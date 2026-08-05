@@ -11,7 +11,8 @@
 //     --passed 3 --total 3
 //
 // Estrategia en 3 niveles:
-//   1. Google Drive (si google_credentials_path configurado en telegram-config.json):
+//   1. Google Drive (OAuth desde el store canonico; como fallback, el JSON de
+//      Service Account que apunte GOOGLE_CREDENTIALS_PATH):
 //      → Sube video a "Intrale QA / SPR-XXXX / #issue-titulo /"
 //      → Permisos "anyone with link" (reader)
 //      → Envía link por Telegram (mensaje descriptivo)
@@ -428,6 +429,88 @@ function getDriveCredentials(opts) {
 }
 function driveOAuth() {
     return getDriveCredentials().values;
+}
+
+// -----------------------------------------------------------------------------
+// Compat con #5172 (`resolveDriveCredentials`) — un solo resolvedor, dos formas
+// -----------------------------------------------------------------------------
+//
+// #5172 llego a `main` (commit fb03a6b8e) con su propio resolvedor de Drive
+// mientras esta rama construia el generico. Los dos resuelven lo mismo con la
+// misma precedencia (env > store > legacy) y la misma validacion por forma, asi
+// que convivir seria duplicar el bug que ambos cierran: dos cadenas que pueden
+// divergir en silencio. Se conserva UNA sola implementacion —`resolveCredential`
+// + `DRIVE_SPEC`— y este wrapper mantiene la firma y el contrato de #5172, que
+// tiene tests y consumidores propios.
+//
+// La diferencia de fondo NO es cosmetica: el resolvedor de #5172 leia el store
+// via `readUnifiedStore()`, que delega en `loadIntoEnv()` y por lo tanto exige
+// que las claves esten en `ENV_MAPPING` — lo que CA-6 de #5217 prohibe, porque
+// `loadIntoEnv` escribe en el `process.env` global que hereda todo proceso hijo
+// de todo agente. Este wrapper resuelve por namespace (`resolveScopedRefs`), sin
+// pasar por `ENV_MAPPING` ni tocar `process.env`.
+//
+// `drive_folder_id` no entra en `missing`: es opcional para #5172 (sin el la
+// subida funciona, degradada a la raiz del Drive — ver `warnIfDriveFolderMissing`).
+const DRIVE_COMPAT_REQUIRED = Object.freeze([
+    "oauth_client_id", "oauth_client_secret", "oauth_refresh_token",
+]);
+
+// El generico etiqueta con mas precision que #5172: el hit del store sale como
+// `store:<namespace>.<scope>` y el del legacy como `legacy:<archivo>#<clave>`
+// cuando el nombre plano del legacy no coincide con el del store (que es el caso
+// de las 4 de Drive: `google_oauth_refresh_token` vs `oauth_refresh_token`).
+// El contrato de #5172 espera las etiquetas planas. Se degradan SOLO en este
+// wrapper: la forma precisa sigue disponible en `cred.credential.sources`.
+function driveCompatSource(source) {
+    if (typeof source !== "string") return source;
+    if (source.startsWith("store:")) return "store:credentials.json";
+    if (source.startsWith("legacy:")) return source.split("#")[0];
+    return source;
+}
+
+function resolveDriveCredentials(opts = {}) {
+    const cred = resolveCredential(DRIVE_SPEC, opts);
+    const sa = resolveDriveServiceAccountPath(opts);
+    const missing = cred.missing.filter(k => DRIVE_COMPAT_REQUIRED.includes(k));
+    return {
+        clientId: cred.values.clientId,
+        clientSecret: cred.values.clientSecret,
+        refreshToken: cred.values.refreshToken,
+        folderId: cred.values.folderId,
+        credentialsPath: sa,
+        clientIdSource: driveCompatSource(cred.sources.clientId),
+        clientSecretSource: driveCompatSource(cred.sources.clientSecret),
+        refreshTokenSource: driveCompatSource(cred.sources.refreshToken),
+        folderIdSource: driveCompatSource(cred.sources.folderId),
+        credentialsPathSource: sa ? "resolveDriveServiceAccountPath" : null,
+        oauthReady: missing.length === 0,
+        missing,
+        // Se preserva el resultado completo del generico para quien lo quiera.
+        credential: cred,
+    };
+}
+
+/**
+ * Compat de #5172. Nunca vuelca un valor de credencial.
+ *
+ * A diferencia de `describeMissingCredentials` —que nombra el store REALMENTE
+ * consultado (`effectiveCanonicalPath`), que es lo que pide CA-10 y lo que usa
+ * el camino de produccion— este wrapper nombra siempre el store canonico por
+ * default, igual que hacia #5172. No es un descuido: es su contrato. El unico
+ * caso en que ambos difieren es cuando el caller INYECTA un store alternativo,
+ * o sea un test; en produccion `opts` viene vacio y los dos coinciden.
+ */
+function describeMissingDriveCredentials(cred) {
+    const base = (cred && cred.credential) ? cred.credential : (cred || {});
+    return describeMissingCredentials({
+        label: DRIVE_SPEC.label,
+        missing: base.missing || [],
+        sourcesConsulted: credentialSources(DRIVE_SPEC),
+        remediation: DRIVE_SPEC.remediation({
+            canonical: effectiveCanonicalPath(), legacyPath: CONFIG_PATH,
+        }),
+    });
 }
 
 let _r2Credentials = null;
@@ -1586,6 +1669,8 @@ module.exports = {
     isCanonicalUrl,
     resolveTelegramCredentials,
     describeMissingTelegramCredentials,
+    resolveDriveCredentials,
+    describeMissingDriveCredentials,
     isValidBotToken,
     isValidChatId,
     // Resolvedor generico (#5217 · entrega el helper compartido de #4917)

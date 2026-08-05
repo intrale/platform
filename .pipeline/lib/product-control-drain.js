@@ -67,7 +67,15 @@ const DEFAULT_ALLOWED_ORGS = Object.freeze(['intrale']);
  * @param {object} [deps]
  * @param {object}   [deps.fsImpl]         impl de fs (default: node:fs).
  * @param {function} [deps.execFileSync]   ejecutor de `gh` (default: child_process).
- * @param {function} [deps.runBootstrap]   registro fail-closed (default: project-bootstrap).
+ * @param {function} [deps.runBootstrap]   registro fail-closed (default: `runBootstrapAsync`
+ *                                          de project-bootstrap — con `kernel.durable:false`
+ *                                          se comporta idéntico al camino FS · CA-6).
+ * @param {function} [deps.resolveContextProjectId] (#5204) resuelve el `contextProjectId`
+ *                                          del alta a partir del descriptor YA validado.
+ *                                          Default: la identidad del producto que se está
+ *                                          creando (ver nota de CA-9 más abajo).
+ * @param {object}   [deps.storeDriver]     driver durable a inyectar al write path.
+ * @param {function} [deps.createStore]     factory de store durable (override de tests).
  * @param {string}   [deps.queueDir]       cola de pedidos (default: product-control/pendiente).
  * @param {string}   [deps.doneDir]        destino de procesados (default: product-control/procesado).
  * @param {string}   [deps.registryPath]   path del registry (pasado a runBootstrap).
@@ -81,7 +89,28 @@ const DEFAULT_ALLOWED_ORGS = Object.freeze(['intrale']);
 function createProductControlDrain(deps = {}) {
   const _fs = deps.fsImpl || fs;
   const exec = deps.execFileSync || execFileSync;
-  const runBootstrap = typeof deps.runBootstrap === 'function' ? deps.runBootstrap : bootstrap.runBootstrap;
+  // #5204 — el default pasa a ser el entry ASÍNCRONO. `runBootstrap` (sync) NUNCA
+  // toma el write path durable: con `kernel.durable:true` el alta por este camino
+  // se registraba sólo en filesystem y el producto no existía para el boot. Con
+  // el flag OFF (default) `runBootstrapAsync` hace exactamente lo mismo que antes
+  // (mismo registro FS, mismo shape de resultado · CA-6), así que la paridad se
+  // mantiene. Un `runBootstrap` sync inyectado por tests sigue funcionando: el
+  // resultado se `await`ea igual.
+  const runBootstrap = typeof deps.runBootstrap === 'function' ? deps.runBootstrap : bootstrap.runBootstrapAsync;
+  // #5204 · CA-9 — contexto de partición del alta. El alta la ejecuta el KERNEL
+  // (control-plane) y su efecto es CREAR la partición del tenant nuevo: no existe
+  // todavía una instancia con credencial propia de la cual derivarlo. Por eso el
+  // default es la identidad del descriptor YA validado fail-closed (schema +
+  // isSafeId + no reservado), y `durableRegisterProduct` vuelve a exigir que el
+  // contexto coincida con esa identidad antes de escribir nada.
+  //
+  // La propiedad anti tenant-hopping se conserva donde importa: un caller que SÍ
+  // tiene contexto propio (una instancia ya viva) lo inyecta por
+  // `deps.resolveContextProjectId` y entonces un descriptor de otro tenant queda
+  // rechazado por el propio write path.
+  const resolveContextProjectId = typeof deps.resolveContextProjectId === 'function'
+    ? deps.resolveContextProjectId
+    : (d) => (d && d.identity && d.identity.projectId) || null;
   // Probe de alcance REAL (CA-2) para repos existentes-de-URL. Inyección explícita
   // least-privilege (alineado con la arquitectura de `repo-probe.js`); ya no se
   // delega a un auto-cableado por default de runBootstrap.
@@ -224,10 +253,13 @@ function createProductControlDrain(deps = {}) {
    * Procesa UN pedido de onboarding (objeto ya parseado). No lee ni mueve archivos:
    * es la unidad testeable pura. Devuelve el resultado del pedido.
    *
+   * ASÍNCRONA desde #5204: el registro puede tomar el write path durable, que es
+   * async. Con `kernel.durable:false` resuelve en el mismo tick lógico que antes.
+   *
    * @param {object} request  `{ type:'product_onboard_request', descriptor, ... }`
-   * @returns {{ok:boolean, projectId?:string, stage:string, created?:boolean, url?:string, reason?:string}}
+   * @returns {Promise<{ok:boolean, projectId?:string, stage:string, created?:boolean, url?:string, reason?:string}>}
    */
-  function processOnboard(request) {
+  async function processOnboard(request) {
     if (!request || request.type !== 'product_onboard_request') {
       return { ok: false, stage: 'type', reason: 'pedido no es product_onboard_request' };
     }
@@ -281,7 +313,20 @@ function createProductControlDrain(deps = {}) {
         // Camino "usar existente": alcance verificado por red (least-privilege).
         bootDeps.probeAccess = probeAccess;
       }
-      boot = runBootstrap({
+      // #5204 · defecto (a) — el write path durable exige `contextProjectId`
+      // fail-closed. Sin propagarlo, un alta con `kernel.durable:true` moría en
+      // `KernelStoreContextError` y ningún producto llegaba a registrarse.
+      const contextProjectId = resolveContextProjectId(resolved);
+      if (contextProjectId) bootDeps.contextProjectId = contextProjectId;
+      // Cableado de persistencia. Se propaga SÓLO si el caller lo inyectó: con el
+      // flag OFF no hace falta y con el flag ON su ausencia la corta el write path
+      // (jamás escribe a un store efímero creyendo que persistió).
+      if (deps.storeDriver) bootDeps.storeDriver = deps.storeDriver;
+      if (typeof deps.createStore === 'function') bootDeps.createStore = deps.createStore;
+      if (typeof deps.kernelDurable === 'boolean') bootDeps.kernelDurable = deps.kernelDurable;
+      if (deps.kernelConfig && typeof deps.kernelConfig === 'object') bootDeps.kernelConfig = deps.kernelConfig;
+      if (typeof deps.onAlert === 'function') bootDeps.onAlert = deps.onAlert;
+      boot = await runBootstrap({
         descriptor: resolved,
         mode: 'full',
         registerMeta: { repoOrigin, repos: repos.map((r) => r && r.url).filter(Boolean) },
@@ -305,8 +350,14 @@ function createProductControlDrain(deps = {}) {
    * Drena la cola una vez: procesa cada `*.json` de `queueDir`, mueve el pedido a
    * `doneDir` con el resultado anexado. Aislado: un pedido corrupto no frena a los
    * demás. Devuelve el resumen `{ processed, results }`.
+   *
+   * ASÍNCRONA desde #5204 (arrastre de `processOnboard`, que puede tomar el write
+   * path durable). El lifecycle de archivos no cambió: se procesa y se mueve uno
+   * por uno, en orden, sin concurrencia.
+   *
+   * @returns {Promise<{processed:number, results:Array}>}
    */
-  function drainOnce() {
+  async function drainOnce() {
     let names = [];
     try {
       names = _fs.readdirSync(queueDir).filter((n) => n.endsWith('.json'));
@@ -336,7 +387,7 @@ function createProductControlDrain(deps = {}) {
       }
       let res;
       try {
-        res = processOnboard(request);
+        res = await processOnboard(request);
       } catch (err) {
         res = { ok: false, stage: 'exception', reason: err.message };
         onAlert({ stage: 'drain-exception', errors: [{ detail: err.message }] });
@@ -398,7 +449,11 @@ module.exports = {
 // -----------------------------------------------------------------------------
 if (require.main === module) {
   const drain = createProductControlDrain({ log: (m) => process.stdout.write(m + '\n') });
-  const summary = drain.drainOnce();
-  process.stdout.write(JSON.stringify({ processed: summary.processed, ok: summary.results.filter((r) => r.ok).length }, null, 2) + '\n');
-  process.exit(0);
+  drain.drainOnce().then((summary) => {
+    process.stdout.write(JSON.stringify({ processed: summary.processed, ok: summary.results.filter((r) => r.ok).length }, null, 2) + '\n');
+    process.exit(0);
+  }).catch((e) => {
+    process.stderr.write(`error inesperado drenando la cola: ${e && e.message ? e.message : e}\n`);
+    process.exit(1);
+  });
 }

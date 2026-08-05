@@ -22,6 +22,9 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const descriptorLib = require('./project-descriptor');
+// #5204 — partición del control-plane (catálogo global que enumera el boot). Se
+// toma de la MISMA autoridad que decide los ids reservados: nunca un literal local.
+const { CONTROL_PLANE_PROJECT_ID } = descriptorLib;
 
 // -----------------------------------------------------------------------------
 // SSRF (CA-D3 · requisito de seguridad #4). `repositories[].url` y `board.ref`
@@ -261,7 +264,25 @@ function defaultRegisterProduct(entry, deps = {}) {
 // Flag de cutover `kernel.durable` (#4821 · CA-6). Se lee UNA SOLA VEZ por
 // operación al inicio del registro (nunca mid-flow) para evitar split-brain
 // FS↔DynamoDB. Inyectable por tests vía `deps.kernelConfig` / `deps.kernelDurable`.
-// Fail-closed a FS: cualquier error de lectura de config ⇒ `durable:false`.
+//
+// #5172 — La lectura y la validación pasan por el punto único
+// (`lib/config-resolver`). El `catch { durable:false }` que había acá era
+// EXACTAMENTE el fail-open que la historia viene a matar: convertía *"no pude
+// leer la config"* en *"el cutover durable está apagado"*, indistinguible de una
+// decisión deliberada del operador. Ahora el error tipado
+// (`ConfigParseViolation` / `ConfigSchemaViolation`, ya redactado por el
+// resolver) se PROPAGA: si la autoridad de la decisión no se puede leer, no hay
+// decisión.
+//
+// Lo que NO cambia (D-4): un config VÁLIDO **sin sección `kernel:`** no es
+// corrupción — es la sección opcional sin declarar ⇒ se conserva el default
+// seguro `durable:false`. Distinguir "no pude leer" de "la sección no está" es
+// el corazón del issue.
+//
+// `deps.configPath` sigue siendo el punto de inyección por firma y se mapea a
+// `resolve({configPath})` (ruta de ARCHIVO explícita). Sin él se usa la
+// `config.yaml` de este checkout, igual que antes: la resolución NO pasa a
+// depender de env vars, para no cambiar de archivo en silencio.
 // -----------------------------------------------------------------------------
 const DEFAULT_CONFIG_PATH = path.resolve(__dirname, '..', 'config.yaml');
 
@@ -272,15 +293,12 @@ function readKernelConfig(deps = {}) {
   if (typeof deps.kernelDurable === 'boolean') {
     return { durable: deps.kernelDurable, tableName: null, region: null };
   }
-  try {
-    const yaml = require('js-yaml'); // safe-by-default (load, sin !!js/function)
-    const cfgPath = deps.configPath || DEFAULT_CONFIG_PATH;
-    const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
-    const k = (cfg.kernel && typeof cfg.kernel === 'object') ? cfg.kernel : {};
-    return { durable: k.durable === true, tableName: k.tableName ?? null, region: k.region ?? null };
-  } catch {
-    return { durable: false, tableName: null, region: null }; // fail-closed a FS
-  }
+  // Lazy-require deliberado (G-3): el resolver arrastra `js-yaml` + `ajv`, y
+  // este módulo se carga también desde contextos sin `node_modules`.
+  const configResolver = require('./config-resolver');
+  const cfg = configResolver.resolve({ configPath: deps.configPath || DEFAULT_CONFIG_PATH });
+  const k = (cfg.kernel && typeof cfg.kernel === 'object') ? cfg.kernel : {};
+  return { durable: k.durable === true, tableName: k.tableName ?? null, region: k.region ?? null };
 }
 
 // -----------------------------------------------------------------------------
@@ -328,6 +346,24 @@ function sanitizeOperatorError(err) {
 // CA-9 (anti tenant-hopping): `contextProjectId` DEBE derivar de la credencial de
 // la instancia (inyectado por el caller), NUNCA del descriptor/request del wizard.
 // El store valida `item.projectId === contextProjectId` como defensa en profundidad.
+//
+// #5204 — DOS PARTICIONES, NO UNA. El alta escribe TRES entidades y NO todas viven
+// en el mismo namespace:
+//
+//   `product#<id>` + `catalog#index` → partición del CONTROL-PLANE. Es el índice
+//       GLOBAL que enumera `kernel-supervisor.bootProducts()` vía su `catalogStore`
+//       (construido con `CONTROL_PLANE_PROJECT_ID`). Escribirlos en la partición
+//       del tenant los volvía INVISIBLES para el boot: `listProducts()` devolvía
+//       `[]` y no se instanciaba ningún pipeline (defecto (b) del issue).
+//   `descriptor#self` → partición del TENANT. Es el estado propio del producto y
+//       el boot lo lee por instancia (`ctx.store.getDescriptor`), ligado al
+//       `contextProjectId` de ESE tenant. Ahí se queda.
+//
+// El aislamiento por tenant NO se relaja: el descriptor se sigue escribiendo con un
+// store ligado al `contextProjectId` de la credencial, y `putDescriptor` reejecuta
+// `assertSameProject`. Además este write path exige explícitamente que el contexto
+// coincida con la identidad del descriptor ANTES de tocar el control-plane, de modo
+// que un contexto ajeno no puede inyectar entradas en el catálogo global.
 // -----------------------------------------------------------------------------
 async function durableRegisterProduct(entry, descriptor, deps = {}) {
   // CA-9: el contexto de tenant proviene de la credencial de la instancia, no del
@@ -336,16 +372,46 @@ async function durableRegisterProduct(entry, descriptor, deps = {}) {
   if (!contextProjectId) {
     throw new KernelStoreContextError('contextProjectId ausente: debe derivar de la credencial de la instancia (CA-9), nunca del descriptor');
   }
+  // #5204 · A01 — el control-plane NO es un tenant: nadie da de alta un producto
+  // "dentro" de la partición del kernel. Se corta antes de construir ningún store.
+  if (descriptorLib.isReservedProjectId(contextProjectId)) {
+    throw new KernelStoreContextError('contextProjectId reservado: la partición del control-plane no puede darse de alta como producto');
+  }
+  // #5204 · CA-9 explícito en el write path. El store ya rechaza escribir la
+  // partición de otro (`assertSameProject`), pero esa defensa recién actúa en
+  // `putDescriptor` — y el catálogo GLOBAL se escribe antes. Sin este corte, un
+  // contexto que no es el del producto podía dejar una entrada en el catálogo del
+  // control-plane y recién después fallar. Se valida ANTES de cualquier escritura.
+  const descriptorProjectId = descriptor && descriptor.identity && descriptor.identity.projectId;
+  if (descriptorProjectId !== contextProjectId) {
+    throw new KernelStoreContextError('contextProjectId no coincide con la identidad del descriptor (anti tenant-hopping · CA-9)');
+  }
+  if (entry && entry.projectId !== contextProjectId) {
+    throw new KernelStoreContextError('el producto a registrar no pertenece al contexto de la instancia (anti tenant-hopping · CA-9)');
+  }
+  // #5204 — sin cableado de persistencia real un alta "durable" escribiría a un
+  // store en memoria que muere con el proceso: alta OK para el operador, producto
+  // inexistente para el boot. Fail-closed antes que fail-silent.
+  if (typeof deps.createStore !== 'function' && !deps.storeDriver) {
+    throw new KernelStoreContextError('alta durable sin store inyectado: el caller debe proveer createStore o storeDriver');
+  }
   const kernelCfg = deps.kernelConfig || readKernelConfig(deps);
   const factory = typeof deps.createStore === 'function'
     ? deps.createStore
     : require('./kernel-store').createKernelStore;
-  const store = factory({
-    contextProjectId,
-    config: { kernel: { tableName: kernelCfg.tableName, region: kernelCfg.region } },
+  const storeConfig = { kernel: { tableName: kernelCfg.tableName, region: kernelCfg.region } };
+  const buildStore = (ctx, allowedNamespaces) => factory({
+    contextProjectId: ctx,
+    allowedNamespaces,
+    config: storeConfig,
     driver: deps.storeDriver,
     onAlert: deps.onAlert,
   });
+
+  // Partición del tenant: SÓLO el descriptor#self del producto.
+  const tenantStore = buildStore(contextProjectId);
+  // Partición del control-plane: producto + catálogo global (lo que lee el boot).
+  const controlStore = buildStore(CONTROL_PLANE_PROJECT_ID, [CONTROL_PLANE_PROJECT_ID]);
 
   // CA-10: validación explícita antes de persistir (además de la que reejecuta el
   // store). Fail-closed: si el descriptor no valida, no se escribe nada.
@@ -354,11 +420,25 @@ async function durableRegisterProduct(entry, descriptor, deps = {}) {
     throw new KernelStoreContextError(`descriptor inválido antes de persistir (CA-10): ${dres.stage}`);
   }
 
+  // Unicidad autoritativa (paridad con el camino FS, que rechaza `duplicate`): un
+  // alta NUNCA pisa el descriptor de un producto ya registrado.
+  const already = await tenantStore.getDescriptor(contextProjectId);
+  if (already) {
+    throw new KernelStoreContextError('el producto ya está registrado: el alta no sobreescribe su descriptor');
+  }
+
   // CA-3: producto + catálogo primero (atómico interno, orden fail-safe); el
   // descriptor#self se escribe al final para no dejar huérfanos indexados.
-  const put = await store.putProduct({ productId: entry.projectId, name: entry.name, status: 'onboarding' });
-  await store.putDescriptor(descriptor);
-  return { status: 'onboarding', durable: true, sk: put.sk, contextProjectId };
+  const put = await controlStore.putProduct({ productId: entry.projectId, name: entry.name, status: 'onboarding' });
+  await tenantStore.putDescriptor(descriptor);
+  return {
+    status: 'onboarding',
+    durable: true,
+    sk: put.sk,
+    contextProjectId,
+    // Partición donde quedó indexado el producto: la MISMA que enumera el boot.
+    catalogProjectId: CONTROL_PLANE_PROJECT_ID,
+  };
 }
 
 // Error interno del write path durable (no expone detalle al operador).

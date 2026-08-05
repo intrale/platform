@@ -12,6 +12,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 
 const policy = require('../lib/kernel-action-policy');
 
@@ -66,9 +67,31 @@ test('acción desconocida cae a notify-and-proceed (fail-open disponibilidad, so
 });
 
 test('el config.yaml real del repo tiene la política gate3 esperada', () => {
-    // Sin config override → lee el config.yaml del repo (o cae a defaults).
-    assert.equal(policy.resolvePolicy('realign-allowlist').mode, 'wait-confirmation');
-    assert.equal(policy.resolvePolicy('worktree-reset').mode, 'notify-and-proceed');
+    // #5174 — "el repo" es ESTE checkout, y hay que decirlo explícitamente.
+    //
+    // Antes esto llamaba `resolvePolicy(accion)` a secas y dejaba que el resolver
+    // eligiera la raíz por su cadena de env vars. El pulpo exporta
+    // `PIPELINE_REPO_ROOT=C:\...\platform` y `build-child-env.js` lo reenvía a
+    // todo hijo, así que la cadena resolvía al repo PRINCIPAL: un test corriendo
+    // en el worktree del agente afirmaba sobre el config.yaml de PRODUCCIÓN y
+    // nunca sobre el suyo. Dos fallas en una:
+    //   a) los cambios de config de la propia rama quedaban sin testear;
+    //   b) el estado de producción podía romper los tests de la rama — que es
+    //      exactamente lo que pasó al partir el manifiesto (#5174): el
+    //      `pipeline.config.json` de producción todavía tenía el `routing`
+    //      placeholder pre-migración y el resolver, fail-closed, tiraba
+    //      `clave-fuera-del-manifiesto`.
+    //
+    // `opts.pipelineDir` es el candidato #2 de la regla de raíz única del
+    // resolver y gana sobre TODA env var, así que fija el test al checkout donde
+    // vive — que es el único config.yaml sobre el que este test tiene autoridad.
+    // Es la misma defensa (G-3) que ya usan `pulpo-liveness-run.js` y
+    // `watchdog-supervisor-run.js` para no heredar la raíz del pulpo.
+    const configResolver = require('../lib/config-resolver');
+    const config = configResolver.resolve({ pipelineDir: path.resolve(__dirname, '..') });
+
+    assert.equal(policy.resolvePolicy('realign-allowlist', { config }).mode, 'wait-confirmation');
+    assert.equal(policy.resolvePolicy('worktree-reset', { config }).mode, 'notify-and-proceed');
 });
 
 // -----------------------------------------------------------------------------
@@ -207,6 +230,45 @@ test('timeout global (gate3.timeout_ms escalar) aplica cuando no hay override po
 test('config null/no-objeto no rompe la resolución', () => {
     assert.equal(policy.resolvePolicy('worktree-reset', { config: null }).mode, 'notify-and-proceed');
     assert.doesNotThrow(() => policy.resolvePolicy('reseed-wave', { config: 'basura' }));
+});
+
+// #5174 — regresión. La inyección se detecta por PRESENCIA, no por truthiness.
+//
+// El bug: `loadGate3Config(opts.config)` recibía sólo el VALOR, así que
+// `{config: null}` era idéntico a "no inyectó" y caía a la lectura ambiental
+// del repo. Con el resolver propagando su error tipado (#5172), eso convertía
+// una inyección explícita en un throw de IO ajeno al llamador — y hacía que el
+// resultado dependiera del estado del repo en vez de lo que el llamador pasó.
+test('#5174 · inyectar config null/no-objeto NO cae a la lectura ambiental', () => {
+    // Raíz inexistente: si el resolver llegara a leer, tiraría. Que resuelva a
+    // los defaults prueba que la inyección cortocircuitó TODA lectura.
+    const prev = process.env.PIPELINE_DIR_OVERRIDE;
+    process.env.PIPELINE_DIR_OVERRIDE = path.join(__dirname, '__no_existe_5174__');
+    try {
+        assert.equal(policy.resolvePolicy('worktree-reset', { config: null }).mode, 'notify-and-proceed');
+        assert.equal(policy.resolvePolicy('realign-allowlist', { config: null }).mode, 'wait-confirmation');
+        assert.equal(policy.resolvePolicy('reseed-wave', { config: 'basura' }).mode, 'wait-confirmation');
+        // Y la inyección de un objeto real sigue ganando sobre el ambiente.
+        const config = { gates: { gate3: { policy: { 'worktree-reset': 'wait-confirmation' } } } };
+        assert.equal(policy.resolvePolicy('worktree-reset', { config }).mode, 'wait-confirmation');
+    } finally {
+        if (prev === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = prev;
+    }
+});
+
+// `undefined` queda del lado de "no inyectó": es lo que devuelve una propiedad
+// ausente, así que `{...base, config: undefined}` no puede degradar a defaults
+// un camino que hoy es fail-closed (#5172).
+test('#5174 · config undefined NO cortocircuita: sigue leyendo fail-closed', () => {
+    const prev = process.env.PIPELINE_DIR_OVERRIDE;
+    process.env.PIPELINE_DIR_OVERRIDE = path.join(__dirname, '__no_existe_5174__');
+    try {
+        assert.throws(() => policy.resolvePolicy('worktree-reset', { config: undefined }));
+    } finally {
+        if (prev === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = prev;
+    }
 });
 // -----------------------------------------------------------------------------
 // Integracion de caller: la politica se ejerce, no queda como codigo muerto.

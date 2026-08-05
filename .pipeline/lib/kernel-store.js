@@ -51,7 +51,7 @@ const {
   ConditionalCheckFailedError,
 } = require('./provisioner-infra');
 const projectDescriptor = require('./project-descriptor');
-const { validateDescriptor, isSafeId, isReservedProjectId, redactAjvErrors } = projectDescriptor;
+const { validateDescriptor, isSafeId, isReservedProjectId, redactAjvErrors, CONTROL_PLANE_PROJECT_ID } = projectDescriptor;
 const { detectInjection } = require('./handoff');
 const { parseSecretRef } = require('./credentials');
 
@@ -669,6 +669,11 @@ module.exports = {
   SCHEMA_PATH,
   SCHEMA_VERSION,
   ENTITY,
+  // #5204 — re-export por ergonomía: los callers del store (boot, alta durable,
+  // drainer) necesitan la MISMA constante de partición del control-plane. La
+  // autoridad sigue siendo `project-descriptor.js` (donde vive la política de
+  // ids reservados); acá sólo se reexporta para no obligar a importar dos libs.
+  CONTROL_PLANE_PROJECT_ID,
   KernelStoreError,
   KernelStoreValidationError,
   KernelStoreIsolationError,

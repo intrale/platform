@@ -104,16 +104,82 @@ test('validateJavaHome: rechaza JAVA_HOME con `..`', () => {
   assert.equal(r.reason, 'javahome-suspicious');
 });
 
-test('loadAllowlist: parsea config.yaml real del repo', () => {
+test('loadAllowlist: parsea la configuración real del repo (kernel + producto)', () => {
   const configPath = path.join(__dirname, '..', 'config.yaml');
   const result = loadAllowlist(configPath);
   assert.equal(result.ok, true);
   assert.ok(Array.isArray(result.list));
-  assert.ok(result.list.length > 0, 'allowlist no debe estar vacía en config.yaml');
+  assert.ok(result.list.length > 0, 'la allowlist real no debe quedar vacía');
   assert.ok(
     result.list.some(e => e.includes('temurin-21')),
     'debe contener al menos un JDK Temurin 21',
   );
+});
+
+// ---------------------------------------------------------------------------
+// #5174 — La partición movió `build:` a `pipeline.config.json`. Estos tests son
+// el canario del lector suelto: sin ellos, la allowlist quedaba vacía y el
+// validador rechazaba TODO JAVA_HOME con exit 78 (build fuera de servicio),
+// sin que ningún test lo detectara.
+// ---------------------------------------------------------------------------
+
+function sandboxConfig(nombre, { yamlList, jsonList }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `jh-${nombre}-`));
+  const configPath = path.join(dir, 'config.yaml');
+  fs.writeFileSync(configPath, yamlList === null
+    ? 'otra_clave: valor\n'
+    : ['build:', '  java_home_allowlist:', ...yamlList.map(p => `    - "${p}"`)].join('\n') + '\n');
+  if (jsonList !== null) {
+    fs.writeFileSync(
+      path.join(dir, 'pipeline.config.json'),
+      JSON.stringify({ productConfig: { build: { java_home_allowlist: jsonList } } }),
+    );
+  }
+  return { dir, configPath };
+}
+
+test('loadAllowlist: el lado producto tiene precedencia sobre el kernel (#5174)', () => {
+  const { dir, configPath } = sandboxConfig('prec', {
+    yamlList: ['C:/kernel/viejo'],
+    jsonList: ['C:/producto/nuevo'],
+  });
+  try {
+    assert.deepEqual(loadAllowlist(configPath).list, ['C:/producto/nuevo']);
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('loadAllowlist: sin manifiesto de producto cae al kernel (rollback de la partición)', () => {
+  const { dir, configPath } = sandboxConfig('rollback', {
+    yamlList: ['C:/kernel/rollback'],
+    jsonList: null,
+  });
+  try {
+    assert.deepEqual(loadAllowlist(configPath).list, ['C:/kernel/rollback']);
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('loadAllowlist: manifiesto de producto ilegible NO se tapa con el kernel (fail-closed)', () => {
+  const { dir, configPath } = sandboxConfig('roto', {
+    yamlList: ['C:/kernel/no-deberia-usarse'],
+    jsonList: null,
+  });
+  fs.writeFileSync(path.join(dir, 'pipeline.config.json'), '{ esto no es json');
+  try {
+    // Lista vacía ⇒ `validateJavaHome` devuelve `allowlist-empty` ⇒ exit 78.
+    // Caer al kernel acá sería resucitar una allowlist stale de la que ya
+    // migramos: preferimos frenar el build a validar contra datos viejos.
+    assert.deepEqual(loadAllowlist(configPath).list, []);
+    assert.equal(
+      validateJavaHome({ javaHome: 'C:/kernel/no-deberia-usarse', allowlist: [] }).reason,
+      'allowlist-empty',
+    );
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
 });
 
 test('loadAllowlist: parser manual con YAML minimal', () => {

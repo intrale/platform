@@ -13,14 +13,26 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { seedProductManifest } = require('./_test-helpers');
 
 const { writeDeliverable } = require('../write-deliverable');
 const { collectAttachmentsForSkill } = require('../skill-deliverable-attachments');
 const { readDeliverableIndex } = require('../deliverable-index');
 const qaReport = require('../qa-deliverable-report');
 
+// #5172 — el sandbox modela un `.pipeline/` real: desde que la lectura de config
+// pasa por `lib/config-resolver`, un `.pipeline/` SIN `config.yaml` es un fallo
+// de lectura y ya no degrada en silencio. `pipelines: {}` es config VÁLIDA sin
+// fases declaradas → enum vacío → `FALLBACK_PHASES`, que es exactamente el caso
+// que este fixture ejercitaba antes. Ninguna aserción cambia.
 function tmpRoot() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'qa-deliverable-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-deliverable-'));
+    fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.pipeline', 'config.yaml'), 'pipelines: {}\n');
+    // #5174 — la configuración vive partida: un `.pipeline/` con kernel pero sin
+    // manifiesto de producto es corrupción TOTAL, no un sandbox a medias.
+    seedProductManifest(path.join(root, '.pipeline'));
+    return root;
 }
 
 test('el reporte QA aprobado se escribe, indexa como qa::verificacion y se recolecta', () => {

@@ -97,6 +97,30 @@ superficie del issue **#5220**, no del pipeline vivo.
 | `google_drive.drive_folder_id` | Google Drive (carpeta destino) | kernel | durable | **sí** |
 | `GOOGLE_CREDENTIALS_PATH` | Google Drive (service account) | kernel | volátil | **sí** |
 
+> **Actualización (#5172, corregida por #5217).** El caso testigo quedó cerrado
+> del lado del consumo, pero **no** por hidratación al ambiente global. Las
+> cuatro claves `google_drive.*` están en `ENV_DESCRIPTORS` —o sea el vault las
+> provisiona, las rota y la política IAM las cubre— con `hydrate: false`, así
+> que **no** forman parte de `ENV_MAPPING` y **no** se inyectan en `process.env`.
+>
+> El motivo es CA-6 de #5217: `loadIntoEnv()` escribe en el `process.env` global
+> y sus call-sites de arranque son `pulpo.js` y `restart.js`, con lo cual todo
+> lo que entre a `ENV_MAPPING` lo hereda **cada proceso hijo de cada agente**,
+> incluidos los CLIs de providers de terceros. Un refresh token de Google no
+> tiene por qué estar ahí: su único consumidor es `qa/scripts/qa-video-share.js`,
+> que lo resuelve **bajo demanda** por namespace con `resolveScopedRefs`.
+>
+> Los nombres `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+> `GOOGLE_OAUTH_REFRESH_TOKEN` y `GOOGLE_DRIVE_FOLDER_ID` siguen siendo los
+> canónicos: son el **override operativo** que el consumidor consulta primero y
+> los que se nombran en los diagnósticos al operador. Lo que ya no ocurre es que
+> el pipeline los propague solo. Antes vivían **sólo** en el archivo versionado
+> `.claude/hooks/telegram-config.json`, cuya copia commiteada no las contiene:
+> cada respawn con `git reset --hard` las borraba y `qa-video-share` abortaba con
+> "Google Drive no configurado", perdiendo la evidencia de QA. `qa-video-share`
+> resuelve ahora con precedencia `env > store > legacy` y
+> `scripts/google-drive-oauth-setup.js` persiste en el store externo, no en el repo.
+
 ### Cloudflare R2
 
 | Identificador | Servicio | Dueño | Durabilidad | ¿Entra en #5217? |
@@ -196,6 +220,13 @@ materializa. Por eso la contención es doble:
 - `.git/info/exclude` del root vivo — cobertura inmediata, desde antes de que el artefacto
   exista. Vive dentro de `.git/`, así que sobrevive el `reset --hard` y el `clean` que el
   root vivo hace en cada respawn.
+
+**Guardas contra re-commit (#5463).** El inventario de paths sensibles dejó de estar
+duplicado entre `.gitignore` y el scanner de `.husky/pre-commit`: ambos —más la suite
+`.pipeline/lib/__tests__/credential-path-guards.test.js`— derivan de
+`.pipeline/lib/sensitive-paths.js`. Un alta se hace en ese módulo y las tres capas la
+heredan; el test falla si alguna se desalinea, si un path del inventario queda trackeado
+(`git ls-files`) o si `.env.example` deja de estar permitido.
 
 Verificar `check-ignore` únicamente en el worktree del agente da un **falso positivo de
 contención**: da `rc=0` ahí mientras el artefacto queda expuesto en el root vivo.

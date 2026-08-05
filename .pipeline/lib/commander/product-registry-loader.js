@@ -9,29 +9,37 @@
 //      credentials.json) para que, sin `products` declarados, se sintetice el
 //      producto default `Intrale` con ese operador (SR-6 / retro-compat).
 //
-// Fail-safe: si el YAML no existe o no parsea, se degrada a `{}` (el registry
-// cae al default single-product Intrale). Nunca rompe el arranque del listener.
+// #5172 — YA NO hay fail-safe a `{}` por config ilegible: la lectura pasa por
+// `lib/config-resolver` y el error tipado se propaga. El default single-product
+// `Intrale` queda reservado para el caso legítimo (config válida SIN
+// `commander_products`), que es lo único que debía activarlo.
 // =============================================================================
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const yaml = require('js-yaml');
+const configResolver = require('../config-resolver');
 
 const { createProductRegistry, extractRegistryConfig } = require('./product-registry');
 
 /**
- * Carga config.yaml (best-effort) desde el `.pipeline/` dado.
- * @param {string} pipelineDir
- * @returns {object} config parseado o {}.
+ * Carga config.yaml desde el `.pipeline/` dado, vía el punto ÚNICO
+ * `lib/config-resolver` (#5172).
+ *
+ * FALLBACK ELIMINADO (#5172): el `catch { return {} }` degradaba un FALLO DE
+ * LECTURA (YAML roto, archivo ausente, permisos) a `{}`, y el registry caía al
+ * default single-product `Intrale` — o sea, una config corrupta se veía
+ * exactamente igual que un pipeline sin `commander_products` declarados, y el
+ * ruteo multi-producto se apagaba en silencio. Ahora el error tipado se PROPAGA.
+ *
+ * Lo que NO cambia: `commander_products:` AUSENTE en un config que parsea bien
+ * sigue siendo válido → `extractRegistryConfig` aplica su default seguro y se
+ * sintetiza el producto default con el operador único histórico (SR-6).
+ *
+ * @param {string} pipelineDir raíz `.pipeline/`.
+ * @returns {object} config validado.
+ * @throws {ConfigParseViolation|ConfigSchemaViolation}
  */
 function loadPipelineConfig(pipelineDir) {
-    try {
-        const p = path.join(pipelineDir, 'config.yaml');
-        return yaml.load(fs.readFileSync(p, 'utf8')) || {};
-    } catch {
-        return {};
-    }
+    return configResolver.resolve({ pipelineDir });
 }
 
 /**

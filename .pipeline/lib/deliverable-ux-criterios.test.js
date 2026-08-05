@@ -24,6 +24,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
+const { seedProductManifest } = require('./__tests__/_test-helpers');
 const path = require('path');
 
 const { writeDeliverable, writeDeliverableException } = require('./write-deliverable');
@@ -33,6 +34,15 @@ function tmpRoot() {
     // Root de repo aislado con `.pipeline/` dentro (contrato de write-deliverable).
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ux-crit-'));
     fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });
+    // #5172 — ver nota en write-deliverable.test.js: `pipelines: {}` es config
+    // VÁLIDA sin fases declaradas → `FALLBACK_PHASES`. Un `.pipeline/` sin
+    // config.yaml ahora es fallo de lectura y no degrada en silencio.
+    fs.writeFileSync(path.join(root, '.pipeline', 'config.yaml'), 'pipelines: {}\n');
+    // #5174 — sembrar también `pipeline.config.json`: sin el manifiesto de
+    // producto junto al kernel el resolver falla cerrado. Fixture mínimo escrito
+    // a mano ⇒ `seedProductManifest` (auto-partición, slice vacío) y NO el real:
+    // `pipelines: {}` debe seguir dando enum de fases vacío → `FALLBACK_PHASES`.
+    seedProductManifest(path.join(root, '.pipeline'));
     return root;
 }
 

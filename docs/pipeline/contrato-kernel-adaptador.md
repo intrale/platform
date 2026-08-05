@@ -78,9 +78,18 @@ del inventario aparece **exactamente una vez** con su lado asignado y una justif
 línea. Valores de la columna **Lado**:
 
 - **kernel** — lógica genérica de orquestación; se muda al kernel sin conocer el producto.
-- **adaptador** — conocimiento de producto (stack, dominio, build, auth); vive del lado adaptador.
-- **a-decidir** — híbrido: mezcla regla genérica + conocimiento de producto; se **parte a nivel
-  de regla/sección en la Ola 9**. El *mecanismo* va al kernel; el *contenido* al adaptador.
+- **producto** — conocimiento de producto (stack, dominio, build, auth); vive del lado adaptador.
+- **autoridad** — decide *quién puede aprobar qué* (gates, firma del operador, circuit breaker,
+  alta de productos/repos). Es un subconjunto duro del kernel: **nunca** es configurable desde
+  el lado del producto. Ver §2.4.
+
+> **Vocabulario (#5173, REQ-UX-6).** El vocabulario canónico es **kernel · producto ·
+> autoridad**. Las tablas §2.1–§2.3 y §2.5+ son del inventario original de #4009 y todavía
+> usan los nombres viejos: `adaptador` ≡ **producto**, y `a-decidir` significaba "híbrido, se
+> parte más adelante". Para `config.yaml` esa categoría **ya no existe**: §2.4 clasifica las 59
+> secciones sin ninguna indecisión, y los híbridos se resuelven partiéndolos por sub-path
+> (columna *Nota*). El default es **fail-closed**: una clave sin lado declarado se trata como
+> `kernel`, nunca como `producto`.
 
 > **Invariante de frontera (CA-3):** ninguna fila marcada **kernel** referencia el producto por
 > nombre. Verificable con `grep` (ver sección "Verificación"). Las filas que sí nombran el
@@ -131,16 +140,199 @@ línea. Valores de la columna **Lado**:
 | `_frozen/ios-dev` | adaptador | Stack del producto (Compose iOS); congelado. |
 | `_frozen/scrum` | kernel | Proceso de orquestación (zombi V3); congelado, genérico. |
 
-### 2.4. `config.yaml` — inventario §2.1
+### 2.4. `config.yaml` — clasificación completa de las 60 secciones (#5173)
 
-| Ítem (sección/regla) | Lado | Justificación (1 línea) |
-|----------------------|------|-------------------------|
-| `dev_skill_mapping` (ruteo label→skill) | adaptador | Mapea labels de dominio del producto a skills de stack; es inyectable por el adaptador (crítico #1). |
-| `dev_routing_priority` (orden de labels) | a-decidir | El mecanismo de prioridad es genérico; la lista concreta de labels es del producto. |
-| `pipeline_scope_keywords` (heurística de override) | a-decidir | Mecanismo de override genérico; las keywords mezclan motor y producto. |
-| `dev_skill_mapping.default` (fallback de skill) | adaptador | El fallback asume un área por defecto del stack del producto. |
-| Límites de concurrencia / umbrales de recursos | a-decidir | El throttling es genérico; los valores calibrados al hardware/stack son del producto. |
-| Artefactos QA (`types/formats`) | kernel | Tipos de artefacto genéricos (video/document, formatos); reutilizables. |
+<!-- #5173 · Entrega B de #5111. Reemplaza la tabla parcial del inventario original,
+     que clasificaba 6 de 57 secciones y dejaba 4 ítems sin decidir. -->
+
+Las **60** secciones top-level de `.pipeline/config.yaml`, una por una, con su forma real y su
+lado. Es la expresión legible de `SIDE_MAP` en `.pipeline/lib/config-schema.js`: **si esta tabla
+y ese mapa divergen, falla el test** `#5173 toda sección top-level de config.yaml está declarada
+en el schema y tiene lado` **en el PR**, no en el arranque.
+
+Reparto: **39 kernel · 12 autoridad · 9 producto**.
+
+> **Regla operativa (CA-1).** La raíz del schema está **cerrada**
+> (`additionalProperties: false`). Agregar una sección nueva a `config.yaml` exige declararla en
+> `config-schema.js` **en el mismo commit**; si no, `loadConfig` la ve como clave desconocida,
+> dispara `haltOnConfigCorruption` y el pipeline arranca pausado.
+
+> **Formas que NO son objeto.** 3 secciones son arrays (`dev_routing_priority`,
+> `pipeline_scope_keywords`, `prioridad_labels`) y 5 son escalares (las 4 de `sherlock_*` y
+> `telegram_burst_window_ms`). Tiparlas como `object` rompe el arranque.
+
+| # | Sección (línea) | Forma | Lado | Nota |
+|---|-----------------|-------|------|------|
+| 1 | `pipelines` (4) | obj | kernel | Split: el grafo de fases es mecanismo; `pipelines.*.skills_por_fase` nombra skills del producto. |
+| 2 | `concurrencia` (26) | obj | kernel | Throttling por rol: mecanismo de orquestación. |
+| 3 | `routing` (64) | obj | kernel | Ruteo de archivos de trabajo entre fases; mecanismo puro. |
+| 4 | `intake` (68) | obj | kernel | Admisión de issues desde GitHub; mecanismo. Los labels concretos los parte #5174. |
+| 5 | `admission_gate` (98) | obj | **autoridad** | Gobierna qué entra al pipeline; decide autonomía. |
+| 6 | `e2e_evidence` (124) | obj | **autoridad** | Gobierna la evidencia exigida por el gate de QA. |
+| 7 | `dev_skill_mapping` (130) | obj | producto | Mapea labels de dominio del producto a skills de stack. |
+| 8 | `dev_skill_partitions` (145) | obj | producto | Partición de skills por área del producto. |
+| 9 | `dev_routing_priority` (157) | **array** | producto | Lista concreta de labels del producto. |
+| 10 | `pipeline_scope_keywords` (170) | **array** | producto | Keywords de override del producto. |
+| 11 | `prioridad_labels` (186) | **array** | producto | Labels de prioridad del tablero del producto. |
+| 12 | `feature_priority` (194) | obj | producto | Política de priorización de features del producto. |
+| 13 | `resource_limits` (213) | obj | kernel | Los umbrales de presión son mecanismo; la calibración fina la parte #5174. |
+| 14 | `timeouts` (270) | obj | kernel | Timeouts de orquestación; mecanismo puro. |
+| 15 | `desync` (296) | obj | kernel | Detección/resolución de desync de estado; mecanismo. |
+| 16 | `build` (304) | obj | producto | Contiene `java_home_allowlist` con paths de JDK de esta máquina. |
+| 17 | `circuit_breaker` (315) | obj | **autoridad** | Corta la autonomía del pipeline ante rebotes; decide autonomía. |
+| 18 | `precheck` (353) | obj | kernel | Chequeos previos al dispatch; mecanismo. |
+| 19 | `anomaly_detector` (372) | obj | kernel | Detección de anomalías del motor; mecanismo. |
+| 20 | `cost_anomaly_alert` (395) | obj | kernel | Alerta de anomalía de costo del motor; mecanismo. |
+| 21 | `ghostbusters_cron` (411) | obj | kernel | Higiene programada del motor; mecanismo. |
+| 22 | `rest_mode` (434) | obj | kernel | Modo descanso del motor; mecanismo. |
+| 23 | `staleness` (447) | obj | kernel | Detección de trabajo stale; mecanismo. |
+| 24 | `watchdog` (461) | obj | kernel | Vigilancia de agentes; mecanismo. |
+| 25 | `wave_watchdog` (489) | obj | kernel | Vigilancia de avance de ola; mecanismo. |
+| 26 | `dashboard` (498) | obj | kernel | Superficie de observabilidad del motor; mecanismo. |
+| 27 | `quota_detector` (534) | obj | kernel | Detección de cuota de providers; mecanismo. |
+| 28 | `multi_provider` (599) | obj | kernel | Split: el enum de providers es kernel; `multi_provider.order` es política de producto. |
+| 29 | `pacing` (652) | obj | kernel | Cadencia de dispatch; mecanismo. |
+| 30 | `handoff` (702) | obj | **autoridad** | Tiene `kill_switch`: gobierna el traspaso de contexto entre agentes. |
+| 31 | `reduced_mode` (739) | obj | kernel | Modo reducido del motor; mecanismo. |
+| 32 | `firma_operador` (783) | obj | **autoridad** | Auto-aprobación de la firma del operador; núcleo de la autoridad. |
+| 33 | `wave_coherence_gate` (831) | obj | kernel | Coherencia de ola; mecanismo de orquestación. |
+| 34 | `historico` (847) | obj | kernel | Frontera activo/histórico; mecanismo. |
+| 35 | `logs_history` (876) | obj | kernel | Retención de logs del motor; mecanismo. |
+| 36 | `rewind` (905) | obj | kernel | Rebobinado de fases; mecanismo. |
+| 37 | `pipeline` (940) | obj | kernel | Parámetros generales del loop; mecanismo. |
+| 38 | `inflight_fallback` (994) | obj | kernel | Fallback de trabajo in-flight; mecanismo. |
+| 39 | `sherlock_enabled` (1029) | **bool** | kernel | Escalar top-level; diagnóstico del motor. |
+| 40 | `sherlock_provider_budget_ms` (1037) | **num** | kernel | Escalar top-level; presupuesto del diagnóstico del motor. |
+| 41 | `sherlock_max_reelaboraciones` (1038) | **num** | kernel | Escalar top-level; límite del diagnóstico del motor. |
+| 42 | `sherlock_wait_budget_ms` (1045) | **num** | kernel | Escalar top-level; espera del diagnóstico del motor. |
+| 43 | `telegram_burst_window_ms` (1062) | **num** | kernel | Escalar top-level; anti-burst del canal de salida. |
+| 44 | `telegram_outbound` (1083) | obj | kernel | Transporte de salida del motor; mecanismo. |
+| 45 | `audio_policy` (1163) | obj | producto | Política de audio narrado hacia el operador del producto. |
+| 46 | `deliverable_notifications` (1174) | obj | kernel | Split: el mecanismo de notificación es kernel; `.skills` y `.attachments_per_skill` son del producto. |
+| 47 | `cua` (1321) | obj | kernel | Automatización de UI del motor; mecanismo. |
+| 48 | `kernel` (1416) | obj | kernel | Configuración del propio kernel; mecanismo. |
+| 49 | `cross_repo_delivery` (1475) | obj | **autoridad** | Declara a qué repos externos puede pushear el pipeline; es una frontera de permiso. |
+| 50 | `architect` (1509) | obj | kernel | Split: `.enabled`/`.gate_mode`/`.go_live_date` son autoridad; `.poll_cap_min`/`.poll_interval_seconds`/`.bot_login` son calibración. |
+| 51 | `operator_signoff` (1580) | obj | **autoridad** | Gate de sign-off humano; decide quién aprueba. |
+| 52 | `operator_signature` (1633) | obj | **autoridad** | Gate de firma; `nonce_ttl_seconds` acota el replay de una firma. |
+| 53 | `deliverable_gate` (1667) | obj | **autoridad** | Gate de entregables; decide qué se considera entregado. |
+| 54 | `gates` (1697) | obj | **autoridad** | Política de gate3 y de ausencia del operador; decide quién aprueba. |
+| 55 | `waves` (1759) | obj | kernel | Modelo de olas del motor; mecanismo. |
+| 56 | `wave_auto_transition` (1782) | obj | **autoridad** | Transición automática de ola sin humano; decide autonomía. |
+| 57 | `telegram` (1800) | obj | producto | Verificado: en HEAD sólo `bot_username`, sin escalación. |
+| 58 | `commander_products` (1823) | obj | **autoridad** | D-2: incluye `default_product` y el alta de productos con sus operadores. |
+| 59 | `vault` (1318) | obj | kernel | #5352: direcciona secretos de infraestructura por host (`prefix`/`projectId`/`hostId`); es mecanismo, se muda al kernel sin conocer el producto. Reutiliza `kernel.region`. |
+| 60 | `worktree_provenance` | obj | kernel | Allowlist de identidades para verificar procedencia de ramas en auto-recovery; mecanismo de seguridad del motor. |
+
+#### 2.4.1. Matriz de precedencia
+
+Cuando más de una regla aplica al mismo path, gana en este orden:
+
+| Prioridad | Regla | Efecto | Dónde vive |
+|---|---|---|---|
+| 1 | Prefijo de autoridad | La **sección entera** es `autoridad`, incluidas sus sub-claves | `AUTHORITY_PREFIXES` (congelada en código) |
+| 2 | Match más específico de `SIDE_MAP` | Gana el patrón con más segmentos; a igual longitud, gana el que no usa comodín | `SIDE_MAP` (congelado en código) |
+| 3 | Default fail-closed | Sin lado declarado ⇒ `kernel`. **Nunca** `producto` | `resolveSide()` |
+
+Por eso `pipelines` es `kernel` pero `pipelines.*.skills_por_fase` es `producto` (regla 2 contra
+regla 2, gana la más específica), y `architect.enabled` es `autoridad` aunque `architect` sea
+`kernel` (regla 1 sobre regla 2).
+
+#### 2.4.2. Por qué la lista de autoridad va congelada en código
+
+`AUTHORITY_PREFIXES` vive en `config-schema.js` con `Object.freeze`, **nunca** en YAML/JSON. Si
+fuera configurable sería auto-referencial: quien puede editar la configuración podría sacarse de
+encima el control que la configuración declara, y la defensa entera se anula. Es el mismo patrón
+que ya usan `PROVIDER_ENUM` y los CAPs hardcodeados de `config.yaml` (declarados ahí mismo como
+defensa contra una configuración maliciosa).
+
+Se declara **por prefijo de sección, no por sub-clave suelta**. Enumerar sub-claves dejaría
+editables justo las que importan: `firma_operador.modo`, `operator_signature.nonce_ttl_seconds`,
+`gates.gate3.timeout_ms`. La única excepción es `architect`, partido a propósito porque su
+cadencia de polling es calibración, no autoridad.
+
+#### 2.4.3. Alcance de la Entrega B (#5173)
+
+En #5173 **no se movió ninguna clave de archivo**: las 58 secciones seguían en `config.yaml`. El
+chequeo de lado era **opt-in** vía `validateConfig(obj, { origin: 'producto' })`, y
+`pulpo.loadConfig` llamaba `validateConfig(raw)` sin segundo argumento ⇒ cero cambio de
+comportamiento. La Entrega C (#5174) es la que parte el archivo y activa `origin`; su estado
+vigente se describe en §2.4.4.
+
+`repos.*` no entra en `SIDE_MAP`: verificado que no existe en `config.yaml` (vive en
+`pipeline.config.json`). Se documenta acá como **autoridad** por D-1. La sección
+`cross_repo_delivery` sí existe en `config.yaml` y se clasifica **autoridad** por el mismo
+criterio: declara a qué repos externos puede pushear el pipeline.
+
+**Estado del enforcement de `repos.*` tras #5174** (corrige lo que esta sección afirmaba antes:
+*«su enforcement es de #5174»*, sin decir con qué alcance). `repos.*` sigue viviendo en
+`pipeline.config.json` — el lado de **menor** confianza — por una **excepción de migración
+enumerada y acotada**, no porque haya dejado de ser autoridad. Lo que #5174 sí cierra:
+
+| Aspecto | Estado |
+|---|---|
+| Top-level del manifiesto | **Forma cerrada.** Toda clave fuera de `MANIFEST_KEYS` (`lib/config-resolver.js`) rompe el arranque nombrando clave y archivo destino. Una clave de autoridad (`firma_operador`, …) puesta ahí ya no pasa. |
+| Alcance de la excepción | **Enumerada** en `REPOS_GRANDFATHERED_SUBKEYS` (`primary`, `allowlist`, `intake`, `default_base_ref`, `note`). Una sub-clave nueva bajo `repos` ⇒ fail-closed. |
+| Coherencia del bloque | Verificada en el arranque: `intake ⊆ allowlist` y `primary ∈ allowlist`. |
+| Visibilidad | **Nunca silenciosa**: traza de nivel `alerta` en cada arranque, nombrando la excepción y el issue que la cierra. |
+| Contenido de `allowlist` | **NO enforzable por config.** Ningún chequeo puede distinguir un repo legítimo de uno hostil; agregar un repo es una decisión y su control es la revisión del cambio. |
+
+Por qué no se mudó al kernel el día 1: `repo-target.js` y `kernel-resolver.js` lo leen de
+`pipeline.config.json` desde #4693, **por fuera del resolver**, y moverlo rompería la paridad
+clave por clave del CA-2 sin ganar frontera — `.github/CODEOWNERS` **no** cubre `.pipeline/`
+(auto-merge habilitado), así que hoy los dos archivos están bajo el mismo control de revisión.
+El cierre de la excepción (mudar el bloque al kernel) es de **#4694**, que ya es la dependencia
+declarada del propio `note` del bloque. Fijado por `lib/__tests__/config-manifest-side.test.js`,
+incluido el test que documenta el límite.
+
+**Reversión (CA-14):** poner `additionalProperties: true` en la raíz de `config-schema.js`. Una
+línea. Deja el `SIDE_MAP` inerte y devuelve el comportamiento al de #3941.
+
+#### 2.4.4. Precedencia en tiempo de ejecución tras la partición (#5174)
+
+Desde #5174 la configuración vive **partida en dos archivos**: `.pipeline/config.yaml` (kernel) y
+`pipeline.config.json` → `productConfig` (producto). `lib/config-resolver.js` es el **único** punto
+que lee los dos y los une.
+
+La matriz de §2.4.1 responde *"¿de qué lado es esta clave?"*. La de acá responde *"si dos fuentes
+la aportan, ¿cuál gana?"*:
+
+| Categoría | Precedencia | Qué pasa si aparece del lado equivocado |
+|---|---|---|
+| Autoridad (lista congelada) | **kernel gana siempre** | Presencia del lado producto **o** en una env var ⇒ **falla el arranque**, nombrando la clave y el lado correcto |
+| Calibración / política de producto | `env > producto > kernel` | — |
+| Mecanismo del kernel | kernel | Clave de producto declarada del lado kernel ⇒ falla el arranque |
+| `PIPELINE_DIR_OVERRIDE` | reubica **ambos** archivos o ninguno | Reubicación parcial ⇒ falla el arranque |
+
+Cuatro propiedades que no son obvias desde la tabla:
+
+1. **Para autoridad, "kernel gana" NO es precedencia de merge: es fail-closed.** Si fuera
+   precedencia, un manifiesto de producto podría declarar `firma_operador.enabled: false` y el
+   resolver lo descartaría en silencio — y desde el log, *"lo ignoré"* es indistinguible de *"el
+   ataque no ocurrió"*. Por eso la **presencia sola** rompe el arranque.
+2. **El fallo es TOTAL, nunca un merge parcial.** Que cualquiera de los dos archivos esté ausente,
+   no parsee o venga vacío se trata como corrupción de la configuración entera y reusa
+   `haltOnConfigCorruption`. El auto-recovery de #4832 exige que **ambos** vuelvan a parsear OK
+   antes de levantar la pausa.
+3. **Los dos lados son disjuntos**, así que el merge es una **unión** y la paridad clave por clave
+   es demostrable (`config-partition-parity.test.js` la verifica contra un golden redactado del
+   estado pre-partición).
+4. **No existe un canal genérico `env → config`.** `PIPELINE_CFG_*` / `PIPELINE_CONFIG_SET_*` están
+   prohibidos enteros y rompen el arranque: `build-child-env.js` reenvía todo `PIPELINE_*` a cada
+   agente hijo, así que un patrón genérico volvería la configuración no auditable. La única
+   superficie de override por entorno es la allowlist cerrada y enumerada de `ENV_OVERRIDES`, que
+   por regla sólo admite claves de lado producto (con dos excepciones de autoridad ya auditadas y
+   enumeradas en `ENV_AUTHORITY_GRANDFATHERED`).
+
+La ubicación del archivo de producto se **deriva de la raíz del kernel** y se resuelve con
+`realpath`, rechazando `..` y symlinks que escapen. El kernel **nunca** toma esa ubicación desde el
+propio archivo de producto: no existe ningún `product_config_path:`.
+
+**Reversión (CA-12):** `PARTITION_ENABLED = false` en `lib/config-resolver.js` — una línea — más
+revertir el movimiento de claves en `config.yaml`. Con el flag apagado no se lee el manifiesto, no
+corre el chequeo de lado y no hay merge: el comportamiento vuelve al de #5172. Está **ejercitado**
+por `config-partition-rollback.test.js`, incluido el caso de que una clave migrada ausente tras el
+rollback **rompa** en vez de caer a un default permisivo.
 
 ### 2.5. `CLAUDE.md` y `.pipeline/*.js` + hooks — inventario §2.2 y §2.3
 

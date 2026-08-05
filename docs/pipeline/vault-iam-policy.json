@@ -1,0 +1,90 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VaultReadHostScoped",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath"
+      ],
+      "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/PROJECT/hosts/HOST/*"
+    },
+    {
+      "Sid": "VaultReadSharedScoped",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath"
+      ],
+      "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/PROJECT/shared/*"
+    },
+    {
+      "Sid": "VaultReadRotatingSecret",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:intrale/PROJECT/rotating/*"
+    },
+    {
+      "Sid": "VaultDecryptViaSsm",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt"
+      ],
+      "Resource": "arn:aws:kms:REGION:ACCOUNT:key/CMK_ID",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.REGION.amazonaws.com"
+        },
+        "StringLike": {
+          "kms:EncryptionContext:PARAMETER_ARN": [
+            "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/PROJECT/hosts/HOST/*",
+            "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/PROJECT/shared/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "VaultDecryptViaSecretsManager",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt"
+      ],
+      "Resource": "arn:aws:kms:REGION:ACCOUNT:key/CMK_ID",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "secretsmanager.REGION.amazonaws.com"
+        },
+        "StringLike": {
+          "kms:EncryptionContext:SecretARN": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:intrale/PROJECT/rotating/*"
+        }
+      }
+    },
+    {
+      "Sid": "VaultDenyWriteSsm",
+      "Effect": "Deny",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:DeleteParameters",
+        "ssm:LabelParameterVersion"
+      ],
+      "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/intrale/PROJECT/*"
+    },
+    {
+      "Sid": "VaultDenyWriteSecretsManager",
+      "Effect": "Deny",
+      "Action": [
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:DeleteSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:intrale/PROJECT/*"
+    }
+  ]
+}

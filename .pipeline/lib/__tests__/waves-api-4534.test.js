@@ -18,11 +18,16 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 let waves, wavesApi, csrf;
 
 function setupTmp() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'waves-api-4534-'));
+    // #5172: la lectura de config.yaml dejó de degradar a default ante ENOENT,
+    // así que el sandbox necesita config propia. Documento mínimo a propósito:
+    // sin sección `waves:` los defaults de concurrencia son los de siempre.
+    seedPipelineConfig(dir);
     process.env.PIPELINE_DIR_OVERRIDE = dir;
     delete require.cache[require.resolve('../waves')];
     delete require.cache[require.resolve('../waves-api')];

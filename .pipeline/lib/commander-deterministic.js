@@ -200,6 +200,34 @@ const WAVE_INTENT_RE = /\b(?:estado|c[oó]mo (?:va|viene|anda)|avance|status|sit
 // mensaje real (no inflado por el sufijo) y (b) el residual NLP no arrastre
 // "... whisper local)" como args (bug del comando /wave por voz).
 const ANNOTATION_TRAIL = /\s*[\(\[][^)\]]*(?:transcript|audio|imagen)[^)\]]*[\)\]]\s*$/i;
+
+// Issue #5336 (CA-4) — Marcador de audio que NO se pudo transcribir.
+//
+// El bug que arregla: cuando whisper fallaba, `multimedia.js` dejaba el texto
+// vacío + el marcador "(audio sin transcribir: <kind>)". `stripPreprocessAnnotations`
+// borraba ese marcador ANTES de clasificar, el residual quedaba vacío, y el mensaje
+// caía en `unknown` → plantilla `error-unknown` → "🤔 No te entendí, Leito".
+// Eso le comunicaba al operador algo FALSO: que su mensaje llegó y no se comprendió,
+// cuando en realidad la infraestructura nunca llegó a escucharlo.
+//
+// Por eso la detección corre ANTES del strip. `classify` expone el hallazgo en
+// campos ADITIVOS (`audioFailed` / `audioErrorKind`) en vez de agregar un valor
+// nuevo al enum de `class`: el enum es contrato con el dispatcher y con pulpo, y
+// romperlo obligaría a tocar todos los consumidores. Los que no conocen los campos
+// nuevos siguen viendo exactamente el mismo `class` que antes.
+//
+// NO se redacta el copy acá: la fuente única del mensaje es
+// `transcriptionFailureMessage()` en multimedia.js. Este módulo sólo enruta.
+const AUDIO_FAILURE_MARKER = /[\(\[]\s*audio (?:sin transcribir|no disponible)\s*(?::\s*([a-z_]+))?\s*[\)\]]/i;
+
+function detectAudioFailure(text) {
+    const m = String(text || '').match(AUDIO_FAILURE_MARKER);
+    if (!m) return null;
+    // `audio no disponible` no lleva kind explícito → download_failed, que es la
+    // única causa por la que multimedia.js emite ese marcador.
+    return { errorKind: (m[1] || 'download_failed').toLowerCase() };
+}
+
 function stripPreprocessAnnotations(text) {
     let out = String(text || '');
     let prev;
@@ -211,16 +239,27 @@ function stripPreprocessAnnotations(text) {
  * Clasifica un mensaje entrante. Devuelve siempre un objeto.
  *
  * @param {string} text
- * @returns {{ class: 'deterministic'|'llm'|'unknown', command: string|null, args: string, raw: string, rawTruncated: string }}
+ * @returns {{ class: 'deterministic'|'llm'|'unknown', command: string|null, args: string, raw: string, rawTruncated: string, audioFailed?: boolean, audioErrorKind?: string }}
  */
 function classify(text) {
     const raw = typeof text === 'string' ? text : '';
+    // #5336 (CA-4): detectar el marcador de audio fallido ANTES de que el strip
+    // lo borre. Sin esto la señal se pierde y el mensaje termina en `unknown`.
+    const audioFailure = detectAudioFailure(raw);
     // Quitar anotaciones del preprocesador (voz/imagen) antes de clasificar.
     const trimmed = stripPreprocessAnnotations(raw).trim();
     const rawTruncated = trimmed.slice(0, RAW_TRUNC_LEN);
 
     if (!trimmed) {
-        return { class: 'unknown', command: null, args: '', raw, rawTruncated };
+        const base = { class: 'unknown', command: null, args: '', raw, rawTruncated };
+        // Audio fallido SIN texto acompañante: el usuario no dijo nada que se
+        // pueda malinterpretar, sólo falló la transcripción. El caller usa estos
+        // campos para responder el fallo real en vez del "no te entendí".
+        if (audioFailure) {
+            base.audioFailed = true;
+            base.audioErrorKind = audioFailure.errorKind;
+        }
+        return base;
     }
 
     // Slash-command — admite guiones (`/pause-partial`, `/dashboard-up`).
@@ -3470,6 +3509,9 @@ module.exports = {
     deliveryCitationFor,
     // #4099 — helper puro para tests del closedSet (estado CLOSED real de GitHub).
     computeClosedSet,
+    // #5336 (CA-4) — detección del marcador de audio sin transcribir.
+    detectAudioFailure,
+    AUDIO_FAILURE_MARKER,
     _waveInternal: {
         handleWaveStatus,
         handleWaveNext,

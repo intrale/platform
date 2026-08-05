@@ -312,7 +312,15 @@ function clearDesyncFlag() {
                 impact: 'medio',
                 reason: 'clearDesyncFlag: destrabe de desync (aditivo/humano)',
             });
-        } catch {}
+        } catch (e) {
+            // #5172 — dejó de ser mudo. `desync-autoresolve` es notify-and-proceed
+            // y acá el veredicto ni se lee, así que no hay gate que bypassear: el
+            // borrado del flag sigue adelante igual que antes. Lo que cambia es
+            // que la pérdida del aviso al operador deja traza en vez de
+            // desaparecer.
+            require('./kernel-action-policy').logPolicyEnforcementFailure(
+                'desync-detector', 'desync-autoresolve', e);
+        }
         try { fs.unlinkSync(p); } catch {}
     }
 }

@@ -13,6 +13,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 const healthCron = require('../multi-provider/health-cron');
+const { seedProductManifest } = require('./_test-helpers');
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'mp-cron-')); }
 
@@ -106,22 +107,34 @@ test('readTickIntervalMs: toma el valor de config.yaml', () => {
     const dir = tmpDir();
     const cfg = path.join(dir, 'config.yaml');
     fs.writeFileSync(cfg, 'multi_provider:\n  health:\n    interval_minutes: 10\n');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 10 * 60 * 1000);
 });
 
-test('readTickIntervalMs: default 5 min si falta el campo o config ilegible', () => {
+test('readTickIntervalMs: default 5 min si falta el campo (sección opcional ausente)', () => {
     const dir = tmpDir();
     const cfg = path.join(dir, 'config.yaml');
     fs.writeFileSync(cfg, 'multi_provider:\n  order: [claude]\n'); // sin health.interval_minutes
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 5 * 60 * 1000);
-    // Path inexistente → default sin romper.
-    assert.equal(healthCron.readTickIntervalMs({ configPath: path.join(dir, 'nope.yaml') }), 5 * 60 * 1000);
+});
+
+// #5172 — el config ILEGIBLE dejó de degradar a "cadencia default". Antes este
+// caso caía al mismo 5 min que un config válido sin el campo, así que "no pude
+// leer la configuración" y "no configuraste cadencia" eran indistinguibles.
+test('readTickIntervalMs: config inaccesible PROPAGA el error tipado, no degrada al default (#5172)', () => {
+    const dir = tmpDir();
+    assert.throws(
+        () => healthCron.readTickIntervalMs({ configPath: path.join(dir, 'nope.yaml') }),
+        (e) => e.name === 'ConfigParseViolation' && e.causa === 'ENOENT',
+    );
 });
 
 test('readTickIntervalMs: clamp piso — 0.5 min → 60s (RS-5.5)', () => {
     const dir = tmpDir();
     const cfg = path.join(dir, 'config.yaml');
     fs.writeFileSync(cfg, 'multi_provider:\n  health:\n    interval_minutes: 0.5\n');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 60 * 1000);
 });
 
@@ -129,14 +142,31 @@ test('readTickIntervalMs: clamp techo — 999 min → 240 min', () => {
     const dir = tmpDir();
     const cfg = path.join(dir, 'config.yaml');
     fs.writeFileSync(cfg, 'multi_provider:\n  health:\n    interval_minutes: 999\n');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
     assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 240 * 60 * 1000);
 });
 
-test('readTickIntervalMs: typo de valor (string) → default 5 min', () => {
+// El schema es LENIENT en la CLAVE (`additionalProperties: true`) y ESTRICTO en
+// el TIPO del valor. Los dos lados de esa decisión, explícitos:
+test('readTickIntervalMs: typo en la CLAVE se ignora → default 5 min', () => {
+    const dir = tmpDir();
+    const cfg = path.join(dir, 'config.yaml');
+    fs.writeFileSync(cfg, 'multi_provider:\n  health:\n    intervalo_minutos: 10\n');
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
+    assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 5 * 60 * 1000);
+});
+
+// #5172 — un valor no-numérico grosero lo caza el schema y ahora PROPAGA. Antes
+// el `catch` lo convertía en 5 min y el operador nunca se enteraba de su typo.
+test('readTickIntervalMs: valor no-numérico PROPAGA ConfigSchemaViolation (#5172)', () => {
     const dir = tmpDir();
     const cfg = path.join(dir, 'config.yaml');
     fs.writeFileSync(cfg, 'multi_provider:\n  health:\n    interval_minutes: "cada rato"\n');
-    assert.equal(healthCron.readTickIntervalMs({ configPath: cfg }), 5 * 60 * 1000);
+    seedProductManifest(dir);   // #5174 — la configuración vive partida: el otro lado también
+    assert.throws(
+        () => healthCron.readTickIntervalMs({ configPath: cfg }),
+        (e) => e.name === 'ConfigSchemaViolation' && e.causa === 'schema-invalido',
+    );
 });
 
 test('tickIfDue: respeta intervalMs inyectado (no due si no pasó)', async () => {
@@ -392,7 +422,13 @@ test('tickIfDue: respeta lock — segundo proceso skip', async () => {
     fs.mkdirSync(stateDir, { recursive: true });
     // Lock manualmente
     fs.writeFileSync(path.join(stateDir, healthCron.LOCK_FILENAME), JSON.stringify({ pid: 99999, acquired_at: Date.now() }));
-    const result = await healthCron.tickIfDue({ stateDir, secretsPath: makeSecretsFile(dir, {}) });
+    // #5174 — `intervalMs` explícito para que el test sea HERMÉTICO: sin él,
+    // `tickIfDue` cae a `readTickIntervalMs()` sin `configPath`, el resolver baja
+    // por la cadena hasta `PIPELINE_REPO_ROOT` y termina leyendo la configuración
+    // del repo AMBIENTE. Este test es sobre el lock, no sobre el intervalo.
+    const result = await healthCron.tickIfDue({
+        stateDir, secretsPath: makeSecretsFile(dir, {}), intervalMs: 60000,
+    });
     assert.equal(result.skipped, true);
     assert.equal(result.reason, 'locked_by_other_process');
 });

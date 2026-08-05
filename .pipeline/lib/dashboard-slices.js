@@ -10,6 +10,8 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+// #5172 — punto único de lectura/validación de config.yaml.
+const configResolver = require('./config-resolver');
 
 // #2890 PR-A — Modo descanso (ventana horaria).
 let restModeWindow = null;
@@ -1449,8 +1451,27 @@ function equipoSlice(state) {
 // `dev_routing_priority`, cae a `dev_skill_mapping.default` si no hay match.
 function resolveDevSkillFromLabels(config, labels) {
     if (!config) return null;
-    const priority = Array.isArray(config.dev_routing_priority) ? config.dev_routing_priority : [];
-    const mapping = config.dev_skill_mapping || {};
+    // #5174 · CA-6 — quinto call-site de las claves migradas al lado producto.
+    // Acá el `|| {}` / `: []` no producía un ruteo malo (esto es una vista), pero
+    // sí una MENTIRA en el dashboard: el operador vería "sin skill resuelto"
+    // cuando la causa real es que la clave no llegó al lector. Se distingue el
+    // caso: config sin la clave ⇒ error explícito y ruidoso; config completa sin
+    // match ⇒ `null`, que es la respuesta legítima de siempre.
+    //
+    // NO se lanza: esta función corre dentro del armado de un slice del
+    // dashboard y una excepción acá tumbaría la vista entera. La regla #1 del
+    // pipeline es que no se muere; el error se hace visible por log y por el
+    // valor centinela, no matando el proceso.
+    const priority = config.dev_routing_priority;
+    const mapping = config.dev_skill_mapping;
+    if (!Array.isArray(priority) || !mapping || typeof mapping !== 'object') {
+        try {
+            console.error('[dashboard-slices] [config partida #5174] faltan dev_routing_priority /'
+                + ' dev_skill_mapping en la configuración resuelta (viven en pipeline.config.json →'
+                + ' productConfig). El lector quedó fuera de lib/config-resolver.');
+        } catch { /* best-effort */ }
+        return null;
+    }
     const labelSet = new Set(labels || []);
     for (const lab of priority) {
         if (labelSet.has(lab) && mapping[lab]) return mapping[lab];
@@ -2535,16 +2556,21 @@ function quotaSlice(state, ctx) {
     return out;
 }
 
-// #4282 — Lee config.yaml para el guard (js-yaml safe-by-default). Ante error
-// → `{}` (el guard cae a defaults conservadores, REQ-SEC-2).
+// #4282 — Configuración para el guard de cuota y el pacing budget.
+//
+// #5172 — Pasa por el punto único (`lib/config-resolver`). Antes degradaba
+// a `{}` ante cualquier error; como los defaults del codebase son
+// apagados por diseño, ese `{}` NO era "defaults conservadores": era el guard
+// apagado en silencio. Ahora PROPAGA el error tipado.
+//
+// La política de este consumidor (D-3) la aplican sus tres call-sites, que ya
+// envuelven la llamada en su propio `try/catch` best-effort: con configuración
+// inválida el guard simplemente NO CORRE (no se evalúa con una config
+// inventada) y el slice sigue sirviendo el resto de sus datos. El estado de
+// error de configuración lo expone `dashboard.js` (CA-8), que es la superficie
+// que el operador mira.
 function _loadGuardRawConfig(pipelineDir) {
-    try {
-        const yaml = require('js-yaml');
-        const cfgPath = path.join(pipelineDir, 'config.yaml');
-        return yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
-    } catch {
-        return {};
-    }
+    return configResolver.resolve({ pipelineDir, reload: true });
 }
 
 // =============================================================================

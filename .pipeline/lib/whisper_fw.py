@@ -40,6 +40,25 @@ import argparse
 # Procedimiento de actualizacion documentado en docs/pipeline/stt-local.md.
 MODEL_REVISION = "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf"
 
+# Issue #5336 (CA-1): prefijo de las lineas de latido que este wrapper emite por
+# stderr mientras trabaja. El caller (whisper-local.js) las usa como SENAL DE VIDA
+# para su watchdog de inactividad: ya no mata el proceso por duracion total, sino
+# por ausencia de progreso. Un audio largo bajo carga puede tardar muchisimo y
+# sigue siendo trabajo valido; un proceso colgado deja de emitir latidos.
+#
+# El caller FILTRA estas lineas del `raw` de error (no son errores). Si se cambia
+# el prefijo hay que actualizar PROGRESS_LINE_RE en whisper-local.js.
+PROGRESS_PREFIX = "[fw-progress]"
+
+
+def heartbeat(stage, detail=""):
+    """Emite una senal de vida por stderr. flush=True es OBLIGATORIO: sin flush el
+    buffer de stderr retiene las lineas y el watchdog del caller ve silencio."""
+    try:
+        print(f"{PROGRESS_PREFIX} {stage} {detail}".rstrip(), file=sys.stderr, flush=True)
+    except Exception:  # pragma: no cover - jamas romper la transcripcion por un log
+        pass
+
 
 def main():
     parser = argparse.ArgumentParser(description="STT local con faster-whisper")
@@ -75,12 +94,19 @@ def main():
     if args.model == "large-v3-turbo":
         kwargs["revision"] = MODEL_REVISION
 
+    # La carga del modelo es una llamada nativa bloqueante (puede tardar minutos
+    # con la maquina cargada) durante la cual Python no puede latir. Avisamos
+    # ANTES de entrar para que el watchdog del caller arranque su ventana de
+    # inactividad con la etapa correcta identificada.
+    heartbeat("model-load-start", args.model)
     try:
         model = WhisperModel(args.model, **kwargs)
     except Exception as exc:
         # Caso tipico: modelo no pre-descargado (local_files_only + offline).
         print(f"no se pudo cargar el modelo '{args.model}': {exc}", file=sys.stderr)
         return 4
+
+    heartbeat("model-load-ok")
 
     try:
         # beam_size=1 + vad_filter + condition_on_previous_text=False: minimizan
@@ -98,8 +124,13 @@ def main():
         # confianza que alimenta el gate de baja confianza (#3918/#3995).
         seg_list = []
         parts = []
+        # `segments` es un generador perezoso: la transcripcion real ocurre al
+        # iterarlo. Un latido por segmento convierte ese trabajo en progreso
+        # observable para el watchdog del caller (#5336 CA-1).
+        heartbeat("transcribe-start")
         for seg in segments:
             parts.append(seg.text)
+            heartbeat("segment", f"t={getattr(seg, 'end', 0):.1f}s")
             entry = {"text": seg.text}
             lp = getattr(seg, "avg_logprob", None)
             ns = getattr(seg, "no_speech_prob", None)
