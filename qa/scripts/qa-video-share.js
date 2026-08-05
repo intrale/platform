@@ -18,8 +18,11 @@
 //      → Envía link por Telegram (mensaje descriptivo)
 //      → Guarda video_url en qa-report.json
 //   2. Video <= 50MB y Drive no disponible → sendVideo directo por Telegram Bot API
-//   3. Video > 50MB sin Drive → subir a Cloudflare R2 + enviar link (si R2 configurado)
-//      (requiere R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET en env)
+//   3. Video > 50MB sin Drive → subir a Cloudflare R2 + enviar link (si R2 esta
+//      provisionado). Se resuelve del namespace `r2` del store canonico, con
+//      override por env. Sin claves en ningun almacen el estado es "no
+//      provisionado" (CA-14): falta trabajo humano en Cloudflare, no un valor
+//      que el operador pueda escribir.
 //
 // Dependencias: ninguna (Node.js puro, https/crypto nativos)
 //
@@ -143,12 +146,17 @@ function readUnifiedStore(opts = {}) {
 // -----------------------------------------------------------------------------
 
 // Ref namespaceado SIEMPRE en forma tilde. RIESGO A-1 (#5217): el regex de
-// `parseSecretRef` (credentials.js:174) no admite `\` ni `C:`, asi que armar el
-// ref con `credentialsLib.CANONICAL_PATH` en Windows devuelve
+// `parseSecretRef` (en `.pipeline/lib/credentials.js`) no admite `\` ni `C:`,
+// asi que armar el ref con `credentialsLib.CANONICAL_PATH` en Windows devuelve
 // `{ok:false, namespace:null}` SIN lanzar excepcion — exactamente el modo de
 // falla silenciosa que este issue cierra, reintroducido por la via del fix.
 // El path real del SO viaja por `opts.canonicalPath`, que `resolveScopedRefs`
-// prioriza sobre `expandHome(ref)` (credentials.js:203-206).
+// prioriza sobre su `expandHome(ref)` interno.
+//
+// Se citan SIMBOLOS y no numeros de linea a proposito: `credentials.js` crecio
+// de ~230 a ~950 lineas entre el punto de rama y `main`, y los anchors que
+// tenia este comentario ya apuntaban a codigo que no era el descripto. Un
+// comentario que manda a leer la linea equivocada es peor que ninguno.
 // Ampliar el regex queda fuera de alcance (parser del brokering de #4687 /
 // #4738, requiere sign-off de `security`).
 const STORE_REF = "~/.claude/secrets/credentials.json";
@@ -315,6 +323,27 @@ function resolveCredential(spec, opts = {}) {
  * `[qa-video-share] <que falta> · <fuentes en orden> · <como resolverlo>`.
  * Nunca incluye valores de credenciales.
  */
+// CA-14: el diagnostico tiene que decir el MISMO estado que reporta
+// `stateLabel`. Hardcodear "no configuradas" borraba la distincion que CA-14
+// introduce: R2 ausente de todo almacen es "no provisionado" (falta trabajo
+// humano en Cloudflare), no "no configurado" (falta un valor que el operador
+// puede escribir). El operador que lee el mensaje decide que hacer con eso.
+//
+// Mapa explicito en vez de derivar el femenino plural por regex: el estado es
+// un enum corto y una conversion magica se rompe en silencio con la primera
+// etiqueta que no termine en "o". `specAbsentLabels()` garantiza cobertura.
+const STATE_PHRASES = Object.freeze({
+    "no configurado": "no configuradas",
+    "no provisionado": "no provisionadas",
+    "configuracion incompleta": "con configuracion incompleta",
+});
+const DEFAULT_STATE_PHRASE = "no configuradas";
+
+function credentialStatePhrase(cred) {
+    const label = cred && cred.stateLabel;
+    return (label && STATE_PHRASES[label]) || DEFAULT_STATE_PHRASE;
+}
+
 function describeMissingCredentials(cred) {
     // Defensivo: este helper se llama en el camino de ERROR, donde un TypeError
     // propio taparia el diagnostico que el operador necesita. Un `cred` viejo o
@@ -322,7 +351,8 @@ function describeMissingCredentials(cred) {
     const missing = (cred && cred.missing) || [];
     const consulted = (cred && cred.sourcesConsulted) || [];
     let msg = "[qa-video-share] credenciales de " + ((cred && cred.label) || "?") +
-        " no configuradas: falta " + (missing.length ? missing.join(" y ") : "(sin detalle)") + ".";
+        " " + credentialStatePhrase(cred) +
+        ": falta " + (missing.length ? missing.join(" y ") : "(sin detalle)") + ".";
     if (consulted.length) msg += " Fuentes consultadas (en orden): " + consulted.join(" > ") + ".";
     if (cred && cred.remediation) msg += " " + cred.remediation;
     return msg;
@@ -1676,6 +1706,8 @@ module.exports = {
     // Resolvedor generico (#5217 · entrega el helper compartido de #4917)
     resolveCredential,
     describeMissingCredentials,
+    credentialStatePhrase,
+    STATE_PHRASES,
     resolveStoreScopes,
     resolveDriveServiceAccountPath,
     warnIfDriveFolderMissing,

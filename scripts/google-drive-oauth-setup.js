@@ -79,10 +79,14 @@ function promptHidden(label) {
     });
 }
 
-function promptVisible(label) {
+// `noTtyMessage` es obligatorio a proposito: este prompt lo usan dos campos
+// distintos (client_id y folder_id) y un mensaje hardcodeado hacia que en CI el
+// script muriera citando la credencial equivocada — el operador salia a buscar
+// un client_id que ya tenia. El diagnostico nombra el campo que realmente falta.
+function promptVisible(label, noTtyMessage) {
     return new Promise(function(resolve, reject) {
         if (!process.stdin.isTTY) {
-            reject(new Error("stdin no es una terminal: pasa el client_id como argumento o por GOOGLE_OAUTH_CLIENT_ID."));
+            reject(new Error(noTtyMessage));
             return;
         }
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
@@ -108,7 +112,12 @@ async function resolveClientCredentials() {
     }
 
     let clientId = process.argv[2] || process.env.GOOGLE_OAUTH_CLIENT_ID || "";
-    if (!clientId) clientId = await promptVisible("Client ID: ");
+    if (!clientId) {
+        clientId = await promptVisible(
+            "Client ID: ",
+            "stdin no es una terminal: pasa el client_id como argumento o por GOOGLE_OAUTH_CLIENT_ID.",
+        );
+    }
     if (!clientId) {
         printUsage();
         process.exit(1);
@@ -125,8 +134,18 @@ async function resolveClientCredentials() {
 
     // El folder ID no es secreto y es opcional: si el operador lo deja vacio se
     // conserva el que ya este en el store (persistTokens no pisa con vacio).
-    const folderId = (process.env.GOOGLE_DRIVE_FOLDER_ID || "").trim()
-        || await promptVisible("Drive folder ID de QA (ENTER para conservar el actual): ");
+    //
+    // Sin TTY no se puede preguntar, pero tampoco corresponde abortar: un campo
+    // OPCIONAL que hace fallar el flujo entero en CI contradice su propio
+    // contrato. Se degrada a vacio, que es exactamente lo que significa el
+    // ENTER del operador interactivo.
+    let folderId = (process.env.GOOGLE_DRIVE_FOLDER_ID || "").trim();
+    if (!folderId && process.stdin.isTTY) {
+        folderId = await promptVisible(
+            "Drive folder ID de QA (ENTER para conservar el actual): ",
+            "", // inalcanzable: sólo se entra con TTY.
+        );
+    }
 
     return { clientId: clientId, clientSecret: clientSecret, folderId: folderId };
 }
@@ -144,6 +163,90 @@ function persistTokens(clientId, clientSecret, refreshToken, folderId, opts) {
     updates[CANONICAL_KEYS.refreshToken] = refreshToken;
     if (folderId) updates[CANONICAL_KEYS.folderId] = folderId;
     return secretsRw.writeCanonicalPaths(updates, opts || {});
+}
+
+/**
+ * Cierra el intercambio de tokens y devuelve el codigo de salida del proceso.
+ *
+ * Extraido del handler HTTP por dos razones. La primera es testeabilidad: era
+ * la unica parte del flujo sin cobertura y la que decide si el operador cree
+ * que quedo provisionado. La segunda es el defecto que arregla:
+ *
+ *   ANTES  un solo `try` envolvia el parseo de la respuesta Y la persistencia,
+ *          y el `catch` caia en `process.exit(0)`. Como `writeCanonicalPaths`
+ *          es fail-closed y LANZA si el store es ilegible, "no se pudo guardar
+ *          el refresh token" se reportaba como EXITO: exit 0, y el operador —o
+ *          la automatizacion que lo invoca— se iba convencido de que Drive
+ *          quedaba provisionado. En el proximo respawn la evidencia de QA se
+ *          perdia igual que antes. Es exactamente la clase de falla silenciosa
+ *          que #5217 existe para eliminar, reintroducida por la via del fix.
+ *
+ *   AHORA  el parseo y la persistencia tienen manejo separado, y CUALQUIER
+ *          fallo de persistencia devuelve 1 con un mensaje accionable.
+ *
+ * Nunca imprime valores ni prefijos de token (CWE-532): solo forma y nombres.
+ *
+ * @returns {number} codigo de salida (0 exito, 1 fallo)
+ */
+function finishTokenExchange(rawBody, ctx) {
+    const log = (ctx && ctx.log) || console.log;
+    const persist = (ctx && ctx.persist) || persistTokens;
+
+    var tokens;
+    try {
+        tokens = JSON.parse(rawBody);
+    } catch (e) {
+        log("Error procesando la respuesta del token endpoint: " + e.message);
+        return 1;
+    }
+
+    if (tokens && tokens.error) {
+        log("Error: " + tokens.error + " — " + (tokens.error_description || ""));
+        return 1;
+    }
+    if (!tokens || !tokens.refresh_token) {
+        log("No se recibio refresh_token. Intenta de nuevo.");
+        return 1;
+    }
+
+    // Confirmacion por FORMA, sin valores ni prefijos (CWE-532):
+    // los logs del pipeline se archivan y se comparten en reportes.
+    log("");
+    log("=== Tokens recibidos ===");
+    log("  access_token: " + (tokens.access_token ? "presente" : "ausente"));
+    log("  refresh_token: presente");
+    log("  expires_in: " + tokens.expires_in + "s");
+
+    var saved;
+    try {
+        saved = persist(ctx.clientId, ctx.clientSecret, tokens.refresh_token, ctx.folderId);
+    } catch (e) {
+        log("");
+        log("ERROR: se obtuvo el refresh token pero NO se pudo guardar en el store.");
+        log("Motivo: " + e.message);
+        log("");
+        log("El token sigue siendo valido pero no quedo persistido: Drive va a");
+        log("seguir sin resolver. Revisa que ~/.claude/secrets/credentials.json sea");
+        log("legible y contenga JSON valido, y volve a ejecutar este script.");
+        return 1;
+    }
+
+    // CA-12: el operador tiene que saber DONDE quedo guardado y
+    // QUE claves se escribieron, sin ver ningun valor.
+    const written = (saved && saved.written) || [];
+    log("");
+    log("Guardado en el store canonico: " + (saved && saved.targetPath));
+    log("Claves escritas:");
+    written.forEach(function(k) { log("  - " + k); });
+    if (saved && saved.backupPath) log("Backup previo: " + saved.backupPath);
+    log("");
+    if (written.indexOf(CANONICAL_KEYS.folderId) === -1) {
+        log("Nota: no se aporto Drive folder ID, se conserva el valor ya");
+        log("guardado en google_drive.drive_folder_id del mismo store.");
+        log("Si ese valor no existe, la evidencia se sube a la RAIZ del Drive.");
+    }
+    log("Listo — el refresh token no expira si la app esta publicada.");
+    return 0;
 }
 
 function startOAuthFlow(clientId, clientSecret, folderId) {
@@ -192,51 +295,13 @@ function startOAuthFlow(clientId, clientSecret, folderId) {
             var data = "";
             tokenRes.on("data", function(c) { data += c; });
             tokenRes.on("end", function() {
-                try {
-                    var tokens = JSON.parse(data);
-                    if (tokens.error) {
-                        console.log("Error: " + tokens.error + " — " + (tokens.error_description || ""));
-                        server.close();
-                        process.exit(1);
-                        return;
-                    }
-                    if (!tokens.refresh_token) {
-                        console.log("No se recibio refresh_token. Intenta de nuevo.");
-                        server.close();
-                        process.exit(1);
-                        return;
-                    }
-
-                    // Confirmacion por FORMA, sin valores ni prefijos (CWE-532):
-                    // los logs del pipeline se archivan y se comparten en reportes.
-                    console.log("");
-                    console.log("=== Tokens recibidos ===");
-                    console.log("  access_token: presente");
-                    console.log("  refresh_token: presente");
-                    console.log("  expires_in: " + tokens.expires_in + "s");
-
-                    var saved = persistTokens(clientId, clientSecret, tokens.refresh_token, folderId);
-
-                    // CA-12: el operador tiene que saber DONDE quedo guardado y
-                    // QUE claves se escribieron, sin ver ningun valor.
-                    console.log("");
-                    console.log("Guardado en el store canonico: " + saved.targetPath);
-                    console.log("Claves escritas:");
-                    saved.written.forEach(function(k) { console.log("  - " + k); });
-                    if (saved.backupPath) console.log("Backup previo: " + saved.backupPath);
-                    console.log("");
-                    if (saved.written.indexOf(CANONICAL_KEYS.folderId) === -1) {
-                        console.log("Nota: no se aporto Drive folder ID, se conserva el valor ya");
-                        console.log("guardado en google_drive.drive_folder_id del mismo store.");
-                        console.log("Si ese valor no existe, la evidencia se sube a la RAIZ del Drive.");
-                    }
-                    console.log("Listo — el refresh token no expira si la app esta publicada.");
-
-                } catch(e) {
-                    console.log("Error procesando la respuesta: " + e.message);
-                }
+                const code = finishTokenExchange(data, {
+                    clientId: clientId,
+                    clientSecret: clientSecret,
+                    folderId: folderId,
+                });
                 server.close();
-                process.exit(0);
+                process.exit(code);
             });
         });
         tokenReq.on("error", function(e) { console.log("Error: " + e.message); server.close(); });
@@ -288,4 +353,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { CANONICAL_KEYS, persistTokens };
+module.exports = { CANONICAL_KEYS, persistTokens, finishTokenExchange };

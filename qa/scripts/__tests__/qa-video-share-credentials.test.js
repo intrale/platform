@@ -35,6 +35,7 @@ const {
     driveGetOrCreateFolder,
     resolveDriveParentId,
     DRIVE_ROOT_FOLDER_ID,
+    TELEGRAM_SPEC,
     DRIVE_SPEC,
     R2_SPEC,
 } = require('../qa-video-share');
@@ -407,6 +408,70 @@ test('CA-14: R2 provisionado a medias reporta "configuracion incompleta", no "no
     assert.equal(cred.stateLabel, 'configuracion incompleta');
     assert.deepEqual(cred.missing, ['access_key_id', 'secret_access_key']);
     assert.equal(cred.storeNamespaceFound, true);
+});
+
+// --- CA-14: el diagnostico dice el MISMO estado que `stateLabel` ---
+//
+// `describeMissingCredentials` hardcodeaba "no configuradas" para cualquier
+// estado. Eso borraba, justo en el unico texto que el operador llega a leer, la
+// distincion que CA-14 introduce: "no provisionado" (falta trabajo humano en
+// Cloudflare) no es lo mismo que "no configurado" (falta un valor que el
+// operador puede escribir), y ninguno de los dos es "configuracion incompleta".
+// El operador que leia "no configuradas" salia a buscar un valor que no existe.
+
+test('CA-14: el diagnostico de R2 ausente dice "no provisionadas", no "no configuradas"', () => {
+    const cred = resolveCredential(R2_SPEC, { env: {}, legacyConfig: {}, storeData: {} });
+    const msg = describeMissingCredentials(cred);
+
+    assert.equal(cred.stateLabel, 'no provisionado');
+    assert.match(msg, /credenciales de .* no provisionadas/);
+    assert.ok(!/no configuradas/.test(msg), 'contradiria el stateLabel que reporta el mismo objeto');
+});
+
+test('CA-14: el diagnostico de R2 a medias dice "con configuracion incompleta"', () => {
+    const cred = resolveCredential(R2_SPEC, {
+        env: {}, legacyConfig: {},
+        storeData: { r2: { account_id: 'fake-account-id-0000' } },
+    });
+    const msg = describeMissingCredentials(cred);
+
+    assert.equal(cred.stateLabel, 'configuracion incompleta');
+    assert.match(msg, /credenciales de .* con configuracion incompleta/);
+    assert.ok(!/no provisionadas/.test(msg));
+    // Sigue diciendo QUE falta: el estado no reemplaza al detalle.
+    assert.match(msg, /access_key_id/);
+});
+
+test('CA-14: Telegram y Drive ausentes conservan "no configuradas" (no-regresion de #4907)', () => {
+    const tg = resolveTelegramCredentials({ env: {}, legacyConfig: {}, storeData: {} });
+    assert.match(describeMissingCredentials(tg), /credenciales de Telegram no configuradas/);
+
+    const drive = resolveDrive({ storeData: {}, legacyConfig: {} });
+    assert.match(describeMissingCredentials(drive), /credenciales de Google Drive no configuradas/);
+});
+
+test('CA-14: todo absentLabel declarado por un spec tiene su frase en STATE_PHRASES', () => {
+    // Guardia contra el modo de falla de un mapa explicito: agregar un spec con
+    // un absentLabel nuevo y que el diagnostico degrade en silencio al default.
+    const { STATE_PHRASES, credentialStatePhrase } = require('../qa-video-share');
+    const labels = [TELEGRAM_SPEC, DRIVE_SPEC, R2_SPEC]
+        .map((s) => s.absentLabel)
+        .filter(Boolean);
+
+    assert.ok(labels.length >= 3, 'los tres specs declaran absentLabel');
+    for (const label of labels) {
+        assert.ok(
+            Object.prototype.hasOwnProperty.call(STATE_PHRASES, label),
+            'falta la frase de "' + label + '" en STATE_PHRASES',
+        );
+    }
+    // "configuracion incompleta" no es un absentLabel pero si un stateLabel.
+    assert.ok(Object.prototype.hasOwnProperty.call(STATE_PHRASES, 'configuracion incompleta'));
+
+    // Defensivo: un `cred` viejo o sin stateLabel no rompe el mensaje.
+    assert.equal(credentialStatePhrase({}), 'no configuradas');
+    assert.equal(credentialStatePhrase(null), 'no configuradas');
+    assert.equal(credentialStatePhrase({ stateLabel: 'inventado' }), 'no configuradas');
 });
 
 test('CA-13: R2 resuelve desde el namespace r2 del store cuando existe', () => {
