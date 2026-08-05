@@ -162,13 +162,22 @@ function parseStallMinutes(raw, fallback = DEFAULT_STALL_MINUTES) {
 
 /**
  * Valida un entero positivo genérico (cooldown, window).
+ *
+ * #5400 (rev-5, secundario 7) — Con COTA SUPERIOR. Sin ella,
+ * `alert_cooldown_minutes: 999999` apagaba el control por completo (reproducido:
+ * 30 días sin despachar y 5 elegibles daba `skip cooldown`, mientras que con 30
+ * daba `escalate`) — un control apagado indistinguible de "todo OK", que es el
+ * meta-bug de este mismo issue. El backoff exponencial nuevo lo amplifica hasta
+ * `MAX_ALERT_BACKOFF_FACTOR` (16x). Mismo criterio fail-closed y mismo tope que
+ * `parseStallMinutes`: fuera de rango cae al default, jamás desactiva.
  */
 function parsePositiveInt(raw, fallback) {
-  const safeFallback = Number.isInteger(fallback) && fallback >= 1 ? fallback : 1;
-  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1) return raw;
+  const inRange = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_STALL_MINUTES;
+  const safeFallback = inRange(fallback) ? fallback : 1;
+  if (typeof raw === 'number' && inRange(raw)) return raw;
   if (typeof raw === 'string' && /^[0-9]+$/.test(raw.trim())) {
     const n = parseInt(raw.trim(), 10);
-    if (n >= 1) return n;
+    if (inRange(n)) return n;
   }
   return safeFallback;
 }

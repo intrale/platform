@@ -1651,13 +1651,11 @@ function recolectarHechosDespacho(cfgRoot, waves) {
   });
 }
 
-/**
- * Compat: la causa declarada sola. Se conserva porque es la unidad que consume
- * `wave-stall-watchdog.decide()` y porque hay tests que la ejercitan puntual.
- */
-function readDeclaredCauseForWave(cfgRoot, waves) {
-  return recolectarHechosDespacho(cfgRoot, waves).cause;
-}
+// #5400 (rev-5, secundario 6) — `readDeclaredCauseForWave` ELIMINADA: era dead
+// code (cero callers) y su comentario afirmaba que había tests que la
+// ejercitaban cuando no existía ninguno. El único consumidor real de los hechos
+// es el tick del watchdog, que llama a `recolectarHechosDespacho` y usa
+// `hechos.cause` directamente.
 
 /** Extraer issue number del nombre de archivo (ej: "1732.po" → "1732").
  *  EP5-H1 (#3938): delega en `workfile-name.js` (comportamiento legacy exacto).
@@ -7159,6 +7157,23 @@ function escalaDuracionMs(config) {
   }
 }
 
+// #5400 (rev-5, secundario 3) — Elegibles REALES esperando, cruzados contra la
+// allowlist. `countPendientesGlobal` devuelve TODOS los workfiles de
+// `pendiente/` (backlog parkeado incluido: ~241), así que usarlo como
+// `elegiblesEsperando` dejaba el gate `elegiblesEsperando > 0` de
+// `dispatch-cause.js` constante-verdadero y la escalada por duración dejaba de
+// ser aditiva. Es el mismo bloqueante que rev-3 arregló para el watchdog,
+// sobreviviendo en el emisor del banner. Fail-soft: ante cualquier fallo cae a 0
+// (fail-closed = no escalar, nunca alertar de más).
+function contarElegiblesEsperando(config) {
+  try {
+    const waves = require('./lib/waves');
+    return recolectarHechosDespacho(config, waves).conteo.elegibles;
+  } catch {
+    return 0;
+  }
+}
+
 // #4709 — Publica la causa declarada del no-despacho para una razón GLOBAL que
 // ocurre fuera del ciclo de candidatos (pausa humana `.paused`, bloqueo por
 // desync). El mainLoop no llama a `brazoLanzamiento` en esos estados, así que la
@@ -7167,9 +7182,10 @@ function escalaDuracionMs(config) {
 function publicarCausaPausa(config, causa, detalle) {
   try {
     const gates = new Map([[causa, detalle]]);
-    // #5400 — el conteo de pendientes alimenta la escalada por duración: una
-    // causa silenciosa sostenida CON trabajo esperando deja de ser silenciosa.
-    const pendientes = countPendientesGlobal(config);
+    // #5400 — el conteo de ELEGIBLES (no el de pendientes crudos) alimenta la
+    // escalada por duración: una causa silenciosa sostenida CON trabajo
+    // despachable esperando deja de ser silenciosa.
+    const pendientes = contarElegiblesEsperando(config);
     dispatchCause.publish({
       pipelineDir: PIPELINE,
       snapshot: {
@@ -7182,15 +7198,16 @@ function publicarCausaPausa(config, causa, detalle) {
       now: Date.now(),
       elegiblesEsperando: pendientes,
       silentEscalateMs: escalaDuracionMs(config),
-      // #5400 (rev-1, B6 / SEC-1) — TEXTO PLANO. `sendTelegram` fija
-      // `parse_mode: 'Markdown'` y este mensaje interpola `resolved.detalle`,
-      // que pasa por la redacción de secretos y termina con `[REDACTED:...]` y
-      // `snake_case` adentro: un `[` sin link y un `_` impar dan
-      // `400 can't parse entities`, el servicio reintenta con el MISMO
-      // parse_mode y la alerta muere en `fallido/`. O sea: el aviso de "el
-      // pipeline no despacha" se auto-anula. Precedente: `sendTelegramPlain`
-      // del canned de cuota (#2975, CA-13).
-      alert: (m) => { try { sendTelegramPlain(m); } catch { /* best-effort */ } },
+      // #5400 (rev-5, B2 / SEC-1) — ESCAPE, no "texto plano". Omitir
+      // `parse_mode` NO alcanza: `servicio-telegram.js` hace
+      // `data.parse_mode || 'Markdown'`, así que el mensaje se parsea igual como
+      // Markdown legacy. Este mensaje interpola `resolved.detalle`, que pasa por
+      // la redacción de secretos y termina con `[REDACTED:...]` y `snake_case`
+      // adentro: un `[` sin link y un `_` impar dan `400 can't parse entities`,
+      // el servicio reintenta con el MISMO parse_mode y la alerta muere en
+      // `fallido/`. O sea: el aviso de "el pipeline no despacha" se auto-anula.
+      // Mismo criterio que `lib/notify-telegram.js`.
+      alert: (m) => { try { sendTelegram(configSchema.escapeMarkdownLegacy(m)); } catch { /* best-effort */ } },
       log: (m) => log('lanzamiento', m),
     });
   } catch (e) {
@@ -7226,17 +7243,15 @@ function brazoLanzamiento(config) {
         },
         now: Date.now(),
         // #5400 — habilita el realce por duración del banner (display-only).
-        elegiblesEsperando: countPendientesGlobal(config),
+        // Elegibles cruzados contra la allowlist, no pendientes crudos (rev-5).
+        elegiblesEsperando: contarElegiblesEsperando(config),
         silentEscalateMs: escalaDuracionMs(config),
-        // #5400 (rev-1, B6 / SEC-1) — TEXTO PLANO. `sendTelegram` fija
-      // `parse_mode: 'Markdown'` y este mensaje interpola `resolved.detalle`,
-      // que pasa por la redacción de secretos y termina con `[REDACTED:...]` y
-      // `snake_case` adentro: un `[` sin link y un `_` impar dan
-      // `400 can't parse entities`, el servicio reintenta con el MISMO
-      // parse_mode y la alerta muere en `fallido/`. O sea: el aviso de "el
-      // pipeline no despacha" se auto-anula. Precedente: `sendTelegramPlain`
-      // del canned de cuota (#2975, CA-13).
-      alert: (m) => { try { sendTelegramPlain(m); } catch { /* best-effort */ } },
+        // #5400 (rev-5, B2 / SEC-1) — ESCAPE, no "texto plano". Omitir
+        // `parse_mode` NO alcanza: `servicio-telegram.js` hace
+        // `data.parse_mode || 'Markdown'`. Ver el detalle en
+        // `publicarCausaPausa`; acá emite ANOMALIA, HALT_HUMANO, CB_INFRA y
+        // DEADLOCK con `detalle` redactado interpolado.
+        alert: (m) => { try { sendTelegram(configSchema.escapeMarkdownLegacy(m)); } catch { /* best-effort */ } },
         log: (m) => log('lanzamiento', m),
       });
     } catch (e) {
@@ -7721,9 +7736,10 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     if (launched) {
       anyLaunched = true;
       _dcState.anyLaunched = true;
-      // #5400 — único punto del código donde consta que un agente salió de
-      // verdad. El watchdog de inactividad mide desde acá.
-      marcarDespachoEfectivo({ issue, skill, fase, pipeline: pipelineName });
+      // #5400 (rev-5, B1) — acá NO se estampa el despacho efectivo. `launched`
+      // sólo significa "el slot estaba libre y `onAcquired()` no tiró": no
+      // prueba que haya salido un agente. La estampa vive en el punto del spawn
+      // real, dentro de `lanzarAgenteClaude`.
     } else if (!slotErrored) {
       // El slot se llenó dentro de la sección crítica (otro proceso ganó la
       // admisión) — reintentar en el próximo ciclo. CA observabilidad (UX).
@@ -7796,10 +7812,11 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
         lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
         // #4709 — el breaker forzó un lanzamiento: hubo despacho este ciclo.
         _dcState.anyLaunched = true;
-        // #5400 — un lanzamiento forzado por el breaker también es despacho
-        // efectivo: si no se estampara, el watchdog seguiría contando un
-        // estancamiento que en realidad se destrabó.
-        marcarDespachoEfectivo({ issue, skill, fase, pipeline: pipelineName });
+        // #5400 (rev-5, B1) — el lanzamiento forzado por el breaker también es
+        // despacho efectivo, pero la estampa la pone `lanzarAgenteClaude` en el
+        // punto del spawn real: si se estampara acá, un forzado que muere en
+        // alguno de sus `return` tempranos (cuota, worktree, infra) resetearía
+        // el reloj sin haber lanzado nada.
       } catch (e) {
         log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
       }
@@ -8594,6 +8611,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             log('lanzamiento', `⚠️ #${issue}: no se pudo cerrar la fase de contrato tras error: ${e2.message.slice(0, 120)}`);
           }
         });
+      // #5400 (rev-5, B1) — El ejecutor determinístico ES un despacho efectivo:
+      // el runner ya arrancó (la promesa está en vuelo) y la fase va a cerrar
+      // sola. No hay `child`, así que la estampa del spawn LLM no lo cubre; sin
+      // este punto explícito una ola íntegramente resuelta por contratos
+      // aparecería como "nunca despachó" y alertaría en falso.
+      marcarDespachoEfectivo({ issue, skill, fase, pipeline });
       return;
     }
   } catch (e) {
@@ -9402,6 +9425,19 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     resolveImpl: launchResolveImpl,
   });
   const child = launchResult.child;
+  // #5400 (rev-5, B1) — ÚNICO punto del código donde consta que un agente salió
+  // de verdad: acá ya hay proceso hijo. Antes la estampa vivía en los call sites
+  // (`if (launched)`), pero `launched` sólo dice "el slot estaba libre y
+  // `onAcquired()` no tiró excepción": `lanzarAgenteClaude` es SÍNCRONA y tiene
+  // 8 `return` tempranos ANTES de este spawn (cuota agotada, invariante de
+  // skill, prompt faltante, workfile corrupto, stale-log, error/irrecuperable de
+  // worktree, aborto por infra) y NINGUNO lanza excepción. El caso de cuota
+  // agotada además es CÍCLICO — los candidatos vuelven a `pendiente/` y el
+  // mainLoop los reintenta cada ciclo — así que la estampa se re-escribía en
+  // cada vuelta y el reloj del watchdog nunca avanzaba: con la cuota agotada el
+  // aviso quedaba MUDO para siempre, que es exactamente el escenario que este
+  // issue viene a cerrar (CA-1/CA-2, causa `quota`).
+  marcarDespachoEfectivo({ issue, skill, fase, pipeline });
   const useDeterministicSkill = (launchResult.provider === 'deterministic');
   if (useDeterministicSkill) {
     log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
@@ -18926,9 +18962,11 @@ async function mainLoop() {
               });
             } catch (e) { log('dispatch-watchdog', `setWaveStalled falló: ${e.message}`); }
           }
-        } else if (active && (decision.recovery
-          || decision.reason === 'dispatching'
-          || decision.reason === 'no-enabled-work')) {
+        // #5400 (rev-5, secundario 5) — `decision.reason === 'dispatching'` salió
+        // de la condición: `decide()` dejó de emitir esa razón en rev-1 (cuando
+        // `dispatching > 0` pasó de skip incondicional a gracia), así que era una
+        // rama muerta que sugería un auto-clear que ya no podía ocurrir por ahí.
+        } else if (active && (decision.recovery || decision.reason === 'no-enabled-work')) {
           // El pipeline volvió a moverse / no hay trabajo pendiente: limpiar la
           // marca de estancamiento si estaba puesta (auto-clear del episodio).
           try {

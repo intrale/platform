@@ -407,3 +407,37 @@ test('loadState/saveStateAtomic round-trip + fail-soft ante archivo ausente', ()
   assert.deepEqual(wd.loadState(file), EMPTY_STATE);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ─── SEC-4 (rev-5) · el cooldown no puede apagar el control ─────────────────
+//
+// `parsePositiveInt` gobierna `alert_cooldown_minutes` y no tenía cota superior:
+// `999999` desactivaba el watchdog de hecho (30 días sin despachar y 5 elegibles
+// daban `skip cooldown`) — un control apagado indistinguible de "todo OK", que
+// es el meta-bug de este mismo issue. El backoff exponencial lo amplifica hasta
+// MAX_ALERT_BACKOFF_FACTOR (16x). Mismo tope y mismo fail-closed que
+// `parseStallMinutes`.
+
+test('un cooldown absurdo cae al default y NO desactiva el control', () => {
+  assert.equal(wd.parsePositiveInt(999999, 30), 30, 'fuera de rango => default');
+  assert.equal(wd.parsePositiveInt('999999', 30), 30, 'string fuera de rango => default');
+  assert.equal(wd.parsePositiveInt(wd.MAX_STALL_MINUTES, 30), wd.MAX_STALL_MINUTES, 'el tope es válido');
+  assert.equal(wd.parsePositiveInt(wd.MAX_STALL_MINUTES + 1, 30), 30, 'un minuto más ya cae al default');
+  assert.equal(wd.parsePositiveInt(45, 30), 45, 'un valor legítimo se respeta');
+  assert.equal(wd.parsePositiveInt(0, 30), 30, 'cero => default (no desactiva)');
+  assert.equal(wd.parsePositiveInt(-5, 30), 30, 'negativo => default');
+  assert.equal(wd.parsePositiveInt(null, 30), 30, 'null => default');
+});
+
+test('con cooldown absurdo el watchdog sigue alertando tras 30 días sin despachar', () => {
+  // Reproducción del hallazgo: antes daba `skip cooldown` para siempre.
+  const treintaDias = 30 * 24 * 60;
+  const f = stalledFacts({
+    now: (treintaDias + 100) * MIN,
+    enabledCount: 5,
+    cooldownMinutes: 999999,
+    state: { lastMovementTs: 100 * MIN, lastSignature: '0:42', lastAlertTs: 100 * MIN, alertCount: 1 },
+  });
+  const d = wd.decide(f);
+  assert.notEqual(d.action, 'skip', `30 días sin despachar con 5 elegibles no puede ser skip (${d.reason})`);
+  assert.ok(['alert', 'escalate'].includes(d.action), `debe avisar; dio ${d.action}`);
+});

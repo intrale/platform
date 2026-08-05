@@ -103,27 +103,88 @@ test('B5: el realce del banner sigue vivo aunque el aviso lo emita el otro módu
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-// ─── B6 · el emisor hermano no puede mandar Markdown crudo ──────────────────
+// ─── B2 (rev-5) · la alerta tiene que SER ENTREGABLE, no "parecer plana" ────
+//
+// El test anterior era un regex sobre el source de `pulpo.js`: asserteaba la
+// FORMA DEL CÓDIGO, no la entrega, y por eso fue estructuralmente incapaz de
+// detectar que el fix "texto plano" era un no-op. Omitir `parse_mode` no evita
+// el parseo: `servicio-telegram.js` hace `data.parse_mode || 'Markdown'`, así
+// que un dropfile sin `parse_mode` se manda IGUAL como Markdown legacy.
+//
+// Estos tests validan el DROPFILE ENCOLADO contra la resolución real del
+// servicio.
 
-test('B6: los publish de causa del Pulpo encolan en texto plano, no en Markdown', () => {
-    // Guardia de código: es exactamente la regresión que ya ocurrió dos veces.
-    // `sendTelegram` fija `parse_mode: 'Markdown'`; `sendTelegramPlain` lo omite.
-    const src = fs.readFileSync(PULPO, 'utf8');
-    const crudos = src.match(/alert:\s*\(m\)\s*=>\s*\{\s*try\s*\{\s*sendTelegram\(/g) || [];
-    assert.deepEqual(crudos, [], 'ningún alert de dispatch-cause puede usar sendTelegram (Markdown)');
-    const planos = src.match(/alert:\s*\(m\)\s*=>\s*\{\s*try\s*\{\s*sendTelegramPlain\(/g) || [];
-    assert.equal(planos.length, 2, 'los dos call sites de publish() deben usar sendTelegramPlain');
+const SVC_TELEGRAM = path.join(__dirname, '..', '..', 'servicio-telegram.js');
+const { escapeMarkdownLegacy } = require('../config-schema');
+
+/** Resolución de parse_mode del servicio, tal como la hace `servicio-telegram`. */
+function parseModeEfectivo(dropfilePayload) {
+    return dropfilePayload.parse_mode || 'Markdown';
+}
+
+/**
+ * ¿Telegram devolvería `400 can't parse entities` con Markdown legacy?
+ * Markdown legacy rompe con delimitadores impares (`_`, `*`, `` ` ``) y con
+ * corchetes que abre como link y no cierra. Un `\` delante los neutraliza.
+ */
+function rompeMarkdownLegacy(text) {
+    const sinEscapados = String(text).replace(/\\[_*`[\]]/g, '');
+    for (const delim of ['_', '*', '`']) {
+        const n = (sinEscapados.split(delim).length - 1);
+        if (n % 2 === 1) return true;
+    }
+    return /\[[^\]]*\](?!\()/.test(sinEscapados) || sinEscapados.includes('[');
+}
+
+test('B2: el servicio parsea como Markdown aunque el dropfile omita parse_mode', () => {
+    // La premisa que invalidaba el fix anterior, verificada contra el source real
+    // del servicio (no contra una copia de la lógica en el test).
+    const src = fs.readFileSync(SVC_TELEGRAM, 'utf8');
+    assert.ok(
+        /const\s+parseMode\s*=\s*data\.parse_mode\s*\|\|\s*'Markdown'/.test(src),
+        'servicio-telegram resuelve el parse_mode con `|| Markdown`: omitirlo NO desactiva el parseo',
+    );
+    // Y por lo tanto el dropfile "plano" viaja como Markdown:
+    assert.equal(parseModeEfectivo({ text: 'hola' }), 'Markdown');
 });
 
-test('B6: un detalle redactado rompería Markdown legacy — por eso va plano', () => {
-    // Reproduce el payload real: la redacción deja `[REDACTED:...]` (corchete sin
-    // link) y los skills viajan en snake_case (`_` impar).
-    const detalle = 'gate con token [REDACTED:high-entropy] y skill pipeline_dev';
-    const corchetesSinLink = /\[[^\]]*\](?!\()/.test(detalle);
-    const guionesBajos = (detalle.match(/_/g) || []).length;
-    assert.ok(corchetesSinLink, 'hay un corchete que Telegram intenta parsear como link');
-    assert.equal(guionesBajos % 2, 1, 'hay un guion bajo impar: itálica sin cerrar');
-    // Con `parse_mode: 'Markdown'` esto es un 400 y la alerta muere en fallido/.
+test('B2: el aviso con detalle redactado se entrega escapado y no muere en fallido/', () => {
+    // Payload REAL del emisor: la redacción de secretos deja `[REDACTED:...]`
+    // (corchete que Telegram abre como link) y los skills viajan en snake_case
+    // (`_` impar). Es el mensaje de ANOMALIA / HALT_HUMANO / CB_INFRA / DEADLOCK.
+    const mensaje = 'Pipeline sin despachar 3h — gate con token '
+        + '[REDACTED:high-entropy] y skill pipeline_dev *sin cerrar';
+
+    // (a) Lo que hacía el fix anterior: encolar el texto crudo sin parse_mode.
+    const dropfilePlano = { text: mensaje };
+    assert.equal(parseModeEfectivo(dropfilePlano), 'Markdown');
+    assert.ok(
+        rompeMarkdownLegacy(dropfilePlano.text),
+        'el "texto plano" se parsea igual como Markdown y da 400 → la alerta muere en fallido/',
+    );
+
+    // (b) Lo que hace el fix de rev-5: escapar antes de encolar.
+    const dropfileEscapado = { text: escapeMarkdownLegacy(mensaje), parse_mode: 'Markdown' };
+    assert.ok(
+        !rompeMarkdownLegacy(dropfileEscapado.text),
+        `el aviso escapado es entregable: ${dropfileEscapado.text}`,
+    );
+    // No se perdió información: el texto sigue siendo legible.
+    assert.ok(dropfileEscapado.text.includes('REDACTED:high-entropy'));
+    assert.ok(dropfileEscapado.text.includes('pipeline'));
+});
+
+test('B2: los dos emisores de causa escapan el mensaje antes de encolarlo', () => {
+    // Guardia de cableado (complementa, no reemplaza, a los dos de arriba): el
+    // `alert` de ambos `publish()` tiene que pasar por el escape.
+    const src = fs.readFileSync(PULPO, 'utf8');
+    const escapados = src.match(
+        /alert:\s*\(m\)\s*=>\s*\{\s*try\s*\{\s*sendTelegram\(configSchema\.escapeMarkdownLegacy\(m\)\)/g,
+    ) || [];
+    assert.equal(escapados.length, 2, 'los dos call sites de publish() deben escapar el mensaje');
+    // Y ninguno puede volver al no-op de "plano".
+    const planos = src.match(/alert:\s*\(m\)\s*=>\s*\{\s*try\s*\{\s*sendTelegramPlain\(/g) || [];
+    assert.deepEqual(planos, [], 'sendTelegramPlain es un no-op acá: el servicio defaultea a Markdown');
 });
 
 // ─── El mensaje del watchdog es seguro por construcción ─────────────────────
