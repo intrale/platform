@@ -45,6 +45,40 @@ reloj). Por eso la señal primaria es `state/last-dispatch.json`.
 `trabajando/ > 0` es un **atenuante**, nunca un skip: con agentes en curso se
 suma `busy_grace_minutes` a los dos umbrales.
 
+#### Dónde se estampa (y por qué ahí y no antes)
+
+La estampa se escribe en **`lanzarAgenteClaude`, después de
+`const child = launchResult.child`** — el único punto donde ya existe un proceso
+hijo — más un punto explícito en la rama del **ejecutor determinístico del
+contrato de tarea**, que resuelve la fase sin `child` pero también es despacho
+real.
+
+**No** se estampa en los call sites del loop de candidatos ni del deadlock
+breaker, aunque ahí exista un `if (launched)` que lo tiente. `launched` viene de
+`slotClaim.reserveSlot`, que hace:
+
+```js
+if (countFn() >= max) return;
+onAcquired();
+launched = true;
+```
+
+o sea que `launched === true` sólo significa *"el slot estaba libre y
+`onAcquired()` no tiró excepción"*. `lanzarAgenteClaude` es **síncrona** y tiene
+8 `return` tempranos **antes** del spawn — cuota agotada, invariante de skill,
+prompt faltante, workfile corrupto, stale-log, error de worktree, worktree
+irrecuperable, aborto por infra — y **ninguno lanza excepción**.
+
+El caso de **cuota agotada** es el peor porque es **cíclico**: los candidatos
+vuelven a `pendiente/` y el mainLoop los reintenta cada ciclo. Estampando desde
+el call site, el reloj se reseteaba en cada vuelta y el watchdog quedaba **mudo
+para siempre** justo con la cuota agotada — una de las causas que este control
+existe para nombrar. Medido sobre `decide()`: 3 h de cuota agotada con 5
+elegibles esperando daban **0 alertas** estampando por ciclo, contra las que
+corresponden estampando sólo en el spawn.
+
+Cubierto por `lib/__tests__/dispatch-stamp-wiring.test.js`.
+
 ### "Trabajo elegible" es `pendiente/` **cruzado con la allowlist**
 
 `pendiente/` es el estacionamiento del backlog completo, no la cola de la ola.
