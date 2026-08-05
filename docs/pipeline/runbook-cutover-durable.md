@@ -299,8 +299,35 @@ como `GenerateDataKey` asociados a `alias/intrale-kernel-store`. CloudTrail pued
 demorar la entrega; un exit code `2` indica que se debe repetir la verificación,
 no recrear el trail.
 
-Durante una reconciliación, consultar la ventana y luego inspeccionar el JSON de
-cada evento para confirmar la CMK, el principal y el contexto de DynamoDB:
+#### Identidades: quién puede aprovisionar y quién puede consultar
+
+Verificado empíricamente al aprovisionar el trail (2026-08-05):
+
+| Acción | Identidad requerida | Estado del usuario `claude-code` |
+|---|---|---|
+| Crear bucket + trail (`--apply`) | Sesión **administrativa** | ❌ `s3:CreateBucket` denegado |
+| Ver que el trail existe y loguea | `cloudtrail:DescribeTrails`, `GetTrailStatus` | ✅ permitido |
+| Consultar eventos (`lookup-events`) | `cloudtrail:LookupEvents` | ❌ **denegado** |
+
+El aprovisionamiento es un **paso admin de una sola vez**: la identidad del
+pipeline no puede crear el bucket ni el trail, y eso es deseable (el pipeline no
+debe poder alterar su propia auditoría).
+
+Lo que **sí** hay que resolver antes de una reconciliación real: el usuario
+`claude-code` **no puede correr `lookup-events`**. Si una reconciliación se
+intenta con la credencial del pipeline, falla con `AccessDeniedException` en el
+peor momento posible. Reconciliar con una identidad administrativa o de
+auditoría, o adjuntarle `cloudtrail:LookupEvents` antes de necesitarla.
+
+#### Consultar el rastro durante una reconciliación
+
+⚠️ **`lookup-events` NO consulta este trail.** Lee el *Event history* de
+CloudTrail, que existe con trail o sin él y **sólo cubre 90 días**. Sirve para
+una reconciliación reciente, pero **no** es la evidencia persistente que este
+trail conserva 365 días. Confundir ambos es el error que deja una investigación
+sin respaldo justo cuando pasa la barrera de los 90 días.
+
+Ventana **menor a 90 días** — consulta rápida por Event history:
 
 ```bash
 aws cloudtrail lookup-events --region us-east-2 \
@@ -309,6 +336,32 @@ aws cloudtrail lookup-events --region us-east-2 \
 aws cloudtrail lookup-events --region us-east-2 \
   --lookup-attributes AttributeKey=EventName,AttributeValue=GenerateDataKey \
   --start-time <UTC-INICIO> --end-time <UTC-FIN>
+```
+
+Ventana **mayor a 90 días** (o si hace falta evidencia con validación de
+integridad) — leer los objetos del trail en S3:
+
+```bash
+BUCKET=intrale-kernel-cloudtrail-<ACCOUNT_ID>-us-east-2
+aws s3 ls s3://$BUCKET/AWSLogs/<ACCOUNT_ID>/CloudTrail/us-east-2/<AAAA>/<MM>/<DD>/
+aws s3 cp s3://$BUCKET/<objeto>.json.gz - | gunzip | \
+  jq '.Records[] | select(.eventName=="Decrypt" or .eventName=="GenerateDataKey")
+      | select(.resources[]?.ARN | test("alias-o-id-de-la-CMK"))
+      | {eventTime, eventName, userIdentity, sourceIPAddress, resources}'
+```
+
+En ambos casos, confirmar en el JSON de cada evento la **CMK** (`resources[].ARN`),
+el **principal** (`userIdentity`) y que el origen sea DynamoDB
+(`sourceIPAddress: dynamodb.amazonaws.com`) — un `Decrypt` de la CMK con otro
+origen es exactamente lo que el `kms:ViaService` debería estar impidiendo.
+
+El trail tiene `--enable-log-file-validation`, así que la integridad de los
+archivos se puede probar contra los digest de
+`AWSLogs/<ACCOUNT_ID>/CloudTrail-Digest/`:
+
+```bash
+aws cloudtrail validate-logs --trail-arn <TRAIL_ARN> \
+  --start-time <UTC-INICIO> --region us-east-2
 ```
 
 ---
