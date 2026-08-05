@@ -211,6 +211,9 @@ const SIDE_MAP = Object.freeze({
     sherlock_wait_budget_ms: 'kernel',
     telegram_burst_window_ms: 'kernel',
     telegram_outbound: 'kernel',
+    // #5573 — política de reenvío de las PARTES DE AUDIO, separada de la de texto.
+    // Es mecanismo de entrega del canal, no producto → kernel.
+    telegram_voice_outbound: 'kernel',
     deliverable_notifications: 'kernel',
     'deliverable_notifications.skills': 'producto',       // whitelist de skills del producto
     'deliverable_notifications.attachments_per_skill': 'producto',
@@ -455,6 +458,10 @@ const SCHEMA = {
         telegram_burst_window_ms: { type: 'number', minimum: 0 },
 
         telegram_outbound: OBJ(),
+        // #5573 — la raíz está CERRADA: `telegram_voice_outbound` en config.yaml
+        // SIN esta declaración deja el pipeline arrancando pausado por
+        // ConfigSchemaViolation. Va en el MISMO commit que la sección nueva.
+        telegram_voice_outbound: OBJ(),
         deliverable_notifications: OBJ(),
         cua: OBJ(),
         kernel: OBJ(),
