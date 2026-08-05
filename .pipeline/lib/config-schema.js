@@ -485,6 +485,16 @@ const SCHEMA = {
                 // ventana se abriera sola.
                 bootstrap_fallback: { type: 'boolean' },
                 bootstrap_fallback_until: { type: 'string' },
+                cut_fallback: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['authorization_ttl_seconds', 'operation_timeout_ms', 'runbook'],
+                    properties: {
+                        authorization_ttl_seconds: { type: 'number', minimum: 1, maximum: 900 },
+                        operation_timeout_ms: { type: 'number', minimum: 100, maximum: 60000 },
+                        runbook: { type: 'string', minLength: 1, maxLength: 512 },
+                    },
+                },
                 // #5448 · CA-21 — misma razón que las dos de arriba. El núcleo
                 // igual valida y falla cerrado, pero un `hosts_activos` que es
                 // string en vez de lista se descubre acá, al arrancar, y no el

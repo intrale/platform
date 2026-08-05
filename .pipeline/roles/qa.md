@@ -369,7 +369,29 @@ cat > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json << 'JSON'
   "rejectionPdf": "logs/rejection-<issue>-qa.pdf"
 }
 JSON
+
+# Aprobado - modo structural (sin video)
+cat > .pipeline/servicios/drive/pendiente/qa-<issue>-structural.json << 'JSON'
+{
+  "action": "upload",
+  "file": ".pipeline/desarrollo/verificacion/procesado/<issue>.qa",
+  "folder": "QA/evidence/<issue>",
+  "description": "QA estructural #<issue>",
+  "title": "<titulo del issue>",
+  "issue": <issue>,
+  "verdict": "aprobado",
+  "passed": 6,
+  "total": 6,
+  "mode": "structural",
+  "source": "qa-structural",
+  "criteriosVerificados": ["CA-1", "CA-2", "CA-3", "CA-4", "CA-5", "CA-6"]
+}
+JSON
 ```
+
+En modo `structural`, `file` apunta al YAML final de QA y `source` debe ser
+`qa-structural`. Los contadores y `criteriosVerificados` se completan con los
+criterios reales del issue; no se inventa un video ni se omite el job de Drive.
 
 **Campos del payload (#2519):**
 
@@ -384,6 +406,8 @@ JSON
 | `passed` | int | Sí | Criterios verificados OK. Si no hay tests cuantificados, `0` |
 | `total` | int | Sí | Criterios totales. Si es `0`, el mensaje usa UX especial |
 | `mode` | string | Sí | `"android"`, `"api"` o `"structural"` |
+| `source` | string | Sí para structural | Siempre `"qa-structural"`; habilita el tratamiento sin video |
+| `criteriosVerificados` | string[] | Sí para structural aprobado | IDs reales de todos los criterios cumplidos |
 | `motivo` | string | Sólo si rechazado | Primera frase = causa concreta, ≤500 chars |
 | `criteriosFallidos` | string[] | Sólo si rechazado | IDs de CAs fallidos, ej. `["CA-1", "CA-4"]` |
 | `rejectionPdf` | string | Opcional | Path relativo al PDF de rejection-report |
