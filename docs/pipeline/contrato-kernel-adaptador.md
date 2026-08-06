@@ -140,17 +140,17 @@ línea. Valores de la columna **Lado**:
 | `_frozen/ios-dev` | adaptador | Stack del producto (Compose iOS); congelado. |
 | `_frozen/scrum` | kernel | Proceso de orquestación (zombi V3); congelado, genérico. |
 
-### 2.4. `config.yaml` — clasificación completa de las 59 secciones (#5173)
+### 2.4. `config.yaml` — clasificación completa de las 60 secciones (#5173)
 
 <!-- #5173 · Entrega B de #5111. Reemplaza la tabla parcial del inventario original,
      que clasificaba 6 de 57 secciones y dejaba 4 ítems sin decidir. -->
 
-Las **59** secciones top-level de `.pipeline/config.yaml`, una por una, con su forma real y su
+Las **60** secciones top-level de `.pipeline/config.yaml`, una por una, con su forma real y su
 lado. Es la expresión legible de `SIDE_MAP` en `.pipeline/lib/config-schema.js`: **si esta tabla
 y ese mapa divergen, falla el test** `#5173 toda sección top-level de config.yaml está declarada
 en el schema y tiene lado` **en el PR**, no en el arranque.
 
-Reparto: **38 kernel · 12 autoridad · 9 producto**.
+Reparto: **39 kernel · 12 autoridad · 9 producto**.
 
 > **Regla operativa (CA-1).** La raíz del schema está **cerrada**
 > (`additionalProperties: false`). Agregar una sección nueva a `config.yaml` exige declararla en
@@ -182,6 +182,7 @@ Reparto: **38 kernel · 12 autoridad · 9 producto**.
 | 17 | `circuit_breaker` (315) | obj | **autoridad** | Corta la autonomía del pipeline ante rebotes; decide autonomía. |
 | 18 | `precheck` (353) | obj | kernel | Chequeos previos al dispatch; mecanismo. |
 | 19 | `anomaly_detector` (372) | obj | kernel | Detección de anomalías del motor; mecanismo. |
+| 19b | `human_block_reminder` (291) | obj | kernel | Cadencia con que el motor insiste ante un bloqueo humano sin responder (#5337); mecanismo, no política de producto. |
 | 20 | `cost_anomaly_alert` (395) | obj | kernel | Alerta de anomalía de costo del motor; mecanismo. |
 | 21 | `ghostbusters_cron` (411) | obj | kernel | Higiene programada del motor; mecanismo. |
 | 22 | `rest_mode` (434) | obj | kernel | Modo descanso del motor; mecanismo. |
@@ -222,6 +223,8 @@ Reparto: **38 kernel · 12 autoridad · 9 producto**.
 | 57 | `telegram` (1800) | obj | producto | Verificado: en HEAD sólo `bot_username`, sin escalación. |
 | 58 | `commander_products` (1823) | obj | **autoridad** | D-2: incluye `default_product` y el alta de productos con sus operadores. |
 | 59 | `vault` (1318) | obj | kernel | #5352: direcciona secretos de infraestructura por host (`prefix`/`projectId`/`hostId`); es mecanismo, se muda al kernel sin conocer el producto. Reutiliza `kernel.region`. |
+| 60 | `worktree_provenance` | obj | kernel | Allowlist de identidades para verificar procedencia de ramas en auto-recovery; mecanismo de seguridad del motor. |
+| 61 | `telegram_voice_outbound` | obj | kernel | #5573: política de reenvío de las PARTES DE AUDIO, separada de `telegram_outbound` (texto) porque la latencia real de un `.ogg` es ~62-74s contra los 5s del texto. Es transporte de salida del motor; mecanismo. |
 
 #### 2.4.1. Matriz de precedencia
 

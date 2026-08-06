@@ -208,6 +208,13 @@ materializa. Por eso la contención es doble:
   exista. Vive dentro de `.git/`, así que sobrevive el `reset --hard` y el `clean` que el
   root vivo hace en cada respawn.
 
+**Guardas contra re-commit (#5463).** El inventario de paths sensibles dejó de estar
+duplicado entre `.gitignore` y el scanner de `.husky/pre-commit`: ambos —más la suite
+`.pipeline/lib/__tests__/credential-path-guards.test.js`— derivan de
+`.pipeline/lib/sensitive-paths.js`. Un alta se hace en ese módulo y las tres capas la
+heredan; el test falla si alguna se desalinea, si un path del inventario queda trackeado
+(`git ls-files`) o si `.env.example` deja de estar permitido.
+
 Verificar `check-ignore` únicamente en el worktree del agente da un **falso positivo de
 contención**: da `rc=0` ahí mientras el artefacto queda expuesto en el root vivo.
 

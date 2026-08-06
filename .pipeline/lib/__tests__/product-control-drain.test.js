@@ -60,7 +60,7 @@ function makeFakeGh({ viewExists = false, createThrows = null } = {}) {
 // CA-1 — create crea el repo, completa la URL limpia y registra en full
 // -----------------------------------------------------------------------------
 
-test('CA-1: provenance:create crea el repo y completa la URL limpia en el registro', () => {
+test('CA-1: provenance:create crea el repo y completa la URL limpia en el registro', async () => {
   const gh = makeFakeGh({ viewExists: false });
   let registered = null;
   const drain = drainLib.createProductControlDrain({
@@ -68,7 +68,7 @@ test('CA-1: provenance:create crea el repo y completa la URL limpia en el regist
     runBootstrap: (a) => { registered = a; return { ok: true, stage: 'registered' }; },
     allowedOrgs: ['intrale'],
   });
-  const res = drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale', visibility: 'private' } }));
+  const res = await drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale', visibility: 'private' } }));
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(res.created, true);
   assert.equal(res.url, 'https://github.com/intrale/store');
@@ -78,25 +78,25 @@ test('CA-1: provenance:create crea el repo y completa la URL limpia en el regist
   assert.equal(registered.registerMeta.repoOrigin, 'created');
 });
 
-test('CA-SEC-1: gh se invoca SIEMPRE con array de args (nunca string/shell)', () => {
+test('CA-SEC-1: gh se invoca SIEMPRE con array de args (nunca string/shell)', async () => {
   const gh = makeFakeGh({ viewExists: false });
   const drain = drainLib.createProductControlDrain({ execFileSync: gh.exec, runBootstrap: () => ({ ok: true }), allowedOrgs: ['intrale'] });
-  drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
+  await drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
   assert.ok(gh.calls.length >= 2);
   assert.deepEqual(gh.calls.find((c) => c[2] === 'create'), ['gh', 'repo', 'create', 'intrale/store', '--private']);
 });
 
-test('CA-SEC-3: visibilidad default private; public sólo con elección explícita', () => {
+test('CA-SEC-3: visibilidad default private; public sólo con elección explícita', async () => {
   const ghPriv = makeFakeGh({ viewExists: false });
   const dPriv = drainLib.createProductControlDrain({ execFileSync: ghPriv.exec, runBootstrap: () => ({ ok: true }), allowedOrgs: ['intrale'] });
   // sin visibility ⇒ private
-  dPriv.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
+  await dPriv.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
   assert.ok(ghPriv.calls.some((c) => c.includes('--private')));
   assert.ok(!ghPriv.calls.some((c) => c.includes('--public')));
 
   const ghPub = makeFakeGh({ viewExists: false });
   const dPub = drainLib.createProductControlDrain({ execFileSync: ghPub.exec, runBootstrap: () => ({ ok: true }), allowedOrgs: ['intrale'] });
-  dPub.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale', visibility: 'public' } }));
+  await dPub.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale', visibility: 'public' } }));
   assert.ok(ghPub.calls.some((c) => c.includes('--public')));
 });
 
@@ -104,20 +104,20 @@ test('CA-SEC-3: visibilidad default private; public sólo con elección explíci
 // CA-SEC-2 — org fuera de la allowlist ⇒ rechazo sin invocar gh
 // -----------------------------------------------------------------------------
 
-test('CA-SEC-2: org fuera de la allowlist se rechaza SIN invocar gh (A01)', () => {
+test('CA-SEC-2: org fuera de la allowlist se rechaza SIN invocar gh (A01)', async () => {
   const gh = makeFakeGh({ viewExists: false });
   const drain = drainLib.createProductControlDrain({ execFileSync: gh.exec, runBootstrap: () => ({ ok: true }), allowedOrgs: ['intrale'] });
-  const res = drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'evilcorp' } }));
+  const res = await drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'evilcorp' } }));
   assert.equal(res.ok, false);
   assert.equal(res.stage, 'create-spec');
   assert.equal(gh.calls.length, 0, 'no debe invocar gh con org fuera de allowlist');
 });
 
-test('CA-SEC-1: create.name con metacaracteres de shell es rechazado antes de invocar gh', () => {
+test('CA-SEC-1: create.name con metacaracteres de shell es rechazado antes de invocar gh', async () => {
   const gh = makeFakeGh({ viewExists: false });
   const drain = drainLib.createProductControlDrain({ execFileSync: gh.exec, runBootstrap: () => ({ ok: true }), allowedOrgs: ['intrale'] });
   // Este descriptor no pasa validateDescriptor (create.name inválido) ⇒ stage validation.
-  const res = drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'foo;rm -rf /', org: 'intrale' } }));
+  const res = await drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'foo;rm -rf /', org: 'intrale' } }));
   assert.equal(res.ok, false);
   assert.equal(gh.calls.length, 0);
 });
@@ -126,29 +126,29 @@ test('CA-SEC-1: create.name con metacaracteres de shell es rechazado antes de in
 // CA-4 — idempotencia y estado consistente ante fallo
 // -----------------------------------------------------------------------------
 
-test('CA-4: repo ya existente ⇒ NO se re-crea (idempotencia)', () => {
+test('CA-4: repo ya existente ⇒ NO se re-crea (idempotencia)', async () => {
   const gh = makeFakeGh({ viewExists: true });
   const drain = drainLib.createProductControlDrain({ execFileSync: gh.exec, runBootstrap: () => ({ ok: true }), allowedOrgs: ['intrale'] });
-  const res = drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
+  const res = await drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
   assert.equal(res.ok, true);
   assert.equal(res.created, false);
   assert.ok(!gh.calls.some((c) => c[2] === 'create'), 'no debe llamar create si el repo ya existe');
 });
 
-test('CA-4: 422 name already exists durante create se maneja idempotente (sin estado a medias)', () => {
+test('CA-4: 422 name already exists durante create se maneja idempotente (sin estado a medias)', async () => {
   const gh = makeFakeGh({ viewExists: false, createThrows: 'GraphQL: Name already exists on this account (HTTP 422)' });
   let registered = false;
   const drain = drainLib.createProductControlDrain({ execFileSync: gh.exec, runBootstrap: () => { registered = true; return { ok: true }; }, allowedOrgs: ['intrale'] });
-  const res = drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
+  const res = await drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
   assert.equal(res.ok, true);
   assert.equal(registered, true, 'debe registrar el producto (URL completada), no dejarlo a medias');
 });
 
-test('CA-4: fallo de creación (permiso) NO registra el producto (no queda a medias)', () => {
+test('CA-4: fallo de creación (permiso) NO registra el producto (no queda a medias)', async () => {
   const gh = makeFakeGh({ viewExists: false, createThrows: 'HTTP 403: Resource not accessible' });
   let registered = false;
   const drain = drainLib.createProductControlDrain({ execFileSync: gh.exec, runBootstrap: () => { registered = true; return { ok: true }; }, allowedOrgs: ['intrale'] });
-  const res = drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
+  const res = await drain.processOnboard(onboardRequest({ id: 'main', role: 'primary', provenance: 'create', create: { name: 'store', org: 'intrale' } }));
   assert.equal(res.ok, false);
   assert.equal(res.stage, 'create-repo');
   assert.equal(registered, false, 'no debe registrar si la creación falló');
@@ -158,11 +158,11 @@ test('CA-4: fallo de creación (permiso) NO registra el producto (no queda a med
 // provenance:existing — no toca gh; inyecta el probe real (repo-probe) explícitamente
 // -----------------------------------------------------------------------------
 
-test('existing: no invoca gh y registra vía runBootstrap full (inyecta probe real CA-2)', () => {
+test('existing: no invoca gh y registra vía runBootstrap full (inyecta probe real CA-2)', async () => {
   const gh = makeFakeGh({ viewExists: true });
   let bootArg = null;
   const drain = drainLib.createProductControlDrain({ execFileSync: gh.exec, runBootstrap: (a) => { bootArg = a; return { ok: true }; } });
-  const res = drain.processOnboard(onboardRequest({ id: 'main', url: 'https://github.com/acme/store', role: 'primary' }));
+  const res = await drain.processOnboard(onboardRequest({ id: 'main', url: 'https://github.com/acme/store', role: 'primary' }));
   assert.equal(res.ok, true);
   assert.equal(res.repoOrigin, 'existing');
   assert.equal(gh.calls.length, 0, 'existing no crea repos');
@@ -175,7 +175,7 @@ test('existing: no invoca gh y registra vía runBootstrap full (inyecta probe re
 // drainOnce — lee/mueve archivos de la cola con fs real (tmp)
 // -----------------------------------------------------------------------------
 
-test('drainOnce procesa la cola, mueve el pedido a procesado y deja sidecar de resultado', () => {
+test('drainOnce procesa la cola, mueve el pedido a procesado y deja sidecar de resultado', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pcd-'));
   const queueDir = path.join(tmp, 'pendiente');
   const doneDir = path.join(tmp, 'procesado');
@@ -191,7 +191,7 @@ test('drainOnce procesa la cola, mueve el pedido a procesado y deja sidecar de r
     queueDir, doneDir,
     now: () => ts++,
   });
-  const summary = drain.drainOnce();
+  const summary = await drain.drainOnce();
   assert.equal(summary.processed, 1);
   assert.equal(summary.results[0].ok, true);
   // La cola quedó vacía; el pedido se movió a procesado con su sidecar.
@@ -201,19 +201,19 @@ test('drainOnce procesa la cola, mueve el pedido a procesado y deja sidecar de r
   assert.ok(done.some((n) => n.endsWith('.result.json')));
 });
 
-test('drainOnce sobre cola inexistente ⇒ 0 procesados (defensivo, no lanza)', () => {
+test('drainOnce sobre cola inexistente ⇒ 0 procesados (defensivo, no lanza)', async () => {
   const drain = drainLib.createProductControlDrain({ queueDir: path.join(os.tmpdir(), 'no', 'existe', 'q'), execFileSync: () => '' });
-  const summary = drain.drainOnce();
+  const summary = await drain.drainOnce();
   assert.equal(summary.processed, 0);
 });
 
-test('drainOnce ignora pedidos que no son onboard (no los mueve)', () => {
+test('drainOnce ignora pedidos que no son onboard (no los mueve)', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pcd-'));
   const queueDir = path.join(tmp, 'pendiente');
   fs.mkdirSync(queueDir, { recursive: true });
   fs.writeFileSync(path.join(queueDir, 'start-acme-1.json'), JSON.stringify({ type: 'product_control_request', action: 'start' }), 'utf8');
   const drain = drainLib.createProductControlDrain({ queueDir, doneDir: path.join(tmp, 'done'), execFileSync: () => '' });
-  const summary = drain.drainOnce();
+  const summary = await drain.drainOnce();
   assert.equal(summary.results[0].stage, 'skip');
   assert.equal(fs.readdirSync(queueDir).length, 1, 'el start/pause queda para el kernel de instancias');
 });

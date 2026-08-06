@@ -170,7 +170,7 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'architect.go_live_date',
 ]);
 
-// Clasificación completa de las 58 secciones top-level de `config.yaml`
+// Clasificación completa de las secciones top-level de `config.yaml`
 // (#5173 CA-6). Clave = path punteado (admite `*` como comodín de un segmento);
 // valor = 'kernel' | 'producto' | 'autoridad'. El match MÁS ESPECÍFICO gana, así
 // una sub-clave puede partirse del lado opuesto a su sección.
@@ -183,9 +183,13 @@ const SIDE_MAP = Object.freeze({
     intake: 'kernel',
     resource_limits: 'kernel',
     timeouts: 'kernel',
+    worktree_provenance: 'kernel',
     desync: 'kernel',
     precheck: 'kernel',
     anomaly_detector: 'kernel',
+    // #5337 — cadencia del recordatorio de bloqueos humanos. Es mecanismo del
+    // pipeline (cuándo insiste), no política de producto.
+    human_block_reminder: 'kernel',
     cost_anomaly_alert: 'kernel',
     ghostbusters_cron: 'kernel',
     rest_mode: 'kernel',
@@ -210,6 +214,9 @@ const SIDE_MAP = Object.freeze({
     sherlock_wait_budget_ms: 'kernel',
     telegram_burst_window_ms: 'kernel',
     telegram_outbound: 'kernel',
+    // #5573 — política de reenvío de las PARTES DE AUDIO, separada de la de texto.
+    // Es mecanismo de entrega del canal, no producto → kernel.
+    telegram_voice_outbound: 'kernel',
     deliverable_notifications: 'kernel',
     'deliverable_notifications.skills': 'producto',       // whitelist de skills del producto
     'deliverable_notifications.attachments_per_skill': 'producto',
@@ -350,6 +357,18 @@ const SCHEMA = {
         routing: OBJ(),
         intake: OBJ(),
 
+        worktree_provenance: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['committers'],
+            properties: {
+                committers: {
+                    type: 'array',
+                    items: { type: 'string', minLength: 1, pattern: '\\S' },
+                },
+            },
+        },
+
         // --- resource_limits: umbrales de presión + priority windows ---------
         resource_limits: {
             type: 'object',
@@ -377,6 +396,7 @@ const SCHEMA = {
         desync: OBJ(),
         precheck: OBJ(),
         anomaly_detector: OBJ(),
+        human_block_reminder: OBJ(),   // #5337 CA-5
         cost_anomaly_alert: OBJ(),
         ghostbusters_cron: OBJ(),
         rest_mode: OBJ(),
@@ -442,6 +462,10 @@ const SCHEMA = {
         telegram_burst_window_ms: { type: 'number', minimum: 0 },
 
         telegram_outbound: OBJ(),
+        // #5573 — la raíz está CERRADA: `telegram_voice_outbound` en config.yaml
+        // SIN esta declaración deja el pipeline arrancando pausado por
+        // ConfigSchemaViolation. Va en el MISMO commit que la sección nueva.
+        telegram_voice_outbound: OBJ(),
         deliverable_notifications: OBJ(),
         cua: OBJ(),
         kernel: OBJ(),
