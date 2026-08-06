@@ -291,6 +291,33 @@ const DEV_BRANCH_RE = /^agent\/\d+-[A-Za-z0-9._/-]+$/;
 const MAX_RECOVERY_SUFFIX = 5;
 
 /**
+ * Tope duro de longitud de un email (RFC 5321 §4.5.3.1.3: 254 chars para el
+ * reverse-path completo). Un `author-not-allowlisted:<...>` más largo que esto
+ * no es un email: es contenido arbitrario que llegó desde `git log --format`
+ * de una rama remota que NO controlamos.
+ */
+const MAX_EMAIL_LENGTH = 254;
+
+/**
+ * Forma segura de email para mostrarle al operador (#5421 CA-11).
+ *
+ * El charset es deliberadamente MÁS ANCHO que el "clásico": incluye `+`, `[` y
+ * `]` porque los bots de GitHub tienen emails legítimos con esa forma
+ * (`41898282+github-actions[bot]@users.noreply.github.com`, que además está
+ * hardcodeado en `PIPELINE_COMMITTER_ALLOWLIST`). Un filtro sin corchetes
+ * descartaría a un `<algo>[bot]@…` no allowlisteado, `unverifiedAuthors`
+ * quedaría vacío y `buildOperatorQuestion` caería a la rama genérica de
+ * "posible rama ajena" — es decir, se arreglaría la inyección rompiendo CA-8.
+ *
+ * `[` y `]` son metacaracteres Markdown, así que ESTA capa acota pero no
+ * alcanza sola: el saneamiento de render vive en
+ * `worktree-guard-policy.js::sanitizeOperatorEmail` (CA-12). Defensa en
+ * profundidad: acá se descarta lo que no tiene forma de email, allá se
+ * neutraliza lo que sí la tiene pero puede alterar el markup.
+ */
+const SAFE_EMAIL_RE = /^[a-z0-9._%+'[\]-]{1,64}@[a-z0-9.[\]-]{1,190}$/i;
+
+/**
  * Extrae los emails de los `reason` de `verifyRemoteBranchOrigin` que fallaron
  * por committer fuera de la allowlist (`author-not-allowlisted:<email>`).
  *
@@ -299,8 +326,13 @@ const MAX_RECOVERY_SUFFIX = 5;
  * agente), que es el caso donde SÍ corresponde el lenguaje de procedencia
  * sospechosa.
  *
+ * #5421 CA-11 — el email viene del `git log` de una rama REMOTA arbitraria:
+ * es input no confiable que termina en un mensaje de Telegram del operador.
+ * Sólo se devuelven strings con forma segura de email; el resto se DESCARTA
+ * (default cerrado, igual criterio que `guardExceptionEligible`).
+ *
  * @param {string[]} reasons
- * @returns {string[]} emails únicos, en orden de aparición.
+ * @returns {string[]} emails únicos con forma segura, en orden de aparición.
  */
 function extractUnverifiedAuthors(reasons) {
     const out = [];
@@ -308,7 +340,9 @@ function extractUnverifiedAuthors(reasons) {
         const m = /^author-not-allowlisted:(.+)$/.exec(String(r || '').trim());
         if (!m) continue;
         const email = m[1].trim();
-        if (email && !out.includes(email)) out.push(email);
+        if (!email || email.length > MAX_EMAIL_LENGTH) continue;
+        if (!SAFE_EMAIL_RE.test(email)) continue;
+        if (!out.includes(email)) out.push(email);
     }
     return out;
 }
@@ -715,4 +749,6 @@ module.exports = {
     PIPELINE_COMMITTER_ALLOWLIST,
     extractUnverifiedAuthors,
     MAX_RECOVERY_SUFFIX,
+    MAX_EMAIL_LENGTH,
+    SAFE_EMAIL_RE,
 };

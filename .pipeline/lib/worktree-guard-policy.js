@@ -235,6 +235,71 @@ function buildAbortLogLine({
 }
 
 /**
+ * Charset PERMITIDO en un email que se le muestra al operador.
+ *
+ * Es una allowlist, no una denylist de metacaracteres, por dos razones:
+ *   1. Los metacaracteres del Markdown legacy (`` ` ``, `_`, `*`, `[`, `]`,
+ *      `(`, `)`) quedan fuera por construcción, sin tener que enumerarlos ni
+ *      acordarse de actualizarlos si Telegram cambia el dialecto.
+ *   2. Telegram AUTO-LINKIFICA URLs planas: un `https://evil.tld/phish` sigue
+ *      siendo clickeable en el cliente aunque no haya markup `[texto](url)`.
+ *      Neutralizar sólo los metacaracteres dejaba el dominio del atacante vivo
+ *      en el mensaje entregado. `:` y `/` no pertenecen a ningún email válido,
+ *      así que excluirlos no cuesta nada y mata la auto-linkificación.
+ *
+ * El charset coincide con `SAFE_EMAIL_RE` de `worktree-resolver.js` menos los
+ * corchetes y el guion bajo: ambos son forma legítima de email pero también
+ * metacaracteres Markdown (`[bot]@…` para link, `_` para énfasis), así que
+ * sobreviven al filtro de origen (CA-11) y se neutralizan recién acá (CA-12).
+ */
+const SAFE_RENDER_CHARSET = /[^a-z0-9@.%+'-]/gi;
+
+/**
+ * Carácter neutro con el que se reemplaza cada carácter no permitido. No es un
+ * escape: es un reemplazo destructivo, a propósito (ver `sanitizeOperatorEmail`).
+ */
+const NEUTRAL_CHAR = '?';
+
+/** Tope de longitud del email ya renderizado (RFC 5321), defensa en profundidad. */
+const MAX_RENDERED_EMAIL = 254;
+
+/**
+ * Sanea un email antes de interpolarlo en el texto del operador (#5421 CA-12).
+ *
+ * **Sanea, no escapa — y la distinción es la clave del fix.** El saliente usa
+ * `parse_mode: 'Markdown'` (legacy). Ese dialecto NO soporta escapes con `\`
+ * y no permite escapar un backtick dentro de un code span: un `` \` ``
+ * insertado se renderiza literal y no cierra el span. Por eso el helper
+ * `escapeMarkdownV2` que ya existe en `notifier-infra-recovered.js` no es
+ * aplicable acá, y por eso reemplazamos en vez de escapar.
+ *
+ * Reemplazar (en vez de descartar el email entero) preserva la
+ * identificabilidad del committer, que es el corazón de CA-8: un
+ * `41898282+github-actions[bot]@users.noreply.github.com` se muestra como
+ * `41898282+github-actions?bot?@users.noreply.github.com` y el operador
+ * entiende perfectamente de quién se le está hablando.
+ *
+ * Garantías sobre el texto entregado:
+ *   - paridad de backticks intacta (no quedan backticks del email dentro del
+ *     code span ⇒ no hay HTTP 400 de Telegram que silencie la alerta);
+ *   - sin `[texto](url)` clickeable inyectado desde el email;
+ *   - sin URL plana auto-linkificable sobreviviendo como texto.
+ *
+ * @param {string} email
+ * @returns {string} email neutralizado, o `''` si no quedó nada identificable.
+ */
+function sanitizeOperatorEmail(email) {
+    const limpio = String(email == null ? '' : email)
+        .trim()
+        .slice(0, MAX_RENDERED_EMAIL)
+        .replace(SAFE_RENDER_CHARSET, NEUTRAL_CHAR);
+    // Default cerrado: si no quedó ni un carácter alfanumérico, no hay committer
+    // identificable que nombrar — devolvemos vacío y el caller cae al wording de
+    // procedencia sospechosa en vez de mostrar `???` como si fuera un email.
+    return /[a-z0-9]/i.test(limpio) ? limpio : '';
+}
+
+/**
  * Texto de la pregunta al operador, separado por CAUSA REAL (CA-8).
  *
  * Tabla de wording:
@@ -246,9 +311,15 @@ function buildAbortLogLine({
  *   - procedencia verificada o desconocida ⇒ texto genérico.
  */
 function buildOperatorQuestion({ issue, reasonStr, branchOriginVerified, unverifiedAuthors } = {}) {
-    const autores = Array.isArray(unverifiedAuthors)
-        ? unverifiedAuthors.filter((a) => typeof a === 'string' && a.trim()).map((a) => a.trim())
-        : [];
+    // CA-12 — el email viene del `git log` de una rama remota arbitraria y
+    // termina en un mensaje Markdown de Telegram. Se sanea SIEMPRE acá, en el
+    // render, aunque el origen (`extractUnverifiedAuthors`, CA-11) ya haya
+    // filtrado por forma: son dos capas independientes a propósito. Si el
+    // saneamiento vacía el string, el autor se descarta (default cerrado).
+    const autores = (Array.isArray(unverifiedAuthors) ? unverifiedAuthors : [])
+        .filter((a) => typeof a === 'string' && a.trim())
+        .map((a) => sanitizeOperatorEmail(a))
+        .filter(Boolean);
 
     if (branchOriginVerified === false && autores.length > 0) {
         const lista = autores.join(', ');
@@ -299,6 +370,7 @@ module.exports = {
     buildAbortLogLine,
     buildOperatorQuestion,
     buildAffectedSkillsLine,
+    sanitizeOperatorEmail,
     normalizarMotivo,
     OPERATIONS,
     ALWAYS_ELIGIBLE,

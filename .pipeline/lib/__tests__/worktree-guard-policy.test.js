@@ -11,6 +11,10 @@
 //   CA-7: `stderr` de gh/git con path absoluto sale redactado.
 //   CA-8: wording por causa real (email vs "rama ajena").
 //   CA-9: línea de skills afectados.
+//   CA-12: el email no deja metacaracteres Markdown en el texto entregado.
+//   CA-13: emails hostiles (phishing con link embebido, silenciador con
+//          backtick suelto) no producen link clickeable ni paridad impar de
+//          backticks; el control benigno de CA-8 sigue verde.
 //   D3:   `operation` NO altera el veredicto.
 // =============================================================================
 'use strict';
@@ -24,6 +28,7 @@ const {
     buildAbortLogLine,
     buildOperatorQuestion,
     buildAffectedSkillsLine,
+    sanitizeOperatorEmail,
     normalizarMotivo,
     OPERATIONS,
 } = require('../worktree-guard-policy');
@@ -377,4 +382,125 @@ test('CA-9 — deduplica y filtra basura; lista vacía → string vacío', () =>
     assert.equal(buildAffectedSkillsLine([]), '');
     assert.equal(buildAffectedSkillsLine(null), '');
     assert.equal(buildAffectedSkillsLine(undefined), '');
+});
+
+// ---- CA-12 / CA-13: saneamiento del email hostil -----------------------------
+//
+// Contexto del hallazgo (ciclo 4/5): el email llega del `git log` de una rama
+// REMOTA arbitraria y se interpolaba textual entre backticks en un mensaje con
+// `parse_mode: 'Markdown'`. Dos ataques confirmados por `qa` y `guru`:
+//   - PHISHING: `a`[Actualizar credenciales](https://evil.tld/phish)`b@x.io`
+//     cerraba el code span y entregaba un link clickeable al operador.
+//   - SILENCIADOR: `a`b@x.io` dejaba paridad IMPAR de backticks ⇒ Telegram
+//     responde HTTP 400 y la alerta de needs-human se pierde entera.
+
+const EMAIL_PHISHING = 'a`[Actualizar credenciales](https://evil.tld/phish)`b@x.io';
+const EMAIL_SILENCIADOR = 'a`b@x.io';
+const EMAIL_BENIGNO = 'backend-dev-agent@intrale';
+const EMAIL_BOT_GITHUB = '41898282+github-actions[bot]@users.noreply.github.com';
+
+/** Cuenta backticks del texto. Impar ⇒ Telegram 400 ⇒ alerta perdida. */
+function contarBackticks(txt) {
+    return (String(txt).match(/`/g) || []).length;
+}
+
+/** ¿Hay un `[texto](url)` clickeable en el texto entregado? */
+function tieneLinkClickeable(txt) {
+    return /\[[^\]\n]*\]\([^)\n]*\)/.test(String(txt));
+}
+
+test('CA-12 — sanitizeOperatorEmail neutraliza los metacaracteres del Markdown legacy', () => {
+    assert.equal(sanitizeOperatorEmail('a`b@x.io'), 'a?b@x.io');
+    assert.equal(sanitizeOperatorEmail('a_b*c@x.io'), 'a?b?c@x.io');
+    assert.equal(sanitizeOperatorEmail('a[b](c)@x.io'), 'a?b??c?@x.io');
+    // El benigno no se toca: `.`, `-` y `@` no son metacaracteres del legacy.
+    assert.equal(sanitizeOperatorEmail(EMAIL_BENIGNO), EMAIL_BENIGNO);
+    // Robustez de entrada: no explota con no-strings.
+    assert.equal(sanitizeOperatorEmail(null), '');
+    assert.equal(sanitizeOperatorEmail(undefined), '');
+});
+
+test('CA-13 — email de PHISHING: sin link clickeable y con paridad par de backticks', () => {
+    const q = buildOperatorQuestion({
+        issue: 5421,
+        reasonStr: 'branch-origin-unverified:agent/5421-*',
+        branchOriginVerified: false,
+        unverifiedAuthors: [EMAIL_PHISHING],
+    });
+    assert.equal(tieneLinkClickeable(q), false, 'el phishing no debe quedar clickeable');
+    assert.equal(contarBackticks(q) % 2, 0, 'paridad impar ⇒ Telegram 400 ⇒ alerta perdida');
+    assert.doesNotMatch(q, /https:\/\/evil\.tld/, 'la URL del atacante no debe sobrevivir como link');
+    // Sigue siendo el wording de CONFIGURACIÓN de CA-8, no el de "rama ajena".
+    assert.doesNotMatch(q, /rama ajena/i);
+    assert.match(q, /allowlist/i);
+});
+
+test('CA-13 — email SILENCIADOR: el backtick suelto no rompe la paridad', () => {
+    const q = buildOperatorQuestion({
+        issue: 5421,
+        reasonStr: 'branch-origin-unverified:agent/5421-*',
+        branchOriginVerified: false,
+        unverifiedAuthors: [EMAIL_SILENCIADOR],
+    });
+    assert.equal(contarBackticks(q) % 2, 0);
+    assert.equal(tieneLinkClickeable(q), false);
+    // El committer sigue siendo identificable pese al saneamiento.
+    assert.match(q, /a\?b@x\.io/);
+});
+
+test('CA-13 — control benigno de CA-8: el email legítimo se sigue mostrando textual', () => {
+    const q = buildOperatorQuestion({
+        issue: 5421,
+        reasonStr: 'branch-origin-unverified:agent/5421-*',
+        branchOriginVerified: false,
+        unverifiedAuthors: [EMAIL_BENIGNO],
+    });
+    assert.match(q, new RegExp(EMAIL_BENIGNO.replace('.', '\.')));
+    assert.equal(contarBackticks(q) % 2, 0);
+    assert.equal(tieneLinkClickeable(q), false);
+    assert.doesNotMatch(q, /rama ajena/i);
+});
+
+test('CA-13 — el bot de GitHub NO se descarta y conserva el wording de configuración (anti-regresión CA-8)', () => {
+    // `guru` detectó que la regex propuesta por el rechazo descartaba este
+    // email legítimo (está en PIPELINE_COMMITTER_ALLOWLIST). Descartarlo dejaría
+    // `unverifiedAuthors` vacío y el texto caería a "posible rama ajena", que es
+    // exactamente el wording que CA-8 vino a eliminar.
+    const q = buildOperatorQuestion({
+        issue: 5421,
+        reasonStr: 'branch-origin-unverified:agent/5421-*',
+        branchOriginVerified: false,
+        unverifiedAuthors: [EMAIL_BOT_GITHUB],
+    });
+    assert.doesNotMatch(q, /rama ajena/i, 'no debe degradar al wording de procedencia sospechosa');
+    assert.match(q, /allowlist/i);
+    // Identificable pese a que `[` y `]` se neutralizan.
+    assert.match(q, /41898282\+github-actions\?bot\?@users\.noreply\.github\.com/);
+    assert.equal(contarBackticks(q) % 2, 0);
+    assert.equal(tieneLinkClickeable(q), false);
+});
+
+test('CA-12 — varios autores hostiles a la vez tampoco rompen el markup', () => {
+    const q = buildOperatorQuestion({
+        issue: 5421,
+        reasonStr: 'branch-origin-unverified:agent/5421-*',
+        branchOriginVerified: false,
+        unverifiedAuthors: [EMAIL_PHISHING, EMAIL_SILENCIADOR, EMAIL_BENIGNO],
+    });
+    assert.equal(contarBackticks(q) % 2, 0);
+    assert.equal(tieneLinkClickeable(q), false);
+    assert.match(q, /committers/, 'con más de uno el texto va en plural');
+});
+
+test('CA-12 — un autor que el saneamiento deja vacío se descarta (default cerrado)', () => {
+    // Sólo metacaracteres ⇒ tras sanear queda '' ⇒ no hay autor nombrable ⇒
+    // corresponde el lenguaje de procedencia sospechosa, no un texto roto.
+    const q = buildOperatorQuestion({
+        issue: 5421,
+        reasonStr: 'branch-origin-unverified:agent/5421-*',
+        branchOriginVerified: false,
+        unverifiedAuthors: ['```'],
+    });
+    assert.match(q, /posible rama ajena/i);
+    assert.equal(contarBackticks(q) % 2, 0);
 });

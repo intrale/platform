@@ -1040,3 +1040,79 @@ test('#5421 D1 — findIssueWorktree resuelve un worktree con path `-r2`', () =>
     assert.ok(found, 'el worktree con sufijo -r2 debe seguir siendo resoluble');
     assert.match(found.worktree, /platform\.agent-2505-delivery-r2$/);
 });
+
+// =============================================================================
+// #5421 CA-11 — saneamiento en el ORIGEN de los emails que llegan al operador.
+//
+// El email sale de `git log --format` sobre una rama REMOTA arbitraria: es
+// input no confiable que termina interpolado en un mensaje Markdown de
+// Telegram. `extractUnverifiedAuthors` sólo debe devolver strings con forma
+// segura de email y descartar el resto (default cerrado).
+//
+// Ojo con la trampa que detectó `guru`: el charset NO puede ser el "clásico"
+// sin corchetes, porque descartaría emails de bots de GitHub que son legítimos
+// y están en la propia allowlist del pipeline. Descartarlos dejaría
+// `unverifiedAuthors` vacío y el texto caería al wording de "posible rama
+// ajena" — o sea, se arreglaría la inyección rompiendo CA-8.
+// =============================================================================
+
+const { MAX_EMAIL_LENGTH } = require('../worktree-resolver');
+
+test('#5421 CA-11 — descarta el email de PHISHING con link Markdown embebido', () => {
+    assert.deepEqual(
+        extractUnverifiedAuthors([
+            'author-not-allowlisted:a`[Actualizar credenciales](https://evil.tld/phish)`b@x.io',
+        ]),
+        [],
+    );
+});
+
+test('#5421 CA-11 — descarta el email SILENCIADOR con backtick suelto', () => {
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:a`b@x.io']), []);
+});
+
+test('#5421 CA-11 — descarta payloads sin forma de email (espacios, saltos, sin arroba)', () => {
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:no-tiene-arroba']), []);
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:hola mundo@x.io']), []);
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:a@x.io\nb@y.io']), []);
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:*bold*@x.io']), []);
+});
+
+test('#5421 CA-11 — descarta por tope de longitud (RFC 5321: 254)', () => {
+    const largo = `${'a'.repeat(70)}@${'b'.repeat(200)}.io`;
+    assert.ok(largo.length > MAX_EMAIL_LENGTH, 'el fixture debe superar el tope');
+    assert.deepEqual(extractUnverifiedAuthors([`author-not-allowlisted:${largo}`]), []);
+});
+
+test('#5421 CA-11 — ACEPTA el bot de GitHub con corchetes (anti-regresión de CA-8)', () => {
+    // Está hardcodeado en PIPELINE_COMMITTER_ALLOWLIST: es forma legítima.
+    const bot = '41898282+github-actions[bot]@users.noreply.github.com';
+    assert.deepEqual(extractUnverifiedAuthors([`author-not-allowlisted:${bot}`]), [bot]);
+});
+
+test('#5421 CA-11 — ACEPTA los emails legítimos que ya usaba el pipeline', () => {
+    for (const email of [
+        'backend-dev-agent@intrale',
+        'noreply@anthropic.com',
+        'android-dev-agent@intrale',
+        'un_agente@sub.dominio.com',
+        "o'brien@intrale.com",
+    ]) {
+        assert.deepEqual(
+            extractUnverifiedAuthors([`author-not-allowlisted:${email}`]),
+            [email],
+            `debería aceptar ${email}`,
+        );
+    }
+});
+
+test('#5421 CA-11 — un email hostil no arrastra a los legítimos de la misma tanda', () => {
+    assert.deepEqual(
+        extractUnverifiedAuthors([
+            'author-not-allowlisted:a`b@x.io',
+            'author-not-allowlisted:backend-dev-agent@intrale',
+            'no-commits-on-branch-or-fetch-empty',
+        ]),
+        ['backend-dev-agent@intrale'],
+    );
+});
