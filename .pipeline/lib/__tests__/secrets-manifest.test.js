@@ -504,8 +504,15 @@ test('ninguna entrada con lector real en el repo puede declararse no_consumer', 
     findEnvVarReaders('TELEGRAM_LEO_OPERATOR_CHAT_ID', { files: sources }),
     [
       '.pipeline/delivery.js',
+      // #5628 sumo dos lectores fail-closed que el manifiesto no declaraba:
+      // el ancla de ruteo privado (notify-telegram.js:83) y el destino de los
+      // avisos privados de la ventana vault (vault-shadow-metrics.js:293,302).
+      // El ancla se actualiza junto con `consumers` en el manifiesto: no es
+      // ruido del barrido, es superficie nueva que hay que declarar.
+      '.pipeline/lib/notify-telegram.js',
       '.pipeline/lib/operator-gate.js',
       '.pipeline/lib/telegram-notifier.js',
+      '.pipeline/lib/vault-shadow-metrics.js',
       '.pipeline/pulpo.js',
     ],
   );
