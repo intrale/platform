@@ -246,26 +246,77 @@ test('SEC-1: el valor del secreto no aparece en evaluate, formatAlert ni el JSON
   assert.equal(sh.evaluate.length <= 4, true);
 });
 
-test('CA-7d/SEC-6: la salida no lleva prefijo, longitud ni hash del valor', () => {
-  const VALOR = 'GOCSPX-abcdef0123456789';
-  const dir = tmpDir('ca7d');
+// Reloj fijo: `evaluate` embebe `ts` ISO en la salida, y buscar un numero suelto
+// ahi adentro convierte el assert en un detector de relojes. Ver el bloque de
+// abajo.
+const RELOJ_FIJO = '2026-08-06T00:00:00.000Z';
+
+const NOMBRE_SECRETO = 'google_drive.oauth_client_secret';
+// `loadResult.hydrated` lleva ENV VARS, no nombres de secreto (ver evaluate()).
+const ENV_VAR_SECRETO = 'GOOGLE_OAUTH_CLIENT_SECRET';
+
+/**
+ * Evalua una unica entrada cuyo valor en el store es `valor`, con reloj fijo.
+ * Cubre los DOS estados que emiten motivo distinto: `ok` (hidratado) y
+ * `chain_broken` (en el store pero sin llegar al ambiente). Sin el caso `ok` la
+ * rama sana de `motivo` quedaba sin cubrir y una fuga ahi pasaba inadvertida.
+ */
+function salidasDe(valor, label) {
+  const dir = tmpDir(label);
   const storePath = path.join(dir, 'credentials.json');
-  fs.writeFileSync(storePath, JSON.stringify({ google_drive: { oauth_client_secret: VALOR } }));
+  fs.writeFileSync(storePath, JSON.stringify({ google_drive: { oauth_client_secret: valor } }));
 
   const manifest = manifiestoFake([entrada({
-    name: 'google_drive.oauth_client_secret', service: 'google_drive', env_var: 'GOOGLE_OAUTH_CLIENT_SECRET',
+    name: NOMBRE_SECRETO, service: 'google_drive', env_var: ENV_VAR_SECRETO,
   })]);
-  const ev = sh.evaluate(cargaFake(), manifest, sh.collectPresence({ manifest, storePath, env: {} }));
-  // Camino completo de salida, incluido el que viaja por `motivo:` → YAML →
-  // GitHub → Telegram (el repo es PUBLICO).
-  const salidas = [JSON.stringify(ev), sh.formatAlert(ev), sh.formatSummary(ev)];
+  const presence = sh.collectPresence({ manifest, storePath, env: {} });
+
+  const salidas = [];
+  const evs = [];
+  for (const carga of [cargaFake(), cargaFake({ hydrated: [ENV_VAR_SECRETO] })]) {
+    const ev = sh.evaluate(carga, manifest, presence, { now: RELOJ_FIJO });
+    evs.push(ev);
+    // Camino completo de salida, incluido el que viaja por `motivo:` → YAML →
+    // GitHub → Telegram (el repo es PUBLICO).
+    salidas.push(JSON.stringify(ev), sh.formatAlert(ev), sh.formatSummary(ev));
+  }
+  return { evs, salidas };
+}
+
+test('CA-7d/SEC-6: el fixture cubre los dos estados con motivo propio', () => {
+  // Guarda del guard: si un refactor hace que ambas cargas caigan en el mismo
+  // estado, las aserciones de fuga de abajo dejarian de cubrir una rama sin que
+  // nadie se entere.
+  const { evs } = salidasDe('GOCSPX-abcdef0123456789', 'ca7d-cobertura');
+  assert.deepEqual(evs.map((e) => e.entries[0].state), ['chain_broken', 'ok']);
+});
+
+test('CA-7d/SEC-6: la salida no lleva prefijo, longitud ni hash del valor', () => {
+  const VALOR = 'GOCSPX-abcdef0123456789';
+  const { salidas } = salidasDe(VALOR, 'ca7d');
 
   for (const out of salidas) {
     assert.equal(out.includes(VALOR), false, 'valor completo');
     assert.equal(out.includes('GOCSPX-'), false, 'prefijo del valor');
-    assert.equal(out.includes(String(VALOR.length)), false, 'longitud exacta del valor');
     assert.equal(/[a-f0-9]{32,}/i.test(out), false, 'cualquier hash del valor');
+    // La longitud se afirma en contexto, no como numero suelto: la salida
+    // embebe `ts` ISO, y un `includes('23')` pelado matchea el timestamp
+    // (hora 23, dia 23, minuto/segundo :23, milisegundos .x23) en ~9% de las
+    // corridas — flaky por reloj, no por fuga. Mismo criterio que
+    // `vault-shadow-status.test.js` (CANARIO). Rebote 1 de #5243.
+    assert.equal(/(longitud|length|len=|largo|chars|caracteres)/i.test(out), false,
+      'la salida ni siquiera habla de longitudes');
   }
+});
+
+test('CA-7d/SEC-6: la salida es identica para valores de distinto largo y prefijo', () => {
+  // Prueba diferencial: si algun derivado del valor (longitud, prefijo, hash,
+  // entropia) se filtrara a la salida, dos secretos distintos producirian bytes
+  // distintos. Es mas fuerte que buscar substrings y no puede volverse flaky.
+  const A = salidasDe('GOCSPX-abcdef0123456789', 'ca7d-a').salidas;          // 23 chars
+  const B = salidasDe('otro-secreto-de-un-largo-bien-distinto-9876543210', 'ca7d-b').salidas; // 48 chars
+
+  assert.deepEqual(A, B, 'la salida depende del valor del secreto: hay una fuga');
 });
 
 // -----------------------------------------------------------------------------
