@@ -35,6 +35,14 @@ const FIELDS = [
   'updatedAt',
   'headRefName',
   'title',
+  // #5337 CA-3 — estado de merge, para distinguir conflicto real (DIRTY) de
+  // review humana exigida por CODEOWNERS/ruleset (BLOCKED). Van en la MISMA
+  // llamada que ya se hacía: cero requests extra a GitHub.
+  // Ojo: `mergeable` lo calcula GitHub de forma asíncrona y devuelve UNKNOWN
+  // mientras tanto — quien lo consuma debe tratar UNKNOWN como "no concluyente",
+  // nunca como veredicto (ver human-block-triggers.js, R2).
+  'mergeable',
+  'mergeStateStatus',
 ].join(',');
 
 /**
