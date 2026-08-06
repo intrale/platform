@@ -160,10 +160,14 @@ const CALLEES_CHILD = /\b(spawnSync|spawn|execFileSync|execSync|execFile|exec|fo
  * distingue `execSync(..., { env: adbEnv })` (child real) de un `env: process.env`
  * que es sólo un argumento de una función pura (ej. shouldEvaluateGate0).
  */
-function calleeDeChild(i) {
+function calleeDeChild(i, col) {
     // Se reconstruye desde LINEAS (no por offsets sobre FUENTE): el archivo tiene
     // finales de línea CRLF y cualquier aritmética de offsets se desincroniza.
-    const slice = LINEAS.slice(Math.max(0, i - 40), i).join('\n');
+    // Incluye la PROPIA línea hasta la columna del `env:` — si no, un spawn de una
+    // sola línea (`spawn(x, [], { env: ... })`) no se detectaría como child y el
+    // sitio se escaparía del barrido por completo.
+    const previas = LINEAS.slice(Math.max(0, i - 40), i).join('\n');
+    const slice = `${previas}\n${LINEAS[i].slice(0, col)}`;
     let encontrado = null;
     CALLEES_CHILD.lastIndex = 0;
     let m;
@@ -183,10 +187,11 @@ function calleeDeChild(i) {
 function enumerarSitiosEnv() {
     const sitios = [];
     LINEAS.forEach((linea, i) => {
-        if (!/\benv:\s*\S/.test(linea)) return;
+        const m = /\benv:\s*\S/.exec(linea);
+        if (!m) return;
         // `processEnv:` / `cleanEnv:` etc. no son la opción `env` de spawn.
         if (/[A-Za-z0-9_]env:\s*\S/.test(linea)) return;
-        const callee = calleeDeChild(i);
+        const callee = calleeDeChild(i, m.index);
         if (!callee) return; // no es opción de un child: función pura, objeto suelto, etc.
         sitios.push({ linea: i + 1, texto: linea.trim(), expr: expresionEnv(linea), callee });
     });
