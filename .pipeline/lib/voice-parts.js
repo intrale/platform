@@ -15,8 +15,14 @@
 // El Commander, en su tick de reconciliación:
 //   1. lee los recibos por-parte y marca la parte confirmada en el estado, y
 //   2. barre los estados: si falta una parte tras el timeout la reenvía (tope N
-//      reintentos + backoff, misma política que texto — #4082); si se agotan los
-//      reintentos avisa al usuario en el chat del padre (nunca hueco silencioso).
+//      reintentos + backoff, política PROPIA de voz — `telegram_voice_outbound`,
+//      #5573); si se agotan los reintentos avisa al usuario en el chat del padre
+//      (nunca hueco silencioso).
+//
+// #5573 — El sweep además distingue "todavía en vuelo" de "perdido": una parte
+// cuyo dropfile sigue vivo en la cola de svc-telegram NO se reenvía (ver
+// `scanInFlightParts` + `planSweep(opts.inFlight)`), con un techo absoluto para
+// que un job atascado no suprima la entrega para siempre.
 //
 // Reglas fail-closed (espeja telegram-receipt.js):
 //   - Una parte se marca `confirmed` SOLO por un recibo `enviado` con message_id
@@ -79,6 +85,17 @@ function isValidState(obj) {
   // #4903 — `dedupeKey` es OPCIONAL (backward-compat con estados previos que no lo
   // llevan). Si está presente debe ser string no vacío; cualquier otra cosa → inválido.
   if (obj.dedupeKey != null && (typeof obj.dedupeKey !== 'string' || obj.dedupeKey.length === 0)) return false;
+  // #5573 — `firstEnqueuedAt` por parte es OPCIONAL (R10: retrocompat con los
+  // estados YA en disco al desplegar; invalidarlos los mandaría a cuarentena y
+  // perdería entregas en vuelo). Si está presente debe ser string no vacío; el
+  // consumidor cae a `enqueuedAt` cuando falta.
+  if (obj.parts && typeof obj.parts === 'object' && !Array.isArray(obj.parts)) {
+    for (const p of Object.values(obj.parts)) {
+      if (!p || typeof p !== 'object') continue;
+      if (p.firstEnqueuedAt != null
+        && (typeof p.firstEnqueuedAt !== 'string' || p.firstEnqueuedAt.length === 0)) return false;
+    }
+  }
   return true;
 }
 
@@ -216,9 +233,15 @@ function buildInitialState({ correlationId, partTotal, chatId, parts, now, dedup
   for (const p of (parts || [])) {
     const idx = rec.coercePartInt(p.partIndex);
     if (idx == null || idx >= pt) continue; // acotado (SEC-R2)
+    const enqueuedAt = typeof p.enqueuedAt === 'string' && p.enqueuedAt.length > 0 ? p.enqueuedAt : createdAt;
     state.parts[String(idx)] = {
       path: typeof p.path === 'string' ? p.path : null,
-      enqueuedAt: typeof p.enqueuedAt === 'string' && p.enqueuedAt.length > 0 ? p.enqueuedAt : createdAt,
+      enqueuedAt,
+      // #5573 — ancla INMUTABLE del primer encolado. `enqueuedAt` se pisa en cada
+      // reenvío (planSweep), así que no sirve ni para el techo absoluto de
+      // supresión por "en vuelo" (SEC-A) ni para medir la latencia real de entrega
+      // punta a punta. `firstEnqueuedAt` no se toca nunca después de nacer.
+      firstEnqueuedAt: enqueuedAt,
       retries: 0,
       // #4903 — una parte puede nacer ya `confirmed` cuando se sabe que fue
       // entregada en una pasada anterior (dedup): no se reenvía, solo se contabiliza.
@@ -276,6 +299,17 @@ function recordPartConfirmation({ pipelineDir, correlationId, partIndex }) {
 // Terminal:
 //   - todas confirmadas → terminal, sin aviso.
 //   - ninguna pendiente y hay fallidas → terminal + aviso consolidado (una vez).
+//
+// #5573 — Señal EN VUELO. El backoff solo mide "cuánto hace que encolé", no
+// distingue "perdido" de "todavía en la cola de svc-telegram". Con la latencia
+// real de un `.ogg` (~62-74s medidos) contra un backoff de texto de 5s, el sweep
+// disparaba reenvíos sobre envíos aún en vuelo → el operador recibía el mismo
+// audio 2-4 veces. `opts.inFlight` (Set de partIndex con dropfile vivo en la
+// cola) suprime el reenvío de esas partes. `opts.inFlightMaxMs` es el TECHO
+// ABSOLUTO de esa supresión, medido desde `firstEnqueuedAt`: sin él, un job
+// atascado en `trabajando/` (nada lo barre con el servicio vivo — `recoverOrphans`
+// corre SOLO al boot) suprimiría el reenvío para siempre, degradando la garantía
+// de #4750 a un hueco silencioso permanente.
 // -----------------------------------------------------------------------------
 function planSweep(state, opts = {}) {
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
@@ -283,6 +317,10 @@ function planSweep(state, opts = {}) {
   const base = Number.isFinite(opts.backoffBaseMs) ? opts.backoffBaseMs : 5000;
   const maxBackoff = Number.isFinite(opts.backoffMaxMs) ? opts.backoffMaxMs : 300000;
   const staleTtl = Number.isFinite(opts.staleTtlMs) ? opts.staleTtlMs : 86400000;
+  // #5573 — partes con dropfile vivo en `pendiente/` ∪ `trabajando/`. Ausente o
+  // mal tipado → Set vacío = comportamiento previo (nunca supresión por accidente).
+  const inFlight = opts.inFlight instanceof Set ? opts.inFlight : new Set();
+  const inFlightMaxMs = Number.isFinite(opts.inFlightMaxMs) ? opts.inFlightMaxMs : 600000;
 
   // Clon defensivo: no mutamos el estado del caller.
   const s = JSON.parse(JSON.stringify(state));
@@ -301,6 +339,21 @@ function planSweep(state, opts = {}) {
     allConfirmed = false;
 
     if (stale) { failedIdx.push(i); continue; }
+
+    // #5573 / SEC-A — techo absoluto de la supresión por "en vuelo", anclado en el
+    // PRIMER encolado (no en `enqueuedAt`, que los reenvíos pisan). R10: si el
+    // estado viene de antes del fix y no trae `firstEnqueuedAt`, cae a `enqueuedAt`.
+    const firstMs = Date.parse(p.firstEnqueuedAt || p.enqueuedAt);
+    const heldTooLong = Number.isFinite(firstMs) && (now - firstMs) >= inFlightMaxMs;
+
+    if (inFlight.has(i) && !heldTooLong) {
+      // Sigue en la cola: NO es una pérdida. No se reencola, NO se incrementa
+      // `retries` ni se pisa `enqueuedAt` (hacerlo corrompe el backoff y la
+      // métrica de latencia). Cuenta como pendiente → el estado no cierra terminal
+      // ni dispara el aviso de faltante prematuramente.
+      anyPending = true;
+      continue;
+    }
 
     const retries = Number.isInteger(p.retries) ? p.retries : 0;
     const backoff = Math.min(maxBackoff, base * Math.pow(2, retries));
@@ -364,6 +417,62 @@ function formatMissingNotice(partNumbers, partTotal) {
 }
 
 // -----------------------------------------------------------------------------
+// #5573 — scanInFlightParts: qué partes de audio siguen VIVAS en la cola de
+// `svc-telegram`. I/O (NO pura, a diferencia de `planSweep`, que recibe el Set ya
+// armado y sigue siendo el activo testeable del módulo).
+//
+// "En vuelo" ≡ existe un dropfile de esa parte en `pendiente/` ∪ `trabajando/`.
+// `fallido/` NO cuenta: es terminal hasta el barredor de boot ⇒ pérdida real, y
+// el reenvío debe ocurrir (CA-3, no se debilita #4750).
+//
+// UNIÓN DE TRES LECTURAS, en orden `pendiente → trabajando → pendiente`. La regla
+// es leer el ORIGEN antes que el DESTINO, y la cola se mueve en AMBOS sentidos
+// (`pendiente→trabajando` al tomar el job; `trabajando→pendiente` al reintentar
+// con `_nextRetryAt`). Con un solo par de lecturas, un archivo que se mueve entre
+// medio no aparece en ninguna → falso "perdido" → justo el duplicado que este
+// issue viene a matar. Con las tres, un move en cualquier dirección cae en al
+// menos una lectura: es imposible que se escape por el race.
+//
+// Devuelve Map<correlationId, Set<partIndex>>.
+// -----------------------------------------------------------------------------
+function scanInFlightParts({ pipelineDir }) {
+  const base = path.join(pipelineDir, 'servicios', 'telegram');
+  const pendienteDir = path.join(base, 'pendiente');
+  const trabajandoDir = path.join(base, 'trabajando');
+  const map = new Map();
+
+  for (const dir of [pendienteDir, trabajandoDir, pendienteDir]) {
+    let names;
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      // SEC-C / R2 — un error de I/O NO cuenta como "en vuelo". Fail-OPEN hacia la
+      // entrega (a lo sumo un duplicado), fail-CLOSED hacia la confirmación. Tratar
+      // un readdir roto como "en vuelo" convertiría una falla de disco en supresión
+      // de entrega, que es exactamente el hueco silencioso que #4750 prohíbe.
+      continue;
+    }
+    for (const name of names) {
+      // Única lectura del nombre. Un dropfile que no matchea (texto, o formato
+      // legacy pre-#5573 sin cid) se ignora → degrada al comportamiento actual
+      // (a lo sumo un duplicado), NUNCA a supresión. R10: cubre la ventana de deploy.
+      const m = /^\d+-voice-(.+)-p(\d+)\.json$/.exec(name);
+      if (!m) continue;
+      const cid = m[1];
+      const idx = rec.coercePartInt(m[2]);
+      // SEC-B / R3 — `pendiente/` es un bus con muchos escritores: un dropfile
+      // forjado podría suprimir la parte de una respuesta en vuelo. Se valida
+      // SIEMPRE. El nombre no es fuente de verdad ni se concatena a ningún
+      // `path.join` de salida: sólo se usa para matchear contra el estado.
+      if (!rec.isValidCorrelationId(cid) || idx == null) continue;
+      if (!map.has(cid)) map.set(cid, new Set());
+      map.get(cid).add(idx);
+    }
+  }
+  return map;
+}
+
+// -----------------------------------------------------------------------------
 // sweepVoiceStates — orquesta el barrido de TODOS los estados (I/O + DI). Lee
 // cada estado, corre `planSweep`, ejecuta los reenvíos vía `enqueue(...)`, avisa
 // vía `notify(...)` y archiva los terminales. Las dependencias se inyectan para
@@ -384,6 +493,13 @@ function sweepVoiceStates({ pipelineDir, now, config = {}, enqueue, notify, logF
   const nowMs = Number.isFinite(now) ? now : Date.now();
   let resent = 0; let notified = 0; let closed = 0; let quarantined = 0;
 
+  // #5573 / SEC-G — escaneo de la cola UNA SOLA VEZ por barrido (nunca por estado)
+  // y sólo si hay estados de voz vivos: sin esto, cada tick pagaría 3 readdir por
+  // estado. `files.length === 0` ya devolvió arriba si el dir no existe.
+  const inFlightByCid = files.length > 0
+    ? (() => { try { return scanInFlightParts({ pipelineDir }); } catch { return new Map(); } })()
+    : new Map();
+
   for (const f of files) {
     const correlationId = f.replace(/\.json$/, '');
     const state = readState(dir, correlationId);
@@ -403,6 +519,9 @@ function sweepVoiceStates({ pipelineDir, now, config = {}, enqueue, notify, logF
       backoffBaseMs: config.backoff_base_ms,
       backoffMaxMs: config.backoff_max_ms,
       staleTtlMs: config.stale_ttl_ms,
+      // #5573 — partes de ESTE correlationId todavía vivas en la cola.
+      inFlight: inFlightByCid.get(state.correlationId) || new Set(),
+      inFlightMaxMs: config.in_flight_max_ms,
     });
 
     for (const r of plan.resends) {
@@ -460,6 +579,8 @@ module.exports = {
   planSweep,
   formatMissingNotice,
   sweepVoiceStates,
+  // #5573 — señal "en vuelo" (anti reenvío sobre envío no perdido)
+  scanInFlightParts,
   // #4903 — dedup cross-retry
   computeDedupeKey,
   isFullyDelivered,

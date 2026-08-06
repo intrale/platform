@@ -866,3 +866,15 @@ request, y el request lleva el secreto. La verificación posterior lee metadata
 carga en forma perezosa dentro del adapter real, así que la suite corre sin
 tenerlo instalado. El camino de lectura sigue sin SDK: usa la AWS CLI y
 `secret-vault-sync-5353.test.js` lo sigue verificando.
+
+## Interfaz de operador — `vault-provision.js`, #5466
+
+El port de escritura de #5465 no se invoca a mano: su composition root es la CLI
+`.pipeline/tools/vault-provision.js`, que cablea la identidad de provisión (STS),
+la CMK explícita y la capability de sobrescritura, y recibe el valor sin
+exponerlo por argumentos, entorno, historial, procesos, temporales ni logs.
+
+El **runbook operativo** — invocación segura, estados, códigos de salida,
+recuperación y política de rotación en origen — vive en
+`docs/pipeline/vault-provisioning.md`. Lo que sigue acá es el diseño; lo que se
+ejecuta a mano está allá.
