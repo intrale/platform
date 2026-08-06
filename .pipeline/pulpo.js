@@ -9601,7 +9601,23 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // cada vuelta y el reloj del watchdog nunca avanzaba: con la cuota agotada el
   // aviso quedaba MUDO para siempre, que es exactamente el escenario que este
   // issue viene a cerrar (CA-1/CA-2, causa `quota`).
-  marcarDespachoEfectivo({ issue, skill, fase, pipeline });
+  //
+  // #5400 (rev-6, B1 residual) — Y no alcanza con llegar hasta acá: hay que
+  // comprobar que el spawn PRODUJO un proceso. Cuando el ejecutable no existe
+  // (`ENOENT` del launcher de Claude / del script determinístico), `spawn` NO
+  // tira sincrónicamente: devuelve un `ChildProcess` con `pid === undefined` y
+  // emite `'error'` de forma asíncrona. Sin esta guarda quedaba abierta la MISMA
+  // puerta que B1 cerró, sólo que una línea más abajo: el workfile vuelve a
+  // `pendiente/`, el mainLoop lo reintenta cada ciclo, y cada reintento
+  // re-estampaba el reloj del watchdog dejándolo mudo para siempre. La estampa
+  // se hace SÓLO con `pid` real, que es lo único que prueba que el agente
+  // arrancó de verdad.
+  if (child && child.pid) {
+    marcarDespachoEfectivo({ issue, skill, fase, pipeline });
+  } else {
+    log('lanzamiento', `⚠️ ${skill}:#${issue} el spawn no devolvió PID — NO se estampa despacho efectivo ` +
+      '(el reloj del watchdog debe seguir corriendo)');
+  }
   const useDeterministicSkill = (launchResult.provider === 'deterministic');
   if (useDeterministicSkill) {
     log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);

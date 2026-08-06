@@ -142,11 +142,11 @@ test('`launched` de reserveSlot no prueba que se haya lanzado un agente', () => 
 test('la estampa de despacho efectivo se hace en el punto del spawn, no en los call sites', () => {
     const src = fs.readFileSync(PULPO, 'utf8');
 
-    // (a) Está inmediatamente después del spawn real.
+    // (a) Está inmediatamente después del spawn real, y GUARDADA por el PID.
     assert.ok(
-        /const child = launchResult\.child;[\s\S]{0,1400}?marcarDespachoEfectivo\(\{ issue, skill, fase, pipeline \}\)/
+        /const child = launchResult\.child;[\s\S]{0,2600}?if \(child && child\.pid\) \{\s*marcarDespachoEfectivo\(\{ issue, skill, fase, pipeline \}\);/
             .test(src),
-        'debe estamparse justo después de `const child = launchResult.child`',
+        'debe estamparse justo después de `const child = launchResult.child`, sólo con PID real',
     );
 
     // (b) Ya NO está atada a `launched` en el call site del loop de candidatos.
@@ -167,6 +167,61 @@ test('la estampa de despacho efectivo se hace en el punto del spawn, no en los c
     const estampas = src.match(/^\s*marcarDespachoEfectivo\(/gm) || [];
     assert.equal(estampas.length, 2,
         `sólo el spawn y el ejecutor determinístico estampan; encontradas ${estampas.length}`);
+});
+
+// ─── 3 · B1 residual: un spawn sin PID no es un despacho ───────────────────
+
+test('un spawn que no devuelve PID no estampa despacho y el watchdog sigue alertando', () => {
+    // `spawn` NO tira sincrónicamente cuando falta el ejecutable: devuelve un
+    // `ChildProcess` con `pid === undefined` y emite `'error'` asíncrono. El
+    // workfile vuelve a `pendiente/` y el mainLoop reintenta cada ciclo — misma
+    // forma cíclica que la cuota agotada. Si la estampa no estuviera guardada
+    // por el PID, el reloj se resetearía en cada vuelta y el watchdog volvería a
+    // quedar mudo para siempre.
+    const inicio = 1_000_000;
+    let estado = {
+        lastMovementTs: inicio, lastStampTs: inicio,
+        lastSignature: null, lastAlertTs: 0, alertCount: 0,
+    };
+    let lastDispatchTs = inicio;
+    let alertas = 0;
+
+    for (let min = 1; min <= 180; min++) {
+        const now = inicio + min * MIN;
+
+        // El ciclo llega al spawn, pero el launcher devuelve `{ child }` sin
+        // PID. Ésta es la guarda bajo test: sólo se estampa con PID real.
+        const child = { pid: undefined };
+        if (child && child.pid) lastDispatchTs = now;
+
+        const d = wd.decide({
+            now,
+            waveKey: 7,
+            enabledCount: 5,
+            dispatching: 0,
+            cause: { declared: true, kind: 'quota', readable: true },
+            lastDispatchTs,
+            state: estado,
+            stallMinutes: 20,
+            cooldownMinutes: 30,
+            declaredCauseEscalateMinutes: 45,
+        });
+        estado = d.nextState;
+        if (d.action === 'alert') alertas++;
+    }
+
+    assert.ok(alertas > 0,
+        'un spawn fallido no puede contar como despacho: el watchdog tiene que alertar igual');
+});
+
+test('la guarda del PID está cableada en el punto del spawn', () => {
+    // Guardia de fuente: sin el `if (child && child.pid)` el test de arriba
+    // seguiría verde (ejercita la semántica, no el cableado real).
+    const src = fs.readFileSync(PULPO, 'utf8');
+    assert.ok(
+        /if \(child && child\.pid\) \{[\s\S]{0,200}?marcarDespachoEfectivo\(/.test(src),
+        'la estampa del spawn LLM debe estar guardada por `child && child.pid`',
+    );
 });
 
 test('el ejecutor determinístico del contrato de tarea también estampa despacho', () => {
