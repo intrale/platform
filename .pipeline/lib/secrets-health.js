@@ -49,6 +49,16 @@ const HEALTH_JSON_NAME = 'secrets-health.json';
  */
 const TG_BUDGET = 3600;
 
+/**
+ * Ventana de repetición del aviso cuando el estado NO cambió (rev-1 de review).
+ *
+ * El dedup por firma calla el mensaje repetido, pero un problema que persiste
+ * no puede volverse invisible: pasada esta ventana el aviso vuelve a salir una
+ * vez. 24 h es el orden de magnitud del vecino (`lastConfigCorruptionAlertMs`
+ * en `pulpo.js`) llevado a un canal que se lee una vez por día.
+ */
+const ALERT_REPEAT_MS = 24 * 60 * 60 * 1000;
+
 /** Estados posibles de una entrada (CA-4). */
 const STATE = Object.freeze({ OK: 'ok', MISSING: 'missing', CHAIN_BROKEN: 'chain_broken' });
 
@@ -251,21 +261,58 @@ function loadManifest(opts = {}) {
 }
 
 /**
+ * Veredictos de `loadIntoEnv` que significan "el resolver lo resolvió y el
+ * valor es utilizable". Se derivan del enum del dueño del store
+ * (`credentials.SOURCE`), nunca de literales propios: la lista de fuentes
+ * válidas cambió dos veces (#5353 sumó `vault`, #5635 sumó `file-bootstrap`) y
+ * copiarla acá es la misma clase de duplicación que prohíbe CA-4b.
+ */
+const SRC = credentials.SOURCE || {};
+const VEREDICTOS_RESUELTOS = Object.freeze(new Set([
+  SRC.VAULT, SRC.FILE_BOOTSTRAP, SRC.CANONICAL, SRC.LEGACY, SRC.ENV_PREEXISTING,
+].filter(Boolean)));
+
+/**
  * Clasifica la PRESENCIA de cada entrada del manifiesto sin dejar salir ningún
- * valor. Es la única función del módulo que lee el store y `process.env`.
+ * valor.
+ *
+ * REGLA DE AUTORIDAD (rev-1 de review) — para `source: store` el veredicto lo
+ * da el RESOLVER, no este módulo. `source: store` no dice "está en el archivo
+ * canónico": dice "lo resuelve el store canónico", y quién lo materializa es
+ * `credentials.loadIntoEnv`, que desde #5353/#5635 puede hacerlo contra el
+ * vault. Con `vault.enabled: true` la ausencia del archivo local es el estado
+ * ESPERADO (`credentials.js`, textual), así que decidir la presencia leyendo
+ * `CANONICAL_PATH` clasificaría las 21 entradas `store` como ausentes, daría
+ * `alert` sobre los dos secretos de Telegram y haltearía el pipeline sobre
+ * secretos que SÍ están y SÍ resuelven — un halt permanente disparado por un
+ * cambio de CONFIG, no de código (#5073).
+ *
+ * Por eso `loadResult.sources[env_var]` manda: es el veredicto por variable que
+ * ya distingue `vault`/`canonical`/`legacy`/`file-bootstrap`/`env-preexisting`
+ * de `missing`/`empty`. La lectura del store queda como FALLBACK, y sólo para
+ * las entradas sobre las que el resolver no se pronuncia: las `deferred`
+ * (`aws.*`, `multimedia.*`), que no están en su mapping porque su consumidor
+ * las pide más tarde.
  *
  * La clasificación de "valor no utilizable" se delega en
  * `credentials.isPlaceholderOrEmpty` — la función ya exportada por el dueño del
  * store. Declarar acá una expresión regular propia sería duplicar el criterio
  * y dejar que derive: exactamente el fail-open de #4907/#4912 (CA-4b).
  *
- * @param {{ manifest?: Object, storePath?: string, env?: Object }} [opts]
+ * @param {{ manifest?: Object, storePath?: string, env?: Object, loadResult?: Object }} [opts]
  * @returns {{ present: string[], placeholder: string[], absent: string[] }}
  */
 function collectPresence(opts = {}) {
   const manifest = opts.manifest || loadManifest();
   const env = opts.env || process.env;
   const out = { present: [], placeholder: [], absent: [] };
+
+  // Veredicto por variable del resolver (UX-2 de #5353). Sin `loadResult` el
+  // módulo se comporta como antes: cae siempre al fallback de disco.
+  const lr = opts.loadResult;
+  const veredictos = (lr && typeof lr === 'object' && lr.sources && typeof lr.sources === 'object')
+    ? lr.sources
+    : null;
 
   let store = null;
   const storePath = opts.storePath || credentials.CANONICAL_PATH;
@@ -279,11 +326,21 @@ function collectPresence(opts = {}) {
     const name = String(entry && entry.name ? entry.name : '');
     if (!name) continue;
 
-    // `source: store` → el valor vive en el store canónico.
+    // `source: store` → lo resuelve el store canónico (hoy: vault, archivo
+    // canónico, legacy o ventana de bootstrap). Manda el veredicto del resolver.
     // `source: env` / `external` → el store no lo conoce; la presencia se
     // comprueba contra el ambiente ya hidratado (gh CLI, R2, etc).
     let raw;
     if (entry.source === 'store') {
+      const veredicto = (veredictos && entry.env_var) ? veredictos[entry.env_var] : undefined;
+      if (veredicto !== undefined) {
+        if (VEREDICTOS_RESUELTOS.has(veredicto)) { out.present.push(name); continue; }
+        if (veredicto === SRC.EMPTY) { out.placeholder.push(name); continue; }
+        if (veredicto === SRC.MISSING) { out.absent.push(name); continue; }
+        // Veredicto desconocido (el enum del resolver creció y este módulo
+        // todavía no lo conoce): no se inventa una clasificación, se cae al
+        // fallback de disco.
+      }
       raw = store ? credentials.getNested(store, name) : undefined;
     } else {
       raw = entry.env_var ? env[entry.env_var] : undefined;
@@ -605,6 +662,78 @@ function writeHealthJson(evaluation, targetPath) {
 }
 
 // -----------------------------------------------------------------------------
+// Dedup del aviso (rev-1 de review)
+// -----------------------------------------------------------------------------
+
+/**
+ * Firma del estado NEGATIVO de una evaluación. Es lo que decide si el aviso de
+ * Telegram es una novedad o el mismo mensaje de siempre.
+ *
+ * Deliberadamente NO incluye `ts` ni los contadores: si entra un secreto nuevo
+ * al manifiesto en estado `ok`, el operador no tiene que enterarse por una
+ * alerta. Sí incluye `halt`, porque pasar de "reporta" a "frena" es un cambio
+ * que el operador tiene que ver aunque el inventario de faltantes no cambie.
+ *
+ * Funciona igual sobre una evaluación fresca y sobre el payload ya escrito en
+ * `secrets-health.json`: ambos traen `name`/`state`/`level` por entrada.
+ *
+ * @param {Object} report evaluación o payload previo
+ * @returns {string}
+ */
+function alertSignature(report) {
+  const entries = (report && Array.isArray(report.entries)) ? report.entries : [];
+  const partes = entries
+    .filter((e) => e && e.level && e.level !== LEVEL.OK)
+    .map((e) => `${e.name}:${e.state}:${e.level}`)
+    .sort();
+  return `${report && report.halt ? 'halt' : 'nohalt'}|${partes.join(',')}`;
+}
+
+/**
+ * Lee el reporte anterior. Best-effort: cualquier problema devuelve `null`, que
+ * el dedup interpreta como "no hay con qué comparar" → se avisa.
+ *
+ * @param {string} jsonPath
+ * @returns {Object|null}
+ */
+function readPreviousHealth(jsonPath) {
+  try {
+    if (!jsonPath || !fs.existsSync(jsonPath)) return null;
+    const parsed = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ¿Corresponde mandar el aviso por Telegram?
+ *
+ * Se avisa cuando hay NOVEDAD: no hay reporte previo, o la firma cambió. Si el
+ * estado es idéntico, se calla — con una ventana de repetición como red de
+ * seguridad, para que un problema que persiste no se vuelva invisible para
+ * siempre (un secreto faltante que nadie repone tiene que volver a sonar, pero
+ * una vez por día, no una vez por reinicio).
+ *
+ * @param {Object} evaluation evaluación fresca
+ * @param {Object|null} previous payload del reporte anterior
+ * @param {number} nowMs
+ * @returns {{ send: boolean, reason: string }}
+ */
+function shouldNotify(evaluation, previous, nowMs) {
+  if (!previous) return { send: true, reason: 'sin-reporte-previo' };
+  if (alertSignature(previous) !== alertSignature(evaluation)) {
+    return { send: true, reason: 'cambio-de-estado' };
+  }
+  const prevMs = Date.parse(previous.ts);
+  if (!Number.isFinite(prevMs)) return { send: true, reason: 'reporte-previo-sin-fecha' };
+  if (!Number.isFinite(nowMs) || (nowMs - prevMs) >= ALERT_REPEAT_MS) {
+    return { send: true, reason: 'ventana-vencida' };
+  }
+  return { send: false, reason: 'sin-cambios' };
+}
+
+// -----------------------------------------------------------------------------
 // applyHalt() — CA-5 / CA-6
 // -----------------------------------------------------------------------------
 
@@ -670,18 +799,36 @@ function applyHalt(evaluation, deps = {}) {
   }
 
   // --- 3) Artefacto para el dashboard ---
+  // El reporte ANTERIOR es el insumo del dedup del paso 4, así que hay que
+  // leerlo ANTES de pisarlo.
+  const jsonPath = deps.pipelineDir ? path.join(deps.pipelineDir, HEALTH_JSON_NAME) : null;
+  const previo = jsonPath ? readPreviousHealth(jsonPath) : null;
   try {
-    if (deps.pipelineDir) {
-      const r = writeHealthJson(evaluation, path.join(deps.pipelineDir, HEALTH_JSON_NAME));
+    if (jsonPath) {
+      const r = writeHealthJson(evaluation, jsonPath);
       res.channels.json = !!r.ok;
     }
   } catch { /* best-effort */ }
 
-  // --- 4) Telegram (best-effort, al final) ---
+  // --- 4) Telegram (best-effort, al final, y SÓLO si hay novedad) ---
+  //
+  // `applyHalt` corre en CADA boot del Pulpo, y el Pulpo reinicia seguido
+  // (watchdog, /restart, respawn). Sin dedup, un `ok:false` que no frena nada
+  // —el estado vivo de hoy: 1 faltante + 3 cadenas rotas, `halt:false`— manda
+  // el MISMO mensaje indefinidamente y entrena al operador a ignorar el canal.
+  // El vecino (`haltOnConfigCorruption`) ya se protege con un throttle en
+  // memoria; acá el dedup va por FIRMA persistida contra el reporte anterior,
+  // que es más fuerte: sobrevive al reinicio del proceso, que es justamente
+  // cuando se dispara este aviso.
+  const nowMs = typeof deps.now === 'function' ? deps.now() : Date.now();
+  const decision = shouldNotify(evaluation, previo, nowMs);
+  res.notified = false;
+  res.notify_reason = decision.reason;
   try {
-    if (typeof deps.sendTelegram === 'function') {
+    if (decision.send && typeof deps.sendTelegram === 'function') {
       deps.sendTelegram(alerta);
       res.channels.telegram = true;
+      res.notified = true;
     }
   } catch { /* best-effort */ }
 
@@ -724,7 +871,7 @@ function autoRecover(deps = {}) {
     // no queremos pisar `process.env` del Pulpo en caliente.
     const loadResult = credentials.loadIntoEnv({ env: {}, logger: () => {} });
     const manifest = loadManifest();
-    const evaluation = evaluate(loadResult, manifest, collectPresence({ manifest }));
+    const evaluation = evaluate(loadResult, manifest, collectPresence({ manifest, loadResult }));
 
     if (evaluation.halt) return { recovered: false, reason: 'sigue-faltando' };
 
@@ -763,7 +910,11 @@ function autoRecover(deps = {}) {
  */
 function evaluateFromDisk(loadResult, opts = {}) {
   const manifest = loadManifest(opts.manifestPath ? { path: opts.manifestPath } : {});
-  const presence = collectPresence({ manifest, storePath: opts.storePath, env: opts.env });
+  // `loadResult` no viaja sólo a `evaluate`: es también el veredicto de
+  // presencia de las entradas `source: store` (ver `collectPresence`).
+  const presence = collectPresence({
+    manifest, storePath: opts.storePath, env: opts.env, loadResult,
+  });
   return evaluate(loadResult, manifest, presence);
 }
 
@@ -777,6 +928,8 @@ module.exports = {
   writeHealthJson,
   loadManifest,
   collectPresence,
+  alertSignature,
+  shouldNotify,
   safeLabel,
   labelFor,
   safeText,
@@ -787,6 +940,7 @@ module.exports = {
   AUTO_RECOVERY_SOURCE,
   HEALTH_JSON_NAME,
   TG_BUDGET,
+  ALERT_REPEAT_MS,
   STATE,
   LEVEL,
   REMEDIATION,

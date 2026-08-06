@@ -222,3 +222,44 @@ test('#5399 CA-8: el copy no promete auto-levantado sobre una pausa deliberadame
     assert.ok(!/se levanta sola/i.test(msg), 'no puede prometer un auto-levantado que el gate no hace');
     assert.ok(msg.includes('/reanudar'));
 });
+
+// -----------------------------------------------------------------------------
+// #5243 rev-1 de review — toda autoría auto-levantable tiene que saber
+// explicarse al operador
+//
+// `secrets-health-halt` entró a `AUTO_LIFTABLE_SOURCES` (`partial-pause.js`)
+// pero no a `PAUSE_SOURCE_LABELS`: tras un halt por secretos el `/restart` le
+// decía al operador "pausa activa (no se pudo identificar el origen)" sobre una
+// pausa que el pipeline mismo puso y sabe explicar. El fallback genérico existe
+// para el marker que escribe un tercero, no para las autorías propias.
+// -----------------------------------------------------------------------------
+
+test('#5243: el halt por secretos se nombra por su causa, no por el fallback generico', () => {
+    const msg = pauseNotice.buildRestartNotice({
+        mode: 'pausado',
+        pauseActive: true,
+        source: 'secrets-health-halt',
+        autoLiftable: partialPause.isAutoLiftableSource('secrets-health-halt'),
+    });
+
+    assert.ok(!msg.includes(pauseNotice.PAUSE_SOURCE_LABEL_FALLBACK),
+        `el copy cae al fallback generico en vez de explicar la causa: ${msg}`);
+    assert.ok(msg.includes(pauseNotice.PAUSE_SOURCE_LABELS['secrets-health-halt']));
+    assert.ok(/secreto/i.test(msg), 'el operador tiene que saber que lo que faltaba era un secreto');
+    // Se auto-levanta al reponer el secreto: el copy no puede mandar a /reanudar
+    // ni a borrar el marker (CA-7b de #5243).
+    assert.ok(/se levanta sola/i.test(msg));
+    assertNoInstruyeBorrarMarker(msg);
+});
+
+test('#5243: ninguna autoria auto-levantable puede quedar sin copy propio', () => {
+    // Guardrail de la clase de defecto, no del caso: sumar un `source` al set de
+    // auto-levantables sin sumarle su línea de copy vuelve a dejar al operador
+    // con "no se pudo identificar el origen" sobre una pausa que el pipeline puso.
+    for (const source of partialPause.AUTO_LIFTABLE_SOURCES) {
+        assert.ok(
+            Object.prototype.hasOwnProperty.call(pauseNotice.PAUSE_SOURCE_LABELS, source),
+            `"${source}" es auto-levantable pero no tiene label humano en pause-notice.js`,
+        );
+    }
+});

@@ -838,6 +838,11 @@ test('collectPresence tolera un store ausente o corrupto sin lanzar', () => {
   const dir = tmpDir('storeroto');
   const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
 
+  // OJO — esto cubre el FALLBACK, no el camino principal: sin `loadResult` no
+  // hay veredicto del resolver contra el cual decidir, y ahí sí la única fuente
+  // es el disco. Que el archivo ausente dé `absent` NO puede afirmarse cuando el
+  // resolver sí se pronunció: ese es el escenario vault-only de más abajo, y
+  // confundirlos es lo que haltearía el pipeline con `vault.enabled: true`.
   const ausente = sh.collectPresence({ manifest, storePath: path.join(dir, 'no-existe.json'), env: {} });
   assert.deepEqual(ausente.absent, ['telegram.bot_token']);
 
@@ -904,4 +909,307 @@ test('CA-5: un always genuinamente ausente SI frena', () => {
   assert.equal(ev.halt, true);
   assert.equal(porNombre(ev, 'telegram.bot_token').level, 'alert');
   assert.match(sh.formatAlert(ev), /PAUSADO/);
+});
+
+// -----------------------------------------------------------------------------
+// rev-1 de review — la presencia de `source: store` la decide el RESOLVER
+//
+// `source: store` no significa "está en el archivo canónico": significa "lo
+// resuelve el store canónico". Quién lo materializa es `credentials.loadIntoEnv`,
+// que desde #5353/#5635 puede resolverlo contra el vault. Duplicar acá el
+// criterio del dueño del store (leyendo `CANONICAL_PATH`) convertía un cambio de
+// CONFIG (`vault.enabled: true`) en un halt permanente del pipeline (#5073).
+// -----------------------------------------------------------------------------
+
+/** Veredictos por variable tal como los emite `loadIntoEnv` (UX-2 de #5353). */
+function cargaConVeredictos(sources, over = {}) {
+  return cargaFake({
+    source: 'vault',
+    hydrated: Object.keys(sources).filter((v) => sources[v] === 'vault' || sources[v] === 'canonical'),
+    sources,
+    ...over,
+  });
+}
+
+test('rev-1: con el vault resolviendo y SIN archivo local, los secretos de store estan presentes', () => {
+  // Escenario exacto del rechazo: `vault.enabled: true`, archivo local ausente
+  // (estado ESPERADO, textual en credentials.js), vault hidratando todo.
+  const dir = tmpDir('vaultonly');
+  const manifest = manifiestoFake([
+    entrada({ name: 'telegram.bot_token', env_var: 'TELEGRAM_BOT_TOKEN' }),
+    entrada({ name: 'telegram.chat_id', env_var: 'TELEGRAM_CHAT_ID' }),
+  ]);
+  const loadResult = cargaConVeredictos({
+    TELEGRAM_BOT_TOKEN: 'vault',
+    TELEGRAM_CHAT_ID: 'vault',
+  });
+
+  const presence = sh.collectPresence({
+    manifest, storePath: path.join(dir, 'no-existe.json'), env: {}, loadResult,
+  });
+
+  assert.deepEqual(presence.absent, [], 'el archivo local ausente NO es un secreto faltante con vault');
+  assert.deepEqual(presence.present.sort(), ['telegram.bot_token', 'telegram.chat_id']);
+
+  const ev = sh.evaluate(loadResult, manifest, presence);
+  assert.equal(ev.ok, true);
+  assert.equal(ev.halt, false, 'un cambio de config NO puede congelar el pipeline');
+});
+
+test('rev-1: los cinco veredictos de resolucion del resolver cuentan como presente', () => {
+  // La lista sale del enum del dueño del store, no de literales propios: si
+  // #5353 o #5635 suman una fuente y este set no la conoce, el health-check
+  // vuelve a clasificar como ausente algo que sí resuelve.
+  const dir = tmpDir('veredictos');
+  for (const veredicto of ['vault', 'file-bootstrap', 'canonical', 'legacy', 'env-preexisting']) {
+    const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
+    const presence = sh.collectPresence({
+      manifest,
+      storePath: path.join(dir, 'no-existe.json'),
+      env: {},
+      loadResult: cargaConVeredictos({ TELEGRAM_BOT_TOKEN: veredicto }),
+    });
+    assert.deepEqual(presence.present, ['telegram.bot_token'],
+      `el veredicto "${veredicto}" tiene que contar como presente`);
+  }
+});
+
+test('rev-1: el veredicto del resolver le gana al contenido del archivo local', () => {
+  // El archivo tiene el valor, pero el resolver dice `missing` (p.ej. un ancla
+  // de autorización que el vault no tiene: `credentials.js` la DESCARTA del
+  // ambiente a propósito). Quien manda es el resolver: si su consumidor no la
+  // puede resolver, está faltando, tenga lo que tenga el archivo.
+  const dir = tmpDir('resolvermanda');
+  const storePath = path.join(dir, 'credentials.json');
+  fs.writeFileSync(storePath, JSON.stringify({ telegram: { bot_token: '123456:AA-valor-que-si-esta' } }));
+  const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
+
+  const presence = sh.collectPresence({
+    manifest,
+    storePath,
+    env: {},
+    loadResult: cargaConVeredictos({ TELEGRAM_BOT_TOKEN: 'missing' }, { hydrated: [] }),
+  });
+
+  assert.deepEqual(presence.absent, ['telegram.bot_token']);
+  assert.deepEqual(presence.present, []);
+});
+
+test('rev-1: el veredicto "empty" del resolver clasifica como placeholder, no como ausente', () => {
+  // `empty` es "presente en la fuente pero inutilizable" (UX-3 de #5353): la
+  // remediación es REPONER y el motivo del reporte es distinto al de "no está".
+  const dir = tmpDir('empty');
+  const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
+  const presence = sh.collectPresence({
+    manifest,
+    storePath: path.join(dir, 'no-existe.json'),
+    env: {},
+    loadResult: cargaConVeredictos({ TELEGRAM_BOT_TOKEN: 'empty' }, { hydrated: [] }),
+  });
+
+  assert.deepEqual(presence.placeholder, ['telegram.bot_token']);
+  const ev = sh.evaluate(cargaFake(), manifest, presence);
+  assert.equal(porNombre(ev, 'telegram.bot_token').state, 'missing');
+  assert.match(porNombre(ev, 'telegram.bot_token').motivo, /relleno/);
+});
+
+test('rev-1: una entrada deferred, sobre la que el resolver no se pronuncia, cae al store', () => {
+  // Las 8 `deferred` (`aws.*`, `multimedia.*`) no están en el mapping del
+  // resolver: su consumidor las pide más tarde. Ahí el disco sigue siendo la
+  // única fuente, y por eso el fallback no se puede eliminar.
+  const dir = tmpDir('deferred');
+  const storePath = path.join(dir, 'credentials.json');
+  fs.writeFileSync(storePath, JSON.stringify({ aws: { region: 'us-east-1' } }));
+  const manifest = manifiestoFake([
+    entrada({ name: 'aws.region', service: 'aws', env_var: 'AWS_REGION', hydration: 'deferred' }),
+    entrada({ name: 'aws.profile', service: 'aws', env_var: 'AWS_PROFILE', hydration: 'deferred' }),
+  ]);
+
+  const presence = sh.collectPresence({
+    manifest,
+    storePath,
+    env: {},
+    // El resolver sólo se pronunció sobre Telegram: nada que decir de `aws.*`.
+    loadResult: cargaConVeredictos({ TELEGRAM_BOT_TOKEN: 'vault' }),
+  });
+
+  assert.deepEqual(presence.present, ['aws.region'], 'el store sigue siendo la fuente de las deferred');
+  assert.deepEqual(presence.absent, ['aws.profile']);
+});
+
+test('rev-1: un veredicto desconocido no se inventa, cae al fallback del store', () => {
+  // Si el enum del resolver crece y este módulo todavía no lo conoce, la
+  // respuesta correcta es no clasificar por adivinanza.
+  const dir = tmpDir('desconocido');
+  const storePath = path.join(dir, 'credentials.json');
+  fs.writeFileSync(storePath, JSON.stringify({ telegram: { bot_token: '123456:AA-valor' } }));
+  const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
+
+  const presence = sh.collectPresence({
+    manifest,
+    storePath,
+    env: {},
+    loadResult: cargaConVeredictos({ TELEGRAM_BOT_TOKEN: 'fuente-que-todavia-no-existe' }),
+  });
+
+  assert.deepEqual(presence.present, ['telegram.bot_token']);
+});
+
+test('rev-1: sin loadResult el comportamiento no cambia (retrocompat)', () => {
+  const dir = tmpDir('retrocompat');
+  const storePath = path.join(dir, 'credentials.json');
+  fs.writeFileSync(storePath, JSON.stringify({ telegram: { bot_token: '123456:AA-valor' } }));
+  const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
+
+  assert.deepEqual(
+    sh.collectPresence({ manifest, storePath, env: {} }).present,
+    ['telegram.bot_token'],
+  );
+});
+
+test('rev-1: collectPresence no duplica el criterio del resolver leyendo el path canonico', () => {
+  // CA-4b, mismo argumento: el criterio de presencia del store tiene un dueño.
+  // Si vuelve a aparecer una decisión propia sobre `CANONICAL_PATH` para las
+  // entradas que el resolver ya resolvió, el candado de #5073 vuelve.
+  const cuerpo = MODULE_SRC.slice(
+    MODULE_SRC.indexOf('function collectPresence'),
+    MODULE_SRC.indexOf('function evaluate('),
+  );
+  assert.ok(cuerpo.includes('veredictos[entry.env_var]'),
+    'collectPresence tiene que consultar el veredicto del resolver');
+  assert.ok(cuerpo.includes('VEREDICTOS_RESUELTOS'),
+    'la lista de fuentes resueltas tiene que derivarse del enum del resolver');
+});
+
+// -----------------------------------------------------------------------------
+// rev-1 de review — el aviso no puede repetirse en cada boot
+//
+// `applyHalt` corre en cada arranque del Pulpo, y el Pulpo reinicia seguido
+// (watchdog, /restart, respawn). Con el estado vivo (`ok:false`, `halt:false`)
+// eso era la MISMA notificación indefinidamente, sin el throttle que sí tiene el
+// vecino (`lastConfigCorruptionAlertMs` en `pulpo.js`).
+// -----------------------------------------------------------------------------
+
+function evalNegativa(over = {}) {
+  const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
+  return sh.evaluate(
+    cargaFake(),
+    manifest,
+    { present: [], placeholder: [], absent: ['telegram.bot_token'] },
+    over,
+  );
+}
+
+test('rev-1: la firma del aviso ignora el ts y los ok, pero no el halt', () => {
+  const a = evalNegativa({ now: '2026-08-06T00:00:00.000Z' });
+  const b = evalNegativa({ now: '2026-08-06T09:00:00.000Z' });
+  assert.equal(sh.alertSignature(a), sh.alertSignature(b), 'el reloj no puede cambiar la firma');
+
+  // Un secreto nuevo en estado ok no es una novedad para el operador.
+  const conOk = sh.evaluate(
+    cargaFake({ hydrated: ['TELEGRAM_CHAT_ID'] }),
+    manifiestoFake([
+      entrada({ name: 'telegram.bot_token' }),
+      entrada({ name: 'telegram.chat_id', env_var: 'TELEGRAM_CHAT_ID' }),
+    ]),
+    { present: ['telegram.chat_id'], placeholder: [], absent: ['telegram.bot_token'] },
+  );
+  assert.equal(sh.alertSignature(conOk), sh.alertSignature(a));
+
+  // Pasar de "reporta" a "frena" SÍ es una novedad.
+  const soloWarn = sh.evaluate(
+    cargaFake(),
+    manifiestoFake([entrada({ name: 'telegram.bot_token', required_when: 'service_active' })]),
+    { present: ['telegram.chat_id'], placeholder: [], absent: ['telegram.bot_token'] },
+  );
+  assert.notEqual(sh.alertSignature(soloWarn), sh.alertSignature(a));
+});
+
+test('rev-1: shouldNotify avisa la novedad y calla la repeticion', () => {
+  const ev = evalNegativa({ now: '2026-08-06T00:00:00.000Z' });
+  const base = Date.parse('2026-08-06T00:00:00.000Z');
+
+  assert.equal(sh.shouldNotify(ev, null, base).send, true, 'sin reporte previo se avisa');
+  assert.equal(sh.shouldNotify(ev, ev, base + 1000).send, false, 'el mismo estado no se repite');
+  assert.equal(sh.shouldNotify(ev, ev, base + 1000).reason, 'sin-cambios');
+
+  const distinto = sh.evaluate(
+    cargaFake(),
+    manifiestoFake([entrada({ name: 'telegram.chat_id', env_var: 'TELEGRAM_CHAT_ID' })]),
+    { present: [], placeholder: [], absent: ['telegram.chat_id'] },
+  );
+  assert.equal(sh.shouldNotify(distinto, ev, base + 1000).send, true, 'un estado distinto SI se avisa');
+  assert.equal(sh.shouldNotify(distinto, ev, base + 1000).reason, 'cambio-de-estado');
+});
+
+test('rev-1: un problema que persiste vuelve a sonar pasada la ventana, no se vuelve invisible', () => {
+  const ev = evalNegativa({ now: '2026-08-06T00:00:00.000Z' });
+  const base = Date.parse('2026-08-06T00:00:00.000Z');
+
+  assert.equal(sh.shouldNotify(ev, ev, base + sh.ALERT_REPEAT_MS - 1).send, false);
+  assert.equal(sh.shouldNotify(ev, ev, base + sh.ALERT_REPEAT_MS).send, true);
+  assert.equal(sh.shouldNotify(ev, ev, base + sh.ALERT_REPEAT_MS).reason, 'ventana-vencida');
+});
+
+test('rev-1: un reporte previo sin fecha no puede suprimir el aviso', () => {
+  const ev = evalNegativa({ now: '2026-08-06T00:00:00.000Z' });
+  const base = Date.parse('2026-08-06T00:00:00.000Z');
+  const sinTs = JSON.parse(JSON.stringify(ev));
+  delete sinTs.ts;
+  assert.equal(sh.shouldNotify(ev, sinTs, base).send, true);
+  assert.equal(sh.shouldNotify(ev, sinTs, base).reason, 'reporte-previo-sin-fecha');
+});
+
+test('rev-1: applyHalt no repite el mismo aviso en el boot siguiente', () => {
+  const dir = tmpDir('dedup');
+  const pauseFile = path.join(dir, '.paused');
+  const enviados = [];
+  const deps = {
+    pauseFile,
+    partialPause: fakePartialPause(pauseFile),
+    sendTelegram: (t) => enviados.push(t),
+    logger: () => {},
+    pipelineDir: dir,
+    now: () => Date.parse('2026-08-06T00:00:00.000Z'),
+  };
+
+  const ev = evalNegativa({ now: '2026-08-06T00:00:00.000Z' });
+
+  const primero = sh.applyHalt(ev, deps);
+  assert.equal(primero.notified, true, 'el primer boot SI avisa');
+  assert.equal(enviados.length, 1);
+
+  // Segundo boot del Pulpo, mismo estado: el reporte anterior quedó en disco.
+  const segundo = sh.applyHalt(ev, deps);
+  assert.equal(segundo.notified, false, 'el segundo boot con el mismo estado NO repite');
+  assert.equal(segundo.notify_reason, 'sin-cambios');
+  assert.equal(enviados.length, 1);
+
+  // El resto de los canales sigue corriendo: el dedup es sólo del aviso.
+  assert.equal(segundo.channels.json, true, 'el artefacto del dashboard se reescribe igual');
+
+  // Cambia el estado → vuelve a avisar.
+  const otro = sh.evaluate(
+    cargaFake(),
+    manifiestoFake([
+      entrada({ name: 'telegram.bot_token' }),
+      entrada({ name: 'telegram.chat_id', env_var: 'TELEGRAM_CHAT_ID' }),
+    ]),
+    { present: [], placeholder: [], absent: ['telegram.bot_token', 'telegram.chat_id'] },
+  );
+  const tercero = sh.applyHalt(otro, deps);
+  assert.equal(tercero.notified, true, 'un estado nuevo SI vuelve a avisar');
+  assert.equal(tercero.notify_reason, 'cambio-de-estado');
+  assert.equal(enviados.length, 2);
+});
+
+test('rev-1: sin pipelineDir no hay reporte previo con que comparar, asi que se avisa', () => {
+  // Fail-open del DEDUP, no del control: ante la duda el operador se entera.
+  const enviados = [];
+  const res = sh.applyHalt(evalNegativa(), {
+    sendTelegram: (t) => enviados.push(t),
+    logger: () => {},
+  });
+  assert.equal(res.notified, true);
+  assert.equal(enviados.length, 1);
 });
