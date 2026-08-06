@@ -295,6 +295,21 @@ anomaly_detector:
   minUsdToAlert: 0.5         # Piso absoluto: si actual ≤ $0.50/h, no alerta nunca
   minAbsUsdPerHour: 2.0      # Umbral grueso durante warmup (mientras no hay baseline)
 
+# (#5337 CA-5) Recordatorio escalado de bloqueos humanos sin responder.
+# El aviso inicial de needs-human dispara sólo en la transición (para no
+# repetir la misma alerta en cada tick del barrido). Este cron cubre el hueco:
+# si el operador no respondió, recuerda espaciado — 2h, 6h, 24h y después cada
+# 72h — con UN mensaje agrupado por tick.
+#
+# FAIL-CLOSED: el módulo no puede destrabar nada. Su único efecto es mandar el
+# mensaje; el silencio del operador jamás auto-aprueba por vencimiento de plazo
+# (ver docs/pipeline/gates-firma-operador.md).
+human_block_reminder:
+  enabled: true              # false → el cron no se inicia
+  kill_switch: false         # true  → idem, para cortar en caliente sin editar enabled
+  tick_ms: 1800000           # 30 min. Es la resolución del recordatorio, no su frecuencia:
+                             # el escalado real lo fija REMINDER_STEPS_HOURS del módulo.
+
 # (#2892 PR-C) Alertas de consumo anómalo: canales y snooze.
 # El pulpo enchufa el detector con dos canales: Telegram (mensaje sanitizado
 # via lib/redact.js + lib/sanitize-payload.js) y banner persistente en el

@@ -125,7 +125,13 @@ function admissionGateSettings() {
 //
 // Mantenemos el label `needs-human` en GitHub (visibilidad para `/doc priorizar`).
 // Solo cortamos la creación automática de markers en filesystem.
-const RECOMMENDATION_LABELS = new Set(['source:recommendation', 'tipo:recomendacion']);
+// #5337 CA-6 — la constante y el predicado viven ahora en `lib/recommendation-labels.js`
+// (fuente única compartida con `human-block.js` y el dashboard). Acá quedan
+// re-exportados para no romper a los consumidores históricos del reconciler.
+const {
+    RECOMMENDATION_LABELS,
+    isRecommendationIssue: isRecommendationIssueShared,
+} = require('./lib/recommendation-labels');
 
 function log(msg) {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -342,12 +348,12 @@ function decidirFasePlaceholder(labels) {
 // Reconciliación: las 3 reglas
 // -----------------------------------------------------------------------------
 
+// #5337 CA-6 — delega en el predicado compartido. Además de la constante, la
+// versión compartida contempla `recommendation:approved`: una recomendación ya
+// aprobada por un humano es trabajo real del pipeline y deja de filtrarse
+// (mismo criterio que ya aplicaba el intake del pulpo).
 function isRecommendationIssue(labels) {
-    if (!Array.isArray(labels)) return false;
-    for (const l of labels) {
-        if (RECOMMENDATION_LABELS.has(l)) return true;
-    }
-    return false;
+    return isRecommendationIssueShared(labels);
 }
 
 // -----------------------------------------------------------------------------

@@ -33,6 +33,8 @@ const {
   vaultScopePlan,
   _resetVaultCache,
   _readVaultConfig,
+  resolveVaultOnly,
+  VAULT_ONLY_ERROR_CODES,
 } = credentials;
 const { buildParameterPath, createInMemoryVaultDriver } = require('../secret-vault');
 const { resolveOperatorAllowlist } = require('../operator-gate');
@@ -193,6 +195,80 @@ function cargar(opts) {
   _resetVaultCache();
   return loadIntoEnv(opts);
 }
+
+function resolverSolo(dotPath, opts) {
+  _resetVaultCache();
+  return resolveVaultOnly(dotPath, opts);
+}
+
+test('vault-only resuelve las dos claves lógicas sin hidratar ambiente', () => {
+  const envHostil = { TELEGRAM_BOT_TOKEN: 'HOSTILE-NOT-A-SECRET' };
+  const opts = { vaultConfig: configVault(), vaultDriver: driverConSeed(), logger: () => {}, env: envHostil };
+  assert.equal(resolverSolo('telegram.bot_token', opts), 'VAULT-BOT');
+  assert.equal(resolverSolo('telegram.leo_operator_chat_id', opts), CHAT_ID_DEL_VAULT);
+  assert.deepEqual(envHostil, { TELEGRAM_BOT_TOKEN: 'HOSTILE-NOT-A-SECRET' });
+});
+
+test('vault-only distingue gate ausente, fallo y valor inválido', () => {
+  const casos = [
+    [{ vaultConfig: null }, VAULT_ONLY_ERROR_CODES.VAULT_DISABLED],
+    [{ vaultConfig: configVault(), vaultDriver: driverQueDeniega() }, VAULT_ONLY_ERROR_CODES.VAULT_FAILURE],
+    [{ vaultConfig: configVault(), vaultDriver: driverConSeed(seedCompleto({ conAncla: false })) }, VAULT_ONLY_ERROR_CODES.VAULT_SECRET_INVALID],
+  ];
+  for (const [opts, code] of casos) {
+    const logs = capturarLogs();
+    assert.throws(() => resolverSolo('telegram.leo_operator_chat_id', { ...opts, logger: logs }), (error) => {
+      assert.equal(error.code, code);
+      assert.equal(error.logicalKey, 'telegram.leo_operator_chat_id');
+      assert.doesNotMatch(error.message, /AccessDenied|hostTest|us-east/);
+      return true;
+    });
+    assert.match(logs.texto(), new RegExp(code));
+    assert.doesNotMatch(logs.texto(), /AccessDenied|hostTest|us-east/);
+  }
+});
+
+test('vault-only distingue configuración indeterminada sin exponer el path físico', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-only-config-rota-'));
+  const pipelineDir = path.join(dir, '.pipeline');
+  fs.mkdirSync(pipelineDir);
+  fs.writeFileSync(path.join(pipelineDir, 'config.yaml'), 'vault: [config inválida');
+  const logs = capturarLogs();
+  try {
+    assert.throws(() => resolverSolo('telegram.bot_token', { pipelineDir, logger: logs }), (error) => {
+      assert.equal(error.code, VAULT_ONLY_ERROR_CODES.VAULT_CONFIG_INDETERMINATE);
+      assert.doesNotMatch(error.message, new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      return true;
+    });
+    assert.equal(logs.texto(), '[credentials] VAULT_CONFIG_INDETERMINATE: operacion segura no ejecutada para telegram.bot_token');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('vault-only rechaza vacío y placeholder sin usar fallback legacy', () => {
+  for (const bot_token of ['', 'CHANGE_ME']) {
+    const seed = seedCompleto();
+    seed.parameters[rutaScope('telegram')].bot_token = bot_token;
+    assert.throws(() => resolverSolo('telegram.bot_token', {
+      vaultConfig: configVault({ bootstrap_fallback: true, bootstrap_fallback_until: '2099-01-01T00:00:00Z' }),
+      vaultDriver: driverConSeed(seed),
+      canonicalPath: 'fallback-que-no-debe-leerse.json',
+      logger: () => {},
+    }), (error) => error.code === VAULT_ONLY_ERROR_CODES.VAULT_SECRET_INVALID);
+  }
+});
+
+test('vault-only no refleja una clave arbitraria en error ni señal local', () => {
+  const logs = capturarLogs();
+  assert.throws(() => resolverSolo('valor-hostil-no-declarado', { logger: logs }), (error) => {
+    assert.equal(error.code, VAULT_ONLY_ERROR_CODES.VAULT_KEY_UNKNOWN);
+    assert.equal(error.logicalKey, 'clave-no-declarada');
+    assert.doesNotMatch(error.message, /valor-hostil/);
+    return true;
+  });
+  assert.doesNotMatch(logs.texto(), /valor-hostil/);
+});
 
 // =============================================================================
 // Retrocompat del descriptor (G1) y superficie de exports

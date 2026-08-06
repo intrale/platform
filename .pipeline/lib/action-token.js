@@ -69,17 +69,7 @@ function deriveKey(rawSecret) {
  * @throws si no hay secreto disponible (el caller debe degradar con gracia).
  */
 function resolveRawSecret() {
-    if (process.env.TELEGRAM_BOT_TOKEN && String(process.env.TELEGRAM_BOT_TOKEN).length > 0) {
-        return String(process.env.TELEGRAM_BOT_TOKEN);
-    }
-    // Intentar hidratar desde credentials.json (idempotente, respeta env existente).
-    try {
-        require('./credentials').loadIntoEnv({ logger: () => {} });
-    } catch (_) { /* best-effort */ }
-    if (process.env.TELEGRAM_BOT_TOKEN && String(process.env.TELEGRAM_BOT_TOKEN).length > 0) {
-        return String(process.env.TELEGRAM_BOT_TOKEN);
-    }
-    throw new Error('action-token: sin secreto disponible (TELEGRAM_BOT_TOKEN ausente en credentials.json)');
+    return require('./credentials').resolveVaultOnly('telegram.bot_token');
 }
 
 function isValidAction(action) {

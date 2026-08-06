@@ -342,3 +342,111 @@ test('#4631 modo directo: sin identityProvider, la delegation del payload se ign
     assert.equal(authd.from, 'dashboard-local');
     assert.notEqual(authd.delegated, true, 'no marca delegated en modo directo');
 });
+
+// =============================================================================
+// #5461 — `verify()` dejó de ser una función TOTAL.
+// Desde que la firma se resuelve SÓLO desde el vault (`credentials.resolveVaultOnly`),
+// `actionToken.verify()` LANZA cuando el vault está cerrado (`vault.enabled: false`,
+// la config productiva actual), indeterminado o sin el secreto. El call-site vive
+// dentro del callback `req.on('end')`: sin catch, la excepción no la agarra ningún
+// caller, escapa a `uncaughtException` y el dashboard entero se muere
+// (`dashboard.js` → `process.exit(1)`). Un solo POST loopback bastaba.
+// Estos tests cubren la rama del lado CONSUMIDOR (CA-5): los demás tests del archivo
+// siempre inyectan un signer funcional, así que no la tocaban.
+// =============================================================================
+
+// Signer que reproduce el fallo real: `verify` lanza el VaultOnlyCredentialError
+// exacto que emite `credentials.resolveVaultOnly` con el vault cerrado.
+function throwingSigner(code = 'VAULT_DISABLED') {
+    return {
+        sign: () => { throw Object.assign(new Error(`credentials: ${code} para telegram.bot_token`), { name: 'VaultOnlyCredentialError', code, logicalKey: 'telegram.bot_token' }); },
+        verify: () => { throw Object.assign(new Error(`credentials: ${code} para telegram.bot_token`), { name: 'VaultOnlyCredentialError', code, logicalKey: 'telegram.bot_token' }); },
+    };
+}
+
+test('#5461 verify() que lanza (vault cerrado) → 503 y NO mata el proceso', async () => {
+    const hb = fakeHumanBlock();
+    const deps = { actionToken: throwingSigner(), humanBlock: hb, log: () => {} };
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '5461', action: 'unblock', token: 'v1.a.b' }) }), deps);
+    assert.equal(res.statusCode, 503, 'responde 503, no escapa a uncaughtException');
+    assert.equal(res.body.ok, false);
+    assert.equal(res.body.reason, 'unavailable');
+});
+
+test('#5461 verify() que lanza NO ejecuta la acción (fail-closed)', async () => {
+    const hb = fakeHumanBlock();
+    const deps = { actionToken: throwingSigner(), humanBlock: hb, log: () => {} };
+    await run(fakeReq({ body: JSON.stringify({ issue: '5461', action: 'unblock', token: 'v1.a.b' }) }), deps);
+    assert.deepEqual(hb.executed, [], 'la acción NO se ejecuta si no se pudo verificar el token');
+});
+
+test('#5461 verify() que lanza queda asentado en el audit-log', async () => {
+    const hb = fakeHumanBlock();
+    const deps = { actionToken: throwingSigner(), humanBlock: hb, log: () => {} };
+    await run(fakeReq({ body: JSON.stringify({ issue: '5461', action: 'unblock', token: 'v1.a.b' }) }), deps);
+    const rec = hb.audited.find(a => a.result_status === 'unavailable');
+    assert.ok(rec, 'auditó la indisponibilidad del verificador');
+    assert.equal(rec.issue, 5461);
+    assert.equal(rec.action, 'unblock');
+});
+
+test('#5461 el copy de 503 no filtra el vault ni el motivo técnico', async () => {
+    const hb = fakeHumanBlock();
+    const deps = { actionToken: throwingSigner(), humanBlock: hb, log: () => {} };
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '5461', action: 'unblock', token: 'v1.a.b' }) }), deps);
+    const dump = JSON.stringify(res.body).toLowerCase();
+    for (const leak of ['vault', 'telegram.bot_token', 'credentials', 'secret', 'hmac']) {
+        assert.ok(!dump.includes(leak), `la respuesta no menciona "${leak}"`);
+    }
+    assert.equal(res.body.msg, TOKEN_REASON_COPY.unavailable);
+});
+
+test('#5461 cualquier throw del verificador degrada a 503, no sólo el del vault', async () => {
+    const hb = fakeHumanBlock();
+    const deps = { actionToken: { verify: () => { throw new Error('boom'); } }, humanBlock: hb, log: () => {} };
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '7', action: 'unblock', token: 'v1.a.b' }) }), deps);
+    assert.equal(res.statusCode, 503);
+    assert.deepEqual(hb.executed, []);
+});
+
+test('#5461 verify() que devuelve un no-objeto no rompe el handler (401 invalid)', async () => {
+    const hb = fakeHumanBlock();
+    const deps = { actionToken: { verify: () => undefined }, humanBlock: hb, log: () => {} };
+    const res = await run(fakeReq({ body: JSON.stringify({ issue: '7', action: 'unblock', token: 'v1.a.b' }) }), deps);
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.reason, 'invalid');
+    assert.deepEqual(hb.executed, []);
+});
+
+test('#5461 end-to-end sobre un http server real: el POST no tumba el proceso', async () => {
+    const http = require('http');
+    const hb = fakeHumanBlock();
+    // Cualquier excepción que escape del callback `req.on('end')` de un server real
+    // llega acá — es exactamente el camino por el que moría el dashboard.
+    const escaped = [];
+    const onUncaught = (e) => escaped.push(e);
+    process.on('uncaughtException', onUncaught);
+    const srv = http.createServer((req, res) => handle(req, res, { actionToken: throwingSigner(), humanBlock: hb, log: () => {} }));
+    try {
+        await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+        const body = JSON.stringify({ issue: '5461', action: 'unblock', token: 'v1.a.b' });
+        const { status, payload } = await new Promise((resolve, reject) => {
+            const rq = http.request({
+                host: '127.0.0.1', port: srv.address().port, method: 'POST', path: '/api/human-block/action',
+                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+            }, (rs) => {
+                let d = ''; rs.on('data', (c) => { d += c; });
+                rs.on('end', () => resolve({ status: rs.statusCode, payload: JSON.parse(d) }));
+            });
+            rq.on('error', reject);
+            rq.end(body);
+        });
+        assert.equal(status, 503, 'el server responde 503 en vez de morirse');
+        assert.equal(payload.reason, 'unavailable');
+        assert.deepEqual(escaped, [], 'ninguna excepción escapó a uncaughtException');
+        assert.deepEqual(hb.executed, []);
+    } finally {
+        process.removeListener('uncaughtException', onUncaught);
+        await new Promise((r) => srv.close(r));
+    }
+});

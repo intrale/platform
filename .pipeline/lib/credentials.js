@@ -171,6 +171,19 @@ const ENV_DESCRIPTORS = Object.freeze({
   // que nadie lo lea de ahí. El campo `env` se conserva porque sigue siendo el
   // nombre canónico de la variable: es el override operativo que el consumidor
   // consulta primero, y el que se nombra en los diagnósticos al operador.
+  //
+  // Relación con #5242 / #5281: ese issue las declaró `hydration: "eager"` en
+  // `.pipeline/secrets-manifest.json` porque en ese momento el nivel 2 (store)
+  // de `qa-video-share.js` resolvía vía `loadIntoEnv`, o sea vía `ENV_MAPPING`:
+  // dejarlas `deferred` rompía la subida de evidencia. #5217 elimina esa
+  // dependencia —el consumidor pasa a `resolveScopedRefs`, que lee el namespace
+  // directo del JSON sin tocar `process.env`—, así que la premisa de `eager`
+  // dejó de valer y las cuatro pasan a `deferred` en el manifiesto EN ESTE
+  // MISMO PR. La invariante bidireccional de CA-3b (`source: "store"` + `eager`
+  // ⟺ clave de `ENV_MAPPING`) se mantiene intacta: se sigue cumpliendo 1:1,
+  // ahora con las cuatro fuera de los dos lados. (Tras #5353 este bloque es
+  // `ENV_DESCRIPTORS` y `ENV_MAPPING` se DERIVA de él, así que la invariante se
+  // evalúa sobre el mapa derivado.)
   'google_drive.oauth_client_id': {
     env: 'GOOGLE_OAUTH_CLIENT_ID', backend: 'ssm', shared: true, auth_anchor: false,
     hydrate: false,
@@ -581,6 +594,48 @@ function valorDelVault(estado, dotPath, desc) {
   return subPath ? getNested(scopeObj, subPath) : scopeObj;
 }
 
+const VAULT_ONLY_ERROR_CODES = Object.freeze({
+  VAULT_DISABLED: 'VAULT_DISABLED',
+  VAULT_CONFIG_INDETERMINATE: 'VAULT_CONFIG_INDETERMINATE',
+  VAULT_FAILURE: 'VAULT_FAILURE',
+  VAULT_SECRET_INVALID: 'VAULT_SECRET_INVALID',
+  VAULT_KEY_UNKNOWN: 'VAULT_KEY_UNKNOWN',
+});
+
+function vaultOnlyError(code, dotPath) {
+  const err = new Error(`credentials: ${code} para ${dotPath}`);
+  err.name = 'VaultOnlyCredentialError';
+  err.code = code;
+  err.logicalKey = dotPath;
+  return err;
+}
+
+/**
+ * Lee una credencial puntual exclusivamente desde el vault. No consulta ni
+ * modifica process.env y tampoco habilita archivos o bootstrap legacy.
+ */
+function resolveVaultOnly(dotPath, opts = {}) {
+  const logger = typeof opts.logger === 'function' ? opts.logger : console.error;
+  const desc = ENV_DESCRIPTORS[dotPath];
+  const fail = (code) => {
+    const safeKey = desc ? dotPath : 'clave-no-declarada';
+    const err = vaultOnlyError(code, safeKey);
+    // Señal local deliberadamente independiente de Telegram. El texto se arma
+    // sólo con constantes y la clave lógica allowlisted.
+    logger(`[credentials] ${code}: operacion segura no ejecutada para ${safeKey}`);
+    throw err;
+  };
+
+  if (!desc) return fail(VAULT_ONLY_ERROR_CODES.VAULT_KEY_UNKNOWN);
+  const estado = resolverVault(opts, () => {});
+  if (estado.indeterminado) return fail(VAULT_ONLY_ERROR_CODES.VAULT_CONFIG_INDETERMINATE);
+  if (!estado.enabled) return fail(VAULT_ONLY_ERROR_CODES.VAULT_DISABLED);
+  if (estado.error || !estado.payload) return fail(VAULT_ONLY_ERROR_CODES.VAULT_FAILURE);
+  const value = valorDelVault(estado, dotPath, desc);
+  if (isPlaceholderOrEmpty(value)) return fail(VAULT_ONLY_ERROR_CODES.VAULT_SECRET_INVALID);
+  return String(value);
+}
+
 // Índice inverso del mapping legacy (`TELEGRAM_BOT_TOKEN` → `bot_token`), para
 // poder leer del archivo legacy aun cuando la iteración va por el descriptor.
 const LEGACY_KEY_BY_ENV = Object.freeze(Object.fromEntries(
@@ -874,7 +929,9 @@ function loadIntoEnv(opts = {}) {
       // El `require` queda acá adentro para que el camino del gate cerrado ni
       // llegue a cargar el módulo.
       const metrics = opts.shadowMetrics
-        || (process.env.NODE_TEST_CONTEXT ? null : require('./vault-shadow-metrics').getVaultShadowMetrics());
+        || (process.env.NODE_TEST_CONTEXT ? null : require('./vault-shadow-metrics').getVaultShadowMetrics({
+            notify: require('./notify-telegram').notifyTelegram,
+        }));
       if (metrics) metrics.record(result.sources, {
         hostId: vaultEstado.cfg && vaultEstado.cfg.hostId,
         // Sólo lo hidratable: ver el comentario de `HYDRATED_DESCRIPTORS`.
@@ -1003,6 +1060,8 @@ module.exports = {
   SOURCE,
   vaultScopePlan,
   _resetVaultCache,
+  resolveVaultOnly,
+  VAULT_ONLY_ERROR_CODES,
   // B2.7 — expuesto SÓLO para el test que verifica que la raíz de la config la
   // fija el código y no el entorno. No tiene call-site productivo fuera de
   // `resolverVault`.

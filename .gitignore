@@ -201,6 +201,11 @@ scripts/planner-plan.json
 .pipeline/rest-mode.json
 .pipeline/blocked-issues.json
 .pipeline/cooldowns.json
+# #5337 — estado del recordatorio de bloqueos humanos. Va acá y no versionado:
+# el repo principal hace `reset --hard` en cada respawn y pisaria el archivo,
+# reiniciando el escalado de recordatorios solo (lo mismo que paso con waves.json).
+.pipeline/human-block-reminder-state.json
+.pipeline/human-block-reminder-state.json.*.tmp
 .pipeline/last-restart.json
 .pipeline/listener-offset.json
 .pipeline/commander-history.jsonl

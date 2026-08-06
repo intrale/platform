@@ -383,6 +383,7 @@ function evaluarPorDefecto(opts = {}) {
   // ruido a cualquier parser. `autoFlushOnExit: false` porque no se registra
   // nada: no hay buffer que volcar y no corresponde instalar un hook de salida.
   const metrics = createVaultShadowMetrics({
+    notify: require('./lib/notify-telegram').notifyTelegram,
     logger: (linea) => {
       try { stderr.write(`${textoSeguro(linea, 600)}
 `); } catch (e) { /* best-effort */ }
