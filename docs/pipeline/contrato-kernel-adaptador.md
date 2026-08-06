@@ -223,6 +223,7 @@ Reparto: **39 kernel · 12 autoridad · 9 producto**.
 | 58 | `commander_products` (1823) | obj | **autoridad** | D-2: incluye `default_product` y el alta de productos con sus operadores. |
 | 59 | `vault` (1318) | obj | kernel | #5352: direcciona secretos de infraestructura por host (`prefix`/`projectId`/`hostId`); es mecanismo, se muda al kernel sin conocer el producto. Reutiliza `kernel.region`. |
 | 60 | `worktree_provenance` | obj | kernel | Allowlist de identidades para verificar procedencia de ramas en auto-recovery; mecanismo de seguridad del motor. |
+| 61 | `telegram_voice_outbound` | obj | kernel | #5573: política de reenvío de las PARTES DE AUDIO, separada de `telegram_outbound` (texto) porque la latencia real de un `.ogg` es ~62-74s contra los 5s del texto. Es transporte de salida del motor; mecanismo. |
 
 #### 2.4.1. Matriz de precedencia
 

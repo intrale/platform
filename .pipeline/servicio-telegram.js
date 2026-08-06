@@ -111,6 +111,8 @@ const MAX_SEND_RETRIES = 5;
 // sweep de chunks de audio del Commander (#4750) use EXACTAMENTE los mismos
 // valores (SEC-R4: no inventar valores nuevos, alinear con #4082).
 const { OUTBOUND_DEFAULTS, resolveOutboundConfig } = require('./lib/telegram-outbound-config');
+// #5573 — traza append-only de entrega de partes de voz (duplicados + latencia).
+const voiceDeliveryAudit = require('./lib/voice-delivery-audit');
 function loadOutboundConfig() {
   return resolveOutboundConfig(loadPipelineConfig());
 }
@@ -152,6 +154,21 @@ function writeSentReceiptIfAny(data, messageIds) {
     telegramReceipt.writeReceipt(RECIBOS, fields);
   } catch (e) {
     log(`No se pudo escribir recibo enviado (${data._correlationId}): ${e.message}`);
+  }
+  // #5573 — traza APPEND-ONLY del envío del chunk. El recibo `<cid>-p<idx>.json`
+  // se SOBRESCRIBE en cada envío, así que un reenvío duplicado no dejaba ninguna
+  // huella (sólo sobrevivía el último message_id). Acá cada envío suma una línea:
+  // más de un evento `sent` para el mismo (correlationId, partIndex) ES un audio
+  // que el operador recibió repetido. Best-effort: auditar no rompe la entrega.
+  if (fields.partIndex != null) {
+    voiceDeliveryAudit.appendVoiceDeliveryEvent(PIPELINE, {
+      event: voiceDeliveryAudit.EVENT_SENT,
+      correlationId: fields.correlationId,
+      partIndex: fields.partIndex,
+      partTotal: fields.partTotal,
+      messageId: Array.isArray(messageIds) && Number.isFinite(messageIds[0]) ? messageIds[0] : undefined,
+      attempt: telegramReceipt.coercePartInt(data._telegramAttempts),
+    });
   }
 }
 
@@ -439,11 +456,25 @@ function handleSendFailure(file, trabajandoPath, err) {
       // error → cero superficie de leak de BOT_TOKEN (SEC-1).
       if (telegramReceipt.isValidCorrelationId(cur._correlationId)) {
         try {
-          telegramReceipt.writeReceipt(RECIBOS, {
+          const failFields = {
             correlationId: cur._correlationId,
             status: telegramReceipt.STATUS_FALLIDO,
             messageIds: [],
-          });
+          };
+          // #5573 — propagar la dimensión de CHUNK también al recibo `fallido`.
+          // Hasta acá el fallo de una parte de audio aterrizaba como `<cid>.json`
+          // (nombre de recibo de TEXTO) en vez de `<cid>-p<idx>.json`, así que el
+          // reconciliador lo metía en el historial conversacional en lugar de
+          // tratarlo como chunk. Misma validación fail-closed que
+          // `writeSentReceiptIfAny` (SEC-R2): dims corruptas → se escribe el
+          // recibo SIN dims (comportamiento previo), nunca con un valor sin acotar
+          // del que se derive un nombre de archivo.
+          if (telegramReceipt.hasPartDims({ partIndex: cur._partIndex, partTotal: cur._partTotal })
+            && telegramReceipt.isValidPartDims(cur._partIndex, cur._partTotal)) {
+            failFields.partIndex = telegramReceipt.coercePartInt(cur._partIndex);
+            failFields.partTotal = telegramReceipt.coercePartInt(cur._partTotal);
+          }
+          telegramReceipt.writeReceipt(RECIBOS, failFields);
         } catch (e) {
           log(`No se pudo escribir recibo fallido (${cur._correlationId}): ${e.message}`);
         }

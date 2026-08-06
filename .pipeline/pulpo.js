@@ -259,7 +259,13 @@ const telegramReceipt = require('./lib/telegram-receipt');
 // reenvía (tope N reintentos + backoff); avisa al usuario si se agotan. Reutiliza
 // la política de reintentos de salientes de #4082 (módulo puro compartido).
 const voiceParts = require('./lib/voice-parts');
-const { resolveOutboundConfig: resolveTelegramOutboundConfig } = require('./lib/telegram-outbound-config');
+// #5573 — traza append-only de entrega de partes de voz (duplicados + latencia).
+const voiceDeliveryAudit = require('./lib/voice-delivery-audit');
+const {
+  resolveOutboundConfig: resolveTelegramOutboundConfig,
+  // #5573 — política de reenvío PROPIA de las partes de audio (no la de texto).
+  resolveVoiceOutboundConfig: resolveTelegramVoiceOutboundConfig,
+} = require('./lib/telegram-outbound-config');
 // #3414 — Notificación Telegram de entregables del pipeline (human-in-the-loop
 // opcional). Se invoca desde `brazoBarrido` cuando un skill notificable cierra
 // fase OK. Default OFF (rollout gradual via config.yaml → deliverable_notifications.enabled).
@@ -10608,6 +10614,27 @@ function reconcileTelegramReceipts(opts = {}) {
       // El sweep (más abajo) cierra la respuesta cuando todas las partes confirman.
       if (voiceParts.isVoicePartReceipt(receipt)) {
         if (receipt.status === telegramReceipt.STATUS_ENVIADO) {
+          // #5573 (cambio 4) — muestra de LATENCIA REAL de entrega del chunk. Se
+          // lee el estado ANTES de confirmar porque `firstEnqueuedAt` (el ancla
+          // inmutable del primer encolado) y `retries` viven ahí. Esta serie es la
+          // que permite recalibrar `telegram_voice_outbound.backoff_base_ms`, hoy
+          // provisional (~62-74s medidos a mano). Best-effort: si algo falla acá,
+          // la confirmación igual ocurre.
+          let latencySample = null;
+          try {
+            const st = voiceParts.readState(voiceParts.voicePartsDir(pipelineDir), receipt.correlationId);
+            const part = st && st.parts ? st.parts[String(receipt.partIndex)] : null;
+            if (part) {
+              const firstMs = Date.parse(part.firstEnqueuedAt || part.enqueuedAt);
+              const atMs = Date.parse(receipt.at);
+              latencySample = {
+                latencyMs: (Number.isFinite(firstMs) && Number.isFinite(atMs)) ? (atMs - firstMs) : undefined,
+                retries: Number.isInteger(part.retries) ? part.retries : 0,
+                partTotal: st.partTotal,
+              };
+            }
+          } catch { /* best-effort */ }
+
           try {
             voiceParts.recordPartConfirmation({
               pipelineDir,
@@ -10616,6 +10643,18 @@ function reconcileTelegramReceipts(opts = {}) {
             });
           } catch (e) {
             log('telegram', `[reconcile] no se pudo confirmar chunk (${receipt.correlationId} p${receipt.partIndex}): ${e.message}`);
+          }
+
+          if (latencySample) {
+            voiceDeliveryAudit.appendVoiceDeliveryEvent(pipelineDir, {
+              ts: receipt.at,
+              event: voiceDeliveryAudit.EVENT_CONFIRMED,
+              correlationId: receipt.correlationId,
+              partIndex: receipt.partIndex,
+              partTotal: latencySample.partTotal != null ? latencySample.partTotal : receipt.partTotal,
+              latencyMs: latencySample.latencyMs,
+              retries: latencySample.retries,
+            });
           }
         }
         // Un recibo `fallido` de chunk se archiva sin confirmar: el sweep reintenta
@@ -10654,11 +10693,17 @@ function reconcileTelegramReceipts(opts = {}) {
     log('telegram', `[reconcile] error (best-effort): ${e.message}`);
   }
   // #4750 — Sweep de contabilidad de chunks de audio: SIEMPRE (aun sin recibos
-  // nuevos). Detecta partes que no confirmaron dentro del timeout y las reenvía
-  // (tope N reintentos + backoff, misma política que texto — #4082); si se agotan
-  // los reintentos avisa al usuario en el chat del padre (nunca hueco silencioso).
+  // nuevos). Detecta partes que no confirmaron dentro del timeout y las reenvía;
+  // si se agotan los reintentos avisa al usuario en el chat del padre (nunca
+  // hueco silencioso).
+  //
+  // #5573 — Política PROPIA de voz (`telegram_voice_outbound`), NO la de texto.
+  // La latencia real de un `.ogg` es ~62-74s contra los 5s de base del texto:
+  // reusar la política de texto disparaba reenvíos sobre envíos todavía en vuelo
+  // y el operador recibía el mismo audio 2-4 veces. El sweep además consulta qué
+  // partes siguen vivas en la cola (`scanInFlightParts`) y no las reencola.
   try {
-    const outboundCfg = resolveTelegramOutboundConfig(loadConfig());
+    const outboundCfg = resolveTelegramVoiceOutboundConfig(loadConfig());
     voiceParts.sweepVoiceStates({
       pipelineDir,
       now: Date.now(),
@@ -10670,6 +10715,9 @@ function reconcileTelegramReceipts(opts = {}) {
       notify: (text) => { try { sendTelegramPlain(text); } catch { /* best-effort */ } },
       logFn: (m) => log('telegram', `[voice-sweep] ${m}`),
     });
+    // #5573 (SEC-E) — retención de 30 días de los `.gz` rotados de la traza de
+    // entrega. Mismo tick del sweep, best-effort.
+    voiceDeliveryAudit.cleanupVoiceDeliveryArchives(pipelineDir);
   } catch (e) {
     log('telegram', `[voice-sweep] error (best-effort): ${e.message}`);
   }
@@ -15693,7 +15741,12 @@ function enqueueTelegramVoice(audioPath, opts = {}) {
   const pi = telegramReceipt.coercePartInt(partIndex);
   const pt = telegramReceipt.coercePartInt(partTotal);
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
-  const filename = `${Date.now()}-voice-p${pi}.json`;
+  // #5573 — el `correlationId` va EN EL NOMBRE del dropfile para que el sweep
+  // (`voiceParts.scanInFlightParts`) sepa qué partes siguen vivas en la cola sin
+  // abrir y parsear cada JSON en cada tick. `correlationId` ya pasó por
+  // `isValidCorrelationId` arriba (regex `[A-Za-z0-9._-]{6,128}` + anti `..`), así
+  // que componer un nombre de archivo con él es seguro.
+  const filename = `${Date.now()}-voice-${correlationId}-p${pi}.json`;
   // #4796 — Fix de ORIGEN: normalizar a forward-slashes ANTES de serializar. En
   // Windows los `\` pueden perderse si la ruta atraviesa una segunda ronda de
   // parse/serialize (incidente 2026-07-19: `C:\…\tts.ogg` → `C:WorkspacesIntrale…ogg`,
