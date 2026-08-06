@@ -291,6 +291,46 @@ test('CA-5: segunda escritura sobre misma PK+SK → colisión append-only (no so
   );
 });
 
+test('#5211: firmas y audit se escriben con attribute_not_exists — IAM NO aporta esta garantía', async () => {
+  // Hallazgo empírico de #5211 (probe `nonrepudio-put-item`, 2026-08-06): sobre
+  // la tabla de no-repudio, `PutItem` responde ConditionalCheckFailedException,
+  // NO AccessDenied. O sea: el runtime está AUTORIZADO a hacer PutItem, y IAM no
+  // distingue "crear" de "pisar" — no existe condición IAM que lo haga.
+  //
+  // Traducción: el `Deny` de IAM cubre Update/Delete/Batch/Transact/PartiQL, pero
+  // la protección contra que un `PutItem` PISE una firma ya escrita es
+  // exclusivamente esta `ConditionExpression`. Si alguien la saca, el append-only
+  // se rompe en silencio y ninguna policy lo detiene.
+  //
+  // El test de colisión de arriba prueba el COMPORTAMIENTO; éste prueba el
+  // MECANISMO, porque un read-then-write (TOCTOU) pasaría aquel test y no éste.
+  const inner = createInMemoryDynamoDriver();
+  const vistos = [];
+  const driver = {
+    ...inner,
+    putItem: (spec, item, opts) => {
+      vistos.push({ sk: item.SK, opts });
+      return inner.putItem(spec, item, opts);
+    },
+  };
+
+  const { store } = makeStore({ driver });
+  await store.putSignature(validSignature({ target: 't1' }));
+  await store.appendAuditEntry({ action: 'created', actor: 'pulpo' });
+
+  const evidencia = vistos.filter(
+    (v) => v.sk.startsWith('signature#') || v.sk.startsWith('audit#'),
+  );
+  assert.equal(evidencia.length, 2, 'se escribieron una firma y una entrada de audit');
+
+  for (const { sk, opts } of evidencia) {
+    assert.ok(opts && typeof opts.conditionExpression === 'string',
+      `la escritura de ${sk} viajó SIN ConditionExpression: IAM no lo frena`);
+    assert.match(opts.conditionExpression, /attribute_not_exists/,
+      `${sk} debe condicionar por inexistencia, no por comparación de valores`);
+  }
+});
+
 test('CA-5: appendAuditEntry escribe entradas append-only con SK único', async () => {
   const { store } = makeStore();
   const a = await store.appendAuditEntry({ action: 'created', actor: 'pulpo' });
