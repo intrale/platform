@@ -201,6 +201,14 @@ node .pipeline/lib/kernel-provision.js     # crea la tabla + evidencia round-tri
 #   TABLE       → kernel.tableName               (no-repudio; sin borrado)
 #   COORD_TABLE → kernel.coordinationTableName   (coordinación; con borrado)
 #   ACCOUNT     → account-id de la cuenta destino (nunca commiteado)
+#   CMK_KEY_ID  → UUID de la CMK que cifra ambas tablas (nunca commiteado)
+
+# Aplicar (REEMPLAZA el documento entero — ver el recuadro más abajo):
+aws iam create-policy-version --policy-arn <...>:policy/IntraleKernelStore \
+    --policy-document file://<resuelto> --set-as-default
+
+# Verificar que quedó aplicado y que no rompió el plano de datos:
+node .pipeline/lib/kernel-iam-verify.js --strict   # exit 0 == CA-3 cerrado
 ```
 
 Al resolver los placeholders, **dos reglas que no se negocian**:
@@ -272,12 +280,50 @@ conocemos), `DenyDynamoDbAccountLevelControlPlane`, `DenyKmsAdministration` y
 
 Los cuatro `Deny` de control plane están **versionados y todavía NO aplicados**
 sobre `policy/IntraleKernelStore`: aplicarlos requiere un principal con gestión
-IAM que el perfil disponible no tiene, a propósito. Hasta entonces el control
-plane sigue en `implicitDeny` — denegado hoy, pero por ausencia de `Allow`.
+IAM que el perfil disponible no tiene, a propósito. Hasta entonces esos controles
+siguen en `implicitDeny` — denegados hoy, pero por ausencia de `Allow`.
 
-La matriz (`kernel-iam-matriz-5211.md`) marca con ⏳ cada fila que depende de esa
-aplicación, y `CONTROL_PLANE_PROBES` lleva el mismo dato en `explicitoTrasAplicar`
-con un test que impide declarar `explicitDeny` mientras el statement esté pendiente.
+Ese estado **ya no se declara a mano en ningún lado**. `kernel-iam-verify.js` lee
+la policy realmente adjunta con `iam:GetPolicyVersion` y la compara contra este
+artefacto; la matriz (`kernel-iam-matriz-5211.md`) publica el diff. Si la
+comparación no se puede correr, se reporta como *no verificada* y nunca como
+"sin drift".
+
+> #### ⚠️ Aplicar REEMPLAZA el documento: el artefacto debe contener lo vigente
+>
+> `aws iam create-policy-version` **sustituye la policy entera, no la fusiona**.
+> Por eso el argumento "el diff sólo agrega `Deny`, la postura sólo puede
+> mejorar" es falso: cualquier statement que exista en AWS y no en este archivo
+> se **pierde** al aplicar.
+>
+> Pasó de verdad. La policy vigente (`v3`) tiene dos statements que el artefacto
+> no modelaba —`AllowIdentityCheck` y el catch-all
+> `DenyEverythingOutsideKernelTables` (`NotAction`/`NotResource`)—, así que
+> aplicar el artefacto anterior habría **degradado** la postura y roto
+> `sts:GetCallerIdentity`. Este archivo ya representa `v3` **más** los cuatro
+> `Deny` nuevos, y `kernel-iam-drift.test.js` falla si alguien vuelve a sacarle
+> un statement vigente (verificado por mutación).
+
+### El catch-all `DenyEverythingOutsideKernelTables`
+
+Es el statement más fuerte de la policy y el que más fácil se lee al revés:
+
+```json
+{ "Effect": "Deny",
+  "NotAction": ["sts:GetCallerIdentity"],
+  "NotResource": [ "<tabla no-repudio>", "<tabla coordinación>", "<CMK>" ] }
+```
+
+Deniega **todo lo que no sea** una de esas tres ARNs. Consecuencia
+contraintuitiva, y central para leer la matriz: **la misma acción da
+`explicitDeny` sobre un recurso ajeno e `implicitDeny` sobre las tres ARNs del
+kernel**, porque ahí el catch-all no matchea. O sea que el agujero está
+justamente sobre los recursos que hay que proteger — y es lo que cierran los
+`Deny` enumerados de #5211: `DenyDynamoDbControlPlane` alcanza `table/*`,
+incluidas las dos tablas del kernel.
+
+Por eso los probes del verificador declaran su `alcance`: uno apuntado a un
+recurso fuera de alcance reporta un control que sobre el recurso real no existe.
 
 ### 2. Dónde vive el permiso de la CMK (y por qué no va en la identity policy)
 

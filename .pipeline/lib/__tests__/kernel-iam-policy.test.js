@@ -47,7 +47,15 @@ function loadPolicy() {
   return JSON.parse(fs.readFileSync(POLICY_PATH, 'utf8'));
 }
 
-const asArray = (v) => (Array.isArray(v) ? v : [v]);
+// `asArray(undefined)` devolvía `[undefined]` y reventaba en cuanto un statement
+// usa `NotAction`/`NotResource` (la forma del catch-all que la policy aplicada
+// SÍ tiene). Devolver `[]` es lo correcto: "este statement no declara Action" no
+// es lo mismo que "declara una acción indefinida".
+const asArray = (v) => {
+  if (Array.isArray(v)) return v;
+  if (v === undefined || v === null) return [];
+  return [v];
+};
 const statementsOf = (policy, effect) => policy.Statement.filter((s) => s.Effect === effect);
 
 test('#5124 · la policy es JSON válido con la forma esperada', () => {
@@ -58,8 +66,17 @@ test('#5124 · la policy es JSON válido con la forma esperada', () => {
   for (const s of policy.Statement) {
     assert.ok(typeof s.Sid === 'string' && s.Sid, 'todo statement lleva Sid (trazabilidad)');
     assert.ok(s.Effect === 'Allow' || s.Effect === 'Deny');
-    assert.ok(asArray(s.Action).length > 0);
-    assert.ok(asArray(s.Resource).length > 0);
+    // Un statement IAM declara Action XOR NotAction, y Resource XOR NotResource.
+    // Exigir siempre `Action`/`Resource` excluía la forma `NotResource`, que es
+    // justamente la que usa el catch-all realmente aplicado.
+    assert.equal(
+      (asArray(s.Action).length > 0) !== (asArray(s.NotAction).length > 0), true,
+      `"${s.Sid}": va Action o NotAction, nunca los dos ni ninguno`,
+    );
+    assert.equal(
+      (asArray(s.Resource).length > 0) !== (asArray(s.NotResource).length > 0), true,
+      `"${s.Sid}": va Resource o NotResource, nunca los dos ni ninguno`,
+    );
   }
 });
 
@@ -118,7 +135,16 @@ test('#5124 CA-1 · ningún Allow concede mutación sobre la tabla de no-repudio
 // CA-4 — La tabla de coordinación, con mínimo privilegio y ARNs literales
 // ---------------------------------------------------------------------------
 
-test('#5124 CA-4 · el Allow de coordinación concede exactamente 4 acciones (sin Query ni UpdateItem)', () => {
+test('#5124 CA-4 · el Allow de coordinación concede exactamente las acciones aplicadas (sin UpdateItem)', () => {
+  // #5211 (rebote de verificación) — Este test afirmaba 4 acciones. La policy
+  // REALMENTE adjunta (v3, leída con `iam:GetPolicyVersion`) concede 6: suma
+  // `Query` y `DescribeTable`. El artefacto se corrigió para representar lo
+  // aplicado, que es el entregable de #5211; achicar el Allow es un cambio
+  // deliberado de mínimo privilegio y vive en #5664, no acá.
+  //
+  // Lo que este test sigue fijando es lo que NO puede aparecer: ninguna acción
+  // de mutación que no sea `DeleteItem` (el release de claim), y nada fuera de
+  // DynamoDB.
   const policy = loadPolicy();
   const coord = statementsOf(policy, 'Allow')
     .filter((s) => asArray(s.Resource).includes(ARN_COORD));
@@ -128,13 +154,18 @@ test('#5124 CA-4 · el Allow de coordinación concede exactamente 4 acciones (si
   assert.deepEqual(acciones, [
     'dynamodb:ConditionCheckItem',
     'dynamodb:DeleteItem',
+    'dynamodb:DescribeTable',
     'dynamodb:GetItem',
     'dynamodb:PutItem',
-  ].sort(), 'son las operaciones que kernel-coordination-store ejecuta realmente');
+    'dynamodb:Query',
+  ].sort(), 'son las acciones de la policy v3 adjunta al principal runtime');
 
-  // Contraprueba explícita: no se copió el Allow de la tabla principal "por simetría".
-  assert.equal(acciones.includes('dynamodb:Query'), false, 'el coordination store nunca hace Query');
+  // Contraprueba explícita: la única mutación concedida es el release de claim.
   assert.equal(acciones.includes('dynamodb:UpdateItem'), false, 'el CAS se hace con PutItem condicional');
+  assert.equal(acciones.includes('dynamodb:BatchWriteItem'), false, 'no hay escritura por lote');
+  for (const a of acciones) {
+    assert.ok(a.startsWith('dynamodb:'), `el Allow de coordinación no puede conceder ${a}`);
+  }
 });
 
 test('#5124 CA-4 · ningún Allow que conceda borrado/mutación tiene wildcard en su Resource', () => {

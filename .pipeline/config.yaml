@@ -1328,6 +1328,19 @@ kernel:
   # estas claves, `kernel-iam-verify.js` no arma la matriz.
   cmkAlias: "intrale-kernel-store"          # alias de la CMK que cifra ambas tablas
   runtimePrincipal: "intrale-kernel-runtime" # usuario IAM del runtime durable
+  # #5211 (rebote de verificación) — Habilitan el chequeo de DRIFT: comparar el
+  # artefacto versionado contra la policy que AWS tiene REALMENTE adjunta. Sin
+  # esa comparación, el repo puede afirmar una postura que AWS no aplica y nadie
+  # se entera: fue exactamente lo que pasó (la policy adjunta resultó ser un
+  # documento con otros Sids, que el artefacto no modelaba).
+  #
+  # `iamAdminProfile` es DISTINTO del perfil runtime a propósito: el runtime
+  # tiene denegado `iam:GetPolicyVersion` —no debe poder leer su propia policy—
+  # así que no puede auditarse a sí mismo. Este perfil se usa SOLO para lectura.
+  # A diferencia de las dos claves de arriba, su ausencia NO es fail-closed: los
+  # probes siguen siendo válidos y el drift se reporta como "no verificado".
+  iamPolicyName: "IntraleKernelStore"        # policy adjunta al principal runtime
+  iamAdminProfile: "intrale"                 # perfil con iam:GetPolicy (solo lectura)
   durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
   # #5135 CA-1 -- Ventana de cutover SUPERVISADA. Default OFF (fail-closed: solo
   # el booleano `true` exacto la abre).

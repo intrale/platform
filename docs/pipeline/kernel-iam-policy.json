@@ -2,13 +2,14 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "RuntimeReadWrite",
+      "Sid": "RuntimeReadWriteNoRepudiation",
       "Effect": "Allow",
       "Action": [
         "dynamodb:PutItem",
         "dynamodb:GetItem",
         "dynamodb:Query",
-        "dynamodb:ConditionCheckItem"
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
       ],
       "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE"
     },
@@ -33,9 +34,19 @@
         "dynamodb:GetItem",
         "dynamodb:PutItem",
         "dynamodb:DeleteItem",
-        "dynamodb:ConditionCheckItem"
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:Query",
+        "dynamodb:DescribeTable"
       ],
       "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/COORD_TABLE"
+    },
+    {
+      "Sid": "AllowIdentityCheck",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
     },
     {
       "Sid": "DenyDynamoDbControlPlane",
@@ -125,6 +136,18 @@
         "iam:GetPolicyVersion"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "DenyEverythingOutsideKernelTables",
+      "Effect": "Deny",
+      "NotAction": [
+        "sts:GetCallerIdentity"
+      ],
+      "NotResource": [
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/COORD_TABLE",
+        "arn:aws:kms:REGION:ACCOUNT:key/CMK_KEY_ID"
+      ]
     }
   ]
 }

@@ -20,6 +20,7 @@ const assert = require('node:assert/strict');
 
 const {
   CANARY_PK,
+  CANARY_TABLE,
   IMPOSSIBLE_CONDITION,
   OUTCOME,
   CONTROL_PLANE_PROBES,
@@ -259,16 +260,25 @@ test('#5211 · con todos los probes en su expectativa, el reporte da ok', () => 
     run(args) {
       const matrix = buildProbeMatrix(CFG);
       const probe = matrix.find((p) => p.args.join(' ') === args.join(' '));
-      return Promise.resolve(probe.expect === 'deny'
-        ? { code: 254, stdout: '', stderr: STDERR_EXPLICIT_DENY }
-        : { code: 0, stdout: '{}', stderr: '' });
+      // `deny` y `denyExplicito` se satisfacen ambos con un explicitDeny; sólo
+      // `allow` espera ejecución limpia.
+      return Promise.resolve(probe.expect === 'allow'
+        ? { code: 0, stdout: '{}', stderr: '' }
+        : { code: 254, stdout: '', stderr: STDERR_EXPLICIT_DENY });
     },
   };
 
   return verifyKernelIam({ kernelConfig: CFG, runner }).then((report) => {
     assert.equal(report.ok, true);
     assert.equal(report.resumen.fallidos, 0);
-    assert.equal(report.resumen.ok, report.resumen.total);
+    assert.equal(report.resumen.ok, report.resumen.ejecutados,
+      'los probes ejecutados están todos en su expectativa');
+    // Pero `ok` NO implica `cerrado`: sin poder leer la policy aplicada, el
+    // drift queda sin verificar y los controles no ejecutables salen
+    // `desconocido`. Distinguirlos es el punto de todo el rebote.
+    assert.equal(report.cerrado, false,
+      'sin comparar contra la policy aplicada no se puede declarar CA-3 cerrado');
+    assert.equal(report.drift.disponible, false);
   });
 });
 
@@ -286,13 +296,13 @@ test('#5211 · un error de spawn se registra como fallo, no tumba la corrida', (
   });
 });
 
-test('#5211 CA-3 · los probes de control plane se declaran, nunca se ejecutan', () => {
+test('#5211 CA-3 · los controles no ejecutables se declaran, nunca se ejecutan', () => {
   // No pueden desaparecer del reporte: omitirlos se leería como "cubierto".
   assert.ok(CONTROL_PLANE_PROBES.length >= 5);
   for (const p of CONTROL_PLANE_PROBES) {
     assert.equal(p.runnable, false, `${p.id} no puede ser ejecutable`);
-    assert.ok(p.evidenciaManual, `${p.id} debe traer evidencia manual observada`);
-    assert.ok(p.fecha, `${p.id} debe traer fecha: una evidencia sin fecha no se puede auditar`);
+    assert.ok(p.motivoNoEjecutable,
+      `${p.id} debe explicar por qué no se ejecuta: "no ejecutable" sin motivo se vuelve un cajón de sastre`);
   }
   // Y no pueden estar en la matriz ejecutable.
   const ejecutables = new Set(buildProbeMatrix(CFG).map((p) => p.id));
@@ -301,51 +311,72 @@ test('#5211 CA-3 · los probes de control plane se declaran, nunca se ejecutan',
   }
 });
 
-test('#5211 CA-3 · ningún probe manual afirma explicitDeny de un statement que NO está aplicado', () => {
-  // El defecto que trajo el rebote: la evidencia declaraba
-  // `explicitDeny · policy/IntraleKernelStore` para CreateTable y AttachUserPolicy,
-  // pero los statements que producirían ese resultado son adiciones de #5211 que
-  // todavía no se aplicaron en AWS. Una evidencia no puede afirmar el efecto de
-  // una policy que no está puesta: es el mismo patrón (decir más de lo que el
-  // estado respalda) que el issue vino a matar.
-  //
-  // El invariante: si la fila declara `explicitoTrasAplicar`, ese statement está
-  // PENDIENTE ⇒ la evidencia observada tiene que ser implicitDeny.
-  for (const p of CONTROL_PLANE_PROBES) {
-    if (!p.explicitoTrasAplicar) continue;
-    assert.match(p.evidenciaManual, /^implicitDeny/,
-      `"${p.id}" declara que ${p.explicitoTrasAplicar} está pendiente de aplicar, `
-      + `pero su evidencia dice "${p.evidenciaManual}"`);
-    assert.equal(/explicitDeny|IntraleKernelStore/.test(p.evidenciaManual), false,
-      `"${p.id}" no puede atribuirle el deny a una policy que todavía no está aplicada`);
+test('#5211 CA-3 · los probes ejecutables de control plane apuntan a objetivos inocuos', () => {
+  // La contracara: si un probe de control plane pasó a ser ejecutable, su
+  // objetivo tiene que ser uno donde el éxito NO haga daño. Un `delete-table`
+  // ejecutable apuntado a la tabla real convertiría al verificador en el
+  // incidente que busca detectar.
+  const DESTRUCTIVAS = ['delete-table', 'schedule-key-deletion', 'disable-key', 'put-key-policy'];
+  for (const p of buildProbeMatrix(CFG)) {
+    const verbo = p.args[1];
+    if (!DESTRUCTIVAS.includes(verbo)) continue;
+    assert.equal(p.alcance, 'out-scope',
+      `"${p.id}" ejecuta "${verbo}" con alcance "${p.alcance}": sólo se admite contra un objetivo inexistente`);
+    assert.ok(p.args.includes(CANARY_TABLE),
+      `"${p.id}" ejecuta "${verbo}" sin apuntar al objetivo canario`);
   }
 });
 
-test('#5211 CA-3 · la evidencia manual es coherente con el artefacto versionado', () => {
-  // Cada Sid citado en `explicitoTrasAplicar` tiene que existir de verdad en el
-  // JSON: si alguien renombra un statement, la evidencia queda apuntando a la
-  // nada y nadie se entera.
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const policy = JSON.parse(fs.readFileSync(
-    path.resolve(__dirname, '..', '..', '..', 'docs', 'pipeline', 'kernel-iam-policy.json'), 'utf8',
-  ));
-  const sids = new Set(policy.Statement.map((s) => s.Sid));
-  for (const p of CONTROL_PLANE_PROBES) {
-    if (!p.explicitoTrasAplicar) continue;
-    assert.ok(sids.has(p.explicitoTrasAplicar),
-      `"${p.id}" cita el Sid "${p.explicitoTrasAplicar}", que no existe en kernel-iam-policy.json`);
+test('#5211 CA-3 · hay un probe in-scope por cada control que protege la evidencia', () => {
+  // El agujero que destapó el rebote: la policy aplicada deniega por
+  // `NotResource`, así que un probe contra una tabla ajena da `explicitDeny`
+  // mientras el MISMO control sobre la tabla de evidencia sigue en
+  // `implicitDeny`. Una matriz que sólo corra probes out-scope reporta
+  // verificado un control que sobre el recurso real no existe.
+  const matriz = buildProbeMatrix(CFG);
+  const porAlcance = (a) => matriz.filter((p) => p.alcance === a).map((p) => p.id);
+
+  assert.ok(porAlcance('in-scope').length >= 3,
+    'sin probes in-scope la matriz no dice nada sobre la tabla de evidencia');
+
+  // Y específicamente el control más importante de CA-3: apagar PITR sobre la
+  // tabla de no-repudio deja la evidencia destruible por otra vía.
+  const pitr = matriz.filter((p) => p.args.includes('update-continuous-backups'));
+  assert.ok(pitr.some((p) => p.alcance === 'in-scope' && p.args.includes(CFG.tableName)),
+    'falta el probe de PITR sobre la tabla de evidencia');
+  assert.ok(pitr.some((p) => p.alcance === 'out-scope'),
+    'falta el contraste out-scope: sin él no se ve que el Deny aplicado discrimina por recurso');
+  // El probe in-scope NUNCA puede apagar PITR: viaja con Enabled=true.
+  for (const p of pitr) {
+    assert.ok(p.args.some((a) => /PointInTimeRecoveryEnabled=true/.test(String(a))),
+      `"${p.id}" podría APAGAR PITR: el probe sería el incidente`);
   }
 });
 
-test('#5211 · el render markdown incluye los probes manuales junto a los ejecutados', () => {
+test('#5211 · todo control de CA-3 exige explicitDeny, salvo la excepción documentada', () => {
+  // `deny` a secas se satisface con `implicitDeny`, que es "hoy no le alcanza el
+  // permiso" y no "no puede". Para CA-3 eso no alcanza. La única excepción es
+  // `kms-describe-key`, que no es una acción de administración y cuya garantía
+  // vive en la key policy (`ViaService`), no en la identity policy.
+  const EXCEPCIONES = new Set(['kms-describe-key']);
+  for (const p of buildProbeMatrix(CFG)) {
+    if (p.ca !== 'CA-3' || EXCEPCIONES.has(p.id)) continue;
+    assert.equal(p.expect, 'denyExplicito',
+      `"${p.id}" espera "${p.expect}": un implicitDeny se desharía con un Allow de más y saldría ✅`);
+  }
+});
+
+test('#5211 · el render markdown expone el drift y separa pendientes de fallos', () => {
   const runner = { profile: 'fake', run: () => Promise.resolve({ code: 0, stdout: '{}', stderr: '' }) };
   return verifyKernelIam({ kernelConfig: CFG, runner }).then((report) => {
     const md = renderMarkdown(report);
-    assert.match(md, /Probes ejecutados/);
-    assert.match(md, /control plane/i);
+    assert.match(md, /Controles probados contra AWS/);
+    assert.match(md, /Artefacto versionado vs\. policy aplicada/,
+      'el drift tiene que estar en el documento que el operador firma');
+    assert.match(md, /NO VERIFICADO/,
+      'sin policy legible, el drift se declara no verificado en vez de omitirse');
     for (const p of CONTROL_PLANE_PROBES) {
-      assert.ok(md.includes(p.id), `el render omite el probe manual ${p.id}`);
+      assert.ok(md.includes(p.id), `el render omite el control no ejecutable ${p.id}`);
     }
   });
 });
