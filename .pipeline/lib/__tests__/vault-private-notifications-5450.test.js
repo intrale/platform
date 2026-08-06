@@ -73,6 +73,60 @@ test('context redacta valores de baja entropía bajo claves sensibles antes de p
   }));
 });
 
+// Regresión #5450 rev-2: el secreto colgado DIRECTO de una clave sensible de
+// primer nivel se persistía en texto plano — `redactObject` sólo consultaba la
+// tabla de claves al iterar entradas de objeto, y un string suelto caía a la
+// redacción por patrón/entropía, ciega ante un valor corto.
+test('context redacta claves sensibles de PRIMER NIVEL antes de persistir', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-private-top-level-'));
+  const canary = 'clave-corta-5450';
+  withEnv('PIPELINE_DIR_OVERRIDE', dir, () => withEnv('TELEGRAM_LEO_OPERATOR_CHAT_ID', '-777', () => {
+    const result = notifyTelegram({
+      chat_id: '-777', component: 'vault-shadow', message: 'evento',
+      context: { password: canary, token: canary, api_key: canary, apiKey: canary, secret: canary },
+    });
+    assert.equal(result.ok, true);
+    const raw = fs.readFileSync(result.dropPath, 'utf8');
+    assert.equal(raw.includes(canary), false, 'el canario de primer nivel no debe persistir en el dropfile');
+    assert.match(JSON.parse(raw).text, /password: \[REDACTED\]/);
+  }));
+});
+
+// Regresión #5450 rev-2: el camino histórico SIN `chat_id` va al chat GRUPAL,
+// así que un secreto sin redactar ahí tiene una audiencia todavía más amplia.
+test('camino sin chat_id (destino grupal) también redacta claves sensibles de primer nivel', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-group-top-level-'));
+  const canary = 'clave-corta-5450';
+  withEnv('PIPELINE_DIR_OVERRIDE', dir, () => withEnv('TELEGRAM_LEO_OPERATOR_CHAT_ID', null, () => {
+    const result = notifyTelegram({
+      component: 'vault-shadow', message: 'evento grupal',
+      context: { password: canary }, holder: { pid: 1234, hostname: 'host-1' },
+    });
+    assert.equal(result.ok, true);
+    const drop = JSON.parse(fs.readFileSync(result.dropPath, 'utf8'));
+    assert.equal(drop.chat_id, undefined, 'sin chat_id el drop va al grupo');
+    assert.equal(fs.readFileSync(result.dropPath, 'utf8').includes(canary), false);
+  }));
+});
+
+test('holder pasa por el motor de claves sensibles y conserva los campos benignos', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-holder-'));
+  const canary = 'clave-corta-5450';
+  withEnv('PIPELINE_DIR_OVERRIDE', dir, () => withEnv('TELEGRAM_LEO_OPERATOR_CHAT_ID', '-777', () => {
+    const result = notifyTelegram({
+      chat_id: '-777', component: 'vault-shadow', message: 'evento',
+      holder: { pid: 4321, hostname: 'host-1', token: canary },
+      context: { via: 'env', intentos: 3 },
+    });
+    const text = JSON.parse(fs.readFileSync(result.dropPath, 'utf8')).text;
+    assert.equal(text.includes(canary), false);
+    // Retrocompatibilidad: lo no sensible se sigue mostrando tal cual.
+    assert.match(text, /holder: pid=4321 host=host-1/);
+    assert.match(text, /via: env/);
+    assert.match(text, /intentos: 3/);
+  }));
+});
+
 test('sin ancla no crea drop ni degrada al destino grupal', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-private-'));
   withEnv('PIPELINE_DIR_OVERRIDE', dir, () => withEnv('TELEGRAM_LEO_OPERATOR_CHAT_ID', null, () => {

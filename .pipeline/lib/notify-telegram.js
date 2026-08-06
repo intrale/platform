@@ -111,19 +111,29 @@ function buildMessage(payload) {
     lines.push('');
 
     // Contexto: holder (PID, host), timestamp, campos custom.
+    //
+    // SEGURIDAD (#5450 rev-2): `redactObject` sólo consulta la tabla de claves
+    // sensibles cuando ITERA las entradas de un objeto. Aplicado sobre un string
+    // suelto degrada a redacción por patrón/entropía, que no reconoce secretos
+    // cortos o de baja entropía. Por eso el objeto se redacta COMPLETO acá,
+    // ANTES de iterarlo: así un secreto colgado directo de una clave sensible de
+    // primer nivel (`context: { password: 'x' }`) también queda tachado, tanto en
+    // el dropfile en reposo como en el body saliente. Vale para los dos destinos
+    // (privado con `chat_id` y el camino histórico sin `chat_id`, que va al grupo).
     const ctxLines = [];
     if (payload.holder && typeof payload.holder === 'object') {
-        const h = payload.holder;
+        const h = redactObject(payload.holder);
         const parts = [];
         if (h.pid) parts.push(`pid=${redactFreeText(h.pid)}`);
         if (h.hostname) parts.push(`host=${redactFreeText(h.hostname)}`);
         if (h.startTime) parts.push(`start=${redactFreeText(h.startTime)}`);
         if (parts.length > 0) ctxLines.push(`holder: ${parts.join(' ')}`);
     }
-    for (const key of Object.keys(ctx)) {
-        const val = ctx[key];
+    const safeCtx = redactObject(ctx);
+    for (const key of Object.keys(safeCtx)) {
+        const val = safeCtx[key];
         if (val == null || val === '') continue;
-        const safeValue = typeof val === 'object' ? JSON.stringify(redactObject(val)) : val;
+        const safeValue = typeof val === 'object' ? JSON.stringify(val) : val;
         ctxLines.push(`${redactFreeText(key)}: ${redactFreeText(safeValue)}`);
     }
     ctxLines.push(`emisor: pid=${process.pid} host=${os.hostname()} ts=${ts}`);
