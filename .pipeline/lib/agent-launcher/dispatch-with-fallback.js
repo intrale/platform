@@ -439,12 +439,44 @@ function onSpawnExit(opts = {}) {
         // race conditions.
         if (verdict.errorClass === 'quota_exhausted' || verdict.errorClass === 'rate_limit') {
             try {
-                const errorType = _selectErrorTypeForFlag(provider, verdict, _quota);
+                // #5455 — El canal de contenido de Anthropic se resuelve ANTES
+                // del selector genérico. Sin esto, `_selectErrorTypeForFlag` no
+                // encuentra `error_type` en el frame (no lo tiene) y degrada al
+                // "default safe" = `allowlist[0]` (`usage_limit_error`), que el
+                // reconcile de #4865 VETA con el adapter sano — exactamente el
+                // caso del incidente. El barrido usa el log CRUDO porque
+                // `verdict.evidence` viene truncado/redactado y no es JSON
+                // re-parseable de forma confiable.
+                //
+                // SCOPE ANTHROPIC (fix del rechazo de #5455): se pasa el
+                // provider REAL del spawn. El detector lo EXIGE y devuelve null
+                // si no canonicaliza a `anthropic`, así que el tipo dedicado no
+                // puede aterrizar sobre un provider ajeno a su allowlist por una
+                // línea con forma de frame inyectada en un log de texto plano.
+                // El gate se declara acá además de en el detector (defensa en
+                // profundidad): este es el punto donde el errorType se PERSISTE
+                // con `provider`, y `setFlag` no valida membresía de allowlist.
+                const contentChannel = (typeof _quota.detectWeeklyLimitContentChannelFromLog === 'function')
+                    ? _quota.detectWeeklyLimitContentChannelFromLog(rawOutput, { now: _now, providerId: provider })
+                    : null;
+                const errorType = contentChannel
+                    ? contentChannel.errorType
+                    : _selectErrorTypeForFlag(provider, verdict, _quota);
                 if (errorType && typeof _quota.setFlag === 'function') {
                     _quota.setFlag({
                         provider,
                         errorType,
-                        rawExcerpt: safeEvidence,
+                        // El reset viaja YA parseado desde el detector; nunca se
+                        // escribe el JSON a mano. `setFlag` clampea igual el TTL
+                        // efectivo de este tipo a 60 minutos (`maxDays` es
+                        // redundante-por-contrato, la garantía vive en setFlag).
+                        ...(contentChannel
+                            ? {
+                                ...(contentChannel.resetsAt ? { resetsAt: contentChannel.resetsAt } : {}),
+                                maxDays: _quota.WEEKLY_LIMIT_CONTENT_MAX_DAYS,
+                            }
+                            : {}),
+                        rawExcerpt: contentChannel ? contentChannel.rawExcerpt : safeEvidence,
                         agent: skill || null,
                     });
                     flagSet = true;

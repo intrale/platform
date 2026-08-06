@@ -567,8 +567,52 @@ switch (action) {
     // launchAll() para que la versión nueva sea la que lance los componentes.
     reexecIfSelfChanged();
     if (flagPaused) {
-      fs.writeFileSync(path.join(PIPELINE, '.paused'), new Date().toISOString());
-      log('Modo PAUSADO — solo Telegram + dashboard activos (intake/lanzamiento deshabilitados)');
+      // #5399 — el restart YA NO reescribe el marker con un ISO pelado: eso
+      // destruía la autoría de la pausa y la volvía indistinguible de una
+      // manual, así que el auto-recovery de #4832 nunca la levantaba (1h33 sin
+      // despachar el 2026-08-02). Ruteamos por el dueño del estado
+      // (`lib/partial-pause.js`), que escribe bajo lock + atómico (CA-11).
+      // `require` LAZY: `stop`/`status` no pagan el costo de arrastrar
+      // file-lock + waves + audit-log + Telegram en el arranque.
+      const partialPause = require('./lib/partial-pause');
+      let res = null;
+      try {
+        if (wasPausedBefore) {
+          // El marker se lee del disco DENTRO del lock, no desde memoria: así la
+          // operación es idempotente ante el re-exec de #2880.
+          res = partialPause.preserveFullPause();
+        } else {
+          // `--paused` sin pausa previa = pausa NUEVA pedida por el operador → humana.
+          res = partialPause.setFullPause({
+            source: 'restart',
+            authorizedBy: 'restart:preserve-pause',
+            justification: 'restart --paused (pausa nueva solicitada por el operador)',
+          });
+        }
+      } catch (e) {
+        // Nunca abortamos el restart por no poder anotar la preservación: el
+        // marker original queda intacto, que ya es la preservación correcta.
+        // UX-3: no se comunica como falla. La pausa siguió preservada; lo único
+        // que faltó es el rastro del restart. Un texto de error empuja a una
+        // intervención manual sobre un estado sano.
+        log(`La pausa quedó preservada, pero no se pudo anotar el rastro del restart (${e.message})`);
+      }
+      // CA-7 — el operador tiene que poder distinguir "esperá 30s y se levanta
+      // sola" de "esto no se levanta hasta que lo destrabes a mano".
+      const autoLiftable = !!(res && res.autoLiftable);
+      const autoria = (res && res.source) || 'unknown';
+      const heredada = wasPausedBefore ? 'heredada' : 'nueva';
+      let extra = autoLiftable
+        ? 'se auto-levanta cuando la causa se resuelva'
+        : 'requiere destrabe explícito';
+      // UX-3 — el camino degradado NO es una falla: la pausa se preservó bien,
+      // sólo no quedó anotado `preservedFrom`. Redactarlo como error empuja al
+      // `rm .pipeline/.paused` manual, que destruye justo la autoría que este
+      // issue crea (UX-2).
+      if (res && res.lockFailed) extra += '; preservada tal cual, sin anotar el rastro del restart';
+      if (res && res.undetermined) extra += `; autoría no determinable (${res.undetermined})`;
+      log(`Modo PAUSADO — pausa ${heredada} (autoría: ${autoria}; ${extra}) — `
+        + 'solo Telegram + dashboard activos (intake/lanzamiento deshabilitados)');
     } else {
       try { fs.unlinkSync(path.join(PIPELINE, '.paused')); } catch {}
     }

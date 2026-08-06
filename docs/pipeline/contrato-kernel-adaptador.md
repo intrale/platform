@@ -86,7 +86,7 @@ línea. Valores de la columna **Lado**:
 > **Vocabulario (#5173, REQ-UX-6).** El vocabulario canónico es **kernel · producto ·
 > autoridad**. Las tablas §2.1–§2.3 y §2.5+ son del inventario original de #4009 y todavía
 > usan los nombres viejos: `adaptador` ≡ **producto**, y `a-decidir` significaba "híbrido, se
-> parte más adelante". Para `config.yaml` esa categoría **ya no existe**: §2.4 clasifica las 58
+> parte más adelante". Para `config.yaml` esa categoría **ya no existe**: §2.4 clasifica las 59
 > secciones sin ninguna indecisión, y los híbridos se resuelven partiéndolos por sub-path
 > (columna *Nota*). El default es **fail-closed**: una clave sin lado declarado se trata como
 > `kernel`, nunca como `producto`.
@@ -140,17 +140,17 @@ línea. Valores de la columna **Lado**:
 | `_frozen/ios-dev` | adaptador | Stack del producto (Compose iOS); congelado. |
 | `_frozen/scrum` | kernel | Proceso de orquestación (zombi V3); congelado, genérico. |
 
-### 2.4. `config.yaml` — clasificación completa de las 58 secciones (#5173)
+### 2.4. `config.yaml` — clasificación completa de las 60 secciones (#5173)
 
 <!-- #5173 · Entrega B de #5111. Reemplaza la tabla parcial del inventario original,
      que clasificaba 6 de 57 secciones y dejaba 4 ítems sin decidir. -->
 
-Las **58** secciones top-level de `.pipeline/config.yaml`, una por una, con su forma real y su
+Las **60** secciones top-level de `.pipeline/config.yaml`, una por una, con su forma real y su
 lado. Es la expresión legible de `SIDE_MAP` en `.pipeline/lib/config-schema.js`: **si esta tabla
 y ese mapa divergen, falla el test** `#5173 toda sección top-level de config.yaml está declarada
 en el schema y tiene lado` **en el PR**, no en el arranque.
 
-Reparto: **37 kernel · 12 autoridad · 9 producto**.
+Reparto: **39 kernel · 12 autoridad · 9 producto**.
 
 > **Regla operativa (CA-1).** La raíz del schema está **cerrada**
 > (`additionalProperties: false`). Agregar una sección nueva a `config.yaml` exige declararla en
@@ -222,6 +222,9 @@ Reparto: **37 kernel · 12 autoridad · 9 producto**.
 | 56 | `wave_auto_transition` (1782) | obj | **autoridad** | Transición automática de ola sin humano; decide autonomía. |
 | 57 | `telegram` (1800) | obj | producto | Verificado: en HEAD sólo `bot_username`, sin escalación. |
 | 58 | `commander_products` (1823) | obj | **autoridad** | D-2: incluye `default_product` y el alta de productos con sus operadores. |
+| 59 | `vault` (1318) | obj | kernel | #5352: direcciona secretos de infraestructura por host (`prefix`/`projectId`/`hostId`); es mecanismo, se muda al kernel sin conocer el producto. Reutiliza `kernel.region`. |
+| 60 | `worktree_provenance` | obj | kernel | Allowlist de identidades para verificar procedencia de ramas en auto-recovery; mecanismo de seguridad del motor. |
+| 61 | `telegram_voice_outbound` | obj | kernel | #5573: política de reenvío de las PARTES DE AUDIO, separada de `telegram_outbound` (texto) porque la latencia real de un `.ogg` es ~62-74s contra los 5s del texto. Es transporte de salida del motor; mecanismo. |
 
 #### 2.4.1. Matriz de precedencia
 

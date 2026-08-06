@@ -31,10 +31,8 @@ const { seedProductManifest } = require('./_test-helpers');
 const QUOTA_MOD = path.join(__dirname, '..', 'quota-exhausted.js');
 
 const YAML_CORRUPTO = 'foo: [1, 2\n  bar: : :\n';
-// `resets_at_cap_max_days: 1` está DELIBERADAMENTE por debajo de la distancia al
-// próximo reset semanal: así el fallback semanal queda fuera del cap y
-// `capResetsAt` devuelve exactamente el techo (`cap_max`). Eso vuelve el TTL
-// determinista y discrimina "se aplicó la config" de "se usó el default de 7d".
+// El reloj y el candidato de reset se fijan más abajo. Así el test no depende
+// de cuánto falta, en el calendario real, para el próximo reset semanal.
 const YAML_SANO_TTL = 'quota_detector:\n  resets_at_cap_max_days: 1\n';
 
 /**
@@ -69,8 +67,17 @@ const BASE = { errorType: 'usage_limit_reached', provider: 'anthropic', auditLog
 
 // Para MEDIR el TTL hace falta un errorType que NO sea `usage_limit_reached`:
 // ese es el cap rolling de Codex (1h fija), donde `maxDays` sólo acota y no
-// define. Sin `resetsAt`, el resto cae exactamente al cap => el TTL es medible.
-const BASE_TTL = { errorType: 'rate_limit_error', provider: 'anthropic', auditLogEnabled: false };
+// define. Un `resetsAt` fijo permite comparar ambos caps con reloj hermético.
+const TEST_NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
+const BASE_TTL = {
+    errorType: 'rate_limit_error',
+    provider: 'anthropic',
+    auditLogEnabled: false,
+    now: TEST_NOW,
+    // Con config corrupta, el default de 7d acepta este candidato de 3d. Con
+    // config sana, el cap de 1d lo rechaza y fija el techo configurado.
+    resetsAt: TEST_NOW + 3 * 86400000,
+};
 
 test('config corrupta + setFlag SIN maxDays => el flag SE ESCRIBE (no fail-open)', () => {
     const r = correrSetFlag(YAML_CORRUPTO, BASE);
@@ -85,8 +92,7 @@ function ttlEnDias(r, desde) {
 }
 
 test('config corrupta => el TTL queda acotado por el default conservador de 7d', () => {
-    const ahora = Date.now();
-    const dias = ttlEnDias(correrSetFlag(YAML_CORRUPTO, BASE_TTL), ahora);
+    const dias = ttlEnDias(correrSetFlag(YAML_CORRUPTO, BASE_TTL), TEST_NOW);
     // Sin config legible el techo es DEFAULT_MAX_RESETS_AT_DAYS; dentro de ese
     // techo `capResetsAt` puede elegir el reset semanal, así que se acota el
     // rango en vez de fijar un valor: lo que importa es que NO hay flag eterno.
@@ -100,17 +106,15 @@ test('config corrupta + maxDays explícito => sigue funcionando (contrato #3077 
 });
 
 test('config SANA => el TTL configurado se sigue aplicando (no se degradó a default)', () => {
-    const ahora = Date.now();
     const r = correrSetFlag(YAML_SANO_TTL, BASE_TTL);
     assert.strictEqual(r.threw, null);
-    const dias = ttlEnDias(r, ahora);
+    const dias = ttlEnDias(r, TEST_NOW);
     assert.ok(dias > 0.95 && dias < 1.05, `TTL esperado ~1d (config), obtenido ${dias.toFixed(2)}d`);
 });
 
 test('config corrupta vs SANA => el techo difiere (prueba que la config SÍ se lee cuando es legible)', () => {
-    const ahora = Date.now();
-    const conCorrupta = ttlEnDias(correrSetFlag(YAML_CORRUPTO, BASE_TTL), ahora);
-    const conSana = ttlEnDias(correrSetFlag(YAML_SANO_TTL, BASE_TTL), ahora);
+    const conCorrupta = ttlEnDias(correrSetFlag(YAML_CORRUPTO, BASE_TTL), TEST_NOW);
+    const conSana = ttlEnDias(correrSetFlag(YAML_SANO_TTL, BASE_TTL), TEST_NOW);
     assert.ok(
         conCorrupta > conSana,
         `la degradación debe ser observable: corrupta=${conCorrupta.toFixed(2)}d sana=${conSana.toFixed(2)}d`
