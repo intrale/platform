@@ -22,6 +22,8 @@ const fs = require('fs');
 const path = require('path');
 const trace = require('./traceability');
 const { redactAll } = require('./sherlock-audit-jsonl');
+// #5337 CA-6 — discriminador compartido "recomendación de agente" vs "bloqueo real".
+const { isRecommendationIssue, normalizeLabelNames } = require('./recommendation-labels');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const PIPELINES = ['desarrollo', 'definicion'];
@@ -352,10 +354,18 @@ function mergeGithubBlockedLabels(fsList, ghIssues) {
         if (!gi) continue;
         const num = Number(gi.issue != null ? gi.issue : gi.number);
         if (!Number.isFinite(num) || seen.has(num)) continue;
+        const labelNames = normalizeLabelNames(gi.labels);
+        // #5337 CA-6 — las recomendaciones de agentes también llevan `needs-human`
+        // pero NO son bloqueos: nadie está frenado esperando al operador, son
+        // backlog esperando triaje. Medición 2026-08-01: 865 de 880 issues con
+        // `needs-human` eran recomendaciones. Sin este filtro la notificación de
+        // bloqueo nace ahogada en 98,3% de ruido y deja de ser señal.
+        //
+        // Sólo aplica a las entradas que vienen SOLO de GitHub. Un marker en
+        // disco (rama `fsList`) lo crea `reportHumanBlock`, o sea que hubo un
+        // agente frenado de verdad: ése no se filtra nunca.
+        if (isRecommendationIssue(labelNames)) continue;
         seen.add(num);
-        const labelNames = Array.isArray(gi.labels)
-            ? gi.labels.map((l) => (typeof l === 'string' ? l : (l && l.name))).filter(Boolean)
-            : [];
         const blockLabel = labelNames.find((l) => GITHUB_HUMAN_BLOCK_LABELS.includes(l));
         merged.push({
             issue: num,
@@ -505,6 +515,31 @@ const HUMAN_BLOCK_PATTERNS = [
     /\bPR\s+#?\d+\s+(?:mergeable|esperando|pendiente)\b.*\b(?:merge|humano|review)/i,
     /\bpending\s+human\s+(?:review|merge|approval)\b/i,
     /\baprobaci[oó]n\s+humana\s+pendiente\b/i,
+
+    // #5337 CA-3 — los 4 casos del 2026-08-01 que NO disparaban notificación.
+    // Cada patrón exige la señal Y su calificador (sin resolver / bloquea /
+    // pendiente): un motivo que apenas MENCIONA "seguridad" o "merge" mientras
+    // describe otra cosa no debe congelar el issue. Los mismos casos también se
+    // detectan por estado objetivo en `human-block-triggers.js`; estos patrones
+    // cubren la vía textual, cuando el agente lo redactó en su `motivo`.
+
+    // (1) Hallazgos de seguridad / code-scanning sin resolver.
+    /\bhallazgos?\s+de\s+seguridad\b[\s\S]{0,80}?\b(?:sin\s+resolver|pendientes?|bloque)/i,
+    /\bcode[-_\s]?scanning\b[\s\S]{0,80}?\b(?:sin\s+resolver|abiert|bloque)/i,
+    /\bruleset\s+de\s+main\b[\s\S]{0,80}?\b(?:exige|bloque|impide)/i,
+
+    // (2) Conflicto de merge que no se resuelve mecánicamente.
+    /\bconflictos?\s+de\s+merge\b/i,
+    /\bmerge\s+conflict\b/i,
+
+    // (3) Un gate devuelve pidiendo una DECISIÓN del operador, no una corrección.
+    /\bdecisi[oó]n\s+(?:del?\s+)?(?:operador|humano|negocio|producto)\b/i,
+    /\brequiere\s+(?:una\s+)?decisi[oó]n\b/i,
+    /\bescalar?\s+(?:la\s+)?decisi[oó]n\b/i,
+    /\bcriterio\s+de\s+negocio\s+pendiente\b/i,
+
+    // (4) Review manual exigida por CODEOWNERS / ruleset.
+    /\breview\s+manual\s+(?:exigid|requerid|pendiente|obligatori)/i,
 ];
 
 /**
@@ -542,9 +577,20 @@ function inferHumanBlockQuestion(motivo, opts = {}) {
  * Usado al notificar un nuevo bloqueo: además del incidente nuevo, mostramos
  * el panorama completo de qué requiere intervención humana.
  *
+ * #5337 CA-2 — el mensaje tiene que decir las TRES cosas: qué issue, qué se
+ * necesita del operador, y qué opciones hay con la recomendación del pipeline
+ * cuando exista. Faltaba la recomendación: se agrega como bloque `💡`, y se
+ * omite entero si no hay (guideline UX: nunca escribir "sin recomendación",
+ * que ocupa una línea para no decir nada).
+ *
+ * Las opciones concretas las ejecuta la botonera (`buildBlockedActionMarkup`):
+ * acá el texto DESCRIBE, los botones EJECUTAN. No se enumera un set de opciones
+ * en el texto que pueda contradecir a los botones.
+ *
  * @param {object} opts
  * @param {object} [opts.highlight] — Issue recién bloqueado a destacar al inicio.
  * @param {Array}  [opts.blocked]   — Lista (default: listBlockedIssues()).
+ * @param {string} [opts.highlight.recommendation] — Recomendación del pipeline (#5337).
  */
 function buildBlockedSummaryMarkdown(opts = {}) {
     const blocked = Array.isArray(opts.blocked) ? opts.blocked : listBlockedIssues();
@@ -559,6 +605,11 @@ function buildBlockedSummaryMarkdown(opts = {}) {
         }
         if (highlight.question) {
             lines.push(`❓ ${String(highlight.question).slice(0, 280)}`);
+        }
+        // #5337 CA-2 — recomendación del pipeline. Sólo si existe.
+        const reco = String(highlight.recommendation || '').trim();
+        if (reco) {
+            lines.push(`💡 *Recomendación:* ${reco.slice(0, 280)}`);
         }
         lines.push('');
     }
@@ -838,12 +889,19 @@ function auditQuickAction(entry = {}) {
  * @param {string} [opts.question] — Decisión/pregunta cruda que requiere humano.
  * @returns {string} Guion narrable, redactado y acotado (≤ 600 chars).
  */
-function buildNeedHumanAudioText({ reason, question } = {}) {
+function buildNeedHumanAudioText({ reason, question, recommendation } = {}) {
     const motivo = redactAll(String(reason || '').trim());
     const decision = redactAll(String(question || '').trim());
+    // #5337 CA-2 — la recomendación también se narra. El audio es el canal que
+    // funciona cuando el operador no está mirando la pantalla; si el texto le
+    // dice qué le conviene hacer y el audio no, el audio queda a medias.
+    // Va ÚLTIMA y es lo primero que se recorta si el guion excede el cap: el
+    // orden narrativo fijo (alerta → motivo → decisión) no se altera (G-3).
+    const sugerencia = redactAll(String(recommendation || '').trim());
     const partes = [];
     if (motivo) partes.push(`El motivo del bloqueo es: ${motivo}.`);
     if (decision) partes.push(`La decisión que necesitamos es: ${decision}.`);
+    if (sugerencia) partes.push(`Sugerencia del pipeline: ${sugerencia}.`);
     const cuerpo = partes.length ? ` ${partes.join(' ')}` : '';
     return `Atención: un issue requiere intervención humana.${cuerpo}`.slice(0, 600);
 }
@@ -873,7 +931,7 @@ function buildNeedHumanAudioText({ reason, question } = {}) {
  */
 async function sendNeedHumanAudio(deps = {}) {
     const {
-        reason, question, profile = 'need-human',
+        reason, question, recommendation, profile = 'need-human',
         botToken, chatId, textToSpeechWithMeta, sendVoiceTelegram,
     } = deps;
     try {
@@ -881,7 +939,7 @@ async function sendNeedHumanAudio(deps = {}) {
         if (typeof textToSpeechWithMeta !== 'function' || typeof sendVoiceTelegram !== 'function') {
             return { sent: false, skipped: 'no-tts' };
         }
-        const audioText = buildNeedHumanAudioText({ reason, question });
+        const audioText = buildNeedHumanAudioText({ reason, question, recommendation });
         const meta = await textToSpeechWithMeta(audioText, { profile });
         if (!meta || !meta.buffer) return { sent: false, skipped: 'no-buffer' };
         const ok = await sendVoiceTelegram(meta.buffer, botToken, chatId);
@@ -925,4 +983,9 @@ module.exports = {
     buildBlockedActionMarkup,
     executeQuickAction,
     auditQuickAction,
+    // #5337 — discriminador recomendación vs bloqueo real (CA-6). Re-export del
+    // módulo compartido para que los consumidores de human-block no tengan que
+    // conocer un segundo módulo sólo para filtrar ruido.
+    isRecommendationIssue,
+    normalizeLabelNames,
 };
