@@ -1518,6 +1518,13 @@ function* _genPipelineState() {
           const yamlData = readYamlSafe(filepath);
           entry.resultado = yamlData.resultado;
           entry.motivo = yamlData.motivo;
+          // #5629 — Señal ESTRUCTURADA de merge real. `resultado` y `motivo` NO
+          // sirven para saber si hubo merge (los markers de #5220/#5244 decían
+          // `aprobado` con el motivo confesando "merge bloqueado"); el único
+          // dato confiable es este SHA, que `delivery.js` escribe sólo en la
+          // rama de merge confirmado. Lo exponemos crudo: la validación de
+          // formato y la regla de "entregado" viven en `lib/delivery-status.js`.
+          entry.delivery_merge_sha = yamlData.delivery_merge_sha || null;
         }
 
         // #2801 — Si el archivo en pendiente/trabajando tiene contexto de

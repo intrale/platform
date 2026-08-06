@@ -36,6 +36,10 @@
 
 const path = require('path');
 const slices = require('./dashboard-slices');
+// #5629 — Fuente ÚNICA del estado "Entregado" (CLOSED en GitHub o
+// `delivery_merge_sha` estructurado). Compartida con `wave-snapshot.js` y con
+// el payload que consume la ventana de Pipeline. No re-derivar la regla acá.
+const deliveryStatus = require('./delivery-status');
 // #3961 EP8-H8 — loader de umbrales configurables del dashboard (CA-6/CA-9).
 let dashboardThresholds = null;
 try { dashboardThresholds = require('./dashboard-thresholds'); } catch { /* opcional */ }
@@ -470,11 +474,19 @@ function deriveIssuesMission(state) {
         const wave = s.activeWave || {};
         const issuesArr = Array.isArray(wave.issues) ? wave.issues : [];
         const titles = s.issueTitles || {};
+        const matrix = s.issueMatrix || {};
         let entregados = 0;
         for (const it of issuesArr) {
             const n = (it && typeof it === 'object') ? it.number : it;
             const meta = titles[String(n)];
-            if (meta && String(meta.state).toUpperCase() === 'CLOSED') entregados++;
+            // #5629 — Mismo helper que `enrichWaveIssue` y `wave-snapshot`: el
+            // conteo de ENTREGADOS del banner no puede discrepar del board
+            // (CA-7). Suma el caso `delivery_merge_sha` para no esperar el TTL
+            // de 1h del title-cache (CA-5).
+            if (deliveryStatus.isDelivered({
+                closedInGitHub: !!meta && String(meta.state).toUpperCase() === 'CLOSED',
+                mergeSha: deliveryStatus.extractMergeSha(matrix[String(n)]),
+            })) entregados++;
         }
         const eta = s.olaETA || null;
         const vel = (eta && eta.velocityETA) || null;
@@ -877,7 +889,16 @@ function enrichWaveIssue(base, state) {
         title = meta.title.slice(0, WAVES_TITLE_MAX_CHARS);
     }
 
-    const isClosed = String(meta.state || '').toUpperCase() === 'CLOSED';
+    // #5629 — "Entregado" por el helper único: CLOSED en GitHub (fuente de
+    // verdad, #4099/#4732) o `delivery_merge_sha` estructurado. El SHA cierra la
+    // ventana del TTL de 1h del title-cache: un PR mergeado hace un minuto ya
+    // cuenta como entregado aunque el cache todavía lo reporte OPEN (CA-5).
+    // NO mirar `resultado`/`motivo` del marker: los de #5220/#5244 decían
+    // `aprobado` con el merge frenado.
+    const isClosed = deliveryStatus.isDelivered({
+        closedInGitHub: String(meta.state || '').toUpperCase() === 'CLOSED',
+        mergeSha: deliveryStatus.extractMergeSha(m),
+    });
     const labels = Array.isArray(meta.labels) ? meta.labels : [];
     const isBlocked = labels.some((l) => String(l).toLowerCase().includes('blocked'));
 
@@ -930,6 +951,12 @@ function enrichWaveIssue(base, state) {
         logFile,
         progress,
         merged,
+        // #5629 — Veredicto de entrega YA RESUELTO por el helper único, para que
+        // la ventana de Pipeline (`pipeline-redesign.js`, browser) lo consuma
+        // tal cual en vez de re-derivarlo con su propia regla
+        // (`status === 'completed' || merged === true`). Un solo cálculo para
+        // las tres vistas (CA-7).
+        delivered: isClosed,
     };
 }
 
@@ -1078,6 +1105,13 @@ function buildWavesPayload(state, pipelineDir) {
                     logFile: it.logFile,
                     progress: completed ? 100 : it.progress,
                     merged: completed ? true : it.merged,
+                    // #5629 — `delivered` viaja en la copia campo por campo (sin
+                    // spread) o se perdería y el cliente lo leería `undefined`.
+                    // El snapshot vivo deriva 'completed' del MISMO helper que
+                    // `enrichWaveIssue`, así que ambos coinciden por
+                    // construcción: si el snapshot dice completed, hubo CLOSED o
+                    // merge SHA real — nunca un marker `aprobado` sin merge.
+                    delivered: completed ? true : it.delivered,
                 };
             });
         }
