@@ -34,6 +34,10 @@ const CFG = {
   tableName: 'tabla-no-repudio',
   coordinationTableName: 'tabla-coordinacion',
   region: 'region-test',
+  // #5211 — Nombres de infra inyectados: el módulo NO puede completarlos con un
+  // literal (ver el test de fail-closed más abajo).
+  cmkAlias: 'alias-cmk-test',
+  runtimePrincipal: 'principal-runtime-test',
 };
 
 // Mensajes reales del AWS CLI (capturados el 2026-08-06, ya redactados).
@@ -150,6 +154,60 @@ test('#5211 · los nombres de tabla salen de config, no hardcodeados', () => {
     'no hay nombres de tabla reales hardcodeados (A05)');
 });
 
+test('#5211 · el alias de la CMK y el principal runtime TAMBIÉN salen de config', () => {
+  // Regresión: `cfg.cmkAlias || 'intrale-kernel-store'` y
+  // `cfg.runtimePrincipal || 'intrale-kernel-runtime'` caían siempre al literal,
+  // porque `readKernelTablesConfig` sólo devuelve
+  // {tableName, coordinationTableName, region, durable} — esas claves nunca
+  // llegaban. Los dos probes de CA-3 apuntaban a un recurso hardcodeado.
+  const matrix = buildProbeMatrix(CFG);
+  const payload = JSON.stringify(matrix);
+
+  const kms = matrix.find((p) => p.id === 'kms-describe-key');
+  assert.deepEqual(kms.args, ['kms', 'describe-key', '--key-id', 'alias/alias-cmk-test']);
+
+  const iam = matrix.find((p) => p.id === 'iam-list-attached-user-policies');
+  assert.deepEqual(iam.args,
+    ['iam', 'list-attached-user-policies', '--user-name', 'principal-runtime-test']);
+
+  assert.equal(/intrale-kernel-store|intrale-kernel-runtime/.test(payload), false,
+    'no queda ningún nombre de infra real hardcodeado en el módulo (A05)');
+});
+
+test('#5211 · sin los nombres de infra en config, la matriz NO se arma (fail-closed)', () => {
+  // Un default silencioso apuntaría el probe a un recurso que puede no existir,
+  // y ese AccessDenied se lee idéntico a un Deny aplicado: la matriz reportaría
+  // ✅ sobre un control que jamás se probó. Preferimos que reviente.
+  for (const clave of ['cmkAlias', 'runtimePrincipal', 'tableName', 'coordinationTableName']) {
+    const incompleta = { ...CFG };
+    delete incompleta[clave];
+    assert.throws(() => buildProbeMatrix(incompleta), new RegExp(clave),
+      `falta "${clave}" y buildProbeMatrix igual armó la matriz`);
+  }
+});
+
+test('#5211 · readKernelIamConfig exige cmkAlias y runtimePrincipal', () => {
+  const { readKernelIamConfig } = require('../kernel-iam-verify');
+  // Config con las tablas pero sin los nombres de infra de la matriz IAM.
+  assert.throws(
+    () => readKernelIamConfig({
+      kernelConfig: {
+        tableName: 'tabla-no-repudio',
+        coordinationTableName: 'tabla-coordinacion',
+        region: 'region-test',
+      },
+    }),
+    /kernel\.cmkAlias.*kernel\.runtimePrincipal|kernel\.cmkAlias/s,
+    'debe fallar nombrando las claves faltantes, no completarlas',
+  );
+
+  // Y con todo presente, las devuelve junto a lo que ya daba el módulo hermano.
+  const cfg = readKernelIamConfig({ kernelConfig: CFG });
+  assert.equal(cfg.cmkAlias, 'alias-cmk-test');
+  assert.equal(cfg.runtimePrincipal, 'principal-runtime-test');
+  assert.equal(cfg.tableName, 'tabla-no-repudio');
+});
+
 test('#5211 CA-2 · la matriz cubre las dos tablas y ambos sentidos (Allow y Deny)', () => {
   const matrix = buildProbeMatrix(CFG);
   const allows = matrix.filter((p) => p.expect === 'allow');
@@ -240,6 +298,43 @@ test('#5211 CA-3 · los probes de control plane se declaran, nunca se ejecutan',
   const ejecutables = new Set(buildProbeMatrix(CFG).map((p) => p.id));
   for (const p of CONTROL_PLANE_PROBES) {
     assert.equal(ejecutables.has(p.id), false, `${p.id} está en la matriz ejecutable`);
+  }
+});
+
+test('#5211 CA-3 · ningún probe manual afirma explicitDeny de un statement que NO está aplicado', () => {
+  // El defecto que trajo el rebote: la evidencia declaraba
+  // `explicitDeny · policy/IntraleKernelStore` para CreateTable y AttachUserPolicy,
+  // pero los statements que producirían ese resultado son adiciones de #5211 que
+  // todavía no se aplicaron en AWS. Una evidencia no puede afirmar el efecto de
+  // una policy que no está puesta: es el mismo patrón (decir más de lo que el
+  // estado respalda) que el issue vino a matar.
+  //
+  // El invariante: si la fila declara `explicitoTrasAplicar`, ese statement está
+  // PENDIENTE ⇒ la evidencia observada tiene que ser implicitDeny.
+  for (const p of CONTROL_PLANE_PROBES) {
+    if (!p.explicitoTrasAplicar) continue;
+    assert.match(p.evidenciaManual, /^implicitDeny/,
+      `"${p.id}" declara que ${p.explicitoTrasAplicar} está pendiente de aplicar, `
+      + `pero su evidencia dice "${p.evidenciaManual}"`);
+    assert.equal(/explicitDeny|IntraleKernelStore/.test(p.evidenciaManual), false,
+      `"${p.id}" no puede atribuirle el deny a una policy que todavía no está aplicada`);
+  }
+});
+
+test('#5211 CA-3 · la evidencia manual es coherente con el artefacto versionado', () => {
+  // Cada Sid citado en `explicitoTrasAplicar` tiene que existir de verdad en el
+  // JSON: si alguien renombra un statement, la evidencia queda apuntando a la
+  // nada y nadie se entera.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const policy = JSON.parse(fs.readFileSync(
+    path.resolve(__dirname, '..', '..', '..', 'docs', 'pipeline', 'kernel-iam-policy.json'), 'utf8',
+  ));
+  const sids = new Set(policy.Statement.map((s) => s.Sid));
+  for (const p of CONTROL_PLANE_PROBES) {
+    if (!p.explicitoTrasAplicar) continue;
+    assert.ok(sids.has(p.explicitoTrasAplicar),
+      `"${p.id}" cita el Sid "${p.explicitoTrasAplicar}", que no existe en kernel-iam-policy.json`);
   }
 });
 

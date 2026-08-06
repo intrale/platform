@@ -54,10 +54,22 @@
         "dynamodb:UpdateGlobalTable",
         "dynamodb:UpdateGlobalTableSettings",
         "dynamodb:TagResource",
-        "dynamodb:UntagResource",
-        "dynamodb:ListTables"
+        "dynamodb:UntagResource"
       ],
       "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/*"
+    },
+    {
+      "Sid": "DenyDynamoDbAccountLevelControlPlane",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:ListTables",
+        "dynamodb:ListBackups",
+        "dynamodb:ListGlobalTables",
+        "dynamodb:ListExports",
+        "dynamodb:ListImports",
+        "dynamodb:DescribeLimits"
+      ],
+      "Resource": "*"
     },
     {
       "Sid": "DenyKmsAdministration",

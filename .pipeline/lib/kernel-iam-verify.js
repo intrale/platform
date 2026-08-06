@@ -161,18 +161,89 @@ function matchesExpectation(expected, outcome) {
 }
 
 // -----------------------------------------------------------------------------
+// Config de la matriz: TODO nombre de infra viene de config, sin fallback
+// -----------------------------------------------------------------------------
+
+/**
+ * Lee la config que necesita la matriz IAM: las dos tablas (vía
+ * `readKernelTablesConfig`) MÁS el alias de la CMK y el principal runtime.
+ *
+ * Fail-closed igual que el módulo hermano: un nombre de infra que no está en
+ * config NO se completa con un literal. Un default silencioso apuntaría el probe
+ * a un recurso que puede no existir, y un `AccessDenied` por recurso inexistente
+ * se lee idéntico a un `Deny` aplicado — la matriz reportaría ✅ sobre un control
+ * que nunca se probó.
+ *
+ * @param {object} [opts]
+ * @param {object} [opts.kernelConfig]  override inyectable (tests).
+ * @param {string} [opts.configPath]
+ * @returns {{tableName:string, coordinationTableName:string, region:string,
+ *            durable:boolean, cmkAlias:string, runtimePrincipal:string}}
+ * @throws {Error} fail-closed si falta `kernel.cmkAlias` o `kernel.runtimePrincipal`.
+ */
+function readKernelIamConfig(opts = {}) {
+    const base = readKernelTablesConfig(opts);
+
+    let kernel = opts.kernelConfig;
+    if (!kernel) {
+        // Mismo punto único de lectura que `readKernelTablesConfig` (#5172).
+        // eslint-disable-next-line global-require
+        const configResolver = require('./config-resolver');
+        const doc = configResolver.resolve(
+            opts.configPath ? { configPath: opts.configPath } : {},
+        ) || {};
+        kernel = (doc && typeof doc.kernel === 'object' && doc.kernel) || {};
+    }
+
+    const str = (v) => (typeof v === 'string' ? v.trim() : '');
+    const cmkAlias = str(kernel.cmkAlias);
+    const runtimePrincipal = str(kernel.runtimePrincipal);
+
+    const faltantes = [];
+    if (!cmkAlias) faltantes.push('kernel.cmkAlias');
+    if (!runtimePrincipal) faltantes.push('kernel.runtimePrincipal');
+    if (faltantes.length) {
+        throw new Error(
+            `kernel-iam-verify: faltan claves de config (${faltantes.join(', ')}). `
+            + 'Fail-closed: el alias de la CMK y el principal runtime NUNCA se hardcodean, '
+            + 'se definen en .pipeline/config.yaml (sección kernel:). Un default silencioso '
+            + 'apuntaría el probe a otro recurso y su AccessDenied se leería como control verificado.',
+        );
+    }
+
+    return { ...base, cmkAlias, runtimePrincipal };
+}
+
+// -----------------------------------------------------------------------------
 // La matriz de probes ejecutables (sin hardcode: los nombres vienen de config)
 // -----------------------------------------------------------------------------
 
 /**
  * Construye la matriz de probes ejecutables para las dos tablas del kernel.
  *
- * @param {{tableName:string, coordinationTableName:string, region:string}} cfg
+ * @param {{tableName:string, coordinationTableName:string, region:string,
+ *          cmkAlias:string, runtimePrincipal:string}} cfg
  * @returns {Array<{id:string, ca:string, expect:'allow'|'deny', descripcion:string, args:string[]}>}
+ * @throws {Error} fail-closed si falta cualquier nombre de infra.
  */
 function buildProbeMatrix(cfg) {
-    const nr = cfg.tableName;
-    const coord = cfg.coordinationTableName;
+    // Sin `||` de cortesía: un probe apuntado al recurso equivocado devuelve
+    // AccessDenied por "no existe" y la matriz lo cuenta como Deny aplicado.
+    const requerido = (valor, clave) => {
+        const v = typeof valor === 'string' ? valor.trim() : '';
+        if (!v) {
+            throw new Error(
+                `kernel-iam-verify: buildProbeMatrix requiere "${clave}" y llegó vacío. `
+                + 'Fail-closed: los nombres de infra vienen de config (kernel:), no de un default.',
+            );
+        }
+        return v;
+    };
+
+    const nr = requerido(cfg && cfg.tableName, 'tableName');
+    const coord = requerido(cfg && cfg.coordinationTableName, 'coordinationTableName');
+    const cmkAlias = requerido(cfg && cfg.cmkAlias, 'cmkAlias');
+    const runtimePrincipal = requerido(cfg && cfg.runtimePrincipal, 'runtimePrincipal');
 
     return [
         // --- CA-2: la coordinación DEBE responder Allow --------------------------
@@ -280,14 +351,14 @@ function buildProbeMatrix(cfg) {
             ca: 'CA-3',
             expect: 'deny',
             descripcion: 'uso directo de la CMK fuera de DynamoDB (kms:ViaService)',
-            args: ['kms', 'describe-key', '--key-id', `alias/${cfg.cmkAlias || 'intrale-kernel-store'}`],
+            args: ['kms', 'describe-key', '--key-id', `alias/${cmkAlias}`],
         },
         {
             id: 'iam-list-attached-user-policies',
             ca: 'CA-3',
             expect: 'deny',
             descripcion: 'lectura de su propia policy (reconocimiento previo a escalada)',
-            args: ['iam', 'list-attached-user-policies', '--user-name', cfg.runtimePrincipal || 'intrale-kernel-runtime'],
+            args: ['iam', 'list-attached-user-policies', '--user-name', runtimePrincipal],
         },
     ];
 }
@@ -299,13 +370,29 @@ function buildProbeMatrix(cfg) {
 // Cada entrada lleva el resultado observado a mano y la fecha. No se ejecutan
 // porque no hay condición que los vuelva reversibles: si el `Deny` regresó, el
 // probe ES el incidente.
+//
+// EL ESTADO OBSERVADO ES `implicitDeny` EN LOS SIETE. No es un descuido: los tres
+// statements Deny de control plane (`DenyDynamoDbControlPlane`,
+// `DenyDynamoDbAccountLevelControlPlane`, `DenyKmsAdministration`,
+// `DenyIamSelfAdministration`) son entregable NUEVO de #5211 y todavía **no están
+// aplicados** sobre `policy/IntraleKernelStore` — aplicarlos requiere un principal
+// con gestión IAM que el perfil disponible no tiene, a propósito. La policy que
+// AWS evalúa hoy es la de `origin/main`: `RuntimeReadWrite`,
+// `DenyMutateNonRepudiation` y `CoordinationReadWrite`, y ninguna alcanza el
+// control plane.
+//
+// Por eso cada entrada declara además `explicitoTrasAplicar`: el Sid que va a
+// convertir esa fila en `explicitDeny` cuando el operador aplique el artefacto.
+// Afirmar hoy el explicitDeny sería exactamente el defecto que #5211 vino a
+// matar: evidencia que dice más de lo que el estado real respalda.
 const CONTROL_PLANE_PROBES = Object.freeze([
     {
         id: 'ddb-create-table',
         ca: 'CA-3',
         runnable: false,
         descripcion: 'crear tabla nueva en la cuenta',
-        evidenciaManual: 'explicitDeny · dynamodb:CreateTable · policy/IntraleKernelStore',
+        evidenciaManual: 'implicitDeny · dynamodb:CreateTable',
+        explicitoTrasAplicar: 'DenyDynamoDbControlPlane',
         fecha: '2026-08-06',
     },
     {
@@ -314,6 +401,7 @@ const CONTROL_PLANE_PROBES = Object.freeze([
         runnable: false,
         descripcion: 'borrar la tabla de no-repudio entera',
         evidenciaManual: 'implicitDeny · dynamodb:DeleteTable',
+        explicitoTrasAplicar: 'DenyDynamoDbControlPlane',
         fecha: '2026-08-06',
     },
     {
@@ -322,6 +410,7 @@ const CONTROL_PLANE_PROBES = Object.freeze([
         runnable: false,
         descripcion: 'apagar deletion protection',
         evidenciaManual: 'implicitDeny · dynamodb:UpdateTable',
+        explicitoTrasAplicar: 'DenyDynamoDbControlPlane',
         fecha: '2026-08-06',
     },
     {
@@ -330,6 +419,7 @@ const CONTROL_PLANE_PROBES = Object.freeze([
         runnable: false,
         descripcion: 'apagar PITR',
         evidenciaManual: 'implicitDeny · dynamodb:UpdateContinuousBackups',
+        explicitoTrasAplicar: 'DenyDynamoDbControlPlane',
         fecha: '2026-08-06',
     },
     {
@@ -338,6 +428,7 @@ const CONTROL_PLANE_PROBES = Object.freeze([
         runnable: false,
         descripcion: 'programar borrado de la CMK (haría ilegible toda la evidencia)',
         evidenciaManual: 'implicitDeny · kms:ScheduleKeyDeletion',
+        explicitoTrasAplicar: 'DenyKmsAdministration',
         fecha: '2026-08-06',
     },
     {
@@ -346,6 +437,7 @@ const CONTROL_PLANE_PROBES = Object.freeze([
         runnable: false,
         descripcion: 'deshabilitar la CMK',
         evidenciaManual: 'implicitDeny · kms:DisableKey',
+        explicitoTrasAplicar: 'DenyKmsAdministration',
         fecha: '2026-08-06',
     },
     {
@@ -353,7 +445,8 @@ const CONTROL_PLANE_PROBES = Object.freeze([
         ca: 'CA-3',
         runnable: false,
         descripcion: 'auto-adjuntarse AdministratorAccess (escalada de privilegio)',
-        evidenciaManual: 'explicitDeny · iam:AttachUserPolicy · policy/IntraleKernelStore',
+        evidenciaManual: 'implicitDeny · iam:AttachUserPolicy',
+        explicitoTrasAplicar: 'DenyIamSelfAdministration',
         fecha: '2026-08-06',
     },
 ]);
@@ -414,7 +507,7 @@ function createProbeRunner(opts = {}) {
  * @returns {Promise<object>} reporte con `probes[]`, `controlPlane[]` y `ok`.
  */
 async function verifyKernelIam(opts = {}) {
-    const cfg = readKernelTablesConfig(opts);
+    const cfg = readKernelIamConfig(opts);
     const runner = opts.runner || createProbeRunner({
         profile: opts.profile, region: cfg.region, spawn: opts.spawn,
     });
@@ -491,11 +584,17 @@ function renderMarkdown(report) {
     L.push('');
     L.push('> No admiten una condición que los vuelva reversibles: si el `Deny`');
     L.push('> regresó, el probe **es** el incidente. Se corren a mano con el operador.');
+    L.push('>');
+    L.push('> La columna **Tras aplicar** dice qué Sid del artefacto versionado');
+    L.push('> convierte esa fila en `explicitDeny`. Mientras diga algo, ese statement');
+    L.push('> NO está aplicado en AWS y la fila sigue en `implicitDeny`: denegado hoy,');
+    L.push('> pero un `Allow` de más lo deshace en silencio.');
     L.push('');
-    L.push('| Probe | CA | Evidencia observada | Fecha |');
-    L.push('|---|---|---|---|');
+    L.push('| Probe | CA | Evidencia observada | Tras aplicar | Fecha |');
+    L.push('|---|---|---|---|---|');
     for (const p of report.controlPlane) {
-        L.push(`| \`${p.id}\` — ${p.descripcion} | ${p.ca} | ${p.evidenciaManual} | ${p.fecha} |`);
+        const pendiente = p.explicitoTrasAplicar ? `\`${p.explicitoTrasAplicar}\`` : '— (ya explícito)';
+        L.push(`| \`${p.id}\` — ${p.descripcion} | ${p.ca} | ${p.evidenciaManual} | ${pendiente} | ${p.fecha} |`);
     }
     return L.join('\n');
 }
@@ -509,6 +608,7 @@ module.exports = {
     CONTROL_PLANE_PROBES,
     classifyProbe,
     matchesExpectation,
+    readKernelIamConfig,
     buildProbeMatrix,
     createProbeRunner,
     verifyKernelIam,

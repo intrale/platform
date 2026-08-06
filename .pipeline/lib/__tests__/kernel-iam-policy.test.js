@@ -256,6 +256,79 @@ test('#5211 CA-3 · el Deny de control plane abarca TODA tabla de la cuenta/regi
     'alcanza toda tabla de la cuenta/región, y sigue acotado a cuenta+región (no `*` global)');
 });
 
+// ---------------------------------------------------------------------------
+// #5211 · Compatibilidad acción ↔ Resource: el Deny INERTE por la otra puerta
+//
+// Un `Deny` puede parsear perfecto, testear verde y no aplicar NUNCA si el
+// `Resource` no es compatible con la acción. Es el MISMO patrón de falla que
+// #5124 (`LeadingKeys` sobre prefijos de sort key): el JSON no se rompe, se lee
+// bien y miente bien.
+//
+// Estas acciones de DynamoDB son de NIVEL CUENTA: la Service Authorization
+// Reference las lista con la columna "Resource types" VACÍA, o sea que no
+// admiten permisos a nivel de recurso. Un statement que las acote a
+// `table/*` (o a cualquier ARN) es letra muerta: AWS nunca lo evalúa como match.
+// Sobre un `Deny`, `Resource: "*"` es siempre la opción segura — es el
+// alcance más amplio, y el más amplio es el que se busca al denegar.
+// ---------------------------------------------------------------------------
+
+const ACCIONES_DDB_NIVEL_CUENTA = [
+  'dynamodb:ListTables',
+  'dynamodb:ListBackups',
+  'dynamodb:ListGlobalTables',
+  'dynamodb:DescribeLimits',
+  'dynamodb:DescribeEndpoints',
+  'dynamodb:ListExports',
+  'dynamodb:ListImports',
+];
+
+test('#5211 · ninguna acción de nivel cuenta viaja con Resource acotado (sería un Deny INERTE)', () => {
+  // Regresión dirigida: `dynamodb:ListTables` estaba dentro de
+  // `DenyDynamoDbControlPlane` con `Resource: arn:...:table/*`. No admite
+  // permisos a nivel de recurso ⇒ el Deny no aplicaba nunca, y la matriz lo
+  // reportaba como explicitDeny. Exactamente el bug que #5211 vino a matar.
+  const policy = loadPolicy();
+  for (const s of policy.Statement) {
+    const deNivelCuenta = asArray(s.Action).filter((a) => ACCIONES_DDB_NIVEL_CUENTA.includes(a));
+    if (!deNivelCuenta.length) continue;
+    assert.deepEqual(asArray(s.Resource), ['*'],
+      `el statement "${s.Sid}" incluye acciones de nivel cuenta (${deNivelCuenta.join(', ')}) `
+      + `con Resource ${JSON.stringify(s.Resource)}: no admiten permisos a nivel de recurso, `
+      + 'así que ese statement NUNCA aplica. Deben vivir en un statement propio con Resource "*"');
+  }
+});
+
+test('#5211 · las acciones de nivel cuenta NO conviven con acciones de nivel recurso', () => {
+  // Aunque el statement tuviera `Resource: "*"`, mezclarlas invita a que mañana
+  // alguien lo acote "para ser prolijo" y desactive las de nivel cuenta en
+  // silencio. Separarlas hace que el error de arriba sea imposible de cometer.
+  const policy = loadPolicy();
+  for (const s of policy.Statement) {
+    const acciones = asArray(s.Action);
+    const nivelCuenta = acciones.filter((a) => ACCIONES_DDB_NIVEL_CUENTA.includes(a));
+    if (!nivelCuenta.length) continue;
+    const nivelRecurso = acciones.filter(
+      (a) => a.startsWith('dynamodb:') && !ACCIONES_DDB_NIVEL_CUENTA.includes(a),
+    );
+    assert.deepEqual(nivelRecurso, [],
+      `el statement "${s.Sid}" mezcla acciones de nivel cuenta (${nivelCuenta.join(', ')}) `
+      + `con acciones de nivel recurso (${nivelRecurso.join(', ')}): un solo Resource no puede `
+      + 'servir a las dos. Van en statements separados');
+  }
+});
+
+test('#5211 CA-3 · `dynamodb:ListTables` está denegado en un statement de alcance de cuenta', () => {
+  // La contraparte positiva: no alcanza con sacarlo del statement equivocado,
+  // tiene que seguir denegado — la matriz afirma que el runtime no enumera la
+  // cuenta.
+  const policy = loadPolicy();
+  const deny = statementsOf(policy, 'Deny')
+    .find((s) => asArray(s.Action).includes('dynamodb:ListTables'));
+  assert.ok(deny, 'ListTables sigue denegado explícitamente');
+  assert.deepEqual(asArray(deny.Resource), ['*'],
+    'y con el único Resource que AWS evalúa para una acción de nivel cuenta');
+});
+
 test('#5211 CA-3 · ningún Deny de control plane arrastra acciones de plano de datos', () => {
   // El wildcard `table/*` del control plane alcanza la tabla de coordinación.
   // Si a ese statement se le colara un `DeleteItem`, el release de un claim

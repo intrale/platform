@@ -243,12 +243,41 @@ explícito gana sobre cualquier `Allow` futuro; un implícito, no.
 
 Se sumaron `DenyDynamoDbControlPlane` (sobre `table/*` de la cuenta+región — el
 mínimo privilegio se evalúa sobre la cuenta, no sobre los recursos que hoy
-conocemos), `DenyKmsAdministration` y `DenyIamSelfAdministration`.
+conocemos), `DenyDynamoDbAccountLevelControlPlane`, `DenyKmsAdministration` y
+`DenyIamSelfAdministration`.
 
 > El wildcard `table/*` de ese statement alcanza la tabla de coordinación. Es
 > seguro **sólo** porque no contiene ninguna acción de plano de datos: si se le
 > colara un `DeleteItem`, el `release()` de un claim quedaría bloqueado para
 > siempre — el bug de #5124 por la puerta de atrás. Hay un test dedicado.
+
+> **Por qué las acciones de nivel cuenta van en un statement aparte.**
+> `dynamodb:ListTables` (y `ListBackups`, `ListGlobalTables`, `ListExports`,
+> `ListImports`, `DescribeLimits`) **no admiten permisos a nivel de recurso** —
+> la Service Authorization Reference las lista con la columna "Resource types"
+> vacía. Un `Deny` que las acote a `table/*` no matchea nunca: es un `Deny`
+> **inerte**, el mismo patrón de falla que `LeadingKeys` en #5124 — parsea bien,
+> testea verde y no protege nada. Por eso viven en
+> `DenyDynamoDbAccountLevelControlPlane` con `Resource: "*"`, el único alcance
+> que AWS evalúa para ellas. Dos tests de regresión lo fijan: uno falla si una
+> acción de nivel cuenta aparece con `Resource` acotado, otro impide que se
+> mezclen con acciones de nivel recurso en un mismo statement.
+>
+> `dynamodb:DescribeEndpoints` queda **fuera** del `Deny` a propósito: es de nivel
+> cuenta, pero algunos SDK la invocan para endpoint discovery y denegarla podría
+> tumbar el plano de datos. El test de regresión igual la vigila — si alguien la
+> agrega, tiene que ser con `Resource: "*"`.
+
+### Estado de aplicación (no confundir artefacto con enforcement)
+
+Los cuatro `Deny` de control plane están **versionados y todavía NO aplicados**
+sobre `policy/IntraleKernelStore`: aplicarlos requiere un principal con gestión
+IAM que el perfil disponible no tiene, a propósito. Hasta entonces el control
+plane sigue en `implicitDeny` — denegado hoy, pero por ausencia de `Allow`.
+
+La matriz (`kernel-iam-matriz-5211.md`) marca con ⏳ cada fila que depende de esa
+aplicación, y `CONTROL_PLANE_PROBES` lleva el mismo dato en `explicitoTrasAplicar`
+con un test que impide declarar `explicitDeny` mientras el statement esté pendiente.
 
 ### 2. Dónde vive el permiso de la CMK (y por qué no va en la identity policy)
 
