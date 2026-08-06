@@ -170,3 +170,158 @@ test('planSweep: estado stale se fuerza terminal y avisa', () => {
   assert.ok(plan.notify, 'avisa la parte faltante');
   assert.deepEqual(plan.notify.partNumbers, [1]);
 });
+
+// =============================================================================
+// #5573 — Señal EN VUELO: no reencolar una parte cuyo envío sigue en la cola.
+//
+// El bug: `planSweep` usaba la política de reintentos de TEXTO (backoff base 5s)
+// contra una latencia real de entrega de `.ogg` de ~62-74s, y no distinguía
+// "todavía en la cola de svc-telegram" de "perdido". Resultado: reenvíos sobre
+// envíos en vuelo → el operador recibía el mismo audio 2-4 veces.
+// =============================================================================
+
+// Política de voz para los tests (espeja `telegram_voice_outbound` de config.yaml).
+const VOICE_CFG = {
+  max_retries: 3,
+  backoff_base_ms: 150000,
+  backoff_max_ms: 900000,
+  stale_ttl_ms: 86400000,
+  in_flight_max_ms: 600000,
+};
+
+const T0 = 1700000000000;
+
+test('#5573 CA-5: parte en vuelo NO se reencola aunque venza el backoff', () => {
+  const s = vp.buildInitialState({
+    correlationId: 'voice-if1-abcdef', partTotal: 2, chatId: 7,
+    parts: [{ partIndex: 0, path: '/a.ogg' }, { partIndex: 1, path: '/b.ogg' }],
+    now: T0,
+  });
+  s.parts['0'].confirmed = true; // la 0 ya llegó; la 1 sigue viajando
+
+  const plan = vp.planSweep(s, {
+    now: T0 + 30000,          // 30s: con la política de TEXTO (base 5s) el backoff ya venció
+    maxRetries: 3,
+    backoffBaseMs: 5000,      // ← la política VIEJA, la que producía el duplicado
+    backoffMaxMs: 300000,
+    staleTtlMs: 86400000,
+    inFlight: new Set([1]),   // ← la señal nueva: el dropfile sigue vivo en la cola
+    inFlightMaxMs: VOICE_CFG.in_flight_max_ms,
+  });
+
+  assert.deepEqual(plan.resends, [], 'una parte en vuelo NO se reenvía');
+  assert.equal(plan.terminal, false, 'el estado sigue abierto esperando la confirmación');
+  assert.equal(plan.notify, null, 'no avisa faltante prematuramente');
+  // Invariantes: una parte en vuelo no puede ensuciar el backoff ni la métrica.
+  assert.equal(plan.state.parts['1'].retries, 0, 'no incrementa retries');
+  assert.equal(plan.state.parts['1'].enqueuedAt, s.parts['1'].enqueuedAt, 'no pisa enqueuedAt');
+  assert.equal(plan.state.parts['1'].firstEnqueuedAt, s.parts['1'].firstEnqueuedAt,
+    'firstEnqueuedAt es el ancla inmutable de la latencia');
+});
+
+test('#5573: sin la señal de en-vuelo el mismo caso SI reencola (el fix es el que corta)', () => {
+  const s = vp.buildInitialState({
+    correlationId: 'voice-if2-abcdef', partTotal: 2, chatId: 7,
+    parts: [{ partIndex: 0, path: '/a.ogg' }, { partIndex: 1, path: '/b.ogg' }],
+    now: T0,
+  });
+  s.parts['0'].confirmed = true;
+  // Misma llamada que el test anterior pero sin `inFlight` = comportamiento previo.
+  const plan = vp.planSweep(s, {
+    now: T0 + 30000, maxRetries: 3, backoffBaseMs: 5000, backoffMaxMs: 300000, staleTtlMs: 86400000,
+  });
+  assert.equal(plan.resends.length, 1, 'la política vieja reenvía a los 30s → duplicado');
+  assert.equal(plan.resends[0].partIndex, 1);
+});
+
+test('#5573 CA-3: parte fuera de la cola y sin recibo SI se reencola (no se debilita #4750)', () => {
+  const s = vp.buildInitialState({
+    correlationId: 'voice-if3-abcdef', partTotal: 2, chatId: 7,
+    parts: [{ partIndex: 0, path: '/a.ogg' }, { partIndex: 1, path: '/b.ogg' }],
+    now: T0,
+  });
+  s.parts['0'].confirmed = true;
+
+  const plan = vp.planSweep(s, {
+    now: T0 + VOICE_CFG.backoff_base_ms + 1, // backoff de VOZ vencido
+    maxRetries: VOICE_CFG.max_retries,
+    backoffBaseMs: VOICE_CFG.backoff_base_ms,
+    backoffMaxMs: VOICE_CFG.backoff_max_ms,
+    staleTtlMs: VOICE_CFG.stale_ttl_ms,
+    inFlight: new Set(),                     // el job ya no está en la cola: pérdida real
+    inFlightMaxMs: VOICE_CFG.in_flight_max_ms,
+  });
+  assert.equal(plan.resends.length, 1, 'pérdida real → reenvío');
+  assert.equal(plan.resends[0].partIndex, 1);
+  assert.equal(plan.state.parts['1'].retries, 1);
+});
+
+test('#5573 SEC-A: parte en vuelo mas alla del techo absoluto se reencola igual', () => {
+  const s = vp.buildInitialState({
+    correlationId: 'voice-if4-abcdef', partTotal: 1, chatId: 7,
+    parts: [{ partIndex: 0, path: '/a.ogg' }], now: T0,
+  });
+  // Un job atascado en trabajando/ (nada lo barre con el servicio vivo:
+  // recoverOrphans corre SOLO al boot) no puede suprimir la entrega para siempre.
+  const plan = vp.planSweep(s, {
+    now: T0 + 11 * 60000, // 11 min > in_flight_max_ms (10 min)
+    maxRetries: VOICE_CFG.max_retries,
+    backoffBaseMs: VOICE_CFG.backoff_base_ms,
+    backoffMaxMs: VOICE_CFG.backoff_max_ms,
+    staleTtlMs: VOICE_CFG.stale_ttl_ms,
+    inFlight: new Set([0]),                    // sigue "en vuelo"…
+    inFlightMaxMs: VOICE_CFG.in_flight_max_ms, // …pero venció el techo
+  });
+  assert.equal(plan.resends.length, 1, 'el techo absoluto vence a la señal de en-vuelo');
+  assert.equal(plan.resends[0].partIndex, 0);
+});
+
+test('#5573 R10: estado sin firstEnqueuedAt (pre-fix) cae a enqueuedAt para el techo', () => {
+  const s = vp.buildInitialState({
+    correlationId: 'voice-if5-abcdef', partTotal: 1, chatId: 7,
+    parts: [{ partIndex: 0, path: '/a.ogg' }], now: T0,
+  });
+  delete s.parts['0'].firstEnqueuedAt; // estado escrito por la versión anterior
+  assert.equal(vp.isValidState(s), true, 'un estado viejo NO se invalida (iría a cuarentena)');
+
+  // Dentro del techo → sigue suprimido.
+  const dentro = vp.planSweep(s, {
+    now: T0 + 60000, maxRetries: 3, backoffBaseMs: 5000, backoffMaxMs: 300000,
+    staleTtlMs: 86400000, inFlight: new Set([0]), inFlightMaxMs: 600000,
+  });
+  assert.deepEqual(dentro.resends, [], 'fallback a enqueuedAt: todavía dentro del techo');
+
+  // Pasado el techo → se reenvía igual.
+  const fuera = vp.planSweep(s, {
+    now: T0 + 11 * 60000, maxRetries: 3, backoffBaseMs: 5000, backoffMaxMs: 300000,
+    staleTtlMs: 86400000, inFlight: new Set([0]), inFlightMaxMs: 600000,
+  });
+  assert.equal(fuera.resends.length, 1, 'fallback a enqueuedAt: techo vencido → reenvío');
+});
+
+test('#5573 Gherkin: 3 audios a ~70s de latencia real → ninguna parte se reencola (retries 0)', () => {
+  let s = vp.buildInitialState({
+    correlationId: 'voice-if6-abcdef', partTotal: 3, chatId: 7,
+    parts: [{ partIndex: 0, path: '/a.ogg' }, { partIndex: 1, path: '/b.ogg' }, { partIndex: 2, path: '/c.ogg' }],
+    now: T0,
+  });
+  // El sweep corre cada 10s mientras las 3 partes están en vuelo; confirman a los ~70s.
+  const inFlight = new Set([0, 1, 2]);
+  for (let t = 10000; t <= 70000; t += 10000) {
+    const plan = vp.planSweep(s, {
+      now: T0 + t,
+      maxRetries: VOICE_CFG.max_retries,
+      backoffBaseMs: VOICE_CFG.backoff_base_ms,
+      backoffMaxMs: VOICE_CFG.backoff_max_ms,
+      staleTtlMs: VOICE_CFG.stale_ttl_ms,
+      inFlight,
+      inFlightMaxMs: VOICE_CFG.in_flight_max_ms,
+    });
+    assert.deepEqual(plan.resends, [], `tick ${t / 1000}s: sin reenvíos`);
+    assert.equal(plan.terminal, false, `tick ${t / 1000}s: estado abierto`);
+    s = plan.state;
+  }
+  for (const i of ['0', '1', '2']) {
+    assert.equal(s.parts[i].retries, 0, `la parte ${i} llega con retries 0 (el operador recibe 1 audio)`);
+  }
+});
