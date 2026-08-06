@@ -237,19 +237,22 @@ function buildAbortLogLine({
 /**
  * Charset PERMITIDO en un email que se le muestra al operador.
  *
- * Es una allowlist, no una denylist de metacaracteres, por dos razones:
- *   1. Los metacaracteres del Markdown legacy (`` ` ``, `_`, `*`, `[`, `]`,
- *      `(`, `)`) quedan fuera por construcción, sin tener que enumerarlos ni
- *      acordarse de actualizarlos si Telegram cambia el dialecto.
- *   2. Telegram AUTO-LINKIFICA URLs planas: un `https://evil.tld/phish` sigue
- *      siendo clickeable en el cliente aunque no haya markup `[texto](url)`.
- *      Neutralizar sólo los metacaracteres dejaba el dominio del atacante vivo
- *      en el mensaje entregado. `:` y `/` no pertenecen a ningún email válido,
- *      así que excluirlos no cuesta nada y mata la auto-linkificación.
+ * Es una allowlist, no una denylist, por dos razones:
+ *   1. Telegram AUTO-LINKIFICA URLs planas: un `https://evil.tld/phish` es
+ *      clickeable en el cliente **aunque el mensaje se envíe sin `parse_mode`**.
+ *      Ésta es la razón por la que el helper sigue vivo después de haber migrado
+ *      el aviso a texto plano (#5421, decisión del operador 2026-08-06): el
+ *      texto plano mata el markup inyectado, NO la auto-linkificación. `:` y `/`
+ *      no pertenecen a ningún email válido, así que excluirlos no cuesta nada y
+ *      corta el vector de phishing.
+ *   2. Como efecto colateral gratuito, los metacaracteres de markup (`` ` ``,
+ *      `_`, `*`, `[`, `]`, `(`, `)`) quedan fuera por construcción. Eso ya no es
+ *      lo que sostiene la entrega del mensaje — eso lo sostiene el envío plano —
+ *      pero mantiene el email prolijo si algún día este texto se renderiza en un
+ *      contexto que sí parsea markup (comentario de GitHub, PDF de rejection).
  *
  * El charset coincide con `SAFE_EMAIL_RE` de `worktree-resolver.js` menos los
- * corchetes y el guion bajo: ambos son forma legítima de email pero también
- * metacaracteres Markdown (`[bot]@…` para link, `_` para énfasis), así que
+ * corchetes y el guion bajo (forma legítima de email, pero también markup), que
  * sobreviven al filtro de origen (CA-11) y se neutralizan recién acá (CA-12).
  */
 const SAFE_RENDER_CHARSET = /[^a-z0-9@.%+'-]/gi;
@@ -266,12 +269,11 @@ const MAX_RENDERED_EMAIL = 254;
 /**
  * Sanea un email antes de interpolarlo en el texto del operador (#5421 CA-12).
  *
- * **Sanea, no escapa — y la distinción es la clave del fix.** El saliente usa
- * `parse_mode: 'Markdown'` (legacy). Ese dialecto NO soporta escapes con `\`
- * y no permite escapar un backtick dentro de un code span: un `` \` ``
- * insertado se renderiza literal y no cierra el span. Por eso el helper
- * `escapeMarkdownV2` que ya existe en `notifier-infra-recovered.js` no es
- * aplicable acá, y por eso reemplazamos en vez de escapar.
+ * **Sanea, no escapa.** El aviso crítico se envía sin `parse_mode` (ver
+ * `human-block.js::buildBlockedSummaryPlain`), así que no hay dialecto contra el
+ * que escapar: lo que queda por neutralizar es el contenido que sigue siendo
+ * activo en texto plano (URLs auto-linkificadas) y los caracteres que ensucian
+ * la identificación del committer. Por eso reemplazamos en vez de escapar.
  *
  * Reemplazar (en vez de descartar el email entero) preserva la
  * identificabilidad del committer, que es el corazón de CA-8: un
@@ -280,10 +282,10 @@ const MAX_RENDERED_EMAIL = 254;
  * entiende perfectamente de quién se le está hablando.
  *
  * Garantías sobre el texto entregado:
- *   - paridad de backticks intacta (no quedan backticks del email dentro del
- *     code span ⇒ no hay HTTP 400 de Telegram que silencie la alerta);
- *   - sin `[texto](url)` clickeable inyectado desde el email;
- *   - sin URL plana auto-linkificable sobreviviendo como texto.
+ *   - sin URL plana auto-linkificable sobreviviendo como texto (el vector que
+ *     el envío plano NO cubre);
+ *   - sin `[texto](url)` ni backticks provenientes del email, por si el texto
+ *     se reusa en un contexto que parsea markup (issue de GitHub, PDF).
  *
  * @param {string} email
  * @returns {string} email neutralizado, o `''` si no quedó nada identificable.
@@ -309,13 +311,24 @@ function sanitizeOperatorEmail(email) {
  *   - procedencia no verificada + sin committers (la rama no tiene commits de
  *     nadie reconocible) ⇒ se conserva el lenguaje de procedencia sospechosa.
  *   - procedencia verificada o desconocida ⇒ texto genérico.
+ *
+ * **Sin markup, a propósito (#5421, decisión del operador 2026-08-06).** Este
+ * string es el cuerpo de un aviso crítico que viaja a Telegram SIN `parse_mode`
+ * (ver `human-block.js::buildBlockedSummaryPlain`). Emitir backticks acá los
+ * mostraría literales al operador, y volver a envolver el email en un code span
+ * reabriría exactamente el modo de falla que cerró el cambio: el `slice(280)` del
+ * renderer corta por posición y puede partir el span al medio. Los valores se
+ * delimitan con comillas dobles, que se leen igual en texto plano, en un
+ * comentario de GitHub y en el PDF de rejection.
  */
 function buildOperatorQuestion({ issue, reasonStr, branchOriginVerified, unverifiedAuthors } = {}) {
     // CA-12 — el email viene del `git log` de una rama remota arbitraria y
-    // termina en un mensaje Markdown de Telegram. Se sanea SIEMPRE acá, en el
-    // render, aunque el origen (`extractUnverifiedAuthors`, CA-11) ya haya
-    // filtrado por forma: son dos capas independientes a propósito. Si el
-    // saneamiento vacía el string, el autor se descarta (default cerrado).
+    // termina en un mensaje de Telegram. Se sanea SIEMPRE acá, en el render,
+    // aunque el origen (`extractUnverifiedAuthors`, CA-11) ya haya filtrado por
+    // forma: son dos capas independientes a propósito. El envío plano neutraliza
+    // el markup, pero NO la auto-linkificación de URLs — eso lo cubre el
+    // saneamiento. Si el saneamiento vacía el string, el autor se descarta
+    // (default cerrado).
     const autores = (Array.isArray(unverifiedAuthors) ? unverifiedAuthors : [])
         .filter((a) => typeof a === 'string' && a.trim())
         .map((a) => sanitizeOperatorEmail(a))
@@ -325,11 +338,11 @@ function buildOperatorQuestion({ issue, reasonStr, branchOriginVerified, unverif
         const lista = autores.join(', ');
         const plural = autores.length > 1;
         return redact(
-            `El pipeline no reconoce ${plural ? 'a los committers' : 'al committer'} \`${lista}\` ` +
-            `de la rama \`agent/${issue}-*\`. ` +
+            `El pipeline no reconoce ${plural ? 'a los committers' : 'al committer'} "${lista}" ` +
+            `de la rama "agent/${issue}-*". ` +
             `Si ${plural ? 'son agentes legítimos' : 'es un agente legítimo'}, falta ` +
-            `${plural ? 'agregarlos' : 'agregarlo'} a la allowlist \`worktree_provenance.committers\` ` +
-            'de `.pipeline/config.yaml`. ' +
+            `${plural ? 'agregarlos' : 'agregarlo'} a la allowlist "worktree_provenance.committers" ` +
+            'de .pipeline/config.yaml. ' +
             `¿Podés confirmarlo y actualizar la allowlist? Después re-encolá #${issue}.`
         );
     }

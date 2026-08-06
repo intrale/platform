@@ -4238,10 +4238,12 @@ function brazoBarrido(config) {
               // #4068 — con botones de acción rápida (inline_keyboard). Si el
               // markup no se puede armar (sin secreto de token), se manda igual
               // el resumen de texto sin botones (degradación con gracia).
+              // #5421 — TEXTO PLANO, sin `parse_mode`: un aviso de needs-human no
+              // puede perderse por un HTTP 400 de formato de Telegram.
               try {
-                const summary = humanBlock.buildBlockedSummaryMarkdown({
+                const summary = humanBlock.buildBlockedSummaryPlain({
                   // #5337 CA-2 — la recomendación del pipeline viaja al mensaje.
-                  // Si no hay ninguna, `buildBlockedSummaryMarkdown` omite la línea.
+                  // Si no hay ninguna, el renderer omite la línea.
                   highlight: {
                     issue: parseInt(issue), skill: skillBloq, reason: motivoTxt, question,
                     recommendation: recomendacionBloqueo,
@@ -4249,7 +4251,7 @@ function brazoBarrido(config) {
                 });
                 let markup;
                 try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue)); } catch { markup = undefined; }
-                sendTelegramWithMarkup(summary, markup || null);
+                sendTelegramWithMarkup(summary, markup || null, { plain: true });
               } catch (e) {
                 log('barrido', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
               }
@@ -5759,8 +5761,9 @@ function brazoBarrido(config) {
                     }
                     // Notificación inmediata (CA-1/CA-2): qué issue, qué se
                     // necesita, y la recomendación del pipeline.
+                    // #5421 — texto plano, sin `parse_mode` (aviso crítico).
                     try {
-                      const summaryPr = humanBlock.buildBlockedSummaryMarkdown({
+                      const summaryPr = humanBlock.buildBlockedSummaryPlain({
                         highlight: {
                           issue: parseInt(issue), skill: 'entrega',
                           reason: veredicto.reason, question: veredicto.question,
@@ -5770,7 +5773,7 @@ function brazoBarrido(config) {
                       let markupPr;
                       try { markupPr = humanBlock.buildBlockedActionMarkup(parseInt(issue)); }
                       catch { markupPr = undefined; }
-                      sendTelegramWithMarkup(summaryPr, markupPr || null);
+                      sendTelegramWithMarkup(summaryPr, markupPr || null, { plain: true });
                     } catch (e) {
                       log('barrido', `Error notificando bloqueo de PR #${issue}: ${e.message}`);
                     }
@@ -6989,18 +6992,20 @@ function escalarACircuitBreaker(opts, deps) {
 
   // Alerta Telegram con ola + causa + botones de acción rápida (#4068). Si el
   // markup no se puede armar (sin secreto de token), se manda igual el texto.
+  // #5421 — texto plano, sin `parse_mode`: el corte del circuit breaker es el
+  // aviso crítico por excelencia (el issue ya no avanza solo).
   try {
-    const summary = hb.buildBlockedSummaryMarkdown({
+    const summary = hb.buildBlockedSummaryPlain({
       highlight: { issue: issueNum, skill: skillBloq, reason: motivoTxt, question: preguntaTxt },
     });
     const header = [
-      `⛔ *Circuit breaker* — #${issueNum} agotó los rebotes (corte ${kind})`,
+      `⛔ Circuit breaker — #${issueNum} agotó los rebotes (corte ${kind})`,
       `🌊 ${waveLabel}`,
       '',
     ].join('\n');
     let markup;
     try { markup = hb.buildBlockedActionMarkup(issueNum); } catch { markup = undefined; }
-    sendTg(header + summary, markup || null);
+    sendTg(header + summary, markup || null, { plain: true });
   } catch (e) {
     logFn('barrido', `#${issueNum} CB (${kind}): error enviando alerta Telegram: ${e.message}`);
   }
@@ -7580,13 +7585,14 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
       // Notificar Telegram solo la primera vez (dedup por reasonFile pre-existente).
       if (!yaTeniaReason) {
         try {
-          const summary = humanBlock.buildBlockedSummaryMarkdown({
+          // #5421 — texto plano, sin `parse_mode` (aviso crítico).
+          const summary = humanBlock.buildBlockedSummaryPlain({
             highlight: { issue: parseInt(issue), skill, reason: reasonTxt, question: questionTxt },
           });
           // #4068 — botones de acción rápida (degradación con gracia si no hay markup).
           let markup;
           try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue)); } catch { markup = undefined; }
-          sendTelegramWithMarkup(summary, markup || null);
+          sendTelegramWithMarkup(summary, markup || null, { plain: true });
         } catch (e) {
           log('lanzamiento', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
         }
@@ -9261,12 +9267,19 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         // Telegram dedupeado — solo la primera vez que se escala este issue+fase.
         try {
           if (!yaTeniaReason && worktreeNotifDedup.shouldNotify(issue, fase)) {
-            const summary = humanBlock.buildBlockedSummaryMarkdown({
+            // #5421 — TEXTO PLANO, sin `parse_mode`. Éste es el aviso que el
+            // operador venía perdiendo: el saliente es fire-and-forget vía
+            // dropfile, así que el HTTP 400 por markup desbalanceado ocurría
+            // dentro de `svc-telegram`, DESPUÉS de que este `catch` ya no podía
+            // verlo, y `markNotified` sellaba el dedup 24h igual. Sin formato no
+            // hay 400 posible.
+            const summary = humanBlock.buildBlockedSummaryPlain({
               highlight: { issue: parseInt(issue, 10), skill, reason: reasonTxt, question: questionTxt },
             });
             let markup;
             try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue, 10)); } catch { markup = undefined; }
-            try { sendTelegramWithMarkup(summary, markup || null); } catch { try { sendTelegram(summary); } catch {} }
+            try { sendTelegramWithMarkup(summary, markup || null, { plain: true }); }
+            catch { try { sendTelegramPlain(summary); } catch {} }
             worktreeNotifDedup.markNotified(issue, fase);
           }
         } catch {}
@@ -9293,7 +9306,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             ...(skillsLineInfra ? [skillsLineInfra] : []),
             'Reintento automático cuando la infra se recupere.',
           ].join('\n');
-          try { sendTelegram(msg); } catch {}
+          // #5421 — plano: `reasonRedacted` trae el motivo con el path del
+          // worktree, y un `_` o `*` del path alcanza para desbalancear el
+          // Markdown y hacer que Telegram descarte el aviso con un 400.
+          try { sendTelegramPlain(msg); } catch {}
           worktreeNotifDedup.markNotified(issue, fase);
         }
       } catch {}
@@ -15921,7 +15937,12 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
   const filename = `${Date.now()}-cmd.json`;
   try {
-    const payload = plain ? { text: msg } : { text: msg, parse_mode: parseMode };
+    // #5421 — La intención de "texto plano" viaja EXPLÍCITA (`plain: true`), no
+    // como la ausencia de `parse_mode`. `svc-telegram` es otro proceso: un campo
+    // ausente no distingue "quiero plano" de "no opiné", y su default histórico
+    // (`data.parse_mode || 'Markdown'`) reinyectaba Markdown, dejando este flag
+    // sin ningún efecto. Ver `servicio-telegram.js::resolveOutboundParseMode`.
+    const payload = plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     payload._correlationId = correlationId;
     fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));
@@ -16503,7 +16524,8 @@ function brazoIntake(config) {
                 log('intake', `❌ #${issueNum} reportHumanBlock (decisión) falló: ${e.message}`);
               }
               try {
-                const summaryDD = humanBlock.buildBlockedSummaryMarkdown({
+                // #5421 — texto plano, sin `parse_mode` (aviso crítico).
+                const summaryDD = humanBlock.buildBlockedSummaryPlain({
                   highlight: {
                     issue: parseInt(issueNum), skill: 'definicion',
                     reason: veredicto.reason, question: veredicto.question,
@@ -16513,7 +16535,7 @@ function brazoIntake(config) {
                 let markupDD;
                 try { markupDD = humanBlock.buildBlockedActionMarkup(parseInt(issueNum)); }
                 catch { markupDD = undefined; }
-                sendTelegramWithMarkup(summaryDD, markupDD || null);
+                sendTelegramWithMarkup(summaryDD, markupDD || null, { plain: true });
               } catch (e) {
                 log('intake', `Error notificando decisión de arquitectura #${issueNum}: ${e.message}`);
               }

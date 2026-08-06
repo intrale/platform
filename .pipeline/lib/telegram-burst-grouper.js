@@ -303,6 +303,33 @@ function extractAttemptSummary(fileEntry) {
 function formatConsolidatedMessage(group, { now } = {}) {
     if (!group || !group.files || group.files.length < 2) return null;
     const files = group.files;
+
+    // #5421 — NO consolidar mensajes que no son una ráfaga real.
+    //
+    // El consolidado DESCARTA el `text` de cada archivo y lo reemplaza por un
+    // resumen de `provider/status/error_class`. Eso es correcto para lo que esta
+    // función fue hecha (#3668: cascadas de reintentos cross-provider, donde el
+    // dato útil ES el resumen), pero es destructivo para cualquier otro mensaje.
+    //
+    // Los salientes genéricos del pulpo (`<ts>-cmd.json`) no declaran `meta`, así
+    // que TODOS derivan la misma clave `unknown|unknown|unknown|unknown` y se
+    // agrupaban entre sí por el solo hecho de haber salido dentro de la misma
+    // ventana de 60s. Dos avisos de `needs-human` no relacionados se fusionaban
+    // en un "⚠️ unknown · 2 intentos · desconocido: ?" y AMBOS textos se perdían
+    // enteros — pérdida total y silenciosa, sin siquiera un HTTP 400 que la
+    // delatara.
+    //
+    // Un grupo sin NINGÚN metadato identificatorio no es una ráfaga: es un
+    // conjunto de mensajes distintos que coincidieron en el tiempo. Devolvemos
+    // `null` para que el drainer los mande individualmente (ese fallback ya
+    // existe y es justamente "no perder el mensaje").
+    const tieneMetadata = files.some((f) => (
+        (f.type && f.type !== 'unknown')
+        || (f.skill && f.skill !== 'unknown')
+        || (f.issue && f.issue !== 'unknown')
+    ));
+    if (!tieneMetadata) return null;
+
     const baseMtime = files[0].mtimeMs || (Number.isFinite(now) ? now : Date.now());
     const lastMtime = files[files.length - 1].mtimeMs || baseMtime;
     const totalMs = Math.max(0, Math.round(lastMtime - baseMtime));

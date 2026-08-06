@@ -504,3 +504,144 @@ test('CA-12 — un autor que el saneamiento deja vacío se descarta (default cer
     assert.match(q, /posible rama ajena/i);
     assert.equal(contarBackticks(q) % 2, 0);
 });
+
+// ---- #5421 — TEXTO PLANO: el aviso crítico no depende del formato -----------
+//
+// Cambio de enfoque decidido por el operador (2026-08-06) después de seis ciclos
+// de QA parcheando el escapado: el aviso de needs-human viaja SIN `parse_mode`.
+//
+// Lo que cerró el agujero no fue escapar mejor, fue dejar de depender del
+// formato. El barrido del ciclo 6 mostró el modo de falla que el escapado no
+// podía cubrir: el `slice(280)` del renderer corta por POSICIÓN y partía el code
+// span al medio, dejando paridad impar de backticks con emails perfectamente
+// VÁLIDOS y benignos (11 de 15 largos probados rompían, incluido el control
+// `backend-dev-agent@intrale` en la línea del listado). Un corte posicional no
+// se puede escapar.
+//
+// El invariante que fijan estos tests: el texto del operador NO LLEVA MARKUP
+// DECORATIVO. Concretamente, cero backticks — el code span era la decoración que
+// el truncado partía, y un backtick nunca es contenido legítimo acá.
+//
+// Ojo con el matiz, que es la médula del cambio de enfoque: el texto SÍ contiene
+// `_` y `*` (`worktree_provenance.committers`, `agent/5421-*`) porque son parte
+// del contenido real que el operador necesita leer para actuar. Bajo Markdown eso
+// es munición viva; en texto plano es texto. No se puede "sanear" un nombre de
+// config ni un glob de rama sin arruinar el mensaje: por eso el fix correcto era
+// cambiar el transporte, no seguir escapando el contenido. El test
+// `contenido con metacaracteres` de más abajo fija exactamente esa expectativa.
+
+/** Decoración de code span: el markup que este texto ya NO debe emitir. */
+const CODE_SPAN = /`/;
+
+test('#5421 — buildOperatorQuestion no emite decoración de markup en NINGUNA de sus 3 ramas', () => {
+    const casos = [
+        ['configuración (committer no reconocido)', {
+            issue: 5421, reasonStr: 'branch-origin-unverified:agent/5421-*',
+            branchOriginVerified: false, unverifiedAuthors: [EMAIL_BENIGNO],
+        }],
+        ['procedencia sospechosa (sin committers)', {
+            issue: 5421, reasonStr: 'branch-origin-unverified:agent/5421-*',
+            branchOriginVerified: false, unverifiedAuthors: [],
+        }],
+        ['genérico (procedencia verificada)', {
+            issue: 5421, reasonStr: 'worktree-path-exists-without-git-entry:/tmp/x',
+            branchOriginVerified: true, unverifiedAuthors: [],
+        }],
+    ];
+    for (const [etiqueta, args] of casos) {
+        const q = buildOperatorQuestion(args);
+        assert.doesNotMatch(q, CODE_SPAN, `rama "${etiqueta}" emitió un code span: ${q}`);
+        assert.equal(tieneLinkClickeable(q), false, `rama "${etiqueta}" armó un link`);
+    }
+});
+
+test('#5421 — el texto lleva contenido con metacaracteres y por eso EXIGE envío plano', () => {
+    // Este test documenta la razón del cambio de transporte. El mensaje contiene
+    // un `_` (nombre de la clave de config) y un `*` (glob de la rama) que son
+    // información que el operador necesita. Enviado como Markdown, ese contenido
+    // desbalancea el parseo y Telegram descarta el aviso con un HTTP 400; en
+    // plano se lee tal cual. No es un defecto a sanear: es el motivo por el que
+    // el aviso crítico no puede viajar con `parse_mode`.
+    const q = buildOperatorQuestion({
+        issue: 5421,
+        reasonStr: 'branch-origin-unverified:agent/5421-*',
+        branchOriginVerified: false,
+        unverifiedAuthors: [EMAIL_BENIGNO],
+    });
+    assert.match(q, /worktree_provenance\.committers/, 'el `_` del nombre de config es contenido, no markup');
+    assert.match(q, /agent\/5421-\*/, 'el `*` del glob de rama es contenido, no markup');
+    // Paridad IMPAR por tipo de metacarácter, justamente: bajo Markdown cada uno
+    // de estos abre un énfasis que nunca cierra ⇒ HTTP 400 ⇒ aviso perdido. En
+    // plano se leen literales y no hay nada que balancear.
+    assert.equal((q.match(/_/g) || []).length % 2, 1, 'un `_` suelto: inofensivo en plano, fatal en Markdown');
+    assert.equal((q.match(/\*/g) || []).length % 2, 1, 'un `*` suelto: inofensivo en plano, fatal en Markdown');
+    // Lo que NO puede haber es decoración nuestra.
+    assert.doesNotMatch(q, CODE_SPAN);
+});
+
+test('#5421 — el wording de configuración sigue completo sin backticks (CA-8 intacto)', () => {
+    const q = buildOperatorQuestion({
+        issue: 5421,
+        reasonStr: 'branch-origin-unverified:agent/5421-*',
+        branchOriginVerified: false,
+        unverifiedAuthors: [EMAIL_BENIGNO],
+    });
+    // El operador tiene que poder actuar: email + allowlist + archivo + acción.
+    assert.match(q, new RegExp(EMAIL_BENIGNO.replace(/\./g, '\\.')));
+    assert.match(q, /worktree_provenance\.committers/);
+    assert.match(q, /\.pipeline\/config\.yaml/);
+    assert.match(q, /re-encolá/i);
+    assert.doesNotMatch(q, /rama ajena/i);
+    // Los valores se delimitan con comillas dobles, legibles en plano.
+    assert.match(q, /"worktree_provenance\.committers"/);
+});
+
+test('#5421 — el email hostil no aporta decoración ni URL auto-linkificable', () => {
+    // El envío plano neutraliza el markup inyectado; el saneamiento sigue vivo
+    // porque Telegram AUTO-LINKIFICA URLs planas incluso sin `parse_mode`.
+    for (const email of [EMAIL_PHISHING, EMAIL_SILENCIADOR, EMAIL_BOT_GITHUB]) {
+        const q = buildOperatorQuestion({
+            issue: 5421,
+            reasonStr: 'branch-origin-unverified:agent/5421-*',
+            branchOriginVerified: false,
+            unverifiedAuthors: [email],
+        });
+        assert.doesNotMatch(q, CODE_SPAN, `el email ${email} filtró un backtick: ${q}`);
+        assert.equal(tieneLinkClickeable(q), false);
+        // Anti-phishing: el esquema y el `//` no sobreviven al saneamiento, así
+        // que no queda una URL que Telegram pueda auto-linkificar hacia el path
+        // del atacante (queda `https???evil.tld?phish`, texto muerto).
+        //
+        // El dominio pelado SÍ sobrevive como texto, y está bien que así sea: es
+        // indistinguible del dominio de un email legítimo (`@intrale.com.ar`),
+        // que es justo lo que el operador necesita leer para reconocer al
+        // committer. Recortarlo rompería CA-8 sin cerrar nada.
+        assert.doesNotMatch(q, /https?:\/\//, 'no debe quedar un esquema de URL navegable');
+        assert.doesNotMatch(q, /\/phish/, 'el path del atacante no debe sobrevivir');
+    }
+});
+
+test('#5421 — emails VÁLIDOS de cualquier largo: el truncado no puede partir un span', () => {
+    // Éste es el caso que el escapado NO cubría: sin metacaracteres en la
+    // entrada, el code span lo aportaba el propio renderer y el corte posicional
+    // lo partía al medio (barrido ciclo 6: 11 de 15 largos rompían la paridad).
+    // Sin span, cortar en 280 o en 160 no puede romper nada.
+    for (const len of [25, 40, 60, 80, 100, 120, 129, 140, 160, 180, 189, 200, 220, 240, 254]) {
+        // Email de EXACTAMENTE `len` caracteres y forma válida (local@dominio.com),
+        // dentro del tope RFC 5321 que aplica `sanitizeOperatorEmail`.
+        const local = 'a'.repeat(Math.min(64, Math.floor(len / 2)));
+        const email = `${local}@${'b'.repeat(len - local.length - 1 - 4)}.com`;
+        assert.equal(email.length, len, 'el email del barrido debe medir lo pedido');
+        const q = buildOperatorQuestion({
+            issue: 5421,
+            reasonStr: 'branch-origin-unverified:agent/5421-*',
+            branchOriginVerified: false,
+            unverifiedAuthors: [email],
+        });
+        assert.doesNotMatch(q, CODE_SPAN, `largo ${len} filtró un backtick: ${q.slice(0, 200)}`);
+        assert.doesNotMatch(q.slice(0, 280), CODE_SPAN, `largo ${len} dejó un span cortado en 280`);
+        assert.doesNotMatch(q.slice(0, 160), CODE_SPAN, `largo ${len} dejó un span cortado en 160`);
+        // El email sigue siendo identificable para el operador.
+        assert.ok(q.includes(email), `largo ${len}: el email debe seguir visible`);
+    }
+});
