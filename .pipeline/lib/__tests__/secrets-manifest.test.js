@@ -241,14 +241,20 @@ test('toda entrada source=store declara consumer_status del enum y broken exige 
     if (entry.consumer_status === 'broken') assert.match(entry.blocked_by, /^#\d+$/, entry.name);
     else assert.equal('blocked_by' in entry, false, entry.name);
   }
-  // Tras el merge de #5172 ninguna entrada queda `broken`: las tres
-  // `google_drive.oauth_*` pasan a `resolved` porque su consumidor las resuelve.
-  // El ancla se mantiene como deepEqual (no como `length >= 0`) para que
-  // declarar algo `broken` siga siendo un cambio visible y deliberado.
+  // El ancla es deepEqual (no `length >= 0`) para que declarar algo `broken`
+  // siga siendo un cambio visible y deliberado. Las dos claves AWS entran acá
+  // en esta pasada: tienen dos consumidores fail-closed reales
+  // (secret-vault.js:514, provisioner-infra.js:447) que no pueden resolverlas
+  // porque su hydration es `deferred`. Antes se publicaban `no_consumer`, que
+  // era falso. Ambas cierran con #5040 (activar `env_isolation_enabled`), que
+  // es lo que permite hidratarlas sin exponerlas a todos los agentes hijos.
   const rotas = manifest.entries
     .filter((entry) => entry.consumer_status === 'broken')
     .map((entry) => [entry.name, entry.blocked_by]);
-  assert.deepEqual(rotas, []);
+  assert.deepEqual(rotas, [
+    ['aws.access_key_id', '#5040'],
+    ['aws.secret_access_key', '#5040'],
+  ]);
   const sinStatus = structuredClone(manifest);
   delete sinStatus.entries.find((entry) => entry.name === 'telegram.bot_token').consumer_status;
   assert.equal(validate(sinStatus).ok, false);
@@ -284,11 +290,12 @@ test('ningun defer_reason afirma que el consumo funciona si su consumer_status e
   const rotas = manifest.entries.filter((entry) => entry.consumer_status === 'broken');
   for (const entry of rotas) assert.ok(cumpleCandado(entry), entry.name);
 
-  // Tras #5172 no queda ninguna entrada `broken`, asi que el bucle de arriba
-  // recorre cero elementos. El candado NO puede apagarse por eso: se ejerce
-  // contra fixtures sinteticos, con control positivo y negativo, para que siga
-  // vivo el dia que una entrada vuelva a nacer rota.
-  assert.equal(rotas.length, 0);
+  // El bucle de arriba ahora SI recorre entradas reales (las dos AWS). Los
+  // fixtures sinteticos de abajo se mantienen igual: cubren los casos que el
+  // manifiesto real no tiene (afirmacion de consumo sano, defer_reason que no
+  // nombra su blocked_by) y mantienen el candado vivo aunque manana vuelva a
+  // quedar en cero.
+  assert.equal(rotas.length, 2);
   assert.equal(cumpleCandado({
     defer_reason: 'El consumo esta roto: la cadena de resolucion no llega al consumidor. Se difiere por postura de seguridad, no porque el consumo este resuelto. Cierra #4890.',
     blocked_by: '#4890',
@@ -458,7 +465,7 @@ test('ningun provider fail-fast puede declararse no_consumer/never en el manifie
   assert.deepEqual(ocultaConsumidor(revertida.entries), ['kimi-moonshot']);
 });
 
-test('ninguna entrada eager con lector real en el repo puede declararse no_consumer', () => {
+test('ninguna entrada con lector real en el repo puede declararse no_consumer', () => {
   // Candado GENERALIZADO. Los dos anteriores estan acotados a `service ===
   // providers` y `auth_mode !== oauth`: por construccion no pueden ver
   // `telegram.*` ni los providers OAuth, y por ese hueco se publicaron como
@@ -468,21 +475,28 @@ test('ninguna entrada eager con lector real en el repo puede declararse no_consu
   // codigo de produccion del repo y, si alguien LEE la env var, prohibe
   // declararla sin consumidor.
   //
-  // Acotado a `hydration: "eager"` a proposito: una entrada `deferred` nunca
-  // llega al `process.env` del Pulpo, asi que un lector suyo no se alcanza hoy
-  // (es el caso de las AWS, cuyo unico lector recibe un `env` inyectado del
-  // scope `aws`, que esta inerte: ningun skill declara `requires_credentials`).
+  // SIN acotar por `hydration`. La pasada anterior lo acoto a `eager` con esta
+  // premisa: «una entrada deferred nunca llega al process.env del Pulpo, asi
+  // que un lector suyo no se alcanza hoy; es el caso de las AWS, cuyo scope
+  // esta inerte porque ningun skill declara requires_credentials». La premisa
+  // es FALSA y se retira: `DEFAULT_REQUIRES_BY_SKILL` declara el scope `aws`
+  // para `backend-dev` y `qa` (build-child-env.js:218,228) y agent-models.json
+  // no lo sobreescribe, asi que el scope NO esta inerte. Con ese acotamiento,
+  // `aws.access_key_id` y `aws.secret_access_key` se publicaron `no_consumer`
+  // teniendo dos lectores fail-closed (secret-vault.js:514,
+  // provisioner-infra.js:447) — la misma clase de afirmacion falsa, una capa
+  // mas abajo. `deferred` explica por que el consumo esta ROTO (`broken` +
+  // `blocked_by`), no autoriza a negar que el consumidor exista.
   const sources = loadProductionSources(ROOT);
   assert.ok(sources.length > 100, `barrido vacio o mal enraizado: ${sources.length}`);
 
   const conLectorReal = (entries) => entries
-    .filter((entry) => entry.hydration === 'eager')
     .map((entry) => ({ entry, lectores: findEnvVarReaders(entry.env_var, { files: sources }) }))
     .filter(({ entry, lectores }) => lectores.length > 0 && entry.consumer_status === 'no_consumer')
     .map(({ entry }) => entry.name);
 
   assert.deepEqual(conLectorReal(manifest.entries), [],
-    'entrada eager declarada no_consumer teniendo lectores en codigo de produccion');
+    'entrada declarada no_consumer teniendo lectores en codigo de produccion');
 
   // Ancla anti-vacuidad: el barrido tiene que estar encontrando lectores de
   // verdad. Sin esto, una regex rota deja el candado verde para siempre.
@@ -515,6 +529,19 @@ test('ninguna entrada eager con lector real en el repo puede declararse no_consu
   assert.equal(anthropic.consumer_status, 'resolved');
   anthropic.consumer_status = 'no_consumer';
   assert.deepEqual(conLectorReal(revertidaAnthropic.entries), ['providers.anthropic.api_key']);
+
+  // Control negativo 3: la entrada `deferred` que el acotamiento a `eager`
+  // dejaba fuera. Sin quitar ese filtro este assert no puede fallar nunca, asi
+  // que es el que prueba que el candado de verdad se amplio.
+  const revertidaAws = structuredClone(manifest);
+  const accessKey = revertidaAws.entries.find((e) => e.name === 'aws.access_key_id');
+  const secretKey = revertidaAws.entries.find((e) => e.name === 'aws.secret_access_key');
+  assert.equal(accessKey.hydration, 'deferred');
+  assert.equal(accessKey.consumer_status, 'broken');
+  assert.equal(secretKey.consumer_status, 'broken');
+  accessKey.consumer_status = 'no_consumer';
+  delete accessKey.blocked_by;
+  assert.deepEqual(conLectorReal(revertidaAws.entries), ['aws.access_key_id']);
 });
 
 test('los consumers declarados no omiten ningun lector que el barrido encuentra', () => {
