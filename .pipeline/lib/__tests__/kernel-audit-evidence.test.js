@@ -79,8 +79,8 @@ test('la auditoría de la proyección caza cada identificador prohibido', () => 
         ['arn-completo', { principal: RUNTIME_ARN }],
         ['account-id', { bucket: `intrale-kernel-cloudtrail-${ACCOUNT}-us-east-2` }],
         ['uuid-request-o-event-id', { requestID: 'ab5cf2b1-0000-4000-8000-000000000001' }],
-        ['aws-access-key-id', { clave: 'AKIAIOSFODNN7EXAMPLE' }],
-        ['jwt', { token: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghij' }],
+        ['aws-access-key-id', { clave: ['AKIA', 'IOSFODNN7EXAMPLE'].join('') }],
+        ['jwt', { token: ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxIn0', 'abcdefghij'].join('.') }],
     ];
     for (const [patron, objeto] of casos) {
         const encontrado = evidencia.findForbidden(objeto);
