@@ -42,7 +42,12 @@ const DEFAULT_STALL_MINUTES = 20;
 // 1440 min = 24h. Un umbral mayor a esto se trata como inválido → default.
 const MAX_STALL_MINUTES = 1440;
 const DEFAULT_COOLDOWN_MINUTES = 30;
-const DEFAULT_WINDOW_MINUTES = 60;
+// rev-6 (S5) — `window_minutes` FUE ELIMINADA. Se parseaba, se exponía en la
+// decisión y se inyectaba desde pulpo.js, pero NINGUNA decisión la leía: era
+// superficie de configuración que prometía un control inexistente (el
+// anti-flooding lo gobierna el backoff exponencial, no una ventana). Se sacó
+// también la clave de `config.yaml`. Un config viejo que todavía la traiga se
+// ignora sin error.
 
 // #5400 (rev-3, CA-4) — Tope del backoff exponencial entre re-alertas del MISMO
 // episodio. Con el cooldown default (30 min) el tope de 16 significa esperar
@@ -191,12 +196,19 @@ function parsePositiveInt(raw, fallback) {
 // la causa declarada, y medir la escalada contra ellos dejaba al watchdog mudo
 // ante causas que alternan. Un estado viejo que todavía los traiga se carga sin
 // error: `normalizeState` simplemente los descarta (no están en la allowlist).
+//
+// rev-6 (BLOQUEANTE rev-1): `lastDispatching` / `lastAvancePct` son ADITIVOS y
+// existen por una sola razón — en modo `never` hay que distinguir un AUMENTO del
+// conteo (despachó) de una BAJA (los agentes terminaron). La firma no alcanza:
+// es igualdad de string y trata ambos como "movimiento". Ver el bloque 1b.
 const DEFAULT_STATE = Object.freeze({
   lastMovementTs: 0,
   lastSignature: null,
   lastAlertTs: 0,
   alertCount: 0,
   lastStampTs: 0,
+  lastDispatching: null,
+  lastAvancePct: null,
 });
 
 /**
@@ -210,6 +222,8 @@ function normalizeState(obj) {
     lastAlertTs: 0,
     alertCount: 0,
     lastStampTs: 0,
+    lastDispatching: null,
+    lastAvancePct: null,
   };
   if (!obj || typeof obj !== 'object') return out;
   if (Number.isFinite(obj.lastMovementTs) && obj.lastMovementTs > 0) {
@@ -232,6 +246,17 @@ function normalizeState(obj) {
   // agente, y encima reiniciaba el reloj de la detención.
   if (Number.isFinite(obj.lastStampTs) && obj.lastStampTs > 0) {
     out.lastStampTs = obj.lastStampTs;
+  }
+  // rev-6 — Últimos valores OBSERVADOS del conteo de despacho y del avance.
+  // `null` = todavía no observado: en ese caso NO se puede afirmar que hubo un
+  // aumento, así que el default es "no hubo movimiento" (fail-closed: el reloj
+  // sigue corriendo). Un estado escrito por una versión anterior cae acá y se
+  // comporta igual de conservador.
+  if (Number.isInteger(obj.lastDispatching) && obj.lastDispatching >= 0) {
+    out.lastDispatching = obj.lastDispatching;
+  }
+  if (Number.isFinite(obj.lastAvancePct)) {
+    out.lastAvancePct = obj.lastAvancePct;
   }
   return out;
 }
@@ -296,13 +321,17 @@ function isCauseValid(cause, now) {
  * cambia CUALQUIERA de los dos (definición del PO, CA). Evita el falso
  * estancamiento por trabajo intra-fase (agente trabajando sin promover ficha).
  */
+function avanceActual(progressSeries) {
+  if (!Array.isArray(progressSeries) || progressSeries.length === 0) return null;
+  const last = progressSeries[progressSeries.length - 1];
+  if (last && Number.isFinite(last.avancePct)) return last.avancePct;
+  return null;
+}
+
 function movementSignature(dispatching, progressSeries, lastDispatchTs) {
   const d = Number.isFinite(dispatching) ? dispatching : 0;
-  let avance = 'na';
-  if (Array.isArray(progressSeries) && progressSeries.length > 0) {
-    const last = progressSeries[progressSeries.length - 1];
-    if (last && Number.isFinite(last.avancePct)) avance = String(last.avancePct);
-  }
+  const pct = avanceActual(progressSeries);
+  const avance = pct == null ? 'na' : String(pct);
   // #5400 — la estampa de despacho efectivo es la señal PRIMARIA de movimiento.
   // Se agrega como TERCER segmento y sólo cuando existe, para no romper la firma
   // legacy de dos segmentos (#4708) en instalaciones que todavía no la estampan.
@@ -368,10 +397,20 @@ function buildAlertMessage(p) {
     ? ' Reloj de despacho degradado (estampa ausente o inválida): la duración es la mínima conocida.'
     : '';
 
+  // rev-6 (B4) — Con el alcance CIEGO no se puede afirmar cuántos issues están
+  // habilitados: sin ola vigente ni allowlist no hay con qué acotar la cola. Se
+  // dice lo único que consta (el tamaño crudo) y se nombra la ceguera, en vez de
+  // reportar "0 esperando", que se lee como "no hay nada que hacer".
+  const espera = o.scopeBlind === true
+    ? `alcance de despacho no determinable (sin ola vigente): ${
+      Number.isInteger(o.queuedTotal) && o.queuedTotal > 0 ? o.queuedTotal : 0
+    } workfile(s) en cola sin poder acotarse;`
+    : `${enabled} issue(s) habilitado(s) esperando;`;
+
   return (
     `${sujeto} — 0 despacho hace ${duracion}. ` +
     `Causa: ${causa} (${autoria}). ` +
-    `${enabled} issue(s) habilitado(s) esperando;${enCurso} ${cierre}${reloj}`
+    `${espera}${enCurso} ${cierre}${reloj}`
   );
 }
 
@@ -401,13 +440,14 @@ function buildRecoveryMessage(p) {
  * @param {*}      facts.waveKey              identificador de la ola activa
  * @param {number} facts.enabledCount         # issues habilitados (no completados, sin bloqueo)
  * @param {number} facts.dispatching          # archivos en trabajando/ de todas las fases
+ * @param {boolean} [facts.scopeBlind]        true = no se pudo determinar qué es despachable (B4)
+ * @param {number} [facts.queuedTotal]        # total crudo de workfiles en cola
  * @param {Array}  [facts.progressSeries]     serie {ts, waveKey, avancePct} de wave-progress
  * @param {object|null} [facts.cause]         causa declarada normalizada (ver isCauseValid)
  * @param {object} [facts.state]              estado persistido del watchdog
  * @param {number|null} [facts.lastDispatchTs]  estampa del último despacho efectivo
  * @param {*}      [facts.stallMinutes]
  * @param {*}      [facts.cooldownMinutes]
- * @param {*}      [facts.windowMinutes]
  * @param {*}      [facts.declaredCauseEscalateMinutes]
  * @param {*}      [facts.busyGraceMinutes]     gracia extra con agentes en curso
  * @returns {{action:'skip'|'alert'|'escalate', reason:string, level:'info'|'warn'|'error',
@@ -425,7 +465,6 @@ function decide(facts) {
     DEFAULT_DECLARED_CAUSE_ESCALATE_MINUTES
   );
   const busyGraceMinutes = parseStallMinutes(facts.busyGraceMinutes, DEFAULT_BUSY_GRACE_MINUTES);
-  const windowMinutes = parsePositiveInt(facts.windowMinutes, DEFAULT_WINDOW_MINUTES);
 
   const now = Number.isFinite(facts.now) ? facts.now : 0;
   const cooldownMs = cooldownMinutes * 60 * 1000;
@@ -433,6 +472,19 @@ function decide(facts) {
   const state = normalizeState(facts.state);
   const enabledCount = Number.isInteger(facts.enabledCount) && facts.enabledCount > 0 ? facts.enabledCount : 0;
   const dispatching = Number.isInteger(facts.dispatching) && facts.dispatching > 0 ? facts.dispatching : 0;
+  // rev-6 (B4) — "No hay trabajo" y "no puedo VER el trabajo" son cosas
+  // distintas y hasta acá colapsaban en el mismo skip mudo. Con el pipeline en
+  // pausa total sin allowlist preservada y sin ola activa, el recolector sale por
+  // `fail-closed-sin-ola` con `elegibles: 0` y el paso 2 salía por
+  // `no-enabled-work`: silencio total con la cola llena y el despacho trabado.
+  // CA-3 (cola vacía no alerta) se comía a CA-1 (avisar cuando no despacha).
+  // Con el alcance CIEGO la vigilancia sigue: manda la causa declarada, que en
+  // ese estado es `wave-empty` y por lo tanto calla el rato normal y después
+  // escala. `queuedTotal` es lo único afirmable del tamaño de la cola.
+  const scopeBlind = facts.scopeBlind === true;
+  const queuedTotal = Number.isInteger(facts.queuedTotal) && facts.queuedTotal > 0
+    ? facts.queuedTotal
+    : 0;
 
   // #5400 (rev-1) — `dispatching` es ATENUANTE, no skip ni dato ignorado: con
   // agentes en curso el pipeline tolera mucho más tiempo sin despachar antes de
@@ -440,7 +492,20 @@ function decide(facts) {
   // ellos (primero el margen normal, después la escalada) se mantenga.
   const busyGraceMs = dispatching > 0 ? busyGraceMinutes * 60 * 1000 : 0;
   const stallMs = stallMinutes * 60 * 1000 + busyGraceMs;
-  const escalateMs = escalateMinutes * 60 * 1000 + busyGraceMs;
+  // rev-6 (S4) — Invariante `escalate >= stall` hecho EXPLÍCITO. Las dos claves
+  // de config son independientes y nada impide `declared_cause_escalate_minutes`
+  // menor que `stall_minutes` (con la config vigente, 20/45, se cumple por
+  // casualidad).
+  //
+  // Honestidad sobre el alcance: hoy esto NO cambia ningún comportamiento
+  // observable, porque el paso 3 ya corta con `stalledMs < stallMs` antes de que
+  // se evalúe `escalateMs` — o sea que el invariante estaba garantizado de forma
+  // IMPLÍCITA, por el orden de los pasos. Se escribe igual porque esa garantía
+  // es frágil: cualquier refactor que mueva el chequeo de causa por encima del
+  // umbral normal reabriría la regresión de #4751 en silencio. Verificado por
+  // barrido de inactividad con escalate(5) < stall(30): idéntico con y sin
+  // `Math.max`. Es una red, no un fix.
+  const escalateMs = Math.max(escalateMinutes * 60 * 1000 + busyGraceMs, stallMs);
 
   // --- 1. Validez de la estampa de despacho efectivo --------------------
   // `state/last-dispatch.json`. Tres estados posibles, y distinguirlos es lo que
@@ -472,11 +537,12 @@ function decide(facts) {
   //   `trabajando/` y ese conteo baja solo a medida que los agentes terminan —
   //   interpretarlo como movimiento reiniciaría el reloj y emitiría una
   //   "recuperación" falsa sin que se haya despachado nada.
-  // SIN estampa NUNCA vista: proxy legacy de #4708 (conteo + avancePct).
+  // SIN estampa NUNCA vista: proxy legacy de #4708 (conteo + avancePct), pero
+  //   SÓLO en la dirección que puede significar un despacho — ver abajo.
   // SIN estampa habiéndola visto antes (B3): NO hay movimiento. Perder el
   //   archivo no es despachar; el reloj sigue corriendo desde donde estaba.
   const signature = movementSignature(dispatching, facts.progressSeries, lastDispatchTs);
-  const signatureChanged = state.lastSignature == null || state.lastSignature !== signature;
+  const avancePct = avanceActual(facts.progressSeries);
   let movedFicha;
   if (lastDispatchTs != null) {
     movedFicha = stampEverSeen
@@ -488,10 +554,52 @@ function decide(facts) {
   } else if (stampEverSeen) {
     movedFicha = false;
   } else {
-    movedFicha = signatureChanged;
+    // rev-6 (BLOQUEANTE rev-1) — Proxy legacy SIN estampa. Antes acá se usaba
+    // `signatureChanged`, o sea igualdad de string sobre `${dispatching}:${avance}`.
+    // Eso contradecía textualmente el invariante escrito 20 líneas más arriba: la
+    // firma cambia TAMBIÉN cuando el conteo BAJA, y el conteo baja solo a medida
+    // que los agentes viejos terminan. Reproducido contra este mismo módulo, modo
+    // `never`, CERO despachos, agentes drenando 3 → 2 → 1 → 0:
+    //
+    //   t=100min disp=3 → alert/unexplained-stall, stalled=99min
+    //   t=101min disp=2 → skip/within-threshold,   stalled=0min,  recovery=SÍ
+    //   t=201min disp=1 → skip/within-threshold,   stalled=0min
+    //
+    // Cada muerte de un agente clavado reiniciaba el reloj y se reportaba como
+    // "despacho reanudado" (que en pulpo.js borra `needs_attention`). Con el
+    // conteo OSCILANDO entre fases el umbral no se alcanzaba NUNCA: 400 min de
+    // detención real sin una sola alerta — la negación exacta de CA-1.
+    //
+    // Un despacho sólo puede AGREGAR trabajo o AVANZAR la ola, así que acá sólo
+    // podría contar el AUMENTO, jamás la baja. Sin observación previa (`null`,
+    // arranque en frío o estado de una versión anterior) no se puede afirmar que
+    // hubo aumento ⇒ no hay movimiento: el reloj arranca y corre.
+    //
+    // Y el AUMENTO DE `dispatching` tampoco cuenta, por un argumento que sólo
+    // vale en esta rama: `never` significa que NUNCA se vio una estampa. La
+    // estampa la escribe pulpo.js en el punto del spawn real (con guarda de PID)
+    // y tiene espejo en memoria si el FS falla, así que un despacho de verdad
+    // habría sacado al watchdog de `never` en el tick siguiente. Si seguimos en
+    // `never`, ese aumento NO vino de un despacho: vino de una ficha promovida
+    // entre fases (el conteo es global a todas). Aceptarlo dejaba al watchdog
+    // MUDO con el conteo oscilando 2↔3 sin un solo despacho — el reloj se
+    // reiniciaba en cada subida y jamás alcanzaba el umbral.
+    //
+    // Queda `avancePct`: progreso real y monótono de la ola, señal independiente
+    // del conteo y la que el PO definió como "mover una ficha" en #4708.
+    movedFicha = state.lastAvancePct != null && avancePct != null
+      && avancePct > state.lastAvancePct;
   }
 
-  const nextState = { ...state, lastSignature: signature };
+  const nextState = {
+    ...state,
+    lastSignature: signature,
+    lastDispatching: dispatching,
+    // Un avance ilegible NO pisa el último valor bueno: si se pierde la serie,
+    // olvidarlo permitiría que el siguiente valor cuente como "aumento" desde
+    // cero y reiniciara el reloj sin haber despachado.
+    lastAvancePct: avancePct != null ? avancePct : state.lastAvancePct,
+  };
 
   // Causa declarada: sólo se usa para NOMBRAR el motivo en el aviso y para
   // decidir cuál de los dos umbrales aplica. Ya NO tiene reloj propio (B1).
@@ -503,7 +611,16 @@ function decide(facts) {
   // --- 1c. Recuperación del despacho (CA-5) -----------------------------
   // Sólo si el episodio anterior LLEGÓ A ALERTAR: reanudar tras un silencio que
   // nadie notificó no es una "recuperación" que valga un mensaje.
-  const recovering = movedFicha && state.alertCount > 0 && state.lastMovementTs > 0;
+  //
+  // rev-6 — Además, SÓLO con el reloj honesto (`stampState === 'ok'`). El mensaje
+  // de recuperación afirma una duración exacta ("la detención duró N"), y sin
+  // estampa creíble esa duración sale de la proxy legacy, que no puede
+  // sostenerla. Anunciar una reanudación que no consta es peor que callar: en
+  // pulpo.js `decision.recovery` dispara `clearWaveStalled()` y borra la marca
+  // `needs_attention` — o sea que una recuperación falsa apaga la señal de
+  // atención en plena detención real.
+  const recovering = movedFicha && state.alertCount > 0 && state.lastMovementTs > 0
+    && stampState === 'ok';
   const recovery = recovering
     ? (() => {
       // Duración total = desde el último despacho previo hasta el que reanuda.
@@ -544,8 +661,9 @@ function decide(facts) {
     waveKey: facts.waveKey != null ? facts.waveKey : null,
     enabledCount,
     stallMinutes,
-    windowMinutes,
     nextState,
+    scopeBlind,
+    queuedTotal,
     // #5400 — contexto para el brazo y el dashboard.
     causeKind,
     dispatching,
@@ -558,7 +676,20 @@ function decide(facts) {
   // --- 2. Sin trabajo habilitado => nada que vigilar (CA-3) -------------
   // Una cola legítimamente vacía NO alerta. Criterio ya acordado: la ociosidad
   // sólo se avisa por recursos o deadlock humano.
-  if (enabledCount <= 0) return base('skip', 'no-enabled-work', 'info');
+  //
+  // rev-6 (B4) — salvo que el alcance esté CIEGO: ahí `elegibles: 0` no significa
+  // "no hay trabajo" sino "no puedo saber cuál es despachable", y callar sería
+  // apagar el control justo en un estado de pipeline trabado.
+  //
+  // rev-6 (B2) — una cola legítimamente vacía CIERRA el episodio: se resetea
+  // también el backoff. Antes el reset colgaba sólo de `movedFicha`, así que el
+  // primer aviso del episodio siguiente heredaba el cooldown acumulado del
+  // anterior (hasta 16× = 8 h de mordaza) sin que nada lo justificara.
+  if (enabledCount <= 0 && !scopeBlind) {
+    nextState.lastAlertTs = 0;
+    nextState.alertCount = 0;
+    return base('skip', 'no-enabled-work', 'info');
+  }
 
   // --- 3. ¿Cuánto lleva sin despachar? ----------------------------------
   // Este es EL reloj del módulo: inactividad de despacho. Es inmune al flapeo de
@@ -618,6 +749,8 @@ function decide(facts) {
     causeKind,
     dispatching,
     stampDegraded,
+    scopeBlind,
+    queuedTotal,
     authorDeclared: facts.authorDeclared,
   });
   return decision;
@@ -631,6 +764,7 @@ module.exports = {
   describeCause,
   formatDurationEs,
   movementSignature,
+  avanceActual,
   parseStallMinutes,
   parsePositiveInt,
   normalizeState,
@@ -640,7 +774,6 @@ module.exports = {
   DEFAULT_STALL_MINUTES,
   MAX_STALL_MINUTES,
   DEFAULT_COOLDOWN_MINUTES,
-  DEFAULT_WINDOW_MINUTES,
   MAX_ALERT_BACKOFF_FACTOR,
   DEFAULT_DECLARED_CAUSE_ESCALATE_MINUTES,
   DEFAULT_BUSY_GRACE_MINUTES,

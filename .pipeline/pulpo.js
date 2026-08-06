@@ -19030,6 +19030,15 @@ async function mainLoop() {
     const stateFile = path.join(PIPELINE, 'state', 'wave-stall-watchdog-state.json');
     const statusFile = path.join(PIPELINE, 'state', 'dispatch-watchdog-status.json');
 
+    // #5400 (rev-6, B1) — Espejo EN MEMORIA del estado del watchdog para cuando
+    // la persistencia falla. `saveStateAtomic` es fail-soft: si `.pipeline/state/`
+    // no es escribible devuelve false, y el tick siguiente releía del disco el
+    // estado VIEJO — con `lastAlertTs`/`alertCount` desactualizados, así que el
+    // anti-flooding se reiniciaba y el mismo episodio se re-anunciaba en cada
+    // tick (1 mensaje por minuto). Con el espejo, el episodio sigue contando
+    // aunque el disco no acompañe. Se limpia apenas la persistencia vuelve.
+    let estadoEnMemoria = null;
+
     // #5400 / SEC-5 — "control apagado" NO puede ser indistinguible de "todo OK".
     // El meta-bug de este issue fue justamente ese: el watchdog llevaba desde el
     // merge en `enabled: false` y nada lo avisaba. Cada tick estampa su estado
@@ -19104,7 +19113,11 @@ async function mainLoop() {
           lastDispatchTs = ultimoDespachoMemTs;
         }
 
-        const state = waveWatchdog.loadState(stateFile);
+        // B1 — el espejo GANA sobre el disco: si el tick anterior no pudo
+        // persistir, lo que hay en el archivo es más viejo que lo que sabemos.
+        const state = estadoEnMemoria != null
+          ? waveWatchdog.normalizeState(estadoEnMemoria)
+          : waveWatchdog.loadState(stateFile);
         const decision = waveWatchdog.decide({
           now: Date.now(),
           waveKey,
@@ -19119,16 +19132,25 @@ async function mainLoop() {
           cooldownMinutes: cfg.alert_cooldown_minutes,
           declaredCauseEscalateMinutes: cfg.declared_cause_escalate_minutes,
           busyGraceMinutes: cfg.busy_grace_minutes,
-          windowMinutes: cfg.window_minutes,
+          // rev-6 (B4) — "0 elegibles" con el alcance CIEGO no es cola vacía: es
+          // no poder determinar qué es despachable. `decide()` lo necesita para
+          // no salir por `no-enabled-work` justo con el pipeline trabado.
+          scopeBlind: hechos.conteo.ciego === true,
+          queuedTotal: hechos.conteo.total,
         });
 
         // Persistir SIEMPRE el nextState (reloj de movimiento, episodio de alerta).
         let estadoPersistido = false;
         try { estadoPersistido = waveWatchdog.saveStateAtomic(stateFile, decision.nextState) !== false; }
         catch (e) { log('dispatch-watchdog', `no pude persistir estado: ${e.message}`); }
+        // B1 — sin persistencia, el estado vive en memoria hasta que el disco
+        // vuelva. Así el episodio no se re-cuenta ni el anti-flooding se apaga.
         if (!estadoPersistido) {
+          estadoEnMemoria = decision.nextState;
           log('dispatch-watchdog', 'no pude persistir el estado del watchdog — ' +
-            'el episodio puede re-contarse en el próximo tick');
+            'sigo con el espejo en memoria (el episodio no se re-cuenta)');
+        } else {
+          estadoEnMemoria = null;
         }
 
         // rev-1 / SEC-5 — `degraded` ahora dice la verdad: el reloj de despacho
@@ -19160,6 +19182,10 @@ async function mainLoop() {
           pendientesTotal: hechos.conteo.total,
           pendientesFueraDeAlcance: hechos.conteo.fueraDeAlcance,
           alcanceAplicado: hechos.conteo.alcanceAplicado,
+          // rev-6 (B4/S3) — el dashboard tiene que poder distinguir "0 elegibles
+          // porque la cola está vacía" de "0 elegibles porque no puedo verla".
+          alcanceCiego: hechos.conteo.ciego === true,
+          modoLeible: hechos.alcance.modeReadable !== false,
           modoPipeline: hechos.alcance.mode,
         });
 

@@ -45,6 +45,35 @@ reloj). Por eso la señal primaria es `state/last-dispatch.json`.
 `trabajando/ > 0` es un **atenuante**, nunca un skip: con agentes en curso se
 suma `busy_grace_minutes` a los dos umbrales.
 
+#### Y en modo `never` el conteo **tampoco** cuenta como movimiento
+
+`stampState: never` = todavía no se vio ninguna estampa. Ahí no hay reloj honesto
+y sólo queda la proxy legacy de #4708 (conteo + `avancePct`). Esa proxy usaba la
+**firma** (`${dispatching}:${avance}`), que es igualdad de string: cambia también
+cuando el conteo **baja**, o sea cuando los agentes viejos terminan. El resultado
+medido, con **cero** despachos y agentes drenando 3 → 2 → 1 → 0:
+
+```
+t=100min disp=3 → alert/unexplained-stall, stalled=99min
+t=101min disp=2 → skip/within-threshold,   stalled=0min,  recovery=SÍ
+t=201min disp=1 → skip/within-threshold,   stalled=0min
+```
+
+Cada muerte de un agente clavado reiniciaba el reloj y se anunciaba como
+*"despacho reanudado"* — que en `pulpo.js` dispara `clearWaveStalled()` y borra
+`needs_attention` en plena detención. Con el conteo **oscilando** entre fases el
+umbral no se alcanzaba nunca y el watchdog quedaba **mudo**.
+
+Hoy, en modo `never`, **sólo un aumento de `avancePct` cuenta como movimiento**.
+El aumento de `dispatching` tampoco vale, y el argumento es específico de esta
+rama: la estampa se escribe en el spawn real y tiene espejo en memoria si el FS
+falla, así que **un despacho de verdad habría sacado al watchdog de `never`**. Si
+seguimos en `never`, ese aumento no vino de un despacho sino de una ficha
+promovida entre fases (el conteo es global a todas).
+
+Por la misma razón **no se emite `recovery` con `stampState !== 'ok'`**: el
+mensaje afirma una duración exacta y sin reloj honesto no se puede sostener.
+
 #### Dónde se estampa (y por qué ahí y no antes)
 
 La estampa se escribe en **`lanzarAgenteClaude`, después de
@@ -99,7 +128,31 @@ Semántica del cruce (`contarElegibles`):
 | allowlist presente | pendientes ∩ allowlist |
 | allowlist presente **+ pausa total** | pendientes ∩ allowlist (los que saldrían al levantar la pausa) |
 | sin allowlist, con ola activa | pendientes ∩ issues abiertos de la ola (desync fail-closed) |
-| sin allowlist, sin ola | 0 — el backlog parkeado no es trabajo esperando |
+| sin allowlist, sin ola | 0 **y `ciego: true`** si hay cola — ver abajo |
+
+`elegibles` cuenta **issues distintos y parseables**, no workfiles: el mismo
+issue presente en 3 fases cuenta **una** vez. Antes se contaban workfiles (y la
+rama del escape hatch devolvía el total crudo, sin filtrar los que no parsean),
+así que el número que gobierna CA-3 y que viaja al mensaje de Telegram venía
+inflado.
+
+### "No hay trabajo" ≠ "no puedo ver el trabajo"
+
+Sin allowlist, sin ola y sin escape hatch, el recolector sale por
+`fail-closed-sin-ola` con `elegibles: 0`. Con la **cola llena**, eso no es una
+cola vacía: es no poder determinar qué es despachable. Devolverlo como un 0 a
+secas hacía que `decide()` saliera por `no-enabled-work` — un skip **mudo** con
+el pipeline trabado, o sea **CA-3 comiéndose a CA-1**, que es la función primaria
+del componente.
+
+Por eso el conteo emite `ciego: true` y el brazo lo pasa como `scopeBlind`. Con
+el alcance ciego la vigilancia **sigue**: manda la causa declarada (que en ese
+estado es `wave-empty`, así que calla el rato normal y después escala) y el aviso
+dice *"alcance de despacho no determinable"* con el tamaño crudo de la cola, en
+vez de reportar "0 esperando" —  que se lee como *"no hay nada que hacer"*.
+
+Una cola **realmente** vacía sigue sin alertar: `ciego` es `false` y CA-3 vale
+igual que siempre.
 
 > La pausa total **no** borra la allowlist para este conteo. `getPipelineMode()`
 > devuelve `allowedIssues: []` en cuanto existe `.paused`; si el recolector se
@@ -128,6 +181,13 @@ Orden de `resolverCausaDeclarada` (el primero que matchea gana):
 La **anomalía** (`"no sé por qué no despacho"`) nunca silencia: es el caso en que
 más hace falta avisar (fail-closed).
 
+> **Una excepción tampoco silencia.** Si `getPipelineMode()` o
+> `unscopedDispatchEnabled()` tiran, el alcance queda con `modeReadable: false` y
+> el paso 3 **no** declara `wave-empty`: una lectura que falló no es una
+> explicación. Antes degradaba a `mode: 'running'` con `scoped:false`, y eso
+> callaba la alarma por doble vía (causa declarada **y** `fail-closed-sin-ola`)
+> — lo contrario de lo que promete el header del módulo.
+
 ### Autoría
 
 Siempre rotulada como **declarada** y display-only. Para la pausa total sale de
@@ -143,8 +203,16 @@ persona.
   14 h cuesta ~6 mensajes, no ~27. El primer aviso nunca se demora.
 - Un episodio nuevo (el pipeline despachó y volvió a frenarse) reinicia el
   contador y vuelve a alertar de una.
+- Una **cola legítimamente vacía también cierra el episodio** y resetea el
+  backoff. Antes el reset colgaba sólo de "movió ficha", así que el primer aviso
+  del episodio siguiente heredaba el cooldown acumulado del anterior (hasta 8 h
+  de mordaza) sin que nada lo justificara.
 - Al reanudarse el despacho sale **un** aviso de recuperación con la duración
-  total de la detención.
+  total de la detención — **sólo con `stampState: 'ok'`** (ver §3).
+- Si el estado no se puede persistir, el brazo mantiene un **espejo en memoria**
+  y lo prefiere sobre el disco. Sin él, un `.pipeline/state/` no escribible
+  reiniciaba el anti-flooding en cada tick: un mensaje por minuto del mismo
+  episodio.
 
 ## 6. Configuración (`config.yaml` → `wave_watchdog`)
 
@@ -172,6 +240,13 @@ badge no es señal de salud.
 `degraded: true` cubre: apagado, kill-switch, brazo sin latir (>10 min),
 estampa de despacho ausente/corrida y estado que no se pudo persistir.
 
+**El watchdog sano no implica el pipeline sano.** El banner marca *silencio
+saludable* sólo si `degraded === false` **y** la última decisión fue `skip`.
+Antes colgaba únicamente de `degraded`, así que un watchdog perfectamente vivo
+que estaba **alertando** por despacho detenido se pintaba como silencio
+saludable: el banner decía "todo bien" mientras el propio control gritaba lo
+contrario. Sin `action` observada tampoco se afirma salud.
+
 ## 8. Debugging
 
 ```bash
@@ -184,6 +259,9 @@ cat .pipeline/state/dispatch-watchdog-status.json
 #   pendientesTotal           → todos los workfiles en pendiente/
 #   pendientesFueraDeAlcance  → backlog parkeado
 #   alcanceAplicado           → allowlist | unscoped | desync-ola | fail-closed-sin-ola
+#   alcanceCiego              → true = "0 elegibles" NO es una cola vacía (§3)
+#   modoLeible                → false = getPipelineMode() tiró; no se declara causa
+#   action                    → última decisión: skip | alert | escalate
 
 # Episodio en curso (reloj de movimiento, cantidad de avisos)
 cat .pipeline/state/wave-stall-watchdog-state.json

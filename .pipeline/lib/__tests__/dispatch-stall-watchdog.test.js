@@ -213,6 +213,189 @@ test('B4: 33 h sin despachar con un agente clavado NO puede reportar salud', () 
     assert.ok(d.stalledMs > 30 * 60 * MIN, 'la duración informada es la real');
 });
 
+// ─── rev-6 · modo `never`: el conteo de trabajando/ NO es evidencia de despacho ─
+//
+// BLOQUEANTE del rebote rev-1. En modo `never` (sin estampa jamás vista) la rama
+// legacy usaba `signatureChanged`, o sea igualdad de string sobre
+// `${dispatching}:${avance}`. La firma cambia TAMBIÉN cuando el conteo BAJA, y el
+// conteo baja solo a medida que los agentes viejos terminan. Resultado: cada
+// muerte de un agente clavado reiniciaba el reloj de detención y emitía una
+// "recuperación" que en pulpo.js borra `needs_attention`. El único test de
+// `never` que existía mantenía `dispatching` FIJO, así que no tocaba el
+// disparador y el defecto quedó descubierto.
+//
+// Helper: ticks sucesivos en modo `never`, encadenando el estado como en producción.
+function correrNever(ticks, base = {}) {
+    let state = wd.normalizeState(null);
+    const out = [];
+    for (const t of ticks) {
+        const d = wd.decide(pipelineFacts({
+            now: t.min * MIN,
+            dispatching: t.disp,
+            enabledCount: 5,
+            lastDispatchTs: undefined,
+            progressSeries: [{ ts: 1, waveKey: 7, avancePct: 42 }],
+            state,
+            ...base,
+        }));
+        out.push(d);
+        state = wd.normalizeState(d.nextState);
+    }
+    return out;
+}
+
+test('rev-6: en modo `never` un conteo DECRECIENTE no reinicia el reloj ni emite recuperación', () => {
+    // Agentes viejos drenando 3 → 2 → 1 → 0 con CERO despachos. Antes esto daba
+    // `stalled=0min` y `recovery=SI` en cada baja.
+    const [t1, t100, t101, t201, t301] = correrNever([
+        { min: 1, disp: 3 }, { min: 100, disp: 3 }, { min: 101, disp: 2 },
+        { min: 201, disp: 1 }, { min: 301, disp: 0 },
+    ]);
+
+    assert.equal(t1.stampState, 'never', 'el escenario es sin estampa');
+    assert.equal(t100.action, 'alert', 'a los 100 min sin despachar tiene que alertar');
+
+    // La baja 3 → 2 NO es un despacho.
+    assert.equal(t101.recovery, null, 'que un agente termine NO es "despacho reanudado"');
+    assert.ok(t101.stalledMs >= 100 * MIN, `el reloj acumula (fue ${t101.stalledMs / MIN}min)`);
+
+    // Y sigue acumulando en cada baja posterior, escalando en vez de callar.
+    for (const [d, min] of [[t201, 200], [t301, 300]]) {
+        assert.equal(d.recovery, null, 'ninguna baja puede emitir recuperación');
+        assert.ok(d.stalledMs >= min * MIN, `el reloj nunca se reinicia (fue ${d.stalledMs / MIN}min)`);
+    }
+    assert.equal(t301.action, 'escalate', 'una detención de 5 h escala');
+});
+
+test('rev-6: en modo `never` un conteo OSCILANTE alerta igual', () => {
+    // El conteo global sube y baja entre fases (2 ↔ 3) sin un solo despacho.
+    // Antes el reloj se reiniciaba en CADA cambio y el umbral no se alcanzaba
+    // nunca: el watchdog quedaba mudo indefinidamente.
+    const ticks = correrNever([
+        { min: 1, disp: 2 }, { min: 10, disp: 3 }, { min: 20, disp: 2 },
+        { min: 30, disp: 3 }, { min: 40, disp: 2 }, { min: 50, disp: 3 },
+        { min: 60, disp: 2 }, { min: 70, disp: 3 }, { min: 82, disp: 2 },
+    ]);
+    const ultimo = ticks[ticks.length - 1];
+    assert.ok(
+        ticks.some((d) => d.action === 'alert' || d.action === 'escalate'),
+        'con el conteo oscilando el watchdog NO puede quedarse mudo'
+    );
+    assert.equal(ultimo.action, 'alert', 'a los 82 min supera el umbral atenuado (20 + 60)');
+    assert.ok(ultimo.stalledMs >= 80 * MIN, 'la inactividad informada es la real');
+    assert.ok(ticks.every((d) => d.recovery == null), 'oscilar no es recuperarse');
+});
+
+test('rev-6: en modo `never` un AVANCE real de la ola sí reinicia el reloj', () => {
+    // La contracara: el avancePct es progreso genuino y monótono de la ola, y
+    // sigue contando como "movió ficha" (definición del PO en #4708).
+    let state = wd.normalizeState(null);
+    const primero = wd.decide(pipelineFacts({
+        now: 1 * MIN, dispatching: 1, lastDispatchTs: undefined, state,
+        progressSeries: [{ ts: 1, waveKey: 7, avancePct: 42 }],
+    }));
+    state = wd.normalizeState(primero.nextState);
+    const conAvance = wd.decide(pipelineFacts({
+        now: 200 * MIN, dispatching: 1, lastDispatchTs: undefined, state,
+        progressSeries: [{ ts: 2, waveKey: 7, avancePct: 57 }],
+    }));
+    assert.equal(conAvance.nextState.lastMovementTs, 200 * MIN, 'el avance reinicia el reloj');
+    assert.equal(conAvance.action, 'skip');
+});
+
+test('rev-6: sin reloj honesto NO se afirma una recuperación', () => {
+    // Aun con movimiento real (avance), en modo `never` la duración de la
+    // detención sale de la proxy legacy y no se puede sostener. Anunciar una
+    // reanudación que no consta borra `needs_attention` en plena detención.
+    const state = {
+        lastMovementTs: 10 * MIN, lastSignature: '1:42', lastAlertTs: 20 * MIN,
+        alertCount: 2, lastDispatching: 1, lastAvancePct: 42,
+    };
+    const d = wd.decide(pipelineFacts({
+        now: 200 * MIN, dispatching: 1, lastDispatchTs: undefined, state,
+        progressSeries: [{ ts: 2, waveKey: 7, avancePct: 90 }],
+    }));
+    assert.equal(d.stampState, 'never');
+    assert.equal(d.recovery, null, 'sin estampa creíble no se anuncia recuperación');
+});
+
+// ─── rev-6 · B4 · "no hay trabajo" ≠ "no puedo ver el trabajo" ───────────────
+
+test('rev-6 (B4): con el alcance CIEGO, 0 elegibles NO silencia el watchdog', () => {
+    // Pausa total sin allowlist preservada y sin ola activa: el recolector sale
+    // por `fail-closed-sin-ola` con elegibles 0. Antes `decide()` salía por
+    // `no-enabled-work` — skip mudo con el pipeline trabado y la cola llena.
+    const d = wd.decide(pipelineFacts({
+        now: 200 * MIN,
+        enabledCount: 0,
+        scopeBlind: true,
+        queuedTotal: 241,
+        lastDispatchTs: 20 * MIN,
+    }));
+    assert.notEqual(d.reason, 'no-enabled-work', 'el alcance ciego no es una cola vacía');
+    assert.equal(d.action, 'alert');
+    assert.match(d.message, /no determinable/, 'el aviso admite que no puede acotar la cola');
+    assert.match(d.message, /241 workfile/, 'informa lo único afirmable: el tamaño crudo');
+    assert.doesNotMatch(d.message, /0 issue\(s\) habilitado/, 'no reporta "0 esperando"');
+});
+
+test('rev-6 (B4): una cola realmente vacía sigue sin alertar (CA-3 intacto)', () => {
+    const d = wd.decide(pipelineFacts({
+        now: 200 * MIN, enabledCount: 0, scopeBlind: false, lastDispatchTs: 20 * MIN,
+    }));
+    assert.equal(d.action, 'skip');
+    assert.equal(d.reason, 'no-enabled-work');
+});
+
+// ─── rev-6 · B2 · el backoff no se arrastra entre episodios ──────────────────
+
+test('rev-6 (B2): una cola vacía cierra el episodio y resetea el backoff', () => {
+    // Antes el reset colgaba SÓLO de `movedFicha`, así que el primer aviso del
+    // episodio siguiente heredaba el cooldown acumulado del anterior (hasta 16x
+    // = 8 h de mordaza) sin que nada lo justificara.
+    const d = wd.decide(pipelineFacts({
+        now: 200 * MIN,
+        enabledCount: 0,
+        lastDispatchTs: 20 * MIN,
+        state: {
+            lastMovementTs: 20 * MIN, lastSignature: '0:42:1200000',
+            lastAlertTs: 190 * MIN, alertCount: 5,
+        },
+    }));
+    assert.equal(d.reason, 'no-enabled-work');
+    assert.equal(d.nextState.alertCount, 0, 'el episodio se cierra');
+    assert.equal(d.nextState.lastAlertTs, 0, 'y el backoff arranca de cero');
+});
+
+// ─── rev-6 · S4 · el invariante escalate >= stall se garantiza ───────────────
+
+test('rev-6 (S4): con `escalate` mal configurado por debajo de `stall`, el modo ola sigue mudo', () => {
+    // Las dos claves son independientes en config y nada impide escalate < stall.
+    // Propiedad que se protege: NO puede existir un punto de inactividad POR
+    // DEBAJO del umbral normal en el que una causa declarada dispare — eso sería
+    // la regresión de #4751. Se barre el rango en vez de probar un solo punto.
+    for (const stalled of [1, 10, 25, 29]) {
+        const d = wd.decide(pipelineFacts({
+            now: (20 + stalled) * MIN,
+            stallMinutes: 30,
+            declaredCauseEscalateMinutes: 5,   // mal configurado: menor que stall
+            cause: { declared: true, kind: 'human-halt', readable: true },
+            lastDispatchTs: 20 * MIN,
+        }));
+        assert.equal(d.action, 'skip', `a los ${stalled} min (< 30) tiene que seguir mudo`);
+    }
+    // Y pasado el umbral normal, escala (la causa vieja deja de explicar).
+    const pasado = wd.decide(pipelineFacts({
+        now: 55 * MIN,                          // 35 min sin despachar
+        stallMinutes: 30,
+        declaredCauseEscalateMinutes: 5,
+        cause: { declared: true, kind: 'human-halt', readable: true },
+        lastDispatchTs: 20 * MIN,
+    }));
+    assert.equal(pasado.action, 'alert');
+    assert.match(pasado.reason, /^stale-declared-cause:/);
+});
+
 // ─── R-3 · no-regresión de #4751 ─────────────────────────────────────────────
 
 test('causa declarada por debajo del umbral sigue muda (no-regresión #4751)', () => {

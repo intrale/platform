@@ -235,7 +235,9 @@ test('#5400 sin archivo de estado el watchdog reporta "no consta", no un OK inve
 
 test('#5400 sin causa y con el watchdog sano muestra el estado esperado y el chip activo', () => {
     const dir = tmpDir();
-    escribirStatusWatchdog(dir, { enabled: true, killSwitch: false, lastTickTs: 1_600_000 });
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: 1_600_000, action: 'skip',
+    });
     escribirEstampa(dir, 1_590_000);
     const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
     assert.strictEqual(s.active, true);
@@ -244,6 +246,34 @@ test('#5400 sin causa y con el watchdog sano muestra el estado esperado y el chi
     assert.match(html, /Cola sin trabajo elegible/);
     assert.match(html, /watchdog activo/);
     assert.match(html, /href="#ic-health-ok"/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// rev-6 (S1/B3) — El silencio "sano" colgaba SÓLO de `degraded === false`, o sea
+// de la salud del watchdog, no de la del pipeline. Un watchdog perfectamente vivo
+// que está ALERTANDO por despacho detenido caía en la misma rama y se pintaba
+// como silencio saludable: el banner decía "todo bien" mientras el control
+// gritaba lo contrario.
+test('#5400 (S1/B3) un watchdog sano que ALERTA no puede pintarse como silencio sano', () => {
+    const dir = tmpDir();
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: 1_600_000, action: 'alert',
+    });
+    escribirEstampa(dir, 1_590_000);
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
+    assert.strictEqual(s.watchdogDegraded, false, 'el watchdog en sí está sano');
+    assert.strictEqual(s.watchdogAction, 'alert');
+    assert.strictEqual(s.healthySilence, false, 'alertando NO es silencio sano');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 (S1/B3) un status sin `action` no afirma silencio sano', () => {
+    const dir = tmpDir();
+    escribirStatusWatchdog(dir, { enabled: true, killSwitch: false, lastTickTs: 1_600_000 });
+    escribirEstampa(dir, 1_590_000);
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
+    assert.strictEqual(s.watchdogAction, null);
+    assert.strictEqual(s.healthySilence, false, 'sin decisión observada no se afirma salud');
     fs.rmSync(dir, { recursive: true, force: true });
 });
 

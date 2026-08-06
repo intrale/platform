@@ -120,8 +120,17 @@ function normalizarIssue(valor) {
 function leerAlcanceDespacho(deps) {
     const partialPause = (deps || {}).partialPause || {};
 
+    // rev-6 (S3) — Una excepción acá NO puede silenciar el watchdog, y hasta esta
+    // revisión lo silenciaba por DOBLE vía: `modo = null` degradaba a
+    // `mode: 'running'` con `scoped:false / unscoped:false`, y eso encadenaba
+    // `contarElegibles → fail-closed-sin-ola` (elegibles 0 ⇒ skip mudo) con
+    // `resolverCausaDeclarada → wave-empty` (causa declarada ⇒ callar). O sea que
+    // el header del módulo prometía lo contrario de lo que hacía el código.
+    // `modeReadable: false` marca "no sé", que NO es lo mismo que "no hay ola".
     let modo = null;
-    try { modo = partialPause.getPipelineMode(); } catch { modo = null; }
+    let modeReadable = true;
+    try { modo = partialPause.getPipelineMode(); } catch { modo = null; modeReadable = false; }
+    if (modo == null) modeReadable = false;
     const mode = (modo && typeof modo.mode === 'string') ? modo.mode : 'running';
     const fullPaused = mode === 'paused';
 
@@ -139,7 +148,8 @@ function leerAlcanceDespacho(deps) {
 
     // Escape hatch de diagnóstico (#5060): con él prendido no hay filtro de ola.
     let unscoped = false;
-    try { unscoped = partialPause.unscopedDispatchEnabled() === true; } catch { unscoped = false; }
+    try { unscoped = partialPause.unscopedDispatchEnabled() === true; }
+    catch { unscoped = false; modeReadable = false; }
 
     let pauseOrigin = null;
     if (fullPaused) {
@@ -148,6 +158,7 @@ function leerAlcanceDespacho(deps) {
 
     return {
         mode,
+        modeReadable,
         fullPaused,
         unscoped,
         scoped: allowedIssues.size > 0,
@@ -190,11 +201,26 @@ function contarElegibles(alcance, pendientes, opts) {
     ));
     const total = issues.length;
 
+    // rev-6 (S2) — `elegibles` cuenta ISSUES DISTINTOS Y PARSEABLES, no workfiles.
+    // Antes la rama `unscoped` devolvía `total` crudo (incluyendo los que no
+    // parsean a issue) y el loop no deduplicaba, así que un mismo issue presente
+    // en 3 fases contaba 3 veces. Ese número gobierna CA-3 y además viaja al
+    // mensaje de Telegram: inflarlo es mentirle al operador sobre el tamaño de
+    // la cola y volver inalcanzable el "0 = cola vacía".
+    const distintos = new Set(issues.filter((n) => n != null));
+
     if (!alcance) {
-        return { total, elegibles: 0, fueraDeAlcance: total, alcanceAplicado: 'sin-alcance' };
+        return {
+            total, elegibles: 0, fueraDeAlcance: total,
+            alcanceAplicado: 'sin-alcance', ciego: total > 0,
+        };
     }
     if (alcance.unscoped) {
-        return { total, elegibles: total, fueraDeAlcance: 0, alcanceAplicado: 'unscoped' };
+        const elegibles = distintos.size;
+        return {
+            total, elegibles, fueraDeAlcance: Math.max(0, total - elegibles),
+            alcanceAplicado: 'unscoped', ciego: false,
+        };
     }
 
     let scope = alcance.allowedIssues instanceof Set ? alcance.allowedIssues : new Set();
@@ -207,17 +233,31 @@ function contarElegibles(alcance, pendientes, opts) {
             if (x) ola.add(x);
         }
         if (ola.size === 0) {
-            return { total, elegibles: 0, fueraDeAlcance: total, alcanceAplicado: 'fail-closed-sin-ola' };
+            // rev-6 (B4) — Acá NO se puede afirmar "no hay trabajo": se puede
+            // afirmar "no puedo determinar QUÉ es despachable" (sin allowlist,
+            // sin ola y sin escape hatch). Con la cola llena eso es CEGUERA, no
+            // una cola vacía, y devolverlo como `elegibles: 0` a secas hacía que
+            // `decide()` saliera por `no-enabled-work`: skip mudo con el pipeline
+            // trabado. CA-3 se comía a CA-1, que es la función primaria.
+            return {
+                total, elegibles: 0, fueraDeAlcance: total,
+                alcanceAplicado: 'fail-closed-sin-ola', ciego: total > 0,
+            };
         }
         scope = ola;
         alcanceAplicado = 'desync-ola';
     }
 
     let elegibles = 0;
-    for (const n of issues) {
-        if (n && scope.has(n)) elegibles++;
+    for (const n of distintos) {
+        if (scope.has(n)) elegibles++;
     }
-    return { total, elegibles, fueraDeAlcance: total - elegibles, alcanceAplicado };
+    return {
+        total, elegibles, fueraDeAlcance: Math.max(0, total - elegibles),
+        alcanceAplicado,
+        // Alcance conocido: el conteo es afirmable aunque dé 0.
+        ciego: false,
+    };
 }
 
 /** Constructor de causa declarada con la forma que consume `decide()`. */
@@ -290,6 +330,13 @@ function resolverCausaDeclarada(ctx) {
 
     // 3. Sin allowlist y sin escape hatch: no hay ola vigente que acote el
     //    dispatch, y desde #5060 eso significa DENEGAR (fail-closed).
+    //
+    //    rev-6 (S3) — SÓLO si el alcance se pudo LEER. Con `modeReadable: false`
+    //    la ausencia de allowlist no es un hecho observado sino una lectura que
+    //    falló, y convertirla en causa declarada dejaba que una excepción
+    //    silenciara el watchdog — justo lo que el header del módulo prohíbe.
+    //    Sin causa declarada la alarma dispara: fail-closed de verdad.
+    if (alcance.modeReadable === false) return null;
     if (alcance.scoped !== true && alcance.unscoped !== true) {
         return declarar('wave-empty');
     }

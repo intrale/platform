@@ -229,8 +229,11 @@ test('CA-6: un episodio NUEVO (movió ficha y volvió a estancarse) re-alerta co
   const f = stalledFacts({
     now: 100 * MIN,
     dispatching: 0,
-    progressSeries: [{ ts: 1, waveKey: 7, avancePct: 55 }], // avancePct distinto → firma nueva
-    state: { lastMovementTs: 40 * MIN, lastSignature: '0:42', lastAlertTs: 60 * MIN, alertCount: 3 },
+    progressSeries: [{ ts: 1, waveKey: 7, avancePct: 55 }], // avancePct SUBIÓ → movió ficha
+    state: {
+      lastMovementTs: 40 * MIN, lastSignature: '0:42', lastAlertTs: 60 * MIN, alertCount: 3,
+      lastAvancePct: 42,
+    },
   });
   const d = wd.decide(f);
   assert.equal(d.action, 'skip'); // recién movió, reloj reiniciado
@@ -241,19 +244,29 @@ test('CA-6: un episodio NUEVO (movió ficha y volvió a estancarse) re-alerta co
 
 // ─── Definición de "ficha movida" ───────────────────────────────────────────
 
-test('ficha movida: cambia conteo trabajando/ con avancePct constante => NO estancada', () => {
-  // Firma persistida "0:42"; ahora hay 2 en trabajando/ → firma "2:42" (nueva).
-  // Sin estampa nunca vista, la proxy legacy de #4708 sigue valiendo: la firma
-  // cambió ⇒ movió ficha ⇒ el reloj se reinicia.
+// rev-6 — Este test AFIRMABA lo contrario ("la firma cambió ⇒ movió ficha ⇒ el
+// reloj se reinicia") y por eso el defecto quedó protegido por la suite: el
+// conteo de `trabajando/` cambia también cuando los agentes TERMINAN, y tratarlo
+// como movimiento reiniciaba el reloj sin que se hubiera despachado nada. Es
+// exactamente lo que el propio módulo se prohíbe en su bloque 1b.
+test('ficha movida: un cambio de conteo trabajando/ NO reinicia el reloj (avancePct constante)', () => {
+  // now=130min contra un reloj fijado en 40min ⇒ 90 min sin despachar. Con 2
+  // agentes en curso el umbral es 20 + 60 de gracia = 80 min, así que 90 > 80
+  // tiene que alertar. Si el conteo reiniciara el reloj, `stalledMs` volvería a 0
+  // y esto sería un `skip` para siempre.
   const f = stalledFacts({
+    now: 130 * MIN,
     dispatching: 2,
     progressSeries: [{ ts: 1, waveKey: 7, avancePct: 42 }],
-    state: { lastMovementTs: 40 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+    state: {
+      lastMovementTs: 40 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0,
+      lastDispatching: 0, lastAvancePct: 42,
+    },
   });
   const d = wd.decide(f);
-  assert.equal(d.action, 'skip');
-  assert.equal(d.reason, 'within-threshold');
-  assert.equal(d.nextState.lastMovementTs, 100 * MIN);
+  assert.equal(d.nextState.lastMovementTs, 40 * MIN, 'el reloj sigue corriendo desde donde estaba');
+  assert.equal(d.stalledMs, 90 * MIN, 'la inactividad se acumula, no se reinicia');
+  assert.equal(d.action, 'alert', '90 min sin despachar supera el umbral atenuado (80)');
 });
 
 test('ficha movida: avancePct cambió (promovió ficha) => reloj reiniciado', () => {
@@ -261,7 +274,10 @@ test('ficha movida: avancePct cambió (promovió ficha) => reloj reiniciado', ()
     now: 100 * MIN,
     dispatching: 0,
     progressSeries: [{ ts: 1, waveKey: 7, avancePct: 99 }],
-    state: { lastMovementTs: 40 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+    state: {
+      lastMovementTs: 40 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0,
+      lastAvancePct: 42,
+    },
   });
   const d = wd.decide(f);
   assert.equal(d.nextState.lastMovementTs, 100 * MIN);
@@ -360,6 +376,8 @@ test('movementSignature: serie vacía o inválida => avance "na"', () => {
 const EMPTY_STATE = {
   lastMovementTs: 0, lastSignature: null, lastAlertTs: 0, alertCount: 0,
   lastStampTs: 0,
+  // rev-6 — aditivos: últimos valores OBSERVADOS. `null` = todavía no observado.
+  lastDispatching: null, lastAvancePct: null,
 };
 
 test('normalizeState: tolera basura y campos ausentes', () => {
@@ -400,6 +418,7 @@ test('loadState/saveStateAtomic round-trip + fail-soft ante archivo ausente', ()
     lastMovementTs: 5, lastSignature: '2:9', lastAlertTs: 7, alertCount: 1, lastStampTs: 3,
   }), true, 'saveStateAtomic reporta si pudo persistir');
   assert.deepEqual(wd.loadState(file), {
+    ...EMPTY_STATE,
     lastMovementTs: 5, lastSignature: '2:9', lastAlertTs: 7, alertCount: 1, lastStampTs: 3,
   });
   // Corrupto → default (fail-soft)

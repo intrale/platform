@@ -2812,7 +2812,12 @@ function dispatchCauseSlice(state, ctx) {
         if (wd.watchdogEnabled !== null || wd.watchdogDegraded !== null) {
             return {
                 active: true,
-                healthySilence: wd.watchdogDegraded === false,
+                // rev-6 (S1/B3) — "silencio SANO" exige las dos cosas: watchdog
+                // no degradado Y última decisión `skip`. Con sólo lo primero, un
+                // watchdog perfectamente vivo que está ALERTANDO por despacho
+                // detenido se pintaba como silencio saludable — el banner decía
+                // "todo bien" mientras el propio control gritaba lo contrario.
+                healthySilence: wd.watchdogDegraded === false && wd.watchdogAction === 'skip',
                 causa: null,
                 label: null,
                 detalle: '',
@@ -2883,6 +2888,7 @@ function readWatchdogStatus(PIPELINE, nowMs) {
     const desconocido = {
         watchdogEnabled: null, watchdogDegraded: null,
         watchdogStaleTick: null, watchdogReason: null,
+        watchdogAction: null,
     };
     let raw;
     try {
@@ -2910,6 +2916,9 @@ function readWatchdogStatus(PIPELINE, nowMs) {
         watchdogEnabled: enabled,
         watchdogDegraded: degraded,
         watchdogStaleTick: stale,
+        // rev-6 (S1/B3) — la ÚLTIMA decisión del brazo. `degraded: false` sólo
+        // dice que el watchdog está sano; no dice que el pipeline lo esté.
+        watchdogAction: typeof raw.action === 'string' ? raw.action : null,
         watchdogReason: !enabled
             ? (raw.killSwitch === true ? 'kill-switch' : 'apagado')
             : (stale ? 'sin latido' : (relojDegradado ? 'con reloj degradado' : null)),

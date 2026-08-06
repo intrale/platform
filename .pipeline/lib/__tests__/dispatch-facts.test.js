@@ -394,3 +394,100 @@ test('recolectar hechos no muta punto-paused, ni la allowlist, ni la cola', () =
     });
     assert.deepEqual(foto(), antes);
 });
+
+// =============================================================================
+// rev-6 — Hallazgos del dictamen de integridad (#5400, rebote rev-1)
+// =============================================================================
+
+// S2 — el conteo elegible gobierna CA-3 y además viaja al mensaje de Telegram.
+// Inflarlo rompía las dos cosas: volvía inalcanzable el "0 = cola vacía" y le
+// mentía al operador sobre el tamaño real de la cola.
+test('S2: el mismo issue en varias fases cuenta UNA vez (dedup por issue)', () => {
+    const alcance = { unscoped: false, scoped: true, allowedIssues: new Set([5400, 5401]) };
+    const pendientes = [
+        { issue: '5400' }, { issue: '5400' }, { issue: '5400' },  // 3 fases, 1 issue
+        { issue: '5401' },
+    ];
+    const c = df.contarElegibles(alcance, pendientes, {});
+    assert.equal(c.total, 4, 'el total crudo de workfiles no cambia');
+    assert.equal(c.elegibles, 2, 'pero los elegibles son ISSUES distintos');
+});
+
+test('S2: con el escape hatch, los workfiles que no parsean a issue no se cuentan', () => {
+    const alcance = { unscoped: true, scoped: false, allowedIssues: new Set() };
+    const pendientes = [
+        { issue: '5400' }, { issue: '5400' },   // duplicado
+        { issue: null }, { issue: 'basura' },   // no parsean
+    ];
+    const c = df.contarElegibles(alcance, pendientes, {});
+    assert.equal(c.total, 4);
+    assert.equal(c.elegibles, 1, 'un solo issue real y distinto');
+    assert.equal(c.fueraDeAlcance, 3);
+});
+
+// B4 — "no hay trabajo" vs "no puedo ver el trabajo".
+test('B4: sin allowlist y sin ola, con la cola llena, el alcance se declara CIEGO', () => {
+    const alcance = { unscoped: false, scoped: false, allowedIssues: new Set() };
+    const c = df.contarElegibles(alcance, [{ issue: '5400' }, { issue: '5401' }], {});
+    assert.equal(c.alcanceAplicado, 'fail-closed-sin-ola');
+    assert.equal(c.elegibles, 0);
+    assert.equal(c.ciego, true, '0 elegibles acá NO es una cola vacía');
+});
+
+test('B4: con la cola realmente vacía NO hay ceguera (CA-3 sigue valiendo)', () => {
+    const alcance = { unscoped: false, scoped: false, allowedIssues: new Set() };
+    const c = df.contarElegibles(alcance, [], {});
+    assert.equal(c.ciego, false, 'sin nada en cola, "0 elegibles" es un hecho afirmable');
+});
+
+test('B4: con alcance conocido, 0 elegibles es un hecho, no ceguera', () => {
+    const alcance = { unscoped: false, scoped: true, allowedIssues: new Set([9999]) };
+    const c = df.contarElegibles(alcance, [{ issue: '5400' }], {});
+    assert.equal(c.elegibles, 0);
+    assert.equal(c.ciego, false);
+});
+
+// S3 — una excepción JAMÁS puede silenciar el watchdog (lo promete el header).
+test('S3: si getPipelineMode() TIRA, el alcance se marca ilegible y no se declara causa', () => {
+    const alcance = df.leerAlcanceDespacho({
+        partialPause: {
+            getPipelineMode() { throw new Error('marker corrupto'); },
+            readPreviousAllowlist: () => [],
+            unscopedDispatchEnabled: () => false,
+            readFullPauseOrigin: () => null,
+        },
+    });
+    assert.equal(alcance.modeReadable, false, 'no sé leer el modo ≠ no hay ola');
+
+    // Antes esto devolvía `wave-empty`: una excepción se convertía en causa
+    // declarada y callaba la alarma. Sin causa, el watchdog dispara.
+    const causa = df.resolverCausaDeclarada({ alcance, elegibles: 0, deps: {} });
+    assert.equal(causa, null, 'una lectura fallida no es una explicación');
+});
+
+test('S3: si unscopedDispatchEnabled() TIRA, tampoco se declara causa', () => {
+    const alcance = df.leerAlcanceDespacho({
+        partialPause: {
+            getPipelineMode: () => ({ mode: 'running', allowedIssues: [] }),
+            readPreviousAllowlist: () => [],
+            unscopedDispatchEnabled() { throw new Error('ilegible'); },
+            readFullPauseOrigin: () => null,
+        },
+    });
+    assert.equal(alcance.modeReadable, false);
+    assert.equal(df.resolverCausaDeclarada({ alcance, elegibles: 0, deps: {} }), null);
+});
+
+test('S3: con el modo LEGIBLE y sin allowlist, `wave-empty` sigue siendo causa válida', () => {
+    const alcance = df.leerAlcanceDespacho({
+        partialPause: {
+            getPipelineMode: () => ({ mode: 'running', allowedIssues: [] }),
+            readPreviousAllowlist: () => [],
+            unscopedDispatchEnabled: () => false,
+            readFullPauseOrigin: () => null,
+        },
+    });
+    assert.equal(alcance.modeReadable, true);
+    const causa = df.resolverCausaDeclarada({ alcance, elegibles: 0, deps: {} });
+    assert.equal(causa && causa.kind, 'wave-empty', 'no-regresión: el desync real sí explica');
+});
