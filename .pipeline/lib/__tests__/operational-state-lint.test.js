@@ -729,3 +729,104 @@ test('CA-4a/CA-4c · el workflow corre en report-only, con permissions read y tr
     // assert.
     assert.ok(!/^\s*pull_request_target\s*:/m.test(wf), 'pull_request_target corre con el token del repo base sobre codigo de un fork');
 });
+
+// ─── Rebote rev-1 · la SALIDA no puede ser secuestrada (SEC-3) ───────────────
+//
+// El hueco de cobertura que dejo pasar las 3 rutas: la suite cubria `::` como
+// INPUT de `sanitizeReason`, nunca como PROPIEDAD DE LA SALIDA. Estos asserts
+// son sobre lo que se EMITE, no sobre lo que se recibe.
+
+/** Payload que, si sobrevive, se convierte en una anotacion falsa en el PR. */
+const SPOOF = '\n::error title=operational-state-lint::Guardrail OK - sin hallazgos\n';
+
+/** Ninguna linea de `texto` puede arrancar con `::` (workflow command). */
+function assertSinWorkflowCommands(texto, contexto) {
+    const secuestradas = texto.split('\n').filter(l => l.startsWith('::'));
+    assert.deepEqual(
+        secuestradas, [],
+        `${contexto}: ninguna linea emitida puede arrancar con "::" (seria un workflow command de Actions)`,
+    );
+}
+
+test('rebote rev-1 ruta A · clave desconocida con "\n::error" NO inyecta un workflow command', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    // JSON perfectamente VALIDO: no hace falta corromper nada.
+    const raw = JSON.stringify({ files: [], rules: [], [`x${SPOOF}`]: 1 });
+    JSON.parse(raw);   // el fixture debe ser JSON valido, si no el test prueba otra cosa
+    writeAllowlistRaw(root, raw);
+    const r = runCli(root, ['--report-only']);
+    assert.equal(r.code, 2, 'sigue siendo fail-loud');
+    assert.match(r.all, /clave desconocida/);
+    assertSinWorkflowCommands(r.all, 'ruta A');
+});
+
+test('rebote rev-1 ruta B · fragmento de JSON.parse con salto de linea NO inyecta un workflow command', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    writeAllowlistRaw(root, `{ "files": [ ROTO${SPOOF} ] }`);
+    const r = runCli(root, ['--report-only']);
+    assert.equal(r.code, 2);
+    assert.match(r.all, /allowlist\.json: JSON/);
+    assertSinWorkflowCommands(r.all, 'ruta B');
+});
+
+test('rebote rev-1 ruta C · un `\n::` en el NOMBRE DE ARCHIVO no secuestra la linea de violation', () => {
+    // `v.file` viene de `walkJs`, o sea del nombre de archivo del repo, y el job
+    // corre en ubuntu-latest donde un `\n` en un nombre de archivo es legal.
+    // Se ejercita `formatViolation` porque ese camino NO pasa por defaultLogger.
+    for (const prefix of ['AVISO:', 'ERROR:']) {
+        const linea = I.formatViolation({ file: `lib/evil${SPOOF}x.js`, line: 1, rule: 'path-level' }, prefix);
+        assertSinWorkflowCommands(linea, `ruta C (${prefix})`);
+        assert.equal(linea.split('\n').length, 1, 'una violation = una linea');
+    }
+});
+
+test('rebote rev-1 · el sink de violations aplana cualquier mensaje a UNA linea', () => {
+    const emitidas = [];
+    const out = I.oneLineSink((l) => emitidas.push(l));
+    out(`AVISO: total: 1 violation${SPOOF}`);
+    assert.equal(emitidas.length, 1);
+    assertSinWorkflowCommands(emitidas.join('\n'), 'oneLineSink');
+    // No colapsa espacios: la indentacion del bloque de remediacion se preserva.
+    out('  Ojo: "allowlist" tiene dos significados');
+    assert.equal(emitidas[1], '  Ojo: "allowlist" tiene dos significados');
+});
+
+test('rebote rev-1 · defaultLogger sanitiza los TRES metodos (puerta unica para mensajes futuros)', () => {
+    const original = { log: console.log, warn: console.warn, error: console.error };
+    const emitidas = [];
+    console.log = console.warn = console.error = (l) => emitidas.push(l);
+    try {
+        const logger = I.defaultLogger();
+        logger.info(`OK${SPOOF}`);
+        logger.warn(`aviso${SPOOF}`);
+        logger.error(`configuracion: clave desconocida "x${SPOOF}"`);
+    } finally {
+        console.log = original.log; console.warn = original.warn; console.error = original.error;
+    }
+    assert.equal(emitidas.length, 3, 'una llamada = una linea, en los tres metodos');
+    for (const l of emitidas) {
+        assert.equal(l.split('\n').length, 1);
+        assert.ok(l.startsWith('[operational-state-lint]'), `toda linea arranca con el prefijo: ${JSON.stringify(l)}`);
+    }
+    assertSinWorkflowCommands(emitidas.join('\n'), 'defaultLogger');
+});
+
+test('rebote rev-1 · --report (markdown a GITHUB_STEP_SUMMARY) tampoco emite lineas con "::"', () => {
+    const md = I.formatReport({
+        scanned: 1, rawLiteralHits: 1, rawLiteralFiles: 1, commentHits: 0, noCtxHits: 0, confirmedHits: 1,
+        violations: [{ file: `lib/evil${SPOOF}x.js`, line: 1, rule: 'path-level' }],
+    });
+    assertSinWorkflowCommands(md, '--report');
+});
+
+test('rebote rev-1 · el eco del fragmento de JSON.parse queda acotado (CA-3b: no volcar contenido)', () => {
+    const root = makeTmpPipeline();
+    installBin(root);
+    writeAllowlistRaw(root, `{ "files": [ ${'CONTENIDO_LARGO_DEL_ARCHIVO'.repeat(40)} ] }`);
+    const r = runCli(root, ['--report-only']);
+    assert.equal(r.code, 2);
+    const linea = r.all.split('\n').find(l => l.includes('JSON inválido')) || '';
+    assert.ok(linea.length < 400, `el mensaje no debe volcar el archivo (largo: ${linea.length})`);
+});

@@ -283,13 +283,50 @@ class LintUsageError extends Error {
     }
 }
 
+// ─── Sanitizacion de salida (rebote rev-1 / SEC-3) ──────────────────────────
+
+/**
+ * Control chars + DEL. Un `\n` acá adentro es todo lo que hace falta para que
+ * texto del repo se convierta en una LINEA PROPIA del log de Actions, y una
+ * linea propia que arranque con `::` es un workflow command: el atacante
+ * escribe anotaciones en la UI del PR firmadas con el nombre del guardrail.
+ */
+const CONTROL_CHARS_RE = /[\x00-\x1F\x7F]/g;
+
+/**
+ * Aplana texto NO CONFIABLE a una sola linea imprimible, para interpolarlo
+ * dentro de un mensaje propio (rev-1: la sanitizacion estaba en la capa del
+ * CAMPO `reason` y no en la de la CLASE de amenaza "texto del repo → stdout").
+ */
+function sanitizeForLog(raw) {
+    return String(raw).replace(CONTROL_CHARS_RE, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Segunda puerta, en la capa del SINK: envuelve un `console.*` garantizando
+ * que UNA llamada emita EXACTAMENTE UNA linea. Neutraliza control chars sin
+ * colapsar espacios ni recortar, para no destruir la indentacion del texto
+ * propio (bloque de remediacion).
+ *
+ * Invariante que sostiene: como toda linea emitida arranca con `LOG_PREFIX`,
+ * `ERROR:`, `AVISO:` o espacios, NINGUNA linea de la salida puede empezar con
+ * `::`. El invariante vive acá, no en cada `throw`: cada mensaje nuevo que
+ * agreguen las partes 2 y 3 de #5109 nace cubierto.
+ */
+function oneLineSink(fn) {
+    return (line) => fn(String(line).replace(CONTROL_CHARS_RE, ' '));
+}
+
 // ─── Helpers (reusados tal cual del template) ───────────────────────────────
 
 function defaultLogger() {
+    const log = oneLineSink(console.log);
+    const warn = oneLineSink(console.warn);
+    const error = oneLineSink(console.error);
     return {
-        info: (m) => console.log(`${LOG_PREFIX} ${m}`),
-        warn: (m) => console.warn(`${LOG_PREFIX} ${m}`),
-        error: (m) => console.error(`${LOG_PREFIX} ${m}`),
+        info: (m) => log(`${LOG_PREFIX} ${m}`),
+        warn: (m) => warn(`${LOG_PREFIX} ${m}`),
+        error: (m) => error(`${LOG_PREFIX} ${m}`),
     };
 }
 
@@ -345,15 +382,20 @@ function lookupContext(source, line, radius = 25) {
  * `reason` viene de un JSON del repo editable vía PR y termina en stdout de
  * Actions. Un `::stop-commands::<token>` ahí adentro usaría el mensaje de
  * error del guardrail para OCULTAR la salida del guardrail. Por eso validar y
- * sanitizar son la misma función: no hay camino donde una `reason` llegue a
- * stdout sin pasar por acá.
+ * sanitizar son la misma función.
+ *
+ * OJO (rebote rev-1): esta función cubre el CAMPO `reason`, NO la clase de
+ * amenaza "texto del repo → log de Actions". Esa la cubren los sinks
+ * (`oneLineSink` en `defaultLogger` y en el camino de violations). No agregar
+ * sanitización caso por caso en cada `throw`: el bug nació exactamente de eso.
  */
 function sanitizeReason(raw, where) {
     if (typeof raw !== 'string') {
         throw new LintConfigError(`${where}: "reason" es obligatoria y debe ser string (recibido: ${raw === undefined ? 'ausente' : typeof raw})`);
     }
     // Control chars + ANSI: rompen el formato del log y habilitan spoofing.
-    const clean = raw.replace(/[\x00-\x1F\x7F]/g, ' ').replace(/\s+/g, ' ').trim();
+    // Misma puerta que usan los sinks (`sanitizeForLog`) — un solo tratamiento.
+    const clean = sanitizeForLog(raw);
     if (!clean) {
         throw new LintConfigError(`${where}: "reason" vacía. Cada excepción necesita una justificación real — el review humano de @leitolarreta es sobre ESE texto.`);
     }
@@ -391,14 +433,17 @@ function loadAllowlist(pipelineRoot) {
     try {
         j = JSON.parse(raw);
     } catch (e) {
-        throw new LintConfigError(`${ALLOWLIST_REL}: JSON inválido (${e.message}). NO se asume allowlist vacía: una allowlist corrupta y una allowlist vacía a propósito no pueden ser indistinguibles (SEC-4).`);
+        // El mensaje de `JSON.parse` hace eco de un fragmento del archivo: se
+        // aplana y se acota para no volcar contenido al log (CA-3b). La
+        // garantia de que no rompe linea la da el sink, esto solo limita el eco.
+        throw new LintConfigError(`${ALLOWLIST_REL}: JSON inválido (${sanitizeForLog(e.message).slice(0, 160)}). NO se asume allowlist vacía: una allowlist corrupta y una allowlist vacía a propósito no pueden ser indistinguibles (SEC-4).`);
     }
     if (j === null || typeof j !== 'object' || Array.isArray(j)) {
         throw new LintConfigError(`${ALLOWLIST_REL}: shape inválido, se esperaba un objeto { files: [], rules: [] }`);
     }
     for (const key of Object.keys(j)) {
         if (key === 'files' || key === 'rules' || key.startsWith('_')) continue;
-        throw new LintConfigError(`${ALLOWLIST_REL}: clave desconocida "${key}". Claves válidas: "files", "rules" y documentación con prefijo "_".`);
+        throw new LintConfigError(`${ALLOWLIST_REL}: clave desconocida "${sanitizeForLog(key).slice(0, 80)}". Claves válidas: "files", "rules" y documentación con prefijo "_".`);
     }
 
     const rawFiles = j.files === undefined ? [] : j.files;
@@ -613,12 +658,19 @@ function lint(opts = {}) {
 
 // ─── Formateo ───────────────────────────────────────────────────────────────
 
-/** Una línea por violation. SIN snippet (CA-3b / SEC-2). */
+/**
+ * Una línea por violation. SIN snippet (CA-3b / SEC-2).
+ *
+ * `v.file` sale de `walkJs`, o sea del NOMBRE DE ARCHIVO del repo, y el job
+ * corre en `ubuntu-latest` donde un `\n` en un nombre de archivo es legal
+ * (rebote rev-1, ruta C). Se aplana acá porque este camino NO pasa por
+ * `defaultLogger`.
+ */
 function formatViolation(v, prefix) {
     const what = v.rule === 'path-level'
         ? 'literal de estado en construccion de path'
         : 'uso de `_internal` (superficie de tests, no API)';
-    return `${prefix} ${v.file}:${v.line} - regla ${v.rule} (${what})`;
+    return `${prefix} ${sanitizeForLog(v.file)}:${sanitizeForLog(v.line)} - regla ${sanitizeForLog(v.rule)} (${what})`;
 }
 
 /**
@@ -708,7 +760,9 @@ function formatReport(result) {
     L.push('| archivo | scope | path-level | internal-bypass | total |');
     L.push('|---|---|---:|---:|---:|');
     for (const r of rows) {
-        L.push(`| \`${r.file}\` | ${r.scope} | ${r['path-level']} | ${r['internal-bypass']} | ${r.total} |`);
+        // El path va aplanado por la misma puerta: `--report` alimenta
+        // GITHUB_STEP_SUMMARY (markdown), donde un `\n` rompe la tabla.
+        L.push(`| \`${sanitizeForLog(r.file)}\` | ${r.scope} | ${r['path-level']} | ${r['internal-bypass']} | ${r.total} |`);
     }
 
     const sub = (scope) => {
@@ -736,7 +790,7 @@ function formatReport(result) {
     if (result.violations.length === 0) {
         L.push('- (ninguna)');
     } else {
-        for (const v of result.violations) L.push(`- \`${v.file}:${v.line}\` — ${v.rule}`);
+        for (const v of result.violations) L.push(`- \`${sanitizeForLog(v.file)}:${sanitizeForLog(v.line)}\` — ${sanitizeForLog(v.rule)}`);
     }
     return L.join('\n');
 }
@@ -835,7 +889,9 @@ function main(argv = process.argv.slice(2)) {
         process.exit(0);
     }
 
-    const out = enforce ? console.error : console.warn;
+    // Segunda puerta: las lineas de violation NO pasan por `defaultLogger`
+    // (rebote rev-1, ruta C). El sink garantiza una llamada = una linea.
+    const out = oneLineSink(enforce ? console.error : console.warn);
     const HOOK_CAP = 10;
     const shown = enforce ? result.violations : result.violations.slice(0, HOOK_CAP);
     for (const v of shown) out(formatViolation(v, prefix));
@@ -862,6 +918,7 @@ module.exports = {
     // exposed for tests
     _internal: {
         walkJs, lintFile, lintSource, loadAllowlist, sanitizeReason,
+        sanitizeForLog, oneLineSink, defaultLogger,
         resolveWrapperBindings, classifyScope, aggregateByFile,
         formatViolation, formatReport, remediationLines, parseArgv, main,
         LintConfigError, LintUsageError,

@@ -3,7 +3,7 @@
   "_shape_doc": {
     "files": "Exencion de ARCHIVO ENTERO. Entries { file, reason }. Desvio deliberado del template ghost-artifact-lint.allowlist.json, que acepta strings pelados y documenta la razon aparte en un _files_doc que puede desincronizarse: una exencion mas amplia que { file, line, reason } no puede tener MENOS justificacion (CA-5). Preferir SIEMPRE una entry de `rules`.",
     "rules": "Excepcion PUNTUAL. Entries { file, line, reason }. `file` es relativo a .pipeline/ (ej: lib/foo.js). `line` entero >= 1.",
-    "reason": "Obligatoria y real. El guardrail sale con exit 2 si esta ausente, vacia, es un placeholder (TODO/FIXME/TBD/wip/...), o empieza con '::' (workflow command de GitHub Actions — SEC-3). Se sanitiza de control chars y se trunca a 200 chars antes de llegar a stdout.",
+    "reason": "Obligatoria y real. El guardrail sale con exit 2 si esta ausente, vacia, es un placeholder (TODO/FIXME/TBD/wip/...), o empieza con '::' (workflow command de GitHub Actions — SEC-3). Se sanitiza de control chars y se trunca a 200 chars. OJO: esa validacion cubre ESTE campo, no la clase de amenaza 'texto del repo -> log de Actions'. La garantia de que ninguna linea emitida arranque con '::' la da el SINK (oneLineSink, aplicado en defaultLogger y en el camino de violations), no este campo.",
     "no_hacer": "Sin excepciones amplias por carpeta (CA-5). Si el caso no cabe en { file, line, reason }, el problema es el matcher o la superficie publica del envoltorio, no la allowlist: ver docs/pipeline/contrato-estado-operativo.md §7."
   },
   "files": [],
