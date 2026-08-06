@@ -140,13 +140,31 @@ eso, Git Bash reescribe un argumento que arranca con `/` — por ejemplo
 falla con un `ParameterNotFound` que **miente**: el parámetro existe, lo que no
 existe es el nombre que MSYS inventó. Peor todavía: ese nombre apócrifo queda
 registrado en el propio rastro de auditoría, así que la mentira sobrevive a la
-sesión. El driver del pipeline no está afectado (invoca la CLI con `spawn` sin
-shell); esto aplica a los comandos manuales del runbook y de QA.
+sesión. El driver del pipeline no está afectado (invoca la CLI con
+`execFileSync` sin shell); esto aplica a los comandos manuales del runbook y de
+QA.
+
+**El Event history de CloudTrail es POR REGIÓN.** Una consulta apuntada a la
+región equivocada no falla: devuelve `Events: 0`, que es indistinguible de
+"nadie accedió al vault". Es un falso negativo silencioso sobre la única
+superficie de consulta de este runbook, así que la región **no se escribe a
+mano**: sale de `kernel.region` en `config.yaml`, que es la misma que usa el
+runtime (`pulpo.js` se la pasa a `runAccessAuditTick`). Cuidado con `us-east-1`:
+aparece en `vault-secretos-aws.md` sólo como región de referencia de *precios*,
+y **no** es la región del vault.
 
 ```bash
-MSYS_NO_PATHCONV=1 aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=GetParameter --start-time 2026-08-03T00:00:00Z --end-time 2026-08-03T23:59:59Z --region us-east-1 --output json --no-cli-pager
-MSYS_NO_PATHCONV=1 aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=GetSecretValue --start-time 2026-08-03T00:00:00Z --end-time 2026-08-03T23:59:59Z --region us-east-1 --output json --no-cli-pager
+VAULT_REGION=$(node -e "console.log(require('./.pipeline/lib/config-resolver').resolve({pipelineDir:'.pipeline'}).kernel.region)" 2>/dev/null)
+echo "$VAULT_REGION"   # verificar que imprime la región del vault antes de seguir
+
+MSYS_NO_PATHCONV=1 aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=GetParameter --start-time 2026-08-03T00:00:00Z --end-time 2026-08-03T23:59:59Z --region "$VAULT_REGION" --output json --no-cli-pager
+MSYS_NO_PATHCONV=1 aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=GetSecretValue --start-time 2026-08-03T00:00:00Z --end-time 2026-08-03T23:59:59Z --region "$VAULT_REGION" --output json --no-cli-pager
 ```
+
+Si `$VAULT_REGION` sale vacío, **parar**: `--region ""` no consulta la región
+del vault y el `Events: 0` resultante no significa nada. Un `Events: 0` sólo es
+evidencia de "no hubo accesos" si antes se confirmó que la región impresa es la
+del vault.
 
 Antes de adjuntar evidencia se eliminan ARN, account IDs, IPs y cualquier salida
 de error cruda — usar `redactAwsEvidence` de `.pipeline/lib/kernel-table-verify.js`
