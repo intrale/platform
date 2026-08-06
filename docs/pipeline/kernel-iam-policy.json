@@ -36,6 +36,83 @@
         "dynamodb:ConditionCheckItem"
       ],
       "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/COORD_TABLE"
+    },
+    {
+      "Sid": "DenyDynamoDbControlPlane",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateContinuousBackups",
+        "dynamodb:UpdateTimeToLive",
+        "dynamodb:CreateBackup",
+        "dynamodb:DeleteBackup",
+        "dynamodb:RestoreTableFromBackup",
+        "dynamodb:RestoreTableToPointInTime",
+        "dynamodb:CreateGlobalTable",
+        "dynamodb:UpdateGlobalTable",
+        "dynamodb:UpdateGlobalTableSettings",
+        "dynamodb:TagResource",
+        "dynamodb:UntagResource",
+        "dynamodb:ListTables"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/*"
+    },
+    {
+      "Sid": "DenyKmsAdministration",
+      "Effect": "Deny",
+      "Action": [
+        "kms:CreateKey",
+        "kms:CreateGrant",
+        "kms:RetireGrant",
+        "kms:RevokeGrant",
+        "kms:PutKeyPolicy",
+        "kms:ScheduleKeyDeletion",
+        "kms:CancelKeyDeletion",
+        "kms:DisableKey",
+        "kms:EnableKey",
+        "kms:DisableKeyRotation",
+        "kms:EnableKeyRotation",
+        "kms:ReplicateKey",
+        "kms:CreateAlias",
+        "kms:UpdateAlias",
+        "kms:DeleteAlias",
+        "kms:TagResource",
+        "kms:UntagResource",
+        "kms:ImportKeyMaterial",
+        "kms:DeleteImportedKeyMaterial"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyIamSelfAdministration",
+      "Effect": "Deny",
+      "Action": [
+        "iam:AttachUserPolicy",
+        "iam:DetachUserPolicy",
+        "iam:PutUserPolicy",
+        "iam:DeleteUserPolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:CreatePolicy",
+        "iam:CreatePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:DeletePolicy",
+        "iam:DeletePolicyVersion",
+        "iam:CreateUser",
+        "iam:CreateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:CreateAccessKey",
+        "iam:UpdateAccessKey",
+        "iam:ListAttachedUserPolicies",
+        "iam:ListUserPolicies",
+        "iam:GetUserPolicy",
+        "iam:GetPolicyVersion"
+      ],
+      "Resource": "*"
     }
   ]
 }
