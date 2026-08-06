@@ -825,7 +825,15 @@ function resumeAll(opts = {}) {
 // es una pausa automática cuya NO-recuperación es deliberada (exige rollback
 // manual). Ver el test de regresión nombrado en
 // `__tests__/restart-preserve-pause-5399.test.js`.
-const AUTO_LIFTABLE_SOURCES = Object.freeze(['config-corruption-halt']);
+// #5243 — `secrets-health-halt` se suma al set: el halt por secreto faltante es
+// auto-generado y su causa es objetivamente verificable en cada ciclo (el
+// secreto está o no está), así que reponerlo debe reanudar el dispatch solo.
+// Sin esta entrada el auto-recovery de #5243 sería código muerto: el marker que
+// escribe `secrets-health.js` se leería como `manual` y la pausa quedaría hasta
+// intervención humana aunque el operador ya hubiera repuesto el secreto.
+// La ampliación es por PERTENENCIA EXACTA a esta lista cerrada — sigue estando
+// prohibido decidir por negación.
+const AUTO_LIFTABLE_SOURCES = Object.freeze(['config-corruption-halt', 'secrets-health-halt']);
 
 // #5399 CA-10 (SEC-3) — cap de tamaño ANTES de `JSON.parse`. Un marker de 64KB
 // ya es tres órdenes de magnitud más grande que cualquier marker legítimo.

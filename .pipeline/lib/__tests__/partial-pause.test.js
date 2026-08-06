@@ -405,13 +405,20 @@ test('#5399: readFullPauseOrigin devuelve el source literal en rawSource sin rel
 
 test('#5399: isAutoLiftableSource decide por pertenencia exacta a la allowlist positiva', () => {
     assert.equal(pp.isAutoLiftableSource('config-corruption-halt'), true);
+    // #5243 — el halt por secreto faltante también es auto-levantable: su causa
+    // se re-verifica contra disco en cada ciclo (el secreto está o no está).
+    assert.equal(pp.isAutoLiftableSource('secrets-health-halt'), true);
     // Todo lo demás es false — incluido lo "no humano" (prohibido decidir por negación).
     for (const v of ['manual', 'unknown', 'telegram', 'restart', 'kernel-cutover-degraded-halt',
         'config-corruption-halt-manual', 'CONFIG-CORRUPTION-HALT', ' config-corruption-halt',
+        // #5243 SEC-5 — la pertenencia es EXACTA: prefijar/sufijar no matchea.
+        'manual-secrets-health-halt', 'secrets-health-halt-manual', 'SECRETS-HEALTH-HALT',
+        ' secrets-health-halt', 'secrets-health', 'secrets-auto-recovery',
         '', null, undefined, 0, 1, true, {}, [], ['config-corruption-halt']]) {
         assert.equal(pp.isAutoLiftableSource(v), false, `${JSON.stringify(v)} no es auto-levantable`);
     }
-    assert.deepEqual([...pp.AUTO_LIFTABLE_SOURCES], ['config-corruption-halt']);
+    assert.deepEqual([...pp.AUTO_LIFTABLE_SOURCES],
+        ['config-corruption-halt', 'secrets-health-halt']);
     assert.equal(Object.isFrozen(pp.AUTO_LIFTABLE_SOURCES), true);
 });
 

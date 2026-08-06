@@ -15,9 +15,41 @@ const execFileAsync = promisify(execFile);
 // de cualquier require que pueda leer credenciales (telegram-secrets,
 // validateOrExit con checkEnv, etc). El cargador degrada silenciosamente si
 // el archivo no existe; sólo loggea warnings al stderr en casos anómalos.
-require('./lib/credentials').loadIntoEnv({
+// #5243 Tiempo 1 — portador del resultado del health-check hacia el bloque
+// SINGLETON. Sin esto el Tiempo 2 no tiene de dónde leerlo.
+let secretsHealth = null;
+
+const credLoad = require('./lib/credentials').loadIntoEnv({
   logger: (m) => process.stderr.write(m + '\n'),
 });
+
+// #5243 Tiempo 1 — evaluar la salud de los secretos con el retorno de
+// `loadIntoEnv` (hasta ahora descartado). Es el único punto donde `hydrated` /
+// `skipped_existing` / `skipped_empty` están disponibles, y es anterior a todo
+// `require` que consuma credenciales.
+//
+// SIN EFECTOS LATERALES: acá sólo se evalúa. Está PROHIBIDO referenciar
+// `PAUSE_FILE` o `partialPause` desde este punto — son const de módulo
+// declaradas más abajo, así que tocarlas en carga no da `undefined`, da un
+// ReferenceError por TDZ: un throw en top-level, proceso muerto al arrancar y
+// `watchdog.ps1` respawneando cada 2 min sin backoff = #5073 reproducido.
+// Todo lo que toca la pausa vive en el Tiempo 2 (bloque SINGLETON).
+//
+// El kill-switch sigue el precedente de `PULPO_SKIP_DATA_RESIDENCY_VALIDATE`:
+// un `required_when` mal declarado en el manifiesto frenaría el pipeline entero
+// y sin escape hatch destrabarlo exigiría un hotfix de código.
+try {
+  if (process.env.PULPO_SKIP_SECRETS_HALT !== '1') {
+    secretsHealth = require('./lib/secrets-health').evaluateFromDisk(credLoad);
+  } else {
+    process.stderr.write('[secrets-health] WARN health-check SKIPPED via PULPO_SKIP_SECRETS_HALT=1\n');
+  }
+} catch (e) {
+  // Degradar a verde es deliberado: un health-check roto NO puede ser el motivo
+  // por el que el pipeline no arranca. Se reporta y se sigue.
+  secretsHealth = { ok: true, halt: false, degraded: true, reason: 'evaluate-failed' };
+  process.stderr.write(`[secrets-health] WARN evaluate fallo, degradando a ok:true: ${e.message}\n`);
+}
 // #4869 — un servicio Windows conserva el PATH con el que arrancó y no ve
 // instalaciones posteriores. Refrescar agy en este mismo proceso garantiza
 // que todos los agentes hijos hereden PATH y AGY_BIN sin reiniciar el host.
@@ -1406,9 +1438,19 @@ function loadConfig() {
   // vez de una comparación literal duplicada acá. Prohibido ampliar el set por
   // negación (`source !== 'human'`) — `kernel-cutover-degraded-halt` es
   // automática pero su no-recuperación es deliberada (#5135).
+  //
+  // #5243 — la condición vuelve a ser la IGUALDAD con la autoría propia de esta
+  // ruta, no la pertenencia genérica al allowlist. Al entrar un segundo source
+  // auto-levantable (`secrets-health-halt`), `isAutoLiftableSource` dejó de ser
+  // una pregunta equivalente a "¿esta pausa la puse yo?": con el config sano
+  // pero un secreto faltante, este bloque habría levantado una pausa que no
+  // generó y cuya causa sigue vigente. Cada auto-recovery levanta SÓLO su
+  // propio halt. El fail-closed no cambia: `readFullPauseOrigin` ya devuelve
+  // `manual` ante cualquier ambigüedad, así que una pausa deliberada nunca
+  // llega acá.
   try {
     if (fs.existsSync(PAUSE_FILE) &&
-        partialPause.isAutoLiftableSource(partialPause.readFullPauseOrigin().source)) {
+        partialPause.readFullPauseOrigin().source === 'config-corruption-halt') {
       // #5174 · CA-5 — llegar acá significa que `configResolver.resolve()` NO
       // lanzó, y post-partición eso exige que los DOS archivos hayan parseado y
       // que el documento mergeado valide. Corregir uno solo no levanta la pausa:
@@ -19019,6 +19061,41 @@ async function mainLoop() {
     log('credential-rotation', `No se pudo iniciar el cron: ${e.message}`);
   }
 
+  // #5243 CA-5 — Paso INVERSO del halt por secreto faltante.
+  //
+  // Vive acá y no en `loadConfig()` a propósito: el config se relee entero en
+  // cada ciclo, pero un secreto NO — el store se hidrata una sola vez, en el
+  // boot. Enganchar el auto-recovery al ciclo de config levantaría la pausa
+  // mirando la evaluación del arranque, es decir datos rancios. `autoRecover`
+  // re-lee el store contra disco (con un `env` descartable, sin pisar
+  // `process.env` en caliente) y sólo entonces decide.
+  //
+  // Fail-closed: sólo levanta un marker cuyo `source` sea exactamente
+  // `secrets-health-halt`. Una pausa manual del operador — o cualquier marker
+  // ambiguo, que `readFullPauseOrigin` degrada a `manual` — nunca se toca.
+  try {
+    const secretsHealthLib = require('./lib/secrets-health');
+    const SECRETS_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
+    const runSecretsRecoveryTick = () => {
+      try {
+        const r = secretsHealthLib.autoRecover({
+          pauseFile: PAUSE_FILE,
+          partialPause,
+          logger: log,
+          pipelineDir: PIPELINE,
+        });
+        if (r.recovered) paused = false;
+      } catch (err) {
+        log('secrets-health', `WARN tick de auto-recovery fallo: ${err.message}`);
+      }
+    };
+    const secretsRecoveryTimer = setInterval(runSecretsRecoveryTick, SECRETS_RECOVERY_INTERVAL_MS);
+    // No mantiene vivo el proceso por sí solo.
+    if (typeof secretsRecoveryTimer.unref === 'function') secretsRecoveryTimer.unref();
+  } catch (e) {
+    log('secrets-health', `No se pudo iniciar el auto-recovery: ${e.message}`);
+  }
+
   // #5337 CA-5 — Recordatorio escalado de bloqueos humanos sin responder.
   //
   // El aviso inicial de needs-human vive dentro del gate `if (!yaBloqueado)` del
@@ -19721,6 +19798,30 @@ if (process.env.PULPO_SKIP_DATA_RESIDENCY_VALIDATE !== '1') {
 
 // --- SINGLETON ---
 require('./singleton')('pulpo');
+
+// #5243 Tiempo 2 — efectos laterales del health-check de secretos. Éste es el
+// primer punto donde `PAUSE_FILE` y `partialPause` ya están inicializados; un
+// halt cableado en el Tiempo 1 correría en carga, con `PAUSE_FILE` en TDZ.
+//
+// Cuatro canales en orden degradante (log → marker → JSON → Telegram), cada uno
+// aislado: el aviso no puede depender del secreto de Telegram, que es
+// justamente uno de los que puede faltar. `applyHalt` nunca lanza ni llama
+// `process.exit` (#5073) — igual va envuelto, mismo blindaje que el resto del
+// boot.
+try {
+  if (secretsHealth && !secretsHealth.ok) {
+    const res = require('./lib/secrets-health').applyHalt(secretsHealth, {
+      pauseFile: PAUSE_FILE,
+      partialPause,
+      sendTelegram: sendTelegramPlain,
+      logger: log,
+      pipelineDir: PIPELINE,
+    });
+    if (res.halted) paused = true;
+  }
+} catch (e) {
+  process.stderr.write(`[secrets-health] WARN applyHalt fallo (no bloquea el boot): ${e.message}\n`);
+}
 
 // Signal ready — singleton adquirido, mainLoop arranca
 try { require('./lib/ready-marker').signalReady('pulpo'); } catch {}
