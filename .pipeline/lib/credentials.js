@@ -447,26 +447,52 @@ function resolverVault(opts, logger) {
     };
   }
 
+  // D-SYNC-8 — recién acá se carga `secret-vault.js`: con el gate cerrado el
+  // módulo no se toca (el `return` de arriba ya salió).
+  const sv = require('./secret-vault');
+
+  // #5426 · CA-12(b) — el `hostId` del namespace se resuelve en RUNTIME cuando
+  // `vault.hostIdFromHostname` lo habilita. `.pipeline/config.yaml` está
+  // trackeado en un repo PÚBLICO y el hostname expone la estructura
+  // `hosts/<hostId>/`, así que el VALOR nunca se commitea (D9). Si no resuelve,
+  // queda vacío y `validateVaultConfig` falla NOMBRANDO `vault.hostId`
+  // (CA-12.e): jamás se sigue contra un namespace colapsado `hosts//`.
+  const cfgHost = { ...cfg, hostId: sv.resolveVaultHostId(cfg) };
+
   const ahora = typeof opts.now === 'function' ? opts.now() : Date.now();
-  const clave = `${cfg.prefix}/${cfg.projectId}#${cfg.hostId}`;
+  const clave = `${cfgHost.prefix}/${cfgHost.projectId}#${cfgHost.hostId}`;
   if (_vaultMemo && _vaultMemo.clave === clave && _vaultMemo.expiraEn > ahora) {
-    return { enabled: true, namespace: clave, payload: _vaultMemo.payload, error: null, cfg };
+    return {
+      enabled: true, namespace: clave, payload: _vaultMemo.payload, error: null, cfg: cfgHost,
+    };
   }
 
-  const sv = require('./secret-vault');
   try {
     const driver = opts.vaultDriver || (() => {
-      // SEC-2 — el ambiente de origen del runner es EXPLÍCITO y es el del
-      // proceso padre. `opts.env` es el ambiente DESTINO (los scripts de QA
-      // pasan un scratch descartable); la identidad AWS no sale de ahí.
-      const runner = sv.createAwsCliVaultRunner(process.env, cfg.region);
+      // SEC-2 (#5426 · G-1) — el ambiente de origen del runner es EXPLÍCITO y
+      // es el del proceso padre. `opts.env` es el ambiente DESTINO (los scripts
+      // de QA pasan un scratch descartable); la identidad AWS no sale de ahí.
+      //
+      // Este es el ÚNICO call-site de producción del runner, así que es el
+      // lugar donde el ambiente elegía la autoridad: antes se le pasaba
+      // `process.env` crudo y sólo la región. La garantía dejó de ser
+      // EXPLICITUD («el ambiente es un argumento, no una variable global») y
+      // pasó a ser ACOTAMIENTO: se le entrega también la config del vault, y
+      // `buildVaultAwsEnv` descarta de `process.env` todo lo que pueda ELEGIR
+      // principal (`AWS_PROFILE`, `AWS_CONFIG_FILE`,
+      // `AWS_SHARED_CREDENTIALS_FILE`), imponiendo `vault.awsProfile` y las
+      // rutas calculadas con `os.homedir()`.
+      //
+      // Sin esto, implementar el guard dentro de `secret-vault.js` cerraría
+      // todos los criterios en verde con el agujero abierto acá.
+      const runner = sv.createAwsCliVaultRunner(process.env, cfgHost);
       return sv.createAwsCliVaultDriver({ run: runner.run });
     })();
 
     // B3-A.1/B3-A.3 — el namespace se construye desde config y `validateVaultConfig`
     // rechaza un `hostId` vacío o inválido NOMBRANDO `vault.hostId`.
     const vault = sv.createSecretVault({
-      config: cfg,
+      config: cfgHost,
       driver,
       // CA-23 — al logger del vault sólo llegan NOMBRES de scope.
       logger: {
@@ -488,9 +514,10 @@ function resolverVault(opts, logger) {
       });
     }
 
-    const ttlMs = (typeof cfg.cache_ttl_seconds === 'number' ? cfg.cache_ttl_seconds : 300) * 1000;
+    const ttlMs = (typeof cfgHost.cache_ttl_seconds === 'number'
+      ? cfgHost.cache_ttl_seconds : 300) * 1000;
     _vaultMemo = { clave, expiraEn: ahora + ttlMs, payload };
-    return { enabled: true, namespace: clave, payload, error: null, cfg };
+    return { enabled: true, namespace: clave, payload, error: null, cfg: cfgHost };
   } catch (err) {
     // CA-22 — un fallo del vault se PROPAGA como fallo, jamás se degrada a
     // vacío ni habilita el fallback al archivo (B1.2). El mensaje ya viene
@@ -507,7 +534,7 @@ function resolverVault(opts, logger) {
       namespace: clave,
       payload: null,
       error: { name: (err && err.name) || 'Error', code: (err && err.code) || null, message: (err && err.message) || '' },
-      cfg,
+      cfg: cfgHost,
     };
   }
 }
