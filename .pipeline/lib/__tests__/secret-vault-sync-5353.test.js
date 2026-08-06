@@ -159,12 +159,34 @@ test('D1.3 · los dos drivers exponen getParametersByPathSync / getSecretValueSy
     // necesitaba SDK; esa intención se conserva ACOTANDO la aserción a una
     // allowlist, en vez de prohibir el paquete a nivel repo. Así sigue fallando
     // si alguien mete `client-secrets-manager` u otro cliente en el runtime.
-    const SDK_PERMITIDOS = ['@aws-sdk/client-ssm'];
+    //
+    // #5466 (3/3 de #5425) suma `@aws-sdk/credential-provider-ini`, que NO es un
+    // cliente: es el resolutor de credenciales por perfil que usa la CLI de
+    // provisión para atar la escritura al `--profile` declarado. Sin él, el
+    // SSMClient caería a la cadena por defecto — que en el host del pipeline es
+    // la identidad READ-ONLY del runtime — y se perdería justamente el control
+    // que #5466 existe para imponer. Además hace que la escritura y el chequeo
+    // de identidad (`aws sts get-caller-identity --profile X`) resuelvan por la
+    // MISMA fuente: los dos leen el perfil del ini y ninguno mira credenciales
+    // estáticas del entorno, así que no pueden divergir.
+    const SDK_PERMITIDOS = [
+        '@aws-sdk/client-ssm',
+        '@aws-sdk/credential-provider-ini',
+    ];
     const sdkDeclarados = Object.keys(require('../../../package.json').dependencies)
         .filter((d) => d.startsWith('@aws-sdk'))
         .sort();
     assert.deepEqual(sdkDeclarados, [...SDK_PERMITIDOS].sort(),
-        'el único `@aws-sdk/*` admitido es el cliente SSM del port de provisión (#5465)');
+        'sólo se admiten el cliente SSM del port de provisión (#5465) y el resolutor '
+        + 'de credenciales por perfil de la CLI (#5466)');
+
+    // Refuerzo: la allowlist creció una vez, así que se fija aparte el invariante
+    // que de verdad importa — UN solo `client-*`. Un `client-secrets-manager` o
+    // un `client-sts` nuevo rompe acá aunque alguien lo agregue a la lista de
+    // arriba sin pensarlo.
+    const clientesSdk = sdkDeclarados.filter((d) => d.startsWith('@aws-sdk/client-'));
+    assert.deepEqual(clientesSdk, ['@aws-sdk/client-ssm'],
+        'el único cliente `@aws-sdk/client-*` del repo es el SSM del port de provisión');
 });
 
 test('D1.3 · el port sync del driver aws-cli consume NextToken igual que el async', async () => {

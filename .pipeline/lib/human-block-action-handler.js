@@ -39,6 +39,10 @@ const TOKEN_REASON_COPY = {
     // motivo técnico. Así un rechazo por identidad no permite ENUMERAR operadores válidos.
     identity: '🔒 Enlace inválido o sin autorización. Por seguridad no se ejecutó ninguna acción.',
     'delegate-mismatch': '🔒 Enlace inválido o sin autorización. Por seguridad no se ejecutó ninguna acción.',
+    // #5461 — el verificador de tokens no está disponible (vault cerrado / secreto
+    // ausente). NO es culpa del enlace, así que el copy no dice "inválido": invita a
+    // reintentar. Tampoco nombra el vault ni el motivo técnico — eso queda en el log.
+    unavailable: '🛠️ No se pudo validar el enlace en este momento. No se ejecutó ninguna acción; probá de nuevo en un rato.',
 };
 
 // #4631 — clase de gate (delegation-grant) que un grant firmado debe incluir para
@@ -156,12 +160,39 @@ function handle(req, res, deps = {}) {
         };
 
         // --- 7. token HMAC (firma + exp + replay) — CA-SEC-5 ---
-        const verdict = actionToken.verify(data.token);
-        if (!verdict.ok) {
-            audit('unauthorized', { token_reason: verdict.reason });
+        // #5461 — `verify()` dejó de ser una función TOTAL: desde que la firma se
+        // resuelve sólo desde el vault, `resolveVaultOnly` LANZA cuando el vault está
+        // cerrado (`vault.enabled: false`), indeterminado o sin el secreto. Este
+        // callback corre en `req.on('end')`, así que una excepción acá no la agarra
+        // ningún caller: escapa a `uncaughtException` y el dashboard se mata entero
+        // (`dashboard.js` → `process.exit(1)`). El catch degrada con gracia, igual que
+        // `human-block.buildBlockedActionMarkup` y `getOperatorGate` de
+        // `listener-telegram.js`: se responde sanitizado y la acción NO se ejecuta
+        // (fail-closed). No se re-lanza NUNCA.
+        let verdict;
+        try {
+            verdict = actionToken.verify(data.token);
+        } catch (e) {
+            // Se loguea el `code` acotado del error (VAULT_DISABLED, VAULT_FAILURE…),
+            // no el `message` crudo: el mensaje de un error arbitrario podría arrastrar
+            // material sensible al log.
+            const code = (e && typeof e.code === 'string') ? e.code : 'unknown';
+            log(`[human-block-action] verificador de token no disponible (${code}) — acción NO ejecutada`);
+            audit('unavailable', { token_reason: 'signer-unavailable' });
+            // 503: la indisponibilidad es del servidor, no un token malo del cliente.
+            // El copy es genérico: no revela config del vault ni el motivo técnico.
+            return sendJson(res, 503, {
+                ok: false, reason: 'unavailable', msg: TOKEN_REASON_COPY.unavailable,
+            });
+        }
+        if (!verdict || !verdict.ok) {
+            // `verdict` puede no ser objeto si un verificador inyectado devuelve
+            // cualquier cosa: se normaliza a 'invalid' antes de tocarle campos.
+            const reason = (verdict && verdict.reason) || 'invalid';
+            audit('unauthorized', { token_reason: reason });
             return sendJson(res, 401, {
-                ok: false, reason: verdict.reason,
-                msg: TOKEN_REASON_COPY[verdict.reason] || TOKEN_REASON_COPY.invalid,
+                ok: false, reason,
+                msg: TOKEN_REASON_COPY[reason] || TOKEN_REASON_COPY.invalid,
             });
         }
         // --- 8. binding token↔(issue,action) ---

@@ -182,6 +182,7 @@ Reparto: **39 kernel · 12 autoridad · 9 producto**.
 | 17 | `circuit_breaker` (315) | obj | **autoridad** | Corta la autonomía del pipeline ante rebotes; decide autonomía. |
 | 18 | `precheck` (353) | obj | kernel | Chequeos previos al dispatch; mecanismo. |
 | 19 | `anomaly_detector` (372) | obj | kernel | Detección de anomalías del motor; mecanismo. |
+| 19b | `human_block_reminder` (291) | obj | kernel | Cadencia con que el motor insiste ante un bloqueo humano sin responder (#5337); mecanismo, no política de producto. |
 | 20 | `cost_anomaly_alert` (395) | obj | kernel | Alerta de anomalía de costo del motor; mecanismo. |
 | 21 | `ghostbusters_cron` (411) | obj | kernel | Higiene programada del motor; mecanismo. |
 | 22 | `rest_mode` (434) | obj | kernel | Modo descanso del motor; mecanismo. |
@@ -223,6 +224,7 @@ Reparto: **39 kernel · 12 autoridad · 9 producto**.
 | 58 | `commander_products` (1823) | obj | **autoridad** | D-2: incluye `default_product` y el alta de productos con sus operadores. |
 | 59 | `vault` (1318) | obj | kernel | #5352: direcciona secretos de infraestructura por host (`prefix`/`projectId`/`hostId`); es mecanismo, se muda al kernel sin conocer el producto. Reutiliza `kernel.region`. |
 | 60 | `worktree_provenance` | obj | kernel | Allowlist de identidades para verificar procedencia de ramas en auto-recovery; mecanismo de seguridad del motor. |
+| 61 | `telegram_voice_outbound` | obj | kernel | #5573: política de reenvío de las PARTES DE AUDIO, separada de `telegram_outbound` (texto) porque la latencia real de un `.ogg` es ~62-74s contra los 5s del texto. Es transporte de salida del motor; mecanismo. |
 
 #### 2.4.1. Matriz de precedencia
 
