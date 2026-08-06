@@ -504,7 +504,10 @@ test('CA-7: el aviso dice que falta, que frena y como reponerlo', () => {
   const ev = sh.evaluate(cargaFake(), manifest, { present: [], placeholder: [], absent: ['telegram.bot_token'] });
   const texto = sh.formatAlert(ev);
 
-  assert.match(texto, /telegram\.bot_token/, 'que falta');
+  // U9 — "qué falta" se dice con el copy de UX, NUNCA con el nombre técnico:
+  // el aviso es la única superficie de usuario de esta historia.
+  assert.match(texto, /token del bot de Telegram/, 'que falta, en copy');
+  assert.ok(!texto.includes('telegram.bot_token'), 'el aviso no muestra el name crudo');
   assert.match(texto, /pipeline queda ciego/, 'que frena');
   assert.match(texto, /REPONER/, 'como reponerlo');
   assert.match(texto, /credential-rotation\.md#telegram/, 'ancla del runbook');
@@ -615,6 +618,96 @@ test('CA-6b: cada entrada del artefacto lleva level, label de texto, service, ne
     assert.equal(typeof e.ts, 'string');
     assert.ok(['ok', 'missing', 'chain_broken'].includes(e.state));
   }
+});
+
+// -----------------------------------------------------------------------------
+// U9 / CA-6b — `label` es copy corto en español, nunca el `name` crudo.
+// La tabla canónica la entrega UX en
+// `.pipeline/assets/mockups/5243/ux-labels-5243.md` (26 entradas, 1:1 con el
+// manifiesto). El aviso al operador es la única superficie de usuario de esta
+// historia y #5230 consume este contrato.
+// -----------------------------------------------------------------------------
+
+test('U9: SECRET_LABELS cubre 1:1 las 26 entradas del manifiesto real', () => {
+  const real = require('../../secrets-manifest.json');
+  const nombres = real.entries.map((e) => e.name);
+  assert.equal(nombres.length, 26, 'el manifiesto de #5242 trae 26 entradas');
+
+  for (const name of nombres) {
+    const label = sh.SECRET_LABELS[name];
+    assert.ok(label, `falta el label de copy para ${name}`);
+    // Copy, no nombre técnico: nunca el `name` crudo ni un derivado con puntos.
+    assert.ok(!label.includes('.'), `${name}: el label no puede ser el name crudo`);
+    assert.ok(!label.includes('_'), `${name}: el label no puede ser el name crudo`);
+    assert.ok(label.length > 0 && label.length <= 60, `${name}: label corto`);
+  }
+  // Sin entradas de más: la tabla no inventa secretos que el manifiesto no tiene.
+  assert.deepEqual(Object.keys(sh.SECRET_LABELS).sort(), [...nombres].sort());
+});
+
+test('U9: el label de una entrada conocida es el copy de UX, no el name prefijado', () => {
+  const manifest = manifiestoFake([entrada({ name: 'telegram.leo_operator_chat_id' })]);
+  const ev = sh.evaluate(cargaFake(), manifest, { present: [], placeholder: [], absent: ['telegram.leo_operator_chat_id'] });
+
+  const e = ev.entries[0];
+  assert.equal(e.label, 'chat privado del operador');
+  // La regresión exacta que rechazó el PO: `telegram · telegram.leo_operator_chat_id`.
+  assert.ok(!e.label.includes('·'), 'el label no lleva el prefijo de servicio');
+  assert.ok(!e.label.includes('telegram.'), 'el label no lleva el name crudo');
+});
+
+test('U9: un secreto fuera de la tabla deriva un label legible, no [secreto_invalido]', () => {
+  // Entrada sintética fuera de la tabla — el manifiesto va a crecer y un secreto
+  // nuevo no puede dejar al operador sin la única línea que puede leer.
+  const manifest = manifiestoFake([
+    entrada({ name: 'stripe.webhook_secret', service: 'stripe', env_var: 'STRIPE_WEBHOOK_SECRET' }),
+  ]);
+  const ev = sh.evaluate(cargaFake(), manifest, { present: [], placeholder: [], absent: ['stripe.webhook_secret'] });
+
+  const label = ev.entries[0].label;
+  assert.equal(label, 'webhook secret de stripe', 'derivación que fija U9');
+  assert.ok(label.length > 0, 'nunca vacío');
+  assert.ok(!label.includes('[secreto_invalido]'), 'prohibido el fallback de U3 como copy');
+  assert.ok(!label.includes('undefined'), 'nunca undefined');
+  assert.notEqual(label, 'stripe.webhook_secret', 'nunca el name crudo');
+});
+
+test('U9: ningún name del manifiesto produce un label vacio, undefined o [secreto_invalido]', () => {
+  // Barrido de bordes: nombres hostiles, vacíos y sin punto. Ninguno puede
+  // dejar al operador sin texto legible.
+  const casos = [
+    ['stripe.webhook_secret', 'stripe'],
+    ['nuevo_servicio.api_key', 'nuevo_servicio'],
+    ['sinpunto', 'telegram'],
+    ['', 'telegram'],
+    [null, 'telegram'],
+    [undefined, undefined],
+    ['telegram.bot\ntoken', 'telegram'],
+    ['___', 'telegram'],
+    ['.', 'telegram'],
+  ];
+
+  for (const [name, service] of casos) {
+    const label = sh.labelFor(name, service);
+    assert.equal(typeof label, 'string', `${name}: string`);
+    assert.ok(label.trim().length > 0, `${name}: nunca vacío`);
+    assert.ok(!label.includes('undefined'), `${name}: nunca undefined`);
+    assert.ok(!label.includes('[secreto_invalido]'), `${name}: nunca el fallback de U3`);
+    assert.notEqual(label, String(name), `${name}: nunca el name crudo`);
+  }
+});
+
+test('U9: el impacto se omite para un servicio desconocido en vez de inventarse', () => {
+  // "servicio desconocido -> se omite la línea de qué frena, nunca se inventa
+  // ni se imprime undefined".
+  for (const svc of Object.keys(sh.IMPACTO_POR_SERVICIO)) {
+    assert.ok(sh.IMPACTO_POR_SERVICIO[svc].length > 0, `${svc}: impacto no vacío`);
+  }
+  const manifest = manifiestoFake([
+    entrada({ name: 'stripe.webhook_secret', service: 'stripe', env_var: 'STRIPE_WEBHOOK_SECRET' }),
+  ]);
+  const ev = sh.evaluate(cargaFake(), manifest, { present: [], placeholder: [], absent: ['stripe.webhook_secret'] });
+  assert.ok(!String(ev.entries[0].impacto).includes('undefined'), 'nunca undefined');
 });
 
 test('CA-6: writeHealthJson con un destino invalido no lanza', () => {

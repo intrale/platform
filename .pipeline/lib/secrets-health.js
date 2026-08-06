@@ -70,18 +70,60 @@ const SAFE_NAME_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
 const SAFE_NAME_FALLBACK = '[secreto_invalido]';
 
 /**
+ * CA-6b / U9 — copy de `label`: texto corto en español, uno por secreto.
+ *
+ * El `label` es COPY, no dato de infraestructura: el manifiesto de #5242 trae
+ * `name`/`service`/`restore` pero NO trae `label` a propósito. La tabla canónica
+ * la entrega UX en `.pipeline/assets/mockups/5243/ux-labels-5243.md` (26 entradas,
+ * 1:1 con el manifiesto) y se transcribe acá tal cual — con tildes, que es lo que
+ * protege U5. El dev no inventa etiquetas.
+ *
+ * NO se agrega el campo a `.pipeline/secrets-manifest.json`: ese archivo es el
+ * contrato de datos de #5242 y tocarlo desde acá rompe su bloque `_precedence`.
+ */
+const SECRET_LABELS = Object.freeze({
+  'telegram.bot_token': 'token del bot de Telegram',
+  'telegram.chat_id': 'chat de Telegram del pipeline',
+  'telegram.leo_operator_chat_id': 'chat privado del operador',
+  'providers.openai.api_key': 'clave de API de OpenAI',
+  'providers.anthropic.api_key': 'clave de API de Anthropic',
+  'providers.google.api_key': 'clave de API de Google Gemini',
+  'providers.cerebras.api_key': 'clave de API de Cerebras',
+  'providers.nvidia.api_key': 'clave de API de NVIDIA NIM',
+  'providers.moonshot.api_key': 'clave de API de Moonshot Kimi',
+  'google_drive.drive_folder_id': 'carpeta de Google Drive',
+  'google_drive.oauth_client_id': 'identificador de cliente OAuth de Google Drive',
+  'google_drive.oauth_client_secret': 'secreto de cliente OAuth de Google Drive',
+  'google_drive.oauth_refresh_token': 'token de refresco de Google Drive',
+  'aws.access_key_id': 'clave de acceso de AWS',
+  'aws.secret_access_key': 'clave secreta de AWS',
+  'aws.region': 'región de AWS',
+  'aws.profile': 'perfil de AWS',
+  'aws.table_name': 'tabla de DynamoDB',
+  'aws.coordination_table_name': 'tabla de coordinación del pipeline',
+  'multimedia.elevenlabs_api_key': 'clave de API de ElevenLabs',
+  'multimedia.elevenlabs_voice_id': 'voz de ElevenLabs',
+  'github.token': 'token de GitHub',
+  'r2.account_id': 'cuenta de Cloudflare R2',
+  'r2.access_key_id': 'clave de acceso de Cloudflare R2',
+  'r2.secret_access_key': 'clave secreta de Cloudflare R2',
+  'r2.bucket': 'bucket de Cloudflare R2',
+});
+
+/**
  * Copy por servicio: qué se frena si falta (CA-7 "qué frena"). Texto corto en
- * español; el fallback genérico evita que un servicio nuevo del manifiesto
- * quede sin explicación.
+ * español, tomado de la tabla de impacto del mismo entregable de UX. Es POR
+ * SERVICIO, no por secreto: repetirlo en cada una de las cuatro entradas de `r2`
+ * es la pared de texto que U4 prohíbe.
  */
 const IMPACTO_POR_SERVICIO = Object.freeze({
-  telegram: 'el pipeline queda ciego: sin avisos ni comandos del operador',
-  github: 'no se pueden leer issues ni abrir PRs',
-  providers: 'los agentes se quedan sin proveedor de modelo',
-  aws: 'no se puede desplegar ni leer el backend',
-  google_drive: 'no se comparte la evidencia de QA',
+  telegram: 'el pipeline queda ciego: no puede avisarte nada ni recibir tus órdenes',
+  github: 'no puede leer ni comentar issues: no entra trabajo nuevo',
+  providers: 'se cae un proveedor del fallback; el pipeline sigue con los que queden',
+  google_drive: 'no se archivan los entregables ni el video de QA',
+  aws: 'no se puede aprovisionar ni leer el estado del kernel',
   r2: 'no se comparte el video de QA',
-  multimedia: 'no se genera el audio narrado',
+  multimedia: 'no hay voz narrada en los avisos',
 });
 
 const IMPACTO_GENERICO = 'el servicio queda sin credencial y su funcion se degrada';
@@ -105,6 +147,51 @@ function safeLabel(name) {
   // nombre hostil tiene que caer al fallback, no ser rescatado.
   const s = String(name == null ? '' : name);
   return SAFE_NAME_RE.test(s) ? s : SAFE_NAME_FALLBACK;
+}
+
+/**
+ * U9 — resuelve el `label` de un secreto. La tabla de UX manda; el fallback
+ * garantiza que un secreto nuevo NUNCA deje al operador sin texto legible.
+ *
+ * Reglas de U9, en orden:
+ *  1. `name` en la tabla → copy canónico de UX.
+ *  2. `name` fuera de la tabla → se DERIVA: se parte por `.`, se reemplazan `_`
+ *     por espacios y queda `<resto> de <servicio>`
+ *     (`stripe.webhook_secret` → `webhook secret de stripe`).
+ *  3. Nunca devuelve cadena vacía, `undefined`, ni el `name` crudo.
+ *
+ * El caso del nombre HOSTIL (falla el alfabeto cerrado de U3) es distinto del
+ * caso "secreto nuevo" que describe U9: no se puede derivar copy de un nombre
+ * que no se puede ni imprimir sin romper el canal. Ahí se degrada a una frase
+ * legible anclada al servicio en vez de escupir `[secreto_invalido]`, que es
+ * justamente lo que U9 prohíbe mostrarle al operador.
+ *
+ * @param {unknown} name
+ * @param {unknown} service
+ * @returns {string}
+ */
+function labelFor(name, service) {
+  const safeName = safeLabel(name);
+  if (Object.prototype.hasOwnProperty.call(SECRET_LABELS, safeName)) {
+    return SECRET_LABELS[safeName];
+  }
+
+  const svcRaw = safeLabel(service || '');
+  const svcOk = svcRaw !== SAFE_NAME_FALLBACK ? svcRaw.replace(/_/g, ' ').trim() : '';
+
+  // Nombre inutilizable (hostil, vacío o fuera del alfabeto): no se deriva.
+  if (safeName !== SAFE_NAME_FALLBACK) {
+    const parts = safeName.split('.').filter(Boolean);
+    if (parts.length > 0) {
+      const svc = parts.length > 1 ? parts[0].replace(/_/g, ' ').trim() : svcOk;
+      const rest = (parts.length > 1 ? parts.slice(1).join(' ') : parts[0])
+        .replace(/_/g, ' ')
+        .trim();
+      if (rest) return svc ? `${rest} de ${svc}` : rest;
+    }
+  }
+
+  return svcOk ? `secreto no identificado de ${svcOk}` : 'secreto no identificado';
 }
 
 /**
@@ -358,7 +445,8 @@ function buildEntry(entry, state, level, remediation, ts, motivo) {
     name: safeLabel(entry.name),
     service: safeLabel(entry.service || 'desconocido'),
     // CA-6b — `label` es TEXTO: la información nunca viaja sólo por color.
-    label: safeText(entry.name ? `${entry.service || 'servicio'} · ${safeLabel(entry.name)}` : 'secreto'),
+    // U9 — copy corto en español de la tabla de UX, nunca el `name` crudo.
+    label: safeText(labelFor(entry.name, entry.service)),
     state,
     level,
     remediation,
@@ -690,8 +778,11 @@ module.exports = {
   loadManifest,
   collectPresence,
   safeLabel,
+  labelFor,
   safeText,
   groupOf,
+  SECRET_LABELS,
+  IMPACTO_POR_SERVICIO,
   HALT_SOURCE,
   AUTO_RECOVERY_SOURCE,
   HEALTH_JSON_NAME,
