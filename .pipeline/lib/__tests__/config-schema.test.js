@@ -72,6 +72,34 @@ test('config válido pasa la validación', () => {
     assert.deepStrictEqual(errors, []);
 });
 
+test('#5419 worktree_provenance acepta una lista de committers', () => {
+    const cfg = validConfig();
+    cfg.worktree_provenance = { committers: ['backend-dev-agent@intrale'] };
+    assert.strictEqual(validateConfig(cfg).valid, true);
+});
+
+test('#5419 worktree_provenance rechaza un tipo de sección inválido', () => {
+    const cfg = validConfig();
+    cfg.worktree_provenance = [];
+    assert.strictEqual(validateConfig(cfg).valid, false);
+});
+
+test('#5419 worktree_provenance rechaza tipos y entradas inválidas', () => {
+    for (const value of ['backend-dev-agent@intrale', [42], [''], ['   ']]) {
+        const cfg = validConfig();
+        cfg.worktree_provenance = { committers: value };
+        assert.strictEqual(validateConfig(cfg).valid, false, JSON.stringify(value));
+    }
+});
+
+test('#5419 worktree_provenance rechaza claves desconocidas', () => {
+    const cfg = validConfig();
+    cfg.worktree_provenance = { committers: [], wildcard: '*@intrale' };
+    const { valid, errors } = validateConfig(cfg);
+    assert.strictEqual(valid, false);
+    assert.match(formatErrors(errors), /wildcard/);
+});
+
 test('la configuración EFECTIVA del repo pasa la validación (no falsos positivos)', () => {
     // #5174 — kernel + producto resueltos. Validar `config.yaml` suelto daría un
     // falso NEGATIVO: post-partición le faltan las claves que viven en producto.

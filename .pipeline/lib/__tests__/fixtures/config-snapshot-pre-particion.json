@@ -1,7 +1,7 @@
 {
   "_doc": "#5174 · CA-2 — snapshot REDACTADO (path -> tipo, NUNCA el valor) de la configuracion resuelta ANTES de partir config.yaml en kernel + producto. Generado desde .pipeline/config.yaml en el commit 14a454441 (entrega B, pre-particion). Sirve para demostrar que la particion no perdio ni cambio ninguna clave. Si un cambio LEGITIMO agrega o quita una clave top-level, regenerar con: node .pipeline/lib/__tests__/fixtures/regen-config-snapshot.js",
-  "_generadoDesde": "faec753c3",
-  "_claves": 443,
+  "_generadoDesde": "4fb73f62d",
+  "_claves": 451,
   "snapshot": [
     "admission_gate: object(3)",
     "admission_gate.bootstrap_cap: number",
@@ -393,6 +393,12 @@
     "telegram_outbound.max_retries: number",
     "telegram_outbound.stale_ttl_ms: number",
     "telegram_outbound.sweep_stagger_ms: number",
+    "telegram_voice_outbound: object(5)",
+    "telegram_voice_outbound.backoff_base_ms: number",
+    "telegram_voice_outbound.backoff_max_ms: number",
+    "telegram_voice_outbound.in_flight_max_ms: number",
+    "telegram_voice_outbound.max_retries: number",
+    "telegram_voice_outbound.stale_ttl_ms: number",
     "timeouts: object(5)",
     "timeouts.agent_timeout_default_minutes: number",
     "timeouts.agent_timeout_overrides: object(9)",
@@ -445,6 +451,8 @@
     "wave_watchdog.window_minutes: number",
     "waves: object(2)",
     "waves.capacity: number",
-    "waves.max_horizon: number"
+    "waves.max_horizon: number",
+    "worktree_provenance: object(1)",
+    "worktree_provenance.committers: array[2]"
   ]
 }
