@@ -138,6 +138,13 @@ const ENV_DESCRIPTORS = Object.freeze({
   // "Google Drive no configurado" hasta que el operador las recargaba a mano.
   // Migradas al store externo (que sobrevive al reset) para cerrar ese ciclo.
   // El refresh_token es un secreto: el loader sólo lista NOMBRES de var.
+  //
+  // #5242 — las cuatro se declaran `hydration: "eager"` /
+  // `consumer_status: "resolved"` en `.pipeline/secrets-manifest.json`, que es
+  // la fuente canónica. La invariante de CA-3b exige que este bloque y el
+  // manifiesto coincidan 1:1 para toda entrada `source: "store"` + `eager`.
+  // (Tras #5353 el bloque es `ENV_DESCRIPTORS`; `ENV_MAPPING` se DERIVA de él,
+  // así que la invariante se sigue evaluando sobre el mapa derivado.)
   'google_drive.oauth_client_id': {
     env: 'GOOGLE_OAUTH_CLIENT_ID', backend: 'ssm', shared: true, auth_anchor: false,
   },
