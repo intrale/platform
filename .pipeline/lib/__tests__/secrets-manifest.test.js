@@ -338,6 +338,15 @@ test('el conjunto nominal de consumer_status=resolved esta anclado', () => {
     'google_drive.oauth_client_id',
     'google_drive.oauth_client_secret',
     'google_drive.oauth_refresh_token',
+    // #5426 — `aws.profile` ENTRA al ancla en este tramo. Antes se declaraba
+    // `no_consumer` con la prosa «sin consumidor activo», y era cierto: nadie
+    // leia AWS_PROFILE. Al cerrar T2-1.1 el vault pasa a leerlo como senal
+    // positiva del modo `assume-role-chain` (`assertVaultAuthSignal`), asi que
+    // el candado generalizado de mas abajo lo detecta como lector real. Sigue
+    // `hydration: deferred` a proposito: el valor lo impone `vault.awsProfile`
+    // desde config, NO el store — hidratarlo seria inerte para el vault y
+    // peligroso fuera de el, porque AWS_PROFILE elige principal.
+    'aws.profile',
   ]);
 });
 
