@@ -307,7 +307,32 @@ AWS_PROFILE=<perfil-pipeline> node .pipeline/lib/kernel-cloudtrail-provision.js 
 `--emit-usage` escribe, lee y borra un ítem efímero en la tabla de coordinación
 (nunca en la tabla append-only de no-repudio). `--verify` **lee los objetos del
 trail en S3** —no el Event history— y exige `Decrypt` y `GenerateDataKey`
-asociados a `alias/intrale-kernel-store`. CloudTrail entrega en lotes de ~5
+asociados a `alias/intrale-kernel-store`.
+
+⚠️ **`Decrypt` y `GenerateDataKey` NO los ejecuta el mismo principal, y
+`GenerateDataKey` no se produce a demanda.** Los dos puntos se verificaron
+empíricamente el 2026-08-05 y condicionan cómo se lee la evidencia:
+
+- **`Decrypt` → usuario runtime.** Aparece con el ARN de
+  `intrale-kernel-runtime`, `invokedBy: dynamodb.amazonaws.com`.
+- **`GenerateDataKey` → DynamoDB, como `AWSService`.** El usuario runtime **no
+  tiene** `kms:GenerateDataKey` en ninguna policy: una llamada directa devuelve
+  `no identity-based policy allows the kms:GenerateDataKey action`. La data key
+  la genera DynamoDB en nombre de la tabla. Exigir el ARN del runtime en esta
+  operación sería exigir un evento que AWS nunca emite.
+
+Lo que prueba uso legítimo en `GenerateDataKey` es que la invocación venga de
+**DynamoDB** —justo lo que ata el `kms:ViaService` de la key policy—. Una data
+key generada desde otro servicio sería el hallazgo, y el verificador la marca
+`principalExpected: false`.
+
+Además, `GenerateDataKey` corresponde al **ciclo de vida de la data key de la
+tabla** (creación/rotación), no a cada escritura: una emisión nueva produce
+`Decrypt` pero normalmente **no** `GenerateDataKey`. Por eso `--verify` sin
+`--since` —sobre la ventana completa de retención— es la forma correcta de
+cerrar la correlación; acotar la ventana a la emisión sólo evidencia `Decrypt`.
+Que falte `GenerateDataKey` en una ventana corta **no** es un fallo del trail:
+recrearlo no cambia nada. CloudTrail entrega en lotes de ~5
 minutos: un exit code `2` significa *todavía no llegó la evidencia*, se repite la
 verificación; **no** se recrea el trail. `--wait <segundos>` reintenta solo.
 
@@ -322,6 +347,7 @@ Verificado empíricamente al aprovisionar el trail (2026-08-05):
 | **Leer el trail en S3** (`--verify`) | `s3:ListBucket`, `s3:GetObject` | ✅ **permitido** | — |
 | Emitir uso de la CMK (`--emit-usage`) | `kms:Decrypt` vía DynamoDB | ❌ **denegado** | ✅ permitido |
 | Consultar Event history (`lookup-events`) | `cloudtrail:LookupEvents` | ❌ denegado | ❌ |
+| Endurecer la policy del destino (`put-bucket-policy`) | `s3:PutBucketPolicy` | ✅ permitido | ❌ denegado |
 
 El aprovisionamiento es un **paso admin de una sola vez**: la identidad del
 pipeline no puede crear el bucket ni el trail, y eso es deseable (el pipeline no
@@ -409,6 +435,127 @@ archivos se puede probar contra los digest de
 aws cloudtrail validate-logs --trail-arn <TRAIL_ARN> \
   --start-time <UTC-INICIO> --region us-east-2
 ```
+
+#### Evidencia redactada: qué sale y qué nunca sale
+
+La evidencia se construye por **proyección allowlist**, no por redacción posterior
+(`.pipeline/lib/kernel-audit-evidence.js`). El orden importa: nunca se persiste la
+respuesta cruda de AWS "para limpiarla después". Un registro de CloudTrail trae
+`recipientAccountId`, `requestID`, `eventID`, ARNs completos y `requestParameters`
+con contexto de cifrado; una denylist sobre eso falla **abierta** ante cualquier
+campo nuevo que AWS agregue, y una allowlist falla **cerrada**.
+
+Lo único que sale de un evento es: `eventTime`, `eventName`, `principal`
+(reducido a `user/<nombre>`), `principalExpected`, `invokedBy`, `errorCode` y
+`outcome`. La clave se referencia por **alias + huella** (`sha256` truncado), no
+por ARN ni key id.
+
+Nunca salen: account-id, ARN completo, request/event IDs, key id, nombre de
+sesión de un rol asumido, credenciales ni material criptográfico. Una segunda
+capa (`assertRedacted`) reescanea lo ya proyectado y **aborta** si algo pasó; su
+mensaje nombra la ruta y el patrón, nunca el valor —un error que imprime el ARN
+que estaba ocultando lo filtra igual, y los errores terminan en logs y en issues.
+
+Esto aplica también al `stdout` del aprovisionador: el plan crudo lleva el
+account-id embebido en el nombre del bucket y el ARN entero del trail, así que
+**todo** lo que imprime pasa por la proyección.
+
+#### Endurecimiento del destino
+
+La policy del bucket declara cinco statements (`bucketPolicy` en
+`.pipeline/lib/kernel-cloudtrail-provision.js`):
+
+| Sid | Efecto | Para qué |
+|---|---|---|
+| `AWSCloudTrailAclCheck` / `AWSCloudTrailWrite` | Allow | Entrega del trail, acotada por `AWS:SourceArn` |
+| `DenyInsecureTransport` | Deny `*` | TLS-only. Va sobre `Principal: '*'` a propósito: la garantía es del canal, no de quién llama |
+| `DenyRuntimeAuditAccess` | Deny runtime | El runtime no borra, no degrada retención, no reescribe la policy **y tampoco lee** la auditoría que genera |
+| `AllowAuditorRead` | Allow auditor | Acceso de auditoría declarado en el destino, separado del runtime y de sólo lectura |
+
+El deny explícito gana sobre cualquier allow presente o futuro: si mañana alguien
+le adjunta una policy amplia al runtime, estas operaciones siguen bloqueadas.
+
+El destino se cifra con **SSE-S3 (`AES256`)**, deliberadamente *distinta* de la
+CMK auditada. Si fueran la misma clave, deshabilitarla para contener un incidente
+del store dejaría ilegible la evidencia de ese mismo incidente. El verificador lo
+comprueba (`destinationKeySeparateFromCmk`) en vez de asumirlo.
+
+Para leer la postura **efectiva** desde AWS —no la policy que creemos haber
+aplicado— con la identidad auditora:
+
+```bash
+node -e "const ct=require('./.pipeline/lib/kernel-cloudtrail-provision');
+const p=ct.buildPlan({accountId:ct.runAws(['sts','get-caller-identity']).Account});
+console.log(ct.verifyDestinationPosture(p,{keyArn:ct.resolveKeyArn(p)}))"
+```
+
+Devuelve una garantía por campo, así que un `false` nombra exactamente qué se
+rompió. `--verify` sale con **exit code `3`** si la evidencia está completa pero
+la postura no cumple: se distingue del `2` porque acá reintentar no sirve, hay
+que corregir.
+
+#### Pruebas negativas: la postura se prueba, no se lee
+
+Inspeccionar policies no alcanza — una policy puede leerse correcta y estar
+anulada por un allow heredado, un boundary ausente o una SCP mal ordenada. La
+matriz de `.pipeline/lib/kernel-audit-negative-tests.js` **intenta** cada
+operación destructiva con las credenciales reales del runtime y exige
+`AccessDenied`.
+
+```bash
+# El key id lo resuelve la identidad AUDITORA: el runtime no tiene kms:DescribeKey.
+KEY_ID=$(aws kms describe-key --key-id alias/intrale-kernel-store \
+  --region us-east-2 --query 'KeyMetadata.KeyId' --output text)
+
+node .pipeline/lib/kernel-audit-negative-tests.js                      # dry-run: imprime la matriz
+AWS_PROFILE=<perfil-runtime> node .pipeline/lib/kernel-audit-negative-tests.js \
+  --run --key-id "$KEY_ID"
+```
+
+Tres salvaguardas que hacen seguro correr esto contra producción:
+
+1. **Guarda de identidad.** El runner se niega a arrancar si el llamador no es el
+   principal runtime. Con una sesión administrativa, `stop-logging` y
+   `delete-trail` **no** serían denegados: destruirían el trail de verdad.
+2. **Parámetros que no destruyen.** `update-trail` y `put-event-selectors`
+   reenvían la configuración vigente; `delete-object` apunta a una clave
+   inexistente con nonce. Si el permiso existiera, la llamada tendría éxito —que
+   es el hallazgo— sin romper nada.
+3. **Corta-escalada.** En cuanto una operación de un servicio no resulta
+   denegada, las **destructivas** que quedan de ese servicio no se ejecutan: el
+   hallazgo ya está probado y seguir sólo agrega la chance de detener el trail o
+   deshabilitar la clave.
+
+El veredicto es **fail-closed**: denegado aprueba, permitido es crítico, y
+cualquier otro error es `inconclusivo` —que **no** aprueba. Un timeout de red no
+puede leerse como "está protegido". Las operaciones de KMS exigen key id porque
+con alias devuelven `InvalidArnException`, que no es una denegación: sin esa
+distinción, un error de forma se leería como postura verificada.
+
+Después de correr la matriz, confirmar con la identidad auditora que el trail
+quedó intacto (el runtime no puede leer su propio estado, y eso es parte de la
+separación):
+
+```bash
+aws cloudtrail get-trail-status --name intrale-kernel-kms --region us-east-2 \
+  --query '{IsLogging:IsLogging,TimeStopped:TimeLoggingStopped}'
+aws kms describe-key --key-id alias/intrale-kernel-store --region us-east-2 \
+  --query 'KeyMetadata.{State:KeyState,Deletion:DeletionDate}'
+```
+
+#### Retención, consulta y eliminación controlada
+
+| Qué | Decisión | Dónde se aplica |
+|---|---|---|
+| **Retención** | 365 días | Lifecycle del bucket (`Expiration.Days` + `NoncurrentVersionExpiration`). Cubre una revisión anual completa y ventanas mayores a los 90 días del Event history |
+| **Quién consulta** | Sólo la identidad auditora | `AllowAuditorRead` en la policy + IAM. El runtime tiene deny explícito de lectura |
+| **Quién puede reducirla** | Nadie fuera de una sesión administrativa | El runtime tiene deny sobre `s3:PutLifecycleConfiguration`, verificado por la matriz negativa |
+| **Eliminación controlada** | Sólo admin, y sólo por vencimiento del lifecycle | Ni el runtime ni el auditor pueden `DeleteObject` / `DeleteBucket` |
+
+La eliminación anticipada de evidencia es un **paso administrativo deliberado**,
+nunca una operación de runtime ni de pipeline: exige una sesión administrativa,
+y queda registrada en el propio trail. El borrado por vencimiento lo hace el
+lifecycle solo, a los 365 días, sin intervención.
 
 ---
 
