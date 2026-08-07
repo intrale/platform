@@ -3659,7 +3659,12 @@ function brazoBarrido(config) {
         // (el issue va a rebotear igual) y esperarlos produce deadlocks cuando
         // algún skill queda atascado. Incidente 2026-04-24: tester:#2505 en
         // cooldown bloqueaba el rebote de qa:#2505 que ya había rechazado.
-        const hayRechazoConfirmado = resultados.some(r => r.resultado === 'rechazado');
+        // #5641 CA-4 — se conserva la LISTA de rechazos, no sólo el booleano: el
+        // drenaje de abajo necesita saber QUIÉN disparó el fast-fail y si todos
+        // esos disparadores fueron veredictos sintetizados por el Pulpo (caída de
+        // infra) o hubo al menos un rechazo de contenido real.
+        const rechazos = resultados.filter(r => r.resultado === 'rechazado');
+        const hayRechazoConfirmado = rechazos.length > 0;
         if (!todosCompletos && !hayRechazoConfirmado) continue;
 
         // Si el rebote va a dispararse por fast-fail (todosCompletos=false pero hay rechazo),
@@ -3702,6 +3707,21 @@ function brazoBarrido(config) {
 
         if (!todosCompletos && hayRechazoConfirmado && !hayDepBlockEnRechazos) {
           const procesadoFaseActual = path.join(fasePath(pipelineName, fase), 'procesado');
+          // #5641 CA-4 — los hermanos drenados NUNCA emitieron veredicto propio, así
+          // que su `cancelado_por` no es una decisión: es una consecuencia. Para que
+          // aguas abajo se pueda distinguir "cancelado porque alguien rechazó de
+          // verdad" de "cancelado porque a un hermano se le cayó el proceso", se
+          // registra QUIÉN disparó el drenaje y si TODOS los disparadores fueron
+          // veredictos sintetizados por el Pulpo.
+          //
+          // FAIL-CLOSED (SEC-3): basta UN rechazo de contenido en la mezcla para que
+          // `cancelado_disparador_infra` quede en `false` y el hermano siga siendo
+          // ambiguo → escala a humano. El default nunca relaja el gate.
+          const disparadores = [...new Set(
+            rechazos.map(r => skillFromFile(r.file.name)).filter(Boolean),
+          )].sort();
+          const disparadorInfra = rechazos.length > 0
+            && rechazos.every(r => r.veredicto_sintetizado_por === 'pulpo');
           for (const estado of ['pendiente', 'trabajando']) {
             const dir = path.join(fasePath(pipelineName, fase), estado);
             try {
@@ -3712,13 +3732,19 @@ function brazoBarrido(config) {
                 const dst = path.join(procesadoFaseActual, f);
                 try {
                   const prev = readYamlSafe(src) || {};
-                  writeYaml(dst, { ...prev, cancelado_por: 'fast-fail-rebote', cancelado_ts: new Date().toISOString() });
+                  writeYaml(dst, {
+                    ...prev,
+                    cancelado_por: 'fast-fail-rebote',
+                    cancelado_ts: new Date().toISOString(),
+                    cancelado_disparado_por: disparadores.join(','),
+                    cancelado_disparador_infra: disparadorInfra,
+                  });
                   fs.unlinkSync(src);
                 } catch {}
               }
             } catch {}
           }
-          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown`);
+          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown (disparado por: ${disparadores.join(',') || '?'}${disparadorInfra ? ', caída de infra' : ''})`);
         } else if (!todosCompletos && hayRechazoConfirmado && hayDepBlockEnRechazos) {
           // #3373 — skip drain. Los archivos pendiente/trabajando se quedan
           // donde están, el handler dep-block los barre a bloqueado-dependencias/
@@ -4076,6 +4102,64 @@ function brazoBarrido(config) {
             }
             return true;
           });
+
+          // #5337 CA-3 — Triggers por ESTADO OBJETIVO, además de la heurística
+          // textual de arriba. Cubren los casos del 2026-08-01 en que un gate
+          // devolvía pidiendo una DECISIÓN (no una corrección) y el motivo no
+          // matcheaba ningún patrón, así que el issue se acumulaba en silencio.
+          //
+          // `recomendacionBloqueo` alimenta el bloque `💡 Recomendación` del
+          // mensaje de Telegram (CA-2): el operador tiene que ver qué le
+          // conviene hacer, no sólo que algo está trabado.
+          let recomendacionBloqueo = '';
+          try {
+            const hbTriggers = require('./lib/human-block-triggers');
+
+            // (a) Devolución de un gate pidiendo decisión del operador.
+            for (const m of motivosClasificados) {
+              if (mecanicoResueltos.has(m)) continue;
+              const det = hbTriggers.detectDecisionRequestBlock({
+                skill: m.skill, motivo: m.motivo, issue: parseInt(issue),
+              });
+              if (!det) continue;
+              if (!recomendacionBloqueo) recomendacionBloqueo = det.recommendation;
+              if (!motivosHumanos.includes(m)) motivosHumanos.push(m);
+            }
+
+            // (b) Rebotado N veces por la MISMA causa. El rebote automático dejó
+            // de aportar: cada pasada quema tokens para volver a fallar igual.
+            // Se mira el histórico de `motivo_rechazo` de la fase de rechazo.
+            if (faseRechazo && motivosHumanos.length === 0 && !esReboteDeInfra) {
+              const motivosPrevios = [];
+              for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+                const dir = path.join(fasePath(pipelineName, faseRechazo), estado);
+                try {
+                  for (const f of fs.readdirSync(dir)) {
+                    if (!f.startsWith(issue + '.')) continue;
+                    const data = readYamlSafe(path.join(dir, f));
+                    if (data && data.motivo_rechazo) motivosPrevios.push(String(data.motivo_rechazo));
+                  }
+                } catch { /* fase sin cola todavía */ }
+              }
+              for (const m of motivosClasificados) motivosPrevios.push(String(m.motivo || ''));
+              const rep = hbTriggers.detectRepeatedRejectionBlock({
+                issue: parseInt(issue), motivos: motivosPrevios,
+              });
+              if (rep) {
+                recomendacionBloqueo = recomendacionBloqueo || rep.recommendation;
+                const principalRep = motivosClasificados[0];
+                if (principalRep && !motivosHumanos.includes(principalRep)) {
+                  motivosHumanos.push(principalRep);
+                }
+                log('barrido', `🔁 #${issue} escala a humano por causa repetida (${rep.repeats} veces)`);
+              }
+            }
+          } catch (e) {
+            // Los triggers son accesorios: si fallan, el flujo textual histórico
+            // sigue funcionando igual. Nunca frenan el barrido.
+            log('barrido', `#${issue} triggers de bloqueo humano fallaron (no bloqueante): ${e.message}`);
+          }
+
           if (motivosHumanos.length > 0 && !esReboteDeInfra) {
             const principal = motivosHumanos[0];
             const skillBloq = principal.skill || skillFromFile(rechazados[0].file.name);
@@ -4179,7 +4263,12 @@ function brazoBarrido(config) {
               // el resumen de texto sin botones (degradación con gracia).
               try {
                 const summary = humanBlock.buildBlockedSummaryMarkdown({
-                  highlight: { issue: parseInt(issue), skill: skillBloq, reason: motivoTxt, question },
+                  // #5337 CA-2 — la recomendación del pipeline viaja al mensaje.
+                  // Si no hay ninguna, `buildBlockedSummaryMarkdown` omite la línea.
+                  highlight: {
+                    issue: parseInt(issue), skill: skillBloq, reason: motivoTxt, question,
+                    recommendation: recomendacionBloqueo,
+                  },
                 });
                 let markup;
                 try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue)); } catch { markup = undefined; }
@@ -4202,6 +4291,7 @@ function brazoBarrido(config) {
                 humanBlock.sendNeedHumanAudio({
                   reason: motivoTxt,
                   question,
+                  recommendation: recomendacionBloqueo, // #5337 CA-2
                   profile: 'need-human',
                   botToken: getTelegramToken(),
                   chatId: getTelegramChatId(),
@@ -5631,6 +5721,106 @@ function brazoBarrido(config) {
               else sendTelegram(text);
               const sum = summarizePrInfoForLog(prInfo);
               log('barrido', `#${issue} notificación cierre — prState=${sum.prState} rollupState=${sum.rollupState} prUrl=${sum.prUrl || '-'}`);
+
+              // #5337 CA-3 — El issue terminó el pipeline pero el PR puede estar
+              // frenado esperando al operador. Ése es EXACTAMENTE el agujero del
+              // 2026-08-01: #5217/#5220/#5242/#5244 quedaron acumulados en
+              // silencio y el operador se enteró horas después, preguntando.
+              //
+              // Tres causas, todas leídas de ESTADO OBJETIVO (no de texto):
+              //   1. hallazgos de code-scanning introducidos por esta rama,
+              //   2. conflicto de merge real (mergeStateStatus=DIRTY),
+              //   4. review humana exigida por CODEOWNERS/ruleset (=BLOCKED).
+              // (La causa 3 —un gate pidiendo decisión— se detecta en el rebote,
+              // más arriba en este mismo brazo.)
+              //
+              // Sólo aplica a PRs ABIERTOS: uno ya mergeado o cerrado no espera
+              // nada de nadie.
+              try {
+                const esPrAbierto = prInfo && !prInfo.error
+                  && String(prInfo.state || '').toUpperCase() === 'OPEN';
+                if (esPrAbierto && !humanBlock.findBlockedMarker(issue)) {
+                  const hbTriggers = require('./lib/human-block-triggers');
+                  const { fetchPrCodeScanningAlerts } = require('./lib/code-scanning-alerts');
+
+                  // Las alertas son best-effort: si no se pueden consultar
+                  // (404 sin code-scanning, 403 sin scope, timeout) seguimos con
+                  // el estado de merge. No poder consultar NUNCA inventa bloqueo.
+                  let securityAlerts = [];
+                  try {
+                    const res = fetchPrCodeScanningAlerts(
+                      { repo: repoTarget.getPrimaryRepo(), prNumber: prInfo.number, headRefName: prInfo.headRefName },
+                      { ghBin: GH_BIN, cwd: ROOT, timeoutMs: 8000 }
+                    );
+                    securityAlerts = res.alerts || [];
+                    if (res.error) log('barrido', `#${issue} code-scanning no consultable (se sigue sin él): ${res.error}`);
+                  } catch (e) {
+                    log('barrido', `#${issue} code-scanning falló (no bloqueante): ${e.message}`);
+                  }
+
+                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, { securityAlerts });
+
+                  if (veredicto && veredicto.inconclusive) {
+                    // R2 — GitHub todavía calcula `mergeable`. Ni bloqueo ni vía
+                    // libre: se reevalúa en el barrido siguiente. Un estado
+                    // desconocido nunca es un veredicto.
+                    log('barrido', `#${issue} estado de merge del PR #${prInfo.number} no concluyente todavía — se reintenta`);
+                  } else if (veredicto && veredicto.trigger) {
+                    log('barrido', `🚧 #${issue} PR #${prInfo.number} requiere intervención humana (${veredicto.trigger})`);
+                    try {
+                      humanBlock.reportHumanBlock({
+                        issue: parseInt(issue),
+                        skill: 'entrega',
+                        phase: 'aprobacion',
+                        pipeline: pipelineName,
+                        reason: veredicto.reason,
+                        question: veredicto.question,
+                        moveFromActive: false,
+                      });
+                    } catch (e) {
+                      log('barrido', `❌ #${issue} reportHumanBlock (PR) falló: ${e.message}`);
+                    }
+                    // Notificación inmediata (CA-1/CA-2): qué issue, qué se
+                    // necesita, y la recomendación del pipeline.
+                    try {
+                      const summaryPr = humanBlock.buildBlockedSummaryMarkdown({
+                        highlight: {
+                          issue: parseInt(issue), skill: 'entrega',
+                          reason: veredicto.reason, question: veredicto.question,
+                          recommendation: veredicto.recommendation,
+                        },
+                      });
+                      let markupPr;
+                      try { markupPr = humanBlock.buildBlockedActionMarkup(parseInt(issue)); }
+                      catch { markupPr = undefined; }
+                      sendTelegramWithMarkup(summaryPr, markupPr || null);
+                    } catch (e) {
+                      log('barrido', `Error notificando bloqueo de PR #${issue}: ${e.message}`);
+                    }
+                    // Aviso por voz: es el canal que funciona cuando el operador
+                    // no está mirando la pantalla. Fire-and-forget.
+                    // El require va acá adentro (igual que en el camino de rebote,
+                    // ~L4247): `multimedia` no está destructurado a nivel módulo.
+                    try {
+                      const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
+                      humanBlock.sendNeedHumanAudio({
+                        reason: veredicto.reason,
+                        question: veredicto.question,
+                        recommendation: veredicto.recommendation,
+                        profile: 'need-human',
+                        botToken: getTelegramToken(),
+                        chatId: getTelegramChatId(),
+                        textToSpeechWithMeta,
+                        sendVoiceTelegram,
+                      }).catch(() => {});
+                    } catch { /* el audio nunca frena el aviso de texto */ }
+                  }
+                }
+              } catch (e) {
+                // Los triggers de PR son accesorios respecto de la notificación
+                // de cierre: si fallan, el mensaje de arriba ya salió igual.
+                log('barrido', `#${issue} triggers de PR fallaron (no bloqueante): ${e.message}`);
+              }
             } catch (e) {
               // Defensa última: si algo falla en el helper, mandamos el texto
               // legacy + sufijo. Nunca dejar al issue sin notificación.
@@ -9915,9 +10105,42 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       }
 
       const data = readYamlSafe(workingPath);
+      // #5641 CA-1/CA-2 — PROCEDENCIA ESTRUCTURADA del veredicto sintético.
+      //
+      // Cuando el proceso del agente muere con exit code ≠ 0, el Pulpo sintetiza
+      // `resultado: rechazado` con el motivo `Agente terminó con código N`. Ese
+      // deliverable NO contiene ninguna decisión de review, pero el detector de
+      // fases varadas lo veía como un rechazo real y escalaba a humano (6 de 12
+      // issues frenados de la ola 9.4 eran esto).
+      //
+      // La marca de procedencia (`veredicto_sintetizado_por: 'pulpo'`) es el ÚNICO
+      // dato que habilita el carril de auto-reintento aguas abajo. Por eso NO puede
+      // clasificarse por el TEXTO del `motivo`: ese campo lo escribe el agente y
+      // sería un vector de escalada (un agente podría citar el literal en un
+      // rechazo de contenido y auto-borrarse el veredicto).
+      //
+      // CA-2 (anti-spoof): el strip va ANTES del `if`, no adentro. Si el agente
+      // dejó su propio `resultado`, la rama no entra y los campos falsificados
+      // sobrevivirían hasta `procesado/`. Mismo patrón que
+      // `delete cleaned.bloqueado_por_infra` (L1031 y L9157).
+      const procedenciaFalsificada =
+        data.veredicto_sintetizado_por !== undefined || data.agente_exit_code !== undefined;
+      delete data.veredicto_sintetizado_por;
+      delete data.agente_exit_code;
+      if (procedenciaFalsificada) {
+        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite)`);
+      }
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
+        if (code !== 0) {
+          data.veredicto_sintetizado_por = 'pulpo';
+          data.agente_exit_code = code;
+        }
+        writeYaml(workingPath, data);
+      } else if (procedenciaFalsificada) {
+        // El agente SÍ opinó, pero además intentó falsificar la procedencia:
+        // hay que persistir el strip o los campos llegan intactos a `procesado/`.
         writeYaml(workingPath, data);
       }
 
@@ -12788,6 +13011,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // se clasificó como cli_1m_context_glitch. `finish()` lo usa para devolverle
     // al orquestador `kind: 'glitch'` (vs 'final') sin re-inspeccionar nada.
     let attemptGlitch = false;
+    // #5456 — clasificación TIPADA del canal de contenido de cuota semanal
+    // (#5455). Se calcula en el handler del frame `result` (único lugar donde el
+    // frame se parsea) y se consume en `finish()` para sustituir el texto crudo
+    // ANTES de `resolveAttempt`. `null` = el turno no murió por cuota semanal.
+    let weeklyQuotaMidTurn = null;
     const startTime = Date.now();
 
     // El turno del Commander YA NO se corta por duración total.
@@ -13017,6 +13245,67 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         log('commander', `🚨 SKILL_TIMEOUT propagado al caller: ${marker}`);
         if (!lastText) lastText = marker;
       }
+      // =====================================================================
+      // #5456 — CLASIFICACIÓN TIPADA PRIMERO, antes de auditar y antes de
+      // asignar el texto del intento.
+      //
+      // Si el turno murió por el canal de contenido de cuota semanal (#5455),
+      // `finalResult.result` ES el aviso crudo de Anthropic. Ese texto no puede
+      // llegar al operador (CA-1), así que lo sustituimos por la respuesta
+      // reactiva y auditamos con un enum estable en vez de `null`.
+      //
+      // PERSISTENCIA ÚNICA: el flag ya se escribió en el handler del frame
+      // `result` por la API canónica (`setFlag` o el hook generalizado). Acá NO
+      // se vuelve a escribir estado ni se agrega otro archivo/selector.
+      //
+      // SEPARACIÓN DE SALIDAS: esta es la respuesta REACTIVA del turno perdido y
+      // se emite SIEMPRE. `shouldEmitFallbackNotice` (aviso PROACTIVO, dedup de
+      // 5 min) no se invoca desde acá — dedupear la respuesta dejaría al
+      // operador sin contestación.
+      // =====================================================================
+      let quotaMidTurnText = null;
+      if (weeklyQuotaMidTurn) {
+        try {
+          // Proveedor del próximo intento: sale del resolver real (excluyendo el
+          // agotado), NUNCA del texto de la respuesta. Si no hay uno resoluble,
+          // el formatter degrada a copy genérico.
+          //
+          // `resolveCommanderProviderQuiet` (#5456) hace dos cosas que la
+          // variante cruda NO hace y que acá son obligatorias:
+          //   1. Consulta la cadena del COMMANDER (`telegram-commander`). El
+          //      default del resolver crudo es la de Sherlock, que tiene otros
+          //      `model_override`: anunciaríamos el proveedor de una cadena
+          //      distinta de la que va a atender el turno siguiente.
+          //   2. Silencia `notify` y el audit del dispatch. Esto es una CONSULTA
+          //      para armar copy, no un spawn: con la variante cruda encolaba un
+          //      tercer mensaje al operador con ids internos (viola CA-1) sin
+          //      pasar por ningún dedup (viola CA-3) y ensuciaba el audit con un
+          //      `fallback_selected` que nunca ocurrió.
+          let nextProvider = null;
+          try {
+            const next = commanderMP.resolveCommanderProviderQuiet(
+              weeklyQuotaMidTurn.provider,
+              { pipelineDir: PIPELINE, log: () => {} },
+            );
+            if (next && next.gated !== true) nextProvider = next.provider || null;
+          } catch { /* best-effort: el copy degrada a genérico */ }
+
+          quotaMidTurnText = commanderMP.formatMidTurnQuotaResponse({
+            primaryProvider: weeklyQuotaMidTurn.provider,
+            fallbackProvider: nextProvider,
+          });
+          log('commander',
+            `🚫 #5456 cuota semanal mid-turn (provider=${weeklyQuotaMidTurn.provider}) — ` +
+            `respuesta cruda SUPRIMIDA, respondo reactivo (next=${nextProvider || 'n/a'}).`);
+        } catch (e) {
+          // Fail-safe: un bug del formatter NO puede devolver el crudo. Si algo
+          // explota respondemos el canned genérico de cuota, nunca el payload.
+          log('commander', `⚠️ #5456 formatter mid-turn falló (best-effort): ${e && e.message}`);
+          try {
+            quotaMidTurnText = commanderMP.formatMidTurnQuotaResponse({});
+          } catch { quotaMidTurnText = 'Se agotó la cuota y este turno se perdió — reenviame el mensaje.'; }
+        }
+      }
       // #3258 — CA-4 / SR-3: audit log con hash-chain del request del commander.
       // Métadata mínima (prov, tokens si los hay, latencia, hashes). NO se
       // loguea prompt ni respuesta literales — solo hashes.
@@ -13039,7 +13328,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           prompt: prompt,
           tokens: tokensSummary,
           latencyMs: Date.now() - startTime,
-          errorCode: (finalResult && finalResult.result) || lastText ? null : 'no_result',
+          // #5456 — enum ESTABLE para el turno perdido por cuota semanal. Nunca
+          // el `errorType` real ni nada del payload: el detalle tipado ya vive
+          // en el audit de `quota-exhausted.js`, server-side.
+          errorCode: quotaMidTurnText
+            ? commanderMP.QUOTA_MIDTURN_ERROR_CODE
+            : (((finalResult && finalResult.result) || lastText) ? null : 'no_result'),
           injectionHits: sanRes.hits,
           supportsToolUse: true,
           requestId: turnRequestId, // #3577 CA-S6
@@ -13054,7 +13348,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // decide retry/give_up según `kind`. `attemptGlitch` distingue el glitch
       // 1M de un resultado normal.
       let resolvedText;
-      if (finalResult?.result) {
+      if (quotaMidTurnText) {
+        // #5456 CA-1 — sustitución ANTES de `resolveAttempt`: ni `finalResult
+        // .result` ni `lastText` (que replica el mismo aviso) llegan al canal.
+        resolvedText = quotaMidTurnText;
+      } else if (finalResult?.result) {
         resolvedText = finalResult.result;
       } else if (lastText) {
         resolvedText = lastText;
@@ -13277,6 +13575,17 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                 log('commander', `[anthropic-1m] hit registrado: ${JSON.stringify(hitLog)} (total=${hitState.hits_total})`);
               } catch (e) { log('commander', `[anthropic-1m] recordHit falló (best-effort): ${e.message}`); }
             } else if (det.matched) {
+              // #5456 — CLASIFICACIÓN TIPADA (contrato de #5455). El subtipo
+              // exacto `weekly_limit_content_channel` es el ÚNICO que sustituye
+              // la respuesta del turno: el frame no trae `is_error`, así que su
+              // `result` es el aviso crudo de Anthropic (hora de reset, jerga de
+              // la cuenta) y NO puede llegar al operador. Se usa el predicado
+              // canónico exportado — acá no se re-parsea el frame ni se compara
+              // el string a mano. Cualquier otro tipo (incluido
+              // `usage_limit_error`) conserva el camino de siempre.
+              if (quotaExhausted.isWeeklyLimitContentChannel(cmdProvider, det.errorType)) {
+                weeklyQuotaMidTurn = { provider: cmdProvider };
+              }
               // #3576 CA-3: en modo generalizado el hook ya invocó setFlag
               // (con audit log unificado + hash-chain). En legacy seguimos
               // setFlag inline para no romper la fast-path histórica.
@@ -13288,7 +13597,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                   errorType: det.errorType,
                   provider: cmdProvider,
                   model: cmdModel,
-                  resetsAt: evt.resets_at,
+                  // #5456 — el canal de contenido (#5455) trae el reset PARSEADO
+                  // en `det.resetsAt`; el frame estructural no lo tiene y sigue
+                  // usando `evt.resets_at`. Sin esto el subtipo se persistía sin
+                  // su reset real y caía al default del escritor.
+                  resetsAt: det.resetsAt || evt.resets_at,
                   maxDays: (cmdProviderDef && cmdProviderDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
                   agent: 'commander',
                   rawExcerpt: line,
@@ -16162,7 +16475,10 @@ function brazoIntake(config) {
         try {
           ghThrottle();
           const result = _ghExecSyncGuarded( // #4612 — breaker-aware
-            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels --limit 50 --search "-label:needs-human"`,
+            // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
+            // cero requests extra) para que el detector de decisión de
+            // arquitectura pueda clasificar el issue al entrar a definición.
+            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "-label:needs-human"`,
             { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
           );
           const repoIssues = JSON.parse(result || '[]');
@@ -16219,6 +16535,76 @@ function brazoIntake(config) {
         if (issueLabels.includes('tipo:recomendacion') && !issueLabels.includes('recommendation:approved')) {
           log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (tipo:recomendacion sin recommendation:approved)`);
           continue;
+        }
+
+        // #5337 CA-4 — DECISIÓN DE ARQUITECTURA NO TOMADA.
+        //
+        // Caso #5217 (2026-08-01): un issue de "store de credenciales" resolvió
+        // por su cuenta que el vault era un JSON en disco local, sin plantearlo
+        // nunca como decisión. Un diseño que no cumplía el requisito de
+        // ejecución distribuida llegó hasta PR sin que el operador supiera que
+        // había algo que decidir.
+        //
+        // El detector es DELIBERADAMENTE ESTRECHO (CA-4a): sólo señales
+        // explícitas y enumeradas en `design-decision-detect.js`. Ante duda,
+        // deja pasar y registra (CA-4b) — un issue sano frenado esperando a un
+        // humano que no tiene nada que decidir sería el problema inverso al que
+        // este cambio arregla.
+        if (pipelineName === 'definicion') {
+          try {
+            const designDecision = require('./lib/design-decision-detect');
+            const veredicto = designDecision.detectDesignDecision({
+              issue: parseInt(issueNum),
+              title: issue.title || '',
+              body: issue.body || '',
+              labels: issueLabels,
+            });
+            if (veredicto.escalate) {
+              const yaBloqueadoDD = humanBlock.findBlockedMarker(issueNum);
+              if (yaBloqueadoDD) {
+                log('intake', `#${issueNum} decisión de arquitectura ya escalada — sin re-notificar`);
+                continue;
+              }
+              log('intake', `🧭 #${issueNum} FRENA en definición — decisión de arquitectura (señales: ${veredicto.signals.join(', ')})`);
+              try {
+                humanBlock.reportHumanBlock({
+                  issue: parseInt(issueNum),
+                  skill: 'definicion',
+                  phase: faseEntrada,
+                  pipeline: pipelineName,
+                  reason: veredicto.reason,
+                  question: veredicto.question,
+                  moveFromActive: false,
+                });
+              } catch (e) {
+                log('intake', `❌ #${issueNum} reportHumanBlock (decisión) falló: ${e.message}`);
+              }
+              try {
+                const summaryDD = humanBlock.buildBlockedSummaryMarkdown({
+                  highlight: {
+                    issue: parseInt(issueNum), skill: 'definicion',
+                    reason: veredicto.reason, question: veredicto.question,
+                    recommendation: veredicto.recommendation,
+                  },
+                });
+                let markupDD;
+                try { markupDD = humanBlock.buildBlockedActionMarkup(parseInt(issueNum)); }
+                catch { markupDD = undefined; }
+                sendTelegramWithMarkup(summaryDD, markupDD || null);
+              } catch (e) {
+                log('intake', `Error notificando decisión de arquitectura #${issueNum}: ${e.message}`);
+              }
+              continue; // NO entra a definición hasta que el operador decida.
+            }
+            // CA-4b — dejar pasar y registrar. Sólo se loguea si hubo señales
+            // parciales; el caso normal (sin señales) no ensucia el log.
+            if (veredicto.signals.length) {
+              log('intake', `#${issueNum} señales de decisión parciales (${veredicto.signals.join(', ')}) — se deja pasar`);
+            }
+          } catch (e) {
+            // Fail-open explícito: un detector roto NO puede frenar el intake.
+            log('intake', `#${issueNum} detector de decisión de arquitectura falló (se deja pasar): ${e.message}`);
+          }
         }
 
         // Dedup por contenido para issues qa:dependency (cierra duplicados automáticamente)
@@ -18814,6 +19200,50 @@ async function mainLoop() {
     log('vault-access-audit', `Auditoría iniciada: tick cada ${Math.round(tickMs / 60000)}min`);
   } catch (e) {
     log('vault-access-audit', `No se pudo iniciar la auditoría: ${e.message}`);
+  }
+
+  // #5337 CA-5 — Recordatorio escalado de bloqueos humanos sin responder.
+  //
+  // El aviso inicial de needs-human vive dentro del gate `if (!yaBloqueado)` del
+  // barrido: dispara SOLO en la transición (SEC-5 de #4067), para no repetir la
+  // misma alerta en cada tick. Este cron es la ruta complementaria: si el
+  // operador no respondió, recuerda de forma espaciada (2h → 6h → 24h → cada
+  // 72h) con UN mensaje agrupado.
+  //
+  // FAIL-CLOSED: el módulo no puede destrabar nada — no importa `unblockIssue`
+  // ni `dismissBlockedIssue`, su único efecto es mandar el mensaje. El silencio
+  // del operador jamás auto-aprueba (docs/pipeline/gates-firma-operador.md).
+  try {
+    const humanBlockReminder = require('./lib/human-block-reminder');
+    const cfgRoot0 = loadConfig() || {};
+    const hbrCfg = cfgRoot0.human_block_reminder || {};
+    const hbrTickMs = Number(hbrCfg.tick_ms) > 0 ? Number(hbrCfg.tick_ms) : (30 * 60 * 1000); // 30min
+    if (hbrCfg.enabled === false || hbrCfg.kill_switch === true) {
+      log('hb-reminder', 'Recordatorio de bloqueos humanos DESACTIVADO por config');
+    } else {
+      const runHbrTick = () => {
+        try {
+          const r = humanBlockReminder.runReminderTick({
+            pipelineDir: PIPELINE,
+            listBlocked: () => humanBlock.listBlockedIssues(),
+            sendTelegram: (texto, markup) => sendTelegramWithMarkup(texto, markup || null),
+            buildMarkup: (issue) => {
+              try { return humanBlock.buildBlockedActionMarkup(issue); } catch { return undefined; }
+            },
+            now: new Date(),
+            log: (msg) => log('hb-reminder', msg),
+          });
+          if (r && r.error) log('hb-reminder', `Tick con error (no bloqueante): ${r.error}`);
+        } catch (err) {
+          log('hb-reminder', `Tick excepción no capturada: ${err.message}`);
+        }
+      };
+      const hbrTimer = setInterval(runHbrTick, hbrTickMs);
+      if (typeof hbrTimer.unref === 'function') hbrTimer.unref();
+      log('hb-reminder', `Recordatorio de bloqueos humanos iniciado: tick cada ${Math.round(hbrTickMs / 60000)}min`);
+    }
+  } catch (e) {
+    log('hb-reminder', `No se pudo iniciar el recordatorio de bloqueos: ${e.message}`);
   }
 
   // #3943 — Brazo cron de ghostbusters --worktrees (EP6-H1).

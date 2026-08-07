@@ -160,12 +160,13 @@ function loadFileSafe({ filePath, fileName, fsImpl }) {
         const stat = _fs.statSync(filePath);
         const raw = _fs.readFileSync(filePath, 'utf8');
         const parsed = JSON.parse(raw);
+        const privateNonce = parsed && parsed.chat_id != null ? `|private:${fileName}` : '';
         const meta = (parsed && typeof parsed === 'object' && parsed.meta) || {};
         const pid = String(meta.pid || extractPidFromFilename(fileName) || 'unknown');
         const type = String(parsed.type || meta.type || 'unknown');
         const skill = String(meta.skill || 'unknown');
         const issue = String(meta.issue == null ? 'unknown' : meta.issue);
-        const key = `${pid}|${type}|${skill}|${issue}`;
+        const key = `${pid}|${type}|${skill}|${issue}${privateNonce}`;
         return {
             ok: true,
             file: fileName,
