@@ -16929,11 +16929,19 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
 // consulta a GitHub, mutación atómica vía las APIs de waves/partial-pause y
 // notificación. NO se escriben los JSON a mano.
 //
-// Orden ola → allowlist (indicado por el issue): si falla la escritura de la
-// allowlist, la divergencia resultante es REDUCTIVA (la ola tiene de más) y la
-// reconcilia el realign del propio Pulpo en el ciclo siguiente. Al revés
-// quedaría un extra en la allowlist sin respaldo en la ola → ambiguo →
-// human-block, justo lo que queremos evitar.
+// Orden ola → allowlist (indicado por el issue): si la escritura de la allowlist
+// falla, la divergencia resultante es REDUCTIVA (la ola tiene de más), que es la
+// clasificación benigna. Al revés quedaría un extra en la allowlist sin respaldo
+// en la ola → `ambiguo` → human-block, justo lo que queremos evitar.
+//
+// OJO — la divergencia reductiva NO se auto-repara sola en el ciclo siguiente:
+// `evaluateDesyncAndMaybeRealign` sólo la resuelve si TODOS los divergentes
+// están confirmados cerrados, y `realignAllowlistToActiveWave` está definida y
+// exportada pero NUNCA se invoca desde el camino de evaluación. Un huérfano
+// recién sumado está ABIERTO, así que dejar la ola escrita sin la allowlist
+// deriva en flag + human-block. Por eso el paso 0 corta ANTES de tocar nada
+// cuando el pipeline no está en `partial_pause`: es la única forma de garantizar
+// que ola y allowlist se muevan juntas o no se mueva ninguna.
 //
 // @returns {{ok: boolean, incorporated: number[], reason?: string}}
 // =============================================================================
@@ -16971,6 +16979,50 @@ function splitOrphanTrustedLogins() {
 
 function reconcileSplitOrphansFromGithub(context) {
   const waves = require('./lib/waves');
+
+  // --- 0. GATE DE MODO — antes de consultar GitHub y antes de mutar NADA -------
+  // El tick que llama acá corre en TODO ciclo periódico: `checkPauseFile()` sólo
+  // setea el flag `paused`, y el gate `if (!paused && !desyncBlocked)` está más
+  // abajo y gatea el DISPATCH, no esta evaluación. O sea: con el pipeline en
+  // pausa total (`.paused`) este código igual se ejecutaba.
+  //
+  // Y `.paused` NO borra `.partial-pause.json` — los writes de PAUSE_FILE no
+  // llaman a `clearPartialPause`, así que ambos archivos coexisten. En ese
+  // estado `getPipelineMode()` devuelve `paused`, el paso 5 no escribía la
+  // allowlist... pero el paso 3 ya había mutado `waves.json`. Resultado: ola con
+  // huérfanos ABIERTOS que la allowlist no tiene (el `desync-detector` lee el
+  // archivo directo del disco, ignora `.paused`), divergencia clasificada como
+  // reductiva pero NO auto-resoluble (los divergentes están abiertos) →
+  // `after.desync` sigue true → flag + human-block al reanudar. El pipeline se
+  // auto-infligía exactamente el bloqueo que #5516 viene a eliminar.
+  //
+  // Por eso: si el modo no es `partial_pause`, NO-OP TOTAL. Ni consulta a gh, ni
+  // `waves.json`, ni allowlist.
+  //   - `paused`  → halt total decidido por el operador; el pipeline no debe
+  //     mutar su propio alcance a espaldas de esa decisión.
+  //   - `running` → sin allowlist NO hay dispatch (#5060: `isIssueAllowedInState`
+  //     devuelve `false` en `running` salvo escape hatch). Sumar a la ola no
+  //     habilitaría nada, y escribir la allowlist METERÍA al pipeline en pausa
+  //     parcial con SÓLO estos hijos permitidos → corte total del resto del
+  //     backlog.
+  // Cuando el operador reanuda a `partial_pause`, el ciclo siguiente (~5 min)
+  // reconcilia con ola y allowlist moviéndose juntas.
+  let mode;
+  try {
+    mode = partialPause.getPipelineMode();
+  } catch (e) {
+    log('pulpo', `WARN split-orphan-reconciler: modo ilegible (${context}): ${e.message}. No-op.`);
+    return { ok: false, incorporated: [], reason: 'mode_unreadable' };   // fail-closed
+  }
+  const allowedNow = Array.isArray(mode && mode.allowedIssues) ? mode.allowedIssues : [];
+  // `partial_pause` con `allowed_issues` vacío (ventana sólo por `allowed_skills`)
+  // cuenta como NO habilitado: la unión del paso 5 no se escribiría y quedaríamos
+  // otra vez con la ola mutada sin respaldo en la allowlist.
+  if (!mode || mode.mode !== 'partial_pause' || allowedNow.length === 0) {
+    log('pulpo', `split-orphan-reconciler: pipeline en modo '${mode && mode.mode}' ` +
+      `(allowlist=${allowedNow.length}) — no-op total, ni ola ni allowlist se tocan (#5516).`);
+    return { ok: false, incorporated: [], reason: 'not_partial_pause' };
+  }
 
   const active = waves.getActiveWave();
   if (!active || !Number.isInteger(active.number)) {
@@ -17129,16 +17181,25 @@ function reconcileSplitOrphansFromGithub(context) {
   }
 
   // --- 5. Allowlist de pausa parcial (después de la ola) -----------------------
-  // GUARD CRÍTICO: sólo tocamos la allowlist si el pipeline YA está en
-  // `partial_pause`. Si está en `running` (archivo ausente/vacío), escribirlo
-  // acá lo METERÍA en pausa parcial con SÓLO estos hijos permitidos — un corte
-  // total de dispatch para el resto del backlog. La ola es la fuente de verdad;
-  // en `running` no hace falta allowlist.
+  // El modo ya se validó en el paso 0 (`partial_pause` con allowlist no vacía);
+  // acá se RE-LEE sólo para tomar el contenido FRESCO de la allowlist: entre el
+  // paso 0 y este punto hubo una consulta a GitHub y escrituras en `waves.json`,
+  // y el operador o el Commander pudieron haberla movido. Si en esa ventana el
+  // modo cambió (pausa total, cierre de ola), NO forzamos el write: la
+  // divergencia queda reductiva y se reporta.
+  //
+  // El write sólo puede hacerse en `partial_pause`: en `running` escribir acá
+  // METERÍA al pipeline en pausa parcial con SÓLO estos hijos permitidos, un
+  // corte total de dispatch para el resto del backlog. Y no es que en `running`
+  // "la ola alcance" — al revés, #5060 hace `isIssueAllowedInState` fail-closed
+  // (`return false` en `running` salvo escape hatch): sin allowlist no se
+  // dispatcha nada. Por eso la reconciliación entera es un no-op fuera de
+  // `partial_pause`, no sólo su último paso.
   let allowlistUpdated = false;
   try {
-    const mode = partialPause.getPipelineMode();
-    const current = Array.isArray(mode.allowedIssues) ? mode.allowedIssues : [];
-    if (mode.mode === 'partial_pause' && current.length > 0) {
+    const modeNow = partialPause.getPipelineMode();
+    const current = Array.isArray(modeNow.allowedIssues) ? modeNow.allowedIssues : [];
+    if (modeNow.mode === 'partial_pause' && current.length > 0) {
       const union = [...new Set([...current, ...incorporated])].sort((a, b) => a - b);
       if (union.length !== current.length) {
         // OJO: `setPartialPause` NO hace merge — reconstruye el JSON entero
@@ -17156,25 +17217,32 @@ function reconcileSplitOrphansFromGithub(context) {
           source: 'split-github-reconcile',
           justification: `Hijos de split descubiertos desde GitHub con padre en la ola ` +
             `${active.number}: ${incorporated.map((c) => `#${c}`).join(', ')} (#5516)`,
-          allowedSkills: Array.isArray(mode.allowedSkills) ? mode.allowedSkills : undefined,
-          acceptedDepRisk: mode.acceptedDepRisk === true,
-          depSources: mode.depSources || undefined,
+          allowedSkills: Array.isArray(modeNow.allowedSkills) ? modeNow.allowedSkills : undefined,
+          acceptedDepRisk: modeNow.acceptedDepRisk === true,
+          depSources: modeNow.depSources || undefined,
           waveNumber: active.number,
           waveName: active.name,
           waveGoal: active.goal,
         });
         allowlistUpdated = !!(r && r.ok);
         if (!allowlistUpdated) {
+          // Divergencia REDUCTIVA (la ola tiene de más). Es la clasificación
+          // benigna, pero NO se auto-repara: los huérfanos recién sumados están
+          // abiertos, así que `evaluateDesyncAndMaybeRealign` no la resuelve.
+          // Queda para el ciclo siguiente (que reintenta la unión) o para el
+          // operador; por eso se avisa fuerte en vez de darla por reconciliada.
           log('pulpo', `WARN split-orphan-reconciler: allowlist NO actualizada (${r && r.msg}). ` +
-            `Divergencia REDUCTIVA (ola tiene de más) — la reconcilia el realign del Pulpo.`);
+            `Divergencia REDUCTIVA pendiente (ola tiene de más): se reintenta el ciclo siguiente.`);
         }
       }
     } else {
-      log('pulpo', `split-orphan-reconciler: pipeline en modo '${mode.mode}' — allowlist no se toca (la ola manda).`);
+      // Carrera rara: el modo cambió entre el paso 0 y acá. No forzamos el write.
+      log('pulpo', `WARN split-orphan-reconciler: el modo cambió a '${modeNow.mode}' durante la ` +
+        `reconciliación — allowlist NO actualizada. Divergencia reductiva pendiente, se reintenta.`);
     }
   } catch (e) {
     log('pulpo', `WARN split-orphan-reconciler: fallo al actualizar allowlist: ${e.message}. ` +
-      `Divergencia reductiva, la reconcilia el realign.`);
+      `Divergencia reductiva pendiente, se reintenta el ciclo siguiente.`);
   }
 
   // --- 6. Notificación ---------------------------------------------------------

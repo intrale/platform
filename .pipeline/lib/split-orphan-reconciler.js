@@ -277,9 +277,16 @@ function parentOfSplitOrphan(issue) {
  *   reason: 'max_depth'|'max_incorporations'|null,
  *   rejectedUntrusted: Array<{ child: number, parent: number, login: string|null, association: string|null }>
  * }} `orphans` ordenado por `child` ascendente, sin duplicados.
- *   `rejectedUntrusted` lista los candidatos que declaraban un padre válido pero
- *   fueron excluidos por SO-7 — nunca se descartan en silencio (son intentos
- *   potenciales de inyección y el wire-up los loguea/alerta).
+ *   `rejectedUntrusted` lista los candidatos que declaraban un padre EN ALCANCE
+ *   DE LA OLA (∈ ola activa, o alcanzable transitivamente por un hijo ya
+ *   incorporado en esta corrida) pero fueron excluidos por SO-7 — nunca se
+ *   descartan en silencio (son intentos potenciales de inyección y el wire-up
+ *   los loguea/alerta).
+ *   NO incluye a los que declaran un padre FUERA de la ola: ésos ya caen por
+ *   SO-2 sin importar quién los haya escrito, así que no representan un intento
+ *   de entrar al alcance del pipeline. En un repo PÚBLICO cualquier
+ *   `[Split de #N]` de un tercero apuntando a un `N` ajeno dispararía si no una
+ *   alerta de seguridad engañosa por ciclo — ruido que erosiona la señal real.
  */
 function findSplitOrphans(issues, ctx = {}) {
     const list = Array.isArray(issues) ? issues : [];
@@ -324,7 +331,11 @@ function findSplitOrphans(issues, ctx = {}) {
     // descarta acá.
     const candidates = [];
     const seenChildren = new Set();
-    const rejectedUntrusted = [];
+    // Staging: acá entra TODO el que declara un padre unívoco y no pasa SO-7. El
+    // filtro por alcance (padre ∈ ola / alcanzable) se aplica al final, cuando el
+    // conjunto `reachable` ya está cerrado — un candidato puede declarar como padre
+    // a un hijo que se incorpora recién en la ronda 2, y ése SÍ es un intento real.
+    const rejectedStaging = [];
     for (const issue of list) {
         if (!isOpenIssue(issue)) continue;                     // SO-3
         const child = toPositiveInt(issue && issue.number);
@@ -337,7 +348,7 @@ function findSplitOrphans(issues, ctx = {}) {
         // quien REALMENTE intentaba entrar (declaraba un padre), no a los cientos
         // de issues normales del repo que ni matchean el formato de split.
         if (!trusted(issue)) {
-            rejectedUntrusted.push({
+            rejectedStaging.push({
                 child,
                 parent,
                 login: authorLoginOf(issue),
@@ -348,7 +359,10 @@ function findSplitOrphans(issues, ctx = {}) {
         seenChildren.add(child);
         candidates.push({ child, parent });
     }
-    if (candidates.length === 0) return { ...empty, rejectedUntrusted };
+    if (candidates.length === 0) {
+        // Sin candidatos confiables no hay expansión: el alcance es la ola cruda.
+        return { ...empty, rejectedUntrusted: rejectedStaging.filter((r) => inWave.has(r.parent)) };
+    }
 
     // Expansión por rondas: cada ronda incorpora los candidatos cuyo padre ya
     // está en el conjunto "alcanzable desde la ola activa" (SO-2).
@@ -397,6 +411,10 @@ function findSplitOrphans(issues, ctx = {}) {
     }
 
     orphans.sort((a, b) => a.child - b.child);
+    // Sólo se reporta como intento de entrada al que apunta a un padre EN ALCANCE:
+    // el resto no habría entrado ni siendo confiable (SO-2), así que alertarlo sería
+    // una acusación falsa ("declaran un padre de la ola activa") y ruido por ciclo.
+    const rejectedUntrusted = rejectedStaging.filter((r) => reachable.has(r.parent));
     return { orphans, truncated, reason, rejectedUntrusted };
 }
 

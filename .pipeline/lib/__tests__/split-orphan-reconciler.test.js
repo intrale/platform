@@ -384,11 +384,47 @@ test('SO-7: sólo se reporta quien DECLARA un padre, no los issues normales del 
     assert.deepEqual(res.rejectedUntrusted, [], 'sin padre declarado no hay intento de entrada');
 });
 
-test('SO-7: padre fuera de la ola + autor no confiable → excluido y sin ruido de alerta', () => {
+test('SO-7: padre FUERA de la ola + autor no confiable → excluido y SIN alerta engañosa', () => {
+    // El repo es PÚBLICO: cualquiera puede abrir "[Split de #4200] ..." apuntando
+    // a un issue ajeno a la ola. Ese candidato ya cae por SO-2 sin importar quién
+    // lo escriba, así que NO es un intento de entrar al alcance del pipeline.
+    // Reportarlo dispararía una alerta de seguridad que afirma "declaran un padre
+    // de la ola activa" — literalmente falso — una vez por issue, por siempre.
     const res = sor.findSplitOrphans([child(9001, 4200, UNTRUSTED_AUTHOR)], { activeWaveIssues: [5452] });
     assert.deepEqual(res.orphans, []);
-    // Declara padre, así que se reporta: es un intento, aunque falle igual por SO-2.
-    assert.equal(res.rejectedUntrusted.length, 1);
+    assert.deepEqual(res.rejectedUntrusted, [], 'padre fuera de la ola no es un intento de entrada');
+});
+
+test('SO-7: se reporta al no confiable cuyo padre está EN la ola, aunque no haya orphans', () => {
+    // Contraste del test anterior: mismo autor no confiable, pero el padre SÍ
+    // pertenece a la ola. Acá la alerta es verdadera y debe dispararse.
+    const res = sor.findSplitOrphans([child(9001, 5452, UNTRUSTED_AUTHOR)], { activeWaveIssues: [5452] });
+    assert.deepEqual(res.orphans, []);
+    assert.deepEqual(res.rejectedUntrusted, [
+        { child: 9001, parent: 5452, login: 'randomuser', association: 'NONE' },
+    ]);
+});
+
+test('SO-7: el reporte incluye al que apunta a un padre alcanzable TRANSITIVAMENTE', () => {
+    // #5458 (confiable) se incorpora por padre #5452 ∈ ola. Un tercero apunta a
+    // #5458 como padre: en la ronda siguiente #5458 ya es alcanzable, así que ese
+    // intento SÍ apunta al alcance del pipeline y debe alertarse.
+    const issues = [child(5458, 5452), child(9001, 5458, UNTRUSTED_AUTHOR)];
+    const res = sor.findSplitOrphans(issues, { activeWaveIssues: [5452] });
+    assert.deepEqual(pairs(res), [[5458, 5452]]);
+    assert.deepEqual(res.rejectedUntrusted.map((r) => [r.child, r.parent]), [[9001, 5458]]);
+});
+
+test('SO-7: mezcla — sólo se alerta por los que apuntan al alcance de la ola', () => {
+    const issues = [
+        child(9001, 5452, UNTRUSTED_AUTHOR),   // padre EN la ola → se alerta
+        child(9002, 4200, UNTRUSTED_AUTHOR),   // padre fuera     → ruido, se filtra
+        child(9003, 7777, UNTRUSTED_AUTHOR),   // padre fuera     → ruido, se filtra
+        child(5458, 5452),                     // confiable       → se incorpora
+    ];
+    const res = sor.findSplitOrphans(issues, { activeWaveIssues: [5452] });
+    assert.deepEqual(pairs(res), [[5458, 5452]]);
+    assert.deepEqual(res.rejectedUntrusted.map((r) => r.child), [9001]);
 });
 
 test('SO-7: OWNER, MEMBER y COLLABORATOR son confiables', () => {
@@ -590,6 +626,124 @@ test('#5516 estructural: SO-7 — el wire-up trae el autor y filtra PRs', () => 
     // Los candidatos excluidos por SO-7 se alertan, no se tragan en silencio.
     assert.match(PULPO_SRC, /rejectedUntrusted/);
     assert.match(PULPO_SRC, /splitOrphanTrustedLogins\(\)/);
+});
+
+// -----------------------------------------------------------------------------
+// GATE DE MODO del wire-up (rebote rev-1) — el reconciliador NO puede mutar
+// `waves.json` fuera de `partial_pause`.
+//
+// Cadena del bug que cierra este bloque:
+//   1. `checkPauseFile()` sólo setea el flag `paused`; el tick de desync corre
+//      igual (el gate `if (!paused && ...)` gatea el DISPATCH, más abajo).
+//   2. `.paused` NO borra `.partial-pause.json`: coexisten.
+//   3. Con ambos presentes `getPipelineMode()` devuelve `paused`, así que el
+//      paso 5 no escribía la allowlist — pero el paso 3 YA había mutado la ola.
+//   4. `desync-detector` lee `.partial-pause.json` directo del disco, ignora
+//      `.paused`: ve `removed:[huérfanos]` → `resoluble_reductivo`.
+//   5. Ese reductivo sólo se auto-resuelve si TODOS los divergentes están
+//      cerrados; los huérfanos recién sumados están ABIERTOS → flag +
+//      human-block. El pipeline se auto-infligía el bloqueo que #5516 elimina.
+//
+// Los stubs reemplazan `partial-pause` y `waves` en la caché de módulos: los
+// tests NUNCA tocan `.paused` ni los JSON de estado reales (crear `.paused` en
+// el repo pausaría el pipeline de producción).
+// -----------------------------------------------------------------------------
+
+const path = require('node:path');
+process.env.PULPO_NO_AUTOSTART = '1';
+const partialPauseMod = require('../partial-pause');
+const wavesMod = require('../waves');
+const pulpo = require(path.join(__dirname, '..', '..', 'pulpo.js'));
+
+/**
+ * Corre `reconcileSplitOrphansFromGithub` con el modo forzado, contando cuántas
+ * veces se tocó `waves`. `getActiveWave` es la PRIMERA lectura de estado después
+ * del gate: si quedó en 0, el gate cortó antes de leer (y por ende de mutar) nada.
+ */
+function runWithMode(modeFn) {
+    const origMode = partialPauseMod.getPipelineMode;
+    const origActive = wavesMod.getActiveWave;
+    const origAdd = wavesMod.addIssueToWave;
+    const calls = { getActiveWave: 0, addIssueToWave: 0 };
+    partialPauseMod.getPipelineMode = modeFn;
+    wavesMod.getActiveWave = () => { calls.getActiveWave++; return null; };
+    wavesMod.addIssueToWave = () => {
+        calls.addIssueToWave++;
+        throw new Error('el reconciliador NO debe mutar waves.json en este modo');
+    };
+    try {
+        return { res: pulpo.reconcileSplitOrphansFromGithub('test'), calls };
+    } finally {
+        partialPauseMod.getPipelineMode = origMode;
+        wavesMod.getActiveWave = origActive;
+        wavesMod.addIssueToWave = origAdd;
+    }
+}
+
+test('#5516 gate: pipeline PAUSADO (.paused) → no-op total, ni ola ni allowlist', () => {
+    // `.paused` con `.partial-pause.json` coexistiendo: el caso exacto del rebote.
+    const { res, calls } = runWithMode(() => ({
+        mode: 'paused', allowedIssues: [], allowedSkills: [],
+    }));
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'not_partial_pause');
+    assert.deepEqual(res.incorporated, []);
+    assert.equal(calls.addIssueToWave, 0, 'waves.json NO se muta con el pipeline pausado');
+    assert.equal(calls.getActiveWave, 0, 'el gate corta ANTES de leer la ola (y antes de gh)');
+});
+
+test('#5516 gate: modo RUNNING → no-op total (sin allowlist no hay dispatch, #5060)', () => {
+    // En `running` sumar a la ola no habilita nada (`isIssueAllowedInState` es
+    // fail-closed) y escribir la allowlist metería al pipeline en pausa parcial
+    // con SÓLO estos hijos → corte total del resto del backlog.
+    const { res, calls } = runWithMode(() => ({
+        mode: 'running', allowedIssues: [], allowedSkills: [],
+    }));
+    assert.equal(res.reason, 'not_partial_pause');
+    assert.equal(calls.addIssueToWave, 0);
+    assert.equal(calls.getActiveWave, 0);
+});
+
+test('#5516 gate: partial_pause con allowed_issues VACÍO → no-op total', () => {
+    // Ventana abierta sólo por `allowed_skills` (#3680): la unión del paso 5 no se
+    // escribiría y la ola quedaría mutada sin respaldo → misma divergencia.
+    const { res, calls } = runWithMode(() => ({
+        mode: 'partial_pause', allowedIssues: [], allowedSkills: ['qa'],
+    }));
+    assert.equal(res.reason, 'not_partial_pause');
+    assert.equal(calls.addIssueToWave, 0);
+    assert.equal(calls.getActiveWave, 0);
+});
+
+test('#5516 gate: getPipelineMode que TIRA → fail-closed, no-op', () => {
+    const { res, calls } = runWithMode(() => { throw new Error('json corrupto'); });
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'mode_unreadable');
+    assert.equal(calls.getActiveWave, 0, 'modo indeterminado nunca habilita mutar la ola');
+});
+
+test('#5516 gate: partial_pause con allowlist → el gate NO corta, sigue el flujo', () => {
+    // Control negativo: sin esto, un gate demasiado estricto volvería el
+    // reconciliador un no-op permanente y el issue quedaría sin efecto.
+    // `getActiveWave` stubeado a null corta en el paso siguiente con otro motivo:
+    // eso prueba que la ejecución PASÓ el gate.
+    const { res, calls } = runWithMode(() => ({
+        mode: 'partial_pause', allowedIssues: [5452], allowedSkills: [],
+    }));
+    assert.equal(res.reason, 'no_active_wave');
+    assert.equal(calls.getActiveWave, 1, 'en partial_pause el reconciliador sigue trabajando');
+});
+
+test('#5516 estructural: el gate de modo está ANTES de la consulta a gh y del write', () => {
+    const fs = require('node:fs');
+    const PULPO_SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+    const fn = PULPO_SRC.slice(PULPO_SRC.indexOf('function reconcileSplitOrphansFromGithub('));
+    const iGate = fn.indexOf("reason: 'not_partial_pause'");
+    const iGh = fn.indexOf('repos/intrale/platform/issues?state=open');
+    const iAdd = fn.indexOf('waves.addIssueToWave(active.number');
+    assert.ok(iGate > 0 && iGh > 0 && iAdd > 0, 'las tres marcas deben existir');
+    assert.ok(iGate < iGh, 'el gate de modo debe cortar antes de pegarle a GitHub');
+    assert.ok(iGate < iAdd, 'el gate de modo debe cortar antes de mutar waves.json');
 });
 
 test('#5516 estructural: el boot NO dispara la consulta a GitHub', () => {
