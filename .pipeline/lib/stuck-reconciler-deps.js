@@ -53,6 +53,14 @@ const partialPauseDefault = require('./partial-pause');
 const humanBlockDefault = require('./human-block');
 const processLivenessDefault = require('./process-liveness');
 const { needsRefetch: needsRefetchDefault } = require('./title-cache-freshness');
+// #5641 CA-UX-1 — fuente única del texto de destrabe (el otro call site es
+// `buildEscalationMessage`, en el mismo módulo). Sin ciclo: el reconciler no
+// requiere este archivo (lo cablea `pulpo.js`).
+const { buildEscalationQuestion } = require('./stuck-phase-reconciler');
+// R-4 — el `reason` arrastra el `motivo` que escribió el agente y termina en
+// disco. Se redacta con el sanitizador canónico del pipeline antes de persistir.
+let sanitizeDefault = (s) => String(s == null ? '' : s);
+try { sanitizeDefault = require('../sanitizer').sanitize; } catch { /* opcional */ }
 
 // Fases PARALELAS de `desarrollo` (todos los skills deben estar, modelo
 // `resultado: aprobado`). Mono-skill (dev/build/entrega) quedan afuera. Las de
@@ -83,6 +91,54 @@ const NEEDS_HUMAN_LABEL = 'needs-human';
 // muestran junto al `<issue>.<skill>`.
 const SELF_HEALING_REASON_PREFIX = '[self-healing]';
 const DEFAULT_SILENT_STREAK_THRESHOLD = 6; // ≈1h con ticks de 10 min
+
+/**
+ * #5641 CA-17 — AUDIT LOG JSONL del self-healing.
+ *
+ * El `audit` dep escribía al log de TEXTO del Pulpo (`log('reconciler', ...)`),
+ * que rota y se mezcla con todo lo demás: imposible reconstruir después cuántas
+ * veces se re-encoló un issue por caída de agente. Ahora las acciones REALES
+ * (`requeue`/`escalate`) también van a un JSONL append-only, hermano de
+ * `human-block-actions-*.jsonl`.
+ *
+ * - APPEND-ONLY (`appendFileSync`, flag `'a'`): nunca `writeFileSync`, que
+ *   truncaría el histórico de la corrida anterior.
+ * - El `reason` y el resto de strings pasan por `sanitizePipelineText`: arrastran
+ *   el `motivo` que escribió el agente y terminan en disco (R-4).
+ * - Best-effort: un fallo de IO NUNCA tumba el tick del reconciler.
+ */
+function auditFilePath(fs, pipelineDir, nowIso) {
+    const dir = path.join(pipelineDir, 'audit');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best-effort */ }
+    return path.join(dir, `stuck-requeue-${String(nowIso).slice(0, 10)}.jsonl`);
+}
+
+/** Sanitiza recursivamente strings del record (secretos + texto del agente). */
+function sanitizeRecord(value, sanitize, depth = 0) {
+    if (depth > 6) return null;
+    if (typeof value === 'string') return sanitize(value).slice(0, 500);
+    if (Array.isArray(value)) return value.slice(0, 50).map((v) => sanitizeRecord(v, sanitize, depth + 1));
+    if (value && typeof value === 'object') {
+        const out = {};
+        for (const [k, v] of Object.entries(value)) out[k] = sanitizeRecord(v, sanitize, depth + 1);
+        return out;
+    }
+    return value; // number | boolean | null | undefined
+}
+
+function buildAuditWriter({ fs, pipelineDir, log, sanitize, now }) {
+    return (rec) => {
+        const record = (typeof rec === 'string') ? { message: rec } : (rec || {});
+        // Los `none` son ruido de tick: siguen sólo en el log de texto.
+        try { log('reconciler', JSON.stringify(record)); } catch { /* best-effort */ }
+        if (record.action !== 'requeue' && record.action !== 'escalate') return;
+        try {
+            const ts = now();
+            const line = JSON.stringify({ ts, ...sanitizeRecord(record, sanitize) });
+            fs.appendFileSync(auditFilePath(fs, pipelineDir, ts), `${line}\n`, { encoding: 'utf8', flag: 'a' });
+        } catch { /* best-effort: el audit nunca tumba el tick */ }
+    };
+}
 
 function labelNameOf(l) {
     if (typeof l === 'string') return l;
@@ -349,7 +405,16 @@ function buildStuckReconcilerDeps(opts = {}) {
                     // del skill sintético (riesgo #5): el dashboard y
                     // `listBlockedIssues()` muestran el reason junto al marker.
                     reason: `${SELF_HEALING_REASON_PREFIX} ${String(reason || 'fase varada')}`.slice(0, 500),
-                    question: `¿Cómo destrabo #${n} en ${pipeline}/${phase}? (rechazo / cancelado / corrupto)`,
+                    // #5641 CA-UX-1 — la pregunta se DERIVA de la causa, desde la
+                    // misma función que usa `buildEscalationMessage`. Antes estaba
+                    // hardcodeada acá con las tres causas históricas y ya había
+                    // divergido del otro call site. Para el presupuesto de infra
+                    // agotado ninguna de las tres aplica: el operador recibiría una
+                    // pregunta que no contiene su respuesta.
+                    question: buildEscalationQuestion({
+                        issue: n, pipeline, fase: phase,
+                        cause: meta.cause || null, infra: meta.infra || null,
+                    }),
                     // `precondition` omitido → normalizePrecondition ⇒ HUMAN_JUDGMENT
                     // (fail-closed, #4748): nunca auto-re-evaluable.
                 });
@@ -385,7 +450,15 @@ function buildStuckReconcilerDeps(opts = {}) {
             catch { /* best-effort: notificar nunca tumba el tick */ }
         },
 
-        audit: (rec) => log('reconciler', typeof rec === 'string' ? rec : JSON.stringify(rec)),
+        // #5641 CA-17 — además del log de texto, las acciones reales se asientan
+        // en `audit/stuck-requeue-<fecha>.jsonl` (append-only, sanitizado).
+        audit: buildAuditWriter({
+            fs,
+            pipelineDir: PIPELINE,
+            log,
+            sanitize: d.sanitize || sanitizeDefault,
+            now: d.now || (() => new Date().toISOString()),
+        }),
     };
 }
 
@@ -429,6 +502,7 @@ function evaluateSilenceHealth(prev, agg = {}, opts = {}) {
 module.exports = {
     buildStuckReconcilerDeps,
     evaluateSilenceHealth,
+    buildAuditWriter,
     DEFAULT_PARALLEL_PHASES,
     DEFAULT_SILENT_STREAK_THRESHOLD,
     SELF_HEALING_REASON_PREFIX,

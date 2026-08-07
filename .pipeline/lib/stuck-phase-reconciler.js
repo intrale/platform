@@ -32,7 +32,7 @@
 
 'use strict';
 
-const { analyzeStuckIssue, classifySkill } = require('./stuck-phase-detector');
+const { analyzeStuckIssue, classifyPhase } = require('./stuck-phase-detector');
 
 const DEFAULT_MAX_REQUEUE_ATTEMPTS = 2;
 const DEFAULT_CAP_PER_TICK = 5;
@@ -41,6 +41,12 @@ const MONO_SKILL_PHASES = new Set(['dev', 'build', 'entrega']);
 const SUPPRESSION_BUCKETS = new Set(['ola', 'cache', 'dedupe', 'cerrado', 'otro']);
 // #5396 rev-1 — estados que el detector considera AMBIGUOS y por los que escala.
 // Son los mismos que `analyzeStuckIssue` agrupa en su rama `escalate`.
+//
+// #5641 CA-16 — `infra-failed` NO va acá, y no es un olvido: no es un veredicto
+// ambiguo, es la AUSENCIA de veredicto (el agente se cayó antes de opinar). Su
+// carril es `requeue`. Agregarlo "por prolijidad" haría que `ambiguousSkillsOf`
+// devolviera skills en un camino que no escala, y la rama de escalate por
+// presupuesto agotado usa `capped` — no esta lista.
 const AMBIGUOUS_STATUSES = new Set(['rejected', 'cancelled', 'corrupt']);
 
 /**
@@ -58,23 +64,103 @@ const AMBIGUOUS_STATUSES = new Set(['rejected', 'cancelled', 'corrupt']);
  * al marker un camino de dispatch válido: son los mismos que el carril
  * `requeue` ya usa, y al destrabar re-corre el agente que quedó sin veredicto.
  *
- * Se reusa `classifySkill` (ya exportado por el detector) en vez de parsear el
- * `reason`: CA-10 exige que `stuck-phase-detector.js` NO aparezca en el diff.
+ * Se reusa la clasificación del detector en vez de parsear el `reason`.
+ *
+ * #5641 R-1 — usa `classifyPhase`, NO `classifySkill` suelto. El re-mapeo
+ * `cancelled → missing` de los hermanos drenados por una caída de infra depende
+ * de la clasificación de OTRO skill de la fase, así que sólo existe a nivel
+ * fase. Si esta función siguiera clasificando skill por skill, vería `cancelled`
+ * donde `analyzeStuckIssue` ya ve `missing`, y el marker de escalación se
+ * plantaría con skills que el detector considera re-encolables: los dos gates
+ * divergirían — exactamente el bug de fondo que #5641 viene a cerrar.
  *
  * @returns {string[]} subconjunto ORDENADO de `requiredSkills` (determinista)
  */
 function ambiguousSkillsOf(it) {
-    const required = Array.isArray(it.requiredSkills) ? it.requiredSkills : [];
-    const deliverables = Array.isArray(it.deliverables) ? it.deliverables : [];
-    const live = it.liveSkills instanceof Set
-        ? it.liveSkills
-        : new Set(Array.isArray(it.liveSkills) ? it.liveSkills : []);
-    return required.filter((s) => AMBIGUOUS_STATUSES.has(classifySkill(s, deliverables, live).status));
+    const classes = classifyPhase(it.requiredSkills, it.deliverables, it.liveSkills);
+    return classes.filter((c) => AMBIGUOUS_STATUSES.has(c.status)).map((c) => c.skill);
 }
 
 /** Normaliza texto libre a una línea (el `reason` interpola nombres de archivo). */
 function oneLine(s, max = 220) {
     return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+// #5641 — causas de decisión. Manejan el texto que ve el operador (CA-UX-1/2/4).
+const CAUSE_INFRA_REQUEUE = 'infra-requeue';
+const CAUSE_INFRA_EXHAUSTED = 'infra-reintentos-agotados';
+
+/**
+ * Exit code representativo para el audit (CA-17). Devuelve el escalar cuando
+ * todos los agentes caídos coinciden, `null` si difieren o no hay dato — el mapa
+ * completo viaja aparte en `agente_exit_codes`.
+ */
+function infraExitCode(infra) {
+    const codes = [...new Set(Object.values((infra && infra.exitCodes) || {}).filter((c) => c != null))];
+    return codes.length === 1 ? codes[0] : null;
+}
+
+/** Lista legible: `po`, `po y ux`, `po, ux y guru`. */
+function humanList(arr) {
+    const a = (arr || []).filter(Boolean);
+    if (a.length === 0) return '';
+    if (a.length === 1) return a[0];
+    return `${a.slice(0, -1).join(', ')} y ${a[a.length - 1]}`;
+}
+
+/**
+ * #5641 CA-UX-1 — La pregunta de destrabe se DERIVA de la causa.
+ *
+ * Antes estaba hardcodeada con las tres causas históricas (`rechazo / cancelado
+ * / corrupto`) y duplicada en dos call sites que ya habían divergido en el
+ * prefijo de contexto. Este issue agrega una CUARTA causa —presupuesto de
+ * reintentos por infra agotado— donde ninguna de las tres aplica: ofrecerle al
+ * operador tres opciones equivocadas es el peor modo de falla de un mensaje de
+ * escalación, porque mueve el forense manual de lugar en vez de eliminarlo.
+ *
+ * Fuente única: la consumen `buildEscalationMessage` (acá) y el dep `escalate`
+ * de `stuck-reconciler-deps.js`.
+ *
+ * @param {object} d       decisión (`issue`, `pipeline`, `fase`, `cause`, `infra`)
+ * @param {object} [opts]  `includeContext` (default true) — el mensaje de Telegram
+ *                         ya trae el `📂 pipeline/fase` en su propia línea.
+ */
+function buildEscalationQuestion(d = {}, opts = {}) {
+    const includeContext = opts.includeContext !== false;
+    const ctx = `${d.pipeline ? `${d.pipeline}/` : ''}${d.fase || ''}`;
+    const en = includeContext && ctx ? ` en ${ctx}` : '';
+
+    if (d.cause === CAUSE_INFRA_EXHAUSTED) {
+        const inf = d.infra || {};
+        const skills = humanList(inf.skills) || 'el agente';
+        const n = Number(inf.attempts);
+        const veces = Number.isFinite(n) && n > 0
+            ? ` ${n} ${n === 1 ? 'vez' : 'veces'} seguidas`
+            : ' varias veces seguidas';
+        const codes = [...new Set(Object.values(inf.exitCodes || {}).filter((c) => c != null))];
+        const exit = codes.length === 1 ? ` (exit code ${codes[0]})` : '';
+        return `¿Cómo destrabo #${d.issue}${en}? El agente de ${skills} se cayó${veces}${exit} y se agotó el presupuesto de reintentos automáticos.`;
+    }
+    return `¿Cómo destrabo #${d.issue}${en}? (rechazo / cancelado / corrupto)`;
+}
+
+/**
+ * #5641 CA-UX-4 — Línea `💡` accionable. `null` cuando no hay nada útil que
+ * decir: la guideline UX de #5337 es OMITIR la línea entera, nunca gastar un
+ * renglón en "sin recomendación".
+ *
+ * Para el presupuesto de infra agotado la recomendación es determinista y
+ * barata: dos caídas seguidas del mismo agente casi siempre son cuota o crash de
+ * arranque, y el operador tiene un log concreto para mirar.
+ */
+function buildEscalationRecommendation(d = {}) {
+    if (d.cause !== CAUSE_INFRA_EXHAUSTED) return null;
+    const inf = d.infra || {};
+    const skills = humanList(inf.skills);
+    if (!skills) return null;
+    const n = Number(inf.attempts);
+    const caidas = Number.isFinite(n) && n > 0 ? `${n} caídas seguidas` : 'las caídas repetidas';
+    return `Revisá el log del agente ${skills} de #${d.issue} — ${caidas} suelen ser cuota agotada o crash de arranque, no un problema del issue.`;
 }
 
 /**
@@ -83,13 +169,19 @@ function oneLine(s, max = 220) {
  * destrabe. Sin Markdown — la estructura la dan los saltos de línea y los emojis
  * (CA-8/SEC-4: el `reason` interpola un skill derivado de un nombre de archivo,
  * contenido no confiable, y viaja en texto plano).
+ *
+ * #5641 CA-UX-1/CA-UX-4 — la pregunta sale de `buildEscalationQuestion` (una
+ * sola fuente para los dos call sites) y se suma la línea `💡` cuando hay
+ * recomendación.
  */
 function buildEscalationMessage(d, title) {
     const lines = [`🙋 Self-healing: #${d.issue} necesita tu decisión`];
     if (title) lines.push(`📌 ${oneLine(title, 120)}`);
     lines.push(`📂 ${d.pipeline ? `${d.pipeline}/` : ''}${d.fase}`);
-    lines.push(`❓ ¿Cómo destrabo #${d.issue}? (rechazo / cancelado / corrupto)`);
+    lines.push(`❓ ${buildEscalationQuestion(d, { includeContext: false })}`);
     lines.push(`ℹ️ ${oneLine(d.reason)}`);
+    const rec = buildEscalationRecommendation(d);
+    if (rec) lines.push(`💡 ${oneLine(rec, 240)}`);
     return lines.join('\n');
 }
 
@@ -164,13 +256,42 @@ function decideForIssue(it, cfg) {
     // requeue
     const retryCounts = it.retryCounts || {};
     const skills = analysis.requeueSkills || [];
+    // #5641 — carril de infra: el detector imputó una caída de proceso (veredicto
+    // sintetizado por el Pulpo), no una ausencia de trabajo. Cambia el texto que
+    // ve el operador y el registro de auditoría, NO el presupuesto: el corte
+    // sigue siendo el `maxRequeueAttempts` ya existente (default 2).
+    const infra = (analysis.infra && Array.isArray(analysis.infra.skills) && analysis.infra.skills.length > 0)
+        ? analysis.infra
+        : null;
     const capped = skills.filter((s) => (retryCounts[s] || 0) >= cfg.maxRequeueAttempts);
     if (capped.length > 0) {
         // Skill(s) agotaron reintentos → escalar (no re-encolar para siempre, Arq P0-3).
         if (it.hasNeedsHuman) return dedupe('tope-reintentos + ya-escalado');
         // #5396 rev-1 — los skills que agotaron reintentos SON los del carril
         // requeue: ya están en `skills_por_fase[fase]`, así que el marker que se
-        // planta con ellos es despachable al destrabar.
+        // planta con ellos es despachable al destrabar. `capped` nunca es vacío
+        // acá (CA-16): el marker siempre tiene camino de dispatch.
+        if (infra) {
+            // #5641 CA-14 — la escalación por infra dice POR QUÉ se agotó, no sólo
+            // que se agotó. Sin reintentos "de gracia": el presupuesto se acabó.
+            const foco = infra.skills.filter((s) => capped.includes(s));
+            const focoSkills = foco.length > 0 ? foco : capped;
+            const attempts = Math.max(0, ...focoSkills.map((s) => retryCounts[s] || 0));
+            const exitCodes = {};
+            for (const s of focoSkills) {
+                if (infra.exitCodes && infra.exitCodes[s] != null) exitCodes[s] = infra.exitCodes[s];
+            }
+            return base(
+                'escalate',
+                `se agotó el presupuesto de reintentos por infra (${cfg.maxRequeueAttempts}) para: ${capped.join(',')}`,
+                {
+                    consumesTick: true,
+                    skills: capped,
+                    cause: CAUSE_INFRA_EXHAUSTED,
+                    infra: { skills: focoSkills, attempts, max: cfg.maxRequeueAttempts, exitCodes },
+                },
+            );
+        }
         return base('escalate', `tope de reintentos (${cfg.maxRequeueAttempts}) alcanzado para: ${capped.join(',')}`, { consumesTick: true, skills: capped });
     }
     // #5396 — un issue con bloqueo humano vigente NO se re-encola. Antes de este
@@ -186,6 +307,26 @@ function decideForIssue(it, cfg) {
     // Pausa: no re-encolar (no spawnear), PO SG-5. El escalate SÍ sigue permitido
     // para issues de la ola (ya filtrados por allowlist arriba).
     if (cfg.paused) return base('none', 'pipeline-en-pausa (no re-encola)', { suppression: 'otro' });
+
+    // #5641 CA-UX-2 — el contador `intento N/M` lo agrega el reconciler, que es
+    // quien conoce el presupuesto (el detector es puro y no lo ve). Que el
+    // operador VEA venir la escalación antes de que ocurra es la diferencia entre
+    // un aviso que puede ignorar y uno que lo sorprende.
+    if (infra) {
+        const intento = Math.max(0, ...infra.skills.map((s) => retryCounts[s] || 0)) + 1;
+        return base('requeue', `${analysis.reason} · intento ${intento}/${cfg.maxRequeueAttempts}`, {
+            skills,
+            consumesTick: true,
+            cause: CAUSE_INFRA_REQUEUE,
+            infra: {
+                skills: infra.skills,
+                drained: infra.drained || [],
+                attempts: intento,
+                max: cfg.maxRequeueAttempts,
+                exitCodes: infra.exitCodes || {},
+            },
+        });
+    }
 
     return base('requeue', analysis.reason, { skills, consumesTick: true });
 }
@@ -230,7 +371,17 @@ function planReconciliation(ctx = {}) {
             continue;
         }
 
-        decisions.push({ ...base, action: d.action, skills: d.skills, reason: d.reason, suppression: d.suppression });
+        // #5641 — `cause`/`infra` viajan hasta el shell: alimentan el texto que ve
+        // el operador (CA-UX-1/2/4) y el registro de auditoría (CA-17).
+        decisions.push({
+            ...base,
+            action: d.action,
+            skills: d.skills,
+            reason: d.reason,
+            suppression: d.suppression,
+            cause: d.cause,
+            infra: d.infra,
+        });
         if (d.consumesTick) {
             actionsThisTick += 1;
             if (d.action === 'requeue') {
@@ -284,7 +435,37 @@ function executeDecisions(decisions, deps = {}) {
                 }
             }
             requeued += 1;
-            audit({ action: 'requeue', issue: d.issue, fase: d.fase, skills: d.skills, reason: d.reason });
+            // #5641 CA-17 — el requeue por infra deja rastro forense: qué skill se
+            // cayó, con qué exit code, cuántos hermanos arrastró y en qué punto del
+            // presupuesto quedó (antes/después). Sin esto, una caída sistemática es
+            // indistinguible de una puntual hasta que agota los reintentos.
+            audit({
+                action: 'requeue',
+                issue: d.issue,
+                pipeline: d.pipeline,
+                fase: d.fase,
+                skills: d.skills,
+                reason: d.reason,
+                cause: d.cause || null,
+                ...(d.infra ? {
+                    infra_skills: d.infra.skills || [],
+                    drenados_por_fast_fail: d.infra.drained || [],
+                    agente_exit_code: infraExitCode(d.infra),
+                    agente_exit_codes: d.infra.exitCodes || {},
+                    reintentos_antes: Math.max(0, (Number(d.infra.attempts) || 1) - 1),
+                    reintentos_despues: Number(d.infra.attempts) || 1,
+                    max_reintentos: d.infra.max,
+                    // CA-15 — contador de AUDITORÍA/observabilidad únicamente. El
+                    // presupuesto efectivo es `maxRequeueAttempts` (default 2); esto
+                    // no consume el circuit breaker de código ni se cablea al tope
+                    // global de rebotes de infra (default 20, que habilitaría 20
+                    // re-ejecuciones de fase completa por issue).
+                    rebote_numero_infra: Number(d.infra.attempts) || 1,
+                } : {}),
+            });
+            // CA-UX-3 — UNA notificación por decisión, no una por skill: el `join`
+            // es lo que evita el Telegram-por-tick que cerró #5396. En el shape de
+            // #5175 son 3 skills re-encolados y 1 solo mensaje.
             notify(
                 `🔧 Self-healing: re-encolé ${(d.skills || []).join(',')} de #${d.issue} (${d.fase}) — ${d.reason}`,
                 { issue: d.issue, fase: d.fase, pipeline: d.pipeline, action: 'requeue' },
@@ -304,6 +485,11 @@ function executeDecisions(decisions, deps = {}) {
                     // cableado elige entre ellos el que planta en el marker, para
                     // que al destrabar el work-item tenga dispatch válido.
                     skills: d.skills || [],
+                    // #5641 CA-UX-1 — la causa viaja al dep para que la pregunta de
+                    // destrabe del marker se derive de ella en vez de enumerar las
+                    // tres causas históricas, que acá no aplican.
+                    cause: d.cause || null,
+                    infra: d.infra || null,
                 }) !== false;
             } catch (e) {
                 audit({ ...d, error: String(e && e.message).slice(0, 120) });
@@ -314,7 +500,17 @@ function executeDecisions(decisions, deps = {}) {
                 continue;
             }
             escalated += 1;
-            audit({ action: 'escalate', issue: d.issue, fase: d.fase, reason: d.reason });
+            audit({
+                action: 'escalate', issue: d.issue, pipeline: d.pipeline, fase: d.fase,
+                reason: d.reason, cause: d.cause || null, skills: d.skills || [],
+                ...(d.infra ? {
+                    infra_skills: d.infra.skills || [],
+                    agente_exit_code: infraExitCode(d.infra),
+                    agente_exit_codes: d.infra.exitCodes || {},
+                    reintentos_agotados: Number(d.infra.attempts) || null,
+                    max_reintentos: d.infra.max,
+                } : {}),
+            });
             notify(buildEscalationMessage(d, titleOf(d.issue)), {
                 issue: d.issue, fase: d.fase, pipeline: d.pipeline, action: 'escalate',
             });
@@ -334,8 +530,12 @@ module.exports = {
     executeDecisions,
     decideForIssue,
     buildEscalationMessage,
+    buildEscalationQuestion,
+    buildEscalationRecommendation,
     ambiguousSkillsOf,
     AMBIGUOUS_STATUSES,
+    CAUSE_INFRA_REQUEUE,
+    CAUSE_INFRA_EXHAUSTED,
     SUPPRESSION_BUCKETS,
     MONO_SKILL_PHASES,
     DEFAULT_MAX_REQUEUE_ATTEMPTS,
