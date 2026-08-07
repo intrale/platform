@@ -177,11 +177,11 @@ test('findSplitOrphans: state ausente o desconocido → excluido (default-deny)'
 // SO-4 / SO-1 — título malformado, input no confiable
 // -----------------------------------------------------------------------------
 
-test('findSplitOrphans: título malformado sin referencia en body → excluido', () => {
+test('findSplitOrphans: título malformado → excluido', () => {
     const malos = [
         plain(5470, { title: '[Split de #] falta el numero' }),
         plain(5471, { title: '[Split de #abc] numero no numerico' }),
-        plain(5472, { title: 'Split de #5452 sin corchetes ni body' }),
+        plain(5472, { title: 'Split de #5452 sin corchetes' }),
         plain(5473, { title: '' }),
         plain(5474, { title: null }),
     ];
@@ -222,35 +222,71 @@ test('findSplitOrphans: entradas basura en la lista no rompen la clasificación'
 });
 
 // -----------------------------------------------------------------------------
-// Vía body (segunda vía de descubrimiento)
+// SO-4 — el BODY NO es criterio de descubrimiento (decisión del operador
+// 2026-08-05, ratificada 2026-08-06). El único criterio es el título canónico.
+//
+// Contexto: contrastado contra los datos reales de la ola, los 7 matches por
+// body eran TODOS falsos positivos (línea de `git log`, título de otro issue
+// entrecomillado, prosa "TRAMO 4 del split de #N") y el 100 % de los hijos
+// legítimos matcheaba por título. Estos tests son la RED que impide que la vía
+// por body se reintroduzca por descuido en un refactor futuro.
 // -----------------------------------------------------------------------------
 
-test('findSplitOrphans: sin título canónico pero con "Split de #N" en el body → se incorpora', () => {
+test('SO-4: sin título canónico, "Split de #N" en el body NO alcanza → excluido', () => {
     const issue = plain(5461, { title: 'Parte 4 de la historia madre', body: 'Split de #5452\n\nCriterios...' });
     const res = sor.findSplitOrphans([issue], { activeWaveIssues: [5452] });
-    assert.deepEqual(pairs(res), [[5461, 5452]]);
+    assert.deepEqual(res.orphans, [], 'el body no debe ser criterio de descubrimiento');
 });
 
-test('findSplitOrphans: "Tracked by #N" en el body también declara padre', () => {
+test('SO-4: "Tracked by #N" en el body NO declara padre', () => {
     const issue = plain(5462, { title: 'Parte 5', body: 'Tracked by #5452' });
-    const res = sor.findSplitOrphans([issue], { activeWaveIssues: [5452] });
-    assert.deepEqual(pairs(res), [[5462, 5452]]);
+    assert.deepEqual(sor.findSplitOrphans([issue], { activeWaveIssues: [5452] }).orphans, []);
 });
 
-test('findSplitOrphans: body con DOS padres candidatos → ambiguo, excluido (SO-4)', () => {
-    const issue = plain(5463, { title: 'Parte 6', body: 'Split de #5452\nTracked by #5451' });
-    const res = sor.findSplitOrphans([issue], { activeWaveIssues: [5451, 5452] });
-    assert.deepEqual(res.orphans, [], 'ambigüedad de padre debe caer en default-deny');
+test('SO-4: "Closes #N" en el body NO declara padre', () => {
+    const issue = plain(5465, { title: 'Parte 7', body: 'Closes #5452' });
+    assert.deepEqual(sor.findSplitOrphans([issue], { activeWaveIssues: [5452] }).orphans, []);
 });
 
-test('parentOfSplitOrphan: el TÍTULO manda sobre el body si difieren', () => {
+test('SO-4: falso positivo real — línea de git log en el body → excluido', () => {
+    // Caso observado en la ola: el body pegaba un `git log` cuyo asunto contenía
+    // la referencia. Por título no matchea, así que ahora queda afuera.
+    const issue = plain(5466, {
+        title: 'Auditoría de commits de la ola',
+        body: 'abc1234 [Split de #5452] Guardas contra re-commit de paths sensibles',
+    });
+    assert.deepEqual(sor.findSplitOrphans([issue], { activeWaveIssues: [5452] }).orphans, []);
+});
+
+test('SO-4: falso positivo real — prosa "TRAMO 4 del split de #N" → excluido', () => {
+    const issue = plain(5467, {
+        title: 'Seguimiento de avance',
+        body: 'Este issue cubre el TRAMO 4 del split de #5452 pero no es un hijo.',
+    });
+    assert.deepEqual(sor.findSplitOrphans([issue], { activeWaveIssues: [5452] }).orphans, []);
+});
+
+test('SO-4: falso positivo real — título de otro issue entrecomillado en el body → excluido', () => {
+    const issue = plain(5468, {
+        title: 'Consolidado de dependencias',
+        body: 'Depende de "[Split de #5452] Resolución vault-only" que sigue abierto.',
+    });
+    assert.deepEqual(sor.findSplitOrphans([issue], { activeWaveIssues: [5452] }).orphans, []);
+});
+
+test('SO-4: el título canónico manda y el body es IRRELEVANTE aunque contradiga', () => {
     const issue = { number: 5464, title: '[Split de #5452] x', body: 'Tracked by #4200', state: 'OPEN' };
     assert.equal(sor.parentOfSplitOrphan(issue), 5452);
 });
 
-test('findSplitOrphans: "Closes #N" en el body NO declara padre (no es procedencia)', () => {
-    const issue = plain(5465, { title: 'Parte 7', body: 'Closes #5452' });
-    assert.deepEqual(sor.findSplitOrphans([issue], { activeWaveIssues: [5452] }).orphans, []);
+test('SO-4: hijo legítimo SIN body igual se incorpora (el body no aporta nada)', () => {
+    // El 100 % de los hijos legítimos matchea por título, así que la ausencia de
+    // body no puede impedir la incorporación.
+    for (const body of [undefined, null, '', 123, {}]) {
+        const issue = child(5458, 5452, { body });
+        const res = sor.findSplitOrphans([issue], { activeWaveIssues: [5452] });
+        assert.deepEqual(pairs(res), [[5458, 5452]], `body=${JSON.stringify(body)} no debe afectar`);
+    }
 });
 
 // -----------------------------------------------------------------------------

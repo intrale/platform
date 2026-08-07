@@ -16910,7 +16910,11 @@ function reconcileSplitOrphansFromGithub(context) {
   // El comando es ESTÁTICO (sólo constantes del módulo, cero interpolación de
   // input externo) → sin superficie de command injection.
   //
-  // maxBuffer amplio: 100 issues con body completo superan el default de 1 MB.
+  // maxBuffer amplio: la REST devuelve el `body` completo de cada issue y 100 de
+  // ellos superan el default de 1 MB. Ese `body` NO se usa para clasificar —
+  // desde la decisión del operador (2026-08-05/06) el único criterio es el
+  // título canónico (SO-4) — pero viene igual en el payload y hay que poder
+  // parsearlo sin que el buffer reviente.
   const issues = [];
   try {
     for (let page = 1; page <= SPLIT_ORPHAN_MAX_PAGES; page++) {

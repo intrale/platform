@@ -41,10 +41,19 @@
 //     nunca auto-incorpora (default-deny estricto, CA "padre fuera de la ola").
 //   - SO-3: sólo issues ABIERTOS. Un hijo cerrado se excluye (no reabre olas ni
 //     reintroduce trabajo terminado).
-//   - SO-4: título malformado / sin referencia de padre parseable → excluido.
-//     Si título y body declaran padres distintos, MANDA EL TÍTULO (formato
-//     canónico que emite `/planner split`); si el título no matchea y el body
-//     declara MÁS DE UN padre posible, es ambiguo → excluido.
+//   - SO-4: ÚNICO criterio de detección = el título canónico `[Split de #N]`
+//     que emite `/planner split`. Un título que no matchea → excluido, sin
+//     fallback de ningún tipo.
+//     DECISIÓN DEL OPERADOR (2026-08-05, ratificada 2026-08-06): el
+//     descubrimiento por BODY quedó ELIMINADO. Se había contemplado como segunda
+//     vía (`Split de #N` / `Tracked by #N` en el cuerpo), pero contrastado contra
+//     los datos reales de la ola los 7 matches por body eran TODOS falsos
+//     positivos: una línea de `git log`, el título de otro issue entrecomillado y
+//     prosa suelta del estilo "TRAMO 4 del split de #N". En paralelo, el 100 % de
+//     los hijos legítimos de la ola matcheaba por título. El body es prosa libre:
+//     anclar o refinar el patrón sólo mueve el umbral de falsos positivos, no lo
+//     elimina. NO reintroducir esta vía sin una nueva decisión explícita del
+//     operador.
 //   - SO-5: amplificación acotada. `maxDepth` limita la profundidad transitiva
 //     (hijo de hijo) y `maxIncorporations` corta la cantidad total de
 //     incorporaciones por corrida. Un actor que cree issues masivamente no puede
@@ -76,8 +85,6 @@
 // =============================================================================
 
 'use strict';
-
-const { parseProvenanceRefs } = require('./partial-pause-deps');
 
 // Formato canónico que emite `/planner split` (`.pipeline/roles/planner.md`):
 //   Título: `[Split de #<parent>] <descripción>`
@@ -218,13 +225,11 @@ function isTrustedAuthor(issue, opts = {}) {
 /**
  * Extrae el padre DECLARADO de un issue, o null si no hay uno unívoco (SO-4).
  *
- * Precedencia:
- *   1. Título `^[Split de #N]` — formato canónico de `/planner split`.
- *   2. Body: referencias de procedencia (`Split de #N` / `Tracked by #N`) vía
- *      `partial-pause-deps.parseProvenanceRefs`. Se acepta SÓLO si el body
- *      declara exactamente UN padre distinto; dos o más = ambiguo → null.
+ * ÚNICO criterio: el título canónico `^[Split de #N]` que emite `/planner split`.
+ * El BODY NO se mira (decisión del operador 2026-08-05/06 — ver SO-4 en la
+ * cabecera). Cualquier otro formato de título → null (default-deny).
  *
- * @param {object} issue — `{ number, title, body }`
+ * @param {object} issue — `{ number, title }`
  * @returns {number|null}
  */
 function parentOfSplitOrphan(issue) {
@@ -232,32 +237,14 @@ function parentOfSplitOrphan(issue) {
     const child = toPositiveInt(issue.number);
     if (!child) return null;                                   // SO-1
 
-    // 1) Título canónico (manda sobre el body).
     const title = typeof issue.title === 'string' ? issue.title : '';
     const m = SPLIT_TITLE_RE.exec(title);
-    if (m) {
-        const parent = toPositiveInt(m[1]);
-        if (!parent) return null;                              // SO-1
-        if (parent === child) return null;                     // SO-6
-        return parent;
-    }
+    if (!m) return null;                                       // SO-4: sin título canónico → excluido
 
-    // 2) Body: referencia explícita de padre (mismo patrón que usa el resto del
-    //    pipeline). Ambigüedad (>1 padre candidato) → default-deny.
-    const body = typeof issue.body === 'string' ? issue.body : '';
-    if (!body) return null;
-    let refs;
-    try {
-        refs = parseProvenanceRefs(body);
-    } catch {
-        return null;                                           // parser falló → excluir
-    }
-    const candidates = [...(refs || [])]
-        .map(toPositiveInt)
-        .filter((n) => n && n !== child);                      // SO-1 + SO-6
-    const unique = [...new Set(candidates)];
-    if (unique.length !== 1) return null;                      // SO-4: ambiguo o vacío
-    return unique[0];
+    const parent = toPositiveInt(m[1]);
+    if (!parent) return null;                                  // SO-1
+    if (parent === child) return null;                         // SO-6
+    return parent;
 }
 
 /**
@@ -269,7 +256,8 @@ function parentOfSplitOrphan(issue) {
  * split queda cubierto en la misma corrida sin depender del ciclo siguiente.
  *
  * @param {Array<object>} issues — issues de GitHub
- *   `{ number, title, body, state, author|user, author_association }`.
+ *   `{ number, title, state, author|user, author_association }`. El `body` NO se
+ *   usa: el único criterio de detección es el título canónico (SO-4).
  *   NO se asume que estén filtrados: el módulo descarta cerrados, inválidos y de
  *   ORIGEN NO CONFIABLE (SO-7). El wire-up DEBE traer el dato de autor; si falta,
  *   el default-deny excluye todo (fail-closed, no fail-open).
