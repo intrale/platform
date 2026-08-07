@@ -269,7 +269,14 @@ function runAccessAuditTick(opts = {}) {
     return { skipped: true, reason: 'empty-allowlist', records: [], notifications: [], errors: [] };
   }
 
-  const region = opts.region || process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
+  // La región sale SÓLO de `kernel.region` (pulpo.js la pasa en opts.region), que
+  // es la misma fuente que documenta el runbook. NO se cae a AWS_REGION /
+  // AWS_DEFAULT_REGION a propósito: el Event history de CloudTrail es POR REGIÓN,
+  // así que una región heredada del ambiente que no sea la del vault no falla —
+  // devuelve `Events: 0`, indistinguible de "nadie accedió al vault". Ese falso
+  // negativo silencioso es justamente lo que este control existe para evitar, y
+  // un fallback lo reintroduce por la puerta de atrás.
+  const region = opts.region;
   // Sin región no se consulta nada: `--region undefined` devolvería un error de
   // la CLI que se leería como "no hubo accesos", o sea un control apagado que
   // aparenta estar prendido. Se prefiere no correr y decirlo (R-H).

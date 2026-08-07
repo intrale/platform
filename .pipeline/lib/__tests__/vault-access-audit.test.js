@@ -87,6 +87,31 @@ test('sin región configurada el tick no corre y lo dice, en vez de fingir cero 
   }
 });
 
+test('CA-9 · una región heredada del ambiente NO reemplaza a kernel.region', () => {
+  // El Event history de CloudTrail es POR REGIÓN: consultar la región equivocada
+  // no falla, devuelve `Events: 0` — indistinguible de "nadie accedió al vault".
+  // Por eso un AWS_REGION del ambiente no habilita el tick: sin kernel.region se
+  // omite y se dice, en vez de auditar en silencio la región que no es.
+  const logs = [];
+  const previo = { AWS_REGION: process.env.AWS_REGION, AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION };
+  process.env.AWS_REGION = 'us-east-1';           // NO es la región del vault
+  process.env.AWS_DEFAULT_REGION = 'eu-west-1';
+  try {
+    const result = audit.runAccessAuditTick({
+      config: { enabled: true, ...config() },
+      log: (line) => logs.push(line),
+    });
+    assert.equal(result.reason, 'sin-region');
+    assert.deepEqual(result.records, []);
+    assert.match(logs.join('\n'), /kernel\.region/);
+  } finally {
+    if (previo.AWS_REGION === undefined) delete process.env.AWS_REGION;
+    else process.env.AWS_REGION = previo.AWS_REGION;
+    if (previo.AWS_DEFAULT_REGION === undefined) delete process.env.AWS_DEFAULT_REGION;
+    else process.env.AWS_DEFAULT_REGION = previo.AWS_DEFAULT_REGION;
+  }
+});
+
 test('el hijo de la CLI recibe un env por allowlist, sin las API keys de los proveedores', () => {
   let visto = null;
   const runner = audit.createCloudTrailRunner(
