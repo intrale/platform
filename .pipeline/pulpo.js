@@ -262,7 +262,13 @@ const telegramReceipt = require('./lib/telegram-receipt');
 // reenvía (tope N reintentos + backoff); avisa al usuario si se agotan. Reutiliza
 // la política de reintentos de salientes de #4082 (módulo puro compartido).
 const voiceParts = require('./lib/voice-parts');
-const { resolveOutboundConfig: resolveTelegramOutboundConfig } = require('./lib/telegram-outbound-config');
+// #5573 — traza append-only de entrega de partes de voz (duplicados + latencia).
+const voiceDeliveryAudit = require('./lib/voice-delivery-audit');
+const {
+  resolveOutboundConfig: resolveTelegramOutboundConfig,
+  // #5573 — política de reenvío PROPIA de las partes de audio (no la de texto).
+  resolveVoiceOutboundConfig: resolveTelegramVoiceOutboundConfig,
+} = require('./lib/telegram-outbound-config');
 // #3414 — Notificación Telegram de entregables del pipeline (human-in-the-loop
 // opcional). Se invoca desde `brazoBarrido` cuando un skill notificable cierra
 // fase OK. Default OFF (rollout gradual via config.yaml → deliverable_notifications.enabled).
@@ -4073,6 +4079,64 @@ function brazoBarrido(config) {
             }
             return true;
           });
+
+          // #5337 CA-3 — Triggers por ESTADO OBJETIVO, además de la heurística
+          // textual de arriba. Cubren los casos del 2026-08-01 en que un gate
+          // devolvía pidiendo una DECISIÓN (no una corrección) y el motivo no
+          // matcheaba ningún patrón, así que el issue se acumulaba en silencio.
+          //
+          // `recomendacionBloqueo` alimenta el bloque `💡 Recomendación` del
+          // mensaje de Telegram (CA-2): el operador tiene que ver qué le
+          // conviene hacer, no sólo que algo está trabado.
+          let recomendacionBloqueo = '';
+          try {
+            const hbTriggers = require('./lib/human-block-triggers');
+
+            // (a) Devolución de un gate pidiendo decisión del operador.
+            for (const m of motivosClasificados) {
+              if (mecanicoResueltos.has(m)) continue;
+              const det = hbTriggers.detectDecisionRequestBlock({
+                skill: m.skill, motivo: m.motivo, issue: parseInt(issue),
+              });
+              if (!det) continue;
+              if (!recomendacionBloqueo) recomendacionBloqueo = det.recommendation;
+              if (!motivosHumanos.includes(m)) motivosHumanos.push(m);
+            }
+
+            // (b) Rebotado N veces por la MISMA causa. El rebote automático dejó
+            // de aportar: cada pasada quema tokens para volver a fallar igual.
+            // Se mira el histórico de `motivo_rechazo` de la fase de rechazo.
+            if (faseRechazo && motivosHumanos.length === 0 && !esReboteDeInfra) {
+              const motivosPrevios = [];
+              for (const estado of ['pendiente', 'trabajando', 'procesado']) {
+                const dir = path.join(fasePath(pipelineName, faseRechazo), estado);
+                try {
+                  for (const f of fs.readdirSync(dir)) {
+                    if (!f.startsWith(issue + '.')) continue;
+                    const data = readYamlSafe(path.join(dir, f));
+                    if (data && data.motivo_rechazo) motivosPrevios.push(String(data.motivo_rechazo));
+                  }
+                } catch { /* fase sin cola todavía */ }
+              }
+              for (const m of motivosClasificados) motivosPrevios.push(String(m.motivo || ''));
+              const rep = hbTriggers.detectRepeatedRejectionBlock({
+                issue: parseInt(issue), motivos: motivosPrevios,
+              });
+              if (rep) {
+                recomendacionBloqueo = recomendacionBloqueo || rep.recommendation;
+                const principalRep = motivosClasificados[0];
+                if (principalRep && !motivosHumanos.includes(principalRep)) {
+                  motivosHumanos.push(principalRep);
+                }
+                log('barrido', `🔁 #${issue} escala a humano por causa repetida (${rep.repeats} veces)`);
+              }
+            }
+          } catch (e) {
+            // Los triggers son accesorios: si fallan, el flujo textual histórico
+            // sigue funcionando igual. Nunca frenan el barrido.
+            log('barrido', `#${issue} triggers de bloqueo humano fallaron (no bloqueante): ${e.message}`);
+          }
+
           if (motivosHumanos.length > 0 && !esReboteDeInfra) {
             const principal = motivosHumanos[0];
             const skillBloq = principal.skill || skillFromFile(rechazados[0].file.name);
@@ -4176,7 +4240,12 @@ function brazoBarrido(config) {
               // el resumen de texto sin botones (degradación con gracia).
               try {
                 const summary = humanBlock.buildBlockedSummaryMarkdown({
-                  highlight: { issue: parseInt(issue), skill: skillBloq, reason: motivoTxt, question },
+                  // #5337 CA-2 — la recomendación del pipeline viaja al mensaje.
+                  // Si no hay ninguna, `buildBlockedSummaryMarkdown` omite la línea.
+                  highlight: {
+                    issue: parseInt(issue), skill: skillBloq, reason: motivoTxt, question,
+                    recommendation: recomendacionBloqueo,
+                  },
                 });
                 let markup;
                 try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue)); } catch { markup = undefined; }
@@ -4199,6 +4268,7 @@ function brazoBarrido(config) {
                 humanBlock.sendNeedHumanAudio({
                   reason: motivoTxt,
                   question,
+                  recommendation: recomendacionBloqueo, // #5337 CA-2
                   profile: 'need-human',
                   botToken: getTelegramToken(),
                   chatId: getTelegramChatId(),
@@ -5628,6 +5698,106 @@ function brazoBarrido(config) {
               else sendTelegram(text);
               const sum = summarizePrInfoForLog(prInfo);
               log('barrido', `#${issue} notificación cierre — prState=${sum.prState} rollupState=${sum.rollupState} prUrl=${sum.prUrl || '-'}`);
+
+              // #5337 CA-3 — El issue terminó el pipeline pero el PR puede estar
+              // frenado esperando al operador. Ése es EXACTAMENTE el agujero del
+              // 2026-08-01: #5217/#5220/#5242/#5244 quedaron acumulados en
+              // silencio y el operador se enteró horas después, preguntando.
+              //
+              // Tres causas, todas leídas de ESTADO OBJETIVO (no de texto):
+              //   1. hallazgos de code-scanning introducidos por esta rama,
+              //   2. conflicto de merge real (mergeStateStatus=DIRTY),
+              //   4. review humana exigida por CODEOWNERS/ruleset (=BLOCKED).
+              // (La causa 3 —un gate pidiendo decisión— se detecta en el rebote,
+              // más arriba en este mismo brazo.)
+              //
+              // Sólo aplica a PRs ABIERTOS: uno ya mergeado o cerrado no espera
+              // nada de nadie.
+              try {
+                const esPrAbierto = prInfo && !prInfo.error
+                  && String(prInfo.state || '').toUpperCase() === 'OPEN';
+                if (esPrAbierto && !humanBlock.findBlockedMarker(issue)) {
+                  const hbTriggers = require('./lib/human-block-triggers');
+                  const { fetchPrCodeScanningAlerts } = require('./lib/code-scanning-alerts');
+
+                  // Las alertas son best-effort: si no se pueden consultar
+                  // (404 sin code-scanning, 403 sin scope, timeout) seguimos con
+                  // el estado de merge. No poder consultar NUNCA inventa bloqueo.
+                  let securityAlerts = [];
+                  try {
+                    const res = fetchPrCodeScanningAlerts(
+                      { repo: repoTarget.getPrimaryRepo(), prNumber: prInfo.number, headRefName: prInfo.headRefName },
+                      { ghBin: GH_BIN, cwd: ROOT, timeoutMs: 8000 }
+                    );
+                    securityAlerts = res.alerts || [];
+                    if (res.error) log('barrido', `#${issue} code-scanning no consultable (se sigue sin él): ${res.error}`);
+                  } catch (e) {
+                    log('barrido', `#${issue} code-scanning falló (no bloqueante): ${e.message}`);
+                  }
+
+                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, { securityAlerts });
+
+                  if (veredicto && veredicto.inconclusive) {
+                    // R2 — GitHub todavía calcula `mergeable`. Ni bloqueo ni vía
+                    // libre: se reevalúa en el barrido siguiente. Un estado
+                    // desconocido nunca es un veredicto.
+                    log('barrido', `#${issue} estado de merge del PR #${prInfo.number} no concluyente todavía — se reintenta`);
+                  } else if (veredicto && veredicto.trigger) {
+                    log('barrido', `🚧 #${issue} PR #${prInfo.number} requiere intervención humana (${veredicto.trigger})`);
+                    try {
+                      humanBlock.reportHumanBlock({
+                        issue: parseInt(issue),
+                        skill: 'entrega',
+                        phase: 'aprobacion',
+                        pipeline: pipelineName,
+                        reason: veredicto.reason,
+                        question: veredicto.question,
+                        moveFromActive: false,
+                      });
+                    } catch (e) {
+                      log('barrido', `❌ #${issue} reportHumanBlock (PR) falló: ${e.message}`);
+                    }
+                    // Notificación inmediata (CA-1/CA-2): qué issue, qué se
+                    // necesita, y la recomendación del pipeline.
+                    try {
+                      const summaryPr = humanBlock.buildBlockedSummaryMarkdown({
+                        highlight: {
+                          issue: parseInt(issue), skill: 'entrega',
+                          reason: veredicto.reason, question: veredicto.question,
+                          recommendation: veredicto.recommendation,
+                        },
+                      });
+                      let markupPr;
+                      try { markupPr = humanBlock.buildBlockedActionMarkup(parseInt(issue)); }
+                      catch { markupPr = undefined; }
+                      sendTelegramWithMarkup(summaryPr, markupPr || null);
+                    } catch (e) {
+                      log('barrido', `Error notificando bloqueo de PR #${issue}: ${e.message}`);
+                    }
+                    // Aviso por voz: es el canal que funciona cuando el operador
+                    // no está mirando la pantalla. Fire-and-forget.
+                    // El require va acá adentro (igual que en el camino de rebote,
+                    // ~L4247): `multimedia` no está destructurado a nivel módulo.
+                    try {
+                      const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
+                      humanBlock.sendNeedHumanAudio({
+                        reason: veredicto.reason,
+                        question: veredicto.question,
+                        recommendation: veredicto.recommendation,
+                        profile: 'need-human',
+                        botToken: getTelegramToken(),
+                        chatId: getTelegramChatId(),
+                        textToSpeechWithMeta,
+                        sendVoiceTelegram,
+                      }).catch(() => {});
+                    } catch { /* el audio nunca frena el aviso de texto */ }
+                  }
+                }
+              } catch (e) {
+                // Los triggers de PR son accesorios respecto de la notificación
+                // de cierre: si fallan, el mensaje de arriba ya salió igual.
+                log('barrido', `#${issue} triggers de PR fallaron (no bloqueante): ${e.message}`);
+              }
             } catch (e) {
               // Defensa última: si algo falla en el helper, mandamos el texto
               // legacy + sufijo. Nunca dejar al issue sin notificación.
@@ -10611,6 +10781,27 @@ function reconcileTelegramReceipts(opts = {}) {
       // El sweep (más abajo) cierra la respuesta cuando todas las partes confirman.
       if (voiceParts.isVoicePartReceipt(receipt)) {
         if (receipt.status === telegramReceipt.STATUS_ENVIADO) {
+          // #5573 (cambio 4) — muestra de LATENCIA REAL de entrega del chunk. Se
+          // lee el estado ANTES de confirmar porque `firstEnqueuedAt` (el ancla
+          // inmutable del primer encolado) y `retries` viven ahí. Esta serie es la
+          // que permite recalibrar `telegram_voice_outbound.backoff_base_ms`, hoy
+          // provisional (~62-74s medidos a mano). Best-effort: si algo falla acá,
+          // la confirmación igual ocurre.
+          let latencySample = null;
+          try {
+            const st = voiceParts.readState(voiceParts.voicePartsDir(pipelineDir), receipt.correlationId);
+            const part = st && st.parts ? st.parts[String(receipt.partIndex)] : null;
+            if (part) {
+              const firstMs = Date.parse(part.firstEnqueuedAt || part.enqueuedAt);
+              const atMs = Date.parse(receipt.at);
+              latencySample = {
+                latencyMs: (Number.isFinite(firstMs) && Number.isFinite(atMs)) ? (atMs - firstMs) : undefined,
+                retries: Number.isInteger(part.retries) ? part.retries : 0,
+                partTotal: st.partTotal,
+              };
+            }
+          } catch { /* best-effort */ }
+
           try {
             voiceParts.recordPartConfirmation({
               pipelineDir,
@@ -10619,6 +10810,18 @@ function reconcileTelegramReceipts(opts = {}) {
             });
           } catch (e) {
             log('telegram', `[reconcile] no se pudo confirmar chunk (${receipt.correlationId} p${receipt.partIndex}): ${e.message}`);
+          }
+
+          if (latencySample) {
+            voiceDeliveryAudit.appendVoiceDeliveryEvent(pipelineDir, {
+              ts: receipt.at,
+              event: voiceDeliveryAudit.EVENT_CONFIRMED,
+              correlationId: receipt.correlationId,
+              partIndex: receipt.partIndex,
+              partTotal: latencySample.partTotal != null ? latencySample.partTotal : receipt.partTotal,
+              latencyMs: latencySample.latencyMs,
+              retries: latencySample.retries,
+            });
           }
         }
         // Un recibo `fallido` de chunk se archiva sin confirmar: el sweep reintenta
@@ -10657,11 +10860,17 @@ function reconcileTelegramReceipts(opts = {}) {
     log('telegram', `[reconcile] error (best-effort): ${e.message}`);
   }
   // #4750 — Sweep de contabilidad de chunks de audio: SIEMPRE (aun sin recibos
-  // nuevos). Detecta partes que no confirmaron dentro del timeout y las reenvía
-  // (tope N reintentos + backoff, misma política que texto — #4082); si se agotan
-  // los reintentos avisa al usuario en el chat del padre (nunca hueco silencioso).
+  // nuevos). Detecta partes que no confirmaron dentro del timeout y las reenvía;
+  // si se agotan los reintentos avisa al usuario en el chat del padre (nunca
+  // hueco silencioso).
+  //
+  // #5573 — Política PROPIA de voz (`telegram_voice_outbound`), NO la de texto.
+  // La latencia real de un `.ogg` es ~62-74s contra los 5s de base del texto:
+  // reusar la política de texto disparaba reenvíos sobre envíos todavía en vuelo
+  // y el operador recibía el mismo audio 2-4 veces. El sweep además consulta qué
+  // partes siguen vivas en la cola (`scanInFlightParts`) y no las reencola.
   try {
-    const outboundCfg = resolveTelegramOutboundConfig(loadConfig());
+    const outboundCfg = resolveTelegramVoiceOutboundConfig(loadConfig());
     voiceParts.sweepVoiceStates({
       pipelineDir,
       now: Date.now(),
@@ -10673,6 +10882,9 @@ function reconcileTelegramReceipts(opts = {}) {
       notify: (text) => { try { sendTelegramPlain(text); } catch { /* best-effort */ } },
       logFn: (m) => log('telegram', `[voice-sweep] ${m}`),
     });
+    // #5573 (SEC-E) — retención de 30 días de los `.gz` rotados de la traza de
+    // entrega. Mismo tick del sweep, best-effort.
+    voiceDeliveryAudit.cleanupVoiceDeliveryArchives(pipelineDir);
   } catch (e) {
     log('telegram', `[voice-sweep] error (best-effort): ${e.message}`);
   }
@@ -15696,7 +15908,12 @@ function enqueueTelegramVoice(audioPath, opts = {}) {
   const pi = telegramReceipt.coercePartInt(partIndex);
   const pt = telegramReceipt.coercePartInt(partTotal);
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
-  const filename = `${Date.now()}-voice-p${pi}.json`;
+  // #5573 — el `correlationId` va EN EL NOMBRE del dropfile para que el sweep
+  // (`voiceParts.scanInFlightParts`) sepa qué partes siguen vivas en la cola sin
+  // abrir y parsear cada JSON en cada tick. `correlationId` ya pasó por
+  // `isValidCorrelationId` arriba (regex `[A-Za-z0-9._-]{6,128}` + anti `..`), así
+  // que componer un nombre de archivo con él es seguro.
+  const filename = `${Date.now()}-voice-${correlationId}-p${pi}.json`;
   // #4796 — Fix de ORIGEN: normalizar a forward-slashes ANTES de serializar. En
   // Windows los `\` pueden perderse si la ruta atraviesa una segunda ronda de
   // parse/serialize (incidente 2026-07-19: `C:\…\tts.ogg` → `C:WorkspacesIntrale…ogg`,
@@ -16112,7 +16329,10 @@ function brazoIntake(config) {
         try {
           ghThrottle();
           const result = _ghExecSyncGuarded( // #4612 — breaker-aware
-            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels --limit 50 --search "-label:needs-human"`,
+            // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
+            // cero requests extra) para que el detector de decisión de
+            // arquitectura pueda clasificar el issue al entrar a definición.
+            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "-label:needs-human"`,
             { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
           );
           const repoIssues = JSON.parse(result || '[]');
@@ -16169,6 +16389,76 @@ function brazoIntake(config) {
         if (issueLabels.includes('tipo:recomendacion') && !issueLabels.includes('recommendation:approved')) {
           log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (tipo:recomendacion sin recommendation:approved)`);
           continue;
+        }
+
+        // #5337 CA-4 — DECISIÓN DE ARQUITECTURA NO TOMADA.
+        //
+        // Caso #5217 (2026-08-01): un issue de "store de credenciales" resolvió
+        // por su cuenta que el vault era un JSON en disco local, sin plantearlo
+        // nunca como decisión. Un diseño que no cumplía el requisito de
+        // ejecución distribuida llegó hasta PR sin que el operador supiera que
+        // había algo que decidir.
+        //
+        // El detector es DELIBERADAMENTE ESTRECHO (CA-4a): sólo señales
+        // explícitas y enumeradas en `design-decision-detect.js`. Ante duda,
+        // deja pasar y registra (CA-4b) — un issue sano frenado esperando a un
+        // humano que no tiene nada que decidir sería el problema inverso al que
+        // este cambio arregla.
+        if (pipelineName === 'definicion') {
+          try {
+            const designDecision = require('./lib/design-decision-detect');
+            const veredicto = designDecision.detectDesignDecision({
+              issue: parseInt(issueNum),
+              title: issue.title || '',
+              body: issue.body || '',
+              labels: issueLabels,
+            });
+            if (veredicto.escalate) {
+              const yaBloqueadoDD = humanBlock.findBlockedMarker(issueNum);
+              if (yaBloqueadoDD) {
+                log('intake', `#${issueNum} decisión de arquitectura ya escalada — sin re-notificar`);
+                continue;
+              }
+              log('intake', `🧭 #${issueNum} FRENA en definición — decisión de arquitectura (señales: ${veredicto.signals.join(', ')})`);
+              try {
+                humanBlock.reportHumanBlock({
+                  issue: parseInt(issueNum),
+                  skill: 'definicion',
+                  phase: faseEntrada,
+                  pipeline: pipelineName,
+                  reason: veredicto.reason,
+                  question: veredicto.question,
+                  moveFromActive: false,
+                });
+              } catch (e) {
+                log('intake', `❌ #${issueNum} reportHumanBlock (decisión) falló: ${e.message}`);
+              }
+              try {
+                const summaryDD = humanBlock.buildBlockedSummaryMarkdown({
+                  highlight: {
+                    issue: parseInt(issueNum), skill: 'definicion',
+                    reason: veredicto.reason, question: veredicto.question,
+                    recommendation: veredicto.recommendation,
+                  },
+                });
+                let markupDD;
+                try { markupDD = humanBlock.buildBlockedActionMarkup(parseInt(issueNum)); }
+                catch { markupDD = undefined; }
+                sendTelegramWithMarkup(summaryDD, markupDD || null);
+              } catch (e) {
+                log('intake', `Error notificando decisión de arquitectura #${issueNum}: ${e.message}`);
+              }
+              continue; // NO entra a definición hasta que el operador decida.
+            }
+            // CA-4b — dejar pasar y registrar. Sólo se loguea si hubo señales
+            // parciales; el caso normal (sin señales) no ensucia el log.
+            if (veredicto.signals.length) {
+              log('intake', `#${issueNum} señales de decisión parciales (${veredicto.signals.join(', ')}) — se deja pasar`);
+            }
+          } catch (e) {
+            // Fail-open explícito: un detector roto NO puede frenar el intake.
+            log('intake', `#${issueNum} detector de decisión de arquitectura falló (se deja pasar): ${e.message}`);
+          }
         }
 
         // Dedup por contenido para issues qa:dependency (cierra duplicados automáticamente)
@@ -18517,12 +18807,16 @@ async function mainLoop() {
   try {
     const cfg = loadConfig();
     if (cfg && cfg.kernel && cfg.kernel.durable === true) {
+      // Require LAZY (igual que el resto del bloque): con `durable:false` no se
+      // carga Ajv ni el schema del store. Se sube acá porque la constante de
+      // partición del control-plane la necesitan el catálogo Y el log.
+      const kernelStoreLib = require('./lib/kernel-store');
       // Constructor LAZY del store durable: sólo se instancia con el flag ON, de
       // modo que con `durable:false` NO se construye ningún driver ni se toca AWS.
       const buildDurableStore = (contextProjectId, allowedNamespaces, onAlert) => {
         const { createAwsCliRunner, createAwsCliDynamoDriver } = require('./lib/provisioner-infra');
         const { buildAwsScopedEnv } = require('./lib/kernel-provision');
-        const { createKernelStore } = require('./lib/kernel-store');
+        const { createKernelStore } = kernelStoreLib;
         const env = buildAwsScopedEnv(process.env, cfg.kernel.region);
         const { run } = createAwsCliRunner(env);
         const driver = createAwsCliDynamoDriver({ run });
@@ -18599,7 +18893,14 @@ async function mainLoop() {
         },
         // Catálogo del control-plane: `listProducts()` lee el índice global (no una
         // partición de tenant), por eso usa un contextProjectId dedicado y seguro.
-        buildCatalogStore: () => buildDurableStore('kernel-control-plane', ['kernel-control-plane']),
+        // #5204 — la partición sale de la CONSTANTE compartida, nunca de un literal:
+        // el alta durable (`durableRegisterProduct`) escribe `product#`/`catalog#index`
+        // en esta misma partición. Cuando eran dos literales distintos, el catálogo se
+        // escribía en la partición del tenant y el boot lo leía acá: invisible.
+        buildCatalogStore: () => buildDurableStore(
+          kernelStoreLib.CONTROL_PLANE_PROJECT_ID,
+          [kernelStoreLib.CONTROL_PLANE_PROJECT_ID],
+        ),
         // Store por instancia: MISMO driver durable ligado a cada tenant con su
         // propio `projectId` derivado del registro (A01 — nunca en banda).
         buildStoreFactory: () => (o) => buildDurableStore(o.contextProjectId, o.allowedNamespaces, o.onAlert),
@@ -19036,6 +19337,50 @@ async function mainLoop() {
     log('credential-rotation', `Cron iniciado: tick cada ${Math.round(tickMs / 60000)}min`);
   } catch (e) {
     log('credential-rotation', `No se pudo iniciar el cron: ${e.message}`);
+  }
+
+  // #5337 CA-5 — Recordatorio escalado de bloqueos humanos sin responder.
+  //
+  // El aviso inicial de needs-human vive dentro del gate `if (!yaBloqueado)` del
+  // barrido: dispara SOLO en la transición (SEC-5 de #4067), para no repetir la
+  // misma alerta en cada tick. Este cron es la ruta complementaria: si el
+  // operador no respondió, recuerda de forma espaciada (2h → 6h → 24h → cada
+  // 72h) con UN mensaje agrupado.
+  //
+  // FAIL-CLOSED: el módulo no puede destrabar nada — no importa `unblockIssue`
+  // ni `dismissBlockedIssue`, su único efecto es mandar el mensaje. El silencio
+  // del operador jamás auto-aprueba (docs/pipeline/gates-firma-operador.md).
+  try {
+    const humanBlockReminder = require('./lib/human-block-reminder');
+    const cfgRoot0 = loadConfig() || {};
+    const hbrCfg = cfgRoot0.human_block_reminder || {};
+    const hbrTickMs = Number(hbrCfg.tick_ms) > 0 ? Number(hbrCfg.tick_ms) : (30 * 60 * 1000); // 30min
+    if (hbrCfg.enabled === false || hbrCfg.kill_switch === true) {
+      log('hb-reminder', 'Recordatorio de bloqueos humanos DESACTIVADO por config');
+    } else {
+      const runHbrTick = () => {
+        try {
+          const r = humanBlockReminder.runReminderTick({
+            pipelineDir: PIPELINE,
+            listBlocked: () => humanBlock.listBlockedIssues(),
+            sendTelegram: (texto, markup) => sendTelegramWithMarkup(texto, markup || null),
+            buildMarkup: (issue) => {
+              try { return humanBlock.buildBlockedActionMarkup(issue); } catch { return undefined; }
+            },
+            now: new Date(),
+            log: (msg) => log('hb-reminder', msg),
+          });
+          if (r && r.error) log('hb-reminder', `Tick con error (no bloqueante): ${r.error}`);
+        } catch (err) {
+          log('hb-reminder', `Tick excepción no capturada: ${err.message}`);
+        }
+      };
+      const hbrTimer = setInterval(runHbrTick, hbrTickMs);
+      if (typeof hbrTimer.unref === 'function') hbrTimer.unref();
+      log('hb-reminder', `Recordatorio de bloqueos humanos iniciado: tick cada ${Math.round(hbrTickMs / 60000)}min`);
+    }
+  } catch (e) {
+    log('hb-reminder', `No se pudo iniciar el recordatorio de bloqueos: ${e.message}`);
   }
 
   // #3943 — Brazo cron de ghostbusters --worktrees (EP6-H1).

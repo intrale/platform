@@ -1,0 +1,75 @@
+{
+  "_comentario": [
+    "Policy REALMENTE adjunta a policy/IntraleKernelStore (version v3), leida el",
+    "2026-08-06 con `aws iam get-policy-version` y enmascarada por",
+    "maskPolicyDocument(): sin account-id, sin region y sin el UUID de la CMK.",
+    "",
+    "Existe porque el rebote de verificacion de #5211 se produjo por DEDUCIR este",
+    "documento en vez de leerlo: se asumio que lo aplicado era el artefacto de",
+    "origin/main (3 statements) y en realidad habia un catch-all por NotResource",
+    "que ese artefacto no modelaba. El fixture ancla el evaluador a un documento",
+    "observado, no imaginado."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RuntimeReadWriteNoRepudiation",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE"
+    },
+    {
+      "Sid": "DenyMutateNonRepudiation",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:TransactWriteItems",
+        "dynamodb:PartiQLUpdate",
+        "dynamodb:PartiQLDelete",
+        "dynamodb:PartiQLInsert"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE"
+    },
+    {
+      "Sid": "CoordinationReadWrite",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:Query",
+        "dynamodb:DescribeTable"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/COORD_TABLE"
+    },
+    {
+      "Sid": "AllowIdentityCheck",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyEverythingOutsideKernelTables",
+      "Effect": "Deny",
+      "NotAction": [
+        "sts:GetCallerIdentity"
+      ],
+      "NotResource": [
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/COORD_TABLE",
+        "arn:aws:kms:REGION:ACCOUNT:key/CMK_KEY_ID"
+      ]
+    }
+  ]
+}

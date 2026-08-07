@@ -49,6 +49,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { redactSecretValue, redactSensitive, redactObject } = require('./redact');
 
 const PIPELINE_DIR_DEFAULT = path.join(__dirname, '..');
 
@@ -71,6 +72,27 @@ function emojiFor(level) {
     return EMOJI_BY_LEVEL[level] || EMOJI_BY_LEVEL.info;
 }
 
+function canonicalChatId(value) {
+    if (typeof value !== 'string' || !/^-?[1-9]\d*$/.test(value)) return null;
+    const numeric = Number(value);
+    return Number.isSafeInteger(numeric) ? String(numeric) : null;
+}
+
+function resolvePrivateChatId(requested) {
+    if (requested == null) return { ok: true, chatId: null };
+    const anchorRaw = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    if (anchorRaw == null || anchorRaw === '') return { ok: false, reason: 'no_operator_chat_id' };
+    const anchor = canonicalChatId(anchorRaw);
+    if (!anchor) return { ok: false, reason: 'invalid_operator_chat_id' };
+    const candidate = canonicalChatId(requested);
+    if (!candidate || candidate !== anchor) return { ok: false, reason: 'unauthorized_chat_id' };
+    return { ok: true, chatId: anchor };
+}
+
+function redactFreeText(value) {
+    return redactSecretValue(redactSensitive(String(value)));
+}
+
 /**
  * Construye el texto del mensaje a partir del payload estructurado.
  * Determinístico — los tests pueden comparar string-equal sobre la salida
@@ -78,9 +100,9 @@ function emojiFor(level) {
  */
 function buildMessage(payload) {
     const level = payload.level || 'info';
-    const component = String(payload.component || 'pipeline');
-    const summary = String(payload.message || '(sin descripción)');
-    const diag = payload.diag ? String(payload.diag) : null;
+    const component = redactFreeText(payload.component || 'pipeline');
+    const summary = redactFreeText(payload.message || '(sin descripción)');
+    const diag = payload.diag ? redactFreeText(payload.diag) : null;
     const ts = payload.ts || new Date().toISOString();
     const ctx = payload.context && typeof payload.context === 'object' ? payload.context : {};
 
@@ -89,19 +111,30 @@ function buildMessage(payload) {
     lines.push('');
 
     // Contexto: holder (PID, host), timestamp, campos custom.
+    //
+    // SEGURIDAD (#5450 rev-2): `redactObject` sólo consulta la tabla de claves
+    // sensibles cuando ITERA las entradas de un objeto. Aplicado sobre un string
+    // suelto degrada a redacción por patrón/entropía, que no reconoce secretos
+    // cortos o de baja entropía. Por eso el objeto se redacta COMPLETO acá,
+    // ANTES de iterarlo: así un secreto colgado directo de una clave sensible de
+    // primer nivel (`context: { password: 'x' }`) también queda tachado, tanto en
+    // el dropfile en reposo como en el body saliente. Vale para los dos destinos
+    // (privado con `chat_id` y el camino histórico sin `chat_id`, que va al grupo).
     const ctxLines = [];
     if (payload.holder && typeof payload.holder === 'object') {
-        const h = payload.holder;
+        const h = redactObject(payload.holder);
         const parts = [];
-        if (h.pid) parts.push(`pid=${h.pid}`);
-        if (h.hostname) parts.push(`host=${h.hostname}`);
-        if (h.startTime) parts.push(`start=${h.startTime}`);
+        if (h.pid) parts.push(`pid=${redactFreeText(h.pid)}`);
+        if (h.hostname) parts.push(`host=${redactFreeText(h.hostname)}`);
+        if (h.startTime) parts.push(`start=${redactFreeText(h.startTime)}`);
         if (parts.length > 0) ctxLines.push(`holder: ${parts.join(' ')}`);
     }
-    for (const key of Object.keys(ctx)) {
-        const val = ctx[key];
+    const safeCtx = redactObject(ctx);
+    for (const key of Object.keys(safeCtx)) {
+        const val = safeCtx[key];
         if (val == null || val === '') continue;
-        ctxLines.push(`${key}: ${typeof val === 'object' ? JSON.stringify(val) : String(val)}`);
+        const safeValue = typeof val === 'object' ? JSON.stringify(val) : val;
+        ctxLines.push(`${redactFreeText(key)}: ${redactFreeText(safeValue)}`);
     }
     ctxLines.push(`emisor: pid=${process.pid} host=${os.hostname()} ts=${ts}`);
     lines.push(...ctxLines);
@@ -109,13 +142,13 @@ function buildMessage(payload) {
 
     // Acción concreta (recomendable que el caller la inyecte explícitamente).
     if (payload.action) {
-        lines.push(String(payload.action));
+        lines.push(redactFreeText(payload.action));
         lines.push('');
     }
 
     // Detalle adicional (1 línea, sin stacktrace). Cap defensivo 400 chars.
     if (payload.detail) {
-        const det = String(payload.detail).replace(/\s+/g, ' ').slice(0, 400);
+        const det = redactFreeText(payload.detail).replace(/\s+/g, ' ').slice(0, 400);
         lines.push(`detalle: ${det}`);
     }
 
@@ -149,6 +182,12 @@ function notifyTelegram(payload) {
         return { ok: false, reason: 'missing_required_fields' };
     }
 
+    const destination = resolvePrivateChatId(payload.chat_id);
+    if (!destination.ok) {
+        console.warn(`[notify-telegram] aviso privado omitido: ${destination.reason}`);
+        return { ok: false, reason: destination.reason };
+    }
+
     let text;
     try {
         text = buildMessage(payload);
@@ -168,7 +207,7 @@ function notifyTelegram(payload) {
     const ts = Date.now();
     // Identificador único por componente para evitar colisiones cuando dos
     // alertas del mismo componente caen en el mismo ms.
-    const slug = String(payload.component).replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 32);
+    const slug = redactFreeText(payload.component).replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 32);
     const filename = `alert-${slug}-${ts}-${process.pid}.json`;
     const dropPath = path.join(dir, filename);
 
@@ -179,9 +218,10 @@ function notifyTelegram(payload) {
         // con el resto del pipeline (no rompe nada — caracteres safe).
         parse_mode: 'Markdown',
     };
+    if (destination.chatId != null) drop.chat_id = destination.chatId;
 
     try {
-        fs.writeFileSync(dropPath, JSON.stringify(drop, null, 2));
+        fs.writeFileSync(dropPath, JSON.stringify(drop, null, 2), { mode: 0o600, flag: 'wx' });
         return { ok: true, dropPath };
     } catch (err) {
         console.warn(`[notify-telegram] no se pudo escribir ${dropPath}: ${err.message}`);
@@ -197,5 +237,7 @@ module.exports = {
         emojiFor,
         telegramQueueDir,
         EMOJI_BY_LEVEL,
+        canonicalChatId,
+        resolvePrivateChatId,
     },
 };

@@ -304,6 +304,21 @@ anomaly_detector:
   minUsdToAlert: 0.5         # Piso absoluto: si actual ≤ $0.50/h, no alerta nunca
   minAbsUsdPerHour: 2.0      # Umbral grueso durante warmup (mientras no hay baseline)
 
+# (#5337 CA-5) Recordatorio escalado de bloqueos humanos sin responder.
+# El aviso inicial de needs-human dispara sólo en la transición (para no
+# repetir la misma alerta en cada tick del barrido). Este cron cubre el hueco:
+# si el operador no respondió, recuerda espaciado — 2h, 6h, 24h y después cada
+# 72h — con UN mensaje agrupado por tick.
+#
+# FAIL-CLOSED: el módulo no puede destrabar nada. Su único efecto es mandar el
+# mensaje; el silencio del operador jamás auto-aprueba por vencimiento de plazo
+# (ver docs/pipeline/gates-firma-operador.md).
+human_block_reminder:
+  enabled: true              # false → el cron no se inicia
+  kill_switch: false         # true  → idem, para cortar en caliente sin editar enabled
+  tick_ms: 1800000           # 30 min. Es la resolución del recordatorio, no su frecuencia:
+                             # el escalado real lo fija REMINDER_STEPS_HOURS del módulo.
+
 # (#2892 PR-C) Alertas de consumo anómalo: canales y snooze.
 # El pulpo enchufa el detector con dos canales: Telegram (mensaje sanitizado
 # via lib/redact.js + lib/sanitize-payload.js) y banner persistente en el
@@ -1015,6 +1030,30 @@ telegram_outbound:
   sweep_stagger_ms: 3000    # Escalonado entre fallidos reencolados por el barredor — SEC-3
 
 # =============================================================================
+# #5573 — Política de reenvío de PARTES DE AUDIO (sweep de chunks TTS, #4750)
+# =============================================================================
+# SEPARADA de `telegram_outbound` (texto) a propósito. La latencia real de
+# entrega de un `.ogg` medida en producción es ~62-74s (upload multipart +
+# procesamiento serial de la cola + sleep anti rate-limit de 1200ms por
+# adjunto), contra los 5s de base que usa el texto. Reusar la política de texto
+# es lo que produjo el bug: reenvíos disparados sobre envíos todavía en vuelo →
+# el operador recibía el mismo audio 2-4 veces, y cada reenvío alargaba la cola
+# de las partes que faltaban (bola de nieve).
+#
+# `backoff_base_ms` es PROVISIONAL: se recalibra con el p50/p95 real que emite
+# `audit/telegram-voice-delivery.jsonl`. No es una constante mágica.
+#
+# Valores fuera de rango caen al default — nunca rompen el sweep.
+telegram_voice_outbound:
+  max_retries: 3            # Menos agresivo que texto: cada reenvío alarga la cola
+  backoff_base_ms: 150000   # 2.5 min > p95 observado (~74s), con margen bajo carga
+  backoff_max_ms: 900000    # Tope del backoff por intento (15 min)
+  stale_ttl_ms: 86400000    # TTL de descarte del estado de contabilidad (24h)
+  in_flight_max_ms: 600000  # SEC-A: techo absoluto de la supresión por "en vuelo" (10 min).
+                            # Sin este techo, un job atascado en trabajando/ suprimiría
+                            # el reenvío para siempre → hueco silencioso (rompe #4750).
+
+# =============================================================================
 # Notificación de entregables del pipeline (#3414)
 # =============================================================================
 # Cuando un skill notificable (guru, po, ux, planner) cierra una fase del
@@ -1290,6 +1329,27 @@ kernel:
   # aplica acá; coordinación conserva `DeleteItem` para liberar claims.
   coordinationTableName: "intrale-kernel-coordination"   # requerido para el driver real (fail-closed sin ella)
   region: "us-east-2"         # región AWS destino (ambas tablas viven acá)
+  # #5211 — Nombres de infra que necesita la matriz IAM (`kernel-iam-verify.js`).
+  # Viven acá y NO en el código por la misma razón que `tableName`: un default
+  # hardcodeado apuntaría el probe a un recurso que puede no existir, y el
+  # AccessDenied por "no existe" se lee idéntico a un Deny aplicado — la matriz
+  # reportaría un control como verificado sin haberlo probado. Fail-closed: sin
+  # estas claves, `kernel-iam-verify.js` no arma la matriz.
+  cmkAlias: "intrale-kernel-store"          # alias de la CMK que cifra ambas tablas
+  runtimePrincipal: "intrale-kernel-runtime" # usuario IAM del runtime durable
+  # #5211 (rebote de verificación) — Habilitan el chequeo de DRIFT: comparar el
+  # artefacto versionado contra la policy que AWS tiene REALMENTE adjunta. Sin
+  # esa comparación, el repo puede afirmar una postura que AWS no aplica y nadie
+  # se entera: fue exactamente lo que pasó (la policy adjunta resultó ser un
+  # documento con otros Sids, que el artefacto no modelaba).
+  #
+  # `iamAdminProfile` es DISTINTO del perfil runtime a propósito: el runtime
+  # tiene denegado `iam:GetPolicyVersion` —no debe poder leer su propia policy—
+  # así que no puede auditarse a sí mismo. Este perfil se usa SOLO para lectura.
+  # A diferencia de las dos claves de arriba, su ausencia NO es fail-closed: los
+  # probes siguen siendo válidos y el drift se reporta como "no verificado".
+  iamPolicyName: "IntraleKernelStore"        # policy adjunta al principal runtime
+  iamAdminProfile: "intrale"                 # perfil con iam:GetPolicy (solo lectura)
   durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
   # #5135 CA-1 -- Ventana de cutover SUPERVISADA. Default OFF (fail-closed: solo
   # el booleano `true` exacto la abre).
