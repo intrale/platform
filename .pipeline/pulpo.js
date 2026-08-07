@@ -19168,6 +19168,40 @@ async function mainLoop() {
     log('credential-rotation', `No se pudo iniciar el cron: ${e.message}`);
   }
 
+  // #5340 — Auditoría de accesos al vault sobre CloudTrail Event history.
+  // Accesorio y apagado por default: cualquier falla queda en el log y nunca
+  // interrumpe el loop principal del Pulpo.
+  try {
+    const vaultAccessAudit = require('./lib/vault-access-audit');
+    const cfgRoot = loadConfig() || {};
+    const auditCfg = (cfgRoot.vault && cfgRoot.vault.access_audit) || {};
+    const tickMs = Math.max(1, Number(auditCfg.poll_interval_min || 10)) * 60 * 1000;
+    const runTick = () => {
+      try {
+        const result = vaultAccessAudit.runAccessAuditTick({
+          pipelineDir: PIPELINE,
+          config: auditCfg,
+          region: cfgRoot.kernel && cfgRoot.kernel.region,
+          sourceEnv: process.env,
+          sendTelegramFn: sendTelegram,
+          log: (msg) => log('vault-access-audit', msg.replace(/^\[vault-access-audit\] /, '')),
+        });
+        if (!result.skipped) {
+          log('vault-access-audit', `Tick: ${result.records.length} acceso(s), ${result.notifications.length} alerta(s)`);
+        }
+        for (const err of result.errors || []) log('vault-access-audit', `WARN ${err.stage}: ${err.message}`);
+      } catch (err) {
+        log('vault-access-audit', `Tick excepción no capturada: ${err.message}`);
+      }
+    };
+    runTick();
+    const vaultAuditTimer = setInterval(runTick, tickMs);
+    if (typeof vaultAuditTimer.unref === 'function') vaultAuditTimer.unref();
+    log('vault-access-audit', `Auditoría iniciada: tick cada ${Math.round(tickMs / 60000)}min`);
+  } catch (e) {
+    log('vault-access-audit', `No se pudo iniciar la auditoría: ${e.message}`);
+  }
+
   // #5337 CA-5 — Recordatorio escalado de bloqueos humanos sin responder.
   //
   // El aviso inicial de needs-human vive dentro del gate `if (!yaBloqueado)` del
