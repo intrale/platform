@@ -317,6 +317,189 @@ test('#5400 el banner consume el sistema de tokens visuales', () => {
     assert.match(html, /var\(--text-secondary, #B1BAC4\)/);
 });
 
+// =============================================================================
+// #5400 (rev-8) — QA visual contra el mockup 47 (#4568). El banner rompía tres
+// reglas de copy que el propio mockup versionado en el PR declara inquebrantables.
+// =============================================================================
+
+// BLOQUEANTE rev-7: `formatRelativeAge` era de UNA unidad, así que el episodio de
+// 1h33 que ORIGINÓ el issue se mostraba como "hace 1 h" — 33 minutos de detención
+// evaporados — mientras Telegram decía "1 h 33 min" por el mismo hecho.
+test('#5400 la duración del banner va en dos unidades: 93 min es "1 h 33 min", nunca "1 h"', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    const MS_1H33 = 93 * 60_000;
+    // Mismo caso que reprodujo el QA visual: 1h33, escalado por duración (A3).
+    dc.writeArtifact(dir, {
+        causa: dc.CAUSAS.HALT_HUMANO, label: 'Pausa total del pipeline',
+        detalle: 'pausa preservada por restart', ts: NOW - MS_1H33, anomalia: false,
+        escaladoPorDuracion: true,
+    });
+    escribirEstampa(dir, NOW - MS_1H33);
+
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.relTime, 'hace 1 h 33 min');
+    assert.strictEqual(s.lastDispatchRelTime, 'hace 1 h 33 min');
+
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /Sin despachar hace 1 h 33 min/,
+        'el título tiene que llevar la duración exacta, no el redondeo');
+    assert.doesNotMatch(html, /hace 1 h(?! 33)/, 'el redondeo a una unidad está prohibido');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// Regla de copy 7 del mockup: un episodio, una conversación. Dos duraciones
+// distintas para el mismo hecho según dónde se lo mire queman la confianza en las
+// dos superficies.
+test('#5400 el banner y el aviso de Telegram cuentan el MISMO episodio con la MISMA duración', () => {
+    const watchdog = require('../wave-stall-watchdog');
+    const MS_1H33 = 93 * 60_000;
+    const enTelegram = watchdog.formatDurationEs(MS_1H33);
+    const enBanner = slices.__test__formatRelativeAge(MS_1H33);
+    assert.strictEqual(enTelegram, '1 h 33 min');
+    assert.strictEqual(enBanner, `hace ${enTelegram}`,
+        'el banner tiene que usar el MISMO formateador que el canal');
+});
+
+test('#5400 la granularidad de dos unidades se sostiene en todo el rango', () => {
+    const f = slices.__test__formatRelativeAge;
+    assert.strictEqual(f(45_000), 'hace 45 s');
+    assert.strictEqual(f(12 * 60_000), 'hace 12 min');
+    assert.strictEqual(f(60 * 60_000), 'hace 1 h', 'una hora exacta no inventa "0 min"');
+    assert.strictEqual(f(93 * 60_000), 'hace 1 h 33 min');
+    assert.strictEqual(f(185 * 60_000), 'hace 3 h 05 min', 'mockup 47 B2: minutos con cero a la izquierda');
+});
+
+// Delta 1 del rechazo: se perdía el "(sin verificar)", que es la mitigación de
+// SEC-2 hecha visible — la autoría pelada se lee como un hecho auditado.
+test('#5400 la autoría se muestra declarada, SIN VERIFICAR y con el instante de inicio', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    dc.writeArtifact(dir, {
+        causa: dc.CAUSAS.HALT_HUMANO, label: 'Pausa total del pipeline',
+        detalle: '', ts: NOW - 93 * 60_000, anomalia: false,
+    });
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW,
+        authorDeclared: 'leitolarreta', causeSinceTs: NOW - 93 * 60_000,
+    });
+
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.autoriaDeclarada, 'leitolarreta');
+    assert.strictEqual(s.autoriaDesdeTs, NOW - 93 * 60_000);
+
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /autoría declarada: leitolarreta \(sin verificar, desde \d{2}:\d{2}\)/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 sin autoría registrada el banner JAMÁS atribuye la pausa a una persona', () => {
+    const dir = tmpDir();
+    dc.writeArtifact(dir, {
+        causa: dc.CAUSAS.HALT_HUMANO, label: 'Pausa total del pipeline',
+        detalle: '', ts: 1_000_000, anomalia: false,
+    });
+    escribirStatusWatchdog(dir, { enabled: true, killSwitch: false, lastTickTs: 1_600_000 });
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
+    assert.strictEqual(s.autoriaDeclarada, null);
+
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /autoría no registrada/);
+    assert.doesNotMatch(html, /autoría declarada/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// Delta 2 del rechazo: la estampa ya persiste issue/skill/fase y el banner los
+// tiraba a la basura.
+test('#5400 el banner nombra el issue y el skill del último despacho', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstado(dir, 'last-dispatch.json', {
+        ts: NOW - 93 * 60_000, issue: '5388', skill: 'pipeline-dev', fase: 'dev',
+    });
+    dc.writeArtifact(dir, {
+        causa: dc.CAUSAS.HALT_HUMANO, label: 'Pausa total del pipeline',
+        detalle: '', ts: NOW - 93 * 60_000, anomalia: false,
+    });
+
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.lastDispatchIssue, '5388');
+    assert.strictEqual(s.lastDispatchSkill, 'pipeline-dev');
+    assert.match(s.lastDispatchClock, /^\d{2}:\d{2}$/);
+
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /Último despacho: \d{2}:\d{2} \(hace 1 h 33 min\) · #5388 pipeline-dev/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// Delta 3 del rechazo: CA-4 (backoff verificable) no era verificable MIRANDO el
+// dashboard. El operador no podía distinguir "el watchdog ya gritó" de "está mudo".
+test('#5400 el banner muestra la línea de backoff: aviso emitido, número de aviso y próximo', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    dc.writeArtifact(dir, {
+        causa: dc.CAUSAS.HALT_HUMANO, label: 'Pausa total del pipeline',
+        detalle: '', ts: NOW - 93 * 60_000, anomalia: false,
+    });
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW, action: 'alert',
+        episodeId: '4f2a', alertCount: 1,
+        lastAlertTs: NOW - 15 * 60_000, nextAlertTs: NOW + 15 * 60_000,
+    });
+
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.episodioId, '4f2a');
+    assert.strictEqual(s.avisosEmitidos, 1);
+
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /avisado a Telegram \d{2}:\d{2}/);
+    assert.match(html, /aviso 1 del episodio 4f2a/);
+    assert.match(html, /próximo aviso no antes de \d{2}:\d{2}/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 bajo el umbral el banner anuncia CUÁNDO avisaría y aclara que no destraba', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    dc.writeArtifact(dir, {
+        causa: dc.CAUSAS.HALT_HUMANO, label: 'Pausa total del pipeline',
+        detalle: '', ts: NOW - 12 * 60_000, anomalia: false,
+    });
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW, action: 'skip',
+        alertCount: 0, alertEtaTs: NOW + 33 * 60_000, alertThresholdMinutes: 45,
+    });
+
+    const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.avisoEtaMin, 33);
+    assert.strictEqual(s.avisoUmbralMin, 45);
+
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /aviso a Telegram si sigue así en 33 min \(umbral 45 min\)/);
+    assert.match(html, /el watchdog mira, no destraba/, 'SEC-3: nunca prometer destrabe');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 la línea de contexto escapa autoría, episodio e identidad del despacho', () => {
+    const html = renderDispatchCauseBanner({
+        active: true,
+        causa: dc.CAUSAS.HALT_HUMANO,
+        label: 'Pausa total',
+        autoriaDeclarada: '<img src=x onerror=alert(1)>',
+        autoriaDesdeClock: '<b>13:12</b>',
+        lastDispatchIssue: '<script>a()</script>',
+        lastDispatchSkill: '<svg onload=alert(2)>',
+        avisosEmitidos: 1,
+        episodioId: '<i>4f2a</i>',
+        avisoUltimoClock: '14:45',
+    });
+    assert.doesNotMatch(html, /<img src=x/);
+    assert.doesNotMatch(html, /<script>a\(\)/);
+    assert.doesNotMatch(html, /<svg onload/);
+    assert.doesNotMatch(html, /<i>4f2a<\/i>/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
 test('#5400 el banner usa los iconos del sprite y no emojis', () => {
     const html = renderDispatchCauseBanner({
         active: true,

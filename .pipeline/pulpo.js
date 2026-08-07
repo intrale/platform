@@ -19268,6 +19268,21 @@ async function mainLoop() {
           causeKind: decision.causeKind,
           lastDispatchTs: decision.lastDispatchTs,
           dispatching,
+          // #5400 (rev-8) — AUTORÍA de la causa, con su instante de inicio. El
+          // banner tiene que poder decir "declarada por X (sin verificar, desde
+          // 13:12)": sin el qualifier temporal ni el "sin verificar" se lee como
+          // un hecho auditado, y no lo es (SEC-2, GRACE MODE).
+          authorDeclared: cause && cause.authorDeclared != null ? cause.authorDeclared : null,
+          causeSinceTs: cause && Number.isFinite(cause.sinceTs) ? cause.sinceTs : null,
+          // #5400 (rev-8) — BACKOFF observable (CA-4 en el dashboard, no sólo en
+          // el código): id del episodio, cuántos avisos van, cuándo salió el
+          // último y cuándo puede salir el próximo.
+          episodeId: decision.episodeId,
+          alertCount: decision.alertCount,
+          lastAlertTs: decision.lastAlertTs,
+          nextAlertTs: decision.nextAlertTs,
+          alertEtaTs: decision.alertEtaTs,
+          alertThresholdMinutes: decision.alertThresholdMinutes,
           // rev-3 — `pendientes` es el conteo ELEGIBLE (el que gobierna la
           // decisión). El total y el backlog fuera de alcance viajan aparte para
           // que el dashboard pueda mostrar "13 elegibles / 241 en cola" en vez de

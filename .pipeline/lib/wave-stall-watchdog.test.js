@@ -519,3 +519,128 @@ test('con cooldown absurdo el watchdog sigue alertando tras 30 días sin despach
   assert.notEqual(d.action, 'skip', `30 días sin despachar con 5 elegibles no puede ser skip (${d.reason})`);
   assert.ok(['alert', 'escalate'].includes(d.action), `debe avisar; dio ${d.action}`);
 });
+
+// ─── #5400 (rev-8) · Episodio y backoff OBSERVABLES ────────────────────────
+//
+// El QA visual contra el mockup 47 encontró que CA-4 ("el aviso no se repite en
+// cada ciclo: hay backoff verificable") sólo era verificable leyendo el código:
+// `decide()` no devolvía ni el id del episodio, ni cuántos avisos van, ni cuándo
+// puede salir el próximo, así que el dashboard no tenía con qué mostrarlo.
+
+test('#5400 la decisión expone el episodio y el backoff proyectado', () => {
+  const f = stalledFacts({
+    now: 100 * MIN,
+    state: { lastMovementTs: 60 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+  });
+  const d = wd.decide(f);
+  assert.equal(d.action, 'alert');
+  assert.equal(d.alertCount, 1, 'el aviso recién emitido tiene que contarse ya');
+  assert.equal(d.lastAlertTs, 100 * MIN);
+  // Primer aviso => backoff x1 => próximo recién tras el cooldown completo.
+  assert.equal(d.nextAlertTs, 100 * MIN + 30 * MIN);
+  assert.equal(d.alertEtaTs, null, 'ya se avisó: la ETA del primer aviso no aplica');
+  assert.ok(d.episodeId, 'el episodio tiene que tener id');
+  assert.match(d.episodeId, /^[0-9a-z]{4}$/);
+});
+
+test('#5400 el backoff proyectado duplica la espera igual que el paso que lo aplica', () => {
+  // 3 avisos emitidos => el 4to espera cooldown * 2^(4-1)... el proyectado usa el
+  // contador YA actualizado, o sea 2^(alertCount-1) sobre el nuevo valor.
+  const f = stalledFacts({
+    now: 200 * MIN,
+    state: { lastMovementTs: 60 * MIN, lastSignature: '0:42', lastAlertTs: 100 * MIN, alertCount: 2 },
+  });
+  const d = wd.decide(f);
+  assert.equal(d.action, 'escalate');
+  assert.equal(d.alertCount, 3);
+  // 2^(3-1) = 4 => 30 min * 4 = 120 min de espera antes del próximo.
+  assert.equal(d.nextAlertTs, 200 * MIN + 120 * MIN);
+});
+
+test('#5400 sin avisos emitidos la decisión dice CUÁNDO avisaría y con qué umbral', () => {
+  const f = stalledFacts({
+    now: 70 * MIN,
+    stallMinutes: 20,
+    state: { lastMovementTs: 60 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+  });
+  const d = wd.decide(f);
+  assert.equal(d.action, 'skip');
+  assert.equal(d.reason, 'within-threshold');
+  assert.equal(d.alertCount, 0);
+  assert.equal(d.nextAlertTs, null);
+  // Arrancó a los 60 min, umbral 20 => avisaría a los 80 min.
+  assert.equal(d.alertEtaTs, 80 * MIN);
+  assert.equal(d.alertThresholdMinutes, 20);
+});
+
+test('#5400 con causa declarada vigente el umbral anunciado es el de ESCALADA', () => {
+  const f = stalledFacts({
+    now: 70 * MIN,
+    stallMinutes: 20,
+    declaredCauseEscalateMinutes: 45,
+    cause: { declared: true, kind: 'human-halt', readable: true },
+    state: { lastMovementTs: 60 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+  });
+  const d = wd.decide(f);
+  assert.equal(d.alertThresholdMinutes, 45,
+    'con causa declarada el operador espera el aviso a los 45, no a los 20');
+  assert.equal(d.alertEtaTs, 60 * MIN + 45 * MIN);
+});
+
+// Regla de copy 7 del mockup 47: un episodio, una conversación.
+test('#5400 aviso, re-aviso y recuperación llevan el MISMO id de episodio', () => {
+  const inicio = 60 * MIN;
+  const primero = wd.decide(stalledFacts({
+    now: 100 * MIN,
+    state: { lastMovementTs: inicio, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+  }));
+  const segundo = wd.decide(stalledFacts({
+    now: 200 * MIN,
+    state: { lastMovementTs: inicio, lastSignature: '0:42', lastAlertTs: 100 * MIN, alertCount: 1 },
+  }));
+  assert.equal(primero.episodeId, segundo.episodeId, 'el episodio no cambió: el id tampoco');
+  assert.ok(primero.message.includes(`Episodio ${primero.episodeId}`));
+  assert.ok(primero.message.includes('aviso 1'));
+  assert.ok(segundo.message.includes(`Episodio ${segundo.episodeId}`));
+  assert.ok(segundo.message.includes('aviso 2'));
+
+  // Y la recuperación cierra ESE episodio, no el reloj ya reiniciado.
+  const reanuda = wd.decide(stalledFacts({
+    now: 210 * MIN,
+    lastDispatchTs: 205 * MIN,
+    state: {
+      lastMovementTs: inicio, lastSignature: '0:42', lastAlertTs: 200 * MIN,
+      alertCount: 2, lastStampTs: inicio,
+    },
+  }));
+  assert.ok(reanuda.recovery, 'tiene que haber aviso de recuperación');
+  assert.equal(reanuda.recovery.episodeId, primero.episodeId);
+  assert.ok(reanuda.recovery.message.includes(`Episodio ${primero.episodeId}`));
+  assert.ok(reanuda.recovery.message.includes('2 aviso(s) emitido(s)'));
+
+  // SEC-1 — el sufijo de episodio NO puede introducir metacaracteres: un `[`
+  // suelto tumba el parseo de Markdown legacy y el aviso muere en `fallido/`.
+  // Mismo set que el resto de la suite (`_` lo cubre `escapeMarkdownLegacy` en
+  // la capa de emisión; el `needs_attention` del cierre lo prueba).
+  for (const m of [primero.message, segundo.message, reanuda.recovery.message]) {
+    assert.ok(!/[*`[\]]/.test(m), m);
+  }
+});
+
+test('#5400 el id de episodio es determinístico y cambia cuando cambia el episodio', () => {
+  assert.equal(wd.episodeId(60 * MIN), wd.episodeId(60 * MIN), 'misma entrada, mismo id');
+  assert.notEqual(wd.episodeId(60 * MIN), wd.episodeId(600 * MIN));
+  assert.equal(wd.episodeId(0), null, 'sin episodio no se inventa un id');
+  assert.equal(wd.episodeId(null), null);
+  assert.equal(wd.episodeId(-5), null);
+});
+
+// El bug que originó el rechazo, visto desde el emisor: la duración del canal.
+test('#5400 el aviso de Telegram expresa 1h33 en dos unidades, nunca redondeado', () => {
+  assert.equal(wd.formatDurationEs(93 * 60 * 1000), '1 h 33 min');
+  const d = wd.decide(stalledFacts({
+    now: 153 * MIN,
+    state: { lastMovementTs: 60 * MIN, lastSignature: '0:42', lastAlertTs: 0, alertCount: 0 },
+  }));
+  assert.ok(d.message.includes('1 h 33 min'), d.message);
+});

@@ -2860,7 +2860,11 @@ function dispatchCauseSlice(state, ctx) {
 // #5400 — Lee la estampa del último despacho efectivo. Read-only y fail-safe:
 // cualquier problema degrada a "no consta" en vez de tumbar el dashboard.
 function readLastDispatchInfo(PIPELINE, nowMs) {
-    const vacio = { lastDispatchTs: null, lastDispatchAgeMs: null, lastDispatchRelTime: null };
+    const vacio = {
+        lastDispatchTs: null, lastDispatchAgeMs: null, lastDispatchRelTime: null,
+        lastDispatchIssue: null, lastDispatchSkill: null, lastDispatchFase: null,
+        lastDispatchClock: null,
+    };
     if (!lastDispatchMod) return vacio;
     try {
         const stamp = lastDispatchMod.readLastDispatch(path.join(PIPELINE, 'state'));
@@ -2870,9 +2874,33 @@ function readLastDispatchInfo(PIPELINE, nowMs) {
             lastDispatchTs: stamp.ts,
             lastDispatchAgeMs: ageMs,
             lastDispatchRelTime: formatRelativeAge(ageMs),
+            // #5400 (rev-8) — IDENTIDAD del último despacho. La estampa ya
+            // persiste issue/skill/fase (allowlist saneada en `last-dispatch.js`)
+            // y el banner los tiraba a la basura: "hace 1 h" no le dice al
+            // operador si lo último que salió fue lo que él esperaba o algo de
+            // otra ola. Mockup 47 A3: "último despacho 13:09 · #5388 pipeline-dev".
+            lastDispatchIssue: stamp.issue != null ? String(stamp.issue) : null,
+            lastDispatchSkill: stamp.skill != null ? String(stamp.skill) : null,
+            lastDispatchFase: stamp.fase != null ? String(stamp.fase) : null,
+            lastDispatchClock: formatClock(stamp.ts),
         };
     } catch {
         return vacio;
+    }
+}
+
+// #5400 (rev-8) — Hora local HH:MM de un timestamp, para el copy del mockup
+// ("último despacho 13:09", "desde 13:12"). Fail-soft: un ts inválido devuelve
+// null y el render omite el dato en vez de mostrar "Invalid Date".
+function formatClock(ts) {
+    if (!Number.isFinite(ts) || ts <= 0) return null;
+    try {
+        const d = new Date(ts);
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${hh}:${mm}`;
+    } catch {
+        return null;
     }
 }
 
@@ -2889,6 +2917,12 @@ function readWatchdogStatus(PIPELINE, nowMs) {
         watchdogEnabled: null, watchdogDegraded: null,
         watchdogStaleTick: null, watchdogReason: null,
         watchdogAction: null,
+        // #5400 (rev-8) — autoría + backoff: sin status file no consta NADA.
+        // Ausencia de dato jamás se rellena con un default optimista.
+        autoriaDeclarada: null, autoriaDesdeTs: null, autoriaDesdeClock: null,
+        episodioId: null, avisosEmitidos: null,
+        avisoUltimoClock: null, avisoProximoClock: null,
+        avisoEtaMin: null, avisoUmbralMin: null,
     };
     let raw;
     try {
@@ -2922,20 +2956,70 @@ function readWatchdogStatus(PIPELINE, nowMs) {
         watchdogReason: !enabled
             ? (raw.killSwitch === true ? 'kill-switch' : 'apagado')
             : (stale ? 'sin latido' : (relojDegradado ? 'con reloj degradado' : null)),
+
+        // #5400 (rev-8) — AUTORÍA declarada de la causa (SEC-2). Se expone cruda
+        // y SIEMPRE junto a su instante de inicio: el render es el que agrega el
+        // rótulo "(sin verificar, desde HH:MM)". Sin dato queda en null y el
+        // banner dice "autoría no registrada" — prohibido defaultear a alguien.
+        autoriaDeclarada: typeof raw.authorDeclared === 'string' && raw.authorDeclared.trim().length > 0
+            ? raw.authorDeclared.trim()
+            : null,
+        autoriaDesdeTs: Number.isFinite(raw.causeSinceTs) && raw.causeSinceTs > 0 ? raw.causeSinceTs : null,
+        autoriaDesdeClock: formatClock(raw.causeSinceTs),
+
+        // #5400 (rev-8) — BACKOFF observable (CA-4 en el dashboard).
+        episodioId: typeof raw.episodeId === 'string' && raw.episodeId.length > 0 ? raw.episodeId : null,
+        avisosEmitidos: Number.isInteger(raw.alertCount) && raw.alertCount >= 0 ? raw.alertCount : null,
+        avisoUltimoClock: formatClock(raw.lastAlertTs),
+        avisoProximoClock: formatClock(raw.nextAlertTs),
+        // Minutos que faltan para el primer aviso del episodio, si todavía no se
+        // emitió ninguno. Negativo/0 ⇒ ya está en tiempo de avisar: se omite en
+        // vez de mostrar "en -3 min".
+        avisoEtaMin: Number.isFinite(raw.alertEtaTs) && raw.alertEtaTs > nowMs
+            ? Math.max(1, Math.round((raw.alertEtaTs - nowMs) / 60000))
+            : null,
+        avisoUmbralMin: Number.isInteger(raw.alertThresholdMinutes) && raw.alertThresholdMinutes > 0
+            ? raw.alertThresholdMinutes
+            : null,
     };
 }
 
-// #4709 — Formateo relativo compacto en español (UX-3). Determinístico y sin
-// dependencias: segundos / minutos / horas / días.
+// #4709 / #5400 (rev-8) — Formateo relativo compacto en español (UX-3).
+//
+// BLOQUEANTE que arregla (rev-8): esta función era de UNA SOLA UNIDAD
+// (`hace ${h} h`), y #5400 la reusó tal cual para el tiempo desde el último
+// despacho. Resultado: el episodio de 1h33 que ORIGINÓ este issue se mostraba
+// en el banner como "hace 1 h" — 33 minutos de detención evaporados justo en el
+// panel que mira el operador — mientras el aviso de Telegram del MISMO episodio
+// decía "1 h 33 min". Dos duraciones para un solo hecho, que es exactamente lo
+// que prohíbe la regla de copy 7 del mockup 47 ("un episodio, una conversación")
+// y lo que la regla 5 nombra por su nombre ("1 h 33 min", no "hace 1 h").
+//
+// El fix es tener UN SOLO formateador por episodio: se delega en
+// `wave-stall-watchdog.formatDurationEs()`, el mismo que produce el string
+// correcto en Telegram. Acá sólo se le antepone el "hace ".
+//
+// Fail-soft: si el módulo del watchdog no carga (dashboard corriendo sobre un
+// checkout parcial), cae a un formateador local equivalente de dos unidades —
+// nunca vuelve a la granularidad de una sola unidad.
 function formatRelativeAge(ms) {
-    const s = Math.floor(ms / 1000);
-    if (s < 60) return `hace ${s} s`;
-    const m = Math.floor(s / 60);
-    if (m < 60) return `hace ${m} min`;
-    const h = Math.floor(m / 60);
-    if (h < 24) return `hace ${h} h`;
-    const d = Math.floor(h / 24);
-    return `hace ${d} d`;
+    const total = Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : 0;
+    if (total < 60) return `hace ${total} s`;
+    try {
+        return `hace ${require('./wave-stall-watchdog').formatDurationEs(ms)}`;
+    } catch {
+        return `hace ${formatDurationDosUnidades(total)}`;
+    }
+}
+
+// Espejo local de `formatDurationEs` (dos unidades) para el caso degradado.
+// Se mantiene idéntico a propósito: divergir acá reintroduce el bug de rev-7.
+function formatDurationDosUnidades(totalSegundos) {
+    const mins = Math.floor(totalSegundos / 60);
+    if (mins < 60) return `${mins} min`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m > 0 ? `${h} h ${m} min` : `${h} h`;
 }
 
 // =============================================================================
@@ -3999,6 +4083,10 @@ module.exports = {
     quotaExhaustedSlice,
     // #4709 — causa declarada del no-despacho (cola ociosa con pendientes).
     dispatchCauseSlice,
+    // #5400 (rev-8) — expuesto SÓLO para el test de granularidad: el contrato de
+    // dos unidades ("1 h 33 min", nunca "1 h") es lo que rompió el QA visual y
+    // tiene que estar cubierto directamente, no por inferencia desde el HTML.
+    __test__formatRelativeAge: formatRelativeAge,
     providerQuotaBannerSlice,
     // #4289 — slice del presupuesto de ritmo (pacing budget) por proveedor
     pacingSlice,

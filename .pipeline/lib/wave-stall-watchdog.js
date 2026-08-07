@@ -141,7 +141,31 @@ function formatDurationEs(ms) {
   if (mins < 60) return `${mins} min`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
-  return m > 0 ? `${h} h ${m} min` : `${h} h`;
+  // Minutos con cero a la izquierda en el tramo h+m ("3 h 05 min", mockup 47 B2):
+  // alinea las duraciones en columna y evita que "3 h 5 min" se lea como un dato
+  // a medio escribir. Sin horas, el minuto va pelado ("12 min").
+  return m > 0 ? `${h} h ${String(m).padStart(2, '0')} min` : `${h} h`;
+}
+
+/**
+ * #5400 (rev-8) — Id corto del EPISODIO de detención.
+ *
+ * Regla de copy 7 del mockup 47 ("un episodio, una conversación"): el aviso, el
+ * re-aviso y la recuperación tienen que llevar el mismo identificador, y el
+ * dashboard tiene que mostrar el mismo que salió por Telegram. Sin él, dos
+ * mensajes del mismo hecho se leen como dos incidentes distintos.
+ *
+ * Se DERIVA del instante en que arrancó la detención (`lastMovementTs`), no se
+ * sortea ni se persiste: la función sigue siendo pura (requisito de `decide`),
+ * el id es estable durante todo el episodio y se renueva solo cuando el reloj
+ * de movimiento se reinicia — que es exactamente cuando el episodio cambia.
+ *
+ * @param {number} startTs  instante de inicio del episodio (ms)
+ * @returns {string|null} 4 caracteres base36, o null si no hay episodio.
+ */
+function episodeId(startTs) {
+  if (!Number.isFinite(startTs) || startTs <= 0) return null;
+  return Math.floor(startTs).toString(36).slice(-4).padStart(4, '0');
 }
 
 /**
@@ -454,10 +478,24 @@ function buildAlertMessage(p) {
     } workfile(s) en cola sin poder acotarse;`
     : `${enabled} issue(s) habilitado(s) esperando;`;
 
+  // #5400 (rev-8, regla de copy 7) — mismo id de episodio en aviso, re-aviso y
+  // recuperación, y el MISMO que muestra el banner. Sin esto, tres mensajes del
+  // mismo hecho se leen como tres incidentes.
+  //
+  // SIN corchetes ni asteriscos (SEC-1): `[` sin link cierra el parseo de
+  // Markdown legacy con `400 can't parse entities`, el servicio reintenta con el
+  // mismo `parse_mode` y el aviso de "el pipeline no despacha" muere en
+  // `fallido/`. El separador es el mismo `·` que usa el resto del mensaje.
+  const episodio = o.episodeId
+    ? ` Episodio ${String(o.episodeId)} · aviso ${
+      Number.isInteger(o.alertNumber) && o.alertNumber > 0 ? o.alertNumber : 1
+    }.`
+    : '';
+
   return (
     `${sujeto} — 0 despacho hace ${duracion}. ` +
     `Causa: ${causa} (${autoria}). ` +
-    `${espera}${enCurso} ${cierre}${reloj}`
+    `${espera}${enCurso} ${cierre}${reloj}${episodio}`
   );
 }
 
@@ -472,9 +510,16 @@ function buildAlertMessage(p) {
 function buildRecoveryMessage(p) {
   const o = p || {};
   const sujeto = o.waveKey != null ? `Ola ${String(o.waveKey)}` : 'Pipeline';
+  // Regla de copy 7: cierra el MISMO episodio que abrió el primer aviso.
+  // Sin corchetes: mismo motivo de SEC-1 que el aviso de inactividad.
+  const episodio = o.episodeId
+    ? ` Episodio ${String(o.episodeId)} · cerrado · ${
+      Number.isInteger(o.alertCount) && o.alertCount > 0 ? o.alertCount : 0
+    } aviso(s) emitido(s).`
+    : '';
   return (
     `${sujeto}: despacho reanudado. ` +
-    `La detención duró ${formatDurationEs(o.outageMs)}.`
+    `La detención duró ${formatDurationEs(o.outageMs)}.${episodio}`
   );
 }
 
@@ -676,7 +721,15 @@ function decide(facts) {
       return {
         outageMs,
         alertCount: state.alertCount,
-        message: buildRecoveryMessage({ waveKey: facts.waveKey, outageMs }),
+        // El episodio que se cierra es el que arrancó en `state.lastMovementTs`
+        // (el viejo), NO el reloj ya reiniciado por el despacho que reanudó.
+        episodeId: episodeId(state.lastMovementTs),
+        message: buildRecoveryMessage({
+          waveKey: facts.waveKey,
+          outageMs,
+          episodeId: episodeId(state.lastMovementTs),
+          alertCount: state.alertCount,
+        }),
       };
     })()
     : null;
@@ -699,26 +752,57 @@ function decide(facts) {
   }
   const lastMovementTs = nextState.lastMovementTs > 0 ? nextState.lastMovementTs : now;
 
-  const base = (action, reason, level) => ({
-    action,
-    reason,
-    level,
-    stalledMs: Math.max(0, now - lastMovementTs),
-    message: null,
-    waveKey: facts.waveKey != null ? facts.waveKey : null,
-    enabledCount,
-    stallMinutes,
-    nextState,
-    scopeBlind,
-    queuedTotal,
-    // #5400 — contexto para el brazo y el dashboard.
-    causeKind,
-    dispatching,
-    lastDispatchTs,
-    stampState,
-    stampDegraded,
-    recovery,
-  });
+  // #5400 (rev-8, CA-4 visible) — el umbral que gobierna ESTE episodio. Con causa
+  // declarada vigente manda la escalada; sin causa, el umbral normal. Es el
+  // número que el banner tiene que poder anunciar ("umbral 45 min") para que el
+  // operador sepa cuándo esperar el aviso en vez de tener que adivinarlo.
+  const umbralEpisodioMs = causeValida ? escalateMs : stallMs;
+
+  const base = (action, reason, level) => {
+    // Se leen ACÁ y no al definir el closure: la rama de alerta muta `nextState`
+    // (lastAlertTs / alertCount) ANTES de llamar a `base`, así que el dashboard
+    // tiene que ver el aviso recién emitido, no el anterior.
+    const avisos = nextState.alertCount || 0;
+    const ultimoAvisoTs = nextState.lastAlertTs > 0 ? nextState.lastAlertTs : null;
+    // Mismo backoff exponencial que aplica el paso 5, proyectado hacia adelante:
+    // si se calculara distinto, el banner prometería una hora y el canal daría
+    // otra. Un solo cálculo, una sola promesa (CA-4).
+    const proximoAvisoTs = ultimoAvisoTs != null
+      ? ultimoAvisoTs + cooldownMs * Math.min(
+        2 ** Math.max(0, avisos - 1), MAX_ALERT_BACKOFF_FACTOR
+      )
+      : null;
+    return {
+      action,
+      reason,
+      level,
+      stalledMs: Math.max(0, now - lastMovementTs),
+      message: null,
+      waveKey: facts.waveKey != null ? facts.waveKey : null,
+      enabledCount,
+      stallMinutes,
+      nextState,
+      scopeBlind,
+      queuedTotal,
+      // #5400 — contexto para el brazo y el dashboard.
+      causeKind,
+      dispatching,
+      lastDispatchTs,
+      stampState,
+      stampDegraded,
+      recovery,
+      // #5400 (rev-8) — episodio y backoff, para que CA-4 sea VISIBLE en el
+      // dashboard y no sólo verificable leyendo el código.
+      episodeId: episodeId(lastMovementTs),
+      alertCount: avisos,
+      lastAlertTs: ultimoAvisoTs,
+      nextAlertTs: proximoAvisoTs,
+      // Cuándo avisaría si la detención sigue igual. Sólo tiene sentido mientras
+      // NO se emitió el primer aviso del episodio; después manda `nextAlertTs`.
+      alertEtaTs: ultimoAvisoTs == null ? lastMovementTs + umbralEpisodioMs : null,
+      alertThresholdMinutes: Math.round(umbralEpisodioMs / 60000),
+    };
+  };
 
   // --- 2. Sin trabajo habilitado => nada que vigilar (CA-3) -------------
   // Una cola legítimamente vacía NO alerta. Criterio ya acordado: la ociosidad
@@ -799,6 +883,10 @@ function decide(facts) {
     scopeBlind,
     queuedTotal,
     authorDeclared: facts.authorDeclared,
+    // Regla de copy 7 — el mismo episodio y el mismo número de aviso que el
+    // banner del dashboard va a mostrar en su línea de backoff.
+    episodeId: decision.episodeId,
+    alertNumber: nextState.alertCount,
   });
   return decision;
 }
@@ -810,6 +898,7 @@ module.exports = {
   buildRecoveryMessage,
   describeCause,
   formatDurationEs,
+  episodeId,
   movementSignature,
   avanceActual,
   parseStallMinutes,
