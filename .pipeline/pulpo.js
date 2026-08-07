@@ -12952,6 +12952,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // se clasificó como cli_1m_context_glitch. `finish()` lo usa para devolverle
     // al orquestador `kind: 'glitch'` (vs 'final') sin re-inspeccionar nada.
     let attemptGlitch = false;
+    // #5456 — clasificación TIPADA del canal de contenido de cuota semanal
+    // (#5455). Se calcula en el handler del frame `result` (único lugar donde el
+    // frame se parsea) y se consume en `finish()` para sustituir el texto crudo
+    // ANTES de `resolveAttempt`. `null` = el turno no murió por cuota semanal.
+    let weeklyQuotaMidTurn = null;
     const startTime = Date.now();
 
     // El turno del Commander YA NO se corta por duración total.
@@ -13181,6 +13186,67 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         log('commander', `🚨 SKILL_TIMEOUT propagado al caller: ${marker}`);
         if (!lastText) lastText = marker;
       }
+      // =====================================================================
+      // #5456 — CLASIFICACIÓN TIPADA PRIMERO, antes de auditar y antes de
+      // asignar el texto del intento.
+      //
+      // Si el turno murió por el canal de contenido de cuota semanal (#5455),
+      // `finalResult.result` ES el aviso crudo de Anthropic. Ese texto no puede
+      // llegar al operador (CA-1), así que lo sustituimos por la respuesta
+      // reactiva y auditamos con un enum estable en vez de `null`.
+      //
+      // PERSISTENCIA ÚNICA: el flag ya se escribió en el handler del frame
+      // `result` por la API canónica (`setFlag` o el hook generalizado). Acá NO
+      // se vuelve a escribir estado ni se agrega otro archivo/selector.
+      //
+      // SEPARACIÓN DE SALIDAS: esta es la respuesta REACTIVA del turno perdido y
+      // se emite SIEMPRE. `shouldEmitFallbackNotice` (aviso PROACTIVO, dedup de
+      // 5 min) no se invoca desde acá — dedupear la respuesta dejaría al
+      // operador sin contestación.
+      // =====================================================================
+      let quotaMidTurnText = null;
+      if (weeklyQuotaMidTurn) {
+        try {
+          // Proveedor del próximo intento: sale del resolver real (excluyendo el
+          // agotado), NUNCA del texto de la respuesta. Si no hay uno resoluble,
+          // el formatter degrada a copy genérico.
+          //
+          // `resolveCommanderProviderQuiet` (#5456) hace dos cosas que la
+          // variante cruda NO hace y que acá son obligatorias:
+          //   1. Consulta la cadena del COMMANDER (`telegram-commander`). El
+          //      default del resolver crudo es la de Sherlock, que tiene otros
+          //      `model_override`: anunciaríamos el proveedor de una cadena
+          //      distinta de la que va a atender el turno siguiente.
+          //   2. Silencia `notify` y el audit del dispatch. Esto es una CONSULTA
+          //      para armar copy, no un spawn: con la variante cruda encolaba un
+          //      tercer mensaje al operador con ids internos (viola CA-1) sin
+          //      pasar por ningún dedup (viola CA-3) y ensuciaba el audit con un
+          //      `fallback_selected` que nunca ocurrió.
+          let nextProvider = null;
+          try {
+            const next = commanderMP.resolveCommanderProviderQuiet(
+              weeklyQuotaMidTurn.provider,
+              { pipelineDir: PIPELINE, log: () => {} },
+            );
+            if (next && next.gated !== true) nextProvider = next.provider || null;
+          } catch { /* best-effort: el copy degrada a genérico */ }
+
+          quotaMidTurnText = commanderMP.formatMidTurnQuotaResponse({
+            primaryProvider: weeklyQuotaMidTurn.provider,
+            fallbackProvider: nextProvider,
+          });
+          log('commander',
+            `🚫 #5456 cuota semanal mid-turn (provider=${weeklyQuotaMidTurn.provider}) — ` +
+            `respuesta cruda SUPRIMIDA, respondo reactivo (next=${nextProvider || 'n/a'}).`);
+        } catch (e) {
+          // Fail-safe: un bug del formatter NO puede devolver el crudo. Si algo
+          // explota respondemos el canned genérico de cuota, nunca el payload.
+          log('commander', `⚠️ #5456 formatter mid-turn falló (best-effort): ${e && e.message}`);
+          try {
+            quotaMidTurnText = commanderMP.formatMidTurnQuotaResponse({});
+          } catch { quotaMidTurnText = 'Se agotó la cuota y este turno se perdió — reenviame el mensaje.'; }
+        }
+      }
       // #3258 — CA-4 / SR-3: audit log con hash-chain del request del commander.
       // Métadata mínima (prov, tokens si los hay, latencia, hashes). NO se
       // loguea prompt ni respuesta literales — solo hashes.
@@ -13203,7 +13269,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           prompt: prompt,
           tokens: tokensSummary,
           latencyMs: Date.now() - startTime,
-          errorCode: (finalResult && finalResult.result) || lastText ? null : 'no_result',
+          // #5456 — enum ESTABLE para el turno perdido por cuota semanal. Nunca
+          // el `errorType` real ni nada del payload: el detalle tipado ya vive
+          // en el audit de `quota-exhausted.js`, server-side.
+          errorCode: quotaMidTurnText
+            ? commanderMP.QUOTA_MIDTURN_ERROR_CODE
+            : (((finalResult && finalResult.result) || lastText) ? null : 'no_result'),
           injectionHits: sanRes.hits,
           supportsToolUse: true,
           requestId: turnRequestId, // #3577 CA-S6
@@ -13218,7 +13289,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // decide retry/give_up según `kind`. `attemptGlitch` distingue el glitch
       // 1M de un resultado normal.
       let resolvedText;
-      if (finalResult?.result) {
+      if (quotaMidTurnText) {
+        // #5456 CA-1 — sustitución ANTES de `resolveAttempt`: ni `finalResult
+        // .result` ni `lastText` (que replica el mismo aviso) llegan al canal.
+        resolvedText = quotaMidTurnText;
+      } else if (finalResult?.result) {
         resolvedText = finalResult.result;
       } else if (lastText) {
         resolvedText = lastText;
@@ -13441,6 +13516,17 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                 log('commander', `[anthropic-1m] hit registrado: ${JSON.stringify(hitLog)} (total=${hitState.hits_total})`);
               } catch (e) { log('commander', `[anthropic-1m] recordHit falló (best-effort): ${e.message}`); }
             } else if (det.matched) {
+              // #5456 — CLASIFICACIÓN TIPADA (contrato de #5455). El subtipo
+              // exacto `weekly_limit_content_channel` es el ÚNICO que sustituye
+              // la respuesta del turno: el frame no trae `is_error`, así que su
+              // `result` es el aviso crudo de Anthropic (hora de reset, jerga de
+              // la cuenta) y NO puede llegar al operador. Se usa el predicado
+              // canónico exportado — acá no se re-parsea el frame ni se compara
+              // el string a mano. Cualquier otro tipo (incluido
+              // `usage_limit_error`) conserva el camino de siempre.
+              if (quotaExhausted.isWeeklyLimitContentChannel(cmdProvider, det.errorType)) {
+                weeklyQuotaMidTurn = { provider: cmdProvider };
+              }
               // #3576 CA-3: en modo generalizado el hook ya invocó setFlag
               // (con audit log unificado + hash-chain). En legacy seguimos
               // setFlag inline para no romper la fast-path histórica.
@@ -13452,7 +13538,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                   errorType: det.errorType,
                   provider: cmdProvider,
                   model: cmdModel,
-                  resetsAt: evt.resets_at,
+                  // #5456 — el canal de contenido (#5455) trae el reset PARSEADO
+                  // en `det.resetsAt`; el frame estructural no lo tiene y sigue
+                  // usando `evt.resets_at`. Sin esto el subtipo se persistía sin
+                  // su reset real y caía al default del escritor.
+                  resetsAt: det.resetsAt || evt.resets_at,
                   maxDays: (cmdProviderDef && cmdProviderDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
                   agent: 'commander',
                   rawExcerpt: line,
