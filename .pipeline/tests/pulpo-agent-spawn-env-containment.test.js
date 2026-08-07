@@ -2,7 +2,9 @@
 
 // -----------------------------------------------------------------------------
 // #5462 — Contención de credenciales en ambientes hijo: barrido de los sitios de
-// spawn de CLASE AGENTE de `.pipeline/pulpo.js`.
+// spawn de CLASE AGENTE de `.pipeline/pulpo.js` Y de los módulos de `.pipeline/lib/`
+// que crean hijos de clase agente/provider (hoy `sherlock-verifier.js` y
+// `agent-launcher.js` — ver sección 3).
 //
 // Por qué existe este archivo
 // ---------------------------
@@ -160,18 +162,21 @@ const CALLEES_CHILD = /\b(spawnSync|spawn|execFileSync|execSync|execFile|exec|fo
  * distingue `execSync(..., { env: adbEnv })` (child real) de un `env: process.env`
  * que es sólo un argumento de una función pura (ej. shouldEvaluateGate0).
  */
-function calleeDeChild(i, col) {
-    // Se reconstruye desde LINEAS (no por offsets sobre FUENTE): el archivo tiene
-    // finales de línea CRLF y cualquier aritmética de offsets se desincroniza.
+function calleeDeChild(i, col, lineas = LINEAS, callees = CALLEES_CHILD) {
+    // Se reconstruye desde `lineas` (no por offsets sobre el fuente): los archivos
+    // tienen finales de línea CRLF y cualquier aritmética de offsets se desincroniza.
     // Incluye la PROPIA línea hasta la columna del `env:` — si no, un spawn de una
     // sola línea (`spawn(x, [], { env: ... })`) no se detectaría como child y el
     // sitio se escaparía del barrido por completo.
-    const previas = LINEAS.slice(Math.max(0, i - 40), i).join('\n');
-    const slice = `${previas}\n${LINEAS[i].slice(0, col)}`;
+    const previas = lineas.slice(Math.max(0, i - 40), i).join('\n');
+    const slice = `${previas}\n${lineas[i].slice(0, col)}`;
     let encontrado = null;
-    CALLEES_CHILD.lastIndex = 0;
+    callees.lastIndex = 0;
     let m;
-    while ((m = CALLEES_CHILD.exec(slice)) !== null) {
+    while ((m = callees.exec(slice)) !== null) {
+        // `function launchAgent({ ... env ... })` es la DECLARACIÓN del helper, no
+        // una llamada: su lista de parámetros no es un sitio de spawn.
+        if (/\bfunction\s+$/.test(slice.slice(0, m.index))) continue;
         let depth = 0;
         for (let k = m.index + m[0].length - 1; k < slice.length; k++) {
             const c = slice[k];
@@ -184,18 +189,46 @@ function calleeDeChild(i, col) {
 }
 
 /** Todos los sitios de `pulpo.js` que pasan una opción `env:` a un proceso hijo. */
-function enumerarSitiosEnv() {
+function enumerarSitiosEnv(lineas = LINEAS, callees = CALLEES_CHILD) {
     const sitios = [];
-    LINEAS.forEach((linea, i) => {
+    lineas.forEach((linea, i) => {
         const m = /\benv:\s*\S/.exec(linea);
         if (!m) return;
         // `processEnv:` / `cleanEnv:` etc. no son la opción `env` de spawn.
         if (/[A-Za-z0-9_]env:\s*\S/.test(linea)) return;
-        const callee = calleeDeChild(i, m.index);
+        const callee = calleeDeChild(i, m.index, lineas, callees);
         if (!callee) return; // no es opción de un child: función pura, objeto suelto, etc.
-        sitios.push({ linea: i + 1, texto: linea.trim(), expr: expresionEnv(linea), callee });
+        sitios.push({
+            linea: i + 1, texto: linea.trim(), expr: expresionEnv(linea), callee, forma: 'explicita',
+        });
     });
     return sitios;
+}
+
+/**
+ * Igual que `enumerarSitiosEnv`, pero detecta ADEMÁS la forma abreviada de
+ * ES6 (`{ args, cwd, env, ... }`). Sin esto, un módulo que delega el env por
+ * shorthand — como `agent-launcher.js` — enumera CERO sitios y el guard de
+ * cardinalidad queda vacuo justo donde tiene que morder (#5462 H-6).
+ */
+function enumerarSitiosEnvConShorthand(lineas, callees) {
+    const sitios = enumerarSitiosEnv(lineas, callees);
+    lineas.forEach((linea, i) => {
+        if (/^\s*(\/\/|\*|\/\*)/.test(linea)) return;  // comentarios: no son código
+        // `env` como propiedad abreviada: precedido por `{` o `,` y seguido por
+        // `,` o `}`. El lookbehind excluye `cleanEnv,` / `childEnv,` (identificadores
+        // que terminan en "env") y — con el `.` — el `process.env,` que aparece como
+        // ARGUMENTO del propio filtro, que no es un sitio de spawn nuevo.
+        const m = /(?<![A-Za-z0-9_$.])env\s*(?=[,}])/.exec(linea);
+        if (!m) return;
+        if (/\benv:/.test(linea)) return;              // ya cubierto por la forma explícita
+        const callee = calleeDeChild(i, m.index, lineas, callees);
+        if (!callee) return;
+        sitios.push({
+            linea: i + 1, texto: linea.trim(), expr: 'env', callee, forma: 'shorthand',
+        });
+    });
+    return sitios.sort((a, b) => a.linea - b.linea);
 }
 
 // Utilitarios con env explícito: NO son childs de clase agente/provider. Cada
@@ -428,6 +461,160 @@ test('el filtro preserva CHAT_ID, PIPELINE_ISSUE y CLAUDE_PROJECT_DIR en los 3 s
         assert.strictEqual(env.PIPELINE_ISSUE, '5462', `${sitio}: perdió PIPELINE_ISSUE`);
         assert.strictEqual(env.CLAUDE_PROJECT_DIR, ROOT_FAKE, `${sitio}: perdió CLAUDE_PROJECT_DIR`);
     }
+});
+
+// -----------------------------------------------------------------------------
+// 3. Barrido de los módulos de `lib/` que spawnean hijos de clase agente/provider
+//
+// Por qué existe esta sección (#5462 H-6)
+// ---------------------------------------
+// La sección 1 se ancla en `pulpo.js` y por construcción NO puede ver un spawn que
+// viva en `lib/`. La pasada anterior cerró los 3 sitios de `pulpo.js`, la suite dio
+// verde y eso sugirió que la clase estaba cerrada — pero `lib/sherlock-verifier.js`
+// tenía DOS spawns de clase provider heredando `process.env` entero (H-4 anthropic,
+// H-5 openai-codex), alcanzables en la operación normal: ninguno de los dos callers
+// reales de `verify()` (`pulpo.js` 15453/15497) pasa `env`, así que corría la rama
+// sin filtrar. Un barrido de un solo archivo da una garantía de un solo archivo.
+// -----------------------------------------------------------------------------
+
+// En `lib/` el sumidero del env es `handler.buildSpawn({...})` (el spawn real toma
+// `spawnDef.spawnOpts`), así que el callee a reconocer es distinto al de `pulpo.js`.
+const CALLEES_CHILD_LIB = /\b(spawnSync|spawn|execFileSync|execSync|execFile|exec|fork|buildSpawn|safeBuildSpawn|launchAgent)\s*\(/g;
+
+/**
+ * Un sitio de clase agente está contenido si su expresión `env` (a) invoca el
+ * filtro directamente, o (b) es un identificador asignado desde el filtro en el
+ * mismo archivo. Cubre tanto el filtro inline como el `const _env = strip(...)`.
+ */
+function envPasaPorFiltro(fuente, expr) {
+    if (/stripReservedChildSecrets\s*\(/.test(expr)) return true;
+    const id = expr.trim().replace(/[,)]+$/, '');
+    if (!/^[A-Za-z_$][\w$]*$/.test(id)) return false;
+    return new RegExp(
+        `\\b${id}\\s*=\\s*buildChildEnvLib\\.stripReservedChildSecrets\\s*\\(`,
+    ).test(fuente);
+}
+
+// Módulos de `lib/` que crean hijos de clase agente/provider. Cada sitio se
+// clasifica y se le exige cardinalidad, igual que en `pulpo.js`.
+//   - `filtrado`: el módulo arma el env él mismo → DEBE pasar por build-child-env.
+//   - `delegado`: el env entra como parámetro ya filtrado por el caller. Se
+//     documenta el caller responsable; si aparece un sitio nuevo, la cardinalidad
+//     falla y fuerza revisar quién lo construye.
+const MODULOS_LIB = [
+    {
+        archivo: 'lib/sherlock-verifier.js',
+        sitios: [
+            { clase: 'filtrado', motivo: 'H-4 — spawn del fiscal en anthropic (transport=spawn)' },
+            { clase: 'filtrado', motivo: 'H-5 — spawn del fiscal en openai-codex (CLI de terceros)' },
+        ],
+    },
+    {
+        archivo: 'lib/agent-launcher.js',
+        sitios: [
+            { clase: 'delegado', motivo: 'buildSpawn determinístico — env recibido por parámetro, filtrado por el caller pulpo.js:lanzarAgenteClaude' },
+            { clase: 'delegado', motivo: 'buildSpawn de provider LLM — idem: el env llega ya filtrado desde pulpo.js' },
+        ],
+    },
+];
+
+for (const mod of MODULOS_LIB) {
+    test(`barrido lib/: ${mod.archivo} enumera exactamente ${mod.sitios.length} sitios de env de clase agente`, () => {
+        const lineas = fs.readFileSync(path.join(PIPELINE_DIR, mod.archivo), 'utf8').split(/\r?\n/);
+        const sitios = enumerarSitiosEnvConShorthand(lineas, CALLEES_CHILD_LIB);
+
+        assert.strictEqual(
+            sitios.length, mod.sitios.length,
+            `Cardinalidad de sitios de env de clase agente cambió en ${mod.archivo}: ` +
+            `esperados ${mod.sitios.length}, encontrados ${sitios.length}.\n` +
+            `Sitios detectados:\n${sitios.map((s) => `  L${s.linea} [${s.forma}] ${s.texto}`).join('\n')}\n` +
+            `Si agregaste un spawn nuevo: construí su env con build-child-env y sumalo ` +
+            `a MODULOS_LIB conscientemente (#5462).`,
+        );
+
+        const fuente = lineas.join('\n');
+        sitios.forEach((s, idx) => {
+            const esperado = mod.sitios[idx];
+            if (esperado.clase !== 'filtrado') return;
+            assert.ok(
+                envPasaPorFiltro(fuente, s.expr),
+                `${mod.archivo} L${s.linea} (${esperado.motivo}) arma un env que NO pasa por ` +
+                `stripReservedChildSecrets: ${s.texto}`,
+            );
+        });
+    });
+}
+
+test('barrido lib/: ningun modulo de lib spawnea con spread crudo de process.env sin filtrar', () => {
+    for (const mod of MODULOS_LIB) {
+        const lineas = fs.readFileSync(path.join(PIPELINE_DIR, mod.archivo), 'utf8').split(/\r?\n/);
+        const fuente = lineas.join('\n');
+        const sitios = enumerarSitiosEnvConShorthand(lineas, CALLEES_CHILD_LIB);
+        for (const s of sitios) {
+            const crudo = /\{\s*\.\.\.process\.env/.test(s.expr) || /\benv\s*\|\|\s*process\.env\b/.test(s.expr);
+            assert.ok(
+                !crudo || envPasaPorFiltro(fuente, s.expr),
+                `${mod.archivo} L${s.linea} pasa process.env crudo al child: ${s.texto}`,
+            );
+        }
+    }
+});
+
+// --- Canarios FUNCIONALES sobre los handlers reales de Sherlock (H-4 / H-5) ----
+//
+// Los asserts de arriba miran el fuente; estos ejecutan los spawn helpers REALES y
+// capturan el `env` exacto que recibiría el child. El `spawnImpl` es falso (no se
+// lanza ningún proceso) pero el armado del env es el de producción.
+
+const sherlockVerifier = require('../lib/sherlock-verifier');
+
+/** Ejecuta un spawn helper real con spawn falso y devuelve el env capturado. */
+function capturarEnvDeSpawn(fn, args) {
+    let capturado = null;
+    const spawnImpl = (cmd, argv, opts) => {
+        capturado = (opts && opts.env) || null;
+        const EventEmitter = require('node:events');
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { write() {}, end() {}, on() {} };
+        child.kill = () => {};
+        return child;
+    };
+    const envOriginal = process.env;
+    process.env = fakeOperatorEnv();
+    try {
+        // La promesa queda pendiente a propósito: el dato de interés (`spawnOpts.env`)
+        // se captura sincrónicamente en el momento del spawn. `timeoutMs: 0` no arma
+        // timer, así que no queda ningún handle abierto.
+        fn({ ...args, timeoutMs: 0, spawnImpl, cwd: ROOT_FAKE });
+    } finally {
+        process.env = envOriginal;
+    }
+    return capturado;
+}
+
+test('H-4 el spawn de Sherlock en anthropic no le pasa el material de firma al child', () => {
+    const env = capturarEnvDeSpawn(sherlockVerifier._spawnAnthropicComplete, { prompt: 'x' });
+    assert.ok(env, 'No se capturó el env del spawn: el handler no llegó a spawnear.');
+    assert.deepStrictEqual(
+        detectarFugas(env), [],
+        'El fiscal Sherlock (anthropic) recibe material reservado en su env.',
+    );
+    assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999', 'TELEGRAM_CHAT_ID debe preservarse.');
+});
+
+test('H-5 el spawn de Sherlock en openai-codex no le pasa el material de firma al CLI de terceros', () => {
+    const env = capturarEnvDeSpawn(sherlockVerifier._spawnCodexComplete, { prompt: 'x', model: 'gpt-5.4-mini' });
+    assert.ok(env, 'No se capturó el env del spawn: el handler no llegó a spawnear.');
+    assert.deepStrictEqual(
+        detectarFugas(env), [],
+        'El fiscal Sherlock (openai-codex) recibe material reservado en su env.',
+    );
+    // El filtro va DESPUÉS del merge: los extras del merge deben sobrevivir.
+    assert.strictEqual(env.CODEX_MODEL, 'gpt-5.4-mini', 'CODEX_MODEL debe preservarse tras el filtro.');
+    assert.strictEqual(env.CLAUDE_PROJECT_DIR, ROOT_FAKE, 'CLAUDE_PROJECT_DIR debe preservarse tras el filtro.');
+    assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999', 'TELEGRAM_CHAT_ID debe preservarse.');
 });
 
 test('el detector de canario atrapa el alias renombrado (auto-test del método)', () => {
