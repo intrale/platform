@@ -501,15 +501,15 @@ test('ninguna entrada con lector real en el repo puede declararse no_consumer', 
   // Ancla anti-vacuidad: el barrido tiene que estar encontrando lectores de
   // verdad. Sin esto, una regex rota deja el candado verde para siempre.
   //
-  // Actualizada al barrido real: `notify-telegram.js` lo lee como ancla del
-  // destino privado (`resolvePrivateChatId`) y `vault-shadow-metrics.js` resuelve
-  // por el mismo camino sus avisos de fallback y cumplimiento (#5450). Los dos
-  // lectores entraron a `main` sin sumarse ni al ancla ni a `consumers`, con lo
-  // cual este candado y el de "los consumers declarados no omiten ningun lector"
-  // quedaron rojos en `main` — reproducido con el `notify-telegram.js` de `main`,
-  // o sea que la deriva es previa y ajena a #5400. El ancla se pone al dia con la
-  // realidad (sigue siendo no vacia y sigue nombrando archivos que existen), y el
-  // manifiesto declara los dos consumidores nuevos.
+  // La lista se amplio de 4 a 6 en #5211. NO es un relajamiento del candado: el
+  // ancla enumera lo que el barrido ENCUENTRA en el repo, no un maximo
+  // permitido, y #5628 sumo dos lectores reales de la env var
+  // (notify-telegram.js:83, que ancla el ruteo privado fail-closed, y
+  // vault-shadow-metrics.js:293,302, que la usa como destino de los avisos
+  // privados de la ventana vault) sin declararlos en el manifiesto. Mientras el
+  // ancla siguio clavada en los 4 viejos, este assert fallaba describiendo mal
+  // el repo. El candado real -que ningun lector quede sin declarar- no se toca:
+  // se arregla en el manifiesto sumando ambos a `consumers`, no aca.
   assert.deepEqual(
     findEnvVarReaders('TELEGRAM_LEO_OPERATOR_CHAT_ID', { files: sources }),
     [
