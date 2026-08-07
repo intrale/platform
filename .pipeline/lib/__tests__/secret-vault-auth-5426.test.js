@@ -93,7 +93,7 @@ const SENAL_POR_MODO = Object.freeze({
 
 function cfgDeModo(modo) {
     return cfgBase(modo === 'assume-role-chain'
-        ? { authMode: modo, awsProfile: 'intrale-vault' }
+        ? { authMode: modo, awsProfile: 'perfil-vault-test' }
         : { authMode: modo });
 }
 
@@ -124,7 +124,7 @@ test('1b · `assume-role-chain` SIN claves estáticas en el ambiente construye O
     // deja par estático en el ambiente, su identidad vive en el perfil.
     const runner = createAwsCliVaultRunner(
         { PATH: '/bin' },   // ni una sola AWS_*
-        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'intrale-vault' }),
+        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'perfil-vault-test' }),
         { execFileSync: () => '{}' },
     );
     assert.equal(runner.kind, 'aws-cli-runner');
@@ -211,7 +211,7 @@ test('2d · `awsProfile` con un modo que no resuelve por perfil se rechaza', () 
     assert.throws(
         () => createAwsCliVaultRunner(
             { AWS_ACCESS_KEY_ID: 'k', AWS_SECRET_ACCESS_KEY: 's' },
-            cfgBase({ authMode: 'static-key', awsProfile: 'intrale-vault' }),
+            cfgBase({ authMode: 'static-key', awsProfile: 'perfil-vault-test' }),
             { execFileSync: () => '{}' },
         ),
         (e) => e.clave === 'vault.awsProfile',
@@ -261,7 +261,7 @@ test('3 · CA-11(c) · ningún mensaje dice `aws login` ni nombra un perfil del 
         // Ningún nombre de perfil del host: ni el que vino por config, ni el que
         // vino por el ambiente. Un mensaje de error viaja a logs y a Telegram.
         assert.ok(!/\bdefault\b/.test(m), `el mensaje nombra un perfil: ${m}`);
-        assert.ok(!/intrale-vault/.test(m), `el mensaje nombra un perfil: ${m}`);
+        assert.ok(!/perfil-vault-test/.test(m), `el mensaje nombra un perfil: ${m}`);
     }
 
     // Y el módulo entero dejó de sugerir la remediación que no satisfacía al
@@ -278,12 +278,12 @@ test('4 · CA-13(a) · AWS_PROFILE=default del ambiente NO llega al hijo', () =>
     let envVisto = null;
     const runner = createAwsCliVaultRunner(
         envHostil(),
-        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'intrale-vault' }),
+        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'perfil-vault-test' }),
         { execFileSync: (bin, args, opts) => { envVisto = opts.env; return '{}'; } },
     );
     runner.run('ssm', ['get-parameters-by-path', '--path', '/intrale/intrale/shared/', '--recursive']);
 
-    assert.equal(envVisto.AWS_PROFILE, 'intrale-vault', 'el perfil sale de config');
+    assert.equal(envVisto.AWS_PROFILE, 'perfil-vault-test', 'el perfil sale de config');
     assert.notEqual(envVisto.AWS_PROFILE, 'default');
     assert.ok(!JSON.stringify(envVisto).includes('default'),
         'ni una sola clave del env del hijo trae `default`');
@@ -309,19 +309,26 @@ test('4b · en modo por perfil, un par estático heredado NO le puede ganar al r
     // T2-1, entrando por la otra puerta.
     const env = buildVaultAwsEnv(
         envHostil({ AWS_ACCESS_KEY_ID: 'AKIA-DEL-PADRE', AWS_SECRET_ACCESS_KEY: 'SECRET-DEL-PADRE' }),
-        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'intrale-vault' }),
+        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'perfil-vault-test' }),
     );
     assert.equal(env.AWS_ACCESS_KEY_ID, undefined);
     assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
     assert.equal(env.AWS_SESSION_TOKEN, undefined);
-    assert.equal(env.AWS_PROFILE, 'intrale-vault');
+    assert.equal(env.AWS_PROFILE, 'perfil-vault-test');
 
     // `instance-profile` tampoco: la identidad sale de la metadata del host.
     const envIP = buildVaultAwsEnv(
         envHostil({ AWS_ACCESS_KEY_ID: 'AKIA-DEL-PADRE', AWS_SECRET_ACCESS_KEY: 'S' }),
         cfgBase({ authMode: 'instance-profile' }),
     );
-    assert.deepEqual(Object.keys(envIP), ['AWS_REGION']);
+    // Ninguna credencial heredada y ningún perfil: eso es lo que este test mide.
+    // El env NO se agota en `AWS_REGION` a propósito — lleva además el corte de
+    // la cadena por archivos, sin el cual la CLI resolvería contra `~/.aws`
+    // (ver 4e, que es donde esa parte se verifica).
+    assert.equal(envIP.AWS_ACCESS_KEY_ID, undefined);
+    assert.equal(envIP.AWS_SECRET_ACCESS_KEY, undefined);
+    assert.equal(envIP.AWS_SESSION_TOKEN, undefined);
+    assert.equal(envIP.AWS_PROFILE, undefined);
 });
 
 test('4c · los modos con material sí lo transportan, y sólo el que corresponde', () => {
@@ -358,6 +365,65 @@ test('4d · un sourceEnv que no es objeto no cae al ambiente global', () => {
     assert.deepEqual(Object.keys(env), ['AWS_REGION']);
 });
 
+test('4e · en `instance-profile` el ambiente del hijo NO puede resolver contra ~/.aws', () => {
+    // El caso negativo del modo que no deja señal: su guard en
+    // `assertVaultAuthSignal` es incondicionalmente verde (el rol se resuelve por
+    // metadata del host), así que si el builder no corta la cadena basada en
+    // ARCHIVOS, la AWS CLI arranca sin material y sin destino y baja por su
+    // cadena por defecto hasta `~/.aws/config` — resolviendo contra `[default]`,
+    // que en un host de desarrollo está muy por encima del rol de lectura.
+    const env = buildVaultAwsEnv(
+        envHostil({ AWS_ACCESS_KEY_ID: 'AKIA-PADRE', AWS_SECRET_ACCESS_KEY: 'S-PADRE' }),
+        cfgBase({ authMode: 'instance-profile' }),
+    );
+
+    // (a) sin destino de perfil: nadie le elige el principal.
+    assert.equal(env.AWS_PROFILE, undefined,
+        '`instance-profile` no resuelve por perfil: setearlo elegiría el principal');
+
+    // (b) sin material heredado: un par estático del padre no le puede ganar
+    //     al rol de instancia.
+    assert.equal(env.AWS_ACCESS_KEY_ID, undefined);
+    assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
+    assert.equal(env.AWS_SESSION_TOKEN, undefined);
+
+    // (c) el corazón del caso: la cadena por archivos apunta a algo que NO EXISTE,
+    //     y en particular NO al `~/.aws` real del host.
+    const homeAws = path.join(os.homedir(), '.aws');
+    for (const clave of ['AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE']) {
+        const valor = env[clave];
+        assert.ok(valor, `${clave} sin valor: la CLI caería a su default (~/.aws)`);
+        assert.equal(fs.existsSync(valor), false,
+            `${clave} apunta a un archivo que EXISTE: ${valor}`);
+        assert.notEqual(valor, path.join(homeAws, 'config'));
+        assert.notEqual(valor, path.join(homeAws, 'credentials'));
+    }
+
+    // (d) y no se copió nada del ambiente hostil: los valores son calculados.
+    assert.notEqual(env.AWS_CONFIG_FILE, 'C:/tmp/evil-config');
+    assert.notEqual(env.AWS_SHARED_CREDENTIALS_FILE, 'C:/tmp/evil-creds');
+    assert.equal(env.AWS_ENDPOINT_URL, undefined);
+
+    // (e) el env completo se agota en region + los dos cortes de cadena.
+    assert.deepEqual(Object.keys(env).sort(),
+        ['AWS_CONFIG_FILE', 'AWS_REGION', 'AWS_SHARED_CREDENTIALS_FILE']);
+});
+
+test('4f · ningún modo deja el ambiente sin material Y sin corte de cadena a la vez', () => {
+    // La invariante que generaliza 4e: para CADA modo del enum, o el hijo lleva
+    // material de credencial, o lleva un destino de archivos explícito. Nunca
+    // ninguno de los dos — ese hueco es el que devuelve la elección al disco.
+    for (const modo of VAULT_AUTH_MODES) {
+        const env = buildVaultAwsEnv(envHostil(SENAL_POR_MODO[modo]),
+            cfgDeModo(modo));
+        const llevaMaterial = !!(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY);
+        const llevaDestino = !!env.AWS_CONFIG_FILE && !!env.AWS_SHARED_CREDENTIALS_FILE;
+        assert.ok(llevaMaterial || llevaDestino,
+            `modo ${modo}: el hijo arranca sin material y sin destino, `
+            + `la CLI resolvería contra ~/.aws — env: ${JSON.stringify(env)}`);
+    }
+});
+
 // =============================================================================
 // 5 · CA-13(b) — la verificación corre sobre el CALL-SITE REAL de producción
 // =============================================================================
@@ -379,7 +445,7 @@ test('5 · CA-13(b) · el call-site de credentials.js no propaga AWS_PROFILE del
             vaultConfig: cfgBase({
                 enabled: true,
                 authMode: 'assume-role-chain',
-                awsProfile: 'intrale-vault',
+                awsProfile: 'perfil-vault-test',
                 hostId: 'HOST-DE-TEST',
             }),
             logger: (m) => visto.push(m),
@@ -495,8 +561,8 @@ test('7 · CA-14 · el vault tiene builder propio y no importa el compartido', (
 
     // El del vault, con la misma entrada, descarta el perfil del ambiente.
     const propio = buildVaultAwsEnv({ AWS_PROFILE: 'default', AWS_ACCESS_KEY_ID: 'k' },
-        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'intrale-vault' }));
-    assert.equal(propio.AWS_PROFILE, 'intrale-vault');
+        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'perfil-vault-test' }));
+    assert.equal(propio.AWS_PROFILE, 'perfil-vault-test');
 });
 
 // =============================================================================
@@ -515,7 +581,7 @@ test('8 · el tramo no agregó verbos: la allowlist sigue teniendo los 3 de lect
     let spawns = 0;
     const runner = createAwsCliVaultRunner(
         { PATH: '/bin' },
-        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'intrale-vault' }),
+        cfgBase({ authMode: 'assume-role-chain', awsProfile: 'perfil-vault-test' }),
         { execFileSync: () => { spawns += 1; return '{}'; } },
     );
     for (const verbo of ['put-parameter', 'delete-parameter', 'label-parameter']) {

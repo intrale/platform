@@ -207,6 +207,13 @@ const VAULT_AUTH_MATERIAL = Object.freeze({
     'static-key': Object.freeze(['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']),
 });
 
+// Nombre de archivo que NO debe existir nunca. Se usa como valor de
+// `AWS_CONFIG_FILE`/`AWS_SHARED_CREDENTIALS_FILE` en `instance-profile` para
+// cortar la cadena de credenciales basada en archivos (ver `buildVaultAwsEnv`).
+// Es un nombre neutro a propósito: este repo es público y un nombre de perfil
+// del host sería reconocimiento gratuito (REQ-SEC-5 de #5339).
+const VAULT_NO_FILE_SENTINEL = 'vault-instance-profile-sin-archivos';
+
 const MAX_CACHE_TTL_SECONDS = 300;            // SEC-6 — tope DURO, no default
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
@@ -498,7 +505,7 @@ function assertVaultAuthConfig(cfg) {
  * Arma el ambiente del proceso hijo del vault. Es el ÚNICO lugar donde se
  * decide con qué principal corre la AWS CLI que lee el vault.
  *
- * Tres invariantes, todas de #5426:
+ * Cuatro invariantes, todas de #5426:
  *
  *   T2-1.1 — `AWS_PROFILE` del ambiente de origen se DESCARTA sin excepción. El
  *            perfil sale de `vault.awsProfile`. Cerrado el bug de R2, un
@@ -508,6 +515,11 @@ function assertVaultAuthConfig(cfg) {
  *   T2-1.3 — `AWS_CONFIG_FILE` y `AWS_SHARED_CREDENTIALS_FILE` se CALCULAN con
  *            `os.homedir()`. Nunca se copian del ambiente: quien los pueda
  *            escribir redirige la resolución de identidad a archivos suyos.
+ *   T2-1.4 — `instance-profile` apunta la cadena por ARCHIVOS a una ruta
+ *            inexistente y no setea `AWS_PROFILE`. Es el único modo sin señal en
+ *            el ambiente; sin este corte el hijo sale con sólo `AWS_REGION` y la
+ *            CLI resuelve contra el `[default]` de `~/.aws`, devolviéndole al
+ *            disco la elección del principal.
  *   T2-1.5 — El material de credencial que se copia depende del modo
  *            (`VAULT_AUTH_MATERIAL`): los modos por perfil/metadata no copian
  *            ninguno, así que un par estático heredado no le puede ganar al rol.
@@ -532,6 +544,24 @@ function buildVaultAwsEnv(sourceEnv, cfg) {
         out.AWS_PROFILE = cfg.awsProfile;
         out.AWS_CONFIG_FILE = path.join(home, '.aws', 'config');
         out.AWS_SHARED_CREDENTIALS_FILE = path.join(home, '.aws', 'credentials');
+    } else if (modo === 'instance-profile') {
+        // T2-1.4 — el ÚNICO modo cuya señal no vive en el ambiente (su guard en
+        // `assertVaultAuthSignal` es incondicionalmente verde, porque el rol se
+        // resuelve por metadata del host). Sin esto el hijo arrancaba con SÓLO
+        // `AWS_REGION`: sin material y sin saber dónde buscarlo, la AWS CLI baja
+        // por su cadena por defecto hasta `~/.aws/config` y termina resolviendo
+        // contra el perfil `[default]` del disco — es decir, el ambiente le
+        // vuelve a ELEGIR el principal al vault, que es justo lo que SEC-7
+        // prohíbe, sólo que por la puerta del modo que no deja señal.
+        //
+        // Neutralizamos la cadena basada en ARCHIVOS apuntándola a una ruta que
+        // no existe (la CLI la trata como config vacía), y NO seteamos
+        // `AWS_PROFILE`: así el único origen posible de identidad es la metadata
+        // del host. El sentinel vive bajo el home —no bajo un temp world-writable—
+        // para que plantarlo exija ya tener la cuenta del operador.
+        const sentinel = path.join(os.homedir(), '.aws', VAULT_NO_FILE_SENTINEL);
+        out.AWS_CONFIG_FILE = sentinel;
+        out.AWS_SHARED_CREDENTIALS_FILE = sentinel;
     }
 
     const material = VAULT_AUTH_MATERIAL[modo] || [];
