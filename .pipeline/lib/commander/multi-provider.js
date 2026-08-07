@@ -751,7 +751,16 @@ function _buildBalancedResolution(args = {}) {
 //   - excludedProvider: string del provider del Commander a excluir. Si no
 //     coincide con ningún provider del chain, no excluye nada.
 //   - skill: nombre del skill alternativo (default 'telegram-sherlock').
+//     OJO: el default NO es neutro — resuelve sobre la cadena de Sherlock, que
+//     tiene sus propios `model_override`. Todo caller que necesite la cadena del
+//     Commander DEBE pasar `skill: COMMANDER_SKILL` explícitamente.
 //   - issue: para audit log (default 'sherlock-verify').
+//   - notify / auditLog: passthrough a `resolveSpawnWithFallback`. El resolver
+//     es puro respecto del ESTADO de cuota, pero NO respecto de sus EFECTOS de
+//     reporte: en el camino `fallback_selected` encola un aviso de Telegram con
+//     ids internos (`skill=`, `provider=`, `model=`) y escribe el audit del
+//     dispatch. Un caller que sólo CONSULTA la cadena (sin spawnear) debe
+//     neutralizar ambos — ver #5456.
 //
 // Devuelve el mismo shape que `resolveCommanderProvider`. Si la chain entera
 // queda gateada por la exclusión + cuotas reales, `source: 'all-gated'`,
@@ -769,6 +778,8 @@ function resolveCommanderProviderExcluding(excludedProvider, opts = {}) {
         fsImpl,
         now,
         issue,
+        notify,
+        auditLog,
     } = opts;
 
     const _dispatch = dispatchModule || require('../agent-launcher/dispatch-with-fallback');
@@ -804,6 +815,39 @@ function resolveCommanderProviderExcluding(excludedProvider, opts = {}) {
         quotaModule: wrappedQuota,
         onLog: typeof log === 'function' ? log : () => {},
         now,
+        notify,
+        auditLog,
+    });
+}
+
+// -----------------------------------------------------------------------------
+// #5456 — resolveCommanderProviderQuiet
+//
+// Consulta SÓLO-LECTURA de la cadena del Commander excluyendo un provider.
+// Pensada para los call sites que necesitan saber "quién atiende el próximo
+// intento" para armar copy visible, SIN que la consulta se confunda con un
+// dispatch real.
+//
+// Neutraliza los dos efectos de reporte de `resolveSpawnWithFallback`:
+//   - `notify`: evitaría una TERCERA salida al operador en el mismo turno, con
+//     ids internos de provider/model/skill (CA-1 y CA-3 de #5456).
+//   - `auditLog`: no hubo spawn, así que un `fallback_selected` en el audit del
+//     dispatch sería una entrada falsa.
+//
+// Y fija `skill`/`issue` en la cadena del COMMANDER: el default del resolver es
+// la de Sherlock, que tiene otros `model_override` y sólo coincide en orden por
+// casualidad.
+// -----------------------------------------------------------------------------
+const _AUDIT_NOOP = { appendChained: () => {} };
+const _NOTIFY_NOOP = () => false;
+
+function resolveCommanderProviderQuiet(excludedProvider, opts = {}) {
+    return resolveCommanderProviderExcluding(excludedProvider, {
+        ...opts,
+        skill: COMMANDER_SKILL,
+        issue: opts.issue || 'commander-chat',
+        notify: _NOTIFY_NOOP,
+        auditLog: _AUDIT_NOOP,
     });
 }
 
@@ -844,6 +888,92 @@ function formatFallbackNotice({ primaryProvider, fallbackProvider, errorCode, su
     }
     return lines.join('\n');
 }
+
+// -----------------------------------------------------------------------------
+// #4870 + #5456 — Mapping CERRADO de proveedores pagos → etiqueta pública.
+//
+// ÚNICA fuente de las etiquetas que ve el operador. Todo copy visible que
+// nombre un proveedor DEBE pasar por acá: un id interno (`openai-codex`,
+// `anthropic`) nunca se interpola crudo y un proveedor desconocido cae a un
+// término genérico en vez de filtrar su nombre interno (CA-1 de #5456).
+//
+// Vivía dentro del bloque de #4870; se subió acá para que #5456 lo reutilice
+// sin duplicar el vocabulario (dos allowlists divergentes = una filtra).
+// -----------------------------------------------------------------------------
+const _PAID_PROVIDER_LABELS = Object.freeze({
+    'anthropic': 'Anthropic',
+    'openai-codex': 'Codex',
+});
+
+/**
+ * Traduce un id interno de proveedor a su etiqueta pública. Fail-closed: lo
+ * que no está en la allowlist NO se interpola, se devuelve `fallbackLabel`.
+ *
+ * @param {string} provider       id interno del proveedor.
+ * @param {string|null} fallbackLabel  valor para proveedores fuera de la allowlist.
+ * @returns {string|null}
+ */
+function publicProviderLabel(provider, fallbackLabel = null) {
+    const key = String(provider == null ? '' : provider).trim().toLowerCase();
+    return _PAID_PROVIDER_LABELS[key] || fallbackLabel;
+}
+
+// -----------------------------------------------------------------------------
+// #5456 — formatMidTurnQuotaResponse — RESPUESTA REACTIVA del turno perdido.
+//
+// Contexto (#5424 / #5455): el CLI de Anthropic, al cortar por límite SEMANAL,
+// emite el aviso como TEXTO del frame final `type:result`. Sin este formatter
+// ese texto crudo — con hora de reset, jerga de la cuenta y wording de
+// Anthropic — viajaba tal cual a Telegram como si fuera la respuesta del
+// Commander. El operador quedaba sin saber que su turno se había perdido.
+//
+// Esta salida es DISTINTA del aviso proactivo (`formatFallbackNotice` +
+// `shouldEmitFallbackNotice`) y las dos deben convivir sin pisarse:
+//
+//   - REACTIVA (esta): contesta EL turno que se perdió. Se emite SIEMPRE, una
+//     vez por cada turno afectado. NUNCA se deduplica — dedupear una respuesta
+//     deja al operador sin contestación (mismo criterio que #4870).
+//   - PROACTIVA (`formatFallbackNotice`): avisa que el canal pasó a otro
+//     proveedor. Esa SÍ conserva la ventana de 5 min de
+//     `shouldEmitFallbackNotice`, porque es anti-spam de un aviso repetido.
+//
+// Contrato del copy:
+//   - CA-2: admite explícitamente que el turno no se completó y pide reenviar.
+//   - CA-1: vocabulario de allowlist cerrada (`Anthropic` / `Codex`). Sin ids
+//     internos, sin `errorType`, sin TTL, sin `resets_at`, sin metadata de la
+//     cuenta y sin una sola palabra del payload crudo.
+//   - CA-5: pasa por `redactSecretValue` (defensa en profundidad, igual #4870).
+//
+// Función PURA: no lee filesystem, no consulta el dedup, no escribe estado.
+// Por eso es segura de llamar una vez por turno sin efectos acumulativos.
+// -----------------------------------------------------------------------------
+function formatMidTurnQuotaResponse({ primaryProvider, fallbackProvider } = {}) {
+    const primary = publicProviderLabel(primaryProvider, null);
+    const fallback = publicProviderLabel(fallbackProvider, null);
+
+    // Fuera de la allowlist el copy degrada a una frase genérica: preferimos
+    // ser vagos antes que interpolar un id interno desconocido.
+    const causa = primary ? `la cuota semanal de ${primary}` : 'la cuota semanal del proveedor principal';
+    const proximo = fallback
+        ? `Ya quedo apuntando a ${fallback} para el próximo intento`
+        : 'Voy a intentar con otro proveedor en el próximo intento';
+
+    const text =
+        `⚠️ Se agotó ${causa} y este turno se perdió — no llegué a completarlo.\n` +
+        `${proximo}: reenviame el mensaje y lo retomo desde ahí.`;
+
+    const r = redactModule();
+    if (r && typeof r.redactSecretValue === 'function') {
+        try { return r.redactSecretValue(text); } catch { /* fall-through */ }
+    }
+    return text;
+}
+
+// #5456 — Enum ESTABLE del audit log para el turno perdido por cuota semanal.
+// Es el único identificador que el cierre del intento puede escribir: el
+// `errorType` real (`weekly_limit_content_channel`) queda server-side en el
+// audit de `quota-exhausted.js`, no en el dispatch del Commander.
+const QUOTA_MIDTURN_ERROR_CODE = 'quota_exhausted_midturn';
 
 // -----------------------------------------------------------------------------
 // SR-6 — Dedup window 5 min para notificaciones de fallback.
@@ -1870,16 +2000,13 @@ function cannedAllProvidersFailedResponse({ chainTried, verifiedAllFailed = fals
 // SEC-REQ-4: el copy NO interpola secrets ni valores de `credentials_env`; aun
 // así pasa por `redactSecretValue` (defensa en profundidad, belt-and-suspenders).
 // -----------------------------------------------------------------------------
-const _PAID_PROVIDER_LABELS = Object.freeze({
-    'anthropic': 'Anthropic',
-    'openai-codex': 'Codex',
-});
-
+// #5456 — `_PAID_PROVIDER_LABELS` se movió arriba (junto a `publicProviderLabel`)
+// para que la respuesta reactiva de cuota comparta la MISMA allowlist cerrada.
 function cannedReducedModeResponse({ downProviders } = {}) {
     // Mapear nombres internos de los pagos caídos a etiquetas de operador. Se
     // ignora cualquier nombre desconocido (nunca se filtra un nombre crudo).
     const labels = (Array.isArray(downProviders) ? downProviders : [])
-        .map((p) => _PAID_PROVIDER_LABELS[String(p || '').toLowerCase()] || null)
+        .map((p) => publicProviderLabel(p, null))
         .filter(Boolean);
     const uniq = [...new Set(labels)]; // dedup preservando orden
     const causa = uniq.length === 0
@@ -1912,10 +2039,13 @@ module.exports = {
     SHERLOCK_SKILL,
     INJECTION_PATTERNS,
     DEDUP_WINDOW_MS,
+    // #5456 — enum estable del audit para el turno perdido por cuota semanal.
+    QUOTA_MIDTURN_ERROR_CODE,
 
     sanitizeUserPrompt,
     resolveCommanderProvider,
     resolveCommanderProviderExcluding,
+    resolveCommanderProviderQuiet,
     // #4565 (rebote rev-1) — gate de cuota read-only: ¿toda la cadena gateada?
     isCommanderChainGated,
     // #4870 — modo reducido read-only: pagos gateados pero free sano.
@@ -1923,6 +2053,10 @@ module.exports = {
     shouldRespondReducedMode,
     formatFallbackNotice,
     shouldEmitFallbackNotice,
+    // #5456 — respuesta REACTIVA del turno perdido por cuota semanal. Pura e
+    // INDEPENDIENTE de `shouldEmitFallbackNotice`: no se deduplica nunca.
+    formatMidTurnQuotaResponse,
+    publicProviderLabel,
     auditCommanderRequest,
     readCommanderStats,
     safeBuildSpawn,
