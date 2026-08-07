@@ -19026,7 +19026,11 @@ async function mainLoop() {
     const waveWatchdog = require('./lib/wave-stall-watchdog');
     const cfgRoot0 = loadConfig() || {};
     const wwCfg0 = cfgRoot0.wave_watchdog || {};
-    const tickMs = waveWatchdog.parsePositiveInt(wwCfg0.tick_ms, 60000);
+    // #5400 (rev-7) — `tick_ms` está en MILISEGUNDOS y se parsea con el helper
+    // de milisegundos. Antes usaba `parsePositiveInt`, acotado a minutos
+    // ([1, 1440]), y el 60000 de config caía fuera de rango: devolvía 1 y el
+    // `setInterval` de abajo corría cada 1 ms en vez de cada 60 s.
+    const tickMs = waveWatchdog.parseTickMs(wwCfg0.tick_ms, waveWatchdog.DEFAULT_TICK_MS);
     const stateFile = path.join(PIPELINE, 'state', 'wave-stall-watchdog-state.json');
     const statusFile = path.join(PIPELINE, 'state', 'dispatch-watchdog-status.json');
 

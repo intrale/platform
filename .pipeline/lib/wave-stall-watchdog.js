@@ -42,6 +42,14 @@ const DEFAULT_STALL_MINUTES = 20;
 // 1440 min = 24h. Un umbral mayor a esto se trata como inválido → default.
 const MAX_STALL_MINUTES = 1440;
 const DEFAULT_COOLDOWN_MINUTES = 30;
+
+// #5400 (rev-7) — Período del brazo, en MILISEGUNDOS. Vive acá y no en
+// `pulpo.js` para que el default y su validación no puedan divergir del helper
+// que los aplica. OJO con la unidad: estas constantes son ms y NO deben
+// mezclarse con `MAX_STALL_MINUTES` (minutos) — esa mezcla fue el bug de rev-6.
+const DEFAULT_TICK_MS = 60 * 1000;        // 1 min
+const MIN_TICK_MS = 1000;                 // 1 s: piso anti-saturación del event loop
+const MAX_TICK_MS = 60 * 60 * 1000;       // 1 h: techo anti-"control apagado"
 // rev-6 (S5) — `window_minutes` FUE ELIMINADA. Se parseaba, se exponía en la
 // decisión y se inyectaba desde pulpo.js, pero NINGUNA decisión la leía: era
 // superficie de configuración que prometía un control inexistente (el
@@ -166,7 +174,7 @@ function parseStallMinutes(raw, fallback = DEFAULT_STALL_MINUTES) {
 }
 
 /**
- * Valida un entero positivo genérico (cooldown, window).
+ * Valida un entero positivo expresado en MINUTOS (cooldown).
  *
  * #5400 (rev-5, secundario 7) — Con COTA SUPERIOR. Sin ella,
  * `alert_cooldown_minutes: 999999` apagaba el control por completo (reproducido:
@@ -175,10 +183,49 @@ function parseStallMinutes(raw, fallback = DEFAULT_STALL_MINUTES) {
  * meta-bug de este mismo issue. El backoff exponencial nuevo lo amplifica hasta
  * `MAX_ALERT_BACKOFF_FACTOR` (16x). Mismo criterio fail-closed y mismo tope que
  * `parseStallMinutes`: fuera de rango cae al default, jamás desactiva.
+ *
+ * #5400 (rev-7, BLOQUEANTE) — Se llamaba `parsePositiveInt`, un nombre SIN
+ * UNIDAD, y por eso `pulpo.js` lo usó para parsear `tick_ms`, que está en
+ * MILISEGUNDOS: `parsePositiveInt(60000, 60000)` caía fuera de [1, 1440] tanto
+ * en el valor como en el fallback y devolvía `1`, con lo que el `setInterval`
+ * del brazo pasaba de 60 s a 1 ms (log: "iniciado: cada 0s"). Como el cuerpo
+ * del tick (relee y valida config.yaml, hace readdir de las colas y escribe 2
+ * archivos de estado) tarda más que el intervalo, el callback se re-encolaba
+ * sin pausa dentro del proceso del Pulpo. El nombre ahora dice la unidad para
+ * que el choque no pueda repetirse en silencio; para milisegundos existe
+ * `parseTickMs`.
  */
-function parsePositiveInt(raw, fallback) {
+function parsePositiveMinutes(raw, fallback) {
   const inRange = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_STALL_MINUTES;
   const safeFallback = inRange(fallback) ? fallback : 1;
+  if (typeof raw === 'number' && inRange(raw)) return raw;
+  if (typeof raw === 'string' && /^[0-9]+$/.test(raw.trim())) {
+    const n = parseInt(raw.trim(), 10);
+    if (inRange(n)) return n;
+  }
+  return safeFallback;
+}
+
+/**
+ * Valida el período del brazo en MILISEGUNDOS (`wave_watchdog.tick_ms`).
+ *
+ * #5400 (rev-7, BLOQUEANTE) — Helper propio, con rango en la unidad correcta:
+ * NO comparte el tope de `MAX_STALL_MINUTES`, que es de minutos y convertía
+ * cualquier valor en ms legítimo en el mínimo absoluto.
+ *
+ * Mismo criterio fail-closed que el resto del módulo, pero acotado por ambos
+ * lados y por motivos distintos:
+ *  - Piso `MIN_TICK_MS` (1 s): por debajo de eso el tick no alcanza a terminar
+ *    su propio cuerpo antes del siguiente disparo y ocupa el event loop del
+ *    Pulpo de forma continua. Es exactamente el modo de falla de rev-6.
+ *  - Techo `MAX_TICK_MS` (1 h): un período mayor deja el dead-man's switch de
+ *    facto apagado — el control existiría pero no miraría, que es el meta-bug
+ *    del issue.
+ * Fuera de rango cae al default seguro; nunca desactiva ni satura.
+ */
+function parseTickMs(raw, fallback = DEFAULT_TICK_MS) {
+  const inRange = (n) => Number.isInteger(n) && n >= MIN_TICK_MS && n <= MAX_TICK_MS;
+  const safeFallback = inRange(fallback) ? fallback : DEFAULT_TICK_MS;
   if (typeof raw === 'number' && inRange(raw)) return raw;
   if (typeof raw === 'string' && /^[0-9]+$/.test(raw.trim())) {
     const n = parseInt(raw.trim(), 10);
@@ -456,7 +503,7 @@ function buildRecoveryMessage(p) {
  */
 function decide(facts) {
   const stallMinutes = parseStallMinutes(facts.stallMinutes, DEFAULT_STALL_MINUTES);
-  const cooldownMinutes = parsePositiveInt(facts.cooldownMinutes, DEFAULT_COOLDOWN_MINUTES);
+  const cooldownMinutes = parsePositiveMinutes(facts.cooldownMinutes, DEFAULT_COOLDOWN_MINUTES);
   // #5400 — mismo parser (y por lo tanto el mismo clamp [1,1440] de SEC-3/SEC-4)
   // que `stall_minutes`: un umbral 0/negativo/gigante NO puede desactivar de
   // facto la escalada. Cae al default seguro.
@@ -766,7 +813,12 @@ module.exports = {
   movementSignature,
   avanceActual,
   parseStallMinutes,
-  parsePositiveInt,
+  // #5400 (rev-7) — `parsePositiveInt` NO se exporta más, ni siquiera como
+  // alias: era un nombre sin unidad y su única razón de existir hoy sería
+  // dejar viva la trampa que rompió el tick. Quien parsea minutos usa
+  // `parsePositiveMinutes`; quien parsea el período del brazo, `parseTickMs`.
+  parsePositiveMinutes,
+  parseTickMs,
   normalizeState,
   loadState,
   saveStateAtomic,
@@ -774,6 +826,9 @@ module.exports = {
   DEFAULT_STALL_MINUTES,
   MAX_STALL_MINUTES,
   DEFAULT_COOLDOWN_MINUTES,
+  DEFAULT_TICK_MS,
+  MIN_TICK_MS,
+  MAX_TICK_MS,
   MAX_ALERT_BACKOFF_FACTOR,
   DEFAULT_DECLARED_CAUSE_ESCALATE_MINUTES,
   DEFAULT_BUSY_GRACE_MINUTES,

@@ -429,7 +429,7 @@ test('loadState/saveStateAtomic round-trip + fail-soft ante archivo ausente', ()
 
 // ─── SEC-4 (rev-5) · el cooldown no puede apagar el control ─────────────────
 //
-// `parsePositiveInt` gobierna `alert_cooldown_minutes` y no tenía cota superior:
+// `parsePositiveMinutes` gobierna `alert_cooldown_minutes` y no tenía cota superior:
 // `999999` desactivaba el watchdog de hecho (30 días sin despachar y 5 elegibles
 // daban `skip cooldown`) — un control apagado indistinguible de "todo OK", que
 // es el meta-bug de este mismo issue. El backoff exponencial lo amplifica hasta
@@ -437,14 +437,73 @@ test('loadState/saveStateAtomic round-trip + fail-soft ante archivo ausente', ()
 // `parseStallMinutes`.
 
 test('un cooldown absurdo cae al default y NO desactiva el control', () => {
-  assert.equal(wd.parsePositiveInt(999999, 30), 30, 'fuera de rango => default');
-  assert.equal(wd.parsePositiveInt('999999', 30), 30, 'string fuera de rango => default');
-  assert.equal(wd.parsePositiveInt(wd.MAX_STALL_MINUTES, 30), wd.MAX_STALL_MINUTES, 'el tope es válido');
-  assert.equal(wd.parsePositiveInt(wd.MAX_STALL_MINUTES + 1, 30), 30, 'un minuto más ya cae al default');
-  assert.equal(wd.parsePositiveInt(45, 30), 45, 'un valor legítimo se respeta');
-  assert.equal(wd.parsePositiveInt(0, 30), 30, 'cero => default (no desactiva)');
-  assert.equal(wd.parsePositiveInt(-5, 30), 30, 'negativo => default');
-  assert.equal(wd.parsePositiveInt(null, 30), 30, 'null => default');
+  assert.equal(wd.parsePositiveMinutes(999999, 30), 30, 'fuera de rango => default');
+  assert.equal(wd.parsePositiveMinutes('999999', 30), 30, 'string fuera de rango => default');
+  assert.equal(wd.parsePositiveMinutes(wd.MAX_STALL_MINUTES, 30), wd.MAX_STALL_MINUTES, 'el tope es válido');
+  assert.equal(wd.parsePositiveMinutes(wd.MAX_STALL_MINUTES + 1, 30), 30, 'un minuto más ya cae al default');
+  assert.equal(wd.parsePositiveMinutes(45, 30), 45, 'un valor legítimo se respeta');
+  assert.equal(wd.parsePositiveMinutes(0, 30), 30, 'cero => default (no desactiva)');
+  assert.equal(wd.parsePositiveMinutes(-5, 30), 30, 'negativo => default');
+  assert.equal(wd.parsePositiveMinutes(null, 30), 30, 'null => default');
+});
+
+// ─── rev-7 (BLOQUEANTE) · el tick está en MILISEGUNDOS ─────────────────────
+//
+// El parser de minutos ([1, 1440]) se estaba usando para `tick_ms`: con el
+// `tick_ms: 60000` de config.yaml devolvía 1, y el `setInterval` del brazo
+// corría cada 1 ms en vez de cada 60 s (log de arranque: "iniciado: cada 0s").
+// Como el cuerpo del tick tarda más que eso, el callback se re-encolaba sin
+// pausa y ocupaba el event loop del Pulpo. La suite pasaba en verde porque
+// consagraba el clamp de minutos en vez de detectar el choque de unidades.
+
+test('tick_ms 60000 arranca el brazo cada 60 s, no cada 1 ms', () => {
+  const tickMs = wd.parseTickMs(60000, wd.DEFAULT_TICK_MS);
+  assert.equal(tickMs, 60000, 'el valor de config.yaml se respeta tal cual, en ms');
+  assert.equal(Math.round(tickMs / 1000), 60, 'el log de arranque debe decir 60s, no 0s');
+  // El parser de minutos es justamente el que NO sirve acá: se deja asertado
+  // para que quede explícito por qué son dos helpers y no uno.
+  assert.equal(wd.parsePositiveMinutes(60000, 60000), 1, 'el parser de minutos degradaba 60000 a 1');
+});
+
+test('el período del brazo nunca satura el event loop ni apaga el control', () => {
+  assert.equal(wd.parseTickMs(1, wd.DEFAULT_TICK_MS), wd.DEFAULT_TICK_MS,
+    '1 ms está por debajo del piso => default (no satura el loop)');
+  assert.equal(wd.parseTickMs(wd.MIN_TICK_MS - 1, wd.DEFAULT_TICK_MS), wd.DEFAULT_TICK_MS,
+    'un ms por debajo del piso ya cae al default');
+  assert.equal(wd.parseTickMs(wd.MIN_TICK_MS, wd.DEFAULT_TICK_MS), wd.MIN_TICK_MS,
+    'el piso exacto es válido');
+  assert.equal(wd.parseTickMs(wd.MAX_TICK_MS, wd.DEFAULT_TICK_MS), wd.MAX_TICK_MS,
+    'el techo exacto es válido');
+  assert.equal(wd.parseTickMs(wd.MAX_TICK_MS + 1, wd.DEFAULT_TICK_MS), wd.DEFAULT_TICK_MS,
+    'por encima del techo => default (el control no queda de facto apagado)');
+  assert.equal(wd.parseTickMs('30000', wd.DEFAULT_TICK_MS), 30000, 'string numérico válido se respeta');
+  assert.equal(wd.parseTickMs(0, wd.DEFAULT_TICK_MS), wd.DEFAULT_TICK_MS, 'cero => default');
+  assert.equal(wd.parseTickMs(-5, wd.DEFAULT_TICK_MS), wd.DEFAULT_TICK_MS, 'negativo => default');
+  assert.equal(wd.parseTickMs(null, wd.DEFAULT_TICK_MS), wd.DEFAULT_TICK_MS, 'null => default');
+  assert.equal(wd.parseTickMs('abc', wd.DEFAULT_TICK_MS), wd.DEFAULT_TICK_MS, 'no numérico => default');
+  assert.equal(wd.parseTickMs(1.5, wd.DEFAULT_TICK_MS), wd.DEFAULT_TICK_MS, 'no entero => default');
+  // Fallback inválido: no puede propagar el bug por la puerta de atrás.
+  assert.equal(wd.parseTickMs(null, 1), wd.DEFAULT_TICK_MS, 'fallback fuera de rango => DEFAULT_TICK_MS');
+});
+
+test('el tick_ms real de config.yaml da un intervalo sano', () => {
+  // Lee el config de verdad: si alguien vuelve a poner un valor patológico,
+  // este test lo levanta antes de que el Pulpo lo cargue en producción.
+  const fsReal = require('fs');
+  const pathReal = require('path');
+  const cfgPath = pathReal.join(__dirname, '..', 'config.yaml');
+  const raw = fsReal.readFileSync(cfgPath, 'utf8');
+  // Acotado al bloque `wave_watchdog:` — hay otros `tick_ms` en config.yaml
+  // (p.ej. `credential_rotation`, 1800000) y un match global agarraría el
+  // primero, testeando una clave que no es la de este brazo.
+  const bloque = raw.split(/^wave_watchdog:\s*$/m)[1];
+  assert.ok(bloque, 'el bloque wave_watchdog debe existir en config.yaml');
+  const soloBloque = bloque.split(/^[a-z_]+:/m)[0];  // corta en la próxima clave top-level
+  const m = soloBloque.match(/^\s{2}tick_ms:\s*(\d+)/m);
+  assert.ok(m, 'wave_watchdog.tick_ms debe existir en config.yaml');
+  const efectivo = wd.parseTickMs(parseInt(m[1], 10), wd.DEFAULT_TICK_MS);
+  assert.equal(efectivo, parseInt(m[1], 10), 'el valor de config no debe ser degradado por el parser');
+  assert.ok(efectivo >= wd.MIN_TICK_MS, `el intervalo efectivo (${efectivo}ms) no puede saturar el event loop`);
 });
 
 test('con cooldown absurdo el watchdog sigue alertando tras 30 días sin despachar', () => {
