@@ -264,6 +264,16 @@ test('#5400 (S1/B3) un watchdog sano que ALERTA no puede pintarse como silencio 
     assert.strictEqual(s.watchdogDegraded, false, 'el watchdog en sí está sano');
     assert.strictEqual(s.watchdogAction, 'alert');
     assert.strictEqual(s.healthySilence, false, 'alertando NO es silencio sano');
+
+    // rev-10 — ESTA es la aserción que faltaba y por la que el guard no vio la
+    // regresión: el test verificaba el CAMPO de la slice, pero el render nunca lo
+    // leía. Un campo correcto que nadie consume no protege al operador.
+    const html = renderDispatchCauseBanner(s);
+    assert.doesNotMatch(html, /nada que despachar no es una falla/,
+        'el banner NO puede declarar salud mientras el watchdog alerta');
+    assert.doesNotMatch(html, /Cola sin trabajo elegible/);
+    assert.match(html, /sin causa declarada/);
+    assert.match(html, /href="#ic-dispatch-stalled"/, 'estado "detención" del mockup 47');
     fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -274,7 +284,125 @@ test('#5400 (S1/B3) un status sin `action` no afirma silencio sano', () => {
     const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
     assert.strictEqual(s.watchdogAction, null);
     assert.strictEqual(s.healthySilence, false, 'sin decisión observada no se afirma salud');
+
+    // rev-10 — sin decisión observada el banner tampoco inventa una alerta: dice
+    // que no consta. Ausencia de dato no se rellena con un OK ni con un incendio.
+    const html = renderDispatchCauseBanner(s);
+    assert.doesNotMatch(html, /nada que despachar no es una falla/);
+    assert.match(html, /Estado del despacho sin confirmar/);
+    assert.match(html, /el watchdog no registró su última decisión/);
     fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// =============================================================================
+// rev-10 — Guard de la regresión del rechazo de QA: el banner pintaba "silencio
+// sano" en verde en el MISMO instante en que Telegram avisaba "0 despacho hace
+// 3 h. 9 issue(s) habilitado(s) esperando; 3 agente(s) en curso".
+//
+// La causa: `dispatch-cause-render.js` decidía la rama `sano` con
+// `!slice.causa && slice.watchdogDegraded === false`, o sea con la salud del
+// WATCHDOG, y nunca leía `healthySilence`. Un watchdog que alerta no está
+// degradado: está haciendo exactamente su trabajo.
+//
+// Este test recorre la cadena completa (status del tick → slice → HTML) con el
+// escenario que reprodujo el QA, y afirma sobre el TEXTO RENDERIZADO.
+// =============================================================================
+test('#5400 (rev-10) con el watchdog alertando por detención de 3 h el banner NO dice silencio sano', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    const MS_3H = 180 * 60_000;
+    // Escenario E del QA: agentes clavados en `trabajando/`, sin causa declarada
+    // (el artifact fue borrado por clearArtifact), watchdog vivo y alertando.
+    escribirEstado(dir, 'last-dispatch.json', {
+        ts: NOW - MS_3H, issue: '5388', skill: 'pipeline-dev', fase: 'dev',
+    });
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000,
+        degraded: false, action: 'alert', reason: 'unexplained-stall',
+        episodeId: '9c11', alertCount: 1,
+        lastAlertTs: NOW - 60_000, nextAlertTs: NOW + 29 * 60_000,
+        alertThresholdMinutes: 20, pendientes: 9, dispatching: 3,
+    });
+
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.causa, null, 'no hay causa declarada');
+    assert.strictEqual(s.watchdogDegraded, false, 'el watchdog está sano');
+    assert.strictEqual(s.healthySilence, false);
+
+    const html = renderDispatchCauseBanner(s);
+    const texto = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+    // 1. Lo prohibido: declarar salud mientras el control grita.
+    assert.doesNotMatch(texto, /nada que despachar no es una falla/);
+    assert.doesNotMatch(texto, /Cola sin trabajo elegible/);
+    // 2. El banner cuenta el MISMO episodio que Telegram: duración y elegibles.
+    assert.match(texto, /Cola sin despachar hace 3 h — sin causa declarada/);
+    assert.match(texto, /9 issues elegibles esperando/);
+    assert.match(texto, /#5388 pipeline-dev/);
+    // 3. Backoff verificable del mismo episodio (CA-4).
+    assert.match(texto, /aviso 1 del episodio 9c11/);
+    // 4. El chip sigue diciendo la verdad sobre el watchdog: está activo.
+    assert.match(html, /watchdog activo/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 (rev-10) una detención ESCALADA sin causa se pinta con semántica grave', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstado(dir, 'last-dispatch.json', { ts: NOW - 300 * 60_000, issue: '5388', skill: 'pipeline-dev' });
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW, degraded: false,
+        action: 'escalate', reason: 'stale-declared-cause', pendientes: 9,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /Sin despachar hace 5 h — sin causa declarada/);
+    assert.match(html, /var\(--danger/, 'escalada ⇒ semántica danger del mockup 47');
+    assert.doesNotMatch(html, /nada que despachar no es una falla/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// El caso legítimo NO se rompe: cola vacía + watchdog que decidió `skip`.
+test('#5400 (rev-10) el silencio realmente sano sigue pintándose sano', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstampa(dir, NOW - 10 * 60_000);
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW, degraded: false,
+        action: 'skip', reason: 'no-enabled-work', pendientes: 0,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.healthySilence, true);
+    const html = renderDispatchCauseBanner(s);
+    assert.match(html, /Cola sin trabajo elegible/);
+    assert.match(html, /nada que despachar no es una falla/);
+    assert.match(html, /href="#ic-health-ok"/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// Invariante de la capa de render, independiente de la slice: la rama de salud
+// se decide SÓLO por `healthySilence`. Si alguien vuelve a colgarla de
+// `watchdogDegraded`, este test cae.
+test('#5400 (rev-10) ningún estado sin `healthySilence:true` puede renderizar el copy de salud', () => {
+    const combinaciones = [
+        { watchdogDegraded: false, watchdogAction: 'alert' },
+        { watchdogDegraded: false, watchdogAction: 'escalate' },
+        { watchdogDegraded: false, watchdogAction: null },
+        { watchdogDegraded: false },
+        { watchdogDegraded: true, watchdogAction: 'skip' },
+        { watchdogDegraded: null, watchdogAction: 'skip' },
+        { watchdogDegraded: false, watchdogAction: 'skip', healthySilence: false },
+    ];
+    for (const wd of combinaciones) {
+        const html = renderDispatchCauseBanner({ active: true, causa: null, ...wd });
+        assert.doesNotMatch(html, /nada que despachar no es una falla/,
+            `pintó salud con ${JSON.stringify(wd)}`);
+    }
+    // Y con el campo en true, sí.
+    assert.match(
+        renderDispatchCauseBanner({ active: true, causa: null, healthySilence: true, watchdogDegraded: false }),
+        /nada que despachar no es una falla/,
+    );
 });
 
 test('#5400 causa y autoría se renderizan escapadas', () => {

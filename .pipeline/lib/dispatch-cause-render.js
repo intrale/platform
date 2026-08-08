@@ -131,9 +131,32 @@ function renderDispatchCauseBanner(slice) {
     if (!slice || slice.active !== true) return '';
 
     const soloWatchdog = !slice.causa;
-    const sano = soloWatchdog && slice.watchdogDegraded === false;
-    const degradado = soloWatchdog && !sano;
-    const grave = !soloWatchdog && (slice.anomalia === true || slice.escaladoPorDuracion === true);
+    // #5400 (rev-10) — El SILENCIO SANO se decide con `healthySilence`, NO con
+    // `watchdogDegraded === false`.
+    //
+    // `watchdogDegraded === false` sólo dice que el WATCHDOG está sano; no dice
+    // nada del pipeline. Un watchdog perfectamente vivo que está ALERTANDO por
+    // detención sin causa declarada caía igual en esta rama, y el banner pintaba
+    // en verde "nada que despachar no es una falla" en el mismo instante en que
+    // Telegram avisaba "0 despacho hace 3 h, 9 issue(s) esperando". Es la misma
+    // regresión que rev-6 (S1/B3) arregló en la slice, sobreviviendo una capa más
+    // arriba porque el render nunca leía el campo corregido.
+    //
+    // `healthySilence` (dashboard-slices.js) exige las DOS cosas: watchdog no
+    // degradado Y última decisión observada `skip`. Sin dato NO se afirma salud.
+    const sano = soloWatchdog && slice.healthySilence === true;
+    // Degradación del CONTROL (OFF, sin latido, reloj degradado o estado no
+    // consta): manda sobre todo lo demás, porque nada de lo que informe es
+    // confiable.
+    const degradado = soloWatchdog && !sano && slice.watchdogDegraded !== false;
+    // Watchdog sano y ALERTANDO: el parado es el pipeline, y encima nadie declaró
+    // la causa. El banner tiene que contar el mismo episodio que Telegram.
+    const detenidoSinCausa = soloWatchdog && !sano && !degradado
+        && (slice.watchdogAction === 'alert' || slice.watchdogAction === 'escalate');
+    // Watchdog sano pero sin decisión observada: no se afirma ni salud ni falla.
+    const sinDecision = soloWatchdog && !sano && !degradado && !detenidoSinCausa;
+    const grave = (!soloWatchdog && (slice.anomalia === true || slice.escaladoPorDuracion === true))
+        || (detenidoSinCausa && slice.watchdogAction === 'escalate');
     const border = sano ? COLORS.borderSubtle : (grave ? COLORS.danger : COLORS.warning);
     const background = sano ? COLORS.surface : (grave ? COLORS.dangerBg : COLORS.warningBg);
     const titleColor = sano ? COLORS.textSecondary : (grave ? COLORS.danger : COLORS.warning);
@@ -175,6 +198,25 @@ function renderDispatchCauseBanner(slice) {
         title = watchdogText;
         body = `Último despacho: ${dispatchRel} · el control no puede confirmar la salud del despacho`;
         mainIcon = icon('ic-watchdog-off', COLORS.warning);
+    } else if (detenidoSinCausa) {
+        // Estado "detención" del mockup 47 (icono `ic-dispatch-stalled` + duración
+        // desde el último despacho), con el label que corresponde cuando el
+        // artifact de causa no existe: nadie declaró por qué está parado.
+        // La duración sale de la MISMA estampa que mide el watchdog, así que el
+        // banner y Telegram no pueden divergir (regla de copy 7).
+        title = `${grave ? 'Sin despachar' : 'Cola sin despachar'}`
+            + `${slice.lastDispatchRelTime ? ` ${dispatchRel}` : ''} — sin causa declarada`;
+        body = contexto || detail || `Último despacho: ${dispatchRel}`;
+        extra = backoff || '';
+        mainIcon = icon('ic-dispatch-stalled', titleColor);
+    } else if (sinDecision) {
+        // El watchdog está vivo pero su último tick no dejó decisión registrada:
+        // no consta si despachó, si está esperando o si está por alertar.
+        // Prohibido rellenar el hueco con un OK inventado (mismo meta-bug de #5400).
+        title = 'Estado del despacho sin confirmar';
+        body = `Último despacho: ${dispatchRel} · el watchdog no registró su última decisión`;
+        extra = backoff || '';
+        mainIcon = icon('ic-dispatch-stalled', titleColor);
     } else {
         // El título lleva la DURACIÓN en dos unidades ("hace 1 h 33 min"): es el
         // número por el que existe este issue y el mismo que sale por Telegram.

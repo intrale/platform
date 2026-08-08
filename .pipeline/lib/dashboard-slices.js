@@ -2827,6 +2827,12 @@ function dispatchCauseSlice(state, ctx) {
                 relTime: null,
                 ...disp,
                 ...wd,
+                // #5400 (rev-10) — Cuántos elegibles está esperando la cola según
+                // el ÚLTIMO tick del watchdog. Sin causa declarada no hay artifact
+                // de donde sacarlo, y sin este dato el banner de una detención sin
+                // causa no podía nombrar el mismo número que el aviso de Telegram
+                // ("9 issue(s) habilitado(s) esperando").
+                elegiblesEsperando: wd.watchdogElegibles,
             };
         }
         return inactivo;
@@ -2849,9 +2855,12 @@ function dispatchCauseSlice(state, ctx) {
         relTime: ageMs != null ? formatRelativeAge(ageMs) : null,
         // #5400 — la causa sostenida demasiado tiempo ya escaló a alertable.
         escaladoPorDuracion: artifact.escaladoPorDuracion === true,
+        // rev-10 — si el artifact no lo trae, cae al conteo del último tick del
+        // watchdog (mismo número que Telegram). Sólo rellena huecos: el artifact
+        // sigue teniendo prioridad.
         elegiblesEsperando: Number.isInteger(artifact.elegiblesEsperando)
             ? artifact.elegiblesEsperando
-            : null,
+            : wd.watchdogElegibles,
         ...disp,
         ...wd,
     };
@@ -2923,6 +2932,7 @@ function readWatchdogStatus(PIPELINE, nowMs) {
         episodioId: null, avisosEmitidos: null,
         avisoUltimoClock: null, avisoProximoClock: null,
         avisoEtaMin: null, avisoUmbralMin: null,
+        watchdogElegibles: null,
     };
     let raw;
     try {
@@ -2980,6 +2990,14 @@ function readWatchdogStatus(PIPELINE, nowMs) {
             : null,
         avisoUmbralMin: Number.isInteger(raw.alertThresholdMinutes) && raw.alertThresholdMinutes > 0
             ? raw.alertThresholdMinutes
+            : null,
+
+        // #5400 (rev-10) — Elegibles esperando según el último tick (`pendientes`
+        // es el conteo ELEGIBLE, el mismo que gobierna la decisión y el mismo que
+        // viaja en el aviso de Telegram). Nombre propio para no pisar el
+        // `elegiblesEsperando` que viene del artifact cuando SÍ hay causa.
+        watchdogElegibles: Number.isInteger(raw.pendientes) && raw.pendientes >= 0
+            ? raw.pendientes
             : null,
     };
 }
