@@ -494,6 +494,17 @@ function restartComponent(name) {
 // Map en memoria por target que rechaza ráfagas < 5s (DoS auto-infligido).
 const _opsRestartHandler = require('./lib/ops-restart-handler');
 const _opsRestartRateLimiter = _opsRestartHandler.makeRateLimiter(5000);
+// #5646 (CA-9) — Cota AGREGADA: el rate-limiter de arriba es por target, así que
+// al reiniciar N componentes afectados en vez de sólo el pulpo, N targets
+// distintos pasarían la misma ráfaga. Esta cota corta el total por ventana; lo
+// que no entra queda pendiente en `stale-services.json` y lo toma el watchdog.
+const _opsRestartAggregateLimiter = _opsRestartHandler.makeAggregateLimiter(4, 60000);
+// #5646 — Marcador de servicios con código viejo. Require defensivo: si no
+// carga, el endpoint sigue funcionando como antes (restart del pulpo) y lo dice.
+let _staleServices = null;
+try { _staleServices = require('./lib/stale-services'); } catch { /* opcional */ }
+let _runtimeBoot = null;
+try { _runtimeBoot = require('./lib/runtime-boot'); } catch { /* opcional */ }
 // #4460 — Gate de defensa-en-profundidad (loopback + Origin/Referer +
 // Content-Type) para el restart del modelo operativo. Require defensivo: si no
 // carga, el endpoint dedicado responde 503 (nunca ejecuta restart sin gate).
@@ -12188,6 +12199,17 @@ function handleRequest(req, res) {
     req.on('end', () => {
       try {
         const parsed = body ? JSON.parse(body) : {};
+        // #5646 (CA-9 / REQ-SEC-5646-4) — del body se lee SÓLO `actor`. El
+        // conjunto de componentes a reiniciar se computa SERVER-SIDE a partir
+        // del diff del sync: una lista de componentes en el request se ignora
+        // por completo. Aceptarla convertiría este endpoint en un selector
+        // arbitrario de procesos a matar, a un request de distancia.
+        //
+        // #5646 (CA-3) — el HEAD previo se lee ANTES de `syncOperativoTree`:
+        // esa llamada PISA el boot marker (`operativo-sync.js`), así que
+        // después ya no queda ninguna referencia previa recuperable.
+        const _prevMarker = _runtimeBoot ? _runtimeBoot.readBootMarker({ pipelineDir: PIPELINE }) : null;
+        const _prevSha = (_prevMarker && _prevMarker.sha) ? _prevMarker.sha : null;
         // #4460 (fix rebote rev-1) — PASO CLAVE: avanzar el working tree a
         // origin/main ANTES de respawnear el Pulpo. Sin esto el restart es un
         // no-op respecto de aplicar entregas: `restartComponent` sólo hace
@@ -12197,8 +12219,10 @@ function handleRequest(req, res) {
         // drift desaparece (CA-4/CA-7). Si el sync falla, se reporta y NO se
         // reescribe el marker (el banner persiste, honesto con el operador).
         let syncMsg = '';
+        let _headSha = null;
         if (_operativoSync) {
           const sync = _operativoSync.syncOperativoTree({ repoRoot: ROOT, pipelineDir: PIPELINE });
+          _headSha = (typeof sync.sha === 'string') ? sync.sha : null;
           syncMsg = sync.ok
             ? `sync✓ ${sync.msg}`
             : `sync✗ ${sync.msg} (restart de todos modos, cambios NO aplicados hasta próximo sync)`;
@@ -12207,33 +12231,107 @@ function handleRequest(req, res) {
           syncMsg = 'sync no disponible (operativo-sync.js no cargó)';
           log('Action: restart-operativo sync → módulo operativo-sync no disponible');
         }
-        // Restart selectivo del Pulpo (el dashboard no puede matarse a sí mismo;
-        // no existe componente 'dashboard' en COMPONENTS). Tras el sync previo,
-        // el Pulpo relanzado relee el código nuevo del modelo operativo.
-        const decision = _opsRestartHandler.runRestart(
-          {
-            target: 'pulpo',
-            source: 'restart-operativo-4460',
-            sourceIp: (req.socket && req.socket.remoteAddress) || '',
-            actor: parsed.actor || '',
-          },
-          {
-            allowlist: COMPONENTS.map(c => c.name),
-            restartFn: restartComponent,
-            rateLimiter: _opsRestartRateLimiter,
-            audit: opsRestartAudit
-              ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
-              : null,
+
+        // #5646 (CA-3) — El sync avanzó el código EN DISCO de todos los
+        // servicios; los que siguen vivos quedaron con el código viejo en su
+        // require-cache. Se marcan acá y el ejecutor los relanza: los que están
+        // en COMPONENTS, este mismo endpoint; el resto (incluido el propio
+        // `dashboard`, que no puede matarse a sí mismo) queda pendiente en disco
+        // y lo relanza el watchdog, único ejecutor externo (REQ-SEC-5646-5).
+        let _afectados = [];
+        if (_staleServices && _headSha) {
+          try {
+            // Sin `prevSha` NO se puede caer al boot marker: `syncOperativoTree`
+            // ya lo pisó con el HEAD nuevo, así que el diff daría vacío y
+            // dejaría servicios stale invisibles (fail-open). Se marca todo el
+            // registro, que es el comportamiento conservador correcto.
+            const aff = _prevSha
+              ? _staleServices.computeAffectedComponents({
+                prevSha: _prevSha,
+                headSha: _headSha,
+                repoRoot: ROOT,
+                pipelineDir: PIPELINE,
+              })
+              : {
+                components: _staleServices.ALL_COMPONENTS.slice(),
+                reasons: _staleServices.ALL_COMPONENTS.map(n => ({ component: n, path: '(estado desconocido)' })),
+                headSha: _headSha,
+              };
+            _afectados = aff.components;
+            const mark = _staleServices.markAffected(_afectados, { sha: aff.headSha, reasons: aff.reasons });
+            for (const r of aff.reasons) {
+              if (!mark.marked.includes(r.component)) continue;
+              log(`restart selectivo: ${r.component} quedó con código viejo — cambio en ${r.path}`);
+            }
+            if (!_afectados.length) log('restart selectivo: sin componentes afectados por el reset');
+          } catch (e) {
+            log(`restart selectivo: no se pudo computar el conjunto afectado (${(e && e.message || '').slice(0, 80)})`);
           }
-        );
-        log(`Action: restart-operativo pulpo → ${decision.body.ok ? '✓' : '✗'} (${decision.status}) ${decision.body.msg}`);
+        }
+
+        // Targets: SIEMPRE el pulpo (contrato del botón, #4460) más los
+        // afectados que estén en la allowlist estática. El orden es el de
+        // COMPONENTS, nunca el del diff.
+        const _allowlist = COMPONENTS.map(c => c.name);
+        const _targets = _allowlist.filter(n => n === 'pulpo' || _afectados.includes(n));
+        // Cota AGREGADA por ventana (CA-9): sin esto una request pasa de matar 1
+        // proceso a matar N. Lo que no entra sigue pendiente en disco → watchdog.
+        const _cupos = _opsRestartAggregateLimiter.grant(_targets.length);
+        if (_cupos === 0) {
+          const msg429 = 'restart ignorado: se alcanzó la cota de restarts por minuto (anti-bucle). '
+            + 'Los servicios pendientes los relanza el watchdog en su próximo ciclo.';
+          log(`Action: restart-operativo → (429) ${msg429}`);
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, msg: `${syncMsg} | ${msg429}`, applied: false }));
+        }
+        const _ejecutables = _targets.slice(0, _cupos);
+        const _diferidos = _targets.slice(_cupos);
+
+        const _resultados = [];
+        for (const _target of _ejecutables) {
+          const decision = _opsRestartHandler.runRestart(
+            {
+              target: _target,
+              source: 'restart-operativo-4460',
+              sourceIp: (req.socket && req.socket.remoteAddress) || '',
+              actor: parsed.actor || '',
+            },
+            {
+              allowlist: _allowlist,
+              restartFn: restartComponent,
+              rateLimiter: _opsRestartRateLimiter,
+              audit: opsRestartAudit
+                ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
+                : null,
+            }
+          );
+          log(`Action: restart-operativo ${_target} → ${decision.body.ok ? '✓' : '✗'} (${decision.status}) ${decision.body.msg}`);
+          // El pendiente se baja SÓLO con el restart confirmado (CA-5): si falló,
+          // el componente sigue marcado y lo toma el watchdog.
+          if (decision.body.ok && _staleServices) {
+            try { _staleServices.clearComponent(_target, { pipelineDir: PIPELINE }); } catch { /* best-effort */ }
+          }
+          _resultados.push({ target: _target, decision });
+        }
+        if (_diferidos.length) {
+          log(`restart selectivo: diferidos al watchdog por cota — ${_diferidos.join(', ')}`);
+        }
+
+        // El resultado que gobierna la respuesta HTTP es el del pulpo (contrato
+        // original del botón); el resto se resume en el mensaje.
+        const _principal = (_resultados.find(r => r.target === 'pulpo') || _resultados[0]).decision;
+        const _otros = _resultados.filter(r => r.target !== 'pulpo');
+        const _extraMsg = _otros.length
+          ? ` | además: ${_otros.map(r => `${r.target} ${r.decision.body.ok ? '✓' : '✗'}`).join(', ')}`
+          : '';
+        const _pendMsg = _diferidos.length ? ` | diferidos al watchdog: ${_diferidos.join(', ')}` : '';
         // Combinar el resultado del sync con el del restart para que el operador
         // sepa si los cambios se aplicaron (sync✓) o sólo se respawneó (sync✗).
-        const combined = Object.assign({}, decision.body, {
-          msg: `${syncMsg} | ${decision.body.msg}`,
-          applied: !!(decision.body.ok && /^sync✓/.test(syncMsg)),
+        const combined = Object.assign({}, _principal.body, {
+          msg: `${syncMsg} | ${_principal.body.msg}${_extraMsg}${_pendMsg}`,
+          applied: !!(_principal.body.ok && /^sync✓/.test(syncMsg)),
         });
-        res.writeHead(decision.status, { 'Content-Type': 'application/json' });
+        res.writeHead(_principal.status, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(combined));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
