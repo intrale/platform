@@ -342,7 +342,12 @@ test('#5400 (rev-10) con el watchdog alertando por detención de 3 h el banner N
     assert.doesNotMatch(texto, /nada que despachar no es una falla/);
     assert.doesNotMatch(texto, /Cola sin trabajo elegible/);
     // 2. El banner cuenta el MISMO episodio que Telegram: duración y elegibles.
-    assert.match(texto, /Cola sin despachar hace 3 h — sin causa declarada/);
+    //    rev-12: 3 h detenido, aviso 1 ya emitido y 9 elegibles esperando es A3
+    //    (SILENCIO SOSPECHOSO) del mockup 47, así que abre con "Sin despachar" y
+    //    va en rojo. Hasta rev-11 decía "Cola sin despachar" en ámbar, igual que
+    //    una pausa de 12 min.
+    assert.match(texto, /Sin despachar hace 3 h — sin causa declarada/);
+    assert.match(html, /--danger/, 'A3 se pinta rojo, no ámbar');
     assert.match(texto, /9 issues elegibles esperando/);
     assert.match(texto, /#5388 pipeline-dev/);
     // 3. Backoff verificable del mismo episodio (CA-4).
@@ -856,5 +861,168 @@ test('#5400 (rev-11) pipeline detenido a mano hace 1 h 33 min: el banner jamás 
     assert.match(texto, /pausa total declarada por el operador/);
     assert.match(texto, /leitolarreta/);
     assert.match(texto, /9 issues elegibles esperando/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// -----------------------------------------------------------------------------
+// rev-12 — BLOQUEANTE del PO: la sección A del mockup 47 colapsaba a UN SOLO
+// COLOR. A3 (silencio sospechoso) nunca se pintaba rojo, así que una pausa total
+// de 12 min y una de 8 h con 7 elegibles esperando eran VISUALMENTE IDÉNTICAS.
+//
+// El guard anterior estaba atado a `action` y al copy, por eso no vio el colapso:
+// estos tests fijan el COLOR, que es lo que el mockup usa para el triage "sin
+// leer" ("Forma e icono primero, color después").
+// -----------------------------------------------------------------------------
+
+// Color efectivo del banner, leído como lo ve el operador.
+function colorBanner(html) {
+    if (/--danger/.test(html)) return 'ROJO';
+    if (/--warning/.test(html)) return 'AMBAR';
+    return 'CALMO';
+}
+
+test('#5400 (rev-12) A2 y A3 NO comparten color: misma causa, distinta duración', () => {
+    const NOW = 1_700_000_000_000;
+    // Ambos escenarios son la MISMA causa (pausa total humana) con los MISMOS 7
+    // elegibles esperando. Lo único que cambia es hace cuánto y si ya se avisó.
+    const escenario = (stalledMin, alertCount) => {
+        const dir = tmpDir();
+        escribirEstado(dir, 'last-dispatch.json', {
+            ts: NOW - stalledMin * 60_000, issue: '5388', skill: 'pipeline-dev', fase: 'dev',
+        });
+        escribirStatusWatchdog(dir, {
+            enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+            action: 'skip', reason: 'declared-cause:human-halt', causeKind: 'human-halt',
+            authorDeclared: 'leitolarreta', causeSinceTs: NOW - stalledMin * 60_000,
+            pendientes: 7, alertThresholdMinutes: 45, alertCount,
+            lastAlertTs: alertCount > 0 ? NOW - 5 * 60_000 : null,
+            episodeId: '4f2a',
+        });
+        const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+        const html = renderDispatchCauseBanner(s);
+        fs.rmSync(dir, { recursive: true, force: true });
+        return { html, color: colorBanner(html) };
+    };
+
+    // A2 · SILENCIO EXPLICADO — 12 min, todavía bajo el umbral, sin avisar aún.
+    const a2 = escenario(12, 0);
+    // A3 · SILENCIO SOSPECHOSO — 1 h 33 min, causa vieja, ya avisada.
+    const a3 = escenario(93, 1);
+
+    assert.strictEqual(a2.color, 'AMBAR', 'A2 (bajo umbral) va ámbar');
+    assert.strictEqual(a3.color, 'ROJO', 'A3 (causa vieja + elegibles) va rojo');
+    assert.notStrictEqual(
+        a2.color, a3.color,
+        'A2 y A3 deben distinguirse por color: el operador tiene que triar SIN LEER',
+    );
+    // Y el título acompaña al color, como en el mockup.
+    assert.match(a2.html, /Cola sin despachar hace 12 min/);
+    assert.match(a3.html, /Sin despachar hace 1 h 33 min/);
+});
+
+test('#5400 (rev-12) una pausa humana sostenida escala a rojo aunque escaladoPorDuracion sea falso', () => {
+    // Regresión exacta del rechazo: `escaladoPorDuracion` sólo se calcula para
+    // causas SILENCIOSAS y `halt_humano` es ALERTABLE, así que es falso por
+    // construcción dure 10 min u 8 horas. El color NO puede depender de él.
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    const MS_8H = 480 * 60_000;
+    escribirEstado(dir, 'last-dispatch.json', {
+        ts: NOW - MS_8H, issue: '5388', skill: 'pipeline-dev', fase: 'dev',
+    });
+    // Artifact REAL publicado por el módulo de causa (camino de producción).
+    dc.publish({
+        pipelineDir: dir,
+        now: NOW,
+        elegiblesEsperando: 7,
+        snapshot: {
+            anyLaunched: false, hayPendientes: true,
+            gatesActivos: [dc.CAUSAS.HALT_HUMANO], detalles: {},
+        },
+    });
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'skip', reason: 'cooldown', causeKind: 'human-halt',
+        pendientes: 7, alertThresholdMinutes: 45, alertCount: 3,
+        lastAlertTs: NOW - 30 * 60_000, episodeId: '4f2a',
+    });
+
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.escaladoPorDuracion, false, 'sigue falso: la causa es alertable');
+    assert.strictEqual(colorBanner(renderDispatchCauseBanner(s)), 'ROJO',
+        '8 h detenido con 7 elegibles esperando no puede pintar igual que 12 min');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 (rev-12) sin aviso registrado, el reloj escala igual pasado el umbral', () => {
+    // El backoff hace que `escalate` caiga en ticks aislados. La gravedad no
+    // puede depender del tick instantáneo: acá el watchdog está en `cooldown`
+    // y sin `alertCount`, pero lleva 3 h detenido con trabajo esperando.
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstado(dir, 'last-dispatch.json', {
+        ts: NOW - 185 * 60_000, issue: '5388', skill: 'pipeline-dev',
+    });
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'skip', reason: 'cooldown', causeKind: 'human-halt',
+        pendientes: 7, alertThresholdMinutes: 45,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(colorBanner(renderDispatchCauseBanner(s)), 'ROJO');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 (rev-12) la cola vacía NUNCA se pinta roja por más que lleve horas', () => {
+    // No-regresión de CA-3 / A1: sin trabajo elegible esperando, un pipeline
+    // quieto es correcto. La escalada por reloj exige elegibles > 0.
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstampa(dir, NOW - 480 * 60_000);
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'skip', reason: 'no-enabled-work', pendientes: 0,
+        alertThresholdMinutes: 45,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.healthySilence, true);
+    assert.strictEqual(colorBanner(renderDispatchCauseBanner(s)), 'CALMO');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 (rev-12) el watchdog degradado se mantiene ámbar (A4), no escala a rojo', () => {
+    // A4 tiene color propio en el mockup: el control apagado se muestra, pero no
+    // se disfraza del incidente A3.
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstampa(dir, NOW - 480 * 60_000);
+    escribirStatusWatchdog(dir, {
+        enabled: false, killSwitch: false, lastTickTs: NOW - 20_000, degraded: true,
+        reason: 'apagado', pendientes: 7,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(colorBanner(renderDispatchCauseBanner(s)), 'AMBAR');
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 (rev-12) A2 sin artifact NOMBRA la causa, no sólo el umbral', () => {
+    // Divergencia secundaria del rechazo: `within-threshold` decía "todavía
+    // dentro del umbral de vigilancia" y se guardaba el `causeKind` que ya
+    // tenía. El mockup A2 nombra "Pausa total del pipeline".
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstampa(dir, NOW - 12 * 60_000);
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'skip', reason: 'within-threshold', causeKind: 'human-halt',
+        pendientes: 7, alertThresholdMinutes: 45,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.watchdogCauseKind, 'human-halt');
+    const html = renderDispatchCauseBanner(s);
+    const texto = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    assert.match(texto, /pausa total declarada por el operador/);
+    assert.match(texto, /todavía dentro del umbral de vigilancia/);
+    assert.strictEqual(colorBanner(html), 'AMBAR', 'bajo umbral sigue siendo A2');
     fs.rmSync(dir, { recursive: true, force: true });
 });

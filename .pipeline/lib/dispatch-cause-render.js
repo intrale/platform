@@ -141,6 +141,56 @@ function lineaBackoff(slice) {
     return null;
 }
 
+// #5400 (rev-12) — Umbral de gravedad por defecto cuando el watchdog no reporta
+// el suyo. Mismo valor que `DEFAULT_SILENT_ESCALATE_MS` del módulo de causa (45
+// min): no se inventa una constante nueva para el mismo concepto.
+const UMBRAL_GRAVEDAD_FALLBACK_MS = 45 * 60 * 1000;
+
+/**
+ * #5400 (rev-12, BLOQUEANTE PO) — ¿La detención ya es SOSPECHOSA (A3) o todavía
+ * está EXPLICADA (A2)?
+ *
+ * La sección A del mockup 47 separa A2 de A3 por una sola pregunta: ¿la
+ * detención dejó de estar "por debajo del umbral" TENIENDO trabajo esperando?
+ *   · A2 SILENCIO EXPLICADO  — causa declarada, todavía bajo umbral → ÁMBAR
+ *   · A3 SILENCIO SOSPECHOSO — causa vieja + elegibles esperando    → ROJO
+ *
+ * Hasta rev-11 el rojo dependía de `escaladoPorDuracion`, que `dispatch-cause`
+ * calcula SÓLO para causas silenciosas (`esSilenciosa = !anomalia &&
+ * !CAUSAS_ALERTABLES.has(causa)`). `halt_humano` ESTÁ en `CAUSAS_ALERTABLES`, así
+ * que el flag era falso POR CONSTRUCCIÓN: una pausa total con 7 elegibles
+ * esperando pintaba el MISMO ámbar a los 12 min que a las 8 h. Es el defecto del
+ * propio issue una capa más arriba — 1 h 33 min pasando desapercibidos.
+ * El otro camino (sólo-watchdog) ataba el rojo a `action === 'escalate'`, que con
+ * el backoff 30→60→120→240 cae en ticks AISLADOS: 3 de 481 minutos en rojo.
+ *
+ * La severidad ahora deriva de lo que el operador necesita para triar SIN LEER:
+ * hace cuánto que no despacha CON trabajo esperando. Dos señales, las dos ya
+ * expuestas por el slice y ninguna atada al tick instantáneo.
+ */
+function detencionSostenida(slice) {
+    // 1. El watchdog YA avisó por este episodio. Por contrato sólo alerta con
+    //    trabajo elegible esperando, así que es A3 por definición del mockup
+    //    ("avisado a Telegram 14:45 · aviso 1 del episodio 4f2a").
+    if (Number.isInteger(slice.avisosEmitidos) && slice.avisosEmitidos > 0) return true;
+
+    // 2. Sin aviso registrado manda el reloj — pero sólo si CONSTA que hay
+    //    trabajo esperando: con la cola vacía nunca se pinta rojo (mockup A1).
+    //    Ausencia de dato no habilita la escalada.
+    const elegibles = slice.elegiblesEsperando;
+    if (!Number.isInteger(elegibles) || elegibles <= 0) return false;
+
+    const stalledMs = Number.isFinite(slice.lastDispatchAgeMs) ? slice.lastDispatchAgeMs : null;
+    if (stalledMs == null) return false;
+
+    // El umbral es el DEL PROPIO WATCHDOG (el mismo que anuncia la línea de
+    // backoff), para que banner y aviso no puedan discrepar (regla de copy 7).
+    const umbralMs = Number.isInteger(slice.avisoUmbralMin) && slice.avisoUmbralMin > 0
+        ? slice.avisoUmbralMin * 60000
+        : UMBRAL_GRAVEDAD_FALLBACK_MS;
+    return stalledMs >= umbralMs;
+}
+
 /** Conteo de elegibles esperando, en el copy del mockup ("7 issues elegibles esperando"). */
 function lineaElegibles(slice) {
     const n = slice.elegiblesEsperando;
@@ -188,8 +238,13 @@ function renderDispatchCauseBanner(slice) {
     // Watchdog sano pero sin decisión observada: no se afirma ni salud ni falla.
     const sinDecision = soloWatchdog && !sano && !degradado && !detenidoSinCausa
         && !detenidoEnSkip;
-    const grave = (!soloWatchdog && (slice.anomalia === true || slice.escaladoPorDuracion === true))
-        || (detenidoSinCausa && slice.watchdogAction === 'escalate');
+    // #5400 (rev-12) — `sano` (A1) y `degradado` (A4) tienen color propio en el
+    // mockup y no escalan a rojo. Para todo lo demás —que es "el pipeline está
+    // parado"— la gravedad la decide `detencionSostenida`, no el tick actual.
+    const grave = !sano && !degradado
+        && ((!soloWatchdog && (slice.anomalia === true || slice.escaladoPorDuracion === true))
+            || (detenidoSinCausa && slice.watchdogAction === 'escalate')
+            || detencionSostenida(slice));
     const border = sano ? COLORS.borderSubtle : (grave ? COLORS.danger : COLORS.warning);
     const background = sano ? COLORS.surface : (grave ? COLORS.dangerBg : COLORS.warningBg);
     const titleColor = sano ? COLORS.textSecondary : (grave ? COLORS.danger : COLORS.warning);
@@ -268,11 +323,20 @@ function renderDispatchCauseBanner(slice) {
                 ? escapeHtmlText(causaWd)
                 : `causa declarada: ${escapeHtmlText(reason.slice('declared-cause:'.length))}`;
         } else if (reason === 'within-threshold') {
-            motivo = 'todavía dentro del umbral de vigilancia';
+            // #5400 (rev-12, divergencia secundaria PO) — A2 del mockup NOMBRA la
+            // causa ("Pausa total del pipeline"), no sólo el estado del umbral.
+            // `watchdogCauseKind` ya viajaba en el slice y se tiraba a la basura,
+            // así que el banner decía menos que el dato que tenía a mano.
+            motivo = causaWd
+                ? `${escapeHtmlText(causaWd)} — todavía dentro del umbral de vigilancia`
+                : 'todavía dentro del umbral de vigilancia';
         } else {
             motivo = causaWd ? escapeHtmlText(causaWd) : 'sin causa declarada';
         }
-        title = `Cola sin despachar${slice.lastDispatchRelTime ? ` ${dispatchRel}` : ''} — ${motivo}`;
+        // #5400 (rev-12) — El prefijo sigue a la severidad igual que en las otras
+        // ramas: A3 abre con "Sin despachar" (mockup), A2 con "Cola sin despachar".
+        title = `${grave ? 'Sin despachar' : 'Cola sin despachar'}`
+            + `${slice.lastDispatchRelTime ? ` ${dispatchRel}` : ''} — ${motivo}`;
         body = contexto || detail || `Último despacho: ${dispatchRel}`;
         extra = backoff || '';
         mainIcon = icon('ic-dispatch-stalled', titleColor);
