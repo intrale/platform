@@ -481,12 +481,18 @@ sección `## Screenshots & Mockups` con mockup esperado adjunto:
 2. **Sanitizar la captura** con `redact()` del módulo `.pipeline/lib/handoff.js`
    antes de adjuntarla a evidencia o rejection report (CA-9 del issue #3383):
    - Tokens JWT, AWS keys, emails reales, URLs firmadas, tarjetas de prueba.
-3. **Comparar visual: mockup vs screenshot**. Identificar diferencias
-   objetivables (citando tokens, números, patrones — nunca "no se ve bien").
+3. **Recorrer el mockup completo en dos tiempos**:
+   - Enumerar primero todas sus secciones o elementos (`A`, `B`, `C` o el índice declarado).
+   - Comparar después el render sección por sección, registrando `verificada: sí/no`,
+     motivo específico para cada sección no verificada y todos los desvíos objetivables.
+   - Está prohibido el early-exit: el barrido se completa aunque el primer hallazgo ya
+     determine rechazo.
 4. **Si difiere** — emitir rejection report con bloque side-by-side:
-   - Llamar `rejection-report.js` pasando `data.visualComparison` con
-     `mockup`, `delivery`, `diffs[{title,description,impact}]`,
-     `suggestedAction`.
+   - Escribir `qa/evidence/<issue>/visual-comparison.json` con `mockup`, `delivery`,
+     `coverage`, `diffs[{section,title,description,impact,regression}]` y `suggestedAction`.
+   - Persistir la cobertura como `visual-coverage-rev<N>.json`; una sección previamente
+     verificada sin desvíos tipifica un hallazgo posterior como regresión, pero nunca
+     permite omitir la verificación actual.
    - El PDF resultante (CA-12, CA-13) incluye las 3 secciones obligatorias:
      mockup esperado, entrega actual, diferencias narradas.
    - El audio narrado (CA-14, CA-UX-5) lee diferencias + acción sugerida
@@ -500,6 +506,8 @@ Guía completa: `docs/pipeline/visual-validation.md §5` (checklist UX para QA
 durante captura).
 
 **Anti-patrones**:
+- Rechazar con un único hallazgo cuando hay otras secciones sin verificar. Un rechazo
+  de una línea sin cobertura declarada es un barrido incompleto, no un veredicto.
 - Aprobar visual sin comparar contra el mockup adjunto (cuando existe).
 - Rebotar con feedback subjetivo ("queda raro", "medio feo") sin tokens/números.
 - Capturar con DevTools, Compose layout inspector u overlays de debug visibles.

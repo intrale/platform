@@ -27,6 +27,7 @@ const apkFreshness = require('./lib/apk-freshness');
 // #3088: lookup del contexto multi-provider (provider/model/cli_version) sobre
 // el audit trail emitido por #3083. Single source of truth, SIN inferencia.
 const traceability = require('./lib/traceability');
+const { redactSensitive, redactEmailsInText } = require('./lib/redact');
 
 const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = __dirname;
@@ -53,6 +54,7 @@ function getArgEq(name) {
 const phase = getArg('phase') || getArgEq('phase') || 'collect';
 const resultsFile = getArg('results') || getArgEq('results') || null;
 const contextFile = getArg('context') || getArgEq('context') || null;
+const visualJsonArg = getArg('visual-json') || getArgEq('visual-json') || null;
 
 const issue = getArg('issue') || '?';
 const skill = getArg('skill') || '?';
@@ -106,7 +108,44 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const MAX_VISUAL_JSON_BYTES = 1048576;
+const MAX_DIFFS_RENDER = 50;
+const SAFE_IMAGE_DATA_URI = /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/;
+
+function loadVisualComparison(issueArg, overridePath) {
+  if (!/^\d+$/.test(String(issueArg))) return null;
+  const baseDir = path.resolve(ROOT, 'qa', 'evidence', String(issueArg));
+  const target = path.resolve(overridePath || path.join(baseDir, 'visual-comparison.json'));
+  if (target !== path.join(baseDir, 'visual-comparison.json') && !target.startsWith(baseDir + path.sep)) return null;
+  try {
+    const stat = fs.lstatSync(target);
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_VISUAL_JSON_BYTES) return null;
+    return JSON.parse(fs.readFileSync(target, 'utf8'));
+  } catch { return null; }
+}
+
+function safeImageSrc(src, issueArg) {
+  const value = String(src || '');
+  if (SAFE_IMAGE_DATA_URI.test(value)) return value;
+  if (!/^\d+$/.test(String(issueArg)) || !value) return null;
+  const baseDir = path.resolve(ROOT, 'qa', 'evidence', String(issueArg));
+  const target = path.resolve(value);
+  if (!target.startsWith(baseDir + path.sep)) return null;
+  try {
+    const stat = fs.lstatSync(target);
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_VISUAL_JSON_BYTES) return null;
+    const ext = path.extname(target).toLowerCase();
+    const mime = ext === '.png' ? 'png' : ext === '.jpg' || ext === '.jpeg' ? 'jpeg' : ext === '.webp' ? 'webp' : null;
+    return mime ? `data:image/${mime};base64,${fs.readFileSync(target).toString('base64')}` : null;
+  } catch { return null; }
+}
+
+function redactVisualText(value) {
+  return redactEmailsInText(redactSensitive(String(value || '')));
 }
 
 // =============================================================================
@@ -1453,6 +1492,7 @@ function collectReportData() {
     existingDeps: [],
     // NUEVO v6
     preflight, evidence, primaryCause, verdict, inconclusive,
+    visualComparison: loadVisualComparison(issue, visualJsonArg),
   };
 }
 
@@ -1509,7 +1549,7 @@ function renderSessionMeta(session) {
 //
 // Si `visualComparison` es null/undefined, retorna cadena vacía (no render).
 // =============================================================================
-function renderVisualComparisonBlock(visualComparison) {
+function renderVisualComparisonBlock(visualComparison, issueArg) {
   if (!visualComparison || typeof visualComparison !== 'object') return '';
   const v = visualComparison;
 
@@ -1521,8 +1561,9 @@ function renderVisualComparisonBlock(visualComparison) {
       ? `<span class="badge badge-green">${escapeHtml('baseline · ' + (col?.baseline || 'v1'))}</span>`
       : `<span class="badge badge-red">no matchea</span>`;
     const borderClass = side === 'mockup' ? 'visual-col-mockup' : 'visual-col-delivery';
-    const imgHtml = col?.src
-      ? `<img src="${escapeHtml(col.src)}" alt="${label}" />`
+    const safeSrc = safeImageSrc(col?.src, issueArg || v.issue);
+    const imgHtml = safeSrc
+      ? `<img src="${escapeHtml(safeSrc)}" alt="${label}" />`
       : `<div class="visual-placeholder">⚠ ${label} no disponible</div>`;
     return `
       <div class="visual-col ${borderClass}">
@@ -1535,22 +1576,44 @@ function renderVisualComparisonBlock(visualComparison) {
       </div>`;
   };
 
-  const diffs = Array.isArray(v.diffs) ? v.diffs.slice(0, 5) : [];
+  const impactOrder = { alto: 0, medio: 1, bajo: 2 };
+  const allDiffs = Array.isArray(v.diffs) ? v.diffs : [];
+  const diffs = allDiffs.slice().sort((a, b) =>
+    (impactOrder[String(a?.impact || 'medio').toLowerCase()] ?? 1) -
+    (impactOrder[String(b?.impact || 'medio').toLowerCase()] ?? 1) ||
+    String(a?.section || '').localeCompare(String(b?.section || ''))
+  ).slice(0, MAX_DIFFS_RENDER);
+  const groupedDiffs = new Map();
+  for (const diff of diffs) {
+    const section = String(diff?.section || 'sin sección');
+    if (!groupedDiffs.has(section)) groupedDiffs.set(section, []);
+    groupedDiffs.get(section).push(diff);
+  }
   const diffsBlock = diffs.length === 0
     ? '<p><em>Sin hallazgos narrados disponibles. Revisión humana de QA pendiente.</em></p>'
-    : `<ol class="visual-diffs">
-        ${diffs.map((d, i) => {
+    : [...groupedDiffs.entries()].map(([section, items]) => `<section data-section="${escapeHtml(section)}"><h4>Sección ${escapeHtml(section)}</h4><ol class="visual-diffs">
+        ${items.map((d, i) => {
           const impact = (d?.impact || 'medio').toLowerCase();
           const impactClass = impact === 'alto' ? 'badge-red'
             : impact === 'medio' ? 'badge-yellow' : 'badge-blue';
           return `<li>
-            <strong>${escapeHtml(d?.title || `Hallazgo ${i + 1}`)}</strong>
-            <p>${escapeHtml(d?.description || '')}</p>
+            <strong>${escapeHtml(redactVisualText(d?.title || `Hallazgo ${i + 1}`))}</strong>
+            <p>${escapeHtml(redactVisualText(d?.description || ''))}</p>
             <span class="badge ${impactClass}">impacto: ${escapeHtml(impact)}</span>
+            <span class="badge badge-blue">sección: ${escapeHtml(d?.section || 'sin sección')}</span>
+            ${d?.regression ? '<span class="badge badge-purple">REGRESIÓN</span>' : ''}
           </li>`;
         }).join('')}
-       </ol>`;
+       </ol></section>`).join('');
 
+  const coverage = v.coverage || {};
+  const verified = new Set(Array.isArray(coverage.verificadas) ? coverage.verificadas.map(String) : []);
+  const notVerified = new Map(Array.isArray(coverage.no_verificadas) ? coverage.no_verificadas.map(x => [String(x?.section || ''), redactVisualText(x?.motivo || 'motivo no informado')]) : []);
+  const declared = Array.isArray(coverage.secciones_declaradas) ? coverage.secciones_declaradas.map(String) : [];
+  const coverageBlock = declared.length
+    ? `<div class="context-box"><h3>Cobertura visual declarada</h3>${declared.map(section => verified.has(section) ? `<span class="badge badge-green">${escapeHtml(section)} · VERIFICADA</span>` : `<span class="badge badge-yellow">${escapeHtml(section)} · NO VERIFICADA · ${escapeHtml(notVerified.get(section) || 'motivo no informado')}</span>`).join(' ')}</div>`
+    : '<div class="context-box"><strong>Cobertura visual no declarada</strong></div>';
+  const truncationBlock = `<p><strong>${diffs.length} de ${allDiffs.length} desvíos mostrados${allDiffs.length > MAX_DIFFS_RENDER ? ' — inventario completo en visual-comparison.json' : ''} · tope de render del PDF: ${MAX_DIFFS_RENDER}</strong></p>`;
   const actionBlock = v.suggestedAction
     ? `<div class="visual-action">
          <p><strong>→ Rebote a ${escapeHtml(v.suggestedAction.skill || 'dev')}</strong></p>
@@ -1561,12 +1624,14 @@ function renderVisualComparisonBlock(visualComparison) {
   return `
 <h2>Comparativo visual — mockup vs entrega</h2>
 <p><span class="badge badge-red">VISUAL MISMATCH</span></p>
+${coverageBlock}
 <div class="visual-compare">
   ${renderColumn(v.mockup, 'mockup')}
   ${renderColumn(v.delivery, 'delivery')}
 </div>
 <h3>Diferencias identificadas</h3>
 ${diffsBlock}
+${truncationBlock}
 ${actionBlock}
 `;
 }
@@ -1693,7 +1758,7 @@ ${renderSessionMeta(session)}
   <h3>#${escapeHtml(issue)} &mdash; ${escapeHtml(issueCtx.title)}</h3>
 </div>
 
-${renderVisualComparisonBlock(visualComparison)}
+${renderVisualComparisonBlock(visualComparison, issue)}
 
 <h2>Causa identificada</h2>
 <div class="${inconclusive ? 'history-box' : 'rootcause-box'}">
@@ -1794,7 +1859,7 @@ function generateNarration(data) {
       return `${title} — impacto ${impact}`;
     }).join('. ');
     const actionSkill = visualComparison.suggestedAction?.skill || 'el desarrollador del área';
-    return `Issue ${issue}: rechazo visual. ${list}. Acción sugerida: rebotar a ${actionSkill} para re-implementar respetando el mockup adjunto en definición.${provSuffix}`;
+    return `Issue ${issue}: rechazo visual. ${visualComparison.diffs.length} desvíos detectados; los ${diffs.length} de mayor impacto son: ${list}. Acción sugerida: rebotar a ${actionSkill} para re-implementar respetando el mockup adjunto en definición.${provSuffix}`;
   }
 
   if (inconclusive) {
@@ -2226,6 +2291,9 @@ module.exports = {
   escapeHtml,
   // #3383 — bloque side-by-side (CA-12, CA-13).
   renderVisualComparisonBlock,
+  loadVisualComparison,
+  safeImageSrc,
+  MAX_DIFFS_RENDER,
   // Acceso a la implementación real de traceability (override en tests).
   _traceability: traceability,
 };

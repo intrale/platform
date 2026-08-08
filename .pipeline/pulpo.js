@@ -10285,6 +10285,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             '--motivo', String(data.motivo || 'Sin motivo'),
             '--log', `${issue}-${skill}.log`, '--pipeline', pipeline,
           ];
+          const visualJsonPath = path.join(ROOT, 'qa', 'evidence', String(issue), 'visual-comparison.json');
+          if (fs.existsSync(visualJsonPath)) reportArgs.push('--visual-json', visualJsonPath);
           if (launchResult && launchResult.provider) {
             reportArgs.push('--provider', String(launchResult.provider));
           }

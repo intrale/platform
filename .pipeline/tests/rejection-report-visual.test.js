@@ -10,6 +10,8 @@ const {
     renderHtml,
     generateNarration,
     escapeHtml,
+    loadVisualComparison,
+    safeImageSrc,
 } = require('../rejection-report');
 
 // ----- renderVisualComparisonBlock ----------------------------------------
@@ -77,8 +79,9 @@ test('renderVisualComparisonBlock clasifica impacto en badges (alto/medio/bajo)'
     assert.ok(/badge-blue[^"]*">impacto: bajo/i.test(out));
 });
 
-test('renderVisualComparisonBlock limita a 5 diffs (CA §4.5 lista max 5)', () => {
-    const tenDiffs = Array.from({ length: 10 }, (_, i) => ({
+test('renderVisualComparisonBlock muestra inventario completo hasta 50 y declara truncado', () => {
+    const tenDiffs = Array.from({ length: 63 }, (_, i) => ({
+        section: `S${i % 3}`,
         title: `D${i}`,
         description: `descripción ${i}`,
         impact: 'medio',
@@ -88,10 +91,9 @@ test('renderVisualComparisonBlock limita a 5 diffs (CA §4.5 lista max 5)', () =
         delivery: { src: 'x://2.png' },
         diffs: tenDiffs,
     });
-    // Sólo los primeros 5 deben aparecer
-    for (let i = 0; i < 5; i++) assert.ok(out.includes(`D${i}`));
-    assert.ok(!out.includes('D5'));
-    assert.ok(!out.includes('D9'));
+    assert.ok(out.includes('50 de 63 desvíos mostrados'));
+    assert.ok(out.includes('inventario completo en visual-comparison.json'));
+    assert.ok(out.includes('sección: S0'));
 });
 
 test('renderVisualComparisonBlock escapa HTML del title/description (SEC-1)', () => {
@@ -210,6 +212,19 @@ test('generateNarration limita a 3 diffs en audio', () => {
     assert.ok(text.includes('C3'));
     assert.ok(!text.includes('D4'));
     assert.ok(!text.includes('E5'));
+    assert.ok(text.includes('5 desvíos detectados'));
+});
+
+test('loader confina paths y las imágenes rechazan esquemas remotos', () => {
+    assert.equal(loadVisualComparison(5708, '../../../etc/passwd'), null);
+    assert.equal(loadVisualComparison('no-numérico'), null);
+    assert.equal(safeImageSrc('https://example.com/a.png', 5708), null);
+    assert.equal(safeImageSrc('file:///etc/passwd', 5708), null);
+    assert.match(safeImageSrc('data:image/png;base64,AAAA', 5708), /^data:image\/png/);
+});
+
+test('escapeHtml escapa comilla simple', () => {
+    assert.equal(escapeHtml("'"), '&#39;');
 });
 
 test('generateNarration sin visualComparison no menciona visual', () => {

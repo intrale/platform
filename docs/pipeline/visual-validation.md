@@ -224,7 +224,10 @@ debe codificarse solo por color, ver design-system.md §1.3).
 
 ### 4.5 Diferencias narradas
 
-Lista vertical, máximo 5 items por reporte (si hay más, agrupar). Cada item:
+Inventario completo agrupado por `section`, con grupos priorizados por su impacto máximo
+y desvíos ordenados `alto → medio → bajo`. Cada item exige `section`, `title`,
+`description` e `impact`. El PDF renderiza hasta 50 y muestra siempre `N de M`; si hay
+más, declara que el inventario completo permanece en `visual-comparison.json`.
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
@@ -265,6 +268,19 @@ Después de re-implementar:
 
 La acción sugerida es **no normativa** — es una pista. El veredicto final lo
 toma PO. Pero ahorra 5-10 minutos al dev que recibe el rebote.
+
+### 4.7 Cobertura y contrato del inventario
+
+Todo aprobado o rechazado visual incluye `coverage.secciones_declaradas`, `verificadas`
+y `no_verificadas[{section,motivo}]`. La unión de verificadas y no verificadas debe ser
+exactamente el conjunto declarado, sin solapamientos. Una sección no verificada requiere
+motivo específico. El archivo `qa/evidence/<issue>/visual-comparison.json` contiene además
+`issue`, `rev`, `mockup`, `delivery`, `diffs[]` y `suggestedAction`.
+
+Cada pasada persiste `visual-coverage-rev<N>.json`. Si una revisión posterior encuentra
+un desvío en una sección previamente verificada sin hallazgos, `regression: true` lo
+distingue en el PDF de un barrido anterior incompleto. La cobertura previa no habilita
+saltear el barrido actual.
 
 ## 5. Checklist UX para QA durante la captura
 
