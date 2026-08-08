@@ -358,6 +358,14 @@ const LABEL_COLORS = {
   'blocked:dependencies': 'B60205',
   'needs-definition': 'ededed',
   'needs-human': 'B60205',   // #2405 CA-4 — circuit breaker infra escalado a humano
+  // #5689 (UX-7) — label de TRIAJE, no de bloqueo. Deliberadamente NO usa el
+  // gris por defecto (`ededed`) ni el rojo de alarma del panel de bloqueados
+  // (`B60205`): es backlog esperando revisión humana, no un agente frenado.
+  // Color = `--purple` de `.pipeline/assets/design-tokens.css:73` (lavanda
+  // claro). NO se usa `--purple-dim` (#8957E5) porque es visualmente muy
+  // cercano al `5319E7` que ya llevan `area:pipeline` y `app:delivery`, labels
+  // que co-ocurren justo en los issues que se van a triar (GURU-6).
+  'needs:triage-backlog': 'BC8CFF',
 };
 
 function ensureLabels(labelsStr, ghClient = defaultGhClient) {

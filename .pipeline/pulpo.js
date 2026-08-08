@@ -16352,6 +16352,44 @@ function findLastRejection(pipelineName, issueNum, config) {
     return best;
 }
 
+// #5689 (SEC-2) — discriminador ÚNICO recomendación-vs-bloqueo-real (#5337).
+// Reemplaza el chequeo inline de un solo label del gate del intake: el inline
+// ignoraba `source:recommendation` (histórico), que el helper sí cubre.
+const { isRecommendationIssue: isPendingRecommendationIssue } = require('./lib/recommendation-labels');
+
+// =============================================================================
+// #5689 (R1 — anti-starvation del intake) — término `--search` ÚNICO del intake.
+//
+// El problema: las ~1.076 recomendaciones de agente tienen `needs-definition`
+// (el mismo label de admisión de `config.yaml`) y hoy quedan afuera SÓLO por el
+// `-label:needs-human` del search. Cuando #5691 migre esas recomendaciones a
+// `needs:triage-backlog`, dejarían de estar filtradas: GitHub aplica el
+// `--limit 50` SERVER-SIDE, antes de `calcularPrioridad()`, así que los 50 slots
+// se llenarían de recomendaciones y el intake de definición real se ahogaría en
+// silencio, sin ninguna alarma.
+//
+// Por qué una función y no dos literales: el término vive en DOS call sites
+// (`discoverWorkDryRun` y el intake real de `brazoIntake`). Duplicar el string
+// hace posible parchear uno, ver el test en verde, y dejar el otro sin blindar
+// (GURU-3). Con una sola fuente eso es imposible por construcción.
+//
+// ⚠️ ESTO NO ES UN CONTROL DE SEGURIDAD — es un control de DISPONIBILIDAD.
+// El índice de búsqueda de GitHub es eventualmente consistente: un issue recién
+// etiquetado puede no reflejar el label acá durante minutos, y en esa ventana
+// pasa el filtro. El control AUTORITATIVO es el gate JS de `brazoIntake` sobre
+// los labels ya traídos (estado fresco, no índice). Ver REQ-SEC-1.
+// =============================================================================
+const INTAKE_SEARCH_EXCLUDED_LABELS = Object.freeze([
+  // Bloqueo real: un agente se frenó y espera acción del operador.
+  'needs-human',
+  // #5689 — backlog de recomendaciones esperando triaje humano (no bloquea).
+  'tipo:recomendacion',
+]);
+
+function buildIntakeSearchQuery() {
+  return INTAKE_SEARCH_EXCLUDED_LABELS.map((l) => `-label:${l}`).join(' ');
+}
+
 // #4687 (Ola Puente P2) — Descubrimiento side-effect-free del tablero (dry-run).
 //
 // Paso 4 del bootstrap de un producto nuevo (project-bootstrap.js): confirmar el
@@ -16417,7 +16455,14 @@ function discoverWorkDryRun(config, opts = {}) {
       if (!isAllowed(repo)) { skippedRepos.push(repo); continue; }
       let issues = [];
       try {
-        const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "-label:needs-human"`);
+        // #5689 REQ-SEC-3 — INVARIANTE: esta consulta trae `number,title`, SIN
+        // `labels`. Por eso esta superficie NO puede evaluar el gate
+        // `isRecommendationIssue()` ni como defensa en profundidad. Hoy es
+        // inocuo porque `discoverWorkDryRun` es side-effect-free por contrato
+        // (no encola, no spawnea). Si alguna vez pasa a alimentar encolado,
+        // DEBE sumar `labels` al `--json` y pasar por el mismo gate que
+        // `brazoIntake`, o abre un bypass total del control autoritativo.
+        const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "${buildIntakeSearchQuery()}"`);
         issues = JSON.parse(out || '[]');
       } catch (e) {
         issues = [];
@@ -16478,7 +16523,7 @@ function brazoIntake(config) {
             // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
             // cero requests extra) para que el detector de decisión de
             // arquitectura pueda clasificar el issue al entrar a definición.
-            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "-label:needs-human"`,
+            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "${buildIntakeSearchQuery()}"`,
             { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
           );
           const repoIssues = JSON.parse(result || '[]');
@@ -16527,13 +16572,33 @@ function brazoIntake(config) {
           continue;
         }
 
-        // RECOMENDACION (#2653): no procesar issues con label tipo:recomendacion
-        // hasta que un humano apruebe (recommendation:approved). Defensa en
-        // profundidad: el search ya filtra needs-human, pero si alguien quita
-        // needs-human por error sin agregar recommendation:approved, el issue
-        // sigue siendo una recomendación pendiente y NO debe entrar al flujo.
-        if (issueLabels.includes('tipo:recomendacion') && !issueLabels.includes('recommendation:approved')) {
-          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (tipo:recomendacion sin recommendation:approved)`);
+        // RECOMENDACION (#2653, blindado en #5689) — GATE AUTORITATIVO.
+        //
+        // No procesar issues de recomendación de agente hasta que un humano los
+        // apruebe (`recommendation:approved`).
+        //
+        // ⚠️ REQ-SEC-1 — ESTE es el control de seguridad, NO el `--search`.
+        // El `-label:...` de `buildIntakeSearchQuery()` es best-effort: se
+        // evalúa contra el índice de búsqueda de GitHub, que es EVENTUALMENTE
+        // CONSISTENTE — un issue recién etiquetado puede no reflejar el label
+        // durante minutos y pasar el filtro. Este gate, en cambio, corre local
+        // sobre los labels que la propia respuesta trajo (`--json ...,labels`):
+        // estado fresco, no índice. Los dos NO son intercambiables y este no se
+        // puede "optimizar" borrándolo porque el search ya filtre.
+        //
+        // Redacción previa a #5689: "si alguien quita needs-human por error".
+        // Eso quedó desactualizado — tras la migración de #5691 las ~924
+        // recomendaciones dejan de tener `needs-human` como modo NORMAL de
+        // operación, no como accidente. Blast radius si el gate falla: cuerpos
+        // de issue escritos por un LLM inyectados en prompts de agentes con
+        // permiso de escribir código y abrir PRs.
+        //
+        // SEC-2: `isPendingRecommendationIssue()` (lib/recommendation-labels.js)
+        // en vez del chequeo de un solo label. Además de `tipo:recomendacion`
+        // cubre `source:recommendation` (el histórico, que el inline ignoraba) y
+        // preserva la semántica: devuelve `false` ante `recommendation:approved`.
+        if (isPendingRecommendationIssue(issueLabels)) {
+          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (sin recommendation:approved)`);
           continue;
         }
 
@@ -19588,6 +19653,11 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,
+    // #5689 (R1) — término `--search` único del intake (anti-starvation).
+    buildIntakeSearchQuery,
+    INTAKE_SEARCH_EXCLUDED_LABELS,
+    // #5689 (SEC-1/SEC-2) — gate autoritativo de recomendaciones del intake.
+    isPendingRecommendationIssue,
     // #4763 (Ola Puente P4) — ruteo product-aware por instancia (fallback single-product).
     resolveIntakeRepo,
     setMultiInstanceRouter,
