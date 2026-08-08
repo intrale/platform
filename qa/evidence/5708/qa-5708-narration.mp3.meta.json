@@ -1,0 +1,9 @@
+{
+  "profile": "qa",
+  "provider": "edge",
+  "voice": "",
+  "character_name": "",
+  "output": "qa/evidence/5708/qa-5708-narration.mp3",
+  "generated_at": "2026-08-08T23:48:32.945Z",
+  "source": "tts-generate.js"
+}

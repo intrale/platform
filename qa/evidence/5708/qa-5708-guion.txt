@@ -1,0 +1,9 @@
+Soy Nacho, QA de Intrale. En esta evidencia verifico el reporte visual del issue cinco mil setecientos ocho contra el mockup cuarenta y ocho.
+
+La composición conserva la jerarquía acordada: encabezado e identidad del reporte, comparación visual entre mockup y entrega, resumen de cobertura y el inventario completo de desvíos.
+
+La cobertura declara cuatro secciones y las cuatro aparecen verificadas. Cada hallazgo muestra sección, índice, impacto textual y descripción; por eso la prioridad no depende solamente del color. Los desvíos están agrupados por sección y ordenados por impacto descendente.
+
+Los marcadores numerados del render se corresponden con los índices del inventario. La banda de inventario declara cuatro de cuatro desvíos mostrados, de modo que cualquier truncado sería visible. El estado de regresión también tiene una etiqueta textual diferenciada.
+
+El resultado de esta comparación es satisfactorio: el PDF real reproduce la estructura y los estados definidos por el mockup cuarenta y ocho, y la evidencia permite auditar los criterios visuales sin depender del JSON fuente.
