@@ -1,0 +1,17 @@
+{
+  "agents": {
+    "2bf05b59": {
+      "session_id": "2bf05b59",
+      "issue": "#2042",
+      "skill": "Agente 2042",
+      "agent_name": "Agente 2042",
+      "branch": "agent/2042-android-dev",
+      "worktree": "C:/Workspaces/Intrale/platform.agent-2042-android-dev",
+      "pid": 8624,
+      "started_at": "2026-04-15T02:31:20Z",
+      "last_heartbeat": "2026-04-15T02:36:27Z",
+      "status": "idle"
+    }
+  },
+  "updated_at": "2026-04-15T02:47:20Z"
+}

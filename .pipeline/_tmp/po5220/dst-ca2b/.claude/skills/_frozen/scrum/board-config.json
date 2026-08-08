@@ -1,0 +1,11 @@
+{
+  "project_number": 1,
+  "organization": "intrale",
+  "repository": "intrale/platform",
+  "project_id": "PVT_kwDOBTzBoc4AyMGf",
+  "status_field_id": "PVTSSF_lADOBTzBoc4AyMGfzgoLqjg",
+  "columns": {
+    "Done": "98236657"
+  },
+  "notes": "Solo Done tiene ID hardcodeado (compatibilidad con post-issue-close.js). Los demás se descubren dinámicamente via GraphQL al inicio de cada invocación."
+}

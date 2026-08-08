@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="800px" height="800px" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none">
+  <!-- Play/Start icon - green triangle in circle -->
+  <circle cx="12" cy="12" r="10" stroke="#34d399" stroke-width="2" fill="none"/>
+  <polygon points="9.5,7 9.5,17 17.5,12" fill="#34d399"/>
+</svg>
