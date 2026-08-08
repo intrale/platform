@@ -3687,7 +3687,12 @@ function brazoBarrido(config) {
         // (el issue va a rebotear igual) y esperarlos produce deadlocks cuando
         // algún skill queda atascado. Incidente 2026-04-24: tester:#2505 en
         // cooldown bloqueaba el rebote de qa:#2505 que ya había rechazado.
-        const hayRechazoConfirmado = resultados.some(r => r.resultado === 'rechazado');
+        // #5641 CA-4 — se conserva la LISTA de rechazos, no sólo el booleano: el
+        // drenaje de abajo necesita saber QUIÉN disparó el fast-fail y si todos
+        // esos disparadores fueron veredictos sintetizados por el Pulpo (caída de
+        // infra) o hubo al menos un rechazo de contenido real.
+        const rechazos = resultados.filter(r => r.resultado === 'rechazado');
+        const hayRechazoConfirmado = rechazos.length > 0;
         if (!todosCompletos && !hayRechazoConfirmado) continue;
 
         // Si el rebote va a dispararse por fast-fail (todosCompletos=false pero hay rechazo),
@@ -3730,6 +3735,21 @@ function brazoBarrido(config) {
 
         if (!todosCompletos && hayRechazoConfirmado && !hayDepBlockEnRechazos) {
           const procesadoFaseActual = path.join(fasePath(pipelineName, fase), 'procesado');
+          // #5641 CA-4 — los hermanos drenados NUNCA emitieron veredicto propio, así
+          // que su `cancelado_por` no es una decisión: es una consecuencia. Para que
+          // aguas abajo se pueda distinguir "cancelado porque alguien rechazó de
+          // verdad" de "cancelado porque a un hermano se le cayó el proceso", se
+          // registra QUIÉN disparó el drenaje y si TODOS los disparadores fueron
+          // veredictos sintetizados por el Pulpo.
+          //
+          // FAIL-CLOSED (SEC-3): basta UN rechazo de contenido en la mezcla para que
+          // `cancelado_disparador_infra` quede en `false` y el hermano siga siendo
+          // ambiguo → escala a humano. El default nunca relaja el gate.
+          const disparadores = [...new Set(
+            rechazos.map(r => skillFromFile(r.file.name)).filter(Boolean),
+          )].sort();
+          const disparadorInfra = rechazos.length > 0
+            && rechazos.every(r => r.veredicto_sintetizado_por === 'pulpo');
           for (const estado of ['pendiente', 'trabajando']) {
             const dir = path.join(fasePath(pipelineName, fase), estado);
             try {
@@ -3740,13 +3760,19 @@ function brazoBarrido(config) {
                 const dst = path.join(procesadoFaseActual, f);
                 try {
                   const prev = readYamlSafe(src) || {};
-                  writeYaml(dst, { ...prev, cancelado_por: 'fast-fail-rebote', cancelado_ts: new Date().toISOString() });
+                  writeYaml(dst, {
+                    ...prev,
+                    cancelado_por: 'fast-fail-rebote',
+                    cancelado_ts: new Date().toISOString(),
+                    cancelado_disparado_por: disparadores.join(','),
+                    cancelado_disparador_infra: disparadorInfra,
+                  });
                   fs.unlinkSync(src);
                 } catch {}
               }
             } catch {}
           }
-          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown`);
+          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown (disparado por: ${disparadores.join(',') || '?'}${disparadorInfra ? ', caída de infra' : ''})`);
         } else if (!todosCompletos && hayRechazoConfirmado && hayDepBlockEnRechazos) {
           // #3373 — skip drain. Los archivos pendiente/trabajando se quedan
           // donde están, el handler dep-block los barre a bloqueado-dependencias/
@@ -10235,9 +10261,42 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       }
 
       const data = readYamlSafe(workingPath);
+      // #5641 CA-1/CA-2 — PROCEDENCIA ESTRUCTURADA del veredicto sintético.
+      //
+      // Cuando el proceso del agente muere con exit code ≠ 0, el Pulpo sintetiza
+      // `resultado: rechazado` con el motivo `Agente terminó con código N`. Ese
+      // deliverable NO contiene ninguna decisión de review, pero el detector de
+      // fases varadas lo veía como un rechazo real y escalaba a humano (6 de 12
+      // issues frenados de la ola 9.4 eran esto).
+      //
+      // La marca de procedencia (`veredicto_sintetizado_por: 'pulpo'`) es el ÚNICO
+      // dato que habilita el carril de auto-reintento aguas abajo. Por eso NO puede
+      // clasificarse por el TEXTO del `motivo`: ese campo lo escribe el agente y
+      // sería un vector de escalada (un agente podría citar el literal en un
+      // rechazo de contenido y auto-borrarse el veredicto).
+      //
+      // CA-2 (anti-spoof): el strip va ANTES del `if`, no adentro. Si el agente
+      // dejó su propio `resultado`, la rama no entra y los campos falsificados
+      // sobrevivirían hasta `procesado/`. Mismo patrón que
+      // `delete cleaned.bloqueado_por_infra` (L1031 y L9157).
+      const procedenciaFalsificada =
+        data.veredicto_sintetizado_por !== undefined || data.agente_exit_code !== undefined;
+      delete data.veredicto_sintetizado_por;
+      delete data.agente_exit_code;
+      if (procedenciaFalsificada) {
+        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite)`);
+      }
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
+        if (code !== 0) {
+          data.veredicto_sintetizado_por = 'pulpo';
+          data.agente_exit_code = code;
+        }
+        writeYaml(workingPath, data);
+      } else if (procedenciaFalsificada) {
+        // El agente SÍ opinó, pero además intentó falsificar la procedencia:
+        // hay que persistir el strip o los campos llegan intactos a `procesado/`.
         writeYaml(workingPath, data);
       }
 
