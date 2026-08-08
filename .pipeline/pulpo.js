@@ -17893,7 +17893,17 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
       fs.mkdirSync(ghQueueDir, { recursive: true });
       fs.writeFileSync(
         path.join(ghQueueDir, `${m.issue}-remove-needs-human-${Date.now()}.json`),
-        JSON.stringify({ action: 'remove-label', issue: Number(m.issue), label: humanBlock.NEEDS_HUMAN_LABEL }),
+        // #5690 SEC-B — el guardrail de `servicio-github.js` rechaza toda orden
+        // de cola que remueva `needs-human` sin procedencia declarada. El brazo
+        // de desbloqueo la declara: llega acá sólo tras verificar que el marker
+        // de bloqueo fue resuelto (`res.ok` arriba), no por un JSON anónimo.
+        JSON.stringify({
+          action: 'remove-label',
+          issue: Number(m.issue),
+          label: humanBlock.NEEDS_HUMAN_LABEL,
+          guardrail_authorized: true,
+          authorized_by: 'brazo-desbloqueo:auto-unblock',
+        }),
       );
       fs.writeFileSync(
         path.join(ghQueueDir, `${m.issue}-auto-unblock-comment-${Date.now()}.json`),

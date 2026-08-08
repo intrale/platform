@@ -32,6 +32,9 @@ require('./lib/java-home-normalizer').normalizeJavaHome({
 const { sanitize } = require('./sanitizer');
 const { sanitizeGithubPayload } = require('./lib/sanitize-payload');
 const gateLabelReconciler = require('./lib/gate-label-reconciler');
+// #5690 — guardrail fail-closed contra la mezcla `needs-human`/`tipo:recomendacion`
+// y contra la auto-aprobación de recomendaciones desde la cola anónima.
+const labelGuardrail = require('./lib/label-guardrail');
 // #4693 CA-0 — fuente de verdad única del repo destino. Reemplaza el literal
 // DEFAULT_REPO por el `primary` del bloque `repos` de pipeline.config.json.
 const repoTarget = require('./lib/repo-target');
@@ -395,6 +398,75 @@ function currentLabelsForIssue(issue, ghClient) {
   return Array.isArray(labels) ? labels.map(String) : [];
 }
 
+// #5690 — Guardrail fail-closed de labels sensibles.
+//
+// Devuelve `true` si la orden fue RECHAZADA (el caller debe cortar sin mutar),
+// `false` si puede seguir su curso normal.
+//
+// SEC-4 / R4: este camino NUNCA remueve `needs-human` ni ordena removerlo. Su
+// único efecto sobre `data` es marcarla como `discarded` — el mismo patrón que
+// la guardia de staleness — para que el JSON viaje a `listo/` con la traza.
+//
+// SEC-C: la consulta de labels actuales se pasa como thunk y NO se envuelve en
+// un catch que devuelva `[]`. Si `gh issue view` falla (rate limit, red, token,
+// timeout), `evaluateLabelOrder` recibe el throw y falla CERRADO. Con `[]` el
+// guardrail no vería conflicto y sería bypasseable a voluntad induciendo rate
+// limit. Por eso tampoco se reusa `currentLabelsForIssue`, que normaliza a `[]`.
+function applyLabelGuardrail(data, ghClient, origen) {
+  if (!data) return false;
+  const verdict = labelGuardrail.evaluateLabelOrder({
+    action: data.action,
+    label: data.label,
+    order: data,
+    getCurrentLabels: () => {
+      if (!ghClient || typeof ghClient.getIssueLabels !== 'function') {
+        throw new Error('ghClient.getIssueLabels requerido para evaluar el guardrail de labels');
+      }
+      return ghClient.getIssueLabels(data.issue);
+    },
+  });
+  if (verdict.allowed) {
+    // El escape hatch de procedencia no es criptográfico; lo que lo hace
+    // auditable es que cada uso queda escrito y atribuido.
+    if (verdict.authorizedBy) {
+      labelGuardrail.auditAuthorizedBypass({
+        issue: data.issue,
+        label_solicitado: data.label,
+        labels_actuales: verdict.currentLabels,
+        origen: data.origen || origen || null,
+        accion: data.action,
+        motivo: verdict.motivo,
+        authorized_by: verdict.authorizedBy,
+      });
+      log(`Guardrail de labels: mutación sensible "${data.label}" en #${data.issue} permitida por procedencia declarada "${verdict.authorizedBy}".`);
+    }
+    return false;
+  }
+
+  data.discarded = `label-guardrail:${verdict.motivo}`;
+  data.discarded_at = new Date().toISOString();
+  data.guardrail_motivo = verdict.motivo;
+  data.guardrail_labels_actuales = verdict.currentLabels || null;
+
+  const contexto = {
+    issue: data.issue,
+    label_solicitado: data.label,
+    labels_actuales: verdict.currentLabels,
+    origen: data.origen || origen || null,
+    accion: data.action,
+    motivo: verdict.motivo,
+  };
+  // Un fallo de auditoría NO puede convertirse en una mutación: el rechazo ya
+  // está decidido antes de llegar acá y `auditConflict` nunca tira.
+  const audit = labelGuardrail.auditConflict(contexto);
+  if (!audit.written && !audit.deduped) {
+    log(`Guardrail de labels: no se pudo escribir la auditoría (${audit.error}). El rechazo se aplica igual.`);
+  }
+  // UX-4a — línea legible en el log normal del servicio. UX-4b — sin Telegram.
+  log(labelGuardrail.describeRejection(contexto));
+  return true;
+}
+
 function applyGateLabelAction(data, ghClient) {
   if (!data || !gateLabelReconciler.isGateLabel(data.label)) return false;
 
@@ -555,6 +627,12 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
             // moverá el JSON a `listo/` con el campo `discarded` ya seteado.
             break;
           }
+          // #5690 — guardrail fail-closed contra la mezcla `needs-human` /
+          // `tipo:recomendacion` y contra la auto-aprobación de recomendaciones.
+          // Va acá, entre la guardia de staleness y `ensureLabels`/`editIssue`,
+          // porque este `switch` es el único choke point de MUTACIÓN por el que
+          // pasan los 6+ productores que escriben órdenes a la cola.
+          if (applyLabelGuardrail(data, ghClient, file.name)) break;
           if (applyGateLabelAction(data, ghClient)) break;
           ensureLabels(data.label, ghClient);
           ghClient.editIssue(data.issue, { addLabel: data.label });
@@ -563,6 +641,11 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
         }
 
         case 'remove-label':
+          // #5690 SEC-B — este `case` no tiene guardia de staleness y
+          // `needs-human` no es gate label, así que hasta ahora
+          // `{"action":"remove-label","label":"needs-human"}` destrababa
+          // cualquier issue bloqueado por un humano sin dejar rastro.
+          if (applyLabelGuardrail(data, ghClient, file.name)) break;
           if (applyGateLabelAction(data, ghClient)) break;
           ghClient.editIssue(data.issue, { removeLabel: data.label });
           log(`Label "${data.label}" removido de #${data.issue}`);
@@ -704,4 +787,6 @@ module.exports = {
   ensureLabels,
   _resetLabelCacheForTests,
   applyGateLabelAction,
+  // #5690 — guardrail de labels sensibles.
+  applyLabelGuardrail,
 };

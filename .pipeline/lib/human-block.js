@@ -765,10 +765,21 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
     const dismiss = deps.dismissBlockedIssue || dismissBlockedIssue;
     const reactivate = (extra) => reactivateAllBlocked(i, { ...deps, ...extra });
 
+    // #5690 SEC-B — el guardrail de `servicio-github.js` rechaza toda orden de
+    // cola que remueva `needs-human` sin procedencia declarada. Estas acciones
+    // SÍ la tienen: `executeQuickAction` sólo se invoca después de que el
+    // caller autorizó (token HMAC de la alerta de Telegram, o allowlist de
+    // operadores del commander). Sin este marcador, los botones de destrabe
+    // dejarían de funcionar.
+    const procedencia = {
+        guardrail_authorized: true,
+        authorized_by: `human-block:${action}`,
+    };
+
     switch (action) {
         case 'unblock': {
             const reactivated = reactivate({ unlocker: 'human-block-action:unblock' });
-            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL });
+            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL, ...procedencia });
             if (reactivated.length === 0) {
                 return { ok: true, action, issue: i, noop: true, msg: `#${i} ya no estaba bloqueado (acción ya resuelta).` };
             }
@@ -787,7 +798,7 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
                 try { const r = dismiss({ issue: i, reason: 'Devuelto a definición desde la alerta de Telegram', unlocker: 'human-block-action:devolver' }); dismissed = !!(r && r.ok); }
                 catch { /* best-effort */ }
             }
-            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL });
+            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL, ...procedencia });
             enqueue('label', { issue: i, label: 'needs-definition' });
             enqueue('comment', { issue: i, body: `## ↩️ Devuelto a definición\n\nUn humano devolvió #${i} a definición desde la alerta de Telegram. Se descarta el trabajo de desarrollo en curso y el issue vuelve a re-analizarse.` });
             return { ok: true, action, issue: i, dismissed, msg: `#${i} devuelto a definición.` };
@@ -808,7 +819,7 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
                 actor: deps.actor || 'human-block:priorizar',
                 note: 'Prioridad elevada desde la alerta de Telegram',
             });
-            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL });
+            enqueue('remove-label', { issue: i, label: NEEDS_HUMAN_LABEL, ...procedencia });
             enqueue('comment', { issue: i, body: `## ⬆️ Prioridad elevada\n\nUn humano subió la prioridad de #${i} a \`priority:high\` desde la alerta de Telegram${reactivated.length ? ' y lo desbloqueó' : ''}.` });
             return { ok: true, action, issue: i, reactivated: reactivated.length, msg: `Prioridad de #${i} elevada a priority:high.` };
         }
