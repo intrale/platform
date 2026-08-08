@@ -35,6 +35,27 @@ try {
     CAUSAS_CON_AUTORIA = new Set(['halt_humano', 'modo_ola']);
 }
 
+// #5400 (rev-11) — Nombres legibles de la causa clasificada por el watchdog.
+// Se REUSA el catálogo de `wave-stall-watchdog` (el mismo que arma el mensaje de
+// Telegram) para que banner y aviso no puedan divergir — regla de copy 7. Import
+// defensivo: si el módulo no carga, el banner se queda sin nombre pero no
+// inventa uno ni se cae.
+let WD_CAUSE_LABELS;
+try {
+    WD_CAUSE_LABELS = require('./wave-stall-watchdog').CAUSE_LABELS || {};
+} catch {
+    WD_CAUSE_LABELS = {};
+}
+
+// Nombre humano de un `causeKind` del watchdog, o `null` si no consta. Nunca
+// devuelve un placeholder optimista: sin dato, el copy dice "sin causa
+// declarada", que es la verdad.
+function nombreCausaWatchdog(causeKind) {
+    if (typeof causeKind !== 'string' || causeKind.length === 0) return null;
+    const label = WD_CAUSE_LABELS[causeKind];
+    return typeof label === 'string' && label.length > 0 ? label : causeKind;
+}
+
 /**
  * #5400 (rev-8) — Línea de AUTORÍA (SEC-2 + regla de copy 4 del mockup 47).
  *
@@ -153,8 +174,20 @@ function renderDispatchCauseBanner(slice) {
     // la causa. El banner tiene que contar el mismo episodio que Telegram.
     const detenidoSinCausa = soloWatchdog && !sano && !degradado
         && (slice.watchdogAction === 'alert' || slice.watchdogAction === 'escalate');
+    // #5400 (rev-11, BLOQUEANTE 1) — Watchdog sano, en `skip`, pero el silencio
+    // NO es sano: hay trabajo esperando y el pipeline no despacha. Es el estado
+    // que antes se pintaba en verde. Se separa de `sinDecision` porque acá SÍ
+    // hay decisión registrada y su razón alcanza para contar qué pasa:
+    //   · `cooldown`           → ya se alertó, sigue parado, backoff corriendo
+    //   · `declared-cause:*`   → hay una pausa declarada, con nombre
+    //   · `within-threshold`   → parado, todavía por debajo del umbral
+    const detenidoEnSkip = soloWatchdog && !sano && !degradado && !detenidoSinCausa
+        && slice.watchdogAction === 'skip'
+        && typeof slice.watchdogDecisionReason === 'string'
+        && slice.watchdogDecisionReason.length > 0;
     // Watchdog sano pero sin decisión observada: no se afirma ni salud ni falla.
-    const sinDecision = soloWatchdog && !sano && !degradado && !detenidoSinCausa;
+    const sinDecision = soloWatchdog && !sano && !degradado && !detenidoSinCausa
+        && !detenidoEnSkip;
     const grave = (!soloWatchdog && (slice.anomalia === true || slice.escaladoPorDuracion === true))
         || (detenidoSinCausa && slice.watchdogAction === 'escalate');
     const border = sano ? COLORS.borderSubtle : (grave ? COLORS.danger : COLORS.warning);
@@ -204,8 +237,42 @@ function renderDispatchCauseBanner(slice) {
         // artifact de causa no existe: nadie declaró por qué está parado.
         // La duración sale de la MISMA estampa que mide el watchdog, así que el
         // banner y Telegram no pueden divergir (regla de copy 7).
+        // #5400 (rev-11) — Si el watchdog CLASIFICÓ la causa, el banner la
+        // nombra. Antes decía siempre "sin causa declarada" aunque el Pulpo ya
+        // hubiera escrito `causeKind`, así que Telegram nombraba la pausa y el
+        // dashboard la negaba sobre el mismo episodio (rompía CA-6 y la regla de
+        // copy 7). Sin dato se mantiene el texto honesto.
+        const causaWd = nombreCausaWatchdog(slice.watchdogCauseKind);
         title = `${grave ? 'Sin despachar' : 'Cola sin despachar'}`
-            + `${slice.lastDispatchRelTime ? ` ${dispatchRel}` : ''} — sin causa declarada`;
+            + `${slice.lastDispatchRelTime ? ` ${dispatchRel}` : ''} — `
+            + `${causaWd ? escapeHtmlText(causaWd) : 'sin causa declarada'}`;
+        body = contexto || detail || `Último despacho: ${dispatchRel}`;
+        extra = backoff || '';
+        mainIcon = icon('ic-dispatch-stalled', titleColor);
+    } else if (detenidoEnSkip) {
+        // #5400 (rev-11, BLOQUEANTE 1) — El pipeline está parado con trabajo
+        // esperando y el watchdog decidió no actuar. NUNCA en verde: el motivo
+        // del `skip` es información de diagnóstico, no un certificado de salud.
+        const reason = slice.watchdogDecisionReason;
+        const causaWd = nombreCausaWatchdog(slice.watchdogCauseKind);
+        let motivo;
+        if (reason === 'cooldown') {
+            // El caso más peligroso: con backoff 30→60→120 min y tick de 1 min,
+            // el watchdog pasa la mayoría de los ticks de un episodio largo acá.
+            // El operador tiene que ver que la detención SIGUE, no un verde.
+            motivo = causaWd
+                ? `${escapeHtmlText(causaWd)} — aviso ya emitido`
+                : 'aviso ya emitido, la detención continúa';
+        } else if (typeof reason === 'string' && reason.startsWith('declared-cause:')) {
+            motivo = causaWd
+                ? escapeHtmlText(causaWd)
+                : `causa declarada: ${escapeHtmlText(reason.slice('declared-cause:'.length))}`;
+        } else if (reason === 'within-threshold') {
+            motivo = 'todavía dentro del umbral de vigilancia';
+        } else {
+            motivo = causaWd ? escapeHtmlText(causaWd) : 'sin causa declarada';
+        }
+        title = `Cola sin despachar${slice.lastDispatchRelTime ? ` ${dispatchRel}` : ''} — ${motivo}`;
         body = contexto || detail || `Último despacho: ${dispatchRel}`;
         extra = backoff || '';
         mainIcon = icon('ic-dispatch-stalled', titleColor);

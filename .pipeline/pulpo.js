@@ -7375,7 +7375,24 @@ function publicarCausaPausa(config, causa, detalle) {
     // #5400 — el conteo de ELEGIBLES (no el de pendientes crudos) alimenta la
     // escalada por duración: una causa silenciosa sostenida CON trabajo
     // despachable esperando deja de ser silenciosa.
-    const pendientes = contarElegiblesEsperando(config);
+    const elegibles = contarElegiblesEsperando(config);
+    // #5400 (rev-11, BLOQUEANTE 2) — `hayPendientes` vuelve a medirse con
+    // `countPendientesGlobal`, como en main. Es el interruptor que decide si el
+    // artifact de causa EXISTE: `resolveCause` devuelve `null` cuando es false
+    // (`lib/dispatch-cause.js:179`) y `publish` entonces llama `clearArtifact`.
+    //
+    // Haberlo atado a `contarElegiblesEsperando` borraba `dispatch-cause.json`
+    // justo en el caso que este issue vino a cubrir: con `.paused` + allowlist
+    // podada (poda TTL / fin de ola) el conteo de elegibles sale por
+    // `fail-closed-sin-ola` con 0 aunque la cola esté llena, así que un pipeline
+    // detenido a mano se quedaba sin causa publicada y el banner caía al
+    // watchdog, que durante los primeros minutos está en
+    // `skip:declared-cause:human-halt` y se pintaba en verde. Es el incidente
+    // del 2026-08-02 con un cartel de salud encima.
+    //
+    // La escalada por duración NO pierde nada: viaja por su propio parámetro
+    // (`elegiblesEsperando`), que sigue siendo el conteo de elegibles.
+    const pendientes = countPendientesGlobal(config);
     dispatchCause.publish({
       pipelineDir: PIPELINE,
       snapshot: {
@@ -7386,7 +7403,9 @@ function publicarCausaPausa(config, causa, detalle) {
         detalles: Object.fromEntries(gates),
       },
       now: Date.now(),
-      elegiblesEsperando: pendientes,
+      // La escalada por duración sigue mirando ELEGIBLES, no pendientes crudos:
+      // una causa silenciosa sólo deja de serlo si hay trabajo despachable.
+      elegiblesEsperando: elegibles,
       silentEscalateMs: escalaDuracionMs(config),
       // #5400 (rev-5, B2 / SEC-1) — ESCAPE, no "texto plano". Omitir
       // `parse_mode` NO alcanza: `servicio-telegram.js` hace

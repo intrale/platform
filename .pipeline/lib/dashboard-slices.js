@@ -2812,12 +2812,22 @@ function dispatchCauseSlice(state, ctx) {
         if (wd.watchdogEnabled !== null || wd.watchdogDegraded !== null) {
             return {
                 active: true,
-                // rev-6 (S1/B3) — "silencio SANO" exige las dos cosas: watchdog
-                // no degradado Y última decisión `skip`. Con sólo lo primero, un
-                // watchdog perfectamente vivo que está ALERTANDO por despacho
-                // detenido se pintaba como silencio saludable — el banner decía
-                // "todo bien" mientras el propio control gritaba lo contrario.
-                healthySilence: wd.watchdogDegraded === false && wd.watchdogAction === 'skip',
+                // rev-6 (S1/B3) — "silencio SANO" exige watchdog no degradado Y
+                // última decisión `skip`. Con sólo lo primero, un watchdog vivo
+                // que estaba ALERTANDO se pintaba como silencio saludable.
+                //
+                // rev-11 (BLOQUEANTE 1) — pero `skip` TAMPOCO alcanza: es la
+                // acción de cuatro situaciones distintas y sólo una es sana.
+                // `cooldown` (ya alertó, sigue parado), `within-threshold`
+                // (parado, todavía por debajo del umbral) y `declared-cause:*`
+                // (parado por una pausa declarada) son `skip` con la cola llena.
+                // Afirmar salud ahí es el defecto exacto que este issue cierra.
+                //
+                // Silencio sano ⇔ NO HAY TRABAJO ELEGIBLE. Se acepta por la
+                // razón explícita del watchdog o por un conteo de elegibles en
+                // cero observado. `null` (no consta) nunca cuenta como sano:
+                // ausencia de dato no es evidencia de salud.
+                healthySilence: esSilencioSano(wd),
                 causa: null,
                 label: null,
                 detalle: '',
@@ -2913,6 +2923,31 @@ function formatClock(ts) {
     }
 }
 
+// #5400 (rev-11) — ¿El silencio del despacho es SANO?
+//
+// Sano significa UNA sola cosa: no hay trabajo elegible esperando, así que no
+// despachar es la conducta correcta. Cualquier otro `skip` es un pipeline
+// parado con cola, y pintarlo en verde es el defecto que este issue cierra.
+//
+// Fail-closed por diseño: se exige evidencia POSITIVA de que la cola está sin
+// trabajo elegible. Con `null` (no consta) devuelve `false` y el banner cae a
+// "estado sin confirmar", que es honesto; el error caro es el falso verde.
+function esSilencioSano(wd) {
+    if (!wd) return false;
+    // El control tiene que estar sano: un watchdog degradado no puede afirmar
+    // nada sobre el pipeline.
+    if (wd.watchdogDegraded !== false) return false;
+    // Y su última decisión tiene que haber sido no-actuar.
+    if (wd.watchdogAction !== 'skip') return false;
+    // Razón explícita del propio watchdog: la cola no tiene trabajo habilitado.
+    if (wd.watchdogDecisionReason === 'no-enabled-work') return true;
+    // O bien un conteo de elegibles observado en CERO (estrictamente 0, no
+    // falsy: `null` es "no consta" y no habilita el verde). Cubre el caso
+    // legítimo de `within-threshold` con la cola realmente vacía.
+    if (wd.watchdogElegibles === 0) return true;
+    return false;
+}
+
 // #5400 — Lee el estado del watchdog de inactividad de despacho.
 //
 // `degraded` es TRI-ESTADO a propósito:
@@ -2926,6 +2961,8 @@ function readWatchdogStatus(PIPELINE, nowMs) {
         watchdogEnabled: null, watchdogDegraded: null,
         watchdogStaleTick: null, watchdogReason: null,
         watchdogAction: null,
+        // #5400 (rev-11) — RAZÓN de la última decisión y causa clasificada.
+        watchdogDecisionReason: null, watchdogCauseKind: null,
         // #5400 (rev-8) — autoría + backoff: sin status file no consta NADA.
         // Ausencia de dato jamás se rellena con un default optimista.
         autoriaDeclarada: null, autoriaDesdeTs: null, autoriaDesdeClock: null,
@@ -2963,6 +3000,32 @@ function readWatchdogStatus(PIPELINE, nowMs) {
         // rev-6 (S1/B3) — la ÚLTIMA decisión del brazo. `degraded: false` sólo
         // dice que el watchdog está sano; no dice que el pipeline lo esté.
         watchdogAction: typeof raw.action === 'string' ? raw.action : null,
+
+        // #5400 (rev-11, BLOQUEANTE 1) — RAZÓN de la última decisión, cruda.
+        //
+        // `action` sola es ambigua: `decide()` emite CUATRO `skip` distintos
+        // (`no-enabled-work`, `within-threshold`, `declared-cause:<kind>` y
+        // `cooldown`) y sólo el primero significa "no hay nada para despachar".
+        // Sin este campo el render no podía distinguirlos y pintaba en verde
+        // "nada que despachar no es una falla" con la cola llena: en `cooldown`
+        // —donde el watchdog pasa la mayor parte de un episodio largo, por el
+        // backoff 30→60→120 con tick de 1 min— el banner volvía al verde DESPUÉS
+        // de haber alertado, con el pipeline todavía parado.
+        //
+        // OJO: `watchdogReason` (abajo) es otra cosa — describe la salud del
+        // CONTROL ('apagado' / 'sin latido' / 'con reloj degradado'). No se
+        // fusionan: una habla del watchdog, la otra del pipeline.
+        watchdogDecisionReason: typeof raw.reason === 'string' && raw.reason.length > 0
+            ? raw.reason
+            : null,
+        // #5400 (rev-11) — CAUSA clasificada del último tick. El Pulpo ya la
+        // escribía y el slice la tiraba, así que el banner de fallback decía
+        // "sin causa declarada" mientras Telegram nombraba la pausa (rompía CA-6
+        // y la regla de copy 7: banner y Telegram cuentan el mismo episodio).
+        watchdogCauseKind: typeof raw.causeKind === 'string' && raw.causeKind.length > 0
+            ? raw.causeKind
+            : null,
+
         watchdogReason: !enabled
             ? (raw.killSwitch === true ? 'kill-switch' : 'apagado')
             : (stale ? 'sin latido' : (relojDegradado ? 'con reloj degradado' : null)),

@@ -159,6 +159,30 @@ igual que siempre.
 > quedara con eso, el escenario "pipeline pausado con trabajo esperando" daría 0
 > elegibles y jamás alertaría — justo el incidente que originó el issue.
 
+### Los elegibles gobiernan la ESCALADA, nunca la EXISTENCIA del artifact
+
+`dispatchCause.publish()` recibe dos conteos y **no** son intercambiables:
+
+| Campo | Se mide con | Para qué |
+|---|---|---|
+| `snapshot.hayPendientes` | `countPendientesGlobal()` (pendientes crudos) | decide si el artifact de causa **existe** |
+| `elegiblesEsperando` | `contarElegiblesEsperando()` (cruce con allowlist) | alimenta la escalada por duración y el texto del aviso |
+
+`hayPendientes` es un interruptor destructivo: `resolveCause()` devuelve `null`
+cuando es `false` y `publish()` entonces llama `clearArtifact()`, o sea **borra
+`dispatch-cause.json`**.
+
+Atarlo a los elegibles lo rompe exactamente en el caso que este control existe
+para cubrir: con `.paused` + allowlist podada (poda TTL / fin de ola) el cruce
+sale por `fail-closed-sin-ola` con `elegibles: 0` aunque la cola esté llena, así
+que un pipeline **detenido a mano** se quedaba sin causa publicada. Sin artifact
+el banner cae al watchdog, que durante los primeros minutos está en
+`skip:declared-cause:human-halt` con `degraded: false` — y se pintaba en verde.
+Es el incidente del 2026-08-02 con un cartel de salud encima.
+
+La regla: **la visibilidad de la causa no puede depender de poder ver el alcance.**
+Que no se sepa qué es despachable es justamente cuando más falta hace el banner.
+
 ## 4. Causas declaradas y orden de resolución
 
 Una causa declarada **explica** un rato de no-despacho; no lo explica para
@@ -241,11 +265,35 @@ badge no es señal de salud.
 estampa de despacho ausente/corrida y estado que no se pudo persistir.
 
 **El watchdog sano no implica el pipeline sano.** El banner marca *silencio
-saludable* sólo si `degraded === false` **y** la última decisión fue `skip`.
-Antes colgaba únicamente de `degraded`, así que un watchdog perfectamente vivo
-que estaba **alertando** por despacho detenido se pintaba como silencio
-saludable: el banner decía "todo bien" mientras el propio control gritaba lo
-contrario. Sin `action` observada tampoco se afirma salud.
+saludable* sólo si `degraded === false`, la última decisión fue `skip` **y esa
+decisión se explica porque no hay trabajo elegible**. Colgó primero sólo de
+`degraded` (un watchdog vivo que **alertaba** se pintaba saludable) y después de
+`degraded` + `action`, que tampoco alcanza: `decide()` emite **cuatro** `skip`
+distintos y sólo uno significa "no hay nada para despachar".
+
+| `reason` | ¿silencio sano? | Qué está pasando |
+|---|---|---|
+| `no-enabled-work` | **sí** | no hay trabajo elegible: no despachar es correcto |
+| `within-threshold` | no | parado, todavía por debajo del umbral |
+| `cooldown` | no | ya alertó y **sigue** parado (backoff corriendo) |
+| `declared-cause:*` | no | parado por una pausa declarada, con nombre |
+
+El caso caro es `cooldown`: con backoff 30→60→120 min y tick de 1 min, el
+watchdog pasa la mayoría de los ticks de un episodio largo ahí, así que colgar el
+verde de `action` sola mostraba salud casi todo lo que duraba la caída — y encima
+*después* de haber alertado.
+
+Por eso el slice expone `watchdogDecisionReason` (la razón cruda del tick) y
+`watchdogCauseKind` (la causa clasificada), separadas de `watchdogReason`, que
+describe la salud del **control** (`apagado` / `sin latido` / `con reloj
+degradado`). El verde exige **evidencia positiva** de cola sin trabajo elegible:
+`reason === 'no-enabled-work'` o un `pendientes` observado en `0`. Sin `action`
+ni `reason` no se afirma salud — ausencia de dato no es evidencia de salud.
+
+`watchdogCauseKind` además deja que el banner **nombre** la causa cuando no hay
+artifact de causa declarada. Sin él, el dashboard decía "sin causa declarada"
+mientras Telegram nombraba la pausa sobre el mismo episodio (rompía CA-6 y la
+regla de copy 7: banner y aviso cuentan lo mismo).
 
 ## 8. Debugging
 
@@ -262,6 +310,10 @@ cat .pipeline/state/dispatch-watchdog-status.json
 #   alcanceCiego              → true = "0 elegibles" NO es una cola vacía (§3)
 #   modoLeible                → false = getPipelineMode() tiró; no se declara causa
 #   action                    → última decisión: skip | alert | escalate
+#   reason                    → POR QUÉ esa decisión. `skip` sólo es silencio
+#                               sano con `no-enabled-work` (ver §7)
+#   causeKind                 → causa clasificada (human-halt, wave-empty, …);
+#                               es la que el banner nombra sin artifact de causa
 
 # Episodio en curso (reloj de movimiento, cantidad de avisos)
 cat .pipeline/state/wave-stall-watchdog-state.json

@@ -233,10 +233,16 @@ test('#5400 sin archivo de estado el watchdog reporta "no consta", no un OK inve
     fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// rev-11: este test traía `action: 'skip'` A SECAS y esperaba silencio sano.
+// Esa expectativa ERA el bug: `skip` es la acción de cuatro situaciones y sólo
+// `no-enabled-work` significa "no hay nada para despachar". Se le agrega la
+// razón para que siga probando su intención real (watchdog sano + cola vacía →
+// chip activo); el caso de `skip` sin razón lo cubre el test de más abajo.
 test('#5400 sin causa y con el watchdog sano muestra el estado esperado y el chip activo', () => {
     const dir = tmpDir();
     escribirStatusWatchdog(dir, {
         enabled: true, killSwitch: false, lastTickTs: 1_600_000, action: 'skip',
+        reason: 'no-enabled-work', pendientes: 0,
     });
     escribirEstampa(dir, 1_590_000);
     const s = slices.dispatchCauseSlice({}, { PIPELINE: dir, nowMs: 1_600_000 });
@@ -643,4 +649,212 @@ test('#5400 el banner usa los iconos del sprite y no emojis', () => {
     assert.match(html, /href="#ic-health-ok"/);
     assert.doesNotMatch(html, /⚠️|⏸️|▶️/u);
     assert.match(html, /dispatch-watchdog-chip/);
+});
+
+// =============================================================================
+// rev-11 — Guard por RAZÓN de skip (BLOQUEANTE 1 del rechazo de review).
+//
+// El guard de rev-10 quedó fijado a `action` ('alert' / 'escalate' / null) y por
+// eso no vio la regresión: `healthySilence` era
+// `watchdogDegraded === false && watchdogAction === 'skip'`, y `decide()` emite
+// CUATRO skips distintos. Tres de ellos son un pipeline PARADO con cola llena:
+//
+//   reason              | ¿sano? | por qué
+//   --------------------|--------|--------------------------------------------
+//   no-enabled-work     |   SÍ   | no hay trabajo elegible: no despachar es OK
+//   within-threshold    |   NO   | parado, todavía por debajo del umbral
+//   cooldown            |   NO   | YA alertó y sigue parado (backoff corriendo)
+//   declared-cause:*    |   NO   | parado por una pausa declarada, con nombre
+//
+// El más caro es `cooldown`: con backoff 30→60→120 min y tick de 1 min, el
+// watchdog pasa la mayoría de los ticks de un episodio largo ahí, así que el
+// operador veía verde casi todo lo que duraba la caída.
+//
+// Estos tests recorren la cadena completa (status del tick → slice → HTML) y
+// afirman sobre el TEXTO RENDERIZADO, no sólo sobre el campo de la slice.
+// =============================================================================
+
+const RAZONES_NO_SANAS = [
+    {
+        reason: 'within-threshold',
+        causeKind: null,
+        // En t=10 con 9 elegibles el banner decía "Cola sin trabajo elegible":
+        // literalmente falso, y en estado estable.
+        esperado: /todavía dentro del umbral de vigilancia/,
+    },
+    {
+        reason: 'cooldown',
+        causeKind: null,
+        esperado: /aviso ya emitido, la detención continúa/,
+    },
+    {
+        reason: 'declared-cause:human-halt',
+        causeKind: 'human-halt',
+        esperado: /pausa total declarada por el operador/,
+    },
+    {
+        reason: 'declared-cause:wave-empty',
+        causeKind: 'wave-empty',
+        esperado: /allowlist vacía/,
+    },
+];
+
+for (const caso of RAZONES_NO_SANAS) {
+    test(`#5400 (rev-11) skip:${caso.reason} con elegibles esperando NO se pinta como silencio sano`, () => {
+        const dir = tmpDir();
+        const NOW = 1_700_000_000_000;
+        escribirEstado(dir, 'last-dispatch.json', {
+            ts: NOW - 40 * 60_000, issue: '5388', skill: 'pipeline-dev', fase: 'dev',
+        });
+        escribirStatusWatchdog(dir, {
+            enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+            action: 'skip', reason: caso.reason, causeKind: caso.causeKind,
+            pendientes: 9,
+        });
+
+        const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+        // El watchdog está sano; el PIPELINE no. Son dos cosas distintas.
+        assert.strictEqual(s.watchdogDegraded, false, 'el watchdog en sí está sano');
+        assert.strictEqual(s.watchdogAction, 'skip');
+        assert.strictEqual(s.watchdogDecisionReason, caso.reason,
+            'la razón del skip tiene que llegar a la slice (antes se perdía)');
+        assert.strictEqual(s.healthySilence, false,
+            `skip:${caso.reason} con 9 elegibles NO es silencio sano`);
+
+        const html = renderDispatchCauseBanner(s);
+        const texto = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        // 1. Lo prohibido: el copy de salud con la cola llena.
+        assert.doesNotMatch(texto, /nada que despachar no es una falla/);
+        assert.doesNotMatch(texto, /Cola sin trabajo elegible/);
+        // 2. El estado principal es "detención", no el ícono de salud.
+        assert.match(html, /href="#ic-dispatch-stalled"/);
+        // 3. El banner NOMBRA por qué está parado, no dice "no consta".
+        assert.match(texto, caso.esperado);
+        assert.doesNotMatch(texto, /Estado del despacho sin confirmar/,
+            'hay decisión registrada: no corresponde el copy de "sin confirmar"');
+        // 4. Cuenta el mismo episodio que Telegram: elegibles esperando.
+        assert.match(texto, /9 issues elegibles esperando/);
+        fs.rmSync(dir, { recursive: true, force: true });
+    });
+}
+
+test('#5400 (rev-11) skip:no-enabled-work es el ÚNICO skip que declara salud', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstampa(dir, NOW - 40 * 60_000);
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'skip', reason: 'no-enabled-work', pendientes: 0,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.healthySilence, true);
+    assert.match(renderDispatchCauseBanner(s), /nada que despachar no es una falla/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 (rev-11) un skip sin razón registrada no afirma salud: sin dato no se pinta verde', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstampa(dir, NOW - 40 * 60_000);
+    // `action: 'skip'` a secas — sin `reason` y sin `pendientes`. Es el estado
+    // que el guard de rev-10 daba por sano. Ausencia de dato no es evidencia de
+    // salud: fail-closed.
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'skip',
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.watchdogDecisionReason, null);
+    assert.strictEqual(s.watchdogElegibles, null, 'no consta el conteo');
+    assert.strictEqual(s.healthySilence, false, 'sin evidencia positiva, no hay verde');
+    const html = renderDispatchCauseBanner(s);
+    assert.doesNotMatch(html, /nada que despachar no es una falla/);
+    assert.match(html, /Estado del despacho sin confirmar/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 (rev-11) within-threshold con la cola REALMENTE vacía sí es silencio sano', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstampa(dir, NOW - 5 * 60_000);
+    // No-regresión en el otro sentido: exigir `no-enabled-work` a secas
+    // convertiría en alarma un pipeline ocioso legítimo (CA-3). Un conteo de
+    // elegibles observado en CERO alcanza para el verde.
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'skip', reason: 'within-threshold', pendientes: 0,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.healthySilence, true);
+    assert.match(renderDispatchCauseBanner(s), /nada que despachar no es una falla/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// -----------------------------------------------------------------------------
+// rev-11 — BLOQUEANTE 2 (agravante): el fallback tiene que poder NOMBRAR la causa.
+// El Pulpo escribía `causeKind` y la slice lo tiraba, así que el banner decía
+// "sin causa declarada" mientras Telegram nombraba la pausa sobre el mismo
+// episodio (rompía CA-6 y la regla de copy 7).
+// -----------------------------------------------------------------------------
+test('#5400 (rev-11) alertando con causa clasificada el banner la nombra en vez de decir "sin causa declarada"', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstado(dir, 'last-dispatch.json', {
+        ts: NOW - 93 * 60_000, issue: '5388', skill: 'pipeline-dev', fase: 'dev',
+    });
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'alert', reason: 'stale-declared-cause:human-halt',
+        causeKind: 'human-halt', pendientes: 9,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.watchdogCauseKind, 'human-halt');
+    const texto = renderDispatchCauseBanner(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    assert.match(texto, /pausa total declarada por el operador/);
+    assert.doesNotMatch(texto, /sin causa declarada/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#5400 (rev-11) sin causeKind el banner sigue diciendo la verdad: sin causa declarada', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstampa(dir, NOW - 93 * 60_000);
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'alert', reason: 'unexplained-stall', pendientes: 9,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.watchdogCauseKind, null);
+    assert.match(renderDispatchCauseBanner(s), /sin causa declarada/);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// -----------------------------------------------------------------------------
+// rev-11 — El escenario completo del rechazo: el incidente del 2026-08-02
+// (`.paused` + allowlist podada) NO puede terminar en un cartel verde.
+// -----------------------------------------------------------------------------
+test('#5400 (rev-11) pipeline detenido a mano hace 1 h 33 min: el banner jamás dice que no hay nada que despachar', () => {
+    const dir = tmpDir();
+    const NOW = 1_700_000_000_000;
+    escribirEstado(dir, 'last-dispatch.json', {
+        ts: NOW - 93 * 60_000, issue: '5388', skill: 'pipeline-dev', fase: 'dev',
+    });
+    // Primeros 45 min del episodio: la causa declarada todavía es válida, así
+    // que el watchdog está en `skip:declared-cause:human-halt` con degraded:false.
+    // Ese era exactamente el camino al falso verde.
+    escribirStatusWatchdog(dir, {
+        enabled: true, killSwitch: false, lastTickTs: NOW - 20_000, degraded: false,
+        action: 'skip', reason: 'declared-cause:human-halt', causeKind: 'human-halt',
+        authorDeclared: 'leitolarreta', causeSinceTs: NOW - 93 * 60_000, pendientes: 9,
+    });
+    const s = slices.dispatchCauseSlice(null, { PIPELINE: dir, nowMs: NOW });
+    assert.strictEqual(s.healthySilence, false);
+    const texto = renderDispatchCauseBanner(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    assert.doesNotMatch(texto, /nada que despachar no es una falla/);
+    assert.doesNotMatch(texto, /Cola sin trabajo elegible/);
+    // Nombra la pausa y su autoría declarada, igual que Telegram.
+    assert.match(texto, /pausa total declarada por el operador/);
+    assert.match(texto, /leitolarreta/);
+    assert.match(texto, /9 issues elegibles esperando/);
+    fs.rmSync(dir, { recursive: true, force: true });
 });
