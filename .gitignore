@@ -207,6 +207,13 @@ scripts/planner-plan.json
 .pipeline/human-block-reminder-state.json
 .pipeline/human-block-reminder-state.json.*.tmp
 .pipeline/last-restart.json
+# #5646 — registro de servicios que quedaron con codigo viejo tras un
+# `reset --hard` y guard de ronda del restart selectivo. Estado runtime puro:
+# versionarlos haria que el propio reset los pise (mismo problema que waves.json).
+.pipeline/stale-services.json
+.pipeline/stale-services.json.*.tmp
+.pipeline/last-selective-restart.json
+.pipeline/last-selective-restart.json.tmp
 .pipeline/listener-offset.json
 .pipeline/commander-history.jsonl
 .pipeline/commander-summary.json
