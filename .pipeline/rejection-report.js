@@ -27,7 +27,7 @@ const apkFreshness = require('./lib/apk-freshness');
 // #3088: lookup del contexto multi-provider (provider/model/cli_version) sobre
 // el audit trail emitido por #3083. Single source of truth, SIN inferencia.
 const traceability = require('./lib/traceability');
-const { redactSensitive, redactEmailsInText } = require('./lib/redact');
+const { redactSensitive, redactEmailsInText, redactSecretValue } = require('./lib/redact');
 
 const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = __dirname;
@@ -145,7 +145,11 @@ function safeImageSrc(src, issueArg) {
 }
 
 function redactVisualText(value) {
-  return redactEmailsInText(redactSensitive(String(value || '')));
+  return redactEmailsInText(redactSecretValue(redactSensitive(String(value || ''))));
+}
+
+function escapeVisualText(value) {
+  return escapeHtml(redactVisualText(value));
 }
 
 // =============================================================================
@@ -1554,11 +1558,11 @@ function renderVisualComparisonBlock(visualComparison, issueArg) {
   const v = visualComparison;
 
   const renderColumn = (col, side) => {
-    const label = escapeHtml(col?.label || (side === 'mockup' ? 'MOCKUP ESPERADO' : 'ENTREGA ACTUAL'));
-    const subtitle = escapeHtml(col?.subtitle ||
+    const label = escapeVisualText(col?.label || (side === 'mockup' ? 'MOCKUP ESPERADO' : 'ENTREGA ACTUAL'));
+    const subtitle = escapeVisualText(col?.subtitle ||
       (side === 'mockup' ? 'adjunto en definición · UX' : 'captura QA · pipeline'));
     const badge = side === 'mockup'
-      ? `<span class="badge badge-green">${escapeHtml('baseline · ' + (col?.baseline || 'v1'))}</span>`
+      ? `<span class="badge badge-green">${escapeVisualText('baseline · ' + (col?.baseline || 'v1'))}</span>`
       : `<span class="badge badge-red">no matchea</span>`;
     const borderClass = side === 'mockup' ? 'visual-col-mockup' : 'visual-col-delivery';
     const safeSrc = safeImageSrc(col?.src, issueArg || v.issue);
@@ -1585,7 +1589,7 @@ function renderVisualComparisonBlock(visualComparison, issueArg) {
   ).slice(0, MAX_DIFFS_RENDER);
   const groupedDiffs = new Map();
   for (const diff of diffs) {
-    const section = String(diff?.section || 'sin sección');
+    const section = redactVisualText(diff?.section || 'sin sección');
     if (!groupedDiffs.has(section)) groupedDiffs.set(section, []);
     groupedDiffs.get(section).push(diff);
   }
@@ -1593,14 +1597,14 @@ function renderVisualComparisonBlock(visualComparison, issueArg) {
     ? '<p><em>Sin hallazgos narrados disponibles. Revisión humana de QA pendiente.</em></p>'
     : [...groupedDiffs.entries()].map(([section, items]) => `<section data-section="${escapeHtml(section)}"><h4>Sección ${escapeHtml(section)}</h4><ol class="visual-diffs">
         ${items.map((d, i) => {
-          const impact = (d?.impact || 'medio').toLowerCase();
+          const impact = redactVisualText(d?.impact || 'medio').toLowerCase();
           const impactClass = impact === 'alto' ? 'badge-red'
             : impact === 'medio' ? 'badge-yellow' : 'badge-blue';
           return `<li>
             <strong>${escapeHtml(redactVisualText(d?.title || `Hallazgo ${i + 1}`))}</strong>
             <p>${escapeHtml(redactVisualText(d?.description || ''))}</p>
             <span class="badge ${impactClass}">impacto: ${escapeHtml(impact)}</span>
-            <span class="badge badge-blue">sección: ${escapeHtml(d?.section || 'sin sección')}</span>
+            <span class="badge badge-blue">sección: ${escapeVisualText(d?.section || 'sin sección')}</span>
             ${d?.regression ? '<span class="badge badge-purple">REGRESIÓN</span>' : ''}
           </li>`;
         }).join('')}
@@ -1611,13 +1615,13 @@ function renderVisualComparisonBlock(visualComparison, issueArg) {
   const notVerified = new Map(Array.isArray(coverage.no_verificadas) ? coverage.no_verificadas.map(x => [String(x?.section || ''), redactVisualText(x?.motivo || 'motivo no informado')]) : []);
   const declared = Array.isArray(coverage.secciones_declaradas) ? coverage.secciones_declaradas.map(String) : [];
   const coverageBlock = declared.length
-    ? `<div class="context-box"><h3>Cobertura visual declarada</h3>${declared.map(section => verified.has(section) ? `<span class="badge badge-green">${escapeHtml(section)} · VERIFICADA</span>` : `<span class="badge badge-yellow">${escapeHtml(section)} · NO VERIFICADA · ${escapeHtml(notVerified.get(section) || 'motivo no informado')}</span>`).join(' ')}</div>`
+    ? `<div class="context-box"><h3>Cobertura visual declarada</h3>${declared.map(section => verified.has(section) ? `<span class="badge badge-green">${escapeVisualText(section)} · VERIFICADA</span>` : `<span class="badge badge-yellow">${escapeVisualText(section)} · NO VERIFICADA · ${escapeHtml(notVerified.get(section) || 'motivo no informado')}</span>`).join(' ')}</div>`
     : '<div class="context-box"><strong>Cobertura visual no declarada</strong></div>';
   const truncationBlock = `<p><strong>${diffs.length} de ${allDiffs.length} desvíos mostrados${allDiffs.length > MAX_DIFFS_RENDER ? ' — inventario completo en visual-comparison.json' : ''} · tope de render del PDF: ${MAX_DIFFS_RENDER}</strong></p>`;
   const actionBlock = v.suggestedAction
     ? `<div class="visual-action">
-         <p><strong>→ Rebote a ${escapeHtml(v.suggestedAction.skill || 'dev')}</strong></p>
-         <p>${escapeHtml(v.suggestedAction.text || 'Re-implementar respetando el mockup referenciado.')}</p>
+         <p><strong>→ Rebote a ${escapeVisualText(v.suggestedAction.skill || 'dev')}</strong></p>
+         <p>${escapeVisualText(v.suggestedAction.text || 'Re-implementar respetando el mockup referenciado.')}</p>
        </div>`
     : '';
 
@@ -1854,11 +1858,11 @@ function generateNarration(data) {
   if (visualComparison && Array.isArray(visualComparison.diffs) && visualComparison.diffs.length > 0) {
     const diffs = visualComparison.diffs.slice(0, 3);
     const list = diffs.map((d, i) => {
-      const title = (d?.title || `hallazgo ${i + 1}`).replace(/\.$/, '');
-      const impact = (d?.impact || 'medio').toLowerCase();
+      const title = redactVisualText(d?.title || `hallazgo ${i + 1}`).replace(/\.$/, '');
+      const impact = redactVisualText(d?.impact || 'medio').toLowerCase();
       return `${title} — impacto ${impact}`;
     }).join('. ');
-    const actionSkill = visualComparison.suggestedAction?.skill || 'el desarrollador del área';
+    const actionSkill = redactVisualText(visualComparison.suggestedAction?.skill || 'el desarrollador del área');
     return `Issue ${issue}: rechazo visual. ${visualComparison.diffs.length} desvíos detectados; los ${diffs.length} de mayor impacto son: ${list}. Acción sugerida: rebotar a ${actionSkill} para re-implementar respetando el mockup adjunto en definición.${provSuffix}`;
   }
 

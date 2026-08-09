@@ -110,6 +110,23 @@ test('renderVisualComparisonBlock escapa HTML del title/description (SEC-1)', ()
     assert.ok(out.includes('&lt;script&gt;'));
 });
 
+test('renderVisualComparisonBlock redacta secretos de todos los campos textuales visuales', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const out = renderVisualComparisonBlock({
+        mockup: { label: secret, subtitle: secret, baseline: secret },
+        delivery: { label: secret, subtitle: secret },
+        coverage: {
+            secciones_declaradas: [secret],
+            verificadas: [secret],
+            no_verificadas: [],
+        },
+        diffs: [{ section: secret, title: secret, description: secret, impact: secret }],
+        suggestedAction: { skill: secret, text: secret },
+    });
+    assert.equal(out.includes(secret), false);
+    assert.match(out, /\[REDACTED(?::AWS_ACCESS_KEY)?\]/);
+});
+
 test('renderVisualComparisonBlock sin diffs muestra mensaje de revisión humana', () => {
     const out = renderVisualComparisonBlock({
         mockup: { src: 'x://1.png' },
@@ -213,6 +230,22 @@ test('generateNarration limita a 3 diffs en audio', () => {
     assert.ok(!text.includes('D4'));
     assert.ok(!text.includes('E5'));
     assert.ok(text.includes('5 desvíos detectados'));
+});
+
+test('generateNarration redacta secretos del contrato visual', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const text = generateNarration({
+        issue: 1234,
+        primaryCause: null,
+        inconclusive: false,
+        autoCreatedDeps: [],
+        visualComparison: {
+            diffs: [{ title: secret, impact: secret }],
+            suggestedAction: { skill: secret },
+        },
+    });
+    assert.equal(text.includes(secret), false);
+    assert.match(text, /\[REDACTED(?::AWS_ACCESS_KEY)?\]/);
 });
 
 test('loader confina paths y las imágenes rechazan esquemas remotos', () => {
