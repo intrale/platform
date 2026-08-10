@@ -358,3 +358,74 @@ test('#2551 CA-S1 — git-ops.redactSensitivePaths oculta credentials/.env en ou
     assert.ok(out.includes('.pipeline/logs/2551-delivery.log'));
     assert.ok(out.includes('app/Main.kt'));
 });
+
+// =============================================================================
+// #5629 — CA-3: `delivery` no puede escribir `resultado: aprobado` cuando el
+// merge quedó bloqueado.
+//
+// Bug original: las ramas `no-qa-gate` y `needs-human` sólo seteaban `motivo` y
+// terminaban con `exitCode === 0`, así que el marker salía `aprobado` con el
+// motivo confesando "merge bloqueado" (#5220 → PR #5277; #5244 → PR #5280).
+// El dashboard tomaba ese marker como entrega y pintaba los issues al 100%.
+// =============================================================================
+
+const humanBlock = require('../../lib/human-block');
+
+test('#5629 CA-3: los gates que frenan el merge están registrados con etiqueta propia', () => {
+    assert.ok(delivery.GATE_BLOCK_LABELS['qa-gate'], 'falta el gate qa-gate');
+    assert.ok(delivery.GATE_BLOCK_LABELS['codeowners-human'], 'falta el gate codeowners-human');
+});
+
+test('#5629 CA-3: el motivo de gate QA se clasifica como BLOQUEO HUMANO (escala sin rebote)', () => {
+    // Clave para no abrir un loop de re-entrega: un `rechazado` común haría que
+    // el pulpo rebote a una fase anterior e incremente `rev`, y el gate QA no se
+    // destraba solo. El motivo human-block hace que escale al operador sin rev++.
+    const motivo = delivery.buildGateBlockMotivo({
+        prNumber: 5277, branch: 'agent/5220-x', gate: 'qa-gate',
+        reason: 'el PR no tiene label qa:passed ni qa:skipped',
+    });
+    assert.ok(humanBlock.isHumanBlockReason(motivo),
+        'el pulpo debe leerlo como bloqueo humano, no como rebote técnico');
+    assert.match(motivo, /merge bloqueado/i);
+    assert.doesNotMatch(motivo, /entrega completada/i);
+});
+
+test('#5629 CA-3: el motivo de CODEOWNERS humano se clasifica como BLOQUEO HUMANO', () => {
+    const motivo = delivery.buildGateBlockMotivo({
+        prNumber: 5280, branch: 'agent/5244-x', gate: 'codeowners-human',
+        reason: 'review requerido de @leitolarreta',
+    });
+    assert.ok(humanBlock.isHumanBlockReason(motivo));
+    assert.match(motivo, /review manual|intervención humana/i);
+});
+
+test('#5629 CA-3 (guardrail): las ramas no-qa-gate y needs-human NO caen en el veredicto aprobado', () => {
+    // Guardrail estructural: `main()` no es invocable en test (hace git/gh), así
+    // que verificamos sobre el fuente que ambas ramas escalan y cortan el flujo
+    // en vez de seguir hasta el `finally` con exitCode 0 (que produce `aprobado`).
+    const src = fs.readFileSync(require.resolve('../delivery.js'), 'utf8');
+
+    for (const status of ['no-qa-gate', 'needs-human']) {
+        const i = src.indexOf(`outcome.status === '${status}'`);
+        assert.ok(i > 0, `no se encontró la rama ${status}`);
+        // Ventana de la rama: hasta el siguiente `else if (outcome.status`.
+        const next = src.indexOf('outcome.status ===', i + 30);
+        const body = src.slice(i, next > 0 ? next : i + 2500);
+
+        assert.match(body, /escalateMergeGateBlock\(/,
+            `${status} debe escalar fail-closed al operador`);
+        assert.match(body, /exitCode = 1;/,
+            `${status} NO puede terminar con exitCode 0 (marker quedaría "aprobado")`);
+        assert.match(body, /\breturn;/,
+            `${status} debe cortar el flujo, no seguir al camino de merge`);
+    }
+});
+
+test('#5629 CA-4: el marker persiste delivery_merge_sha como señal estructurada de merge', () => {
+    // El dashboard deriva "entregado" de este campo, nunca del texto de `motivo`.
+    const src = fs.readFileSync(require.resolve('../delivery.js'), 'utf8');
+    assert.match(src, /delivery_merge_sha: mergeSha/,
+        'el marker debe seguir persistiendo el SHA que consume lib/delivery-status.js');
+    // Y el SHA sólo se asigna en la rama de merge confirmado.
+    assert.match(src, /mergeSha = outcome\.sha/);
+});
