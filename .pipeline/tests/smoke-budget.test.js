@@ -153,3 +153,135 @@ test('los exit codes se traducen a castellano para el operador', () => {
   // Un código desconocido no rompe el mensaje.
   assert.match(budget.describeExitCode(99), /99/);
 });
+
+// ---------------------------------------------------------------------------
+// Sincronización presupuesto ↔ gasto real (rebote de `aprobacion`, #5725).
+//
+// El módulo declara ser "la ÚNICA fuente de verdad de esos tiempos", pero dos
+// de sus constantes (HTTP_RETRY, SELF_CHECK_COUNT) no estaban atadas a nada del
+// lado del smoke: coincidían por casualidad. Estos tests convierten esa
+// coincidencia en invariante — si se desincronizan, rompe el build en vez de
+// degradar el gate en silencio.
+// ---------------------------------------------------------------------------
+
+const smoke = require('../smoke-test');
+
+test('INVARIANTE: SELF_CHECK_COUNT coincide con la lista real de self-checks', () => {
+  // SELF_CHECK_COUNT es el default para los callers que no pueden importar la
+  // lista (restart.js dimensiona su ventana sin cargar el smoke). Si alguien
+  // suma un skill y no toca la constante, el runner queda corto: este assert
+  // es lo que lo frena.
+  assert.strictEqual(
+    smoke.SELF_CHECK_SKILLS.length,
+    budget.SELF_CHECK_COUNT,
+    `SELF_CHECK_SKILLS tiene ${smoke.SELF_CHECK_SKILLS.length} skills pero `
+    + `SELF_CHECK_COUNT declara ${budget.SELF_CHECK_COUNT}: actualizá la constante `
+    + `en lib/smoke-budget.js o el runner dimensionará una ventana corta.`
+  );
+});
+
+test('el conteo real de self-checks manda sobre la constante', () => {
+  const conDefault = budget.postWaitBudgetMs({ http: false, selfCheck: true });
+  const conCinco = budget.postWaitBudgetMs({ http: false, selfCheck: true, selfCheckCount: 5 });
+  assert.strictEqual(conDefault, budget.SELF_CHECK_COUNT * budget.SELF_CHECK_TIMEOUT_MS);
+  assert.strictEqual(conCinco, 5 * budget.SELF_CHECK_TIMEOUT_MS);
+  // Sumar un skill agranda el presupuesto en vez de desbordarlo.
+  assert.ok(conCinco > conDefault);
+});
+
+test('selfCheckCount viaja de smokeBudgetMs a la ventana del runner', () => {
+  const env = {};
+  const cuatro = budget.runnerTimeoutMs({ selfCheckCount: 4 }, env);
+  const seis = budget.runnerTimeoutMs({ selfCheckCount: 6 }, env);
+  assert.strictEqual(seis - cuatro, 2 * budget.SELF_CHECK_TIMEOUT_MS);
+});
+
+// Peor caso REAL, derivado de las listas y params que el smoke usa de verdad —
+// no de las constantes del presupuesto. Es el test que el rechazo pedía: si el
+// gasto real supera lo presupuestado, el watchdog corta self-checks legítimos,
+// el smoke sale EXIT_INCOMPLETE y restart.js toma la rama `incomplete`, que no
+// evalúa, no rollbackea y no mueve pipeline-stable. El gate deja de gatear.
+function peorCasoRealMs({ selfCheckCount, lightTimeoutMs, dashTimeoutMs }) {
+  const r = budget.HTTP_RETRY;
+  const http = r.attempts * r.perAttemptMs
+    + (r.attempts - 1) * r.delayMs
+    + budget.HTTP_SECONDARY_TIMEOUT_MS;
+  return Math.max(lightTimeoutMs, dashTimeoutMs)
+    + http
+    + selfCheckCount * budget.SELF_CHECK_TIMEOUT_MS;
+}
+
+test('INVARIANTE: el peor caso real del smoke entra en su propio presupuesto', () => {
+  const { lightTimeoutMs, dashTimeoutMs } = budget.resolveMarkerTimeouts({});
+  const selfCheckCount = smoke.SELF_CHECK_SKILLS.length;
+  const real = peorCasoRealMs({ selfCheckCount, lightTimeoutMs, dashTimeoutMs });
+  const presupuesto = budget.smokeBudgetMs({ selfCheckCount, lightTimeoutMs, dashTimeoutMs }, {});
+  assert.ok(
+    real <= presupuesto,
+    `peor caso real ${real}ms supera el presupuesto ${presupuesto}ms: el watchdog `
+    + `cortaría durante chequeos legítimos y el smoke saldría EXIT_INCOMPLETE.`
+  );
+});
+
+test('INVARIANTE: sumar self-checks no desborda el presupuesto (se ajusta solo)', () => {
+  const { lightTimeoutMs, dashTimeoutMs } = budget.resolveMarkerTimeouts({});
+  // Antes del fix, 5 skills daban 306s de gasto real contra 281s de presupuesto.
+  for (const selfCheckCount of [4, 5, 6, 10]) {
+    const real = peorCasoRealMs({ selfCheckCount, lightTimeoutMs, dashTimeoutMs });
+    const presupuesto = budget.smokeBudgetMs({ selfCheckCount, lightTimeoutMs, dashTimeoutMs }, {});
+    assert.ok(real <= presupuesto, `con ${selfCheckCount} skills: real ${real}ms > presupuesto ${presupuesto}ms`);
+  }
+});
+
+test('INVARIANTE: el runner sigue cubriendo el peor caso real con cualquier conteo', () => {
+  const { lightTimeoutMs, dashTimeoutMs } = budget.resolveMarkerTimeouts({});
+  for (const selfCheckCount of [4, 5, 6, 10]) {
+    const real = peorCasoRealMs({ selfCheckCount, lightTimeoutMs, dashTimeoutMs });
+    const runner = budget.runnerTimeoutMs({ selfCheckCount, lightTimeoutMs, dashTimeoutMs }, {});
+    assert.ok(
+      runner > real + budget.DUMP_GRACE_MS,
+      `con ${selfCheckCount} skills el runner (${runner}ms) no cubre el peor caso real `
+      + `(${real}ms) + volcado: mataría al smoke antes del diagnóstico.`
+    );
+  }
+});
+
+// Puerto reservado por convención (discard). Nadie escucha ahí: cada intento
+// corta con ECONNREFUSED al instante, así que contar reintentos es barato.
+const PUERTO_CERRADO = 9;
+
+// Cuenta los intentos REALES de la sonda interceptando http.get. smoke-test.js
+// hace `const http = require('http')` y llama `http.get(...)`, o sea que
+// resuelve la propiedad en cada invocación: parchearla acá los captura.
+async function contarIntentos(opts) {
+  const nodeHttp = require('http');
+  const original = nodeHttp.get;
+  let intentos = 0;
+  nodeHttp.get = (...a) => { intentos++; return original.apply(nodeHttp, a); };
+  try {
+    await smoke.checkDashboardHttpWithRetry(PUERTO_CERRADO, '/api/health', opts);
+  } finally {
+    nodeHttp.get = original;
+  }
+  return intentos;
+}
+
+test('la sonda HTTP reintenta la cantidad de veces que dice el presupuesto', async () => {
+  // Puerto cerrado → cada intento falla al toque (ECONNREFUSED), así que el
+  // test es rápido. Sólo overrideamos `delayMs`; `attempts` y `perAttemptMs`
+  // quedan en su default, que es lo que se verifica que salga de HTTP_RETRY.
+  const original = { ...budget.HTTP_RETRY };
+  const res = await smoke.checkDashboardHttpWithRetry(PUERTO_CERRADO, '/api/health', { delayMs: 1 });
+  assert.strictEqual(res.ok, false);
+
+  // Subir el presupuesto sube los reintentos REALES: eso es lo que prueba que
+  // la sonda lee de acá y no de literales propios. Con la copia hardcodeada
+  // que motivó el rechazo, este assert falla (seguiría en 5).
+  budget.HTTP_RETRY.attempts = original.attempts + 2;
+  try {
+    const intentos = await contarIntentos({ delayMs: 1 });
+    assert.strictEqual(intentos, original.attempts + 2);
+  } finally {
+    Object.assign(budget.HTTP_RETRY, original);
+  }
+});

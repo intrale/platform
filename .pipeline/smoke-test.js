@@ -428,7 +428,14 @@ async function checkDashboardHttp(port, timeoutMs = 5000, urlPath = '/api/health
 // responda 200 cuando sólo está lento por contención, pero un dashboard
 // realmente caído (ECONNREFUSED inmediato) sigue fallando todas las pasadas y
 // el gate lo detecta igual. No relaja la condición de salud, sólo la espera.
-async function checkDashboardHttpWithRetry(port, urlPath, { attempts = 5, perAttemptMs = 5000, delayMs = 1500 } = {}) {
+// Los defaults salen de lib/smoke-budget (#5725): son los MISMOS valores con
+// los que se dimensiona el presupuesto, así que el gasto real de la sonda no
+// puede superar lo presupuestado sin que ambos se muevan juntos.
+async function checkDashboardHttpWithRetry(port, urlPath, {
+  attempts = budget.HTTP_RETRY.attempts,
+  perAttemptMs = budget.HTTP_RETRY.perAttemptMs,
+  delayMs = budget.HTTP_RETRY.delayMs,
+} = {}) {
   let last = { ok: false, status: 'unknown' };
   for (let i = 1; i <= attempts; i++) {
     last = await checkDashboardHttp(port, perAttemptMs, urlPath);
@@ -499,6 +506,10 @@ async function main() {
   const selfBudgetMs = budget.smokeBudgetMs({
     http: args.http,
     selfCheck: args.selfCheck,
+    // Conteo REAL de esta corrida, no la constante: si mañana se suma un skill
+    // a SELF_CHECK_SKILLS, el presupuesto crece solo y el watchdog no corta en
+    // medio de self-checks legítimos (#5725).
+    selfCheckCount: SELF_CHECK_SKILLS.length,
     lightTimeoutMs: args.timeoutMs,
     dashTimeoutMs,
   });
@@ -514,7 +525,11 @@ async function main() {
   // qué; si no, un smoke lento es indistinguible de uno colgado.
   log(`Ventana propia del smoke: ${Math.round(selfBudgetMs / 1000)}s `
     + `(markers ${Math.round(budget.markerWaitBudgetMs({ lightTimeoutMs: args.timeoutMs, dashTimeoutMs }) / 1000)}s `
-    + `+ chequeos posteriores ${Math.round(budget.postWaitBudgetMs({ http: args.http, selfCheck: args.selfCheck }) / 1000)}s)`);
+    + `+ chequeos posteriores ${Math.round(budget.postWaitBudgetMs({
+      http: args.http,
+      selfCheck: args.selfCheck,
+      selfCheckCount: SELF_CHECK_SKILLS.length,
+    }) / 1000)}s)`);
   log(`Esperando marker ready de: ${components.join(', ')} `
     + `(livianos ${args.timeoutMs / 1000}s, dashboard ${dashTimeoutMs / 1000}s)`);
 
@@ -633,4 +648,7 @@ module.exports = {
   tailComponentLog,
   dumpPartialState,
   progress,
+  // Lista real de self-checks: la expone para que smoke-budget.test.js pueda
+  // assertear SELF_CHECK_SKILLS.length === budget.SELF_CHECK_COUNT (#5725).
+  SELF_CHECK_SKILLS,
 };

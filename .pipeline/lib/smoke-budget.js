@@ -34,12 +34,22 @@ const MARKER_DASH_TIMEOUT_MS = 120000;   // dashboard: ventana diferenciada (#45
 
 // --- Tramo posterior a la espera de markers ---
 // Sonda HTTP contra /api/health con reintentos (#4131) + chequeo secundario
-// /api/state. Estos valores los consume smoke-test.js: no duplicarlos allá.
+// /api/state. `HTTP_RETRY` es el default de los parámetros de
+// `checkDashboardHttpWithRetry` (smoke-test.js): la sonda reintenta con estos
+// valores porque los lee de acá, así que subirlos acá sube el gasto real y el
+// presupuesto a la vez. No redeclararlos allá.
 const HTTP_RETRY = { attempts: 5, perAttemptMs: 5000, delayMs: 1500 };
 const HTTP_SECONDARY_TIMEOUT_MS = 5000;
 
 // Self-checks de skills determinísticos (tester, build, delivery, linter).
 const SELF_CHECK_TIMEOUT_MS = 30000;
+// Cantidad de self-checks del peor caso. El conteo REAL vive en
+// `SELF_CHECK_SKILLS` (smoke-test.js) y se pasa como `selfCheckCount` cuando se
+// conoce; esta constante es el default para los callers que NO pueden importar
+// esa lista — en particular `restart.js`, que dimensiona su ventana sin cargar
+// el smoke. Para que ese default no se desincronice en silencio,
+// `smoke-budget.test.js` assertea SELF_CHECK_SKILLS.length === SELF_CHECK_COUNT:
+// sumar un skill sin tocar este número rompe el build, no el gate.
 const SELF_CHECK_COUNT = 4;
 
 // Margen para que el watchdog interno alcance a volcar el estado parcial.
@@ -94,14 +104,22 @@ function markerWaitBudgetMs(timeouts = resolveMarkerTimeouts()) {
 }
 
 // Peor caso del tramo posterior a la espera de markers.
-function postWaitBudgetMs({ http = true, selfCheck = true } = {}) {
+//
+// `selfCheckCount` permite al caller que SÍ conoce la lista real de skills
+// (smoke-test.js pasa `SELF_CHECK_SKILLS.length`) dimensionar sobre el conteo
+// efectivo en vez de sobre la constante. Así, sumar un skill agranda el
+// presupuesto solo, y el watchdog no corta en medio de self-checks legítimos.
+function postWaitBudgetMs({ http = true, selfCheck = true, selfCheckCount } = {}) {
+  const n = Number.isFinite(selfCheckCount) && selfCheckCount >= 0
+    ? selfCheckCount
+    : SELF_CHECK_COUNT;
   let ms = 0;
   if (http) {
     ms += HTTP_RETRY.attempts * HTTP_RETRY.perAttemptMs
       + (HTTP_RETRY.attempts - 1) * HTTP_RETRY.delayMs
       + HTTP_SECONDARY_TIMEOUT_MS;
   }
-  if (selfCheck) ms += SELF_CHECK_COUNT * SELF_CHECK_TIMEOUT_MS;
+  if (selfCheck) ms += n * SELF_CHECK_TIMEOUT_MS;
   return ms;
 }
 
@@ -112,6 +130,9 @@ function postWaitBudgetMs({ http = true, selfCheck = true } = {}) {
 // ventanas EFECTIVAS de esta corrida (p. ej. un `--timeout` explícito del
 // operador). Sin esto, un `--timeout 300` haría que el watchdog dispare a los
 // 120s en medio de una espera legítima.
+//
+// `opts` viaja entero a `postWaitBudgetMs`, así que `selfCheckCount` también
+// aplica acá (y, por `runnerTimeoutMs`, a la ventana del runner).
 function smokeBudgetMs(opts = {}, env = process.env) {
   const override = parseInt(env.SMOKE_SELF_BUDGET_MS || '', 10);
   if (Number.isFinite(override) && override > 0) return override;
