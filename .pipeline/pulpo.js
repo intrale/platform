@@ -16355,7 +16355,14 @@ function findLastRejection(pipelineName, issueNum, config) {
 // #5689 (SEC-2) — discriminador ÚNICO recomendación-vs-bloqueo-real (#5337).
 // Reemplaza el chequeo inline de un solo label del gate del intake: el inline
 // ignoraba `source:recommendation` (histórico), que el helper sí cubre.
-const { isRecommendationIssue: isPendingRecommendationIssue } = require('./lib/recommendation-labels');
+// `RECOMMENDATION_APPROVED_LABEL` sale del MISMO módulo a propósito: el pase de
+// rescate del `--search` (abajo) y el gate tienen que hablar del mismo label. Si
+// uno se hardcodeara, renombrarlo dejaría al gate admitiendo issues que el
+// search ya descartó — exactamente la contradicción que rompió rev-1.
+const {
+  isRecommendationIssue: isPendingRecommendationIssue,
+  RECOMMENDATION_APPROVED_LABEL,
+} = require('./lib/recommendation-labels');
 
 // =============================================================================
 // #5689 (R1 — anti-starvation del intake) — término `--search` ÚNICO del intake.
@@ -16388,6 +16395,54 @@ const INTAKE_SEARCH_EXCLUDED_LABELS = Object.freeze([
 
 function buildIntakeSearchQuery() {
   return INTAKE_SEARCH_EXCLUDED_LABELS.map((l) => `-label:${l}`).join(' ');
+}
+
+// -----------------------------------------------------------------------------
+// #5689 (REGRESIÓN rev-1, hallazgo de security) — PASE DE RESCATE.
+//
+// Qué se rompió: la búsqueda de GitHub NO soporta OR ni paréntesis, así que
+// `-label:tipo:recomendacion` es incondicional — excluye TAMBIÉN las
+// recomendaciones que un humano ya aprobó. Y una recomendación aprobada es
+// exactamente `tipo:recomendacion` + `recommendation:approved` (`approve()` de
+// lib/recommendations.js agrega el segundo y NO saca el primero).
+//
+// Consecuencia: el camino de LIBERACIÓN del gate de #2653 quedaba inoperante.
+// El gate JS (`isPendingRecommendationIssue`) devuelve `false` ante
+// `recommendation:approved` y por lo tanto ADMITIRÍA el issue... pero el issue
+// ya nunca volvía de GitHub, así que el gate jamás llegaba a evaluarlo. Aprobar
+// una recomendación pasaba a ser un no-op silencioso: el operador veía
+// "entrará al pipeline en el próximo ciclo" y no entraba nunca.
+// Caso vivo al momento del fix: #5055 (needs-definition + tipo:recomendacion +
+// recommendation:approved, sin needs-human).
+//
+// Solución: DOS pases de búsqueda cuya unión se deduplica por número.
+//   1. BASE     — trabajo normal, excluye bloqueo real y backlog de recos.
+//   2. RESCATE  — sólo las recomendaciones YA aprobadas por un humano.
+//
+// Por qué no hay riesgo de reabrir R1 (starvation) con el pase 2: está acotado
+// a `label:recommendation:approved`, un label que sólo pone un humano de a uno
+// (población viva = 1). No es el backlog de ~1.076 que ahoga el intake.
+//
+// El pase 2 mantiene `-label:needs-human`: una recomendación aprobada que
+// DESPUÉS se bloquea de verdad sigue afuera del intake, igual que cualquier
+// otro trabajo real (circuit breaker de #2405). El rescate reabre el camino de
+// aprobación, no un bypass del breaker.
+//
+// Sigue sin ser un control de seguridad: el pase 2 sólo AGREGA disponibilidad.
+// Todo lo que vuelve de los dos pases pasa igual por el gate autoritativo de
+// `brazoIntake` sobre los labels frescos (REQ-SEC-1), que es quien decide.
+// -----------------------------------------------------------------------------
+function buildIntakeSearchRescueQuery() {
+  // `needs-human` se sigue excluyendo (breaker); `tipo:recomendacion` NO, que es
+  // justamente el punto: son las que el pase base deja afuera.
+  return `-label:${INTAKE_SEARCH_EXCLUDED_LABELS[0]} label:${RECOMMENDATION_APPROVED_LABEL}`;
+}
+
+// Fuente ÚNICA de los pases del intake. Los dos call sites (`discoverWorkDryRun`
+// y el intake real de `brazoIntake`) iteran ESTA función: si alguien agrega un
+// pase, entra por los dos lados o por ninguno (GURU-3).
+function buildIntakeSearchQueries() {
+  return [buildIntakeSearchQuery(), buildIntakeSearchRescueQuery()];
 }
 
 // #4687 (Ola Puente P2) — Descubrimiento side-effect-free del tablero (dry-run).
@@ -16453,19 +16508,30 @@ function discoverWorkDryRun(config, opts = {}) {
     for (const repo of reposFn()) {
       // Fail-closed: repo no allowlisted / malformado ⇒ skip (cero consultas).
       if (!isAllowed(repo)) { skippedRepos.push(repo); continue; }
-      let issues = [];
-      try {
-        // #5689 REQ-SEC-3 — INVARIANTE: esta consulta trae `number,title`, SIN
-        // `labels`. Por eso esta superficie NO puede evaluar el gate
-        // `isRecommendationIssue()` ni como defensa en profundidad. Hoy es
-        // inocuo porque `discoverWorkDryRun` es side-effect-free por contrato
-        // (no encola, no spawnea). Si alguna vez pasa a alimentar encolado,
-        // DEBE sumar `labels` al `--json` y pasar por el mismo gate que
-        // `brazoIntake`, o abre un bypass total del control autoritativo.
-        const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "${buildIntakeSearchQuery()}"`);
-        issues = JSON.parse(out || '[]');
-      } catch (e) {
-        issues = [];
+      const issues = [];
+      // #5689 rev-1 — unión deduplicada de los pases (base + rescate de recos
+      // aprobadas). Dedup por número dentro del repo: los dos pases consultan el
+      // mismo repo y un issue puede volver en ambos si el índice va atrasado.
+      const seenNumbers = new Set();
+      for (const search of buildIntakeSearchQueries()) {
+        try {
+          // #5689 REQ-SEC-3 — INVARIANTE: esta consulta trae `number,title`, SIN
+          // `labels`. Por eso esta superficie NO puede evaluar el gate
+          // `isRecommendationIssue()` ni como defensa en profundidad. Hoy es
+          // inocuo porque `discoverWorkDryRun` es side-effect-free por contrato
+          // (no encola, no spawnea). Si alguna vez pasa a alimentar encolado,
+          // DEBE sumar `labels` al `--json` y pasar por el mismo gate que
+          // `brazoIntake`, o abre un bypass total del control autoritativo.
+          const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "${search}"`);
+          for (const it of JSON.parse(out || '[]')) {
+            if (seenNumbers.has(it.number)) continue;
+            seenNumbers.add(it.number);
+            issues.push(it);
+          }
+        } catch (e) {
+          // Un pase caído no debe tumbar los demás: el dry-run degrada a
+          // "lo que sí pudo listar", nunca a lista vacía por un error parcial.
+        }
       }
       for (const it of issues) {
         discovered.push({ pipeline: pipelineName, label, repo, number: it.number, title: it.title });
@@ -16517,22 +16583,32 @@ function brazoIntake(config) {
           log('intake', `repo omitido — no allowlisted / forma inválida: ${JSON.stringify(repo)}`);
           continue;
         }
-        try {
-          ghThrottle();
-          const result = _ghExecSyncGuarded( // #4612 — breaker-aware
-            // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
-            // cero requests extra) para que el detector de decisión de
-            // arquitectura pueda clasificar el issue al entrar a definición.
-            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "${buildIntakeSearchQuery()}"`,
-            { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
-          );
-          const repoIssues = JSON.parse(result || '[]');
-          // CA-A2 — propagar el repo de origen aguas abajo (leído por getRepoForIssue).
-          for (const it of repoIssues) it.origin_repo = repo;
-          issues = issues.concat(repoIssues);
-        } catch (e) {
-          // Un repo caído no debe tumbar el intake de los demás.
-          log('intake', `Error consultando ${repo} para ${pipelineName}: ${e.message}`);
+        // #5689 rev-1 — unión deduplicada de los pases (base + rescate de recos
+        // aprobadas). Dedup por número DENTRO del repo: `issues` acumula entre
+        // repos y los números colisionan entre repos distintos.
+        const seenNumbers = new Set();
+        for (const search of buildIntakeSearchQueries()) {
+          try {
+            ghThrottle();
+            const result = _ghExecSyncGuarded( // #4612 — breaker-aware
+              // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
+              // cero requests extra) para que el detector de decisión de
+              // arquitectura pueda clasificar el issue al entrar a definición.
+              `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "${search}"`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+            );
+            const repoIssues = JSON.parse(result || '[]');
+            for (const it of repoIssues) {
+              if (seenNumbers.has(it.number)) continue;
+              seenNumbers.add(it.number);
+              // CA-A2 — propagar el repo de origen aguas abajo (leído por getRepoForIssue).
+              it.origin_repo = repo;
+              issues.push(it);
+            }
+          } catch (e) {
+            // Un repo (o un pase) caído no debe tumbar el intake de los demás.
+            log('intake', `Error consultando ${repo} para ${pipelineName}: ${e.message}`);
+          }
         }
       }
 
@@ -19655,6 +19731,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     discoverWorkDryRun,
     // #5689 (R1) — término `--search` único del intake (anti-starvation).
     buildIntakeSearchQuery,
+    buildIntakeSearchRescueQuery,
+    buildIntakeSearchQueries,
     INTAKE_SEARCH_EXCLUDED_LABELS,
     // #5689 (SEC-1/SEC-2) — gate autoritativo de recomendaciones del intake.
     isPendingRecommendationIssue,

@@ -29,7 +29,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const pulpo = require('../../pulpo.js');
-const { buildIntakeSearchQuery, INTAKE_SEARCH_EXCLUDED_LABELS, isPendingRecommendationIssue } = pulpo;
+const {
+  buildIntakeSearchQuery,
+  buildIntakeSearchRescueQuery,
+  buildIntakeSearchQueries,
+  INTAKE_SEARCH_EXCLUDED_LABELS,
+  isPendingRecommendationIssue,
+} = pulpo;
 
 const PULPO_SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
 
@@ -86,23 +92,67 @@ test('R1 buildIntakeSearchQuery excluye needs-human Y tipo:recomendacion', () =>
   assert.deepEqual(INTAKE_SEARCH_EXCLUDED_LABELS.slice(), ['needs-human', 'tipo:recomendacion']);
 });
 
-test('R1 el término no rompe el entrecomillado del comando gh', () => {
-  // Se interpola dentro de `--search "..."`. Una comilla doble ahí partiría el
+test('R1 ningún pase rompe el entrecomillado del comando gh', () => {
+  // Se interpolan dentro de `--search "..."`. Una comilla doble ahí partiría el
   // argumento y `gh` recibiría basura (o peor, tokens sueltos).
-  const q = buildIntakeSearchQuery();
-  assert.ok(!q.includes('"'), 'el término no puede contener comillas dobles');
-  assert.ok(!/[`$\\]/.test(q), 'el término no puede contener metacaracteres de shell');
+  for (const q of buildIntakeSearchQueries()) {
+    assert.ok(!q.includes('"'), `el término no puede contener comillas dobles: ${q}`);
+    assert.ok(!/[`$\\]/.test(q), `el término no puede contener metacaracteres de shell: ${q}`);
+  }
 });
 
-test('GURU-3 los DOS call sites consumen la función — no quedan literales sueltos', () => {
+test('GURU-3 los DOS call sites iteran la MISMA fuente de pases', () => {
   // Sin esto, el modo de falla probable es: parchear el dry-run, test verde,
   // intake real sin blindar ⇒ R1 vivo en producción con la CA cumplida.
-  const callSites = PULPO_SRC.match(/--search "\$\{buildIntakeSearchQuery\(\)\}"/g) || [];
+  const loops = PULPO_SRC.match(/for \(const search of buildIntakeSearchQueries\(\)\)/g) || [];
+  assert.equal(loops.length, 2, `se esperaban 2 loops de pases, hay ${loops.length}`);
+
+  const callSites = PULPO_SRC.match(/--search "\$\{search\}"/g) || [];
   assert.equal(callSites.length, 2, `se esperaban 2 call sites, hay ${callSites.length}`);
 
-  // Ningún `--search` del intake puede seguir con el término hardcodeado.
+  // Ningún `--search` del intake puede seguir con el término hardcodeado, ni
+  // quedar atado al pase base solo (que es exactamente la regresión de rev-1).
   const hardcoded = PULPO_SRC.match(/--search "-label:[^"]*"/g) || [];
   assert.deepEqual(hardcoded, [], `quedan --search hardcodeados: ${JSON.stringify(hardcoded)}`);
+  const soloBase = PULPO_SRC.match(/--search "\$\{buildIntakeSearchQuery\(\)\}"/g) || [];
+  assert.deepEqual(soloBase, [], 'ningún call site puede usar sólo el pase base: excluye las recos aprobadas');
+});
+
+// ---------------------------------------------------------------------------
+// REGRESIÓN rev-1 (hallazgo de security) — el camino de LIBERACIÓN del gate de
+// #2653 quedó inoperante: `-label:tipo:recomendacion` es incondicional (la
+// búsqueda de GitHub no soporta OR), así que excluía también las recos ya
+// aprobadas por un humano. El gate JS las habría admitido, pero nunca llegaban
+// a él. Caso vivo al detectarlo: #5055.
+// ---------------------------------------------------------------------------
+
+test('rev-1 el pase de rescate trae las recomendaciones YA aprobadas', () => {
+  const rescue = buildIntakeSearchRescueQuery();
+  // Positivo, NO negado: es lo que reabre el camino.
+  assert.ok(
+    /(^|\s)label:recommendation:approved(\s|$)/.test(rescue),
+    `el pase de rescate debe filtrar POR recommendation:approved: ${rescue}`,
+  );
+  assert.ok(
+    !rescue.includes('-label:tipo:recomendacion'),
+    'el pase de rescate NO puede excluir tipo:recomendacion — una reco aprobada lo conserva',
+  );
+});
+
+test('rev-1 el pase de rescate NO es un bypass del circuit breaker de #2405', () => {
+  // Una reco aprobada que después se bloquea de verdad sigue afuera del intake.
+  assert.ok(
+    buildIntakeSearchRescueQuery().includes('-label:needs-human'),
+    'el rescate debe seguir excluyendo needs-human',
+  );
+  for (const q of buildIntakeSearchQueries()) {
+    assert.ok(q.includes('-label:needs-human'), `todo pase debe excluir needs-human: ${q}`);
+  }
+});
+
+test('rev-1 el pase base sigue conteniendo el filtro anti-starvation (no se revirtió R1)', () => {
+  // El fix de la regresión no puede "arreglarse" borrando el filtro de R1.
+  assert.ok(buildIntakeSearchQueries()[0].includes('-label:tipo:recomendacion'));
 });
 
 // ---------------------------------------------------------------------------
@@ -126,8 +176,17 @@ function makeGithubFake(allIssues) {
       const search = (cmd.match(/--search "([^"]*)"/) || [, ''])[1];
       const limit = Number((cmd.match(/--limit (\d+)/) || [, '0'])[1]) || allIssues.length;
       const excluded = (search.match(/-label:(\S+)/g) || []).map((t) => t.slice('-label:'.length));
+      // Positivos: `label:X` NO precedido por `-`. Son los que hacen posible el
+      // pase de rescate; sin simularlos el rescate parecería traer todo.
+      const required = (search.match(/(?:^|\s)label:(\S+)/g) || []).map((t) => t.trim().slice('label:'.length));
+      // El `--label "X"` de gh es un AND más, igual que un `label:X` del search.
+      const flagLabel = (cmd.match(/--label "([^"]*)"/) || [])[1];
+      if (flagLabel) required.push(flagLabel);
       // Server-side: primero filtra por el search, DESPUÉS corta en --limit.
-      const filtered = allIssues.filter((it) => !it.labels.some((l) => excluded.includes(l)));
+      const filtered = allIssues.filter((it) => (
+        !it.labels.some((l) => excluded.includes(l))
+        && required.every((r) => it.labels.includes(r))
+      ));
       return JSON.stringify(filtered.slice(0, limit).map((it) => ({ number: it.number, title: it.title })));
     },
   };
@@ -142,9 +201,11 @@ test('R1 (a) el --search que llega a gh incluye el filtro anti-starvation', () =
     getIntakeRepos: () => ['intrale/platform'],
     isRepoAllowed: () => true,
   });
-  assert.equal(gh.seen.length, 1);
+  assert.equal(gh.seen.length, 2, 'un comando por pase: base + rescate');
   assert.ok(gh.seen[0].includes('-label:tipo:recomendacion'), gh.seen[0]);
   assert.ok(gh.seen[0].includes('-label:needs-human'), gh.seen[0]);
+  // rev-1: el segundo pase es el que rescata las recos aprobadas.
+  assert.ok(gh.seen[1].includes('label:recommendation:approved'), gh.seen[1]);
 });
 
 test('R1 (b) con 60 recomendaciones abiertas, el issue de definición real IGUAL aparece en discovered', () => {
@@ -170,6 +231,98 @@ test('R1 (b) con 60 recomendaciones abiertas, el issue de definición real IGUAL
     'el issue de definición real quedó ahogado por el backlog de recomendaciones (R1)',
   );
   assert.equal(res.discovered.length, 1, 'ninguna recomendación debería haber vuelto');
+});
+
+test('rev-1 (e2e) con el backlog ahogando, una reco YA APROBADA igual entra', () => {
+  // El caso vivo que rompía rev-1: #5055 (needs-definition + tipo:recomendacion
+  // + recommendation:approved, sin needs-human). El pase base la excluye por
+  // `tipo:recomendacion`; el de rescate la trae.
+  const recos = Array.from({ length: 60 }, (_, i) => ({
+    number: 1000 + i,
+    title: `[guru] recomendación ${i}`,
+    labels: ['needs-definition', 'tipo:recomendacion'],
+  }));
+  const aprobada = {
+    number: 5055,
+    title: '[guru] recomendación aprobada por un humano',
+    labels: ['needs-definition', 'tipo:recomendacion', 'source:recommendation', 'recommendation:approved'],
+  };
+  const real = { number: 5689, title: 'issue de definición real', labels: ['needs-definition'] };
+  const gh = makeGithubFake([...recos, aprobada, real]);
+
+  const res = pulpo.discoverWorkDryRun(DRY_RUN_CONFIG, {
+    exec: gh.exec,
+    getIntakeRepos: () => ['intrale/platform'],
+    isRepoAllowed: () => true,
+  });
+
+  const nums = res.discovered.map((w) => w.number).sort((a, b) => a - b);
+  assert.deepEqual(nums, [5055, 5689], `esperado [5055, 5689], vino ${JSON.stringify(nums)}`);
+});
+
+test('rev-1 (e2e) una reco aprobada Y bloqueada de verdad NO entra (breaker vivo)', () => {
+  const aprobadaBloqueada = {
+    number: 5055,
+    title: '[guru] aprobada pero bloqueada',
+    labels: ['needs-definition', 'tipo:recomendacion', 'recommendation:approved', 'needs-human'],
+  };
+  const gh = makeGithubFake([aprobadaBloqueada]);
+  const res = pulpo.discoverWorkDryRun(DRY_RUN_CONFIG, {
+    exec: gh.exec,
+    getIntakeRepos: () => ['intrale/platform'],
+    isRepoAllowed: () => true,
+  });
+  assert.deepEqual(res.discovered, [], 'el rescate no puede ser un bypass del circuit breaker');
+});
+
+test('rev-1 (e2e) el mismo issue en los dos pases se devuelve UNA sola vez', () => {
+  // El índice de GitHub es eventualmente consistente: un issue recién aprobado
+  // puede volver por los dos pases. Sin dedup se encolaría/contaría dos veces.
+  const gh = {
+    seen: [],
+    exec(cmd) {
+      gh.seen.push(cmd);
+      return JSON.stringify([{ number: 5055, title: 'reco aprobada' }]);
+    },
+  };
+  const res = pulpo.discoverWorkDryRun(DRY_RUN_CONFIG, {
+    exec: gh.exec,
+    getIntakeRepos: () => ['intrale/platform'],
+    isRepoAllowed: () => true,
+  });
+  assert.equal(gh.seen.length, 2, 'los dos pases se ejecutaron');
+  assert.deepEqual(res.discovered.map((w) => w.number), [5055], 'debe estar deduplicado');
+});
+
+test('rev-1 un pase que falla no tumba al otro', () => {
+  // Degradación parcial: si el pase base explota, el rescate igual devuelve lo
+  // suyo (y viceversa). Antes un throw dejaba `issues = []` para todo el repo.
+  let n = 0;
+  const gh = {
+    exec() {
+      n += 1;
+      if (n === 1) throw new Error('gh se cayó en el pase base');
+      return JSON.stringify([{ number: 5055, title: 'reco aprobada' }]);
+    },
+  };
+  const res = pulpo.discoverWorkDryRun(DRY_RUN_CONFIG, {
+    exec: gh.exec,
+    getIntakeRepos: () => ['intrale/platform'],
+    isRepoAllowed: () => true,
+  });
+  assert.deepEqual(res.discovered.map((w) => w.number), [5055]);
+});
+
+test('rev-1 el gate ADMITE lo que el pase de rescate trae (las dos capas cierran)', () => {
+  // Composición explícita de las dos capas: disponibilidad (search) + control
+  // autoritativo (gate). La regresión fue precisamente que cerraban en
+  // contradicción — el gate decía "admitir" y el search ya lo había descartado.
+  const labelsAprobada = ['needs-definition', 'tipo:recomendacion', 'recommendation:approved'];
+  assert.equal(isPendingRecommendationIssue(labelsAprobada), false, 'el gate la admite');
+  assert.ok(
+    /(^|\s)label:recommendation:approved(\s|$)/.test(buildIntakeSearchRescueQuery()),
+    'y el search la trae — si no, el gate nunca la ve',
+  );
 });
 
 test('R1 (b-control) el mismo fixture SÍ se ahoga si el search no filtra recomendaciones', () => {
