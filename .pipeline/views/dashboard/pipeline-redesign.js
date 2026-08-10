@@ -887,8 +887,19 @@ async function tickPipelineRedesign(){
             if(x && x.id != null){
                 const id = String(x.id);
                 waveMembers.push(id);
+                // #5629 — El veredicto de entrega lo resuelve el SERVIDOR con el
+                // helper único (lib/delivery-status.js: CLOSED en GitHub o
+                // delivery_merge_sha estructurado) y viaja ya listo en el campo
+                // 'delivered'. Antes se re-derivaba acá como
+                // status === 'completed' || merged === true: una TERCERA regla
+                // que podía contradecir a la pantalla principal y al conteo de
+                // ENTREGADOS de la ola (CA-7).
+                // El fallback a status/merged es sólo compat con payloads
+                // viejos; si 'delivered' viene, manda.
                 waveDelivered[id] = {
-                    delivered: (x.status === 'completed' || x.merged === true),
+                    delivered: (typeof x.delivered === 'boolean')
+                        ? x.delivered
+                        : (x.status === 'completed' || x.merged === true),
                     title: x.title || '',
                 };
             }
