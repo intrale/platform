@@ -10,7 +10,10 @@
 //   findPidByScript(scriptFile) → idem
 //   findPidByPort(port)       → pid | null  (socket LISTENING)
 //   pidAlive(pid)             → boolean
-//   scanNodeProcesses()       → [{ pid, commandLine, creationDate }]  (cacheado 2s)
+//   processForPid(pid)        → { pid, name, commandLine, creationDate } | null
+//                               (null ⇒ NO es un proceso node; presente con
+//                                commandLine '' ⇒ node con CommandLine ilegible)
+//   scanNodeProcesses()       → [{ pid, name, commandLine, creationDate }]  (cacheado 2s)
 //   invalidateCache()         → fuerza refresh del próximo scan
 //   SCRIPT_MAP                → mapa nombre → scriptfile
 
@@ -56,7 +59,10 @@ function _parseWmicCsv(stdout) {
     if (name.toLowerCase() !== 'node.exe') continue;
     const creationDate = parts[parts.length - 3] || '';
     const commandLine = parts.slice(1, -3).join(',');
-    processes.push({ pid, commandLine, creationDate });
+    // #5722 — `name` se propaga al registro. Antes se usaba sólo para filtrar y
+    // se tiraba: sin él, un `node.exe` cuya CommandLine vino vacía por permisos
+    // era indistinguible de un proceso ajeno, y el guard del puerto lo perdonaba.
+    processes.push({ pid, name, commandLine, creationDate });
   }
   return processes;
 }
@@ -69,7 +75,10 @@ function _parsePsOutput(stdout) {
     if (!m) continue;
     const cmd = m[3];
     if (!cmd.includes('node')) continue;
-    processes.push({ pid: parseInt(m[1], 10), commandLine: cmd, creationDate: m[2] });
+    // #5722 — mismo contrato que la rama Windows: el registro expone `name`
+    // (imagen del ejecutable) además de la CommandLine completa.
+    const name = (cmd.trim().split(/\s+/)[0] || '').split(/[\\/]/).pop();
+    processes.push({ pid: parseInt(m[1], 10), name, commandLine: cmd, creationDate: m[2] });
   }
   return processes;
 }
@@ -197,6 +206,27 @@ function commandLineForPid(pid) {
   return p ? p.commandLine : null;
 }
 
+// processForPid(pid) → { pid, name, commandLine, creationDate } | null   (#5722)
+//
+// Existe porque `commandLineForPid` devuelve `null` en DOS situaciones que son
+// opuestas para decidir ownership, y las vuelve indistinguibles:
+//
+//   a) el PID no es un proceso node        ⇒ ajeno de verdad, no tocarlo
+//   b) el PID es node.exe pero su CommandLine vino vacía (ilegible por
+//      permisos)                            ⇒ NO es evidencia de que sea ajeno
+//
+// Confundir (b) con (a) es el fail-open que dejó el pipeline 20 h sin despachar:
+// el ocupante del puerto del dashboard era `node.exe` opaco y se lo perdonaba.
+//
+// Contrato: `null` significa EXCLUSIVAMENTE (a) — el PID no aparece en el scan
+// de procesos node. Si aparece, el registro se devuelve entero y el caller
+// decide mirando `name` y `commandLine` (que puede ser `''` en el caso b).
+// No ejecuta comandos nuevos: sólo lee el resultado del scan ya cacheado.
+function processForPid(pid) {
+  if (!pid) return null;
+  return scanNodeProcesses().find(x => x.pid === pid) || null;
+}
+
 // waitForPortFree(port, { attempts, delayMs, onHolder }) → boolean
 // Espera de forma ACOTADA a que `port` quede libre (sin proceso LISTENING).
 // En cada vuelta: invalida cache, consulta findPidByPort(port); si está libre
@@ -231,4 +261,9 @@ module.exports = {
   invalidateCache,
   waitForPortFree,
   commandLineForPid,
+  processForPid,
+  // Expuestos para tests (#5722): el parser es donde nace la señal `name` y
+  // donde se decide conservar la fila de un node.exe con CommandLine ilegible.
+  _parseWmicCsv,
+  _parsePsOutput,
 };
