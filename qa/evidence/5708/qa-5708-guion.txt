@@ -1,9 +1,11 @@
-Soy Nacho, QA de Intrale. En esta evidencia verifico el reporte visual del issue cinco mil setecientos ocho contra el mockup cuarenta y ocho.
+Soy Nacho, QA del pipeline. Rehago la verificación del issue cinco siete cero ocho, porque el video de la pasada anterior fue rechazado con razón: era una captura congelada, sin navegación ni interacción. Esta vez recorro la evidencia en vivo, criterio por criterio.
 
-La composición conserva la jerarquía acordada: encabezado e identidad del reporte, comparación visual entre mockup y entrega, resumen de cobertura y el inventario completo de desvíos.
+Empiezo por el guardrail. Criterio seis: existe el módulo visual report shape gate, con su feature flag propio y apagado por defecto. Lo ejecuto y con el flag apagado devuelve gate disabled, sin bloquear nada. Lo enciendo: si falta la cobertura, bloquea con coverage missing. Si la cobertura está incompleta, bloquea y me dice exactamente qué secciones faltan: B, C y D. Y acá está la clave del diseño: un solo desvío con cobertura completa devuelve gate ok. El discriminante es la cobertura, no la cantidad de hallazgos. Con entrada malformada devuelve report malformed, sin excepción.
 
-La cobertura declara cuatro secciones y las cuatro aparecen verificadas. Cada hallazgo muestra sección, índice, impacto textual y descripción; por eso la prioridad no depende solamente del color. Los desvíos están agrupados por sección y ordenados por impacto descendente.
+Sigo con el reporte real. Criterio tres: cargo el contrato visual comparison punto json y el reporte lo renderiza agrupado por sección y ordenado por impacto descendente. Criterio cuatro: el bloque de cobertura declara las secciones A, B y C como verificadas, y la D como no verificada, con su motivo escrito. Criterio cinco: la regresión aparece con etiqueta textual, sin depender del color.
 
-Los marcadores numerados del render se corresponden con los índices del inventario. La banda de inventario declara cuatro de cuatro desvíos mostrados, de modo que cualquier truncado sería visible. El estado de regresión también tiene una etiqueta textual diferenciada.
+Ahora fuerzo sesenta y tres desvíos. El reporte muestra cincuenta y declara la banda: cincuenta de sesenta y tres desvíos mostrados, inventario completo en el json. Nada se trunca en silencio.
 
-El resultado de esta comparación es satisfactorio: el PDF real reproduce la estructura y los estados definidos por el mockup cuarenta y ocho, y la evidencia permite auditar los criterios visuales sin depender del JSON fuente.
+Criterios uno y dos: la doctrina del rol prohíbe el early exit y obliga a completar el barrido aunque el rechazo ya esté decidido, con el anti patrón documentado.
+
+Criterio siete: veinticuatro de veinticuatro tests verdes. Verifico también el cableado punta a punta: el pulpo pasa visual json, y el reporte asigna el contrato. Ya no es código muerto. Los siete criterios cumplen. Apruebo.
