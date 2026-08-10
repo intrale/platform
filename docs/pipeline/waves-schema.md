@@ -283,12 +283,52 @@ la API de `lib/waves.js` y `lib/partial-pause.js`.
 
 ## Recuperación ante desync
 
-Si el pulpo encuentra `waves.json` y `.partial-pause.json` apuntando a
-allowlists distintos al boot:
+### Escalera de convergencia automática
+
+Antes de bloquear, el pulpo intenta converger solo. El orden importa: cada
+escalón es más permisivo que el anterior y sólo corre si el previo no aplicó.
+
+| # | Caso | Dirección | Qué hace |
+|---|------|-----------|----------|
+| 1 | Toda la divergencia son issues **cerrados** (#4753) | allowlist ← ola | Marca `completed` en `waves.json` y realinea la allowlist |
+| 2 | `added = []` y los faltantes son issues **abiertos de la ola activa** (#5724) | allowlist ← ola | Suma los faltantes a la allowlist (la ola ya los autorizó) |
+| 3 | Extra en la allowlist con **traza legítima reciente** del Commander (#4439) | ola ← allowlist | Agrega el issue a la ola activa |
+| 4 | Extra que es **hijo de un split** del propio pipeline (#4525) | ola ← allowlist | Agrega el hijo + declara la dependencia padre→hijo |
+| — | Cualquier otro caso | — | `human-block` (ver más abajo) |
+
+**Fail-safe transversal (SEC-4)**: el estado de cierre viene del title-cache
+local, sin GitHub en el hot path. Si devuelve `undefined` para algún issue de la
+divergencia (cache miss o title-cache stale, ver #4566/#4882), NINGÚN escalón
+aplica: el estado indeterminado nunca habilita una mutación optimista.
+
+**Qué sigue bloqueando a propósito**: si hay un issue ABIERTO en la allowlist
+que NO está en la ola (`added` no vacío sin traza), converger revocaría en
+silencio una autorización deliberada. Eso es `ambiguo` y lo decide un humano.
+
+### Protección del trabajo vivo frente al TTL (#5724)
+
+Las autorizaciones heredadas de un split (`recursive-deps:from-N`) caducan a las
+48 h (#3625) para que no se acumulen permisos obsoletos. Ese TTL aplica a
+**residuos**, no a trabajo pendiente: un issue vencido se poda de la allowlist
+sólo si NO pertenece a la ola activa, o si pertenece pero está **confirmado
+cerrado**.
+
+Sin ese guard, un issue abierto y `Ready` de la ola activa caducaba por no
+haber sido despachado a tiempo — que es justo lo que pasa cuando el pipeline ya
+está frenado. El bucle de realimentación (freno → caducidad → más freno) dejó el
+dispatch suspendido 10 h el 2026-08-09. Si `waves.json` no se puede leer, la
+poda no corre (conservador: podar de más es lo que produjo el incidente).
+
+### Cuando igual hay que destrabar a mano
 
 1. `desync-detector.detectDesync()` crea `.pipeline/.desync-detected.flag`.
-2. Telegram alerta con paths + diff added/removed.
-3. El pipeline entra en `human-block` (no procesa intake).
+2. Telegram alerta con paths + diff added/removed **y sigue recordando** con
+   backoff (15 min, 1 h, 3 h, 6 h y después cada 6 h) mientras el dispatch siga
+   suspendido, informando cuánto lleva frenado. El estado del ciclo de avisos
+   vive en `.pipeline/.desync-block-notify.json` y se cierra solo al converger.
+3. El pipeline entra en `human-block` (no procesa intake). El dashboard lo
+   muestra como **"Dispatch suspendido"** con la divergencia concreta y la
+   antigüedad del bloqueo.
 4. **Acción manual**:
    - `cat .pipeline/.desync-detected.flag | jq .` para ver el diff exacto.
    - Decidir cuál archivo refleja la realidad operativa.
@@ -321,6 +361,10 @@ confirmación humana).
 - `lib/waves.js` — implementación de la canónica.
 - `lib/partial-pause.js` — implementación del espejo operacional.
 - `lib/desync-detector.js` — detector de inconsistencia.
+- `lib/desync-block-notifier.js` — recordatorios del dispatch suspendido (#5724).
+- `lib/allowlist-recursive-promote.js` — TTL de autorizaciones heredadas + guard
+  de ola activa (#3625, #5724).
+- `lib/wave-dispatch.js` — algoritmo de realineación allowlist ← ola.
 - `.pipeline/scripts/init-waves-from-partial.js` — seed inicial (#3616).
 - `.pipeline/WAVES_CHEATSHEET.md` — cheat sheet operativa de los comandos.
 - Issues: #3487 (widget dashboard), #3488 (planner), #3489 (lib/waves),

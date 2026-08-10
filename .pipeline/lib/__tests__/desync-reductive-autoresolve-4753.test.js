@@ -171,7 +171,17 @@ test('CA-1 borde: ola con SOLO issues cerrados converge (poda + allowlist vacía
 // =============================================================================
 // CA-3 / SEC-1 / SEC-2 — Fail-closed: issue ABIERTO en la divergencia NO auto-resuelve
 // =============================================================================
-test('CA-3/SEC-1: un issue ABIERTO faltante en la allowlist NO auto-resuelve → human-block, sin mutar waves.json', () => {
+// NOTA #5724 — Esta expectativa CAMBIÓ deliberadamente.
+//
+// #4753 bloqueaba cuando la divergencia incluía un issue ABIERTO de la ola
+// ausente de la allowlist. Ese fail-closed era demasiado ancho: la allowlist es
+// subconjunto de la ola (`added = []`), así que converger no revoca nada — sólo
+// repone trabajo que la ola ya autorizó. En producción eso dejó el dispatch
+// suspendido 10 h (incidente 2026-08-09, #5689-#5691). Desde #5724 CA-2 el caso
+// converge aditivamente. Lo que SIGUE bloqueando (y se verifica en los tests de
+// abajo y en desync-wave-guard-5724.test.js) es el estado INDETERMINADO y la
+// presencia de extras abiertos en la allowlist.
+test('CA-3/SEC-1 (actualizado por #5724): un issue ABIERTO de la ola faltante en la allowlist converge aditivamente, y el cerrado se poda', () => {
     const dir = setup();
     try {
         writeWaves(dir, [
@@ -184,16 +194,17 @@ test('CA-3/SEC-1: un issue ABIERTO faltante en la allowlist NO auto-resuelve →
 
         const before = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true, isClosed });
         assert.equal(before.desync, true);
-        // added vacío ⇒ classifyDesync devuelve resoluble_reductivo, PERO removed
-        // trae un abierto (#9999) → la frontera de #4753 debe bloquear igual.
+        assert.deepEqual(before.added, []);
         assert.equal(before.classification, 'resoluble_reductivo');
 
         pulpo.evaluateDesyncAndMaybeRealign('periodic', { isClosed });
 
         const st = readWaveStatuses(dir);
-        assert.equal(st[4716], 'in_progress', 'no se poda nada si hay un abierto en la divergencia (SEC-1)');
-        assert.equal(st[9999], 'in_progress');
-        assert.equal(desyncDetector.isDesyncFlagSet(), true, 'debe escalar a human-block (fail-closed)');
+        assert.equal(st[4716], 'completed', 'el cerrado residual sí se poda de la ola');
+        assert.equal(st[9999], 'in_progress', 'el abierto sigue vivo en la ola');
+        assert.equal(desyncDetector.isDesyncFlagSet(), false, 'el dispatch NO queda suspendido (#5724 CA-2)');
+        const after = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true, isClosed });
+        assert.equal(after.desync, false, 'la divergencia converge');
     } finally { teardown(dir); }
 });
 

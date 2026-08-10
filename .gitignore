@@ -206,6 +206,10 @@ scripts/planner-plan.json
 # reiniciando el escalado de recordatorios solo (lo mismo que paso con waves.json).
 .pipeline/human-block-reminder-state.json
 .pipeline/human-block-reminder-state.json.*.tmp
+# #5724 — estado del ciclo de recordatorios del dispatch suspendido por desync.
+# Mismo criterio que el de arriba: es runtime puro y el `reset --hard` del repo
+# principal lo pisaria, reiniciando la escalera de avisos en cada respawn.
+.pipeline/.desync-block-notify.json
 .pipeline/last-restart.json
 # #5646 — registro de servicios que quedaron con codigo viejo tras un
 # `reset --hard` y guard de ronda del restart selectivo. Estado runtime puro:

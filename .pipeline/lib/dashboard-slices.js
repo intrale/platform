@@ -3218,6 +3218,10 @@ function desyncStatusSlice(state, ctx) {
         removed: [],
         bloqueado: false,
         count: 0,
+        // #5724 CA-4 — antigüedad del bloqueo. Sin esto un dispatch suspendido
+        // hace 10 horas se ve idéntico a uno de 10 minutos, y la duración es
+        // justamente lo que convierte una divergencia en incidente.
+        detected_at: null,
     };
     if (!detector || typeof detector.detectDesync !== 'function') {
         return { ...base, error: 'desync_detector_unavailable' };
@@ -3227,6 +3231,16 @@ function desyncStatusSlice(state, ctx) {
         const bloqueado = typeof detector.isDesyncFlagSet === 'function'
             ? detector.isDesyncFlagSet() === true
             : false;
+        // El `detected_at` vive en el flag de bloqueo. Sin flag (o con flag
+        // ilegible) queda `null` y la UI simplemente no muestra antigüedad.
+        let detectedAt = null;
+        if (bloqueado && typeof detector.readDesyncFlag === 'function') {
+            try {
+                const flag = detector.readDesyncFlag();
+                const v = flag && flag.detected_at;
+                if (typeof v === 'string' && Number.isFinite(Date.parse(v))) detectedAt = v;
+            } catch { /* degradar a null */ }
+        }
         // CA-8: issue numbers sólo enteros validados antes de exponerlos.
         const added = (Array.isArray(probe.added) ? probe.added : []).filter(Number.isInteger);
         const removed = (Array.isArray(probe.removed) ? probe.removed : []).filter(Number.isInteger);
@@ -3260,6 +3274,7 @@ function desyncStatusSlice(state, ctx) {
             removed,
             bloqueado,
             count,
+            detected_at: detectedAt,
         };
     } catch (err) {
         return { ...base, error: String((err && err.message) || err) };
