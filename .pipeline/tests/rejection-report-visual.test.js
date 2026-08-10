@@ -40,8 +40,11 @@ test('renderVisualComparisonBlock muestra placeholder cuando falta src (CA-UX-4)
         delivery: { src: 'x://e.png' },
         diffs: [],
     });
-    assert.ok(out.includes('MOCKUP ESPERADO no disponible'));
+    // #5708 / CA-22 · UX-18 — el placeholder dejó de ser mudo: declara el
+    // motivo. El contrato acá no referencia ninguna imagen para el mockup.
+    assert.ok(out.includes('MOCKUP ESPERADO — imagen no disponible'));
     assert.ok(out.includes('visual-placeholder'));
+    assert.ok(out.includes('el contrato no referencia ninguna imagen'));
 });
 
 test('renderVisualComparisonBlock renderiza 3 secciones (CA-13)', () => {

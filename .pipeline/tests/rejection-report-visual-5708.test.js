@@ -133,7 +133,9 @@ test('CA-9: sin --rev el bloque se suprime con rev-unknown (fail-closed)', () =>
     assert.equal(valor.contract, null);
     assert.equal(valor.skip.reason, 'rev-unknown');
     const html = renderHtml({ ...minimalData, visualComparison: null, visualSkip: valor.skip });
-    assert.ok(html.includes('data-visual-state="E3"'));
+    // CA-19 · UX-15 — banda PROPIA (E3b), no la de `stale-rev`: no sabemos que
+    // la evidencia sea vieja, sabemos que no se puede atribuir.
+    assert.ok(html.includes('data-visual-state="E3b"'));
     assert.equal(html.includes('VISUAL MISMATCH'), false);
 });
 
@@ -280,7 +282,9 @@ test('CA-16 · SEC-10: con el flag ON, una cobertura incompleta no se renderiza'
 
     const html = renderHtml({ ...minimalData, visualComparison: null, visualSkip: cargado.skip });
     assert.equal(html.includes('A3 nunca se pinta en rojo'), false, 'el inventario no puede renderizarse');
-    assert.ok(html.includes('data-visual-state="E4"'));
+    // CA-18 · UX-14 — banda E6, NO E4: el contrato se leyó bien, lo que no se
+    // aceptó es el barrido. Ver el test dedicado más abajo.
+    assert.ok(html.includes('data-visual-state="E6"'));
 });
 
 test('CA-6: con el flag OFF (default) el mismo contrato SÍ se renderiza', () => {

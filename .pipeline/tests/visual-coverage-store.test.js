@@ -26,7 +26,12 @@ test.after(limpiar);
 
 test('sin pasada previa registrada, ningún diff puede quedar como regresión', () => {
   const diffs = [{ section: 'A' }, { section: 'B' }];
-  assert.deepEqual(store.deriveRegressions({ issue: ISSUE, rev: 3, diffs, baseDir: BASE_DIR }), [false, false]);
+  // CA-21 · UX-17 — y tampoco como «no es regresión»: sin línea base no hay
+  // nada que tipificar. Colapsar los dos casos en `false` afirmaba una
+  // verificación que nunca ocurrió.
+  assert.deepEqual(store.deriveRegressions({ issue: ISSUE, rev: 3, diffs, baseDir: BASE_DIR }), ['no-baseline', 'no-baseline']);
+  const informe = store.deriveRegressionReport({ issue: ISSUE, rev: 3, diffs, baseDir: BASE_DIR });
+  assert.equal(informe.baselineRev, null);
 });
 
 test('sección verificada y sin hallazgos en la pasada previa ⇒ regresión', () => {
@@ -38,7 +43,9 @@ test('sección verificada y sin hallazgos en la pasada previa ⇒ regresión', (
   const diffs = [{ section: 'A' }, { section: 'B' }];
   // A quedó sin hallazgos en rev2 ⇒ el desvío nuevo en A es regresión.
   // B ya tenía un hallazgo en rev2 ⇒ no es regresión, es el mismo desvío.
-  assert.deepEqual(store.deriveRegressions({ issue: ISSUE, rev: 3, diffs, baseDir: BASE_DIR }), [true, false]);
+  assert.deepEqual(store.deriveRegressions({ issue: ISSUE, rev: 3, diffs, baseDir: BASE_DIR }), ['regression', 'not-regression']);
+  // El chip necesita saber CONTRA QUÉ pasada se comparó para poder decirlo.
+  assert.equal(store.deriveRegressionReport({ issue: ISSUE, rev: 3, diffs, baseDir: BASE_DIR }).baselineRev, 2);
 });
 
 test('sección NO verificada en la pasada previa ⇒ barrido incompleto, no regresión', () => {
@@ -48,7 +55,9 @@ test('sección NO verificada en la pasada previa ⇒ barrido incompleto, no regr
     diffs: [],
   });
   const diffs = [{ section: 'B' }];
-  assert.deepEqual(store.deriveRegressions({ issue: ISSUE, rev: 3, diffs, baseDir: BASE_DIR }), [false]);
+  // Hay línea base, y B no estaba verificada: hallazgo tardío por barrido
+  // incompleto. Distinto de «sin línea base», que no tipifica nada.
+  assert.deepEqual(store.deriveRegressions({ issue: ISSUE, rev: 3, diffs, baseDir: BASE_DIR }), ['not-regression']);
 });
 
 test('toma la pasada previa más cercana, ignorando la actual y las posteriores', () => {
@@ -67,7 +76,7 @@ test('toma la pasada previa más cercana, ignorando la actual y las posteriores'
   const prev = store.readPreviousCoverage({ issue: ISSUE, rev: 3, baseDir: BASE_DIR });
   assert.equal(prev.rev, 2);
   // En rev2 la sección A tuvo hallazgo ⇒ no es regresión en rev3.
-  assert.deepEqual(store.deriveRegressions({ issue: ISSUE, rev: 3, diffs: [{ section: 'A' }], baseDir: BASE_DIR }), [false]);
+  assert.deepEqual(store.deriveRegressions({ issue: ISSUE, rev: 3, diffs: [{ section: 'A' }], baseDir: BASE_DIR }), ['not-regression']);
 });
 
 test('writeCoverage persiste sólo secciones — nunca imágenes ni base64', () => {
@@ -111,4 +120,8 @@ test('el `regression` declarado en el contrato se descarta: manda el store', () 
   const { contract, skip } = loadVisualComparison(ISSUE, target, 3);
   assert.equal(skip, null);
   assert.equal(contract.diffs[0].regression, false);
+  // CA-21 — y no se degrada a «no es regresión»: sin store previo el estado
+  // real es «sin línea base», que es un falso negativo ESTRUCTURAL declarado.
+  assert.equal(contract.diffs[0].regressionState, 'no-baseline');
+  assert.equal(contract.regressionBaselineRev, null);
 });
