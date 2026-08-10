@@ -76,6 +76,20 @@
 //     Campo de autor ausente, desconocido o indeterminado → EXCLUIDO (default-deny).
 //     La asociación se consulta EN VIVO a GitHub en el wire-up, así que esto NO
 //     reintroduce `authorization_ttls` ni su TTL de 48 h (CA-2 sigue cumplido).
+//   - SO-8: LABELS DE BLOQUEO. Un hijo con `needs-human`, `tipo:recomendacion` o
+//     `source:recommendation` NO se auto-incorpora. Son issues frenados A
+//     PROPÓSITO por decisión humana (`needs-human`) o propuestas que todavía no
+//     pasaron el gate de aprobación humana de #2653 (`tipo:recomendacion` /
+//     `source:recommendation`). Incorporarlos sumaba el issue a la ola Y a la
+//     allowlist, o sea los habilitaba para dispatch: el reconciliador se
+//     convertía en un bypass del propio gate que lo debería contener.
+//     Medido el 2026-08-07 sobre la ola real: 3 de 11 hijos descubiertos
+//     (#5209, #5421, #5462) entraban pese a llevar `needs-human`.
+//     El campo `labels` es OBLIGATORIO en el payload: si falta o no es una lista,
+//     el candidato se EXCLUYE (default-deny). Es deliberado — un wire-up que se
+//     olvide de pedir `labels` desactivaría el guard EN SILENCIO, que es
+//     exactamente la clase de regresión que SO-8 viene a cerrar. La exclusión se
+//     reporta en `rejectedByLabel`, nunca se descarta sin dejar rastro.
 //
 // Idempotencia
 // ------------
@@ -100,6 +114,18 @@ const TRUSTED_AUTHOR_ASSOCIATIONS = Object.freeze([
     'OWNER',
     'MEMBER',
     'COLLABORATOR',
+]);
+
+// SO-8 — Labels que BLOQUEAN la auto-incorporación. Se comparan en minúsculas.
+//   - `needs-human`          → el pipeline lo frenó esperando una decisión humana.
+//   - `tipo:recomendacion`   → recomendación de un agente, pendiente de aprobación
+//   - `source:recommendation`  humana (gate de #2653). Todavía no es trabajo aprobado.
+// Sumar cualquiera de estos a la ola + allowlist equivale a habilitarlos para
+// dispatch, salteando el gate que los frenó.
+const BLOCKING_LABELS = Object.freeze([
+    'needs-human',
+    'tipo:recomendacion',
+    'source:recommendation',
 ]);
 
 // SO-5 — Caps absolutos de amplificación. Los overrides se clampean acá.
@@ -223,6 +249,66 @@ function isTrustedAuthor(issue, opts = {}) {
 }
 
 /**
+ * Extrae los nombres de labels de un issue, normalizados a minúsculas.
+ *
+ * Acepta las formas con las que el dato llega según la fuente:
+ *   - REST / `search/issues` → `labels: [{ name: 'x' }, ...]`
+ *   - `gh --json labels`     → idem
+ *   - GraphQL                → `labels: { nodes: [{ name: 'x' }] }`
+ *   - forma simplificada     → `labels: ['x', 'y']`
+ *
+ * DEFAULT-DENY (SO-8): devuelve `{ known: false }` si el campo falta o no tiene
+ * una forma reconocible. El caller DEBE excluir al candidato en ese caso; un
+ * payload sin `labels` significa "no sé si está bloqueado", no "no está
+ * bloqueado". Entradas individuales inválidas dentro de una lista válida se
+ * ignoran (no invalidan al resto).
+ *
+ * @param {object} issue
+ * @returns {{ known: boolean, names: string[] }}
+ */
+function labelsOf(issue) {
+    const unknown = { known: false, names: [] };
+    if (!issue || typeof issue !== 'object') return unknown;
+
+    let raw = issue.labels;
+    // GraphQL: `{ nodes: [...] }`
+    if (raw && !Array.isArray(raw) && typeof raw === 'object' && Array.isArray(raw.nodes)) {
+        raw = raw.nodes;
+    }
+    if (!Array.isArray(raw)) return unknown;                   // ausente/invalido → SO-8 deny
+
+    const names = [];
+    for (const l of raw) {
+        let name = null;
+        if (typeof l === 'string') name = l;
+        else if (l && typeof l === 'object' && typeof l.name === 'string') name = l.name;
+        if (name === null) continue;                           // entrada rara → se ignora
+        const norm = name.trim().toLowerCase();
+        if (norm !== '') names.push(norm);
+    }
+    return { known: true, names };
+}
+
+/**
+ * SO-8 — ¿El issue está bloqueado por labels? Devuelve la lista de labels de
+ * bloqueo encontrados (vacía si ninguno), o `null` si los labels son
+ * INDETERMINADOS (payload sin `labels` → default-deny, el caller excluye).
+ *
+ * @param {object} issue
+ * @param {Array<string>} [blockingLabels] — override (default `BLOCKING_LABELS`).
+ * @returns {string[]|null}
+ */
+function blockingLabelsOf(issue, blockingLabels) {
+    const { known, names } = labelsOf(issue);
+    if (!known) return null;                                   // indeterminado
+    const blockList = (Array.isArray(blockingLabels) ? blockingLabels : BLOCKING_LABELS)
+        .filter((l) => typeof l === 'string')
+        .map((l) => l.trim().toLowerCase())
+        .filter((l) => l !== '');
+    return names.filter((n) => blockList.includes(n));
+}
+
+/**
  * Extrae el padre DECLARADO de un issue, o null si no hay uno unívoco (SO-4).
  *
  * ÚNICO criterio: el título canónico `^[Split de #N]` que emite `/planner split`.
@@ -256,8 +342,9 @@ function parentOfSplitOrphan(issue) {
  * split queda cubierto en la misma corrida sin depender del ciclo siguiente.
  *
  * @param {Array<object>} issues — issues de GitHub
- *   `{ number, title, state, author|user, author_association }`. El `body` NO se
- *   usa: el único criterio de detección es el título canónico (SO-4).
+ *   `{ number, title, state, author|user, author_association, labels }`. El `body`
+ *   NO se usa: el único criterio de detección es el título canónico (SO-4).
+ *   `labels` es OBLIGATORIO (SO-8): si falta, el candidato se excluye.
  *   NO se asume que estén filtrados: el módulo descarta cerrados, inválidos y de
  *   ORIGEN NO CONFIABLE (SO-7). El wire-up DEBE traer el dato de autor; si falta,
  *   el default-deny excluye todo (fail-closed, no fail-open).
@@ -271,12 +358,18 @@ function parentOfSplitOrphan(issue) {
  *   aceptar. Si tira, el candidato se excluye. Default: criterio propio del módulo.
  * @param {Array<string>} [ctx.trustedLogins] — SO-7: allowlist de logins usada por
  *   el criterio default (ignorada si se inyecta `ctx.isTrustedAuthor`).
+ * @param {Array<string>} [ctx.blockingLabels] — SO-8: override de los labels que
+ *   bloquean la auto-incorporación (default `BLOCKING_LABELS`).
  * @returns {{
  *   orphans: Array<{ child: number, parent: number }>,
  *   truncated: boolean,
  *   reason: 'max_depth'|'max_incorporations'|null,
- *   rejectedUntrusted: Array<{ child: number, parent: number, login: string|null, association: string|null }>
+ *   rejectedUntrusted: Array<{ child: number, parent: number, login: string|null, association: string|null }>,
+ *   rejectedByLabel: Array<{ child: number, parent: number, labels: string[]|null, reason: 'blocking_label'|'labels_unavailable' }>
  * }} `orphans` ordenado por `child` ascendente, sin duplicados.
+ *   `rejectedByLabel` (SO-8) lista los candidatos con padre EN ALCANCE excluidos
+ *   por llevar un label de bloqueo (`blocking_label`) o por venir sin `labels` en
+ *   el payload (`labels_unavailable`). Nunca se descartan en silencio.
  *   `rejectedUntrusted` lista los candidatos que declaraban un padre EN ALCANCE
  *   DE LA OLA (∈ ola activa, o alcanzable transitivamente por un hijo ya
  *   incorporado en esta corrida) pero fueron excluidos por SO-7 — nunca se
@@ -296,8 +389,14 @@ function findSplitOrphans(issues, ctx = {}) {
             .filter(Boolean)
     );
 
-    const empty = { orphans: [], truncated: false, reason: null, rejectedUntrusted: [] };
-    if (list.length === 0 || inWave.size === 0) return empty;
+    // OJO: se construye FRESCO en cada retorno. Devolver una referencia
+    // compartida dejaría que un caller que mute el resultado (p. ej. marcar
+    // `truncated`) contamine las corridas siguientes.
+    const empty = () => ({
+        orphans: [], truncated: false, reason: null,
+        rejectedUntrusted: [], rejectedByLabel: [],
+    });
+    if (list.length === 0 || inWave.size === 0) return empty();
 
     let maxDepth = Number.isFinite(ctx.maxDepth) ? Math.floor(ctx.maxDepth) : DEFAULT_MAX_DEPTH;
     if (maxDepth < 1) maxDepth = 1;
@@ -336,6 +435,9 @@ function findSplitOrphans(issues, ctx = {}) {
     // conjunto `reachable` ya está cerrado — un candidato puede declarar como padre
     // a un hijo que se incorpora recién en la ronda 2, y ése SÍ es un intento real.
     const rejectedStaging = [];
+    // SO-8 — Staging de los bloqueados por label. Mismo criterio de reporte que
+    // SO-7: se filtra por alcance recién al final, con `reachable` ya cerrado.
+    const labelStaging = [];
     for (const issue of list) {
         if (!isOpenIssue(issue)) continue;                     // SO-3
         const child = toPositiveInt(issue && issue.number);
@@ -356,12 +458,35 @@ function findSplitOrphans(issues, ctx = {}) {
             });
             continue;
         }
+        // SO-8 DESPUÉS de SO-7: un autor no confiable es la señal más grave y no
+        // debe quedar tapada por el bucket de labels. Un candidato bloqueado por
+        // label NO entra al conjunto `reachable`, así que sus propios hijos
+        // tampoco se incorporan: si el split padre está frenado por decisión
+        // humana, la rama entera queda frenada.
+        let blocking;
+        try {
+            blocking = blockingLabelsOf(issue, ctx.blockingLabels);
+        } catch {
+            blocking = null;                                   // SO-8 default-deny
+        }
+        if (blocking === null) {
+            labelStaging.push({ child, parent, labels: null, reason: 'labels_unavailable' });
+            continue;
+        }
+        if (blocking.length > 0) {
+            labelStaging.push({ child, parent, labels: blocking, reason: 'blocking_label' });
+            continue;
+        }
         seenChildren.add(child);
         candidates.push({ child, parent });
     }
     if (candidates.length === 0) {
         // Sin candidatos confiables no hay expansión: el alcance es la ola cruda.
-        return { ...empty, rejectedUntrusted: rejectedStaging.filter((r) => inWave.has(r.parent)) };
+        return {
+            ...empty(),
+            rejectedUntrusted: rejectedStaging.filter((r) => inWave.has(r.parent)),
+            rejectedByLabel: labelStaging.filter((r) => inWave.has(r.parent)),
+        };
     }
 
     // Expansión por rondas: cada ronda incorpora los candidatos cuyo padre ya
@@ -415,7 +540,77 @@ function findSplitOrphans(issues, ctx = {}) {
     // el resto no habría entrado ni siendo confiable (SO-2), así que alertarlo sería
     // una acusación falsa ("declaran un padre de la ola activa") y ruido por ciclo.
     const rejectedUntrusted = rejectedStaging.filter((r) => reachable.has(r.parent));
-    return { orphans, truncated, reason, rejectedUntrusted };
+    // SO-8 — Mismo filtro por alcance: un hijo bloqueado por label cuyo padre ni
+    // siquiera está en la ola no aporta señal (habría caído por SO-2 igual).
+    const rejectedByLabel = labelStaging.filter((r) => reachable.has(r.parent));
+    return { orphans, truncated, reason, rejectedUntrusted, rejectedByLabel };
+}
+
+/**
+ * Clasifica el corte de la VENTANA DE DESCUBRIMIENTO del wire-up (#5516, punto 4
+ * del alcance del operador).
+ *
+ * El wire-up pagina la consulta a GitHub con un tope de páginas. Antes, agotar
+ * ese tope no marcaba NADA: `truncated` sólo salía de los caps del módulo puro,
+ * así que el recorte era SILENCIOSO y se perdían huérfanos reales sin señal
+ * (medido el 2026-08-10: 109 de 126 hijos con título canónico quedaban afuera de
+ * la ventana de 300, incluida toda la cadena de #5126).
+ *
+ * Hay truncado cuando:
+ *   - GitHub declaró el resultado incompleto (`incomplete_results: true`), o
+ *   - agotamos `maxPages` y la ÚLTIMA página vino LLENA (`lastBatchSize ===
+ *     pageSize`) ⇒ había más resultados más allá de la ventana.
+ *
+ * Una última página a medio llenar significa que llegamos al final del conjunto:
+ * NO es truncado.
+ *
+ * PURO: sin red ni estado, para poder testear el punto 4 de verdad.
+ *
+ * @param {object} p
+ * @param {number} p.pagesFetched — páginas efectivamente traídas.
+ * @param {number} p.lastBatchSize — tamaño de la última página traída.
+ * @param {number} p.pageSize — `per_page` usado.
+ * @param {number} p.maxPages — tope de páginas del wire-up.
+ * @param {boolean} [p.incompleteResults] — `incomplete_results` de la búsqueda.
+ * @returns {{ truncated: boolean, reason: 'discovery_window'|'search_incomplete'|null }}
+ */
+function classifyDiscoveryWindow(p = {}) {
+    const pagesFetched = Number(p.pagesFetched) || 0;
+    const lastBatchSize = Number(p.lastBatchSize) || 0;
+    const pageSize = Number(p.pageSize) || 0;
+    const maxPages = Number(p.maxPages) || 0;
+
+    // El timeout de búsqueda manda: el conjunto es parcial aunque no hayamos
+    // agotado las páginas.
+    if (p.incompleteResults === true) {
+        return { truncated: true, reason: 'search_incomplete' };
+    }
+    if (pagesFetched >= maxPages && pageSize > 0 && lastBatchSize === pageSize) {
+        return { truncated: true, reason: 'discovery_window' };
+    }
+    return { truncated: false, reason: null };
+}
+
+/**
+ * Combina el truncado del CLASIFICADOR (caps SO-5 / `max_depth`) con el de la
+ * VENTANA de descubrimiento del wire-up. Ambos pueden darse a la vez y los dos
+ * importan, así que los motivos se concatenan en vez de pisarse.
+ *
+ * @param {object} p
+ * @param {boolean} [p.moduleTruncated]
+ * @param {string|null} [p.moduleReason]
+ * @param {boolean} [p.windowTruncated]
+ * @param {string|null} [p.windowReason]
+ * @returns {{ truncated: boolean, reason: string|null }}
+ */
+function combineTruncation(p = {}) {
+    const moduleTruncated = p.moduleTruncated === true;
+    const windowTruncated = p.windowTruncated === true;
+    const reason = [
+        moduleTruncated ? p.moduleReason : null,
+        windowTruncated ? p.windowReason : null,
+    ].filter((r) => typeof r === 'string' && r !== '').join('+') || null;
+    return { truncated: moduleTruncated || windowTruncated, reason };
 }
 
 /**
@@ -442,9 +637,12 @@ function groupByParent(orphans) {
 module.exports = {
     SPLIT_TITLE_RE,
     TRUSTED_AUTHOR_ASSOCIATIONS,
+    BLOCKING_LABELS,
     isTrustedAuthor,
     authorAssociationOf,
     authorLoginOf,
+    labelsOf,
+    blockingLabelsOf,
     DEFAULT_MAX_DEPTH,
     ABSOLUTE_MAX_DEPTH,
     DEFAULT_MAX_INCORPORATIONS,
@@ -452,6 +650,8 @@ module.exports = {
     findSplitOrphans,
     parentOfSplitOrphan,
     groupByParent,
+    classifyDiscoveryWindow,
+    combineTruncation,
     // Exportados para tests.
     toPositiveInt,
     isOpenIssue,

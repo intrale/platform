@@ -17004,13 +17004,58 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
 //
 // @returns {{ok: boolean, incorporated: number[], reason?: string}}
 // =============================================================================
-// SO-7 — Parámetros de la consulta REST. `gh issue list --json` NO expone
+// SO-7 — Parámetros de la consulta. `gh issue list --json` NO expone
 // `authorAssociation` (sólo `author`), así que el descubrimiento va por la API
-// REST, que sí trae `author_association` + `user.login`. Alcance equivalente al
-// `--limit 300` anterior: 3 páginas de 100, ordenadas por creación descendente
-// (los hijos de split recién creados son, por definición, los más nuevos).
+// HTTP, que sí trae `author_association` + `user.login` + `labels` (SO-8).
+//
+// VENTANA DE DESCUBRIMIENTO (corregido en el rebote del 2026-08-10)
+// -----------------------------------------------------------------
+// La versión anterior barría `repos/:o/:r/issues?state=open&sort=created&desc`
+// con 3 páginas de 100 = 300 issues, y ese recorte PERDÍA huérfanos reales en
+// silencio. Medido contra GitHub en vivo el 2026-08-10:
+//
+//     corpus abierto real .................. 1487 issues (16 páginas)
+//     ventana de 3 páginas ................. 296 issues
+//     hijos con título canónico (corpus) ... 126
+//     hijos dentro de la ventana ........... 17   → 109 QUEDABAN AFUERA
+//
+// Entre los perdidos estaba toda la cadena de #5126 (#5207, #5208, #5209,
+// #5212, #5214), que el propio body de #5516 nombra como trancada en cascada.
+//
+// Ampliar el barrido crudo a las 16 páginas NO es la salida: `ghThrottle()` es
+// un busy-wait SÍNCRONO de 2 s por llamada, así que 16 páginas serían ~50 s de
+// spin bloqueando el tick del Pulpo cada ciclo (y #5557 ya está abierta por los
+// ~10 s actuales). En vez de traer todo el repo para descartar el 91 %, se
+// consulta el índice de búsqueda ACOTADO POR TÍTULO: `in:title split` devuelve
+// hoy 136 resultados (2 páginas, ~3 s) y es un SUPERCONJUNTO de lo que el
+// clasificador puede aceptar — el filtro fino sigue siendo el regex anclado
+// `SPLIT_TITLE_RE` del módulo puro (SO-4), que es quien decide de verdad.
+//
+// Se usa el término suelto `split` (no la frase `"Split de"`) para cubrir
+// también la variante `[Split of #N]` que acepta el regex.
+//
+// El payload de `search/issues` trae los mismos campos que necesitamos:
+// `number`, `title`, `state`, `author_association`, `user.login`, `labels` y la
+// clave `pull_request` para distinguir PRs.
+//
+// Contrapartida asumida: el índice de búsqueda puede tener unos segundos de
+// atraso frente a un issue recién creado. Como el reconciliador corre en cada
+// ciclo (~5 min), un hijo que llegue tarde al índice entra en el ciclo
+// siguiente — se autocorrige. Es un retraso acotado, no una pérdida permanente
+// como la del recorte por paginado.
 const SPLIT_ORPHAN_PAGE_SIZE = 100;
-const SPLIT_ORPHAN_MAX_PAGES = 3;
+// 5 páginas = 500 resultados de búsqueda. Con 136 hoy, ~3.7x de aire; y si algún
+// día no alcanza, el corte ya NO es silencioso (`discovery_window`).
+const SPLIT_ORPHAN_MAX_PAGES = 5;
+// Query ESTÁTICA y pre-encodeada (cero interpolación de input externo → sin
+// superficie de command injection).
+const SPLIT_ORPHAN_SEARCH_Q =
+  'repo%3Aintrale%2Fplatform+is%3Aissue+is%3Aopen+in%3Atitle+split';
+
+// Dedupe de la alerta de VENTANA TRUNCADA. Sin esto avisaría cada ~5 min.
+// Se re-alerta si cambia el motivo o si pasaron más de 6 h (sigue vigente).
+const SPLIT_ORPHAN_TRUNC_REALERT_MS = 6 * 60 * 60 * 1000;
+let _splitOrphanTruncAlert = { key: null, at: 0 };
 
 // SO-7 — Dedupe de la alerta de candidatos NO confiables. El reconciliador corre
 // cada ciclo periódico (~5 min); sin esto, un issue de un tercero que quede
@@ -17117,21 +17162,40 @@ function reconcileSplitOrphansFromGithub(context) {
   // título canónico (SO-4) — pero viene igual en el payload y hay que poder
   // parsearlo sin que el buffer reviente.
   const issues = [];
+  // Corte por VENTANA DE DESCUBRIMIENTO. Se marca cuando agotamos
+  // `SPLIT_ORPHAN_MAX_PAGES` con la última página LLENA (⇒ hay más resultados
+  // más allá de la ventana) o cuando GitHub declara el resultado incompleto.
+  // Antes este corte era SILENCIOSO: el loop terminaba sin marcar nada y
+  // `found.truncated` sólo salía de los caps del módulo puro, así que se
+  // perdían huérfanos sin ninguna señal (bloqueante 1 del rechazo de PO).
+  // La clasificación del corte vive en el módulo puro
+  // (`classifyDiscoveryWindow`) para que sea testeable sin red; acá sólo se
+  // recolectan los datos crudos del paginado.
+  let sawIncomplete = false;
+  let pagesFetched = 0;
+  let lastBatchSize = 0;
   try {
     for (let page = 1; page <= SPLIT_ORPHAN_MAX_PAGES; page++) {
       ghThrottle();
       const out = _ghExecSyncGuarded(
-        `"${GH_BIN}" api "repos/intrale/platform/issues?state=open&sort=created&direction=desc` +
+        `"${GH_BIN}" api "search/issues?q=${SPLIT_ORPHAN_SEARCH_Q}` +
         `&per_page=${SPLIT_ORPHAN_PAGE_SIZE}&page=${page}"`,
         { encoding: 'utf8', timeout: 20000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
       );
-      const batch = JSON.parse(out);
-      if (!Array.isArray(batch)) {
+      const payload = JSON.parse(out);
+      // `search/issues` responde `{ total_count, incomplete_results, items:[] }`.
+      const batch = payload && Array.isArray(payload.items) ? payload.items : null;
+      if (!batch) {
         return { ok: false, incorporated: [], reason: 'gh_bad_payload' };
       }
-      // OJO: la REST `/issues` devuelve TAMBIÉN pull requests (se distinguen por
-      // la clave `pull_request`). Un PR titulado `[Split de #N]` no es un hijo
-      // de split y no debe entrar a la ola ni a la allowlist.
+      pagesFetched = page;
+      lastBatchSize = batch.length;
+      // `incomplete_results: true` = GitHub cortó la búsqueda por timeout. El
+      // conjunto es PARCIAL: hay que decirlo, no asumir que está completo.
+      if (payload.incomplete_results === true) sawIncomplete = true;
+      // OJO: la búsqueda de issues puede devolver TAMBIÉN pull requests (se
+      // distinguen por la clave `pull_request`). Un PR titulado `[Split de #N]`
+      // no es un hijo de split y no debe entrar a la ola ni a la allowlist.
       for (const it of batch) {
         if (it && typeof it === 'object' && it.pull_request === undefined) issues.push(it);
       }
@@ -17184,15 +17248,71 @@ function reconcileSplitOrphansFromGithub(context) {
     }
   }
 
+  // --- 2c. SO-8: candidatos BLOQUEADOS POR LABEL -------------------------------
+  // Hijos legítimos (título canónico, autor confiable, padre en la ola) que NO se
+  // incorporan porque llevan `needs-human` / `tipo:recomendacion` /
+  // `source:recommendation`: están frenados a propósito por decisión humana o
+  // pendientes del gate de aprobación de #2653. Sumarlos a la ola Y a la allowlist
+  // los habilitaría para dispatch, salteando ese gate.
+  // No se alerta por Telegram (no es un incidente de seguridad: es el guard
+  // haciendo su trabajo, y estos issues son visibles en el tablero). Se loguea
+  // siempre para que quede trazado por qué no entraron.
+  const byLabel = (found && Array.isArray(found.rejectedByLabel)) ? found.rejectedByLabel : [];
+  if (byLabel.length > 0) {
+    log('pulpo', `split-orphan-reconciler: ${byLabel.length} candidato(s) EXCLUIDO(S) por SO-8 ` +
+      `(label de bloqueo / labels ausentes): ${byLabel.map((r) => `#${r.child}→padre #${r.parent} ` +
+        `[${r.reason}${r.labels && r.labels.length ? ': ' + r.labels.join(',') : ''}]`).join(' | ')}`);
+  }
+
+  // --- 2d. TRUNCADO — se evalúa SIEMPRE, incluso con 0 huérfanos ---------------
+  // Va ANTES del early return de `no_orphans` a propósito. El caso peligroso es
+  // justamente "la ventana cortó y adentro no había nada nuevo": ahí el
+  // reconciliador devolvía `no_orphans` y el ciclo terminaba en silencio, dando
+  // la falsa impresión de que no quedaban huérfanos cuando en realidad ni
+  // llegamos a mirarlos. Truncado ⇒ el resultado es PARCIAL, se diga lo que se
+  // diga sobre los huérfanos encontrados.
+  const window = splitOrphanReconciler.classifyDiscoveryWindow({
+    pagesFetched,
+    lastBatchSize,
+    pageSize: SPLIT_ORPHAN_PAGE_SIZE,
+    maxPages: SPLIT_ORPHAN_MAX_PAGES,
+    incompleteResults: sawIncomplete,
+  });
+  const { truncated, reason: truncReason } = splitOrphanReconciler.combineTruncation({
+    moduleTruncated: !!(found && found.truncated),             // caps SO-5 / max_depth
+    moduleReason: found && found.reason,
+    windowTruncated: window.truncated,                         // ventana de descubrimiento
+    windowReason: window.reason,
+  });
+
+  if (truncated) {
+    log('pulpo', `split-orphan-reconciler: descubrimiento TRUNCADO (${truncReason}) — ` +
+      `resultado PARCIAL sobre ${issues.length} issue(s) en ${pagesFetched} página(s); ` +
+      `el resto queda para el próximo ciclo.`);
+    // Dedupe: el reconciliador corre cada ~5 min y un truncado persiste hasta que
+    // alguien amplíe la ventana. Sin esto, una alerta por ciclo → fatiga.
+    const key = truncReason;
+    const now = Date.now();
+    if (_splitOrphanTruncAlert.key !== key ||
+        (now - _splitOrphanTruncAlert.at) > SPLIT_ORPHAN_TRUNC_REALERT_MS) {
+      _splitOrphanTruncAlert = { key, at: now };
+      try {
+        sendTelegramPlain(
+          `⚠️ Descubrimiento de hijos de split TRUNCADO (#5516).\n` +
+          `Motivo: ${truncReason}. Se revisaron ${issues.length} issue(s) en ` +
+          `${pagesFetched} página(s) de ${SPLIT_ORPHAN_MAX_PAGES}.\n` +
+          `El resultado es PARCIAL: puede haber hijos de split de la ola activa que ` +
+          `todavía no se descubrieron. Se reintenta cada ciclo, pero si el motivo es ` +
+          `'discovery_window' conviene subir SPLIT_ORPHAN_MAX_PAGES en pulpo.js.`
+        );
+      } catch { /* best-effort */ }
+    }
+  }
+
   const orphans = (found && Array.isArray(found.orphans)) ? found.orphans : [];
   if (orphans.length === 0) {
     // Camino idempotente: sin huérfanos nuevos NO se escribe nada ni se notifica.
-    return { ok: true, incorporated: [], reason: 'no_orphans' };
-  }
-  if (found.truncated) {
-    // Nunca truncar en silencio: el remanente entra en el ciclo siguiente.
-    log('pulpo', `split-orphan-reconciler: descubrimiento TRUNCADO (${found.reason}) — ` +
-      `se incorpora un subconjunto; el resto queda para el próximo ciclo.`);
+    return { ok: true, incorporated: [], reason: 'no_orphans', truncated };
   }
 
   // --- 3. Incorporación a la OLA (primero) -------------------------------------
@@ -17316,11 +17436,11 @@ function reconcileSplitOrphansFromGithub(context) {
       `Hijos de split descubiertos en GitHub (el split no pasó por el Commander): ${detalle}\n` +
       `Sumados a la ola ${active.number}` +
       `${allowlistUpdated ? ' y a la allowlist' : ''}. Dependencia padre→hijos declarada.` +
-      `${found.truncated ? `\n⚠️ Descubrimiento truncado (${found.reason}): el resto entra en el próximo ciclo.` : ''}`
+      `${truncated ? `\n⚠️ Descubrimiento truncado (${truncReason}): el resto entra en el próximo ciclo.` : ''}`
     );
   } catch { /* best-effort */ }
 
-  return { ok: true, incorporated };
+  return { ok: true, incorporated, truncated };
 }
 
 /**

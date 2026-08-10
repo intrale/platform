@@ -43,6 +43,12 @@ const UNTRUSTED_AUTHOR = Object.freeze({
     user: Object.freeze({ login: 'randomuser' }),
 });
 
+// SO-8 — `labels` es OBLIGATORIO en el payload: sin el campo el default-deny
+// excluye al candidato (un wire-up que se olvide de pedirlo desactivaría el
+// guard en silencio). Las fixtures traen la lista VACÍA salvo que el test
+// quiera ejercitar justamente un label de bloqueo.
+const NO_LABELS = Object.freeze({ labels: Object.freeze([]) });
+
 // Helper: issue de GitHub con formato canónico de `/planner split`.
 function child(number, parent, over = {}) {
     return {
@@ -51,6 +57,7 @@ function child(number, parent, over = {}) {
         body: `Historia madre: #${parent}\n\n## Criterios\n- algo`,
         state: 'OPEN',
         ...TRUSTED_AUTHOR,
+        ...NO_LABELS,
         ...over,
     };
 }
@@ -62,8 +69,14 @@ function plain(number, over = {}) {
         body: 'sin referencias',
         state: 'OPEN',
         ...TRUSTED_AUTHOR,
+        ...NO_LABELS,
         ...over,
     };
+}
+
+// Helper: issue de GitHub con labels explícitos (SO-8).
+function childWithLabels(number, parent, labels, over = {}) {
+    return child(number, parent, { labels: labels.map((name) => ({ name })), ...over });
 }
 
 // Atajo: sólo los pares child/parent del resultado.
@@ -469,6 +482,7 @@ test('SO-7: acepta la forma GraphQL (authorAssociation + author.login), no sólo
         state: 'OPEN',
         authorAssociation: 'MEMBER',
         author: { login: 'leitolarreta' },
+        labels: [],                                            // SO-8
     };
     assert.deepEqual(pairs(sor.findSplitOrphans([issue], { activeWaveIssues: [5452] })), [[5458, 5452]]);
 });
@@ -613,15 +627,16 @@ test('#5516 estructural: SO-7 — el wire-up trae el autor y filtra PRs', () => 
     const PULPO_SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
 
     // `gh issue list --json` NO expone authorAssociation: el descubrimiento debe
-    // ir por REST, que sí trae author_association + user.login. Si alguien vuelve
-    // al camino viejo, SO-7 degradaría a excluir todo (o peor, a fail-open).
-    assert.match(PULPO_SRC, /repos\/intrale\/platform\/issues\?state=open/);
+    // ir por la API HTTP, que sí trae author_association + user.login + labels.
+    // Si alguien vuelve al camino viejo, SO-7 degradaría a excluir todo (o peor,
+    // a fail-open) y SO-8 se quedaría sin `labels`.
+    assert.match(PULPO_SRC, /search\/issues\?q=\$\{SPLIT_ORPHAN_SEARCH_Q\}/);
     assert.doesNotMatch(
         PULPO_SRC,
         /issue list --repo intrale\/platform --state open/,
         'el camino viejo sin dato de autor no debe volver'
     );
-    // La REST /issues devuelve también PRs: un PR "[Split de #N]" no es un hijo.
+    // La búsqueda de issues devuelve también PRs: un PR "[Split de #N]" no es un hijo.
     assert.match(PULPO_SRC, /pull_request === undefined/);
     // Los candidatos excluidos por SO-7 se alertan, no se tragan en silencio.
     assert.match(PULPO_SRC, /rejectedUntrusted/);
@@ -739,7 +754,7 @@ test('#5516 estructural: el gate de modo está ANTES de la consulta a gh y del w
     const PULPO_SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
     const fn = PULPO_SRC.slice(PULPO_SRC.indexOf('function reconcileSplitOrphansFromGithub('));
     const iGate = fn.indexOf("reason: 'not_partial_pause'");
-    const iGh = fn.indexOf('repos/intrale/platform/issues?state=open');
+    const iGh = fn.indexOf('search/issues?q=');
     const iAdd = fn.indexOf('waves.addIssueToWave(active.number');
     assert.ok(iGate > 0 && iGh > 0 && iAdd > 0, 'las tres marcas deben existir');
     assert.ok(iGate < iGh, 'el gate de modo debe cortar antes de pegarle a GitHub');
@@ -778,4 +793,302 @@ test('isOpenIssue: sólo "open"/"OPEN" cuenta como abierto', () => {
     assert.equal(sor.isOpenIssue({ state: 'CLOSED' }), false);
     assert.equal(sor.isOpenIssue({}), false);
     assert.equal(sor.isOpenIssue(null), false);
+});
+
+// =============================================================================
+// SO-8 — GUARD POR LABELS (punto 2 del alcance del operador, rebote 2026-08-10)
+//
+// Un hijo con `needs-human`, `tipo:recomendacion` o `source:recommendation` está
+// frenado A PROPÓSITO: por decisión humana el primero, por el gate de aprobación
+// de #2653 los otros dos. El reconciliador los sumaba a la ola Y a la allowlist,
+// o sea los habilitaba para dispatch — se convertía en un bypass del gate que lo
+// debería contener.
+//
+// Medido contra GitHub real el 2026-08-07 (rechazo del PO): 3 de 11 hijos
+// descubiertos entraban pese a llevar `needs-human` (#5209, #5421, #5462).
+// =============================================================================
+
+test('SO-8: hijo con `needs-human` → NO se incorpora y se reporta', () => {
+    const issues = [childWithLabels(5462, 5451, ['bug', 'needs-human'])];
+    const res = sor.findSplitOrphans(issues, { activeWaveIssues: [5451] });
+
+    assert.deepEqual(res.orphans, [], 'un issue frenado por decisión humana no entra a la ola');
+    assert.deepEqual(res.rejectedByLabel, [
+        { child: 5462, parent: 5451, labels: ['needs-human'], reason: 'blocking_label' },
+    ], 'la exclusión se reporta, nunca se descarta en silencio');
+});
+
+test('SO-8: hijo con `tipo:recomendacion` → NO se incorpora (gate #2653)', () => {
+    const res = sor.findSplitOrphans(
+        [childWithLabels(5556, 5451, ['tipo:recomendacion'])],
+        { activeWaveIssues: [5451] }
+    );
+    assert.deepEqual(res.orphans, []);
+    assert.equal(res.rejectedByLabel[0].reason, 'blocking_label');
+});
+
+test('SO-8: hijo con `source:recommendation` → NO se incorpora (gate #2653)', () => {
+    const res = sor.findSplitOrphans(
+        [childWithLabels(5557, 5451, ['source:recommendation'])],
+        { activeWaveIssues: [5451] }
+    );
+    assert.deepEqual(res.orphans, []);
+    assert.equal(res.rejectedByLabel[0].reason, 'blocking_label');
+});
+
+test('SO-8: los 3 casos REALES que el PO midió el 2026-08-07 quedan excluidos', () => {
+    // #5209 (hijo de #5126), #5421 (de #5401), #5462 (de #5451): los tres con
+    // `needs-human` y los tres se incorporaban antes de este guard.
+    const issues = [
+        childWithLabels(5209, 5126, ['needs-human', 'area:infra']),
+        childWithLabels(5421, 5401, ['needs-human']),
+        childWithLabels(5462, 5451, ['needs-human', 'qa:passed']),
+    ];
+    const res = sor.findSplitOrphans(issues, { activeWaveIssues: [5126, 5401, 5451] });
+
+    assert.deepEqual(res.orphans, [], 'ninguno de los 3 debe entrar');
+    assert.deepEqual(
+        res.rejectedByLabel.map((r) => r.child).sort((a, b) => a - b),
+        [5209, 5421, 5462]
+    );
+});
+
+test('SO-8: hijo con labels NORMALES sí se incorpora (el guard no es un bloqueo general)', () => {
+    const issues = [childWithLabels(5458, 5452, ['bug', 'Ready', 'area:pipeline', 'size:medium'])];
+    const res = sor.findSplitOrphans(issues, { activeWaveIssues: [5452] });
+    assert.deepEqual(pairs(res), [[5458, 5452]]);
+    assert.deepEqual(res.rejectedByLabel, []);
+});
+
+test('SO-8: payload SIN `labels` → excluido (fail-closed, no fail-open)', () => {
+    // Un wire-up que se olvide de pedir `labels` desactivaría el guard en
+    // silencio. Preferimos no incorporar antes que incorporar algo bloqueado.
+    const sinLabels = { ...child(5458, 5452) };
+    delete sinLabels.labels;
+
+    const res = sor.findSplitOrphans([sinLabels], { activeWaveIssues: [5452] });
+    assert.deepEqual(res.orphans, [], 'sin labels no se puede probar que esté habilitado');
+    assert.deepEqual(res.rejectedByLabel, [
+        { child: 5458, parent: 5452, labels: null, reason: 'labels_unavailable' },
+    ]);
+});
+
+test('SO-8: `labels` con forma inválida → excluido con `labels_unavailable`', () => {
+    for (const labels of [null, 'needs-human', 42, {}, { nodes: 'x' }]) {
+        const res = sor.findSplitOrphans([child(5458, 5452, { labels })], { activeWaveIssues: [5452] });
+        assert.deepEqual(res.orphans, [], `labels=${JSON.stringify(labels)} debe excluir`);
+        assert.equal(res.rejectedByLabel[0].reason, 'labels_unavailable');
+    }
+});
+
+test('SO-8: acepta las 3 formas de payload de labels (REST, GraphQL y strings)', () => {
+    const rest = child(5458, 5452, { labels: [{ name: 'needs-human' }] });
+    const graphql = child(5459, 5452, { labels: { nodes: [{ name: 'needs-human' }] } });
+    const strings = child(5460, 5452, { labels: ['needs-human'] });
+
+    for (const issue of [rest, graphql, strings]) {
+        const res = sor.findSplitOrphans([issue], { activeWaveIssues: [5452] });
+        assert.deepEqual(res.orphans, [], `forma ${JSON.stringify(issue.labels)} debe bloquear`);
+    }
+});
+
+test('SO-8: la comparación de labels es case-insensitive y tolera espacios', () => {
+    for (const name of ['NEEDS-HUMAN', ' Needs-Human ', 'Tipo:Recomendacion']) {
+        const res = sor.findSplitOrphans([child(5458, 5452, { labels: [{ name }] })], {
+            activeWaveIssues: [5452],
+        });
+        assert.deepEqual(res.orphans, [], `"${name}" debe bloquear igual`);
+    }
+});
+
+test('SO-8: entradas basura dentro de una lista válida se ignoran, no invalidan el resto', () => {
+    const issue = child(5458, 5452, { labels: [null, 42, {}, { name: 'Ready' }] });
+    const res = sor.findSplitOrphans([issue], { activeWaveIssues: [5452] });
+    assert.deepEqual(pairs(res), [[5458, 5452]], 'la lista es válida aunque traiga entradas raras');
+});
+
+test('SO-8: un hijo bloqueado NO habilita a sus propios hijos (la rama queda frenada)', () => {
+    // #5207 bloqueado por `needs-human`; #5212 dice ser hijo de #5207. Si #5207
+    // está frenado por decisión humana, su sub-split tampoco debe entrar.
+    const issues = [
+        childWithLabels(5207, 5126, ['needs-human']),
+        child(5212, 5207),
+    ];
+    const res = sor.findSplitOrphans(issues, { activeWaveIssues: [5126] });
+    assert.deepEqual(res.orphans, [], 'ni el bloqueado ni su descendencia');
+});
+
+test('SO-8: padre FUERA de la ola → no se reporta en rejectedByLabel (sin ruido)', () => {
+    // Igual que SO-7: sólo se reporta lo que estaba EN ALCANCE. Un bloqueado cuyo
+    // padre ni pertenece a la ola habría caído por SO-2 de todos modos.
+    const res = sor.findSplitOrphans(
+        [childWithLabels(9001, 4200, ['needs-human'])],
+        { activeWaveIssues: [5451, 5452] }
+    );
+    assert.deepEqual(res.orphans, []);
+    assert.deepEqual(res.rejectedByLabel, [], 'no ensuciar el reporte con lo que ya caía por SO-2');
+});
+
+test('SO-8: SO-7 tiene prioridad — autor no confiable se reporta como untrusted', () => {
+    // Un issue de un tercero CON label de bloqueo: la señal grave es el origen,
+    // no el label. No debe quedar tapada en el bucket de labels.
+    const issue = childWithLabels(9002, 5452, ['needs-human'], { ...UNTRUSTED_AUTHOR });
+    const res = sor.findSplitOrphans([issue], { activeWaveIssues: [5452] });
+
+    assert.deepEqual(res.orphans, []);
+    assert.equal(res.rejectedUntrusted.length, 1, 'la alerta de seguridad manda');
+    assert.deepEqual(res.rejectedByLabel, []);
+});
+
+test('SO-8: `ctx.blockingLabels` permite override sin tocar el módulo', () => {
+    const issue = child(5458, 5452, { labels: [{ name: 'wip' }] });
+    const conDefault = sor.findSplitOrphans([issue], { activeWaveIssues: [5452] });
+    assert.deepEqual(pairs(conDefault), [[5458, 5452]], '`wip` no bloquea por default');
+
+    const conOverride = sor.findSplitOrphans([issue], {
+        activeWaveIssues: [5452],
+        blockingLabels: ['wip'],
+    });
+    assert.deepEqual(conOverride.orphans, []);
+});
+
+test('SO-8: BLOCKING_LABELS expone exactamente los 3 que pidió el operador', () => {
+    assert.deepEqual(
+        [...sor.BLOCKING_LABELS].sort(),
+        ['needs-human', 'source:recommendation', 'tipo:recomendacion']
+    );
+});
+
+// -----------------------------------------------------------------------------
+// NO-REGRESIÓN — los hijos legítimos siguen entrando por título
+// -----------------------------------------------------------------------------
+
+test('no-regresión: los 7 hijos legítimos de la ola siguen incorporándose por título', () => {
+    // Los mismos que citó el operador al fijar el alcance: #5458/#5459/#5460 (de
+    // #5452), #5461/#5462 (de #5451), #5421 (de #5401) y #5440 (de #5340).
+    // Acá van SIN labels de bloqueo (su estado legítimo): ni SO-8 ni la
+    // eliminación del descubrimiento por body pueden dejarlos afuera.
+    const issues = [
+        childWithLabels(5458, 5452, ['Ready']),
+        childWithLabels(5459, 5452, ['Ready']),
+        childWithLabels(5460, 5452, ['Ready']),
+        childWithLabels(5461, 5451, ['Ready']),
+        childWithLabels(5462, 5451, ['Ready']),
+        childWithLabels(5421, 5401, ['Ready']),
+        childWithLabels(5440, 5340, ['Ready']),
+    ];
+    const res = sor.findSplitOrphans(issues, {
+        activeWaveIssues: [5340, 5401, 5451, 5452],
+    });
+
+    assert.deepEqual(pairs(res), [
+        [5421, 5401], [5440, 5340], [5458, 5452], [5459, 5452],
+        [5460, 5452], [5461, 5451], [5462, 5451],
+    ], 'los 7 hijos legítimos entran');
+    assert.equal(res.truncated, false);
+    assert.deepEqual(res.rejectedByLabel, []);
+    assert.deepEqual(res.rejectedUntrusted, []);
+});
+
+// =============================================================================
+// PUNTO 4 — TRUNCADO POR VENTANA DE DESCUBRIMIENTO
+//
+// El corte por paginado era SILENCIOSO: el loop del wire-up agotaba las páginas
+// sin marcar nada y `found.truncated` sólo salía de los caps del módulo puro.
+// Medido el 2026-08-10 contra GitHub real: de 126 hijos con título canónico en el
+// repo, la ventana de 3 páginas alcanzaba 17 → 109 quedaban afuera SIN señal,
+// incluida la cadena de #5126 (#5207, #5208, #5209, #5212, #5214).
+// =============================================================================
+
+test('punto 4: última página LLENA al agotar maxPages → truncated `discovery_window`', () => {
+    assert.deepEqual(
+        sor.classifyDiscoveryWindow({ pagesFetched: 3, lastBatchSize: 100, pageSize: 100, maxPages: 3 }),
+        { truncated: true, reason: 'discovery_window' },
+        'página llena en el tope ⇒ hay más resultados afuera de la ventana'
+    );
+});
+
+test('punto 4: última página a medio llenar → NO es truncado (llegamos al final)', () => {
+    // Caso real de hoy: 136 resultados → 2 páginas (100 + 36) con tope de 5.
+    assert.deepEqual(
+        sor.classifyDiscoveryWindow({ pagesFetched: 2, lastBatchSize: 36, pageSize: 100, maxPages: 5 }),
+        { truncated: false, reason: null }
+    );
+});
+
+test('punto 4: página llena pero SIN agotar maxPages → no es truncado todavía', () => {
+    assert.deepEqual(
+        sor.classifyDiscoveryWindow({ pagesFetched: 1, lastBatchSize: 100, pageSize: 100, maxPages: 5 }),
+        { truncated: false, reason: null },
+        'el loop sigue: recién importa si agota el tope'
+    );
+});
+
+test('punto 4: `incomplete_results` de GitHub → truncated `search_incomplete`', () => {
+    assert.deepEqual(
+        sor.classifyDiscoveryWindow({
+            pagesFetched: 1, lastBatchSize: 10, pageSize: 100, maxPages: 5, incompleteResults: true,
+        }),
+        { truncated: true, reason: 'search_incomplete' },
+        'GitHub cortó la búsqueda por timeout: el conjunto es parcial'
+    );
+});
+
+test('punto 4: el truncado del módulo y el de la ventana se combinan, no se pisan', () => {
+    assert.deepEqual(
+        sor.combineTruncation({
+            moduleTruncated: true, moduleReason: 'max_incorporations',
+            windowTruncated: true, windowReason: 'discovery_window',
+        }),
+        { truncated: true, reason: 'max_incorporations+discovery_window' }
+    );
+    assert.deepEqual(
+        sor.combineTruncation({ moduleTruncated: true, moduleReason: 'max_depth' }),
+        { truncated: true, reason: 'max_depth' }
+    );
+    assert.deepEqual(
+        sor.combineTruncation({ windowTruncated: true, windowReason: 'discovery_window' }),
+        { truncated: true, reason: 'discovery_window' }
+    );
+    assert.deepEqual(sor.combineTruncation({}), { truncated: false, reason: null });
+});
+
+test('punto 4: un motivo de módulo presente pero con truncated=false no se filtra', () => {
+    assert.deepEqual(
+        sor.combineTruncation({
+            moduleTruncated: false, moduleReason: 'max_depth',
+            windowTruncated: true, windowReason: 'discovery_window',
+        }),
+        { truncated: true, reason: 'discovery_window' }
+    );
+});
+
+test('#5516 estructural: el wire-up cablea el truncado de ventana y lo avisa', () => {
+    const fs = require('node:fs');
+    const PULPO_SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+    const fn = PULPO_SRC.slice(PULPO_SRC.indexOf('function reconcileSplitOrphansFromGithub('));
+
+    // Usa los helpers puros (nada de lógica de truncado duplicada en el wire-up).
+    assert.match(fn, /classifyDiscoveryWindow\(\{/);
+    assert.match(fn, /combineTruncation\(\{/);
+
+    // La señal de truncado debe evaluarse ANTES del early return de `no_orphans`:
+    // el caso peligroso es justamente "la ventana cortó y adentro no había nada".
+    const iTrunc = fn.indexOf('classifyDiscoveryWindow({');
+    const iNoOrphans = fn.indexOf("reason: 'no_orphans'");
+    assert.ok(iTrunc > 0 && iNoOrphans > 0, 'las dos marcas deben existir');
+    assert.ok(iTrunc < iNoOrphans, 'el truncado se evalúa antes de devolver no_orphans');
+
+    // Y se avisa por Telegram (con dedupe para no alertar cada ciclo).
+    assert.match(fn, /Descubrimiento de hijos de split TRUNCADO/);
+    assert.match(fn, /_splitOrphanTruncAlert/);
+});
+
+test('#5516 estructural: el wire-up pide labels y reporta SO-8', () => {
+    const fs = require('node:fs');
+    const PULPO_SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+    const fn = PULPO_SRC.slice(PULPO_SRC.indexOf('function reconcileSplitOrphansFromGithub('));
+    // `search/issues` trae `labels` en el payload; los excluidos por SO-8 se loguean.
+    assert.match(fn, /rejectedByLabel/);
+    assert.match(fn, /SO-8/);
 });
