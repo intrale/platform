@@ -391,6 +391,34 @@ Dos matices que el filtro respeta:
   o sea que hubo un agente frenado de verdad; el filtro sólo aplica a las
   entradas que vienen únicamente de un label de GitHub.
 
+### El intake consulta GitHub en DOS pases (#5689)
+
+El intake (`pulpo.js`, `buildIntakeSearchQueries()`) no hace una consulta sino
+dos, y une los resultados deduplicando por número:
+
+| Pase | `--search` | Para qué |
+|------|-----------|----------|
+| **base** | `-label:needs-human -label:tipo:recomendacion` | Trabajo normal. Excluye bloqueo real (breaker de #2405) y el backlog de ~1.076 recomendaciones. |
+| **rescate** | `-label:needs-human label:recommendation:approved` | Las recomendaciones que un humano **ya aprobó**. |
+
+**Por qué dos y no una.** La búsqueda de GitHub no soporta `OR` ni paréntesis,
+así que `-label:tipo:recomendacion` es incondicional: excluye también las recos
+aprobadas, que conservan `tipo:recomendacion` (`approve()` agrega
+`recommendation:approved`, no saca el otro). Con un solo pase, aprobar una
+recomendación era un **no-op silencioso** — el gate de #2653 la habría admitido,
+pero el issue ya nunca volvía de GitHub, así que el gate jamás la evaluaba. El
+operador leía "entrará al pipeline en el próximo ciclo" y no entraba nunca.
+
+Dos invariantes que no se pueden relajar:
+
+- **El pase de rescate no es un bypass del breaker**: mantiene
+  `-label:needs-human`, así que una reco aprobada que después se bloquea de
+  verdad sigue afuera, igual que cualquier otro trabajo real.
+- **Nada de esto es un control de seguridad.** Los dos pases sólo agregan
+  *disponibilidad*; el índice de GitHub es eventualmente consistente. El control
+  autoritativo sigue siendo el gate JS de `brazoIntake` sobre los labels frescos
+  que la propia respuesta trajo (REQ-SEC-1).
+
 ### Cómo agrego un trigger nuevo
 
 1. Sumá la entrada a `TRIGGERS` en `lib/human-block-triggers.js`.
