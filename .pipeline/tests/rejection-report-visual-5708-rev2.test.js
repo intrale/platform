@@ -263,6 +263,33 @@ test('CA-22: el placeholder declara cada motivo por separado', () => {
     assert.match(resolveImageSrc('../../../package.json', ISSUE).reason, /fuera del directorio/);
 });
 
+test('seguridad: rechaza una imagen alcanzada mediante un enlace intermedio', (t) => {
+    fs.mkdirSync(DIR, { recursive: true });
+    const outside = fs.mkdtempSync(path.join(ROOT, '.tmp-image-outside-'));
+    t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(outside, 'probe.png'), 'PNG-SECRET', 'utf8');
+    fs.symlinkSync(outside, path.join(DIR, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    const resolved = resolveImageSrc('linked/probe.png', ISSUE);
+    assert.equal(resolved.src, null);
+    assert.match(resolved.reason, /symlink o junction rechazado/);
+});
+
+test('seguridad: loadVisualComparison no lee un contrato mediante un enlace intermedio', (t) => {
+    fs.mkdirSync(DIR, { recursive: true });
+    const outside = fs.mkdtempSync(path.join(ROOT, '.tmp-contract-outside-'));
+    t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(outside, 'visual-comparison.json'), JSON.stringify({
+        verdict: 'rejected', rev: 3, diffs: [],
+    }), 'utf8');
+    fs.symlinkSync(outside, path.join(DIR, 'linked-contract'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    const result = loadVisualComparison(ISSUE, path.join(DIR, 'linked-contract', 'visual-comparison.json'), 3);
+    assert.equal(result.contract, null);
+    assert.equal(result.skip.reason, 'unreadable');
+    assert.match(result.skip.detail, /symlink o junction intermedio/);
+});
+
 test('CA-22: con la imagen resoluble el badge «no matchea» se conserva', () => {
     fs.mkdirSync(DIR, { recursive: true });
     fs.writeFileSync(path.join(DIR, 'render.png'), Buffer.from('89504e470d0a1a0a', 'hex'));

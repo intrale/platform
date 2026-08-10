@@ -166,6 +166,12 @@ function loadVisualComparison(issueArg, overridePath, revActual) {
 
   let raw;
   try {
+    const realEvidenceRoot = fs.realpathSync(path.resolve(ROOT, 'qa', 'evidence'));
+    const realBase = fs.realpathSync(baseDir);
+    const realTarget = fs.realpathSync(target);
+    if (!realBase.startsWith(realEvidenceRoot + path.sep) || !realTarget.startsWith(realBase + path.sep)) {
+      return skip('unreadable', 'symlink o junction intermedio sale del directorio del issue');
+    }
     const stat = fs.lstatSync(target);
     if (stat.isSymbolicLink() || !stat.isFile()) return skip('unreadable', 'symlink o no-archivo');
     if (stat.size > MAX_VISUAL_JSON_BYTES) {
@@ -258,6 +264,24 @@ function resolveImageSrc(src, issueArg) {
   const target = path.resolve(baseDir, value);
   if (!target.startsWith(baseDir + path.sep)) {
     return { src: null, reason: 'la ruta apunta fuera del directorio de evidencia del issue' };
+  }
+  // La validacion lexica anterior no alcanza: `linked/captura.png` puede pasar
+  // aunque `linked` sea un junction que apunte fuera del directorio del issue.
+  // Comparamos las rutas canonicas antes de inspeccionar o leer el archivo.
+  let realBase;
+  let realTarget;
+  try {
+    const realEvidenceRoot = fs.realpathSync(path.resolve(ROOT, 'qa', 'evidence'));
+    realBase = fs.realpathSync(baseDir);
+    realTarget = fs.realpathSync(target);
+    if (!realBase.startsWith(realEvidenceRoot + path.sep)) {
+      return { src: null, reason: 'symlink o junction rechazado: el directorio del issue sale de qa/evidence' };
+    }
+  } catch {
+    return { src: null, reason: 'archivo ausente en el directorio de evidencia del issue' };
+  }
+  if (!realTarget.startsWith(realBase + path.sep)) {
+    return { src: null, reason: 'symlink o junction rechazado: la ruta real sale del directorio de evidencia del issue' };
   }
   let stat;
   try {

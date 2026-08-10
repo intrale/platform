@@ -105,6 +105,21 @@ test('el path queda confinado a qa/evidence: un baseDir de afuera se rechaza', (
   assert.equal(res.reason, 'path-invalido');
 });
 
+test('writeCoverage rechaza un junction intermedio que escapa de qa/evidence', (t) => {
+  const outside = fs.mkdtempSync(path.join(ROOT, '.tmp-store-outside-'));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.mkdirSync(path.dirname(BASE_DIR), { recursive: true });
+  fs.symlinkSync(outside, BASE_DIR, process.platform === 'win32' ? 'junction' : 'dir');
+
+  const result = store.writeCoverage({
+    issue: ISSUE, rev: 1, baseDir: BASE_DIR,
+    coverage: { verificadas: ['A'] }, diffs: [],
+  });
+  assert.equal(result.written, false);
+  assert.equal(result.reason, 'path-invalido');
+  assert.equal(fs.existsSync(path.join(outside, 'visual-coverage-rev1.json')), false);
+});
+
 test('el `regression` declarado en el contrato se descarta: manda el store', () => {
   const { loadVisualComparison } = require('../rejection-report');
   const contrato = {

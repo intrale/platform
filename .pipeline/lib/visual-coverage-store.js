@@ -40,6 +40,22 @@ function resolveBaseDir(issue, baseDir) {
   // Confinamiento: el baseDir debe caer bajo `qa/evidence/` (o ser exactamente
   // el del issue). Un override que apunte afuera se descarta.
   if (target !== evidenceRoot && !target.startsWith(evidenceRoot + path.sep)) return null;
+  // El prefijo lexico no detecta junctions/symlinks intermedios. Para paths
+  // todavia inexistentes se canoniza el ancestro existente mas cercano; luego
+  // de crear el directorio `writeCoverage` vuelve a validar la ruta completa.
+  let ancestor = target;
+  while (!fs.existsSync(ancestor)) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) return null;
+    ancestor = parent;
+  }
+  try {
+    const realRoot = fs.realpathSync(evidenceRoot);
+    const realAncestor = fs.realpathSync(ancestor);
+    if (realAncestor !== realRoot && !realAncestor.startsWith(realRoot + path.sep)) return null;
+  } catch {
+    return null;
+  }
   return target;
 }
 
@@ -98,6 +114,17 @@ function writeCoverage({ issue, rev, coverage, diffs, baseDir } = {}) {
 
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
+    // Revalidar despues de mkdir cierra el caso donde un componente intermedio
+    // ya era (o termino siendo) un junction hacia fuera de qa/evidence.
+    const validatedDir = resolveBaseDir(issue, path.dirname(target));
+    if (validatedDir === null) {
+      return { written: false, path: target, reason: 'path-invalido' };
+    }
+    const realDir = fs.realpathSync(validatedDir);
+    const realEvidenceRoot = fs.realpathSync(path.resolve(ROOT, 'qa', 'evidence'));
+    if (realDir !== realEvidenceRoot && !realDir.startsWith(realEvidenceRoot + path.sep)) {
+      return { written: false, path: target, reason: 'path-invalido' };
+    }
     // Si ya existe y es symlink, no escribimos a través de él (path traversal).
     if (fs.existsSync(target)) {
       const stat = fs.lstatSync(target);
