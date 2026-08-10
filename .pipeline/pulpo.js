@@ -9412,9 +9412,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Resolver env del child:
   //   - Flag `pipeline.env_isolation_enabled: true` → filtrado por
   //     buildChildEnv (allowlist mínima + scope del skill + provider key).
-  //   - Flag false (default rollout) → comportamiento previo: heredar TODO
-  //     `process.env`. Preserva regresión cero hasta que validemos en
-  //     producción que ningún hook/skill rompa por falta de credencial.
+  //   - Flag false (default rollout) → comportamiento previo salvo secretos
+  //     reservados, que nunca se heredan por nombre ni alias de valor.
   let childEnv;
   let envIsolationEnabled = false;
   try {
@@ -9450,7 +9449,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       throw e;
     }
   } else {
-    childEnv = { ...process.env, ...pipelineExtras };
+    // Aun durante el rollout legado, el material de firma de Telegram nunca
+    // cruza al child por nombre ni por alias con el mismo valor.
+    childEnv = buildChildEnvLib.stripReservedChildSecrets(
+      { ...process.env, ...pipelineExtras },
+      process.env,
+    );
   }
 
   // #3198 — si el dispatcher resolvió un fallback, pasamos un `resolveImpl`
@@ -11163,6 +11167,12 @@ function summarizeCommanderOlderTurns({ input } = {}) {
     ].join(' ');
     const prompt = `${systemInstr}\n\n<material>\n${input}\n</material>`;
 
+    // #5462 H-3 — base del env del child de resumen. Se arma en dos pasos (sin
+    // spread inline) para que el ÚNICO consumidor posible sea el filtro de abajo:
+    // ningún objeto crudo derivado de process.env llega a `spawn` por este sitio.
+    const summaryBaseEnv = { ...process.env };
+    summaryBaseEnv.CLAUDE_PROJECT_DIR = ROOT;
+
     let proc;
     try {
       proc = spawn(
@@ -11175,7 +11185,14 @@ function summarizeCommanderOlderTurns({ input } = {}) {
           '--permission-mode', 'bypassPermissions',
           '--model', COMMANDER_SUMMARY_MODEL,
         ],
-        { shell: CLAUDE_LAUNCHER.shell, windowsHide: true, env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT } },
+        {
+          shell: CLAUDE_LAUNCHER.shell,
+          windowsHide: true,
+          // #5462 H-3 — este spawn no tiene rama de aislamiento: el material de
+          // firma de Telegram se filtra SIEMPRE, por nombre y por alias con el
+          // mismo valor. Preserva TELEGRAM_CHAT_ID / CLAUDE_PROJECT_DIR.
+          env: buildChildEnvLib.stripReservedChildSecrets(summaryBaseEnv, process.env),
+        },
       );
     } catch (e) {
       return reject(e);
@@ -12487,11 +12504,19 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         return reject(e);
       }
     } else {
-      cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+      // #5462 H-2 — sin spread inline: el objeto crudo nunca es el valor final,
+      // el filtro del punto de salida (abajo) es la última operación.
+      cleanEnv = { ...process.env };
+      cleanEnv.CLAUDE_PROJECT_DIR = ROOT;
     }
     // CLAUDECODE se borra siempre — Claude Code lo setea internamente y heredarlo
     // confunde al child sobre si ya está en una sesión activa.
     delete cleanEnv.CLAUDECODE;
+    // #5462 H-2 — Frontera única en el punto de salida del env, FUERA del
+    // if/else de rollout: el material de firma de Telegram no cruza al child por
+    // ninguna rama. Idempotente (buildChildEnv ya filtra internamente) y es la
+    // ÚLTIMA operación sobre el env, después del merge de extras y del delete.
+    cleanEnv = buildChildEnvLib.stripReservedChildSecrets(cleanEnv, process.env);
 
     // #3258 — SR-1: data-residency-filter gate antes del spawn. Sólo aplica
     // a providers no-Anthropic; para Anthropic es passthrough explícito.
@@ -12568,10 +12593,18 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             skillConfigOverride: { provider: prov },
           });
         } else {
-          e = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+          // #5462 H-1 — sin spread inline: el objeto crudo nunca es el valor
+          // devuelto; el filtro del `return` es la última operación.
+          e = { ...process.env };
+          e.CLAUDE_PROJECT_DIR = ROOT;
         }
         delete e.CLAUDECODE;
-        return e;
+        // #5462 H-1 — Ejecutor de fallback no-Anthropic: es el camino literal de
+        // "providers, fallbacks" del objetivo del issue. Filtro en el punto de
+        // salida (fuera del if/else de rollout) y DESPUÉS del delete, para que el
+        // borrado de CLAUDECODE no se pierda sobre el objeto nuevo que devuelve
+        // el helper.
+        return buildChildEnvLib.stripReservedChildSecrets(e, process.env);
       };
 
       const buildFallbackArgs = (provider) => {
