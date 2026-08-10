@@ -510,6 +510,7 @@ test('ninguna entrada con lector real en el repo puede declararse no_consumer', 
   // ancla siguio clavada en los 4 viejos, este assert fallaba describiendo mal
   // el repo. El candado real -que ningun lector quede sin declarar- no se toca:
   // se arregla en el manifiesto sumando ambos a `consumers`, no aca.
+
   assert.deepEqual(
     findEnvVarReaders('TELEGRAM_LEO_OPERATOR_CHAT_ID', { files: sources }),
     [
