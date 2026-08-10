@@ -37,6 +37,15 @@ const { spawnSync } = require('child_process');
 const { componentState, waitForMarkers } = require('./lib/ready-marker');
 const { isMarkerArtifact } = require('./lib/marker-artifact');
 const budget = require('./lib/smoke-budget');
+// SEC-10 (#5725) — el volcado de CA-4 NO es una frontera de confianza: su salida
+// la copia `restart.js` a `restart.log`, que SÍ está en `TAIL_ALLOWED_FILES` y
+// por lo tanto sale por Telegram vía `/tail`. Redactamos en el punto de ESCRITURA,
+// igual que `pulpo.js` con `pulpo.log`, en vez de confiar sólo en el redactor de
+// egreso. Requires defensivos: este módulo corre en el camino de emergencia y una
+// falla de carga no puede dejar el smoke sin diagnóstico (ver `redactLogLine`).
+const { redactSecretValue } = require('./lib/redact');
+let _redactReadOutput = null;
+try { _redactReadOutput = require('./lib/commander/redact-read').redactReadOutput; } catch { /* opcional */ }
 
 const PIPELINE_DIR = __dirname;
 const LOG_FILE = path.join(PIPELINE_DIR, 'logs', 'smoke-test.log');
@@ -189,6 +198,51 @@ function stripControlChars(s) {
   return out;
 }
 
+// SEC-10 (#5725) — redacta UNA línea de log de componente antes de volcarla al
+// diagnóstico. El tail se dispara justo cuando un componente NO llegó a ready, y
+// los que manejan credenciales (svc-drive/OAuth, svc-github/token gh,
+// svc-telegram/bot token) fallan al arrancar típicamente por errores de auth:
+// exactamente cuando el log escupe el payload o el header con la credencial.
+//
+// Cadena en 3 pasos, la misma que ya usa el repo para texto leído de FS que va a
+// salir por Telegram (`renderCanonicalCitation` en commander-deterministic.js):
+//   1. `redactReadOutput` — construido para tails de log: cubre ghp_/gho_, AKIA,
+//      JWT, bot tokens de Telegram, `password=`/`secret=`/`token=`, emails.
+//   2. `redactSecretValue` — patrones de valor por proveedor (sk-ant-, sk-, gsk_,
+//      AKIA, JWT, ARNs). Es el control que cita SEC-10 y el que aplica el caso
+//      análogo de `kernel-degradation-alert.js`, de forma categórica.
+//   3. `redactSecretValue` token-a-token — la heurística de entropía de Shannon
+//      exige un token >40 chars SIN espacios, así que sobre la línea entera NUNCA
+//      dispara. Token-a-token sí atrapa el secreto OPACO sin formato conocido
+//      (mismo motivo por el que `pulpo.js:10753` hace este split).
+//
+// Cobertura parcial y conocida: `GOCSPX-` (client secret de Google) no está en
+// ninguna de las dos tablas de patrones. Ese hueco es preexistente e
+// independiente de este volcado, y quedó registrado en #5758.
+//
+// Defensivo a propósito: si un redactor tira, devolvemos la línea NEUTRALIZADA
+// pero marcada, nunca la cruda — el camino de emergencia no puede convertirse en
+// la fuga que intenta prevenir, y tampoco puede tumbar el smoke.
+function redactLogLine(line) {
+  try {
+    // `stripControlChars` va DENTRO del try: hace `String(s)`, que ejecuta un
+    // `toString` ajeno y por lo tanto puede tirar. Afuera, esa excepción subía
+    // por el `.map()` de `tailComponentLog` y tumbaba el diagnóstico entero —
+    // justo en el camino de emergencia, que es cuando más se lo necesita.
+    let out = stripControlChars(line);
+    if (typeof _redactReadOutput === 'function') {
+      const r = _redactReadOutput(out);
+      if (r && typeof r.text === 'string') out = r.text;
+    }
+    out = redactSecretValue(out);
+    // Paso 3: preservamos los separadores para no destruir el formato del log.
+    out = out.split(/(\s+)/).map(tok => (tok.trim() ? redactSecretValue(tok) : tok)).join('');
+    return out;
+  } catch {
+    return '[REDACTED: falló el redactor, línea omitida]';
+  }
+}
+
 function readTailBytes(file, maxBytes = TAIL_MAX_BYTES) {
   let fd;
   try {
@@ -220,9 +274,13 @@ function tailComponentLog(name, {
   const lines = usable
     .filter(l => l.trim().length > 0)
     .slice(-maxLines)
-    // Neutralizamos control chars: una línea de log con CR/LF o ANSI embebido
-    // no puede falsificar la estructura del diagnóstico del smoke.
-    .map(l => stripControlChars(l).slice(0, TAIL_MAX_LINE_CHARS));
+    // Neutralizamos control chars (una línea de log con CR/LF o ANSI embebido no
+    // puede falsificar la estructura del diagnóstico) y REDACTAMOS secretos
+    // (SEC-10 #5725) antes de que esto llegue a `restart.log` → Telegram.
+    // El orden importa: redactar ANTES de recortar. Al revés, el corte podría
+    // partir un secreto por la mitad, romper el match del patrón y dejar el
+    // prefijo de la credencial en claro.
+    .map(l => redactLogLine(l).slice(0, TAIL_MAX_LINE_CHARS));
   return { file, lines, reason: lines.length ? null : 'log vacío' };
 }
 
@@ -570,6 +628,7 @@ module.exports = {
   resolveRuntimeDir,
   // Expuestos para test (#5725).
   stripControlChars,
+  redactLogLine,
   readTailBytes,
   tailComponentLog,
   dumpPartialState,

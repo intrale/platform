@@ -116,6 +116,81 @@ test("stripControlChars saca control chars pero conserva el tab", () => {
   assert.strictEqual(smoke.stripControlChars("acentúa ñ ✓"), "acentúa ñ ✓");
 });
 
+// --- SEC-10: el volcado de CA-4 no puede filtrar secretos ---
+//
+// El tail sale del camino de emergencia, pero NO se queda ahí: `restart.js` lo
+// copia a `restart.log`, que está en `TAIL_ALLOWED_FILES` y por lo tanto es
+// legible por Telegram vía `/tail`. Además el tail alcanza logs (svc-drive,
+// svc-github, svc-emulador, svc-reconciler) que NO están en ese allowlist: sin
+// redacción, su contenido salía igual, embebido en un archivo que sí está.
+// Estos tests fijan la redacción en el punto de ESCRITURA.
+//
+// TODAS las credenciales de acá abajo son sintéticas.
+
+test('SEC-10: el volcado redacta secretos de proveedor en vez de sacarlos en claro', () => {
+  const dir = tmpDir();
+  const logsDir = path.join(dir, 'logs');
+  fs.mkdirSync(logsDir);
+  // Un componente que falla al arrancar por auth: el caso REAL en que el log
+  // escupe el header o el payload con la credencial adentro.
+  fs.writeFileSync(
+    path.join(logsDir, 'svc-drive.log'),
+    [
+      'aws AKIAIOSFODNN7EXAMPLE',
+      'anthropic sk-ant-FAKEfake0123456789abcdefghijkl',
+      'Authorization: Bearer ghp_FAKEfake0123456789abcdefghijklmnop',
+      'bot 123456789:FAKEfakeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    ].join('\n')
+  );
+
+  const t = smoke.tailComponentLog('svc-drive', { logsDir });
+  const volcado = t.lines.join('\n');
+
+  assert.ok(!volcado.includes('AKIAIOSFODNN7EXAMPLE'), 'la AWS access key no puede salir en claro');
+  assert.ok(!volcado.includes('sk-ant-FAKEfake0123456789abcdefghijkl'), 'la key de Anthropic no puede salir en claro');
+  assert.ok(!volcado.includes('ghp_FAKEfake0123456789abcdefghijklmnop'), 'el PAT de GitHub no puede salir en claro');
+  assert.ok(!volcado.includes('123456789:FAKEfakeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'), 'el bot token de Telegram no puede salir en claro');
+  // Y el volcado SIGUE siendo útil: queda el contexto, se va el valor.
+  assert.match(volcado, /REDACTED/);
+  assert.match(volcado, /aws/);
+});
+
+test('SEC-10: un secreto opaco sin formato conocido cae por entropía', () => {
+  // La heurística de Shannon exige un token >40 chars SIN espacios, así que
+  // sobre la línea entera nunca dispara: la redacción tiene que ser token-a-token.
+  const opaco = 'Zx9QwErTyUiOpAsDfGhJkLzXcVbNmQwErTyUiOpAsDfGhJkL7';
+  const out = smoke.redactLogLine(`[svc-github] token=${opaco}`);
+  assert.ok(!out.includes(opaco), 'un secreto opaco de alta entropía no puede sobrevivir al volcado');
+});
+
+test('SEC-10: se redacta ANTES de recortar, para no dejar el prefijo en claro', () => {
+  // Si el recorte a 200 chars corriera primero, partiría el secreto al medio,
+  // rompería el match del patrón y dejaría el principio de la credencial visible.
+  const dir = tmpDir();
+  const logsDir = path.join(dir, 'logs');
+  fs.mkdirSync(logsDir);
+  const relleno = 'x'.repeat(180);
+  fs.writeFileSync(path.join(logsDir, 'svc-github.log'), `${relleno} AKIAIOSFODNN7EXAMPLE`);
+
+  const t = smoke.tailComponentLog('svc-github', { logsDir });
+  const volcado = t.lines.join('\n');
+  assert.ok(!/AKIA[0-9A-Z]/.test(volcado), 'no puede quedar ni el prefijo de la AWS key');
+});
+
+test('SEC-10: la redacción no rompe una línea de log normal', () => {
+  // Cero-regresión sobre CA-4: el diagnóstico útil tiene que seguir intacto.
+  const linea = 'Error: listen EADDRINUSE: address already in use :::3200';
+  assert.strictEqual(smoke.redactLogLine(linea), linea);
+});
+
+test('SEC-10: si el redactor falla, la línea se omite en vez de salir cruda', () => {
+  // El camino de emergencia no puede convertirse en la fuga que previene.
+  // Un objeto sin `toString` usable hace explotar la cadena de redacción.
+  const explosivo = { toString() { throw new Error('boom'); } };
+  const out = smoke.redactLogLine(explosivo);
+  assert.match(out, /REDACTED/);
+});
+
 // --- CA-2: el log nunca queda en "Esperando marker ready…" ---
 
 function capturarLog(fn) {
