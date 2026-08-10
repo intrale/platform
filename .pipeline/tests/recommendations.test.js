@@ -99,16 +99,38 @@ test('refreshCache captura errores de gh sin tirar excepcion', async () => {
     }
 });
 
-test('approve agrega label approved y remueve needs-human', () => {
+// #5689 REQ-SEC-4 — actualizado: approve() ahora remueve AMBOS labels de freno
+// (`needs-human` y `needs:triage-backlog`), porque durante el split de #5678
+// conviven. Removía sólo `needs-human` hasta #5689 (GURU-5).
+test('approve agrega label approved y remueve needs-human y needs:triage-backlog', () => {
     const ghRunner = fakeRunner([
+        { ok: true },
         { ok: true },
         { ok: true },
     ]);
     const r = reco.approve({ issue: 99, ghRunner, repo: 'test/repo' });
     assert.equal(r.ok, true);
-    assert.equal(ghRunner.calls.length, 2);
+    assert.equal(ghRunner.calls.length, 3);
     assert.deepEqual(ghRunner.calls[0], ['issue', 'edit', '99', '--repo', 'test/repo', '--add-label', 'recommendation:approved']);
     assert.deepEqual(ghRunner.calls[1], ['issue', 'edit', '99', '--repo', 'test/repo', '--remove-label', 'needs-human']);
+    assert.deepEqual(ghRunner.calls[2], ['issue', 'edit', '99', '--repo', 'test/repo', '--remove-label', 'needs:triage-backlog']);
+});
+
+// REQ-SEC-4 — la ventana entre esta parte y #5691 exige que un fallo en el
+// primer --remove-label NO aborte el segundo: si abortara, el label que sí se
+// podía sacar quedaría pegado y el issue afuera del intake igual.
+test('approve intenta remover TODOS los labels aunque uno falle, y reporta fail-closed', () => {
+    const ghRunner = fakeRunner([
+        { ok: true },
+        { ok: false, stderr: 'label not found', status: 1 },
+        { ok: true },
+    ]);
+    const r = reco.approve({ issue: 99, ghRunner, repo: 'test/repo' });
+    assert.equal(r.ok, false, 'fail-closed: no puede reportar éxito si quedó un label de freno');
+    assert.match(r.msg, /Aprobación parcial/);
+    assert.match(r.msg, /needs-human/);
+    assert.equal(ghRunner.calls.length, 3, 'el segundo --remove-label se intenta igual');
+    assert.deepEqual(ghRunner.calls[2], ['issue', 'edit', '99', '--repo', 'test/repo', '--remove-label', 'needs:triage-backlog']);
 });
 
 test('approve falla limpio si no se puede agregar el label', () => {

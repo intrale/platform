@@ -1529,6 +1529,13 @@ function* _genPipelineState() {
           const yamlData = readYamlSafe(filepath);
           entry.resultado = yamlData.resultado;
           entry.motivo = yamlData.motivo;
+          // #5629 — Señal ESTRUCTURADA de merge real. `resultado` y `motivo` NO
+          // sirven para saber si hubo merge (los markers de #5220/#5244 decían
+          // `aprobado` con el motivo confesando "merge bloqueado"); el único
+          // dato confiable es este SHA, que `delivery.js` escribe sólo en la
+          // rama de merge confirmado. Lo exponemos crudo: la validación de
+          // formato y la regla de "entregado" viven en `lib/delivery-status.js`.
+          entry.delivery_merge_sha = yamlData.delivery_merge_sha || null;
         }
 
         // #2801 — Si el archivo en pendiente/trabajando tiene contexto de
@@ -2921,29 +2928,43 @@ function generateHTML(state) {
   }) : [];
   const definidos = definidosList.length;
 
-  // Entregados = completaron la fase final de desarrollo (entrega/procesado)
+  // #5629 — Acá vivían `entregadosList`/`entregados`/`ttEntregados` ("Entregados
+  // a producción"), que derivaban la entrega de "marker de la fase final en
+  // procesado". Eran código MUERTO (ninguno se renderizaba: la KPI viva es
+  // `entregados24h`) pero codificaban justo la regla R4 que
+  // `lib/delivery-status.js` prohíbe, así que se eliminan en vez de migrarse:
+  // dejarlas era sembrar la sexta derivación para el próximo que las reactive.
   const devFasesKpi = config.pipelines?.desarrollo?.fases || [];
   const lastDevFase = devFasesKpi[devFasesKpi.length - 1];
-  const entregadosList = lastDevFase ? matrixEntries.filter(([_, d]) => {
-    const entries = d.fases[`desarrollo/${lastDevFase}`] || [];
-    return entries.some(e => e.estado === 'procesado');
-  }) : [];
-  const entregados = entregadosList.length;
 
   const ttDefinidos  = buildTtData('Definidos listos',        definidosList, (_, d) => {
     const label = ttLabel(d);
     return label || 'definición completada';
   });
-  const ttEntregados = buildTtData('Entregados a producción',  entregadosList, (_, d) => {
-    // Para entregados, buscar el skill que hizo la entrega
-    const entregaEntries = d.fases[`desarrollo/${lastDevFase}`] || [];
-    const proc = entregaEntries.find(e => e.estado === 'procesado');
-    const skill = proc?.skill || '';
-    const label = ttLabel(d);
-    return skill ? `${skill}` + (label ? ` · ${label}` : '') : (label || 'entregado');
-  });
   const now24 = Date.now();
-  const entregados24hList = lastDevFase ? matrixEntries.filter(([_, d]) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; return ee.some(e => e.estado === 'procesado' && e.updatedAt && (now24 - e.updatedAt) < 86400000); }) : [];
+  // #5629 — QUINTA derivación de "Entregado", y la última de la pantalla
+  // principal: este KPI contaba "marker de la fase final en procesado", que es
+  // exactamente la regla R4 que `lib/delivery-status.js` prohíbe (la presencia
+  // del marker NO es entrega: los de #5220/#5244 estaban procesados con los PRs
+  // sin mergear). Ahora la ventana de 24h sigue anclada al `updatedAt` del
+  // marker —es el único timestamp del evento de entrega—, pero sólo cuenta si
+  // el helper único confirma la entrega por CLOSED en GitHub o por
+  // `delivery_merge_sha`. Así el KPI deja de contradecir a ENTREGADOS y al
+  // board (CA-1/CA-7).
+  const _deliveryStatus = (() => {
+    try { return require('./lib/delivery-status'); } catch (_) { return null; }
+  })();
+  const _entregadoReal = (id, d) => {
+    // Sin el helper NO degradamos a la regla vieja: fail-closed (preferimos no
+    // contar una entrega antes que inventar una que no ocurrió).
+    if (!_deliveryStatus) return false;
+    const meta = state.issueTitles?.[String(id)];
+    return _deliveryStatus.isDelivered({
+      closedInGitHub: !!meta && String(meta.state).toUpperCase() === 'CLOSED',
+      mergeSha: _deliveryStatus.extractMergeSha(d),
+    });
+  };
+  const entregados24hList = lastDevFase ? matrixEntries.filter(([id, d]) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; return ee.some(e => e.estado === 'procesado' && e.updatedAt && (now24 - e.updatedAt) < 86400000) && _entregadoReal(id, d); }) : [];
   const entregados24h = entregados24hList.length;
   const ttEntregados24h = buildTtData('Entregados 24h', entregados24hList, (_, d) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; const p = ee.find(e => e.estado === 'procesado'); return p ? p.skill || 'entregado' : 'entregado'; });
 

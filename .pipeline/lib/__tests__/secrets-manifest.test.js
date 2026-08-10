@@ -510,6 +510,7 @@ test('ninguna entrada con lector real en el repo puede declararse no_consumer', 
   // ancla siguio clavada en los 4 viejos, este assert fallaba describiendo mal
   // el repo. El candado real -que ningun lector quede sin declarar- no se toca:
   // se arregla en el manifiesto sumando ambos a `consumers`, no aca.
+
   assert.deepEqual(
     findEnvVarReaders('TELEGRAM_LEO_OPERATOR_CHAT_ID', { files: sources }),
     [
@@ -625,7 +626,12 @@ test('las listas de aislamiento quedan congeladas como defensa secundaria', () =
     github: ['GH_TOKEN', 'GITHUB_TOKEN'],
     aws: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_REGION', 'AWS_PROFILE'],
     'gradle-android': ['JAVA_HOME', 'GRADLE_USER_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT', 'ANDROID_AVD_HOME'],
-    'telegram-hooks': ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'],
+    // #5462 — `TELEGRAM_BOT_TOKEN` SALIÓ de este scope a propósito: el material de
+    // firma no cruza a ningún child, ni siquiera con aislamiento activo. Los hooks
+    // conservan sólo el destino (`TELEGRAM_CHAT_ID`) y notifican por la cola local
+    // privilegiada. Este congelamiento es defensa secundaria: si el token vuelve a
+    // aparecer acá, es una regresión de CA-1 y este assert la frena.
+    'telegram-hooks': ['TELEGRAM_CHAT_ID'],
   });
   assert.deepEqual(SCOPES_ALWAYS_ON, ['telegram-hooks']);
 });

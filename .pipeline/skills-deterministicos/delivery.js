@@ -685,6 +685,10 @@ const GATE_BLOCK_LABELS = {
     provenance: 'no se pudo acreditar la procedencia de la rama del PR',
     'merge-unconfirmed': 'GitHub respondió sin confirmar el merge',
     'retry-exhausted': 'se agotaron los reintentos sin merge confirmado',
+    // #5629 — Gates que ANTES terminaban con exitCode 0 (marker `aprobado`)
+    // aunque el merge nunca ocurriera. Ahora escalan fail-closed como el resto.
+    'qa-gate': 'el PR no tiene el gate de QA (falta label qa:passed o qa:skipped)',
+    'codeowners-human': 'el PR toca paths con CODEOWNERS humano y exige review manual',
 };
 
 // Motivo pensado para que el pulpo lo clasifique como BLOQUEO HUMANO
@@ -803,6 +807,11 @@ async function main() {
     let prUrl = null;
     let mergeSha = null;
     let labelsApplied = [];
+    // #5629 — Flag ESTRUCTURADO de "merge frenado por un gate". Existe para que
+    // el reporte distinga un rebote técnico de una escalada fail-closed sin
+    // tener que adivinarlo parseando `motivo` (misma regla que aplica el
+    // dashboard: el estado se lee de campos, nunca de prosa).
+    let gateBlocked = false;
 
     const phaseStart = () => Date.now();
     const phaseEnd = (key, t0) => { phases[key] = Date.now() - t0; };
@@ -1182,14 +1191,49 @@ async function main() {
             }
 
             if (outcome.status === 'no-qa-gate') {
-                // Sin gate QA → no mergeamos ciegamente; el delivery termina OK pero deja el PR abierto.
-                motivo = `PR #${prNumber} creado pero sin label qa:passed/qa:skipped — merge bloqueado.`;
-                logAppend(`[delivery] ${motivo}`);
+                // #5629 — Sin gate QA no mergeamos ciegamente. ANTES esta rama
+                // sólo seteaba `motivo` y caía al final con `exitCode === 0`, así
+                // que el marker quedaba `resultado: aprobado` con el motivo
+                // confesando "merge bloqueado" (#5220 → PR #5277 nunca mergeado,
+                // issue ABIERTO, pintado 100% en la columna Entregado).
+                // "Entrega no completada" NO puede escribirse como aprobado.
+                //
+                // Escalamos por la misma vía que `blocked` en vez de rebotar con
+                // un `rechazado` plano: un rebote común manda el issue a una fase
+                // anterior e incrementa `rev`, y como el gate QA no se destraba
+                // solo, eso sería un loop de re-entrega que nunca cierra. El
+                // motivo human-block hace que el pulpo escale al operador sin
+                // rev++ (fail-closed, ver docs/pipeline/gates-firma-operador.md).
+                const esc = escalateMergeGateBlock({
+                    issue, prNumber, branch,
+                    gate: 'qa-gate',
+                    reason: 'el PR no tiene label qa:passed ni qa:skipped',
+                    logAppend,
+                });
+                motivo = esc.motivo;
+                gateBlocked = true;
+                exitCode = 1;
+                phaseEnd('pr_merge', t);
+                return; // finally: marker con motivo human-block → NO rebota, escala
             } else if (outcome.status === 'needs-human') {
+                // #5629 — Mismo tratamiento que `no-qa-gate` (antes: exitCode 0
+                // → marker `aprobado`; caso #5244 / PR #5280). El label
+                // `needs-human` se aplica IGUAL y antes de escalar: el board lo
+                // renderiza con la chapa `f-human` 👤, así que el issue no queda
+                // sin señal visible al dejar de pintarse como Entregado.
                 applyNeedsHumanLabel(issue, prNumber, outcome.owners, WORK_DIR);
                 labelsApplied = Array.from(new Set([...labelsApplied, 'needs-human']));
-                motivo = `PR #${prNumber} requiere review humano de ${outcome.owners.join(' ')} — merge bloqueado, label needs-human aplicado.`;
-                logAppend(`[delivery] ${motivo}`);
+                const esc = escalateMergeGateBlock({
+                    issue, prNumber, branch,
+                    gate: 'codeowners-human',
+                    reason: `review requerido de ${outcome.owners.join(' ')}`,
+                    logAppend,
+                });
+                motivo = esc.motivo;
+                gateBlocked = true;
+                exitCode = 1;
+                phaseEnd('pr_merge', t);
+                return; // finally: marker con motivo human-block → NO rebota, escala
             } else if (outcome.status === 'blocked') {
                 // #5420 — No pudimos VERIFICAR el merge (owners/procedencia/SHA/
                 // confirmación). Fail-closed al operador, sin rebote a dev: el
@@ -1199,6 +1243,7 @@ async function main() {
                     gate: outcome.gate, reason: outcome.reason, logAppend,
                 });
                 motivo = esc.motivo;
+                gateBlocked = true;
                 exitCode = 1;
                 phaseEnd('pr_merge', t);
                 return; // finally: marker con motivo human-block → NO rebota, escala a needs-human
@@ -1219,6 +1264,7 @@ async function main() {
                     conflictExcerpt, logAppend,
                 });
                 motivo = esc.motivo;
+                gateBlocked = true;
                 exitCode = 1;
                 phaseEnd('pr_merge', t);
                 return; // finally: marker con motivo human-block → NO rebota, escala a needs-human
@@ -1275,13 +1321,20 @@ async function main() {
             reportLines.push('');
         }
         reportLines.push('### Veredicto');
+        // #5629 — El veredicto textual se deriva de campos estructurados
+        // (`mergeSha`, `gateBlocked`, `prNumber`), no de interpretar `motivo`.
+        // "Entrega completada" queda reservado al caso con SHA de merge real:
+        // antes un PR frenado por gate QA se reportaba como si sólo estuviera
+        // esperando, y el marker salía `aprobado`.
         reportLines.push(exitCode === 0
             ? (mergeSha
                 ? 'Entrega completada y mergeada a main.'
                 : (prNumber
-                    ? 'PR creado, esperando gate QA antes del merge.'
+                    ? 'PR creado; merge no intentado (auto-merge desactivado). Entrega NO completada.'
                     : 'Entrega cerrada sin PR — entregable ya estaba en main (ver motivo).'))
-            : 'Delivery rechazado — ver motivo y rebote.');
+            : (gateBlocked
+                ? 'Entrega NO completada — merge frenado fail-closed y escalado al operador. main quedó intacto.'
+                : 'Delivery rechazado — ver motivo y rebote.'));
         const report = reportLines.join('\n');
         logAppend('[delivery] --- REPORTE ---');
         logAppend(report);
@@ -1380,6 +1433,10 @@ module.exports = {
     buildGateBlockMotivo,
     buildGateBlockEscalation,
     escalateMergeGateBlock,
+    // #5629 — expuesto para que los tests verifiquen que los gates que frenan
+    // el merge (incluidos `qa-gate` y `codeowners-human`) escalan fail-closed
+    // en vez de degradar el marker a `resultado: aprobado`.
+    GATE_BLOCK_LABELS,
     MAX_MERGE_ATTEMPTS,
     OWNERS_REF,
     // #4658 — detección de conflicto real + escalado fail-closed.

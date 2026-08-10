@@ -701,3 +701,112 @@ test('#4325: sin closedIssues el avance NO cuenta cerrados (reproduce el bug)', 
     assert.equal(snap.closedCount, 0);
     assert.equal(snap.totalPct, 0); // el colapso que motivó el fix
 });
+
+// -----------------------------------------------------------------------------
+// #5629 — El estado "Entregado" sale del helper único (lib/delivery-status.js):
+// CLOSED en GitHub o `delivery_merge_sha` estructurado. Un marker de entrega
+// `procesado + aprobado` YA NO acredita entrega por sí solo.
+// -----------------------------------------------------------------------------
+
+const SHA_5629 = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0';
+
+// Reproduce el estado real de #5220: entrega "aprobada" con el merge frenado
+// por falta de gate QA. El PR (#5277) nunca se mergeó y el issue sigue abierto.
+function stateEntregaAprobadaSinMerge(issueId, faseActual = 'desarrollo/entrega') {
+    return makeState({
+        issues: {
+            [String(issueId)]: {
+                title: 'Entrega frenada por gate',
+                labels: ['Ready'],
+                faseActual,
+                estadoActual: 'procesado',
+                fases: {
+                    'desarrollo/dev': [],
+                    'desarrollo/entrega': [{
+                        estado: 'procesado',
+                        resultado: 'aprobado',
+                        motivo: 'PR #5277 creado pero sin label qa:passed/qa:skipped — merge bloqueado.',
+                    }],
+                },
+            },
+        },
+    });
+}
+
+test('#5629 CA-6 (REGRESIÓN #5220/#5244): marker aprobado sin merge + issue abierto NO cuenta como entregado', () => {
+    const state = stateEntregaAprobadaSinMerge(5220);
+    const wave = { label: 'Ola 9.4', issues: [5220], source: 'test' };
+    // closedIssues vacío: #5220 está ABIERTO en GitHub.
+    const snap = buildWaveSnapshot({ state, wave, closedIssues: new Set([]), now: NOW });
+
+    const it = snap.issues.find((i) => i.id === 5220);
+    assert.equal(it.isClosed, false, 'un marker aprobado con el merge frenado no es una entrega');
+    assert.notEqual(it.pct, 100, 'no puede dibujarse al 100%');
+    assert.equal(snap.closedCount, 0, 'no suma a ENTREGADOS de la ola');
+});
+
+test('#5629 CA-2: marker de entrega histórico no pisa la faseActual viva tras un rebote', () => {
+    // El issue pasó por entrega, rebotó, y hoy tiene un agente en aprobación.
+    // El cierre histórico no debe ganarle a la fase real.
+    const state = makeState({
+        issues: {
+            5242: {
+                title: 'Rebotado a aprobación',
+                labels: ['Ready'],
+                faseActual: 'desarrollo/aprobacion',
+                estadoActual: 'trabajando',
+                fases: {
+                    'desarrollo/entrega': [{ estado: 'procesado', resultado: 'aprobado' }],
+                    'desarrollo/aprobacion': [entry({
+                        skill: 'review', estado: 'trabajando', fase: 'aprobacion',
+                        startedAt: NOW - 300000, durationMs: 300000,
+                    })],
+                },
+            },
+        },
+    });
+    const wave = { label: 'Ola 9.4', issues: [5242], source: 'test' };
+    const snap = buildWaveSnapshot({ state, wave, closedIssues: new Set([]), now: NOW });
+
+    const it = snap.issues.find((i) => i.id === 5242);
+    assert.equal(it.isClosed, false, 'no se muestra en la columna Entregado');
+    assert.equal(it.faseActual, 'desarrollo/aprobacion', 'se dibuja en su fase real');
+    assert.equal(it.agente, 'review', 'con su agente vivo');
+});
+
+test('#5629 CA-5: merge SHA estructurado marca entregado sin esperar el TTL del title-cache', () => {
+    // PR mergeado hace un minuto: el cache de títulos todavía lo tiene OPEN
+    // (closedIssues vacío), pero el marker ya trae el SHA real.
+    const state = makeState({
+        issues: {
+            5300: {
+                title: 'Mergeado recién',
+                labels: ['Ready'],
+                faseActual: 'desarrollo/entrega',
+                estadoActual: 'procesado',
+                fases: {
+                    'desarrollo/entrega': [{
+                        estado: 'procesado', resultado: 'aprobado', delivery_merge_sha: SHA_5629,
+                    }],
+                },
+            },
+        },
+    });
+    const wave = { label: 'Ola 9.4', issues: [5300], source: 'test' };
+    const snap = buildWaveSnapshot({ state, wave, closedIssues: new Set([]), now: NOW });
+
+    const it = snap.issues.find((i) => i.id === 5300);
+    assert.equal(it.isClosed, true, 'la señal estructurada de merge se adelanta al cache');
+    assert.equal(it.pct, 100);
+    assert.equal(snap.closedCount, 1);
+});
+
+test('#5629 CA-1: CLOSED en GitHub sigue siendo fuente de verdad (#4099/#4732)', () => {
+    const state = stateEntregaAprobadaSinMerge(5244);
+    const wave = { label: 'Ola 9.4', issues: [5244], source: 'test' };
+    const snap = buildWaveSnapshot({ state, wave, closedIssues: new Set([5244]), now: NOW });
+
+    const it = snap.issues.find((i) => i.id === 5244);
+    assert.equal(it.isClosed, true);
+    assert.equal(it.pct, 100);
+});

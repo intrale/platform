@@ -350,17 +350,35 @@ test('#4248: mapSnapshotStatusToWave traduce al vocabulario del header', () => {
 // pendiente. El enriquecimiento live debe reflejar el estado real.
 function fakeStateConStatusVivo() {
     return {
+        // #5629 — Este fixture codificaba la premisa ERRÓNEA que causó el bug:
+        // asumía que un marker de entrega `procesado + resultado: aprobado`
+        // equivalía a "issue cerrado". No equivale: `delivery.js` escribía
+        // `aprobado` incluso con el merge frenado por gate QA o `needs-human`
+        // (#5220/#5244: markers aprobados, PRs sin mergear, issues ABIERTOS).
+        // Ahora el issue "cerrado" del fixture lo está de verdad: CLOSED en
+        // GitHub + `delivery_merge_sha` real. El caso marker-aprobado-sin-merge
+        // vive en su propio test de regresión más abajo, donde NO debe contar
+        // como entregado.
+        issueTitles: {
+            4248: { title: 'Header de ola', state: 'CLOSED', labels: [] },
+            100: { title: 'En dev', state: 'OPEN', labels: [] },
+            200: { title: 'Pendiente', state: 'OPEN', labels: [] },
+        },
         activeWave: { label: 'Ola 2', source: 'waves', issues: [4248, 100, 200] },
         bloqueados: [],
         issueMatrix: {
-            // Cerrado: tiene desarrollo/entrega procesada+aprobada.
+            // Entregado de verdad: cerrado en GitHub y con SHA de merge.
             4248: {
                 title: 'Header de ola',
                 labels: [],
                 faseActual: 'desarrollo/entrega',
                 estadoActual: 'procesado',
                 fases: {
-                    'desarrollo/entrega': [{ estado: 'procesado', resultado: 'aprobado' }],
+                    'desarrollo/entrega': [{
+                        estado: 'procesado',
+                        resultado: 'aprobado',
+                        delivery_merge_sha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
+                    }],
                 },
             },
             // En curso: agente trabajando en dev.
@@ -428,9 +446,12 @@ test('#4248: el enriquecimiento NO propaga campos extra (sigue el whitelist por 
     // (agent/phase/hasLog/logFile/progress/merged) además de la base. El whitelist
     // por campo se mantiene: enrichWaveIssue reconstruye el objeto campo por campo,
     // así que campos crudos como `notes` siguen sin propagarse.
+    // #5629 — `delivered` se suma al whitelist: es el veredicto de entrega ya
+    // resuelto por el helper único, que la ventana de Pipeline consume tal cual
+    // en vez de re-derivarlo con una regla propia (CA-7).
     assert.deepEqual(
         Object.keys(issue).sort(),
-        ['agent', 'hasLog', 'id', 'logFile', 'merged', 'phase', 'priority', 'progress', 'size', 'status', 'title'],
+        ['agent', 'delivered', 'hasLog', 'id', 'logFile', 'merged', 'phase', 'priority', 'progress', 'size', 'status', 'title'],
     );
     assert.equal('notes' in issue, false, 'no debe propagar `notes` tras enriquecer');
 });
@@ -497,4 +518,150 @@ test('buildWavesPayload sin lib/waves cargada devuelve payload vacío sin throw'
         if (originalWaves) require.cache[wavesPath] = originalWaves;
         if (originalDashRoutes) require.cache[dashRoutesPath] = originalDashRoutes;
     }
+});
+
+// =============================================================================
+// #5629 — CA-7: las TRES vistas coinciden para el mismo issue.
+//
+// Guardrail end-to-end: un issue ABIERTO en GitHub con un marker de entrega
+// `procesado + aprobado` pero SIN merge (el caso real de #5220/#5244) no puede
+// pintarse como Entregado en NINGUNA de las tres superficies:
+//   1. pantalla principal / snapshot de ola  → wave-snapshot
+//   2. conteo de ENTREGADOS de la ola        → deriveIssuesMission
+//   3. ventana de Pipeline                   → plBuildPhaseBuckets (client)
+// =============================================================================
+
+const vm = require('vm');
+const SHA_OK = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0';
+
+// Estado con 2 issues de la ola:
+//   5220 → entrega "aprobada" con merge FRENADO, issue ABIERTO  → NO entregado
+//   5300 → merge real (SHA) aunque el title-cache diga OPEN     → SÍ entregado
+function stateTresVistas() {
+    return {
+        issueTitles: {
+            5220: { title: 'Gate QA frenado', state: 'OPEN', labels: [] },
+            5300: { title: 'Mergeado recién', state: 'OPEN', labels: [] },
+        },
+        activeWave: { label: 'Ola 9.4', source: 'waves', issues: [5220, 5300] },
+        bloqueados: [],
+        issueMatrix: {
+            5220: {
+                title: 'Gate QA frenado',
+                labels: [],
+                faseActual: 'desarrollo/entrega',
+                estadoActual: 'procesado',
+                fases: {
+                    'desarrollo/entrega': [{
+                        estado: 'procesado',
+                        resultado: 'aprobado',
+                        motivo: 'PR #5277 creado pero sin label qa:passed/qa:skipped — merge bloqueado.',
+                    }],
+                },
+            },
+            5300: {
+                title: 'Mergeado recién',
+                labels: [],
+                faseActual: 'desarrollo/entrega',
+                estadoActual: 'procesado',
+                fases: {
+                    'desarrollo/entrega': [{
+                        estado: 'procesado', resultado: 'aprobado', delivery_merge_sha: SHA_OK,
+                    }],
+                },
+            },
+        },
+    };
+}
+
+function payloadTresVistas() {
+    const fakeActive = {
+        number: 94, name: 'Ola 9.4', goal: '', started_at: '2026-08-01T10:00:00Z', status: 'active',
+        issues: [
+            { number: 5220, title: 'Gate QA frenado', priority: 'high', size: 'm', status: 'planned' },
+            { number: 5300, title: 'Mergeado recién', priority: 'high', size: 'm', status: 'planned' },
+        ],
+    };
+    delete require.cache[require.resolve('../dashboard-routes')];
+    return withFakeWaves({ getHorizon: () => [fakeActive] }, () => {
+        delete require.cache[require.resolve('../dashboard-routes')];
+        return require('../dashboard-routes')._internal.buildWavesPayload(stateTresVistas());
+    });
+}
+
+test('#5629 CA-7 (vista 1 — payload de ola): entrega aprobada sin merge NO viaja como delivered', () => {
+    const byId = new Map(payloadTresVistas().active_wave.issues.map((i) => [i.id, i]));
+
+    assert.equal(byId.get(5220).delivered, false, '#5220 abierto y sin merge: NO entregado');
+    assert.notEqual(byId.get(5220).status, 'completed');
+    assert.equal(byId.get(5220).merged, false);
+
+    assert.equal(byId.get(5300).delivered, true, '#5300 tiene merge SHA real: entregado');
+    assert.equal(byId.get(5300).status, 'completed');
+});
+
+test('#5629 CA-7 (vista 2 — conteo de la ola): ENTREGADOS cuenta sólo la entrega verificada', () => {
+    const { _internal } = fresh();
+    const mission = _internal.deriveIssuesMission(stateTresVistas());
+    assert.equal(mission.total, 2);
+    assert.equal(mission.entregados, 1,
+        'sólo #5300 (merge real); #5220 sigue abierto con el merge frenado');
+});
+
+test('#5629 CA-7 (vista 3 — ventana de Pipeline): el bucketing coincide con el payload', () => {
+    // El client script consume el `delivered` que ya resolvió el servidor, en
+    // vez de re-derivarlo con una regla propia.
+    const payload = payloadTresVistas();
+    const prView = require('../../views/dashboard/pipeline-redesign');
+    const sandbox = {
+        console, JSON, Math, Object, Array, Number, String, Boolean, Promise,
+        sessionStorage: { getItem: () => null, setItem: () => {} },
+        document: {
+            getElementById: () => null, querySelector: () => null,
+            querySelectorAll: () => [], createElement: () => ({ style: {}, dataset: {} }),
+        },
+        window: {}, location: { href: '' },
+        setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0,
+        fetchJson: async () => null, setText: () => {},
+        escapeHtml: (s) => String(s == null ? '' : s),
+        SKILL_ICONS: {}, pipelineModeState: { mode: 'running', allowedIssues: [] },
+        moveIssue: () => {}, pauseIssue: () => {},
+        tickHeader: async () => {}, tickWaves: async () => {},
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(prView.pipelineRedesignClientScript(), sandbox, { filename: 'pr.client.js' });
+
+    // Reproduce el cruce que hace tickPipelineRedesign con el payload real.
+    const waveMembers = [];
+    const waveDelivered = {};
+    for (const x of payload.active_wave.issues) {
+        const id = String(x.id);
+        waveMembers.push(id);
+        waveDelivered[id] = {
+            delivered: (typeof x.delivered === 'boolean')
+                ? x.delivered
+                : (x.status === 'completed' || x.merged === true),
+            title: x.title || '',
+        };
+    }
+    // matrix del /api/dash/pipeline: #5220 sigue vivo en la fase de entrega.
+    const matrix = {
+        5220: { title: 'Gate QA frenado', faseActual: 'desarrollo/entrega', estadoActual: 'procesado' },
+    };
+    const buckets = sandbox.plBuildPhaseBuckets(matrix, {}, [], waveMembers, waveDelivered);
+    const itemDe = (id) => Array.from(buckets.done || []).find((i) => String(i.issue) === id);
+
+    // La última columna es la ETAPA "entrega · merge", así que #5220 aparece ahí
+    // por la fase que está cursando. Lo que NO puede es llevar la marca TERMINAL
+    // 'finalizado' (tono verde + 📦 + ✓), que es como se dibujaba "Entregado" al
+    // 100% con el PR sin mergear. Debe verse como tarjeta en curso.
+    const it5220 = itemDe('5220');
+    assert.ok(it5220, '#5220 sigue visible en su etapa');
+    assert.notEqual(it5220.estado, 'finalizado',
+        '#5220 NO puede marcarse como entregado con el merge frenado');
+
+    const it5300 = itemDe('5300');
+    assert.ok(it5300, '#5300 está en la etapa de entrega');
+    assert.equal(it5300.estado, 'finalizado',
+        '#5300 sí: tiene merge real, se marca entregado');
 });

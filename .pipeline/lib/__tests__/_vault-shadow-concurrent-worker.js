@@ -17,6 +17,24 @@ const { createVaultShadowMetrics } = require('../vault-shadow-metrics');
 const [auditDir, marca, filasRaw] = process.argv.slice(2);
 const filas = Number(filasRaw) || 1;
 
+// Fail-closed: sin `auditDir` explicito, `createVaultShadowMetrics` cae al
+// DEFAULT_AUDIT_DIR — o sea, al `.pipeline/audit/` REAL del repo. Invocar este
+// worker a mano ("a ver que hace") alcanzaba para appendear filas sinteticas
+// (`hostConcurrente`, `worker.undefined_0`) al JSONL de produccion y reiniciar
+// el t0 por evidencia negativa, dejando la ventana sombra de #5427 imposible de
+// cerrar. Ademas rompia de forma permanente los tests de integridad de
+// `credentials-vault-shadow-5448.test.js`, que verifican justamente que esos
+// artefactos NO existan. El worker solo tiene sentido contra un directorio
+// temporal, asi que exigirlo es gratis y elimina el footgun de raiz.
+if (!auditDir || !marca) {
+  process.stderr.write(
+    'uso: node _vault-shadow-concurrent-worker.js <auditDir> <marca> [filas]\n'
+    + 'auditDir y marca son OBLIGATORIOS: sin auditDir el worker escribiria en el '
+    + '.pipeline/audit/ real del repo y contaminaria la evidencia de la ventana sombra.\n',
+  );
+  process.exit(2);
+}
+
 const metrics = createVaultShadowMetrics({
   auditDir,
   logger: () => {},
