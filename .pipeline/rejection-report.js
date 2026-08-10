@@ -28,6 +28,15 @@ const apkFreshness = require('./lib/apk-freshness');
 // el audit trail emitido por #3083. Single source of truth, SIN inferencia.
 const traceability = require('./lib/traceability');
 const { redactSensitive, redactEmailsInText, redactSecretValue } = require('./lib/redact');
+// #5708 / D12 — fuente ÚNICA de los topes del contrato visual (antes había dos
+// declaraciones desincronizables: acá y en el hook de forma).
+const { MAX_VISUAL_JSON_BYTES, MAX_DIFFS_RENDER } = require('./lib/visual-contract-limits');
+// #5708 / D14 · SEC-10 — el guardrail de forma deja de ser código muerto: su
+// único call-site real es `loadVisualComparison`, el choke point de render+audio.
+const visualShapeGate = require('./hooks/visual-report-shape-gate');
+// #5708 / D11 — `regression` se DERIVA contra la pasada previa, nunca se confía
+// en lo que declara el contrato (lo escribe un LLM).
+const visualCoverageStore = require('./lib/visual-coverage-store');
 
 const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = __dirname;
@@ -55,6 +64,10 @@ const phase = getArg('phase') || getArgEq('phase') || 'collect';
 const resultsFile = getArg('results') || getArgEq('results') || null;
 const contextFile = getArg('context') || getArgEq('context') || null;
 const visualJsonArg = getArg('visual-json') || getArgEq('visual-json') || null;
+// #5708 / D9 · CA-9 — número de pasada actual. El pulpo lo pasa SIEMPRE desde
+// su contador de rebotes. Si no llega, el contrato visual no se renderiza
+// (fail-closed declarado, `skip.reason = 'rev-unknown'`), nunca en silencio.
+const revArg = getArg('rev') || getArgEq('rev') || null;
 
 const issue = getArg('issue') || '?';
 const skill = getArg('skill') || '?';
@@ -112,20 +125,103 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-const MAX_VISUAL_JSON_BYTES = 1048576;
-const MAX_DIFFS_RENDER = 50;
+// #5708 / D12 — `MAX_VISUAL_JSON_BYTES` y `MAX_DIFFS_RENDER` ya NO se declaran
+// acá: se importan de `lib/visual-contract-limits.js` (una sola fuente de
+// verdad, atada por test contra el hook de forma).
+//
+// `SAFE_IMAGE_DATA_URI` se conserva SÓLO para el camino en memoria (tests y
+// callers que arman el contrato a mano). En disco, un `src` con `data:` es
+// motivo de rechazo del contrato: D7 / SEC-8 — las capturas viajan por
+// referencia, no embebidas, porque el repo es público y `.gitignore` prohíbe
+// versionar binarios de evidencia justamente por PII.
 const SAFE_IMAGE_DATA_URI = /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/;
 
-function loadVisualComparison(issueArg, overridePath) {
-  if (!/^\d+$/.test(String(issueArg))) return null;
+// =============================================================================
+// #5708 — loadVisualComparison(issueArg, overridePath, revActual)
+//
+// Regla rectora (D8/D9/D12/D14/D15): *ninguna razón por la que el bloque visual
+// no se muestre puede ser indistinguible de "no hubo desvíos"*. Por eso ya no
+// devuelve `null` mudo: devuelve `{ contract, skip }` y TODO skip se loguea, se
+// pinta como banda en el PDF (E2/E3/E4) y se narra como sufijo en el audio.
+//
+// `skip === null` + `contract === null` ⇒ E1: no hay contrato en disco, la
+// pasada no hizo ninguna afirmación visual y no hay nada que declarar.
+//
+// @returns {{contract: object|null, skip: {reason: string, detail?: string}|null}}
+// =============================================================================
+function loadVisualComparison(issueArg, overridePath, revActual) {
+  const skip = (reason, detail) => {
+    // Prohibido el descarte callado (SEC-4).
+    console.error(`[visual-json] omitido: ${reason}${detail ? ` — ${detail}` : ''}`);
+    return { contract: null, skip: { reason, detail: detail || null } };
+  };
+  const none = () => ({ contract: null, skip: null });
+
+  if (!/^\d+$/.test(String(issueArg))) return skip('unreadable', 'issue no numérico');
   const baseDir = path.resolve(ROOT, 'qa', 'evidence', String(issueArg));
   const target = path.resolve(overridePath || path.join(baseDir, 'visual-comparison.json'));
-  if (target !== path.join(baseDir, 'visual-comparison.json') && !target.startsWith(baseDir + path.sep)) return null;
+  if (target !== path.join(baseDir, 'visual-comparison.json') && !target.startsWith(baseDir + path.sep)) {
+    return skip('unreadable', 'path fuera del directorio del issue');
+  }
+
+  let raw;
   try {
     const stat = fs.lstatSync(target);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_VISUAL_JSON_BYTES) return null;
-    return JSON.parse(fs.readFileSync(target, 'utf8'));
-  } catch { return null; }
+    if (stat.isSymbolicLink() || !stat.isFile()) return skip('unreadable', 'symlink o no-archivo');
+    if (stat.size > MAX_VISUAL_JSON_BYTES) {
+      // D12 · SEC-4 — el tope superado es FALLO DECLARADO, con bytes y límite.
+      return skip('oversize', `size ${stat.size} B > MAX_VISUAL_JSON_BYTES ${MAX_VISUAL_JSON_BYTES}`);
+    }
+    raw = JSON.parse(fs.readFileSync(target, 'utf8'));
+  } catch (e) {
+    // E1 — sin archivo no hubo QA visual en esta pasada: no es una supresión.
+    if (e && e.code === 'ENOENT') return none();
+    return skip('unreadable', 'JSON inválido o ilegible');
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return skip('unreadable', 'contrato no es un objeto');
+
+  // D8 / CA-8 — discriminante de veredicto. Una aprobación NUNCA se narra como
+  // rechazo, y la ausencia del campo es fail-closed (no se asume rechazo).
+  if (raw.verdict === 'approved') {
+    const out = skip('verdict-approved', coverageSummary(raw.coverage));
+    // UX-E2 — la cobertura de un aprobado SÍ se muestra: es la línea base para
+    // tipificar regresiones en la próxima pasada. El inventario no, porque no
+    // hay desvíos (y por eso tampoco se emite el badge `VISUAL MISMATCH`).
+    out.skip.coverage = (raw.coverage && typeof raw.coverage === 'object') ? raw.coverage : null;
+    return out;
+  }
+  if (raw.verdict !== 'rejected') return skip('verdict-missing', `verdict=${JSON.stringify(raw.verdict)}`);
+
+  // D9 / CA-9 — `rev` con consumidor real: un contrato de otra pasada mostraría
+  // desvíos ya corregidos como si fueran actuales.
+  if (revActual == null) return skip('rev-unknown', 'el caller no informó --rev');
+  if (Number(raw.rev) !== Number(revActual)) {
+    return skip('stale-rev', `rev ${raw.rev} vs actual ${revActual}`);
+  }
+
+  // D7 / SEC-8 / CA-14 — imágenes por referencia, jamás base64 embebido.
+  for (const key of ['mockup', 'delivery']) {
+    const src = String((raw[key] && raw[key].src) || '');
+    if (src.startsWith('data:')) return skip('contract-embeds-base64', key);
+  }
+
+  // D14 / SEC-10 / CA-16 — call-site ÚNICO y real del guardrail de forma.
+  // Con el flag OFF devuelve `{gate:'disabled'}` y no bloquea (rollout gradual).
+  const gate = visualShapeGate.evaluate(raw, {});
+  if (gate && gate.gate === 'block') {
+    const missing = Array.isArray(gate.missing) && gate.missing.length ? ` [${gate.missing.join(', ')}]` : '';
+    return skip('shape-gate-block', `${gate.reason}${missing}`);
+  }
+
+  // D11 / CA-11 — `regression` se descarta del contrato y se recalcula contra
+  // la pasada previa registrada. Sin pasada previa ⇒ `false` por construcción.
+  const diffs = Array.isArray(raw.diffs) ? raw.diffs : [];
+  const derived = visualCoverageStore.deriveRegressions({
+    issue: issueArg, rev: revActual, diffs, baseDir,
+  });
+  raw.diffs = diffs.map((d, i) => ({ ...d, regression: derived[i] === true }));
+
+  return { contract: raw, skip: null };
 }
 
 function safeImageSrc(src, issueArg) {
@@ -133,7 +229,10 @@ function safeImageSrc(src, issueArg) {
   if (SAFE_IMAGE_DATA_URI.test(value)) return value;
   if (!/^\d+$/.test(String(issueArg)) || !value) return null;
   const baseDir = path.resolve(ROOT, 'qa', 'evidence', String(issueArg));
-  const target = path.resolve(value);
+  // #5708 / D7 — el contrato trae paths RELATIVOS al directorio del issue
+  // ("render-rev3.png"). Antes se resolvía contra `process.cwd()`, así que todo
+  // path relativo caía fuera del confinamiento y devolvía `null`.
+  const target = path.resolve(baseDir, value);
   if (!target.startsWith(baseDir + path.sep)) return null;
   try {
     const stat = fs.lstatSync(target);
@@ -1473,6 +1572,20 @@ function collectReportData() {
   // resueltos desde audit trail o CLI args, NUNCA inferidos.
   const sessionCtx = resolveSessionContext(issue, skill);
 
+  // #5708 — contrato visual de ESTA pasada. `revArg` viene del pulpo; sin él,
+  // el bloque se suprime con motivo declarado en vez de mostrar evidencia vieja.
+  const visualLoad = loadVisualComparison(issue, visualJsonArg, revArg);
+  // D11 — registrar la cobertura de esta pasada para que la siguiente pueda
+  // derivar `regression`. Lo escribe el reporte (determinístico), no el agente.
+  if (visualLoad.contract && revArg != null) {
+    visualCoverageStore.writeCoverage({
+      issue,
+      rev: Number(revArg),
+      coverage: visualLoad.contract.coverage,
+      diffs: visualLoad.contract.diffs,
+    });
+  }
+
   return {
     // Identifiers
     issue, skill, fase, exitCode, elapsed, motivo, pipeline, logFile,
@@ -1496,7 +1609,10 @@ function collectReportData() {
     existingDeps: [],
     // NUEVO v6
     preflight, evidence, primaryCause, verdict, inconclusive,
-    visualComparison: loadVisualComparison(issue, visualJsonArg),
+    // #5708 — el loader devuelve `{contract, skip}`: el skip también es
+    // información y viaja al PDF (banda) y al audio (sufijo).
+    visualComparison: visualLoad.contract,
+    visualSkip: visualLoad.skip,
   };
 }
 
@@ -1553,7 +1669,112 @@ function renderSessionMeta(session) {
 //
 // Si `visualComparison` es null/undefined, retorna cadena vacía (no render).
 // =============================================================================
-function renderVisualComparisonBlock(visualComparison, issueArg) {
+// =============================================================================
+// #5708 / D15 · UX-10 · UX-11 — Bandas de los estados degradados (mockup 49
+// `.pipeline/assets/mockups/49-visual-block-degraded-states.svg`).
+//
+// Regla rectora: toda supresión del bloque visual que el operador podría leer
+// como "no hubo desvíos" se declara en el PDF. Un log en stdout no es evidencia
+// para el operador. Cada banda lleva SÍMBOLO + ETIQUETA TEXTUAL + motivo
+// objetivable, así sigue siendo legible en escala de grises (UX-10), y ninguna
+// usa el badge `VISUAL MISMATCH`, reservado al inventario real (UX-13).
+// =============================================================================
+const VISUAL_SKIP_BANDS = {
+  // E2 — el veredicto visual fue APROBADO: no hay desvíos que inventariar.
+  'verdict-approved': {
+    state: 'E2', cls: 'visual-band-ok', symbol: '✔',
+    title: 'COBERTURA VISUAL DECLARADA · sin desvíos',
+    body: 'La validación visual de esta pasada cerró en aprobado. Se muestra la cobertura declarada porque es la línea base para tipificar regresiones en la próxima pasada.',
+  },
+  // E3 — el contrato es de otra pasada: mostrarlo reportaría como vigentes
+  // desvíos que pueden estar ya corregidos.
+  'stale-rev': {
+    state: 'E3', cls: 'visual-band-stale', symbol: '!',
+    title: 'EVIDENCIA VISUAL DESCARTADA — corresponde a una pasada anterior',
+    body: 'Se descarta para no reportar como vigentes desvíos que pueden estar corregidos. Acción: re-ejecutar QA visual en esta pasada.',
+  },
+  'rev-unknown': {
+    state: 'E3', cls: 'visual-band-stale', symbol: '!',
+    title: 'EVIDENCIA VISUAL DESCARTADA — no se pudo determinar la pasada actual',
+    body: 'Sin el número de pasada no hay forma de saber si la evidencia es vigente, así que no se muestra. Acción: re-ejecutar QA visual en esta pasada.',
+  },
+  // E4 — el contrato no se pudo cargar. Es el caso que SEC-4 prohíbe callar.
+  oversize: {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato no se pudo cargar',
+    body: 'Esto NO significa «sin desvíos»: significa que el inventario no se leyó. Acción: re-emitir el contrato con las imágenes por referencia, no embebidas.',
+  },
+  unreadable: {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato no se pudo cargar',
+    body: 'Esto NO significa «sin desvíos»: significa que el inventario no se leyó. Acción: re-emitir un contrato válido y re-ejecutar QA visual.',
+  },
+  'shape-gate-block': {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato no pasó el guardrail de forma',
+    body: 'Esto NO significa «sin desvíos»: significa que el barrido quedó incompleto y no se aceptó el veredicto. Acción: completar la cobertura y re-emitir.',
+  },
+  'verdict-missing': {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato no declara veredicto',
+    body: 'Esto NO significa «sin desvíos»: sin veredicto explícito no se puede afirmar ni rechazo ni aprobación. Acción: re-emitir el contrato con `verdict`.',
+  },
+  'contract-embeds-base64': {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato embebe imágenes en base64',
+    body: 'Esto NO significa «sin desvíos»: el contrato se rechazó por transportar capturas embebidas (prohibido en repo público). Acción: referenciar las imágenes por path bajo qa/evidence/<issue>/.',
+  },
+};
+
+// #5708 — cobertura declarada. Se usa tanto en el inventario de un rechazo como
+// en la banda E2 de un aprobado (donde es la línea base de la próxima pasada).
+function renderVisualCoverageBlock(rawCoverage) {
+  const coverage = rawCoverage || {};
+  const verified = new Set(Array.isArray(coverage.verificadas) ? coverage.verificadas.map(String) : []);
+  const notVerified = new Map(Array.isArray(coverage.no_verificadas) ? coverage.no_verificadas.map(x => [String(x?.section || ''), redactVisualText(x?.motivo || 'motivo no informado')]) : []);
+  const declared = Array.isArray(coverage.secciones_declaradas) ? coverage.secciones_declaradas.map(String) : [];
+  return declared.length
+    ? `<div class="context-box"><h3>Cobertura visual declarada</h3>${declared.map(section => verified.has(section) ? `<span class="badge badge-green">${escapeVisualText(section)} · VERIFICADA</span>` : `<span class="badge badge-yellow">${escapeVisualText(section)} · NO VERIFICADA · ${escapeHtml(notVerified.get(section) || 'motivo no informado')}</span>`).join(' ')}</div>`
+    : '<div class="context-box"><strong>Cobertura visual no declarada</strong></div>';
+}
+
+// Resumen textual "N de M secciones verificadas" para logs y narración.
+function coverageSummary(rawCoverage) {
+  const coverage = rawCoverage || {};
+  const declared = Array.isArray(coverage.secciones_declaradas) ? coverage.secciones_declaradas.length : 0;
+  const verified = Array.isArray(coverage.verificadas) ? coverage.verificadas.length : 0;
+  return `${verified} de ${declared} secciones verificadas`;
+}
+
+function visualSkipBand(visualSkip) {
+  if (!visualSkip || !visualSkip.reason) return null;
+  return VISUAL_SKIP_BANDS[visualSkip.reason] || {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato no se pudo cargar',
+    body: 'Esto NO significa «sin desvíos»: significa que el inventario no se leyó.',
+  };
+}
+
+function renderVisualSkipBand(visualSkip) {
+  const band = visualSkipBand(visualSkip);
+  if (!band) return '';
+  const detail = visualSkip.detail ? escapeVisualText(visualSkip.detail) : '';
+  // E2 muestra además la cobertura declarada (línea base de la próxima pasada).
+  const coverageBlock = band.state === 'E2' ? renderVisualCoverageBlock(visualSkip.coverage) : '';
+  return `
+<h2>Comparativo visual — mockup vs entrega</h2>
+<div class="visual-band ${band.cls}" data-visual-state="${band.state}">
+  <p class="visual-band-title"><span class="visual-band-symbol">${band.symbol}</span> ${escapeHtml(band.title)}</p>
+  <p class="visual-band-body">${escapeHtml(band.body)}</p>
+  <p class="visual-band-detail"><code>motivo: ${escapeHtml(visualSkip.reason)}${detail ? ` — ${detail}` : ''}</code></p>
+</div>
+${coverageBlock}`;
+}
+
+function renderVisualComparisonBlock(visualComparison, issueArg, visualSkip) {
+  // #5708 / D15 — el skip manda: si hubo supresión, se pinta la banda y NUNCA
+  // el inventario (que no existe o no es de esta pasada).
+  if (visualSkip && visualSkip.reason) return renderVisualSkipBand(visualSkip);
   if (!visualComparison || typeof visualComparison !== 'object') return '';
   const v = visualComparison;
 
@@ -1610,13 +1831,7 @@ function renderVisualComparisonBlock(visualComparison, issueArg) {
         }).join('')}
        </ol></section>`).join('');
 
-  const coverage = v.coverage || {};
-  const verified = new Set(Array.isArray(coverage.verificadas) ? coverage.verificadas.map(String) : []);
-  const notVerified = new Map(Array.isArray(coverage.no_verificadas) ? coverage.no_verificadas.map(x => [String(x?.section || ''), redactVisualText(x?.motivo || 'motivo no informado')]) : []);
-  const declared = Array.isArray(coverage.secciones_declaradas) ? coverage.secciones_declaradas.map(String) : [];
-  const coverageBlock = declared.length
-    ? `<div class="context-box"><h3>Cobertura visual declarada</h3>${declared.map(section => verified.has(section) ? `<span class="badge badge-green">${escapeVisualText(section)} · VERIFICADA</span>` : `<span class="badge badge-yellow">${escapeVisualText(section)} · NO VERIFICADA · ${escapeHtml(notVerified.get(section) || 'motivo no informado')}</span>`).join(' ')}</div>`
-    : '<div class="context-box"><strong>Cobertura visual no declarada</strong></div>';
+  const coverageBlock = renderVisualCoverageBlock(v.coverage);
   const truncationBlock = `<p><strong>${diffs.length} de ${allDiffs.length} desvíos mostrados${allDiffs.length > MAX_DIFFS_RENDER ? ' — inventario completo en visual-comparison.json' : ''} · tope de render del PDF: ${MAX_DIFFS_RENDER}</strong></p>`;
   const actionBlock = v.suggestedAction
     ? `<div class="visual-action">
@@ -1652,6 +1867,8 @@ function renderHtml(data) {
     sessionCtx,
     // #3383 — bloque side-by-side opcional (visual mismatch en QA).
     visualComparison,
+    // #5708 / D15 — motivo declarado cuando el bloque NO se muestra.
+    visualSkip,
   } = data;
   // (#3088 / CA-1) Contexto multi-provider; fallback defensivo si por algún
   // motivo `collectReportData` no lo pobló (tests legacy, callers viejos).
@@ -1751,6 +1968,19 @@ function renderHtml(data) {
   .visual-diffs li { margin-bottom: 10px; }
   .visual-diffs strong { color: #2c3e50; }
   .visual-action { background: #d5f5e3; border-left: 4px solid #27ae60; padding: 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+  /* #5708 / UX-10 — bandas de estados degradados (mockup 49). Símbolo + etiqueta
+     textual + motivo: legibles también en escala de grises, sin depender del color. */
+  .visual-band { padding: 14px 16px; margin: 12px 0; border-radius: 6px; border: 2px solid; }
+  .visual-band-title { font-weight: 700; font-size: 0.95em; letter-spacing: 0.4px; margin: 0 0 6px 0; }
+  .visual-band-symbol { display: inline-block; width: 1.4em; height: 1.4em; line-height: 1.4em; text-align: center; border: 2px solid currentColor; border-radius: 50%; margin-right: 8px; font-weight: 700; }
+  .visual-band-body { margin: 0 0 6px 0; font-size: 0.88em; }
+  .visual-band-detail { margin: 0; font-size: 0.8em; font-family: Consolas, monospace; }
+  .visual-band-ok { background: #0f3d26; border-color: #196c2e; color: #cdebd7; }
+  .visual-band-ok .visual-band-title { color: #3fb950; }
+  .visual-band-stale { background: #3a2d0b; border-color: #7d5e10; color: #f0e3c0; }
+  .visual-band-stale .visual-band-title { color: #d29922; }
+  .visual-band-fail { background: #3b1f1b; border-color: #8b1a14; color: #f2d5d2; }
+  .visual-band-fail .visual-band-title { color: #f85149; }
 </style>
 </head><body>
 
@@ -1762,7 +1992,7 @@ ${renderSessionMeta(session)}
   <h3>#${escapeHtml(issue)} &mdash; ${escapeHtml(issueCtx.title)}</h3>
 </div>
 
-${renderVisualComparisonBlock(visualComparison, issue)}
+${renderVisualComparisonBlock(visualComparison, issue, visualSkip)}
 
 <h2>Causa identificada</h2>
 <div class="${inconclusive ? 'history-box' : 'rootcause-box'}">
@@ -1846,28 +2076,32 @@ function providerNarrationSuffix(data) {
 // generateNarration(data) — narración corta para TTS (20-30s, ~300 chars)
 // =============================================================================
 function generateNarration(data) {
-  const { issue, primaryCause, inconclusive, autoCreatedDeps, visualComparison } = data;
+  const { issue, primaryCause, inconclusive, autoCreatedDeps, visualComparison, visualSkip } = data;
 
   // (#3088 / CA-2) Sufijo determinístico opcional con provider+model. Vacío
   // cuando ninguna regla del audio se activa (la mayoría de los casos).
   const provSuffix = providerNarrationSuffix(data);
 
-  // #3383 / CA-UX-5 — audio narrado del rejection report visual: lee
-  // diferencias + acción sugerida, máximo 3 hallazgos, < 60 segundos.
-  // Solo se activa cuando el bloque side-by-side está presente.
-  if (visualComparison && Array.isArray(visualComparison.diffs) && visualComparison.diffs.length > 0) {
-    const diffs = visualComparison.diffs.slice(0, 3);
-    const list = diffs.map((d, i) => {
-      const title = redactVisualText(d?.title || `hallazgo ${i + 1}`).replace(/\.$/, '');
-      const impact = redactVisualText(d?.impact || 'medio').toLowerCase();
-      return `${title} — impacto ${impact}`;
-    }).join('. ');
-    const actionSkill = redactVisualText(visualComparison.suggestedAction?.skill || 'el desarrollador del área');
-    return `Issue ${issue}: rechazo visual. ${visualComparison.diffs.length} desvíos detectados; los ${diffs.length} de mayor impacto son: ${list}. Acción sugerida: rebotar a ${actionSkill} para re-implementar respetando el mockup adjunto en definición.${provSuffix}`;
-  }
+  // #5708 / D10b · SEC-11 · UX-9 — ORDEN: inconclusive → primaryCause → visual.
+  // Antes la rama visual iba primera y cortaba: bastaba con que existiera un
+  // `visual-comparison.json` en disco (escrito por OTRO agente) para que un
+  // rechazo por tests rojos o por un secreto hardcodeado se narrara al operador
+  // como "rechazo visual" y la causa real nunca saliera por el parlante.
+  const visualRejected = !!(visualComparison
+    && visualComparison.verdict === 'rejected'
+    && Array.isArray(visualComparison.diffs)
+    && visualComparison.diffs.length > 0);
+
+  // UX-12 — los estados degradados y los desvíos secundarios se narran como
+  // SUFIJO, nunca como titular. Ninguna supresión queda muda (SEC-4).
+  const visualTail = visualRejected
+    ? ` Además, ${visualComparison.diffs.length} desvíos visuales.`
+    : visualSkip && visualSkip.reason
+    ? ` ${narrateVisualSkip(visualSkip)}`
+    : '';
 
   if (inconclusive) {
-    return `Issue ${issue}: rechazo inconcluyente. El preflight confirmó emulador disponible pero el agente declaró rechazo. Requiere revisión humana del log.${provSuffix}`;
+    return `Issue ${issue}: rechazo inconcluyente. El preflight confirmó emulador disponible pero el agente declaró rechazo. Requiere revisión humana del log.${visualTail}${provSuffix}`;
   }
 
   if (primaryCause) {
@@ -1878,10 +2112,39 @@ function generateNarration(data) {
     let tail = '';
     if (created > 0) tail = ` Se creó issue de dependencia.`;
     else if (existing > 0) tail = ` Dependencia ya existente, se sumó evidencia.`;
-    return `Issue ${issue}: rechazado. Causa: ${trimmed}.${tail}${provSuffix}`;
+    return `Issue ${issue}: rechazado. Causa: ${trimmed}.${tail}${visualTail}${provSuffix}`;
   }
 
-  return `Issue ${issue}: rechazado sin causa identificada. Revisión humana requerida.${provSuffix}`;
+  // #3383 / CA-UX-5 — audio del rejection report visual: diferencias + acción
+  // sugerida, máximo 3 hallazgos (los de mayor impacto), < 60 segundos.
+  // Sólo titula cuando el veredicto del contrato es de rechazo (D8) y ninguna
+  // rama anterior tenía una causa mejor.
+  if (visualRejected) {
+    const diffs = visualComparison.diffs.slice(0, 3);
+    const list = diffs.map((d, i) => {
+      const title = redactVisualText(d?.title || `hallazgo ${i + 1}`).replace(/\.$/, '');
+      const impact = redactVisualText(d?.impact || 'medio').toLowerCase();
+      return `${title} — impacto ${impact}`;
+    }).join('. ');
+    const actionSkill = redactVisualText(visualComparison.suggestedAction?.skill || 'el desarrollador del área');
+    return `Issue ${issue}: rechazo visual. ${visualComparison.diffs.length} desvíos detectados; los ${diffs.length} de mayor impacto son: ${list}. Acción sugerida: rebotar a ${actionSkill} para re-implementar respetando el mockup adjunto en definición.${provSuffix}`;
+  }
+
+  return `Issue ${issue}: rechazado sin causa identificada. Revisión humana requerida.${visualTail}${provSuffix}`;
+}
+
+// #5708 / UX-12 — frase de sufijo por estado degradado. Nunca se omite: E4 es
+// exactamente la falla que SEC-4 prohíbe callar.
+function narrateVisualSkip(visualSkip) {
+  switch (visualSkip && visualSkip.reason) {
+    case 'verdict-approved':
+      return `Además, la validación visual quedó aprobada${visualSkip.detail ? ` con ${redactVisualText(visualSkip.detail)}` : ''}.`;
+    case 'stale-rev':
+    case 'rev-unknown':
+      return 'La evidencia visual disponible es de una pasada anterior y no se tuvo en cuenta.';
+    default:
+      return 'La evidencia visual no se pudo evaluar en esta pasada.';
+  }
 }
 
 // =============================================================================
@@ -2298,6 +2561,12 @@ module.exports = {
   loadVisualComparison,
   safeImageSrc,
   MAX_DIFFS_RENDER,
+  // #5708 — helpers de los estados degradados + topes desde la fuente única
+  // (`lib/visual-contract-limits.js`), atados por test contra el hook de forma.
+  MAX_VISUAL_JSON_BYTES,
+  renderVisualSkipBand,
+  renderVisualCoverageBlock,
+  narrateVisualSkip,
   // Acceso a la implementación real de traceability (override en tests).
   _traceability: traceability,
 };

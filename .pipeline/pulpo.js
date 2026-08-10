@@ -10285,8 +10285,21 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             '--motivo', String(data.motivo || 'Sin motivo'),
             '--log', `${issue}-${skill}.log`, '--pipeline', pipeline,
           ];
-          const visualJsonPath = path.join(ROOT, 'qa', 'evidence', String(issue), 'visual-comparison.json');
-          if (fs.existsSync(visualJsonPath)) reportArgs.push('--visual-json', visualJsonPath);
+          // #5708 / CA-10 · SEC-11 (D10a) — el contrato visual SÓLO lo emite el
+          // skill de QA visual. Desde el bloque genérico `if (resultado ===
+          // 'rechazado')` aplicaba también a tester, security, build, linter y
+          // review: bastaba con que el archivo existiera en disco para que la
+          // narración de CUALQUIER rechazo del issue se contara como "rechazo
+          // visual" y la causa real nunca llegara al operador.
+          if (skill === 'qa') {
+            const visualJsonPath = path.join(ROOT, 'qa', 'evidence', String(issue), 'visual-comparison.json');
+            if (fs.existsSync(visualJsonPath)) reportArgs.push('--visual-json', visualJsonPath);
+          }
+          // #5708 / CA-9 (D9) — `--rev` se pushea SIEMPRE (fuera del if): es el
+          // consumidor real del campo `rev` del contrato. Sin él, el reporte
+          // suprime el bloque con motivo declarado (`rev-unknown`) en vez de
+          // renderizar evidencia de una pasada anterior como si fuera actual.
+          reportArgs.push('--rev', String(Number(data.rebote_numero) || 0));
           if (launchResult && launchResult.provider) {
             reportArgs.push('--provider', String(launchResult.provider));
           }

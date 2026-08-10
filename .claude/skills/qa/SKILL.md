@@ -487,16 +487,52 @@ sección `## Screenshots & Mockups` con mockup esperado adjunto:
      motivo específico para cada sección no verificada y todos los desvíos objetivables.
    - Está prohibido el early-exit: el barrido se completa aunque el primer hallazgo ya
      determine rechazo.
-4. **Si difiere** — emitir rejection report con bloque side-by-side:
-   - Escribir `qa/evidence/<issue>/visual-comparison.json` con `mockup`, `delivery`,
-     `coverage`, `diffs[{section,title,description,impact,regression}]` y `suggestedAction`.
-   - Persistir la cobertura como `visual-coverage-rev<N>.json`; una sección previamente
-     verificada sin desvíos tipifica un hallazgo posterior como regresión, pero nunca
-     permite omitir la verificación actual.
+4. **Emitir el contrato visual** — `qa/evidence/<issue>/visual-comparison.json`.
+   Se escribe **siempre** que hubo validación visual, difiera o no (#5708):
+
+   ```jsonc
+   {
+     "issue": 5708,
+     "rev": 3,                   // número de pasada = `rebote_numero` de tu archivo de trabajo
+     "verdict": "rejected",      // OBLIGATORIO: "rejected" | "approved"
+     "mockup":   { "src": "mockup-v1.png", "baseline": "v1" },  // path RELATIVO al dir del issue
+     "delivery": { "src": "render-rev3.png" },                  // NUNCA data:...;base64
+     "coverage": {
+       "secciones_declaradas": ["A", "B", "C", "D"],
+       "verificadas":    ["A", "B", "C"],
+       "no_verificadas": [{ "section": "D", "motivo": "estado no alcanzable sin datos de negocio" }]
+     },
+     "diffs": [
+       { "section": "A", "title": "A3 nunca se pinta en rojo",
+         "description": "token --danger-fg esperado; la entrega usa --text-muted",
+         "impact": "alto" }
+     ],
+     "suggestedAction": { "skill": "pipeline-dev", "text": "..." }
+   }
+   ```
+
+   Reglas inquebrantables del contrato (#5708):
+   - **`verdict` siempre.** Sin él, el reporte suprime el bloque con motivo declarado y
+     no se narra nada visual. Un aprobado se declara como aprobado — jamás se deja el
+     campo vacío para que "parezca" rechazo.
+   - **`rev` siempre**, igual al número de pasada. El reporte lo compara contra la pasada
+     actual: un contrato viejo se descarta con log, para no reportar como vigentes desvíos
+     que ya pueden estar corregidos.
+   - **Imágenes por referencia, nunca base64.** `src` es un path relativo al directorio del
+     issue. El repo es público y las capturas están ignoradas por posible PII: embeberlas
+     dentro de un `.json` es lavarlas a través del allowlist. Un contrato con `data:` se
+     rechaza entero.
+   - **`regression` NO se declara.** Lo deriva `rejection-report.js` contra la pasada previa
+     registrada. Cualquier `regression` que venga en el contrato se descarta.
+   - **`visual-coverage-rev<N>.json` NO lo escribís vos.** Lo escribe el reporte, para que
+     el registro sea determinístico y auditable en vez de prosa.
    - El PDF resultante (CA-12, CA-13) incluye las 3 secciones obligatorias:
      mockup esperado, entrega actual, diferencias narradas.
    - El audio narrado (CA-14, CA-UX-5) lee diferencias + acción sugerida
      en menos de 60 segundos.
+   - Si el bloque no se puede mostrar (contrato viejo, ilegible, sobre el tope, cobertura
+     incompleta), el reporte pinta una **banda declarada** con el motivo y lo narra como
+     sufijo. Ninguna supresión es silenciosa: ver `docs/pipeline/visual-validation.md §4.8`.
 5. **Aplicar criterio de impacto**:
    - `alto`: bloquea o degrada la acción principal → rechazo seguro.
    - `medio`: afecta jerarquía/legibilidad sin bloquear → rechazo justificable.
@@ -508,6 +544,10 @@ durante captura).
 **Anti-patrones**:
 - Rechazar con un único hallazgo cuando hay otras secciones sin verificar. Un rechazo
   de una línea sin cobertura declarada es un barrido incompleto, no un veredicto.
+- Emitir el contrato sin `verdict` o sin `rev`. Sin discriminante, una aprobación se
+  narra como rechazo y una pasada vieja se muestra como si fuera la actual (#5708).
+- Embeber las capturas en base64 dentro del contrato. Viajan por referencia.
+- Declarar `regression: true` a mano: lo deriva el reporte contra la pasada previa.
 - Aprobar visual sin comparar contra el mockup adjunto (cuando existe).
 - Rebotar con feedback subjetivo ("queda raro", "medio feo") sin tokens/números.
 - Capturar con DevTools, Compose layout inspector u overlays de debug visibles.

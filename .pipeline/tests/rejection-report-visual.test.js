@@ -189,6 +189,9 @@ test('generateNarration usa diffs cuando hay visualComparison (CA-UX-5, audio < 
         inconclusive: false,
         autoCreatedDeps: [],
         visualComparison: {
+            // #5708 / D8 — la rama visual del audio sólo titula con veredicto
+            // de rechazo explícito. Sin `verdict`, el contrato es fail-closed.
+            verdict: 'rejected',
             mockup: { src: 'x://1.png' },
             delivery: { src: 'x://2.png' },
             diffs: [
@@ -213,6 +216,7 @@ test('generateNarration limita a 3 diffs en audio', () => {
         inconclusive: false,
         autoCreatedDeps: [],
         visualComparison: {
+            verdict: 'rejected',
             mockup: { src: 'x' },
             delivery: { src: 'x' },
             diffs: [
@@ -240,6 +244,7 @@ test('generateNarration redacta secretos del contrato visual', () => {
         inconclusive: false,
         autoCreatedDeps: [],
         visualComparison: {
+            verdict: 'rejected',
             diffs: [{ title: secret, impact: secret }],
             suggestedAction: { skill: secret },
         },
@@ -249,8 +254,9 @@ test('generateNarration redacta secretos del contrato visual', () => {
 });
 
 test('loader confina paths y las imágenes rechazan esquemas remotos', () => {
-    assert.equal(loadVisualComparison(5708, '../../../etc/passwd'), null);
-    assert.equal(loadVisualComparison('no-numérico'), null);
+    // #5708 — el loader ya no devuelve `null` mudo: declara SIEMPRE el motivo.
+    assert.equal(loadVisualComparison(5708, '../../../etc/passwd', 1).skip.reason, 'unreadable');
+    assert.equal(loadVisualComparison('no-numérico', null, 1).skip.reason, 'unreadable');
     assert.equal(safeImageSrc('https://example.com/a.png', 5708), null);
     assert.equal(safeImageSrc('file:///etc/passwd', 5708), null);
     assert.match(safeImageSrc('data:image/png;base64,AAAA', 5708), /^data:image\/png/);
