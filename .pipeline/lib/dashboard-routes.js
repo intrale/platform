@@ -1116,22 +1116,33 @@ function buildWavesPayload(state, pipelineDir) {
             });
         }
     }
-    // #4451 — ENTREGADOS autoritativo: mismo origen que el panel de avance del
-    // roadmap (_roadmapAvance → computeClosedSet, fix #4399). El cliente NO
-    // recomputa contando status==='completed' sobre la foto enriquecida.
-    // computeClosedSet espera `wave.issues: number[]`; el payload los tiene como
-    // objetos enriquecidos → mapear a ids. Derivar `total` y `delivered` de la
-    // MISMA lista garantiza el invariante 0 ≤ delivered ≤ total (#3487: coerción
-    // explícita a entero, sin propagar campos crudos de waves.json).
+    // #4451 — ENTREGADOS autoritativo: el cliente NO recomputa contando
+    // status==='completed' sobre la foto enriquecida; lee este entero.
+    //
+    // #5629 — Este contador era la CUARTA derivación de "Entregado" y la última
+    // sin migrar: derivaba de `computeClosedSet`, que ignora
+    // `delivery_merge_sha`. Como `home.js` pinta ENTREGADOS con este entero
+    // (`wave.delivered`) mientras el board pinta cada issue con `it.delivered`,
+    // el MISMO payload llevaba dos nociones distintas de entregado y el banner
+    // podía discrepar del board (CA-7) y esperar el TTL de 1h del title-cache
+    // para reflejar un merge (CA-5).
+    //
+    // Ahora se cuenta sobre los veredictos per-issue YA resueltos por
+    // `deliveryStatus` en `enrichWaveIssue` (más el overlay del snapshot vivo).
+    // Contar la misma lista que define `total` mantiene el invariante
+    // 0 ≤ delivered ≤ total (#3487) por construcción, y banner == board deja de
+    // ser una coincidencia para ser una identidad.
+    //
+    // Se abandona a propósito el fallback por labels `closed`/`done` que traía
+    // `computeClosedSet`: son exactamente los "labels residuales" que #4099 y
+    // #4732 declararon perdedores frente al CLOSED de GitHub, y contarlos
+    // violaba CA-1 (un issue abierto y sin merge no puede sumar a ENTREGADOS).
+    // El caso que ese fallback protegía —épicos cerrados por merge de hijos, sin
+    // matriz— lo cubre igual el camino primario (CLOSED en el title-cache), que
+    // el helper también consulta.
     if (normActive && Array.isArray(normActive.issues)) {
-        let delivered = 0;
-        try {
-            const { computeClosedSet } = require('./commander-deterministic');
-            const ids = normActive.issues.map((it) => it && it.id).filter(Number.isInteger);
-            delivered = computeClosedSet({ wave: { issues: ids }, state }).size;
-        } catch (_) {
-            delivered = 0; // degradación grácil: sin set no inventamos cerrados
-        }
+        const delivered = normActive.issues
+            .filter((it) => it && it.delivered === true).length;
         normActive.delivered = Number.isInteger(delivered) ? delivered : 0;
     }
     const normPlanned = rawPlanned.map((w) => enrichWave(normalizeWave(w), state)).filter(Boolean);
