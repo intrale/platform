@@ -3662,7 +3662,12 @@ function brazoBarrido(config) {
         // (el issue va a rebotear igual) y esperarlos produce deadlocks cuando
         // algún skill queda atascado. Incidente 2026-04-24: tester:#2505 en
         // cooldown bloqueaba el rebote de qa:#2505 que ya había rechazado.
-        const hayRechazoConfirmado = resultados.some(r => r.resultado === 'rechazado');
+        // #5641 CA-4 — se conserva la LISTA de rechazos, no sólo el booleano: el
+        // drenaje de abajo necesita saber QUIÉN disparó el fast-fail y si todos
+        // esos disparadores fueron veredictos sintetizados por el Pulpo (caída de
+        // infra) o hubo al menos un rechazo de contenido real.
+        const rechazos = resultados.filter(r => r.resultado === 'rechazado');
+        const hayRechazoConfirmado = rechazos.length > 0;
         if (!todosCompletos && !hayRechazoConfirmado) continue;
 
         // Si el rebote va a dispararse por fast-fail (todosCompletos=false pero hay rechazo),
@@ -3705,6 +3710,21 @@ function brazoBarrido(config) {
 
         if (!todosCompletos && hayRechazoConfirmado && !hayDepBlockEnRechazos) {
           const procesadoFaseActual = path.join(fasePath(pipelineName, fase), 'procesado');
+          // #5641 CA-4 — los hermanos drenados NUNCA emitieron veredicto propio, así
+          // que su `cancelado_por` no es una decisión: es una consecuencia. Para que
+          // aguas abajo se pueda distinguir "cancelado porque alguien rechazó de
+          // verdad" de "cancelado porque a un hermano se le cayó el proceso", se
+          // registra QUIÉN disparó el drenaje y si TODOS los disparadores fueron
+          // veredictos sintetizados por el Pulpo.
+          //
+          // FAIL-CLOSED (SEC-3): basta UN rechazo de contenido en la mezcla para que
+          // `cancelado_disparador_infra` quede en `false` y el hermano siga siendo
+          // ambiguo → escala a humano. El default nunca relaja el gate.
+          const disparadores = [...new Set(
+            rechazos.map(r => skillFromFile(r.file.name)).filter(Boolean),
+          )].sort();
+          const disparadorInfra = rechazos.length > 0
+            && rechazos.every(r => r.veredicto_sintetizado_por === 'pulpo');
           for (const estado of ['pendiente', 'trabajando']) {
             const dir = path.join(fasePath(pipelineName, fase), estado);
             try {
@@ -3715,13 +3735,19 @@ function brazoBarrido(config) {
                 const dst = path.join(procesadoFaseActual, f);
                 try {
                   const prev = readYamlSafe(src) || {};
-                  writeYaml(dst, { ...prev, cancelado_por: 'fast-fail-rebote', cancelado_ts: new Date().toISOString() });
+                  writeYaml(dst, {
+                    ...prev,
+                    cancelado_por: 'fast-fail-rebote',
+                    cancelado_ts: new Date().toISOString(),
+                    cancelado_disparado_por: disparadores.join(','),
+                    cancelado_disparador_infra: disparadorInfra,
+                  });
                   fs.unlinkSync(src);
                 } catch {}
               }
             } catch {}
           }
-          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown`);
+          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown (disparado por: ${disparadores.join(',') || '?'}${disparadorInfra ? ', caída de infra' : ''})`);
         } else if (!todosCompletos && hayRechazoConfirmado && hayDepBlockEnRechazos) {
           // #3373 — skip drain. Los archivos pendiente/trabajando se quedan
           // donde están, el handler dep-block los barre a bloqueado-dependencias/
@@ -10167,9 +10193,42 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       }
 
       const data = readYamlSafe(workingPath);
+      // #5641 CA-1/CA-2 — PROCEDENCIA ESTRUCTURADA del veredicto sintético.
+      //
+      // Cuando el proceso del agente muere con exit code ≠ 0, el Pulpo sintetiza
+      // `resultado: rechazado` con el motivo `Agente terminó con código N`. Ese
+      // deliverable NO contiene ninguna decisión de review, pero el detector de
+      // fases varadas lo veía como un rechazo real y escalaba a humano (6 de 12
+      // issues frenados de la ola 9.4 eran esto).
+      //
+      // La marca de procedencia (`veredicto_sintetizado_por: 'pulpo'`) es el ÚNICO
+      // dato que habilita el carril de auto-reintento aguas abajo. Por eso NO puede
+      // clasificarse por el TEXTO del `motivo`: ese campo lo escribe el agente y
+      // sería un vector de escalada (un agente podría citar el literal en un
+      // rechazo de contenido y auto-borrarse el veredicto).
+      //
+      // CA-2 (anti-spoof): el strip va ANTES del `if`, no adentro. Si el agente
+      // dejó su propio `resultado`, la rama no entra y los campos falsificados
+      // sobrevivirían hasta `procesado/`. Mismo patrón que
+      // `delete cleaned.bloqueado_por_infra` (L1031 y L9157).
+      const procedenciaFalsificada =
+        data.veredicto_sintetizado_por !== undefined || data.agente_exit_code !== undefined;
+      delete data.veredicto_sintetizado_por;
+      delete data.agente_exit_code;
+      if (procedenciaFalsificada) {
+        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite)`);
+      }
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
+        if (code !== 0) {
+          data.veredicto_sintetizado_por = 'pulpo';
+          data.agente_exit_code = code;
+        }
+        writeYaml(workingPath, data);
+      } else if (procedenciaFalsificada) {
+        // El agente SÍ opinó, pero además intentó falsificar la procedencia:
+        // hay que persistir el strip o los campos llegan intactos a `procesado/`.
         writeYaml(workingPath, data);
       }
 
@@ -13040,6 +13099,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // se clasificó como cli_1m_context_glitch. `finish()` lo usa para devolverle
     // al orquestador `kind: 'glitch'` (vs 'final') sin re-inspeccionar nada.
     let attemptGlitch = false;
+    // #5456 — clasificación TIPADA del canal de contenido de cuota semanal
+    // (#5455). Se calcula en el handler del frame `result` (único lugar donde el
+    // frame se parsea) y se consume en `finish()` para sustituir el texto crudo
+    // ANTES de `resolveAttempt`. `null` = el turno no murió por cuota semanal.
+    let weeklyQuotaMidTurn = null;
     const startTime = Date.now();
 
     // El turno del Commander YA NO se corta por duración total.
@@ -13269,6 +13333,67 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         log('commander', `🚨 SKILL_TIMEOUT propagado al caller: ${marker}`);
         if (!lastText) lastText = marker;
       }
+      // =====================================================================
+      // #5456 — CLASIFICACIÓN TIPADA PRIMERO, antes de auditar y antes de
+      // asignar el texto del intento.
+      //
+      // Si el turno murió por el canal de contenido de cuota semanal (#5455),
+      // `finalResult.result` ES el aviso crudo de Anthropic. Ese texto no puede
+      // llegar al operador (CA-1), así que lo sustituimos por la respuesta
+      // reactiva y auditamos con un enum estable en vez de `null`.
+      //
+      // PERSISTENCIA ÚNICA: el flag ya se escribió en el handler del frame
+      // `result` por la API canónica (`setFlag` o el hook generalizado). Acá NO
+      // se vuelve a escribir estado ni se agrega otro archivo/selector.
+      //
+      // SEPARACIÓN DE SALIDAS: esta es la respuesta REACTIVA del turno perdido y
+      // se emite SIEMPRE. `shouldEmitFallbackNotice` (aviso PROACTIVO, dedup de
+      // 5 min) no se invoca desde acá — dedupear la respuesta dejaría al
+      // operador sin contestación.
+      // =====================================================================
+      let quotaMidTurnText = null;
+      if (weeklyQuotaMidTurn) {
+        try {
+          // Proveedor del próximo intento: sale del resolver real (excluyendo el
+          // agotado), NUNCA del texto de la respuesta. Si no hay uno resoluble,
+          // el formatter degrada a copy genérico.
+          //
+          // `resolveCommanderProviderQuiet` (#5456) hace dos cosas que la
+          // variante cruda NO hace y que acá son obligatorias:
+          //   1. Consulta la cadena del COMMANDER (`telegram-commander`). El
+          //      default del resolver crudo es la de Sherlock, que tiene otros
+          //      `model_override`: anunciaríamos el proveedor de una cadena
+          //      distinta de la que va a atender el turno siguiente.
+          //   2. Silencia `notify` y el audit del dispatch. Esto es una CONSULTA
+          //      para armar copy, no un spawn: con la variante cruda encolaba un
+          //      tercer mensaje al operador con ids internos (viola CA-1) sin
+          //      pasar por ningún dedup (viola CA-3) y ensuciaba el audit con un
+          //      `fallback_selected` que nunca ocurrió.
+          let nextProvider = null;
+          try {
+            const next = commanderMP.resolveCommanderProviderQuiet(
+              weeklyQuotaMidTurn.provider,
+              { pipelineDir: PIPELINE, log: () => {} },
+            );
+            if (next && next.gated !== true) nextProvider = next.provider || null;
+          } catch { /* best-effort: el copy degrada a genérico */ }
+
+          quotaMidTurnText = commanderMP.formatMidTurnQuotaResponse({
+            primaryProvider: weeklyQuotaMidTurn.provider,
+            fallbackProvider: nextProvider,
+          });
+          log('commander',
+            `🚫 #5456 cuota semanal mid-turn (provider=${weeklyQuotaMidTurn.provider}) — ` +
+            `respuesta cruda SUPRIMIDA, respondo reactivo (next=${nextProvider || 'n/a'}).`);
+        } catch (e) {
+          // Fail-safe: un bug del formatter NO puede devolver el crudo. Si algo
+          // explota respondemos el canned genérico de cuota, nunca el payload.
+          log('commander', `⚠️ #5456 formatter mid-turn falló (best-effort): ${e && e.message}`);
+          try {
+            quotaMidTurnText = commanderMP.formatMidTurnQuotaResponse({});
+          } catch { quotaMidTurnText = 'Se agotó la cuota y este turno se perdió — reenviame el mensaje.'; }
+        }
+      }
       // #3258 — CA-4 / SR-3: audit log con hash-chain del request del commander.
       // Métadata mínima (prov, tokens si los hay, latencia, hashes). NO se
       // loguea prompt ni respuesta literales — solo hashes.
@@ -13291,7 +13416,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           prompt: prompt,
           tokens: tokensSummary,
           latencyMs: Date.now() - startTime,
-          errorCode: (finalResult && finalResult.result) || lastText ? null : 'no_result',
+          // #5456 — enum ESTABLE para el turno perdido por cuota semanal. Nunca
+          // el `errorType` real ni nada del payload: el detalle tipado ya vive
+          // en el audit de `quota-exhausted.js`, server-side.
+          errorCode: quotaMidTurnText
+            ? commanderMP.QUOTA_MIDTURN_ERROR_CODE
+            : (((finalResult && finalResult.result) || lastText) ? null : 'no_result'),
           injectionHits: sanRes.hits,
           supportsToolUse: true,
           requestId: turnRequestId, // #3577 CA-S6
@@ -13306,7 +13436,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // decide retry/give_up según `kind`. `attemptGlitch` distingue el glitch
       // 1M de un resultado normal.
       let resolvedText;
-      if (finalResult?.result) {
+      if (quotaMidTurnText) {
+        // #5456 CA-1 — sustitución ANTES de `resolveAttempt`: ni `finalResult
+        // .result` ni `lastText` (que replica el mismo aviso) llegan al canal.
+        resolvedText = quotaMidTurnText;
+      } else if (finalResult?.result) {
         resolvedText = finalResult.result;
       } else if (lastText) {
         resolvedText = lastText;
@@ -13529,6 +13663,17 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                 log('commander', `[anthropic-1m] hit registrado: ${JSON.stringify(hitLog)} (total=${hitState.hits_total})`);
               } catch (e) { log('commander', `[anthropic-1m] recordHit falló (best-effort): ${e.message}`); }
             } else if (det.matched) {
+              // #5456 — CLASIFICACIÓN TIPADA (contrato de #5455). El subtipo
+              // exacto `weekly_limit_content_channel` es el ÚNICO que sustituye
+              // la respuesta del turno: el frame no trae `is_error`, así que su
+              // `result` es el aviso crudo de Anthropic (hora de reset, jerga de
+              // la cuenta) y NO puede llegar al operador. Se usa el predicado
+              // canónico exportado — acá no se re-parsea el frame ni se compara
+              // el string a mano. Cualquier otro tipo (incluido
+              // `usage_limit_error`) conserva el camino de siempre.
+              if (quotaExhausted.isWeeklyLimitContentChannel(cmdProvider, det.errorType)) {
+                weeklyQuotaMidTurn = { provider: cmdProvider };
+              }
               // #3576 CA-3: en modo generalizado el hook ya invocó setFlag
               // (con audit log unificado + hash-chain). En legacy seguimos
               // setFlag inline para no romper la fast-path histórica.
@@ -13540,7 +13685,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                   errorType: det.errorType,
                   provider: cmdProvider,
                   model: cmdModel,
-                  resetsAt: evt.resets_at,
+                  // #5456 — el canal de contenido (#5455) trae el reset PARSEADO
+                  // en `det.resetsAt`; el frame estructural no lo tiene y sigue
+                  // usando `evt.resets_at`. Sin esto el subtipo se persistía sin
+                  // su reset real y caía al default del escritor.
+                  resetsAt: det.resetsAt || evt.resets_at,
                   maxDays: (cmdProviderDef && cmdProviderDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
                   agent: 'commander',
                   rawExcerpt: line,
@@ -16296,6 +16445,99 @@ function findLastRejection(pipelineName, issueNum, config) {
     return best;
 }
 
+// #5689 (SEC-2) — discriminador ÚNICO recomendación-vs-bloqueo-real (#5337).
+// Reemplaza el chequeo inline de un solo label del gate del intake: el inline
+// ignoraba `source:recommendation` (histórico), que el helper sí cubre.
+// `RECOMMENDATION_APPROVED_LABEL` sale del MISMO módulo a propósito: el pase de
+// rescate del `--search` (abajo) y el gate tienen que hablar del mismo label. Si
+// uno se hardcodeara, renombrarlo dejaría al gate admitiendo issues que el
+// search ya descartó — exactamente la contradicción que rompió rev-1.
+const {
+  isRecommendationIssue: isPendingRecommendationIssue,
+  RECOMMENDATION_APPROVED_LABEL,
+} = require('./lib/recommendation-labels');
+
+// =============================================================================
+// #5689 (R1 — anti-starvation del intake) — término `--search` ÚNICO del intake.
+//
+// El problema: las ~1.076 recomendaciones de agente tienen `needs-definition`
+// (el mismo label de admisión de `config.yaml`) y hoy quedan afuera SÓLO por el
+// `-label:needs-human` del search. Cuando #5691 migre esas recomendaciones a
+// `needs:triage-backlog`, dejarían de estar filtradas: GitHub aplica el
+// `--limit 50` SERVER-SIDE, antes de `calcularPrioridad()`, así que los 50 slots
+// se llenarían de recomendaciones y el intake de definición real se ahogaría en
+// silencio, sin ninguna alarma.
+//
+// Por qué una función y no dos literales: el término vive en DOS call sites
+// (`discoverWorkDryRun` y el intake real de `brazoIntake`). Duplicar el string
+// hace posible parchear uno, ver el test en verde, y dejar el otro sin blindar
+// (GURU-3). Con una sola fuente eso es imposible por construcción.
+//
+// ⚠️ ESTO NO ES UN CONTROL DE SEGURIDAD — es un control de DISPONIBILIDAD.
+// El índice de búsqueda de GitHub es eventualmente consistente: un issue recién
+// etiquetado puede no reflejar el label acá durante minutos, y en esa ventana
+// pasa el filtro. El control AUTORITATIVO es el gate JS de `brazoIntake` sobre
+// los labels ya traídos (estado fresco, no índice). Ver REQ-SEC-1.
+// =============================================================================
+const INTAKE_SEARCH_EXCLUDED_LABELS = Object.freeze([
+  // Bloqueo real: un agente se frenó y espera acción del operador.
+  'needs-human',
+  // #5689 — backlog de recomendaciones esperando triaje humano (no bloquea).
+  'tipo:recomendacion',
+]);
+
+function buildIntakeSearchQuery() {
+  return INTAKE_SEARCH_EXCLUDED_LABELS.map((l) => `-label:${l}`).join(' ');
+}
+
+// -----------------------------------------------------------------------------
+// #5689 (REGRESIÓN rev-1, hallazgo de security) — PASE DE RESCATE.
+//
+// Qué se rompió: la búsqueda de GitHub NO soporta OR ni paréntesis, así que
+// `-label:tipo:recomendacion` es incondicional — excluye TAMBIÉN las
+// recomendaciones que un humano ya aprobó. Y una recomendación aprobada es
+// exactamente `tipo:recomendacion` + `recommendation:approved` (`approve()` de
+// lib/recommendations.js agrega el segundo y NO saca el primero).
+//
+// Consecuencia: el camino de LIBERACIÓN del gate de #2653 quedaba inoperante.
+// El gate JS (`isPendingRecommendationIssue`) devuelve `false` ante
+// `recommendation:approved` y por lo tanto ADMITIRÍA el issue... pero el issue
+// ya nunca volvía de GitHub, así que el gate jamás llegaba a evaluarlo. Aprobar
+// una recomendación pasaba a ser un no-op silencioso: el operador veía
+// "entrará al pipeline en el próximo ciclo" y no entraba nunca.
+// Caso vivo al momento del fix: #5055 (needs-definition + tipo:recomendacion +
+// recommendation:approved, sin needs-human).
+//
+// Solución: DOS pases de búsqueda cuya unión se deduplica por número.
+//   1. BASE     — trabajo normal, excluye bloqueo real y backlog de recos.
+//   2. RESCATE  — sólo las recomendaciones YA aprobadas por un humano.
+//
+// Por qué no hay riesgo de reabrir R1 (starvation) con el pase 2: está acotado
+// a `label:recommendation:approved`, un label que sólo pone un humano de a uno
+// (población viva = 1). No es el backlog de ~1.076 que ahoga el intake.
+//
+// El pase 2 mantiene `-label:needs-human`: una recomendación aprobada que
+// DESPUÉS se bloquea de verdad sigue afuera del intake, igual que cualquier
+// otro trabajo real (circuit breaker de #2405). El rescate reabre el camino de
+// aprobación, no un bypass del breaker.
+//
+// Sigue sin ser un control de seguridad: el pase 2 sólo AGREGA disponibilidad.
+// Todo lo que vuelve de los dos pases pasa igual por el gate autoritativo de
+// `brazoIntake` sobre los labels frescos (REQ-SEC-1), que es quien decide.
+// -----------------------------------------------------------------------------
+function buildIntakeSearchRescueQuery() {
+  // `needs-human` se sigue excluyendo (breaker); `tipo:recomendacion` NO, que es
+  // justamente el punto: son las que el pase base deja afuera.
+  return `-label:${INTAKE_SEARCH_EXCLUDED_LABELS[0]} label:${RECOMMENDATION_APPROVED_LABEL}`;
+}
+
+// Fuente ÚNICA de los pases del intake. Los dos call sites (`discoverWorkDryRun`
+// y el intake real de `brazoIntake`) iteran ESTA función: si alguien agrega un
+// pase, entra por los dos lados o por ninguno (GURU-3).
+function buildIntakeSearchQueries() {
+  return [buildIntakeSearchQuery(), buildIntakeSearchRescueQuery()];
+}
+
 // #4687 (Ola Puente P2) — Descubrimiento side-effect-free del tablero (dry-run).
 //
 // Paso 4 del bootstrap de un producto nuevo (project-bootstrap.js): confirmar el
@@ -16359,12 +16601,30 @@ function discoverWorkDryRun(config, opts = {}) {
     for (const repo of reposFn()) {
       // Fail-closed: repo no allowlisted / malformado ⇒ skip (cero consultas).
       if (!isAllowed(repo)) { skippedRepos.push(repo); continue; }
-      let issues = [];
-      try {
-        const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "-label:needs-human"`);
-        issues = JSON.parse(out || '[]');
-      } catch (e) {
-        issues = [];
+      const issues = [];
+      // #5689 rev-1 — unión deduplicada de los pases (base + rescate de recos
+      // aprobadas). Dedup por número dentro del repo: los dos pases consultan el
+      // mismo repo y un issue puede volver en ambos si el índice va atrasado.
+      const seenNumbers = new Set();
+      for (const search of buildIntakeSearchQueries()) {
+        try {
+          // #5689 REQ-SEC-3 — INVARIANTE: esta consulta trae `number,title`, SIN
+          // `labels`. Por eso esta superficie NO puede evaluar el gate
+          // `isRecommendationIssue()` ni como defensa en profundidad. Hoy es
+          // inocuo porque `discoverWorkDryRun` es side-effect-free por contrato
+          // (no encola, no spawnea). Si alguna vez pasa a alimentar encolado,
+          // DEBE sumar `labels` al `--json` y pasar por el mismo gate que
+          // `brazoIntake`, o abre un bypass total del control autoritativo.
+          const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "${search}"`);
+          for (const it of JSON.parse(out || '[]')) {
+            if (seenNumbers.has(it.number)) continue;
+            seenNumbers.add(it.number);
+            issues.push(it);
+          }
+        } catch (e) {
+          // Un pase caído no debe tumbar los demás: el dry-run degrada a
+          // "lo que sí pudo listar", nunca a lista vacía por un error parcial.
+        }
       }
       for (const it of issues) {
         discovered.push({ pipeline: pipelineName, label, repo, number: it.number, title: it.title });
@@ -16416,22 +16676,32 @@ function brazoIntake(config) {
           log('intake', `repo omitido — no allowlisted / forma inválida: ${JSON.stringify(repo)}`);
           continue;
         }
-        try {
-          ghThrottle();
-          const result = _ghExecSyncGuarded( // #4612 — breaker-aware
-            // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
-            // cero requests extra) para que el detector de decisión de
-            // arquitectura pueda clasificar el issue al entrar a definición.
-            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "-label:needs-human"`,
-            { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
-          );
-          const repoIssues = JSON.parse(result || '[]');
-          // CA-A2 — propagar el repo de origen aguas abajo (leído por getRepoForIssue).
-          for (const it of repoIssues) it.origin_repo = repo;
-          issues = issues.concat(repoIssues);
-        } catch (e) {
-          // Un repo caído no debe tumbar el intake de los demás.
-          log('intake', `Error consultando ${repo} para ${pipelineName}: ${e.message}`);
+        // #5689 rev-1 — unión deduplicada de los pases (base + rescate de recos
+        // aprobadas). Dedup por número DENTRO del repo: `issues` acumula entre
+        // repos y los números colisionan entre repos distintos.
+        const seenNumbers = new Set();
+        for (const search of buildIntakeSearchQueries()) {
+          try {
+            ghThrottle();
+            const result = _ghExecSyncGuarded( // #4612 — breaker-aware
+              // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
+              // cero requests extra) para que el detector de decisión de
+              // arquitectura pueda clasificar el issue al entrar a definición.
+              `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "${search}"`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+            );
+            const repoIssues = JSON.parse(result || '[]');
+            for (const it of repoIssues) {
+              if (seenNumbers.has(it.number)) continue;
+              seenNumbers.add(it.number);
+              // CA-A2 — propagar el repo de origen aguas abajo (leído por getRepoForIssue).
+              it.origin_repo = repo;
+              issues.push(it);
+            }
+          } catch (e) {
+            // Un repo (o un pase) caído no debe tumbar el intake de los demás.
+            log('intake', `Error consultando ${repo} para ${pipelineName}: ${e.message}`);
+          }
         }
       }
 
@@ -16471,13 +16741,33 @@ function brazoIntake(config) {
           continue;
         }
 
-        // RECOMENDACION (#2653): no procesar issues con label tipo:recomendacion
-        // hasta que un humano apruebe (recommendation:approved). Defensa en
-        // profundidad: el search ya filtra needs-human, pero si alguien quita
-        // needs-human por error sin agregar recommendation:approved, el issue
-        // sigue siendo una recomendación pendiente y NO debe entrar al flujo.
-        if (issueLabels.includes('tipo:recomendacion') && !issueLabels.includes('recommendation:approved')) {
-          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (tipo:recomendacion sin recommendation:approved)`);
+        // RECOMENDACION (#2653, blindado en #5689) — GATE AUTORITATIVO.
+        //
+        // No procesar issues de recomendación de agente hasta que un humano los
+        // apruebe (`recommendation:approved`).
+        //
+        // ⚠️ REQ-SEC-1 — ESTE es el control de seguridad, NO el `--search`.
+        // El `-label:...` de `buildIntakeSearchQuery()` es best-effort: se
+        // evalúa contra el índice de búsqueda de GitHub, que es EVENTUALMENTE
+        // CONSISTENTE — un issue recién etiquetado puede no reflejar el label
+        // durante minutos y pasar el filtro. Este gate, en cambio, corre local
+        // sobre los labels que la propia respuesta trajo (`--json ...,labels`):
+        // estado fresco, no índice. Los dos NO son intercambiables y este no se
+        // puede "optimizar" borrándolo porque el search ya filtre.
+        //
+        // Redacción previa a #5689: "si alguien quita needs-human por error".
+        // Eso quedó desactualizado — tras la migración de #5691 las ~924
+        // recomendaciones dejan de tener `needs-human` como modo NORMAL de
+        // operación, no como accidente. Blast radius si el gate falla: cuerpos
+        // de issue escritos por un LLM inyectados en prompts de agentes con
+        // permiso de escribir código y abrir PRs.
+        //
+        // SEC-2: `isPendingRecommendationIssue()` (lib/recommendation-labels.js)
+        // en vez del chequeo de un solo label. Además de `tipo:recomendacion`
+        // cubre `source:recommendation` (el histórico, que el inline ignoraba) y
+        // preserva la semántica: devuelve `false` ante `recommendation:approved`.
+        if (isPendingRecommendationIssue(issueLabels)) {
+          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (sin recommendation:approved)`);
           continue;
         }
 
@@ -19533,6 +19823,13 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,
+    // #5689 (R1) — término `--search` único del intake (anti-starvation).
+    buildIntakeSearchQuery,
+    buildIntakeSearchRescueQuery,
+    buildIntakeSearchQueries,
+    INTAKE_SEARCH_EXCLUDED_LABELS,
+    // #5689 (SEC-1/SEC-2) — gate autoritativo de recomendaciones del intake.
+    isPendingRecommendationIssue,
     // #4763 (Ola Puente P4) — ruteo product-aware por instancia (fallback single-product).
     resolveIntakeRepo,
     setMultiInstanceRouter,

@@ -6,7 +6,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { makeRateLimiter, runRestart } = require('./ops-restart-handler');
+const { makeRateLimiter, makeAggregateLimiter, runRestart } = require('./ops-restart-handler');
 
 const ALLOW = ['pulpo', 'listener', 'svc-drive', 'svc-github'];
 
@@ -91,4 +91,50 @@ test('audit recibe source declarativo + sourceIp objetivo, no bloquea si tira', 
         { allowlist: ALLOW, restartFn: () => ({ ok: true, msg: 'ok' }), audit: () => { throw new Error('disk full'); } }
     );
     assert.strictEqual(res2.status, 200);
+});
+
+// ===========================================================================
+// #5646 (CA-9 / REQ-SEC-5646-4) — cota AGREGADA por ventana.
+// El rate-limiter de arriba es POR TARGET: con N componentes afectados, N
+// targets distintos pasan la misma rafaga y una request se vuelve "matar todos
+// los servicios del pipeline". Esta cota es transversal.
+// ===========================================================================
+
+test('#5646 cota agregada: N targets distintos NO esquivan el limite (el rate-limit por target si)', () => {
+    const rl = makeRateLimiter(5000);
+    // Prueba de que el limitador por target NO alcanza: 9 targets distintos
+    // pasan todos en la misma rafaga.
+    const pasaron = ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive',
+        'svc-emulador', 'svc-reconciler', 'outbox-drain', 'dashboard']
+        .filter(t => !rl.isRateLimited(t, 1000));
+    assert.strictEqual(pasaron.length, 9, 'el limitador por target no frena la amplificacion');
+
+    // La cota agregada si: concede a lo sumo `max` por ventana.
+    const agg = makeAggregateLimiter(4, 60000);
+    assert.strictEqual(agg.grant(9, 1000), 4, 'sobre 9 pedidos concede 4');
+    assert.strictEqual(agg.grant(9, 2000), 0, 'dentro de la ventana ya no quedan cupos');
+});
+
+test('#5646 cota agregada: la ventana se libera con el tiempo (retrasa, no pierde)', () => {
+    const agg = makeAggregateLimiter(4, 60000);
+    assert.strictEqual(agg.grant(4, 1000), 4);
+    assert.strictEqual(agg.grant(1, 30000), 0, 'a mitad de ventana sigue cortado');
+    assert.strictEqual(agg.grant(4, 62000), 4, 'pasada la ventana vuelve a conceder');
+});
+
+test('#5646 cota agregada: concede parcialmente y el resto queda para el watchdog', () => {
+    const agg = makeAggregateLimiter(4, 60000);
+    assert.strictEqual(agg.grant(3, 1000), 3);
+    // Sólo queda 1 cupo: se concede 1 de los 3 pedidos; los otros 2 se difieren.
+    assert.strictEqual(agg.grant(3, 1500), 1);
+    assert.strictEqual(agg.grant(1, 1600), 0);
+});
+
+test('#5646 cota agregada: valores invalidos caen a defaults seguros, nunca a "sin limite"', () => {
+    const agg = makeAggregateLimiter(0, -1);
+    assert.strictEqual(agg.maxPerWindow, 4);
+    assert.strictEqual(agg.windowMs, 60000);
+    assert.strictEqual(agg.grant(100, 0), 4, 'jamas concede ilimitado');
+    // grant con basura no rompe ni concede de mas.
+    assert.strictEqual(makeAggregateLimiter(2, 1000).grant('muchos', 0), 0);
 });

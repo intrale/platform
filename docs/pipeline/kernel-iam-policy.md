@@ -11,15 +11,26 @@
 
 ## Archivos
 
-- `docs/pipeline/kernel-iam-policy.json` — policy runtime del **principal del
-  driver**. Los placeholders `REGION`/`ACCOUNT`/`TABLE`/`COORD_TABLE` se resuelven
+- `docs/pipeline/kernel-iam-policy.json` — **identity policy** del principal del
+  driver. Los placeholders `REGION`/`ACCOUNT`/`TABLE`/`COORD_TABLE` se resuelven
   al aplicar la policy con los valores que salen de la sección `kernel:` de
   `config.yaml` (jamás hardcodeados en el repo — CA-2 / A05).
+- `docs/pipeline/kernel-kms-key-policy.json` — **key policy de la CMK** (#5211).
+  Es un artefacto *distinto*: la identity policy no concede `kms:*` en absoluto,
+  el uso de la clave se autoriza acá. Ver "Dónde vive el permiso de la CMK".
 - `.pipeline/lib/__tests__/kernel-iam-policy.test.js` — verifica la policy **como
   dato**: que el `Deny` cubra las 7 acciones de mutación y no lleve `Condition`,
   que ningún `Allow` con borrado tenga wildcard en su `Resource`, y que los
   placeholders sigan intactos. Un JSON de policy no falla al leerse: si miente,
   miente en silencio. Por eso se testea.
+- `.pipeline/lib/__tests__/kernel-kms-key-policy.test.js` — lo mismo para la key
+  policy: uso acotado, `ViaService`, encryption context, cero valores reales.
+- `.pipeline/lib/kernel-iam-verify.js` — **matriz empírica** contra AWS (#5211).
+  Los tests de arriba prueban que el JSON del repo *diga* lo correcto; esto
+  prueba que AWS lo esté *aplicando* sobre el principal real. Son cosas
+  distintas y hacen falta las dos.
+- `docs/pipeline/kernel-iam-matriz-5211.md` — evidencia redactada de esa corrida,
+  más los probes de control plane que se corren a mano.
 
 ## Principio: dos principales distintos
 
@@ -190,6 +201,14 @@ node .pipeline/lib/kernel-provision.js     # crea la tabla + evidencia round-tri
 #   TABLE       → kernel.tableName               (no-repudio; sin borrado)
 #   COORD_TABLE → kernel.coordinationTableName   (coordinación; con borrado)
 #   ACCOUNT     → account-id de la cuenta destino (nunca commiteado)
+#   CMK_KEY_ID  → UUID de la CMK que cifra ambas tablas (nunca commiteado)
+
+# Aplicar (REEMPLAZA el documento entero — ver el recuadro más abajo):
+aws iam create-policy-version --policy-arn <...>:policy/IntraleKernelStore \
+    --policy-document file://<resuelto> --set-as-default
+
+# Verificar que quedó aplicado y que no rompió el plano de datos:
+node .pipeline/lib/kernel-iam-verify.js --strict   # exit 0 == CA-3 cerrado
 ```
 
 Al resolver los placeholders, **dos reglas que no se negocian**:
@@ -213,3 +232,139 @@ escrito acá para que #5126 no arranque con una premisa incompleta.
 
 Mientras `kernel.durable: false` (default) **no hay runtime activo**: la policy es
 un artefacto documental/de bootstrap, sin blast radius.
+
+## Qué cambió en #5211
+
+Tres cosas, todas nacidas de correr la matriz contra AWS en vez de razonar sobre
+el JSON. La evidencia completa y redactada está en `kernel-iam-matriz-5211.md`.
+
+### 1. El control plane pasó de implicitDeny a `Deny` explícito
+
+`DeleteTable`, `UpdateTable` y `UpdateContinuousBackups` estaban denegados por
+**ausencia de `Allow`**. Denegado hoy, sí — pero un `implicitDeny` se deshace con
+que alguien agregue un `Allow` de más, y nadie se entera.
+
+Acá el detalle importa más que de costumbre: **apagar PITR o deletion protection
+deja la evidencia de no-repudio destruible por otra vía.** El append-only del
+plano de datos no vale nada si el runtime puede tirar la tabla entera. Un `Deny`
+explícito gana sobre cualquier `Allow` futuro; un implícito, no.
+
+Se sumaron `DenyDynamoDbControlPlane` (sobre `table/*` de la cuenta+región — el
+mínimo privilegio se evalúa sobre la cuenta, no sobre los recursos que hoy
+conocemos), `DenyDynamoDbAccountLevelControlPlane`, `DenyKmsAdministration` y
+`DenyIamSelfAdministration`.
+
+> El wildcard `table/*` de ese statement alcanza la tabla de coordinación. Es
+> seguro **sólo** porque no contiene ninguna acción de plano de datos: si se le
+> colara un `DeleteItem`, el `release()` de un claim quedaría bloqueado para
+> siempre — el bug de #5124 por la puerta de atrás. Hay un test dedicado.
+
+> **Por qué las acciones de nivel cuenta van en un statement aparte.**
+> `dynamodb:ListTables` (y `ListBackups`, `ListGlobalTables`, `ListExports`,
+> `ListImports`, `DescribeLimits`) **no admiten permisos a nivel de recurso** —
+> la Service Authorization Reference las lista con la columna "Resource types"
+> vacía. Un `Deny` que las acote a `table/*` no matchea nunca: es un `Deny`
+> **inerte**, el mismo patrón de falla que `LeadingKeys` en #5124 — parsea bien,
+> testea verde y no protege nada. Por eso viven en
+> `DenyDynamoDbAccountLevelControlPlane` con `Resource: "*"`, el único alcance
+> que AWS evalúa para ellas. Dos tests de regresión lo fijan: uno falla si una
+> acción de nivel cuenta aparece con `Resource` acotado, otro impide que se
+> mezclen con acciones de nivel recurso en un mismo statement.
+>
+> `dynamodb:DescribeEndpoints` queda **fuera** del `Deny` a propósito: es de nivel
+> cuenta, pero algunos SDK la invocan para endpoint discovery y denegarla podría
+> tumbar el plano de datos. El test de regresión igual la vigila — si alguien la
+> agrega, tiene que ser con `Resource: "*"`.
+
+### Estado de aplicación (no confundir artefacto con enforcement)
+
+Los cuatro `Deny` de control plane están **versionados y todavía NO aplicados**
+sobre `policy/IntraleKernelStore`: aplicarlos requiere un principal con gestión
+IAM que el perfil disponible no tiene, a propósito. Hasta entonces esos controles
+siguen en `implicitDeny` — denegados hoy, pero por ausencia de `Allow`.
+
+Ese estado **ya no se declara a mano en ningún lado**. `kernel-iam-verify.js` lee
+la policy realmente adjunta con `iam:GetPolicyVersion` y la compara contra este
+artefacto; la matriz (`kernel-iam-matriz-5211.md`) publica el diff. Si la
+comparación no se puede correr, se reporta como *no verificada* y nunca como
+"sin drift".
+
+> #### ⚠️ Aplicar REEMPLAZA el documento: el artefacto debe contener lo vigente
+>
+> `aws iam create-policy-version` **sustituye la policy entera, no la fusiona**.
+> Por eso el argumento "el diff sólo agrega `Deny`, la postura sólo puede
+> mejorar" es falso: cualquier statement que exista en AWS y no en este archivo
+> se **pierde** al aplicar.
+>
+> Pasó de verdad. La policy vigente (`v3`) tiene dos statements que el artefacto
+> no modelaba —`AllowIdentityCheck` y el catch-all
+> `DenyEverythingOutsideKernelTables` (`NotAction`/`NotResource`)—, así que
+> aplicar el artefacto anterior habría **degradado** la postura y roto
+> `sts:GetCallerIdentity`. Este archivo ya representa `v3` **más** los cuatro
+> `Deny` nuevos, y `kernel-iam-drift.test.js` falla si alguien vuelve a sacarle
+> un statement vigente (verificado por mutación).
+
+### El catch-all `DenyEverythingOutsideKernelTables`
+
+Es el statement más fuerte de la policy y el que más fácil se lee al revés:
+
+```json
+{ "Effect": "Deny",
+  "NotAction": ["sts:GetCallerIdentity"],
+  "NotResource": [ "<tabla no-repudio>", "<tabla coordinación>", "<CMK>" ] }
+```
+
+Deniega **todo lo que no sea** una de esas tres ARNs. Consecuencia
+contraintuitiva, y central para leer la matriz: **la misma acción da
+`explicitDeny` sobre un recurso ajeno e `implicitDeny` sobre las tres ARNs del
+kernel**, porque ahí el catch-all no matchea. O sea que el agujero está
+justamente sobre los recursos que hay que proteger — y es lo que cierran los
+`Deny` enumerados de #5211: `DenyDynamoDbControlPlane` alcanza `table/*`,
+incluidas las dos tablas del kernel.
+
+Por eso los probes del verificador declaran su `alcance`: uno apuntado a un
+recurso fuera de alcance reporta un control que sobre el recurso real no existe.
+
+### 2. Dónde vive el permiso de la CMK (y por qué no va en la identity policy)
+
+`grep -c "kms:" kernel-iam-policy.json` daba **0**. La lectura intuitiva era
+"faltan statements KMS". Los probes dicen otra cosa: el runtime lee y escribe una
+tabla cifrada con CMK **sin un solo statement `kms:`** en su identity policy, y a
+la vez `kms:DescribeKey` directo le da AccessDenied.
+
+Eso sólo se explica de una forma —confirmada leyendo la key policy con el perfil
+admin—: la autorización vive en la **key policy de la CMK**
+(`RuntimeUseViaDynamoDBOnly`), condicionada por `kms:ViaService`. El descifrado
+ocurre como efecto de una operación DynamoDB; el uso directo de la clave cae.
+
+**El diseño estaba bien; lo que faltaba era versionarlo** — ese permiso no tenía
+representación en el repo, así que nadie podía revisarlo en un PR ni notar que se
+aflojara. Lo cierra `kernel-kms-key-policy.json`.
+
+> **No agregar `kms:Decrypt` a la identity policy.** Sería privilegio redundante
+> y además peligroso: ahí no está atado a `ViaService`, así que habilitaría usar
+> la CMK fuera de DynamoDB — justo lo que hoy está cerrado. Hay un test que lo
+> bloquea.
+
+### 3. `PutItem` sobre no-repudio: el límite real de la garantía IAM
+
+El probe `nonrepudio-put-item` responde `ConditionalCheckFailedException`, **no**
+AccessDenied. El runtime está autorizado a hacer `PutItem` sobre la tabla de
+evidencia, y debe estarlo: es quien escribe las firmas y el audit.
+
+Pero **IAM no distingue crear de pisar**, y no existe condición IAM que haga un
+`PutItem` insert-only (demostrado empíricamente en la matriz). Entonces:
+
+| Amenaza | Quién la frena |
+|---|---|
+| `UpdateItem`/`DeleteItem`/`BatchWriteItem`/`TransactWriteItems`/PartiQL | **IAM** — `Deny` explícito |
+| `PutItem` que pisa una firma ya escrita | **Código** — `attribute_not_exists(PK)` |
+
+La sección "Capa 1 / Capa 2" de arriba ya lo insinuaba ("refuerza, no sostiene").
+#5211 lo vuelve preciso: para el vector `PutItem`, la `ConditionExpression` **es**
+la garantía, no un refuerzo. Si alguien la saca, el append-only se rompe en
+silencio y ninguna policy lo detiene. Por eso `kernel-store.test.js` ahora afirma
+el **mecanismo** (que la escritura viaje con `attribute_not_exists`) y no sólo el
+comportamiento: un read-then-write vulnerable a TOCTOU pasaba el test viejo.
+
+Retirar `PutItem` no es opción: dejaría al kernel sin poder registrar firmas.

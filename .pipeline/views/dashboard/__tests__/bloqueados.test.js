@@ -497,6 +497,40 @@ test('classifyCta clasifica Aprobar/Reintentar/Responder de forma determinístic
     assert.equal(classifyCta({}).kind, 'respond');
 });
 
+// ---------------------------------------------------------------------------
+// #5689 — classifyCta usa el discriminador único `isRecommendationIssue()`
+// en vez del inline, con `CTA_APPROVE_RE` OR-eado como fallback (CA-C2 del PO).
+// ---------------------------------------------------------------------------
+
+test('#5689 classifyCta reconoce source:recommendation (el inline lo ignoraba)', () => {
+    assert.equal(classifyCta({ labels: ['source:recommendation'] }).kind, 'approve');
+});
+
+test('#5689 classifyCta acepta labels en forma [{name}] además de [string]', () => {
+    // `gh issue list --json labels` devuelve objetos; varias partes del pipeline
+    // ya los aplanaron. El helper normaliza ambas formas.
+    assert.equal(classifyCta({ labels: [{ name: 'tipo:recomendacion' }] }).kind, 'approve');
+});
+
+test('#5689 R9 — recommendation:approved deja de clasificar como Aprobar por label', () => {
+    // Delta ESPERADO y correcto, no regresión: ya fue aprobado, no hay nada que
+    // aprobar. Sin texto que matchee `CTA_APPROVE_RE` cae al default seguro.
+    const r = classifyCta({ labels: ['tipo:recomendacion', 'recommendation:approved'], reason: 'build roto' });
+    assert.notEqual(r.kind, 'approve');
+    assert.equal(r.kind, 'retry');
+});
+
+test('#5689 CA-C2 — CTA_APPROVE_RE sigue OR-eado como fallback de texto', () => {
+    // Sin ningún label de recomendación, el heurístico de texto debe seguir vivo.
+    assert.equal(classifyCta({ labels: [], reason: 'esperando aprobación' }).kind, 'approve');
+});
+
+test('#5689 classifyCta no lanza con labels basura', () => {
+    assert.equal(classifyCta({ labels: null }).kind, 'respond');
+    assert.equal(classifyCta({ labels: 'tipo:recomendacion' }).kind, 'respond');
+    assert.equal(classifyCta({ labels: [null, 42, {}] }).kind, 'respond');
+});
+
 test('CA-5 cada fila expone exactamente un CTA primario con su verbo', () => {
     const html = renderBloqueadosSsr({
         bloqueados: [{ issue: 8, age_hours: 5, reason: 'build roto' }],

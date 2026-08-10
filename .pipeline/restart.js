@@ -21,9 +21,12 @@ const {
   pidAlive,
   invalidateCache,
   waitForPortFree,
-  commandLineForPid,
+  processForPid,
   SCRIPT_MAP,
 } = require('./pid-discovery');
+// #5722 — la decisión de ownership y la terminación con fallback verificado
+// viven en un módulo importable para que los tests ejerciten el guard REAL.
+const portGuard = require('./lib/port-guard');
 const { clearAllMarkers } = require('./lib/ready-marker');
 const { annotateAndMoveOrphans } = require('./lib/restart-orphan-annotator');
 // #4664 (Ola 9.1 · cutover de wiring) — el arranque del motor (pulpo/dashboard)
@@ -105,7 +108,68 @@ function sleep(ms) {
 
 // --- SYNC: actualizar repo principal con main ---
 
+// #5646 — Marca en `stale-services.json` los componentes cuyo código cambió con
+// el reset. NUNCA lanza: el sync no puede romperse por el marcado.
+// Los paths que se loguean vienen del contenido del commit y ya salen
+// sanitizados del helper (REQ-SEC-5646-8): un path con CR/LF embebido no puede
+// falsificar líneas en `pulpo.log`.
+function marcarComponentesConCodigoViejo(prevHead, head) {
+  try {
+    const stale = require('./lib/stale-services');
+    const res = stale.computeAffectedComponents({
+      prevSha: prevHead || undefined,
+      headSha: head,
+      repoRoot: ROOT,
+      pipelineDir: PIPELINE,
+    });
+    if (!res.components.length) {
+      // CA-2 / UX G-1: el caso "no afectó a nadie" también deja una línea; sin
+      // ella, el log silencioso es indistinguible de "no corrió".
+      log('restart selectivo: sin componentes afectados por el reset');
+      return;
+    }
+    const mark = stale.markAffected(res.components, { sha: res.headSha, reasons: res.reasons });
+    for (const r of res.reasons) {
+      if (!mark.marked.includes(r.component)) continue;
+      log(`restart selectivo: ${r.component} quedó con código viejo — cambio en ${r.path}`);
+    }
+  } catch (e) {
+    log(`Warning: no se pudo marcar servicios con código viejo: ${(e && e.message || '').slice(0, 80)}`);
+  }
+}
+
+// #5646 (CA-3, corregido por PO sobre P-1 de guru) — Baja del registro de
+// pendientes SÓLO los componentes que `launchAll()` relanzó de verdad. La lista
+// se DERIVA de lo efectivamente lanzado, no de una constante duplicada: limpiar
+// el registro entero desmarcaría `outbox-drain` (que no está en COMPONENTS de
+// este archivo) sin haberlo relanzado jamás → quedaría con código viejo, en
+// silencio y para siempre, que es el fail-open que cierra CA-5.
+function limpiarPendientesRelanzados(lanzados) {
+  if (!Array.isArray(lanzados) || !lanzados.length) return;
+  try {
+    const stale = require('./lib/stale-services');
+    const res = stale.clearComponents(lanzados);
+    if (res.cleared.length) {
+      log(`restart selectivo: ${res.cleared.join(', ')} relanzados por restart.js — pendiente dado de baja`);
+    }
+    const restantes = stale.readPending();
+    if (restantes.components.length) {
+      log(`restart selectivo: siguen pendientes para el watchdog: ${restantes.components.join(', ')}`);
+    }
+  } catch (e) {
+    log(`Warning: no se pudieron limpiar pendientes: ${(e && e.message || '').slice(0, 80)}`);
+  }
+}
+
 function syncWithMain() {
+  // #5646 — HEAD ANTES del reset. Es la referencia contra la que se calcula qué
+  // componentes quedaron con código viejo. Se captura acá (no después) porque
+  // el `reset --hard` de abajo la destruye. Best-effort: si no se puede
+  // resolver, el marcado usa el boot marker como referencia.
+  let prevHead = null;
+  try {
+    prevHead = execSync('git rev-parse HEAD', { cwd: ROOT, timeout: 10000, windowsHide: true, encoding: 'utf8' }).trim();
+  } catch { /* sin referencia previa: se resuelve más abajo con el boot marker */ }
   try {
     execSync('git fetch origin main', { cwd: ROOT, timeout: 30000, windowsHide: true });
     // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2/RS-6): registrar el
@@ -139,6 +203,13 @@ function syncWithMain() {
     // trata como estado desconocido, nunca como "sin pendientes").
     try {
       const head = execSync('git rev-parse HEAD', { cwd: ROOT, timeout: 10000, windowsHide: true, encoding: 'utf8' }).trim();
+      // #5646 — Marcar qué componentes quedaron con código viejo por este reset.
+      // `restart.js` relanza los suyos en `launchAll()` y los baja del registro
+      // ahí mismo; lo que queda pendiente (típicamente `outbox-drain`, que NO
+      // está en COMPONENTS de este archivo) lo relanza el watchdog. Va ANTES de
+      // `writeBootMarker` sólo por orden de lectura: el cómputo usa `prevHead`
+      // explícito, no el marker.
+      marcarComponentesConCodigoViejo(prevHead, head);
       const res = require('./lib/runtime-boot').writeBootMarker(head, { pipelineDir: PIPELINE });
       if (res && res.ok) log(`Boot marker actualizado: ${head.slice(0, 8)}`);
     } catch (e2) {
@@ -176,6 +247,33 @@ function reexecIfSelfChanged() {
 
 // --- KILL: drástico — matar todo lo que sea del pipeline ---
 
+// #5722 — PIDs que los propios componentes declararon al arrancar. Es la
+// corroboración de ownership que permite matar un node.exe opaco sin caer en
+// "matar cualquier node.exe", que se llevaría puestos editores, MCP servers y
+// agentes. Devuelve Map<pid, archivo> (el archivo va al log, para auditoría).
+function readDeclaredPipelinePids() {
+  const map = new Map();
+  for (const comp of COMPONENTS) {
+    try {
+      const raw = fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim();
+      const pid = parseInt(raw, 10);
+      if (pid && !Number.isNaN(pid) && pid !== process.pid) map.set(pid, comp.pid);
+    } catch {}
+  }
+  return map;
+}
+
+// #5722 (CA-3) — terminación con fallback verificado, compartida por killAll()
+// y el guard del puerto.
+function killPipelineProcess(pid) {
+  return portGuard.terminateProcess(pid, {
+    pidAlive,
+    sleep,
+    platform: process.platform,
+    exec: (cmd) => execSync(cmd, { timeout: 8000, stdio: 'pipe', windowsHide: true }),
+  });
+}
+
 function killAll() {
   log('=== STOP ===');
 
@@ -190,31 +288,42 @@ function killAll() {
   // aparece en la CommandLine. Por eso matcheamos por CUALQUIERA de: path
   // `.pipeline` en la CommandLine, o nombre de script conocido del pipeline.
   const scriptNames = new Set(Object.values(SCRIPT_MAP));
-  for (const p of scanNodeProcesses()) {
-    if (!p.commandLine) continue;
-    if (p.pid === process.pid) continue;
-    const cmd = p.commandLine;
-    const matchByPath = cmd.includes('.pipeline');
-    const matchByScript = [...scriptNames].some(s => cmd.includes(s));
-    if (!matchByPath && !matchByScript) continue;
-    pidsToKill.add(p.pid);
-  }
 
   // Además, mata lo que escuche en el puerto del dashboard aunque su
   // commandLine no coincida (casos borde: proceso respawneado por watchdog
   // entre el scan y el kill).
   const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
   const dashOwner = findPidByPort(dashPort);
-  if (dashOwner && dashOwner !== process.pid) pidsToKill.add(dashOwner);
+
+  // #5722 (CA-5) — Se lee ANTES de borrar los .pid de más abajo. Los componentes
+  // escriben su propio PID al arrancar, así que estos archivos corroboran
+  // ownership de un node.exe cuya CommandLine es ilegible. Sin esta señal, el
+  // `if (!p.commandLine) continue` anterior dejaba escapar del kill principal a
+  // pulpo/servicios opacos, en silencio — el mismo modo de falla de #5704.
+  const declaredPids = readDeclaredPipelinePids();
+
+  const seleccion = portGuard.selectPipelinePidsToKill({
+    processes: scanNodeProcesses(),
+    scriptNames: [...scriptNames],
+    declaredPids,
+    dashOwner,
+    selfPid: process.pid,
+  });
+  for (const pid of seleccion.pids) pidsToKill.add(pid);
+  for (const o of seleccion.opacos) {
+    log(`  PID ${o.pid}: node con CommandLine ilegible, ${o.motivo} — se mata igual (#5722)`);
+  }
 
   if (pidsToKill.size === 0) {
     log('  No hay procesos del pipeline corriendo');
   } else {
     for (const pid of pidsToKill) {
-      try {
-        execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, stdio: 'ignore' });
-        log(`  Killed PID ${pid}`);
-      } catch {}
+      // #5722 (CA-3) — con fallback a `wmic call terminate` y verificación por
+      // pidAlive: `taskkill` puede reportar éxito (o "Acceso denegado" tragado)
+      // y dejar el proceso vivo.
+      const res = killPipelineProcess(pid);
+      if (res.killed) log(`  Killed PID ${pid} (${res.intentos[res.intentos.length - 1].label})`);
+      else log(`  PID ${pid} NO se pudo terminar: ${res.intentos.map(i => i.label).join(' → ')}`);
     }
     log(`  ${pidsToKill.size} proceso(s) eliminado(s)`);
   }
@@ -294,16 +403,22 @@ function killAll() {
 
   // Verificar que no quede nada (discovery fresco, no cache).
   invalidateCache();
-  const survivors = scanNodeProcesses().filter(p =>
-    p.commandLine && p.commandLine.includes('.pipeline') &&
-    !p.commandLine.includes('restart.js') &&
-    p.pid !== process.pid
-  );
+  // #5722 — misma regla que arriba: un superviviente con CommandLine ilegible
+  // no se perdona si el pipeline declaró ese PID. `declaredPids` se leyó al
+  // inicio de killAll(), antes de borrar los .pid.
+  const survivors = scanNodeProcesses().filter(p => {
+    if (!p.pid || p.pid === process.pid) return false;
+    const cmd = (p.commandLine || '').trim();
+    if (!cmd) return declaredPids.has(p.pid);
+    return cmd.includes('.pipeline') && !cmd.includes('restart.js');
+  });
   if (survivors.length > 0) {
     log('  Quedan procesos vivos — segundo intento:');
     for (const p of survivors) {
-      try { execSync(`taskkill /PID ${p.pid} /F /T`, { timeout: 5000, stdio: 'ignore' }); } catch {}
-      log(`    Force killed PID ${p.pid}`);
+      const res = killPipelineProcess(p.pid);
+      log(res.killed
+        ? `    Force killed PID ${p.pid} (${res.intentos[res.intentos.length - 1].label})`
+        : `    PID ${p.pid} SIGUE VIVO tras ${res.intentos.map(i => i.label).join(' → ')}`);
     }
   }
 }
@@ -316,46 +431,70 @@ function killAll() {
 // dashboard nuevo choca con EADDRINUSE, el smoke test falla 2× y se dispara un
 // rollback espurio a `pipeline-stable`.
 //
-// onHolder (SEC-2 / CA-2): antes de re-matar valida ownership por commandLine
-// (solo procesos del pipeline: `dashboard.js` o `.pipeline`), LOGUEA PID +
-// commandLine ANTES de matar (auditoría), y mata SOLO por PID numérico vía
-// taskkill (SEC-1 / CA-6: nada de `$(...)`, `fkill <puerto>` ni interpolar
-// salida de netstat). Un proceso ajeno que casualmente tome el puerto NO se
-// mata. Si el backoff se agota, degradamos al comportamiento actual (avanzar +
-// retry EADDRINUSE del dashboard) — nunca peor que hoy (CA-3).
-function freeDashboardPortOrAdvance() {
+// onHolder (SEC-2): antes de re-matar valida ownership, LOGUEA PID + imagen +
+// commandLine ANTES de matar (auditoría), y mata SOLO por PID numérico (SEC-1 /
+// CA-6: nada de `$(...)`, `fkill <puerto>` ni interpolar salida de netstat). Un
+// proceso ajeno que casualmente tome el puerto NO se mata.
+//
+// #5722 — La decisión de ownership se delega a `lib/port-guard`, que distingue
+// "no es un proceso node" (ajeno, se perdona) de "es node.exe con CommandLine
+// ilegible" (se trata como del pipeline). Y si el backoff se agota, esto ya NO
+// degrada a "avanzar igual": aborta ruidoso. Avanzar hacia un arranque que se
+// sabe condenado es lo que costó 20 h de pipeline caído — la supuesta "red
+// secundaria" del retry EADDRINUSE nunca existió, porque el puerto seguía tomado.
+const PORT_GUARD_ATTEMPTS = 6;
+const PORT_GUARD_DELAY_MS = 500;
+
+function freeDashboardPortOrAbort() {
   const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
-  const onHolder = (pid) => {
-    if (pid === process.pid) return;
-    const cmd = commandLineForPid(pid);
-    const owned = !!cmd && (cmd.includes('dashboard.js') || cmd.includes('.pipeline'));
-    log(`  [puerto ${dashPort}] holder PID ${pid} cmd=${cmd || '<desconocido>'}`); // auditoría ANTES de matar
-    if (!owned) {
-      log(`  [puerto ${dashPort}] PID ${pid} no es del pipeline — no se mata`);
-      return;
-    }
-    try {
-      execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, stdio: 'ignore' });
-      log(`  [puerto ${dashPort}] Re-killed PID ${pid}`);
-    } catch {}
-  };
-  const free = waitForPortFree(dashPort, { attempts: 6, delayMs: 500, onHolder });
-  if (free) {
+  const res = portGuard.freeDashboardPort(dashPort, {
+    waitForPortFree,
+    processForPid,
+    pidAlive,
+    selfPid: process.pid,
+    platform: process.platform,
+    attempts: PORT_GUARD_ATTEMPTS,
+    delayMs: PORT_GUARD_DELAY_MS,
+    log,
+    sleep,
+    // stdio 'pipe' (no 'ignore'): necesitamos el stderr del "Acceso denegado"
+    // para poder reportarlo. El fallback igual se decide con pidAlive.
+    exec: (cmd) => execSync(cmd, { timeout: 8000, stdio: 'pipe', windowsHide: true }),
+  });
+
+  if (res.free) {
     log(`  [puerto ${dashPort}] libre antes de launchAll()`);
-  } else {
-    log(`  [puerto ${dashPort}] sigue tomado tras backoff — se avanza igual (retry EADDRINUSE del dashboard como red secundaria)`);
+    return true;
   }
-  return free;
+
+  // CA-2 — fallar explícito y ruidoso. NO se encadena a rollback: volver a una
+  // revisión anterior deja el mismo holder vivo y reproduce el loop del incidente.
+  const alerta = portGuard.buildAbortAlert({
+    port: dashPort,
+    holder: res.holder,
+    platform: process.platform,
+    attempts: PORT_GUARD_ATTEMPTS,
+    delayMs: PORT_GUARD_DELAY_MS,
+  });
+  log(alerta.logText);
+  enqueueTelegramAlert(alerta.telegram);
+  // Exit code propio: permite que watchdog/supervisor distingan "puerto
+  // bloqueado, no reintentar en loop" de "falló otra cosa".
+  process.exit(portGuard.EXIT_PORT_BLOCKED);
 }
 
 // --- LAUNCH ---
 
+// #5646 — Devuelve los nombres de los componentes efectivamente lanzados. El
+// caller usa ESA lista (no una constante duplicada) para bajar pendientes del
+// registro de "código viejo": lo que no se lanzó, no se desmarca.
 function launchAll() {
   log('=== START ===');
 
   const logsDir = path.join(PIPELINE, 'logs');
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 
+  const lanzados = [];
   for (const comp of COMPONENTS) {
     // #4664 — pulpo y dashboard son los entrypoints del motor que migraron a
     // `core/` del kernel: se resuelven vía kernel-resolver (kernel migrado vs
@@ -387,10 +526,12 @@ function launchAll() {
     child.unref();
     fs.closeSync(logFd);
 
+    lanzados.push(comp.name);
     log(`  ${comp.name}: PID ${child.pid}`);
   }
 
   sleep(3000);
+  return lanzados;
 }
 
 // --- SMOKE TEST + TAG pipeline-stable + AUTO-ROLLBACK ---
@@ -616,8 +757,12 @@ switch (action) {
     } else {
       try { fs.unlinkSync(path.join(PIPELINE, '.paused')); } catch {}
     }
-    freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
-    launchAll();
+    freeDashboardPortOrAbort(); // #4308/#5722 — puerto 3200 libre, o abortar ruidoso
+    // #5646 — Estos componentes acaban de arrancar leyendo el código de disco:
+    // se bajan del registro de "código viejo" para que el watchdog no los
+    // reinicie de nuevo un minuto después. Lo que restart.js NO lanza (p. ej.
+    // `outbox-drain`) queda pendiente a propósito.
+    limpiarPendientesRelanzados(launchAll());
     const ok = status();
     log(ok ? '=== Pipeline operativo ===' : '=== Revisar componentes ===');
 
@@ -635,8 +780,11 @@ switch (action) {
       if (!smoke.ok && !flagNoRollback) {
         log('Primer smoke test FAIL — reintento tras limpieza de stragglers');
         killAll();
-        freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
-        launchAll();
+        // #5722 — si acá el puerto sigue tomado, esto aborta ruidoso y NO cae al
+        // rollback de más abajo: el rollback no libera un puerto ocupado, sólo
+        // reproduce el loop del incidente.
+        freeDashboardPortOrAbort(); // #4308/#5722
+        limpiarPendientesRelanzados(launchAll());
         sleep(5000);
         smoke = runSmokeTest();
         if (smoke.ok) log('Segundo smoke test OK tras retry — pipeline recuperado sin rollback');

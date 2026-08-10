@@ -222,6 +222,13 @@ function isMissingTestsReason(motivo) {
  *                                              pasa, este módulo no infiere
  *                                              infra (lo deja al caller).
  * @param {boolean} [opts.isRoutingMismatch=false] — flag externo del routing-classifier
+ * @param {boolean} [opts.veredictoSintetizadoPorPulpo=false] — #5641: el veredicto
+ *                                              lo sintetizó el Pulpo por exit code
+ *                                              ≠ 0 del agente (campo estructurado
+ *                                              `veredicto_sintetizado_por: 'pulpo'`
+ *                                              del deliverable, que el agente NO
+ *                                              puede escribir). Equivale al hint
+ *                                              `rebote_categoria: 'infra_agent_crash'`.
  *
  * @returns {{
  *   category: 'cross_phase'|'dependency_block'|'human_block'|'infra'|'code',
@@ -270,6 +277,32 @@ function classifyRebote(opts = {}) {
     // `preflightQaChecks` (corta antes de retornar `apk_missing`), pero si el
     // motivo `infra-no-apk` llega al barrido general por otra vía, lo
     // clasificamos explícitamente como infra que no penaliza.
+    // 1.4 infra_agent_crash — #5641
+    //
+    // El Pulpo sintetiza `resultado: rechazado` con un motivo que sólo reporta el
+    // exit code cuando el proceso del agente muere con código ≠ 0. Eso NO es un
+    // veredicto de contenido: el agente nunca llegó a opinar. Sin este bloque caía
+    // al fallback `code` (L~378) y consumía rebotes del circuit breaker de código
+    // que deberían ir al contador de infra.
+    //
+    // SEC-1 / CA-7 — se reconoce SÓLO por hint estructurado, nunca por el texto
+    // del `motivo`: ese campo lo escribe el agente, así que matchearlo por
+    // substring sería un vector de escalada (un agente podría citar el literal en
+    // un rechazo real y hacer que no penalice). CERO patrones de texto nuevos: la
+    // superficie ReDoS desaparece por construcción en vez de mitigarse.
+    //
+    // Va ANTES de `human_block` y del fallback `code` a propósito.
+    if (explicitCategory === 'infra_agent_crash' || opts.veredictoSintetizadoPorPulpo === true) {
+        return {
+            category: 'infra',
+            label: null,
+            dependsOn: [],
+            counts_against_circuit_breaker: false,
+            autounlock: null,
+            reason_summary: 'Caída del proceso del agente — no es veredicto de contenido, no penaliza circuit breaker',
+        };
+    }
+
     if (explicitCategory === 'infra_no_apk' || /infra[-_]no[-_]apk/i.test(motivo)) {
         return {
             category: 'infra',

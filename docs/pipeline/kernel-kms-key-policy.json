@@ -1,0 +1,37 @@
+{
+  "Version": "2012-10-17",
+  "Id": "intrale-kernel-store-cmk",
+  "Statement": [
+    {
+      "Sid": "AdminDelegatedToAccountIAM",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::ACCOUNT:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "RuntimeUseViaDynamoDBOnly",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::ACCOUNT:user/RUNTIME_PRINCIPAL"
+      },
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "dynamodb.REGION.amazonaws.com",
+          "kms:EncryptionContext:aws:dynamodb:tableName": [
+            "TABLE",
+            "COORD_TABLE"
+          ]
+        }
+      }
+    }
+  ]
+}

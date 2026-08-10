@@ -7,8 +7,10 @@
 //   - needs-human          → bloquea el flujo automático del pulpo
 //
 // El humano revisa desde el dashboard y:
-//   - aprueba: agrega `recommendation:approved` y quita `needs-human`. El
-//     pulpo lo recoge en el próximo intake.
+//   - aprueba: agrega `recommendation:approved` y quita los labels que frenan
+//     el intake — `needs-human` Y `needs:triage-backlog` (#5689 REQ-SEC-4: los
+//     dos, porque durante el split de #5678 conviven). El pulpo lo recoge en el
+//     próximo intake.
 //   - rechaza: cierra el issue con label `recommendation:rejected`.
 //
 // Este módulo encapsula la lógica de cache + acciones, sin acoplarse al
@@ -152,13 +154,42 @@ async function refreshCache({ ghRunner = defaultGhRunner, repo = 'intrale/platfo
     return cache;
 }
 
+// #5689 REQ-SEC-4 — labels que `approve()` debe SACAR para que la recomendación
+// entre efectivamente al intake.
+//
+// Por qué DOS y no uno: la secuencia obligatoria del split de #5678 mergea esta
+// parte ANTES de la migración del backlog (#5691). Eso abre una ventana donde
+// las recomendaciones todavía tienen `needs-human` y NO tienen todavía
+// `needs:triage-backlog`. Si `approve()` sacara sólo el nuevo, `needs-human`
+// quedaría puesto, el `--search` del intake seguiría excluyendo el issue, y el
+// operador vería `{ok:true, "entrará al pipeline"}` mientras el issue NUNCA
+// entra: éxito falso silencioso. Post-#5691 el caso se invierte.
+//
+// Sacar los dos es idempotente y sobrevive la ventana en ambas direcciones:
+// `gh issue edit --remove-label X` con X presente en el REPO pero ausente en el
+// ISSUE sale con exit 0 (no-op), y CA-1 de esta misma historia garantiza que
+// `needs:triage-backlog` existe en el repo. Se puede simplificar a uno solo una
+// vez que #5691 haya migrado el backlog entero.
+const TRIAGE_BACKLOG_LABEL = 'needs:triage-backlog';
+const APPROVE_REMOVE_LABELS = [NEEDS_HUMAN_LABEL, TRIAGE_BACKLOG_LABEL];
+
 function approve({ issue, ghRunner = defaultGhRunner, repo = 'intrale/platform' }) {
     const num = String(issue);
     const addLabel = ghRunner(['issue', 'edit', num, '--repo', repo, '--add-label', APPROVED_LABEL]);
     if (!addLabel.ok) return { ok: false, msg: `No se pudo agregar label aprobado: ${addLabel.stderr || addLabel.status}` };
-    const removeLabel = ghRunner(['issue', 'edit', num, '--repo', repo, '--remove-label', NEEDS_HUMAN_LABEL]);
-    if (!removeLabel.ok) {
-        return { ok: false, msg: `Aprobación parcial: agregado ${APPROVED_LABEL} pero falló remover ${NEEDS_HUMAN_LABEL}: ${removeLabel.stderr || removeLabel.status}` };
+    // Se intentan TODOS aunque uno falle: si abortáramos en el primer error,
+    // un fallo al remover `needs-human` dejaría `needs:triage-backlog` pegado
+    // (o viceversa) y el issue igual quedaría fuera del intake, pero además con
+    // el label de triaje colgado para siempre en la vista de bloqueados (R7).
+    const failed = [];
+    for (const label of APPROVE_REMOVE_LABELS) {
+        const r = ghRunner(['issue', 'edit', num, '--repo', repo, '--remove-label', label]);
+        if (!r.ok) failed.push(`${label} (${r.stderr || r.status})`);
+    }
+    if (failed.length) {
+        // Fail-closed: el issue queda AFUERA del intake y el operador ve el error,
+        // en vez de un éxito falso sobre un issue que nunca va a entrar.
+        return { ok: false, msg: `Aprobación parcial: agregado ${APPROVED_LABEL} pero falló remover ${failed.join(' · ')}` };
     }
     return { ok: true, msg: `Recomendación #${num} aprobada — entrará al pipeline en el próximo ciclo` };
 }
