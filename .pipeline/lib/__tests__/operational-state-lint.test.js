@@ -134,6 +134,105 @@ test('CA-6c · NO marca valores de dominio (wave.source !== "waves.json")', () =
     assert.equal(violations.length, 0);
 });
 
+// ─── Regla 1 · formas de EVASION del literal (rebote rev-2) ─────────────────
+//
+// El matcher original exigia la comilla PEGADA al nombre del archivo, asi que
+// cualquier literal que fuera FRAGMENTO DE PATH lo evadia sin entrar siquiera
+// al bucket BRUTO. Caso real: `views/dashboard/mizpa-frame.js:42`, un lector
+// vivo de `waves.json` ausente del inventario. Un test por forma.
+
+test('rebote rev-2 · detecta el literal con PREFIJO DE PATH relativo (caso mizpa-frame.js:42)', () => {
+    const root = makeTmpPipeline();
+    // Copia literal de la linea que evadia el matcher.
+    const src = [
+        "const path = require('path');",
+        "const WAVES_PATH = path.join(__dirname, '../../waves.json');",
+        "module.exports = { WAVES_PATH };",
+    ].join('\n');
+    placeJs(root, 'views/dashboard/marco.js', src);
+
+    const { violations } = lint.lint({ pipelineRoot: root, allowlist: emptyAllowlist() });
+    assert.equal(violations.length, 1, 'el prefijo de path no puede evadir el matcher');
+    assert.equal(violations[0].file, 'views/dashboard/marco.js');
+    assert.equal(violations[0].rule, 'path-level');
+    assert.equal(violations[0].line, lineOf(src, "'../../waves.json'"));
+});
+
+test('rebote rev-2 · el literal con prefijo entra al bucket BRUTO aunque se descarte', () => {
+    // `raw: 0` era lo grave del falso negativo: invisible incluso para la
+    // auditoria del delta bruto-vs-confirmado que publica el inventario.
+    const scan = I.lintSource('lib/x.js', [
+        "// el estado vive en '.pipeline/waves.json' y lo lee el dashboard",
+        "const path = require('path');",
+        "const p = path.join(dir, 'logs');",
+    ].join('\n'), emptyAllowlist());
+    assert.equal(scan.rawLiteralHits, 1, 'debe contarse en el bruto');
+    assert.equal(scan.commentHits, 1, 'y descartarse por linea comentada');
+    assert.equal(scan.violations.length, 0);
+});
+
+test('rebote rev-2 · detecta el prefijo de path con separador Windows', () => {
+    const root = makeTmpPipeline();
+    const src = [
+        "const path = require('path');",
+        "const p = path.resolve(base, '..\\\\.paused');",
+    ].join('\n');
+    placeJs(root, 'lib/win.js', src);
+    const { violations } = lint.lint({ pipelineRoot: root, allowlist: emptyAllowlist() });
+    assert.equal(violations.length, 1);
+    assert.equal(violations[0].rule, 'path-level');
+});
+
+test('rebote rev-2 · detecta la concatenacion con separador dentro del literal', () => {
+    const root = makeTmpPipeline();
+    const src = [
+        "const fs = require('fs');",
+        "const raw = fs.readFileSync(DIR + '/.partial-pause.json', 'utf8');",
+    ].join('\n');
+    placeJs(root, 'lib/concat.js', src);
+    const { violations } = lint.lint({ pipelineRoot: root, allowlist: emptyAllowlist() });
+    assert.equal(violations.length, 1);
+    assert.equal(violations[0].rule, 'path-level');
+});
+
+test('rebote rev-2 · el prefijo NO cruza el borde del literal (sin falsos positivos entre strings)', () => {
+    // `[^'"`\n]*` excluye comillas y saltos: el match no puede empezar en una
+    // comilla de OTRO literal y arrastrarse hasta el nombre del archivo.
+    const scan = I.lintSource('lib/y.js', [
+        "const path = require('path');",
+        "const p = path.join('logs/', dir, unrelated, 'waves.json');",
+    ].join('\n'), emptyAllowlist());
+    // Un solo hit bruto: el de `'waves.json'`. Si el prefijo cruzara comillas,
+    // el motor reportaria un match que arranca en `'logs/`.
+    assert.equal(scan.rawLiteralHits, 1);
+    assert.equal(scan.violations.length, 1);
+});
+
+test('rebote rev-2 · LIMITE CONOCIDO: la concatenacion partida del nombre NO se detecta', () => {
+    // Documentado a proposito en el inventario y en el comentario de
+    // STATE_LITERAL_RE. Si algun dia se cierra, este test avisa.
+    const scan = I.lintSource('lib/partido.js', [
+        "const path = require('path');",
+        "const p = path.join(dir, 'waves' + '.json');",
+    ].join('\n'), emptyAllowlist());
+    assert.equal(scan.rawLiteralHits, 0, 'limite conocido: nombre partido en dos literales');
+    assert.equal(scan.violations.length, 0);
+});
+
+test('rebote rev-2 · LIMITE CONOCIDO: la indireccion por constante lejana NO se detecta', () => {
+    // La declaracion de la constante entra al bruto, pero se descarta por falta
+    // de contexto de path si esta a mas de +-3 lineas del `path.join`.
+    const scan = I.lintSource('lib/indirecto.js', [
+        "const WAVES_FILE = 'waves.json';",
+        "", "", "", "", "",
+        "const path = require('path');",
+        "const p = path.join(dir, WAVES_FILE);",
+    ].join('\n'), emptyAllowlist());
+    assert.equal(scan.rawLiteralHits, 1);
+    assert.equal(scan.noCtxHits, 1, 'limite conocido: la constante queda fuera del radio');
+    assert.equal(scan.violations.length, 0);
+});
+
 test('CA-6c · NO marca lineas comentadas aunque haya un path.join de otra cosa cerca', () => {
     const root = makeTmpPipeline();
     // Caso verificado en `lib/wizards/ola/index.js:49`: comentario que menciona
@@ -819,6 +918,21 @@ test('rebote rev-1 · --report (markdown a GITHUB_STEP_SUMMARY) tampoco emite li
         violations: [{ file: `lib/evil${SPOOF}x.js`, line: 1, rule: 'path-level' }],
     });
     assertSinWorkflowCommands(md, '--report');
+});
+
+test('rebote rev-2 · el inventario se declara PISO y no promete equivalencia con `git grep`', () => {
+    // El artefacto se pega literal en #5109. Afirmar que el bruto es
+    // "comparable con un git grep" era FALSO: el bruto cuenta el literal
+    // entrecomillado, no toda mencion del nombre del archivo.
+    const md = I.formatReport({
+        scanned: 1, rawLiteralHits: 1, rawLiteralFiles: 1, commentHits: 0, noCtxHits: 0, confirmedHits: 1,
+        violations: [{ file: 'lib/x.js', line: 1, rule: 'path-level' }],
+    });
+    assert.ok(!/comparable con un `git grep`/.test(md), 'no debe prometer equivalencia con git grep');
+    assert.ok(/PISO auditable, no un censo/.test(md));
+    assert.ok(/## Limites conocidos del matcher/.test(md));
+    assert.ok(/'waves' \+ '\.json'/.test(md), 'declara la concatenacion partida');
+    assert.ok(/WAVES_FILE/.test(md), 'declara la indireccion por constante');
 });
 
 test('rebote rev-1 · el eco del fragmento de JSON.parse queda acotado (CA-3b: no volcar contenido)', () => {

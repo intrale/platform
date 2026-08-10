@@ -143,7 +143,32 @@ const SELF_EXEMPT = new Set([
 // ─── Regla 1 · path-level ───────────────────────────────────────────────────
 
 // Literal de estado. `g` — se resetea `lastIndex` por archivo.
-const STATE_LITERAL_RE = /['"`](?:waves\.json|\.partial-pause\.json|\.paused)['"`]/g;
+//
+// El prefijo de path opcional (`(?:[^'"`\n]*[\/\\])?`) NO es cosmético: sin él
+// la comilla tiene que estar PEGADA al nombre del archivo y cualquier literal
+// que sea FRAGMENTO DE PATH evade el matcher entero — ni siquiera entra al
+// bucket BRUTO, así que el falso negativo es invisible incluso para la
+// auditoría del delta. Caso real que motivó la corrección:
+//
+//     views/dashboard/mizpa-frame.js:42
+//     const WAVES_PATH = path.join(__dirname, '../../waves.json');
+//
+// Es un lector vivo de `waves.json` (lo consume `views/dashboard/logs.js`) que
+// quedaba fuera del inventario y por lo tanto fuera del checklist de migración
+// de las partes 2 y 3 de #5109: tras el flip a `--check` el guardrail habría
+// quedado VERDE con el bypass intacto.
+//
+// La clase de caracteres del prefijo excluye comillas y saltos de línea, así
+// que el match no puede cruzar el borde del literal.
+//
+// LÍMITES CONOCIDOS (declarados a propósito, no descubiertos por accidente):
+//   - concatenación partida: `'waves' + '.json'` → NO se detecta.
+//   - indirección por constante: `path.join(dir, WAVES_FILE)` sólo se detecta
+//     si la declaración de `WAVES_FILE` cae dentro del radio de confirmación
+//     de contexto (±3 líneas de un `path.*`/`fs.*Sync`).
+// Ambos están cubiertos por tests que fijan el comportamiento actual: si algún
+// día se cierran, el test avisa en vez de que el cambio pase inadvertido.
+const STATE_LITERAL_RE = /['"`](?:[^'"`\n]*[\/\\])?(?:waves\.json|\.partial-pause\.json|\.paused)['"`]/g;
 
 // Confirmación por contexto local: sin esto el literal es copy o dominio.
 const PATH_CTX_RE = /path\s*\.\s*(?:join|resolve)|fs\s*\.\s*[a-zA-Z]+Sync|require\(\s*['"]fs['"]\s*\)/;
@@ -531,8 +556,11 @@ function resolveWrapperBindings(src) {
  * Escanea un archivo. Devuelve `{ violations, rawLiteralHits, commentHits,
  * noCtxHits }`.
  *
- * `rawLiteralHits` = TODAS las ocurrencias del literal, comparable con un
- * `git grep`. Se descompone en tres buckets que particionan exacto:
+ * `rawLiteralHits` = todas las ocurrencias del literal ENTRECOMILLADO (con
+ * prefijo de path opcional). NO es equivalente a un `git grep` del nombre del
+ * archivo: `git grep` también cuenta menciones sin comillas (prosa, mensajes,
+ * concatenación partida). El bruto es un PISO auditable, no un censo.
+ * Se descompone en tres buckets que particionan exacto:
  *
  *     rawLiteralHits = commentHits + noCtxHits + (violations path-level)
  *
@@ -741,7 +769,10 @@ function formatReport(result) {
     L.push(`- Archivos JS en scope de \`walkJs\`: **${result.scanned}**`);
     L.push('');
     L.push('Descomposicion del literal de estado (`waves.json` / `.partial-pause.json` / `.paused`).');
-    L.push('Los tres buckets particionan exacto el numero bruto, comparable con un `git grep`:');
+    L.push('Los tres buckets particionan exacto el numero BRUTO. El bruto cuenta el literal');
+    L.push('ENTRECOMILLADO (con prefijo de path opcional): NO es equivalente a un `git grep`');
+    L.push('del nombre del archivo, que ademas cuenta menciones sin comillas. Este inventario');
+    L.push('es un PISO auditable, no un censo — ver LIMITES CONOCIDOS del matcher.');
     L.push('');
     L.push(`| bucket | ocurrencias | que es |`);
     L.push('|---|---:|---|');
@@ -792,6 +823,20 @@ function formatReport(result) {
     } else {
         for (const v of result.violations) L.push(`- \`${sanitizeForLog(v.file)}:${sanitizeForLog(v.line)}\` — ${sanitizeForLog(v.rule)}`);
     }
+    L.push('');
+    L.push('## Limites conocidos del matcher');
+    L.push('');
+    L.push('Este inventario es un **piso auditable**, no un censo. Formas de acceso que el');
+    L.push('matcher NO detecta hoy, declaradas explicitamente para que la migracion de las');
+    L.push('partes 2 y 3 no las de por cubiertas (cada una tiene test que fija la conducta):');
+    L.push('');
+    L.push('- concatenacion partida del nombre: `\'waves\' + \'.json\'`.');
+    L.push('- indireccion por constante (`path.join(dir, WAVES_FILE)`) cuando la declaracion');
+    L.push('  de la constante cae fuera del radio de +-3 lineas de confirmacion de contexto.');
+    L.push('- accesos desde archivos que no son `.js` (por ejemplo shell scripts): `walkJs`');
+    L.push('  solo recolecta `.js` — cubrirlos es otro issue (#5184).');
+    L.push('');
+    L.push('El prefijo de path SI esta cubierto (`path.join(__dirname, \'../../waves.json\')`).');
     return L.join('\n');
 }
 
