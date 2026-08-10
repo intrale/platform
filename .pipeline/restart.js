@@ -576,36 +576,65 @@ function runSmokeTest() {
 // nunca se corregía. `git tag -f` y el push son idempotentes: llamarlos
 // siempre es barato y cierra ese hueco.
 //
-// La guarda nueva es la inversa: NO mover el tag si el árbol de .pipeline/
+// La guarda nueva es la inversa: NO mover el tag si el CÓDIGO de .pipeline/
 // difiere de HEAD. Ese es exactamente el estado post-rollback (HEAD apunta a
 // un commit pero .pipeline/ en disco viene de otro). Taggear ahí grabaría como
 // "estable" un commit cuyo contenido no es el que pasó el smoke, y el próximo
 // rollback volvería a un punto que nunca se validó.
+//
+// OJO (bloqueante 1 de la review de #5723): mirar el diff crudo de `.pipeline/`
+// NO sirve. Hay estado runtime TRACKEADO que el pipeline reescribe durante el
+// propio boot — `telegram-health.json`, `process-transitions.jsonl`,
+// `metrics-history.jsonl`… — así que entre el `reset --hard` de syncWithMain()
+// y este punto el árbol está sucio SIEMPRE. Con el diff crudo el tag no
+// avanzaría jamás y encima alertaría en cada restart: la condición del
+// incidente del 2026-08-09 vuelta permanente. Por eso la lectura y el filtrado
+// viven en `guard.readDirtyPipelineCode()`, que descarta estado runtime pero
+// deja pasar cualquier extensión de código, esté donde esté.
+//
+// La lectura vive en el módulo (y no inline acá) para que los tests la
+// ejerciten de verdad: requerir restart.js dispararía un restart real, así que
+// mientras esto fuera inline no había forma de cubrirlo — y ese fue justamente
+// el hueco por el que se coló el bloqueante 1.
 function pipelineTreeDirty() {
-  try {
-    const out = execSync('git diff --name-only HEAD -- .pipeline/', {
-      cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true,
-    }).trim();
-    return out.length > 0 ? out.split('\n').filter(Boolean) : null;
-  } catch {
+  const { all, relevant, readFailed } = require('./lib/rollback-guard')
+    .readDirtyPipelineCode({ cwd: ROOT });
+  if (readFailed) {
     // Fail-open deliberado: si git no responde no podemos afirmar que el árbol
     // esté sucio, y bloquear el avance del tag por una lectura fallida nos
     // devuelve al problema original (tag que se queda atrás).
+    log('No se pudo leer el diff de .pipeline/ contra HEAD — se asume limpio y el tag avanza');
     return null;
   }
+  if (!relevant.length) {
+    if (all.length) {
+      log(`Árbol de .pipeline/ con ${all.length} archivo(s) modificados, todos estado runtime — no frenan el tag`);
+    }
+    return null;
+  }
+  return relevant;
 }
 
 function moveStableTag() {
   const dirty = pipelineTreeDirty();
   if (dirty) {
-    log(`Tag pipeline-stable NO se mueve: .pipeline/ en disco difiere de HEAD (${dirty.length} archivo(s), ej. ${dirty[0]})`);
+    log(`Tag pipeline-stable NO se mueve: el código de .pipeline/ en disco difiere de HEAD (${dirty.length} archivo(s))`);
+    for (const f of dirty.slice(0, 10)) log(`    - ${f}`);
+    if (dirty.length > 10) log(`    - ...y ${dirty.length - 10} más`);
     log('  Es el estado típico post-rollback. Taggear acá marcaría como estable algo que no es lo que corrió.');
     enqueueTelegramAlert(
       '⚠️ *Smoke test OK pero el tag `pipeline-stable` no avanzó.*\n\n' +
-      `El código de \`.pipeline/\` en disco no coincide con el commit actual (${dirty.length} archivo(s) difieren). ` +
-      'Suele pasar después de un rollback.\n\n' +
-      'Mientras siga así el tag queda atrás, y un próximo rollback puede borrar cambios buenos. ' +
-      'Para alinearlo: mergear el código que está corriendo, o `git checkout HEAD -- .pipeline/` si lo de disco ya no sirve.'
+      `El código de \`.pipeline/\` en disco no coincide con el commit actual. Difieren ${dirty.length} archivo(s):\n` +
+      dirty.slice(0, 10).map((f) => `• \`${f}\``).join('\n') +
+      (dirty.length > 10 ? `\n• ...y ${dirty.length - 10} más` : '') +
+      '\n\nSuele pasar después de un rollback. Mientras siga así el tag queda atrás, ' +
+      'y un próximo rollback puede borrar cambios buenos.\n\n' +
+      'Qué hacer:\n' +
+      '1. Si eso es código que querés conservar: mergealo.\n' +
+      '2. Si lo de disco ya no sirve: `git checkout HEAD -- .pipeline/`.\n' +
+      '3. Si alguno es estado runtime que el pipeline reescribe solo, no es código: ' +
+      'sumalo a `RUNTIME_STATE_FILES` en `.pipeline/lib/rollback-guard.js` (o a `.gitignore`) ' +
+      'para que deje de frenar el tag.'
     );
     return false;
   }

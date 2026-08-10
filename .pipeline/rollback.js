@@ -88,10 +88,20 @@ function sleep(ms) {
 
 /** Lectura de git que nunca lanza: devuelve '' si el comando falla. */
 function gitRead(cmd, timeout = 15000) {
+  return gitReadStrict(cmd, timeout).out;
+}
+
+/**
+ * Igual que gitRead pero distingue "salida vacía" de "el comando falló".
+ * Hace falta para no afirmar en el log que el diff está vacío (o sea, que no
+ * se pierde nada) cuando en realidad no lo pudimos leer — eso sería la misma
+ * ceguera que CA-3 viene a cerrar, sólo que con otra cara.
+ */
+function gitReadStrict(cmd, timeout = 15000) {
   try {
-    return execSync(cmd, { cwd: ROOT, encoding: 'utf8', timeout, windowsHide: true }).trim();
+    return { ok: true, out: execSync(cmd, { cwd: ROOT, encoding: 'utf8', timeout, windowsHide: true }).trim() };
   } catch {
-    return '';
+    return { ok: false, out: '' };
   }
 }
 
@@ -146,21 +156,32 @@ function planRollback() {
 
   // Diff en el sentido en el que el rollback mueve el árbol: de HEAD hacia el
   // target. Acotado a .pipeline/ porque el checkout también lo está.
+  //
+  // El registro NO se condiciona a la ancestría (bloqueante 2 de la review de
+  // #5723). `git diff A B` y `git log A..B` funcionan igual sin relación de
+  // ancestría, y con un target divergente — tag apuntando fuera de la historia
+  // de HEAD tras un force-push/rebase de main, o invocación manual
+  // `node .pipeline/rollback.js <sha>` — el rollback igual revierte. Si acá no
+  // registráramos nada, ese caso perdería código sin dejar rastro: exactamente
+  // la ceguera que CA-3 viene a cerrar. La ancestría alimenta sólo la severidad
+  // (`selfDestructive` vía decide()), nunca suprime el registro.
   const range = `${targetSha} ${headSha}`;
-  const changedFiles = ancestor
-    ? gitRead(`git diff --name-only ${range} -- .pipeline/`).split('\n').map((s) => s.trim()).filter(Boolean)
-    : [];
-  const diffstat = ancestor ? gitRead(`git diff --stat ${range} -- .pipeline/`) : '';
-  const shortstat = guard.parseShortstat(ancestor ? gitRead(`git diff --shortstat ${range} -- .pipeline/`) : '');
-  const commits = ancestor
-    ? guard.parseCommitList(gitRead(`git log --oneline --no-decorate --no-merges ${targetSha}..${headSha}`))
-    : [];
+  const changedFiles = gitRead(`git diff --name-only ${range} -- .pipeline/`)
+    .split('\n').map((s) => s.trim()).filter(Boolean);
+  const diffRead = gitReadStrict(`git diff --stat ${range} -- .pipeline/`);
+  const diffstat = diffRead.out;
+  const diffReadFailed = !diffRead.ok;
+  const shortstat = guard.parseShortstat(gitRead(`git diff --shortstat ${range} -- .pipeline/`));
+  // `A..B` con A y B divergentes lista los commits de B que no están en A, que
+  // es justamente lo que el checkout se lleva puesto. Es la respuesta correcta
+  // también en el caso divergente.
+  const commits = guard.parseCommitList(
+    gitRead(`git log --oneline --no-decorate --no-merges ${targetSha}..${headSha}`)
+  );
   // Para los refs a issues miramos subject + body de TODOS los commits
   // (incluidos los merges): el `Closes #N` del body es el issue real, mientras
   // que el `#N` del subject de un squash suele ser el número del PR.
-  const issues = ancestor
-    ? guard.extractIssueRefs(gitRead(`git log --format=%s%n%b ${targetSha}..${headSha}`))
-    : [];
+  const issues = guard.extractIssueRefs(gitRead(`git log --format=%s%n%b ${targetSha}..${headSha}`));
 
   const lifecycleTouched = guard.touchesLifecycle(changedFiles);
   const decision = guard.decide({
@@ -171,7 +192,7 @@ function planRollback() {
     state: guard.readState(),
   });
 
-  return { targetSha, headSha, ancestor, changedFiles, diffstat, shortstat, commits, issues, lifecycleTouched, decision };
+  return { targetSha, headSha, ancestor, changedFiles, diffstat, diffReadFailed, shortstat, commits, issues, lifecycleTouched, decision };
 }
 
 /**
@@ -182,6 +203,13 @@ function planRollback() {
 function logDiffPreview(plan) {
   log(`  HEAD actual: ${plan.headSha || 'desconocido'}`);
   log(`  ¿Target es ancestro de HEAD?: ${plan.ancestor ? 'sí' : 'no'}`);
+  if (!plan.ancestor) {
+    // Caso divergente: el target no está en la historia de HEAD (force-push o
+    // rebase de main, o invocación manual con un sha suelto). El checkout se
+    // lleva puesto código igual, así que el registro de abajo importa MÁS acá.
+    log('    OJO: el target no está en la historia de HEAD. El rollback no "vuelve atrás":');
+    log('    mueve .pipeline/ a una rama distinta de la historia. Revisá el detalle de abajo.');
+  }
   const lifecycleHits = plan.changedFiles.filter((f) => guard.LIFECYCLE_FILES.includes(f));
   log(`  ¿Toca archivos del lifecycle?: ${lifecycleHits.length ? 'SÍ — ' + lifecycleHits.join(', ') : 'no'}`);
   if (plan.commits.length) {
@@ -194,6 +222,12 @@ function logDiffPreview(plan) {
   if (plan.diffstat) {
     log('  Diffstat de lo que se está por revertir:');
     for (const line of plan.diffstat.split('\n')) log(`    ${line}`);
+  } else if (plan.diffReadFailed) {
+    // No afirmar que no se pierde nada cuando en realidad no lo pudimos leer:
+    // esa es la misma ceguera que CA-3 viene a cerrar, con otra cara.
+    log('  NO SE PUDO LEER EL DIFFSTAT: git no respondió. No hay forma de saber qué se pierde.');
+    log('  Antes de dar por bueno este rollback, mirá a mano:');
+    log(`    git diff --stat ${plan.targetSha || '<target>'} ${plan.headSha || 'HEAD'} -- .pipeline/`);
   } else {
     log('  Diffstat vacío: .pipeline/ es idéntico entre el target y HEAD');
   }

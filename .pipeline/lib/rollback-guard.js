@@ -37,9 +37,14 @@
 //     un halt quedaría pegado para siempre, porque el restart relanzado por
 //     el rollback corre con el código VIEJO (revertido) que no sabe resetear.
 //
-// Este módulo es lógica pura + IO de estado: no ejecuta git ni spawnea nada.
-// Los comandos git los ejecuta rollback.js y le pasa los resultados. Así todo
-// lo que decide es testeable con `node --test`.
+// Este módulo es lógica pura + IO de estado. Los comandos git de rollback.js
+// los ejecuta rollback.js y le pasa los resultados, así todo lo que decide es
+// testeable con `node --test`. La única excepción es
+// `readDirtyPipelineCode()`, que sí corre un `git diff` acotado: vive acá —y no
+// inline en restart.js— porque requerir restart.js dispara un restart real, y
+// esa imposibilidad de testear fue exactamente por donde se coló el bloqueante 1
+// de la review de #5723. El runner git es inyectable y `cwd` es parámetro, así
+// que los tests lo ejercitan contra repos temporales de verdad.
 // =============================================================================
 
 'use strict';
@@ -61,6 +66,160 @@ const LIFECYCLE_FILES = [
     '.pipeline/watchdog.ps1',
     '.pipeline/smoke-test.js',
 ];
+
+// -----------------------------------------------------------------------------
+// Clasificación código vs estado runtime (#5723 — bloqueante 1 de la review)
+//
+// `moveStableTag()` no debe taggear como estable un árbol cuyo CÓDIGO en disco
+// no es el de HEAD (el estado típico post-rollback). Pero la detección ingenua
+// `git diff --name-only HEAD -- .pipeline/` es inservible: `.pipeline/` tiene
+// archivos de estado runtime TRACKEADOS que el propio pipeline reescribe
+// mientras corre, así que el árbol está sucio SIEMPRE y el tag no avanzaría
+// nunca — justo la condición que causó el incidente del 2026-08-09, vuelta
+// permanente por diseño.
+//
+// Criterio (asimétrico a propósito, fail-closed hacia "es código"):
+//   1. Si la extensión es de código ejecutable → CÓDIGO. Gana sobre todo lo
+//      demás: un .js nuevo dentro de un dir de estado sigue siendo código.
+//      Esto es lo que impide que la lista abra la puerta a saltear cambios de
+//      código reales.
+//   2. Si está en la lista explícita de estado runtime → ESTADO.
+//   3. Si cuelga de un dir que sólo contiene estado/artefactos → ESTADO.
+//   4. Cualquier otra cosa → DESCONOCIDO, y cuenta como sucio. Un archivo de
+//      config nuevo (agent-models.json, priority-windows.json…) frena el tag
+//      hasta que alguien lo clasifique a mano, que es el lado seguro del error.
+// -----------------------------------------------------------------------------
+
+/**
+ * Extensiones que SIEMPRE son código/config ejecutable del pipeline.
+ * Tienen prioridad sobre RUNTIME_STATE_FILES y RUNTIME_STATE_DIRS.
+ */
+const PIPELINE_CODE_EXTENSIONS = new Set([
+    '.js', '.cjs', '.mjs', '.ps1', '.sh', '.bat', '.yaml', '.yml',
+]);
+
+/**
+ * Archivos de estado runtime TRACKEADOS que el pipeline reescribe en caliente.
+ * Verificado sobre el repo vivo el 2026-08-10: `git diff --name-only HEAD --
+ * .pipeline/` los devuelve segundos después de cada boot.
+ * (Muchos otros ya están gitignored y por eso nunca aparecen en el diff.)
+ */
+const RUNTIME_STATE_FILES = new Set([
+    '.pipeline/credential-reminder-state.json',
+    '.pipeline/issue-manual-order.json',
+    '.pipeline/metrics-history.jsonl',
+    '.pipeline/partial-pause-deps-cache.json',
+    '.pipeline/process-transitions.jsonl',
+    '.pipeline/runtime-boot.json',
+    '.pipeline/skill-profiles.json',
+    '.pipeline/telegram-health.json',
+]);
+
+/**
+ * Directorios que sólo contienen estado runtime: colas de trabajo, snapshots,
+ * evidencia y artefactos generados. No hay código adentro (verificado con
+ * `git ls-files ... | grep -E '\.(js|ps1|sh)$'` → vacío), y si algún día lo
+ * hubiera, la regla 1 (extensión) lo sigue clasificando como código.
+ */
+const RUNTIME_STATE_DIRS = [
+    '.pipeline/state/',
+    '.pipeline/logs/',
+    '.pipeline/audit/',
+    '.pipeline/handoff/',
+    '.pipeline/sessions/',
+    '.pipeline/deliverables/',
+    '.pipeline/servicios/',
+    '.pipeline/desarrollo/',
+    '.pipeline/definicion/',
+];
+
+/** Normalizar un path al formato de `git diff --name-only` (slashes unix). */
+function normalizeRepoPath(file) {
+    return String(file == null ? '' : file).trim().replace(/\\/g, '/');
+}
+
+/**
+ * Clasificar un archivo cambiado bajo `.pipeline/`.
+ * @returns {'code'|'runtime-state'|'unknown'}
+ */
+function classifyPipelineChange(file) {
+    const f = normalizeRepoPath(file);
+    if (!f) return 'unknown';
+
+    // 1. La extensión manda: código es código esté donde esté.
+    const dot = f.lastIndexOf('.');
+    const slash = f.lastIndexOf('/');
+    const ext = dot > slash ? f.slice(dot).toLowerCase() : '';
+    if (PIPELINE_CODE_EXTENSIONS.has(ext)) return 'code';
+
+    // 2. Lista explícita de estado runtime.
+    if (RUNTIME_STATE_FILES.has(f)) return 'runtime-state';
+
+    // 3. Dirs que sólo contienen estado runtime.
+    if (RUNTIME_STATE_DIRS.some((d) => f.startsWith(d))) return 'runtime-state';
+
+    // 4. Fail-closed: lo que no sabemos clasificar cuenta como sucio.
+    return 'unknown';
+}
+
+/**
+ * Filtrar una lista de archivos cambiados dejando sólo los que deben frenar el
+ * avance de `pipeline-stable` (código + desconocidos). El estado runtime se
+ * descarta porque cambia solo, sin que nadie haya tocado el código.
+ */
+function filterRelevantChanges(changedFiles) {
+    if (!Array.isArray(changedFiles)) return [];
+    return changedFiles
+        .map(normalizeRepoPath)
+        .filter(Boolean)
+        .filter((f) => classifyPipelineChange(f) !== 'runtime-state');
+}
+
+/**
+ * Runner git por defecto. Único punto del módulo que toca el proceso; existe
+ * para que `readDirtyPipelineCode()` sea invocable sin plomería desde
+ * restart.js y, a la vez, ejercitable de verdad desde los tests apuntando
+ * `cwd` a un repo git temporal.
+ */
+function defaultGitRunner(cmd, cwd) {
+    // require perezoso: mantiene el módulo cargable en contextos sin child_process.
+    const { execSync } = require('child_process');
+    return execSync(cmd, { cwd, encoding: 'utf8', timeout: 10000, windowsHide: true });
+}
+
+/**
+ * Leer qué archivos de `.pipeline/` difieren de HEAD en el árbol de trabajo y
+ * separarlos en CÓDIGO (frena el avance de `pipeline-stable`) vs ESTADO RUNTIME
+ * (no frena nada: el pipeline lo reescribe solo en cada boot).
+ *
+ * Vive acá y no inline en restart.js por el bloqueante 1 de la review de #5723:
+ * la versión inline no tenía forma de testearse — requerir restart.js dispara
+ * un restart real — y el bug se coló justamente ahí. Con esto los tests
+ * ejercitan el MISMO código que corre en producción, contra git de verdad.
+ *
+ * @param {{cwd?: string, run?: (cmd: string, cwd: string) => string}} opts
+ * @returns {{all: string[], relevant: string[], readFailed: boolean}}
+ *   - `all`: todo lo que difiere de HEAD bajo `.pipeline/`.
+ *   - `relevant`: sólo lo que debe frenar el tag (código + no clasificados).
+ *   - `readFailed`: true si git no respondió. El llamador debe tratarlo como
+ *     "no sé" y NO como "está limpio" ni como "está sucio".
+ */
+function readDirtyPipelineCode(opts = {}) {
+    const cwd = opts.cwd || process.cwd();
+    const run = typeof opts.run === 'function' ? opts.run : defaultGitRunner;
+    let out;
+    try {
+        out = run('git diff --name-only HEAD -- .pipeline/', cwd);
+    } catch {
+        return { all: [], relevant: [], readFailed: true };
+    }
+    const all = String(out == null ? '' : out)
+        .trim()
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+    return { all, relevant: filterRelevantChanges(all), readFailed: false };
+}
 
 /** Rollbacks consecutivos hacia el mismo target que se toleran antes de cortar. */
 const CONSECUTIVE_THRESHOLD = 2;
@@ -398,6 +557,12 @@ function buildHaltAlert(ctx) {
 module.exports = {
     STATE_FILE,
     LIFECYCLE_FILES,
+    PIPELINE_CODE_EXTENSIONS,
+    RUNTIME_STATE_FILES,
+    RUNTIME_STATE_DIRS,
+    classifyPipelineChange,
+    filterRelevantChanges,
+    readDirtyPipelineCode,
     CONSECUTIVE_THRESHOLD,
     STALE_MS,
     defaultState,
