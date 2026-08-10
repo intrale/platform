@@ -715,6 +715,7 @@ function splitChildrenMissingFromAllowlist(pIn = {}) {
         if (seen.has(child)) continue;                         // duplicado en el input
         const parent = parentOfSplitOrphan(issue);
         if (!parent) continue;                                 // SO-4/SO-6: sólo hijos de split
+        if (!inWave.has(parent)) continue;                     // CA-6: padre fuera de ola → default-deny
         if (!trusted(issue)) continue;                         // SO-7
         let blocking;
         try {

@@ -1153,6 +1153,15 @@ test('#5516 SO-9 sólo mira la ola: un hijo fuera de la ola no entra a la allowl
     assert.deepEqual(gap.missing, []);
 });
 
+test('#5516 SO-9 default-deny: un hijo en la ola con padre fuera de la ola no entra a la allowlist', () => {
+    const gap = sor.splitChildrenMissingFromAllowlist({
+        issues: [child(6001, 4200)],
+        waveIssues: [5340, 6001],
+        allowlistIssues: [5340],
+    });
+    assert.deepEqual(gap.missing, [], 'SO-9 exige que el padre declarado pertenezca a la ola activa');
+});
+
 test('#5516 SO-9 alcance acotado: un issue de la ola SIN título de split no se toca', () => {
     // Importante para no convertir esto en un realign general de la allowlist:
     // sólo convergen HIJOS DE SPLIT (título canónico, SO-4).
