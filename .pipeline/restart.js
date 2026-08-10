@@ -105,7 +105,68 @@ function sleep(ms) {
 
 // --- SYNC: actualizar repo principal con main ---
 
+// #5646 — Marca en `stale-services.json` los componentes cuyo código cambió con
+// el reset. NUNCA lanza: el sync no puede romperse por el marcado.
+// Los paths que se loguean vienen del contenido del commit y ya salen
+// sanitizados del helper (REQ-SEC-5646-8): un path con CR/LF embebido no puede
+// falsificar líneas en `pulpo.log`.
+function marcarComponentesConCodigoViejo(prevHead, head) {
+  try {
+    const stale = require('./lib/stale-services');
+    const res = stale.computeAffectedComponents({
+      prevSha: prevHead || undefined,
+      headSha: head,
+      repoRoot: ROOT,
+      pipelineDir: PIPELINE,
+    });
+    if (!res.components.length) {
+      // CA-2 / UX G-1: el caso "no afectó a nadie" también deja una línea; sin
+      // ella, el log silencioso es indistinguible de "no corrió".
+      log('restart selectivo: sin componentes afectados por el reset');
+      return;
+    }
+    const mark = stale.markAffected(res.components, { sha: res.headSha, reasons: res.reasons });
+    for (const r of res.reasons) {
+      if (!mark.marked.includes(r.component)) continue;
+      log(`restart selectivo: ${r.component} quedó con código viejo — cambio en ${r.path}`);
+    }
+  } catch (e) {
+    log(`Warning: no se pudo marcar servicios con código viejo: ${(e && e.message || '').slice(0, 80)}`);
+  }
+}
+
+// #5646 (CA-3, corregido por PO sobre P-1 de guru) — Baja del registro de
+// pendientes SÓLO los componentes que `launchAll()` relanzó de verdad. La lista
+// se DERIVA de lo efectivamente lanzado, no de una constante duplicada: limpiar
+// el registro entero desmarcaría `outbox-drain` (que no está en COMPONENTS de
+// este archivo) sin haberlo relanzado jamás → quedaría con código viejo, en
+// silencio y para siempre, que es el fail-open que cierra CA-5.
+function limpiarPendientesRelanzados(lanzados) {
+  if (!Array.isArray(lanzados) || !lanzados.length) return;
+  try {
+    const stale = require('./lib/stale-services');
+    const res = stale.clearComponents(lanzados);
+    if (res.cleared.length) {
+      log(`restart selectivo: ${res.cleared.join(', ')} relanzados por restart.js — pendiente dado de baja`);
+    }
+    const restantes = stale.readPending();
+    if (restantes.components.length) {
+      log(`restart selectivo: siguen pendientes para el watchdog: ${restantes.components.join(', ')}`);
+    }
+  } catch (e) {
+    log(`Warning: no se pudieron limpiar pendientes: ${(e && e.message || '').slice(0, 80)}`);
+  }
+}
+
 function syncWithMain() {
+  // #5646 — HEAD ANTES del reset. Es la referencia contra la que se calcula qué
+  // componentes quedaron con código viejo. Se captura acá (no después) porque
+  // el `reset --hard` de abajo la destruye. Best-effort: si no se puede
+  // resolver, el marcado usa el boot marker como referencia.
+  let prevHead = null;
+  try {
+    prevHead = execSync('git rev-parse HEAD', { cwd: ROOT, timeout: 10000, windowsHide: true, encoding: 'utf8' }).trim();
+  } catch { /* sin referencia previa: se resuelve más abajo con el boot marker */ }
   try {
     execSync('git fetch origin main', { cwd: ROOT, timeout: 30000, windowsHide: true });
     // #4577 GATE 3 — INVARIANTE log-antes-de-mutar (RS-2/RS-6): registrar el
@@ -139,6 +200,13 @@ function syncWithMain() {
     // trata como estado desconocido, nunca como "sin pendientes").
     try {
       const head = execSync('git rev-parse HEAD', { cwd: ROOT, timeout: 10000, windowsHide: true, encoding: 'utf8' }).trim();
+      // #5646 — Marcar qué componentes quedaron con código viejo por este reset.
+      // `restart.js` relanza los suyos en `launchAll()` y los baja del registro
+      // ahí mismo; lo que queda pendiente (típicamente `outbox-drain`, que NO
+      // está en COMPONENTS de este archivo) lo relanza el watchdog. Va ANTES de
+      // `writeBootMarker` sólo por orden de lectura: el cómputo usa `prevHead`
+      // explícito, no el marker.
+      marcarComponentesConCodigoViejo(prevHead, head);
       const res = require('./lib/runtime-boot').writeBootMarker(head, { pipelineDir: PIPELINE });
       if (res && res.ok) log(`Boot marker actualizado: ${head.slice(0, 8)}`);
     } catch (e2) {
@@ -350,12 +418,16 @@ function freeDashboardPortOrAdvance() {
 
 // --- LAUNCH ---
 
+// #5646 — Devuelve los nombres de los componentes efectivamente lanzados. El
+// caller usa ESA lista (no una constante duplicada) para bajar pendientes del
+// registro de "código viejo": lo que no se lanzó, no se desmarca.
 function launchAll() {
   log('=== START ===');
 
   const logsDir = path.join(PIPELINE, 'logs');
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 
+  const lanzados = [];
   for (const comp of COMPONENTS) {
     // #4664 — pulpo y dashboard son los entrypoints del motor que migraron a
     // `core/` del kernel: se resuelven vía kernel-resolver (kernel migrado vs
@@ -387,10 +459,12 @@ function launchAll() {
     child.unref();
     fs.closeSync(logFd);
 
+    lanzados.push(comp.name);
     log(`  ${comp.name}: PID ${child.pid}`);
   }
 
   sleep(3000);
+  return lanzados;
 }
 
 // --- SMOKE TEST + TAG pipeline-stable + AUTO-ROLLBACK ---
@@ -617,7 +691,11 @@ switch (action) {
       try { fs.unlinkSync(path.join(PIPELINE, '.paused')); } catch {}
     }
     freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
-    launchAll();
+    // #5646 — Estos componentes acaban de arrancar leyendo el código de disco:
+    // se bajan del registro de "código viejo" para que el watchdog no los
+    // reinicie de nuevo un minuto después. Lo que restart.js NO lanza (p. ej.
+    // `outbox-drain`) queda pendiente a propósito.
+    limpiarPendientesRelanzados(launchAll());
     const ok = status();
     log(ok ? '=== Pipeline operativo ===' : '=== Revisar componentes ===');
 
@@ -636,7 +714,7 @@ switch (action) {
         log('Primer smoke test FAIL — reintento tras limpieza de stragglers');
         killAll();
         freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
-        launchAll();
+        limpiarPendientesRelanzados(launchAll());
         sleep(5000);
         smoke = runSmokeTest();
         if (smoke.ok) log('Segundo smoke test OK tras retry — pipeline recuperado sin rollback');
