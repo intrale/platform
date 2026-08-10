@@ -17312,10 +17312,21 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
     // La ola es la fuente de verdad de qué se debe trabajar y ya fue promovida
     // atómicamente: sumarlos no otorga permisos nuevos.
     //
-    // Frontera (fail-closed, SEC-1/SEC-4): se exige `added = []` (no hay extras
-    // que realinear revocaría en silencio), estado CONFIRMADO de cada faltante
-    // (nada `undefined`) y pertenencia a la ola activa. Cualquier incumplimiento
-    // cae al camino conservador de más abajo.
+    // Frontera (fail-closed, SEC-1): se exige `added = []` (no hay extras que
+    // realinear revocaría en silencio), estado CONFIRMADO de cada faltante y
+    // pertenencia a la ola activa. Cualquier incumplimiento cae al camino
+    // conservador de más abajo.
+    //
+    // OJO con `estadoConfirmado` (SEC-4): NO rechaza nada en producción. El
+    // predicado real es `makeIsClosedFromTitleCache()`, que devuelve
+    // `Boolean(...)` — un cache miss se lee como ABIERTO, nunca `undefined`.
+    // Eso es lo DESEADO acá: los hijos de un split recién creados (#5689-#5691)
+    // todavía no están en el title-cache, y tratarlos como indeterminados los
+    // devolvería al human-block que este código vino a eliminar. El guard queda
+    // como seguro del seam de test `opts.isClosed` y de un futuro predicado que
+    // consulte GitHub y pueda no saber; no es una garantía vigente de que "el
+    // estado indeterminado nunca habilita una mutación". Ver waves-schema.md
+    // (§Recuperación ante desync) antes de "arreglarlo" volviéndolo tri-estado.
     const sinExtras = Array.isArray(probe.added) && probe.added.length === 0;
     const faltantes = (Array.isArray(probe.removed) ? probe.removed : [])
       .filter((n) => Number.isInteger(n) && n > 0);

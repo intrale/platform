@@ -151,9 +151,9 @@ function desyncChips(d) {
 // el dispatch suspendido por desync el mensaje tiene que nombrar el bloqueo
 // real; sin bloqueo vuelve al texto de siempre (que sí es correcto entonces).
 const DESYNC_EMPTY_DEFAULT = 'No hay agentes corriendo. Verificar pausa parcial, cola y blocked:dependencies.';
-function desyncEmptyStateText(d) {
+function desyncEmptyStateText(d, nowMs) {
     if (!d || d.bloqueado !== true) return DESYNC_EMPTY_DEFAULT;
-    const edad = desyncAgeText(d.detectedAt);
+    const edad = desyncAgeText(d.detectedAt, nowMs);
     const sufijo = edad ? ` (${edad})` : '';
     return `Dispatch suspendido por divergencia allowlist↔ola${sufijo}: el Pulpo no lanza agentes hasta converger. No es la cola ni la pausa parcial.`;
 }
@@ -182,7 +182,7 @@ function buildDesyncPresentation(raw, nowMs) {
         edad: desyncAgeText(d.detectedAt, nowMs),
         chips: desyncChips(d),
         accion: d.bloqueado ? DESYNC_ACCION_BLOQUEADO : '',
-        emptyState: desyncEmptyStateText(d),
+        emptyState: desyncEmptyStateText(d, nowMs),
     };
 }
 

@@ -66,6 +66,16 @@ try {
     } = require('./desync-block-banner.js'));
 } catch { /* opcional */ }
 
+// El ícono del banner es un `<use href="#ic-pause-lock">`: sin el sprite
+// inlineado en el documento no resuelve y el banner queda sin su símbolo de
+// alarma (#5724 rev-3). Esta vista no cargaba ningún sprite.
+let _loadIconSprite = () => '';
+try {
+    // eslint-disable-next-line global-require
+    const nav = require('./nav-tabs');
+    if (typeof nav.loadIconSprite === 'function') _loadIconSprite = nav.loadIconSprite;
+} catch { /* opcional */ }
+
 const slug = 'onboarding';
 
 // Interfaces/skills reconocidos por el kernel — se reflejan como opciones del
@@ -552,6 +562,7 @@ function renderOnboarding() {
         + '<style>' + loadThemeCss() + '</style>'
         + '<style>' + _DSB_CSS + '</style>'
         + '</head><body style="background:var(--in-bg,#0D1117);color:var(--in-fg,#e6edf3);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:24px">'
+        + '<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">' + _loadIconSprite() + '</div>'
         + '<div style="max-width:760px;margin:0 auto">'
         + '<a href="/dashboard" style="color:var(--brand-cyan,#00D6FF);text-decoration:none;font-size:12px">← Volver al dashboard</a>'
         + _dsbRender(_dsbResolve())

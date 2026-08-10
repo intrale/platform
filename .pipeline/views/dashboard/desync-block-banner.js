@@ -39,15 +39,44 @@ const desyncCopy = require('../../lib/desync-copy.js');
 // una superficie que nadie visitaba. El slice es READ-ONLY (skipFlag/skipAlert)
 // y el require es perezoso + envuelto: si el módulo no carga, la página
 // renderiza igual (sin banner) en vez de romper.
+// Caché de 2 s. Antes esto era UNA lectura por request del endpoint; ahora el
+// SSR lo resuelve en cada render de cada ventana (19 superficies), y cada
+// resolución es I/O sincrónico sobre waves/partial-pause/flag. 2 s es más corto
+// que el poll del cliente (15 s), así que no cambia la frescura observable: el
+// banner sigue actualizándose por hidratación, y una recarga manual nunca ve
+// datos de más de 2 s. `explicit` (el call-site que ya lo tiene precomputado)
+// sigue teniendo prioridad y no toca la caché.
+// `_dsbCacheLleno` en vez de comparar `_dsbCache !== null`: el estado degradado
+// (slice caído → null) también se cachea. Si no, justo el caso que más I/O
+// desperdicia sería el único que reintenta en cada render de cada ventana.
+const _DSB_TTL_MS = 2000;
+let _dsbCache = null;
+let _dsbCacheLleno = false;
+let _dsbCacheAt = 0;
 function resolveDesyncStatus(explicit) {
     if (explicit && typeof explicit === 'object') return explicit;
+    const ahora = Date.now();
+    if (_dsbCacheLleno && (ahora - _dsbCacheAt) < _DSB_TTL_MS) return _dsbCache;
+    let valor = null;
     try {
         const slices = require('../../lib/dashboard-slices.js');
-        if (!slices || typeof slices.desyncStatusSlice !== 'function') return null;
-        return slices.desyncStatusSlice({}, {});
+        if (slices && typeof slices.desyncStatusSlice === 'function') {
+            valor = slices.desyncStatusSlice({}, {});
+        }
     } catch {
-        return null;
+        valor = null;
     }
+    _dsbCache = valor;
+    _dsbCacheLleno = true;
+    _dsbCacheAt = ahora;
+    return valor;
+}
+
+// Helper de test: invalida la caché para que cada caso arranque limpio.
+function _resetDesyncStatusCacheForTests() {
+    _dsbCache = null;
+    _dsbCacheLleno = false;
+    _dsbCacheAt = 0;
 }
 
 function _chipsSsr(chips) {
@@ -108,15 +137,33 @@ function renderDesyncBlockBannerSsr(desyncStatus) {
 // el header, `data-active` gobierna el display, 0px cuando no aplica. Usa el
 // rojo --danger del design system y no el ámbar de la cuota: esto no es una
 // degradación parcial, el pipeline entero deja de lanzar agentes.
+//
+// CADENA DE FALLBACK DEL ROJO (#5724 rev-3, defecto B1)
+// -----------------------------------------------------
+// `--danger` / `--danger-bg` se definen en UN SOLO archivo (assets/design-tokens.css)
+// y 10 de las 16 ventanas que montan este banner NO lo cargan: sólo cargan
+// `views/dashboard/theme.css`, que no define esos tokens. Con `var(--danger)` a
+// secas la declaración es *invalid at computed-value time* y se caían background,
+// border, border-left, color del ícono, chips, borde del CTA y outline del focus:
+// el banner quedaba texto plano justo donde tiene que gritar.
+//
+// La cadena se resuelve UNA vez acá y se expone como alias local para que ningún
+// call-site futuro pueda volver a olvidarla:
+//   --danger  (design-tokens.css) → --in-bad      (theme.css) → literal
+// El literal final es el mismo #F85149 de design-tokens.css, así que las tres
+// ramas pintan idéntico; sólo cambia de dónde sale. Consecuencia: el banner es
+// AUTOSUFICIENTE — se ve rojo en cualquier shell, cargue o no design-tokens.css.
 const DESYNC_BLOCK_BANNER_CSS = `
 .desync-block-banner {
+    --dsb-danger: var(--danger, var(--in-bad, #f85149));
+    --dsb-danger-bg: var(--danger-bg, var(--in-bad-soft, rgba(248, 81, 73, 0.14)));
     display: none;
     margin: 0 22px 10px;
     padding: 14px 18px;
-    background: var(--danger-bg);
+    background: var(--dsb-danger-bg);
     color: var(--text-primary, var(--in-fg));
-    border: 1px solid var(--danger);
-    border-left: 4px solid var(--danger);
+    border: 1px solid var(--dsb-danger);
+    border-left: 4px solid var(--dsb-danger);
     border-radius: var(--in-radius, 8px);
     font-size: 13px;
     line-height: 1.4;
@@ -125,7 +172,7 @@ const DESYNC_BLOCK_BANNER_CSS = `
     align-items: center;
 }
 .desync-block-banner[data-active="true"] { display: grid; }
-.desync-block-icon { width: 28px; height: 28px; flex: 0 0 28px; color: var(--danger); }
+.desync-block-icon { width: 28px; height: 28px; flex: 0 0 28px; color: var(--dsb-danger); }
 .desync-block-icon svg { width: 100%; height: 100%; fill: currentColor; }
 .desync-block-content { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .desync-block-title {
@@ -157,20 +204,20 @@ const DESYNC_BLOCK_BANNER_CSS = `
 }
 /* La dirección de la divergencia se lee por el signo y la posición, nunca sólo
  * por color (WCAG AA): el chip sigue diciendo lo mismo en monocromo. */
-.dsb-chip-rem { border-color: var(--danger); color: var(--danger); }
+.dsb-chip-rem { border-color: var(--dsb-danger); color: var(--dsb-danger); }
 .dsb-chip-add { border-color: var(--border-strong, var(--in-border)); color: var(--text-primary, var(--in-fg)); }
 .dsb-chip-more { font-weight: 500; opacity: 0.85; }
 .desync-block-cta {
     justify-self: end; white-space: nowrap;
     font-size: 12px; font-weight: 700; text-decoration: none;
     color: var(--text-primary, var(--in-fg));
-    border: 1px solid var(--danger);
+    border: 1px solid var(--dsb-danger);
     border-radius: var(--in-radius, 8px);
     padding: 7px 14px;
     background: transparent;
 }
-.desync-block-cta:hover { background: var(--danger-bg); }
-.desync-block-cta:focus-visible { outline: 2px solid var(--danger); outline-offset: 2px; }
+.desync-block-cta:hover { background: var(--dsb-danger-bg); }
+.desync-block-cta:focus-visible { outline: 2px solid var(--dsb-danger); outline-offset: 2px; }
 /* En los satélites el banner es hijo directo del frame y se alinea con el
  * padding horizontal del cuerpo (mismo criterio que el banner de ola). */
 .satellite-frame > .desync-block-banner { margin: 18px 28px 0; }
@@ -182,8 +229,9 @@ const DESYNC_BLOCK_BANNER_CSS = `
 // renderer del monolito terminaron pudiendo divergir.
 //
 // SEC: todo por textContent / createElement, cero innerHTML con datos del
-// endpoint. Depende sólo de `fetchJson` (FETCH_CLIENT_JS), presente en el
-// shell de home y en el pageShell de los satélites.
+// endpoint. No depende de que el shell inyecte nada: el acceso HTTP pasa por
+// `_dsbFetchStatus()`, que usa `fetchJson` (FETCH_CLIENT_JS) si está y cae a
+// `fetch` nativo si no — ver el comentario de esa función.
 function desyncBlockBannerClientScript() {
     return `
 function _dsbSetActive(banner, activo){
@@ -250,8 +298,31 @@ function _dsbApplyEmptyState(d){
     const p = (d && d.presentacion) || null;
     if(p && typeof p.emptyState === 'string' && p.emptyState) msg.textContent = p.emptyState;
 }
+// Cliente HTTP propio del banner (#5724 rev-3, defecto B2).
+//
+// Antes esto llamaba directo a \`fetchJson\` (FETCH_CLIENT_JS). Tres ventanas que
+// SÍ montan el bundle no inyectan ese helper (logs, multi-provider-coverage,
+// onboarding-wizard): \`tickDesyncBlock()\` tiraba ReferenceError, el
+// \`.catch(function(){})\` del scheduler se lo tragaba y quedaba un setInterval de
+// 15 s que no hacía nada nunca. Si el bloqueo arrancaba con el operador parado
+// en Logs no se enteraba hasta recargar — el escenario exacto del incidente.
+//
+// Ahora el bundle es AUTOSUFICIENTE: usa \`fetchJson\` cuando el shell lo tiene
+// (así conserva la señal de dato desactualizado que ese helper ya maneja) y cae
+// a \`fetch\` nativo cuando no. Cualquier shell nuevo que monte el bundle hereda
+// el poll vivo sin tener que acordarse de inyectar nada.
+async function _dsbFetchStatus(){
+    if (typeof fetchJson === 'function') return await fetchJson('/api/dash/desync-status');
+    try {
+        const r = await fetch('/api/dash/desync-status', { headers: { 'Accept': 'application/json' } });
+        if (!r || !r.ok) return null;
+        return await r.json();
+    } catch (_) {
+        return null;
+    }
+}
 async function tickDesyncBlock(){
-    const d = await fetchJson('/api/dash/desync-status');
+    const d = await _dsbFetchStatus();
     // Endpoint caído: NO apagamos el banner. Un bloqueo real que desaparece de
     // la pantalla porque falló un fetch es peor que un banner viejo — de la
     // señal de dato desactualizado ya se encarga fetchJson.
@@ -266,9 +337,11 @@ async function tickDesyncBlock(){
 // (cada vista arma la suya), así que el bundle trae su propio setInterval. 15s:
 // el estado no cambia rápido —lo escribe el Pulpo al evaluar la divergencia—
 // pero frena el pipeline entero y no puede quedar detrás de un poll lento.
-// Defensivo de punta a punta: si `fetchJson` no existiera en ese shell, el tick
-// falla en silencio y queda el SSR (correcto al cargar la página) en vez de
-// romper la ventana entera.
+// Defensivo de punta a punta: el `.catch` cubre un endpoint caído o un shell
+// raro dejando el SSR (correcto al cargar la página) en vez de romper la
+// ventana entera. Ojo: ese `.catch` es una red de seguridad, NO una licencia
+// para que el tick dependa de globals del shell — un tick que siempre tira se
+// vuelve invisible acá dentro (fue el defecto B2). Ver `_dsbFetchStatus()`.
 const DESYNC_BLOCK_SCHEDULER_JS = `
 if (typeof tickDesyncBlock === 'function') {
     tickDesyncBlock().catch(function(){});
@@ -281,12 +354,31 @@ function desyncBlockBannerBundleJs() {
     return desyncBlockBannerClientScript() + '\n' + DESYNC_BLOCK_SCHEDULER_JS;
 }
 
+// Montaje de UNA sola llamada (#5724 rev-3, defecto B3).
+//
+// El montaje "clásico" son 3 puntos de edición por ventana (CSS al <head>, SSR
+// al body, bundle al <script>). Con 16 ventanas y 3 dialectos de shell distintos
+// eso ya se olvidó tres veces: wizard-descanso, wizard-ola y wizard-providers
+// emitían documento completo con nav-tabs y no montaban NADA — el operador que
+// entraba a crear una ola no veía que el dispatch estaba suspendido.
+//
+// Este helper devuelve el bloque entero autocontenido (style + markup + script)
+// para pegar en una línea después de `${navHtml}`. Los shells que ya hacen el
+// montaje en 3 puntos NO deben usarlo además: duplicaría los ids del banner.
+function renderDesyncBlockMountHtml(desyncStatus) {
+    return '<style>' + DESYNC_BLOCK_BANNER_CSS + '</style>\n'
+        + renderDesyncBlockBannerSsr(resolveDesyncStatus(desyncStatus)) + '\n'
+        + '<script>' + desyncBlockBannerBundleJs() + '</script>';
+}
+
 module.exports = {
     resolveDesyncStatus,
     renderDesyncBlockBannerSsr,
+    renderDesyncBlockMountHtml,
     DESYNC_BLOCK_BANNER_CSS,
     desyncBlockBannerClientScript,
     desyncBlockBannerBundleJs,
     DESYNC_BLOCK_SCHEDULER_JS,
     DSB_CTA_HREF,
+    _resetDesyncStatusCacheForTests,
 };

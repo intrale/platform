@@ -296,10 +296,29 @@ escalón es más permisivo que el anterior y sólo corre si el previo no aplicó
 | 4 | Extra que es **hijo de un split** del propio pipeline (#4525) | ola ← allowlist | Agrega el hijo + declara la dependencia padre→hijo |
 | — | Cualquier otro caso | — | `human-block` (ver más abajo) |
 
-**Fail-safe transversal (SEC-4)**: el estado de cierre viene del title-cache
-local, sin GitHub en el hot path. Si devuelve `undefined` para algún issue de la
-divergencia (cache miss o title-cache stale, ver #4566/#4882), NINGÚN escalón
-aplica: el estado indeterminado nunca habilita una mutación optimista.
+**De dónde sale el estado de cierre (SEC-4)**: del title-cache local, sin
+GitHub en el hot path.
+
+El predicado de producción es **binario, no tri-estado**:
+`makeIsClosedFromTitleCache()` devuelve `Boolean(entry && entry.state === 'CLOSED')`,
+así que **un cache miss se lee como ABIERTO**, nunca como indeterminado. Es
+deliberado y no hay que "arreglarlo": los hijos de un split recién creados
+(#5689-#5691, el incidente que originó #5724) todavía no están en el
+title-cache, y leerlos como indeterminados los mandaría de vuelta al
+`human-block` — exactamente el bloqueo que este cambio vino a eliminar. Leerlos
+como abiertos es lo correcto: un issue abierto de la ola activa se converge
+sumándolo a la allowlist (escalón 2), que es la dirección segura.
+
+Consecuencia a tener presente: el guard `estadoConfirmado` del escalón 2 **no
+rechaza nada en producción** — es un seguro para el seam de test `opts.isClosed`
+(por donde sí puede entrar un predicado tri-estado) y para un futuro predicado
+que consulte GitHub y pueda no saber. No confundirlo con una garantía vigente
+de que "el estado indeterminado nunca habilita una mutación": hoy no existe
+estado indeterminado en el camino real.
+
+Lo que sí sigue aplicando: si el title-cache **no se puede leer**,
+`makeIsClosedFromTitleCache()` devuelve `null` y el escalón 1 (que necesita
+confirmar cierre) no puede aplicar.
 
 **Qué sigue bloqueando a propósito**: si hay un issue ABIERTO en la allowlist
 que NO está en la ola (`added` no vacío sin traza), converger revocaría en

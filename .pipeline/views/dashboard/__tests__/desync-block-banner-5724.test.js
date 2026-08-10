@@ -150,10 +150,91 @@ test('el ícono del banner existe en el sprite del design system', () => {
     }
 });
 
-test('UX-7: el banner no introduce colores hardcodeados', () => {
+// Quita toda expresión `var(...)` (con paréntesis balanceados) del CSS. Lo que
+// queda son los valores que el navegador usa DIRECTO, sin pasar por un token.
+function _sinVarFallbacks(css) {
+    let out = '';
+    let i = 0;
+    while (i < css.length) {
+        const inicio = css.indexOf('var(', i);
+        if (inicio === -1) { out += css.slice(i); break; }
+        out += css.slice(i, inicio);
+        let prof = 0;
+        let j = inicio + 3; // apunta al '(' de 'var('
+        for (; j < css.length; j++) {
+            if (css[j] === '(') prof++;
+            else if (css[j] === ')') { prof--; if (prof === 0) { j++; break; } }
+        }
+        i = j;
+    }
+    return out;
+}
+
+// UX-7, corregido en rev-3.
+//
+// La versión original prohibía TODO literal de color en este CSS ("todo color
+// debe salir de tokens"). Sonaba bien y era la causa directa del defecto B1: al
+// no poder escribir un literal, el CSS quedó con `var(--danger)` pelado, y
+// `--danger` sólo se define en `assets/design-tokens.css`, que 10 de las 16
+// ventanas que montan el banner NO cargan. Con el token indefinido y sin
+// fallback la declaración es *invalid at computed-value time*: se caían
+// background, borde, ícono, chips y CTA, y el banner de alarma quedaba texto
+// plano. El test verde certificaba un banner invisible.
+//
+// La regla correcta no es "cero literales" sino "cero literales CRUDOS": el
+// color se pide siempre al design system, y el literal sólo puede aparecer como
+// último eslabón de la cadena de fallback, para que el banner se vea rojo aun
+// en un shell que no cargó ningún archivo de tokens.
+test('UX-7: el banner pide sus colores a tokens, sin literales crudos', () => {
     const css = banner.DESYNC_BLOCK_BANNER_CSS;
-    assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b/, 'todo color debe salir de tokens');
-    assert.doesNotMatch(css, /\brgb\(/, 'todo color debe salir de tokens');
+    const crudo = _sinVarFallbacks(css);
+    assert.doesNotMatch(crudo, /#[0-9a-fA-F]{3,8}\b/,
+        'todo color debe salir de un token (el literal sólo vale como fallback de var())');
+    assert.doesNotMatch(crudo, /\brgba?\(/,
+        'todo color debe salir de un token (el literal sólo vale como fallback de var())');
+});
+
+test('REGRESIÓN rev-3 (B1): el rojo de alarma sobrevive sin design-tokens.css', () => {
+    const css = banner.DESYNC_BLOCK_BANNER_CSS;
+
+    // Ningún uso pelado de los tokens que sólo existen en design-tokens.css.
+    assert.doesNotMatch(css, /var\(--danger\)/,
+        '`var(--danger)` sin fallback se cae en las ventanas que no cargan design-tokens.css');
+    assert.doesNotMatch(css, /var\(--danger-bg\)/,
+        '`var(--danger-bg)` sin fallback se cae en las ventanas que no cargan design-tokens.css');
+
+    // La cadena se declara una sola vez y termina en un literal.
+    assert.match(css, /--dsb-danger:\s*var\(--danger,\s*var\(--in-bad,\s*#[0-9a-fA-F]{3,8}\)\)/);
+    assert.match(css, /--dsb-danger-bg:\s*var\(--danger-bg,\s*var\(--in-bad-soft,\s*rgba\([^)]*\)\)\)/);
+
+    // El eslabón intermedio tiene que existir de verdad en theme.css, que es lo
+    // único que cargan las 19 superficies.
+    const theme = fs.readFileSync(path.join(__dirname, '..', 'theme.css'), 'utf8');
+    assert.match(theme, /--in-bad:/, 'theme.css debe definir --in-bad');
+    assert.match(theme, /--in-bad-soft:/, 'theme.css debe definir --in-bad-soft');
+
+    // Y todo lo que pintaba de rojo usa el alias, no el token pelado.
+    for (const sel of ['.desync-block-icon', '.dsb-chip-rem', '.desync-block-cta']) {
+        const bloque = css.slice(css.indexOf(sel));
+        assert.ok(bloque.includes('var(--dsb-danger'), `${sel} debe usar el alias con fallback`);
+    }
+});
+
+test('REGRESIÓN rev-3 (B2): el poll no depende de que el shell inyecte fetchJson', () => {
+    const js = banner.desyncBlockBannerBundleJs();
+
+    // El tick pasa por el helper propio, no por el global.
+    assert.match(js, /_dsbFetchStatus/,
+        'el tick debe pasar por el cliente HTTP propio del banner');
+    assert.doesNotMatch(js, /const d = await fetchJson\(/,
+        'llamar a fetchJson directo tira ReferenceError en los shells que no lo inyectan');
+
+    // Usa fetchJson si está, y cae a fetch nativo si no.
+    assert.match(js, /typeof fetchJson === 'function'/);
+    assert.match(js, /await fetch\('\/api\/dash\/desync-status'/);
+
+    // El scheduler sigue existiendo con su intervalo de 15 s.
+    assert.match(js, /setInterval\(.*15000\)/s);
 });
 
 // -----------------------------------------------------------------------------
@@ -304,6 +385,12 @@ test('desyncEmptyStateText sólo cambia el mensaje cuando el bloqueo es real', (
 const SUP_SSR = /id="desync-block-banner"/;
 const SUP_CSS = /\.desync-block-banner\[data-active="true"\]/;
 const SUP_JS = /tickDesyncBlock/;
+// rev-3 — Las dos comprobaciones que faltaban y dejaron pasar B1 y B2: montar el
+// banner no alcanza si el rojo no pinta (token sin fallback en el shell) o si el
+// tick muere en el primer ReferenceError (shell sin fetchJson). Van acá, en el
+// helper compartido, para que apliquen a TODA superficie presente y futura.
+const SUP_CSS_FALLBACK = /--dsb-danger:\s*var\(--danger,/;
+const SUP_JS_FETCH = /_dsbFetchStatus/;
 
 // El render se hace contra el estado real del pipeline (los renderers leen
 // filesystem). Todos degradan con `renderInert` si el estado no está: eso NO se
@@ -318,6 +405,12 @@ function assertSuperficieCubierta(nombre, html) {
     assert.match(html, SUP_SSR, `${nombre}: falta el markup SSR del banner (curl no lo vería)`);
     assert.match(html, SUP_CSS, `${nombre}: falta el CSS del banner (¿quedó colgado de renderInert?)`);
     assert.match(html, SUP_JS, `${nombre}: falta la hidratación (el banner queda congelado en el page load)`);
+    assert.match(html, SUP_CSS_FALLBACK,
+        `${nombre}: el CSS usa los tokens de alarma sin fallback — en un shell sin design-tokens.css `
+        + 'la declaración es invalid at computed-value time y el banner queda texto plano');
+    assert.match(html, SUP_JS_FETCH,
+        `${nombre}: el poll llama a fetchJson directo — si este shell no lo inyecta, tickDesyncBlock `
+        + 'tira ReferenceError, el .catch lo traga y el setInterval de 15s no hace nada nunca');
 }
 
 test('REGRESIÓN rev-1: TODA vista del catálogo VIEW_SLUGS monta el banner', () => {
@@ -379,4 +472,60 @@ test('REGRESIÓN rev-1: toda entrada del menú apunta a una superficie con banne
     }
     assert.deepStrictEqual(sinCobertura, [],
         'entradas del menú que no resuelven a una superficie verificada con banner');
+});
+
+// -----------------------------------------------------------------------------
+// 4. REGRESIÓN rev-3 (B3): las wizards del menú
+// -----------------------------------------------------------------------------
+//
+// wizard-descanso, wizard-ola y wizard-providers emiten documento HTML completo
+// CON nav-tabs y no montaban el banner por ningún lado. Son justo las pantallas
+// donde el operador va a configurar una ola o los providers: enterarse ahí de
+// que el dispatch está suspendido es la diferencia entre corregir el bloqueo y
+// configurar durante horas algo que no se va a despachar.
+//
+// Estas tres no aceptan `desyncStatus` por parámetro (resuelven el estado solas
+// desde el filesystem), así que el test verifica el MONTAJE — markup, estilos y
+// poll presentes — que es exactamente lo que faltaba.
+
+const WIZARDS = [
+    ['wizard-descanso', require('../wizard-descanso.js').renderWizardDescanso],
+    ['wizard-ola', require('../wizard-ola.js').renderWizardOla],
+    ['wizard-providers', require('../wizard-providers.js').renderWizardProviders],
+];
+
+for (const [nombre, render] of WIZARDS) {
+    test(`REGRESIÓN rev-3 (B3): ${nombre} monta el banner de dispatch suspendido`, () => {
+        const html = render({ csrfToken: 'tok' });
+
+        // Emite nav-tabs → es una ventana del menú → CA-4 le aplica.
+        assert.match(html, /class="v3-nav"/, 'la wizard debe seguir emitiendo el menú');
+
+        // 1. Markup del banner con sus ids invariantes.
+        assert.match(html, /id="desync-block-banner"/, 'falta el markup del banner');
+        assert.match(html, /id="desync-block-title"/);
+        assert.match(html, /id="desync-block-chips"/);
+
+        // 2. Estilos, con la cadena de fallback del rojo (defecto B1).
+        assert.match(html, /--dsb-danger:\s*var\(--danger,/,
+            'falta el CSS del banner con su cadena de fallback');
+
+        // 3. Poll vivo y autosuficiente (defecto B2).
+        assert.match(html, /_dsbFetchStatus/, 'falta el cliente HTTP propio del banner');
+        assert.match(html, /setInterval\(/, 'falta el scheduler del poll');
+
+        // Una sola instancia: montar por duplicado rompería los ids.
+        const ocurrencias = (html.match(/id="desync-block-banner"/g) || []).length;
+        assert.strictEqual(ocurrencias, 1, 'el banner no debe montarse dos veces');
+    });
+}
+
+test('REGRESIÓN rev-3 (B1): el ícono del banner resuelve en las wizards (sprite inlineado)', () => {
+    for (const [nombre, render] of WIZARDS) {
+        const html = render({ csrfToken: 'tok' });
+        const usados = [...html.matchAll(/href="#(ic-pause-lock|ic-[a-z0-9-]+)"/g)].map((m) => m[1]);
+        assert.ok(usados.length > 0, `${nombre} debe referenciar íconos`);
+        // El sprite tiene que estar inlineado en el documento o el <use> queda vacío.
+        assert.match(html, /<symbol id="ic-/, `${nombre} no inlinea el sprite: los <use> quedan vacíos`);
+    }
 });

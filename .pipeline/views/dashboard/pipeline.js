@@ -267,12 +267,12 @@ function renderDepsBanner({ ic }) {
 // vio este pill. La vista Inicio ahora muestra el mismo estado, y para que las
 // dos superficies no digan cosas distintas la decisión de texto vive en un solo
 // lugar. Acá queda únicamente el LAYOUT del pill.
+// Sólo lo que este módulo usa de verdad: `desyncMeta()` ya resuelve internamente
+// DSS_META_BLOQUEADO y `desyncChips()` el tope DSS_CHIPS_TOPE — importarlos acá
+// era ruido que sugería un uso que no existe.
 const {
     DSS_META,
-    DSS_META_BLOQUEADO,
-    DSS_CHIPS_TOPE,
     normalizeDesyncStatus,
-    desyncAgeText,
     desyncDetailText,
     desyncMeta,
     desyncChips,
