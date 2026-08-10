@@ -17047,10 +17047,44 @@ const SPLIT_ORPHAN_PAGE_SIZE = 100;
 // 5 páginas = 500 resultados de búsqueda. Con 136 hoy, ~3.7x de aire; y si algún
 // día no alcanza, el corte ya NO es silencioso (`discovery_window`).
 const SPLIT_ORPHAN_MAX_PAGES = 5;
-// Query ESTÁTICA y pre-encodeada (cero interpolación de input externo → sin
-// superficie de command injection).
-const SPLIT_ORPHAN_SEARCH_Q =
-  'repo%3Aintrale%2Fplatform+is%3Aissue+is%3Aopen+in%3Atitle+split';
+// Parte FIJA de la query de búsqueda, pre-encodeada.
+const SPLIT_ORPHAN_SEARCH_Q_SUFFIX = 'is%3Aissue+is%3Aopen+in%3Atitle+split';
+// Fallback si el repo primario de la config no valida (fail-closed al canónico).
+const SPLIT_ORPHAN_FALLBACK_REPO = 'intrale/platform';
+// Forma `owner/repo` aceptada: mismo alfabeto que `REPO_RE` de `lib/repo-target`.
+// Todos sus caracteres son UNRESERVED en URL salvo la `/`, que se encodea a `%2F`,
+// así que el resultado no puede introducir separadores de query ni metacaracteres
+// de shell.
+const SPLIT_ORPHAN_REPO_RE = /^[A-Za-z0-9._-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * Query de búsqueda del reconciliador, construida desde la FUENTE DE VERDAD ÚNICA
+ * del repo destino (`lib/repo-target`, convención #4693 CA-0) en vez de hardcodear
+ * `intrale/platform` (señalado por review el 2026-08-10).
+ *
+ * Sigue siendo efectivamente estática: el único valor interpolado es el repo
+ * primario de la config, VALIDADO contra `SPLIT_ORPHAN_REPO_RE` antes de usarse.
+ * Si no valida (config rota, valor con caracteres raros) se cae al repo canónico
+ * — nunca se arma una query con texto arbitrario, así que no hay superficie de
+ * command injection ni de query injection.
+ * @returns {string} query URL-encodeada, sin el `q=`.
+ */
+function splitOrphanSearchQuery() {
+  let repo = SPLIT_ORPHAN_FALLBACK_REPO;
+  try {
+    const primary = repoTarget.getPrimaryRepo();
+    if (typeof primary === 'string' && SPLIT_ORPHAN_REPO_RE.test(primary.trim())) {
+      repo = primary.trim();
+    } else {
+      log('pulpo', `WARN split-orphan-reconciler: repo primario inválido (${primary}); ` +
+        `se usa ${SPLIT_ORPHAN_FALLBACK_REPO}.`);
+    }
+  } catch (e) {
+    log('pulpo', `WARN split-orphan-reconciler: repo-target ilegible (${e.message}); ` +
+      `se usa ${SPLIT_ORPHAN_FALLBACK_REPO}.`);
+  }
+  return `repo%3A${repo.replace('/', '%2F')}+${SPLIT_ORPHAN_SEARCH_Q_SUFFIX}`;
+}
 
 // Dedupe de la alerta de VENTANA TRUNCADA. Sin esto avisaría cada ~5 min.
 // Se re-alerta si cambia el motivo o si pasaron más de 6 h (sigue vigente).
@@ -17174,11 +17208,14 @@ function reconcileSplitOrphansFromGithub(context) {
   let sawIncomplete = false;
   let pagesFetched = 0;
   let lastBatchSize = 0;
+  // Se resuelve UNA vez por corrida (no por página): así todas las páginas del
+  // mismo barrido consultan el mismo repo aunque la config cambie en el medio.
+  const searchQ = splitOrphanSearchQuery();
   try {
     for (let page = 1; page <= SPLIT_ORPHAN_MAX_PAGES; page++) {
       ghThrottle();
       const out = _ghExecSyncGuarded(
-        `"${GH_BIN}" api "search/issues?q=${SPLIT_ORPHAN_SEARCH_Q}` +
+        `"${GH_BIN}" api "search/issues?q=${searchQ}` +
         `&per_page=${SPLIT_ORPHAN_PAGE_SIZE}&page=${page}"`,
         { encoding: 'utf8', timeout: 20000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
       );
@@ -17310,10 +17347,15 @@ function reconcileSplitOrphansFromGithub(context) {
   }
 
   const orphans = (found && Array.isArray(found.orphans)) ? found.orphans : [];
-  if (orphans.length === 0) {
-    // Camino idempotente: sin huérfanos nuevos NO se escribe nada ni se notifica.
-    return { ok: true, incorporated: [], reason: 'no_orphans', truncated };
-  }
+  // OJO: acá NO hay early return por `orphans.length === 0`.
+  //
+  // Lo había, y era el bloqueante del rechazo de review del 2026-08-10: con la
+  // ola ya escrita y la allowlist fallada en un ciclo previo, el ciclo siguiente
+  // encontraba `orphans: []` (el hijo ya está en la ola ⇒ `inWave.has(child)` lo
+  // excluye) y retornaba ANTES del paso 5, así que la brecha de la allowlist
+  // NUNCA se reintentaba → divergencia reductiva permanente → human-block.
+  // Ahora el paso 5 se alcanza SIEMPRE y re-deriva la brecha del estado (SO-9);
+  // la idempotencia la da que con todo en sync la brecha es vacía y no se escribe.
 
   // --- 3. Incorporación a la OLA (primero) -------------------------------------
   const incorporated = [];
@@ -17338,14 +17380,18 @@ function reconcileSplitOrphansFromGithub(context) {
       log('pulpo', `WARN split-orphan-reconciler: #${child} (padre #${parent}) omitido: ${e.message}`);
     }
   }
-  if (incorporated.length === 0) {
-    return { ok: true, incorporated: [], reason: 'nothing_added' };
-  }
+  // Igual que arriba: NO retornamos por `incorporated.length === 0`. Ése era el
+  // segundo camino que hacía inalcanzable al paso 5 (doble cinturón señalado por
+  // review: `addIssueToWave` devuelve `added:false` para un hijo ya presente, así
+  // que `incorporated` quedaba vacío y se retornaba `nothing_added`).
 
   // --- 4. Dependencia padre→hijos (trazable en el audit encadenado) ------------
   const grouped = splitOrphanReconciler.groupByParent(
     incorporated.map((c) => ({ child: c, parent: parentOf.get(c) }))
   );
+  // Se lleva la cuenta de los grupos que FALLARON para no afirmar después, en el
+  // Telegram, que la dependencia quedó declarada cuando no es cierto.
+  const dependencyFailures = [];
   for (const { parent, children } of grouped) {
     try {
       waves.addDependency(parent, children, {
@@ -17355,6 +17401,7 @@ function reconcileSplitOrphansFromGithub(context) {
           `#${parent} -> ${children.map((c) => `#${c}`).join(', ')} (#5516)`,
       });
     } catch (e) {
+      dependencyFailures.push({ parent, children, msg: e.message });
       log('pulpo', `WARN split-orphan-reconciler: no se pudo declarar dependencia ${parent}->${JSON.stringify(children)}: ${e.message}`);
     }
   }
@@ -17375,12 +17422,62 @@ function reconcileSplitOrphansFromGithub(context) {
   // dispatcha nada. Por eso la reconciliación entera es un no-op fuera de
   // `partial_pause`, no sólo su último paso.
   let allowlistUpdated = false;
+  let allowlistAdded = [];
+  // Brecha PENDIENTE que no se pudo cerrar en esta corrida (para el WARN honesto).
+  let allowlistPending = [];
   try {
     const modeNow = partialPause.getPipelineMode();
     const current = Array.isArray(modeNow.allowedIssues) ? modeNow.allowedIssues : [];
     if (modeNow.mode === 'partial_pause' && current.length > 0) {
-      const union = [...new Set([...current, ...incorporated])].sort((a, b) => a - b);
+      // SO-9 — La brecha se RE-DERIVA DEL ESTADO, no de `incorporated`.
+      //
+      // Se re-lee la ola FRESCA del disco (post-escrituras del paso 3) en vez de
+      // reusar `activeWaveIssues`, que es el snapshot de ANTES de escribir. Así
+      // "qué falta en la allowlist" es una función del estado persistido y no de
+      // la memoria de esta corrida: si un ciclo anterior escribió la ola y falló
+      // la allowlist, este ciclo lo detecta igual y lo cierra.
+      let waveNow = activeWaveIssues;
+      try {
+        const freshWave = waves.getActiveWave();
+        if (freshWave && Number.isInteger(freshWave.number) && Array.isArray(freshWave.issues)) {
+          // Sólo si sigue siendo LA MISMA ola. Si el operador cerró la ola y abrió
+          // otra durante la corrida, no convergemos contra un alcance distinto del
+          // que autorizó el paso 0: se cae al snapshot y la brecha real queda para
+          // el ciclo siguiente (que ya operará sobre la ola nueva).
+          if (freshWave.number === active.number) {
+            waveNow = freshWave.issues
+              .map((i) => i && i.number).filter((n) => Number.isInteger(n));
+          }
+        }
+      } catch { /* se usa el snapshot; la brecha se cierra en el ciclo siguiente */ }
+
+      const gap = splitOrphanReconciler.splitChildrenMissingFromAllowlist({
+        issues,                                                // corpus de GitHub del paso 1
+        waveIssues: waveNow,
+        allowlistIssues: current,
+        trustedLogins: splitOrphanTrustedLogins(),             // SO-7
+      });
+      if (gap.rejectedByLabel.length > 0) {
+        // Un hijo que está en la ola pero lleva label de bloqueo NO entra a la
+        // allowlist (habilitarlo saltearía el gate de #2653). Es una divergencia
+        // reductiva LEGÍTIMA, y se loguea para que no parezca un fallo silencioso.
+        log('pulpo', `split-orphan-reconciler: ${gap.rejectedByLabel.length} hijo(s) en la ola ` +
+          `NO se suman a la allowlist por SO-8: ${gap.rejectedByLabel.map((r) => `#${r.child} [${r.reason}]`).join(' | ')}`);
+      }
+      if (gap.truncated) {
+        log('pulpo', `split-orphan-reconciler: convergencia de allowlist TRUNCADA (${gap.reason}) — ` +
+          `el remanente se cierra en el ciclo siguiente.`);
+      }
+      // Unión = allowlist actual + brecha re-derivada. `incorporated` ya está
+      // contenido en la brecha (acaba de entrar a la ola y no está en la
+      // allowlist), pero se suma igual por robustez: si la re-lectura de la ola
+      // falló y cayó al snapshot, los de esta corrida no se pierden.
+      const toAdd = [...new Set([...gap.missing, ...incorporated])]
+        .filter((n) => !current.includes(n))
+        .sort((a, b) => a - b);
+      const union = [...new Set([...current, ...toAdd])].sort((a, b) => a - b);
       if (union.length !== current.length) {
+        allowlistAdded = toAdd;
         // OJO: `setPartialPause` NO hace merge — reconstruye el JSON entero
         // desde `opts`. Todo campo aditivo que no repasemos acá se PIERDE en el
         // write (`allowed_skills`, `accepted_dep_risk`, `dep_sources`). Perder
@@ -17394,8 +17491,9 @@ function reconcileSplitOrphansFromGithub(context) {
         const r = partialPause.setPartialPause(union, {
           authorizedBy: 'wave-promote',
           source: 'split-github-reconcile',
-          justification: `Hijos de split descubiertos desde GitHub con padre en la ola ` +
-            `${active.number}: ${incorporated.map((c) => `#${c}`).join(', ')} (#5516)`,
+          justification: `Hijos de split de la ola ${active.number} descubiertos desde ` +
+            `GitHub / convergencia ola→allowlist (SO-9): ` +
+            `${toAdd.map((c) => `#${c}`).join(', ')} (#5516)`,
           allowedSkills: Array.isArray(modeNow.allowedSkills) ? modeNow.allowedSkills : undefined,
           acceptedDepRisk: modeNow.acceptedDepRisk === true,
           depSources: modeNow.depSources || undefined,
@@ -17405,42 +17503,89 @@ function reconcileSplitOrphansFromGithub(context) {
         });
         allowlistUpdated = !!(r && r.ok);
         if (!allowlistUpdated) {
-          // Divergencia REDUCTIVA (la ola tiene de más). Es la clasificación
-          // benigna, pero NO se auto-repara: los huérfanos recién sumados están
-          // abiertos, así que `evaluateDesyncAndMaybeRealign` no la resuelve.
-          // Queda para el ciclo siguiente (que reintenta la unión) o para el
-          // operador; por eso se avisa fuerte en vez de darla por reconciliada.
+          allowlistAdded = [];
+          allowlistPending = toAdd;
+          // Divergencia REDUCTIVA (la ola tiene de más). El reintento del ciclo
+          // siguiente SÍ existe ahora: la brecha se re-deriva del estado (SO-9),
+          // así que no depende de que estos hijos vuelvan a aparecer como
+          // huérfanos nuevos. Antes este mensaje mentía — con la ola ya escrita el
+          // descubrimiento devolvía `[]` y el paso 5 era inalcanzable.
           log('pulpo', `WARN split-orphan-reconciler: allowlist NO actualizada (${r && r.msg}). ` +
-            `Divergencia REDUCTIVA pendiente (ola tiene de más): se reintenta el ciclo siguiente.`);
+            `Divergencia REDUCTIVA pendiente (la ola tiene de más): ${toAdd.map((c) => `#${c}`).join(', ')}. ` +
+            `El ciclo siguiente la re-deriva del estado (SO-9) y la cierra sin intervención.`);
         }
       }
     } else {
       // Carrera rara: el modo cambió entre el paso 0 y acá. No forzamos el write.
+      allowlistPending = incorporated;
       log('pulpo', `WARN split-orphan-reconciler: el modo cambió a '${modeNow.mode}' durante la ` +
-        `reconciliación — allowlist NO actualizada. Divergencia reductiva pendiente, se reintenta.`);
+        `reconciliación — allowlist NO actualizada. Divergencia reductiva pendiente; al volver a ` +
+        `'partial_pause' el ciclo siguiente la re-deriva del estado (SO-9) y la cierra.`);
     }
   } catch (e) {
+    allowlistPending = incorporated;
     log('pulpo', `WARN split-orphan-reconciler: fallo al actualizar allowlist: ${e.message}. ` +
-      `Divergencia reductiva pendiente, se reintenta el ciclo siguiente.`);
+      `Divergencia reductiva pendiente; el ciclo siguiente la re-deriva del estado (SO-9) y la cierra.`);
   }
 
   // --- 6. Notificación ---------------------------------------------------------
+  // Idempotencia: sin incorporaciones a la ola Y sin cambios en la allowlist NO se
+  // notifica ni se afirma nada. Es el camino normal de una corrida sin novedades.
+  if (incorporated.length === 0 && allowlistAdded.length === 0) {
+    return {
+      ok: true,
+      incorporated: [],
+      allowlistAdded: [],
+      reason: orphans.length === 0 ? 'no_orphans' : 'nothing_added',
+      truncated,
+      allowlistPending,
+    };
+  }
+
   const detalle = grouped
     .map(({ parent, children }) => `#${parent} → ${children.map((c) => `#${c}`).join(', ')}`)
     .join(' | ');
   log('pulpo', `split-orphan-reconciler: auto-incorporación DESDE GITHUB OK — ` +
-    `hijos=${JSON.stringify(incorporated)} allowlist_actualizada=${allowlistUpdated} (#5516)`);
+    `hijos=${JSON.stringify(incorporated)} allowlist_agregados=${JSON.stringify(allowlistAdded)} ` +
+    `allowlist_actualizada=${allowlistUpdated} deps_fallidas=${dependencyFailures.length} (#5516)`);
   try {
-    sendTelegramPlain(
-      `♻️ Auto-incorporación a la ola activa (#5516).\n` +
-      `Hijos de split descubiertos en GitHub (el split no pasó por el Commander): ${detalle}\n` +
-      `Sumados a la ola ${active.number}` +
-      `${allowlistUpdated ? ' y a la allowlist' : ''}. Dependencia padre→hijos declarada.` +
-      `${truncated ? `\n⚠️ Descubrimiento truncado (${truncReason}): el resto entra en el próximo ciclo.` : ''}`
-    );
+    // Sólo se afirma lo que REALMENTE pasó. Antes esto decía "Dependencia
+    // padre→hijos declarada." de forma incondicional, incluso cuando el paso 4 se
+    // había comido un fallo de `addDependency` (señalado por review).
+    const lineas = [];
+    if (incorporated.length > 0) {
+      lineas.push(`Hijos de split descubiertos en GitHub (el split no pasó por el ` +
+        `Commander): ${detalle}`);
+      lineas.push(`Sumados a la ola ${active.number}.`);
+    }
+    // Convergencia SO-9 pura: cerró una brecha de un ciclo anterior sin sumar nada
+    // nuevo a la ola. Vale avisarlo: es la auto-reparación haciendo su trabajo.
+    const soloConvergencia = allowlistAdded.filter((n) => !incorporated.includes(n));
+    if (incorporated.length === 0) {
+      lineas.push(`Convergencia ola→allowlist (SO-9): se cerró la brecha pendiente de un ` +
+        `ciclo anterior sumando ${allowlistAdded.map((c) => `#${c}`).join(', ')} a la allowlist.`);
+    } else if (allowlistAdded.length > 0) {
+      lineas.push(`Allowlist actualizada: ${allowlistAdded.map((c) => `#${c}`).join(', ')}` +
+        `${soloConvergencia.length > 0 ? ` (incluye ${soloConvergencia.map((c) => `#${c}`).join(', ')} de una brecha anterior)` : ''}.`);
+    } else {
+      lineas.push(`⚠️ Allowlist NO actualizada: la brecha ` +
+        `(${allowlistPending.map((c) => `#${c}`).join(', ') || 'n/a'}) queda pendiente y el ciclo ` +
+        `siguiente la re-deriva del estado y la cierra.`);
+    }
+    if (grouped.length > 0) {
+      lineas.push(dependencyFailures.length === 0
+        ? `Dependencia padre→hijos declarada.`
+        : `⚠️ Dependencia padre→hijos NO declarada para ` +
+          `${dependencyFailures.map((f) => `#${f.parent}`).join(', ')} ` +
+          `(${dependencyFailures.length} de ${grouped.length} grupo(s) falló).`);
+    }
+    if (truncated) {
+      lineas.push(`⚠️ Descubrimiento truncado (${truncReason}): el resto entra en el próximo ciclo.`);
+    }
+    sendTelegramPlain(`♻️ Auto-incorporación a la ola activa (#5516).\n` + lineas.join('\n'));
   } catch { /* best-effort */ }
 
-  return { ok: true, incorporated, truncated };
+  return { ok: true, incorporated, allowlistAdded, truncated, allowlistPending };
 }
 
 /**

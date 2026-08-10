@@ -90,12 +90,19 @@
 //     olvide de pedir `labels` desactivaría el guard EN SILENCIO, que es
 //     exactamente la clase de regresión que SO-8 viene a cerrar. La exclusión se
 //     reporta en `rejectedByLabel`, nunca se descarta sin dejar rastro.
+//   - SO-9: CONVERGENCIA RE-DERIVABLE DEL ESTADO. La unión de la allowlist NO se
+//     calcula desde "lo que incorporé en esta corrida" sino desde el estado:
+//     `splitChildrenMissingFromAllowlist` responde "qué hijos de split están en la
+//     ola activa pero NO en la allowlist". Si la escritura de la ola sale bien y
+//     la de la allowlist falla, el ciclo siguiente cierra la brecha SOLO — antes
+//     quedaba una divergencia reductiva PERMANENTE que terminaba en human-block
+//     (rechazo de review del 2026-08-10). Convergencia estrictamente ADITIVA.
 //
 // Idempotencia
 // ------------
-// Un hijo que YA está en la ola activa se excluye del resultado. Por eso dos
-// corridas seguidas sin cambios en GitHub devuelven `[]` y el wire-up no escribe
-// ni notifica (CA "corrida idempotente").
+// Un hijo que YA está en la ola activa se excluye del descubrimiento, y la brecha
+// de SO-9 es vacía cuando ola y allowlist coinciden. Por eso dos corridas seguidas
+// sin cambios en GitHub no escriben ni notifican (CA "corrida idempotente").
 // =============================================================================
 
 'use strict';
@@ -614,6 +621,129 @@ function combineTruncation(p = {}) {
 }
 
 /**
+ * SO-9 — Brecha ola→allowlist RE-DERIVADA DEL ESTADO.
+ *
+ * Por qué existe (rechazo de review, 2026-08-10)
+ * ---------------------------------------------
+ * El paso 5 del wire-up construía la unión de la allowlist a partir de
+ * `incorporated`, o sea "lo que agregué a la ola EN ESTA corrida". Si la escritura
+ * de la ola salía bien pero la de la allowlist fallaba (lock, carrera de modo,
+ * throw de `setPartialPause`), el estado quedaba `ola=[...,hijo]` /
+ * `allowlist=[...sin hijo]`, y los WARN prometían un reintento IMPOSIBLE: en el
+ * ciclo siguiente `findSplitOrphans` ya excluye al hijo por `inWave.has(child)`,
+ * así que devuelve `[]`, el wire-up hace early return por `no_orphans` y nunca
+ * vuelve a tocar la allowlist. Resultado: divergencia REDUCTIVA PERMANENTE →
+ * flag + human-block. El reconciliador se auto-infligía el bloqueo humano que
+ * #5516 existe para eliminar (y `realignAllowlistToActiveWave` estaba definida y
+ * exportada pero SIN call sites en el camino de evaluación: código muerto).
+ *
+ * La cura es que la unión sea RE-DERIVABLE DEL ESTADO y no de la memoria de la
+ * corrida: "hijos de split que YA están en la ola activa pero NO en la allowlist".
+ * Así el ciclo siguiente cierra la brecha solo, sin importar por qué se abrió.
+ *
+ * Convergencia estrictamente ADITIVA sobre la allowlist (nunca quita), así que no
+ * activa el gate de removals de #3625.
+ *
+ * Guards: se mantienen SO-3/SO-4/SO-7/SO-8 igual que en el descubrimiento. Un
+ * hijo frenado por `needs-human` no entra a la allowlist ni siquiera si alguien lo
+ * metió en la ola: sumarlo lo habilitaría para dispatch, salteando el gate de
+ * #2653 (es la misma razón por la que SO-8 existe). Coherencia: lo que nosotros
+ * sumamos a la ola YA pasó estos guards, así que nuestras propias fallas parciales
+ * siempre se curan; lo que no pasó los guards nunca lo pusimos en la ola.
+ *
+ * PURO: sin red ni estado. El wire-up le pasa la ola y la allowlist ya leídas.
+ *
+ * @param {object} p
+ * @param {Array<object>} p.issues — mismo corpus de GitHub que `findSplitOrphans`.
+ * @param {Array<number|string>} p.waveIssues — números de la ola activa (post-escritura).
+ * @param {Array<number|string>} p.allowlistIssues — `allowed_issues` FRESCO de la allowlist.
+ * @param {Array<string>} [p.blockingLabels] — override SO-8.
+ * @param {Array<string>} [p.trustedLogins] — SO-7 (criterio default del módulo).
+ * @param {(issue: object) => boolean} [p.isTrustedAuthor] — SO-7 inyectado.
+ * @param {number} [p.maxIncorporations] — tope por corrida (clamp [1,200], SO-5).
+ * @returns {{ missing: number[], truncated: boolean, reason: 'max_incorporations'|null,
+ *   rejectedByLabel: Array<{ child: number, parent: number, labels: string[]|null, reason: string }> }}
+ *   `missing` ordenado asc, sin duplicados.
+ */
+function splitChildrenMissingFromAllowlist(pIn = {}) {
+    // `= {}` sólo cubre `undefined`: un `null` explícito pasaría derecho y tiraría
+    // al desreferenciar. Este módulo corre dentro del tick del Pulpo, así que un
+    // throw acá es justo lo que no puede pasar (#5073).
+    const p = (pIn && typeof pIn === 'object') ? pIn : {};
+    const list = Array.isArray(p.issues) ? p.issues : [];
+    const inWave = new Set(
+        (Array.isArray(p.waveIssues) ? p.waveIssues : [])
+            .map(toPositiveInt).filter(Boolean)
+    );
+    const inAllowlist = new Set(
+        (Array.isArray(p.allowlistIssues) ? p.allowlistIssues : [])
+            .map(toPositiveInt).filter(Boolean)
+    );
+
+    let maxIncorporations = Number.isFinite(p.maxIncorporations)
+        ? Math.floor(p.maxIncorporations)
+        : DEFAULT_MAX_INCORPORATIONS;
+    if (maxIncorporations < 1) maxIncorporations = 1;
+    if (maxIncorporations > ABSOLUTE_MAX_INCORPORATIONS) maxIncorporations = ABSOLUTE_MAX_INCORPORATIONS;
+
+    // SO-7 — mismo contrato que `findSplitOrphans`: `=== true` estricto, y un
+    // predicado inyectado que tira cuenta como NO confiable.
+    const trustFn = typeof p.isTrustedAuthor === 'function'
+        ? p.isTrustedAuthor
+        : (issue) => isTrustedAuthor(issue, { trustedLogins: p.trustedLogins });
+    const trusted = (issue) => {
+        try {
+            return trustFn(issue) === true;
+        } catch {
+            return false;                                      // SO-7 default-deny
+        }
+    };
+
+    const missing = [];
+    const seen = new Set();
+    const rejectedByLabel = [];
+    let truncated = false;
+    let reason = null;
+
+    for (const issue of list) {
+        if (!isOpenIssue(issue)) continue;                     // SO-3
+        const child = toPositiveInt(issue && issue.number);
+        if (!child) continue;                                  // SO-1
+        // La brecha es, por definición, sobre lo que YA está en la ola.
+        if (!inWave.has(child)) continue;
+        if (inAllowlist.has(child)) continue;                  // sin brecha → no-op
+        if (seen.has(child)) continue;                         // duplicado en el input
+        const parent = parentOfSplitOrphan(issue);
+        if (!parent) continue;                                 // SO-4/SO-6: sólo hijos de split
+        if (!trusted(issue)) continue;                         // SO-7
+        let blocking;
+        try {
+            blocking = blockingLabelsOf(issue, p.blockingLabels);
+        } catch {
+            blocking = null;                                   // SO-8 default-deny
+        }
+        if (blocking === null) {
+            rejectedByLabel.push({ child, parent, labels: null, reason: 'labels_unavailable' });
+            continue;
+        }
+        if (blocking.length > 0) {
+            rejectedByLabel.push({ child, parent, labels: blocking, reason: 'blocking_label' });
+            continue;
+        }
+        if (missing.length >= maxIncorporations) {
+            // SO-5: el remanente queda para el ciclo siguiente, y se REPORTA.
+            truncated = true;
+            reason = 'max_incorporations';
+            break;
+        }
+        seen.add(child);
+        missing.push(child);
+    }
+
+    return { missing: missing.sort((a, b) => a - b), truncated, reason, rejectedByLabel };
+}
+
+/**
  * Agrupa el resultado de `findSplitOrphans` por padre. Útil para declarar la
  * dependencia `padre → [hijos]` en una sola llamada a `waves.addDependency`.
  *
@@ -648,6 +778,7 @@ module.exports = {
     DEFAULT_MAX_INCORPORATIONS,
     ABSOLUTE_MAX_INCORPORATIONS,
     findSplitOrphans,
+    splitChildrenMissingFromAllowlist,
     parentOfSplitOrphan,
     groupByParent,
     classifyDiscoveryWindow,
