@@ -1012,6 +1012,30 @@ test('varios procesos appendeando el mismo JSONL dejan solo filas completas', as
   });
 });
 
+test('el worker de concurrencia se niega a correr sin auditDir explicito', async () => {
+  // Regresion: invocado sin argumentos, `createVaultShadowMetrics` caia al
+  // DEFAULT_AUDIT_DIR y el worker appendeaba filas sinteticas al
+  // `.pipeline/audit/` REAL — reiniciando el t0 de la ventana sombra de #5427 y
+  // rompiendo de forma permanente los tests de integridad de
+  // `credentials-vault-shadow-5448.test.js`. Tiene que salir != 0 sin escribir.
+  const worker = path.join(__dirname, '_vault-shadow-concurrent-worker.js');
+  const auditReal = path.resolve(__dirname, '..', '..', 'audit');
+  const jsonlReal = path.join(auditReal, 'vault-resolution.jsonl');
+  const t0Real = path.join(auditReal, 'vault-resolution.t0.json');
+  const existiaJsonl = fs.existsSync(jsonlReal);
+  const existiaT0 = fs.existsSync(t0Real);
+
+  const code = await new Promise((ok, ko) => {
+    const p = spawn(process.execPath, [worker], { stdio: 'ignore' });
+    p.on('error', ko);
+    p.on('exit', ok);
+  });
+
+  assert.notEqual(code, 0, 'sin auditDir el worker no puede salir exitoso');
+  assert.equal(fs.existsSync(jsonlReal), existiaJsonl, 'el worker toco el JSONL real');
+  assert.equal(fs.existsSync(t0Real), existiaT0, 'el worker toco el t0 real');
+});
+
 // =============================================================================
 // CA-20/CA-23 — deduplicación persistida
 // =============================================================================

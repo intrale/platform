@@ -20,6 +20,7 @@ const assert = require('node:assert/strict');
 
 const {
     buildChildEnv,
+    stripReservedChildSecrets,
     auditDroppedEnvVars,
     formatAuditLogEntry,
     SYSTEM_ALLOWLIST,
@@ -263,9 +264,7 @@ test('CA-4: skill con scope desconocido throwa con mensaje accionable', () => {
     );
 });
 
-test('CA-4 (telegram-hooks always-on): TELEGRAM_BOT_TOKEN llega a TODOS los childs', () => {
-    // Aún cuando el skill no declara telegram-hooks, los hooks de Claude Code
-    // (agent-concurrency-check.js, worktree-guard.js) lo necesitan.
+test('CA-4: telegram-hooks conserva chat id pero no entrega material de firma', () => {
     const env = buildChildEnv({
         skill: 'guru',
         processEnv: fullOperatorEnv(),
@@ -274,7 +273,7 @@ test('CA-4 (telegram-hooks always-on): TELEGRAM_BOT_TOKEN llega a TODOS los chil
             providers: { anthropic: { credentials_env: 'ANTHROPIC_API_KEY' } },
         },
     });
-    assert.equal(env.TELEGRAM_BOT_TOKEN, 'tg-bot-XXXX');
+    assert.equal(env.TELEGRAM_BOT_TOKEN, undefined);
     assert.equal(env.TELEGRAM_CHAT_ID, '12345');
 });
 
@@ -456,6 +455,34 @@ test('CA-7: pipelineExtras puede sobreescribir un PIPELINE_* del processEnv', ()
     assert.equal(env.PIPELINE_ISSUE, 'new');
 });
 
+test('CA-7: pipelineExtras no reintroduce token reservado por nombre ni alias', () => {
+    const canary = 'CANARY-TELEGRAM-SIGNING-MATERIAL';
+    const env = buildChildEnv({
+        skill: 'guru',
+        processEnv: fullOperatorEnv({ TELEGRAM_BOT_TOKEN: canary }),
+        pipelineExtras: {
+            TELEGRAM_BOT_TOKEN: canary,
+            PIPELINE_SIGNING_ALIAS: canary,
+            PIPELINE_ISSUE: '5462',
+        },
+    });
+    assert.equal(env.TELEGRAM_BOT_TOKEN, undefined);
+    assert.equal(env.PIPELINE_SIGNING_ALIAS, undefined);
+    assert.equal(Object.values(env).includes(canary), false);
+    assert.equal(env.PIPELINE_ISSUE, '5462');
+});
+
+test('CA-7: rollout legado filtra token reservado y aliases antes del spawn', () => {
+    const canary = 'CANARY-TELEGRAM-SIGNING-MATERIAL';
+    const env = stripReservedChildSecrets({
+        PATH: '/usr/bin',
+        TELEGRAM_BOT_TOKEN: canary,
+        LEGACY_ALIAS: canary,
+        PIPELINE_ISSUE: '5462',
+    }, { TELEGRAM_BOT_TOKEN: canary });
+    assert.deepEqual(env, { PATH: '/usr/bin', PIPELINE_ISSUE: '5462' });
+});
+
 test('CA-7: skill no string lanza error', () => {
     assert.throws(
         () => buildChildEnv({ skill: null, processEnv: fullOperatorEnv() }),
@@ -487,7 +514,7 @@ test('CA-7: defaults hardcoded (DEFAULT_REQUIRES_BY_SKILL) aplican cuando no hay
     assert.equal(envBuilder.GH_TOKEN, undefined);
 });
 
-test('CA-7: skill desconocido sin defaults solo recibe SYSTEM + PIPELINE_* + telegram-hooks + provider key', () => {
+test('CA-7: skill desconocido no recibe material de firma de telegram', () => {
     const env = buildChildEnv({
         skill: 'totally-unknown-skill',
         processEnv: fullOperatorEnv(),
@@ -498,8 +525,9 @@ test('CA-7: skill desconocido sin defaults solo recibe SYSTEM + PIPELINE_* + tel
     // Provider key (default anthropic)
     assert.equal(env.ANTHROPIC_API_KEY, 'sk-ant-api-XXXXX');
     assert.equal(env.OPENAI_API_KEY, undefined);
-    // Always-on telegram
-    assert.equal(env.TELEGRAM_BOT_TOKEN, 'tg-bot-XXXX');
+    // Telegram conserva destino, nunca material de firma.
+    assert.equal(env.TELEGRAM_BOT_TOKEN, undefined);
+    assert.equal(env.TELEGRAM_CHAT_ID, '12345');
     // NO scope vars (no defaults para este skill, no scopes declarados)
     assert.equal(env.GH_TOKEN, undefined);
     assert.equal(env.AWS_ACCESS_KEY_ID, undefined);
@@ -642,6 +670,20 @@ test('CA-10: auditDroppedEnvVars NO incluye los VALORES en el output (I-S2)', ()
     // El hash SHA-256-12 sí está
     assert.equal(dropped[0].hash.length, 12);
     assert.match(dropped[0].hash, /^[0-9a-f]{12}$/);
+});
+
+test('CA-10: auditoría omite nombre reservado y aliases de su valor', () => {
+    const canary = 'CANARY-TELEGRAM-SIGNING-MATERIAL';
+    const dropped = auditDroppedEnvVars({
+        TELEGRAM_BOT_TOKEN: canary,
+        ALTERNATE_SIGNING_MATERIAL: canary,
+        SAFE_DROPPED_VAR: 'safe-value',
+    });
+    const serialized = JSON.stringify(dropped);
+    assert.equal(serialized.includes('TELEGRAM_BOT_TOKEN'), false);
+    assert.equal(serialized.includes('ALTERNATE_SIGNING_MATERIAL'), false);
+    assert.equal(serialized.includes(canary), false);
+    assert.equal(dropped.some((entry) => entry.key === 'SAFE_DROPPED_VAR'), true);
 });
 
 test('CA-10: auditDroppedEnvVars devuelve lista alfabéticamente ordenada (DX, fácil diff)', () => {
