@@ -9412,9 +9412,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Resolver env del child:
   //   - Flag `pipeline.env_isolation_enabled: true` → filtrado por
   //     buildChildEnv (allowlist mínima + scope del skill + provider key).
-  //   - Flag false (default rollout) → comportamiento previo: heredar TODO
-  //     `process.env`. Preserva regresión cero hasta que validemos en
-  //     producción que ningún hook/skill rompa por falta de credencial.
+  //   - Flag false (default rollout) → comportamiento previo salvo secretos
+  //     reservados, que nunca se heredan por nombre ni alias de valor.
   let childEnv;
   let envIsolationEnabled = false;
   try {
@@ -9450,7 +9449,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       throw e;
     }
   } else {
-    childEnv = { ...process.env, ...pipelineExtras };
+    // Aun durante el rollout legado, el material de firma de Telegram nunca
+    // cruza al child por nombre ni por alias con el mismo valor.
+    childEnv = buildChildEnvLib.stripReservedChildSecrets(
+      { ...process.env, ...pipelineExtras },
+      process.env,
+    );
   }
 
   // #3198 — si el dispatcher resolvió un fallback, pasamos un `resolveImpl`
@@ -11163,6 +11167,12 @@ function summarizeCommanderOlderTurns({ input } = {}) {
     ].join(' ');
     const prompt = `${systemInstr}\n\n<material>\n${input}\n</material>`;
 
+    // #5462 H-3 — base del env del child de resumen. Se arma en dos pasos (sin
+    // spread inline) para que el ÚNICO consumidor posible sea el filtro de abajo:
+    // ningún objeto crudo derivado de process.env llega a `spawn` por este sitio.
+    const summaryBaseEnv = { ...process.env };
+    summaryBaseEnv.CLAUDE_PROJECT_DIR = ROOT;
+
     let proc;
     try {
       proc = spawn(
@@ -11175,7 +11185,14 @@ function summarizeCommanderOlderTurns({ input } = {}) {
           '--permission-mode', 'bypassPermissions',
           '--model', COMMANDER_SUMMARY_MODEL,
         ],
-        { shell: CLAUDE_LAUNCHER.shell, windowsHide: true, env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT } },
+        {
+          shell: CLAUDE_LAUNCHER.shell,
+          windowsHide: true,
+          // #5462 H-3 — este spawn no tiene rama de aislamiento: el material de
+          // firma de Telegram se filtra SIEMPRE, por nombre y por alias con el
+          // mismo valor. Preserva TELEGRAM_CHAT_ID / CLAUDE_PROJECT_DIR.
+          env: buildChildEnvLib.stripReservedChildSecrets(summaryBaseEnv, process.env),
+        },
       );
     } catch (e) {
       return reject(e);
@@ -12487,11 +12504,19 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         return reject(e);
       }
     } else {
-      cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+      // #5462 H-2 — sin spread inline: el objeto crudo nunca es el valor final,
+      // el filtro del punto de salida (abajo) es la última operación.
+      cleanEnv = { ...process.env };
+      cleanEnv.CLAUDE_PROJECT_DIR = ROOT;
     }
     // CLAUDECODE se borra siempre — Claude Code lo setea internamente y heredarlo
     // confunde al child sobre si ya está en una sesión activa.
     delete cleanEnv.CLAUDECODE;
+    // #5462 H-2 — Frontera única en el punto de salida del env, FUERA del
+    // if/else de rollout: el material de firma de Telegram no cruza al child por
+    // ninguna rama. Idempotente (buildChildEnv ya filtra internamente) y es la
+    // ÚLTIMA operación sobre el env, después del merge de extras y del delete.
+    cleanEnv = buildChildEnvLib.stripReservedChildSecrets(cleanEnv, process.env);
 
     // #3258 — SR-1: data-residency-filter gate antes del spawn. Sólo aplica
     // a providers no-Anthropic; para Anthropic es passthrough explícito.
@@ -12568,10 +12593,18 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             skillConfigOverride: { provider: prov },
           });
         } else {
-          e = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+          // #5462 H-1 — sin spread inline: el objeto crudo nunca es el valor
+          // devuelto; el filtro del `return` es la última operación.
+          e = { ...process.env };
+          e.CLAUDE_PROJECT_DIR = ROOT;
         }
         delete e.CLAUDECODE;
-        return e;
+        // #5462 H-1 — Ejecutor de fallback no-Anthropic: es el camino literal de
+        // "providers, fallbacks" del objetivo del issue. Filtro en el punto de
+        // salida (fuera del if/else de rollout) y DESPUÉS del delete, para que el
+        // borrado de CLAUDECODE no se pierda sobre el objeto nuevo que devuelve
+        // el helper.
+        return buildChildEnvLib.stripReservedChildSecrets(e, process.env);
       };
 
       const buildFallbackArgs = (provider) => {
@@ -16352,6 +16385,99 @@ function findLastRejection(pipelineName, issueNum, config) {
     return best;
 }
 
+// #5689 (SEC-2) — discriminador ÚNICO recomendación-vs-bloqueo-real (#5337).
+// Reemplaza el chequeo inline de un solo label del gate del intake: el inline
+// ignoraba `source:recommendation` (histórico), que el helper sí cubre.
+// `RECOMMENDATION_APPROVED_LABEL` sale del MISMO módulo a propósito: el pase de
+// rescate del `--search` (abajo) y el gate tienen que hablar del mismo label. Si
+// uno se hardcodeara, renombrarlo dejaría al gate admitiendo issues que el
+// search ya descartó — exactamente la contradicción que rompió rev-1.
+const {
+  isRecommendationIssue: isPendingRecommendationIssue,
+  RECOMMENDATION_APPROVED_LABEL,
+} = require('./lib/recommendation-labels');
+
+// =============================================================================
+// #5689 (R1 — anti-starvation del intake) — término `--search` ÚNICO del intake.
+//
+// El problema: las ~1.076 recomendaciones de agente tienen `needs-definition`
+// (el mismo label de admisión de `config.yaml`) y hoy quedan afuera SÓLO por el
+// `-label:needs-human` del search. Cuando #5691 migre esas recomendaciones a
+// `needs:triage-backlog`, dejarían de estar filtradas: GitHub aplica el
+// `--limit 50` SERVER-SIDE, antes de `calcularPrioridad()`, así que los 50 slots
+// se llenarían de recomendaciones y el intake de definición real se ahogaría en
+// silencio, sin ninguna alarma.
+//
+// Por qué una función y no dos literales: el término vive en DOS call sites
+// (`discoverWorkDryRun` y el intake real de `brazoIntake`). Duplicar el string
+// hace posible parchear uno, ver el test en verde, y dejar el otro sin blindar
+// (GURU-3). Con una sola fuente eso es imposible por construcción.
+//
+// ⚠️ ESTO NO ES UN CONTROL DE SEGURIDAD — es un control de DISPONIBILIDAD.
+// El índice de búsqueda de GitHub es eventualmente consistente: un issue recién
+// etiquetado puede no reflejar el label acá durante minutos, y en esa ventana
+// pasa el filtro. El control AUTORITATIVO es el gate JS de `brazoIntake` sobre
+// los labels ya traídos (estado fresco, no índice). Ver REQ-SEC-1.
+// =============================================================================
+const INTAKE_SEARCH_EXCLUDED_LABELS = Object.freeze([
+  // Bloqueo real: un agente se frenó y espera acción del operador.
+  'needs-human',
+  // #5689 — backlog de recomendaciones esperando triaje humano (no bloquea).
+  'tipo:recomendacion',
+]);
+
+function buildIntakeSearchQuery() {
+  return INTAKE_SEARCH_EXCLUDED_LABELS.map((l) => `-label:${l}`).join(' ');
+}
+
+// -----------------------------------------------------------------------------
+// #5689 (REGRESIÓN rev-1, hallazgo de security) — PASE DE RESCATE.
+//
+// Qué se rompió: la búsqueda de GitHub NO soporta OR ni paréntesis, así que
+// `-label:tipo:recomendacion` es incondicional — excluye TAMBIÉN las
+// recomendaciones que un humano ya aprobó. Y una recomendación aprobada es
+// exactamente `tipo:recomendacion` + `recommendation:approved` (`approve()` de
+// lib/recommendations.js agrega el segundo y NO saca el primero).
+//
+// Consecuencia: el camino de LIBERACIÓN del gate de #2653 quedaba inoperante.
+// El gate JS (`isPendingRecommendationIssue`) devuelve `false` ante
+// `recommendation:approved` y por lo tanto ADMITIRÍA el issue... pero el issue
+// ya nunca volvía de GitHub, así que el gate jamás llegaba a evaluarlo. Aprobar
+// una recomendación pasaba a ser un no-op silencioso: el operador veía
+// "entrará al pipeline en el próximo ciclo" y no entraba nunca.
+// Caso vivo al momento del fix: #5055 (needs-definition + tipo:recomendacion +
+// recommendation:approved, sin needs-human).
+//
+// Solución: DOS pases de búsqueda cuya unión se deduplica por número.
+//   1. BASE     — trabajo normal, excluye bloqueo real y backlog de recos.
+//   2. RESCATE  — sólo las recomendaciones YA aprobadas por un humano.
+//
+// Por qué no hay riesgo de reabrir R1 (starvation) con el pase 2: está acotado
+// a `label:recommendation:approved`, un label que sólo pone un humano de a uno
+// (población viva = 1). No es el backlog de ~1.076 que ahoga el intake.
+//
+// El pase 2 mantiene `-label:needs-human`: una recomendación aprobada que
+// DESPUÉS se bloquea de verdad sigue afuera del intake, igual que cualquier
+// otro trabajo real (circuit breaker de #2405). El rescate reabre el camino de
+// aprobación, no un bypass del breaker.
+//
+// Sigue sin ser un control de seguridad: el pase 2 sólo AGREGA disponibilidad.
+// Todo lo que vuelve de los dos pases pasa igual por el gate autoritativo de
+// `brazoIntake` sobre los labels frescos (REQ-SEC-1), que es quien decide.
+// -----------------------------------------------------------------------------
+function buildIntakeSearchRescueQuery() {
+  // `needs-human` se sigue excluyendo (breaker); `tipo:recomendacion` NO, que es
+  // justamente el punto: son las que el pase base deja afuera.
+  return `-label:${INTAKE_SEARCH_EXCLUDED_LABELS[0]} label:${RECOMMENDATION_APPROVED_LABEL}`;
+}
+
+// Fuente ÚNICA de los pases del intake. Los dos call sites (`discoverWorkDryRun`
+// y el intake real de `brazoIntake`) iteran ESTA función: si alguien agrega un
+// pase, entra por los dos lados o por ninguno (GURU-3).
+function buildIntakeSearchQueries() {
+  return [buildIntakeSearchQuery(), buildIntakeSearchRescueQuery()];
+}
+
 // #4687 (Ola Puente P2) — Descubrimiento side-effect-free del tablero (dry-run).
 //
 // Paso 4 del bootstrap de un producto nuevo (project-bootstrap.js): confirmar el
@@ -16415,12 +16541,30 @@ function discoverWorkDryRun(config, opts = {}) {
     for (const repo of reposFn()) {
       // Fail-closed: repo no allowlisted / malformado ⇒ skip (cero consultas).
       if (!isAllowed(repo)) { skippedRepos.push(repo); continue; }
-      let issues = [];
-      try {
-        const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "-label:needs-human"`);
-        issues = JSON.parse(out || '[]');
-      } catch (e) {
-        issues = [];
+      const issues = [];
+      // #5689 rev-1 — unión deduplicada de los pases (base + rescate de recos
+      // aprobadas). Dedup por número dentro del repo: los dos pases consultan el
+      // mismo repo y un issue puede volver en ambos si el índice va atrasado.
+      const seenNumbers = new Set();
+      for (const search of buildIntakeSearchQueries()) {
+        try {
+          // #5689 REQ-SEC-3 — INVARIANTE: esta consulta trae `number,title`, SIN
+          // `labels`. Por eso esta superficie NO puede evaluar el gate
+          // `isRecommendationIssue()` ni como defensa en profundidad. Hoy es
+          // inocuo porque `discoverWorkDryRun` es side-effect-free por contrato
+          // (no encola, no spawnea). Si alguna vez pasa a alimentar encolado,
+          // DEBE sumar `labels` al `--json` y pasar por el mismo gate que
+          // `brazoIntake`, o abre un bypass total del control autoritativo.
+          const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "${search}"`);
+          for (const it of JSON.parse(out || '[]')) {
+            if (seenNumbers.has(it.number)) continue;
+            seenNumbers.add(it.number);
+            issues.push(it);
+          }
+        } catch (e) {
+          // Un pase caído no debe tumbar los demás: el dry-run degrada a
+          // "lo que sí pudo listar", nunca a lista vacía por un error parcial.
+        }
       }
       for (const it of issues) {
         discovered.push({ pipeline: pipelineName, label, repo, number: it.number, title: it.title });
@@ -16472,22 +16616,32 @@ function brazoIntake(config) {
           log('intake', `repo omitido — no allowlisted / forma inválida: ${JSON.stringify(repo)}`);
           continue;
         }
-        try {
-          ghThrottle();
-          const result = _ghExecSyncGuarded( // #4612 — breaker-aware
-            // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
-            // cero requests extra) para que el detector de decisión de
-            // arquitectura pueda clasificar el issue al entrar a definición.
-            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "-label:needs-human"`,
-            { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
-          );
-          const repoIssues = JSON.parse(result || '[]');
-          // CA-A2 — propagar el repo de origen aguas abajo (leído por getRepoForIssue).
-          for (const it of repoIssues) it.origin_repo = repo;
-          issues = issues.concat(repoIssues);
-        } catch (e) {
-          // Un repo caído no debe tumbar el intake de los demás.
-          log('intake', `Error consultando ${repo} para ${pipelineName}: ${e.message}`);
+        // #5689 rev-1 — unión deduplicada de los pases (base + rescate de recos
+        // aprobadas). Dedup por número DENTRO del repo: `issues` acumula entre
+        // repos y los números colisionan entre repos distintos.
+        const seenNumbers = new Set();
+        for (const search of buildIntakeSearchQueries()) {
+          try {
+            ghThrottle();
+            const result = _ghExecSyncGuarded( // #4612 — breaker-aware
+              // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
+              // cero requests extra) para que el detector de decisión de
+              // arquitectura pueda clasificar el issue al entrar a definición.
+              `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "${search}"`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+            );
+            const repoIssues = JSON.parse(result || '[]');
+            for (const it of repoIssues) {
+              if (seenNumbers.has(it.number)) continue;
+              seenNumbers.add(it.number);
+              // CA-A2 — propagar el repo de origen aguas abajo (leído por getRepoForIssue).
+              it.origin_repo = repo;
+              issues.push(it);
+            }
+          } catch (e) {
+            // Un repo (o un pase) caído no debe tumbar el intake de los demás.
+            log('intake', `Error consultando ${repo} para ${pipelineName}: ${e.message}`);
+          }
         }
       }
 
@@ -16527,13 +16681,33 @@ function brazoIntake(config) {
           continue;
         }
 
-        // RECOMENDACION (#2653): no procesar issues con label tipo:recomendacion
-        // hasta que un humano apruebe (recommendation:approved). Defensa en
-        // profundidad: el search ya filtra needs-human, pero si alguien quita
-        // needs-human por error sin agregar recommendation:approved, el issue
-        // sigue siendo una recomendación pendiente y NO debe entrar al flujo.
-        if (issueLabels.includes('tipo:recomendacion') && !issueLabels.includes('recommendation:approved')) {
-          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (tipo:recomendacion sin recommendation:approved)`);
+        // RECOMENDACION (#2653, blindado en #5689) — GATE AUTORITATIVO.
+        //
+        // No procesar issues de recomendación de agente hasta que un humano los
+        // apruebe (`recommendation:approved`).
+        //
+        // ⚠️ REQ-SEC-1 — ESTE es el control de seguridad, NO el `--search`.
+        // El `-label:...` de `buildIntakeSearchQuery()` es best-effort: se
+        // evalúa contra el índice de búsqueda de GitHub, que es EVENTUALMENTE
+        // CONSISTENTE — un issue recién etiquetado puede no reflejar el label
+        // durante minutos y pasar el filtro. Este gate, en cambio, corre local
+        // sobre los labels que la propia respuesta trajo (`--json ...,labels`):
+        // estado fresco, no índice. Los dos NO son intercambiables y este no se
+        // puede "optimizar" borrándolo porque el search ya filtre.
+        //
+        // Redacción previa a #5689: "si alguien quita needs-human por error".
+        // Eso quedó desactualizado — tras la migración de #5691 las ~924
+        // recomendaciones dejan de tener `needs-human` como modo NORMAL de
+        // operación, no como accidente. Blast radius si el gate falla: cuerpos
+        // de issue escritos por un LLM inyectados en prompts de agentes con
+        // permiso de escribir código y abrir PRs.
+        //
+        // SEC-2: `isPendingRecommendationIssue()` (lib/recommendation-labels.js)
+        // en vez del chequeo de un solo label. Además de `tipo:recomendacion`
+        // cubre `source:recommendation` (el histórico, que el inline ignoraba) y
+        // preserva la semántica: devuelve `false` ante `recommendation:approved`.
+        if (isPendingRecommendationIssue(issueLabels)) {
+          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (sin recommendation:approved)`);
           continue;
         }
 
@@ -19588,6 +19762,13 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,
+    // #5689 (R1) — término `--search` único del intake (anti-starvation).
+    buildIntakeSearchQuery,
+    buildIntakeSearchRescueQuery,
+    buildIntakeSearchQueries,
+    INTAKE_SEARCH_EXCLUDED_LABELS,
+    // #5689 (SEC-1/SEC-2) — gate autoritativo de recomendaciones del intake.
+    isPendingRecommendationIssue,
     // #4763 (Ola Puente P4) — ruteo product-aware por instancia (fallback single-product).
     resolveIntakeRepo,
     setMultiInstanceRouter,
