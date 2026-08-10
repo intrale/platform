@@ -238,6 +238,11 @@ scripts/planner-plan.json
 .pipeline/package-lock.json
 .pipeline/circuit-breaker-infra.json
 .pipeline/circuit-breaker-infra.json.tmp
+# #5723 — contador de rollbacks consecutivos. Va fuera del arbol versionado a
+# proposito: el rollback hace `git checkout <target> -- .pipeline/` y se
+# llevaria puesto el estado si estuviera trackeado.
+.pipeline/rollback-state.json
+.pipeline/rollback-state.json.tmp
 # #4900 — estado runtime del provider-quota-guard: snapshot de cuota viva y
 # marker de degradacion preventiva. Los reescribe `provider-quota-guard.js` en
 # cada boot; versionarlos produce dirty-tree perpetuo y fuga de estado operativo

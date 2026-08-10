@@ -570,26 +570,68 @@ function runSmokeTest() {
   }
 }
 
-function moveStableTag() {
+// #5723 (CA-2) — el tag tiene que avanzar en CADA smoke limpio, no sólo
+// cuando el tag local está desalineado. Antes se llamaba únicamente si
+// `!stablePointsToHead()`, así que un tag local en HEAD con el remoto atrasado
+// nunca se corregía. `git tag -f` y el push son idempotentes: llamarlos
+// siempre es barato y cierra ese hueco.
+//
+// La guarda nueva es la inversa: NO mover el tag si el árbol de .pipeline/
+// difiere de HEAD. Ese es exactamente el estado post-rollback (HEAD apunta a
+// un commit pero .pipeline/ en disco viene de otro). Taggear ahí grabaría como
+// "estable" un commit cuyo contenido no es el que pasó el smoke, y el próximo
+// rollback volvería a un punto que nunca se validó.
+function pipelineTreeDirty() {
   try {
-    execSync('git tag -f pipeline-stable HEAD', { cwd: ROOT, timeout: 5000, windowsHide: true });
-    try {
-      execSync('git push origin --force pipeline-stable', { cwd: ROOT, timeout: 30000, windowsHide: true, stdio: 'ignore' });
-      log('Tag pipeline-stable movido y pusheado');
-    } catch (e) {
-      log(`Tag movido local, push falló: ${e.message.slice(0, 100)}`);
-    }
-  } catch (e) {
-    log(`No se pudo mover tag pipeline-stable: ${e.message.slice(0, 100)}`);
+    const out = execSync('git diff --name-only HEAD -- .pipeline/', {
+      cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true,
+    }).trim();
+    return out.length > 0 ? out.split('\n').filter(Boolean) : null;
+  } catch {
+    // Fail-open deliberado: si git no responde no podemos afirmar que el árbol
+    // esté sucio, y bloquear el avance del tag por una lectura fallida nos
+    // devuelve al problema original (tag que se queda atrás).
+    return null;
   }
 }
 
-function stablePointsToHead() {
+function moveStableTag() {
+  const dirty = pipelineTreeDirty();
+  if (dirty) {
+    log(`Tag pipeline-stable NO se mueve: .pipeline/ en disco difiere de HEAD (${dirty.length} archivo(s), ej. ${dirty[0]})`);
+    log('  Es el estado típico post-rollback. Taggear acá marcaría como estable algo que no es lo que corrió.');
+    enqueueTelegramAlert(
+      '⚠️ *Smoke test OK pero el tag `pipeline-stable` no avanzó.*\n\n' +
+      `El código de \`.pipeline/\` en disco no coincide con el commit actual (${dirty.length} archivo(s) difieren). ` +
+      'Suele pasar después de un rollback.\n\n' +
+      'Mientras siga así el tag queda atrás, y un próximo rollback puede borrar cambios buenos. ' +
+      'Para alinearlo: mergear el código que está corriendo, o `git checkout HEAD -- .pipeline/` si lo de disco ya no sirve.'
+    );
+    return false;
+  }
   try {
-    const head = execSync('git rev-parse HEAD', { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).trim();
-    const stable = execSync('git rev-parse pipeline-stable', { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).trim();
-    return head === stable;
-  } catch {
+    let before = null;
+    try {
+      before = execSync('git rev-parse pipeline-stable', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+    } catch {}
+    execSync('git tag -f pipeline-stable HEAD', { cwd: ROOT, timeout: 5000, windowsHide: true });
+    const head = execSync('git rev-parse HEAD', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+    if (before && before !== head) {
+      let ahead = '';
+      try {
+        ahead = execSync(`git rev-list --count ${before}..${head}`, { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }).trim();
+      } catch {}
+      log(`Tag pipeline-stable avanzó ${ahead ? ahead + ' commit(s): ' : ''}${before.slice(0, 8)} → ${head.slice(0, 8)}`);
+    }
+    try {
+      execSync('git push origin --force pipeline-stable', { cwd: ROOT, timeout: 30000, windowsHide: true, stdio: 'ignore' });
+      log(`Tag pipeline-stable movido y pusheado (${head.slice(0, 8)})`);
+    } catch (e) {
+      log(`Tag movido local, push falló: ${e.message.slice(0, 100)}`);
+    }
+    return true;
+  } catch (e) {
+    log(`No se pudo mover tag pipeline-stable: ${e.message.slice(0, 100)}`);
     return false;
   }
 }
@@ -642,7 +684,10 @@ function launchRollbackOrphan() {
     stdio: ['ignore', logFd, logFd],
     detached: true,
     windowsHide: true,
-    env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules') },
+    // ROLLBACK_STDIO_IS_LOG — su stdout ya apunta a rollback.log (logFd). Sin
+    // esta señal rollback.js escribiría cada línea dos veces: una por
+    // appendFileSync y otra por console.log (#5723, G-6).
+    env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules'), ROLLBACK_STDIO_IS_LOG: '1' },
   });
   child.unref();
   fs.closeSync(logFd);
@@ -790,7 +835,16 @@ switch (action) {
         if (smoke.ok) log('Segundo smoke test OK tras retry — pipeline recuperado sin rollback');
       }
       if (smoke.ok) {
-        if (!stablePointsToHead()) moveStableTag();
+        // #5723 (CA-2 + CA-4) — un smoke limpio es la única evidencia de que
+        // el pipeline está sano: avanza el tag y corta la racha de rollbacks.
+        moveStableTag();
+        try {
+          if (require('./lib/rollback-guard').clearState()) {
+            log('Estado de rollback reseteado (un smoke limpio corta la racha)');
+          }
+        } catch (e) {
+          log(`No se pudo resetear el estado de rollback: ${e.message.slice(0, 100)}`);
+        }
       } else if (flagNoRollback) {
         log('Smoke test falló pero --no-rollback activo (diagnóstico)');
         enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\nExit ${smoke.exitCode}\n\nModo diagnóstico (--no-rollback), sin rollback automático.`);
