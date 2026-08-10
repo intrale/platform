@@ -31,6 +31,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
+// Se monta en todas las ventanas: cuando el Pulpo suspende el dispatch no
+// avanza NADA, y la pregunta "por que no se mueve" se hace desde donde el
+// operador este parado. La entrega anterior dejo el estado en un modulo al que
+// no apunta ninguna ruta del menu y el bloqueo paso 10 h invisible.
+const {
+    resolveDesyncStatus: _dsbResolve,
+    renderDesyncBlockBannerSsr: _dsbRender,
+    DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+    desyncBlockBannerBundleJs: _dsbBundle,
+} = require('./desync-block-banner.js');
 // #4531 — Bandeja de estado unificada del header común MIZPÁ.
 const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScript } = require('./header-meta');
 
@@ -557,6 +569,7 @@ ${PANEL_CSS}
     </div>
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
+  ${_dsbRender(_dsbResolve())}
   ${navHtml}
   <main class="mph-body">${bodyHtml()}</main>
   <footer class="in-footer">
@@ -566,6 +579,9 @@ ${PANEL_CSS}
 </div>
 <script>${CLIENT_JS}</script>
 <script>${headerPillsClientScript()}\n${headerPillsPollClientScript()}</script>
+
+<style>${_DSB_CSS}</style>
+<script>${_dsbBundle()}</script>
 </body>
 </html>`;
 }

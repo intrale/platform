@@ -31,6 +31,21 @@ const path = require('node:path');
 
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
+// Ventana de diagnostico: cuando el Pulpo suspende el dispatch no avanza NADA,
+// y es aca donde el operador viene a preguntarse por que. La entrega anterior
+// dejo el estado en un modulo al que no apunta ninguna ruta del menu.
+//
+// Ojo: este shell no inyecta FETCH_CLIENT_JS, asi que el tick de refresco no
+// corre aca (el bundle se auto-protege). El SSR igual muestra el estado real al
+// cargar la pagina, que es lo que hace falta.
+const {
+    resolveDesyncStatus,
+    renderDesyncBlockBannerSsr,
+    DESYNC_BLOCK_BANNER_CSS,
+    desyncBlockBannerBundleJs,
+} = require('./desync-block-banner.js');
 const { CONFIRM_MODAL_JS } = require('./confirm-modal');
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
@@ -1101,6 +1116,7 @@ ${OPS_CSS}
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${missionHtml}
+  ${renderDesyncBlockBannerSsr(resolveDesyncStatus())}
   ${navHtml}
   ${breadcrumb}
   <main class="satellite-body">${opsBodyHtml(state)}</main>
@@ -1111,6 +1127,8 @@ ${OPS_CSS}
 </div>
 <script>${CONFIRM_MODAL_JS}</script>
 <script>${OPS_CLIENT_JS}</script>
+<style>${DESYNC_BLOCK_BANNER_CSS}</style>
+<script>${desyncBlockBannerBundleJs()}</script>
 </body>
 </html>`;
 }

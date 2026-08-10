@@ -260,115 +260,36 @@ function renderDepsBanner({ ic }) {
 // `role="status"` + aria-label con el estado completo. Prohibido el falso
 // verde: `desconocido` es ⚪ gris, no 🟢. Sin colores hardcodeados (tokens).
 // CA-8: issue numbers sólo enteros (`Number.isInteger`) escapados.
-const DSS_META = {
-    sincronizado:          { icon: 'allowlist-check',   label: 'Sincronizado',          cls: 'dss-ok',      aria: 'sincronizado' },
-    realineado_reductivo:  { icon: 'estado-retrying',   label: 'Realineado',            cls: 'dss-warn',    aria: 'realineado, divergencia autoresoluble' },
-    divergencia_bloqueada: { icon: 'warn',              label: 'Divergencia bloqueada', cls: 'dss-danger',  aria: 'divergencia bloqueada, requiere intervención' },
-    desconocido:           { icon: 'stage-not-entered', label: 'Sin datos',             cls: 'dss-unknown', aria: 'sin datos de sincronización' },
-};
-
-// #5724 CA-4 / UX-2 — Presentación del estado BLOQUEANTE. El pill genérico
-// nombraba el síntoma interno ("Divergencia bloqueada"), no la consecuencia
-// operativa: el dispatch está suspendido y no se lanza ningún agente. Un
-// operador que lee "divergencia bloqueada" no deduce "hace 10 horas que no
-// arranca nada". Además el bloqueo usa `pause-lock` (candado de pausa) y deja
-// `warn` para la divergencia que todavía no frenó nada.
-const DSS_META_BLOQUEADO = {
-    icon: 'pause-lock',
-    label: 'Dispatch suspendido',
-    cls: 'dss-danger',
-    aria: 'dispatch suspendido por divergencia entre la allowlist y la ola activa',
-};
-
-// Normalización defensiva del contrato del slice: ante campo ausente/corrupto
-// degradamos a `desconocido` (riesgo del render de `undefined`).
-function normalizeDesyncStatus(raw) {
-    const d = raw && typeof raw === 'object' ? raw : {};
-    const estado = Object.prototype.hasOwnProperty.call(DSS_META, d.estado) ? d.estado : 'desconocido';
-    // Acepta el shape del slice (`detected_at`) y el ya normalizado
-    // (`detectedAt`): el view normaliza en el call-site Y adentro del render,
-    // así que la función tiene que ser idempotente o pierde la antigüedad.
-    const rawDetected = typeof d.detected_at === 'string' ? d.detected_at : d.detectedAt;
-    const detectedAt = (typeof rawDetected === 'string' && Number.isFinite(Date.parse(rawDetected)))
-        ? rawDetected
-        : null;
-    return {
-        estado,
-        added: (Array.isArray(d.added) ? d.added : []).filter(Number.isInteger),
-        removed: (Array.isArray(d.removed) ? d.removed : []).filter(Number.isInteger),
-        count: Number.isInteger(d.count) ? d.count : 0,
-        bloqueado: Boolean(d.bloqueado),
-        detectedAt,
-    };
-}
-
-// #5724 UX-3 — "hace 2 h 15 min". La duración es lo que distingue un hipo de un
-// incidente; sin ella el pill de 10 horas se ve igual que el de 10 minutos.
-function desyncAgeText(detectedAt, nowMs) {
-    const ts = Date.parse(detectedAt);
-    if (!Number.isFinite(ts)) return '';
-    const now = Number.isFinite(nowMs) ? nowMs : Date.now();
-    const min = Math.floor((now - ts) / 60000);
-    if (!Number.isFinite(min) || min < 0) return '';
-    if (min < 1) return 'recién';
-    if (min < 60) return `hace ${min} min`;
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    if (h >= 24) {
-        const dias = Math.floor(h / 24);
-        const restoH = h % 24;
-        return restoH > 0 ? `hace ${dias} d ${restoH} h` : `hace ${dias} d`;
-    }
-    return m > 0 ? `hace ${h} h ${m} min` : `hace ${h} h`;
-}
-
-// Texto de detalle por estado (sin JSON crudo ni paths — CA-8).
-function desyncDetailText(d, nowMs) {
-    switch (d.estado) {
-        case 'sincronizado':
-            return d.count > 0 ? `${d.count} issues alineados` : 'allowlist alineada con la ola';
-        case 'realineado_reductivo':
-            return 'divergencia autoresoluble por el Pulpo · no bloquea';
-        case 'divergencia_bloqueada': {
-            // UX-1: la causa concreta, no la jerga del archivo.
-            const partes = [];
-            if (d.removed.length > 0) {
-                partes.push(`${d.removed.length} ${d.removed.length === 1 ? 'issue' : 'issues'} de la ola fuera de la allowlist`);
-            }
-            if (d.added.length > 0) {
-                partes.push(`${d.added.length} ${d.added.length === 1 ? 'issue' : 'issues'} de la allowlist fuera de la ola`);
-            }
-            if (partes.length === 0) partes.push('la allowlist y la ola activa divergen');
-            if (d.bloqueado) partes.push('no se lanza ningún agente');
-            const edad = d.bloqueado ? desyncAgeText(d.detectedAt, nowMs) : '';
-            if (edad) partes.push(edad);
-            return partes.join(' · ');
-        }
-        default:
-            return 'waves/partial-pause ausente o degradado';
-    }
-}
+//
+// #5724 CA-4 — El copy (labels, detalle, antigüedad, chips) se mudó a
+// `lib/desync-copy.js`. Este módulo sólo se renderiza desde el catch-all legacy
+// de dashboard.js, al que no apunta ninguna ruta del menú V3: el operador nunca
+// vio este pill. La vista Inicio ahora muestra el mismo estado, y para que las
+// dos superficies no digan cosas distintas la decisión de texto vive en un solo
+// lugar. Acá queda únicamente el LAYOUT del pill.
+const {
+    DSS_META,
+    DSS_META_BLOQUEADO,
+    DSS_CHIPS_TOPE,
+    normalizeDesyncStatus,
+    desyncAgeText,
+    desyncDetailText,
+    desyncMeta,
+    desyncChips,
+} = require('../../lib/desync-copy.js');
 
 // Chips de issues added/removed — sólo enteros escapados, tope de 6 (CA-8).
 // #5724 UX-4: el tope deja de ser silencioso — un truncado sin indicador se lee
 // como "esto es todo", y CA-4 pide mostrar la divergencia concreta.
-const DSS_CHIPS_TOPE = 6;
 function desyncIssueChips(d) {
-    const parts = [];
-    d.added.slice(0, DSS_CHIPS_TOPE).forEach((n) => parts.push('<span class="dss-chip dss-chip-add">+#' + escapeHtmlText(String(n)) + '</span>'));
-    d.removed.slice(0, DSS_CHIPS_TOPE).forEach((n) => parts.push('<span class="dss-chip dss-chip-rem">−#' + escapeHtmlText(String(n)) + '</span>'));
-    if (parts.length === 0) return '';
-    const ocultos = Math.max(0, d.added.length - DSS_CHIPS_TOPE) + Math.max(0, d.removed.length - DSS_CHIPS_TOPE);
-    if (ocultos > 0) {
-        parts.push('<span class="dss-chip dss-chip-more" title="' + escapeHtmlAttr(`${ocultos} issues más en la divergencia`) + '">+' + escapeHtmlText(String(ocultos)) + ' más</span>');
-    }
+    const chips = desyncChips(d);
+    if (chips.length === 0) return '';
+    const parts = chips.map((c) => {
+        if (c.tipo === 'add') return '<span class="dss-chip dss-chip-add">+#' + escapeHtmlText(String(c.issue)) + '</span>';
+        if (c.tipo === 'rem') return '<span class="dss-chip dss-chip-rem">−#' + escapeHtmlText(String(c.issue)) + '</span>';
+        return '<span class="dss-chip dss-chip-more" title="' + escapeHtmlAttr(`${c.ocultos} issues más en la divergencia`) + '">+' + escapeHtmlText(String(c.ocultos)) + ' más</span>';
+    });
     return '<span class="dss-chips">' + parts.join('') + '</span>';
-}
-
-// Meta efectiva: el bloqueo real (flag puesto) manda sobre el estado nominal.
-function desyncMeta(d) {
-    if (d.estado === 'divergencia_bloqueada' && d.bloqueado) return DSS_META_BLOQUEADO;
-    return DSS_META[d.estado] || DSS_META.desconocido;
 }
 
 function renderDesyncPill({ ic, desync, now }) {

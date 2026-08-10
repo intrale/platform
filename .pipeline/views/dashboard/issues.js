@@ -87,6 +87,19 @@ const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 // #4531 — Bandeja de estado unificada del header común MIZPÁ.
 const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
 
+// #5724 CA-4 — Banner "Dispatch suspendido por desync". Esta ventana arma su
+// propio shell (no pasa por `pageShell`), así que el banner se monta a mano —
+// mismo patrón que kpis/matriz/providers/descanso. Va en TODAS las ventanas y
+// no sólo en la que "parece" relevante: el criterio ya falló una vez por vivir
+// en una superficie que ninguna ruta del menú visitaba, y el operador se entera
+// del bloqueo en la ventana donde esté parado, no en la que nosotros supongamos.
+const {
+    resolveDesyncStatus: _dsbResolve,
+    renderDesyncBlockBannerSsr: _dsbRender,
+    DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+    desyncBlockBannerBundleJs: _dsbBundle,
+} = require('./desync-block-banner.js');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 const TOKENS_CSS_PATH = path.join(__dirname, '..', '..', 'assets', 'design-tokens.css');
 
@@ -1464,6 +1477,7 @@ function renderIssuesHTML(opts) {
 <style>${tokens}</style>
 <style>${chromeCss}</style>
 <style>${ISSUES_CSS}</style>
+<style>${_DSB_CSS}</style>
 </head>
 <body>
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
@@ -1471,6 +1485,10 @@ ${renderStaleBanner()}
 <a href="#issues-grid" class="in-skip-link" style="position:absolute;left:-9999px">Saltar al listado de issues</a>
 <div class="iss-frame">
   ${renderMizpaChrome(mission)}
+  ${/* #5724 CA-4 — el bloqueo de dispatch va arriba del contenido: con el
+       dispatch suspendido, el backlog que muestra esta ventana no avanza y sin
+       el banner el operador lee una cola quieta sin saber por qué. */ ''}
+  ${_dsbRender(_dsbResolve(opts && opts.desyncStatus))}
   ${body}
   <footer class="in-footer">
     <span>Centro de mando MIZPÁ · backlog en vivo cada 60s</span>
@@ -1481,7 +1499,8 @@ ${renderStaleBanner()}
 ${CONFIRM_MODAL_JS}
 ${headerPillsClientScript()}
 ${renderIssuesClientScript()}
-${missionOlaEtaClientScript()}</script>
+${missionOlaEtaClientScript()}
+${_dsbBundle()}</script>
 </body>
 </html>`;
 }

@@ -39,6 +39,17 @@ const fs = require('fs');
 const path = require('path');
 
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
+// Ventana de diagnostico: cuando el Pulpo suspende el dispatch no avanza NADA,
+// y es aca donde el operador viene a preguntarse por que. La entrega anterior
+// dejo el estado en un modulo al que no apunta ninguna ruta del menu.
+const {
+    resolveDesyncStatus,
+    renderDesyncBlockBannerSsr,
+    DESYNC_BLOCK_BANNER_CSS,
+    desyncBlockBannerBundleJs,
+} = require('./desync-block-banner.js');
 // #4463 — Header compartido: pills de CPU/RAM y uptime del Pulpo + hora. Roadmap
 // antes sólo mostraba estado del pipeline + reloj (sin CPU/RAM ni uptime).
 const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta');
@@ -1311,6 +1322,7 @@ function renderRoadmap(opts) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Intrale · Roadmap de olas</title>
 <style>${theme}</style>
+<style>${DESYNC_BLOCK_BANNER_CSS}</style>
 <style>${tokens}</style>
 <style>
 .satellite-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
@@ -1327,6 +1339,7 @@ function renderRoadmap(opts) {
     <div class="in-header-title"><h1>Roadmap de olas</h1></div>
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
+  ${renderDesyncBlockBannerSsr(resolveDesyncStatus())}
   ${navHtml}
   <main class="satellite-body">${fragment}</main>
   <footer class="in-footer">
@@ -1334,7 +1347,7 @@ function renderRoadmap(opts) {
     <span>Intrale V3 · #4534 · gestión de olas</span>
   </footer>
 </div>
-<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${headerPillsClientScript()}\n${COMMON_HELPERS}\n${renderRoadmapClientScript()}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${headerPillsClientScript()}\n${COMMON_HELPERS}\n${renderRoadmapClientScript()}\n${desyncBlockBannerBundleJs()}</script>
 </body>
 </html>`;
 }

@@ -3205,6 +3205,19 @@ let desyncDetector = null;
 try { desyncDetector = require('./desync-detector'); } catch { /* opcional */ }
 let _desyncDetectorOverride = null;
 
+// #5724 CA-4 — Copy compartido del semáforo. El slice expone la presentación ya
+// resuelta (`presentacion`) además del dato crudo: el banner de la vista Inicio
+// se hidrata client-side y sin esto tendría que reimplementar en el browser el
+// mapeo estado→label/detalle/antigüedad, que es exactamente cómo el pill del
+// panel Pipeline terminó divergiendo del renderer del monolito. Campo ADITIVO:
+// los consumidores viejos leen los mismos campos de antes.
+let desyncCopy = null;
+try { desyncCopy = require('./desync-copy'); } catch { /* opcional: degradamos sin presentacion */ }
+function _desyncPresentacion(payload) {
+    if (!desyncCopy || typeof desyncCopy.buildDesyncPresentation !== 'function') return null;
+    try { return desyncCopy.buildDesyncPresentation(payload); } catch { return null; }
+}
+
 function desyncStatusSlice(state, ctx) {
     const detector = _desyncDetectorOverride || desyncDetector;
     // Base defensiva del contrato JSON (CA-6): siempre devolvemos el shape
@@ -3224,7 +3237,7 @@ function desyncStatusSlice(state, ctx) {
         detected_at: null,
     };
     if (!detector || typeof detector.detectDesync !== 'function') {
-        return { ...base, error: 'desync_detector_unavailable' };
+        return { ...base, presentacion: _desyncPresentacion(base), error: 'desync_detector_unavailable' };
     }
     try {
         const probe = detector.detectDesync({ skipFlag: true, skipAlert: true }) || {};
@@ -3265,7 +3278,7 @@ function desyncStatusSlice(state, ctx) {
             estado = 'desconocido';
         }
 
-        return {
+        const payload = {
             estado,
             classification,
             desync: typeof probe.desync === 'boolean' ? probe.desync : null,
@@ -3276,8 +3289,11 @@ function desyncStatusSlice(state, ctx) {
             count,
             detected_at: detectedAt,
         };
+        // Presentación resuelta server-side (label/detalle/antigüedad/chips) para
+        // que toda superficie diga lo mismo sin reimplementar el copy.
+        return { ...payload, presentacion: _desyncPresentacion(payload) };
     } catch (err) {
-        return { ...base, error: String((err && err.message) || err) };
+        return { ...base, presentacion: _desyncPresentacion(base), error: String((err && err.message) || err) };
     }
 }
 
