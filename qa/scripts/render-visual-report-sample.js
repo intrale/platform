@@ -20,6 +20,7 @@
 // imprime al terminar.
 //
 // Uso: node qa/scripts/render-visual-report-sample.js [--state rejected|approved|stale|oversize]
+//      [--out-dir qa/evidence/5708]
 // =============================================================================
 
 const fs = require('fs');
@@ -30,12 +31,21 @@ const ROOT = path.resolve(__dirname, '../..');
 const puppeteer = require(path.join(ROOT, 'docs/qa/node_modules/puppeteer'));
 const { renderHtml } = require(path.join(ROOT, '.pipeline/rejection-report'));
 
-const mockupPath = path.join(ROOT, '.pipeline/assets/mockups/5708/preview-48.png');
-const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-report-5708-'));
+const mockupPath = path.join(ROOT, '.pipeline/assets/mockups/5708/preview-50.png');
+
+function argValue(name) {
+  const i = process.argv.indexOf(name);
+  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : null;
+}
+
+const requestedOutDir = argValue('--out-dir');
+const outDir = requestedOutDir
+  ? path.resolve(ROOT, requestedOutDir)
+  : fs.mkdtempSync(path.join(os.tmpdir(), 'visual-report-5708-'));
+fs.mkdirSync(outDir, { recursive: true });
 
 const stateArg = (() => {
-  const i = process.argv.indexOf('--state');
-  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : 'rejected';
+  return argValue('--state') || 'rejected';
 })();
 
 const baseData = extra => ({
@@ -75,7 +85,7 @@ const contract = {
   issue: 5708,
   rev: 3,
   verdict: 'rejected',
-  mockup: { src: 'mockup-v1.png', baseline: 'mockup-48' },
+  mockup: { src: 'mockup-50.png', baseline: 'mockup-50' },
   delivery: { src: 'render-rev3.png' },
   coverage: {
     secciones_declaradas: ['A', 'B', 'C', 'D'],
@@ -88,7 +98,7 @@ const contract = {
     { section: 'B', title: 'Inventario sin agrupar', description: 'los hallazgos salen planos, no agrupados por seccion', impact: 'alto', regression: false },
     { section: 'C', title: 'Backoff no declarado', description: 'la banda no informa el proximo reintento', impact: 'bajo', regression: false },
   ],
-  suggestedAction: { skill: 'pipeline-dev', text: 'Re-implementar el inventario respetando el mockup 48.' },
+  suggestedAction: { skill: 'pipeline-dev', text: 'Re-implementar el inventario respetando el mockup 50.' },
 };
 
 const STATES = {
@@ -113,17 +123,43 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  // Materializar referencias reales evita que el PDF pruebe solamente el
+  // placeholder de "imagen no disponible", que fue la causa del rebote.
+  fs.copyFileSync(mockupPath, path.join(outDir, contract.mockup.src));
+  fs.copyFileSync(mockupPath, path.join(outDir, contract.delivery.src));
+  fs.writeFileSync(path.join(outDir, 'visual-comparison.json'), `${JSON.stringify(contract, null, 2)}\n`, 'utf8');
+
   const browser = await puppeteer.launch({ headless: 'new' });
   const page = await browser.newPage();
   await page.setViewport({ width: 1240, height: 1754, deviceScaleFactor: 1 });
   await page.setJavaScriptEnabled(false);
 
-  const html = renderHtml(build());
+  let html = renderHtml(build());
   fs.writeFileSync(path.join(outDir, `rejection-5708-${stateArg}.html`), html, 'utf8');
   await page.setContent(html, { waitUntil: 'load' });
   const pdfPath = path.join(outDir, `rejection-5708-${stateArg}.pdf`);
   await page.pdf({ path: pdfPath, format: 'A4', printBackground: true, margin: { top: '18mm', bottom: '18mm', left: '14mm', right: '14mm' } });
-  await page.screenshot({ path: path.join(outDir, `rejection-5708-${stateArg}.png`), fullPage: true });
+  const deliveryPath = path.join(outDir, contract.delivery.src);
+  await page.screenshot({ path: deliveryPath, fullPage: true });
+
+  // Segunda pasada: el PDF definitivo consume la captura real de la primera.
+  html = renderHtml(build());
+  fs.writeFileSync(path.join(outDir, `rejection-5708-${stateArg}.html`), html, 'utf8');
+  await page.setContent(html, { waitUntil: 'load' });
+  await page.pdf({ path: pdfPath, format: 'A4', printBackground: true, margin: { top: '18mm', bottom: '18mm', left: '14mm', right: '14mm' } });
+
+  // Cuando QA pide una salida explícita, publicar también en el path que usa
+  // el rejection-report real. El archivo sigue ignorado y nunca entra a main.
+  if (requestedOutDir) {
+    const reportLogDir = path.join(ROOT, '.pipeline', 'logs');
+    fs.mkdirSync(reportLogDir, { recursive: true });
+    fs.copyFileSync(pdfPath, path.join(reportLogDir, 'rejection-5708-qa.pdf'));
+  }
+
+  const mockupUri = `data:image/png;base64,${fs.readFileSync(path.join(outDir, contract.mockup.src)).toString('base64')}`;
+  const deliveryUri = `data:image/png;base64,${fs.readFileSync(deliveryPath).toString('base64')}`;
+  await page.setContent(`<!doctype html><meta charset="utf-8"><style>body{margin:0;padding:24px;background:#eef1f5;font:700 18px Arial}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{background:white;padding:14px;border-radius:10px}.card img{width:100%;height:auto;display:block}.label{margin-bottom:10px}</style><div class="grid"><div class="card"><div class="label">Mockup 50</div><img src="${mockupUri}"></div><div class="card"><div class="label">PDF renderizado</div><img src="${deliveryUri}"></div></div>`, { waitUntil: 'load' });
+  await page.screenshot({ path: path.join(outDir, 'screenshot-pdf-vs-mockup.png'), fullPage: true });
   await browser.close();
   console.log(`estado ${stateArg} → ${outDir}`);
   console.log(`  mockup de referencia: ${path.relative(ROOT, mockupPath)}`);
