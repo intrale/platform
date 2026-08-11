@@ -237,6 +237,21 @@ function Invoke-PulpoLivenessCheck {
         } catch {}
     }
 
+    # #5821 CA-4 — Senal secundaria de progreso: el Pulpo toca `last-progress`
+    # DURANTE la iteracion, no solo al cerrarla. Su mtime distingue un ciclo
+    # lento (heartbeat viejo + progreso fresco) de un cuelgue real (ambos
+    # viejos). Solo se recolecta el mtime: el contenido nunca se lee ni se pasa.
+    # Si el archivo no existe (Pulpo viejo, sin la instrumentacion), se manda ''
+    # y el runner decide por umbral — la senal ausente NUNCA inhibe un kill.
+    $progressAgeMs = ''
+    $progressFile = "$PipelineDir\last-progress"
+    if (Test-Path $progressFile) {
+        try {
+            $pAge = (Get-Date) - (Get-Item $progressFile).LastWriteTime
+            $progressAgeMs = [string][int]$pAge.TotalMilliseconds
+        } catch {}
+    }
+
     $runner = "$PipelineDir\pulpo-liveness-run.js"
     if (-not (Test-Path $runner)) { return }
 
@@ -245,6 +260,7 @@ function Invoke-PulpoLivenessCheck {
     $env:PLV_HB_AGE_MS = $hbAgeMs
     $env:PLV_HB_CONTENT = $hbContent
     $env:PLV_SO_PID = [string]$soPid
+    $env:PLV_PROGRESS_AGE_MS = $progressAgeMs
 
     $action = ''
     try {
@@ -254,11 +270,20 @@ function Invoke-PulpoLivenessCheck {
         Write-Log "  pulpo-liveness : ERROR ejecutando runner - $_"
         return
     } finally {
-        Remove-Item Env:\PLV_HB_EXISTS, Env:\PLV_HB_AGE_MS, Env:\PLV_HB_CONTENT, Env:\PLV_SO_PID -ErrorAction SilentlyContinue
+        Remove-Item Env:\PLV_HB_EXISTS, Env:\PLV_HB_AGE_MS, Env:\PLV_HB_CONTENT, Env:\PLV_SO_PID, Env:\PLV_PROGRESS_AGE_MS -ErrorAction SilentlyContinue
+    }
+
+    # #5821 CA-7 — Freno anti-bucle. El runner ya alcanzo el cap de reinicios en
+    # la ventana y escalo a needs-human (alerta por Telegram). NO se reinicia
+    # otra vez: en el incidente del 2026-08-11 hubo 77 kills en 3 horas, y si
+    # matar N veces no arreglo nada la N+1 tampoco lo va a hacer.
+    if ($action -eq 'escalate') {
+        Write-Log "  pulpo-liveness : cap de reinicios alcanzado — escalado a needs-human, NO se reinicia (ver logs\pulpo-liveness.log)"
+        return
     }
 
     if ($action -ne 'kill-respawn') {
-        # 'skip' (sano / sin heartbeat / discrepancia de PID): no tocar nada.
+        # 'skip' (sano / sin heartbeat / discrepancia de PID / ciclo lento): no tocar nada.
         return
     }
 

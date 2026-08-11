@@ -86,11 +86,15 @@ los hechos del SO y delega la decisión en Node:
 - `lib/pulpo-liveness.js` — decisión **pura y testeable** (`node --test`), espejo
   de `lib/watchdog-supervisor.js`.
 - `pulpo-liveness-run.js` — runner que el `.ps1` invoca; lee hechos por env,
-  delega, devuelve `ACTION:kill-respawn | ACTION:skip` por stdout. Fail-soft:
-  cualquier error interno → `ACTION:skip`.
+  delega, devuelve `ACTION:kill-respawn | ACTION:skip | ACTION:escalate` por
+  stdout. Fail-soft: cualquier error interno → `ACTION:skip`.
+- `lib/pulpo-liveness-margin.js` — (#5821) dimensionamiento del umbral contra la
+  duración real de ciclo, alerta de margen y cap de reinicios.
 
 PowerShell queda como capa fina de SO: recolecta hechos, y si Node dice
-`kill-respawn`, ejecuta `Stop-Process` + respawn.
+`kill-respawn`, ejecuta `Stop-Process` + respawn. Si dice `escalate`, **no
+reinicia**: el cap de la ventana ya se alcanzó y la situación quedó escalada a
+`needs-human` (ver §3.1).
 
 #### Decisión (`decide()`)
 

@@ -410,10 +410,51 @@ watchdog:
   # umbral con el proceso vivo, lo declara zombi (loop colgado) y lo reinicia.
   # DESACOPLADO del display: /salud usa "esperado < 30s" sólo para MOSTRAR salud;
   # 30s == 1 poll_interval del Pulpo, un ciclo lento lo rozaría sin ser zombi.
-  # 90s = max(90, 3×poll_interval) evita falsos positivos (CA-4) y restart-storms
-  # (SEC-3). Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo;
-  # inválido → default, NUNCA "nunca stale" — SEC-2).
-  pulpo_liveness_kill_seconds: 180
+  # Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo; inválido →
+  # default, NUNCA "nunca stale" — SEC-2).
+  #
+  # #5821 — Esto ya NO es el umbral final: es el PISO sobre el que se dimensiona.
+  # El umbral EFECTIVO = max(piso, p99(duración real de ciclo) × factor), acotado
+  # por `pulpo_liveness_max_effective_seconds`. Se subió de 180 a 270 porque el
+  # 2026-08-11 el watchdog mató y relanzó al Pulpo 77 veces en 3 horas: 180s era
+  # MENOR que la duración real de un ciclo, o sea un falso positivo puro. Con 270
+  # el bucle paró (0 kills en 51 ciclos), pero el pico observado fue 245s => ~9%
+  # de margen, que es un empate y no un colchón. De ahí el dimensionamiento por
+  # percentil de abajo: el número deja de elegirse a mano después de cada caída.
+  pulpo_liveness_kill_seconds: 270
+
+  # --- #5821 · Dimensionamiento del umbral contra la duración real de ciclo ---
+  # El runner persiste una serie con la duración que el Pulpo mide de su propia
+  # iteración (`iterationMs` en last-tick.json) y deriva el umbral del percentil.
+  pulpo_liveness_percentile: 99            # percentil sobre el que se dimensiona (cubrir la cola, no la mediana)
+  pulpo_liveness_percentile_factor: 2      # umbral derivado = p99 × factor (2x = el doble del ciclo casi-peor observado)
+  pulpo_liveness_max_effective_seconds: 900  # TECHO anti-realimentación: sin él, un cuelgue sube el p99, que sube el umbral, que tolera el próximo cuelgue... y el watchdog se vuelve ciego en silencio
+  pulpo_liveness_min_samples: 100          # N mínimo para que el percentil mueva el umbral (con menos degenera en "el máximo"); por debajo se usa el piso
+  pulpo_liveness_max_samples: 720          # muestras retenidas (≈24 h a 1 cada 2 min)
+
+  # Alerta de margen agotado: avisar ANTES del primer kill, no después de la caída.
+  pulpo_liveness_alert_margin_pct: 75      # alertar cuando el pico consume ≥75% del umbral efectivo (queda 1/4 de colchón para reaccionar)
+  pulpo_liveness_alert_cooldown_minutes: 60  # 1 alerta por ventana: 77 mensajes idénticos entrenan al operador a silenciar el canal
+
+  # Freno anti-bucle (defensa en profundidad). Mismos valores que el supervisor
+  # del watchdog (#4077) para no tener dos frenos con semánticas distintas.
+  pulpo_liveness_max_kills: 3              # cap de reinicios por ventana antes de escalar a needs-human
+  pulpo_liveness_kill_window_minutes: 60
+
+  # Señal secundaria de progreso: distingue "ciclo lento" de "cuelgue real". El
+  # Pulpo toca .pipeline/last-progress DURANTE la iteración; su mtime separa los
+  # dos casos aunque el heartbeat de fin de ciclo esté viejo.
+  # OJO: se dimensiona contra UN PASO del loop, no contra el ciclo entero. La
+  # señal se emite en los hitos secuenciales del `while` (y deliberadamente NO
+  # desde `log()`, que también disparan los timers de fondo y las cadenas
+  # fire-and-forget aunque el loop esté colgado), así que su granularidad real es
+  # el paso más largo. 300s deja lugar de sobra para el brazo de intake.
+  pulpo_liveness_progress_stale_seconds: 300
+  # Techo del ciclo lento: pasado esto se mata aunque reporte progreso (un retry
+  # loop que sigue tocando hitos eternamente también "progresa"). El runner lo
+  # eleva a max(este valor, 2 × umbral efectivo): si quedara <= al umbral, la
+  # rama de ciclo lento sería código muerto.
+  pulpo_liveness_max_slow_cycle_seconds: 1800
 
 # =============================================================================
 # Wave-stall watchdog (#4708) — dead-man's switch de la ola
