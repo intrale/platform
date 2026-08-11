@@ -13,8 +13,17 @@
  *   F — estructura y contrato de módulo (CA-1, CA-2, CA-3)
  *   G — wrapper CLI (contrato de operador G-1/G-2/G-4)
  *
- * Regla de la suite: los literales del vocabulario NO se escriben acá tampoco —
- * se derivan del enum importado, así que si el enum cambia, cambia el test.
+ * Regla de la suite: los fixtures derivan del enum importado (`PHYSICAL`,
+ * `EXCLUDED`) para no volverse una segunda fuente de verdad. PERO esa derivación
+ * es POSICIONAL (`[0]` / `.slice(1)`), la misma suposición que hace el núcleo, así
+ * que por sí sola no puede detectar que el enum se reordene: reordenarlo movía la
+ * métrica 12,5x y dejaba la suite en verde (rechazo rev-1 de #5804).
+ *
+ * Por eso el grupo F ancla el vocabulario con los literales ESCRITOS A MANO. El
+ * literal está permitido acá: CA-2 lo prohíbe en el núcleo (`lib/`) y en
+ * `tools/`, no en el test — justamente para que el test pueda ser el testigo
+ * independiente del contrato. Si el enum se reordena o le insertan una categoría
+ * adelante, el grupo F se pone en rojo.
  */
 
 const { test } = require('node:test');
@@ -935,6 +944,81 @@ test('F · el nucleo no toca fs, child_process, process ni fuentes no determinis
         'Date.now(', 'Math.random(', 'process.env']) {
         assert.ok(!fuenteNucleo.includes(prohibido), `el nucleo usa ${prohibido}`);
     }
+});
+
+// -----------------------------------------------------------------------------
+// F — ancla del vocabulario (rechazo rev-1)
+//
+// El núcleo identifica la categoría física POR POSICIÓN
+// (`PHYSICAL_CATEGORY = CATEGORIES[0]`, vault-calibration-scenario.js:45) y el
+// contrato vivía sólo en un comentario de secret-vault.js. Los tres tests que
+// siguen son el único lugar del repo donde ese contrato está afirmado con
+// literales, y son deliberadamente redundantes entre sí: el primero ancla la
+// forma del enum, el segundo que la evidencia nombra la categoría correcta, y el
+// tercero que el NÚMERO que sale de acá es el correcto.
+// -----------------------------------------------------------------------------
+
+test('F · el vocabulario es exactamente el esperado y physical_read encabeza (contrato posicional)', () => {
+    // Literales a mano A PROPOSITO: este test es el testigo independiente del
+    // enum. Derivarlo del import lo volveria tautologico (fue el agujero rev-1).
+    assert.deepStrictEqual(
+        VAULT_TELEMETRY_CATEGORIES.slice(),
+        ['physical_read', 'cache_hit', 'single_flight_join'],
+        'cambio el vocabulario de telemetria del vault: revisar PHYSICAL_CATEGORY '
+        + '/ EXCLUDED_CATEGORIES en lib/vault-calibration-scenario.js antes de tocar el enum',
+    );
+
+    // La posicion 0 es LO QUE EL NUCLEO LEE: se afirma aparte del deepStrictEqual
+    // para que el mensaje de falla apunte directo al invariante roto.
+    assert.strictEqual(
+        VAULT_TELEMETRY_CATEGORIES[0], 'physical_read',
+        'el elemento 0 del enum dejo de ser la lectura fisica: pico y extrapolacion '
+        + 'mensual se calculan sobre la categoria equivocada',
+    );
+
+    // …y las derivadas de la suite quedan atadas al mismo ancla.
+    assert.strictEqual(PHYSICAL, 'physical_read');
+    assert.deepStrictEqual(EXCLUDED, ['cache_hit', 'single_flight_join']);
+});
+
+test('F · la evidencia nombra physical_read en la formula y NUNCA lo lista como excluido', async () => {
+    const { evidence } = await correr();
+
+    // Punta a punta: lo que el operador (y #5805) leen tiene que citar la
+    // categoria fisica por nombre, no una cualquiera del enum.
+    assert.match(evidence.formula, /^monthly_physical_reads = ceil\(physical_read_total \* MONTH_MS \/ window_duration_ms\)$/);
+
+    assert.ok(
+        !evidence.excluded_from_physical_metrics.includes('physical_read'),
+        'physical_read quedo rotulado como excluido de las metricas fisicas',
+    );
+    assert.deepStrictEqual(
+        evidence.excluded_from_physical_metrics,
+        ['cache_hit', 'single_flight_join'],
+    );
+});
+
+test('F · el escenario del rechazo rev-1: 4 physical_read + 50 cache_hit dan 4 y 2880, no 50 y 36000', () => {
+    // Reproduce el caso exacto que el reviewer uso para demostrar la corrupcion
+    // silenciosa. Con el enum reordenado, physical_total daba 50 y monthly 36000
+    // (12,5x de sobreestimacion) y la suite seguia verde.
+    const sc = baseScenario({ window_duration_ms: 3600000, bucket_ms: 60000 });
+
+    const eventos = [];
+    let seq = 0;
+    for (let i = 0; i < 4; i += 1) eventos.push(evento(seq++, i * 1000, 'physical_read'));
+    for (let i = 0; i < 50; i += 1) eventos.push(evento(seq++, i * 1000, 'cache_hit'));
+
+    const resumen = aggregateEvents(eventos, sc);
+    const evidence = buildScenarioEvidence(resumen, PROVENANCE);
+
+    assert.strictEqual(resumen.physical_total, 4, 'el total fisico conto categorias que no facturan');
+    assert.strictEqual(evidence.monthly_physical_total, 2880, 'la extrapolacion mensual salio de la categoria equivocada');
+
+    // Los no-fisicos se siguen reportando: el invariante es "no mueven la
+    // metrica", no "se pierden".
+    assert.strictEqual(evidence.counts.cache_hit, 50);
+    assert.strictEqual(evidence.counts.physical_read, 4);
 });
 
 // =============================================================================
