@@ -10,8 +10,9 @@
 //
 // Acá `regression` pasa a ser DERIVADO por código:
 //   - `writeCoverage` deja, por pasada, qué secciones se verificaron y cuáles
-//     quedaron sin hallazgos. Lo llama `rejection-report.js`, NO el agente QA,
-//     así el store es determinístico y auditable.
+//     quedaron sin hallazgos. Lo llaman procesos determinísticos del pipeline
+//     (`rejection-report.js` para rechazos y el cierre del Pulpo para aprobados),
+//     NO el agente QA, así el store es auditable.
 //   - `deriveRegressions` compara los diffs de la pasada actual contra la
 //     pasada previa registrada. Sin pasada previa ⇒ todo `no-baseline`, que es
 //     literalmente el criterio de cierre de CA-11: no puede quedar

@@ -57,6 +57,7 @@ const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
 // y en su lugar re-encola el issue a `build` con YAML limpio.
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
+const visualCoverageRecorder = require('./lib/visual-coverage-recorder');
 // #3383 — Gate visual pre-promoción build→verificacion. Default OFF
 // (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
 const visualGate = require('./lib/visual-gate');
@@ -10266,6 +10267,25 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           data.rechazado_por = 'gate-evidencia-on-exit';
           writeYaml(workingPath, data);
           sendTelegram(`⛔ QA:#${issue} — evidencia incompleta al terminar. Rechazo automático: ${evidenceIssues.join('; ')}`);
+        }
+      }
+
+      // #5708: una aprobación visual también es una pasada auditable y debe
+      // quedar como baseline antes de mover el work-file. El reporte se lanza
+      // sólo para rechazos, así que no puede ser dueño exclusivo del store.
+      // Best-effort: una falla de evidencia no puede tumbar el Pulpo.
+      if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
+        try {
+          const coverageResult = visualCoverageRecorder.recordApprovedCoverage({
+            root: ROOT, issue, skill, fase, data,
+          });
+          if (coverageResult.written) {
+            log('lanzamiento', `QA:#${issue} persistió cobertura visual aprobada rev ${Number(data.rebote_numero) || 0}`);
+          } else if (coverageResult.reason !== 'sin-contrato') {
+            log('lanzamiento', `⚠️ QA:#${issue} no persistió cobertura visual aprobada: ${coverageResult.reason}`);
+          }
+        } catch (coverageErr) {
+          log('lanzamiento', `⚠️ QA:#${issue} falló persistencia de cobertura visual aprobada: ${coverageErr.message}`);
         }
       }
 
