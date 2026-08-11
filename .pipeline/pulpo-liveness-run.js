@@ -112,21 +112,15 @@ function loadWatchdogConfig() {
     // (incluido un bug del resolver) NO debe hacerse pasar por corrupción.
     if (isConfigViolation(err)) {
       // FAIL-CLOSED: config corrupta. NO se degrada a los defaults del liveness.
-      //
-      // Motivo (reformulado en #5821 — el original razonaba sobre "180 vs 90 es
-      // la mitad", aritmética que dejó de valer al mover el piso a 270 y que ya
-      // no describe el mecanismo): el default del módulo (90s) es, por
-      // construcción, el valor MÁS BAJO de toda la cadena de resolución del
-      // umbral. Caer a él con la config ilegible degrada el umbral en dirección
-      // DESTRUCTIVA — mata antes y habilita restart-storms (SEC-3) — y además
-      // deja fuera de juego todo el dimensionamiento por percentil de #5821, que
-      // sólo puede AMPLIAR el umbral, nunca reducirlo por debajo del piso. Y esa
-      // degradación se dispararía justo cuando menos se la puede diagnosticar,
-      // porque el síntoma que llega al operador no es "el watchdog mata un Pulpo
-      // sano" sino "el Commander no responde".
-      //
+      // Motivo: si el archivo es ilegible NO SABEMOS qué umbral declaró el
+      // operador, y el default del módulo puede ser más chico que ese valor
+      // (nada impide configurar un umbral holgado para una ola pesada). Aplicar
+      // el default sería degradar en dirección DESTRUCTIVA — mata antes de
+      // tiempo y habilita restart-storms (SEC-3), que es exactamente el bucle de
+      // muerte medido en el incidente del 2026-08-11 (#5820: 77 kills en ~3h
+      // sobre un Pulpo sano, con el Commander caído 4h de arrastre).
       // Se propaga un sentinel y el caller emite ACTION:skip: nunca se mata con
-      // un umbral degradado.
+      // un umbral que no podemos confirmar.
       // SEC-1: el error tipado ya viene redactado ({archivo, causa, linea,
       // columna}); NUNCA se loguea el `.message` crudo de js-yaml.
       log(
@@ -134,7 +128,9 @@ function loadWatchdogConfig() {
           `${err && err.linea != null ? `, linea=${err.linea}` : ''}` +
           `${err && err.columna != null ? `, columna=${err.columna}` : ''}) — ` +
           'NO se aplican los defaults del liveness y NO se mata al Pulpo ' +
-          '(el default del módulo es el valor más bajo de la cadena: degradar a él sería destructivo)'
+          '(sin config legible no se puede confirmar el umbral que declaró el operador; ' +
+          'aplicar el default podría matar antes de tiempo). ' +
+          'Arreglá config.yaml o fijá PULPO_LIVENESS_KILL_SECONDS para reactivar el liveness'
       );
       return { __configViolation: true };
     }
@@ -339,8 +335,8 @@ function main() {
   // no hay umbral confiable: se propaga un umbral no finito y `decide()` devuelve
   // 'skip' por su primitiva ya existente ("umbral inválido => no matar").
   // Ojo: `parseKillSeconds` NUNCA devuelve null (un fallback inválido cae al
-  // default de 90s), así que no sirve para detectar "el operador fijó el env".
-  // Ese chequeo tiene que ser sobre el valor crudo.
+  // DEFAULT_KILL_SECONDS del módulo), así que no sirve para detectar "el
+  // operador fijó el env". Ese chequeo tiene que ser sobre el valor crudo.
   if (cfg.__configViolation && !hasExplicitKillSecondsOverride()) {
     log(
       'ACTION:skip por FAIL-CLOSED de configuración — sin PULPO_LIVENESS_KILL_SECONDS ' +
