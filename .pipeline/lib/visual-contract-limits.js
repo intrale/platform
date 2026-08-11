@@ -17,6 +17,10 @@ module.exports = {
   // Tope de bytes del archivo `visual-comparison.json` en disco. Superarlo es
   // fallo DECLARADO (`skip.reason = 'oversize'`), nunca un `null` mudo (SEC-4).
   MAX_VISUAL_JSON_BYTES: 1048576,
+  // La cobertura se persiste en un segundo artefacto. Estos topes evitan que
+  // una lista adversarial amplifique el contrato al escribir el baseline.
+  MAX_VISUAL_COVERAGE_SECTIONS: 1000,
+  MAX_VISUAL_SECTION_BYTES: 256,
   // Tope de desvíos que el PDF renderiza. Superarlo se declara en el reporte y
   // el gate lo bloquea con `reason: 'diffs-over-limit'`.
   MAX_DIFFS_RENDER: 50,
