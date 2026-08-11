@@ -410,10 +410,17 @@ watchdog:
   # umbral con el proceso vivo, lo declara zombi (loop colgado) y lo reinicia.
   # DESACOPLADO del display: /salud usa "esperado < 30s" sólo para MOSTRAR salud;
   # 30s == 1 poll_interval del Pulpo, un ciclo lento lo rozaría sin ser zombi.
-  # 90s = max(90, 3×poll_interval) evita falsos positivos (CA-4) y restart-storms
-  # (SEC-3). Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo;
+  # 270s (#5820) — subido desde 180s tras el incidente del 2026-08-11: el
+  # watchdog mató y relanzó al Pulpo 77 veces en 3h porque un ciclo real con la
+  # ola cargada supera holgadamente los 180s (pico de edad de heartbeat medido:
+  # 245s). No eran cuelgues: cada kill mataba un proceso sano y se llevaba
+  # puesta la cola de comandos de Telegram. Con 270s: 0 kills en 51 ciclos.
+  # OJO — el margen resultante es de ~25s (9%): un ciclo más pesado vuelve a
+  # disparar el falso positivo. Dimensionamiento contra la duración real de
+  # ciclo + alerta de margen: #5821.
+  # Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo;
   # inválido → default, NUNCA "nunca stale" — SEC-2).
-  pulpo_liveness_kill_seconds: 180
+  pulpo_liveness_kill_seconds: 270
 
 # =============================================================================
 # Wave-stall watchdog (#4708) — dead-man's switch de la ola
