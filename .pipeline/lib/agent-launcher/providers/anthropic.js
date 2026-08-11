@@ -15,6 +15,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #5795 — contrato compartido de la clase cerrada 'authentication_rejected'.
+const authRejection = require('../auth-rejection');
 
 // -----------------------------------------------------------------------------
 // detectLauncher — multi-tier detection (preservar orden de precedencia I6)
@@ -224,12 +226,44 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl, parser
     return { matched: false };
 }
 
+// -----------------------------------------------------------------------------
+// detectAuthenticationRejected (#5795) — clase cerrada `authentication_rejected`.
+//
+// Anthropic documenta una taxonomía de `error.type` acotada y explícita. El
+// único tipo que significa "la credencial presentada no sirve" es
+// `authentication_error` (HTTP 401, "There's an issue with your API key").
+//
+// POSITIVOS: authentication_error
+//
+// NEGATIVOS — el resto de la taxonomía documentada. `permission_error` es el
+// que más se confunde: es HTTP 403 y significa que la clave ES VÁLIDA pero no
+// tiene permiso sobre el recurso. Clasificarlo como credencial rechazada haría
+// que el coordinador de #5794 re-resuelva una credencial sana y consuma su
+// presupuesto al pedo.
+//
+// NO hay entrada para `invalid_api_key`: ese es el código de OpenAI y Anthropic
+// no lo documenta. Si aparece en un log de un spawn Anthropic (frame ajeno
+// embebido, tool_result, inyección), este detector devuelve "sin clasificación"
+// — que es justo el aislamiento cross-provider que pide el issue.
+// -----------------------------------------------------------------------------
+const detectAuthenticationRejected = authRejection.makeDetector({
+    adapter: 'anthropic',
+    positives: ['authentication_error'],
+    negatives: [
+        'permission_error', 'billing_error',
+        'rate_limit_error', 'usage_limit_error', 'weekly_quota_exhausted',
+        'invalid_request_error', 'not_found_error', 'request_too_large',
+        'api_error', 'overloaded_error', 'timeout_error',
+    ],
+});
+
 module.exports = {
     name: 'anthropic',
     detectLauncher: getLauncher,
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
+    detectAuthenticationRejected,
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _setLauncherForTesting,
