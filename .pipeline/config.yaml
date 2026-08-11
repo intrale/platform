@@ -221,6 +221,15 @@ worktree_provenance:
 # (3 ciclos de dispatch a poll_interval 30s). TTL corto a propósito: no debilitar A08.
 desync:
   legit_add_ttl_ms: 90000
+  # #5516 (SO-7) — allowlist de logins CONFIABLES para el reconciliador de hijos
+  # de split. `intrale/platform` es un repo PÚBLICO: sin verificación de origen,
+  # cualquiera podría abrir un issue "[Split de #N]" (N es público) y hacerse
+  # incorporar a la allowlist de pausa parcial, que es el gate de dispatch real.
+  # Por default sólo se confía en autores OWNER/MEMBER/COLLABORATOR del repo.
+  # Esta lista es el escape para cuentas de BOT que no son miembros de la org.
+  # Vacía o ausente → manda sólo la asociación con el repo (fail-closed).
+  # Ejemplo: ["intrale-bot"]
+  split_orphan_trusted_logins: []
 
 # build: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.build (la prosa viajó a productConfigNotes)
 
