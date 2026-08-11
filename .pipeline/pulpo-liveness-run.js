@@ -274,7 +274,63 @@ function supervisorInt(raw, fallback, keyName) {
   return parsed;
 }
 
+/**
+ * #5821 (rebote rev-1) — MODO CONFIRMACIÓN: registrar un kill que el SO YA
+ * confirmó.
+ *
+ * POR QUÉ EL CAP NO PUEDE CONTAR INTENTOS
+ * ---------------------------------------
+ * El cap de reinicios existe para cortar un bucle de kills INÚTILES. Si contara
+ * intentos en vez de terminaciones efectivas, se volvería en contra justo en el
+ * caso que viene a proteger: cuando `Stop-Process` FALLA, el Pulpo sigue
+ * colgado, pero el intento igual consume una posición del cap.
+ *
+ * Y ese fallo no es hipotético en este host: `Stop-Process`/`taskkill` devuelven
+ * "Acceso denegado" de forma recurrente (por eso el runbook usa
+ * `wmic call terminate`). Con el conteo por intento, 3 ciclos de Acceso denegado
+ * (6 minutos) agotaban el cap, el runner escalaba, y `watchdog.ps1` dejaba de
+ * intentar SIQUIERA MATAR al zombi hasta que drenara la ventana de 60 min —
+ * peor que antes del cambio, que reintentaba cada 2 min para siempre. Una
+ * regresión de disponibilidad en el escenario exacto que el issue protege.
+ *
+ * Por eso el kill se contabiliza acá, en una invocación aparte que `watchdog.ps1`
+ * hace SÓLO después de que `Stop-Process` retornó sin excepción. Un kill que no
+ * ocurrió no consume cap.
+ *
+ * Fail-soft: cualquier error se loguea y sale 0 — nunca debe romper el respawn
+ * que el `.ps1` está por hacer a continuación.
+ */
+function confirmKill() {
+  try {
+    const cfg = loadWatchdogConfig();
+    const margin = loadMarginModule();
+    if (!margin) {
+      log('WARN confirmación de kill sin módulo de margen — no se contabiliza');
+      return;
+    }
+    const windowMinutes = supervisorInt(
+      cfg.pulpo_liveness_kill_window_minutes,
+      margin.DEFAULT_KILL_WINDOW_MINUTES,
+      'pulpo_liveness_kill_window_minutes'
+    );
+    const now = Date.now();
+    const state = margin.loadState(STATE_FILE);
+    const next = margin.recordKill(state, now, windowMinutes);
+    margin.saveStateAtomic(STATE_FILE, next);
+    log(`kill CONFIRMADO por el SO y contabilizado — killsInWindow=${next.kills.length}`);
+  } catch (err) {
+    log(`WARN no se pudo contabilizar el kill confirmado: ${err && err.message}`);
+  }
+}
+
 function main() {
+  // #5821 (rebote rev-1) — el `.ps1` llama con este flag DESPUÉS de un
+  // `Stop-Process` exitoso. No hay decisión que tomar ni salida `ACTION:`.
+  if (process.env.PLV_CONFIRM_KILL === '1' || process.argv.includes('--confirm-kill')) {
+    confirmKill();
+    return;
+  }
+
   const cfg = loadWatchdogConfig();
 
   // #5172 (rebote rev-1) — FAIL-CLOSED por config corrupta.
@@ -496,9 +552,15 @@ function main() {
       }
     }
 
-    if (action === 'kill-respawn') {
-      next = margin.recordKill(next, now, params.killWindowMinutes);
-    }
+    // #5821 (rebote rev-1) — el kill NO se contabiliza acá.
+    //
+    // Antes se hacía `recordKill` en este punto, o sea ANTES de que el `.ps1`
+    // intentara siquiera el `Stop-Process`. Eso contaba INTENTOS, no
+    // terminaciones: con `Stop-Process` devolviendo "Acceso denegado" (modo de
+    // falla recurrente en este host) 3 ciclos agotaban el cap contra un Pulpo
+    // que seguía vivo y colgado, y el watchdog dejaba de intentar matarlo por el
+    // resto de la ventana. El conteo vive ahora en `confirmKill()`, que el `.ps1`
+    // invoca sólo tras una terminación confirmada por el SO.
 
     if (action === 'escalate') {
       // Dedup de la escalada: a lo sumo 1 alerta por ventana (mismo criterio

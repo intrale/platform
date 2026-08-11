@@ -294,8 +294,26 @@ function Invoke-PulpoLivenessCheck {
         Stop-Process -Id $soPid -Force -ErrorAction Stop
         Write-Log "  pulpo-liveness : proceso zombi $soPid terminado"
     } catch {
-        Write-Log "  pulpo-liveness : ERROR al matar pid $soPid - $_"
+        # #5821 (rebote rev-1) — El kill FALLO (p. ej. "Acceso denegado", que en
+        # este host pasa seguido). Se sale SIN contabilizarlo: el cap de
+        # reinicios cuenta terminaciones efectivas, no intentos. Contar este
+        # intento agotaria el cap contra un Pulpo que sigue vivo y colgado, y
+        # dejaria al watchdog sin siquiera intentar matarlo por el resto de la
+        # ventana — peor que no tener cap.
+        Write-Log "  pulpo-liveness : ERROR al matar pid $soPid - $_ (NO se contabiliza contra el cap)"
         return
+    }
+
+    # #5821 (rebote rev-1) — Terminacion CONFIRMADA por el SO: recien ahora se
+    # contabiliza contra el cap de la ventana. Fail-soft: si esto falla, el
+    # respawn de abajo igual sigue.
+    try {
+        $env:PLV_CONFIRM_KILL = '1'
+        & node $runner 2>&1 | Out-Null
+    } catch {
+        Write-Log "  pulpo-liveness : WARN no se pudo contabilizar el kill confirmado - $_"
+    } finally {
+        Remove-Item Env:\PLV_CONFIRM_KILL -ErrorAction SilentlyContinue
     }
 
     # Sincronizar con main antes de relanzar (scripts actualizados), igual que

@@ -239,14 +239,33 @@ function loadState(file) {
 
 /** Escritura atómica (tmp + rename), mismo patrón que el heartbeat y #4077. */
 function saveStateAtomic(file, state) {
-  const tmp = `${file}.tmp`;
+  // #5821 (rebote rev-1) — El tmp lleva pid para no ser un recurso COMPARTIDO.
+  // Con un path fijo (`${file}.tmp`), dos runners solapados —dos watchdogs, o un
+  // runner lento que pisa el ciclo de 2 min siguiente— escriben el MISMO archivo
+  // entrelazado antes de renombrar, y en Windows el rename puede además tirar
+  // EPERM con el tmp abierto por el otro proceso. El daño no es neutro aunque
+  // `loadState` sea fail-soft: perder el estado devuelve el umbral al piso de
+  // 270s, que es exactamente la configuración marginal del incidente (pico 245s,
+  // 9% de margen), y tira 3,3 h de calibración.
+  const tmp = `${file}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
   } catch (_) {
     /* fail-soft */
   }
   fs.writeFileSync(tmp, JSON.stringify(normalizeState(state)));
-  fs.renameSync(tmp, file);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    // El rename falló (EPERM por carrera en Windows): limpiar el tmp para no
+    // dejar basura acumulándose en logs/, y propagar — el caller ya es fail-soft.
+    try {
+      fs.unlinkSync(tmp);
+    } catch (_) {
+      /* fail-soft */
+    }
+    throw err;
+  }
 }
 
 /**
@@ -294,10 +313,30 @@ function appendSample(state, opts = {}) {
 }
 
 /** Registra un kill en la ventana (poda los que ya salieron). Nuevo estado. */
+/**
+ * Kills que caen DENTRO de la ventana vigente.
+ *
+ * EL DESCARTE DE `t > now` NO ES DEFENSIVO DE ADORNO. El predicado ingenuo
+ * `now - t < win` es verdadero para TODO timestamp futuro, así que un kill con
+ * `t` adelantado nunca se poda y cuenta para siempre contra el cap. Si el reloj
+ * del host salta hacia adelante (boot antes del sync NTP, restore de snapshot de
+ * VM, corrección de hora) y se registran `maxKills` kills con `t` futuro, al
+ * corregirse el reloj TODA decisión pasa a `escalate` y el watchdog deja de
+ * matar Pulpos zombis hasta que el tiempo real alcance esos timestamps — mudo,
+ * porque la alerta de escalada se deduplica por ventana.
+ *
+ * `shouldAlert` ya protegía este caso; el freno de kills —que es el que puede
+ * dejar el pipeline sin recuperación automática— no lo hacía. Se cierra acá,
+ * en el único lugar por donde pasan los dos consumidores.
+ */
+function killsEnVentana(kills, now, windowMs) {
+  return kills.filter((t) => t <= now && now - t < windowMs);
+}
+
 function recordKill(state, now, windowMinutes = DEFAULT_KILL_WINDOW_MINUTES) {
   const base = normalizeState(state);
   const win = parsePositiveInt(windowMinutes, DEFAULT_KILL_WINDOW_MINUTES) * 60 * 1000;
-  const kills = base.kills.filter((t) => now - t < win);
+  const kills = killsEnVentana(base.kills, now, win);
   kills.push(now);
   return { ...base, kills };
 }
@@ -471,7 +510,9 @@ function decideKillStreak(opts = {}) {
   const windowMs = windowMinutes * 60 * 1000;
 
   const kills = Array.isArray(opts.kills) ? opts.kills.filter((t) => Number.isFinite(t) && t > 0) : [];
-  const recent = kills.filter((t) => now - t < windowMs);
+  // Mismo criterio que `recordKill`: los timestamps futuros se descartan, nunca
+  // se acumulan contra el cap (ver comentario de `killsEnVentana`).
+  const recent = killsEnVentana(kills, now, windowMs);
 
   if (recent.length >= maxKills) {
     return { action: 'escalate', killsInWindow: recent.length, maxKills };

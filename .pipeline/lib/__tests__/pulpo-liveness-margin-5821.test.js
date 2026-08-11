@@ -630,7 +630,12 @@ test('E2E — el ciclo que termina en kill NO entra a la serie de calibración',
         estado.samples.every((s) => s.ms <= 100000),
         'ninguna muestra debería venir del ciclo que terminó en kill',
     );
-    assert.strictEqual(estado.kills.length, 1, 'el kill sí debe quedar contado para el cap');
+    // #5821 (rebote rev-1) — Este assert decía `kills.length === 1`, o sea daba
+    // por bueno contabilizar el kill en el ciclo de DECISIÓN. Eso contaba
+    // intentos y no terminaciones: con `Stop-Process` fallando, el cap se
+    // agotaba contra un Pulpo vivo y el watchdog dejaba de intentar matarlo. El
+    // conteo se movió a `confirmKill()` (ver Parte 7).
+    assert.deepStrictEqual(estado.kills, [], 'el intento todavía no es una terminación');
 });
 
 test('E2E — un ciclo sano SÍ agrega su iterationMs a la serie (CA-1)', () => {
@@ -669,4 +674,109 @@ test('E2E — un typo en una clave nueva de config se loguea, no degrada en sile
     );
     correr(dir, { PLV_HB_AGE_MS: String(120 * 1000) });
     assert.match(logDelRunner(dir), /DEGRADACION: watchdog\.pulpo_liveness_min_samples/);
+});
+
+// =============================================================================
+// Parte 7 — Regresiones del rebote rev-1 (hallazgos de la revisión adversarial)
+//
+// Los dos primeros son la MISMA clase de defecto: el freno anti-bucle, que
+// existe para proteger al pipeline, podía volverse el que lo deja sin
+// recuperación automática. Ambos caminos terminan en un Pulpo colgado que el
+// watchdog deja de intentar matar.
+// =============================================================================
+
+test('cap — un kill con timestamp FUTURO no cuenta contra el cap (reloj corrido)', () => {
+    // `now - t < win` es verdadero para TODO t futuro: sin el descarte, 3 kills
+    // adelantados dejaban toda decisión en `escalate` hasta que el tiempo real
+    // los alcanzara, y el watchdog no volvía a matar un zombi en ese lapso.
+    const now = 1_000_000_000_000;
+    const futuros = [now + 12 * 3600 * 1000, now + 12 * 3600 * 1000, now + 12 * 3600 * 1000];
+
+    const d = margin.decideKillStreak({ now, kills: futuros, maxKills: 3, windowMinutes: 60 });
+    assert.strictEqual(d.action, 'allow', 'los kills futuros NO deben agotar el cap');
+    assert.strictEqual(d.killsInWindow, 0);
+});
+
+test('cap — recordKill poda los timestamps futuros en vez de acumularlos', () => {
+    const now = 1_000_000_000_000;
+    const st = { kills: [now + 3600 * 1000, now - 1000], samples: [] };
+    const next = margin.recordKill(st, now, 60);
+    // Queda el kill pasado dentro de ventana + el nuevo. El futuro se descarta.
+    assert.strictEqual(next.kills.length, 2);
+    assert.ok(next.kills.every((t) => t <= now), 'no debe persistirse ningún kill futuro');
+});
+
+test('cap — la simetría con shouldAlert: ninguno de los dos confía en un ts futuro', () => {
+    const now = 1_000_000_000_000;
+    // shouldAlert ya protegía este caso; el cap ahora también.
+    assert.strictEqual(margin.shouldAlert(now + 3600 * 1000, now, 60), false);
+    assert.strictEqual(
+        margin.decideKillStreak({ now, kills: [now + 3600 * 1000], maxKills: 1, windowMinutes: 60 })
+            .action,
+        'allow',
+    );
+});
+
+test('cap — el ciclo de decisión NO contabiliza el kill (se cuenta al confirmarlo)', () => {
+    // Antes se hacía recordKill en el ciclo de decisión, o sea ANTES de que
+    // PowerShell intentara el Stop-Process. Con `Stop-Process` fallando (Acceso
+    // denegado, recurrente en este host) el cap se agotaba contra un Pulpo vivo.
+    const dir = armarPipeline();
+    const salida = correr(dir, { PLV_HB_AGE_MS: String(600 * 1000) });
+    assert.strictEqual(salida.split('\n').pop().trim(), 'ACTION:kill-respawn');
+
+    const estado = JSON.parse(
+        fs.readFileSync(path.join(dir, 'logs', 'pulpo-liveness-state.json'), 'utf8'),
+    );
+    assert.deepStrictEqual(estado.kills, [], 'el intento no debe contarse: todavía no mató nada');
+});
+
+test('cap — el modo confirmación SÍ contabiliza el kill que el SO confirmó', () => {
+    const dir = armarPipeline();
+    correr(dir, { PLV_HB_AGE_MS: String(600 * 1000), PLV_CONFIRM_KILL: '1' });
+
+    const estado = JSON.parse(
+        fs.readFileSync(path.join(dir, 'logs', 'pulpo-liveness-state.json'), 'utf8'),
+    );
+    assert.strictEqual(estado.kills.length, 1, 'el kill confirmado sí consume cap');
+});
+
+test('cap — N kills fallidos NO escalan: el watchdog sigue intentando matar al zombi', () => {
+    // La regresión de disponibilidad completa: 3 ciclos con Stop-Process fallando
+    // (o sea, 3 decisiones sin confirmación) deben seguir devolviendo
+    // kill-respawn, no `escalate`.
+    const dir = armarPipeline();
+    for (let i = 0; i < 3; i++) {
+        correr(dir, { PLV_HB_AGE_MS: String(600 * 1000) });
+    }
+    const salida = correr(dir, { PLV_HB_AGE_MS: String(600 * 1000) });
+    assert.strictEqual(
+        salida.split('\n').pop().trim(),
+        'ACTION:kill-respawn',
+        'sin terminaciones confirmadas el cap no se agota y se sigue intentando',
+    );
+});
+
+test('cap — en cambio 3 kills CONFIRMADOS sí escalan (el freno real sigue vivo)', () => {
+    const dir = armarPipeline();
+    for (let i = 0; i < 3; i++) {
+        correr(dir, { PLV_HB_AGE_MS: String(600 * 1000), PLV_CONFIRM_KILL: '1' });
+    }
+    const salida = correr(dir, { PLV_HB_AGE_MS: String(600 * 1000) });
+    assert.strictEqual(salida.split('\n').pop().trim(), 'ACTION:escalate');
+});
+
+test('estado — el tmp de escritura es por-proceso (dos runners no se pisan)', () => {
+    // Con un tmp de path fijo, dos runners solapados se corrompen el estado; el
+    // fail-soft lo degrada a vacío y el umbral vuelve al piso marginal de 270s.
+    const dir = armarPipeline();
+    const file = path.join(dir, 'logs', 'estado-tmp.json');
+    margin.saveStateAtomic(file, { samples: [{ t: 1, ms: 5 }], kills: [] });
+
+    assert.ok(fs.existsSync(file));
+    const sobrantes = fs
+        .readdirSync(path.join(dir, 'logs'))
+        .filter((f) => f.startsWith('estado-tmp.json.') && f.endsWith('.tmp'));
+    assert.deepStrictEqual(sobrantes, [], 'el tmp no debe quedar tirado tras el rename');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).samples, [{ t: 1, ms: 5 }]);
 });
