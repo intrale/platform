@@ -5470,7 +5470,7 @@ function brazoBarrido(config) {
               // Datos del PREFLIGHT (cuerpo del issue), NUNCA del YAML del agente
               // (SEC-R1). Fetch sync con timeout corto, igual que visual-gate.
               let g0Body = '';
-              let g0Labels = getIssueInfo(issue).labels || [];
+              let g0Labels = [];
               let g0Comments = [];
               try {
                 ghThrottle();
@@ -5525,6 +5525,41 @@ function brazoBarrido(config) {
                 }
               } catch (e) {
                 log('barrido', `#${issue} gate0: error encolando labels (${e.message})`);
+              }
+
+              // Propagación unidireccional issue -> PR. Una única orden permite
+              // que el worker reconcilie labels frescos del PR en remove-then-add.
+              try {
+                const { resolvePrForGateWrite } = require('./lib/pr-info-fetcher');
+                const resolved = resolvePrForGateWrite(issue, { ghBin: GH_BIN, cwd: ROOT, timeoutMs: 5000 });
+                if (!resolved.ok) {
+                  gate0Audit('pr-propagation-skipped', {
+                    reason: resolved.reason,
+                    candidates: resolved.candidates || null,
+                    detail: resolved.detail || null,
+                  });
+                } else {
+                  const prRec = gateLabelReconciler.reconcileGateLabels({
+                    currentLabels: resolved.pr.labels,
+                    verdict: g0.verdict,
+                  });
+                  const prAction = {
+                    action: 'label', issue: resolved.pr.number, target: 'pr', label: prRec.target,
+                  };
+                  fs.writeFileSync(
+                    path.join(g0QueueDir, `${issue}-gate0-pr-${resolved.pr.number}-${Date.now()}.json`),
+                    JSON.stringify(prAction),
+                  );
+                  gate0Audit('pr-propagation', {
+                    pr: resolved.pr.number,
+                    verdict: g0.verdict,
+                    target: prRec.target,
+                    toAdd: prRec.toAdd,
+                    toRemove: prRec.toRemove,
+                  });
+                }
+              } catch (e) {
+                gate0Audit('pr-propagation-error', { reason: e.message });
               }
 
               if (g0.verdict === 'requires-operator') {
