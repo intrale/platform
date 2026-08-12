@@ -77,8 +77,10 @@ const DEFAULT_PROMOTE_RECOVERY_TTL_MS = 30 * 1000;
 const RENAME_MAX_RETRIES = 3;
 const RENAME_RETRY_BACKOFF_MS = 50;
 
-// Lock acquisition: 5s timeout, 3 retries con jitter.
-const LOCK_TIMEOUT_MS = 5000;
+// Lock acquisition: bajo fork-storm en Windows el holder puede quedar
+// descheduleado varios segundos. El límite sigue siendo finito/fail-closed,
+// pero cubre la serialización real de escritores concurrentes.
+const LOCK_TIMEOUT_MS = 15000;
 const LOCK_MAX_RETRIES = 3;
 
 // Cache por pipelineRoot — mismo shape que wave-state.js.

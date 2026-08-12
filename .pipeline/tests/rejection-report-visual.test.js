@@ -10,6 +10,8 @@ const {
     renderHtml,
     generateNarration,
     escapeHtml,
+    loadVisualComparison,
+    safeImageSrc,
 } = require('../rejection-report');
 
 // ----- renderVisualComparisonBlock ----------------------------------------
@@ -38,8 +40,11 @@ test('renderVisualComparisonBlock muestra placeholder cuando falta src (CA-UX-4)
         delivery: { src: 'x://e.png' },
         diffs: [],
     });
-    assert.ok(out.includes('MOCKUP ESPERADO no disponible'));
+    // #5708 / CA-22 · UX-18 — el placeholder dejó de ser mudo: declara el
+    // motivo. El contrato acá no referencia ninguna imagen para el mockup.
+    assert.ok(out.includes('MOCKUP ESPERADO — imagen no disponible'));
     assert.ok(out.includes('visual-placeholder'));
+    assert.ok(out.includes('el contrato no referencia ninguna imagen'));
 });
 
 test('renderVisualComparisonBlock renderiza 3 secciones (CA-13)', () => {
@@ -77,8 +82,9 @@ test('renderVisualComparisonBlock clasifica impacto en badges (alto/medio/bajo)'
     assert.ok(/badge-blue[^"]*">impacto: bajo/i.test(out));
 });
 
-test('renderVisualComparisonBlock limita a 5 diffs (CA §4.5 lista max 5)', () => {
-    const tenDiffs = Array.from({ length: 10 }, (_, i) => ({
+test('renderVisualComparisonBlock muestra inventario completo hasta 50 y declara truncado', () => {
+    const tenDiffs = Array.from({ length: 63 }, (_, i) => ({
+        section: `S${i % 3}`,
         title: `D${i}`,
         description: `descripción ${i}`,
         impact: 'medio',
@@ -88,10 +94,9 @@ test('renderVisualComparisonBlock limita a 5 diffs (CA §4.5 lista max 5)', () =
         delivery: { src: 'x://2.png' },
         diffs: tenDiffs,
     });
-    // Sólo los primeros 5 deben aparecer
-    for (let i = 0; i < 5; i++) assert.ok(out.includes(`D${i}`));
-    assert.ok(!out.includes('D5'));
-    assert.ok(!out.includes('D9'));
+    assert.ok(out.includes('50 de 63 desvíos mostrados'));
+    assert.ok(out.includes('inventario completo en visual-comparison.json'));
+    assert.ok(out.includes('sección: S0'));
 });
 
 test('renderVisualComparisonBlock escapa HTML del title/description (SEC-1)', () => {
@@ -106,6 +111,23 @@ test('renderVisualComparisonBlock escapa HTML del title/description (SEC-1)', ()
     });
     assert.ok(!out.includes('<script>alert(1)'));
     assert.ok(out.includes('&lt;script&gt;'));
+});
+
+test('renderVisualComparisonBlock redacta secretos de todos los campos textuales visuales', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const out = renderVisualComparisonBlock({
+        mockup: { label: secret, subtitle: secret, baseline: secret },
+        delivery: { label: secret, subtitle: secret },
+        coverage: {
+            secciones_declaradas: [secret],
+            verificadas: [secret],
+            no_verificadas: [],
+        },
+        diffs: [{ section: secret, title: secret, description: secret, impact: secret }],
+        suggestedAction: { skill: secret, text: secret },
+    });
+    assert.equal(out.includes(secret), false);
+    assert.match(out, /\[REDACTED(?::AWS_ACCESS_KEY)?\]/);
 });
 
 test('renderVisualComparisonBlock sin diffs muestra mensaje de revisión humana', () => {
@@ -170,6 +192,9 @@ test('generateNarration usa diffs cuando hay visualComparison (CA-UX-5, audio < 
         inconclusive: false,
         autoCreatedDeps: [],
         visualComparison: {
+            // #5708 / D8 — la rama visual del audio sólo titula con veredicto
+            // de rechazo explícito. Sin `verdict`, el contrato es fail-closed.
+            verdict: 'rejected',
             mockup: { src: 'x://1.png' },
             delivery: { src: 'x://2.png' },
             diffs: [
@@ -194,6 +219,7 @@ test('generateNarration limita a 3 diffs en audio', () => {
         inconclusive: false,
         autoCreatedDeps: [],
         visualComparison: {
+            verdict: 'rejected',
             mockup: { src: 'x' },
             delivery: { src: 'x' },
             diffs: [
@@ -210,6 +236,37 @@ test('generateNarration limita a 3 diffs en audio', () => {
     assert.ok(text.includes('C3'));
     assert.ok(!text.includes('D4'));
     assert.ok(!text.includes('E5'));
+    assert.ok(text.includes('5 desvíos detectados'));
+});
+
+test('generateNarration redacta secretos del contrato visual', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const text = generateNarration({
+        issue: 1234,
+        primaryCause: null,
+        inconclusive: false,
+        autoCreatedDeps: [],
+        visualComparison: {
+            verdict: 'rejected',
+            diffs: [{ title: secret, impact: secret }],
+            suggestedAction: { skill: secret },
+        },
+    });
+    assert.equal(text.includes(secret), false);
+    assert.match(text, /\[REDACTED(?::AWS_ACCESS_KEY)?\]/);
+});
+
+test('loader confina paths y las imágenes rechazan esquemas remotos', () => {
+    // #5708 — el loader ya no devuelve `null` mudo: declara SIEMPRE el motivo.
+    assert.equal(loadVisualComparison(5708, '../../../etc/passwd', 1).skip.reason, 'unreadable');
+    assert.equal(loadVisualComparison('no-numérico', null, 1).skip.reason, 'unreadable');
+    assert.equal(safeImageSrc('https://example.com/a.png', 5708), null);
+    assert.equal(safeImageSrc('file:///etc/passwd', 5708), null);
+    assert.match(safeImageSrc('data:image/png;base64,AAAA', 5708), /^data:image\/png/);
+});
+
+test('escapeHtml escapa comilla simple', () => {
+    assert.equal(escapeHtml("'"), '&#39;');
 });
 
 test('generateNarration sin visualComparison no menciona visual', () => {

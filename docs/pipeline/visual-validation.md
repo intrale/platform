@@ -224,7 +224,10 @@ debe codificarse solo por color, ver design-system.md §1.3).
 
 ### 4.5 Diferencias narradas
 
-Lista vertical, máximo 5 items por reporte (si hay más, agrupar). Cada item:
+Inventario completo agrupado por `section`, con grupos priorizados por su impacto máximo
+y desvíos ordenados `alto → medio → bajo`. Cada item exige `section`, `title`,
+`description` e `impact`. El PDF renderiza hasta 50 y muestra siempre `N de M`; si hay
+más, declara que el inventario completo permanece en `visual-comparison.json`.
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
@@ -265,6 +268,126 @@ Después de re-implementar:
 
 La acción sugerida es **no normativa** — es una pista. El veredicto final lo
 toma PO. Pero ahorra 5-10 minutos al dev que recibe el rebote.
+
+### 4.7 Cobertura y contrato del inventario
+
+Todo aprobado o rechazado visual incluye `coverage.secciones_declaradas`, `verificadas`
+y `no_verificadas[{section,motivo}]`. La unión de verificadas y no verificadas debe ser
+exactamente el conjunto declarado, sin solapamientos. Una sección no verificada requiere
+motivo específico.
+
+El archivo `qa/evidence/<issue>/visual-comparison.json` contiene además `issue`, `rev`,
+`verdict`, `mockup`, `delivery`, `diffs[]` y `suggestedAction`.
+
+**Campos obligatorios agregados por #5708:**
+
+| Campo | Valores | Por qué es obligatorio |
+|-------|---------|------------------------|
+| `verdict` | `"rejected"` \| `"approved"` | Sin discriminante, una aprobación se narraba como rechazo. `loadVisualComparison` devuelve el contrato **sólo** con `"rejected"`; con `"approved"` o ausente lo suprime y **loguea el motivo**. |
+| `rev` | entero = número de pasada | Un contrato de la pasada 1 se renderizaba dentro del reporte de la pasada 7, mostrando desvíos ya corregidos como si fueran actuales. `rejection-report.js` recibe `--rev` del pulpo y compara. |
+
+**Transporte de imágenes (SEC-8):** `mockup.src` y `delivery.src` son **paths relativos
+al directorio del issue** (`"render-rev3.png"`). Prohibido `data:*;base64`: el repo es
+público y `.gitignore` ignora los PNG de evidencia por posible PII — embeberlos dentro
+de un `.json`, que sí está allowlisteado, es lavarlos a través del control. Un contrato
+con `data:` se rechaza entero (`skip.reason = 'contract-embeds-base64'`).
+
+**`regression` es derivado, no declarativo.** Lo calcula `rejection-report.js` vía
+`.pipeline/lib/visual-coverage-store.js`, que persiste `visual-coverage-rev<N>.json` con
+sólo `{issue, rev, verificadas, sin_hallazgos}` — **lo escribe el reporte, no el agente
+de QA**. Cualquier `regression` que venga en el contrato se descarta. La cobertura previa
+no habilita saltear el barrido actual.
+
+**Tipificación tri-estado (UX-17).** `deriveRegressions` devuelve **tres** valores, no un
+booleano, porque `false` colapsaba dos casos que significan cosas distintas:
+
+| `regressionState` | `regressionReason` | Cuándo | Chip en el PDF |
+|-------------------|--------------------|--------|----------------|
+| `regression` | `prev-clean` | La pasada previa declaró esa sección **verificada y sin hallazgos** | `REGRESIÓN · verificada sin hallazgos en rev N` (violeta, sólido) |
+| `not-regression` | `prev-had-findings` | La sección **sí se barrió** en la pasada previa, pero ya tenía hallazgos ⇒ pendiente conocido | `NO ES REGRESIÓN · ya tenía hallazgos en rev N` (gris, sólido) |
+| `not-regression` | `prev-not-verified` | Hay línea base y la sección **no estaba verificada** ⇒ hallazgo tardío por barrido incompleto | `NO ES REGRESIÓN · sección no verificada en rev N` (gris, sólido) |
+| `no-baseline` | `no-baseline` | No hay pasada previa registrada ⇒ **no se pudo tipificar nada** | `SIN LÍNEA BASE · no hay pasada previa registrada` (gris, **con textura**) |
+
+Los dos sub-motivos de `not-regression` no son cosmética: decir *"sección no verificada"*
+sobre una sección que **sí** se barrió (y que ya venía fallando) afirma un hecho falso
+sobre la cobertura de la pasada anterior — el mismo defecto que ataca el issue, aplicado
+al chip que lo reporta.
+
+`no-baseline` es el falso negativo estructural que se acepta a propósito (el sesgo
+correcto: nunca `regression` sin línea base). Pero el operador tiene que **saber** que
+está frente a un falso negativo y no frente a una verificación — mostrarlo igual que
+`not-regression` afirma algo que nadie verificó. La distinción se codifica con **textura
++ texto**, nunca sólo con color, así sobrevive a la impresión monocroma del PDF.
+
+**Topes:** viven en `.pipeline/lib/visual-contract-limits.js` (`MAX_VISUAL_JSON_BYTES`,
+`MAX_DIFFS_RENDER`), consumidos tanto por el reporte como por el guardrail de forma, y
+atados por test. Superar el tope es **fallo declarado**, nunca un descarte mudo.
+
+### 4.8 Estados degradados del bloque visual (#5708 · mockups 49 y 50)
+
+> Regla rectora: *ninguna razón por la que el bloque visual no se muestre puede ser
+> indistinguible de "no hubo desvíos"*. Es la contracara del problema que ataca el issue
+> — un barrido incompleto que se lee como veredicto completo. Un log en `stdout` no es
+> evidencia para el operador: toda supresión se declara en el **PDF** y en el **audio**.
+>
+> **Extensión de la rev-2 (mockup 50):** la regla no alcanza con mostrar la supresión —
+> tampoco puede **describirse con el motivo equivocado**. Una banda que dice "no se pudo
+> cargar" cuando el contrato se leyó perfecto manda al dev a diagnosticar el archivo en
+> vez de re-ejecutar el barrido.
+
+Referencia visual: `.pipeline/assets/mockups/49-visual-block-degraded-states.svg` (E1–E5)
+y `.pipeline/assets/mockups/50-visual-block-rev2-states.svg` (E6, E3b, E2p, chip y
+placeholder), con su especificación en
+`.pipeline/assets/mockups/5708/ux-criterios-5708-addendum2.md`.
+
+| Estado | Condición | `skip.reason` | Artefacto visible |
+|--------|-----------|---------------|-------------------|
+| **E1** | El skill que rechaza no es QA visual, o no hay contrato en disco | `null` | **ninguno** — sin bloque y sin banda. La pasada no hizo ninguna afirmación visual, no hay nada que declarar. |
+| **E2p** | `verdict: "approved"` | `verdict-approved` | Banda verde + cobertura proyectada que viaja en `skip.coverage` (línea base de la próxima pasada). Sin inventario, sin imágenes, sin `suggestedAction`. |
+| **E3** | El contrato es de **otra** pasada (se conocen las dos `rev` y no coinciden) | `stale-rev` | Banda ámbar, símbolo `!`, con los dos `rev`. Acción: re-ejecutar QA visual en esta pasada. |
+| **E3b** | **No se conoce** la pasada actual (el emisor no pasó `--rev`) | `rev-unknown` | Banda ámbar, símbolo **`?`**, copy propio: *"no se afirma que sea vieja: se afirma que no se sabe"*. Acción dirigida **al emisor**, no al dev. |
+| **E4** | Tope de bytes superado, JSON ilegible, sin `verdict`, o con base64 embebido | `oversize`, `unreadable`, `verdict-missing`, `contract-embeds-base64` | Banda roja de falla de carga declarada, con la desambiguación explícita (*«esto NO significa sin desvíos»*) y el motivo medido. |
+| **E5** | — | — | Orden de narración del audio: `inconclusive` → `primaryCause` → `visual`. |
+| **E6** | El guardrail de forma **rechazó el barrido** (cobertura incompleta) | `shape-gate-block` | Banda violeta, símbolo de **círculo incompleto** (borde punteado). *"El contrato se leyó correctamente. Lo que no se aceptó es el barrido."* Acción: re-ejecutar QA visual con barrido completo antes de rebotar. |
+
+**Por qué E3b y E6 no son variantes de E3 y E4.** Con `rev-unknown` el contrato puede ser
+perfectamente el de esta misma pasada: decir *"corresponde a una pasada anterior"* inventa
+un hecho. Y un barrido no aceptado **no es** una falla técnica de carga — el archivo se
+leyó, se parseó y se validó; lo que no pasó fue el linter de cobertura. Ambos casos
+llevan símbolo propio, distinguible por **forma** además de por color.
+
+Cada banda lleva **símbolo + etiqueta textual + motivo objetivable**, así sigue siendo
+legible en escala de grises sin depender del color (UX-10). Ninguna banda degradada emite
+el badge `VISUAL MISMATCH`, que queda reservado al inventario real de la pasada actual
+(UX-13 · UX-19).
+
+**Imagen no resoluble (UX-18).** Con las imágenes por referencia, el camino "no
+resoluble" pasa de excepcional a probable. El placeholder declara el **motivo** (archivo
+ausente / extensión no permitida / symlink rechazado / supera el tope / fuera del
+directorio del issue) más la desambiguación *"Esto NO significa que la entrega coincida
+con el mockup: la imagen no se pudo leer"*. La columna afectada lleva badge **`sin
+captura`**, nunca `no matchea` — que afirmaría el resultado de una comparación que nunca
+se hizo.
+
+**Orden de narración (E5 · UX-9 · UX-12).** La rama visual se evalúa **después** de
+`inconclusive` y de `primaryCause`, y sólo con `verdict: "rejected"`. Antes iba primera
+y cortaba: bastaba con que existiera un `visual-comparison.json` en disco —escrito por
+otro agente— para que un rechazo por tests rojos o por un secreto hardcodeado se narrara
+al operador como *"rechazo visual"* y la causa real nunca saliera por el parlante. Los
+desvíos visuales y los estados degradados aparecen como **sufijo**, jamás como titular:
+
+- E2p → «Además, la validación visual quedó aprobada con 4 de 4 secciones verificadas.»
+- E3 → «La evidencia visual disponible es de una pasada anterior y no se tuvo en cuenta.»
+- E3b → «No se pudo determinar a qué pasada corresponde la evidencia visual, así que no
+  se tuvo en cuenta.» — **no** afirma que sea vieja.
+- E4 → «La evidencia visual no se pudo evaluar en esta pasada.» — nunca se omite.
+- E6 → «El barrido visual no se aceptó: la cobertura declarada está incompleta, así que
+  el inventario podría no estar completo.» — habla del **barrido**, no de una falla de
+  carga.
+
+**Emisor acotado.** `pulpo.js` adjunta `--visual-json` **sólo** cuando el skill es `qa`;
+`--rev` se pasa siempre. Un rechazo de `tester`, `security`, `build`, `linter` o `review`
+no arrastra el contrato visual del issue.
 
 ## 5. Checklist UX para QA durante la captura
 

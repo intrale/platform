@@ -34,6 +34,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #5795 — contrato compartido de la clase cerrada 'authentication_rejected'.
+const authRejection = require('../auth-rejection');
 
 // -----------------------------------------------------------------------------
 // detectLauncher — AGY_BIN, ubicación oficial Windows o PATH.
@@ -269,12 +271,47 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
     return { matched: false };
 }
 
+// -----------------------------------------------------------------------------
+// detectAuthenticationRejected (#5795) — clase cerrada `authentication_rejected`.
+//
+// Google usa el shape google.rpc.Status: `{error:{code:401, status:'UNAUTHENTICATED',
+// details:[{'@type':'...ErrorInfo', reason:'API_KEY_INVALID'}]}}`. La señal
+// inequívoca vive en `status` (enum, no prosa) y en `details[].reason`.
+//
+// POSITIVOS — credencial inválida o expirada:
+//   unauthenticated       enum gRPC/HTTP de credencial ausente o inválida
+//   api_key_invalid       ErrorInfo.reason: la clave no es válida
+//   api_key_expired       ErrorInfo.reason: la clave venció
+//   access_token_expired  ErrorInfo.reason: el token OAuth venció
+//
+// NEGATIVOS — Google los devuelve también con 401/403 pero NO son credencial
+// inválida: son permisos, suspensión de cuenta o bloqueo del servicio. Meterlos
+// en la misma clase haría que el coordinador re-resuelva una credencial sana.
+//   permission_denied / api_key_service_blocked / api_key_http_referrer_blocked
+//   consumer_suspended / billing_disabled / service_disabled
+//   resource_exhausted / quota_exceeded / rate_limit_exceeded (cuota)
+//   unavailable / internal / deadline_exceeded (transitorios)
+//   invalid_argument / failed_precondition / not_found (permanentes)
+// -----------------------------------------------------------------------------
+const detectAuthenticationRejected = authRejection.makeDetector({
+    adapter: 'gemini-google',
+    positives: ['unauthenticated', 'api_key_invalid', 'api_key_expired', 'access_token_expired'],
+    negatives: [
+        'permission_denied', 'api_key_service_blocked', 'api_key_http_referrer_blocked',
+        'consumer_suspended', 'billing_disabled', 'service_disabled', 'accounting_disabled',
+        'resource_exhausted', 'quota_exceeded', 'rate_limit_exceeded',
+        'unavailable', 'internal', 'deadline_exceeded',
+        'invalid_argument', 'failed_precondition', 'not_found', 'aborted',
+    ],
+});
+
 module.exports = {
     name: 'gemini-google',
     detectLauncher: getLauncher,
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
+    detectAuthenticationRejected,
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _translateClaudeArgsToGemini: translateClaudeArgsToGemini,
