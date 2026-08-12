@@ -36,6 +36,12 @@
 //      (tamper-evident, `lib/audit-log.js`). El abuso no es prevenible pero
 //      sí detectable, y el log dice quién dijo ser quién.
 //
+// Esa garantía (1) depende de una premisa que la primera versión de este módulo
+// daba por sentada y NO se cumplía: que el campo `label` de la orden sea UN
+// label. Es una **lista CSV**, y comparar el string entero contra la lista de
+// sensibles dejaba pasar `"needs-human,priority:high"` como "no sensible". Ver
+// SEC-F más abajo: toda decisión se toma sobre los componentes parseados.
+//
 // Se llama `guardrail_authorized` y no `human_authorized` a propósito: de los
 // tres productores legítimos, uno (`servicio-reconciler`, oráculo de épicas
 // con todos los hijos cerrados) NO es humano. Nombrar el campo "human" sería
@@ -86,20 +92,60 @@ const SENSITIVE_LABELS = Object.freeze([
     RECOMMENDATION_APPROVED,
 ]);
 
-// Sólo estos dos requieren leer el estado actual del issue para decidir. Los
-// otros dos sensibles se resuelven sin consulta (ver `evaluateLabelOrder`).
-const REQUIERE_CONSULTA = Object.freeze([NEEDS_HUMAN, TIPO_RECOMENDACION]);
+// Sólo `needs-human` y `tipo:recomendacion` requieren leer el estado actual del
+// issue para decidir (son los dos lados de la regla de mezcla). Los otros dos
+// sensibles se resuelven sin consulta — ver `evaluateLabelOrder`, que lo decide
+// con los flags `pideNeedsHuman` / `pideRecomendacion` sobre los componentes.
 
 const MOTIVOS = Object.freeze({
     MEZCLA_BLOQUEO_SOBRE_RECO: 'mezcla-needs-human-sobre-recomendacion',
     MEZCLA_RECO_SOBRE_BLOQUEO: 'mezcla-recomendacion-sobre-needs-human',
+    MEZCLA_EN_LA_MISMA_ORDEN: 'mezcla-needs-human-y-recomendacion-en-la-misma-orden',
     APPROVED_SIN_ORIGEN_HUMANO: 'approved-sin-origen-autorizado',
     REMOVE_NEEDS_HUMAN_SIN_ORIGEN_HUMANO: 'remove-needs-human-sin-origen-autorizado',
     INDETERMINADO: 'guardrail-indeterminado',
 });
 
+// -----------------------------------------------------------------------------
+// SEC-F — NORMALIZACIÓN CSV (bypass encontrado en la verificación de #5690)
+//
+// El campo `label` de una orden NO es un label: es una **lista CSV**. `gh issue
+// edit --add-label "a,b"` aplica DOS labels, y el propio repo ya emite ese
+// formato (`servicio-github.js` → `labelsStr.split(',')`,
+// `migrate-recomendaciones-legacy.js` → `toAdd.join(',')`).
+//
+// Comparar el string entero por igualdad exacta contra `SENSITIVE_LABELS` hacía
+// que UNA COMA desarmara el guardrail entero: `"needs-human,priority:high"` no
+// matchea ningún elemento → veredicto `label-no-sensible` → pasa directo a
+// `editIssue` → `gh` separa por la coma y remueve `needs-human` igual. El gate
+// humano se destrababa desde la cola anónima, y en silencio: el camino
+// permitido no escribe en `.pipeline/audit/`.
+//
+// La defensa es normalizar ANTES de decidir y aplicar las reglas si CUALQUIER
+// componente es sensible. Se trimea cada componente a propósito: `" needs-human"`
+// no es un label válido para `gh`, pero tratarlo como sensible es la dirección
+// conservadora (peor rechazar de más que dejar pasar una remoción del gate).
+// -----------------------------------------------------------------------------
+
+/** Descompone el campo `label` en sus componentes reales (CSV, trimeados). */
+function parseLabelList(label) {
+    return String(label == null ? '' : label)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+}
+
+/** Componentes sensibles presentes en el campo `label` (puede ser CSV). */
+function sensitiveComponents(label) {
+    return parseLabelList(label).filter((c) => SENSITIVE_LABELS.includes(c));
+}
+
+/**
+ * ¿La orden toca algún label sensible? CSV-aware: `"needs-human,area:infra"`
+ * es sensible aunque el string completo no matchee ningún elemento de la lista.
+ */
 function isSensitiveLabel(label) {
-    return SENSITIVE_LABELS.includes(String(label || ''));
+    return sensitiveComponents(label).length > 0;
 }
 
 /**
@@ -119,7 +165,9 @@ function declaredAuthorization(order) {
  *
  * @param {object} params
  * @param {string} params.action        - 'label' | 'remove-label' (otras → permitidas).
- * @param {string} params.label         - label solicitado.
+ * @param {string} params.label         - label solicitado. Puede ser una LISTA
+ *        CSV (`"a,b"`), que es como `gh` la interpreta: se evalúa componente
+ *        por componente (SEC-F), nunca como string entero.
  * @param {object} [params.order]       - la orden completa (procedencia declarada).
  * @param {function} [params.getCurrentLabels] - () => string[]. Puede tirar.
  * @returns {{allowed:boolean, motivo:string, consulted:boolean, currentLabels:(string[]|null), authorizedBy?:string, error?:string}}
@@ -131,8 +179,12 @@ function evaluateLabelOrder({ action, label, order = {}, getCurrentLabels } = {}
     if (act !== 'label' && act !== 'remove-label') {
         return { allowed: true, motivo: 'accion-fuera-del-dominio', consulted: false, currentLabels: null };
     }
+    // SEC-F — el campo `label` es una LISTA CSV. Se decide sobre los componentes,
+    // nunca sobre el string entero (ver bloque SEC-F arriba).
+    const componentes = parseLabelList(lbl);
+
     // SEC-D — cortar acá evita el `gh issue view` extra en el 99% de las órdenes.
-    if (!isSensitiveLabel(lbl)) {
+    if (!componentes.some((c) => SENSITIVE_LABELS.includes(c))) {
         return { allowed: true, motivo: 'label-no-sensible', consulted: false, currentLabels: null };
     }
 
@@ -149,7 +201,8 @@ function evaluateLabelOrder({ action, label, order = {}, getCurrentLabels } = {}
     // procedencia. Remover un label ausente es un no-op benigno.
     // -------------------------------------------------------------------------
     if (act === 'remove-label') {
-        if (lbl !== NEEDS_HUMAN) {
+        // SEC-F — `needs-human` en CUALQUIER posición del CSV, no sólo solo.
+        if (!componentes.includes(NEEDS_HUMAN)) {
             return { allowed: true, motivo: 'remove-label-no-restringido', consulted: false, currentLabels: null };
         }
         if (!authorizedBy) {
@@ -179,21 +232,35 @@ function evaluateLabelOrder({ action, label, order = {}, getCurrentLabels } = {}
     // La ruta legítima es `lib/recommendations.js` (dashboard), que no pasa
     // por acá.
     // -------------------------------------------------------------------------
-    if (lbl === RECOMMENDATION_APPROVED) {
-        if (!authorizedBy) {
-            return { allowed: false, motivo: MOTIVOS.APPROVED_SIN_ORIGEN_HUMANO, consulted: false, currentLabels: null };
-        }
-        return {
-            allowed: true,
-            motivo: 'approved-con-origen-autorizado',
-            consulted: false,
-            currentLabels: null,
-            authorizedBy,
-        };
+    const pideNeedsHuman = componentes.includes(NEEDS_HUMAN);
+    const pideRecomendacion = componentes.includes(TIPO_RECOMENDACION);
+    const pideApproved = componentes.includes(RECOMMENDATION_APPROVED);
+
+    // SEC-F — mezcla dentro de UNA SOLA orden: `label: "needs-human,tipo:recomendacion"`
+    // aplica los dos labels de una. No hace falta consultar el estado actual, la
+    // orden ya es la mezcla. Va ANTES del chequeo de procedencia a propósito: el
+    // CA pide que volver a mezclarlos sea imposible **por construcción**, así que
+    // la declaración de procedencia no habilita esta combinación (mismo criterio
+    // que las dos reglas de mezcla contra el estado actual).
+    if (pideNeedsHuman && pideRecomendacion) {
+        return { allowed: false, motivo: MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN, consulted: false, currentLabels: null };
     }
 
-    if (!REQUIERE_CONSULTA.includes(lbl)) {
-        return { allowed: true, motivo: 'label-sensible-sin-regla-de-mezcla', consulted: false, currentLabels: null };
+    if (pideApproved && !authorizedBy) {
+        return { allowed: false, motivo: MOTIVOS.APPROVED_SIN_ORIGEN_HUMANO, consulted: false, currentLabels: null };
+    }
+
+    // Ningún componente tiene regla de mezcla contra el estado actual
+    // (`source:recommendation`, o `recommendation:approved` ya autorizado):
+    // se resuelve sin gastar el `gh issue view`.
+    if (!pideNeedsHuman && !pideRecomendacion) {
+        return {
+            allowed: true,
+            motivo: pideApproved ? 'approved-con-origen-autorizado' : 'label-sensible-sin-regla-de-mezcla',
+            consulted: false,
+            currentLabels: null,
+            ...(pideApproved ? { authorizedBy } : {}),
+        };
     }
 
     // -------------------------------------------------------------------------
@@ -229,13 +296,20 @@ function evaluateLabelOrder({ action, label, order = {}, getCurrentLabels } = {}
     }
     const actuales = currentLabels.map(String);
 
-    if (lbl === NEEDS_HUMAN && actuales.includes(TIPO_RECOMENDACION)) {
+    // SEC-F — se evalúa el COMPONENTE pedido, no el string entero.
+    if (pideNeedsHuman && actuales.includes(TIPO_RECOMENDACION)) {
         return { allowed: false, motivo: MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO, consulted: true, currentLabels: actuales };
     }
-    if (lbl === TIPO_RECOMENDACION && actuales.includes(NEEDS_HUMAN)) {
+    if (pideRecomendacion && actuales.includes(NEEDS_HUMAN)) {
         return { allowed: false, motivo: MOTIVOS.MEZCLA_RECO_SOBRE_BLOQUEO, consulted: true, currentLabels: actuales };
     }
-    return { allowed: true, motivo: 'sin-conflicto', consulted: true, currentLabels: actuales };
+    return {
+        allowed: true,
+        motivo: 'sin-conflicto',
+        consulted: true,
+        currentLabels: actuales,
+        ...(pideApproved ? { authorizedBy } : {}),
+    };
 }
 
 // -----------------------------------------------------------------------------
@@ -372,6 +446,8 @@ function describeRejection({ issue, label_solicitado, labels_actuales, motivo, a
             `el issue ya es una recomendación (${TIPO_RECOMENDACION}) y ${NEEDS_HUMAN} es para bloqueos reales`,
         [MOTIVOS.MEZCLA_RECO_SOBRE_BLOQUEO]:
             `el issue está bloqueado por un humano (${NEEDS_HUMAN}) y no puede marcarse como recomendación`,
+        [MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN]:
+            `la orden pide aplicar ${NEEDS_HUMAN} y ${TIPO_RECOMENDACION} juntos, que es exactamente la mezcla que este guardrail existe para impedir`,
         [MOTIVOS.APPROVED_SIN_ORIGEN_HUMANO]:
             'aprobar una recomendación es una acción humana: va por el panel del dashboard, no por la cola',
         [MOTIVOS.REMOVE_NEEDS_HUMAN_SIN_ORIGEN_HUMANO]:
@@ -401,6 +477,8 @@ module.exports = {
     AUDIT_MAX_BYTES,
     // API
     isSensitiveLabel,
+    parseLabelList,
+    sensitiveComponents,
     declaredAuthorization,
     evaluateLabelOrder,
     auditConflict,

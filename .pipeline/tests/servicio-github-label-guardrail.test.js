@@ -203,3 +203,62 @@ test('no-regresion: un comment no pasa por el guardrail', () => {
     assert.strictEqual(observado.comment.length, 1);
     assert.deepStrictEqual(observado.getIssueLabels, []);
 });
+
+// -----------------------------------------------------------------------------
+// SEC-F — REGRESIÓN DEL BYPASS CSV, PROBADA CONTRA EL WORKER REAL
+//
+// El CA de estos tests no es el veredicto del módulo: es que `editIssue` NO se
+// invoque. Es la única prueba de que la mutación no ocurrió, y era exactamente
+// lo que el bypass CSV lograba (veredicto `label-no-sensible` → `editIssue` con
+// el CSV entero → `gh` lo separaba por la coma y aplicaba los dos labels).
+// -----------------------------------------------------------------------------
+
+test('SEC-F: remove-label "needs-human,priority:high" desde la cola anonima NO muta el issue', () => {
+    const { observado, procesada } = correrOrden({
+        action: 'remove-label',
+        issue: 9999,
+        label: 'needs-human,priority:high',
+    });
+    assert.deepStrictEqual(observado.editIssue, [], 'el gate humano se habria destrabado con una coma');
+    assert.match(String(procesada && procesada.discarded), /^label-guardrail:/);
+    assert.strictEqual(procesada.guardrail_motivo, 'remove-needs-human-sin-origen-autorizado');
+});
+
+test('SEC-F: label "needs-human,area:infra" sobre una recomendacion NO muta el issue', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 9998, label: 'needs-human,area:infra' },
+        { labels: ['tipo:recomendacion', 'enhancement'] },
+    );
+    assert.deepStrictEqual(observado.editIssue, [], 'la mezcla se aplicaba igual agregando una coma');
+    assert.strictEqual(procesada.guardrail_motivo, 'mezcla-needs-human-sobre-recomendacion');
+});
+
+test('SEC-F: label "needs-human,tipo:recomendacion" (mezcla en una sola orden) NO muta el issue', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 9997, label: 'needs-human,tipo:recomendacion' },
+        { labels: [] },
+    );
+    assert.deepStrictEqual(observado.editIssue, []);
+    assert.deepStrictEqual(observado.createLabel, [], 'tampoco debe crear labels en el repo');
+    assert.strictEqual(procesada.guardrail_motivo, 'mezcla-needs-human-y-recomendacion-en-la-misma-orden');
+});
+
+test('SEC-F: auto-aprobar via CSV "recommendation:approved,enhancement" NO muta el issue', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 9996, label: 'recommendation:approved,enhancement' },
+        { labels: ['tipo:recomendacion'] },
+    );
+    assert.deepStrictEqual(observado.editIssue, []);
+    assert.strictEqual(procesada.guardrail_motivo, 'approved-sin-origen-autorizado');
+});
+
+test('SEC-F: un CSV sin labels sensibles sigue pasando normal (no rompimos el camino comun)', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 9995, label: 'area:infra,enhancement' },
+        { labels: [] },
+    );
+    assert.strictEqual(observado.editIssue.length, 1, 'la orden legitima tiene que aplicarse');
+    assert.strictEqual(observado.editIssue[0].opts.addLabel, 'area:infra,enhancement');
+    assert.strictEqual(observado.getIssueLabels.length, 0, 'SEC-D: sin consulta extra a la API');
+    assert.ok(!procesada || !procesada.discarded, 'no debe quedar descartada');
+});

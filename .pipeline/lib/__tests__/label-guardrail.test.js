@@ -400,3 +400,158 @@ test('UX-4a: el rechazo de remove-label explica que el destrabe es accion humana
     assert.match(msg, /remover/);
     assert.match(msg, /no por la cola/);
 });
+
+// -----------------------------------------------------------------------------
+// SEC-F — NORMALIZACIÓN CSV (regresión del bypass encontrado en verificación)
+//
+// El campo `label` es una LISTA CSV: `gh issue edit --add-label "a,b"` aplica
+// DOS labels, y el repo ya emite ese formato (`servicio-github.js` hace
+// `labelsStr.split(',')`, `migrate-recomendaciones-legacy.js` hace
+// `toAdd.join(',')`). Comparar el string entero por igualdad exacta hacía que
+// UNA COMA desarmara el guardrail: `"needs-human,priority:high"` no matcheaba
+// ningún elemento sensible → `label-no-sensible` → pasaba a `editIssue` → `gh`
+// separaba por la coma y removía `needs-human` igual, en silencio.
+//
+// Cada test de acá abajo es un vector verificado antes del fix.
+// -----------------------------------------------------------------------------
+
+test('SEC-F: isSensitiveLabel detecta el label sensible en cualquier posicion del CSV', () => {
+    assert.strictEqual(guardrail.isSensitiveLabel('needs-human'), true);
+    assert.strictEqual(guardrail.isSensitiveLabel('needs-human,priority:high'), true);
+    assert.strictEqual(guardrail.isSensitiveLabel('priority:high,needs-human'), true);
+    assert.strictEqual(guardrail.isSensitiveLabel('a,b, needs-human ,c'), true, 'trimea cada componente');
+    assert.strictEqual(guardrail.isSensitiveLabel('area:infra,bug'), false, 'sin sensibles: sigue barato (SEC-D)');
+    assert.strictEqual(guardrail.isSensitiveLabel(''), false);
+    assert.strictEqual(guardrail.isSensitiveLabel(null), false);
+});
+
+test('SEC-F: parseLabelList descompone, trimea y descarta vacios', () => {
+    assert.deepStrictEqual(guardrail.parseLabelList('a, b ,,c'), ['a', 'b', 'c']);
+    assert.deepStrictEqual(guardrail.parseLabelList('needs-human'), ['needs-human']);
+    assert.deepStrictEqual(guardrail.parseLabelList(''), []);
+    assert.deepStrictEqual(guardrail.parseLabelList(null), []);
+});
+
+test('SEC-F: remove-label con needs-human dentro de un CSV exige procedencia igual', () => {
+    for (const label of ['needs-human,priority:high', 'priority:high,needs-human', 'a, needs-human ,b']) {
+        const v = guardrail.evaluateLabelOrder({ action: 'remove-label', label, order: {} });
+        assert.strictEqual(v.allowed, false, `deberia rechazar: ${label}`);
+        assert.strictEqual(v.motivo, guardrail.MOTIVOS.REMOVE_NEEDS_HUMAN_SIN_ORIGEN_HUMANO);
+    }
+});
+
+test('SEC-F: remove-label CSV con procedencia declarada sigue permitido y atribuido', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'remove-label',
+        label: 'needs-human,priority:high',
+        order: { guardrail_authorized: true, authorized_by: 'human-block:unblock' },
+    });
+    assert.strictEqual(v.allowed, true);
+    assert.strictEqual(v.authorizedBy, 'human-block:unblock', 'el bypass tiene que quedar auditado');
+});
+
+test('SEC-F: agregar needs-human via CSV sobre una recomendacion es mezcla y se rechaza', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human,area:infra',
+        order: {},
+        getCurrentLabels: () => ['tipo:recomendacion', 'enhancement'],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO);
+});
+
+test('SEC-F: agregar tipo:recomendacion via CSV sobre un issue bloqueado se rechaza', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'tipo:recomendacion,enhancement',
+        order: {},
+        getCurrentLabels: () => ['needs-human'],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_RECO_SOBRE_BLOQUEO);
+});
+
+test('SEC-F: pedir needs-human y tipo:recomendacion en la MISMA orden es mezcla por construccion', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human,tipo:recomendacion',
+        order: {},
+        getCurrentLabels: () => [],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN);
+    assert.strictEqual(v.consulted, false, 'la orden ya es la mezcla: no hace falta consultar');
+});
+
+test('SEC-F: la procedencia declarada NO habilita la mezcla en la misma orden', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'tipo:recomendacion,needs-human',
+        order: { guardrail_authorized: true, authorized_by: 'atacante' },
+        getCurrentLabels: () => [],
+    });
+    assert.strictEqual(v.allowed, false, 'el CA pide que la mezcla sea imposible POR CONSTRUCCION');
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN);
+});
+
+test('SEC-F: auto-aprobar una recomendacion via CSV sin procedencia se rechaza', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'recommendation:approved,enhancement',
+        order: {},
+        getCurrentLabels: () => [],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.APPROVED_SIN_ORIGEN_HUMANO);
+});
+
+test('SEC-F: approved via CSV CON procedencia pasa y queda atribuido', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'recommendation:approved,enhancement',
+        order: { guardrail_authorized: true, authorized_by: 'dashboard:leito' },
+        getCurrentLabels: () => [],
+    });
+    assert.strictEqual(v.allowed, true);
+    assert.strictEqual(v.authorizedBy, 'dashboard:leito');
+});
+
+test('SEC-F: SEC-C sigue fail-closed cuando el label sensible viene dentro de un CSV', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human,area:infra',
+        order: {},
+        getCurrentLabels: () => { throw new Error('rate limit'); },
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.INDETERMINADO);
+});
+
+test('SEC-F: SEC-D se conserva — un CSV sin sensibles no gasta la consulta', () => {
+    let consultas = 0;
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'area:infra,bug,enhancement',
+        order: {},
+        getCurrentLabels: () => { consultas += 1; return []; },
+    });
+    assert.strictEqual(v.allowed, true);
+    assert.strictEqual(v.motivo, 'label-no-sensible');
+    assert.strictEqual(consultas, 0, 'no puede dispararse un gh issue view por cada orden trivial');
+});
+
+test('SEC-F: el motivo de mezcla en la misma orden tiene explicacion legible en espanol', () => {
+    const msg = guardrail.describeRejection({
+        issue: 4242,
+        label_solicitado: 'needs-human,tipo:recomendacion',
+        labels_actuales: null,
+        motivo: guardrail.MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN,
+        accion: 'label',
+        origen: 'cola-anonima.json',
+    });
+    assert.match(msg, /#4242/);
+    assert.match(msg, /juntos/);
+    assert.match(msg, /NO fue modificado/);
+    assert.doesNotMatch(msg, /mezcla-needs-human-y-recomendacion/, 'debe explicar, no volcar el slug');
+});
