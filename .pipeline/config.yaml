@@ -221,6 +221,15 @@ worktree_provenance:
 # (3 ciclos de dispatch a poll_interval 30s). TTL corto a propósito: no debilitar A08.
 desync:
   legit_add_ttl_ms: 90000
+  # #5516 (SO-7) — allowlist de logins CONFIABLES para el reconciliador de hijos
+  # de split. `intrale/platform` es un repo PÚBLICO: sin verificación de origen,
+  # cualquiera podría abrir un issue "[Split de #N]" (N es público) y hacerse
+  # incorporar a la allowlist de pausa parcial, que es el gate de dispatch real.
+  # Por default sólo se confía en autores OWNER/MEMBER/COLLABORATOR del repo.
+  # Esta lista es el escape para cuentas de BOT que no son miembros de la org.
+  # Vacía o ausente → manda sólo la asociación con el repo (fail-closed).
+  # Ejemplo: ["intrale-bot"]
+  split_orphan_trusted_logins: []
 
 # build: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.build (la prosa viajó a productConfigNotes)
 
@@ -401,10 +410,27 @@ watchdog:
   # umbral con el proceso vivo, lo declara zombi (loop colgado) y lo reinicia.
   # DESACOPLADO del display: /salud usa "esperado < 30s" sólo para MOSTRAR salud;
   # 30s == 1 poll_interval del Pulpo, un ciclo lento lo rozaría sin ser zombi.
-  # 90s = max(90, 3×poll_interval) evita falsos positivos (CA-4) y restart-storms
-  # (SEC-3). Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo;
-  # inválido → default, NUNCA "nunca stale" — SEC-2).
-  pulpo_liveness_kill_seconds: 180
+  #
+  # #5820 — El umbral NO se deriva de poll_interval: se dimensiona contra la
+  # duración REAL de un ciclo del Pulpo, que con la ola actual está muy por
+  # encima del poll. Incidente 2026-08-11 (~11:00–14:00): con 180s el watchdog
+  # mató y relanzó al Pulpo 77 veces (una cada ~6 min) sin que hubiera un cuelgue
+  # real — el ciclo simplemente tardaba más que el umbral. Cada reinicio se
+  # llevaba puesta la cola de comandos de Telegram, así que el Commander quedó
+  # sin responder ~4 horas.
+  #   Medición del log .pipeline/logs/pulpo-liveness.log tras subir a 270:
+  #     · killSeconds=180 → 77 líneas decision=kill el 2026-08-11
+  #     · killSeconds=270 → 0 líneas decision=kill en 68 ciclos
+  #     · máx. hbAgeMs observado bajo el umbral nuevo: 244993 ms (245 s)
+  # El margen contra el techo de 270 s es de ~25 s (9%): este valor PERSISTE la
+  # mitigación medida, pero el dimensionamiento del colchón se rediseña aparte
+  # (#5821). Si volvés a ver kills sin cuelgue real, es ese issue, no este valor.
+  #
+  # Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo; inválido →
+  # default del módulo, NUNCA "nunca stale" — SEC-2). El default de
+  # lib/pulpo-liveness.js se mantiene alineado con este valor para que perder el
+  # bloque `watchdog:` no degrade a un umbral MÁS agresivo que el vigente.
+  pulpo_liveness_kill_seconds: 270
 
 # =============================================================================
 # Wave-stall watchdog (#4708) — dead-man's switch de la ola
@@ -420,12 +446,36 @@ watchdog:
 # o absurdamente grande (> 1440 min = 24h) cae al default seguro — NUNCA
 # "nunca stall" ni deshabilita de facto el watchdog.
 wave_watchdog:
-  enabled: false                 # rollout gradual — activar tras smoke test post-restart
+  # #5400 — ACTIVADO. Este control estuvo en `enabled: false` desde su merge y
+  # nadie se enteró: el 2026-08-02 el pipeline estuvo 1h33 sin despachar y no
+  # llegó ninguna alerta. Dejarlo apagado es reproducir el bug original, así que
+  # el flip a true es entregable del issue, no un follow-up.
+  # Para desactivarlo en caliente usar `kill_switch: true` (no hace falta reiniciar).
+  enabled: true
   kill_switch: false             # corte de emergencia: true desactiva el brazo sin tocar `enabled`
-  stall_minutes: 20              # 0 despacho más de esto (con trabajo habilitado y sin causa) = estancada
-  alert_cooldown_minutes: 30     # SEC-4: mín. entre re-alertas del mismo episodio (anti-flood)
-  window_minutes: 60             # ventana de referencia para la serie de avance/despacho
+  stall_minutes: 20              # 0 despacho más de esto (con trabajo elegible esperando) = detenido
+  # SEC-4 / CA-4: mínimo entre re-alertas del mismo episodio (anti-flood). La
+  # espera se DUPLICA en cada re-alerta (30 → 60 → 120 …) hasta 16× — así una
+  # detención de 14 h cuesta ~6 mensajes y no ~27. El primer aviso no se demora.
+  alert_cooldown_minutes: 30
+  # `window_minutes` se ELIMINÓ en rev-6: se leía y se propagaba, pero ninguna
+  # decisión la usaba. Una perilla que no controla nada es peor que no tenerla.
   tick_ms: 60000                 # cada cuánto corre el brazo (default 1 min)
+  # #5400 — Antigüedad a partir de la cual una causa DECLARADA deja de silenciar
+  # la alarma. Una pausa o un desync explican un rato de no-despacho; no lo
+  # explican para siempre. Escala sólo si además hay trabajo elegible esperando
+  # (aditivo: por debajo de este umbral el modo ola sigue mudo, #4751).
+  # Mismo clamp que stall_minutes: [1, 1440]; un valor inválido cae al default 45.
+  # Se mide contra la INACTIVIDAD DE DESPACHO, no contra la antigüedad de la
+  # causa: con causas que alternan (ventana de prioridad ↔ concurrencia ↔
+  # cooldown) el reloj de la causa se reiniciaba en cada transición y el aviso
+  # no llegaba nunca. Esta misma clave gobierna el realce del banner de causa.
+  declared_cause_escalate_minutes: 45
+  # Gracia extra mientras hay agentes corriendo (`trabajando/` > 0). Con slots
+  # ocupados el no-despacho suele ser saturación legítima, no un estancamiento:
+  # se suma a los dos umbrales de arriba. No es un skip — un agente clavado
+  # termina avisando igual, sólo que más tarde. Mismo clamp [1, 1440].
+  busy_grace_minutes: 60
 
 # Dashboard — opciones del dashboard del pipeline
 dashboard:

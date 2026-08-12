@@ -27,11 +27,27 @@
 
 'use strict';
 
-// Umbral de kill por default: 90s. Desacoplado del "esperado < 30s" que /salud
-// usa para *mostrar* salud. 30s == 1 poll_interval del Pulpo; un ciclo lento
-// (precheck de red, brazo pesado) puede rozarlo sin ser zombi. 90s = max(90,
-// 3×poll_interval) evita falsos positivos (CA-4) y restart-storms (SEC-3).
-const DEFAULT_KILL_SECONDS = 90;
+// Umbral de kill por default: 270s. Desacoplado del "esperado < 30s" que /salud
+// usa para *mostrar* salud (30s == 1 poll_interval del Pulpo).
+//
+// #5820 — Por qué 270 y no 90. El default original (90s = max(90,
+// 3×poll_interval)) derivaba el umbral del POLL, no de la duración real de un
+// ciclo del Pulpo. El incidente del 2026-08-11 midió esa diferencia: con 180s
+// —el DOBLE del default— el watchdog mató al Pulpo 77 veces en ~3h sin que
+// hubiera un cuelgue real, y el máximo hbAgeMs de un Pulpo sano medido después
+// fue 244993 ms (245 s). Un default de 90s es, entonces, casi 3× más agresivo
+// que un umbral que YA se demostró insuficiente.
+//
+// Esto importa porque el default NO es sólo un camino de emergencia: se aplica
+// por vía normal cuando config.yaml no aporta el valor (bloque `watchdog:`
+// ausente — ver pulpo-liveness-run.js, caso D-4 de #5172 — o clave ausente /
+// inválida). Con 90s, perder el bloque de config dejaba el umbral MÁS agresivo
+// que el vigente y reabría el bucle de muerte en silencio. El default se
+// mantiene alineado con `watchdog.pulpo_liveness_kill_seconds` de config.yaml
+// para que la degradación nunca sea en dirección destructiva (SEC-3).
+//
+// Si se sube el valor de config.yaml, subir también este default.
+const DEFAULT_KILL_SECONDS = 270;
 
 /**
  * Valida el umbral de kill en segundos (SEC-2).

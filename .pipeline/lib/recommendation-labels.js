@@ -2,21 +2,30 @@
 // recommendation-labels.js — Fuente ÚNICA del discriminador
 // "issue de recomendación" vs "bloqueo real" (#5337, CA-6).
 //
-// Contexto del problema (medido el 2026-08-01 sobre el repo real):
+// Contexto del problema (medido el 2026-08-07 sobre el repo real, #5689):
 //
-//     needs-human total ................. 880
-//     de esos tipo:recomendacion ........ 865
-//     bloqueos reales ...................  15   (1,7%)
+//     needs-human total ................. 950
+//     de esos tipo:recomendacion ........ 935
+//     bloqueos reales ...................  15   (1,6%)
+//
+// (medición previa, 2026-08-01: 880 / 865 / 15 — 1,7%. Los bloqueos reales se
+// mantienen estables en ~15; lo que crece sin techo es el ruido de backlog.)
 //
 // El label `needs-human` se usa para DOS cosas distintas:
 //   1. Bloqueo real: el pipeline se frenó y necesita una acción del operador.
 //   2. Recomendación de agente (guru/security/po/ux/review): backlog que espera
 //      triaje, sin ningún agente frenado atrás.
 //
-// Mezclarlas hace que la notificación de bloqueo nazca ahogada en 98,3% de
+// Mezclarlas hace que la notificación de bloqueo nazca ahogada en 98,4% de
 // ruido. El discriminador ya existía duplicado en `servicio-reconciler.js` y
 // (inline) en `views/dashboard/bloqueados.js`; una tercera copia en
 // `human-block.js` habría sido una tercera fuente de verdad que se desincroniza.
+//
+// #5689 — consumidores al día de hoy (ya no queda ningún inline):
+//   - `human-block.js:26,367`         (#5337)
+//   - `servicio-reconciler.js:128-134`(#5337)
+//   - `pulpo.js` — gate autoritativo del intake (SEC-2)
+//   - `views/dashboard/bloqueados.js` — `classifyCta()` (el último inline)
 //
 // Este módulo es deliberadamente MINÚSCULO y sin dependencias: `human-block.js`
 // es una librería base que el propio reconciler consume, así que requerir el
@@ -42,7 +51,7 @@ const RECOMMENDATION_APPROVED_LABEL = 'recommendation:approved';
  * GitHub devuelve labels como `[{name, color, ...}]` en `gh issue list --json
  * labels`, pero varias partes del pipeline ya los aplanaron a `['a','b']`.
  * Aceptar ambas formas evita que el filtro falle silenciosamente (que es la
- * peor falla posible acá: dejaría pasar las 865 recomendaciones).
+ * peor falla posible acá: dejaría pasar las 935 recomendaciones).
  *
  * @param {Array<string|{name?:string}>} labels
  * @returns {string[]} nombres de label, sin vacíos.

@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 49 — Estados DEGRADADOS del bloque visual del rejection report.
+  Issue #5708 — addendum de UX tras el rebote de `review` (R1/R2) y los CA-8..CA-13.
+
+  Por que existe:
+    El mockup 48 especifica como se ve el bloque visual cuando HAY contrato valido.
+    No especificaba que ve el operador cuando el contrato NO corresponde a la pasada,
+    declara un aprobado, o no se pudo cargar. Ese hueco produjo R1: un rechazo por
+    tests rojos narrado como "rechazo visual" con 4 desvios que no existian.
+    CA-8/CA-9/CA-13 resuelven la logica; este mockup define el ARTEFACTO VISIBLE de
+    cada supresion, para que "no renderizar" no sea otra forma de silencio.
+
+  Regla rectora (SEC-4 llevada a la experiencia del operador):
+    toda supresion del bloque visual que el operador podria interpretar como
+    "no hubo desvios" se declara en el PDF. Un log no es evidencia para el operador.
+
+  Design system: tokens de .pipeline/assets/design-tokens.css. Ningun estado se
+  codifica solo por color: cada banda lleva simbolo + etiqueta textual + motivo.
+  Contraste AA/AAA sobre fondo #0D1117. Target 1240x1180 (A4 ~150dpi).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1180" viewBox="0 0 1240 1180"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D"/>
+      <stop offset="100%" stop-color="#0A1C36"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1240" height="1180" fill="#0D1117"/>
+
+  <!-- =================== HEADER =================== -->
+  <rect x="0" y="0" width="1240" height="120" fill="url(#headerGrad)"/>
+  <rect x="0" y="119" width="1240" height="1" fill="#30363D"/>
+  <g transform="translate(48, 36)">
+    <rect width="48" height="48" rx="12" fill="#0D274D" stroke="#1890FF" stroke-width="1"/>
+    <path d="M24 10 L7 40 L41 40 Z" fill="none" stroke="url(#brandGrad)" stroke-width="3.5"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M24 22 L17 34 L31 34 Z" fill="url(#brandGrad)"/>
+  </g>
+  <text x="112" y="58" fill="#E6EDF3" font-size="22" font-weight="700">Intrale Pipeline V3</text>
+  <text x="112" y="80" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="2">REJECTION REPORT · ESTADOS DEGRADADOS DEL BLOQUE VISUAL</text>
+  <text x="1192" y="70" fill="#8B949E" font-size="12" font-weight="600" text-anchor="end">MOCKUP 49 · #5708</text>
+
+  <!-- =================== INTRO =================== -->
+  <text x="48" y="164" fill="#E6EDF3" font-size="16" font-weight="700">Cuando el bloque visual NO se renderiza, el reporte lo dice</text>
+  <text x="48" y="188" fill="#8B949E" font-size="12">El operador no puede distinguir «no hubo desvios visuales» de «la evidencia visual no se pudo evaluar» si ambos casos se ven igual.</text>
+  <text x="48" y="207" fill="#8B949E" font-size="12">Cada supresion tiene banda propia, con simbolo, etiqueta textual, motivo objetivable y accion sugerida.</text>
+
+  <!-- =================== E1 =================== -->
+  <g transform="translate(48, 236)">
+    <rect width="1144" height="126" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="126" rx="2" fill="#484F58"/>
+    <text x="24" y="30" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.5">E1 · RECHAZO NO VISUAL — SIN BANDA</text>
+    <circle cx="34" cy="62" r="13" fill="#21262D" stroke="#484F58" stroke-width="1.5"/>
+    <text x="34" y="67" fill="#8B949E" font-size="14" font-weight="700" text-anchor="middle">–</text>
+    <text x="60" y="60" fill="#E6EDF3" font-size="14" font-weight="700">El skill que rechaza no es el de QA visual (tester, security, build, linter, review)</text>
+    <text x="60" y="82" fill="#8B949E" font-size="12">No se adjunta `--visual-json`, no se renderiza bloque y NO se agrega banda: la pasada no hizo ninguna afirmacion visual,</text>
+    <text x="60" y="100" fill="#8B949E" font-size="12">asi que no hay nada que declarar. El reporte muestra la causa real del rechazo, intacta.</text>
+    <rect x="60" y="106" width="1046" height="0" fill="none"/>
+  </g>
+
+  <!-- =================== E2 =================== -->
+  <g transform="translate(48, 380)">
+    <rect width="1144" height="140" rx="10" fill="#0F3D26" stroke="#196C2E" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="140" rx="2" fill="#3FB950"/>
+    <text x="24" y="30" fill="#7EE787" font-size="11" font-weight="700" letter-spacing="1.5">E2 · VEREDICTO VISUAL APROBADO — BANDA INFORMATIVA</text>
+    <circle cx="34" cy="66" r="13" fill="#196C2E" stroke="#3FB950" stroke-width="1.5"/>
+    <path d="M28 66 L32.5 70.5 L40.5 61.5" fill="none" stroke="#0D1117" stroke-width="2.6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="60" y="62" fill="#E6EDF3" font-size="14" font-weight="700">COBERTURA VISUAL DECLARADA · sin desvios</text>
+    <text x="60" y="84" fill="#C9D1D9" font-size="12">`verdict: "approved"` — el contrato se cargo, se leyo y declara 4 de 4 secciones verificadas sin hallazgos.</text>
+    <text x="60" y="102" fill="#C9D1D9" font-size="12">No se renderiza inventario porque no hay desvios; SI se renderiza la cobertura, que es la linea base para tipificar</text>
+    <text x="60" y="120" fill="#C9D1D9" font-size="12">regresiones en la proxima pasada. Un `approved` nunca se narra como rechazo.</text>
+  </g>
+
+  <!-- =================== E3 =================== -->
+  <g transform="translate(48, 538)">
+    <rect width="1144" height="158" rx="10" fill="#3A2D0B" stroke="#7D5E10" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="158" rx="2" fill="#D29922"/>
+    <text x="24" y="30" fill="#E3B341" font-size="11" font-weight="700" letter-spacing="1.5">E3 · CONTRATO DE OTRA PASADA — BANDA DE DESCARTE</text>
+    <circle cx="34" cy="66" r="13" fill="#7D5E10" stroke="#D29922" stroke-width="1.5"/>
+    <text x="34" y="72" fill="#0D1117" font-size="16" font-weight="700" text-anchor="middle">!</text>
+    <text x="60" y="62" fill="#E6EDF3" font-size="14" font-weight="700">EVIDENCIA VISUAL DESCARTADA — corresponde a una pasada anterior</text>
+    <text x="60" y="84" fill="#C9D1D9" font-size="12">El contrato declara `rev: 1` y la pasada actual es `rev: 7`. No se muestra para no reportar como vigentes desvios</text>
+    <text x="60" y="102" fill="#C9D1D9" font-size="12">que pueden estar corregidos hace seis pasadas.</text>
+    <rect x="60" y="114" width="1046" height="30" rx="6" fill="#21262D" stroke="#30363D" stroke-width="1"/>
+    <text x="74" y="134" fill="#8B949E" font-size="11.5" font-family="'Cascadia Code', Consolas, monospace">archivo: qa/evidence/5708/visual-comparison.json · rev 1 vs 7 · accion: re-ejecutar QA visual en esta pasada</text>
+  </g>
+
+  <!-- =================== E4 =================== -->
+  <g transform="translate(48, 714)">
+    <rect width="1144" height="158" rx="10" fill="#3B1F1B" stroke="#8B1A14" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="158" rx="2" fill="#F85149"/>
+    <text x="24" y="30" fill="#FF7B72" font-size="11" font-weight="700" letter-spacing="1.5">E4 · CONTRATO NO CARGABLE — BANDA DE FALLA DECLARADA</text>
+    <circle cx="34" cy="66" r="13" fill="#8B1A14" stroke="#F85149" stroke-width="1.5"/>
+    <text x="34" y="72" fill="#0D1117" font-size="16" font-weight="700" text-anchor="middle">×</text>
+    <text x="60" y="62" fill="#E6EDF3" font-size="14" font-weight="700">EVIDENCIA VISUAL NO EVALUADA — el contrato no se pudo cargar</text>
+    <text x="60" y="84" fill="#C9D1D9" font-size="12">El archivo supera el tope de render (1.20 MB sobre 1.00 MB) o es JSON invalido. Esto NO significa «sin desvios»:</text>
+    <text x="60" y="102" fill="#C9D1D9" font-size="12">significa que el inventario no se leyo. El veredicto visual de esta pasada queda sin respaldo verificable.</text>
+    <rect x="60" y="114" width="1046" height="30" rx="6" fill="#21262D" stroke="#30363D" stroke-width="1"/>
+    <text x="74" y="134" fill="#8B949E" font-size="11.5" font-family="'Cascadia Code', Consolas, monospace">motivo: size 1258291 B &gt; MAX_VISUAL_JSON_BYTES 1048576 · accion: imagenes por referencia, no base64 inline</text>
+  </g>
+
+  <!-- =================== E5 · NARRACION =================== -->
+  <g transform="translate(48, 890)">
+    <rect width="1144" height="242" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="242" rx="2" fill="#1890FF"/>
+    <text x="24" y="30" fill="#79C0FF" font-size="11" font-weight="700" letter-spacing="1.5">E5 · ORDEN DE NARRACION — QUE ESCUCHA EL OPERADOR</text>
+    <text x="24" y="54" fill="#8B949E" font-size="12">La rama visual se evalua DESPUES de `inconclusive` y de `primaryCause`, y solo con `verdict: "rejected"` de la pasada actual.</text>
+
+    <rect x="24" y="70" width="546" height="72" rx="8" fill="#3B1F1B" stroke="#8B1A14" stroke-width="1"/>
+    <text x="40" y="92" fill="#FF7B72" font-size="10.5" font-weight="700" letter-spacing="1.2">HOY — DEFECTO R1</text>
+    <text x="40" y="114" fill="#C9D1D9" font-size="11.5">«Issue 5708: rechazo visual. 4 desvios detectados...»</text>
+    <text x="40" y="132" fill="#8B949E" font-size="11">rechazo real: 3 tests rojos en DoLoginTest — nunca se menciona</text>
+
+    <rect x="598" y="70" width="522" height="72" rx="8" fill="#0F3D26" stroke="#196C2E" stroke-width="1"/>
+    <text x="614" y="92" fill="#7EE787" font-size="10.5" font-weight="700" letter-spacing="1.2">OBJETIVO — CA-10</text>
+    <text x="614" y="114" fill="#C9D1D9" font-size="11.5">«Issue 5708: rechazado. Causa: tests del modulo users</text>
+    <text x="614" y="132" fill="#C9D1D9" font-size="11.5">fallan, 3 rojos en DoLoginTest.»</text>
+
+    <text x="24" y="170" fill="#E6EDF3" font-size="12.5" font-weight="700">Narracion de los estados degradados (audio, no solo PDF):</text>
+    <text x="24" y="192" fill="#C9D1D9" font-size="11.5">E2 → «...ademas, la validacion visual quedo aprobada con 4 de 4 secciones verificadas.» (sufijo, nunca titular)</text>
+    <text x="24" y="211" fill="#C9D1D9" font-size="11.5">E3 → «La evidencia visual disponible es de una pasada anterior y no se tuvo en cuenta.» (sufijo)</text>
+    <text x="24" y="230" fill="#C9D1D9" font-size="11.5">E4 → «La evidencia visual no se pudo evaluar en esta pasada.» (sufijo — nunca se omite: es la falla que SEC-4 prohibe callar)</text>
+  </g>
+
+  <text x="48" y="1160" fill="#484F58" font-size="10.5">UX · Intrale · addendum de #5708 tras rebote de review (R1/R2) · complementa el mockup 48 · ningun estado se codifica solo por color</text>
+</svg>

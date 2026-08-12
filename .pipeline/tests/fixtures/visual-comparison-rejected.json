@@ -1,0 +1,44 @@
+{
+  "issue": 5708,
+  "rev": 3,
+  "verdict": "rejected",
+  "mockup": { "src": "mockup-v1.png", "baseline": "mockup-48" },
+  "delivery": { "src": "render-rev3.png" },
+  "coverage": {
+    "secciones_declaradas": ["A", "B", "C", "D"],
+    "verificadas": ["A", "B", "C"],
+    "no_verificadas": [
+      { "section": "D", "motivo": "estado no alcanzable sin datos de negocio" }
+    ]
+  },
+  "diffs": [
+    {
+      "section": "A",
+      "title": "A3 nunca se pinta en rojo",
+      "description": "token --danger-fg esperado; la entrega usa --text-muted",
+      "impact": "alto"
+    },
+    {
+      "section": "A",
+      "title": "Falta la duracion del rebote en la cabecera",
+      "description": "el chip de duracion no aparece",
+      "impact": "medio"
+    },
+    {
+      "section": "B",
+      "title": "Inventario sin agrupar por seccion",
+      "description": "los hallazgos salen planos, no agrupados",
+      "impact": "alto"
+    },
+    {
+      "section": "C",
+      "title": "Backoff no declarado",
+      "description": "la banda no informa el proximo reintento",
+      "impact": "bajo"
+    }
+  ],
+  "suggestedAction": {
+    "skill": "pipeline-dev",
+    "text": "Re-implementar el inventario respetando el mockup 48."
+  }
+}

@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 50 === Estados que introduce la REVISION 2 del contrato visual (D7 a D15).
+  Issue #5708 === entregable de UX en `criterios`, pasada de routing #2.
+
+  Por que existe:
+    El mockup 48 define el bloque visual CON contrato valido.
+    El mockup 49 define las supresiones E1 a E5 (verdict, rev stale, no cargable).
+    La revision 2 de la receta del architect agrega cuatro situaciones que NINGUNA
+    de esas bandas describe correctamente:
+      1. shape-gate-block  mapeado a E4 ("no se pudo cargar") cuando en realidad
+         el contrato SI se cargo y lo rechazado fue el barrido. Es el corazon del issue.
+      2. rev-unknown       mapeado a E3 ("corresponde a una pasada anterior") cuando
+         en realidad no se sabe a que pasada corresponde. E3 afirmaria algo falso.
+      3. regression derivado (D11): sin pasada previa registrada todos los diffs
+         salen false, y "no es regresion" se ve igual que "no hay linea base".
+      4. imagenes por referencia (D7): el placeholder de imagen pasa de excepcional
+         a probable y hoy no declara motivo.
+
+  Regla rectora heredada del mockup 49 (SEC-4 llevada al operador):
+    ninguna razon por la que algo no se muestre puede ser indistinguible de
+    "no hubo desvios". Un log en stdout no es evidencia para el operador.
+
+  Design system: tokens de .pipeline/assets/design-tokens.css. Ningun estado se
+  codifica solo por color: simbolo + etiqueta textual + motivo objetivable siempre.
+  Contraste AA sobre #0D1117. Target 1240x1560 (A4 ~150dpi).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1560" viewBox="0 0 1240 1560"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D"/>
+      <stop offset="100%" stop-color="#0A1C36"/>
+    </linearGradient>
+    <pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="8" height="8" fill="#161B22"/>
+      <rect width="3" height="8" fill="#21262D"/>
+    </pattern>
+  </defs>
+
+  <rect width="1240" height="1560" fill="#0D1117"/>
+
+  <!-- =================== HEADER =================== -->
+  <rect x="0" y="0" width="1240" height="120" fill="url(#headerGrad)"/>
+  <rect x="0" y="119" width="1240" height="1" fill="#30363D"/>
+  <g transform="translate(48, 36)">
+    <rect width="48" height="48" rx="12" fill="#0D274D" stroke="#1890FF" stroke-width="1"/>
+    <path d="M24 10 L7 40 L41 40 Z" fill="none" stroke="url(#brandGrad)" stroke-width="3.5"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M24 22 L17 34 L31 34 Z" fill="url(#brandGrad)"/>
+  </g>
+  <text x="112" y="58" fill="#E6EDF3" font-size="22" font-weight="700">Intrale Pipeline V3</text>
+  <text x="112" y="80" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="2">REJECTION REPORT · ESTADOS DE LA REVISION 2 DEL CONTRATO VISUAL</text>
+  <text x="1192" y="70" fill="#8B949E" font-size="12" font-weight="600" text-anchor="end">MOCKUP 50 · #5708</text>
+
+  <!-- =================== INTRO =================== -->
+  <text x="48" y="164" fill="#E6EDF3" font-size="16" font-weight="700">Cuatro situaciones que la revision 2 introduce y ninguna banda previa describe bien</text>
+  <text x="48" y="188" fill="#8B949E" font-size="12">El mockup 49 cubre las supresiones E1 a E5. Mapear los motivos nuevos a esas bandas hace que el reporte afirme cosas que no verifico.</text>
+  <text x="48" y="207" fill="#8B949E" font-size="12">Cada estado nuevo lleva banda o marca propia, con simbolo, etiqueta textual, motivo objetivable y accion sugerida.</text>
+
+  <!-- =================== E6 · BARRIDO NO ACEPTADO =================== -->
+  <g transform="translate(48, 236)">
+    <rect width="1144" height="200" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="200" rx="2" fill="#8957E5"/>
+    <text x="24" y="30" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.5">E6 · BARRIDO NO ACEPTADO — BANDA PROPIA, NO E4</text>
+    <text x="24" y="52" fill="#6E7681" font-size="11">skip.reason = shape-gate-block · el guardrail estructural rechazo la cobertura declarada</text>
+
+    <g transform="translate(24, 70)">
+      <rect width="1096" height="112" rx="8" fill="#2B1D46" stroke="#8957E5" stroke-width="1.5"/>
+      <!-- Simbolo propio de E6: circulo INCOMPLETO (arco solido + arco punteado) con puntos
+           suspensivos. No reutiliza la cruz de E4: E4 es falla de carga, E6 es barrido a medias. -->
+      <path d="M34 20 A14 14 0 1 1 21.88 41" fill="none" stroke="#BC8CFF" stroke-width="2" stroke-linecap="round"/>
+      <path d="M21.88 41 A14 14 0 0 1 34 20" fill="none" stroke="#BC8CFF" stroke-width="2"
+            stroke-linecap="round" stroke-dasharray="2.5 3.5" opacity="0.65"/>
+      <circle cx="28" cy="34" r="1.7" fill="#BC8CFF"/>
+      <circle cx="34" cy="34" r="1.7" fill="#BC8CFF"/>
+      <circle cx="40" cy="34" r="1.7" fill="#BC8CFF" opacity="0.35"/>
+      <text x="62" y="30" fill="#D2B7FF" font-size="13" font-weight="700">BARRIDO VISUAL NO ACEPTADO</text>
+      <text x="62" y="48" fill="#D2B7FF" font-size="13" font-weight="700">la cobertura declarada esta incompleta</text>
+      <text x="62" y="70" fill="#C9D1D9" font-size="11.5">El contrato se leyo correctamente. Lo que no se acepto es el barrido: faltan secciones sin declarar como verificadas ni como no verificadas.</text>
+      <text x="62" y="88" fill="#C9D1D9" font-size="11.5">Esto NO es una falla tecnica de carga y NO significa «sin desvios»: el inventario podria estar incompleto.</text>
+      <text x="62" y="104" fill="#8B949E" font-size="10.5" font-family="ui-monospace, 'Cascadia Code', Consolas, monospace">reason=coverage-incomplete · missing=[C, D] · accion: re-ejecutar QA visual con barrido completo antes de rebotar</text>
+    </g>
+  </g>
+
+  <!-- =================== E3b · PASADA INDETERMINADA =================== -->
+  <g transform="translate(48, 456)">
+    <rect width="1144" height="184" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="184" rx="2" fill="#D29922"/>
+    <text x="24" y="30" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.5">E3b · PASADA INDETERMINADA — VARIANTE DE E3, COPY DISTINTO</text>
+    <text x="24" y="52" fill="#6E7681" font-size="11">skip.reason = rev-unknown · el reporte no recibio la pasada actual, asi que no hay contra que comparar</text>
+
+    <g transform="translate(24, 70)">
+      <rect width="1096" height="96" rx="8" fill="#3A2D0B" stroke="#7D5E10" stroke-width="1.5"/>
+      <circle cx="34" cy="30" r="14" fill="none" stroke="#D29922" stroke-width="2"/>
+      <text x="34" y="36" fill="#D29922" font-size="17" font-weight="700" text-anchor="middle">?</text>
+      <text x="62" y="28" fill="#E3B341" font-size="13" font-weight="700">EVIDENCIA VISUAL NO ATRIBUIBLE A ESTA PASADA</text>
+      <text x="62" y="50" fill="#C9D1D9" font-size="11.5">No se pudo determinar a que pasada corresponde la evidencia. No se afirma que sea vieja: se afirma que no se sabe.</text>
+      <text x="62" y="68" fill="#C9D1D9" font-size="11.5">El inventario no se muestra por precaucion. Esto NO significa «sin desvios».</text>
+      <text x="62" y="86" fill="#8B949E" font-size="10.5" font-family="ui-monospace, 'Cascadia Code', Consolas, monospace">contrato.rev=3 · pasada actual=(no informada) · accion: el emisor debe pasar la pasada actual al reporte</text>
+    </g>
+  </g>
+
+  <!-- =================== E2p · APROBADO CON COBERTURA =================== -->
+  <g transform="translate(48, 660)">
+    <rect width="1144" height="214" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="214" rx="2" fill="#3FB950"/>
+    <text x="24" y="30" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.5">E2p · VEREDICTO APROBADO — LA COBERTURA VIAJA EN EL SKIP</text>
+    <text x="24" y="52" fill="#6E7681" font-size="11">skip.reason = verdict-approved · el contrato no se entrega al render, pero la cobertura si debe llegar: es la linea base de la proxima pasada</text>
+
+    <g transform="translate(24, 70)">
+      <rect width="1096" height="126" rx="8" fill="#0F3D26" stroke="#196C2E" stroke-width="1.5"/>
+      <circle cx="34" cy="32" r="14" fill="none" stroke="#3FB950" stroke-width="2"/>
+      <path d="M27 32 l5 5 l10 -11" fill="none" stroke="#3FB950" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="62" y="30" fill="#56D364" font-size="13" font-weight="700">COBERTURA VISUAL DECLARADA · SIN DESVIOS EN ESTA PASADA</text>
+      <text x="62" y="50" fill="#C9D1D9" font-size="11.5">Se muestran las secciones verificadas porque son la linea base para tipificar regresiones en la pasada siguiente. No se muestra inventario.</text>
+
+      <g transform="translate(62, 62)">
+        <rect width="152" height="26" rx="13" fill="#0D2F1C" stroke="#196C2E" stroke-width="1"/>
+        <text x="14" y="17" fill="#56D364" font-size="11" font-weight="600">A · VERIFICADA</text>
+        <rect x="164" width="152" height="26" rx="13" fill="#0D2F1C" stroke="#196C2E" stroke-width="1"/>
+        <text x="178" y="17" fill="#56D364" font-size="11" font-weight="600">B · VERIFICADA</text>
+        <rect x="328" width="152" height="26" rx="13" fill="#0D2F1C" stroke="#196C2E" stroke-width="1"/>
+        <text x="342" y="17" fill="#56D364" font-size="11" font-weight="600">C · VERIFICADA</text>
+        <rect x="492" width="420" height="26" rx="13" fill="#3A2D0B" stroke="#7D5E10" stroke-width="1"/>
+        <text x="506" y="17" fill="#E3B341" font-size="11" font-weight="600">D · NO VERIFICADA · estado no alcanzable sin datos de negocio</text>
+      </g>
+      <text x="62" y="116" fill="#8B949E" font-size="10.5" font-family="ui-monospace, 'Cascadia Code', Consolas, monospace">3 de 4 secciones verificadas · el badge VISUAL MISMATCH nunca aparece en este estado</text>
+    </g>
+  </g>
+
+  <!-- =================== TIPIFICACION DE REGRESION =================== -->
+  <g transform="translate(48, 894)">
+    <rect width="1144" height="256" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="256" rx="2" fill="#BC8CFF"/>
+    <text x="24" y="30" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.5">TIPIFICACION DE REGRESION — TRES ESTADOS, NO DOS</text>
+    <text x="24" y="52" fill="#6E7681" font-size="11">La regresion se deriva del store de cobertura. Ausencia de chip hoy significa dos cosas distintas y se ven igual.</text>
+
+    <g transform="translate(24, 70)">
+      <rect width="1096" height="72" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="18" y="26" fill="#C9D1D9" font-size="12" font-weight="700">Hallazgo · Seccion A · «A3 nunca se pinta en rojo»</text>
+      <g transform="translate(18, 38)">
+        <rect width="118" height="24" rx="12" fill="#3B1F1B" stroke="#8B1A14" stroke-width="1"/>
+        <text x="59" y="16" fill="#FF9C94" font-size="10.5" font-weight="700" text-anchor="middle">IMPACTO: ALTO</text>
+        <rect x="130" width="106" height="24" rx="12" fill="#0D2438" stroke="#1F4A75" stroke-width="1"/>
+        <text x="183" y="16" fill="#79C0FF" font-size="10.5" font-weight="700" text-anchor="middle">SECCION: A</text>
+        <rect x="248" width="290" height="24" rx="12" fill="#2B2140" stroke="#4C3A76" stroke-width="1"/>
+        <text x="262" y="16" fill="#BC8CFF" font-size="10.5" font-weight="700">REGRESION · verificada sin hallazgos en rev 2</text>
+      </g>
+    </g>
+
+    <g transform="translate(24, 152)">
+      <rect width="538" height="84" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="18" y="24" fill="#8B949E" font-size="10.5" font-weight="700" letter-spacing="1">CASO 2 · HAY LINEA BASE Y NO ES REGRESION</text>
+      <g transform="translate(18, 34)">
+        <rect width="330" height="24" rx="12" fill="#21262D" stroke="#484F58" stroke-width="1"/>
+        <text x="14" y="16" fill="#C9D1D9" font-size="10.5" font-weight="700">NO ES REGRESION · seccion no verificada en rev 2</text>
+      </g>
+      <text x="18" y="76" fill="#6E7681" font-size="10.5">Hallazgo tardio por barrido incompleto, no defecto nuevo del codigo.</text>
+    </g>
+
+    <g transform="translate(586, 152)">
+      <rect width="534" height="84" rx="8" fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+      <text x="18" y="24" fill="#8B949E" font-size="10.5" font-weight="700" letter-spacing="1">CASO 3 · NO HAY LINEA BASE — NO SE PUEDE TIPIFICAR</text>
+      <g transform="translate(18, 34)">
+        <rect width="330" height="24" rx="12" fill="url(#hatch)" stroke="#484F58" stroke-width="1"/>
+        <text x="14" y="16" fill="#C9D1D9" font-size="10.5" font-weight="700">SIN LINEA BASE · no hay pasada previa registrada</text>
+      </g>
+      <text x="18" y="76" fill="#6E7681" font-size="10.5">Prohibido mostrarlo igual que el caso 2: seria afirmar algo que no se verifico.</text>
+    </g>
+  </g>
+
+  <!-- =================== PLACEHOLDER DE IMAGEN CON MOTIVO =================== -->
+  <g transform="translate(48, 1170)">
+    <rect width="1144" height="252" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="5" height="252" rx="2" fill="#F85149"/>
+    <text x="24" y="30" fill="#8B949E" font-size="11" font-weight="700" letter-spacing="1.5">IMAGEN NO RESOLUBLE — EL PLACEHOLDER DECLARA EL MOTIVO</text>
+    <text x="24" y="52" fill="#6E7681" font-size="11">Con imagenes por referencia este camino deja de ser excepcional. El placeholder actual dice «no disponible» y no dice por que.</text>
+
+    <g transform="translate(24, 68)">
+      <rect width="536" height="166" rx="8" fill="#0D1117" stroke="#196C2E" stroke-width="1.5"/>
+      <text x="16" y="26" fill="#C9D1D9" font-size="11.5" font-weight="700">MOCKUP ESPERADO</text>
+      <rect x="404" y="12" width="118" height="20" rx="10" fill="#0D2F1C" stroke="#196C2E" stroke-width="1"/>
+      <text x="463" y="26" fill="#56D364" font-size="10" font-weight="700" text-anchor="middle">baseline · v1</text>
+      <text x="16" y="44" fill="#6E7681" font-size="10.5">adjunto en definicion · UX</text>
+      <rect x="16" y="56" width="506" height="94" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+      <rect x="150" y="76" width="238" height="54" rx="4" fill="#21262D"/>
+      <text x="269" y="108" fill="#484F58" font-size="11" text-anchor="middle">render del mockup</text>
+    </g>
+
+    <g transform="translate(584, 68)">
+      <rect width="536" height="166" rx="8" fill="#0D1117" stroke="#8B1A14" stroke-width="1.5"/>
+      <text x="16" y="26" fill="#C9D1D9" font-size="11.5" font-weight="700">ENTREGA ACTUAL</text>
+      <rect x="422" y="12" width="100" height="20" rx="10" fill="#3B1F1B" stroke="#8B1A14" stroke-width="1"/>
+      <text x="472" y="26" fill="#FF9C94" font-size="10" font-weight="700" text-anchor="middle">sin captura</text>
+      <text x="16" y="44" fill="#6E7681" font-size="10.5">captura QA · pipeline</text>
+      <rect x="16" y="56" width="506" height="94" rx="6" fill="#1C1416" stroke="#8B1A14" stroke-width="1" stroke-dasharray="6 4"/>
+      <circle cx="52" cy="86" r="13" fill="none" stroke="#F85149" stroke-width="2"/>
+      <path d="M46 80 l12 12 M58 80 l-12 12" stroke="#F85149" stroke-width="2" stroke-linecap="round"/>
+      <text x="78" y="84" fill="#FF9C94" font-size="12" font-weight="700">CAPTURA DE LA ENTREGA NO DISPONIBLE</text>
+      <text x="78" y="102" fill="#C9D1D9" font-size="10.5">Esto NO significa que la entrega coincida con el mockup: la imagen no se pudo leer.</text>
+      <text x="34" y="132" fill="#8B949E" font-size="10" font-family="ui-monospace, 'Cascadia Code', Consolas, monospace">motivo: archivo ausente en el directorio de evidencia del issue</text>
+    </g>
+  </g>
+
+  <!-- =================== FOOTER =================== -->
+  <g transform="translate(48, 1442)">
+    <rect width="1144" height="82" rx="10" fill="#0D274D" stroke="#1F4A75" stroke-width="1"/>
+    <text x="24" y="30" fill="#79C0FF" font-size="12" font-weight="700">REGLA RECTORA · ninguna razon por la que algo no se muestre puede leerse como «no hubo desvios»</text>
+    <text x="24" y="52" fill="#C9D1D9" font-size="11">Cada banda y cada chip lleva simbolo o textura ademas del color, etiqueta textual y motivo objetivable: se distingue en escala de grises y en impresion monocroma.</text>
+    <text x="24" y="70" fill="#8B949E" font-size="11">Continua el mockup 48 (bloque con contrato valido) y el mockup 49 (supresiones E1 a E5). Los tres son la especificacion del bloque visual de #5708.</text>
+  </g>
+
+</svg>

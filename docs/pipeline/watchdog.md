@@ -126,16 +126,44 @@ mata**, registra la discrepancia. Tras el kill, respawnea con el mismo
 
 ## 3. Umbral de kill (anti falso positivo)
 
-`config.yaml → watchdog.pulpo_liveness_kill_seconds` (default **90s**).
+`config.yaml → watchdog.pulpo_liveness_kill_seconds` (default **270s**).
 
 **Desacoplado del display.** `/salud` usa "esperado < 30s" sólo para *mostrar*
 salud; 30s == 1 `poll_interval` del Pulpo, y un ciclo lento (precheck de red,
-brazo pesado) podría rozarlo sin ser zombi. El umbral de *kill* es holgado:
-`max(90, 3×poll_interval)`. Esto, junto con el guard de `last-restart.json < 90s`
-y la auditoría de cada kill, evita **restart-storms** (SEC-3).
+brazo pesado) podría rozarlo sin ser zombi.
+
+**El umbral NO se deriva de `poll_interval`.** Se dimensiona contra la duración
+REAL de un ciclo del Pulpo, que con la ola actual está muy por encima del poll.
+Lo midió el incidente del **2026-08-11** (~11:00–14:00): con `180s` el watchdog
+mató y relanzó al Pulpo **77 veces** (una cada ~6 min) sin que hubiera un cuelgue
+real — el ciclo simplemente tardaba más que el umbral. Cada reinicio se llevaba
+puesta la cola de comandos de Telegram, así que el Commander quedó sin responder
+~4 h. Medición posterior sobre `.pipeline/logs/pulpo-liveness.log`:
+
+| `killSeconds` | Resultado                                      |
+|---------------|------------------------------------------------|
+| `180`         | 77 × `decision=kill` el 2026-08-11             |
+| `270`         | 0 × `decision=kill` en 68 ciclos               |
+
+Máximo `hbAgeMs` observado en un Pulpo sano: **244993 ms (245 s)**. El margen
+contra el techo de 270 s es de ~25 s (**~9%**): el valor vigente *persiste* la
+mitigación medida, pero **no** resuelve el dimensionamiento del colchón — eso se
+rediseña en **#5821**. Si volvés a ver kills sin cuelgue real, es ese issue y no
+este valor.
+
+El guard de `last-restart.json < 90s` y la auditoría de cada kill son lo que
+evita **restart-storms** (SEC-3). Son un mecanismo distinto de este umbral: su
+ventana de 90 s no se mueve junto con `pulpo_liveness_kill_seconds`.
 
 - Override por env: `PULPO_LIVENESS_KILL_SECONDS` (entero positivo).
 - Valor inválido → cae al default. **Nunca** degrada a "nunca stale" (SEC-2).
+- **Invariante:** `watchdog.pulpo_liveness_kill_seconds` (`config.yaml`) y
+  `DEFAULT_KILL_SECONDS` (`lib/pulpo-liveness.js`) **se mueven juntos**. El
+  default no es sólo un camino de emergencia: se aplica por vía normal cuando el
+  bloque `watchdog:` falta (caso D-4 de #5172) o la clave está ausente/inválida.
+  Si se desalinean hacia abajo, perder el bloque de config degrada a un umbral
+  **más agresivo** que el vigente y reabre el bucle de muerte en silencio. Al
+  subir uno, subir el otro.
 
 ### Semáforo recomendado en `/salud` (UX, CA-5)
 
@@ -162,6 +190,107 @@ de proceso (SEC-5).
 
 ---
 
+## 4.bis Restart selectivo de servicios con código viejo (#5646)
+
+### El problema
+
+El watchdog hace `git fetch origin main` + `git reset --hard FETCH_HEAD` en **dos**
+caminos: antes de respawnear un Pulpo zombi, y antes del loop de servicios caídos.
+Ese reset actualiza el código **en disco de todos los servicios**, pero el
+watchdog sólo relanza los que estaban caídos. Los que siguen vivos quedan con el
+código anterior en el `require.cache` de Node — *código viejo*.
+
+Eso rompe a los servicios que releen datos de disco en caliente pero validan con
+código cacheado. El caso confirmado (dos incidentes en dos días) es el dashboard:
+
+- `.pipeline/config.yaml` se relee en cada validación (`reload: true`).
+- `.pipeline/lib/config-schema.js` quedó congelado desde el arranque del proceso.
+- Un merge que agrega una sección **a los dos archivos a la vez** deja el disco
+  coherente, pero el proceso valida **config nueva contra schema viejo** →
+  `clave no permitida: '<seccion>'` → fail-closed → la ola pierde todos los estados.
+
+El fail-closed **no es el defecto**: es un control funcionando. El defecto es la
+deriva entre código en memoria y datos en disco.
+
+### El diseño: marcar y ejecutar están separados
+
+- **Los emisores de reset sólo MARCAN.** `watchdog.ps1` (sus dos resets),
+  `restart.js:syncWithMain()` y el endpoint `POST /api/ops/restart-operativo`
+  computan qué componentes quedaron con código viejo y lo anotan en
+  `.pipeline/stale-services.json`.
+- **El watchdog es el ÚNICO EJECUTOR** del restart de servicios stale. Ya corre
+  cada 2 min, ya tiene el contrato de spawn correcto, y es externo al dashboard
+  (que no puede matarse a sí mismo). No existe un relanzador genérico que acepte
+  paths o command lines.
+- **La marca persiste hasta que el restart se confirma.** Si el relanzamiento
+  falla, el componente sigue pendiente el ciclo siguiente.
+
+### Mapeo diff → componente (estático y conservador)
+
+| Path del diff                | Componentes afectados |
+|------------------------------|-----------------------|
+| `.pipeline/lib/**`           | todos                 |
+| `.pipeline/config.yaml`      | todos                 |
+| `.pipeline/<script propio>`  | sólo ese componente   |
+| cualquier otra cosa          | ninguno               |
+
+Nada de grafo de imports: ningún proceso puede inspeccionar el `require.cache`
+de otro, así que cualquier inferencia más fina sería adivinanza. Ante duda
+(SHA previo ausente, corrupto o no-hexadecimal; `git diff` que falla) el helper
+devuelve `unknown: true` con **todos** los componentes — nunca la lista vacía.
+
+### Registro canónico de componentes (9)
+
+Es la **unión** de `restart.js:COMPONENTS` (8, con `dashboard`, sin
+`outbox-drain`) y `dashboard.js:COMPONENTS` (8, con `outbox-drain`, sin
+`dashboard`). Vive en `lib/stale-services.js` y `watchdog.ps1:$ScriptMap` lo
+replica; hay un test que falla si divergen — un componente marcado stale sin
+entrada en el mapa del ejecutor sería un fail-open silencioso.
+
+`restart.js` limpia los pendientes **sólo de lo que `launchAll()` relanzó de
+verdad** (lista derivada del retorno, no de una constante duplicada). Por eso
+`outbox-drain` queda pendiente a propósito: lo relanza el watchdog.
+
+### Cotas y guardas
+
+- `last-selective-restart.json`, ventana **90 s** (molde de `last-restart.json`).
+- Máximo **4 componentes por ronda**; el resto queda pendiente para el ciclo
+  siguiente. Casi todo merge del pipeline toca `.pipeline/lib/**`, así que
+  reiniciar varios servicios varias veces por día es el camino feliz, no un
+  incidente: no hay notificación al operador en ese caso.
+- Un componente que **no está corriendo** no se "reinicia": no tiene código
+  viejo en memoria y este bloque no levanta servicios apagados. Se le baja el
+  pendiente y listo.
+- El endpoint HTTP tiene además una **cota agregada** (4 por minuto, en
+  `lib/ops-restart-handler.js:makeAggregateLimiter`): el rate-limiter existente
+  es por *target*, así que con N componentes N targets distintos pasaban la misma
+  ráfaga. El conjunto se computa **server-side**; una lista de componentes en el
+  body del request se ignora.
+
+### Cómo se lee en el log
+
+```
+restart selectivo: dashboard reiniciado — cambio en .pipeline/lib/config-schema.js (PID 1234)
+restart selectivo: sin componentes afectados por el reset
+```
+
+Causa antes del efecto, nombre del componente **como aparece en el panel**
+(`svc-drive`, no `servicio-drive.js`), **un** path (el que motivó el restart, no
+el diff entero). El caso "no reinicié nada" también deja línea: sin ella, el log
+silencioso es indistinguible de un watchdog que no corrió.
+
+Los paths salen del contenido del commit, así que se sanitizan antes de tocar el
+log: `git diff --name-only -z`, strip de CR/LF y secuencias ANSI, truncado a 120
+chars. Un path con salto de línea embebido no puede falsificar líneas.
+
+### Fuera de alcance (rechazar en review)
+
+Relajar `config-schema.js` a "ignorar claves desconocidas", degradar el
+fail-closed del dashboard, o hot-reloadear el require-cache del schema. El bug es
+la frescura del código; ahí es donde pega el fix.
+
+---
+
 ## 5. Archivos involucrados
 
 | Archivo                              | Rol                                                |
@@ -173,6 +302,10 @@ de proceso (SEC-5).
 | `.pipeline/config.yaml`              | `watchdog.pulpo_liveness_kill_seconds`.            |
 | `.pipeline/test/pulpo-liveness.test.js` | Tests `node --test` de la decisión y el runner. |
 | `lib/commander-deterministic.js`     | Read-side de `/salud` (lee `tick.timestamp`).      |
+| `.pipeline/lib/stale-services.js`    | #5646 — registro canónico, mapeo diff→componente, marcado/limpieza y CLI del restart selectivo. |
+| `.pipeline/stale-services.json`      | #5646 — pendientes de relanzar (estado runtime, no versionado). |
+| `.pipeline/last-selective-restart.json` | #5646 — guard de ronda del restart selectivo (90 s). |
+| `.pipeline/lib/stale-services.test.js` | #5646 — tests `node --test` del helper y de los contratos del watchdog/endpoint. |
 
 ---
 
@@ -190,6 +323,16 @@ tail -f .pipeline/logs/pulpo-liveness.log
 
 # Kills de zombi registrados por el watchdog (ts, pid, lag)
 grep "pulpo-liveness" .pipeline/logs/watchdog.log
+
+# #5646 — ¿Qué servicios quedaron con código viejo y todavía no se relanzaron?
+cat .pipeline/stale-services.json
+node .pipeline/lib/stale-services.js --json
+
+# #5646 — Historia de restarts selectivos (qué componente y qué path lo motivó)
+grep "restart selectivo" .pipeline/logs/watchdog.log
+
+# #5646 — ¿El dashboard cayó en fail-closed por config nueva vs schema viejo?
+grep "CONFIG INVÁLIDA" .pipeline/logs/dashboard.log
 ```
 
 ### Generalización pendiente
