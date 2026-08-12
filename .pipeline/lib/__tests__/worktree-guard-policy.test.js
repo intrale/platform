@@ -645,3 +645,112 @@ test('#5421 — emails VÁLIDOS de cualquier largo: el truncado no puede partir 
         assert.ok(q.includes(email), `largo ${len}: el email debe seguir visible`);
     }
 });
+
+// ---- CA-12 end-to-end: paridad del MENSAJE ENTREGADO -------------------------
+//
+// Los tests de arriba pinean el CONTRIBUYENTE (la `question` no aporta ni un
+// backtick). Éstos pinean el RESULTADO: el texto final que sale del renderer,
+// que es lo que Telegram parsea y lo que decide si la alerta llega o se pierde
+// con HTTP 400.
+//
+// La distinción importa porque el modo de falla del ciclo 6 no vivía en
+// `buildOperatorQuestion` sino en la COMPOSICIÓN: el renderer cortaba la
+// question por posición (`slice(0,280)` en el highlight, `slice(0,160)` en el
+// listado) y partía al medio un code span que el propio wording había abierto.
+// Un test que sólo mira la question no puede ver esa clase de bug: hace falta
+// atravesar el renderer. Cubrimos los DOS caminos porque tienen cortes
+// distintos, y el del listado es el que rompía incluso con el email benigno
+// (una escalada real podía silenciar la alerta de OTRO issue).
+const { buildBlockedSummaryMarkdown, buildBlockedSummaryPlain } = require('../human-block');
+
+/** Arma la question del wording de configuración para un email dado. */
+function questionDe(email) {
+    return buildOperatorQuestion({
+        issue: 5421,
+        reasonStr: 'branch-origin-unverified:agent/5421-*',
+        branchOriginVerified: false,
+        unverifiedAuthors: [email],
+    });
+}
+
+/** Email de forma 100% válida y EXACTAMENTE `len` caracteres. */
+function emailDeLargo(len) {
+    const local = 'a'.repeat(Math.min(64, Math.floor(len / 2)));
+    return `${local}@${'b'.repeat(len - local.length - 1 - 4)}.com`;
+}
+
+test('CA-12 — el mensaje ENTREGADO queda con paridad PAR por el camino del HIGHLIGHT', () => {
+    // Largos que en el ciclo 6 rompían la paridad de la alerta destacada.
+    for (const len of [100, 129, 254]) {
+        const email = emailDeLargo(len);
+        assert.equal(email.length, len);
+        const msg = buildBlockedSummaryMarkdown({
+            blocked: [],
+            highlight: {
+                issue: 5421, skill: 'pipeline-dev', question: questionDe(email),
+                reason: 'Fase verificacion: rama irresoluble.',
+            },
+        });
+        assert.equal(
+            contarBackticks(msg) % 2, 0,
+            `largo ${len}: paridad IMPAR en el highlight ⇒ Telegram 400 ⇒ alerta perdida`,
+        );
+    }
+});
+
+test('CA-12 — el mensaje ENTREGADO queda con paridad PAR por el camino del LISTADO', () => {
+    // El listado corta en 160, más agresivo que el highlight: es el camino que
+    // rompía con MÁS largos (11 de 15 en el barrido del ciclo 6).
+    for (const len of [100, 129, 254]) {
+        const email = emailDeLargo(len);
+        const msg = buildBlockedSummaryMarkdown({
+            blocked: [{
+                issue: 5421, skill: 'pipeline-dev', phase: 'verificacion',
+                age_hours: 2, question: questionDe(email),
+            }],
+            highlight: null,
+        });
+        assert.equal(
+            contarBackticks(msg) % 2, 0,
+            `largo ${len}: paridad IMPAR en el listado ⇒ Telegram 400 ⇒ alerta perdida`,
+        );
+    }
+});
+
+test('CA-12 — el control benigno de CA-8 queda PAR también por el camino del LISTADO', () => {
+    // Regresión directa del ciclo 6: `backend-dev-agent@intrale` daba 7
+    // backticks (IMPAR) al listarse con `slice(160)`. No hacía falta atacante —
+    // cualquier escalada real por committer fuera de allowlist silenciaba la
+    // alerta, que podía ser la de otro issue.
+    const msg = buildBlockedSummaryMarkdown({
+        blocked: [{
+            issue: 5421, skill: 'pipeline-dev', phase: 'verificacion',
+            age_hours: 2, question: questionDe(EMAIL_BENIGNO),
+        }],
+        highlight: null,
+    });
+    assert.equal(contarBackticks(msg) % 2, 0, 'el control benigno no puede romper la paridad');
+});
+
+test('CA-12 — el renderer PLANO (el que realmente se envía) no emite un solo backtick', () => {
+    // Éste es el camino de producción: todos los callers de `pulpo.js` mandan
+    // `buildBlockedSummaryPlain` con `{ plain: true }`, así que el payload va
+    // SIN `parse_mode`. Sin dialecto que parsear no hay paridad que romper —
+    // es el kill-switch de la clase entera de bugs, no sólo de esta variante.
+    for (const email of [EMAIL_BENIGNO, EMAIL_PHISHING, EMAIL_SILENCIADOR, emailDeLargo(129)]) {
+        const q = questionDe(email);
+        const conHighlight = buildBlockedSummaryPlain({
+            blocked: [], highlight: { issue: 5421, skill: 'pipeline-dev', question: q },
+        });
+        const conListado = buildBlockedSummaryPlain({
+            blocked: [{
+                issue: 5421, skill: 'pipeline-dev', phase: 'verificacion',
+                age_hours: 2, question: q,
+            }],
+            highlight: null,
+        });
+        assert.equal(contarBackticks(conHighlight), 0, `highlight plano con backticks para ${email}`);
+        assert.equal(contarBackticks(conListado), 0, `listado plano con backticks para ${email}`);
+        assert.equal(tieneLinkClickeable(conListado), false, `link clickeable entregado para ${email}`);
+    }
+});

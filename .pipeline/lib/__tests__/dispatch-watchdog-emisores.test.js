@@ -114,12 +114,18 @@ test('B5: el realce del banner sigue vivo aunque el aviso lo emita el otro módu
 // Estos tests validan el DROPFILE ENCOLADO contra la resolución real del
 // servicio.
 
-const SVC_TELEGRAM = path.join(__dirname, '..', '..', 'servicio-telegram.js');
 const { escapeMarkdownLegacy } = require('../config-schema');
 
-/** Resolución de parse_mode del servicio, tal como la hace `servicio-telegram`. */
+/**
+ * Resolución de parse_mode del servicio. Se delega en la función REAL de
+ * `servicio-telegram` (pura y exportada) en vez de reimplementarla acá: una
+ * copia de la lógica en el test se desincroniza en silencio del source, que es
+ * justo lo que este bloque quiere impedir.
+ */
+const { resolveOutboundParseMode } = require('../../servicio-telegram');
+
 function parseModeEfectivo(dropfilePayload) {
-    return dropfilePayload.parse_mode || 'Markdown';
+    return resolveOutboundParseMode(dropfilePayload);
 }
 
 /**
@@ -137,15 +143,29 @@ function rompeMarkdownLegacy(text) {
 }
 
 test('B2: el servicio parsea como Markdown aunque el dropfile omita parse_mode', () => {
-    // La premisa que invalidaba el fix anterior, verificada contra el source real
-    // del servicio (no contra una copia de la lógica en el test).
-    const src = fs.readFileSync(SVC_TELEGRAM, 'utf8');
-    assert.ok(
-        /const\s+parseMode\s*=\s*data\.parse_mode\s*\|\|\s*'Markdown'/.test(src),
-        'servicio-telegram resuelve el parse_mode con `|| Markdown`: omitirlo NO desactiva el parseo',
-    );
-    // Y por lo tanto el dropfile "plano" viaja como Markdown:
+    // La premisa que invalidaba el fix anterior, verificada contra la función
+    // REAL del servicio. Sigue vigente: OMITIR `parse_mode` no desactiva el
+    // parseo — el default histórico lo reinyecta como 'Markdown'. Por eso el
+    // fix de este issue (escapar antes de encolar) sigue siendo necesario.
     assert.equal(parseModeEfectivo({ text: 'hola' }), 'Markdown');
+    assert.equal(parseModeEfectivo({ text: 'hola', parse_mode: 'MarkdownV2' }), 'MarkdownV2');
+});
+
+test('B2: la ausencia de parse_mode NO equivale a texto plano; `plain:true` sí (#5421)', () => {
+    // Complemento del test de arriba, y la razón por la que este bloque dejó de
+    // mirar el source con un regex: #5421 extrajo la resolución a
+    // `resolveOutboundParseMode` y agregó una vía EXPLÍCITA para el texto plano.
+    // El regex pineaba la forma del código, no la conducta, y se rompió con el
+    // refactor aunque la premisa de #5519 seguía intacta.
+    //
+    // Las dos cosas conviven y no se pisan:
+    //   - omitir `parse_mode`  ⇒ 'Markdown'  (premisa de #5519, arriba)
+    //   - declarar `plain:true` ⇒ null       (vía de #5421 para avisos críticos)
+    assert.equal(parseModeEfectivo({ text: 'hola', plain: true }), null);
+    // `plain` gana sobre un `parse_mode` explícito: es una declaración, no un default.
+    assert.equal(parseModeEfectivo({ text: 'hola', plain: true, parse_mode: 'Markdown' }), null);
+    // Sólo el booleano `true` cuenta (default cerrado: nada de valores truthy sueltos).
+    assert.equal(parseModeEfectivo({ text: 'hola', plain: 'si' }), 'Markdown');
 });
 
 test('B2: el aviso con detalle redactado se entrega escapado y no muere en fallido/', () => {
