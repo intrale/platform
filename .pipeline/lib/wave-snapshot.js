@@ -26,6 +26,8 @@
 'use strict';
 
 const { computeIssueEta, computeLaneEmptyEta } = require('./eta');
+// #5629 — Fuente ÚNICA del estado "Entregado". No re-derivar la regla acá.
+const deliveryStatus = require('./delivery-status');
 
 // Lifecycle completo si el issue pasa por definicion + desarrollo.
 // Replicado localmente para evitar acoplamiento con config.yaml — coincide con
@@ -253,14 +255,38 @@ function buildWaveSnapshot(opts) {
             ? Math.round(((faseIdx + 1) / denominador) * 100)
             : 0;
 
-        // Detección de cierre por presencia de archivo en `entrega/procesado`
-        // (todas las fases dev terminadas) o por label `closed`.
-        const finalFaseEntries = (data.fases || {})['desarrollo/entrega'] || [];
-        const hasEntregaProcesada = finalFaseEntries.some(
-            (e) => e.estado === 'procesado' && e.resultado === 'aprobado',
-        );
-        const isClosed = isClosedFromLabel || hasEntregaProcesada;
-        if (isClosed) pct = 100;
+        // #5629 — Cierre derivado del helper ÚNICO (`lib/delivery-status.js`),
+        // compartido con `dashboard-routes` y con el payload que consume la
+        // ventana de Pipeline. Antes acá vivía una derivación propia:
+        //
+        //     const hasEntregaProcesada = finalFaseEntries.some(
+        //         (e) => e.estado === 'procesado' && e.resultado === 'aprobado');
+        //     const isClosed = isClosedFromLabel || hasEntregaProcesada;
+        //
+        // Esa regla daba por entregado cualquier marker `aprobado` de la fase de
+        // entrega, y `delivery.js` escribía `aprobado` incluso con el merge
+        // frenado por gate QA o `needs-human` (#5220, #5244: issues ABIERTOS,
+        // PRs sin mergear, pintados 100% en la columna Entregado). Además el
+        // marker sobrevive a los rebotes, así que el cierre histórico le ganaba
+        // a la `faseActual` viva y el issue se dibujaba entregado con un agente
+        // trabajándolo (#5242).
+        //
+        // La regla nueva sólo acepta CLOSED en GitHub (#4099/#4732) o un
+        // `delivery_merge_sha` estructurado. Ver R1-R4 en delivery-status.js.
+        const deliveryState = deliveryStatus.deriveDeliveryState({
+            id, closedSet, matrixEntry: data,
+        });
+        const isClosed = deliveryState.delivered;
+        if (isClosed) {
+            pct = 100;
+        } else if (pct >= 100) {
+            // #5629 — El 100% queda RESERVADO a la entrega verificada. Un issue
+            // parado en la última fase del lifecycle (`desarrollo/entrega`)
+            // llegaba a 100% por la fórmula de avance por fase, y así se pintaba
+            // "terminado" con el PR sin mergear y el issue abierto — el síntoma
+            // exacto de #5220/#5244. Todo hecho menos el merge es 99%, no 100%.
+            pct = 99;
+        }
 
         const labels = Array.isArray(data.labels) ? data.labels : [];
         const labelNames = new Set(labels.map((l) => (typeof l === 'string' ? l : (l && l.name) || '')).filter(Boolean));

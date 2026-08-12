@@ -12,7 +12,7 @@ El Pulpo te pasa la variable `QA_MODE` que determina qué tipo de QA ejecutar:
 |---------|-----------|-------------------|
 | `android` | QA E2E con emulador, APK, video narrado | Sí |
 | `api` | QA-API con requests HTTP contra backend | **No** |
-| `structural` | Validación mínima (lint, estructura, docs) | **No** |
+| `structural` | Validación sin APK/backend; puede incluir render visual del propio pipeline | **No** |
 
 **Variables de entorno que recibís del Pulpo:**
 - `QA_MODE` — `android`, `api`, o `structural`
@@ -82,6 +82,24 @@ tenés que producir evidencia visual con audio narrado:
 
 Si no podés generar esa evidencia, rechazá con motivo accionable; no apruebes
 como `structural`.
+
+La misma prohibición aplica si el issue o el diff referencia un mockup versionado
+bajo `.pipeline/assets/mockups/`, o si los criterios exigen inspeccionar el PDF de
+`rejection-report.js`. `structural` significa **sin emulador**, no "sin render".
+En esos casos ejecutá QA visual de infraestructura en el worktree:
+
+1. Generá `qa/evidence/<issue>/visual-comparison.json` con el render real y el
+   mockup, cobertura completa y todos los desvíos, siguiendo el contrato de
+   `docs/pipeline/visual-validation.md §4.7`.
+2. Ejecutá el flujo real que genera el rejection report con `--visual-json`; no
+   alcanza con invocar `renderHtml()` o afirmar que los tests unitarios pasan.
+3. Conservá el PDF real en `.pipeline/logs/rejection-<issue>-qa.pdf` y una captura
+   lado a lado en `qa/evidence/<issue>/screenshot-pdf-vs-mockup.png`.
+4. Inspeccioná ambos artefactos y registrá sus paths y hashes SHA-256 en el YAML.
+
+Si falta cualquiera de esos artefactos, el veredicto es rechazado por evidencia
+incompleta. No se debe pedir otro `QA_MODE`: este camino visual sigue sin requerir
+APK, backend ni emulador.
 
 ---
 

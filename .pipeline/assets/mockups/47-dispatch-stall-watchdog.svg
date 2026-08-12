@@ -1,0 +1,443 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 47 — Watchdog de inactividad de despacho (#5400)
+  =============================================================================
+  Superficies UX de la historia:
+
+    A. Dashboard  — los CUATRO estados que el operador tiene que poder
+       distinguir de un vistazo (CA-6):
+         A1 silencio esperado    (cola vacia, sin pausa)          -> calmo
+         A2 silencio explicado   (causa declarada bajo umbral)    -> ambar
+         A3 silencio sospechoso  (causa vieja + elegibles)        -> rojo
+         A4 watchdog OFF / degradado                              -> ambar
+
+    B. Telegram   — los TRES mensajes del episodio (CA-1, CA-2, CA-4, CA-5):
+         B1 primer aviso de inactividad
+         B2 re-aviso con backoff
+         B3 aviso de recuperacion
+
+    C. Reglas de copy + contrastes WCAG AA + mapa de CAs.
+
+  Restricciones aplicadas:
+    - Tokens reales de `.pipeline/assets/design-tokens.css`.
+    - Iconos nuevos: ic-dispatch-stalled, ic-watchdog-off, ic-dispatch-resumed
+      (definidos abajo en <defs>, replicados en `icons/sprite.svg`).
+    - Copy PLAIN-TEXT-FIRST: ningun mensaje depende de negritas ni de
+      `parse_mode` para entenderse (SEC-1 / #5173). La jerarquia es estructural.
+    - Autoria SIEMPRE rotulada como declarada y sin verificar (SEC-2).
+      Prohibido defaultear a una persona.
+    - El watchdog es read-only: el copy nunca promete destrabe (SEC-3).
+    - Dual-encoding: icono + texto en cada estado, nunca solo color.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1660"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+
+  <defs>
+    <!-- ================= ICONOS NUEVOS (van tambien al sprite) ============= -->
+
+    <!-- ic-dispatch-stalled: la flecha de despacho choca contra un muro.
+         Estado "no sale trabajo". Refuerza por FORMA el ambar/rojo. -->
+    <symbol id="ic-dispatch-stalled" viewBox="0 0 24 24">
+      <path d="M3.5 12 H12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M9.2 8.8 L12.4 12 L9.2 15.2" fill="none" stroke="currentColor" stroke-width="1.75"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M17.5 4.8 V19.2" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+      <path d="M14.6 7.6 V16.4" fill="none" stroke="currentColor" stroke-width="1.4"
+            stroke-linecap="round" opacity="0.45"/>
+    </symbol>
+
+    <!-- ic-watchdog-off: escudo tachado. El control de vigilancia apagado.
+         La diagonal es la que comunica OFF, no el color. -->
+    <symbol id="ic-watchdog-off" viewBox="0 0 24 24">
+      <path d="M12 3 L19.4 5.9 V12 C19.4 16.4 16.2 19.5 12 21 C7.8 19.5 4.6 16.4 4.6 12 V5.9 Z"
+            fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M4.6 4.4 L19.4 19.6" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round"/>
+    </symbol>
+
+    <!-- ic-dispatch-resumed: la misma flecha, ya sin muro, con visto.
+         Espejo visual de ic-dispatch-stalled: cierra el episodio. -->
+    <symbol id="ic-dispatch-resumed" viewBox="0 0 24 24">
+      <path d="M3.5 14.5 H14.2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M11.4 11.3 L14.6 14.5 L11.4 17.7" fill="none" stroke="currentColor" stroke-width="1.75"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M14.6 7.2 L17.1 9.7 L21.4 5" fill="none" stroke="currentColor" stroke-width="1.75"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <!-- ic-health-ok (replica del sprite, para que el mockup sea autonomo) -->
+    <symbol id="ic-health-ok" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.75"/>
+      <path d="M8 12.2 L10.8 15 L16 9.4" fill="none" stroke="currentColor" stroke-width="1.85"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <!-- ic-warn (replica) -->
+    <symbol id="ic-warn" viewBox="0 0 24 24">
+      <path d="M12 3.6 L21 19.2 H3 Z" fill="none" stroke="currentColor" stroke-width="1.75"
+            stroke-linejoin="round"/>
+      <path d="M12 9.4 V13.6" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"/>
+      <circle cx="12" cy="16.4" r="1.05" fill="currentColor"/>
+    </symbol>
+
+    <!-- Avatar del bot de Telegram -->
+    <symbol id="m-bot-avatar" viewBox="0 0 40 40">
+      <circle cx="20" cy="20" r="20" fill="#1F6FEB"/>
+      <path d="M20 10 L11 26 L29 26 Z" fill="none" stroke="#FFFFFF" stroke-width="1.6"
+            stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="M20 16 L16.4 22.4 L23.6 22.4 Z" fill="#FFFFFF"/>
+    </symbol>
+  </defs>
+
+  <!-- Fondo: surface-0 -->
+  <rect width="1440" height="1660" fill="#0D1117"/>
+
+  <!-- ======================================================================
+       HEADER
+       ====================================================================== -->
+  <g transform="translate(40,44)">
+    <text x="0" y="0" fill="#E6EDF3" font-size="22" font-weight="700">
+      Watchdog de inactividad de despacho — sistema visual y de copy
+    </text>
+    <text x="0" y="26" fill="#8B949E" font-size="13">
+      #5400 · UX fase criterios · tokens de design-tokens.css · iconos de icons/sprite.svg · contrastes verificados WCAG AA
+    </text>
+    <rect x="0" y="42" width="1360" height="1" fill="#21262D"/>
+  </g>
+
+  <!-- ======================================================================
+       SECCION A — DASHBOARD: los cuatro estados del silencio
+       ====================================================================== -->
+  <g transform="translate(40,124)">
+    <text x="0" y="0" fill="#B1BAC4" font-size="13" font-weight="600" letter-spacing="0.08em">
+      A · DASHBOARD — CUATRO SILENCIOS, CUATRO TRATAMIENTOS (CA-6)
+    </text>
+    <text x="0" y="20" fill="#8B949E" font-size="12">
+      Regla: el operador tiene que saber en cual de los cuatro esta SIN LEER. Forma e icono primero, color despues.
+    </text>
+  </g>
+
+  <!-- ================ A1 · silencio esperado (calmo) ====================== -->
+  <g transform="translate(40,168)">
+    <text x="0" y="0" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">
+      A1 · SILENCIO ESPERADO — cola sin trabajo elegible, sin pausa · NO alerta, NO banner (CA-3)
+    </text>
+    <rect x="0" y="12" width="1360" height="74" rx="8" fill="#161B22" stroke="#21262D" stroke-width="1"/>
+
+    <!-- chip watchdog permanente -->
+    <g transform="translate(18,32)">
+      <rect x="0" y="0" width="168" height="30" rx="15" fill="rgba(63,185,80,0.14)" stroke="#196C2E" stroke-width="1"/>
+      <g transform="translate(9,5)" color="#3FB950">
+        <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-health-ok"/></svg>
+      </g>
+      <text x="36" y="20" fill="#3FB950" font-size="13" font-weight="600">watchdog activo</text>
+    </g>
+
+    <text x="204" y="46" fill="#B1BAC4" font-size="14">Cola sin trabajo elegible</text>
+    <text x="204" y="66" fill="#8B949E" font-size="12">
+      último despacho hace 22 min · 0 issues elegibles · nada que despachar no es una falla
+    </text>
+
+    <text x="1000" y="46" fill="#8B949E" font-size="12">Telegram:</text>
+    <text x="1064" y="46" fill="#6E7681" font-size="12" font-style="italic">silencio (correcto)</text>
+    <text x="1000" y="66" fill="#8B949E" font-size="12">Color de atención:</text>
+    <text x="1128" y="66" fill="#6E7681" font-size="12" font-style="italic">ninguno</text>
+  </g>
+
+  <!-- ================ A2 · silencio explicado (ambar) ===================== -->
+  <g transform="translate(40,278)">
+    <text x="0" y="0" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">
+      A2 · SILENCIO EXPLICADO — causa declarada, todavía por debajo del umbral · banner sí, Telegram no
+    </text>
+    <rect x="0" y="12" width="1360" height="88" rx="8" fill="rgba(210,153,34,0.10)" stroke="#D29922" stroke-width="1"/>
+    <rect x="0" y="12" width="4" height="88" rx="2" fill="#D29922"/>
+
+    <g transform="translate(20,32)" color="#E3B341">
+      <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-dispatch-stalled"/></svg>
+    </g>
+    <text x="56" y="44" fill="#E3B341" font-size="15" font-weight="700">
+      Cola sin despachar hace 12 min — Pausa total del pipeline
+    </text>
+    <text x="56" y="66" fill="#B1BAC4" font-size="12.5">
+      autoría declarada: leitolarreta (sin verificar, desde 13:12) · 7 issues elegibles esperando
+    </text>
+    <text x="56" y="86" fill="#8B949E" font-size="12">
+      aviso a Telegram si sigue así en 33 min (umbral 45 min) · el watchdog mira, no destraba
+    </text>
+
+    <g transform="translate(1174,32)">
+      <rect x="0" y="0" width="168" height="30" rx="15" fill="rgba(63,185,80,0.14)" stroke="#196C2E" stroke-width="1"/>
+      <g transform="translate(9,5)" color="#3FB950">
+        <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-health-ok"/></svg>
+      </g>
+      <text x="36" y="20" fill="#3FB950" font-size="13" font-weight="600">watchdog activo</text>
+    </g>
+  </g>
+
+  <!-- ================ A3 · silencio sospechoso (rojo) ===================== -->
+  <g transform="translate(40,402)">
+    <text x="0" y="0" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">
+      A3 · SILENCIO SOSPECHOSO — causa vieja + elegibles esperando · banner rojo + Telegram (CA-1, CA-2)
+    </text>
+    <rect x="0" y="12" width="1360" height="88" rx="8" fill="rgba(248,81,73,0.10)" stroke="#F85149" stroke-width="1"/>
+    <rect x="0" y="12" width="4" height="88" rx="2" fill="#F85149"/>
+
+    <g transform="translate(20,32)" color="#FF7B72">
+      <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-dispatch-stalled"/></svg>
+    </g>
+    <text x="56" y="44" fill="#FF7B72" font-size="15" font-weight="700">
+      Sin despachar hace 1 h 33 min — Pausa total del pipeline (halt_humano)
+    </text>
+    <text x="56" y="66" fill="#B1BAC4" font-size="12.5">
+      autoría declarada: leitolarreta (sin verificar, desde 13:12) · 7 issues elegibles esperando · último despacho 13:09 · #5388 pipeline-dev
+    </text>
+    <text x="56" y="86" fill="#8B949E" font-size="12">
+      avisado a Telegram 14:45 · aviso 1 del episodio 4f2a · próximo aviso no antes de 15:30
+    </text>
+
+    <g transform="translate(1174,32)">
+      <rect x="0" y="0" width="168" height="30" rx="15" fill="rgba(63,185,80,0.14)" stroke="#196C2E" stroke-width="1"/>
+      <g transform="translate(9,5)" color="#3FB950">
+        <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-health-ok"/></svg>
+      </g>
+      <text x="36" y="20" fill="#3FB950" font-size="13" font-weight="600">watchdog activo</text>
+    </g>
+  </g>
+
+  <!-- ================ A4 · watchdog OFF / degradado ======================= -->
+  <g transform="translate(40,526)">
+    <text x="0" y="0" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.06em">
+      A4 · EL META-BUG — el control apagado tiene que VERSE. La ausencia de badge nunca es señal de salud.
+    </text>
+
+    <!-- OFF -->
+    <rect x="0" y="12" width="668" height="96" rx="8" fill="rgba(210,153,34,0.10)" stroke="#D29922" stroke-width="1"/>
+    <g transform="translate(18,30)" color="#E3B341">
+      <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-watchdog-off"/></svg>
+    </g>
+    <text x="54" y="42" fill="#E3B341" font-size="14.5" font-weight="700">watchdog OFF — nadie vigila el despacho</text>
+    <text x="54" y="64" fill="#B1BAC4" font-size="12.5">config.yaml → wave_watchdog.enabled: false</text>
+    <text x="54" y="84" fill="#8B949E" font-size="12">Un pipeline detenido no va a avisar. El chip se muestra siempre, no sólo si hay problema.</text>
+    <text x="54" y="102" fill="#8B949E" font-size="12">Mismo tratamiento si el slice no trae el dato: “watchdog: sin datos”, nunca omitido.</text>
+
+    <!-- DEGRADADO -->
+    <rect x="692" y="12" width="668" height="96" rx="8" fill="rgba(210,153,34,0.10)" stroke="#D29922" stroke-width="1"/>
+    <g transform="translate(710,30)" color="#E3B341">
+      <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-warn"/></svg>
+    </g>
+    <text x="746" y="42" fill="#E3B341" font-size="14.5" font-weight="700">watchdog degradado — el aviso no salió</text>
+    <text x="746" y="64" fill="#B1BAC4" font-size="12.5">último drop archivado en servicios/telegram/fallido/ · 14:02</text>
+    <text x="746" y="84" fill="#8B949E" font-size="12">El watchdog detectó, pero el operador no se enteró: eso es una falla, y se muestra.</text>
+    <text x="746" y="102" fill="#8B949E" font-size="12">Todo fallo de emisión queda además en el audit-log.</text>
+  </g>
+
+  <!-- ======================================================================
+       SECCION B — TELEGRAM: el episodio completo
+       ====================================================================== -->
+  <g transform="translate(40,672)">
+    <text x="0" y="0" fill="#B1BAC4" font-size="13" font-weight="600" letter-spacing="0.08em">
+      B · TELEGRAM — UN EPISODIO, UNA CONVERSACIÓN (CA-1, CA-2, CA-4, CA-5)
+    </text>
+    <text x="0" y="20" fill="#8B949E" font-size="12">
+      Texto plano, sin negritas ni `parse_mode`: la jerarquía es estructural. Si el mensaje necesitara markup para entenderse, un título
+      con guión bajo lo tumbaría entero (SEC-1) y la alerta de “pipeline parado” nunca llegaría.
+    </text>
+  </g>
+
+  <!-- Fondo de la ventana de chat -->
+  <rect x="40" y="710" width="1360" height="596" rx="10" fill="#17212B" stroke="#21262D" stroke-width="1"/>
+  <text x="60" y="736" fill="#7D8E98" font-size="12">Telegram · bot @intrale_bot · grupo “Intrale Pipeline V3”</text>
+
+  <!-- ================ B1 · primer aviso ================================== -->
+  <g transform="translate(60,750)">
+    <svg width="34" height="34"><use href="#m-bot-avatar"/></svg>
+  </g>
+  <text x="104" y="764" fill="#00D6FF" font-size="12" font-weight="600">Intrale Pipeline</text>
+  <text x="204" y="764" fill="#5D7689" font-size="11">bot · 14:45</text>
+
+  <g transform="translate(104,772)">
+    <rect width="640" height="256" rx="10" fill="#212D3B" stroke="#F85149" stroke-width="1.5"/>
+    <rect width="4" height="256" rx="2" fill="#F85149"/>
+    <text x="18" y="30" fill="#FF7B72" font-size="14.5" font-weight="700">⏸ Pipeline sin despachar hace 1 h 33 min</text>
+
+    <g font-size="12.5">
+      <text x="18" y="58" fill="#7D8E98">Causa:</text>
+      <text x="76" y="58" fill="#E6EDF3">pausa total del pipeline (halt_humano)</text>
+
+      <text x="18" y="80" fill="#7D8E98">Autoría declarada:</text>
+      <text x="146" y="80" fill="#E6EDF3">leitolarreta</text>
+      <text x="232" y="80" fill="#B9C5CF">— sin verificar · desde 13:12</text>
+
+      <text x="18" y="102" fill="#7D8E98">Esperando:</text>
+      <text x="98" y="102" fill="#E6EDF3">7 issues elegibles</text>
+
+      <g font-family="'SF Mono', Consolas, monospace" font-size="11.5">
+        <text x="34" y="124" fill="#B9C5CF">#5399 · Restart preserva la pausa y le cambia la autoría</text>
+        <text x="34" y="142" fill="#B9C5CF">#5401 · Banner de causa sin tiempo desde el último despacho</text>
+        <text x="34" y="160" fill="#B9C5CF">#5402 · Dedupe de alertas del mismo episodio</text>
+        <text x="34" y="178" fill="#7D8E98">… y 4 más</text>
+      </g>
+
+      <text x="18" y="202" fill="#7D8E98">Último despacho:</text>
+      <text x="132" y="202" fill="#E6EDF3">13:09 · #5388 · pipeline-dev · fase dev</text>
+    </g>
+
+    <rect x="18" y="212" width="604" height="1" fill="#2F3E4E"/>
+    <text x="18" y="232" fill="#B9C5CF" font-size="12">El watchdog mira y avisa: no levanta la pausa ni toca la cola. Destrabar es tuyo.</text>
+    <text x="18" y="248" fill="#7D8E98" font-size="11">episodio 4f2a · aviso 1</text>
+  </g>
+
+  <!-- ================ B2 · re-aviso con backoff ========================== -->
+  <g transform="translate(60,1048)">
+    <svg width="34" height="34"><use href="#m-bot-avatar"/></svg>
+  </g>
+  <text x="104" y="1062" fill="#00D6FF" font-size="12" font-weight="600">Intrale Pipeline</text>
+  <text x="204" y="1062" fill="#5D7689" font-size="11">bot · 16:17</text>
+
+  <g transform="translate(104,1070)">
+    <rect width="640" height="118" rx="10" fill="#212D3B" stroke="#D29922" stroke-width="1.5"/>
+    <rect width="4" height="118" rx="2" fill="#D29922"/>
+    <text x="18" y="28" fill="#E3B341" font-size="14" font-weight="700">⏸ Sigue sin despachar — hace 3 h 05 min</text>
+    <g font-size="12.5">
+      <text x="18" y="54" fill="#7D8E98">Causa:</text>
+      <text x="76" y="54" fill="#E6EDF3">la misma, sin cambios desde 13:12 (halt_humano)</text>
+      <text x="18" y="76" fill="#7D8E98">Esperando:</text>
+      <text x="98" y="76" fill="#E6EDF3">9 issues elegibles</text>
+      <text x="214" y="76" fill="#B9C5CF">(+2 desde el primer aviso)</text>
+    </g>
+    <text x="18" y="100" fill="#B9C5CF" font-size="11.5">Próximo aviso: no antes de las 19:17 — el intervalo se duplica mientras siga igual.</text>
+    <text x="18" y="114" fill="#7D8E98" font-size="11">episodio 4f2a · aviso 2</text>
+  </g>
+
+  <!-- ================ B3 · recuperacion ================================== -->
+  <g transform="translate(60,1208)">
+    <svg width="34" height="34"><use href="#m-bot-avatar"/></svg>
+  </g>
+  <text x="104" y="1222" fill="#00D6FF" font-size="12" font-weight="600">Intrale Pipeline</text>
+  <text x="204" y="1222" fill="#5D7689" font-size="11">bot · 16:53</text>
+
+  <g transform="translate(104,1230)">
+    <rect width="640" height="66" rx="10" fill="#212D3B" stroke="#3FB950" stroke-width="1.5"/>
+    <rect width="4" height="66" rx="2" fill="#3FB950"/>
+    <text x="18" y="26" fill="#3FB950" font-size="14" font-weight="700">▶ Despacho reanudado — estuvo detenido 3 h 41 min</text>
+    <text x="18" y="46" fill="#E6EDF3" font-size="12.5">Se destrabó: pausa levantada · primer despacho #5399 · pipeline-dev · fase dev</text>
+    <text x="18" y="60" fill="#7D8E98" font-size="11">episodio 4f2a · cerrado · 2 avisos emitidos · 9 elegibles al reanudar</text>
+  </g>
+
+  <!-- Panel lateral: reglas de copy -->
+  <g transform="translate(776,772)">
+    <rect width="604" height="524" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <text x="20" y="30" fill="#E6EDF3" font-size="14" font-weight="700">Reglas de copy — inquebrantables</text>
+
+    <g font-size="12">
+      <text x="20" y="60" fill="#58A6FF" font-weight="600">1 · La primera línea alcanza</text>
+      <text x="20" y="78" fill="#B1BAC4">Síntoma + duración. El operador decide si abre el celular</text>
+      <text x="20" y="94" fill="#B1BAC4">ahora o después sin leer el resto.</text>
+
+      <text x="20" y="122" fill="#58A6FF" font-weight="600">2 · Cuatro preguntas, siempre en el mismo orden</text>
+      <text x="20" y="140" fill="#B1BAC4">qué pasa · desde cuándo · por qué · qué hago.</text>
+
+      <text x="20" y="168" fill="#58A6FF" font-weight="600">3 · Causa en criollo, enum entre paréntesis</text>
+      <text x="20" y="186" fill="#B1BAC4">“pausa parcial — la allowlist quedó vacía (modo_ola)”.</text>
+      <text x="20" y="202" fill="#B1BAC4">Nunca el enum solo: a las 3 AM modo_ola no dice nada.</text>
+
+      <text x="20" y="230" fill="#58A6FF" font-weight="600">4 · La autoría se rotula, nunca se infiere</text>
+      <text x="20" y="248" fill="#B1BAC4">con dato → “autoría declarada: X — sin verificar”</text>
+      <text x="20" y="264" fill="#B1BAC4">sin dato → “autoría no registrada”</text>
+      <text x="20" y="280" fill="#B1BAC4">causa sin autoría (ventana, concurrencia) → línea omitida</text>
+
+      <text x="20" y="308" fill="#58A6FF" font-weight="600">5 · Duración en dos unidades, siempre</text>
+      <text x="20" y="326" fill="#B1BAC4">“1 h 33 min”, no “hace 1 h” ni “93 min” ni “5580000 ms”.</text>
+      <text x="20" y="342" fill="#B1BAC4">Si el issue nació de 1h33, el aviso no puede redondear a 1 h.</text>
+
+      <text x="20" y="370" fill="#58A6FF" font-weight="600">6 · Nunca prometer lo que no hace</text>
+      <text x="20" y="388" fill="#B1BAC4">Prohibido “destrabando”, “reintentando solo”, “se resuelve</text>
+      <text x="20" y="404" fill="#B1BAC4">automáticamente”. El watchdog es read-only por contrato.</text>
+
+      <text x="20" y="432" fill="#58A6FF" font-weight="600">7 · Un episodio, una conversación</text>
+      <text x="20" y="450" fill="#B1BAC4">Mismo id corto de episodio en aviso, re-aviso y recuperación.</text>
+      <text x="20" y="466" fill="#B1BAC4">Dos mensajes distintos por el mismo hecho queman la confianza</text>
+      <text x="20" y="482" fill="#B1BAC4">en los dos.</text>
+
+      <text x="20" y="506" fill="#F85149" font-weight="600">8 · Sin markdown: el formato no puede ser requisito de lectura</text>
+    </g>
+  </g>
+
+  <!-- ======================================================================
+       SECCION C — CONTRASTES + MAPA DE CAs
+       ====================================================================== -->
+  <g transform="translate(40,1338)">
+    <text x="0" y="0" fill="#B1BAC4" font-size="13" font-weight="600" letter-spacing="0.08em">
+      C · ACCESIBILIDAD Y TRAZABILIDAD
+    </text>
+  </g>
+
+  <!-- Tabla WCAG -->
+  <g transform="translate(40,1358)">
+    <rect width="668" height="262" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <text x="20" y="28" fill="#E6EDF3" font-size="13" font-weight="700">Contrastes verificados (WCAG AA ≥ 4.5:1)</text>
+
+    <g font-size="11.5" font-family="'SF Mono', Consolas, monospace">
+      <text x="20" y="52" fill="#7D8E98">token / fondo</text>
+      <text x="470" y="52" fill="#7D8E98">ratio</text>
+      <text x="560" y="52" fill="#7D8E98">nivel</text>
+      <rect x="20" y="60" width="628" height="1" fill="#21262D"/>
+
+      <text x="20" y="80"  fill="#E6EDF3">text-primary #E6EDF3 / surface-1</text>
+      <text x="470" y="80" fill="#B1BAC4">14.64</text><text x="560" y="80" fill="#3FB950">AAA</text>
+
+      <text x="20" y="100" fill="#B1BAC4">text-secondary #B1BAC4 / surface-1</text>
+      <text x="470" y="100" fill="#B1BAC4">8.81</text><text x="560" y="100" fill="#3FB950">AAA</text>
+
+      <text x="20" y="120" fill="#8B949E">text-dim #8B949E / surface-1</text>
+      <text x="470" y="120" fill="#B1BAC4">5.62</text><text x="560" y="120" fill="#3FB950">AA</text>
+
+      <text x="20" y="140" fill="#E3B341">warning #E3B341 / surface-1 (título ámbar)</text>
+      <text x="470" y="140" fill="#B1BAC4">8.89</text><text x="560" y="140" fill="#3FB950">AAA</text>
+
+      <text x="20" y="160" fill="#FF7B72">danger #FF7B72 / surface-1 (título rojo)</text>
+      <text x="470" y="160" fill="#B1BAC4">6.86</text><text x="560" y="160" fill="#3FB950">AA</text>
+
+      <text x="20" y="180" fill="#3FB950">success #3FB950 / surface-1 (chip activo)</text>
+      <text x="470" y="180" fill="#B1BAC4">6.81</text><text x="560" y="180" fill="#3FB950">AA</text>
+
+      <text x="20" y="200" fill="#E6EDF3">text-primary / burbuja Telegram #212D3B</text>
+      <text x="470" y="200" fill="#B1BAC4">11.82</text><text x="560" y="200" fill="#3FB950">AAA</text>
+
+      <text x="20" y="220" fill="#B9C5CF">secundario #B9C5CF / burbuja Telegram</text>
+      <text x="470" y="220" fill="#B1BAC4">7.11</text><text x="560" y="220" fill="#3FB950">AAA</text>
+
+      <text x="20" y="240" fill="#7D8E98">terciario #7D8E98 / burbuja Telegram</text>
+      <text x="470" y="240" fill="#B1BAC4">4.54</text><text x="560" y="240" fill="#D29922">AA (límite)</text>
+    </g>
+  </g>
+
+  <!-- Mapa de CAs -->
+  <g transform="translate(732,1358)">
+    <rect width="668" height="262" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+    <text x="20" y="28" fill="#E6EDF3" font-size="13" font-weight="700">Dónde se cumple cada CA en este sistema visual</text>
+
+    <g font-size="11.5">
+      <text x="20" y="54"  fill="#8B949E">CA-1 aviso con causa, autoría y elegibles</text>
+      <text x="380" y="54"  fill="#B1BAC4">B1</text>
+      <text x="20" y="76"  fill="#8B949E">CA-2 causa concreta, no genérica</text>
+      <text x="380" y="76"  fill="#B1BAC4">B1 · regla de copy 3</text>
+      <text x="20" y="98"  fill="#8B949E">CA-3 cola vacía no alerta</text>
+      <text x="380" y="98"  fill="#B1BAC4">A1 (calmo, sin banner)</text>
+      <text x="20" y="120" fill="#8B949E">CA-4 backoff verificable</text>
+      <text x="380" y="120" fill="#B1BAC4">B2 · “próximo aviso no antes de …”</text>
+      <text x="20" y="142" fill="#8B949E">CA-5 recuperación con duración total</text>
+      <text x="380" y="142" fill="#B1BAC4">B3</text>
+      <text x="20" y="164" fill="#8B949E">CA-6 dashboard: tiempo, causa y estado</text>
+      <text x="380" y="164" fill="#B1BAC4">A1–A4 (chip permanente)</text>
+      <text x="20" y="186" fill="#8B949E">SEC-1 escape / sin parse_mode</text>
+      <text x="380" y="186" fill="#B1BAC4">regla de copy 8 (diseño plain-first)</text>
+      <text x="20" y="208" fill="#8B949E">SEC-2 autoría no repudiable</text>
+      <text x="380" y="208" fill="#B1BAC4">regla de copy 4</text>
+      <text x="20" y="230" fill="#8B949E">SEC-3 read-only</text>
+      <text x="380" y="230" fill="#B1BAC4">regla de copy 6</text>
+      <text x="20" y="252" fill="#8B949E">SEC-5 control apagado visible</text>
+      <text x="380" y="252" fill="#B1BAC4">A4</text>
+    </g>
+  </g>
+</svg>

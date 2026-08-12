@@ -43,6 +43,11 @@ const path = require('path');
 // compartido del sprite.svg). Misma dependencia que home.js / matriz.js.
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #5689 (#5337 CA-6) — discriminador ÚNICO "recomendación vs bloqueo real".
+// Reemplaza el discriminador inline de `classifyCta()`, que era la última copia
+// desincronizable (human-block.js y servicio-reconciler.js ya lo consumen).
+const { isRecommendationIssue } = require('../../lib/recommendation-labels');
+
 // #3953 (EP8-H0) — Wrapper único de fetchJson (CA-2) + framework de modal de
 // confirmación con preview (CA-3) que reemplaza confirm() nativo. nhCsrfHeaders
 // se centraliza en FETCH_CLIENT_JS (R2).
@@ -223,10 +228,27 @@ function isJsonRecoverable(raw) {
 function classifyCta(b) {
     const reason = (b && b.reason != null) ? String(b.reason) : '';
     const question = (b && b.question != null) ? String(b.question) : '';
-    const labels = Array.isArray(b && b.labels) ? b.labels.map(x => String(x).toLowerCase()) : [];
+    // #5689 — labels CRUDOS (sin `.toLowerCase()`): `isRecommendationIssue()` es
+    // case-sensitive y normaliza tanto `['a','b']` como `[{name}]`. El
+    // `.toLowerCase()` del inline anterior funcionaba por accidente (los labels
+    // canónicos ya son lowercase); pasarle los crudos hace la equivalencia
+    // explícita en vez de accidental (GURU-4b).
+    const rawLabels = Array.isArray(b && b.labels) ? b.labels : [];
     const txt = reason + ' ' + question;
 
-    if (labels.includes('tipo:recomendacion') || labels.includes('recommendation') || CTA_APPROVE_RE.test(txt)) {
+    // #5689 CA-C2 — discriminador único + `CTA_APPROVE_RE` OR-eado como
+    // fallback, por DECISIÓN DE PRODUCTO del PO: es un heurístico de UI sin
+    // impacto de seguridad (elige el VERBO del CTA, no la visibilidad — el
+    // filtrado de visibilidad vive en `human-block.js:367`), y perderlo degrada
+    // la vista de triaje.
+    //
+    // Delta esperado y CORRECTO, no regresión (R9): el issue con
+    // `recommendation:approved` deja de clasificar como "Aprobar" por label
+    // (ya fue aprobado: no hay nada que aprobar) y cae al fallback de texto.
+    //
+    // Se dropea el label bare `recommendation` del inline anterior: verificado
+    // que no existe en el repo (`gh label list --limit 300`), impacto vivo cero.
+    if (isRecommendationIssue(rawLabels) || CTA_APPROVE_RE.test(txt)) {
         return { verb: 'Aprobar', kind: 'approve', glyph: '✓', cls: 'v3-bloqueados-cta-approve' };
     }
     if (CTA_RETRY_RE.test(txt) || isJsonRecoverable(reason) || isJsonRecoverable(question)) {

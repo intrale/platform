@@ -128,6 +128,16 @@ qa/evidence/**/*.mp3
 # Re-incluir SOLO los metadatos tracked (orden importa: el ! va DESPUES del ignore — #4173)
 !qa/evidence/**/*.json
 !qa/evidence/**/.gitkeep
+# #5708 / SEC-8 · SEC-9 · CA-12 · CA-15 — excepciones a la excepción.
+# El allowlist de `.json` de arriba era un lavadero: el contrato visual
+# transportaba las capturas como `data:image/png;base64,...` adentro de un
+# `.json`, o sea el único tipo de archivo que la política deja pasar. El repo es
+# PÚBLICO y esos PNG están ignorados justamente por posible PII. Los artefactos
+# de corrida no son metadatos: no entran a git (el canal de evidencia pesada es
+# Google Drive — #4173). El `.pdf` además no estaba cubierto por ningún patrón.
+qa/evidence/**/visual-comparison.json
+qa/evidence/**/visual-coverage-rev*.json
+qa/evidence/**/*.pdf
 # SEC-3 — configs con credenciales nunca a git (defensivo, aunque no existan hoy — #4173)
 qa/scripts/telegram-config.json
 **/service-account*.json
@@ -207,7 +217,21 @@ scripts/planner-plan.json
 .pipeline/human-block-reminder-state.json
 .pipeline/human-block-reminder-state.json.*.tmp
 .pipeline/last-restart.json
+# #5646 — registro de servicios que quedaron con codigo viejo tras un
+# `reset --hard` y guard de ronda del restart selectivo. Estado runtime puro:
+# versionarlos haria que el propio reset los pise (mismo problema que waves.json).
+.pipeline/stale-services.json
+.pipeline/stale-services.json.*.tmp
+.pipeline/last-selective-restart.json
+.pipeline/last-selective-restart.json.tmp
 .pipeline/listener-offset.json
+# #5821 — Heartbeat y señal de progreso del Pulpo. Estado runtime puro, con la
+# misma razón que `stale-services.json`: versionarlos haría que el propio
+# `reset --hard` del respawn los pise. `last-progress` además se reescribe cada
+# 5s, así que commitearlo sería churn permanente y conflictos garantizados.
+.pipeline/last-tick.json
+.pipeline/last-tick.json.tmp
+.pipeline/last-progress
 .pipeline/commander-history.jsonl
 .pipeline/commander-summary.json
 .pipeline/commander-summary.json.tmp
@@ -231,6 +255,11 @@ scripts/planner-plan.json
 .pipeline/package-lock.json
 .pipeline/circuit-breaker-infra.json
 .pipeline/circuit-breaker-infra.json.tmp
+# #5723 — contador de rollbacks consecutivos. Va fuera del arbol versionado a
+# proposito: el rollback hace `git checkout <target> -- .pipeline/` y se
+# llevaria puesto el estado si estuviera trackeado.
+.pipeline/rollback-state.json
+.pipeline/rollback-state.json.tmp
 # #4900 — estado runtime del provider-quota-guard: snapshot de cuota viva y
 # marker de degradacion preventiva. Los reescribe `provider-quota-guard.js` en
 # cada boot; versionarlos produce dirty-tree perpetuo y fuga de estado operativo

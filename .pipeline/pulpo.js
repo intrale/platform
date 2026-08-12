@@ -89,6 +89,7 @@ const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
 // y en su lugar re-encola el issue a `build` con YAML limpio.
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
+const visualCoverageRecorder = require('./lib/visual-coverage-recorder');
 // #3383 — Gate visual pre-promoción build→verificacion. Default OFF
 // (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
 const visualGate = require('./lib/visual-gate');
@@ -105,6 +106,8 @@ const operatorSignature = require('./lib/operator-signature');
 // #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
 // Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
 const humanBlock = require('./lib/human-block');
+// #5835 — anexo de estado de ola para el camino LLM (tabla textual del handler).
+const waveAnnex = require('./lib/wave-annex');
 // #4708 — Alerta operacional genérica del control-plane (wave-stall watchdog).
 const { notifyTelegram: notifyTelegramFn } = require('./lib/notify-telegram');
 // #3939 — Primitivas atómicas anti-TOCTOU: claim-by-rename + reserva de slot +
@@ -116,6 +119,14 @@ const fileLock = require('./lib/file-lock');
 // del artifact `.pipeline/dispatch-cause.json` consumible por dashboard y por
 // el dead-man's switch (#4708).
 const dispatchCause = require('./lib/dispatch-cause');
+// #5400 — traducción enum de causa → `kind` del watchdog (pura, testeable).
+const dispatchCauseKind = require('./lib/dispatch-cause-kind');
+// #5400 rev-3 — brazo de RECOLECCIÓN de hechos del watchdog de despacho.
+// Vive en lib/ y con dependencias inyectadas porque era el único tramo del
+// circuito sin test, y ahí se colaron los tres bloqueantes de la review rev-2
+// (causa siempre mal nombrada, elegibles sin cruzar con la allowlist, autoría
+// de la pausa total nunca resuelta).
+const dispatchFacts = require('./lib/dispatch-facts');
 // #4693 CA-0 — fuente de verdad única del repo destino (intake multi-repo,
 // allowlist fail-closed, repo de origen propagado). Reemplaza los literales
 // `intrale/platform` hardcodeados y el intake atado al remote del cwd.
@@ -138,6 +149,9 @@ const desyncDetector = require('./lib/desync-detector');
 const legitAddTrace = require('./lib/legit-add-trace');
 // #4525 — Predicado estructural de "hijo verificable de un split del pipeline"
 const splitProvenance = require('./lib/split-provenance');
+// #5516 — Clasificador puro de hijos de split huérfanos descubiertos DESDE GitHub
+// (cubre los splits que no pasan por el hook del Commander).
+const splitOrphanReconciler = require('./lib/split-orphan-reconciler');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
@@ -529,16 +543,105 @@ configResolver.setTraceSink((linea, nivel) => {
 //   - Escritura atómica tmp+rename: el watchdog nunca lee un archivo a medio escribir.
 //   - Best-effort try/catch (CA-1.1): un fallo de FS jamás tumba el loop del Pulpo.
 const LAST_TICK_PATH = path.join(PIPELINE, 'last-tick.json');
-function writeHeartbeat() {
+function writeHeartbeat(iterationMs) {
   try {
-    const payload = JSON.stringify({ pid: process.pid, timestamp: new Date().toISOString() });
+    const payload = {
+      pid: process.pid,
+      timestamp: new Date().toISOString(),
+    };
+    // #5821 CA-1 — Duración REAL de la iteración anterior del loop.
+    // El watchdog necesita esta magnitud (no la edad del heartbeat) para
+    // dimensionar su umbral: `hbAge` es la EDAD medida en un instante arbitrario
+    // dentro del ciclo, o sea una muestra sesgada hacia abajo de la duración.
+    // Calibrar con ella subestimaría el ciclo y reproduciría el falso positivo
+    // del 2026-08-11 (77 kills en 3 h sobre un Pulpo sano).
+    // Campo OPCIONAL: el read-side lo parsea defensivo y su ausencia sólo deja
+    // el umbral en el piso configurado.
+    if (Number.isFinite(iterationMs) && iterationMs >= 0) payload.iterationMs = iterationMs;
     const tmp = LAST_TICK_PATH + '.tmp';
-    fs.writeFileSync(tmp, payload);
+    fs.writeFileSync(tmp, JSON.stringify(payload));
     fs.renameSync(tmp, LAST_TICK_PATH); // atómico en el mismo FS
   } catch (_) {
     /* fail-soft: un fallo de FS jamás tumba el loop principal (CA-1.1) */
   }
 }
+
+// #5821 CA-4 — Señal secundaria de progreso INTRA-iteración.
+//
+// El heartbeat se escribe una vez por vuelta del loop, así que cuando el loop se
+// cuelga el archivo entero deja de reescribirse: cualquier campo de "progreso"
+// que viviera DENTRO de ese payload quedaría igual de viejo que el mtime y no
+// distinguiría nada. Por eso la señal es un archivo APARTE que el Pulpo toca
+// mientras la iteración avanza. Así el watchdog puede separar "ciclo lento"
+// (heartbeat viejo + progreso fresco) de "cuelgue" (ambos viejos), y subir el
+// umbral deja de significar tolerar cuelgues reales por más tiempo.
+//
+// Sólo importa el MTIME, nunca el contenido: no hay payload que envenenar, y el
+// read-side (lib/pulpo-liveness.js) trata la señal ausente o ilegible como
+// ausente — jamás como permiso para no matar.
+//
+// POR QUÉ SE LLAMA DESDE HITOS DEL LOOP Y NO DESDE `log()`
+// --------------------------------------------------------
+// La tentación es emitirla desde `log()`, que corre cientos de veces por ciclo
+// y daría cobertura gratis. Pero `log()` también lo llaman los `setInterval`
+// de fondo y las cadenas fire-and-forget (`brazoCommander(...).catch(...)`),
+// que siguen vivas aunque el loop principal esté COLGADO. Con esa versión, la
+// señal probaría "un timer disparó", no "el loop avanzó": un Pulpo trabado con
+// un turno del Commander en vuelo se vería sano y la detección de zombi se
+// escaparía hasta el techo de `max_slow_cycle_seconds`. Justo lo que #4154 vino
+// a cerrar.
+//
+// Por eso se llama EXPLÍCITAMENTE en los hitos secuenciales del `while`: son
+// los únicos puntos que sólo se alcanzan si la iteración realmente progresó.
+// El costo es que la señal es tan granular como el paso más largo del ciclo —
+// de ahí que `pulpo_liveness_progress_stale_seconds` se dimensione como "cuánto
+// puede tardar UN paso del loop", no como "cuánto tarda el ciclo entero".
+//
+// Throttle de 5s: barato de todos modos y evita writes redundantes si dos hitos
+// caen juntos.
+const LAST_PROGRESS_PATH = path.join(PIPELINE, 'last-progress');
+const PROGRESS_THROTTLE_MS = 5000;
+let lastProgressWriteMs = 0;
+function touchProgress() {
+  try {
+    const now = Date.now();
+    if (now - lastProgressWriteMs < PROGRESS_THROTTLE_MS) return;
+    lastProgressWriteMs = now;
+    // Write de 1 byte en vez de utimes: `fs.utimesSync` falla si el archivo no
+    // existe y obligaría a un existsSync por llamada. El contenido es irrelevante.
+    fs.writeFileSync(LAST_PROGRESS_PATH, '.');
+  } catch (_) {
+    /* fail-soft: un fallo de FS jamás tumba el loop principal */
+  }
+}
+// #5400 — Estampa del último DESPACHO EFECTIVO.
+// La lógica (write atómico, allowlist de metadata, fail-soft) vive en
+// `lib/last-dispatch.js` para poder testearla; acá sólo queda el brazo.
+// Se estampa EXCLUSIVAMENTE donde consta que un agente salió de verdad — no en
+// "hubo trabajo en vuelo", que es justamente lo que enmascaraba el no-despacho.
+const lastDispatch = require('./lib/last-dispatch');
+// Write atómico compartido (una sola implementación de `tmp + rename`).
+const atomicJson = require('./lib/atomic-json');
+const STATE_DIR = path.join(PIPELINE, 'state');
+
+// #5400 (rev-1, SEC-5) — Espejo EN MEMORIA de la estampa + resultado del último
+// write. `writeLastDispatch` es fail-soft y devuelve `false` si el FS falló;
+// descartar ese valor (rev-0) hacía que el watchdog cayera al modo degradado sin
+// que nada lo dijera — un control apagado indistinguible de "todo OK", que es el
+// meta-bug de este mismo issue. Con el espejo, un fallo de FS transitorio no
+// produce alertas falsas mientras el proceso siga vivo, y el status lo reporta.
+let ultimoDespachoMemTs = 0;
+let ultimaEstampaOk = true;
+function marcarDespachoEfectivo(meta) {
+  const ahora = Date.now();
+  ultimoDespachoMemTs = ahora;
+  ultimaEstampaOk = lastDispatch.writeLastDispatch(STATE_DIR, meta, ahora); // fail-soft por contrato
+  if (!ultimaEstampaOk) {
+    log('dispatch-watchdog', 'no se pudo persistir la estampa de despacho efectivo — ' +
+      'el watchdog usa el espejo en memoria y reporta reloj degradado');
+  }
+}
+
 // Detector multi-capa del launcher de Claude Code.
 // La estructura del paquete cambió entre versiones (2.1.114 eliminó cli.js
 // y lo reemplazó con bin/claude.exe nativo + cli-wrapper.cjs fallback).
@@ -1610,66 +1713,58 @@ function listWorkFiles(dir) {
 }
 
 /**
- * #4708 — Recolecta la "causa declarada" que explica legítimamente un no-despacho
- * de la ola, para que el wave-stall watchdog NO falsa-alarme (CA-2).
+ * #4708 / #5400 — Hechos del watchdog de inactividad de DESPACHO.
  *
- * Todas las causas se computan EN VIVO por el Pulpo (no se leen de un artefacto
- * arbitrario del FS que un agente pueda spoofear — SEC-1). Cada chequeo es
- * defensivo: si tira, se ignora (fail-closed: la ausencia de causa dispara). Al
- * ser cómputo en vivo, la causa es inherentemente vigente (no requiere TTL).
+ * rev-2 tenía TODA esta recolección inline acá, sin un solo test, y describía un
+ * pipeline idealizado en vez del que corre: la causa salía siempre
+ * `partial-pause` (porque desde #5060 ése es el modo NORMAL de operación) y
+ * "trabajo elegible" contaba los 241 workfiles de `pendiente/` sin cruzarlos con
+ * la allowlist (228 de ellos backlog parkeado). rev-3 mueve el brazo entero a
+ * `lib/dispatch-facts.js`, donde las dependencias entran inyectadas y se puede
+ * testear contra un filesystem real.
  *
- * Causas reconocidas (interino hasta #4709 unifique el registro):
- *   - halt humano (.paused / .partial-pause.json)   → kind 'human-halt'
- *   - sin ola vigente que acote el dispatch (#5060) → kind 'wave-empty'
- *   - ventana de reposo / night-window              → kind 'night-window'
- *   - cuota agotada                                 → kind 'quota'
- *   - presión de recursos (ORANGE/RED)              → kind 'resource-pressure'
- *   - gate de coherencia waiting-operator (#4578)   → kind 'waiting-operator'
+ * Acá queda SÓLO el cableado: qué módulo del Pulpo satisface cada dependencia.
  *
- * @returns {{declared:true, kind:string, readable:true}|null} null = sin causa.
+ * @returns {{alcance:object, conteo:object, cause:object|null}}
  */
-function readDeclaredCauseForWave(cfgRoot, waves) {
-  const declare = (kind) => ({ declared: true, kind, readable: true });
-
-  // 1. Halt humano (pausa total o parcial declarada por el operador).
-  try {
-    const mode = partialPause.getPipelineMode().mode;
-    if (mode && mode !== 'running') return declare('human-halt');
-    // #5060 — `running` ya no es barra libre: sin allowlist no hay ola vigente
-    // y el dispatch está fail-closed. Es una espera legítima (falta promover la
-    // ola siguiente), NO una ola estancada — declararla evita que el wave-stall
-    // watchdog (#4708/#4709) alerte por algo que el operador ya controla.
-    if (mode === 'running' && !partialPause.unscopedDispatchEnabled()) {
-      return declare('wave-empty');
-    }
-  } catch { /* fail-closed */ }
-
-  // 2. Ventana de reposo / madrugada — no alertar de noche (CA-2).
-  try {
-    const nw = (cfgRoot.resource_limits || {}).night_window;
-    if (isNightWindow(Date.now(), nw)) return declare('night-window');
-  } catch { /* fail-closed */ }
-
-  // 3. Cuota agotada (primary/fallbacks sin capacidad).
-  try {
-    if (quotaExhausted.isQuotaExhausted()) return declare('quota');
-  } catch { /* fail-closed */ }
-
-  // 4. Presión de recursos: ORANGE/RED suprimen despacho legítimamente.
-  try {
-    const level = getResourcePressure(cfgRoot).level;
-    if (level === PRESSURE_LEVELS.ORANGE || level === PRESSURE_LEVELS.RED) {
-      return declare('resource-pressure');
-    }
-  } catch { /* fail-closed */ }
-
-  // 5. Gate de coherencia (#4578): ola retenida esperando al operador.
-  try {
-    if (waves.isWaveWaitingOperator()) return declare('waiting-operator');
-  } catch { /* fail-closed */ }
-
-  return null;
+function recolectarHechosDespacho(cfgRoot, waves) {
+  return dispatchFacts.recolectarHechos({
+    partialPause,
+    // Trabajo esperando: TODOS los workfiles de `pendiente/`. El cruce con la
+    // allowlist lo hace `contarElegibles` (no se filtra acá para que el módulo
+    // pueda reportar también el total y el backlog fuera de alcance).
+    listarPendientes: () => listarPendientesGlobal(cfgRoot),
+    // Issues abiertos de la ola activa. Sólo se usan si NO hay allowlist: es el
+    // desync fail-closed (la ola existe pero la allowlist no), y en ese caso el
+    // trabajo elegible se acota a la ola — nunca al backlog entero.
+    issuesOlaActiva: () => {
+      const activa = waves.getActiveWave();
+      if (!activa || !Array.isArray(activa.issues)) return [];
+      return activa.issues
+        .filter(i => i && i.status !== 'completed')
+        .map(i => i.number);
+    },
+    isNightWindow: () => isNightWindow(Date.now(), (cfgRoot.resource_limits || {}).night_window),
+    isQuotaExhausted: () => quotaExhausted.isQuotaExhausted(),
+    isResourcePressure: () => {
+      const level = getResourcePressure(cfgRoot).level;
+      return level === PRESSURE_LEVELS.ORANGE || level === PRESSURE_LEVELS.RED;
+    },
+    isWaveWaitingOperator: () => waves.isWaveWaitingOperator(),
+    // Fallback al artifact de causa declarada (#4709): cubre los gates del ciclo
+    // de despacho que no se computan en vivo acá (concurrencia llena, ventana de
+    // prioridad, cooldown, deadlock, cb-infra) sin duplicar su lógica, y unifica
+    // el vocabulario de los dos emisores (R-1). La ANOMALÍA se excluye dentro de
+    // `causeFromArtifact`: "no sé por qué no despacho" jamás silencia (SEC-1).
+    causaDesdeArtifact: () => dispatchCauseKind.causeFromArtifact(dispatchCause.readArtifact(PIPELINE)),
+  });
 }
+
+// #5400 (rev-5, secundario 6) — `readDeclaredCauseForWave` ELIMINADA: era dead
+// code (cero callers) y su comentario afirmaba que había tests que la
+// ejercitaban cuando no existía ninguno. El único consumidor real de los hechos
+// es el tick del watchdog, que llama a `recolectarHechosDespacho` y usa
+// `hechos.cause` directamente.
 
 /** Extraer issue number del nombre de archivo (ej: "1732.po" → "1732").
  *  EP5-H1 (#3938): delega en `workfile-name.js` (comportamiento legacy exacto).
@@ -3701,7 +3796,12 @@ function brazoBarrido(config) {
         // (el issue va a rebotear igual) y esperarlos produce deadlocks cuando
         // algún skill queda atascado. Incidente 2026-04-24: tester:#2505 en
         // cooldown bloqueaba el rebote de qa:#2505 que ya había rechazado.
-        const hayRechazoConfirmado = resultados.some(r => r.resultado === 'rechazado');
+        // #5641 CA-4 — se conserva la LISTA de rechazos, no sólo el booleano: el
+        // drenaje de abajo necesita saber QUIÉN disparó el fast-fail y si todos
+        // esos disparadores fueron veredictos sintetizados por el Pulpo (caída de
+        // infra) o hubo al menos un rechazo de contenido real.
+        const rechazos = resultados.filter(r => r.resultado === 'rechazado');
+        const hayRechazoConfirmado = rechazos.length > 0;
         if (!todosCompletos && !hayRechazoConfirmado) continue;
 
         // Si el rebote va a dispararse por fast-fail (todosCompletos=false pero hay rechazo),
@@ -3744,6 +3844,21 @@ function brazoBarrido(config) {
 
         if (!todosCompletos && hayRechazoConfirmado && !hayDepBlockEnRechazos) {
           const procesadoFaseActual = path.join(fasePath(pipelineName, fase), 'procesado');
+          // #5641 CA-4 — los hermanos drenados NUNCA emitieron veredicto propio, así
+          // que su `cancelado_por` no es una decisión: es una consecuencia. Para que
+          // aguas abajo se pueda distinguir "cancelado porque alguien rechazó de
+          // verdad" de "cancelado porque a un hermano se le cayó el proceso", se
+          // registra QUIÉN disparó el drenaje y si TODOS los disparadores fueron
+          // veredictos sintetizados por el Pulpo.
+          //
+          // FAIL-CLOSED (SEC-3): basta UN rechazo de contenido en la mezcla para que
+          // `cancelado_disparador_infra` quede en `false` y el hermano siga siendo
+          // ambiguo → escala a humano. El default nunca relaja el gate.
+          const disparadores = [...new Set(
+            rechazos.map(r => skillFromFile(r.file.name)).filter(Boolean),
+          )].sort();
+          const disparadorInfra = rechazos.length > 0
+            && rechazos.every(r => r.veredicto_sintetizado_por === 'pulpo');
           for (const estado of ['pendiente', 'trabajando']) {
             const dir = path.join(fasePath(pipelineName, fase), estado);
             try {
@@ -3754,13 +3869,19 @@ function brazoBarrido(config) {
                 const dst = path.join(procesadoFaseActual, f);
                 try {
                   const prev = readYamlSafe(src) || {};
-                  writeYaml(dst, { ...prev, cancelado_por: 'fast-fail-rebote', cancelado_ts: new Date().toISOString() });
+                  writeYaml(dst, {
+                    ...prev,
+                    cancelado_por: 'fast-fail-rebote',
+                    cancelado_ts: new Date().toISOString(),
+                    cancelado_disparado_por: disparadores.join(','),
+                    cancelado_disparador_infra: disparadorInfra,
+                  });
                   fs.unlinkSync(src);
                 } catch {}
               }
             } catch {}
           }
-          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown`);
+          log('barrido', `⚡ #${issue} fast-fail en ${fase} — rebote temprano, cancelados skills pendientes/en cooldown (disparado por: ${disparadores.join(',') || '?'}${disparadorInfra ? ', caída de infra' : ''})`);
         } else if (!todosCompletos && hayRechazoConfirmado && hayDepBlockEnRechazos) {
           // #3373 — skip drain. Los archivos pendiente/trabajando se quedan
           // donde están, el handler dep-block los barre a bloqueado-dependencias/
@@ -7292,6 +7413,66 @@ function countPendientesGlobal(config) {
   return n;
 }
 
+// #5400 rev-3 — Lista los pendientes globales CON su issue, no sólo el total.
+// `countPendientesGlobal` devuelve un número y por eso el watchdog no podía
+// cruzarlos con la allowlist: contaba los 228 workfiles de backlog parkeado como
+// si fueran trabajo despachable (bloqueante N2 de la review rev-2). Mismo
+// contrato barato y best-effort: jamás puede tirar.
+function listarPendientesGlobal(config) {
+  return dispatchFacts.listarPendientesFS(PIPELINE, config);
+}
+
+// #4709 — Cuenta agentes DESPACHADOS (archivos en `trabajando/`) en todas las
+// fases/pipelines. Mismo contrato que `countPendientesGlobal`: barato,
+// best-effort y jamás puede tirar.
+function countTrabajandoGlobal(config) {
+  let n = 0;
+  try {
+    for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines || {})) {
+      for (const fase of (pipelineConfig.fases || [])) {
+        const dir = path.join(fasePath(pipelineName, fase), 'trabajando');
+        try { n += listWorkFiles(dir).length; } catch { /* dir inexistente */ }
+      }
+    }
+  } catch { /* config degradada */ }
+  return n;
+}
+
+// #5400 (rev-1, B5) — Umbral de duración, LEÍDO DE UNA SOLA CLAVE.
+// `wave_watchdog.declared_cause_escalate_minutes` gobierna a la vez el aviso del
+// watchdog y el realce del banner de causa. En rev-0 el banner tenía su propio
+// valor hardcodeado, así que mover la perilla movía la mitad del comportamiento
+// que decía gobernar. Mismo clamp fail-closed [1,1440] que el resto (SEC-3).
+function escalaDuracionMs(config) {
+  try {
+    const wd = require('./lib/wave-stall-watchdog');
+    const mins = wd.parseStallMinutes(
+      ((config || {}).wave_watchdog || {}).declared_cause_escalate_minutes,
+      wd.DEFAULT_DECLARED_CAUSE_ESCALATE_MINUTES
+    );
+    return mins * 60 * 1000;
+  } catch {
+    return undefined; // el módulo aplica su propio default
+  }
+}
+
+// #5400 (rev-5, secundario 3) — Elegibles REALES esperando, cruzados contra la
+// allowlist. `countPendientesGlobal` devuelve TODOS los workfiles de
+// `pendiente/` (backlog parkeado incluido: ~241), así que usarlo como
+// `elegiblesEsperando` dejaba el gate `elegiblesEsperando > 0` de
+// `dispatch-cause.js` constante-verdadero y la escalada por duración dejaba de
+// ser aditiva. Es el mismo bloqueante que rev-3 arregló para el watchdog,
+// sobreviviendo en el emisor del banner. Fail-soft: ante cualquier fallo cae a 0
+// (fail-closed = no escalar, nunca alertar de más).
+function contarElegiblesEsperando(config) {
+  try {
+    const waves = require('./lib/waves');
+    return recolectarHechosDespacho(config, waves).conteo.elegibles;
+  } catch {
+    return 0;
+  }
+}
+
 // #4709 — Publica la causa declarada del no-despacho para una razón GLOBAL que
 // ocurre fuera del ciclo de candidatos (pausa humana `.paused`, bloqueo por
 // desync). El mainLoop no llama a `brazoLanzamiento` en esos estados, así que la
@@ -7300,17 +7481,51 @@ function countPendientesGlobal(config) {
 function publicarCausaPausa(config, causa, detalle) {
   try {
     const gates = new Map([[causa, detalle]]);
+    // #5400 — el conteo de ELEGIBLES (no el de pendientes crudos) alimenta la
+    // escalada por duración: una causa silenciosa sostenida CON trabajo
+    // despachable esperando deja de ser silenciosa.
+    const elegibles = contarElegiblesEsperando(config);
+    // #5400 (rev-11, BLOQUEANTE 2) — `hayPendientes` vuelve a medirse con
+    // `countPendientesGlobal`, como en main. Es el interruptor que decide si el
+    // artifact de causa EXISTE: `resolveCause` devuelve `null` cuando es false
+    // (`lib/dispatch-cause.js:179`) y `publish` entonces llama `clearArtifact`.
+    //
+    // Haberlo atado a `contarElegiblesEsperando` borraba `dispatch-cause.json`
+    // justo en el caso que este issue vino a cubrir: con `.paused` + allowlist
+    // podada (poda TTL / fin de ola) el conteo de elegibles sale por
+    // `fail-closed-sin-ola` con 0 aunque la cola esté llena, así que un pipeline
+    // detenido a mano se quedaba sin causa publicada y el banner caía al
+    // watchdog, que durante los primeros minutos está en
+    // `skip:declared-cause:human-halt` y se pintaba en verde. Es el incidente
+    // del 2026-08-02 con un cartel de salud encima.
+    //
+    // La escalada por duración NO pierde nada: viaja por su propio parámetro
+    // (`elegiblesEsperando`), que sigue siendo el conteo de elegibles.
+    const pendientes = countPendientesGlobal(config);
     dispatchCause.publish({
       pipelineDir: PIPELINE,
       snapshot: {
         anyLaunched: false,
-        hayPendientes: countPendientesGlobal(config) > 0,
+        hayPendientes: pendientes > 0,
         progressInFlight: false,
         gatesActivos: new Set(gates.keys()),
         detalles: Object.fromEntries(gates),
       },
       now: Date.now(),
-      alert: (m) => { try { sendTelegram(m); } catch { /* best-effort */ } },
+      // La escalada por duración sigue mirando ELEGIBLES, no pendientes crudos:
+      // una causa silenciosa sólo deja de serlo si hay trabajo despachable.
+      elegiblesEsperando: elegibles,
+      silentEscalateMs: escalaDuracionMs(config),
+      // #5400 (rev-5, B2 / SEC-1) — ESCAPE, no "texto plano". Omitir
+      // `parse_mode` NO alcanza: `servicio-telegram.js` hace
+      // `data.parse_mode || 'Markdown'`, así que el mensaje se parsea igual como
+      // Markdown legacy. Este mensaje interpola `resolved.detalle`, que pasa por
+      // la redacción de secretos y termina con `[REDACTED:...]` y `snake_case`
+      // adentro: un `[` sin link y un `_` impar dan `400 can't parse entities`,
+      // el servicio reintenta con el MISMO parse_mode y la alerta muere en
+      // `fallido/`. O sea: el aviso de "el pipeline no despacha" se auto-anula.
+      // Mismo criterio que `lib/notify-telegram.js`.
+      alert: (m) => { try { sendTelegram(configSchema.escapeMarkdownLegacy(m)); } catch { /* best-effort */ } },
       log: (m) => log('lanzamiento', m),
     });
   } catch (e) {
@@ -7345,7 +7560,16 @@ function brazoLanzamiento(config) {
           detalles: Object.fromEntries(gates),
         },
         now: Date.now(),
-        alert: (m) => { try { sendTelegram(m); } catch { /* best-effort */ } },
+        // #5400 — habilita el realce por duración del banner (display-only).
+        // Elegibles cruzados contra la allowlist, no pendientes crudos (rev-5).
+        elegiblesEsperando: contarElegiblesEsperando(config),
+        silentEscalateMs: escalaDuracionMs(config),
+        // #5400 (rev-5, B2 / SEC-1) — ESCAPE, no "texto plano". Omitir
+        // `parse_mode` NO alcanza: `servicio-telegram.js` hace
+        // `data.parse_mode || 'Markdown'`. Ver el detalle en
+        // `publicarCausaPausa`; acá emite ANOMALIA, HALT_HUMANO, CB_INFRA y
+        // DEADLOCK con `detalle` redactado interpolado.
+        alert: (m) => { try { sendTelegram(configSchema.escapeMarkdownLegacy(m)); } catch { /* best-effort */ } },
         log: (m) => log('lanzamiento', m),
       });
     } catch (e) {
@@ -7830,6 +8054,10 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     if (launched) {
       anyLaunched = true;
       _dcState.anyLaunched = true;
+      // #5400 (rev-5, B1) — acá NO se estampa el despacho efectivo. `launched`
+      // sólo significa "el slot estaba libre y `onAcquired()` no tiró": no
+      // prueba que haya salido un agente. La estampa vive en el punto del spawn
+      // real, dentro de `lanzarAgenteClaude`.
     } else if (!slotErrored) {
       // El slot se llenó dentro de la sección crítica (otro proceso ganó la
       // admisión) — reintentar en el próximo ciclo. CA observabilidad (UX).
@@ -7902,6 +8130,11 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
         lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
         // #4709 — el breaker forzó un lanzamiento: hubo despacho este ciclo.
         _dcState.anyLaunched = true;
+        // #5400 (rev-5, B1) — el lanzamiento forzado por el breaker también es
+        // despacho efectivo, pero la estampa la pone `lanzarAgenteClaude` en el
+        // punto del spawn real: si se estampara acá, un forzado que muere en
+        // alguno de sus `return` tempranos (cuota, worktree, infra) resetearía
+        // el reloj sin haber lanzado nada.
       } catch (e) {
         log('deadlock', `Error en lanzamiento forzado de ${archivo.name}: ${e.message}`);
       }
@@ -8696,6 +8929,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             log('lanzamiento', `⚠️ #${issue}: no se pudo cerrar la fase de contrato tras error: ${e2.message.slice(0, 120)}`);
           }
         });
+      // #5400 (rev-5, B1) — El ejecutor determinístico ES un despacho efectivo:
+      // el runner ya arrancó (la promesa está en vuelo) y la fase va a cerrar
+      // sola. No hay `child`, así que la estampa del spawn LLM no lo cubre; sin
+      // este punto explícito una ola íntegramente resuelta por contratos
+      // aparecería como "nunca despachó" y alertaría en falso.
+      marcarDespachoEfectivo({ issue, skill, fase, pipeline });
       return;
     }
   } catch (e) {
@@ -9428,9 +9667,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // Resolver env del child:
   //   - Flag `pipeline.env_isolation_enabled: true` → filtrado por
   //     buildChildEnv (allowlist mínima + scope del skill + provider key).
-  //   - Flag false (default rollout) → comportamiento previo: heredar TODO
-  //     `process.env`. Preserva regresión cero hasta que validemos en
-  //     producción que ningún hook/skill rompa por falta de credencial.
+  //   - Flag false (default rollout) → comportamiento previo salvo secretos
+  //     reservados, que nunca se heredan por nombre ni alias de valor.
   let childEnv;
   let envIsolationEnabled = false;
   try {
@@ -9466,7 +9704,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       throw e;
     }
   } else {
-    childEnv = { ...process.env, ...pipelineExtras };
+    // Aun durante el rollout legado, el material de firma de Telegram nunca
+    // cruza al child por nombre ni por alias con el mismo valor.
+    childEnv = buildChildEnvLib.stripReservedChildSecrets(
+      { ...process.env, ...pipelineExtras },
+      process.env,
+    );
   }
 
   // #3198 — si el dispatcher resolvió un fallback, pasamos un `resolveImpl`
@@ -9504,6 +9747,35 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     resolveImpl: launchResolveImpl,
   });
   const child = launchResult.child;
+  // #5400 (rev-5, B1) — ÚNICO punto del código donde consta que un agente salió
+  // de verdad: acá ya hay proceso hijo. Antes la estampa vivía en los call sites
+  // (`if (launched)`), pero `launched` sólo dice "el slot estaba libre y
+  // `onAcquired()` no tiró excepción": `lanzarAgenteClaude` es SÍNCRONA y tiene
+  // 8 `return` tempranos ANTES de este spawn (cuota agotada, invariante de
+  // skill, prompt faltante, workfile corrupto, stale-log, error/irrecuperable de
+  // worktree, aborto por infra) y NINGUNO lanza excepción. El caso de cuota
+  // agotada además es CÍCLICO — los candidatos vuelven a `pendiente/` y el
+  // mainLoop los reintenta cada ciclo — así que la estampa se re-escribía en
+  // cada vuelta y el reloj del watchdog nunca avanzaba: con la cuota agotada el
+  // aviso quedaba MUDO para siempre, que es exactamente el escenario que este
+  // issue viene a cerrar (CA-1/CA-2, causa `quota`).
+  //
+  // #5400 (rev-6, B1 residual) — Y no alcanza con llegar hasta acá: hay que
+  // comprobar que el spawn PRODUJO un proceso. Cuando el ejecutable no existe
+  // (`ENOENT` del launcher de Claude / del script determinístico), `spawn` NO
+  // tira sincrónicamente: devuelve un `ChildProcess` con `pid === undefined` y
+  // emite `'error'` de forma asíncrona. Sin esta guarda quedaba abierta la MISMA
+  // puerta que B1 cerró, sólo que una línea más abajo: el workfile vuelve a
+  // `pendiente/`, el mainLoop lo reintenta cada ciclo, y cada reintento
+  // re-estampaba el reloj del watchdog dejándolo mudo para siempre. La estampa
+  // se hace SÓLO con `pid` real, que es lo único que prueba que el agente
+  // arrancó de verdad.
+  if (child && child.pid) {
+    marcarDespachoEfectivo({ issue, skill, fase, pipeline });
+  } else {
+    log('lanzamiento', `⚠️ ${skill}:#${issue} el spawn no devolvió PID — NO se estampa despacho efectivo ` +
+      '(el reloj del watchdog debe seguir corriendo)');
+  }
   const useDeterministicSkill = (launchResult.provider === 'deterministic');
   if (useDeterministicSkill) {
     log('lanzamiento', `⚡ ${skill}:#${issue} ejecutado en modo determinístico (sin tokens LLM)`);
@@ -10121,9 +10393,42 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       }
 
       const data = readYamlSafe(workingPath);
+      // #5641 CA-1/CA-2 — PROCEDENCIA ESTRUCTURADA del veredicto sintético.
+      //
+      // Cuando el proceso del agente muere con exit code ≠ 0, el Pulpo sintetiza
+      // `resultado: rechazado` con el motivo `Agente terminó con código N`. Ese
+      // deliverable NO contiene ninguna decisión de review, pero el detector de
+      // fases varadas lo veía como un rechazo real y escalaba a humano (6 de 12
+      // issues frenados de la ola 9.4 eran esto).
+      //
+      // La marca de procedencia (`veredicto_sintetizado_por: 'pulpo'`) es el ÚNICO
+      // dato que habilita el carril de auto-reintento aguas abajo. Por eso NO puede
+      // clasificarse por el TEXTO del `motivo`: ese campo lo escribe el agente y
+      // sería un vector de escalada (un agente podría citar el literal en un
+      // rechazo de contenido y auto-borrarse el veredicto).
+      //
+      // CA-2 (anti-spoof): el strip va ANTES del `if`, no adentro. Si el agente
+      // dejó su propio `resultado`, la rama no entra y los campos falsificados
+      // sobrevivirían hasta `procesado/`. Mismo patrón que
+      // `delete cleaned.bloqueado_por_infra` (L1031 y L9157).
+      const procedenciaFalsificada =
+        data.veredicto_sintetizado_por !== undefined || data.agente_exit_code !== undefined;
+      delete data.veredicto_sintetizado_por;
+      delete data.agente_exit_code;
+      if (procedenciaFalsificada) {
+        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite)`);
+      }
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
         data.motivo = code !== 0 ? `Agente terminó con código ${code}` : undefined;
+        if (code !== 0) {
+          data.veredicto_sintetizado_por = 'pulpo';
+          data.agente_exit_code = code;
+        }
+        writeYaml(workingPath, data);
+      } else if (procedenciaFalsificada) {
+        // El agente SÍ opinó, pero además intentó falsificar la procedencia:
+        // hay que persistir el strip o los campos llegan intactos a `procesado/`.
         writeYaml(workingPath, data);
       }
 
@@ -10245,6 +10550,25 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         }
       }
 
+      // #5708: una aprobación visual también es una pasada auditable y debe
+      // quedar como baseline antes de mover el work-file. El reporte se lanza
+      // sólo para rechazos, así que no puede ser dueño exclusivo del store.
+      // Best-effort: una falla de evidencia no puede tumbar el Pulpo.
+      if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
+        try {
+          const coverageResult = visualCoverageRecorder.recordApprovedCoverage({
+            root: ROOT, issue, skill, fase, data,
+          });
+          if (coverageResult.written) {
+            log('lanzamiento', `QA:#${issue} persistió cobertura visual aprobada rev ${Number(data.rebote_numero) || 0}`);
+          } else if (coverageResult.reason !== 'sin-contrato') {
+            log('lanzamiento', `⚠️ QA:#${issue} no persistió cobertura visual aprobada: ${coverageResult.reason}`);
+          }
+        } catch (coverageErr) {
+          log('lanzamiento', `⚠️ QA:#${issue} falló persistencia de cobertura visual aprobada: ${coverageErr.message}`);
+        }
+      }
+
       // Solo movemos si el archivo sigue en trabajando/. Si ya estaba en listo/
       // (contrato viejo), el move lo completó el agente.
       if (workingPath === trabajandoPath) {
@@ -10268,6 +10592,21 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             '--motivo', String(data.motivo || 'Sin motivo'),
             '--log', `${issue}-${skill}.log`, '--pipeline', pipeline,
           ];
+          // #5708 / CA-10 · SEC-11 (D10a) — el contrato visual SÓLO lo emite el
+          // skill de QA visual. Desde el bloque genérico `if (resultado ===
+          // 'rechazado')` aplicaba también a tester, security, build, linter y
+          // review: bastaba con que el archivo existiera en disco para que la
+          // narración de CUALQUIER rechazo del issue se contara como "rechazo
+          // visual" y la causa real nunca llegara al operador.
+          if (skill === 'qa') {
+            const visualJsonPath = path.join(ROOT, 'qa', 'evidence', String(issue), 'visual-comparison.json');
+            if (fs.existsSync(visualJsonPath)) reportArgs.push('--visual-json', visualJsonPath);
+          }
+          // #5708 / CA-9 (D9) — `--rev` se pushea SIEMPRE (fuera del if): es el
+          // consumidor real del campo `rev` del contrato. Sin él, el reporte
+          // suprime el bloque con motivo declarado (`rev-unknown`) en vez de
+          // renderizar evidencia de una pasada anterior como si fuera actual.
+          reportArgs.push('--rev', String(Number(data.rebote_numero) || 0));
           if (launchResult && launchResult.provider) {
             reportArgs.push('--provider', String(launchResult.provider));
           }
@@ -11146,6 +11485,12 @@ function summarizeCommanderOlderTurns({ input } = {}) {
     ].join(' ');
     const prompt = `${systemInstr}\n\n<material>\n${input}\n</material>`;
 
+    // #5462 H-3 — base del env del child de resumen. Se arma en dos pasos (sin
+    // spread inline) para que el ÚNICO consumidor posible sea el filtro de abajo:
+    // ningún objeto crudo derivado de process.env llega a `spawn` por este sitio.
+    const summaryBaseEnv = { ...process.env };
+    summaryBaseEnv.CLAUDE_PROJECT_DIR = ROOT;
+
     let proc;
     try {
       proc = spawn(
@@ -11158,7 +11503,14 @@ function summarizeCommanderOlderTurns({ input } = {}) {
           '--permission-mode', 'bypassPermissions',
           '--model', COMMANDER_SUMMARY_MODEL,
         ],
-        { shell: CLAUDE_LAUNCHER.shell, windowsHide: true, env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT } },
+        {
+          shell: CLAUDE_LAUNCHER.shell,
+          windowsHide: true,
+          // #5462 H-3 — este spawn no tiene rama de aislamiento: el material de
+          // firma de Telegram se filtra SIEMPRE, por nombre y por alias con el
+          // mismo valor. Preserva TELEGRAM_CHAT_ID / CLAUDE_PROJECT_DIR.
+          env: buildChildEnvLib.stripReservedChildSecrets(summaryBaseEnv, process.env),
+        },
       );
     } catch (e) {
       return reject(e);
@@ -12470,11 +12822,19 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         return reject(e);
       }
     } else {
-      cleanEnv = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+      // #5462 H-2 — sin spread inline: el objeto crudo nunca es el valor final,
+      // el filtro del punto de salida (abajo) es la última operación.
+      cleanEnv = { ...process.env };
+      cleanEnv.CLAUDE_PROJECT_DIR = ROOT;
     }
     // CLAUDECODE se borra siempre — Claude Code lo setea internamente y heredarlo
     // confunde al child sobre si ya está en una sesión activa.
     delete cleanEnv.CLAUDECODE;
+    // #5462 H-2 — Frontera única en el punto de salida del env, FUERA del
+    // if/else de rollout: el material de firma de Telegram no cruza al child por
+    // ninguna rama. Idempotente (buildChildEnv ya filtra internamente) y es la
+    // ÚLTIMA operación sobre el env, después del merge de extras y del delete.
+    cleanEnv = buildChildEnvLib.stripReservedChildSecrets(cleanEnv, process.env);
 
     // #3258 — SR-1: data-residency-filter gate antes del spawn. Sólo aplica
     // a providers no-Anthropic; para Anthropic es passthrough explícito.
@@ -12551,10 +12911,18 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             skillConfigOverride: { provider: prov },
           });
         } else {
-          e = { ...process.env, CLAUDE_PROJECT_DIR: ROOT };
+          // #5462 H-1 — sin spread inline: el objeto crudo nunca es el valor
+          // devuelto; el filtro del `return` es la última operación.
+          e = { ...process.env };
+          e.CLAUDE_PROJECT_DIR = ROOT;
         }
         delete e.CLAUDECODE;
-        return e;
+        // #5462 H-1 — Ejecutor de fallback no-Anthropic: es el camino literal de
+        // "providers, fallbacks" del objetivo del issue. Filtro en el punto de
+        // salida (fuera del if/else de rollout) y DESPUÉS del delete, para que el
+        // borrado de CLAUDECODE no se pierda sobre el objeto nuevo que devuelve
+        // el helper.
+        return buildChildEnvLib.stripReservedChildSecrets(e, process.env);
       };
 
       const buildFallbackArgs = (provider) => {
@@ -12994,6 +13362,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // se clasificó como cli_1m_context_glitch. `finish()` lo usa para devolverle
     // al orquestador `kind: 'glitch'` (vs 'final') sin re-inspeccionar nada.
     let attemptGlitch = false;
+    // #5456 — clasificación TIPADA del canal de contenido de cuota semanal
+    // (#5455). Se calcula en el handler del frame `result` (único lugar donde el
+    // frame se parsea) y se consume en `finish()` para sustituir el texto crudo
+    // ANTES de `resolveAttempt`. `null` = el turno no murió por cuota semanal.
+    let weeklyQuotaMidTurn = null;
     const startTime = Date.now();
 
     // El turno del Commander YA NO se corta por duración total.
@@ -13223,6 +13596,67 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         log('commander', `🚨 SKILL_TIMEOUT propagado al caller: ${marker}`);
         if (!lastText) lastText = marker;
       }
+      // =====================================================================
+      // #5456 — CLASIFICACIÓN TIPADA PRIMERO, antes de auditar y antes de
+      // asignar el texto del intento.
+      //
+      // Si el turno murió por el canal de contenido de cuota semanal (#5455),
+      // `finalResult.result` ES el aviso crudo de Anthropic. Ese texto no puede
+      // llegar al operador (CA-1), así que lo sustituimos por la respuesta
+      // reactiva y auditamos con un enum estable en vez de `null`.
+      //
+      // PERSISTENCIA ÚNICA: el flag ya se escribió en el handler del frame
+      // `result` por la API canónica (`setFlag` o el hook generalizado). Acá NO
+      // se vuelve a escribir estado ni se agrega otro archivo/selector.
+      //
+      // SEPARACIÓN DE SALIDAS: esta es la respuesta REACTIVA del turno perdido y
+      // se emite SIEMPRE. `shouldEmitFallbackNotice` (aviso PROACTIVO, dedup de
+      // 5 min) no se invoca desde acá — dedupear la respuesta dejaría al
+      // operador sin contestación.
+      // =====================================================================
+      let quotaMidTurnText = null;
+      if (weeklyQuotaMidTurn) {
+        try {
+          // Proveedor del próximo intento: sale del resolver real (excluyendo el
+          // agotado), NUNCA del texto de la respuesta. Si no hay uno resoluble,
+          // el formatter degrada a copy genérico.
+          //
+          // `resolveCommanderProviderQuiet` (#5456) hace dos cosas que la
+          // variante cruda NO hace y que acá son obligatorias:
+          //   1. Consulta la cadena del COMMANDER (`telegram-commander`). El
+          //      default del resolver crudo es la de Sherlock, que tiene otros
+          //      `model_override`: anunciaríamos el proveedor de una cadena
+          //      distinta de la que va a atender el turno siguiente.
+          //   2. Silencia `notify` y el audit del dispatch. Esto es una CONSULTA
+          //      para armar copy, no un spawn: con la variante cruda encolaba un
+          //      tercer mensaje al operador con ids internos (viola CA-1) sin
+          //      pasar por ningún dedup (viola CA-3) y ensuciaba el audit con un
+          //      `fallback_selected` que nunca ocurrió.
+          let nextProvider = null;
+          try {
+            const next = commanderMP.resolveCommanderProviderQuiet(
+              weeklyQuotaMidTurn.provider,
+              { pipelineDir: PIPELINE, log: () => {} },
+            );
+            if (next && next.gated !== true) nextProvider = next.provider || null;
+          } catch { /* best-effort: el copy degrada a genérico */ }
+
+          quotaMidTurnText = commanderMP.formatMidTurnQuotaResponse({
+            primaryProvider: weeklyQuotaMidTurn.provider,
+            fallbackProvider: nextProvider,
+          });
+          log('commander',
+            `🚫 #5456 cuota semanal mid-turn (provider=${weeklyQuotaMidTurn.provider}) — ` +
+            `respuesta cruda SUPRIMIDA, respondo reactivo (next=${nextProvider || 'n/a'}).`);
+        } catch (e) {
+          // Fail-safe: un bug del formatter NO puede devolver el crudo. Si algo
+          // explota respondemos el canned genérico de cuota, nunca el payload.
+          log('commander', `⚠️ #5456 formatter mid-turn falló (best-effort): ${e && e.message}`);
+          try {
+            quotaMidTurnText = commanderMP.formatMidTurnQuotaResponse({});
+          } catch { quotaMidTurnText = 'Se agotó la cuota y este turno se perdió — reenviame el mensaje.'; }
+        }
+      }
       // #3258 — CA-4 / SR-3: audit log con hash-chain del request del commander.
       // Métadata mínima (prov, tokens si los hay, latencia, hashes). NO se
       // loguea prompt ni respuesta literales — solo hashes.
@@ -13245,7 +13679,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           prompt: prompt,
           tokens: tokensSummary,
           latencyMs: Date.now() - startTime,
-          errorCode: (finalResult && finalResult.result) || lastText ? null : 'no_result',
+          // #5456 — enum ESTABLE para el turno perdido por cuota semanal. Nunca
+          // el `errorType` real ni nada del payload: el detalle tipado ya vive
+          // en el audit de `quota-exhausted.js`, server-side.
+          errorCode: quotaMidTurnText
+            ? commanderMP.QUOTA_MIDTURN_ERROR_CODE
+            : (((finalResult && finalResult.result) || lastText) ? null : 'no_result'),
           injectionHits: sanRes.hits,
           supportsToolUse: true,
           requestId: turnRequestId, // #3577 CA-S6
@@ -13260,7 +13699,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // decide retry/give_up según `kind`. `attemptGlitch` distingue el glitch
       // 1M de un resultado normal.
       let resolvedText;
-      if (finalResult?.result) {
+      if (quotaMidTurnText) {
+        // #5456 CA-1 — sustitución ANTES de `resolveAttempt`: ni `finalResult
+        // .result` ni `lastText` (que replica el mismo aviso) llegan al canal.
+        resolvedText = quotaMidTurnText;
+      } else if (finalResult?.result) {
         resolvedText = finalResult.result;
       } else if (lastText) {
         resolvedText = lastText;
@@ -13483,6 +13926,17 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                 log('commander', `[anthropic-1m] hit registrado: ${JSON.stringify(hitLog)} (total=${hitState.hits_total})`);
               } catch (e) { log('commander', `[anthropic-1m] recordHit falló (best-effort): ${e.message}`); }
             } else if (det.matched) {
+              // #5456 — CLASIFICACIÓN TIPADA (contrato de #5455). El subtipo
+              // exacto `weekly_limit_content_channel` es el ÚNICO que sustituye
+              // la respuesta del turno: el frame no trae `is_error`, así que su
+              // `result` es el aviso crudo de Anthropic (hora de reset, jerga de
+              // la cuenta) y NO puede llegar al operador. Se usa el predicado
+              // canónico exportado — acá no se re-parsea el frame ni se compara
+              // el string a mano. Cualquier otro tipo (incluido
+              // `usage_limit_error`) conserva el camino de siempre.
+              if (quotaExhausted.isWeeklyLimitContentChannel(cmdProvider, det.errorType)) {
+                weeklyQuotaMidTurn = { provider: cmdProvider };
+              }
               // #3576 CA-3: en modo generalizado el hook ya invocó setFlag
               // (con audit log unificado + hash-chain). En legacy seguimos
               // setFlag inline para no romper la fast-path histórica.
@@ -13494,7 +13948,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                   errorType: det.errorType,
                   provider: cmdProvider,
                   model: cmdModel,
-                  resetsAt: evt.resets_at,
+                  // #5456 — el canal de contenido (#5455) trae el reset PARSEADO
+                  // en `det.resetsAt`; el frame estructural no lo tiene y sigue
+                  // usando `evt.resets_at`. Sin esto el subtipo se persistía sin
+                  // su reset real y caía al default del escritor.
+                  resetsAt: det.resetsAt || evt.resets_at,
                   maxDays: (cmdProviderDef && cmdProviderDef.resets_at_cap_max_days) || cfg.resets_at_cap_max_days,
                   agent: 'commander',
                   rawExcerpt: line,
@@ -14592,6 +15050,16 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   if (textoLibre.length > 0) {
     const esAudio = textoLibre.some(m => m._esAudio);
 
+    // #5835 — ¿alguno de los mensajes que van al LLM MENCIONABA la ola? Si sí,
+    // (a) la respuesta del LLM se sanitiza para que no pueda emitir una tabla
+    // propia (CA-5) y (b) se anexa el render TEXTUAL del handler `wave` como
+    // mensaje separado DESPUÉS de la respuesta (CA-3). `classify()` marca el
+    // flag; acá sólo lo consumimos.
+    const waveAnnexRequested = textoLibre.some(m => m._intent && m._intent.waveMentioned === true);
+    if (waveAnnexRequested) {
+      log('commander', '[wave-anexo] pregunta analítica con mención de ola — se responde por LLM y se anexa la tabla del handler');
+    }
+
     // #3949 EP7-H2 — Log por petición atendida del Commander. UN id por turno
     // consolidado (no por mensaje individual): `<chat_id>-<epochms>` (SEC-4,
     // filename-safe). Toda escritura pasa por el stream sanitizado de
@@ -15663,7 +16131,11 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         // captura sin `await` intermedio. El MISMO `outboundText` alimenta el TTS y
         // el texto, garantizando coherencia audio↔texto (CA-4) y blindando contra
         // una mutación tardía de `respuesta` por el bloque Sherlock detached.
-        const outboundText = respuesta;
+        // #5835 (CA-5) — si el mensaje mencionaba la ola, la respuesta del LLM
+        // pasa por el sanitizador ANTES del snapshot frozen: así el texto y el
+        // audio comparten exactamente el mismo contenido ya sin tablas. Ningún
+        // camino deja que el LLM emita una tabla de estado de ola propia.
+        const outboundText = waveAnnexRequested ? waveAnnex.safeLlmAnswer(respuesta) : respuesta;
 
         // Si hubo audio → intentar TTS
         if (esAudio) {
@@ -15769,6 +16241,34 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           disclaimer: sherlockDisclaimerType || 'ninguno',
         });
         requestLog.line(`respuesta: ${outboundText}`);
+
+        // #5835 (CA-3) — ANEXO de estado de ola. El operador hizo una pregunta
+        // analítica que mencionaba la ola: primero se le RESPONDE (arriba), y
+        // recién después se le adjunta el cuadro como contexto.
+        //
+        // El bloque es TEXTUAL del handler `wave` (`wave-annex.buildWaveAnnex`):
+        // ni una porción proviene del LLM. Va como mensaje(s) SEPARADO(S) con
+        // parseMode MarkdownV2 — concatenarlo al texto del LLM (que sale en
+        // 'Markdown', #4130) mostraría los escapes literales dentro del cuadro.
+        // Incluye los extras del paginado (#4075) y descarta `audioText`: quien
+        // pidió una opinión no debe recibir un audio narrando la tabla.
+        //
+        // FAIL-OPEN con la prioridad INVERTIDA respecto de #4089: allá el
+        // fail-open protegía la tabla; acá protege la RESPUESTA, que ya se
+        // entregó. Que un fallo del render de ola se coma la respuesta sería
+        // reintroducir el bug por otra puerta.
+        if (waveAnnexRequested) {
+          try {
+            const annex = await waveAnnex.buildWaveAnnex({ pipelineRoot: PIPELINE });
+            for (const bloque of annex.messages) {
+              try { sendTelegram(bloque, { parseMode: annex.parseMode }); }
+              catch (e) { log('commander', `[wave-anexo] fallo enviar bloque: ${e.message}`); }
+            }
+            log('commander', `[wave-anexo] ${annex.messages.length} mensaje(s) de estado anexados tras la respuesta`);
+          } catch (e) {
+            log('commander', `[wave-anexo] fallo (fail-open, la respuesta ya se entregó): ${e.message}`);
+          }
+        }
         // #4139 — sin corrección diferida: el flujo síncrono espera el verdict
         // antes de despachar, así que el saliente ya es definitivo. Eliminado el
         // segundo envío (`scheduleOptimisticCorrection` / follow-up por voz).
@@ -16245,6 +16745,99 @@ function findLastRejection(pipelineName, issueNum, config) {
     return best;
 }
 
+// #5689 (SEC-2) — discriminador ÚNICO recomendación-vs-bloqueo-real (#5337).
+// Reemplaza el chequeo inline de un solo label del gate del intake: el inline
+// ignoraba `source:recommendation` (histórico), que el helper sí cubre.
+// `RECOMMENDATION_APPROVED_LABEL` sale del MISMO módulo a propósito: el pase de
+// rescate del `--search` (abajo) y el gate tienen que hablar del mismo label. Si
+// uno se hardcodeara, renombrarlo dejaría al gate admitiendo issues que el
+// search ya descartó — exactamente la contradicción que rompió rev-1.
+const {
+  isRecommendationIssue: isPendingRecommendationIssue,
+  RECOMMENDATION_APPROVED_LABEL,
+} = require('./lib/recommendation-labels');
+
+// =============================================================================
+// #5689 (R1 — anti-starvation del intake) — término `--search` ÚNICO del intake.
+//
+// El problema: las ~1.076 recomendaciones de agente tienen `needs-definition`
+// (el mismo label de admisión de `config.yaml`) y hoy quedan afuera SÓLO por el
+// `-label:needs-human` del search. Cuando #5691 migre esas recomendaciones a
+// `needs:triage-backlog`, dejarían de estar filtradas: GitHub aplica el
+// `--limit 50` SERVER-SIDE, antes de `calcularPrioridad()`, así que los 50 slots
+// se llenarían de recomendaciones y el intake de definición real se ahogaría en
+// silencio, sin ninguna alarma.
+//
+// Por qué una función y no dos literales: el término vive en DOS call sites
+// (`discoverWorkDryRun` y el intake real de `brazoIntake`). Duplicar el string
+// hace posible parchear uno, ver el test en verde, y dejar el otro sin blindar
+// (GURU-3). Con una sola fuente eso es imposible por construcción.
+//
+// ⚠️ ESTO NO ES UN CONTROL DE SEGURIDAD — es un control de DISPONIBILIDAD.
+// El índice de búsqueda de GitHub es eventualmente consistente: un issue recién
+// etiquetado puede no reflejar el label acá durante minutos, y en esa ventana
+// pasa el filtro. El control AUTORITATIVO es el gate JS de `brazoIntake` sobre
+// los labels ya traídos (estado fresco, no índice). Ver REQ-SEC-1.
+// =============================================================================
+const INTAKE_SEARCH_EXCLUDED_LABELS = Object.freeze([
+  // Bloqueo real: un agente se frenó y espera acción del operador.
+  'needs-human',
+  // #5689 — backlog de recomendaciones esperando triaje humano (no bloquea).
+  'tipo:recomendacion',
+]);
+
+function buildIntakeSearchQuery() {
+  return INTAKE_SEARCH_EXCLUDED_LABELS.map((l) => `-label:${l}`).join(' ');
+}
+
+// -----------------------------------------------------------------------------
+// #5689 (REGRESIÓN rev-1, hallazgo de security) — PASE DE RESCATE.
+//
+// Qué se rompió: la búsqueda de GitHub NO soporta OR ni paréntesis, así que
+// `-label:tipo:recomendacion` es incondicional — excluye TAMBIÉN las
+// recomendaciones que un humano ya aprobó. Y una recomendación aprobada es
+// exactamente `tipo:recomendacion` + `recommendation:approved` (`approve()` de
+// lib/recommendations.js agrega el segundo y NO saca el primero).
+//
+// Consecuencia: el camino de LIBERACIÓN del gate de #2653 quedaba inoperante.
+// El gate JS (`isPendingRecommendationIssue`) devuelve `false` ante
+// `recommendation:approved` y por lo tanto ADMITIRÍA el issue... pero el issue
+// ya nunca volvía de GitHub, así que el gate jamás llegaba a evaluarlo. Aprobar
+// una recomendación pasaba a ser un no-op silencioso: el operador veía
+// "entrará al pipeline en el próximo ciclo" y no entraba nunca.
+// Caso vivo al momento del fix: #5055 (needs-definition + tipo:recomendacion +
+// recommendation:approved, sin needs-human).
+//
+// Solución: DOS pases de búsqueda cuya unión se deduplica por número.
+//   1. BASE     — trabajo normal, excluye bloqueo real y backlog de recos.
+//   2. RESCATE  — sólo las recomendaciones YA aprobadas por un humano.
+//
+// Por qué no hay riesgo de reabrir R1 (starvation) con el pase 2: está acotado
+// a `label:recommendation:approved`, un label que sólo pone un humano de a uno
+// (población viva = 1). No es el backlog de ~1.076 que ahoga el intake.
+//
+// El pase 2 mantiene `-label:needs-human`: una recomendación aprobada que
+// DESPUÉS se bloquea de verdad sigue afuera del intake, igual que cualquier
+// otro trabajo real (circuit breaker de #2405). El rescate reabre el camino de
+// aprobación, no un bypass del breaker.
+//
+// Sigue sin ser un control de seguridad: el pase 2 sólo AGREGA disponibilidad.
+// Todo lo que vuelve de los dos pases pasa igual por el gate autoritativo de
+// `brazoIntake` sobre los labels frescos (REQ-SEC-1), que es quien decide.
+// -----------------------------------------------------------------------------
+function buildIntakeSearchRescueQuery() {
+  // `needs-human` se sigue excluyendo (breaker); `tipo:recomendacion` NO, que es
+  // justamente el punto: son las que el pase base deja afuera.
+  return `-label:${INTAKE_SEARCH_EXCLUDED_LABELS[0]} label:${RECOMMENDATION_APPROVED_LABEL}`;
+}
+
+// Fuente ÚNICA de los pases del intake. Los dos call sites (`discoverWorkDryRun`
+// y el intake real de `brazoIntake`) iteran ESTA función: si alguien agrega un
+// pase, entra por los dos lados o por ninguno (GURU-3).
+function buildIntakeSearchQueries() {
+  return [buildIntakeSearchQuery(), buildIntakeSearchRescueQuery()];
+}
+
 // #4687 (Ola Puente P2) — Descubrimiento side-effect-free del tablero (dry-run).
 //
 // Paso 4 del bootstrap de un producto nuevo (project-bootstrap.js): confirmar el
@@ -16308,12 +16901,30 @@ function discoverWorkDryRun(config, opts = {}) {
     for (const repo of reposFn()) {
       // Fail-closed: repo no allowlisted / malformado ⇒ skip (cero consultas).
       if (!isAllowed(repo)) { skippedRepos.push(repo); continue; }
-      let issues = [];
-      try {
-        const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "-label:needs-human"`);
-        issues = JSON.parse(out || '[]');
-      } catch (e) {
-        issues = [];
+      const issues = [];
+      // #5689 rev-1 — unión deduplicada de los pases (base + rescate de recos
+      // aprobadas). Dedup por número dentro del repo: los dos pases consultan el
+      // mismo repo y un issue puede volver en ambos si el índice va atrasado.
+      const seenNumbers = new Set();
+      for (const search of buildIntakeSearchQueries()) {
+        try {
+          // #5689 REQ-SEC-3 — INVARIANTE: esta consulta trae `number,title`, SIN
+          // `labels`. Por eso esta superficie NO puede evaluar el gate
+          // `isRecommendationIssue()` ni como defensa en profundidad. Hoy es
+          // inocuo porque `discoverWorkDryRun` es side-effect-free por contrato
+          // (no encola, no spawnea). Si alguna vez pasa a alimentar encolado,
+          // DEBE sumar `labels` al `--json` y pasar por el mismo gate que
+          // `brazoIntake`, o abre un bypass total del control autoritativo.
+          const out = execFn(`"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title --limit 50 --search "${search}"`);
+          for (const it of JSON.parse(out || '[]')) {
+            if (seenNumbers.has(it.number)) continue;
+            seenNumbers.add(it.number);
+            issues.push(it);
+          }
+        } catch (e) {
+          // Un pase caído no debe tumbar los demás: el dry-run degrada a
+          // "lo que sí pudo listar", nunca a lista vacía por un error parcial.
+        }
       }
       for (const it of issues) {
         discovered.push({ pipeline: pipelineName, label, repo, number: it.number, title: it.title });
@@ -16365,22 +16976,32 @@ function brazoIntake(config) {
           log('intake', `repo omitido — no allowlisted / forma inválida: ${JSON.stringify(repo)}`);
           continue;
         }
-        try {
-          ghThrottle();
-          const result = _ghExecSyncGuarded( // #4612 — breaker-aware
-            // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
-            // cero requests extra) para que el detector de decisión de
-            // arquitectura pueda clasificar el issue al entrar a definición.
-            `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "-label:needs-human"`,
-            { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
-          );
-          const repoIssues = JSON.parse(result || '[]');
-          // CA-A2 — propagar el repo de origen aguas abajo (leído por getRepoForIssue).
-          for (const it of repoIssues) it.origin_repo = repo;
-          issues = issues.concat(repoIssues);
-        } catch (e) {
-          // Un repo caído no debe tumbar el intake de los demás.
-          log('intake', `Error consultando ${repo} para ${pipelineName}: ${e.message}`);
+        // #5689 rev-1 — unión deduplicada de los pases (base + rescate de recos
+        // aprobadas). Dedup por número DENTRO del repo: `issues` acumula entre
+        // repos y los números colisionan entre repos distintos.
+        const seenNumbers = new Set();
+        for (const search of buildIntakeSearchQueries()) {
+          try {
+            ghThrottle();
+            const result = _ghExecSyncGuarded( // #4612 — breaker-aware
+              // #5337 CA-4 — `body` se suma a los campos EXISTENTES (misma llamada,
+              // cero requests extra) para que el detector de decisión de
+              // arquitectura pueda clasificar el issue al entrar a definición.
+              `"${GH_BIN}" issue list --repo ${repo} --label "${label}" --state open --json number,title,labels,body --limit 50 --search "${search}"`,
+              { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true }
+            );
+            const repoIssues = JSON.parse(result || '[]');
+            for (const it of repoIssues) {
+              if (seenNumbers.has(it.number)) continue;
+              seenNumbers.add(it.number);
+              // CA-A2 — propagar el repo de origen aguas abajo (leído por getRepoForIssue).
+              it.origin_repo = repo;
+              issues.push(it);
+            }
+          } catch (e) {
+            // Un repo (o un pase) caído no debe tumbar el intake de los demás.
+            log('intake', `Error consultando ${repo} para ${pipelineName}: ${e.message}`);
+          }
         }
       }
 
@@ -16420,13 +17041,33 @@ function brazoIntake(config) {
           continue;
         }
 
-        // RECOMENDACION (#2653): no procesar issues con label tipo:recomendacion
-        // hasta que un humano apruebe (recommendation:approved). Defensa en
-        // profundidad: el search ya filtra needs-human, pero si alguien quita
-        // needs-human por error sin agregar recommendation:approved, el issue
-        // sigue siendo una recomendación pendiente y NO debe entrar al flujo.
-        if (issueLabels.includes('tipo:recomendacion') && !issueLabels.includes('recommendation:approved')) {
-          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (tipo:recomendacion sin recommendation:approved)`);
+        // RECOMENDACION (#2653, blindado en #5689) — GATE AUTORITATIVO.
+        //
+        // No procesar issues de recomendación de agente hasta que un humano los
+        // apruebe (`recommendation:approved`).
+        //
+        // ⚠️ REQ-SEC-1 — ESTE es el control de seguridad, NO el `--search`.
+        // El `-label:...` de `buildIntakeSearchQuery()` es best-effort: se
+        // evalúa contra el índice de búsqueda de GitHub, que es EVENTUALMENTE
+        // CONSISTENTE — un issue recién etiquetado puede no reflejar el label
+        // durante minutos y pasar el filtro. Este gate, en cambio, corre local
+        // sobre los labels que la propia respuesta trajo (`--json ...,labels`):
+        // estado fresco, no índice. Los dos NO son intercambiables y este no se
+        // puede "optimizar" borrándolo porque el search ya filtre.
+        //
+        // Redacción previa a #5689: "si alguien quita needs-human por error".
+        // Eso quedó desactualizado — tras la migración de #5691 las ~924
+        // recomendaciones dejan de tener `needs-human` como modo NORMAL de
+        // operación, no como accidente. Blast radius si el gate falla: cuerpos
+        // de issue escritos por un LLM inyectados en prompts de agentes con
+        // permiso de escribir código y abrir PRs.
+        //
+        // SEC-2: `isPendingRecommendationIssue()` (lib/recommendation-labels.js)
+        // en vez del chequeo de un solo label. Además de `tipo:recomendacion`
+        // cubre `source:recommendation` (el histórico, que el inline ignoraba) y
+        // preserva la semántica: devuelve `false` ante `recommendation:approved`.
+        if (isPendingRecommendationIssue(issueLabels)) {
+          log('intake', `#${issueNum} omitido — recomendación pendiente de aprobación humana (sin recommendation:approved)`);
           continue;
         }
 
@@ -16856,6 +17497,628 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
   return { ok: added.length > 0, added, skipped };
 }
 
+// =============================================================================
+// #5516 — Reconciliación de hijos de split HUÉRFANOS, descubiertos DESDE GITHUB.
+//
+// Diferencia esencial con #3625/#4439/#4525: los tres arrancan leyendo la
+// ALLOWLIST (`probe.added` del desync-detector). Este arranca leyendo GITHUB.
+// Cubre el caso que ninguno cubre: un split hecho por un agente `/planner` que
+// lanzó el Pulpo NO pasa por el hook post-skill-success del Commander, así que
+// sus hijos nunca entran a la allowlist ni registran provenance en
+// `authorization_ttls` — son invisibles para toda la cadena existente.
+//
+// Incidente 2026-08-03: Ola 9.4 frenada por 13 huérfanos (#5458–#5463,
+// #5419–#5421, #5203–#5205, #4890) que trancaban en cascada a #5451, #5452,
+// #5453, #5428, #5401, #5126 y #5112. En ese estado waves.json y
+// `.partial-pause.json` estaban EN SYNC (`desync:false`): los huérfanos no
+// estaban en NINGUNO de los dos. Por eso este paso corre SIEMPRE, no sólo
+// cuando hay divergencia.
+//
+// Clasificación PURA en `lib/split-orphan-reconciler.js` (default-deny,
+// sanitización del padre, sólo abiertos, padre ∈ ola). Acá va sólo el I/O:
+// consulta a GitHub, mutación atómica vía las APIs de waves/partial-pause y
+// notificación. NO se escriben los JSON a mano.
+//
+// Orden ola → allowlist (indicado por el issue): si la escritura de la allowlist
+// falla, la divergencia resultante es REDUCTIVA (la ola tiene de más), que es la
+// clasificación benigna. Al revés quedaría un extra en la allowlist sin respaldo
+// en la ola → `ambiguo` → human-block, justo lo que queremos evitar.
+//
+// OJO — la divergencia reductiva NO se auto-repara sola en el ciclo siguiente:
+// `evaluateDesyncAndMaybeRealign` sólo la resuelve si TODOS los divergentes
+// están confirmados cerrados, y `realignAllowlistToActiveWave` está definida y
+// exportada pero NUNCA se invoca desde el camino de evaluación. Un huérfano
+// recién sumado está ABIERTO, así que dejar la ola escrita sin la allowlist
+// deriva en flag + human-block. Por eso el paso 0 corta ANTES de tocar nada
+// cuando el pipeline no está en `partial_pause`: es la única forma de garantizar
+// que ola y allowlist se muevan juntas o no se mueva ninguna.
+//
+// @returns {{ok: boolean, incorporated: number[], reason?: string}}
+// =============================================================================
+// SO-7 — Parámetros de la consulta. `gh issue list --json` NO expone
+// `authorAssociation` (sólo `author`), así que el descubrimiento va por la API
+// HTTP, que sí trae `author_association` + `user.login` + `labels` (SO-8).
+//
+// VENTANA DE DESCUBRIMIENTO (corregido en el rebote del 2026-08-10)
+// -----------------------------------------------------------------
+// La versión anterior barría `repos/:o/:r/issues?state=open&sort=created&desc`
+// con 3 páginas de 100 = 300 issues, y ese recorte PERDÍA huérfanos reales en
+// silencio. Medido contra GitHub en vivo el 2026-08-10:
+//
+//     corpus abierto real .................. 1487 issues (16 páginas)
+//     ventana de 3 páginas ................. 296 issues
+//     hijos con título canónico (corpus) ... 126
+//     hijos dentro de la ventana ........... 17   → 109 QUEDABAN AFUERA
+//
+// Entre los perdidos estaba toda la cadena de #5126 (#5207, #5208, #5209,
+// #5212, #5214), que el propio body de #5516 nombra como trancada en cascada.
+//
+// Ampliar el barrido crudo a las 16 páginas NO es la salida: `ghThrottle()` es
+// un busy-wait SÍNCRONO de 2 s por llamada, así que 16 páginas serían ~50 s de
+// spin bloqueando el tick del Pulpo cada ciclo (y #5557 ya está abierta por los
+// ~10 s actuales). En vez de traer todo el repo para descartar el 91 %, se
+// consulta el índice de búsqueda ACOTADO POR TÍTULO: `in:title split` devuelve
+// hoy 136 resultados (2 páginas, ~3 s) y es un SUPERCONJUNTO de lo que el
+// clasificador puede aceptar — el filtro fino sigue siendo el regex anclado
+// `SPLIT_TITLE_RE` del módulo puro (SO-4), que es quien decide de verdad.
+//
+// Se usa el término suelto `split` (no la frase `"Split de"`) para cubrir
+// también la variante `[Split of #N]` que acepta el regex.
+//
+// El payload de `search/issues` trae los mismos campos que necesitamos:
+// `number`, `title`, `state`, `author_association`, `user.login`, `labels` y la
+// clave `pull_request` para distinguir PRs.
+//
+// Contrapartida asumida: el índice de búsqueda puede tener unos segundos de
+// atraso frente a un issue recién creado. Como el reconciliador corre en cada
+// ciclo (~5 min), un hijo que llegue tarde al índice entra en el ciclo
+// siguiente — se autocorrige. Es un retraso acotado, no una pérdida permanente
+// como la del recorte por paginado.
+const SPLIT_ORPHAN_PAGE_SIZE = 100;
+// 5 páginas = 500 resultados de búsqueda. Con 136 hoy, ~3.7x de aire; y si algún
+// día no alcanza, el corte ya NO es silencioso (`discovery_window`).
+const SPLIT_ORPHAN_MAX_PAGES = 5;
+// Parte FIJA de la query de búsqueda, pre-encodeada.
+const SPLIT_ORPHAN_SEARCH_Q_SUFFIX = 'is%3Aissue+is%3Aopen+in%3Atitle+split';
+// Fallback si el repo primario de la config no valida (fail-closed al canónico).
+const SPLIT_ORPHAN_FALLBACK_REPO = 'intrale/platform';
+// Forma `owner/repo` aceptada: mismo alfabeto que `REPO_RE` de `lib/repo-target`.
+// Todos sus caracteres son UNRESERVED en URL salvo la `/`, que se encodea a `%2F`,
+// así que el resultado no puede introducir separadores de query ni metacaracteres
+// de shell.
+const SPLIT_ORPHAN_REPO_RE = /^[A-Za-z0-9._-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * Query de búsqueda del reconciliador, construida desde la FUENTE DE VERDAD ÚNICA
+ * del repo destino (`lib/repo-target`, convención #4693 CA-0) en vez de hardcodear
+ * `intrale/platform` (señalado por review el 2026-08-10).
+ *
+ * Sigue siendo efectivamente estática: el único valor interpolado es el repo
+ * primario de la config, VALIDADO contra `SPLIT_ORPHAN_REPO_RE` antes de usarse.
+ * Si no valida (config rota, valor con caracteres raros) se cae al repo canónico
+ * — nunca se arma una query con texto arbitrario, así que no hay superficie de
+ * command injection ni de query injection.
+ * @returns {string} query URL-encodeada, sin el `q=`.
+ */
+function splitOrphanSearchQuery() {
+  let repo = SPLIT_ORPHAN_FALLBACK_REPO;
+  try {
+    const primary = repoTarget.getPrimaryRepo();
+    if (typeof primary === 'string' && SPLIT_ORPHAN_REPO_RE.test(primary.trim())) {
+      repo = primary.trim();
+    } else {
+      log('pulpo', `WARN split-orphan-reconciler: repo primario inválido (${primary}); ` +
+        `se usa ${SPLIT_ORPHAN_FALLBACK_REPO}.`);
+    }
+  } catch (e) {
+    log('pulpo', `WARN split-orphan-reconciler: repo-target ilegible (${e.message}); ` +
+      `se usa ${SPLIT_ORPHAN_FALLBACK_REPO}.`);
+  }
+  return `repo%3A${repo.replace('/', '%2F')}+${SPLIT_ORPHAN_SEARCH_Q_SUFFIX}`;
+}
+
+// Dedupe de la alerta de VENTANA TRUNCADA. Sin esto avisaría cada ~5 min.
+// Se re-alerta si cambia el motivo o si pasaron más de 6 h (sigue vigente).
+const SPLIT_ORPHAN_TRUNC_REALERT_MS = 6 * 60 * 60 * 1000;
+let _splitOrphanTruncAlert = { key: null, at: 0 };
+
+// SO-7 — Dedupe de la alerta de candidatos NO confiables. El reconciliador corre
+// cada ciclo periódico (~5 min); sin esto, un issue de un tercero que quede
+// abierto dispararía una alerta por ciclo (fatiga → la alerta deja de leerse).
+// Vive en memoria del proceso: tras un restart se vuelve a alertar una vez, que
+// es el comportamiento deseado (el operador nuevo debe enterarse).
+const _splitOrphanUntrustedAlerted = new Set();
+
+/**
+ * SO-7 — Allowlist explícita de logins confiables desde `config.yaml`
+ * (`desync.split_orphan_trusted_logins`). Sirve para cuentas de bot que no son
+ * OWNER/MEMBER/COLLABORATOR de la organización. Ausente/inválida → lista vacía,
+ * y entonces manda sólo la asociación con el repo (fail-closed, nunca fail-open).
+ * @returns {string[]}
+ */
+function splitOrphanTrustedLogins() {
+  try {
+    const raw = loadConfig().desync?.split_orphan_trusted_logins;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((l) => typeof l === 'string' && l.trim() !== '');
+  } catch {
+    return [];                                                 // config ilegible → sin allowlist
+  }
+}
+
+function reconcileSplitOrphansFromGithub(context) {
+  const waves = require('./lib/waves');
+
+  // --- 0. GATE DE MODO — antes de consultar GitHub y antes de mutar NADA -------
+  // El tick que llama acá corre en TODO ciclo periódico: `checkPauseFile()` sólo
+  // setea el flag `paused`, y el gate `if (!paused && !desyncBlocked)` está más
+  // abajo y gatea el DISPATCH, no esta evaluación. O sea: con el pipeline en
+  // pausa total (`.paused`) este código igual se ejecutaba.
+  //
+  // Y `.paused` NO borra `.partial-pause.json` — los writes de PAUSE_FILE no
+  // llaman a `clearPartialPause`, así que ambos archivos coexisten. En ese
+  // estado `getPipelineMode()` devuelve `paused`, el paso 5 no escribía la
+  // allowlist... pero el paso 3 ya había mutado `waves.json`. Resultado: ola con
+  // huérfanos ABIERTOS que la allowlist no tiene (el `desync-detector` lee el
+  // archivo directo del disco, ignora `.paused`), divergencia clasificada como
+  // reductiva pero NO auto-resoluble (los divergentes están abiertos) →
+  // `after.desync` sigue true → flag + human-block al reanudar. El pipeline se
+  // auto-infligía exactamente el bloqueo que #5516 viene a eliminar.
+  //
+  // Por eso: si el modo no es `partial_pause`, NO-OP TOTAL. Ni consulta a gh, ni
+  // `waves.json`, ni allowlist.
+  //   - `paused`  → halt total decidido por el operador; el pipeline no debe
+  //     mutar su propio alcance a espaldas de esa decisión.
+  //   - `running` → sin allowlist NO hay dispatch (#5060: `isIssueAllowedInState`
+  //     devuelve `false` en `running` salvo escape hatch). Sumar a la ola no
+  //     habilitaría nada, y escribir la allowlist METERÍA al pipeline en pausa
+  //     parcial con SÓLO estos hijos permitidos → corte total del resto del
+  //     backlog.
+  // Cuando el operador reanuda a `partial_pause`, el ciclo siguiente (~5 min)
+  // reconcilia con ola y allowlist moviéndose juntas.
+  let mode;
+  try {
+    mode = partialPause.getPipelineMode();
+  } catch (e) {
+    log('pulpo', `WARN split-orphan-reconciler: modo ilegible (${context}): ${e.message}. No-op.`);
+    return { ok: false, incorporated: [], reason: 'mode_unreadable' };   // fail-closed
+  }
+  const allowedNow = Array.isArray(mode && mode.allowedIssues) ? mode.allowedIssues : [];
+  // `partial_pause` con `allowed_issues` vacío (ventana sólo por `allowed_skills`)
+  // cuenta como NO habilitado: la unión del paso 5 no se escribiría y quedaríamos
+  // otra vez con la ola mutada sin respaldo en la allowlist.
+  if (!mode || mode.mode !== 'partial_pause' || allowedNow.length === 0) {
+    log('pulpo', `split-orphan-reconciler: pipeline en modo '${mode && mode.mode}' ` +
+      `(allowlist=${allowedNow.length}) — no-op total, ni ola ni allowlist se tocan (#5516).`);
+    return { ok: false, incorporated: [], reason: 'not_partial_pause' };
+  }
+
+  const active = waves.getActiveWave();
+  if (!active || !Number.isInteger(active.number)) {
+    return { ok: false, incorporated: [], reason: 'no_active_wave' };
+  }
+  const activeWaveIssues = Array.isArray(active.issues)
+    ? active.issues.map((i) => i && i.number).filter((n) => Number.isInteger(n))
+    : [];
+  if (activeWaveIssues.length === 0) {
+    return { ok: false, incorporated: [], reason: 'empty_active_wave' };
+  }
+
+  // --- 1. Descubrimiento desde GitHub -----------------------------------------
+  // `state=open` ya filtra cerrados, pero pedimos `state` igual: el módulo puro
+  // exige el campo y descarta lo que no sea `open` (SO-3, default-deny).
+  //
+  // SO-7 — El payload DEBE traer el origen del issue. `intrale/platform` es un
+  // repo PÚBLICO con issues habilitados y el Admission Gate etiqueta
+  // `needs-definition` automáticamente a issues de CUALQUIER autor; como este
+  // reconciliador escribe en la allowlist de pausa parcial (que es el gate de
+  // dispatch real), sin el dato de autor cualquiera podría abrir un
+  // `[Split de #N]` y hacerse ejecutar trabajo autónomo. `gh issue list --json`
+  // NO expone `authorAssociation`, así que vamos por REST (`author_association`
+  // + `user.login`). La asociación se consulta EN VIVO: no reintroduce
+  // `authorization_ttls` ni su TTL de 48 h (CA-2 sigue cumplido).
+  //
+  // El comando es ESTÁTICO (sólo constantes del módulo, cero interpolación de
+  // input externo) → sin superficie de command injection.
+  //
+  // maxBuffer amplio: la REST devuelve el `body` completo de cada issue y 100 de
+  // ellos superan el default de 1 MB. Ese `body` NO se usa para clasificar —
+  // desde la decisión del operador (2026-08-05/06) el único criterio es el
+  // título canónico (SO-4) — pero viene igual en el payload y hay que poder
+  // parsearlo sin que el buffer reviente.
+  const issues = [];
+  // Corte por VENTANA DE DESCUBRIMIENTO. Se marca cuando agotamos
+  // `SPLIT_ORPHAN_MAX_PAGES` con la última página LLENA (⇒ hay más resultados
+  // más allá de la ventana) o cuando GitHub declara el resultado incompleto.
+  // Antes este corte era SILENCIOSO: el loop terminaba sin marcar nada y
+  // `found.truncated` sólo salía de los caps del módulo puro, así que se
+  // perdían huérfanos sin ninguna señal (bloqueante 1 del rechazo de PO).
+  // La clasificación del corte vive en el módulo puro
+  // (`classifyDiscoveryWindow`) para que sea testeable sin red; acá sólo se
+  // recolectan los datos crudos del paginado.
+  let sawIncomplete = false;
+  let pagesFetched = 0;
+  let lastBatchSize = 0;
+  // Se resuelve UNA vez por corrida (no por página): así todas las páginas del
+  // mismo barrido consultan el mismo repo aunque la config cambie en el medio.
+  const searchQ = splitOrphanSearchQuery();
+  try {
+    for (let page = 1; page <= SPLIT_ORPHAN_MAX_PAGES; page++) {
+      ghThrottle();
+      const out = _ghExecSyncGuarded(
+        `"${GH_BIN}" api "search/issues?q=${searchQ}` +
+        `&per_page=${SPLIT_ORPHAN_PAGE_SIZE}&page=${page}"`,
+        { encoding: 'utf8', timeout: 20000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
+      );
+      const payload = JSON.parse(out);
+      // `search/issues` responde `{ total_count, incomplete_results, items:[] }`.
+      const batch = payload && Array.isArray(payload.items) ? payload.items : null;
+      if (!batch) {
+        return { ok: false, incorporated: [], reason: 'gh_bad_payload' };
+      }
+      pagesFetched = page;
+      lastBatchSize = batch.length;
+      // `incomplete_results: true` = GitHub cortó la búsqueda por timeout. El
+      // conjunto es PARCIAL: hay que decirlo, no asumir que está completo.
+      if (payload.incomplete_results === true) sawIncomplete = true;
+      // OJO: la búsqueda de issues puede devolver TAMBIÉN pull requests (se
+      // distinguen por la clave `pull_request`). Un PR titulado `[Split de #N]`
+      // no es un hijo de split y no debe entrar a la ola ni a la allowlist.
+      for (const it of batch) {
+        if (it && typeof it === 'object' && it.pull_request === undefined) issues.push(it);
+      }
+      if (batch.length < SPLIT_ORPHAN_PAGE_SIZE) break;        // última página
+    }
+  } catch (e) {
+    // Degradación de gh (breaker abierto, timeout, red) → no-op. NUNCA derivar
+    // "no hay huérfanos" como una conclusión con efectos: simplemente no
+    // incorporamos nada en este ciclo y reintentamos en el siguiente.
+    log('pulpo', `WARN split-orphan-reconciler: gh degradado (${context}): ${e.message}. Sin incorporación este ciclo.`);
+    return { ok: false, incorporated: [], reason: 'gh_unavailable' };
+  }
+
+  // --- 2. Clasificación pura ---------------------------------------------------
+  let found;
+  try {
+    found = splitOrphanReconciler.findSplitOrphans(issues, {
+      activeWaveIssues,
+      trustedLogins: splitOrphanTrustedLogins(),               // SO-7
+    });
+  } catch (e) {
+    log('pulpo', `WARN split-orphan-reconciler: clasificador falló: ${e.message}. Sin incorporación.`);
+    return { ok: false, incorporated: [], reason: 'classifier_error' };
+  }
+
+  // --- 2b. SO-7: candidatos de ORIGEN NO CONFIABLE -----------------------------
+  // Nunca se descartan en silencio. Un issue que declara un padre de la ola pero
+  // viene de un autor sin relación con el repo es, potencialmente, un intento de
+  // hacerse incorporar al alcance del pipeline. Se loguea siempre y se alerta una
+  // vez por issue (dedupe por proceso) para que quede trazado sin fatigar.
+  const rejected = (found && Array.isArray(found.rejectedUntrusted)) ? found.rejectedUntrusted : [];
+  if (rejected.length > 0) {
+    log('pulpo', `split-orphan-reconciler: ${rejected.length} candidato(s) EXCLUIDO(S) por SO-7 ` +
+      `(origen no confiable): ${rejected.map((r) => `#${r.child}→padre #${r.parent} ` +
+        `[login=${r.login || 'n/a'} assoc=${r.association || 'n/a'}]`).join(' | ')}`);
+    const nuevos = rejected.filter((r) => !_splitOrphanUntrustedAlerted.has(r.child));
+    if (nuevos.length > 0) {
+      for (const r of nuevos) _splitOrphanUntrustedAlerted.add(r.child);
+      try {
+        sendTelegramPlain(
+          `🛡️ Auto-incorporación BLOQUEADA por origen no confiable (#5516, SO-7).\n` +
+          `Estos issues declaran un padre de la ola activa pero su autor no es ` +
+          `OWNER/MEMBER/COLLABORATOR del repo, así que NO entran a la ola ni a la allowlist:\n` +
+          nuevos.map((r) => `• #${r.child} (dice ser hijo de #${r.parent}) — autor ` +
+            `${r.login || 'desconocido'} [${r.association || 'sin asociación'}]`).join('\n') +
+          `\nSi alguno es legítimo, sumalo a mano o agregá el login a ` +
+          `desync.split_orphan_trusted_logins en config.yaml.`
+        );
+      } catch { /* best-effort */ }
+    }
+  }
+
+  // --- 2c. SO-8: candidatos BLOQUEADOS POR LABEL -------------------------------
+  // Hijos legítimos (título canónico, autor confiable, padre en la ola) que NO se
+  // incorporan porque llevan `needs-human` / `tipo:recomendacion` /
+  // `source:recommendation`: están frenados a propósito por decisión humana o
+  // pendientes del gate de aprobación de #2653. Sumarlos a la ola Y a la allowlist
+  // los habilitaría para dispatch, salteando ese gate.
+  // No se alerta por Telegram (no es un incidente de seguridad: es el guard
+  // haciendo su trabajo, y estos issues son visibles en el tablero). Se loguea
+  // siempre para que quede trazado por qué no entraron.
+  const byLabel = (found && Array.isArray(found.rejectedByLabel)) ? found.rejectedByLabel : [];
+  if (byLabel.length > 0) {
+    log('pulpo', `split-orphan-reconciler: ${byLabel.length} candidato(s) EXCLUIDO(S) por SO-8 ` +
+      `(label de bloqueo / labels ausentes): ${byLabel.map((r) => `#${r.child}→padre #${r.parent} ` +
+        `[${r.reason}${r.labels && r.labels.length ? ': ' + r.labels.join(',') : ''}]`).join(' | ')}`);
+  }
+
+  // --- 2d. TRUNCADO — se evalúa SIEMPRE, incluso con 0 huérfanos ---------------
+  // Va ANTES del early return de `no_orphans` a propósito. El caso peligroso es
+  // justamente "la ventana cortó y adentro no había nada nuevo": ahí el
+  // reconciliador devolvía `no_orphans` y el ciclo terminaba en silencio, dando
+  // la falsa impresión de que no quedaban huérfanos cuando en realidad ni
+  // llegamos a mirarlos. Truncado ⇒ el resultado es PARCIAL, se diga lo que se
+  // diga sobre los huérfanos encontrados.
+  const window = splitOrphanReconciler.classifyDiscoveryWindow({
+    pagesFetched,
+    lastBatchSize,
+    pageSize: SPLIT_ORPHAN_PAGE_SIZE,
+    maxPages: SPLIT_ORPHAN_MAX_PAGES,
+    incompleteResults: sawIncomplete,
+  });
+  const { truncated, reason: truncReason } = splitOrphanReconciler.combineTruncation({
+    moduleTruncated: !!(found && found.truncated),             // caps SO-5 / max_depth
+    moduleReason: found && found.reason,
+    windowTruncated: window.truncated,                         // ventana de descubrimiento
+    windowReason: window.reason,
+  });
+
+  if (truncated) {
+    log('pulpo', `split-orphan-reconciler: descubrimiento TRUNCADO (${truncReason}) — ` +
+      `resultado PARCIAL sobre ${issues.length} issue(s) en ${pagesFetched} página(s); ` +
+      `el resto queda para el próximo ciclo.`);
+    // Dedupe: el reconciliador corre cada ~5 min y un truncado persiste hasta que
+    // alguien amplíe la ventana. Sin esto, una alerta por ciclo → fatiga.
+    const key = truncReason;
+    const now = Date.now();
+    if (_splitOrphanTruncAlert.key !== key ||
+        (now - _splitOrphanTruncAlert.at) > SPLIT_ORPHAN_TRUNC_REALERT_MS) {
+      _splitOrphanTruncAlert = { key, at: now };
+      try {
+        sendTelegramPlain(
+          `⚠️ Descubrimiento de hijos de split TRUNCADO (#5516).\n` +
+          `Motivo: ${truncReason}. Se revisaron ${issues.length} issue(s) en ` +
+          `${pagesFetched} página(s) de ${SPLIT_ORPHAN_MAX_PAGES}.\n` +
+          `El resultado es PARCIAL: puede haber hijos de split de la ola activa que ` +
+          `todavía no se descubrieron. Se reintenta cada ciclo, pero si el motivo es ` +
+          `'discovery_window' conviene subir SPLIT_ORPHAN_MAX_PAGES en pulpo.js.`
+        );
+      } catch { /* best-effort */ }
+    }
+  }
+
+  const orphans = (found && Array.isArray(found.orphans)) ? found.orphans : [];
+  // OJO: acá NO hay early return por `orphans.length === 0`.
+  //
+  // Lo había, y era el bloqueante del rechazo de review del 2026-08-10: con la
+  // ola ya escrita y la allowlist fallada en un ciclo previo, el ciclo siguiente
+  // encontraba `orphans: []` (el hijo ya está en la ola ⇒ `inWave.has(child)` lo
+  // excluye) y retornaba ANTES del paso 5, así que la brecha de la allowlist
+  // NUNCA se reintentaba → divergencia reductiva permanente → human-block.
+  // Ahora el paso 5 se alcanza SIEMPRE y re-deriva la brecha del estado (SO-9);
+  // la idempotencia la da que con todo en sync la brecha es vacía y no se escribe.
+
+  // --- 3. Incorporación a la OLA (primero) -------------------------------------
+  const incorporated = [];
+  const parentOf = new Map();
+  for (const { child, parent } of orphans) {
+    try {
+      const r = waves.addIssueToWave(active.number, { number: child }, {
+        updated_by: 'wave-promote',
+        source: 'split-github-reconcile',
+        note: `auto-incorporación de hijo de split #${parent} -> #${child} ` +
+          `(#5516, descubierto desde GitHub, padre ∈ ola ${active.number})`,
+      });
+      // `added:false` === ya estaba en la ola (idempotente). Sólo notificamos y
+      // declaramos dependencia por los que agregamos DE VERDAD en esta corrida.
+      if (r && r.added === true) {
+        incorporated.push(child);
+        parentOf.set(child, parent);
+      }
+    } catch (e) {
+      // EWAVES_DUPLICATE_ISSUE (el hijo ya vive en OTRA ola) u otro conflicto:
+      // no forzamos. Queda fuera y se reporta.
+      log('pulpo', `WARN split-orphan-reconciler: #${child} (padre #${parent}) omitido: ${e.message}`);
+    }
+  }
+  // Igual que arriba: NO retornamos por `incorporated.length === 0`. Ése era el
+  // segundo camino que hacía inalcanzable al paso 5 (doble cinturón señalado por
+  // review: `addIssueToWave` devuelve `added:false` para un hijo ya presente, así
+  // que `incorporated` quedaba vacío y se retornaba `nothing_added`).
+
+  // --- 4. Dependencia padre→hijos (trazable en el audit encadenado) ------------
+  const grouped = splitOrphanReconciler.groupByParent(
+    incorporated.map((c) => ({ child: c, parent: parentOf.get(c) }))
+  );
+  // Se lleva la cuenta de los grupos que FALLARON para no afirmar después, en el
+  // Telegram, que la dependencia quedó declarada cuando no es cierto.
+  const dependencyFailures = [];
+  for (const { parent, children } of grouped) {
+    try {
+      waves.addDependency(parent, children, {
+        updated_by: 'split-orphan-5516',
+        source: 'split-github-reconcile',
+        note: `dependencia declarada por reconciliación desde GitHub: ` +
+          `#${parent} -> ${children.map((c) => `#${c}`).join(', ')} (#5516)`,
+      });
+    } catch (e) {
+      dependencyFailures.push({ parent, children, msg: e.message });
+      log('pulpo', `WARN split-orphan-reconciler: no se pudo declarar dependencia ${parent}->${JSON.stringify(children)}: ${e.message}`);
+    }
+  }
+
+  // --- 5. Allowlist de pausa parcial (después de la ola) -----------------------
+  // El modo ya se validó en el paso 0 (`partial_pause` con allowlist no vacía);
+  // acá se RE-LEE sólo para tomar el contenido FRESCO de la allowlist: entre el
+  // paso 0 y este punto hubo una consulta a GitHub y escrituras en `waves.json`,
+  // y el operador o el Commander pudieron haberla movido. Si en esa ventana el
+  // modo cambió (pausa total, cierre de ola), NO forzamos el write: la
+  // divergencia queda reductiva y se reporta.
+  //
+  // El write sólo puede hacerse en `partial_pause`: en `running` escribir acá
+  // METERÍA al pipeline en pausa parcial con SÓLO estos hijos permitidos, un
+  // corte total de dispatch para el resto del backlog. Y no es que en `running`
+  // "la ola alcance" — al revés, #5060 hace `isIssueAllowedInState` fail-closed
+  // (`return false` en `running` salvo escape hatch): sin allowlist no se
+  // dispatcha nada. Por eso la reconciliación entera es un no-op fuera de
+  // `partial_pause`, no sólo su último paso.
+  let allowlistUpdated = false;
+  let allowlistAdded = [];
+  // Brecha PENDIENTE que no se pudo cerrar en esta corrida (para el WARN honesto).
+  let allowlistPending = [];
+  try {
+    const modeNow = partialPause.getPipelineMode();
+    const current = Array.isArray(modeNow.allowedIssues) ? modeNow.allowedIssues : [];
+    if (modeNow.mode === 'partial_pause' && current.length > 0) {
+      // SO-9 — La brecha se RE-DERIVA DEL ESTADO, no de `incorporated`.
+      //
+      // Se re-lee la ola FRESCA del disco (post-escrituras del paso 3) en vez de
+      // reusar `activeWaveIssues`, que es el snapshot de ANTES de escribir. Así
+      // "qué falta en la allowlist" es una función del estado persistido y no de
+      // la memoria de esta corrida: si un ciclo anterior escribió la ola y falló
+      // la allowlist, este ciclo lo detecta igual y lo cierra.
+      let waveNow = activeWaveIssues;
+      try {
+        const freshWave = waves.getActiveWave();
+        if (freshWave && Number.isInteger(freshWave.number) && Array.isArray(freshWave.issues)) {
+          // Sólo si sigue siendo LA MISMA ola. Si el operador cerró la ola y abrió
+          // otra durante la corrida, no convergemos contra un alcance distinto del
+          // que autorizó el paso 0: se cae al snapshot y la brecha real queda para
+          // el ciclo siguiente (que ya operará sobre la ola nueva).
+          if (freshWave.number === active.number) {
+            waveNow = freshWave.issues
+              .map((i) => i && i.number).filter((n) => Number.isInteger(n));
+          }
+        }
+      } catch { /* se usa el snapshot; la brecha se cierra en el ciclo siguiente */ }
+
+      const gap = splitOrphanReconciler.splitChildrenMissingFromAllowlist({
+        issues,                                                // corpus de GitHub del paso 1
+        waveIssues: waveNow,
+        allowlistIssues: current,
+        trustedLogins: splitOrphanTrustedLogins(),             // SO-7
+      });
+      if (gap.rejectedByLabel.length > 0) {
+        // Un hijo que está en la ola pero lleva label de bloqueo NO entra a la
+        // allowlist (habilitarlo saltearía el gate de #2653). Es una divergencia
+        // reductiva LEGÍTIMA, y se loguea para que no parezca un fallo silencioso.
+        log('pulpo', `split-orphan-reconciler: ${gap.rejectedByLabel.length} hijo(s) en la ola ` +
+          `NO se suman a la allowlist por SO-8: ${gap.rejectedByLabel.map((r) => `#${r.child} [${r.reason}]`).join(' | ')}`);
+      }
+      if (gap.truncated) {
+        log('pulpo', `split-orphan-reconciler: convergencia de allowlist TRUNCADA (${gap.reason}) — ` +
+          `el remanente se cierra en el ciclo siguiente.`);
+      }
+      // Unión = allowlist actual + brecha re-derivada. `incorporated` ya está
+      // contenido en la brecha (acaba de entrar a la ola y no está en la
+      // allowlist), pero se suma igual por robustez: si la re-lectura de la ola
+      // falló y cayó al snapshot, los de esta corrida no se pierden.
+      const toAdd = [...new Set([...gap.missing, ...incorporated])]
+        .filter((n) => !current.includes(n))
+        .sort((a, b) => a - b);
+      const union = [...new Set([...current, ...toAdd])].sort((a, b) => a - b);
+      if (union.length !== current.length) {
+        allowlistAdded = toAdd;
+        // OJO: `setPartialPause` NO hace merge — reconstruye el JSON entero
+        // desde `opts`. Todo campo aditivo que no repasemos acá se PIERDE en el
+        // write (`allowed_skills`, `accepted_dep_risk`, `dep_sources`). Perder
+        // `allowed_skills` cambiaría en silencio qué skills puede correr el
+        // pipeline. `authorization_ttls` sí lo hereda solo el módulo.
+        // La metadata de ola se re-deriva de la ola activa (más fidedigna que
+        // conservar la vieja); `sanitizeWaveMetaForWrite` es fail-closed y
+        // simplemente la omite si no valida.
+        //
+        // Unión estrictamente ADITIVA → el gate de removals de #3625 no aplica.
+        const r = partialPause.setPartialPause(union, {
+          authorizedBy: 'wave-promote',
+          source: 'split-github-reconcile',
+          justification: `Hijos de split de la ola ${active.number} descubiertos desde ` +
+            `GitHub / convergencia ola→allowlist (SO-9): ` +
+            `${toAdd.map((c) => `#${c}`).join(', ')} (#5516)`,
+          allowedSkills: Array.isArray(modeNow.allowedSkills) ? modeNow.allowedSkills : undefined,
+          acceptedDepRisk: modeNow.acceptedDepRisk === true,
+          depSources: modeNow.depSources || undefined,
+          waveNumber: active.number,
+          waveName: active.name,
+          waveGoal: active.goal,
+        });
+        allowlistUpdated = !!(r && r.ok);
+        if (!allowlistUpdated) {
+          allowlistAdded = [];
+          allowlistPending = toAdd;
+          // Divergencia REDUCTIVA (la ola tiene de más). El reintento del ciclo
+          // siguiente SÍ existe ahora: la brecha se re-deriva del estado (SO-9),
+          // así que no depende de que estos hijos vuelvan a aparecer como
+          // huérfanos nuevos. Antes este mensaje mentía — con la ola ya escrita el
+          // descubrimiento devolvía `[]` y el paso 5 era inalcanzable.
+          log('pulpo', `WARN split-orphan-reconciler: allowlist NO actualizada (${r && r.msg}). ` +
+            `Divergencia REDUCTIVA pendiente (la ola tiene de más): ${toAdd.map((c) => `#${c}`).join(', ')}. ` +
+            `El ciclo siguiente la re-deriva del estado (SO-9) y la cierra sin intervención.`);
+        }
+      }
+    } else {
+      // Carrera rara: el modo cambió entre el paso 0 y acá. No forzamos el write.
+      allowlistPending = incorporated;
+      log('pulpo', `WARN split-orphan-reconciler: el modo cambió a '${modeNow.mode}' durante la ` +
+        `reconciliación — allowlist NO actualizada. Divergencia reductiva pendiente; al volver a ` +
+        `'partial_pause' el ciclo siguiente la re-deriva del estado (SO-9) y la cierra.`);
+    }
+  } catch (e) {
+    allowlistPending = incorporated;
+    log('pulpo', `WARN split-orphan-reconciler: fallo al actualizar allowlist: ${e.message}. ` +
+      `Divergencia reductiva pendiente; el ciclo siguiente la re-deriva del estado (SO-9) y la cierra.`);
+  }
+
+  // --- 6. Notificación ---------------------------------------------------------
+  // Idempotencia: sin incorporaciones a la ola Y sin cambios en la allowlist NO se
+  // notifica ni se afirma nada. Es el camino normal de una corrida sin novedades.
+  if (incorporated.length === 0 && allowlistAdded.length === 0) {
+    return {
+      ok: true,
+      incorporated: [],
+      allowlistAdded: [],
+      reason: orphans.length === 0 ? 'no_orphans' : 'nothing_added',
+      truncated,
+      allowlistPending,
+    };
+  }
+
+  const detalle = grouped
+    .map(({ parent, children }) => `#${parent} → ${children.map((c) => `#${c}`).join(', ')}`)
+    .join(' | ');
+  log('pulpo', `split-orphan-reconciler: auto-incorporación DESDE GITHUB OK — ` +
+    `hijos=${JSON.stringify(incorporated)} allowlist_agregados=${JSON.stringify(allowlistAdded)} ` +
+    `allowlist_actualizada=${allowlistUpdated} deps_fallidas=${dependencyFailures.length} (#5516)`);
+  try {
+    // Sólo se afirma lo que REALMENTE pasó. Antes esto decía "Dependencia
+    // padre→hijos declarada." de forma incondicional, incluso cuando el paso 4 se
+    // había comido un fallo de `addDependency` (señalado por review).
+    const lineas = [];
+    if (incorporated.length > 0) {
+      lineas.push(`Hijos de split descubiertos en GitHub (el split no pasó por el ` +
+        `Commander): ${detalle}`);
+      lineas.push(`Sumados a la ola ${active.number}.`);
+    }
+    // Convergencia SO-9 pura: cerró una brecha de un ciclo anterior sin sumar nada
+    // nuevo a la ola. Vale avisarlo: es la auto-reparación haciendo su trabajo.
+    const soloConvergencia = allowlistAdded.filter((n) => !incorporated.includes(n));
+    if (incorporated.length === 0) {
+      lineas.push(`Convergencia ola→allowlist (SO-9): se cerró la brecha pendiente de un ` +
+        `ciclo anterior sumando ${allowlistAdded.map((c) => `#${c}`).join(', ')} a la allowlist.`);
+    } else if (allowlistAdded.length > 0) {
+      lineas.push(`Allowlist actualizada: ${allowlistAdded.map((c) => `#${c}`).join(', ')}` +
+        `${soloConvergencia.length > 0 ? ` (incluye ${soloConvergencia.map((c) => `#${c}`).join(', ')} de una brecha anterior)` : ''}.`);
+    } else {
+      lineas.push(`⚠️ Allowlist NO actualizada: la brecha ` +
+        `(${allowlistPending.map((c) => `#${c}`).join(', ') || 'n/a'}) queda pendiente y el ciclo ` +
+        `siguiente la re-deriva del estado y la cierra.`);
+    }
+    if (grouped.length > 0) {
+      lineas.push(dependencyFailures.length === 0
+        ? `Dependencia padre→hijos declarada.`
+        : `⚠️ Dependencia padre→hijos NO declarada para ` +
+          `${dependencyFailures.map((f) => `#${f.parent}`).join(', ')} ` +
+          `(${dependencyFailures.length} de ${grouped.length} grupo(s) falló).`);
+    }
+    if (truncated) {
+      lineas.push(`⚠️ Descubrimiento truncado (${truncReason}): el resto entra en el próximo ciclo.`);
+    }
+    sendTelegramPlain(`♻️ Auto-incorporación a la ola activa (#5516).\n` + lineas.join('\n'));
+  } catch { /* best-effort */ }
+
+  return { ok: true, incorporated, allowlistAdded, truncated, allowlistPending };
+}
+
 /**
  * Evalúa la divergencia waves↔allowlist y actúa según la clasificación:
  *   - `resoluble_reductivo` → realinea reductivamente + limpia flag + traza.
@@ -16864,6 +18127,38 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
  * Best-effort: nunca lanza (envuelto por el caller). Usado al boot y periódico.
  */
 function evaluateDesyncAndMaybeRealign(context, opts = {}) {
+  // #5516 — Reconciliación de huérfanos de split ANTES de cualquier probe.
+  //
+  // Va acá arriba, y NO dentro del bloque de desync, por una razón concreta: en
+  // el incidente que motiva el issue la ola y la allowlist estaban EN SYNC
+  // (`desync:false`) — los huérfanos no figuraban en ninguno de los dos. Si
+  // colgáramos este paso del camino `mid.desync` (como #4439/#4525), el early
+  // return de `!probe.desync` lo saltearía siempre y el bug seguiría vivo.
+  //
+  // Corriendo primero, además, el probe posterior ve el estado YA incorporado:
+  // la ola y la allowlist quedan sincronizadas en la misma pasada y no se
+  // dispara un human-block espurio por la escritura intermedia.
+  //
+  // OPT-IN EXPLÍCITO (`opts.reconcileSplitOrphans`), no derivado de `context`,
+  // por dos razones:
+  //   - Nunca en el ciclo de BOOT: la consulta a `gh` es síncrona (busy-wait del
+  //     throttle + execSync) y meterla en el arranque puede bloquear el Pulpo
+  //     ~22 s antes de levantar el loop. El primer tick periódico llega a los
+  //     ~5 min; esa demora es preferible a arriesgar el boot.
+  //   - Los tests existentes de #4439/#4525 invocan esta función con
+  //     `'periodic'` y sin opts. Si el disparo colgara del `context`, esos unit
+  //     tests empezarían a pegarle a la red. El flag lo pasa SÓLO el loop de
+  //     producción.
+  //
+  // Best-effort y aislado: si falla, sigue toda la evaluación de desync normal.
+  if (opts.reconcileSplitOrphans === true) {
+    try {
+      reconcileSplitOrphansFromGithub(context);
+    } catch (e) {
+      log('pulpo', `WARN split-orphan-reconciler (${context}): ${e.message}`);
+    }
+  }
+
   // #4753 — seam de test: permitir inyectar `isClosed` (predicado de cierre).
   // Producción (`'boot'`/`'periodic'`) no pasa opts → usa el title-cache local.
   let isClosed = null;
@@ -18894,20 +20189,51 @@ async function mainLoop() {
     log('anomaly', `No se pudo iniciar el detector: ${e.message}`);
   }
 
-  // #4708 — Wave-stall watchdog (dead-man's switch de la ola).
-  // Brazo periódico que detecta "trabajo habilitado + 0 despacho durante N min
-  // + sin causa declarada" y alerta a Telegram + marca la ola `stalled`
-  // (needs_attention). La lógica de decisión vive en lib/wave-stall-watchdog.js
-  // (función pura testeada). Este brazo SÓLO recolecta hechos del filesystem y
-  // la invoca. Es ACCESORIO: si tira, try/catch loguea y NO mata el loop (mismo
-  // criterio que el anomalyDetector). Rollout gradual: `wave_watchdog.enabled`
-  // default false.
+  // #4708 / #5400 — Watchdog de inactividad de DESPACHO.
+  //
+  // #4708 lo creó como dead-man's switch de la OLA. #5400 lo amplía al PIPELINE:
+  // el 2026-08-02 hubo 1h33 sin despachar y ninguna alerta, porque (a) el brazo
+  // estaba apagado, (b) sólo vigilaba si había ola activa, (c) una causa
+  // declarada lo callaba indefinidamente y (d) medía el movimiento con el conteo
+  // de `trabajando/`, que se congela con un agente clavado.
+  //
+  // La lógica de decisión sigue viviendo en lib/wave-stall-watchdog.js (función
+  // pura testeada). Este brazo SÓLO recolecta hechos del filesystem y la invoca:
+  // es READ-ONLY sobre el estado de despacho (SEC-3) — no toca `.paused`, ni la
+  // allowlist, ni la cola. Todo destrabe sigue siendo humano.
+  //
+  // Es ACCESORIO: si tira, try/catch loguea y NO mata el loop.
   try {
     const waveWatchdog = require('./lib/wave-stall-watchdog');
     const cfgRoot0 = loadConfig() || {};
     const wwCfg0 = cfgRoot0.wave_watchdog || {};
-    const tickMs = waveWatchdog.parsePositiveInt(wwCfg0.tick_ms, 60000);
+    // #5400 (rev-7) — `tick_ms` está en MILISEGUNDOS y se parsea con el helper
+    // de milisegundos. Antes usaba `parsePositiveInt`, acotado a minutos
+    // ([1, 1440]), y el 60000 de config caía fuera de rango: devolvía 1 y el
+    // `setInterval` de abajo corría cada 1 ms en vez de cada 60 s.
+    const tickMs = waveWatchdog.parseTickMs(wwCfg0.tick_ms, waveWatchdog.DEFAULT_TICK_MS);
     const stateFile = path.join(PIPELINE, 'state', 'wave-stall-watchdog-state.json');
+    const statusFile = path.join(PIPELINE, 'state', 'dispatch-watchdog-status.json');
+
+    // #5400 (rev-6, B1) — Espejo EN MEMORIA del estado del watchdog para cuando
+    // la persistencia falla. `saveStateAtomic` es fail-soft: si `.pipeline/state/`
+    // no es escribible devuelve false, y el tick siguiente releía del disco el
+    // estado VIEJO — con `lastAlertTs`/`alertCount` desactualizados, así que el
+    // anti-flooding se reiniciaba y el mismo episodio se re-anunciaba en cada
+    // tick (1 mensaje por minuto). Con el espejo, el episodio sigue contando
+    // aunque el disco no acompañe. Se limpia apenas la persistencia vuelve.
+    let estadoEnMemoria = null;
+
+    // #5400 / SEC-5 — "control apagado" NO puede ser indistinguible de "todo OK".
+    // El meta-bug de este issue fue justamente ese: el watchdog llevaba desde el
+    // merge en `enabled: false` y nada lo avisaba. Cada tick estampa su estado
+    // (incluso cuando sale temprano por estar apagado) para que el dashboard
+    // pueda mostrar OFF / degradado en vez de simplemente no mostrar nada.
+    // rev-1: usa el write atómico COMPARTIDO (`lib/atomic-json.js`) en vez de
+    // reimplementar `tmp + rename` por cuarta vez.
+    const escribirStatus = (extra) => {
+      atomicJson.writeJsonAtomic(statusFile, { lastTickTs: Date.now(), ...extra });
+    };
 
     const runWaveStallTick = () => {
       try {
@@ -18915,100 +20241,222 @@ async function mainLoop() {
         const cfg = cfgRoot.wave_watchdog || {};
         // Kill-switch / rollout gradual: leídos en cada tick para permitir
         // activar/desactivar en caliente sin reiniciar el Pulpo.
-        if (cfg.enabled !== true || cfg.kill_switch === true) return;
+        const habilitado = cfg.enabled === true && cfg.kill_switch !== true;
+        if (!habilitado) {
+          escribirStatus({
+            enabled: cfg.enabled === true,
+            killSwitch: cfg.kill_switch === true,
+            degraded: true,
+            reason: cfg.kill_switch === true ? 'kill-switch' : 'disabled',
+          });
+          return;
+        }
 
         const waves = require('./lib/waves');
         const waveProgress = require('./lib/wave-progress');
 
-        const active = waves.getActiveWave();
-        if (!active || !Number.isInteger(active.number)) return; // sin ola activa: nada que vigilar
+        // #5400 — SIN gate de ola. El alcance del issue es el PIPELINE: cualquier
+        // causa que frene el despacho produce el mismo silencio, haya ola o no.
+        // `active` queda como contexto OPCIONAL del mensaje (waveKey puede ser null).
+        let active = null;
+        try {
+          const a = waves.getActiveWave();
+          if (a && Number.isInteger(a.number)) active = a;
+        } catch { /* sin ola: el watchdog igual vigila */ }
+        const waveKey = active ? active.number : null;
 
-        // 1. Trabajo habilitado: issues no completados y sin bloqueo de dependencia.
-        //    (Un issue con TODOS sus bloqueantes abiertos NO cuenta como habilitado
-        //     → un estancamiento por dependencia queda como enabledCount=0 = skip.)
-        const enabled = (active.issues || []).filter((i) => {
-          if (!i || i.status === 'completed') return false;
-          try { return waves.getBlockingIssues(i.number).length === 0; }
-          catch { return true; }
-        });
+        // 1 + 3. Hechos del despacho: alcance vigente, trabajo ELEGIBLE esperando
+        //    y causa declarada. Todo sale de `lib/dispatch-facts` (rev-3), que es
+        //    donde vive ahora el brazo de recolección — inyectable y testeado.
+        //
+        //    "Elegible" = workfile en `pendiente/` CUYO ISSUE ESTÁ EN LA ALLOWLIST
+        //    de la ola. Contarlos todos (rev-2) sumaba los 228 workfiles de
+        //    backlog parkeado: CA-3 quedaba inalcanzable (nunca daba 0) y el gate
+        //    que hace ADITIVA la escalada era constante-verdadero, así que toda
+        //    pausa de despacho terminaba alertando.
+        //      - los bloqueados viven en `bloqueado-*`, no en `pendiente/`;
+        //      - una cola legítimamente vacía da 0 → skip, sin alerta (CA-3).
+        const hechos = recolectarHechosDespacho(cfgRoot, waves);
+        const pendientes = hechos.conteo.elegibles;
+        const dispatching = countTrabajandoGlobal(cfgRoot);
+        const cause = hechos.cause;
 
-        // 2. Despacho: archivos en trabajando/ de TODAS las fases de TODOS los pipelines.
-        let dispatching = 0;
-        for (const [pName, pConfig] of Object.entries(cfgRoot.pipelines || {})) {
-          for (const fase of (pConfig.fases || [])) {
-            dispatching += listWorkFiles(path.join(PIPELINE, pName, fase, 'trabajando')).length;
-          }
+        // 2. Serie de avance (avancePct) de la ola activa, si hay.
+        let progressSeries = [];
+        if (active) {
+          try { progressSeries = waveProgress.readSnapshots({ waveKey: active.number }); }
+          catch { progressSeries = []; }
         }
 
-        // 3. Serie de avance (avancePct) de la ola activa.
-        let progressSeries = [];
-        try { progressSeries = waveProgress.readSnapshots({ waveKey: active.number }); }
-        catch { progressSeries = []; }
+        // 4. Estampa del último despacho EFECTIVO (#5400). Ausente ⇒ el watchdog
+        //    lo trata como reloj degradado (nunca como "movió ficha").
+        //    rev-1: si el write al FS falló pero este proceso SÍ despachó, gana
+        //    el espejo en memoria — evita alertar por un fallo de disco.
+        const stamp = lastDispatch.readLastDispatch(STATE_DIR);
+        let lastDispatchTs = stamp ? stamp.ts : null;
+        if (ultimoDespachoMemTs > 0 && (lastDispatchTs == null || ultimoDespachoMemTs > lastDispatchTs)) {
+          lastDispatchTs = ultimoDespachoMemTs;
+        }
 
-        // 4. Causa declarada (interino hasta #4709 — markers dispersos, computados
-        //    EN VIVO por el Pulpo, no leídos de un artefacto spoofeable por agentes:
-        //    SEC-1). Cada chequeo es defensivo; si tira, NO se asume causa
-        //    (fail-closed: la ausencia de causa dispara). Al ser cómputo en vivo,
-        //    la causa es inherentemente vigente (no requiere TTL propio).
-        const cause = readDeclaredCauseForWave(cfgRoot, waves);
-
-        const state = waveWatchdog.loadState(stateFile);
+        // B1 — el espejo GANA sobre el disco: si el tick anterior no pudo
+        // persistir, lo que hay en el archivo es más viejo que lo que sabemos.
+        const state = estadoEnMemoria != null
+          ? waveWatchdog.normalizeState(estadoEnMemoria)
+          : waveWatchdog.loadState(stateFile);
         const decision = waveWatchdog.decide({
           now: Date.now(),
-          waveKey: active.number,
-          enabledCount: enabled.length,
+          waveKey,
+          enabledCount: pendientes,
           dispatching,
           progressSeries,
           cause,
+          authorDeclared: cause ? cause.authorDeclared : null,
+          lastDispatchTs,
           state,
           stallMinutes: cfg.stall_minutes,
           cooldownMinutes: cfg.alert_cooldown_minutes,
-          windowMinutes: cfg.window_minutes,
+          declaredCauseEscalateMinutes: cfg.declared_cause_escalate_minutes,
+          busyGraceMinutes: cfg.busy_grace_minutes,
+          // rev-6 (B4) — "0 elegibles" con el alcance CIEGO no es cola vacía: es
+          // no poder determinar qué es despachable. `decide()` lo necesita para
+          // no salir por `no-enabled-work` justo con el pipeline trabado.
+          scopeBlind: hechos.conteo.ciego === true,
+          queuedTotal: hechos.conteo.total,
         });
 
         // Persistir SIEMPRE el nextState (reloj de movimiento, episodio de alerta).
-        try { waveWatchdog.saveStateAtomic(stateFile, decision.nextState); }
-        catch (e) { log('wave-stall', `no pude persistir estado: ${e.message}`); }
+        let estadoPersistido = false;
+        try { estadoPersistido = waveWatchdog.saveStateAtomic(stateFile, decision.nextState) !== false; }
+        catch (e) { log('dispatch-watchdog', `no pude persistir estado: ${e.message}`); }
+        // B1 — sin persistencia, el estado vive en memoria hasta que el disco
+        // vuelva. Así el episodio no se re-cuenta ni el anti-flooding se apaga.
+        if (!estadoPersistido) {
+          estadoEnMemoria = decision.nextState;
+          log('dispatch-watchdog', 'no pude persistir el estado del watchdog — ' +
+            'sigo con el espejo en memoria (el episodio no se re-cuenta)');
+        } else {
+          estadoEnMemoria = null;
+        }
+
+        // rev-1 / SEC-5 — `degraded` ahora dice la verdad: el reloj de despacho
+        // sin estampa creíble, el estado que no se pudo persistir o una estampa
+        // que no se pudo escribir son TODOS degradación, y el dashboard tiene
+        // que poder mostrarlo. Antes era `degraded: false` fijo, o sea que el
+        // watchdog reportaba salud incluso ciego.
+        escribirStatus({
+          enabled: true,
+          killSwitch: false,
+          // `never` (todavía no se estampó ningún despacho) también es degradado:
+          // se está midiendo con la proxy legacy, no con el reloj honesto. Se
+          // autolimpia solo en cuanto salga el primer agente.
+          degraded: decision.stampState !== 'ok' || !estadoPersistido || !ultimaEstampaOk,
+          stampState: decision.stampState,
+          stampWriteOk: ultimaEstampaOk,
+          statePersisted: estadoPersistido,
+          action: decision.action,
+          reason: decision.reason,
+          stalledMs: decision.stalledMs,
+          causeKind: decision.causeKind,
+          lastDispatchTs: decision.lastDispatchTs,
+          dispatching,
+          // #5400 (rev-8) — AUTORÍA de la causa, con su instante de inicio. El
+          // banner tiene que poder decir "declarada por X (sin verificar, desde
+          // 13:12)": sin el qualifier temporal ni el "sin verificar" se lee como
+          // un hecho auditado, y no lo es (SEC-2, GRACE MODE).
+          authorDeclared: cause && cause.authorDeclared != null ? cause.authorDeclared : null,
+          causeSinceTs: cause && Number.isFinite(cause.sinceTs) ? cause.sinceTs : null,
+          // #5400 (rev-8) — BACKOFF observable (CA-4 en el dashboard, no sólo en
+          // el código): id del episodio, cuántos avisos van, cuándo salió el
+          // último y cuándo puede salir el próximo.
+          episodeId: decision.episodeId,
+          alertCount: decision.alertCount,
+          lastAlertTs: decision.lastAlertTs,
+          nextAlertTs: decision.nextAlertTs,
+          alertEtaTs: decision.alertEtaTs,
+          alertThresholdMinutes: decision.alertThresholdMinutes,
+          // rev-3 — `pendientes` es el conteo ELEGIBLE (el que gobierna la
+          // decisión). El total y el backlog fuera de alcance viajan aparte para
+          // que el dashboard pueda mostrar "13 elegibles / 241 en cola" en vez de
+          // un único número que mezcla ola con backlog parkeado.
+          pendientes,
+          pendientesTotal: hechos.conteo.total,
+          pendientesFueraDeAlcance: hechos.conteo.fueraDeAlcance,
+          alcanceAplicado: hechos.conteo.alcanceAplicado,
+          // rev-6 (B4/S3) — el dashboard tiene que poder distinguir "0 elegibles
+          // porque la cola está vacía" de "0 elegibles porque no puedo verla".
+          alcanceCiego: hechos.conteo.ciego === true,
+          modoLeible: hechos.alcance.modeReadable !== false,
+          modoPipeline: hechos.alcance.mode,
+        });
+
+        // --- Aviso de RECUPERACIÓN (CA-5) -----------------------------------
+        // Se emite apenas el despacho se reanuda, cualquiera sea la decisión de
+        // este tick, y una sola vez por episodio (`decide` limpia el contador).
+        if (decision.recovery) {
+          log('dispatch-watchdog', `Despacho reanudado tras ${Math.round(decision.recovery.outageMs / 60000)}min ` +
+            `(${decision.recovery.alertCount} aviso(s) emitido(s) durante la detención)`);
+          try {
+            notifyTelegramFn({
+              level: 'info',
+              component: 'dispatch-watchdog',
+              message: decision.recovery.message,
+              context: waveKey != null ? { ola: waveKey } : {},
+            });
+          } catch (e) { log('dispatch-watchdog', `notify de recuperación falló: ${e.message}`); }
+        }
 
         if (decision.action === 'alert' || decision.action === 'escalate') {
-          log('wave-stall', `Ola ${active.number} estancada (${decision.action}): ${decision.reason}, ` +
-            `${enabled.length} habilitado(s), ${Math.round(decision.stalledMs / 60000)}min sin mover ficha`);
+          log('dispatch-watchdog', `Despacho detenido (${decision.action}): ${decision.reason}, ` +
+            `${pendientes} pendiente(s), ${Math.round(decision.stalledMs / 60000)}min sin despachar`);
 
-          // Alerta Telegram — SÓLO waveKey + motivo (SEC-2/CA-5). El mensaje ya
-          // viene sanitizado desde decide(): sin paths, tokens ni dumps.
+          // Alerta Telegram. El mensaje ya viene armado y sanitizado desde
+          // `decide()` (sin paths, tokens ni dumps) y `notifyTelegram` escapa los
+          // metacaracteres de Markdown antes de encolar (SEC-1), así que una causa
+          // con `_` o un `*` desbalanceado no puede tumbar la entrega.
           try {
             notifyTelegramFn({
               level: decision.level,
-              component: 'wave-stall-watchdog',
+              component: 'dispatch-watchdog',
               message: decision.message,
-              action: 'Revisá por qué la ola no despacha (dashboard needs_attention).',
-              context: { ola: active.number, habilitados: enabled.length },
+              action: 'Revisá por qué el pipeline no despacha (el destrabe es manual).',
+              context: {
+                ola: waveKey != null ? waveKey : 'sin ola activa',
+                pendientes,
+                causa: decision.causeKind || 'sin causa declarada',
+              },
             });
-          } catch (e) { log('wave-stall', `notify falló: ${e.message}`); }
+          } catch (e) { log('dispatch-watchdog', `notify falló: ${e.message}`); }
 
           // Estado ola: marcar estancada (needs_attention). Es la escalada a
           // atención humana a NIVEL OLA — no bloquea los issues habilitados
           // (aplicar needs-human a issues sanos los sacaría del despacho y
           // agravaría el propio estancamiento que estamos alertando).
-          try {
-            waves.setWaveStalled(active.number, {
-              reason: decision.reason,
-              since: new Date(Date.now() - decision.stalledMs).toISOString(),
-              updated_by: 'wave-stall-watchdog',
-            });
-          } catch (e) { log('wave-stall', `setWaveStalled falló: ${e.message}`); }
-        } else if (decision.reason === 'dispatching' || decision.reason === 'no-enabled-work') {
-          // La ola volvió a moverse / no hay trabajo pendiente: limpiar la marca
-          // de estancamiento si estaba puesta (auto-clear del episodio).
+          // Sólo aplica si hay ola: sin ola, el aviso de Telegram es la escalada.
+          if (active) {
+            try {
+              waves.setWaveStalled(active.number, {
+                reason: decision.reason,
+                since: new Date(Date.now() - decision.stalledMs).toISOString(),
+                updated_by: 'dispatch-watchdog',
+              });
+            } catch (e) { log('dispatch-watchdog', `setWaveStalled falló: ${e.message}`); }
+          }
+        // #5400 (rev-5, secundario 5) — `decision.reason === 'dispatching'` salió
+        // de la condición: `decide()` dejó de emitir esa razón en rev-1 (cuando
+        // `dispatching > 0` pasó de skip incondicional a gracia), así que era una
+        // rama muerta que sugería un auto-clear que ya no podía ocurrir por ahí.
+        } else if (active && (decision.recovery || decision.reason === 'no-enabled-work')) {
+          // El pipeline volvió a moverse / no hay trabajo pendiente: limpiar la
+          // marca de estancamiento si estaba puesta (auto-clear del episodio).
           try {
             if (waves.isWaveStalled()) {
               waves.clearWaveStalled(active.number, { note: 'ola volvió a despachar' });
-              log('wave-stall', `Ola ${active.number} destrabada: marca stalled limpiada`);
+              log('dispatch-watchdog', `Ola ${active.number} destrabada: marca stalled limpiada`);
             }
           } catch (_e) { /* no bloqueante */ }
         }
       } catch (err) {
-        log('wave-stall', `tick excepción (no bloqueante): ${err.message}`);
+        log('dispatch-watchdog', `tick excepción (no bloqueante): ${err.message}`);
       }
     };
 
@@ -19016,10 +20464,21 @@ async function mainLoop() {
     // impedir un shutdown limpio del proceso.
     const waveStallTimer = setInterval(runWaveStallTick, tickMs);
     if (typeof waveStallTimer.unref === 'function') waveStallTimer.unref();
-    log('wave-stall', `Watchdog de avance de ola iniciado: cada ${Math.round(tickMs / 1000)}s ` +
-      `(enabled=${wwCfg0.enabled === true}, kill_switch=${wwCfg0.kill_switch === true})`);
+    // #5400 / SEC-5 — estampar el estado YA al arrancar: si el watchdog quedó
+    // apagado, el dashboard tiene que poder decirlo desde el primer segundo, no
+    // recién después del primer tick.
+    escribirStatus({
+      enabled: wwCfg0.enabled === true,
+      killSwitch: wwCfg0.kill_switch === true,
+      degraded: !(wwCfg0.enabled === true && wwCfg0.kill_switch !== true),
+      reason: 'boot',
+    });
+    log('dispatch-watchdog', `Watchdog de inactividad de despacho iniciado: cada ${Math.round(tickMs / 1000)}s ` +
+      `(enabled=${wwCfg0.enabled === true}, kill_switch=${wwCfg0.kill_switch === true}, ` +
+      `stall=${waveWatchdog.parseStallMinutes(wwCfg0.stall_minutes)}min, ` +
+      `escalada_causa=${waveWatchdog.parseStallMinutes(wwCfg0.declared_cause_escalate_minutes, waveWatchdog.DEFAULT_DECLARED_CAUSE_ESCALATE_MINUTES)}min)`);
   } catch (e) {
-    log('wave-stall', `No se pudo iniciar el watchdog de avance de ola: ${e.message}`);
+    log('dispatch-watchdog', `No se pudo iniciar el watchdog de avance de ola: ${e.message}`);
   }
 
   // #3080 / S1 multi-provider — Cron de rotación de credenciales.
@@ -19337,6 +20796,12 @@ async function mainLoop() {
     log('audit', `[partial-pause-audit] no pude iniciar cron de verifyChain: ${e.message}`);
   }
 
+  // #5821 CA-1 — Marca de arranque de la iteración anterior, para poder publicar
+  // su duración REAL en el heartbeat. Es la magnitud contra la que el watchdog
+  // dimensiona su umbral; sin ella sólo tendría la edad muestreada del
+  // heartbeat, que subestima la duración y produce falsos positivos.
+  let lastIterationStartMs = null;
+
   while (running) {
     try {
       // #4154 CA-1 — Heartbeat de liveness. Persistir el timestamp de esta
@@ -19345,10 +20810,15 @@ async function mainLoop() {
       // el loop (CA-1.1). El campo canónico es `timestamp` (ISO8601) porque el
       // read-side de `/salud` (commander-deterministic.js) lee `tick.timestamp`.
       // `pid` permite el cross-check PID↔SO del watchdog (SEC-1).
-      writeHeartbeat();
+      const iterStartMs = Date.now();
+      const prevIterationMs =
+        lastIterationStartMs != null ? iterStartMs - lastIterationStartMs : null;
+      lastIterationStartMs = iterStartMs;
+      writeHeartbeat(prevIterationMs);
 
       checkPauseFile();
       checkDesyncFlag();
+      touchProgress(); // #5821 CA-4 — hito 1: el loop entró a la iteración
 
       // #4350 — Detección de divergencia PERIÓDICA (no solo al boot). Cada
       // DESYNC_EVAL_EVERY_TICKS ticks reclasifica: reductiva → realinea;
@@ -19356,7 +20826,10 @@ async function mainLoop() {
       // Telegram. Best-effort: nunca rompe el loop.
       desyncEvalTick = (desyncEvalTick + 1) % DESYNC_EVAL_EVERY_TICKS;
       if (desyncEvalTick === 0) {
-        try { evaluateDesyncAndMaybeRealign('periodic'); }
+        // #5516 — `reconcileSplitOrphans` sólo acá: es el único punto donde
+        // queremos la consulta síncrona a GitHub (cada ~5 min). Ni el boot ni
+        // los unit tests la disparan.
+        try { evaluateDesyncAndMaybeRealign('periodic', { reconcileSplitOrphans: true }); }
         catch (e) { log('pulpo', `WARN desync periódico: ${e.message}`); }
       }
 
@@ -19432,6 +20905,7 @@ async function mainLoop() {
         // bloqueados por infra inmediatamente.
         const wasFailing = lastPrecheckResult ? !lastPrecheckResult.ok : false;
         await ejecutarPrecheck(config);
+        touchProgress(); // #5821 CA-4 — hito 2: sobrevivió el precheck de red
         if (wasFailing && precheckOk()) {
           reencolarInfraBloqueados(config);
         }
@@ -19442,6 +20916,7 @@ async function mainLoop() {
         intentarAutoResumeCB(config);
 
         brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
+        touchProgress(); // #5821 CA-4 — hito 3: pasó el intake (el brazo más pesado en gh)
         // #2801 — desbloqueo en background (fire-and-forget). Antes era síncrono
         // y bloqueaba el loop por ~30 min cuando había muchas dependencias
         // fantasma que tiraban GraphQL errors. Ahora corre async sin frenar
@@ -19452,9 +20927,11 @@ async function mainLoop() {
         // habilite (default OFF + mode notify).
         brazoTransicionOla(config).catch(e => log('desbloqueo', `error en brazo transicion-ola: ${e.message}`));
         brazoBarrido(config);     // Cuarto: promover entre fases
+        touchProgress(); // #5821 CA-4 — hito 4: pasó el barrido de fases
         brazoArchivado(config);   // #4136 — mudar procesado/ de issues en reposo a historico/
         sweepClaimsHuerfanos(config); // #3939 — restaurar claims huérfanos antes de lanzar
         brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
+        touchProgress(); // #5821 CA-4 — hito 5: pasó el lanzamiento de agentes
         brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
         // #3416 — rewind del operador (fire-and-forget). Procesa eventos en
         // `.pipeline/rejections/<issue>-<unix-ts>.json` (escritos por el
@@ -19490,6 +20967,10 @@ async function mainLoop() {
       log('pulpo', `ERROR en ciclo: ${e.message}`);
     }
 
+    // #5821 CA-4 — hito 6: la iteración cerró (incluso si el cuerpo tiró error,
+    // que también es progreso: el loop sigue girando).
+    touchProgress();
+
     // Sleep
     const sleepMs = (loadConfig().timeouts?.poll_interval_seconds || 30) * 1000;
     await new Promise(r => setTimeout(r, sleepMs));
@@ -19516,6 +20997,13 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,
+    // #5689 (R1) — término `--search` único del intake (anti-starvation).
+    buildIntakeSearchQuery,
+    buildIntakeSearchRescueQuery,
+    buildIntakeSearchQueries,
+    INTAKE_SEARCH_EXCLUDED_LABELS,
+    // #5689 (SEC-1/SEC-2) — gate autoritativo de recomendaciones del intake.
+    isPendingRecommendationIssue,
     // #4763 (Ola Puente P4) — ruteo product-aware por instancia (fallback single-product).
     resolveIntakeRepo,
     setMultiInstanceRouter,
@@ -19681,6 +21169,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // aditivo legítimo (CA-3), expuestos para tests de integración.
     evaluateDesyncAndMaybeRealign,
     resyncActiveWaveFromLegitAllowlist,
+    reconcileSplitOrphansFromGithub,
     realignAllowlistToActiveWave,
     // #4753 — auto-resolución del desync reductivo por cierre (expuesto para tests).
     autoResolveReductiveDesyncByClosure,

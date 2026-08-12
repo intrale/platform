@@ -500,15 +500,21 @@ test('ninguna entrada con lector real en el repo puede declararse no_consumer', 
 
   // Ancla anti-vacuidad: el barrido tiene que estar encontrando lectores de
   // verdad. Sin esto, una regex rota deja el candado verde para siempre.
+  //
+  // La lista se amplio de 4 a 6 en #5211. NO es un relajamiento del candado: el
+  // ancla enumera lo que el barrido ENCUENTRA en el repo, no un maximo
+  // permitido, y #5628 sumo dos lectores reales de la env var
+  // (notify-telegram.js:83, que ancla el ruteo privado fail-closed, y
+  // vault-shadow-metrics.js:293,302, que la usa como destino de los avisos
+  // privados de la ventana vault) sin declararlos en el manifiesto. Mientras el
+  // ancla siguio clavada en los 4 viejos, este assert fallaba describiendo mal
+  // el repo. El candado real -que ningun lector quede sin declarar- no se toca:
+  // se arregla en el manifiesto sumando ambos a `consumers`, no aca.
+
   assert.deepEqual(
     findEnvVarReaders('TELEGRAM_LEO_OPERATOR_CHAT_ID', { files: sources }),
     [
       '.pipeline/delivery.js',
-      // #5628 sumo dos lectores fail-closed que el manifiesto no declaraba:
-      // el ancla de ruteo privado (notify-telegram.js:83) y el destino de los
-      // avisos privados de la ventana vault (vault-shadow-metrics.js:293,302).
-      // El ancla se actualiza junto con `consumers` en el manifiesto: no es
-      // ruido del barrido, es superficie nueva que hay que declarar.
       '.pipeline/lib/notify-telegram.js',
       '.pipeline/lib/operator-gate.js',
       '.pipeline/lib/telegram-notifier.js',
@@ -620,7 +626,12 @@ test('las listas de aislamiento quedan congeladas como defensa secundaria', () =
     github: ['GH_TOKEN', 'GITHUB_TOKEN'],
     aws: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_REGION', 'AWS_PROFILE'],
     'gradle-android': ['JAVA_HOME', 'GRADLE_USER_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT', 'ANDROID_AVD_HOME'],
-    'telegram-hooks': ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'],
+    // #5462 — `TELEGRAM_BOT_TOKEN` SALIÓ de este scope a propósito: el material de
+    // firma no cruza a ningún child, ni siquiera con aislamiento activo. Los hooks
+    // conservan sólo el destino (`TELEGRAM_CHAT_ID`) y notifican por la cola local
+    // privilegiada. Este congelamiento es defensa secundaria: si el token vuelve a
+    // aparecer acá, es una regresión de CA-1 y este assert la frena.
+    'telegram-hooks': ['TELEGRAM_CHAT_ID'],
   });
   assert.deepEqual(SCOPES_ALWAYS_ON, ['telegram-hooks']);
 });
