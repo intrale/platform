@@ -511,14 +511,75 @@ configResolver.setTraceSink((linea, nivel) => {
 //   - Escritura atómica tmp+rename: el watchdog nunca lee un archivo a medio escribir.
 //   - Best-effort try/catch (CA-1.1): un fallo de FS jamás tumba el loop del Pulpo.
 const LAST_TICK_PATH = path.join(PIPELINE, 'last-tick.json');
-function writeHeartbeat() {
+function writeHeartbeat(iterationMs) {
   try {
-    const payload = JSON.stringify({ pid: process.pid, timestamp: new Date().toISOString() });
+    const payload = {
+      pid: process.pid,
+      timestamp: new Date().toISOString(),
+    };
+    // #5821 CA-1 — Duración REAL de la iteración anterior del loop.
+    // El watchdog necesita esta magnitud (no la edad del heartbeat) para
+    // dimensionar su umbral: `hbAge` es la EDAD medida en un instante arbitrario
+    // dentro del ciclo, o sea una muestra sesgada hacia abajo de la duración.
+    // Calibrar con ella subestimaría el ciclo y reproduciría el falso positivo
+    // del 2026-08-11 (77 kills en 3 h sobre un Pulpo sano).
+    // Campo OPCIONAL: el read-side lo parsea defensivo y su ausencia sólo deja
+    // el umbral en el piso configurado.
+    if (Number.isFinite(iterationMs) && iterationMs >= 0) payload.iterationMs = iterationMs;
     const tmp = LAST_TICK_PATH + '.tmp';
-    fs.writeFileSync(tmp, payload);
+    fs.writeFileSync(tmp, JSON.stringify(payload));
     fs.renameSync(tmp, LAST_TICK_PATH); // atómico en el mismo FS
   } catch (_) {
     /* fail-soft: un fallo de FS jamás tumba el loop principal (CA-1.1) */
+  }
+}
+
+// #5821 CA-4 — Señal secundaria de progreso INTRA-iteración.
+//
+// El heartbeat se escribe una vez por vuelta del loop, así que cuando el loop se
+// cuelga el archivo entero deja de reescribirse: cualquier campo de "progreso"
+// que viviera DENTRO de ese payload quedaría igual de viejo que el mtime y no
+// distinguiría nada. Por eso la señal es un archivo APARTE que el Pulpo toca
+// mientras la iteración avanza. Así el watchdog puede separar "ciclo lento"
+// (heartbeat viejo + progreso fresco) de "cuelgue" (ambos viejos), y subir el
+// umbral deja de significar tolerar cuelgues reales por más tiempo.
+//
+// Sólo importa el MTIME, nunca el contenido: no hay payload que envenenar, y el
+// read-side (lib/pulpo-liveness.js) trata la señal ausente o ilegible como
+// ausente — jamás como permiso para no matar.
+//
+// POR QUÉ SE LLAMA DESDE HITOS DEL LOOP Y NO DESDE `log()`
+// --------------------------------------------------------
+// La tentación es emitirla desde `log()`, que corre cientos de veces por ciclo
+// y daría cobertura gratis. Pero `log()` también lo llaman los `setInterval`
+// de fondo y las cadenas fire-and-forget (`brazoCommander(...).catch(...)`),
+// que siguen vivas aunque el loop principal esté COLGADO. Con esa versión, la
+// señal probaría "un timer disparó", no "el loop avanzó": un Pulpo trabado con
+// un turno del Commander en vuelo se vería sano y la detección de zombi se
+// escaparía hasta el techo de `max_slow_cycle_seconds`. Justo lo que #4154 vino
+// a cerrar.
+//
+// Por eso se llama EXPLÍCITAMENTE en los hitos secuenciales del `while`: son
+// los únicos puntos que sólo se alcanzan si la iteración realmente progresó.
+// El costo es que la señal es tan granular como el paso más largo del ciclo —
+// de ahí que `pulpo_liveness_progress_stale_seconds` se dimensione como "cuánto
+// puede tardar UN paso del loop", no como "cuánto tarda el ciclo entero".
+//
+// Throttle de 5s: barato de todos modos y evita writes redundantes si dos hitos
+// caen juntos.
+const LAST_PROGRESS_PATH = path.join(PIPELINE, 'last-progress');
+const PROGRESS_THROTTLE_MS = 5000;
+let lastProgressWriteMs = 0;
+function touchProgress() {
+  try {
+    const now = Date.now();
+    if (now - lastProgressWriteMs < PROGRESS_THROTTLE_MS) return;
+    lastProgressWriteMs = now;
+    // Write de 1 byte en vez de utimes: `fs.utimesSync` falla si el archivo no
+    // existe y obligaría a un existsSync por llamada. El contenido es irrelevante.
+    fs.writeFileSync(LAST_PROGRESS_PATH, '.');
+  } catch (_) {
+    /* fail-soft: un fallo de FS jamás tumba el loop principal */
   }
 }
 // #5400 — Estampa del último DESPACHO EFECTIVO.
@@ -20658,6 +20719,12 @@ async function mainLoop() {
     log('audit', `[partial-pause-audit] no pude iniciar cron de verifyChain: ${e.message}`);
   }
 
+  // #5821 CA-1 — Marca de arranque de la iteración anterior, para poder publicar
+  // su duración REAL en el heartbeat. Es la magnitud contra la que el watchdog
+  // dimensiona su umbral; sin ella sólo tendría la edad muestreada del
+  // heartbeat, que subestima la duración y produce falsos positivos.
+  let lastIterationStartMs = null;
+
   while (running) {
     try {
       // #4154 CA-1 — Heartbeat de liveness. Persistir el timestamp de esta
@@ -20666,10 +20733,15 @@ async function mainLoop() {
       // el loop (CA-1.1). El campo canónico es `timestamp` (ISO8601) porque el
       // read-side de `/salud` (commander-deterministic.js) lee `tick.timestamp`.
       // `pid` permite el cross-check PID↔SO del watchdog (SEC-1).
-      writeHeartbeat();
+      const iterStartMs = Date.now();
+      const prevIterationMs =
+        lastIterationStartMs != null ? iterStartMs - lastIterationStartMs : null;
+      lastIterationStartMs = iterStartMs;
+      writeHeartbeat(prevIterationMs);
 
       checkPauseFile();
       checkDesyncFlag();
+      touchProgress(); // #5821 CA-4 — hito 1: el loop entró a la iteración
 
       // #4350 — Detección de divergencia PERIÓDICA (no solo al boot). Cada
       // DESYNC_EVAL_EVERY_TICKS ticks reclasifica: reductiva → realinea;
@@ -20756,6 +20828,7 @@ async function mainLoop() {
         // bloqueados por infra inmediatamente.
         const wasFailing = lastPrecheckResult ? !lastPrecheckResult.ok : false;
         await ejecutarPrecheck(config);
+        touchProgress(); // #5821 CA-4 — hito 2: sobrevivió el precheck de red
         if (wasFailing && precheckOk()) {
           reencolarInfraBloqueados(config);
         }
@@ -20766,6 +20839,7 @@ async function mainLoop() {
         intentarAutoResumeCB(config);
 
         brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
+        touchProgress(); // #5821 CA-4 — hito 3: pasó el intake (el brazo más pesado en gh)
         // #2801 — desbloqueo en background (fire-and-forget). Antes era síncrono
         // y bloqueaba el loop por ~30 min cuando había muchas dependencias
         // fantasma que tiraban GraphQL errors. Ahora corre async sin frenar
@@ -20776,9 +20850,11 @@ async function mainLoop() {
         // habilite (default OFF + mode notify).
         brazoTransicionOla(config).catch(e => log('desbloqueo', `error en brazo transicion-ola: ${e.message}`));
         brazoBarrido(config);     // Cuarto: promover entre fases
+        touchProgress(); // #5821 CA-4 — hito 4: pasó el barrido de fases
         brazoArchivado(config);   // #4136 — mudar procesado/ de issues en reposo a historico/
         sweepClaimsHuerfanos(config); // #3939 — restaurar claims huérfanos antes de lanzar
         brazoLanzamiento(config); // Quinto: asignar trabajo a agentes
+        touchProgress(); // #5821 CA-4 — hito 5: pasó el lanzamiento de agentes
         brazoHuerfanos(config);   // Sexto: recuperar trabajo trabado
         // #3416 — rewind del operador (fire-and-forget). Procesa eventos en
         // `.pipeline/rejections/<issue>-<unix-ts>.json` (escritos por el
@@ -20813,6 +20889,10 @@ async function mainLoop() {
     } catch (e) {
       log('pulpo', `ERROR en ciclo: ${e.message}`);
     }
+
+    // #5821 CA-4 — hito 6: la iteración cerró (incluso si el cuerpo tiró error,
+    // que también es progreso: el loop sigue girando).
+    touchProgress();
 
     // Sleep
     const sleepMs = (loadConfig().timeouts?.poll_interval_seconds || 30) * 1000;

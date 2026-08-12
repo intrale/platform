@@ -225,6 +225,13 @@ scripts/planner-plan.json
 .pipeline/last-selective-restart.json
 .pipeline/last-selective-restart.json.tmp
 .pipeline/listener-offset.json
+# #5821 — Heartbeat y señal de progreso del Pulpo. Estado runtime puro, con la
+# misma razón que `stale-services.json`: versionarlos haría que el propio
+# `reset --hard` del respawn los pise. `last-progress` además se reescribe cada
+# 5s, así que commitearlo sería churn permanente y conflictos garantizados.
+.pipeline/last-tick.json
+.pipeline/last-tick.json.tmp
+.pipeline/last-progress
 .pipeline/commander-history.jsonl
 .pipeline/commander-summary.json
 .pipeline/commander-summary.json.tmp
