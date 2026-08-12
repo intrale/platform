@@ -50,6 +50,21 @@ const LEGACY_FORMULA_VERSION = 1;
 // muy por debajo de cualquier alta real (el peso mínimo de un issue es 1).
 const WEIGHT_EPSILON = 1e-6;
 
+// #5836 (rev-1) — Antigüedad mínima del punto contra el que se explica la
+// variación del avance. Con la cadencia real del dashboard (~33 s), comparar
+// contra el punto inmediato anterior hacía que la nota de CA-5 no apareciera
+// nunca: la caída por altas quedaba absorbida a los dos refrescos. 10 minutos
+// es el orden de magnitud en que el operador percibe "recién": cubre el alta de
+// un split (que llega de a lotes) sin arrastrar historia vieja.
+const DELTA_LOOKBACK_MS = 10 * 60 * 1000;
+
+function deltaLookbackMs() {
+    const raw = process.env.WAVE_PROGRESS_DELTA_LOOKBACK_MS;
+    if (raw === undefined || raw === null || raw === '') return DELTA_LOOKBACK_MS;
+    const n = Number(raw);
+    return (Number.isFinite(n) && n >= 0) ? n : DELTA_LOOKBACK_MS;
+}
+
 let _appendCounter = 0;
 
 // ─── Paths (con override por env para tests) ───────────────────────────────
@@ -261,6 +276,16 @@ function classifyProgressDelta(prev, curr) {
  * aparecería), así que la secuencia vive acá, en un solo lugar, y los dos
  * writers (dashboard y handler `/wave`) la comparten.
  *
+ * #5836 (rev-1) — El punto de comparación NO es el inmediato anterior. El
+ * dashboard escribe un punto cada ~33 s (medido sobre la serie viva: n=200,
+ * mediana 32,9 s, p90 33,2 s), así que comparar contra el último punto medía
+ * una ventana de medio minuto: una caída por altas de hace 10 minutos ya había
+ * sido absorbida y el delta daba `estable`. La nota de CA-5 era, en la
+ * práctica, inalcanzable. Ahora se compara contra el punto más reciente que
+ * tenga al menos `DELTA_LOOKBACK_MS` de antigüedad — el más cercano posible al
+ * borde de la ventana, para que la nota describa "qué cambió en los últimos N
+ * minutos" y no "entre los dos últimos refrescos del dashboard".
+ *
  * @param {object} args — mismos campos que `appendSnapshot`
  * @returns {{written:boolean, delta:object|null}} delta null si no hay punto
  *          previo con el cual comparar (primer snapshot de la ola)
@@ -268,11 +293,21 @@ function classifyProgressDelta(prev, curr) {
 function appendSnapshotWithDelta(args = {}) {
     const { pipelineRoot, waveKey } = args || {};
 
-    // Punto previo: última lectura de ESTA ola, antes de escribir la nueva.
+    // Punto de referencia: la última lectura de ESTA ola con antigüedad
+    // suficiente, leída ANTES de escribir la nueva.
     let prev = null;
     try {
         const prior = readSnapshots({ pipelineRoot, waveKey });
-        if (Array.isArray(prior) && prior.length > 0) prev = prior[prior.length - 1];
+        if (Array.isArray(prior) && prior.length > 0) {
+            const now = isFiniteNumber(args.now) ? args.now : Date.now();
+            const cutoff = now - deltaLookbackMs();
+            // El MÁS RECIENTE de los suficientemente viejos. Si todavía no hay
+            // ninguno (serie más joven que la ventana), se usa el MÁS VIEJO
+            // disponible: es el que maximiza la antigüedad observable, y para
+            // una ola recién arrancada sigue siendo la mejor referencia.
+            const aged = prior.filter((p) => p && isFiniteNumber(p.ts) && p.ts <= cutoff);
+            prev = aged.length > 0 ? aged[aged.length - 1] : prior[0];
+        }
     } catch { prev = null; }   // sin histórico → simplemente no hay nota
 
     const written = appendSnapshot(args);
@@ -356,6 +391,7 @@ module.exports = {
     PRUNE_EVERY_N,
     LEGACY_FORMULA_VERSION,
     WEIGHT_EPSILON,
+    DELTA_LOOKBACK_MS,
     _internal: {
         storePath,
         pipelineDir,

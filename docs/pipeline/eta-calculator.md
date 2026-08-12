@@ -385,6 +385,28 @@ reconstruirlo sería inventar datos. `classifyProgressDelta` detecta el cambio d
 fórmula entre dos puntos y lo reporta como `series-break` en vez de atribuirle una
 causa. Los registros viejos se siguen leyendo sin migración.
 
+**El corte lo honran los consumidores, no sólo el writer.** Persistir `formulaV` no
+alcanza: la ventana de velocidad (`calculateWaveVelocityETA`) se trunca en el último
+cambio de fórmula (`_truncateAtFormulaChange`), de modo que la pendiente se mide
+siempre sobre un tramo homogéneo. Sin eso, el escalón de re-expresar el mismo avance
+en otra unidad (medido sobre la ola viva: v1 = 48 % contra v2 = 52 %, ~4 pp) se mide
+como ritmo REAL: sobre la serie real de la ola 10, con avance real de 0 pp, el cálculo
+devolvía `velocity` a 2,66 pp/h y un ETA de 16,5 h, y **persistía** esa velocidad
+fabricada en `wave-velocity-history.jsonl` (`0.0444 %/min`), donde sobrevive a la
+ventana de 3 h y contamina el fallback `historical` de las olas siguientes — la misma
+clase de incidente que #4886.
+
+No alcanzaba con `_repairDiscontinuities`: su umbral es de reset/restore y en la ola
+viva vale `(100/116)×4 = 3,45 pp`, así que el escalón de 4 pp cae **justo en el borde**
+(un issue más de ola y pasa inadvertido). La versión de fórmula es la señal exacta;
+el umbral es una heurística.
+
+La ausencia de `formulaV` se normaliza a `1` al leer (misma convención que
+`classifyProgressDelta`), porque los ~5000 registros ya escritos no traen el campo. Si
+el tramo homogéneo queda por debajo del piso de snapshots, el cálculo degrada con
+`reason:'formula-change'` — distinguible de una ola nueva sin serie
+(`insufficient-snapshots`).
+
 ### Por qué el peso total se cuantiza
 
 El reparto proporcional divide y multiplica en punto flotante: un padre de peso 5
@@ -409,6 +431,16 @@ _116 issues · 54 cerrados · 62 activos · 36 sin estimar · −5 pp por 18 alt
 
 El texto porta la señal completa —magnitud, unidad (`pp`, no `%`) y causa—; no depende
 de color ni de emoji.
+
+**Contra qué punto se compara.** No contra el inmediato anterior. El dashboard escribe
+un punto cada ~33 s (medido sobre la serie viva: n=200, mediana 32,9 s, p90 33,2 s),
+así que comparar contra el último punto medía media ventana de medio minuto: una caída
+por altas de hace 10 minutos ya estaba absorbida y el delta daba `estable` — la nota
+era, en la práctica, **inalcanzable**. La referencia es el punto más reciente con al
+menos `DELTA_LOOKBACK_MS` (10 min, override por `WAVE_PROGRESS_DELTA_LOOKBACK_MS`) de
+antigüedad, así la nota responde "qué cambió en los últimos 10 minutos" y no "entre los
+dos últimos refrescos". Si la serie es más joven que la ventana, se usa el punto más
+viejo disponible.
 
 ---
 
