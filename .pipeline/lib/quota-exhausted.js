@@ -315,27 +315,48 @@ function ensureDir(dir) {
  *
  * #3575 — Retry bounded en `fs.renameSync`
  * ---------------------------------------
- * En Windows, `fs.renameSync` puede fallar con `EBUSY|EPERM|EEXIST` cuando
- * dos procesos renombran al mismo destino casi simultáneamente (handle
+ * En Windows, `fs.renameSync` puede fallar con `EBUSY|EPERM|EEXIST|EACCES`
+ * cuando dos procesos renombran al mismo destino casi simultáneamente (handle
  * brevemente abierto por antivirus, indexador o el propio FS). En POSIX el
  * rename es atómico y este path raramente dispara, pero el costo del retry
  * acotado es despreciable.
  *
- * Cap explícito (anti-DoS): máximo 3 intentos y ≤50ms totales. Si el
- * destino está realmente bloqueado, propagamos al caller en vez de spinear
+ * Cap explícito (anti-DoS): máximo `RENAME_RETRY_MAX_ATTEMPTS` intentos y
+ * `RENAME_RETRY_MAX_TOTAL_MS` totales (ver #5400 abajo para la calibración). Si
+ * el destino está realmente bloqueado, propagamos al caller en vez de spinear
  * el proceso indefinidamente.
  */
-const RENAME_RETRY_MAX_ATTEMPTS = 3;
-const RENAME_RETRY_MAX_TOTAL_MS = 50;
+// #5400 — Recalibración del budget. El original (3 intentos / 50ms) daba, en
+// los hechos, ~15ms de espera total: 5ms + 10ms y al tercer fallo tiraba. Eso
+// alcanza para un handle suelto de antivirus, pero NO para 10 escritores
+// concurrentes sobre el mismo destino con la máquina cargada (la suite completa
+// corre miles de tests en paralelo). Síntoma: `setFlag` lanzaba EPERM y el test
+// de concurrencia caía de forma intermitente, sólo bajo carga.
+const RENAME_RETRY_MAX_ATTEMPTS = 6;
+const RENAME_RETRY_MAX_TOTAL_MS = 400;
 const RENAME_RETRY_INITIAL_MS = 5;
-const RENAME_RETRYABLE_ERRORS = new Set(['EBUSY', 'EPERM', 'EEXIST']);
+// EACCES lo tira Windows en la misma carrera que EPERM (depende de si el handle
+// en conflicto es del propio FS o de un tercero). Sin él, la carrera más común
+// del CI ni siquiera entraba al retry.
+const RENAME_RETRYABLE_ERRORS = new Set(['EBUSY', 'EPERM', 'EEXIST', 'EACCES']);
 
 function sleepSyncMs(ms) {
-    // Busy-wait acotado a milisegundos (es lo único síncrono que da Node sin
-    // deps nuevas). El cap del caller mantiene esto bajo 50ms totales.
-    const end = Date.now() + ms;
-    // eslint-disable-next-line no-empty
-    while (Date.now() < end) {}
+    if (!(ms > 0)) return;
+    // #5400 — Espera síncrona REAL (bloquea el hilo sin quemar CPU).
+    //
+    // Antes esto era un busy-wait `while (Date.now() < end) {}`, que bajo
+    // contención es contraproducente: el proceso que reintenta le roba CPU
+    // justamente al proceso que tiene tomado el handle que él está esperando
+    // que se libere. Con 10 escritores concurrentes eso se realimenta y alarga
+    // la ventana de conflicto en vez de acortarla.
+    try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    } catch {
+        // Entorno sin SharedArrayBuffer: degradar al busy-wait acotado.
+        const end = Date.now() + ms;
+        // eslint-disable-next-line no-empty
+        while (Date.now() < end) {}
+    }
 }
 
 function renameWithRetry(tmp, filepath) {
@@ -348,14 +369,15 @@ function renameWithRetry(tmp, filepath) {
             return;
         } catch (err) {
             lastErr = err;
-            const code = err && err.code;
-            const retriable = RENAME_RETRYABLE_ERRORS.has(code);
-            const lastAttempt = attempt === RENAME_RETRY_MAX_ATTEMPTS;
-            const overBudget = Date.now() + delayMs > totalDeadline;
-            if (!retriable || lastAttempt || overBudget) throw err;
-            sleepSyncMs(delayMs);
-            delayMs = Math.min(delayMs * 2, totalDeadline - Date.now());
-            if (delayMs <= 0) throw lastErr;
+            if (!RENAME_RETRYABLE_ERRORS.has(err && err.code)) throw err;
+            if (attempt === RENAME_RETRY_MAX_ATTEMPTS) throw err;
+            const remaining = totalDeadline - Date.now();
+            if (remaining <= 0) throw err;
+            // Jitter [0.5x, 1.5x): N escritores que chocan a la vez esperan lo
+            // mismo y vuelven a chocar a la vez. El jitter rompe ese lockstep.
+            const jittered = Math.max(1, Math.round(delayMs * (0.5 + Math.random())));
+            sleepSyncMs(Math.min(jittered, remaining));
+            delayMs = Math.min(delayMs * 2, RENAME_RETRY_MAX_TOTAL_MS);
         }
     }
     // Defensivo (no debería alcanzarse): el loop sale por return o throw.
@@ -1859,6 +1881,12 @@ module.exports = {
     detectWeeklyLimitContentChannelFromLog,
 
     // Helpers expuestos para integración con pulpo.js
+    // #5400 — expuesto para poder testear el retry de forma determinística
+    // (inyectando fallos transitorios) en vez de depender de ganarle a una
+    // carrera real, que es justo lo que hacía intermitente al test.
+    renameWithRetry,
+    RENAME_RETRY_MAX_ATTEMPTS,
+    RENAME_RETRYABLE_ERRORS,
     capResetsAt,
     sanitizeRawExcerpt,
     validateFlagShape,
