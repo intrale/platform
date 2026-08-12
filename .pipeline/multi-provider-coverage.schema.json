@@ -92,6 +92,7 @@
             "rate_limit",
             "transient_5xx",
             "auth",
+            "authentication_rejected",
             "permanent_failure",
             "cli_1m_context_glitch",
             "unknown",

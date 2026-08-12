@@ -410,10 +410,27 @@ watchdog:
   # umbral con el proceso vivo, lo declara zombi (loop colgado) y lo reinicia.
   # DESACOPLADO del display: /salud usa "esperado < 30s" sólo para MOSTRAR salud;
   # 30s == 1 poll_interval del Pulpo, un ciclo lento lo rozaría sin ser zombi.
-  # 90s = max(90, 3×poll_interval) evita falsos positivos (CA-4) y restart-storms
-  # (SEC-3). Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo;
-  # inválido → default, NUNCA "nunca stale" — SEC-2).
-  pulpo_liveness_kill_seconds: 180
+  #
+  # #5820 — El umbral NO se deriva de poll_interval: se dimensiona contra la
+  # duración REAL de un ciclo del Pulpo, que con la ola actual está muy por
+  # encima del poll. Incidente 2026-08-11 (~11:00–14:00): con 180s el watchdog
+  # mató y relanzó al Pulpo 77 veces (una cada ~6 min) sin que hubiera un cuelgue
+  # real — el ciclo simplemente tardaba más que el umbral. Cada reinicio se
+  # llevaba puesta la cola de comandos de Telegram, así que el Commander quedó
+  # sin responder ~4 horas.
+  #   Medición del log .pipeline/logs/pulpo-liveness.log tras subir a 270:
+  #     · killSeconds=180 → 77 líneas decision=kill el 2026-08-11
+  #     · killSeconds=270 → 0 líneas decision=kill en 68 ciclos
+  #     · máx. hbAgeMs observado bajo el umbral nuevo: 244993 ms (245 s)
+  # El margen contra el techo de 270 s es de ~25 s (9%): este valor PERSISTE la
+  # mitigación medida, pero el dimensionamiento del colchón se rediseña aparte
+  # (#5821). Si volvés a ver kills sin cuelgue real, es ese issue, no este valor.
+  #
+  # Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo; inválido →
+  # default del módulo, NUNCA "nunca stale" — SEC-2). El default de
+  # lib/pulpo-liveness.js se mantiene alineado con este valor para que perder el
+  # bloque `watchdog:` no degrade a un umbral MÁS agresivo que el vigente.
+  pulpo_liveness_kill_seconds: 270
 
 # =============================================================================
 # Wave-stall watchdog (#4708) — dead-man's switch de la ola

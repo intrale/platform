@@ -38,6 +38,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #5795 — contrato compartido de la clase cerrada 'authentication_rejected'.
+const authRejection = require('../auth-rejection');
 
 const RUNNER_PATH = path.join(__dirname, '..', 'runners', 'nvidia-nim-runner.js');
 
@@ -236,12 +238,43 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
     return { matched: false };
 }
 
+// -----------------------------------------------------------------------------
+// detectAuthenticationRejected (#5795) — clase cerrada `authentication_rejected`.
+//
+// NVIDIA NIM (`integrate.api.nvidia.com/v1`) sirve el contrato OpenAI, así que
+// el error estructurado llega como `{error:{message, type, code}}` y los tokens
+// documentados de credencial inválida son los de OpenAI.
+//
+// TABLA DELIBERADAMENTE CORTA: el gateway de NVIDIA también devuelve respuestas
+// tipo RFC-7807 (`{status:401, title:'Unauthorized', detail:'...'}`) donde el
+// único indicio es `title`, un campo de PROSA. Esas NO clasifican — `title` ni
+// siquiera entra en los tokens estructurales, y un 401 pelado nunca alcanza
+// para invalidar una credencial. Preferimos no clasificar antes que clasificar
+// por texto libre (el issue lo pide explícito: sin señal inequívoca, negativo).
+//
+// POSITIVOS: invalid_api_key, authentication_error
+// NEGATIVOS: permisos, cuota, transitorios y permanentes que conviven con 401/403.
+// `invalid_request_error` NO se veta: es el `type` que acompaña a
+// `code: invalid_api_key` en el shape OpenAI.
+// -----------------------------------------------------------------------------
+const detectAuthenticationRejected = authRejection.makeDetector({
+    adapter: 'nvidia-nim',
+    positives: ['invalid_api_key', 'authentication_error'],
+    negatives: [
+        'permission_denied', 'permission_error', 'forbidden', 'insufficient_permissions',
+        'rate_limit_exceeded', 'quota_exceeded', 'insufficient_quota', 'billing_error',
+        'context_length_exceeded', 'model_not_found', 'service_unavailable',
+        'internal_server_error', 'overloaded_error',
+    ],
+});
+
 module.exports = {
     name: 'nvidia-nim',
     detectLauncher: getLauncher,
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
+    detectAuthenticationRejected,
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _translateClaudeArgsToNvidia: translateClaudeArgsToNvidia,

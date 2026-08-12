@@ -126,16 +126,44 @@ mata**, registra la discrepancia. Tras el kill, respawnea con el mismo
 
 ## 3. Umbral de kill (anti falso positivo)
 
-`config.yaml → watchdog.pulpo_liveness_kill_seconds` (default **90s**).
+`config.yaml → watchdog.pulpo_liveness_kill_seconds` (default **270s**).
 
 **Desacoplado del display.** `/salud` usa "esperado < 30s" sólo para *mostrar*
 salud; 30s == 1 `poll_interval` del Pulpo, y un ciclo lento (precheck de red,
-brazo pesado) podría rozarlo sin ser zombi. El umbral de *kill* es holgado:
-`max(90, 3×poll_interval)`. Esto, junto con el guard de `last-restart.json < 90s`
-y la auditoría de cada kill, evita **restart-storms** (SEC-3).
+brazo pesado) podría rozarlo sin ser zombi.
+
+**El umbral NO se deriva de `poll_interval`.** Se dimensiona contra la duración
+REAL de un ciclo del Pulpo, que con la ola actual está muy por encima del poll.
+Lo midió el incidente del **2026-08-11** (~11:00–14:00): con `180s` el watchdog
+mató y relanzó al Pulpo **77 veces** (una cada ~6 min) sin que hubiera un cuelgue
+real — el ciclo simplemente tardaba más que el umbral. Cada reinicio se llevaba
+puesta la cola de comandos de Telegram, así que el Commander quedó sin responder
+~4 h. Medición posterior sobre `.pipeline/logs/pulpo-liveness.log`:
+
+| `killSeconds` | Resultado                                      |
+|---------------|------------------------------------------------|
+| `180`         | 77 × `decision=kill` el 2026-08-11             |
+| `270`         | 0 × `decision=kill` en 68 ciclos               |
+
+Máximo `hbAgeMs` observado en un Pulpo sano: **244993 ms (245 s)**. El margen
+contra el techo de 270 s es de ~25 s (**~9%**): el valor vigente *persiste* la
+mitigación medida, pero **no** resuelve el dimensionamiento del colchón — eso se
+rediseña en **#5821**. Si volvés a ver kills sin cuelgue real, es ese issue y no
+este valor.
+
+El guard de `last-restart.json < 90s` y la auditoría de cada kill son lo que
+evita **restart-storms** (SEC-3). Son un mecanismo distinto de este umbral: su
+ventana de 90 s no se mueve junto con `pulpo_liveness_kill_seconds`.
 
 - Override por env: `PULPO_LIVENESS_KILL_SECONDS` (entero positivo).
 - Valor inválido → cae al default. **Nunca** degrada a "nunca stale" (SEC-2).
+- **Invariante:** `watchdog.pulpo_liveness_kill_seconds` (`config.yaml`) y
+  `DEFAULT_KILL_SECONDS` (`lib/pulpo-liveness.js`) **se mueven juntos**. El
+  default no es sólo un camino de emergencia: se aplica por vía normal cuando el
+  bloque `watchdog:` falta (caso D-4 de #5172) o la clave está ausente/inválida.
+  Si se desalinean hacia abajo, perder el bloque de config degrada a un umbral
+  **más agresivo** que el vigente y reabre el bucle de muerte en silencio. Al
+  subir uno, subir el otro.
 
 ### Semáforo recomendado en `/salud` (UX, CA-5)
 

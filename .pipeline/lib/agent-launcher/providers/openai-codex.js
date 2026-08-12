@@ -35,6 +35,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #5795 — contrato compartido de la clase cerrada 'authentication_rejected'.
+const authRejection = require('../auth-rejection');
 
 // -----------------------------------------------------------------------------
 // detectLauncher — multi-tier (preservar precedencia I6 como en anthropic.js)
@@ -366,12 +368,45 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
     return { matched: false };
 }
 
+// -----------------------------------------------------------------------------
+// detectAuthenticationRejected (#5795) — clase cerrada `authentication_rejected`.
+//
+// OpenAI documenta el error de clave inválida como
+// `{error:{message:'Incorrect API key provided...', type:'invalid_request_error',
+// code:'invalid_api_key'}}` con HTTP 401. El discriminante REAL es el `code`;
+// el `type` es el genérico `invalid_request_error`.
+//
+// POSITIVOS: invalid_api_key, invalid_authentication
+//
+// NEGATIVOS — 401/403 de OpenAI que NO son credencial inválida:
+//   insufficient_quota / billing_hard_limit_reached / rate_limit_exceeded → cuota
+//   account_deactivated / permission_denied / unsupported_country_region_territory
+//   context_length_exceeded / model_not_found → permanentes
+//
+// OJO: `invalid_request_error` NO puede ir en la tabla negativa. Es el `type`
+// que ACOMPAÑA a `code: invalid_api_key` en el shape real de OpenAI; vetarlo
+// haría que la guardia de ambigüedad mate todos los positivos legítimos.
+// -----------------------------------------------------------------------------
+const detectAuthenticationRejected = authRejection.makeDetector({
+    adapter: 'openai-codex',
+    positives: ['invalid_api_key', 'invalid_authentication'],
+    negatives: [
+        'insufficient_quota', 'billing_hard_limit_reached', 'rate_limit_exceeded',
+        'tokens_exhausted', 'usage_limit_reached',
+        'account_deactivated', 'permission_denied', 'permission_error', 'forbidden',
+        'unsupported_country_region_territory',
+        'context_length_exceeded', 'model_not_found', 'server_error',
+        'service_unavailable', 'engine_overloaded',
+    ],
+});
+
 module.exports = {
     name: 'openai-codex',
     detectLauncher: getLauncher,
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
+    detectAuthenticationRejected,
     // #4052 CA-2 — pre-flight health-check.
     probeCodexHealth,
     // exports internos para tests

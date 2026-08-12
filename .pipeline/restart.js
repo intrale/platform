@@ -28,6 +28,7 @@ const {
 // viven en un módulo importable para que los tests ejerciten el guard REAL.
 const portGuard = require('./lib/port-guard');
 const { clearAllMarkers } = require('./lib/ready-marker');
+const smokeBudget = require('./lib/smoke-budget');
 const { annotateAndMoveOrphans } = require('./lib/restart-orphan-annotator');
 // #4664 (Ola 9.1 · cutover de wiring) — el arranque del motor (pulpo/dashboard)
 // se resuelve vía el kernel-resolver: apunta al kernel migrado cuando el consumo
@@ -543,30 +544,52 @@ function runSmokeTest() {
     return { ok: true, skipped: true };
   }
 
+  // CA-1 — la ventana del runner se DERIVA de las mismas constantes que usa el
+  // smoke (lib/smoke-budget), en vez de ser un 90000 hardcodeado que nadie
+  // mantenía sincronizado. Antes el runner cortaba ANTES que el smoke: lo mataba
+  // con SIGTERM a mitad de la espera de markers y el diagnóstico nunca llegaba a
+  // escribirse. Por construcción esta ventana ya no puede quedar corta: si sube
+  // la ventana del dashboard, sube sola.
+  const timeoutMs = smokeBudget.runnerTimeoutMs();
   log('=== SMOKE TEST ===');
+  log(`  ventana del runner: ${Math.round(timeoutMs / 1000)}s (derivada del presupuesto del smoke)`);
   try {
-    // smoke-test.js es Node puro: lee ready markers + chequea HTTP en
-    // :3200. No usa wmic ni bash. Timeout holgado (90s) porque el smoke
-    // internamente hace polling hasta 60s a que los 7 componentes
-    // escriban sus markers.
+    // smoke-test.js es Node puro: lee ready markers + chequea HTTP en :3200.
+    // No usa wmic ni bash. El smoke se autolimita ANTES de este timeout y
+    // vuelca su estado parcial, así que llegar acá ya es anómalo.
     const result = spawnSync(process.execPath, [script], {
       cwd: ROOT,
-      timeout: 90000,
+      timeout: timeoutMs,
       encoding: 'utf8',
       windowsHide: true,
     });
     const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
-    const exitCode = result.status === null ? -1 : result.status;
-    if (exitCode === 0) {
+    const cls = smokeBudget.classifySmokeResult(result);
+
+    if (cls.ok) {
       log('Smoke test OK');
-      return { ok: true, exitCode, output };
+      return { ok: true, exitCode: 0, incomplete: false, output };
     }
-    log(`Smoke test FAIL (exit ${exitCode}, signal=${result.signal || 'none'})`);
+
+    // CA-3 — "no completó" y "falló con diagnóstico" son cosas distintas y se
+    // reportan distinto. Colapsar ambas en `exit -1` fue lo que disparó el
+    // rollback a ciegas del 2026-08-09.
+    if (cls.incomplete) {
+      log(`Smoke test NO COMPLETÓ sus chequeos: ${cls.reason}`);
+      log('  Sin veredicto sobre el pipeline — no hay evidencia de que el código sea la causa.');
+    } else {
+      log(`Smoke test FAIL (exit ${cls.exitCode}, signal=${result.signal || 'none'})`);
+    }
     if (output) log(output.split('\n').slice(-12).join('\n'));
-    return { ok: false, exitCode, output };
+    else log('  Sin salida capturada — revisar .pipeline/logs/smoke-test.log');
+    return { ok: false, exitCode: cls.exitCode, incomplete: cls.incomplete, reason: cls.reason, output };
   } catch (e) {
+    // No pudimos ni lanzarlo: tampoco hay evidencia contra el código.
     log(`Smoke test error: ${e.message}`);
-    return { ok: false, exitCode: -1, output: e.message };
+    return {
+      ok: false, exitCode: -1, incomplete: true,
+      reason: `no se pudo ejecutar el smoke test (${e.message})`, output: e.message,
+    };
   }
 }
 
@@ -874,14 +897,32 @@ switch (action) {
         } catch (e) {
           log(`No se pudo resetear el estado de rollback: ${e.message.slice(0, 100)}`);
         }
+      } else if (smoke.incomplete) {
+        // CA-3 — el smoke no llegó a emitir veredicto. Rollbackear acá sería
+        // revertir un deploy potencialmente sano por un problema del propio
+        // gate: no hay ninguna evidencia que apunte al código. Avisamos fuerte
+        // y dejamos la decisión en manos del operador.
+        log('Smoke test no completó — NO se dispara rollback (sin evidencia contra el código)');
+        log('  Diagnóstico parcial en .pipeline/logs/smoke-test.log');
+        enqueueTelegramAlert(
+          `⚠️ *Pipeline restart: el smoke test no llegó a terminar*\n\n`
+          + `${smoke.reason || 'motivo no determinado'}.\n\n`
+          + `No se hizo rollback automático: el smoke no alcanzó a emitir un veredicto, `
+          + `así que no hay evidencia de que el código sea la causa. `
+          + `El pipeline quedó con la versión nueva.\n\n`
+          + `Diagnóstico parcial en \`logs/smoke-test.log\`. Requiere revisión manual.`
+        );
       } else if (flagNoRollback) {
+        const causa = smokeBudget.describeExitCode(smoke.exitCode);
         log('Smoke test falló pero --no-rollback activo (diagnóstico)');
-        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\nExit ${smoke.exitCode}\n\nModo diagnóstico (--no-rollback), sin rollback automático.`);
+        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\n\n${causa} (exit ${smoke.exitCode}).\n\nModo diagnóstico (--no-rollback), sin rollback automático.`);
       } else if (!hasStableTag()) {
+        const causa = smokeBudget.describeExitCode(smoke.exitCode);
         log('Smoke test falló pero no existe tag pipeline-stable — primer deploy, sin rollback');
-        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\nExit ${smoke.exitCode}\n\nNo existe tag \`pipeline-stable\` (primer deploy). Revisar manualmente.`);
+        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\n\n${causa} (exit ${smoke.exitCode}).\n\nNo existe tag \`pipeline-stable\` (primer deploy). Revisar manualmente.`);
       } else {
-        enqueueTelegramAlert(`🚨 *Pipeline restart FALLÓ tras retry — lanzando rollback orphan*\nSmoke test exit ${smoke.exitCode}.\nVolviendo a \`pipeline-stable\`. Progreso en \`logs/rollback.log\`.`);
+        const causa = smokeBudget.describeExitCode(smoke.exitCode);
+        enqueueTelegramAlert(`🚨 *Pipeline restart FALLÓ tras retry — lanzando rollback orphan*\n\n${causa} (exit ${smoke.exitCode}).\n\nVolviendo a \`pipeline-stable\`. Progreso en \`logs/rollback.log\`.`);
         // Lanzamos rollback como orphan detached y salimos. El rollback
         // notifica por Telegram cuando termina (OK o FAIL).
         launchRollbackOrphan();

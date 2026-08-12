@@ -57,6 +57,7 @@ const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
 // y en su lugar re-encola el issue a `build` con YAML limpio.
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
+const visualCoverageRecorder = require('./lib/visual-coverage-recorder');
 // #3383 — Gate visual pre-promoción build→verificacion. Default OFF
 // (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
 const visualGate = require('./lib/visual-gate');
@@ -73,6 +74,8 @@ const operatorSignature = require('./lib/operator-signature');
 // #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
 // Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
 const humanBlock = require('./lib/human-block');
+// #5835 — anexo de estado de ola para el camino LLM (tabla textual del handler).
+const waveAnnex = require('./lib/wave-annex');
 // #4708 — Alerta operacional genérica del control-plane (wave-stall watchdog).
 const { notifyTelegram: notifyTelegramFn } = require('./lib/notify-telegram');
 // #3939 — Primitivas atómicas anti-TOCTOU: claim-by-rename + reserva de slot +
@@ -10269,6 +10272,25 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         }
       }
 
+      // #5708: una aprobación visual también es una pasada auditable y debe
+      // quedar como baseline antes de mover el work-file. El reporte se lanza
+      // sólo para rechazos, así que no puede ser dueño exclusivo del store.
+      // Best-effort: una falla de evidencia no puede tumbar el Pulpo.
+      if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
+        try {
+          const coverageResult = visualCoverageRecorder.recordApprovedCoverage({
+            root: ROOT, issue, skill, fase, data,
+          });
+          if (coverageResult.written) {
+            log('lanzamiento', `QA:#${issue} persistió cobertura visual aprobada rev ${Number(data.rebote_numero) || 0}`);
+          } else if (coverageResult.reason !== 'sin-contrato') {
+            log('lanzamiento', `⚠️ QA:#${issue} no persistió cobertura visual aprobada: ${coverageResult.reason}`);
+          }
+        } catch (coverageErr) {
+          log('lanzamiento', `⚠️ QA:#${issue} falló persistencia de cobertura visual aprobada: ${coverageErr.message}`);
+        }
+      }
+
       // Solo movemos si el archivo sigue en trabajando/. Si ya estaba en listo/
       // (contrato viejo), el move lo completó el agente.
       if (workingPath === trabajandoPath) {
@@ -10292,6 +10314,21 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             '--motivo', String(data.motivo || 'Sin motivo'),
             '--log', `${issue}-${skill}.log`, '--pipeline', pipeline,
           ];
+          // #5708 / CA-10 · SEC-11 (D10a) — el contrato visual SÓLO lo emite el
+          // skill de QA visual. Desde el bloque genérico `if (resultado ===
+          // 'rechazado')` aplicaba también a tester, security, build, linter y
+          // review: bastaba con que el archivo existiera en disco para que la
+          // narración de CUALQUIER rechazo del issue se contara como "rechazo
+          // visual" y la causa real nunca llegara al operador.
+          if (skill === 'qa') {
+            const visualJsonPath = path.join(ROOT, 'qa', 'evidence', String(issue), 'visual-comparison.json');
+            if (fs.existsSync(visualJsonPath)) reportArgs.push('--visual-json', visualJsonPath);
+          }
+          // #5708 / CA-9 (D9) — `--rev` se pushea SIEMPRE (fuera del if): es el
+          // consumidor real del campo `rev` del contrato. Sin él, el reporte
+          // suprime el bloque con motivo declarado (`rev-unknown`) en vez de
+          // renderizar evidencia de una pasada anterior como si fuera actual.
+          reportArgs.push('--rev', String(Number(data.rebote_numero) || 0));
           if (launchResult && launchResult.provider) {
             reportArgs.push('--provider', String(launchResult.provider));
           }
@@ -14735,6 +14772,16 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
   if (textoLibre.length > 0) {
     const esAudio = textoLibre.some(m => m._esAudio);
 
+    // #5835 — ¿alguno de los mensajes que van al LLM MENCIONABA la ola? Si sí,
+    // (a) la respuesta del LLM se sanitiza para que no pueda emitir una tabla
+    // propia (CA-5) y (b) se anexa el render TEXTUAL del handler `wave` como
+    // mensaje separado DESPUÉS de la respuesta (CA-3). `classify()` marca el
+    // flag; acá sólo lo consumimos.
+    const waveAnnexRequested = textoLibre.some(m => m._intent && m._intent.waveMentioned === true);
+    if (waveAnnexRequested) {
+      log('commander', '[wave-anexo] pregunta analítica con mención de ola — se responde por LLM y se anexa la tabla del handler');
+    }
+
     // #3949 EP7-H2 — Log por petición atendida del Commander. UN id por turno
     // consolidado (no por mensaje individual): `<chat_id>-<epochms>` (SEC-4,
     // filename-safe). Toda escritura pasa por el stream sanitizado de
@@ -15806,7 +15853,11 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         // captura sin `await` intermedio. El MISMO `outboundText` alimenta el TTS y
         // el texto, garantizando coherencia audio↔texto (CA-4) y blindando contra
         // una mutación tardía de `respuesta` por el bloque Sherlock detached.
-        const outboundText = respuesta;
+        // #5835 (CA-5) — si el mensaje mencionaba la ola, la respuesta del LLM
+        // pasa por el sanitizador ANTES del snapshot frozen: así el texto y el
+        // audio comparten exactamente el mismo contenido ya sin tablas. Ningún
+        // camino deja que el LLM emita una tabla de estado de ola propia.
+        const outboundText = waveAnnexRequested ? waveAnnex.safeLlmAnswer(respuesta) : respuesta;
 
         // Si hubo audio → intentar TTS
         if (esAudio) {
@@ -15912,6 +15963,34 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           disclaimer: sherlockDisclaimerType || 'ninguno',
         });
         requestLog.line(`respuesta: ${outboundText}`);
+
+        // #5835 (CA-3) — ANEXO de estado de ola. El operador hizo una pregunta
+        // analítica que mencionaba la ola: primero se le RESPONDE (arriba), y
+        // recién después se le adjunta el cuadro como contexto.
+        //
+        // El bloque es TEXTUAL del handler `wave` (`wave-annex.buildWaveAnnex`):
+        // ni una porción proviene del LLM. Va como mensaje(s) SEPARADO(S) con
+        // parseMode MarkdownV2 — concatenarlo al texto del LLM (que sale en
+        // 'Markdown', #4130) mostraría los escapes literales dentro del cuadro.
+        // Incluye los extras del paginado (#4075) y descarta `audioText`: quien
+        // pidió una opinión no debe recibir un audio narrando la tabla.
+        //
+        // FAIL-OPEN con la prioridad INVERTIDA respecto de #4089: allá el
+        // fail-open protegía la tabla; acá protege la RESPUESTA, que ya se
+        // entregó. Que un fallo del render de ola se coma la respuesta sería
+        // reintroducir el bug por otra puerta.
+        if (waveAnnexRequested) {
+          try {
+            const annex = await waveAnnex.buildWaveAnnex({ pipelineRoot: PIPELINE });
+            for (const bloque of annex.messages) {
+              try { sendTelegram(bloque, { parseMode: annex.parseMode }); }
+              catch (e) { log('commander', `[wave-anexo] fallo enviar bloque: ${e.message}`); }
+            }
+            log('commander', `[wave-anexo] ${annex.messages.length} mensaje(s) de estado anexados tras la respuesta`);
+          } catch (e) {
+            log('commander', `[wave-anexo] fallo (fail-open, la respuesta ya se entregó): ${e.message}`);
+          }
+        }
         // #4139 — sin corrección diferida: el flujo síncrono espera el verdict
         // antes de despachar, así que el saliente ya es definitivo. Eliminado el
         // segundo envío (`scheduleOptimisticCorrection` / follow-up por voz).

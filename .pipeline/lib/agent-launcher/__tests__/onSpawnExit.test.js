@@ -577,3 +577,253 @@ test('CA-3 CODEPATH_EMOJI exporta legacy=🛡️ y generalized=🆕 para log tex
     assert.equal(dispatcher.CODEPATH_EMOJI.legacy, '🛡️');
     assert.equal(dispatcher.CODEPATH_EMOJI.generalized, '🆕');
 });
+
+// =============================================================================
+// #5795 — Propagación de `authentication_rejected` por el hook post-spawn.
+//
+// Lo que se afirma acá es el CONTRATO DE TRANSPORTE, no la política:
+//   * la señal tipada llega intacta con el contexto de la operación raíz,
+//   * el objeto es nuevo e inmutable,
+//   * `flagSet === false` y `setFlag` NUNCA se invoca,
+//   * los flags de cuota quedan sin tocar,
+//   * esta capa no decide retry ni fallback,
+//   * dos rechazos de la misma operación raíz quedan ordenados y visibles,
+//   * ningún secreto canario sobrevive al retorno, al audit ni a los logs.
+// =============================================================================
+
+const AUTH_CLASS_HOOK = 'authentication_rejected';
+
+// Frame real de Anthropic: credencial rechazada.
+const FRAME_AUTH_ANTHROPIC = JSON.stringify({
+    type: 'result',
+    is_error: true,
+    error: { type: 'authentication_error', message: 'invalid x-api-key' },
+});
+
+// Frame real de OpenAI/Codex: credencial rechazada (otro provider, otra forma).
+const FRAME_AUTH_CODEX = JSON.stringify({
+    error: { message: 'Incorrect API key provided', type: 'invalid_request_error', code: 'invalid_api_key' },
+});
+
+test('#5795 hook — propaga la senal tipada con el contexto de la operacion raiz', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const r = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: FRAME_AUTH_ANTHROPIC,
+        exitCode: 1, timedOut: false, durationMs: 4000,
+        operationId: 'op-5795-raiz', path: 'primary', attempt: 0,
+        issue: 5795, pipelineDir: tmp, quotaModule: quota,
+    });
+
+    assert.equal(r.errorClass, AUTH_CLASS_HOOK);
+    assert.equal(r.decision, 'authentication-rejected');
+    const proj = r.authenticationRejection;
+    assert.ok(proj, 'la proyeccion tiene que existir');
+    assert.equal(proj.kind, AUTH_CLASS_HOOK);
+    assert.equal(proj.provider, 'anthropic');
+    assert.equal(proj.operationId, 'op-5795-raiz');
+    assert.equal(proj.path, 'primary');
+    assert.equal(proj.attempt, 0);
+    assert.equal(proj.signal.source, 'cli-stream-json');
+    assert.equal(proj.signal.type, 'authentication_error');
+    assert.equal(proj.signal.code, null);
+});
+
+test('#5795 hook — la proyeccion es un objeto nuevo e inmutable (tambien la signal)', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const r = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: FRAME_AUTH_ANTHROPIC, exitCode: 1,
+        operationId: 'op-inmutable', path: 'primary', attempt: 0,
+        pipelineDir: tmp, quotaModule: quota,
+    });
+    const proj = r.authenticationRejection;
+    assert.ok(Object.isFrozen(proj), 'la proyeccion viaja congelada');
+    assert.ok(Object.isFrozen(proj.signal), 'la signal viaja congelada');
+
+    // Mutar no tiene efecto (sloppy mode: falla en silencio, no tira).
+    try { proj.provider = 'hackeado'; } catch { /* strict mode tiraria */ }
+    try { proj.signal.type = 'hackeado'; } catch { /* idem */ }
+    try { proj.campoNuevo = 'x'; } catch { /* idem */ }
+    assert.equal(proj.provider, 'anthropic');
+    assert.equal(proj.signal.type, 'authentication_error');
+    assert.equal(proj.campoNuevo, undefined);
+});
+
+test('#5795 hook — NO llama setFlag y flagSet queda en false', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const r = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: FRAME_AUTH_ANTHROPIC, exitCode: 1,
+        operationId: 'op-sin-flag', path: 'primary', attempt: 0,
+        pipelineDir: tmp, quotaModule: quota,
+    });
+    assert.equal(r.flagSet, false, 'flagSet tiene que ser false');
+    assert.equal(quota._setCalls.length, 0, 'setFlag NO puede invocarse para esta clase');
+});
+
+test('#5795 hook — no decide retry ni fallback en esta capa', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const r = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: FRAME_AUTH_ANTHROPIC, exitCode: 1,
+        operationId: 'op-sin-politica', path: 'primary', attempt: 0,
+        pipelineDir: tmp, quotaModule: quota,
+    });
+    assert.equal(r.retriable, false, 'reintentar con la misma credencial no corresponde');
+    assert.equal(r.shouldFallback, false, 'rotar de provider lo decide el coordinador de #5794');
+    assert.notEqual(r.decision, 'fallback');
+    assert.notEqual(r.decision, 'flag_set');
+});
+
+test('#5795 hook — un rechazo de credencial no toca los flags de cuota', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    // Primero un caso de cuota real: deja el flag seteado.
+    dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: '{"type":"result","is_error":true,"error_type":"usage_limit_error"}',
+        exitCode: 1, pipelineDir: tmp, quotaModule: quota,
+    });
+    const cuotaAntes = quota._setCalls.length;
+    assert.equal(cuotaAntes, 1, 'el caso de cuota si tiene que setear flag');
+
+    // Ahora el rechazo de credencial: no puede agregar ni alterar nada.
+    dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: FRAME_AUTH_ANTHROPIC, exitCode: 1,
+        operationId: 'op-cuota-intacta', path: 'primary', attempt: 0,
+        pipelineDir: tmp, quotaModule: quota,
+    });
+    assert.equal(quota._setCalls.length, cuotaAntes, 'los flags de cuota quedan intactos');
+});
+
+test('#5795 hook — dos rechazos de la misma operacion raiz quedan ordenados y distinguibles', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+
+    const primero = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: FRAME_AUTH_ANTHROPIC, exitCode: 1,
+        operationId: 'op-raiz-compartida', path: 'primary', attempt: 0,
+        issue: 5795, pipelineDir: tmp, quotaModule: quota,
+    });
+    const segundo = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'openai-codex', transport: 'cli',
+        rawOutput: FRAME_AUTH_CODEX, exitCode: 1,
+        operationId: 'op-raiz-compartida', path: 'fallback/1', attempt: 1,
+        issue: 5795, pipelineDir: tmp, quotaModule: quota,
+    });
+
+    // Misma operacion raiz preservada en los dos.
+    assert.equal(primero.authenticationRejection.operationId, 'op-raiz-compartida');
+    assert.equal(segundo.authenticationRejection.operationId, 'op-raiz-compartida');
+    // Pero cada uno conserva su provider emisor, su camino y su intento: el
+    // segundo rechazo NO queda oculto ni pisado por el primero.
+    assert.equal(primero.authenticationRejection.provider, 'anthropic');
+    assert.equal(segundo.authenticationRejection.provider, 'openai-codex');
+    assert.equal(primero.authenticationRejection.path, 'primary');
+    assert.equal(segundo.authenticationRejection.path, 'fallback/1');
+    assert.equal(primero.authenticationRejection.attempt, 0);
+    assert.equal(segundo.authenticationRejection.attempt, 1);
+    assert.notEqual(primero.authenticationRejection, segundo.authenticationRejection);
+
+    // El audit tiene las DOS lineas, en orden.
+    const auditFile = dispatcher.spawnExitAuditFile(tmp);
+    const lineas = fs.readFileSync(auditFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const rechazos = lineas.filter((l) => l.error_class === AUTH_CLASS_HOOK);
+    assert.equal(rechazos.length, 2, 'los dos rechazos tienen que estar auditados');
+    assert.equal(rechazos[0].auth_rejection.provider, 'anthropic');
+    assert.equal(rechazos[1].auth_rejection.provider, 'openai-codex');
+    assert.equal(rechazos[0].auth_rejection.operation_id, 'op-raiz-compartida');
+    assert.equal(rechazos[1].auth_rejection.operation_id, 'op-raiz-compartida');
+    assert.equal(rechazos[0].auth_rejection.attempt, 0);
+    assert.equal(rechazos[1].auth_rejection.attempt, 1);
+    assert.equal(rechazos[0].flag_set, false);
+    assert.equal(rechazos[1].flag_set, false);
+});
+
+test('#5795 hook — el contexto de operacion mal formado se descarta, no viaja crudo', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const r = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: FRAME_AUTH_ANTHROPIC, exitCode: 1,
+        // Basura deliberada: objeto, string gigante y attempt fuera de rango.
+        operationId: { inyectado: true },
+        path: 'x'.repeat(500),
+        attempt: -7,
+        pipelineDir: tmp, quotaModule: quota,
+    });
+    const proj = r.authenticationRejection;
+    assert.equal(proj.operationId, null, 'un objeto no puede viajar como operationId');
+    assert.equal(proj.path, null, 'un path fuera de cota se descarta entero');
+    assert.equal(proj.attempt, null, 'un attempt invalido se descarta');
+    // Pero la senal en si sobrevive: el contexto malo no invalida el rechazo.
+    assert.equal(proj.signal.type, 'authentication_error');
+});
+
+test('#5795 hook — CANARIO: ningun secreto sobrevive al retorno, al audit ni a los logs', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const CANARIO = 'sk-live-CANARIOHOOK5795XYZ';
+    const logs = [];
+
+    const frameConSecretos = JSON.stringify({
+        type: 'result',
+        is_error: true,
+        error: {
+            type: 'authentication_error',
+            message: `invalid api key ${CANARIO}`,
+            token: CANARIO,
+            headers: { authorization: `Bearer ${CANARIO}` },
+            payload: { secret: CANARIO },
+        },
+        stderr: `ANTHROPIC_API_KEY=${CANARIO}`,
+    });
+
+    const r = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: frameConSecretos, exitCode: 1,
+        operationId: 'op-canario', path: 'primary', attempt: 0,
+        issue: 5795, pipelineDir: tmp, quotaModule: quota,
+        onLog: (canal, msg) => logs.push(`${canal} ${msg}`),
+    });
+
+    assert.equal(r.errorClass, AUTH_CLASS_HOOK);
+
+    const retorno = JSON.stringify(r);
+    assert.ok(!retorno.includes(CANARIO), 'el canario NO puede estar en el retorno');
+    assert.ok(!retorno.includes('CANARIOHOOK'), 'ni un fragmento del canario');
+    assert.equal(r.raw, '', 'esta clase no transporta extracto del payload');
+
+    const auditRaw = fs.readFileSync(dispatcher.spawnExitAuditFile(tmp), 'utf8');
+    assert.ok(!auditRaw.includes(CANARIO), 'el canario NO puede estar en el audit JSONL');
+    assert.ok(!auditRaw.includes('CANARIOHOOK'), 'ni un fragmento en el audit');
+
+    assert.ok(!logs.join('\n').includes('CANARIOHOOK'), 'el canario NO puede estar en los logs');
+});
+
+test('#5795 hook — clases distintas de auth no traen proyeccion (campo null)', () => {
+    const tmp = makeTmpPipeline();
+    const quota = fakeQuotaModule();
+    const cuota = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: '{"type":"result","is_error":true,"error_type":"usage_limit_error"}',
+        exitCode: 1, pipelineDir: tmp, quotaModule: quota,
+    });
+    assert.equal(cuota.errorClass, 'quota_exhausted');
+    assert.equal(cuota.authenticationRejection, null);
+
+    const libre = dispatcher.onSpawnExit({
+        skill: 'guru', provider: 'anthropic', transport: 'cli',
+        rawOutput: 'Unauthorized 401 auth failed', exitCode: 1,
+        pipelineDir: tmp, quotaModule: quota,
+    });
+    assert.equal(libre.errorClass, 'auth', 'la clase legacy por texto libre sigue viva');
+    assert.equal(libre.authenticationRejection, null, 'auth legacy no produce proyeccion tipada');
+});

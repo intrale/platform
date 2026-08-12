@@ -192,6 +192,69 @@ const RAW_TRUNC_LEN = 120;       // Para echo en plantillas de error
 // conversación libre que sólo menciona "la ola" (ej. "la ola de calor de ayer").
 const WAVE_INTENT_RE = /\b(?:estado|c[oó]mo (?:va|viene|anda)|avance|status|situaci[oó]n|resumen)\b[^.!?\n]{0,40}?\bola\b/i;
 
+// #5835 — Detector de PREGUNTA ANALÍTICA que apenas MENCIONA la ola.
+//
+// El sticky de #4089 es correcto para un PEDIDO de estado, pero se comía las
+// preguntas de opinión/causa que mencionan "el avance de la ola" al pasar: el
+// operador pedía una mirada y recibía el cuadro. Dos veces seguidas sobre el
+// mismo tema (transcriptos 2026-08-11 23:13 y 2026-08-12 10:15), y desde su
+// lado se percibe como "el bot no me contesta".
+//
+// DISCRIMINANTE LÉXICO, NO SIGNO DE PREGUNTA: `avance de la ola?` es un pedido
+// legítimo y debe seguir yendo a `wave`. Lo que distingue una pregunta
+// analítica es el marcador de OPINIÓN o de CAUSA ("está bien que", "por qué",
+// "me gustaría", "tu mirada", "debería", "lo revisás"), no el `?`.
+//
+// Los marcadores alcanzan POR SÍ SOLOS, sin exigir además el umbral de largo:
+// "¿está bien que baje el avance de la ola?" son 45 chars y es exactamente la
+// misma pregunta que hoy se come la tabla.
+//
+// OJO `porque` vs `por qué`: `porque` (conjunción causal, sin espacio ni tilde)
+// es lenguaje normal de un pedido con contexto ("...porque el dashboard me
+// marca cualquier cosa", regresión viva de #4089) y NO debe marcar analítica.
+// Por eso el marcador exige separador + tilde opcional sólo en `qué`.
+//
+// SEGURIDAD (SEC-1, ReDoS): igual que WAVE_INTENT_RE, corre sobre input
+// arbitrario de Telegram sin cota de longitud. Es una alternancia LINEAL de
+// literales, sin cuantificadores anidados ni alternancias solapadas; el único
+// cuantificador es `\s+` entre palabras fijas.
+const WAVE_ANALYTIC_RE = new RegExp(
+    '(?:'
+    + 'por\\s+qu[eé]'                                  // "¿por qué baja el avance?"
+    + '|porqu[eé]\\s+(?:baja|sube|disminuye|cambia)'   // "porqué" mal tildado + verbo
+    + '|est[aá]\\s+bien\\s+que'                        // "¿está bien que ...?"
+    + '|cu[aá]l\\s+es\\s+la\\s+l[oó]gica'
+    + '|qu[eé]\\s+opin[aá]s'
+    + '|tu\\s+(?:mirada|opini[oó]n|visi[oó]n|parecer|an[aá]lisis)'
+    + '|me\\s+gustar[ií]a'
+    + '|deber[ií]a(?:mos)?'
+    + '|(?:lo|los|la|las)\\s+revis[aá]s'
+    + '|revisalo|revisalos'
+    + '|ten[eé]s\\s+idea'
+    + '|qu[eé]\\s+te\\s+parece'
+    + '|no\\s+entiendo\\s+por'
+    + ')',
+    'i',
+);
+
+// #5835 — Umbral de refuerzo por longitud (sobre el texto YA limpio de las
+// anotaciones del preprocesador de voz: el sufijo "(mensaje de voz transcripto
+// · whisper local)" no debe inflar el conteo). Es DELIBERADAMENTE alto: los dos
+// transcriptos reales superan los 400 chars, mientras que la regresión viva de
+// #4089 ("che necesito saber cómo viene la ola ... porque el dashboard me marca
+// cualquier cosa") ronda los 100 y debe seguir yendo a `wave`.
+const WAVE_ANALYTIC_MIN_LENGTH = 400;
+
+/**
+ * ¿El texto es una pregunta analítica y no un pedido de estado de ola?
+ * Marcador léxico de opinión/causa, o mensaje desproporcionadamente largo.
+ * @param {string} text texto ya limpio de anotaciones del preprocesador.
+ */
+function isWaveAnalyticQuestion(text) {
+    const t = String(text || '');
+    return WAVE_ANALYTIC_RE.test(t) || t.length >= WAVE_ANALYTIC_MIN_LENGTH;
+}
+
 // El preprocesador (multimedia.js) añade anotaciones entre paréntesis/corchetes
 // al final del texto transcripto: "(mensaje de voz transcripto · whisper local)",
 // "(audio sin transcribir: ...)", "(audio no disponible)", "(imagen no disponible)",
@@ -284,6 +347,17 @@ function classify(text) {
     // que brazoCommander decida si hay contexto extra que aclarar (CA-2). La
     // tabla del handler `wave` es inviolable; el residual NUNCA la reescribe.
     if (WAVE_INTENT_RE.test(trimmed)) {
+        // #5835 — MENCIÓN incidental dentro de una pregunta analítica ≠ PEDIDO de
+        // estado. Cuando hay marcador de opinión/causa (o el mensaje es
+        // desproporcionadamente largo), la pregunta va al LLM para que se
+        // RESPONDA. `waveMentioned` es un campo ADITIVO (no toca el enum de
+        // `class`, contrato del dispatcher y de pulpo) que le indica al caller
+        // que debe anexar el render del handler `wave` DESPUÉS de la respuesta.
+        // La invariante de #4089 queda intacta: la tabla la sigue produciendo
+        // SIEMPRE el handler, el LLM nunca la reconstruye.
+        if (isWaveAnalyticQuestion(trimmed)) {
+            return { class: 'llm', command: null, args: trimmed, waveMentioned: true, raw, rawTruncated };
+        }
         const waveResidual = trimmed.replace(WAVE_INTENT_RE, ' ').replace(/\s+/g, ' ').trim();
         return { class: 'deterministic', command: 'wave', args: '', waveResidual, raw, rawTruncated };
     }
@@ -2402,7 +2476,7 @@ function computeClosedSet({ wave, state } = {}) {
  * `usingLegacy` se infiere del `wave.source` para mantener la nota discreta
  * del template `wave-status` cuando no se está leyendo de `waves.json`.
  */
-async function handleWaveStatus({ pipelineRoot, audio }) {
+async function handleWaveStatus({ pipelineRoot, audio, readOnly }) {
     const resolver = require('./wave-resolver');
     const snapshotMod = require('./wave-snapshot');
     const rendererMod = require('./wave-renderer');
@@ -2453,7 +2527,16 @@ async function handleWaveStatus({ pipelineRoot, audio }) {
         const waveKey = activeWave && activeWave.number;
         const now = typeof snapshot.generatedAt === 'number' ? snapshot.generatedAt : Date.now();
         if (Number.isInteger(waveKey) && waveKey > 0 && Number.isFinite(snapshot.totalPct)) {
-            waveProgress.appendSnapshot({ pipelineRoot, waveKey, avancePct: snapshot.totalPct, now });
+            // #5835 — `readOnly`: render SIN efecto de lado sobre la serie temporal.
+            // Una LECTURA del operador que pide el estado es un punto válido de la
+            // serie (#4039), pero una PREGUNTA ANALÍTICA que sólo menciona la ola no
+            // lo es: preguntar no es avanzar. Si cada consulta inyectara un snapshot,
+            // el ETA que lee el operador quedaría sesgado — exactamente la
+            // degradación silenciosa que costó #4566. El cálculo de velocidad SÍ
+            // corre (es lectura pura), así que el ETA mostrado es el mismo.
+            if (!readOnly) {
+                waveProgress.appendSnapshot({ pipelineRoot, waveKey, avancePct: snapshot.totalPct, now });
+            }
             const vel = await etaWave.calculateWaveVelocityETA(waveKey, snapshot.totalPct, now);
             // #4734 — CA-1: el handler `/wave` DELEGA en el módulo único y unifica el
             // mapeo de `etaSource` con el dashboard: acepta tanto el ritmo MEDIDO
@@ -3512,6 +3595,9 @@ module.exports = {
     // #5336 (CA-4) — detección del marcador de audio sin transcribir.
     detectAudioFailure,
     AUDIO_FAILURE_MARKER,
+    // #5835 — detector de pregunta analítica que sólo menciona la ola de pasada.
+    isWaveAnalyticQuestion,
+    WAVE_ANALYTIC_MIN_LENGTH,
     _waveInternal: {
         handleWaveStatus,
         handleWaveNext,
