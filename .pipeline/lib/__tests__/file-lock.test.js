@@ -79,6 +79,30 @@ test('withLockSync soporta reentrancia (mismo pid+startTime no deadlockea)', () 
     } finally { rmrf(target); }
 });
 
+test('atomicCreateLock trata EBUSY transitorio como contención recuperable', (t) => {
+    const target = mkTmpFile();
+    const originalLink = fs.linkSync;
+    let attempts = 0;
+    t.mock.method(fs, 'linkSync', (...args) => {
+        attempts++;
+        if (attempts === 1) {
+            const error = new Error('resource busy');
+            error.code = 'EBUSY';
+            throw error;
+        }
+        return originalLink(...args);
+    });
+    try {
+        const result = lock.acquireLockSync(target, { timeoutMs: 1000 });
+        assert.equal(result.acquired, true);
+        assert.ok(attempts >= 2);
+        lock.releaseLock(target);
+    } finally {
+        t.mock.restoreAll();
+        rmrf(target);
+    }
+});
+
 // ─── Stale detection ────────────────────────────────────────────────────────
 
 test('isStale: PID no existe → stale', () => {

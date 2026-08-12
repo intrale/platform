@@ -84,6 +84,7 @@ const timer = setInterval(() => {
     appendLog(`[${ts}] [freeze-watchdog] FREEZE DETECTADO: el event loop del dashboard lleva ${stalledFor}ms sin latir (umbral ${thresholdMs}ms) — operacion en vuelo al congelarse: ${decodeInflight(freezeInflightMask)}`);
   }
 }, checkMs);
+try { if (parentPort) parentPort.postMessage({ type: 'ready' }); } catch {}
 // OJO: NO hacer unref() de este timer. Es lo único que mantiene vivo el loop
 // del worker; si lo desreferenciamos, el worker sale al instante y deja de
 // vigilar. El worker NO mantiene vivo al proceso principal porque el main ya lo

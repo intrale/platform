@@ -81,6 +81,10 @@ const path = require('node:path');
 // para que onSpawnExit emita `decision: 'provider-spawn-failure'` y el caller no
 // penalice el retry del issue (CA-3 / SEC-3).
 const { classifySpawnFailure } = require('./spawn-failure-classifier');
+// #5795 — nombre canónico de la clase cerrada de rechazo de credencial. Se
+// importa la constante (en vez de escribir el string) para que un typo no
+// desconecte silenciosamente la proyección del veredicto del parser.
+const { AUTH_REJECTED_CLASS } = require('./auth-rejection');
 
 // #4274 — `resolvePermissionMode` se suma al destructuring existente para
 // resolver el modo canónico del provider de FALLBACK en su return (codex →
@@ -280,6 +284,70 @@ function _selectErrorTypeForFlag(provider, verdict, quotaModule) {
 }
 
 // -----------------------------------------------------------------------------
+// #5795 — proyección del rechazo de credencial con el contexto de la operación.
+//
+// QUÉ AGREGA ESTA CAPA
+//   El adapter sabe de frames y devuelve `{kind, signal}`. El dispatcher es el
+//   único que conoce el contexto de la operación: qué provider la emitió, cuál
+//   es la operación RAÍZ (`operationId`), por qué camino de fallback se llegó
+//   (`path`) y qué número de intento es (`attempt`). Eso es lo que se agrega.
+//
+// QUÉ NO HACE
+//   No decide retry, no elige fallback, no persiste presupuesto, no llama
+//   `setFlag`. No guarda estado entre invocaciones: cada rechazo se proyecta y
+//   se audita solo. Por eso un fallback NO puede reiniciar el presupuesto de
+//   credencial (no hay presupuesto acá que reiniciar) ni ocultar el segundo
+//   rechazo (cada llamada emite su propia proyección y su propia línea de
+//   audit, con su `attempt` y su `path`). El dueño del presupuesto de
+//   re-resolución es el coordinador de #5794.
+//
+// INMUTABILIDAD
+//   Se devuelve un objeto NUEVO y congelado, con la `signal` (ya congelada por
+//   el adapter) adentro. El caller no puede mutarlo ni colgarle campos con
+//   datos del provider.
+//
+// ALLOWLIST ESTRICTA
+//   Sólo entran campos de tipo y longitud acotados. `operationId` y `path` son
+//   tokens del pipeline (no del provider), pero igual se validan: si el caller
+//   pasa un objeto, un string gigante o algo raro, se descarta a `null` en vez
+//   de viajar. Nunca se copia `error`, `message`, headers, payload ni stderr.
+// -----------------------------------------------------------------------------
+const AUTH_CONTEXT_MAX_CHARS = 128;
+
+function normalizeContextToken(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > AUTH_CONTEXT_MAX_CHARS) return null;
+    // Tokens del pipeline: identificadores, rutas de cadena de fallback y
+    // separadores. Cualquier cosa con espacios, saltos de línea o comillas se
+    // descarta entera (no se recorta: recortar disfraza un valor inesperado).
+    if (!/^[A-Za-z0-9_.:@/#-]{1,128}$/.test(trimmed)) return null;
+    return trimmed;
+}
+
+function projectAuthRejection(rejection, { provider, operationId, path: opPath, attempt } = {}) {
+    if (!rejection || typeof rejection !== 'object') return null;
+    const signal = rejection.signal;
+    if (!signal || typeof signal !== 'object') return null;
+
+    const attemptNum = Number.isInteger(attempt) && attempt >= 0 && attempt <= 1000
+        ? attempt
+        : null;
+
+    return Object.freeze({
+        kind: rejection.kind,
+        provider: normalizeContextToken(provider),
+        operationId: normalizeContextToken(operationId),
+        path: normalizeContextToken(opPath),
+        attempt: attemptNum,
+        // Ya viene congelada del adapter; la re-congelamos por si un caller
+        // inyectó un módulo fake que devolvió un objeto mutable.
+        signal: Object.isFrozen(signal) ? signal : Object.freeze({ ...signal }),
+    });
+}
+
+// -----------------------------------------------------------------------------
 // onSpawnExit — hook centralizado post-spawn (#3576 CA-2).
 //
 // **Never throws**: cualquier error interno se atrapa y devuelve un veredicto
@@ -298,6 +366,8 @@ function onSpawnExit(opts = {}) {
         auditLogged: false,
         decision: 'ignore',
         codepath: 'generalized',
+        // #5795 — shape estable: el campo existe siempre, null salvo rechazo.
+        authenticationRejection: null,
     };
 
     let verdict = null;
@@ -321,6 +391,13 @@ function onSpawnExit(opts = {}) {
             // rastrea de verdad el primer byte). Habilita la firma 3 del
             // clasificador sin afectar a los callers post-exit legacy.
             spawnInstrumented,
+            // #5795 — contexto de la operación RAÍZ. Lo aporta el caller (es el
+            // único que sabe si este spawn es el primario o un fallback, y a qué
+            // operación pertenece). Opcionales: si faltan, la proyección los
+            // deja en `null` y la señal viaja igual.
+            operationId,
+            path: operationPath,
+            attempt,
             issue,
             pipelineDir,
             parserModule,
@@ -405,6 +482,7 @@ function onSpawnExit(opts = {}) {
                 decision: 'provider-spawn-failure',
                 signature: spawnFailure.signature,
                 codepath: 'generalized',
+                authenticationRejection: null,
             };
         }
 
@@ -432,6 +510,18 @@ function onSpawnExit(opts = {}) {
             : ((s) => String(s == null ? '' : s).slice(0, 200));
         const safeEvidence = sanitize(verdict.evidence || '');
         const safeRaw = sanitize(verdict.raw || '');
+
+        // #5795 — proyección del rechazo de credencial con el contexto raíz.
+        // Se calcula acá (antes del bloque de setFlag) para dejar explícito que
+        // la señal NO pasa por `_selectErrorTypeForFlag` ni por `setFlag`.
+        const authProjection = verdict.errorClass === AUTH_REJECTED_CLASS
+            ? projectAuthRejection(verdict.authRejection, {
+                provider,
+                operationId,
+                path: operationPath,
+                attempt,
+            })
+            : null;
 
         // 2. setFlag SOLO para quota_exhausted/rate_limit y SOLO si hay errorType
         // válido contra la allowlist. NEW-2 (atomic setFlag) ya está garantizado
@@ -512,6 +602,25 @@ function onSpawnExit(opts = {}) {
                     // el transport no lo expone).
                     first_byte_at: Number.isFinite(firstByteAt) ? Math.round(firstByteAt) : null,
                     codepath: 'generalized',
+                    // #5795 — el contexto raíz del rechazo de credencial viaja
+                    // al audit para que dos rechazos de la MISMA operación raíz
+                    // queden ordenados y distinguibles (uno por provider/intento).
+                    // Sin esto, el segundo rechazo tras un fallback sería
+                    // indistinguible del primero. Sólo campos allowlisted: acá
+                    // no entra nada del payload del provider.
+                    ...(authProjection ? {
+                        auth_rejection: {
+                            kind: authProjection.kind,
+                            provider: authProjection.provider,
+                            operation_id: authProjection.operationId,
+                            path: authProjection.path,
+                            attempt: authProjection.attempt,
+                            signal_source: authProjection.signal.source,
+                            signal_code: authProjection.signal.code,
+                            signal_status: authProjection.signal.status,
+                            signal_type: authProjection.signal.type,
+                        },
+                    } : {}),
                 };
                 _audit.appendChained({ file, entry: auditEntry, fsImpl });
                 auditLogged = true;
@@ -521,6 +630,11 @@ function onSpawnExit(opts = {}) {
         }
 
         const decision =
+            // #5795 — decisión propia y terminal PARA ESTA CAPA. No es 'fallback'
+            // (no rotamos provider acá) ni 'ignore' (la señal no se descarta):
+            // es "clasifiqué un rechazo de credencial y lo entrego tipado". Quien
+            // resuelve qué hacer es el coordinador de #5794.
+            authProjection ? 'authentication-rejected' :
             verdict.errorClass === 'unknown' ? 'ignore' :
             flagSet ? 'flag_set' :
             verdict.shouldFallback ? 'fallback' :
@@ -536,6 +650,9 @@ function onSpawnExit(opts = {}) {
             auditLogged,
             decision,
             codepath: 'generalized',
+            // #5795 — señal tipada + contexto raíz, congelada. Ausente (null)
+            // para cualquier otra clase de error.
+            authenticationRejection: authProjection,
         };
     } catch (e) {
         // Catch-all defense in depth — NUNCA debemos romper child.on('exit').
@@ -1921,6 +2038,15 @@ module.exports = {
 
     // #3576 — Hook generalizado post-spawn cross-skill.
     onSpawnExit,
+
+    // #5795 — proyección congelada del rechazo de credencial. Exportada para
+    // que el coordinador de #5794 y los tests la construyan/inspeccionen sin
+    // duplicar la allowlist.
+    projectAuthRejection,
+    AUTH_REJECTED_CLASS,
+    AUTH_CONTEXT_MAX_CHARS,
+    _normalizeContextToken: normalizeContextToken,
+
     isGeneralizedParserEnabled,
     spawnExitAuditFile,
     FEATURE_FLAG_NAME,

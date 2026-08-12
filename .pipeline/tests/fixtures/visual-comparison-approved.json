@@ -1,0 +1,14 @@
+{
+  "issue": 5708,
+  "rev": 3,
+  "verdict": "approved",
+  "mockup": { "src": "mockup-v1.png", "baseline": "mockup-48" },
+  "delivery": { "src": "render-rev3.png" },
+  "coverage": {
+    "secciones_declaradas": ["A", "B", "C", "D"],
+    "verificadas": ["A", "B", "C", "D"],
+    "no_verificadas": []
+  },
+  "diffs": [],
+  "suggestedAction": null
+}
