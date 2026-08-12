@@ -182,3 +182,134 @@ test('SEC-1 (#4089, ReDoS): relleno sin verbo de pedido también es lineal', () 
         `classify() tardó ${elapsed.toFixed(2)}ms sobre 12k chars (esperado lineal < ${REDOS_CEILING_MS}ms)`,
     );
 });
+
+// =============================================================================
+// #5835 — MENCIÓN incidental de la ola dentro de una pregunta analítica.
+//
+// El bug: el sticky de #4089 se comía toda pregunta de opinión que mencionara
+// "el avance de la ola" al pasar. El operador pedía una mirada y recibía el
+// cuadro — dos veces seguidas sobre el mismo tema. Desde su lado se percibe
+// como "el bot no me contesta".
+//
+// Estos tests corren en PAREJA con los de #4089 de arriba a propósito: los de
+// arriba protegen la invariante que NO se debe romper (el pedido explícito
+// sigue siendo determinístico), estos protegen la corrección.
+// =============================================================================
+
+// Transcripto REAL del chat del operador — 2026-08-11 23:13.
+const TRANSCRIPTO_2026_08_11 = [
+    'Che Claudito, estuve mirando el dashboard y me quedó una duda con el tema de',
+    'los splits. Cuando un issue grande se parte en varios hijos y esos hijos se',
+    'suman a la ola, el porcentaje de avance de la ola baja de golpe, porque el',
+    'denominador creció pero el numerador no. Quería saber si está bien que cuando',
+    'se sumen esos hijos el porcentaje de avance de la ola disminuya, o si eso es',
+    'un problema de cómo estamos midiendo el peso de cada issue. Me gustaría que me',
+    'des tu mirada sobre esto antes de que toquemos nada.',
+].join(' ');
+
+// Transcripto REAL del chat del operador — 2026-08-12 10:15.
+const TRANSCRIPTO_2026_08_12 = [
+    'Buen día Claudito, ayer a la noche te comenté algo y no me quedó clara la',
+    'respuesta. El tema tenía que ver con los cortes o divisiones de los issues y',
+    'cómo eso incrementaba el peso o el porcentaje de avance de cada ola. Yo creo',
+    'que hay algo mal en cómo se calcula eso cuando aparecen los hijos de un split,',
+    'porque el avance de la ola se mueve para atrás sin que nadie haya desandado',
+    'trabajo. ¿Lo revisás y me contás qué encontrás?',
+].join(' ');
+
+test('CA-4 (#5835, regresión real 2026-08-11 23:13): pregunta analítica rutea a llm', () => {
+    assert.ok(TRANSCRIPTO_2026_08_11.length > 400, 'el transcripto real supera los 400 chars');
+    const r = commanderDet.classify(TRANSCRIPTO_2026_08_11);
+    assert.equal(r.class, 'llm', 'la pregunta debe responderse, no reemplazarse por la tabla');
+    assert.notEqual(r.command, 'wave');
+    assert.equal(r.waveMentioned, true, 'debe marcarse para anexar la tabla del handler');
+    assert.equal(r.args, TRANSCRIPTO_2026_08_11, 'la pregunta completa viaja al LLM');
+});
+
+test('CA-4 (#5835, regresión real 2026-08-12 10:15): pregunta analítica rutea a llm', () => {
+    assert.ok(TRANSCRIPTO_2026_08_12.length > 400, 'el transcripto real supera los 400 chars');
+    const r = commanderDet.classify(TRANSCRIPTO_2026_08_12);
+    assert.equal(r.class, 'llm');
+    assert.notEqual(r.command, 'wave');
+    assert.equal(r.waveMentioned, true);
+});
+
+test('CA-2 (#5835): marcador léxico alcanza SOLO, sin umbral de longitud', () => {
+    // 45 chars: es exactamente la misma pregunta que los transcriptos largos.
+    const msg = '¿está bien que baje el avance de la ola?';
+    assert.ok(msg.length < commanderDet.WAVE_ANALYTIC_MIN_LENGTH);
+    const r = commanderDet.classify(msg);
+    assert.equal(r.class, 'llm');
+    assert.equal(r.waveMentioned, true);
+});
+
+test('CA-2 (#5835): "me gustaría tu mirada" sobre el avance de la ola rutea a llm', () => {
+    const r = commanderDet.classify('me gustaría tu mirada sobre el avance de la ola');
+    assert.equal(r.class, 'llm');
+    assert.equal(r.waveMentioned, true);
+});
+
+test('CA-2 (#5835): "por qué" causal sobre el avance de la ola rutea a llm', () => {
+    const r = commanderDet.classify('por qué el avance de la ola bajó de un día para el otro');
+    assert.equal(r.class, 'llm');
+    assert.equal(r.waveMentioned, true);
+});
+
+// --- CA-1: los pedidos explícitos NO deben moverse (sin regresión de #4089) ---
+
+for (const pedido of [
+    'estado de la ola',
+    'pasame el estado de la ola actual',
+    'cómo viene la ola',
+    'avance de la ola?',
+    'cómo va la ola',
+    'status de la ola',
+    'resumen de la ola por favor',
+]) {
+    test(`CA-1 (#5835): "${pedido}" sigue ruteando a wave (invariante #4089)`, () => {
+        const r = commanderDet.classify(pedido);
+        assert.equal(r.class, 'deterministic', 'la tabla la produce SIEMPRE el handler');
+        assert.equal(r.command, 'wave');
+        assert.notEqual(r.waveMentioned, true);
+    });
+}
+
+test('CA-1 (#5835): /wave sigue siendo determinístico', () => {
+    const r = commanderDet.classify('/wave');
+    assert.equal(r.class, 'deterministic');
+    assert.equal(r.command, 'wave');
+});
+
+test('CA-1 (#5835): el signo de pregunta NO es el discriminante', () => {
+    // `avance de la ola?` es interrogativo y es un PEDIDO. Si el detector usara
+    // "es interrogativo" como marcador, este caso se rompería.
+    const r = commanderDet.classify('avance de la ola?');
+    assert.equal(r.command, 'wave');
+});
+
+test('CA-1 (#5835): "porque" causal NO es "por qué" (regresión viva de #4089)', () => {
+    // Este mensaje ya estaba protegido por #4089 y debe seguir yendo a wave: el
+    // "porque" es lenguaje normal de un pedido con contexto, no una pregunta.
+    const msg = 'che necesito saber cómo viene la ola en este momento porque el dashboard me marca cualquier cosa';
+    assert.ok(msg.length > 80 && msg.length < commanderDet.WAVE_ANALYTIC_MIN_LENGTH);
+    const r = commanderDet.classify(msg);
+    assert.equal(r.class, 'deterministic');
+    assert.equal(r.command, 'wave');
+});
+
+test('CA-2 (#5835): el umbral de longitud se mide sobre el texto SIN la anotación de voz', () => {
+    // El sufijo del preprocesador de whisper no debe inflar el conteo. Un pedido
+    // corto por voz sigue siendo un pedido.
+    const r = commanderDet.classify('pasame el estado de la ola (mensaje de voz transcripto · whisper local)');
+    assert.equal(r.class, 'deterministic');
+    assert.equal(r.command, 'wave');
+});
+
+test('SEC-1 (#5835, ReDoS): detector analítico también es lineal sobre 12k chars', () => {
+    const adversarial = 'por qu' + ' está bien que '.repeat(800) + ' avance de la ola';
+    const elapsed = bestClassifyMs(adversarial);
+    assert.ok(
+        elapsed < REDOS_CEILING_MS,
+        `classify() tardó ${elapsed.toFixed(2)}ms (esperado lineal < ${REDOS_CEILING_MS}ms)`,
+    );
+});
