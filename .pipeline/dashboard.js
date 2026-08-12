@@ -1157,7 +1157,17 @@ function _scheduleOlaETARefresh(state) {
             if (wSnap && Number.isFinite(wSnap.totalPct)) {
               waveTotalPct = wSnap.totalPct;
               const nowTs = Date.now();
-              waveProgressLib.appendSnapshot({ waveKey, avancePct: wSnap.totalPct, now: nowTs });
+              // #5836 — persistir peso total, conteo y versión de fórmula: sin
+              // ellos, dos puntos de la serie no permiten distinguir una caída
+              // por altas de una por retroceso (CA-5).
+              waveProgressLib.appendSnapshot({
+                waveKey,
+                avancePct: wSnap.totalPct,
+                now: nowTs,
+                totalWeight: wSnap.totalWeight,
+                issueCount: wSnap.totalIssues,
+                formulaV: wSnap.formulaV,
+              });
               const vel = await etaWaveLib.calculateWaveVelocityETA(waveKey, wSnap.totalPct, nowTs);
               // #4532 — aceptar tanto el ritmo MEDIDO ('velocity') como la
               // estimación HISTÓRICA cross-ola ('historical'), para que una ola
