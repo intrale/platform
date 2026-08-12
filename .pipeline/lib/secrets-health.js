@@ -261,15 +261,24 @@ function loadManifest(opts = {}) {
 }
 
 /**
- * Veredictos de `loadIntoEnv` que significan "el resolver lo resolvió y el
- * valor es utilizable". Se derivan del enum del dueño del store
+ * Veredictos de `loadIntoEnv` que significan "el resolver lo resolvió Y ya
+ * descartó que el valor fuera relleno". Se derivan del enum del dueño del store
  * (`credentials.SOURCE`), nunca de literales propios: la lista de fuentes
  * válidas cambió dos veces (#5353 sumó `vault`, #5635 sumó `file-bootstrap`) y
  * copiarla acá es la misma clase de duplicación que prohíbe CA-4b.
+ *
+ * `ENV_PREEXISTING` NO entra en esta lista (rev-2 de verificación). Los otros
+ * cuatro veredictos los asigna el resolver DESPUÉS de pasar el valor por
+ * `isPlaceholderOrEmpty` (`credentials.js:740` vault, `:785` file-bootstrap,
+ * `:809` canonical/legacy). `env-preexisting` no: se asigna mirando sólo
+ * `String(env[envVar]).length > 0` (`credentials.js:723,731-733`). Tratarlo como
+ * resuelto reabre el fail-open de #4907/#4912 por otra puerta: con `REPLACE_ME`
+ * en `process.env` el secreto se reportaba `ok` y el halt se desactivaba. Su
+ * clasificación se hace aparte, abajo, contra `isPlaceholderOrEmpty` (CA-4).
  */
 const SRC = credentials.SOURCE || {};
 const VEREDICTOS_RESUELTOS = Object.freeze(new Set([
-  SRC.VAULT, SRC.FILE_BOOTSTRAP, SRC.CANONICAL, SRC.LEGACY, SRC.ENV_PREEXISTING,
+  SRC.VAULT, SRC.FILE_BOOTSTRAP, SRC.CANONICAL, SRC.LEGACY,
 ].filter(Boolean)));
 
 /**
@@ -300,12 +309,15 @@ const VEREDICTOS_RESUELTOS = Object.freeze(new Set([
  * y dejar que derive: exactamente el fail-open de #4907/#4912 (CA-4b).
  *
  * @param {{ manifest?: Object, storePath?: string, env?: Object, loadResult?: Object }} [opts]
- * @returns {{ present: string[], placeholder: string[], absent: string[] }}
+ * @returns {{ present: string[], placeholder: string[], absent: string[], placeholder_env: string[] }}
  */
 function collectPresence(opts = {}) {
   const manifest = opts.manifest || loadManifest();
   const env = opts.env || process.env;
-  const out = { present: [], placeholder: [], absent: [] };
+  // `placeholder_env` es aditivo: mismo `placeholder` (cuenta como faltante),
+  // pero recuerda que el relleno estaba en el AMBIENTE y no en el store, para
+  // que el copy de CA-7 no mande a revisar el archivo equivocado.
+  const out = { present: [], placeholder: [], absent: [], placeholder_env: [] };
 
   // Veredicto por variable del resolver (UX-2 de #5353). Sin `loadResult` el
   // módulo se comporta como antes: cae siempre al fallback de disco.
@@ -335,6 +347,21 @@ function collectPresence(opts = {}) {
       const veredicto = (veredictos && entry.env_var) ? veredictos[entry.env_var] : undefined;
       if (veredicto !== undefined) {
         if (VEREDICTOS_RESUELTOS.has(veredicto)) { out.present.push(name); continue; }
+        // `env-preexisting` es el ÚNICO veredicto de resolución que el resolver
+        // asigna sin mirar el contenido: le alcanza con que la variable venga
+        // seteada y no vacía (`credentials.js:723,731-733`). El filtro de
+        // relleno lo aplica este módulo, con la misma función del dueño del
+        // store — nunca con una regex propia (CA-4b). Sin este brazo,
+        // `TELEGRAM_BOT_TOKEN=REPLACE_ME` en el ambiente apagaba el halt.
+        if (veredicto === SRC.ENV_PREEXISTING) {
+          if (credentials.isPlaceholderOrEmpty(env[entry.env_var])) {
+            out.placeholder.push(name);
+            out.placeholder_env.push(name);
+          } else {
+            out.present.push(name);
+          }
+          continue;
+        }
         if (veredicto === SRC.EMPTY) { out.placeholder.push(name); continue; }
         if (veredicto === SRC.MISSING) { out.absent.push(name); continue; }
         // Veredicto desconocido (el enum del resolver creció y este módulo
@@ -401,6 +428,9 @@ function evaluate(loadResult, manifest, presence, opts = {}) {
 
   const present = new Set(Array.isArray(presence && presence.present) ? presence.present : []);
   const placeholder = new Set(Array.isArray(presence && presence.placeholder) ? presence.placeholder : []);
+  // Subconjunto de `placeholder` cuyo relleno vino del ambiente, no del store.
+  const placeholderEnv = new Set(Array.isArray(presence && presence.placeholder_env)
+    ? presence.placeholder_env : []);
 
   const hydrated = new Set([
     ...(Array.isArray(lr.hydrated) ? lr.hydrated : []),
@@ -423,6 +453,7 @@ function evaluate(loadResult, manifest, presence, opts = {}) {
     const esExterno = entry.source === 'external';
     const estaPresente = present.has(name);
     const esPlaceholder = placeholder.has(name);
+    const esPlaceholderDeAmbiente = placeholderEnv.has(name);
 
     // --- CA-4c: los dos caminos que dan `ok` aunque el secreto no esté. ---
     if (!estaPresente && requiredWhen === 'never') {
@@ -445,8 +476,15 @@ function evaluate(loadResult, manifest, presence, opts = {}) {
         continue;
       }
       const level = requiredWhen === 'always' ? LEVEL.ALERT : LEVEL.WARN;
-      out.push(buildEntry(entry, STATE.MISSING, level, REMEDIATION.REPONER, ts,
-        esPlaceholder ? 'esta en el store pero con un valor de relleno' : 'no esta en el store'));
+      let motivo = 'no esta en el store';
+      if (esPlaceholderDeAmbiente) {
+        // El operador tiene que sacar el relleno del ambiente además de reponer
+        // el secreto: mientras siga seteado, le gana al store (`credentials.js:731`).
+        motivo = 'viene seteada en el ambiente con un valor de relleno, y el ambiente le gana al store';
+      } else if (esPlaceholder) {
+        motivo = 'esta en el store pero con un valor de relleno';
+      }
+      out.push(buildEntry(entry, STATE.MISSING, level, REMEDIATION.REPONER, ts, motivo));
       continue;
     }
 

@@ -17,6 +17,9 @@ const { execFileSync } = require('node:child_process');
 
 const sh = require('../secrets-health');
 const pp = require('../partial-pause');
+// rev-2: el dueño del store. Los tests del fail-open de `env-preexisting` corren
+// contra `loadIntoEnv` REAL, no contra un `loadResult` sintético.
+const credentials = require('../credentials');
 
 const MODULE_PATH = path.join(__dirname, '..', 'secrets-health.js');
 const MODULE_SRC = fs.readFileSync(MODULE_PATH, 'utf8');
@@ -956,12 +959,15 @@ test('rev-1: con el vault resolviendo y SIN archivo local, los secretos de store
   assert.equal(ev.halt, false, 'un cambio de config NO puede congelar el pipeline');
 });
 
-test('rev-1: los cinco veredictos de resolucion del resolver cuentan como presente', () => {
+test('rev-1: los cuatro veredictos VALIDADOS por el resolver cuentan como presente', () => {
   // La lista sale del enum del dueño del store, no de literales propios: si
   // #5353 o #5635 suman una fuente y este set no la conoce, el health-check
   // vuelve a clasificar como ausente algo que sí resuelve.
+  //
+  // rev-2: son CUATRO, no cinco. `env-preexisting` queda afuera a propósito y
+  // tiene su propia batería abajo — el resolver lo asigna sin mirar el valor.
   const dir = tmpDir('veredictos');
-  for (const veredicto of ['vault', 'file-bootstrap', 'canonical', 'legacy', 'env-preexisting']) {
+  for (const veredicto of ['vault', 'file-bootstrap', 'canonical', 'legacy']) {
     const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
     const presence = sh.collectPresence({
       manifest,
@@ -972,6 +978,116 @@ test('rev-1: los cinco veredictos de resolucion del resolver cuentan como presen
     assert.deepEqual(presence.present, ['telegram.bot_token'],
       `el veredicto "${veredicto}" tiene que contar como presente`);
   }
+});
+
+// -----------------------------------------------------------------------------
+// rev-2 · Fail-open de `env-preexisting` (rechazo de `verificacion`)
+// -----------------------------------------------------------------------------
+
+/**
+ * Los siete rellenos con los que se reprodujo el fail-open. Los siete dan
+ * `isPlaceholderOrEmpty === true`, y los siete se reportaban `ok` con
+ * `halt:false` con sólo estar seteados en `process.env`.
+ */
+const RELLENOS = ['REPLACE_ME', 'CHANGE_ME', 'REVOKED_2026', ' ', '\t\n', 'PLACEHOLDER',
+  'your-token-here-EXAMPLE'];
+
+test('rev-2: un relleno en el AMBIENTE no puede contar como presente (fail-open #4907/#4912)', () => {
+  const dir = tmpDir('envrelleno');
+  for (const relleno of RELLENOS) {
+    assert.equal(credentials.isPlaceholderOrEmpty(relleno), true,
+      `precondicion: "${JSON.stringify(relleno)}" tiene que ser relleno para el dueño del store`);
+    const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
+    const presence = sh.collectPresence({
+      manifest,
+      storePath: path.join(dir, 'no-existe.json'),
+      env: { TELEGRAM_BOT_TOKEN: relleno },
+      loadResult: cargaConVeredictos({ TELEGRAM_BOT_TOKEN: 'env-preexisting' }),
+    });
+    assert.deepEqual(presence.present, [],
+      `"${JSON.stringify(relleno)}" en el ambiente NO es un secreto presente`);
+    assert.deepEqual(presence.placeholder, ['telegram.bot_token']);
+    assert.deepEqual(presence.placeholder_env, ['telegram.bot_token'],
+      'el relleno vino del ambiente, no del store: el copy tiene que poder distinguirlo');
+  }
+});
+
+test('rev-2: `env-preexisting` con un valor USABLE sigue contando como presente', () => {
+  // El otro lado del CA: apretar el fail-open no puede convertirse en un halt
+  // falso sobre un secreto que sí está (R-6).
+  const dir = tmpDir('envusable');
+  const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
+  const presence = sh.collectPresence({
+    manifest,
+    storePath: path.join(dir, 'no-existe.json'),
+    env: { TELEGRAM_BOT_TOKEN: '123456789:AAH-valor-real-de-un-bot' },
+    loadResult: cargaConVeredictos({ TELEGRAM_BOT_TOKEN: 'env-preexisting' }),
+  });
+  assert.deepEqual(presence.present, ['telegram.bot_token']);
+  assert.deepEqual(presence.placeholder, []);
+  assert.deepEqual(presence.placeholder_env, []);
+});
+
+test('rev-2: relleno en el ambiente + store SIN el secreto -> el halt NO se desactiva', () => {
+  // Este es el test que faltaba: ejercita `credentials.loadIntoEnv` REAL, no un
+  // `loadResult` sintético. El camino sintético es justo el que no veía que el
+  // resolver marca `env-preexisting` sin mirar el contenido.
+  const dir = tmpDir('haltreal');
+  const storePath = path.join(dir, 'credentials.json');
+  // Store sano SALVO `telegram.bot_token`, que no está.
+  fs.writeFileSync(storePath, JSON.stringify({ telegram: { chat_id: '-100123456789' } }));
+  const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token', required_when: 'always' })]);
+
+  const evaluarCon = (envInicial) => {
+    const env = { ...envInicial };
+    const loadResult = credentials.loadIntoEnv({
+      env,
+      canonicalPath: storePath,
+      legacyPath: path.join(dir, 'no-existe-legacy.json'),
+      vaultConfig: null,          // gate cerrado por firma: test hermético
+      logger: () => {},
+    });
+    const presence = sh.collectPresence({ manifest, storePath, env, loadResult });
+    return { ev: sh.evaluate(loadResult, manifest, presence), loadResult };
+  };
+
+  // Línea de base: sin nada en el ambiente el guardrail frena.
+  const base = evaluarCon({});
+  assert.equal(base.ev.entries[0].state, 'missing');
+  assert.equal(base.ev.halt, true, 'linea de base: sin el secreto el halt tiene que estar activo');
+
+  for (const relleno of RELLENOS) {
+    const { ev, loadResult } = evaluarCon({ TELEGRAM_BOT_TOKEN: relleno });
+    assert.equal(loadResult.sources.TELEGRAM_BOT_TOKEN, 'env-preexisting',
+      'precondicion: el resolver real tiene que marcarlo `env-preexisting`');
+    assert.equal(ev.entries[0].state, 'missing',
+      `"${JSON.stringify(relleno)}" en el ambiente no puede reportarse presente`);
+    assert.equal(ev.entries[0].level, 'alert');
+    assert.equal(ev.halt, true,
+      `"${JSON.stringify(relleno)}" en el ambiente NO puede desactivar el halt`);
+  }
+
+  // Y con un valor usable el halt se levanta: el control no es un halt fijo.
+  const sano = evaluarCon({ TELEGRAM_BOT_TOKEN: '123456789:AAH-valor-real-de-un-bot' });
+  assert.equal(sano.ev.entries[0].state, 'ok');
+  assert.equal(sano.ev.halt, false);
+});
+
+test('rev-2: el aviso del relleno-en-ambiente no filtra el valor (CA-7d)', () => {
+  const dir = tmpDir('envfuga');
+  const VALOR = 'sk-live-VALORREALISTA';
+  const manifest = manifiestoFake([entrada({ name: 'telegram.bot_token' })]);
+  const presence = sh.collectPresence({
+    manifest,
+    storePath: path.join(dir, 'no-existe.json'),
+    env: { TELEGRAM_BOT_TOKEN: 'REPLACE_ME' },
+    loadResult: cargaConVeredictos({ TELEGRAM_BOT_TOKEN: 'env-preexisting' }),
+  });
+  presence.env_valor_de_prueba = VALOR;   // no debe viajar: `evaluate` sólo lee arrays conocidos
+  const ev = sh.evaluate(cargaConVeredictos({ TELEGRAM_BOT_TOKEN: 'env-preexisting' }), manifest, presence);
+  const salida = JSON.stringify(ev) + sh.formatAlert(ev) + JSON.stringify(presence.placeholder_env);
+  assert.equal(salida.includes(VALOR), false, 'ningun valor puede salir del modulo');
+  assert.equal(salida.includes('REPLACE_ME'), false, 'ni siquiera el relleno se transcribe');
 });
 
 test('rev-1: el veredicto del resolver le gana al contenido del archivo local', () => {
