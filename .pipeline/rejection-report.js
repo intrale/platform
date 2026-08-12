@@ -27,6 +27,16 @@ const apkFreshness = require('./lib/apk-freshness');
 // #3088: lookup del contexto multi-provider (provider/model/cli_version) sobre
 // el audit trail emitido por #3083. Single source of truth, SIN inferencia.
 const traceability = require('./lib/traceability');
+const { redactSensitive, redactEmailsInText, redactSecretValue } = require('./lib/redact');
+// #5708 / D12 — fuente ÚNICA de los topes del contrato visual (antes había dos
+// declaraciones desincronizables: acá y en el hook de forma).
+const { MAX_VISUAL_JSON_BYTES, MAX_DIFFS_RENDER } = require('./lib/visual-contract-limits');
+// #5708 / D14 · SEC-10 — el guardrail de forma deja de ser código muerto: su
+// único call-site real es `loadVisualComparison`, el choke point de render+audio.
+const visualShapeGate = require('./hooks/visual-report-shape-gate');
+// #5708 / D11 — `regression` se DERIVA contra la pasada previa, nunca se confía
+// en lo que declara el contrato (lo escribe un LLM).
+const visualCoverageStore = require('./lib/visual-coverage-store');
 
 const ROOT = path.resolve(__dirname, '..');
 const PIPELINE = __dirname;
@@ -53,6 +63,11 @@ function getArgEq(name) {
 const phase = getArg('phase') || getArgEq('phase') || 'collect';
 const resultsFile = getArg('results') || getArgEq('results') || null;
 const contextFile = getArg('context') || getArgEq('context') || null;
+const visualJsonArg = getArg('visual-json') || getArgEq('visual-json') || null;
+// #5708 / D9 · CA-9 — número de pasada actual. El pulpo lo pasa SIEMPRE desde
+// su contador de rebotes. Si no llega, el contrato visual no se renderiza
+// (fail-closed declarado, `skip.reason = 'rev-unknown'`), nunca en silencio.
+const revArg = getArg('rev') || getArgEq('rev') || null;
 
 const issue = getArg('issue') || '?';
 const skill = getArg('skill') || '?';
@@ -106,7 +121,199 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// #5708 / D12 — `MAX_VISUAL_JSON_BYTES` y `MAX_DIFFS_RENDER` ya NO se declaran
+// acá: se importan de `lib/visual-contract-limits.js` (una sola fuente de
+// verdad, atada por test contra el hook de forma).
+//
+// `SAFE_IMAGE_DATA_URI` se conserva SÓLO para el camino en memoria (tests y
+// callers que arman el contrato a mano). En disco, un `src` con `data:` es
+// motivo de rechazo del contrato: D7 / SEC-8 — las capturas viajan por
+// referencia, no embebidas, porque el repo es público y `.gitignore` prohíbe
+// versionar binarios de evidencia justamente por PII.
+const SAFE_IMAGE_DATA_URI = /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/;
+
+// =============================================================================
+// #5708 — loadVisualComparison(issueArg, overridePath, revActual)
+//
+// Regla rectora (D8/D9/D12/D14/D15): *ninguna razón por la que el bloque visual
+// no se muestre puede ser indistinguible de "no hubo desvíos"*. Por eso ya no
+// devuelve `null` mudo: devuelve `{ contract, skip }` y TODO skip se loguea, se
+// pinta como banda en el PDF (E2/E3/E4) y se narra como sufijo en el audio.
+//
+// `skip === null` + `contract === null` ⇒ E1: no hay contrato en disco, la
+// pasada no hizo ninguna afirmación visual y no hay nada que declarar.
+//
+// @returns {{contract: object|null, skip: {reason: string, detail?: string}|null}}
+// =============================================================================
+function loadVisualComparison(issueArg, overridePath, revActual) {
+  const skip = (reason, detail) => {
+    // Prohibido el descarte callado (SEC-4).
+    console.error(`[visual-json] omitido: ${reason}${detail ? ` — ${detail}` : ''}`);
+    return { contract: null, skip: { reason, detail: detail || null } };
+  };
+  const none = () => ({ contract: null, skip: null });
+
+  if (!/^\d+$/.test(String(issueArg))) return skip('unreadable', 'issue no numérico');
+  const baseDir = path.resolve(ROOT, 'qa', 'evidence', String(issueArg));
+  const target = path.resolve(overridePath || path.join(baseDir, 'visual-comparison.json'));
+  if (target !== path.join(baseDir, 'visual-comparison.json') && !target.startsWith(baseDir + path.sep)) {
+    return skip('unreadable', 'path fuera del directorio del issue');
+  }
+
+  let raw;
+  try {
+    const realEvidenceRoot = fs.realpathSync(path.resolve(ROOT, 'qa', 'evidence'));
+    const realBase = fs.realpathSync(baseDir);
+    const realTarget = fs.realpathSync(target);
+    if (!realBase.startsWith(realEvidenceRoot + path.sep) || !realTarget.startsWith(realBase + path.sep)) {
+      return skip('unreadable', 'symlink o junction intermedio sale del directorio del issue');
+    }
+    const stat = fs.lstatSync(target);
+    if (stat.isSymbolicLink() || !stat.isFile()) return skip('unreadable', 'symlink o no-archivo');
+    if (stat.size > MAX_VISUAL_JSON_BYTES) {
+      // D12 · SEC-4 — el tope superado es FALLO DECLARADO, con bytes y límite.
+      return skip('oversize', `size ${stat.size} B > MAX_VISUAL_JSON_BYTES ${MAX_VISUAL_JSON_BYTES}`);
+    }
+    raw = JSON.parse(fs.readFileSync(target, 'utf8'));
+  } catch (e) {
+    // E1 — sin archivo no hubo QA visual en esta pasada: no es una supresión.
+    if (e && e.code === 'ENOENT') return none();
+    return skip('unreadable', 'JSON inválido o ilegible');
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return skip('unreadable', 'contrato no es un objeto');
+
+  // D8 / CA-8 — discriminante de veredicto. Una aprobación NUNCA se narra como
+  // rechazo, y la ausencia del campo es fail-closed (no se asume rechazo).
+  if (raw.verdict === 'approved') {
+    const out = skip('verdict-approved', coverageSummary(raw.coverage));
+    // UX-E2 — la cobertura de un aprobado SÍ se muestra: es la línea base para
+    // tipificar regresiones en la próxima pasada. El inventario no, porque no
+    // hay desvíos (y por eso tampoco se emite el badge `VISUAL MISMATCH`).
+    out.skip.coverage = (raw.coverage && typeof raw.coverage === 'object') ? raw.coverage : null;
+    return out;
+  }
+  if (raw.verdict !== 'rejected') return skip('verdict-missing', `verdict=${JSON.stringify(raw.verdict)}`);
+
+  // D9 / CA-9 — `rev` con consumidor real: un contrato de otra pasada mostraría
+  // desvíos ya corregidos como si fueran actuales.
+  if (revActual == null) return skip('rev-unknown', 'el caller no informó --rev');
+  if (Number(raw.rev) !== Number(revActual)) {
+    return skip('stale-rev', `rev ${raw.rev} vs actual ${revActual}`);
+  }
+
+  // D7 / SEC-8 / CA-14 — imágenes por referencia, jamás base64 embebido.
+  for (const key of ['mockup', 'delivery']) {
+    const src = String((raw[key] && raw[key].src) || '');
+    if (src.startsWith('data:')) return skip('contract-embeds-base64', key);
+  }
+
+  // D14 / SEC-10 / CA-16 — call-site ÚNICO y real del guardrail de forma.
+  // Con el flag OFF devuelve `{gate:'disabled'}` y no bloquea (rollout gradual).
+  const gate = visualShapeGate.evaluate(raw, {});
+  if (gate && gate.gate === 'block') {
+    const missing = Array.isArray(gate.missing) && gate.missing.length ? ` [${gate.missing.join(', ')}]` : '';
+    return skip('shape-gate-block', `${gate.reason}${missing}`);
+  }
+
+  // D11 / CA-11 — `regression` se descarta del contrato y se recalcula contra
+  // la pasada previa registrada. Sin pasada previa ⇒ `no-baseline`, jamás
+  // `regression`: ése es el criterio de cierre de CA-11.
+  //
+  // CA-21 / UX-17 — se guarda además el TRI-ESTADO y el `rev` de la línea base,
+  // para que el chip pueda decir "no es regresión" y "sin línea base" sin
+  // hacerlos indistinguibles.
+  const diffs = Array.isArray(raw.diffs) ? raw.diffs : [];
+  const { baselineRev, states, reasons } = visualCoverageStore.deriveRegressionReport({
+    issue: issueArg, rev: revActual, diffs, baseDir,
+  });
+  raw.diffs = diffs.map((d, i) => ({
+    ...d,
+    regressionState: states[i] || visualCoverageStore.NO_BASELINE,
+    regressionReason: reasons[i] || visualCoverageStore.NO_BASELINE,
+    regression: states[i] === visualCoverageStore.REGRESSION,
+  }));
+  raw.regressionBaselineRev = baselineRev;
+
+  return { contract: raw, skip: null };
+}
+
+// #5708 / CA-22 · UX-18 — resolución de imagen CON MOTIVO.
+//
+// Con D7 las capturas viajan por path relativo, así que el camino "no
+// resoluble" pasó de excepcional a probable (archivo ausente, extensión fuera
+// del allowlist, symlink, tope de bytes). Un placeholder mudo que sólo dice "no
+// disponible" deja al operador sin saber si mirar el contrato, el disco o el
+// permiso — y peor, la columna llevaba el badge `no matchea`, que AFIRMA una
+// comparación que nunca se hizo.
+//
+// @returns {{src: string|null, reason: string|null}} `reason` en castellano,
+//   listo para el pie del placeholder.
+function resolveImageSrc(src, issueArg) {
+  const value = String(src || '');
+  if (SAFE_IMAGE_DATA_URI.test(value)) return { src: value, reason: null };
+  if (!value) return { src: null, reason: 'el contrato no referencia ninguna imagen' };
+  if (!/^\d+$/.test(String(issueArg))) return { src: null, reason: 'no se pudo resolver el directorio de evidencia del issue' };
+  const baseDir = path.resolve(ROOT, 'qa', 'evidence', String(issueArg));
+  // #5708 / D7 — el contrato trae paths RELATIVOS al directorio del issue
+  // ("render-rev3.png"). Antes se resolvía contra `process.cwd()`, así que todo
+  // path relativo caía fuera del confinamiento y devolvía `null`.
+  const target = path.resolve(baseDir, value);
+  if (!target.startsWith(baseDir + path.sep)) {
+    return { src: null, reason: 'la ruta apunta fuera del directorio de evidencia del issue' };
+  }
+  // La validacion lexica anterior no alcanza: `linked/captura.png` puede pasar
+  // aunque `linked` sea un junction que apunte fuera del directorio del issue.
+  // Comparamos las rutas canonicas antes de inspeccionar o leer el archivo.
+  let realBase;
+  let realTarget;
+  try {
+    const realEvidenceRoot = fs.realpathSync(path.resolve(ROOT, 'qa', 'evidence'));
+    realBase = fs.realpathSync(baseDir);
+    realTarget = fs.realpathSync(target);
+    if (!realBase.startsWith(realEvidenceRoot + path.sep)) {
+      return { src: null, reason: 'symlink o junction rechazado: el directorio del issue sale de qa/evidence' };
+    }
+  } catch {
+    return { src: null, reason: 'archivo ausente en el directorio de evidencia del issue' };
+  }
+  if (!realTarget.startsWith(realBase + path.sep)) {
+    return { src: null, reason: 'symlink o junction rechazado: la ruta real sale del directorio de evidencia del issue' };
+  }
+  let stat;
+  try {
+    stat = fs.lstatSync(target);
+  } catch {
+    return { src: null, reason: 'archivo ausente en el directorio de evidencia del issue' };
+  }
+  if (stat.isSymbolicLink()) return { src: null, reason: 'symlink rechazado' };
+  if (!stat.isFile()) return { src: null, reason: 'la ruta no es un archivo regular' };
+  if (stat.size > MAX_VISUAL_JSON_BYTES) {
+    return { src: null, reason: `supera el tope de ${MAX_VISUAL_JSON_BYTES} B (${stat.size} B)` };
+  }
+  const ext = path.extname(target).toLowerCase();
+  const mime = ext === '.png' ? 'png' : ext === '.jpg' || ext === '.jpeg' ? 'jpeg' : ext === '.webp' ? 'webp' : null;
+  if (!mime) return { src: null, reason: `extensión no permitida (${ext || 'sin extensión'})` };
+  try {
+    return { src: `data:image/${mime};base64,${fs.readFileSync(target).toString('base64')}`, reason: null };
+  } catch {
+    return { src: null, reason: 'el archivo no se pudo leer' };
+  }
+}
+
+function safeImageSrc(src, issueArg) {
+  return resolveImageSrc(src, issueArg).src;
+}
+
+function redactVisualText(value) {
+  return redactEmailsInText(redactSecretValue(redactSensitive(String(value || ''))));
+}
+
+function escapeVisualText(value) {
+  return escapeHtml(redactVisualText(value));
 }
 
 // =============================================================================
@@ -1430,6 +1637,20 @@ function collectReportData() {
   // resueltos desde audit trail o CLI args, NUNCA inferidos.
   const sessionCtx = resolveSessionContext(issue, skill);
 
+  // #5708 — contrato visual de ESTA pasada. `revArg` viene del pulpo; sin él,
+  // el bloque se suprime con motivo declarado en vez de mostrar evidencia vieja.
+  const visualLoad = loadVisualComparison(issue, visualJsonArg, revArg);
+  // D11 — registrar la cobertura de esta pasada para que la siguiente pueda
+  // derivar `regression`. Lo escribe el reporte (determinístico), no el agente.
+  if (visualLoad.contract && revArg != null) {
+    visualCoverageStore.writeCoverage({
+      issue,
+      rev: Number(revArg),
+      coverage: visualLoad.contract.coverage,
+      diffs: visualLoad.contract.diffs,
+    });
+  }
+
   return {
     // Identifiers
     issue, skill, fase, exitCode, elapsed, motivo, pipeline, logFile,
@@ -1453,6 +1674,10 @@ function collectReportData() {
     existingDeps: [],
     // NUEVO v6
     preflight, evidence, primaryCause, verdict, inconclusive,
+    // #5708 — el loader devuelve `{contract, skip}`: el skip también es
+    // información y viaja al PDF (banda) y al audio (sufijo).
+    visualComparison: visualLoad.contract,
+    visualSkip: visualLoad.skip,
   };
 }
 
@@ -1509,21 +1734,193 @@ function renderSessionMeta(session) {
 //
 // Si `visualComparison` es null/undefined, retorna cadena vacía (no render).
 // =============================================================================
-function renderVisualComparisonBlock(visualComparison) {
+// =============================================================================
+// #5708 / D15 · UX-10 · UX-11 — Bandas de los estados degradados (mockup 49
+// `.pipeline/assets/mockups/49-visual-block-degraded-states.svg`).
+//
+// Regla rectora: toda supresión del bloque visual que el operador podría leer
+// como "no hubo desvíos" se declara en el PDF. Un log en stdout no es evidencia
+// para el operador. Cada banda lleva SÍMBOLO + ETIQUETA TEXTUAL + motivo
+// objetivable, así sigue siendo legible en escala de grises (UX-10), y ninguna
+// usa el badge `VISUAL MISMATCH`, reservado al inventario real (UX-13).
+// =============================================================================
+const VISUAL_SKIP_BANDS = {
+  // E2 — el veredicto visual fue APROBADO: no hay desvíos que inventariar.
+  'verdict-approved': {
+    state: 'E2', cls: 'visual-band-ok', symbol: '✔',
+    title: 'COBERTURA VISUAL DECLARADA · sin desvíos',
+    body: 'La validación visual de esta pasada cerró en aprobado. Se muestra la cobertura declarada porque es la línea base para tipificar regresiones en la próxima pasada.',
+  },
+  // E3 — el contrato es de otra pasada: mostrarlo reportaría como vigentes
+  // desvíos que pueden estar ya corregidos. Acá SÍ sabemos que es viejo, porque
+  // tenemos las dos revisiones y no coinciden.
+  'stale-rev': {
+    state: 'E3', cls: 'visual-band-stale', symbol: '!',
+    title: 'EVIDENCIA VISUAL DESCARTADA — corresponde a una pasada anterior',
+    body: 'Se descarta para no reportar como vigentes desvíos que pueden estar corregidos. Esto NO significa «sin desvíos».',
+    action: 're-ejecutar QA visual en esta pasada',
+  },
+  // E3b / CA-19 · UX-15 — variante de E3 con copy PROPIO. Antes compartía la
+  // banda de `stale-rev`, que afirma "corresponde a una pasada anterior": con
+  // `rev-unknown` el contrato puede ser perfectamente el de esta misma pasada,
+  // así que afirmar que es viejo es inventar un hecho. El símbolo `?` (en vez
+  // del `!` de E3) lo hace distinguible sin depender del color, y la acción
+  // apunta AL EMISOR — el dev no puede arreglar que el reporte no reciba --rev.
+  'rev-unknown': {
+    state: 'E3b', cls: 'visual-band-stale', symbol: '?',
+    title: 'EVIDENCIA VISUAL NO ATRIBUIBLE A ESTA PASADA',
+    body: 'No se pudo determinar a qué pasada corresponde la evidencia. No se afirma que sea vieja: se afirma que no se sabe. El inventario no se muestra por precaución. Esto NO significa «sin desvíos».',
+    action: 'el emisor debe pasar la pasada actual al reporte (--rev)',
+  },
+  // E6 / CA-18 · UX-14 — banda PROPIA para el guardrail de forma, no E4.
+  //
+  // Un barrido no aceptado NO es una falla de carga: el contrato se leyó
+  // perfecto. Mandarlo a E4 ("el contrato no se pudo cargar") manda al dev a
+  // diagnosticar el archivo en vez de re-ejecutar el barrido — describe el
+  // problema con el motivo equivocado, que es el mismo defecto que este issue
+  // ataca. Símbolo punteado (círculo incompleto), distinto de la `×` de E4.
+  'shape-gate-block': {
+    state: 'E6', cls: 'visual-band-scan', symbol: '⋯', symbolCls: 'visual-band-symbol-partial',
+    title: 'BARRIDO VISUAL NO ACEPTADO — la cobertura declarada está incompleta',
+    body: 'El contrato se leyó correctamente. Lo que no se aceptó es el barrido: faltan secciones sin declarar como verificadas ni como no verificadas. Esto NO es una falla técnica de carga y NO significa «sin desvíos»: el inventario podría estar incompleto.',
+    action: 're-ejecutar QA visual con barrido completo antes de rebotar',
+  },
+  // E4 — el contrato no se pudo cargar. Es el caso que SEC-4 prohíbe callar.
+  oversize: {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato no se pudo cargar',
+    body: 'Esto NO significa «sin desvíos»: significa que el inventario no se leyó. Acción: re-emitir el contrato con las imágenes por referencia, no embebidas.',
+  },
+  unreadable: {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato no se pudo cargar',
+    body: 'Esto NO significa «sin desvíos»: significa que el inventario no se leyó. Acción: re-emitir un contrato válido y re-ejecutar QA visual.',
+  },
+  'verdict-missing': {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato no declara veredicto',
+    body: 'Esto NO significa «sin desvíos»: sin veredicto explícito no se puede afirmar ni rechazo ni aprobación. Acción: re-emitir el contrato con `verdict`.',
+  },
+  'contract-embeds-base64': {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato embebe imágenes en base64',
+    body: 'Esto NO significa «sin desvíos»: el contrato se rechazó por transportar capturas embebidas (prohibido en repo público). Acción: referenciar las imágenes por path bajo qa/evidence/<issue>/.',
+  },
+};
+
+// #5708 — cobertura declarada. Se usa tanto en el inventario de un rechazo como
+// en la banda E2 de un aprobado (donde es la línea base de la próxima pasada).
+function renderVisualCoverageBlock(rawCoverage) {
+  const coverage = rawCoverage || {};
+  const verified = new Set(Array.isArray(coverage.verificadas) ? coverage.verificadas.map(String) : []);
+  const notVerified = new Map(Array.isArray(coverage.no_verificadas) ? coverage.no_verificadas.map(x => [String(x?.section || ''), redactVisualText(x?.motivo || 'motivo no informado')]) : []);
+  const declared = Array.isArray(coverage.secciones_declaradas) ? coverage.secciones_declaradas.map(String) : [];
+  return declared.length
+    ? `<div class="context-box"><h3>Cobertura visual declarada</h3>${declared.map(section => verified.has(section) ? `<span class="badge badge-green">${escapeVisualText(section)} · VERIFICADA</span>` : `<span class="badge badge-yellow">${escapeVisualText(section)} · NO VERIFICADA · ${escapeHtml(notVerified.get(section) || 'motivo no informado')}</span>`).join(' ')}</div>`
+    : '<div class="context-box"><strong>Cobertura visual no declarada</strong></div>';
+}
+
+// Resumen textual "N de M secciones verificadas" para logs y narración.
+function coverageSummary(rawCoverage) {
+  const coverage = rawCoverage || {};
+  const declared = Array.isArray(coverage.secciones_declaradas) ? coverage.secciones_declaradas.length : 0;
+  const verified = Array.isArray(coverage.verificadas) ? coverage.verificadas.length : 0;
+  return `${verified} de ${declared} secciones verificadas`;
+}
+
+function visualSkipBand(visualSkip) {
+  if (!visualSkip || !visualSkip.reason) return null;
+  return VISUAL_SKIP_BANDS[visualSkip.reason] || {
+    state: 'E4', cls: 'visual-band-fail', symbol: '×',
+    title: 'EVIDENCIA VISUAL NO EVALUADA — el contrato no se pudo cargar',
+    body: 'Esto NO significa «sin desvíos»: significa que el inventario no se leyó.',
+  };
+}
+
+function renderVisualSkipBand(visualSkip) {
+  const band = visualSkipBand(visualSkip);
+  if (!band) return '';
+  const detail = visualSkip.detail ? escapeVisualText(visualSkip.detail) : '';
+  // E2p / UX-16 — el aprobado TAMBIÉN declara cobertura: es la línea base con
+  // la que la próxima pasada va a poder tipificar regresiones.
+  const coverageBlock = band.state === 'E2' ? renderVisualCoverageBlock(visualSkip.coverage) : '';
+  // UX-14 · UX-15 — la acción viaja en el pie, separada del motivo, y apunta a
+  // quien puede resolverla (el emisor en E3b, el barrido en E6).
+  const actionText = band.action ? ` · acción: ${band.action}` : '';
+  // El símbolo se distingue por forma además de por color (UX-10): E6 lleva
+  // borde punteado (barrido incompleto), el resto borde sólido.
+  const symbolCls = band.symbolCls ? ` ${band.symbolCls}` : '';
+  return `
+<h2>Comparativo visual — mockup vs entrega</h2>
+<div class="visual-band ${band.cls}" data-visual-state="${band.state}">
+  <p class="visual-band-title"><span class="visual-band-symbol${symbolCls}">${band.symbol}</span> ${escapeHtml(band.title)}</p>
+  <p class="visual-band-body">${escapeHtml(band.body)}</p>
+  <p class="visual-band-detail"><code>motivo: ${escapeHtml(visualSkip.reason)}${detail ? ` — ${detail}` : ''}${escapeHtml(actionText)}</code></p>
+</div>
+${coverageBlock}`;
+}
+
+// #5708 / CA-21 · UX-17 — el chip de regresión tiene TRES estados, no dos.
+//
+// Antes había chip (regresión) o no había chip, y la ausencia significaba dos
+// cosas incompatibles: "hay línea base y esta sección no estaba verificada"
+// (hallazgo tardío por barrido incompleto) o "no hay línea base y no se pudo
+// tipificar nada" (falso negativo estructural que D11 acepta a propósito).
+// Colapsarlas hace que el operador lea como verificación algo que nunca se
+// verificó — el defecto exacto que este issue ataca, aplicado al chip.
+//
+// La distinción se codifica con TEXTURA + TEXTO, nunca sólo con color (UX-4),
+// así sobrevive a la impresión monocroma del PDF.
+function renderRegressionChip(diff, baselineRev) {
+  const state = diff && diff.regressionState
+    ? String(diff.regressionState)
+    // Compat: un contrato armado en memoria (tests, callers viejos) puede traer
+    // sólo el booleano. Sin estado explícito no se puede afirmar línea base.
+    : (diff && diff.regression === true) ? 'regression' : 'no-baseline';
+  const rev = baselineRev == null ? null : `rev ${escapeHtml(String(baselineRev))}`;
+  if (state === 'regression') {
+    return `<span class="badge badge-purple" data-regression="regression">REGRESIÓN · verificada sin hallazgos${rev ? ` en ${rev}` : ''}</span>`;
+  }
+  if (state === 'not-regression') {
+    // `not-regression` tiene dos causas, y el chip narra la que corresponde:
+    // decir "sección no verificada" sobre una sección que SÍ se barrió (y que
+    // ya tenía hallazgos) es inventar un hecho — el defecto que ataca el issue.
+    const motivo = (diff && diff.regressionReason) === 'prev-had-findings'
+      ? `ya tenía hallazgos${rev ? ` en ${rev}` : ''}`
+      : `sección no verificada${rev ? ` en ${rev}` : ''}`;
+    return `<span class="badge badge-gray" data-regression="not-regression">NO ES REGRESIÓN · ${motivo}</span>`;
+  }
+  return '<span class="badge badge-gray badge-textured" data-regression="no-baseline">SIN LÍNEA BASE · no hay pasada previa registrada</span>';
+}
+
+function renderVisualComparisonBlock(visualComparison, issueArg, visualSkip) {
+  // #5708 / D15 — el skip manda: si hubo supresión, se pinta la banda y NUNCA
+  // el inventario (que no existe o no es de esta pasada).
+  if (visualSkip && visualSkip.reason) return renderVisualSkipBand(visualSkip);
   if (!visualComparison || typeof visualComparison !== 'object') return '';
   const v = visualComparison;
 
   const renderColumn = (col, side) => {
-    const label = escapeHtml(col?.label || (side === 'mockup' ? 'MOCKUP ESPERADO' : 'ENTREGA ACTUAL'));
-    const subtitle = escapeHtml(col?.subtitle ||
+    const label = escapeVisualText(col?.label || (side === 'mockup' ? 'MOCKUP ESPERADO' : 'ENTREGA ACTUAL'));
+    const subtitle = escapeVisualText(col?.subtitle ||
       (side === 'mockup' ? 'adjunto en definición · UX' : 'captura QA · pipeline'));
-    const badge = side === 'mockup'
-      ? `<span class="badge badge-green">${escapeHtml('baseline · ' + (col?.baseline || 'v1'))}</span>`
-      : `<span class="badge badge-red">no matchea</span>`;
     const borderClass = side === 'mockup' ? 'visual-col-mockup' : 'visual-col-delivery';
-    const imgHtml = col?.src
-      ? `<img src="${escapeHtml(col.src)}" alt="${label}" />`
-      : `<div class="visual-placeholder">⚠ ${label} no disponible</div>`;
+    const resolved = resolveImageSrc(col?.src, issueArg || v.issue);
+    // #5708 / CA-22 · UX-18 — sin imagen NO se puede afirmar que no matchea:
+    // no hubo comparación. El badge pasa a `sin captura`, que describe lo que
+    // efectivamente pasó, y el placeholder declara el motivo.
+    const badge = side === 'mockup'
+      ? `<span class="badge badge-green">${escapeVisualText('baseline · ' + (col?.baseline || 'v1'))}</span>`
+      : resolved.src
+      ? `<span class="badge badge-red">no matchea</span>`
+      : `<span class="badge badge-nocapture">sin captura</span>`;
+    const imgHtml = resolved.src
+      ? `<img src="${escapeHtml(resolved.src)}" alt="${label}" />`
+      : `<div class="visual-placeholder">
+           <p class="visual-placeholder-title">⚠ ${label} — imagen no disponible</p>
+           <p class="visual-placeholder-body">Esto NO significa que la entrega coincida con el mockup: la imagen no se pudo leer.</p>
+           <p class="visual-placeholder-detail"><code>motivo: ${escapeHtml(resolved.reason || 'motivo no informado')}</code></p>
+         </div>`;
     return `
       <div class="visual-col ${borderClass}">
         <div class="visual-col-header">
@@ -1535,38 +1932,56 @@ function renderVisualComparisonBlock(visualComparison) {
       </div>`;
   };
 
-  const diffs = Array.isArray(v.diffs) ? v.diffs.slice(0, 5) : [];
+  const impactOrder = { alto: 0, medio: 1, bajo: 2 };
+  const allDiffs = Array.isArray(v.diffs) ? v.diffs : [];
+  const diffs = allDiffs.slice().sort((a, b) =>
+    (impactOrder[String(a?.impact || 'medio').toLowerCase()] ?? 1) -
+    (impactOrder[String(b?.impact || 'medio').toLowerCase()] ?? 1) ||
+    String(a?.section || '').localeCompare(String(b?.section || ''))
+  ).slice(0, MAX_DIFFS_RENDER);
+  const groupedDiffs = new Map();
+  for (const diff of diffs) {
+    const section = redactVisualText(diff?.section || 'sin sección');
+    if (!groupedDiffs.has(section)) groupedDiffs.set(section, []);
+    groupedDiffs.get(section).push(diff);
+  }
   const diffsBlock = diffs.length === 0
     ? '<p><em>Sin hallazgos narrados disponibles. Revisión humana de QA pendiente.</em></p>'
-    : `<ol class="visual-diffs">
-        ${diffs.map((d, i) => {
-          const impact = (d?.impact || 'medio').toLowerCase();
+    : [...groupedDiffs.entries()].map(([section, items]) => `<section data-section="${escapeHtml(section)}"><h4>Sección ${escapeHtml(section)}</h4><ol class="visual-diffs">
+        ${items.map((d, i) => {
+          const impact = redactVisualText(d?.impact || 'medio').toLowerCase();
           const impactClass = impact === 'alto' ? 'badge-red'
             : impact === 'medio' ? 'badge-yellow' : 'badge-blue';
           return `<li>
-            <strong>${escapeHtml(d?.title || `Hallazgo ${i + 1}`)}</strong>
-            <p>${escapeHtml(d?.description || '')}</p>
+            <strong>${escapeHtml(redactVisualText(d?.title || `Hallazgo ${i + 1}`))}</strong>
+            <p>${escapeHtml(redactVisualText(d?.description || ''))}</p>
             <span class="badge ${impactClass}">impacto: ${escapeHtml(impact)}</span>
+            <span class="badge badge-blue">sección: ${escapeVisualText(d?.section || 'sin sección')}</span>
+            ${renderRegressionChip(d, v.regressionBaselineRev)}
           </li>`;
         }).join('')}
-       </ol>`;
+       </ol></section>`).join('');
 
+  const coverageBlock = renderVisualCoverageBlock(v.coverage);
+  const truncationBlock = `<p><strong>${diffs.length} de ${allDiffs.length} desvíos mostrados${allDiffs.length > MAX_DIFFS_RENDER ? ' — inventario completo en visual-comparison.json' : ''} · tope de render del PDF: ${MAX_DIFFS_RENDER}</strong></p>`;
   const actionBlock = v.suggestedAction
     ? `<div class="visual-action">
-         <p><strong>→ Rebote a ${escapeHtml(v.suggestedAction.skill || 'dev')}</strong></p>
-         <p>${escapeHtml(v.suggestedAction.text || 'Re-implementar respetando el mockup referenciado.')}</p>
+         <p><strong>→ Rebote a ${escapeVisualText(v.suggestedAction.skill || 'dev')}</strong></p>
+         <p>${escapeVisualText(v.suggestedAction.text || 'Re-implementar respetando el mockup referenciado.')}</p>
        </div>`
     : '';
 
   return `
 <h2>Comparativo visual — mockup vs entrega</h2>
 <p><span class="badge badge-red">VISUAL MISMATCH</span></p>
+${coverageBlock}
 <div class="visual-compare">
   ${renderColumn(v.mockup, 'mockup')}
   ${renderColumn(v.delivery, 'delivery')}
 </div>
 <h3>Diferencias identificadas</h3>
 ${diffsBlock}
+${truncationBlock}
 ${actionBlock}
 `;
 }
@@ -1583,6 +1998,8 @@ function renderHtml(data) {
     sessionCtx,
     // #3383 — bloque side-by-side opcional (visual mismatch en QA).
     visualComparison,
+    // #5708 / D15 — motivo declarado cuando el bloque NO se muestra.
+    visualSkip,
   } = data;
   // (#3088 / CA-1) Contexto multi-provider; fallback defensivo si por algún
   // motivo `collectReportData` no lo pobló (tests legacy, callers viejos).
@@ -1677,11 +2094,42 @@ function renderHtml(data) {
   .visual-col-subtitle { font-size: 0.78em; color: #7f8c8d; margin-bottom: 8px; }
   .visual-col-img { flex: 1; background: #ecf0f1; border-radius: 4px; overflow: hidden; min-height: 220px; display: flex; align-items: center; justify-content: center; }
   .visual-col-img img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
-  .visual-placeholder { background: repeating-linear-gradient(45deg, #ecf0f1, #ecf0f1 8px, #dfe6e9 8px, #dfe6e9 16px); color: #c0392b; font-weight: 600; padding: 18px; text-align: center; font-size: 0.85em; width: 100%; }
+  /* #5708 / UX-18 — el placeholder declara el motivo y desambigua: sin imagen
+     no hubo comparación, así que no puede leerse como "la entrega coincide". */
+  .visual-placeholder { background: repeating-linear-gradient(45deg, #ecf0f1, #ecf0f1 8px, #dfe6e9 8px, #dfe6e9 16px); color: #c0392b; padding: 18px; text-align: left; font-size: 0.85em; width: 100%; border: 2px dashed #c0392b; border-radius: 4px; }
+  .visual-placeholder-title { font-weight: 700; margin: 0 0 6px 0; }
+  .visual-placeholder-body { margin: 0 0 6px 0; color: #5d2f2b; font-weight: 500; }
+  .visual-placeholder-detail { margin: 0; font-size: 0.92em; font-family: Consolas, monospace; color: #5d2f2b; }
+  /* #5708 / UX-18 — «sin captura» NO es «no matchea»: describe que no hubo
+     comparación, en vez de afirmar el resultado de una que nunca se hizo. */
+  .badge-nocapture { background: #f5e6e4; color: #a93226; border: 1px dashed #a93226; }
   .visual-diffs { padding-left: 20px; }
   .visual-diffs li { margin-bottom: 10px; }
   .visual-diffs strong { color: #2c3e50; }
   .visual-action { background: #d5f5e3; border-left: 4px solid #27ae60; padding: 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+  /* #5708 / UX-10 — bandas de estados degradados (mockup 49). Símbolo + etiqueta
+     textual + motivo: legibles también en escala de grises, sin depender del color. */
+  .visual-band { padding: 14px 16px; margin: 12px 0; border-radius: 6px; border: 2px solid; }
+  .visual-band-title { font-weight: 700; font-size: 0.95em; letter-spacing: 0.4px; margin: 0 0 6px 0; }
+  .visual-band-symbol { display: inline-block; width: 1.4em; height: 1.4em; line-height: 1.4em; text-align: center; border: 2px solid currentColor; border-radius: 50%; margin-right: 8px; font-weight: 700; }
+  .visual-band-body { margin: 0 0 6px 0; font-size: 0.88em; }
+  .visual-band-detail { margin: 0; font-size: 0.8em; font-family: Consolas, monospace; }
+  .visual-band-ok { background: #0f3d26; border-color: #196c2e; color: #cdebd7; }
+  .visual-band-ok .visual-band-title { color: #3fb950; }
+  .visual-band-stale { background: #3a2d0b; border-color: #7d5e10; color: #f0e3c0; }
+  .visual-band-stale .visual-band-title { color: #d29922; }
+  .visual-band-fail { background: #3b1f1b; border-color: #8b1a14; color: #f2d5d2; }
+  .visual-band-fail .visual-band-title { color: #f85149; }
+  /* #5708 / UX-14 — E6 (barrido no aceptado): banda propia, NO la roja de E4.
+     El contrato se leyó bien; lo que no se aceptó es el barrido. */
+  .visual-band-scan { background: #2b1d46; border-color: #8957e5; color: #e4d6ff; }
+  .visual-band-scan .visual-band-title { color: #bc8cff; }
+  /* Círculo INCOMPLETO (arco sólido + arco punteado): distingue a E6 de la cruz
+     de E4 por forma, no sólo por color — sobrevive al PDF en blanco y negro. */
+  .visual-band-symbol-partial { border-style: dashed; }
+  /* #5708 / UX-17 — «sin línea base» se distingue de «no es regresión» por
+     TEXTURA además del texto, para que siga siendo legible en monocromo. */
+  .badge-textured { background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(0,0,0,0.16) 3px, rgba(0,0,0,0.16) 6px); }
 </style>
 </head><body>
 
@@ -1693,7 +2141,7 @@ ${renderSessionMeta(session)}
   <h3>#${escapeHtml(issue)} &mdash; ${escapeHtml(issueCtx.title)}</h3>
 </div>
 
-${renderVisualComparisonBlock(visualComparison)}
+${renderVisualComparisonBlock(visualComparison, issue, visualSkip)}
 
 <h2>Causa identificada</h2>
 <div class="${inconclusive ? 'history-box' : 'rootcause-box'}">
@@ -1777,28 +2225,32 @@ function providerNarrationSuffix(data) {
 // generateNarration(data) — narración corta para TTS (20-30s, ~300 chars)
 // =============================================================================
 function generateNarration(data) {
-  const { issue, primaryCause, inconclusive, autoCreatedDeps, visualComparison } = data;
+  const { issue, primaryCause, inconclusive, autoCreatedDeps, visualComparison, visualSkip } = data;
 
   // (#3088 / CA-2) Sufijo determinístico opcional con provider+model. Vacío
   // cuando ninguna regla del audio se activa (la mayoría de los casos).
   const provSuffix = providerNarrationSuffix(data);
 
-  // #3383 / CA-UX-5 — audio narrado del rejection report visual: lee
-  // diferencias + acción sugerida, máximo 3 hallazgos, < 60 segundos.
-  // Solo se activa cuando el bloque side-by-side está presente.
-  if (visualComparison && Array.isArray(visualComparison.diffs) && visualComparison.diffs.length > 0) {
-    const diffs = visualComparison.diffs.slice(0, 3);
-    const list = diffs.map((d, i) => {
-      const title = (d?.title || `hallazgo ${i + 1}`).replace(/\.$/, '');
-      const impact = (d?.impact || 'medio').toLowerCase();
-      return `${title} — impacto ${impact}`;
-    }).join('. ');
-    const actionSkill = visualComparison.suggestedAction?.skill || 'el desarrollador del área';
-    return `Issue ${issue}: rechazo visual. ${list}. Acción sugerida: rebotar a ${actionSkill} para re-implementar respetando el mockup adjunto en definición.${provSuffix}`;
-  }
+  // #5708 / D10b · SEC-11 · UX-9 — ORDEN: inconclusive → primaryCause → visual.
+  // Antes la rama visual iba primera y cortaba: bastaba con que existiera un
+  // `visual-comparison.json` en disco (escrito por OTRO agente) para que un
+  // rechazo por tests rojos o por un secreto hardcodeado se narrara al operador
+  // como "rechazo visual" y la causa real nunca saliera por el parlante.
+  const visualRejected = !!(visualComparison
+    && visualComparison.verdict === 'rejected'
+    && Array.isArray(visualComparison.diffs)
+    && visualComparison.diffs.length > 0);
+
+  // UX-12 — los estados degradados y los desvíos secundarios se narran como
+  // SUFIJO, nunca como titular. Ninguna supresión queda muda (SEC-4).
+  const visualTail = visualRejected
+    ? ` Además, ${visualComparison.diffs.length} desvíos visuales.`
+    : visualSkip && visualSkip.reason
+    ? ` ${narrateVisualSkip(visualSkip)}`
+    : '';
 
   if (inconclusive) {
-    return `Issue ${issue}: rechazo inconcluyente. El preflight confirmó emulador disponible pero el agente declaró rechazo. Requiere revisión humana del log.${provSuffix}`;
+    return `Issue ${issue}: rechazo inconcluyente. El preflight confirmó emulador disponible pero el agente declaró rechazo. Requiere revisión humana del log.${visualTail}${provSuffix}`;
   }
 
   if (primaryCause) {
@@ -1809,10 +2261,47 @@ function generateNarration(data) {
     let tail = '';
     if (created > 0) tail = ` Se creó issue de dependencia.`;
     else if (existing > 0) tail = ` Dependencia ya existente, se sumó evidencia.`;
-    return `Issue ${issue}: rechazado. Causa: ${trimmed}.${tail}${provSuffix}`;
+    return `Issue ${issue}: rechazado. Causa: ${trimmed}.${tail}${visualTail}${provSuffix}`;
   }
 
-  return `Issue ${issue}: rechazado sin causa identificada. Revisión humana requerida.${provSuffix}`;
+  // #3383 / CA-UX-5 — audio del rejection report visual: diferencias + acción
+  // sugerida, máximo 3 hallazgos (los de mayor impacto), < 60 segundos.
+  // Sólo titula cuando el veredicto del contrato es de rechazo (D8) y ninguna
+  // rama anterior tenía una causa mejor.
+  if (visualRejected) {
+    const diffs = visualComparison.diffs.slice(0, 3);
+    const list = diffs.map((d, i) => {
+      const title = redactVisualText(d?.title || `hallazgo ${i + 1}`).replace(/\.$/, '');
+      const impact = redactVisualText(d?.impact || 'medio').toLowerCase();
+      return `${title} — impacto ${impact}`;
+    }).join('. ');
+    const actionSkill = redactVisualText(visualComparison.suggestedAction?.skill || 'el desarrollador del área');
+    return `Issue ${issue}: rechazo visual. ${visualComparison.diffs.length} desvíos detectados; los ${diffs.length} de mayor impacto son: ${list}. Acción sugerida: rebotar a ${actionSkill} para re-implementar respetando el mockup adjunto en definición.${provSuffix}`;
+  }
+
+  return `Issue ${issue}: rechazado sin causa identificada. Revisión humana requerida.${visualTail}${provSuffix}`;
+}
+
+// #5708 / UX-12 — frase de sufijo por estado degradado. Nunca se omite: E4 es
+// exactamente la falla que SEC-4 prohíbe callar.
+function narrateVisualSkip(visualSkip) {
+  switch (visualSkip && visualSkip.reason) {
+    case 'verdict-approved':
+      return `Además, la validación visual quedó aprobada${visualSkip.detail ? ` con ${redactVisualText(visualSkip.detail)}` : ''}.`;
+    case 'stale-rev':
+      return 'La evidencia visual disponible es de una pasada anterior y no se tuvo en cuenta.';
+    // CA-19 · UX-15 — con `rev-unknown` NO sabemos que la evidencia sea vieja:
+    // sabemos que no podemos atribuirla. Narrarla como "de una pasada anterior"
+    // afirma un hecho que nadie verificó.
+    case 'rev-unknown':
+      return 'No se pudo determinar a qué pasada corresponde la evidencia visual, así que no se tuvo en cuenta.';
+    // CA-18 · UX-14 — el barrido incompleto no es una falla de carga, y la
+    // acción que corresponde es re-ejecutar QA, no diagnosticar el archivo.
+    case 'shape-gate-block':
+      return 'El barrido visual no se aceptó: la cobertura declarada está incompleta, así que el inventario podría no estar completo.';
+    default:
+      return 'La evidencia visual no se pudo evaluar en esta pasada.';
+  }
 }
 
 // =============================================================================
@@ -2226,6 +2715,18 @@ module.exports = {
   escapeHtml,
   // #3383 — bloque side-by-side (CA-12, CA-13).
   renderVisualComparisonBlock,
+  loadVisualComparison,
+  safeImageSrc,
+  // #5708 / CA-22 — resolución CON motivo, para poder testear el placeholder.
+  resolveImageSrc,
+  renderRegressionChip,
+  MAX_DIFFS_RENDER,
+  // #5708 — helpers de los estados degradados + topes desde la fuente única
+  // (`lib/visual-contract-limits.js`), atados por test contra el hook de forma.
+  MAX_VISUAL_JSON_BYTES,
+  renderVisualSkipBand,
+  renderVisualCoverageBlock,
+  narrateVisualSkip,
   // Acceso a la implementación real de traceability (override en tests).
   _traceability: traceability,
 };

@@ -57,6 +57,7 @@ const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
 // y en su lugar re-encola el issue a `build` con YAML limpio.
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
+const visualCoverageRecorder = require('./lib/visual-coverage-recorder');
 // #3383 — Gate visual pre-promoción build→verificacion. Default OFF
 // (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
 const visualGate = require('./lib/visual-gate');
@@ -10271,6 +10272,25 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         }
       }
 
+      // #5708: una aprobación visual también es una pasada auditable y debe
+      // quedar como baseline antes de mover el work-file. El reporte se lanza
+      // sólo para rechazos, así que no puede ser dueño exclusivo del store.
+      // Best-effort: una falla de evidencia no puede tumbar el Pulpo.
+      if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
+        try {
+          const coverageResult = visualCoverageRecorder.recordApprovedCoverage({
+            root: ROOT, issue, skill, fase, data,
+          });
+          if (coverageResult.written) {
+            log('lanzamiento', `QA:#${issue} persistió cobertura visual aprobada rev ${Number(data.rebote_numero) || 0}`);
+          } else if (coverageResult.reason !== 'sin-contrato') {
+            log('lanzamiento', `⚠️ QA:#${issue} no persistió cobertura visual aprobada: ${coverageResult.reason}`);
+          }
+        } catch (coverageErr) {
+          log('lanzamiento', `⚠️ QA:#${issue} falló persistencia de cobertura visual aprobada: ${coverageErr.message}`);
+        }
+      }
+
       // Solo movemos si el archivo sigue en trabajando/. Si ya estaba en listo/
       // (contrato viejo), el move lo completó el agente.
       if (workingPath === trabajandoPath) {
@@ -10294,6 +10314,21 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             '--motivo', String(data.motivo || 'Sin motivo'),
             '--log', `${issue}-${skill}.log`, '--pipeline', pipeline,
           ];
+          // #5708 / CA-10 · SEC-11 (D10a) — el contrato visual SÓLO lo emite el
+          // skill de QA visual. Desde el bloque genérico `if (resultado ===
+          // 'rechazado')` aplicaba también a tester, security, build, linter y
+          // review: bastaba con que el archivo existiera en disco para que la
+          // narración de CUALQUIER rechazo del issue se contara como "rechazo
+          // visual" y la causa real nunca llegara al operador.
+          if (skill === 'qa') {
+            const visualJsonPath = path.join(ROOT, 'qa', 'evidence', String(issue), 'visual-comparison.json');
+            if (fs.existsSync(visualJsonPath)) reportArgs.push('--visual-json', visualJsonPath);
+          }
+          // #5708 / CA-9 (D9) — `--rev` se pushea SIEMPRE (fuera del if): es el
+          // consumidor real del campo `rev` del contrato. Sin él, el reporte
+          // suprime el bloque con motivo declarado (`rev-unknown`) en vez de
+          // renderizar evidencia de una pasada anterior como si fuera actual.
+          reportArgs.push('--rev', String(Number(data.rebote_numero) || 0));
           if (launchResult && launchResult.provider) {
             reportArgs.push('--provider', String(launchResult.provider));
           }
