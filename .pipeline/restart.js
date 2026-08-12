@@ -21,10 +21,14 @@ const {
   pidAlive,
   invalidateCache,
   waitForPortFree,
-  commandLineForPid,
+  processForPid,
   SCRIPT_MAP,
 } = require('./pid-discovery');
+// #5722 — la decisión de ownership y la terminación con fallback verificado
+// viven en un módulo importable para que los tests ejerciten el guard REAL.
+const portGuard = require('./lib/port-guard');
 const { clearAllMarkers } = require('./lib/ready-marker');
+const smokeBudget = require('./lib/smoke-budget');
 const { annotateAndMoveOrphans } = require('./lib/restart-orphan-annotator');
 // #4664 (Ola 9.1 · cutover de wiring) — el arranque del motor (pulpo/dashboard)
 // se resuelve vía el kernel-resolver: apunta al kernel migrado cuando el consumo
@@ -244,6 +248,33 @@ function reexecIfSelfChanged() {
 
 // --- KILL: drástico — matar todo lo que sea del pipeline ---
 
+// #5722 — PIDs que los propios componentes declararon al arrancar. Es la
+// corroboración de ownership que permite matar un node.exe opaco sin caer en
+// "matar cualquier node.exe", que se llevaría puestos editores, MCP servers y
+// agentes. Devuelve Map<pid, archivo> (el archivo va al log, para auditoría).
+function readDeclaredPipelinePids() {
+  const map = new Map();
+  for (const comp of COMPONENTS) {
+    try {
+      const raw = fs.readFileSync(path.join(PIPELINE, comp.pid), 'utf8').trim();
+      const pid = parseInt(raw, 10);
+      if (pid && !Number.isNaN(pid) && pid !== process.pid) map.set(pid, comp.pid);
+    } catch {}
+  }
+  return map;
+}
+
+// #5722 (CA-3) — terminación con fallback verificado, compartida por killAll()
+// y el guard del puerto.
+function killPipelineProcess(pid) {
+  return portGuard.terminateProcess(pid, {
+    pidAlive,
+    sleep,
+    platform: process.platform,
+    exec: (cmd) => execSync(cmd, { timeout: 8000, stdio: 'pipe', windowsHide: true }),
+  });
+}
+
 function killAll() {
   log('=== STOP ===');
 
@@ -258,31 +289,42 @@ function killAll() {
   // aparece en la CommandLine. Por eso matcheamos por CUALQUIERA de: path
   // `.pipeline` en la CommandLine, o nombre de script conocido del pipeline.
   const scriptNames = new Set(Object.values(SCRIPT_MAP));
-  for (const p of scanNodeProcesses()) {
-    if (!p.commandLine) continue;
-    if (p.pid === process.pid) continue;
-    const cmd = p.commandLine;
-    const matchByPath = cmd.includes('.pipeline');
-    const matchByScript = [...scriptNames].some(s => cmd.includes(s));
-    if (!matchByPath && !matchByScript) continue;
-    pidsToKill.add(p.pid);
-  }
 
   // Además, mata lo que escuche en el puerto del dashboard aunque su
   // commandLine no coincida (casos borde: proceso respawneado por watchdog
   // entre el scan y el kill).
   const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
   const dashOwner = findPidByPort(dashPort);
-  if (dashOwner && dashOwner !== process.pid) pidsToKill.add(dashOwner);
+
+  // #5722 (CA-5) — Se lee ANTES de borrar los .pid de más abajo. Los componentes
+  // escriben su propio PID al arrancar, así que estos archivos corroboran
+  // ownership de un node.exe cuya CommandLine es ilegible. Sin esta señal, el
+  // `if (!p.commandLine) continue` anterior dejaba escapar del kill principal a
+  // pulpo/servicios opacos, en silencio — el mismo modo de falla de #5704.
+  const declaredPids = readDeclaredPipelinePids();
+
+  const seleccion = portGuard.selectPipelinePidsToKill({
+    processes: scanNodeProcesses(),
+    scriptNames: [...scriptNames],
+    declaredPids,
+    dashOwner,
+    selfPid: process.pid,
+  });
+  for (const pid of seleccion.pids) pidsToKill.add(pid);
+  for (const o of seleccion.opacos) {
+    log(`  PID ${o.pid}: node con CommandLine ilegible, ${o.motivo} — se mata igual (#5722)`);
+  }
 
   if (pidsToKill.size === 0) {
     log('  No hay procesos del pipeline corriendo');
   } else {
     for (const pid of pidsToKill) {
-      try {
-        execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, stdio: 'ignore' });
-        log(`  Killed PID ${pid}`);
-      } catch {}
+      // #5722 (CA-3) — con fallback a `wmic call terminate` y verificación por
+      // pidAlive: `taskkill` puede reportar éxito (o "Acceso denegado" tragado)
+      // y dejar el proceso vivo.
+      const res = killPipelineProcess(pid);
+      if (res.killed) log(`  Killed PID ${pid} (${res.intentos[res.intentos.length - 1].label})`);
+      else log(`  PID ${pid} NO se pudo terminar: ${res.intentos.map(i => i.label).join(' → ')}`);
     }
     log(`  ${pidsToKill.size} proceso(s) eliminado(s)`);
   }
@@ -362,16 +404,22 @@ function killAll() {
 
   // Verificar que no quede nada (discovery fresco, no cache).
   invalidateCache();
-  const survivors = scanNodeProcesses().filter(p =>
-    p.commandLine && p.commandLine.includes('.pipeline') &&
-    !p.commandLine.includes('restart.js') &&
-    p.pid !== process.pid
-  );
+  // #5722 — misma regla que arriba: un superviviente con CommandLine ilegible
+  // no se perdona si el pipeline declaró ese PID. `declaredPids` se leyó al
+  // inicio de killAll(), antes de borrar los .pid.
+  const survivors = scanNodeProcesses().filter(p => {
+    if (!p.pid || p.pid === process.pid) return false;
+    const cmd = (p.commandLine || '').trim();
+    if (!cmd) return declaredPids.has(p.pid);
+    return cmd.includes('.pipeline') && !cmd.includes('restart.js');
+  });
   if (survivors.length > 0) {
     log('  Quedan procesos vivos — segundo intento:');
     for (const p of survivors) {
-      try { execSync(`taskkill /PID ${p.pid} /F /T`, { timeout: 5000, stdio: 'ignore' }); } catch {}
-      log(`    Force killed PID ${p.pid}`);
+      const res = killPipelineProcess(p.pid);
+      log(res.killed
+        ? `    Force killed PID ${p.pid} (${res.intentos[res.intentos.length - 1].label})`
+        : `    PID ${p.pid} SIGUE VIVO tras ${res.intentos.map(i => i.label).join(' → ')}`);
     }
   }
 }
@@ -384,36 +432,56 @@ function killAll() {
 // dashboard nuevo choca con EADDRINUSE, el smoke test falla 2× y se dispara un
 // rollback espurio a `pipeline-stable`.
 //
-// onHolder (SEC-2 / CA-2): antes de re-matar valida ownership por commandLine
-// (solo procesos del pipeline: `dashboard.js` o `.pipeline`), LOGUEA PID +
-// commandLine ANTES de matar (auditoría), y mata SOLO por PID numérico vía
-// taskkill (SEC-1 / CA-6: nada de `$(...)`, `fkill <puerto>` ni interpolar
-// salida de netstat). Un proceso ajeno que casualmente tome el puerto NO se
-// mata. Si el backoff se agota, degradamos al comportamiento actual (avanzar +
-// retry EADDRINUSE del dashboard) — nunca peor que hoy (CA-3).
-function freeDashboardPortOrAdvance() {
+// onHolder (SEC-2): antes de re-matar valida ownership, LOGUEA PID + imagen +
+// commandLine ANTES de matar (auditoría), y mata SOLO por PID numérico (SEC-1 /
+// CA-6: nada de `$(...)`, `fkill <puerto>` ni interpolar salida de netstat). Un
+// proceso ajeno que casualmente tome el puerto NO se mata.
+//
+// #5722 — La decisión de ownership se delega a `lib/port-guard`, que distingue
+// "no es un proceso node" (ajeno, se perdona) de "es node.exe con CommandLine
+// ilegible" (se trata como del pipeline). Y si el backoff se agota, esto ya NO
+// degrada a "avanzar igual": aborta ruidoso. Avanzar hacia un arranque que se
+// sabe condenado es lo que costó 20 h de pipeline caído — la supuesta "red
+// secundaria" del retry EADDRINUSE nunca existió, porque el puerto seguía tomado.
+const PORT_GUARD_ATTEMPTS = 6;
+const PORT_GUARD_DELAY_MS = 500;
+
+function freeDashboardPortOrAbort() {
   const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
-  const onHolder = (pid) => {
-    if (pid === process.pid) return;
-    const cmd = commandLineForPid(pid);
-    const owned = !!cmd && (cmd.includes('dashboard.js') || cmd.includes('.pipeline'));
-    log(`  [puerto ${dashPort}] holder PID ${pid} cmd=${cmd || '<desconocido>'}`); // auditoría ANTES de matar
-    if (!owned) {
-      log(`  [puerto ${dashPort}] PID ${pid} no es del pipeline — no se mata`);
-      return;
-    }
-    try {
-      execSync(`taskkill /PID ${pid} /F /T`, { timeout: 5000, stdio: 'ignore' });
-      log(`  [puerto ${dashPort}] Re-killed PID ${pid}`);
-    } catch {}
-  };
-  const free = waitForPortFree(dashPort, { attempts: 6, delayMs: 500, onHolder });
-  if (free) {
+  const res = portGuard.freeDashboardPort(dashPort, {
+    waitForPortFree,
+    processForPid,
+    pidAlive,
+    selfPid: process.pid,
+    platform: process.platform,
+    attempts: PORT_GUARD_ATTEMPTS,
+    delayMs: PORT_GUARD_DELAY_MS,
+    log,
+    sleep,
+    // stdio 'pipe' (no 'ignore'): necesitamos el stderr del "Acceso denegado"
+    // para poder reportarlo. El fallback igual se decide con pidAlive.
+    exec: (cmd) => execSync(cmd, { timeout: 8000, stdio: 'pipe', windowsHide: true }),
+  });
+
+  if (res.free) {
     log(`  [puerto ${dashPort}] libre antes de launchAll()`);
-  } else {
-    log(`  [puerto ${dashPort}] sigue tomado tras backoff — se avanza igual (retry EADDRINUSE del dashboard como red secundaria)`);
+    return true;
   }
-  return free;
+
+  // CA-2 — fallar explícito y ruidoso. NO se encadena a rollback: volver a una
+  // revisión anterior deja el mismo holder vivo y reproduce el loop del incidente.
+  const alerta = portGuard.buildAbortAlert({
+    port: dashPort,
+    holder: res.holder,
+    platform: process.platform,
+    attempts: PORT_GUARD_ATTEMPTS,
+    delayMs: PORT_GUARD_DELAY_MS,
+  });
+  log(alerta.logText);
+  enqueueTelegramAlert(alerta.telegram);
+  // Exit code propio: permite que watchdog/supervisor distingan "puerto
+  // bloqueado, no reintentar en loop" de "falló otra cosa".
+  process.exit(portGuard.EXIT_PORT_BLOCKED);
 }
 
 // --- LAUNCH ---
@@ -476,53 +544,146 @@ function runSmokeTest() {
     return { ok: true, skipped: true };
   }
 
+  // CA-1 — la ventana del runner se DERIVA de las mismas constantes que usa el
+  // smoke (lib/smoke-budget), en vez de ser un 90000 hardcodeado que nadie
+  // mantenía sincronizado. Antes el runner cortaba ANTES que el smoke: lo mataba
+  // con SIGTERM a mitad de la espera de markers y el diagnóstico nunca llegaba a
+  // escribirse. Por construcción esta ventana ya no puede quedar corta: si sube
+  // la ventana del dashboard, sube sola.
+  const timeoutMs = smokeBudget.runnerTimeoutMs();
   log('=== SMOKE TEST ===');
+  log(`  ventana del runner: ${Math.round(timeoutMs / 1000)}s (derivada del presupuesto del smoke)`);
   try {
-    // smoke-test.js es Node puro: lee ready markers + chequea HTTP en
-    // :3200. No usa wmic ni bash. Timeout holgado (90s) porque el smoke
-    // internamente hace polling hasta 60s a que los 7 componentes
-    // escriban sus markers.
+    // smoke-test.js es Node puro: lee ready markers + chequea HTTP en :3200.
+    // No usa wmic ni bash. El smoke se autolimita ANTES de este timeout y
+    // vuelca su estado parcial, así que llegar acá ya es anómalo.
     const result = spawnSync(process.execPath, [script], {
       cwd: ROOT,
-      timeout: 90000,
+      timeout: timeoutMs,
       encoding: 'utf8',
       windowsHide: true,
     });
     const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
-    const exitCode = result.status === null ? -1 : result.status;
-    if (exitCode === 0) {
+    const cls = smokeBudget.classifySmokeResult(result);
+
+    if (cls.ok) {
       log('Smoke test OK');
-      return { ok: true, exitCode, output };
+      return { ok: true, exitCode: 0, incomplete: false, output };
     }
-    log(`Smoke test FAIL (exit ${exitCode}, signal=${result.signal || 'none'})`);
+
+    // CA-3 — "no completó" y "falló con diagnóstico" son cosas distintas y se
+    // reportan distinto. Colapsar ambas en `exit -1` fue lo que disparó el
+    // rollback a ciegas del 2026-08-09.
+    if (cls.incomplete) {
+      log(`Smoke test NO COMPLETÓ sus chequeos: ${cls.reason}`);
+      log('  Sin veredicto sobre el pipeline — no hay evidencia de que el código sea la causa.');
+    } else {
+      log(`Smoke test FAIL (exit ${cls.exitCode}, signal=${result.signal || 'none'})`);
+    }
     if (output) log(output.split('\n').slice(-12).join('\n'));
-    return { ok: false, exitCode, output };
+    else log('  Sin salida capturada — revisar .pipeline/logs/smoke-test.log');
+    return { ok: false, exitCode: cls.exitCode, incomplete: cls.incomplete, reason: cls.reason, output };
   } catch (e) {
+    // No pudimos ni lanzarlo: tampoco hay evidencia contra el código.
     log(`Smoke test error: ${e.message}`);
-    return { ok: false, exitCode: -1, output: e.message };
+    return {
+      ok: false, exitCode: -1, incomplete: true,
+      reason: `no se pudo ejecutar el smoke test (${e.message})`, output: e.message,
+    };
   }
+}
+
+// #5723 (CA-2) — el tag tiene que avanzar en CADA smoke limpio, no sólo
+// cuando el tag local está desalineado. Antes se llamaba únicamente si
+// `!stablePointsToHead()`, así que un tag local en HEAD con el remoto atrasado
+// nunca se corregía. `git tag -f` y el push son idempotentes: llamarlos
+// siempre es barato y cierra ese hueco.
+//
+// La guarda nueva es la inversa: NO mover el tag si el CÓDIGO de .pipeline/
+// difiere de HEAD. Ese es exactamente el estado post-rollback (HEAD apunta a
+// un commit pero .pipeline/ en disco viene de otro). Taggear ahí grabaría como
+// "estable" un commit cuyo contenido no es el que pasó el smoke, y el próximo
+// rollback volvería a un punto que nunca se validó.
+//
+// OJO (bloqueante 1 de la review de #5723): mirar el diff crudo de `.pipeline/`
+// NO sirve. Hay estado runtime TRACKEADO que el pipeline reescribe durante el
+// propio boot — `telegram-health.json`, `process-transitions.jsonl`,
+// `metrics-history.jsonl`… — así que entre el `reset --hard` de syncWithMain()
+// y este punto el árbol está sucio SIEMPRE. Con el diff crudo el tag no
+// avanzaría jamás y encima alertaría en cada restart: la condición del
+// incidente del 2026-08-09 vuelta permanente. Por eso la lectura y el filtrado
+// viven en `guard.readDirtyPipelineCode()`, que descarta estado runtime pero
+// deja pasar cualquier extensión de código, esté donde esté.
+//
+// La lectura vive en el módulo (y no inline acá) para que los tests la
+// ejerciten de verdad: requerir restart.js dispararía un restart real, así que
+// mientras esto fuera inline no había forma de cubrirlo — y ese fue justamente
+// el hueco por el que se coló el bloqueante 1.
+function pipelineTreeDirty() {
+  const { all, relevant, readFailed } = require('./lib/rollback-guard')
+    .readDirtyPipelineCode({ cwd: ROOT });
+  if (readFailed) {
+    // Fail-open deliberado: si git no responde no podemos afirmar que el árbol
+    // esté sucio, y bloquear el avance del tag por una lectura fallida nos
+    // devuelve al problema original (tag que se queda atrás).
+    log('No se pudo leer el diff de .pipeline/ contra HEAD — se asume limpio y el tag avanza');
+    return null;
+  }
+  if (!relevant.length) {
+    if (all.length) {
+      log(`Árbol de .pipeline/ con ${all.length} archivo(s) modificados, todos estado runtime — no frenan el tag`);
+    }
+    return null;
+  }
+  return relevant;
 }
 
 function moveStableTag() {
+  const dirty = pipelineTreeDirty();
+  if (dirty) {
+    log(`Tag pipeline-stable NO se mueve: el código de .pipeline/ en disco difiere de HEAD (${dirty.length} archivo(s))`);
+    for (const f of dirty.slice(0, 10)) log(`    - ${f}`);
+    if (dirty.length > 10) log(`    - ...y ${dirty.length - 10} más`);
+    log('  Es el estado típico post-rollback. Taggear acá marcaría como estable algo que no es lo que corrió.');
+    enqueueTelegramAlert(
+      '⚠️ *Smoke test OK pero el tag `pipeline-stable` no avanzó.*\n\n' +
+      `El código de \`.pipeline/\` en disco no coincide con el commit actual. Difieren ${dirty.length} archivo(s):\n` +
+      dirty.slice(0, 10).map((f) => `• \`${f}\``).join('\n') +
+      (dirty.length > 10 ? `\n• ...y ${dirty.length - 10} más` : '') +
+      '\n\nSuele pasar después de un rollback. Mientras siga así el tag queda atrás, ' +
+      'y un próximo rollback puede borrar cambios buenos.\n\n' +
+      'Qué hacer:\n' +
+      '1. Si eso es código que querés conservar: mergealo.\n' +
+      '2. Si lo de disco ya no sirve: `git checkout HEAD -- .pipeline/`.\n' +
+      '3. Si alguno es estado runtime que el pipeline reescribe solo, no es código: ' +
+      'sumalo a `RUNTIME_STATE_FILES` en `.pipeline/lib/rollback-guard.js` (o a `.gitignore`) ' +
+      'para que deje de frenar el tag.'
+    );
+    return false;
+  }
   try {
+    let before = null;
+    try {
+      before = execSync('git rev-parse pipeline-stable', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+    } catch {}
     execSync('git tag -f pipeline-stable HEAD', { cwd: ROOT, timeout: 5000, windowsHide: true });
+    const head = execSync('git rev-parse HEAD', { cwd: ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+    if (before && before !== head) {
+      let ahead = '';
+      try {
+        ahead = execSync(`git rev-list --count ${before}..${head}`, { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }).trim();
+      } catch {}
+      log(`Tag pipeline-stable avanzó ${ahead ? ahead + ' commit(s): ' : ''}${before.slice(0, 8)} → ${head.slice(0, 8)}`);
+    }
     try {
       execSync('git push origin --force pipeline-stable', { cwd: ROOT, timeout: 30000, windowsHide: true, stdio: 'ignore' });
-      log('Tag pipeline-stable movido y pusheado');
+      log(`Tag pipeline-stable movido y pusheado (${head.slice(0, 8)})`);
     } catch (e) {
       log(`Tag movido local, push falló: ${e.message.slice(0, 100)}`);
     }
+    return true;
   } catch (e) {
     log(`No se pudo mover tag pipeline-stable: ${e.message.slice(0, 100)}`);
-  }
-}
-
-function stablePointsToHead() {
-  try {
-    const head = execSync('git rev-parse HEAD', { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).trim();
-    const stable = execSync('git rev-parse pipeline-stable', { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).trim();
-    return head === stable;
-  } catch {
     return false;
   }
 }
@@ -575,7 +736,10 @@ function launchRollbackOrphan() {
     stdio: ['ignore', logFd, logFd],
     detached: true,
     windowsHide: true,
-    env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules') },
+    // ROLLBACK_STDIO_IS_LOG — su stdout ya apunta a rollback.log (logFd). Sin
+    // esta señal rollback.js escribiría cada línea dos veces: una por
+    // appendFileSync y otra por console.log (#5723, G-6).
+    env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules'), ROLLBACK_STDIO_IS_LOG: '1' },
   });
   child.unref();
   fs.closeSync(logFd);
@@ -690,7 +854,7 @@ switch (action) {
     } else {
       try { fs.unlinkSync(path.join(PIPELINE, '.paused')); } catch {}
     }
-    freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
+    freeDashboardPortOrAbort(); // #4308/#5722 — puerto 3200 libre, o abortar ruidoso
     // #5646 — Estos componentes acaban de arrancar leyendo el código de disco:
     // se bajan del registro de "código viejo" para que el watchdog no los
     // reinicie de nuevo un minuto después. Lo que restart.js NO lanza (p. ej.
@@ -713,22 +877,52 @@ switch (action) {
       if (!smoke.ok && !flagNoRollback) {
         log('Primer smoke test FAIL — reintento tras limpieza de stragglers');
         killAll();
-        freeDashboardPortOrAdvance(); // #4308 — puerto 3200 libre antes de relanzar
+        // #5722 — si acá el puerto sigue tomado, esto aborta ruidoso y NO cae al
+        // rollback de más abajo: el rollback no libera un puerto ocupado, sólo
+        // reproduce el loop del incidente.
+        freeDashboardPortOrAbort(); // #4308/#5722
         limpiarPendientesRelanzados(launchAll());
         sleep(5000);
         smoke = runSmokeTest();
         if (smoke.ok) log('Segundo smoke test OK tras retry — pipeline recuperado sin rollback');
       }
       if (smoke.ok) {
-        if (!stablePointsToHead()) moveStableTag();
+        // #5723 (CA-2 + CA-4) — un smoke limpio es la única evidencia de que
+        // el pipeline está sano: avanza el tag y corta la racha de rollbacks.
+        moveStableTag();
+        try {
+          if (require('./lib/rollback-guard').clearState()) {
+            log('Estado de rollback reseteado (un smoke limpio corta la racha)');
+          }
+        } catch (e) {
+          log(`No se pudo resetear el estado de rollback: ${e.message.slice(0, 100)}`);
+        }
+      } else if (smoke.incomplete) {
+        // CA-3 — el smoke no llegó a emitir veredicto. Rollbackear acá sería
+        // revertir un deploy potencialmente sano por un problema del propio
+        // gate: no hay ninguna evidencia que apunte al código. Avisamos fuerte
+        // y dejamos la decisión en manos del operador.
+        log('Smoke test no completó — NO se dispara rollback (sin evidencia contra el código)');
+        log('  Diagnóstico parcial en .pipeline/logs/smoke-test.log');
+        enqueueTelegramAlert(
+          `⚠️ *Pipeline restart: el smoke test no llegó a terminar*\n\n`
+          + `${smoke.reason || 'motivo no determinado'}.\n\n`
+          + `No se hizo rollback automático: el smoke no alcanzó a emitir un veredicto, `
+          + `así que no hay evidencia de que el código sea la causa. `
+          + `El pipeline quedó con la versión nueva.\n\n`
+          + `Diagnóstico parcial en \`logs/smoke-test.log\`. Requiere revisión manual.`
+        );
       } else if (flagNoRollback) {
+        const causa = smokeBudget.describeExitCode(smoke.exitCode);
         log('Smoke test falló pero --no-rollback activo (diagnóstico)');
-        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\nExit ${smoke.exitCode}\n\nModo diagnóstico (--no-rollback), sin rollback automático.`);
+        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\n\n${causa} (exit ${smoke.exitCode}).\n\nModo diagnóstico (--no-rollback), sin rollback automático.`);
       } else if (!hasStableTag()) {
+        const causa = smokeBudget.describeExitCode(smoke.exitCode);
         log('Smoke test falló pero no existe tag pipeline-stable — primer deploy, sin rollback');
-        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\nExit ${smoke.exitCode}\n\nNo existe tag \`pipeline-stable\` (primer deploy). Revisar manualmente.`);
+        enqueueTelegramAlert(`⚠️ *Pipeline restart: smoke test FAIL*\n\n${causa} (exit ${smoke.exitCode}).\n\nNo existe tag \`pipeline-stable\` (primer deploy). Revisar manualmente.`);
       } else {
-        enqueueTelegramAlert(`🚨 *Pipeline restart FALLÓ tras retry — lanzando rollback orphan*\nSmoke test exit ${smoke.exitCode}.\nVolviendo a \`pipeline-stable\`. Progreso en \`logs/rollback.log\`.`);
+        const causa = smokeBudget.describeExitCode(smoke.exitCode);
+        enqueueTelegramAlert(`🚨 *Pipeline restart FALLÓ tras retry — lanzando rollback orphan*\n\n${causa} (exit ${smoke.exitCode}).\n\nVolviendo a \`pipeline-stable\`. Progreso en \`logs/rollback.log\`.`);
         // Lanzamos rollback como orphan detached y salimos. El rollback
         // notifica por Telegram cuando termina (OK o FAIL).
         launchRollbackOrphan();

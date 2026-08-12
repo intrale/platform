@@ -100,11 +100,20 @@ function startFreezeWatchdog(opts = {}) {
   const worker = new Worker(path.join(__dirname, 'freeze-watchdog-worker.js'), {
     workerData: { sab, thresholdMs, bumpMs, logDir },
   });
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
   worker.unref(); // el watchdog no debe impedir que el proceso cierre
   worker.on('message', (m) => {
+    if (m && m.type === 'ready') {
+      resolveReady();
+      return;
+    }
     if (m && m.type === 'freeze' && m.line) onLog(m.line);
   });
-  worker.on('error', (e) => { try { onLog(`freeze-watchdog worker error: ${e && e.message ? e.message : e}`); } catch {} });
+  worker.on('error', (e) => {
+    resolveReady();
+    try { onLog(`freeze-watchdog worker error: ${e && e.message ? e.message : e}`); } catch {}
+  });
 
   // Publicación SINCRÓNICA del bitmask al SAB (#4521). El latido corre cada
   // `bumpMs` (200ms), pero una operación sync que se clava ARRANCA y CONGELA el
@@ -126,7 +135,7 @@ function startFreezeWatchdog(opts = {}) {
     try { worker.terminate(); } catch {}
   }
 
-  return { stop, publishInflight };
+  return { stop, publishInflight, ready };
 }
 
 module.exports = { startFreezeWatchdog, INFLIGHT_BITS, IDX_HEARTBEAT, IDX_INFLIGHT, SAB_INTS };

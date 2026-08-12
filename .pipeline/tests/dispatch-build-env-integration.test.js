@@ -320,9 +320,9 @@ test('integración: cross-provider preserva requires_credentials del skill (scop
 });
 
 // =============================================================================
-// 5. Sanity: telegram-hooks always-on conservado tras cross-provider
+// 5. Material de firma contenido en primary, fallback y extras hostiles
 // =============================================================================
-test('integración: cross-provider preserva telegram-hooks SCOPES_ALWAYS_ON', () => {
+test('integración: cross-provider no recibe token por nombre ni valor', () => {
     const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, baseAgentModels());
     const { childEnv } = pulpoFlow({
         skill: 'guru',
@@ -331,8 +331,32 @@ test('integración: cross-provider preserva telegram-hooks SCOPES_ALWAYS_ON', ()
         processEnv: operatorProcessEnv(),
         quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
     });
-    assert.equal(childEnv.TELEGRAM_BOT_TOKEN, 'tg-bot');
+    assert.equal(childEnv.TELEGRAM_BOT_TOKEN, undefined);
+    assert.equal(Object.values(childEnv).includes('tg-bot'), false);
     assert.equal(childEnv.TELEGRAM_CHAT_ID, '12345');
+});
+
+test('integración: fallback filtra pipelineExtras hostil con alias del token', () => {
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, baseAgentModels());
+    const processEnv = operatorProcessEnv();
+    const dispatchResolution = resolveSpawnWithFallback({
+        skill: 'guru', issue: ISSUE, pipelineDir: PIPELINE_DIR, fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        providerHandlerResolver: fakeProviderHandlerResolver(),
+        auditLog: fakeAuditLog(), notify: fakeNotify(),
+    });
+    const childEnv = buildChildEnv({
+        skill: 'guru', pipelineDir: PIPELINE_DIR, fsImpl, processEnv,
+        pipelineExtras: {
+            TELEGRAM_BOT_TOKEN: processEnv.TELEGRAM_BOT_TOKEN,
+            PIPELINE_TOKEN_ALIAS: processEnv.TELEGRAM_BOT_TOKEN,
+        },
+        skillConfigOverride: { provider: dispatchResolution.provider },
+    });
+    assert.equal(childEnv.TELEGRAM_BOT_TOKEN, undefined);
+    assert.equal(childEnv.PIPELINE_TOKEN_ALIAS, undefined);
+    assert.equal(Object.values(childEnv).includes(processEnv.TELEGRAM_BOT_TOKEN), false);
 });
 
 // =============================================================================

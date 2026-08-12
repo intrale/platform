@@ -378,6 +378,32 @@ test('maybeRotateChatFile: rota cuando supera el cap', () => {
     }
 });
 
+test('maybeRotateChatFile: reintenta EBUSY transitorio al rotar en Windows', (t) => {
+    const tmp = path.join(os.tmpdir(), 'chat-rot-ebusy-' + Date.now() + '.jsonl');
+    fs.writeFileSync(tmp, Buffer.alloc(handler.CHAT_FILE_ROTATE_BYTES + 1, 'x'));
+    const originalRename = fs.renameSync;
+    let attempts = 0;
+    t.mock.method(fs, 'renameSync', (...args) => {
+        attempts++;
+        if (attempts <= 2) {
+            const error = new Error('resource busy');
+            error.code = 'EBUSY';
+            throw error;
+        }
+        return originalRename(...args);
+    });
+    try {
+        handler.maybeRotateChatFile(tmp, () => {});
+        assert.equal(fs.existsSync(tmp), false);
+        assert.equal(fs.existsSync(tmp + '.1'), true);
+        assert.equal(attempts, 3);
+    } finally {
+        t.mock.restoreAll();
+        if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+        if (fs.existsSync(tmp + '.1')) fs.unlinkSync(tmp + '.1');
+    }
+});
+
 // -----------------------------------------------------------------------------
 test('isLoopbackRemote: 127.0.0.1 ok', () => {
     const req = { socket: { remoteAddress: '127.0.0.1' }, headers: {} };

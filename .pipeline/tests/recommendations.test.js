@@ -99,16 +99,45 @@ test('refreshCache captura errores de gh sin tirar excepcion', async () => {
     }
 });
 
-test('approve agrega label approved y remueve needs-human', () => {
+// #5689 REQ-SEC-4 — actualizado: approve() ahora remueve AMBOS labels de freno
+// (`needs-human` y `needs:triage-backlog`), porque durante el split de #5678
+// conviven. Removía sólo `needs-human` hasta #5689 (GURU-5).
+test('approve agrega label approved y remueve needs-human y needs:triage-backlog', () => {
     const ghRunner = fakeRunner([
+        { ok: true },
         { ok: true },
         { ok: true },
     ]);
     const r = reco.approve({ issue: 99, ghRunner, repo: 'test/repo' });
     assert.equal(r.ok, true);
-    assert.equal(ghRunner.calls.length, 2);
+    assert.equal(ghRunner.calls.length, 3);
     assert.deepEqual(ghRunner.calls[0], ['issue', 'edit', '99', '--repo', 'test/repo', '--add-label', 'recommendation:approved']);
     assert.deepEqual(ghRunner.calls[1], ['issue', 'edit', '99', '--repo', 'test/repo', '--remove-label', 'needs-human']);
+    assert.deepEqual(ghRunner.calls[2], ['issue', 'edit', '99', '--repo', 'test/repo', '--remove-label', 'needs:triage-backlog']);
+});
+
+// REQ-SEC-4 — la ventana entre esta parte y #5691 exige que un fallo en el
+// primer --remove-label NO aborte el segundo: si abortara, el label que sí se
+// podía sacar quedaría pegado y el issue afuera del intake igual.
+//
+// #5690 — el stderr del fixture pasó de 'label not found' a 'no permission'.
+// Con la tolerancia UX-1 de #5690, "label not found" ya NO es un fallo: es el
+// no-op esperado cuando el issue no tiene ese label (el objetivo "el label no
+// está en el issue" queda cumplido). Lo que este test verifica —que se intenten
+// TODOS los removes y que un fallo REAL sea fail-closed— se mantiene intacto;
+// sólo se usa un stderr que sí representa un fallo real.
+test('approve intenta remover TODOS los labels aunque uno falle, y reporta fail-closed', () => {
+    const ghRunner = fakeRunner([
+        { ok: true },
+        { ok: false, stderr: 'no permission', status: 1 },
+        { ok: true },
+    ]);
+    const r = reco.approve({ issue: 99, ghRunner, repo: 'test/repo' });
+    assert.equal(r.ok, false, 'fail-closed: no puede reportar éxito si quedó un label de freno');
+    assert.match(r.msg, /Aprobación parcial/);
+    assert.match(r.msg, /needs-human/);
+    assert.equal(ghRunner.calls.length, 3, 'el segundo --remove-label se intenta igual');
+    assert.deepEqual(ghRunner.calls[2], ['issue', 'edit', '99', '--repo', 'test/repo', '--remove-label', 'needs:triage-backlog']);
 });
 
 test('approve falla limpio si no se puede agregar el label', () => {
@@ -198,9 +227,11 @@ test('UX-1d: approve sobre un issue SIN needs-human devuelve ok:true y mensaje d
         "could not find label 'needs-human'",
         'label does not exist',
     ]) {
+        // 3 respuestas: add-label + los DOS remove-label de #5689 REQ-SEC-4.
         const ghRunner = fakeRunner([
             { ok: true },
             { ok: false, stderr, status: 1 },
+            { ok: true },
         ]);
         const r = reco.approve({ issue: 99, ghRunner, repo: 'test/repo' });
         assert.equal(r.ok, true, `deberia tolerar: ${stderr}`);
@@ -209,8 +240,11 @@ test('UX-1d: approve sobre un issue SIN needs-human devuelve ok:true y mensaje d
     }
 });
 
-test('UX-1a: si el caller ya sabe que no esta needs-human, ni se intenta removerlo', () => {
-    const ghRunner = fakeRunner([{ ok: true }]);
+// #5690 + #5689 combinados: el cache de labels ahorra el round-trip de los que
+// YA están ausentes, pero NUNCA de los que están presentes. Saltear uno presente
+// dejaría el label de freno pegado y el issue afuera del intake (éxito falso).
+test('UX-1a: el cache de labels saltea sólo los ausentes, y remueve los presentes', () => {
+    const ghRunner = fakeRunner([{ ok: true }, { ok: true }]);
     const r = reco.approve({
         issue: 99,
         labels: ['tipo:recomendacion', 'needs:triage-backlog', 'enhancement'],
@@ -218,7 +252,12 @@ test('UX-1a: si el caller ya sabe que no esta needs-human, ni se intenta remover
         repo: 'test/repo',
     });
     assert.equal(r.ok, true);
-    assert.equal(ghRunner.calls.length, 1, 'no debe gastarse un round-trip de mas');
+    assert.equal(ghRunner.calls.length, 2, 'no gasta round-trip en needs-human (ausente)');
+    assert.deepEqual(
+        ghRunner.calls[1],
+        ['issue', 'edit', '99', '--repo', 'test/repo', '--remove-label', 'needs:triage-backlog'],
+        'needs:triage-backlog SÍ está presente: hay que removerlo o el issue no entra al intake',
+    );
 });
 
 test('UX-1a: una reco legacy CON needs-human sigue removiendolo', () => {

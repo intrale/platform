@@ -12,9 +12,11 @@
 // alertas que sí hay que atender (98,3% de ruido — issue #5678).
 //
 // El humano revisa desde el dashboard y:
-//   - aprueba: agrega `recommendation:approved`. El pulpo lo recoge en el
-//     próximo intake. (Las recomendaciones legacy además tienen `needs-human`;
-//     se remueve si está — ver `approve()`.)
+//   - aprueba: agrega `recommendation:approved` y quita los labels que frenan
+//     el intake — `needs-human` Y `needs:triage-backlog` (#5689 REQ-SEC-4: los
+//     dos, porque durante el split de #5678 conviven). El pulpo lo recoge en el
+//     próximo intake. La remoción de un label que el issue NO tiene es un no-op
+//     benigno, no un error (#5690 UX-1 — ver `approve()`).
 //   - rechaza: cierra el issue con label `recommendation:rejected`.
 //
 // #5690 — RUTA HUMANA EXENTA POR DISEÑO: `approve()`/`reject()` invocan `gh`
@@ -165,14 +167,31 @@ async function refreshCache({ ghRunner = defaultGhRunner, repo = 'intrale/platfo
     return cache;
 }
 
-// #5690 UX-1a — `gh issue edit --remove-label X` falla cuando X no está en el
-// issue. Post-#5690 las recomendaciones nuevas nacen con `needs:triage-backlog`
-// y SIN `needs-human`, así que ese fallo pasa a ser el caso NORMAL, no un error.
-// Sin esta tolerancia el operador vería un `alert('Error')` en CADA aprobación
-// de reco nueva sobre una acción que en realidad ya se aplicó, y la fila no se
-// iría del panel (el `recoRefresh()` del dashboard está dentro del `if (j.ok)`),
-// invitándolo a apretar de nuevo. Un gate humano en el que el humano no confía
-// es un gate roto.
+// #5689 REQ-SEC-4 — labels que `approve()` debe SACAR para que la recomendación
+// entre efectivamente al intake.
+//
+// Por qué DOS y no uno: la secuencia obligatoria del split de #5678 mergea esta
+// parte ANTES de la migración del backlog (#5691). Eso abre una ventana donde
+// las recomendaciones todavía tienen `needs-human` y NO tienen todavía
+// `needs:triage-backlog`. Si `approve()` sacara sólo el nuevo, `needs-human`
+// quedaría puesto, el `--search` del intake seguiría excluyendo el issue, y el
+// operador vería `{ok:true, "entrará al pipeline"}` mientras el issue NUNCA
+// entra: éxito falso silencioso. Post-#5691 el caso se invierte.
+//
+// Sacar los dos es idempotente y sobrevive la ventana en ambas direcciones. Se
+// puede simplificar a uno solo una vez que #5691 haya migrado el backlog entero.
+const TRIAGE_BACKLOG_LABEL = 'needs:triage-backlog';
+const APPROVE_REMOVE_LABELS = [NEEDS_HUMAN_LABEL, TRIAGE_BACKLOG_LABEL];
+
+// #5690 UX-1a — remover un label que el issue NO tiene es el caso NORMAL post
+// split (#5689 saca los dos labels de freno, pero cada recomendación concreta
+// tiene UNO solo). Según la versión de `gh` eso sale con exit 0 (no-op) o con
+// error de "label not found"; tratar el segundo como fallo real le mostraría al
+// operador un `alert('Error')` en CADA aprobación sobre una acción que sí se
+// aplicó, y como el `recoRefresh()` del dashboard vive dentro del `if (j.ok)`,
+// la fila no se iría del panel, invitándolo a apretar de nuevo. Un gate humano
+// en el que el humano no confía es un gate roto. La tolerancia es SÓLO para el
+// label ausente: permisos, rate limit o red siguen siendo error accionable.
 function isLabelAusenteError(res) {
     const txt = `${(res && res.stderr) || ''}`.toLowerCase();
     return /not found|does not exist|could ?n[o']?t find|not labeled|no encontrad/.test(txt);
@@ -185,21 +204,29 @@ function approve({ issue, labels = null, ghRunner = defaultGhRunner, repo = 'int
     // ocurrió y el error se conserva tal cual.
     const addLabel = ghRunner(['issue', 'edit', num, '--repo', repo, '--add-label', APPROVED_LABEL]);
     if (!addLabel.ok) return { ok: false, msg: `No se pudo agregar label aprobado: ${addLabel.stderr || addLabel.status}` };
-
-    // Si el caller ya conoce los labels (el panel los tiene en cache), evitamos
-    // el round-trip completo cuando `needs-human` no está.
+    // UX-1a — si el caller ya conoce los labels (el panel los tiene en cache),
+    // se saltea el round-trip de los que YA están ausentes. Los que sí están se
+    // remueven igual: saltear uno presente dejaría el issue fuera del intake.
     const conocidos = Array.isArray(labels)
         ? labels.map((l) => (typeof l === 'string' ? l : (l && l.name) || ''))
         : null;
-    if (conocidos && !conocidos.includes(NEEDS_HUMAN_LABEL)) {
-        return { ok: true, msg: `Recomendación #${num} aprobada — entrará al pipeline en el próximo ciclo` };
-    }
 
-    const removeLabel = ghRunner(['issue', 'edit', num, '--repo', repo, '--remove-label', NEEDS_HUMAN_LABEL]);
-    if (!removeLabel.ok && !isLabelAusenteError(removeLabel)) {
-        // La tolerancia es SÓLO para el label ausente. Un fallo real (red,
-        // permisos, rate limit) sigue siendo un error accionable.
-        return { ok: false, msg: `Aprobación parcial: agregado ${APPROVED_LABEL} pero falló remover ${NEEDS_HUMAN_LABEL}: ${removeLabel.stderr || removeLabel.status}` };
+    // Se intentan TODOS aunque uno falle: si abortáramos en el primer error,
+    // un fallo al remover `needs-human` dejaría `needs:triage-backlog` pegado
+    // (o viceversa) y el issue igual quedaría fuera del intake, pero además con
+    // el label de triaje colgado para siempre en la vista de bloqueados (R7).
+    const failed = [];
+    for (const label of APPROVE_REMOVE_LABELS) {
+        if (conocidos && !conocidos.includes(label)) continue; // ya ausente: no-op conocido
+        const r = ghRunner(['issue', 'edit', num, '--repo', repo, '--remove-label', label]);
+        // UX-1c — la tolerancia es SÓLO para el label ausente (el objetivo "el
+        // label no está en el issue" ya se cumple). Un fallo real sigue contando.
+        if (!r.ok && !isLabelAusenteError(r)) failed.push(`${label} (${r.stderr || r.status})`);
+    }
+    if (failed.length) {
+        // Fail-closed: el issue queda AFUERA del intake y el operador ve el error,
+        // en vez de un éxito falso sobre un issue que nunca va a entrar.
+        return { ok: false, msg: `Aprobación parcial: agregado ${APPROVED_LABEL} pero falló remover ${failed.join(' · ')}` };
     }
     return { ok: true, msg: `Recomendación #${num} aprobada — entrará al pipeline en el próximo ciclo` };
 }

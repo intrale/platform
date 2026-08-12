@@ -130,6 +130,12 @@ const canonicalFactsModule = require('./canonical-facts');
 // #3896 — writer del audit JSONL trazable (CA-6). Envuelve appendChained con
 // redacción SEC-2 + validación de path SEC-4.
 const sherlockAuditJsonl = require('./sherlock-audit-jsonl');
+// #5462 — contención de credenciales en el env de los childs de clase provider.
+// Los spawns de Sherlock (anthropic / openai-codex) heredaban `process.env`
+// entero cuando el caller no pasaba `env` — que es el caso de los DOS callers
+// reales de `verify()` en pulpo.js. `stripReservedChildSecrets` saca el material
+// de firma de Telegram por nombre Y por valor (cubre el alias renombrado).
+const buildChildEnvLib = require('./build-child-env');
 
 // Invariante CA-SEC-9 — hardcoded, NO depende de config.
 const HARDCODED_MAX_REELABORACIONES = 1;
@@ -751,7 +757,13 @@ function spawnAnthropicComplete({
                     '--permission-mode', 'bypassPermissions',
                 ],
                 cwd: cwd || process.cwd(),
-                env: env || { ...process.env, CLAUDE_PROJECT_DIR: cwd || process.cwd() },
+                // #5462 H-4 — el filtro envuelve TAMBIÉN el `env` explícito del
+                // caller: el default heredaba process.env entero y ningún caller
+                // real pasa env, así que la rama sin filtrar era la de producción.
+                env: buildChildEnvLib.stripReservedChildSecrets(
+                    env || { ...process.env, CLAUDE_PROJECT_DIR: cwd || process.cwd() },
+                    process.env,
+                ),
             });
         } catch (e) {
             return resolve({
@@ -885,7 +897,8 @@ function spawnAnthropicComplete({
 // SECURITY:
 //   - El prompt va como argv (limitación del adapter Codex), igual que para
 //     todos los spawns de agentes del pulpo — consistente con el resto del
-//     pipeline. El env del child hereda del parent + CODEX_MODEL.
+//     pipeline. El env del child hereda del parent + CODEX_MODEL, MENOS el
+//     material reservado, que se saca con `stripReservedChildSecrets` (#5462).
 //   - stdout truncado a 64KB (mismo cap que anthropic/completion-client).
 // -----------------------------------------------------------------------------
 function spawnCodexComplete({
@@ -902,11 +915,20 @@ function spawnCodexComplete({
         const _spawn = spawnImpl || require('node:child_process').spawn;
         const handler = codexHandler || require('./agent-launcher/providers/openai-codex');
         const _cwd = cwd || process.cwd();
-        const _env = Object.assign(
-            {},
-            env || process.env,
-            model ? { CODEX_MODEL: model } : {},
-            { CLAUDE_PROJECT_DIR: _cwd }
+        // #5462 H-5 — el child es un CLI de TERCEROS (Codex) y es un camino
+        // caliente: la chain `telegram-sherlock` tiene openai-codex como primer
+        // fallback y, por diseño (#3921), Sherlock excluye al provider del
+        // commander — con el commander en anthropic el fiscal cae acá.
+        // El filtro va como ÚLTIMA operación, DESPUÉS del merge: si se filtrara
+        // el operando `env` antes, un extra del merge podría reintroducir material.
+        const _env = buildChildEnvLib.stripReservedChildSecrets(
+            Object.assign(
+                {},
+                env || process.env,
+                model ? { CODEX_MODEL: model } : {},
+                { CLAUDE_PROJECT_DIR: _cwd }
+            ),
+            process.env,
         );
 
         let spawnSpec;
