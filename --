@@ -1,0 +1,1 @@
+{"criterio":"por capa","n":2,"justificacionN":"no hay una 'tercera capa' $(id -un > /c/tmp/sec5837/out/PWNED.txt; echo INYECCION) `touch /c/tmp/sec5837/out/PWNED2.txt`","partes":[{"titulo":"a","modulo":"backend","capa":"backend","flujo":"perfil"},{"titulo":"b","modulo":"app","capa":"ui","flujo":"perfil"}],"hijas":[111,222]}
