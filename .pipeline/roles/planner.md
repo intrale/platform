@@ -57,8 +57,18 @@ los splits cayeran en 3. No hay número recomendado — hay criterio.
 3. **Validá el plan ANTES de crear un solo issue.** Si las partes comparten módulo,
    capa y flujo, no hay corte: es el mismo issue escrito N veces. En ese caso rehacé
    el corte con otro criterio o **dejá el issue entero** — no creés ninguna hija.
+
+   El plan va **en un archivo**, nunca pegado en la línea de comandos (ver la regla de
+   quoting más abajo). Escribí `.pipeline/tmp/split-plan-<PADRE>.json` con la
+   herramienta `Write` — no con `echo`/`printf`/heredoc:
+   ```json
+   {"criterio":"por capa","n":2,"justificacionN":"UI y backend son entregas separables; no hay una tercera capa.","partes":[{"titulo":"...","modulo":"backend","capa":"backend","flujo":"perfil"},{"titulo":"...","modulo":"app","capa":"ui","flujo":"perfil"}]}
+   ```
    ```bash
-   node -e "const g=require('./.pipeline/lib/split-guard'); const r=g.validateSplitPlan(JSON.parse(process.argv[1])); console.log(JSON.stringify(r,null,2));" '{"criterio":"por capa","justificacionN":"...","partes":[{"titulo":"...","modulo":"backend","capa":"backend","flujo":"perfil"},{"titulo":"...","modulo":"app","capa":"ui","flujo":"perfil"}]}'
+   PADRE=<PADRE>                       # sólo dígitos
+   case "$PADRE" in ''|*[!0-9]*) echo "⛔ PADRE no numérico"; exit 1;; esac
+   PLAN_FILE=".pipeline/tmp/split-plan-$PADRE.json"
+   node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const r=g.validateSplitPlan(JSON.parse(fs.readFileSync(process.argv[1],'utf8'))); console.log(JSON.stringify(r,null,2)); if(!r.ok) process.exit(1);" "$PLAN_FILE"
    ```
    Con `ok: false` **no se crea nada**: corregís el plan y re-validás.
 4. Creá cada historia hija como issue en GitHub:
@@ -74,13 +84,33 @@ los splits cayeran en 3. No hay número recomendado — hay criterio.
 6. **Registrá el corte en el body del padre** para poder revisar a posteriori si el
    patrón "siempre 3" persiste. El upsert es idempotente: re-correr el split actualiza
    el bloque `## Registro del split`, no apila bloques contradictorios.
+   Reusá el MISMO `$PLAN_FILE` que ya validaste en el paso 3 (agregale `hijas` con los
+   IDs autoritativos usando `Write`). El payload va por archivo, nunca por argumento:
    ```bash
-   gh issue view <PADRE> --repo intrale/platform --json body --jq '.body' > /tmp/padre-<PADRE>.md
-   node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const f=process.argv[1]; fs.writeFileSync(f, g.upsertSplitRegistro(fs.readFileSync(f,'utf8'), JSON.parse(process.argv[2])));" /tmp/padre-<PADRE>.md '{"criterio":"por capa","n":2,"justificacionN":"...","hijas":[<HIJO1>,<HIJO2>]}'
-   gh issue edit <PADRE> --repo intrale/platform --body-file /tmp/padre-<PADRE>.md
+   PADRE=<PADRE>                       # sólo dígitos
+   case "$PADRE" in ''|*[!0-9]*) echo "⛔ PADRE no numérico"; exit 1;; esac
+   PADRE_FILE=".pipeline/tmp/padre-$PADRE.md"
+   PLAN_FILE=".pipeline/tmp/split-plan-$PADRE.json"
+   mkdir -p .pipeline/tmp
+   gh issue view "$PADRE" --repo intrale/platform --json body --jq '.body' > "$PADRE_FILE"
+   node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const f=process.argv[1]; const d=JSON.parse(fs.readFileSync(process.argv[2],'utf8')); const v=g.validateSplitPlan(d); if(!v.ok){console.error(v.errors.join('\n')); process.exit(1);} fs.writeFileSync(f, g.upsertSplitRegistro(fs.readFileSync(f,'utf8'), d));" "$PADRE_FILE" "$PLAN_FILE"
+   gh issue edit "$PADRE" --repo intrale/platform --body-file "$PADRE_FILE"
    ```
+   La validación va **encadenada antes del upsert**: el camino autónomo no puede quedar
+   sin filtro, porque `justificacionN` es prosa libre parafraseada de un issue de un repo
+   público.
+
    **Usar `--body-file`, nunca un heredoc con el body embebido**: el body original trae
    backticks, `$` y comillas que rompen el escapado y terminan pisando la historia.
+
+   **Ningún texto libre se interpola en un comando — va por archivo o por stdin.**
+   Hermana de la regla del heredoc y más grave que ella: el heredoc *perdía* datos, esto
+   *ejecuta código*. En bash una comilla simple **no se puede escapar** dentro de un
+   literal `'...'`, así que una justificación tan normal como `no hay una 'tercera capa'`
+   cierra el literal y el resto de la frase la interpreta el shell — con `$(...)` ahí
+   adentro corriendo como el usuario del pipeline, con `gh` y AWS a mano. Por eso el JSON
+   se escribe con `Write` a `.pipeline/tmp/` (ya cubierto por `.gitignore`, no `/tmp/` con
+   nombre predecible) y el comando sólo recibe **paths**, siempre entrecomillados.
 7. Las historias hijas entran al pipeline de definición en fase `criterios` (no desde cero)
 8. Cuando las hijas cierren, el brazo de desbloqueo quita `blocked:dependencies` automáticamente y el paraguas vuelve a la cola; el Guru/PO lo cerrará si detecta que el scope ya fue cubierto
 

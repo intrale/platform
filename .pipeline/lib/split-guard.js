@@ -107,6 +107,29 @@ function normalizeText(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
+// Colapsa a UNA sola línea y recorta al máximo declarado.
+//
+// No es cosmética: `justificacionN` y `criterio` son prosa libre que nace de un
+// issue de un repo PÚBLICO (cualquiera puede escribir el título/body que el
+// planner después parafrasea). Si un salto de línea sobrevive hasta el body del
+// padre, el texto puede abrir un `## Encabezado` propio; como `upsertSplitRegistro`
+// delimita su bloque con el próximo `## ` (blockRe), ese encabezado se vuelve la
+// nueva frontera y todo lo que venga detrás queda FUERA de la zona reescribible:
+// ningún re-split posterior lo saca nunca más. Por diseño del propio campo esto
+// es UNA línea, así que colapsar es también lo semánticamente correcto.
+function oneLine(value, max = MAX_JUSTIFICACION_N_CHARS) {
+    const flat = normalizeText(value).replace(/\s+/g, ' ');
+    return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+}
+
+// ¿El texto trae saltos de línea o un encabezado markdown? Se usa para RECHAZAR
+// en validación (camino temprano) además de colapsar en el render (defensa en
+// profundidad): el que escribe se entera de por qué su campo no sirve.
+function hasMultilineOrHeading(value) {
+    const raw = typeof value === 'string' ? value : '';
+    return /[\r\n]/.test(raw) || /(^|\s)#{1,6}\s/.test(raw);
+}
+
 // Normaliza para COMPARAR (no para mostrar): minúsculas, sin tildes, sin espacios
 // redundantes. Sirve tanto para matchear el criterio de corte escrito a mano como
 // para detectar partes indistinguibles ("Backend " vs "backend").
@@ -210,6 +233,22 @@ function isSplitChild(issue) {
  * @returns {{allowed: boolean, isChild: boolean, parent: number|null, reason: string|null, message: string|null}}
  */
 function checkResplit({ issue, force = false, justificacion = '' } = {}) {
+    // Fail-closed ante entrada malformada. El guard existe para FRENAR: si no
+    // puede leer el issue (undefined, null, un string, un objeto sin título),
+    // no sabe si es hijo de un split — y "no sé" nunca puede significar "dale".
+    if (!issue || typeof issue !== 'object' || typeof issue.title !== 'string') {
+        return {
+            allowed: false,
+            isChild: false,
+            parent: null,
+            reason: 'entrada-invalida',
+            message: [
+                '⛔ No se pudo evaluar el freno de cascada: el issue llegó sin `title` legible.',
+                'Pasá el JSON de `gh issue view <N> --json number,title,labels` tal cual, sin recortar campos.',
+            ].join('\n'),
+        };
+    }
+
     const child = isSplitChild(issue);
     const number = toPositiveInt(issue && issue.number);
 
@@ -306,6 +345,11 @@ function validateSplitPlan(plan = {}) {
 
     // --- SG-1: el criterio de corte se declara y es uno de los canónicos ------
     const criterio = resolveCutCriterion(plan.criterio);
+    if (hasMultilineOrHeading(plan.criterio)) {
+        errors.push(
+            '⛔ El criterio de corte trae saltos de línea o un encabezado markdown (`#`). Es un nombre de una línea: elegí uno del catálogo.',
+        );
+    }
     if (!normalizeText(plan.criterio)) {
         errors.push(
             `⛔ Falta declarar el criterio de corte. Elegí uno por nombre: ${CUT_CRITERIA_NOMBRES.join(', ')}.`,
@@ -318,6 +362,14 @@ function validateSplitPlan(plan = {}) {
 
     // --- SG-1: por qué N y no N±1 --------------------------------------------
     const justificacionN = normalizeText(plan.justificacionN);
+    if (hasMultilineOrHeading(plan.justificacionN)) {
+        // Este campo termina embebido en el body del issue padre. Un salto de
+        // línea con `## ` abre un encabezado que corre la frontera del bloque y
+        // deja el texto colado fuera del alcance de todo re-split (rompe el CA-5).
+        errors.push(
+            '⛔ La justificación del N trae saltos de línea o un encabezado markdown (`#`). Es un campo de auditoría de UNA línea: reescribila sin saltos ni `#`.',
+        );
+    }
     if (!justificacionN) {
         errors.push(
             `⛔ Falta la justificación del N: por qué ${n || 'N'} partes y no ${n ? n - 1 : 'N-1'} ni ${n ? n + 1 : 'N+1'}. Una línea alcanza.`,
@@ -377,7 +429,9 @@ function validateSplitPlan(plan = {}) {
  */
 function renderSplitRegistro({ criterio, n, justificacionN, hijas = [] } = {}) {
     const resuelto = resolveCutCriterion(criterio);
-    const nombre = resuelto ? resuelto.nombre : normalizeText(criterio) || 'sin declarar';
+    // El fallback (criterio libre, no canónico) también se colapsa: es texto que
+    // no pasó por el catálogo y por lo tanto puede traer cualquier cosa.
+    const nombre = resuelto ? resuelto.nombre : oneLine(criterio, 80) || 'sin declarar';
     const cantidad = toPositiveInt(n) || (Array.isArray(hijas) ? hijas.length : 0);
     const ids = (Array.isArray(hijas) ? hijas : [])
         .map((h) => toPositiveInt(h))
@@ -389,7 +443,7 @@ function renderSplitRegistro({ criterio, n, justificacionN, hijas = [] } = {}) {
         '',
         `- **Criterio de corte**: ${nombre}`,
         `- **N elegido**: ${cantidad}`,
-        `- **Por qué ${cantidad} y no ${Math.max(cantidad - 1, 1)}/${cantidad + 1}**: ${normalizeText(justificacionN) || 'sin declarar'}`,
+        `- **Por qué ${cantidad} y no ${Math.max(cantidad - 1, 1)}/${cantidad + 1}**: ${oneLine(justificacionN) || 'sin declarar'}`,
     ];
     if (ids.length) lines.push(`- **Sub-historias**: ${ids.join(', ')}`);
 

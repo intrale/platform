@@ -724,8 +724,21 @@ Antes de seguir, chequear que el issue no sea **hijo de un split previo**. Sin e
 freno la cascada se multiplica sola: en la ola 9.4, #5440 se volvió doce issues
 (#5791-5793 → #5794-5805) y hubo hasta nietos de nietos (#5793 → #5800 → #5803/#5805).
 
+Ni el issue ni la justificación se interpolan en el comando (ver "Regla de quoting" en
+SP6): el issue va a un archivo y la justificación a una variable ya asignada, siempre
+entrecomillada. `"$(gh issue view ...)"` está en comilla **doble**, donde `$(...)` del
+título de un issue público sí se expande.
+
 ```bash
-node -e "const g=require('./.pipeline/lib/split-guard'); const i=JSON.parse(process.argv[1]); const r=g.checkResplit({issue:i, force:<TRUE_SI_FORCE>, justificacion:process.argv[2]||''}); console.log(JSON.stringify(r,null,2)); if(!r.allowed) process.exit(1);" "$(gh issue view <N> --repo $GH_REPO --json number,title,labels)" "<JUSTIFICACIÓN_SI_FORCE>"
+ISSUE=<N>                              # sólo dígitos
+case "$ISSUE" in ''|*[!0-9]*) echo "⛔ N no numérico"; exit 1;; esac
+mkdir -p .pipeline/tmp
+ISSUE_FILE=".pipeline/tmp/issue-$ISSUE.json"
+gh issue view "$ISSUE" --repo "$GH_REPO" --json number,title,labels > "$ISSUE_FILE"
+# JUSTIFICACION: escribila con `Write` a .pipeline/tmp/force-$ISSUE.txt si trae comillas.
+JUSTIFICACION_FILE=".pipeline/tmp/force-$ISSUE.txt"
+[ -f "$JUSTIFICACION_FILE" ] || : > "$JUSTIFICACION_FILE"
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const i=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const j=fs.readFileSync(process.argv[2],'utf8'); const r=g.checkResplit({issue:i, force:process.argv[3]==='1', justificacion:j}); console.log(JSON.stringify(r,null,2)); if(!r.allowed) process.exit(1);" "$ISSUE_FILE" "$JUSTIFICACION_FILE" "<1_SI_FORCE_SINO_0>"
 ```
 
 - `allowed: false` → **detener el split** y mostrar el `message` tal cual sale del guard:
@@ -751,9 +764,19 @@ Si `/planner validar-tamaño` clasifica como **L/XL a un issue que ya es hijo de
 split**, la conclusión no es "hay que partirlo de nuevo" sino que **el corte del padre
 estuvo mal**. Reportarlo hacia arriba en vez de crear nietos en silencio:
 
+`<HIJO>`, `<PADRE>` y `<L|XL>` son los únicos valores que se interpolan acá, y los tres
+son cerrados (dígitos y una de dos constantes). El mensaje se pasa por **archivo**, no por
+`$(...)` anidado dentro de comillas dobles:
+
 ```bash
-node -e "const g=require('./.pipeline/lib/split-guard'); console.log(g.reportOversizedChild({issue:<HIJO>, parent:<PADRE>, size:'<L|XL>'}).message);"
-gh issue comment <PADRE> --repo $GH_REPO --body "$(node -e "const g=require('./.pipeline/lib/split-guard'); process.stdout.write(g.reportOversizedChild({issue:<HIJO>, parent:<PADRE>, size:'<L|XL>'}).message);")"
+HIJO=<HIJO>; PADRE=<PADRE>; SIZE=<L|XL>   # HIJO y PADRE: sólo dígitos
+case "$HIJO$PADRE" in ''|*[!0-9]*) echo "⛔ HIJO/PADRE no numéricos"; exit 1;; esac
+case "$SIZE" in L|XL) ;; *) echo "⛔ SIZE debe ser L o XL"; exit 1;; esac
+mkdir -p .pipeline/tmp
+MSG_FILE=".pipeline/tmp/oversized-$HIJO.md"
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); fs.writeFileSync(process.argv[4], g.reportOversizedChild({issue:Number(process.argv[1]), parent:Number(process.argv[2]), size:process.argv[3]}).message);" "$HIJO" "$PADRE" "$SIZE" "$MSG_FILE"
+cat "$MSG_FILE"
+gh issue comment "$PADRE" --repo "$GH_REPO" --body-file "$MSG_FILE"
 ```
 
 ### Paso SP3: Proponer el plan de split
@@ -794,14 +817,28 @@ Para cada sub-historia propuesta, generar:
 
 **Validar el plan ANTES de crear un solo issue** (#5837 CA-1/CA-2):
 
+El plan va **en un archivo**, nunca pegado como argumento (ver "Regla de quoting" en SP6).
+Escribí `.pipeline/tmp/split-plan-<PADRE>.json` con la herramienta `Write` — no con
+`echo`/`printf`/heredoc:
+
+```json
+{"criterio":"por capa","n":2,"justificacionN":"UI y backend son entregas separables; no hay una tercera capa.","partes":[{"titulo":"Endpoint de perfil","modulo":"backend","capa":"backend","flujo":"perfil"},{"titulo":"Pantalla de perfil","modulo":"app","capa":"ui","flujo":"perfil"}]}
+```
+
 ```bash
-node -e "const g=require('./.pipeline/lib/split-guard'); const r=g.validateSplitPlan(JSON.parse(process.argv[1])); console.log(JSON.stringify(r,null,2)); if(!r.ok) process.exit(1);" '{"criterio":"por capa","justificacionN":"UI y backend son entregas separables; no hay una tercera capa.","partes":[{"titulo":"Endpoint de perfil","modulo":"backend","capa":"backend","flujo":"perfil"},{"titulo":"Pantalla de perfil","modulo":"app","capa":"ui","flujo":"perfil"}]}'
+PADRE=<PADRE>                          # sólo dígitos
+case "$PADRE" in ''|*[!0-9]*) echo "⛔ PADRE no numérico"; exit 1;; esac
+PLAN_FILE=".pipeline/tmp/split-plan-$PADRE.json"
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const r=g.validateSplitPlan(JSON.parse(fs.readFileSync(process.argv[1],'utf8'))); console.log(JSON.stringify(r,null,2)); if(!r.ok) process.exit(1);" "$PLAN_FILE"
 ```
 
 Con `ok: false` el split **se detiene y no se crea ninguna sub-historia**. Los rechazos
 posibles son todos accionables:
 - criterio de corte ausente, inventado o escrito como número;
 - falta el "por qué N y no N±1", o excede una línea (240 caracteres);
+- el criterio o la justificación traen **saltos de línea o un encabezado markdown** (`##`):
+  ese texto termina embebido en el body del padre y un encabezado corre la frontera del
+  bloque `## Registro del split`, dejando lo colado fuera del alcance de todo re-split;
 - la justificación invoca un default ("por default", "como siempre", "típicamente") —
   el N tiene que salir del criterio, no de la costumbre;
 - **las partes comparten módulo, capa y flujo** → no hay corte, es el mismo issue escrito
@@ -929,16 +966,33 @@ Luego actualizar el body del issue padre para incluir la lista de sub-historias 
 > el body real trae backticks, `$` y comillas que rompen el escapado. Se usa
 > `--body-file` sobre un archivo temporal, siempre.
 
+> ⛔ **Regla de quoting: ningún texto libre se interpola en un comando — va por archivo
+> o por stdin.** Hermana de la regla del heredoc y más grave que ella: el heredoc *perdía*
+> datos, esto *ejecuta código*. En bash una comilla simple **no se puede escapar** dentro
+> de un literal `'...'`; la primera comilla del texto cierra el literal y el resto lo
+> interpreta el shell. Una justificación tan normal como `no hay una 'tercera capa'`
+> alcanza — y esta misma doctrina empuja a citar frases entre comillas, porque prohíbe
+> `"por default"` / `"como siempre"` / `"típicamente"`. Con `$(...)` del otro lado el
+> comando corre con las credenciales de `gh` y AWS del pipeline, y `intrale/platform` es
+> **público**: el título y el body de un issue son entrada de cualquiera, y el planner los
+> parafrasea en `criterio` / `justificacionN`. Por eso el JSON se escribe con `Write` a
+> `.pipeline/tmp/` (ya cubierto por `.gitignore`; nunca `/tmp/` con nombre predecible) y el
+> comando sólo recibe **paths**, siempre entrecomillados.
+
 ```bash
-PADRE_FILE=".pipeline/tmp/padre-<PADRE>.md"
+PADRE=<PADRE>                          # sólo dígitos
+case "$PADRE" in ''|*[!0-9]*) echo "⛔ PADRE no numérico"; exit 1;; esac
+PADRE_FILE=".pipeline/tmp/padre-$PADRE.md"
+PLAN_FILE=".pipeline/tmp/split-plan-$PADRE.json"   # el mismo de SP3, ahora con `hijas`
 mkdir -p .pipeline/tmp
 
 # 1) Bajar el body actual TAL CUAL (sin pasar por el shell más que como redirección).
-gh issue view <PADRE> --repo $GH_REPO --json body --jq '.body' > "$PADRE_FILE"
+gh issue view "$PADRE" --repo "$GH_REPO" --json body --jq '.body' > "$PADRE_FILE"
 
 # 2) Upsert IDEMPOTENTE del bloque `## Registro del split`: re-ejecutar el split
 #    ACTUALIZA el bloque existente en vez de apilar registros contradictorios.
-node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const f=process.argv[1]; fs.writeFileSync(f, g.upsertSplitRegistro(fs.readFileSync(f,'utf8'), JSON.parse(process.argv[2])));" "$PADRE_FILE" '{"criterio":"por capa","n":2,"justificacionN":"UI y backend son entregas separables; no hay una tercera capa.","hijas":[<HIJO1>,<HIJO2>]}'
+#    La validación va ENCADENADA antes del upsert: ningún camino escribe sin filtro.
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const f=process.argv[1]; const d=JSON.parse(fs.readFileSync(process.argv[2],'utf8')); const v=g.validateSplitPlan(d); if(!v.ok){console.error(v.errors.join('\n')); process.exit(1);} fs.writeFileSync(f, g.upsertSplitRegistro(fs.readFileSync(f,'utf8'), d));" "$PADRE_FILE" "$PLAN_FILE"
 
 # 3) Lista de sub-historias con checkboxes (sólo si todavía no está en el body).
 grep -q '^## Sub-historias' "$PADRE_FILE" || cat >> "$PADRE_FILE" <<'BODY_EOF'
