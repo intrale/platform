@@ -40,8 +40,8 @@
 //   3. UNA sola API key del LLM: la del provider declarado por el skill.
 //   4. Scopes adicionales declarados por el skill (`requires_credentials` en
 //      agent-models.json o defaults hardcoded por skill).
-//   5. `telegram-hooks` SIEMPRE (los hooks `agent-concurrency-check.js` y
-//      `worktree-guard.js` corren dentro del child y necesitan TELEGRAM_*).
+//   5. `telegram-hooks` SIEMPRE, sin material criptográfico: las
+//      notificaciones se delegan a la frontera local privilegiada.
 //   6. Fail-fast: si el provider declara una `credentials_env` y la var no
 //      está en el env del pulpo → throw con mensaje accionable.
 //
@@ -147,16 +147,35 @@ const CREDENTIAL_SCOPES = Object.freeze({
         'ANDROID_SDK_ROOT',
         'ANDROID_AVD_HOME',
     ]),
-    // 'telegram-hooks' se inyecta siempre (ver SCOPES_ALWAYS_ON), pero queda
-    // declarado acá para que sea explícito en agent-models.json y para tests.
-    'telegram-hooks': Object.freeze(['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID']),
+    // Los hooks pueden conservar contexto de destino, pero nunca reciben el
+    // token: notifican mediante la cola/frontera local privilegiada.
+    'telegram-hooks': Object.freeze(['TELEGRAM_CHAT_ID']),
 });
 
-// Scopes inyectados SIEMPRE (los hooks de Claude Code corren dentro del child
-// y los necesitan: `agent-concurrency-check.js` y `worktree-guard.js` alertan
-// vía Telegram). Si querés removerlos en el futuro, hay que reescribir los
-// hooks para postear a un endpoint local del pulpo.
+// Scope always-on sin secretos, conservado por compatibilidad de hooks.
 const SCOPES_ALWAYS_ON = Object.freeze(['telegram-hooks']);
+
+// Material reservado que jamás puede cruzar al child, ni con aislamiento
+// desactivado ni reintroducido desde pipelineExtras bajo otro nombre.
+const RESERVED_CHILD_SECRET_NAMES = Object.freeze(['TELEGRAM_BOT_TOKEN']);
+
+function stripReservedChildSecrets(candidateEnv = {}, operatorEnv = process.env) {
+    const reservedValues = new Set();
+    for (const name of RESERVED_CHILD_SECRET_NAMES) {
+        const value = operatorEnv && operatorEnv[name];
+        if (value !== undefined && value !== null && String(value) !== '') {
+            reservedValues.add(String(value));
+        }
+    }
+
+    const safe = {};
+    for (const [name, value] of Object.entries(candidateEnv || {})) {
+        if (RESERVED_CHILD_SECRET_NAMES.includes(name)) continue;
+        if (value !== undefined && reservedValues.has(String(value))) continue;
+        safe[name] = value;
+    }
+    return safe;
+}
 
 // -----------------------------------------------------------------------------
 // PROVIDER_STATIC_ENV — variables de entorno ESTÁTICAS por provider (#4880).
@@ -415,9 +434,11 @@ function buildChildEnv(opts = {}) {
         }
     }
 
-    // 5. pipelineExtras al final (PIPELINE_ISSUE, PIPELINE_SKILL, etc.). Puede
-    //    sobreescribir entries previos — esperado, el caller sabe qué hace.
-    return { ...out, ...pipelineExtras };
+    // 5. pipelineExtras al final (PIPELINE_ISSUE, PIPELINE_SKILL, etc.). El
+    //    filtro final impide reintroducir el nombre reservado o un alias cuyo
+    //    valor coincida con el material del operador. El descarte es silencioso
+    //    para no revelar nombres alternativos ni valores en logs.
+    return stripReservedChildSecrets({ ...out, ...pipelineExtras }, processEnv);
 }
 
 // -----------------------------------------------------------------------------
@@ -446,11 +467,17 @@ function auditDroppedEnvVars(processEnv = process.env) {
     }
 
     const dropped = [];
+    const reservedValues = new Set(RESERVED_CHILD_SECRET_NAMES
+        .map((name) => processEnv[name])
+        .filter((value) => value !== undefined && value !== null && String(value) !== '')
+        .map(String));
     for (const k of Object.keys(processEnv)) {
+        if (RESERVED_CHILD_SECRET_NAMES.includes(k)) continue;
         if (k.startsWith('PIPELINE_')) continue; // siempre van
         if (allowed.has(k)) continue;
         const v = processEnv[k];
         if (v === undefined) continue;
+        if (reservedValues.has(String(v))) continue;
         const hash = crypto.createHash('sha256').update(String(v)).digest('hex').slice(0, 12);
         dropped.push({ key: k, hash });
     }
@@ -484,7 +511,9 @@ module.exports = {
     PROVIDER_STATIC_ENV,
     CREDENTIAL_SCOPES,
     SCOPES_ALWAYS_ON,
+    RESERVED_CHILD_SECRET_NAMES,
     DEFAULT_REQUIRES_BY_SKILL,
+    stripReservedChildSecrets,
     // Internos exportados para tests.
     _resolveSkillConfig: resolveSkillConfig,
     _readAgentModelsDefensive: readAgentModelsDefensive,

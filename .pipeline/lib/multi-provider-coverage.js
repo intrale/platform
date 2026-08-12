@@ -53,6 +53,10 @@ const ALLOWED_STATUSES = new Set(['PASS', 'WARN', 'FAIL', 'SKIPPED', 'N/A']);
 const ALLOWED_BUCKETS = new Set(['<=100ms', '<=500ms', '<=2s', '<=10s', '>10s']);
 const ALLOWED_ERROR_CLASSES = new Set([
     'quota_exhausted', 'rate_limit', 'transient_5xx', 'auth',
+    // #5795 — clase cerrada de credencial inválida/expirada. Distinta de
+    // `auth`: el smoke test la puede propagar desde el parser y sin esta
+    // entrada el validador rechazaría la matriz entera.
+    'authentication_rejected',
     'permanent_failure', 'cli_1m_context_glitch', 'unknown',
     'parser_well_formed_violation', 'baseline_divergence',
     'data_residency_blocked', 'timeout', 'cap_exceeded',

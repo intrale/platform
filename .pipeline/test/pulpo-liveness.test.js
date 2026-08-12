@@ -26,7 +26,10 @@ const path = require('node:path');
 const liveness = require('../lib/pulpo-liveness');
 
 const SEC = 1000;
-const KILL_MS = 90 * SEC; // umbral default
+// #5820 — El umbral default se elevó de 90s a 270s: 90s era casi 3× más
+// agresivo que los 180s que ya habían producido 77 falsos kills el 2026-08-11,
+// y el default se aplica por vía normal cuando config.yaml no aporta el valor.
+const KILL_MS = liveness.DEFAULT_KILL_SECONDS * SEC; // umbral default
 
 function baseFacts(over = {}) {
   return Object.assign(
@@ -40,6 +43,15 @@ function baseFacts(over = {}) {
     over
   );
 }
+
+// --- contrato del default (#5820) -------------------------------------------
+
+test('DEFAULT_KILL_SECONDS — vale 270s y nunca degrada por debajo del umbral vigente', () => {
+  // Fijado explícitamente (no derivado) para que bajarlo requiera tocar el test:
+  // el default se aplica por vía NORMAL cuando config.yaml no trae la clave, así
+  // que un default agresivo reabre el bucle de muerte del 2026-08-11 en silencio.
+  assert.strictEqual(liveness.DEFAULT_KILL_SECONDS, 270);
+});
 
 // --- parseKillSeconds (SEC-2) -----------------------------------------------
 
@@ -175,7 +187,7 @@ test('runner — zombi confirmado (vencido + pid cruza) => ACTION:kill-respawn',
     PLV_HB_AGE_MS: String(KILL_MS + 5000),
     PLV_HB_CONTENT: '{"pid":34567,"timestamp":"2020-01-01T00:00:00.000Z"}',
     PLV_SO_PID: '34567',
-    PULPO_LIVENESS_KILL_SECONDS: '90',
+    PULPO_LIVENESS_KILL_SECONDS: String(liveness.DEFAULT_KILL_SECONDS),
     PLV_LOG_DIR: require('node:os').tmpdir(),
   });
   assert.strictEqual(out, 'ACTION:kill-respawn');
@@ -215,8 +227,8 @@ test('runner — sin heartbeat => ACTION:skip', () => {
 });
 
 test('runner — umbral inválido por env => default, no falso kill con lag moderado (SEC-2)', () => {
-  // lag 60s: con default 90s NO es zombi. Umbral inválido no debe volverlo "nunca stale"
-  // ni "siempre stale": cae al default 90s => skip.
+  // lag 60s: está por debajo del default vigente, así que NO es zombi. Un umbral
+  // inválido no debe volverlo "nunca stale" ni "siempre stale": cae al default => skip.
   const out = runRunner({
     PLV_HB_EXISTS: '1',
     PLV_HB_AGE_MS: '60000',
