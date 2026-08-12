@@ -111,6 +111,53 @@ test('notifyTelegram no incluye stacktraces (detail trunca a 400 chars)', () => 
     } finally { teardownTmp(dir); }
 });
 
+// =============================================================================
+// #5400 / SEC-1 — El aviso tiene que LLEGAR.
+//
+// `servicio-telegram` hace `data.parse_mode || 'Markdown'`, reintenta con el
+// mismo parse_mode y archiva en `fallido/`. Un `_` impar en una causa o un `*`
+// desbalanceado en un título produce `400 can't parse entities` y la alerta de
+// "pipeline parado" se pierde — el modo de falla exacto que el issue cierra.
+// =============================================================================
+
+test('el aviso se entrega aunque la causa, la autoría o el título contengan guion bajo, asterisco y backtick', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        const res = mod.notifyTelegram({
+            level: 'error',
+            component: 'wave-stall-watchdog',
+            message: 'Causa: modo_ola sin allowlist *urgente* con `backtick` y [corchete',
+            context: { causa: 'human_halt', autoria: 'user_name_con_guiones' },
+            detail: 'issue #5400: pausa_preservada_por_restart',
+        });
+        assert.equal(res.ok, true);
+        const parsed = JSON.parse(fs.readFileSync(res.dropPath, 'utf8'));
+
+        // Todo metacarácter de Markdown legacy queda escapado: Telegram parsea
+        // el mensaje sin error y lo renderiza literal.
+        for (const meta of ['_', '*', '`', '[']) {
+            const sueltos = parsed.text.split('').filter((c, i) => c === meta && parsed.text[i - 1] !== '\\');
+            assert.equal(sueltos.length, 0, `quedó un '${meta}' sin escapar: ${parsed.text}`);
+        }
+        // El contenido sigue siendo legible (Telegram renderiza \_ como _).
+        assert.ok(parsed.text.includes('modo\\_ola'), parsed.text);
+        assert.ok(parsed.text.includes('user\\_name\\_con\\_guiones'), parsed.text);
+        // Y el drop nunca queda sin texto ni cambia de shape.
+        assert.equal(parsed.parse_mode, 'Markdown');
+        assert.ok(parsed.text.length > 0);
+    } finally { teardownTmp(dir); }
+});
+
+test('el escape no altera el texto que ya era seguro', () => {
+    const { dir, mod } = setupTmp();
+    try {
+        const res = mod.notifyTelegram({ component: 'x', message: 'todo bien, sin metacaracteres' });
+        const parsed = JSON.parse(fs.readFileSync(res.dropPath, 'utf8'));
+        assert.ok(parsed.text.includes('todo bien, sin metacaracteres'));
+        assert.ok(!parsed.text.includes('\\'), 'no debe meter backslashes de más');
+    } finally { teardownTmp(dir); }
+});
+
 test('notifyTelegram crea el directorio servicios/telegram/pendiente/ si no existe', () => {
     const { dir, mod } = setupTmp();
     try {
