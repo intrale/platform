@@ -73,7 +73,11 @@ function correr(dir, runnerRel, env) {
     // `process.execPath` en vez del literal 'node': el runner del tester spawnea
     // los tests en un contexto donde 'node' puede no estar en PATH.
     return execFileSync(process.execPath, [path.join(dir, runnerRel)], {
-        env: Object.assign({}, process.env, env),
+        // #5821 — `PIPELINE_DIR_OVERRIDE` redirige la cola de `notify-telegram`
+        // al tmpdir. Sin esto, cualquier camino que alerte (el supervisor ya lo
+        // hace en el fail-closed) encolaría un mensaje DE VERDAD al operador
+        // desde la corrida de tests.
+        env: Object.assign({}, process.env, { PIPELINE_DIR_OVERRIDE: dir }, env),
         encoding: 'utf8',
     }).trim();
 }
@@ -83,8 +87,16 @@ function correr(dir, runnerRel, env) {
 // -----------------------------------------------------------------------------
 
 const RUNNER_LIVENESS = 'pulpo-liveness-run.js';
+// #5821 — El runner ahora también usa `pulpo-liveness-margin` (serie + umbral
+// efectivo + cap de kills) y sus dependencias. Se agregan como shims para que
+// estos tests sigan ejercitando el camino REAL: sin ellos el runner degradaría
+// al fallback "umbral = piso" y las aserciones de fail-closed pasarían por el
+// motivo equivocado (falso verde).
 const SHIMS_LIVENESS_COMPLETOS = {
     'pulpo-liveness': path.join(REAL_LIB, 'pulpo-liveness.js'),
+    'pulpo-liveness-margin': path.join(REAL_LIB, 'pulpo-liveness-margin.js'),
+    'watchdog-supervisor': path.join(REAL_LIB, 'watchdog-supervisor.js'),
+    'notify-telegram': path.join(REAL_LIB, 'notify-telegram.js'),
     'config-resolver': path.join(REAL_LIB, 'config-resolver.js'),
 };
 
@@ -124,7 +136,7 @@ test('liveness — config-resolver ausente (MODULE_NOT_FOUND) => FAIL-SOFT a def
     // Mismo config corrupto, pero sin el resolver: la degradación a defaults es
     // legítima porque no hay evidencia de que la config difiera del default.
     const dir = armarPipelineFalso(RUNNER_LIVENESS, YAML_CORRUPTO, {
-        'pulpo-liveness': path.join(REAL_LIB, 'pulpo-liveness.js'),
+        ...SHIMS_LIVENESS_COMPLETOS,
         'config-resolver': null,
     });
     const out = correr(dir, RUNNER_LIVENESS, hechosZombi());

@@ -410,27 +410,51 @@ watchdog:
   # umbral con el proceso vivo, lo declara zombi (loop colgado) y lo reinicia.
   # DESACOPLADO del display: /salud usa "esperado < 30s" sólo para MOSTRAR salud;
   # 30s == 1 poll_interval del Pulpo, un ciclo lento lo rozaría sin ser zombi.
-  #
-  # #5820 — El umbral NO se deriva de poll_interval: se dimensiona contra la
-  # duración REAL de un ciclo del Pulpo, que con la ola actual está muy por
-  # encima del poll. Incidente 2026-08-11 (~11:00–14:00): con 180s el watchdog
-  # mató y relanzó al Pulpo 77 veces (una cada ~6 min) sin que hubiera un cuelgue
-  # real — el ciclo simplemente tardaba más que el umbral. Cada reinicio se
-  # llevaba puesta la cola de comandos de Telegram, así que el Commander quedó
-  # sin responder ~4 horas.
-  #   Medición del log .pipeline/logs/pulpo-liveness.log tras subir a 270:
-  #     · killSeconds=180 → 77 líneas decision=kill el 2026-08-11
-  #     · killSeconds=270 → 0 líneas decision=kill en 68 ciclos
-  #     · máx. hbAgeMs observado bajo el umbral nuevo: 244993 ms (245 s)
-  # El margen contra el techo de 270 s es de ~25 s (9%): este valor PERSISTE la
-  # mitigación medida, pero el dimensionamiento del colchón se rediseña aparte
-  # (#5821). Si volvés a ver kills sin cuelgue real, es ese issue, no este valor.
-  #
   # Override por env PULPO_LIVENESS_KILL_SECONDS (entero positivo; inválido →
-  # default del módulo, NUNCA "nunca stale" — SEC-2). El default de
-  # lib/pulpo-liveness.js se mantiene alineado con este valor para que perder el
-  # bloque `watchdog:` no degrade a un umbral MÁS agresivo que el vigente.
+  # default, NUNCA "nunca stale" — SEC-2).
+  #
+  # #5821 — Esto ya NO es el umbral final: es el PISO sobre el que se dimensiona.
+  # El umbral EFECTIVO = max(piso, p99(duración real de ciclo) × factor), acotado
+  # por `pulpo_liveness_max_effective_seconds`. Se subió de 180 a 270 porque el
+  # 2026-08-11 el watchdog mató y relanzó al Pulpo 77 veces en 3 horas: 180s era
+  # MENOR que la duración real de un ciclo, o sea un falso positivo puro. Con 270
+  # el bucle paró (0 kills en 51 ciclos), pero el pico observado fue 245s => ~9%
+  # de margen, que es un empate y no un colchón. De ahí el dimensionamiento por
+  # percentil de abajo: el número deja de elegirse a mano después de cada caída.
   pulpo_liveness_kill_seconds: 270
+
+  # --- #5821 · Dimensionamiento del umbral contra la duración real de ciclo ---
+  # El runner persiste una serie con la duración que el Pulpo mide de su propia
+  # iteración (`iterationMs` en last-tick.json) y deriva el umbral del percentil.
+  pulpo_liveness_percentile: 99            # percentil sobre el que se dimensiona (cubrir la cola, no la mediana)
+  pulpo_liveness_percentile_factor: 2      # umbral derivado = p99 × factor (2x = el doble del ciclo casi-peor observado)
+  pulpo_liveness_max_effective_seconds: 900  # TECHO anti-realimentación: sin él, un cuelgue sube el p99, que sube el umbral, que tolera el próximo cuelgue... y el watchdog se vuelve ciego en silencio
+  pulpo_liveness_min_samples: 100          # N mínimo para que el percentil mueva el umbral (con menos degenera en "el máximo"); por debajo se usa el piso
+  pulpo_liveness_max_samples: 720          # muestras retenidas (≈24 h a 1 cada 2 min)
+
+  # Alerta de margen agotado: avisar ANTES del primer kill, no después de la caída.
+  pulpo_liveness_alert_margin_pct: 75      # alertar cuando el pico consume ≥75% del umbral efectivo (queda 1/4 de colchón para reaccionar)
+  pulpo_liveness_alert_cooldown_minutes: 60  # 1 alerta por ventana: 77 mensajes idénticos entrenan al operador a silenciar el canal
+
+  # Freno anti-bucle (defensa en profundidad). Mismos valores que el supervisor
+  # del watchdog (#4077) para no tener dos frenos con semánticas distintas.
+  pulpo_liveness_max_kills: 3              # cap de reinicios por ventana antes de escalar a needs-human
+  pulpo_liveness_kill_window_minutes: 60
+
+  # Señal secundaria de progreso: distingue "ciclo lento" de "cuelgue real". El
+  # Pulpo toca .pipeline/last-progress DURANTE la iteración; su mtime separa los
+  # dos casos aunque el heartbeat de fin de ciclo esté viejo.
+  # OJO: se dimensiona contra UN PASO del loop, no contra el ciclo entero. La
+  # señal se emite en los hitos secuenciales del `while` (y deliberadamente NO
+  # desde `log()`, que también disparan los timers de fondo y las cadenas
+  # fire-and-forget aunque el loop esté colgado), así que su granularidad real es
+  # el paso más largo. 300s deja lugar de sobra para el brazo de intake.
+  pulpo_liveness_progress_stale_seconds: 300
+  # Techo del ciclo lento: pasado esto se mata aunque reporte progreso (un retry
+  # loop que sigue tocando hitos eternamente también "progresa"). El runner lo
+  # eleva a max(este valor, 2 × umbral efectivo): si quedara <= al umbral, la
+  # rama de ciclo lento sería código muerto.
+  pulpo_liveness_max_slow_cycle_seconds: 1800
 
 # =============================================================================
 # Wave-stall watchdog (#4708) — dead-man's switch de la ola
@@ -446,12 +470,36 @@ watchdog:
 # o absurdamente grande (> 1440 min = 24h) cae al default seguro — NUNCA
 # "nunca stall" ni deshabilita de facto el watchdog.
 wave_watchdog:
-  enabled: false                 # rollout gradual — activar tras smoke test post-restart
+  # #5400 — ACTIVADO. Este control estuvo en `enabled: false` desde su merge y
+  # nadie se enteró: el 2026-08-02 el pipeline estuvo 1h33 sin despachar y no
+  # llegó ninguna alerta. Dejarlo apagado es reproducir el bug original, así que
+  # el flip a true es entregable del issue, no un follow-up.
+  # Para desactivarlo en caliente usar `kill_switch: true` (no hace falta reiniciar).
+  enabled: true
   kill_switch: false             # corte de emergencia: true desactiva el brazo sin tocar `enabled`
-  stall_minutes: 20              # 0 despacho más de esto (con trabajo habilitado y sin causa) = estancada
-  alert_cooldown_minutes: 30     # SEC-4: mín. entre re-alertas del mismo episodio (anti-flood)
-  window_minutes: 60             # ventana de referencia para la serie de avance/despacho
+  stall_minutes: 20              # 0 despacho más de esto (con trabajo elegible esperando) = detenido
+  # SEC-4 / CA-4: mínimo entre re-alertas del mismo episodio (anti-flood). La
+  # espera se DUPLICA en cada re-alerta (30 → 60 → 120 …) hasta 16× — así una
+  # detención de 14 h cuesta ~6 mensajes y no ~27. El primer aviso no se demora.
+  alert_cooldown_minutes: 30
+  # `window_minutes` se ELIMINÓ en rev-6: se leía y se propagaba, pero ninguna
+  # decisión la usaba. Una perilla que no controla nada es peor que no tenerla.
   tick_ms: 60000                 # cada cuánto corre el brazo (default 1 min)
+  # #5400 — Antigüedad a partir de la cual una causa DECLARADA deja de silenciar
+  # la alarma. Una pausa o un desync explican un rato de no-despacho; no lo
+  # explican para siempre. Escala sólo si además hay trabajo elegible esperando
+  # (aditivo: por debajo de este umbral el modo ola sigue mudo, #4751).
+  # Mismo clamp que stall_minutes: [1, 1440]; un valor inválido cae al default 45.
+  # Se mide contra la INACTIVIDAD DE DESPACHO, no contra la antigüedad de la
+  # causa: con causas que alternan (ventana de prioridad ↔ concurrencia ↔
+  # cooldown) el reloj de la causa se reiniciaba en cada transición y el aviso
+  # no llegaba nunca. Esta misma clave gobierna el realce del banner de causa.
+  declared_cause_escalate_minutes: 45
+  # Gracia extra mientras hay agentes corriendo (`trabajando/` > 0). Con slots
+  # ocupados el no-despacho suele ser saturación legítima, no un estancamiento:
+  # se suma a los dos umbrales de arriba. No es un skip — un agente clavado
+  # termina avisando igual, sólo que más tarde. Mismo clamp [1, 1440].
+  busy_grace_minutes: 60
 
 # Dashboard — opciones del dashboard del pipeline
 dashboard:

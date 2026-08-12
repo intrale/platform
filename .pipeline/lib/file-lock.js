@@ -74,6 +74,7 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_RETRIES = 3;
 const STALE_AGE_MS = 60 * 1000; // 60s — umbral de stale post-PID-reuse
 const POSIX_LOCK_MODE = 0o600;   // -rw-------
+const LOCK_CONTENTION_CODES = new Set(['EEXIST', 'EBUSY', 'EPERM', 'EACCES']);
 
 // Cache del startTime del proceso actual (estable hasta exit).
 const PROCESS_START_ISO = new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString();
@@ -190,7 +191,11 @@ function atomicCreateLock(lockPath, meta) {
         fs.linkSync(tmp, lockPath); // atómico; EEXIST si el lock ya está tomado
         return true;
     } catch (err) {
-        if (err && err.code === 'EEXIST') return false;
+        // En Windows el antivirus/indexador puede retener por milisegundos el
+        // tmp o el destino y `linkSync` responde EBUSY/EPERM/EACCES. Esos
+        // códigos representan contención transitoria igual que EEXIST: el loop
+        // exterior conserva el timeout y el jitter, sin perder fail-closed.
+        if (err && LOCK_CONTENTION_CODES.has(err.code)) return false;
         throw err;
     } finally {
         // El lock vive bajo lockPath (hard link al mismo inode); el tmp ya no
@@ -575,6 +580,7 @@ module.exports = {
         PROCESS_START_ISO,
         LOCK_SCHEMA_VERSION,
         STALE_AGE_MS,
+        LOCK_CONTENTION_CODES,
         POSIX_LOCK_MODE,
     },
 };

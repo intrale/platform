@@ -1,0 +1,24 @@
+{
+  "issue": 5708,
+  "rev": 3,
+  "verdict": "rejected",
+  "mockup": { "src": "mockup-v1.png", "baseline": "mockup-48" },
+  "delivery": { "src": "render-rev3.png" },
+  "coverage": {
+    "secciones_declaradas": ["A", "B", "C", "D"],
+    "verificadas": ["A"],
+    "no_verificadas": []
+  },
+  "diffs": [
+    {
+      "section": "A",
+      "title": "A3 nunca se pinta en rojo",
+      "description": "token --danger-fg esperado; la entrega usa --text-muted",
+      "impact": "alto"
+    }
+  ],
+  "suggestedAction": {
+    "skill": "pipeline-dev",
+    "text": "Completar el barrido de las secciones B, C y D antes de emitir veredicto."
+  }
+}
