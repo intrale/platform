@@ -726,8 +726,16 @@ freno la cascada se multiplica sola: en la ola 9.4, #5440 se volvió doce issues
 
 Ni el issue ni la justificación se interpolan en el comando (ver "Regla de quoting" en
 SP6): el issue va a un archivo y la justificación a una variable ya asignada, siempre
-entrecomillada. `"$(gh issue view ...)"` está en comilla **doble**, donde `$(...)` del
-título de un issue público sí se expande.
+entrecomillada.
+
+> **Por qué a archivo y no a argv.** No es porque `"$(gh issue view ...)"` se expanda:
+> bash **no** re-expande el resultado de una sustitución de comandos, así que un título
+> con `$(id -u)` llega literal aunque el repo sea público (verificado: `argv recibido:
+> "Titulo con $(id -u) ..."`). El motivo real es otro: el body de un issue trae saltos de
+> línea, comillas y hasta megabytes de texto, y pasarlo por argv lo expone a límites de
+> longitud, a `IFS` si alguien olvida una comilla, y a errores de encoding. El archivo
+> saca al shell del medio por completo — el JSON viaja de `gh` a Node sin intermediarios.
+> Regla práctica: **datos por archivo, identificadores por variable entrecomillada**.
 
 ```bash
 ISSUE=<N>                              # sólo dígitos
@@ -774,10 +782,16 @@ case "$HIJO$PADRE" in ''|*[!0-9]*) echo "⛔ HIJO/PADRE no numéricos"; exit 1;;
 case "$SIZE" in L|XL) ;; *) echo "⛔ SIZE debe ser L o XL"; exit 1;; esac
 mkdir -p .pipeline/tmp
 MSG_FILE=".pipeline/tmp/oversized-$HIJO.md"
-node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); fs.writeFileSync(process.argv[4], g.reportOversizedChild({issue:Number(process.argv[1]), parent:Number(process.argv[2]), size:process.argv[3]}).message);" "$HIJO" "$PADRE" "$SIZE" "$MSG_FILE"
-cat "$MSG_FILE"
-gh issue comment "$PADRE" --repo "$GH_REPO" --body-file "$MSG_FILE"
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const r=g.reportOversizedChild({issue:process.argv[1], parent:process.argv[2], size:process.argv[3]}); if(!r.oversized){console.error('⛔ El hijo no es L/XL: no hay defecto que reportar.'); process.exit(1);} fs.writeFileSync(process.argv[4], r.message);" "$HIJO" "$PADRE" "$SIZE" "$MSG_FILE" \
+  && cat "$MSG_FILE" \
+  && gh issue comment "$PADRE" --repo "$GH_REPO" --body-file "$MSG_FILE"
 ```
+
+> El `if(!r.oversized)` no es decorativo: sin él, un `SIZE` no sobredimensionado hace
+> `message: null` y `writeFileSync` revienta con un `TypeError` críptico
+> (`The "data" argument must be of type string ... Received null`) en vez de decir qué
+> pasó. Es el mismo guard que usa el camino autónomo en `roles/planner.md`, para que
+> ambos caminos fallen igual.
 
 ### Paso SP3: Proponer el plan de split
 
@@ -841,8 +855,13 @@ posibles son todos accionables:
   bloque `## Registro del split`, dejando lo colado fuera del alcance de todo re-split;
 - la justificación invoca un default ("por default", "como siempre", "típicamente") —
   el N tiene que salir del criterio, no de la costumbre;
-- **las partes comparten módulo, capa y flujo** → no hay corte, es el mismo issue escrito
-  N veces. Rehacer con otro criterio o **dejar el issue entero**.
+- **el `n` declarado no coincide con la cantidad de `partes`** → el N que se registra en
+  el padre es el entregable que permite auditar el patrón "siempre 3": si puede diferir
+  de las partes reales, la auditoría miente. Corregí el `n` o completá las partes;
+- **hay partes indistinguibles entre sí** (comparten módulo, capa y flujo) → no hay corte
+  entre ellas, es el mismo issue escrito dos veces. Se rechaza tanto si **todas** las
+  partes son iguales como si **sólo un par** lo es: dos partes idénticas dentro de un plan
+  de tres inflan el N igual. Fusionalas, cortá por otro eje o **dejá el issue entero**.
 
 Mostrar el plan completo y obtener confirmación antes de crear los issues.
 
@@ -1007,7 +1026,7 @@ Este issue fue dividido en las siguientes sub-historias:
 BODY_EOF
 
 # 4) Subir el body compuesto.
-gh issue edit <PADRE> --repo $GH_REPO --body-file "$PADRE_FILE"
+gh issue edit "$PADRE" --repo "$GH_REPO" --body-file "$PADRE_FILE"
 ```
 
 El bloque que queda en el padre se ve así, y es lo que permite auditar a posteriori si
@@ -1024,7 +1043,7 @@ el patrón "siempre 3" persiste:
 
 Agregar label `split` al issue padre (si existe en el repo):
 ```bash
-gh issue edit <PADRE> --repo $GH_REPO --add-label "split" 2>/dev/null || true
+gh issue edit "$PADRE" --repo "$GH_REPO" --add-label "split" 2>/dev/null || true
 ```
 
 > El label `split` marca al **padre paraguas** (así lo lee `pulpo.js#isSplitParent`), no

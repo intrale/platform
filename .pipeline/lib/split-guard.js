@@ -392,24 +392,60 @@ function validateSplitPlan(plan = {}) {
         );
     }
 
+    // --- El N declarado tiene que coincidir con las partes reales -------------
+    // El N registrado en el padre ES el entregable de CA-1/CA-5: es lo que permite
+    // revisar a posteriori si el patrón "siempre 3" persiste. Antes `plan.n` se
+    // ignoraba acá y se creía a ciegas en el render, así que un plan de 2 partes
+    // podía declarar `n: 3` y quedar registrado como 3 sin que nada lo notara —
+    // una auditoría que puede mentir no sirve para nada.
+    if (plan.n !== undefined && plan.n !== null && plan.n !== '') {
+        const declarado = toPositiveInt(plan.n);
+        if (!declarado) {
+            errors.push(
+                `⛔ El N declarado ("${String(plan.n)}") no es un entero positivo. El N es un dato de auditoría: escribilo como número.`,
+            );
+        } else if (declarado !== n) {
+            errors.push(
+                `⛔ El N declarado (${declarado}) no coincide con las partes del plan (${n}). ` +
+                    'El N registrado en el padre tiene que describir el corte que realmente se hizo: corregí el N o completá las partes que faltan.',
+            );
+        }
+    }
+
     // --- SG-2: partes indistinguibles ----------------------------------------
     // Si TODAS las partes comparten módulo, capa y flujo, no hay corte: es el
     // mismo issue escrito N veces. Se rechaza sin crear ninguna sub-historia.
     if (n >= MIN_PARTS) {
         const ejes = ['modulo', 'capa', 'flujo'];
         const firma = (parte) => ejes.map((eje) => comparableText(parte && parte[eje])).join('|');
-        const primeras = firma(partes[0]);
-        const todasIguales = partes.every((p) => firma(p) === primeras);
+        const firmas = partes.map(firma);
         const algunEjeDeclarado = ejes.some((eje) => partes.some((p) => comparableText(p && p[eje])));
 
-        if (todasIguales && algunEjeDeclarado) {
+        // Se rechaza CUALQUIER par de partes indistinguibles, no sólo el caso en que
+        // todas lo son. Chequear "todas iguales" cumplía la letra del CA-2 pero no su
+        // espíritu: un plan de 3 partes con 2 idénticas pasaba limpio, y esas 2 son
+        // exactamente el mismo issue escrito dos veces — el N sale inflado igual.
+        const grupos = new Map();
+        firmas.forEach((f, i) => {
+            if (!grupos.has(f)) grupos.set(f, []);
+            grupos.get(f).push(i + 1);
+        });
+        const duplicados = [...grupos.values()].filter((idxs) => idxs.length > 1);
+
+        if (!algunEjeDeclarado) {
+            errors.push(
+                '⛔ Las partes no declaran módulo/capa/flujo, así que el corte no se puede auditar. Completá esos ejes en cada parte.',
+            );
+        } else if (duplicados.length && duplicados[0].length === n) {
             errors.push(
                 '⛔ Corte no justificado: las partes comparten módulo, capa y flujo — es el mismo issue escrito ' +
                     `${n} veces. Rehacé el corte con otro criterio o dejá el issue entero. No se crea ninguna sub-historia.`,
             );
-        } else if (!algunEjeDeclarado) {
+        } else if (duplicados.length) {
+            const detalle = duplicados.map((idxs) => `partes ${idxs.join(' y ')}`).join('; ');
             errors.push(
-                '⛔ Las partes no declaran módulo/capa/flujo, así que el corte no se puede auditar. Completá esos ejes en cada parte.',
+                `⛔ Corte no justificado: hay partes indistinguibles entre sí (${detalle}) — comparten módulo, capa y flujo. ` +
+                    'Fusionalas o cortalas por otro eje. No se crea ninguna sub-historia.',
             );
         }
     }
@@ -424,19 +460,34 @@ function validateSplitPlan(plan = {}) {
 /**
  * Renderiza el bloque `## Registro del split` que va al body del issue padre.
  *
- * @param {{criterio: string, n: number, justificacionN: string, hijas?: Array<number|string>}} data
+ * El N NO se toma del campo `n` a ciegas: se DERIVA del corte que realmente se
+ * hizo (las partes del plan, o las hijas creadas), y `n` queda como último
+ * recurso. La razón es el propósito del bloque: es el registro de auditoría que
+ * permite revisar si el patrón "siempre 3" persiste. Si el número que se escribe
+ * puede diferir de las hijas que figuran dos líneas más abajo, la auditoría
+ * miente y no sirve. `validateSplitPlan` rechaza el mismatch antes de llegar acá;
+ * si alguien igual llega con datos contradictorios, se registra la discrepancia
+ * en vez de tapar el número real.
+ *
+ * @param {{criterio: string, n?: number, justificacionN: string, partes?: Array, hijas?: Array<number|string>}} data
  * @returns {string}
  */
-function renderSplitRegistro({ criterio, n, justificacionN, hijas = [] } = {}) {
+function renderSplitRegistro({ criterio, n, justificacionN, partes, hijas = [] } = {}) {
     const resuelto = resolveCutCriterion(criterio);
     // El fallback (criterio libre, no canónico) también se colapsa: es texto que
     // no pasó por el catálogo y por lo tanto puede traer cualquier cosa.
     const nombre = resuelto ? resuelto.nombre : oneLine(criterio, 80) || 'sin declarar';
-    const cantidad = toPositiveInt(n) || (Array.isArray(hijas) ? hijas.length : 0);
+
     const ids = (Array.isArray(hijas) ? hijas : [])
         .map((h) => toPositiveInt(h))
         .filter(Boolean)
         .map((h) => `#${h}`);
+
+    // Prioridad de la evidencia: partes del plan > hijas creadas > n declarado.
+    const porPartes = Array.isArray(partes) && partes.length ? partes.length : null;
+    const porHijas = ids.length || null;
+    const declarado = toPositiveInt(n);
+    const cantidad = porPartes || porHijas || declarado || 0;
 
     const lines = [
         REGISTRO_HEADING,
@@ -446,8 +497,88 @@ function renderSplitRegistro({ criterio, n, justificacionN, hijas = [] } = {}) {
         `- **Por qué ${cantidad} y no ${Math.max(cantidad - 1, 1)}/${cantidad + 1}**: ${oneLine(justificacionN) || 'sin declarar'}`,
     ];
     if (ids.length) lines.push(`- **Sub-historias**: ${ids.join(', ')}`);
+    if (declarado && declarado !== cantidad) {
+        lines.push(
+            `- **⚠️ N declarado inconsistente**: el plan decía ${declarado} pero el corte real tiene ${cantidad}. Revisar el split.`,
+        );
+    }
 
     return lines.join('\n');
+}
+
+// Apertura/cierre de un bloque de código markdown: ``` o ~~~, con hasta 3 espacios
+// de indentación (4+ ya sería bloque indentado, no fence).
+const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+
+// Cualquier encabezado ATX, de h1 a h6. La frontera del registro NO puede ser sólo
+// `^##\s`: después de `##` en `### ` viene `#`, no whitespace, así que un `### `
+// no matcheaba y toda subsección h3+ colgada del registro se borraba en silencio.
+const HEADING_RE = /^ {0,3}#{1,6}\s/;
+
+// Línea que ES exactamente el encabezado del registro (no una mención dentro de prosa).
+const REGISTRO_HEADING_LINE_RE = new RegExp(
+    `^ {0,3}${REGISTRO_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`,
+);
+
+/**
+ * Ubica los bloques `## Registro del split` del body, respetando bloques de código.
+ *
+ * Se hace por escaneo de líneas y no por regex sobre el texto entero por dos razones
+ * verificadas empíricamente (rebote de `aprobacion`, #5837):
+ *
+ *   a) La frontera correcta es "el próximo encabezado de CUALQUIER nivel", y un regex
+ *      `^##\s` no matchea `### `. Con esa frontera, un `### Detalle del corte` colgado
+ *      del registro quedaba DENTRO del rango reemplazado y desaparecía sin aviso.
+ *   b) Un fence (` ```markdown `) puede contener el propio formato documentado del
+ *      registro. Sin tracking de fences el upsert entraba al bloque de código, lo
+ *      reescribía y dejaba el ``` de cierre huérfano — markdown roto en el issue.
+ *
+ * Un heading que vive DENTRO de un fence es documentación, no el registro real: se
+ * ignora, y si no hay ninguno afuera el bloque se agrega al final del body.
+ *
+ * @param {string[]} lines
+ * @returns {Array<{start: number, end: number}>} rangos [start, end) de líneas
+ */
+function findRegistroBlocks(lines) {
+    const blocks = [];
+    let fenceChar = null;
+    let fenceLen = 0;
+    let openStart = -1;
+
+    for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
+
+        const fence = FENCE_RE.exec(line);
+        if (fence) {
+            const char = fence[1][0];
+            const len = fence[1].length;
+            if (fenceChar === null) {
+                fenceChar = char;
+                fenceLen = len;
+            } else if (char === fenceChar && len >= fenceLen) {
+                fenceChar = null;
+                fenceLen = 0;
+            }
+            continue; // una línea de fence nunca es encabezado
+        }
+
+        if (fenceChar !== null) continue; // adentro de un bloque de código: intocable
+
+        if (REGISTRO_HEADING_LINE_RE.test(line)) {
+            // Dos registros seguidos (corrida vieja pre-idempotencia): cierra el anterior.
+            if (openStart >= 0) blocks.push({ start: openStart, end: i });
+            openStart = i;
+            continue;
+        }
+
+        if (openStart >= 0 && HEADING_RE.test(line)) {
+            blocks.push({ start: openStart, end: i });
+            openStart = -1;
+        }
+    }
+
+    if (openStart >= 0) blocks.push({ start: openStart, end: lines.length });
+    return blocks;
 }
 
 /**
@@ -457,7 +588,9 @@ function renderSplitRegistro({ criterio, n, justificacionN, hijas = [] } = {}) {
  * bloque existente en vez de apilar bloques contradictorios. Un body con tres
  * registros que se contradicen es peor que ninguno.
  *
- * Nunca pisa el body original: si no encuentra el bloque, lo agrega al final.
+ * Nunca pisa el body original: lo único que se reescribe es el rango que va desde
+ * el encabezado del registro hasta el próximo encabezado de cualquier nivel fuera
+ * de un bloque de código. Si no encuentra el bloque, lo agrega al final.
  *
  * @param {string} body — body actual del issue padre
  * @param {object} data — mismo shape que renderSplitRegistro
@@ -466,29 +599,25 @@ function renderSplitRegistro({ criterio, n, justificacionN, hijas = [] } = {}) {
 function upsertSplitRegistro(body, data) {
     const original = typeof body === 'string' ? body : '';
     const bloque = renderSplitRegistro(data);
+    const lines = original.split('\n');
+    const blocks = findRegistroBlocks(lines);
 
-    // Reemplaza desde el encabezado hasta el próximo `## ` de nivel 2 (o el final).
-    // Sin `g`: se actualiza la PRIMERA aparición y las duplicadas se limpian abajo.
-    const heading = REGISTRO_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const blockRe = new RegExp(`^${heading}\\s*$[\\s\\S]*?(?=^##\\s|\\s*$(?![\\s\\S]))`, 'm');
-
-    if (blockRe.test(original)) {
-        let out = original.replace(blockRe, `${bloque}\n\n`);
-        // Si una corrida vieja (pre-idempotencia) dejó bloques apilados, se podan.
-        const dupRe = new RegExp(`^${heading}\\s*$[\\s\\S]*?(?=^##\\s|\\s*$(?![\\s\\S]))`, 'gm');
-        let first = true;
-        out = out.replace(dupRe, (match) => {
-            if (first) {
-                first = false;
-                return match;
-            }
-            return '';
-        });
-        return out.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+    if (!blocks.length) {
+        const base = original.trimEnd();
+        return (base ? `${base}\n\n---\n\n` : '') + bloque + '\n';
     }
 
-    const base = original.trimEnd();
-    return (base ? `${base}\n\n---\n\n` : '') + bloque + '\n';
+    // El primer bloque se reemplaza; los duplicados de corridas viejas se podan.
+    const out = [];
+    let cursor = 0;
+    blocks.forEach((block, idx) => {
+        out.push(...lines.slice(cursor, block.start));
+        if (idx === 0) out.push(...bloque.split('\n'), '');
+        cursor = block.end;
+    });
+    out.push(...lines.slice(cursor));
+
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
 
 module.exports = {

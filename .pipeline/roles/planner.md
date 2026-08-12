@@ -19,8 +19,18 @@ cascada padre→hijo→nieto que en la ola 9.4 convirtió a #5440 en doce issues
 
 El chequeo es determinístico, no a ojo:
 
+El JSON del issue baja a un **archivo**, nunca a argv: es la misma regla de quoting que
+usa `/planner split` en SP2.b del SKILL.md. Un body trae saltos de línea, comillas y
+puede pesar megabytes; por argv queda expuesto a límites de longitud, a `IFS` y a
+errores de encoding. Por archivo el shell no toca los datos.
+
 ```bash
-node -e "const g=require('./.pipeline/lib/split-guard'); const i=JSON.parse(process.argv[1]); console.log(JSON.stringify(g.checkResplit({issue:i, force:false})));" "$(gh issue view <N> --repo intrale/platform --json number,title,labels)"
+ISSUE=<N>                              # sólo dígitos
+case "$ISSUE" in ''|*[!0-9]*) echo "⛔ N no numérico"; exit 1;; esac
+mkdir -p .pipeline/tmp
+ISSUE_FILE=".pipeline/tmp/issue-$ISSUE.json"
+gh issue view "$ISSUE" --repo intrale/platform --json number,title,labels > "$ISSUE_FILE"
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const i=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); console.log(JSON.stringify(g.checkResplit({issue:i, force:false}),null,2));" "$ISSUE_FILE"
 ```
 
 - Si `allowed: false` → **no dividas**. Escribí `resultado: aprobado` con el sizing
@@ -34,9 +44,22 @@ node -e "const g=require('./.pipeline/lib/split-guard'); const i=JSON.parse(proc
 **Si un hijo recién creado te sale `grande`**, eso no es una invitación a partirlo de
 nuevo: es un **defecto del corte del padre**. Reportalo sobre el padre y no crees nietos.
 
+El CA-4 pide que el defecto quede **sobre el padre**, no sólo impreso en tu salida: si
+el mensaje muere en el log del agente, el corte mal hecho no se corrige nunca. Así que
+el reporte se **postea como comentario en el padre**, igual que en el camino manual
+(SP2.c del SKILL.md):
+
 ```bash
-node -e "const g=require('./.pipeline/lib/split-guard'); console.log(g.reportOversizedChild({issue:<HIJO>, parent:<PADRE>, size:'L'}).message);"
+HIJO=<HIJO>; PADRE=<PADRE>              # sólo dígitos
+for v in "$HIJO" "$PADRE"; do case "$v" in ''|*[!0-9]*) echo "⛔ N no numérico"; exit 1;; esac; done
+mkdir -p .pipeline/tmp
+MSG_FILE=".pipeline/tmp/oversized-$HIJO.txt"
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const r=g.reportOversizedChild({issue:process.argv[1], parent:process.argv[2], size:process.argv[3]}); if(!r.oversized) process.exit(1); fs.writeFileSync(process.argv[4], r.message);" "$HIJO" "$PADRE" "L" "$MSG_FILE" \
+  && gh issue comment "$PADRE" --repo intrale/platform --body-file "$MSG_FILE"
 ```
+
+Además dejá el mismo `message` en las notas de tu `resultado`, para que quede en el
+YAML de la fase y no dependa de que alguien lea el issue.
 
 ### Si es grande → dividir
 

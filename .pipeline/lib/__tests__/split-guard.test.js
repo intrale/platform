@@ -433,3 +433,180 @@ test('SEC: checkResplit sigue autorizando un issue normal bien formado', () => {
     assert.strictEqual(r.allowed, true);
     assert.strictEqual(r.isChild, false);
 });
+
+// =============================================================================
+// Hardening post-review de codigo (#5837, rebote de `aprobacion`)
+//
+// Dos defectos de correctitud reproducidos empiricamente sobre el modulo:
+//   1. La frontera del bloque del registro era `^##\s`, que NO matchea `### `
+//      (despues de `##` viene `#`, no whitespace). Toda subseccion h3+ colgada
+//      del registro desaparecia en silencio, contradiciendo el contrato del
+//      JSDoc ("Nunca pisa el body original"). Tampoco respetaba bloques de
+//      codigo: el upsert entraba al fence y lo dejaba sin cerrar.
+//   2. El N registrado no se cruzaba contra nada: validateSplitPlan derivaba n
+//      de partes.length e IGNORABA plan.n, mientras renderSplitRegistro hacia
+//      lo contrario. Un plan de 2 partes podia registrar "N elegido: 3", y el N
+//      registrado es JUSTO el entregable de CA-1/CA-5.
+// =============================================================================
+
+const FENCE = '`'.repeat(3);
+
+test('CA-5: una subseccion h3 colgada del registro NO se borra al actualizarlo', () => {
+    const body = [
+        '## Objetivo',
+        '',
+        'Texto.',
+        '',
+        '## Registro del split',
+        '',
+        '- **Criterio de corte**: por capa',
+        '',
+        '### Detalle del corte',
+        '',
+        'Cosas importantes que nadie quiere perder.',
+        '',
+        '### Otra subseccion',
+        '',
+        'Mas contexto.',
+        '',
+        '## Notas técnicas',
+        '',
+        'No tocar el kernel.',
+    ].join('\n');
+
+    const out = sg.upsertSplitRegistro(body, { criterio: 'por flujo', n: 2, justificacionN: 'Dos flujos.' });
+
+    assert.match(out, /### Detalle del corte/, 'la subseccion h3 sobrevive');
+    assert.match(out, /Cosas importantes que nadie quiere perder\./);
+    assert.match(out, /### Otra subseccion/, 'la segunda subseccion h3 sobrevive');
+    assert.match(out, /Mas contexto\./);
+    assert.match(out, /## Notas técnicas/, 'la seccion h2 posterior sigue viva');
+    assert.match(out, /por flujo/, 'el registro si se actualizo');
+    assert.doesNotMatch(out, /por capa/, 'el registro viejo se reemplazo');
+});
+
+test('CA-5: un bloque de codigo con el formato documentado no se pisa ni queda sin cerrar', () => {
+    const body = [
+        '## Objetivo',
+        '',
+        'El bloque que queda en el padre se ve asi:',
+        '',
+        FENCE + 'markdown',
+        '## Registro del split',
+        '',
+        '- **Criterio de corte**: por capa',
+        '- **N elegido**: 2',
+        FENCE,
+        '',
+        '## Notas técnicas',
+        '',
+        'Fin.',
+    ].join('\n');
+
+    const out = sg.upsertSplitRegistro(body, { criterio: 'por módulo', n: 2, justificacionN: 'Dos módulos.' });
+
+    const fences = (out.match(new RegExp(FENCE, 'g')) || []).length;
+    assert.strictEqual(fences % 2, 0, `los fences quedan balanceados, hay ${fences}`);
+    assert.match(out, /## Notas técnicas/, 'lo que venia despues del fence sobrevive');
+    assert.match(out, /Fin\./);
+    assert.match(out, /por módulo/, 'el registro real se agrego');
+    assert.match(out, /- \*\*Criterio de corte\*\*: por capa/, 'el ejemplo documentado quedo intacto');
+});
+
+test('CA-5: un registro dentro de un fence no se confunde con el registro real', () => {
+    const body = ['# Doc', '', FENCE, '## Registro del split', FENCE, ''].join('\n');
+    const data = { criterio: 'por capa', n: 2, justificacionN: 'Dos capas.' };
+    const primera = sg.upsertSplitRegistro(body, data);
+    const segunda = sg.upsertSplitRegistro(primera, data);
+
+    assert.strictEqual(segunda, primera, 'sigue siendo idempotente con un fence de por medio');
+    assert.match(primera, /\*\*N elegido\*\*: 2/);
+});
+
+test('CA-1: un N declarado que no coincide con las partes se rechaza', () => {
+    const r = sg.validateSplitPlan({
+        criterio: 'por capa',
+        n: 3,
+        justificacionN: 'UI y backend son separables.',
+        partes: [
+            { titulo: 'A', modulo: 'app', capa: 'ui', flujo: 'alta' },
+            { titulo: 'B', modulo: 'backend', capa: 'api', flujo: 'alta' },
+        ],
+    });
+
+    assert.strictEqual(r.ok, false, 'un N que miente no puede pasar la validacion');
+    assert.ok(
+        r.errors.some((e) => /N declarado \(3\)[\s\S]*no coincide[\s\S]*\(2\)/.test(e)),
+        r.errors.join(' | '),
+    );
+});
+
+test('CA-1: un N declarado coherente con las partes pasa', () => {
+    const r = sg.validateSplitPlan({
+        criterio: 'por capa',
+        n: 2,
+        justificacionN: 'UI y backend son separables.',
+        partes: [
+            { titulo: 'A', modulo: 'app', capa: 'ui', flujo: 'alta' },
+            { titulo: 'B', modulo: 'backend', capa: 'api', flujo: 'alta' },
+        ],
+    });
+    assert.strictEqual(r.ok, true, r.errors.join(' | '));
+    assert.strictEqual(r.n, 2);
+});
+
+test('CA-1: un N no numerico se rechaza en vez de colarse como 0', () => {
+    const r = sg.validateSplitPlan({
+        criterio: 'por capa',
+        n: 'tres',
+        justificacionN: 'Dos capas.',
+        partes: [
+            { titulo: 'A', modulo: 'app', capa: 'ui', flujo: 'alta' },
+            { titulo: 'B', modulo: 'backend', capa: 'api', flujo: 'alta' },
+        ],
+    });
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.errors.some((e) => /entero positivo/.test(e)), r.errors.join(' | '));
+});
+
+test('CA-5: el N del registro se deriva de las hijas reales, no del n declarado', () => {
+    const out = sg.renderSplitRegistro({
+        criterio: 'por capa',
+        n: 3,
+        justificacionN: 'UI y backend son separables.',
+        hijas: [111, 222],
+    });
+
+    assert.match(out, /\*\*N elegido\*\*: 2/, 'el N registrado describe las hijas que existen');
+    assert.doesNotMatch(out, /\*\*N elegido\*\*: 3/);
+    assert.match(out, /N declarado inconsistente/, 'la discrepancia queda visible, no tapada');
+    assert.match(out, /#111, #222/);
+});
+
+test('CA-5: con partes y hijas coherentes no aparece ninguna advertencia', () => {
+    const out = sg.renderSplitRegistro({
+        criterio: 'por capa',
+        n: 2,
+        justificacionN: 'Dos capas.',
+        partes: [{ titulo: 'A' }, { titulo: 'B' }],
+        hijas: [111, 222],
+    });
+    assert.match(out, /\*\*N elegido\*\*: 2/);
+    assert.doesNotMatch(out, /inconsistente/);
+});
+
+test('CA-2: un plan de 3 partes con 2 indistinguibles se rechaza (no solo si TODAS lo son)', () => {
+    const r = sg.validateSplitPlan({
+        criterio: 'por capa',
+        justificacionN: 'Tres partes.',
+        partes: [
+            { titulo: 'A', modulo: 'app', capa: 'ui', flujo: 'alta' },
+            { titulo: 'B', modulo: 'app', capa: 'ui', flujo: 'alta' },
+            { titulo: 'C', modulo: 'backend', capa: 'api', flujo: 'alta' },
+        ],
+    });
+
+    assert.strictEqual(r.ok, false, 'dos partes identicas son el mismo issue escrito dos veces');
+    assert.ok(r.errors.some((e) => /indistinguibles/.test(e)), r.errors.join(' | '));
+    assert.ok(r.errors.some((e) => /partes 1 y 2/.test(e)), 'el error dice CUALES partes chocan');
+});
