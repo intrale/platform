@@ -54,6 +54,18 @@ function _healthSeverity(health) {
 // #3726 — Nav bar V3 unificada (tab activa = "kpis").
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
+// Se monta en todas las ventanas: cuando el Pulpo suspende el dispatch no
+// avanza NADA, y la pregunta "por que no se mueve" se hace desde donde el
+// operador este parado. La entrega anterior dejo el estado en un modulo al que
+// no apunta ninguna ruta del menu y el bloqueo paso 10 h invisible.
+const {
+    resolveDesyncStatus: _dsbResolve,
+    renderDesyncBlockBannerSsr: _dsbRender,
+    DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+    desyncBlockBannerBundleJs: _dsbBundle,
+} = require('./desync-block-banner.js');
+
 // #4243 — Marco común MIZPÁ (cabecera de marca + cabecera de ola) que entregó
 // #4234 (PR #4254) como helpers reutilizables. KPIs los consume en lugar de
 // clonar el markup (CA-5: no duplicar). Require defensivo: si el módulo no
@@ -1246,6 +1258,7 @@ function renderKpis(opts) {
 <title>Intrale · KPIs</title>
 <style>${theme}</style>
 <style>${KPIS_CSS}</style>
+<style>${_DSB_CSS}</style>
 </head>
 <body>
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
@@ -1255,6 +1268,7 @@ function renderKpis(opts) {
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${renderKpisWaveBanner()}
+  ${_dsbRender(_dsbResolve())}
   ${navHtml}
   ${renderKpisBreadcrumb()}
   ${body}
@@ -1264,6 +1278,7 @@ function renderKpis(opts) {
   </footer>
 </div>
 ${renderKpisChromeScript()}
+<script>${_dsbBundle()}</script>
 </body>
 </html>`;
 }
@@ -1576,7 +1591,11 @@ function renderInert(reason) {
 <p>${safe}</p>
 <p>Ver logs del dashboard para detalle. El render no queda en blanco.</p>
 <p><a href="/metrics" style="color:#58a6ff">Ver métricas históricas (/metrics)</a></p>
-</main></body></html>`;
+</main>
+${/* El panel inerte NO monta el banner: no tiene su markup, así que el CSS y
+     el bundle acá eran código muerto — y peor, hacían pasar por "cubierta"
+     una ventana cuyo shell real no lo estaba (#5724 rev-1). */ ''}
+</body></html>`;
 }
 
 module.exports = {

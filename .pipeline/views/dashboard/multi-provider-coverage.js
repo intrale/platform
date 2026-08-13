@@ -45,6 +45,15 @@ const { renderNavTabsSsr } = require('./nav-tabs');
 // #4531 — Bandeja de estado unificada del header común MIZPÁ.
 const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScript } = require('./header-meta');
 
+// #5724 CA-4 — Banner "Dispatch suspendido por desync". Shell propio (no pasa
+// por `pageShell`), así que se monta a mano igual que kpis/matriz/providers.
+const {
+    resolveDesyncStatus: _dsbResolve,
+    renderDesyncBlockBannerSsr: _dsbRender,
+    DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+    desyncBlockBannerBundleJs: _dsbBundle,
+} = require('./desync-block-banner.js');
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -173,6 +182,8 @@ function bodyHtml() {
     </div>
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
+  ${/* #5724 CA-4 — dispatch suspendido por desync allowlist↔ola. */ ''}
+  ${_dsbRender(_dsbResolve())}
   ${renderNavTabsSsr('providers')}
 
   <main class="mpc-body">
@@ -794,6 +805,7 @@ function renderMultiProviderCoverage() {
 <title>Intrale · Multi-Provider Coverage</title>
 <style>${theme}</style>
 <style>${PANEL_CSS}</style>
+<style>${_DSB_CSS}</style>
 </head>
 <body>
 <!-- Sprite SVG (oculto, solo provee símbolos para <use href="#ic-*"/>) -->
@@ -801,6 +813,7 @@ function renderMultiProviderCoverage() {
 ${bodyHtml()}
 <script>${CLIENT_JS}</script>
 <script>${headerPillsClientScript()}\n${headerPillsPollClientScript()}</script>
+<script>${_dsbBundle()}</script>
 </body>
 </html>`;
 }

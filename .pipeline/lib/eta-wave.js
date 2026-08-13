@@ -46,6 +46,12 @@ const etaMarkers = require('./eta-markers');
 // #4532 — Serie histórica de velocidad cross-ola. Alimenta la estimación previa
 // de una ola nueva (sin snapshots propios) y persiste las muestras medidas.
 const velocityHistory = require('./wave-velocity-history');
+// #5836 (rev-1) — Sólo por la constante de versión legacy: la ausencia de
+// `formulaV` en un record significa "serie vieja" (v1, conteo plano). Se
+// importa en vez de duplicar el número para que reader y writer no puedan
+// divergir. `wave-progress` no requiere nada del pipeline (sólo fs/path), así
+// que no introduce ciclo.
+const { LEGACY_FORMULA_VERSION } = require('./wave-progress');
 // #4588 — Métrica de espera de operador. Balde `waitOperatorMin` del lead time,
 // derivado de audit logs append-only (no gameable). Read-only, no rompe CA-14.
 const operatorWaitLib = require('./operator-wait');
@@ -822,8 +828,15 @@ async function calculateDecomposedOlaETA(issueList, concurrency, opts = {}) {
  * IMPORTANTE: este módulo NO escribe nunca sobre este archivo (CA-7); el
  * writer es `lib/wave-progress.js`.
  *
+ * #5836 (rev-1) — Se propaga `formulaV`. Antes se descartaba al leer, y el
+ * consumidor no tenía cómo saber que dos puntos de la ventana venían de
+ * fórmulas distintas: el escalón del cambio de fórmula se medía como avance
+ * REAL. La ausencia del campo se normaliza a `LEGACY_FORMULA_VERSION` (v1),
+ * misma convención que `classifyProgressDelta`, para que los ~5000 puntos ya
+ * escritos sin el campo no queden en un limbo `undefined`.
+ *
  * @param {number} waveKey
- * @returns {Promise<Array<{ts:number, avancePct:number}>>}
+ * @returns {Promise<Array<{ts:number, avancePct:number, formulaV:number}>>}
  */
 function _streamWaveProgress(waveKey) {
     return new Promise((resolve) => {
@@ -843,11 +856,61 @@ function _streamWaveProgress(waveKey) {
             if (rec.waveKey !== waveKey) return;
             if (typeof rec.ts !== 'number' || !Number.isFinite(rec.ts)) return;
             if (typeof rec.avancePct !== 'number' || !Number.isFinite(rec.avancePct)) return;
-            out.push({ ts: rec.ts, avancePct: rec.avancePct });
+            const fv = (typeof rec.formulaV === 'number' && Number.isFinite(rec.formulaV))
+                ? rec.formulaV
+                : LEGACY_FORMULA_VERSION;
+            out.push({ ts: rec.ts, avancePct: rec.avancePct, formulaV: fv });
         });
         rl.on('close', () => { out.sort((a, b) => a.ts - b.ts); resolve(out); });
         rl.on('error', () => { out.sort((a, b) => a.ts - b.ts); resolve(out); });
     });
+}
+
+// ─── Corte de serie por cambio de fórmula (#5836 rev-1) ────────────────────
+
+/**
+ * #5836 (rev-1) — TRUNCA la serie en el último cambio de fórmula, dejando sólo
+ * el tramo final homogéneo.
+ *
+ * Cuando cambia la fórmula del avance (v1 conteo plano → v2 ponderado por
+ * `size:*`), el indicador da un escalón sin que haya pasado NADA en la ola: en
+ * la ola viva medimos v2 = 52 % contra v1 = 48 %, ~4 pp de puro cambio de
+ * unidad. Ese escalón NO es ritmo, y medirlo como tal fabrica velocidad sobre
+ * una ola quieta — que además se PERSISTE en el histórico cross-ola
+ * (`velocityHistory.recordSample`) y sobrevive a la ventana, envenenando el
+ * fallback `historical` de las olas siguientes. Es la misma clase de incidente
+ * que #4886.
+ *
+ * Por qué NO alcanza `_repairDiscontinuities`: su umbral es de reset/restore
+ * (en la ola viva, (100/116)×4 = 3,45 pp) y el escalón de fórmula cae JUSTO en
+ * el borde — a un issue más de ola, pasa sin ser detectado. La versión de
+ * fórmula es la señal exacta y explícita; el umbral es una heurística.
+ *
+ * Por qué se trunca en el ÚLTIMO CAMBIO y no se filtra por "igual a la versión
+ * actual del código": si el reader es más nuevo que todos los puntos escritos,
+ * filtrar por la versión del código vaciaría la ventana entera y dejaría la ola
+ * sin ETA hasta acumular puntos nuevos. Tomar el tramo final contiguo mantiene
+ * la serie homogénea (que es lo único que se necesita para medir pendiente) sin
+ * descartar de más, y trata bien un eventual v1→v2→v1 (rollback de fórmula).
+ *
+ * @param {Array<{ts:number, avancePct:number, formulaV:number}>} series — orden ascendente.
+ * @returns {{series:Array, droppedByFormulaChange:number}}
+ */
+function _truncateAtFormulaChange(series) {
+    if (!Array.isArray(series) || series.length === 0) {
+        return { series: [], droppedByFormulaChange: 0 };
+    }
+    const versionOf = (s) => (
+        (s && typeof s.formulaV === 'number' && Number.isFinite(s.formulaV))
+            ? s.formulaV
+            : LEGACY_FORMULA_VERSION
+    );
+    // La referencia es el punto MÁS RECIENTE: es el que representa la fórmula
+    // con la que se está midiendo el avance actual.
+    const current = versionOf(series[series.length - 1]);
+    let start = series.length - 1;
+    while (start > 0 && versionOf(series[start - 1]) === current) start--;
+    return { series: series.slice(start), droppedByFormulaChange: start };
 }
 
 // ─── Saneo de la serie de avance de la ola (#4886 rev-1) ───────────────────
@@ -1141,7 +1204,13 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now, opts = {}
     // recorte era por cantidad (últimos N), que podía abarcar minutos o muchas
     // horas y diluir el ritmo tras un reposo (raíz técnica del ETA errático).
     const windowStart = ts - WAVE_VELOCITY_WINDOW_MS;
-    const windowed = snapshots.filter((s) => s.ts >= windowStart && s.ts <= ts);
+    const inWindow = snapshots.filter((s) => s.ts >= windowStart && s.ts <= ts);
+    // #5836 (rev-1) — La ventana NO puede cruzar un cambio de fórmula: el
+    // escalón de re-expresar el mismo avance en otra unidad se mediría como
+    // ritmo real. Se trunca ANTES del piso de snapshots, para que un tramo
+    // homogéneo demasiado corto degrade honestamente en vez de completarse con
+    // puntos de la fórmula vieja.
+    const { series: windowed, droppedByFormulaChange } = _truncateAtFormulaChange(inWindow);
     // #4886 (rev-1) — Ya NO se recorta por conteo de snapshots crudos. El tope
     // `WAVE_VELOCITY_WINDOW` (5) con la cadencia real (~33 s) dejaba una ventana
     // efectiva de 2,2 min: como el avance real llega cada ~14 min, casi nunca se
@@ -1150,7 +1219,12 @@ async function calculateWaveVelocityETA(waveKey, avancePctActual, now, opts = {}
     // pendiente agregada se calcula con los DOS extremos de la ventana.
 
     if (windowed.length < WAVE_MIN_SNAPSHOTS) {
-        return historicalFallback('insufficient-snapshots');  // CA-6 → histórico si hay
+        // #5836 (rev-1) — Se distingue la causa: si el tramo quedó corto porque
+        // recién hubo un cambio de fórmula, el reason lo dice (diagnosticable en
+        // el dashboard) en vez de confundirse con una ola nueva sin serie.
+        return historicalFallback(
+            droppedByFormulaChange > 0 ? 'formula-change' : 'insufficient-snapshots',
+        );  // CA-6 → histórico si hay
     }
 
     // #4886 (rev-1) — Reparar los saltos artificiales de reset/restore sobre la
@@ -1356,6 +1430,8 @@ module.exports = {
         _waveIssueCount,
         _jumpThresholdPct,
         _repairDiscontinuities,
+        // #5836 (rev-1) — corte de serie por cambio de fórmula
+        _truncateAtFormulaChange,
         _resolveRestWindow,
         _offOverlapMs,
         _projectRestForward,

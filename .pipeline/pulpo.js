@@ -15,9 +15,41 @@ const execFileAsync = promisify(execFile);
 // de cualquier require que pueda leer credenciales (telegram-secrets,
 // validateOrExit con checkEnv, etc). El cargador degrada silenciosamente si
 // el archivo no existe; sólo loggea warnings al stderr en casos anómalos.
-require('./lib/credentials').loadIntoEnv({
+// #5243 Tiempo 1 — portador del resultado del health-check hacia el bloque
+// SINGLETON. Sin esto el Tiempo 2 no tiene de dónde leerlo.
+let secretsHealth = null;
+
+const credLoad = require('./lib/credentials').loadIntoEnv({
   logger: (m) => process.stderr.write(m + '\n'),
 });
+
+// #5243 Tiempo 1 — evaluar la salud de los secretos con el retorno de
+// `loadIntoEnv` (hasta ahora descartado). Es el único punto donde `hydrated` /
+// `skipped_existing` / `skipped_empty` están disponibles, y es anterior a todo
+// `require` que consuma credenciales.
+//
+// SIN EFECTOS LATERALES: acá sólo se evalúa. Está PROHIBIDO referenciar
+// `PAUSE_FILE` o `partialPause` desde este punto — son const de módulo
+// declaradas más abajo, así que tocarlas en carga no da `undefined`, da un
+// ReferenceError por TDZ: un throw en top-level, proceso muerto al arrancar y
+// `watchdog.ps1` respawneando cada 2 min sin backoff = #5073 reproducido.
+// Todo lo que toca la pausa vive en el Tiempo 2 (bloque SINGLETON).
+//
+// El kill-switch sigue el precedente de `PULPO_SKIP_DATA_RESIDENCY_VALIDATE`:
+// un `required_when` mal declarado en el manifiesto frenaría el pipeline entero
+// y sin escape hatch destrabarlo exigiría un hotfix de código.
+try {
+  if (process.env.PULPO_SKIP_SECRETS_HALT !== '1') {
+    secretsHealth = require('./lib/secrets-health').evaluateFromDisk(credLoad);
+  } else {
+    process.stderr.write('[secrets-health] WARN health-check SKIPPED via PULPO_SKIP_SECRETS_HALT=1\n');
+  }
+} catch (e) {
+  // Degradar a verde es deliberado: un health-check roto NO puede ser el motivo
+  // por el que el pipeline no arranca. Se reporta y se sigue.
+  secretsHealth = { ok: true, halt: false, degraded: true, reason: 'evaluate-failed' };
+  process.stderr.write(`[secrets-health] WARN evaluate fallo, degradando a ok:true: ${e.message}\n`);
+}
 // #4869 — un servicio Windows conserva el PATH con el que arrancó y no ve
 // instalaciones posteriores. Refrescar agy en este mismo proceso garantiza
 // que todos los agentes hijos hereden PATH y AGY_BIN sin reiniciar el host.
@@ -117,6 +149,10 @@ const desyncDetector = require('./lib/desync-detector');
 const legitAddTrace = require('./lib/legit-add-trace');
 // #4525 — Predicado estructural de "hijo verificable de un split del pipeline"
 const splitProvenance = require('./lib/split-provenance');
+// #5724 CA-3 — Lifecycle de aviso del dispatch suspendido por desync
+// (inicial + recordatorios con backoff + cierre). Sin esto el bloqueo pasa
+// horas en silencio: el dedupe del flag convierte cada evaluación en no-op.
+const desyncBlockNotifier = require('./lib/desync-block-notifier');
 // #5516 — Clasificador puro de hijos de split huérfanos descubiertos DESDE GitHub
 // (cubre los splits que no pasan por el hook del Commander).
 const splitOrphanReconciler = require('./lib/split-orphan-reconciler');
@@ -1509,9 +1545,19 @@ function loadConfig() {
   // vez de una comparación literal duplicada acá. Prohibido ampliar el set por
   // negación (`source !== 'human'`) — `kernel-cutover-degraded-halt` es
   // automática pero su no-recuperación es deliberada (#5135).
+  //
+  // #5243 — la condición vuelve a ser la IGUALDAD con la autoría propia de esta
+  // ruta, no la pertenencia genérica al allowlist. Al entrar un segundo source
+  // auto-levantable (`secrets-health-halt`), `isAutoLiftableSource` dejó de ser
+  // una pregunta equivalente a "¿esta pausa la puse yo?": con el config sano
+  // pero un secreto faltante, este bloque habría levantado una pausa que no
+  // generó y cuya causa sigue vigente. Cada auto-recovery levanta SÓLO su
+  // propio halt. El fail-closed no cambia: `readFullPauseOrigin` ya devuelve
+  // `manual` ante cualquier ambigüedad, así que una pausa deliberada nunca
+  // llega acá.
   try {
     if (fs.existsSync(PAUSE_FILE) &&
-        partialPause.isAutoLiftableSource(partialPause.readFullPauseOrigin().source)) {
+        partialPause.readFullPauseOrigin().source === 'config-corruption-halt') {
       // #5174 · CA-5 — llegar acá significa que `configResolver.resolve()` NO
       // lanzó, y post-partición eso exige que los DOS archivos hayan parseado y
       // que el documento mergeado valide. Corregir uno solo no levanta la pausa:
@@ -17408,6 +17454,88 @@ function autoResolveReductiveDesyncByClosure(probe, opts = {}) {
 }
 
 // =============================================================================
+// #5724 CA-2 — Convergencia ADITIVA de la allowlist hacia la ola activa
+// (allowlist ← ola) para issues ABIERTOS de la ola ausentes de la allowlist.
+//
+// El caso: `added = []` (la allowlist es SUBCONJUNTO estricto de la ola) y
+// `removed = [N...]` son issues de la ola activa que están ABIERTOS y faltan en
+// la allowlist. La clasificación ya es `resoluble_reductivo` (no hay extras que
+// revocar), pero la auto-resolución de #4753 exige que TODO issue divergente
+// esté CERRADO — por eso este escenario caía al human-block y el dispatch quedó
+// suspendido 10 h en silencio (incidente 2026-08-09, #5689-#5691).
+//
+// Por qué converger es la dirección segura (carve-out #4350, SEC-1..SEC-6):
+// la ola activa es la fuente de verdad de QUÉ se debe trabajar y ya fue
+// promovida atómicamente. Sumar a la allowlist issues que YA están en esa ola
+// no otorga ningún permiso nuevo — es exactamente lo que `classifyDesync` ya
+// admite en su comentario ("realinear sólo agrega issues de una ola ya
+// promovida"). Con `added = []` la realineación tampoco revoca nada abierto y
+// ajeno: no hay extras en la allowlist que quitar.
+//
+// FRONTERA DE SEGURIDAD (la enforcea el caller, ANTES de la política):
+//   - `added.length === 0` — si hubiera extras, realinear los revocaría en
+//     silencio → ese caso sigue siendo ambiguo/human-block.
+//   - todo issue de `removed` con estado CONFIRMADO (`true`/`false`). Cualquier
+//     `undefined` (cache miss / title-cache stale, #4566/#4882) mantiene SEC-4
+//     y cae al camino conservador.
+//   - todo issue de `removed` pertenece a la OLA ACTIVA.
+//
+// Ruta de política: `desync-autoresolve` (notify-and-proceed), igual que #4753.
+// NO `realign-allowlist` (wait-confirmation → abort sin confirmerChatId), que
+// es justamente lo que dejaría el bloqueo indefinido que este issue elimina.
+// =============================================================================
+function autoResolveMissingOpenWaveIssues(probe, opts = {}) {
+  const isClosed = typeof opts.isClosed === 'function' ? opts.isClosed : null;
+  const missing = Array.isArray(opts.missing) ? opts.missing : [];
+  // Contexto para el copy del operador (estado por issue, sin jerga interna).
+  const issuesCtx = missing.map((n) => ({
+    number: n,
+    estado: (isClosed && isClosed(n) === true) ? 'cerrado' : 'abierto',
+  }));
+
+  // SEC-3 (log-antes-de-mutar): la traza existe aunque el proceso muera a mitad.
+  try {
+    require('./lib/kernel-actions-audit').safeAppendAction({
+      action: 'desync-autoresolve', impact: 'medio',
+      reason: `auto-resolución desync reductivo-aditivo: issues abiertos de la ola activa ausentes de la allowlist ${JSON.stringify(missing)}`,
+      authorizedBy: 'desync-detector',
+    });
+  } catch { /* best-effort: el audit nunca bloquea la convergencia */ }
+
+  let policy = { proceed: true };
+  try {
+    policy = require('./lib/kernel-action-policy').enforceActionPolicy('desync-autoresolve', {
+      impact: 'medio',
+      reason: `Sumé a la allowlist ${missing.length} issue(s) de la ola activa que estaban afuera`,
+      classification: 'reductivo-aditivo-por-ola',
+      issues: issuesCtx,
+    });
+  } catch (e) {
+    // #5172 — `desync-autoresolve` es notify-and-proceed y el default explícito
+    // ya declara el fail-open hacia disponibilidad para esta acción segura. Lo
+    // único que cambia es que la pérdida del aviso deja traza.
+    require('./lib/kernel-action-policy').logPolicyEnforcementFailure(
+      'pulpo', 'desync-autoresolve', e);
+  }
+  if (policy && policy.proceed === false) {
+    return { ok: false, reason: 'policy_block' };
+  }
+
+  // Convergencia allowlist ← ola: repuebla con los issues ABIERTOS de la ola
+  // (walk recursivo de hijos/deps incluido) y poda de la ola los cerrados
+  // residuales de la divergencia. Mutación por el gate auditado de partial-pause.
+  return require('./lib/wave-dispatch').realignActiveWaveDispatch({
+    isClosed,
+    desync: probe,
+    authorizedBy: 'wave-promote',
+    source: 'wave-promote:autoresolve-missing-open',
+    justification:
+      `Convergencia aditiva allowlist ← ola activa (#5724 CA-2): ` +
+      `issues abiertos de la ola ausentes de la allowlist ${JSON.stringify(missing)}`,
+  });
+}
+
+// =============================================================================
 // #4439 CA-3 — Resync ADITIVO hacia la ola activa (dirección INVERSA a
 // realignAllowlistToActiveWave).
 //
@@ -18078,6 +18206,37 @@ function reconcileSplitOrphansFromGithub(context) {
 }
 
 /**
+ * #5724 CA-3 — Registra que el dispatch sigue suspendido por desync y deja que
+ * el notifier decida si toca recordatorio (backoff). Se llama en TODOS los
+ * caminos de human-block, incluidos aquellos donde el flag ya estaba puesto —
+ * que es exactamente donde el dedupe histórico producía el silencio de 10 h.
+ *
+ * Best-effort absoluto: nunca lanza, nunca altera el control de flujo.
+ *
+ * @param {{added?: number[], removed?: number[]}} [probeActual] — divergencia
+ *   vigente (para el copy); si falta se usa la registrada en el flag.
+ */
+function notificarBloqueoDesync(probeActual) {
+  try {
+    const flag = desyncDetector.readDesyncFlag();
+    const fuente = probeActual && (Array.isArray(probeActual.added) || Array.isArray(probeActual.removed))
+      ? probeActual
+      : (flag || {});
+    const r = desyncBlockNotifier.onBlocked({
+      detectedAt: flag && flag.detected_at ? flag.detected_at : undefined,
+      added: fuente.added,
+      removed: fuente.removed,
+    });
+    if (r && r.notificado) {
+      log('pulpo', `desync-detector: recordatorio #${r.escalon} de dispatch suspendido enviado ` +
+        `(${r.antiguedadMin} min bloqueado) — #5724 CA-3`);
+    }
+  } catch (e) {
+    log('pulpo', `WARN desync-detector: no se pudo evaluar el recordatorio de bloqueo: ${e.message}`);
+  }
+}
+
+/**
  * Evalúa la divergencia waves↔allowlist y actúa según la clasificación:
  *   - `resoluble_reductivo` → realinea reductivamente + limpia flag + traza.
  *   - `ambiguo`             → flag + human-block (histórico), con dedupe.
@@ -18146,6 +18305,9 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
       checkDesyncFlag();
       log('pulpo', 'desync-detector: flag stale limpiado (archivos ya en sync)');
     }
+    // #5724 CA-3 — cerrar el ciclo de avisos si había uno abierto (no emite
+    // nada si el operador nunca llegó a ver un recordatorio).
+    try { desyncBlockNotifier.onResolved({ resolucion: 'archivos_en_sync' }); } catch { /* best-effort */ }
     if (context === 'boot') log('pulpo', `desync-detector OK (${probe.reason || 'in_sync'})`);
     return;
   }
@@ -18171,6 +18333,7 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
         if (r && r.ok) {
           desyncDetector.clearDesyncFlag();
           checkDesyncFlag();
+          try { desyncBlockNotifier.onResolved({ resolucion: 'poda_de_cerrados', issues: divergent }); } catch { /* best-effort */ }
           log('pulpo', `desync-detector: auto-resolución REDUCTIVA por cierre OK (#4753) — ` +
             `cerrados_podados=${JSON.stringify(r.prunedFromWave || [])} ` +
             `divergencia=${JSON.stringify(divergent)} allowlist=${JSON.stringify(r.allowlist)}`);
@@ -18180,17 +18343,87 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
         log('pulpo', `WARN desync-detector: auto-resolución reductiva no aplicada (${r && r.reason}). Escalando a human-block.`);
         try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
         checkDesyncFlag();
+        notificarBloqueoDesync(probe);
         return;
       } catch (e) {
         log('pulpo', `WARN desync-detector: auto-resolución reductiva falló: ${e.message}. Escalando a human-block.`);
         try { desyncDetector.detectDesync({ isClosed: isClosed || undefined }); } catch {}
         checkDesyncFlag();
+        notificarBloqueoDesync(probe);
         return;
       }
     }
-    // resoluble_reductivo pero NO todo cerrado-confirmado (p. ej. un issue ABIERTO
-    // de la ola falta en la allowlist): NO auto-resolver. Cae al manejo ambiguo/
-    // human-block de más abajo (sin return acá — fail-closed).
+    // #5724 CA-2 — Reductivo NO puramente por cierre: si la divergencia son
+    // issues de la OLA ACTIVA que están ABIERTOS y faltan en la allowlist, la
+    // convergencia correcta es ADITIVA (allowlist ← ola), no el human-block.
+    // La ola es la fuente de verdad de qué se debe trabajar y ya fue promovida
+    // atómicamente: sumarlos no otorga permisos nuevos.
+    //
+    // Frontera (fail-closed, SEC-1): se exige `added = []` (no hay extras que
+    // realinear revocaría en silencio), estado CONFIRMADO de cada faltante y
+    // pertenencia a la ola activa. Cualquier incumplimiento cae al camino
+    // conservador de más abajo.
+    //
+    // OJO con `estadoConfirmado` (SEC-4): NO rechaza nada en producción. El
+    // predicado real es `makeIsClosedFromTitleCache()`, que devuelve
+    // `Boolean(...)` — un cache miss se lee como ABIERTO, nunca `undefined`.
+    // Eso es lo DESEADO acá: los hijos de un split recién creados (#5689-#5691)
+    // todavía no están en el title-cache, y tratarlos como indeterminados los
+    // devolvería al human-block que este código vino a eliminar. El guard queda
+    // como seguro del seam de test `opts.isClosed` y de un futuro predicado que
+    // consulte GitHub y pueda no saber; no es una garantía vigente de que "el
+    // estado indeterminado nunca habilita una mutación". Ver waves-schema.md
+    // (§Recuperación ante desync) antes de "arreglarlo" volviéndolo tri-estado.
+    const sinExtras = Array.isArray(probe.added) && probe.added.length === 0;
+    const faltantes = (Array.isArray(probe.removed) ? probe.removed : [])
+      .filter((n) => Number.isInteger(n) && n > 0);
+    let issuesOlaActiva = null;
+    if (sinExtras && faltantes.length > 0 && typeof isClosed === 'function') {
+      try {
+        issuesOlaActiva = require('./lib/allowlist-recursive-promote').readActiveWaveIssues();
+      } catch (e) {
+        log('pulpo', `WARN desync-detector: no se pudo leer la ola activa para la convergencia aditiva: ${e.message}`);
+        issuesOlaActiva = null;
+      }
+    }
+    const estadoConfirmado = (n) => { try { return isClosed(n) === true || isClosed(n) === false; } catch { return false; } };
+    const convergenciaAditivaAplica = sinExtras
+      && faltantes.length > 0
+      && typeof isClosed === 'function'
+      && Array.isArray(issuesOlaActiva)
+      && faltantes.every((n) => estadoConfirmado(n) && issuesOlaActiva.includes(n))
+      && faltantes.some((n) => { try { return isClosed(n) === false; } catch { return false; } });
+
+    if (convergenciaAditivaAplica) {
+      try {
+        const r = autoResolveMissingOpenWaveIssues(probe, { isClosed, missing: faltantes });
+        if (r && r.ok) {
+          if (desyncDetector.isDesyncFlagSet()) desyncDetector.clearDesyncFlag();
+          checkDesyncFlag();
+          try { desyncBlockNotifier.onResolved({ resolucion: 'convergencia_aditiva', issues: faltantes }); } catch { /* best-effort */ }
+          log('pulpo', `desync-detector: convergencia ADITIVA allowlist ← ola activa OK (#5724) — ` +
+            `faltantes_repuestos=${JSON.stringify(faltantes)} allowlist=${JSON.stringify(r.allowlist)} ` +
+            `cerrados_podados=${JSON.stringify(r.prunedFromWave || [])}`);
+          try {
+            sendTelegramPlain(
+              `♻️ Volví a habilitar el dispatch (#5724).\n` +
+              `Estos issues de la ola activa estaban afuera de la allowlist y los sumé: ` +
+              `${faltantes.map((n) => `#${n}`).join(', ')}.\n` +
+              `La ola manda: ya estaban aprobados para trabajarse, así que no hizo falta frenar nada.`
+            );
+          } catch { /* best-effort */ }
+          return;
+        }
+        log('pulpo', `WARN desync-detector: convergencia aditiva no aplicada (${r && r.reason}). Sigue evaluación conservadora.`);
+      } catch (e) {
+        log('pulpo', `WARN desync-detector: convergencia aditiva falló: ${e.message}. Sigue evaluación conservadora.`);
+      }
+    }
+
+    // resoluble_reductivo pero NO resoluble por cierre ni por convergencia
+    // aditiva (p. ej. estado indeterminado, o un faltante ajeno a la ola):
+    // NO auto-resolver. Cae al manejo ambiguo/human-block de más abajo (sin
+    // return acá — fail-closed).
     log('pulpo', `desync-detector: divergencia reductiva NO puramente por cierre ` +
       `(divergencia=${JSON.stringify(divergent)}). No se auto-resuelve; sigue evaluación conservadora.`);
   }
@@ -18345,6 +18578,7 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
       desyncDetector.clearDesyncFlag();
       checkDesyncFlag();
     }
+    try { desyncBlockNotifier.onResolved({ resolucion: 'resync_legitimo' }); } catch { /* best-effort */ }
     log('pulpo', `desync-detector: divergencia ambigua resuelta por resync legítimo — pipeline NO bloqueado.`);
     return;
   }
@@ -18361,6 +18595,10 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
   } else {
     checkDesyncFlag();
   }
+  // #5724 CA-3 — SIEMPRE, con flag nuevo o ya puesto. El dedupe del flag hacía
+  // que a partir del segundo ciclo no quedara ningún rastro visible del bloqueo:
+  // el notifier es el que sostiene la comunicación mientras el estado dure.
+  notificarBloqueoDesync(after);
 }
 
 // =============================================================================
@@ -20512,6 +20750,41 @@ async function mainLoop() {
     log('vault-access-audit', `No se pudo iniciar la auditoría: ${e.message}`);
   }
 
+  // #5243 CA-5 — Paso INVERSO del halt por secreto faltante.
+  //
+  // Vive acá y no en `loadConfig()` a propósito: el config se relee entero en
+  // cada ciclo, pero un secreto NO — el store se hidrata una sola vez, en el
+  // boot. Enganchar el auto-recovery al ciclo de config levantaría la pausa
+  // mirando la evaluación del arranque, es decir datos rancios. `autoRecover`
+  // re-lee el store contra disco (con un `env` descartable, sin pisar
+  // `process.env` en caliente) y sólo entonces decide.
+  //
+  // Fail-closed: sólo levanta un marker cuyo `source` sea exactamente
+  // `secrets-health-halt`. Una pausa manual del operador — o cualquier marker
+  // ambiguo, que `readFullPauseOrigin` degrada a `manual` — nunca se toca.
+  try {
+    const secretsHealthLib = require('./lib/secrets-health');
+    const SECRETS_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
+    const runSecretsRecoveryTick = () => {
+      try {
+        const r = secretsHealthLib.autoRecover({
+          pauseFile: PAUSE_FILE,
+          partialPause,
+          logger: log,
+          pipelineDir: PIPELINE,
+        });
+        if (r.recovered) paused = false;
+      } catch (err) {
+        log('secrets-health', `WARN tick de auto-recovery fallo: ${err.message}`);
+      }
+    };
+    const secretsRecoveryTimer = setInterval(runSecretsRecoveryTick, SECRETS_RECOVERY_INTERVAL_MS);
+    // No mantiene vivo el proceso por sí solo.
+    if (typeof secretsRecoveryTimer.unref === 'function') secretsRecoveryTimer.unref();
+  } catch (e) {
+    log('secrets-health', `No se pudo iniciar el auto-recovery: ${e.message}`);
+  }
+
   // #5337 CA-5 — Recordatorio escalado de bloqueos humanos sin responder.
   //
   // El aviso inicial de needs-human vive dentro del gate `if (!yaBloqueado)` del
@@ -20703,14 +20976,24 @@ async function mainLoop() {
   // (recursive-deps:from-N). Cada hora chequea si hay issues en la allowlist
   // cuya autorización heredada venció (48h por default) y los remueve con
   // authorizedBy: 'pulpo:cleanup'. Si tira, no mata el pulpo (accesorio).
+  //
+  // #5724 CA-1 — se inyecta el predicado de cierre (title-cache, sin GitHub en
+  // el hot path) para que la poda distinga RESIDUOS de TRABAJO VIVO: un issue
+  // vencido que sigue abierto y pertenece a la ola activa NO se poda.
   const RECURSIVE_TTL_CHECK_INTERVAL_MIN = 60;
   try {
     const tickRecursiveTtl = () => {
       try {
         const recursivePromote = require('./lib/allowlist-recursive-promote');
-        const result = recursivePromote.expireRecursiveAuthorizations();
+        let isClosed = null;
+        try { isClosed = makeIsClosedFromTitleCache(); } catch { isClosed = null; }
+        const result = recursivePromote.expireRecursiveAuthorizations({ isClosed: isClosed || undefined });
         if (result.expired && result.expired.length > 0) {
           log('commander', `[recursive-ttl] removidos por TTL expirado: ${result.expired.join(',')}`);
+        }
+        if (result.protected && result.protected.length > 0) {
+          log('commander', `[recursive-ttl] TTL vencido pero PROTEGIDOS por pertenecer a la ola activa ` +
+            `(o estado indeterminado): ${result.protected.join(',')} — no se podan (#5724 CA-1)`);
         }
       } catch (e) {
         log('commander', `[recursive-ttl] tick error (best-effort): ${e.message}`);
@@ -21244,6 +21527,30 @@ if (process.env.PULPO_SKIP_DATA_RESIDENCY_VALIDATE !== '1') {
 
 // --- SINGLETON ---
 require('./singleton')('pulpo');
+
+// #5243 Tiempo 2 — efectos laterales del health-check de secretos. Éste es el
+// primer punto donde `PAUSE_FILE` y `partialPause` ya están inicializados; un
+// halt cableado en el Tiempo 1 correría en carga, con `PAUSE_FILE` en TDZ.
+//
+// Cuatro canales en orden degradante (log → marker → JSON → Telegram), cada uno
+// aislado: el aviso no puede depender del secreto de Telegram, que es
+// justamente uno de los que puede faltar. `applyHalt` nunca lanza ni llama
+// `process.exit` (#5073) — igual va envuelto, mismo blindaje que el resto del
+// boot.
+try {
+  if (secretsHealth && !secretsHealth.ok) {
+    const res = require('./lib/secrets-health').applyHalt(secretsHealth, {
+      pauseFile: PAUSE_FILE,
+      partialPause,
+      sendTelegram: sendTelegramPlain,
+      logger: log,
+      pipelineDir: PIPELINE,
+    });
+    if (res.halted) paused = true;
+  }
+} catch (e) {
+  process.stderr.write(`[secrets-health] WARN applyHalt fallo (no bloquea el boot): ${e.message}\n`);
+}
 
 // Signal ready — singleton adquirido, mainLoop arranca
 try { require('./lib/ready-marker').signalReady('pulpo'); } catch {}

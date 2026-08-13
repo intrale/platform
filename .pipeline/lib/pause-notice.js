@@ -51,6 +51,11 @@ const PAUSE_SOURCE_LABELS = Object.freeze({
     // Automáticas.
     'config-corruption-halt': 'el config.yaml no parseaba',
     'kernel-cutover-degraded-halt': 'el cutover del kernel quedó degradado',
+    // #5243 — entra junto con `AUTO_LIFTABLE_SOURCES` de `partial-pause.js`. Sin
+    // esta línea, tras un halt por secretos el restart le dice al operador
+    // "no se pudo identificar el origen" sobre una pausa que el pipeline
+    // mismo puso y sabe explicar.
+    'secrets-health-halt': 'faltaba un secreto que el pipeline necesita',
     // Humanas explícitas.
     'telegram': 'la pusiste vos con /pausar',
     'restart': 'la pediste vos al reiniciar',

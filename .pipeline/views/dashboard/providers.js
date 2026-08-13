@@ -39,6 +39,18 @@ const path = require('node:path');
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
 const { renderStatusBadge } = require('./components');
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
+
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
+// Se monta en todas las ventanas: cuando el Pulpo suspende el dispatch no
+// avanza NADA, y la pregunta "por que no se mueve" se hace desde donde el
+// operador este parado. La entrega anterior dejo el estado en un modulo al que
+// no apunta ninguna ruta del menu y el bloqueo paso 10 h invisible.
+const {
+    resolveDesyncStatus: _dsbResolve,
+    renderDesyncBlockBannerSsr: _dsbRender,
+    DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+    desyncBlockBannerBundleJs: _dsbBundle,
+} = require('./desync-block-banner.js');
 // #4463 — Header compartido: pills de CPU/RAM y uptime del Pulpo + hora, mismo
 // componente que home/satélites. Providers antes sólo mostraba el reloj.
 const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScript } = require('./header-meta');
@@ -895,6 +907,7 @@ function renderProviders() {
 <style>${tokens}</style>
 <style>${theme}</style>
 <style>${PANEL_CSS}</style>
+<style>${_DSB_CSS}</style>
 </head>
 <body>
 <div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">${spriteInline}</div>
@@ -904,6 +917,7 @@ function renderProviders() {
     ${renderHeaderMetaSsr({ withMode: false })}
   </header>
   ${missionHtml}
+  ${_dsbRender(_dsbResolve())}
   ${navHtml}
   ${breadcrumb}
   <main class="satellite-body">${bodyHtml(model)}</main>
@@ -914,7 +928,8 @@ function renderProviders() {
 </div>
 <script>${PROVIDERS_CLIENT_JS}
 ${headerPillsClientScript()}
-${headerPillsPollClientScript()}</script>
+${headerPillsPollClientScript()}
+${_dsbBundle()}</script>
 </body>
 </html>`;
 }
@@ -935,7 +950,11 @@ function renderInert(reason) {
 <h1>Ventana Providers no disponible</h1>
 <p>${safe}</p>
 <p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p>
-</main></body></html>`;
+</main>
+${/* El panel inerte NO monta el banner: sin su markup, el CSS y el bundle acá
+     eran código muerto — y hacían pasar por "cubierta" una ventana cuyo shell
+     real no lo estaba (#5724 rev-1). */ ''}
+</body></html>`;
 }
 
 module.exports = {

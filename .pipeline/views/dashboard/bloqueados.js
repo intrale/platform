@@ -43,6 +43,17 @@ const path = require('path');
 // compartido del sprite.svg). Misma dependencia que home.js / matriz.js.
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
+// Ventana de diagnostico: cuando el Pulpo suspende el dispatch no avanza NADA,
+// y es aca donde el operador viene a preguntarse por que. La entrega anterior
+// dejo el estado en un modulo al que no apunta ninguna ruta del menu.
+const {
+    resolveDesyncStatus,
+    renderDesyncBlockBannerSsr,
+    DESYNC_BLOCK_BANNER_CSS,
+    desyncBlockBannerBundleJs,
+} = require('./desync-block-banner.js');
+
 // #5689 (#5337 CA-6) — discriminador ÚNICO "recomendación vs bloqueo real".
 // Reemplaza el discriminador inline de `classifyCta()`, que era la última copia
 // desincronizable (human-block.js y servicio-reconciler.js ya lo consumen).
@@ -959,6 +970,7 @@ function renderBloqueados(state, opts) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Intrale · Bloqueados</title>
 <style>${theme}</style>
+<style>${DESYNC_BLOCK_BANNER_CSS}</style>
 <style>
 .satellite-frame { max-width: 1600px; margin: 0 auto; padding: 0; }
 .satellite-body { padding: 22px 28px; display: flex; flex-direction: column; gap: 18px; }
@@ -979,6 +991,7 @@ function renderBloqueados(state, opts) {
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${missionHtml}
+  ${renderDesyncBlockBannerSsr(resolveDesyncStatus())}
   ${navHtml}
   <main class="satellite-body">${fragment}</main>
   <footer class="in-footer">
@@ -986,7 +999,7 @@ function renderBloqueados(state, opts) {
     <span>Intrale V3 · #3729</span>
   </footer>
 </div>
-<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${headerPillsClientScript()}\n${COMMON_HELPERS}\n${renderBloqueadosClientScript()}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${headerPillsClientScript()}\n${COMMON_HELPERS}\n${renderBloqueadosClientScript()}\n${desyncBlockBannerBundleJs()}</script>
 </body>
 </html>`;
 }

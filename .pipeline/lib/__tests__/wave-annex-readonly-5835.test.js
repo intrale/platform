@@ -49,8 +49,16 @@ injectModule('waves', {
     invalidateCache: () => {},
     loadWaves: () => ({}),
 });
+// #5836 — el handler pasó a usar la variante `WithDelta` (necesita el punto
+// previo para la nota de CA-5). El fake expone LAS DOS: si sólo expusiera
+// `appendSnapshot`, la llamada real reventaría contra el `try/catch` del
+// handler y el test mediría 0 escrituras por una falta del fake, no del código.
 injectModule('wave-progress', {
-    appendSnapshot: (args) => { appendedSnapshots.push(args); },
+    appendSnapshot: (args) => { appendedSnapshots.push(args); return true; },
+    appendSnapshotWithDelta: (args) => {
+        appendedSnapshots.push(args);
+        return { written: true, delta: { kind: 'estable', deltaPp: 0 } };
+    },
 });
 injectModule('eta-wave', { calculateWaveVelocityETA: async () => null });
 

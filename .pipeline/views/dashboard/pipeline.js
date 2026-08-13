@@ -260,59 +260,51 @@ function renderDepsBanner({ ic }) {
 // `role="status"` + aria-label con el estado completo. Prohibido el falso
 // verde: `desconocido` es ⚪ gris, no 🟢. Sin colores hardcodeados (tokens).
 // CA-8: issue numbers sólo enteros (`Number.isInteger`) escapados.
-const DSS_META = {
-    sincronizado:          { icon: 'allowlist-check',   label: 'Sincronizado',          cls: 'dss-ok',      aria: 'sincronizado' },
-    realineado_reductivo:  { icon: 'estado-retrying',   label: 'Realineado',            cls: 'dss-warn',    aria: 'realineado, divergencia autoresoluble' },
-    divergencia_bloqueada: { icon: 'warn',              label: 'Divergencia bloqueada', cls: 'dss-danger',  aria: 'divergencia bloqueada, requiere intervención' },
-    desconocido:           { icon: 'stage-not-entered', label: 'Sin datos',             cls: 'dss-unknown', aria: 'sin datos de sincronización' },
-};
-
-// Normalización defensiva del contrato del slice: ante campo ausente/corrupto
-// degradamos a `desconocido` (riesgo del render de `undefined`).
-function normalizeDesyncStatus(raw) {
-    const d = raw && typeof raw === 'object' ? raw : {};
-    const estado = Object.prototype.hasOwnProperty.call(DSS_META, d.estado) ? d.estado : 'desconocido';
-    return {
-        estado,
-        added: (Array.isArray(d.added) ? d.added : []).filter(Number.isInteger),
-        removed: (Array.isArray(d.removed) ? d.removed : []).filter(Number.isInteger),
-        count: Number.isInteger(d.count) ? d.count : 0,
-        bloqueado: Boolean(d.bloqueado),
-    };
-}
-
-// Texto de detalle por estado (sin JSON crudo ni paths — CA-8).
-function desyncDetailText(d) {
-    switch (d.estado) {
-        case 'sincronizado':
-            return d.count > 0 ? `${d.count} issues alineados` : 'allowlist alineada con la ola';
-        case 'realineado_reductivo':
-            return 'divergencia autoresoluble por el Pulpo · no bloquea';
-        case 'divergencia_bloqueada':
-            return 'requiere intervención · ambiguo o flag de desync activo';
-        default:
-            return 'waves/partial-pause ausente o degradado';
-    }
-}
+//
+// #5724 CA-4 — El copy (labels, detalle, antigüedad, chips) se mudó a
+// `lib/desync-copy.js`. Este módulo sólo se renderiza desde el catch-all legacy
+// de dashboard.js, al que no apunta ninguna ruta del menú V3: el operador nunca
+// vio este pill. La vista Inicio ahora muestra el mismo estado, y para que las
+// dos superficies no digan cosas distintas la decisión de texto vive en un solo
+// lugar. Acá queda únicamente el LAYOUT del pill.
+// Sólo lo que este módulo usa de verdad: `desyncMeta()` ya resuelve internamente
+// DSS_META_BLOQUEADO y `desyncChips()` el tope DSS_CHIPS_TOPE — importarlos acá
+// era ruido que sugería un uso que no existe.
+const {
+    DSS_META,
+    normalizeDesyncStatus,
+    desyncDetailText,
+    desyncMeta,
+    desyncChips,
+} = require('../../lib/desync-copy.js');
 
 // Chips de issues added/removed — sólo enteros escapados, tope de 6 (CA-8).
+// #5724 UX-4: el tope deja de ser silencioso — un truncado sin indicador se lee
+// como "esto es todo", y CA-4 pide mostrar la divergencia concreta.
 function desyncIssueChips(d) {
-    const parts = [];
-    d.added.slice(0, 6).forEach((n) => parts.push('<span class="dss-chip dss-chip-add">+#' + escapeHtmlText(String(n)) + '</span>'));
-    d.removed.slice(0, 6).forEach((n) => parts.push('<span class="dss-chip dss-chip-rem">−#' + escapeHtmlText(String(n)) + '</span>'));
-    if (parts.length === 0) return '';
+    const chips = desyncChips(d);
+    if (chips.length === 0) return '';
+    const parts = chips.map((c) => {
+        if (c.tipo === 'add') return '<span class="dss-chip dss-chip-add">+#' + escapeHtmlText(String(c.issue)) + '</span>';
+        if (c.tipo === 'rem') return '<span class="dss-chip dss-chip-rem">−#' + escapeHtmlText(String(c.issue)) + '</span>';
+        return '<span class="dss-chip dss-chip-more" title="' + escapeHtmlAttr(`${c.ocultos} issues más en la divergencia`) + '">+' + escapeHtmlText(String(c.ocultos)) + ' más</span>';
+    });
     return '<span class="dss-chips">' + parts.join('') + '</span>';
 }
 
-function renderDesyncPill({ ic, desync }) {
+function renderDesyncPill({ ic, desync, now }) {
     const d = normalizeDesyncStatus(desync);
-    const meta = DSS_META[d.estado] || DSS_META.desconocido;
-    const detail = desyncDetailText(d);
+    const meta = desyncMeta(d);
+    const detail = desyncDetailText(d, now);
     const ariaFull = 'Estado de sincronización allowlist↔ola: ' + meta.aria + '. ' + detail;
+    // UX-2: `role="status"` es aria-live polite — un estado que frena el
+    // pipeline entero no puede esperar a que el lector de pantalla termine lo
+    // que estaba diciendo. Bloqueante ⇒ `role="alert"` (assertive).
+    const role = d.bloqueado ? 'alert' : 'status';
     return `
   <div class="dss-wrap" data-test-id="desync-status">
     <span class="dss-caption">Sync allowlist↔ola</span>
-    <span id="dss-pill" class="dss-pill ${meta.cls}" role="status" aria-label="${escapeHtmlAttr(ariaFull)}" title="${escapeHtmlAttr(detail)}">
+    <span id="dss-pill" class="dss-pill ${meta.cls}" role="${role}" aria-label="${escapeHtmlAttr(ariaFull)}" title="${escapeHtmlAttr(detail)}">
       <span class="dss-ic">${ic(meta.icon, meta.aria)}</span>
       <span class="dss-label">${escapeHtmlText(meta.label)}</span>
       <span class="dss-detail">${escapeHtmlText(detail)}</span>

@@ -104,7 +104,11 @@ test('detectDesync: allowlists distintas → desync + flag + alerta', () => {
         const alertDir = path.join(dir, 'servicios', 'telegram', 'pendiente');
         assert.equal(fs.existsSync(alertDir), true);
         const files = fs.readdirSync(alertDir);
-        assert.ok(files.some((f) => f.startsWith('alert-waves-desync-')), `esperaba alert en ${files.join(',')}`);
+        // #5724 UX-1 — el componente pasó a llamarse por la consecuencia
+        // (`dispatch-suspendido`) en vez de por los archivos que divergen
+        // (`waves-desync`): es el mismo canal que usan los recordatorios del
+        // bloqueo, así que el operador los ve como un único hilo.
+        assert.ok(files.some((f) => f.startsWith('alert-dispatch-suspendido-')), `esperaba alert en ${files.join(',')}`);
     } finally { teardownTmp(dir); }
 });
 

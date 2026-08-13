@@ -28,6 +28,9 @@
 const { computeIssueEta, computeLaneEmptyEta } = require('./eta');
 // #5629 — Fuente ÚNICA del estado "Entregado". No re-derivar la regla acá.
 const deliveryStatus = require('./delivery-status');
+// #5836 — Ponderación por `size:*` + conservación de peso ante splits. Fuente
+// ÚNICA de la fórmula de peso: no re-derivarla acá.
+const waveWeight = require('./wave-weight');
 
 // Lifecycle completo si el issue pasa por definicion + desarrollo.
 // Replicado localmente para evitar acoplamiento con config.yaml — coincide con
@@ -47,6 +50,13 @@ const LIFECYCLE_FULL = [
 const LIFECYCLE_DEV_ONLY = LIFECYCLE_FULL.filter((f) => f.pipeline === 'desarrollo');
 
 const DEFAULT_STALE_THRESHOLD_MIN = 90;
+
+// #5836 — Versión de la fórmula de avance total.
+//   v1 = conteo plano de issues (cada issue pesa 1) — hasta 2026-08-12.
+//   v2 = ponderado por `size:*` con conservación de peso ante splits.
+// Se persiste en el histórico para marcar el corte de serie y no comparar
+// peras con manzanas entre puntos de fórmulas distintas.
+const PROGRESS_FORMULA_VERSION = 2;
 const HUMAN_INTERVENTION_LABELS = new Set([
     'needs-human',
     'bug-en-pipeline',
@@ -160,7 +170,6 @@ function buildWaveSnapshot(opts) {
     const blocks = [];        // CA-5
     const humanInterventions = []; // CA-6
 
-    let sumPctActive = 0;     // Para CA-3.
     let closedCount = 0;
     let etasMissing = 0;      // Issues activos sin estimación (PO-CA-4).
     let activeWithEta = 0;
@@ -340,11 +349,11 @@ function buildWaveSnapshot(opts) {
         // Status visual con precedencia UX-2.
         const status = classifyStatus({ isClosed, isBlocked, isPaused, faseActual: data.faseActual, pct });
 
-        // CA-3: solo issues activos suman a sumPctActive (los cerrados ya cuentan 100 separados).
+        // CA-3: el avance total se computa ponderado más abajo, sobre
+        // `issuesOut` (#5836). Acá sólo llevamos el conteo de cerrados, que el
+        // renderer sigue mostrando como cabezas ("N cerrados"), no como peso.
         if (isClosed) {
             closedCount += 1;
-        } else {
-            sumPctActive += pct;
         }
 
         // Abreviación de fase para móvil (CA-UX render-mobile).
@@ -429,11 +438,27 @@ function buildWaveSnapshot(opts) {
         }));
     }
 
-    // CA-3: % total
+    // CA-3: % total — PONDERADO POR TAMAÑO, con conservación de peso ante
+    // splits (#5836).
+    //
+    // Antes esto era conteo plano: `(closedCount*100 + sumPctActive) / N`. Cada
+    // issue pesaba 1 y un split metía `1 + N` entradas en el denominador por el
+    // mismo trabajo, así que partir un issue grande HUNDÍA el indicador (medido
+    // el 2026-08-11: 57% → 52% por 18 altas de split, sin perder trabajo).
+    //
+    // Ahora el peso sale de `size:*` y el subárbol de un split conserva el peso
+    // de su raíz, así que partir es neutro por construcción. Ver wave-weight.js.
     const totalIssues = wave.issues.length;
-    const totalPct = totalIssues > 0
-        ? Math.round((closedCount * 100 + sumPctActive) / totalIssues)
-        : 0;
+    const weighting = waveWeight.computeWaveWeights(issuesOut);
+    const progress = waveWeight.weightedProgress(issuesOut, weighting.weights);
+    const totalPct = progress.totalPct;
+
+    // Peso efectivo por issue, para que el renderer/dashboard puedan explicar
+    // por qué un issue mueve más la aguja que otro.
+    for (const it of issuesOut) {
+        it.weight = weighting.weights.has(it.id) ? weighting.weights.get(it.id) : 0;
+        it.size = weighting.sizes.has(it.id) ? weighting.sizes.get(it.id) : null;
+    }
 
     // CA-4: ETA absoluto (max sobre activos con eta).
     const etaAbsoluteMs = computeLaneEmptyEta(issueEtas);
@@ -447,6 +472,19 @@ function buildWaveSnapshot(opts) {
         closedCount,
         activeCount: totalIssues - closedCount,
         totalPct,
+        // #5836 — Metadata de ponderación. El renderer la usa para explicar el
+        // indicador (cuánto del denominador pesa por default) y el histórico
+        // para distinguir una caída por altas de una por retroceso.
+        totalWeight: progress.totalWeight,
+        closedWeight: progress.closedWeight,
+        weightedSinSize: weighting.sinSize,
+        splitParentsCovered: weighting.coveredParents.length,
+        weightInflations: weighting.inflations,
+        // Versión de la fórmula de avance. v1 = conteo plano (pre-#5836),
+        // v2 = ponderado por tamaño. Viaja al histórico para marcar el CORTE DE
+        // SERIE: los snapshots viejos no guardaron peso, así que recalcularlos
+        // sería inventar datos (decisión de PO/UX/guru en `validacion`).
+        formulaV: PROGRESS_FORMULA_VERSION,
         etaAbsoluteMs: etaAvailable ? etaAbsoluteMs : null,
         etaAvailable,
         etasMissing,           // CA-4: cuántos activos no tienen estimación
@@ -599,6 +637,7 @@ module.exports = {
     LIFECYCLE_FULL,
     LIFECYCLE_DEV_ONLY,
     DEFAULT_STALE_THRESHOLD_MIN,
+    PROGRESS_FORMULA_VERSION,
     _internal: {
         pickLifecycle,
         findFaseIdx,
