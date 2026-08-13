@@ -119,7 +119,7 @@ function defaultConfigLoader(over = {}) {
 const CHAIN_HTTP = [
     { provider: 'cerebras', model: 'llama-3.3-70b' },
     { provider: 'gemini-google', model: 'gemini-2.0-flash' },
-    { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+    { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
 ];
 
 // #3484 — chain con Anthropic primero (orden aprobado por Leo 2026-05-22).
@@ -324,7 +324,7 @@ test('T-5: 5 turnos paralelos con commanderProvider variado — sameProvider cor
     const chain = [
         { provider: 'cerebras', model: 'llama-3.3-70b' },
         { provider: 'gemini-google', model: 'gemini-2.0-flash' },
-        { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+        { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
     ];
     // Mezcla de providers — los HTTP coinciden a veces con el primero
     // del chain (cerebras), generando same_provider=true cuando aplica.
@@ -1898,7 +1898,7 @@ test('#3501 CA-18 (rev #3921): sin alternative_models NO hay swap intra-provider
         quotaModule: fakeQuotaAllPass(),
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'cerebras', model: 'llama-3.3-70b' },
-            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -1906,7 +1906,7 @@ test('#3501 CA-18 (rev #3921): sin alternative_models NO hay swap intra-provider
     // a nvidia-nim (el commander cerebras queda excluido por defecto).
     assert.equal(result.modelSwap.swapped, false, 'sin alternative_models → NO swap intra-provider');
     assert.equal(result.sherlockProvider, 'nvidia-nim', '#3921: cross-provider por defecto enruta al siguiente provider, no al commander');
-    assert.equal(result.sherlockModel, 'deepseek-ai/deepseek-v4-pro');
+    assert.equal(result.sherlockModel, 'deepseek-ai/deepseek-v4-flash-0731');
     assert.equal(result.sameProvider, false, '#3921: commander excluido por defecto → cross-provider');
     assert.equal(result.sameModel, false);
     // Evento sherlock_model_swap NO debe aparecer en este caso.
@@ -1919,7 +1919,7 @@ test('#3501 CA-18 (rev #3921): sin alternative_models NO hay swap intra-provider
         sherlockModel: result.sherlockModel,
         modelSwap: result.modelSwap,
     });
-    assert.equal(footer, 'Verificado por: nvidia-nim/deepseek-ai/deepseek-v4-pro');
+    assert.equal(footer, 'Verificado por: nvidia-nim/deepseek-ai/deepseek-v4-flash-0731');
     assert.ok(!/swap desde/.test(footer));
 });
 
@@ -2647,7 +2647,7 @@ test('#3921 SEC-6: que falle el PRIMER alternativo NO alcanza para caer a same-p
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'anthropic', model: 'claude-opus-4-7' },
             { provider: 'gemini-google', model: 'gemini-2.0-flash' },
-            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
@@ -2684,7 +2684,7 @@ test('#3921 CA-4/SEC-1: alternativo residency-blocked recien priorizado se desca
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'cerebras', model: 'llama-3.3-70b' },
             { provider: 'gemini-google', model: 'gemini-2.0-flash' },
-            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
         ]}),
         residencyModule: fakeResidencyBlockFor(['gemini-google']),
     });
@@ -2709,7 +2709,7 @@ test('#3921 CA-5/SEC-5: cascada + fallback same-provider terminan dentro del cap
         dispatchModule: fakeDispatcher({ providerChain: [
             { provider: 'cerebras', model: 'llama-3.3-70b' },
             { provider: 'gemini-google', model: 'gemini-2.0-flash' },
-            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+            { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
         ]}),
         residencyModule: fakeResidencyOk(),
     });
