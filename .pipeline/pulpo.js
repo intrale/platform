@@ -100,16 +100,37 @@ const gateVerdict = require('./lib/gate-verdict');
 const gateLabelReconciler = require('./lib/gate-label-reconciler');
 const gateAuditLog = require('./lib/audit-log');
 
+// #5864 — Razones de resolución estricta del PR que NO retienen la promoción.
+//
+// GATE 0 evalúa la promoción `verificacion → linteo`, y el PR lo crea
+// `delivery.js` recién en `entrega` (última fase de `desarrollo`, ver
+// config.yaml: [validacion, dev, build, verificacion, linteo, aprobacion,
+// entrega]). O sea: en el momento de GATE 0 el PR TODAVÍA NO EXISTE por diseño,
+// y `no_strict_match` es el caso normal, no una anomalía. Retener por eso
+// dejaría a TODO issue clavado en `waiting-operator/` al encender el flag —
+// el pipeline entero fuera de servicio.
+//
+// No relaja nada: sin PR no hay label que escribir, y la ausencia del label es
+// justamente lo que mantiene cerrado cualquier gate que lea labels del PR. La
+// propagación real ocurre en `entrega`, cuando el PR ya existe
+// (`delivery.js:propagateGateLabelToPr`).
+//
+// El resto de las razones sí retiene: `fetch_failed` (no sabemos si hay PR),
+// `ambiguous_match` (hay más de un PR y no podemos elegir) y `cross_repository`
+// (head de fork) son fallas de integridad, no estado esperado.
+const PR_PROPAGATION_NON_BLOCKING = new Set(['no_strict_match']);
+
 function gatePrPropagationDecision(resolved, { retain } = {}) {
-  if (resolved && resolved.ok === true) return { allowPromotion: true };
+  if (resolved && resolved.ok === true) return { allowPromotion: true, propagate: true };
   const reason = resolved && typeof resolved.reason === 'string'
     ? resolved.reason
     : 'fetch_failed';
-  const decision = {
-    allowPromotion: false,
-    code: `pr-propagation-${reason}`,
-    detail: resolved && resolved.detail ? String(resolved.detail) : null,
-  };
+  const code = `pr-propagation-${reason}`;
+  const detail = resolved && resolved.detail ? String(resolved.detail) : null;
+  if (PR_PROPAGATION_NON_BLOCKING.has(reason)) {
+    return { allowPromotion: true, propagate: false, code, detail };
+  }
+  const decision = { allowPromotion: false, propagate: false, code, detail };
   if (typeof retain === 'function') retain(decision.code, decision.detail);
   return decision;
 }
@@ -5595,13 +5616,17 @@ function brazoBarrido(config) {
                 const propagationDecision = gatePrPropagationDecision(resolved, {
                   retain: retainGate0FailClosed,
                 });
-                if (!propagationDecision.allowPromotion) {
+                if (!propagationDecision.propagate) {
+                  // Sin PR resoluble no se escribe NINGÚN label (SEC-2). Sólo
+                  // `no_strict_match` deja seguir la promoción — el PR aún no
+                  // existe en esta fase; el resto ya retuvo vía `retain`.
                   gate0Audit('pr-propagation-skipped', {
                     reason: resolved.reason,
                     candidates: resolved.candidates || null,
                     detail: resolved.detail || null,
+                    blocking: !propagationDecision.allowPromotion,
                   });
-                  continue;
+                  if (!propagationDecision.allowPromotion) continue;
                 } else {
                   const prRec = gateLabelReconciler.reconcileGateLabels({
                     currentLabels: resolved.pr.labels,
