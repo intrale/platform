@@ -2628,6 +2628,34 @@ async function handleWaveNext({ pipelineRoot }) {
     };
 }
 
+// =============================================================================
+// #5882 CA-2 — Logger de fallos de sincronización.
+//
+// Este módulo históricamente no logueaba NADA (`grep -c "console\." → 0`): todo
+// su output era el `reply` de Telegram. Eso está bien para los caminos felices,
+// pero dejaba el fallo de sync de la allowlist sin ningún rastro — ni en el log
+// del pipeline, ni en el audit. El incidente del 2026-08-13 no dejó una sola
+// línea que explicara por qué el pipeline se había frenado.
+//
+// Default `console.error` (lo captura el log del proceso que hostea al
+// Commander). `setSyncLogger` permite que `pulpo.js` inyecte su `log('pulpo',…)`
+// y que los tests asserten que la línea se emitió. Lo NO aceptable es que este
+// camino quede mudo.
+// =============================================================================
+let syncLogger = null;
+
+function setSyncLogger(fn) {
+    syncLogger = typeof fn === 'function' ? fn : null;
+}
+
+function logSyncError(msg) {
+    const line = `[commander] ERROR ${msg}`;
+    try {
+        if (syncLogger) syncLogger(line);
+        else console.error(line);
+    } catch { /* el logging nunca rompe el comando */ }
+}
+
 /**
  * `/wave add <num> #issue` — Mueve un issue a una ola específica.
  * Aplica:
@@ -2694,8 +2722,11 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
     }
 
     // CA-7 — Mutación. addIssueToWave es atómico (waves.save → tmp+rename).
+    // #5882 — el resultado ya NO se descarta: su `version` es el input del CAS
+    // del rollback si la sincronización de la allowlist falla.
+    let addResult = null;
     try {
-        waves.addIssueToWave(waveNumber, { number: issueNumber }, {
+        addResult = waves.addIssueToWave(waveNumber, { number: issueNumber }, {
             updated_by: from || 'Leo',
             source: 'telegram-commander/wave-add',
             note: `move issue #${issueNumber} → wave ${waveNumber}`,
@@ -2745,9 +2776,20 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
     //   - escritura tmp+rename atómica bajo lock;
     //   - deja audit-entry encadenada → traza para el auto-resync legítimo (CA-3);
     //   - orden audit-before-write preservado por el propio gate (SEC-4439-6).
-    // Es best-effort respecto del comando: la suma a la ola ya persistió; si la
-    // sync de allowlist falla, la divergencia resultante es REDUCTIVA (issue en
-    // la ola, falta en la allowlist) y el realign del Pulpo la reconcilia sola.
+    //
+    // #5882 CA-7 — Este bloque YA NO es best-effort, y el comentario que decía
+    // que lo era describía una reconciliación que NO ocurre. La verdad medida:
+    // el realign del Pulpo sólo reparaba la divergencia reductiva cuando los
+    // issues involucrados estaban CERRADOS. Con un issue ABIERTO — exactamente
+    // el escenario de una promoción recién hecha — el desync quedaba vivo, el
+    // detector lo veía y el pipeline se frenaba fail-closed esperando a un
+    // humano (incidente 2026-08-13: ~40 min sin despacho, segundo episodio de
+    // la semana).
+    //
+    // Ahora las dos escrituras se resuelven como una unidad: si la allowlist no
+    // entra, se revierte la suma a la ola y el comando responde con error
+    // explícito. El estado final es el previo al comando, nunca un desync mudo.
+    let syncError = null;
     try {
         const isActiveTarget = refreshed.active_wave
             && refreshed.active_wave.number === waveNumber;
@@ -2757,17 +2799,96 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
             if (mode.mode === 'partial_pause') {
                 const current = Array.isArray(mode.allowedIssues) ? mode.allowedIssues : [];
                 if (!current.includes(issueNumber)) {
-                    partialPause.setPartialPause([...current, issueNumber], {
+                    const r = partialPause.setPartialPause([...current, issueNumber], {
                         source: 'wave-promote:wave-add',
                         authorizedBy: 'wave-promote',
                         justification: `Suma coherente /wave add #${issueNumber} -> ola ${waveNumber} (#4439)`,
                     });
+                    // `setPartialPause` NO tira cuando el gate rechaza: devuelve
+                    // { ok:false, rejected:true }. Sin este chequeo, un rechazo
+                    // del gate producía exactamente el desync silencioso que
+                    // este issue viene a eliminar.
+                    if (r && r.ok === false) {
+                        syncError = new Error(r.msg || 'setPartialPause rechazado por el gate de autorización');
+                    }
                 }
             }
         }
-    } catch {
-        // Best-effort: no rompemos el comando por la sync de allowlist.
-        // El desync reductivo resultante se auto-repara vía realign del Pulpo.
+    } catch (e) {
+        syncError = e;
+    }
+
+    if (syncError) {
+        const partialPause = require('./partial-pause');
+        const partialPauseAudit = require('./partial-pause-audit');
+
+        // NO asumir "falló ⇒ no escribió". `setPartialPause` puede fallar
+        // DESPUÉS de que el write aterrizó (o el proceso morir entre el rename
+        // y el retorno). Releemos el estado real antes de decidir. `getPipelineMode`
+        // lee del disco en cada llamada, sin cache.
+        let landed = false;
+        try {
+            if (typeof partialPause.invalidateCache === 'function') partialPause.invalidateCache();
+            const after = partialPause.getPipelineMode();
+            landed = after.mode === 'partial_pause'
+                && Array.isArray(after.allowedIssues)
+                && after.allowedIssues.includes(issueNumber);
+        } catch {
+            landed = null;   // indeterminado ⇒ NO revertir (fail-safe).
+        }
+
+        // El mensaje deriva de input de Telegram (`from`, `note`): sanitizar
+        // SIEMPRE antes de loguear o responder (anti log-injection / leak de
+        // paths). Reusamos el sanitizador existente, no escribimos uno nuevo.
+        const safe = partialPauseAudit.sanitizeJustification(String((syncError && syncError.message) || syncError));
+
+        if (landed === true) {
+            // Ambas escrituras aterrizaron pese al error reportado. El estado es
+            // COHERENTE: revertir acá produciría un desync ADITIVO con issue
+            // abierto (ambiguo → human-block), peor que el bug original.
+            // Reconciliamos hacia adelante.
+            logSyncError(`wave-add #${issueNumber} ola ${waveNumber}: sync reportó error pero la allowlist SÍ quedó escrita (${safe}). Estado coherente, sin rollback.`);
+            if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-add');
+            return {
+                reply: fillTemplate('wave-add-ok', {
+                    'issue-number': issueNumber,
+                    'wave-number': waveNumber,
+                    'wave-name': (targetWaveResolved && targetWaveResolved.name) || `Ola ${waveNumber}`,
+                    'new-size': newSize,
+                }),
+            };
+        }
+
+        let rolledBack = false;
+        let rollbackErr = null;
+        if (landed === false) {
+            try {
+                waves.rollbackIssueAdd(waveNumber, issueNumber, {
+                    expectedVersion: addResult && addResult.version,   // CAS
+                    authorizedBy: 'wave-add-rollback',
+                    updated_by: from || 'Leo',
+                    source: 'wave-add-rollback',
+                    note: `rollback de /wave add #${issueNumber} por partial_sync_failed`,
+                });
+                rolledBack = true;
+            } catch (re) {
+                rollbackErr = partialPauseAudit.sanitizeJustification(String((re && re.message) || re));
+            }
+        }
+
+        logSyncError(
+            `wave-add #${issueNumber} ola ${waveNumber}: partial_sync_failed (${safe}) ` +
+            `landed=${landed} rollback=${rolledBack}${rollbackErr ? ` rollback_error=${rollbackErr}` : ''}`,
+        );
+
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'partial_sync_failed',
+                message: rolledBack
+                    ? `No pude sincronizar la lista de despacho, así que deshice la suma: #${issueNumber} NO quedó en la ola ${waveNumber}. Probá de nuevo.`
+                    : `No pude sincronizar la lista de despacho NI deshacer la suma. #${issueNumber} quedó en la ola ${waveNumber} pero la allowlist está ${landed === null ? 'indeterminada' : 'sin el issue'}. Requiere revisión manual.`,
+            }),
+        };
     }
 
     // CA-9 — Marcar éxito en el cooldown DESPUÉS del write.
@@ -3619,6 +3740,8 @@ module.exports = {
         handleWaveStatus,
         handleWaveNext,
         handleWaveAdd,
+        // #5882 — logger inyectable del fallo de sync (pulpo/tests).
+        setSyncLogger,
         handleWavePromote,
         handleWaveCreate,
         handleWaveRemove,
