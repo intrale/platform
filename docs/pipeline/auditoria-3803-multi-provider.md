@@ -177,7 +177,7 @@ y los evaluadores (qa/po/ux).
 
 | Agente | Cadena |
 |--------|--------|
-| `backend-dev` | Opus → Codex `gpt-5-codex` → NVIDIA `deepseek-v4-pro` |
+| `backend-dev` | Opus → Codex `gpt-5-codex` → NVIDIA `deepseek-v4-flash-0731` |
 | `pipeline-dev` | Opus → Codex `gpt-5-codex` → NVIDIA |
 | `security` | Opus → Codex `gpt-5-codex` → NVIDIA |
 | `android-dev` | Opus → Codex `gpt-5-codex` → Gemini `2.0-flash` → NVIDIA |
@@ -253,6 +253,13 @@ condicionan la afirmación "funciona en todos los órdenes". Se atacan de a poco
 ### Deuda obsoleta de modelos en config base (validar contra catálogo real del provider)
 - **Cerebras** — runtime ya corregido a `gpt-oss-120b` (`llama-3.3-70b` estaba muerto: 404, fuera
   del free tier). Pueden quedar referencias obsoletas en configs/docs base sin tocar; limpiar al pasar.
-- **NVIDIA NIM** — el string `deepseek-ai/deepseek-v4-pro` configurado debería validarse contra el
+- **NVIDIA NIM** — el string DeepSeek configurado debería validarse contra el
   catálogo free real de NVIDIA NIM (análogo al caso Cerebras). **Leo lo marcó como no urgente** —
   se documenta para que quede registrado, no bloquea.
+  **Resuelto el 2026-08-13 (#5887), y la deuda se cobró:** el modelo DeepSeek que esta
+  auditoría señaló llegó a end-of-life el 2026-08-07T09:00:00Z y empezó a devolver HTTP 410 en toda
+  invocación, matando sin trabajo a todo agente que cayera a NVIDIA en su cadena de fallback.
+  Migrado a `deepseek-ai/deepseek-v4-flash-0731`, verificado vivo contra el catálogo real en la misma
+  pasada (`GET /v1/models` → presente, id viejo ausente) y con tool_use medido
+  (`POST /v1/chat/completions` con `tools[]` → `finish_reason: tool_calls`). La detección automatizada
+  de modelo muerto — que es lo que hubiera evitado los 6 días de sangrado — quedó como CA-5 de #5698.

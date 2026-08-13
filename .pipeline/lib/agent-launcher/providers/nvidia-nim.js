@@ -150,11 +150,14 @@ function _parseNvidiaJson(raw) {
 // -----------------------------------------------------------------------------
 // parseTokensFromLog — mapea el `usage` OpenAI al shape canónico del pulpo.
 //
-// Shape capturado en smoke real (2026-06-01, deepseek-v4-pro):
+// Shape re-capturado en smoke real (2026-08-13, deepseek-v4-flash-0731 — #5887,
+// tras el end-of-life del modelo con el que se capturó el shape original el
+// 2026-06-01):
 //   { "choices": [...], "usage": {
-//       "prompt_tokens": 17, "completion_tokens": 2, "total_tokens": 19,
-//       "prompt_tokens_details": { "cached_tokens": N } | null,
-//       "reasoning_tokens": 0 } }
+//       "prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13 } }
+// `prompt_tokens_details.cached_tokens` y `reasoning_tokens` son opcionales: el
+// sucesor los omite cuando valen 0, así que el mapeo de abajo los trata como
+// ausentes-o-null y no asume su presencia.
 //
 // Mapeo:
 //   prompt_tokens                      → input

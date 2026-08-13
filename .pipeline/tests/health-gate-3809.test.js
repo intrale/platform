@@ -137,7 +137,7 @@ function modelsWithChain(primary, fallbacks) {
             'openai-codex': { model: 'gpt-5-codex' },
             'gemini-google': { model: 'gemini-2.0-flash' },
             cerebras: { model: 'gpt-oss-120b' },
-            'nvidia-nim': { model: 'deepseek-ai/deepseek-v4-pro' },
+            'nvidia-nim': { model: 'deepseek-ai/deepseek-v4-flash-0731' },
         },
         skills: {
             'test-skill': { provider: primary, fallbacks },
@@ -238,7 +238,7 @@ test('A10 · rojo FRESCO y DURABLE (no_key_configured/forbidden) → gateado', (
 test('B1 · fallback rojo-fresco se saltea y se usa el siguiente + audit fallback_health_gated', () => {
     const models = modelsWithChain('anthropic', [
         { provider: 'cerebras', model_override: 'gpt-oss-120b' },
-        { provider: 'nvidia-nim', model_override: 'deepseek-ai/deepseek-v4-pro' },
+        { provider: 'nvidia-nim', model_override: 'deepseek-ai/deepseek-v4-flash-0731' },
     ]);
     const audit = fakeAuditLog();
     const snap = healthSnapshot([
@@ -374,7 +374,7 @@ test('B4 · healthReader que tira → fail-open (no rompe la resolución)', () =
 test('C1 · audit fallback_health_gated NO contiene API keys ni tokens', () => {
     const models = modelsWithChain('anthropic', [
         { provider: 'cerebras', model_override: 'gpt-oss-120b' },
-        { provider: 'nvidia-nim', model_override: 'deepseek-ai/deepseek-v4-pro' },
+        { provider: 'nvidia-nim', model_override: 'deepseek-ai/deepseek-v4-flash-0731' },
     ]);
     const audit = fakeAuditLog();
     const snap = healthSnapshot([

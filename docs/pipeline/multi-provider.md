@@ -533,7 +533,7 @@ Convenciones:
 | `ux` | claude / opus-4-7 | openai-codex / gpt-5 | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Vision (mockups/screenshots) — Gemini OK |
 | `doc` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (estrategia de producto) |
 | `planner` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (roadmap/estrategia) |
-| `guru` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | nvidia-nim / deepseek-v4-pro | Gemini **EXCLUIDO** (fragmentos código) |
+| `guru` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | nvidia-nim / deepseek-v4-flash-0731 | Gemini **EXCLUIDO** (fragmentos código) |
 | `ops` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO sí o sí** (procesa API keys / AWS creds / Cognito) |
 | `perf` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | gemini-google / gemini-2.0-flash | cerebras / llama-3.3-70b | Sin secrets — Gemini OK |
 | `auth` | claude / sonnet-4-7 | openai-codex / gpt-5-codex | cerebras / llama-3.3-70b | — | Gemini **EXCLUIDO** (config interna del entorno) |
@@ -1129,7 +1129,7 @@ Si por error pegaste una key directamente en el chat:
 4. **Issue de scrubbing retroactivo**: si querés limpiar el historial existente, ver [#3317](https://github.com/intrale/platform/issues/3317) (necesita aprobación humana, `needs-human`).
 ### 8.9 NVIDIA NIM — guía operativa específica (#3243)
 
-NVIDIA NIM es uno de los 3 free providers vivos (junto con Gemini y Cerebras, post #3353). Hostea ~80 modelos OpenAI-compatible en `integrate.api.nvidia.com`, con catálogo enfocado en razonamiento (DeepSeek V4-Pro, SWE-bench 80.6%) y agentic loops (Kimi K2.6, tool use 96.6%) — complementario a los llamas de Cerebras y a Gemini 2.0 Flash.
+NVIDIA NIM es uno de los 3 free providers vivos (junto con Gemini y Cerebras, post #3353). Hostea ~80 modelos OpenAI-compatible en `integrate.api.nvidia.com`, con catálogo enfocado en razonamiento (DeepSeek V4-Flash-0731 desde #5887; el V4 anterior con SWE-bench 80.6% fue retirado del catálogo) y agentic loops (Kimi K2.6, tool use 96.6%) — complementario a los llamas de Cerebras y a Gemini 2.0 Flash.
 
 **Cómo obtener la API key:**
 
@@ -1142,8 +1142,10 @@ NVIDIA NIM es uno de los 3 free providers vivos (junto con Gemini y Cerebras, po
 
 | Modelo | Capabilities | Context window | Uso recomendado |
 |--------|--------------|----------------|-----------------|
-| `deepseek-ai/deepseek-v4-pro` | `reasoning`, `coding`, `long_context` | 1M tokens | Razonamiento técnico, análisis de código de gran escala (SWE-bench Verified 80.6%, LiveCodeBench 93.5%) |
+| `deepseek-ai/deepseek-v4-flash-0731` | `reasoning`, `coding`, `long_context` | no verificada | Razonamiento técnico y análisis de código. **Sin benchmarks verificados**: los números que figuraban acá (SWE-bench Verified 80.6%, LiveCodeBench 93.5%) y la ventana de 1M tokens eran del modelo DeepSeek retirado y **no** se heredan a este modelo — no medir ≠ suponer (#5887). |
 | `moonshotai/kimi-k2-instruct` | `agentic`, `tool_use`, `long_context` | 128K tokens | Loops agentic con muchos tool calls (tool use success 96.6%, long-horizon 13h / 300 sub-agents) |
+
+> **Migración 2026-08-13 (#5887).** El modelo DeepSeek que este provider tenía configurado llegó a end-of-life el 2026-08-07T09:00:00Z y devolvía HTTP 410 en toda invocación, matando sin trabajo a todo agente que cayera a NVIDIA en su cadena de fallback. Sucesor verificado **en vivo** ese mismo día contra `integrate.api.nvidia.com`: (a) `GET /v1/models` → HTTP 200, `deepseek-ai/deepseek-v4-flash-0731` presente en el catálogo (102 modelos) y el id anterior **ausente**; (b) `POST /v1/chat/completions` con `tools[]` → HTTP 200, `finish_reason: tool_calls`, `tool_calls[0].function.name = read_file`. La (b) no es opcional: la capability `agentic-tool-use` se **declara** en el provider, no se mide, y un sucesor sin tool_use bootearía gates de confianza (`security`, `telegram-sherlock`) que no pueden leer archivos y fallan en abierto. Pin con sufijo de fecha (`-0731`), nunca alias flotante.
 
 Para agregar más modelos del catálogo NVIDIA NIM (ej. `gpt-oss-120b` opcional), seguir sección 3.2: editar `ALLOWED_MODELS_BY_LAUNCHER['nvidia-nim']` en `lib/agent-models-validate.js` + agregar entry en `agent-models.json` con el namespace `vendor/model`. El boot del pulpo cross-valida.
 
@@ -1158,7 +1160,7 @@ NVIDIA **NO publica** rate limits ni monthly quota del free tier. Las decisiones
 
 NVIDIA NIM permite que **partners** (3rd parties) hosteen modelos del catálogo en infra propia. Antes de flippear el provider a `activo` en runtime:
 
-- Verificar en `build.nvidia.com` que `deepseek-ai/deepseek-v4-pro` y `moonshotai/kimi-k2-instruct` aparecen como **"NVIDIA-direct"** (no "NIM Partner redeploy").
+- Verificar en `build.nvidia.com` que `deepseek-ai/deepseek-v4-flash-0731` y `moonshotai/kimi-k2-instruct` aparecen como **"NVIDIA-direct"** (no "NIM Partner redeploy").
 - Si alguno es partner, documentar el hop adicional acá y validar contra la matriz de policy TOS/DPA de #3084 antes de activar.
 - Estado actual: **pendiente de verificación** (al merge de #3243 los modelos quedan declarados como "configurados pero inactivos" hasta completar este check + la fila TOS/DPA en #3084).
 
@@ -1168,13 +1170,13 @@ NVIDIA NIM permite que **partners** (3rd parties) hosteen modelos del catálogo 
 |----------|------------------|------|---------|--------|
 | Gemini | `gemini-2.0-flash` | Generalista (sin código sensible — TOS entrena) | 1M | sin namespace |
 | Cerebras | `llama-3.3-70b` | Velocidad inference | 128K | sin namespace |
-| **NVIDIA NIM** | **`deepseek-v4-pro` / `kimi-k2`** | **Razonamiento / agentic** | **1M (DeepSeek)** | **`vendor/model`** |
+| **NVIDIA NIM** | **`deepseek-v4-flash-0731` / `kimi-k2`** | **Razonamiento / agentic** | **no verificada (DeepSeek)** | **`vendor/model`** |
 
 NVIDIA NIM aporta razonamiento de calidad alta en free tier — Cerebras es velocidad sobre llama, Gemini es generalista. Es **complementario**, no redundante. (Groq fue descontinuado en #3353.)
 
 **Asignación de skills (al merge de #3243):**
 
-- `guru` (análisis técnico): `nvidia-nim` queda como **último fallback** con `deepseek-ai/deepseek-v4-pro`. Anthropic sigue primero (sign-off Leo 2026-05-15).
+- `guru` (análisis técnico): `nvidia-nim` queda como **último fallback** con `deepseek-ai/deepseek-v4-flash-0731` (se migró tras el end-of-life del modelo DeepSeek anterior; ver #5887). Anthropic sigue primero (sign-off Leo 2026-05-15).
 - Resto de skills: sin asignación todavía. Promover NVIDIA NIM arriba en otros skills requiere sign-off humano explícito.
 
 ---
