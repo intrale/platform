@@ -41,6 +41,18 @@ try {
     if (typeof nav.loadIconSprite === 'function') loadIconSprite = nav.loadIconSprite;
 } catch { /* nav opcional en tests */ }
 
+// #5724 CA-4 — El bloqueo de dispatch por desync tiene que verse en TODAS las
+// ventanas del menú, y esta emite documento completo con nav-tabs. El montaje
+// es de una sola llamada (style + markup + poll autocontenidos). Soft-require
+// con el mismo criterio que la nav: si el módulo no carga, el wizard renderiza
+// igual (sin banner) en vez de romper.
+let renderDesyncBlockMountHtml = () => '';
+try {
+    // eslint-disable-next-line global-require
+    const dsb = require('./desync-block-banner');
+    if (typeof dsb.renderDesyncBlockMountHtml === 'function') renderDesyncBlockMountHtml = dsb.renderDesyncBlockMountHtml;
+} catch { /* banner opcional en tests */ }
+
 const THEME_CSS_PATH = path.join(__dirname, 'theme.css');
 function loadTheme() {
     try { return fs.readFileSync(THEME_CSS_PATH, 'utf8'); } catch { return ''; }
@@ -322,6 +334,8 @@ function renderWizardProviders(opts) {
     const spriteInline = loadIconSprite();
     let navHtml = '';
     try { navHtml = renderNavTabsSsr('providers'); } catch { navHtml = ''; }
+    let desyncMount = '';
+    try { desyncMount = renderDesyncBlockMountHtml(); } catch { desyncMount = ''; }
     const csrf = escapeHtmlAttr(o.csrfToken || '');
     const stepper = STEP_DEFS.map((d, i) =>
         `<span class="wz-dot${i === 0 ? ' is-active' : ''}" aria-hidden="true"></span>`).join('');
@@ -345,6 +359,7 @@ function renderWizardProviders(opts) {
     <p style="margin:0;color:var(--text-dim,#9da7b3)">Wizard guiado · provider, acción, key y confirmación</p>
   </header>
   ${navHtml}
+  ${desyncMount}
   <div class="wz-stepper" role="progressbar" aria-valuemin="1" aria-valuemax="4" aria-valuenow="1">${stepper}</div>
   <main>
     ${sections}

@@ -27,6 +27,8 @@
 // =============================================================================
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const partialPause = require('./partial-pause');
 const audit = require('./partial-pause-audit');
 const { notifyTelegram } = require('./notify-telegram');
@@ -204,6 +206,49 @@ function autoPromoteSplitChildren({ parentIssue, childrenIssues }) {
     };
 }
 
+function pipelineDir() {
+    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
+    return path.join(__dirname, '..');
+}
+
+/**
+ * Lee los issues NO completados de la ola activa. Seam para tests.
+ *
+ * Distingue dos situaciones que NO son lo mismo:
+ *   - "no hay ola activa" (waves.json ausente, o `active_wave: null` — modo
+ *     legacy con allowlist manual) → `[]`. No hay nada que proteger, así que la
+ *     poda por TTL sigue limpiando autorizaciones obsoletas como en #3625.
+ *   - "no se pudo determinar la ola" (waves.json presente pero ilegible,
+ *     corrupto o con shape inesperada) → `null` = INDETERMINADO. Ahí el caller
+ *     degrada a conservador y NO poda.
+ *
+ * Se lee el archivo directo en vez de usar `waves.getActiveWave()` a propósito:
+ * `loadWaves` es TOLERANTE (un JSON corrupto degrada en silencio a estado
+ * vacío), y para este guard "no pude leer la ola" y "no hay ola" tienen que
+ * dar resultados opuestos. Confundirlos convertiría un waves.json corrupto en
+ * una poda masiva de la allowlist — justo el fallo que #5724 viene a cerrar.
+ *
+ * @returns {number[]|null}
+ */
+function readActiveWaveIssues() {
+    const file = path.join(pipelineDir(), 'waves.json');
+    if (!fs.existsSync(file)) return []; // sin olas: nada que proteger
+    let parsed;
+    try {
+        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+        return null; // ilegible/corrupto → indeterminado
+    }
+    if (!parsed || typeof parsed !== 'object') return null;
+    const active = parsed.active_wave;
+    if (active === null || active === undefined) return []; // no hay ola activa
+    if (typeof active !== 'object' || !Array.isArray(active.issues)) return null;
+    return active.issues
+        .filter((i) => i && i.status !== 'completed')
+        .map((i) => Number(i && i.number))
+        .filter((n) => Number.isInteger(n) && n > 0);
+}
+
 /**
  * Expira autorizaciones heredadas (recursive-deps:from-N) cuyo TTL pasó.
  *
@@ -211,40 +256,98 @@ function autoPromoteSplitChildren({ parentIssue, childrenIssues }) {
  * remueve esos issues de la allowlist con `authorizedBy: 'pulpo:cleanup'`
  * (audit entry + Telegram notify).
  *
+ * #5724 CA-1 — GUARD DE OLA ACTIVA. El TTL de 48h existe para que no se
+ * acumulen autorizaciones heredadas obsoletas (A04:2021), o sea para podar
+ * RESIDUOS. Aplicado a ciegas también podaba TRABAJO PENDIENTE: un issue
+ * abierto, `Ready` y perteneciente a la ola ACTIVA caducaba de la allowlist
+ * sólo por no haber sido despachado a tiempo — que es exactamente lo que pasa
+ * cuando el pipeline ya está frenado. Bucle de realimentación: el freno provoca
+ * la caducidad que profundiza el freno (incidente 2026-08-09, #5689-#5691 →
+ * 10 h de dispatch suspendido por desync).
+ *
+ * Regla nueva: un issue vencido se poda SÓLO si es residuo, es decir si
+ *   (a) NO pertenece a la ola activa, o
+ *   (b) pertenece pero está CONFIRMADO cerrado (`isClosed(n) === true`).
+ *
+ * Fail-safe (SEC-4, alineado con `expandRecursiveOpenIssues`): la dirección
+ * conservadora acá es NO PODAR — podar de más fue lo que produjo el incidente.
+ * Por eso el estado indeterminado (`undefined` por cache miss del title-cache,
+ * o sin predicado) y la ola ilegible (`null`) PROTEGEN al issue en vez de
+ * habilitar su remoción. Un residuo que sobrevive un ciclo más es barato; un
+ * issue vivo podado frena la ola entera.
+ *
  * @param {object} [opts]
  * @param {number} [opts.nowMs] — para tests con fake clock.
- * @returns {{ expired: number[], remaining: number[], notified: boolean }}
+ * @param {(n:number)=>boolean|undefined} [opts.isClosed] — predicado de cierre
+ *   inyectado (title-cache, sin GitHub en el hot path). `true` = cerrado
+ *   confirmado; `false` = abierto; `undefined` = indeterminado.
+ * @param {number[]|null} [opts.activeWaveIssues] — override de la ola activa
+ *   (seam de test). Si no se pasa, se lee de `waves.getActiveWave()`.
+ * @returns {{ expired: number[], protected: number[], remaining: number[], notified: boolean }}
+ *   `protected` = vencidos que NO se podaron por el guard de ola activa.
  */
-function expireRecursiveAuthorizations({ nowMs } = {}) {
+function expireRecursiveAuthorizations({ nowMs, isClosed, activeWaveIssues } = {}) {
     const now = Number.isFinite(nowMs) ? nowMs : Date.now();
     let state;
     try {
         state = partialPause.getPipelineMode();
     } catch {
-        return { expired: [], remaining: [], notified: false };
+        return { expired: [], protected: [], remaining: [], notified: false };
     }
     if (state.mode !== 'partial_pause') {
-        return { expired: [], remaining: [], notified: false };
+        return { expired: [], protected: [], remaining: [], notified: false };
     }
     const ttls = (state.authorizationTtls && typeof state.authorizationTtls === 'object')
         ? state.authorizationTtls
         : null;
     if (!ttls) {
-        return { expired: [], remaining: state.allowedIssues || [], notified: false };
+        return { expired: [], protected: [], remaining: state.allowedIssues || [], notified: false };
     }
 
-    const expired = [];
+    const vencidos = [];
     for (const k of Object.keys(ttls)) {
         const t = ttls[k];
         if (!t || typeof t !== 'object') continue;
         const ts = Date.parse(t.expires_at);
         if (Number.isFinite(ts) && ts < now) {
             const n = Number(k);
-            if (Number.isInteger(n) && n > 0) expired.push(n);
+            if (Number.isInteger(n) && n > 0) vencidos.push(n);
         }
     }
+    if (vencidos.length === 0) {
+        return { expired: [], protected: [], remaining: state.allowedIssues || [], notified: false };
+    }
+
+    // #5724 CA-1 — separar residuos (podables) de trabajo vivo de la ola activa.
+    const waveIssues = (Array.isArray(activeWaveIssues) || activeWaveIssues === null)
+        ? activeWaveIssues
+        : readActiveWaveIssues();
+    const isClosedFn = typeof isClosed === 'function' ? isClosed : null;
+    const expired = [];
+    const protectedIssues = [];
+    for (const n of vencidos) {
+        if (waveIssues === null) {
+            // Ola indeterminada: no podemos afirmar que `n` sea residuo → proteger.
+            protectedIssues.push(n);
+            continue;
+        }
+        if (!waveIssues.includes(n)) {
+            expired.push(n); // Ajeno a la ola activa → residuo legítimo.
+            continue;
+        }
+        // Pertenece a la ola activa: sólo se poda si está CONFIRMADO cerrado.
+        const closed = isClosedFn ? isClosedFn(n) === true : false;
+        if (closed) expired.push(n);
+        else protectedIssues.push(n);
+    }
+
     if (expired.length === 0) {
-        return { expired: [], remaining: state.allowedIssues || [], notified: false };
+        return {
+            expired: [],
+            protected: protectedIssues,
+            remaining: state.allowedIssues || [],
+            notified: false,
+        };
     }
 
     const newAllowlist = state.allowedIssues.filter(n => !expired.includes(n));
@@ -276,12 +379,13 @@ function expireRecursiveAuthorizations({ nowMs } = {}) {
         } catch { /* best-effort */ }
     }
 
-    return { expired, remaining: newAllowlist, notified };
+    return { expired, protected: protectedIssues, remaining: newAllowlist, notified };
 }
 
 module.exports = {
     autoPromoteSplitChildren,
     expireRecursiveAuthorizations,
     expandRecursiveOpenIssues,
+    readActiveWaveIssues,
     TTL_MS,
 };

@@ -3487,6 +3487,19 @@ let desyncDetector = null;
 try { desyncDetector = require('./desync-detector'); } catch { /* opcional */ }
 let _desyncDetectorOverride = null;
 
+// #5724 CA-4 — Copy compartido del semáforo. El slice expone la presentación ya
+// resuelta (`presentacion`) además del dato crudo: el banner de la vista Inicio
+// se hidrata client-side y sin esto tendría que reimplementar en el browser el
+// mapeo estado→label/detalle/antigüedad, que es exactamente cómo el pill del
+// panel Pipeline terminó divergiendo del renderer del monolito. Campo ADITIVO:
+// los consumidores viejos leen los mismos campos de antes.
+let desyncCopy = null;
+try { desyncCopy = require('./desync-copy'); } catch { /* opcional: degradamos sin presentacion */ }
+function _desyncPresentacion(payload) {
+    if (!desyncCopy || typeof desyncCopy.buildDesyncPresentation !== 'function') return null;
+    try { return desyncCopy.buildDesyncPresentation(payload); } catch { return null; }
+}
+
 function desyncStatusSlice(state, ctx) {
     const detector = _desyncDetectorOverride || desyncDetector;
     // Base defensiva del contrato JSON (CA-6): siempre devolvemos el shape
@@ -3500,15 +3513,29 @@ function desyncStatusSlice(state, ctx) {
         removed: [],
         bloqueado: false,
         count: 0,
+        // #5724 CA-4 — antigüedad del bloqueo. Sin esto un dispatch suspendido
+        // hace 10 horas se ve idéntico a uno de 10 minutos, y la duración es
+        // justamente lo que convierte una divergencia en incidente.
+        detected_at: null,
     };
     if (!detector || typeof detector.detectDesync !== 'function') {
-        return { ...base, error: 'desync_detector_unavailable' };
+        return { ...base, presentacion: _desyncPresentacion(base), error: 'desync_detector_unavailable' };
     }
     try {
         const probe = detector.detectDesync({ skipFlag: true, skipAlert: true }) || {};
         const bloqueado = typeof detector.isDesyncFlagSet === 'function'
             ? detector.isDesyncFlagSet() === true
             : false;
+        // El `detected_at` vive en el flag de bloqueo. Sin flag (o con flag
+        // ilegible) queda `null` y la UI simplemente no muestra antigüedad.
+        let detectedAt = null;
+        if (bloqueado && typeof detector.readDesyncFlag === 'function') {
+            try {
+                const flag = detector.readDesyncFlag();
+                const v = flag && flag.detected_at;
+                if (typeof v === 'string' && Number.isFinite(Date.parse(v))) detectedAt = v;
+            } catch { /* degradar a null */ }
+        }
         // CA-8: issue numbers sólo enteros validados antes de exponerlos.
         const added = (Array.isArray(probe.added) ? probe.added : []).filter(Number.isInteger);
         const removed = (Array.isArray(probe.removed) ? probe.removed : []).filter(Number.isInteger);
@@ -3533,7 +3560,7 @@ function desyncStatusSlice(state, ctx) {
             estado = 'desconocido';
         }
 
-        return {
+        const payload = {
             estado,
             classification,
             desync: typeof probe.desync === 'boolean' ? probe.desync : null,
@@ -3542,9 +3569,13 @@ function desyncStatusSlice(state, ctx) {
             removed,
             bloqueado,
             count,
+            detected_at: detectedAt,
         };
+        // Presentación resuelta server-side (label/detalle/antigüedad/chips) para
+        // que toda superficie diga lo mismo sin reimplementar el copy.
+        return { ...payload, presentacion: _desyncPresentacion(payload) };
     } catch (err) {
-        return { ...base, error: String((err && err.message) || err) };
+        return { ...base, presentacion: _desyncPresentacion(base), error: String((err && err.message) || err) };
     }
 }
 

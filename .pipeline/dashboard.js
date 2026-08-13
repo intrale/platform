@@ -2788,7 +2788,7 @@ function generateHTML(state) {
   // #4375 — Semáforo de sincronización allowlist↔ola (read-only). SSR inicial +
   // refresh cliente cada 30s vía /api/dash/desync-status. Ante error del slice
   // dejamos el estado degradado 'desconocido' (gris), nunca falso verde.
-  let desyncStatusData = { estado: 'desconocido', added: [], removed: [], count: 0, bloqueado: false };
+  let desyncStatusData = { estado: 'desconocido', added: [], removed: [], count: 0, bloqueado: false, detected_at: null };
   try {
     const slices = require('./lib/dashboard-slices');
     const slice = slices.desyncStatusSlice({}, {});
@@ -4698,6 +4698,9 @@ ${loadDesignTokens()}
 .dss-chip{font-size:var(--fs-xs,0.68rem);font-weight:var(--fw-bold,700);padding:1px 6px;border-radius:var(--radius-full,9999px);font-variant-numeric:tabular-nums}
 .dss-chip-add{background:var(--warning-bg,rgba(210,153,34,0.16));color:var(--warning,var(--yl))}
 .dss-chip-rem{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd,#F85149))}
+/* #5724 UX-4 — indicador de overflow de la divergencia (tope de 6 chips). Sin
+   color propio: es metadato, no un issue más. */
+.dss-chip-more{background:var(--deterministic-bg,rgba(110,118,129,0.15));color:var(--text-dim,var(--dim))}
 .dss-ok{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gn));border-color:rgba(63,185,80,0.4)}
 .dss-ok .pl-ic{color:var(--success,var(--gn))}
 .dss-warn{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.45)}
@@ -8316,21 +8319,67 @@ var _DSS_META = {
   divergencia_bloqueada: { icon: 'warn',              label: 'Divergencia bloqueada', cls: 'dss-danger',  aria: 'divergencia bloqueada, requiere intervención' },
   desconocido:           { icon: 'stage-not-entered', label: 'Sin datos',             cls: 'dss-unknown', aria: 'sin datos de sincronización' },
 };
-function _dssDetailText(estado, count) {
+// #5724 CA-4 / UX-1..UX-4 — Estado BLOQUEANTE: nombra la consecuencia (el
+// dispatch está suspendido), no el síntoma interno; candado en vez de warn;
+// role=alert; antigüedad visible; overflow explícito. Espejo exacto del SSR
+// (views/dashboard/pipeline.js) — los dos renderers tienen que decir lo mismo.
+var _DSS_META_BLOQUEADO = {
+  icon: 'pause-lock',
+  label: 'Dispatch suspendido',
+  cls: 'dss-danger',
+  aria: 'dispatch suspendido por divergencia entre la allowlist y la ola activa',
+};
+var _DSS_CHIPS_TOPE = 6;
+function _dssAgeText(detectedAt) {
+  var ts = Date.parse(detectedAt);
+  if (!Number.isFinite(ts)) return '';
+  var min = Math.floor((Date.now() - ts) / 60000);
+  if (!Number.isFinite(min) || min < 0) return '';
+  if (min < 1) return 'recién';
+  if (min < 60) return 'hace ' + min + ' min';
+  var h = Math.floor(min / 60);
+  var m = min % 60;
+  if (h >= 24) {
+    var dias = Math.floor(h / 24);
+    var restoH = h % 24;
+    return restoH > 0 ? ('hace ' + dias + ' d ' + restoH + ' h') : ('hace ' + dias + ' d');
+  }
+  return m > 0 ? ('hace ' + h + ' h ' + m + ' min') : ('hace ' + h + ' h');
+}
+function _dssDetailText(estado, count, d) {
+  var info = d && typeof d === 'object' ? d : {};
   switch (estado) {
     case 'sincronizado': return count > 0 ? (count + ' issues alineados') : 'allowlist alineada con la ola';
     case 'realineado_reductivo': return 'divergencia autoresoluble por el Pulpo · no bloquea';
-    case 'divergencia_bloqueada': return 'requiere intervención · ambiguo o flag de desync activo';
+    case 'divergencia_bloqueada': {
+      var added = (Array.isArray(info.added) ? info.added : []).filter(Number.isInteger);
+      var removed = (Array.isArray(info.removed) ? info.removed : []).filter(Number.isInteger);
+      var bloqueado = Boolean(info.bloqueado);
+      var partes = [];
+      if (removed.length > 0) partes.push(removed.length + (removed.length === 1 ? ' issue' : ' issues') + ' de la ola fuera de la allowlist');
+      if (added.length > 0) partes.push(added.length + (added.length === 1 ? ' issue' : ' issues') + ' de la allowlist fuera de la ola');
+      if (partes.length === 0) partes.push('la allowlist y la ola activa divergen');
+      if (bloqueado) partes.push('no se lanza ningún agente');
+      var edad = bloqueado ? _dssAgeText(info.detected_at) : '';
+      if (edad) partes.push(edad);
+      return partes.join(' · ');
+    }
     default: return 'waves/partial-pause ausente o degradado';
   }
 }
 function _dssChips(added, removed) {
+  var listaAdd = (Array.isArray(added) ? added : []).filter(Number.isInteger);
+  var listaRem = (Array.isArray(removed) ? removed : []).filter(Number.isInteger);
   var parts = [];
-  (Array.isArray(added) ? added : []).filter(Number.isInteger).slice(0, 6)
+  listaAdd.slice(0, _DSS_CHIPS_TOPE)
     .forEach(function(n) { parts.push('<span class="dss-chip dss-chip-add">+#' + _ppaClientEsc(String(n)) + '</span>'); });
-  (Array.isArray(removed) ? removed : []).filter(Number.isInteger).slice(0, 6)
+  listaRem.slice(0, _DSS_CHIPS_TOPE)
     .forEach(function(n) { parts.push('<span class="dss-chip dss-chip-rem">−#' + _ppaClientEsc(String(n)) + '</span>'); });
   if (parts.length === 0) return '';
+  var ocultos = Math.max(0, listaAdd.length - _DSS_CHIPS_TOPE) + Math.max(0, listaRem.length - _DSS_CHIPS_TOPE);
+  if (ocultos > 0) {
+    parts.push('<span class="dss-chip dss-chip-more" title="' + _ppaClientEsc(ocultos + ' issues más en la divergencia') + '">+' + _ppaClientEsc(String(ocultos)) + ' más</span>');
+  }
   return '<span class="dss-chips">' + parts.join('') + '</span>';
 }
 function renderDesyncStatus(data) {
@@ -8338,13 +8387,16 @@ function renderDesyncStatus(data) {
   if (!pill) return;
   var d = data && typeof data === 'object' ? data : {};
   var estado = Object.prototype.hasOwnProperty.call(_DSS_META, d.estado) ? d.estado : 'desconocido';
-  var meta = _DSS_META[estado];
+  var bloqueado = Boolean(d.bloqueado);
+  var meta = (estado === 'divergencia_bloqueada' && bloqueado) ? _DSS_META_BLOQUEADO : _DSS_META[estado];
   var count = Number.isInteger(d.count) ? d.count : 0;
-  var detail = _dssDetailText(estado, count);
+  var detail = _dssDetailText(estado, count, d);
   pill.className = 'dss-pill ' + meta.cls;
   var ariaFull = 'Estado de sincronización allowlist↔ola: ' + meta.aria + '. ' + detail;
   pill.setAttribute('aria-label', ariaFull);
   pill.setAttribute('title', detail);
+  // UX-2: aria-live assertive cuando el pipeline está frenado; polite si no.
+  pill.setAttribute('role', bloqueado ? 'alert' : 'status');
   pill.innerHTML = ''
     + '<span class="dss-ic">' + _ppaIcUse(meta.icon, meta.aria) + '</span>'
     + '<span class="dss-label">' + _ppaClientEsc(meta.label) + '</span>'
