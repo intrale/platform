@@ -46,6 +46,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
+// #5888 — `relativeTime` / `absTime` se mudaron al módulo compartido de render
+// (`providers.js` necesita el mismo formateo "hace N h" para la vigencia de
+// catálogo). Acá se re-exportan para no romper la API pública de historial.
+const { relativeTime, absTime } = require('./components');
 // #3963 — el cómputo (filtros/agrupación/paginación/agregados) vive en el lib;
 // la vista solo lo invoca y renderiza. Si el módulo no carga (caso edge), el
 // render degrada a string vacío.
@@ -141,35 +145,11 @@ function renderHistCard(h, persona, orderIdx, fmtDuration, ghBaseUrl) {
 
 // -----------------------------------------------------------------------------
 // #3963 — Helpers del timeline.
+//
+// `relativeTime` / `absTime` se movieron a `components.js` (#5888): las requiere
+// también el eje de vigencia de catálogo de `providers.js`. Se importan arriba y
+// se re-exportan abajo — el comportamiento y la firma no cambian.
 // -----------------------------------------------------------------------------
-
-// Timestamp humano relativo (CA-5): "ahora", "hace 5 min", "hace 2 h",
-// "hace 3 d". Se mantiene el timestamp absoluto en `title=` para precisión.
-function relativeTime(ts, now) {
-    let t = ts;
-    if (typeof t === 'string') t = Date.parse(t);
-    if (!Number.isFinite(t) || t <= 0) return '';
-    const ref = Number.isFinite(now) ? now : Date.now();
-    let diff = ref - t;
-    if (diff < 0) diff = 0;
-    const min = Math.floor(diff / 60000);
-    if (min < 1) return 'ahora';
-    if (min < 60) return `hace ${min} min`;
-    const h = Math.floor(min / 60);
-    if (h < 24) return `hace ${h} h`;
-    const d = Math.floor(h / 24);
-    return `hace ${d} d`;
-}
-
-// Timestamp absoluto formateado (es-AR) para el atributo `title=`.
-function absTime(ts) {
-    let t = ts;
-    if (typeof t === 'string') t = Date.parse(t);
-    if (!Number.isFinite(t) || t <= 0) return '';
-    return new Date(t).toLocaleString('es-AR', {
-        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
-    });
-}
 
 // URL segura para `href` de links externos (PR): solo https hacia github.com.
 // Evita `javascript:` y esquemas raros. Se escapa igualmente en el atributo.

@@ -81,6 +81,8 @@ test('#4851: onboarding conserva 5 pasos y expone los campos del descriptor comp
     let sprite = '';
     try { sprite = require('../../views/dashboard/nav-tabs').loadIconSprite(); } catch { /* sin sprite: se evalúa el documento entero */ }
     const bodySinSprite = sprite ? res.body.split(sprite).join('') : res.body;
+    assert.ok(bodySinSprite.length < res.body.length, 'el sprite debe haberse recortado antes del assert');
+    assert.ok(bodySinSprite.includes('id="ow-form"'), 'recortar el sprite no debe llevarse el wizard');
     assert.ok(!/groq/i.test(bodySinSprite), 'Groq/groq no debe aparecer en UI/script del wizard');
     assert.ok(!res.body.includes('data-provider-id="groq"'), 'Groq no debe ser opción del orden de providers');
 });
