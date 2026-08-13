@@ -646,3 +646,57 @@ test('THRESHOLDS · expone los 4 thresholds documentados', () => {
 test('ROTATION_POLICY_DAYS · 90 días por convención', () => {
   assert.equal(cron.ROTATION_POLICY_DAYS, 90);
 });
+
+test('inventario real · conserva exactamente las 13 variables de ENV_MAPPING', () => {
+  const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
+  const rows = cron.parseInventoryMarkdown(inventory);
+  const expected = Object.values(require('../credentials').ENV_MAPPING).sort();
+  assert.deepEqual(rows.map((row) => row.env_var).sort(), expected);
+});
+
+test('metadata pendiente · recuerda una vez por día y no silencia la credencial', () => {
+  const row = cron.parseInventoryMarkdown([
+    '| provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |',
+    '|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|',
+    '| telegram | `TELEGRAM_BOT_TOKEN` | leo | _pendiente registrar_ | _pendiente registrar_ | acct | [runbook](https://example.test) | N/A |',
+  ].join('\n'))[0];
+  assert.equal(row.metadata_missing, true);
+  const first = cron.evaluateRotationState({ now: dateUTC('2026-08-03'), inventoryRows: [row], state: {} });
+  assert.equal(first.alerts[0].threshold, 'METADATA-PENDIENTE');
+  const second = cron.evaluateRotationState({ now: dateUTC('2026-08-03'), inventoryRows: [row], state: first.nextState });
+  assert.equal(second.alerts.length, 0);
+});
+
+test('filas rotables nuevas · disparan T-14, T-7, T-3 y T-1', () => {
+  const envVars = ['TELEGRAM_BOT_TOKEN', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'CEREBRAS_API_KEY'];
+  const days = [14, 7, 3, 1];
+  for (let index = 0; index < envVars.length; index++) {
+    const row = {
+      provider: `provider-${index}`,
+      env_var: envVars[index],
+      owner: 'leo',
+      last_rotated: dateUTC('2026-05-03'),
+      expires_at: dateUTC('2026-08-01'),
+    };
+    const result = cron.evaluateRotationState({
+      now: dateUTC(`2026-07-${String(18 + (14 - days[index])).padStart(2, '0')}`),
+      inventoryRows: [row],
+      state: {},
+    });
+    assert.equal(result.alerts[0].threshold, `T-${days[index]}`);
+  }
+});
+
+test('recordatorios del mismo threshold se consolidan en un solo mensaje', () => {
+  const alerts = [
+    { provider: 'uno', env_var: 'SECRET_ONE', threshold: 'T-7', daysRemaining: 7, message: 'uno' },
+    { provider: 'dos', env_var: 'SECRET_TWO', threshold: 'T-7', daysRemaining: 7, message: 'dos' },
+    { provider: 'tres', env_var: 'SECRET_THREE', threshold: 'T-3', daysRemaining: 3, message: 'tres' },
+  ];
+  const consolidated = cron.consolidateAlertsByThreshold(alerts);
+  assert.equal(consolidated.length, 2);
+  assert.match(consolidated[0].message, /2 credenciales requieren atención/);
+  assert.match(consolidated[0].message, /SECRET_ONE/);
+  assert.match(consolidated[0].message, /SECRET_TWO/);
+  assert.equal(consolidated[1], alerts[2]);
+});
