@@ -12,7 +12,7 @@
 //
 // Contrato de argv (lo arma `buildSpawn` del adapter, traduciendo los args
 // estilo Claude del pulpo):
-//   --model <id>            modelo NVIDIA (ej: deepseek-ai/deepseek-v4-pro)
+//   --model <id>            modelo NVIDIA (ej: deepseek-ai/deepseek-v4-flash-0731)
 //   --system-file <path>    archivo con el system prompt (opcional)
 //   --prompt <text>         prompt del usuario
 //   --max-tokens <n>        cap de salida (opcional, default 4096)
@@ -39,7 +39,11 @@ const path = require('node:path');
 
 const ENDPOINT_HOST = 'integrate.api.nvidia.com';
 const ENDPOINT_PATH = '/v1/chat/completions';
-const DEFAULT_MODEL = 'deepseek-ai/deepseek-v4-pro';
+// #5887 — el modelo DeepSeek anterior llegó a end-of-life el 2026-08-07 (HTTP 410
+// en toda invocación). Este default es la última barrera: `providers/nvidia-nim.js`
+// sólo pasa `--model` si viene seteado, así que un spawn sin modelo explícito cae
+// acá. Reemplazado por V4-Flash-0731, verificado vivo el 2026-08-13.
+const DEFAULT_MODEL = 'deepseek-ai/deepseek-v4-flash-0731';
 const DEFAULT_MAX_TOKENS = 4096;
 
 // -----------------------------------------------------------------------------
