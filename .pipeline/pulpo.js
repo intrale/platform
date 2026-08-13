@@ -141,6 +141,13 @@ const productControlDrainer = require('./lib/product-control-drainer'); // #4801
 const kernelScheduler = require('./lib/kernel-scheduler');
 // #2490 — Pausa parcial con allowlist explícita de issues
 const partialPause = require('./lib/partial-pause');
+// #5923 — Punto único de decisión sobre si un botón inline puede emitirse como
+// `url`. Con dashboard no público degrada a `callback_data` en vez de generar un
+// saliente que la Bot API rechaza (y que muere en servicios/telegram/fallido/).
+const telegramButtonUrl = require('./lib/telegram-button-url');
+// Namespace de callback de los botones de pausa parcial trabada. Single source:
+// lo consume `.claude/hooks/commander/callback-handler.js` para rutearlos.
+const PARTIAL_PAUSE_CALLBACK_PREFIX = 'pp';
 // #5399 UX-1 — Copy de operador sobre el estado de la pausa total (funciones puras).
 const pauseNotice = require('./lib/pause-notice');
 // #3518 CA-6 — Detector de desync waves.json ↔ .partial-pause.json
@@ -19846,23 +19853,30 @@ async function brazoPartialPauseDeps(config) {
         missing_deps: deps,
         action: 'alert_sent',
       });
-      // Mensaje de Telegram (CA-2): texto + URL buttons al dashboard.
-      // No usamos callback_query para no acoplar al listener — los botones
-      // tipo "url" son handle del cliente Telegram → abre el dashboard.
+      // Mensaje de Telegram (CA-2): texto + botones de acción.
+      // #5923 — antes los botones eran `url` al dashboard, y como el dashboard
+      // vive en `localhost:3200` la Bot API RECHAZABA el saliente entero: la
+      // alerta nunca llegaba. Ahora `buildActionKeyboard` decide el modo: `url`
+      // sólo si el dashboard es público y está habilitado, si no `callback_data`
+      // con prefijo `pp:`, que resuelve nuestro propio host (listener →
+      // callback-handler → POST a localhost:3200). Los botones EJECUTAN, ya no
+      // abren nada.
       const depList = deps.map(d => `#${d}`).join(', ');
-      const msg = `⚠️ *Pausa parcial trabada*\n\nEl issue *#${issueKey}* está habilitado pero depende de issues abiertas que NO están en el allowlist:\n\n  ${depList}\n\nElegí abajo cómo resolverlo (los botones abren el dashboard).`;
+      const msg = `⚠️ *Pausa parcial trabada*\n\nEl issue *#${issueKey}* está habilitado pero depende de issues abiertas que NO están en el allowlist:\n\n  ${depList}\n\nElegí abajo cómo resolverlo. Se aplica al toque, sin salir de Telegram.`;
       const dashUrl = process.env.DASHBOARD_URL || 'http://localhost:3200';
-      const replyMarkup = {
-        inline_keyboard: [
-          [
-            { text: '✅ Sí, incluir todas', url: `${dashUrl}/?action=include-deps&issue=${issueKey}` },
-            { text: `🎯 Solo #${issueKey}`, url: `${dashUrl}/?action=keep-original&issue=${issueKey}` },
-          ],
-          [
-            { text: '✕ Cancelar pausa parcial', url: `${dashUrl}/?action=cancel-partial-pause` },
-          ],
+      const replyMarkup = telegramButtonUrl.buildActionKeyboard([
+        [
+          { action: 'include-deps',  text: `✅ Sí, incluir las ${deps.length}`, issue: issueKey },
+          { action: 'keep-original', text: `🎯 Seguir sólo con #${issueKey}`,   issue: issueKey },
         ],
-      };
+        [
+          { action: 'cancel-partial-pause', text: '🔓 Levantar la pausa parcial' },
+        ],
+      ], {
+        dashboardUrl: dashUrl,
+        callbackPrefix: PARTIAL_PAUSE_CALLBACK_PREFIX,
+        buildUrl: (action, iss) => `${dashUrl}/?action=${action}${iss ? `&issue=${iss}` : ''}`,
+      }).markup;
       try { sendTelegramWithMarkup(msg, replyMarkup); } catch (e) {
         log('pulpo', `[partial-pause-deps] Error enviando Telegram: ${e.message}`);
         // Fallback a texto plano sin markup.

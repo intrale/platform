@@ -12994,6 +12994,80 @@ function handleRequest(req, res) {
     return;
   }
 
+  // ===========================================================================
+  // #5923 — Las otras 2 resoluciones de "pausa parcial trabada".
+  //
+  // Hasta ahora los 3 botones de la alerta eran `url` al dashboard, y sólo
+  // `include-deps` tenía endpoint: `keep-original` y `cancel-partial-pause`
+  // tenían CERO ocurrencias en este archivo. O sea que aunque el saliente
+  // hubiera llegado (no llegaba: la Bot API rechaza URLs a localhost), 2 de 3
+  // botones eran botones muertos. Con la degradación a `callback_data` el
+  // callback-handler POSTea acá, así que los endpoints tienen que existir.
+  //
+  // Gate copiado de `/api/allowlist-candidates` (loopback + Origin/Referer +
+  // Content-Type estricto), NO del molde de `include-deps`, que no tiene ningún
+  // control de request (CSRF preexistente → fuera de alcance, issue #5929).
+  // El `409` cuando `mode !== 'partial_pause'` es además el anti-replay natural:
+  // el `callback_data` no tiene nonce ni TTL y el mensaje vive para siempre en
+  // el chat, así que el segundo tap tiene que morir server-side.
+  // ===========================================================================
+  if ((req.url === '/api/partial-pause/keep-original'
+       || req.url === '/api/partial-pause/cancel-partial-pause')
+      && req.method === 'POST') {
+    const ppGate = require('./lib/dashboard-request-gate');
+    const ppResolution = require('./lib/partial-pause-resolution');
+
+    const gate = ppGate.evaluateLocalMutationGate({
+      remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+      method: req.method,
+      headers: req.headers,
+    });
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: gate.msg }));
+      return;
+    }
+
+    const ppAction = req.url.endsWith('/keep-original') ? 'keep-original' : 'cancel-partial-pause';
+    let ppBody = '';
+    let ppAborted = false;
+    req.on('data', (chunk) => {
+      ppBody += chunk;
+      if (ppBody.length > 16 * 1024) { ppAborted = true; req.destroy(); }
+    });
+    req.on('end', () => {
+      if (ppAborted) return;
+      try {
+        const payload = ppBody ? JSON.parse(ppBody) : {};
+        const pp = require('./lib/partial-pause');
+        // `authorizedBy` NUNCA se hardcodea: viaja el operador real que apretó
+        // el botón (el callback-handler manda su from.id, ya validado contra la
+        // allowlist fail-closed del listener). `clearPartialPause` lo exige por
+        // ser un removal masivo.
+        const authorizedBy = ppGate.sanitizeAuthorizedBy(payload.authorizedBy);
+        const out = ppResolution.applyResolution({
+          action: ppAction,
+          authorizedBy,
+          deps: {
+            getPipelineMode: pp.getPipelineMode,
+            setPartialPause: pp.setPartialPause,
+            clearPartialPause: pp.clearPartialPause,
+            clearDepsState: () => {
+              try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}
+            },
+          },
+        });
+        log(`Pausa parcial: ${ppAction} por ${authorizedBy} → ${out.status} ${out.body.msg || ''}`);
+        res.writeHead(out.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(out.body));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
   // #2893 — API: estado de detección de deps (alimenta el banner del dashboard).
   if (req.url === '/api/partial-pause/deps-state' && req.method === 'GET') {
     try {

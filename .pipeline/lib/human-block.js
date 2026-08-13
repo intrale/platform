@@ -660,6 +660,11 @@ const ACTION_KEYBOARD_ROWS = Object.freeze([
 ]);
 const HUMAN_BLOCK_ACTIONS = Object.freeze(ACTION_KEYBOARD_ROWS.flat());
 
+// #5923 — namespace de `callback_data` cuando el botón degrada de `url` a
+// callback. Single source: lo usan el emisor (buildBlockedActionMarkup) y el
+// router (`.claude/hooks/commander/callback-handler.js`).
+const HUMAN_BLOCK_CALLBACK_PREFIX = 'hb';
+
 function isQuickAction(action) {
     return HUMAN_BLOCK_ACTIONS.includes(action);
 }
@@ -685,44 +690,66 @@ function enqueueGithub(action, payload = {}) {
 
 /**
  * #4068 / CA-1 — Construye el `reply_markup` (inline_keyboard 2×2) con los 4
- * botones URL no-mutantes hacia el dashboard. Cada URL lleva un token HMAC
- * firmado (un solo uso + exp) que autoriza la acción sobre ESE issue.
+ * botones de acción rápida sobre un issue bloqueado.
+ *
+ * #5923 — El modo de emisión ya NO es siempre `url`. La decisión la centraliza
+ * `telegram-button-url.js`:
+ *
+ *   - Dashboard público (`https:`) Y habilitado en `DASHBOARD_PUBLIC_HOSTS`
+ *     ⇒ botón `url` con token HMAC, exactamente como antes (sin regresión).
+ *   - Cualquier otra cosa (el default `http://localhost:3200`, una IP literal,
+ *     un host interno, `http://` pelado) ⇒ botón `callback_data` con prefijo
+ *     `hb:`, que resuelve NUESTRO propio host vía listener → callback-handler.
+ *
+ * En el camino degradado `actionToken.sign()` NO se invoca (CA-7): firmar una
+ * capability que no se va a usar es superficie muerta, y volcar esa URL en el
+ * mensaje sería una fuga de secreto. `buildUrl` sólo lo llama el helper cuando
+ * el modo `url` está realmente habilitado.
  *
  * NO cambia la firma de buildBlockedSummaryMarkdown (CA-Q1) — es un helper
- * aparte. Si el secreto del token no está disponible, devuelve `undefined`:
- * el caller manda igual el resumen de texto, solo sin botones (degradación
- * con gracia, nunca rompe la notificación).
+ * aparte. Si no queda ningún botón emitible devuelve `undefined`: el caller
+ * manda igual el resumen de texto, solo sin botones (degradación con gracia,
+ * nunca rompe la notificación).
  *
  * @param {number} issue
  * @param {object} [opts]
  * @param {object} [opts.actionToken]   - módulo de token (inyectable en tests).
  * @param {string} [opts.dashboardUrl]  - base URL del dashboard.
+ * @param {string[]|string|null} [opts.hostAllowlist] - override de DASHBOARD_PUBLIC_HOSTS.
  * @returns {object|undefined} `{ inline_keyboard: [...] }` o undefined.
  */
 function buildBlockedActionMarkup(issue, opts = {}) {
     const i = Number(issue);
     if (!Number.isInteger(i) || i <= 0 || i > 999999) return undefined;
-    let actionToken;
-    try { actionToken = opts.actionToken || require('./action-token'); }
+
+    let buttonUrl;
+    try { buttonUrl = opts.buttonUrl || require('./telegram-button-url'); }
     catch { return undefined; }
+
     const dashUrl = (opts.dashboardUrl || process.env.DASHBOARD_URL || 'http://localhost:3200').replace(/\/+$/, '');
-    const makeBtn = (action) => {
-        const meta = ACTION_META[action];
-        if (!meta) return null;
-        let token;
-        try { token = actionToken.sign({ issue: i, action }); }
-        catch { return null; }
-        if (!token) return null;
-        return {
-            text: `${meta.emoji} ${meta.label}`,
-            url: `${dashUrl}/?action=${action}&issue=${i}&token=${encodeURIComponent(token)}`,
-        };
-    };
-    const rows = ACTION_KEYBOARD_ROWS
-        .map((row) => row.map(makeBtn).filter(Boolean))
-        .filter((row) => row.length > 0);
-    if (!rows.length) return undefined;
-    return { inline_keyboard: rows };
+
+    const rows = ACTION_KEYBOARD_ROWS.map((row) => row
+        .map((action) => {
+            const meta = ACTION_META[action];
+            if (!meta) return null;
+            return { action, text: `${meta.emoji} ${meta.label}`, issue: i };
+        })
+        .filter(Boolean));
+
+    // Lazy: el módulo de token sólo se resuelve si realmente vamos por `url`.
+    let actionToken = null;
+    const built = buttonUrl.buildActionKeyboard(rows, {
+        dashboardUrl: dashUrl,
+        callbackPrefix: HUMAN_BLOCK_CALLBACK_PREFIX,
+        hostAllowlist: opts.hostAllowlist,
+        buildUrl: (action, iss) => {
+            if (!actionToken) actionToken = opts.actionToken || require('./action-token');
+            const token = actionToken.sign({ issue: Number(iss), action });
+            if (!token) return null;
+            return `${dashUrl}/?action=${action}&issue=${iss}&token=${encodeURIComponent(token)}`;
+        },
+    });
+    return built.markup;
 }
 
 // Reactiva TODOS los markers bloqueados de un issue (un issue puede tener varios
@@ -978,6 +1005,8 @@ module.exports = {
     ACTION_META,
     ACTION_KEYBOARD_ROWS,
     HUMAN_BLOCK_ACTIONS,
+    // #5923 — prefijo de callback_data del camino degradado.
+    HUMAN_BLOCK_CALLBACK_PREFIX,
     isQuickAction,
     enqueueGithub,
     buildBlockedActionMarkup,

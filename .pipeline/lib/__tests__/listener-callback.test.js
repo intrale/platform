@@ -281,3 +281,87 @@ test('#4802 router.routeCallback returns false → fail-safe toast', async () =>
     assert.match(answer.params.text, /Acción inválida o expirada/);
     resetDeps();
 });
+
+// =============================================================================
+// #5923 — Namespaces `hb:` / `pp:` de los botones degradados de `url` a
+// `callback_data`. Ambos disparan acciones que destraban el pipeline o mutan el
+// allowlist ⇒ privilegiados ⇒ authz fail-closed por `from.id` en el listener.
+// =============================================================================
+
+test('#5923 hb: y pp: son namespace del Commander Y privilegiado', () => {
+    const { isCommanderNamespace, isPrivilegedNamespace, COMMANDER_NAMESPACES, PRIVILEGED_NAMESPACES } = commanderHandler;
+    for (const data of [
+        'hb:unblock:5923', 'hb:devolver-definicion:5923', 'hb:c:devolver-definicion:5923', 'hb:x:devolver-definicion:5923',
+        'pp:include-deps:5923', 'pp:keep-original:5923', 'pp:cancel-partial-pause',
+    ]) {
+        assert.ok(isCommanderNamespace(data), `${data} debe rutear al Commander`);
+        assert.ok(isPrivilegedNamespace(data), `${data} debe exigir authz`);
+    }
+    // PRIVILEGED ⊂ COMMANDER se mantiene con las 2 entradas nuevas.
+    for (const p of PRIVILEGED_NAMESPACES) {
+        assert.ok(COMMANDER_NAMESPACES.includes(p), `privilegiado ${p} debe estar en COMMANDER_NAMESPACES`);
+    }
+    // Sin solapamiento con los namespaces preexistentes.
+    assert.equal(isCommanderNamespace('hbsomething'), false, 'exige el separador `:`');
+    assert.equal(isCommanderNamespace('ppsomething'), false);
+});
+
+test('#5923 authz: hb: de un from.id fuera del allowlist NO llega al router (fail-closed)', async () => {
+    const calls = installFakeTransport();
+    installFakeGate({ ok: false, toast: 'no debería llegar acá' });
+    const routed = installFakeCommanderRouter();
+    process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '111222333';
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'hb:unblock:5923', from: { id: 999, first_name: 'Intruso' } });
+
+    assert.equal(routed.length, 0, 'un intruso no puede desbloquear issues');
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.ok(answer, 'igual se corta el spinner');
+    assert.match(answer.params.text, /Acción inválida o expirada/, 'rechazo uniforme, no revela por qué');
+    resetDeps();
+});
+
+test('#5923 authz: pp: con allowlist vacío se rechaza (fail-closed)', async () => {
+    const calls = installFakeTransport();
+    installFakeGate({ ok: false, toast: 'x' });
+    const routed = installFakeCommanderRouter();
+    // sin TELEGRAM_LEO_OPERATOR_CHAT_ID → allowlist vacío
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'pp:cancel-partial-pause', from: { id: 111222333 } });
+
+    assert.equal(routed.length, 0, 'allowlist vacío ⇒ nadie levanta la pausa parcial');
+    const answer = calls.find(c => c.method === 'answerCallbackQuery');
+    assert.match(answer.params.text, /Acción inválida o expirada/);
+    resetDeps();
+});
+
+test('#5923 authz: hb:/pp: de un from.id AUTORIZADO sí llegan al router con el fromId', async () => {
+    installFakeTransport();
+    installFakeGate({ ok: false, toast: 'x' });
+    const routed = installFakeCommanderRouter();
+    process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '111222333';
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'hb:unblock:5923', from: { id: 111222333, first_name: 'Leo' } });
+    await listener.handleCallbackQuery({ ...CBQ, data: 'pp:include-deps:5923', from: { id: 111222333, first_name: 'Leo' } });
+
+    assert.deepEqual(routed.map(r => r.data), ['hb:unblock:5923', 'pp:include-deps:5923']);
+    assert.ok(routed.every(r => r.fromId === 111222333), 'el operador real viaja al handler para el audit trail');
+    resetDeps();
+});
+
+test('#5923 el listener NO emite toast propio cuando el router devuelve true (D5)', async () => {
+    // Por eso el handler de `hb:`/`pp:` DEBE emitir el suyo: si no, el operador
+    // se queda con el spinner girando y sin saber si su decisión se aplicó.
+    const calls = installFakeTransport();
+    installFakeGate({ ok: false, toast: 'x' });
+    installFakeCommanderRouter(null, true);
+    process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '111222333';
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'hb:unblock:5923', from: { id: 111222333 } });
+
+    assert.equal(
+        calls.filter(c => c.method === 'answerCallbackQuery').length, 0,
+        'el listener delega el toast al handler en el camino handled===true',
+    );
+    resetDeps();
+});
