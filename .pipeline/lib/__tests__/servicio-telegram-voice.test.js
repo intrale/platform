@@ -20,6 +20,14 @@ const path = require('node:path');
 
 const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'svc-tg-voice-'));
 process.env.PIPELINE_STATE_DIR = SANDBOX;
+// #5924 — `PIPELINE_STATE_DIR` sólo movía la cola de TRABAJO del servicio. La
+// cola donde `notify-telegram` deposita la ALERTA sale de `PIPELINE_DIR_OVERRIDE`
+// y, sin setearlo, este archivo escribía un `alert-svc-telegram-*.json` en la
+// cola REAL del repo cada vez que un test provocaba un fallo terminal (verificado
+// el 13/08/2026: la suite dejaba un dropfile en `.pipeline/servicios/telegram/
+// pendiente/`). Con el override apuntando al sandbox, el servicio detecta que la
+// cola quedó fuera de la ruta real y suprime la emisión (R5).
+process.env.PIPELINE_DIR_OVERRIDE = SANDBOX;
 
 const svc = require('../../servicio-telegram');
 const rec = require('../telegram-receipt');
@@ -33,6 +41,36 @@ test('assertDelivered: lanza sin message_id (fail-closed, chunk de voz)', () => 
   assert.throws(() => svc.assertDelivered(null, 0, 3));
   // Con message_id real NO lanza.
   assert.doesNotThrow(() => svc.assertDelivered({ ok: true, result: { message_id: 42 } }, 0, 3));
+});
+
+// #5924 — el rechazo de un chunk de voz también preserva el error real de la API.
+// Antes todos los fallidos quedaban con el mismo string genérico y era imposible
+// distinguir un rechazo del adjunto de un problema de formato del texto.
+test('assertDelivered: un chunk de voz rechazado conserva error_code y description', () => {
+  let capturado = null;
+  try {
+    svc.assertDelivered(
+      { ok: false, error_code: 413, description: 'Request Entity Too Large' },
+      1, 3,
+    );
+  } catch (e) { capturado = e; }
+
+  assert.ok(capturado, 'debe lanzar');
+  // El mensaje histórico sigue identificando el chunk (2/3), y ahora suma la causa.
+  assert.match(capturado.message, /chunk 2\/3/);
+  assert.match(capturado.message, /error_code=413/);
+  assert.match(capturado.message, /Request Entity Too Large/);
+  assert.equal(capturado.telegramErrorCode, 413);
+});
+
+test('#5924: el tipo real de un dropfile de voz es "audio", no "adjunto"', () => {
+  assert.equal(svc.outboundKind({ voice: '/tmp/parte-1.ogg' }), 'audio');
+  const alerta = svc.buildFailureAlert('voz-1.json', 'rechazo', 5, {
+    data: { voice: '/tmp/parte-1.ogg', _partIndex: 1, _partTotal: 3 },
+    errorCode: 413,
+  });
+  assert.match(alerta.message, /No se pudo enviar audio/);
+  assert.equal(alerta.context.tipo, 'audio');
 });
 
 // -----------------------------------------------------------------------------
