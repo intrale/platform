@@ -265,12 +265,22 @@ function detectDesync(opts = {}) {
         }
     }
 
+    // #5724 CA-3 / UX-5 — El copy describe el HECHO CONSUMADO, no una promesa.
+    //
+    // Antes, la rama `resoluble_reductivo` decía "El Pulpo realinea
+    // automáticamente... No requiere acción manual". Pero esta alerta se emite
+    // SOLO desde los caminos de human-block del pulpo: cuando llega acá, la
+    // auto-resolución YA se intentó y NO se aplicó. En el incidente del
+    // 2026-08-09 la clasificación fue justamente `resoluble_reductivo`, así que
+    // el mensaje le prometió al operador que no había nada que hacer mientras
+    // el pipeline quedaba frenado 10 horas. Nunca anunciar una auto-reparación
+    // que todavía no pasó.
     if (!opts.skipAlert) {
         try {
             notifyTelegram({
-                level: 'warn',
-                component: 'waves-desync',
-                message: 'waves.json y .partial-pause.json desincronizados',
+                level: 'error',
+                component: 'dispatch-suspendido',
+                message: 'Dispatch suspendido: la allowlist y la ola activa divergen y no se lanza ningún agente',
                 context: {
                     classification,
                     waves_allowlist: wavesAllow,
@@ -279,8 +289,13 @@ function detectDesync(opts = {}) {
                     missing_from_allowlist: removed,
                 },
                 action: classification === 'resoluble_reductivo'
-                    ? 'Divergencia REDUCTIVA (la allowlist tiene issues cerrados/ajenos respecto de la ola activa). El Pulpo realinea automáticamente a la ola activa dejando traza (carve-out #4350). No requiere acción manual salvo auditar la traza.'
-                    : 'Divergencia AMBIGUA (hay issues abiertos en la allowlist fuera de la ola, o estado indeterminado). Pipeline en human-block. NO se autoreparó (SEC-1). Decidí vos cuál archivo refleja la verdad y arreglalo a mano.',
+                    ? 'La divergencia es REDUCTIVA (la allowlist es subconjunto de la ola), pero el Pulpo NO pudo converger solo: ' +
+                      'el estado de algún issue quedó indeterminado o no pertenece a la ola activa. ' +
+                      'Mientras la divergencia siga, el dispatch no toma trabajo aunque haya cuota. ' +
+                      'Revisá los issues listados y sumalos a la allowlist si corresponde.'
+                    : 'La divergencia es AMBIGUA (hay issues abiertos en la allowlist fuera de la ola, o estado indeterminado). ' +
+                      'NO se autoreparó a propósito (SEC-1): realinear revocaría en silencio una autorización deliberada. ' +
+                      'El dispatch queda suspendido hasta que decidas cuál de los dos archivos refleja la verdad.',
                 diag: 'diff <(jq \'.active_wave.issues\' .pipeline/waves.json) <(jq \'.allowed_issues\' .pipeline/.partial-pause.json)',
             });
             result.alerted = true;
@@ -295,6 +310,26 @@ function detectDesync(opts = {}) {
 
 function isDesyncFlagSet() {
     return fs.existsSync(desyncFlagPath());
+}
+
+/**
+ * Lee el contenido del flag de bloqueo (`detected_at`, clasificación y la
+ * divergencia del momento en que se detectó). #5724 CA-3/CA-4: sin el
+ * `detected_at` un bloqueo de 10 horas se ve idéntico a uno de 10 minutos,
+ * tanto en el recordatorio de Telegram como en el dashboard.
+ *
+ * @returns {object|null} contenido parseado, o `null` si no hay flag o es
+ *   ilegible (nunca lanza: el caller degrada a "sin datos de antigüedad").
+ */
+function readDesyncFlag() {
+    try {
+        const p = desyncFlagPath();
+        if (!fs.existsSync(p)) return null;
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+        return (parsed && typeof parsed === 'object') ? parsed : null;
+    } catch {
+        return null;
+    }
 }
 
 function clearDesyncFlag() {
@@ -329,6 +364,7 @@ module.exports = {
     detectDesync,
     classifyDesync,
     isDesyncFlagSet,
+    readDesyncFlag,
     clearDesyncFlag,
     DESYNC_FLAG_BASENAME,
     _internal: {

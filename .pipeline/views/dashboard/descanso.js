@@ -20,6 +20,18 @@ const path = require('path');
 // compartido del sprite.svg). Misma dependencia que home.js / satellites.js.
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
+// Se monta en todas las ventanas: cuando el Pulpo suspende el dispatch no
+// avanza NADA, y la pregunta "por que no se mueve" se hace desde donde el
+// operador este parado. La entrega anterior dejo el estado en un modulo al que
+// no apunta ninguna ruta del menu y el bloqueo paso 10 h invisible.
+const {
+    resolveDesyncStatus: _dsbResolve,
+    renderDesyncBlockBannerSsr: _dsbRender,
+    DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+    desyncBlockBannerBundleJs: _dsbBundle,
+} = require('./desync-block-banner.js');
+
 // #4245 (Ola 7.1) — DESCANSO adopta el marco común MIZPÁ. Se reutiliza el
 // helper compartido `renderMissionBanner` de la HOME (#4189) — el banner de ola
 // común (② del marco: tag OLA + título + métricas + bloque AVANCE) — en vez de
@@ -1489,6 +1501,7 @@ ${css}
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${missionHtml}
+  ${_dsbRender(_dsbResolve())}
   ${navHtml}
   ${breadcrumb}
   <main class="satellite-body">${bodyHtml}</main>
@@ -1502,6 +1515,9 @@ ${CONFIRM_MODAL_JS}
 ${headerPillsClientScript()}
 ${COMMON_HELPERS}
 ${script}</script>
+
+<style>${_DSB_CSS}</style>
+<script>${_dsbBundle()}</script>
 </body>
 </html>`;
 }

@@ -2534,8 +2534,25 @@ async function handleWaveStatus({ pipelineRoot, audio, readOnly }) {
             // el ETA que lee el operador quedaría sesgado — exactamente la
             // degradación silenciosa que costó #4566. El cálculo de velocidad SÍ
             // corre (es lectura pura), así que el ETA mostrado es el mismo.
+            //
+            // #5836 — mismo payload que el dashboard: peso + conteo + fórmula,
+            // para que la serie sea comparable venga de donde venga el punto.
+            // Se usa la variante `WithDelta` porque este handler SÍ renderiza la
+            // nota de CA-5: necesita el punto previo, que hay que leer antes de
+            // apendear el actual.
             if (!readOnly) {
-                waveProgress.appendSnapshot({ pipelineRoot, waveKey, avancePct: snapshot.totalPct, now });
+                const { delta } = waveProgress.appendSnapshotWithDelta({
+                    pipelineRoot,
+                    waveKey,
+                    avancePct: snapshot.totalPct,
+                    now,
+                    totalWeight: snapshot.totalWeight,
+                    issueCount: snapshot.totalIssues,
+                    formulaV: snapshot.formulaV,
+                });
+                // CA-5 — la causa de la variación viaja al renderer, que decide si
+                // vale la pena anotarla (sólo caída por altas o corte de serie).
+                snapshot.progressDelta = delta;
             }
             const vel = await etaWave.calculateWaveVelocityETA(waveKey, snapshot.totalPct, now);
             // #4734 — CA-1: el handler `/wave` DELEGA en el módulo único y unifica el
