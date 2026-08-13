@@ -338,6 +338,112 @@ tuvo un cierre y subestima cuando no. `WAVE_VELOCITY_WINDOW` quedó **sin uso**.
 
 ---
 
+## Avance de ola ponderado por tamaño (#5836)
+
+`avancePct` — la señal que alimenta toda la velocidad y el ETA de esta doc — dejó de
+ser un **conteo plano de issues** y pasa a ser un **promedio ponderado por `size:*`**:
+
+```
+totalPct = Σ(peso_i × pct_i) / Σ(peso_i)          // wave-weight.js
+```
+
+### Qué problema resuelve
+
+Con conteo plano cada issue pesaba `1`. Al partir un issue, los hijos se sumaban a la
+ola y el padre quedaba abierto y dentro de ella, así que **el mismo trabajo pasaba a
+ocupar `1 + N` posiciones del denominador**. Medido el 2026-08-11 en la ola 9.4: 4
+cierres y 18 altas por splits movieron la ola de 95/50 a 113/54 y el indicador **bajó
+de 57 % a 52 %** sin que se perdiera una sola unidad de trabajo. La cascada
+multiplicaba: 17 entradas por 1 issue original.
+
+Eso rompía la lectura del indicador y la ETA derivada, y penalizaba justo la práctica
+que se quiere incentivar — partir issues grandes.
+
+### Reglas
+
+| Regla | Detalle |
+|---|---|
+| Peso por tamaño | `S=1`, `M=2`, `L=5`. Se reusa el `SIZE_VOCAB` de `eta-wave.js`, así que **`size:large` y `size:grande` colapsan al mismo bucket `L`** (ambos conviven en la ola: 10 y 6 issues) |
+| Peso default | `M` (2) para los issues sin ningún `size:*`. **No es un caso borde: 36 de 116 issues (31 %) de la ola medida no declaran tamaño**, así que el default gobierna casi un tercio del denominador. El renderer lo hace visible con el sufijo `N sin estimar` |
+| Conservación ante split | El peso de un subárbol es **siempre el peso propio de su raíz**, repartido entre las hojas en proporción a su `size:*`. Partir es neutro por construcción, no por aproximación |
+| Padre cubierto | Un padre cuyo trabajo ya vive en hijos presentes en la ola **pesa 0**; su avance es el agregado ponderado de los hijos. Aplica recursivamente: en una cascada sólo las hojas aportan |
+| Parentesco | Se deriva del **título canónico `[Split de #N]`** (`split-orphan-reconciler.parentOfSplitOrphan`), NO de `blockDependencies`: `authorization_ttls` está vacío en producción, así que esa fuente detectaría **cero** padres y el doble conteo persistiría |
+| Re-estimación | Si los hijos declaran más peso que el padre, el denominador **no se infla**: se reparte proporcionalmente y el exceso queda en `weightInflations` como re-estimación, no como retroceso de la ola |
+
+Verificado sobre la ola 9.4 real (116 issues): **24 padres** detectados y puestos en
+peso 0, profundidad máxima **5 niveles**, denominador ponderado 124 contra 116 del
+conteo plano.
+
+### Corte de serie, no recálculo
+
+Los registros de `wave-progress.jsonl` llevan ahora tres campos **opcionales y
+aditivos** (todos primitivos, SEC-2 intacto): `totalWeight`, `issueCount` y
+`formulaV` (`1` = conteo plano, `2` = ponderado).
+
+Los snapshots previos **no se recalculan**: nunca guardaron el peso, así que
+reconstruirlo sería inventar datos. `classifyProgressDelta` detecta el cambio de
+fórmula entre dos puntos y lo reporta como `series-break` en vez de atribuirle una
+causa. Los registros viejos se siguen leyendo sin migración.
+
+**El corte lo honran los consumidores, no sólo el writer.** Persistir `formulaV` no
+alcanza: la ventana de velocidad (`calculateWaveVelocityETA`) se trunca en el último
+cambio de fórmula (`_truncateAtFormulaChange`), de modo que la pendiente se mide
+siempre sobre un tramo homogéneo. Sin eso, el escalón de re-expresar el mismo avance
+en otra unidad (medido sobre la ola viva: v1 = 48 % contra v2 = 52 %, ~4 pp) se mide
+como ritmo REAL: sobre la serie real de la ola 10, con avance real de 0 pp, el cálculo
+devolvía `velocity` a 2,66 pp/h y un ETA de 16,5 h, y **persistía** esa velocidad
+fabricada en `wave-velocity-history.jsonl` (`0.0444 %/min`), donde sobrevive a la
+ventana de 3 h y contamina el fallback `historical` de las olas siguientes — la misma
+clase de incidente que #4886.
+
+No alcanzaba con `_repairDiscontinuities`: su umbral es de reset/restore y en la ola
+viva vale `(100/116)×4 = 3,45 pp`, así que el escalón de 4 pp cae **justo en el borde**
+(un issue más de ola y pasa inadvertido). La versión de fórmula es la señal exacta;
+el umbral es una heurística.
+
+La ausencia de `formulaV` se normaliza a `1` al leer (misma convención que
+`classifyProgressDelta`), porque los ~5000 registros ya escritos no traen el campo. Si
+el tramo homogéneo queda por debajo del piso de snapshots, el cálculo degrada con
+`reason:'formula-change'` — distinguible de una ola nueva sin serie
+(`insufficient-snapshots`).
+
+### Por qué el peso total se cuantiza
+
+El reparto proporcional divide y multiplica en punto flotante: un padre de peso 5
+repartido entre 3 hijos vuelve a sumar `4.999999999999999`. El residuo es irrelevante
+para el porcentaje (entero), pero **no** aguas abajo: `classifyProgressDelta` decide
+"el denominador creció" con una comparación, y un residuo de `+4e-15` alcanzaba para
+reportar un split perfectamente neutro como "caída por altas". Por eso el peso total
+se cuantiza a 6 decimales al publicarse y la comparación usa `WEIGHT_EPSILON = 1e-6`.
+
+### Distinguir una caída por altas de un retroceso
+
+Con dos `avancePct` sueltos el caso era **indecidible**. Con el peso persistido,
+`classifyProgressDelta(prev, curr)` devuelve `altas` (bajó el % pero creció el
+denominador), `retroceso` (bajó sin crecer), `avance`, `estable`, `series-break` o
+`unknown`. Cuando la causa es una alta, el header de `/wave` lo anota en la **línea 2**
+(itálica, discreta — no compite con el `%` ni el ETA, que son los valores accionables
+en bold):
+
+```
+_116 issues · 54 cerrados · 62 activos · 36 sin estimar · −5 pp por 18 altas, no retroceso_
+```
+
+El texto porta la señal completa —magnitud, unidad (`pp`, no `%`) y causa—; no depende
+de color ni de emoji.
+
+**Contra qué punto se compara.** No contra el inmediato anterior. El dashboard escribe
+un punto cada ~33 s (medido sobre la serie viva: n=200, mediana 32,9 s, p90 33,2 s),
+así que comparar contra el último punto medía media ventana de medio minuto: una caída
+por altas de hace 10 minutos ya estaba absorbida y el delta daba `estable` — la nota
+era, en la práctica, **inalcanzable**. La referencia es el punto más reciente con al
+menos `DELTA_LOOKBACK_MS` (10 min, override por `WAVE_PROGRESS_DELTA_LOOKBACK_MS`) de
+antigüedad, así la nota responde "qué cambió en los últimos 10 minutos" y no "entre los
+dos últimos refrescos". Si la serie es más joven que la ventana, se usa el punto más
+viejo disponible.
+
+---
+
 ## Limitaciones conocidas
 
 - El modelo de paralelismo `ceil(sum / concurrency)` es una cota superior. Cuando los tiempos por issue varían mucho, el agregado puede sobreestimar. No es planning exacto; el dashboard lo declara así en la UI (subtítulo "concurrency 3").
@@ -347,6 +453,8 @@ tuvo un cierre y subestima cuando no. `WAVE_VELOCITY_WINDOW` quedó **sin uso**.
 ---
 
 ## Historial
+
+- **2026-08-12** — Issue #5836. El avance de ola contaba issues sin peso, así que partir uno hundía el porcentaje aunque no se hubiera perdido trabajo (ola 9.4: 57 % → 52 % por 18 altas de split). Se pasó a promedio ponderado por `size:*` con conservación de peso ante splits (`wave-weight.js`), parentesco derivado del título `[Split de #N]`, y se extendió `wave-progress.jsonl` con `totalWeight`/`issueCount`/`formulaV` para poder distinguir una caída por altas de un retroceso. Corte de serie explícito, sin recálculo del histórico. Verificado sobre la ola real: 24 padres puestos en peso 0, 5 niveles de cascada, denominador 124 vs 116.
 
 - **2026-07-23** — Issue #4886. Velocidad/ETA de la ola falseadas por la serie histórica envenenada con saltos de reset/restore. Se agregó el techo de plausibilidad (escritura + lectura + poda), el descarte de tramos discontinuos y la degradación honesta con la ola quieta. Medición sobre el store real: 112 de 761 muestras eran picos artificiales (máximo 78,7 %/min ≈ 4723 %/hora); el promedio de las últimas 20 pasó de 306,8 %/hora a 51,5 %/hora.
 
