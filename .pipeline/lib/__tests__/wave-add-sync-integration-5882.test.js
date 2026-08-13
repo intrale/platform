@@ -161,7 +161,7 @@ test('si falla la escritura de la allowlist, el issue NO queda en waves.json (ro
 
         // CA-2 — error explícito al usuario.
         assert.ok(plano(reply).includes('partial_sync_failed'), `debe reportar el error-kind: ${reply}`);
-        assert.ok(plano(reply).includes('deshice la suma'), 'el mensaje dice qué pasó con el estado');
+        assert.ok(plano(reply).includes('deshice la promoción'), 'el mensaje dice qué pasó con el estado');
 
         // CA-2 — log con nivel error.
         assert.ok(logLines.length > 0, 'el fallo debe dejar rastro en el log');
@@ -264,7 +264,7 @@ test('si el estado de la allowlist es INDETERMINADO no se revierte (fail-safe)',
 
         assert.ok(readWaveIssues(dir).includes(880001), 'ante la duda NO se revierte');
         assert.ok(plano(reply).includes('partial_sync_failed'));
-        assert.ok(plano(reply).includes('indeterminada'), `el mensaje declara la incertidumbre: ${reply}`);
+        assert.ok(plano(reply).includes('no tengo certeza'), `el mensaje declara la incertidumbre: ${reply}`);
         assert.ok(logLines.some((l) => l.includes('landed=null')), 'el log deja el estado indeterminado');
     } finally {
         partialPause.setPartialPause = originalSet;

@@ -2849,12 +2849,19 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
             // Reconciliamos hacia adelante.
             logSyncError(`wave-add #${issueNumber} ola ${waveNumber}: sync reportó error pero la allowlist SÍ quedó escrita (${safe}). Estado coherente, sin rollback.`);
             if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-add');
+            // CA-UX-1 — este camino NO puede responder el ✅ pelado del happy
+            // path: el operador vería el mismo tilde verde ante una anomalía que
+            // obligó al sistema a razonar sobre si revertir. El objetivo de
+            // #5882 es eliminar el silencio, no moverlo al lado del humano.
+            // `sync-warning` activa un bloque condicional aditivo en el template
+            // (informativo, no alarma: el estado final ES coherente).
             return {
                 reply: fillTemplate('wave-add-ok', {
                     'issue-number': issueNumber,
                     'wave-number': waveNumber,
                     'wave-name': (targetWaveResolved && targetWaveResolved.name) || `Ola ${waveNumber}`,
                     'new-size': newSize,
+                    'sync-warning': true,
                 }),
             };
         }
@@ -2881,12 +2888,63 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
             `landed=${landed} rollback=${rolledBack}${rollbackErr ? ` rollback_error=${rollbackErr}` : ''}`,
         );
 
+        // CA-UX-2 — léxico único: se dice "Allowlist", y ninguna variante nueva
+        // (el sinónimo que proponía la receta técnica está prohibido por el
+        // contrato UX; hay un test que lo grepea acá para que no vuelva por
+        // copy/paste). Es el vocabulario que ya usan `allowlist.md` y
+        // `wave-promote-ok.md`, y encima es el nombre del comando que el
+        // operador va a correr para diagnosticar.
+        // CA-UX-3 — el peor caso lleva pasos concretos con comandos textuales, y
+        // distingue estado CONOCIDO-malo de INDETERMINADO (el operador actúa
+        // distinto en cada uno). Un solo `error-kind`: la diferenciación va en el
+        // cuerpo, no en el kind (respeta CA-2).
+        // El `e.message` crudo NO se interpola acá — va sanitizado al log
+        // (`safe`); al operador se le habla en castellano, no en stack trace.
+        // El texto va en PLANO: `fill-template` lo escapa a MarkdownV2 solo.
+        //
+        // Desvíos deliberados del copy propuesto en el contrato UX (que lo
+        // habilita si se documenta el porqué) — ambos verificados contra HEAD:
+        //   1. La sintaxis real es `/wave add <ola> #<issue>` (parser en L481-494:
+        //      exige `^\d+$` y `^#\d+$`). El copy proponía `/wave add 5698 12`,
+        //      que el parser RECHAZA por orden y por el `#` faltante.
+        //   2. El copy proponía `/wave remove <issue> <ola>` como vía de reversa.
+        //      Además del orden, `/wave remove` sobre la ola ACTIVA rebota con
+        //      `active_wave_locked` (política A04, L3195-3200) — y estos caminos
+        //      SIEMPRE son sobre la ola activa. Mandar al operador a un comando
+        //      que rebota es peor que no darle el paso: se reemplaza por la vía
+        //      que sí existe (la Allowlist) + `/wave status` para confirmar.
+        let message;
+        if (rolledBack) {
+            // A · rollback exitoso — el estado final es el previo al comando.
+            message = `No pude sumar el #${issueNumber} a la Allowlist, así que deshice la promoción `
+                + `para no dejarte el pipeline desincronizado. El #${issueNumber} NO quedó en la ola `
+                + `${waveNumber} — todo volvió a como estaba. `
+                + `Probá de nuevo con \`/wave add ${waveNumber} #${issueNumber}\`.`;
+        } else if (landed === null) {
+            // C · indeterminado — no se tocó nada más, a propósito.
+            message = `Promoción a medias y no pude releer la Allowlist para saber cómo quedó. `
+                + `El #${issueNumber} SÍ está en la ola ${waveNumber}; de la Allowlist no tengo certeza, `
+                + `así que no toqué nada más para no empeorarlo.\n\n`
+                + `Qué hacer:\n`
+                + `1. Corré \`allowlist\` para ver el estado real antes de reintentar.\n`
+                + `2. Si el #${issueNumber} figura ahí, ya está todo en orden y no hace falta nada más.\n`
+                + `3. Si no figura, pedí que se agregue — la Allowlist no se toca sin tu OK.`;
+        } else {
+            // B · conocido-malo — quedó a medias y el rollback tampoco salió.
+            message = `Promoción a medias y tampoco pude deshacerla. El #${issueNumber} quedó en la ola `
+                + `${waveNumber} pero NO entró a la Allowlist, así que el pipeline puede frenarse `
+                + `fail-closed por desync.\n\n`
+                + `Qué hacer:\n`
+                + `1. Corré \`allowlist\` para ver cómo quedó.\n`
+                + `2. Si falta el #${issueNumber}, pedí que se agregue — la Allowlist no se toca sin tu OK.\n`
+                + `3. Corré \`/wave status\` para confirmar la ola. Ojo: \`/wave remove\` no aplica acá, `
+                + `la ola activa está bloqueada para desasociar — la vía es la Allowlist.`;
+        }
+
         return {
             reply: fillTemplate('wave-error', {
                 'error-kind': 'partial_sync_failed',
-                message: rolledBack
-                    ? `No pude sincronizar la lista de despacho, así que deshice la suma: #${issueNumber} NO quedó en la ola ${waveNumber}. Probá de nuevo.`
-                    : `No pude sincronizar la lista de despacho NI deshacer la suma. #${issueNumber} quedó en la ola ${waveNumber} pero la allowlist está ${landed === null ? 'indeterminada' : 'sin el issue'}. Requiere revisión manual.`,
+                message,
             }),
         };
     }
