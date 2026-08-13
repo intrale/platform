@@ -301,6 +301,10 @@ scripts/planner-plan.json
 .pipeline/connectivity-state.json
 .pipeline/blocked-by-infra.json
 .pipeline/infra-health.json
+# #5243 — reporte del health-check de secretos. Nombra qué secreto falta en
+# ESTA máquina: en un repo público es un mapa de ataque. Mismo tratamiento que
+# infra-health.json, y la regla entra en el mismo commit que su writer.
+.pipeline/secrets-health.json
 .pipeline/events/
 .pipeline/tmp/
 # #2337 — estado reintentando + metricas UX rotadas (no comitear)
