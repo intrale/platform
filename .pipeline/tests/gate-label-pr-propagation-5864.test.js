@@ -2,6 +2,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { applyGateLabelAction } = require('../servicio-github');
+process.env.PULPO_NO_AUTOSTART = '1';
+const { gatePrPropagationDecision } = require('../pulpo');
 
 function fakeGithubClient(initialLabels) {
   const labels = new Set(initialLabels); const calls = [];
@@ -37,4 +39,31 @@ test('acción no-gate destinada a PR no usa la API de issues', () => {
   const ghClient = fakeGithubClient([]);
   assert.equal(applyGateLabelAction({ action: 'label', issue: 5790, target: 'pr', label: 'needs-human' }, ghClient), false);
   assert.equal(ghClient.calls.includes('editIssue'), false);
+});
+
+for (const reason of ['fetch_failed', 'no_strict_match', 'ambiguous_match', 'cross_repository']) {
+  test(`pulpo retiene la promoción cuando la resolución estricta falla con ${reason}`, () => {
+    const retentions = [];
+    const decision = gatePrPropagationDecision(
+      { ok: false, reason, detail: 'evidencia' },
+      { retain: (code, detail) => retentions.push({ code, detail }) },
+    );
+    assert.deepEqual(decision, {
+      allowPromotion: false,
+      code: `pr-propagation-${reason}`,
+      detail: 'evidencia',
+    });
+    assert.deepEqual(retentions, [{ code: `pr-propagation-${reason}`, detail: 'evidencia' }]);
+  });
+}
+
+test('pulpo sólo permite promover cuando el resolvedor estricto confirma el PR', () => {
+  let retained = false;
+  assert.deepEqual(gatePrPropagationDecision(
+    { ok: true, pr: { number: 5788 } },
+    { retain: () => { retained = true; } },
+  ), {
+    allowPromotion: true,
+  });
+  assert.equal(retained, false);
 });

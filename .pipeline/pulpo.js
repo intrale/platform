@@ -99,6 +99,20 @@ const visualGate = require('./lib/visual-gate');
 const gateVerdict = require('./lib/gate-verdict');
 const gateLabelReconciler = require('./lib/gate-label-reconciler');
 const gateAuditLog = require('./lib/audit-log');
+
+function gatePrPropagationDecision(resolved, { retain } = {}) {
+  if (resolved && resolved.ok === true) return { allowPromotion: true };
+  const reason = resolved && typeof resolved.reason === 'string'
+    ? resolved.reason
+    : 'fetch_failed';
+  const decision = {
+    allowPromotion: false,
+    code: `pr-propagation-${reason}`,
+    detail: resolved && resolved.detail ? String(resolved.detail) : null,
+  };
+  if (typeof retain === 'function') retain(decision.code, decision.detail);
+  return decision;
+}
 // #4575 — GATE 2 · Firma de Aceptación del operador. Función ÚNICA de
 // verificación (CA-2) invocada antes de promover `aprobacion → entrega`.
 // Kill switch por config (`operator_signature.enabled`), default OFF.
@@ -5578,12 +5592,16 @@ function brazoBarrido(config) {
               try {
                 const { resolvePrForGateWrite } = require('./lib/pr-info-fetcher');
                 const resolved = resolvePrForGateWrite(issue, { ghBin: GH_BIN, cwd: ROOT, timeoutMs: 5000 });
-                if (!resolved.ok) {
+                const propagationDecision = gatePrPropagationDecision(resolved, {
+                  retain: retainGate0FailClosed,
+                });
+                if (!propagationDecision.allowPromotion) {
                   gate0Audit('pr-propagation-skipped', {
                     reason: resolved.reason,
                     candidates: resolved.candidates || null,
                     detail: resolved.detail || null,
                   });
+                  continue;
                 } else {
                   const prRec = gateLabelReconciler.reconcileGateLabels({
                     currentLabels: resolved.pr.labels,
@@ -5606,6 +5624,8 @@ function brazoBarrido(config) {
                 }
               } catch (e) {
                 gate0Audit('pr-propagation-error', { reason: e.message });
+                retainGate0FailClosed('pr-propagation-error', e.message);
+                continue;
               }
 
               if (g0.verdict === 'requires-operator') {
@@ -21236,6 +21256,7 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    gatePrPropagationDecision,
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,
     // #5689 (R1) — término `--search` único del intake (anti-starvation).
