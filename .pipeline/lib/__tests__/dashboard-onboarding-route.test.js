@@ -69,7 +69,28 @@ test('#4851: onboarding conserva 5 pasos y expone los campos del descriptor comp
     assert.ok(res.body.includes('data-provider-id="nvidia-nim"'));
     assert.ok(res.body.includes('function owMoveProvider('));
     assert.ok(res.body.includes('function owProviderKey('));
-    assert.ok(!/groq/i.test(res.body), 'Groq/groq no debe aparecer en UI/script del wizard');
+
+    // El invariante de #4851 es "el wizard no OFRECE Groq como provider", no
+    // "el string groq no existe en ningun byte de la respuesta".
+    //
+    // Desde #5876 la vista inlinea el sprite compartido (`assets/icons/sprite.svg`)
+    // dentro de un `<div aria-hidden>` para que `<use href="#ic-pause-lock">` del
+    // banner de desync resuelva sin pedir el SVG por HTTP. Ese sprite es un asset
+    // global de todo el dashboard y trae un simbolo `ic-provider-groq` porque
+    // `groq` sigue siendo un provider id de primera clase en el resto del pipeline
+    // (credentials, redact, provider-balancer, validate-free-exclusions) y tiene
+    // sus propios tokens `--provider-groq*` en design-tokens.css. Es decir: el
+    // simbolo no es residuo del wizard y no se borra desde aca.
+    //
+    // Por eso el assert corre sobre el documento SIN el sprite: cubre el SSR del
+    // wizard, su script cliente y el shell, que es exactamente donde Groq no
+    // puede aparecer.
+    const SPRITE_BLOCK = /<div aria-hidden="true"[^>]*>\s*<!--[\s\S]*?<\/svg>\s*<\/div>/;
+    assert.match(res.body, SPRITE_BLOCK, 'la vista debe seguir inlineando el sprite compartido (#5876)');
+    const bodySinSprite = res.body.replace(SPRITE_BLOCK, '');
+    assert.ok(bodySinSprite.length < res.body.length, 'el sprite debe haberse recortado antes del assert');
+    assert.ok(bodySinSprite.includes('id="ow-form"'), 'recortar el sprite no debe llevarse el wizard');
+    assert.ok(!/groq/i.test(bodySinSprite), 'Groq/groq no debe aparecer en UI/script del wizard');
 });
 
 test('CA-S1: onboarding es un slug de la allowlist (partial desde loopback no da 400)', () => {
