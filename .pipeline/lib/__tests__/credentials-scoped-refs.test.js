@@ -35,7 +35,7 @@ test('CA-C2: entrega SOLO los scopes declarados del namespace', () => {
 });
 
 test('CA-C2: NO expande a otros namespaces (aislamiento de blast radius)', () => {
-  const res = cred.resolveScopedRefs('~/x.json#intrale', ['github', 'aws'], { data: FAKE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#intrale', ['github', 'aws'], { data: FAKE_DATA });
   assert.equal(res.ok, true);
   // sólo secretos de intrale, jamás de acme.
   assert.equal(res.scopes.github, 'gh-intrale-token');
@@ -44,7 +44,7 @@ test('CA-C2: NO expande a otros namespaces (aislamiento de blast radius)', () =>
 });
 
 test('CA-C2: scope declarado pero ausente en el namespace ⇒ missing (no ok)', () => {
-  const res = cred.resolveScopedRefs('~/x.json#acme', ['github', 'providers'], { data: FAKE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#acme', ['github', 'providers'], { data: FAKE_DATA });
   assert.equal(res.ok, false);
   assert.deepEqual(res.missing, ['providers']);
   assert.equal(res.scopes.github, 'gh-acme-token');
@@ -57,18 +57,18 @@ test('CA-C2: ref sin #namespace (valor literal) es rechazada', () => {
 });
 
 test('CA-C2: namespace inexistente ⇒ no ok, sin exponer datos', () => {
-  const res = cred.resolveScopedRefs('~/x.json#desconocido', ['github'], { data: FAKE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#desconocido', ['github'], { data: FAKE_DATA });
   assert.equal(res.ok, false);
   assert.deepEqual(res.scopes, {});
 });
 
 test('CA-C2: scopes vacío / no-array es rechazado', () => {
-  assert.equal(cred.resolveScopedRefs('~/x.json#intrale', [], { data: FAKE_DATA }).ok, false);
-  assert.equal(cred.resolveScopedRefs('~/x.json#intrale', null, { data: FAKE_DATA }).ok, false);
+  assert.equal(cred.resolveScopedRefs('~/.claude/secrets/credentials.json#intrale', [], { data: FAKE_DATA }).ok, false);
+  assert.equal(cred.resolveScopedRefs('~/.claude/secrets/credentials.json#intrale', null, { data: FAKE_DATA }).ok, false);
 });
 
 test('CA-C3: redactScoped devuelve SOLO nombres de scope, nunca valores', () => {
-  const res = cred.resolveScopedRefs('~/x.json#intrale', ['github', 'aws'], { data: FAKE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#intrale', ['github', 'aws'], { data: FAKE_DATA });
   const red = cred.redactScoped(res);
   assert.deepEqual(red.scopes.sort(), ['aws', 'github']);
   // el objeto redactado NO contiene ningún valor de secreto.
