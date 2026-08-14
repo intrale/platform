@@ -389,7 +389,11 @@ test('runOnce: el snapshot NO contiene fingerprint, masked ni body excerpt', asy
     });
     const serialized = JSON.stringify(result.snapshot);
     assert.ok(!serialized.includes('VERY_SECRET'), 'snapshot no debe contener la API key');
-    assert.ok(!/fingerprint|masked|body_excerpt|bodyExcerpt/i.test(serialized), 'snapshot no debe contener fingerprint/masked/body');
+    // #5888 S-D — el cruce de catálogo suma un SEGUNDO buffer (hasta 1 MiB) que
+    // vive dentro de `live-ping.js`. Este invariante se ensancha para cubrirlo:
+    // si algún día `catalogRaw` se filtrara al snapshot, acá se ve.
+    assert.ok(!/fingerprint|masked|body_excerpt|bodyExcerpt|catalogRaw|catalog_raw/i.test(serialized),
+        'snapshot no debe contener fingerprint/masked/body/catálogo crudo');
 });
 
 test('runOnce: persiste snapshot a state/multi-provider-health.json', async () => {

@@ -37,7 +37,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { escapeHtmlText, escapeHtmlAttr } = require('../../lib/escape-html.js');
-const { renderStatusBadge } = require('./components');
+const { renderStatusBadge, relativeTime, absTime } = require('./components');
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
 // #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
@@ -102,6 +102,17 @@ const HEALTH_LABEL = Object.freeze({ green: 'SANO', yellow: 'DEGRADADO', red: 'C
 
 // Traducción legible de los reason_code del health-cron (allowlist; lo demás se
 // muestra tal cual, escapado).
+//
+// #5888 D-6/CA-9/CA-18 — INVARIANTE: `ALLOWED_REASON_CODES` (health-alerts.js)
+// debe ser SUBCONJUNTO de las claves de este objeto, y ninguna etiqueta puede
+// contener `_`. Hay un test que lo verifica, y ese test es lo que impide que se
+// repita el precedente de #4869: ahí `cli_license_unavailable` entró a
+// `ALLOWED_REASON_CODES` y nunca acá, así que el operador leía literalmente
+// "cli license unavailable" en un panel que por lo demás está todo en español
+// (el fallback de `reasonHuman` sólo saca guiones bajos). Cuando entró #5888
+// había 5 códigos vivos en esa situación, no 1.
+//
+// Copy acordado con `ux` — NO cambiar sin actualizar la tabla de la definición.
 const REASON_LABEL = Object.freeze({
     cli_oauth_ok: 'OAuth CLI OK',
     authenticated: 'autenticado',
@@ -113,6 +124,15 @@ const REASON_LABEL = Object.freeze({
     no_key_configured: 'sin key configurada',
     unknown_provider: 'provider desconocido',
     cli_unavailable: 'CLI no disponible',
+    // #5888 CA-9 — los 5 huérfanos que ya estaban vivos sin etiqueta.
+    rate_limited: 'rate limit (429)',          // espeja FORBIDDEN (403): el código es lo que se googlea
+    unknown: 'causa desconocida',
+    network_error: 'error de red',             // distinto de `timeout de red`, que ya existía
+    cli_binary_undeclared: 'binario CLI no declarado',  // config faltante, no una caída
+    cli_license_unavailable: 'CLI sin licencia activa', // #4869: instalado pero no habilitado
+    // #5888 CA-8 — eje de VIGENCIA DE MODELO (no es salud del provider).
+    model_not_in_catalog: 'modelo fuera de catálogo',   // nombra lo observado (D-2), no un EOL inferido
+    model_check_unavailable: 'vigencia no verificable', // dice que NO SABEMOS, no que esté bien (D-3)
 });
 function reasonHuman(code) {
     if (!code) return '—';
@@ -270,7 +290,21 @@ function buildProvidersModel() {
             authMode: h.auth_mode || (k.editable === false ? 'oauth' : null),
             freeTierNotes: k.free_tier_notes || h.free_tier_notes || null,
             healthState: state,
+            // #5888 CA-16/R-C — `healthReason` queda INTACTO, reservado al eje de
+            // salud del provider. Los reason codes del eje de modelo NO se
+            // escriben acá: si lo hicieran, el operador leería
+            // "NVIDIA NIM · SANO · modelo fuera de catálogo" en un mismo renglón
+            // cuyo `title` dice "Causa reportada por el health-cron", e
+            // interpretaría el modelo muerto como la causa de la salud del
+            // provider — contradiciendo CA-5 en la superficie visible aunque el
+            // modelo de datos la respete. Peor: pisaría la causa real de salud
+            // cuando el provider ADEMÁS esté degradado.
             healthReason: h.reason_code || null,
+            // #5888 — eje de vigencia de catálogo, independiente de la salud.
+            // `null` para los providers fuera de alcance (anthropic / openai):
+            // el health-cron ni siquiera escribe el campo para ellos, así que la
+            // fila no muestra una vigencia que nadie verifica.
+            catalogCheck: (h.catalog_check && typeof h.catalog_check === 'object') ? h.catalog_check : null,
             // #4283 — discriminante de cuota real (#4202). Independiente del
             // estado de login: distingue "logueado" de "logueado + con cuota"
             // (CA-5). Shape seguro { adapterStatus, status, pct } — sin secretos.
@@ -286,8 +320,29 @@ function buildProvidersModel() {
 
     // Diagnóstico de la cadena.
     const total = providers.length;
+    // #5888 CA-5 — la fórmula de `degraded` / `healthy` NO cambia: el eje de
+    // modelo viaja aparte, en `modelsOutOfCatalog`. (El defecto de que los
+    // providers en `unknown` no entren a ninguno de los dos es #5895, fuera de
+    // alcance de este issue.)
     const degraded = providers.filter((p) => p.healthState === 'yellow' || p.healthState === 'red');
     const healthy = providers.filter((p) => p.healthState === 'green').length;
+
+    // #5888 UX-3/CA-15 — eje SEPARADO: pares (provider, model_id) configurados
+    // que ya no aparecen en el catálogo vivo de su provider. Alimenta el banner
+    // de misión, que sin esto afirmaría "TODO OK · Los 5 proveedores responden"
+    // con un modelo muerto — el mismo modo de falla que la historia elimina,
+    // con otra ropa. `model_check_unavailable` NO entra acá (no es evidencia de
+    // nada; se ve en la fila y nada más).
+    const modelsOutOfCatalog = [];
+    for (const p of providers) {
+        const cc = p.catalogCheck;
+        if (!cc || cc.state !== 'not_in_catalog') continue;
+        for (const m of (Array.isArray(cc.models) ? cc.models : [])) {
+            if (m && m.alive === false && typeof m.model_id === 'string') {
+                modelsOutOfCatalog.push({ providerKey: p.key, providerName: p.name, modelId: m.model_id });
+            }
+        }
+    }
     // Quién absorbe el fallback: el provider con mayor carga 24h.
     let absorber = null;
     for (const p of providers) {
@@ -312,6 +367,8 @@ function buildProvidersModel() {
             total,
             healthy,
             degraded,
+            // #5888 CA-15 — eje de modelo, separado de `degraded`.
+            modelsOutOfCatalog,
             absorber,
             defaultProvider: agents.defaultProvider,
             defaultChain: PROVIDER_ORDER.map((k) => PROVIDER_META[k].name),
@@ -404,12 +461,68 @@ function renderKeyCell(p) {
         + `<span aria-hidden="true">∅</span> sin key</div>`;
 }
 
-function renderCatalogCell(p) {
-    if (!p.models || p.models.length === 0) {
-        return `<div class="prov-models prov-models-empty">— sin catálogo —</div>`;
+/**
+ * #5888 UX-4/CA-8/CA-19 — Línea de VIGENCIA del catálogo. Vive en
+ * `prov-col-models` (no en `prov-col-health`): ésta es la celda semánticamente
+ * correcta para el eje de modelo, y está libre para los 3 providers en alcance
+ * porque `model-catalog.js` devuelve `null` para sus ids (G-8).
+ *
+ * Cuatro estados. La antigüedad va RELATIVA ("hace 4 h") porque lo que el
+ * operador necesita saber es si el dato está fresco, no la hora exacta; el ISO
+ * va al `title`. `vigencia nunca verificada` es un texto propio y necesario:
+ * "no verificable hace —" no comunica nada, y D-3 pide que la ausencia de señal
+ * se vea.
+ *
+ * WCAG 1.4.1: el estado lo dice el TEXTO por sí solo — el color sólo refuerza.
+ */
+function renderVigenciaLine(p, now) {
+    const cc = p.catalogCheck;
+    if (!cc || typeof cc !== 'object') return '';   // provider fuera de alcance del cruce.
+    const state = cc.state;
+    const rel = relativeTime(cc.checked_at, now);
+    const iso = cc.checked_at ? absTime(cc.checked_at) : '';
+
+    if (state === 'not_in_catalog') {
+        const dead = (Array.isArray(cc.models) ? cc.models : []).filter((m) => m && m.alive === false);
+        const chips = dead
+            .map((m) => `<span class="prov-model prov-model-dead" aria-label="${escapeHtmlAttr('modelo fuera de catálogo: ' + m.model_id)}">`
+                + `<span aria-hidden="true">⚠</span>${escapeHtmlText(m.model_id)}</span>`)
+            .join('');
+        const txt = `modelo fuera de catálogo${rel ? ` · verificado ${rel}` : ''}`;
+        return `<div class="prov-vigencia is-model-warn"`
+            + ` title="${escapeHtmlAttr('Última verificación de catálogo: ' + (iso || 'sin dato'))}">`
+            + `<span class="prov-vigencia-txt">${escapeHtmlText(txt)}</span>`
+            + `<span class="prov-vigencia-models">${chips}</span></div>`;
     }
-    const chips = p.models.map((m) => `<span class="prov-model">${escapeHtmlText(m)}</span>`).join('<span class="prov-model-sep" aria-hidden="true">·</span>');
-    return `<div class="prov-models" title="${escapeHtmlAttr('Modelos disponibles para ' + p.name)}">${chips}</div>`;
+    if (state === 'unavailable') {
+        const txt = `vigencia no verificable${rel ? ` · último intento ${rel}` : ''}`;
+        return `<div class="prov-vigencia is-model-info"`
+            + ` title="${escapeHtmlAttr('Último intento de verificación: ' + (iso || 'sin dato'))}">`
+            + `<span class="prov-vigencia-txt">${escapeHtmlText(txt)}</span></div>`;
+    }
+    if (state === 'verified') {
+        const txt = rel ? `verificado ${rel}` : 'verificado';
+        return `<div class="prov-vigencia is-model-ok"`
+            + ` title="${escapeHtmlAttr('Última verificación de catálogo: ' + (iso || 'sin dato'))}">`
+            + `<span class="prov-vigencia-txt">${escapeHtmlText(txt)}</span></div>`;
+    }
+    // 'never' (o cualquier estado no reconocido): la ausencia de señal se ve.
+    return `<div class="prov-vigencia is-model-info"`
+        + ` title="${escapeHtmlAttr('El cruce contra el catálogo del proveedor todavía no corrió para ' + p.name)}">`
+        + `<span class="prov-vigencia-txt">vigencia nunca verificada</span></div>`;
+}
+
+function renderCatalogCell(p, now) {
+    // `— sin catálogo local —` (antes `— sin catálogo —`) queda SÓLO para "no hay
+    // catálogo local declarado en model-catalog.js", que es un eje distinto de
+    // la vigencia y hoy se confundía con ella.
+    const chips = (!p.models || p.models.length === 0)
+        ? `<div class="prov-models prov-models-empty">— sin catálogo local —</div>`
+        : `<div class="prov-models" title="${escapeHtmlAttr('Modelos disponibles para ' + p.name)}">`
+            + p.models.map((m) => `<span class="prov-model">${escapeHtmlText(m)}</span>`)
+                .join('<span class="prov-model-sep" aria-hidden="true">·</span>')
+            + `</div>`;
+    return chips + renderVigenciaLine(p, now);
 }
 
 function renderKillSwitch(p) {
@@ -430,7 +543,7 @@ function renderKillSwitch(p) {
  * Una fila por proveedor (mockup v2). Toda la info — key, salud, tier, catálogo,
  * kill-switch — en una sola línea legible, sin solapas.
  */
-function renderProviderRow(p) {
+function renderProviderRow(p, now) {
     const sev = HEALTH_SEVERITY[p.healthState] || 'info';
     const healthLabel = HEALTH_LABEL[p.healthState] || 'SIN DATOS';
     const reasonTxt = reasonHuman(p.healthReason);
@@ -451,7 +564,7 @@ function renderProviderRow(p) {
     <span class="prov-health-reason" title="${escapeHtmlAttr('Causa reportada por el health-cron')}">${escapeHtmlText(reasonTxt)}</span>
     ${renderQuotaBar(p)}
   </div>
-  <div class="prov-col prov-col-models">${renderCatalogCell(p)}</div>
+  <div class="prov-col prov-col-models">${renderCatalogCell(p, now)}</div>
   <div class="prov-col prov-col-kill">${renderKillSwitch(p)}</div>
 </article>`;
 }
@@ -461,19 +574,48 @@ function renderProviderRow(p) {
  */
 function renderMissionBanner(meta) {
     const degradedCount = meta.degraded.length;
-    const calm = degradedCount === 0;
-    const cls = 'prov-mission' + (calm ? ' is-calm' : ' is-degraded');
+    // #5888 UX-3/CA-15 — El eje de modelo entra al banner SIN contradecir CA-5.
+    //
+    // Sin esto, el elemento de mayor jerarquía visual del panel —lo primero que
+    // el operador lee, y muchas veces lo único— afirmaría "La cadena de
+    // providers está sana · TODO OK · Los 5 proveedores responden" mientras un
+    // modelo configurado está muerto y los agentes que lo usan van a fallar al
+    // despachar. La etiqueta correcta de CA-8 estaría tres niveles más abajo,
+    // en la fila, sin nada que empuje a mirarla.
+    const outOfCatalog = Array.isArray(meta.modelsOutOfCatalog) ? meta.modelsOutOfCatalog : [];
+    const modelWarn = degradedCount === 0 && outOfCatalog.length > 0;
+    const calm = degradedCount === 0 && outOfCatalog.length === 0;
+    // Tratamiento de ADVERTENCIA, no de caído: la cadena efectivamente sigue
+    // operativa. Afirmar que un provider está abajo violaría CA-5.
+    const cls = 'prov-mission' + (calm ? ' is-calm' : modelWarn ? ' is-model-warn' : ' is-degraded');
+    const modelList = outOfCatalog.map((m) => `${m.modelId} (${m.providerName})`).join(', ');
 
     let ttl, chip, desc;
     if (calm) {
         ttl = 'La cadena de providers está sana';
         chip = 'TODO OK';
         desc = `Los ${meta.total} proveedores responden. La cadena de fallback puede absorber caídas sin intervención.`;
+    } else if (modelWarn) {
+        ttl = 'La cadena responde, pero hay modelos fuera de catálogo';
+        chip = outOfCatalog.length === 1
+            ? '1 MODELO FUERA DE CATÁLOGO'
+            : `${outOfCatalog.length} MODELOS FUERA DE CATÁLOGO`;
+        // "o como fallback" no es adorno: es el caso que motivó la historia y el
+        // que el operador NO deduce solo — un fallback roto no se nota hasta que
+        // cae el primario.
+        desc = `Los ${meta.total} proveedores responden. Modelos afectados: ${modelList}. `
+            + `Los agentes que los tengan configurados —como primario o como fallback— van a fallar al despachar.`;
     } else {
         const names = meta.degraded.map((p) => `${p.name} (${reasonHuman(p.healthReason)})`).join(', ');
         ttl = 'La cadena de providers está degradada';
         chip = degradedCount === 1 ? '1 PROVEEDOR CAÍDO' : `${degradedCount} PROVEEDORES CAÍDOS`;
         desc = `Afectados: ${names}. La cadena sigue operativa por fallback, pero con menos redundancia.`;
+        // Provider degradado Y modelo fuera de catálogo: los dos ejes conviven,
+        // ninguno tapa al otro.
+        if (outOfCatalog.length > 0) {
+            desc += ` Además, modelos fuera de catálogo: ${modelList} — los agentes que los tengan `
+                + `configurados, como primario o como fallback, van a fallar al despachar.`;
+        }
     }
 
     const abs = meta.absorber;
@@ -485,15 +627,18 @@ function renderMissionBanner(meta) {
         ? `absorbe una porción alta de la cadena`
         : `reparto de carga saludable`;
 
-    const badgeN = calm ? String(meta.healthy) : String(degradedCount);
-    const badgeK = calm ? 'SANOS' : 'CAÍDOS';
+    // En la rama de advertencia el contador cuenta MODELOS, no providers: decir
+    // "N CAÍDOS de 5 PROVIDERS" con los 5 verdes sería mentir (CA-5).
+    const badgeN = modelWarn ? String(outOfCatalog.length) : calm ? String(meta.healthy) : String(degradedCount);
+    const badgeK = modelWarn ? 'MODELOS' : calm ? 'SANOS' : 'CAÍDOS';
+    const badgeS = modelWarn ? 'FUERA DE CATÁLOGO' : `DE ${String(meta.total)} PROVIDERS`;
 
     return `
-<div class="${cls}" id="prov-mission" role="region" aria-label="Diagnóstico de la cadena de proveedores">
+<div class="${cls}" id="prov-mission" role="region" aria-label="Diagnóstico de la cadena de proveedores y vigencia de sus modelos">
   <div class="prov-btag">
     <div class="prov-btag-n">${escapeHtmlText(badgeN)}</div>
     <div class="prov-btag-k">${escapeHtmlText(badgeK)}</div>
-    <div class="prov-btag-s">DE ${escapeHtmlText(String(meta.total))} PROVIDERS</div>
+    <div class="prov-btag-s">${escapeHtmlText(badgeS)}</div>
   </div>
   <div class="prov-mtext">
     <div class="prov-m-ttl">${escapeHtmlText(ttl)}<span class="prov-m-chip">${escapeHtmlText(chip)}</span></div>
@@ -502,7 +647,7 @@ function renderMissionBanner(meta) {
       <div class="prov-wm">
         <div class="prov-wm-l">🟢 PROVEEDORES SANOS</div>
         <div class="prov-wm-v">${escapeHtmlText(String(meta.healthy))} <span class="u">de ${escapeHtmlText(String(meta.total))}</span></div>
-        <div class="prov-wm-s">${calm ? 'cadena completa' : escapeHtmlText(meta.degraded.map((p) => p.name).join(', ') + ' fuera')}</div>
+        <div class="prov-wm-s">${(calm || modelWarn) ? 'cadena completa' : escapeHtmlText(meta.degraded.map((p) => p.name).join(', ') + ' fuera')}</div>
       </div>
       <div class="prov-wm">
         <div class="prov-wm-l">⚖ ABSORBE EL FALLBACK</div>
@@ -521,6 +666,9 @@ function renderMissionBanner(meta) {
       <div class="prov-reco-l">${calm ? '✓ SIN ACCIÓN PENDIENTE' : '⚠ ACCIÓN SUGERIDA'}</div>
       <div class="prov-reco-t">${calm
           ? 'Monitorear. La cadena tiene redundancia para absorber una caída.'
+          : modelWarn
+          ? escapeHtmlText('Actualizar en agent-models.json: ' + outOfCatalog.map((m) => m.modelId).join(', ')
+              + '. La cadena sigue operativa mientras tanto.')
           : escapeHtmlText('Revisar ' + meta.degraded.map((p) => p.name).join(', ') + ' (terminal Windows / health-run). El resto cubre el fallback.')}</div>
     </div>
   </div>
@@ -548,8 +696,14 @@ function renderAgentStrip(meta) {
 </section>`;
 }
 
-function bodyHtml(model) {
-    const rows = model.providers.map(renderProviderRow).join('');
+function bodyHtml(model, now) {
+    // #5888 — `now` EXPLÍCITO, nunca `.map(renderProviderRow)` a secas: `map`
+    // pasa el ÍNDICE del array como 2do argumento, y un índice es un número
+    // finito, así que `relativeTime` lo tomaría como timestamp de referencia y
+    // TODA la columna de vigencia diría "ahora". Un panel que siempre dice
+    // "verificado ahora" es peor que uno que no dice nada: el operador le cree.
+    const ref = Number.isFinite(now) ? now : Date.now();
+    const rows = model.providers.map((p) => renderProviderRow(p, ref)).join('');
     return `
 ${renderMissionBanner(model.meta)}
 <section class="in-section" aria-labelledby="providers-title">
@@ -691,10 +845,14 @@ const PANEL_CSS = `
   background: var(--in-bg-3); border: 1px solid var(--in-border); border-radius: 14px; padding: 18px 22px; }
 .prov-mission.is-degraded { border-color: var(--in-bad); box-shadow: inset 3px 0 0 var(--in-bad); }
 .prov-mission.is-calm { border-color: var(--in-ok); box-shadow: inset 3px 0 0 var(--in-ok); }
+/* #5888 UX-3 — severidad PROPIA del eje de modelo: advertencia (--in-warn), no
+   caído (--in-bad). La cadena efectivamente sigue operativa (CA-5). */
+.prov-mission.is-model-warn { border-color: var(--in-warn); box-shadow: inset 3px 0 0 var(--in-warn); }
 .prov-btag { display: flex; flex-direction: column; align-items: center; justify-content: center;
   min-width: 120px; padding: 12px 16px; border-radius: 12px; background: var(--in-bg-2); border: 1px solid var(--in-border); }
 .prov-mission.is-degraded .prov-btag { background: var(--in-bad-soft); border-color: var(--in-bad); }
 .prov-mission.is-calm .prov-btag { background: var(--in-ok-soft); border-color: var(--in-ok); }
+.prov-mission.is-model-warn .prov-btag { background: var(--in-warn-soft); border-color: var(--in-warn); }
 .prov-btag-n { font-size: 42px; font-weight: 900; line-height: 1; }
 .prov-btag-k { font-size: 12px; font-weight: 800; letter-spacing: 1px; margin-top: 4px; }
 .prov-btag-s { font-size: 9.5px; font-weight: 700; color: var(--in-fg-dim); letter-spacing: .6px; margin-top: 3px; }
@@ -704,6 +862,8 @@ const PANEL_CSS = `
   background: var(--in-bg-2); border: 1px solid var(--in-border); color: var(--in-fg-dim); }
 .prov-mission.is-degraded .prov-m-chip { background: var(--in-bad-soft); border-color: var(--in-bad); color: var(--in-bad); }
 .prov-mission.is-calm .prov-m-chip { background: var(--in-ok-soft); border-color: var(--in-ok); color: var(--in-ok); }
+.prov-mission.is-model-warn .prov-m-chip { background: var(--in-warn-soft); border-color: var(--in-warn); color: var(--in-warn); }
+.prov-mission.is-model-warn .prov-reco { border-color: var(--in-warn); }
 .prov-m-desc { font-size: 13px; color: var(--in-fg-dim); line-height: 1.5; }
 .prov-wmetrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 6px; }
 .prov-wm { background: var(--in-bg-2); border: 1px solid var(--in-border); border-radius: 10px; padding: 10px 12px; }
@@ -759,6 +919,20 @@ const PANEL_CSS = `
   border: 1px solid var(--in-border); border-radius: 6px; padding: 2px 7px; }
 .prov-model-sep { color: var(--in-fg-soft); }
 .prov-models-empty { font-size: 11px; color: var(--in-fg-soft); }
+/* #5888 UX-4/CA-19 — Eje de VIGENCIA DE CATÁLOGO. Vive en prov-col-models, no
+   en prov-col-health: son ejes distintos y mezclarlos hace leer el modelo muerto
+   como la causa de la salud del provider. El significado lo lleva el TEXTO
+   (WCAG 1.4.1); el color y el ⚠ del chip sólo refuerzan. Sin colores nuevos:
+   reusa las parejas MIZPÁ ya validadas en AA sobre tema oscuro. */
+.prov-col-models { display: flex; flex-direction: column; gap: 5px; }
+.prov-vigencia { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 10.5px; font-weight: 600; }
+.prov-vigencia-txt { white-space: normal; }
+.prov-vigencia.is-model-ok { color: var(--in-fg-dim); }
+.prov-vigencia.is-model-info { color: var(--in-info); }
+.prov-vigencia.is-model-warn { color: var(--in-warn); font-weight: 700; }
+.prov-vigencia-models { display: flex; gap: 5px; flex-wrap: wrap; }
+.prov-model-dead { display: inline-flex; align-items: center; gap: 4px;
+  color: var(--in-warn); background: var(--in-warn-soft); border-color: var(--in-warn); }
 .prov-kill { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 800; letter-spacing: .5px;
   padding: 7px 12px; border-radius: 9px; cursor: pointer; border: 1px solid var(--in-border); background: var(--in-bg-2); color: var(--in-fg); }
 .prov-kill-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
@@ -965,5 +1139,10 @@ module.exports = {
     renderMissionBanner,
     renderAgentStrip,
     renderInert,
+    // #5888 — expuestos para los tests del eje de modelo (CA-9/CA-15/CA-16/CA-18).
+    renderCatalogCell,
+    renderVigenciaLine,
+    REASON_LABEL,
+    reasonHuman,
     slug: 'providers',
 };
