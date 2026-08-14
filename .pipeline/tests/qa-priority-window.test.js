@@ -18,8 +18,13 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
+const previousPipelineDirOverride = process.env.PIPELINE_DIR_OVERRIDE;
+const TEST_PIPELINE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-priority-window-'));
+fs.mkdirSync(path.join(TEST_PIPELINE_DIR, 'servicios', 'telegram', 'pendiente'), { recursive: true });
+process.env.PIPELINE_DIR_OVERRIDE = TEST_PIPELINE_DIR;
 process.env.PULPO_NO_AUTOSTART = '1';
 const pulpo = require(path.join(__dirname, '..', 'pulpo.js'));
 
@@ -34,7 +39,7 @@ const {
     _setBuildPriorityState,
 } = pulpo;
 
-const PRIORITY_FILE = path.join(__dirname, '..', 'priority-windows.json');
+const PRIORITY_FILE = path.join(TEST_PIPELINE_DIR, 'priority-windows.json');
 
 const baseConfig = {
     pipelines: {
@@ -86,20 +91,26 @@ function test(name, fn) { tests.push({ name, fn }); }
 async function runAll() {
     backupPriorityFile();
     let passed = 0; let failed = 0; const errors = [];
-    for (const t of tests) {
-        reset();
-        try {
-            await t.fn();
-            passed++;
-            console.log(`  + ${t.name}`);
-        } catch (e) {
-            failed++;
-            errors.push({ name: t.name, err: e });
-            console.log(`  x ${t.name}`);
-            console.log(`     ${e && e.message}`);
+    try {
+        for (const t of tests) {
+            reset();
+            try {
+                await t.fn();
+                passed++;
+                console.log(`  + ${t.name}`);
+            } catch (e) {
+                failed++;
+                errors.push({ name: t.name, err: e });
+                console.log(`  x ${t.name}`);
+                console.log(`     ${e && e.message}`);
+            }
         }
+    } finally {
+        restorePriorityFile();
+        fs.rmSync(TEST_PIPELINE_DIR, { recursive: true, force: true });
+        if (previousPipelineDirOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = previousPipelineDirOverride;
     }
-    restorePriorityFile();
     console.log(`\n${passed} passed, ${failed} failed (${tests.length} total)`);
     if (failed > 0) {
         for (const e of errors) {

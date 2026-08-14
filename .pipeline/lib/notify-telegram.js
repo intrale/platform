@@ -120,6 +120,46 @@ function redactFreeText(value) {
     return redactSecretValue(redactSensitive(String(value)));
 }
 
+// #5924 — Bloque de código opcional al pie del mensaje.
+//
+// Por qué NO alcanza con `escapeMarkdownLegacy`: cuando el texto a mostrar es
+// contenido REMOTO (p. ej. el `description` que devuelve la API de Telegram al
+// rechazar un envío), escaparlo lo deja legible pero visualmente indistinguible
+// del resto del mensaje. Un bloque de código lo separa como "esto es un dato
+// crudo, no una frase del pipeline" y además es inmune a cualquier entidad
+// Markdown: dentro del fence no hay parseo.
+//
+// Fail-closed contra el mismatch de dialecto (R6 de #5924): el path de dropfiles
+// envía con `parse_mode: 'Markdown'` v1 mientras otros módulos escapan para V2 —
+// los sets de caracteres no coinciden. Por eso acá NO escapamos: encerramos.
+// Lo único que puede romper el fence es un backtick o un salto de línea con
+// otro fence, así que se eliminan del contenido antes de encerrarlo.
+const CODE_BLOCK_MAX = 500;
+
+function sanitizeCodeBlockContent(value) {
+    return redactFreeText(value)
+        .replace(/`/g, "'")          // no puede cerrar el fence antes de tiempo
+        .replace(/[\r\n]+/g, ' ')    // una sola línea: no puede abrir otro fence
+        .trim()
+        .slice(0, CODE_BLOCK_MAX);
+}
+
+/**
+ * Anexa un bloque de código al texto YA escapado. El contenido del bloque NO se
+ * escapa (dentro del fence el backslash se vería crudo); se sanea para que no
+ * pueda salirse del bloque.
+ *
+ * @param {string} escapedText — salida de `escapeMarkdownLegacy(buildMessage(...))`
+ * @param {*} raw — contenido crudo del bloque (`null`/vacío → no-op)
+ * @returns {string}
+ */
+function appendCodeBlock(escapedText, raw) {
+    if (raw == null || String(raw).trim() === '') return escapedText;
+    const content = sanitizeCodeBlockContent(raw);
+    if (!content) return escapedText;
+    return `${escapedText}\n\n\`\`\`\n${content}\n\`\`\``;
+}
+
 /**
  * Construye el texto del mensaje a partir del payload estructurado.
  * Determinístico — los tests pueden comparar string-equal sobre la salida
@@ -199,6 +239,9 @@ function buildMessage(payload) {
  * @param {object} [payload.context]   — campos custom k:v
  * @param {object} [payload.holder]    — { pid, hostname, startTime } del holder
  *                                       (caso lock timeout)
+ * @param {string} [payload.codeBlock] — #5924: contenido crudo/remoto a mostrar
+ *                                       en un bloque de código al pie (saneado,
+ *                                       no escapado, cap 500 chars)
  * @returns {{ ok: boolean, dropPath?: string, reason?: string }}
  */
 function notifyTelegram(payload) {
@@ -243,7 +286,10 @@ function notifyTelegram(payload) {
         // todo lo que parezca un metacarácter viene de datos interpolados y tiene
         // que llegar literal. Escapamos el texto completo para que el envío no se
         // caiga con `400 can't parse entities` y termine en `fallido/`.
-        text: escapeMarkdownLegacy(text),
+        // #5924 — `codeBlock` (opcional) se anexa DESPUÉS del escape: su
+        // contenido va literal dentro de un fence, no escapado. Sin `codeBlock`
+        // la salida es byte-idéntica a la histórica.
+        text: appendCodeBlock(escapeMarkdownLegacy(text), payload.codeBlock),
         parse_mode: 'Markdown',
     };
     if (destination.chatId != null) drop.chat_id = destination.chatId;
@@ -267,5 +313,9 @@ module.exports = {
         EMOJI_BY_LEVEL,
         canonicalChatId,
         resolvePrivateChatId,
+        // #5924
+        appendCodeBlock,
+        sanitizeCodeBlockContent,
+        CODE_BLOCK_MAX,
     },
 };

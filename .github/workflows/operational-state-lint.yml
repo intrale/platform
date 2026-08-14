@@ -1,0 +1,60 @@
+name: Operational State Lint
+
+# Issue #5175 (parte 1 de 3 del split de #5109) — CA-4a, no-negociable: defensa
+# en profundidad. El hook `.husky/pre-commit` local es bypassable con
+# `--no-verify`; este job duplica el guardrail en CI. Mismo precedente que
+# `ghost-artifact-lint.yml` (CA-SEC-8 de #3638).
+#
+# CORRE EN `--report-only` A PROPOSITO (CA-9a / R5). No es un olvido:
+#   - En la parte 1 el repo TIENE violations (18 al momento del merge): la
+#     migracion de lectores va en la parte 2 y la de escritores en la parte 3.
+#     Un guardrail en `enforce` no puede mergearse antes que la migracion,
+#     porque fallaria contra su propio repo y dejaria main rojo.
+#   - El flip a `--check` va en la parte 3, junto con el registro del required
+#     check de branch protection (#5183). Registrarlo antes del flip deja el
+#     check rojo durante toda la migracion.
+#
+# NO "corregir" el `--report-only` a `--check` en esta parte.
+#
+# `pull_request` y NUNCA `pull_request_target`: el segundo corre con el token
+# del repo BASE y acceso a secrets sobre codigo de un fork.
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - '.pipeline/**'
+      - '.github/workflows/operational-state-lint.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - '.pipeline/**'
+
+# CA-4c — el job solo lee el checkout. Sin escritura sobre el repo.
+permissions:
+  contents: read
+
+jobs:
+  operational-state-lint:
+    runs-on: ubuntu-latest
+    name: Operational state lint (envoltorio requerido, report-only)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Run operational-state lint (report-only)
+        working-directory: .pipeline
+        run: node lib/operational-state-lint.js --report-only
+
+      - name: Publicar inventario en el resumen del run
+        working-directory: .pipeline
+        run: node lib/operational-state-lint.js --report >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run operational-state lint unit tests
+        working-directory: .pipeline
+        run: node --test lib/__tests__/operational-state-lint.test.js
