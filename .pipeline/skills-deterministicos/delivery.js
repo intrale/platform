@@ -13,6 +13,8 @@ const absencePolicy = require('../lib/operator-absence-policy');
 const absenceAudit = require('../lib/operator-absence-audit');
 const operatorGate = require('../lib/operator-gate');
 const { sanitizeReason } = require('../lib/kernel-actions-audit');
+// #5864 — dueño único de la invariante "imposible qa:passed + qa:failed".
+const gateLabelReconciler = require('../lib/gate-label-reconciler');
 // #5420 — Verificación de procedencia de la rama del PR antes de mergear.
 // Se CONSUME la implementación canónica (#5419): es `git fetch` + `git log`
 // contra la allowlist de committers, no necesita worktree y no se duplica acá.
@@ -163,8 +165,8 @@ function findExistingPR(branch) {
     } catch { return null; }
 }
 
-function getPRLabels(prNumber) {
-    const r = git.runGh(['pr', 'view', String(prNumber), '--json', 'labels'], { cwd: WORK_DIR });
+function getPRLabels(prNumber, { ghImpl = git.runGh } = {}) {
+    const r = ghImpl(['pr', 'view', String(prNumber), '--json', 'labels'], { cwd: WORK_DIR });
     if (r.exit_code !== 0) return [];
     try {
         return (JSON.parse(r.stdout).labels || []).map((l) => l.name);
@@ -173,6 +175,141 @@ function getPRLabels(prNumber) {
 
 function hasQaGate(labels) {
     return labels.some((l) => QA_LABELS_OK.has(l));
+}
+
+// ============================================================================
+// #5864 — Propagación del label de gate QA issue → PR.
+// ============================================================================
+//
+// El ciclo de QA aplica el label sobre el ISSUE (`gate-label-reconciler.js` es
+// su dueño único desde #4572) y el gate previo al merge lo busca en el PR
+// (`hasQaGate(snapshot.labels)`, Fase 5). Ese tramo nunca se cerraba: los PRs
+// #5519 / #5788 / #5790 tenían el ciclo de QA completo con `qa:passed` en el
+// issue, nacían con `needs-definition` y quedaban frenados hasta que un humano
+// copiaba el label a mano.
+//
+// Se implementa ACÁ, y no en GATE 0 del pulpo ni en el CLI manual
+// `.pipeline/delivery.js`, porque este es el único punto del runtime donde el
+// PR ya existe y todavía no se mergeó:
+//   - GATE 0 corre en la promoción `verificacion → linteo`; el PR lo crea esta
+//     misma fase `entrega`, varias fases después. Ahí el PR no existe todavía.
+//   - `.pipeline/delivery.js` es el CLI manual (#2870). El provider
+//     determinístico resuelve `skills-deterministicos/<skill>.js`, así que ese
+//     archivo NO se ejecuta en la fase `entrega`.
+//
+// Reglas (fail-closed, nunca relaja el gate):
+//   - SEC-1: el vínculo issue↔PR lo establece la RAMA (`agent/<issue>-…`),
+//     jamás el `Closes #<n>` del cuerpo (lo escribe quien abre el PR).
+//   - SEC-2: ante ausencia o conflicto de labels de gate en el issue no se
+//     escribe nada. Nunca se infiere aprobación por falta de datos.
+//   - SEC-3: unidireccional. El issue es la única autoridad; el PR es destino
+//     y jamás origen.
+//   - CA-4: el estado proyectado del PR pasa por `assertMutualExclusion`, así
+//     que es imposible dejarlo con `qa:passed` + `qa:failed`.
+
+// Universo de labels de gate que pueden vivir en el PR. Incluye `qa:skipped`
+// (CA-1 lo nombra explícitamente y el gate de Fase 5 ya lo acepta), que el
+// reconciliador NO conoce a propósito — ampliarle `GATE_LABELS` es #5869.
+const QA_GATE_LABELS = ['qa:passed', 'qa:skipped', 'qa:failed', 'qa:pending'];
+// Labels que MANTIENEN cerrado el gate. Si el issue tiene uno de estos, se
+// propaga igual: propagar la verdad negativa es correcto y no destraba nada.
+const QA_GATE_BLOCKING = new Set(['qa:failed', 'qa:pending']);
+
+/**
+ * Decide (función PURA, sin gh ni fs) qué labels de gate escribir en el PR.
+ *
+ * @returns {{ok:false, reason:string, labels?:string[], branch?:string}
+ *          |{ok:true, target:string, toAdd:string[], toRemove:string[]}}
+ */
+function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels } = {}) {
+    const issueNum = parseInt(issue, 10);
+    if (!Number.isInteger(issueNum) || issueNum <= 0) return { ok: false, reason: 'sin_issue' };
+    const pr = parseInt(prNumber, 10);
+    if (!Number.isInteger(pr) || pr <= 0) return { ok: false, reason: 'pr_no_resuelto' };
+
+    // SEC-1 — resolución estricta por rama. `agent/5864-…` NO matchea el issue
+    // 586 ni el 58640: el separador `-` es parte del prefijo exigido.
+    if (typeof branch !== 'string' || !branch.startsWith(`agent/${issueNum}-`)) {
+        return { ok: false, reason: 'rama_no_corresponde_al_issue', branch: branch || null };
+    }
+
+    const norm = (list) => [...new Set(
+        (Array.isArray(list) ? list : [])
+            .map((l) => ((l && typeof l === 'object' && l.name) ? String(l.name) : String(l))),
+    )];
+    const issueGates = norm(issueLabels).filter((l) => QA_GATE_LABELS.includes(l));
+    const currentPr = norm(prLabels);
+
+    if (issueGates.length === 0) return { ok: false, reason: 'issue_sin_label_de_gate' };
+
+    // Precedencia determinística. Un issue con señal negativa Y positiva a la
+    // vez es un estado incoherente: no se toca el PR (SEC-2).
+    const blocking = issueGates.filter((l) => QA_GATE_BLOCKING.has(l));
+    const passing = issueGates.filter((l) => QA_LABELS_OK.has(l));
+    if (blocking.length > 1 || (blocking.length > 0 && passing.length > 0)) {
+        return { ok: false, reason: 'labels_de_gate_en_conflicto', labels: issueGates };
+    }
+    const target = blocking.length === 1
+        ? blocking[0]
+        : (passing.includes('qa:passed') ? 'qa:passed' : 'qa:skipped');
+
+    const toRemove = QA_GATE_LABELS.filter((l) => l !== target && currentPr.includes(l));
+    const toAdd = currentPr.includes(target) ? [] : [target];
+
+    // CA-4 / SEC-R4 — el guard del dueño único corre sobre el estado proyectado
+    // DEL PR (SEC-4: labels del PR, nunca los del issue).
+    const projected = new Set(currentPr);
+    for (const l of toRemove) projected.delete(l);
+    for (const l of toAdd) projected.add(l);
+    gateLabelReconciler.assertMutualExclusion(projected, { target, toAdd, toRemove });
+
+    if (toAdd.length === 0 && toRemove.length === 0) {
+        return { ok: false, reason: 'pr_ya_reconciliado', labels: [target] };
+    }
+    return { ok: true, target, toAdd, toRemove };
+}
+
+/**
+ * Aplica la propagación contra GitHub. NUNCA es fatal: si falla, el PR queda
+ * sin el label y la Fase 5 bloquea fail-closed, que es el comportamiento
+ * correcto. Devuelve los labels efectivamente aplicados (o `[]`).
+ */
+function propagateGateLabelToPr({ issue, prNumber, branch, issueLabels, log = () => {}, ghImpl = git.runGh } = {}) {
+    let decision;
+    try {
+        // Labels FRESCOS del PR (SEC-4: los del PR, nunca los del issue), leídos
+        // acá mismo para minimizar la ventana TOCTOU contra el `gh pr edit`.
+        const prLabels = getPRLabels(prNumber, { ghImpl });
+        decision = buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels });
+    } catch (e) {
+        log(`[delivery] gate QA issue→PR: no se propaga (${(e && e.message || '').slice(0, 200)})`);
+        return [];
+    }
+    if (!decision.ok) {
+        log(`[delivery] gate QA issue→PR: no se propaga al PR #${prNumber} (${decision.reason})`);
+        return [];
+    }
+    // Un solo `gh pr edit` con removes + add: GitHub lo aplica como una única
+    // edición, así que no existe ventana con `qa:passed` y `qa:failed` juntos.
+    const editArgs = ['pr', 'edit', String(prNumber)];
+    for (const l of decision.toRemove) editArgs.push('--remove-label', l);
+    for (const l of decision.toAdd) editArgs.push('--add-label', l);
+    let res;
+    try {
+        res = ghImpl(editArgs, { cwd: WORK_DIR, timeoutMs: 60 * 1000 });
+    } catch (e) {
+        log(`[delivery] gate QA issue→PR: gh pr edit lanzó excepción (${(e && e.message || '').slice(0, 200)})`);
+        return [];
+    }
+    if (!res || res.exit_code !== 0) {
+        const err = ((res && (res.stderr || res.stdout)) || '').slice(0, 200);
+        log(`[delivery] gate QA issue→PR: gh pr edit falló (${err || 'sin stderr'}) — el gate sigue cerrado`);
+        return [];
+    }
+    log(`[delivery] gate QA issue→PR: PR #${prNumber} → ${decision.target}`
+        + (decision.toRemove.length ? ` (quitados: ${decision.toRemove.join(',')})` : '')
+        + ` [desde el issue #${issue}]`);
+    return decision.toAdd;
 }
 
 function getPRChangedPaths(prNumber) {
@@ -1137,6 +1274,17 @@ async function main() {
             labelsApplied = pr.labels;
             logAppend(`[delivery] PR existente #${prNumber}: ${prUrl}`);
         }
+
+        // #5864 — CA-1: el label de gate QA viaja del issue al PR sin
+        // intervención humana, ANTES de que la Fase 5 lea el snapshot del PR.
+        // Crítico en la rama de PR reusado: ese PR pudo nacer antes de que el
+        // ciclo de QA corriera, así que jamás heredó el label del `pr create`.
+        // Idempotente sobre el PR recién creado (ya trae el label).
+        if (prNumber) {
+            labelsApplied = Array.from(new Set([...labelsApplied, ...propagateGateLabelToPr({
+                issue, prNumber, branch, issueLabels: issueMeta.labels, log: logAppend,
+            })]));
+        }
         phaseEnd('pr_create', t);
 
         // ── Fase 5: auto-merge si gate QA presente ────────────────────
@@ -1425,6 +1573,10 @@ module.exports = {
     getPRChangedPaths,
     applyNeedsHumanLabel,
     hasQaGate,
+    // #5864 — propagación del label de gate QA issue → PR.
+    QA_GATE_LABELS,
+    buildPrGatePropagation,
+    propagateGateLabelToPr,
     // #5420 — camino de merge endurecido: snapshot único, gates en orden,
     // procedencia, SHA pinneado y confirmación estricta.
     getPRSnapshot,

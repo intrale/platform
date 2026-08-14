@@ -88,7 +88,167 @@ test('pulpo sólo propaga cuando el resolvedor estricto confirma el PR', () => {
   assert.equal(retained, false);
 });
 
-// ---- Propagación desde `entrega` (delivery.js), donde el PR ya existe -------
+// ============================================================================
+// RUNTIME REAL de la fase `entrega` — `skills-deterministicos/delivery.js`.
+// ============================================================================
+//
+// El provider determinístico resuelve el skill como
+// `PIPELINE/skills-deterministicos/<skill>.js`
+// (`lib/agent-launcher/providers/deterministic.js:resolveDeterministicScript`).
+// `.pipeline/delivery.js` es el CLI manual del skill `/delivery` (#2870) y NO
+// se ejecuta en la fase `entrega`: por eso CA-1 se cierra acá, en el módulo que
+// el pipeline sí ejecuta, y justo antes de que la Fase 5 lea el snapshot del PR.
+const runtimeDelivery = require('../skills-deterministicos/delivery');
+
+test('el módulo que el pipeline ejecuta en `entrega` expone la propagación', () => {
+  assert.equal(typeof runtimeDelivery.buildPrGatePropagation, 'function');
+  assert.equal(typeof runtimeDelivery.propagateGateLabelToPr, 'function');
+});
+
+// --- CA-1 · regresión del caso real #5519 / #5788 / #5790 -------------------
+for (const { issue, pr } of [{ issue: 5400, pr: 5519 }, { issue: 5723, pr: 5788 }, { issue: 5708, pr: 5790 }]) {
+  test(`CA-1 (runtime): issue #${issue} en qa:passed etiqueta al PR #${pr} que sólo tenía needs-definition`, () => {
+    const res = runtimeDelivery.buildPrGatePropagation({
+      issue, prNumber: pr, branch: `agent/${issue}-pipeline-dev`,
+      issueLabels: [{ name: 'qa:passed' }, { name: 'Ready' }],
+      prLabels: ['needs-definition'],
+    });
+    assert.deepEqual(res, { ok: true, target: 'qa:passed', toAdd: ['qa:passed'], toRemove: [] });
+  });
+}
+
+test('CA-1 (runtime): qa:skipped también viaja del issue al PR', () => {
+  const res = runtimeDelivery.buildPrGatePropagation({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:skipped', 'area:pipeline'], prLabels: [],
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.target, 'qa:skipped');
+  assert.equal(runtimeDelivery.hasQaGate([res.target]), true);
+});
+
+// --- CA-4 / SEC-4 · exclusión mutua sobre los labels DEL PR ----------------
+test('CA-4 (runtime): PR que arrastraba qa:failed queda sólo con qa:passed', () => {
+  const res = runtimeDelivery.buildPrGatePropagation({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:passed'], prLabels: ['qa:failed', 'needs-definition'],
+  });
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.toRemove, ['qa:failed']);
+  assert.deepEqual(res.toAdd, ['qa:passed']);
+  const projected = new Set(['qa:failed', 'needs-definition']);
+  for (const l of res.toRemove) projected.delete(l);
+  for (const l of res.toAdd) projected.add(l);
+  assert.equal(projected.has('qa:failed') && projected.has('qa:passed'), false);
+});
+
+// --- SEC-1 · el vínculo lo hace la rama, nunca el `Closes #<n>` del cuerpo --
+test('SEC-1 (runtime): el prefijo exige el separador — 586 / 58640 no matchean el 5864', () => {
+  for (const branch of ['agent/586-x', 'agent/58640-x', 'main', 'feature/5864-x', 'agent/9999-otro', '']) {
+    const res = runtimeDelivery.buildPrGatePropagation({
+      issue: 5864, prNumber: 5900, branch, issueLabels: ['qa:passed'], prLabels: [],
+    });
+    assert.equal(res.ok, false, `la rama "${branch}" no debió resolver`);
+    assert.equal(res.reason, 'rama_no_corresponde_al_issue');
+  }
+});
+
+// --- CA-3 / SEC-2 · fail-closed: jamás se infiere aprobación ---------------
+test('CA-3 (runtime): issue sin label de gate no escribe nada en el PR', () => {
+  assert.deepEqual(runtimeDelivery.buildPrGatePropagation({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['Ready', 'area:pipeline'], prLabels: [],
+  }), { ok: false, reason: 'issue_sin_label_de_gate' });
+});
+
+test('CA-3 (runtime): sin PR resoluble no se escribe ningún label', () => {
+  assert.equal(runtimeDelivery.buildPrGatePropagation({
+    issue: 5864, prNumber: null, branch: 'agent/5864-pipeline-dev', issueLabels: ['qa:passed'],
+  }).reason, 'pr_no_resuelto');
+  assert.equal(runtimeDelivery.buildPrGatePropagation({
+    issue: null, prNumber: 5900, branch: 'agent/5864-pipeline-dev', issueLabels: ['qa:passed'],
+  }).reason, 'sin_issue');
+});
+
+test('SEC-2 (runtime): issue con señal positiva y negativa a la vez no toca el PR', () => {
+  const res = runtimeDelivery.buildPrGatePropagation({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:passed', 'qa:failed'], prLabels: [],
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, 'labels_de_gate_en_conflicto');
+});
+
+test('SEC-3 (runtime): la verdad negativa se propaga y deja el gate cerrado', () => {
+  const res = runtimeDelivery.buildPrGatePropagation({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:failed'], prLabels: ['qa:passed'],
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.target, 'qa:failed');
+  assert.deepEqual(res.toRemove, ['qa:passed']);
+  assert.equal(runtimeDelivery.hasQaGate([res.target]), false);
+});
+
+test('idempotencia (runtime): PR ya reconciliado no dispara ninguna escritura', () => {
+  assert.deepEqual(runtimeDelivery.buildPrGatePropagation({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:passed'], prLabels: ['qa:passed', 'needs-definition'],
+  }), { ok: false, reason: 'pr_ya_reconciliado', labels: ['qa:passed'] });
+});
+
+// --- SEC-5 · la escritura va por la API de PRs, jamás por la de issues -----
+function fakeGhRunner(prLabels, editExit = 0) {
+  const calls = [];
+  const runner = (ghArgs) => {
+    calls.push(ghArgs);
+    if (ghArgs[0] === 'pr' && ghArgs[1] === 'view') {
+      return { exit_code: 0, stderr: '', stdout: JSON.stringify({ labels: prLabels.map((name) => ({ name })) }) };
+    }
+    return { exit_code: editExit, stdout: '', stderr: editExit ? 'boom' : '' };
+  };
+  return { runner, calls };
+}
+
+test('SEC-5 (runtime): la propagación usa `gh pr edit`, nunca `gh issue edit`', () => {
+  const { runner, calls } = fakeGhRunner(['qa:failed']);
+  const applied = runtimeDelivery.propagateGateLabelToPr({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:passed'], log: () => {}, ghImpl: runner,
+  });
+  assert.deepEqual(applied, ['qa:passed']);
+  assert.deepEqual(
+    calls.find((a) => a[1] === 'edit'),
+    ['pr', 'edit', '5900', '--remove-label', 'qa:failed', '--add-label', 'qa:passed'],
+  );
+  assert.equal(calls.some((a) => a[0] === 'issue'), false);
+});
+
+test('SEC-7 (runtime): si `gh pr edit` falla no se reporta label aplicado y queda el motivo', () => {
+  const { runner } = fakeGhRunner([], 1);
+  const logs = [];
+  const applied = runtimeDelivery.propagateGateLabelToPr({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:passed'], log: (m) => logs.push(m), ghImpl: runner,
+  });
+  assert.deepEqual(applied, []);
+  assert.match(logs.join('\n'), /gh pr edit fall/);
+});
+
+test('la propagación nunca es fatal: una excepción de gh se traga y el gate sigue cerrado', () => {
+  const logs = [];
+  const applied = runtimeDelivery.propagateGateLabelToPr({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:passed'], log: (m) => logs.push(m),
+    ghImpl: () => { throw new Error('ENOENT gh'); },
+  });
+  assert.deepEqual(applied, []);
+  assert.equal(logs.length > 0, true);
+});
+
+// ---- CLI manual `/delivery` (`.pipeline/delivery.js`, #2870) ---------------
+// Segundo punto de entrada, invocado a mano por el skill `/delivery`. No es el
+// camino del pipeline (ver bloque de arriba), pero cierra el mismo tramo.
 
 const { buildPrGatePropagation } = require('../delivery');
 
