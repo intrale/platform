@@ -121,9 +121,15 @@ test('1 · resuelve los scopes declarados y no hidrata nada más (D5)', async ()
         (e) => e.code === VAULT_ERROR_CODES.CONFIG_INVALID && /required_scopes/.test(e.message),
     );
 
-    // CA-6 — el módulo resuelve 2 scopes, no 13 variables.
-    const { ENV_MAPPING } = require('../credentials');
-    assert.equal(Object.keys(ENV_MAPPING).length, 13);
+    // CA-6 — el módulo resuelve scopes, no variables una por una. El conteo se
+    // deriva: desde #5217 `ENV_MAPPING` (lo que se hidrata) es un subconjunto de
+    // `ENV_DESCRIPTORS` (el inventario), así que hardcodear un número acá haría
+    // fallar este test cada vez que se agrega o se desengancha un secreto.
+    const { ENV_MAPPING, ENV_DESCRIPTORS, seHidrata } = require('../credentials');
+    const hidratables = Object.values(ENV_DESCRIPTORS).filter(seHidrata).length;
+    assert.equal(Object.keys(ENV_MAPPING).length, hidratables);
+    assert.ok(hidratables < Object.keys(ENV_DESCRIPTORS).length,
+        'el inventario es mayor que lo hidratado: Drive se resuelve bajo demanda');
 });
 
 // =============================================================================
