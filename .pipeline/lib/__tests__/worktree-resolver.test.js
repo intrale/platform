@@ -858,3 +858,261 @@ test('loadCommitterAllowlist funciona sin config ni sección', () => {
     assert.ok(loadCommitterAllowlist().has('backend-dev-agent@intrale'));
     assert.ok(loadCommitterAllowlist({ config: {} }).has('bot@intrale.com'));
 });
+
+// =============================================================================
+// #5421 — D1 (recuperación en path fresco `-r<N>`, sin adoptar el huérfano) +
+// propagación de `unverifiedAuthors` hasta el borde (CA-8 depende de esto).
+// =============================================================================
+
+const { extractUnverifiedAuthors, MAX_RECOVERY_SUFFIX } = require('../worktree-resolver');
+
+/**
+ * Fake spawn para los casos de recovery: registra los `worktree add` para poder
+ * afirmar SOBRE QUÉ PATH se creó el worktree (no alcanza con el retorno).
+ */
+function makeRecoverySpawn(addCalls, { branch = 'agent/2505-delivery', author = 'noreply@anthropic.com' } = {}) {
+    return function fakeSpawn(cmd, args) {
+        const joined = `${cmd} ${args.join(' ')}`;
+        if (joined.includes('worktree add')) {
+            addCalls.push(args);
+            return { error: null, status: 0, stdout: '', stderr: '' };
+        }
+        if (joined.includes('ls-remote')) {
+            return { error: null, status: 0, stdout: `abc\trefs/heads/${branch}\n`, stderr: '' };
+        }
+        if (joined.includes('log --reverse --format=%ae')) {
+            return { error: null, status: 0, stdout: `${author}\n`, stderr: '' };
+        }
+        return { error: null, status: 0, stdout: '', stderr: '' };
+    };
+}
+
+const norm = (p) => String(p).replace(/\\/g, '/');
+
+test('#5421 extractUnverifiedAuthors — extrae el email de author-not-allowlisted', () => {
+    assert.deepEqual(
+        extractUnverifiedAuthors(['author-not-allowlisted:android-dev-agent@intrale']),
+        ['android-dev-agent@intrale'],
+    );
+});
+
+test('#5421 extractUnverifiedAuthors — `no-commits-on-branch-or-fetch-empty` no aporta email', () => {
+    assert.deepEqual(extractUnverifiedAuthors(['no-commits-on-branch-or-fetch-empty']), []);
+    assert.deepEqual(extractUnverifiedAuthors(['log-author-failed: boom']), []);
+    assert.deepEqual(extractUnverifiedAuthors([]), []);
+    assert.deepEqual(extractUnverifiedAuthors(null), []);
+});
+
+test('#5421 extractUnverifiedAuthors — deduplica preservando el orden', () => {
+    assert.deepEqual(
+        extractUnverifiedAuthors([
+            'author-not-allowlisted:a@intrale',
+            'author-not-allowlisted:b@intrale',
+            'author-not-allowlisted:a@intrale',
+        ]),
+        ['a@intrale', 'b@intrale'],
+    );
+});
+
+test('#5421 resolveDevBranch — rama con committer fuera de allowlist propaga el email', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git ls-remote --heads origin', stdout: 'abc\trefs/heads/agent/1123-fix\n' },
+        { match: 'git fetch', stdout: '' },
+        { match: 'git log --reverse --format=%ae', stdout: 'intruso@ejemplo.com\n' },
+    ]);
+    const result = resolveDevBranch('/repo', 1123, { spawnImpl });
+    assert.equal(result.ok, false);
+    assert.equal(result.branchOriginVerified, false);
+    assert.deepEqual(result.unverifiedAuthors, ['intruso@ejemplo.com']);
+    assert.deepEqual(result.verificationReasons, ['author-not-allowlisted:intruso@ejemplo.com']);
+});
+
+test('#5421 resolveDevBranch — rama sin commits NO produce email (habilita el wording de procedencia)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git ls-remote --heads origin', stdout: 'abc\trefs/heads/agent/1123-fix\n' },
+        { match: 'git fetch', stdout: '' },
+        { match: 'git log --reverse --format=%ae', stdout: '' },
+    ]);
+    const result = resolveDevBranch('/repo', 1123, { spawnImpl });
+    assert.equal(result.ok, false);
+    assert.equal(result.branchOriginVerified, false);
+    assert.deepEqual(result.unverifiedAuthors, []);
+});
+
+test('#5421 resolveExistingWorktree — `unverifiedAuthors` llega hasta el borde (found:false)', () => {
+    const spawnImpl = makeFakeSpawn([
+        { match: 'git worktree list --porcelain', stdout: '' },
+        { match: 'git ls-remote --heads origin', stdout: 'abc\trefs/heads/agent/1123-fix\n' },
+        { match: 'git fetch', stdout: '' },
+        { match: 'git log --reverse --format=%ae', stdout: 'intruso@ejemplo.com\n' },
+    ]);
+    const result = resolveExistingWorktree({
+        ROOT: '/repo', issue: 1123, skill: 'po', spawnImpl, fsImpl: fakeFs(false),
+    });
+    assert.equal(result.found, false);
+    assert.equal(result.branchOriginVerified, false);
+    assert.deepEqual(result.unverifiedAuthors, ['intruso@ejemplo.com']);
+});
+
+test('#5421 D1 — path colisionado + procedencia verificada da worktree fresco en -r2', () => {
+    const addCalls = [];
+    const spawnImpl = makeRecoverySpawn(addCalls);
+    // Sólo el path base está ocupado; los sufijos están libres.
+    const fsImpl = fakeFs((p) => norm(p).endsWith('platform.agent-2505-delivery'));
+
+    const result = attemptAutoRecovery('/repo', '2505', 'delivery', { spawnImpl, fsImpl });
+
+    assert.equal(result.ok, true);
+    assert.match(norm(result.worktreePath), /platform\.agent-2505-delivery-r2$/);
+    // S-1 / D2 — el resultado NUNCA apunta al directorio preexistente.
+    assert.equal(norm(result.worktreePath).endsWith('platform.agent-2505-delivery'), false);
+    assert.equal(norm(result.orphanPath).endsWith('platform.agent-2505-delivery'), true);
+    // El `worktree add` se hizo sobre el path nuevo, no sobre el huérfano.
+    assert.equal(addCalls.length, 1);
+    assert.match(norm(addCalls[0][2]), /platform\.agent-2505-delivery-r2$/);
+    // Y sale desde el remoto verificado, no desde el contenido local no verificado.
+    assert.equal(addCalls[0].includes('origin/agent/2505-delivery'), true);
+});
+
+test('#5421 D1 — con -r2 ocupado usa el primer sufijo libre (-r3)', () => {
+    const addCalls = [];
+    const spawnImpl = makeRecoverySpawn(addCalls);
+    const fsImpl = fakeFs((p) => {
+        const n = norm(p);
+        return n.endsWith('platform.agent-2505-delivery') || n.endsWith('platform.agent-2505-delivery-r2');
+    });
+
+    const result = attemptAutoRecovery('/repo', '2505', 'delivery', { spawnImpl, fsImpl });
+    assert.equal(result.ok, true);
+    assert.match(norm(result.worktreePath), /platform\.agent-2505-delivery-r3$/);
+});
+
+test('#5421 D1 — sin sufijo libre se conserva el reason historico y NO se toca el huerfano', () => {
+    const addCalls = [];
+    const spawnImpl = makeRecoverySpawn(addCalls);
+    // TODO ocupado (path base + todos los sufijos).
+    const result = attemptAutoRecovery('/repo', '2505', 'delivery', { spawnImpl, fsImpl: fakeFs(true) });
+
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /^worktree-path-exists-without-git-entry:/);
+    assert.equal(result.branchOriginVerified, true);
+    assert.equal(addCalls.length, 0, 'sin path libre no se intenta ningun worktree add');
+    assert.equal(MAX_RECOVERY_SUFFIX >= 2, true);
+});
+
+test('#5421 D1 — un existsSync que rompe se trata como ocupado (nunca escribimos a ciegas)', () => {
+    const addCalls = [];
+    const spawnImpl = makeRecoverySpawn(addCalls);
+    const fsImpl = {
+        existsSync: (p) => {
+            if (norm(p).endsWith('platform.agent-2505-delivery')) return true;
+            throw new Error('EACCES');
+        },
+    };
+    const result = attemptAutoRecovery('/repo', '2505', 'delivery', { spawnImpl, fsImpl });
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /^worktree-path-exists-without-git-entry:/);
+    assert.equal(addCalls.length, 0);
+});
+
+test('#5421 D1 — path base libre: se sigue usando el path sin sufijo (sin regresion)', () => {
+    const addCalls = [];
+    const spawnImpl = makeRecoverySpawn(addCalls);
+    const result = attemptAutoRecovery('/repo', '2505', 'delivery', { spawnImpl, fsImpl: fakeFs(false) });
+    assert.equal(result.ok, true);
+    assert.match(norm(result.worktreePath), /platform\.agent-2505-delivery$/);
+    assert.equal(result.orphanPath, null);
+});
+
+test('#5421 D1 — findIssueWorktree resuelve un worktree con path `-r2`', () => {
+    const spawnImpl = makeFakeSpawn([
+        {
+            match: 'git worktree list --porcelain',
+            stdout: [
+                'worktree /tmp/platform.agent-2505-delivery-r2',
+                'HEAD bbb',
+                'branch refs/heads/agent/2505-delivery',
+                '',
+            ].join('\n'),
+        },
+    ]);
+    const found = findIssueWorktree('/repo', 2505, { skill: 'delivery', spawnImpl, fsImpl: fakeFs(true) });
+    assert.ok(found, 'el worktree con sufijo -r2 debe seguir siendo resoluble');
+    assert.match(found.worktree, /platform\.agent-2505-delivery-r2$/);
+});
+
+// =============================================================================
+// #5421 CA-11 — saneamiento en el ORIGEN de los emails que llegan al operador.
+//
+// El email sale de `git log --format` sobre una rama REMOTA arbitraria: es
+// input no confiable que termina interpolado en un mensaje Markdown de
+// Telegram. `extractUnverifiedAuthors` sólo debe devolver strings con forma
+// segura de email y descartar el resto (default cerrado).
+//
+// Ojo con la trampa que detectó `guru`: el charset NO puede ser el "clásico"
+// sin corchetes, porque descartaría emails de bots de GitHub que son legítimos
+// y están en la propia allowlist del pipeline. Descartarlos dejaría
+// `unverifiedAuthors` vacío y el texto caería al wording de "posible rama
+// ajena" — o sea, se arreglaría la inyección rompiendo CA-8.
+// =============================================================================
+
+const { MAX_EMAIL_LENGTH } = require('../worktree-resolver');
+
+test('#5421 CA-11 — descarta el email de PHISHING con link Markdown embebido', () => {
+    assert.deepEqual(
+        extractUnverifiedAuthors([
+            'author-not-allowlisted:a`[Actualizar credenciales](https://evil.tld/phish)`b@x.io',
+        ]),
+        [],
+    );
+});
+
+test('#5421 CA-11 — descarta el email SILENCIADOR con backtick suelto', () => {
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:a`b@x.io']), []);
+});
+
+test('#5421 CA-11 — descarta payloads sin forma de email (espacios, saltos, sin arroba)', () => {
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:no-tiene-arroba']), []);
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:hola mundo@x.io']), []);
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:a@x.io\nb@y.io']), []);
+    assert.deepEqual(extractUnverifiedAuthors(['author-not-allowlisted:*bold*@x.io']), []);
+});
+
+test('#5421 CA-11 — descarta por tope de longitud (RFC 5321: 254)', () => {
+    const largo = `${'a'.repeat(70)}@${'b'.repeat(200)}.io`;
+    assert.ok(largo.length > MAX_EMAIL_LENGTH, 'el fixture debe superar el tope');
+    assert.deepEqual(extractUnverifiedAuthors([`author-not-allowlisted:${largo}`]), []);
+});
+
+test('#5421 CA-11 — ACEPTA el bot de GitHub con corchetes (anti-regresión de CA-8)', () => {
+    // Está hardcodeado en PIPELINE_COMMITTER_ALLOWLIST: es forma legítima.
+    const bot = '41898282+github-actions[bot]@users.noreply.github.com';
+    assert.deepEqual(extractUnverifiedAuthors([`author-not-allowlisted:${bot}`]), [bot]);
+});
+
+test('#5421 CA-11 — ACEPTA los emails legítimos que ya usaba el pipeline', () => {
+    for (const email of [
+        'backend-dev-agent@intrale',
+        'noreply@anthropic.com',
+        'android-dev-agent@intrale',
+        'un_agente@sub.dominio.com',
+        "o'brien@intrale.com",
+    ]) {
+        assert.deepEqual(
+            extractUnverifiedAuthors([`author-not-allowlisted:${email}`]),
+            [email],
+            `debería aceptar ${email}`,
+        );
+    }
+});
+
+test('#5421 CA-11 — un email hostil no arrastra a los legítimos de la misma tanda', () => {
+    assert.deepEqual(
+        extractUnverifiedAuthors([
+            'author-not-allowlisted:a`b@x.io',
+            'author-not-allowlisted:backend-dev-agent@intrale',
+            'no-commits-on-branch-or-fetch-empty',
+        ]),
+        ['backend-dev-agent@intrale'],
+    );
+});

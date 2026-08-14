@@ -78,6 +78,30 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 //               (secret-vault.js), que es enumerada a propósito.
 //   auth_anchor el valor no es un secreto: es la fuente de una decisión de
 //               AUTORIZACIÓN. Cambia la precedencia (B2) — ver más abajo.
+//   hydrate     `false` = el secreto pertenece al inventario del vault, pero
+//               NO se inyecta en el `process.env` global (CA-6 de #5217).
+//               Default `true` (omitido = se hidrata, como siempre).
+//
+// Sobre `hydrate` (#5217 · CA-6) — por qué existe este campo:
+//
+// `loadIntoEnv()` escribe en `process.env` (más abajo) y sus dos call-sites de
+// arranque son `pulpo.js:18` y `restart.js:47`. O sea: TODO lo que entre a
+// `ENV_MAPPING` lo hereda **cada proceso hijo de cada agente**, incluidos los
+// procesos de providers de IA de terceros. Para una API key que el CLI hijo
+// necesita leer del ambiente, eso es el mecanismo. Para las credenciales de
+// Google Drive NO: su único consumidor es `qa/scripts/qa-video-share.js`, que
+// desde #5217 las resuelve BAJO DEMANDA con `resolveScopedRefs` (lectura del
+// namespace, sin tocar `process.env`). Hidratarlas globalmente es superficie de
+// exposición sin ningún consumidor que la justifique.
+//
+// Por eso el campo separa dos cosas que #5172/#5353 habían dejado pegadas:
+//   - pertenecer al INVENTARIO del vault (provisión, política IAM, rotación,
+//     clasificación SSM vs Secrets Manager) → sigue siendo `ENV_DESCRIPTORS`;
+//   - ser inyectado en el ENV GLOBAL de todo hijo → ahora sólo `hydrate: true`.
+// El descriptor de Drive se conserva intacto: la tabla firmada de #5351
+// (`docs/pipeline/vault-secretos-aws.md`) y `vault-iam-policy.json` siguen
+// valiendo, y `vaultScopePlan()` sigue devolviendo `google_drive` en ambos
+// backends. Lo único que cambia es que no se escriben en `process.env`.
 //
 // El scope del vault es el primer segmento del dot-path (`telegram`,
 // `providers`, `google_drive`): las claves top-level del namespace de
@@ -139,28 +163,54 @@ const ENV_DESCRIPTORS = Object.freeze({
   // Migradas al store externo (que sobrevive al reset) para cerrar ese ciclo.
   // El refresh_token es un secreto: el loader sólo lista NOMBRES de var.
   //
-  // #5242 — las cuatro se declaran `hydration: "eager"` /
-  // `consumer_status: "resolved"` en `.pipeline/secrets-manifest.json`, que es
-  // la fuente canónica. La invariante de CA-3b exige que este bloque y el
-  // manifiesto coincidan 1:1 para toda entrada `source: "store"` + `eager`.
-  // (Tras #5353 el bloque es `ENV_DESCRIPTORS`; `ENV_MAPPING` se DERIVA de él,
-  // así que la invariante se sigue evaluando sobre el mapa derivado.)
+  // `hydrate: false` (#5217 · CA-6): siguen en el inventario del vault —se
+  // provisionan, se rotan y la política IAM las cubre— pero NO se inyectan en
+  // el `process.env` global. Su único consumidor (`qa-video-share.js`) las
+  // resuelve bajo demanda por namespace desde #5217, así que hidratarlas sería
+  // exponer un refresh token de Google en el ambiente de todo agente hijo sin
+  // que nadie lo lea de ahí. El campo `env` se conserva porque sigue siendo el
+  // nombre canónico de la variable: es el override operativo que el consumidor
+  // consulta primero, y el que se nombra en los diagnósticos al operador.
+  //
+  // Relación con #5242 / #5281: ese issue las declaró `hydration: "eager"` en
+  // `.pipeline/secrets-manifest.json` porque en ese momento el nivel 2 (store)
+  // de `qa-video-share.js` resolvía vía `loadIntoEnv`, o sea vía `ENV_MAPPING`:
+  // dejarlas `deferred` rompía la subida de evidencia. #5217 elimina esa
+  // dependencia —el consumidor pasa a `resolveScopedRefs`, que lee el namespace
+  // directo del JSON sin tocar `process.env`—, así que la premisa de `eager`
+  // dejó de valer y las cuatro pasan a `deferred` en el manifiesto EN ESTE
+  // MISMO PR. La invariante bidireccional de CA-3b (`source: "store"` + `eager`
+  // ⟺ clave de `ENV_MAPPING`) se mantiene intacta: se sigue cumpliendo 1:1,
+  // ahora con las cuatro fuera de los dos lados. (Tras #5353 este bloque es
+  // `ENV_DESCRIPTORS` y `ENV_MAPPING` se DERIVA de él, así que la invariante se
+  // evalúa sobre el mapa derivado.)
   'google_drive.oauth_client_id': {
     env: 'GOOGLE_OAUTH_CLIENT_ID', backend: 'ssm', shared: true, auth_anchor: false,
+    hydrate: false,
   },
   'google_drive.oauth_client_secret': {
     env: 'GOOGLE_OAUTH_CLIENT_SECRET', backend: 'ssm', shared: true, auth_anchor: false,
+    hydrate: false,
   },
   // El ÚNICO ocupante de Secrets Manager hoy: lo emite un tercero con su propio
   // ciclo de refresh (Google lo renueva y puede invalidarlo sin que nadie lo
   // escriba desde el rol de provisión) — regla (a) de la tabla de #5351.
   'google_drive.oauth_refresh_token': {
     env: 'GOOGLE_OAUTH_REFRESH_TOKEN', backend: 'secretsmanager', shared: true, auth_anchor: false,
+    hydrate: false,
   },
   'google_drive.drive_folder_id': {
     env: 'GOOGLE_DRIVE_FOLDER_ID', backend: 'ssm', shared: true, auth_anchor: false,
+    hydrate: false,
   },
 });
+
+// Subconjunto del inventario que SÍ se inyecta en `process.env` (CA-6 de #5217).
+// Un descriptor sin `hydrate` se hidrata: el default preserva el comportamiento
+// histórico y obliga a que sacar algo del env global sea una decisión explícita.
+function seHidrata(descriptor) {
+  return !descriptor || descriptor.hydrate !== false;
+}
 
 // Retrocompat OBLIGATORIA (G1): el mapa plano `dotPath -> envVar` se DERIVA del
 // descriptor, nunca se duplica a mano. Sigue siendo un objeto plano CONGELADO
@@ -176,8 +226,30 @@ const ENV_DESCRIPTORS = Object.freeze({
 //
 // (Ojo: `hydrate-provider-env.js:35` declara OTRO `ENV_MAPPING` local y
 // homónimo, sin relación con éste. Un `grep` lo trae; no es parte de esto.)
+//
+// #5217 · CA-6: se derivan SÓLO los descriptores con `hydrate` distinto de
+// `false`. `ENV_MAPPING` es, por definición, "lo que se escribe en el
+// `process.env` global", y ése es exactamente el contrato que consumen
+// `loadIntoEnv()` y `listProviders()`. El inventario completo (incluidas las
+// claves que no se hidratan) sigue siendo `ENV_DESCRIPTORS`: quien necesite
+// enumerar TODO el material de clave —provisión del vault, política IAM,
+// métricas de cobertura— tiene que leer el descriptor, no este mapa.
 const ENV_MAPPING = Object.freeze(Object.fromEntries(
-  Object.entries(ENV_DESCRIPTORS).map(([dotPath, d]) => [dotPath, d.env]),
+  Object.entries(ENV_DESCRIPTORS)
+    .filter(([, d]) => seHidrata(d))
+    .map(([dotPath, d]) => [dotPath, d.env]),
+));
+
+// Subconjunto del descriptor que participa del ciclo de hidratación. Es el
+// denominador correcto para la ventana sombra del vault (#5427): esa métrica
+// mide la cobertura del camino `loadIntoEnv` —una fila por variable resuelta—,
+// y un secreto que por diseño NUNCA se hidrata no puede producir esa fila.
+// Contarlo igual lo dejaría para siempre en `no_verificados` y la ventana no
+// cerraría nunca, o sea el fallback a archivo no se retiraría jamás: un cambio
+// de alcance de #5217 congelando la salida del vault. El inventario completo
+// (provisión, IAM, rotación) sigue siendo `ENV_DESCRIPTORS`.
+const HYDRATED_DESCRIPTORS = Object.freeze(Object.fromEntries(
+  Object.entries(ENV_DESCRIPTORS).filter(([, d]) => seHidrata(d)),
 ));
 
 // B2.7 — nombres de las env vars que son anclas de autorización, derivados del
@@ -862,7 +934,8 @@ function loadIntoEnv(opts = {}) {
         }));
       if (metrics) metrics.record(result.sources, {
         hostId: vaultEstado.cfg && vaultEstado.cfg.hostId,
-        descriptors: ENV_DESCRIPTORS,
+        // Sólo lo hidratable: ver el comentario de `HYDRATED_DESCRIPTORS`.
+        descriptors: HYDRATED_DESCRIPTORS,
       });
     } catch (e) {
       // Sólo el nombre del error: una excepción cruda podría arrastrar datos.
@@ -977,6 +1050,12 @@ module.exports = {
   redactScoped,
   // Agregados por #5353.
   ENV_DESCRIPTORS,
+  // #5217 · CA-6 — predicado único de "¿este secreto va al process.env global?".
+  // Se exporta para que los consumidores que enumeran el inventario completo
+  // (métricas de cobertura del vault) distingan "no verificado" de "no se
+  // hidrata por diseño" sin duplicar la regla.
+  seHidrata,
+  HYDRATED_DESCRIPTORS,
   VAULT_BACKENDS,
   SOURCE,
   vaultScopePlan,
