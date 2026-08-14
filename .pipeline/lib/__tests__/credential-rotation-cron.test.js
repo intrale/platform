@@ -647,11 +647,43 @@ test('ROTATION_POLICY_DAYS · 90 días por convención', () => {
   assert.equal(cron.ROTATION_POLICY_DAYS, 90);
 });
 
-test('inventario real · conserva exactamente las 13 variables de ENV_MAPPING', () => {
+// El denominador del inventario de rotación es ENV_DESCRIPTORS, NO ENV_MAPPING.
+// Desde #5217 · CA-6, `ENV_MAPPING` dejó de ser el inventario completo y pasó a
+// ser el subconjunto que se hidrata en el `process.env` global (`seHidrata`),
+// dejando afuera las 4 claves de `google_drive.*` (`hydrate: false`). Esas 4
+// siguen siendo material de clave que ROTA, así que siguen en
+// `docs/secrets-inventory.md` y el cron las tiene que vigilar.
+// `credentials.js` lo declara explícitamente: "El inventario completo
+// (provisión, IAM, rotación) sigue siendo `ENV_DESCRIPTORS`".
+test('inventario real · conserva exactamente las 13 variables de ENV_DESCRIPTORS', () => {
   const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
   const rows = cron.parseInventoryMarkdown(inventory);
-  const expected = Object.values(require('../credentials').ENV_MAPPING).sort();
+  const expected = Object.values(require('../credentials').ENV_DESCRIPTORS).map((d) => d.env).sort();
+  assert.equal(expected.length, 13);
   assert.deepEqual(rows.map((row) => row.env_var).sort(), expected);
+});
+
+// Regresión del desacople de #5217: si alguien vuelve a apuntar el inventario de
+// rotación a `ENV_MAPPING`, las claves con `hydrate:false` quedan fuera del
+// control de rotación sin que nadie lo note. Este test fija que el inventario
+// documentado es un superconjunto estricto del mapa de hidratación.
+test('inventario de rotación · cubre también las claves que no se hidratan', () => {
+  const { ENV_DESCRIPTORS, ENV_MAPPING } = require('../credentials');
+  const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
+  const enInventario = cron.parseInventoryMarkdown(inventory).map((row) => row.env_var);
+  const noSeHidratan = Object.values(ENV_DESCRIPTORS)
+    .map((d) => d.env)
+    .filter((env) => !Object.values(ENV_MAPPING).includes(env));
+
+  assert.deepEqual(noSeHidratan.sort(), [
+    'GOOGLE_DRIVE_FOLDER_ID',
+    'GOOGLE_OAUTH_CLIENT_ID',
+    'GOOGLE_OAUTH_CLIENT_SECRET',
+    'GOOGLE_OAUTH_REFRESH_TOKEN',
+  ]);
+  for (const env of noSeHidratan) {
+    assert.ok(enInventario.includes(env), `${env} no se hidrata pero igual debe estar en el inventario de rotación`);
+  }
 });
 
 test('metadata pendiente · recuerda una vez por día y no silencia la credencial', () => {
