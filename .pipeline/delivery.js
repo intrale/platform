@@ -30,6 +30,8 @@ const commitBuilder = require('./lib/delivery/commit-builder');
 const prBuilder = require('./lib/delivery/pr-builder');
 const operatorSignature = require('./lib/operator-signature');
 const gateLabelReconciler = require('./lib/gate-label-reconciler');
+// #5864 SEC-2 — procedencia del PR destino (defensa contra PRs de fork).
+const prProvenance = require('./lib/pr-provenance');
 
 // ---- #4575 · GATE 2 defense-in-depth (revalidación firma↔HEAD) --------------
 //
@@ -169,13 +171,22 @@ function gh(ghArgs, opts = {}) {
 //   - Se emite UNA sola orden (sin `gate_reconciler`) para que el worker de
 //     `servicio-github` relea los labels frescos DEL PR y haga remove-then-add
 //     sincrónico (exclusión mutua garantizada, sin race de orden en la cola).
-function buildPrGatePropagation({ issue, prNumber, branch, issueLabels } = {}) {
+function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prHead, repo } = {}) {
   const issueNum = parseInt(issue, 10);
   if (!Number.isInteger(issueNum) || issueNum <= 0) return { ok: false, reason: 'sin_issue' };
   const pr = parseInt(prNumber, 10);
   if (!Number.isInteger(pr) || pr <= 0) return { ok: false, reason: 'pr_no_resuelto' };
   if (typeof branch !== 'string' || !branch.startsWith(`agent/${issueNum}-`)) {
     return { ok: false, reason: 'rama_no_corresponde_al_issue', branch: branch || null };
+  }
+  // SEC-2 — el chequeo de arriba valida la rama LOCAL; éste valida el PR
+  // DESTINO. El repo es público y la rama `agent/<issue>-<skill>` es
+  // predecible, así que un fork puede abrir un PR con esa misma rama y cobrar
+  // el `qa:passed` del issue. Fail-closed ante falta de datos.
+  const prov = prProvenance.checkPrProvenance(prHead, { branch, repo });
+  if (!prov.ok) return { ok: false, reason: prov.reason, detail: prov.detail || null };
+  if (prHead.number !== undefined && parseInt(prHead.number, 10) !== pr) {
+    return { ok: false, reason: 'procedencia_desconocida', detail: `pr consultado #${prHead.number} ≠ destino #${pr}` };
   }
   const gates = [...new Set(
     (Array.isArray(issueLabels) ? issueLabels : [])
@@ -206,9 +217,18 @@ function propagateGateLabelToPr({ issue, prNumber, branch, repo, pipelineDir }) 
       console.log(`→ gate QA: no se propaga (respuesta ilegible: ${e.message})`);
       return null;
     }
-    const res = buildPrGatePropagation({ issue, prNumber, branch, issueLabels });
+    // SEC-2 — datos de procedencia del PR destino, leídos justo antes de
+    // decidir. Si `gh` falla, `prHead` queda null y la decisión es fail-closed.
+    let prHead = null;
+    if (prNumber) {
+      const prView = gh(['pr', 'view', String(prNumber), '--repo', repo, '--json', prProvenance.PR_PROVENANCE_FIELDS.join(',')]);
+      if (prView.ok) {
+        try { prHead = JSON.parse(prView.stdout || 'null'); } catch { prHead = null; }
+      }
+    }
+    const res = buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prHead, repo });
     if (!res.ok) {
-      console.log(`→ gate QA: no se propaga al PR (${res.reason})`);
+      console.log(`→ gate QA: no se propaga al PR (${res.reason}${res.detail ? `: ${res.detail}` : ''})`);
       return null;
     }
     const queueDir = path.join(pipelineDir || __dirname, 'servicios', 'github', 'pendiente');
@@ -366,7 +386,7 @@ function main() {
     '--repo', args.repo,
     '--head', snap.branch,
     '--state', 'open',
-    '--json', 'number,url',
+    '--json', prProvenance.PR_PROVENANCE_FIELDS.join(','),
   ]);
 
   let prUrl = null;
@@ -374,9 +394,12 @@ function main() {
   if (existing.ok && existing.stdout && existing.stdout !== '[]') {
     try {
       const list = JSON.parse(existing.stdout);
-      if (list.length > 0) {
-        prUrl = list[0].url;
-        prNumber = list[0].number;
+      // SEC-2 — `--head` no filtra por owner: descartar PRs de fork antes de
+      // adoptar uno como "el PR de esta entrega".
+      for (const p of (Array.isArray(list) ? list : [])) {
+        const prov = prProvenance.checkPrProvenance(p, { branch: snap.branch, repo: args.repo });
+        if (prov.ok) { prUrl = p.url; prNumber = p.number; break; }
+        console.log(`→ PR #${(p && p.number) || '?'} descartado por procedencia (${prov.reason}${prov.detail ? `: ${prov.detail}` : ''})`);
       }
     } catch {}
   }

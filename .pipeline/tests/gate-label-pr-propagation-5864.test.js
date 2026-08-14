@@ -100,6 +100,21 @@ test('pulpo sólo propaga cuando el resolvedor estricto confirma el PR', () => {
 // el pipeline sí ejecuta, y justo antes de que la Fase 5 lea el snapshot del PR.
 const runtimeDelivery = require('../skills-deterministicos/delivery');
 
+// --- Helpers de procedencia (#5864 SEC-2) ----------------------------------
+// Un PR legítimo del pipeline vive en el MISMO repo y su head es exactamente
+// la rama que empujó el agente. Los tests de abajo ejercitan la lógica de
+// LABELS, así que inyectan una procedencia legítima; la procedencia tiene sus
+// propios tests dedicados (bloque "SEC-2 · PRs de fork").
+const ownHead = (branch, number) => ({
+  number, headRefName: branch, isCrossRepository: false,
+  headRepositoryOwner: { login: 'intrale' },
+});
+// `...a` va después para que un test pueda sobrescribir `prHead` a propósito.
+const decide = (a) => runtimeDelivery.buildPrGatePropagation(
+  { prHead: ownHead(a.branch, parseInt(a.prNumber, 10)), ...a });
+const decideCli = (a) => buildPrGatePropagation(
+  { prHead: ownHead(a.branch, parseInt(a.prNumber, 10)), ...a });
+
 test('el módulo que el pipeline ejecuta en `entrega` expone la propagación', () => {
   assert.equal(typeof runtimeDelivery.buildPrGatePropagation, 'function');
   assert.equal(typeof runtimeDelivery.propagateGateLabelToPr, 'function');
@@ -108,7 +123,7 @@ test('el módulo que el pipeline ejecuta en `entrega` expone la propagación', (
 // --- CA-1 · regresión del caso real #5519 / #5788 / #5790 -------------------
 for (const { issue, pr } of [{ issue: 5400, pr: 5519 }, { issue: 5723, pr: 5788 }, { issue: 5708, pr: 5790 }]) {
   test(`CA-1 (runtime): issue #${issue} en qa:passed etiqueta al PR #${pr} que sólo tenía needs-definition`, () => {
-    const res = runtimeDelivery.buildPrGatePropagation({
+    const res = decide({
       issue, prNumber: pr, branch: `agent/${issue}-pipeline-dev`,
       issueLabels: [{ name: 'qa:passed' }, { name: 'Ready' }],
       prLabels: ['needs-definition'],
@@ -118,7 +133,7 @@ for (const { issue, pr } of [{ issue: 5400, pr: 5519 }, { issue: 5723, pr: 5788 
 }
 
 test('CA-1 (runtime): qa:skipped también viaja del issue al PR', () => {
-  const res = runtimeDelivery.buildPrGatePropagation({
+  const res = decide({
     issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
     issueLabels: ['qa:skipped', 'area:pipeline'], prLabels: [],
   });
@@ -129,7 +144,7 @@ test('CA-1 (runtime): qa:skipped también viaja del issue al PR', () => {
 
 // --- CA-4 / SEC-4 · exclusión mutua sobre los labels DEL PR ----------------
 test('CA-4 (runtime): PR que arrastraba qa:failed queda sólo con qa:passed', () => {
-  const res = runtimeDelivery.buildPrGatePropagation({
+  const res = decide({
     issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
     issueLabels: ['qa:passed'], prLabels: ['qa:failed', 'needs-definition'],
   });
@@ -145,7 +160,7 @@ test('CA-4 (runtime): PR que arrastraba qa:failed queda sólo con qa:passed', ()
 // --- SEC-1 · el vínculo lo hace la rama, nunca el `Closes #<n>` del cuerpo --
 test('SEC-1 (runtime): el prefijo exige el separador — 586 / 58640 no matchean el 5864', () => {
   for (const branch of ['agent/586-x', 'agent/58640-x', 'main', 'feature/5864-x', 'agent/9999-otro', '']) {
-    const res = runtimeDelivery.buildPrGatePropagation({
+    const res = decide({
       issue: 5864, prNumber: 5900, branch, issueLabels: ['qa:passed'], prLabels: [],
     });
     assert.equal(res.ok, false, `la rama "${branch}" no debió resolver`);
@@ -155,23 +170,23 @@ test('SEC-1 (runtime): el prefijo exige el separador — 586 / 58640 no matchean
 
 // --- CA-3 / SEC-2 · fail-closed: jamás se infiere aprobación ---------------
 test('CA-3 (runtime): issue sin label de gate no escribe nada en el PR', () => {
-  assert.deepEqual(runtimeDelivery.buildPrGatePropagation({
+  assert.deepEqual(decide({
     issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
     issueLabels: ['Ready', 'area:pipeline'], prLabels: [],
   }), { ok: false, reason: 'issue_sin_label_de_gate' });
 });
 
 test('CA-3 (runtime): sin PR resoluble no se escribe ningún label', () => {
-  assert.equal(runtimeDelivery.buildPrGatePropagation({
+  assert.equal(decide({
     issue: 5864, prNumber: null, branch: 'agent/5864-pipeline-dev', issueLabels: ['qa:passed'],
   }).reason, 'pr_no_resuelto');
-  assert.equal(runtimeDelivery.buildPrGatePropagation({
+  assert.equal(decide({
     issue: null, prNumber: 5900, branch: 'agent/5864-pipeline-dev', issueLabels: ['qa:passed'],
   }).reason, 'sin_issue');
 });
 
 test('SEC-2 (runtime): issue con señal positiva y negativa a la vez no toca el PR', () => {
-  const res = runtimeDelivery.buildPrGatePropagation({
+  const res = decide({
     issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
     issueLabels: ['qa:passed', 'qa:failed'], prLabels: [],
   });
@@ -180,7 +195,7 @@ test('SEC-2 (runtime): issue con señal positiva y negativa a la vez no toca el 
 });
 
 test('SEC-3 (runtime): la verdad negativa se propaga y deja el gate cerrado', () => {
-  const res = runtimeDelivery.buildPrGatePropagation({
+  const res = decide({
     issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
     issueLabels: ['qa:failed'], prLabels: ['qa:passed'],
   });
@@ -191,19 +206,32 @@ test('SEC-3 (runtime): la verdad negativa se propaga y deja el gate cerrado', ()
 });
 
 test('idempotencia (runtime): PR ya reconciliado no dispara ninguna escritura', () => {
-  assert.deepEqual(runtimeDelivery.buildPrGatePropagation({
+  assert.deepEqual(decide({
     issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
     issueLabels: ['qa:passed'], prLabels: ['qa:passed', 'needs-definition'],
   }), { ok: false, reason: 'pr_ya_reconciliado', labels: ['qa:passed'] });
 });
 
 // --- SEC-5 · la escritura va por la API de PRs, jamás por la de issues -----
-function fakeGhRunner(prLabels, editExit = 0) {
+// `head` permite simular el PR destino: por default un PR legítimo del mismo
+// repo; los tests de fork le pasan `isCrossRepository`/owner de un tercero.
+function fakeGhRunner(prLabels, editExit = 0, head = {}) {
   const calls = [];
   const runner = (ghArgs) => {
     calls.push(ghArgs);
     if (ghArgs[0] === 'pr' && ghArgs[1] === 'view') {
-      return { exit_code: 0, stderr: '', stdout: JSON.stringify({ labels: prLabels.map((name) => ({ name })) }) };
+      return {
+        exit_code: 0,
+        stderr: '',
+        stdout: JSON.stringify({
+          number: parseInt(ghArgs[2], 10),
+          headRefName: 'agent/5864-pipeline-dev',
+          isCrossRepository: false,
+          headRepositoryOwner: { login: 'intrale' },
+          labels: prLabels.map((name) => ({ name })),
+          ...head,
+        }),
+      };
     }
     return { exit_code: editExit, stdout: '', stderr: editExit ? 'boom' : '' };
   };
@@ -246,6 +274,112 @@ test('la propagación nunca es fatal: una excepción de gh se traga y el gate si
   assert.equal(logs.length > 0, true);
 });
 
+// ============================================================================
+// SEC-2 · PRs de fork — regresión del rechazo rev-1 (OWASP A01 / A08)
+// ============================================================================
+//
+// `intrale/platform` es PÚBLICO (`forkCount:1`) y la rama `agent/<issue>-<skill>`
+// es predecible (CLAUDE.md). `gh pr list --head <branch>` NO filtra por owner
+// —verificado: en `cli/cli` devuelve un PR con `isCrossRepository:true` del
+// usuario `zhaoxinyi02`—, así que un tercero puede forkear, crear
+// `agent/5864-pipeline-dev` en su fork y abrir un PR contra `main`.
+//
+// Si delivery le propagara el `qa:passed` del issue, ese PR pasaría el gate de
+// QA del merge; el gate de procedencia (`verifyRemoteBranchOrigin`) audita
+// `origin/main..origin/<branch>` —la rama LEGÍTIMA, que el pipeline sí pushea—
+// y el merge se haría contra `snapshot.headRefOid`, el SHA DEL FORK.
+// El label es la última barrera efectiva: estos tests la fijan.
+
+const FORK_HEADS = {
+  'PR de fork (isCrossRepository)': { isCrossRepository: true, headRepositoryOwner: { login: 'atacante' } },
+  'head de otro owner con el flag en false': { isCrossRepository: false, headRepositoryOwner: { login: 'atacante' } },
+  'sin dato de isCrossRepository': { isCrossRepository: undefined, headRepositoryOwner: { login: 'intrale' } },
+  'sin dato de owner': { isCrossRepository: false, headRepositoryOwner: undefined },
+  'head apuntando a otra rama': { headRefName: 'agent/5864-otra-cosa' },
+};
+
+for (const [caso, head] of Object.entries(FORK_HEADS)) {
+  test(`SEC-2 (ruta real): ${caso} NO recibe el label y no se invoca gh pr edit`, () => {
+    const { runner, calls } = fakeGhRunner(['needs-definition'], 0, head);
+    const logs = [];
+    const applied = runtimeDelivery.propagateGateLabelToPr({
+      issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+      issueLabels: ['qa:passed'], log: (m) => logs.push(m), ghImpl: runner,
+    });
+    assert.deepEqual(applied, [], 'no se debe reportar ningún label aplicado');
+    assert.equal(calls.some((a) => a[1] === 'edit'), false, 'no se debe invocar `gh pr edit`');
+    assert.match(logs.join('\n'), /pr_de_fork|procedencia_desconocida|pr_rama_distinta/);
+  });
+}
+
+test('SEC-2 (ruta real): si `gh pr view` falla no se escribe el label (fail-closed)', () => {
+  const calls = [];
+  const applied = runtimeDelivery.propagateGateLabelToPr({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:passed'], log: () => {},
+    ghImpl: (a) => { calls.push(a); return { exit_code: 1, stdout: '', stderr: 'gh: not found' }; },
+  });
+  assert.deepEqual(applied, []);
+  assert.equal(calls.some((a) => a[1] === 'edit'), false);
+});
+
+test('SEC-2 (ruta real): el PR legítimo del mismo repo SÍ recibe el label', () => {
+  const { runner, calls } = fakeGhRunner(['needs-definition']);
+  const applied = runtimeDelivery.propagateGateLabelToPr({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:passed'], log: () => {}, ghImpl: runner,
+  });
+  assert.deepEqual(applied, ['qa:passed'], 'el camino feliz no debe romperse');
+  assert.equal(calls.some((a) => a[1] === 'edit'), true);
+});
+
+test('SEC-2: `gh pr view` pide explícitamente los campos de procedencia', () => {
+  const { runner, calls } = fakeGhRunner([]);
+  runtimeDelivery.propagateGateLabelToPr({
+    issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
+    issueLabels: ['qa:passed'], log: () => {}, ghImpl: runner,
+  });
+  const view = calls.find((a) => a[1] === 'view');
+  const fields = view[view.indexOf('--json') + 1];
+  for (const f of ['isCrossRepository', 'headRepositoryOwner', 'headRefName']) {
+    assert.ok(fields.includes(f), `falta el campo ${f} en la query`);
+  }
+});
+
+// --- findExistingPR: un PR de fork jamás se adopta como el PR del issue -----
+test('SEC-2 (findExistingPR): el PR de fork se descarta y no se adopta', () => {
+  const forkPr = {
+    number: 6001, url: 'https://github.com/atacante/platform/pull/6001', labels: [],
+    headRefName: 'agent/5864-pipeline-dev', isCrossRepository: true,
+    headRepositoryOwner: { login: 'atacante' },
+  };
+  const logs = [];
+  const res = runtimeDelivery.findExistingPR('agent/5864-pipeline-dev', {
+    ghImpl: () => ({ exit_code: 0, stderr: '', stdout: JSON.stringify([forkPr]) }),
+    log: (m) => logs.push(m),
+  });
+  assert.equal(res, null, 'un PR de fork no puede adoptarse como el PR del issue');
+  assert.match(logs.join('\n'), /descartado por procedencia/);
+});
+
+test('SEC-2 (findExistingPR): con fork y PR legítimo, elige el legítimo', () => {
+  const fork = {
+    number: 6001, url: 'u-fork', labels: [{ name: 'qa:passed' }],
+    headRefName: 'agent/5864-pipeline-dev', isCrossRepository: true,
+    headRepositoryOwner: { login: 'atacante' },
+  };
+  const propio = {
+    number: 6002, url: 'u-propio', labels: [{ name: 'needs-definition' }],
+    headRefName: 'agent/5864-pipeline-dev', isCrossRepository: false,
+    headRepositoryOwner: { login: 'intrale' },
+  };
+  const res = runtimeDelivery.findExistingPR('agent/5864-pipeline-dev', {
+    ghImpl: () => ({ exit_code: 0, stderr: '', stdout: JSON.stringify([fork, propio]) }),
+  });
+  assert.equal(res.number, 6002);
+  assert.deepEqual(res.labels, ['needs-definition']);
+});
+
 // ---- CLI manual `/delivery` (`.pipeline/delivery.js`, #2870) ---------------
 // Segundo punto de entrada, invocado a mano por el skill `/delivery`. No es el
 // camino del pipeline (ver bloque de arriba), pero cierra el mismo tramo.
@@ -253,7 +387,7 @@ test('la propagación nunca es fatal: una excepción de gh se traga y el gate si
 const { buildPrGatePropagation } = require('../delivery');
 
 test('delivery propaga el label vigente del issue al PR recién creado (caso #5519/#5788/#5790)', () => {
-  const res = buildPrGatePropagation({
+  const res = decideCli({
     issue: '5400',
     prNumber: '5519',
     branch: 'agent/5400-pipeline-dev',
@@ -266,7 +400,7 @@ test('delivery propaga el label vigente del issue al PR recién creado (caso #55
 });
 
 test('delivery propaga qa:failed sin invertir la autoridad (issue → PR)', () => {
-  const res = buildPrGatePropagation({
+  const res = decideCli({
     issue: 5723,
     prNumber: 5788,
     branch: 'agent/5723-pipeline-dev',
@@ -278,7 +412,7 @@ test('delivery propaga qa:failed sin invertir la autoridad (issue → PR)', () =
 });
 
 test('delivery no propaga si el issue no tiene label de gate (fail-closed)', () => {
-  const res = buildPrGatePropagation({
+  const res = decideCli({
     issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
     issueLabels: [{ name: 'bug' }, { name: 'area:pipeline' }],
   });
@@ -286,7 +420,7 @@ test('delivery no propaga si el issue no tiene label de gate (fail-closed)', () 
 });
 
 test('delivery no propaga si el issue trae labels de gate en conflicto', () => {
-  const res = buildPrGatePropagation({
+  const res = decideCli({
     issue: 5864, prNumber: 5900, branch: 'agent/5864-pipeline-dev',
     issueLabels: ['qa:passed', 'qa:failed'],
   });
@@ -297,7 +431,7 @@ test('delivery no propaga si el issue trae labels de gate en conflicto', () => {
 
 // SEC-1: el vínculo lo da la rama, no el cuerpo del PR ("Closes #<aprobado>").
 test('delivery no propaga a un PR cuya rama no corresponde al issue aprobado', () => {
-  const res = buildPrGatePropagation({
+  const res = decideCli({
     issue: 5400, prNumber: 5999, branch: 'feature/otra-cosa',
     issueLabels: ['qa:passed'],
   });
@@ -306,11 +440,11 @@ test('delivery no propaga a un PR cuya rama no corresponde al issue aprobado', (
 
 test('delivery no propaga sin PR resoluble ni sin issue', () => {
   assert.deepEqual(
-    buildPrGatePropagation({ issue: 5864, prNumber: null, branch: 'agent/5864-x', issueLabels: ['qa:passed'] }),
+    decideCli({ issue: 5864, prNumber: null, branch: 'agent/5864-x', issueLabels: ['qa:passed'] }),
     { ok: false, reason: 'pr_no_resuelto' },
   );
   assert.deepEqual(
-    buildPrGatePropagation({ issue: null, prNumber: 5900, branch: 'agent/5864-x', issueLabels: ['qa:passed'] }),
+    decideCli({ issue: null, prNumber: 5900, branch: 'agent/5864-x', issueLabels: ['qa:passed'] }),
     { ok: false, reason: 'sin_issue' },
   );
 });
@@ -318,7 +452,7 @@ test('delivery no propaga sin PR resoluble ni sin issue', () => {
 // La orden encolada por delivery, ejecutada por el worker, deja el PR con el
 // label correcto y sin tocar la API de issues (SEC-5) — cierre punta a punta.
 test('la orden que encola delivery termina etiquetando el PR vía el worker', () => {
-  const res = buildPrGatePropagation({
+  const res = decideCli({
     issue: 5708, prNumber: 5790, branch: 'agent/5708-pipeline-dev',
     issueLabels: ['qa:passed'],
   });

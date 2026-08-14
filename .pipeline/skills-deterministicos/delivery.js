@@ -15,6 +15,8 @@ const operatorGate = require('../lib/operator-gate');
 const { sanitizeReason } = require('../lib/kernel-actions-audit');
 // #5864 — dueño único de la invariante "imposible qa:passed + qa:failed".
 const gateLabelReconciler = require('../lib/gate-label-reconciler');
+// #5864 SEC-2 — procedencia del PR destino (defensa contra PRs de fork).
+const prProvenance = require('../lib/pr-provenance');
 // #5420 — Verificación de procedencia de la rama del PR antes de mergear.
 // Se CONSUME la implementación canónica (#5419): es `git fetch` + `git log`
 // contra la allowlist de committers, no necesita worktree y no se duplica acá.
@@ -151,17 +153,56 @@ function fetchIssueTitle(issue) {
     } catch { return { title: null, labels: [] }; }
 }
 
-function findExistingPR(branch) {
-    const r = git.runGh(['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,url,labels'], { cwd: WORK_DIR });
-    if (r.exit_code !== 0) return null;
+// #5864 SEC-2 — Repo esperado del head de todo PR que adoptemos o etiquetemos.
+// Ver `lib/pr-provenance.js` para el vector completo (repo público + patrón de
+// rama predecible ⇒ un fork puede abrir un PR con la rama `agent/<issue>-…`).
+const EXPECTED_PR_REPO = process.env.PIPELINE_REPO || prProvenance.DEFAULT_REPO;
+
+/**
+ * Busca el PR abierto del pipeline para `branch`.
+ *
+ * SEC-2: `gh pr list --head <branch>` NO filtra por owner y devuelve también
+ * PRs cuyo head vive en un fork. Adoptar uno de esos como "el PR del issue"
+ * haría que delivery le propague el `qa:passed` y le abra el gate de merge.
+ * Por eso se descarta todo PR que no supere `checkPrProvenance`, y si no queda
+ * ninguno se devuelve `null` (fail-closed): el flujo sigue por la rama de
+ * "no hay PR" y crea el PR legítimo desde la rama de origin.
+ */
+function findExistingPR(branch, { ghImpl = git.runGh, log = () => {} } = {}) {
+    const r = ghImpl(['pr', 'list', '--head', branch, '--state', 'open', '--json', prProvenance.PR_PROVENANCE_FIELDS.join(',')], { cwd: WORK_DIR });
+    if (!r || r.exit_code !== 0) return null;
+    let arr;
+    try { arr = JSON.parse(r.stdout); } catch { return null; }
+    if (!Array.isArray(arr) || !arr.length) return null;
+
+    const own = [];
+    for (const p of arr) {
+        const prov = prProvenance.checkPrProvenance(p, { branch, repo: EXPECTED_PR_REPO });
+        if (prov.ok) { own.push(p); continue; }
+        log(`[delivery] PR #${(p && p.number) || '?'} descartado por procedencia (${prov.reason}${prov.detail ? `: ${prov.detail}` : ''})`
+            + ` — no se adopta como PR del issue ni recibe labels de gate`);
+    }
+    if (!own.length) return null;
+
+    const chosen = own[0];
+    return {
+        number: chosen.number,
+        url: chosen.url,
+        labels: (chosen.labels || []).map((l) => l.name),
+    };
+}
+
+/**
+ * Lee del PR destino, en UNA sola llamada, los labels frescos y los datos de
+ * procedencia. Devuelve `null` ante cualquier problema (fail-closed: sin datos
+ * no se escribe el label).
+ */
+function fetchPrForGateWrite(prNumber, { ghImpl = git.runGh } = {}) {
+    const r = ghImpl(['pr', 'view', String(prNumber), '--json', prProvenance.PR_PROVENANCE_FIELDS.join(',')], { cwd: WORK_DIR });
+    if (!r || r.exit_code !== 0) return null;
     try {
-        const arr = JSON.parse(r.stdout);
-        if (!arr.length) return null;
-        return {
-            number: arr[0].number,
-            url: arr[0].url,
-            labels: (arr[0].labels || []).map((l) => l.name),
-        };
+        const j = JSON.parse(r.stdout);
+        return (j && typeof j === 'object' && !Array.isArray(j)) ? j : null;
     } catch { return null; }
 }
 
@@ -221,7 +262,7 @@ const QA_GATE_BLOCKING = new Set(['qa:failed', 'qa:pending']);
  * @returns {{ok:false, reason:string, labels?:string[], branch?:string}
  *          |{ok:true, target:string, toAdd:string[], toRemove:string[]}}
  */
-function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels } = {}) {
+function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels, prHead } = {}) {
     const issueNum = parseInt(issue, 10);
     if (!Number.isInteger(issueNum) || issueNum <= 0) return { ok: false, reason: 'sin_issue' };
     const pr = parseInt(prNumber, 10);
@@ -231,6 +272,22 @@ function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels
     // 586 ni el 58640: el separador `-` es parte del prefijo exigido.
     if (typeof branch !== 'string' || !branch.startsWith(`agent/${issueNum}-`)) {
         return { ok: false, reason: 'rama_no_corresponde_al_issue', branch: branch || null };
+    }
+
+    // SEC-2 — procedencia del PR DESTINO. El chequeo de arriba valida la rama
+    // LOCAL; éste valida el PR sobre el que realmente se va a escribir. Sin él,
+    // un PR abierto desde un fork con la rama `agent/<issue>-<skill>` recibiría
+    // el `qa:passed` del issue y con eso pasaría el gate de merge (que audita
+    // la rama de origin, no el head del fork, y mergea el SHA del fork).
+    // Fail-closed: si no hay datos de procedencia, no se escribe nada.
+    const prov = prProvenance.checkPrProvenance(prHead, { branch, repo: EXPECTED_PR_REPO });
+    if (!prov.ok) {
+        return { ok: false, reason: prov.reason, detail: prov.detail || null, prNumber: pr };
+    }
+    // El PR consultado tiene que ser el mismo que vamos a editar: si `gh` nos
+    // devolvió otro número, la referencia no es confiable.
+    if (prHead.number !== undefined && parseInt(prHead.number, 10) !== pr) {
+        return { ok: false, reason: 'procedencia_desconocida', detail: `pr consultado #${prHead.number} ≠ destino #${pr}` };
     }
 
     const norm = (list) => [...new Set(
@@ -277,10 +334,14 @@ function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels
 function propagateGateLabelToPr({ issue, prNumber, branch, issueLabels, log = () => {}, ghImpl = git.runGh } = {}) {
     let decision;
     try {
-        // Labels FRESCOS del PR (SEC-4: los del PR, nunca los del issue), leídos
-        // acá mismo para minimizar la ventana TOCTOU contra el `gh pr edit`.
-        const prLabels = getPRLabels(prNumber, { ghImpl });
-        decision = buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels });
+        // Una sola consulta trae labels FRESCOS (SEC-4: los del PR, nunca los
+        // del issue) y los datos de procedencia (SEC-2), leídos acá mismo para
+        // minimizar la ventana TOCTOU contra el `gh pr edit`.
+        const prHead = fetchPrForGateWrite(prNumber, { ghImpl });
+        const prLabels = (prHead && Array.isArray(prHead.labels))
+            ? prHead.labels.map((l) => ((l && l.name) ? l.name : String(l)))
+            : [];
+        decision = buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels, prHead });
     } catch (e) {
         log(`[delivery] gate QA issue→PR: no se propaga (${(e && e.message || '').slice(0, 200)})`);
         return [];
@@ -1225,7 +1286,7 @@ async function main() {
 
         // ── Fase 4: PR (crear o reutilizar) ───────────────────────────
         t = phaseStart();
-        let pr = findExistingPR(branch);
+        let pr = findExistingPR(branch, { log: logAppend });
         const stats = git.getDiffStats(WORK_DIR, 'origin/main');
 
         if (!pr) {
@@ -1577,6 +1638,9 @@ module.exports = {
     QA_GATE_LABELS,
     buildPrGatePropagation,
     propagateGateLabelToPr,
+    // #5864 SEC-2 — procedencia del PR destino (defensa contra PRs de fork).
+    fetchPrForGateWrite,
+    EXPECTED_PR_REPO,
     // #5420 — camino de merge endurecido: snapshot único, gates en orden,
     // procedencia, SHA pinneado y confirmación estricta.
     getPRSnapshot,
