@@ -647,10 +647,26 @@ test('ROTATION_POLICY_DAYS · 90 días por convención', () => {
   assert.equal(cron.ROTATION_POLICY_DAYS, 90);
 });
 
-test('inventario real · conserva exactamente las 13 variables de ENV_MAPPING', () => {
+// El denominador correcto es ENV_DESCRIPTORS, no ENV_MAPPING.
+//
+// Desde #5217 (CA-6) `ENV_MAPPING` es un SUBCONJUNTO del inventario: sólo los
+// descriptores con `hydrate !== false`, o sea "lo que se escribe en el
+// `process.env` global". Las cuatro credenciales de Google Drive están
+// declaradas `hydrate: false` a propósito (su consumidor las resuelve por
+// namespace, hidratarlas expondría un refresh token en el env de todo agente
+// hijo), así que quedan fuera de `ENV_MAPPING` pero SIGUEN en el inventario:
+// se provisionan, se rotan y la política IAM las cubre.
+//
+// El cron de rotación es exactamente uno de los consumidores que el propio
+// `credentials.js:233-236` manda a leer el descriptor completo — cubrir sólo
+// las hidratadas dejaría 4 secretos sin vigilancia de vencimiento, incluido el
+// refresh token de Secrets Manager. Contrastar contra `ENV_MAPPING` volvía
+// verde ese agujero; contra `ENV_DESCRIPTORS` la coherencia es la real (13).
+test('inventario real · conserva exactamente las 13 variables de ENV_DESCRIPTORS', () => {
   const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
   const rows = cron.parseInventoryMarkdown(inventory);
-  const expected = Object.values(require('../credentials').ENV_MAPPING).sort();
+  const expected = Object.values(require('../credentials').ENV_DESCRIPTORS).map((d) => d.env).sort();
+  assert.equal(expected.length, 13);
   assert.deepEqual(rows.map((row) => row.env_var).sort(), expected);
 });
 

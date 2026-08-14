@@ -62,9 +62,17 @@ function makeFakeHumanBlock(overrides = {}) {
     },
     enqueueGithub(action, payload) { calls.enqueueGithub.push({ action, payload }); return true; },
     inferHumanBlockQuestion(motivo, o = {}) { return `¿Podés revisar? [${o.skill || '?'}] ${String(motivo).slice(0, 40)}`; },
-    buildBlockedSummaryMarkdown(o = {}) {
+    // #5421 — el aviso crítico se arma con el renderer PLANO. El fake expone
+    // los dos para que un caller que vuelva al Markdown se note en el test de
+    // `plain` (abajo) en vez de romper con "is not a function" silenciado por
+    // el try/catch de pulpo.js.
+    buildBlockedSummaryPlain(o = {}) {
       const h = o.highlight || {};
       return `🚧 #${h.issue} (${h.skill})\n📝 ${h.reason}`;
+    },
+    buildBlockedSummaryMarkdown(o = {}) {
+      const h = o.highlight || {};
+      return `🚧 *#${h.issue}* (${h.skill})\n📝 ${h.reason}`;
     },
     buildBlockedActionMarkup() { return { inline_keyboard: [[{ text: 'ok', url: 'http://x' }]] }; },
     sendNeedHumanAudio(o) { calls.audio.push(o); return Promise.resolve({ ok: true }); },
@@ -78,7 +86,7 @@ function makeDeps(root, fakeHb, extra = {}) {
     deps: {
       humanBlock: fakeHb,
       sanitize: (s) => String(s), // identidad — la redacción real se testea en human-block
-      sendTelegramWithMarkup: (text, markup) => { tg.calls.push({ text, markup }); },
+      sendTelegramWithMarkup: (text, markup, opts) => { tg.calls.push({ text, markup, opts }); },
       log: () => {},
       pipelineRoot: root,
       resolveWaveForIssue: () => ({ number: 9, name: 'Ola de prueba', issues: [] }),
@@ -154,6 +162,13 @@ test('el corte del circuit breaker crea marker bloqueado-humano + encola comment
   assert.match(tg.calls[0].text, /Ola 9/);
   assert.match(tg.calls[0].text, /dependencia externa/);
   assert.ok(tg.calls[0].markup, 'la alerta debe incluir botones de acción rápida');
+
+  // #5421 — el corte del circuit breaker sale SIN `parse_mode`: es un aviso
+  // crítico y no puede perderse por un HTTP 400 de formato de Telegram.
+  assert.equal(tg.calls[0].opts && tg.calls[0].opts.plain, true,
+    'la alerta de circuit breaker debe enviarse en texto plano (opts.plain)');
+  assert.ok(!/[*_`]/.test(tg.calls[0].text),
+    `el texto del aviso crítico no debe traer metacaracteres Markdown: ${tg.calls[0].text}`);
 
   // El work-file activo se archivó (sacado del flujo), NO quedó en trabajando/.
   assert.equal(fs.existsSync(wf), false);

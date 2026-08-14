@@ -9,7 +9,15 @@
 //
 // **Path**:
 //   `.pipeline/state/notif-dedup-worktree-<issue>-<fase>.txt`
-//   Contiene un único timestamp ISO-8601 (no más, no menos).
+//   Contiene JSON `{ ts: <ISO-8601|null>, skills: [<skill>…] }` (#5421 CA-9).
+//   `ts` es el momento de la ÚLTIMA notificación enviada (null = registrado
+//   pero todavía no notificado). `skills` son los skills afectados por
+//   escaladas del mismo (issue, fase), para que la única alerta que sale los
+//   liste a todos.
+//
+//   **Retrocompatible**: el formato viejo era un timestamp ISO plano y hay
+//   archivos así vivos en `state/`. La lectura los acepta (`skills: []`) — si
+//   los tratara como corruptos, re-floodearía Telegram al primer deploy.
 //
 // **TTL default**: 24 horas. Después de eso, asumimos que el operador ya
 //   pudo no haber visto la notificación o se le pasó — re-notificamos.
@@ -46,12 +54,77 @@ function buildDedupPath(issue, fase, stateDir = DEFAULT_STATE_DIR) {
 }
 
 /**
+ * Tope de skills acumulados por (issue, fase). Sólo para que el archivo y el
+ * texto de la alerta no crezcan sin límite ante un loop patológico.
+ */
+const MAX_SKILLS = 20;
+
+/** Misma forma que `fase`/`skill` en config.yaml. */
+const SKILL_RE = /^[a-z][a-z0-9-]{0,30}$/;
+
+/**
+ * Lee el archivo de dedup y lo normaliza a `{ ts, skills }` (#5421 CA-9).
+ *
+ * **Retrocompatible a propósito**: el formato viejo era un timestamp ISO plano
+ * y hay archivos así vivos en `state/`. Si el contenido parsea como ISO plano
+ * se devuelve `{ ts: <ese ISO>, skills: [] }`. Si se tratara como corrupto,
+ * `shouldNotify` daría `true` para todos y re-floodearíamos Telegram.
+ *
+ * Contenido ilegible/corrupto → `{ ts: null, skills: [] }` (conservador: se
+ * vuelve a notificar).
+ */
+function readEntry(dedupPath, fsImpl) {
+    let raw;
+    try {
+        raw = String(fsImpl.readFileSync(dedupPath, 'utf8')).trim();
+    } catch {
+        return { ts: null, skills: [] };
+    }
+    if (!raw) return { ts: null, skills: [] };
+
+    // Formato nuevo: JSON `{ ts, skills }`.
+    if (raw.startsWith('{')) {
+        try {
+            const parsed = JSON.parse(raw);
+            const ts = typeof parsed.ts === 'string' && Number.isFinite(Date.parse(parsed.ts))
+                ? parsed.ts
+                : null;
+            const skills = Array.isArray(parsed.skills)
+                ? parsed.skills.filter((s) => typeof s === 'string' && SKILL_RE.test(s))
+                : [];
+            return { ts, skills };
+        } catch {
+            return { ts: null, skills: [] };
+        }
+    }
+
+    // Formato legacy: timestamp ISO plano.
+    return { ts: Number.isFinite(Date.parse(raw)) ? raw : null, skills: [] };
+}
+
+/** Escribe el entry normalizado. Best-effort. */
+function writeEntry(dedupPath, entry, fsImpl) {
+    try {
+        fsImpl.mkdirSync(path.dirname(dedupPath), { recursive: true });
+        fsImpl.writeFileSync(
+            dedupPath,
+            JSON.stringify({ ts: entry.ts, skills: entry.skills }),
+            { encoding: 'utf8' },
+        );
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * ¿Debemos notificar? true si:
  *   - No existe archivo de dedup (primera vez), o
- *   - Existe pero su contenido (timestamp) es más viejo que TTL.
+ *   - Existe pero su timestamp de notificación es más viejo que TTL, o
+ *   - Existe pero todavía no se notificó nunca (`ts: null` — el archivo lo creó
+ *     `recordSkill`, que registra el skill afectado SIN marcar notificado).
  *
- * Si por algún motivo el contenido no parsea como timestamp, asumimos
- * "viejo / corrupto" y re-notificamos. Conservador.
+ * Si el contenido no parsea, asumimos "viejo / corrupto" y re-notificamos.
  */
 function shouldNotify(issue, fase, opts = {}) {
     const { ttlMs = DEFAULT_TTL_MS, stateDir = DEFAULT_STATE_DIR, fsImpl = fs, now = Date.now() } = opts;
@@ -65,19 +138,15 @@ function shouldNotify(issue, fase, opts = {}) {
         return false;
     }
 
-    try {
-        const raw = fsImpl.readFileSync(dedupPath, 'utf8').trim();
-        const lastMs = Date.parse(raw);
-        if (!Number.isFinite(lastMs)) return true;
-        return (now - lastMs) >= ttlMs;
-    } catch {
-        // ENOENT u otro → no hay dedup previo, notificamos.
-        return true;
-    }
+    const { ts } = readEntry(dedupPath, fsImpl);
+    const lastMs = ts == null ? NaN : Date.parse(ts);
+    if (!Number.isFinite(lastMs)) return true;
+    return (now - lastMs) >= ttlMs;
 }
 
 /**
  * Marca como notificado escribiendo el timestamp actual. Best-effort.
+ * Preserva los skills ya registrados por `recordSkill`.
  */
 function markNotified(issue, fase, opts = {}) {
     const { stateDir = DEFAULT_STATE_DIR, fsImpl = fs, now = Date.now() } = opts;
@@ -87,13 +156,50 @@ function markNotified(issue, fase, opts = {}) {
     } catch {
         return false;
     }
+    const prev = readEntry(dedupPath, fsImpl);
+    return writeEntry(dedupPath, { ts: new Date(now).toISOString(), skills: prev.skills }, fsImpl);
+}
+
+/**
+ * Registra que `skill` quedó afectado por una escalada de (issue, fase),
+ * SIN marcar como notificado (#5421 CA-9).
+ *
+ * Esa separación es la que hace que funcione: el pulpo llama a `recordSkill`
+ * ANTES de `shouldNotify`, así la única alerta que sale puede listar todos los
+ * skills afectados. Si `recordSkill` tocara el `ts`, se comería la primera
+ * notificación.
+ *
+ * @returns {boolean} true si quedó registrado (o ya estaba).
+ */
+function recordSkill(issue, fase, skill, opts = {}) {
+    const { stateDir = DEFAULT_STATE_DIR, fsImpl = fs } = opts;
+    if (!SKILL_RE.test(String(skill || ''))) return false;
+    let dedupPath;
     try {
-        fsImpl.mkdirSync(path.dirname(dedupPath), { recursive: true });
-        fsImpl.writeFileSync(dedupPath, new Date(now).toISOString(), { encoding: 'utf8' });
-        return true;
+        dedupPath = buildDedupPath(issue, fase, stateDir);
     } catch {
         return false;
     }
+    const entry = readEntry(dedupPath, fsImpl);
+    if (entry.skills.includes(skill)) return true;
+    if (entry.skills.length >= MAX_SKILLS) return false;
+    entry.skills.push(skill);
+    return writeEntry(dedupPath, entry, fsImpl);
+}
+
+/**
+ * Skills registrados para (issue, fase). `[]` si no hay ninguno o si el
+ * archivo es del formato legacy (timestamp plano sin skills).
+ */
+function readSkills(issue, fase, opts = {}) {
+    const { stateDir = DEFAULT_STATE_DIR, fsImpl = fs } = opts;
+    let dedupPath;
+    try {
+        dedupPath = buildDedupPath(issue, fase, stateDir);
+    } catch {
+        return [];
+    }
+    return readEntry(dedupPath, fsImpl).skills;
 }
 
 /**
@@ -121,6 +227,9 @@ module.exports = {
     markNotified,
     clearDedup,
     buildDedupPath,
+    recordSkill,
+    readSkills,
     DEFAULT_TTL_MS,
     DEFAULT_STATE_DIR,
+    MAX_SKILLS,
 };
