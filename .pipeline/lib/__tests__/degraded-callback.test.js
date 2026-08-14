@@ -124,8 +124,16 @@ test('#5923 pp: no destructivo ejecuta, avisa el resultado concreto y retira el 
             'el destino sale del mapa congelado, nunca de interpolar el action');
         assert.equal(requests[0].opts.method, 'POST');
         assert.equal(requests[0].opts.headers['Content-Type'], 'application/json');
-        assert.match(JSON.parse(requests[0].opts.body).authorizedBy, /^telegram:111222333$/,
-            'el operador real viaja al gate, no un literal hardcodeado');
+        // `authorizedBy` es la CLASE de origen del enum cerrado de #3625; la
+        // identidad fina del operador viaja aparte. Mandar `telegram:<from.id>`
+        // dejaba el valor fuera del enum: pasaba sólo por el grace period y con
+        // `PARTIAL_PAUSE_STRICT_AUTH=1` el botón daba 403 para siempre.
+        const sent = JSON.parse(requests[0].opts.body);
+        assert.equal(sent.authorizedBy, 'telegram:operator', 'origen registrado en el enum, no un valor inventado');
+        assert.equal(sent.operatorRef, '111222333', 'el operador real viaja para la trazabilidad fina');
+        const audit = require('../partial-pause-audit');
+        assert.equal(audit.validateAuthorizedBy(sent.authorizedBy).valid, true,
+            'lo que se manda tiene que pasar el validador REAL, no sólo un fake');
 
         const toast = toastOf(calls);
         assert.ok(toast.params.text.length > 0, 'nunca un ack vacío');

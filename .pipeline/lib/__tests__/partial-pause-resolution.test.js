@@ -87,13 +87,18 @@ test('#5923 sanitizeAuthorizedBy conserva al operador real y descarta basura', (
 
 // ─── Resolución ──────────────────────────────────────────────────────────────
 
+// Origen registrado en el enum cerrado de #3625. Usar `telegram:<from.id>` acá
+// (como se hacía antes) dejaba el valor FUERA del enum, y los tests no lo veían
+// porque los fakes no consultaban el validador real.
+const BY = 'telegram:operator';
+
 function makeDeps(mode = 'partial_pause', overrides = {}) {
-    const calls = { set: [], clear: [], depsState: 0 };
+    const calls = { mark: [], clear: [], depsState: 0 };
     return {
         calls,
         deps: {
-            getPipelineMode: () => ({ mode, allowedIssues: [5923, 5924], depSources: { 5924: 'auto-deps' } }),
-            setPartialPause: (issues, opts) => { calls.set.push({ issues, opts }); return { ok: true, allowedIssues: issues, msg: 'ok' }; },
+            getPipelineMode: () => ({ mode, allowedIssues: [5923, 5924], allowedSkills: [], depSources: { 5924: 'auto-deps' } }),
+            markDepRiskAccepted: (opts) => { calls.mark.push(opts); return { ok: true, allowedIssues: [5923, 5924], allowedSkills: [] }; },
             clearPartialPause: (opts) => { calls.clear.push(opts); return { ok: true, existed: true }; },
             clearDepsState: () => { calls.depsState++; },
             ...overrides,
@@ -106,50 +111,51 @@ test('#5923 con mode !== partial_pause ⇒ 409 y CERO mutación (anti-replay)', 
     for (const mode of ['running', 'paused', 'rest', null]) {
         const h = makeDeps(mode);
         for (const action of RESOLUTIONS) {
-            const out = applyResolution({ action, authorizedBy: 'telegram:1', deps: h.deps });
+            const out = applyResolution({ action, authorizedBy: BY, deps: h.deps });
             assert.equal(out.status, 409, `${action} en modo ${mode} debe dar 409`);
             assert.match(out.body.msg, /no en partial_pause/);
         }
-        assert.equal(h.calls.set.length, 0, 'no se toca el allowlist');
+        assert.equal(h.calls.mark.length, 0, 'no se toca el allowlist');
         assert.equal(h.calls.clear.length, 0, 'no se levanta la pausa');
     }
 });
 
 test('#5923 si el estado del pipeline no se puede leer ⇒ 409, nunca mutación a ciegas', () => {
-    const deps = { getPipelineMode: () => undefined, setPartialPause: () => { throw new Error('no debe llamarse'); },
+    const deps = { getPipelineMode: () => undefined, markDepRiskAccepted: () => { throw new Error('no debe llamarse'); },
                    clearPartialPause: () => { throw new Error('no debe llamarse'); } };
     for (const action of RESOLUTIONS) {
-        assert.equal(applyResolution({ action, authorizedBy: 'telegram:1', deps }).status, 409);
+        assert.equal(applyResolution({ action, authorizedBy: BY, deps }).status, 409);
     }
 });
 
 test('#5923 keep-original deja el allowlist igual y marca el riesgo como asumido', () => {
     const h = makeDeps();
-    const out = applyResolution({ action: 'keep-original', authorizedBy: 'telegram:111222333', deps: h.deps });
+    const out = applyResolution({ action: 'keep-original', authorizedBy: BY, operatorRef: '111222333', deps: h.deps });
     assert.equal(out.status, 200);
     assert.equal(out.body.ok, true);
     assert.deepEqual(out.body.allowedIssues, [5923, 5924], 'no suma ni saca nada');
-    assert.equal(h.calls.set.length, 1);
-    assert.equal(h.calls.set[0].opts.acceptedDepRisk, true);
-    assert.equal(h.calls.set[0].opts.authorizedBy, 'telegram:111222333', 'el operador real, no un literal');
+    assert.equal(h.calls.mark.length, 1, 'usa el merge no destructivo, no una reescritura del marker');
+    assert.equal(h.calls.mark[0].authorizedBy, BY, 'origen del enum cerrado (#3625)');
+    assert.match(h.calls.mark[0].justification, /111222333/, 'el from.id real queda trazado en el audit');
     assert.equal(h.calls.depsState, 1, 'limpia el state para que la alerta no reincida');
     assert.ok(out.body.msg.length > 0, 'mensaje concreto para el toast del operador');
 });
 
 test('#5923 cancel-partial-pause levanta la pausa pasando el operador real al gate', () => {
     const h = makeDeps();
-    const out = applyResolution({ action: 'cancel-partial-pause', authorizedBy: 'telegram:111222333', deps: h.deps });
+    const out = applyResolution({ action: 'cancel-partial-pause', authorizedBy: BY, operatorRef: '111222333', deps: h.deps });
     assert.equal(out.status, 200);
     assert.equal(out.body.existed, true);
     assert.equal(h.calls.clear.length, 1);
-    assert.equal(h.calls.clear[0].authorizedBy, 'telegram:111222333');
+    assert.equal(h.calls.clear[0].authorizedBy, BY, 'origen del enum cerrado (#3625)');
+    assert.match(h.calls.clear[0].justification, /111222333/, 'el from.id real queda trazado en el audit');
     assert.ok(h.calls.clear[0].justification.length > 0, 'el audit trail necesita justificación');
     assert.equal(h.calls.depsState, 1);
 });
 
 test('#5923 si el gate de autorización de partial-pause rechaza ⇒ 403, no 200 mentiroso', () => {
     const h = makeDeps('partial_pause', { clearPartialPause: () => ({ ok: false, rejected: true }) });
-    const out = applyResolution({ action: 'cancel-partial-pause', authorizedBy: 'telegram:1', deps: h.deps });
+    const out = applyResolution({ action: 'cancel-partial-pause', authorizedBy: BY, deps: h.deps });
     assert.equal(out.status, 403);
     assert.equal(out.body.ok, false);
     assert.equal(h.calls.depsState, 0, 'no limpia el state si no se aplicó nada');
@@ -159,10 +165,161 @@ test('#5923 una acción fuera del contrato ⇒ 404 sin consultar siquiera el mod
     let consultas = 0;
     const deps = { getPipelineMode: () => { consultas++; return { mode: 'partial_pause' }; } };
     for (const action of ['include-deps', '../kill-agent', '', null, 'KEEP-ORIGINAL']) {
-        const out = applyResolution({ action, authorizedBy: 'telegram:1', deps });
+        const out = applyResolution({ action, authorizedBy: BY, deps });
         assert.equal(out.status, 404, `${action} no es resolución de este endpoint`);
     }
     assert.equal(consultas, 0);
+});
+
+// ─── Integración contra el módulo REAL (regresión de B1/B2/B3) ───────────────
+//
+// Los fakes de arriba no pueden detectar pérdida de estado: devuelven el echo de
+// su input. Estos tests corren `applyResolution` contra el `partial-pause` real
+// con `PIPELINE_DIR_OVERRIDE` y assertean el CONTENIDO del marker después de la
+// resolución, que es donde vivían los 3 bloqueantes.
+
+const fs = require('fs');
+const os = require('os');
+const nodePath = require('path');
+
+function withRealPipelineDir(fn) {
+    const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'pp5923-'));
+    const prevDir = process.env.PIPELINE_DIR_OVERRIDE;
+    const prevStrict = process.env.PARTIAL_PAUSE_STRICT_AUTH;
+    process.env.PIPELINE_DIR_OVERRIDE = dir;
+    // Módulos con estado de path resuelto por env: se recargan limpios.
+    delete require.cache[require.resolve('../partial-pause')];
+    delete require.cache[require.resolve('../partial-pause-audit')];
+    try {
+        const pp = require('../partial-pause');
+        const marker = nodePath.join(dir, '.partial-pause.json');
+        return fn({ pp, dir, marker, writeMarker: (o) => fs.writeFileSync(marker, JSON.stringify(o, null, 2)),
+                    readMarker: () => (fs.existsSync(marker) ? JSON.parse(fs.readFileSync(marker, 'utf8')) : null) });
+    } finally {
+        if (prevDir === undefined) delete process.env.PIPELINE_DIR_OVERRIDE; else process.env.PIPELINE_DIR_OVERRIDE = prevDir;
+        if (prevStrict === undefined) delete process.env.PARTIAL_PAUSE_STRICT_AUTH; else process.env.PARTIAL_PAUSE_STRICT_AUTH = prevStrict;
+        delete require.cache[require.resolve('../partial-pause')];
+        delete require.cache[require.resolve('../partial-pause-audit')];
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+}
+
+function realDeps(pp, calls) {
+    return {
+        getPipelineMode: pp.getPipelineMode,
+        markDepRiskAccepted: pp.markDepRiskAccepted,
+        clearPartialPause: pp.clearPartialPause,
+        clearDepsState: () => { calls.depsState++; },
+    };
+}
+
+test('#5923 B1 keep-original NO borra allowed_skills ni la metadata de ola', () => {
+    withRealPipelineDir(({ pp, writeMarker, readMarker }) => {
+        writeMarker({
+            allowed_issues: [5923, 5924],
+            allowed_skills: ['qa', 'tester'],
+            wave_number: 9,
+            wave_name: 'Ola Puente',
+            wave_goal: 'kernel multiproducto',
+            dep_sources: { 5924: 'auto-deps' },
+            authorization_ttls: { 5924: '2026-09-01T00:00:00.000Z' },
+            created_at: '2026-08-01T00:00:00.000Z',
+            source: 'wave-promote',
+        });
+        const calls = { depsState: 0 };
+        const out = applyResolution({ action: 'keep-original', authorizedBy: BY, operatorRef: '111', deps: realDeps(pp, calls) });
+
+        assert.equal(out.status, 200);
+        const after = readMarker();
+        assert.ok(after, 'el marker sigue existiendo');
+        assert.deepEqual(after.allowed_issues, [5923, 5924], 'allowlist intacto');
+        assert.deepEqual(after.allowed_skills, ['qa', 'tester'], '#3680: allowed_skills NO se pierde');
+        assert.equal(after.wave_number, 9, '#4030: wave_number NO se pierde');
+        assert.equal(after.wave_name, 'Ola Puente', '#4030: wave_name NO se pierde');
+        assert.equal(after.wave_goal, 'kernel multiproducto', '#4030: wave_goal NO se pierde');
+        assert.deepEqual(after.dep_sources, { 5924: 'auto-deps' }, 'dep_sources preservado');
+        assert.deepEqual(after.authorization_ttls, { 5924: '2026-09-01T00:00:00.000Z' }, '#3625: TTLs preservados');
+        assert.equal(after.created_at, '2026-08-01T00:00:00.000Z', 'created_at no se reescribe');
+        assert.equal(after.source, 'wave-promote', 'el origen del allowlist no cambia por aceptar el riesgo');
+        assert.equal(after.accepted_dep_risk, true, 'lo único que cambia es el flag');
+    });
+});
+
+test('#5923 B2 keep-original con pausa parcial SÓLO por skills NO levanta la pausa', () => {
+    withRealPipelineDir(({ pp, writeMarker, readMarker }) => {
+        // Modo soportado desde #3680: allowed_issues vacío + allowed_skills.
+        writeMarker({ allowed_issues: [], allowed_skills: ['qa'], created_at: '2026-08-01T00:00:00.000Z', source: 'wave-promote' });
+        assert.equal(pp.getPipelineMode().mode, 'partial_pause', 'precondición: la pausa está activa por skills');
+
+        const calls = { depsState: 0 };
+        const out = applyResolution({ action: 'keep-original', authorizedBy: BY, operatorRef: '111', deps: realDeps(pp, calls) });
+
+        assert.equal(out.status, 200);
+        const after = readMarker();
+        assert.ok(after, 'el marker NO fue borrado: keep-original no puede levantar la pausa');
+        assert.deepEqual(after.allowed_skills, ['qa'], 'los skills siguen habilitados');
+        assert.equal(pp.getPipelineMode().mode, 'partial_pause', 'el pipeline sigue en pausa parcial');
+        // El toast tiene que describir lo que realmente quedó, no "0 issues" a secas.
+        assert.match(out.body.msg, /skill/, 'el mensaje refleja el scope real (skills), no miente');
+    });
+});
+
+test('#5923 B3 el origen viaja en el enum: mismo resultado con el gate estricto ON', () => {
+    for (const strict of ['0', '1']) {
+        withRealPipelineDir(({ pp, writeMarker, readMarker }) => {
+            process.env.PARTIAL_PAUSE_STRICT_AUTH = strict;
+            writeMarker({ allowed_issues: [5923], created_at: '2026-08-01T00:00:00.000Z', source: 'wave-promote' });
+            const calls = { depsState: 0 };
+            const out = applyResolution({ action: 'cancel-partial-pause', authorizedBy: BY, operatorRef: '111', deps: realDeps(pp, calls) });
+            assert.equal(out.status, 200, `con STRICT=${strict} el botón tiene que funcionar igual`);
+            assert.equal(readMarker(), null, 'la pausa parcial se levantó de verdad');
+        });
+    }
+});
+
+test('#5923 B3 un authorizedBy fuera del enum ⇒ 403 y CERO mutación', () => {
+    // Antes esto pasaba por grace period, ensuciando el audit y muriendo con strict.
+    for (const by of ['telegram:12345', 'dashboard-local', '', null, 'inventado:x']) {
+        withRealPipelineDir(({ pp, writeMarker, readMarker }) => {
+            writeMarker({ allowed_issues: [5923], allowed_skills: ['qa'], created_at: 'x', source: 'wave-promote' });
+            const calls = { depsState: 0 };
+            for (const action of RESOLUTIONS) {
+                const out = applyResolution({ action, authorizedBy: by, deps: realDeps(pp, calls) });
+                assert.equal(out.status, 403, `${JSON.stringify(by)} no está en el enum ⇒ 403`);
+            }
+            assert.ok(readMarker(), 'ninguna mutación se aplicó');
+            assert.equal(calls.depsState, 0, 'ni siquiera se limpia el deps-state');
+        });
+    }
+});
+
+test('#5923 keep-original es idempotente: dos taps no degradan el estado', () => {
+    withRealPipelineDir(({ pp, writeMarker, readMarker }) => {
+        writeMarker({ allowed_issues: [5923], allowed_skills: ['qa'], wave_number: 9, created_at: 'x', source: 'wave-promote' });
+        const calls = { depsState: 0 };
+        applyResolution({ action: 'keep-original', authorizedBy: BY, deps: realDeps(pp, calls) });
+        const first = readMarker();
+        applyResolution({ action: 'keep-original', authorizedBy: BY, deps: realDeps(pp, calls) });
+        const second = readMarker();
+        assert.deepEqual(second.allowed_issues, first.allowed_issues);
+        assert.deepEqual(second.allowed_skills, first.allowed_skills);
+        assert.equal(second.wave_number, 9, 'la wave metadata sobrevive a N aplicaciones');
+    });
+});
+
+test('#5923 markDepRiskAccepted es fail-closed si no hay pausa parcial vigente', () => {
+    withRealPipelineDir(({ pp, readMarker }) => {
+        // Sin marker en disco.
+        const r1 = pp.markDepRiskAccepted({ authorizedBy: BY });
+        assert.equal(r1.ok, false);
+        assert.equal(r1.reason, 'no_partial_pause');
+        assert.equal(readMarker(), null, 'no crea un marker de la nada');
+    });
+    withRealPipelineDir(({ pp, writeMarker }) => {
+        // Marker que no habilita nada: tampoco es pausa parcial.
+        writeMarker({ allowed_issues: [], allowed_skills: [], source: 'x' });
+        assert.equal(pp.markDepRiskAccepted({ authorizedBy: BY }).reason, 'no_partial_pause');
+    });
 });
 
 test('#5923 RESOLUTIONS coincide con los paths que rutea el callback-handler', () => {

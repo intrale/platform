@@ -13040,17 +13040,21 @@ function handleRequest(req, res) {
       try {
         const payload = ppBody ? JSON.parse(ppBody) : {};
         const pp = require('./lib/partial-pause');
-        // `authorizedBy` NUNCA se hardcodea: viaja el operador real que apretó
-        // el botón (el callback-handler manda su from.id, ya validado contra la
-        // allowlist fail-closed del listener). `clearPartialPause` lo exige por
-        // ser un removal masivo.
+        // `authorizedBy` es una CLASE de origen del enum cerrado de #3625
+        // (`telegram:operator`), no una identidad. La identidad fina del
+        // operador que apretó el botón (su `from.id`, ya validado fail-closed
+        // contra la allowlist del listener) viaja aparte en `operatorRef` y
+        // termina en la justification del audit. Mandar `telegram:<from.id>`
+        // como authorizedBy dejaba el valor FUERA del enum: pasaba sólo por el
+        // grace period y con `PARTIAL_PAUSE_STRICT_AUTH=1` daba 403 para siempre.
         const authorizedBy = ppGate.sanitizeAuthorizedBy(payload.authorizedBy);
         const out = ppResolution.applyResolution({
           action: ppAction,
           authorizedBy,
+          operatorRef: ppGate.sanitizeAuthorizedBy(payload.operatorRef, ''),
           deps: {
             getPipelineMode: pp.getPipelineMode,
-            setPartialPause: pp.setPartialPause,
+            markDepRiskAccepted: pp.markDepRiskAccepted,
             clearPartialPause: pp.clearPartialPause,
             clearDepsState: () => {
               try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}

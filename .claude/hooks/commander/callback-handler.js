@@ -695,37 +695,72 @@ function _degradedActionPhrase(text) {
     return sinEmoji.charAt(0).toLowerCase() + sinEmoji.slice(1);
 }
 
-/** Teclado de confirmación. Positivo a la izquierda (igual que `pc:`/`pcx:`). */
-function _degradedConfirmKeyboard(ns, action, issue, label) {
-    const tail = issue ? ":" + issue : "";
-    return [[
-        { text: "⚠️ Sí, " + label, callback_data: ns + ":c:" + action + tail },
-        { text: "✖️ Cancelar",     callback_data: ns + ":x:" + action + tail },
-    ]];
+/** Acceso al helper de botones. Fuente ÚNICA del formato de `callback_data`. */
+function _btnUrl() {
+    return require(path.join(_repoRoot, ".pipeline", "lib", "telegram-button-url.js"));
 }
 
-/** Rearma el teclado ORIGINAL (siempre en modo degradado) para el cancel. */
+/**
+ * Teclado de confirmación. Positivo a la izquierda (igual que `pc:`/`pcx:`).
+ *
+ * El `callback_data` se arma con `buildCallbackData` y pasa por el assert
+ * `fitsCallbackData` del helper, en vez de concatenarse a mano: ese assert es
+ * precisamente el guard que CA-6 pidió centralizar, y saltearlo dejaba un
+ * segundo formato de `callback_data` fuera de control. Si un botón no entra en
+ * los 64 bytes de la Bot API se cae ese botón, no el envío entero.
+ */
+function _degradedConfirmKeyboard(ns, action, issue, label) {
+    const btnUrl = _btnUrl();
+    const row = [
+        { text: "⚠️ Sí, " + label, data: btnUrl.buildCallbackData(ns + ":c", action, issue) },
+        { text: "✖️ Cancelar",     data: btnUrl.buildCallbackData(ns + ":x", action, issue) },
+    ].filter(b => btnUrl.fitsCallbackData(b.data));
+    if (row.length < 2) {
+        // Sin confirmación completa no se ofrece media confirmación.
+        _log("#5923 callback_data de confirmación excede el límite: " + ns + "/" + action);
+        return [];
+    }
+    return [row.map(b => ({ text: b.text, callback_data: b.data }))];
+}
+
+/**
+ * Rearma el teclado ORIGINAL (siempre en modo degradado) para el cancel.
+ * Devuelve `null` si el rearmado FALLÓ, para distinguirlo de "no hay botones"
+ * (`[]`): el caller decide si deja constancia del fallo.
+ */
 function _degradedOriginalKeyboard(ns, issue) {
     try {
-        const btnUrl = require(path.join(_repoRoot, ".pipeline", "lib", "telegram-button-url.js"));
+        const btnUrl = _btnUrl();
         if (ns === "pp") {
-            return btnUrl.buildActionKeyboard([
+            return _rowsOf(btnUrl.buildActionKeyboard([
                 [
                     { action: "include-deps",  text: PP_META["include-deps"].text,  issue },
                     { action: "keep-original", text: PP_META["keep-original"].text, issue },
                 ],
                 [{ action: "cancel-partial-pause", text: PP_META["cancel-partial-pause"].text }],
-            ], { callbackPrefix: "pp" }).markup.inline_keyboard;
+            ], { callbackPrefix: "pp" }));
         }
         const hb = require(path.join(_repoRoot, ".pipeline", "lib", "human-block.js"));
         const rows = hb.ACTION_KEYBOARD_ROWS.map(row => row.map(a => ({
             action: a, text: hb.ACTION_META[a].emoji + " " + hb.ACTION_META[a].label, issue,
         })));
-        return btnUrl.buildActionKeyboard(rows, { callbackPrefix: "hb" }).markup.inline_keyboard;
+        return _rowsOf(btnUrl.buildActionKeyboard(rows, { callbackPrefix: "hb" }));
     } catch (e) {
         _log("#5923 no se pudo rearmar el teclado original: " + e.message);
-        return [];
+        return null;   // FALLÓ ≠ "sin botones"
     }
+}
+
+/**
+ * Filas de un resultado de `buildActionKeyboard`. `markup` es `undefined`
+ * cuando no quedó ningún botón emitible (contrato CA-UX-7), así que acceder
+ * directo a `.markup.inline_keyboard` tiraba y el `try/catch` lo enmascaraba
+ * como "falló el rearmado".
+ */
+function _rowsOf(built) {
+    return (built && built.markup && Array.isArray(built.markup.inline_keyboard))
+        ? built.markup.inline_keyboard
+        : [];
 }
 
 /** Metadata de la acción (label + consequence + highImpact) por namespace. */
@@ -767,7 +802,15 @@ async function _execPartialPause(action, fromId) {
         const resp = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ authorizedBy: "telegram:" + String(fromId || "desconocido") }),
+            // `authorizedBy` es la CLASE de origen registrada en el enum cerrado
+            // de #3625 (`telegram:operator`); el `from.id` concreto viaja en
+            // `operatorRef` para la trazabilidad fina. Mandar `telegram:<from.id>`
+            // dejaba el valor fuera del enum: funcionaba sólo por el grace period
+            // y con el gate estricto activo el botón habría dado 403 para siempre.
+            body: JSON.stringify({
+                authorizedBy: "telegram:operator",
+                operatorRef: String(fromId || "desconocido"),
+            }),
             signal: AbortSignal.timeout(10000),
         });
         let data = null;
@@ -799,12 +842,36 @@ async function handleDegradedActionCallback(cbData, callbackQueryId, message, fr
         return true;
     }
 
-    const ns = cbData.slice(0, 2);
-    const parts = cbData.slice(3).split(":");
+    // Parseo por el MISMO helper que emitió el dato (`telegram-button-url`), no
+    // por slices a mano: dos fuentes de verdad para un formato es como se
+    // desincronizan emisor y router.
+    const ns = cbData.startsWith("pp:") ? "pp" : "hb";
+    let parsed;
+    try { parsed = _btnUrl().parseCallbackData(cbData, ns); }
+    catch (e) {
+        _log("#5923 no se pudo parsear el callback: " + e.message);
+        await _degradedToast(callbackQueryId, "⚠️ No se pudo interpretar la acción.");
+        return true;
+    }
+    if (!parsed) {
+        await _degradedToast(callbackQueryId, "⚠️ Acción no reconocida o ya no disponible.");
+        return true;
+    }
+    // `c` / `x` son etapas de confirmación, no acciones: se pelan re-parseando
+    // con el prefijo extendido, siempre por el helper.
     let stage = "run";
-    if (parts[0] === "c" || parts[0] === "x") { stage = parts.shift(); }
-    const action = parts.shift() || "";
-    const issue = parts.length ? parts.join(":") : "";
+    let action = parsed.action;
+    let issue = parsed.issue || "";
+    if (action === "c" || action === "x") {
+        stage = action;
+        const inner = _btnUrl().parseCallbackData(cbData, ns + ":" + stage);
+        if (!inner) {
+            await _degradedToast(callbackQueryId, "⚠️ Acción no reconocida o ya no disponible.");
+            return true;
+        }
+        action = inner.action;
+        issue = inner.issue || "";
+    }
 
     // El issue, si viene, tiene que ser un entero pelado. Cualquier otra cosa
     // (path traversal, encoding raro) muere acá sin tocar nada.
@@ -822,8 +889,11 @@ async function handleDegradedActionCallback(cbData, callbackQueryId, message, fr
 
     // --- Cancelar la confirmación: restaurar texto Y teclado originales. ---
     if (stage === "x") {
-        await _degradedToast(callbackQueryId, "Cancelado. No se aplicó nada.");
-        await _degradedEdit(messageId, baseText, _degradedOriginalKeyboard(ns, issue));
+        const restored = _degradedOriginalKeyboard(ns, issue);
+        await _degradedToast(callbackQueryId, restored === null
+            ? "Cancelado. No se aplicó nada (no se pudo restaurar el teclado; usá el dashboard)."
+            : "Cancelado. No se aplicó nada.");
+        await _degradedEdit(messageId, baseText, restored || []);
         return true;
     }
 
@@ -854,7 +924,7 @@ async function handleDegradedActionCallback(cbData, callbackQueryId, message, fr
 
     if (!result.ok) {
         // Falló: se deja el teclado puesto para que pueda reintentar.
-        await _degradedEdit(messageId, baseText, _degradedOriginalKeyboard(ns, issue));
+        await _degradedEdit(messageId, baseText, _degradedOriginalKeyboard(ns, issue) || []);
         return true;
     }
 
