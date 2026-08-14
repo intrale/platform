@@ -530,6 +530,24 @@ const PIPELINE = process.env.PIPELINE_DIR_OVERRIDE
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 
+// #5924 (CA-7) — Cola de salientes de Telegram resuelta EN CADA LLAMADA.
+//
+// `PIPELINE` se congela al cargar el módulo. Los tests que requieren `pulpo.js`
+// setean `PIPELINE_DIR_OVERRIDE` DESPUÉS del require (dentro de su `setup()`,
+// que es donde tienen el tmpdir), así que la constante ya había capturado el
+// directorio real: cada corrida de la suite dejaba dropfiles `*-cmd.json` en la
+// cola de Telegram de producción (11 en la medición del 13/08/2026), que el
+// servicio después intentaba enviar como si fueran avisos legítimos.
+//
+// En producción `PIPELINE_DIR_OVERRIDE` NUNCA está definida → devuelve
+// exactamente `path.join(PIPELINE, …)`. Cero cambio en caliente.
+function telegramPendienteDir() {
+  const base = process.env.PIPELINE_DIR_OVERRIDE
+    ? path.resolve(process.env.PIPELINE_DIR_OVERRIDE)
+    : PIPELINE;
+  return path.join(base, 'servicios', 'telegram', 'pendiente');
+}
+
 // #5172 · CA-13 / SEC-3b — la traza del resolver ("qué config estoy enforzando y
 // por qué mecanismo") va al log del pulpo, no sólo a stderr: es la respuesta que
 // el operador necesita poder buscar en `logs/pulpo.log`. Los overrides por env
@@ -16480,7 +16498,7 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
   const correlationId = telegramReceipt.generateCorrelationId('cmd');
 
   // Encolar en el servicio de telegram (fire-and-forget via filesystem)
-  const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+  const svcDir = telegramPendienteDir();
   const filename = `${Date.now()}-cmd.json`;
   try {
     // #5421 — La intención de "texto plano" viaja EXPLÍCITA (`plain: true`), no
@@ -16543,7 +16561,7 @@ function enqueueTelegramVoice(audioPath, opts = {}) {
   }
   const pi = telegramReceipt.coercePartInt(partIndex);
   const pt = telegramReceipt.coercePartInt(partTotal);
-  const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+  const svcDir = telegramPendienteDir();
   // #5573 — el `correlationId` va EN EL NOMBRE del dropfile para que el sweep
   // (`voiceParts.scanInFlightParts`) sepa qué partes siguen vivas en la cola sin
   // abrir y parsear cada JSON en cada tick. `correlationId` ya pasó por
