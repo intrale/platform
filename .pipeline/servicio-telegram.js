@@ -888,6 +888,38 @@ function sweepFallidoOnce() {
   return { requeued, discarded, permanent };
 }
 
+/**
+ * #5421 — Resuelve el dialecto de parseo de un saliente de TEXTO.
+ *
+ * **Por qué existe (y por qué `data.parse_mode || 'Markdown'` era un bug).**
+ * El productor (`pulpo.js::sendTelegramWithMarkup`) y este servicio son procesos
+ * distintos: el único canal entre ellos es el JSON del dropfile. Cuando el
+ * caller pedía texto plano (`opts.plain`), el productor expresaba esa intención
+ * OMITIENDO `parse_mode` del payload. Pero "campo ausente" es indistinguible de
+ * "el emisor no opinó", y el default de este lado lo reinyectaba como
+ * `'Markdown'`. Resultado: `plain:true` no tenía ningún efecto observable — el
+ * mensaje se enviaba parseado igual.
+ *
+ * Eso hacía que un aviso crítico con markup desbalanceado (un `_` de un path, un
+ * backtick de un email hostil) se perdiera con HTTP 400, y como el saliente es
+ * fire-and-forget el emisor nunca se enteraba. También dejaba sin efecto la
+ * defensa anti-inyección del canned de cuota (#2975 CA-13), que dependía del
+ * mismo flag.
+ *
+ * El fix es hacer la intención EXPLÍCITA en el payload (`plain: true`) para que
+ * sobreviva el cruce de proceso, en vez de codificarla como una ausencia.
+ * Retrocompatible: un dropfile viejo sin `plain` conserva el default histórico.
+ *
+ * @param {object} data — payload del dropfile.
+ * @returns {string|null} dialecto, o `null` si el mensaje va SIN `parse_mode`.
+ */
+function resolveOutboundParseMode(data) {
+  if (!data || typeof data !== 'object') return 'Markdown';
+  // Declaración explícita de texto plano: gana sobre cualquier otra cosa.
+  if (data.plain === true) return null;
+  return data.parse_mode || 'Markdown';
+}
+
 // #3668 — Procesa un grupo de burst (N>=2 archivos del mismo skill+issue+pid+type
 // dentro de la ventana). Mueve cada archivo a trabajando/, manda 1 solo mensaje
 // consolidado, y archiva todos los demás a listo/ con suffix
@@ -1168,7 +1200,8 @@ async function processQueue() {
         // Telegram API limita sendMessage a 4096; antes se truncaba silenciosamente.
         // #2893: passthrough opcional de reply_markup (inline_keyboard / url buttons)
         // — se adjunta solo al último chunk para que los botones queden al final.
-        const parseMode = data.parse_mode || 'Markdown';
+        // #5421 — `null` ⇒ el saliente va SIN `parse_mode` (texto plano).
+        const parseMode = resolveOutboundParseMode(data);
         const chunks = splitLongMessage(data.text);
         const hasReplyMarkup = data.reply_markup && typeof data.reply_markup === 'object';
         // #4586 (Palanca 2a) — hilo/topic separado para el firehose de
@@ -1186,7 +1219,10 @@ async function processQueue() {
         // fallido, se reintenta el dropfile completo).
         const messageIds = [];
         for (let i = 0; i < chunks.length; i++) {
-          const params = { text: chunks[i], parse_mode: parseMode };
+          // #5421 — sólo se adjunta `parse_mode` si hay dialecto. En texto plano
+          // el campo NO viaja, así que no hay nada que Telegram pueda rechazar.
+          const params = { text: chunks[i] };
+          if (parseMode) params.parse_mode = parseMode;
           if (privateDestination.chatId != null) params.chat_id = privateDestination.chatId;
           if (textThreadId != null) params.message_thread_id = textThreadId;
           if (hasReplyMarkup && i === chunks.length - 1) {
@@ -1282,6 +1318,9 @@ module.exports = {
   editMessageText,
   // #4586 (Palanca 2a) — normalizador de message_thread_id, expuesto para tests.
   normalizeThreadId,
+  // #5421 — resolutor del dialecto del saliente (puro). Expuesto para el test
+  // que fija que `plain:true` produce envío SIN `parse_mode`.
+  resolveOutboundParseMode,
   resolvePrivateDestination,
   // #4796 — helpers de normalización/allowlist de rutas de adjunto + guarda
   // fail-closed del solo-audio. Puros (o I/O acotado sobre disco); no arrancan el

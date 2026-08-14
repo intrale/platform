@@ -360,7 +360,13 @@ function renderFallaDeEvaluacion(categoria) {
  */
 function evaluarPorDefecto(opts = {}) {
   const { createVaultShadowMetrics } = require('./lib/vault-shadow-metrics');
-  const { ENV_DESCRIPTORS } = require('./lib/credentials');
+  // `HYDRATED_DESCRIPTORS`, no `ENV_DESCRIPTORS`: el denominador de esta ventana
+  // es lo que el ciclo de hidratación puede llegar a resolver. Desde #5217 hay
+  // secretos que están en el inventario del vault pero que a propósito no se
+  // inyectan en el ambiente (Drive), y por lo tanto nunca emiten una fila de
+  // cobertura. Contarlos acá dejaría la ventana permanentemente por debajo del
+  // umbral y el fallback a archivo no se retiraría nunca.
+  const { HYDRATED_DESCRIPTORS } = require('./lib/credentials');
   const stderr = opts.stderr || process.stderr;
   const pipelineDir = opts.pipelineDir ? path.resolve(opts.pipelineDir) : __dirname;
 
@@ -386,7 +392,7 @@ function evaluarPorDefecto(opts = {}) {
   });
 
   return metrics.evaluate({
-    descriptors: ENV_DESCRIPTORS,
+    descriptors: HYDRATED_DESCRIPTORS,
     hostsActivos: sw.hosts_activos,
     durationHours: sw.duration_hours,
     retentionDays: sw.retention_days,

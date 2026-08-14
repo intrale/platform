@@ -27,7 +27,16 @@ const os = require('node:os');
 const path = require('node:path');
 
 const credentials = require('../credentials');
-const { loadIntoEnv, ENV_MAPPING, ENV_DESCRIPTORS, SOURCE, _resetVaultCache } = credentials;
+const {
+  loadIntoEnv, ENV_MAPPING, ENV_DESCRIPTORS, HYDRATED_DESCRIPTORS, SOURCE, _resetVaultCache,
+} = credentials;
+
+// #5217 · CA-6 — el denominador de la ventana sombra es lo HIDRATABLE, no el
+// inventario entero. Las 4 claves de `google_drive` siguen en `ENV_DESCRIPTORS`
+// (el vault las provisiona y la politica IAM las cubre) pero nunca se inyectan
+// en el ambiente, asi que jamas emiten una fila de cobertura: contarlas dejaria
+// la ventana permanentemente por debajo del umbral y el fallback a archivo no
+// se retiraria nunca.
 const { buildParameterPath, createInMemoryVaultDriver } = require('../secret-vault');
 const { getVaultShadowMetrics, _resetVaultShadowMetrics, VIA } = require('../vault-shadow-metrics');
 
@@ -245,7 +254,8 @@ test('CA-14 · con el gate abierto el hook corre UNA sola vez por loadIntoEnv', 
   const { sources, meta } = espia.llamadas[0];
   assert.equal(sources, r.sources, 'recibe el MISMO objeto sources que devuelve loadIntoEnv');
   assert.equal(meta.hostId, HOST, 'el host sale de la config del vault, no del ambiente');
-  assert.equal(meta.descriptors, ENV_DESCRIPTORS, 'el denominador es ENV_DESCRIPTORS, sin lista duplicada');
+  assert.equal(meta.descriptors, HYDRATED_DESCRIPTORS,
+    'el denominador es el subconjunto hidratable del descriptor, sin lista duplicada');
   assert.equal(Object.keys(sources).length, Object.keys(ENV_MAPPING).length);
   for (const envVar of Object.values(ENV_MAPPING)) assert.equal(sources[envVar], SOURCE.VAULT);
 });
@@ -301,15 +311,15 @@ test('la cobertura positiva de un boot real se persiste con el flush', () => {
 
     // La vía `vault` se agrega en memoria: nada en disco hasta el flush.
     assert.equal(fs.existsSync(path.join(auditDir, 'vault-resolution.jsonl')), false);
-    assert.equal(metrics.flush().escritas, Object.keys(ENV_DESCRIPTORS).length);
+    assert.equal(metrics.flush().escritas, Object.keys(HYDRATED_DESCRIPTORS).length);
 
     const filas = metrics.readRows();
-    assert.equal(filas.length, Object.keys(ENV_DESCRIPTORS).length);
+    assert.equal(filas.length, Object.keys(HYDRATED_DESCRIPTORS).length);
     for (const f of filas) {
       assert.equal(f.via, VIA.VAULT);
       assert.equal(f.host, HOST);
     }
-    assert.deepEqual(filas.map((f) => f.name).sort(), Object.keys(ENV_DESCRIPTORS).sort(),
+    assert.deepEqual(filas.map((f) => f.name).sort(), Object.keys(HYDRATED_DESCRIPTORS).sort(),
       'un boot completo cubre exactamente los 13 descriptores');
   });
 });
