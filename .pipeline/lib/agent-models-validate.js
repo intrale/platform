@@ -192,13 +192,18 @@ const ALLOWED_MODELS_BY_LAUNCHER = Object.freeze({
     'zai-glm-4.7',
   ]),
   // #3243 — NVIDIA NIM expone modelos hosted con naming `vendor/model`. La
-  // allowlist se inicializa con los 2 modelos sign-off del issue (DeepSeek
-  // V4-Pro para razonamiento/código y Kimi K2.6 para agentic loops). El
+  // allowlist se inicializa con los 2 modelos sign-off del issue (DeepSeek para
+  // razonamiento/código y Kimi K2.6 para agentic loops). El
   // catálogo crece editando esta lista — fuente única de verdad cross-validada
   // contra `provider.model` y `skills.<x>.model_override`. `gpt-oss-120b` queda
   // pendiente de validar disponibilidad/cuota antes de sumarse.
+  // #5887 — el modelo DeepSeek original llegó a end-of-life el 2026-08-07 y
+  // devolvía HTTP 410; se reemplaza (no se agrega al lado) por el flash pineado,
+  // verificado vivo el 2026-08-13 con GET /v1/models + POST /v1/chat/completions
+  // con tools[] → finish_reason=tool_calls. Comparación exacta contra strings
+  // literales: sin wildcard, sin prefix-match, sin bypass por env var.
   'nvidia-nim': Object.freeze([
-    'deepseek-ai/deepseek-v4-pro',
+    'deepseek-ai/deepseek-v4-flash-0731',
     'moonshotai/kimi-k2-instruct',
   ]),
   // launchers sin allowlist explícita → cualquier string `model` es válido.

@@ -58,14 +58,20 @@ a{color:#60a5fa}
 <div class="step">
 <span class="step-num">5</span><strong>Ejecutar script de autorizacion</strong>
 <p>En la terminal de Claude Code, ejecuta:</p>
-<pre>! node scripts/google-drive-oauth-setup.js &lt;CLIENT_ID&gt; &lt;CLIENT_SECRET&gt;</pre>
+<pre>! node scripts/google-drive-oauth-setup.js &lt;CLIENT_ID&gt;</pre>
+<p><strong>El client secret NO se pasa por linea de comandos</strong> (#5217): los argumentos
+son visibles en la tabla de procesos del SO y quedan en el historial del shell (CWE-214).
+El script lo pide por prompt, sin eco, o lo toma de <code>GOOGLE_OAUTH_CLIENT_SECRET</code>.
+Pasarlo como segundo argumento ahora <strong>falla con error</strong>.</p>
 <p>El script va a:</p>
 <ol>
+<li>Pedirte el Client Secret por prompt (no se muestra en pantalla)</li>
+<li>Pedirte el Drive folder ID de QA (ENTER para conservar el ya guardado)</li>
 <li>Mostrarte una URL — abrila en el browser</li>
 <li>Autorizas con tu cuenta Google</li>
-<li>Google te da un codigo — copialo</li>
-<li>Pegalo en la terminal</li>
-<li>El script guarda el <code>refresh_token</code> en <code>telegram-config.json</code></li>
+<li>El script guarda las credenciales en el <strong>store canonico</strong>
+    <code>~/.claude/secrets/credentials.json</code>, bajo el namespace <code>google_drive</code>,
+    y te confirma que claves escribio (por nombre, nunca por valor)</li>
 </ol>
 </div>
 
@@ -75,11 +81,13 @@ a{color:#60a5fa}
 <li>Ir a <a href="https://drive.google.com">drive.google.com</a></li>
 <li>Crear carpeta: <code>Intrale QA</code></li>
 <li>Copiar el ID de la URL: <code>https://drive.google.com/drive/folders/<strong>1AbCdEfG...</strong></code></li>
-<li>Agregar a <code>.claude/hooks/telegram-config.json</code>:</li>
+<li>Pegarlo cuando el script del paso 5 te lo pida (o exportar <code>GOOGLE_DRIVE_FOLDER_ID</code> antes de correrlo)</li>
 </ol>
-<pre>{
-  "google_drive_folder_id": "1AbCdEfG..."
-}</pre>
+<p><strong>NO lo agregues a <code>.claude/hooks/telegram-config.json</code>.</strong> Ese archivo
+esta trackeado en git: un <code>git reset --hard</code> — que ocurre en cada respawn del entorno —
+lo restaura sin tus valores, y la evidencia de QA deja de subirse en silencio. Es exactamente
+el defecto que cerro #5217. Si el folder ID no resuelve, la evidencia se sube a la
+<strong>raiz</strong> del Drive y el script te avisa por consola.</p>
 </div>
 
 <div class="step">
@@ -91,15 +99,22 @@ a{color:#60a5fa}
   --verdict "APROBADO" --passed 1 --total 1</pre>
 </div>
 
-<h2>Resultado en telegram-config.json</h2>
+<h2>Resultado en el store canonico</h2>
+<p>Todo queda en <code>~/.claude/secrets/credentials.json</code> — <strong>fuera del repo</strong>,
+inmune a <code>reset --hard</code>, <code>clean</code> y checkouts. Estructura (claves anidadas
+bajo <code>google_drive</code>, no los nombres flat del formato legacy):</p>
 <pre>{
-  "bot_token": "...",
-  "chat_id": "...",
-  "google_oauth_client_id": "123456-abc.apps.googleusercontent.com",
-  "google_oauth_client_secret": "GOCSPX-...",
-  "google_oauth_refresh_token": "1//0abc...",
-  "google_drive_folder_id": "1AbCdEfG..."
+  "google_drive": {
+    "oauth_client_id":     "&lt;client id&gt;",
+    "oauth_client_secret": "&lt;client secret&gt;",
+    "oauth_refresh_token": "&lt;refresh token&gt;",
+    "drive_folder_id":     "&lt;folder id&gt;"
+  }
 }</pre>
+<p>Precedencia de resolucion: <code>env</code> &rarr; store canonico &rarr;
+<code>.claude/hooks/telegram-config.json</code> (legacy, <strong>solo lectura</strong>, nunca
+destino de escritura). Un valor vacio o placeholder en un nivel no corta la cadena: cae al
+siguiente. Ver <code>docs/runbooks/credential-rotation.md</code>.</p>
 
 <h2>Diferencia con Service Account</h2>
 <table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0">

@@ -112,3 +112,134 @@ test('shouldNotify — false (silent abort) si filename es inválido', () => {
 test('markNotified — false silencioso si filename inválido', () => {
     assert.equal(markNotified(2505, '../escape', { stateDir: '/tmp' }), false);
 });
+
+// =============================================================================
+// #5421 CA-9 — skills afectados + retrocompatibilidad del formato del archivo.
+// =============================================================================
+
+const { recordSkill, readSkills } = require('../worktree-notif-dedup');
+
+test('CA-9 — 3 escaladas del mismo (issue, fase) con skills distintos ⇒ UNA sola alerta', () => {
+    const stateDir = tmpStateDir();
+    try {
+        let alertas = 0;
+        for (const skill of ['po', 'review', 'ux']) {
+            // Orden real del pulpo: recordSkill ANTES de shouldNotify.
+            recordSkill(1123, 'validacion', skill, { stateDir });
+            if (shouldNotify(1123, 'validacion', { stateDir })) {
+                alertas += 1;
+                markNotified(1123, 'validacion', { stateDir });
+            }
+        }
+        assert.equal(alertas, 1, 'el dedup debe colapsar las 3 escaladas en una alerta');
+        assert.deepEqual(readSkills(1123, 'validacion', { stateDir }), ['po', 'review', 'ux']);
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});
+
+test('CA-9 — recordSkill NO marca como notificado (no se come la primera alerta)', () => {
+    const stateDir = tmpStateDir();
+    try {
+        recordSkill(1123, 'validacion', 'po', { stateDir });
+        assert.equal(shouldNotify(1123, 'validacion', { stateDir }), true);
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});
+
+test('CA-9 — los skills registrados sobreviven a markNotified', () => {
+    const stateDir = tmpStateDir();
+    try {
+        recordSkill(1123, 'validacion', 'po', { stateDir });
+        markNotified(1123, 'validacion', { stateDir });
+        recordSkill(1123, 'validacion', 'review', { stateDir });
+        assert.deepEqual(readSkills(1123, 'validacion', { stateDir }), ['po', 'review']);
+        // Y el dedup sigue vigente después de registrar el segundo skill.
+        assert.equal(shouldNotify(1123, 'validacion', { stateDir }), false);
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});
+
+test('CA-9 — recordSkill es idempotente (no duplica)', () => {
+    const stateDir = tmpStateDir();
+    try {
+        recordSkill(1123, 'validacion', 'po', { stateDir });
+        recordSkill(1123, 'validacion', 'po', { stateDir });
+        assert.deepEqual(readSkills(1123, 'validacion', { stateDir }), ['po']);
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});
+
+test('CA-9 — recordSkill rechaza skills con forma inválida (no los escribe)', () => {
+    const stateDir = tmpStateDir();
+    try {
+        assert.equal(recordSkill(1123, 'validacion', '../escape', { stateDir }), false);
+        assert.equal(recordSkill(1123, 'validacion', 'PO', { stateDir }), false);
+        assert.equal(recordSkill(1123, 'validacion', '', { stateDir }), false);
+        assert.deepEqual(readSkills(1123, 'validacion', { stateDir }), []);
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});
+
+test('CA-9 — readSkills devuelve [] con filename inválido, sin lanzar', () => {
+    assert.deepEqual(readSkills('abc', 'entrega', { stateDir: '/tmp' }), []);
+    assert.deepEqual(readSkills(1123, '../escape', { stateDir: '/tmp' }), []);
+});
+
+test('retrocompat — un archivo legacy (timestamp ISO plano) sigue dedupeando', () => {
+    const stateDir = tmpStateDir();
+    try {
+        // Formato viejo: exactamente lo que hay hoy vivo en `state/`.
+        const p = buildDedupPath(1123, 'validacion', stateDir);
+        fs.mkdirSync(stateDir, { recursive: true });
+        fs.writeFileSync(p, new Date().toISOString(), 'utf8');
+        // Si lo tratáramos como corrupto, esto daría true y re-floodearía Telegram.
+        assert.equal(shouldNotify(1123, 'validacion', { stateDir }), false);
+        assert.deepEqual(readSkills(1123, 'validacion', { stateDir }), []);
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});
+
+test('retrocompat — un archivo legacy vencido sí re-notifica (TTL respetado)', () => {
+    const stateDir = tmpStateDir();
+    try {
+        const p = buildDedupPath(1123, 'validacion', stateDir);
+        fs.mkdirSync(stateDir, { recursive: true });
+        fs.writeFileSync(p, new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), 'utf8');
+        assert.equal(shouldNotify(1123, 'validacion', { stateDir }), true);
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});
+
+test('retrocompat — recordSkill sobre un archivo legacy preserva el ts (no re-notifica)', () => {
+    const stateDir = tmpStateDir();
+    try {
+        const p = buildDedupPath(1123, 'validacion', stateDir);
+        fs.mkdirSync(stateDir, { recursive: true });
+        fs.writeFileSync(p, new Date().toISOString(), 'utf8');
+        recordSkill(1123, 'validacion', 'review', { stateDir });
+        assert.equal(shouldNotify(1123, 'validacion', { stateDir }), false);
+        assert.deepEqual(readSkills(1123, 'validacion', { stateDir }), ['review']);
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});
+
+test('contenido corrupto → se re-notifica (conservador) y skills vacíos', () => {
+    const stateDir = tmpStateDir();
+    try {
+        const p = buildDedupPath(1123, 'validacion', stateDir);
+        fs.mkdirSync(stateDir, { recursive: true });
+        fs.writeFileSync(p, '{esto no es json', 'utf8');
+        assert.equal(shouldNotify(1123, 'validacion', { stateDir }), true);
+        assert.deepEqual(readSkills(1123, 'validacion', { stateDir }), []);
+    } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+});

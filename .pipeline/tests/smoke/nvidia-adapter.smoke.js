@@ -23,7 +23,7 @@ const credentials = require('../../lib/credentials.js');
 
 const TIMEOUT_MS = 120_000;
 const PROMPT = 'Responde exactamente con la palabra OK y nada mas. No expliques nada.';
-const MODEL = process.env.NVIDIA_NIM_MODEL || 'deepseek-ai/deepseek-v4-pro';
+const MODEL = process.env.NVIDIA_NIM_MODEL || 'deepseek-ai/deepseek-v4-flash-0731';
 
 async function main() {
     // Hidratar la API key como lo hace el pulpo al boot.

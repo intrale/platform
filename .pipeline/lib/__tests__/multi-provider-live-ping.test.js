@@ -298,3 +298,33 @@ test('Gemini-Google usa header x-goog-api-key, NUNCA query string (SR-2)', () =>
     assert.ok(headers['x-goog-api-key'], 'Gemini debe usar header x-goog-api-key');
     assert.ok(!('key' in headers), 'no debe haber clave "key" suelta en headers');
 });
+
+// -----------------------------------------------------------------------------
+// #5888 — No-regresión del ping SIN `expectModels`.
+//
+// El cruce de catálogo suma un parámetro opcional a `ping()`. El ping manual del
+// dashboard (`api.js`, path FACTURABLE protegido por el throttle de #3965) NO lo
+// pasa: su shape de retorno tiene que seguir siendo byte por byte el de HEAD, y
+// no puede bajar un catálogo de hasta 1 MiB por proveedor (R-J).
+// -----------------------------------------------------------------------------
+test('#5888 R-J: ping sin expectModels devuelve exactamente el shape de HEAD', async () => {
+    const dir = tmpDir();
+    const f = path.join(dir, 'config.json');
+    writeKeys(f, { cerebras_api_key: 'csk_test_aaaaaaaaaaaaaaaaaaaa' });
+    const r = await livePing.ping({
+        provider: 'cerebras',
+        secretsPath: f,
+        httpImpl: fakeHttp({ status: 200, body: '{"object":"list","data":[{"id":"gpt-oss-120b"}]}' }),
+    });
+    assert.deepEqual(Object.keys(r).sort(), ['latency_ms', 'ok', 'provider', 'reason', 'statusCode']);
+    assert.equal('catalog_check' in r, false);
+    assert.equal(r.ok, true);
+    assert.equal(r.reason, 'authenticated');
+});
+
+test('#5888: la URL de Gemini incorpora ?pageSize=1000 sin dejar de ser literal (cond. 8)', () => {
+    const spec = livePing.PROVIDER_PING_ENDPOINTS['gemini-google'];
+    assert.equal(spec.url, 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000');
+    // Sigue sin nada derivado de config ni de env.
+    assert.ok(!/process\.env/.test(String(spec.url)));
+});

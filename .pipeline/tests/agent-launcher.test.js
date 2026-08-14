@@ -545,7 +545,7 @@ test('launchAgent con provider nvidia-nim spawnea el runner Node con args traduc
     const fsi = fakeFs([modelsPath], {
         [modelsPath]: JSON.stringify({
             skills: {
-                guru: { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+                guru: { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
             },
         }),
     });
@@ -563,7 +563,7 @@ test('launchAgent con provider nvidia-nim spawnea el runner Node con args traduc
             issue: 1,
             args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md', '--output-format', 'stream-json'],
             cwd: ROOT,
-            env: { NVIDIA_NIM_MODEL: 'deepseek-ai/deepseek-v4-pro' },
+            env: { NVIDIA_NIM_MODEL: 'deepseek-ai/deepseek-v4-flash-0731' },
             PIPELINE,
             ROOT,
             fsImpl: fsi,
@@ -577,7 +577,7 @@ test('launchAgent con provider nvidia-nim spawnea el runner Node con args traduc
     assert.equal(call.cmd, '/fake/node');
     assert.equal(call.args[0], '/fake/nvidia-nim-runner.js');
     assert.ok(call.args.includes('--model'));
-    assert.ok(call.args.includes('deepseek-ai/deepseek-v4-pro'));
+    assert.ok(call.args.includes('deepseek-ai/deepseek-v4-flash-0731'));
     assert.ok(call.args.includes('--system-file'));
     assert.ok(call.args.includes('/tmp/sys.md'));
     assert.ok(call.args.includes('--prompt'));
@@ -598,7 +598,7 @@ test('nvidia-nim parseTokensFromLog mapea usage OpenAI (prompt/completion/cached
     const logPath = '/tmp/nvidia.json';
     const payload = JSON.stringify({
         id: 'cmpl-1',
-        model: 'deepseek-ai/deepseek-v4-pro',
+        model: 'deepseek-ai/deepseek-v4-flash-0731',
         choices: [{ message: { role: 'assistant', content: 'OK' } }],
         usage: {
             prompt_tokens: 100,

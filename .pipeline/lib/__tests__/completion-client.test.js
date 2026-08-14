@@ -195,7 +195,7 @@ test('complete NVIDIA NIM éxito devuelve schema normalizado', async () => {
     writeKeys(f, { nvidia_nim_api_key: 'nvapi-test-1234567890abcdef0000' });
     const r = await completion.complete({
         provider: 'nvidia-nim',
-        model: 'deepseek-ai/deepseek-v4-pro',
+        model: 'deepseek-ai/deepseek-v4-flash-0731',
         prompt: 'ping',
         secretsPath: f,
         httpImpl: fakeHttp({
@@ -203,7 +203,7 @@ test('complete NVIDIA NIM éxito devuelve schema normalizado', async () => {
             body: JSON.stringify({
                 choices: [{ message: { content: 'pong nvidia' } }],
                 usage: { prompt_tokens: 10, completion_tokens: 2 },
-                model: 'deepseek-ai/deepseek-v4-pro',
+                model: 'deepseek-ai/deepseek-v4-flash-0731',
             }),
         }),
     });
@@ -555,8 +555,8 @@ test('PROVIDER_MODELS_ALLOWLIST incluye los modelos que usa producción (snapsho
         'cerebras/llama-3.3-70b en producción debe estar allowlisted');
     assert.ok(completion.isAllowedModel('gemini-google', 'gemini-2.0-flash'),
         'gemini-google/gemini-2.0-flash en producción debe estar allowlisted');
-    assert.ok(completion.isAllowedModel('nvidia-nim', 'deepseek-ai/deepseek-v4-pro'),
-        'nvidia-nim/deepseek-ai/deepseek-v4-pro en producción debe estar allowlisted');
+    assert.ok(completion.isAllowedModel('nvidia-nim', 'deepseek-ai/deepseek-v4-flash-0731'),
+        'nvidia-nim/deepseek-ai/deepseek-v4-flash-0731 en producción debe estar allowlisted');
 });
 
 // =============================================================================

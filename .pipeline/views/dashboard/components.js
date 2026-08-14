@@ -175,6 +175,45 @@ function renderAgentPill(opts) {
     return `<span class="agent-pill"${titleAttr}>${inner}</span>`;
 }
 
+// -----------------------------------------------------------------------------
+// #5888 — Formateo de antigüedad, compartido.
+//
+// Vivían en `historial.js:147-176` (#3963). Se mueven acá — el módulo común de
+// render que las pantallas ya requieren— porque `providers.js` necesita la misma
+// lectura "hace N h" para la vigencia de catálogo, y hacer que una pantalla
+// requiera el módulo de OTRA pantalla sería peor que duplicar el formateo.
+// `historial.js` las re-exporta para no romper su API pública ni sus tests.
+// -----------------------------------------------------------------------------
+
+// Timestamp humano relativo: "ahora", "hace 5 min", "hace 2 h", "hace 3 d".
+// El operador necesita saber SI ESTÁ FRESCO, no la hora exacta; el absoluto va
+// al `title=` (ver `absTime`).
+function relativeTime(ts, now) {
+    let t = ts;
+    if (typeof t === 'string') t = Date.parse(t);
+    if (!Number.isFinite(t) || t <= 0) return '';
+    const ref = Number.isFinite(now) ? now : Date.now();
+    let diff = ref - t;
+    if (diff < 0) diff = 0;
+    const min = Math.floor(diff / 60000);
+    if (min < 1) return 'ahora';
+    if (min < 60) return `hace ${min} min`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `hace ${h} h`;
+    const d = Math.floor(h / 24);
+    return `hace ${d} d`;
+}
+
+// Timestamp absoluto formateado (es-AR) para el atributo `title=`.
+function absTime(ts) {
+    let t = ts;
+    if (typeof t === 'string') t = Date.parse(t);
+    if (!Number.isFinite(t) || t <= 0) return '';
+    return new Date(t).toLocaleString('es-AR', {
+        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+}
+
 module.exports = {
     SEVERITY_ICON,
     SEVERITIES,
@@ -183,4 +222,7 @@ module.exports = {
     renderStatusBadge,
     renderKpiCard,
     renderAgentPill,
+    // #5888 — helpers de tiempo compartidos (origen: historial.js).
+    relativeTime,
+    absTime,
 };
