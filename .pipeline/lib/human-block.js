@@ -593,13 +593,71 @@ function inferHumanBlockQuestion(motivo, opts = {}) {
  * @param {string} [opts.highlight.recommendation] — Recomendación del pipeline (#5337).
  */
 function buildBlockedSummaryMarkdown(opts = {}) {
+    return renderBlockedSummary(opts, { plain: false });
+}
+
+/**
+ * Igual que `buildBlockedSummaryMarkdown` pero en TEXTO PLANO, sin un solo
+ * metacarácter de markup emitido por nosotros (#5421, decisión del operador
+ * 2026-08-06).
+ *
+ * **Por qué existe (leer antes de "mejorarlo" volviendo a Markdown).**
+ * Esta alerta es el aviso de `needs-human`: el mensaje que le dice al operador
+ * que el pipeline se detuvo y necesita una decisión. Si se pierde, el pipeline
+ * queda parado sin que nadie lo sepa. Enviado con `parse_mode: 'Markdown'`, se
+ * perdía por HTTP 400 de Telegram cada vez que el markup quedaba mal balanceado,
+ * y el saliente es fire-and-forget vía dropfile (`pulpo.js` no ve el 400: el
+ * `catch` de fallback nunca corre y `markNotified` sella el dedup 24h igual, así
+ * que la alerta se pierde SIN RASTRO).
+ *
+ * Se intentó cerrarlo escapando/saneando durante seis ciclos de QA y siempre
+ * quedó una vía: además de los metacaracteres que venían en el email del
+ * committer (input no confiable, ya acotado por CA-11/CA-12), los `slice(280)` y
+ * `slice(160)` de esta función pueden cortar el texto EN EL MEDIO de un code
+ * span y dejar paridad impar de backticks con un email perfectamente válido y
+ * benigno (verificado en el barrido del ciclo 6: 11 de 15 largos válidos rompían
+ * la paridad, y el propio control `backend-dev-agent@intrale` la rompía en el
+ * listado). El truncado no se puede "escapar": es un corte posicional.
+ *
+ * Por eso la decisión no es escapar mejor, es **no depender del formato**: sin
+ * `parse_mode` no hay nada que Telegram pueda rechazar, y el peor caso de un
+ * truncado infeliz es cosmético (una línea cortada) en vez de la pérdida total
+ * del aviso. El énfasis visual (negritas/itálicas) es un lujo que un aviso
+ * crítico no puede pagar con su propia entrega.
+ *
+ * El caller DEBE enviarlo con `{ plain: true }` para que no se agregue
+ * `parse_mode`; si se envía como Markdown, el texto igual es seguro (no emitimos
+ * markup) pero pierde sentido el ejercicio.
+ *
+ * @param {object} opts — misma forma que `buildBlockedSummaryMarkdown`.
+ * @returns {string} texto plano listo para `sendTelegram*(..., { plain: true })`.
+ */
+function buildBlockedSummaryPlain(opts = {}) {
+    return renderBlockedSummary(opts, { plain: true });
+}
+
+/**
+ * Implementación compartida de los dos renderers. `plain:true` omite todo
+ * markup; `plain:false` conserva byte por byte el formato histórico (los tests
+ * de no-regresión de #4068/#5337 siguen apuntando a ese dialecto).
+ *
+ * Se resuelve con un helper por decoración en vez de dos funciones paralelas
+ * para que el CONTENIDO no pueda divergir entre dialectos: un dato nuevo se
+ * agrega una sola vez y aparece en los dos.
+ */
+function renderBlockedSummary(opts, { plain }) {
     const blocked = Array.isArray(opts.blocked) ? opts.blocked : listBlockedIssues();
     const highlight = opts.highlight || null;
+    // Decoradores: en plano son la identidad, así que el texto sale sin `*`, `_`
+    // ni backticks — nada que Telegram tenga que parsear.
+    const b = (s) => (plain ? s : `*${s}*`);
+    const i = (s) => (plain ? s : `_${s}_`);
+    const code = (s) => (plain ? s : `\`${s}\``);
     const lines = [];
 
     if (highlight) {
         const tag = highlight.skill ? ` (${highlight.skill})` : '';
-        lines.push(`🚧 *Issue #${highlight.issue}${tag} marcado como needs-human*`);
+        lines.push(`🚧 ${b(`Issue #${highlight.issue}${tag} marcado como needs-human`)}`);
         if (highlight.reason) {
             lines.push(`📝 ${String(highlight.reason).slice(0, 280)}`);
         }
@@ -609,27 +667,27 @@ function buildBlockedSummaryMarkdown(opts = {}) {
         // #5337 CA-2 — recomendación del pipeline. Sólo si existe.
         const reco = String(highlight.recommendation || '').trim();
         if (reco) {
-            lines.push(`💡 *Recomendación:* ${reco.slice(0, 280)}`);
+            lines.push(`💡 ${b('Recomendación:')} ${reco.slice(0, 280)}`);
         }
         lines.push('');
     }
 
     if (!blocked.length) {
-        lines.push('_(sin otros incidentes bloqueados actualmente)_');
+        lines.push(i('(sin otros incidentes bloqueados actualmente)'));
         return lines.join('\n');
     }
 
-    lines.push(`📋 *Incidentes bloqueados esperando humano* (${blocked.length})`);
-    for (const b of blocked) {
-        const ageStr = b.age_hours < 1
-            ? `${Math.max(1, Math.round(b.age_hours * 60))}min`
-            : `${Math.round(b.age_hours)}h`;
-        lines.push(`• *#${b.issue}* — ${b.skill} en ${b.phase} _(${ageStr})_`);
-        const detail = (b.question || b.reason || '').toString().trim();
+    lines.push(`📋 ${b('Incidentes bloqueados esperando humano')} (${blocked.length})`);
+    for (const bl of blocked) {
+        const ageStr = bl.age_hours < 1
+            ? `${Math.max(1, Math.round(bl.age_hours * 60))}min`
+            : `${Math.round(bl.age_hours)}h`;
+        lines.push(`• ${b(`#${bl.issue}`)} — ${bl.skill} en ${bl.phase} ${i(`(${ageStr})`)}`);
+        const detail = (bl.question || bl.reason || '').toString().trim();
         if (detail) lines.push(`   ↳ ${detail.slice(0, 160)}`);
     }
     lines.push('');
-    lines.push('_Usá_ `/unblock <issue> <orientación>` _para desbloquear._');
+    lines.push(`${i('Usá')} ${code('/unblock <issue> <orientación>')} ${i('para desbloquear.')}`);
     return lines.join('\n');
 }
 
@@ -965,6 +1023,7 @@ module.exports = {
     classifyPrecondition,
     normalizePrecondition,
     buildBlockedSummaryMarkdown,
+    buildBlockedSummaryPlain,
     buildNeedHumanAudioText,
     sendNeedHumanAudio,
     enqueueNeedsHumanLabel,

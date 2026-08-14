@@ -438,6 +438,9 @@ const { removeWorktree: removeGuardedWorktree } = require('./lib/ghostbusters-wo
 const { resolveExistingWorktree } = require('./lib/worktree-resolver');
 const { appendWorktreeAudit } = require('./lib/worktree-audit');
 const worktreeNotifDedup = require('./lib/worktree-notif-dedup');
+// #5421 — política pura del guard de worktree (allowlist de motivos + textos
+// de operador). Módulo sin I/O para que los CA sean verificables por unit test.
+const worktreeGuardPolicy = require('./lib/worktree-guard-policy');
 // #4532 — Clasificación pura fase→workspace (needsWorktree / useExistingWorktree).
 // Extraída de este archivo para ser testeable y no olvidar fases al editarla.
 const { phaseNeedsWorktree, phaseUsesExistingWorktree } = require('./lib/phase-workspace');
@@ -4402,10 +4405,12 @@ function brazoBarrido(config) {
               // #4068 — con botones de acción rápida (inline_keyboard). Si el
               // markup no se puede armar (sin secreto de token), se manda igual
               // el resumen de texto sin botones (degradación con gracia).
+              // #5421 — TEXTO PLANO, sin `parse_mode`: un aviso de needs-human no
+              // puede perderse por un HTTP 400 de formato de Telegram.
               try {
-                const summary = humanBlock.buildBlockedSummaryMarkdown({
+                const summary = humanBlock.buildBlockedSummaryPlain({
                   // #5337 CA-2 — la recomendación del pipeline viaja al mensaje.
-                  // Si no hay ninguna, `buildBlockedSummaryMarkdown` omite la línea.
+                  // Si no hay ninguna, el renderer omite la línea.
                   highlight: {
                     issue: parseInt(issue), skill: skillBloq, reason: motivoTxt, question,
                     recommendation: recomendacionBloqueo,
@@ -4413,7 +4418,7 @@ function brazoBarrido(config) {
                 });
                 let markup;
                 try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue)); } catch { markup = undefined; }
-                sendTelegramWithMarkup(summary, markup || null);
+                sendTelegramWithMarkup(summary, markup || null, { plain: true });
               } catch (e) {
                 log('barrido', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
               }
@@ -5923,8 +5928,9 @@ function brazoBarrido(config) {
                     }
                     // Notificación inmediata (CA-1/CA-2): qué issue, qué se
                     // necesita, y la recomendación del pipeline.
+                    // #5421 — texto plano, sin `parse_mode` (aviso crítico).
                     try {
-                      const summaryPr = humanBlock.buildBlockedSummaryMarkdown({
+                      const summaryPr = humanBlock.buildBlockedSummaryPlain({
                         highlight: {
                           issue: parseInt(issue), skill: 'entrega',
                           reason: veredicto.reason, question: veredicto.question,
@@ -5934,7 +5940,7 @@ function brazoBarrido(config) {
                       let markupPr;
                       try { markupPr = humanBlock.buildBlockedActionMarkup(parseInt(issue)); }
                       catch { markupPr = undefined; }
-                      sendTelegramWithMarkup(summaryPr, markupPr || null);
+                      sendTelegramWithMarkup(summaryPr, markupPr || null, { plain: true });
                     } catch (e) {
                       log('barrido', `Error notificando bloqueo de PR #${issue}: ${e.message}`);
                     }
@@ -7153,18 +7159,20 @@ function escalarACircuitBreaker(opts, deps) {
 
   // Alerta Telegram con ola + causa + botones de acción rápida (#4068). Si el
   // markup no se puede armar (sin secreto de token), se manda igual el texto.
+  // #5421 — texto plano, sin `parse_mode`: el corte del circuit breaker es el
+  // aviso crítico por excelencia (el issue ya no avanza solo).
   try {
-    const summary = hb.buildBlockedSummaryMarkdown({
+    const summary = hb.buildBlockedSummaryPlain({
       highlight: { issue: issueNum, skill: skillBloq, reason: motivoTxt, question: preguntaTxt },
     });
     const header = [
-      `⛔ *Circuit breaker* — #${issueNum} agotó los rebotes (corte ${kind})`,
+      `⛔ Circuit breaker — #${issueNum} agotó los rebotes (corte ${kind})`,
       `🌊 ${waveLabel}`,
       '',
     ].join('\n');
     let markup;
     try { markup = hb.buildBlockedActionMarkup(issueNum); } catch { markup = undefined; }
-    sendTg(header + summary, markup || null);
+    sendTg(header + summary, markup || null, { plain: true });
   } catch (e) {
     logFn('barrido', `#${issueNum} CB (${kind}): error enviando alerta Telegram: ${e.message}`);
   }
@@ -7847,13 +7855,14 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
       // Notificar Telegram solo la primera vez (dedup por reasonFile pre-existente).
       if (!yaTeniaReason) {
         try {
-          const summary = humanBlock.buildBlockedSummaryMarkdown({
+          // #5421 — texto plano, sin `parse_mode` (aviso crítico).
+          const summary = humanBlock.buildBlockedSummaryPlain({
             highlight: { issue: parseInt(issue), skill, reason: reasonTxt, question: questionTxt },
           });
           // #4068 — botones de acción rápida (degradación con gracia si no hay markup).
           let markup;
           try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue)); } catch { markup = undefined; }
-          sendTelegramWithMarkup(summary, markup || null);
+          sendTelegramWithMarkup(summary, markup || null, { plain: true });
         } catch (e) {
           log('lanzamiento', `Error enviando resumen Telegram needs-human #${issue}: ${e.message}`);
         }
@@ -9388,21 +9397,54 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       //   - Reasons transitorias (red, `worktree-add-failed`) → rebote infra,
       //     pero con un contador `worktree_recovery_intentos` con tope: al
       //     alcanzarlo también se escala a `needs-human` (no loop eterno).
+      //
+      // #5421 (Bloque C) — la regex por PREFIJO se reemplaza por una allowlist
+      // de motivos con igualdad exacta y default cerrado
+      // (`guardExceptionEligible`). Dos cambios de fondo:
+      //   - Un motivo futuro tipo `branch-origin-unverified-foo` YA NO matchea
+      //     por prefijo: motivo desconocido ⇒ el guard aplica.
+      //   - La ausencia de la copia LOCAL de la rama (path huérfano, con la
+      //     rama remota verificada) deja de escalar a `needs-human`: es un
+      //     problema de copia, no de confianza. El resolver ya recrea el
+      //     worktree en un path fresco `-r<N>` (D1) sin tocar el huérfano.
+      // La excepción NO autoriza confiar en el directorio preexistente (D2):
+      // decide únicamente si el aborto escala.
       const WORKTREE_RECOVERY_CAP = 3;
       const reasonStr = String(resolution.reason || 'desconocido');
-      const structural = /^(remote-branch-missing|branch-origin-unverified|worktree-path-exists|invalid-input)/.test(reasonStr);
+      // El reason trae el path absoluto del worktree en el sufijo — se redacta
+      // antes de que viaje a Telegram, al `.reason.json` y al YAML (S-4).
+      const reasonRedacted = redact(reasonStr);
+      const operation = worktreeGuardPolicy.resolveOperation({ fase, skill });
+      const { eligible: guardExcepcion, motivoNormalizado } = worktreeGuardPolicy.guardExceptionEligible(
+        reasonStr,
+        { operation, branchOriginVerified: resolution.branchOriginVerified },
+      );
 
       const prevData = readYamlSafe(trabajandoPath) || {};
       const intentos = (parseInt(prevData.worktree_recovery_intentos, 10) || 0) + 1;
-      const escalarNeedsHuman = structural || intentos >= WORKTREE_RECOVERY_CAP;
+      // CA-5: elegible ⇒ no escala POR MOTIVO. El tope de reintentos sigue vivo
+      // (`needs-human` sigue siendo el mecanismo fail-closed del pipeline: se
+      // acota el *cuándo*, no el *si*).
+      const escalarNeedsHuman = !guardExcepcion || intentos >= WORKTREE_RECOVERY_CAP;
+      // Se mantiene el nombre `structural` en el audit trail para no romper el
+      // JSONL histórico: es el complemento de la excepción del guard.
+      const structural = !guardExcepcion;
 
       const motivoMsg = (
         `Worktree del issue no encontrado — pulpo no puede ejecutar fase ${fase} sin worktree dedicado. ` +
-        `Detalle: ${reasonStr} (intento ${intentos}/${WORKTREE_RECOVERY_CAP})`
+        `Detalle: ${reasonRedacted} (intento ${intentos}/${WORKTREE_RECOVERY_CAP})`
       );
-      log('lanzamiento',
-        `⛔ #${issue}: NO se resolvió worktree/rama para fase ${fase} — abortando spawn (evita commit en rama ajena). ` +
-        `Motivo: ${reasonStr} | estructural=${structural} intentos=${intentos} escala_humano=${escalarNeedsHuman}`);
+      log('lanzamiento', worktreeGuardPolicy.buildAbortLogLine({
+        issue,
+        fase,
+        skill,
+        reasonStr,
+        operation,
+        intentos,
+        cap: WORKTREE_RECOVERY_CAP,
+        eligible: guardExcepcion,
+        escalar: escalarNeedsHuman,
+      }));
 
       // Audit trail persistente (CA-8).
       try {
@@ -9417,6 +9459,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           branch_origin_verified: resolution.branchOriginVerified,
           worktree_recovery_intentos: intentos,
           structural,
+          // #5421 — el audit es el trail forense: guarda el motivo CRUDO (con
+          // el path) y además el veredicto de la política, para poder auditar
+          // por qué un aborto escaló o no sin releer el fuente.
+          motivo_normalizado: motivoNormalizado,
+          guard_excepcion: guardExcepcion,
+          operacion: operation,
         });
       } catch {}
 
@@ -9428,12 +9476,32 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         const blockedDir = path.join(fasePath(pipeline, fase), 'bloqueado-humano');
         try { fs.mkdirSync(blockedDir, { recursive: true }); } catch {}
 
-        const reasonTxt = structural
-          ? `Fase ${fase}: la rama del dev de #${issue} es irresoluble (${reasonStr}). No se arregla reintentando — requiere verificación humana.`
-          : `Fase ${fase}: no se pudo resolver el worktree/rama de #${issue} tras ${intentos} intentos (${reasonStr}). Se alcanzó el tope de reintentos.`;
-        const questionTxt = resolution.branchOriginVerified === false
-          ? `¿Podés inspeccionar el autor de la rama remota origin/agent/${issue}-* de #${issue}? La verificación de procedencia falló (posible rama ajena). Re-encolá o cerrá según corresponda.`
-          : `¿Podés verificar la rama del dev de #${issue} (patrón agent/${issue}-<slug>) y re-encolar el issue al inicio del pipeline, o cerrarlo si ya no aplica?`;
+        // #5421 CA-9 — registrar el skill afectado ANTES de consultar el dedup.
+        // El dedup colapsa por (issue, fase); sin esto, las escaladas de los
+        // otros skills se pierden en silencio. `recordSkill` NO marca como
+        // notificado (no toca el `ts`), así que no se come la primera alerta.
+        try { worktreeNotifDedup.recordSkill(issue, fase, skill); } catch {}
+        let skillsLine = '';
+        try {
+          skillsLine = worktreeGuardPolicy.buildAffectedSkillsLine(
+            worktreeNotifDedup.readSkills(issue, fase),
+          );
+        } catch {}
+
+        const reasonBase = structural
+          ? `Fase ${fase}: la rama del dev de #${issue} es irresoluble (${reasonRedacted}). No se arregla reintentando — requiere verificación humana.`
+          : `Fase ${fase}: no se pudo resolver el worktree/rama de #${issue} tras ${intentos} intentos (${reasonRedacted}). Se alcanzó el tope de reintentos.`;
+        const reasonTxt = skillsLine ? `${reasonBase} ${skillsLine}.` : reasonBase;
+        // #5421 CA-8 — el texto se elige por CAUSA REAL: un committer legítimo
+        // fuera de la allowlist es un problema de CONFIGURACIÓN y su alerta
+        // nombra el email, no "rama ajena". El lenguaje de procedencia
+        // sospechosa queda reservado para la rama que no es de ningún agente.
+        const questionTxt = worktreeGuardPolicy.buildOperatorQuestion({
+          issue,
+          reasonStr: reasonRedacted,
+          branchOriginVerified: resolution.branchOriginVerified,
+          unverifiedAuthors: resolution.unverifiedAuthors,
+        });
 
         // Limpiar markers infra (si venían de un rebote previo) para que el
         // sweep `reencolarInfraBloqueados` NO recicle este archivo.
@@ -9455,7 +9523,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           worktree_recovery_intentos: intentos,
           worktree_branch_origin_verified: resolution.branchOriginVerified,
           bloqueado_por_humano: true,
-          bloqueo_humano_motivo: reasonStr,
+          // Redactado: el reason trae el path absoluto del worktree (S-4).
+          bloqueo_humano_motivo: reasonRedacted,
         };
         try { writeYaml(trabajandoPath, updated); }
         catch (e) { log('lanzamiento', `⚠️ #${issue}: no se pudo actualizar YAML antes de escalar: ${e.message.slice(0, 120)}`); }
@@ -9483,30 +9552,49 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         // Telegram dedupeado — solo la primera vez que se escala este issue+fase.
         try {
           if (!yaTeniaReason && worktreeNotifDedup.shouldNotify(issue, fase)) {
-            const summary = humanBlock.buildBlockedSummaryMarkdown({
+            // #5421 — TEXTO PLANO, sin `parse_mode`. Éste es el aviso que el
+            // operador venía perdiendo: el saliente es fire-and-forget vía
+            // dropfile, así que el HTTP 400 por markup desbalanceado ocurría
+            // dentro de `svc-telegram`, DESPUÉS de que este `catch` ya no podía
+            // verlo, y `markNotified` sellaba el dedup 24h igual. Sin formato no
+            // hay 400 posible.
+            const summary = humanBlock.buildBlockedSummaryPlain({
               highlight: { issue: parseInt(issue, 10), skill, reason: reasonTxt, question: questionTxt },
             });
             let markup;
             try { markup = humanBlock.buildBlockedActionMarkup(parseInt(issue, 10)); } catch { markup = undefined; }
-            try { sendTelegramWithMarkup(summary, markup || null); } catch { try { sendTelegram(summary); } catch {} }
+            try { sendTelegramWithMarkup(summary, markup || null, { plain: true }); }
+            catch { try { sendTelegramPlain(summary); } catch {} }
             worktreeNotifDedup.markNotified(issue, fase);
           }
         } catch {}
 
-        log('lanzamiento', `🚧 #${issue} escalado a needs-human (${reasonStr}, intentos=${intentos}) — movido a ${pipeline}/${fase}/bloqueado-humano/`);
+        log('lanzamiento', `🚧 #${issue} escalado a needs-human (${reasonRedacted}, intentos=${intentos}) — movido a ${pipeline}/${fase}/bloqueado-humano/`);
         return;
       }
 
       // ── REBOTE INFRA TRANSITORIO (no estructural, dentro del tope) ──────
-      // Notificación Telegram dedupeada (CA-4).
+      // Notificación Telegram dedupeada (CA-4 + CA-9: una alerta por
+      // (issue, fase) que lista todos los skills afectados).
       try {
+        try { worktreeNotifDedup.recordSkill(issue, fase, skill); } catch {}
         if (worktreeNotifDedup.shouldNotify(issue, fase)) {
+          let skillsLineInfra = '';
+          try {
+            skillsLineInfra = worktreeGuardPolicy.buildAffectedSkillsLine(
+              worktreeNotifDedup.readSkills(issue, fase),
+            );
+          } catch {}
           const msg = [
             `⛔ Aborté #${issue} en fase ${fase}: no resolví el worktree del dev (intento ${intentos}/${WORKTREE_RECOVERY_CAP}).`,
-            `Motivo: ${reasonStr}`,
+            `Motivo: ${reasonRedacted}`,
+            ...(skillsLineInfra ? [skillsLineInfra] : []),
             'Reintento automático cuando la infra se recupere.',
           ].join('\n');
-          try { sendTelegram(msg); } catch {}
+          // #5421 — plano: `reasonRedacted` trae el motivo con el path del
+          // worktree, y un `_` o `*` del path alcanza para desbalancear el
+          // Markdown y hacer que Telegram descarte el aviso con un 400.
+          try { sendTelegramPlain(msg); } catch {}
           worktreeNotifDedup.markNotified(issue, fase);
         }
       } catch {}
@@ -16395,7 +16483,12 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
   const filename = `${Date.now()}-cmd.json`;
   try {
-    const payload = plain ? { text: msg } : { text: msg, parse_mode: parseMode };
+    // #5421 — La intención de "texto plano" viaja EXPLÍCITA (`plain: true`), no
+    // como la ausencia de `parse_mode`. `svc-telegram` es otro proceso: un campo
+    // ausente no distingue "quiero plano" de "no opiné", y su default histórico
+    // (`data.parse_mode || 'Markdown'`) reinyectaba Markdown, dejando este flag
+    // sin ningún efecto. Ver `servicio-telegram.js::resolveOutboundParseMode`.
+    const payload = plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     payload._correlationId = correlationId;
     fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));
@@ -17118,7 +17211,8 @@ function brazoIntake(config) {
                 log('intake', `❌ #${issueNum} reportHumanBlock (decisión) falló: ${e.message}`);
               }
               try {
-                const summaryDD = humanBlock.buildBlockedSummaryMarkdown({
+                // #5421 — texto plano, sin `parse_mode` (aviso crítico).
+                const summaryDD = humanBlock.buildBlockedSummaryPlain({
                   highlight: {
                     issue: parseInt(issueNum), skill: 'definicion',
                     reason: veredicto.reason, question: veredicto.question,
@@ -17128,7 +17222,7 @@ function brazoIntake(config) {
                 let markupDD;
                 try { markupDD = humanBlock.buildBlockedActionMarkup(parseInt(issueNum)); }
                 catch { markupDD = undefined; }
-                sendTelegramWithMarkup(summaryDD, markupDD || null);
+                sendTelegramWithMarkup(summaryDD, markupDD || null, { plain: true });
               } catch (e) {
                 log('intake', `Error notificando decisión de arquitectura #${issueNum}: ${e.message}`);
               }
