@@ -239,7 +239,7 @@ test('#5420 — ejecutor que devuelve basura (sin objeto) devuelve {ok:false}', 
     assert.equal(res.rules, undefined);
 });
 
-test('#5420 — CODEOWNERS presente pero SIN reglas parseables es {ok:false} (no autorización implícita)', () => {
+test('#5923 — CODEOWNERS presente pero SIN reglas parseables es una configuración válida', () => {
     const res = codeowners.loadCodeownersFromRef('/repo', 'origin/main', {
         spawnImpl: fakeGitShow({
             '.github/CODEOWNERS': { status: 0, stdout: '# sólo comentarios\n\n', stderr: '' },
@@ -247,9 +247,9 @@ test('#5420 — CODEOWNERS presente pero SIN reglas parseables es {ok:false} (no
             'docs/CODEOWNERS': { status: 0, stdout: '', stderr: '' },
         }),
     });
-    assert.equal(res.ok, false);
-    assert.equal(res.rules, undefined);
-    assert.ok(/sin reglas parseables/.test(res.reason));
+    assert.equal(res.ok, true);
+    assert.equal(res.source, '.github/CODEOWNERS');
+    assert.deepEqual(res.rules, []);
 });
 
 test('#5420 — cae a la ruta siguiente si la primera no existe en la ref', () => {
