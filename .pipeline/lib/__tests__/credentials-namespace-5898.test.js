@@ -215,6 +215,41 @@ test('CA-2 · el rechazo ocurre dentro del resolver, sin validación extra del c
   assert.equal(res.code, 'namespace_reservado');
 });
 
+test('CA-2 · el opt-in de primera parte NO viaja en un descriptor: product-seed con #google_drive sigue denegado', () => {
+  // `product-seed.js:701` pasa `pv.credentialRef` VERBATIM y no pasa `opts`
+  // nunca. Ese es justamente el motivo por el que el opt-in de #5898 es un
+  // argumento de call-site y no un campo de la ref: un descriptor hostil puede
+  // elegir el namespace, pero no puede declararse "primera parte".
+  //
+  // Se usa `google_drive` a propósito: es el bloque global que SÍ tiene un
+  // consumidor legítimo (#5217 · qa-video-share). Si mañana alguien lo saca de
+  // la deny-list para "arreglar" a Drive, este test se pone rojo y el vector D4
+  // queda a la vista antes de mergear.
+  // `client_id` es un scope que el bloque `google_drive` del fixture SÍ tiene:
+  // con uno inexistente el test pasaría por la razón equivocada (faltaría el
+  // scope, no se denegaría el namespace).
+  const res = cred.resolveScopedRefs(`${REF_ANCLADA}#google_drive`, ['client_id'], {
+    data: STORE_CON_BLOQUES_GLOBALES,
+  });
+  assert.equal(res.ok, false, 'sin flag explícito, el camino es el de tenant');
+  assert.equal(res.code, 'namespace_reservado');
+  assert.deepEqual(res.scopes, {});
+  assert.ok(res.error.includes('google_drive'), 'el error nombra el namespace denegado');
+  assert.ok(!JSON.stringify(res).includes('FAKE-'), 'el rechazo no filtra valores del bloque global');
+});
+
+test('CA-2 · el consumidor de primera parte (#5217) SÍ resuelve su propio bloque global', () => {
+  // La contracara: la deny-list protege del tenant impostor, no tapia al dueño.
+  // Sin este camino, #5217 se queda sin credenciales de Drive y no hay red
+  // debajo (`hydrate:false`, y el legacy no tiene las claves).
+  const res = cred.resolveScopedRefs(`${REF_ANCLADA}#google_drive`, ['client_id'], {
+    data: STORE_CON_BLOQUES_GLOBALES,
+    systemNamespace: true,
+  });
+  assert.equal(res.ok, true, 'el dueño del bloque global lo resuelve con el opt-in explícito');
+  assert.deepEqual(Object.keys(res.scopes), ['client_id']);
+});
+
 // -----------------------------------------------------------------------------
 // CA-3 · Constante única, sin desincronización con el store real
 // -----------------------------------------------------------------------------

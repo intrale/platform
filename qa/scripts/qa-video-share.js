@@ -179,7 +179,13 @@ function resolveStoreScopes(namespace, scopes, opts = {}) {
     if (!lib || typeof lib.resolveScopedRefs !== "function") return { found: false, scopes: {} };
     if (!namespace || !Array.isArray(scopes) || scopes.length === 0) return { found: false, scopes: {} };
 
-    const refOpts = {};
+    // #5898 — opt-in explicito de primera parte. Los namespaces que lee este
+    // script (`google_drive`, `r2`) son BLOQUES GLOBALES del store, no tenants:
+    // la deny-list `RESERVED_STORE_NAMESPACES` existe para que un producto no se
+    // registre con esos nombres y cobre las llaves del sistema, no para tapiar
+    // al duenio. Este es el unico sitio del script que resuelve contra el store,
+    // asi que el flag va aca y en ningun otro lado.
+    const refOpts = { systemNamespace: true };
     if (opts.storeData !== undefined) refOpts.data = opts.storeData || {};
     else refOpts.canonicalPath = opts.canonicalPath || lib.CANONICAL_PATH;
 
@@ -190,7 +196,18 @@ function resolveStoreScopes(namespace, scopes, opts = {}) {
         return { found: false, scopes: {} };
     }
     if (!res) return { found: false, scopes: {} };
-    return { found: !res.error, scopes: res.scopes || {} };
+    // `found` significa "el namespace EXISTE en el store", no "resolvio todo":
+    // es la distincion de CA-14 entre "no provisionado" (no hay bloque) y
+    // "configuracion incompleta" (hay bloque, faltan scopes).
+    //
+    // #5898 — antes esto se leia como `!res.error`, que funcionaba de casualidad:
+    // la rama de scopes faltantes salia con `error: undefined`. Ese `undefined`
+    // era justamente uno de los bugs que #5898 cierra (CA-6: ningun fail-closed
+    // sale sin `error`), asi que el proxy se rompio al arreglarlo. Ahora la
+    // intencion se expresa con el `code`, que es explicito: el unico fallo que
+    // NO significa "namespace ausente" es `scope_faltante`.
+    const found = res.ok === true || res.code === "scope_faltante";
+    return { found, scopes: res.scopes || {} };
 }
 
 // Path del store efectivamente consultado. Si el caller inyecta `canonicalPath`

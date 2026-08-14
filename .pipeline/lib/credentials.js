@@ -1037,8 +1037,12 @@ function refPathAnclado(rawPath) {
  * @param {string} ref     referencia namespaceada (`path#namespace`).
  * @param {string[]} scopes scopes declarados por el descriptor.
  * @param {object} [opts]
- * @param {object} [opts.data]  credentials ya parseadas (override para tests; evita leer disco).
- * @param {string} [opts.canonicalPath] path del archivo (override para tests).
+ * @param {object} [opts.data]  credentials ya parseadas (override de confianza; evita leer disco).
+ * @param {string} [opts.canonicalPath] path del archivo (override de confianza; ver paso 6).
+ * @param {boolean} [opts.systemNamespace] opt-in EXPLÍCITO de consumidor de primera
+ *        parte: saltea SÓLO el paso 4 (deny-list de bloques globales) y ningún otro.
+ *        El default —y por lo tanto todo dato que venga de un descriptor— sigue
+ *        siendo el camino de tenant.
  * @returns {{ ok:boolean, namespace:string|null, scopes:object, missing:string[], error?:string }}
  */
 function resolveScopedRefs(ref, scopes, opts = {}) {
@@ -1076,7 +1080,28 @@ function resolveScopedRefs(ref, scopes, opts = {}) {
   //     Va ANTES de leer el archivo y DENTRO del resolver, para que cubra por
   //     igual a `kernel-supervisor`, `product-seed` (que pasa la ref verbatim)
   //     y `kernel-store`, sin que ningún call-site agregue su propia validación.
-  if (RESERVED_STORE_NAMESPACES.includes(ns)) {
+  //
+  //     OPT-IN DE PRIMERA PARTE (`opts.systemNamespace === true`). Los bloques
+  //     globales tienen consumidores LEGÍTIMOS del propio sistema: #5217 hizo de
+  //     `qa-video-share.js` el lector de `google_drive`/`r2` del store, y ahí
+  //     `google_drive` no es "el tenant que se registró con nombre de bloque
+  //     global" sino el bloque global leído por quien es su dueño. Sin este
+  //     opt-in la deny-list no protege: rompe al dueño y deja al pipeline sin
+  //     credenciales de Drive (#5217 puso `hydrate:false`, así que no hay red
+  //     de `process.env` debajo).
+  //
+  //     Por qué un flag y NO sacar `google_drive` de la lista ni abrir un
+  //     segundo camino de resolución: sacarlo reabriría D1 (A01/CWE-863) para
+  //     cualquier `projectId = 'google_drive'`, y un segundo resolver rompería
+  //     la invariante de punto único. El flag es un booleano estricto que
+  //     saltea SÓLO este paso — 3, 5, 6, 7 y 8 corren igual — y que no puede
+  //     viajar dentro de un descriptor: `product-seed.js` pasa la ref verbatim
+  //     pero NUNCA opts, así que D4 sigue cerrado por construcción.
+  //
+  //     `=== true` a propósito: un `opts` con `systemNamespace` truthy-por-
+  //     accidente (string, 1, {}) no alcanza para saltear un control de acceso.
+  const esPrimeraParte = opts.systemNamespace === true;
+  if (RESERVED_STORE_NAMESPACES.includes(ns) && !esPrimeraParte) {
     return fail('namespace_reservado', ns,
       `"${ns}" es un bloque global del sistema, no un producto. Registrá el producto con otro `
       + `projectId — están reservados: ${RESERVED_STORE_NAMESPACES.join(', ')}.`);
@@ -1090,16 +1115,27 @@ function resolveScopedRefs(ref, scopes, opts = {}) {
       + `Movelo ahí o corregí "secrets.path" del descriptor.`);
   }
 
-  // 6 · lectura del store. El path efectivo pasa por el MISMO ancla: un
-  //     `opts.canonicalPath` que apunte afuera no puede colarse por atrás.
+  // 6 · lectura del store.
+  //
+  //     `opts.canonicalPath` es un OVERRIDE DE CONFIANZA, con el mismo criterio
+  //     que `opts.data` —que ya se acepta sin ancla ninguna, y es estrictamente
+  //     más poderoso: entrega el contenido del store directamente—. Los dos son
+  //     argumentos JS de un call-site de primera parte en el mismo proceso; NO
+  //     son dato de descriptor. Quien puede pasar `opts` ya está adentro.
+  //
+  //     Dónde vive CA-4, entonces: en `parsed.path` (paso 5), que SÍ sale del
+  //     descriptor y es lo único que un tercero controla. Ese ancla no se
+  //     toca — `~/.claude/secrets/../../evil.json#ns` se sigue rechazando sin
+  //     abrir archivo, con `opts.canonicalPath` o sin él.
+  //
+  //     Anclar además el path efectivo no agregaba defensa (el atacante del
+  //     modelo no llega a `opts`) y sí rompía a los consumidores de primera
+  //     parte: el arnés de #5217 apunta a un store de `tmpdir`, y por esta
+  //     rama se caía hasta el caso de `r2`, que ni siquiera está en la
+  //     deny-list.
   let data = opts.data;
   if (!data) {
     const filePath = opts.canonicalPath || expandHome(parsed.path);
-    if (!refPathAnclado(filePath)) {
-      return fail('path_fuera_del_store', ns,
-        `el archivo de credenciales "${parsed.path}" está fuera de ${STORE_DIR_LOGICO} (namespace "${ns}"). `
-        + `Movelo ahí o corregí "secrets.path" del descriptor.`);
-    }
     try {
       data = readJsonFile(filePath);
     } catch (e) {
@@ -1117,18 +1153,37 @@ function resolveScopedRefs(ref, scopes, opts = {}) {
   //     top-level sobrevive SÓLO para stores sin `namespaces` — y aun ahí la
   //     deny-list del paso 4 ya cerró los bloques globales. Cuando #5217 migre
   //     el store, el fallback se apaga POR CONSTRUCCIÓN, sin un segundo cambio.
+  //
+  //     DÓNDE BUSCA CADA CAMINO. Los dos espacios del store no son el mismo y
+  //     el opt-in del paso 4 elige entre ellos, no los mezcla:
+  //       · primera parte  → bloque global, que vive TOP-LEVEL por definición
+  //         (`telegram`, `providers`, `google_drive`… son claves de la raíz;
+  //         `namespaces` es donde van los tenants). Buscar bajo `namespaces`
+  //         sería buscar al dueño en la casa del inquilino.
+  //       · tenant (default) → `namespaces.<id>`, con la retrocompat de abajo.
+  //     Sigue siendo UN solo punto de resolución: mismo `fail`, mismos pasos
+  //     3/5/6/8, misma forma de retorno. Lo único que cambia es la raíz del
+  //     lookup, y sólo cuando el call-site se declaró explícitamente.
   const nsRoot = (data && typeof data.namespaces === 'object' && data.namespaces) || null;
   let nsObj = null;
-  if (nsRoot) {
+  if (esPrimeraParte) {
+    if (data && typeof data === 'object' && Object.prototype.hasOwnProperty.call(data, ns)) nsObj = data[ns];
+  } else if (nsRoot) {
     if (Object.prototype.hasOwnProperty.call(nsRoot, ns)) nsObj = nsRoot[ns];
   } else if (data && typeof data === 'object') {
     if (Object.prototype.hasOwnProperty.call(data, ns)) nsObj = data[ns];
   }
 
   if (!nsObj || typeof nsObj !== 'object') {
+    // El remedio no es el mismo para los dos espacios: mandar al dueño de un
+    // bloque global a crear `namespaces."google_drive"` lo haría migrar el
+    // secreto al lugar equivocado y romper al resto de sus lectores.
     return fail('namespace_inexistente', ns,
-      `namespace no encontrado: el producto "${ns}" no tiene credenciales cargadas. `
-      + `Agregá el bloque namespaces."${ns}" en ${STORE_FILE_LOGICO}.`,
+      esPrimeraParte
+        ? `namespace no encontrado: el bloque del sistema "${ns}" no tiene credenciales cargadas. `
+          + `Agregá el bloque "${ns}" en la raíz de ${STORE_FILE_LOGICO}.`
+        : `namespace no encontrado: el producto "${ns}" no tiene credenciales cargadas. `
+          + `Agregá el bloque namespaces."${ns}" en ${STORE_FILE_LOGICO}.`,
       [...scopes]);
   }
 
