@@ -2648,8 +2648,42 @@ function setSyncLogger(fn) {
     syncLogger = typeof fn === 'function' ? fn : null;
 }
 
+// Normaliza a STRING plano un mensaje de error que va a terminar en el log.
+//
+// Ojo con la firma de `sanitizeJustification`: devuelve un OBJETO
+// `{sanitized, didRedact, didTruncate}` (partial-pause-audit.js:171-196), NO un
+// string. Interpolarlo directo en un template literal produce "[object Object]"
+// — que es exactamente lo que hacía que la línea de CA-2 apareciera pero no
+// dijera POR QUÉ falló, dejando el próximo diagnóstico a ciegas (el objetivo de
+// #5882 es que el incidente deje rastro LEGIBLE, no que deje una línea muda).
+//
+// Además `sanitizeJustification` sólo redacta secretos y trunca: NO toca CR/LF
+// ni control chars. Sin ese colapso no existe el control anti log-injection que
+// este camino declara — y el mensaje deriva de input de Telegram (`from`,
+// `note`). Por eso se compone con `sanitizeField` de `wave-audit`, que ya
+// colapsa control chars (wave-audit.js:87-95). No se escribe sanitizador nuevo.
+function safeSyncText(value) {
+    const raw = String((value && value.message) || value);
+    let out;
+    try {
+        const r = require('./partial-pause-audit').sanitizeJustification(raw);
+        // Tolerante a que el sanitizador cambie de forma: string u objeto.
+        out = (r && typeof r === 'object') ? String(r.sanitized ?? '') : String(r ?? '');
+    } catch {
+        out = raw;   // el sanitizado nunca rompe el comando
+    }
+    try {
+        out = String(require('./wave-audit').sanitizeField(out) ?? '');
+    } catch {
+        out = out.replace(/[\u0000-\u001F\u007F]+/g, ' ');
+    }
+    return out;
+}
+
 function logSyncError(msg) {
-    const line = `[commander] ERROR ${msg}`;
+    // Backstop de una-línea-es-una-línea: aunque un caller olvide sanitizar, de
+    // acá no sale un CR/LF que parta la línea ni un null byte.
+    const line = `[commander] ERROR ${String(msg).replace(/[\u0000-\u001F\u007F]+/g, ' ')}`;
     try {
         if (syncLogger) syncLogger(line);
         else console.error(line);
@@ -2820,7 +2854,6 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
 
     if (syncError) {
         const partialPause = require('./partial-pause');
-        const partialPauseAudit = require('./partial-pause-audit');
 
         // NO asumir "falló ⇒ no escribió". `setPartialPause` puede fallar
         // DESPUÉS de que el write aterrizó (o el proceso morir entre el rename
@@ -2840,7 +2873,7 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
         // El mensaje deriva de input de Telegram (`from`, `note`): sanitizar
         // SIEMPRE antes de loguear o responder (anti log-injection / leak de
         // paths). Reusamos el sanitizador existente, no escribimos uno nuevo.
-        const safe = partialPauseAudit.sanitizeJustification(String((syncError && syncError.message) || syncError));
+        const safe = safeSyncText(syncError);
 
         if (landed === true) {
             // Ambas escrituras aterrizaron pese al error reportado. El estado es
@@ -2866,12 +2899,29 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
             };
         }
 
+        // `addIssueToWave` es IDEMPOTENTE: si el issue YA estaba en la ola
+        // devuelve `{added:false}` sin escribir ni auditar (waves.js:531-533).
+        // En ese caso este comando no sumó NADA, así que no hay nada que
+        // revertir: llamar al rollback removería de la ola un issue preexistente
+        // que el comando nunca agregó. El escenario no es teórico — es el de
+        // recuperación natural del propio bug de #5882 (issue en la ola, falta
+        // en la allowlist → el operador re-corre `/wave add`, que es lo que el
+        // copy de más abajo le sugiere) y las causas de fallo de la allowlist
+        // son PERSISTENTES (FS read-only, disco lleno, lock tomado, gate).
+        // Encima, tras ese borrado ambos archivos coincidirían, dejando CIEGO al
+        // detector de desync: el issue se cae de la ola activa en silencio,
+        // nadie lo despacha y no hay alerta (misma clase que #5876/#4753).
+        const noopAdd = !(addResult && addResult.added === true);
+
         let rolledBack = false;
         let rollbackErr = null;
-        if (landed === false) {
+        if (landed === false && !noopAdd) {
             try {
                 waves.rollbackIssueAdd(waveNumber, issueNumber, {
                     expectedVersion: addResult && addResult.version,   // CAS
+                    // Evidencia de que la suma es de este mismo acto: sólo el
+                    // add que realmente escribió acuña token (el no-op da null).
+                    rollbackToken: addResult && addResult.rollbackToken,
                     authorizedBy: 'wave-add-rollback',
                     updated_by: from || 'Leo',
                     source: 'wave-add-rollback',
@@ -2879,13 +2929,14 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
                 });
                 rolledBack = true;
             } catch (re) {
-                rollbackErr = partialPauseAudit.sanitizeJustification(String((re && re.message) || re));
+                rollbackErr = safeSyncText(re);
             }
         }
 
         logSyncError(
             `wave-add #${issueNumber} ola ${waveNumber}: partial_sync_failed (${safe}) ` +
-            `landed=${landed} rollback=${rolledBack}${rollbackErr ? ` rollback_error=${rollbackErr}` : ''}`,
+            `added=${!noopAdd} landed=${landed} rollback=${rolledBack}` +
+            `${rollbackErr ? ` rollback_error=${rollbackErr}` : ''}`,
         );
 
         // CA-UX-2 — léxico único: se dice "Allowlist", y ninguna variante nueva
@@ -2920,6 +2971,23 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
                 + `para no dejarte el pipeline desincronizado. El #${issueNumber} NO quedó en la ola `
                 + `${waveNumber} — todo volvió a como estaba. `
                 + `Probá de nuevo con \`/wave add ${waveNumber} #${issueNumber}\`.`;
+        } else if (noopAdd) {
+            // D · el issue YA estaba en la ola: este comando no sumó nada, así
+            // que no hubo nada que revertir (y revertir habría BORRADO de la ola
+            // un issue preexistente). El estado de la ola no cambió; lo que
+            // falló es sólo la sync de la Allowlist. No se le puede decir al
+            // operador "todo volvió a como estaba": nada se deshizo porque nada
+            // se hizo, y el desync que venía a reparar sigue vivo.
+            message = `El #${issueNumber} ya estaba en la ola ${waveNumber}, así que no sumé nada — `
+                + `pero tampoco pude agregarlo a la Allowlist, que es justo lo que faltaba. `
+                + `La ola quedó intacta y no deshice nada.\n\n`
+                + `Qué hacer:\n`
+                + `1. Corré \`allowlist\` para ver el estado real.\n`
+                + (landed === null
+                    ? `2. No pude releer la Allowlist, así que de su contenido no tengo certeza.\n`
+                    : `2. Si falta el #${issueNumber}, pedí que se agregue — la Allowlist no se toca sin tu OK.\n`)
+                + `3. Reintentar \`/wave add\` no lo va a resolver: la suma a la ola ya está hecha, `
+                + `lo que falla es la Allowlist.`;
         } else if (landed === null) {
             // C · indeterminado — no se tocó nada más, a propósito.
             message = `Promoción a medias y no pude releer la Allowlist para saber cómo quedó. `

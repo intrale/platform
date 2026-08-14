@@ -530,7 +530,13 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
     // No duplicar dentro de la misma ola (idempotente).
     if (target.issues.some((i) => normalizeIssue(i.number) === n)) {
         logInfo(`Issue #${n} ya estaba en ola ${waveNumber} — no-op.`);
-        return { waveNumber, issue: n, added: false, version: versionToken(state) };
+        // #5882 rev-1 — `rollbackToken: null` es deliberado y es la mitad del
+        // candado 4 de `rollbackIssueAdd`: este camino NO escribió nada, así que
+        // no puede habilitar una reversión. Sin esto, un caller que revirtiera
+        // mirando sólo el `version` removería de la ola un issue PREEXISTENTE
+        // que nunca sumó — y como después ambos archivos coincidirían, el
+        // detector de desync quedaría ciego (ver comentario de `rollbackIssueAdd`).
+        return { waveNumber, issue: n, added: false, version: versionToken(state), rollbackToken: null };
     }
 
     // #4371 — snapshot del estado de la ola ANTES de mutar (para el audit).
@@ -563,7 +569,20 @@ function addIssueToWaveLocked(waveNumber, issue, n, meta) {
         estado_posterior: { issues: [...issuesBefore, n] },
         note: meta.note,
     });
-    return { waveNumber, issue: n, added: true, version: versionToken(state) };
+    // #5882 rev-1 — el `rollbackToken` se acuña SÓLO en este camino (el que
+    // efectivamente escribió). Es una capacidad: quien no tiene el token no
+    // puede revertir, y el único modo de obtenerlo es haber sumado de verdad en
+    // ESTE acto. Es lo que el CAS por sí solo no puede probar: `versionToken`
+    // es `meta.updated_at`, un timestamp del propio waves.json, así que no
+    // distingue "revierto lo que acabo de escribir" de "remuevo algo que ya
+    // estaba" (en el no-op el token de versión también coincide).
+    return {
+        waveNumber,
+        issue: n,
+        added: true,
+        version: versionToken(state),
+        rollbackToken: `wa-${n}-${crypto.randomBytes(12).toString('hex')}`,
+    };
 }
 
 // =============================================================================
@@ -757,6 +776,10 @@ function removeIssueFromWaveLocked(waveNumber, n, meta) {
 //      el propósito en el call-site y evita que un caller genérico caiga acá
 //      buscando "remover de la ola activa".
 //   3. Remueve EXACTAMENTE `issueNumber`, y sólo si sigue presente en la ola.
+//   4. `meta.rollbackToken` OBLIGATORIO, acuñado por el `addIssueToWave` que
+//      realmente sumó. Es la evidencia de que la suma es de ESTE acto: un add
+//      idempotente (no-op) devuelve `rollbackToken: null` y por lo tanto no
+//      puede habilitar una reversión.
 //
 // Por qué el CAS solo no alcanza
 // ------------------------------
@@ -774,6 +797,7 @@ function removeIssueFromWaveLocked(waveNumber, n, meta) {
 // @param {number} waveNumber — ola sobre la que se revierte (típicamente la activa).
 // @param {number} issueNumber — issue a remover.
 // @param {Object} meta — { expectedVersion (req), authorizedBy:'wave-add-rollback' (req),
+//                          rollbackToken (req, del addIssueToWave con added=true),
 //                          updated_by?, source?, note? }
 // @returns {{ waveNumber:number, issue:number, removed:boolean, version:string }}
 // =============================================================================
@@ -795,6 +819,26 @@ function rollbackIssueAdd(waveNumber, issueNumber, meta = {}) {
         throw mkWavesError(
             'rollbackIssueAdd: expectedVersion es obligatorio (CAS contra la versión devuelta por addIssueToWave).',
             'EWAVES_VERSION_REQUIRED',
+        );
+    }
+    // Candado 4 (#5882 rev-1) — evidencia de que la suma es de ESTE acto.
+    //
+    // El CAS del candado 1 NO alcanza: `versionToken` es `meta.updated_at` del
+    // propio waves.json, así que un `addIssueToWave` que fue NO-OP (issue ya
+    // presente, waves.js:531+) devuelve un `version` que también matchea — el
+    // compare-and-swap no puede distinguir "revierto lo que acabo de escribir"
+    // de "remuevo algo que ya estaba". Sin este candado, un `/wave add` sobre un
+    // issue PREEXISTENTE cuya sync de allowlist falla borraba de la ola un issue
+    // que el comando nunca agregó, y como después ambos archivos coincidían el
+    // detector de desync quedaba CIEGO (defecto bloqueante de la rev-1).
+    //
+    // El `rollbackToken` sólo lo acuña el camino que efectivamente escribió, así
+    // que presentarlo ES la prueba. El no-op devuelve `null` ⇒ acá rebota.
+    if (typeof meta.rollbackToken !== 'string' || meta.rollbackToken.trim() === '') {
+        throw mkWavesError(
+            'rollbackIssueAdd: rollbackToken es obligatorio y debe venir del addIssueToWave que efectivamente '
+            + 'sumó (added=true). Un add no-op no habilita rollback: no hay nada que revertir.',
+            'EWAVES_ROLLBACK_UNPROVEN',
         );
     }
     return withLockSync(wavesFile(), () => rollbackIssueAddLocked(waveNumber, n, meta), {

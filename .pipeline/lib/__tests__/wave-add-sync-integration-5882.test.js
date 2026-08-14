@@ -178,6 +178,57 @@ test('si falla la escritura de la allowlist, el issue NO queda en waves.json (ro
     }
 });
 
+// ─── Regresión rev-1 (#5882) — el no-op NO puede disparar rollback ───────────
+//
+// `addIssueToWave` es IDEMPOTENTE: si el issue ya estaba en la ola devuelve
+// `{added:false}` sin escribir ni auditar (waves.js:531-533). Si el rollback se
+// dispara sin mirar `added`, un `/wave add` sobre un issue PREEXISTENTE cuya
+// sync de allowlist falla REMUEVE de la ola un issue que el comando nunca sumó.
+//
+// El escenario es el de recuperación natural del propio bug de #5882 (issue en
+// la ola, falta en la allowlist → el operador re-corre `/wave add`, cosa que el
+// copy incluso le sugiere) y las causas de fallo de la allowlist son
+// PERSISTENTES (FS read-only, disco lleno, lock tomado, rechazo del gate).
+// Peor: tras el borrado ambos archivos coinciden, así que el detector de desync
+// queda CIEGO — el issue desaparece de la ola activa en silencio, nadie lo
+// despacha y no hay alerta. Misma clase de defecto que #5876/#4753.
+test('un /wave add que fue no-op (added=false) NO remueve el issue de la ola', async () => {
+    const dir = setup();
+    const original = partialPause.setPartialPause;
+    const logLines = [];
+    try {
+        // #880001 YA está en la ola activa; la allowlist NO lo tiene (el desync
+        // que el operador viene a reparar re-corriendo el comando).
+        writeWaves(dir, [880001, 880002]);
+        dropArtifact(dir, 880001);
+        seedAllowlist([880002]);
+        cd._waveInternal.setSyncLogger((l) => logLines.push(l));
+
+        // La causa del desync sigue viva: la allowlist vuelve a fallar.
+        partialPause.setPartialPause = () => { throw new Error('EACCES: disco de sólo lectura'); };
+
+        const { reply } = await cd._waveInternal.handleWaveAdd({
+            pipelineRoot: dir, waveNumber: 1, issueNumber: 880001,
+            cooldown: null, chatId: 'leo', from: 'Leo',
+        });
+
+        // El invariante: no se revierte lo que este comando nunca hizo.
+        assert.ok(readWaveIssues(dir).includes(880001),
+            'el issue preexistente NO puede desaparecer de la ola por un rollback que no le corresponde');
+        assert.deepEqual(readWaveIssues(dir), [880001, 880002], 'la ola queda intacta');
+
+        // Y el reporte no puede mentir diciendo que revirtió algo.
+        assert.ok(plano(reply).includes('partial_sync_failed'), `reporta el error-kind: ${reply}`);
+        assert.ok(!plano(reply).includes('todo volvió a como estaba'),
+            `no puede afirmar que revirtió: ${reply}`);
+        assert.ok(logLines.some((l) => l.includes('rollback=false')),
+            `el log debe dejar claro que no hubo rollback: ${JSON.stringify(logLines)}`);
+    } finally {
+        partialPause.setPartialPause = original;
+        teardown(dir);
+    }
+});
+
 test('un rechazo del gate (que NO lanza) también dispara rollback y error explícito', async () => {
     const dir = setup();
     const original = partialPause.setPartialPause;
@@ -297,6 +348,20 @@ test('un mensaje de error con CRLF y control chars se sanitiza antes de loguear'
         assert.ok(!linea.includes('\r'), 'sin CR (anti log-injection)');
         assert.ok(!linea.includes('\n'), 'sin LF: una línea de log es una línea');
         assert.ok(!linea.includes('\u0000'), 'sin null bytes');
+
+        // Regresion rev-1 (#5882): las tres asserts de arriba pasaban DE FORMA
+        // VACUA. `sanitizeJustification` devuelve un OBJETO {sanitized,...}, no
+        // un string, asi que interpolado en el template literal daba
+        // "[object Object]" — un string que trivialmente no tiene CR/LF/nulls.
+        // La linea de CA-2 existia pero no decia POR QUE fallo, que es justo lo
+        // que #5882 viene a evitar. Anclamos el CONTENIDO real para que el test
+        // no pueda volver a pasar por vacio.
+        assert.ok(!linea.includes('[object Object]'),
+            `el motivo debe ser legible, no el toString de un objeto: ${linea}`);
+        assert.ok(linea.includes('fallo'),
+            `la linea debe conservar el motivo real del fallo: ${linea}`);
+        assert.ok(linea.includes('linea forjada'),
+            `el texto se conserva legible, aplanado en UNA sola linea: ${linea}`);
     } finally {
         partialPause.setPartialPause = original;
         teardown(dir);

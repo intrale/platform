@@ -100,6 +100,7 @@ test('rollbackIssueAdd revierte una suma sobre la ola ACTIVA sin lanzar EWAVES_A
         const r = waves.rollbackIssueAdd(1, 9002, {
             expectedVersion: add.version,
             authorizedBy: 'wave-add-rollback',
+            rollbackToken: add.rollbackToken,
             updated_by: 'Leo',
             source: 'wave-add-rollback',
         });
@@ -168,6 +169,78 @@ test('rollbackIssueAdd exige authorizedBy wave-add-rollback', () => {
     }
 });
 
+// ─── (3bis) candado 4 — evidencia de que la suma es de ESTE acto ──────────
+//
+// Regresión rev-1 (#5882): el CAS por sí solo NO alcanza. `versionToken` es
+// `meta.updated_at` del propio waves.json, así que un add que fue NO-OP (issue
+// ya presente) devuelve un `version` que también matchea: el compare-and-swap
+// no distingue "revierto lo que acabo de escribir" de "remuevo algo que ya
+// estaba". Sin el token, un `/wave add` sobre un issue PREEXISTENTE cuya sync
+// de allowlist fallaba borraba de la ola un issue que nunca sumó — y como
+// después ambos archivos coincidían, el detector de desync quedaba CIEGO.
+
+test('un addIssueToWave no-op devuelve rollbackToken null (no acuña capacidad de revertir)', () => {
+    const dir = setupTmp();
+    try {
+        writeFixture(dir, sampleState());
+        // #5001 YA está en la ola del fixture → el add es idempotente.
+        const add = waves.addIssueToWave(1, { number: 5001 }, { source: 'telegram-commander/wave-add' });
+
+        assert.equal(add.added, false, 'el add sobre un issue preexistente es no-op');
+        assert.equal(add.rollbackToken, null, 'un no-op no puede habilitar una reversión');
+        assert.ok(add.version, 'el version SÍ viene (y por eso el CAS solo no alcanza)');
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
+test('rollbackIssueAdd rechaza el rollback de un add no-op aunque el CAS coincida', () => {
+    const dir = setupTmp();
+    try {
+        writeFixture(dir, sampleState());
+        const add = waves.addIssueToWave(1, { number: 5001 }, { source: 'telegram-commander/wave-add' });
+        assert.equal(add.added, false);
+
+        assert.throws(
+            () => waves.rollbackIssueAdd(1, 5001, {
+                expectedVersion: add.version,          // el CAS coincide...
+                authorizedBy: 'wave-add-rollback',
+                rollbackToken: add.rollbackToken,      // ...pero no hay evidencia de suma.
+            }),
+            (e) => e && e.code === 'EWAVES_ROLLBACK_UNPROVEN',
+            'sin evidencia de que la suma sea de este acto, no se revierte',
+        );
+        assert.deepEqual(activeIssues(dir), [5001],
+            'el issue preexistente sigue en la ola: no se borra lo que no se agregó');
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
+test('rollbackIssueAdd exige rollbackToken (ausente o vacío no habilitan)', () => {
+    const dir = setupTmp();
+    try {
+        writeFixture(dir, sampleState());
+        const add = waves.addIssueToWave(1, { number: 9002 }, { source: 'telegram-commander/wave-add' });
+        assert.equal(add.added, true);
+
+        for (const token of [undefined, null, '', '   ', 42]) {
+            assert.throws(
+                () => waves.rollbackIssueAdd(1, 9002, {
+                    expectedVersion: add.version,
+                    authorizedBy: 'wave-add-rollback',
+                    rollbackToken: token,
+                }),
+                (e) => e && e.code === 'EWAVES_ROLLBACK_UNPROVEN',
+                `un token ${JSON.stringify(token)} no debe habilitar el rollback`,
+            );
+        }
+        assert.deepEqual(activeIssues(dir), [5001, 9002], 'el estado no se tocó');
+    } finally {
+        teardownTmp(dir);
+    }
+});
+
 // ─── (4) la ola cambió entre el add y el rollback ─────────────────────────
 
 test('rollbackIssueAdd con version mismatch aborta ruidoso y NO revierte', () => {
@@ -183,6 +256,7 @@ test('rollbackIssueAdd con version mismatch aborta ruidoso y NO revierte', () =>
             () => waves.rollbackIssueAdd(1, 9002, {
                 expectedVersion: add.version,
                 authorizedBy: 'wave-add-rollback',
+                rollbackToken: add.rollbackToken,
             }),
             (e) => e && e.code === 'EWAVES_VERSION_CONFLICT',
         );
@@ -209,6 +283,7 @@ test('rollbackIssueAdd aborta si el issue ya no está en la ola (complemento del
             () => waves.rollbackIssueAdd(1, 9002, {
                 expectedVersion: add.version,
                 authorizedBy: 'wave-add-rollback',
+                rollbackToken: add.rollbackToken,
             }),
             (e) => e && e.code === 'EWAVES_ROLLBACK_STALE',
         );
@@ -231,6 +306,7 @@ test('el rollback deja audit-entry encadenada propia sin borrar la del issue_add
         waves.rollbackIssueAdd(1, 9002, {
             expectedVersion: add.version,
             authorizedBy: 'wave-add-rollback',
+            rollbackToken: add.rollbackToken,
             updated_by: 'Leo',
         });
 
