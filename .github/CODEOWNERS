@@ -15,3 +15,22 @@
 
 # Workflows GitHub Actions y este archivo: rollback no aplica
 /.github/                   @leitolarreta
+
+# Guardrail operational-state-lint (#5175): excepcion PUNTUAL y deliberada al
+# rationale de auto-merge de `.pipeline/` que declara el header de arriba. NO es
+# una contradiccion olvidada — va despues de `/.github/` porque el ultimo match
+# gana, y son 3 paths puntuales: NO ensancha `.pipeline/`.
+#
+# Por que estos tres y no el resto de `.pipeline/`: este control define SUS
+# PROPIAS exenciones en codigo (SELF_EXEMPT, SKIP_DIRS, el matcher, el scope de
+# walkJs). El smoke-test del restart no puede detectar que alguien las
+# ensancho, porque un guardrail debilitado se ve exactamente igual que un
+# codebase limpio: verde. Sin review humano sobre el binario, "allowlist vacia"
+# no es una virtud sino un bypass sin dueno.
+#
+# El test entra en la lista porque debilitarlo es el paso previo a debilitar el
+# matcher, y la allowlist porque cada entry nueva es una excepcion al invariante
+# del contrato de estado operativo (docs/pipeline/contrato-estado-operativo.md).
+/.pipeline/lib/operational-state-lint.js                @leitolarreta
+/.pipeline/lib/operational-state-lint.allowlist.json    @leitolarreta
+/.pipeline/lib/__tests__/operational-state-lint.test.js @leitolarreta
