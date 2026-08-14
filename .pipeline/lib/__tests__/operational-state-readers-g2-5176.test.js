@@ -195,13 +195,15 @@ test('#5176 A-1 · /allowlist con allowed_issues no vacío NO rinde "allowlist v
     } finally { rmrf(dir); }
 });
 
-test('#5176 SEC-5 · /allowlist modo AUSENTE: sin marker reporta "nunca"', async () => {
+test('#5176 SEC-5 · /allowlist modo AUSENTE: sin marker lo dice sin inventar halt', async () => {
     const dir = mkTmp('g2-render-absent-');
     try {
         const reply = await allowlistReply(dir);
         assert.ok(/Allowlist vacía/.test(reply));
-        assert.ok(/nunca/.test(reply));
-        assert.ok(!/Pausa total/.test(reply));
+        // CA-UX-5 — "nunca" no distinguía "nunca hubo pausa parcial" de "se
+        // levantó y se borró el archivo". El copy es explícito.
+        assert.ok(/sin pausa parcial registrada/.test(reply));
+        assert.ok(!/halt total/.test(reply));
     } finally { rmrf(dir); }
 });
 
@@ -211,7 +213,7 @@ test('#5176 SEC-5 · /allowlist modo VACÍA: marker presente y vacío no se conf
         writePartial(dir, { allowed_issues: [], created_at: '2026-08-14T10:00:00.000Z' });
         const reply = await allowlistReply(dir);
         assert.ok(/Allowlist vacía/.test(reply));
-        assert.ok(!/nunca/.test(reply), 'hay marker: la última modificación es real, no "nunca"');
+        assert.ok(!/sin pausa parcial registrada/.test(reply), 'hay marker: la fecha es real');
         assert.ok(reply.includes('2026'), 'muestra la fecha del marker');
     } finally { rmrf(dir); }
 });
@@ -222,7 +224,7 @@ test('#5176 SEC-5 / R7 · /allowlist modo HALT TOTAL: lo anuncia y NO vacía la 
         writePartial(dir, { allowed_issues: [5176], created_at: '2026-08-14T10:00:00.000Z' });
         fs.writeFileSync(path.join(dir, '.paused'), '');
         const reply = await allowlistReply(dir);
-        assert.ok(/Pausa total/.test(reply), 'el halt total se anuncia como caso propio');
+        assert.ok(/halt total/.test(reply), 'el halt total se anuncia como caso propio');
         assert.ok(reply.includes('5176'), 'el halt total NO vacía la allowlist mostrada');
         assert.ok(!/Allowlist vacía/.test(reply));
     } finally { rmrf(dir); }

@@ -2166,6 +2166,22 @@ async function killAgent(issue, skill, pipeline, fase, durationMs){
     } catch(e){ showToast('Error: '+e.message, false); }
 }
 
+// #5176 CA-UX-3 — proxy al rótulo canónico (window.__dispatchWindowLabel, que
+// define headerPillsClientScript()). El fallback inline mantiene la pill viva
+// si esta vista se sirviera sin ese bundle: degrada al conteo por issues, nunca
+// tira una excepción dentro del tick del header.
+function plDispatchWindowLabel(allowedIssues, allowedSkills){
+    if(typeof window !== 'undefined' && typeof window.__dispatchWindowLabel === 'function'){
+        return window.__dispatchWindowLabel(allowedIssues, allowedSkills);
+    }
+    const nIssues = Array.isArray(allowedIssues) ? allowedIssues.length : 0;
+    const nSkills = Array.isArray(allowedSkills) ? allowedSkills.length : 0;
+    const parts = [];
+    if(nIssues > 0) parts.push(nIssues + ' issues');
+    if(nSkills > 0) parts.push(nSkills + ' skills');
+    return parts.length ? parts.join(' · ') : '0 issues';
+}
+
 async function tickHeader(){
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
@@ -2178,7 +2194,12 @@ async function tickHeader(){
         const menu = document.getElementById('hdr-mode-menu');
         let label = '🟢 Running';
         if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); label = '⏸ Pausado'; }
-        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); label = '⏸ Parcial · '+d.allowedIssues.length+' issues'; }
+        // #5176 CA-UX-3 — el rótulo nombra lo que la ventana restringe. Con una
+        // ventana por skill (allowed_skills no vacío, allowed_issues vacío) esta
+        // pill decía '⏸ Parcial · 0 issues', que el operador lee como "pausa
+        // parcial sin nada autorizado → equivale a running normal". Es lo
+        // opuesto: la ventana por skill SÍ acota el dispatch (#3680 CA-A15).
+        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); label = '⏸ Parcial · '+plDispatchWindowLabel(d.allowedIssues, d.allowedSkills); }
         else { modePill.classList.add('in-mode-running'); }
         // Buscar/crear el span de label que NO afecte el menú children.
         let labelSpan = modePill.querySelector('.in-mode-label');

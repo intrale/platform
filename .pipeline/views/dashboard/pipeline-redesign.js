@@ -612,12 +612,24 @@ function plAllowlistOk(issue){
     if(!Number.isInteger(n) || n <= 0) return false;
     return pipelineModeState.allowedIssues.includes(n);
 }
+// #5176 CA-UX-4 — ningún control de inspección desaparece con una restricción
+// vigente. La condición miraba SÓLO allowedIssues.length: con una ventana por
+// skill (#3680 CA-A15, allowed_skills no vacío y allowed_issues vacío) el modo
+// es partial_pause, el dispatch está acotado, y sin embargo el toggle se
+// escondía — el operador perdía la vía de inspección justo cuando había algo
+// que inspeccionar. Ahora la allowlist efectiva se evalúa por CUALQUIER eje.
 function plRefreshToggleVisibility(){
     const t = document.getElementById('pl-allowlist-toggle');
     if(!t) return;
-    const visible = pipelineModeState.mode === 'partial_pause' && pipelineModeState.allowedIssues.length > 0;
+    const hasIssues = Array.isArray(pipelineModeState.allowedIssues) && pipelineModeState.allowedIssues.length > 0;
+    const hasSkills = Array.isArray(pipelineModeState.allowedSkills) && pipelineModeState.allowedSkills.length > 0;
+    const visible = pipelineModeState.mode === 'partial_pause' && (hasIssues || hasSkills);
     t.style.display = visible ? 'inline-flex' : 'none';
-    if(!visible && plOnlyWave){
+    // El filtro en sí sigue siendo por issue (plAllowlistOk), así que con una
+    // ventana SÓLO por skill no hay ningún issue que dejar pasar: dejarlo
+    // encendido blanquearía la cola. Se apaga —sin ocultar el control, que es
+    // lo que pide CA-UX-4— y el operador puede encenderlo cuando quiera.
+    if(!hasIssues && plOnlyWave){
         plOnlyWave = false;
         t.setAttribute('aria-checked', 'false');
         if(typeof tickPipelineRedesign === 'function') tickPipelineRedesign().catch(()=>{});

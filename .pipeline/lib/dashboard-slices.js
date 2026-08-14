@@ -576,13 +576,22 @@ function headerSlice(state, ctx) {
     // derivar el estado operativo de `ctx.PIPELINE`. En producción son el
     // mismo directorio; el resto del slice sigue usando `PIPELINE` para lo
     // suyo (build status, rest-mode, métricas).
+    //
+    // CA-UX-3 / CA-UX-4 · el slice publica también `allowedSkills`. Sin ese
+    // campo el cliente no puede distinguir una ventana por skill de una pausa
+    // parcial vacía: rotulaba `⏸ Parcial · 0 issues` y escondía el toggle de
+    // inspección de la allowlist justo cuando había una restricción vigente.
+    // `views/dashboard/multi-provider-coverage.js` ya lo leía del header y
+    // recibía `undefined` — este es el productor que faltaba.
     let mode = 'running';
     let allowedIssues = [];
+    let allowedSkills = [];
     if (operationalState && typeof operationalState.getDispatchState === 'function') {
         try {
             const dispatch = operationalState.getDispatchState();
             mode = dispatch.mode;
             allowedIssues = Array.isArray(dispatch.allowedIssues) ? dispatch.allowedIssues : [];
+            allowedSkills = Array.isArray(dispatch.allowedSkills) ? dispatch.allowedSkills : [];
         } catch { /* envoltorio degradado → header en running, nunca rompe */ }
     }
     const procesos = state.procesos || {};
@@ -710,6 +719,7 @@ function headerSlice(state, ctx) {
     return {
         mode,
         allowedIssues,
+        allowedSkills,
         pulpoAlive,
         pulpoUptimeMs: procesos.pulpo?.uptime || 0,
         counts: {

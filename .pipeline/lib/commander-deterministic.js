@@ -32,6 +32,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, spawnSync, execFileSync } = require('child_process');
 const { fillTemplate, escapeMarkdownV2 } = require('./commander/fill-template');
+// #5176 CA-UX-3 — rótulo canónico de la ventana de dispatch (issues / skills).
+const { dispatchWindowLabel } = require('./dispatch-window-label');
 const { createAuditLog } = require('./commander/audit-log');
 const { createRateLimiter } = require('./commander/rate-limit');
 const {
@@ -2072,12 +2074,29 @@ function buildDefaultHandlers(ctx) {
         //     `getDispatchState()` habría rendido `allowed_issues: []` y
         //     reintroducido justo la confusión que SEC-5 previene (R7).
         //
-        // `last-modified-by` sigue rindiendo `null` SIEMPRE: ningún escritor
-        // emite `modified_by` en el marker. Es un campo cosmético muerto del
-        // template; quitarlo es decisión de UX, no de esta migración.
+        // CA-UX-1 / CA-UX-2 — el halt total es un TERCER estado del template,
+        // mutuamente excluyente con los otros dos y con precedencia sobre
+        // cualquier lectura de allowlist (contrato §4). La versión anterior de
+        // este render agregaba una línea suelta de halt DEBAJO de un
+        // `*Estado:* 🟢 sin pausa parcial`: el operador leía las dos cosas a la
+        // vez y la primera es la que fija la impresión. El modo se pasa
+        // EXPLÍCITO (`full-pause`, derivado de `getDispatchState().mode`), no
+        // como booleano derivado de `allowed.length`.
+        //
+        // CA-UX-3 — una ventana por skill NO se rotula por issues. Con
+        // `allowed_skills` no vacío y `allowed_issues` vacío, el copy nombra los
+        // skills y NO afirma "equivale a running normal": la ventana por skill
+        // restringe el dispatch (#3680 CA-A15).
+        //
+        // CA-UX-5 — `last-modified-by` sale del contrato del template: ningún
+        // escritor emite `modified_by` en el marker, así que era un campo
+        // permanentemente vacío (la fuente real es #5195). Y la rama de marker
+        // ausente dice "sin pausa parcial registrada", no "nunca", que no
+        // distinguía "nunca hubo" de "se levantó y se borró el archivo".
         allowlist: async () => {
             let snapshot = null;
             let haltTotal = false;
+            let pauseOrigin = null;
             try {
                 snapshot = withOperationalStateRoot(PIPELINE, () => operationalState.readDispatchAllowlist());
             } catch (_) { snapshot = null; }
@@ -2089,16 +2108,35 @@ function buildDefaultHandlers(ctx) {
                     PIPELINE, () => operationalState.getDispatchState().mode,
                 ) === 'paused';
             } catch (_) { haltTotal = false; }
+            if (haltTotal) {
+                try {
+                    const origin = withOperationalStateRoot(
+                        PIPELINE, () => operationalState.readFullPauseOrigin(),
+                    );
+                    const parts = [];
+                    if (origin && typeof origin.source === 'string' && origin.source && origin.source !== 'unknown') {
+                        parts.push(origin.source);
+                    }
+                    if (origin && typeof origin.detail === 'string' && origin.detail.trim()) {
+                        parts.push(origin.detail.trim().slice(0, 120));
+                    }
+                    pauseOrigin = parts.length ? parts.join(' · ') : null;
+                } catch (_) { pauseOrigin = null; }
+            }
 
             if (!snapshot) {
                 return fillTemplate('allowlist', {
                     active: false,
                     'full-pause': haltTotal,
-                    'last-modified': 'nunca',
-                    'last-modified-by': null,
+                    'pause-origin': pauseOrigin,
+                    'window-label': '',
+                    'last-modified': 'sin pausa parcial registrada',
                     'empty-allowlist': true,
                     count: 0,
                     issues: [],
+                    'skills-count': 0,
+                    'has-skills': false,
+                    'skills-display': '',
                     'con-deps-recursivas': false,
                     deps: [],
                 });
@@ -2109,19 +2147,26 @@ function buildDefaultHandlers(ctx) {
                 'title-short': '(sin metadata)',
                 'labels-display': null,
             }));
+            const skills = Array.isArray(snapshot.skills) ? snapshot.skills : [];
             const isEmpty = issues.length === 0;
 
             return fillTemplate('allowlist', {
-                // "Activa" = hay issues autorizados en el marker. NO se deriva
-                // del halt total: son dos ejes distintos y el template los
-                // muestra por separado.
-                active: !isEmpty,
+                // CA-UX-3 · "activa" = hay una restricción vigente por CUALQUIER
+                // eje (issues O skills), igual que `getPipelineMode()` (#3680
+                // CA-A15). Antes miraba sólo issues: una ventana por skill se
+                // rendía como "sin pausa parcial" con el dispatch acotado.
+                // Sigue sin derivarse del halt total: son ejes distintos.
+                active: !isEmpty || skills.length > 0,
                 'full-pause': haltTotal,
+                'pause-origin': pauseOrigin,
+                'window-label': dispatchWindowLabel(issues.length, skills.length),
                 'last-modified': snapshot.createdAt || 'desconocida',
-                'last-modified-by': null,
                 'empty-allowlist': isEmpty,
                 count: issues.length,
                 issues,
+                'skills-count': skills.length,
+                'has-skills': skills.length > 0,
+                'skills-display': skills.join(', '),
                 'con-deps-recursivas': false,
                 deps: [],
             });

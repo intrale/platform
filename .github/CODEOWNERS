@@ -25,6 +25,17 @@
 #   /.github/       responsable: @leitolarreta
 #   /.pipeline/     responsable: @leitolarreta
 #
+# Guardrail de estado operativo (#5175 CA-5 / SEC-1). Se nombra explicito
+# porque su allowlist es una superficie de EXENCION: quien la edita apaga
+# un chequeo, y eso tiene que quedar declarado aunque no haya gate.
+# Reintroducido en #5176: el rewrite de #5975 dejo estos paths sin declarar
+# y su propio test de #5175 quedo en rojo sobre `main`. Van como COMENTARIO
+# a proposito — no crean regla de aprobacion, asi que la decision de #5975
+# (nada de gates auto-bloqueantes) queda intacta.
+#   /.pipeline/lib/operational-state-lint.js                 responsable: @leitolarreta
+#   /.pipeline/lib/operational-state-lint.allowlist.json     responsable: @leitolarreta
+#   /.pipeline/lib/__tests__/operational-state-lint.test.js  responsable: @leitolarreta
+#
 # Si en el futuro aparece un caso que exija de verdad separacion entre
 # autor y aprobador, la salida correcta es una identidad de servicio
 # propia del pipeline — no reactivar una regla que solo se auto-bloquea.
