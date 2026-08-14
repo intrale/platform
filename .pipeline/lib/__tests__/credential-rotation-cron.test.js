@@ -647,11 +647,47 @@ test('ROTATION_POLICY_DAYS · 90 días por convención', () => {
   assert.equal(cron.ROTATION_POLICY_DAYS, 90);
 });
 
-test('inventario real · conserva exactamente las 13 variables de ENV_MAPPING', () => {
+// El inventario firmado (`docs/secrets-inventory.md`) cubre TODO el inventario
+// del vault: provisión, política IAM, clasificación SSM vs Secrets Manager y
+// rotación. Esa lista es `ENV_DESCRIPTORS`, no `ENV_MAPPING`.
+//
+// Desde #5217 (CA-6) `ENV_MAPPING` dejó de ser sinónimo del inventario: se
+// derivan sólo los descriptores con `hydrate !== false`, o sea los que se
+// inyectan en el `process.env` global de todo proceso hijo. Las cuatro
+// credenciales de Google Drive quedaron con `hydrate: false` (su único
+// consumidor las resuelve bajo demanda con `resolveScopedRefs`), así que
+// `ENV_MAPPING` bajó a 9 mientras el inventario siguió —correctamente— en 13.
+//
+// El assert quedó apuntando al subconjunto hidratado y empezó a fallar contra
+// el doc completo. Se corrige el REFERENTE, no el doc: comparar contra
+// `ENV_DESCRIPTORS` restaura la intención original del test (su propio título
+// dice "las 13 variables") y además ENDURECE la cobertura — ahora un secreto
+// del vault que no se hidrata tampoco puede quedar fuera del inventario
+// firmado, que es justo el caso que este test existe para atrapar.
+test('inventario real · conserva exactamente las 13 variables del inventario del vault (ENV_DESCRIPTORS)', () => {
   const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
   const rows = cron.parseInventoryMarkdown(inventory);
-  const expected = Object.values(require('../credentials').ENV_MAPPING).sort();
+  const descriptors = Object.values(require('../credentials').ENV_DESCRIPTORS);
+  const expected = descriptors.map((d) => d.env).sort();
+  assert.equal(expected.length, 13, 'el inventario del vault son 13 variables');
   assert.deepEqual(rows.map((row) => row.env_var).sort(), expected);
+});
+
+// No-regresión de #5217 · CA-6: `ENV_MAPPING` (lo que se inyecta en el env
+// global de cada hijo) debe seguir siendo un subconjunto ESTRICTO del
+// inventario. Si alguien vuelve a hidratar las credenciales de Drive, este
+// test lo frena aunque el de arriba siga verde.
+test('#5217 CA-6 · ENV_MAPPING es subconjunto estricto del inventario y no hidrata Google Drive', () => {
+  const creds = require('../credentials');
+  const hydrated = Object.values(creds.ENV_MAPPING);
+  const inventario = new Set(Object.values(creds.ENV_DESCRIPTORS).map((d) => d.env));
+  for (const env of hydrated) {
+    assert.ok(inventario.has(env), `${env} se hidrata pero no está en el inventario del vault`);
+  }
+  assert.ok(hydrated.length < inventario.size, 'debe ser subconjunto ESTRICTO');
+  for (const env of hydrated) {
+    assert.ok(!/^GOOGLE_/.test(env), `${env} no debe hidratarse en el env global (#5217 CA-6)`);
+  }
 });
 
 test('metadata pendiente · recuerda una vez por día y no silencia la credencial', () => {
