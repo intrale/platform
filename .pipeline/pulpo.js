@@ -17706,13 +17706,26 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
 // `source:'telegram-commander/wave-add'`). Es el caso del incidente 2026-08-13:
 // una promoción del operador cuyo segundo write no aterrizó.
 //
-// Por qué hacía falta además de #5724
-// -----------------------------------
-// La convergencia aditiva de #5724 exige `probe.added === []` y estado
-// CONFIRMADO de cada faltante. Una divergencia MIXTA (extras + faltantes) o un
-// estado indeterminado la desactivan, y el issue abierto vuelve al human-block.
-// Esta reparación es más angosta en autoridad (exige traza legítima explícita)
-// pero cubre esos casos, porque no depende de que no haya extras.
+// Dominio alcanzable REAL (verificado empíricamente; no ampliar de memoria)
+// ------------------------------------------------------------------------
+// Esta función NO es la que atiende el caso canónico del incidente. Un issue
+// abierto recién promovido, SIN extras en la allowlist, lo resuelve la
+// convergencia aditiva de #5724, que corre ANTES en el realign y hace `return`.
+//
+// Lo que queda para acá es el hueco que #5724 deja al declinar por
+// `sinExtras === false`: divergencia `resoluble_reductivo` CON extras, y con
+// TODOS los extras CONFIRMADOS CERRADOS. Si algún extra está ABIERTO la
+// clasificación es `ambiguo` (desync-detector → classifyDesync) y el caller ni
+// llega a invocar esto, porque vive dentro del `if (resoluble_reductivo)`.
+//
+// O sea: último recurso ANTES del human-block, no cobertura general. Es más
+// angosta en autoridad que #5724 (exige traza legítima explícita en el audit)
+// y su alcance está acotado por el caller, no por esta función.
+//
+// El contrato de orden #5724 → #5882 y el dominio de cada uno están fijados por
+// la suite de integración de `wave-add-sync-integration-5882.test.js`
+// ("realign · ..."), que maneja `evaluateDesyncAndMaybeRealign` de punta a
+// punta. Si alguien reordena los bloques, esos tests avisan.
 //
 // Invariantes duras (no relajar sin declararlo):
 //   - ADITIVO PURO: siempre `[...current, ...toAdd]`. Jamás se construye una
@@ -18605,11 +18618,19 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
     // #5882 CA-3 — Último intento ANTES del human-block: reparación ADITIVA de
     // la allowlist para los faltantes con TRAZA LEGÍTIMA de `/wave add`.
     //
-    // Acá es exactamente donde caía el issue ABIERTO recién promovido: la
-    // resolución por cierre no aplica (está abierto) y la convergencia de #5724
-    // se desactiva si hay extras o el estado es indeterminado. El resultado era
-    // un human-block sobre una promoción que el operador había pedido
-    // explícitamente minutos antes.
+    // Qué llega hasta acá (y qué NO)
+    // ------------------------------
+    // NO el issue abierto recién promovido sin extras: ese caso lo resuelve la
+    // convergencia de #5724 unas líneas más arriba, que hace `return`. Tampoco
+    // una divergencia `ambiguo` (algún extra ABIERTO): este bloque está dentro
+    // del `if (probe.classification === 'resoluble_reductivo')`, así que ni se
+    // evalúa y el fail-closed sigue entero.
+    //
+    // Llega el hueco que deja #5724 al declinar por `sinExtras === false`:
+    // divergencia reductiva CON extras, todos CONFIRMADOS CERRADOS, y algún
+    // faltante que el operador promovió. Ahí antes había human-block sobre una
+    // promoción pedida explícitamente minutos antes; esto es el último intento
+    // de repararla antes de frenar.
     //
     // La autoridad para reparar NO viene de "está en la ola" a secas — eso ya lo
     // cubre #5724 con sus propios guards — sino de una entry `issue_added` en el

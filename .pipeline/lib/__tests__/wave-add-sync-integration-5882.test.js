@@ -545,3 +545,195 @@ test('el catch de sync de allowlist ya no está vacío ni promete auto-reparaci�
     assert.ok(/partial_sync_failed/.test(src), 'debe existir el error-kind explícito');
     assert.ok(/rollbackIssueAdd/.test(src), 'debe invocar el rollback');
 });
+
+// =============================================================================
+// Integración por `evaluateDesyncAndMaybeRealign` (rev-1 del review)
+//
+// Por qué esta suite existe
+// -------------------------
+// Los tests de arriba llaman `repairAllowlistFromLegitWaveAdd(...)` DIRECTO.
+// Eso verifica la función, pero NO que el realign del Pulpo la alcance — que es
+// lo que dice el Gherkin 3 ("Cuando corre el realign del Pulpo"). El review de
+// rev-1 mostró que ese hueco escondía un hecho importante sobre el DOMINIO
+// ALCANZABLE del bloque, y estas pruebas lo fijan para que no se pierda.
+//
+// El dominio real (verificado empíricamente contra HEAD):
+//   - `resoluble_reductivo` SIN extras  → lo resuelve la convergencia de #5724,
+//     que corre ANTES y hace `return`. El bloque de #5882 NO se ejecuta.
+//   - `resoluble_reductivo` CON extras y TODOS los extras CONFIRMADOS CERRADOS
+//     → #5724 declina por `sinExtras === false` y ACÁ entra #5882.
+//   - `ambiguo` (algún extra ABIERTO) → el bloque vive dentro del `if` de
+//     `resoluble_reductivo`, así que ni se evalúa. Fail-closed intacto.
+//
+// Nota de fixture (no borrar): estos tests copian `config.yaml` y
+// `pipeline.config.json` al directorio override. Sin ellos el Pulpo detecta
+// "CONFIG INVÁLIDA" durante el realign y PAUSA el dispatch (`.paused`), con lo
+// cual `getPipelineMode()` devuelve `paused` y la reparación declina por
+// `no_partial_pause`. Los casos negativos pasarían por el MOTIVO EQUIVOCADO.
+// Por eso cada aserción negativa mira además la línea de log del motivo.
+// =============================================================================
+
+// Fixture completo: `setup()` + la configuración que el realign necesita para
+// no auto-pausarse (ver nota de arriba).
+function setupIntegracion() {
+    const dir = setup();
+    const pipelineSrc = path.join(__dirname, '..', '..');
+    fs.copyFileSync(path.join(pipelineSrc, 'config.yaml'), path.join(dir, 'config.yaml'));
+    fs.copyFileSync(path.join(pipelineSrc, '..', 'pipeline.config.json'), path.join(dir, 'pipeline.config.json'));
+    try { desyncDetector.clearDesyncFlag(); } catch (_) {}
+    return dir;
+}
+
+// Allowlist SIN entry de audit: un extra sembrado por `seedAllowlist` deja
+// traza legítima en `partial-pause-audit` y dispara el resync de #4439
+// (ola ← allowlist), que no es lo que estos casos quieren observar.
+function writeAllowlistCruda(dir, allowedIssues) {
+    fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({
+        allowed_issues: allowedIssues,
+        created_at: '2026-08-13T00:00:00.000Z',
+        source: 'fixture',
+    }, null, 2));
+}
+
+// Traza de promoción del operador en el audit encadenado de olas.
+function sembrarTrazaWaveAdd(issue, opts = {}) {
+    const ageMs = Number.isFinite(opts.ageMs) ? opts.ageMs : 5 * 1000;
+    waveAudit.recordWaveEvent({
+        event: 'issue_added',
+        wave: 1,
+        issue,
+        actor: 'Leo',
+        source: opts.source || 'telegram-commander/wave-add',
+        timestamp: new Date(Date.now() - ageMs).toISOString(),
+    });
+}
+
+// El realign loguea con `log('pulpo', ...)`, que sale por console.log.
+function correrRealign(isClosed) {
+    const lineas = [];
+    const original = console.log;
+    console.log = (...args) => lineas.push(args.join(' '));
+    try {
+        pulpo.evaluateDesyncAndMaybeRealign('periodic', { isClosed });
+    } finally {
+        console.log = original;
+    }
+    return lineas;
+}
+
+function lineasDesync(lineas) {
+    return JSON.stringify(lineas.filter((l) => /desync-detector/.test(l)));
+}
+
+// ─── Caso 1 — el dominio REAL del bloque: repara y limpia el flag ────────────
+test('realign · con extras CERRADOS y un faltante ABIERTO con traza legítima, la reparación aditiva corre y libera el dispatch', () => {
+    const dir = setupIntegracion();
+    try {
+        writeWaves(dir, [880002, 880003]);
+        // #870001 es un extra de la allowlist AJENO a la ola y CERRADO: esto es
+        // lo que hace declinar a #5724 (`sinExtras === false`) y deja el caso
+        // para #5882.
+        writeAllowlistCruda(dir, [880002, 870001]);
+        sembrarTrazaWaveAdd(880003);
+        const isClosed = (n) => Number(n) === 870001;
+
+        const antes = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true, isClosed });
+        assert.equal(antes.classification, 'resoluble_reductivo', 'el fixture debe caer en el dominio del bloque');
+        assert.deepEqual(antes.added, [870001], 'hay un extra (por eso #5724 declina)');
+        assert.deepEqual(antes.removed, [880003], 'y falta el issue promovido');
+
+        const lineas = correrRealign(isClosed);
+
+        assert.ok(readAllowlist(dir).includes(880003), 'el issue promovido vuelve a la allowlist');
+        assert.equal(desyncDetector.isDesyncFlagSet(), false, 'el dispatch queda liberado');
+        assert.ok(lineas.some((l) => /reparación ADITIVA de allowlist OK \(#5882\)/.test(l)),
+            `debe ser el bloque de #5882 el que resuelve: ${lineasDesync(lineas)}`);
+    } finally {
+        teardown(dir);
+    }
+});
+
+// ─── Caso 2 — Gherkin 4: misma divergencia SIN traza legítima ────────────────
+test('realign · la MISMA divergencia sin traza legítima de wave-add NO se repara y sigue fail-closed', () => {
+    const dir = setupIntegracion();
+    try {
+        writeWaves(dir, [880002, 880003]);
+        writeAllowlistCruda(dir, [880002, 870001]);
+        // Sin `sembrarTrazaWaveAdd`: el audit de olas no tiene el `issue_added`.
+        const isClosed = (n) => Number(n) === 870001;
+
+        const lineas = correrRealign(isClosed);
+
+        assert.deepEqual(readAllowlist(dir).slice().sort((a, b) => a - b), [870001, 880002],
+            'sin traza no se toca la allowlist');
+        assert.equal(desyncDetector.isDesyncFlagSet(), true, 'el pipeline sigue frenado esperando al humano');
+        // Debe declinar POR FALTA DE TRAZA, no por un fixture a medias.
+        assert.ok(lineas.some((l) => /sin traza legítima de wave-add/.test(l)),
+            `el motivo debe ser la ausencia de traza: ${lineasDesync(lineas)}`);
+        assert.ok(!lineas.some((l) => /no_partial_pause|no_active_wave/.test(l)),
+            'no puede declinar por un fixture incompleto (ver nota de fixture)');
+    } finally {
+        teardown(dir);
+    }
+});
+
+// ─── Caso 3 — ambiguo: el bloque ni se evalúa, fail-closed intacto ───────────
+test('realign · con un extra ABIERTO la divergencia es ambigua y el bloque de #5882 ni se evalúa', () => {
+    const dir = setupIntegracion();
+    try {
+        writeWaves(dir, [880002, 880003]);
+        writeAllowlistCruda(dir, [880002, 870001]);
+        sembrarTrazaWaveAdd(880003);        // traza legítima presente...
+        const isClosed = () => false;       // ...pero el extra está ABIERTO
+
+        const antes = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true, isClosed });
+        assert.equal(antes.classification, 'ambiguo',
+            'un extra abierto y ajeno a la ola clasifica ambiguo (desync-detector)');
+
+        const lineas = correrRealign(isClosed);
+
+        assert.ok(!readAllowlist(dir).includes(880003),
+            'aun con traza legítima, el camino ambiguo no repara');
+        assert.equal(desyncDetector.isDesyncFlagSet(), true, 'fail-closed intacto');
+        assert.ok(!lineas.some((l) => /#5882/.test(l)),
+            `el bloque vive dentro del if de resoluble_reductivo: no debe dejar rastro: ${lineasDesync(lineas)}`);
+        assert.ok(!lineas.some((l) => /divergencia reductiva NO puramente por cierre/.test(l)),
+            'tampoco pasa por la rama reductiva');
+    } finally {
+        teardown(dir);
+    }
+});
+
+// ─── Caso 4 — fija el ORDEN #5724 → #5882 ────────────────────────────────────
+//
+// Sin esta aserción, un reordenamiento futuro (o un guard nuevo en #5724) podría
+// dejar el bloque de #5882 inalcanzable —o alcanzable de más— sin que ningún
+// test se entere. Fija el contrato: SIN extras manda #5724; el de #5882 es el
+// último recurso y no se ejecuta si el anterior ya resolvió.
+test('realign · el escenario canónico SIN extras lo resuelve #5724 y el bloque de #5882 no llega a correr', () => {
+    const dir = setupIntegracion();
+    try {
+        writeWaves(dir, [880002, 880003]);
+        writeAllowlistCruda(dir, [880002]);   // sin extras: added === []
+        sembrarTrazaWaveAdd(880003);          // traza legítima igual de fresca
+        const isClosed = () => false;
+
+        const antes = desyncDetector.detectDesync({ skipFlag: true, skipAlert: true, isClosed });
+        assert.equal(antes.classification, 'resoluble_reductivo');
+        assert.deepEqual(antes.added, [], 'sin extras es el dominio de #5724');
+
+        const lineas = correrRealign(isClosed);
+
+        // Converge igual — al operador le da lo mismo quién lo arregló.
+        assert.ok(readAllowlist(dir).includes(880003), 'el faltante vuelve a la allowlist');
+        assert.equal(desyncDetector.isDesyncFlagSet(), false, 'el dispatch queda liberado');
+
+        // Pero el contrato de ORDEN es explícito.
+        assert.ok(lineas.some((l) => /convergencia ADITIVA allowlist ← ola activa OK \(#5724\)/.test(l)),
+            `lo resuelve la convergencia de #5724: ${lineasDesync(lineas)}`);
+        assert.ok(!lineas.some((l) => /#5882/.test(l)),
+            `#5724 corre primero y hace return: el bloque de #5882 no se evalúa: ${lineasDesync(lineas)}`);
+    } finally {
+        teardown(dir);
+    }
+});

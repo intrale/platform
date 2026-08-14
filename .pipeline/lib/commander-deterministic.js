@@ -2637,10 +2637,12 @@ async function handleWaveNext({ pipelineRoot }) {
 // del pipeline, ni en el audit. El incidente del 2026-08-13 no dejó una sola
 // línea que explicara por qué el pipeline se había frenado.
 //
-// Default `console.error` (lo captura el log del proceso que hostea al
-// Commander). `setSyncLogger` permite que `pulpo.js` inyecte su `log('pulpo',…)`
-// y que los tests asserten que la línea se emitió. Lo NO aceptable es que este
-// camino quede mudo.
+// El logger EFECTIVO en producción es el default `console.error`, que cae en el
+// log del proceso que hostea al Commander. `setSyncLogger` es hoy un seam de
+// TEST solamente: nadie lo inyecta en runtime (`grep -rn "setSyncLogger"` sólo
+// devuelve definición, export y tests). Queda como punto de inyección por si el
+// host quiere redirigir el output, pero no describe un cableado vigente con
+// `pulpo.js`. Lo NO aceptable es que este camino quede mudo.
 // =============================================================================
 let syncLogger = null;
 
@@ -2861,7 +2863,6 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
         // lee del disco en cada llamada, sin cache.
         let landed = false;
         try {
-            if (typeof partialPause.invalidateCache === 'function') partialPause.invalidateCache();
             const after = partialPause.getPipelineMode();
             landed = after.mode === 'partial_pause'
                 && Array.isArray(after.allowedIssues)
