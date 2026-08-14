@@ -647,11 +647,33 @@ test('ROTATION_POLICY_DAYS · 90 días por convención', () => {
   assert.equal(cron.ROTATION_POLICY_DAYS, 90);
 });
 
-test('inventario real · conserva exactamente las 13 variables de ENV_MAPPING', () => {
+// El inventario cubre TODA credencial que haya que provisionar, rotar o revocar,
+// se hidrate o no en el ambiente. Por eso la fuente de verdad es ENV_DESCRIPTORS
+// (13 entradas) y no ENV_MAPPING (9): desde #5217 las 4 claves de google_drive
+// quedan en el inventario con `hydrate: false`, fuera de ENV_MAPPING, para no
+// ampliar el process.env global (ver credentials-google-drive.test.js · CA-6).
+test('inventario real · conserva exactamente las 13 variables de ENV_DESCRIPTORS', () => {
   const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
   const rows = cron.parseInventoryMarkdown(inventory);
-  const expected = Object.values(require('../credentials').ENV_MAPPING).sort();
+  const expected = Object.values(require('../credentials').ENV_DESCRIPTORS).map((d) => d.env).sort();
+  assert.equal(expected.length, 13);
   assert.deepEqual(rows.map((row) => row.env_var).sort(), expected);
+});
+
+// Guard de no-regresión de #5217: si alguien vuelve a meter google_drive en
+// ENV_MAPPING, el inventario seguiría verde pero el process.env global se
+// ampliaría de nuevo. ENV_MAPPING tiene que ser subconjunto estricto.
+test('inventario real · ENV_MAPPING es subconjunto de lo inventariado y excluye google_drive', () => {
+  const credentials = require('../credentials');
+  const inventariadas = new Set(Object.values(credentials.ENV_DESCRIPTORS).map((d) => d.env));
+  for (const env of Object.values(credentials.ENV_MAPPING)) {
+    assert.ok(inventariadas.has(env), env + ' se hidrata pero no está en el inventario');
+  }
+  for (const dotPath of Object.keys(credentials.ENV_DESCRIPTORS)) {
+    if (!dotPath.startsWith('google_drive.')) continue;
+    assert.equal(credentials.ENV_MAPPING[dotPath], undefined,
+      dotPath + ' no puede volver a ENV_MAPPING (#5217 · CA-6)');
+  }
 });
 
 test('metadata pendiente · recuerda una vez por día y no silencia la credencial', () => {
