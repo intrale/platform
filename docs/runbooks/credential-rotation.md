@@ -26,9 +26,36 @@ Desde #3311 todas las credenciales del proyecto viven en un **único archivo**:
     "groq":     { "api_key": "..." },
     "cerebras": { "api_key": "..." },
     "nvidia":   { "api_key": "..." }
+  },
+
+  // #5217 — namespaces que NO pasan por ENV_MAPPING (ver más abajo)
+  "google_drive": {
+    "oauth_client_id":     "...",
+    "oauth_client_secret": "...",
+    "oauth_refresh_token": "...",
+    "drive_folder_id":     "..."
+  },
+  "r2": {
+    "account_id":        "...",   // sin provisionar
+    "access_key_id":     "...",
+    "secret_access_key": "...",
+    "bucket":            "..."
   }
 }
 ```
+
+> **Dos formas de consumir el store, y no son intercambiables (#5217):**
+>
+> | Mecanismo | Qué hace | Quién lo usa |
+> |---|---|---|
+> | `loadIntoEnv()` | itera `ENV_MAPPING` y escribe en el **`process.env` global** | Telegram + API keys de IA |
+> | `resolveScopedRefs()` | lee **un namespace puntual** del JSON, sin tocar `process.env` | Google Drive, R2, brokering por producto |
+>
+> Drive y R2 **no están en `ENV_MAPPING` a propósito**: `loadIntoEnv()` se
+> invoca en el boot de `pulpo.js` y `restart.js`, así que todo lo que entre ahí
+> lo hereda **cada proceso hijo de cada agente**, incluidos los de providers de
+> IA de terceros. Credenciales que usa un solo consumidor puntual se resuelven
+> bajo demanda. Agregarlas a `ENV_MAPPING` es una regresión de mínimo privilegio.
 
 **Cómo se carga**: `.pipeline/lib/credentials.js#loadIntoEnv()` se invoca al
 boot de `pulpo.js` y `restart.js`, mapea cada path a su env var canónica
@@ -229,6 +256,89 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
 - [ ] Pulpo arranca y procesa `intake` sin errores `gh CLI`.
 - [ ] Commit pusheado con `last_rotated`.
 
+## Google Drive (OAuth — evidencia de QA)
+
+> _Aplica cuando vence o se revoca el `refresh_token` de Drive y
+> `qa-video-share.js` deja de subir la evidencia de video._
+
+**Dónde vive**: namespace `google_drive` de `credentials.json` (ver estructura
+arriba). **No** en `.claude/hooks/telegram-config.json` — ese archivo está
+trackeado en git, un `reset --hard` restauraría la versión sin credenciales y la
+subida se caería en silencio (es el bug que cerró #5217).
+
+1. Abrí <https://console.cloud.google.com/apis/credentials> con la cuenta del
+   inventario y ubicá el OAuth Client ID de tipo *Desktop app*.
+2. Re-autorizá:
+   ```bash
+   node scripts/google-drive-oauth-setup.js <client_id>
+   ```
+   El **client secret NO se pasa por argumento**: se pide por prompt (sin eco) o
+   se toma de `GOOGLE_OAUTH_CLIENT_SECRET`. Los argumentos son visibles en la
+   tabla de procesos del SO y quedan en el historial del shell (CWE-214).
+3. El script también pide el **Drive folder ID** de la carpeta de QA (o lo toma
+   de `GOOGLE_DRIVE_FOLDER_ID`). Dejarlo vacío conserva el que ya esté guardado.
+   Si `google_drive.drive_folder_id` no resuelve en ninguna fuente, la evidencia
+   se sube a la **raíz** del Drive en vez de la carpeta de QA: no rompe la
+   subida, pero `qa-video-share.js` lo avisa por consola. No es secreto, pero sí
+   parte de la provisión — antes sólo podía setearse a mano en el archivo
+   trackeado del repo, o sea que se perdía en cada respawn.
+4. El script persiste en el store canónico con backup pre-save, escritura
+   atómica y `0600`, y te lista **los nombres** de las claves escritas.
+5. Actualizá `last_rotated` en `docs/secrets-inventory.md`. Commiteá.
+
+> **Si el store está corrupto**, `writeCanonicalPaths` **aborta sin escribir** en
+> vez de degradar el archivo a `{}` — si escribiera, se perderían Telegram y
+> todos los providers de IA de una sola vez. Reparalo a mano o restaurá el
+> backup más reciente de `~/.claude/secrets/backups/` antes de reintentar.
+
+### Cómo verificar que rotaste bien (Drive)
+
+- [ ] El script imprimió `Guardado en el store canónico: ~/.claude/secrets/credentials.json`.
+- [ ] `git status --porcelain .claude/hooks/telegram-config.json` **sin salida**
+      (ningún secreto quedó en el archivo del repo).
+- [ ] Una corrida de `qa-video-share.js` sube la evidencia sin emitir
+      `Google Drive no configurado`.
+- [ ] Sobrevive al respawn: tras `git reset --hard` + `git clean -fd`, la subida
+      sigue funcionando sin intervención humana.
+
+## Cloudflare R2 (sin provisionar)
+
+R2 está **cableado pero no provisionado**: el consumidor lee el namespace `r2`
+del store, y hoy **no existe ninguna clave `r2.*` en ningún almacén**. Por eso
+los mensajes al operador dicen `no provisionado` y no `no configurado` — son
+estados distintos:
+
+| Estado | Qué significa | Cómo se resuelve |
+|---|---|---|
+| `no configurado` | falta escribir el valor | editar el store canónico |
+| `no provisionado` | la credencial no existe en ningún lado | crear las credenciales en Cloudflare, y recién ahí escribirlas |
+
+Darlas de alta requiere crear un API token de R2 en Cloudflare y escribir
+`r2.account_id`, `r2.access_key_id`, `r2.secret_access_key` y `r2.bucket` en
+`credentials.json`. Es trabajo humano; ningún criterio del pipeline depende de
+que R2 suba.
+
+## AWS y GitHub: ya son durables, no se duplican en el store
+
+Estas dos **no se migran** al store canónico (#5217 · CA-15). No es un pendiente:
+ya se resuelven por mecanismos externos al repo y persistentes a los respawns.
+Duplicar el material de clave dentro de `credentials.json` agregaría una copia
+más para custodiar y rotar, sin ningún beneficio.
+
+| Credencial | Dónde vive realmente | Cómo se rota |
+|---|---|---|
+| AWS | perfiles de `~/.aws/credentials` + `~/.aws/config` (fuera del repo) | por AWS CLI / consola IAM; el pipeline los consume vía perfil |
+| GitHub | credential helper del sistema (`git credential fill`) y `gh auth` | ver la sección **GitHub** de este runbook |
+
+Notas:
+
+- El namespace `aws` que aparezca en `credentials.json` es de **brokering por
+  producto** (`resolveScopedRefs`), no la fuente que usa el AWS CLI.
+- `GH_TOKEN` / `GITHUB_TOKEN` **ya están** en
+  `ALLOWED_CREDENTIAL_ENV_VARS` (`.pipeline/lib/agent-models-validate.js`). Esa
+  lista **no se amplía** con credenciales de cloud: existe justamente para
+  impedir que un `agent-models.json` declare `AWS_SECRET_ACCESS_KEY` como env de
+  un provider de IA de terceros (refinamiento Security #3 de #3080).
 ## Telegram (reposicion)
 
 Para **rotar** una credencial viva, seguí el flujo del proveedor. Esta sección
@@ -299,8 +409,18 @@ sección cubre credenciales **ausentes** en una máquina limpia.
    `google_drive.drive_folder_id` en `~/.claude/secrets/credentials.json`.
 4. Ejecutá `node .pipeline/lib/credentials.js`: las cuatro
    (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
-   `GOOGLE_OAUTH_REFRESH_TOKEN`, `GOOGLE_DRIVE_FOLDER_ID`) deben figurar como
-   hidratadas. El comando lista **nombres** de variable, nunca valores.
+   `GOOGLE_OAUTH_REFRESH_TOKEN`, `GOOGLE_DRIVE_FOLDER_ID`) **NO** deben figurar
+   como hidratadas: desde #5217 son `hydration: "deferred"` y quedan fuera de
+   `ENV_MAPPING` a propósito (CA-6). El comando lista **nombres** de variable,
+   nunca valores.
+
+   > Esto cambió respecto de #5242, que las declaró `eager`. En aquel momento el
+   > nivel *store* de `qa-video-share.js` resolvía vía `loadIntoEnv`, así que
+   > sacarlas del env global rompía la subida de evidencia. Hoy el consumidor las
+   > lee con `resolveScopedRefs` (namespace directo del JSON, sin `process.env`),
+   > y hidratarlas sólo expondría un refresh token de Google en el ambiente de
+   > todo agente hijo sin que nadie lo lea de ahí. Para comprobar que resuelven,
+   > usá el paso 5, no la salida de hidratación.
 5. Verificá el consumo real: `qa/scripts/qa-video-share.js` resuelve estas
    credenciales con precedencia `env` > store (`~/.claude/secrets/credentials.json`)
    > legacy. Si el log dice `credenciales de Google Drive no configuradas`,
@@ -318,7 +438,11 @@ sección cubre variables **ausentes** en una máquina limpia.
 1. Creá un token R2 de mínimo privilegio desde el panel de Cloudflare.
 2. Configurá `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` y
    `R2_BUCKET` como variables de entorno del operador.
-3. No las escribas en `credentials.json`: R2 es una fuente `env`, no `store`.
+3. La fuente declarada de R2 en el manifiesto es `env`, y es la que conviene usar:
+   el consumidor consulta primero las env vars. Existe además un fallback al
+   namespace `r2` del store canónico, pero **hoy no hay ninguna clave `r2.*` en
+   ningún almacén** — de ahí el estado `no provisionado`. No dupliques el material
+   de clave en los dos lados: elegí uno.
 4. Verificá únicamente la presencia por nombre en el proceso que comparte la
    evidencia; nunca imprimas sus valores.
 

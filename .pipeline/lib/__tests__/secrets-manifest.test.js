@@ -138,13 +138,19 @@ test('la precedencia declara intrale-api-keys como fuente conocida no canonica',
     && /NO canonica/i.test(item.estado)));
 });
 
-test('las 12 huerfanas estan declaradas y solo google_drive.* es eager', () => {
-  // Ancla actualizada tras el merge de #5172: las tres `google_drive.oauth_*`
-  // pasan a `eager`. NO es una relajacion del criterio de CA-3 — es la misma
-  // regla aplicada a un dato que cambio. El pilar (ii) ahora se cumple: el
-  // consumidor `qa/scripts/qa-video-share.js` las lee de `process.env`, y su
-  // nivel 2 (store) tambien resuelve via `loadIntoEnv`, o sea via ENV_MAPPING.
-  // Dejarlas `deferred` rompia la subida de evidencia de QA en los DOS niveles.
+test('las 12 huerfanas estan declaradas y ninguna es eager', () => {
+  // Ancla actualizada por #5217 (CA-6). #5242 habia pasado las cuatro
+  // `google_drive.*` a `eager` con esta premisa: «el nivel 2 (store) del
+  // consumidor resuelve via `loadIntoEnv`, o sea via ENV_MAPPING, asi que
+  // dejarlas `deferred` rompe la subida de evidencia de QA en los DOS niveles».
+  // La premisa era cierta ENTONCES y dejo de serlo: #5217 reescribio ese nivel
+  // sobre `resolveScopedRefs`, que lee el namespace `google_drive` directo del
+  // JSON del store sin pasar por `process.env`. Con el consumo desacoplado de
+  // la hidratacion, el pilar (ii) ya no las sostiene como `eager` y mantenerlas
+  // solo publicaria un refresh token de Google en el entorno de todo agente
+  // hijo. No es una relajacion de CA-3: es la misma regla sobre un dato que
+  // volvio a cambiar. La cobertura de que Drive SIGUE resolviendo esta en
+  // `qa/scripts/__tests__/qa-video-share-credentials.test.js`, no aca.
   const orphanNames = [
     'google_drive.drive_folder_id', 'google_drive.oauth_client_id',
     'google_drive.oauth_client_secret', 'google_drive.oauth_refresh_token',
@@ -154,24 +160,23 @@ test('las 12 huerfanas estan declaradas y solo google_drive.* es eager', () => {
   ];
   const entries = orphanNames.map((name) => manifest.entries.find((entry) => entry.name === name));
   assert.ok(entries.every(Boolean));
-  assert.deepEqual(entries.filter((entry) => entry.hydration === 'eager').map((entry) => entry.name), [
-    'google_drive.drive_folder_id',
-    'google_drive.oauth_client_id',
-    'google_drive.oauth_client_secret',
-    'google_drive.oauth_refresh_token',
-  ]);
-  assert.equal(entries.filter((entry) => entry.hydration === 'deferred').length, 8);
-  // El ancla del lado de ENV_MAPPING: las cuatro deben estar cableadas con el
-  // nombre exacto que espera el consumidor (el prefijo NO es simetrico).
-  assert.equal(ENV_MAPPING['google_drive.drive_folder_id'], 'GOOGLE_DRIVE_FOLDER_ID');
-  assert.equal(ENV_MAPPING['google_drive.oauth_client_id'], 'GOOGLE_OAUTH_CLIENT_ID');
-  assert.equal(ENV_MAPPING['google_drive.oauth_client_secret'], 'GOOGLE_OAUTH_CLIENT_SECRET');
-  assert.equal(ENV_MAPPING['google_drive.oauth_refresh_token'], 'GOOGLE_OAUTH_REFRESH_TOKEN');
-  // Y ninguna `aws.*` / `multimedia.*` se cuela: ahi el pilar (ii) sigue sin
-  // cumplirse (scope `aws` inerte, ElevenLabs sin lector).
+  assert.deepEqual(entries.filter((entry) => entry.hydration === 'eager').map((entry) => entry.name), []);
+  assert.equal(entries.filter((entry) => entry.hydration === 'deferred').length, 12);
+  // El ancla del lado de ENV_MAPPING: ninguna de las 12 se cuela en el mapa
+  // derivado. Cubre a las cuatro `google_drive.*` (desacopladas por #5217) y a
+  // las `aws.*` / `multimedia.*`, donde el pilar (ii) sigue sin cumplirse.
   for (const entry of entries.filter((item) => item.hydration === 'deferred')) {
     assert.equal(ENV_MAPPING[entry.name], undefined, entry.name);
   }
+  // Anti-vacuidad: el bucle de arriba seria trivialmente verde si `ENV_MAPPING`
+  // estuviera vacio o mal importado. Las que SI se hidratan siguen cableadas
+  // con el nombre exacto que espera cada consumidor.
+  assert.equal(ENV_MAPPING['telegram.bot_token'], 'TELEGRAM_BOT_TOKEN');
+  assert.equal(ENV_MAPPING['providers.openai.api_key'], 'OPENAI_API_KEY');
+  // Y el env var canonico de Drive sigue declarado en el manifiesto aunque no
+  // se hidrate: es el override operativo que el consumidor consulta primero.
+  const folder = entries.find((entry) => entry.name === 'google_drive.drive_folder_id');
+  assert.equal(folder.env_var, 'GOOGLE_DRIVE_FOLDER_ID');
 });
 
 test('toda entrada deferred tiene defer_reason de al menos 40 caracteres', () => {
@@ -205,7 +210,7 @@ test('el childEnv real no expone ninguna credencial deferred', () => {
   const canonical = path.join(tmp, 'credentials.json');
   const legacy = path.join(tmp, 'legacy.json');
   const deferred = manifest.entries.filter((item) => item.hydration === 'deferred');
-  assert.equal(deferred.length, 8);
+  assert.equal(deferred.length, 12);
   assert.ok(deferred.every((entry) => leafDotPaths(fakeCredentialStore).includes(entry.name)));
   fs.writeFileSync(canonical, JSON.stringify(fakeCredentialStore));
   try {
@@ -214,14 +219,14 @@ test('el childEnv real no expone ninguna credencial deferred', () => {
     const pipelineExtras = { PIPELINE_ISSUE: '5242' };
     const childEnv = { ...parentEnv, ...pipelineExtras };
     // Control positivo (obligatorio por CA-3d): sin esto el test pasa por
-    // vacuidad si `loadIntoEnv` no hidrata nada. Se amplia a las cuatro
-    // `google_drive.*`, que tras #5172 SI deben llegar al hijo — es el
-    // comportamiento que la version `deferred` de esta rama rompia.
+    // vacuidad si `loadIntoEnv` no hidrata nada. #5242 lo habia ampliado a las
+    // cuatro `google_drive.*` porque entonces SI debian llegar al hijo; #5217
+    // las saca del env global (CA-6), asi que ahora las cubre el bucle de
+    // `deferred` de abajo y el control positivo vuelve a apoyarse en las que
+    // siguen hidratandose. Se usan DOS servicios distintos para que el ancla no
+    // dependa de una sola rama de `ENV_MAPPING`.
     assert.equal(childEnv.TELEGRAM_BOT_TOKEN, 'fake-bot-token');
-    assert.equal(childEnv.GOOGLE_DRIVE_FOLDER_ID, 'fake-folder');
-    assert.equal(childEnv.GOOGLE_OAUTH_CLIENT_ID, 'fake-client');
-    assert.equal(childEnv.GOOGLE_OAUTH_CLIENT_SECRET, 'fake-secret');
-    assert.equal(childEnv.GOOGLE_OAUTH_REFRESH_TOKEN, 'fake-refresh');
+    assert.equal(childEnv.OPENAI_API_KEY, 'fake-openai');
     for (const entry of manifest.entries.filter((item) => item.hydration === 'deferred')) {
       assert.equal(childEnv[entry.env_var], undefined, entry.env_var);
     }
