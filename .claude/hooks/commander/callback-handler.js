@@ -774,24 +774,68 @@ function _degradedMeta(ns, action) {
     } catch { return null; }
 }
 
-/** Ejecuta `hb:<action>:<issue>`. Devuelve el texto concreto para el toast. */
-function _execHumanBlock(action, issue) {
+/**
+ * Ejecuta `hb:<action>:<issue>`. Devuelve el texto concreto para el toast.
+ *
+ * R-SEC-9.b — este es el TERCER canal que llega a `executeQuickAction`, y los
+ * otros dos ya dejan rastro de autor (`human-block-action-handler.js:154` para
+ * el camino HTTP, `commander-deterministic.js:1535-1544` para el comando de
+ * texto). Sin `operator` en el audit, apretar `hb:devolver-definicion` —la
+ * acción que DESCARTA el trabajo de desarrollo en curso— quedaba sin ninguna
+ * anotación de quién fue: con varios operadores en la allowlist, reconstruir un
+ * incidente se volvía imposible. El `operator` NO es opcional: lo garantiza el
+ * guard fail-closed de `handleDegradedActionCallback`.
+ */
+function _execHumanBlock(action, issue, operator, chatId, messageId) {
     const hb = require(path.join(_repoRoot, ".pipeline", "lib", "human-block.js"));
-    if (!hb.isQuickAction(action)) return { ok: false, msg: "Acción no reconocida." };
     const i = Number(issue);
+    // La entry se emite en TODOS los caminos —OK y fail-closed—, igual que
+    // `commander-deterministic.js`: un rechazo sin registrar es justamente el
+    // intento que más interesa reconstruir después. `auditQuickAction` nunca
+    // lanza, pero el try/catch deja explícito que el audit no puede tumbar la
+    // operación (regla "el pipeline no puede morir").
+    const audit = (result_status) => {
+        try {
+            hb.auditQuickAction({
+                issue: i, action, from: operator, chat_id: chatId,
+                message_id: messageId, result_status,
+            });
+        } catch (e) { _log("#5923 audit de hb: falló: " + e.message); }
+    };
+    if (!hb.isQuickAction(action)) {
+        audit("rejected");
+        return { ok: false, msg: "Acción no reconocida." };
+    }
     // Mismo guard que buildBlockedActionMarkup: entero 1..999999.
-    if (!Number.isInteger(i) || i <= 0 || i > 999999) return { ok: false, msg: "Issue inválido." };
+    if (!Number.isInteger(i) || i <= 0 || i > 999999) {
+        audit("rejected");
+        return { ok: false, msg: "Issue inválido." };
+    }
     // Entry point EXPORTADO. NO se pasa por `human-block-action-handler.handle`:
     // ese valida token HMAC + ALLOWED_ORIGINS porque su input viene de HTTP; acá
     // el input ya lo autorizó el listener y no hay token que validar.
     // Es idempotente ⇒ cubre el anti-replay que el `callback_data` no tiene.
-    const r = hb.executeQuickAction({ issue: i, action });
-    if (!r || r.ok !== true) return { ok: false, msg: (r && r.error) || "No se pudo aplicar la acción." };
+    let r;
+    try {
+        r = hb.executeQuickAction({ issue: i, action });
+    } catch (e) {
+        audit("error");
+        throw e;   // lo reporta el caller; el audit ya quedó asentado
+    }
+    if (!r || r.ok !== true) {
+        audit("error");
+        return { ok: false, msg: (r && r.error) || "No se pudo aplicar la acción." };
+    }
+    audit("authorized");
     return { ok: true, msg: r.msg || ("Acción aplicada sobre #" + i + ".") };
 }
 
-/** Ejecuta `pp:<action>` posteando al dashboard en el host propio. */
-async function _execPartialPause(action, fromId) {
+/**
+ * Ejecuta `pp:<action>` posteando al dashboard en el host propio.
+ * `operator` es el `from.id` REAL, ya validado como no vacío por el guard
+ * fail-closed del caller: acá no hay ningún fallback a literal (R-SEC-9.a).
+ */
+async function _execPartialPause(action, operator) {
     const route = PP_ROUTES[action];
     if (!route) return { ok: false, msg: "Acción no reconocida." };
     // Loopback explícito: el dashboard corre en esta misma máquina. No se usa
@@ -807,9 +851,14 @@ async function _execPartialPause(action, fromId) {
             // `operatorRef` para la trazabilidad fina. Mandar `telegram:<from.id>`
             // dejaba el valor fuera del enum: funcionaba sólo por el grace period
             // y con el gate estricto activo el botón habría dado 403 para siempre.
+            //
+            // R-SEC-9.a — sin fallback a literal: un `operatorRef: "desconocido"`
+            // sobre `cancel-partial-pause` (la acción que libera TODO el backlog)
+            // es peor que no registrar nada, porque el log AFIRMA algo falso. Si
+            // la identidad no llega, no se llega hasta acá.
             body: JSON.stringify({
                 authorizedBy: "telegram:operator",
-                operatorRef: String(fromId || "desconocido"),
+                operatorRef: operator,
             }),
             signal: AbortSignal.timeout(10000),
         });
@@ -828,12 +877,48 @@ async function _execPartialPause(action, fromId) {
 }
 
 /**
+ * Normaliza el `from.id` de Telegram a la referencia de operador que se asienta
+ * en el audit. Devuelve `null` cuando no hay identidad utilizable — el caller
+ * traduce ese `null` en fail-closed.
+ */
+function _operatorRef(fromId) {
+    // Falsy (undefined, null, "", 0, false) ⇒ no hay identidad. El `0` importa:
+    // no existe usuario de Telegram con id 0, así que aceptarlo sería tomar un
+    // centinela por un operador.
+    if (!fromId) return null;
+    const s = String(fromId).trim();
+    // Estos literales aparecen cuando alguien interpola un valor ausente antes
+    // de llegar acá: son tan poco identidad como el vacío.
+    if (!s || s === "undefined" || s === "null" || s === "0") return null;
+    return s;
+}
+
+/**
  * Punto de entrada de los callbacks degradados. SIEMPRE devuelve `true` (el
  * namespace es nuestro) y SIEMPRE emite toast, incluso en los fail-closed.
  */
 async function handleDegradedActionCallback(cbData, callbackQueryId, message, fromId) {
     const messageId = message && message.message_id;
+    const chatId = message && message.chat && message.chat.id;
     const baseText = String((message && message.text) || "").split(DEGRADED_CONFIRM_MARKER)[0];
+
+    // R-SEC-9.a — FAIL-CLOSED por identidad, antes de cualquier otra cosa.
+    //
+    // Todo lo que se ejecuta por acá es privilegiado (destraba el pipeline, muta
+    // el allowlist, descarta trabajo en curso), así que sin `from.id` no se
+    // ejecuta: ni request saliente, ni entry de audit, ni mutación. Hoy el
+    // listener ya rechaza antes (`listener-telegram.js:833`), pero ese gate vive
+    // en otro archivo: si mañana cambia, este guard es lo que evita que la
+    // acción corra igual y el audit quede afirmando un autor inventado.
+    //
+    // El toast es el MISMO texto que el fail-safe del listener, a propósito: no
+    // le confirma a quien lo aprieta si el callback existía o no.
+    const operator = _operatorRef(fromId);
+    if (!operator) {
+        _log("#5923 callback degradado SIN from.id — fail-closed: " + cbData);
+        await _degradedToast(callbackQueryId, "Acción inválida o expirada");
+        return true;
+    }
 
     // `_repoRoot` es lo único que nos deja cruzar a `.pipeline/`. Sin él,
     // fail-closed con toast — nunca throw (el pipeline no puede morir).
@@ -912,8 +997,8 @@ async function handleDegradedActionCallback(cbData, callbackQueryId, message, fr
     let result;
     try {
         result = ns === "pp"
-            ? await _execPartialPause(action, fromId)
-            : _execHumanBlock(action, issue);
+            ? await _execPartialPause(action, operator)
+            : _execHumanBlock(action, issue, operator, chatId, messageId);
     } catch (e) {
         _log("#5923 error ejecutando " + cbData + ": " + e.message);
         result = { ok: false, msg: "Error ejecutando la acción: " + e.message };
@@ -932,7 +1017,7 @@ async function handleDegradedActionCallback(cbData, callbackQueryId, message, fr
     // anti-replay real es server-side: idempotencia en `hb:`, 409 en `pp:`).
     const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
     const constancia = meta.text + (issue ? " · #" + issue : "")
-        + " — operador " + String(fromId || "?") + " · " + stamp + "\n" + result.msg;
+        + " — operador " + operator + " · " + stamp + "\n" + result.msg;
     await _degradedEdit(messageId, baseText + "\n\n✅ " + constancia, []);
     return true;
 }

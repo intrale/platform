@@ -69,6 +69,25 @@ function installFakeFetch(responder) {
 const toastOf = (calls) => calls.find(c => c.method === 'answerCallbackQuery');
 const editOf = (calls) => calls.find(c => c.method === 'editMessageText');
 
+// ─── Audit real de `human-block` (R-SEC-9) ───────────────────────────────────
+// `human-block.js` resuelve su PIPELINE_DIR desde `CLAUDE_PROJECT_DIR` en
+// require-time, así que las entries caen en el tmp. Se leen del DISCO —no de un
+// fake que devuelva el eco de su input— para que el test falle si mañana el
+// audit deja de escribirse de verdad.
+const AUDIT_DIR = path.join(TMP_DIR, '.pipeline', 'audit');
+
+function auditEntries() {
+    if (!fs.existsSync(AUDIT_DIR)) return [];
+    return fs.readdirSync(AUDIT_DIR)
+        .filter(f => f.startsWith('human-block-actions-') && f.endsWith('.jsonl'))
+        .flatMap(f => fs.readFileSync(path.join(AUDIT_DIR, f), 'utf8')
+            .split('\n').filter(Boolean).map(l => JSON.parse(l)));
+}
+
+function clearAudit() {
+    fs.rmSync(AUDIT_DIR, { recursive: true, force: true });
+}
+
 // ─── Fail-closed ─────────────────────────────────────────────────────────────
 
 test('#5923 pp:../kill-agent:1 muere en el lookup del mapa congelado, sin request saliente', async () => {
@@ -179,6 +198,68 @@ test('#5923 hb: no destructivo ejecuta contra human-block y devuelve su msg', as
     assert.ok(toast.params.text.length > 0);
     assert.match(toast.params.text, /5923/, 'el toast nombra el issue afectado');
     assert.deepEqual(editOf(calls).params.reply_markup, { inline_keyboard: [] });
+});
+
+// ─── Trazabilidad del operador (R-SEC-9) ─────────────────────────────────────
+
+test('#5923 R-SEC-9.a sin from.id es fail-closed: cero requests, cero audit, toast uniforme', async () => {
+    // Cada acción privilegiada del canal, con cada forma de "no hay identidad".
+    // El `0` entra a propósito: no hay usuario de Telegram con id 0, así que
+    // tratarlo como identidad válida sería aceptar un valor centinela.
+    for (const cbData of ['pp:include-deps:5923', 'pp:c:cancel-partial-pause', 'hb:unblock:5923', 'hb:c:devolver-definicion:5923']) {
+        for (const sinId of [undefined, null, '', 0, '   ', 'undefined']) {
+            clearAudit();
+            const calls = installFakeTgApi();
+            const requests = installFakeFetch();
+            try {
+                const handled = await handler.handleDegradedActionCallback(cbData, 'cbq-noid', MESSAGE, sinId);
+
+                assert.equal(handled, true, 'el namespace sigue siendo nuestro: no cae al fail-safe del listener');
+                assert.equal(requests.length, 0, `${cbData} con from.id=${JSON.stringify(sinId)} no puede generar request`);
+                assert.deepEqual(auditEntries(), [], 'sin identidad no se asienta NADA: un audit sin autor real es peor que ninguno');
+                assert.equal(editOf(calls), undefined, 'no se toca el mensaje');
+
+                const toast = toastOf(calls);
+                // Mismo texto que el fail-safe del listener: no le confirma al
+                // que aprieta si el callback existía o no.
+                assert.equal(toast.params.text, 'Acción inválida o expirada',
+                    'toast uniforme, sin filtrar si la acción existía');
+            } finally { requests.restore(); }
+        }
+    }
+});
+
+test('#5923 R-SEC-9.b hb: con from.id válido asienta una entry con el operador REAL', async () => {
+    clearAudit();
+    const calls = installFakeTgApi();
+    await handler.handleDegradedActionCallback('hb:unblock:5923', 'cbq-audit-1', MESSAGE, OPERADOR);
+
+    const entries = auditEntries();
+    assert.equal(entries.length, 1, 'el 3er canal a executeQuickAction deja huella, igual que los otros dos');
+    const e = entries[0];
+    assert.equal(e.from, String(OPERADOR), 'el from.id REAL, no un literal ni el bot');
+    assert.equal(e.action, 'unblock');
+    assert.equal(e.issue, 5923);
+    assert.equal(e.intent_class, 'human-block-action');
+    assert.equal(String(e.chat_id), String(CHAT_ID), 'el chat desde donde se apretó');
+    assert.equal(e.message_id, 42, 'el mensaje concreto, para reconstruir qué botón era');
+    assert.equal(e.result_status, 'authorized');
+    assert.ok(toastOf(calls), 'la acción se ejecutó igual: el audit no la bloquea');
+});
+
+test('#5923 R-SEC-9.b devolver-definicion (descarta trabajo) también queda asentado al confirmar', async () => {
+    clearAudit();
+    // 1er tap: sólo pide confirmación ⇒ no ejecuta ⇒ no audita.
+    await handler.handleDegradedActionCallback('hb:devolver-definicion:5923', 'cbq-audit-2', MESSAGE, OPERADOR);
+    assert.deepEqual(auditEntries(), [], 'pedir confirmación no es ejecutar');
+
+    // 2do tap: ejecuta ⇒ tiene que quedar registrado quién descartó el trabajo.
+    await handler.handleDegradedActionCallback('hb:c:devolver-definicion:5923', 'cbq-audit-3', MESSAGE, OPERADOR);
+    const entries = auditEntries();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].from, String(OPERADOR));
+    assert.equal(entries[0].action, 'devolver-definicion');
+    assert.equal(entries[0].issue, 5923);
 });
 
 // ─── Doble tap de las acciones destructivas (CA-17 / CA-UX-1..3) ─────────────
