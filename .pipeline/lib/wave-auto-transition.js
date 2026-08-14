@@ -38,6 +38,8 @@
 const path = require('path');
 
 const waves = require('./waves');
+// #5176 — envoltorio único de acceso al estado operativo (contrato §2).
+const operationalState = require('./operational-state');
 const auditLog = require('./audit-log');
 const recursivePromote = require('./allowlist-recursive-promote');
 const { notifyTelegram } = require('./notify-telegram');
@@ -58,10 +60,6 @@ function pipelineDir() {
 
 function wavesAuditFile() {
     return path.join(pipelineDir(), 'logs', 'waves.jsonl');
-}
-
-function partialFile() {
-    return path.join(pipelineDir(), '.partial-pause.json');
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -86,16 +84,25 @@ function safeAudit(entry) {
     }
 }
 
-/** Lee el allowlist actual de `.partial-pause.json` (defensivo, nunca lanza). */
+/**
+ * Lee el allowlist efectivo actual (defensivo, NUNCA lanza, `[]` ante ausencia).
+ *
+ * #5176 — migrado al envoltorio. Se usa `readDispatchAllowlist()` y no
+ * `getDispatchState().allowedIssues` porque estas dos lecturas alimentan un
+ * DIFF `prev` vs `next` alrededor de la transición de ola: con `.paused`
+ * presente, el estado de dispatch devuelve `allowedIssues: []` sin leer el
+ * marker (precedencia `paused > partial_pause`), y el diff registraría en el
+ * audit una remoción total seguida de un alta total que nunca ocurrieron.
+ * El halt total es un marker aparte y no altera el CONTENIDO de la allowlist
+ * (R7). Traducción fiel del comportamiento previo.
+ *
+ * El contrato "nunca lanza / `[]` ante ausencia" se preserva explícitamente: el
+ * envoltorio degrada a `null` cuando el marker no existe o es ilegible.
+ */
 function readAllowlistSafe() {
     try {
-        const fs = require('fs');
-        const p = partialFile();
-        if (!fs.existsSync(p)) return [];
-        const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
-        return Array.isArray(parsed.allowed_issues)
-            ? parsed.allowed_issues.map(normNum).filter(Boolean)
-            : [];
+        const snapshot = operationalState.readDispatchAllowlist();
+        return snapshot ? snapshot.issues.map(normNum).filter(Boolean) : [];
     } catch {
         return [];
     }

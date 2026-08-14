@@ -41,6 +41,32 @@ const {
 } = require('./commander/destructive-cooldown');
 const { redactReadOutput } = require('./commander/redact-read');
 const baseRedact = require('./redact');
+// #5176 — envoltorio único de acceso al estado operativo (contrato §2).
+const operationalState = require('./operational-state');
+
+/**
+ * Ejecuta `fn` (SÍNCRONA) haciendo que el envoltorio de estado operativo
+ * resuelva su ruta contra el `pipelineRoot` con el que se creó el dispatcher.
+ *
+ * #5176 — el dispatcher está parametrizado por `pipelineRoot`; el envoltorio
+ * resuelve la ruta por su cuenta. Cuando coinciden (SIEMPRE en producción) esto
+ * es un no-op y no se toca el entorno. Mismo mecanismo que `wave-resolver.js`
+ * ya usaba para `waves.js`, y por eso `fn` debe ser síncrona: el swap se
+ * restaura en `finally`, así que un `await` adentro liberaría el override antes
+ * de tiempo.
+ */
+function withOperationalStateRoot(pipelineRoot, fn) {
+    const current = process.env.PIPELINE_DIR_OVERRIDE || path.resolve(__dirname, '..');
+    if (!pipelineRoot || path.resolve(pipelineRoot) === path.resolve(current)) return fn();
+    const prev = process.env.PIPELINE_DIR_OVERRIDE;
+    process.env.PIPELINE_DIR_OVERRIDE = pipelineRoot;
+    try {
+        return fn();
+    } finally {
+        if (prev === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = prev;
+    }
+}
 
 // Issue #3541 — Notificación CUA fire-and-forget. Se carga lazy en
 // `createDispatcher` para no encarecer el require del módulo cuando el feature
@@ -2020,11 +2046,54 @@ function buildDefaultHandlers(ctx) {
             });
         },
 
+        // #5176 · A-1 + SEC-5 — Render de `/allowlist`.
+        //
+        // CORRECCIÓN INTENCIONAL DOCUMENTADA, no paridad literal.
+        // ------------------------------------------------------
+        // La versión previa parseaba `parsed.issues`, `parsed.allowlist` o un
+        // array pelado — tres formatos que NINGÚN escritor produce. El schema
+        // canónico que escriben `setAllowlist` / `addToAllowlist` es
+        // `allowed_issues` (`partial-pause.js`), así que con 17 issues
+        // realmente autorizados el comando respondía "allowlist vacía / nunca
+        // modificada". Es la clase de evento que termina en el operador
+        // re-autorizando a mano porque cree que se perdió el estado — el
+        // camino exacto del dispatch masivo de #5060.
+        //
+        // Migrar la lectura al envoltorio CORRIGE el defecto: es un cambio
+        // observable para el operador y se declara como tal, en vez de
+        // preservar el bug para "cumplir" la paridad de CA-8.
+        //
+        // Los TRES estados quedan separados (SEC-5), no colapsados en "vacía":
+        //   - marker ausente        → "nunca", sin pausa parcial.
+        //   - marker presente vacío → allowlist vacía explícita.
+        //   - halt total presente   → se anuncia el halt Y se sigue mostrando
+        //     el contenido real de la allowlist. Son markers separados y el
+        //     halt gana sobre la allowlist (contrato §4); leerlo por
+        //     `getDispatchState()` habría rendido `allowed_issues: []` y
+        //     reintroducido justo la confusión que SEC-5 previene (R7).
+        //
+        // `last-modified-by` sigue rindiendo `null` SIEMPRE: ningún escritor
+        // emite `modified_by` en el marker. Es un campo cosmético muerto del
+        // template; quitarlo es decisión de UX, no de esta migración.
         allowlist: async () => {
-            const partialPausePath = path.join(PIPELINE, '.partial-pause.json');
-            if (!fs.existsSync(partialPausePath)) {
+            let snapshot = null;
+            let haltTotal = false;
+            try {
+                snapshot = withOperationalStateRoot(PIPELINE, () => operationalState.readDispatchAllowlist());
+            } catch (_) { snapshot = null; }
+            // El eje "halt total" se lee por el MODO del envoltorio, que es
+            // donde vive la precedencia `paused > partial_pause > running`
+            // (contrato §4). No se deriva de la allowlist.
+            try {
+                haltTotal = withOperationalStateRoot(
+                    PIPELINE, () => operationalState.getDispatchState().mode,
+                ) === 'paused';
+            } catch (_) { haltTotal = false; }
+
+            if (!snapshot) {
                 return fillTemplate('allowlist', {
                     active: false,
+                    'full-pause': haltTotal,
                     'last-modified': 'nunca',
                     'last-modified-by': null,
                     'empty-allowlist': true,
@@ -2035,50 +2104,21 @@ function buildDefaultHandlers(ctx) {
                 });
             }
 
-            let raw;
-            try { raw = fs.readFileSync(partialPausePath, 'utf8'); }
-            catch (e) {
-                return fillTemplate('allowlist', {
-                    active: false,
-                    'last-modified': 'error de lectura',
-                    'last-modified-by': null,
-                    'empty-allowlist': true,
-                    count: 0,
-                    issues: [],
-                    'con-deps-recursivas': false,
-                    deps: [],
-                });
-            }
-            let parsed = null;
-            try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
-
-            // Soportar formatos variados: { issues: [...] }, [...], { allowlist: [...] }
-            let allowed = [];
-            if (Array.isArray(parsed)) allowed = parsed;
-            else if (parsed && Array.isArray(parsed.issues)) allowed = parsed.issues;
-            else if (parsed && Array.isArray(parsed.allowlist)) allowed = parsed.allowlist;
-
-            const stat = fs.statSync(partialPausePath);
-            const lastModified = new Date(stat.mtimeMs).toISOString();
-            const isEmpty = allowed.length === 0;
-            // Pausa parcial "activa" si el archivo existe Y tiene items en allowlist.
-            const isActive = !isEmpty;
-
-            const issues = allowed.map((item) => {
-                if (typeof item === 'number' || typeof item === 'string') {
-                    return { number: Number(item), 'title-short': '(sin metadata)', 'labels-display': null };
-                }
-                return {
-                    number: Number(item.issue || item.number || 0),
-                    'title-short': String(item.title || '(sin título)').slice(0, 60),
-                    'labels-display': item.labels ? String(item.labels).slice(0, 40) : null,
-                };
-            });
+            const issues = snapshot.issues.map((number) => ({
+                number,
+                'title-short': '(sin metadata)',
+                'labels-display': null,
+            }));
+            const isEmpty = issues.length === 0;
 
             return fillTemplate('allowlist', {
-                active: isActive,
-                'last-modified': lastModified,
-                'last-modified-by': parsed && parsed.modified_by ? String(parsed.modified_by) : null,
+                // "Activa" = hay issues autorizados en el marker. NO se deriva
+                // del halt total: son dos ejes distintos y el template los
+                // muestra por separado.
+                active: !isEmpty,
+                'full-pause': haltTotal,
+                'last-modified': snapshot.createdAt || 'desconocida',
+                'last-modified-by': null,
                 'empty-allowlist': isEmpty,
                 count: issues.length,
                 issues,

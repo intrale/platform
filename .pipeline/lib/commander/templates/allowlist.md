@@ -1,6 +1,7 @@
 *🔐 Allowlist · `.partial-pause.json`*
 
 *Estado:* {{#if active}}🟡 pausa parcial activa{{else}}🟢 sin pausa parcial{{/if}}
+{{#if full-pause}}🔴 Pausa total del pipeline activa: gana sobre la allowlist.{{/if}}
 *Última modificación:* {{last-modified}}{{#if last-modified-by}} _por {{last-modified-by}}_{{/if}}
 
 ━━━━━━━━━━━━━━━━━━━━
