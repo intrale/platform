@@ -660,6 +660,39 @@ function formatSummary(evaluation) {
 // -----------------------------------------------------------------------------
 
 /**
+ * Claves de las que `writeHealthJson` es DUEÑO. Se reescriben enteras en cada
+ * write; cualquier otra clave del documento pertenece a otro escritor y se
+ * preserva tal cual. Sacarlas del documento previo (en vez de confiar sólo en
+ * el spread) evita que un `entries` de un esquema viejo sobreviva si un payload
+ * futuro deja de emitirlo.
+ */
+const HEALTH_OWN_KEYS = Object.freeze(['ts', 'ok', 'halt', 'counts', 'entries']);
+
+/**
+ * Lee el documento previo y devuelve SÓLO las claves ajenas. Best-effort: ante
+ * archivo ausente, JSON roto o fs caído devuelve `{}` y el write sigue siendo
+ * un reemplazo. Nunca lanza — corre en el camino de boot del Pulpo.
+ *
+ * @param {string} dest
+ * @param {Object} fsImpl
+ * @returns {Object}
+ */
+function readForeignKeys(dest, fsImpl) {
+  try {
+    if (!fsImpl.existsSync(dest)) return {};
+    const parsed = JSON.parse(fsImpl.readFileSync(dest, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const ajenas = {};
+    for (const k of Object.keys(parsed)) {
+      if (!HEALTH_OWN_KEYS.includes(k)) ajenas[k] = parsed[k];
+    }
+    return ajenas;
+  } catch {
+    return {};
+  }
+}
+
+/**
  * Escribe el artefacto que consume el dashboard (#5230). Precedente:
  * `infra-health.json`.
  *
@@ -667,14 +700,26 @@ function formatSummary(evaluation) {
  * usa el `atomicWriteFile` de `./waves`: arrastraría el módulo `waves` al camino
  * de boot y agregaría superficie de falla justo donde no puede haber throws.
  *
+ * El archivo tiene MÁS DE UN ESCRITOR (#5245): `secrets-guard.js` persiste sus
+ * contadores de migración bajo la clave `migration`, y ese contador es la
+ * condición de corte que autoriza a encender `strict` en #5263. Por eso el
+ * write es un MERGE (`{ ...previo, ...payload }`) y no un reemplazo del
+ * documento entero: reemplazarlo borraba `migration` en cada boot del Pulpo, y
+ * la métrica no sobrevivía a producción aunque los tests estuvieran en verde.
+ * Cada escritor pisa SOLO sus propias claves.
+ *
  * @param {Object} evaluation
  * @param {string} targetPath
+ * @param {Object} [deps]
+ * @param {Object} [deps.fsImpl] — inyectable para test.
  * @returns {{ ok: boolean, path: string, error?: string }}
  */
-function writeHealthJson(evaluation, targetPath) {
+function writeHealthJson(evaluation, targetPath, { fsImpl = fs } = {}) {
   const dest = targetPath;
   try {
+    const previo = readForeignKeys(dest, fsImpl);
     const payload = {
+      ...previo,
       ts: evaluation.ts,
       ok: !!evaluation.ok,
       halt: !!evaluation.halt,
@@ -692,7 +737,7 @@ function writeHealthJson(evaluation, targetPath) {
         ts: e.ts,
       })),
     };
-    fs.writeFileSync(dest, JSON.stringify(payload, null, 2));
+    fsImpl.writeFileSync(dest, JSON.stringify(payload, null, 2));
     return { ok: true, path: dest };
   } catch (e) {
     return { ok: false, path: dest, error: safeText(e && e.message) };

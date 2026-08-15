@@ -736,6 +736,9 @@ module.exports = {
     resolveExistingWorktree,
     findIssueWorktree,
     countCommitsAhead,
+    // #5245 — export aditivo: `secrets-guard.js` necesita listar TODOS los
+    // worktrees y reusa este wrapper en vez de escribir otro `spawnSync`.
+    gitSpawn,
     parseWorktreeList,
     parseLsRemoteRefs,
     resolveDevBranch,

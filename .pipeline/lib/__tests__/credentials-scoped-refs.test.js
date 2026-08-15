@@ -35,7 +35,7 @@ test('CA-C2: entrega SOLO los scopes declarados del namespace', () => {
 });
 
 test('CA-C2: NO expande a otros namespaces (aislamiento de blast radius)', () => {
-  const res = cred.resolveScopedRefs('~/x.json#intrale', ['github', 'aws'], { data: FAKE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#intrale', ['github', 'aws'], { data: FAKE_DATA });
   assert.equal(res.ok, true);
   // sólo secretos de intrale, jamás de acme.
   assert.equal(res.scopes.github, 'gh-intrale-token');
@@ -44,7 +44,7 @@ test('CA-C2: NO expande a otros namespaces (aislamiento de blast radius)', () =>
 });
 
 test('CA-C2: scope declarado pero ausente en el namespace ⇒ missing (no ok)', () => {
-  const res = cred.resolveScopedRefs('~/x.json#acme', ['github', 'providers'], { data: FAKE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#acme', ['github', 'providers'], { data: FAKE_DATA });
   assert.equal(res.ok, false);
   assert.deepEqual(res.missing, ['providers']);
   assert.equal(res.scopes.github, 'gh-acme-token');
@@ -57,18 +57,18 @@ test('CA-C2: ref sin #namespace (valor literal) es rechazada', () => {
 });
 
 test('CA-C2: namespace inexistente ⇒ no ok, sin exponer datos', () => {
-  const res = cred.resolveScopedRefs('~/x.json#desconocido', ['github'], { data: FAKE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#desconocido', ['github'], { data: FAKE_DATA });
   assert.equal(res.ok, false);
   assert.deepEqual(res.scopes, {});
 });
 
 test('CA-C2: scopes vacío / no-array es rechazado', () => {
-  assert.equal(cred.resolveScopedRefs('~/x.json#intrale', [], { data: FAKE_DATA }).ok, false);
-  assert.equal(cred.resolveScopedRefs('~/x.json#intrale', null, { data: FAKE_DATA }).ok, false);
+  assert.equal(cred.resolveScopedRefs('~/.claude/secrets/credentials.json#intrale', [], { data: FAKE_DATA }).ok, false);
+  assert.equal(cred.resolveScopedRefs('~/.claude/secrets/credentials.json#intrale', null, { data: FAKE_DATA }).ok, false);
 });
 
 test('CA-C3: redactScoped devuelve SOLO nombres de scope, nunca valores', () => {
-  const res = cred.resolveScopedRefs('~/x.json#intrale', ['github', 'aws'], { data: FAKE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#intrale', ['github', 'aws'], { data: FAKE_DATA });
   const red = cred.redactScoped(res);
   assert.deepEqual(red.scopes.sort(), ['aws', 'github']);
   // el objeto redactado NO contiene ningún valor de secreto.
@@ -100,18 +100,64 @@ const DRIVE_DATA = {
 
 const DRIVE_SCOPES = ['oauth_client_id', 'oauth_client_secret', 'oauth_refresh_token', 'drive_folder_id'];
 
+// #5898 — `google_drive` es un BLOQUE GLOBAL del store, no un tenant: está en
+// `RESERVED_STORE_NAMESPACES` para que ningún producto se registre con ese
+// projectId y cobre las llaves del sistema. Su dueño legítimo —#5217— se
+// declara con `systemNamespace: true`, el opt-in explícito de primera parte.
+// Es un cambio de FORMA del call-site, no de expectativa: los asserts de abajo
+// son los mismos. El caso negativo (mismo ref, SIN flag ⇒ denegado) tiene test
+// propio más abajo, así que la deny-list sigue probada para este namespace.
+const PRIMERA_PARTE = { systemNamespace: true };
+
 test('#5217: resolveScopedRefs devuelve los 4 scopes de google_drive', () => {
-  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#google_drive', DRIVE_SCOPES, { data: DRIVE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#google_drive', DRIVE_SCOPES, { data: DRIVE_DATA, ...PRIMERA_PARTE });
   assert.equal(res.ok, true);
   assert.deepEqual(res.missing, []);
   assert.deepEqual(Object.keys(res.scopes).sort(), [...DRIVE_SCOPES].sort());
+});
+
+test('#5898: el MISMO ref de #5217 SIN el opt-in sigue denegado por la deny-list', () => {
+  // Contracara exacta del test de arriba: lo único que cambia es el flag. Si
+  // alguien "arreglara" el opt-in sacando `google_drive` de la deny-list, este
+  // test se pone rojo — que es el punto (D1 · A01/CWE-863).
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#google_drive', DRIVE_SCOPES, { data: DRIVE_DATA });
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'namespace_reservado');
+  assert.deepEqual(res.scopes, {});
+});
+
+test('#5898: el opt-in exige `true` estricto — un truthy accidental no alcanza', () => {
+  for (const valor of ['true', 1, {}, [], 'si']) {
+    const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#google_drive', DRIVE_SCOPES, { data: DRIVE_DATA, systemNamespace: valor });
+    assert.equal(res.ok, false, `systemNamespace=${JSON.stringify(valor)} no debe saltear el control`);
+    assert.equal(res.code, 'namespace_reservado');
+  }
+});
+
+test('#5898: el opt-in saltea SÓLO la deny-list — los otros pasos siguen corriendo', () => {
+  // Path fuera del store: el flag no lo salva (CA-4 intacto).
+  const fuera = cred.resolveScopedRefs('~/x.json#google_drive', DRIVE_SCOPES, { data: DRIVE_DATA, ...PRIMERA_PARTE });
+  assert.equal(fuera.ok, false);
+  assert.equal(fuera.code, 'path_fuera_del_store');
+
+  // Namespace inexistente: el flag no lo inventa.
+  const ausente = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#google_drive', DRIVE_SCOPES, { data: { telegram: { bot_token: 'x' } }, ...PRIMERA_PARTE });
+  assert.equal(ausente.ok, false);
+  assert.equal(ausente.code, 'namespace_inexistente');
+
+  // Clave interna de JS: el flag no la habilita (CA-5 intacto).
+  const proto = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#__proto__', DRIVE_SCOPES, { data: DRIVE_DATA, ...PRIMERA_PARTE });
+  assert.equal(proto.ok, false);
+  assert.equal(proto.code, 'namespace_invalido');
 });
 
 test('#5217: un scope con placeholder cae en missing (no se devuelve vacío)', () => {
   const withPlaceholder = {
     google_drive: { ...DRIVE_DATA.google_drive, oauth_refresh_token: 'MOVED_TO_HOME_DOT_CLAUDE_SECRETS' },
   };
-  const res = cred.resolveScopedRefs('~/x.json#google_drive', DRIVE_SCOPES, { data: withPlaceholder });
+  // Path anclado (R-1 de #5898: cambio mecánico del literal, ningún assert se
+  // toca) + opt-in de primera parte.
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#google_drive', DRIVE_SCOPES, { data: withPlaceholder, ...PRIMERA_PARTE });
   assert.equal(res.ok, false);
   assert.deepEqual(res.missing, ['oauth_refresh_token']);
   // El consumidor debe poder caer al siguiente nivel de la cadena: el scope
@@ -153,7 +199,7 @@ test('A-1: un ref con path absoluto estilo Windows es rechazado SIN excepción',
 test('A-1: la mitigación es ref en forma tilde + canonicalPath explícito', () => {
   // Forma correcta: el ref se arma SIEMPRE con `~`, y el path real del SO viaja
   // por opts.canonicalPath, que resolveScopedRefs prioriza sobre expandHome().
-  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#google_drive', DRIVE_SCOPES, { data: DRIVE_DATA });
+  const res = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#google_drive', DRIVE_SCOPES, { data: DRIVE_DATA, ...PRIMERA_PARTE });
   assert.equal(res.ok, true);
   assert.equal(res.namespace, 'google_drive');
 
@@ -165,9 +211,16 @@ test('A-1: la mitigación es ref en forma tilde + canonicalPath explícito', () 
   const file = path.join(tmp, 'credentials.json');
   fs.writeFileSync(file, JSON.stringify(DRIVE_DATA), 'utf8');
   try {
-    const viaOverride = cred.resolveScopedRefs('~/otro/lugar.json#google_drive', DRIVE_SCOPES, { canonicalPath: file });
+    // El ref va SIEMPRE en la forma anclada (#5898 · CA-4: `parsed.path` es lo
+    // único que sale del descriptor, así que su ancla no se negocia). Lo que
+    // este assert prueba sigue siendo lo mismo que probaba antes: `canonicalPath`
+    // gana sobre `expandHome(parsed.path)` — se lee `file`, en tmpdir, y no el
+    // store real del host.
+    const viaOverride = cred.resolveScopedRefs('~/.claude/secrets/credentials.json#google_drive', DRIVE_SCOPES, { canonicalPath: file, ...PRIMERA_PARTE });
     assert.equal(viaOverride.ok, true);
     assert.deepEqual(viaOverride.missing, []);
+    assert.equal(viaOverride.scopes.oauth_refresh_token, DRIVE_DATA.google_drive.oauth_refresh_token,
+      'los valores salieron del store inyectado por canonicalPath, no de otro archivo');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

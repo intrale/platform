@@ -19,6 +19,8 @@
 
 // #5172 — `fs` quedó sin uso: la única lectura de disco de este archivo era el
 // `readFileSync` de config.yaml, que ahora hace el punto único.
+// #5864 — vuelve a usarse: encolar la propagación del label de gate QA al PR.
+const fs = require('fs');
 const { spawnSync } = require('child_process');
 const path = require('path');
 
@@ -27,6 +29,9 @@ const classifier = require('./lib/delivery/change-classifier');
 const commitBuilder = require('./lib/delivery/commit-builder');
 const prBuilder = require('./lib/delivery/pr-builder');
 const operatorSignature = require('./lib/operator-signature');
+const gateLabelReconciler = require('./lib/gate-label-reconciler');
+// #5864 SEC-2 — procedencia del PR destino (defensa contra PRs de fork).
+const prProvenance = require('./lib/pr-provenance');
 
 // ---- #4575 · GATE 2 defense-in-depth (revalidación firma↔HEAD) --------------
 //
@@ -148,6 +153,94 @@ function gh(ghArgs, opts = {}) {
     stdout: (result.stdout || '').trim(),
     stderr: (result.stderr || '').trim(),
   };
+}
+
+// ---- #5864 · Propagación del label de gate QA issue → PR -------------------
+//
+// El ciclo de QA aplica `qa:passed`/`qa:failed`/`qa:pending` sobre el ISSUE, y
+// el gate previo al merge los busca en el PR. Acá se cierra ese tramo: es el
+// único punto del pipeline donde el PR ya existe (lo acabamos de crear/resolver)
+// y todavía no se mergeó.
+//
+// Función PURA (sin fs/gh) para que la decisión sea testeable. Reglas:
+//   - SEC-1: el vínculo issue↔PR lo establece la RAMA (`agent/<issue>-…`), nunca
+//     el cuerpo del PR. Si la rama no corresponde al issue, no se propaga.
+//   - SEC-2/fail-closed: ante ausencia o conflicto de labels de gate en el
+//     issue no se escribe nada y queda el motivo. Nunca se infiere aprobación.
+//   - SEC-3: unidireccional. El issue es la autoridad; el PR es sólo destino.
+//   - Se emite UNA sola orden (sin `gate_reconciler`) para que el worker de
+//     `servicio-github` relea los labels frescos DEL PR y haga remove-then-add
+//     sincrónico (exclusión mutua garantizada, sin race de orden en la cola).
+function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prHead, repo } = {}) {
+  const issueNum = parseInt(issue, 10);
+  if (!Number.isInteger(issueNum) || issueNum <= 0) return { ok: false, reason: 'sin_issue' };
+  const pr = parseInt(prNumber, 10);
+  if (!Number.isInteger(pr) || pr <= 0) return { ok: false, reason: 'pr_no_resuelto' };
+  if (typeof branch !== 'string' || !branch.startsWith(`agent/${issueNum}-`)) {
+    return { ok: false, reason: 'rama_no_corresponde_al_issue', branch: branch || null };
+  }
+  // SEC-2 — el chequeo de arriba valida la rama LOCAL; éste valida el PR
+  // DESTINO. El repo es público y la rama `agent/<issue>-<skill>` es
+  // predecible, así que un fork puede abrir un PR con esa misma rama y cobrar
+  // el `qa:passed` del issue. Fail-closed ante falta de datos.
+  const prov = prProvenance.checkPrProvenance(prHead, { branch, repo });
+  if (!prov.ok) return { ok: false, reason: prov.reason, detail: prov.detail || null };
+  if (prHead.number !== undefined && parseInt(prHead.number, 10) !== pr) {
+    return { ok: false, reason: 'procedencia_desconocida', detail: `pr consultado #${prHead.number} ≠ destino #${pr}` };
+  }
+  const gates = [...new Set(
+    (Array.isArray(issueLabels) ? issueLabels : [])
+      .map((l) => (l && typeof l === 'object' && l.name) ? String(l.name) : String(l))
+      .filter((l) => gateLabelReconciler.isGateLabel(l)),
+  )];
+  if (gates.length === 0) return { ok: false, reason: 'issue_sin_label_de_gate' };
+  if (gates.length > 1) return { ok: false, reason: 'labels_de_gate_en_conflicto', labels: gates };
+  return { ok: true, action: { action: 'label', issue: pr, target: 'pr', label: gates[0] } };
+}
+
+// Encola la propagación. NUNCA es fatal: un problema acá no puede tumbar la
+// entrega (el PR ya existe y el label ausente mantiene cerrado el gate).
+function propagateGateLabelToPr({ issue, prNumber, branch, repo, pipelineDir }) {
+  try {
+    if (!issue) {
+      console.log('→ gate QA: sin issue asociado, no se propaga');
+      return null;
+    }
+    const view = gh(['issue', 'view', String(issue), '--repo', repo, '--json', 'labels']);
+    if (!view.ok) {
+      console.log(`→ gate QA: no se propaga (fetch_failed: ${view.stderr || `exit ${view.status}`})`);
+      return null;
+    }
+    let issueLabels = [];
+    try { issueLabels = JSON.parse(view.stdout || '{}').labels || []; }
+    catch (e) {
+      console.log(`→ gate QA: no se propaga (respuesta ilegible: ${e.message})`);
+      return null;
+    }
+    // SEC-2 — datos de procedencia del PR destino, leídos justo antes de
+    // decidir. Si `gh` falla, `prHead` queda null y la decisión es fail-closed.
+    let prHead = null;
+    if (prNumber) {
+      const prView = gh(['pr', 'view', String(prNumber), '--repo', repo, '--json', prProvenance.PR_PROVENANCE_FIELDS.join(',')]);
+      if (prView.ok) {
+        try { prHead = JSON.parse(prView.stdout || 'null'); } catch { prHead = null; }
+      }
+    }
+    const res = buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prHead, repo });
+    if (!res.ok) {
+      console.log(`→ gate QA: no se propaga al PR (${res.reason}${res.detail ? `: ${res.detail}` : ''})`);
+      return null;
+    }
+    const queueDir = path.join(pipelineDir || __dirname, 'servicios', 'github', 'pendiente');
+    fs.mkdirSync(queueDir, { recursive: true });
+    const file = path.join(queueDir, `${issue}-delivery-pr-${res.action.issue}-${Date.now()}.json`);
+    fs.writeFileSync(file, JSON.stringify(res.action));
+    console.log(`→ gate QA: encolado ${res.action.label} para el PR #${res.action.issue} (desde el issue #${issue})`);
+    return file;
+  } catch (e) {
+    console.log(`→ gate QA: no se propaga (error: ${e.message})`);
+    return null;
+  }
 }
 
 // Lee body + comments del issue. Devuelve { body, comments: [{body}] }.
@@ -293,7 +386,7 @@ function main() {
     '--repo', args.repo,
     '--head', snap.branch,
     '--state', 'open',
-    '--json', 'number,url',
+    '--json', prProvenance.PR_PROVENANCE_FIELDS.join(','),
   ]);
 
   let prUrl = null;
@@ -301,9 +394,12 @@ function main() {
   if (existing.ok && existing.stdout && existing.stdout !== '[]') {
     try {
       const list = JSON.parse(existing.stdout);
-      if (list.length > 0) {
-        prUrl = list[0].url;
-        prNumber = list[0].number;
+      // SEC-2 — `--head` no filtra por owner: descartar PRs de fork antes de
+      // adoptar uno como "el PR de esta entrega".
+      for (const p of (Array.isArray(list) ? list : [])) {
+        const prov = prProvenance.checkPrProvenance(p, { branch: snap.branch, repo: args.repo });
+        if (prov.ok) { prUrl = p.url; prNumber = p.number; break; }
+        console.log(`→ PR #${(p && p.number) || '?'} descartado por procedencia (${prov.reason}${prov.detail ? `: ${prov.detail}` : ''})`);
       }
     } catch {}
   }
@@ -333,6 +429,16 @@ function main() {
     console.log(`→ PR ya existe: ${prUrl}`);
   }
 
+  // 8. #5864 — el label de gate QA viaja del issue al PR, sin intervención
+  //    humana. Único punto del flujo donde el PR ya existe y no se mergeó.
+  propagateGateLabelToPr({
+    issue: args.issue,
+    prNumber,
+    branch: snap.branch,
+    repo: args.repo,
+    pipelineDir: __dirname,
+  });
+
   console.log(`\n✅ Delivery completo`);
   console.log(`   PR:     ${prUrl}`);
   console.log(`   Number: ${prNumber || 'N/A'}`);
@@ -352,6 +458,9 @@ module.exports = {
   parseArgs,
   fetchIssue,
   main,
+  // #5864 — propagación del label de gate QA issue → PR (exportados para tests)
+  buildPrGatePropagation,
+  propagateGateLabelToPr,
   // #4575 — GATE 2 defense-in-depth (exportados para tests)
   checkOperatorSignatureGate,
   resolveAuthorizedSigners,

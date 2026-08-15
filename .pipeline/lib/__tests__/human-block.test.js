@@ -610,8 +610,16 @@ const fakeActionToken = {
     sign: ({ issue, action }) => `v1.${action}-${issue}.sig`,
 };
 
+// #5923 — el modo `url` ahora exige dashboard https público Y habilitado en el
+// allowlist de hosts. Estas opts reproducen ese camino feliz.
+const URL_MODE = {
+    actionToken: fakeActionToken,
+    dashboardUrl: 'https://dashboard.intrale.com',
+    hostAllowlist: ['dashboard.intrale.com'],
+};
+
 test('#4068 buildBlockedActionMarkup devuelve inline_keyboard 2×2 con exactamente los 4 botones', () => {
-    const markup = hb.buildBlockedActionMarkup(4068, { actionToken: fakeActionToken, dashboardUrl: 'http://localhost:3200' });
+    const markup = hb.buildBlockedActionMarkup(4068, URL_MODE);
     assert.ok(markup && Array.isArray(markup.inline_keyboard), 'devuelve inline_keyboard');
     const buttons = markup.inline_keyboard.flat();
     assert.equal(buttons.length, 4, 'exactamente 4 botones');
@@ -629,15 +637,87 @@ test('#4068 buildBlockedActionMarkup devuelve inline_keyboard 2×2 con exactamen
     assert.ok(!buttons.some(b => /action=pausar/.test(b.url)), 'no hay botón pausar');
 });
 
-test('#4068 buildBlockedActionMarkup devuelve undefined si el token no se puede firmar (degradación)', () => {
-    const brokenToken = { sign: () => { throw new Error('sin secreto'); } };
-    const markup = hb.buildBlockedActionMarkup(10, { actionToken: brokenToken });
-    assert.equal(markup, undefined);
-});
-
 test('#4068 buildBlockedActionMarkup rechaza issue inválido', () => {
     assert.equal(hb.buildBlockedActionMarkup(0, { actionToken: fakeActionToken }), undefined);
     assert.equal(hb.buildBlockedActionMarkup('x', { actionToken: fakeActionToken }), undefined);
+    assert.equal(hb.buildBlockedActionMarkup(1000000, { actionToken: fakeActionToken }), undefined);
+});
+
+// =============================================================================
+// #5923 — Degradación de `url` a `callback_data` cuando el dashboard no es
+// público. Antes de esta issue el markup se emitía SIEMPRE con `url` a
+// `localhost:3200`; la Bot API rechazaba el saliente entero y la alerta al
+// operador NUNCA llegaba.
+// =============================================================================
+
+test('#5923 dashboard no público ⇒ callback_data y actionToken.sign NO invocado (CA-7)', () => {
+    let firmas = 0;
+    const espia = { sign: (args) => { firmas++; return fakeActionToken.sign(args); } };
+    const markup = hb.buildBlockedActionMarkup(5923, {
+        actionToken: espia, dashboardUrl: 'http://localhost:3200', hostAllowlist: [],
+    });
+    assert.equal(firmas, 0, 'firmar una capability que no se va a usar es superficie muerta');
+    const buttons = markup.inline_keyboard.flat();
+    assert.equal(buttons.length, 4);
+    for (const b of buttons) {
+        assert.equal(b.url, undefined, 'ningún botón puede tener campo url');
+        assert.match(b.callback_data, /^hb:[a-z-]+:5923$/);
+    }
+});
+
+test('#5923 en el camino degradado no se filtra ni el token ni la base URL (R1.3)', () => {
+    const markup = hb.buildBlockedActionMarkup(5923, {
+        actionToken: fakeActionToken, dashboardUrl: 'http://localhost:3200', hostAllowlist: [],
+    });
+    const blob = JSON.stringify(markup);
+    assert.ok(!blob.includes('token'), 'no aparece el token ni el parámetro');
+    assert.ok(!blob.includes('localhost'), 'no aparece la base URL');
+    assert.ok(!blob.includes('3200'), 'no aparece el puerto');
+    assert.ok(!blob.includes('.sig'), 'no aparece material de firma');
+});
+
+test('#5923 el prefijo de callback es el mismo que rutea el callback-handler', () => {
+    assert.equal(hb.HUMAN_BLOCK_CALLBACK_PREFIX, 'hb');
+    const markup = hb.buildBlockedActionMarkup(1, { dashboardUrl: 'http://localhost:3200', hostAllowlist: [] });
+    for (const b of markup.inline_keyboard.flat()) {
+        assert.ok(b.callback_data.startsWith(hb.HUMAN_BLOCK_CALLBACK_PREFIX + ':'));
+        assert.ok(Buffer.byteLength(b.callback_data, 'utf8') <= 64, 'límite de la Bot API');
+    }
+});
+
+test('#5923 sin módulo de token utilizable igual se entregan botones (antes se perdían)', () => {
+    // Antes de #5923 un token que no se puede firmar dejaba el mensaje SIN
+    // acciones. Ahora degrada a callback_data, que no necesita token.
+    const roto = { sign: () => { throw new Error('sin secreto'); } };
+    const markup = hb.buildBlockedActionMarkup(10, {
+        actionToken: roto, dashboardUrl: 'https://dashboard.intrale.com', hostAllowlist: ['dashboard.intrale.com'],
+    });
+    assert.ok(markup, 'la alerta conserva sus acciones');
+    assert.equal(markup.inline_keyboard.flat().length, 4);
+    for (const b of markup.inline_keyboard.flat()) assert.equal(b.url, undefined);
+});
+
+test('#5923 executeQuickAction es idempotente ⇒ el 2do tap del mismo botón es no-op (anti-replay)', () => {
+    // El `callback_data` no tiene nonce ni TTL y el mensaje vive para siempre en
+    // el chat: el anti-replay tiene que ser server-side.
+    const blocked = new Set([5923]);
+    const h = makeExecDeps(blocked);
+    const primero = hb.executeQuickAction({ issue: 5923, action: 'unblock', deps: h.deps });
+    const segundo = hb.executeQuickAction({ issue: 5923, action: 'unblock', deps: h.deps });
+    assert.equal(primero.ok, true);
+    assert.equal(primero.reactivated, 1);
+    assert.equal(segundo.ok, true, 'no explota');
+    assert.equal(segundo.noop, true, 'el segundo tap no vuelve a mutar');
+    assert.match(segundo.msg, /ya no estaba bloqueado/);
+});
+
+test('#5923 executeQuickAction rechaza acción e issue fuera de contrato (fail-closed)', () => {
+    const h = makeExecDeps(new Set([1]));
+    assert.equal(hb.executeQuickAction({ issue: 1, action: 'kill-agent', deps: h.deps }).ok, false);
+    assert.equal(hb.executeQuickAction({ issue: 1, action: '../unblock', deps: h.deps }).ok, false);
+    assert.equal(hb.executeQuickAction({ issue: 0, action: 'unblock', deps: h.deps }).ok, false);
+    assert.equal(hb.executeQuickAction({ issue: 1000000, action: 'unblock', deps: h.deps }).ok, false);
+    assert.equal(h.enqueued.length, 0, 'ningún efecto lateral encolado');
 });
 
 test('#4068 buildBlockedSummaryMarkdown NO cambió su firma (CA-Q1, no-regresión)', () => {
