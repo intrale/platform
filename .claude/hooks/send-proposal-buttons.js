@@ -13,20 +13,28 @@ const path = require("path");
 
 const { registerMessage } = require("./telegram-message-registry");
 
+// #5245 CA-12 — require cruzado FATAL (sin try/catch): es el camino de
+// credenciales, no telemetría.
+const { loadTelegramSecrets } = require("../../.pipeline/lib/telegram-secrets");
+
 const HOOKS_DIR = __dirname;
-const CONFIG_FILE = path.join(HOOKS_DIR, "telegram-config.json");
 const PROPOSALS_FILE = path.join(HOOKS_DIR, "planner-proposals.json");
 const LOG_FILE = path.join(HOOKS_DIR, "hook-debug.log");
 
-let _tgCfg;
+// Antes esto leía `telegram-config.json` directo: el archivo existe y es JSON
+// válido, así que el catch nunca disparaba, el script posteaba con un token
+// placeholder, se comía el 404 de la API de Telegram y salía con código 0.
+// Un éxito aparente: el operador nunca recibía los botones y nadie se enteraba.
+// Acá el `exit(1)` sí corresponde — es un CLI one-shot del planner, no un
+// daemon bajo watchdog (no aplica la no-regresión de #5073).
+let BOT_TOKEN = "";
+let CHAT_ID = "";
 try {
-    _tgCfg = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+    ({ bot_token: BOT_TOKEN, chat_id: CHAT_ID } = loadTelegramSecrets());
 } catch (e) {
-    console.error("Error leyendo telegram-config.json:", e.message);
+    console.error("sin credenciales Telegram: " + e.message);
     process.exit(1);
 }
-const BOT_TOKEN = _tgCfg.bot_token;
-const CHAT_ID = _tgCfg.chat_id;
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 

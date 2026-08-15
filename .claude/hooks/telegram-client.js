@@ -7,6 +7,12 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const { sanitizeHtml } = require("./telegram-sanitizer");
+// #5245 CA-12/CA-12a — chokepoint unico de credenciales Telegram.
+// El require cruzado hacia `.pipeline/lib/` es FATAL a proposito: sin try/catch
+// ni fallback. Un fallback silencioso acá reproduce exactamente el modo de falla
+// que esta historia viene a matar (degradar sin ruido a la lectura in-repo).
+const { loadTelegramSecrets } = require("../../.pipeline/lib/telegram-secrets");
+const { assertSecretOrigin } = require("../../.pipeline/lib/secrets-guard");
 
 const HOOKS_DIR = __dirname;
 const CONFIG_FILE = path.join(HOOKS_DIR, "telegram-config.json");
@@ -21,13 +27,65 @@ const TG_MSG_MAX = 4096;
 
 let _config = null;
 
+// Claves de secreto que todavía viven dentro del archivo in-repo (dual: config
+// operativa versionada + credenciales). El dot-path es el del manifiesto
+// (#5242), que es lo que le permite al guard distinguir `quiet_hours` (lectura
+// in-repo legítima) de `bot_token` (prohibida).
+const IN_REPO_SECRET_KEYS = Object.freeze([
+    ["bot_token", "telegram.bot_token"],
+    ["chat_id", "telegram.chat_id"],
+    ["openai_api_key", "providers.openai.api_key"],
+    ["anthropic_api_key", "providers.anthropic.api_key"],
+]);
+
+/**
+ * Config de Telegram.
+ *
+ * #5245 (D-3): las claves OPERATIVAS se siguen leyendo del archivo in-repo —
+ * están versionadas y tienen consumidores vivos— pero los SECRETOS salen
+ * siempre del chokepoint, que los pisa en el spread. Así el archivo in-repo no
+ * puede volver a ser fuente de `bot_token` ni por accidente.
+ *
+ * El degradado silencioso se preserva a propósito: `loadTelegramSecrets()`
+ * lanza si no encuentra credenciales, y hacer eso fatal convertiría "falta una
+ * credencial" en "el pipeline dejó de notificar", que es el riesgo principal
+ * declarado de la historia.
+ */
 function getConfig() {
     if (_config) return _config;
+
+    let operational = {};
     try {
-        _config = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+        const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+        // El archivo es dual: si además de la config operativa trae material de
+        // secreto, esta lectura se declara al guard (en `warn` avisa y cuenta;
+        // en `strict` aborta esta rama y las claves operativas degradan a {},
+        // pero los secretos llegan igual por el chokepoint → sigue notificando).
+        for (const [fileKey, dotPath] of IN_REPO_SECRET_KEYS) {
+            if (typeof raw[fileKey] === "string" && raw[fileKey].trim()) {
+                assertSecretOrigin(CONFIG_FILE, {
+                    op: "read",
+                    secret: dotPath,
+                    site: "telegram-client.getConfig",
+                });
+            }
+        }
+        operational = raw;
     } catch (e) {
-        _config = { bot_token: "", chat_id: "" };
+        operational = {};
     }
+
+    let bot_token = "";
+    let chat_id = "";
+    try {
+        const secrets = loadTelegramSecrets({ legacyConfigPath: CONFIG_FILE, log });
+        bot_token = secrets.bot_token || "";
+        chat_id = secrets.chat_id ? String(secrets.chat_id) : "";
+    } catch (e) {
+        log("sin credenciales Telegram: " + e.message);
+    }
+
+    _config = { ...operational, bot_token, chat_id };
     return _config;
 }
 

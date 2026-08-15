@@ -582,3 +582,119 @@ test('writeCanonicalPaths rechaza un store que es un array (no un objeto)', () =
         /no es un JSON de objeto válido/,
     );
 });
+
+// =============================================================================
+// #5245 · CA-10 — Enganche del guard de origen en el camino de ESCRITURA.
+//
+// `writeCanonicalPaths` es el punto de escritura único del store canónico, así
+// que el guard va acá y no en un call site suelto: cubre al setup OAuth de
+// Drive, a `rotateKey` y a cualquier productor que se sume después.
+// =============================================================================
+
+function fakeGuard() {
+    const calls = [];
+    return {
+        calls,
+        assertSecretOrigin(filePath, opts) {
+            calls.push({ filePath, ...opts });
+            return { ok: true, origin: 'outside', counted: false, strict: false };
+        },
+    };
+}
+
+test('writeCanonicalPaths consulta el guard de origen antes de escribir, con op:write', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'credentials.json');
+    const guard = fakeGuard();
+
+    secrets.writeCanonicalPaths(
+        { 'google_drive.oauth_client_secret': 'fake-secret' },
+        { secretsPath: file, backupDir: path.join(dir, 'backups'), guardImpl: guard },
+    );
+
+    assert.equal(guard.calls.length, 1);
+    assert.equal(guard.calls[0].filePath, file);
+    assert.equal(guard.calls[0].op, 'write');
+    assert.equal(guard.calls[0].secret, 'google_drive.oauth_client_secret');
+    assert.equal(guard.calls[0].site, 'secrets-rw.writeCanonicalPaths');
+});
+
+test('writeCanonicalPaths consulta el guard por CADA dot-path del update', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'credentials.json');
+    const guard = fakeGuard();
+
+    secrets.writeCanonicalPaths(
+        {
+            'google_drive.oauth_client_id': 'id',
+            'google_drive.oauth_client_secret': 'secret',
+            'google_drive.refresh_token': 'refresh',
+        },
+        { secretsPath: file, backupDir: path.join(dir, 'backups'), guardImpl: guard },
+    );
+
+    assert.equal(guard.calls.length, 3);
+    assert.deepEqual(
+        guard.calls.map((c) => c.secret).sort(),
+        [
+            'google_drive.oauth_client_id',
+            'google_drive.oauth_client_secret',
+            'google_drive.refresh_token',
+        ],
+    );
+    // Todas con op:'write' — ninguna se cuela como lectura.
+    assert.ok(guard.calls.every((c) => c.op === 'write'));
+});
+
+test('un rechazo del guard aborta la escritura SIN dejar efectos parciales en el filesystem', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'sub', 'credentials.json');
+    const err = new Error('origen in-repo prohibido');
+    const guard = {
+        assertSecretOrigin() { throw err; },
+    };
+
+    assert.throws(
+        () => secrets.writeCanonicalPaths(
+            { 'google_drive.oauth_client_secret': 'fake-secret' },
+            { secretsPath: file, backupDir: path.join(dir, 'backups'), guardImpl: guard },
+        ),
+        /origen in-repo prohibido/,
+    );
+
+    // Fail-closed de verdad: ni el archivo, ni su directorio, ni el backup.
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.existsSync(path.join(dir, 'sub')), false);
+    assert.equal(fs.existsSync(path.join(dir, 'backups')), false);
+});
+
+test('el guard corre DESPUES de validar dot-paths: un path invalido no llega al guard', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'credentials.json');
+    const guard = fakeGuard();
+
+    assert.throws(
+        () => secrets.writeCanonicalPaths(
+            { '__proto__.polluted': 'x' },
+            { secretsPath: file, backupDir: path.join(dir, 'backups'), guardImpl: guard },
+        ),
+    );
+
+    assert.equal(guard.calls.length, 0);
+});
+
+test('sin guardImpl inyectado, writeCanonicalPaths usa el guard real y sigue escribiendo', () => {
+    // Destino en tmpdir => origen 'outside' => el guard deja pasar. Verifica que
+    // el enganche real no rompe la escritura legitima del store canonico.
+    const dir = tmpDir();
+    const file = path.join(dir, 'credentials.json');
+
+    const res = secrets.writeCanonicalPaths(
+        { 'google_drive.oauth_client_id': 'fake-id' },
+        { secretsPath: file, backupDir: path.join(dir, 'backups') },
+    );
+
+    assert.equal(res.ok, true);
+    const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(written.google_drive.oauth_client_id, 'fake-id');
+});

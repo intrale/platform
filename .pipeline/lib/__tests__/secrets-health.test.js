@@ -1329,3 +1329,158 @@ test('rev-1: sin pipelineDir no hay reporte previo con que comparar, asi que se 
   assert.equal(res.notified, true);
   assert.equal(enviados.length, 1);
 });
+
+// -----------------------------------------------------------------------------
+// #5245 rev-2 — Co-propiedad de `secrets-health.json`.
+//
+// El archivo tiene DOS escritores: este modulo (#5243, en cada boot del Pulpo) y
+// `secrets-guard.js` (#5245, al salir cada proceso, bajo la clave `migration`).
+// Ese contador ES la condicion de corte de CA-11 y es lo unico que autoriza a
+// encender `strict` en #5263. La direccion guard-no-pisa-a-#5243 ya estaba
+// cubierta en `secrets-guard.test.js`; lo que sigue cubre la INVERSA, que era la
+// que rompia en produccion: el write de #5243 borraba `migration` entero.
+// -----------------------------------------------------------------------------
+
+const guard = require('../secrets-guard');
+
+/** Evaluación sana (`ok: true`): en el store Y cableada al ambiente. */
+function evaluacionMinima() {
+  return sh.evaluate(
+    cargaFake({ hydrated: ['TELEGRAM_BOT_TOKEN'] }),
+    manifiestoFake([entrada({ name: 'telegram.bot_token' })]),
+    { present: ['telegram.bot_token'], placeholder: [], absent: [] },
+  );
+}
+
+test('#5245: writeHealthJson NO pisa el bloque `migration` que escribe secrets-guard', () => {
+  const dir = tmpDir('copropiedad');
+  const jsonPath = path.join(dir, 'secrets-health.json');
+
+  // 1) El guard persiste la metrica de corte (escritores reales, sin mocks).
+  const flush = guard.flushCounters({
+    targetPath: jsonPath,
+    counters: {
+      in_repo_reads: 4,
+      distinct_sources: 2,
+      instrumented_sites: 2,
+      undetermined_origins: 0,
+    },
+    uninstrumentedReaders: 46,
+  });
+  assert.equal(flush.ok, true);
+
+  // 2) Boot del Pulpo: el health-check de #5243 escribe lo suyo.
+  const res = sh.writeHealthJson(evaluacionMinima(), jsonPath);
+  assert.equal(res.ok, true);
+
+  // 3) La metrica de corte sobrevive intacta.
+  const doc = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  const m = doc[guard.HEALTH_MIGRATION_KEY];
+  assert.ok(m, 'el bloque `migration` sobrevive al write de #5243');
+  assert.equal(m.in_repo_reads, 4);
+  assert.equal(m.distinct_sources, 2);
+  assert.equal(m.uninstrumented_readers, 46, 'el denominador tambien sobrevive');
+
+  // Y lo propio de #5243 quedo escrito igual.
+  assert.equal(typeof doc.ts, 'string');
+  assert.equal(doc.ok, true);
+  assert.ok(Array.isArray(doc.entries));
+});
+
+test('#5245: N boots seguidos del Pulpo no degradan la metrica (no es suerte del primer write)', () => {
+  const dir = tmpDir('copropiedad-n');
+  const jsonPath = path.join(dir, 'secrets-health.json');
+  guard.flushCounters({
+    targetPath: jsonPath,
+    counters: { in_repo_reads: 7, distinct_sources: 3, instrumented_sites: 2, undetermined_origins: 1 },
+    uninstrumentedReaders: 46,
+  });
+
+  for (let i = 0; i < 5; i++) sh.writeHealthJson(evaluacionMinima(), jsonPath);
+
+  const m = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))[guard.HEALTH_MIGRATION_KEY];
+  assert.equal(m.in_repo_reads, 7);
+  assert.equal(m.undetermined_origins, 1);
+  assert.equal(m.uninstrumented_readers, 46);
+});
+
+test('#5245: el ciclo completo guard -> #5243 -> guard acumula, no reinicia', () => {
+  const dir = tmpDir('copropiedad-ciclo');
+  const jsonPath = path.join(dir, 'secrets-health.json');
+  const counters = { in_repo_reads: 2, distinct_sources: 1, instrumented_sites: 2, undetermined_origins: 0 };
+
+  guard.flushCounters({ targetPath: jsonPath, counters, uninstrumentedReaders: 46 });
+  sh.writeHealthJson(evaluacionMinima(), jsonPath);   // boot del Pulpo en el medio
+  guard.flushCounters({ targetPath: jsonPath, counters });  // otro proceso suma lo suyo
+
+  const m = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))[guard.HEALTH_MIGRATION_KEY];
+  assert.equal(m.in_repo_reads, 4, 'acumulado: el write de #5243 no reinicio el contador');
+  assert.equal(m.uninstrumented_readers, 46, 'el denominador no volvio a -1');
+});
+
+test('#5245: writeHealthJson reescribe SUS claves enteras, sin arrastrar esquema viejo', () => {
+  const dir = tmpDir('copropiedad-own');
+  const jsonPath = path.join(dir, 'secrets-health.json');
+  // Documento previo con `entries` de 2 elementos + una clave ajena.
+  fs.writeFileSync(jsonPath, JSON.stringify({
+    ts: 'viejo', ok: false, halt: true,
+    counts: { ok: 99, missing: 99, chain_broken: 99 },
+    entries: [{ name: 'zombi.uno' }, { name: 'zombi.dos' }],
+    migration: { in_repo_reads: 1 },
+  }));
+
+  sh.writeHealthJson(evaluacionMinima(), jsonPath);
+
+  const doc = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  assert.equal(doc.halt, false, 'las claves propias se pisan, no se mergean');
+  assert.notEqual(doc.ts, 'viejo');
+  assert.equal(doc.counts.missing, 0);
+  assert.equal(doc.entries.length, 1, 'ninguna entry zombi del esquema previo');
+  assert.deepEqual(doc.migration, { in_repo_reads: 1 }, 'la clave ajena intacta');
+});
+
+test('#5245: un JSON previo corrupto no tumba el write ni el boot del Pulpo', () => {
+  const dir = tmpDir('copropiedad-corrupto');
+  const jsonPath = path.join(dir, 'secrets-health.json');
+  fs.writeFileSync(jsonPath, '{ esto no es json');
+
+  const res = sh.writeHealthJson(evaluacionMinima(), jsonPath);
+  assert.equal(res.ok, true, 'degrada a reemplazo, no propaga el parse error');
+  assert.doesNotThrow(() => JSON.parse(fs.readFileSync(jsonPath, 'utf8')));
+});
+
+test('#5245: un fs de lectura roto degrada a reemplazo y NO lanza', () => {
+  const dir = tmpDir('copropiedad-fsroto');
+  const jsonPath = path.join(dir, 'secrets-health.json');
+  const escrito = [];
+  const fsRoto = {
+    existsSync: () => { throw new Error('fs roto'); },
+    readFileSync: () => { throw new Error('fs roto'); },
+    writeFileSync: (p, d) => escrito.push(d),
+  };
+  const res = sh.writeHealthJson(evaluacionMinima(), jsonPath, { fsImpl: fsRoto });
+  assert.equal(res.ok, true);
+  assert.equal(escrito.length, 1);
+  assert.equal(JSON.parse(escrito[0]).ok, true);
+});
+
+test('#5245: el merge no filtra valores de secretos al artefacto', () => {
+  // El repo es publico (CA-7d): preservar claves ajenas no puede ser una via de
+  // fuga nueva. El bloque preservado es numerico y ademas se re-verifica aca.
+  const dir = tmpDir('copropiedad-redact');
+  const jsonPath = path.join(dir, 'secrets-health.json');
+  guard.flushCounters({
+    targetPath: jsonPath,
+    counters: { in_repo_reads: 1, distinct_sources: 1, instrumented_sites: 1, undetermined_origins: 0 },
+    uninstrumentedReaders: 46,
+  });
+  sh.writeHealthJson(evaluacionMinima(), jsonPath);
+
+  const raw = fs.readFileSync(jsonPath, 'utf8');
+  const m = JSON.parse(raw)[guard.HEALTH_MIGRATION_KEY];
+  for (const [k, v] of Object.entries(m)) {
+    if (k === 'ts' || k === 'ts_reset') continue;
+    assert.equal(typeof v, 'number', `${k} debe ser numero, nunca un path ni un valor`);
+  }
+  assert.equal(raw.includes('telegram-config.json'), false, 'ningun path de origen en el artefacto');
+});

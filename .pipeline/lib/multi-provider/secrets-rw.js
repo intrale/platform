@@ -38,6 +38,25 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+
+// #5245 · Guard de origen, cargado en forma perezosa y memoizada.
+//
+// Perezoso porque `secrets-rw` lo importa medio pipeline (dashboard incluido) y
+// sólo el camino de ESCRITURA necesita el guard: cargarlo en el top penalizaría
+// a todos los lectores con el require de `worktree-resolver` + `secrets-manifest`.
+//
+// Y FATAL a propósito (D-7): si el guard no carga, la escritura de credenciales
+// NO procede. Un `try/catch` con fallback acá reproduciría exactamente el modo de
+// falla que esta historia viene a matar — degradar sin ruido a escribir el secreto
+// donde no corresponde. El fallback silencioso es aceptable para telemetría, no
+// para el llavero del que arranca todo el pipeline.
+let _secretsGuard;
+function requireSecretsGuard() {
+    if (_secretsGuard === undefined) {
+        _secretsGuard = require('../secrets-guard');
+    }
+    return _secretsGuard;
+}
 const os = require('node:os');
 const crypto = require('node:crypto');
 
@@ -278,6 +297,7 @@ function writeCanonicalPaths(updates, {
     fsImpl = fs,
     now = Date.now(),
     legacyUpdates = null,
+    guardImpl = null,
 } = {}) {
     if (!updates || typeof updates !== 'object' || Object.keys(updates).length === 0) {
         throw new Error('[secrets-rw] writeCanonicalPaths: "updates" requerido (objeto no vacío keyed por dot-path).');
@@ -288,6 +308,31 @@ function writeCanonicalPaths(updates, {
     for (const dotPath of Object.keys(updates)) parseSafeDotPath(dotPath);
 
     const targetPath = secretsPath || HOME_CANONICAL;
+
+    // #5245 · CA-10 — Guard de origen en el camino de ESCRITURA. Este es el punto
+    // de escritura único del store canónico, así que engancharlo acá cubre a TODOS
+    // los productores de credenciales (el setup OAuth de Drive, `rotateKey`, y
+    // cualquiera que se sume) en vez de un call site suelto que el próximo script
+    // vuelve a esquivar. Un guard sólo de lectura deja que el próximo setup
+    // reintroduzca la fuga intacta.
+    //
+    // Va ANTES de mkdir/backup/write: fail-closed no puede dejar efectos
+    // secundarios parciales en el filesystem si el origen resulta prohibido.
+    //
+    // Se consultan TODOS los dot-paths del update: el guard descarta por sí mismo
+    // las claves operativas (`not_a_secret`, no cuentan) y deduplica por
+    // (secreto, archivo) una vez por proceso, así que esto no infla el contador.
+    const guard = guardImpl || requireSecretsGuard();
+    if (guard && typeof guard.assertSecretOrigin === 'function') {
+        for (const dotPath of Object.keys(updates)) {
+            guard.assertSecretOrigin(targetPath, {
+                op: 'write',
+                secret: dotPath,
+                site: 'secrets-rw.writeCanonicalPaths',
+            });
+        }
+    }
+
     const dir = path.dirname(targetPath);
     if (!fsImpl.existsSync(dir)) fsImpl.mkdirSync(dir, { recursive: true });
 
