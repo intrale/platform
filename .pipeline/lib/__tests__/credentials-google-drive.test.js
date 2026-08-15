@@ -83,8 +83,15 @@ function hydrate(env = {}) {
 }
 
 function resolverDrive(over = {}) {
+    // #5898 — `google_drive` es un bloque global del store: la deny-list
+    // `RESERVED_STORE_NAMESPACES` impide que un producto se registre con ese
+    // projectId, y su dueño legitimo (este camino, el de #5217) se declara con
+    // el opt-in explicito de primera parte. Cambia la FORMA del call-site, no
+    // las expectativas: ningun assert de este archivo se toca. El caso negativo
+    // —mismo ref sin flag ⇒ `namespace_reservado`— vive en
+    // `credentials-scoped-refs.test.js`.
     return credentials.resolveScopedRefs(STORE_REF, DRIVE_SCOPES, {
-        canonicalPath, ...over,
+        canonicalPath, systemNamespace: true, ...over,
     });
 }
 

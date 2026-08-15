@@ -71,9 +71,10 @@ function loadCodeowners(repoRoot) {
 //      borrarse del gate; la fuente de verdad es la rama principal. Además
 //      funciona aunque el worktree local esté podado o desincronizado.
 //
-// Un archivo presente pero SIN reglas parseables también es `ok:false`: un
-// CODEOWNERS vacío en `origin/main` es una anomalía de configuración, no una
-// autorización implícita a mergear.
+// Un archivo presente pero SIN reglas parseables es una configuración válida:
+// significa que no hay rutas sujetas a aprobación de code owners. Sigue siendo
+// fail-closed ante ausencia, fallo de lectura o ref inválida; sólo distinguimos
+// esos errores de un archivo legíble e intencionalmente informativo.
 //
 // `loadCodeowners` se conserva intacto para los consumidores locales existentes
 // (no críticos); sólo el gate de merge migra a este loader.
@@ -152,11 +153,6 @@ function loadCodeownersFromRef(repoRoot, ref, options = {}) {
         }
         const content = typeof res.stdout === 'string' ? res.stdout : '';
         const rules = parseCodeowners(content);
-        if (!rules.length) {
-            // Presente pero sin reglas: anomalía, no autorización implícita.
-            failures.push(`${rel}: sin reglas parseables`);
-            continue;
-        }
         return { ok: true, rules, ref, source: rel };
     }
 

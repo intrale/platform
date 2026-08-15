@@ -647,14 +647,21 @@ test('ROTATION_POLICY_DAYS · 90 días por convención', () => {
   assert.equal(cron.ROTATION_POLICY_DAYS, 90);
 });
 
-// El denominador del inventario de rotación es ENV_DESCRIPTORS, NO ENV_MAPPING.
-// Desde #5217 · CA-6, `ENV_MAPPING` dejó de ser el inventario completo y pasó a
-// ser el subconjunto que se hidrata en el `process.env` global (`seHidrata`),
-// dejando afuera las 4 claves de `google_drive.*` (`hydrate: false`). Esas 4
-// siguen siendo material de clave que ROTA, así que siguen en
-// `docs/secrets-inventory.md` y el cron las tiene que vigilar.
-// `credentials.js` lo declara explícitamente: "El inventario completo
-// (provisión, IAM, rotación) sigue siendo `ENV_DESCRIPTORS`".
+// El denominador correcto es ENV_DESCRIPTORS, no ENV_MAPPING.
+//
+// Desde #5217 (CA-6) `ENV_MAPPING` es un SUBCONJUNTO del inventario: sólo los
+// descriptores con `hydrate !== false`, o sea "lo que se escribe en el
+// `process.env` global". Las cuatro credenciales de Google Drive están
+// declaradas `hydrate: false` a propósito (su consumidor las resuelve por
+// namespace, hidratarlas expondría un refresh token en el env de todo agente
+// hijo), así que quedan fuera de `ENV_MAPPING` pero SIGUEN en el inventario:
+// se provisionan, se rotan y la política IAM las cubre.
+//
+// El cron de rotación es exactamente uno de los consumidores que el propio
+// `credentials.js:233-236` manda a leer el descriptor completo — cubrir sólo
+// las hidratadas dejaría 4 secretos sin vigilancia de vencimiento, incluido el
+// refresh token de Secrets Manager. Contrastar contra `ENV_MAPPING` volvía
+// verde ese agujero; contra `ENV_DESCRIPTORS` la coherencia es la real (13).
 test('inventario real · conserva exactamente las 13 variables de ENV_DESCRIPTORS', () => {
   const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
   const rows = cron.parseInventoryMarkdown(inventory);
@@ -663,26 +670,19 @@ test('inventario real · conserva exactamente las 13 variables de ENV_DESCRIPTOR
   assert.deepEqual(rows.map((row) => row.env_var).sort(), expected);
 });
 
-// Regresión del desacople de #5217: si alguien vuelve a apuntar el inventario de
-// rotación a `ENV_MAPPING`, las claves con `hydrate:false` quedan fuera del
-// control de rotación sin que nadie lo note. Este test fija que el inventario
-// documentado es un superconjunto estricto del mapa de hidratación.
-test('inventario de rotación · cubre también las claves que no se hidratan', () => {
-  const { ENV_DESCRIPTORS, ENV_MAPPING } = require('../credentials');
-  const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
-  const enInventario = cron.parseInventoryMarkdown(inventory).map((row) => row.env_var);
-  const noSeHidratan = Object.values(ENV_DESCRIPTORS)
-    .map((d) => d.env)
-    .filter((env) => !Object.values(ENV_MAPPING).includes(env));
-
-  assert.deepEqual(noSeHidratan.sort(), [
-    'GOOGLE_DRIVE_FOLDER_ID',
-    'GOOGLE_OAUTH_CLIENT_ID',
-    'GOOGLE_OAUTH_CLIENT_SECRET',
-    'GOOGLE_OAUTH_REFRESH_TOKEN',
-  ]);
-  for (const env of noSeHidratan) {
-    assert.ok(enInventario.includes(env), `${env} no se hidrata pero igual debe estar en el inventario de rotación`);
+// Guard de no-regresión de #5217: si alguien vuelve a meter google_drive en
+// ENV_MAPPING, el inventario seguiría verde pero el process.env global se
+// ampliaría de nuevo. ENV_MAPPING tiene que ser subconjunto estricto.
+test('inventario real · ENV_MAPPING es subconjunto de lo inventariado y excluye google_drive', () => {
+  const credentials = require('../credentials');
+  const inventariadas = new Set(Object.values(credentials.ENV_DESCRIPTORS).map((d) => d.env));
+  for (const env of Object.values(credentials.ENV_MAPPING)) {
+    assert.ok(inventariadas.has(env), env + ' se hidrata pero no está en el inventario');
+  }
+  for (const dotPath of Object.keys(credentials.ENV_DESCRIPTORS)) {
+    if (!dotPath.startsWith('google_drive.')) continue;
+    assert.equal(credentials.ENV_MAPPING[dotPath], undefined,
+      dotPath + ' no puede volver a ENV_MAPPING (#5217 · CA-6)');
   }
 });
 

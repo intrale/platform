@@ -78,6 +78,16 @@ const AUTHORIZED_BY_STATIC = Object.freeze([
     // y la entry de preservación quedaba como `action: 'reject'` — el CA-13
     // fallaba en silencio. Prohibido usarlo en un call-site que mute la allowlist.
     'restart:preserve-pause',
+    // #5923 — botones degradados a `callback_data` en la alerta de "pausa
+    // parcial trabada". El operador humano ya fue autorizado fail-closed por
+    // `from.id` contra la allowlist del listener (listener-telegram.js:831-843)
+    // ANTES de que el handler invoque nada; este valor traza que la mutación
+    // entró por ese camino. Es un origen de CLASE, no de identidad: el `from.id`
+    // concreto viaja por `justification`/`extra` (trazabilidad fina) para no
+    // ensanchar el enum con un valor por operador. Habilita removals porque
+    // `cancel-partial-pause` ES un removal masivo deliberado del operador,
+    // equivalente al `resume:operator` que ya está autorizado.
+    'telegram:operator',
 ]);
 
 // `recursive-deps:from-<N>` donde N es el número del issue padre (>0).
