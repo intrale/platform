@@ -828,8 +828,15 @@ function createKernelSupervisor(deps = {}) {
       // Fail-closed: no dejar secretos parciales/ajenos en el ctx.
       ctx.secrets = null;
       ctx.secretsMeta = meta;
-      onAlert({ projectId, stage: 'secrets', errors: [{ detail: `resolución scoped fallida (missing: ${meta.missing.join(',') || '—'})` }] });
-      return { ok: false, meta, error: resolved.error || 'scopes faltantes' };
+      // #5898 CA-6.b — el `detail` ES el error del resolver, no una
+      // reconstrucción a partir de `missing`. Los rechazos por namespace
+      // reservado y por path fuera del store traen `missing: []` POR DISEÑO
+      // (no falta un scope: se denegó el namespace o el path), así que
+      // reconstruir desde `missing` le mostraba al operador "missing: —" como
+      // texto terminal — justo lo que CA-6 prohíbe. `resolved.error` viene
+      // siempre poblado y nombra namespace + scopes + remediación.
+      onAlert({ projectId, stage: 'secrets', errors: [{ detail: resolved.error }] });
+      return { ok: false, meta, error: resolved.error };
     }
 
     // Secretos SÓLO en el ctx de la instancia (nunca process.env global · CA-6.2).

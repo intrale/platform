@@ -55,6 +55,17 @@ const path = require('path');
 const CANONICAL_PATH = path.join(os.homedir(), '.claude', 'secrets', 'credentials.json');
 const LEGACY_PATH = path.join(os.homedir(), '.claude', 'secrets', 'telegram-config.json');
 
+// Directorio del store canónico — ancla de CA-4 (#5898). Vive FUERA del repo
+// POR DISEÑO: los secretos dentro del árbol versionado se pierden en cada
+// respawn, así que la polaridad del chequeo es "dentro del store Y fuera del
+// repo", nunca una sola de las dos.
+const STORE_DIR = path.dirname(CANONICAL_PATH);
+
+// Forma lógica del store para los mensajes al operador: nombrar el path
+// resuelto expondría el home del host y no le sirve a nadie (UX-2, regla 2).
+const STORE_DIR_LOGICO = '~/.claude/secrets/';
+const STORE_FILE_LOGICO = '~/.claude/secrets/credentials.json';
+
 // Raíz del repo — se usa para B1.4 (el archivo de la ventana de bootstrap tiene
 // que estar FUERA del árbol versionado, coherente con #5218).
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -960,6 +971,26 @@ function loadIntoEnv(opts = {}) {
 // proceso). Para logs/output usar `redactScoped()` — NUNCA loguear el objeto crudo.
 // =============================================================================
 
+// Bloques globales del store: NO son namespaces de tenant. Un projectId que
+// coincida con uno de estos NO puede resolverlo (#5898 · D1 · A01/CWE-863).
+//
+// El control vive ACÁ y no en la validación de identidad porque `SAFE_ID_RE`
+// (`project-descriptor.js:114`) admite `providers`, `telegram` y `aws` como
+// projectId perfectamente válidos — el aislamiento estaba invertido: el tenant
+// honesto fallaba y el que se registraba como `providers` cobraba las llaves de
+// todos los proveedores.
+//
+// UNA SOLA definición: quien la necesite la importa desde acá, no la copia
+// (CA-3). Si mañana se agrega un bloque global al store y no se suma a esta
+// lista, el test de CA-3 de `credentials-namespace-5898.test.js` se pone rojo.
+const RESERVED_STORE_NAMESPACES = Object.freeze([
+  'telegram', 'providers', 'multimedia', 'aws', 'google_drive', 'aws_vault_bootstrap',
+]);
+
+// Claves que resuelven contra `Object.prototype` en un lookup ingenuo
+// (#5898 · D2 · A03/CWE-1321).
+const UNSAFE_JS_KEYS = Object.freeze(['__proto__', 'constructor', 'prototype']);
+
 // `~/.claude/secrets/credentials.json#intrale`  →  { path, namespace }
 function parseSecretRef(ref) {
   const m = /^(~?[A-Za-z0-9._/-]+)#([A-Za-z0-9._:-]+)$/.exec(String(ref == null ? '' : ref).trim());
@@ -975,65 +1006,235 @@ function expandHome(p) {
 }
 
 /**
+ * ¿El path de la ref cae DENTRO del store canónico y FUERA del repo? (CA-4)
+ *
+ * Son DOS condiciones conjuntas, no una. `estaDentroDelRepo` responde "¿está
+ * dentro del repo?" y en su otro uso (ventana de bootstrap) sirve para
+ * RECHAZAR; el store canónico vive fuera del repo. Reusarla tal cual como
+ * "¿es válido?" rechazaría el store legítimo y aceptaría todo lo de afuera —
+ * el agujero al revés.
+ *
+ * El control es SEMÁNTICO sobre el path resuelto, no sintáctico sobre el
+ * literal: `path.resolve` normaliza `..` antes de comparar, así que
+ * `~/.claude/secrets/../../evil.json` cae fuera de STORE_DIR y se rechaza.
+ * Un regex que prohibiera `..` se eludiría con encodings y rompería paths
+ * legítimos — por eso NO se toca `parseSecretRef`.
+ *
+ * Residual aceptado (R-8, seguimiento en #5912): el ancla es lógica, no
+ * física. Un symlink DENTRO de STORE_DIR apuntando afuera la elude; endurecer
+ * con `fs.realpathSync` quedó fuera del alcance de #5898.
+ */
+function refPathAnclado(rawPath) {
+  const abs = path.resolve(expandHome(String(rawPath == null ? '' : rawPath)));
+  const rel = path.relative(STORE_DIR, abs);
+  const dentroDelStore = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  return dentroDelStore && !estaDentroDelRepo(abs);   // ← conjunción, NO alternativa
+}
+
+/**
  * Resuelve SOLO los scopes declarados de un namespace del archivo de credenciales.
  *
  * @param {string} ref     referencia namespaceada (`path#namespace`).
  * @param {string[]} scopes scopes declarados por el descriptor.
  * @param {object} [opts]
- * @param {object} [opts.data]  credentials ya parseadas (override para tests; evita leer disco).
- * @param {string} [opts.canonicalPath] path del archivo (override para tests).
+ * @param {object} [opts.data]  credentials ya parseadas (override de confianza; evita leer disco).
+ * @param {string} [opts.canonicalPath] path del archivo (override de confianza; ver paso 6).
+ * @param {boolean} [opts.systemNamespace] opt-in EXPLÍCITO de consumidor de primera
+ *        parte: saltea SÓLO el paso 4 (deny-list de bloques globales) y ningún otro.
+ *        El default —y por lo tanto todo dato que venga de un descriptor— sigue
+ *        siendo el camino de tenant.
  * @returns {{ ok:boolean, namespace:string|null, scopes:object, missing:string[], error?:string }}
  */
 function resolveScopedRefs(ref, scopes, opts = {}) {
+  // Helper único de fail-closed: ningún camino puede salir con `error:
+  // undefined` ni con un texto terminal genérico (CA-6). Cada mensaje dice
+  // QUÉ pasó · POR QUÉ · QUÉ HACER, sin jerga de implementación y sin valores.
+  const fail = (code, namespace, error, missing = []) => ({
+    ok: false, code, namespace, scopes: {}, missing, error,
+  });
+
+  // 1 · ref mal formada.
   const parsed = parseSecretRef(ref);
-  if (!parsed) return { ok: false, namespace: null, scopes: {}, missing: [], error: 'ref inválida: se esperaba referencia namespaceada (patrón ...#scope)' };
+  if (!parsed) {
+    return fail('ref_invalida', null,
+      'ref inválida: la referencia de credenciales está mal formada, se esperaba "<archivo>#<namespace>". '
+      + 'Revisá "secrets.path" del descriptor del producto.');
+  }
+  const ns = parsed.namespace;
+
+  // 2 · el producto no declara qué necesita.
   if (!Array.isArray(scopes) || scopes.length === 0) {
-    return { ok: false, namespace: parsed.namespace, scopes: {}, missing: [], error: 'scopes requerido (array no vacío)' };
+    return fail('scopes_requeridos', ns,
+      `el producto "${ns}" no declara qué credenciales necesita. `
+      + 'Agregá "secrets.scopes" (array no vacío) al descriptor.');
   }
 
+  // 3 · claves internas de JS como namespace (prototype pollution · CA-5).
+  if (UNSAFE_JS_KEYS.includes(ns)) {
+    return fail('namespace_invalido', ns,
+      `namespace "${ns}" no es un nombre válido. Elegí un projectId que no sea una clave interna `
+      + `de JavaScript (${UNSAFE_JS_KEYS.join(', ')}).`);
+  }
+
+  // 4 · bloque global del store pedido como namespace de tenant (CA-1/CA-2).
+  //     Va ANTES de leer el archivo y DENTRO del resolver, para que cubra por
+  //     igual a `kernel-supervisor`, `product-seed` (que pasa la ref verbatim)
+  //     y `kernel-store`, sin que ningún call-site agregue su propia validación.
+  //
+  //     OPT-IN DE PRIMERA PARTE (`opts.systemNamespace === true`). Los bloques
+  //     globales tienen consumidores LEGÍTIMOS del propio sistema: #5217 hizo de
+  //     `qa-video-share.js` el lector de `google_drive`/`r2` del store, y ahí
+  //     `google_drive` no es "el tenant que se registró con nombre de bloque
+  //     global" sino el bloque global leído por quien es su dueño. Sin este
+  //     opt-in la deny-list no protege: rompe al dueño y deja al pipeline sin
+  //     credenciales de Drive (#5217 puso `hydrate:false`, así que no hay red
+  //     de `process.env` debajo).
+  //
+  //     Por qué un flag y NO sacar `google_drive` de la lista ni abrir un
+  //     segundo camino de resolución: sacarlo reabriría D1 (A01/CWE-863) para
+  //     cualquier `projectId = 'google_drive'`, y un segundo resolver rompería
+  //     la invariante de punto único. El flag es un booleano estricto que
+  //     saltea SÓLO este paso — 3, 5, 6, 7 y 8 corren igual — y que no puede
+  //     viajar dentro de un descriptor: `product-seed.js` pasa la ref verbatim
+  //     pero NUNCA opts, así que D4 sigue cerrado por construcción.
+  //
+  //     `=== true` a propósito: un `opts` con `systemNamespace` truthy-por-
+  //     accidente (string, 1, {}) no alcanza para saltear un control de acceso.
+  const esPrimeraParte = opts.systemNamespace === true;
+  if (RESERVED_STORE_NAMESPACES.includes(ns) && !esPrimeraParte) {
+    return fail('namespace_reservado', ns,
+      `"${ns}" es un bloque global del sistema, no un producto. Registrá el producto con otro `
+      + `projectId — están reservados: ${RESERVED_STORE_NAMESPACES.join(', ')}.`);
+  }
+
+  // 5 · path anclado al store canónico (CA-4). Corre ANTES de cualquier
+  //     lectura: el rechazo es "sin abrir el archivo", literal.
+  if (!refPathAnclado(parsed.path)) {
+    return fail('path_fuera_del_store', ns,
+      `el archivo de credenciales "${parsed.path}" está fuera de ${STORE_DIR_LOGICO} (namespace "${ns}"). `
+      + `Movelo ahí o corregí "secrets.path" del descriptor.`);
+  }
+
+  // 6 · lectura del store.
+  //
+  //     `opts.canonicalPath` es un OVERRIDE DE CONFIANZA, con el mismo criterio
+  //     que `opts.data` —que ya se acepta sin ancla ninguna, y es estrictamente
+  //     más poderoso: entrega el contenido del store directamente—. Los dos son
+  //     argumentos JS de un call-site de primera parte en el mismo proceso; NO
+  //     son dato de descriptor. Quien puede pasar `opts` ya está adentro.
+  //
+  //     Dónde vive CA-4, entonces: en `parsed.path` (paso 5), que SÍ sale del
+  //     descriptor y es lo único que un tercero controla. Ese ancla no se
+  //     toca — `~/.claude/secrets/../../evil.json#ns` se sigue rechazando sin
+  //     abrir archivo, con `opts.canonicalPath` o sin él.
+  //
+  //     Anclar además el path efectivo no agregaba defensa (el atacante del
+  //     modelo no llega a `opts`) y sí rompía a los consumidores de primera
+  //     parte: el arnés de #5217 apunta a un store de `tmpdir`, y por esta
+  //     rama se caía hasta el caso de `r2`, que ni siquiera está en la
+  //     deny-list.
   let data = opts.data;
   if (!data) {
     const filePath = opts.canonicalPath || expandHome(parsed.path);
     try {
       data = readJsonFile(filePath);
     } catch (e) {
-      return { ok: false, namespace: parsed.namespace, scopes: {}, missing: [], error: 'no se pudo leer el archivo de credenciales' };
+      return fail('store_ilegible', ns,
+        `no se pudo leer el archivo de credenciales del sistema (namespace "${ns}"). `
+        + `Verificá que ${STORE_FILE_LOGICO} exista y sea JSON válido.`);
     }
   }
 
-  // El namespace vive bajo `namespaces.<ns>` (canónico multi-producto) o, para
-  // retrocompat, como una clave top-level del archivo. NUNCA se expande el
-  // archivo entero: sólo el sub-objeto del namespace resuelto.
-  const nsObj = (data && typeof data.namespaces === 'object' && data.namespaces && typeof data.namespaces[parsed.namespace] === 'object')
-    ? data.namespaces[parsed.namespace]
-    : (data && typeof data[parsed.namespace] === 'object' ? data[parsed.namespace] : null);
-
-  if (!nsObj) {
-    return { ok: false, namespace: parsed.namespace, scopes: {}, missing: [...scopes], error: `namespace no encontrado: ${parsed.namespace}` };
+  // 7 · lookup del namespace. `hasOwnProperty`, NUNCA acceso directo:
+  //     `data.namespaces.__proto__` es truthy aunque `namespaces` no lo declare.
+  //
+  //     Sin fallback top-level cuando el store tiene `namespaces` (CA-1.b): el
+  //     nombre puede existir en la raíz y aun así NO resuelve. La retrocompat
+  //     top-level sobrevive SÓLO para stores sin `namespaces` — y aun ahí la
+  //     deny-list del paso 4 ya cerró los bloques globales. Cuando #5217 migre
+  //     el store, el fallback se apaga POR CONSTRUCCIÓN, sin un segundo cambio.
+  //
+  //     DÓNDE BUSCA CADA CAMINO. Los dos espacios del store no son el mismo y
+  //     el opt-in del paso 4 elige entre ellos, no los mezcla:
+  //       · primera parte  → bloque global, que vive TOP-LEVEL por definición
+  //         (`telegram`, `providers`, `google_drive`… son claves de la raíz;
+  //         `namespaces` es donde van los tenants). Buscar bajo `namespaces`
+  //         sería buscar al dueño en la casa del inquilino.
+  //       · tenant (default) → `namespaces.<id>`, con la retrocompat de abajo.
+  //     Sigue siendo UN solo punto de resolución: mismo `fail`, mismos pasos
+  //     3/5/6/8, misma forma de retorno. Lo único que cambia es la raíz del
+  //     lookup, y sólo cuando el call-site se declaró explícitamente.
+  const nsRoot = (data && typeof data.namespaces === 'object' && data.namespaces) || null;
+  let nsObj = null;
+  if (esPrimeraParte) {
+    if (data && typeof data === 'object' && Object.prototype.hasOwnProperty.call(data, ns)) nsObj = data[ns];
+  } else if (nsRoot) {
+    if (Object.prototype.hasOwnProperty.call(nsRoot, ns)) nsObj = nsRoot[ns];
+  } else if (data && typeof data === 'object') {
+    if (Object.prototype.hasOwnProperty.call(data, ns)) nsObj = data[ns];
   }
 
-  const out = {};
+  if (!nsObj || typeof nsObj !== 'object') {
+    // El remedio no es el mismo para los dos espacios: mandar al dueño de un
+    // bloque global a crear `namespaces."google_drive"` lo haría migrar el
+    // secreto al lugar equivocado y romper al resto de sus lectores.
+    return fail('namespace_inexistente', ns,
+      esPrimeraParte
+        ? `namespace no encontrado: el bloque del sistema "${ns}" no tiene credenciales cargadas. `
+          + `Agregá el bloque "${ns}" en la raíz de ${STORE_FILE_LOGICO}.`
+        : `namespace no encontrado: el producto "${ns}" no tiene credenciales cargadas. `
+          + `Agregá el bloque namespaces."${ns}" en ${STORE_FILE_LOGICO}.`,
+      [...scopes]);
+  }
+
+  // 8 · scopes. La copia sin prototipo evita que un scope como `toString` o
+  //     `constructor` resuelva contra Object.prototype y se entregue una
+  //     función nativa como si fuera un secreto (CA-5).
+  const safeNs = Object.assign(Object.create(null), nsObj);
+  const out = Object.create(null);
   const missing = [];
   for (const s of scopes) {
-    if (Object.prototype.hasOwnProperty.call(nsObj, s) && !isPlaceholderOrEmpty(nsObj[s])) {
-      out[s] = nsObj[s];
-    } else {
-      missing.push(s);
-    }
+    if (UNSAFE_JS_KEYS.includes(s)) { missing.push(s); continue; }
+    const v = Object.prototype.hasOwnProperty.call(safeNs, s) ? safeNs[s] : undefined;
+    if (typeof v === 'function') { missing.push(s); continue; }
+    if (v !== undefined && !isPlaceholderOrEmpty(v)) out[s] = v;
+    else missing.push(s);
   }
-  return { ok: missing.length === 0, namespace: parsed.namespace, scopes: out, missing };
+
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      code: 'scope_faltante',
+      namespace: ns,
+      // La forma pública NO cambia: spread a objeto literal. Devolver `out`
+      // crudo (sin prototipo) pondría rojo cualquier `assert.deepEqual` strict
+      // contra `{}` — la protección va adentro, no en la forma devuelta (R-4).
+      scopes: { ...out },
+      missing,
+      error: `al producto "${ns}" le faltan credenciales: ${missing.join(', ')}. `
+        + `Cargalas en namespaces."${ns}" de ${STORE_FILE_LOGICO}.`,
+    };
+  }
+
+  return { ok: true, namespace: ns, scopes: { ...out }, missing };
 }
 
 // Redacta un resultado de resolveScopedRefs para logging: sólo nombres de scope,
 // nunca valores (CA-C3).
 function redactScoped(resolved) {
   if (!resolved || typeof resolved !== 'object') return { namespace: null, scopes: [] };
-  return {
+  const red = {
     ok: !!resolved.ok,
     namespace: resolved.namespace || null,
     scopes: Object.keys(resolved.scopes || {}),
     missing: resolved.missing || [],
   };
+  // `code` y `error` viajan a la forma redactada para que el diagnóstico que
+  // llega al operador sea accionable (CA-6/CA-6.b). Ninguno de los dos contiene
+  // valores de credencial: sólo nombres de namespace, de scope y remediación.
+  if (resolved.code) red.code = resolved.code;
+  if (resolved.error) red.error = resolved.error;
+  return red;
 }
 
 module.exports = {
@@ -1048,6 +1249,9 @@ module.exports = {
   parseSecretRef,
   resolveScopedRefs,
   redactScoped,
+  // #5898 — vocabulario ÚNICO de namespaces reservados. Se importa, no se
+  // copia (CA-3): una segunda lista literal se desincroniza del store.
+  RESERVED_STORE_NAMESPACES,
   // Agregados por #5353.
   ENV_DESCRIPTORS,
   // #5217 · CA-6 — predicado único de "¿este secreto va al process.env global?".
