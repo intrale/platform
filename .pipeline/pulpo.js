@@ -4166,7 +4166,9 @@ function brazoBarrido(config) {
                 for (const depNum of result.dependsOn) {
                   // Invalidar cache antes de chequear: el dep pudo haber cerrado
                   // hace minutos y el cache de 10min nos daría un estado stale.
-                  issueLabelsCache.delete(depNum);
+                  // #5856 CA-5 — clave canónica: sin normalizar, una entrada
+                  // sembrada con clave string no se borraba (invalidación NO-OP).
+                  issueLabelsCache.delete(issueCacheKey(depNum));
                   const info = getIssueInfo(depNum);
                   stateLog.push(`#${depNum}=${info.state}`);
                   if (info.state !== 'CLOSED') {
@@ -6887,8 +6889,24 @@ function issueMentionsPipelineScope(issueNum, config) {
 const issueLabelsCache = new Map(); // issueNum → { labels: [...], state: string, fetchedAt: timestamp }
 const LABELS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
 
+/**
+ * #5856 CA-5 — Clave canónica de `issueLabelsCache`.
+ *
+ * El cache se consultaba/escribía con el valor tal cual llegaba (`number` desde
+ * algunos call-sites, `string` desde `issueFromFile()`), mientras la
+ * invalidación de `_shouldReblockForDependencies()` borraba con `String(issue)`.
+ * Con una entrada sembrada con clave numérica, esa invalidación era un NO-OP
+ * silencioso: la relectura "en vivo" volvía a leer el mismo valor stale y la
+ * protección de #4023 no protegía nada. Normalizar en TODOS los extremos
+ * (get / set / delete) elimina la dependencia implícita del tipo.
+ */
+function issueCacheKey(issueNum) {
+  return String(issueNum);
+}
+
 function getIssueInfo(issueNum) {
-  const cached = issueLabelsCache.get(issueNum);
+  const key = issueCacheKey(issueNum);
+  const cached = issueLabelsCache.get(key);
   if (cached && (Date.now() - cached.fetchedAt) < LABELS_CACHE_TTL_MS) {
     return cached;
   }
@@ -6904,7 +6922,7 @@ function getIssueInfo(issueNum) {
       state: parsed.state || 'UNKNOWN',
       fetchedAt: Date.now()
     };
-    issueLabelsCache.set(issueNum, info);
+    issueLabelsCache.set(key, info);
     return info;
   } catch {
     return { labels: [], state: 'UNKNOWN', fetchedAt: Date.now() };
@@ -6964,6 +6982,58 @@ function isIssueClosed(issueNum) {
 }
 
 /**
+ * #5856 — Lee labels EN VIVO contra GitHub **propagando el error**.
+ *
+ * `getIssueLabels()` NO sirve para un gate fail-closed: `getIssueInfo()` atrapa
+ * toda excepción y devuelve `{ labels: [], state: 'UNKNOWN' }`, que es
+ * indistinguible de "el label ya no está". Con `gh` caído, un gate construido
+ * sobre él concluye "destrabado" y lanza el agente igual — fail-OPEN disparable
+ * por una caída de red (OWASP A01). Este lector distingue los dos casos: si no
+ * pudo preguntarle a GitHub, lanza.
+ *
+ * Seguridad (OWASP A03 — mismo criterio que el SEC-FIX de #4505): `issue` llega
+ * de `issueFromFile()`, que es LENIENTE y no valida `/^\d+$/`. Un work-file
+ * corrupto/malicioso (`5856 & echo PWNED.pipeline-dev`) inyectaría comandos si
+ * se interpolara en un string de shell. Defensa en profundidad:
+ *   1) Canonizar a numérico y LANZAR si no lo es (el caller lo traduce a
+ *      fail-closed: ante un identificador ilegible se mantiene el bloqueo).
+ *   2) `execFileSync` con argv (SIN shell): aunque el arg tuviera
+ *      metacaracteres, `gh` lo recibe como un único token.
+ *
+ * Efecto lateral deliberado: siembra `issueLabelsCache` con la lectura fresca,
+ * así el resto del barrido reusa el dato en vivo en lugar de pagar otro `gh`
+ * (mitiga el costo de la revalidación, Riesgo 3 del issue).
+ *
+ * @param {string|number} issue
+ * @returns {string[]} nombres de labels vigentes en GitHub
+ * @throws si el identificador no es numérico, si `gh` falla/timeoutea, o si la
+ *         respuesta no trae un array de labels.
+ */
+function _readLiveLabelsOrThrow(issue) {
+  const id = String(issue == null ? '' : issue).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new Error(`identificador de issue no numérico (${id.slice(0, 40)})`);
+  }
+  ghThrottle();
+  const raw = execFileSync(
+    GH_BIN,
+    ['issue', 'view', id, '--json', 'labels,state'],
+    { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true },
+  ).trim();
+  const parsed = JSON.parse(raw);
+  if (!parsed || !Array.isArray(parsed.labels)) {
+    throw new Error('respuesta de gh sin array de labels');
+  }
+  const labels = parsed.labels.map(l => (l && l.name) || '').filter(Boolean);
+  issueLabelsCache.set(issueCacheKey(id), {
+    labels,
+    state: parsed.state || 'UNKNOWN',
+    fetchedAt: Date.now(),
+  });
+  return labels;
+}
+
+/**
  * #4023 CA-1 — Decide si un issue debe re-bloquearse por `blocked:dependencies`,
  * releyendo labels EN VIVO contra GitHub para no caer en el "re-bloqueo
  * fantasma" causado por la caché stale (LABELS_CACHE_TTL_MS = 10 min).
@@ -6972,27 +7042,115 @@ function isIssueClosed(issueNum) {
  * re-fetchea. Devuelve `true` SOLO si el label sigue presente en vivo.
  *
  * Extraído como función inyectable para testeo unitario (los defaults usan la
- * caché y `getIssueLabels` reales del módulo).
+ * caché y el lector en vivo reales del módulo).
+ *
+ * #5856 — El default de `readLiveLabels` pasó de `getIssueLabels()` a
+ * `_readLiveLabelsOrThrow()`: el anterior NUNCA lanzaba, así que el `catch`
+ * fail-closed de abajo era inalcanzable en producción y el helper degradaba a
+ * fail-OPEN con `gh` caído. La firma y la semántica del `catch` no cambian, así
+ * que los tests de #4023 (que inyectan `readLiveLabels`) siguen valiendo.
  *
  * @param {string|number} issue
  * @param {object} [deps]
  * @param {() => void} [deps.invalidateCache]
  * @param {() => string[]} [deps.readLiveLabels]
+ * @param {(brazo: string, msg: string) => void} [deps.logFn]
  * @returns {boolean}
  */
 function _shouldReblockForDependencies(issue, {
-  invalidateCache = () => issueLabelsCache.delete(String(issue)),
-  readLiveLabels = () => getIssueLabels(issue),
+  invalidateCache = () => issueLabelsCache.delete(issueCacheKey(issue)),
+  readLiveLabels = () => _readLiveLabelsOrThrow(issue),
+  logFn = log,
 } = {}) {
   try { invalidateCache(); } catch { /* invalidación best-effort */ }
   let liveLbls;
   try { liveLbls = readLiveLabels(); }
-  catch {
+  catch (e) {
     // Fail-closed: si no se puede releer en vivo, mantener el bloqueo (no
     // arriesgar lanzar un issue que GitHub todavía podría tener bloqueado).
+    // #5856 — el fallo se loguea con el número de issue: un gate que corre a
+    // ciegas sin dejar señal es OWASP A09 (fallo de logging/monitoreo).
+    try {
+      logFn('lanzamiento', `🔴 #${issue} no se pudo verificar el label blocked:dependencies contra GitHub — se mantiene bloqueado por precaución (fail-closed, #5856): ${String((e && e.message) || e).slice(0, 120)}`);
+    } catch { /* logging best-effort */ }
     return true;
   }
   return Array.isArray(liveLbls) && liveLbls.includes('blocked:dependencies');
+}
+
+/** #5856 — variantes aceptadas del label de bloqueo humano. */
+const HUMAN_BLOCK_LABELS = Object.freeze(['needs-human', 'needs:human']);
+
+/**
+ * #5856 CA-1/CA-3/CA-6 — Verifica EN VIVO contra GitHub si el bloqueo humano de
+ * un issue sigue vigente, antes de que el barrido de lanzamiento lo re-bloquee.
+ *
+ * Espejo de `_shouldReblockForDependencies()` pero con **tres** desenlaces en
+ * lugar de dos, porque el gate necesita distinguirlos en el log y en el
+ * `.reason.json` (CA-6/CA-7): colapsar "no pude preguntar" dentro de "el label
+ * no está" es exactamente el defecto que este issue corrige.
+ *
+ *   - `PRESENTE`       → el label sigue aplicado en GitHub: bloqueo real.
+ *   - `AUSENTE`        → lectura en vivo EXITOSA y sin el label: la caché estaba
+ *                        stale, el destrabe humano es válido, NO re-bloquear.
+ *   - `NO_VERIFICABLE` → no hubo lectura confiable (gh caído, timeout, JSON roto,
+ *                        identificador no numérico, respuesta sin array de
+ *                        labels): fail-closed, se mantiene el bloqueo.
+ *
+ * Nota sobre el caso "respuesta no-array": se clasifica como `NO_VERIFICABLE`,
+ * no como `AUSENTE`. Una respuesta que no se pudo interpretar NO es una lectura
+ * exitosa, y anunciar "ya removido en GitHub" sobre ella violaría el CA-7
+ * ("ningún mensaje afirma lo no verificado").
+ *
+ * @param {string|number} issue
+ * @param {object} [deps]
+ * @param {() => void} [deps.invalidateCache]
+ * @param {() => string[]} [deps.readLiveLabels]
+ * @param {(brazo: string, msg: string) => void} [deps.logFn]
+ * @returns {{ estado: 'PRESENTE'|'AUSENTE'|'NO_VERIFICABLE', error: string|null }}
+ */
+function _verifyHumanBlockLive(issue, {
+  invalidateCache = () => issueLabelsCache.delete(issueCacheKey(issue)),
+  readLiveLabels = () => _readLiveLabelsOrThrow(issue),
+  logFn = log,
+} = {}) {
+  try { invalidateCache(); } catch { /* invalidación best-effort */ }
+
+  let liveLbls;
+  try { liveLbls = readLiveLabels(); }
+  catch (e) {
+    return _humanBlockUnverifiable(issue, String((e && e.message) || e).slice(0, 120), logFn);
+  }
+  if (!Array.isArray(liveLbls)) {
+    return _humanBlockUnverifiable(issue, 'la relectura en vivo no devolvió un array de labels', logFn);
+  }
+
+  return HUMAN_BLOCK_LABELS.some(l => liveLbls.includes(l))
+    ? { estado: 'PRESENTE', error: null }
+    : { estado: 'AUSENTE', error: null };
+}
+
+/** #5856 — desenlace fail-closed con traza (CA-6, tercer mensaje). */
+function _humanBlockUnverifiable(issue, motivo, logFn) {
+  try {
+    logFn('lanzamiento', `🔴 #${issue} no se pudo verificar el label needs-human contra GitHub — se mantiene bloqueado por precaución (fail-closed, #5856): ${motivo}`);
+  } catch { /* logging best-effort */ }
+  return { estado: 'NO_VERIFICABLE', error: motivo };
+}
+
+/**
+ * #5856 CA-3 — Fachada booleana de `_verifyHumanBlockLive()`, simétrica con
+ * `_shouldReblockForDependencies()`: `true` = mantener/aplicar el bloqueo.
+ *
+ * Sólo `AUSENTE` (lectura en vivo exitosa que confirma que el label ya no está)
+ * libera. Cualquier otra cosa — incluido "no pude preguntarle a GitHub" — bloquea.
+ *
+ * @param {string|number} issue
+ * @param {object} [deps] — mismos que `_verifyHumanBlockLive`.
+ * @returns {boolean}
+ */
+function _shouldReblockForHuman(issue, deps = {}) {
+  return _verifyHumanBlockLive(issue, deps).estado !== 'AUSENTE';
 }
 
 /** Calcular score de prioridad para un issue (menor = más prioritario) */
@@ -7934,14 +8092,39 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     // para que el dashboard lo vea como bloqueado y NO lo retomamos hasta que
     // un humano remueva el label (entonces el intake genera un archivo fresco).
     if (issueLbls.includes('needs-human') || issueLbls.includes('needs:human')) {
+      // #5856 — Re-bloqueo fantasma: `issueLbls` viene de la caché (TTL 10min,
+      // LABELS_CACHE_TTL_MS). Si un humano destrabó el issue dentro de esa
+      // ventana, la caché todavía muestra el label viejo y volveríamos a
+      // bloquearlo, revirtiendo una autorización explícita del operador
+      // (incidente 2026-08-12: tres destrabes revertidos solos en 5 minutos).
+      // Misma protección que la rama blocked:dependencias de arriba (#4023),
+      // pero con TRES desenlaces: el fail-closed por "no verificable" no puede
+      // disfrazarse de "ya destrabado" (CA-6/CA-7).
+      const veredictoHumano = _verifyHumanBlockLive(issue);
+
+      if (veredictoHumano.estado === 'AUSENTE') {
+        log('lanzamiento', `🟢 #${issue} label needs-human ya removido en GitHub (caché stale) — NO re-bloquear (#5856)`);
+        // Sin mover a bloqueado-humano/, sin .reason.json, sin Telegram, sin
+        // _dcMark y sin `continue`: el issue sigue evaluándose por el resto de
+        // los gates (closed, dedup, cooldown…), igual que la rama de deps.
+      } else {
+      const noVerificable = veredictoHumano.estado === 'NO_VERIFICABLE';
       const blockedDir = path.join(fasePath(pipelineName, fase), 'bloqueado-humano');
       try { fs.mkdirSync(blockedDir, { recursive: true }); } catch {}
       const targetFile = path.join(blockedDir, archivo.name);
       const reasonFile = targetFile + '.reason.json';
       const yaTeniaReason = fs.existsSync(reasonFile);
       // Persistir reason mínima para que listBlockedIssues() lo muestre con contexto.
-      const reasonTxt = 'Label needs-human aplicado en GitHub — pipeline pausa el skill hasta que un humano remueva el label.';
-      const questionTxt = `¿Podés revisar #${issue} y quitar el label \`needs-human\` cuando esté listo para reentrar?`;
+      // #5856 CA-7 — el motivo del bloqueo por precaución NO reusa el texto de
+      // "label aplicado": ese texto lo consumen el dashboard y el resumen de
+      // Telegram, y afirmar un label que no se pudo leer reproduce exactamente
+      // el desconcierto que motivó este issue.
+      const reasonTxt = noVerificable
+        ? `Bloqueo por precaución (#5856): el pipeline NO pudo verificar el label needs-human contra GitHub (${veredictoHumano.error}). Se mantiene bloqueado (fail-closed) hasta poder confirmar el estado real del label.`
+        : 'Label needs-human aplicado en GitHub — pipeline pausa el skill hasta que un humano remueva el label.';
+      const questionTxt = noVerificable
+        ? `¿Podés revisar #${issue}? El pipeline no pudo leer sus labels en GitHub y lo mantuvo bloqueado por precaución.`
+        : `¿Podés revisar #${issue} y quitar el label \`needs-human\` cuando esté listo para reentrar?`;
       if (!yaTeniaReason) {
         try {
           fs.writeFileSync(reasonFile, JSON.stringify({
@@ -7951,12 +8134,21 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
             pipeline: pipelineName,
             reason: reasonTxt,
             question: questionTxt,
+            // #5856 — marca legible para dashboard/auditoría: distingue el
+            // bloqueo verificado del preventivo sin parsear el texto.
+            verificado_en_vivo: !noVerificable,
             blocked_at: new Date().toISOString(),
           }, null, 2));
         } catch {}
       }
       try { moveFile(archivo.path, blockedDir); } catch {}
-      log('lanzamiento', `🚧 #${issue} omitido — label needs-human. Movido a ${pipelineName}/${fase}/bloqueado-humano/`);
+      // #5856 CA-6 — tres desenlaces, tres mensajes distintos. El de
+      // "no verificable" lo emite _verifyHumanBlockLive() al detectar el fallo.
+      if (!noVerificable) {
+        log('lanzamiento', `🚧 #${issue} omitido — label needs-human vigente en GitHub. Movido a ${pipelineName}/${fase}/bloqueado-humano/`);
+      } else {
+        log('lanzamiento', `🔴 #${issue} movido a ${pipelineName}/${fase}/bloqueado-humano/ por precaución (estado del label no verificable, #5856)`);
+      }
       // Notificar Telegram solo la primera vez (dedup por reasonFile pre-existente).
       if (!yaTeniaReason) {
         try {
@@ -7975,6 +8167,7 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
       // #4709 — needs-human es un halt humano por issue.
       _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, `#${issue} bloqueado por label needs-human`);
       continue;
+      } // fin else (#5856): bloqueo vigente o no verificable
     }
 
     // 0c. CLOSED: no lanzar issues cerrados en GitHub — archivar y seguir
@@ -8344,7 +8537,8 @@ function autoClassifyIssue(issueNum) {
       log('auto-classify', `#${issueNum}: label "${winner.label}" asignado en GitHub ✓`);
 
       // Invalidar cache de labels para que el ruteo use el label nuevo
-      issueLabelsCache.delete(issueNum);
+      // (#5856 CA-5 — clave canónica en ambos extremos).
+      issueLabelsCache.delete(issueCacheKey(issueNum));
     } catch (e) {
       log('auto-classify', `#${issueNum}: error asignando label — ${e.message.slice(0, 80)}`);
     }
@@ -21524,9 +21718,15 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     isDeclaredStackDevSkill,
     getGenericDevFallbackSkill,
     _setIssueInfoForTest: (issue, info) => {
-      issueLabelsCache.set(issue, { labels: info.labels || [], state: info.state || 'OPEN', fetchedAt: Date.now() });
+      // #5856 CA-5 — misma clave canónica que getIssueInfo y las invalidaciones,
+      // para que el helper de test no dependa del tipo del identificador.
+      issueLabelsCache.set(issueCacheKey(issue), { labels: info.labels || [], state: info.state || 'OPEN', fetchedAt: Date.now() });
       if (typeof info.text === 'string') issueTextCache.set(issue, { text: info.text.toLowerCase(), fetchedAt: Date.now() });
     },
+    // #5856 CA-5 — lectura CRUDA de la entrada de caché (sin TTL ni fetch), para
+    // poder afirmar en test que la invalidación borró de verdad la entrada.
+    // Devuelve `undefined` si no existe.
+    _peekIssueInfoForTest: (issue) => issueLabelsCache.get(issueCacheKey(issue)),
     _clearIssueRoutingCachesForTest: () => {
       issueLabelsCache.clear();
       issueTextCache.clear();
@@ -21548,6 +21748,12 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #4023 — re-bloqueo fantasma: lectura en vivo + self-heal (testing).
     _shouldReblockForDependencies,
     _selfHealPhantomBlocks,
+    // #5856 — re-bloqueo fantasma de needs-human: lector en vivo fail-closed +
+    // verificación tri-estado + fachada booleana (testing).
+    _readLiveLabelsOrThrow,
+    _verifyHumanBlockLive,
+    _shouldReblockForHuman,
+    HUMAN_BLOCK_LABELS,
     UNBLOCK_WEDGE_TIMEOUT_MS,
     REENTRY_LOG_COOLDOWN_MS,
     _getUnblockState: () => ({
