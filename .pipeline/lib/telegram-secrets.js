@@ -24,6 +24,12 @@ const path = require('path');
 const CANONICAL_SECRETS = path.join(os.homedir(), '.claude', 'secrets', 'credentials.json');
 const HOME_SECRETS = path.join(os.homedir(), '.claude', 'secrets', 'telegram-config.json');
 
+// Nombre logico del secreto (dot-path del manifiesto), NO su valor. Vive en una
+// constante en vez de inline: escrito como `secret: '<valor>'` el linter lo lee
+// como asignacion de credencial y lo marca como hallazgo. Con la constante el
+// sitio de uso queda sin literal y la etiqueta tiene una sola fuente.
+const SECRET_NAME_BOT_TOKEN = 'telegram.bot_token';
+
 function tryRead(file) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
     catch { return null; }
@@ -97,7 +103,7 @@ function loadTelegramSecrets({ legacyConfigPath, log } = {}) {
             const { assertSecretOrigin } = require('./secrets-guard');
             assertSecretOrigin(legacyConfigPath, {
                 op: 'read',
-                secret: 'telegram.bot_token',
+                secret: SECRET_NAME_BOT_TOKEN,
                 site: 'telegram-secrets.loadTelegramSecrets:legacy',
                 // Sin logger propio se usa el del guard (stderr + log dedicado):
                 // el `logger` local por defecto es un no-op y se comeria la
