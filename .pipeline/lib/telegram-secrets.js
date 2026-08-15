@@ -86,6 +86,25 @@ function loadTelegramSecrets({ legacyConfigPath, log } = {}) {
     // 4) Legacy committed fallback
     if (legacyConfigPath) {
         const legacy = tryRead(legacyConfigPath);
+        // #5245 — Punto donde un secreto se resuelve desde un archivo que puede
+        // vivir adentro del repo (publico). Se declara al guard ANTES de mirar
+        // si el valor sirve: la lectura in-repo ya ocurrio, y es exactamente lo
+        // que la migracion tiene que llevar a cero. En `warn` avisa y cuenta; en
+        // `strict` (#5263) lanza y el llamador degrada.
+        // Require diferido a proposito: solo esta rama paga el costo, y el resto
+        // de los consumidores de este modulo no arrastran el guard.
+        if (legacy && typeof legacy.bot_token === 'string' && legacy.bot_token.trim()) {
+            const { assertSecretOrigin } = require('./secrets-guard');
+            assertSecretOrigin(legacyConfigPath, {
+                op: 'read',
+                secret: 'telegram.bot_token',
+                site: 'telegram-secrets.loadTelegramSecrets:legacy',
+                // Sin logger propio se usa el del guard (stderr + log dedicado):
+                // el `logger` local por defecto es un no-op y se comeria la
+                // evidencia de enganche que pide CA-11.
+                log: typeof log === 'function' ? logger : undefined,
+            });
+        }
         if (legacy && isLikelyToken(legacy.bot_token) && !looksLikePlaceholder(legacy.bot_token)) {
             logger(`[secrets] WARNING: bot_token leido del archivo committed (${legacyConfigPath}). Mover a ${CANONICAL_SECRETS}.`);
             return { bot_token: legacy.bot_token, chat_id: String(legacy.chat_id), source: 'legacy' };
