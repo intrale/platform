@@ -99,6 +99,41 @@ const visualGate = require('./lib/visual-gate');
 const gateVerdict = require('./lib/gate-verdict');
 const gateLabelReconciler = require('./lib/gate-label-reconciler');
 const gateAuditLog = require('./lib/audit-log');
+
+// #5864 — Razones de resolución estricta del PR que NO retienen la promoción.
+//
+// GATE 0 evalúa la promoción `verificacion → linteo`, y el PR lo crea
+// `delivery.js` recién en `entrega` (última fase de `desarrollo`, ver
+// config.yaml: [validacion, dev, build, verificacion, linteo, aprobacion,
+// entrega]). O sea: en el momento de GATE 0 el PR TODAVÍA NO EXISTE por diseño,
+// y `no_strict_match` es el caso normal, no una anomalía. Retener por eso
+// dejaría a TODO issue clavado en `waiting-operator/` al encender el flag —
+// el pipeline entero fuera de servicio.
+//
+// No relaja nada: sin PR no hay label que escribir, y la ausencia del label es
+// justamente lo que mantiene cerrado cualquier gate que lea labels del PR. La
+// propagación real ocurre en `entrega`, cuando el PR ya existe
+// (`delivery.js:propagateGateLabelToPr`).
+//
+// El resto de las razones sí retiene: `fetch_failed` (no sabemos si hay PR),
+// `ambiguous_match` (hay más de un PR y no podemos elegir) y `cross_repository`
+// (head de fork) son fallas de integridad, no estado esperado.
+const PR_PROPAGATION_NON_BLOCKING = new Set(['no_strict_match']);
+
+function gatePrPropagationDecision(resolved, { retain } = {}) {
+  if (resolved && resolved.ok === true) return { allowPromotion: true, propagate: true };
+  const reason = resolved && typeof resolved.reason === 'string'
+    ? resolved.reason
+    : 'fetch_failed';
+  const code = `pr-propagation-${reason}`;
+  const detail = resolved && resolved.detail ? String(resolved.detail) : null;
+  if (PR_PROPAGATION_NON_BLOCKING.has(reason)) {
+    return { allowPromotion: true, propagate: false, code, detail };
+  }
+  const decision = { allowPromotion: false, propagate: false, code, detail };
+  if (typeof retain === 'function') retain(decision.code, decision.detail);
+  return decision;
+}
 // #4575 — GATE 2 · Firma de Aceptación del operador. Función ÚNICA de
 // verificación (CA-2) invocada antes de promover `aprobacion → entrega`.
 // Kill switch por config (`operator_signature.enabled`), default OFF.
@@ -5546,7 +5581,7 @@ function brazoBarrido(config) {
               // Datos del PREFLIGHT (cuerpo del issue), NUNCA del YAML del agente
               // (SEC-R1). Fetch sync con timeout corto, igual que visual-gate.
               let g0Body = '';
-              let g0Labels = getIssueInfo(issue).labels || [];
+              let g0Labels = [];
               let g0Comments = [];
               try {
                 ghThrottle();
@@ -5601,6 +5636,51 @@ function brazoBarrido(config) {
                 }
               } catch (e) {
                 log('barrido', `#${issue} gate0: error encolando labels (${e.message})`);
+              }
+
+              // Propagación unidireccional issue -> PR. Una única orden permite
+              // que el worker reconcilie labels frescos del PR en remove-then-add.
+              try {
+                const { resolvePrForGateWrite } = require('./lib/pr-info-fetcher');
+                const resolved = resolvePrForGateWrite(issue, { ghBin: GH_BIN, cwd: ROOT, timeoutMs: 5000 });
+                const propagationDecision = gatePrPropagationDecision(resolved, {
+                  retain: retainGate0FailClosed,
+                });
+                if (!propagationDecision.propagate) {
+                  // Sin PR resoluble no se escribe NINGÚN label (SEC-2). Sólo
+                  // `no_strict_match` deja seguir la promoción — el PR aún no
+                  // existe en esta fase; el resto ya retuvo vía `retain`.
+                  gate0Audit('pr-propagation-skipped', {
+                    reason: resolved.reason,
+                    candidates: resolved.candidates || null,
+                    detail: resolved.detail || null,
+                    blocking: !propagationDecision.allowPromotion,
+                  });
+                  if (!propagationDecision.allowPromotion) continue;
+                } else {
+                  const prRec = gateLabelReconciler.reconcileGateLabels({
+                    currentLabels: resolved.pr.labels,
+                    verdict: g0.verdict,
+                  });
+                  const prAction = {
+                    action: 'label', issue: resolved.pr.number, target: 'pr', label: prRec.target,
+                  };
+                  fs.writeFileSync(
+                    path.join(g0QueueDir, `${issue}-gate0-pr-${resolved.pr.number}-${Date.now()}.json`),
+                    JSON.stringify(prAction),
+                  );
+                  gate0Audit('pr-propagation', {
+                    pr: resolved.pr.number,
+                    verdict: g0.verdict,
+                    target: prRec.target,
+                    toAdd: prRec.toAdd,
+                    toRemove: prRec.toRemove,
+                  });
+                }
+              } catch (e) {
+                gate0Audit('pr-propagation-error', { reason: e.message });
+                retainGate0FailClosed('pr-propagation-error', e.message);
+                continue;
               }
 
               if (g0.verdict === 'requires-operator') {
@@ -21513,6 +21593,7 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    gatePrPropagationDecision,
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,
     // #5689 (R1) — término `--search` único del intake (anti-starvation).

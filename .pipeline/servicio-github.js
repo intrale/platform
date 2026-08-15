@@ -133,6 +133,19 @@ const defaultGhClient = {
     }
   },
 
+  editPullRequest(prNumber, { addLabel, removeLabel } = {}) {
+    if (addLabel) {
+      cp.execFileSync(GH_BIN, ['pr', 'edit', String(prNumber), '--add-label', String(addLabel)], {
+        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
+      });
+    }
+    if (removeLabel) {
+      cp.execFileSync(GH_BIN, ['pr', 'edit', String(prNumber), '--remove-label', String(removeLabel)], {
+        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
+      });
+    }
+  },
+
   commentIssue(issueNumber, body) {
     cp.execFileSync(GH_BIN, ['issue', 'comment', String(issueNumber), '--body-file', '-'], {
       cwd: ROOT, encoding: 'utf8', input: body == null ? '' : String(body),
@@ -191,6 +204,18 @@ const defaultGhClient = {
     const raw = cp.execFileSync(
       GH_BIN,
       ['issue', 'view', String(issueNumber), '--json', 'labels', '--repo', DEFAULT_REPO],
+      { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true },
+    );
+    const parsed = JSON.parse(raw || '{}');
+    return Array.isArray(parsed.labels)
+      ? parsed.labels.map((l) => (l && l.name) ? l.name : String(l)).filter(Boolean)
+      : [];
+  },
+
+  getPrLabels(prNumber) {
+    const raw = cp.execFileSync(
+      GH_BIN,
+      ['pr', 'view', String(prNumber), '--json', 'labels', '--repo', DEFAULT_REPO],
       { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true },
     );
     const parsed = JSON.parse(raw || '{}');
@@ -395,11 +420,16 @@ function _resetLabelCacheForTests() {
   labelCacheTs = 0;
 }
 
-function currentLabelsForIssue(issue, ghClient) {
-  if (!ghClient || typeof ghClient.getIssueLabels !== 'function') {
-    throw new Error('ghClient.getIssueLabels requerido para reconciliar labels QA');
+function currentLabelsForTarget(number, target, ghClient) {
+  const normalizedTarget = target || 'issue';
+  if (normalizedTarget !== 'issue' && normalizedTarget !== 'pr') {
+    throw new Error(`target inválido para reconciliar labels QA: ${normalizedTarget}`);
   }
-  const labels = ghClient.getIssueLabels(issue);
+  const method = normalizedTarget === 'pr' ? 'getPrLabels' : 'getIssueLabels';
+  if (!ghClient || typeof ghClient[method] !== 'function') {
+    throw new Error(`ghClient.${method} requerido para reconciliar labels QA`);
+  }
+  const labels = ghClient[method](number);
   return Array.isArray(labels) ? labels.map(String) : [];
 }
 
@@ -407,14 +437,16 @@ function applyGateLabelAction(data, ghClient) {
   if (!data || !gateLabelReconciler.isGateLabel(data.label)) return false;
 
   if (data.gate_reconciler === true) {
+    const edit = data.target === 'pr' ? ghClient.editPullRequest : ghClient.editIssue;
+    if (typeof edit !== 'function') throw new Error(`ghClient sin editor para target=${data.target || 'issue'}`);
     if (data.action === 'label') {
       ensureLabels(data.label, ghClient);
-      ghClient.editIssue(data.issue, { addLabel: data.label });
+      edit.call(ghClient, data.issue, { addLabel: data.label });
       log(`Gate label reconciliado "${data.label}" -> #${data.issue}`);
       return true;
     }
     if (data.action === 'remove-label') {
-      ghClient.editIssue(data.issue, { removeLabel: data.label });
+      edit.call(ghClient, data.issue, { removeLabel: data.label });
       log(`Gate label reconciliado "${data.label}" removido de #${data.issue}`);
       return true;
     }
@@ -429,22 +461,25 @@ function applyGateLabelAction(data, ghClient) {
 
   if (data.action !== 'label') return false;
 
-  const currentLabels = currentLabelsForIssue(data.issue, ghClient);
+  const target = data.target || 'issue';
+  const currentLabels = currentLabelsForTarget(data.issue, target, ghClient);
   const verdict = gateLabelReconciler.verdictForGateLabel(data.label);
   const reconciliation = gateLabelReconciler.reconcileGateLabels({ currentLabels, verdict });
-  const actions = gateLabelReconciler.buildLabelActions({ issue: data.issue, reconciliation });
+  const actions = gateLabelReconciler.buildLabelActions({ issue: data.issue, reconciliation, target });
   data.gate_reconciled = true;
   data.gate_reconciled_at = new Date().toISOString();
   data.gate_reconciled_from = currentLabels;
   data.gate_reconciled_actions = actions;
 
   for (const action of actions) {
+    const edit = action.target === 'pr' ? ghClient.editPullRequest : ghClient.editIssue;
+    if (typeof edit !== 'function') throw new Error(`ghClient sin editor para target=${action.target}`);
     if (action.action === 'remove-label') {
-      ghClient.editIssue(action.issue, { removeLabel: action.label });
+      edit.call(ghClient, action.issue, { removeLabel: action.label });
       log(`Gate label normalizado "${action.label}" removido de #${action.issue}`);
     } else if (action.action === 'label') {
       ensureLabels(action.label, ghClient);
-      ghClient.editIssue(action.issue, { addLabel: action.label });
+      edit.call(ghClient, action.issue, { addLabel: action.label });
       log(`Gate label normalizado "${action.label}" -> #${action.issue}`);
     }
   }
@@ -564,6 +599,11 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
             break;
           }
           if (applyGateLabelAction(data, ghClient)) break;
+          if (data.target === 'pr') {
+            data.discarded = 'non-gate-pr-label-blocked';
+            log(`Orden no-gate a PR bloqueada: #${data.issue} label=${data.label}`);
+            break;
+          }
           ensureLabels(data.label, ghClient);
           ghClient.editIssue(data.issue, { addLabel: data.label });
           log(`Label "${data.label}" → #${data.issue}`);
@@ -572,6 +612,11 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
 
         case 'remove-label':
           if (applyGateLabelAction(data, ghClient)) break;
+          if (data.target === 'pr') {
+            data.discarded = 'non-gate-pr-label-blocked';
+            log(`Orden no-gate a PR bloqueada: #${data.issue} remove-label=${data.label}`);
+            break;
+          }
           ghClient.editIssue(data.issue, { removeLabel: data.label });
           log(`Label "${data.label}" removido de #${data.issue}`);
           break;
@@ -712,4 +757,5 @@ module.exports = {
   ensureLabels,
   _resetLabelCacheForTests,
   applyGateLabelAction,
+  currentLabelsForTarget,
 };

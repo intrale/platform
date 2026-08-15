@@ -467,7 +467,16 @@ function supervisorConAlertas(catalogo, alertas) {
   });
 }
 
-test('CA-6.b · onAlert de `secrets` emite el error del resolver para namespace_reservado', async () => {
+// #5899 — este seam del kernel dejó de consumir `resolveScopedRefs`: ahora
+// resuelve contra el VAULT (REQ-SEC-1), así que `namespace_reservado` y
+// `path_fuera_del_store` ya no pueden originarse acá. Esos dos rechazos siguen
+// cubiertos ARRIBA, directamente sobre `resolveScopedRefs`, que es donde vive
+// el blindaje de #5898 y donde sigue entrando su otro consumidor
+// (`product-seed.js`). Lo que estos dos casos pinnean —y sigue siendo el
+// invariante de UX-1 de CA-6.b— es que el `detail` de `onAlert` ES el error del
+// resolver, verbatim, y nunca una reconstrucción a partir de `missing`.
+
+test('CA-6.b · onAlert de `secrets` emite el error del resolver verbatim (gate del vault cerrado)', async () => {
   const alertas = [];
   const supervisor = supervisorConAlertas(
     [{ productId: 'providers', projectId: 'providers', name: 'Providers', status: 'active' }],
@@ -475,9 +484,11 @@ test('CA-6.b · onAlert de `secrets` emite el error del resolver para namespace_
   );
   await supervisor.bootProducts();
 
+  // Sin `vaultConfig` inyectada se lee la real: `vault.enabled: false` ⇒
+  // fail-closed, JAMÁS fallback al archivo de credenciales (CA-17 de #5899).
   const r = supervisor.resolveInstanceSecrets('providers', {
     scopes: ['openai'],
-    data: STORE_CON_BLOQUES_GLOBALES,
+    logger: () => {},
   });
   assert.equal(r.ok, false);
 
@@ -486,10 +497,11 @@ test('CA-6.b · onAlert de `secrets` emite el error del resolver para namespace_
   const detail = alerta.errors[0].detail;
   assert.equal(detail, r.error, 'el detail ES el error del resolver, no una reconstrucción');
   assert.ok(!detail.includes('missing: —'), 'el operador nunca lee "missing: —" como texto terminal');
-  assert.ok(detail.includes('providers'), 'el detail nombra el namespace rechazado');
+  assert.ok(detail.includes('providers'), 'el detail nombra el producto que quedó sin credenciales');
+  assert.ok(detail.includes('vault.enabled'), 'el detail nombra la palanca que hay que tocar');
 });
 
-test('CA-6.b · onAlert de `secrets` emite el error del resolver para path_fuera_del_store', async () => {
+test('CA-6.b · onAlert de `secrets` emite el error del resolver verbatim (scope ausente en el vault)', async () => {
   const alertas = [];
   const supervisor = supervisorConAlertas(
     [{ productId: 'acme', projectId: 'acme', name: 'ACME', status: 'active' }],
@@ -497,10 +509,15 @@ test('CA-6.b · onAlert de `secrets` emite el error del resolver para path_fuera
   );
   await supervisor.bootProducts();
 
+  const { createInMemoryVaultDriver } = require('../secret-vault');
   const r = supervisor.resolveInstanceSecrets('acme', {
     scopes: ['api_key'],
-    ref: '~/x.json#acme',
-    data: STORE_CON_BLOQUES_GLOBALES,
+    vaultConfig: {
+      enabled: true, prefix: '/test5898', projectId: 'kernel', hostId: 'hostDePrueba',
+      cache_ttl_seconds: 300, required_scopes: [], shared_secrets: [],
+    },
+    vaultDriver: createInMemoryVaultDriver({ parameters: {} }),   // vault vacío
+    logger: () => {},
   });
   assert.equal(r.ok, false);
   assert.notEqual(r.error, 'scopes faltantes', 'el retorno no degrada a texto terminal');
@@ -510,6 +527,7 @@ test('CA-6.b · onAlert de `secrets` emite el error del resolver para path_fuera
   const detail = alerta.errors[0].detail;
   assert.equal(detail, r.error, 'el detail ES el error del resolver');
   assert.ok(!detail.includes('missing: —'), 'sin "missing: —" como texto terminal');
+  assert.ok(detail.includes('api_key'), 'el detail nombra el scope que falta');
 });
 
 // -----------------------------------------------------------------------------
