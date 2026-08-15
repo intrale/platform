@@ -53,7 +53,9 @@ const {
 const projectDescriptor = require('./project-descriptor');
 const { validateDescriptor, isSafeId, isReservedProjectId, redactAjvErrors, CONTROL_PLANE_PROJECT_ID } = projectDescriptor;
 const { detectInjection } = require('./handoff');
-const { parseSecretRef } = require('./credentials');
+// `RESERVED_STORE_NAMESPACES` se IMPORTA, no se copia (#5898 · CA-3): una
+// segunda lista literal en este archivo se desincronizaría del store.
+const { parseSecretRef, RESERVED_STORE_NAMESPACES } = require('./credentials');
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -305,6 +307,13 @@ function createKernelStore(deps = {}) {
           }
           if (!allowedNamespaces.includes(parsed.namespace)) {
             hits.push({ path: `credentials[${i}].ref`, keyword: 'ref', detail: `namespace de credencial fuera de allowlist: ${parsed.namespace}` });
+          } else if (RESERVED_STORE_NAMESPACES.includes(parsed.namespace)) {
+            // Defensa en profundidad (#5898 · CA-3): `allowedNamespaces` es
+            // `[projectId]`, y `SAFE_ID_RE` admite `providers`/`telegram`/`aws`
+            // como projectId — así que un producto registrado con ese nombre
+            // pasaba la allowlist. El rechazo duro vive en `resolveScopedRefs`
+            // (borde de resolución); acá se cierra el borde de ESCRITURA.
+            hits.push({ path: `credentials[${i}].ref`, keyword: 'ref', detail: `namespace de credencial reservado por el store global: ${parsed.namespace}` });
           }
         });
       }
