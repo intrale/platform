@@ -53,13 +53,18 @@ jobs:
       - name: Checkout (solo `.pipeline/lib/` — NO código del PR)
         # IMPORTANTE: `actions/checkout` SIN `ref: head.sha` (CA-S2). Trae el
         # default branch (= main) que es código de confianza, no del fork.
-        # Solo necesitamos `.pipeline/lib/admission-gate.js` y `redact.js`.
+        # Solo necesitamos `admission-gate.js` y su árbol de dependencias.
+        # #5680: la lista de abajo ES el contrato de empaquetado del módulo —
+        # el test T4 la parsea de este YAML y verifica que el require cargue
+        # con exactamente estos archivos. Si agregás un `require` al módulo,
+        # agregá el archivo acá en el MISMO commit.
         uses: actions/checkout@v4
         with:
           sparse-checkout: |
             .pipeline/lib/admission-gate.js
             .pipeline/lib/redact.js
             .pipeline/lib/constants.js
+            .pipeline/lib/recommendation-labels.js
           sparse-checkout-cone-mode: false
 
       - name: Evaluar y aplicar label si corresponde
@@ -85,8 +90,12 @@ jobs:
 
             core.info(`Admission gate evaluando ${kind} #${number}`);
 
-            if (gate.isAdmitted(labels)) {
-              core.info(`#${number} ya tiene label de admisión — no-op`);
+            // #5680 — `needsAdmissionLabel` y no `isAdmitted`: además de los ya
+            // admitidos, excluye las recomendaciones de agente pendientes de
+            // triaje (esperan decisión humana, no definición). El label se les
+            // concede en `recommendations.approve()`.
+            if (!gate.needsAdmissionLabel(labels)) {
+              core.info(`#${number} no requiere label de admisión — no-op`);
               return;
             }
 
