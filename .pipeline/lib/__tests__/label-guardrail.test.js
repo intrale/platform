@@ -555,3 +555,216 @@ test('SEC-F: el motivo de mezcla en la misma orden tiene explicacion legible en 
     assert.match(msg, /NO fue modificado/);
     assert.doesNotMatch(msg, /mezcla-needs-human-y-recomendacion/, 'debe explicar, no volcar el slug');
 });
+
+// -----------------------------------------------------------------------------
+// SEC-G — NORMALIZACIÓN DE CASE (regresión del 2do bypass, misma clase que SEC-F)
+//
+// SEC-F cubrió el separador y no el case. `Array.includes()` es case-sensitive;
+// GitHub y `gh` resuelven los nombres de label case-insensitive (verificado
+// contra la API real: `gh api .../labels/NEEDS-HUMAN` devuelve `needs-human`, y
+// `gh issue edit --remove-label "ZZZ-CASETEST"` removió el `zzz-casetest`).
+//
+// Entonces `{"action":"remove-label","label":"NEEDS-HUMAN"}` salía por el
+// early-return `label-no-sensible`, llegaba a `editIssue` y removía el
+// `needs-human` REAL — rompiendo SEC-4/R4 y sin dejar línea de auditoría.
+//
+// Cada test de acá abajo es un vector verificado ROJO antes del fix.
+// -----------------------------------------------------------------------------
+
+test('SEC-G: normalizeLabelName baja a minusculas y trimea (solo para comparar)', () => {
+    assert.strictEqual(guardrail.normalizeLabelName('  NEEDS-HUMAN '), 'needs-human');
+    assert.strictEqual(guardrail.normalizeLabelName('Tipo:Recomendacion'), 'tipo:recomendacion');
+    assert.strictEqual(guardrail.normalizeLabelName(''), '');
+    assert.strictEqual(guardrail.normalizeLabelName(null), '');
+});
+
+test('SEC-G: isSensitiveLabel detecta el sensible en cualquier variante de case', () => {
+    for (const l of ['NEEDS-HUMAN', 'Needs-Human', 'needs-Human', ' NeEdS-HuMaN ', 'Tipo:Recomendacion', 'RECOMMENDATION:APPROVED']) {
+        assert.strictEqual(guardrail.isSensitiveLabel(l), true, `deberia ser sensible: ${l}`);
+    }
+    // Combinado con SEC-F: case raro + CSV.
+    assert.strictEqual(guardrail.isSensitiveLabel('priority:high,NEEDS-HUMAN'), true);
+    assert.strictEqual(guardrail.isSensitiveLabel('Area:Infra,Bug'), false, 'sin sensibles sigue barato (SEC-D)');
+});
+
+test('SEC-G: parseLabelList NO altera el case (el original es lo que viaja a gh y al audit)', () => {
+    assert.deepStrictEqual(guardrail.parseLabelList('NEEDS-HUMAN, Area:Infra'), ['NEEDS-HUMAN', 'Area:Infra']);
+    assert.deepStrictEqual(guardrail.normalizedLabelList('NEEDS-HUMAN, Area:Infra'), ['needs-human', 'area:infra']);
+});
+
+test('SEC-G: remove-label de needs-human en MAYUSCULAS exige procedencia igual', () => {
+    for (const label of ['NEEDS-HUMAN', 'Needs-Human', 'needs-Human', ' NeEdS-HuMaN ', 'NEEDS-HUMAN,priority:high']) {
+        const v = guardrail.evaluateLabelOrder({ action: 'remove-label', label, order: {} });
+        assert.strictEqual(v.allowed, false, `deberia rechazar: ${label}`);
+        assert.strictEqual(v.motivo, guardrail.MOTIVOS.REMOVE_NEEDS_HUMAN_SIN_ORIGEN_HUMANO);
+    }
+});
+
+test('SEC-G: agregar Needs-Human sobre una recomendacion sigue siendo mezcla', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'Needs-Human',
+        order: {},
+        getCurrentLabels: () => ['tipo:recomendacion'],
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO);
+});
+
+test('SEC-G: la normalizacion aplica tambien a los labels ACTUALES del issue', () => {
+    // El otro lado de la comparación: si GitHub reporta `Tipo:Recomendacion`,
+    // comparar contra la constante en minúsculas dejaba pasar la mezcla.
+    const v1 = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human',
+        order: {},
+        getCurrentLabels: () => ['Tipo:Recomendacion', 'Enhancement'],
+    });
+    assert.strictEqual(v1.allowed, false);
+    assert.strictEqual(v1.motivo, guardrail.MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO);
+
+    const v2 = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'tipo:recomendacion',
+        order: {},
+        getCurrentLabels: () => ['NEEDS-HUMAN'],
+    });
+    assert.strictEqual(v2.allowed, false);
+    assert.strictEqual(v2.motivo, guardrail.MOTIVOS.MEZCLA_RECO_SOBRE_BLOQUEO);
+});
+
+test('SEC-G: currentLabels devuelto conserva el case ORIGINAL para el forense', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'needs-human',
+        order: {},
+        getCurrentLabels: () => ['Tipo:Recomendacion'],
+    });
+    assert.deepStrictEqual(v.currentLabels, ['Tipo:Recomendacion'], 'el audit registra lo que GitHub reporta, no una version reescrita');
+});
+
+test('SEC-G: auto-aprobar con Recommendation:Approved sin procedencia se rechaza', () => {
+    const v = guardrail.evaluateLabelOrder({ action: 'label', label: 'Recommendation:Approved', order: {} });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.APPROVED_SIN_ORIGEN_HUMANO);
+});
+
+test('SEC-G: mezcla en la misma orden con case mixto se rechaza aun con procedencia', () => {
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'NEEDS-HUMAN,Tipo:Recomendacion',
+        order: { guardrail_authorized: true, authorized_by: 'atacante' },
+    });
+    assert.strictEqual(v.allowed, false, 'imposible POR CONSTRUCCION: la procedencia no habilita la mezcla');
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN);
+});
+
+test('SEC-G: SEC-D preservado — un label no sensible con case raro no consulta la API', () => {
+    let consultas = 0;
+    const v = guardrail.evaluateLabelOrder({
+        action: 'label',
+        label: 'Area:Infra,BUG',
+        order: {},
+        getCurrentLabels: () => { consultas++; return []; },
+    });
+    assert.strictEqual(v.allowed, true);
+    assert.strictEqual(consultas, 0, 'normalizar no puede encarecer el camino comun');
+});
+
+test('SEC-G/SEC-4: ningun veredicto del modulo ordena remover needs-human', () => {
+    // El invariante R4: la salida es un veredicto, nunca una accion.
+    const variantes = ['needs-human', 'NEEDS-HUMAN', 'Needs-Human', 'needs-human,x'];
+    for (const label of variantes) {
+        for (const action of ['label', 'remove-label']) {
+            for (const order of [{}, { guardrail_authorized: true, authorized_by: 'quien-sea' }]) {
+                const v = guardrail.evaluateLabelOrder({ action, label, order, getCurrentLabels: () => [] });
+                assert.ok(!('removeLabel' in v), 'el veredicto no puede traer una accion de remocion');
+                assert.ok(!('accion' in v) && !('mutacion' in v));
+                assert.strictEqual(typeof v.allowed, 'boolean');
+            }
+        }
+    }
+});
+
+// -----------------------------------------------------------------------------
+// SEC-H — EL NACIMIENTO TAMBIÉN ES UNA MUTACIÓN
+//
+// `case 'create-issue'` seteaba `data.labels` y llegaba a `createIssue` sin
+// pasar por ningún guardrail: un issue podía NACER con `needs-human` y
+// `tipo:recomendacion` juntos. El CA pide que la mezcla sea imposible por
+// construcción, y el nacimiento no estaba cubierto.
+// -----------------------------------------------------------------------------
+
+test('SEC-H: crear un issue con needs-human + tipo:recomendacion se rechaza', () => {
+    for (const labels of [
+        'needs-human,tipo:recomendacion',
+        'tipo:recomendacion,needs-human',
+        'NEEDS-HUMAN,Tipo:Recomendacion',
+        'enhancement,tipo:recomendacion,area:infra,needs-human',
+    ]) {
+        const v = guardrail.evaluateCreateIssueLabels({ labels, order: {} });
+        assert.strictEqual(v.allowed, false, `deberia rechazar: ${labels}`);
+        assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN);
+    }
+});
+
+test('SEC-H: la procedencia declarada NO habilita nacer mezclado', () => {
+    const v = guardrail.evaluateCreateIssueLabels({
+        labels: 'needs-human,tipo:recomendacion',
+        order: { guardrail_authorized: true, authorized_by: 'atacante' },
+    });
+    assert.strictEqual(v.allowed, false);
+    assert.strictEqual(v.motivo, guardrail.MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN);
+});
+
+test('SEC-H: nacer con recommendation:approved sin procedencia se rechaza (SEC-A al nacimiento)', () => {
+    for (const labels of ['recommendation:approved', 'Recommendation:Approved,enhancement']) {
+        const v = guardrail.evaluateCreateIssueLabels({ labels, order: {} });
+        assert.strictEqual(v.allowed, false, `deberia rechazar: ${labels}`);
+        assert.strictEqual(v.motivo, guardrail.MOTIVOS.APPROVED_SIN_ORIGEN_HUMANO);
+    }
+});
+
+test('SEC-H: nacer con recommendation:approved CON procedencia queda permitido y atribuido', () => {
+    const v = guardrail.evaluateCreateIssueLabels({
+        labels: 'recommendation:approved,enhancement',
+        order: { guardrail_authorized: true, authorized_by: 'dashboard:panel-reco' },
+    });
+    assert.strictEqual(v.allowed, true);
+    assert.strictEqual(v.authorizedBy, 'dashboard:panel-reco');
+});
+
+test('SEC-H: crear un issue bloqueado (needs-human SOLO) sigue siendo legitimo', () => {
+    // El circuit breaker de infra crea issues ya bloqueados. Lo prohibido es la
+    // COMBINACION, no el label de bloqueo.
+    const v = guardrail.evaluateCreateIssueLabels({ labels: 'needs-human,priority:critical', order: {} });
+    assert.strictEqual(v.allowed, true);
+});
+
+test('SEC-H: crear una recomendacion limpia (el flujo de los 5 roles) pasa', () => {
+    const v = guardrail.evaluateCreateIssueLabels({
+        labels: 'tipo:recomendacion,source:recommendation,needs:triage-backlog,enhancement,priority:low',
+        order: {},
+    });
+    assert.strictEqual(v.allowed, true);
+});
+
+test('SEC-H: labels sin sensibles ni siquiera evalua reglas (SEC-D)', () => {
+    const v = guardrail.evaluateCreateIssueLabels({ labels: 'bug,area:infra', order: {} });
+    assert.strictEqual(v.allowed, true);
+    assert.strictEqual(v.motivo, 'label-no-sensible');
+    assert.strictEqual(v.consulted, false);
+});
+
+test('SEC-H: describeRejection de create-issue no habla de un issue inexistente', () => {
+    const msg = guardrail.describeRejection({
+        issue: null,
+        label_solicitado: 'needs-human,tipo:recomendacion',
+        labels_actuales: null,
+        motivo: guardrail.MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN,
+        accion: 'create-issue',
+        origen: 'cola-anonima.json',
+    });
+    assert.match(msg, /NO fue creado/);
+    assert.doesNotMatch(msg, /#null/, 'no puede citar un numero de issue que todavia no existe');
+});

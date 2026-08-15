@@ -125,7 +125,34 @@ const MOTIVOS = Object.freeze({
 // componente es sensible. Se trimea cada componente a propósito: `" needs-human"`
 // no es un label válido para `gh`, pero tratarlo como sensible es la dirección
 // conservadora (peor rechazar de más que dejar pasar una remoción del gate).
+//
 // -----------------------------------------------------------------------------
+// SEC-G — NORMALIZACIÓN DE CASE (segundo bypass, misma clase que SEC-F)
+//
+// SEC-F cubrió el **separador** y no el **case**, y eso reabría el mismo agujero
+// por otra letra. `Array.includes()` es case-sensitive; GitHub y `gh` resuelven
+// nombres de label **case-insensitive**. Verificado contra la API real:
+//
+//   $ gh api repos/intrale/platform/labels/NEEDS-HUMAN --jq '.name'  -> needs-human
+//   $ gh issue edit N --remove-label "ZZZ-CASETEST"  # removió el "zzz-casetest"
+//
+// Entonces `{"action":"remove-label","label":"NEEDS-HUMAN"}` salía por el
+// early-return `label-no-sensible`, llegaba a `editIssue` y `gh` removía el
+// `needs-human` real — rompiendo SEC-4/R4, el invariante más importante del
+// módulo, y sin dejar línea en `.pipeline/audit/` porque el camino permitido no
+// audita.
+//
+// La defensa es la misma dirección conservadora que el trim de SEC-F: se compara
+// en minúsculas. La normalización es **sólo para decidir** — el label que viaja
+// a `editIssue` y al audit log sigue siendo el original, porque el audit tiene
+// que registrar textualmente lo que el productor pidió, no una versión
+// reescrita por el guardrail.
+// -----------------------------------------------------------------------------
+
+/** Forma canónica de un nombre de label para COMPARAR (nunca para escribir). */
+function normalizeLabelName(name) {
+    return String(name == null ? '' : name).trim().toLowerCase();
+}
 
 /** Descompone el campo `label` en sus componentes reales (CSV, trimeados). */
 function parseLabelList(label) {
@@ -135,14 +162,28 @@ function parseLabelList(label) {
         .filter(Boolean);
 }
 
-/** Componentes sensibles presentes en el campo `label` (puede ser CSV). */
-function sensitiveComponents(label) {
-    return parseLabelList(label).filter((c) => SENSITIVE_LABELS.includes(c));
+/**
+ * SEC-G — los componentes en forma canónica, que es la única sobre la que se
+ * toman decisiones. `SENSITIVE_LABELS` ya está en minúsculas, así que alcanza
+ * con bajar el lado del input.
+ */
+function normalizedLabelList(label) {
+    return parseLabelList(label).map(normalizeLabelName).filter(Boolean);
 }
 
 /**
- * ¿La orden toca algún label sensible? CSV-aware: `"needs-human,area:infra"`
- * es sensible aunque el string completo no matchee ningún elemento de la lista.
+ * Componentes sensibles presentes en el campo `label` (puede ser CSV).
+ * Devuelve los componentes **originales** (para mensajes/audit), pero decide
+ * comparando en forma canónica (SEC-G).
+ */
+function sensitiveComponents(label) {
+    return parseLabelList(label).filter((c) => SENSITIVE_LABELS.includes(normalizeLabelName(c)));
+}
+
+/**
+ * ¿La orden toca algún label sensible? CSV-aware (SEC-F) y case-insensitive
+ * (SEC-G): `"NEEDS-HUMAN,area:infra"` es sensible aunque el string completo no
+ * matchee ningún elemento de la lista.
  */
 function isSensitiveLabel(label) {
     return sensitiveComponents(label).length > 0;
@@ -181,7 +222,10 @@ function evaluateLabelOrder({ action, label, order = {}, getCurrentLabels } = {}
     }
     // SEC-F — el campo `label` es una LISTA CSV. Se decide sobre los componentes,
     // nunca sobre el string entero (ver bloque SEC-F arriba).
-    const componentes = parseLabelList(lbl);
+    // SEC-G — y sobre su forma canónica en minúsculas, porque `gh` resuelve los
+    // nombres de label case-insensitive (ver bloque SEC-G arriba). `componentes`
+    // es la ÚNICA lista que se usa para decidir de acá en adelante.
+    const componentes = normalizedLabelList(lbl);
 
     // SEC-D — cortar acá evita el `gh issue view` extra en el 99% de las órdenes.
     if (!componentes.some((c) => SENSITIVE_LABELS.includes(c))) {
@@ -295,12 +339,18 @@ function evaluateLabelOrder({ action, label, order = {}, getCurrentLabels } = {}
         };
     }
     const actuales = currentLabels.map(String);
+    // SEC-G — el otro lado de la comparación tiene el mismo problema: un issue
+    // cuyo label real esté escrito `Tipo:Recomendacion` no matchearía y la
+    // mezcla pasaría igual. Se decide sobre la forma canónica; `actuales` (sin
+    // normalizar) es lo que se devuelve y se audita, porque el forense necesita
+    // ver los labels tal como los reporta GitHub.
+    const actualesNorm = actuales.map(normalizeLabelName);
 
     // SEC-F — se evalúa el COMPONENTE pedido, no el string entero.
-    if (pideNeedsHuman && actuales.includes(TIPO_RECOMENDACION)) {
+    if (pideNeedsHuman && actualesNorm.includes(TIPO_RECOMENDACION)) {
         return { allowed: false, motivo: MOTIVOS.MEZCLA_BLOQUEO_SOBRE_RECO, consulted: true, currentLabels: actuales };
     }
-    if (pideRecomendacion && actuales.includes(NEEDS_HUMAN)) {
+    if (pideRecomendacion && actualesNorm.includes(NEEDS_HUMAN)) {
         return { allowed: false, motivo: MOTIVOS.MEZCLA_RECO_SOBRE_BLOQUEO, consulted: true, currentLabels: actuales };
     }
     return {
@@ -309,6 +359,74 @@ function evaluateLabelOrder({ action, label, order = {}, getCurrentLabels } = {}
         consulted: true,
         currentLabels: actuales,
         ...(pideApproved ? { authorizedBy } : {}),
+    };
+}
+
+// -----------------------------------------------------------------------------
+// SEC-H — EL NACIMIENTO TAMBIÉN ES UNA MUTACIÓN
+//
+// `evaluateLabelOrder` cubre `label` / `remove-label`, pero el `case
+// 'create-issue'` de `servicio-github.js` setea `data.labels` y llega a
+// `createIssue` sin pasar por ningún guardrail. Verificado: una orden con
+// `labels: "needs-human,tipo:recomendacion"` creaba el issue **ya mezclado**,
+// sin `discarded` y sin línea de auditoría.
+//
+// El CA pide que la mezcla sea imposible **por construcción**. Un issue que
+// nace mezclado la reintroduce igual que uno que se mezcla después, así que la
+// regla tiene que aplicar también acá.
+//
+// Diferencias deliberadas con `evaluateLabelOrder`:
+//
+//   - NO se consulta estado actual: el issue todavía no existe, no hay `gh
+//     issue view` que hacer ni labels previos contra los cuales mezclar. Las
+//     únicas reglas aplicables son las que se resuelven dentro de la orden
+//     misma.
+//   - NO se restringe `needs-human` solo: crear un issue ya bloqueado es
+//     legítimo (el circuit breaker de infra lo hace). Lo prohibido es la
+//     COMBINACIÓN, igual que en `MEZCLA_EN_LA_MISMA_ORDEN`.
+//   - SÍ se restringe `recommendation:approved` sin procedencia: nacer aprobado
+//     es SEC-A mudado al nacimiento — un agente crearía su propia recomendación
+//     ya aprobada y entraría a la ola sin que ningún humano la mire.
+//
+// SEC-4/R4 se mantiene: como todo el módulo, esta función sólo devuelve un
+// veredicto. No muta, no corrige y no ordena remover nada.
+// -----------------------------------------------------------------------------
+
+/**
+ * Evalúa los labels con los que un issue va a NACER. **No muta nada.**
+ *
+ * @param {object} params
+ * @param {string} params.labels  - CSV de labels del `create-issue`.
+ * @param {object} [params.order] - la orden completa (procedencia declarada).
+ * @returns {{allowed:boolean, motivo:string, consulted:boolean, currentLabels:null, authorizedBy?:string}}
+ */
+function evaluateCreateIssueLabels({ labels, order = {} } = {}) {
+    // SEC-F + SEC-G — mismas dos normalizaciones que el resto del módulo.
+    const componentes = normalizedLabelList(labels);
+
+    // SEC-D — sin sensibles no hay nada que evaluar y no se gasta nada.
+    if (!componentes.some((c) => SENSITIVE_LABELS.includes(c))) {
+        return { allowed: true, motivo: 'label-no-sensible', consulted: false, currentLabels: null };
+    }
+
+    // La mezcla dentro del set de nacimiento. Va ANTES de la procedencia a
+    // propósito: la declaración NO habilita esta combinación, mismo criterio
+    // que `MEZCLA_EN_LA_MISMA_ORDEN` en `evaluateLabelOrder`.
+    if (componentes.includes(NEEDS_HUMAN) && componentes.includes(TIPO_RECOMENDACION)) {
+        return { allowed: false, motivo: MOTIVOS.MEZCLA_EN_LA_MISMA_ORDEN, consulted: false, currentLabels: null };
+    }
+
+    const authorizedBy = declaredAuthorization(order);
+    if (componentes.includes(RECOMMENDATION_APPROVED) && !authorizedBy) {
+        return { allowed: false, motivo: MOTIVOS.APPROVED_SIN_ORIGEN_HUMANO, consulted: false, currentLabels: null };
+    }
+
+    return {
+        allowed: true,
+        motivo: 'create-issue-sin-conflicto',
+        consulted: false,
+        currentLabels: null,
+        ...(authorizedBy && componentes.includes(RECOMMENDATION_APPROVED) ? { authorizedBy } : {}),
     };
 }
 
@@ -459,6 +577,14 @@ function describeRejection({ issue, label_solicitado, labels_actuales, motivo, a
     const actuales = Array.isArray(labels_actuales) && labels_actuales.length
         ? ` Labels actuales: ${labels_actuales.join(', ')}.`
         : '';
+    // SEC-H — en `create-issue` no hay issue todavía: decir "en #null" y "el
+    // issue NO fue modificado" sería confuso para el operador que lee el log.
+    if (accion === 'create-issue') {
+        return (
+            `Guardrail de labels: rechazada la creación de un issue con labels "${label_solicitado}" — ${porque}.` +
+            ` Origen: ${origen || 'desconocido'}. El issue NO fue creado.`
+        );
+    }
     const verbo = accion === 'remove-label' ? 'remover' : 'agregar';
     return (
         `Guardrail de labels: rechazada la orden de ${verbo} "${label_solicitado}" en #${issue} — ${porque}.` +
@@ -477,10 +603,13 @@ module.exports = {
     AUDIT_MAX_BYTES,
     // API
     isSensitiveLabel,
+    normalizeLabelName,
     parseLabelList,
+    normalizedLabelList,
     sensitiveComponents,
     declaredAuthorization,
     evaluateLabelOrder,
+    evaluateCreateIssueLabels,
     auditConflict,
     auditAuthorizedBypass,
     describeRejection,

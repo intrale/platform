@@ -46,12 +46,16 @@ function correrOrden(orden, { labels = [] } = {}) {
       process.env.PIPELINE_STATE_DIR = ${JSON.stringify(dir)};
       const fs = require('fs');
       const svc = require(${JSON.stringify(path.join(PIPELINE, 'servicio-github.js'))});
-      const observado = { editIssue: [], createLabel: [], getIssueLabels: [], comment: [] };
+      const observado = { editIssue: [], createLabel: [], getIssueLabels: [], comment: [], createIssue: [] };
       const LABELS = ${JSON.stringify(labels)};
+      let proximoNumero = 10000;
       const ghClient = {
         editIssue: (issue, opts) => { observado.editIssue.push({ issue, opts }); return { ok: true }; },
         createLabel: (name) => { observado.createLabel.push(name); return { created: true }; },
         listLabels: () => [],
+        // SEC-H — el equivalente de \`editIssue\` para el NACIMIENTO: si esto se
+        // invoca en un caso rechazado, el issue nació mezclado igual.
+        createIssue: (opts) => { observado.createIssue.push(opts); return { number: proximoNumero++ }; },
         commentIssue: (issue, body) => { observado.comment.push({ issue, body }); },
         getIssueLabels: (issue) => {
           observado.getIssueLabels.push(issue);
@@ -261,4 +265,138 @@ test('SEC-F: un CSV sin labels sensibles sigue pasando normal (no rompimos el ca
     assert.strictEqual(observado.editIssue[0].opts.addLabel, 'area:infra,enhancement');
     assert.strictEqual(observado.getIssueLabels.length, 0, 'SEC-D: sin consulta extra a la API');
     assert.ok(!procesada || !procesada.discarded, 'no debe quedar descartada');
+});
+
+// -----------------------------------------------------------------------------
+// SEC-G — variantes de CASE contra el worker real.
+//
+// Lo que importa no es el veredicto del módulo: es que `editIssue` NO se
+// invoque. Antes del fix estos 4 casos llegaban a `editIssue` con
+// `discarded: NINGUNO`, removiendo el `needs-human` real sin dejar rastro.
+// -----------------------------------------------------------------------------
+
+test('SEC-G: remove-label "NEEDS-HUMAN" (mayusculas) NO muta el issue', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'remove-label', issue: 9994, label: 'NEEDS-HUMAN' },
+        { labels: ['needs-human'] },
+    );
+    assert.deepStrictEqual(observado.editIssue, [], 'gh resuelve el label case-insensitive: habria removido el gate humano real');
+    assert.strictEqual(procesada.guardrail_motivo, 'remove-needs-human-sin-origen-autorizado');
+    assert.match(procesada.discarded, /^label-guardrail:/);
+});
+
+test('SEC-G: remove-label "Needs-Human,priority:high" (case + CSV juntos) NO muta el issue', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'remove-label', issue: 9993, label: 'Needs-Human,priority:high' },
+        { labels: ['needs-human', 'priority:high'] },
+    );
+    assert.deepStrictEqual(observado.editIssue, []);
+    assert.strictEqual(procesada.guardrail_motivo, 'remove-needs-human-sin-origen-autorizado');
+});
+
+test('SEC-G: label "Needs-Human" sobre una recomendacion NO muta el issue', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 9992, label: 'Needs-Human' },
+        { labels: ['tipo:recomendacion', 'enhancement'] },
+    );
+    assert.deepStrictEqual(observado.editIssue, []);
+    assert.deepStrictEqual(observado.createLabel, [], 'tampoco debe crear el label en el repo');
+    assert.strictEqual(procesada.guardrail_motivo, 'mezcla-needs-human-sobre-recomendacion');
+});
+
+test('SEC-G: label "Recommendation:Approved" (auto-aprobacion) NO muta el issue', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 9991, label: 'Recommendation:Approved' },
+        { labels: ['tipo:recomendacion'] },
+    );
+    assert.deepStrictEqual(observado.editIssue, []);
+    assert.strictEqual(procesada.guardrail_motivo, 'approved-sin-origen-autorizado');
+});
+
+test('SEC-G: la mezcla tambien se frena cuando el label ACTUAL viene con otro case', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 9990, label: 'needs-human' },
+        { labels: ['Tipo:Recomendacion'] },
+    );
+    assert.deepStrictEqual(observado.editIssue, []);
+    assert.strictEqual(procesada.guardrail_motivo, 'mezcla-needs-human-sobre-recomendacion');
+});
+
+test('SEC-G: un label legitimo con case propio sigue aplicandose (camino comun intacto)', () => {
+    const { observado, procesada } = correrOrden(
+        { action: 'label', issue: 9989, label: 'Area:Infra' },
+        { labels: [] },
+    );
+    assert.strictEqual(observado.editIssue.length, 1, 'la orden legitima tiene que aplicarse');
+    assert.strictEqual(observado.editIssue[0].opts.addLabel, 'Area:Infra', 'el label viaja SIN normalizar a gh');
+    assert.strictEqual(observado.getIssueLabels.length, 0, 'SEC-D: sin consulta extra a la API');
+    assert.ok(!procesada || !procesada.discarded);
+});
+
+// -----------------------------------------------------------------------------
+// SEC-H — `create-issue` contra el worker real.
+//
+// Antes del fix la orden llegaba a `createIssue` y el issue nacía mezclado,
+// sin `discarded` y sin línea de auditoría.
+// -----------------------------------------------------------------------------
+
+test('SEC-H: create-issue con needs-human + tipo:recomendacion NO crea el issue', () => {
+    const { observado, procesada } = correrOrden({
+        action: 'create-issue',
+        issue: 9988,
+        title: 'reco que nace mezclada',
+        body: 'cuerpo',
+        labels: 'needs-human,tipo:recomendacion',
+    });
+    assert.deepStrictEqual(observado.createIssue, [], 'el issue NO puede nacer mezclado');
+    assert.deepStrictEqual(observado.createLabel, [], 'ni siquiera debe crear los labels');
+    assert.strictEqual(procesada.guardrail_motivo, 'mezcla-needs-human-y-recomendacion-en-la-misma-orden');
+});
+
+test('SEC-H: create-issue mezclado en MAYUSCULAS tampoco crea el issue', () => {
+    const { observado, procesada } = correrOrden({
+        action: 'create-issue',
+        issue: 9987,
+        title: 'reco mezclada con case raro',
+        body: 'cuerpo',
+        labels: 'NEEDS-HUMAN,Tipo:Recomendacion',
+    });
+    assert.deepStrictEqual(observado.createIssue, []);
+    assert.strictEqual(procesada.guardrail_motivo, 'mezcla-needs-human-y-recomendacion-en-la-misma-orden');
+});
+
+test('SEC-H: create-issue con recommendation:approved sin procedencia NO crea el issue', () => {
+    const { observado, procesada } = correrOrden({
+        action: 'create-issue',
+        issue: 9986,
+        title: 'reco que nace ya aprobada',
+        body: 'cuerpo',
+        labels: 'recommendation:approved,enhancement',
+    });
+    assert.deepStrictEqual(observado.createIssue, [], 'nacer aprobado es SEC-A mudado al nacimiento');
+    assert.strictEqual(procesada.guardrail_motivo, 'approved-sin-origen-autorizado');
+});
+
+test('SEC-H: create-issue de una recomendacion limpia SI se crea (camino de los 5 roles)', () => {
+    const { observado, procesada } = correrOrden({
+        action: 'create-issue',
+        issue: 9985,
+        title: 'reco limpia',
+        body: 'cuerpo',
+        labels: 'tipo:recomendacion,source:recommendation,needs:triage-backlog,enhancement,priority:low',
+    });
+    assert.strictEqual(observado.createIssue.length, 1, 'el flujo legitimo de recomendaciones no puede romperse');
+    assert.strictEqual(observado.createIssue[0].labels, 'tipo:recomendacion,source:recommendation,needs:triage-backlog,enhancement,priority:low');
+    assert.ok(!procesada || !procesada.discarded);
+});
+
+test('SEC-H: create-issue con needs-human SOLO se crea (bloqueo legitimo del circuit breaker)', () => {
+    const { observado } = correrOrden({
+        action: 'create-issue',
+        issue: 9984,
+        title: 'issue bloqueado por infra',
+        body: 'cuerpo',
+        labels: 'needs-human,priority:critical',
+    });
+    assert.strictEqual(observado.createIssue.length, 1, 'lo prohibido es la COMBINACION, no el label de bloqueo');
 });

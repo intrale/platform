@@ -475,6 +475,54 @@ function applyLabelGuardrail(data, ghClient, origen) {
   return true;
 }
 
+// #5690 SEC-H — el mismo guardrail sobre el NACIMIENTO del issue.
+//
+// `case 'create-issue'` pasaba `data.labels` a `ensureLabels` + `createIssue`
+// sin ninguna guardia: un issue podía nacer con `needs-human` y
+// `tipo:recomendacion` juntos, que es exactamente la mezcla que el CA declara
+// imposible por construcción. No alcanza con cubrir la mutación posterior.
+//
+// Devuelve `true` si la creación fue RECHAZADA (el caller corta sin crear).
+// SEC-4/R4 intacto: sólo marca `discarded`, nunca remueve nada.
+function applyCreateIssueGuardrail(data, origen) {
+  if (!data) return false;
+  const verdict = labelGuardrail.evaluateCreateIssueLabels({ labels: data.labels, order: data });
+  if (verdict.allowed) {
+    if (verdict.authorizedBy) {
+      labelGuardrail.auditAuthorizedBypass({
+        issue: null,
+        label_solicitado: data.labels,
+        labels_actuales: null,
+        origen: data.origen || origen || null,
+        accion: 'create-issue',
+        motivo: verdict.motivo,
+        authorized_by: verdict.authorizedBy,
+      });
+      log(`Guardrail de labels: creación con labels sensibles "${data.labels}" permitida por procedencia declarada "${verdict.authorizedBy}".`);
+    }
+    return false;
+  }
+
+  data.discarded = `label-guardrail:${verdict.motivo}`;
+  data.discarded_at = new Date().toISOString();
+  data.guardrail_motivo = verdict.motivo;
+
+  const contexto = {
+    issue: null,
+    label_solicitado: data.labels,
+    labels_actuales: null,
+    origen: data.origen || origen || null,
+    accion: 'create-issue',
+    motivo: verdict.motivo,
+  };
+  const audit = labelGuardrail.auditConflict(contexto);
+  if (!audit.written && !audit.deduped) {
+    log(`Guardrail de labels: no se pudo escribir la auditoría (${audit.error}). El rechazo se aplica igual.`);
+  }
+  log(labelGuardrail.describeRejection(contexto));
+  return true;
+}
+
 function applyGateLabelAction(data, ghClient) {
   if (!data || !gateLabelReconciler.isGateLabel(data.label)) return false;
 
@@ -660,6 +708,10 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           break;
 
         case 'create-issue': {
+          // #5690 SEC-H — antes de `ensureLabels`/`createIssue`: un issue que
+          // nace mezclado reintroduce la mezcla igual que uno que se mezcla
+          // después. Va primero para no crear siquiera los labels.
+          if (applyCreateIssueGuardrail(data, file.name)) break;
           ensureLabels(data.labels, ghClient);
           const created = ghClient.createIssue({
             title: data.title,
@@ -797,4 +849,5 @@ module.exports = {
   applyGateLabelAction,
   // #5690 — guardrail de labels sensibles.
   applyLabelGuardrail,
+  applyCreateIssueGuardrail,
 };
