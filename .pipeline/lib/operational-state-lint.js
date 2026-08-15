@@ -735,7 +735,14 @@ function remediationLines(rules) {
     if (out.length) {
         out.push('');
         out.push('  Si la excepcion es legitima: entry { file, line, reason } en');
-        out.push(`  \`.pipeline/${ALLOWLIST_REL}\` — requiere review humano de @leitolarreta (CODEOWNERS).`);
+        out.push(`  \`.pipeline/${ALLOWLIST_REL}\`.`);
+        out.push('  Ese archivo tiene owner humano (@leitolarreta) por una regla ACTIVA de');
+        out.push('  `.github/CODEOWNERS` (#5986): el gate de auto-merge del pipeline');
+        out.push('  (`delivery.js`, que evalua CODEOWNERS contra `origin/main`) NO auto-mergea');
+        out.push('  el PR que lo toque — lo deja en `needs-human` y escala.');
+        out.push('  Proximo paso: abris el PR igual; queda frenado y lo destraba @leitolarreta');
+        out.push('  desde el flujo de bloqueo humano del pipeline. NO es un Approve de GitHub');
+        out.push('  (`protect-main` tiene `require_code_owner_review: false`).');
     }
     return out;
 }
