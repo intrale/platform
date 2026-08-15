@@ -33,6 +33,22 @@
 
 const { redactSensitive } = require('./redact');
 
+// #5680 — require OPCIONAL, nunca duro.
+//
+// Este módulo corre bajo el `sparse-checkout` acotado de
+// `.github/workflows/admission-gate.yml`. Un `require` faltante en ese runner
+// no degrada: hace throw en el `require()` del github-script y voltea el gate
+// para TODO issue/PR nuevo (la regresión exacta que #3175 vino a cerrar).
+// `recommendation-labels.js` se agrega al sparse-checkout en este mismo commit,
+// pero el try/catch queda como contrato de empaquetado para el próximo que
+// agregue una dependencia y se olvide del YAML.
+let isRecommendationIssue = null;
+try {
+    ({ isRecommendationIssue } = require('./recommendation-labels'));
+} catch {
+    isRecommendationIssue = null; // degradación explícita: sin exclusión
+}
+
 // -----------------------------------------------------------------------------
 // Configuración
 // -----------------------------------------------------------------------------
@@ -138,6 +154,38 @@ function isAdmitted(labels) {
 }
 
 /**
+ * ¿Corresponde que el gate le aplique label de admisión a este artefacto? (#5680)
+ *
+ * Distinto de `isAdmitted()`, y la distinción es deliberada:
+ *   - `isAdmitted()` responde "¿tiene label de admisión?". Tiene un consumidor
+ *     fuera del gate — `wizards/ola/index.js:245` — donde cambiar la semántica
+ *     haría que las recomendaciones pasen el guard de admisibilidad de olas.
+ *     Queda intacta.
+ *   - `needsAdmissionLabel()` responde "¿el gate debe intervenir?", que es la
+ *     pregunta real del workflow y del sweep del reconciler.
+ *
+ * Una recomendación de agente pendiente de triaje NO está pendiente de
+ * definición: espera una decisión humana. El label de admisión se concede en
+ * `recommendations.approve()`, atado a ese acto humano deliberado.
+ *
+ * @param {Array<string|{name?: string}>} labels
+ * @returns {boolean}
+ */
+function needsAdmissionLabel(labels) {
+    if (isAdmitted(labels)) return false;
+    try {
+        if (isRecommendationIssue && isRecommendationIssue(labels)) return false;
+    } catch {
+        // Fail-safe hacia el comportamiento previo a #5680: ante cualquier error
+        // del discriminador, aplicamos el label. Una recomendación de más en el
+        // pool de admisión es benigna (la frena el gate autoritativo del intake
+        // en `pulpo.js`); un issue real SIN label de admisión queda huérfano y
+        // no lo levanta nadie.
+    }
+    return true;
+}
+
+/**
  * Lista de huérfanos que requieren admisión, dado el resultado de
  * `gh issue list --state open --json number,labels,title,url`.
  *
@@ -154,7 +202,10 @@ function filterOrphans(ghItems) {
     for (const item of ghItems) {
         if (!item || typeof item !== 'object') continue;
         if (typeof item.number !== 'number') continue;
-        if (isAdmitted(item.labels)) continue;
+        // #5680 — no basta con "¿ya está admitido?": las recomendaciones de
+        // agente pendientes de triaje tampoco son huérfanos que el sweep deba
+        // etiquetar.
+        if (!needsAdmissionLabel(item.labels)) continue;
         out.push({
             number: item.number,
             title: typeof item.title === 'string' ? item.title : '',
@@ -315,6 +366,7 @@ module.exports = {
     ADMISSION_COMMENT_PREFIX_PR,
     // decisión
     isAdmitted,
+    needsAdmissionLabel,
     normalizeLabels,
     filterOrphans,
     applyBootstrapCap,
