@@ -144,16 +144,15 @@ test('#5420 CA — PR que toca .github/workflows/ SIN copia local queda bloquead
     assert.equal(calls.length, 0, 'un PR con owner humano nunca llega al PUT');
 });
 
-test('#5420 — un CODEOWNERS remoto VACÍO no autoriza el merge (fail-closed)', () => {
+test('#5923 — un CODEOWNERS remoto legíble y sin reglas activas autoriza continuar', () => {
     const calls = [];
     const out = delivery.attemptMergeWithGates(baseDeps({
         loadOwners: ownersFromRemote('# archivo sin reglas\n'),
         getSnapshot: () => snapshotOk({ files: ['.github/workflows/ci.yml'] }),
         mergePR: recordingMerge(() => MERGED_OK, calls),
     }));
-    assert.equal(out.status, 'blocked');
-    assert.equal(out.gate, 'codeowners');
-    assert.equal(calls.length, 0);
+    assert.equal(out.status, 'merged');
+    assert.equal(calls.length, 1);
 });
 
 // ── CA: procedencia (contra-test de seguridad) ─────────────────────────────
