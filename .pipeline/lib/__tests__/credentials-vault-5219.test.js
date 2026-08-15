@@ -330,7 +330,19 @@ test('CA-12/CA-16 · superar max_cached_tenants EVICTA la entrada más vieja en 
 
     pedir('proy-0');                       // memo: [0]
     pedir('proy-1');                       // memo: [0,1]
-    pedir('proy-2');                       // cota 2 ⇒ evicta 0, memo: [1,2]
+
+    // El pedido que DISPARA la evicción tiene que devolver su propio material.
+    // Afirmar sólo sobre efectos colaterales (llamadas al driver, clearCache)
+    // deja pasar una evicción que revienta DESPUÉS de leer el secreto y ANTES
+    // de guardarlo: el driver se llamó, la víctima se limpió, y aun así el
+    // producto se queda sin credenciales. Por eso se chequea `res.ok` y el
+    // valor devuelto, no el rastro que dejó el camino.
+    const evictor = pedir('proy-2');       // cota 2 ⇒ evicta 0, memo: [1,2]
+    assert.equal(evictor.res.ok, true,
+      `el pedido que evicta devuelve ok:true (code=${evictor.res && evictor.res.code}, `
+      + `error=${evictor.res && evictor.res.error})`);
+    assert.deepEqual(evictor.res.scopes, { alpha: { valor: 'FAKE-2' } },
+      'el pedido que evicta trae SU PROPIO material, no el de la víctima ni vacío');
 
     assert.equal(pedir('proy-1').llamadas, 0, 'proy-1 sigue cacheado');
     assert.ok(pedir('proy-0').llamadas > 0, 'proy-0 fue evictado: paga MISS');
@@ -344,6 +356,36 @@ test('CA-12/CA-16 · superar max_cached_tenants EVICTA la entrada más vieja en 
   } finally {
     espia.restaurar();
   }
+});
+
+test('CA-12 · superada la cota, el namespace EVICTOR queda cacheado (2da resolución = 0 llamadas)', () => {
+  _resetVaultCache();
+  const logger = capturarLogs();
+  const material = {};
+  for (let i = 0; i < 3; i += 1) material[`proy-${i}`] = { alpha: { valor: `FAKE-${i}` } };
+  const driver = driverSembrado({ material });
+  const opts = { vaultConfig: cfg({ max_cached_tenants: 2 }), vaultDriver: driver, logger };
+
+  const pedir = (projectId) => {
+    const antes = driver.calls.length;
+    const res = resolveInstanceVault({ projectId, scopes: ['alpha'] }, opts);
+    return { res, llamadas: driver.calls.length - antes };
+  };
+
+  pedir('proy-0');
+  pedir('proy-1');
+  pedir('proy-2');   // evicta a proy-0 y debe QUEDAR en la memo
+
+  // El corazón de CA-12: evictar es hacerle lugar a la entrada nueva. Si la
+  // escritura del evictor no llega a la memo, tras cada evicción el mapa queda
+  // POR DEBAJO de la cota y el thrash que CA-10 acredita con 2 tenants vuelve
+  // entero apenas se supera la cota — la evicción sería pura pérdida.
+  const repetido = pedir('proy-2');
+  assert.equal(repetido.res.ok, true, 'la 2da resolución del evictor sigue siendo ok');
+  assert.equal(repetido.llamadas, 0,
+    'el namespace que disparó la evicción quedó cacheado: 0 llamadas al driver');
+  assert.deepEqual(repetido.res.scopes, { alpha: { valor: 'FAKE-2' } },
+    'y devuelve su propio material desde la memo');
 });
 
 test('CA-13 · la evicción emite un warn con NOMBRES, la cota y el impacto — sin un solo valor', () => {

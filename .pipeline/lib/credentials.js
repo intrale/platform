@@ -364,6 +364,18 @@ const DEFAULT_MAX_CACHED_TENANTS = 8;
 const EVICTION_WARN_COOLDOWN_MS = 5 * 60 * 1000;
 const _evictionWarn = new Map();   // clave -> { ultimoAviso, acumuladas }
 
+// Techo del mapa de cooldowns. Guarda DOS NÚMEROS por namespace (nunca material
+// del vault), así que el riesgo acá no es exposición de plaintext sino
+// crecimiento sin techo en un proceso que vive días.
+//
+// 64 = 8 × `DEFAULT_MAX_CACHED_TENANTS`: el estado de aviso tiene que sobrevivir
+// a los namespaces YA evictados de la memo — si se podara a la altura de la cota
+// se perdería el cooldown justo del namespace que más evicciones dispara, que es
+// exactamente la señal que UX-OPS-1 quiere conservar. El múltiplo da lugar a la
+// rotación de varias generaciones de tenants dentro de la ventana de 5 min
+// manteniendo el mapa en unos pocos KB.
+const MAX_ESTADOS_DE_AVISO = 8 * DEFAULT_MAX_CACHED_TENANTS;
+
 /**
  * G-5 — hay DOS cachés en capas: esta memo y la interna de `createSecretVault`.
  * Soltar la entrada de arriba sin limpiar la de abajo dejaría plaintext vivo
@@ -636,7 +648,18 @@ function escribirEnMemo(clave, entrada, cota, ahora, logger) {
     const victima = _vaultMemo.keys().next().value;
     if (victima === undefined) break;
     borrarDelMemo(victima);
-    avisarEviccion(victima, cota, ahora, logger);
+    // El aviso es OBSERVABILIDAD y corre entre la lectura del secreto y su
+    // guardado: si puede lanzar, tumba la resolución entera y —por el
+    // fail-closed deliberado de CA-17/CA-22— el producto arranca SIN
+    // credenciales. Eso convertiría un fallo del logger en denegación de
+    // servicio sobre los secretos, que es justo el modo de fallo que #5899
+    // viene a matar. Nunca al revés: primero el secreto, después la telemetría.
+    try {
+      avisarEviccion(victima, cota, ahora, logger);
+    } catch (e) {
+      // Tragar a propósito: sin el warn se pierde una línea de diagnóstico;
+      // con la excepción se pierde el arranque del producto.
+    }
   }
   _vaultMemo.set(clave, entrada);
 }
