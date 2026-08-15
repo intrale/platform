@@ -32,11 +32,6 @@
 #   /.pipeline/lib/operational-state-lint.allowlist.json  responsable: @leitolarreta
 #   /.pipeline/lib/__tests__/operational-state-lint.test.js  responsable: @leitolarreta
 #
-# NOTA (#5975): estas lineas son COMENTARIOS a proposito. El archivo no declara
-# reglas activas; convertirlas en reglas reactivaria el gate auto-bloqueante que
-# #5175 removio. `parseCodeowners` las ignora, con lo cual el comportamiento de
-# auto-merge queda exactamente igual que antes de este cambio.
-#
 # Si en el futuro aparece un caso que exija de verdad separacion entre
 # autor y aprobador, la salida correcta es una identidad de servicio
 # propia del pipeline — no reactivar una regla que solo se auto-bloquea.
