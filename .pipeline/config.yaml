@@ -1498,6 +1498,23 @@ vault:
   # `shared/` NO es el default: lo que no esté acá se busca en el namespace del
   # host (`hosts/<hostId>/`), que es lo que mantiene el aislamiento entre hosts.
   shared_secrets: []
+  # #5899 — Cuántos namespaces del vault (`<prefix>/<projectId>#<hostId>`) puede
+  # tener cacheados el proceso a la vez.
+  #
+  # ¿QUÉ NÚMERO PONGO? El máximo de instancias/productos que corren en paralelo
+  # en este host, más una para el namespace del propio kernel (`projectId`
+  # de acá arriba). Hoy: 1 kernel + hasta 3 instancias concurrentes ⇒ 8 sobra.
+  #
+  # POR DEBAJO de ese número vuelve el thrash: dos proyectos alternándose se
+  # desalojan mutuamente y cada resolución paga un proceso de la AWS CLI, POR
+  # LANZAMIENTO DE AGENTE. El síntoma a buscar en `pulpo.log` es la línea
+  # `eviccion del namespace del vault "..." por cota` — si aparece seguido, la
+  # cota quedó corta.
+  #
+  # POR ENCIMA no rompe nada, pero es un control de seguridad además de una
+  # optimización: acota cuánto plaintext vive en memoria durante la ventana de
+  # `cache_ttl_seconds`. No lo pongas en un número arbitrariamente grande.
+  max_cached_tenants: 8
   # ---------------------------------------------------------------------------
   # #5353 · B1 — ventana de bootstrap sobre el archivo de credenciales
   # ---------------------------------------------------------------------------
