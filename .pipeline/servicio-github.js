@@ -51,6 +51,15 @@ const FALLIDO = path.join(QUEUE_DIR, 'fallido');
 const MAX_RETRIES = 3;
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const STALE_ORDERS_LOG = path.join(LOG_DIR, 'stale-orders.log');
+// #5863 CA-R3 — marker de aplicación EFECTIVA de labels sobre issues.
+//
+// El Pulpo y este worker son procesos distintos. Cuando el Pulpo encola una
+// orden ya invalida su caché (CA-R2), pero hay mutaciones que nacen fuera de él
+// (`lib/human-block.js`, `lib/rebote-classifier.js`, reintentos del worker) y
+// que el Pulpo no ve hasta que vence el TTL de 10 minutos. Este `.jsonl` es el
+// canal de vuelta: append-only, una línea por label efectivamente aplicado, que
+// el Pulpo drena en cada barrido para invalidar sin preguntarle nada a GitHub.
+const LABELS_APPLIED_LOG = path.join(LOG_DIR, 'labels-applied.jsonl');
 
 // #4693 CA-0 — resuelto vía repo-target (primary del manifiesto). El helper
 // es fail-closed: si el manifiesto falta/está roto, cae a 'intrale/platform'.
@@ -439,15 +448,22 @@ function applyGateLabelAction(data, ghClient) {
   if (data.gate_reconciler === true) {
     const edit = data.target === 'pr' ? ghClient.editPullRequest : ghClient.editIssue;
     if (typeof edit !== 'function') throw new Error(`ghClient sin editor para target=${data.target || 'issue'}`);
+    // #5863 CA-R3 / Riesgo R6 — este ramal es el MÁS fácil de olvidar de los
+    // tres: no sólo cortocircuita el `switch` del worker (devuelve `true` y el
+    // `case` hace `break`), sino que además retorna antes del bucle de
+    // reconciliación de abajo. Es el camino de las órdenes que encola el gate 0
+    // del Pulpo (`gate_reconciler: true`), o sea el de mayor volumen.
     if (data.action === 'label') {
       ensureLabels(data.label, ghClient);
       edit.call(ghClient, data.issue, { addLabel: data.label });
       log(`Gate label reconciliado "${data.label}" -> #${data.issue}`);
+      logLabelApplied(data);
       return true;
     }
     if (data.action === 'remove-label') {
       edit.call(ghClient, data.issue, { removeLabel: data.label });
       log(`Gate label reconciliado "${data.label}" removido de #${data.issue}`);
+      logLabelApplied(data);
       return true;
     }
   }
@@ -481,7 +497,14 @@ function applyGateLabelAction(data, ghClient) {
       ensureLabels(action.label, ghClient);
       edit.call(ghClient, action.issue, { addLabel: action.label });
       log(`Gate label normalizado "${action.label}" -> #${action.issue}`);
+    } else {
+      continue;
     }
+    // #5863 CA-R3 / Riesgo R6 — este camino es el fácil de olvidar: devuelve
+    // `true` y el `switch` del worker hace `break` ANTES de llegar al final del
+    // `case`, así que los labels de gate se escapaban sin dejar rastro para el
+    // Pulpo. El marker se escribe acá, por acción aplicada.
+    logLabelApplied(action);
   }
   if (actions.length === 0) {
     log(`Gate label normalizado no-op: #${data.issue} target=${data.label}`);
@@ -542,6 +565,47 @@ function logStaleOrder(entry) {
         fs.appendFileSync(STALE_ORDERS_LOG, line);
     } catch {
         // best-effort — no tirar el worker por un fallo de logging
+    }
+}
+
+/**
+ * #5863 CA-R3 — Registra que un label fue aplicado EFECTIVAMENTE sobre un issue.
+ *
+ * Se invoca DESPUÉS de que `ghClient` devolvió sin lanzar: la línea afirma un
+ * hecho consumado, no una intención. El Pulpo la lee para invalidar su caché sin
+ * gastar una llamada a la API (CA-R7).
+ *
+ * Contrato del archivo — `appendFileSync`, NUNCA `writeFileSync`: el Pulpo lee
+ * por offset de bytes y avanza. Un `writeFileSync` truncaría el archivo bajo los
+ * pies del lector y le haría perder invalidaciones en silencio, que es
+ * exactamente el defecto que este issue arregla.
+ *
+ * No se registran:
+ *   - órdenes descartadas (`data.discarded`) — no se aplicó nada;
+ *   - órdenes con `target === 'pr'` — el número es de un PR y invalidar
+ *     `issueLabelsCache` con él corrompería el issue homónimo (Riesgo R2).
+ *
+ * @param {{issue: number|string, label: string, action?: string, target?: string, discarded?: string}} entry
+ * @returns {boolean} `true` si se escribió la línea.
+ */
+function logLabelApplied(entry) {
+    try {
+        if (!entry || entry.discarded) return false;
+        if ((entry.target || 'issue') === 'pr') return false;
+        const issue = parseInt(entry.issue, 10);
+        if (!Number.isInteger(issue) || issue <= 0) return false;
+        fs.mkdirSync(LOG_DIR, { recursive: true });
+        const line = JSON.stringify({
+            ts: new Date().toISOString(),
+            issue,
+            label: entry.label || null,
+            action: entry.action || 'label',
+        }) + '\n';
+        fs.appendFileSync(LABELS_APPLIED_LOG, line);
+        return true;
+    } catch {
+        // best-effort — no tirar el worker por un fallo de logging
+        return false;
     }
 }
 
@@ -607,6 +671,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           ensureLabels(data.label, ghClient);
           ghClient.editIssue(data.issue, { addLabel: data.label });
           log(`Label "${data.label}" → #${data.issue}`);
+          logLabelApplied(data); // #5863 CA-R3
           break;
         }
 
@@ -619,6 +684,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           }
           ghClient.editIssue(data.issue, { removeLabel: data.label });
           log(`Label "${data.label}" removido de #${data.issue}`);
+          logLabelApplied(data); // #5863 CA-R3
           break;
 
         case 'create-issue': {
@@ -744,6 +810,9 @@ module.exports = {
   validateOrderFresh,
   logStaleOrder,
   STALE_ORDERS_LOG,
+  // #5863 CA-R3 — marker de aplicación efectiva consumido por el Pulpo.
+  logLabelApplied,
+  LABELS_APPLIED_LOG,
   // Constantes que los tests necesitan (resueltas a partir de PIPELINE_STATE_DIR
   // si se setea antes del require).
   PENDIENTE,
