@@ -232,8 +232,12 @@ test('CA-B3: schema falla antes que la sanitización de path (orden)', () => {
 // CA-C1 — credenciales por ref, valor literal rechazado
 // -----------------------------------------------------------------------------
 
+// El path apunta al store canónico (`~/.claude/secrets/`) desde #6031: la
+// validación ancla la ref y `~/.secrets.json` queda fuera del store. La
+// intención del test no cambia — "una ref namespeaceada pasa" —, sólo se usa
+// una ref que además es legítima.
 test('CA-C1: credentials.ref válida namespaceada pasa', () => {
-  const res = d.validateDescriptor(validDescriptor({ credentials: [{ ref: '~/.secrets.json#intrale', scopes: ['aws'] }] }));
+  const res = d.validateDescriptor(validDescriptor({ credentials: [{ ref: '~/.claude/secrets/credentials.json#intrale', scopes: ['aws'] }] }));
   assert.equal(res.valid, true, JSON.stringify(res.errors));
 });
 
