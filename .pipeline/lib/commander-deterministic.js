@@ -34,6 +34,9 @@ const { spawn, spawnSync, execFileSync } = require('child_process');
 const { fillTemplate, escapeMarkdownV2 } = require('./commander/fill-template');
 // #5176 CA-UX-3 — rótulo canónico de la ventana de dispatch (issues / skills).
 const { dispatchWindowLabel } = require('./dispatch-window-label');
+// #5176 — cota de largo del render de `/allowlist`: el listado no puede exceder
+// el saliente de Telegram ni perder issues en silencio al recortarse.
+const allowlistBudget = require('./allowlist-render-budget');
 const { createAuditLog } = require('./commander/audit-log');
 const { createRateLimiter } = require('./commander/rate-limit');
 const {
@@ -2134,6 +2137,11 @@ function buildDefaultHandlers(ctx) {
                     'empty-allowlist': true,
                     count: 0,
                     issues: [],
+                    compact: false,
+                    'compact-list': '',
+                    truncated: false,
+                    shown: 0,
+                    'hidden-count': 0,
                     'skills-count': 0,
                     'has-skills': false,
                     'skills-display': '',
@@ -2150,7 +2158,30 @@ function buildDefaultHandlers(ctx) {
             const skills = Array.isArray(snapshot.skills) ? snapshot.skills : [];
             const isEmpty = issues.length === 0;
 
-            return fillTemplate('allowlist', {
+            // #5176 (rebote rev-3) — COTA DE LARGO DEL LISTADO.
+            // ------------------------------------------------
+            // Corregir A-1 destapó un segundo defecto: con la cascada vieja el
+            // render SIEMPRE contaba 0 issues, así que el mensaje siempre era
+            // corto. Al empezar a mostrar los `allowed_issues` reales, el
+            // listado sin cota pasó a 4652 chars con el marker de producción
+            // (139 autorizados) y el transporte lo recortaba a 4000: 16 issues
+            // perdidos SIN aviso, pie del mensaje descartado y corte a mitad de
+            // token MarkdownV2 (`\(sin metadata\` → riesgo de 400 Can't parse
+            // entities). El operador pasaba de leer "vacía con 139 autorizados"
+            // a leer "123 de 139" sin saber que faltaban: los dos caminos
+            // terminan en la re-autorización manual del dispatch de #5060, que
+            // es justo lo que SEC-5 / A-1 buscan evitar.
+            //
+            // `fitAllowlistRender` degrada por DENSIDAD antes que por corte
+            // (detallada → compacta → compacta acotada con "y N más"), y elige
+            // MIDIENDO el render, no estimando: a escala de producción los 139
+            // entran completos y, si algún día no entraran, el mensaje lo
+            // declara con el total real en vez de callarlo.
+            //
+            // Los campos de largo variable que vienen del MARKER (los escribe
+            // otro proceso) se acotan en origen para que la degradación por
+            // issues no tenga que compensar un campo desbordado.
+            const baseCtx = {
                 // CA-UX-3 · "activa" = hay una restricción vigente por CUALQUIER
                 // eje (issues O skills), igual que `getPipelineMode()` (#3680
                 // CA-A15). Antes miraba sólo issues: una ventana por skill se
@@ -2160,16 +2191,23 @@ function buildDefaultHandlers(ctx) {
                 'full-pause': haltTotal,
                 'pause-origin': pauseOrigin,
                 'window-label': dispatchWindowLabel(issues.length, skills.length),
-                'last-modified': snapshot.createdAt || 'desconocida',
+                'last-modified': allowlistBudget.clampLastModified(snapshot.createdAt),
                 'empty-allowlist': isEmpty,
                 count: issues.length,
-                issues,
                 'skills-count': skills.length,
                 'has-skills': skills.length > 0,
-                'skills-display': skills.join(', '),
+                'skills-display': allowlistBudget.clampSkillsDisplay(skills),
                 'con-deps-recursivas': false,
                 deps: [],
+            };
+
+            // `issues` / `compact-list` / `truncated` / `shown` / `hidden-count`
+            // los aporta la vista elegida por el presupuesto.
+            const fitted = allowlistBudget.fitAllowlistRender({
+                rows: issues,
+                renderWith: (view) => fillTemplate('allowlist', { ...baseCtx, ...view }),
             });
+            return fitted.text;
         },
 
         'dashboard-up': async () => {

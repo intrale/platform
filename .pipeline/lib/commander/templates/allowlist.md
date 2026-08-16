@@ -20,9 +20,17 @@
 {{else}}
 
 *Issues admitidos ({{count}}):*
+{{#if compact}}
+{{{compact-list}}}
+{{else}}
 {{#each issues}}
   ✅ \#{{number}} · {{title-short}}{{#if labels-display}} · {{labels-display}}{{/if}}
 {{/each}}
+{{/if}}
+{{#if truncated}}
+_… y {{hidden-count}} más de los {{count}} autorizados \(sólo se listan {{shown}} para que el mensaje entre en Telegram\)._
+_La allowlist NO está incompleta: los {{count}} siguen autorizados. La lista entera está en el tablero._
+{{/if}}
 {{#if has-skills}}
 *Skills admitidos ({{skills-count}}):* {{skills-display}}
 {{/if}}
