@@ -19,11 +19,14 @@ name: Operational State Lint
 # `pull_request` y NUNCA `pull_request_target`: el segundo corre con el token
 # del repo BASE y acceso a secrets sobre codigo de un fork.
 
-# `.github/CODEOWNERS` esta en los `paths:` por #5986 (CA-5): la suite de este
-# job asegura que las 4 reglas del guardrail siguen activas, y sin este path un
-# PR que toca UNICAMENTE CODEOWNERS no dispara el job — o sea, la asercion no
-# corre en el unico PR donde importa. Precedente real: #5975 toco solo ese
-# archivo y mergeo con 14 checks verdes, sin este job entre ellos.
+# `.github/CODEOWNERS` esta en los `paths:` por #5986 (CA-5). Bajo la Opcion A
+# decidida por el operador el archivo queda en modo `solo-comentarios`: CERO
+# reglas de ownership activas. Lo que la suite de este job asegura es
+# exactamente eso — que el modo siga siendo `solo-comentarios` y que no se
+# reintroduzcan reglas por la ventana (`GATE_CODEOWNERS_ESPERADO=false`). Sin
+# este path, un PR que toca UNICAMENTE CODEOWNERS no dispara el job — o sea, la
+# asercion no corre en el unico PR donde importa. Precedente real: #5975 toco
+# solo ese archivo y mergeo con 14 checks verdes, sin este job entre ellos.
 on:
   pull_request:
     branches: [ main, develop ]
