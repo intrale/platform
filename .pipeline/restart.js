@@ -783,7 +783,18 @@ const action = process.argv[2] || 'restart';
 // Estado de pausa PREVIO al restart: si el pipeline estaba en pausa total
 // (.paused presente) antes de reiniciar, el restart debe CONSERVAR esa pausa
 // en lugar de soltarla. Un /restart no es un "destrabe" implícito.
-const wasPausedBefore = fs.existsSync(path.join(PIPELINE, '.paused'));
+// #5179 grupo 3b / CA-6b — se consulta al envoltorio único, no al marker crudo.
+// FAIL-CLOSED: si el módulo no carga o `getDispatchState()` tira, se asume que
+// SÍ estaba pausado. Degradar a `false` haría que un restart soltara una pausa
+// del operador por no poder leer el estado — el fail-open que #5399 vino a
+// cerrar (un /restart no es un destrabe implícito).
+const wasPausedBefore = (() => {
+  try {
+    return require('./lib/operational-state').getDispatchState().mode === 'paused';
+  } catch {
+    return true;   // indeterminado ⇒ conservar la pausa
+  }
+})();
 const flagPaused = process.argv.includes('--paused') || wasPausedBefore;
 const flagNoSmokeTest = process.argv.includes('--no-smoke-test');
 const flagNoRollback = process.argv.includes('--no-rollback');
@@ -852,7 +863,20 @@ switch (action) {
       log(`Modo PAUSADO — pausa ${heredada} (autoría: ${autoria}; ${extra}) — `
         + 'solo Telegram + dashboard activos (intake/lanzamiento deshabilitados)');
     } else {
-      try { fs.unlinkSync(path.join(PIPELINE, '.paused')); } catch {}
+      // #5179 grupo 3b — restart en modo normal (ni `--paused` ni pausa previa):
+      // se limpia cualquier marker residual vía el gate, con lock + audit, en vez
+      // del `unlinkSync` crudo que borraba el estado sin dejar rastro.
+      // `restart:preserve-pause` es la identidad del ciclo de vida de pausa que
+      // usa restart.js (#5399) — de hecho es el default del propio módulo dueño.
+      // `restart:rollback` NO corresponde: está reservado al recovery
+      // transaccional (restart.js:185), que es otra operación.
+      try {
+        require('./lib/operational-state').clearFullPause({
+          source: 'restart',
+          authorizedBy: 'restart:preserve-pause',
+          justification: 'restart normal: sin pausa previa ni --paused, se limpia marker residual',
+        });
+      } catch { /* nunca abortar el restart por no poder limpiar el marker */ }
     }
     freeDashboardPortOrAbort(); // #4308/#5722 — puerto 3200 libre, o abortar ruidoso
     // #5646 — Estos componentes acaban de arrancar leyendo el código de disco:

@@ -226,26 +226,34 @@ function pipelineDir() {
  *     corrupto o con shape inesperada) → `null` = INDETERMINADO. Ahí el caller
  *     degrada a conservador y NO poda.
  *
- * Se lee el archivo directo en vez de usar `waves.getActiveWave()` a propósito:
- * `loadWaves` es TOLERANTE (un JSON corrupto degrada en silencio a estado
- * vacío), y para este guard "no pude leer la ola" y "no hay ola" tienen que
- * dar resultados opuestos. Confundirlos convertiría un waves.json corrupto en
- * una poda masiva de la allowlist — justo el fallo que #5724 viene a cerrar.
+ * NO se usa `waves.getActiveWave()` (el de `lib/waves.js`): ése es TOLERANTE — un
+ * JSON corrupto degrada en silencio a estado vacío — y para este guard "no pude
+ * leer la ola" y "no hay ola" tienen que dar resultados opuestos. Confundirlos
+ * convertiría un waves.json corrupto en una poda masiva de la allowlist, justo
+ * el fallo que #5724 viene a cerrar.
+ *
+ * #5179 grupo 3b — se usa `operational-state.getActiveWave()`, que SÍ preserva
+ * esa distinción: lee por `loadStateStrict()` y TIRA ante estado corrupto o
+ * shape inválida, en vez de degradar. Equivalencia verificada call site por
+ * call site:
+ *   archivo ausente     → devuelve null  ⇒ []    (sin olas: nada que proteger)
+ *   JSON corrupto       → TIRA           ⇒ null  (indeterminado)
+ *   shape inválida      → TIRA           ⇒ null  (indeterminado)
+ *   sin ola activa      → devuelve null  ⇒ []
+ *   ola activa          → objeto de ola  ⇒ issues filtrados
  *
  * @returns {number[]|null}
  */
 function readActiveWaveIssues() {
-    const file = path.join(pipelineDir(), 'waves.json');
-    if (!fs.existsSync(file)) return []; // sin olas: nada que proteger
-    let parsed;
+    let active;
     try {
-        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+        active = operationalState.getActiveWave();
     } catch {
-        return null; // ilegible/corrupto → indeterminado
+        return null; // ilegible/corrupto/shape inválida → indeterminado
     }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const active = parsed.active_wave;
-    if (active === null || active === undefined) return []; // no hay ola activa
+    // `null` cubre por igual "no hay waves.json" y "no hay ola activa": en ambos
+    // casos no hay nada que proteger, que es la semántica previa de `[]`.
+    if (active === null || active === undefined) return [];
     if (typeof active !== 'object' || !Array.isArray(active.issues)) return null;
     return active.issues
         .filter((i) => i && i.status !== 'completed')

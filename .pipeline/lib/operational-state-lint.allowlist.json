@@ -12,6 +12,11 @@
       "file": "lib/desync-detector.js",
       "line": 122,
       "reason": "#5176 A-2: el detector necesita distinguir 'sin active_wave' (null, NO es desync) de 'ola vacia' ([]), no puede lanzar ante waves.json corrupto y no debe disparar la alerta dedupada de waves.getAllowlist (#3616). Ningun lector del envoltorio cumple las tres. Version estructural: #5191."
+    },
+    {
+      "file": "pulpo.js",
+      "line": 17827,
+      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso —:12508 es el fallback de setFullPause— y el seam de test SEC-3 (#4832). Estructural: #6104"
     }
   ]
 }

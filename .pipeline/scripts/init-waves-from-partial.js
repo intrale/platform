@@ -62,8 +62,20 @@ function pipelineDir() {
     return path.resolve(__dirname, '..');
 }
 
-function wavesFile() { return path.join(pipelineDir(), 'waves.json'); }
-function partialFile() { return path.join(pipelineDir(), '.partial-pause.json'); }
+// #5179 grupo 3b — los paths de estado NO se construyen a mano: se los pide a
+// los módulos DUEÑOS del estado, que los resuelven honrando
+// `PIPELINE_DIR_OVERRIDE` igual que `pipelineDir()`.
+//
+// Por qué el seed no consume la superficie pública del envoltorio (y no es un
+// bypass): este script es el BOOTSTRAP que corre justo sobre los estados en los
+// que los lectores estrictos del envoltorio TIRAN — `waves.json` ausente o
+// corrupto — y cuyo trabajo es precisamente crearlo/repararlo. Además necesita
+// el payload CRUDO de `.partial-pause.json` (`wave_number`, `wave_name`, `note`)
+// con su propia validación fail-closed, y esos campos no viajan en
+// `getDispatchState()`. Opera deliberadamente por debajo de la abstracción; lo
+// que sí respeta es la propiedad del path.
+function wavesFile() { return require('../lib/waves')._paths().WAVES_FILE; }
+function partialFile() { return require('../lib/partial-pause')._paths().PARTIAL_FILE; }
 
 // ─── Sanitización defensiva ─────────────────────────────────────────────────
 
