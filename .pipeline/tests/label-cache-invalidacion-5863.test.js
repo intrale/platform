@@ -318,11 +318,25 @@ test('CA-R3 el barrido de lanzamiento drena el marker antes de evaluar los gates
 // -----------------------------------------------------------------------------
 
 test('CA-R4 la rama AUSENTE reconcilia el marker por la ruta de destrabe existente', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'pulpo.js'), 'utf8');
+  // Los fines de línea se normalizan antes de medir: `core.autocrlf=true` deja
+  // CRLF en el working tree de Windows mientras el blob viaja en LF, y
+  // `.gitattributes` sólo fuerza LF para `*.sh` y los workflows, no para `*.js`.
+  // Una ventana medida en caracteres cuenta ese `\r` de más por línea, así que
+  // sin normalizar el test mide un fuente distinto según la plataforma.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'pulpo.js'), 'utf8')
+    .replace(/\r\n/g, '\n');
   const ausente = src.indexOf("label needs-human ya removido en GitHub");
   assert.ok(ausente > 0, 'debe conservar la rama AUSENTE de #5856');
 
-  const bloque = src.slice(ausente, ausente + 2600);
+  // El bloque se acota por su terminador ESTRUCTURAL (el catch de la
+  // reconciliación), no por un largo fijo. Con una ventana de N caracteres el
+  // test empieza a fallar por crecer un comentario dentro del bloque —
+  // exactamente lo que pasó cuando #6084 sumó 212 líneas acá y dejó el margen
+  // en 25 caracteres, por debajo de lo que cuesta el CRLF.
+  const finBloque = src.indexOf('no se pudo reconciliar el marker de bloqueado-humano/', ausente);
+  assert.ok(finBloque > ausente,
+    'precondición: se ubicó el cierre del bloque de reconciliación');
+  const bloque = src.slice(ausente, finBloque);
   assert.match(bloque, /humanBlock\.findBlockedMarker\(/,
     'debe buscar el marker previo antes de decidir qué hacer con él');
   assert.match(bloque, /humanBlock\.unblockIssue\(/,
