@@ -86,6 +86,10 @@ tasks.register("verifyNoLegacyStrings") {
             "tools",
             "forbidden-strings-processor",
         )
+        val excludedRootSegments = setOf(
+            ".claude",
+            ".pipeline",
+        )
         val excludedTestSegments = setOf(
             "test",
             "tests",
@@ -118,7 +122,7 @@ tasks.register("verifyNoLegacyStrings") {
             val relative = dir.relativePath()
             if (relative.isEmpty()) return false
             val segments = relative.split('/')
-            return segments.any { segment ->
+            return segments.first() in excludedRootSegments || segments.any { segment ->
                 segment in excludedSegments ||
                     segment in excludedTestSegments ||
                     segment.equals("test", ignoreCase = true) ||
