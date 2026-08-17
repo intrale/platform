@@ -464,13 +464,30 @@ test('5 · CA-13(b) · el call-site de credentials.js no propaga AWS_PROFILE del
 
 test('5b · el call-site pasa la config del vault, no sólo la región', () => {
     // Verificación estructural, para que el acotamiento no se pueda deshacer sin
-    // que un test lo note: el runner se construye con `cfgHost`, que es la
-    // config del vault, y jamás con `cfg.region` pelada.
+    // que un test lo note: el runner se construye con el OBJETO de config del
+    // vault, y jamás con `cfg.region` pelada.
+    //
+    // El nombre del local NO es parte del criterio. #5426 lo introdujo como
+    // `cfgHost` (f92d25644); después `main` refactorizó `credentials.js` en los
+    // splits #5219 (a219ea460) y #5900 (f899e6893) y lo renombró a `cfg`,
+    // conservando la semántica —y hasta el comentario `#5426 · SEC-2/G-1` que
+    // explica que el 2º argumento dejó de ser la región—. Anclar el assert al
+    // identificador hacía que el merge con main diera rojo sin que nada del
+    // acotamiento se hubiera aflojado: un falso positivo.
+    //
+    // Lo que SÍ es criterio (CA-13/G-1) y queda asertado: que el 2º argumento
+    // sea el objeto de config y no `.region` ni un string. La garantía de
+    // comportamiento —que `AWS_PROFILE=default` del ambiente no se filtre— la
+    // cubre el test 5, que ejercita el call-site de verdad.
     const fuente = fs.readFileSync(path.join(__dirname, '..', 'credentials.js'), 'utf8');
-    assert.match(fuente, /createAwsCliVaultRunner\(process\.env,\s*cfgHost\)/,
+    assert.match(fuente, /createAwsCliVaultRunner\(process\.env,\s*cfg(?:Host)?\)/,
         'el call-site debe entregarle la config del vault al runner');
     assert.ok(!/createAwsCliVaultRunner\(process\.env,\s*cfg\.region\)/.test(fuente),
         'el call-site no puede volver a pasar sólo la región');
+    // Ningún literal en el 2º argumento: un string ahí es exactamente el modo de
+    // identidad implícito que T2-2 prohíbe.
+    assert.ok(!/createAwsCliVaultRunner\(process\.env,\s*['"`]/.test(fuente),
+        'el call-site no puede pasar un literal en lugar de la config');
 });
 
 // =============================================================================
