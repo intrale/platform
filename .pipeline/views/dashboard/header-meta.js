@@ -89,6 +89,22 @@ function renderHeaderMetaSsr(opts) {
 //   SEC-1: sólo .textContent / .classList / .title (property). Sin innerHTML.
 function headerPillsClientScript() {
     return `
+// #5176 CA-UX-3 — rótulo canónico de la ventana de dispatch, espejo client-side
+// de lib/dispatch-window-label.js. Se define ANTES (y fuera) del guard de
+// __hydrateHeaderPills porque lo consumen también las vistas que arman su
+// propia pill de modo (home.js mantiene un menú desplegable dentro de #hdr-mode
+// y por eso no delega el textContent en el hidratador compartido).
+if (typeof window !== 'undefined' && !window.__dispatchWindowLabel) {
+    window.__dispatchWindowLabel = function (allowedIssues, allowedSkills) {
+        var nIssues = Array.isArray(allowedIssues) ? allowedIssues.length : 0;
+        var nSkills = Array.isArray(allowedSkills) ? allowedSkills.length : 0;
+        var parts = [];
+        if (nIssues > 0) parts.push(nIssues + ' issues');
+        if (nSkills > 0) parts.push(nSkills + ' skills');
+        if (parts.length === 0) return '0 issues';
+        return parts.join(' · ');
+    };
+}
 if (typeof window !== 'undefined' && !window.__hydrateHeaderPills) {
     // Formateo de uptime autocontenido (idéntico a fmtDur de home/satélites) para
     // que el helper sea portable a vistas que no definen fmtDur (providers, roadmap).
@@ -138,9 +154,11 @@ if (typeof window !== 'undefined' && !window.__hydrateHeaderPills) {
                 modePill.classList.add('in-mode-paused');
                 modeLabel = '⏸ Pausado';
             } else if (d.mode === 'partial_pause') {
-                var nAllowed = Array.isArray(d.allowedIssues) ? d.allowedIssues.length : 0;
+                // #5176 CA-UX-3 — una ventana por skill se rotula por SKILLS.
+                // Antes: 'Parcial · 0 issues', indistinguible de una pausa
+                // parcial vacía (que sí equivale a running normal).
                 modePill.classList.add('in-mode-partial');
-                modeLabel = '⏸ Parcial · ' + nAllowed + ' issues';
+                modeLabel = '⏸ Parcial · ' + window.__dispatchWindowLabel(d.allowedIssues, d.allowedSkills);
             } else {
                 modePill.classList.add('in-mode-running');
                 modeLabel = '🟢 Running';

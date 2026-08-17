@@ -103,6 +103,12 @@ const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 
+// #5176 — Envoltorio único de acceso al estado operativo. Mismo criterio de
+// require defensivo que el resto del módulo: si no carga, `headerSlice` degrada
+// a `running` sin romper el header del dashboard.
+let operationalState = null;
+try { operationalState = require('./operational-state'); } catch { /* opcional */ }
+
 // Detector de artifacts auxiliares (.guidance.txt, .reason.json, .comment.md,
 // y cualquier filename con > 2 segmentos). Compartido con human-block para
 // que ambos listadores excluyan los mismos fantasmas. Fallback defensivo si
@@ -546,19 +552,47 @@ function nextInQueue(state, ctx, limit = 3, opts = {}) {
 
 function headerSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
-    const partialFile = path.join(PIPELINE, '.partial-pause.json');
-    const pauseFile = path.join(PIPELINE, '.paused');
+    // #5176 — El modo de dispatch del header sale del envoltorio único, no de
+    // dos `fs.existsSync` sobre paths construidos acá. Dos consecuencias
+    // DELIBERADAS y declaradas (no efectos colaterales):
+    //
+    //   R7 · el halt total sigue ganando. `getDispatchState()` aplica la
+    //   precedencia `paused > partial_pause > running` del contrato §4: con
+    //   `.paused` presente devuelve `mode: 'paused'` sin siquiera leer el
+    //   marker de allowlist. El header NO puede confundir halt total con
+    //   "allowlist vacía" porque son ramas distintas del mismo retorno, no dos
+    //   lecturas independientes que alguien pueda reordenar.
+    //
+    //   SEC-4 · ventana por skill. El header activaba `partial_pause` SÓLO con
+    //   `allowed_issues.length > 0`; `getPipelineMode()` lo activa con issues
+    //   O skills (#3680 CA-A15). Con una ventana por skill (sin issues), el
+    //   header mostraba `running` mientras el Pulpo estaba en `partial_pause`
+    //   — el operador leía "sin pausa" con el dispatch acotado. La semántica
+    //   del envoltorio es la correcta y se adopta: es un cambio observable
+    //   DECLARADO, no una regresión.
+    //
+    // El envoltorio resuelve la ruta física por su cuenta (contrato §2:
+    // `PIPELINE_DIR_OVERRIDE` o `.pipeline/`), así que este slice deja de
+    // derivar el estado operativo de `ctx.PIPELINE`. En producción son el
+    // mismo directorio; el resto del slice sigue usando `PIPELINE` para lo
+    // suyo (build status, rest-mode, métricas).
+    //
+    // CA-UX-3 / CA-UX-4 · el slice publica también `allowedSkills`. Sin ese
+    // campo el cliente no puede distinguir una ventana por skill de una pausa
+    // parcial vacía: rotulaba `⏸ Parcial · 0 issues` y escondía el toggle de
+    // inspección de la allowlist justo cuando había una restricción vigente.
+    // `views/dashboard/multi-provider-coverage.js` ya lo leía del header y
+    // recibía `undefined` — este es el productor que faltaba.
     let mode = 'running';
     let allowedIssues = [];
-    if (fs.existsSync(pauseFile)) {
-        mode = 'paused';
-    } else if (fs.existsSync(partialFile)) {
-        const data = safeReadJson(partialFile, {});
-        const arr = Array.isArray(data.allowed_issues) ? data.allowed_issues : [];
-        if (arr.length > 0) {
-            mode = 'partial_pause';
-            allowedIssues = arr;
-        }
+    let allowedSkills = [];
+    if (operationalState && typeof operationalState.getDispatchState === 'function') {
+        try {
+            const dispatch = operationalState.getDispatchState();
+            mode = dispatch.mode;
+            allowedIssues = Array.isArray(dispatch.allowedIssues) ? dispatch.allowedIssues : [];
+            allowedSkills = Array.isArray(dispatch.allowedSkills) ? dispatch.allowedSkills : [];
+        } catch { /* envoltorio degradado → header en running, nunca rompe */ }
     }
     const procesos = state.procesos || {};
     const pulpoAlive = !!(procesos.pulpo && procesos.pulpo.alive);
@@ -685,6 +719,7 @@ function headerSlice(state, ctx) {
     return {
         mode,
         allowedIssues,
+        allowedSkills,
         pulpoAlive,
         pulpoUptimeMs: procesos.pulpo?.uptime || 0,
         counts: {

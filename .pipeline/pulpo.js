@@ -350,6 +350,10 @@ const handoff = require('./lib/handoff');
 // reconcilia el historial leyendo `recibos/` que escribe `svc-telegram` cuando
 // el API confirma la entrega (`ok:true` + `message_id`) o falla terminal.
 const telegramReceipt = require('./lib/telegram-receipt');
+// #5176 — Cota de largo del saliente. El recorte del transporte partía tokens
+// MarkdownV2 al medio (modo de falla `400 Can't parse entities`) y marcaba el
+// truncado con `'...'`, tres metacaracteres V2 sin escapar.
+const telegramTextBudget = require('./lib/telegram-text-budget');
 // #4750 — Contabilidad + reconciliación de chunks de audio (part_index/part_total)
 // atados al correlationId padre. Detecta partes faltantes tras el timeout y las
 // reenvía (tope N reintentos + backoff); avisa al usuario si se agotan. Reutiliza
@@ -16947,7 +16951,15 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
   const chatId = getTelegramChatId();
   if (!token || !chatId) { log('telegram', 'Sin token/chatId'); return null; }
 
-  const msg = text.length > 4000 ? text.slice(0, 4000) + '...' : text;
+  // #5176 — Red de seguridad del transporte. El recorte anterior
+  // (`text.slice(0, 4000) + '...'`) cortaba a mitad de escape MarkdownV2 y podía
+  // partir un par surrogate; el propio marcador `'...'` son metacaracteres V2
+  // sin escapar. `safeTruncate` respeta los límites de token y marca con `…`.
+  //
+  // Es una RED, no la solución: un handler que puede producir texto largo lo
+  // acota él mismo y AVISA qué omitió (ver `lib/allowlist-render-budget.js`).
+  // Llegar acá sigue significando pérdida silenciosa de contenido.
+  const msg = telegramTextBudget.safeTruncate(text, telegramTextBudget.TELEGRAM_TEXT_LIMIT);
   const plain = !!(opts && opts.plain);
   // #4130 — dialecto del saliente. Default legacy 'Markdown'; un handler que
   // produce escapes V2 (ej. `/wave`) lo declara vía opts.parseMode. `plain` gana
