@@ -481,6 +481,13 @@ function prepareBootstrap(args = {}) {
 
   // Paso 3 — dry-run side-effect-free.
   const dry = dryRun(descriptor, deps);
+  // #6032 · CA-5 — el descarte de scopes legacy en la migración NO es silencioso:
+  // viaja hasta el render que ve el operador. Un descarte enumerado y reportado
+  // sólo deja de ser un fallo silencioso si el texto explica además por qué no se
+  // perdió capacidad (eso lo pone `renderHuman`).
+  if (dry && dry.ok && Array.isArray(validation.droppedScopes) && validation.droppedScopes.length > 0) {
+    dry.droppedScopes = [...validation.droppedScopes];
+  }
   if (!dry.ok) {
     return { error: { ok: false, stage: 'dry-run', mode, errors: [{ path: 'dry-run', detail: dry.reason }], human: renderHuman({ ok: false, stage: 'dry-run', errors: [{ detail: dry.reason }] }) } };
   }
@@ -632,6 +639,15 @@ function renderHuman(res) {
     }
   }
   if (res.dryRun) {
+    // #6032 · CA-5 — primero lo que CAMBIÓ respecto del archivo que el operador
+    // escribió. La segunda línea es la mitad que evita el malentendido: sin ella
+    // "descartado" se lee como "perdí una credencial".
+    if ((res.dryRun.droppedScopes || []).length > 0) {
+      lines.push(`   descriptor migrado 1.0 -> 1.1`);
+      lines.push(`   scopes descartados en la migracion: ${res.dryRun.droppedScopes.join(', ')}`);
+      lines.push(`     (contexto de destino, no credencial: sigue llegando por su canal;`);
+      lines.push(`      no se traduce a un scope de credencial para no concederle el token al proceso hijo)`);
+    }
     lines.push(`   labels de admisión: ${(res.dryRun.admissionLabels || []).join(', ') || '(ninguno)'}`);
     lines.push(`   providers: ${(res.dryRun.providerOrder || []).join(', ') || '(ninguno)'}`);
     lines.push(`   política de PR: ${res.dryRun.pullRequestPolicy || '(no declarada)'}`);
