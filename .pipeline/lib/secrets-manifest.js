@@ -3,11 +3,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { isPlaceholderOrEmpty } = require('./credentials');
+const { SECRET_SCOPES } = require('./secret-scopes');
 
 const DEFAULT_PATH = path.join(__dirname, '..', 'secrets-manifest.json');
-const SERVICES = Object.freeze([
-  'telegram', 'github', 'providers', 'aws', 'google_drive', 'r2', 'multimedia',
-]);
+// Fuente unica del vocabulario: misma referencia congelada, mismo contenido y
+// mismo orden que el literal que vivia aca. `SCHEMA.services` y `validate` no
+// cambian de comportamiento.
+const SERVICES = SECRET_SCOPES;
 const SOURCES = Object.freeze(['store', 'env', 'external']);
 const REQUIRED_WHEN = Object.freeze(['always', 'service_active', 'never']);
 const HYDRATION = Object.freeze(['eager', 'deferred', 'n/a']);
@@ -231,6 +233,9 @@ function listByService(manifest) {
 module.exports = {
   load,
   SCHEMA,
+  // Sin este export, derivar un `enum` de Ajv desde `require(...).SERVICES` da
+  // `undefined`, y un `enum: undefined` no valida nada: fail-open silencioso.
+  SERVICES,
   validate,
   listByService,
   isMetadataKey,
