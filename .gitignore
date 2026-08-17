@@ -216,6 +216,10 @@ scripts/planner-plan.json
 # reiniciando el escalado de recordatorios solo (lo mismo que paso con waves.json).
 .pipeline/human-block-reminder-state.json
 .pipeline/human-block-reminder-state.json.*.tmp
+# #5724 — estado del ciclo de recordatorios del dispatch suspendido por desync.
+# Mismo criterio que el de arriba: es runtime puro y el `reset --hard` del repo
+# principal lo pisaria, reiniciando la escalera de avisos en cada respawn.
+.pipeline/.desync-block-notify.json
 .pipeline/last-restart.json
 # #5646 — registro de servicios que quedaron con codigo viejo tras un
 # `reset --hard` y guard de ronda del restart selectivo. Estado runtime puro:
@@ -297,6 +301,10 @@ scripts/planner-plan.json
 .pipeline/connectivity-state.json
 .pipeline/blocked-by-infra.json
 .pipeline/infra-health.json
+# #5243 — reporte del health-check de secretos. Nombra qué secreto falta en
+# ESTA máquina: en un repo público es un mapa de ataque. Mismo tratamiento que
+# infra-health.json, y la regla entra en el mismo commit que su writer.
+.pipeline/secrets-health.json
 .pipeline/events/
 .pipeline/tmp/
 # #2337 — estado reintentando + metricas UX rotadas (no comitear)

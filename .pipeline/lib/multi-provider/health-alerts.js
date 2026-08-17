@@ -65,6 +65,21 @@ const ALLOWED_REASON_CODES = Object.freeze(new Set([
     // dispatch lo trate como rojo DURABLE y saltee el provider (no lo colapses
     // a 'unknown', que el dispatch interpreta como rojo transitorio → fail-open).
     'cli_license_unavailable',
+    // #5888 — eje de VIGENCIA DE MODELO, distinto del eje de salud del provider.
+    //
+    // Deben estar acá porque `sanitizeReasonCode` colapsa a `'unknown'` todo lo
+    // que no esté en este set, SIN error ni log: la alerta se emitiría igual y
+    // los tests pasarían aparentando funcionar (cond. 3 / R-3).
+    //
+    // Y deben quedar FUERA de `DURABLE_RED_REASONS`
+    // (`agent-launcher/dispatch-with-fallback.js:749`) — exactamente lo
+    // contrario de lo que documenta el bloque de `cli_license_unavailable` acá
+    // arriba. Razón: un modelo muerto NO invalida al provider. NVIDIA sigue
+    // sirviendo el resto de su catálogo; si estos codes entraran a
+    // DURABLE_RED_REASONS, el health-gate del dispatch (`:818`) sacaría a NVIDIA
+    // ENTERA de la cascada de fallback por un solo modelo caído (CA-4 / R-C).
+    'model_not_in_catalog',    // catálogo leído COMPLETO y el modelo no está.
+    'model_check_unavailable', // no se pudo verificar. Ausencia de señal, no evidencia.
 ]));
 
 // Estados válidos del provider (espejan los CA-3 / narrativa UX).
@@ -102,6 +117,30 @@ function sanitizeProvider(provider) {
     // Solo aceptamos providers que matcheen el patrón seguro (lowercase + dash).
     if (typeof provider !== 'string' || !/^[a-z][a-z0-9-]{0,32}$/.test(provider)) return null;
     return provider;
+}
+
+// #5888 S-A / CA-6 — Allowlist de charset para el `model_id` que viaja al
+// operador (texto de Telegram en Markdown + panel del dashboard).
+//
+// El id que llega acá es NUESTRO (sale de `agent-models.json`, no del catálogo
+// remoto), pero `agent-models.json` lo escriben AGENTES: esto es defensa en
+// profundidad, no teatro.
+//
+// El charset excluye deliberadamente los metacaracteres de Markdown — backtick,
+// `[`, `]`, `(`, `)`, `*`, `_` — porque el sink es un mensaje con
+// `parse_mode: 'Markdown'`: un id con backticks podría cerrar el bloque de
+// código y hacer que un humano CON AUTORIDAD lea texto inyectado como si fuera
+// del pipeline. Mismo estilo fail-closed que `sanitizeProvider`: devuelve
+// `null`, NUNCA el crudo. El llamador emite igual, con texto genérico (CA-6).
+//
+// Validado contra los 6 ids reales del config: `claude-opus-4-7`, `gpt-5.5`,
+// `gemini-3-flash-preview`, `gpt-oss-120b`, `zai-glm-4.7`, `kimi-k2-6` y
+// `deepseek-ai/deepseek-v4-pro` (la `/` del vendor es el motivo de incluirla).
+const MODEL_ID_RE = /^[a-z0-9][a-z0-9./-]{0,63}$/;
+
+function sanitizeModelId(modelId) {
+    if (typeof modelId !== 'string' || !MODEL_ID_RE.test(modelId)) return null;
+    return modelId;
 }
 
 /**
@@ -297,6 +336,88 @@ function recordMultiDown({ sent, now = Date.now(), dedupFile = HOME_DEDUP_FILE, 
     try { writeJsonAtomic(dedupFile, store, fsImpl); } catch { /* best-effort */ }
 }
 
+// -----------------------------------------------------------------------------
+// #5888 — Evento de VIGENCIA DE MODELO (CA-1/CA-6/CA-17).
+//
+// Función PROPIA, no se reusa `decide()` (R-D). La key de dedup de `decide()`
+// es `provider|state`; si el evento de modelo la compartiera, o suprimiría la
+// alerta de salud del provider, o repetiría la de modelo en cada tick. Acá la
+// key es `provider|model|<id>` — no colisiona con ningún `provider|<state>`
+// porque `model` no es un estado válido (`ALLOWED_STATES` = green/yellow/red).
+//
+// Ventana propia de 24h: un modelo fuera de catálogo es una condición
+// PERSISTENTE (no se arregla sola), así que el back-off exponencial del eje de
+// salud no aplica. 1 recordatorio por día es lo que mantiene la barrera visible
+// sin entrenar al operador a ignorar el canal.
+// -----------------------------------------------------------------------------
+const MODEL_ALERT_DEDUP_MS = 24 * 60 * 60 * 1000;
+
+// Sentinela para el id que NO sobrevivió a `sanitizeModelId` (S-A fail-closed).
+// La alerta se emite igual — degradada, sin el id — pero necesita una key de
+// dedup estable para no floodear.
+const UNREPRESENTABLE_MODEL_KEY = '__unrepresentable__';
+
+/**
+ * Decide si un modelo fuera de catálogo merece emisión a Telegram.
+ *
+ * @param {object} params
+ * @param {string} params.provider — provider gestionado (`nvidia-nim`, …).
+ * @param {string} params.modelId — id configurado. Si no pasa el sanitize, la
+ *   alerta se emite IGUAL con `model_id: null` (nunca el crudo, nunca se omite).
+ * @param {string} [params.providerState] — estado de salud del provider. Viaja
+ *   en el payload SÓLO para que el texto pueda decir "sigue sano" sin mentir;
+ *   NO se usa para decidir si emitir (cond. 4: los ejes son independientes).
+ * @returns {{ shouldEmit: boolean, reasonNoEmit?: string, payload?: object, nextEligibleAt?: number }}
+ */
+function decideModelEvent({ provider, modelId, providerState, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
+    const p = sanitizeProvider(provider);
+    if (!p) return { shouldEmit: false, reasonNoEmit: 'invalid_input' };
+    const m = sanitizeModelId(modelId);
+    const s = sanitizeState(providerState);
+
+    const store = tryReadJson(dedupFile, fsImpl) || { alerts: {} };
+    if (!store.alerts || typeof store.alerts !== 'object') store.alerts = {};
+
+    const key = `${p}|model|${m || UNREPRESENTABLE_MODEL_KEY}`;
+    const prev = store.alerts[key];
+    if (prev && (now - (prev.last_sent_at || 0)) < MODEL_ALERT_DEDUP_MS) {
+        return {
+            shouldEmit: false,
+            reasonNoEmit: 'dedup_window',
+            nextEligibleAt: prev.last_sent_at + MODEL_ALERT_DEDUP_MS,
+        };
+    }
+
+    // Payload metadata-only (CA-11): sólo lo que el operador necesita leer.
+    // NADA del body del provider — el catálogo remoto ni siquiera salió de
+    // `live-ping.js`, lo que llega acá es un id de NUESTRO config.
+    const payload = {
+        event: 'model_not_in_catalog',
+        provider: p,
+        model_id: m,               // `null` ⇒ el texto cae a la rama genérica.
+        provider_state: s,         // `null` si el estado no era válido.
+        reason_code: 'model_not_in_catalog',
+        observed_at: new Date(now).toISOString(),
+    };
+    return { shouldEmit: true, payload: redact.redactValue(payload) };
+}
+
+function recordModelEvent({ provider, modelId, sent, now = Date.now(), dedupFile = HOME_DEDUP_FILE, fsImpl = fs } = {}) {
+    const p = sanitizeProvider(provider);
+    if (!p || !sent) return;
+    const m = sanitizeModelId(modelId);
+    const store = tryReadJson(dedupFile, fsImpl) || { alerts: {} };
+    if (!store.alerts || typeof store.alerts !== 'object') store.alerts = {};
+    const key = `${p}|model|${m || UNREPRESENTABLE_MODEL_KEY}`;
+    const prev = store.alerts[key];
+    store.alerts[key] = {
+        last_sent_at: now,
+        consecutive_count: ((prev && prev.consecutive_count) || 0) + 1,
+    };
+    try { writeJsonAtomic(dedupFile, store, fsImpl); }
+    catch { /* best-effort: si no podemos escribir, próxima decisión re-emite */ }
+}
+
 module.exports = {
     HOME_DEDUP_FILE,
     DEDUP_WINDOW_MS,
@@ -312,4 +433,10 @@ module.exports = {
     sanitizeProvider,
     sanitizeState,
     sanitizeReasonCode,
+    // #5888 — eje de vigencia de modelo.
+    MODEL_ALERT_DEDUP_MS,
+    UNREPRESENTABLE_MODEL_KEY,
+    sanitizeModelId,
+    decideModelEvent,
+    recordModelEvent,
 };

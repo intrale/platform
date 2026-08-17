@@ -48,6 +48,21 @@ const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 // Función pura compartida con dashboard.js (sin dependencia circular).
 const { computeInfraHealthLevel } = require('../../lib/infra-health-level');
 
+// #5724 CA-4 — Banner "Dispatch suspendido por desync" + copy compartido. El
+// pill del panel Pipeline (views/dashboard/pipeline.js) sólo se dibuja en el
+// catch-all legacy de dashboard.js, al que no apunta ninguna ruta del menú:
+// durante el incidente el dispatch estuvo ~10 h suspendido y esta vista —la que
+// el operador mira— no lo nombraba. El banner es un componente compartido con
+// la ventana Pipeline y su copy sale de lib/desync-copy.js, así ninguna de las
+// superficies puede divergir del resto.
+const desyncCopy = require('../../lib/desync-copy.js');
+const {
+    resolveDesyncStatus,
+    renderDesyncBlockBannerSsr,
+    DESYNC_BLOCK_BANNER_CSS,
+    desyncBlockBannerClientScript,
+} = require('./desync-block-banner.js');
+
 // #3954 EP8-H1 — Store del audit de la bandeja de alertas (ack/snooze). Require
 // defensivo: en tests aislados o checkouts viejos el módulo puede faltar; el
 // renderer degrada a "sin acciones registradas" sin romper.
@@ -1045,6 +1060,12 @@ function homeStyles() {
 }
 .quota-provider-chip .quota-provider-reason { font-weight: 500; opacity: 0.9; }
 .quota-provider-chip .quota-provider-reset { font-weight: 500; opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+/* #5724 CA-4 — Banner del bloqueo de dispatch por desync allowlist↔ola. Los
+ * estilos viven en views/dashboard/desync-block-banner.js porque el mismo
+ * banner se monta también en la ventana Pipeline: duplicar el CSS acá es como
+ * terminó divergiendo el copy del semáforo entre superficies. */
+${DESYNC_BLOCK_BANNER_CSS}
 
 /* #4731 — Health strip: evidencia visible de "no global" (CA-2). */
 .quota-health-strip {
@@ -3020,6 +3041,11 @@ async function tickQuotaExhausted(){
     renderQuotaExhaustedBanner(d);
 }
 
+// ====== #5724 CA-4 — Banner del bloqueo de dispatch por desync =============
+// La hidratación (renderDesyncBlockBanner + tickDesyncBlock) es la MISMA que
+// usa la ventana Pipeline; vive en views/dashboard/desync-block-banner.js.
+${desyncBlockBannerClientScript()}
+
 // ====== #3013 — Banner real-snapshot (4 estados) ============================
 //
 // CA-UX-1 a CA-UX-3, CA-UX-9. Render defensivo: TODOS los strings que
@@ -4194,6 +4220,12 @@ const POLLS = [
     // (CA-15).
     { fn: tickQuotaSnapshot, ms: 60000 },
     { fn: tickActive, ms: 2000 },
+    // #5724 CA-4 — banner de dispatch suspendido por desync allowlist↔ola.
+    // 15s: el estado no cambia rápido (lo escribe el Pulpo al evaluar la
+    // divergencia) pero es un bloqueo total del pipeline — no puede quedar
+    // detrás de un poll de 60s, y la antigüedad ("hace 10 h 33 min") se
+    // recalcula server-side en cada respuesta.
+    { fn: tickDesyncBlock, ms: 15000 },
     { fn: tickRecent, ms: 10000 },
     { fn: tickQueue, ms: 5000 },
     // #3492 — ETA de la ola actual (p50/p75/p90). TTL del cache server-side
@@ -4857,6 +4889,16 @@ function _validateSelected(opts) {
 
 // Composer: resuelve TODO el I/O (markers, os.uptime) y arma el `state` plano
 // que consumen las sub-funciones puras. Es el único lugar con efectos.
+// #5724 CA-4 — Estado de sync allowlist↔ola para el SSR. El caller (las rutas)
+// lo pasa precomputado; si no viene, lo leemos acá para que NINGUNA superficie
+// que renderice la home quede sin el banner por olvido del call-site — el
+// criterio ya falló una vez por depender de una superficie que nadie visita.
+// El require es perezoso y envuelto: el slice es read-only pero si el módulo no
+// carga, la home renderiza igual (sin banner) en vez de romper.
+function _collectDesyncStatus(opts) {
+    return resolveDesyncStatus(opts && opts.desyncStatus);
+}
+
 function collectHomeState(opts) {
     const _opts = opts || {};
     const pipelineDir = path.join(__dirname, '..', '..'); // .pipeline/
@@ -4864,6 +4906,8 @@ function collectHomeState(opts) {
     const quotaState = _opts.quotaState || getInitialQuotaState();
     return {
         quotaState,
+        // #5724 CA-4 — dispatch suspendido por divergencia allowlist↔ola.
+        desyncStatus: _collectDesyncStatus(_opts),
         currentView: typeof _opts.currentView === 'string' ? _opts.currentView : 'home',
         unknownViewRequested: _opts.unknownViewRequested === true,
         // #3954 — semáforo global + supresiones de alertas + selección deep-link.
@@ -5632,7 +5676,11 @@ function renderNowColumn(state) {
       <div class="active-list mz-now-list" id="active-list"></div>
       <div class="active-empty mz-now-empty" id="active-empty" style="display:none">
         <div class="active-empty-icon">⏸</div>
-        <div class="active-empty-msg">No hay agentes corriendo. Verificar pausa parcial, cola y blocked:dependencies.</div>
+        <!-- #5724 CA-4 — el texto del vacío depende de POR QUÉ está vacío.
+             Con el dispatch suspendido por desync, mandar a revisar pausa
+             parcial / cola / blocked:dependencies manda al operador a mirar
+             donde no está el problema. -->
+        <div class="active-empty-msg">${escapeHtmlText(desyncCopy.buildDesyncPresentation(state && state.desyncStatus).emptyState)}</div>
       </div>
     </section>`;
 }
@@ -5716,6 +5764,8 @@ function renderHomeHTML(opts) {
     const state = collectHomeState(_opts);
     const quotaState = state.quotaState;
     const quotaBannerHtml = renderQuotaBannerSsr(quotaState);
+    // #5724 CA-4 — banner del bloqueo de dispatch por desync (SSR real).
+    const desyncBlockBannerHtml = renderDesyncBlockBannerSsr(state.desyncStatus);
     const currentView = state.currentView;
     const unknownViewRequested = state.unknownViewRequested;
 
@@ -5776,6 +5826,12 @@ ${renderStaleBanner()}
     ${renderBrandBar(state)}
     ${renderControlBar(state)}
   </header>
+
+  ${/* #5724 CA-4 — Dispatch suspendido por desync allowlist↔ola. Va PRIMERO,
+       arriba del banner de cuota: un dispatch suspendido explica el 0 en vuelo
+       aunque haya cuota de sobra en todos los proveedores, que es exactamente
+       el escenario del incidente (Anthropic al 0% de consumo, cero agentes). */ ''}
+  ${desyncBlockBannerHtml}
 
   ${quotaBannerHtml}
 
@@ -5889,6 +5945,8 @@ module.exports = {
     renderMissionBanner,
     renderSystemQuotaPanel,
     renderNowColumn,
+    // #5724 CA-4 — banner del bloqueo de dispatch (exportado para test unitario)
+    renderDesyncBlockBannerSsr,
     renderWaveBoard,
     renderDiagnostics,
     // #4249/#4533 — matriz de cuota por proveedor × ventana (Bloque A): fuente

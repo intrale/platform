@@ -381,6 +381,141 @@ test('buildBlockedSummaryMarkdown sin bloqueados devuelve mensaje placeholder', 
     assert.match(md, /sin otros incidentes bloqueados/);
 });
 
+// =============================================================================
+// #5421 — avisos críticos en TEXTO PLANO (decisión del operador 2026-08-06).
+//
+// Después de seis ciclos de QA parcheando el escapado de Markdown se cambió el
+// enfoque: el aviso de needs-human se manda sin `parse_mode`. Estos tests fijan
+// la propiedad que hace que el aviso no se pueda perder: el texto NO contiene
+// metacaracteres de markup, así que no hay markup que Telegram pueda rechazar
+// con un HTTP 400.
+//
+// Cubren en particular el modo de falla que el escapado NO podía cerrar: los
+// `slice(280)`/`slice(160)` del renderer cortan por POSICIÓN y partían el code
+// span al medio, dejando paridad impar de backticks con emails perfectamente
+// válidos y benignos (barrido del ciclo 6: 11 de 15 largos válidos rompían).
+// =============================================================================
+
+// Metacaracteres de énfasis/código de Markdown legacy: son los que rompen el
+// parseo de Telegram si quedan desbalanceados. Los paréntesis quedan afuera a
+// propósito: el renderer los usa como puntuación normal (`(po)`, `(2h)`) y en
+// Markdown sólo son sintaxis DESPUÉS de un `]`, caso que se chequea aparte.
+const MARKUP_CHARS = /[*_`]/;
+/** Construcción de link Markdown, el vector de phishing clickeable. */
+const MARKDOWN_LINK = /\]\(/;
+
+/** Cuenta ocurrencias de MARKUP_CHARS en un string. */
+function contarMarkup(s) {
+    return (String(s).match(/[*_`]/g) || []).length;
+}
+
+test('#5421 buildBlockedSummaryPlain no emite ningún metacarácter de markup', () => {
+    resetFs();
+    hb.reportHumanBlock({
+        issue: 7101, skill: 'po', phase: 'dev', pipeline: 'desarrollo',
+        reason: 'criterios contradictorios', question: '¿AC#2 o AC#5?',
+    });
+
+    const txt = hb.buildBlockedSummaryPlain({
+        highlight: {
+            issue: 7101, skill: 'po',
+            reason: 'bloqueo humano', question: '¿mergeás?',
+            recommendation: 'aprobar y seguir',
+        },
+    });
+
+    assert.doesNotMatch(txt, MARKUP_CHARS, `salió markup en: ${txt}`);
+    assert.doesNotMatch(txt, MARKDOWN_LINK, `salió un link Markdown en: ${txt}`);
+    // El contenido sigue completo: plano no significa mutilado.
+    assert.match(txt, /#7101/);
+    assert.match(txt, /needs-human/);
+    assert.match(txt, /Recomendación:/);
+    assert.match(txt, /aprobar y seguir/);
+    assert.match(txt, /Incidentes bloqueados esperando humano/);
+    assert.match(txt, /unblock/);
+});
+
+test('#5421 buildBlockedSummaryPlain sin bloqueados: placeholder sin markup', () => {
+    resetFs();
+    const txt = hb.buildBlockedSummaryPlain({});
+    assert.match(txt, /sin otros incidentes bloqueados/);
+    assert.doesNotMatch(txt, MARKUP_CHARS);
+});
+
+test('#5421 el renderer no agrega markup propio ni siquiera con un vector hostil', () => {
+    resetFs();
+    // Los dos vectores del reproductor de QA: phishing con link Markdown
+    // embebido, y silenciador con backtick suelto. Llegan acá dentro de la
+    // `question` porque es lo que arma `buildOperatorQuestion`.
+    //
+    // La garantía NO es que el vector desaparezca del string — es que el
+    // renderer no aporta markup, así que el vector viaja como texto literal y
+    // Telegram no tiene nada que parsear (ni que rechazar con un 400). El
+    // saneamiento del email en sí es responsabilidad de
+    // `worktree-guard-policy::sanitizeOperatorEmail` (CA-11/CA-12), testeado allá.
+    const vectores = [
+        'El pipeline no reconoce al committer "a`[Actualizar credenciales](https://evil.tld/phish)`b@x.io".',
+        'El pipeline no reconoce al committer "a`b@x.io".',
+    ];
+    for (const question of vectores) {
+        const txt = hb.buildBlockedSummaryPlain({
+            highlight: { issue: 5421, skill: 'pipeline-dev', reason: 'branch-origin-unverified', question },
+            blocked: [{ issue: 5421, skill: 'pipeline-dev', phase: 'dev', age_hours: 2, question }],
+        });
+        // El listado repite la `question` truncada a 160, así que el aporte
+        // propio se mide contra las dos apariciones posibles del vector.
+        const propios = contarMarkup(txt) - contarMarkup(question) - contarMarkup(question.slice(0, 160));
+        assert.equal(propios, 0, `el renderer plano agregó markup propio: ${txt}`);
+    }
+});
+
+test('#5421 truncado a 280/160 no puede romper el formato: no hay span que partir', () => {
+    resetFs();
+    // Barrido del ciclo 6: emails VÁLIDOS de largos crecientes. Con Markdown,
+    // el corte posicional partía el code span y dejaba paridad impar (11 de 15
+    // largos rompían). En plano no hay span: el peor caso es una línea cortada.
+    for (const len of [25, 40, 60, 80, 100, 120, 129, 140, 160, 180, 189, 200, 220, 240, 254]) {
+        const local = 'a'.repeat(Math.min(64, len));
+        const email = `${local}@${'b'.repeat(Math.max(1, len - local.length - 1))}.com`;
+        const question = `El pipeline no reconoce al committer "${email}" de la rama "agent/5421-".`;
+        const txt = hb.buildBlockedSummaryPlain({
+            highlight: { issue: 5421, skill: 'pipeline-dev', reason: 'branch-origin-unverified', question },
+            blocked: [{ issue: 5421, skill: 'pipeline-dev', phase: 'dev', age_hours: 2, question }],
+        });
+        // Los inputs son markup-free, así que el output tiene que serlo también
+        // para CUALQUIER largo — sin importar dónde caiga el corte.
+        assert.equal(contarMarkup(question), 0, 'el input del barrido debe ser markup-free');
+        assert.doesNotMatch(txt, MARKUP_CHARS, `largo ${len} filtró markup: ${txt.slice(0, 200)}`);
+        assert.doesNotMatch(txt, MARKDOWN_LINK, `largo ${len} armó un link: ${txt.slice(0, 200)}`);
+    }
+});
+
+test('#5421 el renderer Markdown sigue intacto (compat, no-regresión)', () => {
+    resetFs();
+    // El dialecto viejo se conserva para los mensajes NO críticos: la decisión
+    // fue migrar los avisos críticos, no borrar el formateo del pipeline.
+    const md = hb.buildBlockedSummaryMarkdown({
+        highlight: { issue: 7102, skill: 'po', reason: 'r', question: 'q', recommendation: 'reco' },
+        blocked: [{ issue: 7102, skill: 'po', phase: 'dev', age_hours: 3, question: 'q' }],
+    });
+    assert.match(md, /🚧 \*Issue #7102 \(po\) marcado como needs-human\*/);
+    assert.match(md, /💡 \*Recomendación:\* reco/);
+    assert.match(md, /• \*#7102\* — po en dev _\(3h\)_/);
+    assert.match(md, /_Usá_ `\/unblock <issue> <orientación>` _para desbloquear\._/);
+});
+
+test('#5421 plano y Markdown dicen lo MISMO: el contenido no puede divergir', () => {
+    resetFs();
+    const opts = {
+        highlight: { issue: 7103, skill: 'ux', reason: 'motivo x', question: 'pregunta y', recommendation: 'reco z' },
+        blocked: [{ issue: 7103, skill: 'ux', phase: 'dev', age_hours: 1.5, question: 'pregunta y' }],
+    };
+    // Quitar el markup del dialecto Markdown debe dar exactamente el plano.
+    const md = hb.buildBlockedSummaryMarkdown(opts).replace(/[*_`]/g, '');
+    const plano = hb.buildBlockedSummaryPlain(opts);
+    assert.equal(plano, md);
+});
+
 test('reportHumanBlock no duplica notificación: findBlockedMarker permite dedup', () => {
     resetFs();
     hb.reportHumanBlock({
@@ -475,8 +610,16 @@ const fakeActionToken = {
     sign: ({ issue, action }) => `v1.${action}-${issue}.sig`,
 };
 
+// #5923 — el modo `url` ahora exige dashboard https público Y habilitado en el
+// allowlist de hosts. Estas opts reproducen ese camino feliz.
+const URL_MODE = {
+    actionToken: fakeActionToken,
+    dashboardUrl: 'https://dashboard.intrale.com',
+    hostAllowlist: ['dashboard.intrale.com'],
+};
+
 test('#4068 buildBlockedActionMarkup devuelve inline_keyboard 2×2 con exactamente los 4 botones', () => {
-    const markup = hb.buildBlockedActionMarkup(4068, { actionToken: fakeActionToken, dashboardUrl: 'http://localhost:3200' });
+    const markup = hb.buildBlockedActionMarkup(4068, URL_MODE);
     assert.ok(markup && Array.isArray(markup.inline_keyboard), 'devuelve inline_keyboard');
     const buttons = markup.inline_keyboard.flat();
     assert.equal(buttons.length, 4, 'exactamente 4 botones');
@@ -494,15 +637,87 @@ test('#4068 buildBlockedActionMarkup devuelve inline_keyboard 2×2 con exactamen
     assert.ok(!buttons.some(b => /action=pausar/.test(b.url)), 'no hay botón pausar');
 });
 
-test('#4068 buildBlockedActionMarkup devuelve undefined si el token no se puede firmar (degradación)', () => {
-    const brokenToken = { sign: () => { throw new Error('sin secreto'); } };
-    const markup = hb.buildBlockedActionMarkup(10, { actionToken: brokenToken });
-    assert.equal(markup, undefined);
-});
-
 test('#4068 buildBlockedActionMarkup rechaza issue inválido', () => {
     assert.equal(hb.buildBlockedActionMarkup(0, { actionToken: fakeActionToken }), undefined);
     assert.equal(hb.buildBlockedActionMarkup('x', { actionToken: fakeActionToken }), undefined);
+    assert.equal(hb.buildBlockedActionMarkup(1000000, { actionToken: fakeActionToken }), undefined);
+});
+
+// =============================================================================
+// #5923 — Degradación de `url` a `callback_data` cuando el dashboard no es
+// público. Antes de esta issue el markup se emitía SIEMPRE con `url` a
+// `localhost:3200`; la Bot API rechazaba el saliente entero y la alerta al
+// operador NUNCA llegaba.
+// =============================================================================
+
+test('#5923 dashboard no público ⇒ callback_data y actionToken.sign NO invocado (CA-7)', () => {
+    let firmas = 0;
+    const espia = { sign: (args) => { firmas++; return fakeActionToken.sign(args); } };
+    const markup = hb.buildBlockedActionMarkup(5923, {
+        actionToken: espia, dashboardUrl: 'http://localhost:3200', hostAllowlist: [],
+    });
+    assert.equal(firmas, 0, 'firmar una capability que no se va a usar es superficie muerta');
+    const buttons = markup.inline_keyboard.flat();
+    assert.equal(buttons.length, 4);
+    for (const b of buttons) {
+        assert.equal(b.url, undefined, 'ningún botón puede tener campo url');
+        assert.match(b.callback_data, /^hb:[a-z-]+:5923$/);
+    }
+});
+
+test('#5923 en el camino degradado no se filtra ni el token ni la base URL (R1.3)', () => {
+    const markup = hb.buildBlockedActionMarkup(5923, {
+        actionToken: fakeActionToken, dashboardUrl: 'http://localhost:3200', hostAllowlist: [],
+    });
+    const blob = JSON.stringify(markup);
+    assert.ok(!blob.includes('token'), 'no aparece el token ni el parámetro');
+    assert.ok(!blob.includes('localhost'), 'no aparece la base URL');
+    assert.ok(!blob.includes('3200'), 'no aparece el puerto');
+    assert.ok(!blob.includes('.sig'), 'no aparece material de firma');
+});
+
+test('#5923 el prefijo de callback es el mismo que rutea el callback-handler', () => {
+    assert.equal(hb.HUMAN_BLOCK_CALLBACK_PREFIX, 'hb');
+    const markup = hb.buildBlockedActionMarkup(1, { dashboardUrl: 'http://localhost:3200', hostAllowlist: [] });
+    for (const b of markup.inline_keyboard.flat()) {
+        assert.ok(b.callback_data.startsWith(hb.HUMAN_BLOCK_CALLBACK_PREFIX + ':'));
+        assert.ok(Buffer.byteLength(b.callback_data, 'utf8') <= 64, 'límite de la Bot API');
+    }
+});
+
+test('#5923 sin módulo de token utilizable igual se entregan botones (antes se perdían)', () => {
+    // Antes de #5923 un token que no se puede firmar dejaba el mensaje SIN
+    // acciones. Ahora degrada a callback_data, que no necesita token.
+    const roto = { sign: () => { throw new Error('sin secreto'); } };
+    const markup = hb.buildBlockedActionMarkup(10, {
+        actionToken: roto, dashboardUrl: 'https://dashboard.intrale.com', hostAllowlist: ['dashboard.intrale.com'],
+    });
+    assert.ok(markup, 'la alerta conserva sus acciones');
+    assert.equal(markup.inline_keyboard.flat().length, 4);
+    for (const b of markup.inline_keyboard.flat()) assert.equal(b.url, undefined);
+});
+
+test('#5923 executeQuickAction es idempotente ⇒ el 2do tap del mismo botón es no-op (anti-replay)', () => {
+    // El `callback_data` no tiene nonce ni TTL y el mensaje vive para siempre en
+    // el chat: el anti-replay tiene que ser server-side.
+    const blocked = new Set([5923]);
+    const h = makeExecDeps(blocked);
+    const primero = hb.executeQuickAction({ issue: 5923, action: 'unblock', deps: h.deps });
+    const segundo = hb.executeQuickAction({ issue: 5923, action: 'unblock', deps: h.deps });
+    assert.equal(primero.ok, true);
+    assert.equal(primero.reactivated, 1);
+    assert.equal(segundo.ok, true, 'no explota');
+    assert.equal(segundo.noop, true, 'el segundo tap no vuelve a mutar');
+    assert.match(segundo.msg, /ya no estaba bloqueado/);
+});
+
+test('#5923 executeQuickAction rechaza acción e issue fuera de contrato (fail-closed)', () => {
+    const h = makeExecDeps(new Set([1]));
+    assert.equal(hb.executeQuickAction({ issue: 1, action: 'kill-agent', deps: h.deps }).ok, false);
+    assert.equal(hb.executeQuickAction({ issue: 1, action: '../unblock', deps: h.deps }).ok, false);
+    assert.equal(hb.executeQuickAction({ issue: 0, action: 'unblock', deps: h.deps }).ok, false);
+    assert.equal(hb.executeQuickAction({ issue: 1000000, action: 'unblock', deps: h.deps }).ok, false);
+    assert.equal(h.enqueued.length, 0, 'ningún efecto lateral encolado');
 });
 
 test('#4068 buildBlockedSummaryMarkdown NO cambió su firma (CA-Q1, no-regresión)', () => {

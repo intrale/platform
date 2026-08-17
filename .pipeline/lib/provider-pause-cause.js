@@ -180,6 +180,24 @@ const REASON_TABLE = Object.freeze({
     timeout: { text: () => 'sin respuesta a tiempo', cause: CAUSE_TRANSITORIA },
     network_error: { text: () => 'error de red', cause: CAUSE_TRANSITORIA },
     unknown: { text: () => REASON_LABEL_DEFAULT, cause: CAUSE_TRANSITORIA },
+
+    // #5888 — Códigos del eje de VIGENCIA DE MODELO. En condiciones normales
+    // NUNCA llegan acá: viven en `catalog_check.reason_code` del snapshot, no en
+    // el `reason_code` de salud del provider que lee este módulo (CA-5/R-C).
+    //
+    // Igual llevan copy, por dos razones. Primera, el invariante de UX-3 (un
+    // código sin fila cae al default silencioso "motivo desconocido", que es
+    // justo el modo de falla que este módulo vino a eliminar). Segunda, si
+    // alguna vez alguien los escribiera en el eje equivocado, el texto que ve el
+    // operador tiene que seguir siendo cierto y no acusar al proveedor de estar
+    // caído: NINGUNO de los dos es motivo de pausa del proveedor.
+    //
+    // Por eso ambos van a CAUSE_TRANSITORIA y no a CAUSE_AUTH: CAUSE_AUTH es la
+    // causa DOMINANTE (prioridad 0) y encabezaría el mensaje como si el
+    // proveedor estuviera inutilizable, cuando sigue sirviendo el resto de su
+    // catálogo.
+    model_not_in_catalog: { text: () => 'con un modelo fuera de catálogo', cause: CAUSE_TRANSITORIA },
+    model_check_unavailable: { text: () => 'con la vigencia de sus modelos sin verificar', cause: CAUSE_TRANSITORIA },
 });
 
 /**

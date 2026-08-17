@@ -593,13 +593,71 @@ function inferHumanBlockQuestion(motivo, opts = {}) {
  * @param {string} [opts.highlight.recommendation] — Recomendación del pipeline (#5337).
  */
 function buildBlockedSummaryMarkdown(opts = {}) {
+    return renderBlockedSummary(opts, { plain: false });
+}
+
+/**
+ * Igual que `buildBlockedSummaryMarkdown` pero en TEXTO PLANO, sin un solo
+ * metacarácter de markup emitido por nosotros (#5421, decisión del operador
+ * 2026-08-06).
+ *
+ * **Por qué existe (leer antes de "mejorarlo" volviendo a Markdown).**
+ * Esta alerta es el aviso de `needs-human`: el mensaje que le dice al operador
+ * que el pipeline se detuvo y necesita una decisión. Si se pierde, el pipeline
+ * queda parado sin que nadie lo sepa. Enviado con `parse_mode: 'Markdown'`, se
+ * perdía por HTTP 400 de Telegram cada vez que el markup quedaba mal balanceado,
+ * y el saliente es fire-and-forget vía dropfile (`pulpo.js` no ve el 400: el
+ * `catch` de fallback nunca corre y `markNotified` sella el dedup 24h igual, así
+ * que la alerta se pierde SIN RASTRO).
+ *
+ * Se intentó cerrarlo escapando/saneando durante seis ciclos de QA y siempre
+ * quedó una vía: además de los metacaracteres que venían en el email del
+ * committer (input no confiable, ya acotado por CA-11/CA-12), los `slice(280)` y
+ * `slice(160)` de esta función pueden cortar el texto EN EL MEDIO de un code
+ * span y dejar paridad impar de backticks con un email perfectamente válido y
+ * benigno (verificado en el barrido del ciclo 6: 11 de 15 largos válidos rompían
+ * la paridad, y el propio control `backend-dev-agent@intrale` la rompía en el
+ * listado). El truncado no se puede "escapar": es un corte posicional.
+ *
+ * Por eso la decisión no es escapar mejor, es **no depender del formato**: sin
+ * `parse_mode` no hay nada que Telegram pueda rechazar, y el peor caso de un
+ * truncado infeliz es cosmético (una línea cortada) en vez de la pérdida total
+ * del aviso. El énfasis visual (negritas/itálicas) es un lujo que un aviso
+ * crítico no puede pagar con su propia entrega.
+ *
+ * El caller DEBE enviarlo con `{ plain: true }` para que no se agregue
+ * `parse_mode`; si se envía como Markdown, el texto igual es seguro (no emitimos
+ * markup) pero pierde sentido el ejercicio.
+ *
+ * @param {object} opts — misma forma que `buildBlockedSummaryMarkdown`.
+ * @returns {string} texto plano listo para `sendTelegram*(..., { plain: true })`.
+ */
+function buildBlockedSummaryPlain(opts = {}) {
+    return renderBlockedSummary(opts, { plain: true });
+}
+
+/**
+ * Implementación compartida de los dos renderers. `plain:true` omite todo
+ * markup; `plain:false` conserva byte por byte el formato histórico (los tests
+ * de no-regresión de #4068/#5337 siguen apuntando a ese dialecto).
+ *
+ * Se resuelve con un helper por decoración en vez de dos funciones paralelas
+ * para que el CONTENIDO no pueda divergir entre dialectos: un dato nuevo se
+ * agrega una sola vez y aparece en los dos.
+ */
+function renderBlockedSummary(opts, { plain }) {
     const blocked = Array.isArray(opts.blocked) ? opts.blocked : listBlockedIssues();
     const highlight = opts.highlight || null;
+    // Decoradores: en plano son la identidad, así que el texto sale sin `*`, `_`
+    // ni backticks — nada que Telegram tenga que parsear.
+    const b = (s) => (plain ? s : `*${s}*`);
+    const i = (s) => (plain ? s : `_${s}_`);
+    const code = (s) => (plain ? s : `\`${s}\``);
     const lines = [];
 
     if (highlight) {
         const tag = highlight.skill ? ` (${highlight.skill})` : '';
-        lines.push(`🚧 *Issue #${highlight.issue}${tag} marcado como needs-human*`);
+        lines.push(`🚧 ${b(`Issue #${highlight.issue}${tag} marcado como needs-human`)}`);
         if (highlight.reason) {
             lines.push(`📝 ${String(highlight.reason).slice(0, 280)}`);
         }
@@ -609,27 +667,27 @@ function buildBlockedSummaryMarkdown(opts = {}) {
         // #5337 CA-2 — recomendación del pipeline. Sólo si existe.
         const reco = String(highlight.recommendation || '').trim();
         if (reco) {
-            lines.push(`💡 *Recomendación:* ${reco.slice(0, 280)}`);
+            lines.push(`💡 ${b('Recomendación:')} ${reco.slice(0, 280)}`);
         }
         lines.push('');
     }
 
     if (!blocked.length) {
-        lines.push('_(sin otros incidentes bloqueados actualmente)_');
+        lines.push(i('(sin otros incidentes bloqueados actualmente)'));
         return lines.join('\n');
     }
 
-    lines.push(`📋 *Incidentes bloqueados esperando humano* (${blocked.length})`);
-    for (const b of blocked) {
-        const ageStr = b.age_hours < 1
-            ? `${Math.max(1, Math.round(b.age_hours * 60))}min`
-            : `${Math.round(b.age_hours)}h`;
-        lines.push(`• *#${b.issue}* — ${b.skill} en ${b.phase} _(${ageStr})_`);
-        const detail = (b.question || b.reason || '').toString().trim();
+    lines.push(`📋 ${b('Incidentes bloqueados esperando humano')} (${blocked.length})`);
+    for (const bl of blocked) {
+        const ageStr = bl.age_hours < 1
+            ? `${Math.max(1, Math.round(bl.age_hours * 60))}min`
+            : `${Math.round(bl.age_hours)}h`;
+        lines.push(`• ${b(`#${bl.issue}`)} — ${bl.skill} en ${bl.phase} ${i(`(${ageStr})`)}`);
+        const detail = (bl.question || bl.reason || '').toString().trim();
         if (detail) lines.push(`   ↳ ${detail.slice(0, 160)}`);
     }
     lines.push('');
-    lines.push('_Usá_ `/unblock <issue> <orientación>` _para desbloquear._');
+    lines.push(`${i('Usá')} ${code('/unblock <issue> <orientación>')} ${i('para desbloquear.')}`);
     return lines.join('\n');
 }
 
@@ -660,6 +718,11 @@ const ACTION_KEYBOARD_ROWS = Object.freeze([
 ]);
 const HUMAN_BLOCK_ACTIONS = Object.freeze(ACTION_KEYBOARD_ROWS.flat());
 
+// #5923 — namespace de `callback_data` cuando el botón degrada de `url` a
+// callback. Single source: lo usan el emisor (buildBlockedActionMarkup) y el
+// router (`.claude/hooks/commander/callback-handler.js`).
+const HUMAN_BLOCK_CALLBACK_PREFIX = 'hb';
+
 function isQuickAction(action) {
     return HUMAN_BLOCK_ACTIONS.includes(action);
 }
@@ -685,44 +748,66 @@ function enqueueGithub(action, payload = {}) {
 
 /**
  * #4068 / CA-1 — Construye el `reply_markup` (inline_keyboard 2×2) con los 4
- * botones URL no-mutantes hacia el dashboard. Cada URL lleva un token HMAC
- * firmado (un solo uso + exp) que autoriza la acción sobre ESE issue.
+ * botones de acción rápida sobre un issue bloqueado.
+ *
+ * #5923 — El modo de emisión ya NO es siempre `url`. La decisión la centraliza
+ * `telegram-button-url.js`:
+ *
+ *   - Dashboard público (`https:`) Y habilitado en `DASHBOARD_PUBLIC_HOSTS`
+ *     ⇒ botón `url` con token HMAC, exactamente como antes (sin regresión).
+ *   - Cualquier otra cosa (el default `http://localhost:3200`, una IP literal,
+ *     un host interno, `http://` pelado) ⇒ botón `callback_data` con prefijo
+ *     `hb:`, que resuelve NUESTRO propio host vía listener → callback-handler.
+ *
+ * En el camino degradado `actionToken.sign()` NO se invoca (CA-7): firmar una
+ * capability que no se va a usar es superficie muerta, y volcar esa URL en el
+ * mensaje sería una fuga de secreto. `buildUrl` sólo lo llama el helper cuando
+ * el modo `url` está realmente habilitado.
  *
  * NO cambia la firma de buildBlockedSummaryMarkdown (CA-Q1) — es un helper
- * aparte. Si el secreto del token no está disponible, devuelve `undefined`:
- * el caller manda igual el resumen de texto, solo sin botones (degradación
- * con gracia, nunca rompe la notificación).
+ * aparte. Si no queda ningún botón emitible devuelve `undefined`: el caller
+ * manda igual el resumen de texto, solo sin botones (degradación con gracia,
+ * nunca rompe la notificación).
  *
  * @param {number} issue
  * @param {object} [opts]
  * @param {object} [opts.actionToken]   - módulo de token (inyectable en tests).
  * @param {string} [opts.dashboardUrl]  - base URL del dashboard.
+ * @param {string[]|string|null} [opts.hostAllowlist] - override de DASHBOARD_PUBLIC_HOSTS.
  * @returns {object|undefined} `{ inline_keyboard: [...] }` o undefined.
  */
 function buildBlockedActionMarkup(issue, opts = {}) {
     const i = Number(issue);
     if (!Number.isInteger(i) || i <= 0 || i > 999999) return undefined;
-    let actionToken;
-    try { actionToken = opts.actionToken || require('./action-token'); }
+
+    let buttonUrl;
+    try { buttonUrl = opts.buttonUrl || require('./telegram-button-url'); }
     catch { return undefined; }
+
     const dashUrl = (opts.dashboardUrl || process.env.DASHBOARD_URL || 'http://localhost:3200').replace(/\/+$/, '');
-    const makeBtn = (action) => {
-        const meta = ACTION_META[action];
-        if (!meta) return null;
-        let token;
-        try { token = actionToken.sign({ issue: i, action }); }
-        catch { return null; }
-        if (!token) return null;
-        return {
-            text: `${meta.emoji} ${meta.label}`,
-            url: `${dashUrl}/?action=${action}&issue=${i}&token=${encodeURIComponent(token)}`,
-        };
-    };
-    const rows = ACTION_KEYBOARD_ROWS
-        .map((row) => row.map(makeBtn).filter(Boolean))
-        .filter((row) => row.length > 0);
-    if (!rows.length) return undefined;
-    return { inline_keyboard: rows };
+
+    const rows = ACTION_KEYBOARD_ROWS.map((row) => row
+        .map((action) => {
+            const meta = ACTION_META[action];
+            if (!meta) return null;
+            return { action, text: `${meta.emoji} ${meta.label}`, issue: i };
+        })
+        .filter(Boolean));
+
+    // Lazy: el módulo de token sólo se resuelve si realmente vamos por `url`.
+    let actionToken = null;
+    const built = buttonUrl.buildActionKeyboard(rows, {
+        dashboardUrl: dashUrl,
+        callbackPrefix: HUMAN_BLOCK_CALLBACK_PREFIX,
+        hostAllowlist: opts.hostAllowlist,
+        buildUrl: (action, iss) => {
+            if (!actionToken) actionToken = opts.actionToken || require('./action-token');
+            const token = actionToken.sign({ issue: Number(iss), action });
+            if (!token) return null;
+            return `${dashUrl}/?action=${action}&issue=${iss}&token=${encodeURIComponent(token)}`;
+        },
+    });
+    return built.markup;
 }
 
 // Reactiva TODOS los markers bloqueados de un issue (un issue puede tener varios
@@ -976,6 +1061,7 @@ module.exports = {
     classifyPrecondition,
     normalizePrecondition,
     buildBlockedSummaryMarkdown,
+    buildBlockedSummaryPlain,
     buildNeedHumanAudioText,
     sendNeedHumanAudio,
     enqueueNeedsHumanLabel,
@@ -989,6 +1075,8 @@ module.exports = {
     ACTION_META,
     ACTION_KEYBOARD_ROWS,
     HUMAN_BLOCK_ACTIONS,
+    // #5923 — prefijo de callback_data del camino degradado.
+    HUMAN_BLOCK_CALLBACK_PREFIX,
     isQuickAction,
     enqueueGithub,
     buildBlockedActionMarkup,

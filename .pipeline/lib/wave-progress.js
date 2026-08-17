@@ -41,6 +41,30 @@ const MAX_LINES = 5000;
 // (una línea por refresh, ~30s) así que reescribirlo cada N appends es barato.
 const PRUNE_EVERY_N = 50;
 
+// #5836 — Versión de fórmula asumida para los registros que NO traen `formulaV`.
+// Todo lo escrito antes del cambio usaba conteo plano de issues (v1).
+const LEGACY_FORMULA_VERSION = 1;
+
+// #5836 — Umbral para considerar que el denominador CRECIÓ de verdad. Absorbe
+// el residuo de punto flotante del reparto proporcional de un split (~1e-15),
+// muy por debajo de cualquier alta real (el peso mínimo de un issue es 1).
+const WEIGHT_EPSILON = 1e-6;
+
+// #5836 (rev-1) — Antigüedad mínima del punto contra el que se explica la
+// variación del avance. Con la cadencia real del dashboard (~33 s), comparar
+// contra el punto inmediato anterior hacía que la nota de CA-5 no apareciera
+// nunca: la caída por altas quedaba absorbida a los dos refrescos. 10 minutos
+// es el orden de magnitud en que el operador percibe "recién": cubre el alta de
+// un split (que llega de a lotes) sin arrastrar historia vieja.
+const DELTA_LOOKBACK_MS = 10 * 60 * 1000;
+
+function deltaLookbackMs() {
+    const raw = process.env.WAVE_PROGRESS_DELTA_LOOKBACK_MS;
+    if (raw === undefined || raw === null || raw === '') return DELTA_LOOKBACK_MS;
+    const n = Number(raw);
+    return (Number.isFinite(n) && n >= 0) ? n : DELTA_LOOKBACK_MS;
+}
+
 let _appendCounter = 0;
 
 // ─── Paths (con override por env para tests) ───────────────────────────────
@@ -81,15 +105,32 @@ function isFiniteNumber(n) {
  * permite múltiples writers (loop de dashboard + handler de `/wave`) sin
  * corromper líneas.
  *
- * @param {{pipelineRoot?:string, waveKey:number, avancePct:number, now?:number}} args
+ * #5836 — El record acepta tres campos OPCIONALES más, todos primitivos
+ * (SEC-2 intacto): `totalWeight`, `issueCount` y `formulaV`. Sin ellos era
+ * imposible distinguir, entre dos puntos de la serie, si el avance bajó porque
+ * algo retrocedió o porque entraron issues nuevos al denominador — que es
+ * justamente lo que CA-5 necesita anotar. Los campos se omiten del record si no
+ * vienen, así que las líneas viejas y las nuevas conviven sin migración.
+ *
+ * @param {{pipelineRoot?:string, waveKey:number, avancePct:number, now?:number,
+ *          totalWeight?:number, issueCount?:number, formulaV?:number}} args
  * @returns {boolean} true si escribió
  */
-function appendSnapshot({ pipelineRoot: pipelineRootArg, waveKey, avancePct, now } = {}) {
+function appendSnapshot({
+    pipelineRoot: pipelineRootArg, waveKey, avancePct, now,
+    totalWeight, issueCount, formulaV,
+} = {}) {
     if (!isValidWaveKey(waveKey)) return false;        // CA-11
     if (!isFiniteNumber(avancePct)) return false;      // CA-10/CA-14
     const ts = isFiniteNumber(now) ? now : Date.now();
 
     const rec = { ts, waveKey, avancePct };            // SOLO primitivos (SEC-2)
+    // Campos opcionales #5836: se agregan sólo si son primitivos válidos. Un
+    // valor basura NO invalida el punto (el avance sigue siendo útil), sólo se
+    // descarta el campo — degradar sin romper.
+    if (isFiniteNumber(totalWeight) && totalWeight >= 0) rec.totalWeight = totalWeight;
+    if (isFiniteNumber(issueCount) && Number.isInteger(issueCount) && issueCount >= 0) rec.issueCount = issueCount;
+    if (isFiniteNumber(formulaV) && Number.isInteger(formulaV) && formulaV > 0) rec.formulaV = formulaV;
     const file = storePath(pipelineRootArg);
     try {
         fs.appendFileSync(file, JSON.stringify(rec) + '\n');  // objeto completo, nunca concat
@@ -136,10 +177,149 @@ function readSnapshots({ pipelineRoot: pipelineRootArg, waveKey } = {}) {
         if (!isValidWaveKey(rec.waveKey)) continue;
         if (!isFiniteNumber(rec.ts) || !isFiniteNumber(rec.avancePct)) continue;
         if (filterKey !== null && rec.waveKey !== filterKey) continue;
-        out.push({ ts: rec.ts, waveKey: rec.waveKey, avancePct: rec.avancePct });
+        const out1 = { ts: rec.ts, waveKey: rec.waveKey, avancePct: rec.avancePct };
+        // #5836 — Campos opcionales, PURAMENTE ADITIVOS: sólo se copian si el
+        // record los trae. La ausencia de `formulaV` ES la señal de "punto de la
+        // serie vieja" y `classifyProgressDelta` ya la normaliza a
+        // LEGACY_FORMULA_VERSION, así que rellenarla acá sería redundante y
+        // además cambiaría la forma del objeto para los consumidores que ya
+        // existen (el dashboard y `pulpo.js` leen esta serie). Mantener la forma
+        // estable evita romper una lectura que hoy funciona.
+        if (isFiniteNumber(rec.totalWeight)) out1.totalWeight = rec.totalWeight;
+        if (isFiniteNumber(rec.issueCount)) out1.issueCount = rec.issueCount;
+        if (isFiniteNumber(rec.formulaV)) out1.formulaV = rec.formulaV;
+        out.push(out1);
     }
     out.sort((a, b) => a.ts - b.ts);
     return out;
+}
+
+// ─── classifyProgressDelta (#5836 / CA-5) ──────────────────────────────────
+
+/**
+ * Explica POR QUÉ cambió el avance entre dos puntos de la serie.
+ *
+ * El operador lee una caída del indicador como pérdida de productividad. Casi
+ * nunca lo es: si entraron issues nuevos a la ola, el denominador creció y el
+ * porcentaje baja aunque no se haya deshecho un solo trabajo. Esta función
+ * separa los dos casos usando el peso total, que antes de #5836 no se
+ * persistía (con dos `avancePct` sueltos el caso era indecidible).
+ *
+ * Clasificación:
+ *   - `series-break`: los puntos vienen de fórmulas distintas (v1 conteo plano
+ *     vs v2 ponderado). NO son comparables — recalcular los viejos sería
+ *     inventar el peso que nunca se guardó, así que se marca el corte.
+ *   - `altas`: el avance bajó Y el denominador creció. La caída se explica por
+ *     issues nuevos, no por retroceso.
+ *   - `retroceso`: el avance bajó SIN que creciera el denominador. Acá sí algo
+ *     volvió para atrás.
+ *   - `avance` / `estable`: subió o no se movió.
+ *   - `unknown`: falta info para decidir (punto sin peso ni conteo).
+ *
+ * @param {object} prev — record anterior (de `readSnapshots`)
+ * @param {object} curr — record actual
+ * @returns {{kind:string, deltaPp:number, deltaWeight:number|null, deltaIssues:number|null}}
+ */
+function classifyProgressDelta(prev, curr) {
+    const none = { kind: 'unknown', deltaPp: 0, deltaWeight: null, deltaIssues: null };
+    if (!prev || !curr || typeof prev !== 'object' || typeof curr !== 'object') return none;
+    if (!isFiniteNumber(prev.avancePct) || !isFiniteNumber(curr.avancePct)) return none;
+
+    const deltaPp = curr.avancePct - prev.avancePct;
+
+    // Corte de serie: comparar un punto de conteo plano con uno ponderado
+    // mezcla peras con manzanas. Se avisa y no se atribuye causa.
+    const vPrev = isFiniteNumber(prev.formulaV) ? prev.formulaV : LEGACY_FORMULA_VERSION;
+    const vCurr = isFiniteNumber(curr.formulaV) ? curr.formulaV : LEGACY_FORMULA_VERSION;
+    if (vPrev !== vCurr) {
+        return { kind: 'series-break', deltaPp, deltaWeight: null, deltaIssues: null };
+    }
+
+    const deltaWeight = isFiniteNumber(prev.totalWeight) && isFiniteNumber(curr.totalWeight)
+        ? curr.totalWeight - prev.totalWeight
+        : null;
+    const deltaIssues = isFiniteNumber(prev.issueCount) && isFiniteNumber(curr.issueCount)
+        ? curr.issueCount - prev.issueCount
+        : null;
+
+    if (deltaPp > 0) return { kind: 'avance', deltaPp, deltaWeight, deltaIssues };
+    if (deltaPp === 0) return { kind: 'estable', deltaPp, deltaWeight, deltaIssues };
+
+    // Bajó. ¿Creció el denominador? Con peso disponible, ese es el criterio
+    // fino; si no hay peso, caemos al conteo de issues.
+    //
+    // El peso se compara contra un EPSILON, no contra 0: el reparto proporcional
+    // de un split deja residuos de punto flotante (~1e-15), y sin el margen un
+    // split perfectamente neutro se reportaría como "caída por altas". El peso
+    // ya viene cuantizado a 6 decimales desde `wave-weight`, así que cualquier
+    // crecimiento real del denominador queda muy por encima de este umbral.
+    const denominadorCrecio = deltaWeight !== null
+        ? deltaWeight > WEIGHT_EPSILON
+        : (deltaIssues !== null ? deltaIssues > 0 : null);
+
+    if (denominadorCrecio === null) return { kind: 'unknown', deltaPp, deltaWeight, deltaIssues };
+    return {
+        kind: denominadorCrecio ? 'altas' : 'retroceso',
+        deltaPp,
+        deltaWeight,
+        deltaIssues,
+    };
+}
+
+/**
+ * `appendSnapshot` + clasificación del punto nuevo contra el anterior (#5836).
+ *
+ * Existe para que el orden de las dos operaciones no quede librado al caller:
+ * el punto previo hay que leerlo ANTES de escribir, porque una vez apendeado el
+ * último registro del store es el actual y el delta daría siempre 0. Ese error
+ * de orden es fácil de cometer y silencioso (la nota de CA-5 simplemente nunca
+ * aparecería), así que la secuencia vive acá, en un solo lugar, y los dos
+ * writers (dashboard y handler `/wave`) la comparten.
+ *
+ * #5836 (rev-1) — El punto de comparación NO es el inmediato anterior. El
+ * dashboard escribe un punto cada ~33 s (medido sobre la serie viva: n=200,
+ * mediana 32,9 s, p90 33,2 s), así que comparar contra el último punto medía
+ * una ventana de medio minuto: una caída por altas de hace 10 minutos ya había
+ * sido absorbida y el delta daba `estable`. La nota de CA-5 era, en la
+ * práctica, inalcanzable. Ahora se compara contra el punto más reciente que
+ * tenga al menos `DELTA_LOOKBACK_MS` de antigüedad — el más cercano posible al
+ * borde de la ventana, para que la nota describa "qué cambió en los últimos N
+ * minutos" y no "entre los dos últimos refrescos del dashboard".
+ *
+ * @param {object} args — mismos campos que `appendSnapshot`
+ * @returns {{written:boolean, delta:object|null}} delta null si no hay punto
+ *          previo con el cual comparar (primer snapshot de la ola)
+ */
+function appendSnapshotWithDelta(args = {}) {
+    const { pipelineRoot, waveKey } = args || {};
+
+    // Punto de referencia: la última lectura de ESTA ola con antigüedad
+    // suficiente, leída ANTES de escribir la nueva.
+    let prev = null;
+    try {
+        const prior = readSnapshots({ pipelineRoot, waveKey });
+        if (Array.isArray(prior) && prior.length > 0) {
+            const now = isFiniteNumber(args.now) ? args.now : Date.now();
+            const cutoff = now - deltaLookbackMs();
+            // El MÁS RECIENTE de los suficientemente viejos. Si todavía no hay
+            // ninguno (serie más joven que la ventana), se usa el MÁS VIEJO
+            // disponible: es el que maximiza la antigüedad observable, y para
+            // una ola recién arrancada sigue siendo la mejor referencia.
+            const aged = prior.filter((p) => p && isFiniteNumber(p.ts) && p.ts <= cutoff);
+            prev = aged.length > 0 ? aged[aged.length - 1] : prior[0];
+        }
+    } catch { prev = null; }   // sin histórico → simplemente no hay nota
+
+    const written = appendSnapshot(args);
+    if (!written || !prev) return { written, delta: null };
+
+    const curr = {
+        avancePct: args.avancePct,
+        totalWeight: args.totalWeight,
+        issueCount: args.issueCount,
+        formulaV: args.formulaV,
+    };
+    return { written, delta: classifyProgressDelta(prev, curr) };
 }
 
 // ─── pruneStore (CA-12 / SEC-4) ────────────────────────────────────────────
@@ -203,10 +383,15 @@ module.exports = {
     appendSnapshot,
     readSnapshots,
     pruneStore,
+    classifyProgressDelta,
+    appendSnapshotWithDelta,
     // Constantes / helpers expuestos para tests
     RETENTION_MS,
     MAX_LINES,
     PRUNE_EVERY_N,
+    LEGACY_FORMULA_VERSION,
+    WEIGHT_EPSILON,
+    DELTA_LOOKBACK_MS,
     _internal: {
         storePath,
         pipelineDir,

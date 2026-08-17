@@ -553,6 +553,107 @@ function setPartialPause(issues, opts = {}) {
 }
 
 /**
+ * #5923 — Marca `accepted_dep_risk: true` sobre el marker VIGENTE, sin
+ * reconstruirlo.
+ *
+ * Por qué existe (y por qué NO alcanza `setPartialPause`): `setPartialPause`
+ * REESCRIBE el marker entero desde sus argumentos, así que todo campo que el
+ * caller no le pase desaparece. Un caller que sólo quiere aceptar el riesgo de
+ * deps abiertas no tiene manera de enumerar los campos co-existentes sin
+ * conocerlos a todos — y `getPipelineMode()` ni siquiera expone
+ * `wave_number`/`wave_name` (#4030), así que la proyección es estructuralmente
+ * incompleta. El resultado era pérdida silenciosa de `allowed_skills` (#3680) y
+ * de la metadata de ola, con respuesta `ok:true`.
+ *
+ * Peor todavía: con la pausa parcial activa SÓLO por skills (`allowed_issues`
+ * vacío, modo soportado desde #3680), `setPartialPause([], …)` cae en la rama
+ * legacy de lista vacía y DELEGA en `clearPartialPause` — o sea que una acción
+ * vendida como "no cambies nada" levantaba la pausa parcial entera.
+ *
+ * Contrato de esta primitiva:
+ *   - Es un MERGE: lee el JSON crudo y sólo agrega/pisa las claves del flag.
+ *     Todo lo demás (allowed_issues, allowed_skills, wave_*, dep_sources,
+ *     authorization_ttls, created_at, source) viaja verbatim.
+ *   - NO puede borrar el marker ni vaciar el allowlist: no hay camino de código
+ *     que llame a `clearPartialPause` ni que escriba `allowed_issues: []`.
+ *   - Fail-closed: si no hay marker, o no habilita nada (ni issues ni skills),
+ *     devuelve `{ok:false, reason:'no_partial_pause'}` sin escribir.
+ *   - `source` NO se pisa: el origen del allowlist no cambió por aceptar el
+ *     riesgo. Quién lo aceptó queda en campos aditivos propios + audit entry.
+ *
+ * @param {{ source?: string, authorizedBy?: string, justification?: string, extra?: Object }} [opts]
+ * @returns {{ok: boolean, rejected?: boolean, reason?: string, allowedIssues: number[], allowedSkills?: string[], msg?: string}}
+ */
+function markDepRiskAccepted(opts = {}) {
+    const snapshot = readPartialFile();
+    if (!snapshot) {
+        return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
+    }
+    const allowedIssues = snapshot.allowed_issues || [];
+    const allowedSkills = snapshot.allowed_skills || [];
+    // Misma disyunción que `getPipelineMode` (#3680 CA-A15): un marker que no
+    // habilita ni issues ni skills no es una pausa parcial activa.
+    if (allowedIssues.length === 0 && allowedSkills.length === 0) {
+        return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
+    }
+
+    // Audit con `previous === current`: la operación es aditiva por
+    // construcción y su diff nunca tiene `removed`, así que el gate no puede
+    // rechazarla por removals. La entry se emite igual, para que la aceptación
+    // del riesgo quede trazada con el operador que la firmó.
+    const gateResult = evaluateAndAudit({
+        previous: allowedIssues,
+        current: allowedIssues,
+        source: opts.source,
+        authorizedBy: opts.authorizedBy,
+        justification: opts.justification || 'markDepRiskAccepted (#5923)',
+        intendedAction: 'write',
+        extra: opts.extra,
+    });
+    if (gateResult.rejected) {
+        return { ok: false, rejected: true, reason: 'gate_rejected', allowedIssues };
+    }
+
+    return withLockSync(partialFile(), () => {
+        // Re-lectura BAJO lock: entre el snapshot de arriba y el write pudo
+        // entrar otro writer. El merge se hace sobre lo más fresco.
+        let fresh;
+        try {
+            fresh = JSON.parse(fs.readFileSync(partialFile(), 'utf8'));
+        } catch {
+            return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
+        }
+        if (!fresh || typeof fresh !== 'object' || Array.isArray(fresh)) {
+            return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
+        }
+        // Merge aditivo. `source` intacto a propósito (ver doc de arriba).
+        const merged = {
+            ...fresh,
+            accepted_dep_risk: true,
+            accepted_dep_risk_at: new Date().toISOString(),
+        };
+        if (opts.authorizedBy) merged.accepted_dep_risk_by = String(opts.authorizedBy);
+        atomicWriteFile(partialFile(), JSON.stringify(merged, null, 2));
+
+        const finalIssues = (Array.isArray(fresh.allowed_issues) ? fresh.allowed_issues : [])
+            .map(normalizeIssue).filter(Boolean);
+        const finalSkills = (Array.isArray(fresh.allowed_skills) ? fresh.allowed_skills : [])
+            .filter(s => typeof s === 'string' && s.trim()).map(s => s.trim());
+        return {
+            ok: true,
+            allowedIssues: finalIssues,
+            allowedSkills: finalSkills,
+            msg: 'Riesgo de deps abiertas aceptado; allowlist intacto',
+        };
+    }, {
+        component: 'partial-pause-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+/**
  * Variante atómica que además devuelve un snapshot del estado previo para
  * habilitar rollback transaccional (#3520).
  *
@@ -825,7 +926,15 @@ function resumeAll(opts = {}) {
 // es una pausa automática cuya NO-recuperación es deliberada (exige rollback
 // manual). Ver el test de regresión nombrado en
 // `__tests__/restart-preserve-pause-5399.test.js`.
-const AUTO_LIFTABLE_SOURCES = Object.freeze(['config-corruption-halt']);
+// #5243 — `secrets-health-halt` se suma al set: el halt por secreto faltante es
+// auto-generado y su causa es objetivamente verificable en cada ciclo (el
+// secreto está o no está), así que reponerlo debe reanudar el dispatch solo.
+// Sin esta entrada el auto-recovery de #5243 sería código muerto: el marker que
+// escribe `secrets-health.js` se leería como `manual` y la pausa quedaría hasta
+// intervención humana aunque el operador ya hubiera repuesto el secreto.
+// La ampliación es por PERTENENCIA EXACTA a esta lista cerrada — sigue estando
+// prohibido decidir por negación.
+const AUTO_LIFTABLE_SOURCES = Object.freeze(['config-corruption-halt', 'secrets-health-halt']);
 
 // #5399 CA-10 (SEC-3) — cap de tamaño ANTES de `JSON.parse`. Un marker de 64KB
 // ya es tres órdenes de magnitud más grande que cualquier marker legítimo.
@@ -1133,6 +1242,9 @@ module.exports = {
     isSkillAllowedInState,
     setPartialPause,
     setPartialPauseAtomic, // #3520
+    // #5923 — merge no destructivo del flag de riesgo de deps. NO reconstruye
+    // el marker: preserva allowed_skills (#3680) y wave metadata (#4030).
+    markDepRiskAccepted,
     clearPartialPause,
     resumeAll,
     // #3741 — pausa total gateada (wizard de pausa, scope full).

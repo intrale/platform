@@ -283,6 +283,71 @@ function findIssueWorktree(ROOT, issue, { skill = null, spawnImpl = spawnSync, f
 const DEV_BRANCH_RE = /^agent\/\d+-[A-Za-z0-9._/-]+$/;
 
 /**
+ * Tope de sufijos `-r<N>` que probamos al recrear un worktree cuyo path base
+ * quedó ocupado por un directorio huérfano (#5421 D1). Con 5 alcanza de sobra:
+ * si se acumularon 4 huérfanos del mismo issue, el problema es de limpieza y
+ * corresponde que el operador lo mire.
+ */
+const MAX_RECOVERY_SUFFIX = 5;
+
+/**
+ * Tope duro de longitud de un email (RFC 5321 §4.5.3.1.3: 254 chars para el
+ * reverse-path completo). Un `author-not-allowlisted:<...>` más largo que esto
+ * no es un email: es contenido arbitrario que llegó desde `git log --format`
+ * de una rama remota que NO controlamos.
+ */
+const MAX_EMAIL_LENGTH = 254;
+
+/**
+ * Forma segura de email para mostrarle al operador (#5421 CA-11).
+ *
+ * El charset es deliberadamente MÁS ANCHO que el "clásico": incluye `+`, `[` y
+ * `]` porque los bots de GitHub tienen emails legítimos con esa forma
+ * (`41898282+github-actions[bot]@users.noreply.github.com`, que además está
+ * hardcodeado en `PIPELINE_COMMITTER_ALLOWLIST`). Un filtro sin corchetes
+ * descartaría a un `<algo>[bot]@…` no allowlisteado, `unverifiedAuthors`
+ * quedaría vacío y `buildOperatorQuestion` caería a la rama genérica de
+ * "posible rama ajena" — es decir, se arreglaría la inyección rompiendo CA-8.
+ *
+ * `[` y `]` son metacaracteres Markdown, así que ESTA capa acota pero no
+ * alcanza sola: el saneamiento de render vive en
+ * `worktree-guard-policy.js::sanitizeOperatorEmail` (CA-12). Defensa en
+ * profundidad: acá se descarta lo que no tiene forma de email, allá se
+ * neutraliza lo que sí la tiene pero puede alterar el markup.
+ */
+const SAFE_EMAIL_RE = /^[a-z0-9._%+'[\]-]{1,64}@[a-z0-9.[\]-]{1,190}$/i;
+
+/**
+ * Extrae los emails de los `reason` de `verifyRemoteBranchOrigin` que fallaron
+ * por committer fuera de la allowlist (`author-not-allowlisted:<email>`).
+ *
+ * Devuelve `[]` cuando ninguna rama falló por autor — típicamente el motivo fue
+ * `no-commits-on-branch-or-fetch-empty` (la rama no corresponde a ningún
+ * agente), que es el caso donde SÍ corresponde el lenguaje de procedencia
+ * sospechosa.
+ *
+ * #5421 CA-11 — el email viene del `git log` de una rama REMOTA arbitraria:
+ * es input no confiable que termina en un mensaje de Telegram del operador.
+ * Sólo se devuelven strings con forma segura de email; el resto se DESCARTA
+ * (default cerrado, igual criterio que `guardExceptionEligible`).
+ *
+ * @param {string[]} reasons
+ * @returns {string[]} emails únicos con forma segura, en orden de aparición.
+ */
+function extractUnverifiedAuthors(reasons) {
+    const out = [];
+    for (const r of Array.isArray(reasons) ? reasons : []) {
+        const m = /^author-not-allowlisted:(.+)$/.exec(String(r || '').trim());
+        if (!m) continue;
+        const email = m[1].trim();
+        if (!email || email.length > MAX_EMAIL_LENGTH) continue;
+        if (!SAFE_EMAIL_RE.test(email)) continue;
+        if (!out.includes(email)) out.push(email);
+    }
+    return out;
+}
+
+/**
  * Parsea la salida de `git ls-remote --heads origin refs/heads/agent/<n>-*` y
  * devuelve los nombres de rama (`agent/<issue>-<slug>`, sin el prefijo
  * `refs/heads/`). Ignora líneas que no matcheen el formato `<sha>\trefs/heads/...`.
@@ -349,9 +414,28 @@ function resolveDevBranch(ROOT, issue, { spawnImpl = spawnSync, log, config } = 
     }
 
     // (3) Filtrar por procedencia ANTES de desambiguar (orden de seguridad).
-    const verified = branches.filter((b) => verifyRemoteBranchOrigin(ROOT, b, { spawnImpl, config }).ok);
+    //
+    // #5421 — `map` en vez de `filter`: el `reason` de cada verificación trae el
+    // email del committer que no está en la allowlist
+    // (`author-not-allowlisted:<email>`) y hasta acá se descartaba, dejando al
+    // operador con un texto de "posible rama ajena" cuando lo real suele ser un
+    // agente legítimo sin dar de alta en `worktree_provenance.committers` (CA-8).
+    const evaluadas = branches.map((b) => ({
+        branch: b,
+        result: verifyRemoteBranchOrigin(ROOT, b, { spawnImpl, config }),
+    }));
+    const verified = evaluadas.filter((e) => e.result && e.result.ok).map((e) => e.branch);
     if (verified.length === 0) {
-        return { ok: false, reason: `branch-origin-unverified:${prefix}*`, branchOriginVerified: false };
+        const verificationReasons = evaluadas.map((e) => String((e.result && e.result.reason) || ''));
+        return {
+            ok: false,
+            reason: `branch-origin-unverified:${prefix}*`,
+            branchOriginVerified: false,
+            // Vacío cuando el motivo fue `no-commits-on-branch-or-fetch-empty`:
+            // esa distinción es la que separa los dos textos de operador (CA-8).
+            unverifiedAuthors: extractUnverifiedAuthors(verificationReasons),
+            verificationReasons,
+        };
     }
     if (verified.length === 1) {
         return { ok: true, branch: verified[0], reason: 'single-verified', branchOriginVerified: true };
@@ -461,7 +545,15 @@ function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl
         if (rd.branchOriginVerified === false) {
             log?.(`⛔ auto-recovery rechazado: branch-origin-unverified (${rd.reason})`);
         }
-        return { ok: false, reason: rd.reason, branchOriginVerified: rd.branchOriginVerified };
+        return {
+            ok: false,
+            reason: rd.reason,
+            branchOriginVerified: rd.branchOriginVerified,
+            // #5421 — el email del committer no reconocido tiene que llegar al
+            // texto del operador; acá se perdía.
+            unverifiedAuthors: rd.unverifiedAuthors || [],
+            verificationReasons: rd.verificationReasons || [],
+        };
     }
 
     const branchName = rd.branch;
@@ -474,15 +566,54 @@ function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl
     // directorio quedó) NO lo tocamos — preferimos abortar y que el operador
     // limpie. Auto-borrar paths que pueden tener trabajo no commiteado es
     // peligroso.
-    try {
-        if (fsImpl.existsSync(worktreePath)) {
+    //
+    // #5421 (D1) — el comentario de arriba sigue vigente: NO se adopta, NO se
+    // lee y NO se borra el directorio huérfano. Lo que se agrega es una SALIDA
+    // ALTERNATIVA: como la procedencia de la rama remota ya está verificada
+    // (llegamos acá sólo con `rd.ok === true`), se crea un worktree FRESCO
+    // desde `origin/<branch>` en un path libre con sufijo `-r<N>`.
+    //
+    // Por qué: `worktree-path-exists-without-git-entry` es una condición
+    // PERMANENTE — bajar sólo la escalada no completaba la fase (rebotaba a
+    // `pendiente/` como infra, agotaba el cap de reintentos y escalaba igual).
+    // Y las dos recuperaciones "obvias" no sirven: `git worktree repair` no
+    // recrea una entrada borrada y `worktree add --force` no adopta un
+    // directorio existente.
+    //
+    // Cero confianza en el contenido local no verificado (S-1), cero
+    // destrucción de trabajo del operador (S-2), y la fase completa.
+    let targetPath = worktreePath;
+    let orphanPath = null;
+
+    let pathOcupado = false;
+    try { pathOcupado = !!fsImpl.existsSync(worktreePath); } catch { pathOcupado = false; }
+
+    if (pathOcupado) {
+        orphanPath = worktreePath;
+        let libre = null;
+        for (let n = 2; n <= MAX_RECOVERY_SUFFIX; n++) {
+            const candidate = path.join(ROOT, '..', `${worktreeBase}-r${n}`);
+            let ocupado = true;
+            // Un `existsSync` que rompe se trata como ocupado: nunca escribimos
+            // sobre un path cuyo estado no pudimos leer.
+            try { ocupado = !!fsImpl.existsSync(candidate); } catch { ocupado = true; }
+            if (!ocupado) { libre = candidate; break; }
+        }
+        if (!libre) {
+            // Sin sufijo libre → se conserva el `reason` histórico y aplica el
+            // camino de excepción del guard (no escala, pero tampoco resuelve).
             return {
                 ok: false,
                 reason: `worktree-path-exists-without-git-entry:${worktreePath}`,
                 branchOriginVerified: true,
             };
         }
-    } catch {}
+        targetPath = libre;
+        log?.(
+            `♻️ #${issue}: el path ${worktreePath} está ocupado por un directorio que git no reconoce — ` +
+            `NO lo toco; creo una copia fresca desde origin/${branchName} en ${targetPath}`,
+        );
+    }
 
     // Prune defensivo antes del add.
     try { gitSpawn(['worktree', 'prune'], { cwd: ROOT, spawnImpl, timeout: 10000 }); } catch {}
@@ -492,14 +623,16 @@ function attemptAutoRecovery(ROOT, issue, skill, { spawnImpl = spawnSync, fsImpl
         // Esto es seguro porque ya verificamos la procedencia del remoto.
         gitSpawn([
             'worktree', 'add',
-            worktreePath,
+            targetPath,
             '-B', branchName,
             `origin/${branchName}`,
         ], { cwd: ROOT, spawnImpl, timeout: 30000 });
-        log?.(`♻️ Worktree recuperado para #${issue}: ${worktreePath} (branch: ${branchName}, ${rd.reason})`);
+        log?.(`♻️ Worktree recuperado para #${issue}: ${targetPath} (branch: ${branchName}, ${rd.reason})`);
         return {
             ok: true,
-            worktreePath,
+            // Nunca es el path huérfano: o es el base libre, o el sufijo `-r<N>`.
+            worktreePath: targetPath,
+            orphanPath,
             branch: branchName,
             branchOriginVerified: true,
             verificationReason: rd.reason,
@@ -592,6 +725,10 @@ function resolveExistingWorktree({
         found: false,
         reason: rec.reason,
         branchOriginVerified: rec.branchOriginVerified,
+        // #5421 — igual que `verificationReason` en el camino `found:true`: sin
+        // esto, el operador recibe "posible rama ajena" en vez del email real.
+        unverifiedAuthors: rec.unverifiedAuthors || [],
+        verificationReasons: rec.verificationReasons || [],
     };
 }
 
@@ -599,6 +736,9 @@ module.exports = {
     resolveExistingWorktree,
     findIssueWorktree,
     countCommitsAhead,
+    // #5245 — export aditivo: `secrets-guard.js` necesita listar TODOS los
+    // worktrees y reusa este wrapper en vez de escribir otro `spawnSync`.
+    gitSpawn,
     parseWorktreeList,
     parseLsRemoteRefs,
     resolveDevBranch,
@@ -610,4 +750,8 @@ module.exports = {
     WorktreeResolutionError,
     // Exports auxiliares para tests / herramientas operativas.
     PIPELINE_COMMITTER_ALLOWLIST,
+    extractUnverifiedAuthors,
+    MAX_RECOVERY_SUFFIX,
+    MAX_EMAIL_LENGTH,
+    SAFE_EMAIL_RE,
 };

@@ -162,7 +162,7 @@ test('CA-3 / SEC-3 · provider SIN capabilities declaradas en rol agéntico ⇒ 
   // Provider capaz de tool_use pero sin declarar `capabilities` → fail-closed.
   cfg.providers.nocap = {
     launcher: 'nvidia-nim',
-    model: 'deepseek-ai/deepseek-v4-pro',
+    model: 'deepseek-ai/deepseek-v4-flash-0731',
     spawn_args_template: ['--model', '{model}', '{user_prompt}'],
     output_parser: 'openai-sse',
     quota_error_types: ['rate_limit_exceeded'],

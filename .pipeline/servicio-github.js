@@ -38,6 +38,10 @@ const labelGuardrail = require('./lib/label-guardrail');
 // #4693 CA-0 — fuente de verdad única del repo destino. Reemplaza el literal
 // DEFAULT_REPO por el `primary` del bloque `repos` de pipeline.config.json.
 const repoTarget = require('./lib/repo-target');
+// #5863 CA-R3 — canal de vuelta hacia el Pulpo. Este proceso es el único que
+// aplica labels de verdad; el Pulpo cachea labels 10 min y, sin este registro,
+// no tiene forma de enterarse de una mutación aplicada acá.
+const labelMutationLog = require('./lib/label-mutation-log');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 // #2994 — `GH_BIN_OVERRIDE` permite a los tests E2E de la cola apuntar a un
@@ -136,6 +140,19 @@ const defaultGhClient = {
     }
   },
 
+  editPullRequest(prNumber, { addLabel, removeLabel } = {}) {
+    if (addLabel) {
+      cp.execFileSync(GH_BIN, ['pr', 'edit', String(prNumber), '--add-label', String(addLabel)], {
+        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
+      });
+    }
+    if (removeLabel) {
+      cp.execFileSync(GH_BIN, ['pr', 'edit', String(prNumber), '--remove-label', String(removeLabel)], {
+        cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true,
+      });
+    }
+  },
+
   commentIssue(issueNumber, body) {
     cp.execFileSync(GH_BIN, ['issue', 'comment', String(issueNumber), '--body-file', '-'], {
       cwd: ROOT, encoding: 'utf8', input: body == null ? '' : String(body),
@@ -194,6 +211,18 @@ const defaultGhClient = {
     const raw = cp.execFileSync(
       GH_BIN,
       ['issue', 'view', String(issueNumber), '--json', 'labels', '--repo', DEFAULT_REPO],
+      { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true },
+    );
+    const parsed = JSON.parse(raw || '{}');
+    return Array.isArray(parsed.labels)
+      ? parsed.labels.map((l) => (l && l.name) ? l.name : String(l)).filter(Boolean)
+      : [];
+  },
+
+  getPrLabels(prNumber) {
+    const raw = cp.execFileSync(
+      GH_BIN,
+      ['pr', 'view', String(prNumber), '--json', 'labels', '--repo', DEFAULT_REPO],
       { cwd: ROOT, encoding: 'utf8', timeout: 15000, windowsHide: true },
     );
     const parsed = JSON.parse(raw || '{}');
@@ -398,11 +427,16 @@ function _resetLabelCacheForTests() {
   labelCacheTs = 0;
 }
 
-function currentLabelsForIssue(issue, ghClient) {
-  if (!ghClient || typeof ghClient.getIssueLabels !== 'function') {
-    throw new Error('ghClient.getIssueLabels requerido para reconciliar labels QA');
+function currentLabelsForTarget(number, target, ghClient) {
+  const normalizedTarget = target || 'issue';
+  if (normalizedTarget !== 'issue' && normalizedTarget !== 'pr') {
+    throw new Error(`target inválido para reconciliar labels QA: ${normalizedTarget}`);
   }
-  const labels = ghClient.getIssueLabels(issue);
+  const method = normalizedTarget === 'pr' ? 'getPrLabels' : 'getIssueLabels';
+  if (!ghClient || typeof ghClient[method] !== 'function') {
+    throw new Error(`ghClient.${method} requerido para reconciliar labels QA`);
+  }
+  const labels = ghClient[method](number);
   return Array.isArray(labels) ? labels.map(String) : [];
 }
 
@@ -523,19 +557,43 @@ function applyCreateIssueGuardrail(data, origen) {
   return true;
 }
 
+/**
+ * #5863 CA-R3 — Registra en el marker append-only una mutación de label ya
+ * APLICADA en GitHub, para que el Pulpo invalide su caché sin esperar el TTL.
+ *
+ * Se invoca sólo después de que el editor de `gh` retornó sin lanzar: una orden
+ * descartada por stale, bloqueada por un gate o fallida NO se registra. El
+ * marker describe el estado real de GitHub, no las intenciones de la cola.
+ *
+ * Best-effort absoluto: si el registro falla, la mutación ya ocurrió y el
+ * pipeline debe seguir. El costo de perder una línea es volver al
+ * comportamiento previo (la caché del Pulpo vence sola a los 10 minutos).
+ */
+function recordLabelMutation(issue, label, action, target) {
+  try {
+    labelMutationLog.recordApplied({
+      pipelineDir: PIPELINE, issue, label, action, target,
+    });
+  } catch { /* best-effort — nunca puede romper el procesamiento de la cola */ }
+}
+
 function applyGateLabelAction(data, ghClient) {
   if (!data || !gateLabelReconciler.isGateLabel(data.label)) return false;
 
   if (data.gate_reconciler === true) {
+    const edit = data.target === 'pr' ? ghClient.editPullRequest : ghClient.editIssue;
+    if (typeof edit !== 'function') throw new Error(`ghClient sin editor para target=${data.target || 'issue'}`);
     if (data.action === 'label') {
       ensureLabels(data.label, ghClient);
-      ghClient.editIssue(data.issue, { addLabel: data.label });
+      edit.call(ghClient, data.issue, { addLabel: data.label });
       log(`Gate label reconciliado "${data.label}" -> #${data.issue}`);
+      recordLabelMutation(data.issue, data.label, 'label', data.target);
       return true;
     }
     if (data.action === 'remove-label') {
-      ghClient.editIssue(data.issue, { removeLabel: data.label });
+      edit.call(ghClient, data.issue, { removeLabel: data.label });
       log(`Gate label reconciliado "${data.label}" removido de #${data.issue}`);
+      recordLabelMutation(data.issue, data.label, 'remove-label', data.target);
       return true;
     }
   }
@@ -549,23 +607,28 @@ function applyGateLabelAction(data, ghClient) {
 
   if (data.action !== 'label') return false;
 
-  const currentLabels = currentLabelsForIssue(data.issue, ghClient);
+  const target = data.target || 'issue';
+  const currentLabels = currentLabelsForTarget(data.issue, target, ghClient);
   const verdict = gateLabelReconciler.verdictForGateLabel(data.label);
   const reconciliation = gateLabelReconciler.reconcileGateLabels({ currentLabels, verdict });
-  const actions = gateLabelReconciler.buildLabelActions({ issue: data.issue, reconciliation });
+  const actions = gateLabelReconciler.buildLabelActions({ issue: data.issue, reconciliation, target });
   data.gate_reconciled = true;
   data.gate_reconciled_at = new Date().toISOString();
   data.gate_reconciled_from = currentLabels;
   data.gate_reconciled_actions = actions;
 
   for (const action of actions) {
+    const edit = action.target === 'pr' ? ghClient.editPullRequest : ghClient.editIssue;
+    if (typeof edit !== 'function') throw new Error(`ghClient sin editor para target=${action.target}`);
     if (action.action === 'remove-label') {
-      ghClient.editIssue(action.issue, { removeLabel: action.label });
+      edit.call(ghClient, action.issue, { removeLabel: action.label });
       log(`Gate label normalizado "${action.label}" removido de #${action.issue}`);
+      recordLabelMutation(action.issue, action.label, 'remove-label', action.target);
     } else if (action.action === 'label') {
       ensureLabels(action.label, ghClient);
-      ghClient.editIssue(action.issue, { addLabel: action.label });
+      edit.call(ghClient, action.issue, { addLabel: action.label });
       log(`Gate label normalizado "${action.label}" -> #${action.issue}`);
+      recordLabelMutation(action.issue, action.label, 'label', action.target);
     }
   }
   if (actions.length === 0) {
@@ -690,9 +753,15 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           // pasan los 6+ productores que escriben órdenes a la cola.
           if (applyLabelGuardrail(data, ghClient, file.name)) break;
           if (applyGateLabelAction(data, ghClient)) break;
+          if (data.target === 'pr') {
+            data.discarded = 'non-gate-pr-label-blocked';
+            log(`Orden no-gate a PR bloqueada: #${data.issue} label=${data.label}`);
+            break;
+          }
           ensureLabels(data.label, ghClient);
           ghClient.editIssue(data.issue, { addLabel: data.label });
           log(`Label "${data.label}" → #${data.issue}`);
+          recordLabelMutation(data.issue, data.label, 'label', data.target);
           break;
         }
 
@@ -703,8 +772,14 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           // cualquier issue bloqueado por un humano sin dejar rastro.
           if (applyLabelGuardrail(data, ghClient, file.name)) break;
           if (applyGateLabelAction(data, ghClient)) break;
+          if (data.target === 'pr') {
+            data.discarded = 'non-gate-pr-label-blocked';
+            log(`Orden no-gate a PR bloqueada: #${data.issue} remove-label=${data.label}`);
+            break;
+          }
           ghClient.editIssue(data.issue, { removeLabel: data.label });
           log(`Label "${data.label}" removido de #${data.issue}`);
+          recordLabelMutation(data.issue, data.label, 'remove-label', data.target);
           break;
 
         case 'create-issue': {
@@ -850,4 +925,5 @@ module.exports = {
   // #5690 — guardrail de labels sensibles.
   applyLabelGuardrail,
   applyCreateIssueGuardrail,
+  currentLabelsForTarget,
 };

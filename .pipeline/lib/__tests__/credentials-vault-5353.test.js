@@ -40,6 +40,41 @@ const { buildParameterPath, createInMemoryVaultDriver } = require('../secret-vau
 const { resolveOperatorAllowlist } = require('../operator-gate');
 
 // -----------------------------------------------------------------------------
+// #5217 · CA-6 — el inventario y lo que se hidrata dejaron de ser el mismo set
+// -----------------------------------------------------------------------------
+//
+// Hasta #5217, `ENV_DESCRIPTORS` y `ENV_MAPPING` tenían las mismas 13 claves y
+// los asserts de abajo hardcodeaban ese 13. Ahora las 4 de `google_drive` están
+// en el inventario del vault (se provisionan, se rotan, la política IAM las
+// cubre) pero NO se inyectan en el `process.env` global: su único consumidor
+// las resuelve bajo demanda por namespace.
+//
+// Los conteos se DERIVAN para que sumar un secreto al inventario no obligue a
+// tocar ocho asserts — que es exactamente cómo un número mágico se convierte en
+// un test que se actualiza sin leerlo.
+const HIDRATADAS = Object.keys(ENV_MAPPING).length;
+const NO_HIDRATADAS = Object.keys(ENV_DESCRIPTORS).length - HIDRATADAS;
+const NO_ANCLA = HIDRATADAS - 1;
+
+test('CA-6 (#5217) · las credenciales de Drive estan en el inventario pero NO se hidratan', () => {
+  const drive = Object.keys(ENV_DESCRIPTORS).filter((k) => k.startsWith('google_drive.'));
+  assert.equal(drive.length, 4, 'las 4 siguen en el inventario del vault');
+  assert.equal(NO_HIDRATADAS, 4, 'y son exactamente las que no se hidratan');
+
+  for (const dotPath of drive) {
+    assert.equal(ENV_DESCRIPTORS[dotPath].hydrate, false, `${dotPath} deberia declarar hydrate:false`);
+    assert.equal(ENV_MAPPING[dotPath], undefined, `${dotPath} NO puede estar en ENV_MAPPING`);
+  }
+
+  // El inventario del vault no se toca: la tabla firmada de #5351 y la política
+  // IAM siguen valiendo, incluido el único ocupante de Secrets Manager.
+  assert.deepEqual(vaultScopePlan(ENV_DESCRIPTORS), {
+    ssm: ['telegram', 'providers', 'google_drive'],
+    secretsmanager: ['google_drive'],
+  });
+});
+
+// -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
 
@@ -242,7 +277,8 @@ test('vault-only no refleja una clave arbitraria en error ni señal local', () =
 test('ENV_MAPPING sigue siendo el mapa plano dotPath -> envVar tras introducir el descriptor', () => {
   assert.equal(typeof ENV_MAPPING, 'object');
   assert.ok(Object.isFrozen(ENV_MAPPING), 'sigue congelado');
-  assert.equal(Object.keys(ENV_MAPPING).length, 13, 'las 13 de siempre (no 17)');
+  assert.equal(Object.keys(ENV_MAPPING).length, HIDRATADAS,
+    'solo las que se hidratan: el inventario completo es ENV_DESCRIPTORS (CA-6 de #5217)');
 
   // Plano de verdad: `Object.entries` devuelve strings, no descriptores. Es lo
   // que rompería `listProviders()` (wizards/providers/index.js:73) en silencio.
@@ -257,8 +293,10 @@ test('ENV_MAPPING sigue siendo el mapa plano dotPath -> envVar tras introducir e
     assert.equal(typeof d.get, 'undefined', `${dotPath} está detrás de un getter`);
     assert.equal(d.enumerable, true);
   }
+  // Deriva del descriptor, pero SOLO de la parte hidratable (CA-6 de #5217):
+  // el inventario completo incluye claves que a propósito no llegan al env.
   assert.deepEqual(Object.values(ENV_MAPPING).sort(),
-    Object.values(ENV_DESCRIPTORS).map((d) => d.env).sort());
+    Object.values(ENV_DESCRIPTORS).filter(credentials.seHidrata).map((d) => d.env).sort());
 });
 
 test('los 10 simbolos historicos siguen exportados y loadIntoEnv sigue sync (D-SYNC-1)', () => {
@@ -356,13 +394,22 @@ test('Gherkin 1 · en configuracion por defecto el arranque no depende de ningun
 
   assert.equal(r.vault.enabled, true);
   assert.equal(r.source, SOURCE.VAULT);
-  assert.equal(r.hydrated.length, 13, 'las 13 salieron del vault, sin ningún archivo');
+  assert.equal(r.hydrated.length, HIDRATADAS, 'las hidratables salieron del vault, sin ningún archivo');
   assert.deepEqual(r.missing, []);
   for (const envVar of Object.values(ENV_MAPPING)) {
     assert.equal(r.sources[envVar], SOURCE.VAULT, `${envVar} no vino del vault`);
   }
   assert.equal(env.TELEGRAM_BOT_TOKEN, 'VAULT-BOT');
-  assert.equal(env.GOOGLE_OAUTH_REFRESH_TOKEN, 'VAULT-GD-REFRESH', 'el tier rotating también');
+  // #5217 · CA-6: el tier rotating SE LEE del vault (el plan de scopes lo sigue
+  // incluyendo), pero su valor NO se escribe en el ambiente. Se verifica contra
+  // el driver, no contra `env`: comprobarlo por la hidratación era justamente lo
+  // que ataba el camino de Secrets Manager al `process.env` global.
+  assert.equal(env.GOOGLE_OAUTH_REFRESH_TOKEN, undefined,
+    'el refresh token de Drive no se hidrata: lo resuelve su consumidor bajo demanda');
+  assert.ok(
+    driver.calls.some((c) => JSON.stringify(c).includes('rotating')),
+    'el tier rotating igual se consultó al vault',
+  );
 });
 
 test('Gherkin 2 · acceso cruzado denegado se propaga como fallo, jamas como valor vacio', () => {
@@ -378,7 +425,7 @@ test('Gherkin 2 · acceso cruzado denegado se propaga como fallo, jamas como val
 
     assert.ok(driver.calls.length > 0, 'se intentó leer');
     assert.equal(r.vault.error.code, 'VAULT_CLI');
-    assert.equal(r.missing.length, 13, 'las 13 quedan fail-closed');
+    assert.equal(r.missing.length, HIDRATADAS, 'las hidratables quedan fail-closed');
     assert.equal(r.hydrated.length, 0);
     // CA-22 / B1.2 — el fallo NO degrada al archivo, aunque el archivo exista y
     // tenga los valores. La denegación queda registrada.
@@ -610,7 +657,7 @@ test('B1.2 · un error del driver NUNCA habilita el fallback a archivo, ni con l
 
     // Un fallback disparado por error de red o de sesión es fail-open
     // disfrazado: cualquiera que degrade la red desactiva el control entero.
-    assert.equal(r.missing.length, 13);
+    assert.equal(r.missing.length, HIDRATADAS);
     assert.equal(r.hydrated.length, 0);
     assert.ok(!('TELEGRAM_BOT_TOKEN' in env));
     assert.ok(!logger.texto().includes('ventana de bootstrap del vault ACTIVA'),
@@ -700,7 +747,7 @@ test('B2.6 · para las 12 no-ancla la precedencia de process.env NO cambia', () 
     ...sinArchivos(), env, logger: () => {}, vaultConfig: configVault(), vaultDriver: driverConSeed(),
   });
 
-  assert.equal(r.skipped_existing.length, 12, 'las 12 no-ancla siguen ganando por ambiente');
+  assert.equal(r.skipped_existing.length, NO_ANCLA, 'las no-ancla siguen ganando por ambiente');
   assert.equal(env.OPENAI_API_KEY, 'AMBIENTE-OPENAI_API_KEY');
   assert.equal(r.sources.OPENAI_API_KEY, SOURCE.ENV_PREEXISTING);
   // La única que cambia de régimen es el ancla.
@@ -831,7 +878,7 @@ test('B3-A.1 · el namespace se construye desde config y no hay camino fuera del
     vaultConfig: configVault({ hostId: 'otroHost' }), vaultDriver: driverConSeed(),
   });
   assert.equal(otro.vault.namespace, `${PREFIX}/${PROJECT}#otroHost`);
-  assert.equal(otro.hydrated.length, 13,
+  assert.equal(otro.hydrated.length, HIDRATADAS,
     'los scopes de este inventario son shared: el aislamiento por host lo prueba secret-vault.test.js');
 });
 
@@ -872,7 +919,7 @@ test('UX-6 · loadIntoEnv({env: scratch}) no escribe en process.env y tolera el 
   }
   assert.notEqual(process.env.TELEGRAM_BOT_TOKEN, 'VAULT-BOT',
     'ningún valor del vault se filtró a process.env');
-  assert.equal(r.hydrated.length, 13);
+  assert.equal(r.hydrated.length, HIDRATADAS);
 
   // Y con el vault caído tampoco lanza: devuelve el resultado degradado.
   const scratch2 = {};
