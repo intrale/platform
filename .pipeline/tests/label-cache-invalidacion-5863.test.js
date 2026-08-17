@@ -322,7 +322,9 @@ test('CA-R4 la rama AUSENTE reconcilia el marker por la ruta de destrabe existen
   const ausente = src.indexOf("label needs-human ya removido en GitHub");
   assert.ok(ausente > 0, 'debe conservar la rama AUSENTE de #5856');
 
-  const bloque = src.slice(ausente, ausente + 2600);
+  const finAusente = src.indexOf('const noVerificable =', ausente);
+  assert.ok(finAusente > ausente, 'debe ubicar el final de la rama AUSENTE');
+  const bloque = src.slice(ausente, finAusente);
   assert.match(bloque, /humanBlock\.findBlockedMarker\(/,
     'debe buscar el marker previo antes de decidir qué hacer con él');
   assert.match(bloque, /humanBlock\.unblockIssue\(/,
