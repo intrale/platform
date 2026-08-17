@@ -322,7 +322,18 @@ test('CA-R4 la rama AUSENTE reconcilia el marker por la ruta de destrabe existen
   const ausente = src.indexOf("label needs-human ya removido en GitHub");
   assert.ok(ausente > 0, 'debe conservar la rama AUSENTE de #5856');
 
-  const bloque = src.slice(ausente, ausente + 2600);
+  // #6012 — La ventana fija de 2600 chars se quedó corta cuando #6084 sumó el
+  // manejo de colisión con el work-file vivo: el literal `unlocker:` pasó a
+  // arrancar en el offset 2580 y el slice lo cortaba al medio
+  // (`unlocker: 'github:la`), rompiendo el assert sin que hubiera regresión
+  // real en `pulpo.js`. Se ancla el final del bloque en el `catch` de la
+  // reconciliación en vez de contar caracteres, así el test deja de romperse
+  // cada vez que el bloque crece.
+  const finReconciliacion = src.indexOf('no se pudo reconciliar el marker', ausente);
+  assert.ok(finReconciliacion > ausente,
+    'debe conservar el bloque de reconciliación de #5863 con su manejo de error');
+
+  const bloque = src.slice(ausente, finReconciliacion);
   assert.match(bloque, /humanBlock\.findBlockedMarker\(/,
     'debe buscar el marker previo antes de decidir qué hacer con él');
   assert.match(bloque, /humanBlock\.unblockIssue\(/,
