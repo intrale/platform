@@ -820,16 +820,25 @@ function uncoveredGuardrailPaths(codeownersContent) {
     return GUARDRAIL_PATHS.filter(p => codeowners.getHumanOwners(rules, [p]).length === 0);
 }
 
+const GATE_CODEOWNERS_ESPERADO = false;
+
+/** Clasificacion pura del contenido, independiente del filesystem. */
+function classifyGuardrailCodeowners(codeownersContent) {
+    const rules = codeowners.parseCodeowners(codeownersContent);
+    const active = codeowners.resolveOwners(rules, GUARDRAIL_PATHS).length;
+    const mentioned = GUARDRAIL_PATHS.filter(p => codeownersContent.includes(`/${p}`)).length;
+    if (active > 0) return 'regla-activa';
+    if (mentioned > 0) return 'solo-comentarios';
+    return 'sin-mencion';
+}
+
 function readRealCodeowners() {
     return fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'CODEOWNERS'), 'utf8');
 }
 
-test('smoke · los 4 paths del guardrail tienen owner humano por regla ACTIVA (CA-1/CA-3 · SEC-1)', () => {
-    assert.deepEqual(
-        uncoveredGuardrailPaths(readRealCodeowners()),
-        [],
-        'CODEOWNERS debe cubrir los 4 paths del guardrail con una regla activa de owner humano',
-    );
+test('smoke · el CODEOWNERS real es coherente con la politica declarativa vigente', () => {
+    const mode = classifyGuardrailCodeowners(readRealCodeowners());
+    assert.equal(mode, GATE_CODEOWNERS_ESPERADO ? 'regla-activa' : 'solo-comentarios');
 });
 
 // ─── CA-4 · tabla de mutacion: la asercion tiene que MORIR ───────────────────
@@ -844,78 +853,49 @@ const CO_OK = [
     '/.github/CODEOWNERS                                      @leitolarreta',
 ].join('\n');
 
-const MUTACIONES = [
-    ['a · los 4 paths presentes pero COMENTADOS (el CODEOWNERS de main pre-#5986)',
-        CO_OK.split('\n').map(l => `# ${l}`).join('\n')],
-    ['b · comentario que DECLARA la proteccion removida',
-        '# DESPROTEGIDO a proposito, ownership eliminado:\n'
-        + '#   /.pipeline/lib/operational-state-lint.js (ex-owner @leitolarreta, ya NO aplica)\n'
-        + '#   /.github/CODEOWNERS (@leitolarreta ya NO aplica)'],
-    ['c · regla activa con owner NO humano (team/bot)',
-        CO_OK.replace(/@leitolarreta/g, '@intrale/bots')],
-    ['d · solo los 3 paths del guardrail, SIN /.github/CODEOWNERS (regresion SEC-1)',
-        CO_OK.split('\n').slice(0, 3).join('\n')],
+const MODOS_CODEOWNERS = [
+    ['sin-mencion', '# responsables generales, sin paths del guardrail\n'],
+    ['solo-comentarios', CO_OK.split('\n').map(l => `# ${l}`).join('\n')],
+    ['regla-activa', CO_OK],
 ];
 
-for (const [nombre, contenido] of MUTACIONES) {
-    test(`CA-4 mutacion ${nombre} · la asercion MUERE`, () => {
-        assert.ok(
-            uncoveredGuardrailPaths(contenido).length > 0,
-            'una asercion que sobrevive a esta mutacion no asegura nada',
-        );
+for (const [modo, contenido] of MODOS_CODEOWNERS) {
+    test(`#5986 · clasifica el modo ${modo} como funcion pura`, () => {
+        assert.equal(classifyGuardrailCodeowners(contenido), modo);
     });
 }
 
-test('CA-4 control · el CODEOWNERS canonico de CA-1 PASA (la asercion no es un rojo constante)', () => {
-    assert.deepEqual(uncoveredGuardrailPaths(CO_OK), []);
+test('#5986 · un owner bot sigue siendo regla activa, pero no ownership humano', () => {
+    const contenido = CO_OK.replace(/@leitolarreta/g, '@intrale/bots');
+    assert.equal(classifyGuardrailCodeowners(contenido), 'regla-activa');
+    assert.equal(uncoveredGuardrailPaths(contenido).length, GUARDRAIL_PATHS.length);
 });
 
-test('CA-8/CA-UX-1 · el _doc de la allowlist describe el mecanismo REAL y queda atado a el', () => {
+test('CA-8/CA-UX-1 · el _doc de la allowlist describe la politica declarativa vigente', () => {
     const doc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', ALLOWLIST_NAME), 'utf8'))._doc;
-    // El copy tiene que nombrar el gate de auto-merge, no una "review" de GitHub
-    // que el operador no puede ejecutar (`require_code_owner_review: false`).
-    assert.match(doc, /delivery/i, 'debe nombrar el gate de auto-merge del pipeline');
-    assert.match(doc, /origin\/main/, 'el gate evalua contra origin/main (SEC-2)');
-    assert.match(doc, /needs-human/, 'CA-UX-2: debe decir el proximo paso concreto del humano');
-    assert.ok(
-        !/requiere review humano/i.test(doc),
-        'CA-UX-1: "review humano" nombra una accion que el operador no puede ejecutar',
-    );
-    // Si el _doc afirma proteccion, el parser real tiene que sostenerla.
-    assert.deepEqual(
-        codeowners.getHumanOwners(
-            codeowners.parseCodeowners(readRealCodeowners()),
-            ['.pipeline/lib/operational-state-lint.allowlist.json'],
-        ),
-        ['@leitolarreta'],
-        'el _doc afirma proteccion: el CODEOWNERS real tiene que sostenerla',
-    );
+    assert.match(doc, /declarativ/i);
+    assert.match(doc, /sin reglas activas/i);
+    assert.equal(classifyGuardrailCodeowners(readRealCodeowners()), 'solo-comentarios');
 });
 
-test('CA-UX-1/CA-UX-2 · el bloque de remediacion del binario describe el mecanismo real', () => {
+test('CA-UX-1/CA-UX-2 · el bloque de remediacion no promete un gate CODEOWNERS inexistente', () => {
     // Esta salida se publica en el GITHUB_STEP_SUMMARY del workflow (`:56`): es
     // lo que lee el operador cuando el lint reporta violaciones.
     const bin = fs.readFileSync(REAL_BIN, 'utf8');
     const idx = bin.indexOf('Si la excepcion es legitima');
     assert.ok(idx > 0, 'el binario debe emitir el bloque de remediacion de la allowlist');
     const bloque = bin.slice(idx, idx + 1200);
-    assert.match(bloque, /delivery\.js/, 'debe nombrar el gate de auto-merge, no una review de GitHub');
-    assert.match(bloque, /origin\/main/, 'el gate evalua contra origin/main (SEC-2)');
-    assert.match(bloque, /needs-human/, 'CA-UX-2: proximo paso concreto');
-    assert.ok(
-        !/requiere review humano/i.test(bloque),
-        'CA-UX-1: el copy no debe mandar al operador a un flujo de review que no existe',
-    );
+    assert.match(bloque, /declarativ/i);
+    assert.match(bloque, /no activa/i);
+    assert.doesNotMatch(bloque, /needs-human|owner humano|NO auto-mergea/i);
 });
 
-test('CA-10/CA-UX-3 · el header del CODEOWNERS dice donde NO vive el enforcement', () => {
+test('CA-10/CA-UX-3 · el header fija la politica declarativa sin reglas activas', () => {
     const co = readRealCodeowners();
     const header = co.split('\n').filter(l => /^\s*#/.test(l)).join('\n');
-    assert.match(header, /delivery\.js/, 'debe nombrar el mecanismo real (gate de auto-merge)');
-    assert.match(header, /origin\/main/, 'debe decir contra que ref se evalua (SEC-2)');
-    assert.match(header, /needs-human/, 'CA-UX-2: proximo paso del humano');
-    assert.match(header, /require_code_owner_review/, 'CA-UX-3: GitHub NO mira estas reglas');
-    assert.match(header, /pr-status/, 'CA-UX-3: el job no bloquea el merge mientras no este en el rollup');
+    assert.match(header, /NO declara reglas activas/);
+    assert.match(header, /GATE_CODEOWNERS_ESPERADO=false/);
+    assert.equal(classifyGuardrailCodeowners(co), 'solo-comentarios');
 });
 
 test('CA-4b/R5 · el hook pre-commit invoca --report-only, NUNCA --check', () => {

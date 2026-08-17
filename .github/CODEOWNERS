@@ -1,46 +1,30 @@
-# CODEOWNERS — Frontera del guardrail operational-state-lint (issue #5986)
+# CODEOWNERS — Declaracion de responsabilidad (SIN gate de aprobacion obligatoria)
 #
 # Sintaxis: <pattern> <owner-or-team>
 # Ultimo match gana. Los patrones son glob-style (similar a .gitignore).
 #
-# ── Estado actual (issue #5986, reemplaza al estado de #5175/#5975) ─
-# Este archivo SI declara reglas activas: las 4 de abajo. Son la
-# frontera del guardrail `operational-state-lint` — su binario, su
-# allowlist, su suite de tests y este mismo archivo. Se declaran path
-# por path porque quien los edita puede bajar el guardrail.
+# Estado actual (issues #5175, #5975 y decision humana de #5986)
+# Este archivo NO declara reglas activas a proposito. El gate de aprobacion
+# obligatoria resultaba inaplicable: el pipeline abre los PRs con la misma
+# cuenta que era code owner y GitHub no permite auto-aprobarse.
 #
-# QUE APLICA ESTAS REGLAS (mecanismo real):
-#   El gate de auto-merge del pipeline (`.pipeline/skills-deterministicos/
-#   delivery.js`), que evalua CODEOWNERS contra `origin/main` — no contra
-#   el head del PR, porque el head podria estar editando este archivo
-#   para sacarse del gate. Si un PR toca alguno de los 4 paths, delivery
-#   NO auto-mergea: deja el PR en `needs-human` y escala.
+# La proteccion se apoya en controles automaticos verificables sobre main:
+# PR obligatorio, hilos resueltos, review automatico, pr-status requerido,
+# SAST, Actions fijadas por SHA, ghost-artifact-lint y operational-state-lint.
 #
-# PROXIMO PASO CUANDO UN PR QUEDA FRENADO:
-#   Lo destraba @leitolarreta desde el flujo de bloqueo humano del
-#   pipeline (label `needs-human` sobre el PR). NO es un Approve de
-#   GitHub: no hay reviewer solicitado ni boton que destrabe.
+# Responsabilidad declarada (informativa, no bloqueante):
+#   /.github/       responsable: @leitolarreta
+#   /.pipeline/     responsable: @leitolarreta
 #
-# ── Donde NO vive el enforcement (alcance honesto, CA-10 / CA-UX-3) ─
-#   - GitHub NO mira estas reglas: el ruleset `protect-main` tiene
-#     `require_code_owner_review: false` y `required_approving_review_
-#     count: 0`. No va a pedir ni exigir review de code owner.
-#   - Un fallo del job `operational-state-lint` NO bloquea el merge
-#     mientras no entre al rollup `pr-status` (eso es #5183).
-#   - Un humano con permiso de push sigue pudiendo mergear a mano. Es
-#     el limite de diseño aceptado.
+# Guardrail operational-state-lint (#5202):
+#   /.pipeline/lib/operational-state-lint.js               responsable: @leitolarreta
+#   /.pipeline/lib/operational-state-lint.allowlist.json    responsable: @leitolarreta
+#   /.pipeline/lib/__tests__/operational-state-lint.test.js responsable: @leitolarreta
+#   /.github/CODEOWNERS                                     responsable: @leitolarreta
 #
-# ── Por que la superficie es angosta ───────────────────────────────
-# #5175 quito la regla `/.github/` entera porque auto-bloqueaba: el
-# pipeline abre los PRs con la misma cuenta que era code owner y GitHub
-# no permite auto-aprobarse. Eso NO se reintroduce: el freno de hoy vive
-# en el auto-merge del pipeline (que escala a un humano), no en el
-# ruleset de GitHub (que trababa el PR esperando una firma imposible).
-# NO agregar `/.github/` ni `/.pipeline/` enteros: una regla amplia
-# paraliza el auto-merge de todo el pipeline y rompe el self-check de
-# `delivery.js` que corre en el smoke test del restart.
-
-/.pipeline/lib/operational-state-lint.js                 @leitolarreta
-/.pipeline/lib/operational-state-lint.allowlist.json     @leitolarreta
-/.pipeline/lib/__tests__/operational-state-lint.test.js  @leitolarreta
-/.github/CODEOWNERS                                      @leitolarreta
+# La clasificacion semantica de #5986 distingue sin-mencion,
+# solo-comentarios y regla-activa. La politica vigente espera el modo
+# declarativo solo-comentarios (GATE_CODEOWNERS_ESPERADO=false).
+#
+# Si se exige separacion entre autor y aprobador, corresponde una identidad
+# de servicio propia del pipeline, no reactivar una regla auto-bloqueante.

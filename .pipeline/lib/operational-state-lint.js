@@ -736,13 +736,10 @@ function remediationLines(rules) {
         out.push('');
         out.push('  Si la excepcion es legitima: entry { file, line, reason } en');
         out.push(`  \`.pipeline/${ALLOWLIST_REL}\`.`);
-        out.push('  Ese archivo tiene owner humano (@leitolarreta) por una regla ACTIVA de');
-        out.push('  `.github/CODEOWNERS` (#5986): el gate de auto-merge del pipeline');
-        out.push('  (`delivery.js`, que evalua CODEOWNERS contra `origin/main`) NO auto-mergea');
-        out.push('  el PR que lo toque — lo deja en `needs-human` y escala.');
-        out.push('  Proximo paso: abris el PR igual; queda frenado y lo destraba @leitolarreta');
-        out.push('  desde el flujo de bloqueo humano del pipeline. NO es un Approve de GitHub');
-        out.push('  (`protect-main` tiene `require_code_owner_review: false`).');
+        out.push('  `.github/CODEOWNERS` declara la responsabilidad sobre este archivo,');
+        out.push('  pero la politica vigente (#5986, Opcion A) es declarativa y no activa');
+        out.push('  un gate de ownership. El cambio se valida mediante los controles');
+        out.push('  automaticos requeridos del PR, incluido operational-state-lint.');
     }
     return out;
 }
