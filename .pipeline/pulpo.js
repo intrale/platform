@@ -18160,6 +18160,89 @@ function resyncActiveWaveFromLegitAllowlist(issues) {
 }
 
 // =============================================================================
+// #5882 — Reparación ADITIVA de la ALLOWLIST desde una traza legítima de
+// `/wave add`. Espejo exacto de `resyncActiveWaveFromLegitAllowlist`, en la
+// dirección contraria.
+//
+// Aquel converge ola ← allowlist (el extra tiene traza en `partial-pause-audit`).
+// Este converge allowlist ← ola: el issue está en `active_wave.issues` y FALTA
+// en la allowlist, y su traza vive en `wave-audit` (`issue_added` con
+// `source:'telegram-commander/wave-add'`). Es el caso del incidente 2026-08-13:
+// una promoción del operador cuyo segundo write no aterrizó.
+//
+// Dominio alcanzable REAL (verificado empíricamente; no ampliar de memoria)
+// ------------------------------------------------------------------------
+// Esta función NO es la que atiende el caso canónico del incidente. Un issue
+// abierto recién promovido, SIN extras en la allowlist, lo resuelve la
+// convergencia aditiva de #5724, que corre ANTES en el realign y hace `return`.
+//
+// Lo que queda para acá es el hueco que #5724 deja al declinar por
+// `sinExtras === false`: divergencia `resoluble_reductivo` CON extras, y con
+// TODOS los extras CONFIRMADOS CERRADOS. Si algún extra está ABIERTO la
+// clasificación es `ambiguo` (desync-detector → classifyDesync) y el caller ni
+// llega a invocar esto, porque vive dentro del `if (resoluble_reductivo)`.
+//
+// O sea: último recurso ANTES del human-block, no cobertura general. Es más
+// angosta en autoridad que #5724 (exige traza legítima explícita en el audit)
+// y su alcance está acotado por el caller, no por esta función.
+//
+// El contrato de orden #5724 → #5882 y el dominio de cada uno están fijados por
+// la suite de integración de `wave-add-sync-integration-5882.test.js`
+// ("realign · ..."), que maneja `evaluateDesyncAndMaybeRealign` de punta a
+// punta. Si alguien reordena los bloques, esos tests avisan.
+//
+// Invariantes duras (no relajar sin declararlo):
+//   - ADITIVO PURO: siempre `[...current, ...toAdd]`. Jamás se construye una
+//     lista que omita un issue ya presente en la allowlist. Esto preserva
+//     #4753 (poda que borró la allowlist) y #5516 (huérfanos de split).
+//   - SOLO issues que YA están en `active_wave.issues`. El permiso no se deriva
+//     de un archivo no verificado ni del set de candidatos por sí solo.
+//   - NO se toca `waves.json` en este camino.
+//   - Todo `return` de no-reparación lleva su `reason`, para que el caller lo
+//     loguee. Abortar en silencio sería el mismo defecto que estamos arreglando.
+//
+// @param {number[]} issues — subconjunto con traza legítima (probe.removed filtrado).
+// @returns {{ ok: boolean, added: number[], reason?: string }}
+// =============================================================================
+function repairAllowlistFromLegitWaveAdd(issues) {
+  const waves = require('./lib/waves');
+  const partialPause = require('./lib/partial-pause');
+
+  const active = waves.getActiveWave();
+  if (!active || !Number.isInteger(active.number)) {
+    return { ok: false, added: [], reason: 'no_active_wave' };
+  }
+
+  const mode = partialPause.getPipelineMode();
+  if (mode.mode !== 'partial_pause') {
+    // Sin pausa parcial no hay allowlist que reparar; crear una acá
+    // restringiría el pipeline a un solo issue (regresión de #5060).
+    return { ok: false, added: [], reason: 'no_partial_pause' };
+  }
+
+  const inWave = new Set(
+    (active.issues || []).map((i) => Number(i && i.number != null ? i.number : i)),
+  );
+  const current = Array.isArray(mode.allowedIssues) ? mode.allowedIssues : [];
+  const toAdd = (Array.isArray(issues) ? issues : [])
+    .filter((n) => inWave.has(n) && !current.includes(n));
+  if (toAdd.length === 0) {
+    return { ok: false, added: [], reason: 'nothing_to_add' };
+  }
+
+  const r = partialPause.setPartialPause([...current, ...toAdd], {
+    source: 'wave-promote:repair-additive-5882',
+    authorizedBy: 'wave-promote',
+    justification: `Reparación aditiva de allowlist por traza legítima de wave-add (#5882): ${toAdd.join(', ')}`,
+  });
+  // El gate puede rechazar sin tirar. No dar por reparado lo que no se escribió.
+  if (r && r.ok === false) {
+    return { ok: false, added: [], reason: `gate_rejected: ${r.msg || 'sin detalle'}` };
+  }
+  return { ok: true, added: toAdd };
+}
+
+// =============================================================================
 // #5516 — Reconciliación de hijos de split HUÉRFANOS, descubiertos DESDE GITHUB.
 //
 // Diferencia esencial con #3625/#4439/#4525: los tres arrancan leyendo la
@@ -18993,6 +19076,75 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
         log('pulpo', `WARN desync-detector: convergencia aditiva no aplicada (${r && r.reason}). Sigue evaluación conservadora.`);
       } catch (e) {
         log('pulpo', `WARN desync-detector: convergencia aditiva falló: ${e.message}. Sigue evaluación conservadora.`);
+      }
+    }
+
+    // #5882 CA-3 — Último intento ANTES del human-block: reparación ADITIVA de
+    // la allowlist para los faltantes con TRAZA LEGÍTIMA de `/wave add`.
+    //
+    // Qué llega hasta acá (y qué NO)
+    // ------------------------------
+    // NO el issue abierto recién promovido sin extras: ese caso lo resuelve la
+    // convergencia de #5724 unas líneas más arriba, que hace `return`. Tampoco
+    // una divergencia `ambiguo` (algún extra ABIERTO): este bloque está dentro
+    // del `if (probe.classification === 'resoluble_reductivo')`, así que ni se
+    // evalúa y el fail-closed sigue entero.
+    //
+    // Llega el hueco que deja #5724 al declinar por `sinExtras === false`:
+    // divergencia reductiva CON extras, todos CONFIRMADOS CERRADOS, y algún
+    // faltante que el operador promovió. Ahí antes había human-block sobre una
+    // promoción pedida explícitamente minutos antes; esto es el último intento
+    // de repararla antes de frenar.
+    //
+    // La autoridad para reparar NO viene de "está en la ola" a secas — eso ya lo
+    // cubre #5724 con sus propios guards — sino de una entry `issue_added` en el
+    // audit encadenado con `source` en el enum cerrado, dentro de TTL, y sin una
+    // remoción humana posterior (anti-replay). Sin traza, no se repara y el
+    // fail-closed queda intacto.
+    const faltantesLegitCand = (Array.isArray(probe.removed) ? probe.removed : [])
+      .filter((n) => Number.isInteger(n) && n > 0);
+    if (faltantesLegitCand.length > 0) {
+      let ttlMsWaveAdd;
+      try { ttlMsWaveAdd = loadConfig().desync?.legit_add_ttl_ms; } catch { ttlMsWaveAdd = undefined; }
+      let legitWaveAdd = [];
+      try {
+        legitWaveAdd = legitAddTrace.isLegitimateRecentWaveAdd(faltantesLegitCand, {
+          now: Date.now(),
+          ttlMs: ttlMsWaveAdd,
+          isClosed: isClosed || undefined,
+        });
+      } catch (e) {
+        log('pulpo', `WARN desync-detector: predicado legit-wave-add falló: ${e.message}. No reparo.`);
+        legitWaveAdd = [];
+      }
+
+      if (legitWaveAdd.length > 0) {
+        try {
+          const r = repairAllowlistFromLegitWaveAdd(legitWaveAdd);
+          if (r && r.ok) {
+            if (desyncDetector.isDesyncFlagSet()) desyncDetector.clearDesyncFlag();
+            checkDesyncFlag();
+            try { desyncBlockNotifier.onResolved({ resolucion: 'reparacion_aditiva_wave_add', issues: r.added }); } catch { /* best-effort */ }
+            log('pulpo', `desync-detector: reparación ADITIVA de allowlist OK (#5882) — ` +
+              `agregados=${JSON.stringify(r.added)} (traza legítima en wave-audit)`);
+            try {
+              sendTelegramPlain(
+                `♻️ Volví a habilitar el dispatch (#5882).\n` +
+                `Estos issues estaban en la ola pero faltaban en la lista de despacho: ` +
+                `${r.added.map((n) => `#${n}`).join(', ')}.\n` +
+                `Tienen traza de promoción tuya, así que los repuse sin frenar nada.`
+              );
+            } catch { /* best-effort */ }
+            return;
+          }
+          // Nunca en silencio: si no reparó, queda el motivo en el log.
+          log('pulpo', `WARN desync-detector: reparación aditiva no aplicada (${r && r.reason}). Sigue fail-closed.`);
+        } catch (e) {
+          log('pulpo', `WARN desync-detector: reparación aditiva falló: ${e.message}. Sigue fail-closed.`);
+        }
+      } else {
+        log('pulpo', `desync-detector: sin traza legítima de wave-add para ` +
+          `${JSON.stringify(faltantesLegitCand)}. Sigue fail-closed (#5882).`);
       }
     }
 
@@ -22013,6 +22165,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // aditivo legítimo (CA-3), expuestos para tests de integración.
     evaluateDesyncAndMaybeRealign,
     resyncActiveWaveFromLegitAllowlist,
+    // #5882 — reparación aditiva allowlist ← ola con traza legítima.
+    repairAllowlistFromLegitWaveAdd,
     reconcileSplitOrphansFromGithub,
     realignAllowlistToActiveWave,
     // #4753 — auto-resolución del desync reductivo por cierre (expuesto para tests).
