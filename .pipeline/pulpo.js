@@ -141,6 +141,10 @@ const operatorSignature = require('./lib/operator-signature');
 // #2549 — Detección de bloqueo humano en motivos de rechazo + helpers de marker.
 // Evita relanzar al infinito skills cuyo rechazo es "esperando merge humano".
 const humanBlock = require('./lib/human-block');
+// #5863 CA-R3 — marker append-only de mutaciones de labels aplicadas por
+// `servicio-github.js`. El Pulpo lo DRENA (nunca lo escribe): es el canal por
+// el que se entera de una mutacion hecha en otro proceso sin esperar el TTL.
+const labelMutationLog = require('./lib/label-mutation-log');
 // #5835 — anexo de estado de ola para el camino LLM (tabla textual del handler).
 const waveAnnex = require('./lib/wave-annex');
 // #4708 — Alerta operacional genérica del control-plane (wave-stall watchdog).
@@ -1745,9 +1749,9 @@ function quarantineCorruptWorkFile(q) {
   try {
     const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
     fs.mkdirSync(ghQueueDir, { recursive: true });
-    fs.writeFileSync(
+    encolarOrdenGithub(
       path.join(ghQueueDir, `${issue}-needs-human-corrupt-${Date.now()}.json`),
-      JSON.stringify({ action: 'label', issue: parseInt(issue, 10), label: 'needs-human' }),
+      { action: 'label', issue: parseInt(issue, 10), label: 'needs-human' },
     );
   } catch (e) {
     log('corruption', `No pude encolar label needs-human por work-file corrupto #${issue}: ${e.message}`);
@@ -4022,7 +4026,7 @@ function brazoBarrido(config) {
                 const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
                 fs.mkdirSync(ghQueueDir, { recursive: true });
                 const labelFile = path.join(ghQueueDir, `${issue}-needs-human-crossphase-${Date.now()}.json`);
-                fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }));
+                encolarOrdenGithub(labelFile, { action: 'label', issue: parseInt(issue), label: 'needs-human' });
               } catch (e) { log('barrido', `error encolando label needs-human: ${e.message}`); }
               for (const a of archivos) {
                 const dest = path.join(fasePath(pipelineName, fase), 'procesado');
@@ -4166,7 +4170,9 @@ function brazoBarrido(config) {
                 for (const depNum of result.dependsOn) {
                   // Invalidar cache antes de chequear: el dep pudo haber cerrado
                   // hace minutos y el cache de 10min nos daría un estado stale.
-                  issueLabelsCache.delete(depNum);
+                  // #5856 CA-5 — clave canónica: sin normalizar, una entrada
+                  // sembrada con clave string no se borraba (invalidación NO-OP).
+                  issueLabelsCache.delete(issueCacheKey(depNum));
                   const info = getIssueInfo(depNum);
                   stateLog.push(`#${depNum}=${info.state}`);
                   if (info.state !== 'CLOSED') {
@@ -4605,9 +4611,9 @@ function brazoBarrido(config) {
                 fs.mkdirSync(ghQueueDir, { recursive: true });
                 // Aplicar label `needs-human`. El servicio-github auto-crea el
                 // label si no existe (ver LABEL_COLORS, color #B60205).
-                fs.writeFileSync(
+                encolarOrdenGithub(
                   path.join(ghQueueDir, `${issue}-needs-human-apply-${Date.now()}.json`),
-                  JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }),
+                  { action: 'label', issue: parseInt(issue), label: 'needs-human' },
                 );
                 // 3) comentario estructurado (plantilla UX — una frase + <details> + 3 acciones)
                 const body = [
@@ -4913,7 +4919,7 @@ function brazoBarrido(config) {
                   const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
                   fs.mkdirSync(ghQueueDir, { recursive: true });
                   const labelFile = path.join(ghQueueDir, `${issue}-blocked-routing-${Date.now()}.json`);
-                  fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'blocked:routing-manual' }));
+                  encolarOrdenGithub(labelFile, { action: 'label', issue: parseInt(issue), label: 'blocked:routing-manual' });
                 } catch (e) {
                   log('routing', `Error encolando label blocked:routing-manual: ${e.message}`);
                 }
@@ -5321,9 +5327,9 @@ function brazoBarrido(config) {
                     log('barrido', `⛔ #${issue} deliverable-gate: ${dgIntento} intentos sin entregable del PO (cap ${DG_MAX_INTENTOS}) — escalando a needs-human`);
                     try {
                       fs.mkdirSync(ghQueueDir, { recursive: true });
-                      fs.writeFileSync(
+                      encolarOrdenGithub(
                         path.join(ghQueueDir, `${issue}-dgate-needs-human-${Date.now()}.json`),
-                        JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'needs-human' }),
+                        { action: 'label', issue: parseInt(issue), label: 'needs-human' },
                       );
                       fs.writeFileSync(
                         path.join(ghQueueDir, `${issue}-dgate-needs-human-comment-${Date.now()}.json`),
@@ -5476,13 +5482,13 @@ function brazoBarrido(config) {
                 try {
                   const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
                   fs.mkdirSync(ghQueueDir, { recursive: true });
-                  fs.writeFileSync(
+                  encolarOrdenGithub(
                     path.join(ghQueueDir, `${issue}-visual-gate-label-${Date.now()}.json`),
-                    JSON.stringify({
+                    {
                       action: 'label',
                       issue: parseInt(issue),
                       label: visualGate.NEEDS_VISUAL_BASELINE_LABEL,
-                    }),
+                    },
                   );
                 } catch (e) {
                   log('barrido', `Error encolando visual-gate label #${issue}: ${e.message}`);
@@ -5536,9 +5542,9 @@ function brazoBarrido(config) {
               const reason = `GATE 0 fail-closed: ${code}${detail ? ` (${detail})` : ''}`;
               try {
                 fs.mkdirSync(g0QueueDir, { recursive: true });
-                fs.writeFileSync(
+                encolarOrdenGithub(
                   path.join(g0QueueDir, `${issue}-gate0-failclosed-label-${Date.now()}.json`),
-                  JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'qa:pending' }),
+                  { action: 'label', issue: parseInt(issue), label: 'qa:pending' },
                 );
                 fs.writeFileSync(
                   path.join(g0QueueDir, `${issue}-gate0-failclosed-comment-${Date.now()}.json`),
@@ -5665,9 +5671,9 @@ function brazoBarrido(config) {
                   const prAction = {
                     action: 'label', issue: resolved.pr.number, target: 'pr', label: prRec.target,
                   };
-                  fs.writeFileSync(
+                  encolarOrdenGithub(
                     path.join(g0QueueDir, `${issue}-gate0-pr-${resolved.pr.number}-${Date.now()}.json`),
-                    JSON.stringify(prAction),
+                    prAction,
                   );
                   gate0Audit('pr-propagation', {
                     pr: resolved.pr.number,
@@ -5950,12 +5956,12 @@ function brazoBarrido(config) {
 
             const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
             const labelFile = path.join(ghQueueDir, `${issue}-ready-${Date.now()}.json`);
-            fs.writeFileSync(labelFile, JSON.stringify({ action: 'label', issue: parseInt(issue), label: 'Ready' }));
+            encolarOrdenGithub(labelFile, { action: 'label', issue: parseInt(issue), label: 'Ready' });
             log('barrido', `#${issue} → encolado label "Ready" en servicio-github`);
 
             // También remover label needs-definition
             const rmLabelFile = path.join(ghQueueDir, `${issue}-rm-ndef-${Date.now()}.json`);
-            fs.writeFileSync(rmLabelFile, JSON.stringify({ action: 'remove-label', issue: parseInt(issue), label: 'needs-definition' }));
+            encolarOrdenGithub(rmLabelFile, { action: 'remove-label', issue: parseInt(issue), label: 'needs-definition' });
           }
 
           // Si es pipeline de desarrollo → notificar por telegram con estado
@@ -6887,15 +6893,80 @@ function issueMentionsPipelineScope(issueNum, config) {
 const issueLabelsCache = new Map(); // issueNum → { labels: [...], state: string, fetchedAt: timestamp }
 const LABELS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
 
+/**
+ * #5856 CA-5 — Clave canónica de `issueLabelsCache`.
+ *
+ * El cache se consultaba/escribía con el valor tal cual llegaba (`number` desde
+ * algunos call-sites, `string` desde `issueFromFile()`), mientras la
+ * invalidación de `_shouldReblockForDependencies()` borraba con `String(issue)`.
+ * Con una entrada sembrada con clave numérica, esa invalidación era un NO-OP
+ * silencioso: la relectura "en vivo" volvía a leer el mismo valor stale y la
+ * protección de #4023 no protegía nada. Normalizar en TODOS los extremos
+ * (get / set / delete) elimina la dependencia implícita del tipo.
+ */
+function issueCacheKey(issueNum) {
+  return String(issueNum);
+}
+
+/**
+ * #5863 CA-R1 — Invalida la entrada cacheada de UN issue.
+ *
+ * Existía como expresión suelta repetida (`issueLabelsCache.delete(issueCacheKey(x))`)
+ * en cuatro lugares y ausente en los once call-sites que mutan labels. Nombrarla
+ * la vuelve invocable desde toda ruta de mutación (CA-R2) y verificable desde
+ * los tests sin espiar el Map por dentro.
+ *
+ * @param {string|number} issueNum
+ * @returns {boolean} true si había una entrada que borrar.
+ */
+function invalidateIssueLabels(issueNum) {
+  try { return issueLabelsCache.delete(issueCacheKey(issueNum)); }
+  catch { return false; }
+}
+
+/**
+ * #5863 CA-R1 — Invalida TODA la caché de labels.
+ *
+ * Para eventos que cambian el mundo en bloque (reintake, reconciliación de ola)
+ * donde enumerar los issues afectados sería más frágil que tirar la caché
+ * entera. Cuesta a lo sumo un `gh` por issue que el barrido vuelva a tocar.
+ *
+ * @returns {number} cantidad de entradas descartadas.
+ */
+function invalidateAllIssueLabels() {
+  const n = issueLabelsCache.size;
+  try { issueLabelsCache.clear(); } catch { /* best-effort */ }
+  return n;
+}
+
+/**
+ * #5863 CA-R5 — Lectura cacheada de labels+estado.
+ *
+ * `issueNum` llega desde `issueFromFile()`, que es LENIENTE: no valida `/^\d+$/`.
+ * Interpolar ese valor en un string de shell (como hacía este `execSync`) le da a
+ * un work-file corrupto o manipulado un camino directo a ejecución de comandos
+ * (OWASP A03). Mismo criterio que ya aplicaba `_readLiveLabelsOrThrow()`:
+ *   1) canonizar a numérico y, si no lo es, degradar al safe-default `UNKNOWN`
+ *      sin tocar la red — un identificador ilegible no puede "no tener labels",
+ *      y `UNKNOWN` mantiene fail-closed a todos los gates que lo consultan;
+ *   2) `execFileSync` con argv, sin shell.
+ */
 function getIssueInfo(issueNum) {
-  const cached = issueLabelsCache.get(issueNum);
+  const key = issueCacheKey(issueNum);
+  const cached = issueLabelsCache.get(key);
   if (cached && (Date.now() - cached.fetchedAt) < LABELS_CACHE_TTL_MS) {
     return cached;
   }
+  const id = key.trim();
+  if (!/^\d+$/.test(id)) {
+    log('lanzamiento', `🔴 identificador de issue no numérico (${id.slice(0, 40)}) — no se consulta GitHub (#5863)`);
+    return { labels: [], state: 'UNKNOWN', fetchedAt: Date.now() };
+  }
   try {
     ghThrottle();
-    const result = execSync(
-      `"${GH_BIN}" issue view ${issueNum} --json labels,state`,
+    const result = execFileSync(
+      GH_BIN,
+      ['issue', 'view', id, '--json', 'labels,state'],
       { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true }
     ).trim();
     const parsed = JSON.parse(result);
@@ -6904,7 +6975,7 @@ function getIssueInfo(issueNum) {
       state: parsed.state || 'UNKNOWN',
       fetchedAt: Date.now()
     };
-    issueLabelsCache.set(issueNum, info);
+    issueLabelsCache.set(key, info);
     return info;
   } catch {
     return { labels: [], state: 'UNKNOWN', fetchedAt: Date.now() };
@@ -6913,6 +6984,40 @@ function getIssueInfo(issueNum) {
 
 function getIssueLabels(issueNum) {
   return getIssueInfo(issueNum).labels;
+}
+
+/**
+ * #5863 CA-R2 — Encola una orden para `servicio-github.js` INVALIDANDO la caché
+ * del issue afectado en el mismo acto.
+ *
+ * Antes cada call-site hacía `fs.writeFileSync(file, JSON.stringify({action:
+ * 'label', ...}))` a mano y ninguno tocaba la caché. Resultado: el Pulpo aplicaba
+ * `needs-human` a un issue y durante los siguientes 10 minutos seguía leyendo la
+ * foto vieja — sin el label recién puesto, o con el label recién sacado. Escribir
+ * y olvidar era el defecto; este helper vuelve imposible hacer una sin la otra.
+ *
+ * La invalidación es DELIBERADAMENTE optimista (se aplica al ENCOLAR, no al
+ * confirmar): borrar una entrada de más sólo cuesta una relectura, mientras que
+ * dejarla stale es el bug que estamos cerrando. La confirmación real de la
+ * aplicación llega por el marker append-only de `servicio-github.js` (CA-R3).
+ *
+ * No agrega lecturas a GitHub (CA-R7): sólo BORRA del Map. El próximo `gh` lo
+ * paga quien realmente necesite ese issue, y sólo si lo necesita.
+ *
+ * @param {string} filePath  destino en `servicios/github/pendiente/`.
+ * @param {object} payload   orden ya armada (`{action, issue, ...}`).
+ * @returns {string} el mismo `filePath`, para encadenar.
+ */
+function encolarOrdenGithub(filePath, payload) {
+  fs.writeFileSync(filePath, JSON.stringify(payload));
+  try {
+    if (payload
+      && (payload.action === 'label' || payload.action === 'remove-label')
+      && payload.target !== 'pr') {
+      invalidateIssueLabels(payload.issue);
+    }
+  } catch { /* la orden ya quedó encolada: la invalidación es best-effort */ }
+  return filePath;
 }
 
 /**
@@ -6964,6 +7069,58 @@ function isIssueClosed(issueNum) {
 }
 
 /**
+ * #5856 — Lee labels EN VIVO contra GitHub **propagando el error**.
+ *
+ * `getIssueLabels()` NO sirve para un gate fail-closed: `getIssueInfo()` atrapa
+ * toda excepción y devuelve `{ labels: [], state: 'UNKNOWN' }`, que es
+ * indistinguible de "el label ya no está". Con `gh` caído, un gate construido
+ * sobre él concluye "destrabado" y lanza el agente igual — fail-OPEN disparable
+ * por una caída de red (OWASP A01). Este lector distingue los dos casos: si no
+ * pudo preguntarle a GitHub, lanza.
+ *
+ * Seguridad (OWASP A03 — mismo criterio que el SEC-FIX de #4505): `issue` llega
+ * de `issueFromFile()`, que es LENIENTE y no valida `/^\d+$/`. Un work-file
+ * corrupto/malicioso (`5856 & echo PWNED.pipeline-dev`) inyectaría comandos si
+ * se interpolara en un string de shell. Defensa en profundidad:
+ *   1) Canonizar a numérico y LANZAR si no lo es (el caller lo traduce a
+ *      fail-closed: ante un identificador ilegible se mantiene el bloqueo).
+ *   2) `execFileSync` con argv (SIN shell): aunque el arg tuviera
+ *      metacaracteres, `gh` lo recibe como un único token.
+ *
+ * Efecto lateral deliberado: siembra `issueLabelsCache` con la lectura fresca,
+ * así el resto del barrido reusa el dato en vivo en lugar de pagar otro `gh`
+ * (mitiga el costo de la revalidación, Riesgo 3 del issue).
+ *
+ * @param {string|number} issue
+ * @returns {string[]} nombres de labels vigentes en GitHub
+ * @throws si el identificador no es numérico, si `gh` falla/timeoutea, o si la
+ *         respuesta no trae un array de labels.
+ */
+function _readLiveLabelsOrThrow(issue) {
+  const id = String(issue == null ? '' : issue).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new Error(`identificador de issue no numérico (${id.slice(0, 40)})`);
+  }
+  ghThrottle();
+  const raw = execFileSync(
+    GH_BIN,
+    ['issue', 'view', id, '--json', 'labels,state'],
+    { cwd: ROOT, encoding: 'utf8', timeout: 10000, windowsHide: true },
+  ).trim();
+  const parsed = JSON.parse(raw);
+  if (!parsed || !Array.isArray(parsed.labels)) {
+    throw new Error('respuesta de gh sin array de labels');
+  }
+  const labels = parsed.labels.map(l => (l && l.name) || '').filter(Boolean);
+  issueLabelsCache.set(issueCacheKey(id), {
+    labels,
+    state: parsed.state || 'UNKNOWN',
+    fetchedAt: Date.now(),
+  });
+  return labels;
+}
+
+/**
  * #4023 CA-1 — Decide si un issue debe re-bloquearse por `blocked:dependencies`,
  * releyendo labels EN VIVO contra GitHub para no caer en el "re-bloqueo
  * fantasma" causado por la caché stale (LABELS_CACHE_TTL_MS = 10 min).
@@ -6972,27 +7129,115 @@ function isIssueClosed(issueNum) {
  * re-fetchea. Devuelve `true` SOLO si el label sigue presente en vivo.
  *
  * Extraído como función inyectable para testeo unitario (los defaults usan la
- * caché y `getIssueLabels` reales del módulo).
+ * caché y el lector en vivo reales del módulo).
+ *
+ * #5856 — El default de `readLiveLabels` pasó de `getIssueLabels()` a
+ * `_readLiveLabelsOrThrow()`: el anterior NUNCA lanzaba, así que el `catch`
+ * fail-closed de abajo era inalcanzable en producción y el helper degradaba a
+ * fail-OPEN con `gh` caído. La firma y la semántica del `catch` no cambian, así
+ * que los tests de #4023 (que inyectan `readLiveLabels`) siguen valiendo.
  *
  * @param {string|number} issue
  * @param {object} [deps]
  * @param {() => void} [deps.invalidateCache]
  * @param {() => string[]} [deps.readLiveLabels]
+ * @param {(brazo: string, msg: string) => void} [deps.logFn]
  * @returns {boolean}
  */
 function _shouldReblockForDependencies(issue, {
-  invalidateCache = () => issueLabelsCache.delete(String(issue)),
-  readLiveLabels = () => getIssueLabels(issue),
+  invalidateCache = () => issueLabelsCache.delete(issueCacheKey(issue)),
+  readLiveLabels = () => _readLiveLabelsOrThrow(issue),
+  logFn = log,
 } = {}) {
   try { invalidateCache(); } catch { /* invalidación best-effort */ }
   let liveLbls;
   try { liveLbls = readLiveLabels(); }
-  catch {
+  catch (e) {
     // Fail-closed: si no se puede releer en vivo, mantener el bloqueo (no
     // arriesgar lanzar un issue que GitHub todavía podría tener bloqueado).
+    // #5856 — el fallo se loguea con el número de issue: un gate que corre a
+    // ciegas sin dejar señal es OWASP A09 (fallo de logging/monitoreo).
+    try {
+      logFn('lanzamiento', `🔴 #${issue} no se pudo verificar el label blocked:dependencies contra GitHub — se mantiene bloqueado por precaución (fail-closed, #5856): ${String((e && e.message) || e).slice(0, 120)}`);
+    } catch { /* logging best-effort */ }
     return true;
   }
   return Array.isArray(liveLbls) && liveLbls.includes('blocked:dependencies');
+}
+
+/** #5856 — variantes aceptadas del label de bloqueo humano. */
+const HUMAN_BLOCK_LABELS = Object.freeze(['needs-human', 'needs:human']);
+
+/**
+ * #5856 CA-1/CA-3/CA-6 — Verifica EN VIVO contra GitHub si el bloqueo humano de
+ * un issue sigue vigente, antes de que el barrido de lanzamiento lo re-bloquee.
+ *
+ * Espejo de `_shouldReblockForDependencies()` pero con **tres** desenlaces en
+ * lugar de dos, porque el gate necesita distinguirlos en el log y en el
+ * `.reason.json` (CA-6/CA-7): colapsar "no pude preguntar" dentro de "el label
+ * no está" es exactamente el defecto que este issue corrige.
+ *
+ *   - `PRESENTE`       → el label sigue aplicado en GitHub: bloqueo real.
+ *   - `AUSENTE`        → lectura en vivo EXITOSA y sin el label: la caché estaba
+ *                        stale, el destrabe humano es válido, NO re-bloquear.
+ *   - `NO_VERIFICABLE` → no hubo lectura confiable (gh caído, timeout, JSON roto,
+ *                        identificador no numérico, respuesta sin array de
+ *                        labels): fail-closed, se mantiene el bloqueo.
+ *
+ * Nota sobre el caso "respuesta no-array": se clasifica como `NO_VERIFICABLE`,
+ * no como `AUSENTE`. Una respuesta que no se pudo interpretar NO es una lectura
+ * exitosa, y anunciar "ya removido en GitHub" sobre ella violaría el CA-7
+ * ("ningún mensaje afirma lo no verificado").
+ *
+ * @param {string|number} issue
+ * @param {object} [deps]
+ * @param {() => void} [deps.invalidateCache]
+ * @param {() => string[]} [deps.readLiveLabels]
+ * @param {(brazo: string, msg: string) => void} [deps.logFn]
+ * @returns {{ estado: 'PRESENTE'|'AUSENTE'|'NO_VERIFICABLE', error: string|null }}
+ */
+function _verifyHumanBlockLive(issue, {
+  invalidateCache = () => issueLabelsCache.delete(issueCacheKey(issue)),
+  readLiveLabels = () => _readLiveLabelsOrThrow(issue),
+  logFn = log,
+} = {}) {
+  try { invalidateCache(); } catch { /* invalidación best-effort */ }
+
+  let liveLbls;
+  try { liveLbls = readLiveLabels(); }
+  catch (e) {
+    return _humanBlockUnverifiable(issue, String((e && e.message) || e).slice(0, 120), logFn);
+  }
+  if (!Array.isArray(liveLbls)) {
+    return _humanBlockUnverifiable(issue, 'la relectura en vivo no devolvió un array de labels', logFn);
+  }
+
+  return HUMAN_BLOCK_LABELS.some(l => liveLbls.includes(l))
+    ? { estado: 'PRESENTE', error: null }
+    : { estado: 'AUSENTE', error: null };
+}
+
+/** #5856 — desenlace fail-closed con traza (CA-6, tercer mensaje). */
+function _humanBlockUnverifiable(issue, motivo, logFn) {
+  try {
+    logFn('lanzamiento', `🔴 #${issue} no se pudo verificar el label needs-human contra GitHub — se mantiene bloqueado por precaución (fail-closed, #5856): ${motivo}`);
+  } catch { /* logging best-effort */ }
+  return { estado: 'NO_VERIFICABLE', error: motivo };
+}
+
+/**
+ * #5856 CA-3 — Fachada booleana de `_verifyHumanBlockLive()`, simétrica con
+ * `_shouldReblockForDependencies()`: `true` = mantener/aplicar el bloqueo.
+ *
+ * Sólo `AUSENTE` (lectura en vivo exitosa que confirma que el label ya no está)
+ * libera. Cualquier otra cosa — incluido "no pude preguntarle a GitHub" — bloquea.
+ *
+ * @param {string|number} issue
+ * @param {object} [deps] — mismos que `_verifyHumanBlockLive`.
+ * @returns {boolean}
+ */
+function _shouldReblockForHuman(issue, deps = {}) {
+  return _verifyHumanBlockLive(issue, deps).estado !== 'AUSENTE';
 }
 
 /** Calcular score de prioridad para un issue (menor = más prioritario) */
@@ -7704,6 +7949,32 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     return;
   }
 
+  // #5863 CA-R3 — Drenar el marker de mutaciones que aplicó `servicio-github.js`
+  // (otro proceso) e invalidar esos issues ANTES de evaluar ningún gate. Sin
+  // esto, un label aplicado o removido hace dos segundos por la cola sigue
+  // invisible para este barrido hasta que venza el TTL de 10 minutos, que es
+  // exactamente cómo un destrabe se revertía solo.
+  //
+  // Va al principio del brazo a propósito: los gates de más abajo (`blocked:
+  // dependencies`, `needs-human`, cierre del issue) leen la caché, así que
+  // invalidar después no serviría de nada en este ciclo.
+  try {
+    const drained = labelMutationLog.drainNewIssues({ pipelineDir: PIPELINE });
+    if (drained.issues.length > 0) {
+      for (const n of drained.issues) invalidateIssueLabels(n);
+      log('lanzamiento', `♻️ caché de labels invalidada para ${drained.issues.length} issue(s) con mutación aplicada por servicio-github: ${drained.issues.map(n => '#' + n).join(', ')} (#5863)`);
+    }
+    if (drained.rotated) {
+      // El marker rotó bajo nuestros pies: releímos desde el principio del
+      // archivo nuevo, así que puede haber issues ya invalidados. Es idempotente.
+      log('lanzamiento', '♻️ marker de mutaciones de labels rotó — cursor reiniciado (#5863)');
+    }
+  } catch (e) {
+    // Best-effort: el drenado es una mejora sobre el TTL, nunca un bloqueante
+    // del despacho. Si falla, el comportamiento degrada al de antes de #5863.
+    log('lanzamiento', `[WARN] no se pudo drenar el marker de mutaciones de labels: ${e.message}`);
+  }
+
   // Limpieza proactiva periódica (cada N ciclos, sin importar presión)
   proactiveCleanup(config);
 
@@ -7934,14 +8205,84 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
     // para que el dashboard lo vea como bloqueado y NO lo retomamos hasta que
     // un humano remueva el label (entonces el intake genera un archivo fresco).
     if (issueLbls.includes('needs-human') || issueLbls.includes('needs:human')) {
+      // #5856 — Re-bloqueo fantasma: `issueLbls` viene de la caché (TTL 10min,
+      // LABELS_CACHE_TTL_MS). Si un humano destrabó el issue dentro de esa
+      // ventana, la caché todavía muestra el label viejo y volveríamos a
+      // bloquearlo, revirtiendo una autorización explícita del operador
+      // (incidente 2026-08-12: tres destrabes revertidos solos en 5 minutos).
+      // Misma protección que la rama blocked:dependencias de arriba (#4023),
+      // pero con TRES desenlaces: el fail-closed por "no verificable" no puede
+      // disfrazarse de "ya destrabado" (CA-6/CA-7).
+      const veredictoHumano = _verifyHumanBlockLive(issue);
+
+      if (veredictoHumano.estado === 'AUSENTE') {
+        log('lanzamiento', `🟢 #${issue} label needs-human ya removido en GitHub (caché stale) — NO re-bloquear (#5856)`);
+        // Sin mover a bloqueado-humano/, sin .reason.json, sin Telegram, sin
+        // _dcMark y sin `continue`: el issue sigue evaluándose por el resto de
+        // los gates (closed, dedup, cooldown…), igual que la rama de deps.
+        //
+        // #5863 CA-R4 — RECONCILIAR EL ESTADO VISIBLE. No re-bloquear alcanzaba
+        // para que el issue avanzara, pero el marker de un bloqueo ANTERIOR
+        // seguía en `bloqueado-humano/` con su `.reason.json`: el dashboard y
+        // `/bloqueados` mostraban frenado un issue que el pipeline ya había
+        // despachado. Esa contradicción es la que hacía dudar al operador de si
+        // el destrabe había tomado efecto.
+        //
+        // Se reusa la ruta de destrabe existente (`humanBlock.unblockIssue`),
+        // que ya sabe mover el marker de vuelta a `pendiente/`, borrar el
+        // `.reason.json` y emitir el evento de auditoría. `unlocker` deja la
+        // trazabilidad de que el destrabe vino de GitHub y no de un `/unblock`.
+        // Sin guidance: el operador destrabó quitando el label, no escribió
+        // orientación, y fabricarla sería ponerle palabras que no dijo.
+        try {
+          const marcado = humanBlock.findBlockedMarker(parseInt(issue, 10));
+          if (marcado) {
+            // Colisión posible: estamos procesando un work-file VIVO en
+            // `pendiente/`. Si el marker bloqueado apunta al mismo destino, el
+            // rename de `unblockIssue` choca contra un archivo existente y su
+            // fallback lo reescribiría vacío — destruiría el work-file real. En
+            // ese caso el marker es un residuo puro: se borra junto a su
+            // `.reason.json` y listo, que es el mismo estado final.
+            const destino = path.join(
+              fasePath(marcado.pipeline, marcado.phase), 'pendiente', path.basename(marcado.file));
+            if (fs.existsSync(destino)) {
+              try { fs.unlinkSync(marcado.file); } catch { /* best-effort */ }
+              try { fs.unlinkSync(`${marcado.file}.reason.json`); } catch { /* puede no existir */ }
+              log('lanzamiento', `♻️ #${issue} marker residual de bloqueado-humano/ eliminado tras el destrabe en GitHub (ya había work-file vivo en ${marcado.pipeline}/${marcado.phase}/pendiente, #5863)`);
+            } else {
+              const rec = humanBlock.unblockIssue({
+                issue: parseInt(issue, 10),
+                guidance: '',
+                unlocker: 'github:label-removed',
+              });
+              if (rec && rec.ok) {
+                log('lanzamiento', `♻️ #${issue} marker de bloqueado-humano/ reconciliado tras el destrabe en GitHub (${rec.from_phase} → ${rec.to_phase}, #5863)`);
+              }
+            }
+          }
+          // Sin marker previo: el caso normal cuando el label se aplicó y se
+          // removió sin que el issue llegara a bloquearse. Nada que reconciliar.
+        } catch (e) {
+          log('lanzamiento', `[WARN] #${issue} no se pudo reconciliar el marker de bloqueado-humano/: ${e.message}`);
+        }
+      } else {
+      const noVerificable = veredictoHumano.estado === 'NO_VERIFICABLE';
       const blockedDir = path.join(fasePath(pipelineName, fase), 'bloqueado-humano');
       try { fs.mkdirSync(blockedDir, { recursive: true }); } catch {}
       const targetFile = path.join(blockedDir, archivo.name);
       const reasonFile = targetFile + '.reason.json';
       const yaTeniaReason = fs.existsSync(reasonFile);
       // Persistir reason mínima para que listBlockedIssues() lo muestre con contexto.
-      const reasonTxt = 'Label needs-human aplicado en GitHub — pipeline pausa el skill hasta que un humano remueva el label.';
-      const questionTxt = `¿Podés revisar #${issue} y quitar el label \`needs-human\` cuando esté listo para reentrar?`;
+      // #5856 CA-7 — el motivo del bloqueo por precaución NO reusa el texto de
+      // "label aplicado": ese texto lo consumen el dashboard y el resumen de
+      // Telegram, y afirmar un label que no se pudo leer reproduce exactamente
+      // el desconcierto que motivó este issue.
+      const reasonTxt = noVerificable
+        ? `Bloqueo por precaución (#5856): el pipeline NO pudo verificar el label needs-human contra GitHub (${veredictoHumano.error}). Se mantiene bloqueado (fail-closed) hasta poder confirmar el estado real del label.`
+        : 'Label needs-human aplicado en GitHub — pipeline pausa el skill hasta que un humano remueva el label.';
+      const questionTxt = noVerificable
+        ? `¿Podés revisar #${issue}? El pipeline no pudo leer sus labels en GitHub y lo mantuvo bloqueado por precaución.`
+        : `¿Podés revisar #${issue} y quitar el label \`needs-human\` cuando esté listo para reentrar?`;
       if (!yaTeniaReason) {
         try {
           fs.writeFileSync(reasonFile, JSON.stringify({
@@ -7951,12 +8292,21 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
             pipeline: pipelineName,
             reason: reasonTxt,
             question: questionTxt,
+            // #5856 — marca legible para dashboard/auditoría: distingue el
+            // bloqueo verificado del preventivo sin parsear el texto.
+            verificado_en_vivo: !noVerificable,
             blocked_at: new Date().toISOString(),
           }, null, 2));
         } catch {}
       }
       try { moveFile(archivo.path, blockedDir); } catch {}
-      log('lanzamiento', `🚧 #${issue} omitido — label needs-human. Movido a ${pipelineName}/${fase}/bloqueado-humano/`);
+      // #5856 CA-6 — tres desenlaces, tres mensajes distintos. El de
+      // "no verificable" lo emite _verifyHumanBlockLive() al detectar el fallo.
+      if (!noVerificable) {
+        log('lanzamiento', `🚧 #${issue} omitido — label needs-human vigente en GitHub. Movido a ${pipelineName}/${fase}/bloqueado-humano/`);
+      } else {
+        log('lanzamiento', `🔴 #${issue} movido a ${pipelineName}/${fase}/bloqueado-humano/ por precaución (estado del label no verificable, #5856)`);
+      }
       // Notificar Telegram solo la primera vez (dedup por reasonFile pre-existente).
       if (!yaTeniaReason) {
         try {
@@ -7975,6 +8325,7 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
       // #4709 — needs-human es un halt humano por issue.
       _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, `#${issue} bloqueado por label needs-human`);
       continue;
+      } // fin else (#5856): bloqueo vigente o no verificable
     }
 
     // 0c. CLOSED: no lanzar issues cerrados en GitHub — archivar y seguir
@@ -8344,7 +8695,8 @@ function autoClassifyIssue(issueNum) {
       log('auto-classify', `#${issueNum}: label "${winner.label}" asignado en GitHub ✓`);
 
       // Invalidar cache de labels para que el ruteo use el label nuevo
-      issueLabelsCache.delete(issueNum);
+      // (#5856 CA-5 — clave canónica en ambos extremos).
+      issueLabelsCache.delete(issueCacheKey(issueNum));
     } catch (e) {
       log('auto-classify', `#${issueNum}: error asignando label — ${e.message.slice(0, 80)}`);
     }
@@ -14156,6 +14508,31 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                   auditLogEnabled: cfg.audit_log_enabled !== false,
                 });
               }
+              // #5456 (residual) — FALLBACK EN VIVO, NO EN EL TURNO SIGUIENTE.
+              //
+              // Hasta acá el turno quedaba resuelto con el canned de
+              // `formatMidTurnQuotaResponse` ("quedo apuntando a X, reenviame el
+              // mensaje"): el operador perdía el turno y tenía que reescribir.
+              // Peor, el flag del canal de contenido (#5455) tiene TTL efectivo
+              // de 60 min por diseño, así que el mensaje siguiente volvía a
+              // elegir Anthropic, volvía a chocar y volvía a devolver el canned.
+              // Con el corte SEMANAL de por medio eso es un bucle de días
+              // (incidente 12–17/08: 5 turnos consecutivos perdidos con Codex
+              // sano y disponible todo el tiempo).
+              //
+              // El ejecutor in-flight ya existía y ya cubre `eof_premature`,
+              // `transient_5xx` y los timeouts; la cuota agotada era el único
+              // detector que emitía telemetría pero no ejecutaba. Se invoca
+              // DESPUÉS del `setFlag` a propósito: el resolver del secundario
+              // lee el flag para excluir al proveedor agotado de la cadena.
+              //
+              // Todas las guardas del ejecutor siguen aplicando (sólo primario
+              // Anthropic, cap de UNA ejecución por turno, budget, lock
+              // anti-duplicado). Si no hay secundario elegible, el ejecutor
+              // responde su propio canned y reclama el turno — el operador nunca
+              // queda mudo.
+              _emitShadowSignal('quota_exhausted');
+              _maybeExecuteInflightFallback('quota_exhausted');
             } else if (evt.is_error !== true) {
               // CA-3 (issue padre): un spawn exitoso prueba que la cuota volvió
               // antes del resets_at calculado → drenado proactivo.
@@ -19474,9 +19851,9 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
     try {
       const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
       fs.mkdirSync(ghQueueDir, { recursive: true });
-      fs.writeFileSync(
+      encolarOrdenGithub(
         path.join(ghQueueDir, `${m.issue}-remove-needs-human-${Date.now()}.json`),
-        JSON.stringify({ action: 'remove-label', issue: Number(m.issue), label: humanBlock.NEEDS_HUMAN_LABEL }),
+        { action: 'remove-label', issue: Number(m.issue), label: humanBlock.NEEDS_HUMAN_LABEL },
       );
       fs.writeFileSync(
         path.join(ghQueueDir, `${m.issue}-auto-unblock-comment-${Date.now()}.json`),
@@ -21524,9 +21901,23 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     isDeclaredStackDevSkill,
     getGenericDevFallbackSkill,
     _setIssueInfoForTest: (issue, info) => {
-      issueLabelsCache.set(issue, { labels: info.labels || [], state: info.state || 'OPEN', fetchedAt: Date.now() });
+      // #5856 CA-5 — misma clave canónica que getIssueInfo y las invalidaciones,
+      // para que el helper de test no dependa del tipo del identificador.
+      issueLabelsCache.set(issueCacheKey(issue), { labels: info.labels || [], state: info.state || 'OPEN', fetchedAt: Date.now() });
       if (typeof info.text === 'string') issueTextCache.set(issue, { text: info.text.toLowerCase(), fetchedAt: Date.now() });
     },
+    // #5856 CA-5 — lectura CRUDA de la entrada de caché (sin TTL ni fetch), para
+    // poder afirmar en test que la invalidación borró de verdad la entrada.
+    // Devuelve `undefined` si no existe.
+    _peekIssueInfoForTest: (issue) => issueLabelsCache.get(issueCacheKey(issue)),
+    // #5863 CA-R5 — lectura expuesta sólo en modo test para comprobar que un
+    // identificador inválido falla cerrado sin invocar el cliente de GitHub.
+    getIssueInfo,
+    // #5863 CA-R1 — invalidacion explicita, exportada para test.
+    invalidateIssueLabels,
+    invalidateAllIssueLabels,
+    // #5863 CA-R2 — encolado de ordenes GitHub con invalidacion acoplada.
+    encolarOrdenGithub,
     _clearIssueRoutingCachesForTest: () => {
       issueLabelsCache.clear();
       issueTextCache.clear();
@@ -21548,6 +21939,12 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #4023 — re-bloqueo fantasma: lectura en vivo + self-heal (testing).
     _shouldReblockForDependencies,
     _selfHealPhantomBlocks,
+    // #5856 — re-bloqueo fantasma de needs-human: lector en vivo fail-closed +
+    // verificación tri-estado + fachada booleana (testing).
+    _readLiveLabelsOrThrow,
+    _verifyHumanBlockLive,
+    _shouldReblockForHuman,
+    HUMAN_BLOCK_LABELS,
     UNBLOCK_WEDGE_TIMEOUT_MS,
     REENTRY_LOG_COOLDOWN_MS,
     _getUnblockState: () => ({

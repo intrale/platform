@@ -29,6 +29,11 @@ const Ajv = require('ajv');
 const { detectInjection } = require('./handoff');
 const migrations = require('./project-descriptor-migrations');
 const { validateBaseRef } = require('./worktree-prefix');
+// #6031 — el ancla de `credentials[].ref` se IMPORTA de su dueño, no se
+// reimplementa acá. `credentials.js` sólo requiere builtins (`fs`, `os`,
+// `path`) y no hace I/O en carga de módulo, así que este require no cierra
+// ciclo ni arrastra lecturas de disco al camino de validación.
+const { refPathAnclado, parseSecretRef, STORE_DIR_LOGICO } = require('./credentials');
 
 const SCHEMA_PATH = path.resolve(__dirname, '..', 'contracts', 'project.schema.json');
 const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
@@ -170,6 +175,19 @@ function isSafeWorktreePath(p) {
   return true;
 }
 
+// Mensajes de rechazo de `credentials[].ref` (#6031). Son ESTÁTICOS a propósito:
+// se calculan una vez desde `STORE_DIR_LOGICO` (el literal `~/.claude/secrets/`),
+// nunca desde el path resuelto ni desde el valor que mandó el descriptor. El
+// `detail` viaja a logs, al dashboard y a issues, y el wizard de onboarding lo
+// renderiza literal como texto de interfaz: interpolar el path resuelto filtraría
+// el usuario del host y el valor crudo daría eco a un dato no confiable.
+// Le dicen al operador dónde va el archivo y qué corregir, no sólo qué falló.
+const CRED_REF_DETALLE = `la referencia de la credencial tiene que apuntar a un archivo dentro de ${STORE_DIR_LOGICO} `
+  + 'y venir con el namespace al final, en la forma "archivo#namespace". '
+  + 'Mové el archivo ahí o corregí la referencia en el descriptor.';
+const CRED_LISTA_DETALLE = 'la sección de credenciales tiene que ser una lista de entradas '
+  + '{ ref, scopes }. Revisá el bloque "credentials" del descriptor.';
+
 function collectPathTraversalHits(descriptor) {
   const hits = [];
   const pid = descriptor && descriptor.identity && descriptor.identity.projectId;
@@ -184,6 +202,36 @@ function collectPathTraversalHits(descriptor) {
   const wtRoot = descriptor && descriptor.thresholds && descriptor.thresholds.worktreeRoot;
   if (wtRoot !== undefined && !isSafeWorktreePath(wtRoot)) {
     hits.push({ path: 'thresholds.worktreeRoot', detail: 'ruta de worktree insegura (traversal / absoluta / ~ / NUL)' });
+  }
+  // Referencias a credenciales (#6031). El `pattern` del schema no ancla nada:
+  // es una regex sobre el string crudo, no normaliza `..`, no expande `~` y no
+  // sabe dónde vive el store. El ancla es semántica sobre el path resuelto y su
+  // dueño es `credentials.js` → se importa `refPathAnclado`, jamás se copia.
+  //
+  // Cálculo puro de paths (`path.resolve` / `path.relative`, cero `fs`): el
+  // rechazo ocurre SIN abrir el archivo del store, así que no hay ventana TOCTOU
+  // ni el validador se convierte en un oráculo de existencia de archivos.
+  //
+  // `credentials` es OPCIONAL en el schema: ausente ⇒ 0 hits. Pero presente con
+  // forma inesperada ⇒ hit — un `|| []` se tragaría un objeto en silencio.
+  //
+  // Fuera de alcance: exigir que el namespace de la ref coincida con
+  // `identity.projectId` (#6077). Acá se entrega sólo el ancla al store.
+  const creds = descriptor && descriptor.credentials;
+  if (creds !== undefined) {
+    if (!Array.isArray(creds)) {
+      hits.push({ path: 'credentials', detail: CRED_LISTA_DETALLE });
+    } else {
+      creds.forEach((c, i) => {
+        const parsed = parseSecretRef(c && c.ref);
+        // Fail-closed: una ref que no se puede interpretar CUENTA como hit.
+        // El `parsed && ...` sería el agujero clásico — una ref malformada se
+        // saltearía el control entero.
+        if (!parsed || !refPathAnclado(parsed.path)) {
+          hits.push({ path: `credentials[${i}].ref`, detail: CRED_REF_DETALLE });
+        }
+      });
+    }
   }
   return hits;
 }
