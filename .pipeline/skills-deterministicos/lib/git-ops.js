@@ -259,7 +259,10 @@ function getChangedFiles(cwd) {
 //      interpreta como opción (en el worktree del rebote había un archivo
 //      llamado literalmente `--`).
 //   2. Si git no soporta esas flags (< 2.25), se cae a `git add --` por lotes,
-//      cada uno holgadamente debajo del límite.
+//      cada uno holgadamente debajo del límite. Ese lote es el único que viaja
+//      por argv, así que va con `shell: false` (ver el comentario en el cuerpo
+//      de `addPaths`): sin cmd.exe de por medio no hay metacaracteres que
+//      interpretar en los nombres de archivo.
 //
 // El fallback se dispara ante cualquier exit distinto de 0 y no solo ante
 // "unknown option": detectar falta de soporte por el texto del stderr
@@ -302,16 +305,34 @@ function addPaths(paths, opts = {}) {
     if (!list.length) return emptyCmdResult('git add (sin paths)');
 
     // 1) Ruta principal: pathspecs por stdin, separadas por NUL.
+    // `shell: false` explícito: los argumentos son constantes, así que hoy no
+    // hay nada inyectable acá, pero dejamos de depender de esa propiedad —
+    // basta con que alguien parametrice un argumento para reabrir el agujero.
     const viaStdin = runGit(
         ['add', '--pathspec-from-file=-', '--pathspec-file-nul'],
-        { ...opts, input: list.join('\0') }
+        { ...opts, input: list.join('\0'), shell: false }
     );
     if (viaStdin.exit_code === 0) return viaStdin;
 
     // 2) Fallback por lotes para git sin soporte de --pathspec-from-file.
+    //
+    // `shell: false` es OBLIGATORIO acá, no una preferencia de estilo: este es
+    // el único lote que viaja por argv y sus elementos son datos controlados
+    // por el contenido del worktree. Con `shell: true` Node concatena los
+    // argumentos sin escaparlos (el propio Node emite DEP0190) y los pasa a
+    // cmd.exe, donde `&`, `^`, `%`, `(` y `)` — todos VÁLIDOS en nombres de
+    // archivo de Windows — son metacaracteres. Un archivo llamado `a&ver`
+    // hacía que cmd.exe cortara el nombre en el `&` y ejecutara `ver` como
+    // comando propio, con los permisos del operador; y como el exit code que
+    // volvía era el del comando inyectado y no el de git, un `git add` fallido
+    // se reportaba como éxito (exit 0) y la entrega avanzaba sin los cambios.
+    //
+    // Sin cmd.exe de por medio, Node pasa cada argumento tal cual y el límite
+    // de largo pasa a ser el de CreateProcess (32767), muy por encima del
+    // presupuesto de 6000 que ya aplica `chunkPathsByBudget`.
     let last = emptyCmdResult('git add (por lotes)');
     for (const chunk of chunkPathsByBudget(list)) {
-        last = runGit(['add', '--', ...chunk], opts);
+        last = runGit(['add', '--', ...chunk], { ...opts, shell: false });
         if (last.exit_code !== 0) return last;
     }
     return last;

@@ -144,6 +144,92 @@ test('addPaths — propaga el fallo real de git (path inexistente) sin enmascara
     }
 });
 
+// Regresión del rebote rev-2 de #5426 (fase `verificacion`, hallazgo
+// [Alta][OWASP A03 - Injection]).
+//
+// El test de arriba probaba el fallback con UN SOLO path benigno, que nunca
+// llega a cmd.exe con metacaracteres, así que afirmaba una garantía que el
+// código no cumplía. El fallback por lotes corría bajo `shell: true` (default
+// de `runCmd` en win32) y Node no escapa los argumentos: con un archivo
+// llamado `a&ver` en el worktree, cmd.exe cortaba el nombre en el `&` y
+// ejecutaba `ver` como comando propio. Peor: el exit code que volvía era el
+// del comando inyectado (0), así que un `git add` fallido se reportaba como
+// éxito y `delivery.js:1406` — que sólo lanza si `exit_code !== 0` — seguía de
+// largo con la entrega incompleta.
+//
+// El escenario necesita las DOS piezas juntas: un path con metacaracter Y un
+// path inexistente que fuerce el fallo del camino por stdin y active el
+// fallback por argv.
+test('addPaths — un path con "&" no ejecuta comandos por cmd.exe ni enmascara el fallo', () => {
+    const { dir } = makeRepo();
+    try {
+        // `&` es un caracter VÁLIDO en nombres de archivo de Windows y un
+        // separador de comandos en cmd.exe. `ver` imprime la versión del SO:
+        // si aparece en stdout, hubo ejecución de un comando ajeno a git.
+        fs.writeFileSync(path.join(dir, 'a&ver'), 'payload\n');
+        fs.writeFileSync(path.join(dir, 'normal.txt'), 'x\n');
+
+        const res = ops.addPaths(
+            ['normal.txt', 'a&ver', 'NO-EXISTE-fuerza-el-fallback.txt'],
+            { cwd: dir }
+        );
+
+        assert.notEqual(
+            res.exit_code, 0,
+            'el pathspec inexistente debe hacer fallar el lote; exit 0 significa ' +
+            'que el exit code que volvió es el del comando inyectado, no el de git'
+        );
+        assert.ok(
+            !/Microsoft Windows|Versi/i.test(res.stdout),
+            `stdout contiene salida de un comando ajeno a git (inyección): ${JSON.stringify(res.stdout)}`
+        );
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('addPaths — metacaracteres de cmd.exe en nombres de archivo se stagean literales', () => {
+    // La contracara del test anterior: además de no ejecutar nada, los nombres
+    // con metacaracteres tienen que llegar a git tal cual. Todos estos son
+    // caracteres válidos en nombres de archivo de Windows.
+    const { dir, run } = makeRepo();
+    try {
+        const nombres = ['con&ampersand.txt', 'con^caret.txt', 'con%percent%.txt', 'con(parens).txt'];
+        for (const n of nombres) fs.writeFileSync(path.join(dir, n), 'x\n');
+
+        const res = ops.addPaths(nombres, { cwd: dir });
+        assert.equal(res.exit_code, 0, `addPaths falló: ${res.stderr || res.stdout}`);
+
+        const staged = run(['diff', '--cached', '--name-only']).stdout
+            .split(/\r?\n/).filter(Boolean).sort();
+        assert.deepEqual(staged, [...nombres].sort());
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('addPaths — el fallback por lotes corre sin shell (argv sin cmd.exe)', () => {
+    // Verificación directa de la propiedad, independiente del sistema de
+    // archivos: `runGit` con `shell: false` no pasa por cmd.exe, así que un
+    // `&` en un argumento es dato y no un separador de comandos.
+    const { dir } = makeRepo();
+    try {
+        fs.writeFileSync(path.join(dir, 'normal.txt'), 'x\n');
+        fs.writeFileSync(path.join(dir, 'a&ver'), 'y\n');
+
+        const res = ops.runGit(
+            ['add', '--', 'normal.txt', 'a&ver', 'NO-EXISTE.txt'],
+            { cwd: dir, shell: false }
+        );
+
+        assert.notEqual(res.exit_code, 0, 'git debe reportar el pathspec inexistente');
+        assert.match(res.stderr, /NO-EXISTE\.txt/, 'el error debe ser el de git, no el de otro comando');
+        assert.ok(!/Microsoft Windows|Versi/i.test(res.stdout), 'no debe ejecutarse ningún comando ajeno');
+    } finally {
+        cleanup(dir);
+    }
+});
+
 test('chunkPathsByBudget — ningún lote supera el presupuesto de argv', () => {
     const paths = Array.from({ length: 500 }, (_, i) => `dir/archivo-largo-${i}.txt`);
     const chunks = ops.chunkPathsByBudget(paths, 1000);
