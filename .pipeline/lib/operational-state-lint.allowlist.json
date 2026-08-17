@@ -7,5 +7,11 @@
     "no_hacer": "Sin excepciones amplias por carpeta (CA-5). Si el caso no cabe en { file, line, reason }, el problema es el matcher o la superficie publica del envoltorio, no la allowlist: ver docs/pipeline/contrato-estado-operativo.md §7."
   },
   "files": [],
-  "rules": []
+  "rules": [
+    {
+      "file": "lib/desync-detector.js",
+      "line": 122,
+      "reason": "#5176 A-2: el detector necesita distinguir 'sin active_wave' (null, NO es desync) de 'ola vacia' ([]), no puede lanzar ante waves.json corrupto y no debe disparar la alerta dedupada de waves.getAllowlist (#3616). Ningun lector del envoltorio cumple las tres. Version estructural: #5191."
+    }
+  ]
 }

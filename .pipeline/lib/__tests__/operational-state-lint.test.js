@@ -625,10 +625,38 @@ test('CA-5 · exencion de archivo entero exige {file,reason}: un string pelado �
     assert.match(r.all, /se esperaba \{ file, reason \}/);
 });
 
-test('CA-10 · la allowlist REAL del repo nace vacia y carga sin errores', () => {
-    const al = I.loadAllowlist(path.join(__dirname, '..', '..'));
+test('CA-10 · la allowlist REAL del repo carga sin errores, sin exenciones de archivo entero y sin entries stale', () => {
+    const pipelineRoot = path.join(__dirname, '..', '..');
+    const al = I.loadAllowlist(pipelineRoot);
+
+    // `files` sigue teniendo que estar vacio: una exencion de ARCHIVO ENTERO es
+    // demasiado amplia para el invariante del contrato §2 (CA-10 / CA-5).
     assert.equal(al.files.size, 0, 'files debe estar vacio (CA-10)');
-    assert.equal(al.rules.length, 0, 'rules debe estar vacio (CA-10)');
+
+    // `rules` ya NO tiene que estar vacio. #5176 (parte 2 de 3) declaro la
+    // primera exclusion justificada: `desync-detector` conserva su lectura
+    // tolerante de `waves.json` porque ningun lector del envoltorio distingue
+    // "sin ola activa" (null) de "ola vacia" ([]) sin romper el detector (A-2).
+    //
+    // Lo que se fija acá es MAS fuerte que "cero entries": cada entry tiene que
+    // estar VIVA. Una entry que ya no corresponde a ninguna violation (call
+    // site migrado, o drift de numero de linea tras un refactor) es una exencion
+    // que nadie revisa y que el guardrail aplica en silencio — justo el modo de
+    // falla que #5175 evito con el fail-loud de `loadAllowlist`.
+    const crudas = lint.lint({ pipelineRoot, allowlist: { files: new Set(), rules: [] } }).violations;
+    const vivas = new Set(crudas.map((v) => `${v.file}:${v.line}`));
+    const suprimidas = lint.lint({ pipelineRoot }).violations;
+
+    for (const r of al.rules) {
+        assert.ok(
+            vivas.has(`${r.file}:${r.line}`),
+            `entry stale en la allowlist: ${r.file}:${r.line} ya no es violation — borrala en vez de dejarla`,
+        );
+        assert.ok(
+            !suprimidas.some((v) => v.file === r.file && v.line === r.line),
+            `la entry ${r.file}:${r.line} no esta suprimiendo la violation que declara`,
+        );
+    }
 });
 
 test('CA-5b · allowlist AUSENTE si es allowlist vacia (la ausencia no es ambigua, la corrupcion si)', () => {

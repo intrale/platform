@@ -67,6 +67,7 @@
 const fs = require('fs');
 const path = require('path');
 const { notifyTelegram } = require('./notify-telegram');
+const operationalState = require('./operational-state');
 
 const DESYNC_FLAG_BASENAME = '.desync-detected.flag';
 
@@ -89,6 +90,33 @@ function normalizeIssue(issue) {
  * excepciones de schema (si waves.json está roto, devolvemos null y dejamos
  * que el caller decida cómo tratarlo). Sin fallback a partial-pause —
  * acá queremos la canónica del waves.
+ *
+ * #5176 · A-2 — EXCLUSIÓN JUSTIFICADA de la migración al envoltorio.
+ * -----------------------------------------------------------------
+ * Este call site NO puede traducirse a `operationalState.getWaveScopeIssues()`
+ * ni a `getActiveWave()`. Las tres divergencias (verificadas, no teóricas):
+ *
+ *   1. `null` vs `[]`. Acá, "sin `active_wave`" devuelve `null` y significa
+ *      AUSENCIA DE CANÓNICA — explícitamente "no es desync" (ver el comentario
+ *      de abajo). `getWaveScopeIssues()` delega en `waves.getAllowlist()`, que
+ *      devuelve `[]`. Colapsar ausencia en "canónica vacía" convierte cada
+ *      ventana entre olas en un desync FALSO permanente, con flag y
+ *      human-block: el detector frenaría el pipeline justo cuando no hay nada
+ *      que detectar.
+ *
+ *   2. Tolerante → estricto. `getActiveWave()` usa `readWaveStateStrict()`,
+ *      que es fail-closed y LANZA ante `waves.json` corrupto. Este detector
+ *      corre en el tick del Pulpo con contrato "nunca lanza": un archivo
+ *      corrupto tumbaría el detector justo cuando más falta hace.
+ *
+ *   3. Efecto colateral. `waves.getAllowlist()` dispara alerta de Telegram
+ *      dedupada por boot (#3616). El detector corre en loop → migrarlo
+ *      cambiaría el comportamiento observable, contra CA-8.
+ *
+ * Por eso el acceso queda registrado en
+ * `lib/operational-state-lint.allowlist.json` con su razón, en vez de
+ * "migrarse" rompiendo la semántica. La versión estructural (exponer una
+ * lectura tolerante de alcance de ola en el envoltorio) es #5191.
  */
 function readWavesAllowlist(opts = {}) {
     const wavesPath = path.join(pipelineDir(), 'waves.json');
@@ -113,21 +141,28 @@ function readWavesAllowlist(opts = {}) {
 }
 
 /**
- * Lee la allowlist del .partial-pause.json. null si el archivo no existe o
- * es ilegible. Devuelve array vacío si existe pero está vacío.
+ * Lee la allowlist efectiva. `null` si el marker no existe o es ilegible.
+ * Devuelve array vacío si existe pero está vacío.
+ *
+ * #5176 · SEC-3 — se migra a `operationalState.readDispatchAllowlist()`, NO a
+ * `getDispatchState()`. Los tres estados que este detector necesita distinguir
+ * son justo los que el estado de dispatch colapsa:
+ *
+ *   - marker ausente/ilegible → `null` ("no hay nada que comparar").
+ *   - marker presente y vacío → `[]` (afirmación explícita, comparable).
+ *   - halt total (`.paused`) presente → el contenido del marker se conserva.
+ *     `getDispatchState()` retornaría `allowedIssues: []` sin siquiera leer el
+ *     marker (la precedencia `paused > partial_pause` corta antes), así que
+ *     durante un halt total el detector vería la allowlist vacía y reportaría
+ *     un desync falso contra la ola activa. El halt total es un marker aparte
+ *     y NO es "una allowlist más" (R7).
+ *
+ * El gate de dispatch NO se toca acá: este detector sólo COMPARA estado, no
+ * decide si un issue puede correr.
  */
 function readPartialAllowlist() {
-    const partialPath = path.join(pipelineDir(), '.partial-pause.json');
-    if (!fs.existsSync(partialPath)) return null;
-    let parsed;
-    try {
-        parsed = JSON.parse(fs.readFileSync(partialPath, 'utf8'));
-    } catch {
-        return null;
-    }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const arr = Array.isArray(parsed.allowed_issues) ? parsed.allowed_issues : [];
-    return arr.map(normalizeIssue).filter(Boolean);
+    const snapshot = operationalState.readDispatchAllowlist();
+    return snapshot ? snapshot.issues : null;
 }
 
 /**

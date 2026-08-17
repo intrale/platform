@@ -43,6 +43,8 @@
 const fs = require('fs');
 const path = require('path');
 const waves = require('./waves');
+// #5176 — envoltorio único de acceso al estado operativo (contrato §2).
+const operationalState = require('./operational-state');
 
 // Constantes de pipeline — replicadas localmente para no acoplar con
 // dashboard.js (que carga config.yaml y arrastra deps innecesarias).
@@ -84,6 +86,36 @@ function normalizeIssueNumber(value) {
 function effectiveWavesPipelineDir() {
     if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
     return path.resolve(__dirname, '..');
+}
+
+/**
+ * Ejecuta `fn` haciendo que los módulos dueños del estado operativo resuelvan
+ * su ruta contra `pipelineRoot`.
+ *
+ * #5176 — mismo mecanismo que `readFromWavesJson` ya usaba para `waves.js`,
+ * extraído para reusarlo con el envoltorio. Este resolver recibe el
+ * `pipelineRoot` por parámetro, mientras que el envoltorio resuelve la ruta por
+ * su cuenta (contrato §2). Cuando los dos coinciden — SIEMPRE en producción —
+ * el override es un no-op y no se toca el entorno. Cuando no coinciden (tests
+ * con tmp dirs), el swap es síncrono y se restaura en `finally`, así que ningún
+ * otro consumidor lo observa.
+ *
+ * Alternativa descartada: ignorar `pipelineRoot` y leer siempre del directorio
+ * del envoltorio. Compilaba y en producción daba lo mismo, pero convertía un
+ * parámetro público en decorativo y hacía que un caller con root propio leyera
+ * en silencio el estado de OTRO pipeline.
+ */
+function withPipelineRoot(pipelineRoot, fn) {
+    const needsOverride = path.resolve(pipelineRoot) !== path.resolve(effectiveWavesPipelineDir());
+    if (!needsOverride) return fn();
+    const prevOverride = process.env.PIPELINE_DIR_OVERRIDE;
+    process.env.PIPELINE_DIR_OVERRIDE = pipelineRoot;
+    try {
+        return fn();
+    } finally {
+        if (prevOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = prevOverride;
+    }
 }
 
 /**
@@ -195,10 +227,23 @@ function collectActiveIssuesFromFs(pipelineRoot) {
  * `parentId`. Invertimos esa relación para responder "¿qué issues bloquean a
  * #parentId?" → la lista de sus children.
  *
- * Fuente de verdad real (no hardcodeo): el mismo archivo que la allowlist usa
- * para autorizar issues recursivamente (recursive-deps). Si el archivo no
+ * Fuente de verdad real (no hardcodeo): el mismo estado que la allowlist usa
+ * para autorizar issues recursivamente (recursive-deps). Si el marker no
  * existe / no parsea / no tiene `authorization_ttls`, devuelve `{}` (fallback
  * grácil → el renderer mantiene el motivo genérico).
+ *
+ * #5176 — la lectura pasa por `operationalState.readDispatchAllowlist()`. Es la
+ * traducción fiel: el mapa de TTLs vive en el marker de allowlist y se lee
+ * INDEPENDIENTEMENTE del modo de dispatch. `getDispatchState()` no sirve acá
+ * porque sólo incluye `authorizationTtls` en la rama `partial_pause`: en
+ * `paused` y en `running` el objeto ni siquiera trae el campo (SEC-1), así que
+ * durante un halt total el tablero perdería todos los motivos de bloqueo.
+ *
+ * Esto NO gatea dispatch: se consume desde render de tablero
+ * (`commander-deterministic`, `dashboard-routes`).
+ *
+ * `pipelineRoot` se sigue honrando vía `withPipelineRoot` — el mismo mecanismo
+ * que este módulo ya usaba para `waves.js`.
  *
  * @param {object} opts
  * @param {string} opts.pipelineRoot - Path absoluto al directorio `.pipeline`.
@@ -207,17 +252,14 @@ function collectActiveIssuesFromFs(pipelineRoot) {
 function resolveBlockDependencies(opts) {
     const pipelineRoot = opts && opts.pipelineRoot;
     if (!pipelineRoot) return {};
-    const file = path.join(pipelineRoot, '.partial-pause.json');
-    let parsed;
+    let snapshot;
     try {
-        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+        snapshot = withPipelineRoot(pipelineRoot, () => operationalState.readDispatchAllowlist());
     } catch {
         return {};
     }
-    if (!parsed || typeof parsed !== 'object') return {};
-    const ttls = parsed.authorization_ttls && typeof parsed.authorization_ttls === 'object'
-        ? parsed.authorization_ttls
-        : {};
+    if (!snapshot) return {};
+    const ttls = snapshot.authorizationTtls || {};
     const map = {};
     for (const [childKey, info] of Object.entries(ttls)) {
         const child = normalizeIssueNumber(childKey);
@@ -241,9 +283,20 @@ function resolveBlockDependencies(opts) {
  * `.partial-pause.json` — presencia en `allowed_issues` **y** `expires_at > now`
  * — para devolver sólo los hijos que el Pulpo realmente tiene autorizados.
  *
- * Determinístico y sin cache: lee el archivo en cada llamada (el board se
+ * Determinístico y sin cache: lee el estado en cada llamada (el board se
  * refresca cada 30s y la autoría heredada tiene TTL de 48h — un valor cacheado
  * listaría hijos ya des-autorizados).
+ *
+ * #5176 · SEC-1 — LA VIGENCIA SE APLICA A MANO, Y ESO NO ES OPCIONAL.
+ * ------------------------------------------------------------------
+ * `isIssueAllowed()` es MEMBRESÍA PURA: responde "¿está en la allowlist?" y no
+ * mira `expires_at`. Traducir este call site a `isIssueAllowed()` compilaría,
+ * pasaría todos los tests de membresía y desactivaría el vencimiento en
+ * silencio: el tablero listaría como vigentes hijos con TTL vencido, y las
+ * decisiones de allowlist son humanas y se toman mirando ese tablero.
+ *
+ * Por eso el cruce sigue siendo explícito y de DOS condiciones —
+ * pertenencia a la allowlist Y `expires_at > now`— igual que antes de migrar.
  *
  * @param {object} opts
  * @param {string} opts.pipelineRoot - Path absoluto al directorio `.pipeline`.
@@ -263,22 +316,15 @@ function resolveLiveSplitChildren(opts) {
     }
     if (parents.size === 0) return [];
     const now = typeof opts.now === 'number' ? opts.now : Date.now();
-    const file = path.join(pipelineRoot, '.partial-pause.json');
-    let parsed;
+    let snapshot;
     try {
-        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+        snapshot = withPipelineRoot(pipelineRoot, () => operationalState.readDispatchAllowlist());
     } catch {
         return [];
     }
-    if (!parsed || typeof parsed !== 'object') return [];
-    const allowed = new Set(
-        (Array.isArray(parsed.allowed_issues) ? parsed.allowed_issues : [])
-            .map(normalizeIssueNumber)
-            .filter((n) => n !== null)
-    );
-    const ttls = parsed.authorization_ttls && typeof parsed.authorization_ttls === 'object'
-        ? parsed.authorization_ttls
-        : {};
+    if (!snapshot) return [];
+    const allowed = new Set(snapshot.issues);
+    const ttls = snapshot.authorizationTtls || {};
     const out = new Set();
     for (const [childKey, info] of Object.entries(ttls)) {
         const child = normalizeIssueNumber(childKey);
