@@ -784,18 +784,26 @@ const action = process.argv[2] || 'restart';
 // (.paused presente) antes de reiniciar, el restart debe CONSERVAR esa pausa
 // en lugar de soltarla. Un /restart no es un "destrabe" implícito.
 // #5179 grupo 3b / CA-6b — se consulta al envoltorio único, no al marker crudo.
-// FAIL-CLOSED: si el módulo no carga o `getDispatchState()` tira, se asume que
-// SÍ estaba pausado. Degradar a `false` haría que un restart soltara una pausa
-// del operador por no poder leer el estado — el fail-open que #5399 vino a
-// cerrar (un /restart no es un destrabe implícito).
-const wasPausedBefore = (() => {
-  try {
-    return require('./lib/operational-state').getDispatchState().mode === 'paused';
-  } catch {
-    return true;   // indeterminado ⇒ conservar la pausa
+// FAIL-CLOSED (ver `lib/full-pause-state.js`): si el estado no se puede
+// determinar se asume PAUSADO, para que un restart no suelte una pausa del
+// operador por no poder leerla — el fail-open que #5399 vino a cerrar (un
+// /restart no es un destrabe implícito).
+//
+// MEMOIZADO Y LAZY a propósito: el valor se resuelve la primera vez que alguien
+// lo pide, no al cargar el módulo. `stop` / `status` no despachan pausa y así no
+// pagan el costo de arrastrar el envoltorio (waves + partial-pause + audit-log +
+// Telegram), que es la misma razón por la que el require del branch `--paused`
+// también es lazy.
+let _wasPausedBeforeCache = null;
+function wasPausedBefore() {
+  if (_wasPausedBeforeCache === null) {
+    _wasPausedBeforeCache = require('./lib/full-pause-state').isFullPauseActive();
   }
-})();
-const flagPaused = process.argv.includes('--paused') || wasPausedBefore;
+  return _wasPausedBeforeCache;
+}
+// El short-circuit de `--paused` se preserva: con la flag explícita ni se
+// consulta el estado en disco.
+function flagPausedFn() { return process.argv.includes('--paused') || wasPausedBefore(); }
 const flagNoSmokeTest = process.argv.includes('--no-smoke-test');
 const flagNoRollback = process.argv.includes('--no-rollback');
 const flagNoSync = process.argv.includes('--no-sync');
@@ -808,7 +816,12 @@ switch (action) {
   case 'status':
     status();
     break;
-  default:
+  default: {
+    // Se resuelve ANTES de matar procesos y sincronizar, igual que cuando era
+    // una const de módulo: el estado que interesa es el previo al restart, no el
+    // que quede después de `killAll()` / `syncWithMain()`. Memoizado, así que las
+    // lecturas de más abajo devuelven este mismo valor.
+    const flagPaused = flagPausedFn();
     killAll();
     if (!flagNoSync) syncWithMain();
     else log('Saltando sync con origin/main (--no-sync)');
@@ -826,7 +839,7 @@ switch (action) {
       const partialPause = require('./lib/partial-pause');
       let res = null;
       try {
-        if (wasPausedBefore) {
+        if (wasPausedBefore()) {
           // El marker se lee del disco DENTRO del lock, no desde memoria: así la
           // operación es idempotente ante el re-exec de #2880.
           res = partialPause.preserveFullPause();
@@ -850,7 +863,7 @@ switch (action) {
       // sola" de "esto no se levanta hasta que lo destrabes a mano".
       const autoLiftable = !!(res && res.autoLiftable);
       const autoria = (res && res.source) || 'unknown';
-      const heredada = wasPausedBefore ? 'heredada' : 'nueva';
+      const heredada = wasPausedBefore() ? 'heredada' : 'nueva';
       let extra = autoLiftable
         ? 'se auto-levanta cuando la causa se resuelva'
         : 'requiere destrabe explícito';
@@ -952,4 +965,5 @@ switch (action) {
         launchRollbackOrphan();
       }
     }
+  }
 }

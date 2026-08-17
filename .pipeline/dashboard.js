@@ -158,23 +158,10 @@ const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
 
 // #5179 grupo 3b / CA-6b — Halt total leído por el envoltorio único de estado
-// operativo, NUNCA por `existsSync('.paused')` a mano.
-//
-// FAIL-CLOSED deliberado: si el módulo no carga o `getDispatchState()` tira, se
-// reporta PAUSADO. Devolver `false` (en marcha) ante un estado indeterminado es
-// exactamente el fail-open que #6080 abrió contra `dashboard-slices.js`: el
-// tablero mostraría el pipeline "operando" mientras el operador cree que lo
-// frenó. Ante la duda, el indicador se queda del lado seguro.
-//
-// `opts.stateMod` es el seam de inyección que usan los tests del camino degradado.
-function isFullPauseActive(opts = {}) {
-  try {
-    const stateMod = opts.stateMod || require('./lib/operational-state');
-    return stateMod.getDispatchState().mode === 'paused';
-  } catch {
-    return true;   // indeterminado ⇒ fail-closed (jamás "en marcha")
-  }
-}
+// operativo, NUNCA por `existsSync('.paused')` a mano. La lectura es FAIL-CLOSED
+// y vive en `lib/full-pause-state.js`, compartida con `restart.js` y cubierta
+// por tests del camino degradado.
+const { isFullPauseActive } = require('./lib/full-pause-state');
 
 // Sistema visual unificado (issue #2523).
 // Los assets viven en .pipeline/assets/ y son producidos por el agente UX.
