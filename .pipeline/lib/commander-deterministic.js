@@ -2751,6 +2751,70 @@ async function handleWaveNext({ pipelineRoot }) {
     };
 }
 
+// =============================================================================
+// #5882 CA-2 — Logger de fallos de sincronización.
+//
+// Este módulo históricamente no logueaba NADA (`grep -c "console\." → 0`): todo
+// su output era el `reply` de Telegram. Eso está bien para los caminos felices,
+// pero dejaba el fallo de sync de la allowlist sin ningún rastro — ni en el log
+// del pipeline, ni en el audit. El incidente del 2026-08-13 no dejó una sola
+// línea que explicara por qué el pipeline se había frenado.
+//
+// El logger EFECTIVO en producción es el default `console.error`, que cae en el
+// log del proceso que hostea al Commander. `setSyncLogger` es hoy un seam de
+// TEST solamente: nadie lo inyecta en runtime (`grep -rn "setSyncLogger"` sólo
+// devuelve definición, export y tests). Queda como punto de inyección por si el
+// host quiere redirigir el output, pero no describe un cableado vigente con
+// `pulpo.js`. Lo NO aceptable es que este camino quede mudo.
+// =============================================================================
+let syncLogger = null;
+
+function setSyncLogger(fn) {
+    syncLogger = typeof fn === 'function' ? fn : null;
+}
+
+// Normaliza a STRING plano un mensaje de error que va a terminar en el log.
+//
+// Ojo con la firma de `sanitizeJustification`: devuelve un OBJETO
+// `{sanitized, didRedact, didTruncate}` (partial-pause-audit.js:171-196), NO un
+// string. Interpolarlo directo en un template literal produce "[object Object]"
+// — que es exactamente lo que hacía que la línea de CA-2 apareciera pero no
+// dijera POR QUÉ falló, dejando el próximo diagnóstico a ciegas (el objetivo de
+// #5882 es que el incidente deje rastro LEGIBLE, no que deje una línea muda).
+//
+// Además `sanitizeJustification` sólo redacta secretos y trunca: NO toca CR/LF
+// ni control chars. Sin ese colapso no existe el control anti log-injection que
+// este camino declara — y el mensaje deriva de input de Telegram (`from`,
+// `note`). Por eso se compone con `sanitizeField` de `wave-audit`, que ya
+// colapsa control chars (wave-audit.js:87-95). No se escribe sanitizador nuevo.
+function safeSyncText(value) {
+    const raw = String((value && value.message) || value);
+    let out;
+    try {
+        const r = require('./partial-pause-audit').sanitizeJustification(raw);
+        // Tolerante a que el sanitizador cambie de forma: string u objeto.
+        out = (r && typeof r === 'object') ? String(r.sanitized ?? '') : String(r ?? '');
+    } catch {
+        out = raw;   // el sanitizado nunca rompe el comando
+    }
+    try {
+        out = String(require('./wave-audit').sanitizeField(out) ?? '');
+    } catch {
+        out = out.replace(/[\u0000-\u001F\u007F]+/g, ' ');
+    }
+    return out;
+}
+
+function logSyncError(msg) {
+    // Backstop de una-línea-es-una-línea: aunque un caller olvide sanitizar, de
+    // acá no sale un CR/LF que parta la línea ni un null byte.
+    const line = `[commander] ERROR ${String(msg).replace(/[\u0000-\u001F\u007F]+/g, ' ')}`;
+    try {
+        if (syncLogger) syncLogger(line);
+        else console.error(line);
+    } catch { /* el logging nunca rompe el comando */ }
+}
+
 /**
  * `/wave add <num> #issue` — Mueve un issue a una ola específica.
  * Aplica:
@@ -2817,8 +2881,11 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
     }
 
     // CA-7 — Mutación. addIssueToWave es atómico (waves.save → tmp+rename).
+    // #5882 — el resultado ya NO se descarta: su `version` es el input del CAS
+    // del rollback si la sincronización de la allowlist falla.
+    let addResult = null;
     try {
-        waves.addIssueToWave(waveNumber, { number: issueNumber }, {
+        addResult = waves.addIssueToWave(waveNumber, { number: issueNumber }, {
             updated_by: from || 'Leo',
             source: 'telegram-commander/wave-add',
             note: `move issue #${issueNumber} → wave ${waveNumber}`,
@@ -2868,9 +2935,20 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
     //   - escritura tmp+rename atómica bajo lock;
     //   - deja audit-entry encadenada → traza para el auto-resync legítimo (CA-3);
     //   - orden audit-before-write preservado por el propio gate (SEC-4439-6).
-    // Es best-effort respecto del comando: la suma a la ola ya persistió; si la
-    // sync de allowlist falla, la divergencia resultante es REDUCTIVA (issue en
-    // la ola, falta en la allowlist) y el realign del Pulpo la reconcilia sola.
+    //
+    // #5882 CA-7 — Este bloque YA NO es best-effort, y el comentario que decía
+    // que lo era describía una reconciliación que NO ocurre. La verdad medida:
+    // el realign del Pulpo sólo reparaba la divergencia reductiva cuando los
+    // issues involucrados estaban CERRADOS. Con un issue ABIERTO — exactamente
+    // el escenario de una promoción recién hecha — el desync quedaba vivo, el
+    // detector lo veía y el pipeline se frenaba fail-closed esperando a un
+    // humano (incidente 2026-08-13: ~40 min sin despacho, segundo episodio de
+    // la semana).
+    //
+    // Ahora las dos escrituras se resuelven como una unidad: si la allowlist no
+    // entra, se revierte la suma a la ola y el comando responde con error
+    // explícito. El estado final es el previo al comando, nunca un desync mudo.
+    let syncError = null;
     try {
         const isActiveTarget = refreshed.active_wave
             && refreshed.active_wave.number === waveNumber;
@@ -2880,17 +2958,187 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
             if (mode.mode === 'partial_pause') {
                 const current = Array.isArray(mode.allowedIssues) ? mode.allowedIssues : [];
                 if (!current.includes(issueNumber)) {
-                    partialPause.setPartialPause([...current, issueNumber], {
+                    const r = partialPause.setPartialPause([...current, issueNumber], {
                         source: 'wave-promote:wave-add',
                         authorizedBy: 'wave-promote',
                         justification: `Suma coherente /wave add #${issueNumber} -> ola ${waveNumber} (#4439)`,
                     });
+                    // `setPartialPause` NO tira cuando el gate rechaza: devuelve
+                    // { ok:false, rejected:true }. Sin este chequeo, un rechazo
+                    // del gate producía exactamente el desync silencioso que
+                    // este issue viene a eliminar.
+                    if (r && r.ok === false) {
+                        syncError = new Error(r.msg || 'setPartialPause rechazado por el gate de autorización');
+                    }
                 }
             }
         }
-    } catch {
-        // Best-effort: no rompemos el comando por la sync de allowlist.
-        // El desync reductivo resultante se auto-repara vía realign del Pulpo.
+    } catch (e) {
+        syncError = e;
+    }
+
+    if (syncError) {
+        const partialPause = require('./partial-pause');
+
+        // NO asumir "falló ⇒ no escribió". `setPartialPause` puede fallar
+        // DESPUÉS de que el write aterrizó (o el proceso morir entre el rename
+        // y el retorno). Releemos el estado real antes de decidir. `getPipelineMode`
+        // lee del disco en cada llamada, sin cache.
+        let landed = false;
+        try {
+            const after = partialPause.getPipelineMode();
+            landed = after.mode === 'partial_pause'
+                && Array.isArray(after.allowedIssues)
+                && after.allowedIssues.includes(issueNumber);
+        } catch {
+            landed = null;   // indeterminado ⇒ NO revertir (fail-safe).
+        }
+
+        // El mensaje deriva de input de Telegram (`from`, `note`): sanitizar
+        // SIEMPRE antes de loguear o responder (anti log-injection / leak de
+        // paths). Reusamos el sanitizador existente, no escribimos uno nuevo.
+        const safe = safeSyncText(syncError);
+
+        if (landed === true) {
+            // Ambas escrituras aterrizaron pese al error reportado. El estado es
+            // COHERENTE: revertir acá produciría un desync ADITIVO con issue
+            // abierto (ambiguo → human-block), peor que el bug original.
+            // Reconciliamos hacia adelante.
+            logSyncError(`wave-add #${issueNumber} ola ${waveNumber}: sync reportó error pero la allowlist SÍ quedó escrita (${safe}). Estado coherente, sin rollback.`);
+            if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-add');
+            // CA-UX-1 — este camino NO puede responder el ✅ pelado del happy
+            // path: el operador vería el mismo tilde verde ante una anomalía que
+            // obligó al sistema a razonar sobre si revertir. El objetivo de
+            // #5882 es eliminar el silencio, no moverlo al lado del humano.
+            // `sync-warning` activa un bloque condicional aditivo en el template
+            // (informativo, no alarma: el estado final ES coherente).
+            return {
+                reply: fillTemplate('wave-add-ok', {
+                    'issue-number': issueNumber,
+                    'wave-number': waveNumber,
+                    'wave-name': (targetWaveResolved && targetWaveResolved.name) || `Ola ${waveNumber}`,
+                    'new-size': newSize,
+                    'sync-warning': true,
+                }),
+            };
+        }
+
+        // `addIssueToWave` es IDEMPOTENTE: si el issue YA estaba en la ola
+        // devuelve `{added:false}` sin escribir ni auditar (waves.js:531-533).
+        // En ese caso este comando no sumó NADA, así que no hay nada que
+        // revertir: llamar al rollback removería de la ola un issue preexistente
+        // que el comando nunca agregó. El escenario no es teórico — es el de
+        // recuperación natural del propio bug de #5882 (issue en la ola, falta
+        // en la allowlist → el operador re-corre `/wave add`, que es lo que el
+        // copy de más abajo le sugiere) y las causas de fallo de la allowlist
+        // son PERSISTENTES (FS read-only, disco lleno, lock tomado, gate).
+        // Encima, tras ese borrado ambos archivos coincidirían, dejando CIEGO al
+        // detector de desync: el issue se cae de la ola activa en silencio,
+        // nadie lo despacha y no hay alerta (misma clase que #5876/#4753).
+        const noopAdd = !(addResult && addResult.added === true);
+
+        let rolledBack = false;
+        let rollbackErr = null;
+        if (landed === false && !noopAdd) {
+            try {
+                waves.rollbackIssueAdd(waveNumber, issueNumber, {
+                    expectedVersion: addResult && addResult.version,   // CAS
+                    // Evidencia de que la suma es de este mismo acto: sólo el
+                    // add que realmente escribió acuña token (el no-op da null).
+                    rollbackToken: addResult && addResult.rollbackToken,
+                    authorizedBy: 'wave-add-rollback',
+                    updated_by: from || 'Leo',
+                    source: 'wave-add-rollback',
+                    note: `rollback de /wave add #${issueNumber} por partial_sync_failed`,
+                });
+                rolledBack = true;
+            } catch (re) {
+                rollbackErr = safeSyncText(re);
+            }
+        }
+
+        logSyncError(
+            `wave-add #${issueNumber} ola ${waveNumber}: partial_sync_failed (${safe}) ` +
+            `added=${!noopAdd} landed=${landed} rollback=${rolledBack}` +
+            `${rollbackErr ? ` rollback_error=${rollbackErr}` : ''}`,
+        );
+
+        // CA-UX-2 — léxico único: se dice "Allowlist", y ninguna variante nueva
+        // (el sinónimo que proponía la receta técnica está prohibido por el
+        // contrato UX; hay un test que lo grepea acá para que no vuelva por
+        // copy/paste). Es el vocabulario que ya usan `allowlist.md` y
+        // `wave-promote-ok.md`, y encima es el nombre del comando que el
+        // operador va a correr para diagnosticar.
+        // CA-UX-3 — el peor caso lleva pasos concretos con comandos textuales, y
+        // distingue estado CONOCIDO-malo de INDETERMINADO (el operador actúa
+        // distinto en cada uno). Un solo `error-kind`: la diferenciación va en el
+        // cuerpo, no en el kind (respeta CA-2).
+        // El `e.message` crudo NO se interpola acá — va sanitizado al log
+        // (`safe`); al operador se le habla en castellano, no en stack trace.
+        // El texto va en PLANO: `fill-template` lo escapa a MarkdownV2 solo.
+        //
+        // Desvíos deliberados del copy propuesto en el contrato UX (que lo
+        // habilita si se documenta el porqué) — ambos verificados contra HEAD:
+        //   1. La sintaxis real es `/wave add <ola> #<issue>` (parser en L481-494:
+        //      exige `^\d+$` y `^#\d+$`). El copy proponía `/wave add 5698 12`,
+        //      que el parser RECHAZA por orden y por el `#` faltante.
+        //   2. El copy proponía `/wave remove <issue> <ola>` como vía de reversa.
+        //      Además del orden, `/wave remove` sobre la ola ACTIVA rebota con
+        //      `active_wave_locked` (política A04, L3195-3200) — y estos caminos
+        //      SIEMPRE son sobre la ola activa. Mandar al operador a un comando
+        //      que rebota es peor que no darle el paso: se reemplaza por la vía
+        //      que sí existe (la Allowlist) + `/wave status` para confirmar.
+        let message;
+        if (rolledBack) {
+            // A · rollback exitoso — el estado final es el previo al comando.
+            message = `No pude sumar el #${issueNumber} a la Allowlist, así que deshice la promoción `
+                + `para no dejarte el pipeline desincronizado. El #${issueNumber} NO quedó en la ola `
+                + `${waveNumber} — todo volvió a como estaba. `
+                + `Probá de nuevo con \`/wave add ${waveNumber} #${issueNumber}\`.`;
+        } else if (noopAdd) {
+            // D · el issue YA estaba en la ola: este comando no sumó nada, así
+            // que no hubo nada que revertir (y revertir habría BORRADO de la ola
+            // un issue preexistente). El estado de la ola no cambió; lo que
+            // falló es sólo la sync de la Allowlist. No se le puede decir al
+            // operador "todo volvió a como estaba": nada se deshizo porque nada
+            // se hizo, y el desync que venía a reparar sigue vivo.
+            message = `El #${issueNumber} ya estaba en la ola ${waveNumber}, así que no sumé nada — `
+                + `pero tampoco pude agregarlo a la Allowlist, que es justo lo que faltaba. `
+                + `La ola quedó intacta y no deshice nada.\n\n`
+                + `Qué hacer:\n`
+                + `1. Corré \`allowlist\` para ver el estado real.\n`
+                + (landed === null
+                    ? `2. No pude releer la Allowlist, así que de su contenido no tengo certeza.\n`
+                    : `2. Si falta el #${issueNumber}, pedí que se agregue — la Allowlist no se toca sin tu OK.\n`)
+                + `3. Reintentar \`/wave add\` no lo va a resolver: la suma a la ola ya está hecha, `
+                + `lo que falla es la Allowlist.`;
+        } else if (landed === null) {
+            // C · indeterminado — no se tocó nada más, a propósito.
+            message = `Promoción a medias y no pude releer la Allowlist para saber cómo quedó. `
+                + `El #${issueNumber} SÍ está en la ola ${waveNumber}; de la Allowlist no tengo certeza, `
+                + `así que no toqué nada más para no empeorarlo.\n\n`
+                + `Qué hacer:\n`
+                + `1. Corré \`allowlist\` para ver el estado real antes de reintentar.\n`
+                + `2. Si el #${issueNumber} figura ahí, ya está todo en orden y no hace falta nada más.\n`
+                + `3. Si no figura, pedí que se agregue — la Allowlist no se toca sin tu OK.`;
+        } else {
+            // B · conocido-malo — quedó a medias y el rollback tampoco salió.
+            message = `Promoción a medias y tampoco pude deshacerla. El #${issueNumber} quedó en la ola `
+                + `${waveNumber} pero NO entró a la Allowlist, así que el pipeline puede frenarse `
+                + `fail-closed por desync.\n\n`
+                + `Qué hacer:\n`
+                + `1. Corré \`allowlist\` para ver cómo quedó.\n`
+                + `2. Si falta el #${issueNumber}, pedí que se agregue — la Allowlist no se toca sin tu OK.\n`
+                + `3. Corré \`/wave status\` para confirmar la ola. Ojo: \`/wave remove\` no aplica acá, `
+                + `la ola activa está bloqueada para desasociar — la vía es la Allowlist.`;
+        }
+
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'partial_sync_failed',
+                message,
+            }),
+        };
     }
 
     // CA-9 — Marcar éxito en el cooldown DESPUÉS del write.
@@ -3742,6 +3990,8 @@ module.exports = {
         handleWaveStatus,
         handleWaveNext,
         handleWaveAdd,
+        // #5882 — logger inyectable del fallo de sync (pulpo/tests).
+        setSyncLogger,
         handleWavePromote,
         handleWaveCreate,
         handleWaveRemove,

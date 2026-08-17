@@ -179,11 +179,18 @@ test('approve concede needs-definition si el view falla o el JSON es invalido (#
 // REQ-SEC-4 — la ventana entre esta parte y #5691 exige que un fallo en el
 // primer --remove-label NO aborte el segundo: si abortara, el label que sí se
 // podía sacar quedaría pegado y el issue afuera del intake igual.
+//
+// #5690 — el stderr del fixture pasó de 'label not found' a 'no permission'.
+// Con la tolerancia UX-1 de #5690, "label not found" ya NO es un fallo: es el
+// no-op esperado cuando el issue no tiene ese label (el objetivo "el label no
+// está en el issue" queda cumplido). Lo que este test verifica —que se intenten
+// TODOS los removes y que un fallo REAL sea fail-closed— se mantiene intacto;
+// sólo se usa un stderr que sí representa un fallo real.
 test('approve intenta remover TODOS los labels aunque uno falle, y reporta fail-closed', () => {
     const ghRunner = fakeRunner([
         viewLabels(['tipo:recomendacion']),
         { ok: true },
-        { ok: false, stderr: 'label not found', status: 1 },
+        { ok: false, stderr: 'no permission', status: 1 },
         { ok: true },
     ]);
     const r = reco.approve({ issue: 99, ghRunner, repo: 'test/repo' });
@@ -265,4 +272,85 @@ test('readCache devuelve estructura vacia cuando el archivo no existe', () => {
     } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
     }
+});
+
+// -----------------------------------------------------------------------------
+// #5690 UX-1 — approve() tolerante a la ausencia de needs-human.
+//
+// Post-#5690 una recomendación NUEVA nace con `needs:triage-backlog` y SIN
+// `needs-human`, así que `gh issue edit --remove-label needs-human` falla en
+// CADA aprobación. Antes eso devolvía `ok:false` → el dashboard mostraba
+// `alert('Error')` sobre una acción que sí se había aplicado, y como
+// `recoRefresh()` vive dentro del `if (j.ok)`, la fila no desaparecía del panel
+// y el operador volvía a apretar. Falso negativo destructivo sobre el único
+// camino humano para destrabar recomendaciones.
+// -----------------------------------------------------------------------------
+
+test('UX-1d: approve sobre un issue SIN needs-human devuelve ok:true y mensaje de exito', () => {
+    for (const stderr of [
+        "failed to remove label: 'needs-human' not found on issue",
+        "could not find label 'needs-human'",
+        'label does not exist',
+    ]) {
+        // 4 respuestas: view + add-label + los DOS remove-label de #5689.
+        const ghRunner = fakeRunner([
+            viewLabels(['tipo:recomendacion']),
+            { ok: true },
+            { ok: false, stderr, status: 1 },
+            { ok: true },
+        ]);
+        const r = reco.approve({ issue: 99, ghRunner, repo: 'test/repo' });
+        assert.equal(r.ok, true, `deberia tolerar: ${stderr}`);
+        assert.match(r.msg, /aprobada/);
+        assert.doesNotMatch(r.msg, /parcial/);
+    }
+});
+
+// #5690 + #5689 combinados: el cache de labels ahorra el round-trip de los que
+// YA están ausentes, pero NUNCA de los que están presentes. Saltear uno presente
+// dejaría el label de freno pegado y el issue afuera del intake (éxito falso).
+test('UX-1a: el cache de labels saltea sólo los ausentes, y remueve los presentes', () => {
+    const ghRunner = fakeRunner([{ ok: true }, { ok: true }]);
+    const r = reco.approve({
+        issue: 99,
+        labels: ['tipo:recomendacion', 'needs:triage-backlog', 'enhancement'],
+        ghRunner,
+        repo: 'test/repo',
+    });
+    assert.equal(r.ok, true);
+    assert.equal(ghRunner.calls.length, 2, 'no gasta round-trip en needs-human (ausente)');
+    assert.deepEqual(
+        ghRunner.calls[1],
+        ['issue', 'edit', '99', '--repo', 'test/repo', '--remove-label', 'needs:triage-backlog'],
+        'needs:triage-backlog SÍ está presente: hay que removerlo o el issue no entra al intake',
+    );
+});
+
+test('UX-1a: una reco legacy CON needs-human sigue removiendolo', () => {
+    const ghRunner = fakeRunner([{ ok: true }, { ok: true }]);
+    const r = reco.approve({
+        issue: 99,
+        labels: ['tipo:recomendacion', 'needs-human'],
+        ghRunner,
+        repo: 'test/repo',
+    });
+    assert.equal(r.ok, true);
+    assert.equal(ghRunner.calls.length, 2);
+    assert.deepEqual(ghRunner.calls[1], ['issue', 'edit', '99', '--repo', 'test/repo', '--remove-label', 'needs-human']);
+});
+
+test('UX-1c: la tolerancia es SOLO para el label ausente, un fallo real sigue siendo error', () => {
+    for (const stderr of ['no permission', 'API rate limit exceeded', 'connection refused']) {
+        const ghRunner = fakeRunner([viewLabels(['tipo:recomendacion']), { ok: true }, { ok: false, stderr, status: 1 }]);
+        const r = reco.approve({ issue: 99, ghRunner, repo: 'test/repo' });
+        assert.equal(r.ok, false, `no deberia tolerar: ${stderr}`);
+        assert.match(r.msg, /Aprobaci.n parcial/);
+    }
+});
+
+test('UX-1c: si falla el add-label (la operacion que importa) sigue devolviendo error', () => {
+    const ghRunner = fakeRunner([viewLabels(['tipo:recomendacion']), { ok: false, stderr: 'not found', status: 1 }]);
+    const r = reco.approve({ issue: 99, ghRunner, repo: 'test/repo' });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /No se pudo agregar label aprobado/);
 });

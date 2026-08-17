@@ -320,7 +320,19 @@ function enqueueLabelRemove(issueNum, label) {
     const filename = `${issueNum}-rm-${label}-reconciler-${Date.now()}.json`;
     fs.writeFileSync(
         path.join(GH_QUEUE, filename),
-        JSON.stringify({ action: 'remove-label', issue: issueNum, label }),
+        // #5690 SEC-B — procedencia declarada para el guardrail de labels.
+        // El reconciliador sólo emite `remove-label needs-human` cuando el
+        // oráculo de `label-reconciler-core` confirmó que la épica tiene todos
+        // los hijos verificables cerrados y NO hay marker humano activo. No es
+        // una acción humana (por eso el campo no se llama `human_*`), pero sí
+        // es una decisión de un productor identificado y state-checked.
+        JSON.stringify({
+            action: 'remove-label',
+            issue: issueNum,
+            label,
+            guardrail_authorized: true,
+            authorized_by: 'servicio-reconciler:label-reconciler-core',
+        }),
     );
 }
 
