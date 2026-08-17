@@ -1,0 +1,27 @@
+Soy el QA del pipeline y vengo a contarte cómo salió la verificación del issue 5690, la parte dos del split del 5678: emisión limpia en los cinco roles de agente y guardrail fail-closed contra la mezcla de labels.
+
+Arranco por una aclaración importante. El pulpo me ruteó este issue como modo estructural, pero el cambio toca el dashboard: modifica el texto visible del panel de recomendaciones pendientes. Así que no lo cerré como estructural a secas. Renderé la sección real, extrayendo el template directamente del código en HEAD, y lo que estás viendo en pantalla es ese render.
+
+El texto ahora dice: los agentes guru, security, po, ux y review crean issues con label tipo recomendación más needs dos puntos triage backlog. La cadena needs guión human ya no aparece en ese copy. Criterio de la parte visible, cumplido.
+
+Vamos con los criterios de aceptación. El primero: los cinco roles emiten needs triage backlog en lugar de needs human en el label del gh issue create. Verificado línea por línea: guru en la ochenta y uno, po en la ciento ochenta y ocho, review en la sesenta y siete, security en la ciento treinta y dos, y ux en la doscientos noventa y dos. Los cinco, cumple.
+
+Segundo criterio: que los otros labels queden intactos. Confirmado, en los cinco archivos siguen enhancement, source recommendation, tipo recomendación, priority low y los placeholders de área, sin tocar.
+
+Tercero: que la prosa y el ítem obligatorio describan recommendation approved como el gate real. Cumple. Los cinco roles ahora explican que lo que frena al pulpo es tener tipo recomendación sin recommendation approved, y que needs triage backlog sólo señala que falta triaje y no bloquea nada.
+
+Cuarto: security punto eme de en la línea ciento veinte, la definición de ruido, ya no menciona needs human. Cumple.
+
+Quinto criterio, y acá me detengo porque hay un matiz. El criterio pide que un grep de needs human sobre la carpeta de roles no devuelva ninguna línea que describa el flujo de recomendaciones. El grep todavía devuelve seis líneas. Las revisé una por una: cinco son el ítem que prohíbe explícitamente usar needs human en recomendaciones, y la sexta, en base punto eme de, es el circuit breaker del tercer rebote, que es un bloqueo real y no una recomendación. Ninguna de esas líneas usa needs human como parte del flujo: lo prohíben o hablan de otra cosa. Refuerzan la separación en vez de romperla, así que lo doy por cumplido, y lo dejo anotado.
+
+Sexto: el guardrail vive en servicio github punto jota ese, dentro del case de label, entre la guardia de staleness y ensure labels con edit issue. Verificado: la guardia de staleness termina en la seiscientos veintiocho, el guardrail entra en la seiscientos treinta, y recién en la seiscientos treinta y siete y treinta y ocho se llama a ensure labels y edit issue. Está en el punto de escritura, que era justamente lo que pedía el issue: no en una ruta de lectura.
+
+Séptimo y octavo: los tests de las dos direcciones de la mezcla. Agregar needs human a un issue que ya tiene tipo recomendación, rechazado y edit issue no invocado. Y al revés, agregar tipo recomendación sobre un issue con needs human, ídem. Los dos en verde.
+
+Noveno, el criterio de seguridad número cuatro: que ningún camino del guardrail remueva needs human. El test existe y pasa. Además leí el módulo: el guardrail devuelve solamente un veredicto, no ejecuta mutaciones ni ordena remociones. El fail-closed se sostiene.
+
+Décimo: el conflicto queda registrado en la carpeta de audit con timestamp, issue, label solicitado, labels actuales y origen. Los cinco campos están presentes en el registro.
+
+Y el último: la suite de tests en verde. Acá tuve que corregir la forma de invocarla, porque pasarle los directorios sueltos falla en Node veinticuatro, que los intenta resolver como módulo. Corriéndola con los patrones de archivo: ocho mil quinientos sesenta y un tests, cero fallas, cinco skippeados. Verde.
+
+Conclusión: los once criterios de aceptación se cumplen, la evidencia visual del cambio de copy está capturada, y no encontré ningún defecto que justifique rechazar. Para mí el 5690 pasa. Nos vemos en la próxima.
