@@ -22,10 +22,19 @@ const delivery = require('../delivery');
 const humanBlock = require('../../lib/human-block');
 
 // ── classifyMergeFailure (señal server-side, CA-2 / R7) ────────────────────
-test('#4658 CA-2 — classifyMergeFailure: HTTP 405 (not mergeable) = conflicto real', () => {
+// #6012 re-baseline — el 405 dejó de ser incondicionalmente "conflicto real":
+// GitHub también lo devuelve mientras calcula la mergeabilidad. Lo que este test
+// fija ahora es el DEFAULT FAIL-CLOSED de CA-4: invocado SIN `ctx` (o con un ctx
+// que no trae estado), el comportamiento es idéntico al previo a #6012 — frena
+// como conflicto terminal. La lectura transitoria exige señal explícita del
+// servidor; la ausencia de datos nunca la habilita.
+test('#4658/#6012 CA-2 — classifyMergeFailure: 405 SIN contexto de mergeabilidad = conflicto terminal', () => {
     const c = delivery.classifyMergeFailure({ exit_code: 1, stderr: 'gh: Pull Request is not mergeable (HTTP 405)' });
     assert.equal(c.conflict, true);
     assert.equal(c.httpStatus, 405);
+    assert.equal(c.retryable, false);
+    // Frena igual, pero no AFIRMA un conflicto que nadie verificó (CA-9).
+    assert.equal(c.confirmed, false);
 });
 
 // #5420 — reclasificado: con el `sha` pinneado en el PUT, un 409 "head branch
@@ -48,10 +57,26 @@ test('#5420 — classifyMergeFailure: HTTP 409 de conflicto REAL sigue siendo te
     assert.equal(c.kind, 'not-mergeable');
 });
 
-test('#5420 — classifyMergeFailure: 405 not-mergeable NUNCA es reintentable', () => {
-    const c = delivery.classifyMergeFailure({ exit_code: 1, stderr: 'gh: Pull Request is not mergeable (HTTP 405)' });
-    assert.equal(c.retryable, false);
-    assert.equal(c.kind, 'not-mergeable');
+// #6012 re-baseline — el invariante de #5420 se conserva acotado al caso sin
+// señal: con `ctx` ausente o incompleto el 405 NUNCA es reintentable. Se prueban
+// las tres formas de "no tengo señal" que podrían colarse como transitorias.
+test('#5420/#6012 — classifyMergeFailure: 405 sin señal de estado NUNCA es reintentable', () => {
+    const res = { exit_code: 1, stderr: 'gh: Pull Request is not mergeable (HTTP 405)' };
+    const ctxs = [
+        ['ctx ausente', undefined],
+        ['ctx vacío', {}],
+        ['estado nulo', { mergeStateStatus: null }],
+        ['estado fuera del enum', { mergeStateStatus: 'CALCULANDO' }],
+        ['estado no-string', { mergeStateStatus: 42 }],
+    ];
+    for (const [nombre, ctx] of ctxs) {
+        const c = ctx === undefined
+            ? delivery.classifyMergeFailure(res)
+            : delivery.classifyMergeFailure(res, ctx);
+        assert.equal(c.retryable, false, `${nombre}: no puede habilitar reintento`);
+        assert.equal(c.kind, 'not-mergeable', `${nombre}: cae en el default terminal`);
+        assert.equal(c.conflict, true, `${nombre}: sigue frenando el merge`);
+    }
 });
 
 test('#4658 — classifyMergeFailure: deteccion textual sin codigo HTTP explicito', () => {

@@ -42,9 +42,19 @@ prefijos) aplica igual al otro documento.
 
 | provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |
 |----------|---------|-------|--------------|------------|------------|----------------------|---------------------|
+| telegram-bot | `TELEGRAM_BOT_TOKEN` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://t.me/BotFather |
+| telegram-chat | `TELEGRAM_CHAT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| telegram-operator | `TELEGRAM_LEO_OPERATOR_CHAT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| openai-codex | `OPENAI_API_KEY` | leitolarreta | _pendiente alta_ | _pendiente alta_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#openai) | https://platform.openai.com/api-keys |
 | anthropic | `ANTHROPIC_API_KEY` | leitolarreta | N/A (OAuth Max) | N/A (OAuth Max) | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#anthropic) | https://console.anthropic.com/settings/keys |
-| openai-codex | `OPENAI_API_KEY` | leitolarreta | _no aplica todavía_ | _no aplica todavía_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#openai) | https://platform.openai.com/api-keys |
-| nvidia-nim | `NVIDIA_NIM_API_KEY` | leitolarreta | _no aplica todavía_ | _no aplica todavía_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#nvidia-nim) | https://build.nvidia.com (panel "API keys") |
+| google-ai | `GEMINI_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://aistudio.google.com/app/apikey |
+| cerebras | `CEREBRAS_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://cloud.cerebras.ai/ |
+| nvidia-nim | `NVIDIA_NIM_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#nvidia-nim) | https://build.nvidia.com/settings/api-keys |
+| moonshot | `ANTHROPIC_AUTH_TOKEN` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://platform.moonshot.ai/console/api-keys |
+| google-drive-client | `GOOGLE_OAUTH_CLIENT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| google-drive-client-secret | `GOOGLE_OAUTH_CLIENT_SECRET` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://console.cloud.google.com/apis/credentials |
+| google-drive-refresh | `GOOGLE_OAUTH_REFRESH_TOKEN` | leitolarreta | N/A (OAuth administrado por tercero) | N/A (OAuth administrado por tercero) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | https://myaccount.google.com/permissions |
+| google-drive-folder | `GOOGLE_DRIVE_FOLDER_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
 
 **Notas**:
 

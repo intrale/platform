@@ -51,6 +51,38 @@ try {
     renderProductSwitcherSsr = () => '';
 }
 
+// #5724 CA-4 — Banner "Dispatch suspendido por desync". Esta vista arma su
+// propio shell (no pasa por `pageShell`), así que el banner se monta a mano.
+// Require defensivo como el resto del módulo: si no carga, la vista renderiza
+// igual sin banner en vez de romper.
+//
+// Nota: este shell no incluye FETCH_CLIENT_JS, así que el poll de refresco no
+// tiene `fetchJson` y falla en silencio (el bundle lo contempla). Lo que queda
+// es el SSR, que ya es correcto al cargar la página — es justo lo que hace
+// falta acá, porque el bloqueo dura horas y esta ventana no es de kiosko.
+let _dsbResolve = () => null;
+let _dsbRender = () => '';
+let _DSB_CSS = '';
+let _dsbBundle = () => '';
+try {
+    ({
+        resolveDesyncStatus: _dsbResolve,
+        renderDesyncBlockBannerSsr: _dsbRender,
+        DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+        desyncBlockBannerBundleJs: _dsbBundle,
+    } = require('./desync-block-banner.js'));
+} catch { /* opcional */ }
+
+// El ícono del banner es un `<use href="#ic-pause-lock">`: sin el sprite
+// inlineado en el documento no resuelve y el banner queda sin su símbolo de
+// alarma (#5724 rev-3). Esta vista no cargaba ningún sprite.
+let _loadIconSprite = () => '';
+try {
+    // eslint-disable-next-line global-require
+    const nav = require('./nav-tabs');
+    if (typeof nav.loadIconSprite === 'function') _loadIconSprite = nav.loadIconSprite;
+} catch { /* opcional */ }
+
 // #4778 · pieza 3 del mockup 36 — bandeja GATE 2 filtrada por producto. Require
 // defensivo (fail-open): si el módulo no carga, la vista igual renderiza el grid
 // (pieza 2) sin la bandeja. El filtrado por productId es responsabilidad del
@@ -491,12 +523,19 @@ function renderEstadoProductos(opts = {}) {
         + '<meta name="viewport" content="width=device-width, initial-scale=1">'
         + '<title>Intrale · Estado por producto</title>'
         + '<style>' + loadThemeCss() + '</style>'
+        + '<style>' + _DSB_CSS + '</style>'
         + '</head><body style="background:var(--in-bg,#0D1117);color:var(--in-fg,#e6edf3);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:24px">'
+        + '<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">' + _loadIconSprite() + '</div>'
         + '<div style="max-width:1040px;margin:0 auto">'
         + '<a href="/dashboard" style="color:var(--brand-cyan,#00D6FF);text-decoration:none;font-size:12px">← Volver al dashboard</a>'
+        // #5724 CA-4 — dispatch suspendido por desync, arriba del estado por
+        // producto: si el dispatch está frenado, TODOS los productos están
+        // frenados y el grid de abajo muestra un avance que no va a moverse.
+        + _dsbRender(_dsbResolve(opts && opts.desyncStatus))
         + renderEstadoProductosSsr(opts)
         + '</div>'
         + '<script>' + renderEstadoProductosClientScript() + '</script>'
+        + '<script>' + _dsbBundle() + '</script>'
         // Client script de la bandeja GATE 2 (firma/rechazo con CSRF) — sólo si el
         // módulo cargó. Sin él, la bandeja embebida se ve pero sus botones no operan.
         + ((esperandoFirmaView && typeof esperandoFirmaView.renderEsperandoFirmaClientScript === 'function')

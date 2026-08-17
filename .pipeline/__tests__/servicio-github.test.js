@@ -92,6 +92,18 @@ function makeFakeGhClient(overrides = {}) {
             if (overrides.createLabel) return overrides.createLabel(name, color, opts);
             return { created: true, alreadyExists: false };
         },
+        // #5690 — `defaultGhClient` expone `getIssueLabels` (servicio-github.js:193)
+        // y el guardrail de labels lo consulta para las órdenes sensibles
+        // (`needs-human`, `tipo:recomendacion`). Sin este método el fake divergía
+        // de producción: el thunk tiraba, el guardrail fallaba CERRADO (SEC-C) y
+        // descartaba órdenes legítimas de `needs-human`. El default `[]` modela un
+        // issue sin labels → sin conflicto de mezcla, que es la precondición de
+        // los tests de staleness (#2994) y del resto del archivo.
+        getIssueLabels(issueNumber) {
+            calls.push({ method: 'getIssueLabels', args: [issueNumber] });
+            if (overrides.getIssueLabels) return overrides.getIssueLabels(issueNumber);
+            return [];
+        },
     };
     return client;
 }

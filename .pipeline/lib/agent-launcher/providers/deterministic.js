@@ -184,6 +184,13 @@ function detectQuotaExhausted() {
     return { matched: false };
 }
 
+// Los skills determinísticos corren scripts locales del repo: no presentan
+// credencial a ningún provider, así que no existe credencial que pueda ser
+// rechazada. El detector es explícitamente negativo (#5795) — se declara en vez
+// de omitirse para que el contrato sea uniforme entre los siete adapters y
+// nadie herede la tabla de otro por accidente.
+const detectAuthenticationRejected = require('../auth-rejection').neverClassifies;
+
 module.exports = {
     name: 'deterministic',
     DETERMINISTIC_SKILLS,
@@ -193,4 +200,5 @@ module.exports = {
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
+    detectAuthenticationRejected,
 };

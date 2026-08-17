@@ -670,7 +670,16 @@ test('#3186 enqueueLabelRemove escribe JSON con shape correcto', () => {
     const files = fs.readdirSync(GH_QUEUE).filter(f => f.endsWith('.json'));
     assert.equal(files.length, 1);
     const cmd = JSON.parse(fs.readFileSync(path.join(GH_QUEUE, files[0]), 'utf8'));
-    assert.deepEqual(cmd, { action: 'remove-label', issue: 7777, label: 'needs-human' });
+    // #5690 SEC-B — el shape suma la procedencia declarada. Sin ella el
+    // guardrail de `servicio-github.js` rechaza la orden (fail-closed) y el
+    // reconciliador dejaría de poder limpiar épicas resueltas.
+    assert.deepEqual(cmd, {
+        action: 'remove-label',
+        issue: 7777,
+        label: 'needs-human',
+        guardrail_authorized: true,
+        authorized_by: 'servicio-reconciler:label-reconciler-core',
+    });
 });
 
 // =============================================================================

@@ -69,7 +69,22 @@ test('#4851: onboarding conserva 5 pasos y expone los campos del descriptor comp
     assert.ok(res.body.includes('data-provider-id="nvidia-nim"'));
     assert.ok(res.body.includes('function owMoveProvider('));
     assert.ok(res.body.includes('function owProviderKey('));
-    assert.ok(!/groq/i.test(res.body), 'Groq/groq no debe aparecer en UI/script del wizard');
+    // #5724 rev-3 empezó a inlinear el sprite de íconos COMPLETO en el documento
+    // de la vista (el banner de desync usa `<use href="#ic-pause-lock">` y sin el
+    // sprite en el documento el símbolo no resuelve). Ese sprite es compartido por
+    // todo el dashboard y trae `ic-provider-groq` + su comentario: Groq sigue vivo
+    // como provider free en la vista multi-provider, así que el ícono debe seguir
+    // existiendo. Lo que #4851 prohíbe es que Groq aparezca como OPCIÓN del wizard,
+    // no que el sprite compartido pierda su símbolo — por eso la aserción se evalúa
+    // sobre el documento con el sprite descontado, más un chequeo explícito de que
+    // no hay provider `groq` ofrecido en el orden de providers.
+    let sprite = '';
+    try { sprite = require('../../views/dashboard/nav-tabs').loadIconSprite(); } catch { /* sin sprite: se evalúa el documento entero */ }
+    const bodySinSprite = sprite ? res.body.split(sprite).join('') : res.body;
+    assert.ok(bodySinSprite.length < res.body.length, 'el sprite debe haberse recortado antes del assert');
+    assert.ok(bodySinSprite.includes('id="ow-form"'), 'recortar el sprite no debe llevarse el wizard');
+    assert.ok(!/groq/i.test(bodySinSprite), 'Groq/groq no debe aparecer en UI/script del wizard');
+    assert.ok(!res.body.includes('data-provider-id="groq"'), 'Groq no debe ser opción del orden de providers');
 });
 
 test('CA-S1: onboarding es un slug de la allowlist (partial desde loopback no da 400)', () => {

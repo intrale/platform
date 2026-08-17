@@ -39,6 +39,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #5795 — contrato compartido de la clase cerrada 'authentication_rejected'.
+const authRejection = require('../auth-rejection');
 
 const RUNNER_PATH = path.join(__dirname, '..', 'runners', 'cerebras-runner.js');
 
@@ -238,12 +240,41 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
     return { matched: false };
 }
 
+// -----------------------------------------------------------------------------
+// detectAuthenticationRejected (#5795) — clase cerrada `authentication_rejected`.
+//
+// Cerebras expone una API OpenAI-compatible (`/v1/chat/completions`), así que
+// el shape del error es el de OpenAI: `{error:{message, type, code}}`. Los
+// tokens inequívocos de credencial inválida son los mismos.
+//
+// POSITIVOS — credencial inválida o expirada, sin ambigüedad:
+//   invalid_api_key       código OpenAI-compatible para clave incorrecta
+//   authentication_error  tipo de error de autenticación
+//   wrong_api_key         variante que devuelve el gateway de Cerebras
+//
+// NEGATIVOS — parecen auth o conviven con 401/403 pero NO son credencial
+// inválida. Si alguno aparece, el detector se abstiene aunque haya positivo.
+// Ojo: `invalid_request_error` NO va acá — es el `type` que acompaña a
+// `code: invalid_api_key` en el shape OpenAI, y vetarlo mataría el positivo.
+// -----------------------------------------------------------------------------
+const detectAuthenticationRejected = authRejection.makeDetector({
+    adapter: 'cerebras',
+    positives: ['invalid_api_key', 'authentication_error', 'wrong_api_key'],
+    negatives: [
+        'permission_denied', 'permission_error', 'forbidden', 'insufficient_permissions',
+        'rate_limit_exceeded', 'quota_exceeded', 'insufficient_quota', 'billing_error',
+        'context_length_exceeded', 'model_not_found', 'service_unavailable',
+        'internal_server_error', 'overloaded_error',
+    ],
+});
+
 module.exports = {
     name: 'cerebras',
     detectLauncher: getLauncher,
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
+    detectAuthenticationRejected,
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _translateClaudeArgsToCerebras: translateClaudeArgsToCerebras,

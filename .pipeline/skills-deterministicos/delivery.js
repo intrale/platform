@@ -13,6 +13,10 @@ const absencePolicy = require('../lib/operator-absence-policy');
 const absenceAudit = require('../lib/operator-absence-audit');
 const operatorGate = require('../lib/operator-gate');
 const { sanitizeReason } = require('../lib/kernel-actions-audit');
+// #5864 — dueño único de la invariante "imposible qa:passed + qa:failed".
+const gateLabelReconciler = require('../lib/gate-label-reconciler');
+// #5864 SEC-2 — procedencia del PR destino (defensa contra PRs de fork).
+const prProvenance = require('../lib/pr-provenance');
 // #5420 — Verificación de procedencia de la rama del PR antes de mergear.
 // Se CONSUME la implementación canónica (#5419): es `git fetch` + `git log`
 // contra la allowlist de committers, no necesita worktree y no se duplica acá.
@@ -149,22 +153,61 @@ function fetchIssueTitle(issue) {
     } catch { return { title: null, labels: [] }; }
 }
 
-function findExistingPR(branch) {
-    const r = git.runGh(['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,url,labels'], { cwd: WORK_DIR });
-    if (r.exit_code !== 0) return null;
+// #5864 SEC-2 — Repo esperado del head de todo PR que adoptemos o etiquetemos.
+// Ver `lib/pr-provenance.js` para el vector completo (repo público + patrón de
+// rama predecible ⇒ un fork puede abrir un PR con la rama `agent/<issue>-…`).
+const EXPECTED_PR_REPO = process.env.PIPELINE_REPO || prProvenance.DEFAULT_REPO;
+
+/**
+ * Busca el PR abierto del pipeline para `branch`.
+ *
+ * SEC-2: `gh pr list --head <branch>` NO filtra por owner y devuelve también
+ * PRs cuyo head vive en un fork. Adoptar uno de esos como "el PR del issue"
+ * haría que delivery le propague el `qa:passed` y le abra el gate de merge.
+ * Por eso se descarta todo PR que no supere `checkPrProvenance`, y si no queda
+ * ninguno se devuelve `null` (fail-closed): el flujo sigue por la rama de
+ * "no hay PR" y crea el PR legítimo desde la rama de origin.
+ */
+function findExistingPR(branch, { ghImpl = git.runGh, log = () => {} } = {}) {
+    const r = ghImpl(['pr', 'list', '--head', branch, '--state', 'open', '--json', prProvenance.PR_PROVENANCE_FIELDS.join(',')], { cwd: WORK_DIR });
+    if (!r || r.exit_code !== 0) return null;
+    let arr;
+    try { arr = JSON.parse(r.stdout); } catch { return null; }
+    if (!Array.isArray(arr) || !arr.length) return null;
+
+    const own = [];
+    for (const p of arr) {
+        const prov = prProvenance.checkPrProvenance(p, { branch, repo: EXPECTED_PR_REPO });
+        if (prov.ok) { own.push(p); continue; }
+        log(`[delivery] PR #${(p && p.number) || '?'} descartado por procedencia (${prov.reason}${prov.detail ? `: ${prov.detail}` : ''})`
+            + ` — no se adopta como PR del issue ni recibe labels de gate`);
+    }
+    if (!own.length) return null;
+
+    const chosen = own[0];
+    return {
+        number: chosen.number,
+        url: chosen.url,
+        labels: (chosen.labels || []).map((l) => l.name),
+    };
+}
+
+/**
+ * Lee del PR destino, en UNA sola llamada, los labels frescos y los datos de
+ * procedencia. Devuelve `null` ante cualquier problema (fail-closed: sin datos
+ * no se escribe el label).
+ */
+function fetchPrForGateWrite(prNumber, { ghImpl = git.runGh } = {}) {
+    const r = ghImpl(['pr', 'view', String(prNumber), '--json', prProvenance.PR_PROVENANCE_FIELDS.join(',')], { cwd: WORK_DIR });
+    if (!r || r.exit_code !== 0) return null;
     try {
-        const arr = JSON.parse(r.stdout);
-        if (!arr.length) return null;
-        return {
-            number: arr[0].number,
-            url: arr[0].url,
-            labels: (arr[0].labels || []).map((l) => l.name),
-        };
+        const j = JSON.parse(r.stdout);
+        return (j && typeof j === 'object' && !Array.isArray(j)) ? j : null;
     } catch { return null; }
 }
 
-function getPRLabels(prNumber) {
-    const r = git.runGh(['pr', 'view', String(prNumber), '--json', 'labels'], { cwd: WORK_DIR });
+function getPRLabels(prNumber, { ghImpl = git.runGh } = {}) {
+    const r = ghImpl(['pr', 'view', String(prNumber), '--json', 'labels'], { cwd: WORK_DIR });
     if (r.exit_code !== 0) return [];
     try {
         return (JSON.parse(r.stdout).labels || []).map((l) => l.name);
@@ -173,6 +216,161 @@ function getPRLabels(prNumber) {
 
 function hasQaGate(labels) {
     return labels.some((l) => QA_LABELS_OK.has(l));
+}
+
+// ============================================================================
+// #5864 — Propagación del label de gate QA issue → PR.
+// ============================================================================
+//
+// El ciclo de QA aplica el label sobre el ISSUE (`gate-label-reconciler.js` es
+// su dueño único desde #4572) y el gate previo al merge lo busca en el PR
+// (`hasQaGate(snapshot.labels)`, Fase 5). Ese tramo nunca se cerraba: los PRs
+// #5519 / #5788 / #5790 tenían el ciclo de QA completo con `qa:passed` en el
+// issue, nacían con `needs-definition` y quedaban frenados hasta que un humano
+// copiaba el label a mano.
+//
+// Se implementa ACÁ, y no en GATE 0 del pulpo ni en el CLI manual
+// `.pipeline/delivery.js`, porque este es el único punto del runtime donde el
+// PR ya existe y todavía no se mergeó:
+//   - GATE 0 corre en la promoción `verificacion → linteo`; el PR lo crea esta
+//     misma fase `entrega`, varias fases después. Ahí el PR no existe todavía.
+//   - `.pipeline/delivery.js` es el CLI manual (#2870). El provider
+//     determinístico resuelve `skills-deterministicos/<skill>.js`, así que ese
+//     archivo NO se ejecuta en la fase `entrega`.
+//
+// Reglas (fail-closed, nunca relaja el gate):
+//   - SEC-1: el vínculo issue↔PR lo establece la RAMA (`agent/<issue>-…`),
+//     jamás el `Closes #<n>` del cuerpo (lo escribe quien abre el PR).
+//   - SEC-2: ante ausencia o conflicto de labels de gate en el issue no se
+//     escribe nada. Nunca se infiere aprobación por falta de datos.
+//   - SEC-3: unidireccional. El issue es la única autoridad; el PR es destino
+//     y jamás origen.
+//   - CA-4: el estado proyectado del PR pasa por `assertMutualExclusion`, así
+//     que es imposible dejarlo con `qa:passed` + `qa:failed`.
+
+// Universo de labels de gate que pueden vivir en el PR. Incluye `qa:skipped`
+// (CA-1 lo nombra explícitamente y el gate de Fase 5 ya lo acepta), que el
+// reconciliador NO conoce a propósito — ampliarle `GATE_LABELS` es #5869.
+const QA_GATE_LABELS = ['qa:passed', 'qa:skipped', 'qa:failed', 'qa:pending'];
+// Labels que MANTIENEN cerrado el gate. Si el issue tiene uno de estos, se
+// propaga igual: propagar la verdad negativa es correcto y no destraba nada.
+const QA_GATE_BLOCKING = new Set(['qa:failed', 'qa:pending']);
+
+/**
+ * Decide (función PURA, sin gh ni fs) qué labels de gate escribir en el PR.
+ *
+ * @returns {{ok:false, reason:string, labels?:string[], branch?:string}
+ *          |{ok:true, target:string, toAdd:string[], toRemove:string[]}}
+ */
+function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels, prHead } = {}) {
+    const issueNum = parseInt(issue, 10);
+    if (!Number.isInteger(issueNum) || issueNum <= 0) return { ok: false, reason: 'sin_issue' };
+    const pr = parseInt(prNumber, 10);
+    if (!Number.isInteger(pr) || pr <= 0) return { ok: false, reason: 'pr_no_resuelto' };
+
+    // SEC-1 — resolución estricta por rama. `agent/5864-…` NO matchea el issue
+    // 586 ni el 58640: el separador `-` es parte del prefijo exigido.
+    if (typeof branch !== 'string' || !branch.startsWith(`agent/${issueNum}-`)) {
+        return { ok: false, reason: 'rama_no_corresponde_al_issue', branch: branch || null };
+    }
+
+    // SEC-2 — procedencia del PR DESTINO. El chequeo de arriba valida la rama
+    // LOCAL; éste valida el PR sobre el que realmente se va a escribir. Sin él,
+    // un PR abierto desde un fork con la rama `agent/<issue>-<skill>` recibiría
+    // el `qa:passed` del issue y con eso pasaría el gate de merge (que audita
+    // la rama de origin, no el head del fork, y mergea el SHA del fork).
+    // Fail-closed: si no hay datos de procedencia, no se escribe nada.
+    const prov = prProvenance.checkPrProvenance(prHead, { branch, repo: EXPECTED_PR_REPO });
+    if (!prov.ok) {
+        return { ok: false, reason: prov.reason, detail: prov.detail || null, prNumber: pr };
+    }
+    // El PR consultado tiene que ser el mismo que vamos a editar: si `gh` nos
+    // devolvió otro número, la referencia no es confiable.
+    if (prHead.number !== undefined && parseInt(prHead.number, 10) !== pr) {
+        return { ok: false, reason: 'procedencia_desconocida', detail: `pr consultado #${prHead.number} ≠ destino #${pr}` };
+    }
+
+    const norm = (list) => [...new Set(
+        (Array.isArray(list) ? list : [])
+            .map((l) => ((l && typeof l === 'object' && l.name) ? String(l.name) : String(l))),
+    )];
+    const issueGates = norm(issueLabels).filter((l) => QA_GATE_LABELS.includes(l));
+    const currentPr = norm(prLabels);
+
+    if (issueGates.length === 0) return { ok: false, reason: 'issue_sin_label_de_gate' };
+
+    // Precedencia determinística. Un issue con señal negativa Y positiva a la
+    // vez es un estado incoherente: no se toca el PR (SEC-2).
+    const blocking = issueGates.filter((l) => QA_GATE_BLOCKING.has(l));
+    const passing = issueGates.filter((l) => QA_LABELS_OK.has(l));
+    if (blocking.length > 1 || (blocking.length > 0 && passing.length > 0)) {
+        return { ok: false, reason: 'labels_de_gate_en_conflicto', labels: issueGates };
+    }
+    const target = blocking.length === 1
+        ? blocking[0]
+        : (passing.includes('qa:passed') ? 'qa:passed' : 'qa:skipped');
+
+    const toRemove = QA_GATE_LABELS.filter((l) => l !== target && currentPr.includes(l));
+    const toAdd = currentPr.includes(target) ? [] : [target];
+
+    // CA-4 / SEC-R4 — el guard del dueño único corre sobre el estado proyectado
+    // DEL PR (SEC-4: labels del PR, nunca los del issue).
+    const projected = new Set(currentPr);
+    for (const l of toRemove) projected.delete(l);
+    for (const l of toAdd) projected.add(l);
+    gateLabelReconciler.assertMutualExclusion(projected, { target, toAdd, toRemove });
+
+    if (toAdd.length === 0 && toRemove.length === 0) {
+        return { ok: false, reason: 'pr_ya_reconciliado', labels: [target] };
+    }
+    return { ok: true, target, toAdd, toRemove };
+}
+
+/**
+ * Aplica la propagación contra GitHub. NUNCA es fatal: si falla, el PR queda
+ * sin el label y la Fase 5 bloquea fail-closed, que es el comportamiento
+ * correcto. Devuelve los labels efectivamente aplicados (o `[]`).
+ */
+function propagateGateLabelToPr({ issue, prNumber, branch, issueLabels, log = () => {}, ghImpl = git.runGh } = {}) {
+    let decision;
+    try {
+        // Una sola consulta trae labels FRESCOS (SEC-4: los del PR, nunca los
+        // del issue) y los datos de procedencia (SEC-2), leídos acá mismo para
+        // minimizar la ventana TOCTOU contra el `gh pr edit`.
+        const prHead = fetchPrForGateWrite(prNumber, { ghImpl });
+        const prLabels = (prHead && Array.isArray(prHead.labels))
+            ? prHead.labels.map((l) => ((l && l.name) ? l.name : String(l)))
+            : [];
+        decision = buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels, prHead });
+    } catch (e) {
+        log(`[delivery] gate QA issue→PR: no se propaga (${(e && e.message || '').slice(0, 200)})`);
+        return [];
+    }
+    if (!decision.ok) {
+        log(`[delivery] gate QA issue→PR: no se propaga al PR #${prNumber} (${decision.reason})`);
+        return [];
+    }
+    // Un solo `gh pr edit` con removes + add: GitHub lo aplica como una única
+    // edición, así que no existe ventana con `qa:passed` y `qa:failed` juntos.
+    const editArgs = ['pr', 'edit', String(prNumber)];
+    for (const l of decision.toRemove) editArgs.push('--remove-label', l);
+    for (const l of decision.toAdd) editArgs.push('--add-label', l);
+    let res;
+    try {
+        res = ghImpl(editArgs, { cwd: WORK_DIR, timeoutMs: 60 * 1000 });
+    } catch (e) {
+        log(`[delivery] gate QA issue→PR: gh pr edit lanzó excepción (${(e && e.message || '').slice(0, 200)})`);
+        return [];
+    }
+    if (!res || res.exit_code !== 0) {
+        const err = ((res && (res.stderr || res.stdout)) || '').slice(0, 200);
+        log(`[delivery] gate QA issue→PR: gh pr edit falló (${err || 'sin stderr'}) — el gate sigue cerrado`);
+        return [];
+    }
+    log(`[delivery] gate QA issue→PR: PR #${prNumber} → ${decision.target}`
+        + (decision.toRemove.length ? ` (quitados: ${decision.toRemove.join(',')})` : '')
+        + ` [desde el issue #${issue}]`);
+    return decision.toAdd;
 }
 
 function getPRChangedPaths(prNumber) {
@@ -200,13 +398,64 @@ function getPRChangedPaths(prNumber) {
 // sin rama, y PR sin archivos → `{ ok:false, reason }`. NUNCA se degrada a
 // listas vacías (una lista de archivos vacía haría que CODEOWNERS no matchee
 // nada y el PR pase como "sin owners humanos").
+//
+// #6012 CA-1 — El estado de mergeabilidad (`mergeable`, `mergeStateStatus`,
+// `state`) se lee en LA MISMA llamada que los gates. No se agrega una lectura
+// separada a propósito: una segunda llamada reabriría la ventana TOCTOU que
+// #5420 cerró (leí el estado → alguien pushea → mergeo con el estado viejo).
+
+// Enums cerrados de la API de GitHub. Cualquier valor fuera de la lista se
+// normaliza a `null` — ver `normalizeMergeState`.
+const MERGE_STATE_VALUES = new Set([
+    'BEHIND', 'BLOCKED', 'CLEAN', 'DIRTY', 'DRAFT', 'HAS_HOOKS', 'UNKNOWN', 'UNSTABLE',
+]);
+const PR_STATE_VALUES = new Set(['OPEN', 'CLOSED', 'MERGED']);
+const MERGEABLE_VALUES = new Set(['MERGEABLE', 'CONFLICTING', 'UNKNOWN']);
+
+// #6012 CA-1/CA-4 — Normalizador PURO del estado de mergeabilidad.
+//
+// Por qué `null` y no `{ok:false}`: si GitHub omite (o renombra) uno de estos
+// campos, un `ok:false` bloquearía TODA entrega, no sólo el caso del 405 — el
+// blast radius sería el pipeline entero. El fail-closed correcto acá es
+// devolver `null` ("no tengo señal") y dejar que el clasificador caiga en su
+// default terminal: `null` NUNCA habilita el reintento, sólo un `'UNKNOWN'`
+// explícito del servidor lo hace. Los campos duros (headRefOid, headRefName,
+// files) mantienen su `ok:false` — ahí la ausencia sí es lectura degradada.
+function normalizeMergeState(parsed = {}) {
+    const pick = (value, allowed) => {
+        const v = typeof value === 'string' ? value.trim().toUpperCase() : '';
+        return allowed.has(v) ? v : null;
+    };
+    const src = (parsed && typeof parsed === 'object') ? parsed : {};
+    return {
+        mergeStateStatus: pick(src.mergeStateStatus, MERGE_STATE_VALUES),
+        state: pick(src.state, PR_STATE_VALUES),
+        mergeable: pick(src.mergeable, MERGEABLE_VALUES),
+    };
+}
+
+// Campos del snapshot. `SNAPSHOT_FIELDS_LEGACY` es el fallback si el `gh`
+// instalado no conoce los 3 campos nuevos (ver degradación más abajo).
+const SNAPSHOT_FIELDS = 'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state';
+const SNAPSHOT_FIELDS_LEGACY = 'labels,files,headRefOid,headRefName';
+
 function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR } = {}) {
+    const view = (fields) => ghImpl(
+        ['pr', 'view', String(prNumber), '--json', fields],
+        { cwd, timeoutMs: 60 * 1000 },
+    );
     let res;
     try {
-        res = ghImpl(
-            ['pr', 'view', String(prNumber), '--json', 'labels,files,headRefOid,headRefName'],
-            { cwd, timeoutMs: 60 * 1000 },
-        );
+        res = view(SNAPSHOT_FIELDS);
+        // #6012 — Degradación explícita: un `gh` viejo que no conozca alguno de
+        // los 3 campos nuevos sale != 0 con "Unknown JSON field". Sin este
+        // fallback, ese `gh` bloquearía TODAS las entregas (riesgo ALTO
+        // identificado por el arquitecto). Al reintentar con el set legacy, los
+        // 3 campos quedan en `null` y el clasificador cae en su default
+        // terminal = exactamente el comportamiento previo a este issue.
+        if (res && res.exit_code !== 0 && /unknown\s+json\s+field/i.test(`${res.stderr || ''}\n${res.stdout || ''}`)) {
+            res = view(SNAPSHOT_FIELDS_LEGACY);
+        }
     } catch (e) {
         return { ok: false, reason: `gh pr view lanzó excepción: ${codeowners.sanitizeRefReason(e && e.message, 120)}` };
     }
@@ -248,7 +497,7 @@ function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR } = {}) {
         return { ok: false, reason: 'gh pr view no devolvió archivos del PR (lectura degradada)' };
     }
 
-    return { ok: true, labels, files, headRefOid, headRefName };
+    return { ok: true, labels, files, headRefOid, headRefName, ...normalizeMergeState(parsed) };
 }
 
 function applyNeedsHumanLabel(issue, prNumber, owners, repoRoot) {
@@ -293,9 +542,37 @@ function tmpFile(prefix, content) {
 // no escalar al operador. Se distingue por el mensaje, no por el status pelado:
 // un 409 ambiguo se mantiene como conflicto terminal (fail-closed).
 //
-// Shape: { conflict, retryable, kind, httpStatus, reason }.
-//   kind: 'ok' | 'head-changed' | 'not-mergeable' | 'generic'
-function classifyMergeFailure(res = {}) {
+// #6012 — El 405 dejaba de ser ambiguo sólo en apariencia. GitHub también lo
+// devuelve mientras TODAVÍA ESTÁ CALCULANDO la mergeabilidad del PR recién
+// creado (`mergeStateStatus: UNKNOWN`), y ahí no hay ningún conflicto: es una
+// condición transitoria que el propio pipeline resuelve esperando. Tomarla como
+// conflicto convertía una entrega sana en un `needs-human` permanente (PRs
+// #6010 / #6011, mergeados después sin un solo cambio de código).
+//
+// La señal autoritativa NO es el status HTTP pelado ni `mergeable`: es
+// `mergeStateStatus`, que distingue los cuatro casos que el 405 mezcla:
+//
+//   UNKNOWN  → GitHub está calculando       → transitorio, se espera y reintenta
+//   DIRTY    → conflicto CONFIRMADO         → escala al operador
+//   BLOCKED  → protección de rama frenando  → escala, JAMÁS reintenta
+//   DRAFT    → PR en borrador               → escala, JAMÁS reintenta
+//   null/otro→ sin señal                    → default fail-closed (= hoy)
+//
+// BLOCKED y DRAFT no entran al camino de reintento a propósito: son controles
+// de seguridad haciendo su trabajo, y reintentar contra ellos los convertiría
+// en un bucle silencioso que esconde "faltan aprobaciones" (hallazgo ALTO de
+// security, OWASP A04). `mergeable` NO se usa para decidir: con branch
+// protection frenando el merge vale `MERGEABLE`, así que clasificar por él
+// mandaría un control activo al camino transitorio.
+//
+// `ctx` ausente o incompleto ⇒ comportamiento idéntico al previo a #6012:
+// 405 = conflicto terminal, no reintentable. El default fail-closed no se
+// relaja (CA-4).
+//
+// Shape: { conflict, retryable, kind, httpStatus, confirmed, reason }.
+//   kind: 'ok' | 'head-changed' | 'not-mergeable' | 'mergeability-unknown'
+//       | 'gate-block' | 'generic'
+function classifyMergeFailure(res = {}, ctx = {}) {
     if (!res || res.exit_code === 0) {
         return { conflict: false, retryable: false, kind: 'ok', httpStatus: null, reason: 'ok' };
     }
@@ -322,11 +599,36 @@ function classifyMergeFailure(res = {}) {
 
     // 405/409 son las señales autoritativas de "no mergeable" del merge squash.
     if (httpStatus === 405 || httpStatus === 409) {
-        return { conflict: true, retryable: false, kind: 'not-mergeable', httpStatus, reason: `http_${httpStatus}` };
+        const mergeState = normalizeMergeState(ctx).mergeStateStatus;
+        // El 409 NO se reclasifica: su semántica canónica es "head branch was
+        // modified" y ya tiene su propio camino (#5420, arriba). Sólo el 405
+        // admite lectura transitoria, y sólo con UNKNOWN explícito del servidor.
+        if (httpStatus === 405 && mergeState === 'UNKNOWN') {
+            return {
+                conflict: false, retryable: true, kind: 'mergeability-unknown',
+                httpStatus, confirmed: false, reason: 'http_405_mergeability_unknown',
+            };
+        }
+        if (mergeState === 'BLOCKED' || mergeState === 'DRAFT') {
+            return {
+                conflict: false, retryable: false, kind: 'gate-block', httpStatus, confirmed: false,
+                gate: mergeState === 'BLOCKED' ? 'branch-protection' : 'pr-draft',
+                reason: `http_${httpStatus}_${mergeState.toLowerCase()}`,
+            };
+        }
+        // DIRTY = conflicto CONFIRMADO. `null` / cualquier otro estado = default
+        // fail-closed: conflicto terminal igual que hoy, pero marcado
+        // `confirmed:false` para que el log y el texto al operador no afirmen un
+        // conflicto que nadie verificó (CA-9 / CA-UX-1).
+        return {
+            conflict: true, retryable: false, kind: 'not-mergeable', httpStatus,
+            confirmed: mergeState === 'DIRTY', reason: `http_${httpStatus}`,
+        };
     }
     // Defensa textual: gh puede envolver el status en el cuerpo del error.
+    // `confirmed:false` — la detección es por texto, no por estado del servidor.
     if (notMergeableText) {
-        return { conflict: true, retryable: false, kind: 'not-mergeable', httpStatus, reason: 'not_mergeable_text' };
+        return { conflict: true, retryable: false, kind: 'not-mergeable', httpStatus, confirmed: false, reason: 'not_mergeable_text' };
     }
     return { conflict: false, retryable: false, kind: 'generic', httpStatus, reason: 'generic_error' };
 }
@@ -369,6 +671,33 @@ function confirmMergeResponse(res = {}) {
 // quema cuota y esconde un problema real.
 const MAX_MERGE_ATTEMPTS = 2;
 
+// #6012 CA-8 — Presupuesto SEPARADO para la espera de mergeabilidad. No comparte
+// contador con MAX_MERGE_ATTEMPTS a propósito: si la espera del 405 consumiera
+// el único reintento de `head-changed`, un head que se mueve después escalaría
+// de más (hallazgo BAJO de security).
+const MAX_MERGEABILITY_WAITS = 6;
+// Backoff acotado: 1+2+4+8+8+8 = 31 s de techo TOTAL por invocación (no por
+// intento). Queda muy por debajo del timeoutMs de 3 min del propio PUT.
+const MERGEABILITY_BACKOFF_MS = [1000, 2000, 4000, 8000, 8000, 8000];
+
+// Buffer compartido de 4 bytes para `sleepSync`. Nunca hacemos `Atomics.notify`:
+// se usa puramente como sleep que CEDE la CPU (a diferencia de un busy-wait,
+// que bajo carga no deja schedulear a nadie más). Mismo patrón que
+// `.pipeline/lib/file-lock.js` — se copia acá, en vez de importarlo, porque
+// file-lock NO lo exporta y no vale la pena ampliar su superficie pública.
+const SLEEP_SHARED = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(ms) {
+    if (!(ms > 0)) return;
+    try {
+        Atomics.wait(SLEEP_SHARED, 0, 0, ms);
+    } catch {
+        // Degradación, no rotura: si Atomics no está disponible, busy-wait.
+        const until = Date.now() + ms;
+        while (Date.now() < until) { /* espera */ }
+    }
+}
+
 // ============================================================================
 // #5420 — Gate de merge: unidad testeable con dependencias inyectadas.
 // ============================================================================
@@ -387,8 +716,24 @@ const MAX_MERGE_ATTEMPTS = 2;
 // empezar por el paso 1 — nunca reusa labels, paths, rama ni SHA del intento
 // anterior (si el head se movió, los gates anteriores ya no valen nada).
 //
+// #6012 — Ese invariante se extiende AL 405: la espera por mergeabilidad y su
+// reintento salen por el MISMO `continue`, así que también vuelven al paso 1 y
+// reevalúan los 6 gates. Está prohibido envolver `mergePR(...)` en un bucle
+// local: mergearía a `main` con un veredicto de QA y un CODEOWNERS leídos ~30 s
+// antes, y en esa ventana alguien puede pushear a la rama o cambiar labels
+// (hallazgo ALTO de security, OWASP A08).
+//
+// Dos presupuestos INDEPENDIENTES (CA-8):
+//   `attempt` — gates/head-changed, tope `MAX_MERGE_ATTEMPTS` (2).
+//   `waits`   — espera de mergeabilidad, tope `MAX_MERGEABILITY_WAITS` (6).
+// La espera hace `attempt--` para no consumir presupuesto de gates. El bucle
+// termina siempre: cada vuelta o retorna, o incrementa `waits` (monótono, nunca
+// se decrementa, y ambos callsites están guardados por `waits < maxWaits`), o
+// incrementa `attempt` neto. Techo duro de vueltas = attemptsMax + maxWaits.
+//
 // Devuelve `{ status, ... }` con status ∈
-//   'merged' | 'no-qa-gate' | 'needs-human' | 'blocked' | 'conflict' | 'error'
+//   'merged' | 'no-qa-gate' | 'needs-human' | 'blocked' | 'conflict'
+//   | 'transient' | 'error'
 function attemptMergeWithGates({
     prNumber,
     getSnapshot,
@@ -397,17 +742,47 @@ function attemptMergeWithGates({
     mergePR,
     logAppend,
     maxAttempts = MAX_MERGE_ATTEMPTS,
+    // #6012 — El sleep es inyectable (default no-op en tests) para que la suite
+    // no espere 31 s reales por cada caso de polling.
+    sleepImpl = sleepSync,
+    maxMergeabilityWaits = MAX_MERGEABILITY_WAITS,
+    // Resultado del pre-check local `git merge-tree`. SÓLO se usa para loguear
+    // la contradicción con el servidor — nunca para decidir (CA-7).
+    mergeTreeClean = false,
 } = {}) {
     const log = typeof logAppend === 'function' ? logAppend : () => {};
     const attemptsMax = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : MAX_MERGE_ATTEMPTS;
+    const waitsMax = Number.isInteger(maxMergeabilityWaits) && maxMergeabilityWaits >= 0
+        ? maxMergeabilityWaits
+        : MAX_MERGEABILITY_WAITS;
+    const sleep = typeof sleepImpl === 'function' ? sleepImpl : sleepSync;
 
-    for (let attempt = 1; attempt <= attemptsMax; attempt++) {
+    let attempt = 0;
+    let waits = 0;
+
+    while (attempt < attemptsMax) {
+        attempt++;
         // (1) Snapshot único: labels + files + rama + SHA del head, atómico.
         const snapshot = getSnapshot(prNumber);
         if (!snapshot || snapshot.ok !== true) {
             const reason = (snapshot && snapshot.reason) || 'snapshot no disponible';
             log(`[delivery] gate merge: snapshot del PR no disponible (${reason}) — merge bloqueado`);
             return { status: 'blocked', gate: 'snapshot', reason, attempt };
+        }
+
+        // (1b) #6012 CA-3 — Un PR ya cerrado también reporta UNKNOWN en
+        //      `mergeable`/`mergeStateStatus` (verificado sobre los PRs #6010 y
+        //      #6011, ya MERGED, con ambos campos en UNKNOWN). Sin este corte, el
+        //      polling se comería el backoff completo esperando un estado que ya
+        //      nunca va a resolverse.
+        if (snapshot.state === 'MERGED') {
+            log('[delivery] gate merge: el PR ya figura MERGED — éxito idempotente, no se reintenta el PUT');
+            return { status: 'merged', sha: null, idempotent: true, snapshot, attempt };
+        }
+        if (snapshot.state && snapshot.state !== 'OPEN') {
+            const reason = `el PR está en estado ${snapshot.state}`;
+            log(`[delivery] gate merge: ${reason} — merge bloqueado`);
+            return { status: 'blocked', gate: 'pr-closed', reason, snapshot, attempt };
         }
 
         // (2) Gate de QA sobre los labels del MISMO snapshot que se va a mergear.
@@ -440,8 +815,23 @@ function attemptMergeWithGates({
             return { status: 'blocked', gate: 'provenance', reason, snapshot, attempt };
         }
 
+        // (5b) #6012 CA-2 — Espera pre-merge. Si GitHub todavía está calculando
+        //      la mergeabilidad, disparar el PUT ahora produce el 405 que este
+        //      issue vino a arreglar. Mejor esperar y reevaluar TODO que pegarle
+        //      a la API en la ventana ciega.
+        if (snapshot.mergeStateStatus === 'UNKNOWN' && waits < waitsMax) {
+            const delay = MERGEABILITY_BACKOFF_MS[waits] || 8000;
+            waits++;
+            log(`[delivery] gate merge: mergeStateStatus=UNKNOWN (GitHub calculando) — espera ${delay}ms (${waits}/${waitsMax}) y reevaluación completa de gates`);
+            sleep(delay);
+            attempt--;  // la espera NO consume presupuesto de gates (CA-8)
+            continue;
+        }
+
         // (6) Merge con el SHA observado al evaluar los gates. Si el head se
         //     movió, GitHub responde 409 y NO mergea nada.
+        //     El `sha` sale del snapshot del intento VIGENTE — el `continue` de
+        //     arriba garantiza que nunca se reuse el previo a una espera.
         const mergeRes = mergePR({ prNumber, sha: snapshot.headRefOid, headRefName: snapshot.headRefName });
         const confirmed = confirmMergeResponse(mergeRes);
         if (confirmed.ok) {
@@ -454,7 +844,47 @@ function attemptMergeWithGates({
             return { status: 'blocked', gate: 'merge-unconfirmed', reason: confirmed.reason, snapshot, attempt };
         }
 
-        const classification = classifyMergeFailure(mergeRes);
+        const classification = classifyMergeFailure(mergeRes, {
+            mergeStateStatus: snapshot.mergeStateStatus,
+            state: snapshot.state,
+        });
+
+        // #6012 CA-7 — El pre-check local corre contra el `origin/main` que
+        // tenga el worktree, que puede estar viejo. Si contradice al servidor,
+        // se DEJA CONSTANCIA pero manda la señal del servidor: usar la local
+        // para reclasificar sería el mismo error de razonamiento que el falso
+        // positivo de CODEOWNERS (#5898).
+        if (mergeTreeClean === true && classification.kind !== 'ok') {
+            log('[delivery] contradicción: merge-tree local dio integración limpia y la API respondió no-mergeable — manda la señal del servidor');
+        }
+
+        // #6012 CA-6 — El 405 transitorio sale por el MISMO `continue` que
+        // `head-changed`: vuelve al paso 1 y reevalúa los 6 gates.
+        if (classification.kind === 'mergeability-unknown') {
+            if (waits < waitsMax) {
+                const delay = MERGEABILITY_BACKOFF_MS[waits] || 8000;
+                waits++;
+                log(`[delivery] gate merge: HTTP 405 con mergeStateStatus=UNKNOWN — transitorio, espera ${delay}ms (${waits}/${waitsMax}) y reevaluación completa de gates`);
+                sleep(delay);
+                attempt--;  // no consume presupuesto de gates (CA-8)
+                continue;
+            }
+            // CA-10 — Presupuesto agotado con el estado todavía sin resolver.
+            // NO es conflicto y NO escala: es transitorio y reintentable.
+            log(`[delivery] gate merge: mergeStateStatus siguió en UNKNOWN tras ${waits} esperas — resultado TRANSITORIO (no es conflicto, no escala)`);
+            return { status: 'transient', classification, waits, mergeRes, snapshot, attempt };
+        }
+
+        // #6012 CA-5 — Controles activos (branch protection / draft). Escalan
+        // por el camino de gate-block y NUNCA se reintentan.
+        if (classification.kind === 'gate-block') {
+            log(`[delivery] gate merge: HTTP ${classification.httpStatus} con estado ${classification.gate} — control activo, escala sin reintentar`);
+            return {
+                status: 'blocked', gate: classification.gate,
+                reason: classification.reason, classification, mergeRes, snapshot, attempt,
+            };
+        }
+
         if (classification.retryable && attempt < attemptsMax) {
             log(`[delivery] gate merge: head movido (${classification.reason}) — reintento ${attempt + 1}/${attemptsMax} reevaluando todos los gates`);
             continue;
@@ -517,14 +947,45 @@ function classifyConflictFiles(paths, allowlist) {
 // como BLOQUEO HUMANO (human-block.js → bloqueado-humano/ + needs-human) y NO
 // como rebote técnico a dev. Debe matchear HUMAN_BLOCK_PATTERNS: incluye
 // "requiere intervención humana" + "merge manual" a propósito.
-function buildConflictMotivo({ prNumber, branch, httpStatus } = {}) {
+//
+// #6012 CA-UX-1 — `confirmed` distingue el conflicto verificado
+// (`mergeStateStatus=DIRTY`) del default fail-closed (estado sin señal). Ambos
+// frenan igual y ambos siguen matcheando HUMAN_BLOCK_PATTERNS — lo que cambia
+// es que el texto ya no le AFIRMA al operador un conflicto que nadie verificó.
+// Decirle "resolvé el conflicto a mano" cuando en realidad falta una aprobación
+// lo manda a buscar un conflicto inexistente: el mismo defecto que este issue
+// corrige, pero en el canal donde más cuesta.
+function buildConflictMotivo({ prNumber, branch, httpStatus, confirmed = false } = {}) {
     const pr = prNumber ? `PR #${prNumber}` : 'el PR';
     const rama = branch ? ` (rama ${sanitizeReason(branch).sanitized})` : '';
     const http = httpStatus ? ` [HTTP ${httpStatus}]` : '';
+    const que = confirmed
+        ? `Conflicto de merge REAL contra main en ${pr}${rama}${http}`
+        : `Merge bloqueado en ${pr}${rama}${http}: GitHub no pudo mergear y el estado del PR no confirma la causa`;
     return (
-        `Conflicto de merge REAL contra main en ${pr}${rama}${http} — requiere intervención humana. `
+        `${que} — requiere intervención humana. `
         + `Delivery frenado y escalado al operador: merge manual pendiente (fail-closed, sin auto-merge por silencio). `
         + `Opciones: resolver (arreglarlo a mano) / abortar (descartar este delivery) / reintentar (reintentar el merge).`
+    );
+}
+
+// #6012 CA-UX-4 — Motivo del resultado TRANSITORIO (CA-10). No escala: viaja
+// como error técnico y rebota acotado por el circuit breaker de 3.
+//
+// ⚠️ Este texto está redactado para NO matchear `HUMAN_BLOCK_PATTERNS`
+// (lib/human-block.js): nada de "conflicto de merge", "merge bloqueado/manual",
+// "requiere intervención humana" ni "PR #N pendiente … merge". Cualquiera de
+// esas cadenas lo enrutaría como bloqueo humano en vez de rebote técnico — o
+// sea, reintroduciría exactamente el `needs-human` que este issue elimina.
+// Hay un test que lo verifica contra `isHumanBlockReason`.
+function buildTransientMergeMotivo({ prNumber, waits } = {}) {
+    const pr = prNumber ? `PR #${prNumber}` : 'el PR';
+    const esperas = Number.isInteger(waits) && waits > 0 ? waits : MAX_MERGEABILITY_WAITS;
+    return (
+        `Estado de merge transitorio de GitHub en ${pr}: mergeStateStatus siguió en UNKNOWN `
+        + `tras ${esperas} esperas escalonadas (~31 s), o sea que el servidor todavía no terminó `
+        + `de calcular la mergeabilidad. No hay defecto de dev ni evidencia de integración sucia: `
+        + `la entrega se reintenta tal cual, sin cambios de código.`
     );
 }
 
@@ -533,19 +994,30 @@ function buildConflictMotivo({ prNumber, branch, httpStatus } = {}) {
 // REAL, no el ficticio de rebase; (2) qué hace cada opción; (3) cómo responder;
 // (4) main intacto (tono fail-closed de #4632); (5) contexto saneado del
 // conflicto (R5/R6: sanitizeReason redacta secrets + escapa CRLF).
-function buildMergeConflictEscalation({ issue, prNumber, branch, httpStatus, conflictExcerpt } = {}) {
+//
+// #6012 CA-UX-1 — Con `confirmed:false` el mensaje describe lo que realmente se
+// observó (GitHub rechazó el merge, el estado no dice por qué) en vez de afirmar
+// un conflicto. Se mantiene el mismo formato de #4632/#4658: qué pasó → qué hace
+// cada opción → cómo responder → `main` intacto.
+function buildMergeConflictEscalation({ issue, prNumber, branch, httpStatus, conflictExcerpt, confirmed = false } = {}) {
     const safe = (v) => sanitizeReason(v == null ? '' : String(v)).sanitized.replace(/[\r\n]+/g, ' ').slice(0, 300);
     const excerpt = conflictExcerpt ? safe(conflictExcerpt).slice(0, 240) : '';
     const lines = [
-        '🛑 GATE · Delivery frenado por CONFLICTO DE MERGE REAL — necesito que decidas',
+        confirmed
+            ? '🛑 GATE · Delivery frenado por CONFLICTO DE MERGE REAL — necesito que decidas'
+            : '🛑 GATE · Delivery frenado: GitHub rechazó el merge y no pude confirmar la causa — necesito que decidas',
         `Issue/PR: #${safe(issue)} / ${prNumber ? `PR #${safe(prNumber)}` : '(sin PR)'}  ·  Rama: ${safe(branch)}`,
         httpStatus ? `Señal server-side: HTTP ${safe(httpStatus)} (GitHub no puede mergear limpio).` : 'GitHub no puede mergear limpio.',
         '',
-        'Esto NO es el conflicto ficticio de rebase que #4658 eliminó: es un conflicto de merge GENUINO contra `main`.',
+        confirmed
+            ? 'Esto NO es el conflicto ficticio de rebase que #4658 eliminó: es un conflicto de merge GENUINO contra `main`.'
+            : 'El estado del PR NO confirma un conflicto: puede estar perfecto. Lo que no pude es acreditar por qué GitHub lo rechazó, y mergear sin esa acreditación sería saltear el gate.',
         '`main` quedó INTACTO. Nada se mergeó. Esta espera es intencional (fail-closed), no un fallo silencioso.',
         '',
         'Opciones:',
-        '• *resolver* — lo arreglás a mano (resolvés el conflicto y mergeás el PR vos).',
+        confirmed
+            ? '• *resolver* — lo arreglás a mano (resolvés el conflicto y mergeás el PR vos).'
+            : '• *resolver* — lo revisás y, si está sano, mergeás el PR vos.',
         '• *abortar* — se descarta este delivery.',
         '• *reintentar* — se reintenta el merge tal cual.',
         '',
@@ -627,9 +1099,9 @@ function auditFailClosedDecision({ issue, motivo, extra, timestamp, log } = {}) 
     }
 }
 
-function escalateMergeConflict({ issue, prNumber, branch, httpStatus, conflictExcerpt, timestamp, logAppend } = {}) {
+function escalateMergeConflict({ issue, prNumber, branch, httpStatus, conflictExcerpt, confirmed = false, timestamp, logAppend } = {}) {
     const log = typeof logAppend === 'function' ? logAppend : () => {};
-    const motivo = buildConflictMotivo({ prNumber, branch, httpStatus });
+    const motivo = buildConflictMotivo({ prNumber, branch, httpStatus, confirmed });
 
     // (1) Audit central, tamper-evident. Override best-effort del pipelineDir.
     auditFailClosedDecision({
@@ -641,6 +1113,7 @@ function escalateMergeConflict({ issue, prNumber, branch, httpStatus, conflictEx
             pr: prNumber || null,
             branch: branch || null,
             http_status: httpStatus || null,
+            conflict_confirmado: confirmed === true,
             conflict_excerpt: conflictExcerpt ? String(conflictExcerpt).slice(0, 500) : null,
         },
     });
@@ -661,7 +1134,7 @@ function escalateMergeConflict({ issue, prNumber, branch, httpStatus, conflictEx
     }
 
     // (2b) Mensaje con opciones explícitas (UX #4658).
-    const optionsMsg = buildMergeConflictEscalation({ issue, prNumber, branch, httpStatus, conflictExcerpt });
+    const optionsMsg = buildMergeConflictEscalation({ issue, prNumber, branch, httpStatus, conflictExcerpt, confirmed });
     const enq = enqueueOperatorTelegram(optionsMsg);
     log(`[delivery] escalado operador ${enq.ok ? 'encolado' : `falló: ${enq.error}`}`);
 
@@ -685,6 +1158,18 @@ const GATE_BLOCK_LABELS = {
     provenance: 'no se pudo acreditar la procedencia de la rama del PR',
     'merge-unconfirmed': 'GitHub respondió sin confirmar el merge',
     'retry-exhausted': 'se agotaron los reintentos sin merge confirmado',
+    // #5629 — Gates que ANTES terminaban con exitCode 0 (marker `aprobado`)
+    // aunque el merge nunca ocurriera. Ahora escalan fail-closed como el resto.
+    'qa-gate': 'el PR no tiene el gate de QA (falta label qa:passed o qa:skipped)',
+    'codeowners-human': 'el PR toca paths con CODEOWNERS humano y exige review manual',
+    // #6012 CA-UX-2 — Estados que el 405 mezclaba con "conflicto de merge". Salen
+    // por este camino (no por el de conflicto) porque el vocabulario correcto ya
+    // está acá: "No es un conflicto de merge: el PR puede estar perfecto…".
+    // La acción que se le pide al operador es la de SU estado — aprobar/esperar
+    // checks o sacar el draft, no resolver un conflicto que no existe.
+    'branch-protection': 'la protección de rama bloquea el merge (faltan reviews o checks obligatorios)',
+    'pr-draft': 'el PR está en borrador (draft) y GitHub no permite mergearlo',
+    'pr-closed': 'el PR ya no está abierto',
 };
 
 // Motivo pensado para que el pulpo lo clasifique como BLOQUEO HUMANO
@@ -803,6 +1288,11 @@ async function main() {
     let prUrl = null;
     let mergeSha = null;
     let labelsApplied = [];
+    // #5629 — Flag ESTRUCTURADO de "merge frenado por un gate". Existe para que
+    // el reporte distinga un rebote técnico de una escalada fail-closed sin
+    // tener que adivinarlo parseando `motivo` (misma regla que aplica el
+    // dashboard: el estado se lee de campos, nunca de prosa).
+    let gateBlocked = false;
 
     const phaseStart = () => Date.now();
     const phaseEnd = (key, t0) => { phases[key] = Date.now() - t0; };
@@ -1036,6 +1526,11 @@ async function main() {
             logAppend(`[delivery] conflicto de merge REAL detectado (merge-tree) — escalando al operador sin rebote`);
             const esc = escalateMergeConflict({
                 issue, prNumber: null, branch, httpStatus: null,
+                // #6012 — Este SÍ es un conflicto confirmado: merge-tree corrió,
+                // está soportado y devolvió la lista concreta de archivos que
+                // chocan. El `confirmed:false` es para el 405 sin señal, no para
+                // esta detección (que no cambia — sigue siendo la de #4632/#4658).
+                confirmed: true,
                 conflictExcerpt, logAppend,
             });
             motivo = esc.motivo;
@@ -1079,7 +1574,7 @@ async function main() {
 
         // ── Fase 4: PR (crear o reutilizar) ───────────────────────────
         t = phaseStart();
-        let pr = findExistingPR(branch);
+        let pr = findExistingPR(branch, { log: logAppend });
         const stats = git.getDiffStats(WORK_DIR, 'origin/main');
 
         if (!pr) {
@@ -1128,6 +1623,17 @@ async function main() {
             labelsApplied = pr.labels;
             logAppend(`[delivery] PR existente #${prNumber}: ${prUrl}`);
         }
+
+        // #5864 — CA-1: el label de gate QA viaja del issue al PR sin
+        // intervención humana, ANTES de que la Fase 5 lea el snapshot del PR.
+        // Crítico en la rama de PR reusado: ese PR pudo nacer antes de que el
+        // ciclo de QA corriera, así que jamás heredó el label del `pr create`.
+        // Idempotente sobre el PR recién creado (ya trae el label).
+        if (prNumber) {
+            labelsApplied = Array.from(new Set([...labelsApplied, ...propagateGateLabelToPr({
+                issue, prNumber, branch, issueLabels: issueMeta.labels, log: logAppend,
+            })]));
+        }
         phaseEnd('pr_create', t);
 
         // ── Fase 5: auto-merge si gate QA presente ────────────────────
@@ -1146,6 +1652,9 @@ async function main() {
             const outcome = attemptMergeWithGates({
                 prNumber,
                 logAppend,
+                // #6012 CA-7 — El pre-check ya calculado se reusa SÓLO para
+                // loguear la contradicción con el servidor. No reclasifica nada.
+                mergeTreeClean: mergeCheck.supported === true && mergeCheck.mergeable === true,
                 getSnapshot: (n) => getPRSnapshot(n),
                 // #2652 + #5420 — CODEOWNERS desde origin/main, NO del worktree
                 // local (que puede estar podado) ni del head del PR (que podría
@@ -1182,14 +1691,49 @@ async function main() {
             }
 
             if (outcome.status === 'no-qa-gate') {
-                // Sin gate QA → no mergeamos ciegamente; el delivery termina OK pero deja el PR abierto.
-                motivo = `PR #${prNumber} creado pero sin label qa:passed/qa:skipped — merge bloqueado.`;
-                logAppend(`[delivery] ${motivo}`);
+                // #5629 — Sin gate QA no mergeamos ciegamente. ANTES esta rama
+                // sólo seteaba `motivo` y caía al final con `exitCode === 0`, así
+                // que el marker quedaba `resultado: aprobado` con el motivo
+                // confesando "merge bloqueado" (#5220 → PR #5277 nunca mergeado,
+                // issue ABIERTO, pintado 100% en la columna Entregado).
+                // "Entrega no completada" NO puede escribirse como aprobado.
+                //
+                // Escalamos por la misma vía que `blocked` en vez de rebotar con
+                // un `rechazado` plano: un rebote común manda el issue a una fase
+                // anterior e incrementa `rev`, y como el gate QA no se destraba
+                // solo, eso sería un loop de re-entrega que nunca cierra. El
+                // motivo human-block hace que el pulpo escale al operador sin
+                // rev++ (fail-closed, ver docs/pipeline/gates-firma-operador.md).
+                const esc = escalateMergeGateBlock({
+                    issue, prNumber, branch,
+                    gate: 'qa-gate',
+                    reason: 'el PR no tiene label qa:passed ni qa:skipped',
+                    logAppend,
+                });
+                motivo = esc.motivo;
+                gateBlocked = true;
+                exitCode = 1;
+                phaseEnd('pr_merge', t);
+                return; // finally: marker con motivo human-block → NO rebota, escala
             } else if (outcome.status === 'needs-human') {
+                // #5629 — Mismo tratamiento que `no-qa-gate` (antes: exitCode 0
+                // → marker `aprobado`; caso #5244 / PR #5280). El label
+                // `needs-human` se aplica IGUAL y antes de escalar: el board lo
+                // renderiza con la chapa `f-human` 👤, así que el issue no queda
+                // sin señal visible al dejar de pintarse como Entregado.
                 applyNeedsHumanLabel(issue, prNumber, outcome.owners, WORK_DIR);
                 labelsApplied = Array.from(new Set([...labelsApplied, 'needs-human']));
-                motivo = `PR #${prNumber} requiere review humano de ${outcome.owners.join(' ')} — merge bloqueado, label needs-human aplicado.`;
-                logAppend(`[delivery] ${motivo}`);
+                const esc = escalateMergeGateBlock({
+                    issue, prNumber, branch,
+                    gate: 'codeowners-human',
+                    reason: `review requerido de ${outcome.owners.join(' ')}`,
+                    logAppend,
+                });
+                motivo = esc.motivo;
+                gateBlocked = true;
+                exitCode = 1;
+                phaseEnd('pr_merge', t);
+                return; // finally: marker con motivo human-block → NO rebota, escala
             } else if (outcome.status === 'blocked') {
                 // #5420 — No pudimos VERIFICAR el merge (owners/procedencia/SHA/
                 // confirmación). Fail-closed al operador, sin rebote a dev: el
@@ -1199,6 +1743,7 @@ async function main() {
                     gate: outcome.gate, reason: outcome.reason, logAppend,
                 });
                 motivo = esc.motivo;
+                gateBlocked = true;
                 exitCode = 1;
                 phaseEnd('pr_merge', t);
                 return; // finally: marker con motivo human-block → NO rebota, escala a needs-human
@@ -1213,15 +1758,29 @@ async function main() {
                 const conflictExcerpt = git.redactInline(
                     (mergeRes.stderr || mergeRes.stdout || '').slice(0, 300),
                 );
-                logAppend(`[delivery] gh api merge → conflicto REAL (${cls.reason}) — escalando al operador sin rebote`);
+                // #6012 CA-9 — El log dejó de contradecirse. "conflicto REAL"
+                // sólo se escribe cuando `mergeStateStatus=DIRTY` lo confirma;
+                // el default fail-closed dice lo que de verdad pasó.
+                logAppend(cls.confirmed
+                    ? `[delivery] gh api merge → conflicto REAL confirmado (mergeStateStatus=DIRTY, ${cls.reason}) — escalando al operador sin rebote`
+                    : `[delivery] gh api merge → no mergeable SIN confirmación de estado (${cls.reason}) — fail-closed, escalando al operador sin rebote`);
                 const esc = escalateMergeConflict({
                     issue, prNumber, branch, httpStatus: cls.httpStatus,
-                    conflictExcerpt, logAppend,
+                    conflictExcerpt, confirmed: cls.confirmed === true, logAppend,
                 });
                 motivo = esc.motivo;
+                gateBlocked = true;
                 exitCode = 1;
                 phaseEnd('pr_merge', t);
                 return; // finally: marker con motivo human-block → NO rebota, escala a needs-human
+            } else if (outcome.status === 'transient') {
+                // #6012 CA-10 — GitHub nunca terminó de calcular la
+                // mergeabilidad. NO es conflicto y NO se escala: se rebota como
+                // error técnico, acotado por el circuit breaker de 3 rebotes
+                // (que es el tope explícito que pide CA-10 — no se re-encola sin
+                // rev++, eso esquivaría el breaker y ciclaría quemando cuota).
+                logAppend(`[delivery] gh api merge → estado transitorio (${outcome.waits} esperas, mergeStateStatus=UNKNOWN) — rebote técnico, sin escalar al operador`);
+                throw new Error(buildTransientMergeMotivo({ prNumber, waits: outcome.waits }));
             } else if (outcome.status !== 'merged') {
                 // Fallo genérico (infra: red, auth, 5xx): rebote técnico legítimo.
                 const mergeRes = outcome.mergeRes || {};
@@ -1275,13 +1834,20 @@ async function main() {
             reportLines.push('');
         }
         reportLines.push('### Veredicto');
+        // #5629 — El veredicto textual se deriva de campos estructurados
+        // (`mergeSha`, `gateBlocked`, `prNumber`), no de interpretar `motivo`.
+        // "Entrega completada" queda reservado al caso con SHA de merge real:
+        // antes un PR frenado por gate QA se reportaba como si sólo estuviera
+        // esperando, y el marker salía `aprobado`.
         reportLines.push(exitCode === 0
             ? (mergeSha
                 ? 'Entrega completada y mergeada a main.'
                 : (prNumber
-                    ? 'PR creado, esperando gate QA antes del merge.'
+                    ? 'PR creado; merge no intentado (auto-merge desactivado). Entrega NO completada.'
                     : 'Entrega cerrada sin PR — entregable ya estaba en main (ver motivo).'))
-            : 'Delivery rechazado — ver motivo y rebote.');
+            : (gateBlocked
+                ? 'Entrega NO completada — merge frenado fail-closed y escalado al operador. main quedó intacto.'
+                : 'Delivery rechazado — ver motivo y rebote.'));
         const report = reportLines.join('\n');
         logAppend('[delivery] --- REPORTE ---');
         logAppend(report);
@@ -1372,6 +1938,13 @@ module.exports = {
     getPRChangedPaths,
     applyNeedsHumanLabel,
     hasQaGate,
+    // #5864 — propagación del label de gate QA issue → PR.
+    QA_GATE_LABELS,
+    buildPrGatePropagation,
+    propagateGateLabelToPr,
+    // #5864 SEC-2 — procedencia del PR destino (defensa contra PRs de fork).
+    fetchPrForGateWrite,
+    EXPECTED_PR_REPO,
     // #5420 — camino de merge endurecido: snapshot único, gates en orden,
     // procedencia, SHA pinneado y confirmación estricta.
     getPRSnapshot,
@@ -1380,8 +1953,17 @@ module.exports = {
     buildGateBlockMotivo,
     buildGateBlockEscalation,
     escalateMergeGateBlock,
+    // #5629 — expuesto para que los tests verifiquen que los gates que frenan
+    // el merge (incluidos `qa-gate` y `codeowners-human`) escalan fail-closed
+    // en vez de degradar el marker a `resultado: aprobado`.
+    GATE_BLOCK_LABELS,
     MAX_MERGE_ATTEMPTS,
     OWNERS_REF,
+    // #6012 — clasificación transitoria vs conflicto confirmado del HTTP 405.
+    normalizeMergeState,
+    MAX_MERGEABILITY_WAITS,
+    MERGEABILITY_BACKOFF_MS,
+    buildTransientMergeMotivo,
     // #4658 — detección de conflicto real + escalado fail-closed.
     classifyMergeFailure,
     shouldEscalateLocalMerge,

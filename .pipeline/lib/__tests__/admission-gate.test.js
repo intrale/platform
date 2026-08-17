@@ -303,3 +303,178 @@ test('alreadyCommented: PR detecta su propio prefijo (no el de issue)', () => {
     ];
     assert.equal(gate.alreadyCommented(comments, 'pr'), false);
 });
+
+// -----------------------------------------------------------------------------
+// needsAdmissionLabel (#5680)
+//
+// El gate deja de proponer label de admisión para recomendaciones de agente
+// pendientes de triaje. `isAdmitted` NO cambia (tiene consumidor externo en
+// `wizards/ola/index.js:245`); la pregunta nueva vive en un predicado propio.
+// -----------------------------------------------------------------------------
+
+// T1 — las recomendaciones pendientes de triaje quedan afuera, por los dos
+// labels: `tipo:recomendacion` (vigente) y `source:recommendation` (histórico).
+test('needsAdmissionLabel: tipo:recomendacion → false (#5680)', () => {
+    assert.equal(gate.needsAdmissionLabel([{ name: 'tipo:recomendacion' }]), false);
+});
+
+test('needsAdmissionLabel: source:recommendation (histórico) → false (#5680)', () => {
+    assert.equal(gate.needsAdmissionLabel([{ name: 'source:recommendation' }]), false);
+});
+
+test('needsAdmissionLabel: recomendación con labels extra sigue excluida (#5680)', () => {
+    assert.equal(
+        gate.needsAdmissionLabel([{ name: 'tipo:recomendacion' }, { name: 'needs-human' }, { name: 'area:pipeline' }]),
+        false,
+    );
+});
+
+// Una recomendación YA aprobada por un humano dejó de ser backlog: es trabajo
+// real. `isRecommendationIssue()` ya devuelve false ante `recommendation:approved`.
+test('needsAdmissionLabel: recommendation:approved → true (ya no es backlog) (#5680)', () => {
+    assert.equal(
+        gate.needsAdmissionLabel([{ name: 'tipo:recomendacion' }, { name: 'recommendation:approved' }]),
+        true,
+    );
+});
+
+// T2 — blinda R4 (excluir de más = DoS auto-infligido sobre la cola de entrada).
+// Los issues reales sin label de admisión SIGUEN necesitándolo.
+test('needsAdmissionLabel: issue sin labels → true (#5680)', () => {
+    assert.equal(gate.needsAdmissionLabel([]), true);
+    assert.equal(gate.needsAdmissionLabel(null), true);
+    assert.equal(gate.needsAdmissionLabel(undefined), true);
+});
+
+test('needsAdmissionLabel: issue real (bug) → true (#5680)', () => {
+    assert.equal(gate.needsAdmissionLabel([{ name: 'bug' }]), true);
+});
+
+test('needsAdmissionLabel: ya admitido (needs-definition / Ready) → false (#5680)', () => {
+    assert.equal(gate.needsAdmissionLabel([{ name: 'needs-definition' }]), false);
+    assert.equal(gate.needsAdmissionLabel([{ name: 'Ready' }]), false);
+});
+
+test('needsAdmissionLabel: acepta labels como strings planos (#5680)', () => {
+    assert.equal(gate.needsAdmissionLabel(['tipo:recomendacion']), false);
+    assert.equal(gate.needsAdmissionLabel(['bug']), true);
+});
+
+// T5 — blinda R3: `isAdmitted` conserva su semántica EXACTA. Devuelve false para
+// una recomendación porque no tiene label de admisión, no porque sea recomendación.
+test('isAdmitted: semántica intacta ante tipo:recomendacion (#5680, R3)', () => {
+    assert.equal(gate.isAdmitted([{ name: 'tipo:recomendacion' }]), false);
+    assert.equal(gate.isAdmitted([{ name: 'source:recommendation' }]), false);
+    // …y sigue devolviendo true si la recomendación SÍ tiene label de admisión.
+    assert.equal(gate.isAdmitted([{ name: 'tipo:recomendacion' }, { name: 'needs-definition' }]), true);
+    assert.equal(gate.isAdmitted([{ name: 'tipo:recomendacion' }, { name: 'Ready' }]), true);
+});
+
+// filterOrphans hereda la exclusión — es lo que consume el sweep del reconciler
+// (`servicio-reconciler.js:1168-1169`), que ya trae `labels` en su `--json`.
+test('filterOrphans: excluye recomendaciones y conserva huérfanos reales (#5680)', () => {
+    const items = [
+        { number: 1, title: 'bug real', url: 'u1', labels: [] },
+        { number: 2, title: 'reco', url: 'u2', labels: [{ name: 'tipo:recomendacion' }] },
+        { number: 3, title: 'reco histórica', url: 'u3', labels: [{ name: 'source:recommendation' }] },
+        { number: 4, title: 'ya admitido', url: 'u4', labels: [{ name: 'Ready' }] },
+        { number: 5, title: 'reco aprobada', url: 'u5', labels: [{ name: 'tipo:recomendacion' }, { name: 'recommendation:approved' }] },
+    ];
+    assert.deepEqual(gate.filterOrphans(items).map(o => o.number), [1, 5]);
+});
+
+// -----------------------------------------------------------------------------
+// T4 (#5680) — test de empaquetado: blinda R1
+//
+// El módulo corre en el runner de Actions bajo el `sparse-checkout` acotado de
+// `.github/workflows/admission-gate.yml`. Un `require` de un archivo que no está
+// en esa lista no degrada: hace throw y voltea el gate para TODO issue/PR nuevo
+// (la regresión exacta que #3175 vino a cerrar).
+//
+// Este test parsea la lista DEL YAML (no la hardcodea, así sigue siendo válido
+// cuando alguien la edite), copia sólo esos archivos a un tmpdir y hace
+// require(). Cubre el árbol de dependencias entero para el próximo require que
+// alguien agregue sin acordarse del workflow.
+// -----------------------------------------------------------------------------
+
+const fs = require('node:fs');
+const os = require('node:os');
+const nodePath = require('node:path');
+
+const WORKFLOW_PATH = nodePath.join(__dirname, '..', '..', '..', '.github', 'workflows', 'admission-gate.yml');
+
+// Parser mínimo del bloque `sparse-checkout: |` — sin dependencia de YAML.
+function parseSparseCheckout(yamlText) {
+    const lines = yamlText.split(/\r?\n/);
+    const start = lines.findIndex(l => /^\s*sparse-checkout:\s*\|\s*$/.test(l));
+    assert.notEqual(start, -1, 'el workflow debe declarar un bloque `sparse-checkout: |`');
+    const indent = lines[start].match(/^(\s*)/)[1].length;
+    const out = [];
+    for (const line of lines.slice(start + 1)) {
+        if (!line.trim()) continue;
+        // El bloque literal termina cuando la indentación vuelve al nivel de la clave.
+        if (line.match(/^(\s*)/)[1].length <= indent) break;
+        out.push(line.trim());
+    }
+    return out;
+}
+
+test('T4 sparse-checkout del workflow incluye recommendation-labels.js (#5680)', () => {
+    const files = parseSparseCheckout(fs.readFileSync(WORKFLOW_PATH, 'utf8'));
+    assert.ok(
+        files.includes('.pipeline/lib/recommendation-labels.js'),
+        `el gate requiere recommendation-labels.js; sparse-checkout actual: ${files.join(', ')}`,
+    );
+});
+
+test('T4 admission-gate.js carga con SOLO los archivos del sparse-checkout (#5680, R1)', () => {
+    const files = parseSparseCheckout(fs.readFileSync(WORKFLOW_PATH, 'utf8'));
+    const repoRoot = nodePath.join(__dirname, '..', '..', '..');
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'admission-gate-pkg-'));
+    try {
+        for (const rel of files) {
+            const src = nodePath.join(repoRoot, rel);
+            assert.ok(fs.existsSync(src), `el sparse-checkout lista un archivo inexistente: ${rel}`);
+            const dst = nodePath.join(tmp, rel);
+            fs.mkdirSync(nodePath.dirname(dst), { recursive: true });
+            fs.copyFileSync(src, dst);
+        }
+        // require() real desde el árbol recortado: si falta una dependencia,
+        // esto throwea igual que el github-script del runner.
+        const isolated = require(nodePath.join(tmp, '.pipeline', 'lib', 'admission-gate.js'));
+        assert.equal(typeof isolated.needsAdmissionLabel, 'function');
+        // Y con el árbol completo la exclusión funciona de verdad (no degradada).
+        assert.equal(isolated.needsAdmissionLabel([{ name: 'tipo:recomendacion' }]), false);
+        assert.equal(isolated.needsAdmissionLabel([{ name: 'bug' }]), true);
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+// Contracara del try/catch: si `recommendation-labels.js` NO está (empaquetado
+// incompleto), el módulo debe CARGAR IGUAL y degradar a "aplicar el label".
+// Degradar es benigno; throwear voltea el gate entero.
+test('T4 admission-gate.js carga aunque falte recommendation-labels.js (#5680, R1)', () => {
+    const files = parseSparseCheckout(fs.readFileSync(WORKFLOW_PATH, 'utf8'))
+        .filter(f => !f.endsWith('recommendation-labels.js'));
+    const repoRoot = nodePath.join(__dirname, '..', '..', '..');
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'admission-gate-degraded-'));
+    try {
+        for (const rel of files) {
+            const dst = nodePath.join(tmp, rel);
+            fs.mkdirSync(nodePath.dirname(dst), { recursive: true });
+            fs.copyFileSync(nodePath.join(repoRoot, rel), dst);
+        }
+        let isolated;
+        assert.doesNotThrow(() => {
+            isolated = require(nodePath.join(tmp, '.pipeline', 'lib', 'admission-gate.js'));
+        }, 'el require debe ser opcional: un throw acá deja sin label a TODO issue nuevo');
+        // Degradación explícita: sin el discriminador, se aplica el label.
+        assert.equal(isolated.needsAdmissionLabel([{ name: 'tipo:recomendacion' }]), true);
+        // El comportamiento para issues reales no cambia.
+        assert.equal(isolated.needsAdmissionLabel([{ name: 'bug' }]), true);
+        assert.equal(isolated.needsAdmissionLabel([{ name: 'Ready' }]), false);
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+});

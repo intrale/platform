@@ -88,7 +88,16 @@ test('context redacta claves sensibles de PRIMER NIVEL antes de persistir', () =
     assert.equal(result.ok, true);
     const raw = fs.readFileSync(result.dropPath, 'utf8');
     assert.equal(raw.includes(canary), false, 'el canario de primer nivel no debe persistir en el dropfile');
-    assert.match(JSON.parse(raw).text, /password: \[REDACTED\]/);
+    // #5400 / SEC-1 — el dropfile sale con el texto ESCAPADO para Markdown
+    // legacy, así que el marcador viaja como `\[REDACTED]`: `[` es metacarácter
+    // y sin escapar Telegram responde `400 can't parse entities`, el servicio
+    // reintenta con el mismo `parse_mode` y la notificación muere en `fallido/`
+    // (o sea: el aviso de secreto redactado no llegaría). Telegram renderiza
+    // `\[` como `[`, con lo cual el operador sigue leyendo `[REDACTED]`.
+    // La aserción de seguridad de este test es la de arriba (el canario NO
+    // persiste) y queda intacta; acá sólo se acepta el marcador en su forma
+    // escapada o cruda.
+    assert.match(JSON.parse(raw).text, /password: \\?\[REDACTED\]/);
   }));
 });
 

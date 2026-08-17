@@ -293,6 +293,46 @@ function renderTraceLine(now) {
  * @param {object} snapshot
  * @param {number} now
  */
+/**
+ * Nota explicativa de la variación del avance entre dos snapshots (#5836/CA-5).
+ *
+ * El operador lee toda caída del indicador como pérdida de productividad. Casi
+ * nunca lo es: si entraron issues a la ola, el denominador creció y el
+ * porcentaje baja sin que se haya deshecho un solo trabajo. Sólo anotamos
+ * cuando la nota AGREGA información (caída por altas, o corte de serie); una
+ * subida o un movimiento normal no necesitan glosa.
+ *
+ * Copy: magnitud + unidad + causa. Se usa "pp" (puntos porcentuales) y no "%",
+ * que confundiría la variación con el valor. El texto dice explícitamente que
+ * no hubo retroceso — la señal NO puede depender de color ni emoji.
+ *
+ * Devuelve texto PLANO (sin escapar): el caller lo escapa junto con el resto
+ * de la línea, así el `−` (U+2212) pasa por `escapeMarkdownV2` una sola vez.
+ *
+ * @param {{kind:string, deltaPp:number, deltaIssues:number|null}} [delta]
+ * @returns {string} '' si no hay nada que anotar
+ */
+function renderProgressDeltaNote(delta) {
+    if (!delta || typeof delta !== 'object') return '';
+
+    if (delta.kind === 'series-break') {
+        return 'corte de serie: fórmula de avance nueva';
+    }
+    if (delta.kind !== 'altas') return '';
+
+    const pp = Number(delta.deltaPp);
+    if (!Number.isFinite(pp) || pp >= 0) return '';
+    // U+2212 (minus real), no el guión ASCII: es el signo matemático correcto
+    // y es lo que ya usa el copy del resto del reporte.
+    const magnitud = `−${Math.abs(Math.round(pp))} pp`;
+
+    const altas = Number(delta.deltaIssues);
+    if (Number.isFinite(altas) && altas > 0) {
+        return `${magnitud} por ${altas} altas, no retroceso`;
+    }
+    return `${magnitud} por altas, no retroceso`;
+}
+
 function composeWaveParts(snapshot, now) {
     // CA-13: ola sin issues activos → render degradado.
     if (!snapshot || !snapshot.totalIssues || snapshot.totalIssues === 0) {
@@ -349,6 +389,19 @@ function composeWaveParts(snapshot, now) {
         `${snapshot.activeCount} activos`,
     ];
     if (snapshot.blocks && snapshot.blocks.length > 0) counts.push(`${snapshot.blocks.length} bloqueados`);
+    // #5836 — El peso default gobierna ~1/3 del denominador (36 de 116 issues
+    // de la ola medida no tienen `size:*`). Si un tercio de la ola pesa por
+    // default, el operador tiene derecho a saberlo al leer el indicador.
+    // Coherente con el sufijo "(+N sin estimación)" que el ETA ya usa.
+    if (Number.isFinite(snapshot.weightedSinSize) && snapshot.weightedSinSize > 0) {
+        counts.push(`${snapshot.weightedSinSize} sin estimar`);
+    }
+    // #5836 / CA-5 — La causa de la variación va ACÁ (línea 2, itálica y
+    // discreta), NO en la línea 1: es contexto explicativo, no un valor
+    // accionable, y no debe disputarle jerarquía visual al % ni al ETA, que
+    // son los dos valores en bold. La línea 1 ya envuelve en Telegram mobile.
+    const deltaNote = renderProgressDeltaNote(snapshot.progressDelta);
+    if (deltaNote) counts.push(deltaNote);
     const headerLine2 = `_${escapeMarkdownV2(counts.join(' · '))}_`;
 
     return {
@@ -512,6 +565,7 @@ module.exports = {
         wrapTableRows,
         paginateTableRows,
         composeWaveParts,
+        renderProgressDeltaNote,
         renderTableRow,
         formatBouncesCol,
         BOUNCE_ARROW,

@@ -36,6 +36,11 @@
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 
+// #5724 CA-4 — El banner del bloqueo de dispatch NO se monta acá: lo emite el
+// shell de satélites (views/dashboard/satellites.js → pageShell), así aparece
+// en todas las ventanas y no sólo en ésta. Duplicarlo repetiría los ids del
+// DOM y volvería a abrir la puerta a que las superficies divijan.
+
 let escapeHtmlText;
 let escapeHtmlAttr;
 try {
@@ -305,6 +310,7 @@ function renderPipelineRedesignBody() {
 const PIPELINE_REDESIGN_CSS = `
 /* #4190 — Rediseño PIPELINE MIZPÁ. Scoped a #pl-redesign + clases mz-* propias. */
 .pl-redesign { display: flex; flex-direction: column; gap: 16px; }
+
 
 /* Marca MIZPÁ (replicado de home.js — no está en theme.css). */
 .in-header-brand { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
@@ -887,8 +893,19 @@ async function tickPipelineRedesign(){
             if(x && x.id != null){
                 const id = String(x.id);
                 waveMembers.push(id);
+                // #5629 — El veredicto de entrega lo resuelve el SERVIDOR con el
+                // helper único (lib/delivery-status.js: CLOSED en GitHub o
+                // delivery_merge_sha estructurado) y viaja ya listo en el campo
+                // 'delivered'. Antes se re-derivaba acá como
+                // status === 'completed' || merged === true: una TERCERA regla
+                // que podía contradecir a la pantalla principal y al conteo de
+                // ENTREGADOS de la ola (CA-7).
+                // El fallback a status/merged es sólo compat con payloads
+                // viejos; si 'delivered' viene, manda.
                 waveDelivered[id] = {
-                    delivered: (x.status === 'completed' || x.merged === true),
+                    delivered: (typeof x.delivered === 'boolean')
+                        ? x.delivered
+                        : (x.status === 'completed' || x.merged === true),
                     title: x.title || '',
                 };
             }

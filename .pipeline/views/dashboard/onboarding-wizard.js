@@ -48,6 +48,34 @@ try {
     escapeHtmlAttr = (s) => (s == null ? '' : String(s).replace(/[&<>"'`]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' }[c])));
 }
 
+// #5724 CA-4 — Banner "Dispatch suspendido por desync". Shell autocontenido:
+// el banner se monta a mano, con require defensivo como el resto del módulo.
+// Va también acá aunque el wizard sea estático: quien está dando de alta un
+// producto necesita saber que el pipeline no va a despachar nada de lo que
+// configure hasta que el bloqueo se resuelva.
+let _dsbResolve = () => null;
+let _dsbRender = () => '';
+let _DSB_CSS = '';
+let _dsbBundle = () => '';
+try {
+    ({
+        resolveDesyncStatus: _dsbResolve,
+        renderDesyncBlockBannerSsr: _dsbRender,
+        DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+        desyncBlockBannerBundleJs: _dsbBundle,
+    } = require('./desync-block-banner.js'));
+} catch { /* opcional */ }
+
+// El ícono del banner es un `<use href="#ic-pause-lock">`: sin el sprite
+// inlineado en el documento no resuelve y el banner queda sin su símbolo de
+// alarma (#5724 rev-3). Esta vista no cargaba ningún sprite.
+let _loadIconSprite = () => '';
+try {
+    // eslint-disable-next-line global-require
+    const nav = require('./nav-tabs');
+    if (typeof nav.loadIconSprite === 'function') _loadIconSprite = nav.loadIconSprite;
+} catch { /* opcional */ }
+
 const slug = 'onboarding';
 
 // Interfaces/skills reconocidos por el kernel — se reflejan como opciones del
@@ -532,12 +560,16 @@ function renderOnboarding() {
         + '<meta name="viewport" content="width=device-width, initial-scale=1">'
         + '<title>Intrale · Onboarding de producto</title>'
         + '<style>' + loadThemeCss() + '</style>'
+        + '<style>' + _DSB_CSS + '</style>'
         + '</head><body style="background:var(--in-bg,#0D1117);color:var(--in-fg,#e6edf3);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:24px">'
+        + '<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">' + _loadIconSprite() + '</div>'
         + '<div style="max-width:760px;margin:0 auto">'
         + '<a href="/dashboard" style="color:var(--brand-cyan,#00D6FF);text-decoration:none;font-size:12px">← Volver al dashboard</a>'
+        + _dsbRender(_dsbResolve())
         + renderOnboardingWizardSsr()
         + '</div>'
         + '<script>' + renderOnboardingWizardClientScript() + '</script>'
+        + '<script>' + _dsbBundle() + '</script>'
         + '</body></html>';
 }
 

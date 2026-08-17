@@ -144,16 +144,15 @@ test('#5420 CA — PR que toca .github/workflows/ SIN copia local queda bloquead
     assert.equal(calls.length, 0, 'un PR con owner humano nunca llega al PUT');
 });
 
-test('#5420 — un CODEOWNERS remoto VACÍO no autoriza el merge (fail-closed)', () => {
+test('#5923 — un CODEOWNERS remoto legíble y sin reglas activas autoriza continuar', () => {
     const calls = [];
     const out = delivery.attemptMergeWithGates(baseDeps({
         loadOwners: ownersFromRemote('# archivo sin reglas\n'),
         getSnapshot: () => snapshotOk({ files: ['.github/workflows/ci.yml'] }),
         mergePR: recordingMerge(() => MERGED_OK, calls),
     }));
-    assert.equal(out.status, 'blocked');
-    assert.equal(out.gate, 'codeowners');
-    assert.equal(calls.length, 0);
+    assert.equal(out.status, 'merged');
+    assert.equal(calls.length, 1);
 });
 
 // ── CA: procedencia (contra-test de seguridad) ─────────────────────────────
@@ -205,7 +204,10 @@ test('#5420 — snapshot degradado (gh falla) ⇒ bloqueo, sin merge', () => {
     assert.equal(calls.length, 0);
 });
 
-test('#5420 — getPRSnapshot: gh OK devuelve labels, files, head y rama en UNA sola llamada', () => {
+// #6012 re-baseline — el snapshot ahora trae TAMBIÉN el estado de mergeabilidad
+// (`mergeable`, `mergeStateStatus`, `state`) en la misma lectura. El invariante
+// que fija este test no cambió: sigue siendo UNA sola llamada, sin TOCTOU.
+test('#5420/#6012 — getPRSnapshot: labels, files, head, rama y estado de merge en UNA sola llamada', () => {
     const calls = [];
     const snap = delivery.getPRSnapshot(777, {
         ghImpl: (argv, opts) => {
@@ -228,9 +230,18 @@ test('#5420 — getPRSnapshot: gh OK devuelve labels, files, head y rama en UNA 
     assert.deepEqual(snap.files, ['.pipeline/pulpo.js']);
     assert.equal(snap.headRefOid, HEAD_SHA);
     assert.equal(snap.headRefName, 'agent/5401-pipeline-dev');
-    assert.equal(calls.length, 1, 'labels, files, head y rama salen de una única lectura (sin TOCTOU)');
+    assert.equal(calls.length, 1, 'labels, files, head, rama y estado de merge salen de una única lectura (sin TOCTOU)');
     assert.deepEqual(calls[0].argv.slice(0, 4), ['pr', 'view', '777', '--json']);
-    assert.equal(calls[0].argv[4], 'labels,files,headRefOid,headRefName');
+    assert.equal(
+        calls[0].argv[4],
+        'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state',
+        '#6012 CA-1: el estado de mergeabilidad viaja en la MISMA llamada que los gates',
+    );
+    // El PR de este fixture no devolvió los campos nuevos: se normalizan a null
+    // (nunca a 'UNKNOWN'), que es lo que mantiene el default fail-closed.
+    assert.equal(snap.mergeStateStatus, null);
+    assert.equal(snap.state, null);
+    assert.equal(snap.mergeable, null);
 });
 
 test('#5420 — getPRSnapshot: bordes degradados son {ok:false}, nunca listas vacías', () => {
@@ -316,14 +327,34 @@ test('#5420 — el retry tiene tope: head que sigue moviéndose escala como conf
     assert.equal(out.classification.kind, 'head-changed');
 });
 
-test('#5420 — conflicto REAL (405 not mergeable) escala de una, sin reintentar', () => {
+// #6012 re-baseline — antes este test afirmaba que TODO 405 era conflicto real.
+// Ahora el 405 sólo es conflicto CONFIRMADO con `mergeStateStatus=DIRTY`; el
+// snapshot de `baseDeps` no trae estado, así que ejercita el default
+// fail-closed: sigue frenando y sigue sin reintentar (que es el invariante de
+// #5420 que no se puede perder), pero marcado `confirmed:false`.
+test('#5420/#6012 — 405 sin contexto de mergeabilidad sigue siendo conflicto terminal, sin reintentar', () => {
     const calls = [];
     const out = delivery.attemptMergeWithGates(baseDeps({
         mergePR: recordingMerge(() => ({ exit_code: 1, stdout: '', stderr: 'gh: Pull Request is not mergeable (HTTP 405)' }), calls),
     }));
     assert.equal(out.status, 'conflict');
     assert.equal(out.classification.retryable, false);
-    assert.equal(calls.length, 1, 'un conflicto real no se reintenta');
+    assert.equal(out.classification.confirmed, false, 'sin señal del servidor no se AFIRMA el conflicto');
+    assert.equal(calls.length, 1, 'el default fail-closed no se reintenta');
+});
+
+// #6012 — el escenario de conflicto REAL que este archivo cubría pasa a estar
+// explícito: lo que lo confirma es el estado del servidor, no el status HTTP.
+test('#5420/#6012 — conflicto REAL (405 + mergeStateStatus=DIRTY) escala de una, sin reintentar', () => {
+    const calls = [];
+    const out = delivery.attemptMergeWithGates(baseDeps({
+        getSnapshot: () => snapshotOk({ state: 'OPEN', mergeStateStatus: 'DIRTY', mergeable: 'CONFLICTING' }),
+        mergePR: recordingMerge(() => ({ exit_code: 1, stdout: '', stderr: 'gh: Pull Request is not mergeable (HTTP 405)' }), calls),
+    }));
+    assert.equal(out.status, 'conflict');
+    assert.equal(out.classification.retryable, false);
+    assert.equal(out.classification.confirmed, true);
+    assert.equal(calls.length, 1, 'un conflicto confirmado no se reintenta');
 });
 
 test('#5420 — fallo genérico de infra (5xx) sigue siendo error técnico, no conflicto', () => {

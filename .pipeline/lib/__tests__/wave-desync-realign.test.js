@@ -90,7 +90,9 @@ test('#4350 estructural: pulpo.js tiene realignAllowlistToActiveWave + evaluaci�
     assert.match(PULPO_SRC, /function realignAllowlistToActiveWave\(/);
     assert.match(PULPO_SRC, /function evaluateDesyncAndMaybeRealign\(/);
     assert.match(PULPO_SRC, /evaluateDesyncAndMaybeRealign\('boot'\)/);
-    assert.match(PULPO_SRC, /evaluateDesyncAndMaybeRealign\('periodic'\)/);
+    // #5516 — el call periódico ahora pasa opts (`{ reconcileSplitOrphans: true }`).
+    // Lo que este guard protege es que el wire-up periódico EXISTA, no su aridad.
+    assert.match(PULPO_SRC, /evaluateDesyncAndMaybeRealign\('periodic'[,)]/);
     // Usa el gate auditado con authorizedBy wave-promote.
     assert.match(PULPO_SRC, /authorizedBy:\s*'wave-promote'/);
     // Realinea SOLO si es reductivo.

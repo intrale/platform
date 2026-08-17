@@ -163,6 +163,17 @@ $ awk '...extraer identificador + dueño de cada fila de tabla...' docs/pipeline
 | `google_drive.drive_folder_id` | **(c)** | identificador de carpeta, no secreto | `shared/` — un destino de evidencia para todos los hosts. |
 | `GOOGLE_CREDENTIALS_PATH` | **(c)** | es un **path** local, no una credencial | `shared/`. El **material apuntado** (JSON de service account) sí es secreto; su alta como (b) es alcance de #5217, no de esta clasificación. Se anota para que no quede como cobertura implícita. |
 
+> **Nota (#5217 · CA-6) — pertenecer a esta tabla NO implica hidratarse.** Las
+> cuatro claves de arriba se provisionan, se rotan y la política IAM las cubre
+> exactamente como dice esta clasificación (`vaultScopePlan()` sigue devolviendo
+> `google_drive` en `ssm` **y** en `secretsmanager`, o sea el tier `rotating`
+> conserva su ocupante). Lo que #5217 desacopló es la **inyección en el
+> `process.env` global**: llevan `hydrate: false` en `ENV_DESCRIPTORS` y por lo
+> tanto no están en `ENV_MAPPING`. Su consumidor las resuelve bajo demanda por
+> namespace. Consecuencia operativa a tener presente: no aparecen en las filas
+> de cobertura de la ventana sombra, cuyo denominador es `HYDRATED_DESCRIPTORS`
+> y no el inventario completo.
+
 ### Cloudflare R2
 
 | Identificador | Destino | Regla | Ubicación y membresía |

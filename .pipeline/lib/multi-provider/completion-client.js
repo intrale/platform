@@ -134,7 +134,10 @@ const PROVIDER_COMPLETION_ENDPOINTS = Object.freeze({
 // El `model` viaja como field del body JSON (no en la URL) → NO abre SSRF, pero
 // igual filtramos. Los modelos en producción salen de `.pipeline/agent-models.json`
 // (snapshot 2026-05-19): cerebras=llama-3.3-70b, gemini-google=gemini-2.0-flash,
-// nvidia-nim=deepseek-ai/deepseek-v4-pro. Si la lista se queda corta, agregar
+// nvidia-nim=deepseek-ai/deepseek-v4-flash-0731 (#5887, 2026-08-13: el
+// modelo deepseek anterior llegó a end-of-life el 2026-08-07 y devolvía HTTP 410
+// — se reemplaza, no se deja al lado, para que ninguna reintroducción pase
+// silenciosa por esta barrera). Si la lista se queda corta, agregar
 // acá + test.
 const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
     cerebras: Object.freeze([
@@ -156,7 +159,7 @@ const PROVIDER_MODELS_ALLOWLIST = Object.freeze({
         'gemini-2.5-pro',
     ]),
     'nvidia-nim': Object.freeze([
-        'deepseek-ai/deepseek-v4-pro',
+        'deepseek-ai/deepseek-v4-flash-0731',
         'deepseek-ai/deepseek-r1',
         'meta/llama-3.1-8b-instruct',
         'meta/llama-3.1-70b-instruct',

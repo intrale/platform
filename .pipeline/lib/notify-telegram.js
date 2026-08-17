@@ -53,6 +53,33 @@ const { redactSecretValue, redactSensitive, redactObject } = require('./redact')
 
 const PIPELINE_DIR_DEFAULT = path.join(__dirname, '..');
 
+// #5400 / SEC-1 — Escape del Markdown legacy de Telegram.
+//
+// El comentario histórico de este módulo decía que pasar `parse_mode: 'Markdown'`
+// "no rompe nada — caracteres safe". Es FALSO en cuanto el mensaje interpola
+// datos del pipeline: causas, autorías, títulos de issues, nombres de skill. Un
+// `snake_case` mete un `_` impar y Telegram responde `400 can't parse entities`;
+// `servicio-telegram` reintenta con el MISMO parse_mode y termina archivando en
+// `fallido/`. Resultado: la alerta de "pipeline parado" nunca llega — que es
+// exactamente el modo de falla que este issue viene a cerrar (mismo agujero de
+// #5173).
+//
+// No alcanza con omitir `parse_mode`: el servicio hace `data.parse_mode ||
+// 'Markdown'`, así que un valor ausente o vacío cae igual en Markdown. La
+// solución local y completa es ESCAPAR el texto antes de encolarlo. Telegram
+// renderiza `\_` como `_`, así que el mensaje se lee idéntico.
+//
+// Import defensivo (mismo patrón que `redact` en dispatch-cause.js): si
+// `config-schema` no carga, se usa un escape local equivalente. Una alerta jamás
+// debe perderse por un problema de require.
+let escapeMarkdownLegacy;
+try {
+    ({ escapeMarkdownLegacy } = require('./config-schema'));
+} catch { /* fallback abajo */ }
+if (typeof escapeMarkdownLegacy !== 'function') {
+    escapeMarkdownLegacy = (s) => String(s).replace(/([_*`[])/g, '\\$1');
+}
+
 function pipelineDir() {
     if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
     return PIPELINE_DIR_DEFAULT;
@@ -91,6 +118,46 @@ function resolvePrivateChatId(requested) {
 
 function redactFreeText(value) {
     return redactSecretValue(redactSensitive(String(value)));
+}
+
+// #5924 — Bloque de código opcional al pie del mensaje.
+//
+// Por qué NO alcanza con `escapeMarkdownLegacy`: cuando el texto a mostrar es
+// contenido REMOTO (p. ej. el `description` que devuelve la API de Telegram al
+// rechazar un envío), escaparlo lo deja legible pero visualmente indistinguible
+// del resto del mensaje. Un bloque de código lo separa como "esto es un dato
+// crudo, no una frase del pipeline" y además es inmune a cualquier entidad
+// Markdown: dentro del fence no hay parseo.
+//
+// Fail-closed contra el mismatch de dialecto (R6 de #5924): el path de dropfiles
+// envía con `parse_mode: 'Markdown'` v1 mientras otros módulos escapan para V2 —
+// los sets de caracteres no coinciden. Por eso acá NO escapamos: encerramos.
+// Lo único que puede romper el fence es un backtick o un salto de línea con
+// otro fence, así que se eliminan del contenido antes de encerrarlo.
+const CODE_BLOCK_MAX = 500;
+
+function sanitizeCodeBlockContent(value) {
+    return redactFreeText(value)
+        .replace(/`/g, "'")          // no puede cerrar el fence antes de tiempo
+        .replace(/[\r\n]+/g, ' ')    // una sola línea: no puede abrir otro fence
+        .trim()
+        .slice(0, CODE_BLOCK_MAX);
+}
+
+/**
+ * Anexa un bloque de código al texto YA escapado. El contenido del bloque NO se
+ * escapa (dentro del fence el backslash se vería crudo); se sanea para que no
+ * pueda salirse del bloque.
+ *
+ * @param {string} escapedText — salida de `escapeMarkdownLegacy(buildMessage(...))`
+ * @param {*} raw — contenido crudo del bloque (`null`/vacío → no-op)
+ * @returns {string}
+ */
+function appendCodeBlock(escapedText, raw) {
+    if (raw == null || String(raw).trim() === '') return escapedText;
+    const content = sanitizeCodeBlockContent(raw);
+    if (!content) return escapedText;
+    return `${escapedText}\n\n\`\`\`\n${content}\n\`\`\``;
 }
 
 /**
@@ -172,6 +239,9 @@ function buildMessage(payload) {
  * @param {object} [payload.context]   — campos custom k:v
  * @param {object} [payload.holder]    — { pid, hostname, startTime } del holder
  *                                       (caso lock timeout)
+ * @param {string} [payload.codeBlock] — #5924: contenido crudo/remoto a mostrar
+ *                                       en un bloque de código al pie (saneado,
+ *                                       no escapado, cap 500 chars)
  * @returns {{ ok: boolean, dropPath?: string, reason?: string }}
  */
 function notifyTelegram(payload) {
@@ -212,10 +282,14 @@ function notifyTelegram(payload) {
     const dropPath = path.join(dir, filename);
 
     const drop = {
-        text,
-        // El servicio default usa Markdown; nuestro texto no lleva sintaxis MD,
-        // se renderiza igual como texto plano. Pasamos 'Markdown' por consistencia
-        // con el resto del pipeline (no rompe nada — caracteres safe).
+        // #5400 / SEC-1 — `buildMessage` no produce sintaxis Markdown intencional:
+        // todo lo que parezca un metacarácter viene de datos interpolados y tiene
+        // que llegar literal. Escapamos el texto completo para que el envío no se
+        // caiga con `400 can't parse entities` y termine en `fallido/`.
+        // #5924 — `codeBlock` (opcional) se anexa DESPUÉS del escape: su
+        // contenido va literal dentro de un fence, no escapado. Sin `codeBlock`
+        // la salida es byte-idéntica a la histórica.
+        text: appendCodeBlock(escapeMarkdownLegacy(text), payload.codeBlock),
         parse_mode: 'Markdown',
     };
     if (destination.chatId != null) drop.chat_id = destination.chatId;
@@ -239,5 +313,9 @@ module.exports = {
         EMOJI_BY_LEVEL,
         canonicalChatId,
         resolvePrivateChatId,
+        // #5924
+        appendCodeBlock,
+        sanitizeCodeBlockContent,
+        CODE_BLOCK_MAX,
     },
 };

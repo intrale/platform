@@ -503,6 +503,12 @@ const SCHEMA = {
                 cache_ttl_seconds: { type: 'number', minimum: 1, maximum: 300 },
                 required_scopes: { type: 'array', items: { type: 'string' } },
                 shared_secrets: { type: 'array', items: { type: 'string' } },
+                // #5899 — cota de namespaces cacheados a la vez. Se tipa por el
+                // mismo motivo que `cache_ttl_seconds`: es un control de
+                // seguridad (acota el plaintext en memoria), no una preferencia.
+                // Un `0` o un string dejarían el memo sin cota efectiva y sólo
+                // se descubriría el día que corran varias instancias juntas.
+                max_cached_tenants: { type: 'number', minimum: 1 },
                 // #5353 · B1 — se tipan por el mismo motivo que `enabled`: son
                 // fail-closed. Un `bootstrap_fallback: "false"` string sería
                 // truthy para el YAML y sólo se descubriría el día que la

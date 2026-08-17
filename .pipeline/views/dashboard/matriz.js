@@ -51,6 +51,18 @@ const path = require('path');
 // compartido del sprite.svg). Misma dependencia que home.js / satellites.js.
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
+// Se monta en todas las ventanas: cuando el Pulpo suspende el dispatch no
+// avanza NADA, y la pregunta "por que no se mueve" se hace desde donde el
+// operador este parado. La entrega anterior dejo el estado en un modulo al que
+// no apunta ninguna ruta del menu y el bloqueo paso 10 h invisible.
+const {
+    resolveDesyncStatus: _dsbResolve,
+    renderDesyncBlockBannerSsr: _dsbRender,
+    DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+    desyncBlockBannerBundleJs: _dsbBundle,
+} = require('./desync-block-banner.js');
+
 // #3722 — Escape HTML server-side unificado (lib/escape-html.js, cierra #2901).
 // CA-B3: las ventanas extraídas usan el helper compartido en vez de duplicar
 // un escapeHtmlSsr inline. escapeHtmlText cubre el contexto nodo-texto y
@@ -952,6 +964,7 @@ ${MATRIZ_CSS}
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${olaBanner}
+  ${_dsbRender(_dsbResolve())}
   ${navHtml}
   ${breadcrumb}
   <main class="satellite-body">${renderMatrizInner()}</main>
@@ -960,6 +973,9 @@ ${MATRIZ_CSS}
     <span>Intrale V3 · MIZPÁ</span>
   </footer>
 </div>
+
+<style>${_DSB_CSS}</style>
+<script>${_dsbBundle()}</script>
 </body>
 </html>`;
 }

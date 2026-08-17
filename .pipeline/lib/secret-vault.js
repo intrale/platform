@@ -214,6 +214,12 @@ const VAULT_AUTH_MATERIAL = Object.freeze({
 // del host sería reconocimiento gratuito (REQ-SEC-5 de #5339).
 const VAULT_NO_FILE_SENTINEL = 'vault-instance-profile-sin-archivos';
 
+// #5804/#5803 — UNICA fuente de verdad del vocabulario de telemetría del vault.
+// El ORDEN es contractual: el primer elemento es la categoría de lectura FISICA
+// (la única que factura y la única que alimenta pico y extrapolación); el resto
+// son categorías que se cuentan pero NO son tráfico físico.
+const VAULT_TELEMETRY_CATEGORIES = Object.freeze(['physical_read', 'cache_hit', 'single_flight_join']);
+
 const MAX_CACHE_TTL_SECONDS = 300;            // SEC-6 — tope DURO, no default
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
@@ -1511,6 +1517,7 @@ module.exports = {
     VAULT_READONLY_COMMANDS,
     VAULT_ALLOWED_FLAGS,
     VAULT_TIERS,
+    VAULT_TELEMETRY_CATEGORIES,
     VAULT_ERROR_CODES,
     MAX_CACHE_TTL_SECONDS,
     // #5426 — mecanismo de identidad del host. `VAULT_AUTH_MODES` se exporta

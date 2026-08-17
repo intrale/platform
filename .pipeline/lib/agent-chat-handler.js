@@ -170,7 +170,7 @@ function maybeRotateChatFile(chatFile, log) {
                         // El más viejo se descarta.
                         fs.unlinkSync(older);
                     }
-                    fs.renameSync(newer, older);
+                    renameChatFileWithRetry(newer, older);
                 } catch (e) {
                     if (log) log(`agent-chat: rotación falló para ${path.basename(newer)}: ${e.message}`);
                 }
@@ -178,13 +178,39 @@ function maybeRotateChatFile(chatFile, log) {
         }
         // .chat.jsonl → .chat.jsonl.1
         try {
-            fs.renameSync(chatFile, `${chatFile}.1`);
+            renameChatFileWithRetry(chatFile, `${chatFile}.1`);
         } catch (e) {
             if (log) log(`agent-chat: rotación falló para ${path.basename(chatFile)}: ${e.message}`);
         }
     } catch (e) {
         if (log) log(`agent-chat: maybeRotateChatFile falló: ${e.message}`);
     }
+}
+
+const CHAT_RENAME_RETRYABLE = new Set(['EBUSY', 'EPERM', 'EACCES']);
+const CHAT_RENAME_MAX_ATTEMPTS = 6;
+
+function renameChatFileWithRetry(from, to) {
+    let lastError;
+    for (let attempt = 0; attempt < CHAT_RENAME_MAX_ATTEMPTS; attempt++) {
+        try {
+            fs.renameSync(from, to);
+            return;
+        } catch (error) {
+            lastError = error;
+            if (!error || !CHAT_RENAME_RETRYABLE.has(error.code)) throw error;
+            // Espera cooperativa y acotada: libera CPU para que Windows cierre
+            // el handle transitorio antes del siguiente intento.
+            const waitMs = 10 * (attempt + 1);
+            try {
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+            } catch {
+                const deadline = Date.now() + waitMs;
+                while (Date.now() < deadline) { /* fallback acotado */ }
+            }
+        }
+    }
+    throw lastError;
 }
 
 /**
