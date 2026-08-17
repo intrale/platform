@@ -205,11 +205,15 @@ test('confirm: audit-then-apply produce UNA entry NDJSON rica y aplica el estado
     }
 });
 
-test('confirm lanza (sin ok) cuando setPartialPause rechaza el apply; no devuelve exito silencioso', async () => {
+test('confirm lanza (sin ok) cuando setAllowlist rechaza el apply; no devuelve exito silencioso', async () => {
     flow._setForTests({
         partialPause: {
             readPreviousAllowlist: () => [5],
-            setPartialPause: () => ({ ok: false, rejected: true, msg: 'gate rechazó' }),
+        },
+        // #5179 grupo 3 — la mutación va por el envoltorio; el seam de inyección
+        // sigue vivo, sólo cambió de nombre de superficie.
+        operationalState: {
+            setAllowlist: () => ({ ok: false, rejected: true, msg: 'gate rechazó' }),
         },
         deps: { resolveOpenDeps: () => ({ openDeps: [] }) },
     });

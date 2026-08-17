@@ -30,6 +30,10 @@
 const fs = require('fs');
 const path = require('path');
 const partialPause = require('./partial-pause');
+// #5179 grupo 3 — las MUTACIONES van por el envoltorio único de estado
+// operativo. Los lectores (`getPipelineMode`) siguen en `partialPause`: su
+// migración es superficie ancha y vive en #5164.
+const operationalState = require('./operational-state');
 const audit = require('./partial-pause-audit');
 const { notifyTelegram } = require('./notify-telegram');
 
@@ -175,7 +179,7 @@ function autoPromoteSplitChildren({ parentIssue, childrenIssues }) {
         };
     }
 
-    const result = partialPause.setPartialPause(newAllowlist, {
+    const result = operationalState.setAllowlist(newAllowlist, {
         source: 'planner-split:auto',
         authorizedBy: `recursive-deps:from-${pn}`,
         justification: `Auto-promoted children from #${pn} split (TTL 48h)`,
@@ -358,7 +362,7 @@ function expireRecursiveAuthorizations({ nowMs, isClosed, activeWaveIssues } = {
         if (newAllowlist.includes(n)) newTtls[k] = ttls[k];
     }
 
-    const result = partialPause.setPartialPause(newAllowlist, {
+    const result = operationalState.setAllowlist(newAllowlist, {
         source: 'pulpo:cleanup',
         authorizedBy: 'pulpo:cleanup',
         justification: `TTL expired for ${expired.map(n => `#${n}`).join(', ')}`,

@@ -2954,16 +2954,19 @@ async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, 
             && refreshed.active_wave.number === waveNumber;
         if (isActiveTarget) {
             const partialPause = require('./partial-pause');
+            // #5179 grupo 3 — la MUTACIÓN va por el envoltorio único; el lector
+            // (`getPipelineMode`) queda en `partial-pause` (superficie ancha → #5164).
+            const operationalState = require('./operational-state');
             const mode = partialPause.getPipelineMode();
             if (mode.mode === 'partial_pause') {
                 const current = Array.isArray(mode.allowedIssues) ? mode.allowedIssues : [];
                 if (!current.includes(issueNumber)) {
-                    const r = partialPause.setPartialPause([...current, issueNumber], {
+                    const r = operationalState.setAllowlist([...current, issueNumber], {
                         source: 'wave-promote:wave-add',
                         authorizedBy: 'wave-promote',
                         justification: `Suma coherente /wave add #${issueNumber} -> ola ${waveNumber} (#4439)`,
                     });
-                    // `setPartialPause` NO tira cuando el gate rechaza: devuelve
+                    // `setAllowlist` NO tira cuando el gate rechaza: devuelve
                     // { ok:false, rejected:true }. Sin este chequeo, un rechazo
                     // del gate producía exactamente el desync silencioso que
                     // este issue viene a eliminar.
