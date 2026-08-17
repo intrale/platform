@@ -1692,6 +1692,15 @@ module.exports = {
   // fija el código y no el entorno. No tiene call-site productivo fuera de
   // `resolverVault`.
   _readVaultConfig: readVaultConfig,
+  // #6031 — ancla de `credentials[].ref` como PUNTO ÚNICO DE VERDAD. La
+  // validación del descriptor (`project-descriptor.js`) la importa; nunca la
+  // copia. Una segunda copia (regex "anclada" en el schema, predicado propio)
+  // se desincroniza del endurecimiento futuro del residual de symlinks
+  // (R-8, seguimiento en #5912) y dejaría media superficie sin arreglar.
+  // `STORE_DIR_LOGICO` acompaña para nombrar el destino esperado en el mensaje
+  // al operador sin filtrar el home del host.
+  refPathAnclado,
+  STORE_DIR_LOGICO,
 };
 
 // CLI: dry-run que imprime resumen sin valores. Útil para diagnóstico operativo.

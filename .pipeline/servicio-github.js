@@ -35,6 +35,10 @@ const gateLabelReconciler = require('./lib/gate-label-reconciler');
 // #4693 CA-0 — fuente de verdad única del repo destino. Reemplaza el literal
 // DEFAULT_REPO por el `primary` del bloque `repos` de pipeline.config.json.
 const repoTarget = require('./lib/repo-target');
+// #5863 CA-R3 — canal de vuelta hacia el Pulpo. Este proceso es el único que
+// aplica labels de verdad; el Pulpo cachea labels 10 min y, sin este registro,
+// no tiene forma de enterarse de una mutación aplicada acá.
+const labelMutationLog = require('./lib/label-mutation-log');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 // #2994 — `GH_BIN_OVERRIDE` permite a los tests E2E de la cola apuntar a un
@@ -433,6 +437,26 @@ function currentLabelsForTarget(number, target, ghClient) {
   return Array.isArray(labels) ? labels.map(String) : [];
 }
 
+/**
+ * #5863 CA-R3 — Registra en el marker append-only una mutación de label ya
+ * APLICADA en GitHub, para que el Pulpo invalide su caché sin esperar el TTL.
+ *
+ * Se invoca sólo después de que el editor de `gh` retornó sin lanzar: una orden
+ * descartada por stale, bloqueada por un gate o fallida NO se registra. El
+ * marker describe el estado real de GitHub, no las intenciones de la cola.
+ *
+ * Best-effort absoluto: si el registro falla, la mutación ya ocurrió y el
+ * pipeline debe seguir. El costo de perder una línea es volver al
+ * comportamiento previo (la caché del Pulpo vence sola a los 10 minutos).
+ */
+function recordLabelMutation(issue, label, action, target) {
+  try {
+    labelMutationLog.recordApplied({
+      pipelineDir: PIPELINE, issue, label, action, target,
+    });
+  } catch { /* best-effort — nunca puede romper el procesamiento de la cola */ }
+}
+
 function applyGateLabelAction(data, ghClient) {
   if (!data || !gateLabelReconciler.isGateLabel(data.label)) return false;
 
@@ -443,11 +467,13 @@ function applyGateLabelAction(data, ghClient) {
       ensureLabels(data.label, ghClient);
       edit.call(ghClient, data.issue, { addLabel: data.label });
       log(`Gate label reconciliado "${data.label}" -> #${data.issue}`);
+      recordLabelMutation(data.issue, data.label, 'label', data.target);
       return true;
     }
     if (data.action === 'remove-label') {
       edit.call(ghClient, data.issue, { removeLabel: data.label });
       log(`Gate label reconciliado "${data.label}" removido de #${data.issue}`);
+      recordLabelMutation(data.issue, data.label, 'remove-label', data.target);
       return true;
     }
   }
@@ -477,10 +503,12 @@ function applyGateLabelAction(data, ghClient) {
     if (action.action === 'remove-label') {
       edit.call(ghClient, action.issue, { removeLabel: action.label });
       log(`Gate label normalizado "${action.label}" removido de #${action.issue}`);
+      recordLabelMutation(action.issue, action.label, 'remove-label', action.target);
     } else if (action.action === 'label') {
       ensureLabels(action.label, ghClient);
       edit.call(ghClient, action.issue, { addLabel: action.label });
       log(`Gate label normalizado "${action.label}" -> #${action.issue}`);
+      recordLabelMutation(action.issue, action.label, 'label', action.target);
     }
   }
   if (actions.length === 0) {
@@ -607,6 +635,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           ensureLabels(data.label, ghClient);
           ghClient.editIssue(data.issue, { addLabel: data.label });
           log(`Label "${data.label}" → #${data.issue}`);
+          recordLabelMutation(data.issue, data.label, 'label', data.target);
           break;
         }
 
@@ -619,6 +648,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           }
           ghClient.editIssue(data.issue, { removeLabel: data.label });
           log(`Label "${data.label}" removido de #${data.issue}`);
+          recordLabelMutation(data.issue, data.label, 'remove-label', data.target);
           break;
 
         case 'create-issue': {
