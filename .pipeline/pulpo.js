@@ -321,6 +321,10 @@ const waveAutoTransition = require('./lib/wave-auto-transition');
 const { resolveReboteDestino } = require('./lib/rebote-destino');
 // #2893 — Detección de dependencias del allowlist en pausa parcial
 const partialPauseDeps = require('./lib/partial-pause-deps');
+// #6118 — Copy de la alerta de dependencias faltantes (fuente única del texto
+// visible al operador) y store persistente de los silencios.
+const partialPauseDepsCopy = require('./lib/partial-pause-deps-copy');
+const partialPauseDepsMute = require('./lib/partial-pause-deps-mute');
 // #4614 — self-healing de fases varadas (reconciler).
 const { runStuckPhaseReconciler } = require('./lib/stuck-phase-reconciler-runner');
 // #5396 — el cableado de deps del reconciler vive en su propio módulo para que
@@ -20508,6 +20512,10 @@ function partialPauseDepsConfig(config) {
   return {
     checkEveryNTicks: Math.max(1, Number(c.check_every_n_ticks) || PARTIAL_PAUSE_DEPS_DEFAULTS.checkEveryNTicks),
     alertCooldownMs: Math.max(60_000, Number(c.alert_cooldown_ms) || PARTIAL_PAUSE_DEPS_DEFAULTS.alertCooldownMs),
+    // #6118 CA-13 — ventana del silencio, con default explícito y clamp en el
+    // módulo del store. El copy la deriva de acá: cambiar el valor cambia el
+    // texto del botón y de la confirmación sin tocar código.
+    muteTtlMs: partialPauseDepsMute.resolveTtlMs(c),
   };
 }
 
@@ -20590,6 +20598,28 @@ async function brazoPartialPauseDeps(config) {
         });
         continue;
       }
+      // #6118 — Silencio explícito del operador. Distinto del cooldown de acá
+      // arriba: el cooldown es automático y vive en memoria de ESTE proceso; el
+      // silencio lo pidió una persona apretando un botón y vive en archivo, así
+      // que sobrevive al respawn (CA-11) y lo ve el proceso que atendió el tap.
+      // La clave es la firma (issue + deps ordenadas): si aparece una dependencia
+      // nueva, la firma cambia y el aviso vuelve aunque la ventana siga vigente
+      // (CA-10). Queda auditado para no volver el silencio un punto ciego.
+      try {
+        if (partialPauseDepsMute.isMuted(sig, now)) {
+          appendPartialPauseDepsLog({
+            issue: Number(issueKey),
+            missing_deps: deps,
+            signature: sig,
+            action: 'suppressed_by_mute',
+          });
+          continue;
+        }
+      } catch (e) {
+        // Un store ilegible NO puede tapar la alerta: se avisa de más, nunca de
+        // menos. Ese es el lado seguro de este fallo.
+        log('pulpo', `[partial-pause-deps] Warning: no se pudo leer el silencio (${e.message}); se emite igual`);
+      }
       partialPauseDepsAlertCache.set(sig, now);
       appendPartialPauseDepsLog({
         issue: Number(issueKey),
@@ -20604,17 +20634,32 @@ async function brazoPartialPauseDeps(config) {
       // con prefijo `pp:`, que resuelve nuestro propio host (listener →
       // callback-handler → POST a localhost:3200). Los botones EJECUTAN, ya no
       // abren nada.
-      const depList = deps.map(d => `#${d}`).join(', ');
-      const msg = `⚠️ *Pausa parcial trabada*\n\nEl issue *#${issueKey}* está habilitado pero depende de issues abiertas que NO están en el allowlist:\n\n  ${depList}\n\nElegí abajo cómo resolverlo. Se aplica al toque, sin salir de Telegram.`;
+      // #6118 — El copy sale del módulo, no de un template inline. El título
+      // nombra al issue frenado (no al pipeline), el cuerpo enumera las
+      // dependencias que faltan y ninguna de las dos superficies expone
+      // vocabulario interno. Ver `lib/partial-pause-deps-copy.js`.
+      const msg = partialPauseDepsCopy.buildAlertMessage({ issue: issueKey, deps });
+      const labels = partialPauseDepsCopy.buildButtonLabels({
+        issue: issueKey, deps, muteTtlMs: ppCfg.muteTtlMs,
+      });
       const dashUrl = process.env.DASHBOARD_URL || 'http://localhost:3200';
+      // Teclado en COLUMNA, un botón por fila (UX-D-3 / PO-R3): los labels miden
+      // 29-32 chars y dos de ese largo en la misma fila se truncan con "…" en
+      // Telegram móvil, que es justo donde el operador lee esto — y un label
+      // truncado devuelve la ambigüedad que este issue vino a eliminar.
+      //
+      // El botón de alcance global (`cancel-partial-pause`) YA NO ESTÁ (CA-6):
+      // convertía una decisión sobre un issue puntual en un cambio de alcance de
+      // todo el pipeline, imposible de anticipar desde este contexto. Sigue
+      // disponible desde el dashboard, que es donde el alcance global se ve.
+      //
+      // `include-deps-for-issue` (no `include-deps`) es el endpoint acotado: suma
+      // SÓLO las dependencias de este issue. El viejo recalcula sobre todo lo
+      // habilitado y es el que usa el banner del dashboard.
       const replyMarkup = telegramButtonUrl.buildActionKeyboard([
-        [
-          { action: 'include-deps',  text: `✅ Sí, incluir las ${deps.length}`, issue: issueKey },
-          { action: 'keep-original', text: `🎯 Seguir sólo con #${issueKey}`,   issue: issueKey },
-        ],
-        [
-          { action: 'cancel-partial-pause', text: '🔓 Levantar la pausa parcial' },
-        ],
+        [{ action: 'include-deps-for-issue', text: labels['include-deps-for-issue'], issue: issueKey }],
+        [{ action: 'keep-original',          text: labels['keep-original'],          issue: issueKey }],
+        [{ action: 'mute-alert',             text: labels['mute-alert'],             issue: issueKey }],
       ], {
         dashboardUrl: dashUrl,
         callbackPrefix: PARTIAL_PAUSE_CALLBACK_PREFIX,

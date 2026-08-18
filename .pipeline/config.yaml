@@ -319,6 +319,24 @@ human_block_reminder:
   tick_ms: 1800000           # 30 min. Es la resolución del recordatorio, no su frecuencia:
                              # el escalado real lo fija REMINDER_STEPS_HOURS del módulo.
 
+# (#2893 / #6118) Aviso de dependencias faltantes: un issue habilitado que no
+# puede avanzar porque depende de otro que quedó fuera de la selección de la ola.
+#
+# El aviso tiene DOS frenos distintos, que no hay que confundir:
+#   - alert_cooldown_ms: automático. Evita repetir el mismo aviso mientras la
+#     situación no cambia. Vive en memoria del Pulpo y se pierde al reiniciar.
+#   - mute_ttl_ms: lo pide el operador apretando "No avisarme por …". Vive en
+#     .pipeline/partial-pause-deps-mute.json y sobrevive al reinicio.
+#
+# mute_ttl_ms es lo que el botón y su confirmación DECLARAN en el texto: bajarlo
+# a 6h hace que el botón diga "por 6 h" sin tocar código. Nunca es infinito —un
+# aviso silenciado para siempre convierte un issue trabado en un punto ciego—:
+# el módulo lo acota a [1 min, 7 días].
+partial_pause_deps:
+  check_every_n_ticks: 5     # cada cuántos ciclos del Pulpo se rastrean las deps
+  alert_cooldown_ms: 1800000 # 30 min — freno automático entre avisos iguales
+  mute_ttl_ms: 86400000      # 24 h  — ventana del silencio pedido por el operador
+
 # (#2892 PR-C) Alertas de consumo anómalo: canales y snooze.
 # El pulpo enchufa el detector con dos canales: Telegram (mensaje sanitizado
 # via lib/redact.js + lib/sanitize-payload.js) y banner persistente en el
