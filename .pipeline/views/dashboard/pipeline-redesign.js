@@ -313,12 +313,17 @@ function renderAgentsLegendSsr() {
 //        sigue siendo el banner de bloqueo.
 //   P5 — empty-state explícito; la línea NUNCA se oculta. Una línea que aparece
 //        y desaparece hace dudar de la lectura.
-// El ícono es `ic-transition-history` del sprite existente (semántica de
-// histórico): cero íconos nuevos, cero emojis inventados.
+//   P6 — el umbral superado cambia TAMBIÉN el glyph, no sólo el color: el `use`
+//        pasa de `#ic-transition-history` a `#ic-warn` (triángulo). Lo hace
+//        `plRenderAutoRepair` por id, por eso el `<use>` lleva uno.
+// Ambos íconos salen del sprite existente (`ic-transition-history` = semántica
+// de histórico, `ic-warn` = triángulo de warning): cero íconos nuevos, cero
+// emojis inventados. El SSR arranca en el estado base (empty-state, que nunca
+// es warn), y la hidratación decide.
 function renderAutoRepairLineSsr() {
     return `
   <div class="pl-autorepair" id="pl-autorepair-row" role="status" aria-live="polite" title="Última vez que el pipeline repuso solo issues a la lista de trabajo. Es una operación sana y por eso no se notifica: queda registrada acá.">
-    <svg class="pl-autorepair-ic" aria-hidden="true" width="12" height="12"><use href="#ic-transition-history"></use></svg>
+    <svg class="pl-autorepair-ic" aria-hidden="true" width="12" height="12"><use id="pl-autorepair-ic-use" href="#ic-transition-history"></use></svg>
     <span class="pl-autorepair-val" id="pl-autorepair">Sin auto-reparaciones registradas.</span>
   </div>`;
 }
@@ -545,7 +550,10 @@ const PIPELINE_REDESIGN_CSS = `
    7.4:1 sobre --surface-1, ≥ WCAG AA) y no el de los estados: no compite con el
    pill de bloqueo ni con el banner de desync.
    P6: el único ascenso de jerarquía es el umbral superado → --warning (6.4:1),
-   y va acompañado de texto explícito, nunca sólo color. */
+   y va acompañado de texto explícito Y de cambio de glyph (#ic-transition-history
+   → #ic-warn, que lo hace plAutoRepairGlyph en JS), nunca sólo color. Los dos
+   íconos son stroke-based sobre currentColor, así que heredan el --warning sin
+   regla extra. */
 .pl-autorepair { display: flex; align-items: center; gap: 6px; font-size: 11px;
   color: var(--text-dim, var(--in-fg-dim,#8A93A6)); padding: 6px 4px 0;
   line-height: 1.5; flex-wrap: wrap; }
@@ -931,17 +939,37 @@ function plBuildPhaseBuckets(matrix, extraById, waveExtra, waveMembers, waveDeli
 // P5 — la línea nunca se oculta: sin dato muestra su empty-state.
 // P6 — único caso que sube de jerarquía: umbral superado. Warning + glyph +
 //      texto explícito, nunca sólo color (WCAG: info no transmitida por color).
+//      Los tres canales se mueven juntos: el color lo pone la clase
+//      pl-autorepair-warn, el texto viene ya resuelto del slice, y el GLYPH se
+//      intercambia acá (#ic-transition-history -> #ic-warn, el triángulo).
+//      Si sólo cambiara el color, un daltónico o un monitor en escala de grises
+//      no vería el ascenso de jerarquía — que es justo lo que P6 prohíbe.
 // setText usa textContent, así que el dato no se interpola como HTML.
+const PL_AUTOREPAIR_IC_BASE = '#ic-transition-history';
+const PL_AUTOREPAIR_IC_WARN = '#ic-warn';
+
+function plAutoRepairGlyph(warn){
+    const use = document.getElementById('pl-autorepair-ic-use');
+    if(!use) return;
+    const href = warn ? PL_AUTOREPAIR_IC_WARN : PL_AUTOREPAIR_IC_BASE;
+    // Sólo escribimos si cambió: el tick es cada 5s y reescribir el href de un
+    // <use> fuerza al browser a re-resolver el símbolo del sprite en cada vuelta.
+    if(use.getAttribute('href') !== href) use.setAttribute('href', href);
+}
+
 function plRenderAutoRepair(ds){
     const row = document.getElementById('pl-autorepair-row');
     const p = ds && ds.auto_reparacion_presentacion;
     if(!p || !p.texto){
         setText('pl-autorepair', 'Sin auto-reparaciones registradas.');
         if(row) row.classList.remove('pl-autorepair-warn');
+        plAutoRepairGlyph(false);
         return;
     }
+    const warn = p.severidad === 'warn';
     setText('pl-autorepair', p.texto);
-    if(row) row.classList.toggle('pl-autorepair-warn', p.severidad === 'warn');
+    if(row) row.classList.toggle('pl-autorepair-warn', warn);
+    plAutoRepairGlyph(warn);
 }
 
 async function tickPipelineRedesign(){
