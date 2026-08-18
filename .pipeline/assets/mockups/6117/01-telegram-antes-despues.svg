@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 01 — Canal Telegram: antes vs despues (#6117)
+  -----------------------------------------------------------------------------
+  Demuestra:
+    - ANTES: dos avisos informativos de auto-reparacion exitosa ocupando el canal
+      y empujando hacia arriba la alerta que SI pide decision del operador.
+    - DESPUES: la reparacion exitosa desaparece del canal (queda en log, audit,
+      metrica y dashboard). Solo sobreviven los mensajes accionables.
+    - Copy FINAL y normativo de los 4 mensajes que SI se emiten:
+        M1 reparacion no aplicada      (CA-4)
+        M2 excepcion en la reparacion  (CA-4)
+        M3 fallo de escritura de audit (CA-4 / SEC-2)
+        M4 repeticion sobre el umbral  (CA-5)
+    - Cierre de ciclo de desyncBlockNotifier.onResolved: se CONSERVA (no es un
+      aviso informativo de auto-reparacion, es el cierre de una conversacion que
+      el operador ya habia empezado a leer). Se muestra en verde.
+
+  Sistema visual:
+    - 100% reuso de design-tokens.css (sin tonos nuevos de marca)
+    - Fondo del canal:  --surface-0 #0D1117
+    - Burbuja de bot:   --surface-2 #1C2128 con borde --border-subtle #21262D
+    - Ruido a eliminar: --text-disabled #6E7681 + tachado + banda --danger
+    - Accionable:       --warning #D29922 (decision) / --danger #F85149 (frenado)
+    - Cierre de ciclo:  --success #3FB950
+    - Tipografia: Segoe UI / system-ui, la del dashboard
+
+  Reglas de copy fijadas por UX (vinculantes para implementacion):
+    R1 · Nunca el numero del issue del pipeline entre parentesis. Ese numero es
+         trazabilidad de codigo, no informacion del operador, y se confunde con
+         los issues reparados que aparecen dos lineas abajo.
+    R2 · Primero la consecuencia operativa, despues el detalle.
+    R3 · Toda alerta cierra con "Que hacer:" (instruccion de reanudacion, #5134).
+    R4 · Tipos de reparacion con etiqueta humana, nunca la clave interna:
+           convergencia_aditiva          -> "convergencia con la ola activa"
+           reparacion_aditiva_wave_add   -> "reposicion de una promocion tuya"
+    R5 · Prohibido e.stack, paths absolutos del host, contenido de config.yaml,
+         tokens y audit crudo (SEC-5).
+
+  Accesibilidad:
+    - Contraste verificado sobre --surface-2: primario 13.9:1, secundario 9.2:1,
+      warning 6.4:1, danger 5.9:1, success 7.1:1 — todos >= WCAG AA.
+    - Ninguna informacion transmitida solo por color: cada bloque combina color
+      + glyph + texto explicito de estado.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="1080" viewBox="0 0 1480 1080" font-family="Segoe UI, system-ui, -apple-system, sans-serif">
+
+  <rect width="1480" height="1080" fill="#0D1117"/>
+
+  <!-- ===================== TITULO ===================== -->
+  <text x="40" y="52" fill="#E6EDF3" font-size="26" font-weight="600">#6117 · Telegram deja de narrar lo que ya se resolvio solo</text>
+  <text x="40" y="80" fill="#8B949E" font-size="15">El canal vuelve a ser de decision: entra lo que pide accion o fallo, sale lo que ya salio bien.</text>
+  <line x1="40" y1="100" x2="1440" y2="100" stroke="#21262D" stroke-width="1"/>
+
+  <!-- ===================== COLUMNA IZQUIERDA: ANTES ===================== -->
+  <g transform="translate(40,130)">
+    <rect x="0" y="0" width="660" height="36" rx="8" fill="rgba(248, 81, 73, 0.14)"/>
+    <circle cx="20" cy="18" r="6" fill="#F85149"/>
+    <text x="38" y="24" fill="#F85149" font-size="15" font-weight="600">ANTES · hoy</text>
+    <text x="150" y="24" fill="#B1BAC4" font-size="14">4 mensajes — 2 son ruido que no pide nada</text>
+
+    <!-- burbuja ruido 1 -->
+    <g transform="translate(0,54)">
+      <rect x="0" y="0" width="660" height="112" rx="10" fill="#1C2128" stroke="#21262D"/>
+      <rect x="0" y="0" width="4" height="112" rx="2" fill="#6E7681"/>
+      <text x="20" y="28" fill="#6E7681" font-size="14.5">♻️ Volvi a habilitar el dispatch (#5724).</text>
+      <text x="20" y="52" fill="#6E7681" font-size="14.5">Estos issues de la ola activa estaban afuera de la</text>
+      <text x="20" y="72" fill="#6E7681" font-size="14.5">allowlist y los sume: #4821, #4830.</text>
+      <text x="20" y="94" fill="#6E7681" font-size="14.5">La ola manda: ya estaban aprobados, no hizo falta frenar.</text>
+      <line x1="20" y1="22" x2="330" y2="22" stroke="#F85149" stroke-width="1.5" opacity="0.85"/>
+    </g>
+    <g transform="translate(560,168)">
+      <rect x="0" y="0" width="100" height="24" rx="12" fill="rgba(248, 81, 73, 0.14)"/>
+      <text x="50" y="16" fill="#F85149" font-size="11.5" font-weight="600" text-anchor="middle">SE ELIMINA</text>
+    </g>
+
+    <!-- burbuja ruido 2 -->
+    <g transform="translate(0,204)">
+      <rect x="0" y="0" width="660" height="112" rx="10" fill="#1C2128" stroke="#21262D"/>
+      <rect x="0" y="0" width="4" height="112" rx="2" fill="#6E7681"/>
+      <text x="20" y="28" fill="#6E7681" font-size="14.5">♻️ Volvi a habilitar el dispatch (#5882).</text>
+      <text x="20" y="52" fill="#6E7681" font-size="14.5">Estos issues estaban en la ola pero faltaban en la</text>
+      <text x="20" y="72" fill="#6E7681" font-size="14.5">lista de despacho: #4902.</text>
+      <text x="20" y="94" fill="#6E7681" font-size="14.5">Tienen traza de promocion tuya, los repuse sin frenar.</text>
+      <line x1="20" y1="22" x2="330" y2="22" stroke="#F85149" stroke-width="1.5" opacity="0.85"/>
+    </g>
+    <g transform="translate(560,318)">
+      <rect x="0" y="0" width="100" height="24" rx="12" fill="rgba(248, 81, 73, 0.14)"/>
+      <text x="50" y="16" fill="#F85149" font-size="11.5" font-weight="600" text-anchor="middle">SE ELIMINA</text>
+    </g>
+
+    <!-- alerta real sepultada -->
+    <g transform="translate(0,354)">
+      <rect x="0" y="0" width="660" height="92" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="4" height="92" rx="2" fill="#F85149"/>
+      <text x="20" y="30" fill="#F85149" font-size="14.5" font-weight="600">🚨 Dispatch suspendido hace 2 h 15 min.</text>
+      <text x="20" y="54" fill="#B1BAC4" font-size="14.5">La allowlist y la ola activa divergen y no puedo converger solo.</text>
+      <text x="20" y="76" fill="#B1BAC4" font-size="14.5">No se lanza ningun agente.</text>
+    </g>
+    <g transform="translate(0,458)">
+      <path d="M 12 14 L 24 4 L 24 10 L 46 10 L 46 18 L 24 18 L 24 24 Z" fill="#D29922"/>
+      <text x="58" y="19" fill="#D29922" font-size="13.5" font-style="italic">Lo unico que pedia decision, y entra ultimo entre 3 mensajes.</text>
+    </g>
+  </g>
+
+  <!-- ===================== COLUMNA DERECHA: DESPUES ===================== -->
+  <g transform="translate(780,130)">
+    <rect x="0" y="0" width="660" height="36" rx="8" fill="rgba(63, 185, 80, 0.14)"/>
+    <circle cx="20" cy="18" r="6" fill="#3FB950"/>
+    <text x="38" y="24" fill="#3FB950" font-size="15" font-weight="600">DESPUES · #6117</text>
+    <text x="205" y="24" fill="#B1BAC4" font-size="14">solo lo accionable llega al telefono</text>
+
+    <!-- lo que ya no llega -->
+    <g transform="translate(0,54)">
+      <rect x="0" y="0" width="660" height="72" rx="10" fill="none" stroke="#30363D" stroke-width="1" stroke-dasharray="5 4"/>
+      <text x="20" y="30" fill="#8B949E" font-size="14">Las 2 reparaciones exitosas ya no se envian.</text>
+      <text x="20" y="54" fill="#6E7681" font-size="13">Quedan en: log del Pulpo · audit encadenado · metrica · dashboard.</text>
+    </g>
+
+    <!-- cierre de ciclo conservado -->
+    <g transform="translate(0,142)">
+      <rect x="0" y="0" width="660" height="68" rx="10" fill="#1C2128" stroke="#21262D"/>
+      <rect x="0" y="0" width="4" height="68" rx="2" fill="#3FB950"/>
+      <text x="20" y="28" fill="#3FB950" font-size="14.5" font-weight="600">✅ El dispatch volvio a arrancar — estuvo frenado 2 h 15 min</text>
+      <text x="20" y="52" fill="#8B949E" font-size="13">Se conserva: cierra un aviso que el operador YA habia recibido.</text>
+    </g>
+
+    <!-- M1 -->
+    <g transform="translate(0,226)">
+      <rect x="0" y="0" width="660" height="136" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="4" height="136" rx="2" fill="#F85149"/>
+      <text x="20" y="27" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.6">M1 · REPARACION NO APLICADA</text>
+      <text x="20" y="52" fill="#F85149" font-size="14.5" font-weight="600">⚠️ No pude reponer issues a la lista de trabajo.</text>
+      <text x="20" y="74" fill="#E6EDF3" font-size="14.5">Quedaron afuera: #4821, #4830.</text>
+      <text x="20" y="94" fill="#B1BAC4" font-size="14.5">Motivo: la ola activa no esta confirmada.</text>
+      <text x="20" y="114" fill="#B1BAC4" font-size="14.5">Mientras tanto no se lanza ningun agente.</text>
+      <text x="20" y="132" fill="#D29922" font-size="13.5">Que hacer: abri Pipeline, compara la ola con la lista y volve a promover.</text>
+    </g>
+
+    <!-- M3 -->
+    <g transform="translate(0,378)">
+      <rect x="0" y="0" width="660" height="116" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="4" height="116" rx="2" fill="#D29922"/>
+      <text x="20" y="27" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.6">M3 · SE REPARO PERO NO QUEDO REGISTRO (SEC-2)</text>
+      <text x="20" y="52" fill="#D29922" font-size="14.5" font-weight="600">⚠️ Repuse issues pero no pude dejar registro de la operacion.</text>
+      <text x="20" y="74" fill="#E6EDF3" font-size="14.5">Repuestos: #4821. Ya estan habilitados; falta la traza de auditoria.</text>
+      <text x="20" y="96" fill="#D29922" font-size="13.5">Que hacer: revisa el estado en Pipeline antes de seguir.</text>
+    </g>
+
+    <!-- M4 -->
+    <g transform="translate(0,510)">
+      <rect x="0" y="0" width="660" height="136" rx="10" fill="#1C2128" stroke="#30363D"/>
+      <rect x="0" y="0" width="4" height="136" rx="2" fill="#D29922"/>
+      <text x="20" y="27" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.6">M4 · LA MISMA REPARACION SE REPITE (CA-5)</text>
+      <text x="20" y="52" fill="#D29922" font-size="14.5" font-weight="600">🔁 Vengo reponiendo lo mismo una y otra vez.</text>
+      <text x="20" y="74" fill="#E6EDF3" font-size="14.5">Van 3 reparaciones en la ultima hora — convergencia con la ola activa.</text>
+      <text x="20" y="96" fill="#B1BAC4" font-size="14.5">Cada una salio bien, pero que se repita significa que algo las</text>
+      <text x="20" y="114" fill="#B1BAC4" font-size="14.5">esta desalineando de nuevo.</text>
+      <text x="20" y="132" fill="#D29922" font-size="13.5">Que hacer: mira Pipeline — hay una causa de fondo para atacar.</text>
+    </g>
+  </g>
+
+  <!-- ===================== NOTA M2 + REGLAS ===================== -->
+  <g transform="translate(40,800)">
+    <rect x="0" y="0" width="660" height="112" rx="10" fill="#161B22" stroke="#21262D"/>
+    <text x="20" y="28" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.6">M2 · EXCEPCION EN LA REPARACION (CA-4)</text>
+    <text x="20" y="53" fill="#F85149" font-size="14.5" font-weight="600">⚠️ No pude reponer issues a la lista de trabajo.</text>
+    <text x="20" y="75" fill="#B1BAC4" font-size="14.5">Motivo: error inesperado al aplicar la reparacion.</text>
+    <text x="20" y="97" fill="#D29922" font-size="13.5">Que hacer: abri Pipeline y revisa el log del Pulpo. Sin stack en el chat.</text>
+  </g>
+
+  <g transform="translate(780,800)">
+    <rect x="0" y="0" width="660" height="228" rx="10" fill="#161B22" stroke="#21262D"/>
+    <text x="20" y="30" fill="#E6EDF3" font-size="15" font-weight="600">Reglas de copy (vinculantes)</text>
+    <text x="20" y="58" fill="#B1BAC4" font-size="13.5">R1 · Nunca el numero del issue del pipeline entre parentesis.</text>
+    <text x="20" y="80" fill="#B1BAC4" font-size="13.5">R2 · Primero la consecuencia operativa, despues el detalle.</text>
+    <text x="20" y="102" fill="#B1BAC4" font-size="13.5">R3 · Toda alerta cierra con "Que hacer:" (#5134).</text>
+    <text x="20" y="124" fill="#B1BAC4" font-size="13.5">R4 · Tipos con etiqueta humana, nunca la clave interna:</text>
+    <text x="40" y="146" fill="#8B949E" font-size="13">convergencia_aditiva → "convergencia con la ola activa"</text>
+    <text x="40" y="166" fill="#8B949E" font-size="13">reparacion_aditiva_wave_add → "reposicion de una promocion tuya"</text>
+    <text x="20" y="190" fill="#B1BAC4" font-size="13.5">R5 · Sin stack, paths, config ni tokens en el chat (SEC-5).</text>
+    <text x="20" y="214" fill="#B1BAC4" font-size="13.5">R6 · El copy vive en lib/desync-copy.js, no inline en pulpo.js.</text>
+  </g>
+
+</svg>

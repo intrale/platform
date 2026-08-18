@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 02 — Vista Pipeline: "Ultima auto-reparacion" (#6117 · CA-7)
+  -----------------------------------------------------------------------------
+  Demuestra:
+    - Estado ACTUAL (izquierda): el pill de sincronizacion existente. Cuando el
+      Pulpo auto-repara, el pill vuelve a "Sincronizado" y no queda NINGUN rastro
+      consultable de que hubo una reparacion. El operador que apago Telegram se
+      entera de nada.
+    - Estado ESPERADO (derecha): misma tarjeta, con una linea de metadato debajo
+      del pill. Es informacion de contexto, no una alerta: no compite con el
+      estado, no cambia el color del pill, no agrega un panel nuevo.
+    - Los 4 estados de la linea: normal, plural, repeticion sobre umbral, vacio.
+
+  Superficie de implementacion (H7 · vinculante):
+    views/dashboard/pipeline-redesign.js  → vista VIVA, /pipeline, polling 5s.
+    NO views/dashboard/pipeline.js, que esta huerfano: ninguna ruta del menu V3
+    pasa por el catch-all legacy que lo renderiza. Poner el dato ahi cumple el
+    CA de mentira — es la misma falla que dejo el dispatch ~10 h suspendido sin
+    pantalla que lo dijera (2026-08-09).
+
+  Sistema visual:
+    - 100% reuso de design-tokens.css. Cero tonos nuevos.
+    - Tarjeta:   --surface-1 #161B22 / borde --border-subtle #21262D
+    - Metadato:  --text-dim #8B949E — jerarquia por debajo del pill (es contexto)
+    - Separador: --border #30363D
+    - Umbral superado: --warning #D29922 (unico caso que sube de jerarquia)
+    - Vacio:     --text-disabled #6E7681
+    - Icono: ic-transition-history del sprite existente (semantica de historico).
+      NO se crea icono nuevo: el sprite ya tiene 123 simbolos y ninguno de los
+      candidatos de "reparacion" aporta sobre el de historico.
+
+  Reglas de presentacion fijadas por UX (vinculantes):
+    P1 · Es METADATO, no alerta. Nunca toma el color de estado del pill salvo el
+         caso de umbral superado.
+    P2 · Etiqueta humana del tipo, nunca la clave interna del JSONL (R4).
+    P3 · Antiguedad con desyncAgeText() — ya existe en desync-copy.js, misma
+         redaccion que el resto de la vista ("hace 12 min", "hace 2 h 15 min").
+    P4 · Tope de 6 chips de issues + "+N" — se reusa DSS_CHIPS_TOPE. Un truncado
+         silencioso se lee como "esto es todo".
+    P5 · Empty-state explicito. Nunca ocultar la linea: la ausencia de dato es
+         dato, y una linea que aparece y desaparece hace dudar de la lectura.
+    P6 · El copy vive en lib/desync-copy.js (fuente unica ya existente), no en
+         la vista. Ninguna superficie inventa copy propio.
+
+  Accesibilidad:
+    - Contraste sobre --surface-1: dim 7.4:1, warning 6.8:1, disabled 4.8:1
+      (el disabled solo se usa en empty-state, texto no esencial) — WCAG AA.
+    - role="status" (polite): es informacion de contexto, nunca interrumpe al
+      lector de pantalla. El pill de bloqueo sigue siendo el unico role="alert".
+    - Sin informacion solo por color: el caso de umbral suma glyph + texto
+      "se repitio 3 veces", no solo el ambar.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="920" viewBox="0 0 1480 920" font-family="Segoe UI, system-ui, -apple-system, sans-serif">
+
+  <rect width="1480" height="920" fill="#0D1117"/>
+
+  <text x="40" y="52" fill="#E6EDF3" font-size="26" font-weight="600">#6117 · CA-7 — La auto-reparacion se consulta, ya no se recibe</text>
+  <text x="40" y="80" fill="#8B949E" font-size="15">Vista Pipeline (/pipeline · polling 5s). Una linea de metadato bajo el pill de sincronizacion.</text>
+  <line x1="40" y1="100" x2="1440" y2="100" stroke="#21262D" stroke-width="1"/>
+
+  <!-- ===================== ACTUAL ===================== -->
+  <g transform="translate(40,132)">
+    <rect x="0" y="0" width="660" height="30" rx="8" fill="#1C2128"/>
+    <text x="16" y="20" fill="#8B949E" font-size="13" font-weight="600" letter-spacing="0.6">ACTUAL · HEAD</text>
+
+    <g transform="translate(0,46)">
+      <rect x="0" y="0" width="660" height="150" rx="10" fill="#161B22" stroke="#21262D"/>
+      <text x="20" y="30" fill="#B1BAC4" font-size="13" font-weight="600" letter-spacing="0.5">SINCRONIZACION ALLOWLIST ↔ OLA</text>
+
+      <!-- pill sincronizado -->
+      <g transform="translate(20,48)">
+        <rect x="0" y="0" width="168" height="34" rx="17" fill="rgba(63, 185, 80, 0.14)" stroke="#196C2E"/>
+        <circle cx="19" cy="17" r="6" fill="#3FB950"/>
+        <text x="34" y="22" fill="#3FB950" font-size="14" font-weight="600">Sincronizado</text>
+      </g>
+      <text x="204" y="70" fill="#8B949E" font-size="13.5">14 issues alineados</text>
+
+      <line x1="20" y1="104" x2="640" y2="104" stroke="#30363D" stroke-dasharray="4 4"/>
+      <text x="20" y="128" fill="#6E7681" font-size="13.5" font-style="italic">— sin rastro de la reparacion que acaba de ocurrir —</text>
+    </g>
+
+    <g transform="translate(0,216)">
+      <path d="M 12 14 L 24 4 L 24 10 L 46 10 L 46 18 L 24 18 L 24 24 Z" fill="#F85149"/>
+      <text x="58" y="19" fill="#F85149" font-size="13.5">Si se apaga Telegram sin esto, la mutacion queda sin superficie de consulta.</text>
+    </g>
+  </g>
+
+  <!-- ===================== ESPERADO ===================== -->
+  <g transform="translate(780,132)">
+    <rect x="0" y="0" width="660" height="30" rx="8" fill="rgba(63, 185, 80, 0.14)"/>
+    <text x="16" y="20" fill="#3FB950" font-size="13" font-weight="600" letter-spacing="0.6">ESPERADO · #6117</text>
+
+    <g transform="translate(0,46)">
+      <rect x="0" y="0" width="660" height="150" rx="10" fill="#161B22" stroke="#21262D"/>
+      <text x="20" y="30" fill="#B1BAC4" font-size="13" font-weight="600" letter-spacing="0.5">SINCRONIZACION ALLOWLIST ↔ OLA</text>
+
+      <g transform="translate(20,48)">
+        <rect x="0" y="0" width="168" height="34" rx="17" fill="rgba(63, 185, 80, 0.14)" stroke="#196C2E"/>
+        <circle cx="19" cy="17" r="6" fill="#3FB950"/>
+        <text x="34" y="22" fill="#3FB950" font-size="14" font-weight="600">Sincronizado</text>
+      </g>
+      <text x="204" y="70" fill="#8B949E" font-size="13.5">14 issues alineados</text>
+
+      <line x1="20" y1="104" x2="640" y2="104" stroke="#30363D"/>
+
+      <!-- linea de metadato: ic-transition-history -->
+      <g transform="translate(20,116)">
+        <circle cx="9" cy="9" r="8.5" fill="none" stroke="#8B949E" stroke-width="1.4"/>
+        <path d="M 9 4.5 L 9 9.5 L 12.5 11.5" stroke="#8B949E" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+        <text x="26" y="14" fill="#8B949E" font-size="13.5">Ultima auto-reparacion · convergencia con la ola activa · </text>
+        <text x="404" y="14" fill="#B1BAC4" font-size="13.5">#4821 #4830</text>
+        <text x="490" y="14" fill="#8B949E" font-size="13.5"> · hace 12 min</text>
+      </g>
+    </g>
+
+    <g transform="translate(0,216)">
+      <path d="M 12 14 L 24 4 L 24 10 L 46 10 L 46 18 L 24 18 L 24 24 Z" fill="#3FB950"/>
+      <text x="58" y="19" fill="#3FB950" font-size="13.5">Pull en vez de push: esta cuando el operador la busca, no cuando ocurre.</text>
+    </g>
+  </g>
+
+  <!-- ===================== VARIANTES ===================== -->
+  <text x="40" y="420" fill="#E6EDF3" font-size="19" font-weight="600">Estados de la linea</text>
+  <line x1="40" y1="436" x2="1440" y2="436" stroke="#21262D"/>
+
+  <!-- V1 -->
+  <g transform="translate(40,460)">
+    <rect x="0" y="0" width="1400" height="66" rx="10" fill="#161B22" stroke="#21262D"/>
+    <text x="20" y="26" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.6">V1 · REPOSICION DE UNA PROMOCION DEL OPERADOR — 1 issue</text>
+    <g transform="translate(20,38)">
+      <circle cx="9" cy="9" r="8.5" fill="none" stroke="#8B949E" stroke-width="1.4"/>
+      <path d="M 9 4.5 L 9 9.5 L 12.5 11.5" stroke="#8B949E" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+      <text x="26" y="14" fill="#8B949E" font-size="13.5">Ultima auto-reparacion · reposicion de una promocion tuya · </text>
+      <text x="392" y="14" fill="#B1BAC4" font-size="13.5">#4902</text>
+      <text x="436" y="14" fill="#8B949E" font-size="13.5"> · hace 2 h 15 min</text>
+    </g>
+  </g>
+
+  <!-- V2 -->
+  <g transform="translate(40,542)">
+    <rect x="0" y="0" width="1400" height="66" rx="10" fill="#161B22" stroke="#21262D"/>
+    <text x="20" y="26" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.6">V2 · TOPE DE CHIPS (P4) — se reusa DSS_CHIPS_TOPE = 6, el truncado nunca es silencioso</text>
+    <g transform="translate(20,38)">
+      <circle cx="9" cy="9" r="8.5" fill="none" stroke="#8B949E" stroke-width="1.4"/>
+      <path d="M 9 4.5 L 9 9.5 L 12.5 11.5" stroke="#8B949E" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+      <text x="26" y="14" fill="#8B949E" font-size="13.5">Ultima auto-reparacion · convergencia con la ola activa · </text>
+      <text x="404" y="14" fill="#B1BAC4" font-size="13.5">#4821 #4830 #4902 #4905 #4911 #4917</text>
+      <text x="672" y="14" fill="#8B949E" font-size="13.5">+3 · hace 4 min</text>
+    </g>
+  </g>
+
+  <!-- V3 -->
+  <g transform="translate(40,624)">
+    <rect x="0" y="0" width="1400" height="66" rx="10" fill="#161B22" stroke="#30363D"/>
+    <rect x="0" y="0" width="4" height="66" rx="2" fill="#D29922"/>
+    <text x="20" y="26" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.6">V3 · UMBRAL SUPERADO — unico caso que sube de jerarquia visual (glyph + texto, no solo color)</text>
+    <g transform="translate(20,38)">
+      <path d="M 9 2 L 17 16 L 1 16 Z" fill="none" stroke="#D29922" stroke-width="1.5" stroke-linejoin="round"/>
+      <path d="M 9 7 L 9 11" stroke="#D29922" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="9" cy="13.5" r="0.9" fill="#D29922"/>
+      <text x="26" y="14" fill="#D29922" font-size="13.5">Ultima auto-reparacion · convergencia con la ola activa · </text>
+      <text x="404" y="14" fill="#E6EDF3" font-size="13.5">#4821 #4830</text>
+      <text x="492" y="14" fill="#D29922" font-size="13.5"> · se repitio 3 veces en la ultima hora</text>
+    </g>
+  </g>
+
+  <!-- V4 -->
+  <g transform="translate(40,706)">
+    <rect x="0" y="0" width="1400" height="66" rx="10" fill="#161B22" stroke="#21262D"/>
+    <text x="20" y="26" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.6">V4 · EMPTY-STATE (P5) — la linea NUNCA se oculta: la ausencia de dato tambien es dato</text>
+    <g transform="translate(20,38)">
+      <circle cx="9" cy="9" r="8.5" fill="none" stroke="#6E7681" stroke-width="1.4"/>
+      <path d="M 9 4.5 L 9 9.5 L 12.5 11.5" stroke="#6E7681" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+      <text x="26" y="14" fill="#6E7681" font-size="13.5">Sin auto-reparaciones registradas.</text>
+    </g>
+  </g>
+
+  <!-- contrato -->
+  <g transform="translate(40,798)">
+    <rect x="0" y="0" width="1400" height="92" rx="10" fill="#1C2128" stroke="#21262D"/>
+    <text x="20" y="28" fill="#E6EDF3" font-size="14.5" font-weight="600">Contrato de datos — solo GET, solo estos campos (SEC-6)</text>
+    <text x="20" y="54" fill="#B1BAC4" font-size="13.5">/api/dash/desync-status → ultima_auto_reparacion: { tipo, issues, timestamp } | null</text>
+    <text x="20" y="76" fill="#8B949E" font-size="13">La etiqueta humana y la antiguedad las deriva la CAPA DE PRESENTACION (lib/desync-copy.js). El JSONL guarda la clave interna; la pantalla nunca la muestra.</text>
+  </g>
+
+</svg>
