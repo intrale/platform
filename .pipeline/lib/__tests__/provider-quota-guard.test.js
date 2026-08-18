@@ -613,3 +613,51 @@ test('CA-7: soft-gate NO altera el happy path cuando el provider no está degrad
     assert.equal(r.source, 'agent-models');
     assert.notEqual(r.softGatedPrimaryUsed, true);
 });
+
+// -----------------------------------------------------------------------------
+// CA-7 de #5924 — el emisor por defecto no contamina la cola REAL del repo
+//
+// Contexto: `evaluate()` cae a `enqueueTelegram` cuando el llamador no inyecta
+// `sendTelegram`, y resuelve el directorio con `pipelineDirDefault()`. Un test
+// que llegue al guard sin aislar el pipelineDir termina depositando un aviso con
+// datos de cuota REALES en `.pipeline/servicios/telegram/pendiente/`, que el
+// worker manda al operador como si fuera legítimo. Verificado el 18/08/2026: la
+// corrida del tester dejó un `<ts>-provider-quota-guard.json` en la cola del
+// worktree y `telegram-queue-no-contamina.test.js` falló por eso.
+// -----------------------------------------------------------------------------
+
+test('CA-7 #5924: bajo node --test el emisor NO escribe en la cola real del repo', () => {
+    assert.ok(process.env.NODE_TEST_CONTEXT, 'sanity: este test corre bajo el runner de Node');
+
+    const real = guard.pipelineDirDefault();
+    const colaReal = guard.telegramQueueDir(real);
+    const antes = fs.existsSync(colaReal)
+        ? fs.readdirSync(colaReal).filter((f) => f.endsWith('.json'))
+        : [];
+
+    const r = guard.enqueueTelegram(real, 'Openai-codex va al 99% (semanal).', 1787068223094);
+    assert.equal(r.ok, false, 'el encolado a la cola real debe quedar suprimido');
+    assert.equal(r.reason, 'suppressed_under_test');
+
+    const despues = fs.existsSync(colaReal)
+        ? fs.readdirSync(colaReal).filter((f) => f.endsWith('.json'))
+        : [];
+    assert.deepEqual(despues, antes, 'la cola real no cambió');
+});
+
+test('CA-7 #5924: con el pipelineDir aislado el encolado real sigue funcionando', () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'pqg-cola-'));
+    try {
+        const r = guard.enqueueTelegram(sandbox, 'Anthropic va al 91% (semanal).', 42);
+        assert.equal(r.ok, true, 'un sandbox no está alcanzado por el rail');
+
+        const dir = guard.telegramQueueDir(sandbox);
+        const files = fs.readdirSync(dir);
+        assert.deepEqual(files, ['42-provider-quota-guard.json']);
+        const drop = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+        assert.equal(drop.parse_mode, 'Markdown');
+        assert.match(drop.text, /91%/);
+    } finally {
+        try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+});

@@ -248,8 +248,46 @@ function isPreventivelyDegraded(provider, opts = {}) {
 // Telegram (FS queue) + mensaje (REQ-SEC-1: solo métricas, sin secretos)
 // -----------------------------------------------------------------------------
 
+// Directorio `.pipeline/` REAL del repo — el que el pipeline usa en producción.
+// Se calcula una sola vez y NO pasa por `pipelineDirDefault()` a propósito: acá
+// interesa la ubicación física del módulo, no la que el entorno haya redirigido.
+const REAL_PIPELINE_DIR = path.resolve(__dirname, '..');
+
+/**
+ * CA-7 de #5924: la batería de tests NUNCA puede depositar un aviso en la cola
+ * REAL de Telegram del repo.
+ *
+ * `evaluate()` cae a este emisor cuando el llamador no inyecta `sendTelegram`, y
+ * resuelve el directorio con `pipelineDirDefault()`. Cualquier test que llegue
+ * al guard sin aislar `PIPELINE_DIR_OVERRIDE` (ni pasar `pipelineDir`) termina
+ * escribiendo en la cola del repo: el worker de Telegram después manda ese
+ * mensaje al operador como si fuera una alerta legítima, y el test estático de
+ * CA-7 —que sólo mira los emisores de `servicio-telegram`/`notify-telegram`— no
+ * lo ve. Verificado el 18/08/2026: la corrida del tester dejó un
+ * `<ts>-provider-quota-guard.json` con datos de cuota REALES en la cola del
+ * worktree, y por eso `telegram-queue-no-contamina.test.js` falló.
+ *
+ * El rail sólo bloquea la combinación exacta que rompe el invariante: correr
+ * bajo `node --test` Y apuntar al `.pipeline/` físico del repo. Un sandbox
+ * (tmpdir, `PIPELINE_DIR_OVERRIDE`, `opts.pipelineDir`) escribe normalmente, así
+ * que los tests que verifican el encolado siguen ejerciendo el código real.
+ *
+ * `NODE_TEST_CONTEXT` lo pone el runner de Node en el proceso hijo; en
+ * producción no existe. Mismo criterio ya usado en `lib/credentials.js` y
+ * `lib/secrets-guard.js`. Además `skills-deterministicos/tester.js` lo borra del
+ * env de sus hijos, así que un spawn de producción disparado desde un test no
+ * hereda la supresión.
+ */
+function isRealQueueUnderTest(pd) {
+    if (!process.env.NODE_TEST_CONTEXT) return false;
+    try { return path.resolve(pd) === REAL_PIPELINE_DIR; } catch { return false; }
+}
+
 function enqueueTelegram(pd, text, now) {
     try {
+        if (isRealQueueUnderTest(pd)) {
+            return { ok: false, reason: 'suppressed_under_test' };
+        }
         const dir = telegramQueueDir(pd);
         ensureDir(dir);
         const file = path.join(dir, `${now}-provider-quota-guard.json`);
@@ -506,6 +544,9 @@ module.exports = {
     markerFile,
     telegramQueueDir,
     pipelineDirDefault,
+    // emisor por defecto — expuesto para poder testear el rail de CA-7 (#5924)
+    // sin arrastrar los efectos de estado de `evaluate()`.
+    enqueueTelegram,
     // constantes
     DEFAULT_WARN,
     DEFAULT_CRIT,

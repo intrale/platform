@@ -76,7 +76,42 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
+// `resolveAuthorizedSigners` mergea DOS fuentes: `config.cua.operator_chat_ids`
+// y la env `TELEGRAM_LEO_OPERATOR_CHAT_ID`. Los agentes del pipeline corren con
+// esa env seteada (el chat del operador), así que un test que sólo mira la
+// primera fuente aprueba en una consola limpia y falla dentro del pipeline.
+// Por eso cada caso declara explícitamente el valor de la env que asume.
+function withOperatorEnv(value, fn) {
+    const previo = Object.prototype.hasOwnProperty.call(process.env, 'TELEGRAM_LEO_OPERATOR_CHAT_ID')
+        ? process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID
+        : undefined;
+    if (value === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = value;
+    try {
+        return fn();
+    } finally {
+        if (previo === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = previo;
+    }
+}
+
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+    const signers = withOperatorEnv(undefined, () => (
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } })
+    ));
     assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+});
+
+test('resolveAuthorizedSigners suma el operador de la env sin duplicarlo', () => {
+    const signers = withOperatorEnv('2', () => (
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } })
+    ));
+    assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+});
+
+test('resolveAuthorizedSigners agrega el operador de la env cuando no está en config', () => {
+    const signers = withOperatorEnv('7', () => (
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } })
+    ));
+    assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '7']);
 });
