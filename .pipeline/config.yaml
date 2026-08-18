@@ -1709,9 +1709,15 @@ architect:
 # se resuelve server-side desde credentials.json (`TELEGRAM_LEO_OPERATOR_CHAT_ID`)
 # y se inyecta al gate en runtime.
 operator_signoff:
-  enabled: false
-  gate_mode: dry-run
-  go_live_date: '2026-07-10T00:00:00Z'
+  # Encendido del piloto (2026-08-18, decisión del operador): GATE 1 pasa a
+  # `enforce` SIN exenciones por label — el operador pidió explícitamente ver
+  # todo lo que cae antes de decidir qué eximir. El riesgo se acota por
+  # `go_live_date`: sólo los issues creados desde el encendido piden firma; el
+  # backlog vivo de la ola queda grandfathered y sigue fluyendo.
+  # Kill switch inmediato ante deadlock: `enabled: false`.
+  enabled: true
+  gate_mode: enforce
+  go_live_date: '2026-08-18T00:00:00Z'
   preauthorized_classes: []
 
 # =============================================================================
