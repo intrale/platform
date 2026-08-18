@@ -10191,6 +10191,38 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // pipelineExtras = vars de contexto del child (PIPELINE_*, handoff, extras
   // específicos del skill). Se pasan SIEMPRE — son inocuas y necesarias para
   // que el agente sepa qué issue/fase/skill está procesando.
+  // #5110 (SEC-1 · A01/A07) — binding de spawn del proyecto en contexto.
+  //
+  // `PIPELINE_PROJECT_ID` viaja en el env, pero el env NO es autoridad:
+  // `build-child-env.js` propaga toda `PIPELINE_*` heredada de `process.env`, y
+  // los roles instruyen a los agentes a correr `node -e "require('.../lib/...')"`.
+  // Sin binding, un agente podría exportar la var y hablarle al namespace de
+  // otro proyecto. Por eso el pulpo — y sólo el pulpo — escribe un registro en
+  // `.pipeline/state/project-bindings/<nonce>.json`, y `project-context.js`
+  // valida que el par env/binding coincida antes de aceptar el id.
+  //
+  // Residual honesto: el binding vive en el FS local con el mismo usuario del
+  // SO. Sube la barra (hay que forjar un registro del pulpo) pero no es
+  // criptográfico; la autoridad plena llega con #5113/#5129.
+  const projectBinding = (() => {
+    try {
+      const projectContext = require('./lib/project-context');
+      const nonce = `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+      return projectContext.writeSpawnBinding({
+        projectId: projectContext.resolveProjectContext().projectId,
+        nonce,
+        skill,
+        spawnedAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      // Best-effort: si el binding no se pudo escribir NO se rompe el spawn. El
+      // hijo simplemente no recibe las vars y cae al camino `single-project`,
+      // que es exactamente el comportamiento previo a #5110.
+      log('lanzamiento', `⚠️  binding de proyecto no escrito para ${skill}:#${issue}: ${e.message}`);
+      return null;
+    }
+  })();
+
   const pipelineExtras = {
     PIPELINE_ISSUE: issue,
     PIPELINE_SKILL: skill,
@@ -10199,6 +10231,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     PIPELINE_TRABAJANDO: trabajandoPath,
     PIPELINE_WORKTREE: spawnCwd,
     PIPELINE_REPO_ROOT: ROOT,
+    // #5110 — transporte + prueba de autoría. Van SIEMPRE juntos: uno sin el
+    // otro hace que `resolveProjectContext()` tire fail-closed.
+    ...(projectBinding ? {
+      PIPELINE_PROJECT_ID: projectBinding.projectId,
+      PIPELINE_PROJECT_BINDING: projectBinding.nonce,
+    } : {}),
     // #2993 — el agente usa estos para escribir su sección de handoff antes
     // de salir (paso 7.5 de roles/_base.md). Si `ENABLED=0`, el agente NO
     // escribe — kill-switch global desde config.yaml → handoff.enabled.

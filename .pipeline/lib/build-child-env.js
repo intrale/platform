@@ -375,6 +375,15 @@ function buildChildEnv(opts = {}) {
     }
 
     // 2. PIPELINE_* — siempre se propagan (contexto del child).
+    //
+    // #5110 · SEC-1 — este loop es exactamente la mecánica que hace que
+    // `PIPELINE_PROJECT_ID` NO pueda ser autoridad: cualquier `PIPELINE_*` que
+    // esté en el env del pulpo (o que un agente exporte y herede un nieto) se
+    // propaga sin validar. Por eso `lib/project-context.js` trata esa var como
+    // TRANSPORTE y exige que venga apareada con `PIPELINE_PROJECT_BINDING`, un
+    // nonce que sólo el pulpo escribe en `.pipeline/state/project-bindings/`.
+    // El comportamiento de este loop NO cambia — se documenta la razón por la
+    // que el consumidor desconfía de lo que acá se propaga.
     for (const k of Object.keys(processEnv)) {
         if (k.startsWith('PIPELINE_') && processEnv[k] !== undefined) {
             out[k] = processEnv[k];

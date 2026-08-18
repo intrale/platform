@@ -1898,6 +1898,36 @@ waves:
   max_horizon: 12
 
 # =============================================================================
+# Estado operativo — aislamiento por proyecto (#5110, Ola 9.4 · E2)
+# =============================================================================
+# Namespacea el estado operativo (registro de olas, allowlist de ejecución,
+# archived/, audit y markers de transacción) por `projectId`:
+#
+#   enabled: false  →  .pipeline/waves.json                          (PLANO)
+#   enabled: true   →  .pipeline/projects/<projectId>/waves.json     (NAMESPACEADO)
+#
+# `.pipeline/.paused` NO se namespacea en ningún caso: es el halt TOTAL y es un
+# control de seguridad. Degradarlo a per-proyecto lo haría fallar ABIERTO.
+#
+# DEFAULT OFF a propósito. Prender esto ANTES de correr el migrador deja al
+# pipeline mirando un namespace vacío — cero olas, dispatch detenido. Secuencia:
+#
+#   1. Pausar (`.pipeline/.paused`).
+#   2. node .pipeline/scripts/migrate-operational-state-namespace.js --dry-run
+#   3. node .pipeline/scripts/migrate-operational-state-namespace.js
+#   4. enabled: true
+#   5. node .pipeline/restart.js
+#
+# Rollback (R8, minutos): enabled: false + `--rollback` + restart.
+operational_state:
+  namespaced:
+    enabled: false
+    host_project_id: intrale-platform
+    # true → exige contexto resuelto explícitamente (pasa a rechazar el camino
+    # de compat de proyecto único). Se prende recién con 2 proyectos reales.
+    strict_context: false
+
+# =============================================================================
 # Transición automática de ola (#4368, Ola 8.3)
 # =============================================================================
 # El brazo `brazoTransicionOla` (pulpo.js) detecta si TODOS los issues de la ola

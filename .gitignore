@@ -403,3 +403,22 @@ security-report-*.md
 # snapshot del estado de coordinación local; se retienen sólo para rollback y NO
 # deben versionarse (ni filtrarse por un `git add -A`).
 .pipeline/backup/
+
+# #5110 (Ola 9.4 · E2 · R2) — estado operativo namespaceado por projectId.
+#
+# BLOQUEANTE, y va en el MISMO commit que el cambio de layout. Las entradas del
+# layout plano (`.pipeline/waves.json:255`, `.pipeline/.partial-pause.json:213`,
+# `.pipeline/archived/:332`, `.pipeline/audit/`) son paths LITERALES: ninguna
+# cubre `.pipeline/projects/<projectId>/...`. Verificado antes del cambio:
+#
+#   $ git check-ignore -q .pipeline/waves.json                             → IGNORADO
+#   $ git check-ignore -q .pipeline/projects/intrale-platform/waves.json   → TRACKEABLE
+#
+# O sea que al namespacear, el estado operativo (que incluye la allowlist, el
+# registro de olas y el audit JSONL con motivos de rechazo y metadata interna)
+# dejaba de estar ignorado en un repo PÚBLICO. Mismo precedente que `27d790aba`,
+# que destrackeó `.pipeline/state/`.
+#
+# Cubre `waves.json`, `.partial-pause.json`, `archived/`, `audit/` y los markers
+# de promote/archive de TODOS los proyectos, presentes y futuros.
+.pipeline/projects/
