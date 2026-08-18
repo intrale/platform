@@ -832,6 +832,11 @@ function createKernelSupervisor(deps = {}) {
     const scopesContrato = delDescriptor ? unir('scopes') : opts.scopes;
     const sharedContrato = Array.isArray(opts.sharedScopes) ? opts.sharedScopes
       : (delDescriptor ? unir('shared') : []);
+    const inheritIgnorado = delDescriptor ? unir('inherit') : [];
+    if (inheritIgnorado.length > 0 && typeof opts.logger === 'function') {
+      opts.logger('[kernel-supervisor] INFO: credentials[].inherit se ignora en este borde; '
+        + `no altera los scopes efectivos (${inheritIgnorado.join(', ')})`);
+    }
 
     // Unico borde contrato -> vault. Quien pueble el vault (#5339/#5393) debe
     // cargar `providers__<vendor>`; descriptor, logs y consumidores usan `providers:<vendor>`.
