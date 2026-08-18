@@ -31,6 +31,7 @@ const path = require('node:path');
 const TESTS_DIR = __dirname;
 const PIPELINE_DIR = path.resolve(__dirname, '..', '..');
 const REAL_QUEUE = path.join(PIPELINE_DIR, 'servicios', 'telegram');
+const OPERATIONAL_DROPFILE = /^\d+-provider-quota-guard\.json$/;
 
 // Llamadas que TERMINAN depositando un dropfile en la cola de Telegram. Requerir
 // el módulo no basta para contaminar (media suite lo requiere sólo por funciones
@@ -75,7 +76,12 @@ test('CA-7: la cola real no tiene dropfiles dejados por la suite', () => {
     const dir = path.join(REAL_QUEUE, sub);
     let entries = [];
     try { entries = fs.readdirSync(dir); } catch { continue; }
-    const dropfiles = entries.filter((f) => f.endsWith('.json'));
+    // El pipeline sigue activo durante la suite y puede encolar una alerta real
+    // del guard de cuota. Ese productor operativo no es contaminación de tests;
+    // cualquier otro dropfile continúa haciendo fallar esta guarda.
+    const dropfiles = entries.filter(
+      (f) => f.endsWith('.json') && !OPERATIONAL_DROPFILE.test(f),
+    );
     assert.deepEqual(
       dropfiles, [],
       `la suite dejó dropfiles en la cola real ${dir}: ${dropfiles.join(', ')}`,
