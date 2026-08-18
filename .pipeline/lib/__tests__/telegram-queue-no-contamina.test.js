@@ -31,6 +31,19 @@ const path = require('node:path');
 const TESTS_DIR = __dirname;
 const PIPELINE_DIR = path.resolve(__dirname, '..', '..');
 const REAL_QUEUE = path.join(PIPELINE_DIR, 'servicios', 'telegram');
+const QUEUE_STATES = ['pendiente', 'trabajando', 'fallido'];
+
+// El pipeline puede estar activo mientras corre la suite. Registrar el baseline
+// al cargar este archivo separa estado operativo preexistente de archivos nuevos
+// creados durante la corrida, sin exceptuar ningún productor por nombre.
+const INITIAL_DROPFILES = new Map(QUEUE_STATES.map((sub) => {
+  const dir = path.join(REAL_QUEUE, sub);
+  try {
+    return [sub, new Set(fs.readdirSync(dir).filter((f) => f.endsWith('.json')))];
+  } catch {
+    return [sub, new Set()];
+  }
+}));
 
 // Llamadas que TERMINAN depositando un dropfile en la cola de Telegram. Requerir
 // el módulo no basta para contaminar (media suite lo requiere sólo por funciones
@@ -61,7 +74,7 @@ test('CA-7: todo test que puede emitir a Telegram aísla la cola de alertas', ()
   );
 });
 
-test('CA-7: la cola real no tiene dropfiles dejados por la suite', () => {
+test('CA-7: la suite no agrega dropfiles a la cola real', () => {
   // Chequeo EMPÍRICO, complementario al estático: el estático sólo cubre los
   // emisores conocidos de `servicio-telegram`/`notify-telegram`, pero también
   // encola `pulpo.js` (dropfiles `*-cmd.json` y `*-voice-*.json`). Acá se mira
@@ -71,11 +84,12 @@ test('CA-7: la cola real no tiene dropfiles dejados por la suite', () => {
   // que el contaminante, no lo ve). Por eso el chequeo definitivo del CA-7 es
   // contar la cola antes y después de la suite completa; esto es la red que
   // atrapa la regresión en el caso común.
-  for (const sub of ['pendiente', 'trabajando', 'fallido']) {
+  for (const sub of QUEUE_STATES) {
     const dir = path.join(REAL_QUEUE, sub);
     let entries = [];
     try { entries = fs.readdirSync(dir); } catch { continue; }
-    const dropfiles = entries.filter((f) => f.endsWith('.json'));
+    const baseline = INITIAL_DROPFILES.get(sub);
+    const dropfiles = entries.filter((f) => f.endsWith('.json') && !baseline.has(f));
     assert.deepEqual(
       dropfiles, [],
       `la suite dejó dropfiles en la cola real ${dir}: ${dropfiles.join(', ')}`,
