@@ -249,6 +249,17 @@ const SENSITIVE_PATHS = Object.freeze([
         },
     },
     {
+        id: 'pipeline-runtime-state',
+        clase: 'estado',
+        reglas: ['.pipeline/state/'],
+        muestras: ['.pipeline/state/probe.json'],
+        pathspecs: [':(glob).pipeline/state/**'],
+        requiereIgnore: true,
+        escaneaContenido: true,
+        motivo: 'Estado runtime del pipeline. Todo descendiente debe permanecer fuera del índice y de los pull requests (#6111).',
+        test: (p) => p.startsWith('.pipeline/state/') && p.length > '.pipeline/state/'.length,
+    },
+    {
         id: 'commander-session',
         clase: 'estado',
         reglas: ['.pipeline/commander-session.json'],
