@@ -55,6 +55,7 @@ const repoTarget = require('./repo-target');
 // contra el archivo. `resolveScopedRefs` sigue vivo para sus otros consumidores
 // (`product-seed.js`), pero el kernel ya no lo usa.
 const { resolveInstanceVault, redactScoped } = require('./credentials');
+const { scopeVaultSegment } = require('./secret-scopes');
 const { segmentProductState } = require('./product-state-segment');
 
 const ACTIVE_STATUS = 'active';
@@ -792,18 +793,18 @@ function createKernelSupervisor(deps = {}) {
    *   - Logging/alertas SIEMPRE redactadas (`redactScoped`): sólo nombres de scope.
    *
    * REQ-SEC-1 — `projectId` sale de la CLAVE DEL REGISTRY, nunca de datos en
-   * banda, y `descriptor.secrets.path` DEJÓ DE COMPONER NADA: el path del vault
+   * banda, y `credentials[].ref` NO COMPONE NADA: el path del vault
    * es `vault.prefix` + `projectId` + `vault.hostId` + tier explícito, los tres
-   * out-of-band. Un `secrets.path` hostil no puede influirlo (regresión de SEC-3
+   * out-of-band. Un `credentials[].ref` hostil no puede influirlo (regresión de SEC-3
    * de #5352 que este cableado cierra). El descriptor aporta a lo sumo `scopes`,
    * que pasan por el validador canónico del vault.
    *
    * @param {string} projectId  id de la instancia (validado fail-closed).
    * @param {object} [opts]
-   * @param {string[]} [opts.scopes]        scopes declarados; default: los del descriptor
-   *                                         (`descriptor.secrets.scopes`).
+   * @param {string[]} [opts.scopes]        scopes declarados; default: unión de
+   *                                         `descriptor.credentials[].scopes`.
    * @param {string[]} [opts.sharedScopes]  subconjunto que vive en `shared/` (G-3);
-   *                                         default: `descriptor.secrets.shared_scopes`.
+   *                                         default: unión de `descriptor.credentials[].shared`.
    *                                         `host` es el default: `shared` se ENUMERA.
    * @param {object}   [opts.vaultConfig]   sección `vault:` inyectada (tests).
    * @param {object}   [opts.vaultDriver]   driver del vault inyectado (tests).
@@ -823,11 +824,26 @@ function createKernelSupervisor(deps = {}) {
     if (!ctx) return { ok: false, meta: { namespace: projectId, scopes: [] }, error: 'instancia inexistente' };
 
     const desc = ctx.descriptor && typeof ctx.descriptor === 'object' ? ctx.descriptor : null;
-    const declared = desc && desc.secrets && typeof desc.secrets === 'object' ? desc.secrets : null;
-    const scopes = Array.isArray(opts.scopes) ? opts.scopes
-      : (declared && Array.isArray(declared.scopes) ? declared.scopes : []);
-    const sharedScopes = Array.isArray(opts.sharedScopes) ? opts.sharedScopes
-      : (declared && Array.isArray(declared.shared_scopes) ? declared.shared_scopes : []);
+    const credentials = desc && Array.isArray(desc.credentials) ? desc.credentials : [];
+    const unir = (campo) => [...new Set(credentials.flatMap((credential) => (
+      credential && Array.isArray(credential[campo]) ? credential[campo] : []
+    )))];
+    const delDescriptor = !Array.isArray(opts.scopes);
+    const scopesContrato = delDescriptor ? unir('scopes') : opts.scopes;
+    const sharedContrato = Array.isArray(opts.sharedScopes) ? opts.sharedScopes
+      : (delDescriptor ? unir('shared') : []);
+    const inheritIgnorado = delDescriptor ? unir('inherit') : [];
+    if (inheritIgnorado.length > 0 && typeof opts.logger === 'function') {
+      opts.logger('[kernel-supervisor] INFO: credentials[].inherit se ignora en este borde; '
+        + `no altera los scopes efectivos (${inheritIgnorado.join(', ')})`);
+    }
+
+    // Unico borde contrato -> vault. Quien pueble el vault (#5339/#5393) debe
+    // cargar `providers__<vendor>`; descriptor, logs y consumidores usan `providers:<vendor>`.
+    const aSegmento = (scope) => (delDescriptor ? scopeVaultSegment(scope) : scope);
+    const pares = scopesContrato.map((scope) => ({ scope, segmento: aSegmento(scope) }));
+    const scopes = pares.map(({ segmento }) => segmento);
+    const sharedScopes = sharedContrato.map(aSegmento);
 
     // Sólo plomería del resolver: nada de esto compone el path del vault.
     const vaultOpts = {};
@@ -856,6 +872,25 @@ function createKernelSupervisor(deps = {}) {
           + 'Proximo paso: corregir esa clave en .pipeline/config.yaml',
       };
     }
+    const aContrato = new Map(pares.map(({ scope, segmento }) => [segmento, scope]));
+    const porContrato = Object.create(null);
+    for (const { scope, segmento } of pares) {
+      if (Object.prototype.hasOwnProperty.call(resolved.scopes || {}, segmento)) {
+        porContrato[scope] = resolved.scopes[segmento];
+      }
+    }
+    const reContextualizarScopes = (texto) => {
+      if (typeof texto !== 'string') return texto;
+      let salida = texto;
+      for (const [segmento, scope] of aContrato) salida = salida.split(segmento).join(scope);
+      return salida.replace(/secrets\.scopes/g, 'credentials[].scopes');
+    };
+    resolved = {
+      ...resolved,
+      scopes: porContrato,
+      missing: (resolved.missing || []).map((scope) => aContrato.get(scope) || scope),
+      error: reContextualizarScopes(resolved.error),
+    };
     const meta = redactScoped(resolved);          // A02: sólo nombres de scope, nunca valores
 
     if (!resolved.ok) {
