@@ -19,6 +19,12 @@
 #   - Caso contrario → no validar (evita ruido en commits que no tocan el área).
 TOUCHED_FILES=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
 
+# Guard compartido local/CI (#6111). Debe ejecutarse antes de cualquier
+# early-exit de RUN_VALIDATE y exactamente una vez.
+if [ -f ".pipeline/lib/precommit-secret-scan.js" ]; then
+  node .pipeline/lib/precommit-secret-scan.js --staged || exit $?
+fi
+
 # =============================================================================
 # Issue #5175 CA-4b — Guardrail del envoltorio de estado operativo
 # (`.pipeline/lib/operational-state.js`), capa local del doble wiring.
@@ -31,10 +37,8 @@ TOUCHED_FILES=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || 
 # "doble wiring" con una capa que no corre es wiring simple (CA-4a).
 #
 # NO mover este bloque hacia abajo "para agrupar con los otros lints" sin antes
-# arreglar ese early-exit. El mismo early-exit tiene hoy inertes al secret-scan
-# (#3310) y al ghost-artifact-lint (#3638) — reportado aparte, no se arregla
-# desde este issue porque activarlos cambia el comportamiento bloqueante del
-# hook para todo el repo.
+# arreglar ese early-exit. El secret-scan ya quedó por encima en #6111; el
+# ghost-artifact-lint sigue fuera del alcance de este cambio.
 #
 # MODO `--check` (BLOQUEANTE) desde #5179 — el flip de la parte 3 del split.
 #
@@ -100,33 +104,6 @@ if [ "$EXIT" = "3" ]; then
   printf '[warn] agent-models validate skip: toolchain incompleto (correr "npm install")\n' >&2
 elif [ "$EXIT" != "0" ]; then
   exit $EXIT
-fi
-
-# =============================================================================
-# Issue #3310 CA-5 — Secret-scan defensivo · inventario alineado en #5463.
-#
-# Segunda capa de contención de paths sensibles. La primera es `.gitignore`;
-# este escáner cubre el caso de que alguien (humano o agente) des-ignore un path
-# o lo fuerce al índice con `git add -f`.
-#
-# ⚠️ El inventario NO se declara acá ni en `.gitignore`: los tres consumidores
-# derivan de `.pipeline/lib/sensitive-paths.js` (#5463). Antes esta capa cubría
-# sólo el estado del Commander (#3310) mientras `.gitignore` cubría otro
-# conjunto, y los dos stores de credenciales del pipeline
-# (`.pipeline/credentials.json`, `.pipeline/telegram-config.json`) no estaban en
-# ninguno. Alta nueva → editar el módulo, no esta lista.
-#
-# El helper Node devuelve:
-#   - exit 0 → OK (ni paths del inventario en el índice ni secretos detectados)
-#   - exit 1 → BLOQUEAR (path sensible staged, secretos encontrados, o el
-#              sanitizer falló — fail-closed)
-# =============================================================================
-if [ -f ".pipeline/lib/precommit-secret-scan.js" ]; then
-  node .pipeline/lib/precommit-secret-scan.js
-  SCAN_EXIT=$?
-  if [ "$SCAN_EXIT" != "0" ]; then
-    exit $SCAN_EXIT
-  fi
 fi
 
 # =============================================================================
