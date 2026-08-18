@@ -157,6 +157,12 @@ const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
 
+// #5179 grupo 3b / CA-6b — Halt total leído por el envoltorio único de estado
+// operativo, NUNCA por `existsSync('.paused')` a mano. La lectura es FAIL-CLOSED
+// y vive en `lib/full-pause-state.js`, compartida con `restart.js` y cubierta
+// por tests del camino degradado.
+const { isFullPauseActive } = require('./lib/full-pause-state');
+
 // Sistema visual unificado (issue #2523).
 // Los assets viven en .pipeline/assets/ y son producidos por el agente UX.
 // Lazy-load con cache: el dashboard renderiza muchas veces por minuto y
@@ -2091,7 +2097,7 @@ function* _genPipelineState() {
       if (typeof data.faseActual === 'string' && /bloqueados/.test(data.faseActual)) bloqueados++;
     }
     const primarySummary = { activos, pendientes, bloqueados, procesados: doneIssueIds.length };
-    const isPausedNow = fs.existsSync(path.join(PIPELINE, '.paused'));
+    const isPausedNow = isFullPauseActive();
     const now = Date.now();
     state.products = catalog;
     for (const p of catalog) {
@@ -2741,7 +2747,7 @@ function generateHTML(state) {
   const pulpoBuild = fmtDate(path.join(PIPELINE, 'pulpo.js'));
   let pulpoUptime = '—';
   try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
-  const isPaused = fs.existsSync(path.join(PIPELINE, '.paused'));
+  const isPaused = isFullPauseActive();
 
   // #2490 — Pausa parcial (allowlist de issues)
   let partialPauseState = { mode: 'running', allowedIssues: [] };
@@ -12800,14 +12806,16 @@ function handleRequest(req, res) {
     req.on('end', () => {
       try {
         const { action } = JSON.parse(body);
-        const pauseFile = path.join(PIPELINE, '.paused');
+        // #5179 grupo 3b — el marker `.paused` NO se toca con fs directo: toda
+        // mutación pasa por el envoltorio único (lock + audit + sanitización).
         if (action === 'resume' || action === 'remove') {
           // #2490 — resume limpia tanto pausa completa como parcial
           // #3625 — resume requiere authorizedBy: 'resume:operator' para que el gate
           // acepte el removal masivo de allowlist.
-          try { fs.unlinkSync(pauseFile); } catch {}
+          // El `unlinkSync('.paused')` previo era redundante: `resumeAll()` ya
+          // borra el marker total (devuelve `removedFull`) además del parcial.
           try {
-            const { resumeAll } = require('./lib/partial-pause');
+            const { resumeAll } = require('./lib/operational-state');
             resumeAll({
               source: 'dashboard',
               authorizedBy: 'resume:operator',
@@ -12818,7 +12826,15 @@ function handleRequest(req, res) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pipeline reanudado — lanzamientos activos' }));
         } else if (action === 'pause') {
-          fs.writeFileSync(pauseFile, new Date().toISOString());
+          // El write crudo del marker (ISO plano, sin lock ni audit) queda
+          // reemplazado por el gate. `source: 'dashboard'` NO está en
+          // AUTO_LIFTABLE_SOURCES, así que la pausa se sigue leyendo como
+          // `manual` — igual que el marker legacy. Paridad preservada (CA-8).
+          require('./lib/operational-state').setFullPause({
+            source: 'dashboard',
+            authorizedBy: 'pause:dashboard',
+            justification: 'Dashboard /api/pause action=pause (halt total)',
+          });
           log('Pipeline pausado desde dashboard');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pipeline pausado — solo Telegram activo' }));

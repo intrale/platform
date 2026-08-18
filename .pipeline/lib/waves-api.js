@@ -43,6 +43,10 @@ try { issueOrder = require('./issue-order'); } catch { /* opcional */ }
 // (degradan a 503 si el checkout no los tiene).
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
+// #5179 grupo 3 — las MUTACIONES van por el envoltorio único de estado
+// operativo. Los lectores siguen en `partialPause` (superficie ancha → #5164).
+let operationalState = null;
+try { operationalState = require('./operational-state'); } catch { /* opcional */ }
 let ppDeps = null;
 try { ppDeps = require('./partial-pause-deps'); } catch { /* opcional */ }
 
@@ -530,7 +534,7 @@ function handleAllowlistRead(res) {
 // Devuelve el shape { status, body } | { errorStatus, code, message, field }
 // que consume finishMutation.
 function dispatchAllowlistMutation(route, parsed) {
-    if (!partialPause || !ppDeps) {
+    if (!partialPause || !ppDeps || !operationalState) {
         return { errorStatus: 503, code: 'module_unavailable', message: 'La edición de allowlist no está disponible.' };
     }
     const parsedIds = parseIssueIds(parsed);
@@ -573,7 +577,7 @@ function allowlistAdd(ids) {
     const union = ppDeps.allowlistWithDeps(candidate, missing);
     const aArrastrar = union.filter((n) => !candidate.includes(n));
 
-    const r = partialPause.setPartialPause(union, {
+    const r = operationalState.setAllowlist(union, {
         source: ALLOWLIST_SOURCE,
         authorizedBy: ALLOWLIST_AUTHORIZED_BY,
         justification: `Editor Roadmap: agregar ${ids.map((n) => `#${n}`).join(', ')} (arrastre recursivo)`,
@@ -631,7 +635,7 @@ function allowlistRemove(ids, parsed) {
         } };
     }
 
-    const r = partialPause.setPartialPause(remaining, {
+    const r = operationalState.setAllowlist(remaining, {
         source: ALLOWLIST_SOURCE,
         authorizedBy: ALLOWLIST_AUTHORIZED_BY,
         justification: `Editor Roadmap: quitar ${ids.map((n) => `#${n}`).join(', ')}${bloqueado ? ' (confirmado con inconsistencias)' : ''}`,

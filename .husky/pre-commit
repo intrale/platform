@@ -36,26 +36,29 @@ TOUCHED_FILES=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || 
 # desde este issue porque activarlos cambia el comportamiento bloqueante del
 # hook para todo el repo.
 #
-# ATENCION: corre en `--report-only` y NO propaga el exit code. Esto CONTRADICE
-# el patron del bloque de ghost-artifact-lint A PROPOSITO (R5 del issue):
+# MODO `--check` (BLOQUEANTE) desde #5179 — el flip de la parte 3 del split.
 #
-#   - Al momento del merge de la parte 1 el repo tiene 18 violations reales: la
-#     migracion de lectores va en la parte 2 y la de escritores en la parte 3
-#     (#5109). Con `--check` aca, TODO commit que toque `.pipeline/` falla desde
-#     el merge, con el CI en verde — o sea, invisible.
-#   - El remedio obvio frente a eso es `--no-verify`, y eso mata la capa local
-#     del doble wiring de forma permanente. El costo de un falso bloqueo no es
-#     un commit molesto: es perder el hook para siempre.
-#   - El flip a `--check` va en la parte 3, con las violations en cero.
+# Historia de por que estuvo en `--report-only` hasta aca (R5 del issue): al
+# momento del merge de la parte 1 el repo tenia 18 violations reales — la
+# migracion de lectores fue la parte 2 (#5176) y la de escritores la parte 3
+# (#5179). Con `--check` desde el principio, TODO commit que tocara `.pipeline/`
+# habria fallado, el remedio obvio habria sido `--no-verify`, y eso mata la capa
+# local del doble wiring de forma permanente.
+#
+# Con el inventario de produccion en CERO ese riesgo ya no existe: el hook solo
+# bloquea cuando alguien AGREGA un acceso directo nuevo, que es exactamente lo
+# que se quiere frenar. Ahora si propaga el exit code, como el bloque de
+# ghost-artifact-lint.
 #
 # Se filtra a los archivos staged (`--only`): sin filtro escupe avisos de
 # archivos que el dev no toco en cada commit que roce `.pipeline/`, y eso
-# entrena a ignorar el hook (UX-1).
+# entrena a ignorar el hook (UX-1). Con el hook bloqueante el filtro ademas
+# garantiza que nadie quede bloqueado por una violation que no introdujo.
 # =============================================================================
 if [ -f ".pipeline/lib/operational-state-lint.js" ]; then
   OPSTATE_ONLY=$(printf '%s\n' "$TOUCHED_FILES" | grep '^\.pipeline/.*\.js$' | paste -sd, - 2>/dev/null || true)
   if [ -n "$OPSTATE_ONLY" ]; then
-    node .pipeline/lib/operational-state-lint.js --report-only --only="$OPSTATE_ONLY" || true
+    node .pipeline/lib/operational-state-lint.js --check --only="$OPSTATE_ONLY" || exit 1
   fi
 fi
 
