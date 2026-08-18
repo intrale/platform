@@ -279,15 +279,8 @@ function applyResolution({ action, authorizedBy, operatorRef, issue, deps } = {}
             }
         }
         let waveMeta = {};
-        if (typeof d.readMarkerRaw === 'function') {
-            try {
-                const raw = d.readMarkerRaw() || {};
-                waveMeta = {
-                    waveNumber: raw.wave_number,
-                    waveName: raw.wave_name,
-                    waveGoal: raw.wave_goal,
-                };
-            } catch { waveMeta = {}; }
+        if (typeof d.readWaveMeta === 'function') {
+            try { waveMeta = d.readWaveMeta() || {}; } catch { waveMeta = {}; }
         }
 
         const result = d.setPartialPause(finalList, {

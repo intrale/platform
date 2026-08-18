@@ -13085,10 +13085,9 @@ function handleRequest(req, res) {
             // Metadata de la ola: `getPipelineMode()` no la expone y
             // `setPartialPause` reescribe el marker desde sus argumentos, así que
             // sin esto habilitar una dependencia borraría la identidad de la ola.
-            readMarkerRaw: () => {
-              try { return JSON.parse(fs.readFileSync(path.join(PIPELINE, '.partial-pause.json'), 'utf8')); }
-              catch { return null; }
-            },
+            // La lectura la hace `partial-pause`, que es el dueño del marker: el
+            // path de estado no se reconstruye acá (#5109).
+            readWaveMeta: pp.readWaveMetaFromMarker,
             alertSignature: require('./lib/partial-pause-deps').alertSignature,
             mute: require('./lib/partial-pause-deps-mute').mute,
             muteTtlMs: require('./lib/partial-pause-deps-mute').resolveTtlMsFromDisk(),

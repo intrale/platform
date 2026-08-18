@@ -508,7 +508,7 @@ test('#6118 include-deps-for-issue preserva skills, dep_sources y metadata de la
     // le pasa, se pierde. Habilitar una dependencia no puede borrar la identidad
     // de la ola activa como daño colateral.
     const h = depsCon6118({ 6033: [6032] }, {
-        readMarkerRaw: () => ({ wave_number: 9, wave_name: 'Ola Puente', wave_goal: 'kernel multiproducto' }),
+        readWaveMeta: () => ({ waveNumber: 9, waveName: 'Ola Puente', waveGoal: 'kernel multiproducto' }),
     });
     applyResolution({ action: 'include-deps-for-issue', authorizedBy: BY, issue: 6033, deps: h.deps });
 
@@ -559,6 +559,59 @@ test('#6118 CA-14 el `msg` interno del dashboard NO se empobrece', () => {
     const out = applyResolution({ action: 'keep-original', authorizedBy: BY, issue: 6033, deps: h.deps });
     assert.match(out.body.msg, /allowlist/, 'el dashboard mantiene su vocabulario');
     assert.doesNotMatch(out.body.operatorMsg, /allowlist/i, 'Telegram no lo ve');
+});
+
+test('#6118 include-deps-for-issue con primitivas REALES preserva la ola y suma sólo la dep', () => {
+    // Los tests de arriba usan fakes para aislar la lógica; éste corre contra el
+    // `partial-pause` de verdad y un marker en disco. Es el que atrapa un
+    // desacople entre lo que `readWaveMetaFromMarker` devuelve y lo que
+    // `setPartialPause` espera por `opts` — el seam donde se perdía la ola.
+    withRealPipelineDir(({ pp, writeMarker, readMarker }) => {
+        writeMarker({
+            allowed_issues: [6033, 6040],
+            allowed_skills: ['qa', 'tester'],
+            wave_number: 9,
+            wave_name: 'Ola Puente',
+            wave_goal: 'kernel multiproducto',
+            dep_sources: { 6040: 'auto-deps' },
+            created_at: '2026-08-01T00:00:00.000Z',
+            source: 'wave-promote',
+        });
+        const dropped = [];
+        const out = applyResolution({
+            action: 'include-deps-for-issue',
+            authorizedBy: BY,
+            issue: 6033,
+            deps: {
+                getPipelineMode: pp.getPipelineMode,
+                setPartialPause: pp.setPartialPause,
+                readWaveMeta: pp.readWaveMetaFromMarker,
+                readDepsState: () => ({ missing: { 6033: [6032], 6040: [6041] } }),
+                dropIssueFromDepsState: (n) => dropped.push(n),
+            },
+        });
+
+        assert.equal(out.status, 200, out.body.msg);
+        const marker = readMarker();
+        assert.deepEqual(marker.allowed_issues, [6032, 6033, 6040], 'suma #6032 y nada más');
+        assert.ok(!marker.allowed_issues.includes(6041), 'la dep del otro issue alertado no entra');
+        assert.deepEqual(marker.allowed_skills, ['qa', 'tester'], 'los skills sobreviven (#3680)');
+        assert.equal(marker.wave_number, 9, 'la identidad de la ola sobrevive (#4030)');
+        assert.equal(marker.wave_name, 'Ola Puente');
+        assert.equal(marker.wave_goal, 'kernel multiproducto');
+        assert.equal(marker.dep_sources['6032'], 'auto-deps');
+        assert.deepEqual(dropped, [6033]);
+    });
+});
+
+test('#6118 readWaveMetaFromMarker degrada a {} sin marker o con marker ilegible', () => {
+    withRealPipelineDir(({ pp, marker }) => {
+        assert.deepEqual(pp.readWaveMetaFromMarker(), {}, 'sin marker no inventa una ola');
+        fs.writeFileSync(marker, '{ no es json');
+        assert.deepEqual(pp.readWaveMetaFromMarker(), {}, 'marker corrupto no tira');
+        fs.writeFileSync(marker, JSON.stringify({ allowed_issues: [1] }));
+        assert.deepEqual(pp.readWaveMetaFromMarker(), {}, 'sin metadata de ola devuelve vacío');
+    });
 });
 
 test('#6118 CA-7 el 403 de autorización también habla en criollo para Telegram', () => {
