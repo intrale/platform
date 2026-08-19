@@ -76,7 +76,45 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
+
+// `resolveAuthorizedSigners` (delivery.js:109) lee `TELEGRAM_LEO_OPERATOR_CHAT_ID`
+// de `process.env` en tiempo de llamada. Sin aislar esa variable el test depende
+// del entorno: en la máquina del operador (que la exporta de verdad) el id real
+// se colaba en el resultado y la suite quedaba en rojo por ambiente, no por
+// código. Mismo patrón `withEnv` que `cua-operator-resolve.test.js:29`.
+function withOperatorEnv(value, fn) {
+    const KEY = 'TELEGRAM_LEO_OPERATOR_CHAT_ID';
+    const saved = process.env[KEY];
+    try {
+        if (value === undefined) delete process.env[KEY];
+        else process.env[KEY] = value;
+        return fn();
+    } finally {
+        if (saved === undefined) delete process.env[KEY];
+        else process.env[KEY] = saved;
+    }
+}
+
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
-    assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+    withOperatorEnv(undefined, () => {
+        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+        assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+    });
+});
+
+// La rama `envOperator` de `resolveAuthorizedSigners` (delivery.js:109-110) antes
+// sólo se ejercitaba por accidente, según tuviera o no la variable la máquina que
+// corría la suite. Acá queda cubierta de forma explícita y determinística.
+test('resolveAuthorizedSigners suma la credential dedicada del operador sin duplicarla', () => {
+    withOperatorEnv('4242', () => {
+        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '4242'] } });
+        assert.deepStrictEqual([...signers].sort(), ['1', '4242']);
+    });
+});
+
+test('resolveAuthorizedSigners ignora la credential dedicada vacía o en blanco', () => {
+    withOperatorEnv('   ', () => {
+        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } });
+        assert.deepStrictEqual([...signers], ['1']);
+    });
 });
