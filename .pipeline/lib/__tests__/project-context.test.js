@@ -401,3 +401,285 @@ test('pruneStaleBindings no rompe si el directorio no existe', () => {
         assert.equal(pc.pruneStaleBindings(), 0);
     } finally { cleanup(dir); }
 });
+
+// =============================================================================
+// Ramas defensivas del control de aislamiento (#5110 · rebote rev-1)
+//
+// El issue exige 100% de RAMAS en este módulo: "una rama sin test es un default
+// silencioso". La primera pasada quedó en 80% y el grueso de lo que faltaba eran
+// checks de defensa en profundidad —contención de paths detrás de `isSafeId()`,
+// fallbacks de config ilegible— que NO se pueden alcanzar por la API pública,
+// justamente porque hay un validador más estricto adelante.
+//
+// Se resolvió extrayendo esos checks a helpers PUROS (`_internal`) en vez de
+// borrarlos: la garantía sigue en el código y ahora además está probada con
+// entradas que escapan de verdad.
+// =============================================================================
+
+// ─── ProjectContextError · defaults y cause ─────────────────────────────────
+
+test('ProjectContextError sin opts usa code/stage por defecto', () => {
+    const pc = fresh();
+    const err = new pc.ProjectContextError('boom');
+    assert.equal(err.name, 'ProjectContextError');
+    assert.equal(err.code, 'EOPSTATE_NO_PROJECT_CONTEXT');
+    assert.equal(err.stage, 'isolation');
+    assert.equal('cause' in err, false, 'sin cause explícita no se inventa la propiedad');
+    assert.ok(err instanceof Error);
+});
+
+test('ProjectContextError propaga code, stage y cause explícitos', () => {
+    const pc = fresh();
+    const raiz = new Error('raíz');
+    const err = new pc.ProjectContextError('boom', { code: 'EOTRO', stage: 'otra', cause: raiz });
+    assert.equal(err.code, 'EOTRO');
+    assert.equal(err.stage, 'otra');
+    assert.equal(err.cause, raiz);
+});
+
+// ─── Contención de paths (SEC-2) ────────────────────────────────────────────
+
+test('containedUnder acepta lo que cuelga del root y rechaza lo que escapa', () => {
+    const { containedUnder } = fresh()._internal;
+    const root = path.resolve('/tmp/projects');
+
+    assert.equal(containedUnder(path.join(root, 'alpha'), root), path.join(root, 'alpha'));
+    // El propio root NO está contenido: un id que colapse a la raíz es un escape.
+    assert.equal(containedUnder(root, root), null);
+    // Hermano con prefijo compartido: `projects-evil` NO cuelga de `projects`.
+    assert.equal(containedUnder(root + '-evil', root), null);
+    assert.equal(containedUnder(path.resolve('/tmp/otro'), root), null);
+});
+
+test('requireContainedUnder tira EOPSTATE_PATH_ESCAPE ante un escape', () => {
+    const { requireContainedUnder } = fresh()._internal;
+    const root = path.resolve('/tmp/projects');
+
+    assert.equal(requireContainedUnder(path.join(root, 'alpha'), root), path.join(root, 'alpha'));
+    assert.throws(
+        () => requireContainedUnder(path.resolve('/etc/passwd'), root),
+        (e) => e.code === 'EOPSTATE_PATH_ESCAPE' && e.stage === 'isolation',
+    );
+    // Fail-closed también cuando colapsa exactamente al root.
+    assert.throws(() => requireContainedUnder(root, root), { code: 'EOPSTATE_PATH_ESCAPE' });
+});
+
+// ─── Identidad del host ─────────────────────────────────────────────────────
+
+test('parseHostProjectId extrae y trimmea, o devuelve null si no hay id usable', () => {
+    const { parseHostProjectId } = fresh()._internal;
+
+    assert.equal(parseHostProjectId('{"projectId":"  intrale-platform  "}'), 'intrale-platform');
+    assert.equal(parseHostProjectId('null'), null, 'JSON null');
+    assert.equal(parseHostProjectId('{}'), null, 'sin la clave');
+    assert.equal(parseHostProjectId('{"projectId":42}'), null, 'no-string');
+    assert.equal(parseHostProjectId('{"projectId":"   "}'), null, 'sólo espacios');
+});
+
+test('computeHostProjectId cae al literal del host si el config no se puede leer', () => {
+    const { computeHostProjectId, HOST_FALLBACK_ID } = fresh()._internal;
+
+    const lector = () => { throw new Error('ENOENT'); };
+    assert.equal(computeHostProjectId(lector), HOST_FALLBACK_ID);
+    // JSON corrupto entra por el mismo catch.
+    assert.equal(computeHostProjectId(() => 'no-es-json{'), HOST_FALLBACK_ID);
+    // Config legible pero sin projectId → mismo fallback.
+    assert.equal(computeHostProjectId(() => '{}'), HOST_FALLBACK_ID);
+    // Config que sí lo declara → gana el declarado.
+    assert.equal(computeHostProjectId(() => '{"projectId":"otro-host"}'), 'otro-host');
+});
+
+test('computeHostProjectId rechaza un projectId inseguro declarado en el config', () => {
+    const { computeHostProjectId } = fresh()._internal;
+    for (const malo of ['../escape', 'a/b', 'a\\b', 'con espacio']) {
+        assert.throws(
+            () => computeHostProjectId(() => JSON.stringify({ projectId: malo })),
+            (e) => e.code === 'EOPSTATE_INVALID_PROJECT_ID' && e.stage === 'isolation',
+            'debía rechazar ' + malo,
+        );
+    }
+});
+
+test('HOST_PROJECT_ID resuelve la identidad del checkout', () => {
+    const pc = fresh();
+    assert.equal(pc.HOST_PROJECT_ID, 'intrale-platform');
+    // Cacheado: dos lecturas dan lo mismo sin releer el archivo.
+    assert.equal(pc.HOST_PROJECT_ID, pc.HOST_PROJECT_ID);
+});
+
+// ─── Flag de layout ─────────────────────────────────────────────────────────
+
+test('namespacedFromConfig sólo enciende con enabled === true literal', () => {
+    const { namespacedFromConfig } = fresh()._internal;
+
+    assert.equal(namespacedFromConfig({ operational_state: { namespaced: { enabled: true } } }), true);
+
+    // Formas degradadas del árbol → APAGADO (default seguro).
+    assert.equal(namespacedFromConfig(null), false, 'config nulo');
+    assert.equal(namespacedFromConfig(undefined), false, 'config ausente');
+    assert.equal(namespacedFromConfig({}), false, 'sin operational_state');
+    assert.equal(namespacedFromConfig({ operational_state: {} }), false, 'sin namespaced');
+    assert.equal(namespacedFromConfig({ operational_state: { namespaced: {} } }), false, 'sin enabled');
+
+    // Sin coerción: un flag que mueve el registro de olas no se prende por "truthy".
+    for (const casi of ['true', 1, '1', 'yes']) {
+        assert.equal(
+            namespacedFromConfig({ operational_state: { namespaced: { enabled: casi } } }),
+            false,
+            JSON.stringify(casi) + ' no debe encender el namespaceo',
+        );
+    }
+});
+
+test('PIPELINE_OPSTATE_NAMESPACED=0 fuerza el layout plano', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        const pc = fresh();
+        process.env.PIPELINE_OPSTATE_NAMESPACED = '0';
+        assert.equal(pc.namespaceEnabled(), false);
+        assert.equal(pc.stateDir(), path.resolve(dir), 'plano = la raíz física, sin namespace');
+
+        process.env.PIPELINE_OPSTATE_NAMESPACED = '1';
+        assert.equal(pc.namespaceEnabled(), true);
+    } finally { cleanup(dir); }
+});
+
+// ─── stateDir · el mkdir es best-effort ─────────────────────────────────────
+
+test('stateDir no tira si no puede crear el directorio: el write posterior falla ruidoso', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        const pc = fresh();
+        process.env.PIPELINE_OPSTATE_NAMESPACED = '1';
+        // `projects` como ARCHIVO ⇒ mkdirSync del namespace falla (ENOTDIR).
+        fs.writeFileSync(path.join(dir, 'projects'), 'no soy un directorio');
+
+        const resuelto = pc.stateDir();
+        assert.equal(resuelto, path.join(path.resolve(dir), 'projects', 'alpha'));
+        assert.equal(fs.existsSync(resuelto), false, 'el directorio no llegó a crearse');
+    } finally { cleanup(dir); }
+});
+
+// ─── bindingsDir · fallback sin PIPELINE_REPO_ROOT ──────────────────────────
+
+test('bindingsDir cae al .pipeline local si no hay override ni PIPELINE_REPO_ROOT', () => {
+    const previoRepo = process.env.PIPELINE_REPO_ROOT;
+    delete process.env.PIPELINE_REPO_ROOT;
+    delete process.env.PIPELINE_DIR_OVERRIDE;
+    try {
+        const pc = fresh();
+        const esperado = path.join(path.resolve(__dirname, '..', '..'), 'state', 'project-bindings');
+        assert.equal(pc._paths().BINDINGS_DIR, esperado);
+    } finally {
+        if (previoRepo !== undefined) process.env.PIPELINE_REPO_ROOT = previoRepo;
+    }
+});
+
+// ─── Bindings · entradas corruptas y nonces inseguros ───────────────────────
+
+test('readSpawnBinding devuelve null ante un binding corrupto o sin projectId', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        const pc = fresh();
+        pc.writeSpawnBinding({ projectId: 'alpha', nonce: 'semilla' });
+        const bdir = pc._paths().BINDINGS_DIR;
+
+        const casos = {
+            'no-json': 'no soy json{',
+            'json-null': 'null',
+            'json-array': '[1,2,3]',
+            'json-escalar': '"soy-un-string"',
+            'sin-project': '{"nonce":"x"}',
+            'project-no-string': '{"projectId":123}',
+        };
+        for (const [nonce, contenido] of Object.entries(casos)) {
+            fs.writeFileSync(path.join(bdir, nonce + '.json'), contenido);
+            assert.equal(pc.readSpawnBinding(nonce), null, 'debía rechazar ' + nonce);
+        }
+
+        // El binding sano sigue leyéndose.
+        assert.equal(pc.readSpawnBinding('semilla').projectId, 'alpha');
+    } finally { cleanup(dir); }
+});
+
+test('bindingFileFor rechaza nonces inseguros y no arma path', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        const pc = fresh();
+        for (const malo of ['../fuga', 'a/b', 'a\\b', '..', null, undefined, 42, '']) {
+            assert.equal(pc._internal.bindingFileFor(malo), null, 'debía rechazar ' + JSON.stringify(malo));
+        }
+        assert.ok(pc._internal.bindingFileFor('ok').endsWith(path.sep + 'ok.json'));
+    } finally { cleanup(dir); }
+});
+
+test('readSpawnBinding y clearSpawnBinding rechazan nonces inseguros', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        const pc = fresh();
+        for (const malo of ['../fuga', 'a/b', null, 42]) {
+            assert.equal(pc.readSpawnBinding(malo), null);
+            assert.equal(pc.clearSpawnBinding(malo), false);
+        }
+    } finally { cleanup(dir); }
+});
+
+test('writeSpawnBinding distingue nonce nulo de nonce inseguro en el mensaje', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        const pc = fresh();
+        assert.throws(
+            () => pc.writeSpawnBinding({ projectId: 'alpha', nonce: null }),
+            (e) => e.code === 'EOPSTATE_INVALID_BINDING' && /null/.test(e.message),
+        );
+        assert.throws(
+            () => pc.writeSpawnBinding({ projectId: 'alpha', nonce: '../fuga' }),
+            (e) => e.code === 'EOPSTATE_INVALID_BINDING' && /fuga/.test(e.message),
+        );
+    } finally { cleanup(dir); }
+});
+
+// ─── Poda · entradas que no son bindings vigentes ───────────────────────────
+
+test('pruneStaleBindings ignora lo que no es .json y sobrevive a un borrado imposible', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        const pc = fresh();
+        pc.writeSpawnBinding({ projectId: 'alpha', nonce: 'vigente' });
+        const bdir = pc._paths().BINDINGS_DIR;
+        const pasado = new Date(Date.now() - pc.BINDING_TTL_MS - 60000);
+
+        // Entrada que NO termina en .json: se saltea aunque esté vencida.
+        const ajeno = path.join(bdir, 'README.txt');
+        fs.writeFileSync(ajeno, 'no soy un binding');
+        fs.utimesSync(ajeno, pasado, pasado);
+
+        // Entrada .json vencida que es un DIRECTORIO: statSync pasa, unlinkSync
+        // falla ⇒ el catch por-archivo la deja pasar sin tumbar la poda.
+        const trampa = path.join(bdir, 'trampa.json');
+        fs.mkdirSync(trampa);
+        fs.utimesSync(trampa, pasado, pasado);
+
+        assert.equal(pc.pruneStaleBindings(), 0, 'ninguna entrada podable');
+        assert.ok(fs.existsSync(ajeno), 'el no-.json queda intacto');
+        assert.ok(fs.existsSync(trampa), 'el que no se pudo borrar queda intacto');
+        assert.ok(fs.existsSync(path.join(bdir, 'vigente.json')), 'el vigente se conserva');
+    } finally { cleanup(dir); }
+});
+
+// ─── assertSameProject (paridad kernel-store · A01) ─────────────────────────
+
+test('assertSameProject deja pasar la partición propia y corta la ajena', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        const pc = fresh();
+        assert.equal(pc.assertSameProject('alpha', 'waves.save'), 'alpha');
+        assert.throws(
+            () => pc.assertSameProject('beta', 'waves.save'),
+            (e) => e.code === 'EOPSTATE_CROSS_PROJECT'
+                && e.stage === 'isolation'
+                && /alpha/.test(e.message)
+                && /beta/.test(e.message),
+        );
+    } finally { cleanup(dir); }
+});

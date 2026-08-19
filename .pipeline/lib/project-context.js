@@ -147,6 +147,46 @@ function projectsRoot() {
 }
 
 // -----------------------------------------------------------------------------
+// Contención de paths (SEC-2 · anti-traversal)
+// -----------------------------------------------------------------------------
+//
+// Estos dos helpers son DEFENSA EN PROFUNDIDAD: en todos sus call sites el id ya
+// pasó por `isSafeId()`, que rechaza `..`, `/` y `\`, así que un escape es hoy
+// inalcanzable desde la API pública. Justamente por eso viven acá como funciones
+// PURAS y exportadas en `_internal`: es el único nivel donde se les puede
+// construir una entrada que escape y probar que cortan. Dejarlos inline en cada
+// call site los volvía ramas muertas — no testeadas, no verificables, y por lo
+// tanto una garantía que nadie estaba mirando (que es exactamente lo que este
+// módulo NO puede permitirse siendo el control de aislamiento).
+//
+// Corolario de diseño: los call sites NO ramifican. Preguntan al helper y usan
+// lo que devuelve. Si mañana el regex de ids se relaja, la contención sigue
+// cortando ANTES de tocar el FS y con test que lo respalda.
+
+/**
+ * @returns {string|null} `child` si cuelga estrictamente de `parent`; si no, `null`.
+ */
+function containedUnder(child, parent) {
+    return child.startsWith(parent + path.sep) ? child : null;
+}
+
+/**
+ * Igual que `containedUnder()` pero fail-closed y ruidoso — para el sustrato de
+ * estado, donde un escape no puede degradarse a "no encontré nada".
+ * @throws {ProjectContextError}
+ */
+function requireContainedUnder(child, parent) {
+    const contained = containedUnder(child, parent);
+    if (!contained) {
+        throw new ProjectContextError(
+            `namespace resuelve fuera de ${parent}: ${child}`,
+            { code: 'EOPSTATE_PATH_ESCAPE', stage: 'isolation' },
+        );
+    }
+    return contained;
+}
+
+// -----------------------------------------------------------------------------
 // Flag de layout (rollout gradual + R8)
 // -----------------------------------------------------------------------------
 //
@@ -167,6 +207,23 @@ function projectsRoot() {
 
 let namespaceEnabledCache = null;
 
+/**
+ * Lee el flag del árbol de config ya resuelto. PURA: el camino real depende de
+ * `config-resolver` (js-yaml + ajv + schema del pipeline entero), así que armar
+ * por fixture cada combinación de config parcial costaría más que el control que
+ * se quiere probar. Acá cada forma degradada del árbol —sin `operational_state`,
+ * con la sección pero sin `namespaced`, con `enabled` en un valor distinto de
+ * `true`— es un caso de test de una línea.
+ *
+ * Estricto con `=== true` a propósito: `"true"`, `1` o `"1"` en el YAML NO
+ * encienden el namespaceo. Un flag que mueve dónde vive el registro de olas no
+ * se prende por coerción accidental.
+ */
+function namespacedFromConfig(cfg) {
+    const ns = cfg && cfg.operational_state && cfg.operational_state.namespaced;
+    return !!(ns && ns.enabled === true);
+}
+
 function namespaceEnabled() {
     const env = process.env.PIPELINE_OPSTATE_NAMESPACED;
     if (env === '1') return true;
@@ -179,9 +236,7 @@ function namespaceEnabled() {
         // se consulta en el camino caliente de resolución de paths.
         // eslint-disable-next-line global-require
         const configResolver = require('./config-resolver');
-        const cfg = configResolver.resolve({ pipelineDir: pipelineDir() });
-        const ns = cfg && cfg.operational_state && cfg.operational_state.namespaced;
-        enabled = !!(ns && ns.enabled === true);
+        enabled = namespacedFromConfig(configResolver.resolve({ pipelineDir: pipelineDir() }));
     } catch {
         // Config ilegible ⇒ layout PLANO. Es el default seguro: ante duda, el
         // comportamiento conocido, no uno nuevo.
@@ -204,15 +259,36 @@ const HOST_FALLBACK_ID = 'intrale-platform';
 
 let hostProjectIdCache = null;
 
-function readHostProjectId() {
-    if (hostProjectIdCache !== null) return hostProjectIdCache;
+function hostConfigFile() {
+    return path.join(repoRoot(), 'pipeline.config.json');
+}
+
+/**
+ * Extrae el `projectId` del contenido crudo de `pipeline.config.json`.
+ * PURA a propósito: `repoRoot()` no honra `PIPELINE_DIR_OVERRIDE` (la identidad
+ * del host es del checkout, no del directorio de estado que un fixture apunte a
+ * otro lado), así que un test no puede alimentar este parseo por el FS sin
+ * escribir en el repo real. Separarlo lo hace verificable sin esa trampa.
+ *
+ * @returns {string|null} el id ya trimmeado, o `null` si el JSON no lo declara.
+ * @throws {SyntaxError} si `raw` no es JSON — lo captura `computeHostProjectId()`.
+ */
+function parseHostProjectId(raw) {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.projectId === 'string' && parsed.projectId.trim()) {
+        return parsed.projectId.trim();
+    }
+    return null;
+}
+
+/**
+ * Resuelve la identidad del host a partir de un lector inyectable.
+ * @param {() => string} readRaw
+ */
+function computeHostProjectId(readRaw) {
     let id = null;
     try {
-        const raw = fs.readFileSync(path.join(repoRoot(), 'pipeline.config.json'), 'utf8');
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed.projectId === 'string' && parsed.projectId.trim()) {
-            id = parsed.projectId.trim();
-        }
+        id = parseHostProjectId(readRaw());
     } catch {
         // Archivo ausente o ilegible (fixtures, checkouts parciales): se cae al
         // literal conocido. NO es un default silencioso a "otro proyecto" — es
@@ -226,7 +302,12 @@ function readHostProjectId() {
             { code: 'EOPSTATE_INVALID_PROJECT_ID', stage: 'isolation' },
         );
     }
-    hostProjectIdCache = id;
+    return id;
+}
+
+function readHostProjectId() {
+    if (hostProjectIdCache !== null) return hostProjectIdCache;
+    hostProjectIdCache = computeHostProjectId(() => fs.readFileSync(hostConfigFile(), 'utf8'));
     return hostProjectIdCache;
 }
 
@@ -299,14 +380,11 @@ function assertSameProject(projectId, op) {
 function stateDirFor(projectId) {
     assertOperationalNamespace(projectId);
     const root = projectsRoot();
-    const dir = path.resolve(path.join(root, projectId));
-    if (dir === root || !dir.startsWith(root + path.sep)) {
-        throw new ProjectContextError(
-            `namespace resuelve fuera de projects/: ${dir} ∉ ${root}`,
-            { code: 'EOPSTATE_PATH_ESCAPE', stage: 'isolation' },
-        );
-    }
-    return dir;
+    // `requireContainedUnder()` cubre también el caso `dir === root`: la raíz no
+    // empieza con `root + sep`, así que un id que colapse al propio root queda
+    // rechazado por el mismo check, sin una condición extra que nadie pueda
+    // ejercitar.
+    return requireContainedUnder(path.resolve(path.join(root, projectId)), root);
 }
 
 const ensuredStateDirs = new Set();
@@ -348,11 +426,20 @@ function stateDir() {
  * pulpo antes de spawnear un agente. Devuelve `null` ante cualquier problema:
  * el caller trata `null` como "sin autoridad" y tira — nunca como "seguí igual".
  */
-function readSpawnBinding(nonce) {
+/**
+ * Path del binding de `nonce`, o `null` si el nonce no es seguro o el path
+ * escaparía del directorio de bindings. Único lugar que arma este path: que
+ * lectura y borrado compartan resolución evita que una de las dos se relaje sola.
+ */
+function bindingFileFor(nonce) {
     if (!isSafeId(nonce)) return null;
     const dir = path.resolve(bindingsDir());
-    const file = path.resolve(path.join(dir, `${nonce}.json`));
-    if (!file.startsWith(dir + path.sep)) return null;
+    return containedUnder(path.resolve(path.join(dir, `${nonce}.json`)), dir);
+}
+
+function readSpawnBinding(nonce) {
+    const file = bindingFileFor(nonce);
+    if (!file) return null;
     try {
         const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
         if (!parsed || typeof parsed !== 'object') return null;
@@ -380,7 +467,11 @@ function writeSpawnBinding({ projectId, nonce, pid = null, skill = null, spawned
     }
     const dir = path.resolve(bindingsDir());
     fs.mkdirSync(dir, { recursive: true });
-    try { pruneStaleBindings(); } catch { /* best-effort */ }
+    // Sin `try` alrededor: `pruneStaleBindings()` ya contiene TODO su error
+    // adentro (readdir y cada stat/unlink van en su propio catch) y devuelve un
+    // contador, nunca tira. Un catch extra acá sería una rama muerta que además
+    // sugiere, en falso, que la poda puede tumbar un spawn.
+    pruneStaleBindings();
     const file = path.join(dir, `${nonce}.json`);
     const body = {
         projectId,
@@ -395,10 +486,8 @@ function writeSpawnBinding({ projectId, nonce, pid = null, skill = null, spawned
 
 /** Borra un binding consumido. Idempotente. */
 function clearSpawnBinding(nonce) {
-    if (!isSafeId(nonce)) return false;
-    const dir = path.resolve(bindingsDir());
-    const file = path.resolve(path.join(dir, `${nonce}.json`));
-    if (!file.startsWith(dir + path.sep)) return false;
+    const file = bindingFileFor(nonce);
+    if (!file) return false;
     try {
         fs.unlinkSync(file);
         return true;
@@ -559,6 +648,20 @@ module.exports = {
     pruneStaleBindings,
     BINDING_TTL_MS,
     _resetForTests,
+    // Helpers PUROS del control de aislamiento. Se exportan para poder probarlos
+    // con entradas que la API pública ya no deja construir (un id que escape del
+    // root, un `pipeline.config.json` ilegible, un árbol de config a medio
+    // armar). No son API: nadie fuera de los tests debería importarlos.
+    _internal: {
+        containedUnder,
+        requireContainedUnder,
+        parseHostProjectId,
+        computeHostProjectId,
+        namespacedFromConfig,
+        bindingFileFor,
+        hostConfigFile,
+        HOST_FALLBACK_ID,
+    },
     _paths: () => ({
         PIPELINE_DIR: pipelineDir(),
         PROJECTS_ROOT: projectsRoot(),
