@@ -46,6 +46,81 @@ const ACTION_ALLOWLIST = Object.freeze([
     'approve', 'reject', 'adjust-definicion',
 ]);
 
+// --- #6206 · binding (gate, issue, anchor) dentro del payload firmado --------
+//
+// El canal único de firma (`approval-channel.js`) necesita que un token diga
+// SOBRE QUÉ está firmando, no sólo qué acción autoriza. Hoy conviven dos
+// productores (`human-block.js`, `operator-gate.js`) que mintean con la misma
+// clave derivada y la misma forma `{i,a,n,e}`: sin binding, el botón de un gate
+// puede firmar otro (R-1 del issue, OWASP A01/A08).
+//
+// Se agregan DOS campos OPCIONALES al payload:
+//   `g` — gate al que el token queda atado (string corto de un enum del caller).
+//   `h` — ancla de lo firmado, serializada `<kind>|<value>` (ver `serializeAnchor`).
+//
+// Decisión D-3 del issue: el binding viaja DENTRO del payload firmado y se
+// compara en el consumo. La clave compuesta del store (`k`) es CONSECUENCIA de
+// ese binding, nunca el mecanismo: namespacear sólo el store convertiría el
+// un-solo-uso en "un uso por store".
+//
+// Retro-compatibilidad (R-2): `g`/`h` NO entran en la guarda de campos de
+// `verify()`; los dos consumidores vivos (`human-block-action-handler.js:174`,
+// `operator-gate.js:341`) siguen funcionando con tokens sin esos campos.
+const GATE_RE = /^[a-z][a-z0-9-]{0,31}$/;
+const ANCHOR_KIND_RE = /^[a-z][a-z0-9-]{0,31}$/;
+const NONCE_NS_INFO = 'action-token/ns/v1';
+
+/**
+ * ¿`gate` es un identificador de gate con forma segura? El enum concreto lo
+ * define el caller (`approval-channel.GATES`); acá sólo se valida la FORMA para
+ * que el valor sea inerte como componente de una clave derivada.
+ * @param {string} gate
+ * @returns {boolean}
+ */
+function isValidGate(gate) {
+    return typeof gate === 'string' && GATE_RE.test(gate);
+}
+
+/**
+ * Serializa un ancla `{kind, value}` a la forma canónica `<kind>|<value>` que
+ * viaja en `h`.
+ *
+ * El `kind` va SIEMPRE adentro y se valida contra `ANCHOR_KIND_RE` (que excluye
+ * el separador `|`), así que la serialización es inyectiva: un `body-hash` y un
+ * `commit-sha` con el mismo `value` producen anclas DISTINTAS y no son
+ * intercambiables (R2 del issue — prohibido normalizar ambos tipos a uno solo).
+ *
+ * Acepta también un string ya serializado (idempotente) para que el caller pueda
+ * pasar el valor que le devolvió esta misma función.
+ *
+ * @param {{kind:string, value:string}|string} anchor
+ * @returns {string|null} `null` si el ancla es inválida (fail-closed).
+ */
+function serializeAnchor(anchor) {
+    if (typeof anchor === 'string') {
+        // Ya serializada: debe respetar la forma `<kind>|<value>`.
+        const idx = anchor.indexOf('|');
+        if (idx <= 0 || idx === anchor.length - 1) return null;
+        return ANCHOR_KIND_RE.test(anchor.slice(0, idx)) ? anchor : null;
+    }
+    if (!anchor || typeof anchor !== 'object') return null;
+    const kind = String(anchor.kind == null ? '' : anchor.kind);
+    const value = String(anchor.value == null ? '' : anchor.value);
+    if (!ANCHOR_KIND_RE.test(kind) || value === '' || value.length > 512) return null;
+    return `${kind}|${value}`;
+}
+
+/**
+ * Clave compuesta del store de nonces, derivada del binding `(g, i, h, n)`.
+ * Es CONSECUENCIA del binding firmado, no un sustituto (D-3).
+ * @returns {string} hex sha256
+ */
+function nonceKey({ g, i, h, n }) {
+    return crypto.createHash('sha256')
+        .update(`${NONCE_NS_INFO}|${g}|${i}|${h}|${n}`, 'utf8')
+        .digest('hex');
+}
+
 // --- base64url helpers (sin padding, URL-safe para query strings) -----------
 function b64urlEncode(buf) {
     return Buffer.from(buf).toString('base64')
@@ -88,11 +163,19 @@ function isValidIssue(issue) {
  * @param {string}   [opts.nonceFile] - path del store JSONL de nonces usados.
  * @param {number}   [opts.ttlMs]     - vida del token (default 24h).
  * @param {function} [opts.now]       - clock injectable (default Date.now).
+ * @param {function} [opts.nonceGen]  - #6206: generador de nonce injectable.
+ *   SÓLO para tests que necesitan dos tokens con el mismo `n` y distinto
+ *   binding (replay cross-namespace). Producción NUNCA lo pasa: el default es
+ *   `crypto.randomBytes`. Se inyecta la FUENTE de aleatoriedad en vez de
+ *   aceptar un `nonce` explícito en `sign()`, que sería un footgun de reuso.
  */
 function createTokenSigner(opts = {}) {
     const ttlMs = Number.isFinite(opts.ttlMs) ? opts.ttlMs : DEFAULT_TTL_MS;
     const nonceFile = opts.nonceFile || DEFAULT_NONCE_FILE;
     const now = typeof opts.now === 'function' ? opts.now : () => Date.now();
+    const nonceGen = typeof opts.nonceGen === 'function'
+        ? () => String(opts.nonceGen())
+        : () => crypto.randomBytes(12).toString('hex');
     const rawSecret = opts.secret !== undefined ? opts.secret : resolveRawSecret();
     const key = deriveKey(rawSecret);
 
@@ -101,45 +184,86 @@ function createTokenSigner(opts = {}) {
     }
 
     // --- nonce store (un-solo-uso) ------------------------------------------
+    //
+    // #6206 — se leen DOS sets del mismo JSONL:
+    //   `plain`     — nonces crudos (`n`). Cubre TODO token consumido, con o sin
+    //                 binding, y es el que usa el camino legacy sin cambios.
+    //   `composite` — claves compuestas (`k`) de los tokens con binding.
+    // El camino del canal exige que NINGUNO de los dos matchee (estrictamente
+    // más seguro que chequear sólo `k`: un mismo nonce no se puede reusar
+    // cambiando de namespace).
     function readUsedNonces() {
-        const used = new Set();
+        const plain = new Set();
+        const composite = new Set();
         let raw;
-        try { raw = fs.readFileSync(nonceFile, 'utf8'); } catch { return used; }
+        try { raw = fs.readFileSync(nonceFile, 'utf8'); } catch { return { plain, composite }; }
         for (const ln of raw.split('\n')) {
             if (!ln) continue;
             try {
                 const o = JSON.parse(ln);
-                if (o && o.n) used.add(String(o.n));
+                if (o && o.n) plain.add(String(o.n));
+                if (o && o.k) composite.add(String(o.k));
             } catch { /* línea corrupta — skip */ }
         }
-        return used;
+        return { plain, composite };
     }
     function markNonceUsed(nonce, meta) {
         try { fs.mkdirSync(path.dirname(nonceFile), { recursive: true }); } catch { /* idempotente */ }
-        const line = JSON.stringify({
+        const rec = {
             n: nonce,
             issue: meta && meta.issue,
             action: meta && meta.action,
             ts: new Date(now()).toISOString(),
-        }) + '\n';
-        fs.appendFileSync(nonceFile, line);
+        };
+        // `n` se escribe SIEMPRE (R-2: el set legacy sigue cubriendo todo token
+        // consumido). `k` se agrega sólo cuando el token trae binding.
+        if (meta && meta.k) rec.k = String(meta.k);
+        if (meta && meta.gate) rec.gate = String(meta.gate);
+        fs.appendFileSync(nonceFile, JSON.stringify(rec) + '\n');
     }
 
     /**
      * Firma un token para {issue, action}. `exp` opcional (epoch ms); default
      * now()+ttlMs.
+     *
+     * #6206 — `gate` y `anchor` son OPCIONALES y atan el token a un contexto
+     * concreto (`g`/`h` en el payload). Los emite `approval-channel.js`, que en
+     * el consumo los exige; el camino legacy de botones sigue firmando sin
+     * ellos y no cambia de forma.
+     *
+     * @param {object}   p
+     * @param {number}   p.issue
+     * @param {string}   p.action   - ∈ ACTION_ALLOWLIST.
+     * @param {number}   [p.exp]    - epoch ms.
+     * @param {string}   [p.gate]   - gate al que se ata el token (forma `GATE_RE`).
+     * @param {{kind:string,value:string}|string} [p.anchor] - ancla de lo firmado.
      * @returns {string} token `v1.<body>.<sig>`
      */
-    function sign({ issue, action, exp } = {}) {
+    function sign({ issue, action, exp, gate, anchor } = {}) {
         const i = Number(issue);
         if (!isValidIssue(i)) throw new Error(`action-token.sign: issue inválido (${issue})`);
         if (!isValidAction(action)) throw new Error(`action-token.sign: action inválida (${action})`);
         const payload = {
             i,
             a: action,
-            n: crypto.randomBytes(12).toString('hex'),
+            n: nonceGen(),
             e: Number.isFinite(exp) ? exp : now() + ttlMs,
         };
+        // Binding opcional. Fail-closed: si el caller PIDE binding y el valor es
+        // inválido, se rompe acá — nunca se emite un token con binding a medias
+        // (un token con `g` pero sin `h` sería aceptable para un consumidor
+        // distraído y no ataría el ancla).
+        if (gate !== undefined || anchor !== undefined) {
+            if (!isValidGate(gate)) {
+                throw new Error(`action-token.sign: gate inválido (${gate})`);
+            }
+            const h = serializeAnchor(anchor);
+            if (h === null) {
+                throw new Error('action-token.sign: anchor inválida (esperado {kind, value})');
+            }
+            payload.g = gate;
+            payload.h = h;
+        }
         const body = b64urlEncode(JSON.stringify(payload));
         return `${TOKEN_VERSION}.${body}.${signBody(body)}`;
     }
@@ -181,11 +305,28 @@ function createTokenSigner(opts = {}) {
         }
         // 3. Expiración (SEC-5).
         if (exp <= now()) return { ok: false, reason: 'expired' };
+
+        // #6206 — binding opcional. `g`/`h` quedan DELIBERADAMENTE fuera de la
+        // guarda de campos de arriba (R-2): un token viejo sin ellos sigue
+        // siendo válido acá. La obligatoriedad vive en `approval-channel`, no en
+        // este verificador compartido.
+        const g = typeof payload.g === 'string' && isValidGate(payload.g) ? payload.g : null;
+        const h = typeof payload.h === 'string' ? serializeAnchor(payload.h) : null;
+        const bound = g !== null && h !== null;
+        const k = bound ? nonceKey({ g, i: issue, h, n: String(nonce) }) : null;
+
         // 4. Replay — nonce un solo uso (SEC-5).
         const used = readUsedNonces();
-        if (used.has(String(nonce))) return { ok: false, reason: 'replayed' };
-        markNonceUsed(String(nonce), { issue, action });
-        return { ok: true, issue, action, nonce: String(nonce) };
+        // El nonce crudo bloquea SIEMPRE (cubre legacy y cross-namespace: un
+        // token consumido en un namespace no revalida en otro). La clave
+        // compuesta agrega el bloqueo específico del binding.
+        if (used.plain.has(String(nonce))) return { ok: false, reason: 'replayed' };
+        if (bound && used.composite.has(k)) return { ok: false, reason: 'replayed' };
+
+        markNonceUsed(String(nonce), { issue, action, k, gate: g });
+        const res = { ok: true, issue, action, nonce: String(nonce) };
+        if (bound) { res.g = g; res.h = h; res.k = k; }
+        return res;
     }
 
     return { sign, verify, nonceFile, ttlMs };
@@ -206,6 +347,11 @@ module.exports = {
     deriveKey,
     isValidAction,
     isValidIssue,
+    // #6206 — binding (gate, issue, anchor). Superficie NUEVA; `ACTION_ALLOWLIST`
+    // y `DEFAULT_NONCE_FILE` quedan intactos.
+    isValidGate,
+    serializeAnchor,
+    nonceKey,
     ACTION_ALLOWLIST,
     DEFAULT_TTL_MS,
     DEFAULT_NONCE_FILE,
