@@ -2378,6 +2378,170 @@ multi-provider; esta doc se actualiza cuando esos adapters de cuota cierren.
 
 ---
 
+## 15. Criterio de permanencia de proveedores (#6145)
+
+Responde, de forma recurrente y sin análisis manual, la pregunta *"¿qué proveedores de la
+cadena me están costando más de lo que aportan?"* — incluida la respuesta legítima
+**"ninguno"**.
+
+El criterio **marca candidatos**; **nunca da de baja a nadie**. La baja efectiva es
+siempre un PR de configuración trazable.
+
+### 15.1 Cómo se corre
+
+```bash
+# Reporte completo para el operador (tabla + conclusión + motivo por proveedor)
+node .pipeline/scripts/provider-contribution-report.js --dias=30
+
+# Tabla de 4 columnas, para terminales angostas
+node .pipeline/scripts/provider-contribution-report.js --dias=30 --compacto
+
+# JSON canónico, para pipear a jq
+node .pipeline/scripts/provider-contribution-report.js --dias=30 --json
+
+# Además, deja la evaluación en el audit append-only (hash-chain)
+node .pipeline/scripts/provider-contribution-report.js --dias=30 --registrar
+```
+
+Con la misma ventana, el comando produce **siempre el mismo veredicto** (test:
+`el mismo comando sobre la misma ventana produce el mismo veredicto`).
+
+Exit codes: `0` reporte emitido · `1` error de IO · `2` ventana sin archivos verificables
+(todo queda `no evaluable`, no se decide nada).
+
+### 15.2 Fuente de datos
+
+`.pipeline/logs/cross-provider-dispatch-*.jsonl` — append-only con hash-chain
+(`hash_prev` / `hash_self`), rotación diaria, escrito por
+`lib/agent-launcher/dispatch-with-fallback.js` vía `audit-log.appendChained`. La
+integridad de **cada** archivo diario se verifica con `audit-log.verifyChain` antes de
+alimentar el criterio; un archivo con la cadena rota se descarta y se reporta.
+
+> **Prohibido usar `.claude/activity-log.jsonl`.** Esa fuente sólo registra `provider` en
+> `session:start` / `session:end`: mide sesiones de agente ya arrancado, no intentos de
+> proveedor. Daría **cero** para `gemini-google`, `cerebras` y `nvidia-nim` — los tres que
+> más despachan — y el criterio los daría de baja justo por aportar. Hay un test de
+> policy que falla si el módulo llega a importarla.
+
+### 15.3 Taxonomía: qué cuenta y qué no
+
+| Evento | Cuenta como |
+|---|---|
+| `fallback_selected` | **aporte real** — única señal de que el proveedor resolvió el pedido |
+| `fallback_health_gated` | bloqueo, clasificado según `health_reason` |
+| `fallback_provider_disabled` · `fallback_pacing_budget_red` | bloqueo por `cupo` |
+| `fallback_no_credentials` | bloqueo por `credencial` |
+| `primary_inactive_by_schedule` · `fallback_also_gated` · `fallback_provider_inactive_by_schedule` | **excluidos del denominador** |
+| `chain_exhausted` | evento de cadena, no imputable a ningún proveedor |
+
+```
+evaluables = intentos − gateos por ventana horaria
+tasa de aporte = aportes / evaluables
+```
+
+**Por qué se excluye el gating horario:** es el **~50%** de los eventos. Incluirlo mediría
+la política de horarios que nosotros configuramos, no al proveedor.
+
+### 15.4 Familias de bloqueo (no se mezclan)
+
+| Familia | `health_reason` | Lectura |
+|---|---|---|
+| `cupo` | `quota_exhausted`, `quota_exhausted_real` | Recuperable por diseño |
+| `credencial` | `invalid_credentials`, `no_key_configured`, `forbidden` | Imputable al proveedor / a la cuenta |
+| `observabilidad local` | `cli_license_unavailable`, `cli_unavailable`, `cli_binary_undeclared`, `unknown_provider` | **Bug nuestro.** Jamás imputable al proveedor |
+
+Un proveedor cuyo bloqueo dominante es `observabilidad local` tiene **techo `rol acotado`**:
+no puede ser marcado como candidato a baja sin corregir antes el chequeo.
+
+### 15.5 Umbrales (`config.yaml` → `multi_provider.permanence`)
+
+| Umbral | Default | Qué decide |
+|---|---:|---|
+| `enabled` | `false` | Rollout gradual |
+| `window_days` | 30 | Ventana de medición (CA-1 exige ≥30) |
+| `min_sample` | 200 | Intentos evaluables mínimos; por debajo ⇒ `no evaluable` |
+| `min_contribution_rate` | 0.05 | Tasa bajo la cual se marca candidato |
+| `max_days_without_win` | 14 | Días sin aporte real que marcan candidato |
+| `min_survivors` | 1 | Proveedores sanos que deben sobrevivir siempre |
+
+### 15.6 Invariantes — no configurables, cada uno con test
+
+1. **Marca candidatos; nunca ejecuta la baja.** El audit registra `executed_action: none`.
+2. **Nunca vacía la cadena.** Si marcar dejaría menos de `min_survivors` proveedores
+   sanos, **no marca a ninguno** (test: *nunca marca candidato al ultimo proveedor sano de
+   la cadena*). Hereda el invariante ya vigente para el soft-gate de cuota (§13.6).
+3. **Nunca marca a un proveedor `billing: paid`.**
+4. **"Sin dato" ⇒ `no evaluable`, jamás "no aporta".** Muestra chica, silencio del log o
+   hash-chain rota ⇒ no se decide sobre nadie.
+5. **Bloqueo de origen local ⇒ techo `rol acotado`.**
+6. **Sólo metadatos.** Cada entrada del log se proyecta contra una whitelist cerrada;
+   `raw_excerpt` y demás texto libre nunca llegan al reporte ni al audit.
+7. **Read-only.** El módulo no invoca ninguna API de escritura de `fs`; la única escritura
+   es opt-in (`--registrar`) y va al audit append-only.
+
+### 15.7 Vocabulario del veredicto
+
+Exactamente cinco literales, en español y sin abreviar. Los identificadores internos
+(`rol_acotado`, `candidato_baja`, `no_evaluable`, `sin_declarar`) viven en el JSON y en el
+audit, **nunca** en el texto que lee el operador.
+
+`mantener` · `rol acotado` · `candidato a baja` · `no evaluable` · `sin declarar`
+
+Las ausencias de medición **nunca** se escriben como `0` ni como `—`: declaran su causa
+con vocabulario cerrado — `sin instrumentar (#6152)`, `sin muestra`,
+`sin declarar (#6153)`, `cadena rota`.
+
+### 15.8 Equivalencia con el panel de salud
+
+El operador cruza dos tableros en la misma decisión. Esta tabla es la traducción entre
+ambos, y el antídoto contra el síntoma *"el panel no coincide con lo que el dispatcher
+hace"*:
+
+| Panel de salud (`/multi-provider-health`) | Reporte de permanencia | ¿Contradicción? | Lectura correcta |
+|---|---|---|---|
+| `green` / activo | mantener | no | Aporta y está sano |
+| `green` / activo | candidato a baja | **no** | Está sano pero **no lo eligen**: sobra en la cadena |
+| `red` por causa **local** (`cli_license_unavailable`) | mantener | **no** | El rojo es nuestro, no del proveedor. Corregir el chequeo |
+| `red` por causa **del proveedor** (credencial, 4xx sostenido) | candidato a baja | no | Coinciden: evaluar la baja |
+| `sin datos 24h` | no evaluable | no | Falta muestra. **Nunca** se degrada a "no aporta" |
+| ausente del panel | sin declarar | no | Despacha pero no está en config (#6153) |
+
+**Ejemplo canónico — `gemini-google`.** Figura `red` en el panel y `mantener` en el
+reporte, **simultáneamente, y eso es correcto**: el rojo lo produce
+`cli-oauth-probe.js:82` cuando `AGY_LICENSE_READY !== '1'`, un flag de entorno **sin
+round-trip al proveedor**. Mientras tanto el dispatcher lo eligió 277 veces en la misma
+ventana, porque el health-gate sólo aplica con rojo fresco (<20 min) y con snapshot viejo
+cae en `red_stale` → fail-open. Seguimiento de la corrección: **#6225**.
+
+### 15.9 Registro de la decisión
+
+Cada corrida con `--registrar` deja una entrada `provider_permanence_evaluated` en
+`.pipeline/audit/provider-permanence.jsonl` (append-only, hash-chain) con la ventana, el
+estado de integridad, los umbrales aplicados, el veredicto y la evidencia por proveedor, y
+`executed_action: none`. Un PR posterior que ejecute una baja **referencia esa entrada**,
+de modo que el flip de configuración nunca sea una edición suelta.
+
+### 15.10 Evaluación vigente
+
+La primera evaluación completa (ventana 2026-07-20 → 2026-08-19, 97.616 eventos, 31
+archivos, hash-chain OK) está en
+[`docs/pipeline/evaluacion-free-providers-6145.md`](evaluacion-free-providers-6145.md).
+
+**Resultado: no se da de baja a ningún proveedor.** El hallazgo central es que los
+gratuitos no descargan al proveedor pago — recogen trabajo que la cadena paga **ya
+rechazó** (1.483 de 1.483 selecciones de gratuitos ocurrieron después de descartar
+`anthropic` **y** `openai-codex`). Darlos de baja no alivia al pago: convierte esos
+dispatches en `chain_exhausted`.
+
+### 15.11 Tests
+
+```bash
+node --test .pipeline/lib/multi-provider/__tests__/provider-contribution.test.js   # 26 tests
+node --test .pipeline/tests/provider-permanence-6145.test.js                       # 12 tests
+```
+
+---
+
 ## Apéndice — links rápidos
 
 - **Código:** [`.pipeline/agent-models.json`](../../.pipeline/agent-models.json), [`.pipeline/agent-models.schema.json`](../../.pipeline/agent-models.schema.json), [`.pipeline/lib/agent-models-validate.js`](../../.pipeline/lib/agent-models-validate.js), [`.pipeline/validate-agent-models.js`](../../.pipeline/validate-agent-models.js), [`.pipeline/lib/multi-provider/`](../../.pipeline/lib/multi-provider/), [`.pipeline/lib/quota-adapters/`](../../.pipeline/lib/quota-adapters/), [`.pipeline/lib/agent-launcher/`](../../.pipeline/lib/agent-launcher/).

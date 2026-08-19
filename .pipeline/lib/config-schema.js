@@ -430,6 +430,28 @@ const SCHEMA = {
                         interval_minutes: { type: 'number', minimum: 0 },
                     },
                 },
+                // --- #6145 CA-6 — criterio de permanencia de proveedores.
+                //     Declarado acá porque la raíz es CERRADA: agregar la
+                //     subsección a config.yaml sin declararla en el schema deja
+                //     al dashboard fail-closed (precedente ya sufrido).
+                //     LENIENT en `additionalProperties` como el resto de
+                //     multi_provider, pero con TIPOS y RANGOS chequeados: un
+                //     umbral con tipo/rango inválido no debe llegar al criterio
+                //     que marca candidatos a baja. Los invariantes de seguridad
+                //     (nunca vacía la cadena, nunca marca un pago, "sin dato" ⇒
+                //     no evaluable) viven en código, NO acá.
+                permanence: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        window_days: { type: 'number', minimum: 1 },
+                        min_sample: { type: 'number', minimum: 0 },
+                        min_contribution_rate: { type: 'number', minimum: 0, maximum: 1 },
+                        max_days_without_win: { type: 'number', minimum: 0 },
+                        min_survivors: { type: 'number', minimum: 1 },
+                    },
+                },
             },
         },
 
