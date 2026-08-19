@@ -14892,6 +14892,21 @@ function cmdUnblock(args) {
   const guidance = m[2].trim();
   if (!guidance) return '❌ La orientación no puede estar vacía.';
 
+  // #6190 — el pie de destrabe de la ficha de decisión termina con palabras
+  // ("seguido de qué querés que se haga") cuando no hay un valor concreto que
+  // proponer. Ese texto se puede copiar entero: si lo aceptáramos, quedaría
+  // persistido en `<marker>.guidance.txt` y el pulpo lo inyectaría al prompt
+  // del agente como INDICACIONES HUMANAS que nadie escribió. Se rechaza acá,
+  // que es donde entra. Lazy + try/catch: un módulo de copy nunca puede tumbar
+  // el comando de destrabe.
+  try {
+    const { esOrientacionMolde } = require('./lib/decision-card');
+    if (typeof esOrientacionMolde === 'function' && esOrientacionMolde(guidance)) {
+      return `❌ Eso es el texto del aviso, no una orientación. Contame qué querés que se haga con #${issue}.
+Ej: \`/unblock ${issue} reintentar usando la API REST\``;
+    }
+  } catch {}
+
   let humanBlock;
   try { humanBlock = require('./lib/human-block'); }
   catch (e) { return `⚠️ No pude cargar el módulo de bloqueos: ${e.message}`; }

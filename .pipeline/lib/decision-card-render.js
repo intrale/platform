@@ -148,7 +148,13 @@ function renderFichaCompacta(card, indice, total, avisoN) {
     const aviso = decisionCard.sufijoAviso(avisoN);
     const edad = [card.que_esta_frenado.desde, aviso].filter(Boolean).join(', ');
     // El separador es UN carácter, no markup: `->` son dos y se lee como código.
-    const cola = card.issue ? ` → /unblock ${card.issue} ${card.ejemplo_de_valor}` : '';
+    // El valor de ejemplo puede venir vacío a propósito (`pregunta`,
+    // `indeterminado`): ahí la cola dice con palabras que la orientación la
+    // escribe el operador, en vez de un molde pegable que el agente leería como
+    // indicación humana real (#6190, rev-1).
+    const cola = card.issue
+        ? ` → /unblock ${card.issue} ${card.ejemplo_de_valor || decisionCard.ORIENTACION_LIBRE}`
+        : '';
     const armar = (titulo) => `${prefijo}${titulo}${edad ? ` — ${edad}` : ''}. ${card.que_se_decide_corto}${cola}`;
 
     const linea = armar(card.que_esta_frenado.titulo);

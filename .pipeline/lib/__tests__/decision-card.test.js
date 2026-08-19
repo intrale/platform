@@ -290,17 +290,20 @@ test('indeterminado: "espera algo pero no dice qué" no puede proponer esperar a
     assert.match(card.falta, /no dice cuál/);
 });
 
+/** Un `raw` por cada uno de los 7 tipos del mapa. */
+const UNO_POR_TIPO = [
+    { issue: 1, reason: 'dependency_block: espera #2' },
+    { issue: 3, reason: 'circuit breaker: rebotes agotados' },
+    { issue: 4, reason: 'GATE 1: firma de definición pendiente' },
+    { issue: 5, reason_category: 'rate_limit', reason: 'cuota del proveedor' },
+    { issue: 6, tipo: 'rebote', reason: 'rechazado por el control' },
+    { issue: 7, question: '¿Seguimos?' },
+    { issue: 8, reason: '' },
+];
+
 test('los 7 tipos del mapa están cubiertos y ninguno queda sin plantilla', () => {
     const vistos = new Set();
-    const casos = [
-        { issue: 1, reason: 'dependency_block: espera #2' },
-        { issue: 3, reason: 'circuit breaker: rebotes agotados' },
-        { issue: 4, reason: 'GATE 1: firma de definición pendiente' },
-        { issue: 5, reason_category: 'rate_limit', reason: 'cuota del proveedor' },
-        { issue: 6, tipo: 'rebote', reason: 'rechazado por el control' },
-        { issue: 7, question: '¿Seguimos?' },
-        { issue: 8, reason: '' },
-    ];
+    const casos = UNO_POR_TIPO;
     for (const raw of casos) {
         const card = dc.buildDecisionCard(raw, AHORA);
         vistos.add(card.tipo);
@@ -308,6 +311,120 @@ test('los 7 tipos del mapa están cubiertos y ninguno queda sin plantilla', () =
     }
     assert.deepEqual([...vistos].sort(), [...dc.TIPOS].sort(),
         'un tipo sin caso es un tipo que sale a Telegram sin haberse leído nunca');
+});
+
+
+// =============================================================================
+// #6190 rev-1 — el pie de destrabe dejó de ser un molde EN EL NÚMERO, pero
+// seguía siéndolo EN EL VALOR (`qué-hacer`, `tu-respuesta`). No es cosmético:
+// `cmdUnblock` acepta ese texto como orientación válida, `human-block` lo
+// persiste en `<marker>.guidance.txt` y el pulpo lo inyecta al prompt del
+// agente bajo "INDICACIONES HUMANAS … NO la ignores". Pegar el pie tal cual
+// destrababa el issue con una indicación que nadie escribió.
+// =============================================================================
+
+/** Una orientación pegable es UNA palabra que el operador puede tipear igual. */
+const VALOR_PEGABLE = /^[a-záéíóúñ]+$/;
+
+test('rev-1: ningún tipo emite un molde en el pie de destrabe (ni número ni valor)', () => {
+    for (const raw of UNO_POR_TIPO) {
+        const card = dc.buildDecisionCard(raw, AHORA);
+        const ctx = `tipo ${card.tipo}`;
+        const valor = card.ejemplo_de_valor;
+
+        // Vacío es legítimo y significa "la orientación la escribe el operador".
+        // Lo que NO puede pasar es que el valor sea un marcador de posición.
+        if (valor) {
+            assert.match(valor, VALOR_PEGABLE,
+                `${ctx}: "${valor}" no es una orientación pegable, parece un molde`);
+        }
+        assert.equal(card.pie_destrabe,
+            `Para decidir, respondé: /unblock ${raw.issue} ${valor || dc.ORIENTACION_LIBRE}`,
+            `${ctx}: el pie no arma el comando esperado`);
+
+        // Ningún molde, en ninguna de sus formas conocidas.
+        for (const molde of ['qué-hacer', 'tu-respuesta', '<issue>', '<orientación>']) {
+            assert.ok(!card.pie_destrabe.includes(molde), `${ctx}: el pie trae el molde "${molde}"`);
+        }
+        assert.ok(!HTML_CHARS.test(card.pie_destrabe), `${ctx}: el pie trae <> de molde`);
+    }
+});
+
+test('rev-1: cuando la orientación la escribe el operador, el pie lo dice con palabras', () => {
+    // `pregunta` e `indeterminado` son los dos tipos donde no hay un valor que
+    // el pipeline pueda proponer: uno pide la respuesta a una pregunta de
+    // producto, el otro ni siquiera pudo clasificar el bloqueo.
+    const casos = [
+        { raw: { issue: 6150, question: '¿Cobramos la comisión al comercio?' }, tipo: 'pregunta' },
+        { raw: { issue: 6150, reason: '' }, tipo: 'indeterminado' },
+    ];
+    for (const { raw, tipo } of casos) {
+        const card = dc.buildDecisionCard(raw, AHORA);
+        assert.equal(card.tipo, tipo);
+        assert.equal(card.ejemplo_de_valor, '',
+            `${tipo}: no hay valor que proponer, así que la ficha no puede inventar uno`);
+        assert.equal(card.pie_destrabe,
+            'Para decidir, respondé: /unblock 6150 seguido de qué querés que se haga');
+
+        // Y la línea compacta del mensaje agrupado dice exactamente lo mismo:
+        // el defecto de rev-1 afectaba a las dos superficies.
+        const compacta = cardRender.renderFichaCompacta(card, 1, 2);
+        assert.ok(compacta.endsWith('/unblock 6150 seguido de qué querés que se haga'),
+            `la compacta sigue con molde: ${compacta}`);
+    }
+});
+
+test('rev-1: el pie pegado tal cual se reconoce como molde, no como orientación', () => {
+    // Guarda del lado del comando (`cmdUnblock` la consume): el pie sin valor
+    // se lee bien pero se puede copiar entero, y una orientación falsa termina
+    // en el prompt del agente como si la hubiera escrito el operador.
+    const moldes = [
+        dc.ORIENTACION_LIBRE,
+        'Seguido de que queres que se haga.',          // sin acentos, con punto
+        '  seguido de   qué querés que se haga  ',     // pegado con espacios
+        'qué-hacer',
+        'tu-respuesta',
+        '<orientación>',
+    ];
+    for (const m of moldes) {
+        assert.equal(dc.esOrientacionMolde(m), true, `debía reconocerse como molde: ${JSON.stringify(m)}`);
+    }
+
+    // Y ninguna orientación de verdad puede quedar afuera por esta guarda.
+    const reales = [
+        'esperar', 'reintentar', 'aprobar', 'corregir', 'renovar',
+        'reintentar usando la API REST en lugar de gRPC',
+        'que se haga lo que pide el comentario del PO',
+        'dar de baja: ya no aplica',
+    ];
+    for (const r of reales) {
+        assert.equal(dc.esOrientacionMolde(r), false, `orientación válida rechazada: ${JSON.stringify(r)}`);
+    }
+
+    // Vacío no es "molde": ese caso lo cubre la validación de orientación vacía.
+    assert.equal(dc.esOrientacionMolde(''), false);
+    assert.equal(dc.esOrientacionMolde(null), false);
+    assert.equal(dc.esOrientacionMolde(undefined), false);
+
+    // Todo valor de ejemplo que la ficha SÍ propone tiene que pasar la guarda:
+    // si el copy propusiera algo que el comando rechaza, el pie no se podría
+    // pegar y volveríamos al molde por otra puerta.
+    for (const raw of UNO_POR_TIPO) {
+        const card = dc.buildDecisionCard(raw, AHORA);
+        if (!card.ejemplo_de_valor) continue;
+        assert.equal(dc.esOrientacionMolde(card.ejemplo_de_valor), false,
+            `tipo ${card.tipo}: el pie propone un valor que el comando rechaza`);
+    }
+});
+
+test('rev-1: la redacción del pie sin valor es UNA sola, compartida con el fallback', () => {
+    // El fallback ya usaba el texto acordado; la ficha decía otra cosa. Que
+    // ambos salgan de la misma constante es lo que impide que vuelvan a
+    // divergir.
+    assert.ok(dc.FALLBACK.cierre.includes(dc.ORIENTACION_LIBRE),
+        'el cierre del fallback tiene que salir de la misma constante que el pie');
+    assert.ok(!/qué-hacer|tu-respuesta/.test(JSON.stringify(dc.COPY)),
+        'la tabla de copy no puede declarar valores de ejemplo que sean moldes');
 });
 
 // =============================================================================
@@ -543,11 +660,12 @@ test('R-1 el recorte es por unidad ENTERA: ninguna ficha ni compacta queda corta
     const compactas = r.text.split('\n').filter((l) => /^\d+ · #\d+ «/.test(l));
     assert.equal(compactas.length, r.compactas);
     for (const l of compactas) {
-        assert.match(l, /\/unblock \d+ \S+$/, `compacta cortada al medio: ${l}`);
+        assert.match(l, new RegExp(`/unblock \\d+ (\\S+|${dc.ORIENTACION_LIBRE})$`),
+            `compacta cortada al medio: ${l}`);
         assert.ok(l.length <= cardRender.COMPACTA_MAX + 1, `compacta de ${l.length} chars: ${l}`);
     }
     // La ficha completa termina con su pie de destrabe, entera.
-    assert.match(r.text, /Para decidir, respondé: \/unblock \d+ \S+/);
+    assert.match(r.text, new RegExp(`Para decidir, respondé: /unblock \\d+ (\\S+|${dc.ORIENTACION_LIBRE})`));
 });
 
 test('R-1 el título largo se recorta ADENTRO de las comillas, nunca la pregunta ni el comando', () => {

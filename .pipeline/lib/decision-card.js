@@ -554,6 +554,63 @@ function esPreguntaUsable(n) {
 }
 
 // =============================================================================
+// Cola del comando de destrabe cuando NO hay un valor concreto que el operador
+// pueda pegar tal cual (#6190, rebote rev-1).
+//
+// El pie de destrabe dejó de ser un molde en el NÚMERO (`<issue>` → 6150), pero
+// en `pregunta` e `indeterminado` seguía siendo un molde en el VALOR
+// (`qué-hacer`, `tu-respuesta`): son marcadores de posición, no orientaciones.
+// Y no son inofensivos: `cmdUnblock` los acepta como orientación válida, se
+// persisten en `<marker>.guidance.txt` y terminan inyectados en el prompt del
+// agente bajo el rótulo "INDICACIONES HUMANAS … NO la ignores". O sea: pegar el
+// pie tal cual destraba el issue con una indicación que nadie escribió.
+//
+// Cuando el valor lo tiene que escribir el operador, el pie lo dice con
+// palabras en vez de fingir un valor. Es la misma redacción que ya usaba el
+// fallback (`FALLBACK.cierre`), que se arma desde acá para que haya UNA sola.
+// =============================================================================
+const ORIENTACION_LIBRE = 'seguido de qué querés que se haga';
+
+/**
+ * Moldes históricos del pie de destrabe (#6190 rev-1) + la propia frase de
+ * `ORIENTACION_LIBRE`. Ninguno es una orientación: son texto del aviso.
+ */
+const MOLDES_DE_ORIENTACION = deepFreeze([
+    ORIENTACION_LIBRE,
+    'qué-hacer',
+    'tu-respuesta',
+    'orientación',
+    'issue',
+]);
+
+/**
+ * ¿Este texto es el molde del aviso pegado tal cual, en vez de una orientación?
+ *
+ * Guarda del lado del comando: el pie sin valor de ejemplo se lee bien pero se
+ * puede copiar entero, y `unblockIssue` lo persistiría en
+ * `<marker>.guidance.txt`, desde donde el pulpo lo inyecta al prompt del agente
+ * bajo "INDICACIONES HUMANAS … NO la ignores". Es exactamente la cadena que
+ * describe el rechazo: rechazarlo acá cierra el paso aunque el copy vuelva a
+ * cambiar.
+ *
+ * Compara normalizado (sin acentos, sin `<>`, sin puntuación de borde) para que
+ * no dependa de cómo se pegó.
+ * @param {string} texto
+ * @returns {boolean}
+ */
+function esOrientacionMolde(texto) {
+    const norm = (t) => String(t == null ? '' : t)
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase()
+        .replace(/[<>`*_"'.,;:!?]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const t = norm(texto);
+    if (!t) return false;
+    return MOLDES_DE_ORIENTACION.some((m) => norm(m) === t);
+}
+
+// =============================================================================
 // Tabla de copy `tipo → plantilla`. Literal del contrato de `ux` §4.
 //
 // R-4: ningún texto de acá se interpola desde `reason`, `question`, el título ni
@@ -602,7 +659,9 @@ const COPY = deepFreeze({
         por_que: 'Un agente se trabó con una pregunta que no puede responder solo.',
         costo: 'El agente no sigue: el trabajo queda exactamente donde estaba.',
         sin_reco: 'No hay recomendación: la pregunta es sobre el producto y la respuesta la tenés vos.',
-        ejemplo: 'tu-respuesta',
+        // Sin valor de ejemplo A PROPÓSITO: la respuesta a la pregunta del
+        // agente la escribe el operador. Ver `ORIENTACION_LIBRE`.
+        ejemplo: '',
     },
     indeterminado: {
         por_que: 'Quedó frenado por algo que no supe clasificar.',
@@ -612,7 +671,9 @@ const COPY = deepFreeze({
         falta_dep_sin_numero: 'Qué trabajo está esperando: dice que espera algo pero no dice cuál.',
         falta_sin_firmante: 'No hay ningún firmante autorizado configurado: sin eso ninguna firma vale.',
         falta_ilegible: 'El motivo del bloqueo llegó ilegible o no entra en un aviso.',
-        ejemplo: 'qué-hacer',
+        // Sin valor de ejemplo A PROPÓSITO: si no supe clasificar el bloqueo,
+        // menos puedo proponer qué hacer con él. Ver `ORIENTACION_LIBRE`.
+        ejemplo: '',
     },
 });
 
@@ -1162,7 +1223,7 @@ const CIERRE_RECORDATORIO = 'Nada se destraba solo por dejar pasar el tiempo.';
 const FALLBACK = deepFreeze({
     encabezado_uno: 'Hay 1 trabajo esperando tu decisión y no pude armar el detalle.',
     encabezado_varios: 'Hay {n} trabajos esperando tu decisión y no pude armar el detalle.',
-    cierre: 'No te muestro opciones porque no pude prepararlas. Siguen frenados: esto no destrabó nada. Mirá el tablero para decidir, o respondé /unblock {issue} seguido de qué querés que se haga.',
+    cierre: `No te muestro opciones porque no pude prepararlas. Siguen frenados: esto no destrabó nada. Mirá el tablero para decidir, o respondé /unblock {issue} ${ORIENTACION_LIBRE}.`,
     cierre_sin_numero: 'No te muestro opciones porque no pude prepararlas. Siguen frenados: esto no destrabó nada. Mirá el tablero para decidir.',
 });
 
@@ -1225,7 +1286,10 @@ function buildDecisionCard(raw, nowMs) {
         .filter(Boolean)
         .slice(0, MAX_EVIDENCIAS);
 
-    const ejemplo = sec(f.ejemplo, 40) || 'qué-hacer';
+    // NUNCA un default de molde acá: un `|| 'qué-hacer'` reintroduce el defecto
+    // que este issue cierra por la puerta de atrás, para CUALQUIER tipo cuya
+    // plantilla no declare valor. Vacío significa "lo escribe el operador".
+    const ejemplo = sec(f.ejemplo, 40);
     const ref = refIssue(n.issue);
 
     // UX §5 — el título va SIEMPRE entre «comillas angulares», en una sola línea
@@ -1268,8 +1332,11 @@ function buildDecisionCard(raw, nowMs) {
         ejemplo_de_valor: ejemplo,
         // Sin número no hay comando que el operador pueda ejecutar: se lo manda
         // al tablero en vez de darle un molde que falla al pegarlo.
+        // Con valor de ejemplo el pie se pega tal cual y funciona. Sin él, dice
+        // con palabras que la orientación la escribe el operador (rev-1): un
+        // valor inventado se pega igual y el agente lo lee como indicación.
         pie_destrabe: n.issue
-            ? `Para decidir, respondé: /unblock ${n.issue} ${ejemplo}`
+            ? `Para decidir, respondé: /unblock ${n.issue} ${ejemplo || ORIENTACION_LIBRE}`
             : 'Para decidir, mirá el tablero: sin el número no puedo darte el comando.',
     });
 }
@@ -1284,6 +1351,9 @@ function buildDecisionCards(rawList, nowMs) {
 
 module.exports = {
     TIPOS,
+    ORIENTACION_LIBRE,
+    MOLDES_DE_ORIENTACION,
+    esOrientacionMolde,
     MAX_CAMPO,
     MAX_EVIDENCIA,
     MAX_EVIDENCIAS,
