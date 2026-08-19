@@ -24,6 +24,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const nodeFs = require('node:fs');
+const os = require('node:os');
 
 // Aísla del kill-switch operacional live (`provider-disabled.json` global): sin
 // esto, un provider drenado en runtime por el pulpo volvía flaky la chain
@@ -37,6 +39,9 @@ const {
     dispatchAuditFile,
     MAX_FALLBACK_DEPTH,
 } = require('../lib/agent-launcher/dispatch-with-fallback');
+// #6179 CA-8 — lista única de jerga/secretos, compartida con los otros tests
+// anti-jerga. Ver `lib/__tests__/helpers/forbidden-copy-patterns.js`.
+const { assertCopyLimpio } = require('../lib/__tests__/helpers/forbidden-copy-patterns');
 
 // -----------------------------------------------------------------------------
 // Helpers — fakes inyectables
@@ -145,8 +150,71 @@ function fakeFsWithAgentModels(pipelineDir, modelsObj) {
     };
 }
 
-const PIPELINE_DIR = '/repo/.pipeline';
+// #6179 — `PIPELINE_DIR` pasó de ser un path sintético (`/repo/.pipeline`) a un
+// tmpdir REAL. Motivo: el dispatcher ahora consulta la política de emisión por
+// episodio (`lib/fallback-episode-state.js`), que persiste su estado con
+// `atomic-json` + `file-lock` — dos módulos que trabajan sobre el filesystem de
+// verdad, no sobre el `fsImpl` inyectado. Con un path sintético el módulo
+// terminaba creando `C:\repo\.pipeline\state\` fuera del repo.
+//
+// El `fakeFsWithAgentModels` sigue siendo fake y sigue keyeando por path: lo
+// único que se vuelve real es el directorio.
+const PIPELINE_DIR = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'v3-dispatch-fallback-'));
+const EPISODE_STATE_FILE = path.join(PIPELINE_DIR, 'state', 'fallback-episode.json');
 const ISSUE = 3198;
+
+/**
+ * #6179 — cada test arranca sin episodio previo.
+ *
+ * Sin esto los tests quedan acoplados por orden: uno que abre un episodio de
+ * respaldo hace que el siguiente happy path emita "volvió al motor principal" y
+ * el conteo de `notify.calls` deja de significar nada.
+ */
+function resetEpisodeState() {
+    for (const f of [EPISODE_STATE_FILE, `${EPISODE_STATE_FILE}.lock`]) {
+        try { nodeFs.rmSync(f, { force: true }); } catch { /* no existía */ }
+    }
+}
+
+/**
+ * #6179 — siembra el snapshot de salud que `recordDispatch` usa para DERIVAR la
+ * causa (nunca se pasa por parámetro: ése era el agujero de SEC-9).
+ *
+ * Sin snapshot, `classifyPauseCause` devuelve `degraded:true` ⇒
+ * `dominantCause: null` ⇒ "motivo desconocido" ⇒ notifica en cada despacho por
+ * CA-12. Ese comportamiento es CORRECTO y está testeado aparte; acá se siembra
+ * una causa conocida (`cuota`) porque lo que se quiere medir es la
+ * deduplicación por episodio, no el fail-closed.
+ */
+function seedHealthSnapshot({ anthropicReason = 'quota_exhausted_real' } = {}) {
+    const stateDir = path.join(PIPELINE_DIR, 'state');
+    nodeFs.mkdirSync(stateDir, { recursive: true });
+    nodeFs.writeFileSync(
+        path.join(stateDir, 'multi-provider-health.json'),
+        JSON.stringify({
+            ts: new Date().toISOString(),
+            providers: [
+                {
+                    provider: 'anthropic', label: 'Anthropic', state: 'red',
+                    reason_code: anthropicReason, quota: { pct: 100 },
+                },
+                {
+                    provider: 'openai', label: 'OpenAI / Codex', state: 'green',
+                    reason_code: 'cli_oauth_ok', quota: { pct: 10 },
+                },
+            ],
+        }),
+    );
+}
+
+test.beforeEach(() => {
+    resetEpisodeState();
+    seedHealthSnapshot();
+});
+
+process.on('exit', () => {
+    try { nodeFs.rmSync(PIPELINE_DIR, { recursive: true, force: true }); } catch {}
+});
 
 function baseAgentModels() {
     return {
@@ -259,8 +327,144 @@ test('resolveSpawnWithFallback elige primer fallback libre cuando primary está 
     assert.deepEqual(r.fallbackUsed, { index: 0, provider: 'openai-codex' });
 
     assert.ok(audit.entries.find(e => e.entry.event === 'fallback_selected'), 'audit fallback_selected');
-    assert.equal(notify.calls.length, 1, 'una notificación Telegram');
-    assert.match(notify.calls[0].text, /cross-provider/i);
+
+    // #6179 — el PRIMER despacho que cae a respaldo sí avisa: es un cambio de
+    // situación. Lo que cambia respecto de antes es el CONTENIDO del aviso.
+    assert.equal(notify.calls.length, 1, 'el primer cambio de estado emite un aviso');
+    const aviso = notify.calls[0];
+
+    // CA-8 · el texto que antes decía `skill=guru … primary=anthropic (gated) …
+    // fallback=openai-codex (índice 0) … model=gpt-codex` ya no puede reaparecer.
+    assertCopyLimpio(assert, aviso.text, 'aviso de episodio del dispatcher');
+    assert.doesNotMatch(aviso.text, /cross-provider/i,
+        'el título técnico viejo no vuelve al chat');
+
+    // CA-4 · el aviso responde las cuatro preguntas, en castellano de operador.
+    assert.match(aviso.text, /motor de respaldo/i, 'dice qué cambió');
+    assert.match(aviso.text, /\nMotivo: /, 'dice por qué');
+    assert.match(aviso.text, /\nDesde las \d{2}:\d{2} \(/, 'dice desde cuándo');
+
+    // SEC-4 / CA-9 · sin `plain: true` el dropfile cae al default `'Markdown'`
+    // de `resolveOutboundParseMode` y el texto viaja SIN escapar.
+    assert.equal(aviso.plain, true, 'el dropfile declara texto plano');
+});
+
+// -----------------------------------------------------------------------------
+// 3.b — #6179 CA-1 / CA-2: el despacho REPETIDO en el mismo estado no avisa.
+//
+// Éste es el criterio central de la historia: 8.984 mensajes en 85 días salían
+// justamente de acá, uno por cada despacho.
+// -----------------------------------------------------------------------------
+test('#6179 CA-1/CA-2 — 15 despachos seguidos al mismo respaldo emiten UN solo aviso', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const notify = fakeNotify();
+
+    for (let n = 0; n < 15; n++) {
+        resolveSpawnWithFallback({
+            skill: 'guru',
+            issue: ISSUE,
+            pipelineDir: PIPELINE_DIR,
+            fsImpl,
+            quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+            primaryResolver: fakeResolver,
+            auditLog: fakeAuditLog(),
+            notify,
+        });
+    }
+
+    assert.equal(notify.calls.length, 1,
+        '15 despachos en el mismo estado ⇒ exactamente 1 aviso (CA-2)');
+});
+
+test('#6179 CA-16 — la auditoría fallback_selected sigue intacta en CADA despacho', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const audit = fakeAuditLog();
+    const notify = fakeNotify();
+
+    for (let n = 0; n < 5; n++) {
+        resolveSpawnWithFallback({
+            skill: 'guru',
+            issue: ISSUE,
+            pipelineDir: PIPELINE_DIR,
+            fsImpl,
+            quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+            primaryResolver: fakeResolver,
+            auditLog: audit,
+            notify,
+        });
+    }
+
+    // Sólo cambia el canal de SALIDA, no la auditoría: cambiar ruido por
+    // ceguera no sería una mejora (SEC-8).
+    const seleccionados = audit.entries.filter(e => e.entry.event === 'fallback_selected');
+    assert.equal(seleccionados.length, 5, 'los 5 eventos quedan auditados');
+    for (const e of seleccionados) {
+        assert.equal(e.entry.cross_provider, true);
+        assert.deepEqual(e.entry.chain_tried, ['anthropic', 'openai-codex']);
+        assert.equal(e.entry.fallback_index, 0);
+    }
+    assert.equal(notify.calls.length, 1, 'pero el chat recibió uno solo');
+});
+
+test('#6179 — una consulta READ-ONLY no abre episodio ni suprime el aviso real', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const notify = fakeNotify();
+    const comun = {
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }),
+        primaryResolver: fakeResolver,
+        auditLog: fakeAuditLog(),
+        notify,
+    };
+
+    // Sondas como `isReducedMode` / `isCommanderChainGated` re-resuelven la
+    // cadena sin despachar. Silenciar sólo `notify` no alcanzaba: si la sonda
+    // persistía el episodio, el despacho REAL siguiente leía "no cambió nada" y
+    // se callaba — una consulta read-only suprimiendo el aviso verdadero.
+    for (let i = 0; i < 3; i++) {
+        resolveSpawnWithFallback({ ...comun, recordEpisode: false, notify: () => {} });
+    }
+    assert.equal(nodeFs.existsSync(EPISODE_STATE_FILE), false,
+        'la sonda no deja estado de episodio');
+
+    resolveSpawnWithFallback(comun);
+    assert.equal(notify.calls.length, 1, 'el despacho real sí avisa');
+});
+
+test('#6179 CA-2 — la vuelta al motor principal emite un único aviso', () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const notify = fakeNotify();
+    const comun = {
+        skill: 'guru',
+        issue: ISSUE,
+        pipelineDir: PIPELINE_DIR,
+        fsImpl,
+        primaryResolver: fakeResolver,
+        auditLog: fakeAuditLog(),
+        notify,
+    };
+
+    // Degradados…
+    resolveSpawnWithFallback({ ...comun, quotaModule: fakeQuotaModule({ gatedProviders: ['anthropic'] }) });
+    assert.equal(notify.calls.length, 1);
+
+    // …y el primario vuelve. Tres despachos sanos ⇒ un solo aviso de vuelta.
+    for (let n = 0; n < 3; n++) {
+        resolveSpawnWithFallback({ ...comun, quotaModule: fakeQuotaModule({ gatedProviders: [] }) });
+    }
+
+    assert.equal(notify.calls.length, 2, 'un aviso de ida y uno de vuelta, nada más');
+    const vuelta = notify.calls[1];
+    assert.match(vuelta.text, /volvió al motor principal/i);
+    assert.equal(vuelta.plain, true);
+    assertCopyLimpio(assert, vuelta.text, 'aviso de vuelta a la normalidad');
 });
 
 // -----------------------------------------------------------------------------

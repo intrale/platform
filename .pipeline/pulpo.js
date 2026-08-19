@@ -13313,23 +13313,38 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             return def && typeof def.supports_tool_use === 'boolean' ? def.supports_tool_use : true;
           } catch { return true; }
         })();
-        const shouldEmit = commanderMP.shouldEmitFallbackNotice({
+        // #6179 — política de emisión por EPISODIO, compartida con el dispatcher.
+        //
+        // Acá vivía `shouldEmitFallbackNotice` (ventana de 5 min) + un
+        // `errorCode: 'quota_exhausted'` HARDCODEADO. Ese literal significaba que
+        // un 401 por credencial revocada se le reportaba al operador como "cuota
+        // agotada" (SEC-9): con el aviso por evento el ruido lo compensaba —veía
+        // la ráfaga e iba a mirar—, pero con un aviso por episodio ese mismo
+        // evento pasaba a ser un único mensaje con el motivo equivocado que no se
+        // repetía nunca más. `recordDispatch` deriva la causa de
+        // `provider-pause-cause`; NO existe forma de pasarla por parámetro (CA-6).
+        //
+        // `pipelineDir: PIPELINE` es el MISMO que resuelve el dispatcher: los dos
+        // emisores tienen que terminar en el mismo archivo de episodio o vuelve el
+        // doble aviso con la política nueva puesta (D10, con test propio).
+        const episodeState = require('./lib/fallback-episode-state');
+        const epNow = Date.now();
+        const epRes = episodeState.recordDispatch({
           pipelineDir: PIPELINE,
-          chatId: getTelegramChatId(),
-          fallbackProvider: resolution.provider,
+          provider: resolution.provider,
+          crossProvider: true,
+          chain: resolution.chainTried,
+          now: epNow,
         });
-        if (shouldEmit) {
-          const notice = commanderMP.formatFallbackNotice({
-            primaryProvider: resolution.primaryProvider || 'anthropic',
-            fallbackProvider: resolution.provider,
-            errorCode: 'quota_exhausted',
-            supportsToolUse,
-          });
-          sendTelegramPlain(notice);
-          log('commander', `↪️ Cross-provider notice emitido (fallback=${resolution.provider})`);
+        if (epRes && epRes.notify) {
+          sendTelegramPlain(commanderMP.formatEpisodeNotice(epRes.episode, { now: epNow }));
+          log('commander', `↪️ Aviso de episodio emitido (motivo=${epRes.reason}, cambio=${epRes.changed})`);
         } else {
-          log('commander', `↪️ Cross-provider fallback activo (fallback=${resolution.provider}) — notice dedupeado por ventana 5min`);
+          log('commander', `↪️ Fallback activo sin cambio de episodio (motivo=${epRes && epRes.reason}) — sin aviso`);
         }
+        // `supportsToolUse` queda leído arriba para el log operativo; el escalón
+        // que ve el operador lo deriva `recordDispatch` desde `agent-models.json`.
+        void supportsToolUse;
       } catch (notifErr) {
         log('commander', `⚠️ Error formando notice de fallback (best-effort): ${notifErr.message}`);
       }
