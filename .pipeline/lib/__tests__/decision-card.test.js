@@ -1,0 +1,702 @@
+'use strict';
+
+// =============================================================================
+// decision-card.test.js — #6190 (split de #6173).
+//
+// Qué se protege acá, en orden de importancia:
+//
+//  1. El contrato anti-#5421: NINGÚN campo de NINGUNA ficha emite markup. Es la
+//     guarda de no-regresión más importante del issue — un mensaje con markup
+//     desbalanceado se pierde con un HTTP 400 que nadie ve, porque el saliente
+//     de Telegram es fire-and-forget vía dropfile.
+//  2. Que ningún secreto ni ruta del pipeline salga por la ficha.
+//  3. Que la ficha nunca invente una recomendación que no puede justificar.
+//  4. Que el mensaje agrupado entre en el presupuesto SIN perder trabajos en
+//     silencio: la cuenta le tiene que cerrar al operador.
+//
+// Cobertura: los 7 tipos del mapa `tipo → plantilla`. Un tipo sin test es un
+// tipo que sale a Telegram sin haberse leído nunca.
+// =============================================================================
+
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+
+const dc = require('../decision-card');
+const cardRender = require('../decision-card-render');
+const reminder = require('../human-block-reminder');
+
+const AHORA = Date.parse('2026-08-19T20:00:00Z');
+
+// Mismo predicado que `human-block.test.js:403` (el CA manda reusarlo, no
+// inventar otro), más el de HTML: el criterio dice "ni Markdown ni HTML" y
+// `MARKUP_CHARS` no cubre `<>` (H-UX-6).
+const MARKUP_CHARS = /[*_`]/;
+const HTML_CHARS = /[<>]/;
+const MARKDOWN_LINK = /\]\(/;
+
+/** Todos los strings de una ficha, con su ruta, para auditarlos uno por uno. */
+function camposString(card, prefijo = '') {
+    const out = [];
+    for (const [k, v] of Object.entries(card)) {
+        const ruta = prefijo ? `${prefijo}.${k}` : k;
+        if (typeof v === 'string') out.push([ruta, v]);
+        else if (Array.isArray(v)) {
+            v.forEach((x, i) => {
+                if (typeof x === 'string') out.push([`${ruta}[${i}]`, x]);
+                else if (x && typeof x === 'object') out.push(...camposString(x, `${ruta}[${i}]`));
+            });
+        } else if (v && typeof v === 'object') out.push(...camposString(v, ruta));
+    }
+    return out;
+}
+
+/** Los 6 campos que la ficha responde SIEMPRE. */
+function assertSeisCampos(card, tipo) {
+    assert.equal(card.tipo, tipo, `el tipo clasificado debía ser ${tipo}`);
+    assert.ok(card.que_esta_frenado.titulo, '1) qué está frenado');
+    assert.ok(card.por_que_esta_frenado, '2) por qué está frenado');
+    assert.ok(card.que_se_decide, '3) qué se decide');
+    assert.ok(Array.isArray(card.opciones), '4) qué opciones hay');
+    assert.ok(Array.isArray(card.evidencia_minima), '5) qué evidencia hay');
+    assert.ok(card.costo_de_no_decidir, '6) qué pasa si no se decide');
+}
+
+/**
+ * CA-A4 — invariante duro: A LO SUMO UNA recomendada, siempre con razón no
+ * vacía, y si no hay ninguna la ficha DICE POR QUÉ (el silencio no vale).
+ */
+function assertInvarianteRecomendada(card) {
+    const recos = card.opciones.filter((o) => o.es_recomendada);
+    assert.ok(recos.length <= 1, `hay ${recos.length} opciones recomendadas, el máximo es 1`);
+    for (const r of recos) {
+        assert.ok(r.razon_recomendacion && r.razon_recomendacion.trim().length > 0,
+            'una opción recomendada sin razón es peor que ninguna recomendada');
+    }
+    for (const o of card.opciones) {
+        assert.ok(o.consecuencia && o.consecuencia.trim().length > 0,
+            `la opción "${o.etiqueta}" no declara su consecuencia`);
+    }
+    if (recos.length === 0 && !card.indeterminado) {
+        assert.ok(card.sin_recomendacion_porque,
+            'sin recomendada la ficha tiene que decir por qué no la hay');
+    }
+}
+
+// =============================================================================
+// Un caso por tipo. Los 4 que pide el CA explícitamente, más los 3 restantes:
+// el mapa `tipo → plantilla` se cubre entero.
+// =============================================================================
+
+test('dependencia: los 6 campos, y la recomendación se apoya en un hecho verificable', () => {
+    const card = dc.buildDecisionCard({
+        issue: 6190,
+        titulo: 'Ficha de decisión única y aviso agrupado',
+        skill: 'pipeline-dev', phase: 'dev',
+        reason: 'dependency_block: espera #6110',
+        dep_titulo: 'Migrar el estado operativo',
+        dep_age_hours: 5,          // < 48 h → hay movimiento reciente
+        age_hours: 3,
+    }, AHORA);
+
+    assertSeisCampos(card, 'dependencia');
+    assertInvarianteRecomendada(card);
+    assert.match(card.que_se_decide, /#6110/, 'nombra el trabajo que se espera');
+    assert.match(card.que_se_decide, /\?$/, 'qué se decide termina en pregunta');
+    const reco = card.opciones.find((o) => o.es_recomendada);
+    assert.ok(reco, 'con actividad reciente en la dependencia SÍ hay recomendación');
+    assert.match(reco.etiqueta, /Esperar/);
+    assert.match(reco.razon_recomendacion, /movimiento/);
+});
+
+test('dependencia: sin poder leer la actividad de la dependencia NO se recomienda nada', () => {
+    const card = dc.buildDecisionCard({
+        issue: 6190, reason: 'dependency_block: espera #6110', age_hours: 3,
+        // sin `dep_age_hours`: no se puede verificar en qué anda
+    }, AHORA);
+    assert.equal(card.opciones.filter((o) => o.es_recomendada).length, 0);
+    assert.match(card.sin_recomendacion_porque, /No hay recomendación/);
+    assert.match(card.sin_recomendacion_porque, /#6110/, 'dice sobre cuál no pudo ver');
+});
+
+test('circuit (rebotes agotados): los 6 campos y la recomendación depende del motivo', () => {
+    const mismo = dc.buildDecisionCard({
+        issue: 7001, titulo: 'Algo que rebotó tres veces',
+        reason: 'circuit breaker: 3 rebotes agotados',
+        rebotes: 3, rebotes_mismo_motivo: true,
+        ultimo_rechazo_age_hours: 2, rechazo_fase: 'verificacion', compilo: true,
+        age_hours: 10,
+    }, AHORA);
+    assertSeisCampos(mismo, 'circuit');
+    assertInvarianteRecomendada(mismo);
+    assert.match(mismo.opciones.find((o) => o.es_recomendada).etiqueta, /Reintentar/);
+
+    const distinto = dc.buildDecisionCard({
+        issue: 7002, reason: 'circuit breaker: rebotes agotados',
+        rebotes: 3, rebotes_mismo_motivo: false, age_hours: 10,
+    }, AHORA);
+    assertInvarianteRecomendada(distinto);
+    assert.match(distinto.opciones.find((o) => o.es_recomendada).etiqueta, /definición/);
+
+    // Sin el dato de si fallaron por lo mismo, no se recomienda nada.
+    const sinDato = dc.buildDecisionCard({
+        issue: 7003, reason: 'circuit breaker', rebotes: 3, age_hours: 10,
+    }, AHORA);
+    assert.equal(sinDato.opciones.filter((o) => o.es_recomendada).length, 0);
+    assert.ok(sinDato.sin_recomendacion_porque);
+});
+
+test('firma (GATE 1): cero recomendadas es lo CORRECTO, y la ficha lo declara', () => {
+    // Plantilla pura: input sintético → ficha esperada. GATE 2 está documentado
+    // pero no enforzado, así que no se testea como flujo runtime.
+    const card = dc.buildDecisionCard({
+        issue: 4574, titulo: 'Encender el gate de firma',
+        reason: 'GATE 1: firma de definición pendiente',
+        criterios_total: 12, fecha_corta: '12 de agosto',
+        autores: ['po', 'ux'],
+        age_hours: 30,
+    }, AHORA);
+
+    assertSeisCampos(card, 'firma');
+    assertInvarianteRecomendada(card);
+    assert.equal(card.opciones.length, 3, 'aprobar / rechazar / ajustar');
+    assert.equal(card.opciones.filter((o) => o.es_recomendada).length, 0,
+        'un gate cuyo pedido de firma sugiere cómo firmar deja de ser un gate');
+    assert.match(card.sin_recomendacion_porque, /la decisión es tuya/);
+});
+
+test('firma: sin firmante autorizado NO es una firma, es indeterminado (CA-A3)', () => {
+    // Pedirle al operador que firme cuando ninguna firma sería válida es
+    // ofrecerle una opción que no se puede ejecutar.
+    const card = dc.buildDecisionCard({
+        issue: 4575, reason: 'GATE 1: firma de definición pendiente',
+        firmantes_autorizados: 0, age_hours: 5,
+    }, AHORA);
+    assert.equal(card.tipo, 'indeterminado');
+    assert.deepEqual(card.opciones, []);
+    assert.match(card.falta, /firmante autorizado/);
+});
+
+test('infra: la evidencia son contadores y antigüedades, nunca el error del proveedor', () => {
+    const card = dc.buildDecisionCard({
+        issue: 7100, titulo: 'Trabajo frenado por el proveedor',
+        reason_category: 'backend_5xx',
+        reason: 'HTTP 503 en https://api.proveedor.tld/v1/messages — stack: at foo (bar.js:12)',
+        conexion_restablecida: false, alternativo_con_cuota: true,
+        frenados_por_lo_mismo: 4,
+        primer_fallo_age_hours: 2, ultimo_intento_age_hours: 0.5,
+        age_hours: 2,
+    }, AHORA);
+
+    assertSeisCampos(card, 'infra');
+    assertInvarianteRecomendada(card);
+    assert.match(card.opciones.find((o) => o.es_recomendada).etiqueta, /alternativo/);
+    const todo = camposString(card).map(([, v]) => v).join(' | ');
+    assert.ok(!/api\.proveedor\.tld/.test(todo), 'la URL del proveedor no sale');
+    assert.ok(!/503/.test(todo), 'el código crudo del error no sale');
+    assert.ok(!/bar\.js/.test(todo), 'el stack no sale');
+    assert.match(card.evidencia_minima.join(' '), /4 trabajos frenados por lo mismo/);
+});
+
+test('infra: credencial rechazada recomienda renovar, y no depende de ningún otro dato', () => {
+    const card = dc.buildDecisionCard({
+        issue: 7101, reason_category: 'auth_failure', reason: 'credencial rechazada', age_hours: 1,
+    }, AHORA);
+    assert.equal(card.tipo, 'infra');
+    assertInvarianteRecomendada(card);
+    const reco = card.opciones.find((o) => o.es_recomendada);
+    assert.match(reco.etiqueta, /Renovar la credencial/);
+    assert.match(reco.razon_recomendacion, /Ningún proveedor alternativo/);
+});
+
+test('infra: causa desconocida NO usa la plantilla de infra, cae en indeterminado', () => {
+    const card = dc.buildDecisionCard({
+        issue: 7102, reason_category: 'unknown', reason: 'algo del proveedor', age_hours: 1,
+    }, AHORA);
+    assert.equal(card.tipo, 'indeterminado');
+    assert.deepEqual(card.opciones, []);
+});
+
+test('rebote: con motivo legible recomienda corregir; sin motivo NO recomienda nada', () => {
+    const conMotivo = dc.buildDecisionCard({
+        issue: 7200, titulo: 'Devuelto por calidad',
+        reason: 'rechazado: falta el test del caso borde',
+        phase: 'verificacion', rebotes: 1, age_hours: 4,
+    }, AHORA);
+    assertSeisCampos(conMotivo, 'rebote');
+    assertInvarianteRecomendada(conMotivo);
+    assert.match(conMotivo.opciones.find((o) => o.es_recomendada).etiqueta, /corregir/);
+
+    const sinMotivo = dc.buildDecisionCard({
+        issue: 7201, tipo: 'rebote', reason: '', phase: 'verificacion', age_hours: 4,
+    }, AHORA);
+    assert.equal(sinMotivo.opciones.filter((o) => o.es_recomendada).length, 0);
+    assert.match(sinMotivo.sin_recomendacion_porque, /vacío o ilegible/);
+});
+
+test('pregunta: se cita LITERAL, y cero recomendadas es lo esperado', () => {
+    const card = dc.buildDecisionCard({
+        issue: 7300, titulo: 'Un agente preguntó algo',
+        skill: 'po', phase: 'criterios',
+        question: '¿Cobramos la comisión al comercio o al repartidor?',
+        age_hours: 2,
+    }, AHORA);
+
+    assertSeisCampos(card, 'pregunta');
+    assertInvarianteRecomendada(card);
+    assert.equal(card.que_se_decide, '¿Cobramos la comisión al comercio o al repartidor?',
+        'parafrasear la pregunta de un agente la cambia (UX §1.8)');
+    assert.equal(card.opciones.filter((o) => o.es_recomendada).length, 0);
+    assert.match(card.sin_recomendacion_porque, /la respuesta la tenés vos/);
+});
+
+test('pregunta: si no es una pregunta usable cae en indeterminado antes que mutilarla', () => {
+    const largo = `${'a'.repeat(200)}?`;
+    for (const q of ['esto no es una pregunta', largo]) {
+        const card = dc.buildDecisionCard({ issue: 7301, question: q, age_hours: 1 }, AHORA);
+        assert.equal(card.tipo, 'indeterminado', `debería ser indeterminado con: ${q.slice(0, 30)}`);
+    }
+});
+
+// =============================================================================
+// Indeterminado: el caso más frecuente hoy, y el que NO puede inventar opciones.
+// =============================================================================
+
+test('indeterminado con el motivo VACÍO: opciones vacía, falta poblado, cero genéricas', () => {
+    // Es el caso más frecuente en la medición real (H-UX-2: #6150 llegaba sin
+    // ninguna razón), no un borde teórico.
+    const card = dc.buildDecisionCard({
+        issue: 6150, titulo: 'Algo que quedó frenado sin texto',
+        skill: 'guru', phase: 'analisis', reason: '', question: '',
+        age_hours: 27,
+    }, AHORA);
+
+    assert.equal(card.tipo, 'indeterminado');
+    assert.equal(card.indeterminado, true);
+    assert.deepEqual(card.opciones, [], 'cero opciones inventadas: cero es mejor que tres genéricas');
+    assert.ok(card.falta && card.falta.length > 0, 'dice QUÉ dato le falta');
+    assert.match(card.falta, /motivo del bloqueo/);
+    assert.ok(card.que_se_decide, 'igual dice que hay que decidir algo');
+    assert.ok(card.costo_de_no_decidir, 'y qué pasa si no se decide');
+});
+
+test('indeterminado: "espera algo pero no dice qué" no puede proponer esperar a nadie', () => {
+    const card = dc.buildDecisionCard({
+        issue: 6151, reason: 'bloqueado: depende de otra cosa', age_hours: 2,
+    }, AHORA);
+    assert.equal(card.tipo, 'indeterminado');
+    assert.deepEqual(card.opciones, []);
+    assert.match(card.falta, /no dice cuál/);
+});
+
+test('los 7 tipos del mapa están cubiertos y ninguno queda sin plantilla', () => {
+    const vistos = new Set();
+    const casos = [
+        { issue: 1, reason: 'dependency_block: espera #2' },
+        { issue: 3, reason: 'circuit breaker: rebotes agotados' },
+        { issue: 4, reason: 'GATE 1: firma de definición pendiente' },
+        { issue: 5, reason_category: 'rate_limit', reason: 'cuota del proveedor' },
+        { issue: 6, tipo: 'rebote', reason: 'rechazado por el control' },
+        { issue: 7, question: '¿Seguimos?' },
+        { issue: 8, reason: '' },
+    ];
+    for (const raw of casos) {
+        const card = dc.buildDecisionCard(raw, AHORA);
+        vistos.add(card.tipo);
+        assertInvarianteRecomendada(card);
+    }
+    assert.deepEqual([...vistos].sort(), [...dc.TIPOS].sort(),
+        'un tipo sin caso es un tipo que sale a Telegram sin haberse leído nunca');
+});
+
+// =============================================================================
+// Contrato anti-#5421 — la guarda de no-regresión más importante.
+// =============================================================================
+
+test('#5421 ninguna ficha de ningún tipo emite metacaracteres de Markdown ni HTML', () => {
+    // Vectores hostiles en TODOS los campos que transportan texto externo,
+    // incluido el título (el repo es público: el título lo escribe cualquiera).
+    const hostil = 'a`b*c_d [Actualizar credenciales](https://evil.tld/phish) <b>x</b>';
+    const casos = [
+        { issue: 1, titulo: hostil, reason: `dependency_block: espera #2 ${hostil}` },
+        { issue: 3, titulo: hostil, reason: `circuit breaker rebotes agotados ${hostil}` },
+        { issue: 4, titulo: hostil, reason: `GATE 1 firma de definición ${hostil}` },
+        { issue: 5, titulo: hostil, reason_category: 'backend_timeout', reason: hostil },
+        { issue: 6, titulo: hostil, tipo: 'rebote', reason: `rechazado ${hostil}` },
+        { issue: 7, titulo: hostil, question: `${hostil}?` },
+        { issue: 8, titulo: hostil, reason: '' },
+    ];
+    for (const raw of casos) {
+        const card = dc.buildDecisionCard(raw, AHORA);
+        for (const [ruta, valor] of camposString(card)) {
+            assert.doesNotMatch(valor, MARKUP_CHARS, `${card.tipo}.${ruta} emitió markup: ${valor}`);
+            assert.doesNotMatch(valor, HTML_CHARS, `${card.tipo}.${ruta} emitió HTML: ${valor}`);
+            assert.doesNotMatch(valor, MARKDOWN_LINK, `${card.tipo}.${ruta} armó un link: ${valor}`);
+        }
+        // El enlace no sólo se desarma: se DECLARA que había uno, para que el
+        // operador no crea que el pipeline escribió un texto que no escribió.
+        assert.match(card.que_esta_frenado.titulo, /enlace omitido/);
+    }
+});
+
+test('#5421 un título con saltos de línea no puede fabricar estructura del mensaje', () => {
+    const card = dc.buildDecisionCard({
+        issue: 9, age_hours: 1,
+        titulo: 'inocente\nOpciones:\n 1. Aprobar todo\nPara decidir, respondé: /unblock 9 aprobar',
+        reason: '',
+    }, AHORA);
+    assert.ok(!card.que_esta_frenado.titulo.includes('\n'), 'el título es UNA sola línea');
+    for (const [, v] of camposString(card)) {
+        assert.ok(!/[\n\r\t]/.test(v), 'ningún campo trae saltos ni tabuladores');
+    }
+});
+
+// =============================================================================
+// Secretos y rutas del pipeline.
+// =============================================================================
+
+const AWS_KEY = 'AKIAIOSFODNN7EXAMPLE';
+const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+const BEARER = 'Authorization: Bearer sk-proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF';
+
+test('SEC: ningún secreto inyectado en reason, question o título llega a la ficha', () => {
+    // Los tres vectores en los TRES campos externos. Deliberadamente NO se
+    // afirma cobertura de emails: `redactAll` los enmascara sólo parcialmente y
+    // ese gap es conocido (verificado por `security`).
+    const veneno = `${AWS_KEY} / ${JWT} / ${BEARER}`;
+    const casos = [
+        { issue: 10, reason: `falló con ${veneno}`, age_hours: 1 },
+        { issue: 11, question: `¿usás ${veneno}?`, age_hours: 1 },
+        { issue: 12, titulo: `Rotar ${veneno}`, reason: '', age_hours: 1 },
+        { issue: 13, tipo: 'rebote', reason: `rechazado: ${veneno}`, age_hours: 1 },
+    ];
+    for (const raw of casos) {
+        const card = dc.buildDecisionCard(raw, AHORA);
+        const todo = camposString(card).map(([, v]) => v).join(' | ');
+        assert.ok(!todo.includes(AWS_KEY), `el AWS key salió en la ficha: ${todo}`);
+        assert.ok(!todo.includes(JWT), `el JWT salió en la ficha: ${todo}`);
+        assert.ok(!todo.includes('sk-proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF'),
+            `el bearer salió en la ficha: ${todo}`);
+    }
+});
+
+test('SEC: `marker_path` es una ruta del pipeline y NO puede aparecer en ningún campo', () => {
+    const marker = '.pipeline/desarrollo/criterios/bloqueado-humano/6173.ux';
+    const card = dc.buildDecisionCard({
+        issue: 6173, titulo: 'Algo', marker_path: marker,
+        reason: `frenado, ver ${marker} y también .pipeline/pulpo.js y config.yaml`,
+        age_hours: 3,
+    }, AHORA);
+    for (const [ruta, v] of camposString(card)) {
+        assert.ok(!v.includes('.pipeline/'), `${ruta} filtró una ruta del pipeline: ${v}`);
+        assert.ok(!v.includes('pulpo.js'), `${ruta} filtró un nombre de módulo: ${v}`);
+        assert.ok(!v.includes('config.yaml'), `${ruta} filtró un archivo de estado: ${v}`);
+    }
+});
+
+test('CA-12: el mensaje no lleva labels internos ni claves snake_case', () => {
+    const card = dc.buildDecisionCard({
+        issue: 6174,
+        reason: 'needs-human + blocked:dependencies; motivo_rechazo=algo; age_hours=12',
+        age_hours: 12,
+    }, AHORA);
+    const todo = camposString(card).map(([, v]) => v).join(' | ');
+    for (const jerga of ['needs-human', 'blocked:dependencies', 'motivo_rechazo', 'age_hours']) {
+        assert.ok(!todo.includes(jerga), `salió jerga interna "${jerga}": ${todo}`);
+    }
+});
+
+test('el título se cita LITERAL aunque traiga jerga: es el identificador del operador', () => {
+    // H-UX-4: el 21,5 % de los títulos abiertos trae jerga legítimamente. El
+    // guardián corre sobre lo que la ficha REDACTA, no sobre el título citado.
+    const card = dc.buildDecisionCard({
+        issue: 6121, titulo: 'Purgar los worktrees residuales del dispatch', reason: '', age_hours: 1,
+    }, AHORA);
+    assert.match(card.que_esta_frenado.titulo, /worktrees residuales del dispatch/,
+        'mutilar el título destruye el identificador que el operador reconoce');
+    assert.match(card.que_esta_frenado.titulo, /^#6121 «/, 'y va atribuido, nunca abriendo línea');
+});
+
+test('un título vacío no produce «» hueco', () => {
+    const card = dc.buildDecisionCard({ issue: 6122, titulo: '   ', reason: '', age_hours: 1 }, AHORA);
+    assert.equal(card.que_esta_frenado.titulo, '#6122 (sin título)');
+    assert.ok(!card.que_esta_frenado.titulo.includes('«»'));
+});
+
+// =============================================================================
+// `nowMs` inyectable, inmutabilidad y pureza.
+// =============================================================================
+
+test('la antigüedad se calcula con el `nowMs` inyectado, sin tocar el reloj real', () => {
+    const raw = { issue: 20, blocked_at: '2026-08-19T18:00:00Z', reason: '', titulo: 'x' };
+    const a = dc.buildDecisionCard(raw, Date.parse('2026-08-19T20:00:00Z'));
+    const b = dc.buildDecisionCard(raw, Date.parse('2026-08-21T20:00:00Z'));
+    assert.equal(a.que_esta_frenado.desde, 'hace 2 h');
+    assert.equal(b.que_esta_frenado.desde, 'hace 2 d 2 h');
+    assert.notEqual(a.que_esta_frenado.desde, b.que_esta_frenado.desde);
+
+    // Y no es que "además" lea el reloj: con `Date.now` roto sigue funcionando.
+    const real = Date.now;
+    Date.now = () => { throw new Error('el módulo leyó el reloj real'); };
+    try {
+        const c = dc.buildDecisionCard(raw, Date.parse('2026-08-19T20:00:00Z'));
+        assert.equal(c.que_esta_frenado.desde, 'hace 2 h');
+    } finally {
+        Date.now = real;
+    }
+});
+
+test('la antigüedad no calculable se OMITE: nunca "hace NaN" ni "hace 0 min"', () => {
+    const card = dc.buildDecisionCard({ issue: 21, blocked_at: 'no es una fecha', reason: '' }, AHORA);
+    assert.equal(card.que_esta_frenado.desde, '');
+    const todo = camposString(card).map(([, v]) => v).join(' ');
+    assert.ok(!/NaN/.test(todo));
+});
+
+test('la ficha está congelada EN PROFUNDIDAD: no se le puede cambiar la recomendada', () => {
+    // `Object.freeze` es superficial y `opciones` es un array de objetos: un
+    // freeze de un nivel deja que un consumidor mute justo los dos campos que el
+    // operador lee como "el pipeline me recomienda esto".
+    const card = dc.buildDecisionCard({
+        issue: 22, reason: 'dependency_block: espera #23', dep_age_hours: 5, age_hours: 1,
+    }, AHORA);
+    const antes = card.opciones.map((o) => o.es_recomendada);
+    try { card.opciones[0].es_recomendada = !antes[0]; } catch (_) { /* strict mode */ }
+    try { card.opciones[0].etiqueta = 'Aprobar todo sin mirar'; } catch (_) { /* strict mode */ }
+    try { card.que_esta_frenado.titulo = 'otro'; } catch (_) { /* strict mode */ }
+    assert.deepEqual(card.opciones.map((o) => o.es_recomendada), antes);
+    assert.notEqual(card.opciones[0].etiqueta, 'Aprobar todo sin mirar');
+    assert.match(card.que_esta_frenado.titulo, /^#22/);
+});
+
+test('el módulo es PURO: sin filesystem, sin red, sin estado del pipeline', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'decision-card.js'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+    const requires = [...src.matchAll(/require\((['"])(.+?)\1\)/g)].map((m) => m[2]);
+    assert.deepEqual(requires, ['./sherlock-audit-jsonl'],
+        'la ÚNICA excepción al contrato de pureza es la frontera de redacción');
+    assert.ok(!/\bDate\.now\(\)/.test(src), 'el "ahora" se inyecta, no se lee');
+});
+
+test('caps de longitud: ningún campo pasa de 220, ninguna evidencia de 120, máximo 3', () => {
+    const largo = 'palabra '.repeat(200);
+    for (const raw of [
+        { issue: 30, titulo: largo, reason: largo },
+        { issue: 31, question: `${largo}?` },
+        { issue: 32, tipo: 'rebote', reason: largo },
+    ]) {
+        const card = dc.buildDecisionCard(raw, AHORA);
+        for (const [ruta, v] of camposString(card)) {
+            const tope = ruta.startsWith('evidencia_minima') ? dc.MAX_EVIDENCIA : dc.MAX_CAMPO;
+            assert.ok(v.length <= tope, `${ruta} mide ${v.length} y el tope es ${tope}`);
+        }
+        assert.ok(card.evidencia_minima.length <= dc.MAX_EVIDENCIAS);
+    }
+});
+
+// =============================================================================
+// R-1 — Presupuesto del mensaje agrupado. El hueco de diseño real del issue.
+// =============================================================================
+
+function muchosBloqueos(n) {
+    return Array.from({ length: n }, (_, i) => ({
+        issue: 8000 + i,
+        titulo: `Un trabajo con un título largo de verdad para ocupar lugar, número ${i}`,
+        skill: 'pipeline-dev', phase: 'dev',
+        reason: `dependency_block: espera #${9000 + i}`,
+        dep_age_hours: 5,
+        age_hours: 40 - i, // el 0 es el más viejo → destacado
+    }));
+}
+
+test('R-1 con muchos bloqueos el mensaje entra en el presupuesto y NADIE desaparece en silencio', () => {
+    for (const n of [2, 3, 4, 8, 30, 120]) {
+        const cards = dc.buildDecisionCards(muchosBloqueos(n), AHORA);
+        const r = cardRender.fitFichas(cards);
+
+        assert.ok(r.text.length <= cardRender.FICHA_BUDGET,
+            `con ${n} bloqueos el mensaje mide ${r.text.length} y el presupuesto es ${cardRender.FICHA_BUDGET}`);
+        // La cuenta le tiene que cerrar al operador: nadie se pierde.
+        assert.equal(r.completas + r.compactas + r.ocultas, n,
+            `con ${n} bloqueos la cuenta no cierra: ${JSON.stringify(r)}`);
+        // UX §1.2: jamás dos fichas completas.
+        assert.ok(r.completas <= 1, `salieron ${r.completas} fichas completas`);
+        // Y si quedó alguien afuera, el mensaje lo DECLARA con el número exacto.
+        if (r.ocultas > 0) {
+            assert.match(r.text, new RegExp(`\\b${r.ocultas}\\b`),
+                'el mensaje tiene que decir cuántos quedaron afuera, con el número exacto');
+            assert.match(r.text, /tablero/, 'y dónde verlos');
+        } else {
+            assert.ok(!/no entraron en este mensaje/.test(r.text),
+                'sin excedente no se dice que hubo excedente');
+        }
+    }
+});
+
+test('R-1 el recorte es por unidad ENTERA: ninguna ficha ni compacta queda cortada al medio', () => {
+    const cards = dc.buildDecisionCards(muchosBloqueos(60), AHORA);
+    const r = cardRender.fitFichas(cards);
+    // Toda línea que arranca una compacta tiene que terminar con su comando: si
+    // se hubiera cortado a la mitad, faltaría el `/unblock`.
+    const compactas = r.text.split('\n').filter((l) => /^\d+ · #\d+ «/.test(l));
+    assert.equal(compactas.length, r.compactas);
+    for (const l of compactas) {
+        assert.match(l, /\/unblock \d+ \S+$/, `compacta cortada al medio: ${l}`);
+        assert.ok(l.length <= cardRender.COMPACTA_MAX + 1, `compacta de ${l.length} chars: ${l}`);
+    }
+    // La ficha completa termina con su pie de destrabe, entera.
+    assert.match(r.text, /Para decidir, respondé: \/unblock \d+ \S+/);
+});
+
+test('R-1 el título largo se recorta ADENTRO de las comillas, nunca la pregunta ni el comando', () => {
+    // Peor caso real de la línea compacta: número de issue largo, título en el
+    // tope de 120, antigüedad de días y sufijo de aviso. Es el escenario del
+    // recordatorio insistente, que es justo donde la línea más crece.
+    const titulo = 'Un titulo deliberadamente larguisimo que no entra en la linea compacta de ninguna manera posible porque mide muchisimo y sigue creciendo';
+    const cards = dc.buildDecisionCards([
+        { issue: 1, reason: '', age_hours: 400 },
+        { issue: 123456, age_hours: 300, titulo, question: 'Cobramos la comisión al comercio o al repartidor?' },
+    ], AHORA);
+    const r = cardRender.fitFichas(cards, undefined, { avisos: { 123456: 12 } });
+    const compacta = r.text.split('\n').find((l) => l.startsWith('2 · '));
+
+    assert.ok(compacta.length <= cardRender.COMPACTA_MAX,
+        `la compacta mide ${compacta.length} y el tope es ${cardRender.COMPACTA_MAX}`);
+    assert.match(compacta, /…»/, 'la elipsis va DENTRO de las comillas angulares');
+    assert.ok(!/»…/.test(compacta), 'afuera se leería como si el título terminara ahí');
+    assert.match(compacta, /\/unblock 123456 /, 'el comando sobrevive al recorte');
+    assert.match(compacta, /Un agente te hizo una pregunta\./, 'y qué se decide también');
+    assert.match(compacta, /12º aviso/, 'el número de aviso es contexto de urgencia, no se pierde');
+});
+
+test('R-1 con un solo bloqueo no hay encabezado de grupo ni línea de excedente', () => {
+    const cards = dc.buildDecisionCards([{ issue: 1, titulo: 'Uno solo', reason: '', age_hours: 1 }], AHORA);
+    const r = cardRender.fitFichas(cards);
+    assert.equal(r.completas, 1);
+    assert.ok(!r.text.includes('🚦'), 'un encabezado de grupo con un solo ítem es ruido');
+    assert.ok(!/no entraron en este mensaje/.test(r.text));
+});
+
+// =============================================================================
+// Fail-closed (R-2 / SEC-1) y el 7º camino de #5421 (R-6).
+// =============================================================================
+
+test('fail-closed: si armar la ficha lanza, el aviso SALE IGUAL, redactado y sin el motivo crudo', () => {
+    const humanBlock = require('../human-block');
+    const original = dc.buildDecisionCards;
+    dc.buildDecisionCards = () => { throw new Error('boom de prueba'); };
+    // El stderr del fallback es deliberado (deja rastro); se silencia para no
+    // ensuciar la salida del runner.
+    const write = process.stderr.write;
+    process.stderr.write = () => true;
+    let texto;
+    try {
+        texto = humanBlock.buildBlockedSummaryPlain({
+            nowMs: AHORA,
+            blocked: [{
+                issue: 6173, titulo: 'Un trabajo frenado', skill: 'ux', phase: 'criterios',
+                age_hours: 3,
+                reason: `stack completo con ${AWS_KEY} y ${JWT} y ${BEARER}`,
+                marker_path: '.pipeline/desarrollo/criterios/bloqueado-humano/6173.ux',
+            }],
+        });
+    } finally {
+        dc.buildDecisionCards = original;
+        process.stderr.write = write;
+    }
+
+    // 1) El operador se entera igual: fail-closed es hacia la VISIBILIDAD.
+    assert.match(texto, /#6173/);
+    assert.match(texto, /no pude armar el detalle/i, 'declara el fallo en vez de esconderlo');
+    // 2) Y dice explícitamente que nada se destrabó: el peor desenlace es que
+    //    lea el aviso raro como "ya está resuelto".
+    assert.match(texto, /esto no destrabó nada/i);
+    // 3) SEC-1: el fallback es el camino que MÁS filtra, no el que menos.
+    assert.ok(!texto.includes(AWS_KEY), `el fallback filtró el AWS key: ${texto}`);
+    assert.ok(!texto.includes(JWT), `el fallback filtró el JWT: ${texto}`);
+    assert.ok(!texto.includes('.pipeline/'), `el fallback filtró una ruta: ${texto}`);
+    assert.ok(!texto.includes('stack completo'), 'el fallback NO vuelca el motivo crudo');
+    // 4) Sin markup: el aviso degradado no puede perderse con un 400.
+    assert.doesNotMatch(texto, MARKUP_CHARS);
+    // 5) No inventa opciones: es el mismo principio que `indeterminado`.
+    assert.ok(!/Opciones:/.test(texto));
+});
+
+test('fail-closed: el recordatorio también sale si la ficha lanza, y sin volcar el motivo', () => {
+    const original = dc.buildDecisionCards;
+    dc.buildDecisionCards = () => { throw new Error('boom de prueba'); };
+    const write = process.stderr.write;
+    process.stderr.write = () => true;
+    let msg;
+    try {
+        msg = reminder.buildReminderMessage([
+            { issue: 5217, skill: 'po', phase: 'dev', reason: `secreto ${AWS_KEY}`, age_hours: 30, reminder_number: 3 },
+        ], AHORA);
+    } finally {
+        dc.buildDecisionCards = original;
+        process.stderr.write = write;
+    }
+    assert.match(msg, /#5217/, 'el bloqueo se sigue recordando');
+    assert.ok(!msg.includes(AWS_KEY), 'el degradado no filtra el secreto');
+    assert.doesNotMatch(msg, MARKUP_CHARS, 'y sigue sin markup');
+    assert.match(msg, /Nada se destraba solo/, 'la garantía de que el tiempo no aprueba sigue estando');
+});
+
+test('R-6 el recordatorio se encola con `plain: true`, no con `parse_mode`', () => {
+    // El bug histórico de #5421 vivía en el borde ENTRE PROCESOS, no en el
+    // string: el texto podía ser impecable y perderse igual si el emisor no
+    // pedía texto plano. Por eso se audita el WIRING, no sólo el mensaje.
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+    const i = src.indexOf('humanBlockReminder.runReminderTick({');
+    assert.ok(i > 0, 'no encontré el wiring del recordatorio en pulpo.js');
+    const bloque = src.slice(i, i + 1200);
+    const linea = bloque.split('\n').find((l) => l.includes('sendTelegram:'));
+    assert.ok(linea, 'el tick del recordatorio tiene que inyectar sendTelegram');
+    assert.match(linea, /\{\s*plain:\s*true\s*\}/,
+        'el recordatorio era el 7º camino y el único que salía sin `plain`');
+    assert.ok(!/parse_mode/.test(linea), 'y no puede pedir parse_mode');
+});
+
+test('el recordatorio no puede alcanzar el renderer por la vía que sabe destrabar', () => {
+    // Garantía estructural, hermana de la de `human-block-notificacion`: el
+    // renderer compartido vive en su propio módulo justamente para que el
+    // recordatorio pueda reusarlo SIN importar `human-block.js`.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'decision-card-render.js'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+    for (const prohibido of ['unblockIssue', 'dismissBlockedIssue', 'human-block']) {
+        assert.ok(!src.includes(prohibido),
+            `decision-card-render.js no puede conocer ${prohibido}`);
+    }
+});
+
+test('el título se toma del cache que el pipeline ya mantiene, y su ausencia no rompe nada', () => {
+    // `listBlockedIssues()` no trae título: el marker es un archivo vacío con el
+    // número en el nombre. Sin enriquecer, TODA ficha diría "(sin título)" y el
+    // operador tendría que ir a buscar de qué se trata — justo el trabajo que
+    // este issue le vino a sacar de encima. La lectura es DECORATIVA: si el
+    // cache no está, el aviso sale igual.
+    const humanBlock = require('../human-block');
+    const texto = humanBlock.buildBlockedSummaryPlain({
+        nowMs: AHORA,
+        blocked: [{ issue: 987654, skill: 'po', phase: 'dev', reason: '', age_hours: 2 }],
+    });
+    assert.match(texto, /#987654 \(sin título\)/,
+        'un issue que el cache no conoce degrada a "(sin título)", no rompe el aviso');
+    assert.match(texto, /Para decidir, respondé: \/unblock 987654 /);
+    assert.doesNotMatch(texto, MARKUP_CHARS);
+});
+
+test('el título que trae el call-site gana sobre el del cache', () => {
+    const humanBlock = require('../human-block');
+    const texto = humanBlock.buildBlockedSummaryPlain({
+        nowMs: AHORA,
+        blocked: [{
+            issue: 987655, skill: 'po', phase: 'dev', reason: '', age_hours: 2,
+            titulo: 'El que sabe el emisor',
+        }],
+    });
+    assert.match(texto, /«El que sabe el emisor»/);
+});

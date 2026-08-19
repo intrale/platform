@@ -4508,6 +4508,9 @@ function brazoBarrido(config) {
                   reason: motivoTxt,
                   question,
                   recommendation: recomendacionBloqueo, // #5337 CA-2
+                  // #6190 — sin esto la ficha no puede nombrar el trabajo y el
+                  // audio narra "este trabajo" en vez del número.
+                  issue, skill: skillBloq, phase: fase,
                   profile: 'need-human',
                   botToken: getTelegramToken(),
                   chatId: getTelegramChatId(),
@@ -6069,6 +6072,7 @@ function brazoBarrido(config) {
                         reason: veredicto.reason,
                         question: veredicto.question,
                         recommendation: veredicto.recommendation,
+                        issue, // #6190 — contexto de la ficha
                         profile: 'need-human',
                         botToken: getTelegramToken(),
                         chatId: getTelegramChatId(),
@@ -7537,7 +7541,9 @@ function escalarACircuitBreaker(opts, deps) {
     try {
       const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
       return hb.sendNeedHumanAudio({
-        reason: motivoTxt, question: preguntaTxt, profile: 'need-human',
+        reason: motivoTxt, question: preguntaTxt,
+        issue: issueNum, skill: skillBloq, phase, // #6190 — contexto de la ficha
+        profile: 'need-human',
         botToken: getTelegramToken(), chatId: getTelegramChatId(),
         textToSpeechWithMeta, sendVoiceTelegram,
       });
@@ -21566,7 +21572,11 @@ async function mainLoop() {
           const r = humanBlockReminder.runReminderTick({
             pipelineDir: PIPELINE,
             listBlocked: () => humanBlock.listBlockedIssues(),
-            sendTelegram: (texto, markup) => sendTelegramWithMarkup(texto, markup || null),
+            // #6190 — `plain: true` es el 3er argumento que le faltaba a ESTE
+            // emisor: los otros 6 ya lo mandaban. Era el último camino con el
+            // riesgo de #5421 vivo (markup desbalanceado → 400 de Telegram →
+            // recordatorio perdido sin rastro).
+            sendTelegram: (texto, markup) => sendTelegramWithMarkup(texto, markup || null, { plain: true }),
             buildMarkup: (issue) => {
               try { return humanBlock.buildBlockedActionMarkup(issue); } catch { return undefined; }
             },

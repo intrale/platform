@@ -15,8 +15,8 @@
     },
     {
       "file": "pulpo.js",
-      "line": 17827,
-      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso —:12508 es el fallback de setFullPause— y el seam de test SEC-3 (#4832). Estructural: #6104"
+      "line": 17833,
+      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso —:12508 es el fallback de setFullPause— y el seam de test SEC-3 (#4832). Estructural: #6104. Linea reanclada 17827->17833 por #6190 (el wiring del recordatorio y los 3 emisores de audio sumaron lineas arriba); la exencion es la misma const."
     }
   ]
 }

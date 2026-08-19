@@ -401,6 +401,11 @@ test('buildBlockedSummaryMarkdown sin bloqueados devuelve mensaje placeholder', 
 // propósito: el renderer los usa como puntuación normal (`(po)`, `(2h)`) y en
 // Markdown sólo son sintaxis DESPUÉS de un `]`, caso que se chequea aparte.
 const MARKUP_CHARS = /[*_`]/;
+// #6190 (H-UX-6) — el criterio dice "ni Markdown ni HTML", y `MARKUP_CHARS` no
+// cubre HTML. Sin este predicado aparte, el test es más flojo que el criterio
+// que dice verificar: un copy que sólo es seguro porque el test no mira es un
+// riesgo latente, no un cumplimiento.
+const HTML_CHARS = /[<>]/;
 /** Construcción de link Markdown, el vector de phishing clickeable. */
 const MARKDOWN_LINK = /\]\(/;
 
@@ -425,14 +430,23 @@ test('#5421 buildBlockedSummaryPlain no emite ningún metacarácter de markup', 
     });
 
     assert.doesNotMatch(txt, MARKUP_CHARS, `salió markup en: ${txt}`);
+    assert.doesNotMatch(txt, HTML_CHARS, `salió markup HTML en: ${txt}`);
     assert.doesNotMatch(txt, MARKDOWN_LINK, `salió un link Markdown en: ${txt}`);
-    // El contenido sigue completo: plano no significa mutilado.
+    // El contenido sigue completo: plano no significa mutilado. Desde #6190 el
+    // dialecto plano es la FICHA DE DECISIÓN, así que lo que tiene que estar es
+    // qué se decide, qué opciones hay y cómo se destraba — no el vocabulario
+    // interno que la ficha justamente vino a sacar.
     assert.match(txt, /#7101/);
-    assert.match(txt, /needs-human/);
-    assert.match(txt, /Recomendación:/);
-    assert.match(txt, /aprobar y seguir/);
-    assert.match(txt, /Incidentes bloqueados esperando humano/);
-    assert.match(txt, /unblock/);
+    assert.match(txt, /Qué está frenado:/);
+    assert.match(txt, /Por qué:/);
+    assert.match(txt, /Opciones:/);
+    assert.match(txt, /Si no decidís:/);
+    assert.match(txt, /aprobar y seguir/, 'la sugerencia que ya calculó el pipeline no se pierde');
+    assert.match(txt, /\/unblock 7101 /, 'el pie lleva el número REAL, no un molde');
+    assert.doesNotMatch(txt, /<issue>|<orientación>|<qué hacer>/,
+        'H-UX-3/CA-17: ningún molde literal en la salida');
+    assert.doesNotMatch(txt, /needs-human|dependency_block|blocked:/,
+        'CA-12: el mensaje no lleva labels internos ni claves de máquina');
 });
 
 test('#5421 buildBlockedSummaryPlain sin bloqueados: placeholder sin markup', () => {
@@ -462,10 +476,14 @@ test('#5421 el renderer no agrega markup propio ni siquiera con un vector hostil
             highlight: { issue: 5421, skill: 'pipeline-dev', reason: 'branch-origin-unverified', question },
             blocked: [{ issue: 5421, skill: 'pipeline-dev', phase: 'dev', age_hours: 2, question }],
         });
-        // El listado repite la `question` truncada a 160, así que el aporte
-        // propio se mide contra las dos apariciones posibles del vector.
-        const propios = contarMarkup(txt) - contarMarkup(question) - contarMarkup(question.slice(0, 160));
-        assert.equal(propios, 0, `el renderer plano agregó markup propio: ${txt}`);
+        // #6190 endurece la garantía. Antes era "el renderer no APORTA markup"
+        // (el vector viajaba literal y Telegram no tenía nada que parsear).
+        // Ahora la ficha neutraliza los metacaracteres en el ORIGEN, así que la
+        // propiedad pasa a ser la más fuerte posible: CERO markup en la salida,
+        // vengan de donde vengan. Un vector hostil no puede aportar ni uno.
+        assert.equal(contarMarkup(txt), 0, `el renderer plano dejó pasar markup: ${txt}`);
+        assert.doesNotMatch(txt, HTML_CHARS, `el renderer plano dejó pasar HTML: ${txt}`);
+        assert.doesNotMatch(txt, MARKDOWN_LINK, `quedó un link Markdown armable: ${txt}`);
     }
 });
 
@@ -504,16 +522,29 @@ test('#5421 el renderer Markdown sigue intacto (compat, no-regresión)', () => {
     assert.match(md, /_Usá_ `\/unblock <issue> <orientación>` _para desbloquear\._/);
 });
 
-test('#5421 plano y Markdown dicen lo MISMO: el contenido no puede divergir', () => {
+// #6190 — los dos dialectos YA NO producen el mismo contenido, y es a propósito:
+// el plano es la ficha de decisión (camino de producción, los 7 emisores) y el
+// Markdown quedó CONGELADO en el formato histórico porque retirarlo es #6193.
+// Lo que este test protege ahora es lo que sigue sin poder divergir: ningún
+// trabajo bloqueado puede desaparecer de uno de los dos dialectos.
+test('#6190 los dialectos divergen en forma, NUNCA en cobertura de issues', () => {
     resetFs();
     const opts = {
         highlight: { issue: 7103, skill: 'ux', reason: 'motivo x', question: 'pregunta y', recommendation: 'reco z' },
-        blocked: [{ issue: 7103, skill: 'ux', phase: 'dev', age_hours: 1.5, question: 'pregunta y' }],
+        blocked: [
+            { issue: 7103, skill: 'ux', phase: 'dev', age_hours: 1.5, question: 'pregunta y' },
+            { issue: 7104, skill: 'po', phase: 'dev', age_hours: 9, question: 'otra cosa' },
+        ],
     };
-    // Quitar el markup del dialecto Markdown debe dar exactamente el plano.
-    const md = hb.buildBlockedSummaryMarkdown(opts).replace(/[*_`]/g, '');
+    const md = hb.buildBlockedSummaryMarkdown(opts);
     const plano = hb.buildBlockedSummaryPlain(opts);
-    assert.equal(plano, md);
+    for (const n of [7103, 7104]) {
+        assert.match(md, new RegExp(`#${n}\\b`), `#${n} falta en el dialecto Markdown`);
+        assert.match(plano, new RegExp(`#${n}\\b`), `#${n} falta en el dialecto plano`);
+    }
+    // Y la divergencia es la esperada: sólo uno de los dos lleva markup.
+    assert.match(md, MARKUP_CHARS, 'el dialecto Markdown sigue siendo Markdown');
+    assert.doesNotMatch(plano, MARKUP_CHARS, 'el dialecto plano sigue sin markup');
 });
 
 test('reportHumanBlock no duplica notificación: findBlockedMarker permite dedup', () => {
@@ -818,58 +849,89 @@ test('#4068 HUMAN_BLOCK_ACTIONS son las 4 acciones sin pausar', () => {
 // de la alerta needs-human. Cubre formato (CA-2), redacción SEC-3 y degradación.
 // =============================================================================
 
-test('buildNeedHumanAudioText narra motivo + decisión en español con encabezado fijo', () => {
+test('buildNeedHumanAudioText narra la ficha en el orden fijo con encabezado de alerta', () => {
     const txt = hb.buildNeedHumanAudioText({
-        reason: 'el PR quedó bloqueado por CODEOWNERS',
-        question: 'mergealo a mano o reasigná el review',
+        issue: 7300,
+        reason: 'pendiente de firma de definición',
     });
     // G-2: encabezado fijo de alerta (earcon verbal) siempre presente.
     assert.ok(txt.startsWith('Atención: un issue requiere intervención humana.'),
         'arranca con el encabezado de alerta fijo');
-    assert.ok(txt.includes('El motivo del bloqueo es: el PR quedó bloqueado por CODEOWNERS.'),
-        'incluye el motivo narrado');
-    assert.ok(txt.includes('La decisión que necesitamos es: mergealo a mano o reasigná el review.'),
-        'incluye la decisión narrada');
+    // #6190 — el orden narrativo es el del contrato de copy: qué se decide →
+    // por qué está frenado → recomendación → costo de no decidir.
+    const iDecision = txt.indexOf('La decisión que necesitamos es:');
+    const iPorQue = txt.indexOf('Está frenado porque');
+    const iCosto = txt.indexOf('Si no decidís,');
+    assert.ok(iDecision > 0, 'narra qué se decide');
+    assert.ok(iPorQue > iDecision, 'el por qué va después de la decisión');
+    assert.ok(iCosto > iPorQue, 'el costo de no decidir va al final');
+    // `firma` no lleva recomendada, y el audio lo DICE en vez de callarse: el
+    // silencio se oye como que el audio se cortó.
+    assert.ok(txt.includes('No te propongo ninguna opción: la decisión es tuya.'),
+        'declara que no hay recomendación en vez de omitirla');
+    // El audio se escucha sin pantalla: ni `#` ni comandos.
+    assert.ok(!txt.includes('#'), 'el numeral no se narra');
+    assert.ok(!txt.includes('/unblock'), 'el comando no se narra: el audio orienta, el texto ejecuta');
 });
 
-test('buildNeedHumanAudioText SEC-3: redacta un AWS key del motivo antes de narrar', () => {
+test('buildNeedHumanAudioText no narra el vocabulario interno del pipeline (CA-12)', () => {
     const txt = hb.buildNeedHumanAudioText({
+        issue: 7301, skill: 'ux', phase: 'criterios',
+        reason: 'dependency_block: espera #6110',
+    });
+    assert.ok(!txt.includes('dependency_block'), 'la clave interna no se narra');
+    assert.ok(txt.includes('6110'), 'el número del trabajo que espera SÍ se narra');
+});
+
+// SEC-3 — la garantía que importa es que el secreto NO SALE. Con la ficha hay
+// dos caminos distintos y los dos se cubren:
+//  · el texto crudo que la ficha NO transporta (un motivo cualquiera) → el
+//    secreto desaparece entero, porque el copy sale de la tabla congelada;
+//  · el texto que SÍ se cita literal (la pregunta de un agente, UX §1.8) → pasa
+//    por `redactAll` en la frontera y sale con el marcador.
+test('buildNeedHumanAudioText SEC-3: un AWS key del motivo no llega al audio', () => {
+    const txt = hb.buildNeedHumanAudioText({
+        issue: 7310,
         reason: 'falló con la clave AKIAIOSFODNN7EXAMPLE en el deploy',
         question: 'rotá la credencial',
     });
     assert.ok(!txt.includes('AKIAIOSFODNN7EXAMPLE'),
         'el AWS key NO aparece literal en el texto narrable');
-    assert.ok(txt.includes('[REDACTED]'), 'el secreto fue reemplazado por el marcador');
 });
 
-test('buildNeedHumanAudioText SEC-3: redacta un github_pat_* de la decisión', () => {
+test('buildNeedHumanAudioText SEC-3: un github_pat_* citado sale con el marcador', () => {
     const pat = 'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
     const txt = hb.buildNeedHumanAudioText({
+        issue: 7311,
         reason: 'el token expiró',
-        question: `usá ${pat} para reautenticar`,
+        // Termina en '?' y entra en 160: es una pregunta CITABLE, así que este
+        // es el camino donde el texto externo sí viaja a la ficha.
+        question: `usá ${pat} para reautenticar?`,
     });
     assert.ok(!txt.includes(pat), 'el PAT NO aparece literal en el texto narrable');
     assert.ok(txt.includes('[REDACTED]'), 'el PAT fue reemplazado por el marcador');
 });
 
-test('buildNeedHumanAudioText SEC-3: redacta un JWT embebido en el motivo', () => {
+test('buildNeedHumanAudioText SEC-3: un JWT del motivo no llega al audio', () => {
     const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
-    const txt = hb.buildNeedHumanAudioText({ reason: `bearer ${jwt}`, question: 'revocá' });
+    const txt = hb.buildNeedHumanAudioText({ issue: 7312, reason: `bearer ${jwt}`, question: 'revocá' });
     assert.ok(!txt.includes(jwt), 'el JWT NO aparece literal');
-    assert.ok(txt.includes('[REDACTED]'), 'el JWT fue reemplazado por el marcador');
 });
 
-test('buildNeedHumanAudioText degrada a alerta mínima con input vacío (no rompe)', () => {
-    const vacio = hb.buildNeedHumanAudioText({});
-    assert.equal(vacio, 'Atención: un issue requiere intervención humana.',
-        'sin motivo/decisión devuelve solo el encabezado de alerta');
-    const sinArgs = hb.buildNeedHumanAudioText();
-    assert.equal(sinArgs, 'Atención: un issue requiere intervención humana.',
-        'sin argumentos no lanza y devuelve el encabezado');
-    // input parcial: solo motivo.
-    const parcial = hb.buildNeedHumanAudioText({ reason: 'solo motivo' });
-    assert.ok(parcial.includes('El motivo del bloqueo es: solo motivo.'));
-    assert.ok(!parcial.includes('La decisión'), 'sin question no agrega la cláusula de decisión');
+test('buildNeedHumanAudioText con input vacío dice que no sabe, y no rompe', () => {
+    // #6190 — antes devolvía sólo el encabezado, que le dejaba al operador un
+    // audio sin ninguna información. Ahora es el caso `indeterminado` del
+    // contrato: se dice que no se pudo inferir y QUÉ falta — y nada más, porque
+    // inventar opciones en el único canal que no se puede verificar es peor.
+    for (const entrada of [{}, undefined]) {
+        const txt = hb.buildNeedHumanAudioText(entrada);
+        assert.ok(txt.startsWith('Atención: un issue requiere intervención humana.'),
+            'el encabezado de alerta se mantiene');
+        assert.ok(txt.includes('No pude inferir qué hay que decidir.'),
+            'declara que no sabe en vez de callarse');
+        assert.ok(txt.includes('Me falta'), 'y dice qué dato le falta');
+        assert.ok(!/Opciones|Te recomiendo/.test(txt), 'cero opciones inventadas');
+    }
 });
 
 test('buildNeedHumanAudioText acota la longitud a 600 chars (CA-NF / G-3)', () => {
