@@ -15,10 +15,21 @@
 // Telegram (fuente única `credentials.json` vía `lib/credentials.js`). Derivar
 // con HMAC evita reusar el secreto crudo y desacopla el dominio del token.
 //
-// NOTA: este módulo corre en el proceso del dashboard (single-thread). `verify()`
-// es 100% síncrono — el check de nonce y el append son atómicos dentro del event
-// loop, sin `await` intermedio, así que un doble-click no puede gastar el token
-// dos veces (no hay ventana de carrera dentro del proceso).
+// CONSUMO ÚNICO DEL NONCE — POR QUÉ NO ALCANZA EL SINGLE-THREAD
+// -------------------------------------------------------------
+// `verify()` es 100% síncrono, así que dentro de UN proceso el check de nonce y
+// el append no tienen ventana de carrera (un doble-click no gasta el token dos
+// veces). Pero la vieja nota de este módulo justificaba la seguridad del store
+// con "corre en el proceso del dashboard (single-thread)", y ESA invariante ya
+// no vale: desde #6206 el mismo `DEFAULT_NONCE_FILE` lo consumen DOS servicios
+// separados — el listener de Telegram y el dashboard (`restart.js:93` y `:99`) —
+// porque `approval-channel.js` despacha firmas desde ambos medios.
+//
+// Entre procesos, `readUsedNonces()` + `markNonceUsed()` es un read-modify-write
+// sin lock: dos procesos leen "no usado" y ambos consumen el mismo token. Por eso
+// el consumo se cierra con un RECLAMO ATÓMICO (`openSync(..., 'wx')` ⇒
+// O_CREAT|O_EXCL): el kernel garantiza que exactamente uno gana. El JSONL se
+// sigue escribiendo como registro histórico y para el camino legacy.
 // =============================================================================
 
 'use strict';
@@ -196,7 +207,20 @@ function createTokenSigner(opts = {}) {
         const plain = new Set();
         const composite = new Set();
         let raw;
-        try { raw = fs.readFileSync(nonceFile, 'utf8'); } catch { return { plain, composite }; }
+        try {
+            raw = fs.readFileSync(nonceFile, 'utf8');
+        } catch (e) {
+            // FAIL-CLOSED. Sólo "el archivo todavía no existe" significa
+            // legítimamente "ningún nonce usado". Cualquier otro error
+            // (EBUSY/EACCES/EPERM/EISDIR/EMFILE…) es "no sé qué se consumió", y
+            // tratarlo como set vacío revalida tokens YA GASTADOS: con el store
+            // ilegible un token consumido volvía a valer. Se relanza para que el
+            // caller rechace; los tres consumidores vivos ya envuelven `verify()`
+            // (`human-block-action-handler.js:174`, `listener-telegram.js:876`,
+            // `approval-channel.submitSignature`), así que no mata ningún proceso.
+            if (e && e.code === 'ENOENT') return { plain, composite };
+            throw e;
+        }
         for (const ln of raw.split('\n')) {
             if (!ln) continue;
             try {
@@ -207,6 +231,52 @@ function createTokenSigner(opts = {}) {
         }
         return { plain, composite };
     }
+    // --- reclamo atómico del nonce (#6206) -----------------------------------
+    //
+    // El directorio de reclamos vive junto al JSONL (bajo `.pipeline/audit/`, que
+    // ya está gitignored). Un reclamo es un archivo vacío cuyo nombre es el hash
+    // del valor reclamado: nunca se escribe el nonce crudo en un nombre de path.
+    const claimDir = `${nonceFile}.claims`;
+
+    function claimPathFor(value) {
+        const h = crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
+        return path.join(claimDir, `${h.slice(0, 40)}.claim`);
+    }
+
+    /**
+     * Reclama atómicamente TODOS los valores o ninguno. `openSync(..., 'wx')` es
+     * O_CREAT|O_EXCL: entre procesos concurrentes exactamente uno crea el archivo
+     * y el resto recibe EEXIST. Eso cierra la ventana del read-modify-write.
+     *
+     * Fail-closed en dos direcciones:
+     *   - EEXIST            ⇒ ese valor ya fue consumido ⇒ `replayed`.
+     *   - cualquier otro    ⇒ no podemos GARANTIZAR unicidad ⇒ `unavailable`
+     *                         (no se consume ni se firma).
+     *
+     * @returns {{claimed:true}|{claimed:false, reason:'replayed'|'unavailable'}}
+     */
+    function claimNonces(values) {
+        try {
+            fs.mkdirSync(claimDir, { recursive: true });
+        } catch {
+            return { claimed: false, reason: 'unavailable' };
+        }
+        const won = [];
+        for (const value of values) {
+            const target = claimPathFor(value);
+            try {
+                fs.closeSync(fs.openSync(target, 'wx'));
+                won.push(target);
+            } catch (e) {
+                // Rollback de los reclamos que SÍ ganamos en este intento: el
+                // token no se consume, así que no debe quedar medio quemado.
+                for (const w of won) { try { fs.unlinkSync(w); } catch { /* best-effort */ } }
+                return { claimed: false, reason: e && e.code === 'EEXIST' ? 'replayed' : 'unavailable' };
+            }
+        }
+        return { claimed: true };
+    }
+
     function markNonceUsed(nonce, meta) {
         try { fs.mkdirSync(path.dirname(nonceFile), { recursive: true }); } catch { /* idempotente */ }
         const rec = {
@@ -322,6 +392,15 @@ function createTokenSigner(opts = {}) {
         // compuesta agrega el bloqueo específico del binding.
         if (used.plain.has(String(nonce))) return { ok: false, reason: 'replayed' };
         if (bound && used.composite.has(k)) return { ok: false, reason: 'replayed' };
+
+        // 5. #6206 — RECLAMO ATÓMICO. El chequeo de arriba lee el histórico (cubre
+        //    lo consumido antes de que existieran los reclamos y el camino
+        //    legacy), pero entre esa lectura y el append hay una ventana que dos
+        //    PROCESOS distintos pueden atravesar a la vez. `wx` la cierra: el
+        //    kernel decide el ganador. Se reclaman los mismos dos espacios de
+        //    nombres que se chequean arriba, para que el bloqueo sea simétrico.
+        const claim = claimNonces(bound ? [String(nonce), `k:${k}`] : [String(nonce)]);
+        if (!claim.claimed) return { ok: false, reason: claim.reason };
 
         markNonceUsed(String(nonce), { issue, action, k, gate: g });
         const res = { ok: true, issue, action, nonce: String(nonce) };

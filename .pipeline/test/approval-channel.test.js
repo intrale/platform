@@ -59,6 +59,11 @@ function mkEnv(over = {}) {
                 entry: { ...record, ts: new Date().toISOString() },
             });
         },
+        // #6206 — la allowlist de firmantes se resuelve SERVER-SIDE desde el
+        // entorno; ya NO hay forma de pasarla en el payload del cliente. El test
+        // inyecta un env hermético en vez de un `writerOptions`.
+        env: { TELEGRAM_LEO_OPERATOR_CHAT_ID: OPERATOR },
+        writerPipelineDir: dir,
         ...(over.deps || {}),
     };
     return {
@@ -66,7 +71,6 @@ function mkEnv(over = {}) {
         deps,
         companionCalls,
         companionFile: path.join(dir, 'audit', 'operator-gate-signatures.jsonl'),
-        writerOptions: { pipelineDir: dir, authorizedSigners: [OPERATOR] },
         cleanup: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} },
     };
 }
@@ -90,7 +94,6 @@ function submit(env, req, over = {}) {
         signedBy: OPERATOR,
         body: BODY,
         gateMode: 'enforce',
-        writerOptions: env.writerOptions,
         ...over,
     }, env.deps);
 }

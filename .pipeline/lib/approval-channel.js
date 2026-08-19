@@ -29,6 +29,20 @@
 //   sólo `{ verdict, nonce }`; cualquier `anchor` que venga en la entrada se
 //   ignora. `body-hash` y `commit-sha` NO se normalizan a un tipo único (R2):
 //   `anchor` es `{kind, value}` con comparación discriminada por `kind`.
+// [CA-A2 · A01] Las `options` del writer del gate se construyen por ENUMERACIÓN
+//   EXPLÍCITA server-side (`buildWriterOptions`), NUNCA reenviando un objeto del
+//   llamador. Ese objeto es el que decide la autorización del firmante
+//   (`normalizeAuthorizedSigners(options.authorizedSigners)`), y por la misma vía
+//   viajarían `pipelineDir` (redirige el chain de no repudio), `fsImpl`,
+//   `rateLimit` (anula CA-11) y `now`/`nowISO` (falsifican el `signed_at`).
+//   La allowlist se resuelve server-side uniendo las DOS fuentes que YA son
+//   autoridad en producción — `operator-gate.resolveOperatorAllowlist` (la del
+//   camino de botones) y `cua.operator_chat_ids` de `config.yaml` (la que usa
+//   `delivery.js` para GATE 2) — y es fail-closed si queda vacía.
+// [A01/A02] El token del canal es una capability bearer: se devuelve en memoria
+//   al adaptador que pidió la firma, pero NO se persiste ni en el depósito ni en
+//   el audit. El depósito lo leen dashboard y Telegram; un token ahí es "quien
+//   lee el índice, firma".
 // [CA-A3 · SEC-1/SEC-2] Nonce de un solo uso namespaced por `(gate, issue,
 //   anchor)`, extendiendo `action-token.js` (NO reimplementándolo acá): el
 //   binding viaja dentro del payload firmado (`g`/`h`) y se compara en el
@@ -238,6 +252,23 @@ function resolveDeps(deps = {}) {
         signer: deps.signer || null,
         now: typeof deps.now === 'function' ? deps.now : () => Date.now(),
         rejectRate: { ...DEFAULT_REJECT_RATE, ...(deps.rejectRate || {}) },
+        // Entorno del que se resuelve la allowlist de firmantes SERVER-SIDE.
+        // `deps` es cableado del proceso (no input del cliente): un adaptador
+        // llama `submitSignature(p)` sin `deps`; los tests inyectan un env
+        // hermético. NO existe ningún camino por el que el payload del cliente
+        // aporte firmantes autorizados.
+        env: deps.env || process.env,
+        // Config ya resuelta (tests / caller que la tiene en mano). `null` ⇒ el
+        // kernel la lee él mismo con `config-resolver`. En ningún caso sale del
+        // payload del cliente.
+        config: deps.config != null ? deps.config : null,
+        // Sólo para tests herméticos: raíz `.pipeline/` del writer del gate. En
+        // producción va `null` y cada gate resuelve su propio default.
+        writerPipelineDir: typeof deps.writerPipelineDir === 'string' && deps.writerPipelineDir !== ''
+            ? deps.writerPipelineDir
+            : null,
+        // Rate-limit de FIRMA del gate (CA-11). Es del gate, no del cliente.
+        writerRateLimit: deps.writerRateLimit || null,
         // Companion de audit (D-2). Lazy y sustituible en tests: el default
         // construye el singleton de `operator-gate`, que resuelve credenciales.
         auditCompanion: deps.auditCompanion
@@ -248,6 +279,86 @@ function resolveDeps(deps = {}) {
 function tokenSigner(d) {
     if (d.signer) return d.signer;
     return actionToken;
+}
+
+// -----------------------------------------------------------------------------
+// CA-A2 · A01 — las opciones del writer se construyen SERVER-SIDE
+// -----------------------------------------------------------------------------
+
+/**
+ * Allowlist de firmantes autorizados, resuelta **siempre server-side**.
+ *
+ * NO se crea una lista paralela: se unen las DOS fuentes que ya son autoridad en
+ * producción, para que el canal no pueda divergir de los caminos que reemplaza.
+ *
+ *   1. `TELEGRAM_LEO_OPERATOR_CHAT_ID` — vía `operator-gate.resolveOperatorAllowlist`,
+ *      la misma que autoriza el camino de BOTONES (`operator-gate.handleSignature`).
+ *   2. `cua.operator_chat_ids` de `config.yaml` — la misma unión que hace
+ *      `delivery.resolveAuthorizedSigners:100`, que es hoy el consumidor real de
+ *      GATE 2. Sin esto, un aprobador de respaldo designado por config podría
+ *      firmar por `delivery` pero no por el canal.
+ *
+ * **Fail-closed**: sin allowlist configurada devuelve `[]`, y el writer del gate
+ * rechaza toda firma (`authorizedSigners.size === 0` ⇒ "firmante no autorizado").
+ * Si la config no se puede leer, se degrada a la fuente (1), que es
+ * ESTRICTAMENTE MÁS ANGOSTA — nunca se degrada a "cualquiera firma".
+ *
+ * @returns {Array<string>}
+ */
+function resolveAuthorizedSigners(d) {
+    const ids = new Set();
+
+    // 1 · credential dedicada del operador (misma fuente que el camino de botones).
+    try {
+        for (const id of require('./operator-gate').resolveOperatorAllowlist(d.env)) ids.add(id);
+    } catch { /* módulo roto ⇒ no aporta firmantes (nunca abre el camino) */ }
+
+    // 2 · allowlist de config, leída SERVER-SIDE (jamás del payload del cliente).
+    try {
+        const config = d.config !== null
+            ? d.config
+            : require('./config-resolver').resolve({ pipelineDir: d.writerPipelineDir || undefined });
+        const cua = (config && config.cua) || {};
+        if (Array.isArray(cua.operator_chat_ids)) {
+            for (const raw of cua.operator_chat_ids) {
+                const s = String(raw == null ? '' : raw).trim();
+                if (s) ids.add(s);
+            }
+        }
+    } catch { /* config ilegible ⇒ queda sólo (1): más angosto, nunca más ancho */ }
+
+    return Array.from(ids);
+}
+
+/**
+ * Construye las `options` que van al writer del gate por **ENUMERACIÓN
+ * EXPLÍCITA**, mismo patrón que `recordRejectedAttempt`.
+ *
+ * POR QUÉ (A01 · confused deputy): `options` es *exactamente* el objeto que decide
+ * la autorización del firmante — `recordDefinitionSignature` y
+ * `recordAcceptanceSignature` hacen `normalizeAuthorizedSigners(options.authorizedSigners)`
+ * y nada más. Reenviar un objeto del cliente ahí (el viejo `p.writerOptions`)
+ * delegaba en el llamador la decisión de quién puede firmar, y por la misma vía
+ * viajaban `pipelineDir` (redirige el audit chain de no repudio), `fsImpl`
+ * (sustituye el filesystem), `rateLimit` (anula CA-11) y `now`/`nowISO`
+ * (falsifican el `signed_at`). Construir por enumeración es lo que hace que el
+ * comentario del paso 11 ("la autoridad sigue siendo DEL GATE") sea cierto.
+ *
+ * Ningún campo sale del payload del cliente: todos salen de `d` (deps del
+ * proceso) o se resuelven server-side.
+ */
+function buildWriterOptions(d) {
+    const options = {
+        // A01 — server-side, nunca del input.
+        authorizedSigners: resolveAuthorizedSigners(d),
+        // Reloj del kernel: el gate deriva `signed_at` de acá. `nowISO` NO se
+        // pasa, así que el timestamp del chain de no repudio no es inyectable.
+        now: Number(d.now()),
+    };
+    if (d.writerPipelineDir !== null) options.pipelineDir = d.writerPipelineDir;
+    if (d.fsImpl !== fs) options.fsImpl = d.fsImpl;
+    if (d.writerRateLimit !== null) options.rateLimit = d.writerRateLimit;
+    return options;
 }
 
 // -----------------------------------------------------------------------------
@@ -458,7 +569,10 @@ function requestSignature(p = {}, deps = {}) {
             text: presentedText,
         },
         presentation_safe: presentation.safe,
-        token,
+        // OJO: `token` NO va acá — se agrega sólo al valor DEVUELTO, más abajo.
+        // El depósito es un índice legible por el dashboard y por Telegram, y el
+        // token es una capability bearer: quien lo lee, firma (A01/A02). Por eso
+        // ya estaba excluido del audit; persistirlo en el índice lo contradecía.
         created_at: createdAt,
         gate_mode: gateMode,
     };
@@ -496,7 +610,10 @@ function requestSignature(p = {}, deps = {}) {
         });
     } catch { /* el audit del pedido no bloquea la presentación */ }
 
-    return { ok: true, request, path: target };
+    // El token viaja SÓLO en la respuesta en memoria, nunca en el depósito ni en
+    // el audit. El adaptador que pidió la firma lo entrega por su canal (botón de
+    // Telegram, formulario del dashboard) y lo devuelve en `submitSignature`.
+    return { ok: true, request: { ...request, token }, path: target };
 }
 
 /** CA-UX1 · `title`: una línea, ≤ 80 chars, sin verbos de acción. */
@@ -574,7 +691,12 @@ function normalizeEvidence(raw) {
  *                                 del nonce del token, que es el del canal.
  * @param {string} [p.actor]     - identidad de origen para el registro de rechazos.
  * @param {string} [p.origen]    - medio de origen ('telegram' | 'dashboard' | ...).
- * @param {object} [p.writerOptions] - opciones que van tal cual al writer del gate.
+ *
+ * NO existe `p.writerOptions`: las opciones del writer (allowlist de firmantes,
+ * `pipelineDir`, `fsImpl`, reloj, rate-limit) las construye el kernel server-side
+ * en `buildWriterOptions`. El cliente aporta sólo `{ verdict, nonce }` + material
+ * fuente (CA-A2); nada de lo que manda decide quién puede firmar.
+ *
  * @param {object} [deps]
  * @returns {{ok:boolean, reason?:string, entry?:object, gate?:string, issue?:number}}
  */
@@ -611,9 +733,21 @@ function submitSignature(p = {}, deps = {}) {
 
     // 4 · verificar y CONSUMIR el token. Consumirlo incluso si después se
     //     rechaza es deliberado: una capability que tocó el canal se quema.
-    const res = tokenSigner(d).verify(p.token);
-    if (!res.ok) {
-        return rejectAndCount(`token ${res.reason}`);
+    //     `verify()` NO es una función total (#5461): lanza con el vault cerrado
+    //     o sin secreto, y desde #6206 también si el store de nonces es
+    //     ilegible. Sin este catch la excepción escapa al proceso adaptador
+    //     (Telegram / dashboard) y lo mata. Fail-closed: la firma NO se registra.
+    let res;
+    try {
+        res = tokenSigner(d).verify(p.token);
+    } catch (e) {
+        // Se registra el `code` acotado, no el `message` crudo: el mensaje de un
+        // error arbitrario podría arrastrar material sensible al log.
+        const code = (e && typeof e.code === 'string') ? e.code : 'unknown';
+        return rejectAndCount(`verificador de token no disponible (${code}) — firma NO registrada`);
+    }
+    if (!res || !res.ok) {
+        return rejectAndCount(`token ${(res && res.reason) || 'invalid'}`);
     }
 
     // 5 · SEC-1 — `g`/`h` OBLIGATORIOS acá (no en `verify()`). Un token del
@@ -673,8 +807,12 @@ function submitSignature(p = {}, deps = {}) {
     // 11 · Despacho al writer del gate. La autoridad sobre autorización,
     //      rate-limit de firma e integridad sigue siendo DEL GATE — el kernel no
     //      la duplica.
+    //      Las `options` se construyen SERVER-SIDE por enumeración explícita
+    //      (`buildWriterOptions`): el cliente no aporta ni la allowlist de
+    //      firmantes, ni el `pipelineDir` del audit, ni el reloj, ni el
+    //      rate-limit. Ver el comentario de `buildWriterOptions`.
     const writer = g.spec.writer();
-    const writerOptions = p.writerOptions || {};
+    const writerOptions = buildWriterOptions(d);
     let out;
     try {
         out = g.spec.gate === 'definicion'

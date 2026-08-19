@@ -46,8 +46,10 @@ function mkEnv(signerOpts = {}) {
                 file: path.join(dir, 'audit', 'operator-gate-signatures.jsonl'),
                 entry: { ...record, ts: new Date().toISOString() },
             }),
+            // #6206 — allowlist resuelta SERVER-SIDE desde el entorno.
+            env: { TELEGRAM_LEO_OPERATOR_CHAT_ID: OPERATOR },
+            writerPipelineDir: dir,
         },
-        writerOptions: { pipelineDir: dir, authorizedSigners: [OPERATOR] },
         cleanup: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} },
     };
 }
@@ -61,7 +63,6 @@ function submit(env, token, over = {}) {
         signedBy: OPERATOR,
         body: BODY,
         gateMode: 'enforce',
-        writerOptions: env.writerOptions,
         ...over,
     }, env.deps);
 }

@@ -424,6 +424,10 @@ test('#6206 CA-A5: firmante no autorizado desde el canal → rechazo fail-closed
                 secret: 'secreto-6206', nonceFile: path.join(canalDir, 'nonces.jsonl'),
             }),
             auditCompanion: () => ({ hash_self: 'fake' }),
+            // El operador SÍ está configurado server-side: lo que se prueba es
+            // que un firmante distinto no pasa, no que la allowlist esté vacía.
+            env: { TELEGRAM_LEO_OPERATOR_CHAT_ID: OPERATOR },
+            writerPipelineDir: t.pipelineDir,
         };
         try {
             const req = channel.requestSignature(
@@ -439,7 +443,6 @@ test('#6206 CA-A5: firmante no autorizado desde el canal → rechazo fail-closed
                 signedBy: 'no-soy-el-operador',   // ∉ authorizedSigners
                 body: BODY,
                 gateMode: 'enforce',
-                writerOptions: { pipelineDir: t.pipelineDir, authorizedSigners: [OPERATOR] },
             }, deps);
 
             assert.equal(res.ok, false, 'el canal no puede firmar con un firmante no autorizado');
