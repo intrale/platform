@@ -76,7 +76,34 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
+// `resolveAuthorizedSigners` fusiona la allowlist de `cua.operator_chat_ids` con
+// la credencial dedicada del operador (`TELEGRAM_LEO_OPERATOR_CHAT_ID`). Esa env
+// SÍ está exportada en el entorno real del pipeline, así que el test tiene que
+// gobernarla explícitamente: leerla del ambiente lo volvía no hermético y hacía
+// fallar la suite sólo en la máquina del agente (y nunca en un CI limpio).
+function withOperatorEnv(value, fn) {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'TELEGRAM_LEO_OPERATOR_CHAT_ID');
+    const prev = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    if (value === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = value;
+    try {
+        return fn();
+    } finally {
+        if (had) process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = prev;
+        else delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    }
+}
+
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+    const signers = withOperatorEnv(undefined, () => (
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } })
+    ));
     assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+});
+
+test('resolveAuthorizedSigners suma la credencial del operador sin duplicarla', () => {
+    const signers = withOperatorEnv('7', () => (
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '7'] } })
+    ));
+    assert.deepStrictEqual([...signers].sort(), ['1', '7']);
 });
