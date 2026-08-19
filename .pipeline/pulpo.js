@@ -13023,6 +13023,82 @@ function generarMensajeProgreso(count, elapsedSec, tools, lastTool, textoOrigina
 // responsabilidad la toma `logSkillInvocation` (`_sanitize*` helpers en
 // `issue-creation.js`). Centralizar la redacción evita duplicarla en cada
 // callsite y mantiene el `trace` útil también para debugging local.
+// =============================================================================
+// #6144 — Aviso de "cadena de IA caída": texto con causa + entrega hablada.
+//
+// Punto único por el que pasan los 3 callers del canned de cadena agotada. Hace
+// tres cosas y en este orden:
+//
+//   1. Clasifica la caída server-side (`classifyPauseCause`). `chainTried` entra
+//      SÓLO acá: nunca se interpola al operador (CA-6). Del resultado, el copy
+//      lee cuatro campos (`degraded`, `stale`, `dominantCause`,
+//      `providers[].rest`) y nada más.
+//   2. Arma el texto por el entry point de siempre
+//      (`cannedAllProvidersFailedResponse`), inyectando la clasificación ya
+//      calculada para no leer el snapshot de salud dos veces.
+//   3. Dispara el aviso hablado fire-and-forget.
+//
+// El audio va DESPUÉS y desacoplado del texto a propósito: `sendDownNoticeAudio`
+// nunca lanza, pero además no se espera. Un cuelgue de `edge-tts` no puede
+// demorar la respuesta al operador — que es precisamente el síntoma que #6144
+// viene a corregir. El texto sale siempre; el audio es el extra.
+//
+// Ante cualquier error de clasificación se degrada al copy genérico sin afirmar
+// causa (CA-19): inventar una causa con autoridad es peor que el genérico.
+//
+// @returns {string} el texto listo para entregar al operador.
+// =============================================================================
+function avisoCadenaCaida({ chainTried, verifiedAllFailed = false, requestId } = {}) {
+  let classification = null;
+  try {
+    classification = require('./lib/provider-pause-cause')
+      .classifyPauseCause(Array.isArray(chainTried) ? chainTried : []);
+  } catch (e) {
+    classification = null; // fail-closed → genérico (CA-19)
+    log('commander', `[cadena-caida] no se pudo clasificar la causa, uso copy genérico: ${e.message}`);
+  }
+
+  const texto = commanderMP.cannedAllProvidersFailedResponse({
+    chainTried,
+    verifiedAllFailed,
+    requestId,
+    // La clasificación ya está hecha: se inyecta para que el entry point no
+    // vuelva a tocar disco dentro del turno.
+    classify: () => classification,
+  });
+
+  try {
+    const chatId = getTelegramChatId();
+    const botToken = getTelegramToken();
+    // CA-17 — sin destino autorizado resoluble no se emite audio (fail-closed).
+    if (chatId && botToken) {
+      const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
+      let audioPolicy = null;
+      try { audioPolicy = (loadConfig() || {}).audio_policy || null; } catch { audioPolicy = null; }
+      commanderMP.sendDownNoticeAudio({
+        classification,
+        botToken,
+        chatId,
+        audioPolicy,
+        profile: 'need-human', // D5/CA-10: alerta de sistema, no charla
+        textToSpeechWithMeta,
+        sendVoiceTelegram,
+      }).then((r) => {
+        if (!r) return;
+        if (r.sent) log('commander', `[cadena-caida] aviso hablado entregado (via=${r.via})`);
+        else if (r.error) log('commander', `[cadena-caida] aviso hablado falló, texto ya entregado: ${r.error}`);
+        else if (r.skipped) log('commander', `[cadena-caida] aviso hablado omitido: ${r.skipped}`);
+      }).catch(() => { /* el contrato dice que no lanza; red extra por las dudas */ });
+    } else {
+      log('commander', '[cadena-caida] sin chat/token resoluble — aviso hablado omitido (fail-closed)');
+    }
+  } catch (e) {
+    log('commander', `[cadena-caida] aviso hablado no se pudo iniciar, texto ya entregado: ${e.message}`);
+  }
+
+  return texto;
+}
+
 function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
   return new Promise((resolve, reject) => {
     const readline = require('readline');
@@ -13176,7 +13252,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           } catch { /* best-effort */ }
           // #4440 CA-1 — caso pre-spawn: nunca se intentó la cadena completa,
           // por lo que NO se afirma falla total (verifiedAllFailed: false).
-          return resolve(commanderMP.cannedAllProvidersFailedResponse({ chainTried: ['anthropic'], verifiedAllFailed: false, requestId: turnRequestId }));
+          // #6144 — el aviso ahora explica la causa dominante y se entrega
+          // también por voz (fire-and-forget dentro del helper).
+          return resolve(avisoCadenaCaida({ chainTried: ['anthropic'], verifiedAllFailed: false, requestId: turnRequestId }));
         }
       } else {
         log('commander', '   degradando a Anthropic por compatibilidad (primario habilitado).');
@@ -13581,7 +13659,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // saber qué pasó.
         // #4440 CA-1 — se spawneó y efectivamente falló toda la cadena:
         // imposibilidad verificada (verifiedAllFailed: true).
-        return resolve(commanderMP.cannedAllProvidersFailedResponse({
+        // #6144 — mismo aviso, ahora con causa dominante derivada de la cadena
+        // realmente intentada y con entrega hablada.
+        return resolve(avisoCadenaCaida({
           chainTried: Array.from(triedNonAnthropic),
           verifiedAllFailed: true,
           requestId: turnRequestId,
@@ -16896,7 +16976,20 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         if (totalProviderFailure) {
           // #4440 CA-1 — path best-effort sin verificación de falla total real:
           // se mantiene el default verifiedAllFailed: false (no afirma "TODOS").
-          try { sendTelegram(commanderMP.cannedAllProvidersFailedResponse({ verifiedAllFailed: false })); } catch { /* best-effort */ }
+          // #6144 CA-17 — destino fail-closed: este caller usaba `sendTelegram()`
+          // sin resolver el chat. Si no hay chat autorizado resoluble no se emite
+          // nada (ni texto con causa ni audio).
+          // #6144 CA-19 — tampoco tiene `chainTried`: sin cadena no hay causa
+          // observada, así que el copy degrada a genérico. Es el comportamiento
+          // correcto, no una carencia: inventar una causa acá sería mentirle al
+          // operador con autoridad.
+          try {
+            if (getTelegramChatId()) {
+              sendTelegram(avisoCadenaCaida({ verifiedAllFailed: false }));
+            } else {
+              log('commander', '[cadena-caida] sin chat autorizado resoluble — aviso no emitido (fail-closed)');
+            }
+          } catch { /* best-effort */ }
         } else {
           sendTelegram('⚠️ Error procesando tu mensaje. Intentá de nuevo.');
         }
