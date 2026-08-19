@@ -326,6 +326,8 @@ const { runStuckPhaseReconciler } = require('./lib/stuck-phase-reconciler-runner
 // #5396 — el cableado de deps del reconciler vive en su propio módulo para que
 // el test pueda verificarlo SIN cargar pulpo.js (16k líneas con side-effects).
 const { buildStuckReconcilerDeps, evaluateSilenceHealth } = require('./lib/stuck-reconciler-deps');
+// #6150 — clasificación por decisión + copy en lenguaje de operador.
+const { selectRealRisk, buildStuckAlertCopy } = require('./lib/stuck-reconciler-copy');
 // #4622 — liveness real del pid + identidad (anti-heartbeat-zombi). Fuente única
 // compartida con canonical-facts y el hook activity-logger.
 const processLiveness = require('./lib/process-liveness');
@@ -19442,21 +19444,43 @@ const STUCK_STALE_MS = 15 * 60 * 1000;
 // CA-UX-4: los contadores por tick van al log, NO a Telegram; sólo la señal de
 // vida (una vez por racha) notifica.
 const STUCK_HEALTH_FILE = path.join(PIPELINE, '.stuck-reconciler-health.json');
-function emitStuckReconcilerLiveness(agg) {
+function emitStuckReconcilerLiveness(res, agg, titleOf) {
   try {
+    // #6150 CA-1 — el filtro es POR DECISIÓN. El criterio agregado anterior
+    // (`suprimidos_por_ola >= evaluados`) mandaba al chat un aviso de 177
+    // "evaluados" con cero tareas realmente frenadas.
+    const risks = selectRealRisk((res && res.decisions) || []);
+
     let prev = null;
     try { prev = JSON.parse(fs.readFileSync(STUCK_HEALTH_FILE, 'utf8')); } catch { /* primera vez */ }
-    const { next, emitSignal } = evaluateSilenceHealth(prev, agg);
-    try { fs.writeFileSync(STUCK_HEALTH_FILE, JSON.stringify(next, null, 2)); } catch { /* best-effort */ }
+    const { next, emitSignal } = evaluateSilenceHealth(prev, { agg, risks });
+
+    // SEC-5 — tmp + rename. Con `writeFileSync` directo, un corte a mitad de
+    // escritura deja JSON inválido ⇒ `prev = null` ⇒ se pierde el episodio ⇒ el
+    // "un aviso por episodio" degrada a "avisar de nuevo en cada ciclo".
+    try {
+      const tmp = `${STUCK_HEALTH_FILE}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
+      fs.renameSync(tmp, STUCK_HEALTH_FILE);
+    } catch { /* best-effort: nunca tumba el ciclo */ }
+
+    // CA-2 — sin tareas en riesgo real no sale NADA a Telegram, por larga que
+    // sea la racha. El diagnóstico ya quedó en el log y en el archivo de estado.
     if (!emitSignal) return;
-    // Texto plano (SEC-4) y sin audio TTS (CA-UX-5: el audio queda reservado al
-    // circuit breaker; esto es una señal de diagnóstico, no una emergencia).
-    sendTelegramPlain(
-      `🔇 Self-healing mudo hace ${next.streak} ticks seguidos\n`
-      + `Evaluó ${agg.evaluados} issue(s) varado(s) y no actuó en ninguno.\n`
-      + `Supresiones: ola=${agg.suprimidos_por_ola} cache=${agg.suprimidos_por_cache} dedupe=${agg.suprimidos_por_dedupe}\n`
-      + `Revisá .pipeline/logs/pulpo.log (canal "reconciler") si no lo esperabas.`
-    );
+
+    const texto = buildStuckAlertCopy({
+      risks,
+      nowMs: Date.now(),
+      titleOf,
+      // SEC-2 — el título lo elige un tercero (el repo es público): redact +
+      // sanitize + strip de control chars antes de interpolarlo.
+      sanitize: (providerExhaustionPause && providerExhaustionPause.sanitizeForTelegram) || null,
+    });
+    if (!texto) return;
+
+    // Texto plano (SEC-1/SEC-4) y sin audio TTS (CA-UX-5 de #5396: el audio queda
+    // reservado al circuit breaker; esto no es una emergencia).
+    sendTelegramPlain(texto);
   } catch (e) {
     log('reconciler', `señal de vida (best-effort) falló: ${e && e.message}`);
   }
@@ -19515,7 +19539,7 @@ function runStuckReconcilerTick() {
       requeued: res.requeued || 0,
     };
     log('reconciler', `🔧 self-healing tick: ${JSON.stringify(agg)}`);
-    emitStuckReconcilerLiveness(agg);
+    emitStuckReconcilerLiveness(res, agg, deps.issueTitle);
   } catch (e) {
     log('reconciler', `tick error (no tumba el loop): ${e && e.message}`);
   }
