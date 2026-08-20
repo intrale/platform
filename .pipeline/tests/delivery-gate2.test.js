@@ -76,7 +76,52 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
+// --- resolveAuthorizedSigners ------------------------------------------------
+//
+// #6206 (rebote 1) — Estos casos eran dependientes del entorno: `resolveAuthorizedSigners`
+// mezcla, por diseño (CA-4, `delivery.js:98-111`), la allowlist `cua.operator_chat_ids`
+// con la credencial dedicada del operador que viaja en `TELEGRAM_LEO_OPERATOR_CHAT_ID`.
+// El agente del pipeline corre con esa variable exportada, así que el assert de
+// "sólo config" recogía además el chat id real y fallaba sólo en ese entorno
+// (verde en una shell limpia, rojo bajo el pulpo). La variable se aísla acá en vez
+// de relajar el assert: el merge del env es comportamiento buscado y tiene su
+// propio caso más abajo.
+const OPERATOR_ENV = 'TELEGRAM_LEO_OPERATOR_CHAT_ID';
+
+function withOperatorEnv(value, fn) {
+    const had = Object.prototype.hasOwnProperty.call(process.env, OPERATOR_ENV);
+    const previo = process.env[OPERATOR_ENV];
+    if (value === undefined) delete process.env[OPERATOR_ENV];
+    else process.env[OPERATOR_ENV] = value;
+    try {
+        return fn();
+    } finally {
+        // Restaurar exactamente el estado previo: `delete` si no existía, para no
+        // dejar la cadena vacía (que `resolveAuthorizedSigners` trata distinto).
+        if (had) process.env[OPERATOR_ENV] = previo;
+        else delete process.env[OPERATOR_ENV];
+    }
+}
+
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+    const signers = withOperatorEnv(undefined, () => delivery.resolveAuthorizedSigners({
+        cua: { operator_chat_ids: ['1', '2', '2'] },
+    }));
     assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+});
+
+test('resolveAuthorizedSigners suma la credencial del operador del entorno sin duplicarla', () => {
+    // Cubre la rama env de `delivery.js:109-110`, que antes sólo se ejercitaba por
+    // accidente según cómo estuviera el entorno del runner.
+    const signers = withOperatorEnv('777', () => delivery.resolveAuthorizedSigners({
+        cua: { operator_chat_ids: ['1', '777'] },
+    }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '777']);
+});
+
+test('resolveAuthorizedSigners ignora un entorno vacío y no inventa firmantes', () => {
+    const signers = withOperatorEnv('   ', () => delivery.resolveAuthorizedSigners({
+        cua: { operator_chat_ids: ['1'] },
+    }));
+    assert.deepStrictEqual(signers, ['1']);
 });
