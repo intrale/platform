@@ -10298,6 +10298,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
     onLog: log,
     resolveImpl: launchResolveImpl,
+    // #6272 — el launcher lee SÓLO `pipeline.model_propagation` de acá para
+    // decidir si el modelo resuelto viaja al hijo (flag apagado por default:
+    // sin la sección, o con `enabled` != true, no se toca nada).
+    config,
   });
   const child = launchResult.child;
   // #5400 (rev-5, B1) — ÚNICO punto del código donde consta que un agente salió
