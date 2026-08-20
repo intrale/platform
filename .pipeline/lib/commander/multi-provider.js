@@ -684,6 +684,18 @@ function _buildBalancedResolution(args = {}) {
         providerBilling: (_pickedBillingDef && _pickedBillingDef.billing === 'paid') ? 'paid' : 'free',
     };
 
+    // #6271 — el camino estricto expone `models_by_provider` (mapa
+    // {provider: model} de toda la cadena declarada) porque delega en
+    // `resolveProviderForSkill`. El camino balanceado arma su objeto a mano, asi
+    // que la clave hay que espejarla explicitamente o el shape OFF/ON diverge
+    // (#4412 CA-1 exige claves IDENTICAS). El mapa NO depende del eslabon que
+    // eligio el balancer: describe la cadena declarada completa, igual que en OFF.
+    // Defensivo: si el modulo inyectado no expone el helper (fake parcial en
+    // tests), degradamos a {} — la clave existe igual y el shape no se rompe.
+    const modelsByProvider = typeof _rp.resolveModelsByProvider === 'function'
+        ? _rp.resolveModelsByProvider(models, COMMANDER_SKILL)
+        : {};
+
     if (isPrimary) {
         // Espejo EXACTO del shape estricto-primario (…resolveProviderForSkill +
         // metadatos de dispatch). Mismas claves que el retorno OFF (CA-1).
@@ -691,6 +703,7 @@ function _buildBalancedResolution(args = {}) {
         return {
             provider,
             model,
+            models_by_provider: modelsByProvider,
             mode,
             handler,
             source: 'balanced',
@@ -717,6 +730,7 @@ function _buildBalancedResolution(args = {}) {
     return {
         provider,
         model,
+        models_by_provider: modelsByProvider,
         handler,
         mode,
         source: 'balanced',
