@@ -326,10 +326,17 @@ function enqueueLabelApply(issueNum, label, meta = null) {
         if (meta.snapshot_at) payload.snapshot_at = meta.snapshot_at;
         if (typeof meta.marker_mtime === 'number') payload.marker_mtime = meta.marker_mtime;
     }
-    fs.writeFileSync(
-        path.join(GH_QUEUE, filename),
-        JSON.stringify(payload),
-    );
+    // #6226 - escritura fail-closed: dos ordenes del mismo issue+label en el
+    // mismo milisegundo resolvian al mismo path y la segunda pisaba a la
+    // primera. Se conserva el nombre; solo ante colision se desambigua.
+    dropfileWriter.writeUniqueFileSync({
+        dir: GH_QUEUE,
+        filename,
+        data: JSON.stringify(payload),
+        onCollision: (name, attempt) => console.warn(
+            `[servicio-reconciler] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+        ),
+    });
 }
 
 // #3186 — encola orden `remove-label` para que el servicio-github le quite
@@ -339,22 +346,27 @@ function enqueueLabelApply(issueNum, label, meta = null) {
 function enqueueLabelRemove(issueNum, label) {
     fs.mkdirSync(GH_QUEUE, { recursive: true });
     const filename = `${issueNum}-rm-${label}-reconciler-${Date.now()}.json`;
-    fs.writeFileSync(
-        path.join(GH_QUEUE, filename),
+    // #6226 - escritura fail-closed (ver `enqueueLabelApply`).
+    dropfileWriter.writeUniqueFileSync({
+        dir: GH_QUEUE,
+        filename,
+        onCollision: (name, attempt) => console.warn(
+                `[servicio-reconciler] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
         // #5690 SEC-B — procedencia declarada para el guardrail de labels.
         // El reconciliador sólo emite `remove-label needs-human` cuando el
         // oráculo de `label-reconciler-core` confirmó que la épica tiene todos
         // los hijos verificables cerrados y NO hay marker humano activo. No es
         // una acción humana (por eso el campo no se llama `human_*`), pero sí
         // es una decisión de un productor identificado y state-checked.
-        JSON.stringify({
+        data: JSON.stringify({
             action: 'remove-label',
             issue: issueNum,
             label,
             guardrail_authorized: true,
             authorized_by: 'servicio-reconciler:label-reconciler-core',
         }),
-    );
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -1148,7 +1160,15 @@ function applyAdmissionLabel(issueNumber) {
             issue: issueNumber,
             label: admissionGate.DEFAULT_ADMISSION_LABEL,
         };
-        fs.writeFileSync(path.join(GH_QUEUE, filename), JSON.stringify(payload));
+        // #6226 - escritura fail-closed (ver `enqueueLabelApply`).
+        dropfileWriter.writeUniqueFileSync({
+            dir: GH_QUEUE,
+            filename,
+            data: JSON.stringify(payload),
+            onCollision: (name, attempt) => console.warn(
+                `[servicio-reconciler] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
         return true;
     } catch (e) {
         log(`Error encolando admission label #${issueNumber}: ${e.message.slice(0, 120)}`);

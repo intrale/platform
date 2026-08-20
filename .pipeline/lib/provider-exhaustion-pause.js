@@ -63,6 +63,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #6226 - nombres unicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('./dropfile-writer');
 const { spawnSync } = require('node:child_process');
 
 // Carga defensiva de primitivas. Si alguno falla (paths legacy), degradamos
@@ -844,14 +846,20 @@ function enqueueTelegram(text, opts = {}) {
     catch (e) { return { ok: false, reason: `cannot_create_queue_dir: ${e.message}` }; }
     const now = Number.isFinite(opts.now) ? opts.now : Date.now();
     const tag = opts.filenameTag || 'exhaustion';
-    const filename = `${now}-${tag}.json`;
-    const file = path.join(queueDir, filename);
+    // #6226 - nombre unico (`<ts>-<seq>-<tag>.json`) + escritura `wx`. Antes era
+    // `${now}-${tag}.json` a secas: dos avisos del mismo tag en el mismo
+    // milisegundo resolvian al mismo path y el segundo pisaba al primero.
     try {
-        fs.writeFileSync(file, JSON.stringify({
-            text,
-            parse_mode: 'Markdown',
-        }), 'utf8');
-        return { ok: true, file };
+        const { filePath } = dropfileWriter.writeDropfileSync({
+            dir: queueDir,
+            suffix: `${tag}.json`,
+            data: JSON.stringify({ text, parse_mode: 'Markdown' }),
+            now: () => now,
+            onCollision: (name, attempt) => console.warn(
+                `[provider-exhaustion-pause] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
+        return { ok: true, file: filePath };
     } catch (e) {
         return { ok: false, reason: `cannot_write_file: ${e.message}` };
     }

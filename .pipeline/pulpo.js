@@ -7017,7 +7017,26 @@ function getIssueLabels(issueNum) {
  * @returns {string} el mismo `filePath`, para encadenar.
  */
 function encolarOrdenGithub(filePath, payload) {
-  fs.writeFileSync(filePath, JSON.stringify(payload));
+  // #6226 — escritura fail-closed. Los ~13 call-sites arman el nombre como
+  // `<issue>-<tag>-${Date.now()}.json`: el prefijo desambigua entre issues, pero
+  // NO entre dos órdenes del mismo issue+tag en el mismo milisegundo (ej. el
+  // `for (const act of g0Actions)` de gate0, que encola varias órdenes seguidas
+  // sin ceder el event loop, o los dos `-needs-human-comment-` distintos). Ahí
+  // el segundo `writeFileSync` pisaba al primero y la orden se perdía sin
+  // error: el issue quedaba sin su label o sin su comentario.
+  //
+  // Se respeta el nombre pedido tal cual (no cambia ningún parseo de
+  // `servicio-github.js`); sólo ante colisión real se desambigua con `-<n>`.
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const escrito = dropfileWriter.writeUniqueFileSync({
+    dir: path.dirname(filePath),
+    filename: path.basename(filePath),
+    data: JSON.stringify(payload),
+    onCollision: (name, attempt) => log(
+      'github',
+      `⚠️ Colisión de nombre de orden github (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+    ),
+  });
   try {
     if (payload
       && (payload.action === 'label' || payload.action === 'remove-label')
@@ -7025,7 +7044,10 @@ function encolarOrdenGithub(filePath, payload) {
       invalidateIssueLabels(payload.issue);
     }
   } catch { /* la orden ya quedó encolada: la invalidación es best-effort */ }
-  return filePath;
+  // Devolvemos el path REALMENTE escrito, no el pedido: si hubo colisión son
+  // distintos, y un caller que se quede con el pedido apuntaría a un archivo
+  // que no es el suyo.
+  return escrito.filePath;
 }
 
 /**

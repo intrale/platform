@@ -107,6 +107,10 @@ function writeDropfileSync(options = {}) {
     now = Date.now,
     maxAttempts = DEFAULT_MAX_ATTEMPTS,
     onCollision = null,
+    // Permisos del archivo. Se propaga tal cual a `writeFileSync`: hay
+    // productores que encolan payloads sensibles con `0o600` y perder ese modo
+    // al migrar seria un downgrade de seguridad silencioso.
+    mode = undefined,
   } = options;
 
   if (typeof dir !== 'string' || dir.length === 0) {
@@ -115,6 +119,7 @@ function writeDropfileSync(options = {}) {
   const payload = typeof data === 'string' || Buffer.isBuffer(data)
     ? data
     : JSON.stringify(data);
+  const writeOpts = mode === undefined ? { flag: 'wx' } : { flag: 'wx', mode };
 
   let lastErr = null;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -125,7 +130,7 @@ function writeDropfileSync(options = {}) {
     const filePath = path.join(dir, filename);
     try {
       // `wx` = crear en exclusiva. Si existe, EEXIST en vez de pisar.
-      fsImpl.writeFileSync(filePath, payload, { flag: 'wx' });
+      fsImpl.writeFileSync(filePath, payload, writeOpts);
       return { filename, filePath, collisions: attempt };
     } catch (e) {
       if (e && e.code === 'EEXIST') {
@@ -146,6 +151,81 @@ function writeDropfileSync(options = {}) {
   throw err;
 }
 
+// -----------------------------------------------------------------------------
+// writeUniqueFileSync — para colas cuyo nombre YA carga semántica
+// -----------------------------------------------------------------------------
+//
+// `writeDropfileSync` es para las colas cuyo nombre es puro timestamp (telegram:
+// `<ts>-<seq>-cmd.json`), donde el orden lexicográfico ES el orden de entrega.
+//
+// Pero varias colas del pipeline nombran el dropfile con datos del contenido
+// —`<issue>-<label>-block-<ts>.json` (github), `<issue>-<decision>-<ts>.json`
+// (gate-signature), `onboard-<projectId>-<ts>.json` (product-control)— porque el
+// consumidor y el operador leen el nombre para saber qué es. Reescribirlos al
+// formato `<ts>-<seq>-<sufijo>` les borraría esa información.
+//
+// Para esos casos: se respeta el nombre pedido TAL CUAL, y sólo si ya existe se
+// desambigua insertando `-<n>` ANTES de la extensión (`foo.json` → `foo-1.json`).
+// En el camino feliz —que es el 99.9%— el nombre no cambia en absoluto, así que
+// migrar un productor a esta función NO altera ningún parseo de nombre existente
+// aguas abajo. Lo único que cambia es que una colisión deja de ser una
+// sobreescritura silenciosa.
+function splitExt(filename) {
+  const dot = filename.lastIndexOf('.');
+  // Un punto en la posición 0 es un archivo oculto (`.foo`), no una extensión.
+  if (dot <= 0) return { stem: filename, ext: '' };
+  return { stem: filename.slice(0, dot), ext: filename.slice(dot) };
+}
+
+function writeUniqueFileSync(options = {}) {
+  const {
+    dir,
+    filename,
+    data,
+    fsImpl = fs,
+    maxAttempts = DEFAULT_MAX_ATTEMPTS,
+    onCollision = null,
+    mode = undefined,
+  } = options;
+
+  if (typeof dir !== 'string' || dir.length === 0) {
+    throw new Error('dropfile-writer: `dir` debe ser un string no vacío');
+  }
+  if (typeof filename !== 'string' || filename.length === 0) {
+    throw new Error('dropfile-writer: `filename` debe ser un string no vacío');
+  }
+  const payload = typeof data === 'string' || Buffer.isBuffer(data)
+    ? data
+    : JSON.stringify(data);
+
+  const writeOpts = mode === undefined ? { flag: 'wx' } : { flag: 'wx', mode };
+  const { stem, ext } = splitExt(filename);
+  let lastErr = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const candidate = attempt === 0 ? filename : `${stem}-${attempt}${ext}`;
+    const filePath = path.join(dir, candidate);
+    try {
+      fsImpl.writeFileSync(filePath, payload, writeOpts);
+      return { filename: candidate, filePath, collisions: attempt };
+    } catch (e) {
+      if (e && e.code === 'EEXIST') {
+        lastErr = e;
+        if (typeof onCollision === 'function') {
+          try { onCollision(candidate, attempt); } catch { /* el log no rompe la escritura */ }
+        }
+        continue;
+      }
+      throw e; // ENOSPC, EACCES, ENOENT… no son colisiones: que las vea el caller.
+    }
+  }
+  const err = new Error(
+    `dropfile-writer: no se pudo escribir un dropfile único en ${dir} tras ${maxAttempts} intentos (nombre base ${filename})`
+  );
+  err.code = 'EDROPFILECOLLISION';
+  err.cause = lastErr;
+  throw err;
+}
+
 // Sólo para tests: reinicia el contador de proceso.
 function __resetSeqForTests() {
   lastTs = -1;
@@ -155,6 +235,7 @@ function __resetSeqForTests() {
 module.exports = {
   buildDropfileName,
   writeDropfileSync,
+  writeUniqueFileSync,
   padSeq,
   SEQ_WIDTH,
   SEQ_MAX,
