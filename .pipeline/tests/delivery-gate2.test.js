@@ -76,7 +76,42 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
+// `resolveAuthorizedSigners` une la allowlist de config con la credencial
+// dedicada del operador que viaja por env (CA-4 de #4575). Estos dos casos
+// fijan la env var en vez de heredarla: en la máquina del operador
+// TELEGRAM_LEO_OPERATOR_CHAT_ID está exportada y se colaba como un firmante
+// extra, haciendo fallar el caso base sólo fuera de CI.
+const ENV_OPERADOR = 'TELEGRAM_LEO_OPERATOR_CHAT_ID';
+
+function conEnvOperador(valor, fn) {
+    const previo = process.env[ENV_OPERADOR];
+    if (valor === undefined) delete process.env[ENV_OPERADOR];
+    else process.env[ENV_OPERADOR] = valor;
+    try {
+        fn();
+    } finally {
+        if (previo === undefined) delete process.env[ENV_OPERADOR];
+        else process.env[ENV_OPERADOR] = previo;
+    }
+}
+
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
-    assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+    conEnvOperador(undefined, () => {
+        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+        assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+    });
+});
+
+test('resolveAuthorizedSigners suma la credencial del operador que llega por env', () => {
+    conEnvOperador('42', () => {
+        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+        assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2', '42']);
+    });
+});
+
+test('resolveAuthorizedSigners no duplica al operador que ya está en la allowlist', () => {
+    conEnvOperador('1', () => {
+        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } });
+        assert.deepStrictEqual(signers.sort(), ['1', '2']);
+    });
 });
