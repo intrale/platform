@@ -427,11 +427,13 @@ test('#6206 CA-A5: firmante no autorizado desde el canal → rechazo fail-closed
             // El operador SÍ está configurado server-side: lo que se prueba es
             // que un firmante distinto no pasa, no que la allowlist esté vacía.
             env: { TELEGRAM_LEO_OPERATOR_CHAT_ID: OPERATOR },
+            // CA-A2.b — el modo del gate lo lee el kernel de la config.
+            config: { operator_signoff: { enabled: true, gate_mode: 'enforce' }, cua: { operator_chat_ids: [] } },
             writerPipelineDir: t.pipelineDir,
         };
         try {
             const req = channel.requestSignature(
-                { gate: 'definicion', issue: 4574, body: BODY, gateMode: 'enforce' }, deps,
+                { gate: 'definicion', issue: 4574, body: BODY }, deps,
             );
             assert.equal(req.ok, true);
 
@@ -442,7 +444,6 @@ test('#6206 CA-A5: firmante no autorizado desde el canal → rechazo fail-closed
                 verdict: 'signed',
                 signedBy: 'no-soy-el-operador',   // ∉ authorizedSigners
                 body: BODY,
-                gateMode: 'enforce',
             }, deps);
 
             assert.equal(res.ok, false, 'el canal no puede firmar con un firmante no autorizado');

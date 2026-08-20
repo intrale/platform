@@ -43,6 +43,9 @@ const signoffGate = require('../lib/operator-signoff-gate');
 
 const OPERATOR = '12345678';
 const IMPOSTOR = '999999-impostor';
+// Aprobador de respaldo designado por `cua.operator_chat_ids` (operación prevista
+// en docs/pipeline/gates-firma-operador.md §13). Autoridad de GATE 2, NO de GATE 1.
+const RESPALDO = '77777777';
 const SECRET = 'secreto-de-test-6206-authority';
 const BODY = '## Criterios\n\n- [ ] CA-1 la autoridad de firma es del kernel\n';
 
@@ -74,6 +77,14 @@ function mkEnv(over = {}) {
         // El operador real, resuelto server-side (misma fuente que el camino de
         // botones: `operator-gate.resolveOperatorAllowlist`).
         env: { TELEGRAM_LEO_OPERATOR_CHAT_ID: OPERATOR },
+        // CA-A2.b — el `gate_mode` lo lee el KERNEL de la config, no del
+        // payload. El test inyecta una config hermética en vez de un
+        // `gateMode` en cada llamada.
+        config: {
+            operator_signoff: { enabled: true, gate_mode: 'enforce' },
+            operator_signature: { enabled: true, gate_mode: 'enforce' },
+            cua: { operator_chat_ids: [] },
+        },
         writerPipelineDir: dir,
         ...(over.deps || {}),
     };
@@ -86,7 +97,7 @@ function mkEnv(over = {}) {
 
 function request(env, over = {}) {
     const res = channel.requestSignature(
-        { gate: 'definicion', issue: 6206, body: BODY, gateMode: 'enforce', ...over }, env.deps,
+        { gate: 'definicion', issue: 6206, body: BODY, ...over }, env.deps,
     );
     assert.equal(res.ok, true, `requestSignature falló: ${res.reason}`);
     return res;
@@ -100,12 +111,23 @@ function submit(env, req, over = {}) {
         verdict: 'signed',
         signedBy: OPERATOR,
         body: BODY,
-        gateMode: 'enforce',
         ...over,
     }, env.deps);
 }
 
 /** Payload de auto-autorización, tal cual el PoC del rechazo. */
+/**
+ * `signersFor` recibe deps YA resueltas. El test replica los campos que ese
+ * camino usa, en vez de exportar `resolveDeps` sólo para el test.
+ */
+function depsResueltas(deps) {
+    return {
+        env: deps.env || {},
+        config: deps.config != null ? deps.config : null,
+        writerPipelineDir: deps.writerPipelineDir || null,
+    };
+}
+
 function autoAutorizacion(dir, quien) {
     return {
         signedBy: quien,
@@ -234,7 +256,7 @@ test('#6206/A02: el token NO se persiste en el depósito ni lo expone listPendin
         assert.equal(JSON.parse(crudo).token, undefined);
 
         // Y el índice que van a leer dashboard (#6208) y Telegram (#6207) tampoco.
-        const listado = channel.listPending({ gateMode: 'enforce' }, env.deps);
+        const listado = channel.listPending({}, env.deps);
         assert.equal(listado.degraded, false);
         assert.equal(JSON.stringify(listado.pending).includes(token), false,
             'listPending expone el token: quien lee el índice podría firmar');
@@ -318,19 +340,129 @@ test('#6206/A04: el reclamo atómico no rompe el camino feliz de tokens distinto
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('#6206/A01: el aprobador de respaldo de `cua.operator_chat_ids` SÍ puede firmar', () => {
-    // Misma unión que `delivery.resolveAuthorizedSigners:100`: el canal no puede
-    // rechazar a quien la config designa y `delivery` acepta.
-    const env = mkEnv({ deps: { config: { cua: { operator_chat_ids: ['77777777'] } } } });
+// -----------------------------------------------------------------------------
+// CA-A5.b · la allowlist se resuelve POR GATE, desde la fuente que es autoridad
+//           de ESE gate. (Rechazo rev-2 · hallazgo 2 · OWASP A01.)
+//
+// El defecto: `resolveAuthorizedSigners(d)` devolvía UNA unión
+// (`env ∪ cua.operator_chat_ids`) para los DOS gates, o sea MÁS ANCHA que el
+// evaluador de GATE 1 (`pulpo.js:5906` → `operator-gate.resolveOperatorAllowlist`,
+// que lee sólo `TELEGRAM_LEO_OPERATOR_CHAT_ID`). Como `evalSignature` mira sólo
+// la firma MÁS RECIENTE, una firma que el canal aceptaba y el gate no reconocía
+// invertía `approve` → `block`: DoS del gate por confused deputy, y el humano
+// recibía `ok:true` por una acción que degradó el estado.
+// -----------------------------------------------------------------------------
+
+/** Config con un aprobador de respaldo designado: habilita GATE 2, NO GATE 1. */
+const CONFIG_CON_RESPALDO = {
+    operator_signoff: { enabled: true, gate_mode: 'enforce' },
+    operator_signature: { enabled: true, gate_mode: 'enforce' },
+    cua: { operator_chat_ids: [RESPALDO] },
+};
+
+test('CA-A5.b: el respaldo de `cua.operator_chat_ids` NO firma el gate `definicion`', () => {
+    const env = mkEnv({ deps: { config: CONFIG_CON_RESPALDO } });
     try {
-        const res = submit(env, request(env), { signedBy: '77777777' });
-        assert.equal(res.ok, true, `el respaldo designado por config debería firmar: ${res.reason}`);
-        assert.equal(signoffGate.readSignatureState(6206, env.dir).latest.signed_by, '77777777');
+        const res = submit(env, request(env), { signedBy: RESPALDO });
+        assert.equal(res.ok, false,
+            'el canal no puede ser MÁS ANCHO que el evaluador del gate que firma');
+        assert.match(res.reason, /no autorizado/i);
+        assert.equal(signoffGate.readSignatureState(6206, env.dir).latest, null,
+            'fail-closed real: no se escribió nada en el audit chain del gate');
     } finally { env.cleanup(); }
 });
 
+test('CA-A5.b: la firma del respaldo NO invierte la firma legítima previa del operador', () => {
+    const env = mkEnv({ deps: { config: CONFIG_CON_RESPALDO } });
+    try {
+        assert.equal(submit(env, request(env)).ok, true, 'el operador firma primero');
+
+        const args = {
+            issue: { number: 6206, body: BODY, labels: [], createdAt: '2026-08-01T00:00:00Z' },
+            body: BODY,
+            config: {
+                enabled: true, gate_mode: 'enforce',
+                expected_chat_id: OPERATOR, go_live_date: '2026-01-01T00:00:00Z',
+            },
+            options: { pipelineDir: env.dir, authorizedSigners: [OPERATOR] },
+        };
+        const antes = signoffGate.evaluate(args);
+        assert.equal(antes.decision, 'approve', 'el gate reconoce la firma del operador');
+
+        const res = submit(env, request(env), { signedBy: RESPALDO });
+        assert.equal(res.ok, false,
+            'requisito UX: la respuesta del canal coincide con el veredicto real del gate');
+
+        const despues = signoffGate.evaluate(args);
+        assert.equal(despues.decision, 'approve', 'la firma legítima del operador NO se invirtió');
+    } finally { env.cleanup(); }
+});
+
+test('CA-A5.b: el respaldo SÍ está en la allowlist del gate `aceptacion` (D-4)', () => {
+    // El canal tampoco puede ser más ANGOSTO que el evaluador de GATE 2.
+    const env = mkEnv({ deps: { config: CONFIG_CON_RESPALDO } });
+    try {
+        const d = depsResueltas(env.deps);
+        const gate2 = channel.GATES.aceptacion.signersFor(d);
+        assert.ok(gate2.includes(RESPALDO), 'GATE 2 acepta al respaldo designado');
+        assert.ok(gate2.includes(OPERATOR), 'y sigue aceptando al operador');
+
+        // Con la MISMA config, GATE 1 queda angosto.
+        assert.deepEqual(channel.GATES.definicion.signersFor(d), [OPERATOR]);
+    } finally { env.cleanup(); }
+});
+
+test('CA-A5.b/D-4: `aceptacion` sin nada configurado resuelve [] — NO el chat principal', () => {
+    // `pulpo.js:15035` cae al chat principal del bot cuando el set queda vacío.
+    // D-4: el canal NO adopta ese fallback (sería "cualquiera del chat principal
+    // firma la aceptación", lo contrario del invariante de GATE 2).
+    const env = mkEnv({ deps: {
+        env: {},                                     // sin TELEGRAM_LEO_OPERATOR_CHAT_ID
+        config: { cua: { operator_chat_ids: [] } },  // sin respaldo designado
+    } });
+    try {
+        const d = depsResueltas(env.deps);
+        assert.deepEqual(channel.GATES.aceptacion.signersFor(d), [], 'fail-closed: nadie firma');
+        assert.deepEqual(channel.GATES.definicion.signersFor(d), []);
+    } finally { env.cleanup(); }
+});
+
+test('CA-A5.b/D-4: `aceptacion` es EQUIVALENTE a `delivery.resolveAuthorizedSigners`', () => {
+    // El kernel replica la semántica de `delivery.js:100` sobre `d.env` para que
+    // los tests sean herméticos (delivery lee `process.env` directo). Este test
+    // impide que las dos diverjan en silencio — que es el defecto corregido.
+    const delivery = require('../delivery');
+    const casos = [
+        { cua: [], envOp: '' },
+        { cua: [], envOp: OPERATOR },
+        { cua: [RESPALDO], envOp: '' },
+        { cua: [RESPALDO, '  ', null], envOp: OPERATOR },
+        { cua: [OPERATOR], envOp: OPERATOR },
+    ];
+    const previo = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    try {
+        for (const caso of casos) {
+            const config = { cua: { operator_chat_ids: caso.cua } };
+            if (caso.envOp) process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = caso.envOp;
+            else delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+
+            const esperado = delivery.resolveAuthorizedSigners(config).slice().sort();
+            const obtenido = channel.resolveAceptacionSigners({
+                config,
+                env: { TELEGRAM_LEO_OPERATOR_CHAT_ID: caso.envOp },
+                writerPipelineDir: null,
+            }).slice().sort();
+            assert.deepEqual(obtenido, esperado,
+                `divergencia con delivery.js para ${JSON.stringify(caso)}`);
+        }
+    } finally {
+        if (previo === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = previo;
+    }
+});
+
 test('#6206/A01: la config NO ensancha la allowlist con quien no está designado', () => {
-    const env = mkEnv({ deps: { config: { cua: { operator_chat_ids: ['77777777'] } } } });
+    const env = mkEnv({ deps: { config: CONFIG_CON_RESPALDO } });
     try {
         const res = submit(env, request(env), autoAutorizacion(env.dir, IMPOSTOR));
         assert.equal(res.ok, false);

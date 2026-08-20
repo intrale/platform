@@ -22,7 +22,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createTokenSigner, serializeAnchor, isValidGate, nonceKey, ACTION_ALLOWLIST, DEFAULT_NONCE_FILE } = require('../action-token');
+const actionToken = require('../action-token');
+const { createTokenSigner, serializeAnchor, isValidGate, nonceKey, ACTION_ALLOWLIST, DEFAULT_NONCE_FILE } = actionToken;
 
 const SECRET = 'secreto-compat-6206';
 
@@ -169,4 +170,85 @@ test('un token con binding tampered en `g` no pasa la firma HMAC', () => {
             .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         assert.equal(s.signer.verify(`${v}.${tampered}.${sig}`).reason, 'invalid');
     } finally { s.cleanup(); }
+});
+
+// -----------------------------------------------------------------------------
+// REQ-SEC-6206-12 / REQ-GURU-6206-D · poda de `<nonceFile>.claims`
+//
+// El directorio de reclamos crecía un archivo por token consumido y no se podaba
+// nunca. No era explotable (sólo un token con HMAC válido y no expirado crea
+// reclamo), pero crecía sin techo.
+//
+// Podar es seguro porque la autoridad histórica del un-solo-uso es el JSONL
+// (`readUsedNonces`), que NO se poda: un nonce consumido sigue bloqueado aunque
+// su reclamo ya no exista. El reclamo `wx` sólo cierra la carrera ENTRE PROCESOS.
+// -----------------------------------------------------------------------------
+
+test('#6206/D: los reclamos más viejos que el TTL del token se podan', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'action-token-prune-'));
+    try {
+        const nonceFile = path.join(dir, 'nonces.jsonl');
+        const ttlMs = 60 * 1000;
+        const signer = actionToken.createTokenSigner({ secret: SECRET, nonceFile, ttlMs });
+        const claimDir = `${nonceFile}.claims`;
+
+        // Se consumen 5 tokens ⇒ 5 reclamos.
+        for (let i = 0; i < 5; i += 1) {
+            assert.equal(signer.verify(signer.sign({ issue: 6206 + i, action: 'approve' })).ok, true);
+        }
+        const antes = fs.readdirSync(claimDir).filter(n => n.endsWith('.claim'));
+        assert.equal(antes.length, 5);
+
+        // Se envejecen los reclamos y el marcador de throttle más allá de sus
+        // umbrales, para disparar el barrido en el próximo consumo.
+        const viejo = new Date(Date.now() - (ttlMs + actionToken.CLAIM_PRUNE_EVERY_MS + 10 * 60 * 1000));
+        for (const n of fs.readdirSync(claimDir)) {
+            fs.utimesSync(path.join(claimDir, n), viejo, viejo);
+        }
+
+        assert.equal(signer.verify(signer.sign({ issue: 7000, action: 'approve' })).ok, true);
+
+        const despues = fs.readdirSync(claimDir).filter(n => n.endsWith('.claim'));
+        assert.equal(despues.length, 1, 'quedan sólo los reclamos vivos');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#6206/D: la poda NO reabre el replay (el JSONL sigue siendo la autoridad)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'action-token-prune-safe-'));
+    try {
+        const nonceFile = path.join(dir, 'nonces.jsonl');
+        const signer = actionToken.createTokenSigner({ secret: SECRET, nonceFile });
+        const claimDir = `${nonceFile}.claims`;
+
+        // Token de larga vida: se consume, y después se le borra el reclamo (lo
+        // que haría la poda si se pasara de agresiva).
+        const token = signer.sign({ issue: 6206, action: 'approve', exp: Date.now() + 86400000 });
+        assert.equal(signer.verify(token).ok, true);
+        for (const n of fs.readdirSync(claimDir)) {
+            if (n.endsWith('.claim')) fs.unlinkSync(path.join(claimDir, n));
+        }
+
+        assert.equal(signer.verify(token).reason, 'replayed',
+            'el JSONL sigue bloqueando el token aunque su reclamo se haya podado');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#6206/D: la poda está throttleada (no barre en cada consumo)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'action-token-throttle-'));
+    try {
+        const nonceFile = path.join(dir, 'nonces.jsonl');
+        const signer = actionToken.createTokenSigner({ secret: SECRET, nonceFile, ttlMs: 60 * 1000 });
+        const claimDir = `${nonceFile}.claims`;
+
+        assert.equal(signer.verify(signer.sign({ issue: 6206, action: 'approve' })).ok, true);
+        // Se envejece SÓLO el reclamo; el marcador de throttle queda fresco.
+        const viejo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+        for (const n of fs.readdirSync(claimDir)) {
+            if (n.endsWith('.claim')) fs.utimesSync(path.join(claimDir, n), viejo, viejo);
+        }
+        assert.equal(signer.verify(signer.sign({ issue: 6207, action: 'approve' })).ok, true);
+
+        assert.equal(fs.readdirSync(claimDir).filter(n => n.endsWith('.claim')).length, 2,
+            'el barrido no corre en cada firma: el camino caliente no paga readdirSync');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

@@ -48,6 +48,12 @@ function mkEnv(signerOpts = {}) {
             }),
             // #6206 — allowlist resuelta SERVER-SIDE desde el entorno.
             env: { TELEGRAM_LEO_OPERATOR_CHAT_ID: OPERATOR },
+            // CA-A2.b — el modo del gate lo lee el kernel de la config.
+            config: {
+                operator_signoff: { enabled: true, gate_mode: 'enforce' },
+                operator_signature: { enabled: true, gate_mode: 'enforce' },
+                cua: { operator_chat_ids: [] },
+            },
             writerPipelineDir: dir,
         },
         cleanup: () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} },
@@ -62,7 +68,6 @@ function submit(env, token, over = {}) {
         verdict: 'signed',
         signedBy: OPERATOR,
         body: BODY,
-        gateMode: 'enforce',
         ...over,
     }, env.deps);
 }

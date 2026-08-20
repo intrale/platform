@@ -43,6 +43,9 @@ const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const DEFAULT_NONCE_FILE = path.join(PIPELINE_DIR, 'audit', 'human-block-tokens-used.jsonl');
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h (SEC-5: exp corto)
 const TOKEN_VERSION = 'v1';
+// #6206 — cada cuánto, como máximo, se barre `<nonceFile>.claims` (ver
+// `pruneClaims`). El barrido es best-effort y no está en el camino de decisión.
+const CLAIM_PRUNE_EVERY_MS = 60 * 60 * 1000; // 1h
 const SECRET_INFO = 'human-block-action-token/v1';
 
 // Allowlist cerrada de acciones (CA-SEC-3, OWASP A03). `pausar` queda FUERA por
@@ -237,10 +240,53 @@ function createTokenSigner(opts = {}) {
     // ya está gitignored). Un reclamo es un archivo vacío cuyo nombre es el hash
     // del valor reclamado: nunca se escribe el nonce crudo en un nombre de path.
     const claimDir = `${nonceFile}.claims`;
+    const claimPruneMarker = path.join(claimDir, '.last-prune');
 
     function claimPathFor(value) {
         const h = crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
         return path.join(claimDir, `${h.slice(0, 40)}.claim`);
+    }
+
+    /**
+     * #6206 (REQ-SEC-6206-12 / REQ-GURU-6206-D) — poda del directorio de
+     * reclamos por ANTIGÜEDAD.
+     *
+     * El directorio crecía un archivo por token consumido y no se podaba nunca.
+     * No era explotable (sólo un token con HMAC válido y no expirado crea
+     * reclamo), pero crecía sin techo.
+     *
+     * POR QUÉ ES SEGURO PODAR: el reclamo `wx` sólo cierra la ventana de carrera
+     * ENTRE PROCESOS entre la lectura del JSONL y su append. La autoridad
+     * histórica del un-solo-uso es el JSONL (`readUsedNonces`), que NO se poda:
+     * un nonce consumido sigue bloqueado por `used.plain` aunque su reclamo ya
+     * no exista. Y un token cuyo reclamo tiene más de `ttlMs` está expirado, así
+     * que `verify()` ya lo rechazó en el paso 3 antes de llegar acá.
+     *
+     * Throttle por marcador en disco (no por reloj de proceso ni azar): la poda
+     * corre a lo sumo una vez por `CLAIM_PRUNE_EVERY_MS`, así el camino caliente
+     * no paga un `readdirSync` por firma.
+     */
+    function pruneClaims() {
+        const nowMs = Number(now());
+        try {
+            const st = fs.statSync(claimPruneMarker);
+            if (nowMs - Number(st.mtimeMs) < CLAIM_PRUNE_EVERY_MS) return;
+        } catch { /* sin marcador ⇒ primera poda */ }
+
+        // El marcador se toca ANTES de barrer: si el barrido falla a mitad, no
+        // se reintenta en cada firma.
+        try { fs.writeFileSync(claimPruneMarker, String(nowMs), 'utf8'); } catch { return; }
+
+        let names;
+        try { names = fs.readdirSync(claimDir); } catch { return; }
+        for (const name of names) {
+            if (!name.endsWith('.claim')) continue;
+            const full = path.join(claimDir, name);
+            try {
+                const st = fs.statSync(full);
+                if (nowMs - Number(st.mtimeMs) > ttlMs) fs.unlinkSync(full);
+            } catch { /* best-effort: la poda nunca puede romper el consumo */ }
+        }
     }
 
     /**
@@ -261,6 +307,7 @@ function createTokenSigner(opts = {}) {
         } catch {
             return { claimed: false, reason: 'unavailable' };
         }
+        pruneClaims();
         const won = [];
         for (const value of values) {
             const target = claimPathFor(value);
@@ -408,7 +455,7 @@ function createTokenSigner(opts = {}) {
         return res;
     }
 
-    return { sign, verify, nonceFile, ttlMs };
+    return { sign, verify, nonceFile, ttlMs, pruneClaims };
 }
 
 // --- singleton perezoso (producción) ----------------------------------------
@@ -433,6 +480,7 @@ module.exports = {
     nonceKey,
     ACTION_ALLOWLIST,
     DEFAULT_TTL_MS,
+    CLAIM_PRUNE_EVERY_MS,
     DEFAULT_NONCE_FILE,
     TOKEN_VERSION,
 };
