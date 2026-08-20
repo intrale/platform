@@ -76,7 +76,40 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
+// `resolveAuthorizedSigners` une la allowlist de config con la credential del
+// operador en env (`TELEGRAM_LEO_OPERATOR_CHAT_ID`, delivery.js:109). Los tests
+// de abajo controlan esa env var explicitamente: si se deja la del entorno real,
+// el id del operador se cuela en el resultado y la asercion falla por ambiente
+// y no por codigo. Mismo patron hermetico que `listener-callback.test.js:72`.
+function withOperatorEnv(valor, fn) {
+    const previo = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    if (valor === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = valor;
+    try {
+        return fn();
+    } finally {
+        if (previo === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = previo;
+    }
+}
+
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+    const signers = withOperatorEnv(undefined, () => delivery.resolveAuthorizedSigners({
+        cua: { operator_chat_ids: ['1', '2', '2'] },
+    }));
     assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+});
+
+test('CA-4 · resolveAuthorizedSigners suma la credential del operador desde env', () => {
+    const signers = withOperatorEnv('777', () => delivery.resolveAuthorizedSigners({
+        cua: { operator_chat_ids: ['1', '2'] },
+    }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '2', '777']);
+});
+
+test('CA-4 · el operador de env no se duplica si ya está en la allowlist', () => {
+    const signers = withOperatorEnv('1', () => delivery.resolveAuthorizedSigners({
+        cua: { operator_chat_ids: ['1', '2'] },
+    }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '2']);
 });
