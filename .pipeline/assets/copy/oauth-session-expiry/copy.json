@@ -1,0 +1,88 @@
+{
+  "_comment": "UX #6239 — copy canónico del aviso anticipado de vencimiento de la sesión de Claude Code. Fuente única del texto que ve el operador, en Telegram y en el dashboard. NO editar sin pasar por UX. Renderer de referencia: render.js. Validador: validate-copy.js. Criterios vinculantes: .pipeline/assets/mockups/6239/ux-criterios-6239.md",
+
+  "reglas": {
+    "canal_telegram": "notifyTelegram() escapa el texto entero antes de encolar (notify-telegram.js:284-294, parse_mode Markdown). El copy NO usa *, _, ` ni []: se verían como caracteres literales. El emoji lo pone notifyTelegram según level (⚠️ warn, 🚨 error, ℹ️ info) — el copy NO lo repite.",
+    "message_max_chars": 200,
+    "action_max_chars": 320,
+    "un_solo_slot": "El único valor interpolado es {RESTANTE} / {ANTIGUEDAD}, y siempre es salida de formatDurationEs(ms). NUNCA se interpola un valor leído del archivo de credenciales (RS-3).",
+    "sin_context": "No se manda payload.context. El render lo imprimiría como 'clave: valor' crudo debajo del titular ('umbral: t30') y eso es jerga interna. La línea 'emisor:' ya la agrega notifyTelegram sola.",
+    "vocabulario_prohibido": "OAuth, token, access token, refresh token, expiresAt, claudeAiOauth, epoch, credencial, T-30, T-10, umbral, tick, fail-open, available, key_status, auth_mode, rutas de archivo, y cualquier fragmento del contenido del archivo.",
+    "como_se_nombra": "Al operador se le habla de 'la sesión de Claude Code'. Nunca del token ni del archivo donde vive. Lo que se le pide es 'reautenticar', nunca 'rotar' (rotar es el vocabulario del cron de API keys, que es otro horizonte y otra acción).",
+    "nunca_por_telegram": "Ningún texto puede pedirle al operador que pegue credenciales en el chat. La acción siempre ocurre 'desde una terminal'.",
+    "un_episodio_una_conversacion": "Todo aviso que abre, cierra. Si se avisó T-30 o T-10 y después la sesión se renovó, sale el cierre A5. Si se avisó que el chequeo no lee, y vuelve a leer, sale el cierre A4. Un aviso sin cierre deja al operador sin saber si lo que hizo sirvió.",
+    "silencio_es_la_regla": "El aviso sólo se emite cuando hay algo que el operador puede y debe hacer. La renovación automática — el caso normal, varias veces por día — NO produce ningún mensaje."
+  },
+
+  "telegram": {
+    "component": "sesion-claude",
+
+    "A1_por_vencer": {
+      "cuando": "Quedan 30 minutos o menos Y se cumple la condición de emisión cerrada por PO el 2026-08-20: CE-1 (el refresh ya no alcanza para el ciclo siguiente) o CE-2 (la cadena de renovación no está probada sana). Exige además lectura previa persistida (CA-6): con el marker ausente no se emite.",
+      "level": "warn",
+      "message": "La sesión de Claude Code vence en {RESTANTE} y no se está renovando sola.",
+      "action": "Reautenticá la sesión desde una terminal antes de que se venza. Si llega a vencerse, los agentes que arranquen después mueren al primer intento y lo vas a ver como una lluvia de rebotes."
+    },
+
+    "A2_urgente": {
+      "cuando": "Quedan 10 minutos o menos, misma condición de emisión (CE-1 o CE-2).",
+      "level": "error",
+      "message": "Quedan {RESTANTE} de sesión de Claude Code y sigue sin renovarse sola.",
+      "action": "Reautenticá ahora desde una terminal. Apenas se venza, todo agente nuevo falla al arrancar hasta que vuelvas a iniciar sesión."
+    },
+
+    "A3_chequeo_sin_datos": {
+      "cuando": "El chequeo no pudo leer la vigencia durante 3 evaluaciones seguidas (RS-7). NO es un aviso de vencimiento.",
+      "level": "warn",
+      "message": "Hace {ANTIGUEDAD} que no puedo verificar cuánto le queda a la sesión de Claude Code.",
+      "action": "No es que esté por vencerse: es el chequeo el que no está leyendo el dato. Mientras siga así no te va a llegar el aviso anticipado, así que si la sesión se cae te vas a enterar por los rebotes."
+    },
+
+    "A4_chequeo_recuperado": {
+      "cuando": "Se había avisado A3 y el chequeo volvió a leer la vigencia.",
+      "level": "info",
+      "message": "Volví a poder verificar la vigencia de la sesión de Claude Code.",
+      "action": "El aviso anticipado vuelve a estar activo. No hace falta que hagas nada."
+    },
+
+    "A5_renovada": {
+      "cuando": "Se había avisado A1 o A2 y el vencimiento saltó hacia adelante (la sesión se renovó, sola o porque el operador reautenticó).",
+      "level": "info",
+      "message": "La sesión de Claude Code se renovó — quedan {RESTANTE}.",
+      "action": "Se cerró solo el aviso de recién. No hace falta que hagas nada."
+    }
+  },
+
+  "silencios": {
+    "_comment": "Casos en los que NO se emite absolutamente nada. Están acá para que sean tan explícitos como los mensajes: son la mayor parte del tiempo de vida del chequeo.",
+    "renovacion_normal": "El vencimiento cruza los 30 o los 10 minutos y no se cumple ni CE-1 ni CE-2: el refresh alcanza y la cadena de renovación está probada sana. La renovación ocurre en el vencimiento (T-0), no antes de los umbrales, así que en régimen normal el operador cruza los dos umbrales sin recibir nada. Silencio.",
+    "primera_lectura": "No hay lectura previa persistida (arranque del Pulpo, estado borrado). Sin historial no se puede evaluar CE-2 ni afirmar nada sobre la salud de la renovación. Silencio: se persiste la lectura y se decide en la evaluación siguiente (CA-6).",
+    "ya_vencida": "Quedan 0 minutos o menos. El aviso anticipado ya no tiene sentido y ese caso es de #6238. Silencio.",
+    "sesion_sana": "Queda más de media hora. Silencio. El dato está en el dashboard para quien lo quiera mirar."
+  },
+
+  "dashboard": {
+    "_comment": "Línea de estado de sesión en la columna de salud del panel de Proveedores, sólo para la fila de Claude. Clase prov-session — NO reusar prov-vigencia, que ya significa 'vigencia del cruce contra el catálogo de modelos'.",
+    "regla_vocabulario": "Todo texto de esta línea contiene la palabra 'sesión'. Todo texto de la línea de catálogo contiene 'modelo' o 'catálogo'. Es lo que las hace distinguibles cuando conviven en la misma fila.",
+    "estados": {
+      "vigente": { "texto": "sesión vigente · quedan {RESTANTE}", "tono": "dim", "cuando": "más de 30 minutos" },
+      "por_vencer": { "texto": "la sesión vence en {RESTANTE}", "tono": "warn", "cuando": "30 minutos o menos" },
+      "urgente": { "texto": "⚠ la sesión vence en {RESTANTE}", "tono": "warn-fuerte", "cuando": "10 minutos o menos" },
+      "vencida": { "texto": "⚠ sesión vencida", "tono": "warn-fuerte", "cuando": "0 minutos o menos" },
+      "sin_datos": { "texto": "vigencia de la sesión no verificable", "tono": "info", "cuando": "no se pudo leer" }
+    },
+    "titles": {
+      "vigente": "Vigencia de la sesión de Claude Code. Se renueva sola; si dejara de renovarse te aviso por Telegram.",
+      "por_vencer": "La sesión vence dentro de la media hora. Si la renovación automática está sana se renueva sola y no te interrumpo; sólo te aviso si hace falta que reautentiques.",
+      "urgente": "La sesión vence en minutos. Si la renovación automática no alcanza te llega el aviso por Telegram para que reautentiques.",
+      "vencida": "La sesión ya venció: los agentes nuevos van a fallar al arrancar.",
+      "sin_datos": "El chequeo de vigencia no pudo leer el dato. No implica que la sesión esté vencida."
+    }
+  },
+
+  "formato_tiempo": {
+    "funcion": "formatDurationEs(ms) de .pipeline/lib/wave-stall-watchdog.js:137",
+    "motivo": "Ya produce exactamente el formato que necesitamos y es el que el operador viene leyendo en el resto de los avisos del pipeline. Escribir un formateador nuevo daría dos redacciones distintas para la misma magnitud.",
+    "ejemplos": ["8 min", "27 min", "3 h", "5 h 20 min"]
+  }
+}
