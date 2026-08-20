@@ -76,7 +76,33 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
+// Helper: aísla `TELEGRAM_LEO_OPERATOR_CHAT_ID` para que el resultado no dependa
+// del entorno del runner. Sin esto el test pasa en una máquina limpia y falla en
+// el pipeline (donde la credencial del operador SÍ está exportada).
+function conEnvOperador(valor, fn) {
+    const previo = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    if (valor == null) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = valor;
+    try {
+        return fn();
+    } finally {
+        if (previo === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = previo;
+    }
+}
+
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+    const signers = conEnvOperador(null, () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } }));
     assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+});
+
+test('resolveAuthorizedSigners suma la credencial del operador y deduplica contra la allowlist', () => {
+    const conNuevo = conEnvOperador('9', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }));
+    assert.deepStrictEqual([...conNuevo].sort(), ['1', '2', '9']);
+
+    const yaPresente = conEnvOperador('1', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }));
+    assert.deepStrictEqual([...yaPresente].sort(), ['1', '2']);
 });
