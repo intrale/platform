@@ -311,29 +311,42 @@ function edadMinutosRaw(raw, nowMs) {
  * la forma exacta en que este camino filtra — y es justo cuando el motivo tiene
  * más chances de traer un stack o un volcado de config (SEC-1).
  */
-// Rangos de control, marcas invisibles y separadores de línea Unicode. Se
-// declaran por CODE POINT y no como literales crudos en el fuente: un literal
-// con caracteres de control es invisible al leer el diff y frágil ante
-// cualquier herramienta que normalice el archivo.
+// Rangos de control, marcas invisibles y separadores de línea Unicode. La
+// TABLA no se declara acá: se importa de `decision-card`, que es su única
+// fuente. rev-2 / SEC-B: había una copia local y quedó corta (le faltaban los
+// anuladores de dirección U+202A-U+202E y U+2066-U+2069) mientras la del
+// armador se corregía — o sea, el mismo título salía saneado por una
+// superficie y crudo por la otra. Importar una constante CONGELADA no rompe la
+// independencia del fallback: no ejecuta nada del armador de fichas, y si el
+// require de `decision-card` fallara este módulo no existiría (ya lo importa
+// para el copy). Se arma el regex una sola vez, en carga.
 const CONTROL_MINIMO_RE = new RegExp(
-    '[' + [
-        [0x00, 0x1F],     // C0: salto de linea, retorno de carro, tab
-        [0x7F, 0x9F],     // DEL + C1
-        [0x200B, 0x200F], // ancho cero + marcas de direccion
-        [0x2028, 0x2029], // LINE / PARAGRAPH SEPARATOR
-        [0xFEFF, 0xFEFF], // BOM
-    ].map(([x, y]) => String.fromCharCode(x) + '-' + String.fromCharCode(y)).join('') + ']',
+    '[' + decisionCard.CONTROL_RANGES
+        .map(([x, y]) => String.fromCharCode(x) + '-' + String.fromCharCode(y)).join('') + ']',
     'g',
 );
 
 function sanearMinimo(v, max) {
     let s = String(v == null ? '' : v);
     if (!s) return '';
-    s = String(redactAll(s));
+    // MISMO ORDEN que `sec()` en `decision-card`: controles → secretos → URLs →
+    // markup. El orden importa (redactar antes de truncar; sacar controles
+    // antes de buscar URLs, para que un carácter invisible metido en el medio
+    // no parta el match) y tenerlo igual en ambos lados es lo que evita que
+    // esta superficie vuelva a quedarse atrás.
+    //
     // Saltos y controles a espacio: sin esto un título hostil fabrica líneas
     // falsas que imitan la estructura del mensaje.
     s = s.replace(CONTROL_MINIMO_RE, ' ');
-    s = s.replace(/[*`<>]/g, '').replace(/_/g, ' ').replace(/\]\(/g, '] (');
+    s = String(redactAll(s));
+    // rev-2 / SEC-A: en TEXTO PLANO Telegram auto-enlaza las URLs desnudas.
+    // Sin esto, el aviso degradado le entregaba al operador un link CLICKEABLE
+    // escrito por un tercero (el repo es público, el título lo escribe
+    // cualquiera) dentro de un mensaje que él lee como propio del pipeline —
+    // y este es justo el camino que corre cuando la entrada es rara, o sea
+    // cuando hay atacante. Se consume el regex del armador, no se copia.
+    s = s.replace(decisionCard.URL_RE, decisionCard.URL_MARCA);
+    s = s.replace(/\]\(/g, '] (').replace(/[*`<>]/g, '').replace(/_/g, ' ');
     s = s.replace(/\s+/g, ' ').trim();
     return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
 }

@@ -178,11 +178,23 @@ const URL_MARCA = 'enlace omitido';
 // el archivo (de hecho rompió el parseo del módulo la primera vez). Los rangos
 // son C0, C1, las marcas invisibles de ancho cero y dirección, los separadores
 // de línea y párrafo de Unicode, y el BOM.
-const CONTROL_RANGES = Object.freeze([
+//
+// rev-2 / SEC-B: la tabla decía cubrir "las marcas de dirección" pero paraba en
+// 0x200F, y ahí está lo peligroso de verdad. U+202E (RLO) es una orden de
+// "mostrá todo al revés de acá en adelante": el atacante escribe el texto dado
+// vuelta y en pantalla se lee derecho, pero el vuelco ARRASTRA al texto que el
+// pipeline puso después, así que el operador puede leer una cosa y decidir
+// sobre otra. Los aislantes U+2066-U+2069 hacen lo mismo acotado a un rango.
+// No hay título legítimo que los necesite; van al mismo saco que el salto de
+// línea. ÚNICA tabla del módulo: el renderer la importa en vez de copiarla —
+// dos copias divergen y ese fue justo el defecto de esta rev.
+const CONTROL_RANGES = deepFreeze([
     [0x00, 0x1F],     // C0: incluye salto de línea, retorno de carro y tab
     [0x7F, 0x9F],     // DEL + C1
     [0x200B, 0x200F], // ancho cero + marcas de dirección
+    [0x202A, 0x202E], // LRE/RLE/PDF/LRO/RLO: anulación de dirección
     [0x2028, 0x2029], // LINE SEPARATOR / PARAGRAPH SEPARATOR
+    [0x2066, 0x2069], // LRI/RLI/FSI/PDI: aislantes de dirección
     [0xFEFF, 0xFEFF], // BOM
 ]);
 
@@ -1351,6 +1363,15 @@ function buildDecisionCards(rawList, nowMs) {
 
 module.exports = {
     TIPOS,
+    // Primitivas de saneamiento compartidas con `decision-card-render.js`.
+    // Se exportan como DATO (no como lógica) a propósito: el camino de
+    // fallback del renderer tiene que poder sanear sin invocar al armador de
+    // fichas —que es justo el que acaba de fallar—, pero tampoco puede tener
+    // su propia copia de estas tablas. Una copia diverge; una constante
+    // congelada compartida, no. Es la misma lección de `ORIENTACION_LIBRE`.
+    CONTROL_RANGES,
+    URL_RE,
+    URL_MARCA,
     ORIENTACION_LIBRE,
     MOLDES_DE_ORIENTACION,
     esOrientacionMolde,

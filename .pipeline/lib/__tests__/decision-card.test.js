@@ -457,6 +457,44 @@ test('#5421 ninguna ficha de ningún tipo emite metacaracteres de Markdown ni HT
     }
 });
 
+// Anuladores de dirección: no se escriben como literales crudos en el fuente
+// (serían invisibles al leer el diff y darían vuelta el propio archivo de test).
+const RLO = String.fromCharCode(0x202E);  // RIGHT-TO-LEFT OVERRIDE
+const LRO = String.fromCharCode(0x202D);  // LEFT-TO-RIGHT OVERRIDE
+const RLI = String.fromCharCode(0x2067);  // RIGHT-TO-LEFT ISOLATE
+const PDI = String.fromCharCode(0x2069);  // POP DIRECTIONAL ISOLATE
+const ZWSP = String.fromCharCode(0x200B);
+const BIDI_RE = new RegExp('[' + [
+    [0x200B, 0x200F], [0x202A, 0x202E], [0x2066, 0x2069],
+].map(([x, y]) => String.fromCharCode(x) + '-' + String.fromCharCode(y)).join('') + ']');
+
+test('#5421 / rev-2 SEC-B: los anuladores de dirección no llegan a ningún campo', () => {
+    // U+202E ordena "mostrá todo al revés de acá en adelante". El atacante
+    // escribe el texto dado vuelta: en pantalla se lee derecho, pero el vuelco
+    // ARRASTRA al texto que el pipeline puso después, así que el operador
+    // decide un /unblock leyendo algo distinto de lo que hay guardado.
+    const hostil = `Fix menor${RLO}0516# rarbocsed euq yaH${LRO}x${RLI}y${PDI}${ZWSP}`;
+    const casos = [
+        { issue: 20, titulo: hostil, reason: '', age_hours: 1 },
+        { issue: 21, titulo: 'Algo', reason: `rechazado ${hostil}`, age_hours: 1 },
+        { issue: 22, titulo: 'Algo', question: `${hostil}?`, age_hours: 1 },
+    ];
+    for (const raw of casos) {
+        const card = dc.buildDecisionCard(raw, AHORA);
+        for (const [ruta, valor] of camposString(card)) {
+            assert.doesNotMatch(valor, BIDI_RE,
+                `${card.tipo}.${ruta} dejó pasar un anulador de dirección: ${JSON.stringify(valor)}`);
+        }
+        // Y el render completo tampoco: es lo que realmente ve el operador.
+        assert.doesNotMatch(cardRender.renderFichaCompleta(card), BIDI_RE);
+    }
+    // El camino degradado es el que corre CUANDO la entrada es rara — o sea,
+    // justo cuando hay atacante. No puede ser el más permisivo.
+    const fb = cardRender.renderFallbackAviso(
+        [{ issue: 20, titulo: hostil, age_hours: 1 }], AHORA);
+    assert.doesNotMatch(fb, BIDI_RE, `el aviso degradado dejó pasar un anulador: ${JSON.stringify(fb)}`);
+});
+
 test('#5421 un título con saltos de línea no puede fabricar estructura del mensaje', () => {
     const card = dc.buildDecisionCard({
         issue: 9, age_hours: 1,
@@ -466,6 +504,55 @@ test('#5421 un título con saltos de línea no puede fabricar estructura del men
     assert.ok(!card.que_esta_frenado.titulo.includes('\n'), 'el título es UNA sola línea');
     for (const [, v] of camposString(card)) {
         assert.ok(!/[\n\r\t]/.test(v), 'ningún campo trae saltos ni tabuladores');
+    }
+});
+
+// =============================================================================
+// rev-2 — Paridad entre las DOS superficies que sanean la misma entrada.
+//
+// El defecto de la rev anterior no fue "falta un regex": fue que había dos
+// copias del saneamiento y una se quedó atrás. Lo que se protege acá no es un
+// vector puntual sino la INVARIANTE — mismo título hostil, mismo resultado por
+// los dos caminos— porque es lo único que no se vuelve a romper en silencio.
+// =============================================================================
+
+test('rev-2 SEC-A: el aviso degradado neutraliza las URLs igual que la ficha', () => {
+    // En TEXTO PLANO Telegram auto-enlaza las URLs desnudas. Un título de un
+    // repo público llegaba CLICKEABLE al operador dentro de un mensaje que él
+    // lee como escrito por su propio pipeline.
+    const hostil = 'Bug grave — mira https://evil.tld/robo y www.phish.tld ya';
+    const fb = cardRender.renderFallbackAviso(
+        [{ issue: 6150, titulo: hostil, age_hours: 1 }], AHORA);
+
+    assert.ok(!fb.includes('evil.tld'), `el aviso degradado filtró la URL: ${fb}`);
+    assert.ok(!fb.includes('www.phish'), `el aviso degradado filtró el dominio: ${fb}`);
+    // Se DECLARA que había un enlace: el operador no tiene que creer que el
+    // pipeline escribió un texto que no escribió.
+    assert.match(fb, /enlace omitido/);
+
+    // Y sale EXACTAMENTE igual que por el camino principal.
+    const card = dc.buildDecisionCard({ issue: 6150, titulo: hostil, reason: '', age_hours: 1 }, AHORA);
+    assert.ok(card.que_esta_frenado.titulo.includes('enlace omitido'));
+    assert.ok(fb.includes(card.que_esta_frenado.titulo.replace('#6150 «', '').replace('»', '')),
+        'las dos superficies tienen que producir el MISMO título saneado');
+});
+
+test('rev-2: la tabla de caracteres de control es UNA sola, compartida con el renderer', () => {
+    // Guarda estructural, no de comportamiento: si alguien vuelve a copiar la
+    // tabla en el renderer, esto sigue verde pero el grep falla. Se verifica
+    // que el renderer NO declara rangos propios y que consume el export.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'decision-card-render.js'), 'utf8');
+    assert.match(src, /decisionCard\.CONTROL_RANGES/,
+        'el renderer tiene que consumir la tabla del armador, no tener la suya');
+    assert.match(src, /decisionCard\.URL_RE/,
+        'y lo mismo con el regex de URLs: duplicarlo es cómo divergieron');
+    assert.ok(!/\[0x200B, 0x200F\]/.test(src),
+        'el renderer volvió a declarar rangos de control propios: van a divergir de nuevo');
+
+    // Y la tabla cubre los anuladores de dirección que el comentario promete.
+    const cubre = (cp) => dc.CONTROL_RANGES.some(([a, b]) => cp >= a && cp <= b);
+    for (const cp of [0x200B, 0x200F, 0x202A, 0x202E, 0x2066, 0x2069, 0x2028, 0xFEFF]) {
+        assert.ok(cubre(cp), `la tabla no cubre U+${cp.toString(16).toUpperCase()}`);
     }
 });
 
