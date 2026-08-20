@@ -122,3 +122,161 @@ test('archivo de estado se crea con 0o600 (no en Windows)', () => {
         assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     }
 });
+
+// =============================================================================
+// #6238 — `source` configurable en el disable + auto-recuperación acotada.
+// =============================================================================
+
+// Fake más completo: además de setProviderDisabled, modela el eje `source` del
+// módulo real (`provider-disabled.getDisabledEntry` / `clearProviderDisabled`).
+function fakeDisabledStore(initial = {}) {
+    const entries = { ...initial };
+    const calls = { set: [], clear: [] };
+    return {
+        entries,
+        calls,
+        setProviderDisabled(provider, opts) {
+            calls.set.push({ provider, opts });
+            entries[provider] = { name: provider, source: (opts && opts.source) || null };
+            return { ok: true, ttl_ms: opts && opts.ttlMs };
+        },
+        getDisabledEntry(provider) {
+            return entries[provider] || null;
+        },
+        clearProviderDisabled(provider, opts) {
+            calls.clear.push({ provider, opts });
+            if (!entries[provider]) return false;
+            delete entries[provider];
+            return true;
+        },
+    };
+}
+
+test('#6238 source custom llega a setProviderDisabled', () => {
+    const dir = tmpPipeline();
+    const disabled = fakeDisabledStore();
+    const r = psh.recordProviderSpawnDeath({
+        pipelineDir: dir, provider: 'anthropic', skill: 'pipeline-dev', issue: 6226,
+        threshold: 1, disableTtlMs: 60 * 60 * 1000, source: 'credential-death',
+        disabledModule: disabled,
+    });
+    assert.equal(r.consecutiveDeaths, 1);
+    assert.equal(r.disabled, true);
+    assert.equal(disabled.calls.set.length, 1);
+    assert.equal(disabled.calls.set[0].opts.source, 'credential-death');
+    assert.equal(disabled.calls.set[0].opts.ttlMs, 60 * 60 * 1000);
+});
+
+test('#6238 threshold:1 apaga con UNA sola muerte (credencial es deterministica)', () => {
+    const dir = tmpPipeline();
+    const disabled = fakeDisabledStore();
+    const r = psh.recordProviderSpawnDeath({
+        pipelineDir: dir, provider: 'anthropic', threshold: 1,
+        source: 'credential-death', disabledModule: disabled,
+    });
+    assert.equal(r.threshold, 1);
+    assert.equal(r.disabled, true);
+});
+
+test('#6238 no-regresion: sin source explicito el disable sigue siendo spawn-death', () => {
+    const dir = tmpPipeline();
+    const disabled = fakeDisabledStore();
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', disabledModule: disabled });
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', disabledModule: disabled });
+    assert.equal(disabled.calls.set[0].opts.source, 'spawn-death');
+    assert.equal(psh.DEFAULT_DISABLE_SOURCE, 'spawn-death');
+});
+
+test('#6238 source no-string cae al default (no se persiste basura)', () => {
+    const dir = tmpPipeline();
+    const disabled = fakeDisabledStore();
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'cerebras', threshold: 1, source: 42, disabledModule: disabled });
+    assert.equal(disabled.calls.set[0].opts.source, 'spawn-death');
+});
+
+test('#6238 CA-4: la corrida sana limpia el disable con source credential-death', () => {
+    const dir = tmpPipeline();
+    const disabled = fakeDisabledStore();
+    psh.recordProviderSpawnDeath({
+        pipelineDir: dir, provider: 'anthropic', threshold: 1,
+        source: 'credential-death', disabledModule: disabled,
+    });
+    assert.ok(disabled.getDisabledEntry('anthropic'));
+
+    const cleared = psh.recordProviderHealthy({
+        pipelineDir: dir, provider: 'anthropic', disabledModule: disabled,
+    });
+    assert.equal(cleared, true);
+    assert.equal(disabled.getDisabledEntry('anthropic'), null);
+    assert.equal(disabled.calls.clear.length, 1);
+    assert.equal(disabled.calls.clear[0].provider, 'anthropic');
+});
+
+test('#6238 CA-4: NUNCA pisa un kill-switch manual (#3811) ni un apagado de pacing (#4289)', () => {
+    for (const source of ['manual', 'cli', 'dashboard', 'pacing', 'spawn-death', null, undefined]) {
+        const dir = tmpPipeline();
+        const disabled = fakeDisabledStore({ anthropic: { name: 'anthropic', source } });
+        psh.recordProviderHealthy({ pipelineDir: dir, provider: 'anthropic', disabledModule: disabled });
+        assert.ok(disabled.getDisabledEntry('anthropic'), 'source=' + source + ' no debe limpiarse');
+        assert.equal(disabled.calls.clear.length, 0, 'source=' + source + ' no debe llamar a clear');
+    }
+});
+
+test('#6238 CA-4: auto-recupera aunque el contador de muertes ya no exista', () => {
+    // La ventana del contador pudo vencer (o el archivo pudo limpiarse) y el
+    // disable seguir vigente: la recuperación no puede depender del contador.
+    const dir = tmpPipeline();
+    const disabled = fakeDisabledStore({ anthropic: { name: 'anthropic', source: 'credential-death' } });
+    assert.equal(psh.peekProviderSpawnHealth({ pipelineDir: dir, provider: 'anthropic' }), null);
+    const cleared = psh.recordProviderHealthy({ pipelineDir: dir, provider: 'anthropic', disabledModule: disabled });
+    assert.equal(cleared, true);
+    assert.equal(disabled.getDisabledEntry('anthropic'), null);
+});
+
+test('#6238 CA-4: no existe apagado indefinido — el disable siempre lleva TTL', () => {
+    const dir = tmpPipeline();
+    const disabled = fakeDisabledStore();
+    psh.recordProviderSpawnDeath({
+        pipelineDir: dir, provider: 'anthropic', threshold: 1,
+        source: 'credential-death', disableTtlMs: 60 * 60 * 1000, disabledModule: disabled,
+    });
+    const ttlMs = disabled.calls.set[0].opts.ttlMs;
+    assert.ok(Number.isFinite(ttlMs) && ttlMs > 0, 'ttlMs debe ser finito y positivo');
+    assert.notEqual(ttlMs, null);
+});
+
+test('#6238 la tabla de sources auto-recuperables es cerrada e inmutable', () => {
+    assert.deepEqual(psh.AUTO_RECOVERABLE_DISABLE_SOURCES, ['credential-death']);
+    assert.ok(Object.isFrozen(psh.AUTO_RECOVERABLE_DISABLE_SOURCES));
+});
+
+test('#6238 fail-open: un disabledModule roto no rompe recordProviderHealthy', () => {
+    const dir = tmpPipeline();
+    const broken = {
+        getDisabledEntry() { throw new Error('roto'); },
+        clearProviderDisabled() { throw new Error('roto'); },
+    };
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'gemini-google', disabledModule: fakeDisabledStore() });
+    let cleared;
+    assert.doesNotThrow(() => {
+        cleared = psh.recordProviderHealthy({ pipelineDir: dir, provider: 'gemini-google', disabledModule: broken });
+    });
+    // El contador igual se resetea: el fallo del disable no bloquea el reset.
+    assert.equal(cleared, true);
+    assert.equal(psh.peekProviderSpawnHealth({ pipelineDir: dir, provider: 'gemini-google' }), null);
+});
+
+test('#6238 aislamiento: un pipelineDir de prueba NUNCA toca el provider-disabled real', () => {
+    // Sin disabledModule inyectado y con un tmpdir, la guarda de _sameDir corta
+    // el camino: no se lee ni se escribe el archivo del pipeline real.
+    const dir = tmpPipeline();
+    const realDisabled = require('../../provider-disabled');
+    const readState = () => (fs.existsSync(realDisabled.flagFile())
+        ? fs.readFileSync(realDisabled.flagFile(), 'utf8') : null);
+    const before = readState();
+    psh.recordProviderSpawnDeath({ pipelineDir: dir, provider: 'anthropic', disabledModule: fakeDisabledStore() });
+    assert.doesNotThrow(() => {
+        psh.recordProviderHealthy({ pipelineDir: dir, provider: 'anthropic' });
+    });
+    assert.equal(readState(), before, 'el estado real de provider-disabled no puede cambiar');
+});
