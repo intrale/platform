@@ -64,19 +64,23 @@ function urgencyFor(marginSeconds) {
 }
 
 /**
- * Redacta hace cuánto que la situación sigue igual (CA-6).
+ * Redacta hace cuánto fue el aviso anterior por esta misma condición (CA-6).
  *
  * D-3/SEC-4: devuelve `null` en vez de degradar. Si el intervalo no es finito y
  * positivo (primera alerta de la vida, estado ausente o corrupto, reloj hacia
  * atrás) la línea se OMITE entera. Nunca "sigue igual desde hace 0 minutos" ni
  * "hace NaN minutos": un dato erróneo en el canal es peor que un dato ausente.
  *
- * Tabla de intervalos entregada por `ux`:
+ * Tabla de intervalos entregada por `ux` (contrato v3, L-2 — ahora con
+ * singulares: "hace 1 minutos" y "hace 1 días" delatan que el texto lo armó una
+ * máquina y no alguien hablándole al operador):
  *   < 1 min      -> se omite
- *   1–59 min     -> "hace {N} minutos"
+ *   1–2 min      -> "hace un minuto"
+ *   2–59 min     -> "hace {N} minutos"
  *   60–119 min   -> "hace una hora"
  *   2–23 h       -> "hace {N} horas"
- *   >= 24 h      -> "hace {N} días"
+ *   24–47 h      -> "hace un día"
+ *   >= 48 h      -> "hace {N} días"
  *
  * @param {number} deltaMs
  * @returns {string|null}
@@ -84,11 +88,13 @@ function urgencyFor(marginSeconds) {
 function formatPersistence(deltaMs) {
   if (!Number.isFinite(deltaMs) || deltaMs < 60 * 1000) return null;
   const min = Math.floor(deltaMs / 60000);
+  if (min === 1) return 'hace un minuto';
   if (min < 60) return 'hace ' + min + ' minutos';
   const h = Math.floor(min / 60);
   if (h === 1) return 'hace una hora';
   if (h < 24) return 'hace ' + h + ' horas';
-  return 'hace ' + Math.floor(h / 24) + ' días';
+  const d = Math.floor(h / 24);
+  return d === 1 ? 'hace un día' : 'hace ' + d + ' días';
 }
 
 /**
@@ -97,7 +103,11 @@ function formatPersistence(deltaMs) {
  * @param {object} params
  * @param {number} params.marginSeconds  segundos de tolerancia que quedan
  * @param {number} params.prevAlertTs    epoch ms de la alerta ANTERIOR — se
- *   captura antes de marcar la nueva, que lo pisa con `now` (H-2)
+ *   captura antes de marcar la nueva, que lo pisa con `now` (H-2). Llega YA
+ *   FILTRADO por el runner (SEC-7 / CA-6a): si durante la ventana de silencio
+ *   no hubo ninguna observación degradada, el runner manda `null` y la línea
+ *   se omite sola por la rama D-3. Este módulo no recibe contadores y no decide
+ *   qué cuenta como persistencia — sólo redacta el intervalo que le pasan.
  * @param {number} params.now            epoch ms actual
  * @returns {{message: string, action: string, context: object, urgency: string}}
  */
@@ -131,11 +141,20 @@ function buildMarginAlert({ marginSeconds, prevAlertTs, now } = {}) {
   }
 
   // CA-6: la persistencia se expresa en lenguaje llano, no como un contador.
+  //
+  // CA-6c (#6146 rev-3) — la frase NO afirma continuidad ininterrumpida.
+  // "viene igual desde hace 3 días" es una afirmación sobre la condición: dice
+  // que estuvo degradada 72 h seguidas. El dato que la respalda no prueba eso,
+  // prueba que hubo avisos repetidos — compatible con ciclos sanos en el medio.
+  // El literal de `ux` (L-1, contrato v3) afirma en cambio dos hechos
+  // comprobables por separado — hubo un aviso hace tanto, y sigue pasando ahora
+  // — con el mismo valor de uso para el operador. Misma disciplina que
+  // D-3/SEC-4: dato acotado o dato ausente, nunca dato falso.
   const desde =
     Number.isFinite(prevAlertTs) && prevAlertTs > 0 && Number.isFinite(now)
       ? formatPersistence(now - prevAlertTs)
       : null;
-  if (desde) context['desde cuándo'] = 'viene igual desde ' + desde;
+  if (desde) context['desde cuándo'] = 'ya te avisé ' + desde + ' y sigue pasando';
 
   return { message, action, context, urgency };
 }

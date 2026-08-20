@@ -519,52 +519,125 @@ function main() {
     // --- CA-5 / CA-6: alerta de margen, ANTES del primer kill, 1 por ventana ---
     if (marginInfo.degraded) {
       if (margin.shouldAlert(next.lastAlertTs, now, params.alertCooldownMinutes)) {
+        // H-2 (#6146): `repeats` y `lastAlertTs` se capturan ANTES de markAlert,
+        // que pisa el primero con 0 y el segundo con `now`. Sin esta captura la
+        // línea de persistencia saldría siempre diciendo que la condición
+        // arrancó recién.
         const repeats = next.alertRepeats;
-        // H-2 (#6146): `prevAlertTs` se captura ANTES de markAlert, que lo pisa
-        // con `now`. Sin esta captura la línea de persistencia sale siempre
-        // diciendo que la condición arrancó recién.
-        const prevAlertTs = next.lastAlertTs;
+        const lastAlertTs = next.lastAlertTs;
+        // CA-6a / D-5 / SEC-7 (#6146 rev-3) — GATE DE PERSISTENCIA.
+        //
+        // `lastAlertTs` es CUÁNDO se avisó, no DESDE CUÁNDO sigue pasando: nunca
+        // se resetea al recuperarse la condición, así que por sí solo no es
+        // evidencia de nada. Pasarlo crudo hacía que una condición aparecida
+        // recién le afirmara al operador "ya te avisé hace 3 días y sigue
+        // pasando" — un hecho falso, que es lo que bloqueó la review.
+        //
+        // Sin observaciones degradadas dentro de la ventana que acaba de cerrar
+        // (`repeats === 0`) no hay evidencia de repetición, así que la marca NO
+        // se pasa: `null` cae en la rama D-3/SEC-4 que el módulo de copy ya tiene
+        // cubierta y la línea se OMITE. Dato ausente > dato falso.
+        //
+        // Se filtra acá y no en el módulo a propósito (SEC-7): la firma de
+        // `buildMarginAlert` no se amplía, así que la contención estructural de
+        // CA-2 queda intacta y ningún contador interno cruza el borde del módulo.
+        const prevAlertTs = repeats > 0 ? lastAlertTs : null;
         next = margin.markAlert(next, now);
+        // CA-12 / SEC-6 (#6146 rev-3): el `try` cubre SÓLO la construcción del
+        // texto. Antes envolvía también a la emisión, así que un `require`
+        // fallido dejaba al operador sin ningún aviso — y éste es justamente el
+        // aviso que anticipa que el vigilante va a reiniciar un Pulpo sano.
+        // Ahora un fallo de construcción degrada el texto, no lo silencia.
+        let alerta;
         try {
           // eslint-disable-next-line global-require
           const copy = require('./lib/pulpo-liveness-copy');
-          const alerta = copy.buildMarginAlert({
+          alerta = copy.buildMarginAlert({
             marginSeconds: marginInfo.marginSeconds,
             prevAlertTs,
             now,
           });
-          // SEC-1 / CA-7 (#6146): el detalle de diagnóstico sale del mensaje al
-          // operador y queda ACÁ. Antes de este log, la emisión de la alerta y
-          // las repeticiones acumuladas no quedaban registradas en ningún lado:
-          // vivían sólo dentro del texto que se mandaba al canal. Este renglón
-          // es la única traza forense de "se le avisó al operador N veces".
-          // El log NO es superficie del operador, así que acá sí va vocabulario
-          // interno.
-          log(
-            'alerta_margen emitida urgencia=' + alerta.urgency +
-              ' repeticionesSilenciadas=' + repeats +
-              ' peakSeconds=' + marginInfo.peakSeconds +
-              ' effectiveSeconds=' + threshold.effectiveSeconds +
-              ' thresholdSource=' + threshold.source +
-              ' samples=' + threshold.sampleCount +
-              ' marginSeconds=' + marginInfo.marginSeconds +
-              ' consumedPct=' + marginInfo.consumedPct +
-              ' prevAlertTs=' + (prevAlertTs || 'ninguno')
-          );
+        } catch (err) {
+          // Literal de rescate entregado por `ux` (contrato v3, L-3). Va inline
+          // acá y no exportado del módulo de copy porque, si ese módulo no se
+          // pudo requerir, un literal suyo tampoco estaría disponible.
+          //
+          // SEC-6: texto CONSTANTE. Prohibido interpolar `err.message`, el stack
+          // o el path — un require fallido trae rutas absolutas del filesystem.
+          // El detalle del error queda sólo en el log de acá abajo.
+          //
+          // "puede reiniciar" (y no "está por") es deliberado: es verdadero en
+          // los dos niveles de urgencia, y el camino de error no está en
+          // condiciones de saber en cuál de los dos está.
+          alerta = {
+            urgency: 'desconocida',
+            message:
+              'El vigilante puede reiniciar el Pulpo aunque está trabajando bien. ' +
+              'Si lo reinicia, lo que vas a ver es que el Commander deja de responder.',
+            action:
+              'Podemos darle más tolerancia al vigilante para que no reinicie el Pulpo ' +
+              'por ciclos lentos. Si estás de acuerdo, avisá y el pipeline aplica el cambio.',
+            context: {},
+          };
+          log('WARN copy de la alerta de margen no disponible: ' + (err && err.message));
+        }
+        // SEC-1 / CA-7 (#6146): el detalle de diagnóstico sale del mensaje al
+        // operador y queda ACÁ. Antes de este log, la emisión de la alerta y las
+        // repeticiones acumuladas no quedaban registradas en ningún lado: vivían
+        // sólo dentro del texto que se mandaba al canal. Este renglón es la única
+        // traza forense de "se le avisó al operador N veces".
+        // El log NO es superficie del operador, así que acá sí va vocabulario
+        // interno. `prevAlertTsEnviado` deja asentado si el gate CA-6a dejó pasar
+        // la marca o la omitió: sin ese dato, un aviso sin la línea de
+        // persistencia es indistinguible de un bug del módulo de copy.
+        log(
+          'alerta_margen emitida urgencia=' + alerta.urgency +
+            ' repeticionesSilenciadas=' + repeats +
+            ' peakSeconds=' + marginInfo.peakSeconds +
+            ' effectiveSeconds=' + threshold.effectiveSeconds +
+            ' thresholdSource=' + threshold.source +
+            ' samples=' + threshold.sampleCount +
+            ' marginSeconds=' + marginInfo.marginSeconds +
+            ' consumedPct=' + marginInfo.consumedPct +
+            ' prevAlertTs=' + (lastAlertTs || 'ninguno') +
+            ' prevAlertTsEnviado=' + (prevAlertTs || 'omitido')
+        );
+        try {
+          // CA-12: UNA sola emisión, siempre en `warn`. El fail-soft de emisión
+          // se conserva tal cual: un fallo encolando jamás cambia la decisión del
+          // watchdog ni tumba el runner (CA-13).
           notify('warn', alerta.message, alerta.action, alerta.context);
         } catch (err) {
-          // Fail-soft: un fallo construyendo o encolando el aviso jamás cambia
-          // la decisión del watchdog ni tumba el runner.
           log('WARN aviso de margen no emitido: ' + (err && err.message));
         }
       } else {
         // CA-6: la condición persiste pero el cooldown está vigente. Se acumula
-        // para poder decir en la próxima alerta hace cuánto que viene igual, en
-        // vez de mandar el mensaje pelado otra vez: 77 mensajes idénticos
-        // entrenan al operador a silenciar el canal, que es el fallo que esto
-        // quiere evitar.
+        // la evidencia de que se repitió, para poder decir en la próxima alerta
+        // que ya se había avisado, en vez de mandar el mensaje pelado otra vez:
+        // 77 mensajes idénticos entrenan al operador a silenciar el canal, que es
+        // el fallo que esto quiere evitar. Esta cuenta es la que habilita el gate
+        // CA-6a de más arriba, y la que la rama de recuperación de abajo limpia.
         next = margin.bumpAlertRepeats(next);
       }
+    } else if (Number.isFinite(marginInfo.peakSeconds) && next.alertRepeats > 0) {
+      // CA-6b / D-5b (#6146 rev-3) — la pata que le faltaba al gate de arriba.
+      //
+      // `alertRepeats` sólo lo bajaba `markAlert`, y todo el bloque de la alerta
+      // vive dentro del `if (marginInfo.degraded)`: cuando la condición se
+      // recuperaba, nadie tocaba el contador. Sin esta rama el gate es un falso
+      // positivo permanente — la evidencia de un episodio viejo sobrevive para
+      // siempre y vuelve a habilitar la frase en un episodio nuevo.
+      //
+      // La guarda del pico NO es cosmética: `evaluateMargin` devuelve
+      // `degraded: false` TAMBIÉN cuando no hay pico observable. Una laguna de
+      // datos no es una recuperación y no puede borrar la evidencia de un
+      // episodio vivo.
+      //
+      // `lastAlertTs` NO se resetea a propósito: ponerlo en 0 resetea también el
+      // cooldown y, con la condición oscilando degradado/sano, se alertaría en
+      // cada oscilación — el spam es justo lo que este issue viene a evitar. Se
+      // limpia la evidencia, la cadencia queda intacta.
+      next = { ...next, alertRepeats: 0 };
     }
 
     // #5821 (rebote rev-1) — el kill NO se contabiliza acá.
