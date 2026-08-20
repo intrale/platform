@@ -354,6 +354,10 @@ const telegramReceipt = require('./lib/telegram-receipt');
 // MarkdownV2 al medio (modo de falla `400 Can't parse entities`) y marcaba el
 // truncado con `'...'`, tres metacaracteres V2 sin escapar.
 const telegramTextBudget = require('./lib/telegram-text-budget');
+// #6226 — Nombres únicos + escritura fail-closed (`wx`) para los dropfiles de la
+// cola de salientes. Dos mensajes encolados en el mismo tick resolvían al mismo
+// `${Date.now()}-cmd.json` y el segundo pisaba al primero, sin error ni rastro.
+const dropfileWriter = require('./lib/dropfile-writer');
 // #4750 — Contabilidad + reconciliación de chunks de audio (part_index/part_total)
 // atados al correlationId padre. Detecta partes faltantes tras el timeout y las
 // reenvía (tope N reintentos + backoff); avisa al usuario si se agotan. Reutiliza
@@ -16975,7 +16979,6 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
 
   // Encolar en el servicio de telegram (fire-and-forget via filesystem)
   const svcDir = telegramPendienteDir();
-  const filename = `${Date.now()}-cmd.json`;
   try {
     // #5421 — La intención de "texto plano" viaja EXPLÍCITA (`plain: true`), no
     // como la ausencia de `parse_mode`. `svc-telegram` es otro proceso: un campo
@@ -16985,7 +16988,20 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     const payload = plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     payload._correlationId = correlationId;
-    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));
+    // #6226 — Nombre único (`<ts>-<seq>-cmd.json`) + escritura `wx`. Antes eran
+    // dos `writeFileSync` al mismo path cuando el handler emitía `reply` +
+    // `extraMessages` en el mismo tick (paginado de `/wave`), y el segundo
+    // pisaba al primero: el operador recibía el mensaje 2 sin el 1, sin ningún
+    // indicio de que faltaba contenido.
+    const { filename } = dropfileWriter.writeDropfileSync({
+      dir: svcDir,
+      suffix: 'cmd.json',
+      data: JSON.stringify(payload),
+      onCollision: (name, attempt) => log(
+        'telegram',
+        `⚠️ Colisión de nombre de dropfile (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+      ),
+    });
     log('telegram', `Encolado (${msg.length} chars${replyMarkup ? ', con reply_markup' : ''}) → ${filename}`);
     return correlationId;
   } catch (e) {
@@ -21992,6 +22008,12 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    // #6226 — path REAL de encolado de salientes. Expuesto para el test de
+    // regresión que fija que dos mensajes emitidos en el mismo tick (el `reply`
+    // + los `extraMessages` del paginado) producen DOS dropfiles y no uno.
+    // Con `PIPELINE_DIR_OVERRIDE` la cola apunta a un temp dir: no se manda nada.
+    sendTelegram,
+    telegramPendienteDir,
     gatePrPropagationDecision,
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,

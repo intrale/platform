@@ -49,6 +49,7 @@ const waveState = require('./lib/wave-state');
 const waveSnapshot = require('./lib/wave-snapshot');
 const { computeClosedSet } = require('./lib/commander-deterministic');
 const { notifyTelegram } = require('./lib/notify-telegram');
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
@@ -1163,9 +1164,15 @@ function enqueueTelegramAlert(text) {
     // profundidad.
     try {
         fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE, { recursive: true });
-        const filename = `${Date.now()}-admission-sweep.json`;
         const payload = { text, parse_mode: 'Markdown' };
-        fs.writeFileSync(path.join(ADMISSION_TELEGRAM_QUEUE, filename), JSON.stringify(payload), 'utf8');
+        // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+        // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+        dropfileWriter.writeDropfileSync({
+            dir: ADMISSION_TELEGRAM_QUEUE,
+            suffix: 'admission-sweep.json',
+            data: JSON.stringify(payload),
+            onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
+        });
         return true;
     } catch (e) {
         log(`Error encolando alerta Telegram admission: ${e.message.slice(0, 120)}`);
@@ -1274,12 +1281,14 @@ function enqueueScreenshotsGateAlert(issues) {
     const text = lines.join('\n');
     try {
         fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE, { recursive: true });
-        const filename = `${Date.now()}-screenshots-gate.json`;
-        fs.writeFileSync(
-            path.join(ADMISSION_TELEGRAM_QUEUE, filename),
-            JSON.stringify({ text, parse_mode: 'Markdown' }),
-            'utf8',
-        );
+        // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+        // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+        dropfileWriter.writeDropfileSync({
+            dir: ADMISSION_TELEGRAM_QUEUE,
+            suffix: 'screenshots-gate.json',
+            data: JSON.stringify({ text, parse_mode: 'Markdown' }),
+            onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
+        });
         return true;
     } catch (e) {
         log(`Error encolando alerta screenshots-gate: ${e.message.slice(0, 120)}`);
