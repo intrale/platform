@@ -520,30 +520,49 @@ function main() {
     if (marginInfo.degraded) {
       if (margin.shouldAlert(next.lastAlertTs, now, params.alertCooldownMinutes)) {
         const repeats = next.alertRepeats;
+        // H-2 (#6146): `prevAlertTs` se captura ANTES de markAlert, que lo pisa
+        // con `now`. Sin esta captura la línea de persistencia sale siempre
+        // diciendo que la condición arrancó recién.
+        const prevAlertTs = next.lastAlertTs;
         next = margin.markAlert(next, now);
-        notify(
-          'warn',
-          `Margen de liveness del Pulpo en rojo: pico de ciclo ${marginInfo.peakSeconds}s contra un ` +
-            `umbral efectivo de ${threshold.effectiveSeconds}s (${marginInfo.consumedPct}% consumido, ` +
-            `quedan ${marginInfo.marginSeconds}s)`,
-          `Subí \`pulpo_liveness_kill_seconds\` o \`pulpo_liveness_percentile_factor\` en ` +
-            `.pipeline/config.yaml y commiteá el cambio a main`,
-          {
-            si_se_pasa:
-              'el watchdog empieza a matar un Pulpo sano y el sintoma que vas a ver es ' +
-              '"el Commander no responde", no "el watchdog mata un proceso sano"',
-            pico_observado: `${marginInfo.peakSeconds}s`,
-            umbral_efectivo: `${threshold.effectiveSeconds}s (origen ${threshold.source})`,
-            margen_restante: `${marginInfo.marginSeconds}s (${marginInfo.marginPct}%)`,
-            muestras: threshold.sampleCount,
-            repeticiones_silenciadas: repeats,
-          }
-        );
+        try {
+          // eslint-disable-next-line global-require
+          const copy = require('./lib/pulpo-liveness-copy');
+          const alerta = copy.buildMarginAlert({
+            marginSeconds: marginInfo.marginSeconds,
+            prevAlertTs,
+            now,
+          });
+          // SEC-1 / CA-7 (#6146): el detalle de diagnóstico sale del mensaje al
+          // operador y queda ACÁ. Antes de este log, la emisión de la alerta y
+          // las repeticiones acumuladas no quedaban registradas en ningún lado:
+          // vivían sólo dentro del texto que se mandaba al canal. Este renglón
+          // es la única traza forense de "se le avisó al operador N veces".
+          // El log NO es superficie del operador, así que acá sí va vocabulario
+          // interno.
+          log(
+            'alerta_margen emitida urgencia=' + alerta.urgency +
+              ' repeticionesSilenciadas=' + repeats +
+              ' peakSeconds=' + marginInfo.peakSeconds +
+              ' effectiveSeconds=' + threshold.effectiveSeconds +
+              ' thresholdSource=' + threshold.source +
+              ' samples=' + threshold.sampleCount +
+              ' marginSeconds=' + marginInfo.marginSeconds +
+              ' consumedPct=' + marginInfo.consumedPct +
+              ' prevAlertTs=' + (prevAlertTs || 'ninguno')
+          );
+          notify('warn', alerta.message, alerta.action, alerta.context);
+        } catch (err) {
+          // Fail-soft: un fallo construyendo o encolando el aviso jamás cambia
+          // la decisión del watchdog ni tumba el runner.
+          log('WARN aviso de margen no emitido: ' + (err && err.message));
+        }
       } else {
         // CA-6: la condición persiste pero el cooldown está vigente. Se acumula
-        // para reportar "se repitió N veces" en la próxima alerta, en vez de
-        // mandar el mensaje pelado otra vez: 77 mensajes idénticos entrenan al
-        // operador a silenciar el canal, que es el fallo que esto quiere evitar.
+        // para poder decir en la próxima alerta hace cuánto que viene igual, en
+        // vez de mandar el mensaje pelado otra vez: 77 mensajes idénticos
+        // entrenan al operador a silenciar el canal, que es el fallo que esto
+        // quiere evitar.
         next = margin.bumpAlertRepeats(next);
       }
     }

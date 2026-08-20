@@ -428,6 +428,9 @@ test('iterationMs — se parsea defensivo del contenido no confiable (SEC-2)', (
 const SHIMS = {
     'pulpo-liveness': path.join(REAL_LIB, 'pulpo-liveness.js'),
     'pulpo-liveness-margin': path.join(REAL_LIB, 'pulpo-liveness-margin.js'),
+    // #6146: el copy al operador vive en su propio módulo. Sin este shim el
+    // runner no lo encuentra en el tmpdir y el aviso se pierde en el fail-soft.
+    'pulpo-liveness-copy': path.join(REAL_LIB, 'pulpo-liveness-copy.js'),
     'watchdog-supervisor': path.join(REAL_LIB, 'watchdog-supervisor.js'),
     'notify-telegram': path.join(REAL_LIB, 'notify-telegram.js'),
     'config-resolver': path.join(REAL_LIB, 'config-resolver.js'),
@@ -541,15 +544,29 @@ test('E2E — margen degradado: alerta con el dato numérico y NO reinicia', () 
     const msgs = alertas(dir);
     assert.strictEqual(msgs.length, 1, `esperaba 1 alerta, hubo ${msgs.length}`);
     const texto = msgs[0];
-    // UX: el número concreto es parte del copy, no un adjunto.
-    assert.match(texto, /220s/, 'falta el pico observado');
-    assert.match(texto, /270s/, 'falta el umbral efectivo');
-    assert.match(texto, /81% consumido/, 'falta el % consumido');
+    // #6146 — el copy al operador cambió: antes acá viajaban el pico, el umbral,
+    // el % consumido y la ruta del archivo de configuración. El operador dijo
+    // textual que así no se entendía. Ahora el aviso es síntoma + consecuencia y
+    // el detalle numérico vive en el log (se verifica abajo).
+    assert.match(texto, /reiniciaría el Pulpo aunque esté trabajando bien/);
     // UX: nombrar el síntoma que el operador va a percibir — es lo que evita
     // 3 horas de diagnóstico en la dirección equivocada.
-    assert.match(texto, /el Commander no responde/);
-    // UX: la acción nombra el mecanismo concreto, no un verbo abstracto.
-    assert.match(texto, /config\.yaml/);
+    assert.match(texto, /el Commander deja de responder/);
+    // #6146 CA-5: pico 220s contra umbral 270s => quedan 50s, o sea nivel
+    // "atención", no "inminente".
+    assert.match(texto, /todavía hay aire: quedan 50 segundos de tolerancia/);
+    // #6146 CA-2: el aviso ya NO filtra vocabulario interno ni rutas.
+    assert.doesNotMatch(texto, /config\.yaml/);
+    assert.doesNotMatch(texto, /umbral/i);
+    assert.doesNotMatch(texto, /pulpo_liveness_/);
+    // #6146 CA-7: todo el detalle técnico sigue disponible para diagnóstico.
+    const log6146 = logDelRunner(dir);
+    assert.match(log6146, /alerta_margen emitida urgencia=atencion/);
+    assert.match(log6146, /repeticionesSilenciadas=0/);
+    assert.match(log6146, /peakSeconds=220/);
+    assert.match(log6146, /effectiveSeconds=270/);
+    assert.match(log6146, /consumedPct=81/);
+    assert.match(log6146, /marginSeconds=50/);
     // UX: ⚠️ = "el pipeline sigue", distinto del glifo de escalada.
     assert.match(texto, /⚠/);
 });
