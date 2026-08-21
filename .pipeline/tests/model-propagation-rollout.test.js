@@ -4,6 +4,7 @@ const fs = require('fs'); const os = require('os'); const path = require('path')
 const yaml = require('js-yaml');
 const r = require('../lib/model-propagation-rollout');
 const dispatcher = require('../lib/agent-launcher/dispatch-with-fallback');
+const { resolveProviderForSkill } = require('../lib/agent-launcher/resolve-provider');
 function fixture() { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rollout-')); fs.mkdirSync(path.join(root, 'logs'), { recursive: true }); return root; }
 function seed(root, rows) { fs.writeFileSync(path.join(root, 'logs', 'spawn-exit-2026-08-20.jsonl'), rows.map(x => JSON.stringify(x)).join('\n')); }
 const cfg = { baseline_min_runs: 2, evaluation_min_runs: 2, thresholds: { rebound_absolute: .1, early_death_absolute: .1 }, waves: [{ actors: ['po'] }, { actors: ['pipeline-dev'] }] };
@@ -67,4 +68,14 @@ test('produce rebote asociado al provider real y la evaluación automática lo c
   assert.equal(r.recordRebound(root,{issue:77,skill:'po',ts:'2026-08-20T04:00:00Z'}).recorded,true);
   const result=r.evaluateEnabled(root,cfg,{from:'2026-08-20T00:00:00Z'});
   assert.equal(result['po::anthropic'].action,'rollback'); assert.equal(r.shouldPropagate(root,'po','anthropic'),false);
+});
+test('el resolver real propaga el model_override de los actores primarios', () => {
+  const pipelineDir=path.join(__dirname,'..');
+  for (const [actor, expectedModel] of [['telegram-sherlock','claude-haiku-4-5'],['po','claude-sonnet-4-6']]) {
+    const resolution=resolveProviderForSkill(actor,{pipelineDir});
+    assert.equal(resolution.provider,'anthropic'); assert.equal(resolution.model,expectedModel);
+    const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:actor,provider:'anthropic',exit_code:0,duration_ms:1})));
+    r.captureBaseline(root); r.enablePair(root,actor,'anthropic',{...cfg,waves:[{actors:[actor]}]});
+    assert.deepStrictEqual(r.applyToSpawn(root,actor,resolution,['-p','hola'],{}).args,['-p','hola','--model',expectedModel]);
+  }
 });

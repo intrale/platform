@@ -169,9 +169,14 @@ function resolveProviderForSkill(skill, opts = {}) {
 
     const providerName = skillCfg.provider || 'anthropic';
     const handler = getProviderHandler(providerName); // valida contra tabla hardcoded
+    const providerModel = models.providers && models.providers[providerName]
+        ? models.providers[providerName].model
+        : null;
     return {
         provider: providerName,
-        model: skillCfg.model || defaultModel,
+        // El contrato canónico usa model_override para el pin por skill. El
+        // campo model se conserva como compatibilidad con configs legacy.
+        model: skillCfg.model_override || skillCfg.model || providerModel || defaultModel,
         // #3082 (CA-8): el mode efectivo del provider para este skill es lo
         // que la matriz capability×(provider, mode) consume. Lo extraemos del
         // bloque providers.<X>.permissions_mode de agent-models.json. Si no
