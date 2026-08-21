@@ -8,14 +8,25 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 function runCmd(cmd, args, opts = {}) {
     const started = Date.now();
-    const res = spawnSync(cmd, args, {
+    const spawnOpts = {
         cwd: opts.cwd,
         env: opts.env || process.env,
         encoding: 'utf8',
         timeout: opts.timeoutMs || DEFAULT_TIMEOUT_MS,
         windowsHide: true,
         shell: opts.shell ?? (process.platform === 'win32'),
-    });
+    };
+    // #5426 (rev-1): permitir alimentar el stdin del proceso hijo. Lo usa
+    // `addPaths` para pasarle a `git add` la lista de pathspecs por stdin en
+    // lugar de por argv, que en Windows está limitada a 8191 caracteres.
+    // `encoding: 'utf8'` aplica a stdout/stderr; para stdin pasamos un Buffer
+    // explícito para no depender de esa conversión con separadores NUL.
+    if (opts.input != null) {
+        spawnOpts.input = Buffer.isBuffer(opts.input)
+            ? opts.input
+            : Buffer.from(String(opts.input), 'utf8');
+    }
+    const res = spawnSync(cmd, args, spawnOpts);
     return {
         cmd: `${cmd} ${args.join(' ')}`,
         exit_code: res.status == null ? 1 : res.status,
@@ -225,6 +236,106 @@ function getChangedFiles(cwd) {
         files.push({ code, path, staged: code[0] !== ' ' && code[0] !== '?' });
     }
     return files;
+}
+
+// #5426 (rev-1) — `git add` inmune al límite de línea de comandos de Windows.
+//
+// Rebote de la fase `entrega`: «git add falló: La línea de comandos es
+// demasiado larga». `delivery.js` hacía `runGit(['add', '--', ...stagePaths])`
+// con un path por argumento. Como `runCmd` usa `shell: true` en win32, el
+// comando pasa por `cmd.exe`, cuyo límite duro es **8191 caracteres** — no los
+// 32767 de CreateProcess. En el worktree del rebote había 406 archivos
+// cambiados que sumaban ~16,9 KB de paths: más del doble del límite.
+//
+// El límite de cmd.exe no es configurable, así que la lista deja de viajar por
+// argv. Estrategia, en orden:
+//
+//   1. `git add --pathspec-from-file=- --pathspec-file-nul`, leyendo la lista
+//      por **stdin**. argv queda de tamaño constante sin importar cuántos
+//      archivos haya. El separador NUL además elimina el problema de quoting:
+//      con `shell: true` Node NO escapa los argumentos, así que hoy un path con
+//      espacios ya se partía en dos pathspecs. Por el mismo motivo desaparece
+//      la necesidad del separador `--`: dentro del archivo de pathspecs nada se
+//      interpreta como opción (en el worktree del rebote había un archivo
+//      llamado literalmente `--`).
+//   2. Si git no soporta esas flags (< 2.25), se cae a `git add --` por lotes,
+//      cada uno holgadamente debajo del límite. Ese lote es el único que viaja
+//      por argv, así que va con `shell: false` (ver el comentario en el cuerpo
+//      de `addPaths`): sin cmd.exe de por medio no hay metacaracteres que
+//      interpretar en los nombres de archivo.
+//
+// El fallback se dispara ante cualquier exit distinto de 0 y no solo ante
+// "unknown option": detectar falta de soporte por el texto del stderr
+// dependería del locale del git instalado (el error que originó este rebote
+// vino en español). Reintentar por lotes es idempotente, y si el fallo era
+// real — por ejemplo un path ignorado por .gitignore — el lote falla con el
+// mismo error, que es el que se devuelve.
+const GIT_ADD_ARGV_BUDGET = 6000;
+
+function emptyCmdResult(cmd) {
+    return { cmd, exit_code: 0, stdout: '', stderr: '', wall_ms: 0, signal: null, error: null };
+}
+
+// Parte una lista de paths en lotes cuyo largo acumulado queda debajo del
+// presupuesto de argv. Siempre emite al menos un path por lote: un path que por
+// sí solo exceda el presupuesto no se puede partir, y es preferible dejar que
+// git falle con su propio mensaje a entrar en un bucle infinito.
+function chunkPathsByBudget(paths, budget = GIT_ADD_ARGV_BUDGET) {
+    const chunks = [];
+    let current = [];
+    let used = 0;
+    for (const p of paths) {
+        // +3: el separador y las comillas que pueda agregar el shell.
+        const cost = Buffer.byteLength(p, 'utf8') + 3;
+        if (current.length && used + cost > budget) {
+            chunks.push(current);
+            current = [];
+            used = 0;
+        }
+        current.push(p);
+        used += cost;
+    }
+    if (current.length) chunks.push(current);
+    return chunks;
+}
+
+function addPaths(paths, opts = {}) {
+    const list = (Array.isArray(paths) ? paths : [])
+        .filter((p) => typeof p === 'string' && p !== '');
+    if (!list.length) return emptyCmdResult('git add (sin paths)');
+
+    // 1) Ruta principal: pathspecs por stdin, separadas por NUL.
+    // `shell: false` explícito: los argumentos son constantes, así que hoy no
+    // hay nada inyectable acá, pero dejamos de depender de esa propiedad —
+    // basta con que alguien parametrice un argumento para reabrir el agujero.
+    const viaStdin = runGit(
+        ['add', '--pathspec-from-file=-', '--pathspec-file-nul'],
+        { ...opts, input: list.join('\0'), shell: false }
+    );
+    if (viaStdin.exit_code === 0) return viaStdin;
+
+    // 2) Fallback por lotes para git sin soporte de --pathspec-from-file.
+    //
+    // `shell: false` es OBLIGATORIO acá, no una preferencia de estilo: este es
+    // el único lote que viaja por argv y sus elementos son datos controlados
+    // por el contenido del worktree. Con `shell: true` Node concatena los
+    // argumentos sin escaparlos (el propio Node emite DEP0190) y los pasa a
+    // cmd.exe, donde `&`, `^`, `%`, `(` y `)` — todos VÁLIDOS en nombres de
+    // archivo de Windows — son metacaracteres. Un archivo llamado `a&ver`
+    // hacía que cmd.exe cortara el nombre en el `&` y ejecutara `ver` como
+    // comando propio, con los permisos del operador; y como el exit code que
+    // volvía era el del comando inyectado y no el de git, un `git add` fallido
+    // se reportaba como éxito (exit 0) y la entrega avanzaba sin los cambios.
+    //
+    // Sin cmd.exe de por medio, Node pasa cada argumento tal cual y el límite
+    // de largo pasa a ser el de CreateProcess (32767), muy por encima del
+    // presupuesto de 6000 que ya aplica `chunkPathsByBudget`.
+    let last = emptyCmdResult('git add (por lotes)');
+    for (const chunk of chunkPathsByBudget(list)) {
+        last = runGit(['add', '--', ...chunk], { ...opts, shell: false });
+        if (last.exit_code !== 0) return last;
+    }
+    return last;
 }
 
 // #2551 — Estado granular del worktree previo al rebase.
@@ -885,6 +996,9 @@ module.exports = {
     getCurrentBranch,
     getCurrentSha,
     getChangedFiles,
+    addPaths,
+    chunkPathsByBudget,
+    GIT_ADD_ARGV_BUDGET,
     getDirtyState,
     parseGitStatusOutput,
     getDiffStats,

@@ -1500,6 +1500,61 @@ vault:
   # Al ENCENDER el gate, un hostId vacío o inválido falla con un mensaje que
   # nombra esta clave (`vault.hostId`), no el regex.
   hostId: ""
+  # #5426 · CA-12(b) — habilita resolver el `hostId` en RUNTIME desde
+  # `os.hostname()`. Lo que se commitea es el MECANISMO, nunca el VALOR: este
+  # archivo está trackeado en un repo PÚBLICO y publicar el hostname entrega
+  # gratis la estructura de namespaces `hosts/<hostId>/` que sostiene el
+  # aislamiento entre hosts (T2-5). Con esto, el alta de un host nuevo NO
+  # requiere editar este archivo: `git status --porcelain .pipeline/config.yaml`
+  # queda sin salida después del alta.
+  #
+  # Es una señal POSITIVA y explícita, no el default silencioso: si resolver por
+  # hostname fuera implícito, un `hostId` vacío dejaría de distinguirse de «sin
+  # configurar» y se perdería el fail-closed que hoy nombra la clave. Si el
+  # hostname no resuelve a un segmento válido (por ejemplo un FQDN con puntos —
+  # que NO se trunca, porque `a.uno.local` y `a.dos.local` colapsarían al mismo
+  # namespace), el gate falla nombrando `vault.hostId`.
+  hostIdFromHostname: true
+  # ---------------------------------------------------------------------------
+  # #5426 · CA-11 — mecanismo de identidad del host (raíz de confianza)
+  # ---------------------------------------------------------------------------
+  # Cómo prueba este host quién es ANTES de poder leer el vault. Es la señal
+  # POSITIVA del guard de `createAwsCliVaultRunner`: el ambiente puede
+  # TRANSPORTAR material de credencial, pero nunca ELIGE con qué principal corre
+  # la AWS CLI (T2-1). Un valor vacío o fuera del enum falla nombrando esta
+  # clave — nunca «faltan variables», que es una remediación que el operador no
+  # puede accionar.
+  #
+  # Enum CERRADO (`VAULT_AUTH_MODES`, secret-vault.js):
+  #
+  #   assume-role-chain  perfil de la AWS CLI con `role_arn` + `source_profile`.
+  #                      Entrega credencial con `Expiration` (vida corta) y NO
+  #                      requiere habilitación administrativa en AWS. Es la
+  #                      opción firmada por el operador para este host (D7), con
+  #                      su riesgo residual escrito en la tabla de
+  #                      `docs/pipeline/vault-secretos-aws.md` § Raíz de
+  #                      confianza: la cadena TERMINA en una key estática del
+  #                      perfil source.
+  #   session-token      par + `AWS_SESSION_TOKEN` ya emitidos, en el ambiente.
+  #   static-key         par estático. Sólo con las condiciones de § Estado
+  #                      transitorio; degrada el vault a «un archivo en vez de
+  #                      varios», con peor blast radius.
+  #   instance-profile   el host corre sobre cómputo de AWS. No deja señal en el
+  #                      ambiente: la señal es JUSTAMENTE esta clave, y por eso
+  #                      el enum existe en vez de mirar qué variables hay.
+  authMode: "assume-role-chain"
+  # Perfil de la AWS CLI que usa SÓLO el vault, con `authMode:
+  # assume-role-chain`. Se commitea VACÍO por el mismo criterio que `hostId`: es
+  # un nombre local del host y este repo es público. Con el gate abierto, vacío
+  # falla nombrando `vault.awsProfile`.
+  #
+  # NO es un alias del perfil de trabajo del operador ni de `intrale` /
+  # `kernel-runtime` (D8: esos quedan fuera de alcance, no se migran ni se
+  # cuentan). El perfil del vault existe para asumir el rol de LECTURA del host.
+  # Con cualquier otro `authMode` esta clave debe quedar vacía: perfil + material
+  # de credencial en el mismo ambiente es ambiguo — la CLI resuelve por el
+  # material y el perfil queda de adorno.
+  awsProfile: ""
   # SEC-6 — TTL de la caché en memoria. Tope DURO de 300 s: un valor mayor se
   # RECHAZA (no se recorta en silencio), porque una credencial rotada seguiría
   # sirviéndose de la caché hasta que expire.
