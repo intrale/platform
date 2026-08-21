@@ -10631,6 +10631,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             exitCode: code,
             timedOut: false,
             durationMs: Math.round(elapsedSec * 1000),
+            source: (dispatchResolution && dispatchResolution.source) || 'primary',
             pipelineDir: PIPELINE,
             onLog: log,
           });

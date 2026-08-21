@@ -398,6 +398,7 @@ function onSpawnExit(opts = {}) {
             operationId,
             path: operationPath,
             attempt,
+            source,
             issue,
             pipelineDir,
             parserModule,
@@ -598,6 +599,11 @@ function onSpawnExit(opts = {}) {
                     exit_code: (exitCode === null || exitCode === undefined) ? null : Number(exitCode),
                     timed_out: timedOut === true,
                     duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+                    // #6274: señal durable para que el rollout no atribuya al
+                    // modelo las muertes tempranas propias de un fallback caído.
+                    death_kind: (Number(exitCode) !== 0 && Number.isFinite(durationMs) && durationMs < 15000)
+                        ? ((source === 'fallback' || source === 'dispatch-fallback') ? 'provider-death' : 'agent-death')
+                        : 'normal',
                     // Signal C — first-byte ts (opcional, puede ser undefined si
                     // el transport no lo expone).
                     first_byte_at: Number.isFinite(firstByteAt) ? Math.round(firstByteAt) : null,

@@ -140,7 +140,7 @@ línea. Valores de la columna **Lado**:
 | `_frozen/ios-dev` | adaptador | Stack del producto (Compose iOS); congelado. |
 | `_frozen/scrum` | kernel | Proceso de orquestación (zombi V3); congelado, genérico. |
 
-### 2.4. `config.yaml` — clasificación completa de las 60 secciones (#5173)
+### 2.4. `config.yaml` — clasificación completa de las 61 secciones (#5173)
 
 <!-- #5173 · Entrega B de #5111. Reemplaza la tabla parcial del inventario original,
      que clasificaba 6 de 57 secciones y dejaba 4 ítems sin decidir. -->
@@ -194,6 +194,7 @@ Reparto: **39 kernel · 12 autoridad · 9 producto**.
 | 28 | `multi_provider` (599) | obj | kernel | Split: el enum de providers es kernel; `multi_provider.order` es política de producto. |
 | 29 | `pacing` (652) | obj | kernel | Cadencia de dispatch; mecanismo. |
 | 30 | `handoff` (702) | obj | **autoridad** | Tiene `kill_switch`: gobierna el traspaso de contexto entre agentes. |
+| 30b | `model_propagation_rollout` | obj | **autoridad** | Gobierna el encendido y rollback fail-closed de modelos por actor/proveedor. |
 | 31 | `reduced_mode` (739) | obj | kernel | Modo reducido del motor; mecanismo. |
 | 32 | `firma_operador` (783) | obj | **autoridad** | Auto-aprobación de la firma del operador; núcleo de la autoridad. |
 | 33 | `wave_coherence_gate` (831) | obj | kernel | Coherencia de ola; mecanismo de orquestación. |

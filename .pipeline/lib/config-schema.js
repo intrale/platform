@@ -157,6 +157,7 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'circuit_breaker',
     'e2e_evidence',
     'handoff',
+    'model_propagation_rollout',
     'firma_operador',
     'operator_signoff',
     'operator_signature',
@@ -247,6 +248,7 @@ const SIDE_MAP = Object.freeze({
     e2e_evidence: 'autoridad',
     circuit_breaker: 'autoridad',
     handoff: 'autoridad',
+    model_propagation_rollout: 'autoridad',
     firma_operador: 'autoridad',
     operator_signoff: 'autoridad',
     operator_signature: 'autoridad',
@@ -598,6 +600,28 @@ const SCHEMA = {
                 max_section_kb: { type: 'integer', minimum: 1 },
                 retention_days: { type: 'integer', minimum: 1 },
                 inject_in_phases: { type: 'array', items: { type: 'string' } },
+            },
+        },
+
+        model_propagation_rollout: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['baseline_min_runs', 'evaluation_min_runs', 'thresholds', 'waves'],
+            properties: {
+                baseline_min_runs: { type: 'integer', minimum: 1 },
+                evaluation_min_runs: { type: 'integer', minimum: 1 },
+                thresholds: {
+                    type: 'object', additionalProperties: false,
+                    required: ['rebound_absolute', 'early_death_absolute'],
+                    properties: {
+                        rebound_absolute: { type: 'number', minimum: 0, maximum: 1 },
+                        early_death_absolute: { type: 'number', minimum: 0, maximum: 1 },
+                    },
+                },
+                waves: { type: 'array', minItems: 1, items: {
+                    type: 'object', additionalProperties: false, required: ['actors'],
+                    properties: { actors: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } } },
+                } },
             },
         },
 
