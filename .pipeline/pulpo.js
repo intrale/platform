@@ -10477,6 +10477,26 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       // Delay 15s para dejar que SIGTERM→SIGKILL cierren el proceso primero.
       const cleanupCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
       setTimeout(() => {
+        let effectiveObservation = { model: null, source: 'not_observable', observable: false };
+        let effectiveDeclared = null;
+        let effectiveProvider = 'unknown';
+        let effectiveLogPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
+        try {
+          const effectiveModel = require('./lib/metrics/effective-model');
+          const agentModels = require('./lib/agent-models');
+          try { effectiveProvider = resolveSkillProvider(skill) || 'unknown'; } catch {}
+          const declared = agentModels.resolveModel(skill);
+          effectiveDeclared = declared && declared.model;
+          effectiveObservation = effectiveModel.extractEffectiveModel({
+            provider: effectiveProvider, logPath: effectiveLogPath,
+          });
+          effectiveModel.recordEffectiveModel({
+            issue, skill, provider: effectiveProvider,
+            model_declared: effectiveDeclared,
+            model_resolved: traceHandle && traceHandle.model,
+            observed: effectiveObservation,
+          });
+        } catch { /* observabilidad best-effort: nunca altera el lifecycle */ }
         try {
           const killed = killGradleDaemonsForCwd(cleanupCwd, `${skill}:#${issue} (watchdog)`);
           log('lanzamiento', `🧹 cleanup post-watchdog ${skill}:#${issue}: ${killed || 0} daemons Gradle terminados`);
@@ -10744,6 +10764,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             handoff_in_tokens: handoffStats.in_tokens || 0,
             handoff_out_bytes: handoffOutBytes,
             handoff_sections_in: handoffStats.total_sections || 0,
+            model_effective: effectiveObservation.model,
+            model_effective_source: effectiveObservation.source,
           });
         } catch (e) {
           log('lanzamiento', `traceability emitSessionEnd falló para ${skill}:#${issue}: ${e.message}`);
@@ -21887,7 +21909,17 @@ async function mainLoop() {
       // dispara LLM ni completion — solo /v1/models. Fire-and-forget.
       try {
         const healthCron = require(path.join(PIPELINE, 'lib', 'multi-provider', 'health-cron'));
-        healthCron.tickIfDue({}).catch(e => log('mp-health', `tickIfDue error: ${e.message}`));
+        healthCron.tickIfDue({}).then((tick) => {
+          if (tick && tick.skipped) return;
+          try {
+            const effectiveModel = require(path.join(PIPELINE, 'lib', 'metrics', 'effective-model'));
+            const notify = require(path.join(PIPELINE, 'lib', 'notify-telegram')).notifyTelegram;
+            effectiveModel.evaluateDivergence({
+              config: ((config.multi_provider || {}).effective_model_audit || {}),
+              notify,
+            });
+          } catch { /* auditoría fail-soft */ }
+        }).catch(e => log('mp-health', `tickIfDue error: ${e.message}`));
       } catch (e) {
         // require puede fallar si el módulo no existe (build viejo); no es fatal.
       }
