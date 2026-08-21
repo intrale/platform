@@ -531,7 +531,7 @@ function onSpawnExit(opts = {}) {
         // válido contra la allowlist. NEW-2 (atomic setFlag) ya está garantizado
         // por #3575 → este hook puede ser invocado desde múltiples skills sin
         // race conditions.
-        if (verdict.errorClass === 'quota_exhausted' || verdict.errorClass === 'rate_limit') {
+        if (!opts.telemetryOnly && (verdict.errorClass === 'quota_exhausted' || verdict.errorClass === 'rate_limit')) {
             try {
                 // #5455 — El canal de contenido de Anthropic se resuelve ANTES
                 // del selector genérico. Sin esto, `_selectErrorTypeForFlag` no

@@ -727,7 +727,7 @@ model_propagation_rollout:
     rebound_absolute: 0.10
     early_death_absolute: 0.10
   waves:
-    - actors: [sherlock]
+    - actors: [telegram-sherlock]
     - actors: [doc, refinar, po]
     - actors: [backend-dev, pipeline-dev, android-dev]
 

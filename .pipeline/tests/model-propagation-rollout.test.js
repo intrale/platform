@@ -10,7 +10,7 @@ const cfg = { baseline_min_runs: 2, evaluation_min_runs: 2, thresholds: { reboun
 test('configura los escalones en el orden obligatorio de CA-4', () => {
   const config = yaml.load(fs.readFileSync(path.join(__dirname, '..', 'config.yaml'), 'utf8'));
   assert.deepStrictEqual(config.model_propagation_rollout.waves.map(wave => wave.actors), [
-    ['sherlock'],
+    ['telegram-sherlock'],
     ['doc', 'refinar', 'po'],
     ['backend-dev', 'pipeline-dev', 'android-dev'],
   ]);
@@ -52,3 +52,19 @@ test('rollback apaga sólo el flag y notifica una vez', () => { const root=fixtu
   const out=r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:.5,reboundRate:0},cfg,{notify:x=>notices.push(x)}); assert.equal(out.action,'rollback'); assert.equal(r.shouldPropagate(root,'po','anthropic'),false); assert.equal(notices.length,1);
   assert.equal(r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:.5,reboundRate:0},cfg,{notify:x=>notices.push(x)}).action,'off'); assert.equal(notices.length,1); });
 test('muestra insuficiente no dispara rollback y reencendido exige humano', () => { const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1}))); r.captureBaseline(root); r.enablePair(root,'po','anthropic',cfg); assert.equal(r.evaluatePair(root,'po','anthropic',{n:1,earlyDeathRate:1,reboundRate:1},cfg).action,'deferred'); assert.throws(()=>r.reenablePair(root,'po','anthropic',''),/--by/); });
+test('el comando de spawn queda idéntico apagado, propaga encendido y omite tras rollback', () => {
+  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
+  r.captureBaseline(root); const resolution={provider:'anthropic',model:'claude-sonnet-4-6'}; const original=['-p','hola'];
+  assert.deepStrictEqual(r.applyToSpawn(root,'po',resolution,original,{PIPELINE_ISSUE:'1'}),{args:original,env:{PIPELINE_ISSUE:'1'},propagated:false});
+  r.enablePair(root,'po','anthropic',cfg); assert.deepStrictEqual(r.applyToSpawn(root,'po',resolution,original,{}).args,[...original,'--model','claude-sonnet-4-6']);
+  r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:1,reboundRate:0},cfg);
+  assert.deepStrictEqual(r.applyToSpawn(root,'po',resolution,original,{}).args,original);
+});
+test('produce rebote asociado al provider real y la evaluación automática lo consume', () => {
+  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,issue:77,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
+  r.captureBaseline(root); r.enablePair(root,'po','anthropic',cfg);
+  assert.equal(r.recordRebound(root,{issue:77,skill:'po',ts:'2026-08-20T03:00:00Z'}).recorded,true);
+  assert.equal(r.recordRebound(root,{issue:77,skill:'po',ts:'2026-08-20T04:00:00Z'}).recorded,true);
+  const result=r.evaluateEnabled(root,cfg,{from:'2026-08-20T00:00:00Z'});
+  assert.equal(result['po::anthropic'].action,'rollback'); assert.equal(r.shouldPropagate(root,'po','anthropic'),false);
+});

@@ -241,7 +241,7 @@ const UTILITARIOS = [
 
 // Expresiones `env:` esperadas en los sitios de CLASE AGENTE. Cardinalidad = 4.
 const AGENTE_ESPERADOS = [
-    'childEnv',                                                                  // lanzarAgenteClaude
+    'rolloutSpawn.env',                                                          // lanzarAgenteClaude (copia filtrada + modelo gated)
     'buildChildEnvLib.stripReservedChildSecrets(summaryBaseEnv, process.env)',   // H-3 summarize
     'attemptEnv',                                                                // H-1 fallback no-Anthropic
     'cleanEnv',                                                                  // H-2 commander legacy

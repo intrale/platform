@@ -204,6 +204,7 @@ const desyncBlockNotifier = require('./lib/desync-block-notifier');
 const splitOrphanReconciler = require('./lib/split-orphan-reconciler');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
+const modelPropagationRollout = require('./lib/model-propagation-rollout'); // #6274
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
 // Expone isWorkaroundEnabled, recordHit, checkTtlAlert, formatStartupLogLine,
 // formatHitExtension, formatTtlAlertMessage, sanitizeHitLog.
@@ -5217,6 +5218,15 @@ function brazoBarrido(config) {
           for (const skill of skillsDestino) {
             const destinoFile = path.join(destinoPendiente, `${issue}.${skill}`);
             writeYaml(destinoFile, yamlOut);
+          }
+          // #6274 — productor canónico de rebotes: asocia el rechazo al último
+          // spawn efectivo del mismo issue+actor, que contiene el provider real.
+          for (const rechazado of rechazados) {
+            try {
+              modelPropagationRollout.recordRebound(PIPELINE, {
+                issue, skill: skillFromFile(rechazado.file.name), ts: new Date().toISOString(),
+              });
+            } catch (e) { log('barrido', `rollout: no se pudo registrar rebote #${issue}: ${e.message}`); }
           }
 
           if (esReboteDeInfra) {
@@ -10420,11 +10430,16 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       })
     : undefined;
 
+  // #6274 — el flag por (actor, provider) controla el comando/env real. Con el
+  // flag apagado devuelve copias byte-idénticas del input previo.
+  const rolloutSpawn = modelPropagationRollout.applyToSpawn(
+    PIPELINE, skill, dispatchResolution, args, childEnv,
+  );
   const launchResult = launchAgent({
     skill, issue, trabajandoPath, fase, pipeline,
-    args,
+    args: rolloutSpawn.args,
     cwd: spawnCwd,
-    env: childEnv,
+    env: rolloutSpawn.env,
     PIPELINE,
     ROOT,
     onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
@@ -10854,6 +10869,22 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
               });
             } catch {}
           }
+          // El parser legacy no escribía telemetría de corridas. Reusamos el
+          // writer canónico sin repetir sus efectos de cuota.
+          dispatcher.onSpawnExit({
+            skill, issue, provider: skillProvider, transport: 'cli', rawOutput: raw,
+            exitCode: code, timedOut: false, durationMs: Math.round(elapsedSec * 1000),
+            source: (dispatchResolution && dispatchResolution.source) || 'primary',
+            pipelineDir: PIPELINE, onLog: log, telemetryOnly: true,
+          });
+        }
+        // #6274 — evaluación automática en cada exit, después de persistir la
+        // corrida tanto en el camino generalized como en el legacy.
+        try {
+          const rolloutCfg = (loadConfig() || {}).model_propagation_rollout || {};
+          modelPropagationRollout.evaluateEnabled(PIPELINE, rolloutCfg, { notify: notifyTelegramFn });
+        } catch (rolloutErr) {
+          log('lanzamiento', `rollout: evaluación automática falló para ${skill}:#${issue}: ${rolloutErr.message}`);
         }
       } catch (qErr) {
         log('lanzamiento', `quota_detector (agent log) falló (best-effort) para ${skill}:#${issue}: ${qErr.message}`);

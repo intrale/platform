@@ -85,6 +85,33 @@ function enablePair(pipelineDir, actor, provider, config, opts = {}) {
   return state.flags[key];
 }
 function shouldPropagate(pipelineDir, actor, provider, fsImpl = fs) { return readState(pipelineDir, fsImpl).flags[pairKey(actor, provider)]?.enabled === true; }
+const MODEL_ENV_BY_PROVIDER = Object.freeze({
+  'openai-codex': 'CODEX_MODEL', 'gemini-google': 'GEMINI_MODEL',
+  cerebras: 'CEREBRAS_MODEL', 'nvidia-nim': 'NVIDIA_NIM_MODEL',
+});
+function applyToSpawn(pipelineDir, actor, resolution, args, env, fsImpl = fs) {
+  const nextArgs = Array.isArray(args) ? [...args] : [];
+  const nextEnv = { ...(env || {}) };
+  if (!resolution?.provider || !resolution.model || !shouldPropagate(pipelineDir, actor, resolution.provider, fsImpl)) {
+    return { args: nextArgs, env: nextEnv, propagated: false };
+  }
+  if (resolution.provider === 'anthropic') nextArgs.push('--model', String(resolution.model));
+  else if (MODEL_ENV_BY_PROVIDER[resolution.provider]) nextEnv[MODEL_ENV_BY_PROVIDER[resolution.provider]] = String(resolution.model);
+  else return { args: nextArgs, env: nextEnv, propagated: false };
+  return { args: nextArgs, env: nextEnv, propagated: true };
+}
+function recordRebound(pipelineDir, event, opts = {}) {
+  const fsImpl = opts.fsImpl || fs;
+  const rows = readJsonlFiles(paths(pipelineDir).logs, 'spawn-exit-', fsImpl)
+    .filter(r => String(r.issue) === String(event.issue) && r.skill === event.skill && r.provider);
+  const spawn = rows.at(-1);
+  if (!spawn) return { recorded: false, reason: 'sin spawn asociado' };
+  const row = { ts: event.ts || new Date().toISOString(), issue: event.issue, skill: event.skill, provider: spawn.provider };
+  const file = path.join(paths(pipelineDir).logs, `rebound-events-${row.ts.slice(0, 10)}.jsonl`);
+  fsImpl.mkdirSync(path.dirname(file), { recursive: true });
+  fsImpl.appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+  return { recorded: true, row };
+}
 function evaluatePair(pipelineDir, actor, provider, observed, config, opts = {}) {
   const fsImpl = opts.fsImpl || fs; const state = readState(pipelineDir, fsImpl); const key = pairKey(actor, provider);
   if (!state.flags[key]?.enabled) return { action: 'off' };
@@ -110,10 +137,11 @@ function evaluatePair(pipelineDir, actor, provider, observed, config, opts = {})
 }
 function evaluateEnabled(pipelineDir, config, opts = {}) {
   const fsImpl = opts.fsImpl || fs; const state = readState(pipelineDir, fsImpl);
-  const observedByPair = collect(pipelineDir, opts); const results = {};
+  const results = {};
   for (const [key, flag] of Object.entries(state.flags)) {
     if (!flag.enabled) continue;
     const [actor, provider] = key.split('::');
+    const observedByPair = collect(pipelineDir, { ...opts, from: opts.from || flag.enabledAt });
     results[key] = evaluatePair(pipelineDir, actor, provider, observedByPair[key], config, opts);
   }
   const refreshed = readState(pipelineDir, fsImpl);
@@ -135,4 +163,4 @@ function reenablePair(pipelineDir, actor, provider, by, opts = {}) {
   return state.flags[key];
 }
 
-module.exports = { DEFAULTS, pairKey, rates, collect, captureBaseline, enablePair, evaluatePair, evaluateEnabled, reenablePair, shouldPropagate, readState };
+module.exports = { DEFAULTS, pairKey, rates, collect, captureBaseline, enablePair, evaluatePair, evaluateEnabled, reenablePair, shouldPropagate, applyToSpawn, recordRebound, readState };
