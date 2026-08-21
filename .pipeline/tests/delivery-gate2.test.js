@@ -77,6 +77,13 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
 });
 
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
-    assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+    const previousOperator = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    try {
+        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+        assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+    } finally {
+        if (previousOperator === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = previousOperator;
+    }
 });
