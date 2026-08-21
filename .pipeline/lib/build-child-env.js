@@ -209,6 +209,35 @@ const PROVIDER_STATIC_ENV = Object.freeze({
 });
 
 // -----------------------------------------------------------------------------
+// PROVIDER_MODEL_ENV — nombre de la variable de entorno por la que cada provider
+// NO-Anthropic espera recibir el modelo a usar (#6272).
+//
+// Mismo criterio de diseño que PROVIDER_STATIC_ENV (#4880): CONSTANTE de código,
+// scopeada al provider ACTIVO del despacho, jamás derivada de `processEnv` ni de
+// input del operador. El valor que se inyecta es el modelo resuelto, y pasa antes
+// por la whitelist estricta de `lib/model-propagation.js` (SR-A.1).
+//
+// Los providers cuyo launcher es `claude` (anthropic, kimi-moonshot) NO figuran
+// acá a propósito: reciben el modelo por el flag `--model` en el array de args
+// (ver providers/anthropic.js::buildSpawn), no por env. `lib/model-propagation.js`
+// decide el canal (`arg` vs `env`) y usa este mapa como fuente única de nombres.
+//
+// Los nombres coinciden con lo que cada handler YA lee hoy:
+//   - openai-codex   → providers/openai-codex.js  (`env.CODEX_MODEL`)
+//   - gemini-google  → providers/gemini-google.js (`env.AGY_MODEL || env.GEMINI_MODEL`)
+//   - cerebras       → providers/cerebras.js      (`env.CEREBRAS_MODEL`)
+//   - nvidia-nim     → providers/nvidia-nim.js    (`env.NVIDIA_NIM_MODEL`)
+//
+// **NO agregar entradas sin que el handler correspondiente lea esa variable** —
+// el guardrail anti-regresión (CA-7) verifica justamente esa correspondencia.
+const PROVIDER_MODEL_ENV = Object.freeze({
+    'openai-codex': 'CODEX_MODEL',
+    'gemini-google': 'GEMINI_MODEL',
+    'cerebras': 'CEREBRAS_MODEL',
+    'nvidia-nim': 'NVIDIA_NIM_MODEL',
+});
+
+// -----------------------------------------------------------------------------
 // DEFAULT_REQUIRES_BY_SKILL — defaults usados cuando agent-models.json no
 // existe o el skill no declara `requires_credentials`. Se sobreescribe por el
 // archivo cuando #3072 (H1) lo entregue.
@@ -518,6 +547,7 @@ module.exports = {
     SYSTEM_ALLOWLIST,
     PROVIDER_DEFAULT_CREDENTIAL_ENV,
     PROVIDER_STATIC_ENV,
+    PROVIDER_MODEL_ENV,
     CREDENTIAL_SCOPES,
     SCOPES_ALWAYS_ON,
     RESERVED_CHILD_SECRET_NAMES,
