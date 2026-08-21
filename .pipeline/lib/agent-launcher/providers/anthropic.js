@@ -17,6 +17,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 // #5795 — contrato compartido de la clase cerrada 'authentication_rejected'.
 const authRejection = require('../auth-rejection');
+// #6272 — whitelist estricta del id de modelo antes de tocar argv (SR-A.1).
+const { sanitizeModelId } = require('../../model-propagation');
 
 // -----------------------------------------------------------------------------
 // detectLauncher — multi-tier detection (preservar orden de precedencia I6)
@@ -78,21 +80,56 @@ function _resetLauncherCacheForTesting() {
 // buildSpawn — devuelve el objeto que el wrapper pasa a child_process.spawn.
 //
 // Contrato:
-//   input:  { args, cwd, env }
-//   output: { cmd, args, spawnOpts }
+//   input:  { args, cwd, env, interactive_supported, model? }
+//   output: { cmd, args, spawnOpts, modelTrace? }
 //
 // `args` ya viene completo con --system-prompt-file, --output-format, etc.
 // Acá solo prependemos `prefixArgs` del launcher (ej. la ruta a cli.js cuando
 // usamos node directo) y armamos `spawnOpts` con shell del launcher.
+//
+// #6272 — `model` (OPCIONAL). Cuando el launcher lo pasa, se agrega como
+// `['--model', id]`: DOS ELEMENTOS SEPARADOS del array de args, nunca por
+// interpolación de string. `detectLauncher` puede devolver `shell:true` (tiers 4
+// y 5: cmd-shim / path-fallback), así que un id con metacaracteres se
+// interpretaría en `cmd.exe` — por eso el valor pasa ANTES por la whitelist
+// estricta (SR-A.1, `lib/model-propagation.js`). Si no valida, el flag se OMITE,
+// el agente hereda el default del CLI y queda `modelTrace` para la traza del
+// caller: nunca se aborta el spawn (CA-3).
+//
+// Defensa en profundidad a propósito: el launcher ya validó el id antes de
+// llegar acá, pero `buildSpawn` es la ÚLTIMA frontera antes de argv y no confía
+// en su caller. Un handler nuevo que reuse esta función (ej. kimi-moonshot)
+// hereda la validación sin tener que acordarse de pedirla.
+//
+// Regresión cero (CA-4): con `model` undefined el objeto devuelto es idéntico al
+// previo — mismos args, mismo `spawnOpts`, y sin la clave `modelTrace`.
+//
+// Posición del flag: inmediatamente después de `prefixArgs` y ANTES de `args`,
+// para no quedar detrás de un eventual argumento posicional del CLI.
 // -----------------------------------------------------------------------------
-function buildSpawn({ args, cwd, env, interactive_supported }) {
+function buildSpawn({ args, cwd, env, interactive_supported, model }) {
     const launcher = getLauncher();
     // #3605 — Opt-in por skill+provider. Default 'ignore' preserva I3
     // (regresión cero CA-4); 'pipe' habilita stdin para chat operador→agente.
     const stdin = interactive_supported === true ? 'pipe' : 'ignore';
-    return {
+
+    // #6272 — el flag sólo entra en juego si el caller pidió propagar. `undefined`
+    // = camino legacy intacto (no se evalúa la whitelist ni se agrega `modelTrace`).
+    let modelArgs = [];
+    let modelTrace = null;
+    if (model !== undefined && model !== null) {
+        const sane = sanitizeModelId(model);
+        if (sane.model) {
+            modelArgs = ['--model', sane.model];
+            modelTrace = { applied: true, model: sane.model, reason: 'ok' };
+        } else {
+            modelTrace = { applied: false, model: null, reason: sane.reason };
+        }
+    }
+
+    const out = {
         cmd: launcher.cmd,
-        args: [...launcher.prefixArgs, ...args],
+        args: [...launcher.prefixArgs, ...modelArgs, ...args],
         spawnOpts: {
             cwd,
             stdio: [stdin, 'pipe', 'pipe'],
@@ -102,6 +139,8 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
             env,
         },
     };
+    if (modelTrace) out.modelTrace = modelTrace;
+    return out;
 }
 
 // -----------------------------------------------------------------------------
