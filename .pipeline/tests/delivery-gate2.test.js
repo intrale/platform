@@ -94,22 +94,30 @@ function withOperatorEnv(valor, fn) {
 }
 
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = withOperatorEnv(undefined, () => delivery.resolveAuthorizedSigners({
-        cua: { operator_chat_ids: ['1', '2', '2'] },
-    }));
+    const signers = withOperatorEnv(undefined, () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } }));
     assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
 });
 
-test('CA-4 · resolveAuthorizedSigners suma la credential del operador desde env', () => {
-    const signers = withOperatorEnv('777', () => delivery.resolveAuthorizedSigners({
-        cua: { operator_chat_ids: ['1', '2'] },
-    }));
-    assert.deepStrictEqual([...signers].sort(), ['1', '2', '777']);
+test('#6226 · resolveAuthorizedSigners suma el operador del env sin duplicar el ya listado', () => {
+    const signers = withOperatorEnv('7', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '7'] } }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '7']);
 });
 
-test('CA-4 · el operador de env no se duplica si ya está en la allowlist', () => {
-    const signers = withOperatorEnv('1', () => delivery.resolveAuthorizedSigners({
-        cua: { operator_chat_ids: ['1', '2'] },
-    }));
-    assert.deepStrictEqual([...signers].sort(), ['1', '2']);
+test('#6226 · resolveAuthorizedSigners agrega el operador del env cuando no estaba', () => {
+    const signers = withOperatorEnv('7', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '7']);
+});
+
+test('#6226 · el aislamiento no filtra al caso base y restaura el valor previo', () => {
+    // Simula el entorno del pipeline (variable presente) y verifica las dos
+    // propiedades del helper: adentro no filtra, y al salir restaura.
+    withOperatorEnv('6529617704', () => {
+        const signers = withOperatorEnv(undefined, () =>
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }));
+        assert.deepStrictEqual([...signers].sort(), ['1', '2']);
+        assert.strictEqual(process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID, '6529617704');
+    });
 });

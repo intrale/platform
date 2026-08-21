@@ -972,6 +972,43 @@ pipeline:
   # Default: 90 días. Recomendado mínimo: 30 días (piso hardcoded).
   audit_retention_days: 90
 
+  # ---------------------------------------------------------------------------
+  # (#6272, split de #6270) Propagación del modelo resuelto al proceso hijo.
+  #
+  # Hasta este issue el modelo declarado en `agent-models.json` se resolvía y se
+  # logueaba, pero NUNCA llegaba al hijo: Anthropic nunca recibía `--model`, y
+  # CODEX_MODEL / GEMINI_MODEL / CEREBRAS_MODEL / NVIDIA_NIM_MODEL nunca se
+  # seteaban para agentes. Los cinco proveedores corrían con el default de su CLI.
+  #
+  # APAGADO POR DEFAULT. Con `enabled: false` (o sin esta sección) el objeto que
+  # recibe `child_process.spawn` es byte-idéntico al de antes del cambio.
+  #
+  # NO ENCENDER antes de que #6271 (resolución correcta del modelo) esté
+  # entregado: con la resolución vieja, prender esto sólo repartiría el literal
+  # legacy a los cinco proveedores. El encendido escalonado y el rollback son
+  # scope de #6274.
+  #
+  # Modos:
+  #   off      → no se toca nada (default).
+  #   dry-run  → se loguea el modelo que SE HABRÍA pasado, con prefijo
+  #              `[dry-run]`, sin alterar el comando. Sirve para verificar qué
+  #              resolvería cada actor antes de prender de verdad.
+  #   on       → se propaga (flag `--model` en anthropic/kimi-moonshot; variable
+  #              de entorno en el resto, según PROVIDER_MODEL_ENV).
+  #
+  # Precedencia: by_skill (actor) > by_provider > default_mode > off. El más
+  # específico gana, así se puede prender un actor sin prender a su proveedor
+  # entero. Un valor de modo inválido se IGNORA y cae al siguiente nivel: un typo
+  # nunca enciende la propagación.
+  #
+  # `enabled: false` es kill-switch duro: apaga todo sin tener que desarmar las
+  # granularidades (rollback de un renglón).
+  model_propagation:
+    enabled: false
+    default_mode: 'off'
+    by_provider: {}
+    by_skill: {}
+
 # =============================================================================
 # #4821 (Split de #4804) — Cutover a persistencia durable del alta de producto.
 #

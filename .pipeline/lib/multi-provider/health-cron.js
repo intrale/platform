@@ -43,6 +43,8 @@ const livePing = require('./live-ping');
 const healthAlerts = require('./health-alerts');
 const auditLog = require('../audit-log');
 const redact = require('../redact');
+// #6226 — nombres únicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('../dropfile-writer');
 // #4402 — fuente única de la lógica CLI-OAuth (extraída de acá a un módulo
 // compartido para que `live-ping.js` la reutilice sin ciclo de require).
 const cliOauthProbe = require('./cli-oauth-probe');
@@ -770,13 +772,28 @@ function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs } = {}) {
         const root = pipelineDir || path.resolve(__dirname, '..', '..');
         const svcDir = path.join(root, 'servicios', 'telegram', 'pendiente');
         if (!fsImpl.existsSync(svcDir)) fsImpl.mkdirSync(svcDir, { recursive: true });
-        const filename = `${Date.now()}-mp-health.json`;
         // El payload ya pasó por redact en health-alerts, pero re-aplicamos
         // por defense in depth (SR-4): si el formateador introduce campos
         // nuevos, se redactan antes de salir.
         const safePayload = redact.redactValue(payload);
         const msg = { text: formatAlertText(safePayload), parse_mode: 'Markdown' };
-        fsImpl.writeFileSync(path.join(svcDir, filename), JSON.stringify(msg), 'utf8');
+        // #6226 — nombre único (`<ts>-<seq>-mp-health.json`) + escritura `wx`.
+        // Antes el nombre era `${Date.now()}-mp-health.json` a secas y
+        // `emitAlerts()` invoca este sender UNA VEZ POR ALERTA dentro del mismo
+        // tick (un tick con 4 providers en rojo emite 4 llamadas seguidas).
+        // Todas caían en el mismo milisegundo → mismo path → cada alerta pisaba
+        // a la anterior y sólo sobrevivía la última. Silencioso: el sender
+        // devolvía `true` y `emitAlerts` las contaba como enviadas, así que ni
+        // el log ni el estado de dedupe delataban las perdidas.
+        dropfileWriter.writeDropfileSync({
+            dir: svcDir,
+            suffix: 'mp-health.json',
+            data: JSON.stringify(msg),
+            fsImpl,
+            onCollision: (name, attempt) => console.warn(
+                `[health-cron] colisión de nombre de dropfile (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+            ),
+        });
         return true;
     } catch {
         return false;
