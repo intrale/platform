@@ -2028,6 +2028,59 @@ function resolveSpawnWithFallback(opts = {}) {
     };
 }
 
+// -----------------------------------------------------------------------------
+// appendSpawnExitDeathKind — #6238 (CA-6). Writer fino que deja constancia de la
+// clasificación de muerte prematura en el MISMO audit log de spawn-exit
+// (`spawn-exit-YYYY-MM-DD.jsonl`, 0o600, hash-chain de `appendChained`).
+//
+// POR QUÉ UNA LÍNEA APARTE Y NO UN CAMPO EN LA DE `onSpawnExit`
+// ------------------------------------------------------------
+// `onSpawnExit` (arriba) ya escribió su línea ANTES de que el Pulpo corra la
+// clasificación de muerte prematura: para esa capa el error se ve como un 5xx
+// transitorio (`error_class: 'transient_5xx'`). Se acepta la DOBLE LÍNEA:
+// `death_kind` es el campo autoritativo para la muerte prematura y desambigua
+// contra el `error_class` de la línea previa. Queda documentado acá para que
+// nadie lo lea como duplicado espurio.
+//
+// SEGURIDAD (SEC-CA-5): `raw_excerpt` está AUSENTE, no vacío. El excerpt es
+// justo donde vive el material sensible; acá no hay ningún campo que
+// transporte texto del provider. `token` viene de la tabla cerrada
+// `CREDENTIAL_DEATH_TOKENS` del detector, así que el JSONL no puede filtrar.
+//
+// Best-effort: cualquier error de IO se silencia (nunca rompe el lifecycle).
+// -----------------------------------------------------------------------------
+function appendSpawnExitDeathKind(opts = {}) {
+    const {
+        pipelineDir, skill, issue, provider, deathKind,
+        token, signature, exitCode, durationMs, fsImpl, auditLog,
+    } = opts;
+    if (!pipelineDir || !deathKind) return false;
+    try {
+        const _now = Number.isFinite(opts.now) ? opts.now : Date.now();
+        const _audit = auditLog || require('../audit-log');
+        const file = spawnExitAuditFile(pipelineDir, new Date(_now));
+        ensureSecureAuditFile(file, fsImpl);
+        const entry = {
+            ts: new Date(_now).toISOString(),
+            skill: skill || null,
+            issue: (issue == null) ? null : (Number(issue) || String(issue)),
+            provider: provider || null,
+            death_kind: String(deathKind),
+            // Identificador de NUESTRA tabla cerrada, nunca texto del provider.
+            credential_token: (typeof token === 'string' && token) ? token : null,
+            signature: (typeof signature === 'string' && signature) ? signature : null,
+            exit_code: (exitCode === null || exitCode === undefined) ? null : Number(exitCode),
+            duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+            codepath: 'premature-death',
+            // raw_excerpt: AUSENTE a propósito (SEC-CA-5). No agregar.
+        };
+        _audit.appendChained({ file, entry, fsImpl });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 module.exports = {
     resolveSpawnWithFallback,
     enqueueTelegramNotice,
@@ -2058,6 +2111,8 @@ module.exports = {
 
     isGeneralizedParserEnabled,
     spawnExitAuditFile,
+    // #6238 CA-6 — writer de la línea `death_kind` en el spawn-exit JSONL.
+    appendSpawnExitDeathKind,
     FEATURE_FLAG_NAME,
     CODEPATH_EMOJI,
 
