@@ -36,8 +36,34 @@ issue: 1732
 fase: verificacion
 pipeline: desarrollo
 resultado: rechazado
+severidad: grave        # grave | leve — OBLIGATORIO (ver abajo)
 motivo: "Descripción clara del problema encontrado"
 ```
+
+### Campo `severidad` en los rechazos (#6296) — OBLIGATORIO
+
+Un rechazo tuyo **no espera a un humano**: el pipeline lo resuelve solo y el
+destino lo fijás vos con este campo. Sólo hay dos valores válidos:
+
+| Valor | Qué significa | Qué hace el pipeline |
+|-------|---------------|----------------------|
+| `grave` | Hay un **defecto real**: tests en rojo, criterio de aceptación incumplido, build roto, regresión, hallazgo de seguridad. | Devuelve el issue a `dev` con tu motivo como guía. |
+| `leve` | Observación que **no justifica frenar**: nit de naming, sugerencia de estilo, mejora opcional sin defecto concreto. | No frena: publica tu observación en el PR y la fase se vuelve a correr completa. |
+
+Reglas inquebrantables:
+
+- **Ausente, vacío o cualquier otro valor ⇒ se trata como `grave`** (fail-closed).
+  El pipeline nunca interpreta el silencio como "es menor". Un falso `grave`
+  cuesta un rebote; un falso `leve` deja pasar un defecto.
+- **No lo pongas en el `motivo`** — el campo es estructurado. `motivo: "severidad
+  leve, es un nit"` se lee como `grave`, porque el texto libre lo escribe el
+  agente y no es una fuente confiable.
+- **`leve` no es "apruebo con reservas".** Si dudás entre los dos, es `grave`.
+- Los rechazos de `security` son **siempre `grave`**, aunque declares `leve`: el
+  piso está en código (`.pipeline/lib/rejection-severity.js`) y no se puede bajar.
+- Ojo con el vocabulario: varios skills usan "severidad" para clasificar
+  **hallazgos dentro de su reporte**. Ese uso es interno del reporte. Este campo
+  es otra cosa: la severidad **del veredicto completo**, y es el que rutea.
 
 7.5 **Escribir tu sección de handoff** (#2993) — solo si el pipeline activó el handoff cross-agente. Sirve para que el próximo agente del issue arranque con el contexto procesado por vos en vez de releer todo desde cero.
 

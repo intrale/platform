@@ -3,8 +3,11 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
     planReconciliation, executeDecisions, decideForIssue,
+    rejectedSkillsOf,
     DEFAULT_MAX_REQUEUE_ATTEMPTS, DEFAULT_CAP_PER_TICK,
 } = require('./stuck-phase-reconciler');
+// #6296 — el test de contrato anti-divergencia lee LOS DOS gates.
+const { analyzeStuckIssue } = require('./stuck-phase-detector');
 
 const NOW = 1_800_000_000_000;
 const OLD = NOW - 30 * 60 * 1000; // stale
@@ -23,6 +26,25 @@ function stuckIssue(over = {}) {
         ...over,
     };
 }
+// #6296 — issue con un RECHAZO en una fase paralela (el shape real de los 13
+// issues varados del 2026-08-21: uno rechaza, los hermanos quedan cancelados).
+function rechazoIssue(over = {}) {
+    return {
+        issue: 6146, pipeline: 'desarrollo', fase: 'verificacion',
+        requiredSkills: ['qa', 'tester', 'security'],
+        deliverables: [
+            deliv('qa', 'listo', { resultado: 'rechazado', severidad: 'grave', motivo: 'CA-1: la pantalla no renderiza' }),
+            deliv('tester', 'listo', CANCEL),
+            deliv('security', 'listo', CANCEL),
+        ],
+        liveSkills: new Set(), liveElsewhere: false, hasNeedsHuman: false,
+        retryCounts: {}, isMonoSkill: false, allowed: true, active: true,
+        ...over,
+    };
+}
+// Resolutor de destino de rebote (envuelve `rebote-destino` en producción).
+const DEST_DEV = () => ({ faseDestino: 'dev', skillsDestino: ['backend-dev'] });
+
 function plan(issues, extra = {}) { return planReconciliation({ issues, nowMs: NOW, ...extra }); }
 function only(issues, extra = {}) { return plan(issues, extra).decisions[0]; }
 
@@ -246,7 +268,10 @@ test('R-1 ambiguousSkillsOf sobre el shape de #5175 → [] (no diverge del detec
     // el detector considera re-encolables: los dos gates divergirían.
     assert.deepEqual(ambiguousSkillsOf(infraIssue()), []);
 });
-test('R-1 ambiguousSkillsOf sigue detectando un rechazo de contenido real', () => {
+// #6296 — REESCRITO: `rejected` salió de `AMBIGUOUS_STATUSES` (tiene carril
+// `rebote` propio). El skill que RECHAZÓ ya no es "ambiguo"; el hermano drenado
+// que no emitió veredicto propio sí lo sigue siendo.
+test('#6296 R-1 ambiguousSkillsOf ya NO devuelve al que rechazó (tiene carril propio)', () => {
     const it = infraIssue({
         deliverables: [
             deliv('po', 'procesado', { resultado: 'rechazado', motivo: 'CA-2 incumplido' }),
@@ -255,12 +280,203 @@ test('R-1 ambiguousSkillsOf sigue detectando un rechazo de contenido real', () =
             deliv('architect', 'procesado', APROB),
         ],
     });
-    assert.deepEqual(ambiguousSkillsOf(it), ['po', 'review']);
+    assert.deepEqual(ambiguousSkillsOf(it), ['review']);
+    assert.deepEqual(rejectedSkillsOf(it), ['po']);
 });
 test('CA-16 AMBIGUOUS_STATUSES no contiene infra-failed', () => {
     assert.ok(!AMBIGUOUS_STATUSES.has('infra-failed'),
         'infra-failed no es un veredicto ambiguo: es la AUSENCIA de veredicto');
-    assert.deepEqual([...AMBIGUOUS_STATUSES].sort(), ['cancelled', 'corrupt', 'rejected']);
+    assert.deepEqual([...AMBIGUOUS_STATUSES].sort(), ['cancelled', 'corrupt']);
+});
+test('#6296 AMBIGUOUS_STATUSES ya NO contiene rejected (gate espejo del detector)', () => {
+    assert.ok(!AMBIGUOUS_STATUSES.has('rejected'),
+        'un rechazo es una decisión, no una ambigüedad: su carril es `rebote`');
+});
+
+// ─── #6296 TEST DE CONTRATO ANTI-DIVERGENCIA ───────────────────────────────
+// Los DOS gates leídos en la MISMA aserción. Tocar `analyzeStuckIssue` y olvidar
+// `AMBIGUOUS_STATUSES` (o al revés) dejaría al reconciler devolviendo el skill
+// que rechazó como "ambiguo" en un camino que ya no escala — exactamente la
+// divergencia detector↔reconciler que #5641 vino a cerrar.
+test('#6296 contrato: con un rejected, el detector NO escala Y el skill no es ambiguo', () => {
+    const it = rechazoIssue();
+    const analysis = analyzeStuckIssue({
+        requiredSkills: it.requiredSkills,
+        deliverables: it.deliverables,
+        liveSkills: it.liveSkills,
+        nowMs: NOW,
+    });
+    assert.notEqual(analysis.action, 'escalate');
+    assert.equal(analysis.action, 'rebote');
+    assert.ok(!ambiguousSkillsOf(it).includes('qa'),
+        'el skill que rechazó no puede estar en los dos carriles a la vez');
+    assert.deepEqual(rejectedSkillsOf(it), ['qa']);
+});
+
+// ─── #6296 CARRIL DE REBOTE POR SEVERIDAD ──────────────────────────────────
+test('#6296 CA-1 rechazo grave con hermanos cancelled → rebote a dev, sin needs-human', () => {
+    const d = only([rechazoIssue()], { resolveRebote: DEST_DEV });
+    assert.equal(d.action, 'rebote');
+    assert.notEqual(d.action, 'escalate');
+    assert.equal(d.dest.faseDestino, 'dev');
+    assert.deepEqual(d.dest.skillsDestino, ['backend-dev']);
+    assert.equal(d.rebote.severidadEfectiva, 'grave');
+    assert.match(d.reason, /qa:rejected\(grave\)/);
+});
+test('#6296 CA-3 rechazo SIN severidad declarada → grave (nunca leve, nunca aprueba)', () => {
+    const d = only([rechazoIssue({
+        deliverables: [
+            deliv('qa', 'listo', { resultado: 'rechazado', motivo: 'sin campo severidad' }),
+            deliv('tester', 'listo', CANCEL),
+            deliv('security', 'listo', CANCEL),
+        ],
+    })], { resolveRebote: DEST_DEV });
+    assert.equal(d.action, 'rebote');
+    assert.equal(d.rebote.severidadEfectiva, 'grave');
+});
+test('#6296 CA-2 rechazo LEVE → requeue de la fase completa, JAMÁS promote/done', () => {
+    const d = only([rechazoIssue({
+        requiredSkills: ['review', 'po'],
+        deliverables: [
+            deliv('review', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'nit de naming' }),
+            deliv('po', 'listo', CANCEL),
+        ],
+    })], { resolveRebote: DEST_DEV });
+    assert.equal(d.action, 'requeue');
+    assert.notEqual(d.action, 'promote');
+    assert.notEqual(d.action, 'done');
+    assert.notEqual(d.action, 'rebote', 'un leve NO vuelve a desarrollo');
+    // Los hermanos `cancelled` NO son aprobación: la fase se re-corre completa.
+    assert.deepEqual(d.skills, ['review', 'po']);
+    assert.ok(d.observacion, 'el carril leve publica observación en el PR');
+    assert.deepEqual(d.observacion.items.map((i) => i.skill), ['review']);
+});
+test('#6296 un GRAVE + un LEVE ⇒ grave (nunca se promedia)', () => {
+    const d = only([rechazoIssue({
+        requiredSkills: ['review', 'tester'],
+        deliverables: [
+            deliv('review', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'nit' }),
+            deliv('tester', 'listo', { resultado: 'rechazado', severidad: 'grave', motivo: 'tests en rojo' }),
+        ],
+    })], { resolveRebote: DEST_DEV });
+    assert.equal(d.action, 'rebote');
+    assert.equal(d.rebote.severidadEfectiva, 'grave');
+});
+test('#6296 CA-5 security en el carril leve NO publica su motivo en el PR', () => {
+    const d = only([rechazoIssue({
+        requiredSkills: ['security', 'po'],
+        deliverables: [
+            // Aunque el YAML declare `leve`, el piso de `rejection-severity` lo
+            // vuelve grave: security jamás entra al carril liviano.
+            deliv('security', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'secret en claro' }),
+            deliv('po', 'listo', CANCEL),
+        ],
+    })], { resolveRebote: DEST_DEV });
+    assert.equal(d.action, 'rebote');
+    assert.equal(d.rebote.severidadEfectiva, 'grave');
+    assert.equal(d.observacion, undefined, 'nada de security se publica en el PR');
+});
+test('#6296 SEC-D destino inválido (fase_rechazo null) → escalate, JAMÁS "seguir curso"', () => {
+    const d = only([rechazoIssue()], { resolveRebote: () => null });
+    assert.equal(d.action, 'escalate');
+    assert.match(d.reason, /destino de rebote inválido/);
+    assert.deepEqual(d.skills, ['qa'], 'el marker se planta con un skill REAL de la fase');
+});
+test('#6296 SEC-D resolutor que LANZA → escalate (no tumba el tick)', () => {
+    const d = only([rechazoIssue()], { resolveRebote: () => { throw new Error('config rota'); } });
+    assert.equal(d.action, 'escalate');
+});
+test('#6296 sin resolutor cableado → escalate (fail-closed, nunca inventa fase)', () => {
+    const d = only([rechazoIssue()]);
+    assert.equal(d.action, 'escalate');
+});
+test('#6296 dedupe: rechazo grave con needs-human vigente → none (no pisa un bloqueo humano)', () => {
+    const d = only([rechazoIssue({ hasNeedsHuman: true, needsHumanSource: 'marker' })], { resolveRebote: DEST_DEV });
+    assert.equal(d.action, 'none');
+    assert.equal(d.suppression, 'dedupe');
+});
+test('#6296 CA-7 carril leve respeta el presupuesto de requeue existente', () => {
+    const base = {
+        requiredSkills: ['review', 'po'],
+        deliverables: [
+            deliv('review', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'nit' }),
+            deliv('po', 'listo', CANCEL),
+        ],
+    };
+    const d = only([rechazoIssue({ ...base, retryCounts: { review: 2 } })], { resolveRebote: DEST_DEV });
+    assert.equal(d.action, 'escalate', 'agotado el presupuesto, el leve escala en vez de loopear');
+    assert.match(d.reason, /tope de reintentos/);
+});
+test('#6296 CA-4 no-regresión: cancelled+corrupt SIN ningún rejected → sigue escalando', () => {
+    const d = only([rechazoIssue({
+        requiredSkills: ['tester', 'security'],
+        deliverables: [
+            deliv('tester', 'listo', CANCEL),
+            deliv('security', 'listo', { algo: 'ilegible' }),
+        ],
+    })], { resolveRebote: DEST_DEV });
+    assert.equal(d.action, 'escalate');
+    assert.match(d.reason, /sin decisión de validador/);
+});
+test('#6296 executeDecisions cuenta `rebotes` y deja audit del carril nuevo', () => {
+    const audits = [];
+    const notifs = [];
+    const r = executeDecisions([{
+        issue: 6146, pipeline: 'desarrollo', fase: 'aprobacion', action: 'rebote',
+        reason: 'rechazo de validador (review:rejected(grave))',
+        dest: { faseDestino: 'dev', skillsDestino: ['backend-dev'] },
+        rebote: { severidadEfectiva: 'grave', skills: [{ skill: 'review', severidad: 'grave' }], arrastrados: ['po:cancelled'] },
+    }], {
+        rebote: () => true,
+        audit: (rec) => audits.push(rec),
+        notify: (m) => notifs.push(m),
+    });
+    assert.equal(r.rebotes, 1);
+    assert.equal(r.skipped, 0);
+    assert.equal(audits.filter((a) => a.action === 'rebote').length, 1);
+    assert.equal(audits[0].fase_destino, 'dev');
+    assert.equal(notifs.length, 1, 'CA-UX-3: UNA notificación por decisión');
+});
+test('#6296 executeDecisions: dep `rebote` que devuelve false ⇒ skipped, NO contado', () => {
+    const audits = [];
+    const r = executeDecisions([{
+        issue: 6146, pipeline: 'desarrollo', fase: 'aprobacion', action: 'rebote',
+        reason: 'x', dest: { faseDestino: 'dev', skillsDestino: ['backend-dev'] },
+        rebote: { severidadEfectiva: 'grave', skills: [] },
+    }], { rebote: () => false, audit: (rec) => audits.push(rec) });
+    assert.equal(r.rebotes, 0);
+    assert.equal(r.skipped, 1);
+    assert.ok(audits.some((a) => a.error));
+});
+test('#6296 executeDecisions: sin dep `rebote` cableado ⇒ skipped (fail-observable)', () => {
+    const r = executeDecisions([{
+        issue: 1, pipeline: 'desarrollo', fase: 'aprobacion', action: 'rebote',
+        reason: 'x', dest: { faseDestino: 'dev', skillsDestino: ['backend-dev'] },
+    }], {});
+    assert.equal(r.rebotes, 0);
+    assert.equal(r.skipped, 1);
+});
+test('#6296 CA-8 regresión con el caso REAL de #6146 (review:rejected + 3 cancelled)', () => {
+    // Fixture COPIADO del marker archivado por el destrabe manual del 2026-08-21
+    // (`6146.review.reason.json.commander-desempate-...`), no leído del path vivo:
+    // los tests son puros.
+    const it = {
+        issue: 6146, pipeline: 'desarrollo', fase: 'aprobacion',
+        requiredSkills: ['review', 'po', 'ux', 'architect'],
+        deliverables: [
+            deliv('review', 'listo', { resultado: 'rechazado', motivo: 'CA-2 incumplido: el gate de lint falla en enforce' }),
+            deliv('po', 'listo', CANCEL),
+            deliv('ux', 'listo', CANCEL),
+            deliv('architect', 'listo', CANCEL),
+        ],
+        liveSkills: new Set(), liveElsewhere: false, hasNeedsHuman: false,
+        retryCounts: {}, isMonoSkill: false, allowed: true, active: true,
+    };
+    const d = only([it], { resolveRebote: DEST_DEV });
+    assert.equal(d.action, 'rebote', 'destino dev, sin pasar por needs-human');
+    assert.equal(d.dest.faseDestino, 'dev');
+    assert.notEqual(d.action, 'escalate');
+    assert.deepEqual(d.rebote.arrastrados, ['po:cancelled', 'ux:cancelled', 'architect:cancelled']);
 });
 
 // ─── CA-10 / CA-UX-2: el carril de requeue por infra ───────────────────────
@@ -411,4 +627,21 @@ test('CA-UX-4 sin recomendación la línea se omite entera (no "sin recomendaci�
     const msg = buildEscalationMessage({ issue: 1, pipeline: 'desarrollo', fase: 'validacion', reason: 'ambigüedad' }, null);
     assert.ok(!msg.includes('💡'), 'nunca gastar un renglón para no decir nada (#5337)');
     assert.equal(buildEscalationRecommendation({ issue: 1 }), null);
+});
+
+// #6296 — pausa: escribir en `pendiente/` ES re-encolar (PO SG-5).
+test('#6296 pausa: el rebote grave NO spawnea un dev (escalate sí seguiría permitido)', () => {
+    const d = only([rechazoIssue()], { resolveRebote: DEST_DEV, paused: true });
+    assert.equal(d.action, 'none');
+    assert.match(d.reason, /pausa/);
+});
+test('#6296 pausa: el carril leve tampoco re-encola', () => {
+    const d = only([rechazoIssue({
+        requiredSkills: ['review', 'po'],
+        deliverables: [
+            deliv('review', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'nit' }),
+            deliv('po', 'listo', CANCEL),
+        ],
+    })], { resolveRebote: DEST_DEV, paused: true });
+    assert.equal(d.action, 'none');
 });

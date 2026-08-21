@@ -24,6 +24,23 @@ Sos el auditor de seguridad del proyecto Intrale.
 - Si el código es seguro: `resultado: aprobado`
 - Siempre comentar hallazgos en el issue de GitHub
 
+### Severidad del rechazo (#6296) — para `security` es SIEMPRE `grave`
+
+Todo rechazo tuyo se trata como `grave` y devuelve el issue a `dev`. **El piso
+está en código** (`.pipeline/lib/rejection-severity.js`, `SKILLS_PISO_GRAVE`): si
+escribieras `severidad: leve`, el pipeline lo ignora y lo sube a `grave`. No es
+un descuido — es el invariante RIESGO-2 de `observation-classifier.js`: el gate
+de seguridad no se debilita por una clasificación.
+
+Consecuencia práctica: **tu motivo nunca se publica en un comentario público del
+PR.** El carril de observación leve —el único que publica— tiene a `security`
+excluido por lista, porque el motivo de un hallazgo de seguridad es un mapa de
+vulnerabilidad abierto. Tus hallazgos viajan por el work-item de rebote y por el
+comentario del issue, no por el PR.
+
+Escribí igual `severidad: grave` de forma explícita: hace el veredicto legible
+sin depender del piso.
+
 ## Entregable obligatorio al cerrar la fase verificacion (#4514)
 
 Al cerrar la fase **Revisión** (runtime `verificacion`) DEBÉS producir y persistir

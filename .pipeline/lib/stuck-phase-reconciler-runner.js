@@ -111,7 +111,7 @@ function runStuckPhaseReconciler(deps, opts = {}) {
         // caller loguea `evaluados: 0` y así se distingue "no había nada varado"
         // de "el reconciler está muerto".
         return {
-            requeued: 0, escalated: 0, skipped: 0, decisions: [],
+            requeued: 0, escalated: 0, rebotes: 0, skipped: 0, decisions: [],
             evaluados: 0,
             suppressed: { ola: 0, cache: 0, dedupe: 0, cerrado: 0, otro: 0 },
         };
@@ -124,11 +124,18 @@ function runStuckPhaseReconciler(deps, opts = {}) {
         maxRequeueAttempts: opts.maxRequeueAttempts,
         capPerTick: opts.capPerTick,
         staleThresholdMs: opts.staleThresholdMs,
+        // #6296 — resolutor del destino del rebote por severidad. Si el cableado
+        // no lo provee, el plan cae a `escalate` (fail-closed), nunca inventa fase.
+        resolveRebote: deps.resolveRebote,
     });
 
     const summary = executeDecisions(decisions, {
         requeueWorkItem: deps.requeueWorkItem,
         escalate: deps.escalate,
+        // #6296 — materialización del rebote grave y publicación de la
+        // observación del carril leve.
+        rebote: deps.rebote,
+        publicarObservacion: deps.publicarObservacion,
         notify: deps.notify,
         audit: deps.audit,
         workItemExists: deps.workItemExists,

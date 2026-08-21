@@ -16,7 +16,10 @@
  *   - `merge-conflict` → `delivery.classifyConflictFiles(paths, allowlist)`.
  *   - `desync`         → `desync-detector.classifyDesync(diff, isClosed)`
  *                        (mapeo explícito reductivo→mecanico / ambiguo→decision).
- *   - `gate-reject`    → `decision` por defecto hasta la parte (b) #4766.
+ *   - `gate-reject`    → `rejection-severity.resolveSeverity` (#6296, cierra la
+ *                        deuda de #4766(b)): `grave` ⇒ `mecanico` con rebote a
+ *                        `dev`; `leve` ⇒ `mecanico` con observación al PR; sin
+ *                        veredicto verificable ⇒ `decision` (fail-closed).
  *
  * La allowlist/denylist se cargan SOLO del repo base (`.pipeline/config/`),
  * NUNCA del branch evaluado (SR-2): `loadConfig()` ancla el path con
@@ -358,6 +361,59 @@ function classifyDesyncBlock(block) {
     return decision(`desync ${raw}`, { delegateTo, evidence: { raw } });
 }
 
+/**
+ * #6296 — cierra la deuda de #4766(b): `gate-reject` deja de ser `decision`
+ * incondicional y se clasifica POR SEVERIDAD.
+ *
+ * Hasta acá, TODO rechazo de gate escalaba a humano "por defecto hasta la parte
+ * (b)". Esa parte nunca llegó, así que el default se volvió permanente y produjo
+ * el atasco de 13 issues en `needs-human` del 2026-08-21.
+ *
+ * Reglas (mismas que el carril del reconciler — fuente única en
+ * `rejection-severity.js`):
+ *   - Sin YAML de veredicto ⇒ no hay PROCEDENCIA verificable ⇒ `decision`
+ *     (SR-8, fail-closed). Es el único camino que sigue escalando: cuando ni
+ *     siquiera sabemos quién decidió, no hay decisión que respetar.
+ *   - `grave` ⇒ `mecanico`: rebote a `dev`. El defecto se acciona sin esperar.
+ *   - `leve`  ⇒ `mecanico`: observación al PR, el issue sigue su curso.
+ *
+ * Un rechazo de `security` NUNCA cae en el carril leve: el piso está en código
+ * dentro de `rejection-severity.js` (`SKILLS_PISO_GRAVE`), no acá — un piso
+ * duplicado es un piso que puede divergir.
+ *
+ * OJO con `mecanico`: acá significa "resoluble sin juicio humano", NO "sin
+ * consecuencias". Los dos carriles ejecutan una acción concreta y auditada; en
+ * ninguno de los dos se auto-aprueba nada ni se saltea un gate.
+ */
+function classifyGateReject(block) {
+    const { resolveSeverity } = require('./rejection-severity');
+    const delegateTo = 'rejection-severity.resolveSeverity';
+
+    // SR-8 — sin veredicto estructurado no hay procedencia. `typeof null` es
+    // `'object'`, y un array tampoco es un veredicto: guardas explícitas.
+    const verdict = block && block.verdict;
+    if (!verdict || typeof verdict !== 'object' || Array.isArray(verdict)) {
+        return decision('gate-reject sin veredicto verificable → decision (SR-8)', {
+            delegateTo: 'gate-reject-sin-veredicto',
+        });
+    }
+
+    const sev = resolveSeverity({ skill: block.skill, yaml: verdict });
+    const config = loadConfig();
+    if (sev === 'leve') {
+        auditMecanico({ kind: 'gate-reject', paths: [], delegateTo, reason: 'gate-reject leve', config });
+        return mecanico('gate-reject leve → observación al PR', {
+            delegateTo: 'gate-reject-leve',
+            evidence: { skill: block.skill || null, severidad: 'leve' },
+        });
+    }
+    auditMecanico({ kind: 'gate-reject', paths: [], delegateTo, reason: 'gate-reject grave', config });
+    return mecanico('gate-reject grave → rebote a dev', {
+        delegateTo: 'gate-reject-grave',
+        evidence: { skill: block.skill || null, severidad: 'grave' },
+    });
+}
+
 // -----------------------------------------------------------------------------
 // API pública: classifyBlock — dispatcher con fail-closed envolvente (CA-1/SR-8).
 // -----------------------------------------------------------------------------
@@ -383,9 +439,7 @@ function classifyBlock(block) {
             case 'desync':
                 return classifyDesyncBlock(block);
             case 'gate-reject':
-                return decision('gate-reject por defecto → decision (parte b #4766 pendiente)', {
-                    delegateTo: 'gate-reject-default',
-                });
+                return classifyGateReject(block);
             default:
                 return decision(`kind desconocido: ${String(block.kind)}`);
         }
@@ -397,6 +451,7 @@ function classifyBlock(block) {
 module.exports = {
     classifyBlock,
     _internal: {
+        classifyGateReject,
         canonicalizePath,
         matchSegment,
         matchGlob,
