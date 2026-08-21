@@ -607,7 +607,12 @@ function makeSpyFs(seed = {}) {
 }
 
 // loadDescriptor fake: devuelve un descriptor onboarding válido (o el override).
-function fakeLoader(result) { return () => result; }
+//
+// #6032 · CA-18 — `onDisk` (el parse crudo del archivo, sin migrar) por default
+// espeja `descriptor`, que es el caso normal cuando el descriptor ya está en la
+// versión corriente. Un test que necesite que DIVERJAN — justamente el escenario
+// que CA-18 cubre: disco en `1.0`, memoria migrada a `1.1` — lo pasa explícito.
+function fakeLoader(result) { return () => ({ onDisk: result.descriptor, ...result }); }
 
 const DESC_PATH = '/tmp/descriptors/acme-store.json';
 

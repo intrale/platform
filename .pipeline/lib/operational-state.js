@@ -709,6 +709,56 @@ function readFullPauseOrigin() {
     return partialPause.readFullPauseOrigin();
 }
 
+/**
+ * Contenido del marker de allowlist, INDEPENDIENTE del modo de dispatch (#5176).
+ *
+ * Por qué existe y por qué NO alcanza `getDispatchState()`
+ * -------------------------------------------------------
+ * `getDispatchState()` responde "¿qué gatea el dispatch AHORA?", y para eso
+ * COLAPSA deliberadamente dos ejes que algunos lectores necesitan separados:
+ *
+ *   1. Halt total gana sobre la allowlist. Con `.paused` presente,
+ *      `getPipelineMode()` retorna temprano con `allowedIssues: []` SIN leer el
+ *      marker de allowlist, aunque el marker tenga 17 issues autorizados. Un
+ *      lector que quiera saber "qué dice el marker" (un detector de desync, un
+ *      diff de transición de ola, el render de `/allowlist`) leería `[]` y
+ *      concluiría que el estado se perdió — que es exactamente el evento que
+ *      termina en re-autorización manual masiva (#5060).
+ *
+ *   2. Marker AUSENTE y marker PRESENTE-PERO-VACÍO caen los dos en `running`
+ *      con `allowedIssues: []`. Para el gate de dispatch da igual (los dos
+ *      deniegan), pero para un detector de desync NO: ausencia de canónica no
+ *      es divergencia, y colapsarlas produce un desync falso permanente.
+ *
+ * Esta función devuelve los TRES estados sin colapsar:
+ *
+ *   - `null`            → marker ausente o ilegible (no hay nada que afirmar).
+ *   - `{ issues: [] }`  → marker presente y vacío (afirmación explícita).
+ *   - `{ issues: [n] }` → marker presente con contenido, haya o no halt total.
+ *
+ * NO es el gate de dispatch: para decidir si un issue puede correr está
+ * `isIssueAllowed()` / `getDispatchState()`, que SÍ aplican la precedencia
+ * `paused > partial_pause > running`. Quien use esto para gatear dispatch
+ * reintroduce el fail-open de #5060.
+ *
+ * @returns {{ issues: number[], skills: string[], createdAt: string|null,
+ *   source: string|null, authorizationTtls: Object|null }|null}
+ */
+function readDispatchAllowlist() {
+    const marker = readDispatchMarkerRaw();
+    if (!marker) return null;
+    return {
+        issues: markerIssues(marker),
+        skills: normalizeSkills(marker.allowed_skills),
+        createdAt: typeof marker.created_at === 'string' ? marker.created_at : null,
+        source: typeof marker.source === 'string' ? marker.source : null,
+        authorizationTtls: (marker.authorization_ttls && typeof marker.authorization_ttls === 'object'
+            && !Array.isArray(marker.authorization_ttls))
+            ? marker.authorization_ttls
+            : null,
+    };
+}
+
 // -----------------------------------------------------------------------------
 
 module.exports = {
@@ -741,6 +791,7 @@ module.exports = {
     isSkillAllowedInState,
     unscopedDispatchEnabled,
     readFullPauseOrigin,
+    readDispatchAllowlist,
     // ── Allowlist efectiva · mutación (authorizedBy OBLIGATORIO) ─────────────
     setAllowlist,
     setAllowlistAtomic,

@@ -625,10 +625,38 @@ test('CA-5 · exencion de archivo entero exige {file,reason}: un string pelado �
     assert.match(r.all, /se esperaba \{ file, reason \}/);
 });
 
-test('CA-10 · la allowlist REAL del repo nace vacia y carga sin errores', () => {
-    const al = I.loadAllowlist(path.join(__dirname, '..', '..'));
+test('CA-10 · la allowlist REAL del repo carga sin errores, sin exenciones de archivo entero y sin entries stale', () => {
+    const pipelineRoot = path.join(__dirname, '..', '..');
+    const al = I.loadAllowlist(pipelineRoot);
+
+    // `files` sigue teniendo que estar vacio: una exencion de ARCHIVO ENTERO es
+    // demasiado amplia para el invariante del contrato §2 (CA-10 / CA-5).
     assert.equal(al.files.size, 0, 'files debe estar vacio (CA-10)');
-    assert.equal(al.rules.length, 0, 'rules debe estar vacio (CA-10)');
+
+    // `rules` ya NO tiene que estar vacio. #5176 (parte 2 de 3) declaro la
+    // primera exclusion justificada: `desync-detector` conserva su lectura
+    // tolerante de `waves.json` porque ningun lector del envoltorio distingue
+    // "sin ola activa" (null) de "ola vacia" ([]) sin romper el detector (A-2).
+    //
+    // Lo que se fija acá es MAS fuerte que "cero entries": cada entry tiene que
+    // estar VIVA. Una entry que ya no corresponde a ninguna violation (call
+    // site migrado, o drift de numero de linea tras un refactor) es una exencion
+    // que nadie revisa y que el guardrail aplica en silencio — justo el modo de
+    // falla que #5175 evito con el fail-loud de `loadAllowlist`.
+    const crudas = lint.lint({ pipelineRoot, allowlist: { files: new Set(), rules: [] } }).violations;
+    const vivas = new Set(crudas.map((v) => `${v.file}:${v.line}`));
+    const suprimidas = lint.lint({ pipelineRoot }).violations;
+
+    for (const r of al.rules) {
+        assert.ok(
+            vivas.has(`${r.file}:${r.line}`),
+            `entry stale en la allowlist: ${r.file}:${r.line} ya no es violation — borrala en vez de dejarla`,
+        );
+        assert.ok(
+            !suprimidas.some((v) => v.file === r.file && v.line === r.line),
+            `la entry ${r.file}:${r.line} no esta suprimiendo la violation que declara`,
+        );
+    }
 });
 
 test('CA-5b · allowlist AUSENTE si es allowlist vacia (la ausencia no es ambigua, la corrupcion si)', () => {
@@ -649,7 +677,10 @@ test('CA-9a · --report-only ⇒ exit 0 con prefijo AVISO:, y se auto-declara no
     assert.match(r.all, /^AVISO: lib\/bad\.js:2 /m);
     assert.ok(!/^ERROR:/m.test(r.all));
     assert.match(r.all, /NO bloquea el commit ni el build/);
-    assert.match(r.all, /parte 3 de #5109/);
+    // #5179 — tras el flip, el pie del modo report-only ya no anuncia un flip
+    // pendiente: aclara que el wiring real SÍ bloquea, para que nadie lo use
+    // como vía de escape.
+    assert.match(r.all, /corre en `--check` desde #5179/);
 });
 
 test('CA-9a · --check con violations ⇒ exit 1 con prefijo ERROR:', () => {
@@ -790,13 +821,21 @@ test('smoke · el binario real y su allowlist estan en CODEOWNERS (CA-5 / SEC-1)
     assert.match(co, /@leitolarreta/);
 });
 
-test('CA-4b/R5 · el hook pre-commit invoca --report-only, NUNCA --check', () => {
+test('CA-9b/#5179 · el hook pre-commit invoca --check y PROPAGA el exit code', () => {
+    // Invertido respecto de #5175 a proposito: aquel test fijaba `--report-only`
+    // porque el repo tenia violations y un hook bloqueante habria entrenado a
+    // todo el mundo a usar `--no-verify` (R5). Con el inventario en cero el hook
+    // solo bloquea a quien AGREGA un acceso directo nuevo, que es el objetivo.
     const hook = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.husky', 'pre-commit'), 'utf8');
     const linea = hook.split('\n').find(l => l.includes('operational-state-lint.js') && l.includes('node '));
     assert.ok(linea, 'el hook debe invocar el guardrail');
-    assert.match(linea, /--report-only/);
-    assert.ok(!/--check/.test(linea), 'clonar el --check del template rompe todo commit bajo .pipeline/ (R5)');
-    assert.match(linea, /\|\| true/, 'no debe propagar el exit code');
+    assert.match(linea, /--check/);
+    assert.ok(!/--report-only/.test(linea), 'volver a report-only apaga la capa local del doble wiring');
+    assert.ok(!/\|\|\s*true/.test(linea), 'con `|| true` el hook no bloquea nada: seria wiring decorativo');
+    assert.match(linea, /\|\|\s*exit 1/, 'debe propagar el fallo');
+    // El filtro `--only` sigue siendo obligatorio: con el hook bloqueante, sin
+    // el filtro un dev quedaria frenado por una violation que no introdujo.
+    assert.match(linea, /--only=/);
 });
 
 test('CA-4a · el bloque del hook esta ANTES del primer `exit 0` (si no, es codigo muerto)', () => {
@@ -816,10 +855,16 @@ test('CA-4a · el bloque del hook esta ANTES del primer `exit 0` (si no, es codi
     assert.ok(idxLint < idxExit, `el bloque del guardrail (linea ${idxLint + 1}) debe estar antes del primer \`exit 0\` (linea ${idxExit + 1})`);
 });
 
-test('CA-4a/CA-4c · el workflow corre en report-only, con permissions read y trigger pull_request', () => {
+test('CA-4a/CA-4c/CA-9b · el workflow corre en enforce, con permissions read y trigger pull_request', () => {
     const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'operational-state-lint.yml'), 'utf8');
-    assert.match(wf, /operational-state-lint\.js --report-only/);
-    assert.ok(!/operational-state-lint\.js --check/.test(wf), 'el flip a --check va en la parte 3');
+    assert.match(wf, /operational-state-lint\.js --check/);
+    assert.ok(
+        !/run:\s*node lib\/operational-state-lint\.js --report-only/.test(wf),
+        'el paso de enforce no puede volver a --report-only (la mencion en los comentarios si esta permitida)',
+    );
+    // El inventario debe publicarse aunque el check falle: es justo el run donde
+    // hace falta para diagnosticar.
+    assert.match(wf, /if: always\(\)/);
     assert.match(wf, /permissions:/);
     assert.match(wf, /contents:\s*read/);
     assert.match(wf, /^\s*pull_request:/m);

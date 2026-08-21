@@ -59,6 +59,15 @@ const DEFAULT_WINDOW_MS = 15 * 60 * 1000; // 15 min
 // provider se recupera, vuelve a la cadena en el próximo ciclo.
 const DEFAULT_DISABLE_TTL_MS = 30 * 60 * 1000; // 30 min
 
+// #6238 — `source` con el que se persiste el disable en `provider-disabled`
+// cuando el caller no especifica otro. Preserva el valor histórico.
+const DEFAULT_DISABLE_SOURCE = 'spawn-death';
+
+// #6238 — único `source` que `recordProviderHealthy` tiene permitido limpiar de
+// forma automática. Cerrado a propósito: un kill-switch manual (#3811) o un
+// apagado de pacing (#4289) NUNCA se pisan porque un spawn haya salido bien.
+const AUTO_RECOVERABLE_DISABLE_SOURCES = Object.freeze(['credential-death']);
+
 function stateFile(pipelineDir) {
     return path.join(pipelineDir, 'state', 'provider-spawn-health.json');
 }
@@ -116,6 +125,12 @@ function writeAtomic(pipelineDir, data, fsImpl) {
  * @param {number} [opts.threshold]       muertes consecutivas para apagar (default 2).
  * @param {number} [opts.windowMs]        ventana deslizante (default 15min).
  * @param {number} [opts.disableTtlMs]    TTL del apagado (default 30min).
+ * @param {string} [opts.source]          #6238 — origen del disable que se
+ *        persiste en `provider-disabled` (eje `entry.source`, #4289). Default
+ *        `'spawn-death'` (comportamiento pre-#6238 intacto). El brazo de
+ *        credencial vencida pasa `'credential-death'` para que
+ *        `recordProviderHealthy` pueda auto-recuperarlo sin pisar un
+ *        kill-switch manual (#3811) ni un apagado de pacing (#4289).
  * @param {number} [opts.now]
  * @param {object} [opts.fsImpl]
  * @param {object} [opts.disabledModule]  inyectable en tests (provider-disabled).
@@ -159,9 +174,14 @@ function recordProviderSpawnDeath(opts = {}) {
             if (disabledModule && typeof disabledModule.setProviderDisabled === 'function') {
                 // provider-disabled valida contra su allowlist; un provider fuera
                 // de ella devuelve {ok:false} y no rompe nada (fail-open).
+                // #6238 — `source` configurable. Default preservado a
+                // 'spawn-death': ningún caller pre-#6238 cambia de conducta.
+                const disableSource = (typeof opts.source === 'string' && opts.source)
+                    ? opts.source
+                    : DEFAULT_DISABLE_SOURCE;
                 const r = disabledModule.setProviderDisabled(provider, {
                     ttlMs: disableTtlMs,
-                    source: 'spawn-death',
+                    source: disableSource,
                     now,
                 });
                 result.disabled = !!(r && r.ok);
@@ -177,22 +197,61 @@ function recordProviderSpawnDeath(opts = {}) {
  * recordProviderHealthy — resetea el contador de muertes de un provider cuando
  * corrió bien (exit 0 o vida ≥ umbral). Idempotente. Fail-open.
  *
- * @param {object} opts { pipelineDir, provider, now, fsImpl }
- * @returns {boolean} true si había estado que limpiar.
+ * #6238 (CA-4, auto-recuperación) — además de resetear el contador, si el
+ * provider quedó apagado con `source: 'credential-death'`, el primer spawn sano
+ * LIMPIA ese disable: la credencial volvió a andar, no hace falta esperar el
+ * TTL ni que intervenga una persona. La limpieza está acotada a esa `source`:
+ * un kill-switch manual (#3811) o un apagado de pacing (#4289) NO se tocan.
+ *
+ * @param {object} opts { pipelineDir, provider, now, fsImpl, disabledModule }
+ * @returns {boolean} true si había estado que limpiar (contador y/o disable).
  */
 function recordProviderHealthy(opts = {}) {
     const { pipelineDir, provider } = opts;
     if (!pipelineDir || !provider || typeof provider !== 'string') return false;
     const _fs = opts.fsImpl || fs;
+    const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+    let cleared = false;
+
+    // 1) Auto-recuperación del disable por credencial vencida (#6238 CA-4).
+    //    Va PRIMERO y fuera del early-return del contador: la ventana del
+    //    contador puede haber vencido y el disable seguir vigente.
+    try {
+        const injected = !!opts.disabledModule;
+        const disabledModule = opts.disabledModule || _loadDisabledModule();
+        // GUARDA: `provider-disabled` resuelve su propio archivo (no acepta dir
+        // por parámetro). Si el `pipelineDir` del caller NO es el mismo que el
+        // del módulo, tocar ese archivo sería escribir sobre el estado de OTRO
+        // pipeline — típicamente el real, desde un test con tmpdir. En ese caso
+        // no hacemos nada (fail-safe). Los tests inyectan `disabledModule`.
+        const sameDir = injected || _sameDir(pipelineDir, disabledModule);
+        if (sameDir
+            && disabledModule
+            && typeof disabledModule.getDisabledEntry === 'function'
+            && typeof disabledModule.clearProviderDisabled === 'function') {
+            const entry = disabledModule.getDisabledEntry(provider, { now });
+            if (entry && AUTO_RECOVERABLE_DISABLE_SOURCES.includes(entry.source)) {
+                const ok = disabledModule.clearProviderDisabled(provider, {
+                    now,
+                    source: 'credential-death-recovered',
+                });
+                cleared = cleared || !!ok;
+            }
+        }
+    } catch { /* fail-open: nunca rompe el lifecycle del agente */ }
+
+    // 2) Reset del contador de muertes consecutivas (comportamiento #4648).
     try {
         const { providers } = readRaw(pipelineDir, _fs);
-        if (!providers[provider]) return false;
-        delete providers[provider];
-        writeAtomic(pipelineDir, { providers }, _fs);
-        return true;
+        if (providers[provider]) {
+            delete providers[provider];
+            writeAtomic(pipelineDir, { providers }, _fs);
+            cleared = true;
+        }
     } catch {
-        return false;
+        // fail-open
     }
+    return cleared;
 }
 
 /**
@@ -207,6 +266,19 @@ function peekProviderSpawnHealth(opts = {}) {
         return providers[provider] || null;
     } catch {
         return null;
+    }
+}
+
+// #6238 — ¿el `pipelineDir` del caller es el mismo que el que resuelve
+// `provider-disabled` para su propio archivo? Evita que una corrida con un
+// pipelineDir de prueba escriba sobre el estado del pipeline real. Fail-safe:
+// ante cualquier duda devuelve false (no se toca nada).
+function _sameDir(pipelineDir, disabledModule) {
+    try {
+        if (!disabledModule || typeof disabledModule.pipelineDir !== 'function') return false;
+        return path.resolve(pipelineDir) === path.resolve(disabledModule.pipelineDir());
+    } catch {
+        return false;
     }
 }
 
@@ -228,6 +300,10 @@ module.exports = {
     DEFAULT_DEATH_THRESHOLD,
     DEFAULT_WINDOW_MS,
     DEFAULT_DISABLE_TTL_MS,
+    // #6238 — source por defecto del disable + tabla cerrada de sources que la
+    // corrida sana puede limpiar automáticamente.
+    DEFAULT_DISABLE_SOURCE,
+    AUTO_RECOVERABLE_DISABLE_SOURCES,
     // internos para tests
     _readRaw: readRaw,
 };

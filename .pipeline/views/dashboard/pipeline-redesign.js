@@ -293,6 +293,41 @@ function renderAgentsLegendSsr() {
     </div>`;
 }
 
+// --- Última auto-reparación del trabajo (#6117 CA-7) -------------------------
+// Desde #6117 las auto-reparaciones EXITOSAS de la lista de trabajo ya no se
+// avisan por Telegram: no piden ninguna decisión del operador. Pero el dato no
+// puede desaparecer, así que se consulta acá cuando se quiere, en vez de
+// recibirlo empujado al chat.
+//
+// Va en esta vista y no en `views/dashboard/pipeline.js` a propósito: aquel
+// panel no lo alcanza ninguna ruta del menú V3 (superficie huérfana), y ésa fue
+// justamente la causa del incidente del 2026-08-09, donde el trabajo estuvo
+// frenado ~10 h sin ninguna pantalla que lo dijera.
+//
+// El contenido lo hidrata `tickPipelineRedesign` con `setText` (textContent, no
+// innerHTML): no hay superficie de XSS aunque el dato viniera manipulado.
+//
+// Presentación fijada por UX (CA-UX-5, reglas P1–P6):
+//   P1 — es METADATO, no alerta: `role="status"` (polite), sin panel nuevo y sin
+//        tocar el color del pill de estado. El único `role="alert"` de la vista
+//        sigue siendo el banner de bloqueo.
+//   P5 — empty-state explícito; la línea NUNCA se oculta. Una línea que aparece
+//        y desaparece hace dudar de la lectura.
+//   P6 — el umbral superado cambia TAMBIÉN el glyph, no sólo el color: el `use`
+//        pasa de `#ic-transition-history` a `#ic-warn` (triángulo). Lo hace
+//        `plRenderAutoRepair` por id, por eso el `<use>` lleva uno.
+// Ambos íconos salen del sprite existente (`ic-transition-history` = semántica
+// de histórico, `ic-warn` = triángulo de warning): cero íconos nuevos, cero
+// emojis inventados. El SSR arranca en el estado base (empty-state, que nunca
+// es warn), y la hidratación decide.
+function renderAutoRepairLineSsr() {
+    return `
+  <div class="pl-autorepair" id="pl-autorepair-row" role="status" aria-live="polite" title="Última vez que el pipeline repuso solo issues a la lista de trabajo. Es una operación sana y por eso no se notifica: queda registrada acá.">
+    <svg class="pl-autorepair-ic" aria-hidden="true" width="12" height="12"><use id="pl-autorepair-ic-use" href="#ic-transition-history"></use></svg>
+    <span class="pl-autorepair-val" id="pl-autorepair">Sin auto-reparaciones registradas.</span>
+  </div>`;
+}
+
 // --- Cuerpo completo de la pantalla ------------------------------------------
 function renderPipelineRedesignBody() {
     return `
@@ -300,6 +335,7 @@ function renderPipelineRedesignBody() {
   ${renderMissionBannerPipeline()}
   ${renderPhaseFlowSsr()}
   ${renderIssuesByPhaseSsr()}
+  ${renderAutoRepairLineSsr()}
   <div class="pl-legend" title="Convenciones de la pantalla.">
     El Flujo de fases conserva siempre las 6 fases con su conteo (incluso las que están en 0). La vista total de abajo dibuja todos los hijos de la ola —entregados y los de definición sin arrancar incluidos— y solo abre columna para las fases con issues, repartiendo el ancho entre las que quedan. Nunca se trunca el título ni se resume la lista.
   </div>
@@ -509,6 +545,22 @@ const PIPELINE_REDESIGN_CSS = `
 .plc-foot-eta { margin-left: auto; font-size: 10px; color: var(--in-fg-dim,#8A93A6); font-variant-numeric: tabular-nums; }
 
 .pl-legend { font-size: 11px; color: var(--in-fg-dim,#8A93A6); line-height: 1.5; padding: 2px 4px; }
+/* #6117 CA-UX-5 — línea de última auto-reparación.
+   P1: es METADATO, no alerta. Usa el color atenuado de la leyenda (--text-dim,
+   7.4:1 sobre --surface-1, ≥ WCAG AA) y no el de los estados: no compite con el
+   pill de bloqueo ni con el banner de desync.
+   P6: el único ascenso de jerarquía es el umbral superado → --warning (6.4:1),
+   y va acompañado de texto explícito Y de cambio de glyph (#ic-transition-history
+   → #ic-warn, que lo hace plAutoRepairGlyph en JS), nunca sólo color. Los dos
+   íconos son stroke-based sobre currentColor, así que heredan el --warning sin
+   regla extra. */
+.pl-autorepair { display: flex; align-items: center; gap: 6px; font-size: 11px;
+  color: var(--text-dim, var(--in-fg-dim,#8A93A6)); padding: 6px 4px 0;
+  line-height: 1.5; flex-wrap: wrap; }
+.pl-autorepair-ic { width: 12px; height: 12px; flex: none; fill: currentColor; opacity: .85; }
+.pl-autorepair-val { font-variant-numeric: tabular-nums; }
+.pl-autorepair-warn { color: var(--warning,#D29922); }
+.pl-autorepair-warn .pl-autorepair-ic { opacity: 1; }
 
 /* #4234 — Color por fase de las columnas (molde único, tinte por fase). */
 .pl-col.ph-def    { border-color: rgba(251,191,36,.24);  background: rgba(251,191,36,.035); }
@@ -612,12 +664,24 @@ function plAllowlistOk(issue){
     if(!Number.isInteger(n) || n <= 0) return false;
     return pipelineModeState.allowedIssues.includes(n);
 }
+// #5176 CA-UX-4 — ningún control de inspección desaparece con una restricción
+// vigente. La condición miraba SÓLO allowedIssues.length: con una ventana por
+// skill (#3680 CA-A15, allowed_skills no vacío y allowed_issues vacío) el modo
+// es partial_pause, el dispatch está acotado, y sin embargo el toggle se
+// escondía — el operador perdía la vía de inspección justo cuando había algo
+// que inspeccionar. Ahora la allowlist efectiva se evalúa por CUALQUIER eje.
 function plRefreshToggleVisibility(){
     const t = document.getElementById('pl-allowlist-toggle');
     if(!t) return;
-    const visible = pipelineModeState.mode === 'partial_pause' && pipelineModeState.allowedIssues.length > 0;
+    const hasIssues = Array.isArray(pipelineModeState.allowedIssues) && pipelineModeState.allowedIssues.length > 0;
+    const hasSkills = Array.isArray(pipelineModeState.allowedSkills) && pipelineModeState.allowedSkills.length > 0;
+    const visible = pipelineModeState.mode === 'partial_pause' && (hasIssues || hasSkills);
     t.style.display = visible ? 'inline-flex' : 'none';
-    if(!visible && plOnlyWave){
+    // El filtro en sí sigue siendo por issue (plAllowlistOk), así que con una
+    // ventana SÓLO por skill no hay ningún issue que dejar pasar: dejarlo
+    // encendido blanquearía la cola. Se apaga —sin ocultar el control, que es
+    // lo que pide CA-UX-4— y el operador puede encenderlo cuando quiera.
+    if(!hasIssues && plOnlyWave){
         plOnlyWave = false;
         t.setAttribute('aria-checked', 'false');
         if(typeof tickPipelineRedesign === 'function') tickPipelineRedesign().catch(()=>{});
@@ -865,15 +929,66 @@ function plBuildPhaseBuckets(matrix, extraById, waveExtra, waveMembers, waveDeli
     return buckets;
 }
 
+// #6117 CA-7 / CA-UX-5 — Última auto-reparación de la lista de trabajo.
+//
+// El TEXTO no se arma acá: viene ya resuelto en auto_reparacion_presentacion,
+// que el slice calcula con lib/desync-copy. Redactarlo en el browser sería una
+// segunda versión del mismo copy — exactamente cómo el pill del panel Pipeline
+// terminó divergiendo del renderer del monolito.
+//
+// P5 — la línea nunca se oculta: sin dato muestra su empty-state.
+// P6 — único caso que sube de jerarquía: umbral superado. Warning + glyph +
+//      texto explícito, nunca sólo color (WCAG: info no transmitida por color).
+//      Los tres canales se mueven juntos: el color lo pone la clase
+//      pl-autorepair-warn, el texto viene ya resuelto del slice, y el GLYPH se
+//      intercambia acá (#ic-transition-history -> #ic-warn, el triángulo).
+//      Si sólo cambiara el color, un daltónico o un monitor en escala de grises
+//      no vería el ascenso de jerarquía — que es justo lo que P6 prohíbe.
+// setText usa textContent, así que el dato no se interpola como HTML.
+const PL_AUTOREPAIR_IC_BASE = '#ic-transition-history';
+const PL_AUTOREPAIR_IC_WARN = '#ic-warn';
+
+function plAutoRepairGlyph(warn){
+    const use = document.getElementById('pl-autorepair-ic-use');
+    if(!use) return;
+    const href = warn ? PL_AUTOREPAIR_IC_WARN : PL_AUTOREPAIR_IC_BASE;
+    // Sólo escribimos si cambió: el tick es cada 5s y reescribir el href de un
+    // <use> fuerza al browser a re-resolver el símbolo del sprite en cada vuelta.
+    if(use.getAttribute('href') !== href) use.setAttribute('href', href);
+}
+
+function plRenderAutoRepair(ds){
+    const row = document.getElementById('pl-autorepair-row');
+    const p = ds && ds.auto_reparacion_presentacion;
+    if(!p || !p.texto){
+        setText('pl-autorepair', 'Sin auto-reparaciones registradas.');
+        if(row) row.classList.remove('pl-autorepair-warn');
+        plAutoRepairGlyph(false);
+        return;
+    }
+    const warn = p.severidad === 'warn';
+    setText('pl-autorepair', p.texto);
+    if(row) row.classList.toggle('pl-autorepair-warn', warn);
+    plAutoRepairGlyph(warn);
+}
+
 async function tickPipelineRedesign(){
     // #4234 — VISTA TOTAL DE LA OLA: cruzamos la membresía de la ola activa
     // (/api/dash/waves → solo IDs) con el matrix del pipeline (hijos en vuelo,
     // con faseActual/agentes) y la franja terminal waveIssues (hijos sin
     // work-file: 'finalizado'=entregado, 'no-ingreso'=definición sin arrancar).
-    const [d, w] = await Promise.all([
+    // #6117 CA-7 — la última auto-reparación viaja en /api/dash/desync-status,
+    // junto al resto del estado del despacho. Se le cuelga un catch para que un
+    // endpoint caído no arrastre a toda la pantalla.
+    const [d, w, ds] = await Promise.all([
         fetchJson('/api/dash/pipeline'),
         fetchJson('/api/dash/waves').catch(function(){ return null; }),
+        fetchJson('/api/dash/desync-status').catch(function(){ return null; }),
     ]);
+    // Se pinta ANTES del early-return: si /api/dash/pipeline se cae, la línea de
+    // auto-reparación igual se actualiza. Es un registro independiente del
+    // matrix de issues y no tiene por qué compartir su suerte.
+    plRenderAutoRepair(ds);
     if(!d) return;
     const matrix = d.matrix || {};
     const waveExtra = Array.isArray(d.waveIssues) ? d.waveIssues : [];

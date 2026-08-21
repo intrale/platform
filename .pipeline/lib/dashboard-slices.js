@@ -103,6 +103,12 @@ const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 
+// #5176 — Envoltorio único de acceso al estado operativo. Mismo criterio de
+// require defensivo que el resto del módulo: si no carga, `headerSlice` degrada
+// a `running` sin romper el header del dashboard.
+let operationalState = null;
+try { operationalState = require('./operational-state'); } catch { /* opcional */ }
+
 // Detector de artifacts auxiliares (.guidance.txt, .reason.json, .comment.md,
 // y cualquier filename con > 2 segmentos). Compartido con human-block para
 // que ambos listadores excluyan los mismos fantasmas. Fallback defensivo si
@@ -546,19 +552,47 @@ function nextInQueue(state, ctx, limit = 3, opts = {}) {
 
 function headerSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
-    const partialFile = path.join(PIPELINE, '.partial-pause.json');
-    const pauseFile = path.join(PIPELINE, '.paused');
+    // #5176 — El modo de dispatch del header sale del envoltorio único, no de
+    // dos `fs.existsSync` sobre paths construidos acá. Dos consecuencias
+    // DELIBERADAS y declaradas (no efectos colaterales):
+    //
+    //   R7 · el halt total sigue ganando. `getDispatchState()` aplica la
+    //   precedencia `paused > partial_pause > running` del contrato §4: con
+    //   `.paused` presente devuelve `mode: 'paused'` sin siquiera leer el
+    //   marker de allowlist. El header NO puede confundir halt total con
+    //   "allowlist vacía" porque son ramas distintas del mismo retorno, no dos
+    //   lecturas independientes que alguien pueda reordenar.
+    //
+    //   SEC-4 · ventana por skill. El header activaba `partial_pause` SÓLO con
+    //   `allowed_issues.length > 0`; `getPipelineMode()` lo activa con issues
+    //   O skills (#3680 CA-A15). Con una ventana por skill (sin issues), el
+    //   header mostraba `running` mientras el Pulpo estaba en `partial_pause`
+    //   — el operador leía "sin pausa" con el dispatch acotado. La semántica
+    //   del envoltorio es la correcta y se adopta: es un cambio observable
+    //   DECLARADO, no una regresión.
+    //
+    // El envoltorio resuelve la ruta física por su cuenta (contrato §2:
+    // `PIPELINE_DIR_OVERRIDE` o `.pipeline/`), así que este slice deja de
+    // derivar el estado operativo de `ctx.PIPELINE`. En producción son el
+    // mismo directorio; el resto del slice sigue usando `PIPELINE` para lo
+    // suyo (build status, rest-mode, métricas).
+    //
+    // CA-UX-3 / CA-UX-4 · el slice publica también `allowedSkills`. Sin ese
+    // campo el cliente no puede distinguir una ventana por skill de una pausa
+    // parcial vacía: rotulaba `⏸ Parcial · 0 issues` y escondía el toggle de
+    // inspección de la allowlist justo cuando había una restricción vigente.
+    // `views/dashboard/multi-provider-coverage.js` ya lo leía del header y
+    // recibía `undefined` — este es el productor que faltaba.
     let mode = 'running';
     let allowedIssues = [];
-    if (fs.existsSync(pauseFile)) {
-        mode = 'paused';
-    } else if (fs.existsSync(partialFile)) {
-        const data = safeReadJson(partialFile, {});
-        const arr = Array.isArray(data.allowed_issues) ? data.allowed_issues : [];
-        if (arr.length > 0) {
-            mode = 'partial_pause';
-            allowedIssues = arr;
-        }
+    let allowedSkills = [];
+    if (operationalState && typeof operationalState.getDispatchState === 'function') {
+        try {
+            const dispatch = operationalState.getDispatchState();
+            mode = dispatch.mode;
+            allowedIssues = Array.isArray(dispatch.allowedIssues) ? dispatch.allowedIssues : [];
+            allowedSkills = Array.isArray(dispatch.allowedSkills) ? dispatch.allowedSkills : [];
+        } catch { /* envoltorio degradado → header en running, nunca rompe */ }
     }
     const procesos = state.procesos || {};
     const pulpoAlive = !!(procesos.pulpo && procesos.pulpo.alive);
@@ -685,6 +719,7 @@ function headerSlice(state, ctx) {
     return {
         mode,
         allowedIssues,
+        allowedSkills,
         pulpoAlive,
         pulpoUptimeMs: procesos.pulpo?.uptime || 0,
         counts: {
@@ -3500,6 +3535,14 @@ function _desyncPresentacion(payload) {
     try { return desyncCopy.buildDesyncPresentation(payload); } catch { return null; }
 }
 
+// #6117 CA-UX-5 — presentación de la línea de última auto-reparación (P1–P6),
+// resuelta con el mismo módulo de copy. Degrada a `null` si el módulo no cargó:
+// la vista tiene su propio empty-state y no se rompe por esto.
+function _autoRepairPresentacion(ultima, repeticion) {
+    if (!desyncCopy || typeof desyncCopy.autoRepairLineaDashboard !== 'function') return null;
+    try { return desyncCopy.autoRepairLineaDashboard(ultima, { repeticion }); } catch { return null; }
+}
+
 function desyncStatusSlice(state, ctx) {
     const detector = _desyncDetectorOverride || desyncDetector;
     // Base defensiva del contrato JSON (CA-6): siempre devolvemos el shape
@@ -3517,6 +3560,11 @@ function desyncStatusSlice(state, ctx) {
         // hace 10 horas se ve idéntico a uno de 10 minutos, y la duración es
         // justamente lo que convierte una divergencia en incidente.
         detected_at: null,
+        // #6117 CA-7 — parte del contrato: presente (en `null`) también en los
+        // caminos degradados, para que la UI no tenga que distinguir "no hubo
+        // reparación" de "el slice falló".
+        ultima_auto_reparacion: null,
+        auto_reparacion_repeticion: null,
     };
     if (!detector || typeof detector.detectDesync !== 'function') {
         return { ...base, presentacion: _desyncPresentacion(base), error: 'desync_detector_unavailable' };
@@ -3560,6 +3608,44 @@ function desyncStatusSlice(state, ctx) {
             estado = 'desconocido';
         }
 
+        // #6117 CA-7 — última auto-reparación del despacho. Desde que las
+        // reparaciones exitosas dejaron de avisarse por Telegram, ésta es la
+        // superficie donde el operador las consulta cuando quiere, en vez de
+        // recibirlas empujadas al chat.
+        // SEC-6: shape acotado a `{tipo, issues, timestamp}` y SÓLO lectura. El
+        // dashboard (3200) no tiene autenticación, así que acá no se expone
+        // nada más ni se ofrece ninguna acción que dispare una reparación.
+        // `readLastAutoRepair` nunca lanza: degrada a `null`.
+        let ultimaAutoReparacion = null;
+        // CA-UX-5 · P6 — el único caso que sube de jerarquía visual es el umbral
+        // superado. Viaja en un campo HERMANO y no dentro de
+        // `ultima_auto_reparacion`, para que ese shape siga siendo exactamente
+        // `{tipo, issues, timestamp}` (SEC-6). Derivado del mismo JSONL, sólo
+        // lectura: no expone nada que no estuviera ya.
+        let repeticion = null;
+        try {
+            const autoRepair = require('./metrics/auto-repair');
+            ultimaAutoReparacion = autoRepair.readLastAutoRepair();
+            if (ultimaAutoReparacion) {
+                let cfg = {};
+                // Si la config no resuelve, el módulo de métrica clampea a sus
+                // defaults (3 / 1 h): el umbral nunca queda indefinido.
+                try { cfg = (configResolver.resolve({}).config || {}).desync || {}; } catch { cfg = {}; }
+                const rep = autoRepair.shouldAlertRepetition({
+                    tipo: ultimaAutoReparacion.tipo,
+                    threshold: cfg.repair_alert_threshold,
+                    windowMs: cfg.repair_alert_window_ms,
+                });
+                // `estado_ilegible` no es "se repitió": es "no pude contar". No
+                // se pinta warning por no saber — para eso está el Telegram.
+                repeticion = {
+                    count: rep.count,
+                    ventana_ms: rep.windowMs,
+                    superado: rep.alert === true && rep.motivo === 'umbral',
+                };
+            }
+        } catch { /* degradar a null — el slice nunca falla por esto */ }
+
         const payload = {
             estado,
             classification,
@@ -3570,6 +3656,14 @@ function desyncStatusSlice(state, ctx) {
             bloqueado,
             count,
             detected_at: detectedAt,
+            ultima_auto_reparacion: ultimaAutoReparacion,
+            auto_reparacion_repeticion: repeticion,
+            // CA-UX-5 — el copy de la línea se resuelve SERVER-SIDE con
+            // `desync-copy`, igual que `presentacion`. El cliente sólo hace
+            // `setText`: si armara el texto en el browser sería una segunda
+            // redacción del mismo dato, que es el problema que ese módulo
+            // existe para evitar.
+            auto_reparacion_presentacion: _autoRepairPresentacion(ultimaAutoReparacion, repeticion),
         };
         // Presentación resuelta server-side (label/detalle/antigüedad/chips) para
         // que toda superficie diga lo mismo sin reimplementar el copy.

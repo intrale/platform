@@ -7,5 +7,16 @@
     "no_hacer": "Sin excepciones amplias por carpeta (CA-5). Si el caso no cabe en { file, line, reason }, el problema es el matcher o la superficie publica del envoltorio, no la allowlist: ver docs/pipeline/contrato-estado-operativo.md §7."
   },
   "files": [],
-  "rules": []
+  "rules": [
+    {
+      "file": "lib/desync-detector.js",
+      "line": 122,
+      "reason": "#5176 A-2: el detector necesita distinguir 'sin active_wave' (null, NO es desync) de 'ola vacia' ([]), no puede lanzar ante waves.json corrupto y no debe disparar la alerta dedupada de waves.getAllowlist (#3616). Ningun lector del envoltorio cumple las tres. Version estructural: #5191."
+    },
+    {
+      "file": "pulpo.js",
+      "line": 18145,
+      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -- :12733 es el fallback de setFullPause -- y el seam de test SEC-3 (#4832). Estructural: #6104. Linea reubicada de 17827 a 18145 por el brazo credential-death de #6238 y el merge de main en #6144 (mismo call site, sin cambio de semantica)."
+    }
+  ]
 }

@@ -12,20 +12,23 @@ const assert = require('node:assert/strict');
 
 const m = require('../project-descriptor-migrations');
 
-test('CA-F1: descriptor 1.0 migra por identidad (1.0 → 1.0) y "sigue arrancando"', () => {
+test('CA-F1: descriptor 1.0 "sigue arrancando" — migra a 1.1 sin editar el archivo', () => {
   const desc = { schemaVersion: '1.0', identity: { projectId: 'x', name: 'X' } };
   const res = m.migrateDescriptor(desc);
   assert.equal(res.ok, true);
   assert.equal(res.from, '1.0');
-  assert.equal(res.to, '1.0');
-  assert.deepEqual(res.descriptor, desc);
+  assert.equal(res.to, '1.1');
+  assert.equal(res.descriptor.schemaVersion, '1.1');
+  // Función pura (CA-8): la entrada NO se muta.
+  assert.equal(desc.schemaVersion, '1.0');
+  assert.deepEqual(res.descriptor.identity, desc.identity);
 });
 
-test('CA-B4 (#7): downgrade de schemaVersion (0.9 < 1.0) es RECHAZADO', () => {
+test('CA-B4 (#7): schemaVersion vieja SIN ruta de migración (0.9) es RECHAZADA', () => {
   const res = m.migrateDescriptor({ schemaVersion: '0.9' });
   assert.equal(res.ok, false);
-  assert.equal(res.code, 'downgrade_rejected');
-  assert.match(res.error, /downgrade/);
+  assert.equal(res.code, 'unknown_version');
+  assert.ok(res.error && res.error.length > 0);
 });
 
 test('version más nueva que la soportada es rechazada (kernel viejo)', () => {
@@ -50,7 +53,8 @@ test('compareVersions ordena correctamente', () => {
   assert.equal(m.compareVersions('bad', '1.0'), null);
 });
 
-test('CURRENT_SCHEMA_VERSION es 1.0 y KNOWN_VERSIONS lo incluye', () => {
-  assert.equal(m.CURRENT_SCHEMA_VERSION, '1.0');
+test('CURRENT_SCHEMA_VERSION es 1.1 y KNOWN_VERSIONS incluye toda la cadena', () => {
+  assert.equal(m.CURRENT_SCHEMA_VERSION, '1.1');
   assert.ok(m.KNOWN_VERSIONS.includes('1.0'));
+  assert.ok(m.KNOWN_VERSIONS.includes('1.1'));
 });

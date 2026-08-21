@@ -185,10 +185,30 @@ function loadIssueStateCache(opts = {}) {
 }
 
 function loadSplitChildrenMap(opts = {}) {
-    const parsed = readJsonFileSafe(opts.partialPauseFile || path.join(PIPELINE, '.partial-pause.json'));
-    const ttls = parsed && typeof parsed === 'object' && parsed.authorization_ttls && typeof parsed.authorization_ttls === 'object'
-        ? parsed.authorization_ttls
-        : {};
+    // #5179 grupo 3b — los TTLs se piden al envoltorio único de estado operativo
+    // en vez de parsear `.partial-pause.json` a mano.
+    //
+    // CA-6c: el seam de inyección `opts.partialPauseFile` sigue vivo. Cuando el
+    // caller declara un archivo explícito (tests herméticos sobre un tmp), se lee
+    // ESE archivo — el envoltorio resuelve el path real del pipeline y no lo
+    // honraría. Sin archivo inyectado se usa la superficie pública.
+    let ttls = {};
+    if (opts.partialPauseFile) {
+        const parsed = readJsonFileSafe(opts.partialPauseFile);
+        ttls = parsed && typeof parsed === 'object' && parsed.authorization_ttls
+            && typeof parsed.authorization_ttls === 'object'
+            ? parsed.authorization_ttls
+            : {};
+    } else {
+        try {
+            const state = require('./lib/operational-state').getDispatchState();
+            ttls = state && state.authorizationTtls && typeof state.authorizationTtls === 'object'
+                ? state.authorizationTtls
+                : {};
+        } catch {
+            ttls = {};   // sin TTLs resolubles ⇒ mapa vacío (igual que el parse fallido previo)
+        }
+    }
     const map = new Map();
     for (const [childKey, info] of Object.entries(ttls)) {
         const child = normalizeIssueNumber(childKey);

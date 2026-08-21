@@ -424,3 +424,151 @@ test('el scanner deja pasar un commit sin paths sensibles', () => {
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
     }
 });
+
+test('pipeline-runtime-state clasifica todos sus descendientes sin excepciones', () => {
+    for (const rel of [
+        '.pipeline/state/probe.json',
+        '.pipeline/state/sub dir/archivo con espacios',
+        '.pipeline/state/$(touch NO-EJECUTAR)',
+        '.pipeline/state/linea\nnueva.json',
+    ]) {
+        const result = inventario.clasificarPath(rel);
+        assert.ok(result, `no clasificó ${JSON.stringify(rel)}`);
+        assert.strictEqual(result.id, 'pipeline-runtime-state');
+        assert.strictEqual(result.clase, 'estado');
+        assert.strictEqual(result.requiereIgnore, true);
+    }
+    assert.strictEqual(inventario.clasificarPath('.pipeline/state'), null);
+    assert.strictEqual(inventario.clasificarPath('.pipeline/stateful/probe.json'), null);
+});
+
+test('parser NUL cubre A/C/M/R y conserva ambos lados de copy y rename', () => {
+    const hostile = '.pipeline/state/a b\n"$()`;x.json';
+    const parsed = scanner.__forTestsOnly__.parseNameStatusZ(Buffer.from(
+        ['A', hostile, 'C100', 'origen', '.pipeline/state/copia', 'M', '.pipeline/state/mod',
+            'R090', '.pipeline/state/viejo', 'destino', ''].join('\0'),
+    ));
+    assert.deepStrictEqual(parsed.map((entry) => entry.status), ['A', 'C100', 'M', 'R090']);
+    assert.deepStrictEqual(parsed[0].paths, [hostile]);
+    assert.deepStrictEqual(parsed[1].paths, ['origen', '.pipeline/state/copia']);
+    assert.deepStrictEqual(parsed[3].paths, ['.pipeline/state/viejo', 'destino']);
+});
+
+test('el guard de rango bloquea ambos lados de renames y deduplica paths', () => {
+    const output = Buffer.from([
+        'R100', '.pipeline/state/origen.json', 'destino.json',
+        'C100', 'origen.json', '.pipeline/state/copia.json',
+        'M', '.pipeline/state/copia.json', '',
+    ].join('\0'));
+    const findings = scanner.collectFindings({ mode: 'range', base: 'base', head: 'head', git: () => output });
+    assert.deepStrictEqual(findings.map((finding) => finding.path), [
+        '.pipeline/state/origen.json', '.pipeline/state/copia.json',
+    ]);
+});
+
+test('un fallo de Git bloquea y se distingue de una infracción', () => {
+    const failGit = () => { throw new scanner.GitOperationError('enumerar paths del diff', 128, 'fixture'); };
+    assert.throws(() => scanner.collectFindings({ mode: 'staged', git: failGit }), /enumerar paths del diff/);
+    const originalWrite = process.stderr.write;
+    let diagnostic = '';
+    process.stderr.write = (chunk) => { diagnostic += chunk; return true; };
+    try {
+        assert.strictEqual(scanner.main(['--staged'], { git: failGit }), 2);
+    } finally {
+        process.stderr.write = originalWrite;
+    }
+    assert.match(diagnostic, /fallo técnico de Git/);
+    assert.match(diagnostic, /enumerar paths del diff/);
+});
+
+test('workflow de PR nace enforce, con permisos mínimos y sin bypass', () => {
+    const workflow = fs.readFileSync(path.join(REPO_ROOT, '.github', 'workflows', 'runtime-state-guard.yml'), 'utf8');
+    assert.match(workflow, /^\s*pull_request:\s*$/m);
+    assert.match(workflow, /^\s*contents:\s*read\s*$/m);
+    assert.match(workflow, /fetch-depth:\s*0/);
+    assert.match(workflow, /--range/);
+    for (const forbidden of ['pull_request_target', 'continue-on-error', '|| true', 'report-only', 'secrets.']) {
+        assert.ok(!workflow.includes(forbidden), `workflow contiene bypass/provisión prohibida: ${forbidden}`);
+    }
+});
+
+test('commit real con path runtime forzado falla mediante hook y el caso limpio pasa', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'guardas-6111-hook-'));
+    try {
+        git(['init', '-q'], { cwd: tmp });
+        git(['config', 'user.email', 'test@intrale'], { cwd: tmp });
+        git(['config', 'user.name', 'test'], { cwd: tmp });
+        git(['config', 'commit.gpgsign', 'false'], { cwd: tmp });
+        git(['commit', '-q', '--allow-empty', '--no-verify', '-m', 'init'], { cwd: tmp });
+        const scannerPath = path.join(REPO_ROOT, '.pipeline', 'lib', 'precommit-secret-scan.js').replace(/\\/g, '/');
+        fs.writeFileSync(path.join(tmp, '.git', 'hooks', 'pre-commit'), `#!/bin/sh\nnode "${scannerPath}" --staged\n`);
+        fs.chmodSync(path.join(tmp, '.git', 'hooks', 'pre-commit'), 0o755);
+        fs.mkdirSync(path.join(tmp, '.pipeline', 'state'), { recursive: true });
+        fs.writeFileSync(path.join(tmp, '.pipeline', 'state', 'probe.json'), '{"canary":"NO-IMPRIMIR"}');
+        git(['add', '-f', '--', '.pipeline/state/probe.json'], { cwd: tmp });
+        const blocked = git(['commit', '-m', 'runtime'], { cwd: tmp });
+        assert.notStrictEqual(blocked.rc, 0);
+        assert.match(blocked.stderr, /pipeline-runtime-state/);
+        assert.match(blocked.stderr, /clase=estado/);
+        assert.match(blocked.stderr, /Remediación/);
+        assert.ok(!blocked.stderr.includes('NO-IMPRIMIR'));
+        git(['reset', '-q'], { cwd: tmp });
+        fs.writeFileSync(path.join(tmp, 'funcional.txt'), 'ok');
+        git(['add', 'funcional.txt'], { cwd: tmp });
+        const clean = git(['commit', '-q', '-m', 'clean'], { cwd: tmp });
+        assert.strictEqual(clean.rc, 0, clean.stderr);
+        assert.strictEqual(clean.stdout.trim(), '');
+        assert.strictEqual(clean.stderr.trim(), '');
+    } finally {
+        try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+});
+
+test('hook invoca el scanner exactamente una vez antes del primer early-exit', () => {
+    const hook = fs.readFileSync(path.join(REPO_ROOT, '.husky', 'pre-commit'), 'utf8');
+    const invocations = hook.match(/^\s*node \.pipeline\/lib\/precommit-secret-scan\.js\b/gm) || [];
+    assert.strictEqual(invocations.length, 1);
+    assert.ok(hook.indexOf('precommit-secret-scan.js --staged') < hook.indexOf('if [ "$RUN_VALIDATE" = "0" ]'));
+});
+
+test('rango Git real bloquea A/C/M/R y deja pasar un diff funcional limpio', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'guardas-6111-range-'));
+    const scannerPath = path.join(REPO_ROOT, '.pipeline', 'lib', 'precommit-secret-scan.js');
+    try {
+        git(['init', '-q'], { cwd: tmp });
+        git(['config', 'user.email', 'test@intrale'], { cwd: tmp });
+        git(['config', 'user.name', 'test'], { cwd: tmp });
+        git(['config', 'commit.gpgsign', 'false'], { cwd: tmp });
+        fs.mkdirSync(path.join(tmp, '.pipeline', 'state'), { recursive: true });
+        fs.writeFileSync(path.join(tmp, '.pipeline', 'state', 'modified.json'), 'base');
+        fs.writeFileSync(path.join(tmp, '.pipeline', 'state', 'renamed.json'), 'rename');
+        fs.writeFileSync(path.join(tmp, 'copy-source.txt'), 'copy fixture with enough unique content');
+        fs.writeFileSync(path.join(tmp, 'clean.txt'), 'base');
+        git(['add', '-A'], { cwd: tmp });
+        git(['commit', '-q', '-m', 'base'], { cwd: tmp });
+        const base = git(['rev-parse', 'HEAD'], { cwd: tmp }).stdout.trim();
+
+        fs.writeFileSync(path.join(tmp, '.pipeline', 'state', 'added.json'), 'added');
+        fs.writeFileSync(path.join(tmp, '.pipeline', 'state', 'modified.json'), 'changed');
+        fs.copyFileSync(path.join(tmp, 'copy-source.txt'), path.join(tmp, '.pipeline', 'state', 'copied.txt'));
+        fs.renameSync(path.join(tmp, '.pipeline', 'state', 'renamed.json'), path.join(tmp, 'renamed-out.json'));
+        git(['add', '-A'], { cwd: tmp });
+        git(['commit', '-q', '-m', 'matrix'], { cwd: tmp });
+        const head = git(['rev-parse', 'HEAD'], { cwd: tmp }).stdout.trim();
+        const blocked = spawnSync('node', [scannerPath, '--range', base, head], { cwd: tmp, encoding: 'utf8' });
+        assert.strictEqual(blocked.status, 1, blocked.stderr);
+        for (const rel of ['added.json', 'modified.json', 'copied.txt', 'renamed.json']) {
+            assert.ok(blocked.stderr.includes(rel), `el rango no reportó ${rel}: ${blocked.stderr}`);
+        }
+
+        fs.writeFileSync(path.join(tmp, 'clean.txt'), 'functional change');
+        git(['add', 'clean.txt'], { cwd: tmp });
+        git(['commit', '-q', '-m', 'clean'], { cwd: tmp });
+        const cleanHead = git(['rev-parse', 'HEAD'], { cwd: tmp }).stdout.trim();
+        const clean = spawnSync('node', [scannerPath, '--range', head, cleanHead], { cwd: tmp, encoding: 'utf8' });
+        assert.strictEqual(clean.status, 0, clean.stderr);
+        assert.strictEqual((clean.stdout || '') + (clean.stderr || ''), '');
+    } finally {
+        try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+});

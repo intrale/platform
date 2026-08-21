@@ -2376,8 +2376,9 @@ function handleWavePauseMutation(req, res) {
     if (pathnameOnly !== '/dashboard/wave/pause') return false;
     if (_waveLifecycleGates(req, res, 'wave_pause')) return true;
 
+    // #5179 grupo 3 — mutación vía el envoltorio único de estado operativo.
     let pp;
-    try { pp = require('./partial-pause'); } catch { pp = null; }
+    try { pp = require('./operational-state'); } catch { pp = null; }
     if (!pp || typeof pp.setFullPause !== 'function') {
         sendMutationJson(res, { error: 'module_unavailable' }, 503);
         return true;
@@ -2412,8 +2413,9 @@ function handleWaveResumeMutation(req, res) {
     if (pathnameOnly !== '/dashboard/wave/resume') return false;
     if (_waveLifecycleGates(req, res, 'wave_resume')) return true;
 
+    // #5179 grupo 3 — mutación vía el envoltorio único de estado operativo.
     let pp;
-    try { pp = require('./partial-pause'); } catch { pp = null; }
+    try { pp = require('./operational-state'); } catch { pp = null; }
     if (!pp || typeof pp.resumeAll !== 'function') {
         sendMutationJson(res, { error: 'module_unavailable' }, 503);
         return true;
