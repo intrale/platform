@@ -1,11 +1,13 @@
 # Self-healing de fases varadas — operación y salida del bloqueo
 
 > Contexto: #4614 (reconciler original), #4222 (guarda anti bloqueo fantasma),
-> #5060 (ejecución sólo por olas), **#5396** (fin del re-escalado en loop).
+> #5060 (ejecución sólo por olas), **#5396** (fin del re-escalado en loop),
+> **#6150** (el aviso lo gobierna la tarea frenada, no la racha).
 > Código: `.pipeline/lib/stuck-phase-detector.js`,
 > `.pipeline/lib/stuck-phase-reconciler.js`,
 > `.pipeline/lib/stuck-phase-reconciler-runner.js`,
-> `.pipeline/lib/stuck-reconciler-deps.js`.
+> `.pipeline/lib/stuck-reconciler-deps.js`,
+> `.pipeline/lib/stuck-reconciler-copy.js`.
 
 ## Qué hace
 
@@ -68,15 +70,31 @@ self-healing **100% mudo por diseño**, y nadie se entera. Por eso:
     "suprimidos_por_cache":2,"suprimidos_por_dedupe":1,"escalados":0,"requeued":0}
   ```
 
-- Si hay **6 ticks consecutivos** (≈1 h) con `evaluados > 0` y cero acciones, se
-  manda **una sola** notificación de señal de vida. La racha vive en
-  `.pipeline/.stuck-reconciler-health.json` (separado de
-  `.stuck-reconciler-state.json`, que está indexado por `issue|fase`).
-- **No** se emite esa señal si el silencio se explica 100% por el filtro de ola
-  (`suprimidos_por_ola == evaluados`): acotar a la ola es lo correcto, no una
-  anomalía.
-- Los contadores por tick van al **log**, no a Telegram. Sólo la señal de vida
-  notifica, y sin audio TTS (el audio queda reservado al circuit breaker).
+- **Qué se notifica lo decide el conjunto de tareas realmente frenadas**, no la
+  racha. Cada decisión del tick se clasifica **una por una** (`isRealRisk` en
+  `lib/stuck-reconciler-copy.js`) y sólo entra la que quedó **fail-closed por
+  estado no confirmado**: el reconciler quiso actuar y no pudo confirmar el
+  estado de la tarea. Conjunto vacío ⇒ silencio, por más ciclos que lleve.
+  Conjunto no vacío ⇒ **se avisa en el primer ciclo del episodio**, sin esperar
+  ninguna racha.
+- **Un aviso por episodio.** El episodio se identifica por la huella
+  `issue|fase|motivo` de las tareas frenadas (`buildEpisodeFingerprint`): si el
+  conjunto **cambia** — entra o sale una tarea — es un episodio nuevo y se
+  vuelve a avisar; si es **idéntico**, se calla. Conjunto vacío cierra el
+  episodio, y uno posterior vuelve a avisar.
+  Ya **no** existe el criterio agregado del filtro de ola
+  (`suprimidos_por_ola == evaluados`): comparar contadores escondía la única
+  tarea que importaba entre cientos de decisiones sanas — y al revés, llegó a
+  disparar un aviso con 177 decisiones y **cero** tareas frenadas.
+- La racha **sobrevive como dato de diagnóstico** (CA-7 de #5396), ya no
+  gobierna el envío: se loguea y se persiste como
+  `ciclos_revisando_sin_actuar` en `.pipeline/.stuck-reconciler-health.json`,
+  junto con `umbral_ciclos`, `tareas_en_riesgo`, `episodio`, `ultimo_aviso_iso`
+  y `motivos`. Ese archivo sigue separado de `.stuck-reconciler-state.json`,
+  que está indexado por `issue|fase`.
+- Los contadores por tick van al **log**, no a Telegram. Sólo el aviso de tareas
+  frenadas notifica, y sin audio TTS (el audio queda reservado al circuit
+  breaker).
 
 Para auditar a mano:
 
@@ -183,6 +201,7 @@ y de 25 issues escalados sólo 3 eran de la ola activa. Tres causas:
 ```bash
 node --test .pipeline/lib/stuck-phase-reconciler*.test.js
 node --test .pipeline/__tests__/stuck-reconciler-wiring-5396.test.js
+node --test .pipeline/lib/stuck-reconciler-copy.test.js
 node --test .pipeline/lib/__tests__/stuck-escalate-no-oscilacion-5396.test.js
 node --test .pipeline/lib/__tests__/servicio-reconciler.test.js
 ```
