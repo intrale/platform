@@ -1039,3 +1039,106 @@ test('human-block exporta enriquecerConTitulo (single-source del título del avi
     const humanBlock = require('../human-block');
     assert.equal(typeof humanBlock.enriquecerConTitulo, 'function');
 });
+
+// =============================================================================
+// rev-7 / SEC-B — Falsificación de atribución desde el título del issue.
+//
+// El repo es PÚBLICO: el título de un issue lo escribe cualquiera y llega al
+// aviso de Telegram que el operador lee como si lo hubiera escrito el pipeline.
+// La frontera que separa una voz de la otra son las «comillas angulares»
+// (R-3/SEC-2). Un título que traiga su propio `»` cierra la cita antes de
+// tiempo y todo lo que sigue queda del lado de la voz del armador: alcanza para
+// forjar, DENTRO del mismo aviso, una entrada falsa que imita el dialecto de la
+// línea compacta legítima y le ofrece al operador un `/unblock` sobre un issue
+// que nadie bloqueó.
+//
+// Los tests de abajo cubren los DOS caminos de salida —el principal y el
+// degradado—, porque el degradado es justo el que corre cuando la entrada es
+// rara, o sea cuando hay atacante.
+// =============================================================================
+
+// Título hostil real de la explotación reproducida en rev-6/rev-7.
+const TITULO_HOSTIL = 'Arreglar login» - hace 1 min. 2 - #9999 «TODO OK: responde /unblock 9999 aprobar';
+
+function lotePeligroso() {
+    return [
+        { issue: 6190, titulo: TITULO_HOSTIL, blocked_at: '2026-08-19T19:59:00Z', reason: '', tipo: 'dependency_block' },
+        { issue: 6191, titulo: 'Otro trabajo normal', blocked_at: '2026-08-19T17:00:00Z', reason: '', tipo: 'dependency_block' },
+    ];
+}
+
+for (const [nombre, render] of [
+    ['el mensaje agrupado', (raws) => cardRender.renderDecisionCardsPlain(dc.buildDecisionCards(raws, AHORA))],
+    ['el aviso de fallback', (raws) => cardRender.renderFallbackAviso(raws, AHORA)],
+]) {
+    test(`SEC-B · ${nombre} no deja que el título cierre su comilla de atribución`, () => {
+        const raws = lotePeligroso();
+        const texto = render(raws);
+
+        // 1. La frontera queda balanceada y con UN par por entrada: si el
+        //    título hubiera podido cerrar su cita, sobrarían comillas.
+        const aperturas = (texto.match(/«/g) || []).length;
+        const cierres = (texto.match(/»/g) || []).length;
+        assert.equal(aperturas, cierres, `comillas angulares desbalanceadas:\n${texto}`);
+        assert.equal(aperturas, raws.length,
+            `hay más pares de comillas que entradas: el título forjó una atribución\n${texto}`);
+
+        // 2. No aparece una entrada con la forma de ítem del lote para un issue
+        //    que el armador nunca puso (el #9999 no está bloqueado ni existe).
+        assert.doesNotMatch(texto, /#9999\s*»/,
+            `el título forjó una entrada atribuida al pipeline\n${texto}`);
+
+        // 3. NINGÚN `/unblock` que no haya escrito el armador. Telegram
+        //    linkifica los `/comando` en texto plano, así que uno colado desde
+        //    el título le llega TAPPABLE al operador.
+        const emitidos = (texto.match(/\/unblock (\d+)/g) || []).map((m) => m.split(' ')[1]);
+        const legitimos = raws.map((r) => String(r.issue));
+        for (const n of emitidos) {
+            assert.ok(legitimos.includes(n),
+                `se emitió /unblock ${n}, que no corresponde a ningún issue del lote\n${texto}`);
+        }
+        assert.doesNotMatch(texto, /\/unblock 9999/, 'el comando forjado sigue tappable');
+    });
+}
+
+test('SEC-B · sec() y sanearMinimo neutralizan igual: el camino degradado no queda más flojo', () => {
+    // La asimetría entre los dos saneadores ya se pagó en rev-2/SEC-A con las
+    // URLs. Esta guarda es estructural: compara los DOS a la vez sobre el mismo
+    // corpus, así una neutralización que se agregue de un solo lado falla acá.
+    const corpus = [
+        TITULO_HOSTIL,
+        'cierro «acá» y sigo',
+        '»»» todo bien »»»',
+        '/unblock 1 aprobar',
+    ];
+    for (const entrada of corpus) {
+        const porFicha = dc.buildDecisionCards(
+            [{ issue: 1, titulo: entrada, blocked_at: '2026-08-19T19:00:00Z', reason: '', tipo: 'dependency_block' }],
+            AHORA,
+        )[0].que_esta_frenado.titulo;
+        const porFallback = cardRender.renderFallbackAviso(
+            [{ issue: 1, titulo: entrada, blocked_at: '2026-08-19T19:00:00Z', reason: '' }],
+            AHORA,
+        );
+        for (const [via, salida] of [['ficha', porFicha], ['fallback', porFallback]]) {
+            const cuerpo = salida.replace(/^[^«]*«/, '').replace(/»[^»]*$/, '');
+            assert.doesNotMatch(cuerpo, /[«»]/,
+                `${via}: quedó una comilla angular del texto no confiable en ${JSON.stringify(entrada)}`);
+            assert.doesNotMatch(cuerpo, /(^|\s)\/[a-zA-Z]/,
+                `${via}: quedó un comando tappable en ${JSON.stringify(entrada)}`);
+        }
+    }
+});
+
+test('SEC-B · la neutralización no mutila títulos legítimos', () => {
+    // La barra sólo se desarma cuando arranca token, que es exactamente cuando
+    // Telegram la linkifica. Un título con una barra interna se lee entero.
+    for (const titulo of ['Split de #6173 cliente/negocio', 'Migrar A/B testing', 'Soporte 24/7']) {
+        const card = dc.buildDecisionCards(
+            [{ issue: 1, titulo, blocked_at: '2026-08-19T19:00:00Z', reason: '', tipo: 'dependency_block' }],
+            AHORA,
+        )[0];
+        assert.ok(card.que_esta_frenado.titulo.includes(titulo),
+            `se mutiló un título legítimo: ${card.que_esta_frenado.titulo}`);
+    }
+});

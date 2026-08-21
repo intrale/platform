@@ -347,6 +347,15 @@ function sanearMinimo(v, max) {
     // cuando hay atacante. Se consume el regex del armador, no se copia.
     s = s.replace(decisionCard.URL_RE, decisionCard.URL_MARCA);
     s = s.replace(/\]\(/g, '] (').replace(/[*`<>]/g, '').replace(/_/g, ' ');
+    // rev-7 / SEC-B: las «comillas angulares» son la frontera de atribución que
+    // este mismo renderer agrega abajo. Si el título trae un `»` propio, cierra
+    // la cita antes de tiempo y forja una entrada falsa con un `/unblock` sobre
+    // un issue que nadie bloqueó. Se consume el regex del armador, no se copia.
+    s = s.replace(decisionCard.GUILLEMET_RE, decisionCard.GUILLEMET_REEMPLAZO);
+    // Y el `/comando` tappable que Telegram linkifica solo. Mismo motivo que
+    // arriba: el camino degradado es JUSTO el que corre cuando la entrada es
+    // rara, o sea cuando hay atacante. No puede ser el más flojo.
+    s = s.replace(decisionCard.COMANDO_RE, decisionCard.COMANDO_REEMPLAZO);
     s = s.replace(/\s+/g, ' ').trim();
     return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
 }

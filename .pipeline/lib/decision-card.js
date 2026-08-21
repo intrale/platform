@@ -154,6 +154,31 @@ function deepFreeze(o) {
 // bug por descuido. Los `<>` se van por el mismo motivo del lado HTML.
 const MARKUP_BORRAR_RE = /[*`<>]/g;
 const MARKUP_ESPACIO_RE = /_/g;
+// rev-7 / SEC-B. Las «comillas angulares» NO son decoración: son la frontera de
+// atribución que R-3/SEC-2 usa para separar «esto lo escribió el pipeline» de
+// «esto lo escribió un tercero». Un título hostil que traiga un `»` propio
+// —y el repo es público, el título lo escribe cualquiera— cierra su propia
+// cita antes de tiempo y todo lo que sigue queda del lado de la voz del
+// pipeline: alcanza para forjar, DENTRO del mismo aviso, una entrada falsa que
+// imita el dialecto de la línea compacta legítima («2 · #9999 «…» — hace 3 h.»)
+// y le muestra al operador un `/unblock` sobre un issue que nadie bloqueó.
+// Se reemplaza por comilla recta en vez de borrar: el título sigue leyéndose
+// entero, pero deja de poder hablar con la voz del armador. Va acá, en el
+// ORIGEN, para que ningún renderer pueda reintroducir la clase por descuido.
+const GUILLEMET_RE = /[«»]/g;
+const GUILLEMET_REEMPLAZO = '"';
+
+// rev-7 / SEC-B, segunda mitad. Cerrar la comilla angular deja el texto hostil
+// DENTRO de la cita, pero no le saca el aguijón: Telegram linkifica cualquier
+// `/comando` en texto plano, así que un título con `/unblock 9999` le sigue
+// poniendo al operador un comando TAPPABLE que el armador nunca escribió —
+// sobre un issue que nadie bloqueó. La barra sólo se neutraliza cuando arranca
+// token (inicio o después de espacio), que es exactamente cuando Telegram la
+// linkifica: así `cliente/negocio` o `A/B` quedan intactos y el título se sigue
+// leyendo entero. Es la misma decisión que con las URLs (rev-2/SEC-A): lo que
+// llega clickeable desde texto de un tercero, se desarma en el origen.
+const COMANDO_RE = /(^|\s)\/(?=[a-zA-Z])/g;
+const COMANDO_REEMPLAZO = '$1';
 // El vector de phishing clickeable: `](` arma un link Markdown. Se parte con un
 // espacio en vez de borrar, para no mutilar títulos como «[Split de #6173]».
 const MARKDOWN_LINK_RE = /\]\(/g;
@@ -238,7 +263,9 @@ function sec(value, max = MAX_CAMPO) {
     s = s.replace(URL_RE, URL_MARCA);
     s = s.replace(MARKDOWN_LINK_RE, '] (')
         .replace(MARKUP_BORRAR_RE, '')
-        .replace(MARKUP_ESPACIO_RE, ' ');
+        .replace(MARKUP_ESPACIO_RE, ' ')
+        .replace(GUILLEMET_RE, GUILLEMET_REEMPLAZO)
+        .replace(COMANDO_RE, COMANDO_REEMPLAZO);
     s = s.replace(/\s+/g, ' ').trim();
     return truncar(s, max);
 }
@@ -1376,6 +1403,13 @@ module.exports = {
     CONTROL_RANGES,
     URL_RE,
     URL_MARCA,
+    // rev-7 / SEC-B: misma razón que URL_RE. El camino degradado no puede
+    // quedar más flojo que el principal —esa asimetría ya se pagó en rev-2/
+    // SEC-A con las URLs— y una copia del regex diverge; esta, no.
+    GUILLEMET_RE,
+    GUILLEMET_REEMPLAZO,
+    COMANDO_RE,
+    COMANDO_REEMPLAZO,
     ORIENTACION_LIBRE,
     MOLDES_DE_ORIENTACION,
     esOrientacionMolde,
