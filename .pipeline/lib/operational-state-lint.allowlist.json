@@ -15,8 +15,8 @@
     },
     {
       "file": "pulpo.js",
-      "line": 17829,
-      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso —:12508 es el fallback de setFullPause— y el seam de test SEC-3 (#4832). Estructural: #6104"
+      "line": 18054,
+      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -- :12735 es el fallback de setFullPause -- y el seam de test SEC-3 (#4832). Estructural: #6104. Linea reubicada por los brazos credential-death de #6238 y oauth-session-expiry de #6239 (mismo call site, sin cambio de semantica)."
     }
   ]
 }
