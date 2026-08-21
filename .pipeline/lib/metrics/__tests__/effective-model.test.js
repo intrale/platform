@@ -64,6 +64,26 @@ test('normaliza variante y rechaza secretos o saltos de línea', () => {
     assert.equal(obs.observable, false);
 });
 
+test('rechaza secretos GitHub, AWS, JWT y tokens genericos antes de persistir', () => {
+    const secrets = [
+        `ghp_${'a'.repeat(40)}`,
+        'AKIAIOSFODNN7EXAMPLE',
+        'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature',
+        'aB3dE5fG7hJ9kL2mN4pQ6rS8tV0wX1yZ3_5-7.9aB3dE5fG7hJ9kL',
+    ];
+
+    for (const secret of secrets) {
+        assert.equal(m.normalizeModelId(secret), null, `debe rechazar ${secret.slice(0, 4)}`);
+        const file = tempFile();
+        const rec = m.recordEffectiveModel({ issue: 6273, skill: 'security', provider: 'anthropic',
+            model_declared: 'safe-model', raw: anthropicLog(secret) }, { file });
+        const persisted = fs.readFileSync(file, 'utf8');
+        assert.equal(rec.model_effective, null);
+        assert.equal(rec.source, m.NOT_OBSERVABLE);
+        assert.equal(persisted.includes(secret), false);
+    }
+});
+
 test('append-only conserva ambas corridas', () => {
     const file = tempFile();
     const opts = { issue: 1, skill: 'x', provider: 'anthropic', model_declared: 'a', raw: anthropicLog('a') };

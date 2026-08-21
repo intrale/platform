@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { redactSecretValue } = require('../redact');
 
 const NOT_OBSERVABLE = 'not_observable';
 const WHITELIST = Object.freeze([
@@ -15,8 +16,12 @@ function defaultFile() {
 }
 
 function normalizeModelId(value) {
-    const normalized = String(value || '').replace(/\[[^\]]*\]\s*$/, '').trim().toLowerCase();
-    if (/^(sk-|api[_-]?key|bearer)/.test(normalized)) return null;
+    const candidate = String(value || '').replace(/\[[^\]]*\]\s*$/, '').trim();
+    // El modelo observado viene de un log no confiable. El redactor central es
+    // la fuente canonica para detectar credenciales: si altera el valor, jamas
+    // se valida ni se persiste una version parcial/redactada como model id.
+    if (redactSecretValue(candidate) !== candidate) return null;
+    const normalized = candidate.toLowerCase();
     return MODEL_ID.test(normalized) ? normalized : null;
 }
 
