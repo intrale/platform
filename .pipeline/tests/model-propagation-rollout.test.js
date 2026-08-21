@@ -1,11 +1,20 @@
 'use strict';
 const test = require('node:test'); const assert = require('node:assert/strict');
 const fs = require('fs'); const os = require('os'); const path = require('path');
+const yaml = require('js-yaml');
 const r = require('../lib/model-propagation-rollout');
 const dispatcher = require('../lib/agent-launcher/dispatch-with-fallback');
 function fixture() { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rollout-')); fs.mkdirSync(path.join(root, 'logs'), { recursive: true }); return root; }
 function seed(root, rows) { fs.writeFileSync(path.join(root, 'logs', 'spawn-exit-2026-08-20.jsonl'), rows.map(x => JSON.stringify(x)).join('\n')); }
 const cfg = { baseline_min_runs: 2, evaluation_min_runs: 2, thresholds: { rebound_absolute: .1, early_death_absolute: .1 }, waves: [{ actors: ['po'] }, { actors: ['pipeline-dev'] }] };
+test('configura los escalones en el orden obligatorio de CA-4', () => {
+  const config = yaml.load(fs.readFileSync(path.join(__dirname, '..', 'config.yaml'), 'utf8'));
+  assert.deepStrictEqual(config.model_propagation_rollout.waves.map(wave => wave.actors), [
+    ['sherlock'],
+    ['doc', 'refinar', 'po'],
+    ['backend-dev', 'pipeline-dev', 'android-dev'],
+  ]);
+});
 test('congela baseline por actor y proveedor y excluye provider-death', () => { const root = fixture(); seed(root, [
   { ts:'2026-08-20T01:00:00Z', skill:'po', provider:'anthropic', exit_code:0, duration_ms:100 },
   { ts:'2026-08-20T02:00:00Z', skill:'po', provider:'anthropic', exit_code:1, duration_ms:100, death_kind:'provider-death' }]);

@@ -6,8 +6,8 @@ Este control apaga o enciende la **propagación de modelo** por par actor/provee
 
 1. Congelar una sola vez el baseline: `node .pipeline/model-rollout.js baseline --from <ISO> --until <ISO>`.
 2. Consultarlo con `node .pipeline/model-rollout.js status` y comprobar al menos 30 corridas por par.
-3. Encender explícitamente: `node .pipeline/model-rollout.js enable --actor po --provider anthropic --by <operador>`.
-4. Observar al menos 20 corridas. Los escalones declarados en `config.yaml` son `po`, luego `guru/ux/architect`, y finalmente los devs pesados. Se eligieron actores con telemetría real; `sherlock` no es un actor del dispatcher.
+3. Encender explícitamente: `node .pipeline/model-rollout.js enable --actor sherlock --provider anthropic --by <operador>`.
+4. Observar al menos 20 corridas. Los escalones declarados en `config.yaml` siguen el orden obligatorio: primero `sherlock`; luego los actores livianos `doc`, `refinar` y `po`; finalmente los devs pesados `backend-dev`, `pipeline-dev` y `android-dev`.
 5. Evaluar la ventana con `node .pipeline/model-rollout.js evaluate --from <ISO> --until <ISO>`. Sólo una evaluación sana con muestra suficiente habilita el escalón siguiente.
 
 ## Umbrales y rollback

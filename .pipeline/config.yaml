@@ -727,8 +727,8 @@ model_propagation_rollout:
     rebound_absolute: 0.10
     early_death_absolute: 0.10
   waves:
-    - actors: [po]
-    - actors: [guru, ux, architect]
+    - actors: [sherlock]
+    - actors: [doc, refinar, po]
     - actors: [backend-dev, pipeline-dev, android-dev]
 
 # #4870 — Modo reducido: aviso advisory cuando no hay proveedor PAGO disponible.
