@@ -15,8 +15,8 @@
     },
     {
       "file": "pulpo.js",
-      "line": 17865,
-      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -el fallback de setFullPause- y el seam de test SEC-3 (#4832). Estructural: #6104. OJO (#6226): 'line' es un puntero fragil: cualquier cambio que agregue lineas ARRIBA de la definicion de PAUSE_FILE la corre y el guardrail falla en pre-commit. Si eso pasa, re-apuntala a la linea nueva de 'const PAUSE_FILE ='; no borres la entry ni exceptues el archivo entero."
+      "line": 18183,
+      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -el fallback de setFullPause- y el seam de test SEC-3 (#4832). Estructural: #6104. OJO: 'line' es un puntero fragil: cualquier cambio que agregue lineas ARRIBA de la definicion la corre y el guardrail falla en pre-commit. Ya paso en #6238, #6144 y #6226. Si vuelve a pasar, re-apuntala a la linea nueva de 'const PAUSE_FILE ='; no borres la entry ni exceptues el archivo entero."
     }
   ]
 }

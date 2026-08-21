@@ -230,6 +230,21 @@ desync:
   # Vacía o ausente → manda sólo la asociación con el repo (fail-closed).
   # Ejemplo: ["intrale-bot"]
   split_orphan_trusted_logins: []
+  # #6117 — Detector de auto-reparaciones REPETIDAS de la lista de trabajo.
+  # Una auto-reparación exitosa es sana y ya no se avisa por Telegram (queda en
+  # log, audit, métrica y dashboard). Pero que la MISMA reparación se repita
+  # varias veces en poco tiempo no es sanidad: es el síntoma de una causa raíz
+  # que sigue desarmando la lista. A partir de `repair_alert_threshold`
+  # reparaciones del mismo tipo dentro de `repair_alert_window_ms`, el operador
+  # recibe un aviso de anomalía recurrente.
+  # La firma es SÓLO el tipo de reparación; el set de issues no agrupa (si
+  # agrupara, la misma causa raíz rompiendo issues distintos nunca alcanzaría el
+  # umbral, que es justo lo que queremos detectar).
+  # Valores fuera de rango se clampean en lib/metrics/auto-repair.js
+  # (threshold 2..50, ventana 1 min..24 h): una config rota nunca desactiva la
+  # alerta ni frena el pipeline.
+  repair_alert_threshold: 3
+  repair_alert_window_ms: 3600000
 
 # build: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.build (la prosa viajó a productConfigNotes)
 

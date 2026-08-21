@@ -737,3 +737,176 @@ test('realign · el escenario canónico SIN extras lo resuelve #5724 y el bloque
         teardown(dir);
     }
 });
+
+// =============================================================================
+// #6117 — La reparación aditiva con traza legítima EXITOSA tampoco notifica
+//
+// Antes de #6117 esta rama emitía "Volví a habilitar el dispatch (#5882)". Es
+// el mismo criterio que la rama de #5724: la reparación se aplicó, el trabajo
+// siguió y el operador no tiene nada que decidir. Lo que sí se comunica es el
+// FALLO — ahí el pipeline queda fail-closed de verdad.
+//
+// FALSO VERDE (H6): `sendTelegramPlain` encola un dropfile; sin credenciales
+// válidas corta antes de escribir y sin directorio el write tira y se lo come
+// un catch. Un `assert(dropfiles === 0)` pasaría sin probar nada. Por eso el
+// arnés siembra credenciales + directorio y hay un CONTROL POSITIVO abajo.
+// =============================================================================
+
+// Formato exigido por `lib/telegram-secrets.js::isLikelyToken`. Valor SINTÉTICO.
+const TG_TOKEN_FAKE_6117 = '1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+let _tgEnvPrevio6117 = null;
+
+/** setupIntegracion() + cola de Telegram operativa. */
+function setupIntegracionTelegram() {
+    const dir = setupIntegracion();
+    fs.mkdirSync(path.join(dir, 'servicios', 'telegram', 'pendiente'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
+    _tgEnvPrevio6117 = {
+        token: process.env.TELEGRAM_BOT_TOKEN,
+        chat: process.env.TELEGRAM_CHAT_ID,
+    };
+    process.env.TELEGRAM_BOT_TOKEN = TG_TOKEN_FAKE_6117;
+    process.env.TELEGRAM_CHAT_ID = '999999';
+    // Estado de proceso: sin limpiarlo, un test silencia al siguiente.
+    try { pulpo._resetAutoRepairFailureDedupe(); } catch (_) {}
+    return dir;
+}
+
+function teardownIntegracionTelegram(dir) {
+    if (_tgEnvPrevio6117) {
+        if (_tgEnvPrevio6117.token === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+        else process.env.TELEGRAM_BOT_TOKEN = _tgEnvPrevio6117.token;
+        if (_tgEnvPrevio6117.chat === undefined) delete process.env.TELEGRAM_CHAT_ID;
+        else process.env.TELEGRAM_CHAT_ID = _tgEnvPrevio6117.chat;
+        _tgEnvPrevio6117 = null;
+    }
+    teardown(dir);
+}
+
+function dropfiles6117(dir) {
+    try { return fs.readdirSync(path.join(dir, 'servicios', 'telegram', 'pendiente')); }
+    catch { return []; }
+}
+
+function dropfileTexts6117(dir) {
+    const d = path.join(dir, 'servicios', 'telegram', 'pendiente');
+    return dropfiles6117(dir).map((f) => {
+        try { return JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')).text || ''; }
+        catch { return ''; }
+    });
+}
+
+test('#6117 CONTROL POSITIVO (5882): el arnés detecta un dropfile cuando se emite uno', () => {
+    // Sin esto, los asserts de silencio de abajo son falsos verdes.
+    const dir = setupIntegracionTelegram();
+    try {
+        assert.deepEqual(dropfiles6117(dir), [], 'arranca sin dropfiles');
+        pulpo.notifyAutoRepairFailure('reparacion_aditiva_wave_add', 'control positivo');
+        assert.equal(dropfiles6117(dir).length, 1,
+            'credenciales y directorio presentes: un envío real deja dropfile');
+    } finally { teardownIntegracionTelegram(dir); }
+});
+
+test('#6117 CA-2: la reparación aditiva con traza legítima EXITOSA no deja dropfile', () => {
+    const dir = setupIntegracionTelegram();
+    try {
+        // Mismo fixture que el caso canónico de #5882: extra CERRADO ajeno a la
+        // ola (hace declinar a #5724) + faltante ABIERTO con traza de /wave add.
+        writeWaves(dir, [880002, 880003]);
+        writeAllowlistCruda(dir, [880002, 870001]);
+        sembrarTrazaWaveAdd(880003);
+        const isClosed = (n) => Number(n) === 870001;
+
+        const lineas = correrRealign(isClosed);
+
+        // La reparación ocurrió de verdad (si no, el silencio no prueba nada).
+        assert.ok(readAllowlist(dir).includes(880003), 'el issue promovido volvió a la allowlist');
+        assert.ok(lineas.some((l) => /reparación ADITIVA de allowlist OK \(#5882\)/.test(l)),
+            `debe resolver el bloque de #5882: ${lineasDesync(lineas)}`);
+        assert.equal(desyncDetector.isDesyncFlagSet(), false, 'el trabajo quedó liberado');
+
+        assert.deepEqual(dropfiles6117(dir), [],
+            'reparación exitosa: no pide ninguna decisión, no se le escribe al operador');
+    } finally { teardownIntegracionTelegram(dir); }
+});
+
+test('#6117 CA-3: la reparación de #5882 sigue dejando traza completa en el log', () => {
+    const dir = setupIntegracionTelegram();
+    try {
+        writeWaves(dir, [880002, 880003]);
+        writeAllowlistCruda(dir, [880002, 870001]);
+        sembrarTrazaWaveAdd(880003);
+
+        const lineas = correrRealign((n) => Number(n) === 870001);
+        const contenido = lineas.join('\n');
+
+        assert.ok(/reparación ADITIVA de allowlist OK/.test(contenido), 'la reparación queda en el log');
+        assert.ok(/880003/.test(contenido), 'el log nombra el issue repuesto');
+        assert.ok(/#6117/.test(contenido), 'el log explica por qué no se notificó');
+    } finally { teardownIntegracionTelegram(dir); }
+});
+
+test('#6117 CA-6: la reparación de #5882 registra la métrica con su propio tipo', () => {
+    const dir = setupIntegracionTelegram();
+    try {
+        const autoRepair = require('../metrics/auto-repair');
+        assert.equal(autoRepair.readLastAutoRepair(), null, 'arranca sin métrica');
+
+        writeWaves(dir, [880002, 880003]);
+        writeAllowlistCruda(dir, [880002, 870001]);
+        sembrarTrazaWaveAdd(880003);
+        correrRealign((n) => Number(n) === 870001);
+
+        const last = autoRepair.readLastAutoRepair();
+        assert.notEqual(last, null, 'quedó registrada');
+        assert.equal(last.tipo, 'reparacion_aditiva_wave_add',
+            'se distingue del tipo de #5724: los contadores no se mezclan');
+        assert.deepEqual(last.issues, [880003]);
+    } finally { teardownIntegracionTelegram(dir); }
+});
+
+test('#6117 CA-4/H8: un rechazo del gate se comunica distinto de un fallo genérico', () => {
+    // Un `gate_rejected` no es un error del pipeline: es una salvaguarda que
+    // dijo que no. Lo que el operador tiene que hacer es distinto, así que el
+    // copy tiene que distinguirlo.
+    const dir = setupIntegracionTelegram();
+    try {
+        pulpo.notifyAutoRepairFailure('reparacion_aditiva_wave_add', 'gate_rejected: allowlist bloqueada',
+            { gateRejected: true });
+        const [t] = dropfileTexts6117(dir);
+        assert.ok(t, 'el fallo se comunica');
+        // Copy normativo M1 con la variante de motivo de H8 (CA-UX-3).
+        assert.ok(/Motivo: el gate de pausa parcial rechazó el cambio/.test(t),
+            'el motivo dice que fue un rechazo con criterio, no un fallo técnico');
+        assert.ok(/no se lanza ningún agente/.test(t), 'R2: primero la consecuencia operativa');
+        assert.ok(/Qué hacer:/.test(t) && /wave add/.test(t), 'R3: cómo destrabar (#5134)');
+
+        // Contraste: un fallo genérico lleva la causa cruda, no la del gate.
+        pulpo._resetAutoRepairFailureDedupe();
+        pulpo.notifyAutoRepairFailure('reparacion_aditiva_wave_add', 'no_active_wave');
+        const textos = dropfileTexts6117(dir);
+        const generico = textos.find((x) => /no_active_wave/.test(x));
+        assert.ok(generico, 'se emitió el genérico');
+        assert.ok(!/gate de pausa parcial/.test(generico),
+            'el genérico no inventa un rechazo del gate que no ocurrió');
+    } finally { teardownIntegracionTelegram(dir); }
+});
+
+test('#6117: la divergencia que NO se repara sigue fail-closed y ahora además avisa', () => {
+    // Regresión: el `WARN ... Sigue fail-closed` del camino no aplicado sigue
+    // en el log, y el flag de bloqueo se mantiene. Lo único que cambia es que
+    // el operador se entera por Telegram en vez de sólo en el log.
+    const dir = setupIntegracionTelegram();
+    try {
+        writeWaves(dir, [880002, 880003]);
+        writeAllowlistCruda(dir, [880002, 870001]);
+        // SIN sembrar traza legítima → no hay nada que reparar por esta vía.
+        const lineas = correrRealign((n) => Number(n) === 870001);
+        const contenido = lineas.join('\n');
+
+        assert.ok(!readAllowlist(dir).includes(880003), 'no se repara sin traza');
+        assert.ok(/sin traza legítima de wave-add/.test(contenido),
+            `debe declinar por falta de traza: ${lineasDesync(lineas)}`);
+        assert.ok(/Sigue fail-closed/.test(contenido), 'el fail-closed sigue declarado en el log');
+    } finally { teardownIntegracionTelegram(dir); }
+});
