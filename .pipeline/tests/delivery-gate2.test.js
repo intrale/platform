@@ -119,6 +119,15 @@ test('resolveAuthorizedSigners suma la credencial del operador del entorno sin d
     assert.deepStrictEqual([...signers].sort(), ['1', '777']);
 });
 
+test('resolveAuthorizedSigners agrega al operador del entorno que no está en la config', () => {
+    // Caso que traía `origin/main` y que el merge de #6206 no debe perder: la
+    // credencial del entorno no sólo se deduplica, también amplía la allowlist.
+    const signers = withOperatorEnv('77', () => delivery.resolveAuthorizedSigners({
+        cua: { operator_chat_ids: ['1'] },
+    }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '77']);
+});
+
 test('resolveAuthorizedSigners ignora un entorno vacío y no inventa firmantes', () => {
     const signers = withOperatorEnv('   ', () => delivery.resolveAuthorizedSigners({
         cua: { operator_chat_ids: ['1'] },

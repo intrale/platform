@@ -230,6 +230,21 @@ desync:
   # Vacía o ausente → manda sólo la asociación con el repo (fail-closed).
   # Ejemplo: ["intrale-bot"]
   split_orphan_trusted_logins: []
+  # #6117 — Detector de auto-reparaciones REPETIDAS de la lista de trabajo.
+  # Una auto-reparación exitosa es sana y ya no se avisa por Telegram (queda en
+  # log, audit, métrica y dashboard). Pero que la MISMA reparación se repita
+  # varias veces en poco tiempo no es sanidad: es el síntoma de una causa raíz
+  # que sigue desarmando la lista. A partir de `repair_alert_threshold`
+  # reparaciones del mismo tipo dentro de `repair_alert_window_ms`, el operador
+  # recibe un aviso de anomalía recurrente.
+  # La firma es SÓLO el tipo de reparación; el set de issues no agrupa (si
+  # agrupara, la misma causa raíz rompiendo issues distintos nunca alcanzaría el
+  # umbral, que es justo lo que queremos detectar).
+  # Valores fuera de rango se clampean en lib/metrics/auto-repair.js
+  # (threshold 2..50, ventana 1 min..24 h): una config rota nunca desactiva la
+  # alerta ni frena el pipeline.
+  repair_alert_threshold: 3
+  repair_alert_window_ms: 3600000
 
 # build: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.build (la prosa viajó a productConfigNotes)
 
@@ -1709,14 +1724,24 @@ architect:
 # se resuelve server-side desde credentials.json (`TELEGRAM_LEO_OPERATOR_CHAT_ID`)
 # y se inyecta al gate en runtime.
 operator_signoff:
-  # Encendido del piloto (2026-08-18, decisión del operador): GATE 1 pasa a
-  # `enforce` SIN exenciones por label — el operador pidió explícitamente ver
-  # todo lo que cae antes de decidir qué eximir. El riesgo se acota por
-  # `go_live_date`: sólo los issues creados desde el encendido piden firma; el
-  # backlog vivo de la ola queda grandfathered y sigue fluyendo.
-  # Kill switch inmediato ante deadlock: `enabled: false`.
-  enabled: true
-  gate_mode: enforce
+  # APAGADO (2026-08-19, decisión del operador; reafirmada 2026-08-20).
+  #
+  # El piloto se encendió el 2026-08-18 en `enforce` y quedó en DEADLOCK: la
+  # mitad que RETIENE está cableada, pero la mitad que FIRMA no existe todavía
+  # (`recordDefinitionSignature` no tiene ningún caller: ni Telegram, ni el
+  # dashboard, ni un comando). Resultado: issues retenidos sin ningún canal
+  # para desbloquearlos + notificaciones repetidas al operador.
+  #
+  # NO REENCENDER hasta que exista el canal único de firma (#6199 — Telegram
+  # con botones + dashboard web + API). Ese issue es la precondición dura.
+  # Cualquier cambio de estos valores requiere firma explícita del operador.
+  #
+  # NOTA OPERATIVA (2026-08-20): el apagado se aplicó primero sólo en el working
+  # tree del repo principal y un `reset --hard` a origin/main lo revirtió,
+  # reencendiendo el gate sin que nadie lo pidiera. Por eso este apagado va
+  # COMMITEADO a main: es el único estado que sobrevive al respawn.
+  enabled: false
+  gate_mode: dry-run
   go_live_date: '2026-08-18T00:00:00Z'
   preauthorized_classes: []
 
