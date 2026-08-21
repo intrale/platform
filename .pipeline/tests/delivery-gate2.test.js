@@ -76,33 +76,39 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
-// Helper: aísla `TELEGRAM_LEO_OPERATOR_CHAT_ID` para que el resultado no dependa
-// del entorno del runner. Sin esto el test pasa en una máquina limpia y falla en
-// el pipeline (donde la credencial del operador SÍ está exportada).
-function conEnvOperador(valor, fn) {
-    const previo = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
-    if (valor == null) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
-    else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = valor;
-    try {
-        return fn();
-    } finally {
-        if (previo === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
-        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = previo;
-    }
-}
-
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = conEnvOperador(null, () =>
-        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } }));
-    assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+    // El test debe ser hermético: `resolveAuthorizedSigners` suma el operador de
+    // `TELEGRAM_LEO_OPERATOR_CHAT_ID`, y si el entorno la trae seteada (el pipeline
+    // la exporta en producción) el assert de abajo veía un id extra y fallaba por
+    // ambiente, no por código. Se aísla la variable y se restaura al salir.
+    const prev = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    try {
+        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+        assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+    } finally {
+        if (prev === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = prev;
+    }
 });
 
-test('resolveAuthorizedSigners suma la credencial del operador y deduplica contra la allowlist', () => {
-    const conNuevo = conEnvOperador('9', () =>
-        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }));
-    assert.deepStrictEqual([...conNuevo].sort(), ['1', '2', '9']);
-
-    const yaPresente = conEnvOperador('1', () =>
-        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }));
-    assert.deepStrictEqual([...yaPresente].sort(), ['1', '2']);
+test('resolveAuthorizedSigners suma el operador de TELEGRAM_LEO_OPERATOR_CHAT_ID sin duplicar', () => {
+    const prev = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '2';
+    try {
+        // '2' ya viene en la config: el operador de env no debe duplicarlo.
+        assert.deepStrictEqual(
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }).sort(),
+            ['1', '2'],
+        );
+        // Un operador que no está en la config sí se agrega.
+        process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '77';
+        assert.deepStrictEqual(
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }).sort(),
+            ['1', '77'],
+        );
+    } finally {
+        if (prev === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = prev;
+    }
 });
