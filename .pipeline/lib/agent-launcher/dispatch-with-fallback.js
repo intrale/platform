@@ -91,7 +91,7 @@ const { AUTH_REJECTED_CLASS } = require('./auth-rejection');
 // 'full-auto', free providers → 'bypassPermissions'). Sin esto el fallback
 // perdía el `mode` y el launcher caía a un default fail-open peligroso.
 // `resolve-provider` ya se importa acá sin ciclo de require — solo sumamos un símbolo.
-const { resolveProviderForSkill, getProviderHandler, resolvePermissionMode } = require('./resolve-provider');
+const { resolveProviderForSkill, getProviderHandler, resolvePermissionMode, resolveModelForSkillProvider } = require('./resolve-provider');
 // MP-05 (#3803) — reutilizamos la validación de credenciales del precheck del
 // Commander para hacer pre-check de credenciales también en los skills antes de
 // elegir un fallback (no solo el Commander la tenía).
@@ -1867,11 +1867,13 @@ function resolveSpawnWithFallback(opts = {}) {
         // distinto). Si todavía hay configs legacy con `fallbacks: [string]`,
         // `fbModelOverride` queda null y el fallback usa el `model` default
         // del provider (comportamiento previo preservado).
-        const fbProviderDef = (models && models.providers && models.providers[fbName]) || null;
+        // #6271 — la precedencia vive en resolveModelForSkillProvider (fuente
+        // única). `fbModelOverride` se sigue respetando explícitamente porque
+        // el shape ya fue normalizado arriba; si es null, el helper resuelve
+        // por (skill, fbName) con la MISMA cadena de antes:
+        //   fallbacks[i].model_override → providers.<fbName>.model → models.defaults.model → null.
         const fbModel = fbModelOverride
-            || (fbProviderDef && fbProviderDef.model)
-            || (models && models.defaults && models.defaults.model)
-            || null;
+            || resolveModelForSkillProvider(models, skill, fbName, { fallbackModel: null });
 
         // Audit + notify (S-6 / S-9).
         auditAppend({
