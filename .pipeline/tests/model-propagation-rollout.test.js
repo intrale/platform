@@ -49,6 +49,31 @@ test('encendido es independiente por par y respeta escalones', () => { const roo
   {ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1},
   {ts:`2026-08-20T0${i}:10:00Z`,skill:'pipeline-dev',provider:'anthropic',exit_code:0,duration_ms:1}])); r.captureBaseline(root);
   r.enablePair(root,'po','anthropic',cfg,{actor:'leo'}); assert.equal(r.shouldPropagate(root,'po','anthropic'),true); assert.equal(r.shouldPropagate(root,'pipeline-dev','anthropic'),false); assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',cfg),/escalón/); });
+test('CA-4: po saludable no habilita devs si doc y refinar no acumularon muestra', () => {
+  const root=fixture(); const config={...cfg,waves:[{actors:['doc','refinar','po']},{actors:['pipeline-dev']}]};
+  seed(root,[1,2].flatMap(i=>[
+    {ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1},
+    {ts:`2026-08-20T0${i}:10:00Z`,skill:'pipeline-dev',provider:'anthropic',exit_code:0,duration_ms:1},
+  ]));
+  r.captureBaseline(root); r.enablePair(root,'po','anthropic',config);
+  const result=r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
+  assert.equal(result['po::anthropic'].action,'healthy');
+  assert.equal(r.readState(root).waveEvidence['0::anthropic'],undefined);
+  assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',config),/todos los actores/);
+});
+test('CA-4: un escalón completo y saludable habilita el siguiente sólo en el mismo proveedor', () => {
+  const root=fixture(); const config={...cfg,waves:[{actors:['doc','refinar','po']},{actors:['pipeline-dev']}]};
+  seed(root,[1,2].flatMap(i=>['doc','refinar','po','pipeline-dev'].flatMap(skill=>[
+    {ts:`2026-08-20T0${i}:00:00Z`,skill,provider:'anthropic',exit_code:0,duration_ms:1},
+    {ts:`2026-08-20T0${i}:10:00Z`,skill,provider:'openai-codex',exit_code:0,duration_ms:1},
+  ])));
+  r.captureBaseline(root);
+  for (const actor of ['doc','refinar','po']) r.enablePair(root,actor,'anthropic',config);
+  r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
+  assert.ok(r.readState(root).waveEvidence['0::anthropic']);
+  assert.doesNotThrow(()=>r.enablePair(root,'pipeline-dev','anthropic',config));
+  assert.throws(()=>r.enablePair(root,'pipeline-dev','openai-codex',config),/openai-codex/);
+});
 test('rollback apaga sólo el flag y notifica una vez', () => { const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1}))); r.captureBaseline(root); r.enablePair(root,'po','anthropic',cfg); const notices=[];
   const out=r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:.5,reboundRate:0},cfg,{notify:x=>notices.push(x)}); assert.equal(out.action,'rollback'); assert.equal(r.shouldPropagate(root,'po','anthropic'),false); assert.equal(notices.length,1);
   assert.equal(r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:.5,reboundRate:0},cfg,{notify:x=>notices.push(x)}).action,'off'); assert.equal(notices.length,1); });

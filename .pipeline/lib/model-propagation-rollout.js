@@ -74,12 +74,15 @@ function captureBaseline(pipelineDir, opts = {}) {
   return state.baselines;
 }
 function waveIndex(actor, config) { return (config.waves || []).findIndex(w => (w.actors || []).includes(actor)); }
+function waveEvidenceKey(wave, provider) { return `${wave}::${provider}`; }
 function enablePair(pipelineDir, actor, provider, config, opts = {}) {
   const fsImpl = opts.fsImpl || fs; const state = readState(pipelineDir, fsImpl); const key = pairKey(actor, provider);
   const baseline = state.baselines[key]; const min = config.baseline_min_runs || DEFAULTS.baselineMinRuns;
   if (!baseline || baseline.n < min) throw new Error(`no se puede encender ${actor} en ${provider}: baseline con ${baseline ? baseline.n : 0} corridas, se necesitan ${min}`);
   const wave = waveIndex(actor, config); if (wave < 0) throw new Error(`actor '${actor}' no está declarado en los escalones`);
-  if (wave > 0 && !state.waveEvidence[String(wave - 1)]) throw new Error(`el escalón ${wave + 1} requiere evidencia sin degradación del escalón ${wave}`);
+  if (wave > 0 && !state.waveEvidence[waveEvidenceKey(wave - 1, provider)]) {
+    throw new Error(`el escalón ${wave + 1} en ${provider} requiere que todos los actores del escalón ${wave} acumulen la muestra mínima sin degradación`);
+  }
   const now = opts.now || new Date(); state.flags[key] = { enabled: true, enabledAt: now.toISOString(), enabledBy: opts.actor || 'operador', rollback: null };
   atomicJson(paths(pipelineDir).state, state, fsImpl); audit(pipelineDir, { ts: now.toISOString(), event: 'enabled', pair: key, origin: 'humano', by: opts.actor || 'operador' }, fsImpl);
   return state.flags[key];
@@ -145,11 +148,19 @@ function evaluateEnabled(pipelineDir, config, opts = {}) {
     results[key] = evaluatePair(pipelineDir, actor, provider, observedByPair[key], config, opts);
   }
   const refreshed = readState(pipelineDir, fsImpl);
+  const providers = new Set(Object.keys(refreshed.flags).map(key => key.split('::')[1]).filter(Boolean));
   for (let i = 0; i < (config.waves || []).length; i++) {
     const actors = config.waves[i].actors || [];
-    const keys = Object.keys(refreshed.flags).filter(k => actors.includes(k.split('::')[0]));
-    if (keys.length && keys.every(k => results[k]?.action === 'healthy')) refreshed.waveEvidence[String(i)] = {
-      at: (opts.now || new Date()).toISOString(), pairs: keys, minRuns: config.evaluation_min_runs || DEFAULTS.evaluationMinRuns };
+    for (const provider of providers) {
+      const keys = actors.map(actor => pairKey(actor, provider));
+      const evidenceKey = waveEvidenceKey(i, provider);
+      const completeAndHealthy = keys.length > 0 && keys.every(key =>
+        refreshed.flags[key]?.enabled === true && results[key]?.action === 'healthy');
+      if (completeAndHealthy) refreshed.waveEvidence[evidenceKey] = {
+        at: (opts.now || new Date()).toISOString(), provider, pairs: keys,
+        minRuns: config.evaluation_min_runs || DEFAULTS.evaluationMinRuns };
+      else delete refreshed.waveEvidence[evidenceKey];
+    }
   }
   atomicJson(paths(pipelineDir).state, refreshed, fsImpl);
   return results;
