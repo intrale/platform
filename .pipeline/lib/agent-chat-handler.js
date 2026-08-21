@@ -154,7 +154,7 @@ function chatJsonlPath(LOG_DIR, validatedLogFile) {
  * Idempotente: si el archivo no existe o pesa menos del cap, no hace nada.
  * Best-effort: si falla, log + continúa (no rompe el flow del operador).
  */
-function maybeRotateChatFile(chatFile, log) {
+function maybeRotateChatFile(chatFile, log, renameFile = fs.renameSync) {
     try {
         if (!fs.existsSync(chatFile)) return;
         const stat = fs.statSync(chatFile);
@@ -170,7 +170,7 @@ function maybeRotateChatFile(chatFile, log) {
                         // El más viejo se descarta.
                         fs.unlinkSync(older);
                     }
-                    renameChatFileWithRetry(newer, older);
+                    renameChatFileWithRetry(newer, older, renameFile);
                 } catch (e) {
                     if (log) log(`agent-chat: rotación falló para ${path.basename(newer)}: ${e.message}`);
                 }
@@ -178,7 +178,7 @@ function maybeRotateChatFile(chatFile, log) {
         }
         // .chat.jsonl → .chat.jsonl.1
         try {
-            renameChatFileWithRetry(chatFile, `${chatFile}.1`);
+            renameChatFileWithRetry(chatFile, `${chatFile}.1`, renameFile);
         } catch (e) {
             if (log) log(`agent-chat: rotación falló para ${path.basename(chatFile)}: ${e.message}`);
         }
@@ -190,11 +190,11 @@ function maybeRotateChatFile(chatFile, log) {
 const CHAT_RENAME_RETRYABLE = new Set(['EBUSY', 'EPERM', 'EACCES']);
 const CHAT_RENAME_MAX_ATTEMPTS = 6;
 
-function renameChatFileWithRetry(from, to) {
+function renameChatFileWithRetry(from, to, renameFile = fs.renameSync) {
     let lastError;
     for (let attempt = 0; attempt < CHAT_RENAME_MAX_ATTEMPTS; attempt++) {
         try {
-            fs.renameSync(from, to);
+            renameFile(from, to);
             return;
         } catch (error) {
             lastError = error;

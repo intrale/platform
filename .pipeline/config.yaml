@@ -1724,9 +1724,25 @@ architect:
 # se resuelve server-side desde credentials.json (`TELEGRAM_LEO_OPERATOR_CHAT_ID`)
 # y se inyecta al gate en runtime.
 operator_signoff:
+  # APAGADO (2026-08-19, decisión del operador; reafirmada 2026-08-20).
+  #
+  # El piloto se encendió el 2026-08-18 en `enforce` y quedó en DEADLOCK: la
+  # mitad que RETIENE está cableada, pero la mitad que FIRMA no existe todavía
+  # (`recordDefinitionSignature` no tiene ningún caller: ni Telegram, ni el
+  # dashboard, ni un comando). Resultado: issues retenidos sin ningún canal
+  # para desbloquearlos + notificaciones repetidas al operador.
+  #
+  # NO REENCENDER hasta que exista el canal único de firma (#6199 — Telegram
+  # con botones + dashboard web + API). Ese issue es la precondición dura.
+  # Cualquier cambio de estos valores requiere firma explícita del operador.
+  #
+  # NOTA OPERATIVA (2026-08-20): el apagado se aplicó primero sólo en el working
+  # tree del repo principal y un `reset --hard` a origin/main lo revirtió,
+  # reencendiendo el gate sin que nadie lo pidiera. Por eso este apagado va
+  # COMMITEADO a main: es el único estado que sobrevive al respawn.
   enabled: false
   gate_mode: dry-run
-  go_live_date: '2026-07-10T00:00:00Z'
+  go_live_date: '2026-08-18T00:00:00Z'
   preauthorized_classes: []
 
 # =============================================================================

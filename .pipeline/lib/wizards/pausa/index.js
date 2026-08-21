@@ -21,9 +21,11 @@
 //   2 — motivo obligatorio (validación server-side) + snapshot del estado.
 //   3 — doble confirmación (2 checks para despausar) + drift-check + apply.
 //
-// MUTACIÓN EXCLUSIVA VÍA GATE (#3625, security A08): toda mutación pasa por
-//   - partial-pause.setPartialPause / clearPartialPause   (pausa parcial)
-//   - partial-pause.setFullPause   / clearFullPause        (pausa total `.paused`)
+// MUTACIÓN EXCLUSIVA VÍA GATE (#3625, security A08): toda mutación pasa por el
+// envoltorio único de estado operativo (#5179 grupo 3), que delega en el gate
+// auditado de `partial-pause`:
+//   - operational-state.setAllowlist / clearAllowlist   (pausa parcial)
+//   - operational-state.setFullPause / clearFullPause   (pausa total `.paused`)
 // El wizard NUNCA escribe `.partial-pause.json` ni `.paused` por su cuenta. El
 // `extra: { via: 'wizard-pausa', ... }` viaja al audit NDJSON (CA-11) — una sola
 // entry autoritativa, sin doble-auditar.
@@ -40,6 +42,10 @@ const previewDiff = require('../allowlist/preview-diff');
 // con `_setForTests` para no tocar gh ni el FS real.
 let deps = require('../../partial-pause-deps');
 let partialPause = require('../../partial-pause');
+// #5179 grupo 3 — las MUTACIONES van por el envoltorio único de estado
+// operativo. Los lectores (`getPipelineMode`, `readPreviousAllowlist`) siguen en
+// `partialPause`: su migración es superficie ancha y vive en #5164.
+let operationalState = require('../../operational-state');
 
 let resolveDepsOpts = {};
 
@@ -336,22 +342,22 @@ async function executeStep(session, step, params) {
             let resultingMode;
             if (action === 'pausar') {
                 if (scope === 'full') {
-                    apply = partialPause.setFullPause(gateOpts);
+                    apply = operationalState.setFullPause(gateOpts);
                     resultingMode = 'paused';
                 } else {
                     // Preservar allowed_skills no manipulado por el wizard (#3680 CA-14).
-                    apply = partialPause.setPartialPause(nextAllowlist, Object.assign({
+                    apply = operationalState.setAllowlist(nextAllowlist, Object.assign({
                         allowedSkills: current.allowedSkills,
                     }, gateOpts));
                     resultingMode = modeForAllowlist(nextAllowlist, current.allowedSkills);
                 }
             } else { // despausar
                 if (scope === 'full') {
-                    apply = partialPause.clearFullPause(gateOpts);
+                    apply = operationalState.clearFullPause(gateOpts);
                 } else if (scope === 'allowlist') {
-                    apply = partialPause.clearPartialPause(gateOpts);
+                    apply = operationalState.clearAllowlist(gateOpts);
                 } else { // issue → saca uno del allowlist (puede vaciarlo → clear)
-                    apply = partialPause.setPartialPause(nextAllowlist, Object.assign({
+                    apply = operationalState.setAllowlist(nextAllowlist, Object.assign({
                         allowedSkills: current.allowedSkills,
                     }, gateOpts));
                 }
@@ -406,12 +412,14 @@ register();
 function _setForTests(overrides = {}) {
     if (overrides.deps) deps = overrides.deps;
     if (overrides.partialPause) partialPause = overrides.partialPause;
+    if (overrides.operationalState) operationalState = overrides.operationalState;
     if (overrides.resolveDepsOpts) resolveDepsOpts = overrides.resolveDepsOpts;
 }
 
 function _resetForTests() {
     deps = require('../../partial-pause-deps');
     partialPause = require('../../partial-pause');
+    operationalState = require('../../operational-state');
     resolveDepsOpts = {};
 }
 

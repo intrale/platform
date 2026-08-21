@@ -39,8 +39,6 @@ try {
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-const WAVES_PATH = path.join(__dirname, '../../waves.json');
-
 // ───────────────────────── Formato de fecha de inicio de ola (#4447) ─────────
 // Defensa en profundidad (requisito de security): parsea el ISO crudo a `Date`,
 // valida `isNaN` y formatea con `Intl.DateTimeFormat` es-AR + TZ Buenos Aires
@@ -76,8 +74,17 @@ function formatWaveStart(iso) {
  */
 function collectWave(wavesPath) {
     try {
-        const raw = JSON.parse(fs.readFileSync(wavesPath || WAVES_PATH, 'utf8'));
-        const w = raw && raw.active_wave;
+        // #5179 grupo 3b — la ola activa se pide al envoltorio único de estado
+        // operativo. CA-6c: el seam `wavesPath` sigue vivo — cuando el caller
+        // declara un archivo explícito (tests) se lee ESE archivo, porque el
+        // envoltorio resuelve el path real del pipeline y no lo honraría.
+        let w;
+        if (wavesPath) {
+            const raw = JSON.parse(fs.readFileSync(wavesPath, 'utf8'));
+            w = raw && raw.active_wave;
+        } else {
+            w = require('../../lib/operational-state.js').getActiveWave();
+        }
         if (!w || typeof w !== 'object') return { active: false };
         const total = Number(w.total ?? w.issues_total ?? (Array.isArray(w.issues) ? w.issues.length : 0)) || 0;
         const done = Number(w.done ?? w.delivered ?? w.completed ?? 0) || 0;

@@ -24,6 +24,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// Toda llamada que omita `pipelineDir` queda contenida en un sandbox. En la
+// corrida masiva los tests se ejecutan en paralelo y nunca deben alcanzar la
+// cola real del worktree.
+const TEST_PIPELINE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'pqg-suite-'));
+process.env.PIPELINE_DIR_OVERRIDE = TEST_PIPELINE_DIR;
+test.after(() => {
+    try { fs.rmSync(TEST_PIPELINE_DIR, { recursive: true, force: true }); } catch {}
+});
+
 // Aísla del kill-switch operacional live (`provider-disabled.json` global): sin
 // esto, un provider drenado en runtime por el pulpo volvía flaky la chain
 // (#4801 rebote). Ver isolate-provider-disabled.helper.js.

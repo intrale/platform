@@ -189,6 +189,29 @@ evidencia: "Validación estructural — archivos modificados verificados"
 modo: structural
 ```
 
+Antes de cerrar, QA debe conservar la evidencia estructural en un Markdown
+auditable y encolar su descriptor en Drive. Aunque este modo no sube video, el
+job es obligatorio para que aprobación pueda verificar la trazabilidad:
+
+```bash
+mkdir -p "qa/evidence/<issue>"
+# Escribir en qa/evidence/<issue>/qa-<issue>-structural.md los comandos,
+# outputs y criterios verificados durante esta misma pasada.
+cat > .pipeline/servicios/drive/pendiente/qa-<issue>-structural.json << 'JSON'
+{
+  "action": "upload",
+  "file": "qa/evidence/<issue>/qa-<issue>-structural.md",
+  "issue": <issue>,
+  "mode": "structural",
+  "source": "qa-structural"
+}
+JSON
+```
+
+Los campos `mode: structural` y `source: qa-structural` son obligatorios. El
+servicio Drive reconoce ese schema canónico, registra el artefacto sin intentar
+tratar el Markdown como video y mueve el descriptor a `listo/`.
+
 ---
 
 ## QA-Android (UI con emulador)
