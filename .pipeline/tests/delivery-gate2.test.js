@@ -78,14 +78,14 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
 
 // --- resolveAuthorizedSigners ------------------------------------------------
 //
-// #6206 (rebote 1) — Estos casos eran dependientes del entorno: `resolveAuthorizedSigners`
-// mezcla, por diseño (CA-4, `delivery.js:98-111`), la allowlist `cua.operator_chat_ids`
-// con la credencial dedicada del operador que viaja en `TELEGRAM_LEO_OPERATOR_CHAT_ID`.
-// El agente del pipeline corre con esa variable exportada, así que el assert de
-// "sólo config" recogía además el chat id real y fallaba sólo en ese entorno
-// (verde en una shell limpia, rojo bajo el pulpo). La variable se aísla acá en vez
-// de relajar el assert: el merge del env es comportamiento buscado y tiene su
-// propio caso más abajo.
+// #6206 (rebote 1) / #6226 — Estos casos eran dependientes del entorno:
+// `resolveAuthorizedSigners` mezcla, por diseno (CA-4, `delivery.js:98-111`), la
+// allowlist `cua.operator_chat_ids` con la credencial dedicada del operador que
+// viaja en `TELEGRAM_LEO_OPERATOR_CHAT_ID`. El agente del pipeline corre con esa
+// variable exportada, asi que el assert de "solo config" recogia ademas el chat id
+// real y fallaba solo en ese entorno (verde en una shell limpia, rojo bajo el
+// pulpo). La variable se aisla aca en vez de relajar el assert: el merge del env es
+// comportamiento buscado y tiene sus propios casos mas abajo.
 const OPERATOR_ENV = 'TELEGRAM_LEO_OPERATOR_CHAT_ID';
 
 function withOperatorEnv(value, fn) {
@@ -111,26 +111,37 @@ test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () =>
 });
 
 test('resolveAuthorizedSigners suma la credencial del operador del entorno sin duplicarla', () => {
-    // Cubre la rama env de `delivery.js:109-110`, que antes sólo se ejercitaba por
-    // accidente según cómo estuviera el entorno del runner.
+    // Cubre la rama env de `delivery.js:109-110`, que antes solo se ejercitaba por
+    // accidente segun como estuviera el entorno del runner.
     const signers = withOperatorEnv('777', () => delivery.resolveAuthorizedSigners({
         cua: { operator_chat_ids: ['1', '777'] },
     }));
     assert.deepStrictEqual([...signers].sort(), ['1', '777']);
 });
 
-test('resolveAuthorizedSigners agrega al operador del entorno que no está en la config', () => {
-    // Caso que traía `origin/main` y que el merge de #6206 no debe perder: la
-    // credencial del entorno no sólo se deduplica, también amplía la allowlist.
+test('resolveAuthorizedSigners agrega al operador del entorno que no esta en la config', () => {
+    // Caso que traia `origin/main` (#6226) y que el merge de #6206 no debe perder: la
+    // credencial del entorno no solo se deduplica, tambien amplia la allowlist.
     const signers = withOperatorEnv('77', () => delivery.resolveAuthorizedSigners({
         cua: { operator_chat_ids: ['1'] },
     }));
     assert.deepStrictEqual([...signers].sort(), ['1', '77']);
 });
 
-test('resolveAuthorizedSigners ignora un entorno vacío y no inventa firmantes', () => {
+test('resolveAuthorizedSigners ignora un entorno vacio y no inventa firmantes', () => {
     const signers = withOperatorEnv('   ', () => delivery.resolveAuthorizedSigners({
         cua: { operator_chat_ids: ['1'] },
     }));
     assert.deepStrictEqual(signers, ['1']);
+});
+
+test('#6226 - el aislamiento no filtra al caso base y restaura el valor previo', () => {
+    // Simula el entorno del pipeline (variable presente) y verifica las dos
+    // propiedades del helper: adentro no filtra, y al salir restaura.
+    withOperatorEnv('6529617704', () => {
+        const signers = withOperatorEnv(undefined, () =>
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }));
+        assert.deepStrictEqual([...signers].sort(), ['1', '2']);
+        assert.strictEqual(process.env[OPERATOR_ENV], '6529617704');
+    });
 });

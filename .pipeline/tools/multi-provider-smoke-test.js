@@ -41,6 +41,8 @@ const credentials = require('../lib/credentials');
 const partialPause = require('../lib/partial-pause');
 const dataResidency = require('../lib/data-residency-filter');
 const redact = require('../lib/redact');
+// #6226 - nombres unicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('../lib/dropfile-writer');
 
 // -----------------------------------------------------------------------------
 // CLI args (parser mínimo — sin yargs/commander para evitar deps).
@@ -493,7 +495,6 @@ if (!cliArgs.noCreateIssues && failEntries.length > 0) {
 if (!cliArgs.noTelegram) {
     const queueDir = path.join(PIPELINE_DIR, 'servicios', 'telegram', 'pendiente');
     try { fs.mkdirSync(queueDir, { recursive: true }); } catch {}
-    const dropfile = path.join(queueDir, `${Date.now()}-smoke-test-signoff.json`);
     const tts_text = `Smoke test multi-provider terminó: ${summary.pass} PASS, ${summary.warn} WARN, ${summary.fail} FAIL, ${summary.skipped} SKIPPED, ${summary.na} N/A. ` +
         (failIssues.length ? `${failIssues.length} issue${failIssues.length > 1 ? 's' : ''} auto-creado${failIssues.length > 1 ? 's' : ''} por los FAIL.` : 'Sin FAILs detectados.');
 
@@ -534,8 +535,19 @@ if (!cliArgs.noTelegram) {
         generated_at: new Date().toISOString(),
     };
     try {
-        fs.writeFileSync(dropfile, JSON.stringify(payload, null, 2));
-        log(`Sign-off Telegram encolado: ${path.basename(dropfile)}`);
+        // #6226 - nombre unico (`<ts>-<seq>-smoke-test-signoff.json`) +
+        // escritura `wx`. El nombre era `${Date.now()}-smoke-test-signoff.json`
+        // a secas: si el sign-off caia en el mismo milisegundo que otro dropfile
+        // de la cola, uno de los dos se perdia sin dejar rastro.
+        const { filename } = dropfileWriter.writeDropfileSync({
+            dir: queueDir,
+            suffix: 'smoke-test-signoff.json',
+            data: JSON.stringify(payload, null, 2),
+            onCollision: (name, attempt) => log(
+                `WARN colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta con otro nombre, no se sobreescribe`
+            ),
+        });
+        log(`Sign-off Telegram encolado: ${filename}`);
     } catch (e) {
         log(`WARN encolado Telegram falló: ${e.message}`);
     }

@@ -405,10 +405,25 @@ async function telegramSendMultipart(method, fieldName, filePath, extra = {}, co
   }
 }
 
+// #6226 — El orden de esta lista ES el orden en que el operador lee los
+// mensajes. `readdirSync` no garantiza ningún orden (lo decide la enumeración
+// del filesystem), y `groupByBurst` ordena por `mtimeMs`, que EMPATA para dos
+// dropfiles escritos en el mismo milisegundo — justo el caso del paginado. Con
+// el empate, el orden final quedaba librado a NTFS.
+//
+// Ordenar por nombre lo vuelve determinístico: los dropfiles se nombran
+// `<ts>-<seq>-<sufijo>` (ver `lib/dropfile-writer.js`), con timestamp al frente
+// y seq zero-padded, así que el orden lexicográfico es el orden de emisión.
+// Importa para la lectura, no sólo para la corrección: en el paginado sólo el
+// primer mensaje lleva header y los 2..N arrancan con `_(continúa)_`.
+//
+// Comparación con `<`/`>` en vez de `localeCompare`: acá se quiere el orden de
+// código de unidad, estable e independiente del locale de la máquina.
 function listWorkFiles(dir) {
   try {
     return fs.readdirSync(dir)
       .filter(f => !f.startsWith('.') && f.endsWith('.json'))
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
       .map(f => ({ name: f, path: path.join(dir, f) }));
   } catch { return []; }
 }
@@ -1328,6 +1343,10 @@ module.exports = {
   resolveAttachmentPath,
   declaredAttachmentTypes,
   shouldFailClosed,
+  // #6226 — listado de la cola. Expuesto para el test que fija que el orden de
+  // drenaje es el orden de emisión (por nombre) y no el que devuelva el
+  // filesystem. Puro salvo el `readdirSync` sobre el dir que le pasan.
+  listWorkFiles,
   isUnderBase,
   mediaBaseDir,
   // #5924 — diagnosticabilidad + no-reciclado. Puros (o I/O acotado): el

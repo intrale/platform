@@ -590,6 +590,28 @@ test('los consumers declarados no omiten ningun lector que el barrido encuentra'
   assert.deepEqual(omisiones, []);
 });
 
+test('el barrido ignora qa/evidence pero sigue viendo qa/scripts', () => {
+  // Regresion #6226: `qa/evidence/<issue>/` es la SALIDA de evidencia por
+  // issue. Un repro ad-hoc que toca `process.env.TELEGRAM_BOT_TOKEN` para
+  // simular un envio no es un consumidor de produccion; contarlo obligaba al
+  // manifiesto publico a declarar rutas descartables como `consumers` y dejaba
+  // el candado en rojo segun que evidencia dejo el ultimo QA.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-scan-roots-'));
+  const lector = 'const t = process.env.TELEGRAM_BOT_TOKEN;\n';
+  for (const rel of ['qa/evidence/6226', 'qa/scripts', '.pipeline/_tmp']) {
+    fs.mkdirSync(path.join(tmp, rel), { recursive: true });
+  }
+  fs.writeFileSync(path.join(tmp, 'qa/evidence/6226/repro-e2e.js'), lector);
+  fs.writeFileSync(path.join(tmp, 'qa/scripts/qa-video-share.js'), lector);
+  fs.writeFileSync(path.join(tmp, '.pipeline/_tmp/scratch.js'), lector);
+
+  const lectores = findEnvVarReaders('TELEGRAM_BOT_TOKEN', { repoRoot: tmp });
+
+  // Control positivo: sin esto el test pasaria por vacuidad si el barrido no
+  // encontrara NADA (p. ej. si se rompiera el recorrido de directorios).
+  assert.deepEqual(lectores, ['qa/scripts/qa-video-share.js']);
+});
+
 test('regresion nominal de las cuatro claves google_drive', () => {
   const actual = Object.fromEntries(manifest.entries
     .filter((entry) => entry.name.startsWith('google_drive.'))
