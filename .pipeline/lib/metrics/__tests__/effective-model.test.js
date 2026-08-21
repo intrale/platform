@@ -21,6 +21,25 @@ test('persiste modelo efectivo, actor y proveedor con whitelist exacta', () => {
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).skill, 'planner');
 });
 
+test('usa el proveedor efectivo del fallback para extraer y persistir la corrida', () => {
+    const file = tempFile();
+    const capture = m.recordEffectiveModelForRun({
+        issue: 6273,
+        skill: 'planner',
+        configuredProvider: 'anthropic',
+        dispatchResolution: { provider: 'openai-codex', source: 'fallback' },
+        launchResult: { provider: 'openai-codex', model: 'gpt-5-codex' },
+        model_declared: 'claude-opus-5',
+        raw: anthropicLog('claude-opus-5'),
+    }, { file });
+
+    assert.equal(capture.record.provider, 'openai-codex');
+    assert.equal(capture.record.model_resolved, 'gpt-5-codex');
+    assert.equal(capture.observed.observable, false,
+        'no debe seleccionar el extractor Anthropic del proveedor primario');
+    assert.equal(capture.record.model_effective, null);
+});
+
 test('no observable queda fuera de coincidencias y del denominador', () => {
     const rows = m.auditDeclaredVsEffective({ records: [{ skill: 'delivery', provider: 'deterministic',
         model_declared: null, model_resolved: null, model_effective: null, source: m.NOT_OBSERVABLE }] });

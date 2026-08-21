@@ -16,8 +16,11 @@ test('CA-1 cablea la captura del modelo en el flujo post-exit normal', () => {
     const watchdogBody = source.slice(watchdogStart, watchdogEnd);
 
     assert.notEqual(exitStart, -1, 'debe existir el exit handler de agentes');
-    assert.match(exitBody, /extractEffectiveModel\s*\(/);
-    assert.match(exitBody, /recordEffectiveModel\s*\(/);
+    assert.match(exitBody, /recordEffectiveModelForRun\s*\(/);
+    assert.match(exitBody, /launchResult\s*,/,
+        'la captura debe recibir la resoluciÃ³n efectiva devuelta por el launcher');
+    assert.match(exitBody, /dispatchResolution\s*,/,
+        'la captura debe conservar la resoluciÃ³n efectiva del dispatcher');
     assert.doesNotMatch(watchdogBody, /recordEffectiveModel\s*\(/,
         'la persistencia no puede depender de que dispare el watchdog');
 });

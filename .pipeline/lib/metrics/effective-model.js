@@ -102,6 +102,30 @@ function recordEffectiveModel(opts = {}, deps = {}) {
     } catch { return null; }
 }
 
+function recordEffectiveModelForRun(opts = {}, deps = {}) {
+    try {
+        const provider = String(
+            (opts.launchResult && opts.launchResult.provider)
+            || (opts.dispatchResolution && opts.dispatchResolution.provider)
+            || opts.configuredProvider
+            || 'unknown'
+        );
+        const observed = extractEffectiveModel({ provider, logPath: opts.logPath, raw: opts.raw }, deps);
+        const record = recordEffectiveModel({
+            issue: opts.issue,
+            skill: opts.skill,
+            provider,
+            model_declared: opts.model_declared,
+            model_resolved: (opts.launchResult && opts.launchResult.model) || opts.model_resolved,
+            observed,
+            ts: opts.ts,
+        }, deps);
+        return { observed, record };
+    } catch {
+        return { observed: { model: null, source: NOT_OBSERVABLE, observable: false }, record: null };
+    }
+}
+
 function readRecords(deps = {}) {
     try {
         const raw = (deps.fs || fs).readFileSync(deps.file || defaultFile(), 'utf8');
@@ -220,5 +244,5 @@ function recordsFromLogs(logDir, deps = {}) {
 }
 
 module.exports = { NOT_OBSERVABLE, WHITELIST, normalizeModelId, extractEffectiveModel,
-    recordEffectiveModel, auditDeclaredVsEffective, evaluateDivergence, readRecords,
+    recordEffectiveModel, recordEffectiveModelForRun, auditDeclaredVsEffective, evaluateDivergence, readRecords,
     persistentShouldNotify, recordsFromLogs };

@@ -10871,19 +10871,19 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       try {
         const effectiveModel = require('./lib/metrics/effective-model');
         const agentModels = require('./lib/agent-models');
-        let effectiveProvider = 'unknown';
-        try { effectiveProvider = resolveSkillProvider(skill) || 'unknown'; } catch {}
+        let configuredProvider = 'unknown';
+        try { configuredProvider = resolveSkillProvider(skill) || 'unknown'; } catch {}
         const declared = agentModels.resolveModel(skill);
-        effectiveObservation = effectiveModel.extractEffectiveModel({
-          provider: effectiveProvider,
+        const capture = effectiveModel.recordEffectiveModelForRun({
+          issue, skill,
+          launchResult,
+          dispatchResolution,
+          configuredProvider,
           logPath: path.join(LOG_DIR, `${issue}-${skill}.log`),
-        });
-        effectiveModel.recordEffectiveModel({
-          issue, skill, provider: effectiveProvider,
           model_declared: declared && declared.model,
           model_resolved: traceHandle && traceHandle.model,
-          observed: effectiveObservation,
         });
+        effectiveObservation = capture.observed;
       } catch { /* observabilidad best-effort: nunca altera el lifecycle */ }
 
       if (traceHandle) {
