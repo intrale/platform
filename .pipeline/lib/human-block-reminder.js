@@ -51,6 +51,14 @@ const decisionCard = require('./decision-card');
 // `unblockIssue` ni `dismissBlockedIssue` ni por vía indirecta (ver la garantía
 // estructural arriba, y su test en `human-block-notificacion.test.js`).
 const cardRender = require('./decision-card-render');
+// #6190 — `listBlockedIssues()` NO trae `titulo` ni `labels` (el marker es un
+// archivo vacío con el número en el nombre): el `due` que llega acá viene con
+// esa forma cruda. Sin enriquecer, TODAS las fichas del recordatorio salían con
+// "(sin título)" mientras el aviso inicial —con el mismo dato y en el mismo
+// instante— salía con el título real. Es un módulo de SÓLO LECTURA de cache:
+// no le da a este módulo ninguna capacidad de destrabe, así que no viola la
+// garantía estructural de arriba.
+const issueTitleCache = require('./issue-title-cache');
 
 // Escalones de recordatorio, en horas desde el bloqueo. Después del último se
 // repite cada `RECURRING_EVERY_HOURS`.
@@ -227,11 +235,21 @@ function formatAge(ageHours) {
  * plano, redactado y sin volcar el motivo crudo. Un bloqueo no puede dejar de
  * recordarse porque falló el formateador. Nunca `catch {}` vacío.
  *
+ * TÍTULO (CA-1/CA-2): el `due` llega con la forma cruda de
+ * `listBlockedIssues()`, que no trae `titulo` ni `labels`. Se enriquece con el
+ * MISMO módulo que usa el aviso inicial antes de armar las fichas — si no, el
+ * recordatorio emite "(sin título)" para todos los issues y deja de ser "el
+ * mismo cuerpo que el mensaje agrupado", que es literalmente lo que el mockup
+ * 6190-01 panel B declara.
+ *
  * @param {Array}  due     — salida de `evaluateReminders().due`.
  * @param {number} [nowMs] — "ahora" inyectable (CA-A6).
+ * @param {object} [opts]
+ * @param {string} [opts.pipelineDir] — dir de `.pipeline` para el cache de
+ *   títulos (inyectable en tests; en producción lo pasa `runReminderTick`).
  * @returns {string} texto PLANO, o '' si no hay nada que recordar.
  */
-function buildReminderMessage(due, nowMs) {
+function buildReminderMessage(due, nowMs, opts) {
     const list = Array.isArray(due) ? due : [];
     if (!list.length) return '';
 
@@ -258,7 +276,11 @@ function buildReminderMessage(due, nowMs) {
 
     let cuerpo;
     try {
-        const cards = decisionCard.buildDecisionCards(ordenados, nowMs);
+        const enriquecidos = issueTitleCache.enriquecerConTitulo(
+            ordenados,
+            { pipelineDir: opts && opts.pipelineDir },
+        );
+        const cards = decisionCard.buildDecisionCards(enriquecidos, nowMs);
         // El presupuesto del bloque de fichas descuenta lo que ocupan el
         // encabezado y el cierre: si no, el recordatorio entra justo y el
         // transporte lo trunca en silencio — la falla que este issue cierra.
@@ -324,7 +346,7 @@ function runReminderTick(opts = {}) {
             return { sent: false, due: 0 };
         }
 
-        const texto = buildReminderMessage(due, now.getTime());
+        const texto = buildReminderMessage(due, now.getTime(), { pipelineDir });
 
         // Botonera: sólo tiene sentido cuando el recordatorio es de UN bloqueo
         // (los botones actúan sobre un issue puntual). Con varios, el texto

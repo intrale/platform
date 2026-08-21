@@ -905,3 +905,137 @@ test('el título que trae el call-site gana sobre el del cache', () => {
     });
     assert.match(texto, /«El que sabe el emisor»/);
 });
+
+// =============================================================================
+// #6190 rev-1 — NO-REGRESIÓN DEL RECORDATORIO SIN TÍTULO.
+//
+// El defecto que motivó este bloque: el recordatorio emitía "(sin título)" para
+// el 100 % de los issues mientras el aviso inicial, con el MISMO dato y en el
+// MISMO instante, emitía el título real. Causa: `buildReminderMessage` recibía
+// la salida CRUDA de `listBlockedIssues()` —que no trae `titulo`— y armaba las
+// fichas sin enriquecerla, porque el enriquecimiento vivía sin exportar dentro
+// de `human-block.js`.
+//
+// Por qué los tests de la pasada anterior no lo detectaron: le pasaban al
+// recordatorio `due` CON título, una forma que producción nunca produce. Estos
+// tests usan la forma exacta de `listBlockedIssues()`.
+// =============================================================================
+
+const issueTitleCache = require('../issue-title-cache');
+const os = require('os');
+
+/**
+ * Un `due` con la forma EXACTA que produce `listBlockedIssues()`
+ * (`human-block.js`, bloque `result.push({...})`): sin `titulo` y sin `labels`.
+ * Si alguien "arregla" un test agregando `titulo` acá, el test deja de proteger
+ * lo que tiene que proteger.
+ */
+function dueComoProduccion(extra = {}) {
+    return Object.assign({
+        issue: 6239,
+        skill: 'po',
+        phase: 'dev',
+        pipeline: 'desarrollo',
+        reason: '',
+        question: '',
+        precondition: null,
+        blocked_at: new Date(AHORA - 12 * 3600000).toISOString(),
+        age_hours: 12.7,
+        marker_path: '/repo/.pipeline/desarrollo/dev/bloqueado/6239.po',
+    }, extra);
+}
+
+/** Cache de títulos temporal, con la misma forma que el que mantiene el pipeline. */
+function cacheTemporal(mapa) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'title-cache-6190-'));
+    fs.writeFileSync(path.join(dir, issueTitleCache.TITLE_CACHE_FILE), JSON.stringify(mapa), 'utf8');
+    return dir;
+}
+
+const TITULO_REAL = 'Aviso anticipado de vencimiento de la sesion OAuth antes de que caigan los agentes';
+
+test('CA-2 el recordatorio NO dice "(sin título)" con la forma cruda de listBlockedIssues()', () => {
+    const dir = cacheTemporal({ '6239': { title: TITULO_REAL, labels: [] } });
+    const msg = reminder.buildReminderMessage(
+        [dueComoProduccion({ reminder_number: 2 })],
+        AHORA,
+        { pipelineDir: dir },
+    );
+    assert.ok(!msg.includes('(sin título)'),
+        `el recordatorio volvió a emitir "(sin título)" con el dato que sí tiene el cache:\n${msg}`);
+    assert.ok(msg.includes(`«${TITULO_REAL}»`),
+        `el recordatorio tiene que citar el título literal:\n${msg}`);
+    assert.doesNotMatch(msg, MARKUP_CHARS);
+});
+
+test('CA-1 el recordatorio emite el MISMO cuerpo que el aviso inicial para el mismo dato', () => {
+    // El mockup 6190-01 panel B lo declara literal: "Mismo cuerpo que el mensaje
+    // agrupado. Lo único propio son el encabezado y el cierre". Se compara la
+    // línea que divergía —`Qué está frenado:`—, que es la que lleva el título.
+    const humanBlock = require('../human-block');
+    const dir = cacheTemporal({ '6239': { title: TITULO_REAL, labels: [] } });
+    const crudo = dueComoProduccion();
+
+    // El aviso inicial enriquece por dentro; acá se le da el raw YA enriquecido
+    // con el mismo módulo (su regla "el call-site gana" lo respeta tal cual),
+    // para que la única diferencia posible sea el camino del recordatorio.
+    const enriquecido = issueTitleCache.enriquecerConTitulo([crudo], { pipelineDir: dir });
+    const inicial = humanBlock.buildBlockedSummaryPlain({ nowMs: AHORA, blocked: enriquecido });
+    // El recordatorio recibe el CRUDO, como en producción.
+    const recordatorio = reminder.buildReminderMessage([crudo], AHORA, { pipelineDir: dir });
+
+    const lineaDe = (txt) => (txt.split('\n').find((l) => l.startsWith('Qué está frenado:')) || '').trim();
+    assert.ok(lineaDe(inicial), `el aviso inicial no trajo la línea esperada:\n${inicial}`);
+    assert.equal(lineaDe(recordatorio), lineaDe(inicial),
+        `el recordatorio divergió del aviso inicial:\n--- inicial ---\n${inicial}\n--- recordatorio ---\n${recordatorio}`);
+});
+
+test('el enriquecimiento del recordatorio es DECORATIVO: sin cache el aviso sale igual', () => {
+    // Fail-open sólo para el título; el bloqueo se sigue recordando siempre.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'title-cache-6190-vacio-'));
+    const msg = reminder.buildReminderMessage(
+        [dueComoProduccion({ reminder_number: 3 })],
+        AHORA,
+        { pipelineDir: dir },
+    );
+    assert.match(msg, /#6239/, 'el bloqueo se recuerda aunque no haya cache');
+    assert.match(msg, /\(sin título\)/, 'y degrada explícito, sin «» hueco');
+    assert.doesNotMatch(msg, MARKUP_CHARS);
+});
+
+test('guarda de la causa raíz: listBlockedIssues() no produce `titulo`, así que enriquecer es obligatorio', () => {
+    // Si algún día `listBlockedIssues()` empezara a traer `titulo`, este test se
+    // pone rojo y quien lo toque tiene que decidir a conciencia si el
+    // enriquecimiento sigue haciendo falta — en vez de descubrirlo por un
+    // recordatorio que salió mudo a Telegram.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'human-block.js'), 'utf8');
+    const i = src.indexOf('function listBlockedIssues()');
+    assert.ok(i > 0, 'no encontré listBlockedIssues()');
+    const cuerpo = src.slice(i, src.indexOf('\n}', i));
+    assert.ok(!/\btitulo\b/.test(cuerpo),
+        'listBlockedIssues() sigue sin traer título: el enriquecimiento es obligatorio en TODO emisor');
+
+    // Y el recordatorio lo aplica ANTES de armar las fichas.
+    const rem = fs.readFileSync(path.join(__dirname, '..', 'human-block-reminder.js'), 'utf8');
+    const iEnr = rem.indexOf('issueTitleCache.enriquecerConTitulo(');
+    const iCards = rem.indexOf('decisionCard.buildDecisionCards(');
+    assert.ok(iEnr > 0, 'el recordatorio tiene que enriquecer el título');
+    assert.ok(iEnr < iCards, 'y tiene que hacerlo ANTES de construir las fichas');
+});
+
+test('el módulo de títulos no le da al recordatorio ninguna capacidad de destrabe', () => {
+    // Garantía estructural: `human-block-reminder` no puede requerir
+    // `human-block` (test en human-block-notificacion.test.js). Por eso el
+    // enriquecimiento vive en un módulo de SÓLO LECTURA de cache.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'issue-title-cache.js'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+    for (const prohibido of ['unblockIssue', 'dismissBlockedIssue', 'human-block', 'writeFile']) {
+        assert.ok(!src.includes(prohibido), `issue-title-cache.js no puede conocer ${prohibido}`);
+    }
+});
+
+test('human-block exporta enriquecerConTitulo (single-source del título del aviso)', () => {
+    const humanBlock = require('../human-block');
+    assert.equal(typeof humanBlock.enriquecerConTitulo, 'function');
+});

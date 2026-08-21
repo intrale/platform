@@ -733,6 +733,8 @@ function renderBlockedSummaryLegacy(opts, { plain }) {
 // importa este módulo, que sí sabe destrabar. Compartir el renderer desde acá
 // habría roto esa garantía en silencio.
 const cardRender = require('./decision-card-render');
+// #6190 — enriquecimiento de título/labels, compartido con el recordatorio.
+const issueTitleCache = require('./issue-title-cache');
 
 const FICHA_BUDGET = cardRender.FICHA_BUDGET;
 const fitFichas = cardRender.fitFichas;
@@ -748,47 +750,11 @@ const edadMinutosRaw = cardRender.edadMinutosRaw;
  *
  * `listBlockedIssues()` no trae título (el marker es un archivo vacío con el
  * número en el nombre), así que se enriquece desde el cache que el pipeline ya
- * mantiene — el mismo del que leen el dashboard, el commander y el
- * reconciliador. Sin llamadas a GitHub en el camino del aviso: el aviso de un
- * bloqueo no puede depender de la red.
- *
- * DEFENSIVO POR DISEÑO: si el cache no existe, está corrupto o no tiene la
- * entrada, la ficha degrada a "(sin título)" y el aviso sale igual. Un aviso de
- * bloqueo nunca puede perderse porque falló una lectura decorativa.
+ * mantiene. La implementación vive en `issue-title-cache.js` porque el
+ * RECORDATORIO también la necesita y no puede requerir este módulo (garantía
+ * estructural: no puede alcanzar `unblockIssue`). Ver el header de ese módulo.
  */
-const TITLE_CACHE_FILE = '.issue-title-cache.json';
-
-function leerTitleCache() {
-    try {
-        const raw = fs.readFileSync(path.join(PIPELINE_DIR, TITLE_CACHE_FILE), 'utf8');
-        const obj = JSON.parse(raw);
-        return obj && typeof obj === 'object' ? obj : {};
-    } catch (_) {
-        // Ausente o corrupto: no es un error, es un aviso sin título.
-        return {};
-    }
-}
-
-/**
- * Devuelve los `raw` con `titulo` y `labels` completados desde el cache, sin
- * pisar nunca lo que el call-site ya sabía: si el emisor trae el título (porque
- * lo tiene fresco), ése manda.
- */
-function enriquecerConTitulo(raws) {
-    let cache = null;
-    return raws.map((r) => {
-        const yaTiene = r && typeof r.titulo === 'string' && r.titulo.trim();
-        const yaLabels = r && Array.isArray(r.labels) && r.labels.length;
-        if (yaTiene && yaLabels) return r;
-        if (cache === null) cache = leerTitleCache();
-        const e = cache[String(r && r.issue)];
-        if (!e || typeof e !== 'object') return r;
-        const parche = {};
-        if (!yaTiene && typeof e.title === 'string' && e.title.trim()) parche.titulo = e.title;
-        if (!yaLabels && Array.isArray(e.labels)) parche.labels = e.labels;
-        return Object.keys(parche).length ? Object.assign({}, r, parche) : r;
-    });
-}
+const enriquecerConTitulo = (raws) => issueTitleCache.enriquecerConTitulo(raws, { pipelineDir: PIPELINE_DIR });
 
 /**
  * Render de producción del aviso de bloqueo: fichas de decisión en texto plano.
@@ -1360,6 +1326,9 @@ module.exports = {
     // no poder alcanzar `unblockIssue` ni por vía indirecta.
     renderDecisionCardsPlain,
     FICHA_BUDGET,
+    // #6190 — exportado para que el aviso inicial y el recordatorio compartan
+    // exactamente el mismo enriquecimiento (CA-1: mismo cuerpo, mismo dato).
+    enriquecerConTitulo,
     sendNeedHumanAudio,
     enqueueNeedsHumanLabel,
     HUMAN_BLOCK_PATTERNS,
