@@ -7,6 +7,8 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+// #6226 - escritura fail-closed de dropfiles.
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const COMMANDER_QUEUE = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
@@ -437,7 +439,18 @@ function enqueueCommanderCommand(text) {
     text: String(text || ''),
     date: Math.floor(Date.now() / 1000),
   };
-  fs.writeFileSync(path.join(COMMANDER_QUEUE, `${id}.json`), JSON.stringify(content, null, 2));
+  // #6226 - nombre unico + escritura `wx`. El nombre era `${Date.now()}-cbcmd`
+  // SIN ningun desempate: dos toques de boton inline en el mismo milisegundo
+  // resolvian al mismo path y el segundo comando del operador se perdia en
+  // silencio (el listener logueaba "encolado" para los dos).
+  dropfileWriter.writeUniqueFileSync({
+    dir: COMMANDER_QUEUE,
+    filename: `${id}.json`,
+    data: JSON.stringify(content, null, 2),
+    onCollision: (name, attempt) => log(
+      `Colision de nombre en la cola del commander (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+    ),
+  });
   log(`Comando de callback encolado al commander: "${String(text).slice(0, 50)}"`);
 }
 

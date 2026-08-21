@@ -76,39 +76,48 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
-test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    // El test debe ser hermético: `resolveAuthorizedSigners` suma el operador de
-    // `TELEGRAM_LEO_OPERATOR_CHAT_ID`, y si el entorno la trae seteada (el pipeline
-    // la exporta en producción) el assert de abajo veía un id extra y fallaba por
-    // ambiente, no por código. Se aísla la variable y se restaura al salir.
+// #6226 - `resolveAuthorizedSigners` suma `TELEGRAM_LEO_OPERATOR_CHAT_ID` a los
+// firmantes. Si el test hereda esa variable del entorno (el pipeline la exporta),
+// el resultado trae un id extra y el assert falla por ambiente, no por código.
+// Se aísla la variable en cada caso y se cubre el fallback por env de forma
+// explícita, para que la conducta quede testeada y no sólo silenciada.
+function withOperatorEnv(value, fn) {
     const prev = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
-    delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    if (value === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = value;
     try {
-        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
-        assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+        return fn();
     } finally {
         if (prev === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
         else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = prev;
     }
+}
+
+test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
+    const signers = withOperatorEnv(undefined, () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } }));
+    assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
 });
 
-test('resolveAuthorizedSigners suma el operador de TELEGRAM_LEO_OPERATOR_CHAT_ID sin duplicar', () => {
-    const prev = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
-    process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '2';
-    try {
-        // '2' ya viene en la config: el operador de env no debe duplicarlo.
-        assert.deepStrictEqual(
-            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }).sort(),
-            ['1', '2'],
-        );
-        // Un operador que no está en la config sí se agrega.
-        process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '77';
-        assert.deepStrictEqual(
-            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }).sort(),
-            ['1', '77'],
-        );
-    } finally {
-        if (prev === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
-        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = prev;
-    }
+test('#6226 · resolveAuthorizedSigners suma el operador del env sin duplicar el ya listado', () => {
+    const signers = withOperatorEnv('7', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '7'] } }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '7']);
+});
+
+test('#6226 · resolveAuthorizedSigners agrega el operador del env cuando no estaba', () => {
+    const signers = withOperatorEnv('7', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '7']);
+});
+
+test('#6226 · el aislamiento no filtra al caso base y restaura el valor previo', () => {
+    // Simula el entorno del pipeline (variable presente) y verifica las dos
+    // propiedades del helper: adentro no filtra, y al salir restaura.
+    withOperatorEnv('6529617704', () => {
+        const signers = withOperatorEnv(undefined, () =>
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }));
+        assert.deepStrictEqual([...signers].sort(), ['1', '2']);
+        assert.strictEqual(process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID, '6529617704');
+    });
 });

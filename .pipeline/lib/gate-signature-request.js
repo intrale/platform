@@ -28,6 +28,8 @@
 
 const fs = require('fs');
 const path = require('path');
+// #6226 - escritura fail-closed de dropfiles.
+const dropfileWriter = require('./dropfile-writer');
 
 const trace = require('./traceability');
 const auditLog = require('./audit-log');
@@ -140,8 +142,20 @@ function enqueueDecision(args = {}, deps = {}) {
     if (!path.resolve(requestPath).startsWith(path.resolve(queueDir) + path.sep)) {
         return { ok: false, status: 400, msg: 'path-escape' };
     }
+    // #6226 - escritura fail-closed. El nombre lleva `<issue>-<decision>-<ts>`:
+    // dos pedidos del mismo issue con la misma decision en el mismo milisegundo
+    // resolvian al mismo path y el segundo pisaba al primero. Se conserva el
+    // nombre; solo ante colision real se desambigua con `-<n>`.
     try {
-        _fs.writeFileSync(requestPath, JSON.stringify(record), 'utf8');
+        dropfileWriter.writeUniqueFileSync({
+            dir: queueDir,
+            filename: fileName,
+            data: JSON.stringify(record),
+            fsImpl: _fs,
+            onCollision: (name, attempt) => console.warn(
+                `[gate-signature-request] colision de nombre de pedido (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
     } catch (e) {
         return { ok: false, status: 500, msg: `no se pudo encolar el pedido: ${e.message}`, audit_persisted: auditRes.persisted };
     }

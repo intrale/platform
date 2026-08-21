@@ -255,7 +255,9 @@ test('readDirtyPipelineCode acota el diff a .pipeline/ y usa el cwd que le pasan
 
 /** Copia a un repo temporal el mínimo de `.pipeline/` que rollback.js requiere. */
 function installRollbackScript(dir) {
-    for (const rel of ['rollback.js', 'pid-discovery.js', 'lib/rollback-guard.js']) {
+    // #6226 — `lib/dropfile-writer.js` se sumó al mínimo: rollback.js lo usa para
+    // encolar su alerta de Telegram con nombre único y escritura `wx`.
+    for (const rel of ['rollback.js', 'pid-discovery.js', 'lib/rollback-guard.js', 'lib/dropfile-writer.js']) {
         const dst = path.join(dir, '.pipeline', rel);
         fs.mkdirSync(path.dirname(dst), { recursive: true });
         fs.copyFileSync(path.join(PIPELINE_DIR, rel), dst);
