@@ -18400,13 +18400,27 @@ function autoResolveMissingOpenWaveIssues(probe, opts = {}) {
   }));
 
   // SEC-3 (log-antes-de-mutar): la traza existe aunque el proceso muera a mitad.
+  //
+  // #6117 SEC-2 — el resultado del audit ya NO se descarta. `safeAppendAction`
+  // no lanza: devuelve `{ok:false, error}` cuando la cadena no se pudo escribir.
+  // Antes ese `false` moría en un `try/catch` mudo, así que una mutación de la
+  // AUTORIZACIÓN de despacho podía aplicarse sin dejar rastro y nadie se
+  // enteraba. Ahora viaja como `audit_failed` en el resultado y el caller
+  // notifica al operador — perder la trazabilidad de quién habilitó qué no
+  // puede ser silencioso, aunque la reparación en sí haya salido bien.
+  let auditFailed = false;
   try {
-    require('./lib/kernel-actions-audit').safeAppendAction({
+    const auditRes = require('./lib/kernel-actions-audit').safeAppendAction({
       action: 'desync-autoresolve', impact: 'medio',
       reason: `auto-resolución desync reductivo-aditivo: issues abiertos de la ola activa ausentes de la allowlist ${JSON.stringify(missing)}`,
       authorizedBy: 'desync-detector',
     });
-  } catch { /* best-effort: el audit nunca bloquea la convergencia */ }
+    if (!auditRes || auditRes.ok !== true) auditFailed = true;
+  } catch {
+    // best-effort: el audit nunca BLOQUEA la convergencia (fail-open hacia
+    // disponibilidad), pero su fallo sí se reporta.
+    auditFailed = true;
+  }
 
   let policy = { proceed: true };
   try {
@@ -18430,7 +18444,7 @@ function autoResolveMissingOpenWaveIssues(probe, opts = {}) {
   // Convergencia allowlist ← ola: repuebla con los issues ABIERTOS de la ola
   // (walk recursivo de hijos/deps incluido) y poda de la ola los cerrados
   // residuales de la divergencia. Mutación por el gate auditado de partial-pause.
-  return require('./lib/wave-dispatch').realignActiveWaveDispatch({
+  const r = require('./lib/wave-dispatch').realignActiveWaveDispatch({
     isClosed,
     desync: probe,
     authorizedBy: 'wave-promote',
@@ -18439,6 +18453,10 @@ function autoResolveMissingOpenWaveIssues(probe, opts = {}) {
       `Convergencia aditiva allowlist ← ola activa (#5724 CA-2): ` +
       `issues abiertos de la ola ausentes de la allowlist ${JSON.stringify(missing)}`,
   });
+  // #6117 SEC-2 — se anexa el veredicto del audit SIN tocar el resto del
+  // resultado del mutador (`ok`, `allowlist`, `prunedFromWave`, `reason`).
+  if (r && typeof r === 'object') r.audit_failed = auditFailed;
+  return r;
 }
 
 // =============================================================================
@@ -19225,6 +19243,198 @@ function notificarBloqueoDesync(probeActual) {
   }
 }
 
+// =============================================================================
+// #6117 — Mensajería de las auto-reparaciones del despacho.
+//
+// Criterio único (acordado con el operador el 2026-08-18): por Telegram va lo
+// que REQUIERE UNA DECISIÓN o está frenado. Una auto-reparación exitosa no es
+// ninguna de las dos cosas — ya se ejecutó, salió bien y el pipeline siguió
+// andando — así que va a log, audit, métrica y dashboard, y NO al chat.
+//
+// Quedan tres motivos legítimos para escribirle al operador desde acá:
+//   1. la reparación NO se aplicó o falló  → el despacho sigue frenado;
+//   2. la reparación anduvo pero el AUDIT no se pudo escribir (SEC-2) → se mutó
+//      la autorización de despacho sin dejar rastro;
+//   3. la MISMA reparación se repite N veces en la ventana → ya no es una
+//      auto-reparación sana, es el síntoma de una causa raíz sin resolver.
+// =============================================================================
+
+// CA-UX-1 / R6 — el TEXTO de estos mensajes NO vive acá. Vive en
+// `lib/desync-copy.js`, que es la fuente única del copy de sincronización.
+// Inline en `pulpo.js` es justamente como nacieron los dos avisos que este
+// issue borró: copy pegado a la lógica, que se duplica por superficie y termina
+// divergiendo. Acá sólo queda el CABLEADO (cuándo se manda y con qué datos).
+const desyncCopy = require('./lib/desync-copy');
+
+/**
+ * Umbral y ventana del detector de repetición, leídos de `config.yaml`.
+ * Mismo patrón que `desync.legit_add_ttl_ms`: si la config no está o está rota,
+ * el módulo de métrica clampea a sus defaults (3 reparaciones / 1 hora). Una
+ * config inválida NUNCA frena el pipeline ni desactiva la alerta.
+ */
+function autoRepairAlertConfig() {
+  try {
+    const d = loadConfig().desync || {};
+    return { threshold: d.repair_alert_threshold, windowMs: d.repair_alert_window_ms };
+  } catch {
+    return { threshold: undefined, windowMs: undefined };
+  }
+}
+
+/**
+ * Recorta una causa de fallo para que sea publicable (SEC-5).
+ * Prohibido en el chat: stack traces, paths absolutos del host, contenido de
+ * `config.yaml`, tokens. Se redacta con el sanitizador canónico y además se
+ * borran los paths absolutos, que el sanitizador de secretos no cubre.
+ */
+function sanitizeAutoRepairCause(raw) {
+  let s = String(raw == null ? 'sin detalle' : raw);
+  // Cortar en la primera línea: descarta el stack pegado con \n.
+  s = s.split('\n')[0];
+  try {
+    if (quotaExhausted && typeof quotaExhausted.sanitizeRawExcerpt === 'function') {
+      s = quotaExhausted.sanitizeRawExcerpt(s);
+    }
+  } catch { /* best-effort: seguimos con los filtros de abajo */ }
+  // Paths absolutos Windows (C:\...) y POSIX (/c/... , /home/...) → placeholder.
+  s = s.replace(/[A-Za-z]:\\[^\s'"]*/g, '<path>');
+  s = s.replace(/(?:^|\s)\/[A-Za-z0-9._\-\/]{6,}/g, ' <path>');
+  // Token de bot de Telegram (`<id>:<secreto>`). `sanitizeRawExcerpt` cubre las
+  // API keys de los providers de LLM, pero NO este formato — y es justamente la
+  // credencial del canal por el que estamos por mandar el mensaje: si un error
+  // la ecoara, la publicaríamos en el propio chat.
+  s = s.replace(/\b\d{6,}:[A-Za-z0-9_-]{20,}\b/g, '[REDACTED]');
+  s = s.replace(/[\r\n\t]/g, ' ').trim();
+  if (!s) s = 'sin detalle';
+  return s.slice(0, 160);
+}
+
+/**
+ * Efectos secundarios del camino FELIZ de una auto-reparación.
+ * Registra la métrica y evalúa los dos únicos motivos por los que una
+ * reparación exitosa igual amerita avisar. Never-throws: nada de esto puede
+ * romper el camino de reparación que lo invoca.
+ *
+ * @param {string} tipo      'convergencia_aditiva' | 'reparacion_aditiva_wave_add'
+ * @param {number[]} issues  issues efectivamente repuestos
+ * @param {object} r         resultado del mutador (para leer `audit_failed`)
+ */
+function afterSuccessfulAutoRepair(tipo, issues, r) {
+  const autoRepair = require('./lib/metrics/auto-repair');
+
+  // CA-6 — el contador. Va ANTES de evaluar la repetición: el detector cuenta
+  // sobre el JSONL e incluye la reparación en curso.
+  try { autoRepair.recordAutoRepair({ tipo, issues }); } catch { /* best-effort */ }
+
+  // SEC-2 (M3) — se mutó quién puede despachar y no quedó registro de la
+  // operación. No frena nada, pero el operador tiene que saberlo.
+  if (r && r.audit_failed === true) {
+    try {
+      sendTelegramPlain(desyncCopy.autoRepairAuditFailedText({ issues }));
+    } catch { /* best-effort */ }
+  }
+
+  // CA-5 (M4) — repetir la misma reparación no es sanidad, es un síntoma.
+  try {
+    const cfg = autoRepairAlertConfig();
+    const rep = autoRepair.shouldAlertRepetition({
+      tipo,
+      nowMs: Date.now(),
+      threshold: cfg.threshold,
+      windowMs: cfg.windowMs,
+    });
+    if (rep && rep.alert) {
+      sendTelegramPlain(desyncCopy.autoRepairRepetitionText({
+        tipo,
+        count: rep.count,
+        windowMs: rep.windowMs,
+        // SEC-4: no se pudo contar. Se avisa igual y el copy lo dice.
+        ilegible: rep.motivo === 'estado_ilegible',
+      }));
+    }
+  } catch { /* best-effort */ }
+}
+
+// #6117 — Dedupe del aviso de FALLO de reparación.
+//
+// `evaluateDesyncAndMaybeRealign('periodic')` corre cada ~5 min. Una divergencia
+// que no se puede reparar NO se arregla sola: la misma rama de fallo se
+// ejecutaría en cada tick. Sin dedupe serían ~288 mensajes por día — un flood
+// peor que los dos avisos que este issue vino a sacar, y en el mismo canal.
+//
+// La cota se pone por FIRMA (tipo + causa sanitizada): mientras la causa no
+// cambie, se avisa una vez por ventana. Si la causa CAMBIA se avisa enseguida,
+// porque es información nueva sobre por qué sigue frenado.
+//
+// Es in-memory a propósito, y es el único estado de este issue que no se
+// persiste. Un restart del Pulpo re-habilita el aviso: eso falla hacia la
+// VISIBILIDAD (peor caso, un mensaje de más tras un reinicio) en vez de hacia el
+// silencio. Persistirlo tendría el efecto contrario, que es el que no queremos.
+//
+// Esto CONVIVE con `desyncBlockNotifier.onBlocked`, que ya escalona el aviso de
+// "el trabajo sigue frenado" (15 min / 1 h / 3 h / 6 h y después cada 6 h). Los
+// dos mensajes no se pisan: aquél comunica CUÁNTO HACE que está frenado; éste,
+// POR QUÉ no se pudo reparar solo — que es el dato que `onBlocked` no tiene.
+const _autoRepairFailureLastNotified = new Map();
+
+/**
+ * Limpia el dedupe. Sólo para tests: el estado es de proceso y, sin esto, un
+ * test que emite un aviso silencia al siguiente que usa la misma firma —
+ * acoplamiento entre casos que se lee como un bug del código bajo prueba.
+ */
+function _resetAutoRepairFailureDedupe() { _autoRepairFailureLastNotified.clear(); }
+
+/**
+ * Aviso del camino de FALLO: la reparación no se aplicó (M1) o lanzó (M2). Acá
+ * el despacho SÍ queda frenado, así que el mensaje lleva causa + `Qué hacer:`
+ * (R3 / #5134). El TEXTO vive en `desync-copy`; acá sólo el cableado.
+ * Never-throws.
+ *
+ * @param {string} tipo    tipo de reparación intentada
+ * @param {string} causa   motivo crudo (se sanitiza acá antes de pasarlo al copy)
+ * @param {object} [opts]  { gateRejected: bool, excepcion: bool, issues: number[] }
+ * @returns {{notificado: boolean, motivo: string}}
+ */
+function notifyAutoRepairFailure(tipo, causa, opts = {}) {
+  try {
+    // R5 — la sanitización se hace ACÁ, no en el copy: `desync-copy` es un
+    // módulo puro y no puede (ni debe) redactar secretos. Al copy le llega
+    // texto ya limpio.
+    const limpia = sanitizeAutoRepairCause(causa);
+
+    // Dedupe por firma. La ventana se reusa de la config del detector de
+    // repetición: es el mismo orden de magnitud de "esto ya me lo dijiste".
+    const firma = `${tipo}::${limpia}`;
+    const ahora = Date.now();
+    let ventanaMs = Number(autoRepairAlertConfig().windowMs);
+    if (!Number.isFinite(ventanaMs) || ventanaMs <= 0) ventanaMs = 3600000;
+    const ultimo = _autoRepairFailureLastNotified.get(firma);
+    if (Number.isFinite(ultimo) && (ahora - ultimo) < ventanaMs) {
+      return { notificado: false, motivo: 'dedupe_ventana' };
+    }
+    // Cota de memoria: la causa ya viene sanitizada y truncada, pero el set de
+    // firmas posibles no es cerrado. Se poda para que un proceso de vida larga
+    // no acumule claves indefinidamente.
+    if (_autoRepairFailureLastNotified.size > 50) _autoRepairFailureLastNotified.clear();
+    _autoRepairFailureLastNotified.set(firma, ahora);
+    // M2 (excepción) vs M1 (no aplicada). Son mensajes distintos a propósito:
+    // ante una excepción no hay causa publicable (R5), y lo que el operador
+    // tiene que mirar es el log, no la ola.
+    const texto = opts.excepcion === true
+      ? desyncCopy.autoRepairExceptionText()
+      : desyncCopy.autoRepairFailureText({
+        issues: opts.issues,
+        causa: limpia,
+        // H8 — el gate rechazó con criterio; no es un fallo técnico.
+        gateRejected: opts.gateRejected === true,
+      });
+    sendTelegramPlain(texto);
+    return { notificado: true, motivo: 'emitido' };
+  } catch {
+    return { notificado: false, motivo: 'error' };   // best-effort
+  }
+}
+
 /**
  * Evalúa la divergencia waves↔allowlist y actúa según la clasificación:
  *   - `resoluble_reductivo` → realinea reductivamente + limpia flag + traza.
@@ -19392,20 +19602,23 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
           try { desyncBlockNotifier.onResolved({ resolucion: 'convergencia_aditiva', issues: faltantes }); } catch { /* best-effort */ }
           log('pulpo', `desync-detector: convergencia ADITIVA allowlist ← ola activa OK (#5724) — ` +
             `faltantes_repuestos=${JSON.stringify(faltantes)} allowlist=${JSON.stringify(r.allowlist)} ` +
-            `cerrados_podados=${JSON.stringify(r.prunedFromWave || [])}`);
-          try {
-            sendTelegramPlain(
-              `♻️ Volví a habilitar el dispatch (#5724).\n` +
-              `Estos issues de la ola activa estaban afuera de la allowlist y los sumé: ` +
-              `${faltantes.map((n) => `#${n}`).join(', ')}.\n` +
-              `La ola manda: ya estaban aprobados para trabajarse, así que no hizo falta frenar nada.`
-            );
-          } catch { /* best-effort */ }
+            `cerrados_podados=${JSON.stringify(r.prunedFromWave || [])} audit_failed=${r.audit_failed === true} ` +
+            `(sin ruido a Telegram, #6117)`);
+          // #6117 CA-1 — el aviso informativo de esta rama SE ELIMINÓ. La
+          // reparación salió bien y no pide ninguna decisión: queda en el log de
+          // arriba, en el audit, en la métrica y en el dashboard. Sólo se avisa
+          // si el audit falló o si la reparación se está repitiendo.
+          afterSuccessfulAutoRepair('convergencia_aditiva', faltantes, r);
           return;
         }
         log('pulpo', `WARN desync-detector: convergencia aditiva no aplicada (${r && r.reason}). Sigue evaluación conservadora.`);
+        // #6117 CA-4 (M1) — antes esto moría en el log y el operador se
+        // enteraba tarde (o nunca). El despacho queda sin reparar: eso sí se avisa.
+        notifyAutoRepairFailure('convergencia_aditiva', r && r.reason, { issues: faltantes });
       } catch (e) {
         log('pulpo', `WARN desync-detector: convergencia aditiva falló: ${e.message}. Sigue evaluación conservadora.`);
+        // M2 — excepción: no se publica el error (R5), se manda al log del Pulpo.
+        notifyAutoRepairFailure('convergencia_aditiva', e && e.message, { excepcion: true });
       }
     }
 
@@ -19456,21 +19669,26 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
             checkDesyncFlag();
             try { desyncBlockNotifier.onResolved({ resolucion: 'reparacion_aditiva_wave_add', issues: r.added }); } catch { /* best-effort */ }
             log('pulpo', `desync-detector: reparación ADITIVA de allowlist OK (#5882) — ` +
-              `agregados=${JSON.stringify(r.added)} (traza legítima en wave-audit)`);
-            try {
-              sendTelegramPlain(
-                `♻️ Volví a habilitar el dispatch (#5882).\n` +
-                `Estos issues estaban en la ola pero faltaban en la lista de despacho: ` +
-                `${r.added.map((n) => `#${n}`).join(', ')}.\n` +
-                `Tienen traza de promoción tuya, así que los repuse sin frenar nada.`
-              );
-            } catch { /* best-effort */ }
+              `agregados=${JSON.stringify(r.added)} (traza legítima en wave-audit) ` +
+              `(sin ruido a Telegram, #6117)`);
+            // #6117 CA-2 — mismo criterio que la rama de #5724: reparación
+            // exitosa y con traza de promoción del propio operador. No hay nada
+            // que decidir, así que no se le escribe al chat.
+            afterSuccessfulAutoRepair('reparacion_aditiva_wave_add', r.added, r);
             return;
           }
           // Nunca en silencio: si no reparó, queda el motivo en el log.
           log('pulpo', `WARN desync-detector: reparación aditiva no aplicada (${r && r.reason}). Sigue fail-closed.`);
+          // #6117 CA-4 — acá el pipeline SÍ queda frenado (fail-closed): el
+          // operador tiene que enterarse. H8: `gate_rejected` se distingue del
+          // resto porque lo que hay que hacer es distinto.
+          notifyAutoRepairFailure('reparacion_aditiva_wave_add', r && r.reason, {
+            issues: legitWaveAdd,
+            gateRejected: !!(r && typeof r.reason === 'string' && r.reason.startsWith('gate_rejected')),
+          });
         } catch (e) {
           log('pulpo', `WARN desync-detector: reparación aditiva falló: ${e.message}. Sigue fail-closed.`);
+          notifyAutoRepairFailure('reparacion_aditiva_wave_add', e && e.message, { excepcion: true });
         }
       } else {
         log('pulpo', `desync-detector: sin traza legítima de wave-add para ` +
@@ -22522,6 +22740,12 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     realignAllowlistToActiveWave,
     // #4753 — auto-resolución del desync reductivo por cierre (expuesto para tests).
     autoResolveReductiveDesyncByClosure,
+    // #6117 — mensajería de auto-reparación (expuesta para tests unitarios del
+    // sanitizador de causa y del dedupe del aviso de fallo).
+    sanitizeAutoRepairCause,
+    notifyAutoRepairFailure,
+    afterSuccessfulAutoRepair,
+    _resetAutoRepairFailureDedupe,
     checkDesyncFlag,
     _getDesyncBlocked: () => desyncBlocked,
   };
