@@ -103,16 +103,26 @@ test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () =>
 });
 
 // La rama `envOperator` de `resolveAuthorizedSigners` (delivery.js:109-110) antes
-// sólo se ejercitaba por accidente, según tuviera o no la variable la máquina que
-// corría la suite. Acá queda cubierta de forma explícita y determinística.
-test('resolveAuthorizedSigners suma la credential dedicada del operador sin duplicarla', () => {
-    withOperatorEnv('4242', () => {
-        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '4242'] } });
-        assert.deepStrictEqual([...signers].sort(), ['1', '4242']);
+// solo se ejercitaba por accidente, segun tuviera o no la variable la maquina que
+// corria la suite. Aca queda cubierta de forma explicita y deterministica.
+test('resolveAuthorizedSigners suma el operador de TELEGRAM_LEO_OPERATOR_CHAT_ID sin duplicar', () => {
+    // Ya viene en la config: el operador de env no debe duplicarlo.
+    withOperatorEnv('2', () => {
+        assert.deepStrictEqual(
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }).sort(),
+            ['1', '2'],
+        );
+    });
+    // No esta en la config: si se agrega.
+    withOperatorEnv('77', () => {
+        assert.deepStrictEqual(
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }).sort(),
+            ['1', '77'],
+        );
     });
 });
 
-test('resolveAuthorizedSigners ignora la credential dedicada vacía o en blanco', () => {
+test('resolveAuthorizedSigners ignora la credential dedicada vacia o en blanco', () => {
     withOperatorEnv('   ', () => {
         const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } });
         assert.deepStrictEqual([...signers], ['1']);

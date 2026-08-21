@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","model":"claude-opus-5"}
+{"type":"assistant","message":{"role":"assistant","type":"message","model":"claude-opus-5","content":[{"type":"text","text":"El issue reporta que el agente murió con \"Failed to authenticate: OAuth session expired and could not be refreshed\"."}]}}
+{"is_error":true,"num_turns":42,"subtype":"success","result":"crash del agente","type":"result","duration_ms":3100}

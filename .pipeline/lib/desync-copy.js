@@ -186,10 +186,200 @@ function buildDesyncPresentation(raw, nowMs) {
     };
 }
 
+// =============================================================================
+// #6117 — Copy de las AUTO-REPARACIONES del despacho (CA-UX-1 · R6)
+//
+// Los dos avisos que #6117 borró nacieron como literales inline en `pulpo.js`.
+// Ese es exactamente el modo de fallo que este módulo existe para evitar: copy
+// que nace pegado a la lógica, se duplica por superficie y termina divergiendo.
+// Todo el texto de auto-reparación vive acá; `pulpo.js` sólo lo consume.
+//
+// Además cierra el riesgo de "dos mensajes distintos del mismo evento" con
+// #5890: con una sola fuente no puede haber dos redacciones.
+//
+// Reglas vinculantes que gobiernan este bloque (comentario de criterios UX):
+//   R1 — nunca el número del issue del pipeline entre paréntesis. Es
+//        trazabilidad de código, no información del operador, y se confunde con
+//        los issues reparados que aparecen dos líneas más abajo.
+//   R2 — primero la consecuencia operativa, después el detalle.
+//   R3 — toda alerta cierra con `Qué hacer:` (instrucción de reanudación).
+//   R4 — tipos con etiqueta humana, NUNCA la clave interna.
+//   R5 — sin stack, paths absolutos, config ni tokens. La causa llega YA
+//        sanitizada: este módulo es puro y no puede redactar secretos.
+// =============================================================================
+
+// R4 — mapa cerrado clave interna → etiqueta humana. El JSONL guarda
+// `convergencia_aditiva`; ninguna superficie visible lo muestra (CA-UX-2).
+const AUTO_REPAIR_LABELS = {
+    convergencia_aditiva: 'convergencia con la ola activa',
+    reparacion_aditiva_wave_add: 'reposición de una promoción tuya',
+};
+
+/** Etiqueta humana de un tipo. Un tipo desconocido degrada sin filtrar la clave. */
+function autoRepairLabel(tipo) {
+    return AUTO_REPAIR_LABELS[tipo] || 'reparación de la lista de trabajo';
+}
+
+/** Lista de issues como chips de texto: `#4821, #4830`. */
+function autoRepairIssuesText(issues) {
+    const list = (Array.isArray(issues) ? issues : []).filter(Number.isInteger);
+    return list.map((n) => `#${n}`).join(', ');
+}
+
+/** Ventana en criollo: "la última hora", "los últimos 30 min", "las últimas 6 h". */
+function autoRepairWindowText(windowMs) {
+    const ms = Number(windowMs);
+    if (!Number.isFinite(ms) || ms <= 0) return 'la última hora';
+    const min = Math.round(ms / 60000);
+    if (min < 60) return `los últimos ${min} min`;
+    const h = Math.round(min / 60);
+    if (h === 1) return 'la última hora';
+    if (h < 24) return `las últimas ${h} h`;
+    const d = Math.round(h / 24);
+    return d === 1 ? 'el último día' : `los últimos ${d} días`;
+}
+
+/**
+ * M1 · La reparación NO se aplicó (`r.ok === false`). El despacho sigue frenado.
+ *
+ * @param {object} o
+ * @param {number[]} [o.issues]      issues que quedaron afuera
+ * @param {string} [o.causa]         causa corta, YA sanitizada por el caller (R5)
+ * @param {boolean} [o.gateRejected] H8: el gate rechazó con criterio, no falló
+ */
+function autoRepairFailureText({ issues, causa, gateRejected } = {}) {
+    const lineas = ['⚠️ No pude reponer issues a la lista de trabajo.'];
+    const chips = autoRepairIssuesText(issues);
+    if (chips) lineas.push(`Quedaron afuera: ${chips}.`);
+    // H8 — un `gate_rejected` no es un fallo técnico sino un rechazo con
+    // criterio. El copy no los confunde porque lo que hay que hacer difiere.
+    const motivo = gateRejected === true
+        ? 'el gate de pausa parcial rechazó el cambio'
+        : (causa || 'sin detalle');
+    lineas.push(`Motivo: ${motivo}.`);
+    lineas.push('Mientras tanto no se lanza ningún agente.');   // R2: consecuencia
+    lineas.push('Qué hacer: abrí Pipeline, compará la ola activa con la lista y volvé a promover con /wave add.');
+    return lineas.join('\n');
+}
+
+/** M2 · Excepción al aplicar la reparación. No se expone el error (R5). */
+function autoRepairExceptionText() {
+    return [
+        '⚠️ No pude reponer issues a la lista de trabajo.',
+        'Motivo: error inesperado al aplicar la reparación.',
+        'Mientras tanto no se lanza ningún agente.',
+        'Qué hacer: abrí Pipeline y revisá el log del Pulpo.',
+    ].join('\n');
+}
+
+/**
+ * M3 · Se reparó bien pero el audit no se pudo escribir (SEC-2).
+ * No frena nada: lo que falta es la traza de quién habilitó qué.
+ */
+function autoRepairAuditFailedText({ issues } = {}) {
+    const lineas = ['⚠️ Repuse issues pero no pude dejar registro de la operación.'];
+    const chips = autoRepairIssuesText(issues);
+    if (chips) lineas.push(`Repuestos: ${chips}.`);
+    lineas.push('Ya están habilitados; lo que falta es la traza de auditoría.');
+    lineas.push('Qué hacer: revisá el estado en Pipeline antes de seguir.');
+    return lineas.join('\n');
+}
+
+/**
+ * M4 · La misma reparación se repite: hay una causa de fondo.
+ *
+ * @param {object} o
+ * @param {string} o.tipo
+ * @param {number} o.count       cuántas veces en la ventana
+ * @param {number} o.windowMs    ventana evaluada
+ * @param {boolean} [o.ilegible] SEC-4: no se pudo contar, se avisa igual
+ */
+function autoRepairRepetitionText({ tipo, count, windowMs, ilegible } = {}) {
+    const ventana = autoRepairWindowText(windowMs);
+    const etiqueta = autoRepairLabel(tipo);
+    const segunda = ilegible === true
+        // Fail-open: se avisa sin poder afirmar el conteo, y se dice por qué.
+        ? `No pude contar cuántas fueron en ${ventana} — el registro quedó ilegible — pero es ${etiqueta}.`
+        : `Van ${count} reparaciones en ${ventana} — ${etiqueta}.`;
+    return [
+        '🔁 Vengo reponiendo lo mismo una y otra vez.',
+        segunda,
+        'Cada una salió bien, pero que se repita significa que algo las está desalineando de nuevo.',
+        'Qué hacer: mirá Pipeline — hay una causa de fondo para atacar.',
+    ].join('\n');
+}
+
+/**
+ * CA-UX-5 · Presentación de la línea del dashboard (P1–P6), como DATO.
+ * El HTML lo arma la vista; acá se decide QUÉ dice.
+ *
+ * @param {object|null} ultima  `{tipo, issues, timestamp}` del slice
+ * @param {object} [opts]       { nowMs, repeticion: {count, ventana_ms, superado} }
+ * @returns {{vacio: boolean, texto: string, label: string, chips: object[],
+ *           edad: string, severidad: 'meta'|'warn', aviso: string}}
+ */
+function autoRepairLineaDashboard(ultima, opts = {}) {
+    const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+
+    // P5 — empty-state EXPLÍCITO. La línea nunca se oculta: una línea que
+    // aparece y desaparece hace dudar de la lectura.
+    if (!ultima || !ultima.timestamp) {
+        return {
+            vacio: true,
+            texto: 'Sin auto-reparaciones registradas.',
+            label: '', chips: [], edad: '', severidad: 'meta', aviso: '',
+        };
+    }
+
+    const label = autoRepairLabel(ultima.tipo);                 // P2 — R4
+    const edad = desyncAgeText(ultima.timestamp, nowMs);        // P3 — reuso, no reimplementación
+
+    // P4 — tope de chips reusando DSS_CHIPS_TOPE + `+N`. Un truncado silencioso
+    // se lee como "esto es todo".
+    const todos = (Array.isArray(ultima.issues) ? ultima.issues : []).filter(Number.isInteger);
+    const chips = todos.slice(0, DSS_CHIPS_TOPE).map((n) => ({ tipo: 'issue', issue: n }));
+    if (todos.length > DSS_CHIPS_TOPE) {
+        chips.push({ tipo: 'more', ocultos: todos.length - DSS_CHIPS_TOPE });
+    }
+
+    // P6 — único caso que sube de jerarquía visual. Nunca sólo color: warning +
+    // glyph + texto explícito.
+    const rep = opts.repeticion;
+    const superado = !!(rep && rep.superado === true);
+    const aviso = superado
+        ? `se repitió ${rep.count} veces en ${autoRepairWindowText(rep.ventana_ms)}`
+        : '';
+
+    const partes = ['Última auto-reparación', label];
+    const chipsTexto = chips.map((c) => (c.tipo === 'more' ? `+${c.ocultos}` : `#${c.issue}`)).join(' ');
+    if (chipsTexto) partes.push(chipsTexto);
+    if (edad) partes.push(edad);
+    if (aviso) partes.push(aviso);
+
+    return {
+        vacio: false,
+        texto: partes.join(' · '),
+        label,
+        chips,
+        edad,
+        severidad: superado ? 'warn' : 'meta',   // P1: metadato, no alerta
+        aviso,
+    };
+}
+
 module.exports = {
     DSS_META,
     DSS_META_BLOQUEADO,
     DSS_CHIPS_TOPE,
+    // #6117 — copy de auto-reparación (CA-UX-1..3, CA-UX-5).
+    AUTO_REPAIR_LABELS,
+    autoRepairLabel,
+    autoRepairWindowText,
+    autoRepairFailureText,
+    autoRepairExceptionText,
+    autoRepairAuditFailedText,
+    autoRepairRepetitionText,
+    autoRepairLineaDashboard,
     DESYNC_EMPTY_DEFAULT,
     DESYNC_ACCION_BLOQUEADO,
     normalizeDesyncStatus,
