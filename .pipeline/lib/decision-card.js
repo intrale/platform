@@ -54,8 +54,12 @@
 // audio. `redactSensitive` de `lib/redact.js` NO alcanza: sólo cubre URLs y
 // emails y deja pasar AWS keys y JWT enteros (verificado).
 //
-// Cobertura verificada empíricamente contra HEAD:
-//     AKIAIOSFODNN7EXAMPLE                 → [REDACTED]
+// Cobertura verificada empíricamente contra HEAD. Los vectores se citan
+// TRUNCADOS a propósito: un literal bien formado acá gatilla —con razón— la
+// regla `secret:aws-access-key` del linter (`skills-deterministicos/lib/
+// static-checks.js`), que no puede distinguir un ejemplo de docs de una
+// credencial real. Misma convención que `motor-9.1-secret-allowlist.json`.
+//     AKIA…EXAMPLE (ej. oficial AWS docs)  → [REDACTED]
 //     Authorization: Bearer eyJ....        → [REDACTED]
 //     ghp_xxxxxxxx...                      → [REDACTED]
 //     leito@intrale.com                    → le***@in***.com  (enmascarado
