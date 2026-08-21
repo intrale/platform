@@ -19977,8 +19977,11 @@ const STUCK_STALE_MS = 15 * 60 * 1000;
 //
 // La racha vive en su PROPIO archivo: `.stuck-reconciler-state.json` está
 // indexado por `issue|fase` y mezclar acá un contador global lo corrompería.
-// CA-UX-4: los contadores por tick van al log, NO a Telegram; sólo la señal de
-// vida (una vez por racha) notifica.
+// CA-UX-4: los contadores por tick van al log, NO a Telegram.
+// #6150 — la racha ya NO gobierna el envío. Lo que notifica es la existencia de
+// tareas en riesgo real (`selectRealRisk`), una vez por EPISODIO: mientras el
+// conjunto de tareas frenadas no cambie, no se reitera; si entra o sale una, sí.
+// La racha se sigue calculando y persistiendo, pero sólo para log/estado.
 const STUCK_HEALTH_FILE = path.join(PIPELINE, '.stuck-reconciler-health.json');
 function emitStuckReconcilerLiveness(res, agg, titleOf) {
   try {
@@ -20075,7 +20078,11 @@ function runStuckReconcilerTick() {
       requeued: res.requeued || 0,
     };
     log('reconciler', `🔧 self-healing tick: ${JSON.stringify(agg)}`);
-    emitStuckReconcilerLiveness(res, agg, deps.issueTitle);
+    // #6150 rev-2 — `issueTitleForDisplay`, NO `issueTitle`. El aviso se dispara
+    // justo cuando la entrada del title-cache está vencida (`suppression:'cache'`
+    // ⇐ `cache-desconocida` ⇐ entrada no fresca), y `issueTitle` es fresh-only:
+    // cableado con él, el título era `null` en el 100% de los avisos reales.
+    emitStuckReconcilerLiveness(res, agg, deps.issueTitleForDisplay);
   } catch (e) {
     log('reconciler', `tick error (no tumba el loop): ${e && e.message}`);
   }

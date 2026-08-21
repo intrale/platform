@@ -311,8 +311,46 @@ function buildStuckReconcilerDeps(opts = {}) {
 
         // CA-UX-2 — título para que la notificación sea legible. Sólo si la
         // entrada está fresca; si no, el mensaje va sin título (nunca miente).
+        //
+        // OJO (#6150 rev-2): este lector es fresh-only A PROPÓSITO y su
+        // consumidor es el escalado de `stuck-phase-reconciler.js` (#5396
+        // CA-UX-2), que corre en la rama `hasNeedsHuman === false` — es decir,
+        // con entrada fresca garantizada. NO usarlo para el aviso de tareas
+        // frenadas: ese corre en la rama complementaria
+        // (`cache-desconocida` ⇒ entrada vencida) y ahí esto devuelve `null`
+        // SIEMPRE. Para display usar `issueTitleForDisplay`.
         issueTitle: (issue) => {
             const e = readFreshEntry(issue);
+            return (e && typeof e.title === 'string' && e.title.trim()) ? e.title.trim() : null;
+        },
+
+        // #6150 rev-2 — título SÓLO PARA DISPLAY, tolerante a staleness.
+        //
+        // POR QUÉ EXISTE (y por qué no alcanza con `issueTitle`)
+        // ------------------------------------------------------
+        // El aviso de tareas frenadas se dispara exactamente cuando la entrada
+        // del title-cache está VENCIDA: `suppression:'cache'` sale de
+        // `needsHumanSource === 'cache-desconocida'`, que a su vez se devuelve
+        // sólo si `readFreshEntry()` es falsy. Como `issueTitle` exige esa misma
+        // entrada fresca, las dos ramas son complementarias: entrada fresca ⇒
+        // hay título pero NO hay aviso; entrada vencida ⇒ hay aviso pero NO hay
+        // título. Cableado así, el operador recibía siempre el número pelado
+        // ("• #6150 — hace 2 h") y CA-3 quedaba muerto por construcción.
+        //
+        // POR QUÉ ES SEGURO RELAJAR LA FRESCURA ACÁ
+        // ------------------------------------------
+        // La frescura protege DECISIONES sobre labels (¿re-escalo o no?), donde
+        // un dato viejo produce una acción incorrecta e irreversible. Acá no se
+        // decide nada: la cadena sólo se imprime. El peor caso de un título
+        // vencido es que el issue haya sido renombrado y el operador lea el
+        // nombre anterior del MISMO issue — que sigue identificado por su número
+        // en la misma línea. Mismo criterio ya vigente en `isIssueOpen`, que
+        // también lee sobre `readTitleCacheEntry`.
+        //
+        // El saneo (SEC-2) NO se hace acá: lo aplica `buildStuckAlertCopy` vía
+        // el `sanitize` inyectado desde `pulpo.js`, igual que con `issueTitle`.
+        issueTitleForDisplay: (issue) => {
+            const e = readTitleCacheEntry(issue);
             return (e && typeof e.title === 'string' && e.title.trim()) ? e.title.trim() : null;
         },
 

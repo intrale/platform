@@ -77,6 +77,16 @@ self-healing **100% mudo por diseño**, y nadie se entera. Por eso:
   estado de la tarea. Conjunto vacío ⇒ silencio, por más ciclos que lleve.
   Conjunto no vacío ⇒ **se avisa en el primer ciclo del episodio**, sin esperar
   ninguna racha.
+- **El título de la tarea sale de un lector tolerante a desactualización**
+  (`deps.issueTitleForDisplay`), no del fresh-only `deps.issueTitle`. No es un
+  detalle: el aviso se dispara *exactamente* cuando la entrada del title-cache
+  está vencida (ése es el motivo `fail-closed por estado no confirmado`), así
+  que el lector fresh-only devuelve `null` en el 100% de los avisos reales y el
+  operador recibía sólo el número. La frescura protege **decisiones sobre
+  labels**, donde un dato viejo produce una acción incorrecta; no protege una
+  cadena que sólo se imprime al lado del número del issue. `deps.issueTitle`
+  sigue siendo fresh-only y sigue siendo el correcto para su consumidor original
+  (el escalado de #5396 CA-UX-2, que corre en la rama de entrada fresca).
 - **Un aviso por episodio.** El episodio se identifica por la huella
   `issue|fase|motivo` de las tareas frenadas (`buildEpisodeFingerprint`): si el
   conjunto **cambia** — entra o sale una tarea — es un episodio nuevo y se
