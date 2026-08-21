@@ -72,6 +72,18 @@
 //   acta se acepta del payload: `gateMode` se recalcula server-side leyendo
 //   config en los TRES call sites (`requestSignature`, `listPending`, el acta).
 //   Un gate fail-closed cuyo modo elige quien lo consume no es fail-closed.
+//   Ídem `evidence_hash` del acta de GATE 2 (`operator-signature.js:816`): lo
+//   computa el kernel sobre lo que él mismo presentó (`computeChannelEvidenceHash`)
+//   y al firmar lo lee del `nonce_issued` hash-chained, NUNCA de un campo del
+//   payload (el literal prohibido no se escribe ni en comentario: se verifica
+//   por grep sobre este archivo, igual que SEC-2).
+// [CA-A1 · #4571 §5.1] Cada gate es operable END-TO-END desde el kernel: si un
+//   gate exige un artefacto previo para poder firmar (GATE 2 exige un nonce de un
+//   solo uso, CA-5 de `operator-signature`), lo emite `requestSignature` por el
+//   `prepare` del registry. Un adaptador que tuviera que llamar DIRECTO a
+//   `issueNonce` estaría escribiendo en el audit chain del gate por fuera del
+//   kernel — lo contrario del invariante rector ("el adaptador pide, el kernel
+//   ejecuta") y del contrato ÚNICO multi-gate.
 // [CA-A7 · A08] Firma invalidada si cambió lo firmado: el ancla recalculada no
 //   matchea la firmada ⇒ se pide firma nueva.
 // [SEC-2] El identificador del actor local del dashboard NO aparece en el
@@ -186,6 +198,11 @@ const GATES = Object.freeze({
         // CA-A5.b — MISMA fuente que el evaluador de este gate
         // (`pulpo.js:5906` → `operator-gate.resolveOperatorAllowlist`).
         signersFor: (d) => resolveDefinicionSigners(d),
+        // GATE 1 no tiene un nonce propio: el anti-replay es el del token del
+        // canal (`action-token`, namespaced por `(g,i,h)`). `prepare` no emite
+        // nada y `writerExtras` no agrega campos al acta.
+        prepare: () => ({ ok: true }),
+        writerExtras: () => ({ ok: true, extras: {} }),
     }),
     aceptacion: Object.freeze({
         gate: 'aceptacion',
@@ -198,6 +215,17 @@ const GATES = Object.freeze({
         // (`delivery.js:100`), designada por el PO como autoridad ÚNICA de
         // GATE 2. SIN el fallback al chat principal de `pulpo.js:15035`.
         signersFor: (d) => resolveAceptacionSigners(d),
+        // CA-A1/#6206 rev-4 — GATE 2 exige (CA-5 de `operator-signature`) un
+        // nonce PROPIO emitido por `operator-signature.issueNonce`, ligado a
+        // `(issue, sha)` y persistido en el audit hash-chain del gate. Lo emite
+        // EL KERNEL al pedir la firma: si lo emitiera el adaptador estaría
+        // escribiendo en el audit chain del gate por fuera del kernel, que es
+        // exactamente lo contrario del invariante rector ("el adaptador pide,
+        // el kernel ejecuta") y del contrato ÚNICO multi-gate de CA-A1.
+        prepare: (d, ctx) => issueAceptacionNonce(d, ctx),
+        // CA-A2.b — el `evidence_hash` del acta NO sale del payload: se lee del
+        // registro `nonce_issued` que escribió este mismo kernel.
+        writerExtras: (d, ctx) => resolveAceptacionWriterExtras(d, ctx),
     }),
 });
 
@@ -493,6 +521,151 @@ function buildWriterOptions(d, spec) {
     return options;
 }
 
+/** Raíz `.pipeline/` que usa el writer del gate (tests inyectan una hermética). */
+function writerPipelineDirOf(d) {
+    return d.writerPipelineDir !== null ? d.writerPipelineDir : PIPELINE_DIR;
+}
+
+// -----------------------------------------------------------------------------
+// Nonce PROPIO del gate `aceptacion` (CA-5 de operator-signature) — lo emite el
+// KERNEL, nunca el adaptador
+// -----------------------------------------------------------------------------
+
+/**
+ * Forma del nonce de GATE 2: 32 hex minúsculas, tal como lo emite
+ * `operator-signature.generateNonce` (16 bytes de CSPRNG en hex). Este módulo
+ * NO genera nonces (invariante A-1, verificado por grep en
+ * `approval-channel-nonce.test.js`): sólo valida la FORMA del que le devuelven,
+ * y lo hace ANTES de leer el audit para que un string arbitrario del payload no
+ * dispare una lectura de la cadena entera.
+ */
+const GATE_NONCE_RE = /^[0-9a-f]{32}$/;
+
+/**
+ * Hash del paquete de evidencia PRESENTADO, computado **server-side** sobre
+ * material que armó este kernel (nada del payload crudo llega acá):
+ *   - `anchor` recalculada server-side (CA-A2),
+ *   - `presented.digest` (digest de lo que el medio muestra, REQ-SEC-5),
+ *   - `evidence` ya normalizada por `normalizeEvidence` (enum cerrado de `kind`,
+ *     `ref` truncada, ≤ 20 items).
+ *
+ * Se computa UNA vez, al pedir la firma, y queda en el registro `nonce_issued`
+ * del audit hash-chained del gate. Al firmar, el acta lo toma DE AHÍ.
+ *
+ * @param {object} request - el `SignatureRequest` ya armado por el kernel.
+ * @returns {string} `sha256:<hex>`
+ */
+function computeChannelEvidenceHash(request) {
+    return require('./operator-signature').computeEvidenceHash({
+        v: 'approval-channel/evidence/v1',
+        gate: request.gate,
+        issue: request.issue,
+        anchor_kind: request.anchor.kind,
+        anchor_value: request.anchor.value,
+        presented_digest: request.presented.digest,
+        truncated: request.presented.truncated,
+        evidence: request.evidence,
+    });
+}
+
+/**
+ * `prepare` del gate `aceptacion`: emite el nonce de un solo uso de GATE 2 por
+ * el ÚNICO camino legítimo (`operator-signature.issueNonce`), con las opciones
+ * construidas server-side por el kernel.
+ *
+ * POR QUÉ EXISTE (defecto rev-3, bloqueante): `recordAcceptanceSignature` exige
+ * (CA-5) un nonce previamente emitido; el canal no lo emitía, así que
+ * `requestSignature({gate:'aceptacion'})` devolvía `ok:true` y `submitSignature`
+ * con exactamente lo que el kernel entregaba fallaba con "nonce inexistente". El
+ * gate sólo firmaba si el adaptador llamaba DIRECTO a `issueNonce`, o sea
+ * escribiendo en el audit chain del gate POR FUERA del kernel — lo contrario del
+ * invariante rector de #4571 §5.1 y del contrato único multi-gate (CA-A1).
+ *
+ * El `nonce` es una capability bearer, igual que el token: viaja SÓLO en la
+ * respuesta en memoria de `requestSignature`, nunca al depósito ni al audit del
+ * canal (el depósito lo leen Telegram y el dashboard: un nonce ahí es "quien lee
+ * el índice, firma").
+ *
+ * @param {object} d
+ * @param {{issue:number, anchor:object, evidenceHash:string}} ctx
+ * @returns {{ok:true, nonce:string}|{ok:false, reason:string}}
+ */
+function issueAceptacionNonce(d, ctx) {
+    const cfg = readConfigSafe(d);
+    const section = (cfg.ok && cfg.config.operator_signature && typeof cfg.config.operator_signature === 'object')
+        ? cfg.config.operator_signature
+        : {};
+    let out;
+    try {
+        out = require('./operator-signature').issueNonce({
+            issueId: ctx.issue,
+            sha: ctx.anchor.value,
+            // Server-side: digest de lo que el kernel presenta (REQ-SEC-5).
+            evidenceHash: ctx.evidenceHash,
+            config: { nonce_ttl_seconds: section.nonce_ttl_seconds },
+            // Mismas opciones enumeradas que el writer: `pipelineDir`/`fsImpl`/
+            // reloj del kernel. `authorizedSigners` le es indiferente a
+            // `issueNonce`, pero no se arma un objeto aparte para no abrir un
+            // segundo camino de construcción de opciones.
+            options: buildWriterOptions(d, GATES.aceptacion),
+        });
+    } catch (e) {
+        return { ok: false, reason: `no se pudo emitir el nonce del gate aceptacion: ${e.message}` };
+    }
+    if (!out || out.ok !== true || typeof out.nonce !== 'string') {
+        return { ok: false, reason: `no se pudo emitir el nonce del gate aceptacion: ${(out && out.reason) || 'sin motivo'}` };
+    }
+    return { ok: true, nonce: out.nonce };
+}
+
+/**
+ * `writerExtras` del gate `aceptacion`: resuelve los campos que el writer de
+ * GATE 2 necesita y que **no pueden salir del payload** (CA-A2.b).
+ *
+ * `evidence_hash` queda en el acta de no repudio (`operator-signature.js:816`).
+ * Antes se reenviaba el campo homónimo crudo del payload, sin validación de forma
+ * ni de largo y sin figurar en los `@param`: cualquiera podía elegir qué
+ * "evidencia" decía haber visto el operador en un artefacto hash-chained. Ahora
+ * se lee del registro `nonce_issued` que escribió ESTE kernel al emitir el
+ * pedido, atado al mismo `(issue, nonce, sha)` que el gate va a validar.
+ *
+ * Fail-closed: si la cadena no se puede leer, o no hay un `nonce_issued` del
+ * canal para ese `(issue, nonce, sha)`, **se rechaza antes de despachar** (y
+ * antes de escribir el companion de audit).
+ *
+ * @param {object} d
+ * @param {{issue:number, anchor:object, nonce:*}} ctx
+ * @returns {{ok:true, extras:object}|{ok:false, reason:string}}
+ */
+function resolveAceptacionWriterExtras(d, ctx) {
+    const nonce = typeof ctx.nonce === 'string' ? ctx.nonce : '';
+    if (!GATE_NONCE_RE.test(nonce)) {
+        return { ok: false, reason: 'nonce del gate ausente o con forma inválida' };
+    }
+    const gate2 = require('./operator-signature');
+    let state;
+    try {
+        state = gate2.readSignatureState(ctx.issue, writerPipelineDirOf(d));
+    } catch (e) {
+        const code = (e && typeof e.code === 'string') ? e.code : 'unknown';
+        return { ok: false, reason: `audit del gate aceptacion no verificable (${code}) — firma NO registrada` };
+    }
+    const issued = gate2.filterByKind(state.entries, ctx.issue, gate2.KIND_NONCE)
+        .find(r => r.nonce === nonce && r.sha === ctx.anchor.value);
+    if (!issued) {
+        return { ok: false, reason: 'el nonce del gate no fue emitido por el canal para este artefacto' };
+    }
+    return {
+        ok: true,
+        extras: {
+            nonce,
+            // El writer normaliza `typeof !== 'string'` a `''`; acá ya viene del
+            // registro server-side, así que o es el digest emitido o es ''.
+            evidenceHash: typeof issued.evidence_hash === 'string' ? issued.evidence_hash : '',
+        },
+    };
+}
+
 // -----------------------------------------------------------------------------
 // CA-A6 · Registro de intentos no autorizados + rate-limit del rechazo
 // -----------------------------------------------------------------------------
@@ -690,8 +863,13 @@ function recordRejectedAttempt({ gate, issue, origen, actor, reason }, d) {
  * @param {Array<{kind:string,ref:string}>} [p.evidence] - referencias, nunca payloads.
  * @param {object} [deps]
  * @returns {{ok:true, request:object, path:string}|{ok:false, reason:string, retained?:boolean, alert?:string}}
+ *   En `ok:true`, `request` lleva DOS capabilities que no están en el depósito:
+ *   `token` (siempre) y `nonce` (sólo gate `aceptacion`, emitido server-side por
+ *   `operator-signature.issueNonce`). El adaptador los devuelve tal cual en
+ *   `submitSignature`; con eso el gate `aceptacion` es operable end-to-end SIN
+ *   que el adaptador toque nunca el audit chain del gate.
  *
- * CA-A2.b — **NO existe `p.gateMode`.** El modo lo recalcula el kernel leyendo
+ * CA-A2.b — **el modo NO se acepta de la entrada.** Lo recalcula el kernel leyendo
  * `config.yaml` (`resolveGateMode`). Antes venía del payload con default
  * `'dry-run'`, así que un adaptador que omitía el campo hacía que un texto
  * hostil se emitiera igual en vez de retenerse (REQ-SEC-5).
@@ -788,7 +966,24 @@ function requestSignature(p = {}, deps = {}) {
         request.presentation_alert = presentation.alert;
     }
 
-    // 6 · Depósito (índice de presentación, CA-A4).
+    // 6 · `prepare` del gate: lo que el gate necesita emitir server-side ANTES
+    //     de que exista un pedido presentable. Hoy es el nonce propio de
+    //     `aceptacion` (CA-5 de `operator-signature`), que el kernel emite por
+    //     el único camino legítimo (`issueNonce`) para que el adaptador NO
+    //     tenga que escribir en el audit chain del gate. Sin esto, el gate
+    //     `aceptacion` no era operable end-to-end desde el kernel.
+    //
+    //     Va DESPUÉS de la retención por presentación insegura (paso 4): un
+    //     pedido retenido no quema un nonce ni deja rastro en la cadena del gate.
+    const prepared = g.spec.prepare(d, {
+        issue,
+        anchor,
+        evidenceHash: computeChannelEvidenceHash(request),
+        gateMode,
+    });
+    if (!prepared.ok) return { ok: false, reason: prepared.reason };
+
+    // 7 · Depósito (índice de presentación, CA-A4).
     const target = depositPathFor(d.depositDir, issue, g.spec.gate);
     if (target === null) return { ok: false, reason: 'path-escape' };
     try {
@@ -798,8 +993,8 @@ function requestSignature(p = {}, deps = {}) {
         return { ok: false, reason: `no se pudo escribir el pendiente: ${e.message}` };
     }
 
-    // 7 · Audit hash-chained del pedido. El token NO se audita (es una
-    //     capability portable); sí su ancla y el gate.
+    // 8 · Audit hash-chained del pedido. Ni el token ni el nonce del gate se
+    //     auditan acá (son capabilities portables); sí su ancla y el gate.
     try {
         d.auditImpl.appendChained({
             file: d.auditFile,
@@ -818,10 +1013,15 @@ function requestSignature(p = {}, deps = {}) {
         });
     } catch { /* el audit del pedido no bloquea la presentación */ }
 
-    // El token viaja SÓLO en la respuesta en memoria, nunca en el depósito ni en
-    // el audit. El adaptador que pidió la firma lo entrega por su canal (botón de
-    // Telegram, formulario del dashboard) y lo devuelve en `submitSignature`.
-    return { ok: true, request: { ...request, token }, path: target };
+    // El token y el nonce del gate viajan SÓLO en la respuesta en memoria, nunca
+    // en el depósito ni en el audit del canal. El adaptador que pidió la firma
+    // los entrega por su canal (botón de Telegram, formulario del dashboard) y
+    // los devuelve tal cual en `submitSignature`: **el adaptador pide, el kernel
+    // ejecuta** — no hay ningún camino por el que el adaptador escriba una firma
+    // ni un nonce por su cuenta.
+    const emitted = { ...request, token };
+    if (typeof prepared.nonce === 'string') emitted.nonce = prepared.nonce;
+    return { ok: true, request: emitted, path: target };
 }
 
 /** CA-UX1 · `title`: una línea, ≤ 80 chars, sin verbos de acción. */
@@ -884,7 +1084,8 @@ function normalizeEvidence(raw) {
  *   6. `g === gate` que se resuelve   → comparación explícita, no "si viene lo uso"
  *   7. `h === ancla recalculada`      → cubre CA-A2 y CA-A7 a la vez
  *   8. verdict ∈ enum del gate
- *   9. despacho al writer del registry + companion de audit (D-2)
+ *   9. `writerExtras` del gate        → campos del acta resueltos SERVER-SIDE
+ *  10. despacho al writer del registry + companion de audit (D-2)
  *
  * @param {object} p
  * @param {string} p.gate
@@ -894,9 +1095,16 @@ function normalizeEvidence(raw) {
  * @param {string} p.signedBy    - identidad del firmante (la autoriza el gate).
  * @param {string} [p.body]      - material fuente actual (gate `definicion`).
  * @param {string} [p.commit]    - material fuente actual (gate `aceptacion`).
- * @param {string} [p.nonce]     - nonce PROPIO del gate `aceptacion` (el emitido
- *                                 por `operator-signature.issueNonce`). Distinto
- *                                 del nonce del token, que es el del canal.
+ * @param {string} [p.nonce]     - **gate `aceptacion` únicamente.** Nonce PROPIO
+ *                                 del gate (CA-5 de `operator-signature`), tal
+ *                                 como lo devolvió `requestSignature` en
+ *                                 `request.nonce`. Distinto del nonce del token,
+ *                                 que es el del canal. El adaptador lo transporta
+ *                                 y lo devuelve; NO lo emite (lo emitió el kernel
+ *                                 vía `issueNonce`). Se valida de forma
+ *                                 (`GATE_NONCE_RE`) y contra el registro
+ *                                 `nonce_issued` del audit del gate antes de
+ *                                 despachar.
  * @param {string} [p.actor]     - identidad de origen para el registro de rechazos.
  * @param {string} [p.origen]    - medio de origen ('telegram' | 'dashboard' | ...).
  *
@@ -904,6 +1112,13 @@ function normalizeEvidence(raw) {
  * `pipelineDir`, `fsImpl`, reloj, rate-limit) las construye el kernel server-side
  * en `buildWriterOptions`. El cliente aporta sólo `{ verdict, nonce }` + material
  * fuente (CA-A2); nada de lo que manda decide quién puede firmar.
+ *
+ * CA-A2.b — **el `evidence_hash` NO se acepta de la entrada.** Queda en el acta
+ * hash-chained de GATE 2 (`operator-signature.js:816`); antes se reenviaba crudo
+ * del payload, sin validación de forma ni de largo. Ahora lo resuelve
+ * `writerExtras` leyendo el `nonce_issued` que escribió este mismo kernel. El
+ * campo del payload ya no se lee en ningún punto del módulo — invariante
+ * verificado por grep en `approval-channel-aceptacion.test.js`.
  *
  * @param {object} [deps]
  * @returns {{ok:boolean, reason?:string, entry?:object, gate?:string, issue?:number}}
@@ -960,8 +1175,10 @@ function submitSignature(p = {}, deps = {}) {
     const issue = Number(p.issue);
 
     // 3 · CA-A2.b — el modo del gate lo determina el KERNEL leyendo config.
-    //     `p.gateMode` se ignora: un campo que gobierna comportamiento
-    //     fail-closed no se acepta del payload del cliente.
+    //     Un `gateMode` que venga en la entrada se ignora: un campo que
+    //     gobierna comportamiento fail-closed no se acepta del payload del
+    //     cliente. El literal no se escribe ni en comentario (mismo criterio
+    //     grep-able que SEC-2).
     const gateMode = resolveGateMode(g.spec, d);
 
     // 4 · verificar y CONSUMIR el token. Consumirlo incluso si después se
@@ -1018,7 +1235,21 @@ function submitSignature(p = {}, deps = {}) {
         return rejectAndCount(`verdict inválido para el gate ${g.spec.gate}`);
     }
 
-    // 10 · D-2 — companion de audit ANTES del despacho. Si no se puede dejar
+    // 10 · CA-A2.b — campos que van al acta del gate y NO pueden salir del
+    //      payload. Para `aceptacion`: el nonce propio del gate (que emitió
+    //      `requestSignature` por `issueNonce`) y el `evidence_hash`, que se lee
+    //      del registro `nonce_issued` server-side, no de la entrada.
+    //
+    //      Va ANTES del companion de audit a propósito: un nonce ausente,
+    //      rotado o de otro artefacto se rechaza sin dejar una entrada
+    //      "accepted-before-transition" de una firma que nunca ocurrió.
+    const extrasRes = g.spec.writerExtras(d, { issue, anchor: anchorRes.anchor, nonce: p.nonce });
+    if (!extrasRes.ok) {
+        return rejectAndCount(extrasRes.reason);
+    }
+    const writerExtras = extrasRes.extras;
+
+    // 11 · D-2 — companion de audit ANTES del despacho. Si no se puede dejar
     //      constancia, NO se firma (mismo criterio que `operator-gate.js:351`,
     //      donde un audit fallido aborta la transición).
     if (g.spec.auditCompanion) {
@@ -1037,13 +1268,15 @@ function submitSignature(p = {}, deps = {}) {
         }
     }
 
-    // 11 · Despacho al writer del gate. La autoridad sobre autorización,
+    // 12 · Despacho al writer del gate. La autoridad sobre autorización,
     //      rate-limit de firma e integridad sigue siendo DEL GATE — el kernel no
     //      la duplica.
     //      Las `options` se construyen SERVER-SIDE por enumeración explícita
     //      (`buildWriterOptions`): el cliente no aporta ni la allowlist de
     //      firmantes, ni el `pipelineDir` del audit, ni el reloj, ni el
-    //      rate-limit. Ver el comentario de `buildWriterOptions`.
+    //      rate-limit. Ver el comentario de `buildWriterOptions`. Los campos
+    //      específicos del gate que quedan en el acta salen de `writerExtras`
+    //      (paso 10), también server-side.
     const writer = g.spec.writer();
     const writerOptions = buildWriterOptions(d, g.spec);
     let out;
@@ -1062,9 +1295,11 @@ function submitSignature(p = {}, deps = {}) {
                 issueId: issue,
                 signedBy: p.signedBy,
                 signedCommit: anchorRes.anchor.value,
-                nonce: p.nonce,
                 verdict: p.verdict,
-                evidenceHash: p.evidenceHash,
+                // CA-A2.b — `nonce` + `evidenceHash` resueltos SERVER-SIDE en
+                // `writerExtras` contra el `nonce_issued` que escribió el
+                // kernel. Nada de esto se reenvía crudo del payload.
+                ...writerExtras,
                 // CA-A2.b — modo REAL del kernel, no el del payload.
                 gateMode,
                 options: writerOptions,
@@ -1079,7 +1314,7 @@ function submitSignature(p = {}, deps = {}) {
         return rejectAndCount(`el gate rechazó la firma: ${(out && out.reason) || 'sin motivo'}`);
     }
 
-    // 12 · D-2 — companion post-despacho CON `gate` no nulo: ésta es la entrada
+    // 13 · D-2 — companion post-despacho CON `gate` no nulo: ésta es la entrada
     //      que `operator-wait.js:167` lee como cierre del gate.
     if (g.spec.auditCompanion) {
         try {
@@ -1095,7 +1330,7 @@ function submitSignature(p = {}, deps = {}) {
         } catch { /* la firma ya está persistida; la constancia previa existe */ }
     }
 
-    // 13 · Audit propio del canal + limpieza del pendiente (índice, no autoridad).
+    // 14 · Audit propio del canal + limpieza del pendiente (índice, no autoridad).
     try {
         d.auditImpl.appendChained({
             file: d.auditFile,
@@ -1258,6 +1493,10 @@ module.exports = {
     resolveGateMode,          // CA-A2.b — modo del gate, server-side
     resolveDefinicionSigners, // CA-A5.b — allowlist de GATE 1 (== pulpo.js:5906)
     resolveAceptacionSigners, // CA-A5.b + D-4 — allowlist de GATE 2 (== delivery.js:100)
+    // #6206 rev-4 — el gate `aceptacion` es operable end-to-end desde el kernel.
+    computeChannelEvidenceHash,   // CA-A2.b — digest de lo presentado, server-side
+    issueAceptacionNonce,         // CA-5 — el KERNEL emite el nonce de GATE 2
+    resolveAceptacionWriterExtras,// CA-A2.b — `evidence_hash` del acta, server-side
 
     // Constantes
     GATES,
@@ -1273,4 +1512,5 @@ module.exports = {
     DEFAULT_REJECT_RATE,
     REJECT_FILE_MAX_BYTES,
     PRESENTATION_MAX_CHARS,
+    GATE_NONCE_RE,
 };
