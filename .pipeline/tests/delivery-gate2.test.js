@@ -77,6 +77,9 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
 });
 
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
+    const signers = delivery.resolveAuthorizedSigners(
+        { cua: { operator_chat_ids: ['1', '2', '2'] } },
+        {},
+    );
     assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
 });

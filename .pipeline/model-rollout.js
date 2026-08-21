@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 'use strict';
-const path = require('path');
-const yaml = require('js-yaml');
-const fs = require('fs');
 const rollout = require('./lib/model-propagation-rollout');
+const configResolver = require('./lib/config-resolver');
 const pipelineDir = __dirname;
 const argv = process.argv.slice(2); const command = argv.shift();
 const arg = n => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : null; };
-const config = (yaml.load(fs.readFileSync(path.join(pipelineDir, 'config.yaml'), 'utf8')).model_propagation_rollout || {});
+const config = (configResolver.resolve({ pipelineDir }).model_propagation_rollout || {});
 try {
   if (command === 'baseline') console.log(JSON.stringify(rollout.captureBaseline(pipelineDir, { from: arg('from'), until: arg('until') }), null, 2));
   else if (command === 'status') console.log(JSON.stringify(rollout.readState(pipelineDir), null, 2));
