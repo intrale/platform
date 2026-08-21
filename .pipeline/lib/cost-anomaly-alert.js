@@ -26,6 +26,8 @@ const fs = require('fs');
 const path = require('path');
 const { redactSensitive } = require('./redact');
 const { sanitize } = require('../sanitizer');
+// #6226 - nombres unicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('./dropfile-writer');
 
 // Cap absoluto del snooze (CA-2.8 / CA-Sec-A04b). El backend rechaza
 // payloads con valor > MAX_SNOOZE_HOURS aunque la UI tenga el bug.
@@ -159,11 +161,21 @@ function sendTelegramAlert(evaluation, snapshot, opts) {
         return { ok: false, reason: `cannot_create_queue_dir: ${e.message}`, text };
     }
 
-    const filename = `${now}-anomaly-alert.json`;
-    const file = path.join(queueDir, filename);
+    // #6226 - nombre unico (`<ts>-<seq>-anomaly-alert.json`) + escritura `wx`.
+    // El nombre era `${now}-anomaly-alert.json` a secas: dos anomalias evaluadas
+    // en el mismo milisegundo (o dos procesos encolando a la vez) resolvian al
+    // mismo path y la segunda pisaba a la primera, devolviendo `ok:true` igual.
     try {
-        fs.writeFileSync(file, JSON.stringify({ text, parse_mode: 'Markdown' }), 'utf8');
-        return { ok: true, file, text };
+        const { filePath } = dropfileWriter.writeDropfileSync({
+            dir: queueDir,
+            suffix: 'anomaly-alert.json',
+            data: JSON.stringify({ text, parse_mode: 'Markdown' }),
+            now: () => now,
+            onCollision: (name, attempt) => console.warn(
+                `[cost-anomaly-alert] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta con otro nombre, no se sobreescribe`
+            ),
+        });
+        return { ok: true, file: filePath, text };
     } catch (e) {
         return { ok: false, reason: `cannot_write_file: ${e.message}`, text };
     }

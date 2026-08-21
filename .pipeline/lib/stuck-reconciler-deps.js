@@ -57,6 +57,8 @@ const { needsRefetch: needsRefetchDefault } = require('./title-cache-freshness')
 // `buildEscalationMessage`, en el mismo módulo). Sin ciclo: el reconciler no
 // requiere este archivo (lo cablea `pulpo.js`).
 const { buildEscalationQuestion } = require('./stuck-phase-reconciler');
+// #6150 — la huella de episodio vive con el resto de la lógica de copy/clasificación.
+const { buildEpisodeFingerprint } = require('./stuck-reconciler-copy');
 // R-4 — el `reason` arrastra el `motivo` que escribió el agente y termina en
 // disco. Se redacta con el sanitizador canónico del pipeline antes de persistir.
 let sanitizeDefault = (s) => String(s == null ? '' : s);
@@ -420,8 +422,46 @@ function buildStuckReconcilerDeps(opts = {}) {
 
         // CA-UX-2 — título para que la notificación sea legible. Sólo si la
         // entrada está fresca; si no, el mensaje va sin título (nunca miente).
+        //
+        // OJO (#6150 rev-2): este lector es fresh-only A PROPÓSITO y su
+        // consumidor es el escalado de `stuck-phase-reconciler.js` (#5396
+        // CA-UX-2), que corre en la rama `hasNeedsHuman === false` — es decir,
+        // con entrada fresca garantizada. NO usarlo para el aviso de tareas
+        // frenadas: ese corre en la rama complementaria
+        // (`cache-desconocida` ⇒ entrada vencida) y ahí esto devuelve `null`
+        // SIEMPRE. Para display usar `issueTitleForDisplay`.
         issueTitle: (issue) => {
             const e = readFreshEntry(issue);
+            return (e && typeof e.title === 'string' && e.title.trim()) ? e.title.trim() : null;
+        },
+
+        // #6150 rev-2 — título SÓLO PARA DISPLAY, tolerante a staleness.
+        //
+        // POR QUÉ EXISTE (y por qué no alcanza con `issueTitle`)
+        // ------------------------------------------------------
+        // El aviso de tareas frenadas se dispara exactamente cuando la entrada
+        // del title-cache está VENCIDA: `suppression:'cache'` sale de
+        // `needsHumanSource === 'cache-desconocida'`, que a su vez se devuelve
+        // sólo si `readFreshEntry()` es falsy. Como `issueTitle` exige esa misma
+        // entrada fresca, las dos ramas son complementarias: entrada fresca ⇒
+        // hay título pero NO hay aviso; entrada vencida ⇒ hay aviso pero NO hay
+        // título. Cableado así, el operador recibía siempre el número pelado
+        // ("• #6150 — hace 2 h") y CA-3 quedaba muerto por construcción.
+        //
+        // POR QUÉ ES SEGURO RELAJAR LA FRESCURA ACÁ
+        // ------------------------------------------
+        // La frescura protege DECISIONES sobre labels (¿re-escalo o no?), donde
+        // un dato viejo produce una acción incorrecta e irreversible. Acá no se
+        // decide nada: la cadena sólo se imprime. El peor caso de un título
+        // vencido es que el issue haya sido renombrado y el operador lea el
+        // nombre anterior del MISMO issue — que sigue identificado por su número
+        // en la misma línea. Mismo criterio ya vigente en `isIssueOpen`, que
+        // también lee sobre `readTitleCacheEntry`.
+        //
+        // El saneo (SEC-2) NO se hace acá: lo aplica `buildStuckAlertCopy` vía
+        // el `sanitize` inyectado desde `pulpo.js`, igual que con `issueTitle`.
+        issueTitleForDisplay: (issue) => {
+            const e = readTitleCacheEntry(issue);
             return (e && typeof e.title === 'string' && e.title.trim()) ? e.title.trim() : null;
         },
 
@@ -825,43 +865,76 @@ function buildStuckReconcilerDeps(opts = {}) {
 }
 
 /**
- * PURO — evalúa la racha de silencio del reconciler (CA-7 / CA-UX-3).
+ * PURO — evalúa la señal de vida del reconciler.
  *
- * Riesgo #2: fail-closed por caché + filtro de ola siempre activo + allowlist
- * vacía tras la poda de fin de ola componen un self-healing 100% mudo *por
- * diseño*. Ese es exactamente el estado de producción que nadie notó. Esta
- * función es lo que impide que CA-1…CA-4 se "cumplan" apagando el reconciler.
+ * #5396 (CA-7) creó esta función para que un self-healing 100% mudo *por diseño*
+ * (fail-closed por caché + filtro de ola + allowlist vacía) no pasara inadvertido.
+ * El problema: gobernaba el envío a Telegram con la RACHA y un criterio AGREGADO
+ * (`suprimidos_por_ola >= evaluados`). En producción eso disparó un aviso con 177
+ * decisiones y CERO tareas realmente frenadas — comprensible sólo para el pipeline
+ * y, encima, falso.
  *
- * CA-UX-3: NO se emite señal si la totalidad del silencio se explica por el
- * filtro de ola (es el comportamiento correcto, no una anomalía), y se emite
- * como máximo UNA vez por racha.
+ * #6150 invierte el gobierno:
  *
- * @param {object|null} prev  estado previo `{ streak, signaled }`
- * @param {object} agg        `{ evaluados, escalados, requeued, rebotes, suprimidos_por_ola }`
- * @param {object} [opts]     `{ threshold }`
- * @returns {{ next: {streak:number, signaled:boolean}, emitSignal: boolean }}
+ *  - **Qué se notifica** lo decide `risks` (decisiones clasificadas UNA POR UNA
+ *    por `isRealRisk`, en `lib/stuck-reconciler-copy.js`), no la racha ni un
+ *    contador. Conjunto vacío ⇒ silencio, sin importar cuántos ciclos lleve.
+ *  - **Cuándo se repite** lo decide la HUELLA del episodio, no un booleano
+ *    `signaled`: si entra o sale una tarea, es un episodio nuevo y vuelve a
+ *    avisar; si es idéntico, no.
+ *  - **`streak` sobrevive** pero sólo alimenta log/estado (sigue siendo el dato
+ *    que hace visible un reconciliador apagado, que es lo que CA-7 protegía).
+ *
+ * @param {object|null} prev   estado previo (`{ streak, episodio, ... }`)
+ * @param {object} input       `{ agg, risks }` — contadores (`escalados`, `requeued`,
+ *                             `rebotes` de #6296) + decisiones en riesgo real
+ * @param {object} [opts]      `{ threshold, nowIso }`
+ * @returns {{ next: object, emitSignal: boolean }}
  */
-function evaluateSilenceHealth(prev, agg = {}, opts = {}) {
+function evaluateSilenceHealth(prev, input = {}, opts = {}) {
     const threshold = Number.isFinite(opts.threshold) && opts.threshold > 0
         ? opts.threshold : DEFAULT_SILENT_STREAK_THRESHOLD;
+    const agg = (input && input.agg) || {};
+    const risks = Array.isArray(input && input.risks) ? input.risks : [];
+
     const evaluados = Number(agg.evaluados) || 0;
     // #6296 — `rebotes` CUENTA como acción: es el carril que reemplaza a la
     // escalación por rechazo. Omitirlo haría que una racha de rebotes exitosos se
     // reportara como "silencio del reconciler" y disparara la alerta de CA-7 al revés.
     const acciones = (Number(agg.escalados) || 0) + (Number(agg.requeued) || 0) + (Number(agg.rebotes) || 0);
 
-    // Hubo acción (o no había nada que evaluar) → racha reseteada.
-    if (evaluados === 0 || acciones > 0) {
-        return { next: { streak: 0, signaled: false }, emitSignal: false };
-    }
+    // La racha mide "ciclos revisando sin actuar". Hubo acción (o no había nada
+    // que revisar) ⇒ se reinicia. Es diagnóstico, no gobierna el envío.
+    const streak = (evaluados === 0 || acciones > 0)
+        ? 0
+        : ((prev && Number(prev.streak)) || 0) + 1;
 
-    const streak = ((prev && Number(prev.streak)) || 0) + 1;
-    const alreadySignaled = !!(prev && prev.signaled);
-    // CA-UX-3 — silencio explicado 100% por el filtro de ola: es lo esperado.
-    const explainedByWave = (Number(agg.suprimidos_por_ola) || 0) >= evaluados;
-    const emitSignal = streak >= threshold && !alreadySignaled && !explainedByWave;
+    const motivos = {
+        fuera_de_la_ola: Number(agg.suprimidos_por_ola) || 0,
+        estado_no_confirmado: Number(agg.suprimidos_por_cache) || 0,
+        ya_avisadas: Number(agg.suprimidos_por_dedupe) || 0,
+    };
 
-    return { next: { streak, signaled: alreadySignaled || emitSignal }, emitSignal };
+    // Episodio vacío ⇒ se cierra (CA-5): un episodio posterior vuelve a avisar.
+    const episodio = buildEpisodeFingerprint(risks);
+    const emitSignal = risks.length > 0 && episodio !== ((prev && prev.episodio) || '');
+
+    const next = {
+        // Claves autoexplicativas en castellano: el archivo de estado tiene que
+        // poder leerlo una persona (CA-2), no sólo el emisor.
+        ciclos_revisando_sin_actuar: streak,
+        umbral_ciclos: threshold,
+        tareas_en_riesgo: risks.length,
+        episodio,
+        ultimo_aviso_iso: emitSignal
+            ? (opts.nowIso || new Date().toISOString())
+            : ((prev && prev.ultimo_aviso_iso) || null),
+        motivos,
+        // Compat: `streak` sigue presente para lectores viejos del archivo.
+        streak,
+    };
+
+    return { next, emitSignal };
 }
 
 module.exports = {

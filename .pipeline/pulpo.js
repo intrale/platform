@@ -332,6 +332,8 @@ const { runStuckPhaseReconciler } = require('./lib/stuck-phase-reconciler-runner
 // #5396 — el cableado de deps del reconciler vive en su propio módulo para que
 // el test pueda verificarlo SIN cargar pulpo.js (16k líneas con side-effects).
 const { buildStuckReconcilerDeps, evaluateSilenceHealth } = require('./lib/stuck-reconciler-deps');
+// #6150 — clasificación por decisión + copy en lenguaje de operador.
+const { selectRealRisk, buildStuckAlertCopy } = require('./lib/stuck-reconciler-copy');
 // #4622 — liveness real del pid + identidad (anti-heartbeat-zombi). Fuente única
 // compartida con canonical-facts y el hook activity-logger.
 const processLiveness = require('./lib/process-liveness');
@@ -360,6 +362,10 @@ const telegramReceipt = require('./lib/telegram-receipt');
 // MarkdownV2 al medio (modo de falla `400 Can't parse entities`) y marcaba el
 // truncado con `'...'`, tres metacaracteres V2 sin escapar.
 const telegramTextBudget = require('./lib/telegram-text-budget');
+// #6226 — Nombres únicos + escritura fail-closed (`wx`) para los dropfiles de la
+// cola de salientes. Dos mensajes encolados en el mismo tick resolvían al mismo
+// `${Date.now()}-cmd.json` y el segundo pisaba al primero, sin error ni rastro.
+const dropfileWriter = require('./lib/dropfile-writer');
 // #4750 — Contabilidad + reconciliación de chunks de audio (part_index/part_total)
 // atados al correlationId padre. Detecta partes faltantes tras el timeout y las
 // reenvía (tope N reintentos + backoff); avisa al usuario si se agotan. Reutiliza
@@ -7001,7 +7007,26 @@ function getIssueLabels(issueNum) {
  * @returns {string} el mismo `filePath`, para encadenar.
  */
 function encolarOrdenGithub(filePath, payload) {
-  fs.writeFileSync(filePath, JSON.stringify(payload));
+  // #6226 — escritura fail-closed. Los ~13 call-sites arman el nombre como
+  // `<issue>-<tag>-${Date.now()}.json`: el prefijo desambigua entre issues, pero
+  // NO entre dos órdenes del mismo issue+tag en el mismo milisegundo (ej. el
+  // `for (const act of g0Actions)` de gate0, que encola varias órdenes seguidas
+  // sin ceder el event loop, o los dos `-needs-human-comment-` distintos). Ahí
+  // el segundo `writeFileSync` pisaba al primero y la orden se perdía sin
+  // error: el issue quedaba sin su label o sin su comentario.
+  //
+  // Se respeta el nombre pedido tal cual (no cambia ningún parseo de
+  // `servicio-github.js`); sólo ante colisión real se desambigua con `-<n>`.
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const escrito = dropfileWriter.writeUniqueFileSync({
+    dir: path.dirname(filePath),
+    filename: path.basename(filePath),
+    data: JSON.stringify(payload),
+    onCollision: (name, attempt) => log(
+      'github',
+      `⚠️ Colisión de nombre de orden github (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+    ),
+  });
   try {
     if (payload
       && (payload.action === 'label' || payload.action === 'remove-label')
@@ -7009,7 +7034,10 @@ function encolarOrdenGithub(filePath, payload) {
       invalidateIssueLabels(payload.issue);
     }
   } catch { /* la orden ya quedó encolada: la invalidación es best-effort */ }
-  return filePath;
+  // Devolvemos el path REALMENTE escrito, no el pedido: si hubo colisión son
+  // distintos, y un caller que se quede con el pedido apuntaría a un archivo
+  // que no es el suyo.
+  return escrito.filePath;
 }
 
 /**
@@ -10442,6 +10470,10 @@ ${g}
     onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
     onLog: log,
     resolveImpl: launchResolveImpl,
+    // #6272 — el launcher lee SÓLO `pipeline.model_propagation` de acá para
+    // decidir si el modelo resuelto viaja al hijo (flag apagado por default:
+    // sin la sección, o con `enabled` != true, no se toca nada).
+    config,
   });
   const child = launchResult.child;
   // #5400 (rev-5, B1) — ÚNICO punto del código donde consta que un agente salió
@@ -17305,7 +17337,6 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
 
   // Encolar en el servicio de telegram (fire-and-forget via filesystem)
   const svcDir = telegramPendienteDir();
-  const filename = `${Date.now()}-cmd.json`;
   try {
     // #5421 — La intención de "texto plano" viaja EXPLÍCITA (`plain: true`), no
     // como la ausencia de `parse_mode`. `svc-telegram` es otro proceso: un campo
@@ -17315,7 +17346,20 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     const payload = plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     payload._correlationId = correlationId;
-    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));
+    // #6226 — Nombre único (`<ts>-<seq>-cmd.json`) + escritura `wx`. Antes eran
+    // dos `writeFileSync` al mismo path cuando el handler emitía `reply` +
+    // `extraMessages` en el mismo tick (paginado de `/wave`), y el segundo
+    // pisaba al primero: el operador recibía el mensaje 2 sin el 1, sin ningún
+    // indicio de que faltaba contenido.
+    const { filename } = dropfileWriter.writeDropfileSync({
+      dir: svcDir,
+      suffix: 'cmd.json',
+      data: JSON.stringify(payload),
+      onCollision: (name, attempt) => log(
+        'telegram',
+        `⚠️ Colisión de nombre de dropfile (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+      ),
+    });
     log('telegram', `Encolado (${msg.length} chars${replyMarkup ? ', con reply_markup' : ''}) → ${filename}`);
     return correlationId;
   } catch (e) {
@@ -19987,24 +20031,49 @@ const STUCK_STALE_MS = 15 * 60 * 1000;
 //
 // La racha vive en su PROPIO archivo: `.stuck-reconciler-state.json` está
 // indexado por `issue|fase` y mezclar acá un contador global lo corrompería.
-// CA-UX-4: los contadores por tick van al log, NO a Telegram; sólo la señal de
-// vida (una vez por racha) notifica.
+// CA-UX-4: los contadores por tick van al log, NO a Telegram.
+// #6150 — la racha ya NO gobierna el envío. Lo que notifica es la existencia de
+// tareas en riesgo real (`selectRealRisk`), una vez por EPISODIO: mientras el
+// conjunto de tareas frenadas no cambie, no se reitera; si entra o sale una, sí.
+// La racha se sigue calculando y persistiendo, pero sólo para log/estado.
 const STUCK_HEALTH_FILE = path.join(PIPELINE, '.stuck-reconciler-health.json');
-function emitStuckReconcilerLiveness(agg) {
+function emitStuckReconcilerLiveness(res, agg, titleOf) {
   try {
+    // #6150 CA-1 — el filtro es POR DECISIÓN. El criterio agregado anterior
+    // (`suprimidos_por_ola >= evaluados`) mandaba al chat un aviso de 177
+    // "evaluados" con cero tareas realmente frenadas.
+    const risks = selectRealRisk((res && res.decisions) || []);
+
     let prev = null;
     try { prev = JSON.parse(fs.readFileSync(STUCK_HEALTH_FILE, 'utf8')); } catch { /* primera vez */ }
-    const { next, emitSignal } = evaluateSilenceHealth(prev, agg);
-    try { fs.writeFileSync(STUCK_HEALTH_FILE, JSON.stringify(next, null, 2)); } catch { /* best-effort */ }
+    const { next, emitSignal } = evaluateSilenceHealth(prev, { agg, risks });
+
+    // SEC-5 — tmp + rename. Con `writeFileSync` directo, un corte a mitad de
+    // escritura deja JSON inválido ⇒ `prev = null` ⇒ se pierde el episodio ⇒ el
+    // "un aviso por episodio" degrada a "avisar de nuevo en cada ciclo".
+    try {
+      const tmp = `${STUCK_HEALTH_FILE}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
+      fs.renameSync(tmp, STUCK_HEALTH_FILE);
+    } catch { /* best-effort: nunca tumba el ciclo */ }
+
+    // CA-2 — sin tareas en riesgo real no sale NADA a Telegram, por larga que
+    // sea la racha. El diagnóstico ya quedó en el log y en el archivo de estado.
     if (!emitSignal) return;
-    // Texto plano (SEC-4) y sin audio TTS (CA-UX-5: el audio queda reservado al
-    // circuit breaker; esto es una señal de diagnóstico, no una emergencia).
-    sendTelegramPlain(
-      `🔇 Self-healing mudo hace ${next.streak} ticks seguidos\n`
-      + `Evaluó ${agg.evaluados} issue(s) varado(s) y no actuó en ninguno.\n`
-      + `Supresiones: ola=${agg.suprimidos_por_ola} cache=${agg.suprimidos_por_cache} dedupe=${agg.suprimidos_por_dedupe}\n`
-      + `Revisá .pipeline/logs/pulpo.log (canal "reconciler") si no lo esperabas.`
-    );
+
+    const texto = buildStuckAlertCopy({
+      risks,
+      nowMs: Date.now(),
+      titleOf,
+      // SEC-2 — el título lo elige un tercero (el repo es público): redact +
+      // sanitize + strip de control chars antes de interpolarlo.
+      sanitize: (providerExhaustionPause && providerExhaustionPause.sanitizeForTelegram) || null,
+    });
+    if (!texto) return;
+
+    // Texto plano (SEC-1/SEC-4) y sin audio TTS (CA-UX-5 de #5396: el audio queda
+    // reservado al circuit breaker; esto no es una emergencia).
+    sendTelegramPlain(texto);
   } catch (e) {
     log('reconciler', `señal de vida (best-effort) falló: ${e && e.message}`);
   }
@@ -20072,7 +20141,11 @@ function runStuckReconcilerTick() {
       rebotes: res.rebotes || 0,
     };
     log('reconciler', `🔧 self-healing tick: ${JSON.stringify(agg)}`);
-    emitStuckReconcilerLiveness(agg);
+    // #6150 rev-2 — `issueTitleForDisplay`, NO `issueTitle`. El aviso se dispara
+    // justo cuando la entrada del title-cache está vencida (`suppression:'cache'`
+    // ⇐ `cache-desconocida` ⇐ entrada no fresca), y `issueTitle` es fresh-only:
+    // cableado con él, el título era `null` en el 100% de los avisos reales.
+    emitStuckReconcilerLiveness(res, agg, deps.issueTitleForDisplay);
   } catch (e) {
     log('reconciler', `tick error (no tumba el loop): ${e && e.message}`);
   }
@@ -22549,6 +22622,12 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    // #6226 — path REAL de encolado de salientes. Expuesto para el test de
+    // regresión que fija que dos mensajes emitidos en el mismo tick (el `reply`
+    // + los `extraMessages` del paginado) producen DOS dropfiles y no uno.
+    // Con `PIPELINE_DIR_OVERRIDE` la cola apunta a un temp dir: no se manda nada.
+    sendTelegram,
+    telegramPendienteDir,
     gatePrPropagationDecision,
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,

@@ -77,11 +77,23 @@ function buildIssuesContext(deps) {
             // se distinga de un dedupe legítimo. Un dep legacy que devuelva boolean
             // sigue funcionando: `needsHumanSource` queda en null.
             const nh = deps.hasNeedsHuman(issue);
+            // #6150 CA-3 — "hace cuánto está frenada" es el único dato del copy
+            // nuevo que no llegaba al emisor. Se toma el entregable MÁS VIEJO:
+            // marca desde cuándo la fase dejó de avanzar. `null` si ningún
+            // deliverable trae `mtimeMs` (tests puros) — el copy omite la
+            // antigüedad en vez de imprimir `NaN`.
+            const mtimes = data.deliverables
+                .map((d) => d.mtimeMs)
+                // `> 0` y no sólo `isFinite`: `deps.buildIssuesContext` deja
+                // `mtimeMs = 0` cuando el statSync falla (carrera con un rename),
+                // y ese 0 daría "hace 20324 d" en el copy (#6150, obs. de qa).
+                .filter((v) => Number.isFinite(v) && v > 0);
             out.push({
                 issue: Number(issue),
                 pipeline, fase,
                 requiredSkills: required,
                 deliverables: data.deliverables,
+                stuckSinceMs: mtimes.length ? Math.min(...mtimes) : null,
                 liveSkills: data.liveSkills,
                 liveElsewhere: !!deps.issueLiveElsewhere(issue, pipeline, fase),
                 hasNeedsHuman: !!nh,
