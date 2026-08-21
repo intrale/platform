@@ -485,6 +485,19 @@ const SCHEMA = {
                 prefix: { type: 'string' },
                 projectId: { type: 'string' },
                 hostId: { type: 'string' },
+                // #5426 · CA-11/CA-12 — mecanismo de identidad del host. Se
+                // tipan por el mismo motivo que `enabled`: son fail-closed. Un
+                // `hostIdFromHostname: "false"` string sería truthy para el
+                // YAML, y un `authMode` fuera del enum sólo se descubriría al
+                // encender el gate. El enum se declara acá ADEMÁS de en
+                // `VAULT_AUTH_MODES` porque los dos controles fallan en momentos
+                // distintos: el schema al arrancar, el módulo al leer el vault.
+                hostIdFromHostname: { type: 'boolean' },
+                authMode: {
+                    type: 'string',
+                    enum: ['assume-role-chain', 'session-token', 'static-key', 'instance-profile'],
+                },
+                awsProfile: { type: 'string' },
                 // Tope DURO de SEC-6: el módulo también lo rechaza, pero acá el
                 // operador se entera al arrancar y no al encender el gate.
                 cache_ttl_seconds: { type: 'number', minimum: 1, maximum: 300 },
