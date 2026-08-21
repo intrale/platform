@@ -1956,29 +1956,45 @@ function cannedAllGatedResponse(resolution = null) {
 // Variación anti-robot (feedback_telegram-messages-natural.md): rota entre
 // variantes con `requestId` como semilla determinística. `requestId` es opcional.
 // -----------------------------------------------------------------------------
-const _ALL_FAILED_UNVERIFIED_VARIANTS = Object.freeze([
-    '⚠️ Tuve un problema para responderte en este momento. ' +
-        'Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando — probá de nuevo en un momento.',
-    '⚠️ No pude generar la respuesta ahora mismo. ' +
-        'Mientras tanto, los comandos determinísticos (/status, /listado, /lanzar) siguen andando — reintentá en un rato.',
-]);
-const _ALL_FAILED_VERIFIED_VARIANTS = Object.freeze([
-    '⚠️ Ahora mismo no tengo forma de responderte con IA. ' +
-        'Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando — probá de nuevo más tarde.',
-    '⚠️ Por el momento no puedo responderte con IA. ' +
-        'Igual podés seguir con los comandos determinísticos (/status, /listado, /lanzar); volvé a intentar en un rato.',
-]);
-function cannedAllProvidersFailedResponse({ chainTried, verifiedAllFailed = false, requestId } = {}) {
-    // chainTried se acepta por backward-compat de firma pero NO se interpola al
-    // operador (CA-2). El detalle técnico ya viaja a los logs server-side.
-    void chainTried;
-    const variants = verifiedAllFailed
-        ? _ALL_FAILED_VERIFIED_VARIANTS
-        : _ALL_FAILED_UNVERIFIED_VARIANTS;
-    const idx = requestId
-        ? parseInt(hashFor(requestId).slice(0, 4), 16) % variants.length
-        : 0;
-    return variants[idx];
+// #6144 — el copy fijo de arriba se reemplazó por un mensaje construido a partir
+// de la CAUSA DOMINANTE de la caída (cupo agotado / fuera de horario / caída
+// temporal / problema de acceso), con las cuatro partes que pide CA-1: qué pasó,
+// qué sigue funcionando, qué pasó con el pedido, y cuándo vuelve si es estimable.
+// Toda la redacción vive en `provider-down-notice.js` (fuente de verdad de UX en
+// `assets/audio/provider-down/copy.json`); acá sólo queda el cableado.
+//
+// CLASIFICACIÓN INYECTADA, NO AMBIENTE — decisión deliberada:
+//
+// La receta del architect proponía que esta función llamara a `classifyPauseCause`
+// por default. Verificado empíricamente que eso rompe CA-25: `classifyPauseCause`
+// hace `readFileSync` del snapshot de salud, así que el copy pasaría a depender
+// del estado de la máquina donde corren los tests. Y el copy de la causa `auth`
+// ("Hay un problema de acceso que necesita tu intervención") NO satisface la
+// aserción vigente `/no.*(tengo|puedo).*IA|IA/i` de
+// `commander-inflight-fallback.test.js` — que CA-25 prohíbe modificar. Con
+// clasificación ambiente, esos tests quedan verdes o rojos según qué diga el
+// snapshot en ese momento: exactamente el tipo de test flaky que la red de
+// seguridad de la anonimización no puede permitirse.
+//
+// Con `classify` inyectado la función vuelve a ser PURA por default: sin
+// `classify` no hay lectura de disco y el copy es el genérico, determinístico.
+// Los 3 callers de `pulpo.js` inyectan el clasificador, así que CA-2 se cumple
+// en producción; y el fail-closed a genérico de CA-19 sale gratis para cualquier
+// caller que no lo haga (incluido `pulpo.js:16899`, que no tiene `chainTried`).
+function cannedAllProvidersFailedResponse({ chainTried, verifiedAllFailed = false, requestId, classify } = {}) {
+    // `chainTried` ahora SÍ se usa — pero SÓLO como entrada de clasificación
+    // server-side. NUNCA se interpola al operador (CA-2 de #4440, CA-6 de #6144):
+    // el módulo de copy sólo lee `dominantCause`, `stale`, `degraded` y
+    // `providers[].rest` del resultado, nunca la cadena ni etiquetas de provider.
+    let classification = null;
+    if (typeof classify === 'function') {
+        try {
+            classification = classify(Array.isArray(chainTried) ? chainTried : []);
+        } catch {
+            classification = null; // fail-closed → copy genérico (CA-19)
+        }
+    }
+    return providerDownNotice.buildDownNoticeText(classification, { verifiedAllFailed, requestId });
 }
 
 // -----------------------------------------------------------------------------
@@ -2033,6 +2049,8 @@ function cannedReducedModeResponse({ downProviders } = {}) {
 // -----------------------------------------------------------------------------
 const inflight = require('./inflight-fallback');
 const credPrecheck = require('./credentials-precheck');
+// #6144 — copy + guion de voz + cooldown del aviso de cadena caída.
+const providerDownNotice = require('./provider-down-notice');
 
 module.exports = {
     COMMANDER_SKILL,
@@ -2067,6 +2085,14 @@ module.exports = {
     cannedFallbackUnavailableResponse,
     cannedAllGatedResponse,
     cannedAllProvidersFailedResponse,
+    // #6144 — re-export del aviso de cadena caída: el guion hablado, la
+    // resolución del clip pregrabado, el cooldown y la orquestación del envío
+    // de voz. `pulpo.js` los consume desde acá para no requerir dos módulos.
+    buildDownNoticeText: providerDownNotice.buildDownNoticeText,
+    buildDownNoticeAudioText: providerDownNotice.buildDownNoticeAudioText,
+    resolveFallbackClip: providerDownNotice.resolveFallbackClip,
+    shouldEmitDownAudio: providerDownNotice.shouldEmitDownAudio,
+    sendDownNoticeAudio: providerDownNotice.sendDownNoticeAudio,
     cannedDataResidencyResponse,
     // #4870 — aviso advisory del modo reducido (canned determinístico D1).
     cannedReducedModeResponse,
