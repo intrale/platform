@@ -1398,9 +1398,17 @@ async function main() {
                 .filter((p) => !SAFE_IGNORE.test(p));
 
             if (stagePaths.length) {
-                const addRes = git.runGit(['add', '--', ...stagePaths], { cwd: WORK_DIR });
+                // #5426 (rev-1): NO volver a `git add -- <paths>` con un path por
+                // argumento. `runCmd` usa `shell: true` en Windows, así que el
+                // comando pasa por cmd.exe y su límite de 8191 caracteres: con 406
+                // archivos cambiados (~16,9 KB de paths) la entrega rebotó con «La
+                // línea de comandos es demasiado larga». `addPaths` manda la lista
+                // por stdin, con argv de tamaño constante.
+                const addRes = git.addPaths(stagePaths, { cwd: WORK_DIR });
                 if (addRes.exit_code !== 0) {
-                    throw new Error(`git add falló: ${addRes.stderr || addRes.stdout}`);
+                    throw new Error(
+                        `git add falló (${stagePaths.length} paths): ${addRes.stderr || addRes.stdout}`
+                    );
                 }
             }
 
