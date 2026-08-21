@@ -417,7 +417,10 @@ const { isNightWindow } = require('./lib/night-window');
 // #2975 — Notificador Telegram del modo cuota Anthropic agotada (lifecycle:
 // inicial + recordatorios A→B→C→D rotando + cierre + canned a texto libre).
 // Depende del flag .pipeline/quota-exhausted.json producido por #2974.
-const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN } = require('./lib/quota-notifier');
+// #6238 CA-UX-2: `providerLabel` traduce la provider-key interna a su nombre
+// humano. NUNCA interpolamos la clave cruda ('anthropic', 'openai-codex') en un
+// texto que ve el operador.
+const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN, providerLabel } = require('./lib/quota-notifier');
 // #3074 / H2 multi-provider: dispatcher de spawn por provider (anthropic /
 // deterministic / openai-codex). Reemplaza el bloque inline de spawn de Claude
 // que vivía acá pre-refactor (~líneas 4900-4994 de la versión previa).
@@ -8795,6 +8798,135 @@ function sendBlockedInfraNotif(issue, message) {
 }
 
 // =============================================================================
+// #6238 — AVISO DE SESIÓN DE PROVIDER VENCIDA (credencial rechazada al spawn)
+//
+// Una credencial vencida no se arregla reintentando: necesita que una persona
+// reautentique. El aviso es DEDUPLICADO por PROVIDER (clave derivada del
+// provider, nunca de datos del log — CA-5) con ventana de 30 min.
+//
+// SEC-CA-4 — EL DEDUPE SUPRIME ÚNICAMENTE EL TELEGRAM. La línea de `log()` y la
+// línea del JSONL de auditoría se emiten SIEMPRE, en todas las muertes,
+// incluidas las suprimidas. Un canal de dedupe no puede ser un canal de
+// supresión de evidencia.
+//
+// SEC-CA-5 — el mensaje NO lleva excerpt del log, ni fragmento de credencial,
+// ni texto crudo del provider. Sólo provider (label humano) e issues en espera.
+// =============================================================================
+const CREDENTIAL_NOTIF_COOLDOWN_MS = 30 * 60 * 1000; // 30 min (CA-5)
+// { [providerKey]: { firstSeenAt, lastSent, pendingIssues: Set<string> } }
+const _credentialNotifState = {};
+// CA-UX-7 — tope de issues enumerados; el resto se resume en "… y N más".
+const CREDENTIAL_NOTIF_MAX_ISSUES = 10;
+
+/** Formatea una duración en ms como "45 min" / "1 h 15 min" (registro humano). */
+function formatElapsedHuman(ms) {
+  const totalMin = Math.max(0, Math.round(ms / 60000));
+  if (totalMin < 60) return `${totalMin} min`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+/** CA-UX-7 — lista de issues en espera, acotada a 10 + "… y N más". */
+function formatPendingIssues(pendingSet) {
+  const all = Array.from(pendingSet);
+  const shown = all.slice(0, CREDENTIAL_NOTIF_MAX_ISSUES).map((n) => `#${n}`).join(', ');
+  const rest = all.length - CREDENTIAL_NOTIF_MAX_ISSUES;
+  return rest > 0 ? `${shown}… y ${rest} más` : shown;
+}
+
+/**
+ * buildCredentialDeathMessage — copy del aviso al operador. PURA (sin estado,
+ * sin IO): existe aparte para que el test de copy (CA-UX-8) la ejerza sin
+ * levantar el Pulpo.
+ *
+ * @param {object} o
+ * @param {string} o.providerKey provider-key interna (se traduce a label humano).
+ * @param {boolean} o.isRepeat   true si es una repetición de la misma ventana.
+ * @param {number} o.elapsedMs   ms desde el primer aviso (sólo para repetición).
+ * @param {string} o.pending     lista ya formateada de issues en espera.
+ * @returns {string}
+ */
+function buildCredentialDeathMessage({ providerKey, isRepeat, elapsedMs, pending }) {
+  // CA-UX-1: abre con 🚨 (requiere mirada humana). Prohibidos 🔌/⚠️/⛔/⏸️: los
+  // dos primeros ya significan "se resuelve solo", que acá sería falso.
+  // CA-UX-2: label humano, nunca la provider-key cruda.
+  // CA-UX-8: sin jerga interna del pipeline en el texto que ve el operador.
+  const label = providerLabel(providerKey);
+  if (!isRepeat) {
+    return (
+      `🚨 La sesión de ${label} venció.\n\n` +
+      `Los agentes que salen por ahí se mueren a los pocos segundos, antes de leer su issue. ` +
+      `Frené el despacho por ese motor durante una hora en vez de seguir reintentando: ` +
+      `una credencial vencida no se arregla reintentando.\n\n` +
+      `Para destrabarlo hace falta que reautentiques la sesión en la máquina del pipeline. ` +
+      `En cuanto un agente vuelva a arrancar bien, el motor se rehabilita solo — no tenés ` +
+      `que tocar nada más.\n\n` +
+      // CA-UX-4: el valor central de la historia es invisible si no se dice.
+      `Ningún issue pagó el costo: no gastaron intento ni suman rebote.\n\n` +
+      `Esperando: ${pending}\n\n` +
+      // CA-UX-5: el aviso explica su propia repetición.
+      `Mientras siga vencida te vuelvo a avisar cada 30 minutos. No es el avisador ` +
+      `repitiéndose: es que sigue igual.`
+    );
+  }
+  // CA-UX-6: la repetición NO es el mismo texto — lleva el tiempo transcurrido
+  // y la marca explícita de "sigue igual". Dos mensajes idénticos consecutivos
+  // entrenan al operador a ignorar 🚨, el marcador más fuerte del canal.
+  return (
+    `🚨 La sesión de ${label} sigue vencida — hace ${formatElapsedHuman(elapsedMs)}.\n\n` +
+    `Nada cambió desde el aviso anterior: el despacho por ese motor sigue frenado y los ` +
+    `issues siguen esperando sin penalización. Sigue haciendo falta reautenticar en la ` +
+    `máquina del pipeline.\n\n` +
+    `Esperando: ${pending}`
+  );
+}
+
+/**
+ * sendCredentialDeathNotif — avisa al operador que la sesión de un provider
+ * venció. Deduplicado por PROVIDER (30 min). Devuelve el estado para que el
+ * caller pueda dejarlo en el log (CA-UX-9).
+ *
+ * SEC-CA-4: la supresión aplica SÓLO al Telegram. El caller igual escribe su
+ * línea de log y su línea de auditoría en todas las muertes.
+ *
+ * @param {string} providerKey provider-key interna (se traduce con providerLabel).
+ * @param {number|string} issue issue que quedó esperando por esta muerte.
+ * @param {object} [opts] { now, send } — inyectables para test.
+ * @returns {{ sent: boolean, remainingMin: number, pending: string, message: string|null }}
+ */
+function sendCredentialDeathNotif(providerKey, issue, opts = {}) {
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const send = typeof opts.send === 'function' ? opts.send : sendTelegram;
+  // CA-5: la clave de dedupe se deriva del PROVIDER, nunca de datos del log.
+  const key = String(providerKey || 'unknown');
+  const st = _credentialNotifState[key]
+    || (_credentialNotifState[key] = { firstSeenAt: now, lastSent: 0, pendingIssues: new Set() });
+  if (issue != null) st.pendingIssues.add(String(issue));
+
+  const pending = formatPendingIssues(st.pendingIssues);
+  const elapsedSinceSent = now - st.lastSent;
+  if (st.lastSent && elapsedSinceSent < CREDENTIAL_NOTIF_COOLDOWN_MS) {
+    return {
+      sent: false,
+      remainingMin: Math.ceil((CREDENTIAL_NOTIF_COOLDOWN_MS - elapsedSinceSent) / 60000),
+      pending,
+      message: null,
+    };
+  }
+
+  const message = buildCredentialDeathMessage({
+    providerKey: key,
+    isRepeat: st.lastSent > 0,
+    elapsedMs: now - st.firstSeenAt,
+    pending,
+  });
+  st.lastSent = now;
+  send(message);
+  return { sent: true, remainingMin: 0, pending, message };
+}
+
+// =============================================================================
 // CIRCUIT BREAKER DE INFRA (issue #2305)
 // Cuenta fallos de red consecutivos entre issues. A la 3ra falla seguida,
 // abre el CB, pausa el pipeline y notifica a Leo vía Telegram.
@@ -10477,26 +10609,6 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       // Delay 15s para dejar que SIGTERM→SIGKILL cierren el proceso primero.
       const cleanupCwd = (needsWorktree || useExistingWorktree) ? worktreePath : ROOT;
       setTimeout(() => {
-        let effectiveObservation = { model: null, source: 'not_observable', observable: false };
-        let effectiveDeclared = null;
-        let effectiveProvider = 'unknown';
-        let effectiveLogPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
-        try {
-          const effectiveModel = require('./lib/metrics/effective-model');
-          const agentModels = require('./lib/agent-models');
-          try { effectiveProvider = resolveSkillProvider(skill) || 'unknown'; } catch {}
-          const declared = agentModels.resolveModel(skill);
-          effectiveDeclared = declared && declared.model;
-          effectiveObservation = effectiveModel.extractEffectiveModel({
-            provider: effectiveProvider, logPath: effectiveLogPath,
-          });
-          effectiveModel.recordEffectiveModel({
-            issue, skill, provider: effectiveProvider,
-            model_declared: effectiveDeclared,
-            model_resolved: traceHandle && traceHandle.model,
-            observed: effectiveObservation,
-          });
-        } catch { /* observabilidad best-effort: nunca altera el lifecycle */ }
         try {
           const killed = killGradleDaemonsForCwd(cleanupCwd, `${skill}:#${issue} (watchdog)`);
           log('lanzamiento', `🧹 cleanup post-watchdog ${skill}:#${issue}: ${killed || 0} daemons Gradle terminados`);
@@ -10600,6 +10712,17 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     // Ambos paths emiten un log estructurado `{codepath, skill, provider,
     // error_class}` con emojis 🛡️/🆕 SOLO en el log textual (NO en JSON)
     // para diff manual de paridad (refinación R3 guru + R2 ux).
+    // #6238 CA-8 — scope hoisteado del contenido del log del agente.
+    //
+    // El bloque de muerte prematura (más abajo) necesita la COLA del log para
+    // clasificar `credential-death`, y NO puede abrir un archivo nuevo: hacerlo
+    // reintroduciría una superficie de path (SEC-CA-7) y leería el
+    // `.attempt-N.log`, que un run posterior puede haber pisado (#6245).
+    // Reusar lo que este mismo exit handler ya cargó mata los tres pájaros: sin
+    // path nuevo, sin forensia perdida y el contenido ya pasó por
+    // `createSanitizeStream` (#2334). Queda '' si el skill es determinístico o
+    // si la lectura falla ⇒ el detector cae fail-closed.
+    let agentLogRaw = '';
     if (!useDeterministicSkill) {
       try {
         const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
@@ -10608,6 +10731,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
         let raw = '';
         try { raw = fs.readFileSync(logPath, 'utf8'); } catch {}
+        agentLogRaw = raw;
 
         // Resolución provider/model — necesaria en ambos paths.
         //
@@ -10738,8 +10862,31 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     // #2801 — emit session:end para agentes Claude. Damos un pequeño delay
     // para que el writer termine de flushear el último chunk del log antes
     // de parsearlo. No bloqueamos el resto del handler.
-    if (traceHandle) {
-      setTimeout(() => {
+    // #6273 — Captura observacional post-exit para TODA corrida. Este callback
+    // se agenda desde el flujo normal de `child.on('exit')`, no desde el
+    // watchdog: así también persisten las terminaciones normales. La observación
+    // vive en el mismo scope que `session:end`, que la consume más abajo.
+    setTimeout(() => {
+      let effectiveObservation = { model: null, source: 'not_observable', observable: false };
+      try {
+        const effectiveModel = require('./lib/metrics/effective-model');
+        const agentModels = require('./lib/agent-models');
+        let effectiveProvider = 'unknown';
+        try { effectiveProvider = resolveSkillProvider(skill) || 'unknown'; } catch {}
+        const declared = agentModels.resolveModel(skill);
+        effectiveObservation = effectiveModel.extractEffectiveModel({
+          provider: effectiveProvider,
+          logPath: path.join(LOG_DIR, `${issue}-${skill}.log`),
+        });
+        effectiveModel.recordEffectiveModel({
+          issue, skill, provider: effectiveProvider,
+          model_declared: declared && declared.model,
+          model_resolved: traceHandle && traceHandle.model,
+          observed: effectiveObservation,
+        });
+      } catch { /* observabilidad best-effort: nunca altera el lifecycle */ }
+
+      if (traceHandle) {
         try {
           const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
           const tk = parseTokensFromLog(logPath);
@@ -10796,8 +10943,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
             status: code === 0 ? 'ok' : 'error',
           });
         } catch { /* best-effort, no rompe el lifecycle */ }
-      }, 500);
-    }
+      }
+    }, 500);
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
     //
@@ -10821,6 +10968,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       // al path `bloqueado_por_infra`. El cooldown por muerte-de-provider se
       // aplica al PROVIDER (health/backoff), no al issue.
       let deathKind = 'agent-death';
+      let deathToken = null;
+      let deathSignature = null;
       if (!hasVerdict && providerDeathClassifier) {
         try {
           const effProvider = (launchResult && launchResult.provider)
@@ -10829,13 +10978,92 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           const verdict = providerDeathClassifier.classifyPrematureDeath({
             code, elapsedSec, hasVerdict,
             source: effSource, provider: effProvider,
+            // #6238 CA-8 — cola del log que este mismo handler ya leyó. 32 KB:
+            // 4 KB no alcanza porque el frame de la credencial queda detrás de
+            // un `result` de varios KB. Sin abrir archivo nuevo ⇒ sin path
+            // traversal posible y sin leer un `.attempt-N.log` pisado (#6245).
+            logTail: agentLogRaw ? agentLogRaw.slice(-32 * 1024) : '',
           });
           deathKind = verdict.kind;
+          deathToken = verdict.token || null;
+          deathSignature = verdict.signature || null;
         } catch (clsErr) {
           // Fail-closed: si la clasificación falla, penalizamos como antes.
           log('lanzamiento', `⚠️ clasificación de muerte falló para ${skill}:#${issue}: ${clsErr.message} — trato como agent-death`);
           deathKind = 'agent-death';
         }
+      }
+
+      // #6238 — Muerte por CREDENCIAL VENCIDA del provider. Va ANTES del brazo
+      // de provider-death porque la credencial precede en el orden de causas.
+      //
+      // Clona la mecánica del brazo de provider-death (que ya implementa el
+      // CA-3 completo): NO `registerFastFail`, NO cooldown al (skill,issue), el
+      // archivo vuelve a `pendiente/` sin marcar intento consumido, y se corre
+      // la limpieza de recursos. Diferencias propias de esta causa:
+      //   * el provider se apaga con UNA sola muerte (threshold:1): una
+      //     credencial vencida es determinística, no hace falta acumular;
+      //   * el apagado lleva `source:'credential-death'` para que el primer
+      //     spawn sano lo auto-recupere (CA-4) sin pisar un kill-switch manual;
+      //   * NO se dispara `rejection-report.js`: es un PDF de rebote del ISSUE,
+      //     y acá el issue no falló;
+      //   * el aviso al operador es el de reautenticación, deduplicado (CA-5).
+      if (!hasVerdict && deathKind === 'credential-death') {
+        const effProvider = (launchResult && launchResult.provider)
+          || (dispatchResolution && dispatchResolution.provider) || 'unknown';
+
+        let disabled = false;
+        if (providerSpawnHealth) {
+          try {
+            const r = providerSpawnHealth.recordProviderSpawnDeath({
+              pipelineDir: PIPELINE, provider: effProvider, skill, issue,
+              threshold: 1,
+              disableTtlMs: 60 * 60 * 1000, // 60 min (CA-4: TTL acotado, sin apagado indefinido)
+              source: 'credential-death',
+            });
+            disabled = !!(r && r.disabled);
+          } catch (hErr) {
+            log('lanzamiento', `⚠️ provider-spawn-health falló para ${effProvider} (${skill}:#${issue}): ${hErr.message}`);
+          }
+        }
+
+        // CA-6 — auditoría SIEMPRE (nunca la suprime el dedupe del aviso).
+        // Sin `raw_excerpt` y sin texto crudo del provider.
+        try {
+          const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
+          if (typeof dispatcher.appendSpawnExitDeathKind === 'function') {
+            dispatcher.appendSpawnExitDeathKind({
+              pipelineDir: PIPELINE, skill, issue, provider: effProvider,
+              deathKind: 'credential-death',
+              token: deathToken, signature: deathSignature,
+              exitCode: code, durationMs: Math.round(elapsedSec * 1000),
+            });
+          }
+        } catch { /* best-effort: la auditoría nunca rompe el lifecycle */ }
+
+        // CA-5 / SEC-CA-4 — el Telegram se deduplica por provider; el log NO.
+        let notif = { sent: false, remainingMin: 0, pending: `#${issue}` };
+        try { notif = sendCredentialDeathNotif(effProvider, issue); } catch { /* best-effort */ }
+
+        // CA-UX-9 — la línea de log dice si el aviso se suprimió y cuánto falta.
+        log('lanzamiento',
+          `🚨 #${issue}: sesión de ${providerLabel(effProvider)} vencida — ${skill} NO penalizado ` +
+          `(sin cooldown, sin rebote). Murió en ${elapsedSec.toFixed(0)}s (code=${code}). ` +
+          `${disabled ? 'Motor apagado 60min.' : 'Motor NO apagado (provider fuera de la allowlist).'} ` +
+          `Aviso ${notif.sent ? 'enviado' : `suprimido por cooldown (${notif.remainingMin}min restantes)`}. ` +
+          `Esperando: ${notif.pending}.`);
+
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        try { moveFile(trabajandoPath, pendienteDir); } catch {}
+        activeProcesses.delete(processKey(skill, issue));
+        killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (credential-death)`);
+        if (contextChannelId) {
+          try {
+            const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+            cm.leaveChannelByType(contextChannelId, 'agent');
+          } catch (e) {}
+        }
+        return;
       }
 
       // #4648 — Muerte por provider no disponible: NO penalizar al issue.
@@ -22127,6 +22355,17 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _clearIssueRoutingCachesForTest: () => {
       issueLabelsCache.clear();
       issueTextCache.clear();
+    },
+    // #6238 — aviso de sesión de provider vencida: copy puro + dedupe por
+    // provider. Exportados para el test de copy (CA-UX-8) y el de dedupe (CA-5).
+    buildCredentialDeathMessage,
+    sendCredentialDeathNotif,
+    formatElapsedHuman,
+    formatPendingIssues,
+    CREDENTIAL_NOTIF_COOLDOWN_MS,
+    CREDENTIAL_NOTIF_MAX_ISSUES,
+    _resetCredentialNotifStateForTest: () => {
+      for (const k of Object.keys(_credentialNotifState)) delete _credentialNotifState[k];
     },
     // #4046 — preflight de APK por flavor real + resolución de changed-files.
     preflightQaChecks,
