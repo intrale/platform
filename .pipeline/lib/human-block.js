@@ -20,6 +20,8 @@
 
 const fs = require('fs');
 const path = require('path');
+// #6226 - escritura fail-closed de dropfiles.
+const dropfileWriter = require('./dropfile-writer');
 const trace = require('./traceability');
 const { redactAll } = require('./sherlock-audit-jsonl');
 // #5337 CA-6 — discriminador compartido "recomendación de agente" vs "bloqueo real".
@@ -39,10 +41,17 @@ function enqueueNeedsHumanLabel(issue) {
     try {
         fs.mkdirSync(GH_QUEUE_DIR, { recursive: true });
         const filename = `${issue}-${NEEDS_HUMAN_LABEL}-block-${Date.now()}.json`;
-        fs.writeFileSync(
-            path.join(GH_QUEUE_DIR, filename),
-            JSON.stringify({ action: 'label', issue: Number(issue), label: NEEDS_HUMAN_LABEL }),
-        );
+        // #6226 - escritura fail-closed: dos bloqueos del mismo issue en el
+        // mismo milisegundo resolvian al mismo path y el segundo pisaba al
+        // primero. Se conserva el nombre; solo ante colision se desambigua.
+        dropfileWriter.writeUniqueFileSync({
+            dir: GH_QUEUE_DIR,
+            filename,
+            data: JSON.stringify({ action: 'label', issue: Number(issue), label: NEEDS_HUMAN_LABEL }),
+            onCollision: (name, attempt) => console.warn(
+                `[human-block] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
         return true;
     } catch {
         return false;

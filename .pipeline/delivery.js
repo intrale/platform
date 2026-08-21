@@ -23,6 +23,8 @@
 const fs = require('fs');
 const { spawnSync } = require('child_process');
 const path = require('path');
+// #6226 - escritura fail-closed de dropfiles.
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const gitCtx = require('./lib/delivery/git-context');
 const classifier = require('./lib/delivery/change-classifier');
@@ -233,8 +235,16 @@ function propagateGateLabelToPr({ issue, prNumber, branch, repo, pipelineDir }) 
     }
     const queueDir = path.join(pipelineDir || __dirname, 'servicios', 'github', 'pendiente');
     fs.mkdirSync(queueDir, { recursive: true });
-    const file = path.join(queueDir, `${issue}-delivery-pr-${res.action.issue}-${Date.now()}.json`);
-    fs.writeFileSync(file, JSON.stringify(res.action));
+    // #6226 - escritura fail-closed. Se conserva el nombre; solo ante colision
+    // real se desambigua con `-<n>`.
+    const { filePath: file } = dropfileWriter.writeUniqueFileSync({
+        dir: queueDir,
+        filename: `${issue}-delivery-pr-${res.action.issue}-${Date.now()}.json`,
+        data: JSON.stringify(res.action),
+        onCollision: (name, attempt) => console.log(
+            `-> gate QA: colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+        ),
+    });
     console.log(`→ gate QA: encolado ${res.action.label} para el PR #${res.action.issue} (desde el issue #${issue})`);
     return file;
   } catch (e) {
