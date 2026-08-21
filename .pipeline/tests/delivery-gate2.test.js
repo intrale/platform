@@ -76,14 +76,11 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
-// #6271 — este test era NO HERMETICO: `resolveAuthorizedSigners` suma por
-// diseño `process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID` a los signers (delivery.js
-// ~L109), asi que en cualquier entorno con esa variable exportada (la maquina
-// del pulpo la tiene) el assert recibia un id extra y fallaba. El defecto era
-// del test, no del codigo: el merge del operador por env es comportamiento
-// intencional. Aislamos la variable para que el resultado no dependa del
-// entorno, y cubrimos el merge en un test propio en vez de perderlo.
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
+    // El test debe ser hermético: `resolveAuthorizedSigners` suma el operador de
+    // `TELEGRAM_LEO_OPERATOR_CHAT_ID`, y si el entorno la trae seteada (el pipeline
+    // la exporta en producción) el assert de abajo veía un id extra y fallaba por
+    // ambiente, no por código. Se aísla la variable y se restaura al salir.
     const prev = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
     delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
     try {
@@ -95,14 +92,21 @@ test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () =>
     }
 });
 
-// #6271 — contraparte explicita: el operador declarado por env SI debe sumarse
-// a los signers (y sin duplicar si ya venia en la config).
 test('resolveAuthorizedSigners suma el operador de TELEGRAM_LEO_OPERATOR_CHAT_ID sin duplicar', () => {
     const prev = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
-    process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '99';
+    process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '2';
     try {
-        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '99'] } });
-        assert.deepStrictEqual([...signers].sort(), ['1', '99']);
+        // '2' ya viene en la config: el operador de env no debe duplicarlo.
+        assert.deepStrictEqual(
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }).sort(),
+            ['1', '2'],
+        );
+        // Un operador que no está en la config sí se agrega.
+        process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '77';
+        assert.deepStrictEqual(
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }).sort(),
+            ['1', '77'],
+        );
     } finally {
         if (prev === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
         else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = prev;
