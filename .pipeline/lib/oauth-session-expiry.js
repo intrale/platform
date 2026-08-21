@@ -90,6 +90,7 @@ function evaluate({ now = Date.now(), statePath }) {
     const epoch = fields.expiresAt;
     const minutesLeft = Math.floor((epoch - now) / 60000);
     const renewed = prev.expires_at_epoch !== null && epoch > prev.expires_at_epoch;
+    const renewedBeforeExpiry = renewed && prev.expires_at_epoch > now;
     const crossedWithoutRenewal = prev.expires_at_epoch !== null
         && prev.expires_at_epoch <= now && epoch <= prev.expires_at_epoch;
     const next = { ...prev };
@@ -101,6 +102,8 @@ function evaluate({ now = Date.now(), statePath }) {
     if (renewed) {
         next.t30_sent = false;
         next.t10_sent = false;
+    }
+    if (renewedBeforeExpiry) {
         next.renewal_unhealthy = false;
     }
 

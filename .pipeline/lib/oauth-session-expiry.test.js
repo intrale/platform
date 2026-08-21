@@ -102,6 +102,34 @@ test('la renovación resetea umbrales y cierra un aviso abierto', (t) => {
     assert.equal(state.renewal_unhealthy, false);
 });
 
+test('CE-2 conserva la falla tras un nuevo ciclo tardío y habilita T-30 y T-10', (t) => {
+    const cycleStart = 1_800_000_000_000;
+    let epoch = cycleStart + 60000;
+    const statePath = fixture(t, credentials(epoch));
+
+    oauth.evaluate({ now: cycleStart, statePath });
+    const expired = oauth.evaluate({ now: cycleStart + 2 * 60000, statePath });
+    assert.equal(expired.reason, 'already_expired');
+    assert.equal(JSON.parse(originalRead(statePath, 'utf8')).renewal_unhealthy, true);
+
+    const nextCycleExpiry = cycleStart + 8 * 60 * 60000;
+    epoch = nextCycleExpiry;
+    fs.readFileSync = (file, encoding) => path.resolve(String(file)) === path.resolve(oauth.CREDENTIALS_PATH)
+        ? JSON.stringify(credentials(epoch)) : originalRead.call(fs, file, encoding);
+    const nextCycle = oauth.evaluate({ now: cycleStart + 3 * 60000, statePath });
+    assert.equal(nextCycle.reason, 'threshold_not_crossed_or_sent');
+    assert.equal(JSON.parse(originalRead(statePath, 'utf8')).renewal_unhealthy, true);
+
+    const t30 = oauth.evaluate({ now: nextCycleExpiry - 25 * 60000, statePath });
+    assert.equal(t30.threshold, 't30');
+    assert.equal(t30.reason, 'renewal_unhealthy');
+    oauth.recordEmitted({ statePath, alert: t30.alert, threshold: t30.threshold });
+
+    const t10 = oauth.evaluate({ now: nextCycleExpiry - 8 * 60000, statePath });
+    assert.equal(t10.threshold, 't10');
+    assert.equal(t10.reason, 'renewal_unhealthy');
+});
+
 test('tres lecturas fallidas abren un único episodio de salud y la recuperación lo cierra', (t) => {
     const now = 1_800_000_000_000;
     const statePath = fixture(t, new Error('missing'));
