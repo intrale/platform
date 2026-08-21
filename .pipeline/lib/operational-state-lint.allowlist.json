@@ -15,8 +15,8 @@
     },
     {
       "file": "pulpo.js",
-      "line": 17865,
-      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso —el fallback de setFullPause— y el seam de test SEC-3 (#4832). Estructural: #6104. #5110: reapuntada 17827->17865, la declaracion NO cambio; el binding de spawn de proyecto agrego 38 lineas arriba. Entry re-apuntada, NO nueva."
+      "line": 18183,
+      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -- el fallback de setFullPause -- y el seam de test SEC-3 (#4832). Estructural: #6104. Linea reubicada 17827 -> 18145 (#6238/#6144) -> 18183 por el merge de main en #5110, que sumo el binding de spawn de proyecto arriba. La declaracion NO cambio: entry re-apuntada, NO nueva."
     }
   ]
 }

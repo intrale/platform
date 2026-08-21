@@ -3535,6 +3535,14 @@ function _desyncPresentacion(payload) {
     try { return desyncCopy.buildDesyncPresentation(payload); } catch { return null; }
 }
 
+// #6117 CA-UX-5 — presentación de la línea de última auto-reparación (P1–P6),
+// resuelta con el mismo módulo de copy. Degrada a `null` si el módulo no cargó:
+// la vista tiene su propio empty-state y no se rompe por esto.
+function _autoRepairPresentacion(ultima, repeticion) {
+    if (!desyncCopy || typeof desyncCopy.autoRepairLineaDashboard !== 'function') return null;
+    try { return desyncCopy.autoRepairLineaDashboard(ultima, { repeticion }); } catch { return null; }
+}
+
 function desyncStatusSlice(state, ctx) {
     const detector = _desyncDetectorOverride || desyncDetector;
     // Base defensiva del contrato JSON (CA-6): siempre devolvemos el shape
@@ -3552,6 +3560,11 @@ function desyncStatusSlice(state, ctx) {
         // hace 10 horas se ve idéntico a uno de 10 minutos, y la duración es
         // justamente lo que convierte una divergencia en incidente.
         detected_at: null,
+        // #6117 CA-7 — parte del contrato: presente (en `null`) también en los
+        // caminos degradados, para que la UI no tenga que distinguir "no hubo
+        // reparación" de "el slice falló".
+        ultima_auto_reparacion: null,
+        auto_reparacion_repeticion: null,
     };
     if (!detector || typeof detector.detectDesync !== 'function') {
         return { ...base, presentacion: _desyncPresentacion(base), error: 'desync_detector_unavailable' };
@@ -3595,6 +3608,44 @@ function desyncStatusSlice(state, ctx) {
             estado = 'desconocido';
         }
 
+        // #6117 CA-7 — última auto-reparación del despacho. Desde que las
+        // reparaciones exitosas dejaron de avisarse por Telegram, ésta es la
+        // superficie donde el operador las consulta cuando quiere, en vez de
+        // recibirlas empujadas al chat.
+        // SEC-6: shape acotado a `{tipo, issues, timestamp}` y SÓLO lectura. El
+        // dashboard (3200) no tiene autenticación, así que acá no se expone
+        // nada más ni se ofrece ninguna acción que dispare una reparación.
+        // `readLastAutoRepair` nunca lanza: degrada a `null`.
+        let ultimaAutoReparacion = null;
+        // CA-UX-5 · P6 — el único caso que sube de jerarquía visual es el umbral
+        // superado. Viaja en un campo HERMANO y no dentro de
+        // `ultima_auto_reparacion`, para que ese shape siga siendo exactamente
+        // `{tipo, issues, timestamp}` (SEC-6). Derivado del mismo JSONL, sólo
+        // lectura: no expone nada que no estuviera ya.
+        let repeticion = null;
+        try {
+            const autoRepair = require('./metrics/auto-repair');
+            ultimaAutoReparacion = autoRepair.readLastAutoRepair();
+            if (ultimaAutoReparacion) {
+                let cfg = {};
+                // Si la config no resuelve, el módulo de métrica clampea a sus
+                // defaults (3 / 1 h): el umbral nunca queda indefinido.
+                try { cfg = (configResolver.resolve({}).config || {}).desync || {}; } catch { cfg = {}; }
+                const rep = autoRepair.shouldAlertRepetition({
+                    tipo: ultimaAutoReparacion.tipo,
+                    threshold: cfg.repair_alert_threshold,
+                    windowMs: cfg.repair_alert_window_ms,
+                });
+                // `estado_ilegible` no es "se repitió": es "no pude contar". No
+                // se pinta warning por no saber — para eso está el Telegram.
+                repeticion = {
+                    count: rep.count,
+                    ventana_ms: rep.windowMs,
+                    superado: rep.alert === true && rep.motivo === 'umbral',
+                };
+            }
+        } catch { /* degradar a null — el slice nunca falla por esto */ }
+
         const payload = {
             estado,
             classification,
@@ -3605,6 +3656,14 @@ function desyncStatusSlice(state, ctx) {
             bloqueado,
             count,
             detected_at: detectedAt,
+            ultima_auto_reparacion: ultimaAutoReparacion,
+            auto_reparacion_repeticion: repeticion,
+            // CA-UX-5 — el copy de la línea se resuelve SERVER-SIDE con
+            // `desync-copy`, igual que `presentacion`. El cliente sólo hace
+            // `setText`: si armara el texto en el browser sería una segunda
+            // redacción del mismo dato, que es el problema que ese módulo
+            // existe para evitar.
+            auto_reparacion_presentacion: _autoRepairPresentacion(ultimaAutoReparacion, repeticion),
         };
         // Presentación resuelta server-side (label/detalle/antigüedad/chips) para
         // que toda superficie diga lo mismo sin reimplementar el copy.
