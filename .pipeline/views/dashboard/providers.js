@@ -57,6 +57,8 @@ const { renderHeaderMetaSsr, headerPillsClientScript, headerPillsPollClientScrip
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
+const oauthSessionExpiry = require('../../lib/oauth-session-expiry.js');
+const oauthSessionCopy = require('../../assets/copy/oauth-session-expiry/render.js');
 
 // Fuentes de datos (libs puras — sin req/res). Cada require va con guarda en el
 // colector correspondiente: si una lib falla, la pantalla degrada con "sin
@@ -257,6 +259,8 @@ function buildProvidersModel() {
     const catalog = collectCatalog();
     const agents = collectAgentConfig();
     const disabled = collectDisabled();
+    let oauthSession = { expiresAt: null, minutesLeft: null, available: false };
+    try { oauthSession = oauthSessionExpiry.getOAuthSessionExpiry(); } catch (_) { /* degradación visible */ }
 
     const providers = PROVIDER_ORDER.map((key) => {
         const meta = PROVIDER_META[key];
@@ -309,6 +313,9 @@ function buildProvidersModel() {
             // estado de login: distingue "logueado" de "logueado + con cuota"
             // (CA-5). Shape seguro { adapterStatus, status, pct } — sin secretos.
             quota: (h.quota && typeof h.quota === 'object') ? h.quota : null,
+            session: key === 'anthropic'
+                ? { available: oauthSession.available, minutesLeft: oauthSession.minutesLeft }
+                : null,
             lastChecked: h.last_checked_at || null,
             loadPct,
             dispatches24h: disp,
@@ -547,6 +554,9 @@ function renderProviderRow(p, now) {
     const sev = HEALTH_SEVERITY[p.healthState] || 'info';
     const healthLabel = HEALTH_LABEL[p.healthState] || 'SIN DATOS';
     const reasonTxt = reasonHuman(p.healthReason);
+    const session = p.key === 'anthropic'
+        ? oauthSessionCopy.renderDashboard(p.session || { available: false, minutesLeft: null })
+        : null;
     return `<article class="prov-row" data-provider="${escapeHtmlAttr(p.key)}" style="--row-accent:${p.accent};">
   <div class="prov-id">
     <span class="prov-dot" aria-hidden="true"></span>
@@ -562,6 +572,7 @@ function renderProviderRow(p, now) {
       ${renderQuotaChip(p)}
     </div>
     <span class="prov-health-reason" title="${escapeHtmlAttr('Causa reportada por el health-cron')}">${escapeHtmlText(reasonTxt)}</span>
+    ${session ? `<span class="prov-session is-${escapeHtmlAttr(session.tono)}" title="${escapeHtmlAttr(session.title)}">${escapeHtmlText(session.texto)}</span>` : ''}
     ${renderQuotaBar(p)}
   </div>
   <div class="prov-col prov-col-models">${renderCatalogCell(p, now)}</div>
@@ -900,6 +911,11 @@ const PANEL_CSS = `
 .prov-col-health { display: flex; flex-direction: column; gap: 6px; }
 .prov-health-badges { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .prov-health-reason { font-size: 11px; color: var(--in-fg-dim); }
+.prov-session { font-size: 10.5px; font-weight: 600; }
+.prov-session.is-dim { color: var(--in-fg-dim); }
+.prov-session.is-info { color: var(--in-info); }
+.prov-session.is-warn { color: var(--in-warn); }
+.prov-session.is-warn-fuerte { color: var(--in-warn); font-weight: 800; }
 /* #4283 — chip de cuota real. Reutiliza las parejas MIZPÁ ya validadas (WCAG
    AA en tema oscuro). No introduce colores nuevos. */
 .prov-quota-chip { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--in-border); white-space: nowrap; }

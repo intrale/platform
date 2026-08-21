@@ -208,6 +208,8 @@ const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // Expone isWorkaroundEnabled, recordHit, checkTtlAlert, formatStartupLogLine,
 // formatHitExtension, formatTtlAlertMessage, sanitizeHitLog.
 const oneMWorkaround = require('./lib/commander/anthropic-1m-workaround');
+const oauthSessionExpiry = require('./lib/oauth-session-expiry');
+const oauthSessionCopy = require('./assets/copy/oauth-session-expiry/render');
 // #3950 (EP7-H3) — política PURA de auto-retry del glitch 1M del CLI Anthropic.
 // Decide retry_same | retry_standard | give_up, backoff acotado, validación del
 // modelo (whitelist SR-A) y formato del log por intento. Sin side effects.
@@ -21690,6 +21692,43 @@ async function mainLoop() {
     log('commander', `[anthropic-1m] cron TTL iniciado: cada ${ANTHROPIC_1M_TTL_CHECK_INTERVAL_MIN}min`);
   } catch (e) {
     log('commander', `[anthropic-1m] no pude iniciar cron TTL: ${e.message}`);
+  }
+
+  // #6239 — Vigencia de la sesión Claude. Best-effort y sin datos sensibles:
+  // el módulo sólo devuelve fechas derivadas y el copy visible es el asset UX.
+  const OAUTH_EXPIRY_CHECK_INTERVAL_MIN = 5;
+  const OAUTH_EXPIRY_STATE_FILE = path.join(PIPELINE, 'oauth-session-expiry-state.json');
+  try {
+    const tickOAuthExpiry = () => {
+      try {
+        const decision = oauthSessionExpiry.evaluate({ statePath: OAUTH_EXPIRY_STATE_FILE });
+        if (!decision.shouldEmit) return;
+        const aviso = decision.alert === 'expiry'
+          ? (decision.threshold === 't10' ? 'A2_urgente' : 'A1_por_vencer')
+          : decision.alert === 'health_unavailable'
+            ? 'A3_chequeo_sin_datos'
+            : decision.alert === 'health_recovered'
+              ? 'A4_chequeo_recuperado'
+              : 'A5_renovada';
+        notifyTelegramFn(oauthSessionCopy.renderTelegram(aviso, {
+          minutesLeft: decision.minutesLeft,
+          ageMinutes: decision.ageMinutes,
+        }));
+        oauthSessionExpiry.recordEmitted({
+          statePath: OAUTH_EXPIRY_STATE_FILE,
+          alert: decision.alert,
+          threshold: decision.threshold,
+        });
+      } catch (_) {
+        // No interpolar el error: podría originarse al leer la credencial.
+        log('commander', '[oauth-expiry] tick error (best-effort)');
+      }
+    };
+    setTimeout(tickOAuthExpiry, 60 * 1000);
+    setInterval(tickOAuthExpiry, OAUTH_EXPIRY_CHECK_INTERVAL_MIN * 60 * 1000);
+    log('commander', `[oauth-expiry] cron iniciado: cada ${OAUTH_EXPIRY_CHECK_INTERVAL_MIN}min`);
+  } catch (_) {
+    log('commander', '[oauth-expiry] no pude iniciar el cron');
   }
 
   // #3638 CA-F-7 — Ghost-artifact cleaner: barre carpetas operacionales en
