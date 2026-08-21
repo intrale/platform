@@ -13587,8 +13587,10 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // El canned ES la respuesta directa al pedido del operador (siempre se
         // envía — deduplicar una respuesta dejaría al operador sin contestación).
         // El return temprano evita además el notice proactivo de crossProvider
-        // (que SÍ está deduplicado por shouldEmitFallbackNotice), evitando doble
-        // señal: respeta el dedup 5 min anti-spam del aviso.
+        // (que SÍ está deduplicado, ahora por la política de EPISODIO de
+        // `fallback-episode-state.recordDispatch`), evitando doble señal.
+        // #6179 — la ventana de 5 min de `shouldEmitFallbackNotice` que
+        // describía este comentario YA NO EXISTE: la borró CA-3.
         return resolve(commanderMP.cannedReducedModeResponse({ downProviders }));
       }
     } catch (e) {
@@ -13605,17 +13607,6 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // específico del Commander.
     if (resolution.crossProvider) {
       try {
-        const fbHandler = resolution.handler || {};
-        // Si el provider efectivo no soporta tool use (Cerebras/Gemini/NVIDIA),
-        // SR-8 obliga a avisar la degradación de capacidad en línea separada.
-        // Leemos el flag del JSON config para no asumirlo en runtime.
-        const supportsToolUse = (() => {
-          try {
-            const models = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'agent-models.json'), 'utf8'));
-            const def = models.providers && models.providers[resolution.provider];
-            return def && typeof def.supports_tool_use === 'boolean' ? def.supports_tool_use : true;
-          } catch { return true; }
-        })();
         // #6179 — política de emisión por EPISODIO, compartida con el dispatcher.
         //
         // Acá vivía `shouldEmitFallbackNotice` (ventana de 5 min) + un
@@ -13645,9 +13636,6 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         } else {
           log('commander', `↪️ Fallback activo sin cambio de episodio (motivo=${epRes && epRes.reason}) — sin aviso`);
         }
-        // `supportsToolUse` queda leído arriba para el log operativo; el escalón
-        // que ve el operador lo deriva `recordDispatch` desde `agent-models.json`.
-        void supportsToolUse;
       } catch (notifErr) {
         log('commander', `⚠️ Error formando notice de fallback (best-effort): ${notifErr.message}`);
       }
@@ -14483,9 +14471,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // se vuelve a escribir estado ni se agrega otro archivo/selector.
       //
       // SEPARACIÓN DE SALIDAS: esta es la respuesta REACTIVA del turno perdido y
-      // se emite SIEMPRE. `shouldEmitFallbackNotice` (aviso PROACTIVO, dedup de
-      // 5 min) no se invoca desde acá — dedupear la respuesta dejaría al
-      // operador sin contestación.
+      // se emite SIEMPRE. El aviso PROACTIVO no se emite desde acá — dedupear la
+      // respuesta dejaría al operador sin contestación. #6179: ese aviso lo
+      // deduplica hoy la política por EPISODIO (`recordDispatch`); la ventana de
+      // 5 min de `shouldEmitFallbackNotice` que nombraba este comentario se
+      // borró con CA-3.
       // =====================================================================
       let quotaMidTurnText = null;
       if (weeklyQuotaMidTurn) {

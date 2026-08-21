@@ -383,6 +383,20 @@ function decide(prev, current, ctx) {
 // API pública
 // -----------------------------------------------------------------------------
 
+/**
+ * Budget de espera del lock. `LOCK_TIMEOUT_MS` es el valor de producción y el
+ * único que se usa en runtime; el override existe para que la rama de CA-14 se
+ * pueda ejercitar en milisegundos en vez de con 5 s de reloj real.
+ *
+ * Se acepta `0` a propósito (`>= 0`, no `> 0`): con budget cero el acquire falla
+ * en el primer intento y la rama fail-closed queda determinística, sin sleeps.
+ */
+function resolveLockTimeoutMs(opts = {}) {
+    return (Number.isFinite(opts.lockTimeoutMs) && opts.lockTimeoutMs >= 0)
+        ? Number(opts.lockTimeoutMs)
+        : LOCK_TIMEOUT_MS;
+}
+
 function resolveDeps(opts = {}) {
     return {
         fsImpl: opts.fsImpl || fs,
@@ -417,6 +431,13 @@ function readEpisode(opts = {}) {
  *                                        episodio. La staleness del lock va con reloj real
  *                                        adentro de `file-lock` (G-2).
  * @param {number} [opts.heartbeatMs]     ventana de re-aviso (CA-13).
+ * @param {number} [opts.lockTimeoutMs]   budget de espera del lock. Default `LOCK_TIMEOUT_MS`
+ *                                        (5000 ms). Inyectable con el MISMO criterio que
+ *                                        `now`/`fsImpl`/`heartbeatMs`/`models`: sin esto, la
+ *                                        rama fail-closed de CA-14 (`lock_no_adquirido`) sólo
+ *                                        se puede ejercitar esperando 5 s de reloj real, que es
+ *                                        el motivo por el que quedó sin test. NO se usa desde
+ *                                        producción — ningún call site lo pasa.
  * @returns {{ notify:boolean, changed:boolean, episode:object|null, reason:string }}
  */
 function recordDispatch(opts = {}) {
@@ -512,7 +533,7 @@ function recordDispatch(opts = {}) {
                 };
             }
             return { notify: d.notify, changed: d.changed, episode, reason: d.reason };
-        }, { component: 'fallback-episode', timeoutMs: LOCK_TIMEOUT_MS });
+        }, { component: 'fallback-episode', timeoutMs: resolveLockTimeoutMs(opts) });
     } catch (err) {
         // CA-14 · No se pudo entrar a la sección crítica ⇒ se avisa igual.
         // Fail-closed hacia el aviso, coherente con CA-10/CA-11: preferimos un

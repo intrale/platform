@@ -3,7 +3,19 @@
 //
 // Cubre las ramas de decisión de `recordDispatch`: changed / notify / auth /
 // desconocida / ausente / ilegible / shape_invalido / persistencia_fallida /
-// heartbeat / deterministic / lock_no_adquirido.
+// heartbeat / deterministic / lock_no_adquirido / entra_respaldo (desde un
+// episodio primario abierto, que es la transición dominante en producción).
+//
+// Cada nombre de esa lista tiene al menos un test que asserea su `reason`. Si se
+// agrega una rama, va con test: un header que afirma cubrir algo que no cubre es
+// peor que no tener header, porque apaga la revisión.
+//
+// Lo ÚNICO que queda sin ejecutar en `fallback-episode-state.js` son dos `catch`
+// fail-safe de helpers que no deciden nada: el de `deriveTier` alrededor de
+// `billingOf` (inalcanzable — `billingOf` ya atrapa adentro y nunca lanza) y el
+// de `deriveCause` alrededor de `classifyPauseCause` (que tampoco lanza con la
+// entrada hostil que se le prueba más abajo). Ninguno es una rama de decisión de
+// `recordDispatch`; se dejan como red por si esas dependencias cambian.
 //
 // AISLAMIENTO: cada test usa un tmpdir propio como `stateDir`. El módulo trabaja
 // sobre el filesystem REAL a propósito (`atomic-json` + `file-lock` +
@@ -127,6 +139,38 @@ test('CA-2 — la vuelta al motor principal emite un aviso, y uno solo', () => {
         assert.match(texto, /volvió al motor principal/i);
         assert.match(texto, /Estuvo 4 h con motor de respaldo/);
         assertCopyLimpio(assert, texto, 'aviso de vuelta a la normalidad');
+    } finally { rm(dir); }
+});
+
+test('CA-2 — con un episodio PRIMARIO abierto, caer a respaldo emite el aviso de entrada', () => {
+    // El camino DOMINANTE en producción, y por eso tiene test propio: el happy
+    // path de `dispatch-with-fallback.js:1538-1549` llama a `_recordEpisode` en
+    // CADA despacho exitoso del primario, así que cuando el pipeline se degrada
+    // `prev` casi nunca es null — es un episodio en `mode: 'primario'`. El primer
+    // aviso que ve el operador sale por esta rama, no por la de `prev === null`.
+    const dir = mkStateDir();
+    try {
+        seedHealth(dir);
+
+        // Estado sembrado como lo siembra producción: despacho sano del primario.
+        const sano = dispatch(dir, { provider: 'anthropic', crossProvider: false, now: T0 });
+        assert.equal(sano.notify, false, 'el primario estable no avisa');
+        const persistido = JSON.parse(fs.readFileSync(episodeFile(dir), 'utf8'));
+        assert.equal(persistido.mode, 'primario', 'precondición: hay episodio primario abierto');
+
+        // Y ahora sí, la degradación.
+        const caida = dispatch(dir, { now: T0 + HORA });
+        assert.equal(caida.notify, true, 'entrar en respaldo desde primario SIEMPRE avisa');
+        assert.equal(caida.changed, true);
+        assert.equal(caida.reason, 'entra_respaldo', 'la transición, no `sin_estado_previo`');
+        assert.equal(caida.episode.mode, 'respaldo');
+        assert.equal(caida.episode.tier, 'respaldo_pago');
+        assert.equal(caida.episode.since, T0 + HORA, 'el episodio degradado arranca en la caída');
+
+        // Y a partir de acá el dedup vuelve a mandar: un solo aviso.
+        for (let i = 1; i <= 5; i++) {
+            assert.equal(dispatch(dir, { now: T0 + HORA + i * 1000 }).notify, false);
+        }
     } finally { rm(dir); }
 });
 
@@ -325,6 +369,185 @@ test('CA-11 — si writeJsonAtomic devuelve false, se notifica igual', () => {
     } finally { rm(dir); }
 });
 
+test('#6179 — sin `models` inyectado, el escalón se deriva de `agent-models.json` del pipelineDir', () => {
+    // `pulpo.js` llama a `recordDispatch` SIN `models` (sólo `pipelineDir`), así
+    // que este es el camino real del Commander: si la lectura se rompiera, todo
+    // proveedor caería a `gratuito_sin_herramientas` y el operador vería el 🚨 de
+    // calidad degradada en cada fallback a un respaldo PAGO. Falso destacado =
+    // fatiga de alerta.
+    const dir = mkStateDir();
+    try {
+        const pipelineDir = path.join(dir, 'pipeline');
+        fs.mkdirSync(path.join(pipelineDir, 'state'), { recursive: true });
+        seedHealth(path.join(pipelineDir, 'state'));
+        fs.writeFileSync(path.join(pipelineDir, 'agent-models.json'), JSON.stringify(MODELS));
+
+        const r = episodeState.recordDispatch({
+            pipelineDir, provider: 'openai-codex', crossProvider: true,
+            chain: ['anthropic', 'openai-codex'], now: T0, // <- sin `models`
+        });
+        assert.equal(r.episode.tier, 'respaldo_pago', 'leyó el billing del archivo');
+
+        // Y si el archivo no está, degrada sin romper (fail-safe de `billingOf`).
+        const dir2 = mkStateDir();
+        try {
+            const pd2 = path.join(dir2, 'pipeline');
+            fs.mkdirSync(path.join(pd2, 'state'), { recursive: true });
+            seedHealth(path.join(pd2, 'state'));
+            const r2 = episodeState.recordDispatch({
+                pipelineDir: pd2, provider: 'openai-codex', crossProvider: true,
+                chain: ['anthropic', 'openai-codex'], now: T0,
+            });
+            assert.equal(r2.episode.tier, 'gratuito_sin_herramientas', 'sin archivo, el peor escalón');
+            assert.equal(r2.notify, true, 'y sigue avisando: nunca silencio por no poder leer');
+        } finally { rm(dir2); }
+    } finally { rm(dir); }
+});
+
+test('#6179 — `models` hostil no rompe el aviso: degrada al peor escalón', () => {
+    // D8 / entrada hostil: un `agent-models.json` que explota al leerse no puede
+    // tumbar al avisador. Describir de menos una degradación es peor que
+    // describirla de más, así que el fail-safe cae al escalón MÁS degradado.
+    const dir = mkStateDir();
+    try {
+        seedHealth(dir);
+        const modelsHostil = { get providers() { throw new Error('agent-models.json explotó'); } };
+        const r = dispatch(dir, { models: modelsHostil });
+        assert.equal(r.notify, true, 'el avisador sobrevive a la entrada hostil');
+        assert.equal(r.episode.tier, 'gratuito_sin_herramientas');
+    } finally { rm(dir); }
+});
+
+test('#6179 — `chain` hostil ⇒ causa desconocida, que NOTIFICA (CA-12), no crashea', () => {
+    const dir = mkStateDir();
+    try {
+        seedHealth(dir);
+        // Un elemento que explota al convertirse a string: `classifyPauseCause`
+        // lo toca y lanza. El fail-safe es `cause: null` = "no se pudo
+        // determinar", que por CA-12 notifica destacado en vez de callar.
+        const chainHostil = [{ toString() { throw new Error('boom'); } }];
+        const r = dispatch(dir, { chain: chainHostil, now: T0 + 1 });
+        assert.equal(r.notify, true);
+        assert.equal(r.episode.cause, null, 'causa desconocida, jamás una inventada');
+        assertCopyLimpio(assert, cmp.formatEpisodeNotice(r.episode, { now: T0 + 1 }), 'chain hostil');
+    } finally { rm(dir); }
+});
+
+// -----------------------------------------------------------------------------
+// CA-14 / SEC-6 — no poder entrar a la sección crítica no puede ser silencio
+//
+// Es la red del issue: si esta rama regresiona, el operador recibe SILENCIO, que
+// es indistinguible de "está todo bien" — el modo de falla exacto que la historia
+// existe para eliminar. Sin test que la pinnee, el fail-closed no está entregado.
+// -----------------------------------------------------------------------------
+
+/**
+ * Deja el lock del archivo de episodio TOMADO por un holder que `file-lock` no
+ * puede robar, para forzar el timeout de forma determinística y sin esperas.
+ *
+ * El holder declara nuestro propio PID (así `isPidAlive` da true y el lock no se
+ * declara stale) pero con `startTime` distinto del real, así que tampoco entra
+ * por la puerta de reentrancia (`file-lock.js:369`). Con `lockTimeoutMs: 0` el
+ * acquire falla en el primer intento: sin sleeps, sin reloj de 5 s.
+ */
+function trabarLock(stateDir) {
+    fs.mkdirSync(stateDir, { recursive: true });
+    const lockPath = episodeFile(stateDir) + '.lock';
+    fs.writeFileSync(lockPath, JSON.stringify({
+        pid: process.pid,                       // vivo => no es stale
+        startTime: '1999-01-01T00:00:00.000Z',  // != el real => no es reentrante
+        hostname: os.hostname(),
+        version: 1,
+        acquired_at: new Date(T0).toISOString(),
+    }));
+    return lockPath;
+}
+
+test('CA-14 — lock no adquirido EN RESPALDO ⇒ avisa igual, con episodio sintetizado', () => {
+    const dir = mkStateDir();
+    try {
+        seedHealth(dir);
+        dispatch(dir);                                   // abre el episodio
+        assert.equal(dispatch(dir, { now: T0 + 1000 }).notify, false,
+            'precondición: un despacho repetido en este estado NO avisaría');
+
+        trabarLock(dir);
+        const r = dispatch(dir, { now: T0 + 2000, lockTimeoutMs: 0 });
+
+        assert.equal(r.notify, true, 'fail-closed hacia el aviso: un mensaje de más > un silencio');
+        assert.equal(r.changed, false, 'no sabemos si cambió: no pudimos leer el estado');
+        assert.match(r.reason, /^lock_no_adquirido:/, 'el motivo dice por qué, para diagnóstico');
+
+        // El episodio va SINTETIZADO: sin él, `formatEpisodeNotice` no tendría qué
+        // renderizar y el aviso que acabamos de decidir emitir se caería igual.
+        assert.ok(r.episode, 'hay episodio que renderizar');
+        assert.equal(r.episode.mode, 'respaldo');
+        assert.equal(r.episode.tier, 'respaldo_pago');
+        assert.equal(r.episode.evento, 'entra_respaldo');
+        assert.equal(r.episode.since, T0 + 2000);
+        const texto = cmp.formatEpisodeNotice(r.episode, { now: T0 + 2000 });
+        assert.ok(texto.length > 0);
+        assertCopyLimpio(assert, texto, 'aviso emitido sin poder tomar el lock');
+
+        // Y no dejó basura: el estado en disco sigue siendo el que había.
+        const enDisco = JSON.parse(fs.readFileSync(episodeFile(dir), 'utf8'));
+        assert.equal(enDisco.updatedAt, T0 + 1000, 'sin lock no se escribe estado');
+    } finally { rm(dir); }
+});
+
+test('CA-14 — lock no adquirido EN PRIMARIO ⇒ NO avisa (asimetría deliberada)', () => {
+    const dir = mkStateDir();
+    try {
+        seedHealth(dir);
+        trabarLock(dir);
+        const r = episodeState.recordDispatch({
+            stateDir: dir, provider: 'anthropic', crossProvider: false,
+            chain: ['anthropic'], models: MODELS, now: T0, lockTimeoutMs: 0,
+        });
+
+        // En primario no hay degradación que ocultar: avisar sería anunciar una
+        // "vuelta a la normalidad" que quizá nunca ocurrió — un destacado falso,
+        // que es la fatiga de alerta que CA-15 manda evitar.
+        assert.equal(r.notify, false);
+        assert.equal(r.changed, false);
+        assert.equal(r.episode, null, 'sin episodio no hay nada que renderizar');
+        assert.equal(r.reason, 'lock_no_adquirido');
+    } finally { rm(dir); }
+});
+
+test('CA-14 — las dos ramas del lock son DISTINGUIBLES por `reason`', () => {
+    // Si colapsaran al mismo motivo, el log operativo no permitiría saber si el
+    // pipeline calló estando degradado (bug grave) o estando sano (correcto).
+    const dir = mkStateDir();
+    try {
+        seedHealth(dir);
+        trabarLock(dir);
+        const enPrimario = episodeState.recordDispatch({
+            stateDir: dir, provider: 'anthropic', crossProvider: false,
+            chain: ['anthropic'], models: MODELS, now: T0, lockTimeoutMs: 0,
+        });
+        const enRespaldo = dispatch(dir, { now: T0, lockTimeoutMs: 0 });
+        assert.notEqual(enPrimario.reason, enRespaldo.reason);
+        assert.notEqual(enPrimario.notify, enRespaldo.notify);
+    } finally { rm(dir); }
+});
+
+test('#6179 — `lockTimeoutMs` es de tests: el default de producción es 5000 ms', () => {
+    // El override existe SÓLO para poder ejercitar CA-14 en milisegundos. Si un
+    // call site de producción lo pasara, un budget corto convertiría el
+    // fail-closed en una fuente de ruido propia (G-4).
+    const mod = fs.readFileSync(path.resolve(__dirname, '..', 'fallback-episode-state.js'), 'utf8');
+    assert.match(mod, /const LOCK_TIMEOUT_MS = 5000;/, 'el default no cambió');
+
+    for (const f of [
+        path.resolve(__dirname, '..', 'agent-launcher', 'dispatch-with-fallback.js'),
+        path.resolve(__dirname, '..', '..', 'pulpo.js'),
+    ]) {
+        assert.doesNotMatch(fs.readFileSync(f, 'utf8'), /lockTimeoutMs/,
+            `${path.basename(f)} no puede pasar lockTimeoutMs`);
+    }
+});
+
 // -----------------------------------------------------------------------------
 // CA-13 — heartbeat
 // -----------------------------------------------------------------------------
@@ -364,6 +587,33 @@ test('CA-13 — la ventana del heartbeat es configurable', () => {
         dispatch(dir, { heartbeatMs: HORA });
         assert.equal(dispatch(dir, { now: T0 + 30 * 60 * 1000, heartbeatMs: HORA }).notify, false);
         assert.equal(dispatch(dir, { now: T0 + HORA, heartbeatMs: HORA }).notify, true);
+    } finally { rm(dir); }
+});
+
+test('CA-13 — la ventana también sale de `config.yaml`, no sólo del parámetro', () => {
+    // El parámetro `heartbeatMs` es de tests; en producción `recordDispatch` no
+    // lo recibe y la ventana la resuelve `config.yaml: fallback_episode
+    // .heartbeat_hours`. Sin este test, cambiar el default del YAML no rompería
+    // nada visible y el operador dejaría de recibir el re-aviso sostenido.
+    const dir = mkStateDir();
+    try {
+        seedHealth(dir);
+        const cfgPath = path.join(dir, 'config.yaml');
+        fs.writeFileSync(cfgPath, 'fallback_episode:\n  heartbeat_hours: 2\n');
+
+        // Sin `heartbeatMs`: la ventana tiene que salir del YAML (2 h).
+        const base = {
+            stateDir: dir, configPath: cfgPath, provider: 'openai-codex',
+            crossProvider: true, chain: ['anthropic', 'openai-codex'], models: MODELS,
+        };
+        const abre = episodeState.recordDispatch({ ...base, now: T0 });
+        assert.equal(abre.episode.heartbeatMs, 2 * HORA, 'leyó heartbeat_hours del YAML');
+
+        assert.equal(episodeState.recordDispatch({ ...base, now: T0 + HORA }).notify, false,
+            'a la hora todavía no toca re-avisar');
+        const re = episodeState.recordDispatch({ ...base, now: T0 + 3 * HORA });
+        assert.equal(re.notify, true, 'pasadas las 2 h configuradas, re-avisa');
+        assert.equal(re.reason, 'heartbeat');
     } finally { rm(dir); }
 });
 
