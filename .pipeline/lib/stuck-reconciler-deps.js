@@ -65,6 +65,8 @@ try { sanitizeDefault = require('../sanitizer').sanitize; } catch { /* opcional 
 // #6296 — carril de rebote por severidad.
 const { resolveReboteDestino } = require('./rebote-destino');
 const { contarRebotes, resolveRebotesMax } = require('./rebote-counter');
+// #6296 rev-3 — fuente UNICA de la politica de no-publicacion (ver nota en (6)).
+const { ocultaMotivoPublico } = require('./rejection-severity');
 const redactDefault = require('./redact');
 // Sanitización del guidance de origen AGENTE: se REUSAN los detectores del
 // handoff (mismo productor conceptual: texto que un agente cita de terceros).
@@ -695,6 +697,28 @@ function buildStuckReconcilerDeps(opts = {}) {
             if (escritos === 0) return false;
 
             // (6) Constancia en el issue.
+            //
+            // SEC (#6296 rev-3) — `intrale/platform` es un repo PUBLIC y esto es un
+            // comentario en un issue ABIERTO. El motivo de un rechazo de `security`
+            // contiene, por contrato del rol, el claim empirico: CVE, secreto con
+            // archivo:linea, o vector de inyeccion con archivo:linea. Publicarlo aca
+            // seria publicar la ubicacion exacta de una vulnerabilidad AUN SIN
+            // CORREGIR — el rebote va a dev justamente porque el defecto sigue vivo.
+            //
+            // Este es el carril que `security` SIEMPRE toma (piso `grave` en
+            // `rejection-severity`), asi que la guarda tiene que estar aca y no solo
+            // en el leve. La redaccion de secretos NO alcanza: apunta a VALORES
+            // (AKIA…, JWT, token=), y un texto como "SQL injection en Foo.kt:42 via
+            // parametro sin sanitizar" no matchea ningun patron y saldria verbatim.
+            //
+            // Ocultar NO es silenciar: queda el puntero no sensible (quien rechazo,
+            // origen, destino, nro de rebote) para que el issue siga siendo
+            // auditable. El motivo completo sigue viajando por los canales PRIVADOS,
+            // que no salen del FS: `motivo_rechazo` del work-item (4) y la guidance
+            // de agente (5).
+            const ocultarMotivo = ocultaMotivoPublico(
+                rechazoSkills.length ? rechazoSkills : [rechazadoPorSkill],
+            );
             try {
                 humanBlock.enqueueGithub('comment', {
                     issue: n,
@@ -704,11 +728,19 @@ function buildStuckReconcilerDeps(opts = {}) {
                         `**Rechazó:** \`${rechazadoPorSkill || 'desconocido'}\` en \`${pipeline}/${faseOrigen}\` · **Severidad:** \`${severidad}\``,
                         `**Destino:** \`${pipeline}/${faseDestino}\` → \`${validos.join(', ')}\` (rebote ${conteo.reboteCount + 1}/${maxRebotes})`,
                         '',
-                        '**Motivo del rechazo (sanitizado):**',
-                        '',
-                        '```',
-                        String(motivoParaYaml).slice(0, 1500),
-                        '```',
+                        ...(ocultarMotivo
+                            ? [
+                                '**Motivo del rechazo:** _no se publica_ — proviene de un validador cuyo motivo es sensible: un hallazgo de seguridad sin corregir describe cómo explotarlo, y este repositorio es público.',
+                                '',
+                                'El motivo completo llegó al agente por los canales privados del pipeline (work-item y guidance) y queda en el deliverable marcado `sensible: true`. Se consulta por ahí — no se replica en este comentario.',
+                            ]
+                            : [
+                                '**Motivo del rechazo (sanitizado):**',
+                                '',
+                                '```',
+                                String(motivoParaYaml).slice(0, 1500),
+                                '```',
+                            ]),
                         '',
                         '_Criterio #6296: un rechazo es una decisión, no una ambigüedad — el pipeline lo devuelve a desarrollo en vez de escalar a `needs-human`._',
                     ].join('\n'),

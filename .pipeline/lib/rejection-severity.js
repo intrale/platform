@@ -44,6 +44,52 @@ const SEVERIDADES = Object.freeze(['grave', 'leve']);
  */
 const SKILLS_PISO_GRAVE = Object.freeze(['security']);
 
+/**
+ * Skills cuyo MOTIVO de rechazo NUNCA se publica en una superficie pública
+ * (comentario de issue o de PR). `intrale/platform` es un repo PUBLIC.
+ *
+ * POR QUÉ ES UNA LISTA APARTE DE `SKILLS_PISO_GRAVE`
+ * -------------------------------------------------
+ * Son dos decisiones distintas que hoy caen en el mismo skill:
+ *   - `SKILLS_PISO_GRAVE`  responde "¿frena el issue?"  ⇒ severidad.
+ *   - `SKILLS_SIN_MOTIVO_PUBLICO` responde "¿el texto puede salir?" ⇒ difusión.
+ * Colapsarlas ata la difusión a la severidad, y mañana un skill grave-pero-
+ * publicable (o publicable-pero-leve) obligaría a desarmar el piso de seguridad.
+ *
+ * FUENTE ÚNICA (#6296 rev-3): la consumen los DOS carriles de publicación
+ * -- el leve (`buildObservacion` → `pr-comment`) y el grave (dep `rebote` →
+ * `comment`). Tenía una copia local en `stuck-phase-reconciler.js` que sólo
+ * cubría el carril leve, al que `security` NUNCA llega por el piso de arriba:
+ * el control vivía donde era inalcanzable y faltaba donde siempre corre. Toda
+ * lectura de esta lista pasa por acá para que no vuelva a divergir.
+ *
+ * La redacción de secretos NO sustituye esta lista: `redact` apunta a VALORES
+ * (AKIA…, JWT, `token=`), y un motivo como "SQL injection en Foo.kt:42 vía
+ * parámetro sin sanitizar" no matchea ningún patrón y saldría verbatim.
+ */
+const SKILLS_SIN_MOTIVO_PUBLICO = Object.freeze(['security']);
+
+/**
+ * ¿Alguno de estos skills obliga a ocultar el motivo en superficie pública?
+ *
+ * Fail-closed por diseño: basta UN skill sensible para ocultar el bloque de
+ * motivo completo. No se publica "la parte no-sensible" de un texto mixto --
+ * los motivos se concatenan y separar por autor es frágil.
+ *
+ * @param {Array<string|{skill?:string}>} skills skills que rechazaron (o sus
+ *   registros de rechazo; se acepta cualquiera de las dos formas porque cada
+ *   carril tiene la suya a mano).
+ * @returns {boolean} `true` si el motivo debe omitirse. Entrada no-array ⇒
+ *   `true`: sin lista legible de autores no se puede afirmar que sea publicable.
+ */
+function ocultaMotivoPublico(skills) {
+    if (!Array.isArray(skills)) return true;
+    return skills.some((s) => {
+        const nombre = (s && typeof s === 'object') ? s.skill : s;
+        return SKILLS_SIN_MOTIVO_PUBLICO.includes(String(nombre == null ? '' : nombre).trim().toLowerCase());
+    });
+}
+
 /** `'grave'` es el default fail-closed de todo el módulo. */
 const GRAVE = 'grave';
 const LEVE = 'leve';
@@ -102,6 +148,8 @@ module.exports = {
     resolveSeverityAgregada,
     SEVERIDADES,
     SKILLS_PISO_GRAVE,
+    SKILLS_SIN_MOTIVO_PUBLICO,
+    ocultaMotivoPublico,
     GRAVE,
     LEVE,
 };

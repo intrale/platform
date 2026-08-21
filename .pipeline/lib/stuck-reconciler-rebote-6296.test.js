@@ -316,3 +316,81 @@ test('el audit sigue ignorando los `none` (ruido de tick)', () => {
     writer({ action: 'none', issue: 1 });
     assert.equal(escritas.length, 0);
 });
+
+// ─── SEC #6296 rev-3: el motivo de `security` NO sale al issue público ─────
+//
+// `intrale/platform` es PUBLIC (`gh repo view --json visibility` ⇒ PUBLIC) y
+// este carril comenta en un issue ABIERTO. `security` tiene piso `grave` en
+// `rejection-severity`, así que SIEMPRE toma este carril y NUNCA el leve: el
+// test de `buildObservacion` cubría el carril inalcanzable y dejaba descubierto
+// el único que corre. Estos tests cubren el que corre.
+const MOTIVO_SEC = 'SQL injection en Foo.kt:42 vía parámetro sin sanitizar';
+const metaSecurity = (skills) => meta({
+    rebote: { severidadEfectiva: 'grave', skills },
+    reason: 'rechazo de validador (security:rejected(grave))',
+});
+
+test('SEC rev-3 rechazo de `security`: el comentario público NO lleva el motivo', () => {
+    const { deps, enqueued } = build();
+    assert.equal(deps.rebote(6296, metaSecurity([
+        { skill: 'security', severidad: 'grave', motivo: MOTIVO_SEC },
+    ])), true);
+
+    const comment = enqueued.find((e) => e.action === 'comment');
+    assert.ok(comment, 'el rebote sigue dejando constancia (ocultar ≠ silenciar)');
+    const body = comment.payload.body;
+
+    // Lo que NO puede salir: el claim empírico ni el andamiaje que lo enmarca.
+    assert.ok(!body.includes(MOTIVO_SEC), 'el motivo NO se publica');
+    assert.ok(!/Foo\.kt:42/.test(body), 'la ubicación de la vulnerabilidad NO se publica');
+    assert.ok(!/sanitizado/.test(body), 'no se anuncia un bloque de motivo que no está');
+
+    // Lo que SÍ tiene que salir: el puntero no sensible que mantiene auditable
+    // el issue (quién rechazó, origen, destino, nro de rebote).
+    assert.match(body, /Rebote automático por rechazo de validador/);
+    assert.match(body, /security/);
+    assert.match(body, /desarrollo\/verificacion/);
+    assert.match(body, /desarrollo\/dev/);
+    assert.match(body, /rebote 1\/3/);
+    assert.match(body, /no se publica/);
+});
+
+test('SEC rev-3 el motivo de `security` SÍ viaja por los canales PRIVADOS (FS)', () => {
+    const { deps, fs } = build();
+    assert.equal(deps.rebote(6296, metaSecurity([
+        { skill: 'security', severidad: 'grave', motivo: MOTIVO_SEC },
+    ])), true);
+
+    // Ocultarlo del issue no puede dejar al dev sin el claim: si no llega por
+    // el FS, el rebote pierde su razón de ser.
+    const dir = path.join(PIPELINE, 'desarrollo', 'dev', 'pendiente');
+    const wi = fs.files[path.join(dir, '6296.backend-dev')];
+    assert.ok(wi, 'work-item escrito');
+    assert.match(wi, /motivo_rechazo: .*SQL injection/, 'el motivo llega por el work-item');
+    assert.match(wi, /^rechazado_por_skill: security$/m);
+
+    const guidance = fs.files[path.join(dir, '6296.backend-dev.guidance.agent.txt')];
+    assert.ok(guidance, 'guidance de agente escrita');
+    assert.ok(guidance.includes('Foo.kt:42'), 'el motivo llega por la guidance');
+});
+
+test('SEC rev-3 basta UN skill sensible entre varios para ocultar el bloque', () => {
+    const { deps, enqueued } = build();
+    // Los motivos se concatenan; separar por autor es frágil ⇒ fail-closed.
+    assert.equal(deps.rebote(6296, metaSecurity([
+        { skill: 'qa', severidad: 'grave', motivo: 'CA-1: la pantalla no renderiza' },
+        { skill: 'security', severidad: 'grave', motivo: MOTIVO_SEC },
+    ])), true);
+
+    const body = enqueued.find((e) => e.action === 'comment').payload.body;
+    assert.ok(!body.includes(MOTIVO_SEC), 'el motivo sensible NO se publica');
+    assert.ok(!body.includes('no renderiza'), 'tampoco sale el motivo del co-rechazo concatenado');
+});
+
+test('SEC rev-3 no-regresión: un rechazo NO sensible sigue publicando su motivo', () => {
+    const { deps, enqueued } = build();
+    assert.equal(deps.rebote(6296, meta()), true);
+    const body = enqueued.find((e) => e.action === 'comment').payload.body;
+    assert.match(body, /no renderiza/, 'el carril normal no se volvió mudo');
+    assert.match(body, /Motivo del rechazo \(sanitizado\)/);
+});

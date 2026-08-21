@@ -33,6 +33,7 @@
 'use strict';
 
 const { analyzeStuckIssue, classifyPhase } = require('./stuck-phase-detector');
+const { SKILLS_SIN_MOTIVO_PUBLICO, ocultaMotivoPublico } = require('./rejection-severity');
 
 const DEFAULT_MAX_REQUEUE_ATTEMPTS = 2;
 const DEFAULT_CAP_PER_TICK = 5;
@@ -143,7 +144,12 @@ const CAUSE_REJECT_SIN_DESTINO = 'rechazo-sin-destino';
 // de vulnerabilidad abierto. El piso `security ⇒ grave` de `rejection-severity`
 // ya lo mantiene fuera de este carril; esta lista es defensa en profundidad para
 // el texto que efectivamente se publica.
-const SKILLS_SIN_OBSERVACION_PUBLICA = new Set(['security']);
+//
+// rev-3: la lista dejó de ser local. Vive en `rejection-severity` (fuente única)
+// porque el carril GRAVE —el único que `security` puede tomar— también publica,
+// y una copia por carril ya divergió una vez: el control quedó sólo acá, donde
+// `security` no llega. El alias se mantiene por compatibilidad del export.
+const SKILLS_SIN_OBSERVACION_PUBLICA = new Set(SKILLS_SIN_MOTIVO_PUBLICO);
 
 /**
  * #6296 — payload de la observación al PR del carril leve.
@@ -154,7 +160,7 @@ const SKILLS_SIN_OBSERVACION_PUBLICA = new Set(['security']);
  */
 function buildObservacion(analysis, it) {
     const skills = ((analysis.rebote && analysis.rebote.skills) || [])
-        .filter((r) => !SKILLS_SIN_OBSERVACION_PUBLICA.has(String(r.skill || '').toLowerCase()));
+        .filter((r) => !ocultaMotivoPublico([r.skill]));
     return {
         issue: it.issue,
         pipeline: it.pipeline,
