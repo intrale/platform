@@ -324,6 +324,58 @@ confirmar cierre) no puede aplicar.
 que NO está en la ola (`added` no vacío sin traza), converger revocaría en
 silencio una autorización deliberada. Eso es `ambiguo` y lo decide un humano.
 
+### Qué se comunica de cada convergencia (#6117)
+
+Los escalones 2 y 3 avisaban por Telegram cada vez que reparaban con éxito. Se
+sacó: **una reparación exitosa no pide ninguna decisión del operador** — ya se
+ejecutó, salió bien y el pipeline siguió andando. El aviso sólo competía en el
+mismo canal con las alertas que sí requieren intervención, y las diluía.
+
+Criterio vigente:
+
+| Situación | Telegram | Dónde queda |
+|---|---|---|
+| Reparación **exitosa** (escalones 2 y 3) | **No** | `pulpo.log`, audit de olas, métrica y dashboard |
+| Reparación **no aplicada** o que lanzó | **Sí**, con causa y cómo destrabar | + `WARN` en `pulpo.log` |
+| Reparación OK pero el **audit no se pudo escribir** | **Sí** | Se mutó la autorización de despacho sin dejar rastro |
+| La **misma** reparación se repite N veces en la ventana | **Sí**, como anomalía recurrente | Ver config abajo |
+| El caso cae a `human-block` | **Sí**, escalonado por `desync-block-notifier` | Sin cambios |
+
+El cierre de ciclo (`desyncBlockNotifier.onResolved`) **no se tocó**: sigue
+avisando que el trabajo volvió, pero sólo si el operador había recibido antes el
+aviso de bloqueo. Nunca un cierre huérfano.
+
+**Métrica** — cada reparación exitosa se registra en
+`.pipeline/state/auto-repair.jsonl` (append-only) con `{tipo, issues, count,
+timestamp}` y nada más. `tipo` es un enum cerrado
+(`convergencia_aditiva` | `reparacion_aditiva_wave_add`).
+
+**Detector de repetición** — que la misma reparación se repita no es sanidad: es
+el síntoma de una causa raíz que sigue desarmando la lista. Se configura en
+`config.yaml` bajo `desync:`:
+
+```yaml
+desync:
+  repair_alert_threshold: 3        # reparaciones del mismo tipo…
+  repair_alert_window_ms: 3600000  # …dentro de esta ventana ⇒ aviso
+```
+
+Dos decisiones de diseño que conviene no "arreglar":
+
+- **La firma es sólo el tipo**, no el set de issues. Si el set agrupara, una
+  causa raíz que rompe issues distintos en cada vuelta nunca alcanzaría el
+  umbral — justo el caso que la alerta busca detectar.
+- **El conteo se deriva del JSONL, no de memoria.** El Pulpo se reinicia seguido
+  (watchdog, `restart.js`, respawn) y un contador in-memory se resetearía
+  precisamente cuando la causa raíz agita el sistema.
+
+Si el JSONL no se puede leer o parsear, el detector **avisa igual**
+(`motivo: 'estado_ilegible'`): no poder contar no puede traducirse en silencio.
+
+El aviso de **fallo** se dedupea por firma (`tipo` + causa) durante la misma
+ventana. Sin eso, una divergencia irreparable dispararía un mensaje en cada tick
+periódico (~5 min) — un flood peor que los avisos que #6117 vino a sacar.
+
 ### Protección del trabajo vivo frente al TTL (#5724)
 
 Las autorizaciones heredadas de un split (`recursive-deps:from-N`) caducan a las
@@ -347,7 +399,10 @@ poda no corre (conservador: podar de más es lo que produjo el incidente).
    vive en `.pipeline/.desync-block-notify.json` y se cierra solo al converger.
 3. El pipeline entra en `human-block` (no procesa intake). El dashboard lo
    muestra como **"Dispatch suspendido"** con la divergencia concreta y la
-   antigüedad del bloqueo.
+   antigüedad del bloqueo. En la vista **Pipeline** figura además la línea
+   *"Última auto-reparación"* (tipo, issues repuestos y hace cuánto), que sirve
+   para distinguir un bloqueo nuevo de uno que viene reparándose en loop —
+   consultable sin depender de Telegram (#6117).
 4. **Acción manual**:
    - `cat .pipeline/.desync-detected.flag | jq .` para ver el diff exacto.
    - Decidir cuál archivo refleja la realidad operativa.

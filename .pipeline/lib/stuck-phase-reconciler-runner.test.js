@@ -227,3 +227,28 @@ test('las decisiones arrastran la antigüedad del entregable más viejo', () => 
     assert.ok(d, 'la decisión existe');
     assert.equal(d.stuckSinceMs, VIEJO, 'viaja hasta el emisor, que es quien arma el texto');
 });
+
+test('rebote rev-2 · un mtimeMs en 0 no se toma como antigüedad', () => {
+    // `deps.buildIssuesContext` deja `mtimeMs = 0` cuando el statSync falla (carrera
+    // con un rename). `Number.isFinite(0)` es true, así que el filtro ingenuo lo
+    // tomaba como el entregable más viejo y el copy imprimía "hace 20324 d" (epoch).
+    const VIEJO = NOW - 3 * 60 * 60 * 1000;
+    const fs = { desarrollo: { validacion: {
+        listo: {
+            '702.po': { yaml: APROB, mtimeMs: 0 },
+            '702.ux': { yaml: APROB, mtimeMs: VIEJO },
+        },
+    } } };
+    const ctx = buildIssuesContext(makeDeps(fs));
+    assert.equal(ctx.length, 1);
+    assert.equal(ctx[0].stuckSinceMs, VIEJO, 'el 0 se descarta, gana el mtime real más viejo');
+});
+
+test('rebote rev-2 · si TODOS los mtimeMs son 0, stuckSinceMs queda en null', () => {
+    const fs = { desarrollo: { validacion: {
+        listo: { '703.po': { yaml: APROB, mtimeMs: 0 } },
+    } } };
+    const ctx = buildIssuesContext(makeDeps(fs));
+    assert.equal(ctx.length, 1);
+    assert.equal(ctx[0].stuckSinceMs, null, 'sin dato confiable el copy omite la antigüedad');
+});

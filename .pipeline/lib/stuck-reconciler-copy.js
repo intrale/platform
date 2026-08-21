@@ -116,16 +116,22 @@ const FORBIDDEN_TERMS_RE = new RegExp(
  * sanitize + strip de control chars). Acá se suma lo específico del copy: colapsar
  * whitespace, tachar rutas/extensiones y jerga, y capar a 120 chars.
  */
+// Secuencia ANSI completa (CSI). Se aplica dos veces en scrubTitle: antes del
+// `sanitize` inyectado (que borra el ESC y dejaría el "[31m" suelto) y después.
+const ANSI_RE = /\x1B\[[0-9;?]*[ -/]*[@-~]/g;
+
 function scrubTitle(raw, sanitize) {
     if (raw == null) return '';
-    let str = raw;
+    // Secuencias ANSI completas ANTES del `sanitize` inyectado: `sanitizeForTelegram`
+    // borra \x00-\x1F —el ESC incluido— y dejaría el "[31m" suelto como texto
+    // inerte, que es justo el residuo que este scrub quiere evitar.
+    let str = String(raw).replace(ANSI_RE, '');
     if (typeof sanitize === 'function') {
         try { str = sanitize(str); } catch { /* best-effort: seguimos con el crudo */ }
     }
     str = String(str == null ? '' : str)
-        // Secuencias ANSI completas primero: si sólo borráramos el ESC (que sí
-        // cae en \x00-\x1F) quedaría el "[31m" suelto como texto.
-        .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, '')
+        // Segunda pasada, idempotente: cubre lo que el `sanitize` pudiera reintroducir.
+        .replace(ANSI_RE, '')
         // Bidi override / isolates y zero-width. NO son control chars del rango
         // \x00-\x1F, así que ni `sanitizeForTelegram` ni un strip ingenuo los
         // agarran: sobreviven y permiten dar vuelta el texto que ve el operador

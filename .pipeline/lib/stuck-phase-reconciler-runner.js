@@ -84,7 +84,10 @@ function buildIssuesContext(deps) {
             // antigüedad en vez de imprimir `NaN`.
             const mtimes = data.deliverables
                 .map((d) => d.mtimeMs)
-                .filter((v) => Number.isFinite(v));
+                // `> 0` y no sólo `isFinite`: `deps.buildIssuesContext` deja
+                // `mtimeMs = 0` cuando el statSync falla (carrera con un rename),
+                // y ese 0 daría "hace 20324 d" en el copy (#6150, obs. de qa).
+                .filter((v) => Number.isFinite(v) && v > 0);
             out.push({
                 issue: Number(issue),
                 pipeline, fase,

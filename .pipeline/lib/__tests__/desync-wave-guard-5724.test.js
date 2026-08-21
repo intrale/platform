@@ -590,3 +590,460 @@ test('CA-4: sin bloqueo, detected_at es null (no se inventa antigüedad)', () =>
         assert.equal(s.detected_at, null);
     } finally { teardown(dir); }
 });
+
+// =============================================================================
+// #6117 — La convergencia aditiva EXITOSA no le escribe al operador
+//
+// Antes de #6117 esta rama emitía "Volví a habilitar el dispatch (#5724)". El
+// aviso no pedía ninguna decisión: la reparación ya se había ejecutado y el
+// pipeline seguía andando. Ahora el dato va a log, audit, métrica y dashboard.
+//
+// RIESGO DE FALSO VERDE (H6) — `sendTelegramPlain` NO hace HTTP: encola un
+// dropfile en `<pipeline>/servicios/telegram/pendiente`. Si faltan las
+// credenciales corta ANTES de escribir, y si el directorio no existe el
+// `writeFileSync` tira y se lo come un `catch` best-effort. En cualquiera de
+// esos dos casos un `assert(dropfiles === 0)` pasaría sin haber probado nada.
+//
+// Por eso cada test de silencio de acá abajo:
+//   1. corre sobre un arnés que SIEMBRA credenciales válidas y CREA el
+//      directorio de la cola (`setupTelegram`), y
+//   2. va acompañado de un CONTROL POSITIVO en el mismo arnés, que demuestra
+//      que el harness detecta un dropfile cuando efectivamente lo hay.
+// Sin el control positivo, estos tests no valen nada.
+// =============================================================================
+
+const autoRepairMetrics = require('../metrics/auto-repair');
+
+// Formato exigido por `lib/telegram-secrets.js::isLikelyToken`. Valor SINTÉTICO
+// con la forma correcta, no una credencial real.
+const TG_TOKEN_FAKE = '1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+let _tgEnvPrevio = null;
+
+/** setup() + cola de Telegram operativa (credenciales + directorio). */
+function setupTelegram() {
+    const dir = setup();
+    fs.mkdirSync(path.join(dir, 'servicios', 'telegram', 'pendiente'), { recursive: true });
+    _tgEnvPrevio = {
+        token: process.env.TELEGRAM_BOT_TOKEN,
+        chat: process.env.TELEGRAM_CHAT_ID,
+    };
+    process.env.TELEGRAM_BOT_TOKEN = TG_TOKEN_FAKE;
+    process.env.TELEGRAM_CHAT_ID = '999999';
+    // El dedupe del aviso de fallo es estado de PROCESO, no del tmpdir: sin
+    // limpiarlo, un test que ya emitió una firma silencia al siguiente que use
+    // la misma, y el fallo se lee como un bug del código bajo prueba.
+    try { pulpo._resetAutoRepairFailureDedupe(); } catch (_) {}
+    return dir;
+}
+
+function teardownTelegram(dir) {
+    if (_tgEnvPrevio) {
+        if (_tgEnvPrevio.token === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+        else process.env.TELEGRAM_BOT_TOKEN = _tgEnvPrevio.token;
+        if (_tgEnvPrevio.chat === undefined) delete process.env.TELEGRAM_CHAT_ID;
+        else process.env.TELEGRAM_CHAT_ID = _tgEnvPrevio.chat;
+        _tgEnvPrevio = null;
+    }
+    teardown(dir);
+}
+
+/** Dropfiles encolados para Telegram en el tmpdir del test. */
+function dropfiles(dir) {
+    const d = path.join(dir, 'servicios', 'telegram', 'pendiente');
+    try { return fs.readdirSync(d); } catch { return []; }
+}
+
+/** Texto de cada dropfile (para asertar sobre el copy emitido). */
+function dropfileTexts(dir) {
+    const d = path.join(dir, 'servicios', 'telegram', 'pendiente');
+    return dropfiles(dir).map((f) => {
+        try { return JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')).text || ''; }
+        catch { return ''; }
+    });
+}
+
+test('#6117 CONTROL POSITIVO: el arnés SÍ detecta un dropfile cuando se emite uno', () => {
+    // Este test es el que le da sentido a los de silencio. Si esto falla, los
+    // `assert(dropfiles === 0)` de abajo son falsos verdes.
+    const dir = setupTelegram();
+    try {
+        assert.deepEqual(dropfiles(dir), [], 'arranca sin dropfiles');
+        pulpo.notifyAutoRepairFailure('convergencia_aditiva', 'motivo de prueba');
+        assert.equal(dropfiles(dir).length, 1,
+            'el arnés tiene credenciales y directorio: un envío real deja dropfile');
+    } finally { teardownTelegram(dir); }
+});
+
+test('#6117 CA-1: una convergencia aditiva EXITOSA no deja ningún dropfile de Telegram', () => {
+    const dir = setupTelegram();
+    try {
+        writeWaves(dir, [
+            { number: 5688, status: 'in_progress' },
+            { number: 5689, status: 'in_progress' },
+            { number: 5690, status: 'in_progress' },
+        ]);
+        writeAllowlist(dir, [5688]);
+        const isClosed = isClosedFrom([]);
+
+        pulpo.evaluateDesyncAndMaybeRealign('periodic', { isClosed });
+
+        // La reparación efectivamente ocurrió (si no, el silencio no prueba nada).
+        assert.deepEqual(readAllowlist(dir), [5688, 5689, 5690], 'la reparación se aplicó');
+        assert.equal(desyncDetector.isDesyncFlagSet(), false);
+        assert.deepEqual(dropfiles(dir), [],
+            'una reparación exitosa no pide ninguna decisión: no se le escribe al operador');
+    } finally { teardownTelegram(dir); }
+});
+
+test('#6117 CA-3: la reparación exitosa SÍ deja traza completa en el log del Pulpo', () => {
+    // `log()` escribe por stdout (el servicio lo redirige a pulpo.log), así que
+    // la traza se captura interceptando console.log, no leyendo un archivo.
+    const dir = setupTelegram();
+    const capturado = [];
+    const originalLog = console.log;
+    console.log = (...args) => { capturado.push(args.join(' ')); };
+    try {
+        writeWaves(dir, [
+            { number: 5688, status: 'in_progress' },
+            { number: 5689, status: 'in_progress' },
+        ]);
+        writeAllowlist(dir, [5688]);
+
+        pulpo.evaluateDesyncAndMaybeRealign('periodic', { isClosed: isClosedFrom([]) });
+    } finally {
+        console.log = originalLog;
+        teardownTelegram(dir);
+    }
+
+    const contenido = capturado.join('\n');
+    assert.ok(/convergencia ADITIVA/.test(contenido), 'la convergencia queda en el log');
+    assert.ok(/5689/.test(contenido), 'el log nombra los issues repuestos');
+    assert.ok(/faltantes_repuestos/.test(contenido), 'el log conserva el detalle de qué se repuso');
+    // El silencio de Telegram queda explicado en la propia traza: quien lea el
+    // log dentro de seis meses no tiene que adivinar por qué no hubo aviso.
+    assert.ok(/#6117/.test(contenido), 'el log dice por qué no se notificó');
+});
+
+test('#6117 CA-3: onResolved sigue invocándose (no es regresión de #5724 CA-4)', () => {
+    // El cierre de ciclo de `desyncBlockNotifier` NO se borró: sigue avisando
+    // "volvió el trabajo" cuando el operador ya había recibido el aviso de
+    // bloqueo. Silenciar la auto-reparación no puede llevarse eso puesto.
+    const dir = setupTelegram();
+    try {
+        const llamadas = [];
+        const original = blockNotifier.onResolved;
+        blockNotifier.onResolved = (arg) => { llamadas.push(arg); return { notificado: false }; };
+        try {
+            writeWaves(dir, [
+                { number: 5688, status: 'in_progress' },
+                { number: 5689, status: 'in_progress' },
+            ]);
+            writeAllowlist(dir, [5688]);
+            pulpo.evaluateDesyncAndMaybeRealign('periodic', { isClosed: isClosedFrom([]) });
+        } finally { blockNotifier.onResolved = original; }
+
+        assert.equal(llamadas.length, 1, 'onResolved se invocó exactamente una vez');
+        assert.equal(llamadas[0].resolucion, 'convergencia_aditiva');
+        assert.deepEqual(llamadas[0].issues, [5689]);
+    } finally { teardownTelegram(dir); }
+});
+
+test('#6117 CA-6: la reparación exitosa incrementa el contador de auto-reparaciones', () => {
+    const dir = setupTelegram();
+    try {
+        writeWaves(dir, [
+            { number: 5688, status: 'in_progress' },
+            { number: 5689, status: 'in_progress' },
+        ]);
+        writeAllowlist(dir, [5688]);
+
+        assert.equal(autoRepairMetrics.readLastAutoRepair(), null, 'arranca sin métrica');
+        pulpo.evaluateDesyncAndMaybeRealign('periodic', { isClosed: isClosedFrom([]) });
+
+        const last = autoRepairMetrics.readLastAutoRepair();
+        assert.notEqual(last, null, 'quedó registrada la auto-reparación');
+        assert.equal(last.tipo, 'convergencia_aditiva');
+        assert.deepEqual(last.issues, [5689]);
+    } finally { teardownTelegram(dir); }
+});
+
+test('#6117 CA-7: el slice del dashboard expone la última auto-reparación', () => {
+    const dir = setupTelegram();
+    try {
+        writeWaves(dir, [
+            { number: 5688, status: 'in_progress' },
+            { number: 5689, status: 'in_progress' },
+        ]);
+        writeAllowlist(dir, [5688]);
+
+        // Sin reparaciones todavía: el campo existe y vale null (contrato).
+        const antes = slices.desyncStatusSlice({}, {});
+        assert.ok('ultima_auto_reparacion' in antes, 'el campo es parte del contrato');
+        assert.equal(antes.ultima_auto_reparacion, null);
+
+        pulpo.evaluateDesyncAndMaybeRealign('periodic', { isClosed: isClosedFrom([]) });
+
+        const s = slices.desyncStatusSlice({}, {});
+        const u = s.ultima_auto_reparacion;
+        assert.notEqual(u, null, 'el operador puede consultarla sin depender de Telegram');
+        assert.equal(u.tipo, 'convergencia_aditiva');
+        assert.deepEqual(u.issues, [5689]);
+        assert.ok(Number.isFinite(Date.parse(u.timestamp)));
+        // SEC-6: shape acotado — el dashboard no expone nada más.
+        assert.deepEqual(Object.keys(u).sort(), ['issues', 'timestamp', 'tipo']);
+    } finally { teardownTelegram(dir); }
+});
+
+test('#6117 CA-4: una reparación que FALLA sí notifica, con causa y cómo destrabar', () => {
+    const dir = setupTelegram();
+    try {
+        pulpo.notifyAutoRepairFailure('convergencia_aditiva', 'no_active_wave');
+
+        const textos = dropfileTexts(dir);
+        assert.equal(textos.length, 1, 'el fallo sí llega al operador');
+        const t = textos[0];
+        assert.ok(/no pude/i.test(t), 'dice que no pudo');
+        assert.ok(/no_active_wave/.test(t), 'incluye la causa');
+        assert.ok(/wave add/.test(t), 'dice qué hacer para destrabar (#5134)');
+    } finally { teardownTelegram(dir); }
+});
+
+test('#6117 SEC-5: el aviso de fallo no filtra stack, paths absolutos ni tokens', () => {
+    const dir = setupTelegram();
+    try {
+        const sucio = 'ENOENT: no such file C:\\Workspaces\\Intrale\\secreto\\config.yaml '
+            + 'token=1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+            + '    at Object.<anonymous> (/c/Workspaces/Intrale/platform/.pipeline/pulpo.js:19080:15)\n'
+            + '    at Module._compile (node:internal/modules/cjs/loader:1234:14)';
+        pulpo.notifyAutoRepairFailure('reparacion_aditiva_wave_add', sucio);
+
+        const [t] = dropfileTexts(dir);
+        assert.ok(t, 'se emitió el aviso');
+        assert.ok(!/C:\\Workspaces/.test(t), 'sin paths absolutos de Windows');
+        assert.ok(!/\/c\/Workspaces/.test(t), 'sin paths absolutos POSIX');
+        assert.ok(!/at Object\.<anonymous>/.test(t), 'sin stack trace');
+        assert.ok(!/at Module\._compile/.test(t), 'sin stack trace');
+        assert.ok(!/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/.test(t), 'sin el token');
+    } finally { teardownTelegram(dir); }
+});
+
+test('#6117: el aviso de fallo se dedupea por firma (no floodea el tick de 5 min)', () => {
+    // `evaluateDesyncAndMaybeRealign('periodic')` corre cada ~5 min. Una causa
+    // que persiste ejecutaría la rama de fallo en CADA tick: sin dedupe serían
+    // ~288 mensajes por día, un flood peor que los avisos que #6117 vino a
+    // sacar. Se avisa una vez por ventana, y de nuevo si la causa CAMBIA.
+    const dir = setupTelegram();
+    try {
+        const r1 = pulpo.notifyAutoRepairFailure('convergencia_aditiva', 'no_partial_pause');
+        const r2 = pulpo.notifyAutoRepairFailure('convergencia_aditiva', 'no_partial_pause');
+        const r3 = pulpo.notifyAutoRepairFailure('convergencia_aditiva', 'no_partial_pause');
+        assert.equal(r1.notificado, true, 'el primero avisa');
+        assert.equal(r2.notificado, false, 'el repetido no');
+        assert.equal(r3.motivo, 'dedupe_ventana');
+        assert.equal(dropfiles(dir).length, 1, 'un solo mensaje pese a tres ticks');
+
+        // Causa distinta = información nueva sobre por qué sigue frenado.
+        const r4 = pulpo.notifyAutoRepairFailure('convergencia_aditiva', 'no_active_wave');
+        assert.equal(r4.notificado, true, 'una causa nueva sí se comunica');
+        assert.equal(dropfiles(dir).length, 2);
+    } finally { teardownTelegram(dir); }
+});
+
+test('#6117 SEC-2: si el audit no se pudo escribir, la reparación exitosa SÍ avisa', () => {
+    // Se mutó quién puede despachar y no quedó registro de la operación. No
+    // frena nada, pero el operador tiene que enterarse antes de seguir tocando.
+    const dir = setupTelegram();
+    try {
+        pulpo.afterSuccessfulAutoRepair('convergencia_aditiva', [5689], { ok: true, audit_failed: true });
+        const [t] = dropfileTexts(dir);
+        assert.ok(t, 'el fallo de audit no puede ser silencioso');
+        assert.ok(/registro/i.test(t), 'explica que no quedó registro');
+
+        // Contraprueba: con el audit OK, la misma reparación es silenciosa.
+        const antes = dropfiles(dir).length;
+        pulpo.afterSuccessfulAutoRepair('convergencia_aditiva', [5690], { ok: true, audit_failed: false });
+        assert.equal(dropfiles(dir).length, antes,
+            'audit OK => sigue sin escribirle al operador');
+    } finally { teardownTelegram(dir); }
+});
+
+test('#6117 CA-5: la N-ésima repetición de la misma reparación SÍ notifica como anomalía', () => {
+    const dir = setupTelegram();
+    try {
+        // Umbral default 3. Las dos primeras son sanas y silenciosas.
+        pulpo.afterSuccessfulAutoRepair('convergencia_aditiva', [1], { ok: true });
+        assert.deepEqual(dropfiles(dir), [], '1a reparación: silenciosa');
+        pulpo.afterSuccessfulAutoRepair('convergencia_aditiva', [2], { ok: true });
+        assert.deepEqual(dropfiles(dir), [], '2a reparación: silenciosa');
+
+        // La 3ª ya no es una auto-reparación sana: es un síntoma.
+        pulpo.afterSuccessfulAutoRepair('convergencia_aditiva', [3], { ok: true });
+        const textos = dropfileTexts(dir);
+        assert.equal(textos.length, 1, '3a reparación: se avisa la anomalía recurrente');
+        // Copy normativo M4 (CA-UX-3): conteo + ventana + etiqueta humana + R3.
+        assert.ok(/Van 3 reparaciones/.test(textos[0]), 'dice cuántas veces se repitió');
+        assert.ok(/en la última hora/.test(textos[0]), 'dice en qué ventana');
+        assert.ok(/convergencia con la ola activa/.test(textos[0]), 'R4: etiqueta humana del tipo');
+        assert.ok(!/convergencia_aditiva/.test(textos[0]), 'CA-UX-2: nunca la clave interna');
+        assert.ok(/Qué hacer:/.test(textos[0]), 'R3: cierra con instrucción de reanudación');
+    } finally { teardownTelegram(dir); }
+});
+
+// =============================================================================
+// #6117 — Criterios UX (CA-UX-1..5) verificados como código
+//
+// El copy de este issue lo entregó UX como normativo (comentario de criterios).
+// Estas aserciones evitan que una edición futura lo erosione sin que nadie lo
+// note: son las reglas R1–R6 y P1–P6 expresadas como test.
+// =============================================================================
+
+const desyncCopy = require('../desync-copy');
+
+// Los 4 mensajes que SÍ se emiten (M1–M4), en su forma canónica.
+function todosLosMensajes() {
+    return [
+        desyncCopy.autoRepairFailureText({ issues: [4821, 4830], causa: 'no_active_wave' }),
+        desyncCopy.autoRepairFailureText({ issues: [4821], gateRejected: true }),
+        desyncCopy.autoRepairExceptionText(),
+        desyncCopy.autoRepairAuditFailedText({ issues: [4821] }),
+        desyncCopy.autoRepairRepetitionText({
+            tipo: 'convergencia_aditiva', count: 3, windowMs: 3600000,
+        }),
+        desyncCopy.autoRepairRepetitionText({
+            tipo: 'reparacion_aditiva_wave_add', count: 5, windowMs: 3600000,
+        }),
+    ];
+}
+
+test('#6117 CA-UX-1: el copy vive en desync-copy.js, no inline en pulpo.js', () => {
+    // R6 — inline en pulpo.js es como nacieron los dos avisos que este issue
+    // borró. Se afirma que el módulo expone los constructores de los 4 mensajes.
+    for (const fn of ['autoRepairFailureText', 'autoRepairExceptionText',
+        'autoRepairAuditFailedText', 'autoRepairRepetitionText', 'autoRepairLineaDashboard']) {
+        assert.equal(typeof desyncCopy[fn], 'function', `desync-copy debe exponer ${fn}`);
+    }
+    // Y que pulpo.js NO reintrodujo literales de copy propios en estas ramas.
+    const fuentePulpo = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+    for (const literal of ['Volví a habilitar el dispatch', 'Intenté reponer', 'Tuve que repon']) {
+        assert.ok(!fuentePulpo.includes(literal),
+            `pulpo.js no debe traer copy inline de auto-reparación: "${literal}"`);
+    }
+});
+
+test('#6117 CA-UX-2 / R4: ninguna superficie visible muestra las claves internas', () => {
+    const superficies = todosLosMensajes();
+    // La línea del dashboard también es superficie visible.
+    superficies.push(desyncCopy.autoRepairLineaDashboard(
+        { tipo: 'convergencia_aditiva', issues: [1], timestamp: new Date().toISOString() }, {}).texto);
+    superficies.push(desyncCopy.autoRepairLineaDashboard(
+        { tipo: 'reparacion_aditiva_wave_add', issues: [2], timestamp: new Date().toISOString() }, {}).texto);
+
+    for (const s of superficies) {
+        assert.ok(!/convergencia_aditiva/.test(s), `clave interna filtrada: ${s}`);
+        assert.ok(!/reparacion_aditiva_wave_add/.test(s), `clave interna filtrada: ${s}`);
+    }
+    // Y el mapa de etiquetas humanas es un set CERRADO.
+    assert.deepEqual(Object.keys(desyncCopy.AUTO_REPAIR_LABELS).sort(),
+        ['convergencia_aditiva', 'reparacion_aditiva_wave_add']);
+    assert.equal(desyncCopy.autoRepairLabel('convergencia_aditiva'), 'convergencia con la ola activa');
+    assert.equal(desyncCopy.autoRepairLabel('reparacion_aditiva_wave_add'), 'reposición de una promoción tuya');
+    // Un tipo desconocido degrada sin filtrar la clave cruda.
+    assert.ok(!/tipo_raro/.test(desyncCopy.autoRepairLabel('tipo_raro')));
+});
+
+test('#6117 R1: ningún mensaje trae el número de issue del pipeline entre paréntesis', () => {
+    // Es el problema #2 del issue: el (#5724) se confundía con los issues
+    // reparados que aparecen dos líneas más abajo.
+    for (const m of todosLosMensajes()) {
+        const hits = m.match(/\(#\d{3,}\)/g) || [];
+        assert.deepEqual(hits, [], `trazabilidad de código filtrada al operador: ${m}`);
+    }
+});
+
+test('#6117 R3: toda alerta cierra con la instrucción de reanudación', () => {
+    for (const m of todosLosMensajes()) {
+        assert.ok(/Qué hacer:/.test(m), `sin instrucción de reanudación (#5134): ${m}`);
+    }
+});
+
+test('#6117 R2: la consecuencia operativa va antes que el detalle en los mensajes de fallo', () => {
+    // "No se lanza ningún agente" importa más que qué función falló.
+    for (const m of [desyncCopy.autoRepairFailureText({ causa: 'x' }), desyncCopy.autoRepairExceptionText()]) {
+        assert.ok(/no se lanza ningún agente/.test(m), `falta la consecuencia operativa: ${m}`);
+        assert.ok(m.indexOf('no se lanza ningún agente') < m.indexOf('Qué hacer:'),
+            'la consecuencia va antes del cierre');
+    }
+});
+
+test('#6117 CA-UX-5 · P5: la línea del dashboard tiene empty-state explícito', () => {
+    for (const vacio of [null, undefined, {}, { tipo: 'convergencia_aditiva' }]) {
+        const l = desyncCopy.autoRepairLineaDashboard(vacio, {});
+        assert.equal(l.vacio, true);
+        assert.equal(l.texto, 'Sin auto-reparaciones registradas.',
+            'la línea nunca se oculta ni queda en blanco');
+    }
+});
+
+test('#6117 CA-UX-5 · P3: la antigüedad reusa desyncAgeText, no un formateador nuevo', () => {
+    const now = Date.parse('2026-08-18T12:00:00.000Z');
+    const ts = new Date(now - 135 * 60000).toISOString();   // 2 h 15 min
+    const l = desyncCopy.autoRepairLineaDashboard(
+        { tipo: 'convergencia_aditiva', issues: [1], timestamp: ts }, { nowMs: now });
+    // Misma redacción que el resto de la vista.
+    assert.equal(l.edad, desyncCopy.desyncAgeText(ts, now));
+    assert.ok(/hace 2 h 15 min/.test(l.texto), `redacción divergente: ${l.texto}`);
+});
+
+test('#6117 CA-UX-5 · P4: el tope de chips reusa DSS_CHIPS_TOPE y no trunca en silencio', () => {
+    const issues = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    const l = desyncCopy.autoRepairLineaDashboard(
+        { tipo: 'convergencia_aditiva', issues, timestamp: new Date().toISOString() }, {});
+    const more = l.chips.filter((c) => c.tipo === 'more');
+    assert.equal(l.chips.length, desyncCopy.DSS_CHIPS_TOPE + 1, 'tope + indicador');
+    assert.equal(more.length, 1, 'el truncado se indica, no es silencioso');
+    assert.equal(more[0].ocultos, issues.length - desyncCopy.DSS_CHIPS_TOPE);
+    assert.ok(/\+3/.test(l.texto), `el +N tiene que verse: ${l.texto}`);
+});
+
+test('#6117 CA-UX-5 · P1/P6: es metadato salvo umbral superado, y nunca sólo color', () => {
+    const base = { tipo: 'convergencia_aditiva', issues: [4821], timestamp: new Date().toISOString() };
+
+    // P1 — caso normal: metadato, sin ascenso de jerarquía.
+    const normal = desyncCopy.autoRepairLineaDashboard(base, {});
+    assert.equal(normal.severidad, 'meta');
+    assert.equal(normal.aviso, '');
+
+    // P6 — umbral superado: sube a warning Y lo dice con texto explícito.
+    const warn = desyncCopy.autoRepairLineaDashboard(base, {
+        repeticion: { count: 3, ventana_ms: 3600000, superado: true },
+    });
+    assert.equal(warn.severidad, 'warn');
+    assert.ok(/se repitió 3 veces en la última hora/.test(warn.texto),
+        `la info no puede ir sólo en el color: ${warn.texto}`);
+
+    // Repetición por debajo del umbral no asciende.
+    const bajo = desyncCopy.autoRepairLineaDashboard(base, {
+        repeticion: { count: 2, ventana_ms: 3600000, superado: false },
+    });
+    assert.equal(bajo.severidad, 'meta');
+});
+
+test('#6117: la ventana se dice en criollo, no en milisegundos', () => {
+    assert.equal(desyncCopy.autoRepairWindowText(3600000), 'la última hora');
+    assert.equal(desyncCopy.autoRepairWindowText(1800000), 'los últimos 30 min');
+    assert.equal(desyncCopy.autoRepairWindowText(6 * 3600000), 'las últimas 6 h');
+    // Config rota: no se rompe ni muestra NaN.
+    for (const malo of [0, -1, NaN, null, undefined, 'una hora']) {
+        assert.ok(desyncCopy.autoRepairWindowText(malo).length > 0);
+        assert.ok(!/NaN/.test(desyncCopy.autoRepairWindowText(malo)));
+    }
+});
+
+test('#6117 SEC-4: si no se pudo contar, M4 lo dice en vez de inventar un número', () => {
+    const m = desyncCopy.autoRepairRepetitionText({
+        tipo: 'convergencia_aditiva', windowMs: 3600000, ilegible: true,
+    });
+    assert.ok(/no pude contar/i.test(m), 'reconoce que no pudo contar');
+    assert.ok(!/Van undefined/.test(m) && !/NaN/.test(m), 'nunca un número inventado');
+    assert.ok(/Qué hacer:/.test(m), 'R3 se mantiene');
+});

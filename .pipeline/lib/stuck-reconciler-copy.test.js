@@ -233,6 +233,22 @@ test('el título hostil se sanea antes de interpolarse', () => {
     assert.equal(out.split('\n').length, 5, 'un título con saltos no rompe la estructura');
 });
 
+test('rebote rev-2 · el sanitize inyectado no deja el CSI suelto como texto', () => {
+    // Regresión: `sanitizeForTelegram` borra  - —el ESC incluido—, así
+    // que si corre ANTES del strip de ANSI el CSI queda huérfano y el "[31m"
+    // sobrevive como texto inerte. El scrub tiene que sacar la secuencia COMPLETA.
+    const sanitizeQueBorraControles = (t) => String(t).replace(/[ -]/g, '');
+    const out = buildStuckAlertCopy({
+        risks: [dec({ issue: 7 })],
+        nowMs: NOW,
+        titleOf: () => '[31mAlta de negocio[0m',
+        sanitize: sanitizeQueBorraControles,
+    });
+    assert.ok(!out.includes('[31m'), `residuo ANSI en la salida: ${JSON.stringify(out)}`);
+    assert.ok(!out.includes('[0m'), 'residuo del reset ANSI');
+    assert.match(out, /Alta de negocio/, 'el texto legible del título sí sobrevive');
+});
+
 test('el título largo se acota', () => {
     const out = buildStuckAlertCopy({
         risks: [dec({ issue: 6 })], nowMs: NOW, titleOf: () => 'x'.repeat(500),
