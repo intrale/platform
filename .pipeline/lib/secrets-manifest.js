@@ -156,8 +156,19 @@ const READER_SCAN_EXCLUDED_FILES = Object.freeze(['.pipeline/lib/credentials.js'
 // descartables como `consumers`, y el candado pasaria a rojo o verde segun que
 // scratch dejo el ultimo agente. Es la misma clase de no-produccion que `logs`
 // y `sessions`.
+// `evidence` (`qa/evidence/<issue>/`) es la MISMA clase que `_tmp`, pero del
+// lado de QA: es la carpeta de SALIDA de evidencia por issue (reproducciones
+// ad-hoc, `report.js` de reportes HTML, probes de un rebote puntual). Esos
+// scripts tocan `process.env.TELEGRAM_BOT_TOKEN` para SIMULAR un envio, no para
+// consumirlo en produccion. Contarlos como lectores obliga al manifiesto
+// PUBLICO a declarar rutas descartables como `qa/evidence/6226/repro-*.js` en
+// sus `consumers`, y deja el candado en rojo o verde segun que evidencia dejo
+// el ultimo QA. Se excluye `evidence`, NO `qa`: los consumidores reales de
+// credenciales viven en `qa/scripts/` (p. ej. `qa-video-share.js`,
+// `qa-narration.js`) y siguen dentro del barrido.
 const READER_SCAN_EXCLUDED_DIRS = Object.freeze([
   'node_modules', '__tests__', 'tests', 'fixtures', 'logs', 'sessions', '_tmp',
+  'evidence',
 ]);
 
 /** Quita comentarios de linea y de bloque: una mencion en prosa no es una lectura. */
