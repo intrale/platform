@@ -27,20 +27,36 @@
 // Seguridad operativa
 // -------------------
 // SEC-8 / R6 — TOCTOU contra un pulpo vivo: si el pipeline está despachando
-// mientras movemos archivos, un `waves.json` puede escribirse en el layout
-// viejo justo después de copiarlo y el cambio se pierde en silencio. Por eso el
-// migrador EXIGE halt total verificado (`.pipeline/.paused` presente en disco)
-// o un lock global explícito vía `--lock`.
+// mientras movemos archivos, un `waves.json` puede escribirse en el layout viejo
+// justo después de copiarlo y el cambio se pierde en silencio.
 //
-// La verificación es sobre el ARCHIVO físico, no sobre `isFullPauseActive()`:
-// ese helper está diseñado para fallar cerrado devolviendo `true` ("nunca
-// afirmes que está en marcha"), que para el migrador sería fallar ABIERTO
-// (arrancaría creyendo que hay halt cuando en realidad no pudo leer el estado).
-// Se lo consulta igual, pero como señal secundaria.
+// Contra eso hay DOS guardas, y son de naturaleza distinta — no se sustituyen:
 //
-// R2 / SEC-7 — todo lo que produce este script (backup y destino) debe caer
-// bajo rutas gitignoreadas. Se verifica con `git check-ignore` ANTES de escribir
-// y se aborta si alguna ruta quedara trackeable.
+//   1. HALT TOTAL (`.pipeline/.paused` presente en disco). Es la única que frena
+//      al PULPO, o sea la única que cierra el TOCTOU de verdad. Es OBLIGATORIA
+//      en toda corrida que escriba (migrar y rollback). No hay bandera que la
+//      saltee: un flag de bypass acá es exactamente el modo de fallo que esta
+//      guarda dice cubrir.
+//   2. LOCK DE MIGRADOR (`.pipeline/.opstate-migration.lock`). Da exclusión mutua
+//      entre CORRIDAS DE ESTE SCRIPT y nada más: ningún otro proceso del
+//      pipeline lo observa. Se toma SIEMPRE (no es opt-in) y se libera en
+//      `finally`. Nunca reemplaza al halt — compone con él.
+//
+// El `--lock` de la primera versión se presentó como equivalente al halt y NO lo
+// era. Se eliminó: pasarlo hoy es un error explícito, no un no-op silencioso.
+//
+// La verificación del halt es sobre el ARCHIVO físico, no sobre
+// `isFullPauseActive()`: ese helper está diseñado para fallar cerrado devolviendo
+// `true` ("nunca afirmes que está en marcha"), que para el migrador sería fallar
+// ABIERTO (arrancaría creyendo que hay halt cuando en realidad no pudo leer el
+// estado). Se lo consulta igual, pero como señal secundaria.
+//
+// `--dry-run` no escribe un solo byte (ni el lock): no exige halt, para que el
+// operador pueda inspeccionar el plan ANTES de pausar el pipeline.
+//
+// R2 / SEC-7 — todo lo que produce este script (backup, destino y el propio
+// LOCK) debe caer bajo rutas gitignoreadas. Se verifica con `git check-ignore`
+// ANTES de escribir y se aborta si alguna ruta quedara trackeable.
 // =============================================================================
 
 const fs = require('node:fs');
@@ -126,32 +142,24 @@ function assertIgnored(paths, label) {
     }
 }
 
-// ─── Halt guard (SEC-8 · R6) ────────────────────────────────────────────────
+// ─── Guardas de concurrencia (SEC-8 · R6) ──────────────────────────────────
+//
+// Son DOS y cubren cosas distintas; ver el encabezado del archivo.
 
-function assertHalted({ useLock }) {
-    if (useLock) {
-        // Lock global explícito: exclusivo, y con el pid adentro para forensia.
-        try {
-            const fd = fs.openSync(lockFile(), 'wx');
-            fs.writeFileSync(fd, `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
-            fs.closeSync(fd);
-        } catch (err) {
-            if (err && err.code === 'EEXIST') {
-                throw new Error(
-                    `[SEC-8] ya hay un lock de migración en ${lockFile()} — otra corrida está en curso. ` +
-                    'Si sabés que quedó huérfano, borralo a mano.',
-                );
-            }
-            throw err;
-        }
-        return { lockTaken: true };
-    }
-
+/**
+ * Guarda 1 — HALT TOTAL. La única que frena al PULPO, o sea la única que cierra
+ * el TOCTOU de verdad. Obligatoria en toda corrida que escriba, sin bypass.
+ */
+function assertHalted() {
     if (!fs.existsSync(pauseFile())) {
         throw new Error(
             `[SEC-8/R6] el migrador exige halt total verificado: no existe ${pauseFile()}.\n` +
-            'Pausá el pipeline (`.paused`) o corré con --lock para tomar un lock global explícito.\n' +
-            'Migrar con el pulpo vivo pierde escrituras en silencio (TOCTOU).',
+            'Pausá el pipeline (creá `.pipeline/.paused`) y volvé a correr.\n' +
+            'Migrar con el pulpo vivo pierde escrituras en silencio (TOCTOU): el pulpo puede\n' +
+            'escribir waves.json entre la copia y el borrado, y ese cambio se pierde.\n' +
+            'No hay flag que saltee esta guarda. El lock del migrador NO la reemplaza:\n' +
+            'ningún otro proceso del pipeline lo observa.\n' +
+            'Para inspeccionar el plan sin pausar nada: --dry-run.',
         );
     }
 
@@ -164,8 +172,49 @@ function assertHalted({ useLock }) {
             console.warn('[warn] .paused existe pero isFullPauseActive() dio false — revisá la config antes de seguir.');
         }
     } catch { /* no-fatal */ }
+}
 
-    return { lockTaken: false };
+/**
+ * Guarda 2 — LOCK DE MIGRADOR. Exclusión mutua entre corridas de ESTE script y
+ * nada más. Dos migradores simultáneos (aun con el pipeline pausado) se pisan el
+ * backup y el movimiento, así que se toma SIEMPRE — ya no es opt-in.
+ *
+ * R2/SEC-7 — el lock es un archivo que este script CREA dentro del repo, así que
+ * pasa por el mismo guard de gitignore que el backup y el destino. Era el único
+ * archivo producido por el migrador que se saltaba su propia regla.
+ */
+function acquireMigrationLock() {
+    assertIgnored([lockFile()], 'el lock del migrador');
+    try {
+        const fd = fs.openSync(lockFile(), 'wx');
+        fs.writeFileSync(fd, `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
+        fs.closeSync(fd);
+    } catch (err) {
+        if (err && err.code === 'EEXIST') {
+            throw new Error(
+                `[SEC-8] ya hay un lock de migración en ${lockFile()} — otra corrida está en curso. ` +
+                'Si sabés que quedó huérfano, borralo a mano.',
+            );
+        }
+        throw err;
+    }
+    return { lockTaken: true };
+}
+
+/**
+ * Las dos guardas, en orden: primero el halt (si falta, no queremos dejar un lock
+ * huérfano de una corrida que nunca iba a arrancar), después la exclusión mutua.
+ *
+ * `--dry-run` no escribe nada, ni siquiera el lock: se saltea las dos a propósito
+ * para que el operador pueda ver el plan ANTES de pausar el pipeline.
+ */
+function acquireGuards({ dryRun }) {
+    if (dryRun) {
+        console.log('[dry-run] sin halt ni lock: esta corrida no escribe un solo byte.');
+        return { lockTaken: false };
+    }
+    assertHalted();
+    return acquireMigrationLock();
 }
 
 function releaseLock(taken) {
@@ -264,7 +313,7 @@ function cmdStatus() {
     return 0;
 }
 
-function cmdMigrate({ dryRun, useLock }) {
+function cmdMigrate({ dryRun }) {
     const root = pipelineDir();
     const stateDir = resolveStateDir();
     const marker = migratedMarker(stateDir);
@@ -286,7 +335,7 @@ function cmdMigrate({ dryRun, useLock }) {
         return 0;
     }
 
-    const { lockTaken } = assertHalted({ useLock });
+    const { lockTaken } = acquireGuards({ dryRun });
     try {
         // Destino ignorado (R2) — antes de crear nada.
         assertIgnored([stateDir, ...items.map((i) => path.join(stateDir, i.rel))], 'el estado namespaceado');
@@ -327,7 +376,7 @@ function writeMarker(marker, extra) {
  * R8 — vuelta al layout plano en minutos. Mueve de vuelta lo que esté en el
  * namespace del host y borra el marker. Idempotente.
  */
-function cmdRollback({ dryRun, useLock }) {
+function cmdRollback({ dryRun }) {
     const root = pipelineDir();
     const stateDir = resolveStateDir();
     const marker = migratedMarker(stateDir);
@@ -338,7 +387,7 @@ function cmdRollback({ dryRun, useLock }) {
         return 0;
     }
 
-    const { lockTaken } = assertHalted({ useLock });
+    const { lockTaken } = acquireGuards({ dryRun });
     try {
         const backup = makeBackup(stateDir, items, { dryRun });
         console.log(`[backup] ${backup.dryRun ? '(dry-run) ' : ''}${backup.dir} — ${backup.files} archivo(s)`);
@@ -368,7 +417,20 @@ function cmdRollback({ dryRun, useLock }) {
 function main(argv) {
     const args = new Set(argv);
     const dryRun = args.has('--dry-run');
-    const useLock = args.has('--lock');
+
+    // `--lock` existía en rev-1 presentado como equivalente al halt, y no lo era:
+    // el lock sólo da exclusión entre migradores — ningún proceso del pipeline lo
+    // mira, así que no frena al pulpo. Se eliminó. Aceptarlo como no-op silencioso
+    // dejaría al operador creyendo que todavía tiene un bypass legítimo del halt,
+    // que es justo el modo de fallo que hay que cerrar: falla explorándolo.
+    if (args.has('--lock')) {
+        throw new Error(
+            '[SEC-8] `--lock` fue eliminado: nunca protegió del TOCTOU que decía cubrir.\n' +
+            'El lock de migrador (exclusión entre corridas de este script) ahora se toma SIEMPRE,\n' +
+            'y el halt total (`.pipeline/.paused`) es obligatorio y no tiene bypass.\n' +
+            'Pausá el pipeline y corré el comando sin `--lock`.',
+        );
+    }
 
     if (args.has('--help') || args.has('-h')) {
         console.log([
@@ -376,14 +438,17 @@ function main(argv) {
             '',
             '  --status     inspecciona el layout actual y sale',
             '  --rollback   vuelve al layout plano (R8)',
-            '  --dry-run    muestra qué haría sin tocar el FS',
-            '  --lock       toma un lock global en vez de exigir .paused',
+            '  --dry-run    muestra qué haría sin tocar el FS (no exige halt)',
+            '',
+            'Migrar y --rollback EXIGEN halt total: `.pipeline/.paused` presente en disco.',
+            'El lock de migrador (.opstate-migration.lock) se toma siempre: da exclusión',
+            'entre corridas de este script y NO frena al pulpo ni reemplaza al halt.',
         ].join('\n'));
         return 0;
     }
     if (args.has('--status')) return cmdStatus();
-    if (args.has('--rollback')) return cmdRollback({ dryRun, useLock });
-    return cmdMigrate({ dryRun, useLock });
+    if (args.has('--rollback')) return cmdRollback({ dryRun });
+    return cmdMigrate({ dryRun });
 }
 
 if (require.main === module) {
@@ -399,5 +464,9 @@ module.exports = {
     main,
     MIGRATION_ITEMS,
     SCHEMA_VERSION,
-    _internal: { resolveItems, isGitIgnored, assertIgnored, assertHalted, makeBackup, resolveStateDir, pipelineDir },
+    _internal: {
+        resolveItems, isGitIgnored, assertIgnored,
+        assertHalted, acquireMigrationLock, acquireGuards, releaseLock, lockFile,
+        makeBackup, resolveStateDir, pipelineDir,
+    },
 };

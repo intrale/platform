@@ -45,6 +45,7 @@ function cleanup(dir) {
     delete process.env.PIPELINE_PROJECT_ID;
     delete process.env.PIPELINE_PROJECT_BINDING;
     delete process.env.PIPELINE_OPSTATE_NAMESPACED;
+    delete process.env.PIPELINE_OPSTATE_STRICT_CONTEXT;
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* noop */ }
 }
 
@@ -667,19 +668,128 @@ test('pruneStaleBindings ignora lo que no es .json y sobrevive a un borrado impo
     } finally { cleanup(dir); }
 });
 
-// ─── assertSameProject (paridad kernel-store · A01) ─────────────────────────
+// ─── strict_context (CA-3 exigible) ─────────────────────────────────────────
+//
+// `operational_state.namespaced.strict_context: true` apaga los DOS caminos que
+// resuelven el contexto por convención en vez de por declaración. Hasta rev-1 el
+// knob estaba en config.yaml y en el schema pero NO lo leía nadie: documentaba
+// un comportamiento que no existía. Estos tests son el cableado.
 
-test('assertSameProject deja pasar la partición propia y corta la ajena', () => {
+test('strict_context OFF (default) · el camino de compat de proyecto único sigue vivo', () => {
     const dir = sandbox(['alpha']);
     try {
         const pc = fresh();
-        assert.equal(pc.assertSameProject('alpha', 'waves.save'), 'alpha');
+        assert.equal(pc._internal.strictContextEnabled(), false, 'default OFF: sin regresión (CA-5)');
+        assert.equal(pc.resolveProjectContext().source, 'single-project');
+    } finally { cleanup(dir); }
+});
+
+test('strict_context ON · un único descriptor YA NO alcanza: exige contexto declarado', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        process.env.PIPELINE_OPSTATE_STRICT_CONTEXT = '1';
+        const pc = fresh();
+        assert.equal(pc._internal.strictContextEnabled(), true);
         assert.throws(
-            () => pc.assertSameProject('beta', 'waves.save'),
-            (e) => e.code === 'EOPSTATE_CROSS_PROJECT'
+            () => pc.resolveProjectContext(),
+            (e) => e.code === 'EOPSTATE_NO_PROJECT_CONTEXT'
                 && e.stage === 'isolation'
-                && /alpha/.test(e.message)
-                && /beta/.test(e.message),
+                && /strict_context/.test(e.message),
         );
+    } finally { cleanup(dir); }
+});
+
+test('strict_context ON · tampoco vale el host-fallback de cero descriptores', () => {
+    const dir = sandbox([]);
+    try {
+        process.env.PIPELINE_OPSTATE_STRICT_CONTEXT = '1';
+        const pc = fresh();
+        assert.throws(
+            () => pc.resolveProjectContext(),
+            (e) => e.code === 'EOPSTATE_NO_PROJECT_CONTEXT' && /strict_context/.test(e.message),
+        );
+    } finally { cleanup(dir); }
+});
+
+test('strict_context ON · lo DECLARADO sigue resolviendo (explícito y binding de spawn)', () => {
+    // El modo estricto no rompe a quien declara el contexto: es justo lo que
+    // premia. Si tirara también acá sería un kill-switch, no un knob.
+    const dir = sandbox(['alpha', 'beta']);
+    try {
+        process.env.PIPELINE_OPSTATE_STRICT_CONTEXT = '1';
+        const pc = fresh();
+
+        assert.equal(pc.resolveProjectContext({ projectId: 'beta' }).source, 'explicit');
+
+        const { nonce } = pc.writeSpawnBinding({ projectId: 'alpha', nonce: 'n1', skill: 'pipeline-dev' });
+        process.env.PIPELINE_PROJECT_ID = 'alpha';
+        process.env.PIPELINE_PROJECT_BINDING = nonce;
+        const ctx = pc.resolveProjectContext();
+        assert.equal(ctx.projectId, 'alpha');
+        assert.equal(ctx.source, 'spawn-binding');
+    } finally { cleanup(dir); }
+});
+
+test('strictContextFromConfig es estricto con === true (nada de coerción)', () => {
+    const pc = fresh();
+    const f = pc._internal.strictContextFromConfig;
+    assert.equal(f(null), false, 'config ausente ⇒ permisivo (comportamiento conocido)');
+    assert.equal(f({}), false);
+    assert.equal(f({ operational_state: {} }), false);
+    assert.equal(f({ operational_state: { namespaced: {} } }), false);
+    assert.equal(f({ operational_state: { namespaced: { strict_context: 'true' } } }), false);
+    assert.equal(f({ operational_state: { namespaced: { strict_context: 1 } } }), false);
+    assert.equal(f({ operational_state: { namespaced: { strict_context: true } } }), true);
+});
+
+test('PIPELINE_OPSTATE_STRICT_CONTEXT=0 fuerza el modo permisivo', () => {
+    const dir = sandbox(['alpha']);
+    try {
+        process.env.PIPELINE_OPSTATE_STRICT_CONTEXT = '0';
+        const pc = fresh();
+        assert.equal(pc._internal.strictContextEnabled(), false);
+        assert.equal(pc.resolveProjectContext().source, 'single-project');
+    } finally { cleanup(dir); }
+});
+
+// ─── Aislamiento cross-project: dónde vive de verdad ────────────────────────
+
+test('el módulo NO exporta un assertSameProject decorativo', () => {
+    // rev-1 exportaba (y testeaba) un `assertSameProject` sin un solo caller de
+    // producción: figuraba como defensa A01 en el diff y no protegía nada. El
+    // chequeo real vive en `kernel-store.js`, cableado sobre una API que sí
+    // recibe `projectId` del caller. Este test fija que no vuelva a colarse una
+    // garantía que nadie invoca.
+    const pc = fresh();
+    assert.equal(typeof pc.assertSameProject, 'undefined');
+
+    const kernelStoreSrc = fs.readFileSync(path.join(__dirname, '..', 'kernel-store.js'), 'utf8');
+    assert.match(
+        kernelStoreSrc, /assertSameProject\(projectId, 'getDescriptor'\)/,
+        'premisa: el homónimo de kernel-store SÍ está cableado',
+    );
+});
+
+test('clearSpawnBinding tiene caller de producción: el pulpo consume el binding al morir el hijo', () => {
+    // rev-1 escribía un binding por spawn y no lo borraba nunca: la limpieza
+    // quedaba 100% en el TTL de 48h, que además sólo corre DENTRO del próximo
+    // writeSpawnBinding(). En un pipeline pausado los bindings se acumulaban.
+    //
+    // Es un chequeo de CABLEADO, no de comportamiento: `pulpo.js` no se puede
+    // requerir desde un test (arranca el servicio). Lo que fija este assert es
+    // que el borrado siga teniendo un call site vivo en el exit handler.
+    const pulpoSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+    assert.match(pulpoSrc, /clearSpawnBinding\(projectBinding\.nonce\)/);
+
+    // Y que el borrado real siga siendo idempotente: el hijo puede morir por
+    // watchdog con el binding ya barrido por la poda.
+    const dir = sandbox(['alpha']);
+    try {
+        const pc = fresh();
+        const { nonce, file } = pc.writeSpawnBinding({ projectId: 'alpha', nonce: 'n9' });
+        assert.ok(fs.existsSync(file));
+        assert.equal(pc.clearSpawnBinding(nonce), true, 'primer borrado');
+        assert.ok(!fs.existsSync(file));
+        assert.equal(pc.clearSpawnBinding(nonce), false, 'segundo borrado: false, sin tirar');
     } finally { cleanup(dir); }
 });

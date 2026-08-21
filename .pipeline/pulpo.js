@@ -10719,6 +10719,27 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       catch { /* idempotente: best-effort, nunca rompe el lifecycle */ }
     }
 
+    // #5110 (rev-2) — consumir el binding de proyecto del spawn.
+    //
+    // El binding es de UN SOLO USO: prueba que este pulpo lanzó este hijo con
+    // este projectId. Una vez que el hijo murió no vuelve a servir para nada, y
+    // dejarlo en disco alarga la ventana en la que un nonce válido está tirado
+    // en el FS esperando que alguien lo reutilice (el residual de SEC-1: el
+    // binding no es criptográfico, así que su vida útil es parte de la barra).
+    //
+    // Sin esto la limpieza quedaba 100% en el TTL de 48h de
+    // `pruneStaleBindings()`, que además sólo corre DENTRO del próximo
+    // `writeSpawnBinding()`: en un pipeline pausado o sin despachos, los
+    // bindings simplemente se acumulan sin que nadie los toque.
+    //
+    // Best-effort e idempotente: `clearSpawnBinding` devuelve false y no tira si
+    // el archivo ya no está. El lifecycle del agente nunca depende de esto.
+    if (projectBinding && projectBinding.nonce) {
+      try {
+        require('./lib/project-context').clearSpawnBinding(projectBinding.nonce);
+      } catch { /* best-effort: el TTL de 48h sigue siendo la red de contención */ }
+    }
+
     // #3605 — Desregistrar del agent-ipc registry. Idempotente: si nunca se
     // registró (interactive_supported=false), unregister es no-op. Drena
     // promesas pendientes en la cola con AGENT_DEAD para no dejar callers

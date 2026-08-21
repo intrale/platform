@@ -385,6 +385,27 @@ Tampoco entran los ~30 JSON de `.pipeline/state/` (quedan para **#5113**) ni
 El caso 5 es el que importa: elegir "el primero" o "el host" sería el default
 silencioso que un punto de entrada mal cableado convierte en corrupción cruzada.
 
+**La identidad del host NO se configura.** Sale de `pipeline.config.json`
+(`projectId`), la misma fuente que usa `kernel-store`. `config.yaml` no declara
+`host_project_id`: sería una segunda verdad que el código no lee, y editarla daría
+un no-op silencioso.
+
+#### `strict_context` — apagar la resolución por convención
+
+Los casos 3 y 4 resuelven por **convención** (hay un solo descriptor / no hay
+ninguno), no porque alguien haya **declarado** el proyecto. Eso es compat, no CA-3.
+
+`config.yaml → operational_state.namespaced.strict_context: true` (default
+**false**) los apaga a los dos: con el knob prendido, el contexto tiene que venir
+declarado —`opts.projectId` in-process o el par env+binding del pulpo— y cualquier
+otra cosa tira `EOPSTATE_NO_PROJECT_CONTEXT`. `PIPELINE_OPSTATE_STRICT_CONTEXT=1|0`
+fuerza el valor sin tocar config.
+
+Por qué default OFF: hoy **sólo el pulpo emite binding**; el dashboard, los hooks y
+los skills caen a `single-project`. Prenderlo antes de #5164 deja al tablero sin
+estado operativo. Es el interruptor que hace **exigible** el CA-3 cuando el
+cableado exista, no antes.
+
 ### 12.4 El entorno NO es autoridad
 
 `build-child-env.js` propaga **toda** `PIPELINE_*` heredada, y los roles instruyen
@@ -396,6 +417,12 @@ Por eso el pulpo —y sólo el pulpo— escribe un binding en
 sólo acepta la var del entorno si **coincide con el binding**. El directorio de
 bindings se resuelve contra `PIPELINE_REPO_ROOT` (repo principal), no contra el
 `.pipeline/` local: los agentes de dev corren en un worktree con su propia copia.
+
+**Ciclo de vida del binding:** es de un solo uso. El pulpo lo escribe antes del
+spawn y lo **borra en el `exit` del hijo** (`clearSpawnBinding`). El TTL de 48h de
+`pruneStaleBindings()` queda como red de contención para el hijo que muere por
+watchdog — no como único mecanismo de limpieza, porque esa poda sólo corre dentro
+del **próximo** `writeSpawnBinding()`: sin despachos, los bindings se acumulaban.
 
 **Residual honesto:** el binding vive en el FS local, bajo el mismo usuario del
 SO. Sube la barra (hay que forjar un registro del pulpo) pero **no es
@@ -416,18 +443,37 @@ un tercer eje: no se unifica ni se toca.
 ### 12.6 Rollback (R8)
 
 ```bash
-# 1. Bajar el flag
+# 1. PAUSAR — obligatorio, no hay bypass (ver abajo)
+#    creá .pipeline/.paused
+# 2. Bajar el flag
 #    config.yaml → operational_state.namespaced.enabled: false
-# 2. Devolver el layout plano (bit a bit, verificado por test)
+# 3. Devolver el layout plano (bit a bit, verificado por test)
 node .pipeline/scripts/migrate-operational-state-namespace.js --rollback
-# 3. Restart
+# 4. Restart (que también levanta el halt)
 node .pipeline/restart.js
 ```
 
-El migrador exige halt total verificado (`.paused` en disco) o `--lock`; hace
-backup verificado en `.pipeline/backup/opstate-<ts>/` y aborta si alguna ruta
-que va a producir quedara **trackeable** en git (el layout namespaceado no está
-cubierto por las entradas literales viejas del `.gitignore` — R2/SEC-7).
+El migrador hace backup verificado en `.pipeline/backup/opstate-<ts>/` y aborta si
+alguna ruta que va a producir quedara **trackeable** en git — backup, destino **y su
+propio lock** (el layout namespaceado no está cubierto por las entradas literales
+viejas del `.gitignore` — R2/SEC-7).
+
+#### Las dos guardas de concurrencia, y por qué no se sustituyen
+
+| Guarda | Qué frena | Obligatoria |
+|--------|-----------|-------------|
+| **Halt total** — `.pipeline/.paused` en disco | Al **pulpo**. Es la única que cierra el TOCTOU. | **Sí**, en migrar y en `--rollback`. |
+| **Lock de migrador** — `.pipeline/.opstate-migration.lock` | Sólo a **otras corridas de este script**. Ningún proceso del pipeline lo observa. | Se toma **siempre**, automático. |
+
+El `--lock` de la primera versión se presentaba como equivalente al halt y **no lo
+era**: daba exclusión entre migradores y nada más. Un operador que corriera
+`--rollback --lock` con el pulpo vivo perdía en silencio cualquier `waves.json` que
+el pulpo escribiera entre la copia y el borrado — exactamente el modo de fallo que
+la guarda decía cubrir, en el único camino que mueve el registro de olas de lugar.
+**El flag se eliminó**: pasarlo hoy falla explícito, no es un no-op.
+
+`--dry-run` no exige halt ni toma el lock — no escribe un solo byte, así que sirve
+para inspeccionar el plan **antes** de pausar el pipeline.
 
 ### 12.7 Lo que #5110 **no** hace
 
@@ -436,3 +482,7 @@ cubierto por las entradas literales viejas del `.gitignore` — R2/SEC-7).
   raíz de path de `waves.js`/`partial-pause.js` y no por la fachada.
 - No permite **elegir** un proyecto distinto del ambiente desde un consumidor:
   hoy los `require` directos toman el contexto ambiente. Eso es **#5164**.
+- No cablea contexto explícito en **cada** punto de entrada (CA-3): sólo el pulpo
+  emite binding; dashboard, hooks y skills caen a `single-project`/`host-fallback`.
+  Lo que #5110 sí deja listo es el **interruptor** que vuelve eso un error
+  (`strict_context`, §12.3) — default OFF hasta que #5164 complete el cableado.

@@ -205,7 +205,7 @@ function requireContainedUnder(child, parent) {
 // `PIPELINE_OPSTATE_NAMESPACED` fuerza el valor (1/0) sin tocar config — lo usan
 // los tests de aislamiento y sirve para probar el encendido en caliente.
 
-let namespaceEnabledCache = null;
+let namespacedConfigCache = null;
 
 /**
  * Lee el flag del árbol de config ya resuelto. PURA: el camino real depende de
@@ -224,26 +224,70 @@ function namespacedFromConfig(cfg) {
     return !!(ns && ns.enabled === true);
 }
 
+/**
+ * `operational_state.namespaced.strict_context`. Mismo criterio `=== true`.
+ *
+ * Qué hace cuando está prendido: apaga los DOS caminos que resuelven el contexto
+ * por convención en vez de por declaración — `single-project` (exactamente un
+ * descriptor) y `host-fallback` (cero descriptores). Con `strict_context: true`
+ * el contexto tiene que venir declarado: `opts.projectId` in-process o el par
+ * env+binding que escribe el pulpo. Cualquier otra cosa tira
+ * `EOPSTATE_NO_PROJECT_CONTEXT`.
+ *
+ * Es el knob que hace exigible el CA-3 del issue ("el projectId se resuelve de
+ * forma explícita en cada punto de entrada") sin romper el pipeline de un
+ * proyecto mientras el cableado de #5164 no esté.
+ */
+function strictContextFromConfig(cfg) {
+    const ns = cfg && cfg.operational_state && cfg.operational_state.namespaced;
+    return !!(ns && ns.strict_context === true);
+}
+
+/**
+ * Resuelve la config UNA vez por proceso y cachea las dos lecturas juntas: el
+ * resolver arrastra `js-yaml` + `ajv` y esto se consulta en el camino caliente
+ * de resolución de paths, así que no se paga dos veces.
+ *
+ * Config ilegible ⇒ `{ enabled: false, strictContext: false }`, es decir el
+ * comportamiento PLANO y permisivo de siempre. Es el default seguro: ante duda,
+ * el comportamiento conocido, no uno nuevo. En particular no se cae a strict —
+ * una config rota no debe dejar al pipeline sin poder resolver su propio estado.
+ */
+function readNamespacedConfig() {
+    if (namespacedConfigCache) return namespacedConfigCache;
+    let cfg = null;
+    try {
+        // Lazy-require deliberado: ver arriba.
+        // eslint-disable-next-line global-require
+        const configResolver = require('./config-resolver');
+        cfg = configResolver.resolve({ pipelineDir: pipelineDir() });
+    } catch {
+        cfg = null;
+    }
+    namespacedConfigCache = Object.freeze({
+        enabled: namespacedFromConfig(cfg),
+        strictContext: strictContextFromConfig(cfg),
+    });
+    return namespacedConfigCache;
+}
+
 function namespaceEnabled() {
     const env = process.env.PIPELINE_OPSTATE_NAMESPACED;
     if (env === '1') return true;
     if (env === '0') return false;
+    return readNamespacedConfig().enabled;
+}
 
-    if (namespaceEnabledCache !== null) return namespaceEnabledCache;
-    let enabled = false;
-    try {
-        // Lazy-require deliberado: el resolver arrastra `js-yaml` + `ajv` y esto
-        // se consulta en el camino caliente de resolución de paths.
-        // eslint-disable-next-line global-require
-        const configResolver = require('./config-resolver');
-        enabled = namespacedFromConfig(configResolver.resolve({ pipelineDir: pipelineDir() }));
-    } catch {
-        // Config ilegible ⇒ layout PLANO. Es el default seguro: ante duda, el
-        // comportamiento conocido, no uno nuevo.
-        enabled = false;
-    }
-    namespaceEnabledCache = enabled;
-    return enabled;
+/**
+ * `PIPELINE_OPSTATE_STRICT_CONTEXT` fuerza el valor (1/0) sin tocar config, con
+ * el mismo patrón que el flag de layout: lo usan los tests y sirve para probar
+ * el modo estricto en caliente antes de escribirlo en el YAML.
+ */
+function strictContextEnabled() {
+    const env = process.env.PIPELINE_OPSTATE_STRICT_CONTEXT;
+    if (env === '1') return true;
+    if (env === '0') return false;
+    return readNamespacedConfig().strictContext;
 }
 
 // -----------------------------------------------------------------------------
@@ -351,20 +395,19 @@ function assertOperationalNamespace(id) {
     return id;
 }
 
-/**
- * Paridad literal con `kernel-store.js:241-247` — aislamiento A01.
- * Rechaza operar la partición de un proyecto distinto al del contexto.
- */
-function assertSameProject(projectId, op) {
-    const ctx = resolveProjectContext();
-    if (projectId !== ctx.projectId) {
-        throw new ProjectContextError(
-            `aislamiento A01: el contexto "${ctx.projectId}" no puede operar la partición de "${projectId}"`,
-            { code: 'EOPSTATE_CROSS_PROJECT', stage: 'isolation' },
-        );
-    }
-    return projectId;
-}
+// NOTA — acá vivía un `assertSameProject()` "por paridad" con
+// `kernel-store.js:241-247`. Se eliminó en rev-2: no tenía un solo caller de
+// producción. El único consumidor que pide una partición por id explícito es el
+// migrador, y lo hace a propósito sobre el HOST (`stateDirFor(HOST_PROJECT_ID)`)
+// justamente para NO depender de que el contexto ambiente de la máquina que
+// migra esté bien configurado — un cross-check ahí habría roto el caso legítimo.
+// Todo el resto del sustrato usa `stateDir()`, que resuelve el contexto y no
+// recibe id de nadie, así que no hay superficie donde el chequeo aplique.
+//
+// Una defensa A01 exportada y testeada pero que nadie invoca es peor que no
+// tenerla: figura como garantía en el diff y no protege nada. El chequeo real
+// vive en `kernel-store.js`, donde SÍ está cableado (`:428`, `:440`) sobre una
+// API que recibe `projectId` del caller.
 
 // -----------------------------------------------------------------------------
 // Directorio de estado namespaceado (SEC-2 · anti-traversal)
@@ -574,6 +617,22 @@ function resolveProjectContext(opts = {}) {
 
     const known = listDescriptorProjectIds();
 
+    // `strict_context: true` — los dos caminos de abajo resuelven por CONVENCIÓN
+    // (hay un solo descriptor / no hay ninguno), no porque alguien haya declarado
+    // el proyecto. Es exactamente lo que el modo estricto viene a prohibir: con
+    // el knob prendido, un punto de entrada sin contexto falla ruidoso en vez de
+    // acertarle al único proyecto que hay. Se chequea una sola vez, acá, para no
+    // repetir la condición en cada rama.
+    if (strictContextEnabled()) {
+        throw new ProjectContextError(
+            'operational_state.namespaced.strict_context: true — el contexto de proyecto debe venir ' +
+            `DECLARADO y no lo está (${known.length} descriptor(es) conocido(s)). Los caminos de compat ` +
+            '`single-project` y `host-fallback` están apagados por config. Pasá projectId explícito ' +
+            'o spawneá con binding del pulpo.',
+            { code: 'EOPSTATE_NO_PROJECT_CONTEXT', stage: 'isolation' },
+        );
+    }
+
     if (known.length === 1) {
         cached = freezeContext(assertOperationalNamespace(known[0]), 'single-project');
         return cached;
@@ -626,7 +685,7 @@ function currentProjectIdOrNull() {
 function _resetForTests() {
     cached = null;
     hostProjectIdCache = null;
-    namespaceEnabledCache = null;
+    namespacedConfigCache = null;
     ensuredStateDirs.clear();
 }
 
@@ -637,7 +696,6 @@ module.exports = {
     currentProjectIdOrNull,
     namespaceEnabled,
     assertOperationalNamespace,
-    assertSameProject,
     stateDir,
     stateDirFor,
     projectsRoot,
@@ -658,6 +716,8 @@ module.exports = {
         parseHostProjectId,
         computeHostProjectId,
         namespacedFromConfig,
+        strictContextFromConfig,
+        strictContextEnabled,
         bindingFileFor,
         hostConfigFile,
         HOST_FALLBACK_ID,

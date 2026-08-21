@@ -542,9 +542,16 @@ const SCHEMA = {
                     additionalProperties: true,
                     properties: {
                         enabled: { type: 'boolean' },
-                        host_project_id: { type: 'string' },
-                        // `true` → exige contexto resuelto explícitamente y NO
-                        // acepta el camino de compat de proyecto único.
+                        // `true` → el contexto de proyecto debe venir DECLARADO
+                        // (projectId explícito o binding de spawn del pulpo): se
+                        // apagan los caminos de compat `single-project` y
+                        // `host-fallback`, que resuelven por convención. Lo lee
+                        // `project-context.js` (`strictContextEnabled()`).
+                        //
+                        // NO hay `host_project_id`: la identidad del host sale de
+                        // `pipeline.config.json`, fuente única compartida con el
+                        // kernel-store. Declararla también acá sería una segunda
+                        // verdad que nadie lee.
                         strict_context: { type: 'boolean' },
                     },
                 },

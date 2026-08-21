@@ -157,7 +157,7 @@ test('instalación sin layout plano: no falla, deja el marker', () => {
 
 // ─── R6 / SEC-8 · halt obligatorio ──────────────────────────────────────────
 
-test('SEC-8 · sin halt ni lock, el migrador se niega a correr', () => {
+test('SEC-8 · sin halt, el migrador se niega a correr', () => {
     const dir = setup({ paused: false });
     try {
         const m = fresh();
@@ -171,25 +171,100 @@ test('SEC-8 · sin halt ni lock, el migrador se niega a correr', () => {
     } finally { teardown(dir); }
 });
 
-test('SEC-8 · --lock permite correr sin .paused, y el lock se libera al terminar', () => {
+test('SEC-8 · el ROLLBACK también exige halt (es el camino que mueve waves.json de lugar)', () => {
+    // rev-1 permitía `--rollback --lock` con el pulpo vivo. Ese era el escenario
+    // concreto de pérdida silenciosa: el pulpo escribe waves.json entre
+    // copyRecursive y removeRecursive y el cambio se va al tacho.
+    const dir = setup();
+    try {
+        const m = fresh();
+        assert.equal(m.main([]), 0, 'premisa: migró con .paused puesto');
+        fs.unlinkSync(path.join(dir, '.paused'));
+
+        assert.throws(() => m.main(['--rollback']), (err) => {
+            assert.match(err.message, /halt total verificado/i);
+            return true;
+        });
+        assert.ok(
+            fs.existsSync(path.join(dir, 'projects', HOST(), 'waves.json')),
+            'el estado namespaceado queda intacto: el rollback no arrancó',
+        );
+        assert.ok(!fs.existsSync(path.join(dir, 'waves.json')), 'no escribió nada en el layout plano');
+    } finally { teardown(dir); }
+});
+
+test('SEC-8 · `--lock` ya no existe: falla explícito en vez de dar un bypass falso', () => {
+    // El flag se presentaba como equivalente al halt y NO lo era (sólo daba
+    // exclusión entre migradores; ningún proceso del pipeline lee ese lock).
+    // Aceptarlo como no-op silencioso dejaría al operador creyendo que todavía
+    // tiene un bypass legítimo, así que se rechaza con mensaje explícito.
     const dir = setup({ paused: false });
     try {
-        assert.equal(fresh().main(['--lock']), 0);
-        assert.ok(fs.existsSync(path.join(dir, 'projects', HOST(), 'waves.json')));
+        const m = fresh();
+        for (const argv of [['--lock'], ['--rollback', '--lock']]) {
+            assert.throws(() => m.main(argv), (err) => {
+                assert.match(err.message, /`--lock` fue eliminado/);
+                assert.match(err.message, /halt total/i);
+                return true;
+            }, `main(${JSON.stringify(argv)}) debe rechazar el flag`);
+        }
+        assert.ok(fs.existsSync(path.join(dir, 'waves.json')), 'no migró nada');
+        assert.ok(!fs.existsSync(path.join(dir, '.opstate-migration.lock')), 'ni tomó el lock');
+    } finally { teardown(dir); }
+});
+
+test('SEC-8 · el lock de migrador se toma SIEMPRE y se libera al terminar', () => {
+    const dir = setup();
+    try {
+        assert.equal(fresh().main([]), 0);
+        assert.ok(fs.existsSync(path.join(dir, 'projects', HOST(), 'waves.json')), 'migró');
         assert.ok(!fs.existsSync(path.join(dir, '.opstate-migration.lock')), 'el lock se libera');
     } finally { teardown(dir); }
 });
 
 test('SEC-8 · un lock preexistente aborta la corrida (otra migración en curso)', () => {
-    const dir = setup({ paused: false });
+    const dir = setup();
     try {
         fs.writeFileSync(path.join(dir, '.opstate-migration.lock'), JSON.stringify({ pid: 99999 }));
-        assert.throws(() => fresh().main(['--lock']), (err) => {
+        assert.throws(() => fresh().main([]), (err) => {
             assert.match(err.message, /lock de migraci/i);
             return true;
         });
         assert.ok(fs.existsSync(path.join(dir, 'waves.json')), 'no migró nada');
+        assert.ok(fs.existsSync(path.join(dir, '.opstate-migration.lock')), 'no pisó el lock ajeno');
     } finally { teardown(dir); }
+});
+
+test('SEC-8 · sin halt NO queda un lock huérfano (el orden de las guardas importa)', () => {
+    const dir = setup({ paused: false });
+    try {
+        assert.throws(() => fresh().main([]), /halt total verificado/i);
+        assert.ok(
+            !fs.existsSync(path.join(dir, '.opstate-migration.lock')),
+            'una corrida que nunca iba a arrancar no puede dejar el lock tomado',
+        );
+    } finally { teardown(dir); }
+});
+
+test('SEC-8 · --dry-run no exige halt (inspeccionar el plan antes de pausar)', () => {
+    const dir = setup({ paused: false });
+    try {
+        const before = snapshotTree(dir);
+        assert.equal(fresh().main(['--dry-run']), 0, 'dry-run corre sin .paused');
+        assert.deepEqual(snapshotTree(dir), before, 'y sigue sin escribir un solo byte (ni el lock)');
+    } finally { teardown(dir); }
+});
+
+test('B3 · el lock del migrador pasa por el guard de gitignore como el resto', () => {
+    // rev-1 aplicaba assertIgnored() al backup y al destino pero NO al lock, que
+    // es el otro archivo que el script crea. En repo público un `git add -A`
+    // durante una migración lo levantaba.
+    const m = fresh();
+    const repoRoot = path.resolve(__dirname, '..', '..', '..');
+    assert.ok(
+        m._internal.isGitIgnored(path.join(repoRoot, '.pipeline', '.opstate-migration.lock')),
+        'el .gitignore REAL de este checkout tiene que cubrir el lock',
+    );
 });
 
 // ─── R8 · rollback ──────────────────────────────────────────────────────────
