@@ -906,9 +906,18 @@ async function handleCallbackQuery(cbq) {
     if (opResult.editMessage && cbq.message) {
       const actorName = cbq.from?.first_name || cbq.from?.id || 'operador';
       const hora = new Date().toISOString().replace('T', ' ').slice(0, 16);
+      // El footer es la constancia PERMANENTE en el chat: sólo puede afirmar
+      // "Confirmado" cuando el efecto realmente ocurrió. En los caminos
+      // terminales fallidos (`executor-unavailable`, `precondition-failed`,
+      // `expired`, `unavailable`) el binding se gastó pero NO se ejecutó nada,
+      // así que la constancia registra el intento y su autor sin afirmar el
+      // corte. Mismo criterio que el footer de product-command (`execOk`).
+      const prefijo = opResult.ok
+        ? `✅ Confirmado por ${actorName}`
+        : `⚠️ No aplicado · pidió ${actorName}`;
       await removeInlineKeyboard(
         cbq.message,
-        `⚙️ Confirmado por ${actorName} · ${hora} — ${opResult.toast}`
+        `${prefijo} · ${hora} — ${opResult.toast}`
       );
     }
     try {

@@ -541,3 +541,54 @@ test('#5458 integración con el operator-gate REAL: cero movimientos de work-fil
     assert.equal(ejecutado, 1, 'no se repite el efecto');
     resetDeps();
 });
+
+// --- #5458 rebote rev-1: el footer PERMANENTE no puede mentir -------------
+// El bug original afirmaba "Confirmado por <operador>" en los 4 caminos
+// terminales donde la acción NO se ejecutó. Los tests previos sólo cubrían
+// fallos con `editMessage: false` (que ni siquiera escriben footer), así que
+// el defecto pasó. Estos casos ejercitan fallo terminal CON edición.
+const OP_FALLIDOS_TERMINALES = [
+  { status: 'executor-unavailable', toast: '🔒 Ejecutor no disponible; el fallback se conserva' },
+  { status: 'precondition-failed', toast: '🔒 Las condiciones del corte ya no se cumplen; el fallback se conserva' },
+  { status: 'expired', toast: '⏱️ Acción expirada, pedí la confirmación de nuevo' },
+  { status: 'unavailable', toast: '🔒 No se pudo confirmar de forma segura; el fallback se conserva' },
+];
+
+for (const caso of OP_FALLIDOS_TERMINALES) {
+  test(`#5458 el footer NO dice "Confirmado" cuando la acción falló (${caso.status})`, async () => {
+    const calls = installFakeTransport();
+    installFakeGateConClasificacion('operational', {
+      ok: false, editMessage: true, status: caso.status,
+      reason: caso.status, toast: caso.toast,
+      action: 'vault-cut-fallback', issue: 5458,
+    });
+
+    await listener.handleCallbackQuery({ ...CBQ, data: 'ffff0000ffff0003' });
+
+    const edit = calls.find(c => c.method === 'editMessageText');
+    assert.ok(edit, 'resultado terminal: debe dejar constancia en el chat');
+    assert.doesNotMatch(
+      edit.params.text, /Confirmado por/,
+      'no puede afirmar una confirmación que no ocurrió',
+    );
+    assert.match(edit.params.text, /No aplicado/, 'debe decir que no se aplicó');
+    // La atribución al operador se conserva (valor de auditoría).
+    assert.match(edit.params.text, /Leo/);
+    // El motivo real sigue visible.
+    assert.ok(edit.params.text.includes(caso.toast.slice(2).trim()));
+    resetDeps();
+  });
+}
+
+test('#5458 el footer SÍ dice "Confirmado por" cuando el corte se aplicó', async () => {
+  const calls = installFakeTransport();
+  installFakeGateConClasificacion('operational', OP_OK);
+
+  await listener.handleCallbackQuery({ ...CBQ, data: 'ffff0000ffff0004' });
+
+  const edit = calls.find(c => c.method === 'editMessageText');
+  assert.ok(edit);
+  assert.match(edit.params.text, /✅ Confirmado por Leo/);
+  assert.doesNotMatch(edit.params.text, /No aplicado/);
+  resetDeps();
+});
