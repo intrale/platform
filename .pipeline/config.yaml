@@ -2015,6 +2015,52 @@ waves:
   max_horizon: 12
 
 # =============================================================================
+# Estado operativo — aislamiento por proyecto (#5110, Ola 9.4 · E2)
+# =============================================================================
+# Namespacea el estado operativo (registro de olas, allowlist de ejecución,
+# archived/, audit y markers de transacción) por `projectId`:
+#
+#   enabled: false  →  .pipeline/waves.json                          (PLANO)
+#   enabled: true   →  .pipeline/projects/<projectId>/waves.json     (NAMESPACEADO)
+#
+# `.pipeline/.paused` NO se namespacea en ningún caso: es el halt TOTAL y es un
+# control de seguridad. Degradarlo a per-proyecto lo haría fallar ABIERTO.
+#
+# DEFAULT OFF a propósito. Prender esto ANTES de correr el migrador deja al
+# pipeline mirando un namespace vacío — cero olas, dispatch detenido. Secuencia:
+#
+#   1. Pausar (`.pipeline/.paused`).
+#   2. node .pipeline/scripts/migrate-operational-state-namespace.js --dry-run
+#   3. node .pipeline/scripts/migrate-operational-state-namespace.js
+#   4. enabled: true
+#   5. node .pipeline/restart.js
+#
+# Rollback (R8, minutos): pausar + enabled: false + `--rollback` + restart.
+# El migrador EXIGE `.paused` en disco (migrar y rollback por igual): es la única
+# guarda que frena al pulpo. No hay flag de bypass — ver §12.6 del contrato.
+#
+# La identidad del host NO se declara acá. Vive en `pipeline.config.json`
+# (`projectId: intrale-platform`), que es la MISMA fuente que usa el kernel-store
+# y que ya coincide con `.pipeline/descriptors/intrale-platform.json`. Un
+# `host_project_id` en este archivo sería una segunda fuente de verdad que el
+# código no lee: editarlo daría un no-op silencioso, justo lo contrario de la
+# tesis de #5110 ("el contexto debe ser explícito, no inferido"). Se eliminó.
+operational_state:
+  namespaced:
+    enabled: false
+    # true → el contexto de proyecto debe venir DECLARADO (projectId explícito
+    # in-process, o binding de spawn escrito por el pulpo). Con esto en true se
+    # apagan los dos caminos de compat que resuelven por convención —
+    # `single-project` (un único descriptor) y `host-fallback` (cero
+    # descriptores) — y ambos pasan a tirar EOPSTATE_NO_PROJECT_CONTEXT.
+    #
+    # DEFAULT false: hoy sólo el pulpo emite binding; el dashboard, los hooks y
+    # los skills caen a `single-project`. Prenderlo antes de #5164 (contexto
+    # explícito en cada punto de entrada) deja al tablero sin estado operativo.
+    # Se prende recién con 2 proyectos reales, después de #5164.
+    strict_context: false
+
+# =============================================================================
 # Transición automática de ola (#4368, Ola 8.3)
 # =============================================================================
 # El brazo `brazoTransicionOla` (pulpo.js) detecta si TODOS los issues de la ola
