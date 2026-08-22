@@ -13027,8 +13027,16 @@ function handleRequest(req, res) {
   // el `callback_data` no tiene nonce ni TTL y el mensaje vive para siempre en
   // el chat, así que el segundo tap tiene que morir server-side.
   // ===========================================================================
+  //
+  // #6118 — Se suman `include-deps-for-issue` (include ACOTADO al issue de la
+  // alerta) y `mute-alert` (silencio del aviso). Entran a ESTE bloque y no al de
+  // `/include-deps` de más arriba a propósito: aquél no tiene ningún control de
+  // request (CSRF preexistente, #5929, fuera de alcance). Colgar rutas nuevas de
+  // ese molde propagaría el defecto; el molde bueno es éste.
   if ((req.url === '/api/partial-pause/keep-original'
-       || req.url === '/api/partial-pause/cancel-partial-pause')
+       || req.url === '/api/partial-pause/cancel-partial-pause'
+       || req.url === '/api/partial-pause/include-deps-for-issue'
+       || req.url === '/api/partial-pause/mute-alert')
       && req.method === 'POST') {
     const ppGate = require('./lib/dashboard-request-gate');
     const ppResolution = require('./lib/partial-pause-resolution');
@@ -13044,7 +13052,10 @@ function handleRequest(req, res) {
       return;
     }
 
-    const ppAction = req.url.endsWith('/keep-original') ? 'keep-original' : 'cancel-partial-pause';
+    // La acción sale del path, no del body: el enum de rutas de arriba es el
+    // único set posible, así que no hay forma de que el cliente nombre una
+    // acción que no esté en esta lista.
+    const ppAction = req.url.slice('/api/partial-pause/'.length);
     let ppBody = '';
     let ppAborted = false;
     req.on('data', (chunk) => {
@@ -13064,16 +13075,53 @@ function handleRequest(req, res) {
         // como authorizedBy dejaba el valor FUERA del enum: pasaba sólo por el
         // grace period y con `PARTIAL_PAUSE_STRICT_AUTH=1` daba 403 para siempre.
         const authorizedBy = ppGate.sanitizeAuthorizedBy(payload.authorizedBy);
+        // #6118 — El state de deps es la fuente de verdad del servidor sobre QUÉ
+        // dependencias frenan a cada issue. El tap sólo trae el número de issue
+        // (no entra más en 64 bytes de `callback_data`), así que el conjunto se
+        // deriva acá y nunca se toma del cliente.
+        const ppDepsStateFile = path.join(PIPELINE, 'partial-pause-deps-state.json');
+        const ppDepsRead = () => {
+          try { return JSON.parse(fs.readFileSync(ppDepsStateFile, 'utf8')); }
+          catch { return null; }
+        };
         const out = ppResolution.applyResolution({
           action: ppAction,
           authorizedBy,
           operatorRef: ppGate.sanitizeAuthorizedBy(payload.operatorRef, ''),
+          // Entero del cliente. `applyResolution` lo valida con `^\d{1,7}$` y lo
+          // contrasta contra el state antes de usarlo; nunca se concatena a un
+          // path ni a una URL.
+          issue: payload.issue,
           deps: {
             getPipelineMode: pp.getPipelineMode,
             markDepRiskAccepted: pp.markDepRiskAccepted,
             clearPartialPause: pp.clearPartialPause,
+            setPartialPause: pp.setPartialPause,
+            readDepsState: ppDepsRead,
+            // Metadata de la ola: `getPipelineMode()` no la expone y
+            // `setPartialPause` reescribe el marker desde sus argumentos, así que
+            // sin esto habilitar una dependencia borraría la identidad de la ola.
+            // La lectura la hace `partial-pause`, que es el dueño del marker: el
+            // path de estado no se reconstruye acá (#5109).
+            readWaveMeta: pp.readWaveMetaFromMarker,
+            alertSignature: require('./lib/partial-pause-deps').alertSignature,
+            mute: require('./lib/partial-pause-deps-mute').mute,
+            muteTtlMs: require('./lib/partial-pause-deps-mute').resolveTtlMsFromDisk(),
+            // Saca del state SÓLO al issue resuelto. Borrar el archivo entero
+            // volvería invisibles a los otros issues alertados.
+            dropIssueFromDepsState: (issueNum) => {
+              try {
+                const st = ppDepsRead();
+                if (!st || !st.missing) return;
+                delete st.missing[String(issueNum)];
+                if (Object.keys(st.missing).length === 0) { fs.unlinkSync(ppDepsStateFile); return; }
+                const tmp = `${ppDepsStateFile}.tmp.${process.pid}.${Date.now()}`;
+                fs.writeFileSync(tmp, JSON.stringify(st, null, 2));
+                fs.renameSync(tmp, ppDepsStateFile);
+              } catch {}
+            },
             clearDepsState: () => {
-              try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}
+              try { fs.unlinkSync(ppDepsStateFile); } catch {}
             },
           },
         });

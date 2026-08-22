@@ -33,6 +33,7 @@
 'use strict';
 
 const { analyzeStuckIssue, classifyPhase } = require('./stuck-phase-detector');
+const { SKILLS_SIN_MOTIVO_PUBLICO, ocultaMotivoPublico } = require('./rejection-severity');
 
 const DEFAULT_MAX_REQUEUE_ATTEMPTS = 2;
 const DEFAULT_CAP_PER_TICK = 5;
@@ -47,7 +48,17 @@ const SUPPRESSION_BUCKETS = new Set(['ola', 'cache', 'dedupe', 'cerrado', 'otro'
 // carril es `requeue`. Agregarlo "por prolijidad" haría que `ambiguousSkillsOf`
 // devolviera skills en un camino que no escala, y la rama de escalate por
 // presupuesto agotado usa `capped` — no esta lista.
-const AMBIGUOUS_STATUSES = new Set(['rejected', 'cancelled', 'corrupt']);
+//
+// #6296 — `rejected` SALE de esta lista. Es el GATE ESPEJO del cambio en
+// `analyzeStuckIssue`: un rechazo ya no escala, tiene carril `rebote` propio.
+// Dejarlo acá haría que `ambiguousSkillsOf` devolviera el skill que rechazó como
+// "ambiguo" en un camino que ya no escala — exactamente la divergencia
+// detector↔reconciler que #5641 vino a cerrar. Los dos cambios entran en el
+// mismo commit y hay un test de contrato que los compara.
+const AMBIGUOUS_STATUSES = new Set(['cancelled', 'corrupt']);
+
+/** #6296 — estados que representan una DECISIÓN de validador (carril `rebote`). */
+const REJECTED_STATUSES = new Set(['rejected']);
 
 /**
  * #5396 rev-1 — skills REALES de la fase que motivaron la escalación.
@@ -81,6 +92,40 @@ function ambiguousSkillsOf(it) {
     return classes.filter((c) => AMBIGUOUS_STATUSES.has(c.status)).map((c) => c.skill);
 }
 
+/**
+ * #6296 — skills que RECHAZARON en la fase. Hermana de `ambiguousSkillsOf`.
+ *
+ * Misma disciplina: se deriva de `classifyPhase` (la misma función que consume
+ * `analyzeStuckIssue`), NUNCA parseando el `reason`. El `reason` es texto libre
+ * que interpola el `motivo` del agente; leerlo para tomar decisiones sería una
+ * fuente de verdad spoofeable.
+ *
+ * Se usa como `skills` del marker cuando el carril `rebote` NO puede resolver un
+ * destino válido y cae a `escalate`: el marker necesita un skill REAL de la fase
+ * para tener camino de dispatch al destrabar.
+ *
+ * @returns {string[]} subconjunto ORDENADO de `requiredSkills` (determinista)
+ */
+function rejectedSkillsOf(it) {
+    const classes = classifyPhase(it.requiredSkills, it.deliverables, it.liveSkills);
+    return classes.filter((c) => REJECTED_STATUSES.has(c.status)).map((c) => c.skill);
+}
+
+/**
+ * #6296 — skills de la fase SIN veredicto propio (carril leve).
+ *
+ * Un rechazo leve no frena el issue, pero los hermanos `cancelled` TAMPOCO son
+ * aprobación: la fase se re-corre completa. Estos son los que hay que volver a
+ * lanzar: todo lo que no sea `done` ni `live` (incluye al que rechazó leve, que
+ * tiene que volver a opinar sobre el estado corregido).
+ *
+ * @returns {string[]} subconjunto ORDENADO de `requiredSkills`
+ */
+function skillsSinVeredictoPropio(it) {
+    const classes = classifyPhase(it.requiredSkills, it.deliverables, it.liveSkills);
+    return classes.filter((c) => c.status !== 'done' && c.status !== 'live').map((c) => c.skill);
+}
+
 /** Normaliza texto libre a una línea (el `reason` interpola nombres de archivo). */
 function oneLine(s, max = 220) {
     return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, max);
@@ -89,6 +134,41 @@ function oneLine(s, max = 220) {
 // #5641 — causas de decisión. Manejan el texto que ve el operador (CA-UX-1/2/4).
 const CAUSE_INFRA_REQUEUE = 'infra-requeue';
 const CAUSE_INFRA_EXHAUSTED = 'infra-reintentos-agotados';
+// #6296 — causas del carril de rechazo por severidad.
+const CAUSE_REJECT_GRAVE = 'rechazo-grave';
+const CAUSE_REJECT_LEVE = 'rechazo-leve';
+const CAUSE_REJECT_SIN_DESTINO = 'rechazo-sin-destino';
+
+// #6296 — `security` NUNCA entra al carril leve, y tampoco publica su motivo en
+// un comentario PÚBLICO del PR: el motivo de un hallazgo de seguridad es un mapa
+// de vulnerabilidad abierto. El piso `security ⇒ grave` de `rejection-severity`
+// ya lo mantiene fuera de este carril; esta lista es defensa en profundidad para
+// el texto que efectivamente se publica.
+//
+// rev-3: la lista dejó de ser local. Vive en `rejection-severity` (fuente única)
+// porque el carril GRAVE —el único que `security` puede tomar— también publica,
+// y una copia por carril ya divergió una vez: el control quedó sólo acá, donde
+// `security` no llega. El alias se mantiene por compatibilidad del export.
+const SKILLS_SIN_OBSERVACION_PUBLICA = new Set(SKILLS_SIN_MOTIVO_PUBLICO);
+
+/**
+ * #6296 — payload de la observación al PR del carril leve.
+ *
+ * PURO: arma el dato, NO publica. El texto lo sanitiza y publica el dep (los
+ * motivos están OBLIGADOS por el protocolo de rebote a pegar output de comandos,
+ * así que pueden arrastrar secretos).
+ */
+function buildObservacion(analysis, it) {
+    const skills = ((analysis.rebote && analysis.rebote.skills) || [])
+        .filter((r) => !ocultaMotivoPublico([r.skill]));
+    return {
+        issue: it.issue,
+        pipeline: it.pipeline,
+        fase: it.fase,
+        severidad: 'leve',
+        items: skills.map((r) => ({ skill: r.skill, motivo: r.motivo || null })),
+    };
+}
 
 /**
  * Exit code representativo para el audit (CA-17). Devuelve el escalar cuando
@@ -187,7 +267,9 @@ function buildEscalationMessage(d, title) {
 
 /**
  * Decide la acción efectiva para UN issue aplicando las guardas.
- * @returns {{action:'requeue'|'escalate'|'none', skills?:string[], reason:string, consumesTick:boolean}}
+ * @returns {{action:'requeue'|'escalate'|'rebote'|'none', skills?:string[],
+ *            dest?:{faseDestino:string,skillsDestino:string[]}, rebote?:object,
+ *            observacion?:object, reason:string, consumesTick:boolean}}
  */
 function decideForIssue(it, cfg) {
     const base = (action, reason, extra) => ({ action, reason, consumesTick: false, ...extra });
@@ -243,6 +325,87 @@ function decideForIssue(it, cfg) {
         }
         return base('none', `${prefix} (dedupe: ${src || 'desconocido'})`, { suppression: 'dedupe' });
     };
+
+    // #6296 — CARRIL DE RECHAZO. Un validador decidió; el pipeline respeta esa
+    // decisión en vez de pedir humano. Va ANTES de `escalate` porque el detector
+    // ya garantiza que las acciones son exclusivas; el orden acá sólo documenta
+    // la precedencia conceptual (decisión > ambigüedad).
+    if (analysis.action === 'rebote') {
+        // El reconciler tampoco resuelve el destino a mano: lo delega en el dep
+        // que envuelve `rebote-destino.js` (fase_rechazo + determinarDevSkill).
+        // Reimplementar el mapeo acá sería una tercera fuente de verdad.
+        let dest = null;
+        try { dest = cfg.resolveRebote ? cfg.resolveRebote(it) : null; }
+        catch { dest = null; } // dep roto ⇒ tratar como destino inválido (fail-closed)
+
+        // SEC-D — destino inválido o nulo (p.ej. `definicion`, con
+        // `fase_rechazo: null`) ⇒ ESCALATE, jamás "seguir curso". Un rebote sin
+        // destino que se convirtiera en `none` dejaría el issue varado en
+        // silencio, que es peor que el bug original.
+        if (!dest || !dest.faseDestino || !Array.isArray(dest.skillsDestino) || dest.skillsDestino.length === 0) {
+            if (it.hasNeedsHuman) return dedupe('ya-escalado');
+            return base('escalate', `${analysis.reason} — destino de rebote inválido, escalo`, {
+                consumesTick: true,
+                skills: rejectedSkillsOf(it),
+                cause: CAUSE_REJECT_SIN_DESTINO,
+            });
+        }
+
+        if (analysis.rebote && analysis.rebote.severidadEfectiva === 'leve') {
+            // SEC-C(c1) — carril LEVE: la observación no frena el issue, pero
+            // "seguir su curso" NO es `promote`/`done`. Los hermanos `cancelled`
+            // no son aprobación: promover fabricaría un gate aprobado con
+            // veredictos cancelados y saltearía el gate de QA que `CLAUDE.md`
+            // declara no negociable. Por eso: `requeue` de la fase COMPLETA +
+            // observación publicada en el PR.
+            //
+            // Reusa el presupuesto de requeue existente (`maxRequeueAttempts`):
+            // un contador nuevo sería otro camino para loopear.
+            const skillsLeve = skillsSinVeredictoPropio(it);
+            if (skillsLeve.length === 0) {
+                // Nada que re-correr y sin embargo la fase no completó: estado
+                // indeterminado ⇒ humano (fail-closed).
+                if (it.hasNeedsHuman) return dedupe('ya-escalado');
+                return base('escalate', `${analysis.reason} — leve sin skills re-encolables, escalo`, {
+                    consumesTick: true, skills: rejectedSkillsOf(it), cause: CAUSE_REJECT_SIN_DESTINO,
+                });
+            }
+            const cappedLeve = skillsLeve.filter((sk) => ((it.retryCounts || {})[sk] || 0) >= cfg.maxRequeueAttempts);
+            if (cappedLeve.length > 0) {
+                if (it.hasNeedsHuman) return dedupe('tope-reintentos + ya-escalado');
+                return base('escalate', `${analysis.reason} — tope de reintentos (${cfg.maxRequeueAttempts}) en el carril leve para: ${cappedLeve.join(',')}`, {
+                    consumesTick: true, skills: cappedLeve, cause: CAUSE_REJECT_LEVE,
+                });
+            }
+            if (it.hasNeedsHuman) return dedupe('bloqueado-humano');
+            if (cfg.paused) return base('none', 'pipeline-en-pausa (no re-encola)', { suppression: 'otro' });
+            return base('requeue', `${analysis.reason} — leve: re-corro la fase y publico observación`, {
+                consumesTick: true,
+                skills: skillsLeve,
+                cause: CAUSE_REJECT_LEVE,
+                observacion: buildObservacion(analysis, it),
+            });
+        }
+
+        // Carril GRAVE → rebote de código a `dev`.
+        //
+        // Dedupe: un bloqueo humano VIGENTE gana sobre el rebote. Materializarlo
+        // escribiría un work-item en `dev/pendiente` sobre un issue que está
+        // esperando decisión de una persona — la misma línea roja que #5396 fijó
+        // para el carril `requeue`. No hay regresión sobre el CA del issue: el
+        // carril de rechazo corre ANTES de que exista escalación por rechazo, así
+        // que el `needs-human` que llegue acá lo puso otra cosa (o un humano).
+        if (it.hasNeedsHuman) return dedupe('bloqueado-humano');
+        // Pausa: escribir en `pendiente/` ES re-encolar (PO SG-5). El escalate
+        // sigue permitido bajo pausa; spawnear un dev, no.
+        if (cfg.paused) return base('none', 'pipeline-en-pausa (no re-encola)', { suppression: 'otro' });
+        return base('rebote', `${analysis.reason} → ${dest.faseDestino}/${dest.skillsDestino.join(',')}`, {
+            consumesTick: true,
+            dest,
+            rebote: analysis.rebote,
+            cause: CAUSE_REJECT_GRAVE,
+        });
+    }
 
     if (analysis.action === 'escalate') {
         if (it.hasNeedsHuman) return dedupe('ya-escalado');
@@ -341,6 +504,7 @@ function decideForIssue(it, cfg) {
  * @param {number} [ctx.capPerTick]
  * @param {boolean} [ctx.paused]
  * @param {Set<string>} [ctx.monoSkillPhases]
+ * @param {(it:object)=>{faseDestino:string,skillsDestino:string[]}|null} [ctx.resolveRebote]
  * @returns {{decisions:Array, retryUpdates:object}}
  */
 function planReconciliation(ctx = {}) {
@@ -351,6 +515,10 @@ function planReconciliation(ctx = {}) {
         capPerTick: Number.isFinite(ctx.capPerTick) && ctx.capPerTick > 0 ? ctx.capPerTick : DEFAULT_CAP_PER_TICK,
         paused: !!ctx.paused,
         monoSkillPhases: ctx.monoSkillPhases instanceof Set ? ctx.monoSkillPhases : MONO_SKILL_PHASES,
+        // #6296 — resolutor del destino del rebote (envuelve `rebote-destino.js`).
+        // Sin él, el carril grave no tiene destino ⇒ escala (fail-closed): el
+        // plan NUNCA inventa una fase destino por su cuenta.
+        resolveRebote: typeof ctx.resolveRebote === 'function' ? ctx.resolveRebote : null,
     };
 
     const issues = Array.isArray(ctx.issues) ? ctx.issues : [];
@@ -386,6 +554,11 @@ function planReconciliation(ctx = {}) {
             suppression: d.suppression,
             cause: d.cause,
             infra: d.infra,
+            // #6296 — el destino resuelto, la severidad y la observación viajan
+            // hasta el shell: es el shell quien materializa el rebote y publica.
+            dest: d.dest,
+            rebote: d.rebote,
+            observacion: d.observacion,
         });
         if (d.consumesTick) {
             actionsThisTick += 1;
@@ -407,15 +580,16 @@ function planReconciliation(ctx = {}) {
  * @param {object} deps
  *   @param {(pipeline,fase,skill,issue)=>void} deps.requeueWorkItem  (idempotente por nombre)
  *   @param {(issue,reason)=>boolean|void} deps.escalate  false si no pudo registrar needs-human
+ *   @param {(issue,meta)=>boolean} [deps.rebote]  #6296 — materializa el rebote a `dev`; false si no pudo
  *   @param {(msg)=>void} [deps.notify]
  *   @param {(record)=>void} [deps.audit]
  *   @param {(pipeline,fase,skill,issue)=>boolean} [deps.workItemExists] re-check idempotente
  *   @param {(issue)=>string|null} [deps.issueTitle] título para el mensaje (CA-UX-2)
- * @returns {{requeued:number, escalated:number, skipped:number, evaluados:number,
+ * @returns {{requeued:number, escalated:number, rebotes:number, skipped:number, evaluados:number,
  *            suppressed:{ola:number,cache:number,dedupe:number,cerrado:number,otro:number}}}
  */
 function executeDecisions(decisions, deps = {}) {
-    let requeued = 0, escalated = 0, skipped = 0;
+    let requeued = 0, escalated = 0, skipped = 0, rebotes = 0;
     // #5396 CA-7 (SEC-3) — desglose de POR QUÉ el tick estuvo callado. Sin esto,
     // "no notificó nada" es indistinguible entre "todo sano" y "el self-healing
     // está muerto" — que es exactamente el estado que nadie detectó en producción.
@@ -468,12 +642,64 @@ function executeDecisions(decisions, deps = {}) {
                     rebote_numero_infra: Number(d.infra.attempts) || 1,
                 } : {}),
             });
+            // #6296 — carril LEVE: la observación va al PR. Best-effort: si la
+            // publicación falla, el requeue YA ocurrió y no se revierte (la fase
+            // se re-corre igual). Se audita para que el silencio sea visible.
+            if (d.observacion) {
+                let obsOk = false;
+                try { obsOk = deps.publicarObservacion ? deps.publicarObservacion(d.observacion) !== false : false; }
+                catch (e) { audit({ ...d, action: 'requeue', error: `observación: ${String(e && e.message).slice(0, 120)}` }); }
+                if (!obsOk) audit({ action: 'requeue', issue: d.issue, fase: d.fase, error: 'observación al PR no publicada' });
+            }
             // CA-UX-3 — UNA notificación por decisión, no una por skill: el `join`
             // es lo que evita el Telegram-por-tick que cerró #5396. En el shape de
             // #5175 son 3 skills re-encolados y 1 solo mensaje.
             notify(
                 `🔧 Self-healing: re-encolé ${(d.skills || []).join(',')} de #${d.issue} (${d.fase}) — ${d.reason}`,
                 { issue: d.issue, fase: d.fase, pipeline: d.pipeline, action: 'requeue' },
+            );
+        } else if (d.action === 'rebote') {
+            // #6296 — MATERIALIZACIÓN DEL REBOTE. Mismo patrón fail-observable que
+            // `escalate`: el dep devuelve `false` cuando no pudo escribir (destino
+            // inválido, circuit breaker agotado, issue inválido) y entonces NO se
+            // cuenta como hecho — se audita y se saltea. Un rebote "contado" que
+            // nunca tocó el FS deja el issue varado sin rastro.
+            let reboteOk = false;
+            try {
+                reboteOk = deps.rebote && deps.rebote(d.issue, {
+                    pipeline: d.pipeline,
+                    fase: d.fase,
+                    dest: d.dest,
+                    rebote: d.rebote,
+                    reason: d.reason,
+                    cause: d.cause || null,
+                }) !== false;
+            } catch (e) {
+                audit({ ...d, error: String(e && e.message).slice(0, 120) });
+            }
+            if (!reboteOk) {
+                audit({ ...d, action: 'rebote', error: 'no se pudo materializar el rebote' });
+                skipped += 1;
+                continue;
+            }
+            rebotes += 1;
+            audit({
+                action: 'rebote',
+                issue: d.issue,
+                pipeline: d.pipeline,
+                fase: d.fase,
+                reason: d.reason,
+                cause: d.cause || null,
+                fase_destino: (d.dest && d.dest.faseDestino) || null,
+                skills_destino: (d.dest && d.dest.skillsDestino) || [],
+                severidad: (d.rebote && d.rebote.severidadEfectiva) || null,
+                rechazaron: ((d.rebote && d.rebote.skills) || []).map((r) => `${r.skill}:${r.severidad}`),
+                arrastrados: (d.rebote && d.rebote.arrastrados) || [],
+            });
+            // CA-UX-3 — UNA notificación por decisión, no una por skill.
+            notify(
+                `⏪ Self-healing: #${d.issue} rebota de ${d.fase} a ${(d.dest && d.dest.faseDestino) || '?'} — ${oneLine(d.reason)}`,
+                { issue: d.issue, fase: d.fase, pipeline: d.pipeline, action: 'rebote' },
             );
         } else if (d.action === 'escalate') {
             // El escalate necesita `pipeline`/`fase` explícitos: sin ellos
@@ -527,7 +753,7 @@ function executeDecisions(decisions, deps = {}) {
             audit({ action: 'none', issue: d.issue, fase: d.fase, reason: d.reason, suppression: bucket });
         }
     }
-    return { requeued, escalated, skipped, suppressed, evaluados: (decisions || []).length };
+    return { requeued, escalated, rebotes, skipped, suppressed, evaluados: (decisions || []).length };
 }
 
 module.exports = {
@@ -538,7 +764,15 @@ module.exports = {
     buildEscalationQuestion,
     buildEscalationRecommendation,
     ambiguousSkillsOf,
+    rejectedSkillsOf,
+    skillsSinVeredictoPropio,
+    buildObservacion,
     AMBIGUOUS_STATUSES,
+    REJECTED_STATUSES,
+    CAUSE_REJECT_GRAVE,
+    CAUSE_REJECT_LEVE,
+    CAUSE_REJECT_SIN_DESTINO,
+    SKILLS_SIN_OBSERVACION_PUBLICA,
     CAUSE_INFRA_REQUEUE,
     CAUSE_INFRA_EXHAUSTED,
     SUPPRESSION_BUCKETS,
