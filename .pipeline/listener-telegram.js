@@ -882,6 +882,72 @@ async function handleCallbackQuery(cbq) {
     return;
   }
 
+  // #5458 — DESPACHO OPERACIONAL AISLADO. Antes del gate de lifecycle, se
+  // clasifica el binding server-side: si el `callback_data` corresponde a una
+  // acción OPERACIONAL (`vault-cut-fallback`), se deriva a su handler dedicado y
+  // se corta el flujo. Esa acción no puede pasar por `handleSignature()` — ahí
+  // abajo vive `applyTransition()`, que mueve work-files. La clasificación no
+  // consume nada: si el id es desconocido, cae al camino de firma de siempre y
+  // éste responde el toast genérico.
+  let callbackKind = null;
+  try {
+    callbackKind = typeof gate.classifyCallback === 'function'
+      ? gate.classifyCallback(cbq.data)
+      : null;
+  } catch (e) {
+    log(`Error clasificando callback: ${e.message}`);
+    callbackKind = null;
+  }
+
+  if (callbackKind === 'operational') {
+    let opResult;
+    try {
+      opResult = gate.handleOperationalCallback({
+        operatorId: cbq.from?.id,
+        callbackData: cbq.data,
+      });
+    } catch (e) {
+      log(`Error procesando callback operacional: ${e.message}`);
+      await answerCallbackQuery(cbq.id, 'No se pudo procesar la acción');
+      return;
+    }
+
+    // Respuesta TERMINAL en todos los caminos: se corta el spinner y, cuando el
+    // resultado es definitivo, se quitan los botones para que un segundo toque
+    // no pueda repetir nada (el nonce ya está gastado de todos modos).
+    await answerCallbackQuery(cbq.id, opResult.toast);
+    if (opResult.editMessage && cbq.message) {
+      const actorName = cbq.from?.first_name || cbq.from?.id || 'operador';
+      const hora = new Date().toISOString().replace('T', ' ').slice(0, 16);
+      // El footer es la constancia PERMANENTE en el chat: sólo puede afirmar
+      // "Confirmado" cuando el efecto realmente ocurrió. En los caminos
+      // terminales fallidos (`executor-unavailable`, `precondition-failed`,
+      // `expired`, `unavailable`) el binding se gastó pero NO se ejecutó nada,
+      // así que la constancia registra el intento y su autor sin afirmar el
+      // corte. Mismo criterio que el footer de product-command (`execOk`).
+      const prefijo = opResult.ok
+        ? `✅ Confirmado por ${actorName}`
+        : `⚠️ No aplicado · pidió ${actorName}`;
+      await removeInlineKeyboard(
+        cbq.message,
+        `${prefijo} · ${hora} — ${opResult.toast}`
+      );
+    }
+    try {
+      appendHistory({
+        direction: 'in',
+        handler: 'operator-gate-operational',
+        from: cbq.from?.first_name || 'unknown',
+        from_id: cbq.from?.id,
+        ok: !!opResult.ok,
+        action: opResult.action || null,
+        issue: opResult.issue || null,
+        reason: opResult.reason || null,
+      });
+    } catch { /* best-effort */ }
+    return;
+  }
+
   // A01/A07: la autorización se valida DENTRO de operator-gate contra `from.id`
   // (no `chat.id`) + binding tenant→operador server-side. Acá sólo pasamos los
   // datos crudos del callback (tratados como no confiables).

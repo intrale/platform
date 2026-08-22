@@ -8090,7 +8090,7 @@ function showAllowlistPromoteModal(issue, preview) {
     : toAdd.map(function(d) {
         const c = chains[String(d)] || {};
         const t = c.title ? ' — ' + _aclEsc(String(c.title).slice(0, 70)) : '';
-        return '<li><a href="https://github.com/intrale/platform/issues/' + d + '" target="_blank" style="color:#58a6ff;font-family:\'SF Mono\',Consolas,monospace">#' + d + '</a>' + t + '</li>';
+        return '<li><a href="https://github.com/intrale/platform/issues/' + d + '" target="_blank" style="color:#58a6ff;font-family:\\\'SF Mono\\\',Consolas,monospace">#' + d + '</a>' + t + '</li>';
       }).join('');
 
   const overlay = document.createElement('div');
@@ -8099,7 +8099,7 @@ function showAllowlistPromoteModal(issue, preview) {
   overlay.innerHTML = '<div role="dialog" aria-modal="true" aria-labelledby="acl-promote-title" style="background:#161b22;border:1px solid rgba(63,185,80,0.5);border-radius:10px;padding:20px;max-width:620px;width:92%;color:#c9d1d9;box-shadow:0 10px 40px rgba(0,0,0,0.6);">'
     + '<h3 id="acl-promote-title" style="margin:0 0 10px;color:#3fb950;display:flex;align-items:center;gap:8px;">➕ Promover #' + issue + ' a allowlist activa</h3>'
     + '<div style="margin-bottom:10px;padding:8px 12px;background:rgba(188,140,255,0.08);border-left:3px solid #bc8cff;border-radius:4px;">'
-      + '<strong>Candidato:</strong> <a href="https://github.com/intrale/platform/issues/' + issue + '" target="_blank" style="color:#58a6ff;font-family:\'SF Mono\',Consolas,monospace">#' + issue + '</a>'
+      + '<strong>Candidato:</strong> <a href="https://github.com/intrale/platform/issues/' + issue + '" target="_blank" style="color:#58a6ff;font-family:\\\'SF Mono\\\',Consolas,monospace">#' + issue + '</a>'
     + '</div>'
     + '<div style="margin-bottom:8px;font-size:0.88rem;">Se sumarán <strong>' + toAdd.length + '</strong> issue' + (toAdd.length === 1 ? '' : 's') + ' a la allowlist activa (incluyendo deps recursivas abiertas):</div>'
     + '<ul style="margin:0 0 12px;padding-left:22px;font-size:0.82rem;max-height:240px;overflow-y:auto;">' + toAddList + '</ul>'
@@ -8780,9 +8780,9 @@ async function restartOperativoConfirm() {
   var detalle = _robItems.map(function(it) {
     var issue = (it && Number.isInteger(it.issue)) ? ('#' + it.issue) : '(sin issue)';
     return '  • ' + issue + ' — ' + (it && it.componente || 'pipeline');
-  }).join('\n');
-  var msg = 'Reiniciar el modelo operativo (Pulpo) para aplicar estos cambios entregados?\n\n'
-    + detalle + '\n\nEl reinicio es selectivo (no mata agentes vivos). ¿Continuar?';
+  }).join('\\n');
+  var msg = 'Reiniciar el modelo operativo (Pulpo) para aplicar estos cambios entregados?\\n\\n'
+    + detalle + '\\n\\nEl reinicio es selectivo (no mata agentes vivos). ¿Continuar?';
   if (!window.confirm(msg)) return; // Cancelar no reinicia nada (CA-5).
   var btn = document.getElementById('rob-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Reiniciando…'; }
@@ -9869,9 +9869,9 @@ function _wpRender() {
       + '<span class="wave-prio-meta" style="color:var(--dim);font-size:0.9em">' + st + '</span>'
       + '<span class="wave-prio-spacer"></span>'
       + '<button class="wave-prio-btn wave-prio-up" type="button" title="Subir una posición"'
-      + ' aria-label="Subir #' + num + ' una posición" onclick="wavePrioMove(\'' + num + '\',-1)"' + upDis + '>▲</button>'
+      + ' aria-label="Subir #' + num + ' una posición" onclick="wavePrioMove(\\\'' + num + '\\\',-1)"' + upDis + '>▲</button>'
       + '<button class="wave-prio-btn wave-prio-down" type="button" title="Bajar una posición"'
-      + ' aria-label="Bajar #' + num + ' una posición" onclick="wavePrioMove(\'' + num + '\',1)"' + downDis + '>▼</button>'
+      + ' aria-label="Bajar #' + num + ' una posición" onclick="wavePrioMove(\\\'' + num + '\\\',1)"' + downDis + '>▼</button>'
       + '</li>';
   }).join('');
 }

@@ -226,6 +226,9 @@ const SIDE_MAP = Object.freeze({
     // mecanismo de orquestación, se muda al kernel sin conocer el producto.
     vault: 'kernel',
     waves: 'kernel',
+    // #5110 — el namespaceo del estado operativo por projectId es mecanismo de
+    // orquestación puro (aislamiento multi-proyecto), no política de producto.
+    operational_state: 'kernel',
     architect: 'kernel',
     'architect.poll_cap_min': 'producto',        // calibración, no gate
     'architect.poll_interval_seconds': 'producto',
@@ -532,6 +535,41 @@ const SCHEMA = {
         },
 
         waves: OBJ(),
+
+        // --- operational_state: aislamiento del estado operativo (#5110) -----
+        //
+        // `namespaced.enabled` es el interruptor del layout:
+        //   false (DEFAULT) → layout PLANO `.pipeline/waves.json` — exactamente
+        //                     el comportamiento pre-#5110, sin regresión.
+        //   true            → `.pipeline/projects/<projectId>/waves.json`.
+        //
+        // Poner el interruptor en config (y no en código) es lo que hace que R8
+        // — "rollback al modelo plano en minutos" — sea real: se baja el flag y
+        // se corre el migrador con `--rollback`.
+        operational_state: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                namespaced: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        // `true` → el contexto de proyecto debe venir DECLARADO
+                        // (projectId explícito o binding de spawn del pulpo): se
+                        // apagan los caminos de compat `single-project` y
+                        // `host-fallback`, que resuelven por convención. Lo lee
+                        // `project-context.js` (`strictContextEnabled()`).
+                        //
+                        // NO hay `host_project_id`: la identidad del host sale de
+                        // `pipeline.config.json`, fuente única compartida con el
+                        // kernel-store. Declararla también acá sería una segunda
+                        // verdad que nadie lee.
+                        strict_context: { type: 'boolean' },
+                    },
+                },
+            },
+        },
 
         // --- architect: el GATE es autoridad, la cadencia es calibración -----
         architect: {
