@@ -55,10 +55,50 @@ const SECRET_INFO = 'human-block-action-token/v1';
 // `adjust-definicion` — las tres acciones del canal de firma de un toque por
 // Telegram. Se EXTIENDE la allowlist existente (no se reinventa la firma): el
 // mismo `sign`/`verify` HMAC + nonce single-use cubre el anti-replay del botón.
+//
+// #5458 (capability del corte del fallback del vault): se agrega
+// `vault-cut-fallback`. Esta allowlist es CRIPTOGRAFICA — dice que acciones se
+// pueden firmar, NO que acciones tocan el lifecycle. `vault-cut-fallback` es
+// deliberadamente OPERACIONAL: queda fuera de `HUMAN_BLOCK_ACTIONS`, fuera de
+// `isQuickAction()` y fuera de `GATE_ACTIONS` de `operator-gate.js`, asi que
+// ninguna ruta que la lleve puede llegar a `applyTransition()` ni mover
+// work-files. El aislamiento lo cementan los tests de esos tres modulos.
 const ACTION_ALLOWLIST = Object.freeze([
     'unblock', 'mas-contexto', 'devolver-definicion', 'priorizar',
     'approve', 'reject', 'adjust-definicion',
+    'vault-cut-fallback',
 ]);
+
+// #5458 — Acciones OPERACIONALES: no tocan lifecycle y su capability es mucho
+// mas peligrosa que un boton de gate (apaga el fallback de credenciales), asi
+// que llevan un TTL propio, corto y con MAXIMO EXPLICITO verificado.
+//
+// El maximo no se aplica solo al firmar (eso lo puede eludir cualquier caller
+// que pase `exp` a mano): `verify()` lo REVALIDA usando el instante de emision
+// `t` que va DENTRO del cuerpo firmado. Un token operacional sin `t` —o con una
+// vida mayor al cap— se rechaza cerrado. Como la accion es nueva, no existen
+// tokens legacy sin `t`, asi que exigirlo no rompe nada emitido antes.
+const OPERATIONAL_TTL_MS = Object.freeze({
+    'vault-cut-fallback': 10 * 60 * 1000, // 10 min: el operador confirma o caduca
+});
+
+/** TTL maximo permitido para `action`, o null si la accion no tiene cap. */
+function maxTtlFor(action) {
+    return Object.prototype.hasOwnProperty.call(OPERATIONAL_TTL_MS, action)
+        ? OPERATIONAL_TTL_MS[action]
+        : null;
+}
+
+/** Es `action` operacional (TTL capado + `t` obligatorio en el cuerpo)? */
+function isOperationalAction(action) {
+    return maxTtlFor(action) !== null;
+}
+
+// #5458 — Guarda de FORMA del nonce. En este modulo el nonce nunca se usa crudo
+// como nombre de archivo (el reclamo hashea el valor, ver `claimPathFor`), pero
+// el nonce llega dentro de un cuerpo controlable por el atacante hasta que la
+// firma se valida: validar la forma mantiene inerte cualquier derivacion futura.
+const NONCE_RE = /^[a-f0-9]{8,64}$/;
 
 // --- #6206 · binding (gate, issue, anchor) dentro del payload firmado --------
 //
@@ -248,6 +288,20 @@ function createTokenSigner(opts = {}) {
     }
 
     /**
+     * Cuerpo del reclamo (#5458): metadata del consumo, nunca el token ni la
+     * firma. El nombre del archivo ya es un hash, asi que el cuerpo es lo unico
+     * que hace auditable un reclamo suelto.
+     */
+    function claimBody(meta) {
+        return JSON.stringify({
+            n: meta && meta.nonce,
+            issue: meta && meta.issue,
+            action: meta && meta.action,
+            ts: new Date(now()).toISOString(),
+        });
+    }
+
+    /**
      * #6206 (REQ-SEC-6206-12 / REQ-GURU-6206-D) — poda del directorio de
      * reclamos por ANTIGÜEDAD.
      *
@@ -301,7 +355,7 @@ function createTokenSigner(opts = {}) {
      *
      * @returns {{claimed:true}|{claimed:false, reason:'replayed'|'unavailable'}}
      */
-    function claimNonces(values) {
+    function claimNonces(values, meta) {
         try {
             fs.mkdirSync(claimDir, { recursive: true });
         } catch {
@@ -309,10 +363,14 @@ function createTokenSigner(opts = {}) {
         }
         pruneClaims();
         const won = [];
+        const body = claimBody(meta);
         for (const value of values) {
             const target = claimPathFor(value);
             try {
-                fs.closeSync(fs.openSync(target, 'wx'));
+                const fd = fs.openSync(target, 'wx');
+                // El reclamo vale por existir; el cuerpo es traza de auditoria.
+                try { fs.writeSync(fd, body); } catch { /* best-effort */ }
+                finally { try { fs.closeSync(fd); } catch { /* idempotente */ } }
                 won.push(target);
             } catch (e) {
                 // Rollback de los reclamos que SÍ ganamos en este intento: el
@@ -360,11 +418,21 @@ function createTokenSigner(opts = {}) {
         const i = Number(issue);
         if (!isValidIssue(i)) throw new Error(`action-token.sign: issue inválido (${issue})`);
         if (!isValidAction(action)) throw new Error(`action-token.sign: action inválida (${action})`);
+        // #5458 — `t` (instante de emision) va DENTRO del cuerpo firmado para que
+        // `verify()` pueda revalidar el TTL maximo de las acciones operacionales.
+        // Es aditivo: los tokens legacy sin `t` siguen verificando igual.
+        const issuedAt = now();
+        const cap = maxTtlFor(action);
+        // El cap se aplica tambien al `exp` explicito: un caller no puede pedir
+        // una capability operacional de larga vida.
+        let expiry = Number.isFinite(exp) ? exp : issuedAt + ttlMs;
+        if (cap !== null) expiry = Math.min(expiry, issuedAt + cap);
         const payload = {
             i,
             a: action,
             n: nonceGen(),
-            e: Number.isFinite(exp) ? exp : now() + ttlMs,
+            e: expiry,
+            t: issuedAt,
         };
         // Binding opcional. Fail-closed: si el caller PIDE binding y el valor es
         // inválido, se rompe acá — nunca se emite un token con binding a medias
@@ -420,7 +488,19 @@ function createTokenSigner(opts = {}) {
         if (!isValidIssue(issue) || !isValidAction(action) || !nonce || !Number.isFinite(exp)) {
             return { ok: false, reason: 'invalid' };
         }
-        // 3. Expiración (SEC-5).
+        // 3. #5458 — TTL maximo explicito de las acciones operacionales. Se
+        //    revalida contra el instante de emision FIRMADO: aunque alguien
+        //    firmara con un `exp` largo, el token no se acepta. Sin `t` (o con
+        //    `t` incoherente) se rechaza cerrado — la accion es nueva, no hay
+        //    tokens legacy que proteger.
+        const capMs = maxTtlFor(action);
+        if (capMs !== null) {
+            const issuedAt = Number(payload.t);
+            if (!Number.isFinite(issuedAt) || exp - issuedAt > capMs || exp <= issuedAt) {
+                return { ok: false, reason: 'invalid' };
+            }
+        }
+        // 4. Expiración (SEC-5).
         if (exp <= now()) return { ok: false, reason: 'expired' };
 
         // #6206 — binding opcional. `g`/`h` quedan DELIBERADAMENTE fuera de la
@@ -432,7 +512,7 @@ function createTokenSigner(opts = {}) {
         const bound = g !== null && h !== null;
         const k = bound ? nonceKey({ g, i: issue, h, n: String(nonce) }) : null;
 
-        // 4. Replay — nonce un solo uso (SEC-5).
+        // 5. Replay — nonce un solo uso (SEC-5).
         const used = readUsedNonces();
         // El nonce crudo bloquea SIEMPRE (cubre legacy y cross-namespace: un
         // token consumido en un namespace no revalida en otro). La clave
@@ -440,13 +520,16 @@ function createTokenSigner(opts = {}) {
         if (used.plain.has(String(nonce))) return { ok: false, reason: 'replayed' };
         if (bound && used.composite.has(k)) return { ok: false, reason: 'replayed' };
 
-        // 5. #6206 — RECLAMO ATÓMICO. El chequeo de arriba lee el histórico (cubre
+        // 6. #6206 — RECLAMO ATÓMICO. El chequeo de arriba lee el histórico (cubre
         //    lo consumido antes de que existieran los reclamos y el camino
         //    legacy), pero entre esa lectura y el append hay una ventana que dos
         //    PROCESOS distintos pueden atravesar a la vez. `wx` la cierra: el
         //    kernel decide el ganador. Se reclaman los mismos dos espacios de
         //    nombres que se chequean arriba, para que el bloqueo sea simétrico.
-        const claim = claimNonces(bound ? [String(nonce), `k:${k}`] : [String(nonce)]);
+        const claim = claimNonces(
+            bound ? [String(nonce), `k:${k}`] : [String(nonce)],
+            { nonce: String(nonce), issue, action },
+        );
         if (!claim.claimed) return { ok: false, reason: claim.reason };
 
         markNonceUsed(String(nonce), { issue, action, k, gate: g });
@@ -455,7 +538,7 @@ function createTokenSigner(opts = {}) {
         return res;
     }
 
-    return { sign, verify, nonceFile, ttlMs, pruneClaims };
+    return { sign, verify, nonceFile, claimDir, ttlMs, pruneClaims };
 }
 
 // --- singleton perezoso (producción) ----------------------------------------
@@ -478,6 +561,12 @@ module.exports = {
     isValidGate,
     serializeAnchor,
     nonceKey,
+    // #5458 — cap de TTL de las acciones operacionales. Se exporta para que el
+    // despachador operacional y los tests lean el MISMO valor, sin copiarlo.
+    isOperationalAction,
+    maxTtlFor,
+    OPERATIONAL_TTL_MS,
+    NONCE_RE,
     ACTION_ALLOWLIST,
     DEFAULT_TTL_MS,
     CLAIM_PRUNE_EVERY_MS,

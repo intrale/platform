@@ -82,7 +82,22 @@ function pipelineDir() {
     return path.join(__dirname, '..');
 }
 
-function partialFile() { return path.join(pipelineDir(), '.partial-pause.json'); }
+// #5110 (D3) — la allowlist de ejecución se namespacea por proyecto. Se le
+// pregunta directamente a `project-context.js` (dueño del namespace) y NO a
+// `waves.js`: los tests del dashboard reemplazan el módulo `waves` por un fake
+// parcial en `require.cache`, y hacer pasar la resolución de paths de la
+// allowlist por ahí la rompería en cuanto el fake no exponga `_paths()`.
+function stateDir() { return require('./project-context').stateDir(); }
+
+function partialFile() { return path.join(stateDir(), '.partial-pause.json'); }
+
+// #5110 (D4 · SEC-6) — `.paused` NO se namespacea: es el halt TOTAL del
+// pipeline y es un control de seguridad. Degradarlo a per-proyecto lo haría
+// fallar ABIERTO (un proyecto sin marker despacharía con el sistema pausado).
+// Queda en la raíz física, con precedencia máxima. Si algún día se agrega pausa
+// por proyecto, es ADITIVA: `pausaEfectiva = globalPaused || projectPaused`.
+// `lib/full-pause-state.js` (`isFullPauseActive()`, fail-closed) no cambia de
+// semántica.
 function pauseFile() { return path.join(pipelineDir(), '.paused'); }
 
 function normalizeIssue(issue) {
@@ -1267,5 +1282,10 @@ module.exports = {
     // para declarar la causa del wave-stall watchdog (#4708/#4709) cuando el
     // dispatch está detenido por falta de ola y no por halt humano.
     unscopedDispatchEnabled,
-    _paths: () => ({ PARTIAL_FILE: partialFile(), PAUSE_FILE: pauseFile() }),
+    _paths: () => ({
+        PARTIAL_FILE: partialFile(),
+        PAUSE_FILE: pauseFile(),
+        // #5110 — `PARTIAL_FILE` está namespaceado; `PAUSE_FILE` NO (D4/SEC-6).
+        PROJECT_ID: require('./project-context').currentProjectIdOrNull(),
+    }),
 };

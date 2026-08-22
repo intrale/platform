@@ -10351,6 +10351,38 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // pipelineExtras = vars de contexto del child (PIPELINE_*, handoff, extras
   // específicos del skill). Se pasan SIEMPRE — son inocuas y necesarias para
   // que el agente sepa qué issue/fase/skill está procesando.
+  // #5110 (SEC-1 · A01/A07) — binding de spawn del proyecto en contexto.
+  //
+  // `PIPELINE_PROJECT_ID` viaja en el env, pero el env NO es autoridad:
+  // `build-child-env.js` propaga toda `PIPELINE_*` heredada de `process.env`, y
+  // los roles instruyen a los agentes a correr `node -e "require('.../lib/...')"`.
+  // Sin binding, un agente podría exportar la var y hablarle al namespace de
+  // otro proyecto. Por eso el pulpo — y sólo el pulpo — escribe un registro en
+  // `.pipeline/state/project-bindings/<nonce>.json`, y `project-context.js`
+  // valida que el par env/binding coincida antes de aceptar el id.
+  //
+  // Residual honesto: el binding vive en el FS local con el mismo usuario del
+  // SO. Sube la barra (hay que forjar un registro del pulpo) pero no es
+  // criptográfico; la autoridad plena llega con #5113/#5129.
+  const projectBinding = (() => {
+    try {
+      const projectContext = require('./lib/project-context');
+      const nonce = `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+      return projectContext.writeSpawnBinding({
+        projectId: projectContext.resolveProjectContext().projectId,
+        nonce,
+        skill,
+        spawnedAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      // Best-effort: si el binding no se pudo escribir NO se rompe el spawn. El
+      // hijo simplemente no recibe las vars y cae al camino `single-project`,
+      // que es exactamente el comportamiento previo a #5110.
+      log('lanzamiento', `⚠️  binding de proyecto no escrito para ${skill}:#${issue}: ${e.message}`);
+      return null;
+    }
+  })();
+
   const pipelineExtras = {
     PIPELINE_ISSUE: issue,
     PIPELINE_SKILL: skill,
@@ -10359,6 +10391,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     PIPELINE_TRABAJANDO: trabajandoPath,
     PIPELINE_WORKTREE: spawnCwd,
     PIPELINE_REPO_ROOT: ROOT,
+    // #5110 — transporte + prueba de autoría. Van SIEMPRE juntos: uno sin el
+    // otro hace que `resolveProjectContext()` tire fail-closed.
+    ...(projectBinding ? {
+      PIPELINE_PROJECT_ID: projectBinding.projectId,
+      PIPELINE_PROJECT_BINDING: projectBinding.nonce,
+    } : {}),
     // #2993 — el agente usa estos para escribir su sección de handoff antes
     // de salir (paso 7.5 de roles/_base.md). Si `ENABLED=0`, el agente NO
     // escribe — kill-switch global desde config.yaml → handoff.enabled.
@@ -10711,6 +10749,27 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     if (runningProviders) {
       try { runningProviders.clearRunningProvider(`${pipeline}/${fase}/${skill}:${issue}`); }
       catch { /* idempotente: best-effort, nunca rompe el lifecycle */ }
+    }
+
+    // #5110 (rev-2) — consumir el binding de proyecto del spawn.
+    //
+    // El binding es de UN SOLO USO: prueba que este pulpo lanzó este hijo con
+    // este projectId. Una vez que el hijo murió no vuelve a servir para nada, y
+    // dejarlo en disco alarga la ventana en la que un nonce válido está tirado
+    // en el FS esperando que alguien lo reutilice (el residual de SEC-1: el
+    // binding no es criptográfico, así que su vida útil es parte de la barra).
+    //
+    // Sin esto la limpieza quedaba 100% en el TTL de 48h de
+    // `pruneStaleBindings()`, que además sólo corre DENTRO del próximo
+    // `writeSpawnBinding()`: en un pipeline pausado o sin despachos, los
+    // bindings simplemente se acumulan sin que nadie los toque.
+    //
+    // Best-effort e idempotente: `clearSpawnBinding` devuelve false y no tira si
+    // el archivo ya no está. El lifecycle del agente nunca depende de esto.
+    if (projectBinding && projectBinding.nonce) {
+      try {
+        require('./lib/project-context').clearSpawnBinding(projectBinding.nonce);
+      } catch { /* best-effort: el TTL de 48h sigue siendo la red de contención */ }
     }
 
     // #3605 — Desregistrar del agent-ipc registry. Idempotente: si nunca se
@@ -13619,8 +13678,10 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // El canned ES la respuesta directa al pedido del operador (siempre se
         // envía — deduplicar una respuesta dejaría al operador sin contestación).
         // El return temprano evita además el notice proactivo de crossProvider
-        // (que SÍ está deduplicado por shouldEmitFallbackNotice), evitando doble
-        // señal: respeta el dedup 5 min anti-spam del aviso.
+        // (que SÍ está deduplicado, ahora por la política de EPISODIO de
+        // `fallback-episode-state.recordDispatch`), evitando doble señal.
+        // #6179 — la ventana de 5 min de `shouldEmitFallbackNotice` que
+        // describía este comentario YA NO EXISTE: la borró CA-3.
         return resolve(commanderMP.cannedReducedModeResponse({ downProviders }));
       }
     } catch (e) {
@@ -13637,33 +13698,34 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // específico del Commander.
     if (resolution.crossProvider) {
       try {
-        const fbHandler = resolution.handler || {};
-        // Si el provider efectivo no soporta tool use (Cerebras/Gemini/NVIDIA),
-        // SR-8 obliga a avisar la degradación de capacidad en línea separada.
-        // Leemos el flag del JSON config para no asumirlo en runtime.
-        const supportsToolUse = (() => {
-          try {
-            const models = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'agent-models.json'), 'utf8'));
-            const def = models.providers && models.providers[resolution.provider];
-            return def && typeof def.supports_tool_use === 'boolean' ? def.supports_tool_use : true;
-          } catch { return true; }
-        })();
-        const shouldEmit = commanderMP.shouldEmitFallbackNotice({
+        // #6179 — política de emisión por EPISODIO, compartida con el dispatcher.
+        //
+        // Acá vivía `shouldEmitFallbackNotice` (ventana de 5 min) + un
+        // `errorCode: 'quota_exhausted'` HARDCODEADO. Ese literal significaba que
+        // un 401 por credencial revocada se le reportaba al operador como "cuota
+        // agotada" (SEC-9): con el aviso por evento el ruido lo compensaba —veía
+        // la ráfaga e iba a mirar—, pero con un aviso por episodio ese mismo
+        // evento pasaba a ser un único mensaje con el motivo equivocado que no se
+        // repetía nunca más. `recordDispatch` deriva la causa de
+        // `provider-pause-cause`; NO existe forma de pasarla por parámetro (CA-6).
+        //
+        // `pipelineDir: PIPELINE` es el MISMO que resuelve el dispatcher: los dos
+        // emisores tienen que terminar en el mismo archivo de episodio o vuelve el
+        // doble aviso con la política nueva puesta (D10, con test propio).
+        const episodeState = require('./lib/fallback-episode-state');
+        const epNow = Date.now();
+        const epRes = episodeState.recordDispatch({
           pipelineDir: PIPELINE,
-          chatId: getTelegramChatId(),
-          fallbackProvider: resolution.provider,
+          provider: resolution.provider,
+          crossProvider: true,
+          chain: resolution.chainTried,
+          now: epNow,
         });
-        if (shouldEmit) {
-          const notice = commanderMP.formatFallbackNotice({
-            primaryProvider: resolution.primaryProvider || 'anthropic',
-            fallbackProvider: resolution.provider,
-            errorCode: 'quota_exhausted',
-            supportsToolUse,
-          });
-          sendTelegramPlain(notice);
-          log('commander', `↪️ Cross-provider notice emitido (fallback=${resolution.provider})`);
+        if (epRes && epRes.notify) {
+          sendTelegramPlain(commanderMP.formatEpisodeNotice(epRes.episode, { now: epNow }));
+          log('commander', `↪️ Aviso de episodio emitido (motivo=${epRes.reason}, cambio=${epRes.changed})`);
         } else {
-          log('commander', `↪️ Cross-provider fallback activo (fallback=${resolution.provider}) — notice dedupeado por ventana 5min`);
+          log('commander', `↪️ Fallback activo sin cambio de episodio (motivo=${epRes && epRes.reason}) — sin aviso`);
         }
       } catch (notifErr) {
         log('commander', `⚠️ Error formando notice de fallback (best-effort): ${notifErr.message}`);
@@ -14500,9 +14562,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // se vuelve a escribir estado ni se agrega otro archivo/selector.
       //
       // SEPARACIÓN DE SALIDAS: esta es la respuesta REACTIVA del turno perdido y
-      // se emite SIEMPRE. `shouldEmitFallbackNotice` (aviso PROACTIVO, dedup de
-      // 5 min) no se invoca desde acá — dedupear la respuesta dejaría al
-      // operador sin contestación.
+      // se emite SIEMPRE. El aviso PROACTIVO no se emite desde acá — dedupear la
+      // respuesta dejaría al operador sin contestación. #6179: ese aviso lo
+      // deduplica hoy la política por EPISODIO (`recordDispatch`); la ventana de
+      // 5 min de `shouldEmitFallbackNotice` que nombraba este comentario se
+      // borró con CA-3.
       // =====================================================================
       let quotaMidTurnText = null;
       if (weeklyQuotaMidTurn) {

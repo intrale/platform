@@ -65,8 +65,12 @@ test('R-2: un payload literal `{i,a,n,e}` (forma de human-block.js y operator-ga
             const token = s.signer.sign({ issue: 6206, action });
             const payload = JSON.parse(Buffer.from(
                 token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
-            assert.deepEqual(Object.keys(payload).sort(), ['a', 'e', 'i', 'n'],
-                'el payload sin binding NO cambia de forma');
+            // `t` (instante de emision) lo agrego #5458 en main para poder
+            // revalidar el TTL de las acciones operacionales; es aditivo y no
+            // participa del binding. Lo que #6206 NO puede agregar sin binding
+            // es `g`/`h`: eso es lo que cuida este assert.
+            assert.deepEqual(Object.keys(payload).sort(), ['a', 'e', 'i', 'n', 't'],
+                'el payload sin binding NO suma campos de binding');
             assert.equal(s.signer.verify(token).ok, true);
         }
     } finally { s.cleanup(); }
@@ -124,9 +128,12 @@ test('R-2: un store JSONL viejo (sólo `n`, sin `k`) se lee sin romper', () => {
 // -----------------------------------------------------------------------------
 
 test('#6206 no altera ACTION_ALLOWLIST ni DEFAULT_NONCE_FILE', () => {
+    // `vault-cut-fallback` la agrego #5458 en main (capability operacional, ya
+    // mergeada). #6206 no toca la allowlist: su superficie nueva es el binding.
     assert.deepEqual([...ACTION_ALLOWLIST], [
         'unblock', 'mas-contexto', 'devolver-definicion', 'priorizar',
         'approve', 'reject', 'adjust-definicion',
+        'vault-cut-fallback',
     ]);
     assert.equal(Object.isFrozen(ACTION_ALLOWLIST), true);
     assert.equal(path.basename(DEFAULT_NONCE_FILE), 'human-block-tokens-used.jsonl');
