@@ -15,10 +15,15 @@
 // Telegram (fuente única `credentials.json` vía `lib/credentials.js`). Derivar
 // con HMAC evita reusar el secreto crudo y desacopla el dominio del token.
 //
-// NOTA: este módulo corre en el proceso del dashboard (single-thread). `verify()`
-// es 100% síncrono — el check de nonce y el append son atómicos dentro del event
-// loop, sin `await` intermedio, así que un doble-click no puede gastar el token
-// dos veces (no hay ventana de carrera dentro del proceso).
+// NOTA (#5458): `verify()` es 100% síncrono, así que dentro de un proceso no hay
+// ventana de carrera. Pero el pipeline corre VARIOS procesos que verifican con el
+// mismo store (dashboard, listener, y sus respawns), y ahí el patrón viejo
+// "leer JSONL → appendFileSync" no probaba exclusión: dos procesos podían leer
+// el nonce libre antes de que el otro appendeara. El consumo ahora es un claim
+// exclusivo `open(..., 'wx')` (`O_CREAT|O_EXCL`) de un archivo por nonce: gana
+// exactamente uno, el resto recibe `EEXIST` → `replayed`. Si el claim no se
+// puede decidir (error de disco), se devuelve `unavailable` y NO se autoriza
+// nada (fail-closed).
 // =============================================================================
 
 'use strict';
@@ -41,10 +46,51 @@ const SECRET_INFO = 'human-block-action-token/v1';
 // `adjust-definicion` — las tres acciones del canal de firma de un toque por
 // Telegram. Se EXTIENDE la allowlist existente (no se reinventa la firma): el
 // mismo `sign`/`verify` HMAC + nonce single-use cubre el anti-replay del botón.
+//
+// #5458 (capability del corte del fallback del vault): se agrega
+// `vault-cut-fallback`. Esta allowlist es CRIPTOGRÁFICA — dice qué acciones se
+// pueden firmar, NO qué acciones tocan el lifecycle. `vault-cut-fallback` es
+// deliberadamente OPERACIONAL: queda fuera de `HUMAN_BLOCK_ACTIONS`, fuera de
+// `isQuickAction()` y fuera de `GATE_ACTIONS` de `operator-gate.js`, así que
+// ninguna ruta que la lleve puede llegar a `applyTransition()` ni mover
+// work-files. El aislamiento lo cementan los tests de esos tres módulos.
 const ACTION_ALLOWLIST = Object.freeze([
     'unblock', 'mas-contexto', 'devolver-definicion', 'priorizar',
     'approve', 'reject', 'adjust-definicion',
+    'vault-cut-fallback',
 ]);
+
+// #5458 — Acciones OPERACIONALES: no tocan lifecycle y su capability es mucho
+// más peligrosa que un botón de gate (apaga el fallback de credenciales), así
+// que llevan un TTL propio, corto y con MÁXIMO EXPLÍCITO verificado.
+//
+// El máximo no se aplica sólo al firmar (eso lo puede eludir cualquier caller
+// que pase `exp` a mano): `verify()` lo REVALIDA usando el instante de emisión
+// `t` que va DENTRO del cuerpo firmado. Un token operacional sin `t` —o con una
+// vida mayor al cap— se rechaza cerrado. Como la acción es nueva, no existen
+// tokens legacy sin `t`, así que exigirlo no rompe nada emitido antes.
+const OPERATIONAL_TTL_MS = Object.freeze({
+    'vault-cut-fallback': 10 * 60 * 1000, // 10 min: el operador confirma o caduca
+});
+
+/** TTL máximo permitido para `action`, o null si la acción no tiene cap. */
+function maxTtlFor(action) {
+    return Object.prototype.hasOwnProperty.call(OPERATIONAL_TTL_MS, action)
+        ? OPERATIONAL_TTL_MS[action]
+        : null;
+}
+
+/** ¿`action` es operacional (TTL capado + `t` obligatorio en el cuerpo)? */
+function isOperationalAction(action) {
+    return maxTtlFor(action) !== null;
+}
+
+// Los nonces se usan como NOMBRE DE ARCHIVO del claim atómico. `sign()` los
+// genera con `crypto.randomBytes(12).toString('hex')` (24 hex), pero el nonce
+// llega dentro de un cuerpo controlable por el atacante hasta que la firma se
+// valida — y aun con firma válida no queremos construir paths con texto libre.
+// Esta regex es la guarda anti path-traversal del store de claims.
+const NONCE_RE = /^[a-f0-9]{8,64}$/;
 
 // --- base64url helpers (sin padding, URL-safe para query strings) -----------
 function b64urlEncode(buf) {
@@ -100,7 +146,22 @@ function createTokenSigner(opts = {}) {
         return b64urlEncode(crypto.createHmac('sha256', key).update(body).digest());
     }
 
-    // --- nonce store (un-solo-uso) ------------------------------------------
+    // --- nonce store (un-solo-uso, atómico cross-process) -------------------
+    //
+    // #5458 — El patrón anterior (`readUsedNonces()` y después `appendFileSync`)
+    // NO prueba exclusión mutua: dos PROCESOS (dashboard + listener, o dos
+    // listeners tras un respawn) pueden leer el JSONL antes de que el otro
+    // appendee y ambos ver el nonce libre. Con un botón que apaga el fallback de
+    // credenciales, esa carrera es "dos confirmaciones → dos cortes".
+    //
+    // El claim ahora es un `open(..., 'wx')` sobre UN archivo por nonce:
+    // `O_CREAT|O_EXCL` es atómico a nivel de filesystem (en Windows libuv lo
+    // mapea a `CREATE_NEW`), así que exactamente un proceso gana y el resto
+    // recibe `EEXIST`. El JSONL histórico se sigue leyendo (los nonces
+    // consumidos ANTES de esta migración deben seguir muertos) y se sigue
+    // appendeando después del claim, sólo como traza de auditoría.
+    const claimDir = nonceFile + '.claims';
+
     function readUsedNonces() {
         const used = new Set();
         let raw;
@@ -114,15 +175,84 @@ function createTokenSigner(opts = {}) {
         }
         return used;
     }
-    function markNonceUsed(nonce, meta) {
-        try { fs.mkdirSync(path.dirname(nonceFile), { recursive: true }); } catch { /* idempotente */ }
-        const line = JSON.stringify({
-            n: nonce,
-            issue: meta && meta.issue,
-            action: meta && meta.action,
-            ts: new Date(now()).toISOString(),
-        }) + '\n';
-        fs.appendFileSync(nonceFile, line);
+
+    /** Traza de auditoría del consumo. Best-effort: nunca des-reclama el nonce. */
+    function appendNonceAudit(nonce, meta) {
+        try {
+            fs.mkdirSync(path.dirname(nonceFile), { recursive: true });
+            fs.appendFileSync(nonceFile, JSON.stringify({
+                n: nonce,
+                issue: meta && meta.issue,
+                action: meta && meta.action,
+                ts: new Date(now()).toISOString(),
+            }) + '\n');
+        } catch { /* la autoridad es el claim, no el JSONL */ }
+    }
+
+    // Retención del store de claims. Un claim pesa ~120 bytes y se crea UNA vez
+    // por token consumido (un toque de botón del operador), así que el volumen
+    // es bajo — pero `.pipeline/audit/` no tiene rotación y el disco lleno ya es
+    // un modo de falla conocido de este repo. Se poda de forma OPORTUNISTA y
+    // best-effort: una sola pasada por instancia, y sólo si el dir ya creció.
+    //
+    // Podar NO puede resucitar un token: `verify()` chequea la EXPIRACIÓN antes
+    // del claim, y el corte de poda (7 días) es varias veces el TTL máximo que
+    // emite este módulo (24h). Un token cuyo claim tiene más de 7 días ya se
+    // rechaza como `expired` sin llegar nunca al nonce.
+    const PRUNE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+    const PRUNE_THRESHOLD = 500;
+    let yaPodado = false;
+
+    function podarClaimsViejos() {
+        if (yaPodado) return;
+        yaPodado = true;
+        try {
+            const nombres = fs.readdirSync(claimDir);
+            if (nombres.length <= PRUNE_THRESHOLD) return;
+            const limite = now() - PRUNE_AFTER_MS;
+            for (const nombre of nombres) {
+                const f = path.join(claimDir, nombre);
+                try {
+                    if (fs.statSync(f).mtimeMs < limite) fs.unlinkSync(f);
+                } catch { /* archivo tomado por otro proceso — se ignora */ }
+            }
+        } catch { /* la poda NUNCA afecta la decisión del claim */ }
+    }
+
+    /**
+     * Reclama el nonce de forma exclusiva y atómica (cross-process).
+     * @returns {'claimed'|'replayed'|'unavailable'} — `unavailable` es
+     *   fail-closed: no sabemos si el nonce estaba libre, así que NO se consume
+     *   ni se autoriza nada.
+     */
+    function claimNonce(nonce, meta) {
+        if (!NONCE_RE.test(nonce)) return 'unavailable'; // no apto como filename
+        // 1. Nonces consumidos antes de la migración (JSONL histórico).
+        if (readUsedNonces().has(nonce)) return 'replayed';
+        // 2. Claim exclusivo — ésta es la autoridad. El `mkdir` va en su propio
+        //    try: su `EEXIST` significa "el dir ya está", NO "el nonce ya se
+        //    usó". Confundirlos convertiría un store roto en un `replayed`
+        //    silencioso.
+        try { fs.mkdirSync(claimDir, { recursive: true }); } catch { /* lo decide el open */ }
+        let fd;
+        try {
+            fd = fs.openSync(path.join(claimDir, nonce + '.json'), 'wx');
+        } catch (e) {
+            if (e && e.code === 'EEXIST') return 'replayed';
+            return 'unavailable';
+        }
+        try {
+            fs.writeSync(fd, JSON.stringify({
+                n: nonce,
+                issue: meta && meta.issue,
+                action: meta && meta.action,
+                ts: new Date(now()).toISOString(),
+            }));
+        } catch { /* el claim vale aunque el cuerpo no se haya escrito */ }
+        finally { try { fs.closeSync(fd); } catch { /* idempotente */ } }
+        appendNonceAudit(nonce, meta);
+        podarClaimsViejos();
+        return 'claimed';
     }
 
     /**
@@ -134,11 +264,21 @@ function createTokenSigner(opts = {}) {
         const i = Number(issue);
         if (!isValidIssue(i)) throw new Error(`action-token.sign: issue inválido (${issue})`);
         if (!isValidAction(action)) throw new Error(`action-token.sign: action inválida (${action})`);
+        // #5458 — `t` (instante de emisión) va DENTRO del cuerpo firmado para que
+        // `verify()` pueda revalidar el TTL máximo de las acciones operacionales.
+        // Es aditivo: los tokens legacy sin `t` siguen verificando igual.
+        const issuedAt = now();
+        const cap = maxTtlFor(action);
+        // El cap se aplica también al `exp` explícito: un caller no puede pedir
+        // una capability operacional de larga vida.
+        let expiry = Number.isFinite(exp) ? exp : issuedAt + ttlMs;
+        if (cap !== null) expiry = Math.min(expiry, issuedAt + cap);
         const payload = {
             i,
             a: action,
             n: crypto.randomBytes(12).toString('hex'),
-            e: Number.isFinite(exp) ? exp : now() + ttlMs,
+            e: expiry,
+            t: issuedAt,
         };
         const body = b64urlEncode(JSON.stringify(payload));
         return `${TOKEN_VERSION}.${body}.${signBody(body)}`;
@@ -179,16 +319,28 @@ function createTokenSigner(opts = {}) {
         if (!isValidIssue(issue) || !isValidAction(action) || !nonce || !Number.isFinite(exp)) {
             return { ok: false, reason: 'invalid' };
         }
-        // 3. Expiración (SEC-5).
+        // 3. TTL máximo explícito de las acciones operacionales (#5458). Se
+        //    revalida contra el instante de emisión FIRMADO: aunque alguien
+        //    firmara con un `exp` largo, el token no se acepta. Sin `t` (o con
+        //    `t` incoherente) se rechaza cerrado — la acción es nueva, no hay
+        //    tokens legacy que proteger.
+        const cap = maxTtlFor(action);
+        if (cap !== null) {
+            const issuedAt = Number(payload.t);
+            if (!Number.isFinite(issuedAt) || exp - issuedAt > cap || exp <= issuedAt) {
+                return { ok: false, reason: 'invalid' };
+            }
+        }
+        // 4. Expiración (SEC-5).
         if (exp <= now()) return { ok: false, reason: 'expired' };
-        // 4. Replay — nonce un solo uso (SEC-5).
-        const used = readUsedNonces();
-        if (used.has(String(nonce))) return { ok: false, reason: 'replayed' };
-        markNonceUsed(String(nonce), { issue, action });
+        // 5. Replay — nonce un solo uso, claim ATÓMICO cross-process (#5458).
+        const claim = claimNonce(String(nonce), { issue, action });
+        if (claim === 'replayed') return { ok: false, reason: 'replayed' };
+        if (claim !== 'claimed') return { ok: false, reason: 'unavailable' };
         return { ok: true, issue, action, nonce: String(nonce) };
     }
 
-    return { sign, verify, nonceFile, ttlMs };
+    return { sign, verify, nonceFile, claimDir, ttlMs };
 }
 
 // --- singleton perezoso (producción) ----------------------------------------
@@ -206,6 +358,12 @@ module.exports = {
     deriveKey,
     isValidAction,
     isValidIssue,
+    // #5458 — cap de TTL de las acciones operacionales. Se exporta para que el
+    // despachador operacional y los tests lean el MISMO valor, sin copiarlo.
+    isOperationalAction,
+    maxTtlFor,
+    OPERATIONAL_TTL_MS,
+    NONCE_RE,
     ACTION_ALLOWLIST,
     DEFAULT_TTL_MS,
     DEFAULT_NONCE_FILE,
