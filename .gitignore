@@ -223,6 +223,12 @@ scripts/planner-plan.json
 # Mismo criterio que el de arriba: es runtime puro y el `reset --hard` del repo
 # principal lo pisaria, reiniciando la escalera de avisos en cada respawn.
 .pipeline/.desync-block-notify.json
+# #6118 — silencios activos de la alerta de dependencias faltantes. Estado
+# runtime puro y por maquina: versionarlo haria que el `reset --hard` del
+# respawn lo pise y el "no avisarme por 24 h" del operador se pierda, que es
+# justamente la falla que el silencio persistente vino a evitar.
+.pipeline/partial-pause-deps-mute.json
+.pipeline/partial-pause-deps-mute.json.*.tmp
 .pipeline/last-restart.json
 # #5646 — registro de servicios que quedaron con codigo viejo tras un
 # `reset --hard` y guard de ronda del restart selectivo. Estado runtime puro:
@@ -381,6 +387,12 @@ __pycache__/
 # Ignorarlo no constituye un backup: `git clean -xdf` elimina también archivos
 # ignorados; confirmar el target y contar con respaldo antes de ejecutarlo.
 .pipeline/state/*
+
+# #6206 — depósito de pendientes de firma del canal único de aprobación.
+# Índice de presentación, NUNCA autoridad (CA-A4). No versionar: el repo hace
+# `reset --hard` en cada respawn y git podría resucitar un pendiente resuelto
+# o borrar uno vivo sin dejar rastro en la cadena de audit.
+.pipeline/approval-channel/*
 
 # #4536 — estado runtime del scheduler de ventanas OFF por proveedor (#3871) y
 # del disable manual por proveedor. Fail-open, con updated_at, generado/persistido

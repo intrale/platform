@@ -250,12 +250,17 @@ test('#5458 el claim atómico es un archivo por nonce dentro del store derivado'
     const token = t.sign({ issue: 5458, action: ACTION });
     const r = t.verify(token);
     assert.equal(r.ok, true);
-    const claims = fs.readdirSync(t.claimDir);
-    assert.deepEqual(claims, [`${r.nonce}.json`]);
+    // #6206 unificó el store: el nombre del reclamo es el hash del valor
+    // reclamado (nunca el nonce crudo en un path) y lleva sufijo `.claim`. Un
+    // token SIN binding sigue reclamando exactamente un valor.
+    const claims = fs.readdirSync(t.claimDir).filter((n) => n.endsWith('.claim'));
+    assert.equal(claims.length, 1);
+    assert.doesNotMatch(claims[0], new RegExp(r.nonce), 'el nonce crudo no va en el path');
     // El claim no guarda el token ni la firma — sólo metadata del consumo.
     const guardado = JSON.parse(fs.readFileSync(path.join(t.claimDir, claims[0]), 'utf8'));
     assert.equal(guardado.action, ACTION);
     assert.equal(guardado.issue, 5458);
+    assert.equal(guardado.n, r.nonce);
     assert.doesNotMatch(JSON.stringify(guardado), /CANARIO-SECRETO/);
     assert.equal(guardado.token, undefined);
     assert.equal(guardado.sig, undefined);
@@ -282,11 +287,13 @@ test('#5458 la poda del store de claims no puede resucitar un token vivo', () =>
     const token = t.sign({ issue: 5458, action: ACTION });
     assert.equal(t.verify(token).ok, true);
 
-    // Se fuerza la poda: >500 claims viejos + el claim real envejecido a mano.
+    // Se fuerza la poda: reclamos y marcador de throttle envejecidos más allá
+    // de sus umbrales (#6206 poda por ANTIGÜEDAD > ttlMs, throttleada por el
+    // marcador en disco, no por un umbral de cantidad).
     const claims = `${file}.claims`;
     const viejo = ahora - 30 * 24 * 60 * 60 * 1000;
-    for (let i = 0; i < 520; i += 1) {
-        const f = path.join(claims, `relleno${i}.json`);
+    for (let i = 0; i < 20; i += 1) {
+        const f = path.join(claims, `relleno${i}.claim`);
         fs.writeFileSync(f, '{}');
         fs.utimesSync(f, new Date(viejo), new Date(viejo));
     }
@@ -294,11 +301,12 @@ test('#5458 la poda del store de claims no puede resucitar un token vivo', () =>
         const full = path.join(claims, f);
         fs.utimesSync(full, new Date(viejo), new Date(viejo));
     }
+    const antes = fs.readdirSync(claims).filter((n) => n.endsWith('.claim')).length;
 
-    // Un signer NUEVO (latch de poda sin usar) consume otro token y dispara la poda.
     const t2 = createTokenSigner({ secret: SECRET, nonceFile: file, now: () => ahora });
     assert.equal(t2.verify(t2.sign({ issue: 1, action: ACTION })).ok, true);
-    assert.ok(fs.readdirSync(claims).length < 520, 'la poda debe haber corrido');
+    assert.ok(fs.readdirSync(claims).filter((n) => n.endsWith('.claim')).length < antes,
+        'la poda debe haber corrido');
 
     // El token original quedó SIN claim, pero sigue muerto: ya expiró (el corte
     // de poda es muy superior al TTL) y además su nonce vive en el JSONL.
@@ -313,5 +321,8 @@ test('#5458 con pocos claims la poda no borra nada', () => {
     for (let i = 1; i <= 5; i += 1) {
         assert.equal(t.verify(t.sign({ issue: i, action: ACTION })).ok, true);
     }
-    assert.equal(fs.readdirSync(`${file}.claims`).length, 5);
+    assert.equal(
+        fs.readdirSync(`${file}.claims`).filter((n) => n.endsWith('.claim')).length,
+        5,
+    );
 });
