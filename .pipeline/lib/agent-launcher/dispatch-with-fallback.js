@@ -75,6 +75,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #6226 - nombres unicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('../dropfile-writer');
 
 // #4052 — clasificador puro de "muerte al spawnear del provider". Distingue una
 // muerte de spawn-failure (infra del provider) de un fallo legítimo del issue,
@@ -838,9 +840,6 @@ function enqueueTelegramNotice({ pipelineDir, fsImpl, text, meta, plain }) {
     try {
         const queueDir = path.join(pipelineDir, TELEGRAM_QUEUE_SUBDIR);
         _fs.mkdirSync(queueDir, { recursive: true });
-        // Nombre con timestamp + pid para evitar colisiones entre procesos
-        // concurrentes (caller puede ser pulpo + un script de mantenimiento).
-        const fname = `cross-provider-${Date.now()}-${process.pid}.json`;
         const payload = JSON.stringify({
             type: 'cross-provider-fallback',
             text,
@@ -854,7 +853,23 @@ function enqueueTelegramNotice({ pipelineDir, fsImpl, text, meta, plain }) {
             meta: meta || {},
             queued_at: new Date().toISOString(),
         }, null, 2);
-        _fs.writeFileSync(path.join(queueDir, fname), payload, { mode: 0o600 });
+        // #6226 - escritura fail-closed. El nombre lleva timestamp + pid, pero
+        // el pid es CONSTANTE dentro de un proceso: dos avisos del mismo proceso
+        // en el mismo milisegundo resolvian al mismo path y el segundo pisaba al
+        // primero. Se conserva el nombre tal cual (su prefijo define la posicion
+        // del archivo en el drenado por orden de nombre) y solo ante colision
+        // real se desambigua con `-<n>`.
+        const fname = `cross-provider-${Date.now()}-${process.pid}.json`;
+        dropfileWriter.writeUniqueFileSync({
+            dir: queueDir,
+            filename: fname,
+            data: payload,
+            fsImpl: _fs,
+            mode: 0o600,
+            onCollision: (name, attempt) => console.warn(
+                `[dispatch-with-fallback] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
         return true;
     } catch {
         return false;

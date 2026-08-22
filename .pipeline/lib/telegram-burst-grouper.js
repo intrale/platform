@@ -240,10 +240,20 @@ function groupByBurst({ fileEntries, windowMs, fsImpl }) {
         loadFileSafe({ filePath: entry.path, fileName: entry.name, fsImpl })
     );
     // Sort por mtime ascendente (los unparseable van al final con mtime=Infinity).
+    //
+    // #6226 — Desempate explícito por nombre. Dos dropfiles escritos en el mismo
+    // milisegundo (el `reply` + los `extraMessages` del paginado) EMPATAN en
+    // `mtimeMs`, y sin desempate el orden quedaba heredado del orden de entrada,
+    // es decir de cómo enumeró el filesystem. Los nombres son
+    // `<ts>-<seq>-<sufijo>` (ver `lib/dropfile-writer.js`), con seq zero-padded,
+    // así que el orden lexicográfico es el orden de emisión.
     loaded.sort((a, b) => {
         const ma = a.ok ? a.mtimeMs : Number.POSITIVE_INFINITY;
         const mb = b.ok ? b.mtimeMs : Number.POSITIVE_INFINITY;
-        return ma - mb;
+        if (ma !== mb) return ma - mb;
+        const fa = a.file || '';
+        const fb = b.file || '';
+        return fa < fb ? -1 : fa > fb ? 1 : 0;
     });
 
     const groups = [];

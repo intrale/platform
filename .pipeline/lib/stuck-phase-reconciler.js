@@ -362,7 +362,12 @@ function planReconciliation(ctx = {}) {
     let actionsThisTick = 0;
 
     for (const it of sorted) {
-        const base = { issue: it.issue, pipeline: it.pipeline, fase: it.fase };
+        // #6150 CA-3 — `stuckSinceMs` viaja en `base` para que TODAS las
+        // decisiones (incluida la del cap por tick) lo hereden.
+        const base = {
+            issue: it.issue, pipeline: it.pipeline, fase: it.fase,
+            stuckSinceMs: Number.isFinite(it.stuckSinceMs) ? it.stuckSinceMs : null,
+        };
         const d = decideForIssue(it, cfg);
 
         // Cap por tick: solo las acciones REALES (escalate/requeue) consumen cupo.

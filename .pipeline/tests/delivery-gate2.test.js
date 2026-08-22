@@ -76,55 +76,56 @@ test('CA-3 · enforce con firma para OTRO SHA (HEAD avanzó) ⇒ bloquea', () =>
     assert.match(r.reason, /HEAD avanzó/);
 });
 
-
-// `resolveAuthorizedSigners` (delivery.js:109) lee `TELEGRAM_LEO_OPERATOR_CHAT_ID`
-// de `process.env` en tiempo de llamada. Sin aislar esa variable el test depende
-// del entorno: en la máquina del operador (que la exporta de verdad) el id real
-// se colaba en el resultado y la suite quedaba en rojo por ambiente, no por
-// código. Mismo patrón `withEnv` que `cua-operator-resolve.test.js:29`.
+// #6226 - `resolveAuthorizedSigners` suma `TELEGRAM_LEO_OPERATOR_CHAT_ID` a los
+// firmantes. Si el test hereda esa variable del entorno (el pipeline la exporta),
+// el resultado trae un id extra y el assert falla por ambiente, no por código.
+// Se aísla la variable en cada caso y se cubre el fallback por env de forma
+// explícita, para que la conducta quede testeada y no sólo silenciada.
 function withOperatorEnv(value, fn) {
-    const KEY = 'TELEGRAM_LEO_OPERATOR_CHAT_ID';
-    const saved = process.env[KEY];
+    const prev = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    if (value === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = value;
     try {
-        if (value === undefined) delete process.env[KEY];
-        else process.env[KEY] = value;
         return fn();
     } finally {
-        if (saved === undefined) delete process.env[KEY];
-        else process.env[KEY] = saved;
+        if (prev === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+        else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = prev;
     }
 }
 
 test('resolveAuthorizedSigners reúne cua.operator_chat_ids sin duplicar', () => {
-    withOperatorEnv(undefined, () => {
-        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } });
-        assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+    const signers = withOperatorEnv(undefined, () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2', '2'] } }));
+    assert.deepStrictEqual([...new Set(signers)].sort(), ['1', '2']);
+});
+
+test('#6226 · resolveAuthorizedSigners suma el operador del env sin duplicar el ya listado', () => {
+    const signers = withOperatorEnv('7', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '7'] } }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '7']);
+});
+
+test('#6226 · resolveAuthorizedSigners agrega el operador del env cuando no estaba', () => {
+    const signers = withOperatorEnv('7', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }));
+    assert.deepStrictEqual([...signers].sort(), ['1', '7']);
+});
+
+test('#6226 · el aislamiento no filtra al caso base y restaura el valor previo', () => {
+    // Simula el entorno del pipeline (variable presente) y verifica las dos
+    // propiedades del helper: adentro no filtra, y al salir restaura.
+    withOperatorEnv('6529617704', () => {
+        const signers = withOperatorEnv(undefined, () =>
+            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }));
+        assert.deepStrictEqual([...signers].sort(), ['1', '2']);
+        assert.strictEqual(process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID, '6529617704');
     });
 });
 
-// La rama `envOperator` de `resolveAuthorizedSigners` (delivery.js:109-110) antes
-// solo se ejercitaba por accidente, segun tuviera o no la variable la maquina que
-// corria la suite. Aca queda cubierta de forma explicita y deterministica.
-test('resolveAuthorizedSigners suma el operador de TELEGRAM_LEO_OPERATOR_CHAT_ID sin duplicar', () => {
-    // Ya viene en la config: el operador de env no debe duplicarlo.
-    withOperatorEnv('2', () => {
-        assert.deepStrictEqual(
-            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1', '2'] } }).sort(),
-            ['1', '2'],
-        );
-    });
-    // No esta en la config: si se agrega.
-    withOperatorEnv('77', () => {
-        assert.deepStrictEqual(
-            delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }).sort(),
-            ['1', '77'],
-        );
-    });
-});
-
-test('resolveAuthorizedSigners ignora la credential dedicada vacia o en blanco', () => {
-    withOperatorEnv('   ', () => {
-        const signers = delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } });
-        assert.deepStrictEqual([...signers], ['1']);
-    });
+// Aporte de #6179 preservado en el merge: la variable seteada pero en blanco no
+// debe sumar un firmante vacio (resolveAuthorizedSigners la trimea y descarta).
+test('resolveAuthorizedSigners ignora el operador de env vacio o en blanco', () => {
+    const signers = withOperatorEnv('   ', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }));
+    assert.deepStrictEqual([...signers], ['1']);
 });

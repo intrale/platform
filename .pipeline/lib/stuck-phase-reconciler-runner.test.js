@@ -180,3 +180,75 @@ test('E2E deliverable reciente → none (ventana de gracia)', () => {
     const res = runStuckPhaseReconciler(deps, {});
     assert.equal(res.requeued, 0, 'muy reciente, darle tiempo');
 });
+
+// -----------------------------------------------------------------------------
+// #6150 CA-3 — antigüedad de la tarea frenada
+//
+// "Hace cuánto está así" era el único de los cinco elementos del aviso nuevo que
+// no llegaba al emisor: el runner tenía el `mtimeMs` de cada entregable pero lo
+// descartaba al armar el contexto.
+// -----------------------------------------------------------------------------
+
+test('buildIssuesContext: stuckSinceMs es el entregable MÁS VIEJO del issue', () => {
+    const VIEJO = NOW - 5 * 60 * 60 * 1000;
+    const MEDIO = NOW - 2 * 60 * 60 * 1000;
+    const fs = { desarrollo: { validacion: {
+        listo: { '700.po': { yaml: APROB, mtimeMs: MEDIO } },
+        archivado: {
+            '700.ux': { yaml: APROB, mtimeMs: VIEJO },
+            '700.guru': { yaml: APROB, mtimeMs: NOW - 60 * 1000 },
+        },
+    } } };
+    const ctx = buildIssuesContext(makeDeps(fs));
+    assert.equal(ctx.length, 1);
+    assert.equal(ctx[0].stuckSinceMs, VIEJO, 'marca desde cuándo la fase dejó de avanzar');
+});
+
+test('buildIssuesContext: sin mtimeMs finito, stuckSinceMs queda en null', () => {
+    const fs = { desarrollo: { validacion: {
+        listo: { '701.po': { yaml: APROB, mtimeMs: undefined } },
+    } } };
+    const ctx = buildIssuesContext(makeDeps(fs));
+    assert.equal(ctx.length, 1);
+    assert.equal(ctx[0].stuckSinceMs, null, 'null explícito: el copy omite la antigüedad en vez de imprimir NaN');
+});
+
+test('las decisiones arrastran la antigüedad del entregable más viejo', () => {
+    const VIEJO = NOW - 8 * 60 * 60 * 1000;
+    const fs = { desarrollo: { aprobacion: {
+        listo: { '4507.review': { yaml: APROB, mtimeMs: OLD } },
+        archivado: {
+            '4507.po': { yaml: APROB, mtimeMs: VIEJO },
+            '4507.architect': { yaml: APROB, mtimeMs: OLD },
+        },
+    } } };
+    const res = runStuckPhaseReconciler(makeDeps(fs), {});
+    const d = (res.decisions || []).find((x) => Number(x.issue) === 4507);
+    assert.ok(d, 'la decisión existe');
+    assert.equal(d.stuckSinceMs, VIEJO, 'viaja hasta el emisor, que es quien arma el texto');
+});
+
+test('rebote rev-2 · un mtimeMs en 0 no se toma como antigüedad', () => {
+    // `deps.buildIssuesContext` deja `mtimeMs = 0` cuando el statSync falla (carrera
+    // con un rename). `Number.isFinite(0)` es true, así que el filtro ingenuo lo
+    // tomaba como el entregable más viejo y el copy imprimía "hace 20324 d" (epoch).
+    const VIEJO = NOW - 3 * 60 * 60 * 1000;
+    const fs = { desarrollo: { validacion: {
+        listo: {
+            '702.po': { yaml: APROB, mtimeMs: 0 },
+            '702.ux': { yaml: APROB, mtimeMs: VIEJO },
+        },
+    } } };
+    const ctx = buildIssuesContext(makeDeps(fs));
+    assert.equal(ctx.length, 1);
+    assert.equal(ctx[0].stuckSinceMs, VIEJO, 'el 0 se descarta, gana el mtime real más viejo');
+});
+
+test('rebote rev-2 · si TODOS los mtimeMs son 0, stuckSinceMs queda en null', () => {
+    const fs = { desarrollo: { validacion: {
+        listo: { '703.po': { yaml: APROB, mtimeMs: 0 } },
+    } } };
+    const ctx = buildIssuesContext(makeDeps(fs));
+    assert.equal(ctx.length, 1);
+    assert.equal(ctx[0].stuckSinceMs, null, 'sin dato confiable el copy omite la antigüedad');
+});
