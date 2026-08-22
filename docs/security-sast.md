@@ -15,6 +15,8 @@ El pipeline de seguridad estático (SAST) analiza el código fuente y sus depend
 **Configuración:**
 - Plugin Gradle: `org.owasp.dependencycheck:12.2.0`
 - `failBuildOnCVSS = 11.0` → nunca falla (CVSS máximo es 10.0)
+- La variable `NVD_API_KEY`, cuando existe y no está vacía, se conecta a `dependencyCheck.nvd.apiKey` sin imprimirse ni persistirse.
+- La base NVD usa caches renovables `nvd-data-v2-<run_id>` y sólo restaura entradas del prefijo `nvd-data-v2-`; no recupera la cache `v1` histórica.
 - Genera reportes en el directorio por defecto de Gradle
 
 **Task Gradle:**
@@ -112,6 +114,20 @@ Si un archivo tiene un falso positivo, agregar un comentario en línea:
 | `NVD_API_KEY` | API key de NVD para evitar rate limiting en OWASP DC | GitHub Secrets |
 
 > Sin `NVD_API_KEY`, el scan puede ser más lento o fallar por rate limiting de NVD. Para obtener una key gratuita: https://nvd.nist.gov/developers/request-an-api-key
+
+### Alta manual de `NVD_API_KEY`
+
+El secret todavía requiere una acción humana porque NVD confirma el alta por correo:
+
+1. Solicitar una API key en https://nvd.nist.gov/developers/request-an-api-key y completar la confirmación recibida por correo.
+2. Cargarla sin imprimirla: `gh secret set NVD_API_KEY --repo intrale/platform` y pegar el valor cuando `gh` lo solicite.
+3. Comprobar únicamente su presencia con `gh secret list --repo intrale/platform`; el comando debe listar `NVD_API_KEY`.
+
+Los pull requests desde forks no reciben secrets. En ese caso el workflow continúa en modo warning, informa que la API key no está disponible y anticipa la mayor duración, sin mostrar el valor. El reporte consolidado diferencia estos estados textuales:
+
+- `scan válido`: la task terminó correctamente y existe un reporte OWASP.
+- `scan fallido`: la task terminó con error; que el modo warning no bloquee el merge no significa que el scanner haya funcionado.
+- `reporte ausente`: la task no dejó un reporte verificable y no se interpreta como ausencia de vulnerabilidades.
 
 ## Próximas iteraciones
 

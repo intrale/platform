@@ -55,6 +55,11 @@ plugins {
 dependencyCheck {
     // failBuildOnCVSS = 11.0 → nunca falla (CVSS máximo es 10.0) — modo warning
     failBuildOnCVSS = 11.0f
+    nvd {
+        System.getenv("NVD_API_KEY")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { apiKey = it }
+    }
 }
 
 tasks.register("verifyNoLegacyStrings") {

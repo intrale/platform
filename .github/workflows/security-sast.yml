@@ -20,7 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true  # Modo warning — no bloquea el PR
     outputs:
-      result: ${{ job.status }}
+      scan_outcome: ${{ steps.owasp-scan.outcome }}
+      report_status: ${{ steps.owasp-report.outputs.status }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -48,18 +49,45 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.gradle/dependency-check-data
-          key: nvd-data-v1
+          key: nvd-data-v2-${{ github.run_id }}
           restore-keys: |
-            nvd-data-
+            nvd-data-v2-
 
       - name: Grant execute permission
         run: chmod +x gradlew
 
+      - name: Advertir ejecución sin NVD API key
+        if: ${{ env.NVD_API_KEY == '' }}
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          echo "## OWASP Dependency Check" >> "$GITHUB_STEP_SUMMARY"
+          echo "Estado de credencial: API key del NVD no disponible." >> "$GITHUB_STEP_SUMMARY"
+          echo "El scan continúa en modo warning, pero la actualización puede tardar minutos en lugar de segundos por el rate limit anónimo." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run OWASP Dependency Check
+        id: owasp-scan
         run: ./gradlew dependencyCheckAggregate --no-daemon
         continue-on-error: true
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+      - name: Validar reporte OWASP
+        id: owasp-report
+        if: always()
+        shell: bash
+        run: |
+          if find build/reports -type f -size +0c \( -name 'dependency-check-report.html' -o -name 'dependency-check-report.json' -o -name 'dependency-check-report.xml' \) -print -quit 2>/dev/null | grep -q .; then
+            echo "status=present" >> "$GITHUB_OUTPUT"
+            echo "Estado del reporte: scan válido; reporte OWASP presente." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "status=missing" >> "$GITHUB_OUTPUT"
+            echo "Estado del reporte: reporte ausente; el scan no se considera exitoso." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${{ steps.owasp-scan.outcome }}" != "success" ]; then
+            echo "Estado del scan: scan fallido (modo warning; no bloquea el merge)." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload OWASP report
         if: always()
@@ -221,7 +249,8 @@ jobs:
           script: |
             const fs = require('fs');
 
-            const depCheckResult = '${{ needs.dependency-check.result }}';
+            const depCheckOutcome = '${{ needs.dependency-check.outputs.scan_outcome }}';
+            const depCheckReportStatus = '${{ needs.dependency-check.outputs.report_status }}';
             const semgrepResult = '${{ needs.semgrep.result }}';
             const detectSecretsResult = '${{ needs.detect-secrets.result }}';
 
@@ -246,6 +275,14 @@ jobs:
               return '❓';
             };
 
+            const depCheckState = depCheckOutcome !== 'success'
+              ? 'scan fallido'
+              : depCheckReportStatus !== 'present'
+                ? 'reporte ausente'
+                : 'scan válido';
+
+            const depCheckIcon = depCheckState === 'scan válido' ? '✅' : '⚠️';
+
             const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
             const securityTabUrl = `${{ github.server_url }}/${{ github.repository }}/security/code-scanning`;
 
@@ -256,7 +293,7 @@ jobs:
               ``,
               `| Herramienta | Estado | Hallazgos | Detalles |`,
               `|-------------|--------|-----------|----------|`,
-              `| 🔍 OWASP Dependency Check | ${icon(depCheckResult)} \`${depCheckResult}\` | Vulnerabilidades en dependencias | [Ver reporte](${runUrl}) |`,
+              `| 🔍 OWASP Dependency Check | ${depCheckIcon} \`${depCheckState}\` | Vulnerabilidades en dependencias | [Ver reporte](${runUrl}) |`,
               `| 🛡️ Semgrep (análisis estático) | ${icon(semgrepResult)} \`${semgrepResult}\` | ${semgrepFindings} hallazgo(s) | [Ver en Security tab](${securityTabUrl}) |`,
               `| 🔑 detect-secrets (secretos) | ${icon(detectSecretsResult)} \`${detectSecretsResult}\` | ${secretsCount} posible(s) secreto(s) | [Ver reporte](${runUrl}) |`,
               ``,
