@@ -33,7 +33,7 @@ function rechazoIssue(over = {}) {
         issue: 6146, pipeline: 'desarrollo', fase: 'verificacion',
         requiredSkills: ['qa', 'tester', 'security'],
         deliverables: [
-            deliv('qa', 'listo', { resultado: 'rechazado', severidad: 'grave', motivo: 'CA-1: la pantalla no renderiza' }),
+            deliv('qa', 'listo', { resultado: 'rechazado', gravedad: 'grave', motivo: 'CA-1: la pantalla no renderiza' }),
             deliv('tester', 'listo', CANCEL),
             deliv('security', 'listo', CANCEL),
         ],
@@ -338,7 +338,7 @@ test('#6296 CA-2 rechazo LEVE → requeue de la fase completa, JAMÁS promote/do
     const d = only([rechazoIssue({
         requiredSkills: ['review', 'po'],
         deliverables: [
-            deliv('review', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'nit de naming' }),
+            deliv('review', 'listo', { resultado: 'rechazado', gravedad: 'leve', motivo: 'nit de naming' }),
             deliv('po', 'listo', CANCEL),
         ],
     })], { resolveRebote: DEST_DEV });
@@ -355,8 +355,8 @@ test('#6296 un GRAVE + un LEVE ⇒ grave (nunca se promedia)', () => {
     const d = only([rechazoIssue({
         requiredSkills: ['review', 'tester'],
         deliverables: [
-            deliv('review', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'nit' }),
-            deliv('tester', 'listo', { resultado: 'rechazado', severidad: 'grave', motivo: 'tests en rojo' }),
+            deliv('review', 'listo', { resultado: 'rechazado', gravedad: 'leve', motivo: 'nit' }),
+            deliv('tester', 'listo', { resultado: 'rechazado', gravedad: 'grave', motivo: 'tests en rojo' }),
         ],
     })], { resolveRebote: DEST_DEV });
     assert.equal(d.action, 'rebote');
@@ -368,7 +368,7 @@ test('#6296 CA-5 security en el carril leve NO publica su motivo en el PR', () =
         deliverables: [
             // Aunque el YAML declare `leve`, el piso de `rejection-severity` lo
             // vuelve grave: security jamás entra al carril liviano.
-            deliv('security', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'secret en claro' }),
+            deliv('security', 'listo', { resultado: 'rechazado', gravedad: 'leve', motivo: 'secret en claro' }),
             deliv('po', 'listo', CANCEL),
         ],
     })], { resolveRebote: DEST_DEV });
@@ -399,7 +399,7 @@ test('#6296 CA-7 carril leve respeta el presupuesto de requeue existente', () =>
     const base = {
         requiredSkills: ['review', 'po'],
         deliverables: [
-            deliv('review', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'nit' }),
+            deliv('review', 'listo', { resultado: 'rechazado', gravedad: 'leve', motivo: 'nit' }),
             deliv('po', 'listo', CANCEL),
         ],
     };
@@ -639,7 +639,7 @@ test('#6296 pausa: el carril leve tampoco re-encola', () => {
     const d = only([rechazoIssue({
         requiredSkills: ['review', 'po'],
         deliverables: [
-            deliv('review', 'listo', { resultado: 'rechazado', severidad: 'leve', motivo: 'nit' }),
+            deliv('review', 'listo', { resultado: 'rechazado', gravedad: 'leve', motivo: 'nit' }),
             deliv('po', 'listo', CANCEL),
         ],
     })], { resolveRebote: DEST_DEV, paused: true });

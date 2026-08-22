@@ -36,11 +36,11 @@ issue: 1732
 fase: verificacion
 pipeline: desarrollo
 resultado: rechazado
-severidad: grave        # grave | leve — OBLIGATORIO (ver abajo)
+gravedad: grave         # grave | leve — OBLIGATORIO (ver abajo)
 motivo: "Descripción clara del problema encontrado"
 ```
 
-### Campo `severidad` en los rechazos (#6296) — OBLIGATORIO
+### Campo `gravedad` en los rechazos (#6296) — OBLIGATORIO
 
 Un rechazo tuyo **no espera a un humano**: el pipeline lo resuelve solo y el
 destino lo fijás vos con este campo. Sólo hay dos valores válidos:
@@ -55,15 +55,19 @@ Reglas inquebrantables:
 - **Ausente, vacío o cualquier otro valor ⇒ se trata como `grave`** (fail-closed).
   El pipeline nunca interpreta el silencio como "es menor". Un falso `grave`
   cuesta un rebote; un falso `leve` deja pasar un defecto.
-- **No lo pongas en el `motivo`** — el campo es estructurado. `motivo: "severidad
+- **No lo pongas en el `motivo`** — el campo es estructurado. `motivo: "gravedad
   leve, es un nit"` se lee como `grave`, porque el texto libre lo escribe el
   agente y no es una fuente confiable.
 - **`leve` no es "apruebo con reservas".** Si dudás entre los dos, es `grave`.
 - Los rechazos de `security` son **siempre `grave`**, aunque declares `leve`: el
   piso está en código (`.pipeline/lib/rejection-severity.js`) y no se puede bajar.
-- Ojo con el vocabulario: varios skills usan "severidad" para clasificar
-  **hallazgos dentro de su reporte**. Ese uso es interno del reporte. Este campo
-  es otra cosa: la severidad **del veredicto completo**, y es el que rutea.
+- **El campo se llama `gravedad`, y el gate IGNORA `severidad`.** No es un
+  alias: `severidad` ya nombra escalas NO binarias en varios skills
+  (`critica|alta|media|baja`, `critical|high|medium|low`, `error`) para
+  clasificar **hallazgos dentro de tu reporte**. Ese uso sigue siendo válido
+  ahí. Pero si escribís `severidad: leve` en el veredicto, el pipeline **no lo
+  lee** y el rechazo sale `grave` por fail-closed. `gravedad` es otra cosa: la
+  gravedad **del veredicto completo**, y es el único campo que rutea.
 
 7.5 **Escribir tu sección de handoff** (#2993) — solo si el pipeline activó el handoff cross-agente. Sirve para que el próximo agente del issue arranque con el contexto procesado por vos en vez de releer todo desde cero.
 

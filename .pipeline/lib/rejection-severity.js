@@ -12,7 +12,7 @@
 //   - `grave` ⇒ el issue vuelve a `dev` (rebote de código).
 //   - `leve`  ⇒ no frena: observación al PR y la fase se re-corre completa.
 //
-// PISO A (fail-closed): la severidad la fija el validador que rechazó. Si NO la
+// PISO A (fail-closed): la gravedad la fija el validador que rechazó. Si NO la
 // declara —o declara cualquier cosa fuera de la whitelist— se trata como
 // `grave`. Nunca auto-aprueba por silencio.
 //
@@ -103,14 +103,15 @@ const LEVE = 'leve';
  *
  * @param {object}  args
  * @param {string}  [args.skill]  skill que emitió el rechazo
- * @param {object}  [args.yaml]   YAML del veredicto (sólo se lee `severidad`)
+ * @param {object}  [args.yaml]   YAML del veredicto (sólo se lee `gravedad`;
+ *   `severidad` se IGNORA — ver el comentario en el cuerpo)
  * @returns {'grave'|'leve'}
  */
 function resolveSeverity(args = {}) {
     const skill = String((args && args.skill) || '').trim().toLowerCase();
 
     // Piso por skill ANTES de mirar lo declarado: `security` no puede
-    // auto-degradarse escribiendo `severidad: leve`.
+    // auto-degradarse escribiendo `gravedad: leve`.
     if (SKILLS_PISO_GRAVE.includes(skill)) return GRAVE;
 
     const yaml = args && args.yaml;
@@ -118,8 +119,23 @@ function resolveSeverity(args = {}) {
     // verificable ⇒ grave. `typeof null === 'object'`, por eso la guarda explícita.
     if (!yaml || typeof yaml !== 'object' || Array.isArray(yaml)) return GRAVE;
 
-    const raw = yaml.severidad;
-    // Sólo strings. Un `severidad: []` / `{}` / `0` / `true` NO es una
+    // `gravedad`, NO `severidad`. Decisión normativa cerrada por `po` (addendum
+    // del issue, comment 5372616025) sobre la resolución vinculante de `ux`:
+    // `severidad` ya nombra ESCALAS NO BINARIAS en cuatro vocabularios vivos del
+    // repo (`ux/SKILL.md` critica|alta|media|baja, `security/SKILL.md`
+    // critical|high|medium|low, `review/SKILL.md`, `roles/linter.md` error). Un
+    // `review` que rechace con `severidad: media` —su propio léxico— creería
+    // haber declarado el veredicto y caería al default `grave` sin enterarse,
+    // dejando el carril leve (CA-2) inalcanzable en la práctica. El fail-closed
+    // salvaría la corrección, no el entendimiento.
+    //
+    // SIN ALIAS A PROPÓSITO: aceptar `severidad` como fallback reintroduce
+    // exactamente la colisión que este nombre viene a cerrar — un `severidad:
+    // media` volvería a leerse como una declaración válida-pero-inválida en vez
+    // de como lo que es: campo equivocado ⇒ grave. El campo es greenfield (no
+    // había lectores previos), así que no hay compatibilidad que romper.
+    const raw = yaml.gravedad;
+    // Sólo strings. Un `gravedad: []` / `{}` / `0` / `true` NO es una
     // declaración legible ⇒ grave. Prohibido el `!== 'leve'` implícito: con él,
     // un objeto raro colapsaría a grave "por accidente" en vez de por regla.
     if (typeof raw !== 'string') return GRAVE;

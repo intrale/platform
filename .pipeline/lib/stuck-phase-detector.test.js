@@ -146,7 +146,7 @@ test('#6296 rechazo REAL → rebote (nunca requeue a la misma fase: loopearía)'
     });
     assert.equal(r.action, 'rebote');
     assert.notEqual(r.action, 'requeue', 'un rechazo NUNCA re-encola la misma fase');
-    assert.equal(r.rebote.severidadEfectiva, 'grave', 'sin `severidad` declarada ⇒ grave (piso A)');
+    assert.equal(r.rebote.severidadEfectiva, 'grave', 'sin `gravedad` declarada ⇒ grave (piso A)');
     assert.match(r.reason, /ux:rejected\(grave\)/);
 });
 test('#6296 rechazo + faltante → gana el rechazo (rebote, no requeue del faltante)', () => {
@@ -376,8 +376,8 @@ test('CA-12 invariante security: su rechazo es SIEMPRE grave y nunca se auto-ree
     assert.equal(r.rebote.severidadEfectiva, 'grave');
     assert.match(r.reason, /security:rejected\(grave\)/);
 });
-test('CA-12 piso de security: aunque DECLARE `severidad: leve`, la efectiva es grave', () => {
-    const y = { resultado: 'rechazado', severidad: 'leve', motivo: 'SEC-2: credencial en claro' };
+test('CA-12 piso de security: aunque DECLARE `gravedad: leve`, la efectiva es grave', () => {
+    const y = { resultado: 'rechazado', gravedad: 'leve', motivo: 'SEC-2: credencial en claro' };
     const r = analyzeStuckIssue({
         requiredSkills: ['security', 'po'],
         deliverables: [deliv('security', 'listo', y), deliv('po', 'listo', APROB)],

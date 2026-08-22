@@ -3,7 +3,7 @@
 > Contexto: #4614 (reconciler original), #4222 (guarda anti bloqueo fantasma),
 > #5060 (ejecución sólo por olas), **#5396** (fin del re-escalado en loop),
 > **#6150** (el aviso lo gobierna la tarea frenada, no la racha),
-> **#6296** (un rechazo deja de escalar: carril de rebote por severidad).
+> **#6296** (un rechazo deja de escalar: carril de rebote por gravedad).
 > Código: `.pipeline/lib/stuck-phase-detector.js`,
 > `.pipeline/lib/stuck-phase-reconciler.js`,
 > `.pipeline/lib/stuck-phase-reconciler-runner.js`,
@@ -31,7 +31,7 @@ Ante una fase varada puede hacer tres cosas:
 > decisión de validador que ya dice qué hacer, y respetarla no es auto-completar
 > nada — es rutearla al lugar correcto en vez de dejarla esperando días.
 
-## Carril de rechazo por severidad (#6296)
+## Carril de rechazo por gravedad (#6296)
 
 Hasta #6296 un veredicto `rejected` entraba al balde `ambiguous` junto con
 `cancelled` y `corrupt`, y **escalaba a `needs-human`**. El 2026-08-21 eso dejó
@@ -49,11 +49,19 @@ era cosmético: todos traían defecto real. El humano no aportaba ninguna decisi
 
 ### La regla ("C con piso A", aprobada por el operador el 2026-08-21)
 
+El validador declara la gravedad en el campo **`gravedad: grave | leve`** del
+YAML de su veredicto. El gate **NO lee `severidad`, y no hay alias**: ese nombre
+ya designa escalas no binarias en varios vocabularios del repo (`ux/SKILL.md`
+`critica|alta|media|baja`, `security/SKILL.md` y `review/SKILL.md`
+`critical|high|medium|low`, `roles/linter.md` `error`) para clasificar hallazgos
+*dentro* de un reporte. Un `severidad: media` no es una declaración de veredicto:
+cae al default `grave` por fail-closed, igual que si no hubiera escrito nada.
+
 | Situación | Acción |
 |---|---|
-| Al menos un `rejected` de severidad **`grave`** | **`rebote`** → el issue vuelve a `dev` con el motivo del rechazo como guía. |
-| Sólo `rejected` de severidad **`leve`** | **`requeue` de la fase completa** + observación publicada en el PR. El issue no frena. |
-| `rejected` **sin severidad declarada** | Se trata como **`grave`** (fail-closed). Nunca auto-aprueba por silencio. |
+| Al menos un `rejected` de gravedad **`grave`** | **`rebote`** → el issue vuelve a `dev` con el motivo del rechazo como guía. |
+| Sólo `rejected` de gravedad **`leve`** | **`requeue` de la fase completa** + observación publicada en el PR. El issue no frena. |
+| `rejected` **sin gravedad declarada** | Se trata como **`grave`** (fail-closed). Nunca auto-aprueba por silencio. |
 | `cancelled`/`corrupt` y **ningún** `rejected` | **`escalate`** — igual que antes. Acá sí no hay decisión que respetar. |
 
 Reglas que sostienen todo lo demás:
@@ -74,15 +82,15 @@ Reglas que sostienen todo lo demás:
 
 ### Reparto de responsabilidades
 
-Una sola fuente de severidad, tres consumidores. Ponerla en más de un lugar
+Una sola fuente de gravedad, tres consumidores. Ponerla en más de un lugar
 reproduce la divergencia detector↔reconciler que #5641 vino a cerrar.
 
 | Capa | Qué decide | Qué NO hace |
 |---|---|---|
 | `rejection-severity.js` (puro) | Whitelist `{grave,leve}`, default `grave`, piso `security` | No lee FS ni config |
-| `stuck-phase-detector.js` (puro) | Emite `action: 'rebote'` con la severidad efectiva | **No resuelve la fase destino** (no conoce la config) |
+| `stuck-phase-detector.js` (puro) | Emite `action: 'rebote'` con la gravedad efectiva | **No resuelve la fase destino** (no conoce la config) |
 | `stuck-phase-reconciler.js` (puro) | Guardas, carril leve vs grave, destino vía dep | No escribe en el FS |
-| `stuck-reconciler-deps.js` (IO) | Materializa el work-item, guidance, comentario | No decide severidad |
+| `stuck-reconciler-deps.js` (IO) | Materializa el work-item, guidance, comentario | No decide gravedad |
 
 ### El canal de guidance de agente (SEC-A)
 

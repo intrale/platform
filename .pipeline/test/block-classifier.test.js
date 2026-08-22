@@ -97,24 +97,33 @@ test('#6296 — veredicto no-objeto (null/array/string) → decision (fail-close
     }
 });
 test('#6296 — gate-reject GRAVE → mecanico con destino dev', () => {
-    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'tester', verdict: { resultado: 'rechazado', severidad: 'grave' } });
+    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'tester', verdict: { resultado: 'rechazado', gravedad: 'grave' } });
     assert.strictEqual(out.category, 'mecanico');
     assert.strictEqual(out.delegateTo, 'gate-reject-grave');
     assert.strictEqual(out.evidence.severidad, 'grave');
     assert.match(out.reason, /rebote a dev/);
 });
 test('#6296 — gate-reject LEVE → mecanico con observación al PR', () => {
-    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'review', verdict: { resultado: 'rechazado', severidad: 'leve' } });
+    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'review', verdict: { resultado: 'rechazado', gravedad: 'leve' } });
     assert.strictEqual(out.category, 'mecanico');
     assert.strictEqual(out.delegateTo, 'gate-reject-leve');
     assert.match(out.reason, /observación al PR/);
 });
-test('#6296 — gate-reject sin `severidad` declarada → grave (piso A, nunca leve)', () => {
+test('#6296 — gate-reject sin `gravedad` declarada → grave (piso A, nunca leve)', () => {
     const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'qa', verdict: { resultado: 'rechazado' } });
     assert.strictEqual(out.delegateTo, 'gate-reject-grave');
 });
+test('#6296 CA-21 — `severidad: leve` NO alcanza el carril leve del clasificador', () => {
+    // El campo del veredicto es `gravedad`. `severidad` es el nombre descartado
+    // (colisiona con escalas no binarias de ux/security/review/linter): si el
+    // clasificador lo aceptara, un `review` con su propio léxico abriría el
+    // carril leve creyendo declarar el veredicto.
+    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'review', verdict: { resultado: 'rechazado', severidad: 'leve' } });
+    assert.strictEqual(out.delegateTo, 'gate-reject-grave');
+    assert.strictEqual(out.evidence.severidad, 'grave');
+});
 test('#6296 — gate-reject de security declarando `leve` sigue siendo grave', () => {
-    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'security', verdict: { resultado: 'rechazado', severidad: 'leve' } });
+    const out = bc.classifyBlock({ kind: 'gate-reject', skill: 'security', verdict: { resultado: 'rechazado', gravedad: 'leve' } });
     assert.strictEqual(out.delegateTo, 'gate-reject-grave',
         'el gate de seguridad no se debilita: el piso está en rejection-severity.js');
 });
