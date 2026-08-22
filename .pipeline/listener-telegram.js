@@ -340,14 +340,16 @@ function getOperationalExecutor() {
   const { createOperationalExecutor } = require('./lib/vault-cut-fallback');
   const credentials = require('./lib/credentials');
   const { getVaultShadowMetrics, ESTADO } = require('./lib/vault-shadow-metrics');
-  const yaml = require('js-yaml');
+  const configResolver = require('./lib/config-resolver');
   const configPath = path.join(PIPELINE, 'config.yaml');
   const defaults = {
     configPath,
     resolveOptions: ({ operatorId, issuedAt }) => ({
       validateAllowlist: async () => String(credentials.resolveVaultOnly('telegram.leo_operator_chat_id')) === String(operatorId),
       evaluateCoverage: async () => {
-        const cfg = yaml.load(fs.readFileSync(configPath, 'utf8'));
+        // La precondición se revalida contra la autoridad efectiva completa
+        // inmediatamente antes del corte; `reload` evita usar un snapshot stale.
+        const cfg = configResolver.resolve({ configPath, reload: true });
         const shadow = (cfg && cfg.vault && cfg.vault.shadow_window) || {};
         const result = getVaultShadowMetrics().evaluate({
           descriptors: credentials.HYDRATED_DESCRIPTORS,
