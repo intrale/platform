@@ -19,6 +19,11 @@ jobs:
     name: OWASP Dependency Check
     runs-on: ubuntu-latest
     continue-on-error: true  # Modo warning — no bloquea el PR
+    # La credencial se declara a nivel job: el bloque `env:` de un step NO está en
+    # scope para el `if:` de ese mismo step, así que sin esto la condición de
+    # presencia leería un contexto indefinido y sería siempre verdadera.
+    env:
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
     outputs:
       scan_outcome: ${{ steps.owasp-scan.outcome }}
       report_status: ${{ steps.owasp-report.outputs.status }}
@@ -56,21 +61,27 @@ jobs:
       - name: Grant execute permission
         run: chmod +x gradlew
 
-      - name: Advertir ejecución sin NVD API key
-        if: ${{ env.NVD_API_KEY == '' }}
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+      # $GITHUB_STEP_SUMMARY es append-only en orden de ejecución: el encabezado
+      # tiene que salir de un step sin `if:` y ubicado antes de las líneas que encabeza.
+      - name: Encabezado del summary OWASP
         run: |
           echo "## OWASP Dependency Check" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Advertir ejecución sin NVD API key
+        if: ${{ env.NVD_API_KEY == '' }}
+        run: |
           echo "Estado de credencial: API key del NVD no disponible." >> "$GITHUB_STEP_SUMMARY"
           echo "El scan continúa en modo warning, pero la actualización puede tardar minutos en lugar de segundos por el rate limit anónimo." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Confirmar NVD API key disponible
+        if: ${{ env.NVD_API_KEY != '' }}
+        run: |
+          echo "Estado de credencial: API key del NVD disponible." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run OWASP Dependency Check
         id: owasp-scan
         run: ./gradlew dependencyCheckAggregate --no-daemon
         continue-on-error: true
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
       - name: Validar reporte OWASP
         id: owasp-report

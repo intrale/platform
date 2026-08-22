@@ -16,6 +16,8 @@ El pipeline de seguridad estático (SAST) analiza el código fuente y sus depend
 - Plugin Gradle: `org.owasp.dependencycheck:12.2.0`
 - `failBuildOnCVSS = 11.0` → nunca falla (CVSS máximo es 10.0)
 - La variable `NVD_API_KEY`, cuando existe y no está vacía, se conecta a `dependencyCheck.nvd.apiKey` sin imprimirse ni persistirse.
+- La credencial se declara en `jobs.dependency-check.env`, **no** en el `env:` de un step: el bloque `env:` de un step no está en scope para el `if:` de ese mismo step, así que declararla ahí haría que la condición leyera un contexto indefinido y se cumpliera siempre. Ese alcance de job es lo que permite consultar la *presencia* del secret desde un `if:` (el contexto `secrets` no está disponible en condiciones).
+- La detección es **por presencia, nunca por valor**: sólo se compara `env.NVD_API_KEY` contra cadena vacía. No se usan `contains(...)`, prefijos, longitud ni hash, que convertirían el chequeo en un oráculo sobre el secret.
 - La base NVD usa caches renovables `nvd-data-v2-<run_id>` y sólo restaura entradas del prefijo `nvd-data-v2-`; no recupera la cache `v1` histórica.
 - Genera reportes en el directorio por defecto de Gradle
 
@@ -122,6 +124,17 @@ El secret todavía requiere una acción humana porque NVD confirma el alta por c
 1. Solicitar una API key en https://nvd.nist.gov/developers/request-an-api-key y completar la confirmación recibida por correo.
 2. Cargarla sin imprimirla: `gh secret set NVD_API_KEY --repo intrale/platform` y pegar el valor cuando `gh` lo solicite.
 3. Comprobar únicamente su presencia con `gh secret list --repo intrale/platform`; el comando debe listar `NVD_API_KEY`.
+
+### Estado de la credencial en el summary del workflow
+
+El job declara el estado de la credencial en **ambas** ramas, nunca en silencio y nunca interpolando el valor:
+
+| Situación | Línea en `$GITHUB_STEP_SUMMARY` |
+|-----------|---------------------------------|
+| Secret ausente (`env.NVD_API_KEY == ''`) | `Estado de credencial: API key del NVD no disponible.` + aviso de mayor duración por rate limit anónimo |
+| Secret presente (`env.NVD_API_KEY != ''`) | `Estado de credencial: API key del NVD disponible.` |
+
+El encabezado `## OWASP Dependency Check` lo emite un step **sin `if:`** ubicado **antes** de ambas ramas: `$GITHUB_STEP_SUMMARY` es append-only en orden de ejecución, así que un encabezado dentro de un step condicional dejaría huérfanas las líneas `Estado del reporte: …` cuando esa rama no corre.
 
 Los pull requests desde forks no reciben secrets. En ese caso el workflow continúa en modo warning, informa que la API key no está disponible y anticipa la mayor duración, sin mostrar el valor. El reporte consolidado diferencia estos estados textuales:
 
