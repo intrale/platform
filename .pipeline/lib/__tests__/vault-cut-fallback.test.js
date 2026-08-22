@@ -6,7 +6,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const yaml = require('js-yaml');
-const { executeVaultCutFallback, VaultCutError, resolvePolicy } = require('../vault-cut-fallback');
+const {
+  executeVaultCutFallback, createOperationalExecutor, VaultCutError, resolvePolicy,
+} = require('../vault-cut-fallback');
 
 function fixture(overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-cut-'));
@@ -192,4 +194,17 @@ test('timeout cancela validaciones y no produce consumo, corte ni auditoría tar
   const audit = fs.readFileSync(auditPath, 'utf8');
   assert.doesNotMatch(audit, /fallback_cut/);
   assert.match(audit, /"code":"timeout"/);
+});
+
+test('el adaptador mapea éxito, idempotencia y errores al vocabulario operacional', async (t) => {
+  const fx = fixture();
+  t.after(() => fs.rmSync(fx.dir, { recursive: true, force: true }));
+  const run = createOperationalExecutor(validOptions(fx));
+  assert.deepEqual(await run(), { ok: true, status: 'cut' });
+  assert.deepEqual(await run(), { ok: true, status: 'already-cut' });
+
+  const rejected = fixture();
+  t.after(() => fs.rmSync(rejected.dir, { recursive: true, force: true }));
+  const fail = createOperationalExecutor(validOptions(rejected, { validateAllowlist: async () => false }));
+  assert.deepEqual(await fail(), { ok: false, status: 'precondition-failed' });
 });

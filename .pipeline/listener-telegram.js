@@ -902,7 +902,7 @@ async function handleCallbackQuery(cbq) {
   if (callbackKind === 'operational') {
     let opResult;
     try {
-      opResult = gate.handleOperationalCallback({
+      opResult = await gate.handleOperationalCallback({
         operatorId: cbq.from?.id,
         callbackData: cbq.data,
       });

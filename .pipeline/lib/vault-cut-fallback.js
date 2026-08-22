@@ -253,9 +253,43 @@ async function executeVaultCutFallback(opts = {}) {
   }
 }
 
+const PRECONDITION_CODES = new Set([
+  'allowlist_invalid', 'coverage_incomplete', 'state_invalid', 'config_invalid',
+  'config_unavailable', 'policy_invalid', 'authorization_missing',
+  'authorization_expired', 'authorization_consumed', 'config_changed',
+  'concurrent_execution', 'timeout', 'persist_failed', 'verification_failed',
+]);
+
+/** Adapta el ejecutor al vocabulario cerrado consumido por operationalToast(). */
+function createOperationalExecutor(options = {}) {
+  return async function operationalVaultCutExecutor() {
+    try {
+      const result = await executeVaultCutFallback(options);
+      return { ok: true, status: result.alreadyCut ? 'already-cut' : 'cut' };
+    } catch (error) {
+      // El journal durable prueba que el estado ya fue aplicado; no mentir al
+      // operador diciendo que el fallback se conservó. El próximo retry
+      // reconstruye el JSONL de auditoría de forma idempotente.
+      if (error && error.code === 'audit_pending' && error.stateApplied === true) {
+        return { ok: true, status: 'cut' };
+      }
+      if (error && error.code === 'audit_journal_failed') {
+        return { ok: false, status: 'audit-failed' };
+      }
+      return {
+        ok: false,
+        status: error && PRECONDITION_CODES.has(error.code)
+          ? 'precondition-failed'
+          : 'executor-unavailable',
+      };
+    }
+  };
+}
+
 module.exports = {
   executeVaultCutFallback,
   execute: executeVaultCutFallback,
+  createOperationalExecutor,
   resolvePolicy,
   renderCutDocument,
   atomicWrite,
