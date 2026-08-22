@@ -36,6 +36,7 @@ const fs = require('fs');
 const path = require('path');
 const { scanNodeProcesses, invalidateCache } = require('./pid-discovery');
 const guard = require('./lib/rollback-guard');
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const PIPELINE_DIR = __dirname;
 const ROOT = path.resolve(PIPELINE_DIR, '..');
@@ -73,8 +74,14 @@ function enqueueTelegramAlert(text) {
   const svcDir = path.join(PIPELINE_DIR, 'servicios', 'telegram', 'pendiente');
   try {
     if (!fs.existsSync(svcDir)) fs.mkdirSync(svcDir, { recursive: true });
-    const filename = `${Date.now()}-rollback-alert.json`;
-    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify({ text: msg, parse_mode: 'Markdown' }));
+    // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+    // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+    dropfileWriter.writeDropfileSync({
+      dir: svcDir,
+      suffix: 'rollback-alert.json',
+      data: JSON.stringify({ text: msg, parse_mode: 'Markdown' }),
+      onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
+    });
   } catch (e) {
     log(`No se pudo encolar alerta Telegram: ${e.message}`);
   }
