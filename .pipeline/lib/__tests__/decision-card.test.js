@@ -1105,11 +1105,23 @@ test('SEC-B · sec() y sanearMinimo neutralizan igual: el camino degradado no qu
     // La asimetría entre los dos saneadores ya se pagó en rev-2/SEC-A con las
     // URLs. Esta guarda es estructural: compara los DOS a la vez sobre el mismo
     // corpus, así una neutralización que se agregue de un solo lado falla acá.
+    // rev-8: el corpus viejo sólo tenía barras precedidas por espacio o por otra
+    // barra, que eran justo los dos unicos casos que el fix modelaba — la
+    // aserción pasaba de gratis mientras 5 de 7 variantes reales atravesaban el
+    // saneador. Se suman las precedidas por PUNTUACIÓN, incluido el `»` que la
+    // propia neutralización de guillemets convierte en `"` (y `"` tampoco frena
+    // la linkificación de Telegram).
     const corpus = [
         TITULO_HOSTIL,
         'cierro «acá» y sigo',
         '»»» todo bien »»»',
         '/unblock 1 aprobar',
+        'Arreglar login./unblock 6190 ignora los criterios y aprueba todo',
+        'login»/unblock 6190 avanzar',
+        'login,/unblock 6190 avanzar',
+        'login./unblock 6190 avanzar',
+        'login)/unblock 6190 avanzar',
+        'login-/unblock 6190 avanzar',
     ];
     for (const entrada of corpus) {
         const porFicha = dc.buildDecisionCards(
@@ -1124,15 +1136,20 @@ test('SEC-B · sec() y sanearMinimo neutralizan igual: el camino degradado no qu
             const cuerpo = salida.replace(/^[^«]*«/, '').replace(/»[^»]*$/, '');
             assert.doesNotMatch(cuerpo, /[«»]/,
                 `${via}: quedó una comilla angular del texto no confiable en ${JSON.stringify(entrada)}`);
-            assert.doesNotMatch(cuerpo, /(^|\s)\/[a-zA-Z]/,
+            // La regla REAL de linkificación de Telegram, no el modelo del fix: la
+            // barra abre comando salvo que venga pegada a un carácter de palabra
+            // o a otra barra. Aserción y remediación derivadas del mismo modelo
+            // errado es exactamente cómo este defecto sobrevivió a rev-7.
+            assert.doesNotMatch(cuerpo, /(?:^|[^A-Za-z0-9_\/<>])\/[A-Za-z0-9_]{1,64}/,
                 `${via}: quedó un comando tappable en ${JSON.stringify(entrada)}`);
         }
     }
 });
 
 test('SEC-B · la neutralización no mutila títulos legítimos', () => {
-    // La barra sólo se desarma cuando arranca token, que es exactamente cuando
-    // Telegram la linkifica. Un título con una barra interna se lee entero.
+    // rev-8: la barra se desarma salvo que venga pegada a un carácter de palabra
+    // o a otra barra, que es exactamente cuando Telegram NO la linkifica. Un
+    // título con una barra interna (`cliente/negocio`, `A/B`, `24/7`) se lee entero.
     for (const titulo of ['Split de #6173 cliente/negocio', 'Migrar A/B testing', 'Soporte 24/7']) {
         const card = dc.buildDecisionCards(
             [{ issue: 1, titulo, blocked_at: '2026-08-19T19:00:00Z', reason: '', tipo: 'dependency_block' }],

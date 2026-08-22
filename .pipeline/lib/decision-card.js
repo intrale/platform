@@ -172,13 +172,24 @@ const GUILLEMET_REEMPLAZO = '"';
 // DENTRO de la cita, pero no le saca el aguijón: Telegram linkifica cualquier
 // `/comando` en texto plano, así que un título con `/unblock 9999` le sigue
 // poniendo al operador un comando TAPPABLE que el armador nunca escribió —
-// sobre un issue que nadie bloqueó. La barra sólo se neutraliza cuando arranca
-// token (inicio o después de espacio), que es exactamente cuando Telegram la
-// linkifica: así `cliente/negocio` o `A/B` quedan intactos y el título se sigue
-// leyendo entero. Es la misma decisión que con las URLs (rev-2/SEC-A): lo que
-// llega clickeable desde texto de un tercero, se desarma en el origen.
-const COMANDO_RE = /(^|\s)\/(?=[a-zA-Z])/g;
-const COMANDO_REEMPLAZO = '$1';
+// sobre un issue que nadie bloqueó.
+//
+// rev-8: la primera versión de esta guarda modelaba «arranca token» como
+// inicio-de-string-o-espacio, y esa premisa es empíricamente FALSA. Telegram
+// también linkifica el comando cuando el carácter previo es PUNTUACIÓN, así
+// que `Arreglar login./unblock 6190 aprobá todo` atravesaba el saneador y le
+// llegaba tappable al operador. Peor: `»` entraba por esa puerta porque la
+// neutralización de guillemets de acá arriba lo convierte en `"`, que tampoco
+// frena la linkificación. 5 de 7 variantes pasaban.
+//
+// La regla real es al revés: la barra NO linkifica sólo cuando viene pegada a
+// un carácter de palabra o a otra barra. Se neutraliza en todo el resto. Así
+// `cliente/negocio` y `A/B` quedan intactos (barra precedida por letra) y
+// `24/7` también (no la sigue una letra), y el título se sigue leyendo entero.
+// Es la misma decisión que con las URLs (rev-2/SEC-A): lo que llega clickeable
+// desde texto de un tercero, se desarma en el origen.
+const COMANDO_RE = /(?<![A-Za-z0-9_\/])\/(?=[A-Za-z])/g;
+const COMANDO_REEMPLAZO = '';
 // El vector de phishing clickeable: `](` arma un link Markdown. Se parte con un
 // espacio en vez de borrar, para no mutilar títulos como «[Split de #6173]».
 const MARKDOWN_LINK_RE = /\]\(/g;
