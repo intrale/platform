@@ -40,6 +40,7 @@ const { spawn } = require('child_process');
 const parser = require('./lib/quota-snapshot-parser');
 const persist = require('./lib/quota-snapshot-persist');
 const alerterMod = require('./lib/quota-snapshot-alerter');
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const PIPELINE_DIR = __dirname;
 const DEFAULT_PS1_PATH = path.join(PIPELINE_DIR, 'scripts', 'capture-quota-snapshot.ps1');
@@ -83,11 +84,14 @@ function enqueueTelegram(text) {
   // Drop al outbox de servicio-telegram. Mismo patrón que rollback.js / restart.js.
   try {
     if (!fs.existsSync(TG_OUTBOX_DIR)) fs.mkdirSync(TG_OUTBOX_DIR, { recursive: true });
-    const filename = `${Date.now()}-quota-snapshot.json`;
-    fs.writeFileSync(
-      path.join(TG_OUTBOX_DIR, filename),
-      JSON.stringify({ text, parse_mode: 'Markdown' })
-    );
+    // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+    // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+    dropfileWriter.writeDropfileSync({
+      dir: TG_OUTBOX_DIR,
+      suffix: 'quota-snapshot.json',
+      data: JSON.stringify({ text, parse_mode: 'Markdown' }),
+      onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
+    });
   } catch (e) {
     log(`enqueueTelegram error: ${e && e.message}`);
   }

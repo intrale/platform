@@ -330,6 +330,8 @@ const { runStuckPhaseReconciler } = require('./lib/stuck-phase-reconciler-runner
 // #5396 — el cableado de deps del reconciler vive en su propio módulo para que
 // el test pueda verificarlo SIN cargar pulpo.js (16k líneas con side-effects).
 const { buildStuckReconcilerDeps, evaluateSilenceHealth } = require('./lib/stuck-reconciler-deps');
+// #6150 — clasificación por decisión + copy en lenguaje de operador.
+const { selectRealRisk, buildStuckAlertCopy } = require('./lib/stuck-reconciler-copy');
 // #4622 — liveness real del pid + identidad (anti-heartbeat-zombi). Fuente única
 // compartida con canonical-facts y el hook activity-logger.
 const processLiveness = require('./lib/process-liveness');
@@ -358,6 +360,10 @@ const telegramReceipt = require('./lib/telegram-receipt');
 // MarkdownV2 al medio (modo de falla `400 Can't parse entities`) y marcaba el
 // truncado con `'...'`, tres metacaracteres V2 sin escapar.
 const telegramTextBudget = require('./lib/telegram-text-budget');
+// #6226 — Nombres únicos + escritura fail-closed (`wx`) para los dropfiles de la
+// cola de salientes. Dos mensajes encolados en el mismo tick resolvían al mismo
+// `${Date.now()}-cmd.json` y el segundo pisaba al primero, sin error ni rastro.
+const dropfileWriter = require('./lib/dropfile-writer');
 // #4750 — Contabilidad + reconciliación de chunks de audio (part_index/part_total)
 // atados al correlationId padre. Detecta partes faltantes tras el timeout y las
 // reenvía (tope N reintentos + backoff); avisa al usuario si se agotan. Reutiliza
@@ -421,7 +427,10 @@ const { isNightWindow } = require('./lib/night-window');
 // #2975 — Notificador Telegram del modo cuota Anthropic agotada (lifecycle:
 // inicial + recordatorios A→B→C→D rotando + cierre + canned a texto libre).
 // Depende del flag .pipeline/quota-exhausted.json producido por #2974.
-const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN } = require('./lib/quota-notifier');
+// #6238 CA-UX-2: `providerLabel` traduce la provider-key interna a su nombre
+// humano. NUNCA interpolamos la clave cruda ('anthropic', 'openai-codex') en un
+// texto que ve el operador.
+const { createQuotaNotifier, DEFAULT_REMINDER_INTERVAL_MIN, providerLabel } = require('./lib/quota-notifier');
 // #3074 / H2 multi-provider: dispatcher de spawn por provider (anthropic /
 // deterministic / openai-codex). Reemplaza el bloque inline de spawn de Claude
 // que vivía acá pre-refactor (~líneas 4900-4994 de la versión previa).
@@ -7017,7 +7026,26 @@ function getIssueLabels(issueNum) {
  * @returns {string} el mismo `filePath`, para encadenar.
  */
 function encolarOrdenGithub(filePath, payload) {
-  fs.writeFileSync(filePath, JSON.stringify(payload));
+  // #6226 — escritura fail-closed. Los ~13 call-sites arman el nombre como
+  // `<issue>-<tag>-${Date.now()}.json`: el prefijo desambigua entre issues, pero
+  // NO entre dos órdenes del mismo issue+tag en el mismo milisegundo (ej. el
+  // `for (const act of g0Actions)` de gate0, que encola varias órdenes seguidas
+  // sin ceder el event loop, o los dos `-needs-human-comment-` distintos). Ahí
+  // el segundo `writeFileSync` pisaba al primero y la orden se perdía sin
+  // error: el issue quedaba sin su label o sin su comentario.
+  //
+  // Se respeta el nombre pedido tal cual (no cambia ningún parseo de
+  // `servicio-github.js`); sólo ante colisión real se desambigua con `-<n>`.
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const escrito = dropfileWriter.writeUniqueFileSync({
+    dir: path.dirname(filePath),
+    filename: path.basename(filePath),
+    data: JSON.stringify(payload),
+    onCollision: (name, attempt) => log(
+      'github',
+      `⚠️ Colisión de nombre de orden github (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+    ),
+  });
   try {
     if (payload
       && (payload.action === 'label' || payload.action === 'remove-label')
@@ -7025,7 +7053,10 @@ function encolarOrdenGithub(filePath, payload) {
       invalidateIssueLabels(payload.issue);
     }
   } catch { /* la orden ya quedó encolada: la invalidación es best-effort */ }
-  return filePath;
+  // Devolvemos el path REALMENTE escrito, no el pedido: si hubo colisión son
+  // distintos, y un caller que se quede con el pedido apuntaría a un archivo
+  // que no es el suyo.
+  return escrito.filePath;
 }
 
 /**
@@ -8799,6 +8830,135 @@ function sendBlockedInfraNotif(issue, message) {
 }
 
 // =============================================================================
+// #6238 — AVISO DE SESIÓN DE PROVIDER VENCIDA (credencial rechazada al spawn)
+//
+// Una credencial vencida no se arregla reintentando: necesita que una persona
+// reautentique. El aviso es DEDUPLICADO por PROVIDER (clave derivada del
+// provider, nunca de datos del log — CA-5) con ventana de 30 min.
+//
+// SEC-CA-4 — EL DEDUPE SUPRIME ÚNICAMENTE EL TELEGRAM. La línea de `log()` y la
+// línea del JSONL de auditoría se emiten SIEMPRE, en todas las muertes,
+// incluidas las suprimidas. Un canal de dedupe no puede ser un canal de
+// supresión de evidencia.
+//
+// SEC-CA-5 — el mensaje NO lleva excerpt del log, ni fragmento de credencial,
+// ni texto crudo del provider. Sólo provider (label humano) e issues en espera.
+// =============================================================================
+const CREDENTIAL_NOTIF_COOLDOWN_MS = 30 * 60 * 1000; // 30 min (CA-5)
+// { [providerKey]: { firstSeenAt, lastSent, pendingIssues: Set<string> } }
+const _credentialNotifState = {};
+// CA-UX-7 — tope de issues enumerados; el resto se resume en "… y N más".
+const CREDENTIAL_NOTIF_MAX_ISSUES = 10;
+
+/** Formatea una duración en ms como "45 min" / "1 h 15 min" (registro humano). */
+function formatElapsedHuman(ms) {
+  const totalMin = Math.max(0, Math.round(ms / 60000));
+  if (totalMin < 60) return `${totalMin} min`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+/** CA-UX-7 — lista de issues en espera, acotada a 10 + "… y N más". */
+function formatPendingIssues(pendingSet) {
+  const all = Array.from(pendingSet);
+  const shown = all.slice(0, CREDENTIAL_NOTIF_MAX_ISSUES).map((n) => `#${n}`).join(', ');
+  const rest = all.length - CREDENTIAL_NOTIF_MAX_ISSUES;
+  return rest > 0 ? `${shown}… y ${rest} más` : shown;
+}
+
+/**
+ * buildCredentialDeathMessage — copy del aviso al operador. PURA (sin estado,
+ * sin IO): existe aparte para que el test de copy (CA-UX-8) la ejerza sin
+ * levantar el Pulpo.
+ *
+ * @param {object} o
+ * @param {string} o.providerKey provider-key interna (se traduce a label humano).
+ * @param {boolean} o.isRepeat   true si es una repetición de la misma ventana.
+ * @param {number} o.elapsedMs   ms desde el primer aviso (sólo para repetición).
+ * @param {string} o.pending     lista ya formateada de issues en espera.
+ * @returns {string}
+ */
+function buildCredentialDeathMessage({ providerKey, isRepeat, elapsedMs, pending }) {
+  // CA-UX-1: abre con 🚨 (requiere mirada humana). Prohibidos 🔌/⚠️/⛔/⏸️: los
+  // dos primeros ya significan "se resuelve solo", que acá sería falso.
+  // CA-UX-2: label humano, nunca la provider-key cruda.
+  // CA-UX-8: sin jerga interna del pipeline en el texto que ve el operador.
+  const label = providerLabel(providerKey);
+  if (!isRepeat) {
+    return (
+      `🚨 La sesión de ${label} venció.\n\n` +
+      `Los agentes que salen por ahí se mueren a los pocos segundos, antes de leer su issue. ` +
+      `Frené el despacho por ese motor durante una hora en vez de seguir reintentando: ` +
+      `una credencial vencida no se arregla reintentando.\n\n` +
+      `Para destrabarlo hace falta que reautentiques la sesión en la máquina del pipeline. ` +
+      `En cuanto un agente vuelva a arrancar bien, el motor se rehabilita solo — no tenés ` +
+      `que tocar nada más.\n\n` +
+      // CA-UX-4: el valor central de la historia es invisible si no se dice.
+      `Ningún issue pagó el costo: no gastaron intento ni suman rebote.\n\n` +
+      `Esperando: ${pending}\n\n` +
+      // CA-UX-5: el aviso explica su propia repetición.
+      `Mientras siga vencida te vuelvo a avisar cada 30 minutos. No es el avisador ` +
+      `repitiéndose: es que sigue igual.`
+    );
+  }
+  // CA-UX-6: la repetición NO es el mismo texto — lleva el tiempo transcurrido
+  // y la marca explícita de "sigue igual". Dos mensajes idénticos consecutivos
+  // entrenan al operador a ignorar 🚨, el marcador más fuerte del canal.
+  return (
+    `🚨 La sesión de ${label} sigue vencida — hace ${formatElapsedHuman(elapsedMs)}.\n\n` +
+    `Nada cambió desde el aviso anterior: el despacho por ese motor sigue frenado y los ` +
+    `issues siguen esperando sin penalización. Sigue haciendo falta reautenticar en la ` +
+    `máquina del pipeline.\n\n` +
+    `Esperando: ${pending}`
+  );
+}
+
+/**
+ * sendCredentialDeathNotif — avisa al operador que la sesión de un provider
+ * venció. Deduplicado por PROVIDER (30 min). Devuelve el estado para que el
+ * caller pueda dejarlo en el log (CA-UX-9).
+ *
+ * SEC-CA-4: la supresión aplica SÓLO al Telegram. El caller igual escribe su
+ * línea de log y su línea de auditoría en todas las muertes.
+ *
+ * @param {string} providerKey provider-key interna (se traduce con providerLabel).
+ * @param {number|string} issue issue que quedó esperando por esta muerte.
+ * @param {object} [opts] { now, send } — inyectables para test.
+ * @returns {{ sent: boolean, remainingMin: number, pending: string, message: string|null }}
+ */
+function sendCredentialDeathNotif(providerKey, issue, opts = {}) {
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const send = typeof opts.send === 'function' ? opts.send : sendTelegram;
+  // CA-5: la clave de dedupe se deriva del PROVIDER, nunca de datos del log.
+  const key = String(providerKey || 'unknown');
+  const st = _credentialNotifState[key]
+    || (_credentialNotifState[key] = { firstSeenAt: now, lastSent: 0, pendingIssues: new Set() });
+  if (issue != null) st.pendingIssues.add(String(issue));
+
+  const pending = formatPendingIssues(st.pendingIssues);
+  const elapsedSinceSent = now - st.lastSent;
+  if (st.lastSent && elapsedSinceSent < CREDENTIAL_NOTIF_COOLDOWN_MS) {
+    return {
+      sent: false,
+      remainingMin: Math.ceil((CREDENTIAL_NOTIF_COOLDOWN_MS - elapsedSinceSent) / 60000),
+      pending,
+      message: null,
+    };
+  }
+
+  const message = buildCredentialDeathMessage({
+    providerKey: key,
+    isRepeat: st.lastSent > 0,
+    elapsedMs: now - st.firstSeenAt,
+    pending,
+  });
+  st.lastSent = now;
+  send(message);
+  return { sent: true, remainingMin: 0, pending, message };
+}
+
+// =============================================================================
 // CIRCUIT BREAKER DE INFRA (issue #2305)
 // Cuenta fallos de red consecutivos entre issues. A la 3ra falla seguida,
 // abre el CB, pausa el pipeline y notifica a Leo vía Telegram.
@@ -10195,6 +10355,38 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
   // pipelineExtras = vars de contexto del child (PIPELINE_*, handoff, extras
   // específicos del skill). Se pasan SIEMPRE — son inocuas y necesarias para
   // que el agente sepa qué issue/fase/skill está procesando.
+  // #5110 (SEC-1 · A01/A07) — binding de spawn del proyecto en contexto.
+  //
+  // `PIPELINE_PROJECT_ID` viaja en el env, pero el env NO es autoridad:
+  // `build-child-env.js` propaga toda `PIPELINE_*` heredada de `process.env`, y
+  // los roles instruyen a los agentes a correr `node -e "require('.../lib/...')"`.
+  // Sin binding, un agente podría exportar la var y hablarle al namespace de
+  // otro proyecto. Por eso el pulpo — y sólo el pulpo — escribe un registro en
+  // `.pipeline/state/project-bindings/<nonce>.json`, y `project-context.js`
+  // valida que el par env/binding coincida antes de aceptar el id.
+  //
+  // Residual honesto: el binding vive en el FS local con el mismo usuario del
+  // SO. Sube la barra (hay que forjar un registro del pulpo) pero no es
+  // criptográfico; la autoridad plena llega con #5113/#5129.
+  const projectBinding = (() => {
+    try {
+      const projectContext = require('./lib/project-context');
+      const nonce = `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+      return projectContext.writeSpawnBinding({
+        projectId: projectContext.resolveProjectContext().projectId,
+        nonce,
+        skill,
+        spawnedAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      // Best-effort: si el binding no se pudo escribir NO se rompe el spawn. El
+      // hijo simplemente no recibe las vars y cae al camino `single-project`,
+      // que es exactamente el comportamiento previo a #5110.
+      log('lanzamiento', `⚠️  binding de proyecto no escrito para ${skill}:#${issue}: ${e.message}`);
+      return null;
+    }
+  })();
+
   const pipelineExtras = {
     PIPELINE_ISSUE: issue,
     PIPELINE_SKILL: skill,
@@ -10203,6 +10395,12 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     PIPELINE_TRABAJANDO: trabajandoPath,
     PIPELINE_WORKTREE: spawnCwd,
     PIPELINE_REPO_ROOT: ROOT,
+    // #5110 — transporte + prueba de autoría. Van SIEMPRE juntos: uno sin el
+    // otro hace que `resolveProjectContext()` tire fail-closed.
+    ...(projectBinding ? {
+      PIPELINE_PROJECT_ID: projectBinding.projectId,
+      PIPELINE_PROJECT_BINDING: projectBinding.nonce,
+    } : {}),
     // #2993 — el agente usa estos para escribir su sección de handoff antes
     // de salir (paso 7.5 de roles/_base.md). Si `ENABLED=0`, el agente NO
     // escribe — kill-switch global desde config.yaml → handoff.enabled.
@@ -10302,6 +10500,10 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
     onLog: log,
     resolveImpl: launchResolveImpl,
+    // #6272 — el launcher lee SÓLO `pipeline.model_propagation` de acá para
+    // decidir si el modelo resuelto viaja al hijo (flag apagado por default:
+    // sin la sección, o con `enabled` != true, no se toca nada).
+    config,
   });
   const child = launchResult.child;
   // #5400 (rev-5, B1) — ÚNICO punto del código donde consta que un agente salió
@@ -10553,6 +10755,27 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       catch { /* idempotente: best-effort, nunca rompe el lifecycle */ }
     }
 
+    // #5110 (rev-2) — consumir el binding de proyecto del spawn.
+    //
+    // El binding es de UN SOLO USO: prueba que este pulpo lanzó este hijo con
+    // este projectId. Una vez que el hijo murió no vuelve a servir para nada, y
+    // dejarlo en disco alarga la ventana en la que un nonce válido está tirado
+    // en el FS esperando que alguien lo reutilice (el residual de SEC-1: el
+    // binding no es criptográfico, así que su vida útil es parte de la barra).
+    //
+    // Sin esto la limpieza quedaba 100% en el TTL de 48h de
+    // `pruneStaleBindings()`, que además sólo corre DENTRO del próximo
+    // `writeSpawnBinding()`: en un pipeline pausado o sin despachos, los
+    // bindings simplemente se acumulan sin que nadie los toque.
+    //
+    // Best-effort e idempotente: `clearSpawnBinding` devuelve false y no tira si
+    // el archivo ya no está. El lifecycle del agente nunca depende de esto.
+    if (projectBinding && projectBinding.nonce) {
+      try {
+        require('./lib/project-context').clearSpawnBinding(projectBinding.nonce);
+      } catch { /* best-effort: el TTL de 48h sigue siendo la red de contención */ }
+    }
+
     // #3605 — Desregistrar del agent-ipc registry. Idempotente: si nunca se
     // registró (interactive_supported=false), unregister es no-op. Drena
     // promesas pendientes en la cola con AGENT_DEAD para no dejar callers
@@ -10584,6 +10807,17 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
     // Ambos paths emiten un log estructurado `{codepath, skill, provider,
     // error_class}` con emojis 🛡️/🆕 SOLO en el log textual (NO en JSON)
     // para diff manual de paridad (refinación R3 guru + R2 ux).
+    // #6238 CA-8 — scope hoisteado del contenido del log del agente.
+    //
+    // El bloque de muerte prematura (más abajo) necesita la COLA del log para
+    // clasificar `credential-death`, y NO puede abrir un archivo nuevo: hacerlo
+    // reintroduciría una superficie de path (SEC-CA-7) y leería el
+    // `.attempt-N.log`, que un run posterior puede haber pisado (#6245).
+    // Reusar lo que este mismo exit handler ya cargó mata los tres pájaros: sin
+    // path nuevo, sin forensia perdida y el contenido ya pasó por
+    // `createSanitizeStream` (#2334). Queda '' si el skill es determinístico o
+    // si la lectura falla ⇒ el detector cae fail-closed.
+    let agentLogRaw = '';
     if (!useDeterministicSkill) {
       try {
         const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
@@ -10592,6 +10826,7 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
         const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
         let raw = '';
         try { raw = fs.readFileSync(logPath, 'utf8'); } catch {}
+        agentLogRaw = raw;
 
         // Resolución provider/model — necesaria en ambos paths.
         //
@@ -10803,6 +11038,8 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
       // al path `bloqueado_por_infra`. El cooldown por muerte-de-provider se
       // aplica al PROVIDER (health/backoff), no al issue.
       let deathKind = 'agent-death';
+      let deathToken = null;
+      let deathSignature = null;
       if (!hasVerdict && providerDeathClassifier) {
         try {
           const effProvider = (launchResult && launchResult.provider)
@@ -10811,13 +11048,92 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
           const verdict = providerDeathClassifier.classifyPrematureDeath({
             code, elapsedSec, hasVerdict,
             source: effSource, provider: effProvider,
+            // #6238 CA-8 — cola del log que este mismo handler ya leyó. 32 KB:
+            // 4 KB no alcanza porque el frame de la credencial queda detrás de
+            // un `result` de varios KB. Sin abrir archivo nuevo ⇒ sin path
+            // traversal posible y sin leer un `.attempt-N.log` pisado (#6245).
+            logTail: agentLogRaw ? agentLogRaw.slice(-32 * 1024) : '',
           });
           deathKind = verdict.kind;
+          deathToken = verdict.token || null;
+          deathSignature = verdict.signature || null;
         } catch (clsErr) {
           // Fail-closed: si la clasificación falla, penalizamos como antes.
           log('lanzamiento', `⚠️ clasificación de muerte falló para ${skill}:#${issue}: ${clsErr.message} — trato como agent-death`);
           deathKind = 'agent-death';
         }
+      }
+
+      // #6238 — Muerte por CREDENCIAL VENCIDA del provider. Va ANTES del brazo
+      // de provider-death porque la credencial precede en el orden de causas.
+      //
+      // Clona la mecánica del brazo de provider-death (que ya implementa el
+      // CA-3 completo): NO `registerFastFail`, NO cooldown al (skill,issue), el
+      // archivo vuelve a `pendiente/` sin marcar intento consumido, y se corre
+      // la limpieza de recursos. Diferencias propias de esta causa:
+      //   * el provider se apaga con UNA sola muerte (threshold:1): una
+      //     credencial vencida es determinística, no hace falta acumular;
+      //   * el apagado lleva `source:'credential-death'` para que el primer
+      //     spawn sano lo auto-recupere (CA-4) sin pisar un kill-switch manual;
+      //   * NO se dispara `rejection-report.js`: es un PDF de rebote del ISSUE,
+      //     y acá el issue no falló;
+      //   * el aviso al operador es el de reautenticación, deduplicado (CA-5).
+      if (!hasVerdict && deathKind === 'credential-death') {
+        const effProvider = (launchResult && launchResult.provider)
+          || (dispatchResolution && dispatchResolution.provider) || 'unknown';
+
+        let disabled = false;
+        if (providerSpawnHealth) {
+          try {
+            const r = providerSpawnHealth.recordProviderSpawnDeath({
+              pipelineDir: PIPELINE, provider: effProvider, skill, issue,
+              threshold: 1,
+              disableTtlMs: 60 * 60 * 1000, // 60 min (CA-4: TTL acotado, sin apagado indefinido)
+              source: 'credential-death',
+            });
+            disabled = !!(r && r.disabled);
+          } catch (hErr) {
+            log('lanzamiento', `⚠️ provider-spawn-health falló para ${effProvider} (${skill}:#${issue}): ${hErr.message}`);
+          }
+        }
+
+        // CA-6 — auditoría SIEMPRE (nunca la suprime el dedupe del aviso).
+        // Sin `raw_excerpt` y sin texto crudo del provider.
+        try {
+          const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
+          if (typeof dispatcher.appendSpawnExitDeathKind === 'function') {
+            dispatcher.appendSpawnExitDeathKind({
+              pipelineDir: PIPELINE, skill, issue, provider: effProvider,
+              deathKind: 'credential-death',
+              token: deathToken, signature: deathSignature,
+              exitCode: code, durationMs: Math.round(elapsedSec * 1000),
+            });
+          }
+        } catch { /* best-effort: la auditoría nunca rompe el lifecycle */ }
+
+        // CA-5 / SEC-CA-4 — el Telegram se deduplica por provider; el log NO.
+        let notif = { sent: false, remainingMin: 0, pending: `#${issue}` };
+        try { notif = sendCredentialDeathNotif(effProvider, issue); } catch { /* best-effort */ }
+
+        // CA-UX-9 — la línea de log dice si el aviso se suprimió y cuánto falta.
+        log('lanzamiento',
+          `🚨 #${issue}: sesión de ${providerLabel(effProvider)} vencida — ${skill} NO penalizado ` +
+          `(sin cooldown, sin rebote). Murió en ${elapsedSec.toFixed(0)}s (code=${code}). ` +
+          `${disabled ? 'Motor apagado 60min.' : 'Motor NO apagado (provider fuera de la allowlist).'} ` +
+          `Aviso ${notif.sent ? 'enviado' : `suprimido por cooldown (${notif.remainingMin}min restantes)`}. ` +
+          `Esperando: ${notif.pending}.`);
+
+        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+        try { moveFile(trabajandoPath, pendienteDir); } catch {}
+        activeProcesses.delete(processKey(skill, issue));
+        killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (credential-death)`);
+        if (contextChannelId) {
+          try {
+            const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+            cm.leaveChannelByType(contextChannelId, 'agent');
+          } catch (e) {}
+        }
+        return;
       }
 
       // #4648 — Muerte por provider no disponible: NO penalizar al issue.
@@ -13027,6 +13343,82 @@ function generarMensajeProgreso(count, elapsedSec, tools, lastTool, textoOrigina
 // responsabilidad la toma `logSkillInvocation` (`_sanitize*` helpers en
 // `issue-creation.js`). Centralizar la redacción evita duplicarla en cada
 // callsite y mantiene el `trace` útil también para debugging local.
+// =============================================================================
+// #6144 — Aviso de "cadena de IA caída": texto con causa + entrega hablada.
+//
+// Punto único por el que pasan los 3 callers del canned de cadena agotada. Hace
+// tres cosas y en este orden:
+//
+//   1. Clasifica la caída server-side (`classifyPauseCause`). `chainTried` entra
+//      SÓLO acá: nunca se interpola al operador (CA-6). Del resultado, el copy
+//      lee cuatro campos (`degraded`, `stale`, `dominantCause`,
+//      `providers[].rest`) y nada más.
+//   2. Arma el texto por el entry point de siempre
+//      (`cannedAllProvidersFailedResponse`), inyectando la clasificación ya
+//      calculada para no leer el snapshot de salud dos veces.
+//   3. Dispara el aviso hablado fire-and-forget.
+//
+// El audio va DESPUÉS y desacoplado del texto a propósito: `sendDownNoticeAudio`
+// nunca lanza, pero además no se espera. Un cuelgue de `edge-tts` no puede
+// demorar la respuesta al operador — que es precisamente el síntoma que #6144
+// viene a corregir. El texto sale siempre; el audio es el extra.
+//
+// Ante cualquier error de clasificación se degrada al copy genérico sin afirmar
+// causa (CA-19): inventar una causa con autoridad es peor que el genérico.
+//
+// @returns {string} el texto listo para entregar al operador.
+// =============================================================================
+function avisoCadenaCaida({ chainTried, verifiedAllFailed = false, requestId } = {}) {
+  let classification = null;
+  try {
+    classification = require('./lib/provider-pause-cause')
+      .classifyPauseCause(Array.isArray(chainTried) ? chainTried : []);
+  } catch (e) {
+    classification = null; // fail-closed → genérico (CA-19)
+    log('commander', `[cadena-caida] no se pudo clasificar la causa, uso copy genérico: ${e.message}`);
+  }
+
+  const texto = commanderMP.cannedAllProvidersFailedResponse({
+    chainTried,
+    verifiedAllFailed,
+    requestId,
+    // La clasificación ya está hecha: se inyecta para que el entry point no
+    // vuelva a tocar disco dentro del turno.
+    classify: () => classification,
+  });
+
+  try {
+    const chatId = getTelegramChatId();
+    const botToken = getTelegramToken();
+    // CA-17 — sin destino autorizado resoluble no se emite audio (fail-closed).
+    if (chatId && botToken) {
+      const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
+      let audioPolicy = null;
+      try { audioPolicy = (loadConfig() || {}).audio_policy || null; } catch { audioPolicy = null; }
+      commanderMP.sendDownNoticeAudio({
+        classification,
+        botToken,
+        chatId,
+        audioPolicy,
+        profile: 'need-human', // D5/CA-10: alerta de sistema, no charla
+        textToSpeechWithMeta,
+        sendVoiceTelegram,
+      }).then((r) => {
+        if (!r) return;
+        if (r.sent) log('commander', `[cadena-caida] aviso hablado entregado (via=${r.via})`);
+        else if (r.error) log('commander', `[cadena-caida] aviso hablado falló, texto ya entregado: ${r.error}`);
+        else if (r.skipped) log('commander', `[cadena-caida] aviso hablado omitido: ${r.skipped}`);
+      }).catch(() => { /* el contrato dice que no lanza; red extra por las dudas */ });
+    } else {
+      log('commander', '[cadena-caida] sin chat/token resoluble — aviso hablado omitido (fail-closed)');
+    }
+  } catch (e) {
+    log('commander', `[cadena-caida] aviso hablado no se pudo iniciar, texto ya entregado: ${e.message}`);
+  }
+
+  return texto;
+}
+
 function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
   return new Promise((resolve, reject) => {
     const readline = require('readline');
@@ -13180,7 +13572,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           } catch { /* best-effort */ }
           // #4440 CA-1 — caso pre-spawn: nunca se intentó la cadena completa,
           // por lo que NO se afirma falla total (verifiedAllFailed: false).
-          return resolve(commanderMP.cannedAllProvidersFailedResponse({ chainTried: ['anthropic'], verifiedAllFailed: false, requestId: turnRequestId }));
+          // #6144 — el aviso ahora explica la causa dominante y se entrega
+          // también por voz (fire-and-forget dentro del helper).
+          return resolve(avisoCadenaCaida({ chainTried: ['anthropic'], verifiedAllFailed: false, requestId: turnRequestId }));
         }
       } else {
         log('commander', '   degradando a Anthropic por compatibilidad (primario habilitado).');
@@ -13585,7 +13979,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // saber qué pasó.
         // #4440 CA-1 — se spawneó y efectivamente falló toda la cadena:
         // imposibilidad verificada (verifiedAllFailed: true).
-        return resolve(commanderMP.cannedAllProvidersFailedResponse({
+        // #6144 — mismo aviso, ahora con causa dominante derivada de la cadena
+        // realmente intentada y con entrega hablada.
+        return resolve(avisoCadenaCaida({
           chainTried: Array.from(triedNonAnthropic),
           verifiedAllFailed: true,
           requestId: turnRequestId,
@@ -16900,7 +17296,20 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         if (totalProviderFailure) {
           // #4440 CA-1 — path best-effort sin verificación de falla total real:
           // se mantiene el default verifiedAllFailed: false (no afirma "TODOS").
-          try { sendTelegram(commanderMP.cannedAllProvidersFailedResponse({ verifiedAllFailed: false })); } catch { /* best-effort */ }
+          // #6144 CA-17 — destino fail-closed: este caller usaba `sendTelegram()`
+          // sin resolver el chat. Si no hay chat autorizado resoluble no se emite
+          // nada (ni texto con causa ni audio).
+          // #6144 CA-19 — tampoco tiene `chainTried`: sin cadena no hay causa
+          // observada, así que el copy degrada a genérico. Es el comportamiento
+          // correcto, no una carencia: inventar una causa acá sería mentirle al
+          // operador con autoridad.
+          try {
+            if (getTelegramChatId()) {
+              sendTelegram(avisoCadenaCaida({ verifiedAllFailed: false }));
+            } else {
+              log('commander', '[cadena-caida] sin chat autorizado resoluble — aviso no emitido (fail-closed)');
+            }
+          } catch { /* best-effort */ }
         } else {
           sendTelegram('⚠️ Error procesando tu mensaje. Intentá de nuevo.');
         }
@@ -16979,7 +17388,6 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
 
   // Encolar en el servicio de telegram (fire-and-forget via filesystem)
   const svcDir = telegramPendienteDir();
-  const filename = `${Date.now()}-cmd.json`;
   try {
     // #5421 — La intención de "texto plano" viaja EXPLÍCITA (`plain: true`), no
     // como la ausencia de `parse_mode`. `svc-telegram` es otro proceso: un campo
@@ -16989,7 +17397,20 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     const payload = plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     payload._correlationId = correlationId;
-    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify(payload));
+    // #6226 — Nombre único (`<ts>-<seq>-cmd.json`) + escritura `wx`. Antes eran
+    // dos `writeFileSync` al mismo path cuando el handler emitía `reply` +
+    // `extraMessages` en el mismo tick (paginado de `/wave`), y el segundo
+    // pisaba al primero: el operador recibía el mensaje 2 sin el 1, sin ningún
+    // indicio de que faltaba contenido.
+    const { filename } = dropfileWriter.writeDropfileSync({
+      dir: svcDir,
+      suffix: 'cmd.json',
+      data: JSON.stringify(payload),
+      onCollision: (name, attempt) => log(
+        'telegram',
+        `⚠️ Colisión de nombre de dropfile (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+      ),
+    });
     log('telegram', `Encolado (${msg.length} chars${replyMarkup ? ', con reply_markup' : ''}) → ${filename}`);
     return correlationId;
   } catch (e) {
@@ -18086,13 +18507,27 @@ function autoResolveMissingOpenWaveIssues(probe, opts = {}) {
   }));
 
   // SEC-3 (log-antes-de-mutar): la traza existe aunque el proceso muera a mitad.
+  //
+  // #6117 SEC-2 — el resultado del audit ya NO se descarta. `safeAppendAction`
+  // no lanza: devuelve `{ok:false, error}` cuando la cadena no se pudo escribir.
+  // Antes ese `false` moría en un `try/catch` mudo, así que una mutación de la
+  // AUTORIZACIÓN de despacho podía aplicarse sin dejar rastro y nadie se
+  // enteraba. Ahora viaja como `audit_failed` en el resultado y el caller
+  // notifica al operador — perder la trazabilidad de quién habilitó qué no
+  // puede ser silencioso, aunque la reparación en sí haya salido bien.
+  let auditFailed = false;
   try {
-    require('./lib/kernel-actions-audit').safeAppendAction({
+    const auditRes = require('./lib/kernel-actions-audit').safeAppendAction({
       action: 'desync-autoresolve', impact: 'medio',
       reason: `auto-resolución desync reductivo-aditivo: issues abiertos de la ola activa ausentes de la allowlist ${JSON.stringify(missing)}`,
       authorizedBy: 'desync-detector',
     });
-  } catch { /* best-effort: el audit nunca bloquea la convergencia */ }
+    if (!auditRes || auditRes.ok !== true) auditFailed = true;
+  } catch {
+    // best-effort: el audit nunca BLOQUEA la convergencia (fail-open hacia
+    // disponibilidad), pero su fallo sí se reporta.
+    auditFailed = true;
+  }
 
   let policy = { proceed: true };
   try {
@@ -18116,7 +18551,7 @@ function autoResolveMissingOpenWaveIssues(probe, opts = {}) {
   // Convergencia allowlist ← ola: repuebla con los issues ABIERTOS de la ola
   // (walk recursivo de hijos/deps incluido) y poda de la ola los cerrados
   // residuales de la divergencia. Mutación por el gate auditado de partial-pause.
-  return require('./lib/wave-dispatch').realignActiveWaveDispatch({
+  const r = require('./lib/wave-dispatch').realignActiveWaveDispatch({
     isClosed,
     desync: probe,
     authorizedBy: 'wave-promote',
@@ -18125,6 +18560,10 @@ function autoResolveMissingOpenWaveIssues(probe, opts = {}) {
       `Convergencia aditiva allowlist ← ola activa (#5724 CA-2): ` +
       `issues abiertos de la ola ausentes de la allowlist ${JSON.stringify(missing)}`,
   });
+  // #6117 SEC-2 — se anexa el veredicto del audit SIN tocar el resto del
+  // resultado del mutador (`ok`, `allowlist`, `prunedFromWave`, `reason`).
+  if (r && typeof r === 'object') r.audit_failed = auditFailed;
+  return r;
 }
 
 // =============================================================================
@@ -18911,6 +19350,198 @@ function notificarBloqueoDesync(probeActual) {
   }
 }
 
+// =============================================================================
+// #6117 — Mensajería de las auto-reparaciones del despacho.
+//
+// Criterio único (acordado con el operador el 2026-08-18): por Telegram va lo
+// que REQUIERE UNA DECISIÓN o está frenado. Una auto-reparación exitosa no es
+// ninguna de las dos cosas — ya se ejecutó, salió bien y el pipeline siguió
+// andando — así que va a log, audit, métrica y dashboard, y NO al chat.
+//
+// Quedan tres motivos legítimos para escribirle al operador desde acá:
+//   1. la reparación NO se aplicó o falló  → el despacho sigue frenado;
+//   2. la reparación anduvo pero el AUDIT no se pudo escribir (SEC-2) → se mutó
+//      la autorización de despacho sin dejar rastro;
+//   3. la MISMA reparación se repite N veces en la ventana → ya no es una
+//      auto-reparación sana, es el síntoma de una causa raíz sin resolver.
+// =============================================================================
+
+// CA-UX-1 / R6 — el TEXTO de estos mensajes NO vive acá. Vive en
+// `lib/desync-copy.js`, que es la fuente única del copy de sincronización.
+// Inline en `pulpo.js` es justamente como nacieron los dos avisos que este
+// issue borró: copy pegado a la lógica, que se duplica por superficie y termina
+// divergiendo. Acá sólo queda el CABLEADO (cuándo se manda y con qué datos).
+const desyncCopy = require('./lib/desync-copy');
+
+/**
+ * Umbral y ventana del detector de repetición, leídos de `config.yaml`.
+ * Mismo patrón que `desync.legit_add_ttl_ms`: si la config no está o está rota,
+ * el módulo de métrica clampea a sus defaults (3 reparaciones / 1 hora). Una
+ * config inválida NUNCA frena el pipeline ni desactiva la alerta.
+ */
+function autoRepairAlertConfig() {
+  try {
+    const d = loadConfig().desync || {};
+    return { threshold: d.repair_alert_threshold, windowMs: d.repair_alert_window_ms };
+  } catch {
+    return { threshold: undefined, windowMs: undefined };
+  }
+}
+
+/**
+ * Recorta una causa de fallo para que sea publicable (SEC-5).
+ * Prohibido en el chat: stack traces, paths absolutos del host, contenido de
+ * `config.yaml`, tokens. Se redacta con el sanitizador canónico y además se
+ * borran los paths absolutos, que el sanitizador de secretos no cubre.
+ */
+function sanitizeAutoRepairCause(raw) {
+  let s = String(raw == null ? 'sin detalle' : raw);
+  // Cortar en la primera línea: descarta el stack pegado con \n.
+  s = s.split('\n')[0];
+  try {
+    if (quotaExhausted && typeof quotaExhausted.sanitizeRawExcerpt === 'function') {
+      s = quotaExhausted.sanitizeRawExcerpt(s);
+    }
+  } catch { /* best-effort: seguimos con los filtros de abajo */ }
+  // Paths absolutos Windows (C:\...) y POSIX (/c/... , /home/...) → placeholder.
+  s = s.replace(/[A-Za-z]:\\[^\s'"]*/g, '<path>');
+  s = s.replace(/(?:^|\s)\/[A-Za-z0-9._\-\/]{6,}/g, ' <path>');
+  // Token de bot de Telegram (`<id>:<secreto>`). `sanitizeRawExcerpt` cubre las
+  // API keys de los providers de LLM, pero NO este formato — y es justamente la
+  // credencial del canal por el que estamos por mandar el mensaje: si un error
+  // la ecoara, la publicaríamos en el propio chat.
+  s = s.replace(/\b\d{6,}:[A-Za-z0-9_-]{20,}\b/g, '[REDACTED]');
+  s = s.replace(/[\r\n\t]/g, ' ').trim();
+  if (!s) s = 'sin detalle';
+  return s.slice(0, 160);
+}
+
+/**
+ * Efectos secundarios del camino FELIZ de una auto-reparación.
+ * Registra la métrica y evalúa los dos únicos motivos por los que una
+ * reparación exitosa igual amerita avisar. Never-throws: nada de esto puede
+ * romper el camino de reparación que lo invoca.
+ *
+ * @param {string} tipo      'convergencia_aditiva' | 'reparacion_aditiva_wave_add'
+ * @param {number[]} issues  issues efectivamente repuestos
+ * @param {object} r         resultado del mutador (para leer `audit_failed`)
+ */
+function afterSuccessfulAutoRepair(tipo, issues, r) {
+  const autoRepair = require('./lib/metrics/auto-repair');
+
+  // CA-6 — el contador. Va ANTES de evaluar la repetición: el detector cuenta
+  // sobre el JSONL e incluye la reparación en curso.
+  try { autoRepair.recordAutoRepair({ tipo, issues }); } catch { /* best-effort */ }
+
+  // SEC-2 (M3) — se mutó quién puede despachar y no quedó registro de la
+  // operación. No frena nada, pero el operador tiene que saberlo.
+  if (r && r.audit_failed === true) {
+    try {
+      sendTelegramPlain(desyncCopy.autoRepairAuditFailedText({ issues }));
+    } catch { /* best-effort */ }
+  }
+
+  // CA-5 (M4) — repetir la misma reparación no es sanidad, es un síntoma.
+  try {
+    const cfg = autoRepairAlertConfig();
+    const rep = autoRepair.shouldAlertRepetition({
+      tipo,
+      nowMs: Date.now(),
+      threshold: cfg.threshold,
+      windowMs: cfg.windowMs,
+    });
+    if (rep && rep.alert) {
+      sendTelegramPlain(desyncCopy.autoRepairRepetitionText({
+        tipo,
+        count: rep.count,
+        windowMs: rep.windowMs,
+        // SEC-4: no se pudo contar. Se avisa igual y el copy lo dice.
+        ilegible: rep.motivo === 'estado_ilegible',
+      }));
+    }
+  } catch { /* best-effort */ }
+}
+
+// #6117 — Dedupe del aviso de FALLO de reparación.
+//
+// `evaluateDesyncAndMaybeRealign('periodic')` corre cada ~5 min. Una divergencia
+// que no se puede reparar NO se arregla sola: la misma rama de fallo se
+// ejecutaría en cada tick. Sin dedupe serían ~288 mensajes por día — un flood
+// peor que los dos avisos que este issue vino a sacar, y en el mismo canal.
+//
+// La cota se pone por FIRMA (tipo + causa sanitizada): mientras la causa no
+// cambie, se avisa una vez por ventana. Si la causa CAMBIA se avisa enseguida,
+// porque es información nueva sobre por qué sigue frenado.
+//
+// Es in-memory a propósito, y es el único estado de este issue que no se
+// persiste. Un restart del Pulpo re-habilita el aviso: eso falla hacia la
+// VISIBILIDAD (peor caso, un mensaje de más tras un reinicio) en vez de hacia el
+// silencio. Persistirlo tendría el efecto contrario, que es el que no queremos.
+//
+// Esto CONVIVE con `desyncBlockNotifier.onBlocked`, que ya escalona el aviso de
+// "el trabajo sigue frenado" (15 min / 1 h / 3 h / 6 h y después cada 6 h). Los
+// dos mensajes no se pisan: aquél comunica CUÁNTO HACE que está frenado; éste,
+// POR QUÉ no se pudo reparar solo — que es el dato que `onBlocked` no tiene.
+const _autoRepairFailureLastNotified = new Map();
+
+/**
+ * Limpia el dedupe. Sólo para tests: el estado es de proceso y, sin esto, un
+ * test que emite un aviso silencia al siguiente que usa la misma firma —
+ * acoplamiento entre casos que se lee como un bug del código bajo prueba.
+ */
+function _resetAutoRepairFailureDedupe() { _autoRepairFailureLastNotified.clear(); }
+
+/**
+ * Aviso del camino de FALLO: la reparación no se aplicó (M1) o lanzó (M2). Acá
+ * el despacho SÍ queda frenado, así que el mensaje lleva causa + `Qué hacer:`
+ * (R3 / #5134). El TEXTO vive en `desync-copy`; acá sólo el cableado.
+ * Never-throws.
+ *
+ * @param {string} tipo    tipo de reparación intentada
+ * @param {string} causa   motivo crudo (se sanitiza acá antes de pasarlo al copy)
+ * @param {object} [opts]  { gateRejected: bool, excepcion: bool, issues: number[] }
+ * @returns {{notificado: boolean, motivo: string}}
+ */
+function notifyAutoRepairFailure(tipo, causa, opts = {}) {
+  try {
+    // R5 — la sanitización se hace ACÁ, no en el copy: `desync-copy` es un
+    // módulo puro y no puede (ni debe) redactar secretos. Al copy le llega
+    // texto ya limpio.
+    const limpia = sanitizeAutoRepairCause(causa);
+
+    // Dedupe por firma. La ventana se reusa de la config del detector de
+    // repetición: es el mismo orden de magnitud de "esto ya me lo dijiste".
+    const firma = `${tipo}::${limpia}`;
+    const ahora = Date.now();
+    let ventanaMs = Number(autoRepairAlertConfig().windowMs);
+    if (!Number.isFinite(ventanaMs) || ventanaMs <= 0) ventanaMs = 3600000;
+    const ultimo = _autoRepairFailureLastNotified.get(firma);
+    if (Number.isFinite(ultimo) && (ahora - ultimo) < ventanaMs) {
+      return { notificado: false, motivo: 'dedupe_ventana' };
+    }
+    // Cota de memoria: la causa ya viene sanitizada y truncada, pero el set de
+    // firmas posibles no es cerrado. Se poda para que un proceso de vida larga
+    // no acumule claves indefinidamente.
+    if (_autoRepairFailureLastNotified.size > 50) _autoRepairFailureLastNotified.clear();
+    _autoRepairFailureLastNotified.set(firma, ahora);
+    // M2 (excepción) vs M1 (no aplicada). Son mensajes distintos a propósito:
+    // ante una excepción no hay causa publicable (R5), y lo que el operador
+    // tiene que mirar es el log, no la ola.
+    const texto = opts.excepcion === true
+      ? desyncCopy.autoRepairExceptionText()
+      : desyncCopy.autoRepairFailureText({
+        issues: opts.issues,
+        causa: limpia,
+        // H8 — el gate rechazó con criterio; no es un fallo técnico.
+        gateRejected: opts.gateRejected === true,
+      });
+    sendTelegramPlain(texto);
+    return { notificado: true, motivo: 'emitido' };
+  } catch {
+    return { notificado: false, motivo: 'error' };   // best-effort
+  }
+}
+
 /**
  * Evalúa la divergencia waves↔allowlist y actúa según la clasificación:
  *   - `resoluble_reductivo` → realinea reductivamente + limpia flag + traza.
@@ -19078,20 +19709,23 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
           try { desyncBlockNotifier.onResolved({ resolucion: 'convergencia_aditiva', issues: faltantes }); } catch { /* best-effort */ }
           log('pulpo', `desync-detector: convergencia ADITIVA allowlist ← ola activa OK (#5724) — ` +
             `faltantes_repuestos=${JSON.stringify(faltantes)} allowlist=${JSON.stringify(r.allowlist)} ` +
-            `cerrados_podados=${JSON.stringify(r.prunedFromWave || [])}`);
-          try {
-            sendTelegramPlain(
-              `♻️ Volví a habilitar el dispatch (#5724).\n` +
-              `Estos issues de la ola activa estaban afuera de la allowlist y los sumé: ` +
-              `${faltantes.map((n) => `#${n}`).join(', ')}.\n` +
-              `La ola manda: ya estaban aprobados para trabajarse, así que no hizo falta frenar nada.`
-            );
-          } catch { /* best-effort */ }
+            `cerrados_podados=${JSON.stringify(r.prunedFromWave || [])} audit_failed=${r.audit_failed === true} ` +
+            `(sin ruido a Telegram, #6117)`);
+          // #6117 CA-1 — el aviso informativo de esta rama SE ELIMINÓ. La
+          // reparación salió bien y no pide ninguna decisión: queda en el log de
+          // arriba, en el audit, en la métrica y en el dashboard. Sólo se avisa
+          // si el audit falló o si la reparación se está repitiendo.
+          afterSuccessfulAutoRepair('convergencia_aditiva', faltantes, r);
           return;
         }
         log('pulpo', `WARN desync-detector: convergencia aditiva no aplicada (${r && r.reason}). Sigue evaluación conservadora.`);
+        // #6117 CA-4 (M1) — antes esto moría en el log y el operador se
+        // enteraba tarde (o nunca). El despacho queda sin reparar: eso sí se avisa.
+        notifyAutoRepairFailure('convergencia_aditiva', r && r.reason, { issues: faltantes });
       } catch (e) {
         log('pulpo', `WARN desync-detector: convergencia aditiva falló: ${e.message}. Sigue evaluación conservadora.`);
+        // M2 — excepción: no se publica el error (R5), se manda al log del Pulpo.
+        notifyAutoRepairFailure('convergencia_aditiva', e && e.message, { excepcion: true });
       }
     }
 
@@ -19142,21 +19776,26 @@ function evaluateDesyncAndMaybeRealign(context, opts = {}) {
             checkDesyncFlag();
             try { desyncBlockNotifier.onResolved({ resolucion: 'reparacion_aditiva_wave_add', issues: r.added }); } catch { /* best-effort */ }
             log('pulpo', `desync-detector: reparación ADITIVA de allowlist OK (#5882) — ` +
-              `agregados=${JSON.stringify(r.added)} (traza legítima en wave-audit)`);
-            try {
-              sendTelegramPlain(
-                `♻️ Volví a habilitar el dispatch (#5882).\n` +
-                `Estos issues estaban en la ola pero faltaban en la lista de despacho: ` +
-                `${r.added.map((n) => `#${n}`).join(', ')}.\n` +
-                `Tienen traza de promoción tuya, así que los repuse sin frenar nada.`
-              );
-            } catch { /* best-effort */ }
+              `agregados=${JSON.stringify(r.added)} (traza legítima en wave-audit) ` +
+              `(sin ruido a Telegram, #6117)`);
+            // #6117 CA-2 — mismo criterio que la rama de #5724: reparación
+            // exitosa y con traza de promoción del propio operador. No hay nada
+            // que decidir, así que no se le escribe al chat.
+            afterSuccessfulAutoRepair('reparacion_aditiva_wave_add', r.added, r);
             return;
           }
           // Nunca en silencio: si no reparó, queda el motivo en el log.
           log('pulpo', `WARN desync-detector: reparación aditiva no aplicada (${r && r.reason}). Sigue fail-closed.`);
+          // #6117 CA-4 — acá el pipeline SÍ queda frenado (fail-closed): el
+          // operador tiene que enterarse. H8: `gate_rejected` se distingue del
+          // resto porque lo que hay que hacer es distinto.
+          notifyAutoRepairFailure('reparacion_aditiva_wave_add', r && r.reason, {
+            issues: legitWaveAdd,
+            gateRejected: !!(r && typeof r.reason === 'string' && r.reason.startsWith('gate_rejected')),
+          });
         } catch (e) {
           log('pulpo', `WARN desync-detector: reparación aditiva falló: ${e.message}. Sigue fail-closed.`);
+          notifyAutoRepairFailure('reparacion_aditiva_wave_add', e && e.message, { excepcion: true });
         }
       } else {
         log('pulpo', `desync-detector: sin traza legítima de wave-add para ` +
@@ -19443,24 +20082,49 @@ const STUCK_STALE_MS = 15 * 60 * 1000;
 //
 // La racha vive en su PROPIO archivo: `.stuck-reconciler-state.json` está
 // indexado por `issue|fase` y mezclar acá un contador global lo corrompería.
-// CA-UX-4: los contadores por tick van al log, NO a Telegram; sólo la señal de
-// vida (una vez por racha) notifica.
+// CA-UX-4: los contadores por tick van al log, NO a Telegram.
+// #6150 — la racha ya NO gobierna el envío. Lo que notifica es la existencia de
+// tareas en riesgo real (`selectRealRisk`), una vez por EPISODIO: mientras el
+// conjunto de tareas frenadas no cambie, no se reitera; si entra o sale una, sí.
+// La racha se sigue calculando y persistiendo, pero sólo para log/estado.
 const STUCK_HEALTH_FILE = path.join(PIPELINE, '.stuck-reconciler-health.json');
-function emitStuckReconcilerLiveness(agg) {
+function emitStuckReconcilerLiveness(res, agg, titleOf) {
   try {
+    // #6150 CA-1 — el filtro es POR DECISIÓN. El criterio agregado anterior
+    // (`suprimidos_por_ola >= evaluados`) mandaba al chat un aviso de 177
+    // "evaluados" con cero tareas realmente frenadas.
+    const risks = selectRealRisk((res && res.decisions) || []);
+
     let prev = null;
     try { prev = JSON.parse(fs.readFileSync(STUCK_HEALTH_FILE, 'utf8')); } catch { /* primera vez */ }
-    const { next, emitSignal } = evaluateSilenceHealth(prev, agg);
-    try { fs.writeFileSync(STUCK_HEALTH_FILE, JSON.stringify(next, null, 2)); } catch { /* best-effort */ }
+    const { next, emitSignal } = evaluateSilenceHealth(prev, { agg, risks });
+
+    // SEC-5 — tmp + rename. Con `writeFileSync` directo, un corte a mitad de
+    // escritura deja JSON inválido ⇒ `prev = null` ⇒ se pierde el episodio ⇒ el
+    // "un aviso por episodio" degrada a "avisar de nuevo en cada ciclo".
+    try {
+      const tmp = `${STUCK_HEALTH_FILE}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
+      fs.renameSync(tmp, STUCK_HEALTH_FILE);
+    } catch { /* best-effort: nunca tumba el ciclo */ }
+
+    // CA-2 — sin tareas en riesgo real no sale NADA a Telegram, por larga que
+    // sea la racha. El diagnóstico ya quedó en el log y en el archivo de estado.
     if (!emitSignal) return;
-    // Texto plano (SEC-4) y sin audio TTS (CA-UX-5: el audio queda reservado al
-    // circuit breaker; esto es una señal de diagnóstico, no una emergencia).
-    sendTelegramPlain(
-      `🔇 Self-healing mudo hace ${next.streak} ticks seguidos\n`
-      + `Evaluó ${agg.evaluados} issue(s) varado(s) y no actuó en ninguno.\n`
-      + `Supresiones: ola=${agg.suprimidos_por_ola} cache=${agg.suprimidos_por_cache} dedupe=${agg.suprimidos_por_dedupe}\n`
-      + `Revisá .pipeline/logs/pulpo.log (canal "reconciler") si no lo esperabas.`
-    );
+
+    const texto = buildStuckAlertCopy({
+      risks,
+      nowMs: Date.now(),
+      titleOf,
+      // SEC-2 — el título lo elige un tercero (el repo es público): redact +
+      // sanitize + strip de control chars antes de interpolarlo.
+      sanitize: (providerExhaustionPause && providerExhaustionPause.sanitizeForTelegram) || null,
+    });
+    if (!texto) return;
+
+    // Texto plano (SEC-1/SEC-4) y sin audio TTS (CA-UX-5 de #5396: el audio queda
+    // reservado al circuit breaker; esto no es una emergencia).
+    sendTelegramPlain(texto);
   } catch (e) {
     log('reconciler', `señal de vida (best-effort) falló: ${e && e.message}`);
   }
@@ -19519,7 +20183,11 @@ function runStuckReconcilerTick() {
       requeued: res.requeued || 0,
     };
     log('reconciler', `🔧 self-healing tick: ${JSON.stringify(agg)}`);
-    emitStuckReconcilerLiveness(agg);
+    // #6150 rev-2 — `issueTitleForDisplay`, NO `issueTitle`. El aviso se dispara
+    // justo cuando la entrada del title-cache está vencida (`suppression:'cache'`
+    // ⇐ `cache-desconocida` ⇐ entrada no fresca), y `issueTitle` es fresh-only:
+    // cableado con él, el título era `null` en el 100% de los avisos reales.
+    emitStuckReconcilerLiveness(res, agg, deps.issueTitleForDisplay);
   } catch (e) {
     log('reconciler', `tick error (no tumba el loop): ${e && e.message}`);
   }
@@ -22037,6 +22705,12 @@ process.on('SIGTERM', () => {
 // Útil para tests unitarios y scripts de evidencia del gate predictivo.
 if (process.env.PULPO_NO_AUTOSTART === '1') {
   module.exports = {
+    // #6226 — path REAL de encolado de salientes. Expuesto para el test de
+    // regresión que fija que dos mensajes emitidos en el mismo tick (el `reply`
+    // + los `extraMessages` del paginado) producen DOS dropfiles y no uno.
+    // Con `PIPELINE_DIR_OVERRIDE` la cola apunta a un temp dir: no se manda nada.
+    sendTelegram,
+    telegramPendienteDir,
     gatePrPropagationDecision,
     // #4687 (Ola Puente P2) — descubrimiento side-effect-free del tablero (dry-run).
     discoverWorkDryRun,
@@ -22141,6 +22815,17 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
       issueLabelsCache.clear();
       issueTextCache.clear();
     },
+    // #6238 — aviso de sesión de provider vencida: copy puro + dedupe por
+    // provider. Exportados para el test de copy (CA-UX-8) y el de dedupe (CA-5).
+    buildCredentialDeathMessage,
+    sendCredentialDeathNotif,
+    formatElapsedHuman,
+    formatPendingIssues,
+    CREDENTIAL_NOTIF_COOLDOWN_MS,
+    CREDENTIAL_NOTIF_MAX_ISSUES,
+    _resetCredentialNotifStateForTest: () => {
+      for (const k of Object.keys(_credentialNotifState)) delete _credentialNotifState[k];
+    },
     // #4046 — preflight de APK por flavor real + resolución de changed-files.
     preflightQaChecks,
     getChangedFilesForIssue,
@@ -22238,6 +22923,12 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     realignAllowlistToActiveWave,
     // #4753 — auto-resolución del desync reductivo por cierre (expuesto para tests).
     autoResolveReductiveDesyncByClosure,
+    // #6117 — mensajería de auto-reparación (expuesta para tests unitarios del
+    // sanitizador de causa y del dedupe del aviso de fallo).
+    sanitizeAutoRepairCause,
+    notifyAutoRepairFailure,
+    afterSuccessfulAutoRepair,
+    _resetAutoRepairFailureDedupe,
     checkDesyncFlag,
     _getDesyncBlocked: () => desyncBlocked,
   };

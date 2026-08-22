@@ -24,6 +24,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// Toda llamada que omita `pipelineDir` queda contenida en un sandbox. En la
+// corrida masiva los tests se ejecutan en paralelo y nunca deben alcanzar la
+// cola real del worktree.
+const TEST_PIPELINE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'pqg-suite-'));
+process.env.PIPELINE_DIR_OVERRIDE = TEST_PIPELINE_DIR;
+test.after(() => {
+    try { fs.rmSync(TEST_PIPELINE_DIR, { recursive: true, force: true }); } catch {}
+});
+
 // Aísla del kill-switch operacional live (`provider-disabled.json` global): sin
 // esto, un provider drenado en runtime por el pulpo volvía flaky la chain
 // (#4801 rebote). Ver isolate-provider-disabled.helper.js.
@@ -629,7 +638,15 @@ test('CA-7: soft-gate NO altera el happy path cuando el provider no está degrad
 test('CA-7 #5924: bajo node --test el emisor NO escribe en la cola real del repo', () => {
     assert.ok(process.env.NODE_TEST_CONTEXT, 'sanity: este test corre bajo el runner de Node');
 
-    const real = guard.pipelineDirDefault();
+    // A proposito NO se usa `pipelineDirDefault()`: desde #6111 esta suite
+    // exporta `PIPELINE_DIR_OVERRIDE` apuntando a un tmp, asi que el default ya
+    // no devuelve el `.pipeline/` fisico del repo. El rail cubre exactamente esa
+    // ruta fisica -- la unica que puede terminar en la cola que lee el worker --
+    // y es contra ella que hay que ejercerlo. Los dos mecanismos son
+    // complementarios: el override aisla a las suites que se acuerdan de
+    // ponerlo, el rail ataja a las que no.
+    const real = path.resolve(__dirname, '..', '..');
+    assert.equal(path.basename(real), '.pipeline', 'sanity: `real` apunta al .pipeline fisico');
     const colaReal = guard.telegramQueueDir(real);
     const antes = fs.existsSync(colaReal)
         ? fs.readdirSync(colaReal).filter((f) => f.endsWith('.json'))
@@ -653,7 +670,12 @@ test('CA-7 #5924: con el pipelineDir aislado el encolado real sigue funcionando'
 
         const dir = guard.telegramQueueDir(sandbox);
         const files = fs.readdirSync(dir);
-        assert.deepEqual(files, ['42-provider-quota-guard.json']);
+        // #6226 cambio el nombre a `<ts>-<seq>-provider-quota-guard.json` para
+        // que dos avisos del mismo milisegundo no se pisen. Se asierta el
+        // formato, no el literal, para no volver a acoplar el test al ancho del
+        // contador.
+        assert.equal(files.length, 1, 'un aviso ⇒ un dropfile');
+        assert.match(files[0], /^42-\d+-provider-quota-guard\.json$/);
         const drop = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
         assert.equal(drop.parse_mode, 'Markdown');
         assert.match(drop.text, /91%/);

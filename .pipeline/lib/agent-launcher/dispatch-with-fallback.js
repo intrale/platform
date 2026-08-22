@@ -75,6 +75,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #6226 - nombres unicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('../dropfile-writer');
 
 // #4052 — clasificador puro de "muerte al spawnear del provider". Distingue una
 // muerte de spawn-failure (infra del provider) de un fallo legítimo del issue,
@@ -91,7 +93,7 @@ const { AUTH_REJECTED_CLASS } = require('./auth-rejection');
 // 'full-auto', free providers → 'bypassPermissions'). Sin esto el fallback
 // perdía el `mode` y el launcher caía a un default fail-open peligroso.
 // `resolve-provider` ya se importa acá sin ciclo de require — solo sumamos un símbolo.
-const { resolveProviderForSkill, getProviderHandler, resolvePermissionMode } = require('./resolve-provider');
+const { resolveProviderForSkill, getProviderHandler, resolvePermissionMode, resolveModelForSkillProvider } = require('./resolve-provider');
 // MP-05 (#3803) — reutilizamos la validación de credenciales del precheck del
 // Commander para hacer pre-check de credenciales también en los skills antes de
 // elegir un fallback (no solo el Commander la tenía).
@@ -838,16 +840,29 @@ function enqueueTelegramNotice({ pipelineDir, fsImpl, text, meta }) {
     try {
         const queueDir = path.join(pipelineDir, TELEGRAM_QUEUE_SUBDIR);
         _fs.mkdirSync(queueDir, { recursive: true });
-        // Nombre con timestamp + pid para evitar colisiones entre procesos
-        // concurrentes (caller puede ser pulpo + un script de mantenimiento).
-        const fname = `cross-provider-${Date.now()}-${process.pid}.json`;
         const payload = JSON.stringify({
             type: 'cross-provider-fallback',
             text,
             meta: meta || {},
             queued_at: new Date().toISOString(),
         }, null, 2);
-        _fs.writeFileSync(path.join(queueDir, fname), payload, { mode: 0o600 });
+        // #6226 - escritura fail-closed. El nombre lleva timestamp + pid, pero
+        // el pid es CONSTANTE dentro de un proceso: dos avisos del mismo proceso
+        // en el mismo milisegundo resolvian al mismo path y el segundo pisaba al
+        // primero. Se conserva el nombre tal cual (su prefijo define la posicion
+        // del archivo en el drenado por orden de nombre) y solo ante colision
+        // real se desambigua con `-<n>`.
+        const fname = `cross-provider-${Date.now()}-${process.pid}.json`;
+        dropfileWriter.writeUniqueFileSync({
+            dir: queueDir,
+            filename: fname,
+            data: payload,
+            fsImpl: _fs,
+            mode: 0o600,
+            onCollision: (name, attempt) => console.warn(
+                `[dispatch-with-fallback] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
         return true;
     } catch {
         return false;
@@ -1867,11 +1882,13 @@ function resolveSpawnWithFallback(opts = {}) {
         // distinto). Si todavía hay configs legacy con `fallbacks: [string]`,
         // `fbModelOverride` queda null y el fallback usa el `model` default
         // del provider (comportamiento previo preservado).
-        const fbProviderDef = (models && models.providers && models.providers[fbName]) || null;
+        // #6271 — la precedencia vive en resolveModelForSkillProvider (fuente
+        // única). `fbModelOverride` se sigue respetando explícitamente porque
+        // el shape ya fue normalizado arriba; si es null, el helper resuelve
+        // por (skill, fbName) con la MISMA cadena de antes:
+        //   fallbacks[i].model_override → providers.<fbName>.model → models.defaults.model → null.
         const fbModel = fbModelOverride
-            || (fbProviderDef && fbProviderDef.model)
-            || (models && models.defaults && models.defaults.model)
-            || null;
+            || resolveModelForSkillProvider(models, skill, fbName, { fallbackModel: null });
 
         // Audit + notify (S-6 / S-9).
         auditAppend({
@@ -2019,6 +2036,59 @@ function resolveSpawnWithFallback(opts = {}) {
     };
 }
 
+// -----------------------------------------------------------------------------
+// appendSpawnExitDeathKind — #6238 (CA-6). Writer fino que deja constancia de la
+// clasificación de muerte prematura en el MISMO audit log de spawn-exit
+// (`spawn-exit-YYYY-MM-DD.jsonl`, 0o600, hash-chain de `appendChained`).
+//
+// POR QUÉ UNA LÍNEA APARTE Y NO UN CAMPO EN LA DE `onSpawnExit`
+// ------------------------------------------------------------
+// `onSpawnExit` (arriba) ya escribió su línea ANTES de que el Pulpo corra la
+// clasificación de muerte prematura: para esa capa el error se ve como un 5xx
+// transitorio (`error_class: 'transient_5xx'`). Se acepta la DOBLE LÍNEA:
+// `death_kind` es el campo autoritativo para la muerte prematura y desambigua
+// contra el `error_class` de la línea previa. Queda documentado acá para que
+// nadie lo lea como duplicado espurio.
+//
+// SEGURIDAD (SEC-CA-5): `raw_excerpt` está AUSENTE, no vacío. El excerpt es
+// justo donde vive el material sensible; acá no hay ningún campo que
+// transporte texto del provider. `token` viene de la tabla cerrada
+// `CREDENTIAL_DEATH_TOKENS` del detector, así que el JSONL no puede filtrar.
+//
+// Best-effort: cualquier error de IO se silencia (nunca rompe el lifecycle).
+// -----------------------------------------------------------------------------
+function appendSpawnExitDeathKind(opts = {}) {
+    const {
+        pipelineDir, skill, issue, provider, deathKind,
+        token, signature, exitCode, durationMs, fsImpl, auditLog,
+    } = opts;
+    if (!pipelineDir || !deathKind) return false;
+    try {
+        const _now = Number.isFinite(opts.now) ? opts.now : Date.now();
+        const _audit = auditLog || require('../audit-log');
+        const file = spawnExitAuditFile(pipelineDir, new Date(_now));
+        ensureSecureAuditFile(file, fsImpl);
+        const entry = {
+            ts: new Date(_now).toISOString(),
+            skill: skill || null,
+            issue: (issue == null) ? null : (Number(issue) || String(issue)),
+            provider: provider || null,
+            death_kind: String(deathKind),
+            // Identificador de NUESTRA tabla cerrada, nunca texto del provider.
+            credential_token: (typeof token === 'string' && token) ? token : null,
+            signature: (typeof signature === 'string' && signature) ? signature : null,
+            exit_code: (exitCode === null || exitCode === undefined) ? null : Number(exitCode),
+            duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+            codepath: 'premature-death',
+            // raw_excerpt: AUSENTE a propósito (SEC-CA-5). No agregar.
+        };
+        _audit.appendChained({ file, entry, fsImpl });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 module.exports = {
     resolveSpawnWithFallback,
     enqueueTelegramNotice,
@@ -2049,6 +2119,8 @@ module.exports = {
 
     isGeneralizedParserEnabled,
     spawnExitAuditFile,
+    // #6238 CA-6 — writer de la línea `death_kind` en el spawn-exit JSONL.
+    appendSpawnExitDeathKind,
     FEATURE_FLAG_NAME,
     CODEPATH_EMOJI,
 

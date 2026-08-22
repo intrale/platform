@@ -514,16 +514,29 @@ test('R7 · __tests__/ y *.test.js quedan fuera (sus fixtures tienen literales a
 test('CA-10 · SELF_EXEMPT: el sustrato del envoltorio y el propio guardrail no se autoauditan', () => {
     const root = makeTmpPipeline();
     const body = "const path=require('path');\nconst w = path.join(D, 'waves.json');\nconst p = path.join(D, '.partial-pause.json');";
-    for (const rel of ['lib/operational-state.js', 'lib/waves.js', 'lib/partial-pause.js', 'lib/operational-state-lint.js']) {
+    for (const rel of [
+        'lib/operational-state.js', 'lib/waves.js', 'lib/partial-pause.js', 'lib/operational-state-lint.js',
+        // #5110 — sustrato del namespaceo por projectId.
+        'lib/project-context.js', 'scripts/migrate-operational-state-namespace.js',
+    ]) {
         placeJs(root, rel, body);
     }
     const { violations } = lint.lint({ pipelineRoot: root, allowlist: emptyAllowlist() });
     assert.equal(violations.length, 0);
+    // El set se pinea a propósito: agrandar el scope del control es una decisión
+    // que tiene que pasar por este test (y por CODEOWNERS), no colarse en un
+    // refactor. #5110 suma dos entradas y ninguna es un consumidor:
+    //   - `lib/project-context.js` RESUELVE el namespace `.pipeline/projects/<id>/`.
+    //   - el migrador MUEVE el layout plano a ese namespace.
+    // Ambos manipulan los literales de estado por definición, igual que
+    // `waves.js`. Auditarlos sería tautológico.
     assert.deepEqual([...I.SELF_EXEMPT].sort(), [
         'lib/operational-state-lint.js',
         'lib/operational-state.js',
         'lib/partial-pause.js',
+        'lib/project-context.js',
         'lib/waves.js',
+        'scripts/migrate-operational-state-namespace.js',
     ]);
 });
 
@@ -677,7 +690,10 @@ test('CA-9a · --report-only ⇒ exit 0 con prefijo AVISO:, y se auto-declara no
     assert.match(r.all, /^AVISO: lib\/bad\.js:2 /m);
     assert.ok(!/^ERROR:/m.test(r.all));
     assert.match(r.all, /NO bloquea el commit ni el build/);
-    assert.match(r.all, /parte 3 de #5109/);
+    // #5179 — tras el flip, el pie del modo report-only ya no anuncia un flip
+    // pendiente: aclara que el wiring real SÍ bloquea, para que nadie lo use
+    // como vía de escape.
+    assert.match(r.all, /corre en `--check` desde #5179/);
 });
 
 test('CA-9a · --check con violations ⇒ exit 1 con prefijo ERROR:', () => {
@@ -818,13 +834,21 @@ test('smoke · el binario real y su allowlist estan en CODEOWNERS (CA-5 / SEC-1)
     assert.match(co, /@leitolarreta/);
 });
 
-test('CA-4b/R5 · el hook pre-commit invoca --report-only, NUNCA --check', () => {
+test('CA-9b/#5179 · el hook pre-commit invoca --check y PROPAGA el exit code', () => {
+    // Invertido respecto de #5175 a proposito: aquel test fijaba `--report-only`
+    // porque el repo tenia violations y un hook bloqueante habria entrenado a
+    // todo el mundo a usar `--no-verify` (R5). Con el inventario en cero el hook
+    // solo bloquea a quien AGREGA un acceso directo nuevo, que es el objetivo.
     const hook = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.husky', 'pre-commit'), 'utf8');
     const linea = hook.split('\n').find(l => l.includes('operational-state-lint.js') && l.includes('node '));
     assert.ok(linea, 'el hook debe invocar el guardrail');
-    assert.match(linea, /--report-only/);
-    assert.ok(!/--check/.test(linea), 'clonar el --check del template rompe todo commit bajo .pipeline/ (R5)');
-    assert.match(linea, /\|\| true/, 'no debe propagar el exit code');
+    assert.match(linea, /--check/);
+    assert.ok(!/--report-only/.test(linea), 'volver a report-only apaga la capa local del doble wiring');
+    assert.ok(!/\|\|\s*true/.test(linea), 'con `|| true` el hook no bloquea nada: seria wiring decorativo');
+    assert.match(linea, /\|\|\s*exit 1/, 'debe propagar el fallo');
+    // El filtro `--only` sigue siendo obligatorio: con el hook bloqueante, sin
+    // el filtro un dev quedaria frenado por una violation que no introdujo.
+    assert.match(linea, /--only=/);
 });
 
 test('CA-4a · el bloque del hook esta ANTES del primer `exit 0` (si no, es codigo muerto)', () => {
@@ -844,10 +868,16 @@ test('CA-4a · el bloque del hook esta ANTES del primer `exit 0` (si no, es codi
     assert.ok(idxLint < idxExit, `el bloque del guardrail (linea ${idxLint + 1}) debe estar antes del primer \`exit 0\` (linea ${idxExit + 1})`);
 });
 
-test('CA-4a/CA-4c · el workflow corre en report-only, con permissions read y trigger pull_request', () => {
+test('CA-4a/CA-4c/CA-9b · el workflow corre en enforce, con permissions read y trigger pull_request', () => {
     const wf = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'operational-state-lint.yml'), 'utf8');
-    assert.match(wf, /operational-state-lint\.js --report-only/);
-    assert.ok(!/operational-state-lint\.js --check/.test(wf), 'el flip a --check va en la parte 3');
+    assert.match(wf, /operational-state-lint\.js --check/);
+    assert.ok(
+        !/run:\s*node lib\/operational-state-lint\.js --report-only/.test(wf),
+        'el paso de enforce no puede volver a --report-only (la mencion en los comentarios si esta permitida)',
+    );
+    // El inventario debe publicarse aunque el check falle: es justo el run donde
+    // hace falta para diagnosticar.
+    assert.match(wf, /if: always\(\)/);
     assert.match(wf, /permissions:/);
     assert.match(wf, /contents:\s*read/);
     assert.match(wf, /^\s*pull_request:/m);

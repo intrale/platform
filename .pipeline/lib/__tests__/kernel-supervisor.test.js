@@ -813,7 +813,7 @@ test('A02 · cada instancia resuelve SÓLO sus scopes contra el vault (nunca el 
   const rA = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken'], ...vaultOpts() });
   assert.equal(rA.ok, true);
   const a = supervisor.getInstance('acme');
-  assert.deepEqual(a.secrets, { githubToken: { token: 'ghp_acme_SECRET' } }, 'A resuelve su propio scope');
+  assert.deepEqual({ ...a.secrets }, { githubToken: { token: 'ghp_acme_SECRET' } }, 'A resuelve su propio scope');
   // El scope no pedido no se materializa; el secreto de B jamás aparece en A.
   assert.equal(a.secrets.anthropicKey, undefined, 'sólo el scope declarado');
   assert.ok(!JSON.stringify(a.secrets).includes('globex'), 'ningún secreto de B en A');
@@ -888,8 +888,8 @@ test('#5899 CA-1 · resolveInstanceSecrets resuelve por el VAULT con el projectI
   assert.equal(rA.ok, true);
   assert.equal(rB.ok, true);
   // Cada uno trae SU material: la resolución salió del vault, no del archivo.
-  assert.deepEqual(supervisor.getInstance('acme').secrets, { githubToken: { token: 'ghp_acme_SECRET' } });
-  assert.deepEqual(supervisor.getInstance('globex').secrets, { githubToken: { token: 'ghp_globex_SECRET' } });
+  assert.deepEqual({ ...supervisor.getInstance('acme').secrets }, { githubToken: { token: 'ghp_acme_SECRET' } });
+  assert.deepEqual({ ...supervisor.getInstance('globex').secrets }, { githubToken: { token: 'ghp_globex_SECRET' } });
 
   // El `projectId` del path es la CLAVE DEL REGISTRY, nunca `vault.projectId`
   // ni un dato en banda: las raíces barridas lo demuestran.
@@ -899,7 +899,7 @@ test('#5899 CA-1 · resolveInstanceSecrets resuelve por el VAULT con el projectI
   assert.ok(!raices.some((r) => r.includes('/kernel/')), 'ningún path cae bajo la identidad del kernel');
 });
 
-test('#5899 CA-2/REQ-SEC-1 · un `secrets.path` hostil del descriptor no influye el path del vault', async () => {
+test('#5899 CA-2/REQ-SEC-1 · un `credentials[].ref` hostil no influye el path del vault', async () => {
   _resetVaultCache();
   const supervisor = createKernelSupervisor({
     catalogStore: fakeCatalogStore(CATALOG_MIXTO),
@@ -912,7 +912,7 @@ test('#5899 CA-2/REQ-SEC-1 · un `secrets.path` hostil del descriptor no influye
   const ctx = supervisor.getInstance('acme');
   ctx.descriptor = {
     projectId: 'acme',
-    secrets: { path: '../../globex/hosts/otro', scopes: ['githubToken'] },
+    credentials: [{ ref: '../../globex/hosts/otro', scopes: ['githubToken'] }],
   };
 
   const driver = driverDeVault();
@@ -920,7 +920,7 @@ test('#5899 CA-2/REQ-SEC-1 · un `secrets.path` hostil del descriptor no influye
     { vaultConfig: vaultCfg(), vaultDriver: driver, logger: () => {} });
 
   assert.equal(r.ok, true, 'los scopes declarados por el descriptor sí se usan');
-  assert.deepEqual(ctx.secrets, { githubToken: { token: 'ghp_acme_SECRET' } });
+  assert.deepEqual({ ...ctx.secrets }, { githubToken: { token: 'ghp_acme_SECRET' } });
   for (const c of driver.calls) {
     const objetivo = c.root || c.name || '';
     assert.ok(!objetivo.includes('..'), `el path del vault no contiene traversal: ${objetivo}`);

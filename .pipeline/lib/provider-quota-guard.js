@@ -39,6 +39,8 @@
 
 const fs = require('fs');
 const path = require('path');
+// #6226 - nombres unicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('./dropfile-writer');
 
 // -----------------------------------------------------------------------------
 // Defaults conservadores
@@ -290,9 +292,19 @@ function enqueueTelegram(pd, text, now) {
         }
         const dir = telegramQueueDir(pd);
         ensureDir(dir);
-        const file = path.join(dir, `${now}-provider-quota-guard.json`);
-        fs.writeFileSync(file, JSON.stringify({ text, parse_mode: 'Markdown' }), 'utf8');
-        return { ok: true, file };
+        // #6226 - nombre unico (`<ts>-<seq>-provider-quota-guard.json`) +
+        // escritura `wx`: dos avisos del mismo milisegundo ya no se pisan entre
+        // si ni pisan los de otro proceso que encole en la misma cola.
+        const { filePath } = dropfileWriter.writeDropfileSync({
+            dir,
+            suffix: 'provider-quota-guard.json',
+            data: JSON.stringify({ text, parse_mode: 'Markdown' }),
+            now: () => now,
+            onCollision: (name, attempt) => console.warn(
+                `[provider-quota-guard] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta con otro nombre, no se sobreescribe`
+            ),
+        });
+        return { ok: true, file: filePath };
     } catch (e) {
         return { ok: false, reason: e && e.message };
     }

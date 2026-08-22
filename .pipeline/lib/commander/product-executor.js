@@ -38,13 +38,14 @@ const path = require('path');
 const EXECUTABLE = Object.freeze(new Set(['pause', 'resume']));
 
 /**
- * Carga best-effort de `partial-pause.js` (dueño del estado de pausa). Fail-open:
- * si no cargara, `execute` devuelve `{ executed:false }` en vez de romper el
- * listener.
+ * Carga best-effort del envoltorio único de estado operativo (#5179 grupo 3),
+ * que delega en `partial-pause.js` (dueño del marker) bajo lock + audit.
+ * Fail-open: si no cargara, `execute` devuelve `{ executed:false }` en vez de
+ * romper el listener.
  */
-function safeLoadPartialPause() {
+function safeLoadOperationalState() {
     try {
-        return require('../partial-pause');
+        return require('../operational-state');
     } catch (_) {
         return null;
     }
@@ -54,12 +55,15 @@ function safeLoadPartialPause() {
  * Crea el ejecutor de acciones product-aware.
  *
  * @param {object} [opts]
- * @param {object} [opts.partialPause] módulo partial-pause inyectable (tests).
- * @param {function} [opts.now]        clock inyectable.
+ * @param {object} [opts.operationalState] envoltorio de estado inyectable (tests).
+ * @param {object} [opts.partialPause]     alias legacy del seam anterior (#5179).
+ * @param {function} [opts.now]            clock inyectable.
  * @returns {{ execute: function, EXECUTABLE: Set<string> }}
  */
 function createProductExecutor(opts = {}) {
-    const partialPause = opts.partialPause || safeLoadPartialPause();
+    // Seam de inyección preservado: `operationalState` es el nombre nuevo,
+    // `partialPause` se mantiene como alias para no romper callers existentes.
+    const stateMod = opts.operationalState || opts.partialPause || safeLoadOperationalState();
     const now = typeof opts.now === 'function' ? opts.now : () => Date.now();
 
     /**
@@ -77,16 +81,19 @@ function createProductExecutor(opts = {}) {
         if (!EXECUTABLE.has(command)) {
             return { executed: false, reason: 'unsupported-at-product-level', productId };
         }
-        if (!partialPause) {
+        if (!stateMod) {
             return { executed: false, reason: 'partial-pause-unavailable', productId };
         }
 
+        // #5179 D2 — `product-commander:<productId>` queda FUERA del enum cerrado
+        // a propósito: el modelo de identidad de producto se decide en #5165. El
+        // valor se preserva tal cual (el envoltorio sólo exige string no vacío).
         const authorizedBy = `product-commander:${productId}`;
         const stamp = new Date(now()).toISOString();
 
         try {
             if (command === 'pause') {
-                const r = partialPause.setFullPause({
+                const r = stateMod.setFullPause({
                     source: 'telegram',
                     authorizedBy,
                     justification: `Pausa de ${productName || productId} desde Commander product-aware (#4780) @ ${stamp}`,
@@ -101,7 +108,7 @@ function createProductExecutor(opts = {}) {
             }
 
             // resume: levantar halt total + pausa parcial (paridad con /reanudar).
-            const r = partialPause.resumeAll({
+            const r = stateMod.resumeAll({
                 source: 'telegram',
                 authorizedBy: `resume:${authorizedBy}`,
                 justification: `Reanudar ${productName || productId} desde Commander product-aware (#4780) @ ${stamp}`,

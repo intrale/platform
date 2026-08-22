@@ -14,11 +14,16 @@
 // por fuera de la fachada `lib/operational-state.js`. El invariante está
 // documentado en `docs/pipeline/contrato-estado-operativo.md` §2.
 //
-// ESTA PARTE NO MIGRA NADA. Es puramente aditiva: el binario nace con los tres
-// modos, y el wiring (CI + hook) arranca en `--report-only`. El flip a
-// `--check` va en la parte 3, cuando las violations estén en cero (R5 del
-// issue). Un guardrail en `enforce` no puede mergearse antes que la migración
-// porque fallaría contra su propio repo.
+// ESTADO DEL WIRING: en `--check` (ENFORCE) desde #5179, la parte 3 del split.
+// El inventario de accesos directos en producción está en CERO, así que a partir
+// de acá un acceso directo NUEVO al estado operativo rompe el build (CI) y el
+// commit (hook).
+//
+// El binario nació con los tres modos y el wiring arrancó en `--report-only`
+// (partes 1 y 2) porque un guardrail en `enforce` no puede mergearse antes que
+// la migración: fallaría contra su propio repo (R5). Los tres modos siguen
+// existiendo — `--report` / `--report-only` son útiles para auditar sin
+// bloquear.
 //
 // Las dos reglas del matcher
 // --------------------------
@@ -133,11 +138,20 @@ const SKIP_DIRS = new Set([
 // archivo contiene los literales del matcher. Auditarlos sería tautológico.
 // Esto NO son entradas de allowlist: es scope del control, revisado vía
 // CODEOWNERS junto con el binario.
+// #5110 — `lib/project-context.js` es el dueño de la RESOLUCIÓN del namespace
+// (`.pipeline/projects/<projectId>/`) y `scripts/migrate-operational-state-namespace.js`
+// es el migrador que mueve el layout plano a ese namespace: ambos manipulan los
+// literales de estado por definición, igual que el resto del sustrato. NO se
+// usa `operational-state-lint.allowlist.json` para esto — esa allowlist es por
+// LÍNEA y su propósito es documentar excepciones de consumidores, no declarar
+// scope del control.
 const SELF_EXEMPT = new Set([
     'lib/operational-state.js',
     'lib/waves.js',
     'lib/partial-pause.js',
     'lib/operational-state-lint.js',
+    'lib/project-context.js',
+    'scripts/migrate-operational-state-namespace.js',
 ]);
 
 // ─── Regla 1 · path-level ───────────────────────────────────────────────────
@@ -871,8 +885,8 @@ const USAGE = [
     '',
     'modos (exactamente uno, obligatorio):',
     '  --report         inventario markdown reproducible, exit 0 siempre',
-    '  --report-only    avisos con prefijo AVISO:, exit 0 siempre (wiring parte 1)',
-    '  --check          prefijo ERROR:, exit 1 si hay violations (parte 3)',
+    '  --report-only    avisos con prefijo AVISO:, exit 0 siempre (auditar sin bloquear)',
+    '  --check          prefijo ERROR:, exit 1 si hay violations (modo del wiring)',
     '',
     'opciones:',
     '  --json           solo con --report: emite el inventario como JSON',
@@ -948,9 +962,9 @@ function main(argv = process.argv.slice(2)) {
 
     if (!enforce) {
         out('');
-        out('AVISO: modo report-only — NO bloquea el commit ni el build. El flip a `--check`');
-        out('       va en la parte 3 de #5109, con las violations en cero. No "corregir" esto');
-        out('       a --check antes de esa migracion (R5).');
+        out('AVISO: modo report-only — NO bloquea el commit ni el build. El wiring real');
+        out('       (CI + hook pre-commit) corre en `--check` desde #5179: alla estas');
+        out('       violations SI bloquean. Usa este modo para auditar, no para saltear.');
         process.exit(0);
     }
     process.exit(1);

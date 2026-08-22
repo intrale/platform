@@ -1,0 +1,20 @@
+name: Runtime state guard
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-state-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Bloquear estado runtime en el diff
+        run: >-
+          node .pipeline/lib/precommit-secret-scan.js --range
+          "${{ github.event.pull_request.base.sha }}"
+          "${{ github.event.pull_request.head.sha }}"
