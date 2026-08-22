@@ -661,8 +661,11 @@ multi_provider:
     min_contribution_rate: 0.05
     # Días sin un solo aporte real tras los cuales queda marcado como candidato.
     max_days_without_win: 14
-    # Proveedores sanos que deben sobrevivir SIEMPRE. Si marcar candidatos
-    # dejaría menos que esto, no se marca a ninguno (invariante 2).
+    # Proveedores NO PAGOS sanos que deben sobrevivir SIEMPRE. Si marcar
+    # candidatos dejaría menos que esto, no se marca a ninguno (invariante 2).
+    # Los pagos NO cuentan: son `mantener` por construcción (invariante 3) y
+    # satisfarían este umbral de forma vacua, dejando que el criterio vacíe la
+    # cadena de gratuitos entera de un saque.
     min_survivors: 1
 
   quota_alert:

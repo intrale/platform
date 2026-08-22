@@ -129,11 +129,52 @@ test('sin dato en la ventana no equivale a no aporta', () => {
 // -----------------------------------------------------------------------------
 
 test('un gateo durable por cli_license_unavailable no baja la tasa de aporte', () => {
+    // rev-2 (#6145) — el review probó que este test NO asertaba lo que su nombre
+    // promete: verificaba `contributionRate < 0.05`, o sea que la tasa SÍ bajaba.
+    // El body del issue es explícito: "un gateo durable por observabilidad NO baja
+    // la tasa de aporte: va a la columna bloqueo_observabilidad". Ahora el gateo
+    // por causa NUESTRA queda fuera del denominador y el test asserta el número.
     const entries = [
         ...many(300, 'fallback_selected', 'cerebras'),   // sostiene la cadena
-        // gemini: 10 aportes sobre 1010 evaluables => 0,99% (bajo el 5%),
-        // pero el bloqueo dominante es un flag de entorno NUESTRO.
-        ...many(10, 'fallback_selected', 'gemini-google'),
+        // gemini: 120 aportes + 30 bloqueos imputables al proveedor => 150
+        // evaluables reales, 80 % de tasa. Los 1.000 gateos por un flag de
+        // entorno NUESTRO no entran al denominador.
+        ...many(120, 'fallback_selected', 'gemini-google'),
+        ...many(30, 'fallback_provider_disabled', 'gemini-google'),
+        ...many(1000, 'fallback_health_gated', 'gemini-google', {
+            health_state: 'red',
+            health_reason: 'cli_license_unavailable',
+        }),
+    ];
+    const { metrics, verdicts } = evaluate(entries);
+    const g = metrics['gemini-google'];
+
+    // Lo que el nombre promete, asertado de verdad:
+    assert.strictEqual(g.gatedByLocalObservability, 1000, 'los gateos propios se cuentan aparte');
+    assert.strictEqual(g.evaluables, 150, 'el denominador excluye el gateo por causa nuestra');
+    assert.strictEqual(g.contributionRate, 120 / 150);
+    assert.ok(
+        g.contributionRate >= THRESHOLDS.min_contribution_rate,
+        'la tasa NO baja del umbral: el gateo propio no se le imputa al proveedor',
+    );
+    // Contraste explícito: con el gateo dentro del denominador la tasa habría
+    // sido 120/1150 = 10,4 %, muy por debajo de la real.
+    assert.ok(120 / 1150 < g.contributionRate, 'incluir el gateo propio deprimiría la tasa');
+
+    assert.strictEqual(g.dominantBlock, 'observabilidad_local', 'la columna propia se mantiene');
+    assert.strictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.MANTENER);
+    assert.notStrictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.CANDIDATO_BAJA);
+});
+
+test('el techo rol_acotado sigue tapando la baja si aun asi la tasa queda baja', () => {
+    // Segunda línea de defensa del riesgo 3: aunque el gateo propio ya no entra
+    // al denominador, si el proveedor igual rinde poco Y su bloqueo dominante es
+    // de causa nuestra, el veredicto se topa en `rol_acotado`. Nunca se propone
+    // la baja sin corregir antes el chequeo.
+    const entries = [
+        ...many(300, 'fallback_selected', 'cerebras'),   // sostiene la cadena
+        ...many(2, 'fallback_selected', 'gemini-google'),
+        ...many(200, 'fallback_provider_disabled', 'gemini-google'),
         ...many(1000, 'fallback_health_gated', 'gemini-google', {
             health_state: 'red',
             health_reason: 'cli_license_unavailable',
@@ -141,14 +182,13 @@ test('un gateo durable por cli_license_unavailable no baja la tasa de aporte', (
     ];
     const { metrics, verdicts } = evaluate(entries);
 
-    assert.ok(metrics['gemini-google'].contributionRate < 0.05, 'la tasa cruda sí está por debajo del umbral');
+    assert.ok(metrics['gemini-google'].contributionRate < 0.05, 'la tasa sí quedó baja');
     assert.strictEqual(metrics['gemini-google'].dominantBlock, 'observabilidad_local');
     assert.strictEqual(
         verdicts['gemini-google'].verdict,
         mod.VERDICT.ROL_ACOTADO,
         'techo rol_acotado: no se propone la baja sin corregir antes el chequeo',
     );
-    assert.notStrictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.CANDIDATO_BAJA);
 });
 
 test('un bloqueo por causa del proveedor si habilita el candidato a baja', () => {
@@ -237,6 +277,151 @@ test('nunca marca candidato al ultimo proveedor sano de la cadena', () => {
     assert.match(verdicts.cerebras.reasons.join(' '), /invariante de cadena minima/);
 });
 
+// -----------------------------------------------------------------------------
+// rev-2 (#6145) — BLOQUEANTE 1 del review: el invariante de cadena mínima
+// tiene que proteger a la cadena que el criterio PUEDE tocar (los gratuitos).
+// Estos tests usan el `declared` REAL de producción, no un sintético de uno.
+// -----------------------------------------------------------------------------
+
+test('el invariante de cadena minima no lo satisfacen los pagos de forma vacua', () => {
+    // Configuración EXACTA de producción: 2 pagos + 3 gratuitos. Los 3 gratuitos
+    // por debajo del umbral. En rev-1 los 2 pagos contaban como "sobrevivientes"
+    // (son `mantener` por construcción), el contador nunca bajaba de
+    // min_survivors=1 y el criterio proponía vaciar la cadena de gratuitos
+    // ENTERA de una sola vez: el incidente del 19/08 auto-infligido.
+    const entries = [
+        // gemini: 5 aportes sobre 505 evaluables, bloqueo imputable al proveedor.
+        ...many(5, 'fallback_selected', 'gemini-google'),
+        ...many(500, 'fallback_health_gated', 'gemini-google', {
+            health_state: 'red', health_reason: 'quota_exhausted',
+        }),
+        ...many(5, 'fallback_selected', 'cerebras'),
+        ...many(500, 'fallback_provider_disabled', 'cerebras'),
+        ...many(5, 'fallback_selected', 'nvidia-nim'),
+        ...many(500, 'fallback_provider_disabled', 'nvidia-nim'),
+        // Los pagos, con muestra de sobra y aporte alto.
+        ...many(500, 'fallback_selected', 'anthropic'),
+        ...many(500, 'fallback_selected', 'openai-codex'),
+    ];
+    const { metrics, verdicts } = evaluate(entries);
+
+    for (const free of ['gemini-google', 'cerebras', 'nvidia-nim']) {
+        assert.ok(metrics[free].contributionRate < 0.05, `${free}: la tasa cruda justifica el candidato`);
+        assert.strictEqual(
+            verdicts[free].verdict,
+            mod.VERDICT.ROL_ACOTADO,
+            `${free}: el invariante lo revierte, no se marca`,
+        );
+        assert.strictEqual(verdicts[free].chainInvariantApplied, true);
+        assert.match(verdicts[free].reasons.join(' '), /invariante de cadena minima/);
+    }
+
+    const candidatos = Object.values(verdicts).filter((v) => v.verdict === mod.VERDICT.CANDIDATO_BAJA);
+    assert.deepStrictEqual(candidatos, [], 'NINGÚN candidato: la cadena de gratuitos no se vacía');
+
+    // Y los pagos siguen intactos, sin poder acreditarse la supervivencia.
+    assert.strictEqual(verdicts.anthropic.verdict, mod.VERDICT.MANTENER);
+    assert.strictEqual(verdicts['openai-codex'].verdict, mod.VERDICT.MANTENER);
+    assert.strictEqual(verdicts.anthropic.chainInvariantApplied, undefined);
+});
+
+test('con gratuitos sanos de sobra el criterio si marca al que no aporta', () => {
+    // Contracara del test anterior: sin este, el invariante podría estar
+    // bloqueando SIEMPRE y el criterio no marcaría nunca a nadie (CA-6 vacío).
+    const entries = [
+        ...many(500, 'fallback_selected', 'gemini-google'),   // aporta
+        ...many(500, 'fallback_selected', 'cerebras'),        // aporta
+        ...many(5, 'fallback_selected', 'nvidia-nim'),        // no aporta
+        ...many(500, 'fallback_provider_disabled', 'nvidia-nim'),
+        ...many(500, 'fallback_selected', 'anthropic'),
+        ...many(500, 'fallback_selected', 'openai-codex'),
+    ];
+    const { verdicts } = evaluate(entries);
+
+    assert.strictEqual(verdicts['gemini-google'].verdict, mod.VERDICT.MANTENER);
+    assert.strictEqual(verdicts.cerebras.verdict, mod.VERDICT.MANTENER);
+    assert.strictEqual(
+        verdicts['nvidia-nim'].verdict,
+        mod.VERDICT.CANDIDATO_BAJA,
+        'quedan 2 gratuitos sanos: el invariante no aplica y el criterio marca',
+    );
+    assert.strictEqual(verdicts['nvidia-nim'].chainInvariantApplied, undefined);
+});
+
+test('min_survivors alto exige mas gratuitos sanos antes de marcar a nadie', () => {
+    // Mismo escenario que el anterior pero pidiendo 3 sobrevivientes gratuitos:
+    // sólo hay 2, así que el candidato se revierte.
+    const entries = [
+        ...many(500, 'fallback_selected', 'gemini-google'),
+        ...many(500, 'fallback_selected', 'cerebras'),
+        ...many(5, 'fallback_selected', 'nvidia-nim'),
+        ...many(500, 'fallback_provider_disabled', 'nvidia-nim'),
+        ...many(500, 'fallback_selected', 'anthropic'),
+        ...many(500, 'fallback_selected', 'openai-codex'),
+    ];
+    const { verdicts } = evaluate(entries, { thresholds: { ...THRESHOLDS, min_survivors: 3 } });
+
+    assert.strictEqual(verdicts['nvidia-nim'].verdict, mod.VERDICT.ROL_ACOTADO);
+    assert.strictEqual(verdicts['nvidia-nim'].chainInvariantApplied, true);
+});
+
+// -----------------------------------------------------------------------------
+// rev-2 (#6145) — taxonomía completa de eventos
+// -----------------------------------------------------------------------------
+
+test('el kill-switch del operador no le baja la tasa de aporte al proveedor', () => {
+    // `provider_disabled` es una decisión NUESTRA (kill-switch #3811), igual que
+    // la ventana horaria. Contarlo en el denominador mediría al operador.
+    const entries = [
+        ...many(300, 'fallback_selected', 'cerebras'),
+        ...many(100, 'fallback_selected', 'nvidia-nim'),
+        ...many(900, 'provider_disabled', 'x', { primary_provider: 'nvidia-nim' }),
+    ];
+    const m = mod.computeContribution(entries, { now: NOW })['nvidia-nim'];
+
+    assert.strictEqual(m.gatedByOperator, 900, 'se cuenta aparte, imputado al primario');
+    assert.strictEqual(m.evaluables, 100, 'fuera del denominador');
+    assert.strictEqual(m.contributionRate, 1);
+    assert.strictEqual(m.attempts, 1000, 'pero sigue visible en los intentos totales');
+});
+
+test('el costo de failover reconcilia con las entradas leidas, sin eventos huerfanos', () => {
+    // rev-2: el review encontró 261 eventos que quedaban FUERA del total y por lo
+    // tanto fuera de los porcentajes, sin que el reporte lo mencionara.
+    const entries = [
+        ...many(10, 'fallback_selected', 'cerebras'),
+        ...many(5, 'primary_inactive_by_schedule', 'x', { primary_provider: 'anthropic' }),
+        ...many(3, 'gated_no_fallbacks', 'x', { primary_provider: 'anthropic' }),
+        ...many(2, 'provider_disabled', 'x', { primary_provider: 'anthropic' }),
+        ...many(7, 'evento_del_futuro_que_nadie_declaro', 'cerebras'),
+    ];
+    const fc = mod.computeFailoverCost(entries);
+
+    assert.strictEqual(fc.totalEvents, 27, 'el total cuenta TODAS las entradas leídas');
+    assert.strictEqual(fc.unclassified.events, 7);
+    assert.deepStrictEqual({ ...fc.unclassified.byEvent }, { evento_del_futuro_que_nadie_declaro: 7 });
+    assert.strictEqual(fc.operatorGating.events, 2);
+    assert.strictEqual(fc.chainExhausted.events, 3, 'gated_no_fallbacks es evento de cadena');
+    assert.strictEqual(fc.reconciles, true, 'los buckets cierran contra el total');
+});
+
+test('una ventana vacia se reporta como sin datos, nunca como cadena rota', () => {
+    // rev-2: con 0 archivos el reporte decía "la cadena de hash no verificó
+    // (0 archivo/s con integridad rota)" — una frase autocontradictoria.
+    const declared = { cerebras: { billing: 'free', declaredInConfig: true } };
+    const verdicts = mod.evaluatePermanence({}, THRESHOLDS, {
+        chainOk: false, noData: true, declared, now: NOW,
+    });
+    assert.strictEqual(verdicts.cerebras.verdict, mod.VERDICT.NO_EVALUABLE);
+    assert.match(verdicts.cerebras.reasons.join(' '), /sin datos en la ventana/);
+    assert.ok(!verdicts.cerebras.reasons.join(' ').includes('rota'), 'no habla de corrupción');
+
+    const rota = mod.evaluatePermanence({}, THRESHOLDS, {
+        chainOk: false, noData: false, declared, now: NOW,
+    });
+    assert.match(rota.cerebras.reasons.join(' '), /cadena de hash rota/);
+});
+
 test('un proveedor pago nunca es candidato a baja', () => {
     const entries = [
         ...many(300, 'fallback_selected', 'cerebras'),
@@ -320,6 +505,7 @@ test('el reparto por rol separa lo conversacional de los agentes del pipeline', 
 test('la latencia no instrumentada se declara, nunca se inventa ni se estima', () => {
     const entries = many(10, 'fallback_selected', 'gemini-google');
     const healthSnapshot = {
+        ts: '2026-08-19T11:41:13.000Z',
         providers: [
             { provider: 'gemini-google', state: 'red', reason_code: 'cli_license_unavailable', latency_ms: null },
             { provider: 'cerebras', state: 'green', reason_code: 'authenticated', latency_ms: 674 },
@@ -330,10 +516,29 @@ test('la latencia no instrumentada se declara, nunca se inventa ni se estima', (
         { now: NOW, healthSnapshot },
     );
 
-    assert.strictEqual(metrics['gemini-google'].latencyMs, null);
-    assert.strictEqual(metrics['gemini-google'].latencyReason, mod.ABSENCE.NO_INSTRUMENTADO);
-    assert.strictEqual(metrics.cerebras.latencyMs, 674);
-    assert.strictEqual(metrics.cerebras.latencyReason, null);
+    assert.strictEqual(metrics['gemini-google'].lastPingMs, null);
+    assert.strictEqual(metrics['gemini-google'].lastPingReason, mod.ABSENCE.NO_INSTRUMENTADO);
+    assert.strictEqual(metrics.cerebras.lastPingMs, 674);
+    assert.strictEqual(metrics.cerebras.lastPingReason, null);
+    assert.strictEqual(metrics.cerebras.lastPingAt, '2026-08-19T11:41:13.000Z', 'el dato viaja fechado');
+});
+
+test('la columna de latencia se llama ultimo live-ping y no mediana', () => {
+    // rev-2 (#6145) — BLOQUEANTE 2 del review. `health.latency_ms` es UN ping
+    // puntual, no un agregado de la ventana: el review midió 15,9 s / 2,3 s /
+    // 1,26 s para el mismo proveedor el mismo día. Rotularlo "latencia mediana"
+    // era una afirmación falsa sobre el dato — y el doc apoyaba una
+    // recomendación en él. El rótulo ahora dice lo que el dato es.
+    const healthSnapshot = {
+        ts: '2026-08-19T11:41:13.000Z',
+        providers: [{ provider: 'cerebras', state: 'green', reason_code: 'authenticated', latency_ms: 674 }],
+    };
+    const metrics = mod.computeContribution(many(10, 'fallback_selected', 'cerebras'), { now: NOW, healthSnapshot });
+    const header = mod.renderMarkdownTable(metrics, {}).split('\n')[0];
+
+    assert.ok(header.includes('Último live-ping'), 'la columna se llama por lo que es');
+    assert.ok(header.includes('no es mediana'), 'y aclara explícitamente que no es una mediana');
+    assert.ok(!/Latencia mediana/i.test(header), 'el rótulo falso de rev-1 ya no está');
 });
 
 test('la tabla no usa guiones ni ceros para representar ausencia de medicion', () => {
@@ -423,14 +628,20 @@ test('el reporte no copia raw_excerpt ni texto de prompts', () => {
             chain_tried: ['anthropic', 'cerebras'],
             issue: '6145',
         }),
-    ].map((e) => mod.projectEntry(e));
+    ];
 
-    for (const e of entries) {
+    // rev-2 (#6145) — el review probó que este test era tautológico: pre-proyectaba
+    // las entradas ANTES de alimentar el reporte, así que los asserts sobre el
+    // serializado no probaban nada (el secreto ya se había removido). Ahora el
+    // camino es el REAL: entradas CRUDAS, con `raw_excerpt`, directo a
+    // computeContribution / renderMarkdownTable.
+    for (const e of entries.map((x) => mod.projectEntry(x))) {
         assert.ok(!('raw_excerpt' in e), 'raw_excerpt no cruza la whitelist');
         assert.ok(!('chain_tried' in e), 'chain_tried no cruza la whitelist');
         assert.ok(!('issue' in e), 'issue no cruza la whitelist');
     }
 
+    assert.ok(entries.some((e) => e.raw_excerpt === SECRETO), 'las entradas de entrada SÍ traen el secreto');
     const metrics = mod.computeContribution(entries, { now: NOW });
     const verdicts = mod.evaluatePermanence(metrics, THRESHOLDS, { chainOk: true, declared: DECLARED, now: NOW });
     const serialized = JSON.stringify({ metrics, verdicts, table: mod.renderMarkdownTable(metrics, { verdicts }) });

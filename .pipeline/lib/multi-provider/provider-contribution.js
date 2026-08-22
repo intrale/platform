@@ -33,8 +33,10 @@
 //    cadena de hash rota.
 // 5. EL CRITERIO MARCA CANDIDATOS; NUNCA EJECUTA LA BAJA (REQ-SEC-3). La baja
 //    efectiva es un PR de configuracion trazable, en issue posterior.
-// 6. NUNCA VACIA LA CADENA. Si el criterio dejara la cadena sin ningun
-//    proveedor sobreviviente, no marca a nadie.
+// 6. NUNCA VACIA LA CADENA. Si el criterio dejara sin ningun sobreviviente a
+//    la cadena que PUEDE tocar (la de los NO pagos), no marca a nadie. Los
+//    pagos no cuentan como sobrevivientes: son `mantener` por construccion y
+//    satisfarian el invariante de forma vacua (rev-2, BLOQUEANTE 1 del review).
 // 7. NUNCA MARCA A UN PROVEEDOR PAGO por metrica automatica.
 //
 // El modulo es PURO: todas las dependencias entran por parametro (`fsImpl`,
@@ -84,7 +86,17 @@ const ENTRY_FIELD_WHITELIST = Object.freeze([
  *              denominador y se imputa a una familia de bloqueo.
  *   schedule — gateo por ventana horaria. EXCLUIDO del denominador: es el 50,7%
  *              de los eventos y mide la politica de horarios, no al proveedor.
+ *   operativo— salto por decision del operador (kill-switch #3811). EXCLUIDO
+ *              del denominador por la misma razon que `schedule`: mide una
+ *              politica nuestra, no al proveedor.
  *   chain    — evento de cadena, no imputable a ningun proveedor individual.
+ *
+ * rev-2 (#6145): la taxonomia estaba INCOMPLETA. Sobre los 89 archivos diarios
+ * del log real quedaban fuera `gated_no_fallbacks` (261), `provider_disabled`
+ * (222) y `forced_provider_override` (2) — el hueco que el review detecto entre
+ * `entriesRead` y `failoverCost.totalEvents`. Ahora estan clasificados, y
+ * `computeFailoverCost` ademas reconcilia cualquier evento futuro en el bucket
+ * `unclassified`: el total SIEMPRE cierra contra las entradas leidas.
  */
 const EVENT_KIND = Object.freeze({
     fallback_selected: 'win',
@@ -96,6 +108,18 @@ const EVENT_KIND = Object.freeze({
     primary_inactive_by_schedule: 'schedule',
     fallback_also_gated: 'schedule',
     fallback_provider_inactive_by_schedule: 'schedule',
+    // --- rev-2: eventos reales que faltaban en la taxonomia ------------------
+    // Kill-switch operacional del primario (`dispatch-with-fallback.js:1372`).
+    // Lo imputa el OPERADOR, no el proveedor => fuera del denominador.
+    provider_disabled: 'operativo',
+    // Cadena sin fallbacks declarados (`dispatch-with-fallback.js:1539`): es un
+    // evento de cadena, no imputable a un proveedor individual.
+    gated_no_fallbacks: 'chain',
+    // Forzado manual del smoke-test (`dispatch-with-fallback.js:1238`, :1178,
+    // :1202). No es aporte ni bloqueo del proveedor.
+    forced_provider_override: 'chain',
+    forced_provider_override_ignored: 'chain',
+    forced_provider_override_invalid_provider: 'chain',
 });
 
 /**
@@ -162,7 +186,12 @@ const ABSENCE = Object.freeze({
     NO_INSTRUMENTADO: 'sin instrumentar (#6152)',
     SIN_MUESTRA: 'sin muestra',
     SIN_DECLARAR: 'sin declarar (#6153)',
-    CADENA_ROTA: 'cadena rota',
+    // rev-2 (#6145): `CADENA_ROTA` estaba declarada y no se usaba, y el reporte
+    // decia "la cadena de hash no verifico (0 archivo/s con integridad rota)"
+    // cuando la ventana estaba VACIA. "Sin datos" y "cadena rota" son dos cosas
+    // distintas y ahora tienen literal propio y camino propio.
+    CADENA_ROTA: 'cadena de hash rota',
+    SIN_DATOS: 'sin datos en la ventana',
 });
 
 /** Defaults del criterio de permanencia (CA-6). Config los sobreescribe. */
@@ -226,9 +255,15 @@ function projectEntry(entry) {
 }
 
 /** Proveedor al que se imputa el evento (o null si no es imputable). */
+const PRIMARY_ATTRIBUTED_EVENTS = Object.freeze(new Set([
+    'primary_inactive_by_schedule',
+    // rev-2: el kill-switch nombra al primario, no trae `fallback_provider`.
+    'provider_disabled',
+]));
+
 function providerOf(entry) {
     if (!entry) return null;
-    if (entry.event === 'primary_inactive_by_schedule') {
+    if (PRIMARY_ATTRIBUTED_EVENTS.has(entry.event)) {
         return typeof entry.primary_provider === 'string' ? entry.primary_provider : null;
     }
     return typeof entry.fallback_provider === 'string' ? entry.fallback_provider : null;
@@ -355,7 +390,15 @@ function readWindow(opts = {}) {
     return {
         entries,
         integrity: {
+            // rev-2 (#6145): `chainOk:false` con `filesChecked:0` hacia que el
+            // reporte dijera "la cadena no verifico (0 archivo/s con integridad
+            // rota)" — una frase autocontradictoria. `noData` separa los dos
+            // casos: NO HAY VENTANA (nada que verificar) vs LA VENTANA MIENTE.
+            // Los dos frenan la decision, pero por razones distintas y con
+            // mensajes distintos.
             chainOk: brokenFiles.length === 0 && files.length > 0,
+            noData: files.length === 0,
+            chainBroken: brokenFiles.length > 0,
             filesChecked: files.length,
             brokenFiles,
             entriesRead: entries.length,
@@ -372,8 +415,14 @@ function readWindow(opts = {}) {
 /**
  * Agrega las entradas por proveedor.
  *
- * INVARIANTE DEL DENOMINADOR (riesgo 2 del body, confirmado por `guru`):
- *   evaluables = attempts - gatedBySchedule
+ * INVARIANTE DEL DENOMINADOR (riesgo 2 y 3 del body, confirmado por `guru`):
+ *   evaluables = attempts - gatedBySchedule - gatedByOperator
+ *                        - gatedByLocalObservability
+ *
+ * Los tres descuentos son causas NUESTRAS, no del proveedor: la ventana
+ * horaria, el kill-switch del operador y un chequeo de salud que se pone rojo
+ * por un flag de entorno propio. Ninguna puede bajarle la tasa de aporte a un
+ * proveedor (rev-2 #6145).
  * El 50,7% de los eventos de la ventana real es gateo por ventana horaria.
  * Incluirlo mide la politica de horarios, no al proveedor.
  *
@@ -391,6 +440,8 @@ function computeContribution(entries, opts = {}) {
                 provider: name,
                 attempts: 0,
                 gatedBySchedule: 0,
+                gatedByOperator: 0,
+                gatedByLocalObservability: 0,
                 evaluables: 0,
                 wins: 0,
                 contributionRate: null,
@@ -402,8 +453,9 @@ function computeContribution(entries, opts = {}) {
                 lastSeenAt: null,
                 roleWins: { conversacional: 0, pipeline: 0 },
                 roleSplitPct: null,
-                latencyMs: null,
-                latencyReason: ABSENCE.NO_INSTRUMENTADO,
+                lastPingMs: null,
+                lastPingAt: null,
+                lastPingReason: ABSENCE.NO_INSTRUMENTADO,
                 skills: Object.create(null),
             };
         }
@@ -428,6 +480,37 @@ function computeContribution(entries, opts = {}) {
             m.gatedBySchedule += 1;
             continue;                                  // fuera del denominador
         }
+        if (kind === 'operativo') {
+            // Kill-switch del operador: misma clase que el gateo horario.
+            m.gatedByOperator += 1;
+            continue;                                  // fuera del denominador
+        }
+
+        // ---------------------------------------------------------------------
+        // rev-2 (#6145) — INVARIANTE 3 DEL BODY, ahora en el DENOMINADOR.
+        //
+        // "Un gateo durable por observabilidad (p.ej. `cli_license_unavailable`,
+        //  que es un flag de env, no un veredicto del proveedor) NO baja la tasa
+        //  de aporte: va a la columna `bloqueo_observabilidad`."
+        //
+        // Hasta rev-1 el gateo por causa NUESTRA si entraba en `evaluables` y
+        // solo se compensaba a nivel veredicto (techo `rol_acotado`). Es decir:
+        // la tasa SI bajaba, contra lo que manda el body. Se excluye del
+        // denominador y se contabiliza en su columna propia; el techo
+        // `rol_acotado` se mantiene como segunda linea de defensa.
+        // ---------------------------------------------------------------------
+        const localObservabilityGate = kind === 'block'
+            && entry.event === 'fallback_health_gated'
+            && blockFamilyForHealthReason(entry.health_reason) === 'observabilidad_local';
+        if (localObservabilityGate) {
+            m.gatedByLocalObservability += 1;
+            m.blocks.observabilidad_local = (m.blocks.observabilidad_local || 0) + 1;
+            if (entry.health_reason) {
+                m.healthReasons[entry.health_reason] = (m.healthReasons[entry.health_reason] || 0) + 1;
+            }
+            continue;                                  // fuera del denominador
+        }
+
         m.evaluables += 1;
 
         if (kind === 'win') {
@@ -458,16 +541,33 @@ function computeContribution(entries, opts = {}) {
         const health = healthByProvider[HEALTH_PROVIDER_ALIAS[m.provider] || m.provider]
             || healthByProvider[m.provider]
             || null;
+        // ---------------------------------------------------------------------
+        // rev-2 (#6145) — ESTO NO ES UNA MEDIANA, Y AHORA SE LLAMA COMO ES.
+        //
+        // CA-1 pide "latencia mediana sobre una ventana de al menos 30 dias".
+        // El log de dispatch NO trae latencia por invocacion: la unica fuente es
+        // `state/multi-provider-health.json`, que guarda el resultado de UN
+        // live-ping puntual (el ultimo). Rotularlo "latencia mediana" fue un
+        // error de rev-1: el review midio 15,9 s -> 2,3 s -> 1,26 s para
+        // nvidia-nim en tres observaciones del mismo dia.
+        //
+        // Decision (rebote rev-2): NO se estima una mediana que no existe — el
+        // body prohibe inventar el numero — se reporta lo que hay con su nombre
+        // real (`ultimo live-ping`), su fecha y la advertencia de volatilidad.
+        // La mediana real requiere instrumentar latencia por invocacion: #6152.
+        // Ningun veredicto ni recomendacion se apoya en este numero.
+        // ---------------------------------------------------------------------
         if (health && Number.isFinite(health.latency_ms)) {
-            m.latencyMs = health.latency_ms;
-            m.latencyReason = null;
+            m.lastPingMs = health.latency_ms;
+            m.lastPingAt = health.ts || (opts.healthSnapshot && opts.healthSnapshot.ts) || null;
+            m.lastPingReason = null;
         } else {
-            // CA-1 / prohibicion explicita del PO: NO inventar el numero ni
-            // derivarlo de `duration_ms` del activity-log (wall-clock del
-            // agente, p50 ~602s). Los proveedores CLI-OAuth no estan
-            // instrumentados — se dice, no se estima.
-            m.latencyMs = null;
-            m.latencyReason = ABSENCE.NO_INSTRUMENTADO;
+            // Los proveedores CLI-OAuth no estan instrumentados — se dice, no se
+            // estima. Prohibido derivarlo de `duration_ms` del activity-log
+            // (wall-clock del agente, p50 ~602s).
+            m.lastPingMs = null;
+            m.lastPingAt = null;
+            m.lastPingReason = ABSENCE.NO_INSTRUMENTADO;
         }
         m.healthState = health ? (health.state || null) : null;
         m.healthReasonCode = health ? (health.reason_code || null) : null;
@@ -547,9 +647,16 @@ function evaluatePermanence(metrics, thresholds, chainCtx = {}) {
                     : 'ausente de agent-models.json y de config.yaml (#6153)',
             );
         } else if (!chainOk) {
-            // REQ-SEC-2 — integridad rota: no se decide sobre NADIE.
+            // REQ-SEC-2 — integridad rota o ventana vacia: no se decide sobre
+            // NADIE. rev-2: el motivo distingue los dos casos en vez de
+            // fusionarlos en una frase que suena a corrupcion cuando en realidad
+            // no hay un solo archivo que leer.
             verdict = VERDICT.NO_EVALUABLE;
-            reasons.push('cadena de hash rota o ventana sin archivos verificables');
+            reasons.push(
+                chainCtx.noData === true
+                    ? `${ABSENCE.SIN_DATOS}: no hay archivos de dispatch que verificar`
+                    : `${ABSENCE.CADENA_ROTA}: la ventana no es confiable para decidir`,
+            );
         } else if (def.billing === 'paid') {
             // REQ-SEC-3 — un proveedor pago nunca sale por metrica automatica.
             // El chequeo va ANTES del de muestra: el criterio no aplica a los
@@ -630,16 +737,37 @@ function evaluatePermanence(metrics, thresholds, chainCtx = {}) {
 
     // -------------------------------------------------------------------------
     // INVARIANTE FINAL (REQ-SEC-3): el criterio NUNCA vacia la cadena.
-    // Si tras marcar candidatos no queda ningun proveedor sobreviviente entre
-    // los declarados, se revierten TODOS los candidatos a `rol_acotado`: el
-    // criterio no marca nada antes que reproducir el incidente del 19/08 de
-    // forma auto-infligida y permanente.
+    //
+    // rev-2 (#6145) — BLOQUEANTE 1 DEL REVIEW. Hasta rev-1 los "sobrevivientes"
+    // se contaban sobre TODOS los declarados. Como un proveedor pago es
+    // `mantener` POR CONSTRUCCION (se excluye del criterio antes que cualquier
+    // otro chequeo, unas lineas mas arriba), los 2 pagos satisfacian el
+    // invariante de forma VACUA: el contador nunca bajaba de `min_survivors` y
+    // el guard no se disparaba NUNCA para los gratuitos. Con el `declared` real
+    // de produccion (anthropic + openai-codex pagos; gemini-google + cerebras +
+    // nvidia-nim gratuitos) el criterio proponia vaciar la cadena de gratuitos
+    // entera de una sola vez, sin que el invariante interviniera.
+    //
+    // Eso es exactamente el incidente del 19/08 que motiva el issue, pero
+    // auto-infligido y permanente: los dos proveedores que "sostenian" el
+    // invariante son justamente los que estaban caidos ese dia (Anthropic
+    // apagado por horario, OpenAI sin cupo).
+    //
+    // CORRECCION: los sobrevivientes se cuentan SOLO entre los proveedores que
+    // el criterio PUEDE marcar — los no-pagos. Un proveedor que el criterio no
+    // puede tocar no puede acreditarse la supervivencia de la cadena.
+    //
+    // `no_evaluable` y `sin_declarar` NO cuentan como sobrevivientes: el
+    // invariante se apoya solo en proveedores de los que SI sabemos que estan
+    // aportando (`mantener`) o que se conservan a proposito (`rol_acotado`).
+    // Es la direccion conservadora: ante duda, no se marca a nadie.
     // -------------------------------------------------------------------------
     const declaredVerdicts = Object.values(out).filter((v) => v.declared);
-    const survivors = declaredVerdicts.filter(
+    const markable = declaredVerdicts.filter((v) => v.billing !== 'paid');
+    const survivors = markable.filter(
         (v) => v.verdict === VERDICT.MANTENER || v.verdict === VERDICT.ROL_ACOTADO,
     );
-    const candidates = declaredVerdicts.filter((v) => v.verdict === VERDICT.CANDIDATO_BAJA);
+    const candidates = markable.filter((v) => v.verdict === VERDICT.CANDIDATO_BAJA);
 
     const minSurvivors = Number.isFinite(t.min_survivors) ? t.min_survivors : 1;
     if (candidates.length > 0 && survivors.length < minSurvivors) {
@@ -647,8 +775,10 @@ function evaluatePermanence(metrics, thresholds, chainCtx = {}) {
             c.verdict = VERDICT.ROL_ACOTADO;
             c.verdictLabel = VERDICT_LABEL[VERDICT.ROL_ACOTADO];
             c.reasons.push(
-                'invariante de cadena minima: marcarlo dejaria la cadena sin proveedores sanos '
-                + `(sobrevivientes=${survivors.length} < min_survivors=${minSurvivors}) — no se marca`,
+                'invariante de cadena minima: marcarlo dejaria sin proveedores sanos a la cadena '
+                + 'que el criterio puede tocar (los NO pagos; un pago es `mantener` por '
+                + `construccion y no cuenta) — sobrevivientes=${survivors.length} < `
+                + `min_survivors=${minSurvivors}, no se marca`,
             );
             c.chainInvariantApplied = true;
         }
@@ -671,13 +801,13 @@ function fmtRate(rate) {
     return `${(rate * 100).toFixed(1).replace('.', ',')} %`;
 }
 
-function fmtLatency(m) {
-    if (Number.isFinite(m.latencyMs)) {
-        return m.latencyMs >= 1000
-            ? `${(m.latencyMs / 1000).toFixed(1).replace('.', ',')} s`
-            : `${m.latencyMs} ms`;
+function fmtLastPing(m) {
+    if (Number.isFinite(m.lastPingMs)) {
+        return m.lastPingMs >= 1000
+            ? `${(m.lastPingMs / 1000).toFixed(1).replace('.', ',')} s`
+            : `${m.lastPingMs} ms`;
     }
-    return m.latencyReason || ABSENCE.NO_INSTRUMENTADO;
+    return m.lastPingReason || ABSENCE.NO_INSTRUMENTADO;
 }
 
 function fmtInstant(ms) {
@@ -739,7 +869,7 @@ function renderMarkdownTable(metrics, opts = {}) {
     }
 
     const head = [
-        '| Proveedor | Intentos evaluables | Aportes | Tasa | Latencia mediana '
+        '| Proveedor | Intentos evaluables | Aportes | Tasa | Último live-ping (no es mediana) '
         + '| Bloqueo dominante | Último aporte | Rol (conversacional / pipeline) | Recomendación |',
         '|---|---:|---:|---:|---|---|---|---|---|',
     ].join('\n');
@@ -755,7 +885,7 @@ function renderMarkdownTable(metrics, opts = {}) {
         fmtInt(m.evaluables),
         fmtInt(m.wins),
         fmtRate(m.contributionRate),
-        fmtLatency(m),
+        fmtLastPing(m),
         fmtBlock(m),
         fmtInstant(m.lastWinAt),
         fmtRole(m),
@@ -772,12 +902,22 @@ function renderMarkdownTable(metrics, opts = {}) {
  */
 function computeFailoverCost(entries) {
     const counts = Object.create(null);
+    // rev-2 (#6145) — el review encontro 261 eventos que quedaban FUERA del
+    // total (`entriesRead` 98.048 vs `totalEvents` 97.787) porque el bucle
+    // salteaba todo evento ausente de la taxonomia. Los porcentajes se
+    // calculaban entonces sobre un denominador que el propio reporte no
+    // declaraba. Ahora `totalEvents` cuenta TODAS las entradas leidas y lo que
+    // no encaja en ninguna familia cae, visible, en `unclassified`.
     let total = 0;
+    const unclassifiedByEvent = Object.create(null);
+    let unclassified = 0;
     for (const e of entries || []) {
-        const kind = EVENT_KIND[e.event];
-        if (!kind) continue;
         total += 1;
         counts[e.event] = (counts[e.event] || 0) + 1;
+        if (!EVENT_KIND[e.event]) {
+            unclassified += 1;
+            unclassifiedByEvent[e.event] = (unclassifiedByEvent[e.event] || 0) + 1;
+        }
     }
     const sum = (...names) => names.reduce((acc, n) => acc + (counts[n] || 0), 0);
 
@@ -786,6 +926,7 @@ function computeFailoverCost(entries) {
         'fallback_also_gated',
         'fallback_provider_inactive_by_schedule',
     );
+    const operator = sum('provider_disabled');
     const providerBlocks = sum(
         'fallback_health_gated',
         'fallback_provider_disabled',
@@ -793,17 +934,28 @@ function computeFailoverCost(entries) {
         'fallback_no_credentials',
     );
     const wins = sum('fallback_selected');
-    const chain = sum('chain_exhausted');
+    const chain = sum(
+        'chain_exhausted',
+        'gated_no_fallbacks',
+        'forced_provider_override',
+        'forced_provider_override_ignored',
+        'forced_provider_override_invalid_provider',
+    );
     const pct = (n) => (total > 0 ? Number(((n / total) * 100).toFixed(1)) : null);
 
-    return {
+    const out = {
         totalEvents: total,
         byEvent: counts,
         scheduleGating: { events: schedule, pct: pct(schedule) },
+        operatorGating: { events: operator, pct: pct(operator) },
         providerBlocking: { events: providerBlocks, pct: pct(providerBlocks) },
         wins: { events: wins, pct: pct(wins) },
         chainExhausted: { events: chain, pct: pct(chain) },
+        unclassified: { events: unclassified, pct: pct(unclassified), byEvent: unclassifiedByEvent },
     };
+    // Contrato explicito: los buckets cierran contra el total, siempre.
+    out.reconciles = (schedule + operator + providerBlocks + wins + chain + unclassified) === total;
+    return out;
 }
 
 module.exports = {

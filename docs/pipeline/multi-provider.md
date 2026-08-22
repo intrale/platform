@@ -2507,7 +2507,7 @@ siempre un PR de configuración trazable.
 
 ```bash
 # Reporte completo para el operador (tabla + conclusión + motivo por proveedor)
-node .pipeline/scripts/provider-contribution-report.js --dias=30
+node .pipeline/scripts/provider-contribution-report.js --dias=30 --hasta=2026-08-21
 
 # Tabla de 4 columnas, para terminales angostas
 node .pipeline/scripts/provider-contribution-report.js --dias=30 --compacto
@@ -2519,11 +2519,25 @@ node .pipeline/scripts/provider-contribution-report.js --dias=30 --json
 node .pipeline/scripts/provider-contribution-report.js --dias=30 --registrar
 ```
 
+> **Fijá `--hasta` si vas a citar los números.** Sin él, `--dias=30` toma la ventana que
+> termina *ahora*: mañana da otra ventana y otros números, y el "comando reproducible" deja
+> de reproducir. La salida del CLI trae la línea `Regenerar:` con todos los flags que
+> afectan el resultado (`--dias`, `--hasta`, `--compacto` y los overrides de umbral) ya
+> armada para copiar.
+
 Con la misma ventana, el comando produce **siempre el mismo veredicto** (test:
 `el mismo comando sobre la misma ventana produce el mismo veredicto`).
 
-Exit codes: `0` reporte emitido · `1` error de IO · `2` ventana sin archivos verificables
+Exit codes: `0` reporte emitido · `1` error explícito — configuración irresoluble o
+argumento inválido, **sin defaults silenciosos** · `2` ventana sin archivos verificables
 (todo queda `no evaluable`, no se decide nada).
+
+**De dónde salen los umbrales, siempre declarado.** El CLI lee `config.yaml` por el lector
+canónico del repo (`lib/config-resolver.js`) e imprime la línea
+`Procedencia de los umbrales: …`. Si la configuración no resuelve, **falla con exit 1**: un
+umbral que decide quién sale de la cadena no puede salir de un `catch`. Si la sección
+`multi_provider.permanence` está ausente (rollout gradual), usa los defaults del módulo
+**y lo dice**.
 
 ### 15.2 Fuente de datos
 
@@ -2544,19 +2558,39 @@ alimentar el criterio; un archivo con la cadena rota se descarta y se reporta.
 | Evento | Cuenta como |
 |---|---|
 | `fallback_selected` | **aporte real** — única señal de que el proveedor resolvió el pedido |
-| `fallback_health_gated` | bloqueo, clasificado según `health_reason` |
+| `fallback_health_gated` con causa de proveedor (`cupo` / `credencial`) | bloqueo, entra al denominador |
+| `fallback_health_gated` con causa `observabilidad local` | **excluido del denominador** — el rojo es nuestro |
 | `fallback_provider_disabled` · `fallback_pacing_budget_red` | bloqueo por `cupo` |
 | `fallback_no_credentials` | bloqueo por `credencial` |
-| `primary_inactive_by_schedule` · `fallback_also_gated` · `fallback_provider_inactive_by_schedule` | **excluidos del denominador** |
-| `chain_exhausted` | evento de cadena, no imputable a ningún proveedor |
+| `primary_inactive_by_schedule` · `fallback_also_gated` · `fallback_provider_inactive_by_schedule` | **excluidos del denominador** — política horaria |
+| `provider_disabled` | **excluido del denominador** — kill-switch del operador (#3811) |
+| `chain_exhausted` · `gated_no_fallbacks` · `forced_provider_override*` | eventos de cadena, no imputables a ningún proveedor |
 
 ```
-evaluables = intentos − gateos por ventana horaria
+evaluables = intentos
+             − gateos por ventana horaria
+             − saltos por kill-switch del operador
+             − gateos de salud por causa nuestra (observabilidad local)
+
 tasa de aporte = aportes / evaluables
 ```
 
-**Por qué se excluye el gating horario:** es el **~50%** de los eventos. Incluirlo mediría
-la política de horarios que nosotros configuramos, no al proveedor.
+**Los tres descuentos comparten una razón:** miden una política o un bug **nuestro**, no al
+proveedor.
+
+- *Ventana horaria* — es el **~51 %** de los eventos. Incluirla mediría el horario que
+  nosotros configuramos.
+- *Kill-switch* — es una decisión operativa explícita del operador.
+- *Observabilidad local* — el rojo lo produce un flag de entorno propio, sin round-trip al
+  proveedor. Es el caso `gemini-google`: con sus 3.658 gateos dentro del denominador su
+  tasa daba 7,6 %; con el denominador limpio da **93,1 %**. Un umbral ingenuo lo habría
+  sacado de la cadena por un bug de instrumentación nuestro.
+
+**La taxonomía es cerrada y reconcilia.** El reporte cuenta *todas* las entradas leídas, y
+cualquier evento que el dispatcher agregue en el futuro y todavía no esté clasificado cae
+en un bucket `fuera de taxonomía` visible, con su nombre. La propiedad
+`failoverCost.reconciles` verifica que los buckets sumen exactamente el total: los
+porcentajes nunca se calculan sobre un denominador que el reporte no declara.
 
 ### 15.4 Familias de bloqueo (no se mezclan)
 
@@ -2566,8 +2600,12 @@ la política de horarios que nosotros configuramos, no al proveedor.
 | `credencial` | `invalid_credentials`, `no_key_configured`, `forbidden` | Imputable al proveedor / a la cuenta |
 | `observabilidad local` | `cli_license_unavailable`, `cli_unavailable`, `cli_binary_undeclared`, `unknown_provider` | **Bug nuestro.** Jamás imputable al proveedor |
 
-Un proveedor cuyo bloqueo dominante es `observabilidad local` tiene **techo `rol acotado`**:
-no puede ser marcado como candidato a baja sin corregir antes el chequeo.
+El bloqueo por `observabilidad local` tiene **doble protección**:
+
+1. **No entra al denominador** (§15.3), así que no le baja la tasa de aporte.
+2. Si aun así el proveedor rinde poco, un bloqueo dominante `observabilidad local` le pone
+   **techo `rol acotado`**: no puede ser marcado como candidato a baja sin corregir antes
+   el chequeo.
 
 ### 15.5 Umbrales (`config.yaml` → `multi_provider.permanence`)
 
@@ -2578,18 +2616,31 @@ no puede ser marcado como candidato a baja sin corregir antes el chequeo.
 | `min_sample` | 200 | Intentos evaluables mínimos; por debajo ⇒ `no evaluable` |
 | `min_contribution_rate` | 0.05 | Tasa bajo la cual se marca candidato |
 | `max_days_without_win` | 14 | Días sin aporte real que marcan candidato |
-| `min_survivors` | 1 | Proveedores sanos que deben sobrevivir siempre |
+| `min_survivors` | 1 | Proveedores **no pagos** sanos que deben sobrevivir siempre |
 
 ### 15.6 Invariantes — no configurables, cada uno con test
 
 1. **Marca candidatos; nunca ejecuta la baja.** El audit registra `executed_action: none`.
-2. **Nunca vacía la cadena.** Si marcar dejaría menos de `min_survivors` proveedores
-   sanos, **no marca a ninguno** (test: *nunca marca candidato al ultimo proveedor sano de
-   la cadena*). Hereda el invariante ya vigente para el soft-gate de cuota (§13.6).
+2. **Nunca vacía la cadena que el criterio puede tocar.** Si marcar dejaría menos de
+   `min_survivors` proveedores **no pagos** sanos, **no marca a ninguno** (tests: *nunca
+   marca candidato al ultimo proveedor sano de la cadena* y *el invariante de cadena minima
+   no lo satisfacen los pagos de forma vacua*). Hereda el invariante ya vigente para el
+   soft-gate de cuota (§13.6).
+
+   > **Los proveedores pagos NO cuentan como sobrevivientes.** Un pago es `mantener` por
+   > construcción — se excluye del criterio antes que cualquier otro chequeo (invariante 3)
+   > —, así que contarlo satisfaría el invariante de forma **vacua**: el contador nunca
+   > bajaría de `min_survivors` y el guard no se dispararía jamás para los gratuitos. Con
+   > la cadena real (2 pagos + 3 gratuitos) eso permitía proponer la baja de **los tres
+   > gratuitos de una sola vez**: el incidente del 19/08 — Anthropic apagado por horario +
+   > OpenAI sin cupo — pero auto-infligido y permanente. Los sobrevivientes se cuentan sólo
+   > entre los proveedores que el criterio **puede marcar**.
 3. **Nunca marca a un proveedor `billing: paid`.**
-4. **"Sin dato" ⇒ `no evaluable`, jamás "no aporta".** Muestra chica, silencio del log o
-   hash-chain rota ⇒ no se decide sobre nadie.
-5. **Bloqueo de origen local ⇒ techo `rol acotado`.**
+4. **"Sin dato" ⇒ `no evaluable`, jamás "no aporta".** Muestra chica, silencio del log,
+   ventana vacía o hash-chain rota ⇒ no se decide sobre nadie. La derivación de "está
+   declarado en config" falla **cerrada**: sin evidencia de declaración, el proveedor es
+   `sin declarar` y por lo tanto **no puede** ser candidato a baja — nunca al revés.
+5. **Bloqueo de origen local ⇒ fuera del denominador, y techo `rol acotado`.**
 6. **Sólo metadatos.** Cada entrada del log se proyecta contra una whitelist cerrada;
    `raw_excerpt` y demás texto libre nunca llegan al reporte ni al audit.
 7. **Read-only.** El módulo no invoca ninguna API de escritura de `fs`; la única escritura
@@ -2605,7 +2656,23 @@ audit, **nunca** en el texto que lee el operador.
 
 Las ausencias de medición **nunca** se escriben como `0` ni como `—`: declaran su causa
 con vocabulario cerrado — `sin instrumentar (#6152)`, `sin muestra`,
-`sin declarar (#6153)`, `cadena rota`.
+`sin declarar (#6153)`, `cadena de hash rota`, `sin datos en la ventana`.
+
+**"Sin datos" y "cadena rota" no son lo mismo** y no comparten mensaje: una ventana sin un
+solo archivo que verificar dice *"no hay ni un archivo de dispatch en la ventana pedida"*,
+no *"la cadena de hash no verificó (0 archivos con integridad rota)"*. Las dos frenan la
+decisión, pero por razones distintas y con acciones distintas.
+
+### 15.7.1 La columna de latencia **no** es una mediana
+
+`multi-provider-health.json` guarda el resultado de **un** live-ping puntual, no un
+agregado de la ventana: el log de dispatch **no registra latencia por invocación**. El
+dato es volátil — tres observaciones del mismo proveedor (`nvidia-nim`) el mismo día
+dieron **15,9 s → 2,3 s → 1,26 s** —, por eso la columna se llama *"Último live-ping (no
+es mediana)"* y el reporte imprime el disclaimer completo al pie.
+
+**Ningún veredicto ni recomendación se apoya en ese número.** La mediana real por ventana
+requiere instrumentar latencia por invocación: **#6152**.
 
 ### 15.8 Equivalencia con el panel de salud
 
