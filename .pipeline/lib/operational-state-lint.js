@@ -125,6 +125,22 @@ const CONTRACT_DOC = 'docs/pipeline/contrato-estado-operativo.md';
 
 // Carpetas excluidas del scan por convención (mismo set que el template: no
 // son código que acceda a estado operativo en runtime del pulpo).
+// #6190 — Copia LOCAL del predicado canonico de `lib/scratch-dirs.js`.
+//
+// Por que inline y no `require('./scratch-dirs')`: este binario se copia SOLO
+// (sin sus vecinos) a un tmpdir en los tests del CLI (`installBin`), y ademas
+// corre en el hook de pre-commit. Una dependencia local nueva le agrega un
+// modo de falla —"falta el vecino, el pre-commit no corre"— a un guardrail que
+// tiene que ser el ultimo en romperse. Se mantiene self-contained a proposito.
+//
+// La copia NO puede desincronizarse en silencio: `lib/__tests__/scratch-dirs.test.js`
+// compara este predicado contra el canonico nombre por nombre.
+function isScratchDirName(name) {
+    if (typeof name !== 'string' || name === '') return false;
+    if (name === '_tmp') return true;
+    return name.startsWith('tmp');
+}
+
 const SKIP_DIRS = new Set([
     'node_modules', '__tests__', '_test-helpers', 'tests', 'archived',
     'archivado', 'audit', 'audio', 'logs', 'events', 'tmp', 'sessions',
@@ -378,7 +394,13 @@ function walkJs(root) {
         for (const e of entries) {
             if (e.isSymbolicLink()) continue;
             if (e.isDirectory()) {
-                if (SKIP_DIRS.has(e.name)) continue;
+                // #6190 — `SKIP_DIRS` traia `tmp` pero no `_tmp` ni las formas
+                // `tmp-review-<issue>`/`tmp<issue>`. Como esos scratchpads
+                // contienen COPIAS ENTERAS del repo, el lint reportaba
+                // violations sobre archivos que no son codigo de este arbol y
+                // bloqueaba el pre-commit de issues ajenos. Fuente unica del
+                // criterio: `lib/scratch-dirs.js`.
+                if (SKIP_DIRS.has(e.name) || isScratchDirName(e.name)) continue;
                 if (e.name.startsWith('.')) continue;
                 recurse(path.join(dir, e.name));
             } else if (e.isFile()) {
@@ -982,7 +1004,7 @@ module.exports = {
         formatViolation, formatReport, remediationLines, parseArgv, main,
         LintConfigError, LintUsageError,
         STATE_LITERAL_RE, PATH_CTX_RE, COMMENT_LINE_RE, isCommentOnlyLine, isInsideBlockComment,
-        ID_RE, SELF_EXEMPT, SKIP_DIRS, RULES,
+        ID_RE, SELF_EXEMPT, SKIP_DIRS, RULES, isScratchDirName,
         ALLOWLIST_REL, USAGE,
     },
 };

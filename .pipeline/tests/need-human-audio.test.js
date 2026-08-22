@@ -100,6 +100,7 @@ test('SEC-4: helper no lanza aunque falten las funciones de multimedia', async (
 test('SEC-3: el texto que recibe textToSpeechWithMeta no contiene el secreto literal', async () => {
     let textoSintetizado = null;
     await hb.sendNeedHumanAudio({
+        issue: 4067,
         reason: 'falló con AKIAIOSFODNN7EXAMPLE en deploy',
         question: 'rotá la credencial',
         botToken: 'T', chatId: 'C',
@@ -107,6 +108,26 @@ test('SEC-3: el texto que recibe textToSpeechWithMeta no contiene el secreto lit
         sendVoiceTelegram: async () => true,
     });
     assert.ok(textoSintetizado, 'se llamó al TTS');
+    assert.ok(!textoSintetizado.includes('AKIAIOSFODNN7EXAMPLE'), 'el secreto NO llega al sintetizador');
+});
+
+// #6190 — con la ficha hay DOS caminos y los dos tienen que quedar limpios:
+//  · el motivo crudo NO se narra (el copy sale de la tabla congelada), así que
+//    el secreto desaparece entero;
+//  · la pregunta de un agente SÍ se cita literal (UX §1.8), así que ahí el
+//    secreto viaja hasta la frontera de redacción y sale con el marcador.
+// El segundo es el que prueba que la redacción sigue viva, no sólo que el texto
+// se perdió por el camino.
+test('SEC-3: en el texto que SÍ se cita literal, el secreto sale con el marcador', async () => {
+    let textoSintetizado = null;
+    await hb.sendNeedHumanAudio({
+        issue: 4067,
+        reason: 'el token expiró',
+        question: '¿Uso AKIAIOSFODNN7EXAMPLE o pido una nueva?',
+        botToken: 'T', chatId: 'C',
+        textToSpeechWithMeta: async (text) => { textoSintetizado = text; return { buffer: Buffer.from('x') }; },
+        sendVoiceTelegram: async () => true,
+    });
     assert.ok(!textoSintetizado.includes('AKIAIOSFODNN7EXAMPLE'), 'el secreto NO llega al sintetizador');
     assert.ok(textoSintetizado.includes('[REDACTED]'), 'el secreto fue redactado antes de sintetizar');
 });

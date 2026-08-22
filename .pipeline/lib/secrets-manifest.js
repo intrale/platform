@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { isPlaceholderOrEmpty } = require('./credentials');
 const { SECRET_SCOPES } = require('./secret-scopes');
+const { isScratchDirName } = require('./scratch-dirs');
 
 const DEFAULT_PATH = path.join(__dirname, '..', 'secrets-manifest.json');
 // Fuente unica del vocabulario: misma referencia congelada, mismo contenido y
@@ -184,7 +185,12 @@ function listProductionSources(dir, baseDir, acc) {
   for (const dirent of dirents) {
     const full = path.join(dir, dirent.name);
     if (dirent.isDirectory()) {
-      if (READER_SCAN_EXCLUDED_DIRS.includes(dirent.name)) continue;
+      // #6190 — `_tmp` ya estaba en la lista de arriba, pero los scratchpads
+      // `tmp*` (`tmp-review-<issue>`, `tmp<issue>`, ...) no: una copia del repo
+      // ahi adentro hacia que el barrido reportara "lectores" que no son codigo
+      // del repo. El predicado compartido cubre las dos formas.
+      if (READER_SCAN_EXCLUDED_DIRS.includes(dirent.name)
+          || isScratchDirName(dirent.name)) continue;
       listProductionSources(full, baseDir, acc);
     } else if (dirent.name.endsWith('.js') && !dirent.name.endsWith('.test.js')) {
       const rel = path.relative(baseDir, full).split(path.sep).join('/');
