@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[api|desktop|android|all|validate <issue-number>] [--skip-env] [--keep-env]"
 allowed-tools: Bash, Read, Write, Grep, Glob, TaskCreate, TaskUpdate, TaskList
 model: claude-sonnet-4-6
+required_permissions: [file_read, file_write_repo, bash, child_spawn, tool_use_gated, long_running_watcher]
 ---
 
 # /qa — QA E2E
@@ -355,6 +356,32 @@ Generar `qa/evidence/<issue>/qa-report.json` siguiendo el template de `docs/qa-t
 
 Usar `Write` tool para escribir el `qa-report.json`.
 
+## Paso V7c: Promoción de screenshots a librería (issue #3409)
+
+Después de escribir `qa-report.json`, si el `verdict` quedó `APROBADO` y el branch corresponde a un issue con label `app:client | app:business | app:delivery`, invocar el hook de promoción:
+
+```bash
+node qa/scripts/promote-screenshots.js \
+  --issue "$ISSUE_NUM" \
+  2>&1 | tail -20
+```
+
+El hook es **idempotente** y **fail-safe**:
+
+- Detecta PNGs en `qa/evidence/<issue>/`, los mapea a pantalla canónica + flavor, y copia atómicamente a `docs/app-screenshots-reference/<pantalla>/<pantalla>-<flavor>-<YYYY-MM-DD>.png`.
+- Si la política PII de #3385 no está disponible (módulo `qa/lib/pii-policy.js` ausente, contrato roto, o lanza al cargar), **NO promueve nada** y registra `PII policy unavailable — promotion skipped`. El repo es público — default seguro.
+- Si la librería `docs/app-screenshots-reference/` no existe en `main`, el hook falla con `screenshots-reference library missing — depends on #3407`. **NO crea la estructura on-demand** (eso es scope de #3407).
+- Re-ejecutar sobre el mismo run no duplica archivos: el hook compara hashes y emite `promoted 0 screenshots (already in library)`.
+- Logs accionables esperados:
+  - `promoted N screenshots to library` — happy path.
+  - `promoted 0 screenshots (already in library)` — idempotencia.
+  - `overwritten same-day screenshot <pantalla>/<flavor>` — versión nueva sobre la misma fecha.
+  - `PII detected — promotion skipped: <filename>` — flags PII activos.
+  - `PII policy unavailable — promotion skipped` — política no importable.
+  - `unmapped: <filename>` — el filename no mapeó a pantalla canónica (no aborta).
+
+El hook **no aborta** el QA: cualquier skip queda registrado para trazabilidad y el exit code sigue 0. Ver `docs/qa/screenshot-promotion.md` para el detalle operativo y la lista de heurísticas filename → pantalla canónica.
+
 ## Paso V7b: Enviar videos a Telegram
 
 Best-effort, no aborta el reporte:
@@ -441,3 +468,110 @@ gh issue edit "$ISSUE_NUM" --repo intrale/platform --add-label "$LABEL" 2>/dev/n
 - Recordings van a `qa/recordings/` — NO commitear.
 - SIEMPRE reportar veredicto final, incluso sin fallos.
 - Para criterios de cobertura, exploracion abierta o issues ambiguos: consultar `docs/qa-doctrina.md`.
+
+## Validación visual post-construcción (#3383)
+
+Para issues con labels `app:client | app:business | app:delivery` que tengan
+sección `## Screenshots & Mockups` con mockup esperado adjunto:
+
+1. **Capturar la entrega real** en el mismo estado que muestra el mockup
+   (no comparar pantalla feliz vs estado vacío del mockup):
+   - Android: `adb exec-out screencap -p` en flow Maestro.
+   - Dashboard / web: `page.screenshot()` Playwright headless.
+2. **Sanitizar la captura** con `redact()` del módulo `.pipeline/lib/handoff.js`
+   antes de adjuntarla a evidencia o rejection report (CA-9 del issue #3383):
+   - Tokens JWT, AWS keys, emails reales, URLs firmadas, tarjetas de prueba.
+3. **Recorrer el mockup completo en dos tiempos**:
+   - Enumerar primero todas sus secciones o elementos (`A`, `B`, `C` o el índice declarado).
+   - Comparar después el render sección por sección, registrando `verificada: sí/no`,
+     motivo específico para cada sección no verificada y todos los desvíos objetivables.
+   - Está prohibido el early-exit: el barrido se completa aunque el primer hallazgo ya
+     determine rechazo.
+4. **Emitir el contrato visual** — `qa/evidence/<issue>/visual-comparison.json`.
+   Se escribe **siempre** que hubo validación visual, difiera o no (#5708):
+
+   ```jsonc
+   {
+     "issue": 5708,
+     "rev": 3,                   // número de pasada = `rebote_numero` de tu archivo de trabajo
+     "verdict": "rejected",      // OBLIGATORIO: "rejected" | "approved"
+     "mockup":   { "src": "mockup-v1.png", "baseline": "v1" },  // path RELATIVO al dir del issue
+     "delivery": { "src": "render-rev3.png" },                  // NUNCA data:...;base64
+     "coverage": {
+       "secciones_declaradas": ["A", "B", "C", "D"],
+       "verificadas":    ["A", "B", "C"],
+       "no_verificadas": [{ "section": "D", "motivo": "estado no alcanzable sin datos de negocio" }]
+     },
+     "diffs": [
+       { "section": "A", "title": "A3 nunca se pinta en rojo",
+         "description": "token --danger-fg esperado; la entrega usa --text-muted",
+         "impact": "alto" }
+     ],
+     "suggestedAction": { "skill": "pipeline-dev", "text": "..." }
+   }
+   ```
+
+   Reglas inquebrantables del contrato (#5708):
+   - **`verdict` siempre.** Sin él, el reporte suprime el bloque con motivo declarado y
+     no se narra nada visual. Un aprobado se declara como aprobado — jamás se deja el
+     campo vacío para que "parezca" rechazo.
+   - **`rev` siempre**, igual al número de pasada. El reporte lo compara contra la pasada
+     actual: un contrato viejo se descarta con log, para no reportar como vigentes desvíos
+     que ya pueden estar corregidos.
+   - **Imágenes por referencia, nunca base64.** `src` es un path relativo al directorio del
+     issue. El repo es público y las capturas están ignoradas por posible PII: embeberlas
+     dentro de un `.json` es lavarlas a través del allowlist. Un contrato con `data:` se
+     rechaza entero.
+   - **`regression` NO se declara.** Lo deriva `rejection-report.js` contra la pasada previa
+     registrada. Cualquier `regression` que venga en el contrato se descarta.
+   - **`visual-coverage-rev<N>.json` NO lo escribís vos.** Lo escribe el reporte, para que
+     el registro sea determinístico y auditable en vez de prosa.
+   - El PDF resultante (CA-12, CA-13) incluye las 3 secciones obligatorias:
+     mockup esperado, entrega actual, diferencias narradas.
+   - El audio narrado (CA-14, CA-UX-5) lee diferencias + acción sugerida
+     en menos de 60 segundos.
+   - Si el bloque no se puede mostrar (contrato viejo, ilegible, sobre el tope, cobertura
+     incompleta), el reporte pinta una **banda declarada** con el motivo y lo narra como
+     sufijo. Ninguna supresión es silenciosa: ver `docs/pipeline/visual-validation.md §4.8`.
+5. **Aplicar criterio de impacto**:
+   - `alto`: bloquea o degrada la acción principal → rechazo seguro.
+   - `medio`: afecta jerarquía/legibilidad sin bloquear → rechazo justificable.
+   - `bajo`: cosmético → consultar con PO antes de rebote.
+
+Guía completa: `docs/pipeline/visual-validation.md §5` (checklist UX para QA
+durante captura).
+
+**Anti-patrones**:
+- Rechazar con un único hallazgo cuando hay otras secciones sin verificar. Un rechazo
+  de una línea sin cobertura declarada es un barrido incompleto, no un veredicto.
+- Emitir el contrato sin `verdict` o sin `rev`. Sin discriminante, una aprobación se
+  narra como rechazo y una pasada vieja se muestra como si fuera la actual (#5708).
+- Embeber las capturas en base64 dentro del contrato. Viajan por referencia.
+- Declarar `regression: true` a mano: lo deriva el reporte contra la pasada previa.
+- Aprobar visual sin comparar contra el mockup adjunto (cuando existe).
+- Rebotar con feedback subjetivo ("queda raro", "medio feo") sin tokens/números.
+- Capturar con DevTools, Compose layout inspector u overlays de debug visibles.
+- Comparar contra mockup invalidado (rebotado a definición sin re-confirmación
+  de UX — ver CA-15).
+
+## Entregable de cierre de fase
+
+> Doctrina común (#3929 / EP3-H3): cada productor deja el **artefacto físico** de su fase, no sólo un comentario en el issue. Reglas completas de formato, paths y seguridad (CA-5..CA-9): [`docs/pipeline/entregables-multimedia-por-agente.md`](../../../docs/pipeline/entregables-multimedia-por-agente.md) → §5.bis "Doctrina de cierre de fase".
+
+Antes de salir (después de escribir tu resultado), generá el artefacto en el root issue-scoped:
+
+- **Path:** video en `qa/evidence/{issue}/` + reporte en `.pipeline/assets/docs/{issue}/`
+- **Formato:** MP4 (video E2E) + reporte HTML→PDF/MD con veredicto arriba
+
+Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas**:
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// #4466 — pasar `fase` puebla el índice .pipeline/deliverables/<issue>.json (store #4255)
+// y da filename phase-scoped. Tomamos la fase real del pipeline desde el env inyectado.
+const fase = process.env.PIPELINE_FASE || "verificacion";
+writeDeliverable("qa", issue, { fase, md /* o svg para mockups/diagramas */ });
+```
+
+El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).

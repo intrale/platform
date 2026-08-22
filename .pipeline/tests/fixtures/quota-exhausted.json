@@ -1,0 +1,9 @@
+{
+  "exhausted": true,
+  "provider": "anthropic",
+  "model": "claude-opus-4-7",
+  "resets_at": "2099-12-31T23:59:59.000Z",
+  "detected_at": "2099-12-31T00:00:00.000Z",
+  "pattern_matched": "usage_limit_error",
+  "_fixture_note": "Fixture aislado para smoke test del modo degradado (issue #3253 CA-8). NO usar en producción. resets_at sintético a 2099 para que el flag siempre se vea activo sin importar cuándo corra el test."
+}

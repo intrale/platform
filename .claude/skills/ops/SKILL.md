@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "[--fix] [--sprint] [--env] [--hooks] [--resources] [reset]"
 allowed-tools: Bash, Read, Glob, Grep
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn]
 ---
 
 # /ops — Ops Health Check

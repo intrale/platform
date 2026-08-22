@@ -26,20 +26,32 @@ const ROUTING_PATTERNS = [
   /agregar\s+label\s+['"]?area:[\w-]+/i,
 ];
 
-// Skills conocidos del pipeline (debe coincidir con config.yaml dev_skill_mapping).
+// Skills conocidos del pipeline. Debe coincidir con `dev_skill_mapping`, que
+// desde #5174 vive del lado PRODUCTO: `pipeline.config.json` → `productConfig.
+// dev_skill_mapping` (antes estaba en `.pipeline/config.yaml`).
 // Usado para validar que lo extraído es un skill real, no un falso positivo.
+// Sigue hardcodeado a propósito: este clasificador corre sobre TEXTO de issues y
+// no debe depender de la config resuelta (se usa en caminos donde todavía no hay
+// config cargada). La coherencia entre las dos listas la verifica un test.
 const KNOWN_DEV_SKILLS = new Set([
   'backend-dev',
   'android-dev',
   'web-dev',
   'pipeline-dev',
+  'dev',
   'ios-dev',
   'desktop-dev',
 ]);
 
-// Áreas conocidas (labels area:*). Sincronizar con dev_skill_mapping del config.
+// Áreas conocidas (labels area:*). Sincronizar con `dev_skill_mapping`, hoy en
+// `pipeline.config.json` → `productConfig.dev_skill_mapping` (#5174).
 const KNOWN_AREAS = new Set([
   'pipeline',
+  // #5174 — `area:dashboard` estaba ruteada en `dev_skill_mapping` (→ pipeline-dev)
+  // pero faltaba acá: el clasificador descartaba como falso positivo cualquier
+  // mismatch de ruteo que la nombrara. Lo detectó el test de coherencia que
+  // acompaña a la partición, no un incidente.
+  'dashboard',
   'infra',
   'backend',
   'web',

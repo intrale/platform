@@ -12,6 +12,14 @@ const { execFile } = require('child_process');
 require('./lib/sanitize-console').install();
 const { sanitize } = require('./sanitizer');
 const { sanitizeDrivePayload, sanitizeDriveFilename, filenameHasSecret } = require('./lib/sanitize-payload');
+// CA-3 / RS-3 (#3927): notificación de fallo a Telegram con texto redactado.
+const { notifyTelegram } = require('./lib/notify-telegram');
+const { isMarkerArtifact } = require('./lib/marker-artifact');
+// RS-3 (#3927): `redactSensitive` cubre emails/URLs/bot-tokens, pero NO los
+// patrones de VALOR de proveedores (AWS `AKIA…`, `sk-ant-…`, JWT, etc.) — esos
+// los redacta `redactSecretValue`. Componemos ambas para no volcar NINGÚN
+// secreto del mensaje de error al usuario.
+const { redactSensitive, redactSecretValue } = require('./lib/redact');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const PROJECT_ROOT = path.resolve(PIPELINE, '..');
@@ -28,6 +36,27 @@ const MAX_RETRIES = 2;
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${ts}] [svc-drive] ${msg}`);
+}
+
+// CA-3 / RS-3 (#3927): "fallo de envío SIEMPRE notifica". Antes el camino
+// `fallido/` sólo escribía `_error`/`_failedAt` y logueaba → silencio. Ahora
+// emite una alerta a Telegram. El texto pasa SIEMPRE por `redactSensitive`
+// (RS-3) — nunca volcamos `err.stack`/`_error` crudo al usuario.
+function notifyDriveFailure(issue, reason) {
+  try {
+    const safeIssue = /^\d+$/.test(String(issue || '')) ? String(issue) : 'desconocido';
+    const safeReason = redactSecretValue(
+      redactSensitive(String(reason == null ? 'error desconocido' : reason)),
+    );
+    notifyTelegram({
+      level: 'error',
+      component: 'svc-drive',
+      message: `Fallo al subir a Drive el video del issue #${safeIssue}: ${safeReason}`,
+      context: { issue: safeIssue, adjunto: 'video' },
+    });
+  } catch (e) {
+    log(`No se pudo notificar fallo a Telegram: ${e.message}`);
+  }
 }
 
 function listWorkFiles(dir) {
@@ -68,6 +97,11 @@ function recoverOrphans() {
 // Ej: "QA video con relato narrado #2015" → "2015"
 // Ej: "qa-2015-video.json" → "2015"
 function extractIssue(data, filename) {
+  // #3927: campo `issue` explícito (schema { file, issue, title } que emite
+  // deliverable-notify al encolar). Tiene prioridad si es numérico.
+  if (data && data.issue != null && /^\d+$/.test(String(data.issue))) {
+    return String(data.issue);
+  }
   // Desde description: buscar #NNNN
   if (data.description) {
     const match = data.description.match(/#(\d+)/);
@@ -87,19 +121,45 @@ function extractIssue(data, filename) {
 
 // Extraer título del issue desde description (después del " - " o " — ")
 function extractTitle(data) {
+  // #3927: campo `title` explícito (schema { file, issue, title }).
+  if (data && typeof data.title === 'string' && data.title.trim()) {
+    return data.title.trim();
+  }
   if (!data.description) return '';
   const match = data.description.match(/(?:#\d+)\s*[-—]\s*(.+)/);
   return match ? match[1].trim() : '';
+}
+
+// RS-2 (#3927): containment. Sólo permitimos subir a Drive videos contenidos en
+// `qa/evidence/` o `qa/recordings/`. Evita que un job con `../` o un path absoluto
+// arbitrario suba a Drive público un archivo cualquiera del filesystem.
+const ALLOWED_VIDEO_DIRS = [
+  path.resolve(PROJECT_ROOT, 'qa', 'evidence'),
+  path.resolve(PROJECT_ROOT, 'qa', 'recordings'),
+];
+function isWithinAllowedVideoDir(resolved) {
+  if (!resolved) return false;
+  const real = path.resolve(resolved);
+  return ALLOWED_VIDEO_DIRS.some((dir) => real === dir || real.startsWith(dir + path.sep));
 }
 
 // Resolver la ruta del video: buscar en múltiples ubicaciones posibles
 function resolveVideoPath(filePath) {
   // Intentar como ruta relativa al proyecto
   const fromProject = path.resolve(PROJECT_ROOT, filePath);
-  if (fs.existsSync(fromProject)) return fromProject;
+  if (fs.existsSync(fromProject)) {
+    // RS-2: aunque exista, sólo lo aceptamos si cae dentro de los dirs permitidos.
+    if (isWithinAllowedVideoDir(fromProject)) return fromProject;
+    log(`RS-2: path resuelto fuera de qa/evidence|qa/recordings, rechazado: ${filePath}`);
+    return null;
+  }
 
   // Intentar como ruta absoluta
-  if (path.isAbsolute(filePath) && fs.existsSync(filePath)) return filePath;
+  if (path.isAbsolute(filePath) && fs.existsSync(filePath)) {
+    if (isWithinAllowedVideoDir(filePath)) return filePath;
+    log(`RS-2: absoluto fuera de qa/evidence|qa/recordings, rechazado: ${filePath}`);
+    return null;
+  }
 
   // Buscar en qa/evidence/{issue}/ por videos con extensión mp4
   const issueMatch = filePath.match(/qa-(\d+)/);
@@ -124,6 +184,19 @@ function resolveVideoPath(filePath) {
   }
 
   return null;
+}
+
+// QA estructural no produce video por contrato. Algunos agentes dejan un
+// Markdown auditable y encolan un job para conservar la trazabilidad. Ese job
+// no debe llegar al uploader de videos ni fallar por el containment RS-2.
+// Exigimos ambos campos canónicos para que un payload común no pueda saltear
+// accidentalmente el upload con sólo declarar `mode: structural`.
+function isStructuralEvidenceJob(data) {
+  return Boolean(
+    data
+    && data.mode === 'structural'
+    && data.source === 'qa-structural',
+  );
 }
 
 // #2519: lee qa-narration.meta.json (si existe) para saber qué proveedor TTS
@@ -154,6 +227,7 @@ function readQaVerdictFromYaml(issue) {
   try {
     if (!fs.existsSync(procesadoDir)) return {};
     const files = fs.readdirSync(procesadoDir)
+      .filter((f) => !isMarkerArtifact(f))
       .filter((f) => f.startsWith(String(issue) + '.') && f.endsWith('.yaml') && f.includes('qa'));
     if (files.length === 0) return {};
     // Preferir el más reciente
@@ -296,12 +370,21 @@ async function processJob(file) {
       return;
     }
 
+    if (isStructuralEvidenceJob(data)) {
+      log(`Job ${file.name}: QA estructural sin video; cola Drive eximida`);
+      ensureDir(LISTO);
+      fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+      return;
+    }
+
     const resolvedPath = resolveVideoPath(videoFile);
     if (!resolvedPath) {
-      log(`Job ${file.name}: video no encontrado en ninguna ruta: ${videoFile}`);
+      log(`Job ${file.name}: video no encontrado o fuera de directorios permitidos: ${videoFile}`);
       // Mover a fallido para no reintentar indefinidamente
       ensureDir(FALLIDO);
       fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+      // CA-3: fallo SIEMPRE notifica (antes era silencio).
+      notifyDriveFailure(issue, 'no se encontró el video o quedó fuera de qa/evidence|qa/recordings');
       return;
     }
 
@@ -327,6 +410,8 @@ async function processJob(file) {
         log(`Error copiando a nombre saneado (${e.message}); se omite upload para evitar leak`);
         ensureDir(FALLIDO);
         fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+        // CA-3: fallo SIEMPRE notifica (mensaje redactado RS-3).
+        notifyDriveFailure(issue, `no se pudo preparar el nombre seguro del archivo: ${e.message}`);
         return;
       }
     }
@@ -363,6 +448,12 @@ async function processJob(file) {
       fs.writeFileSync(trabajandoPath, JSON.stringify(jobData, null, 2));
     } catch {}
     fs.renameSync(trabajandoPath, path.join(FALLIDO, file.name));
+    // CA-3 / RS-3: fallo terminal SIEMPRE notifica a Telegram, con el mensaje
+    // del último error redactado (nunca `err.stack`/`_error` crudo).
+    notifyDriveFailure(
+      issue,
+      `tras ${MAX_RETRIES} intentos: ${lastErr && lastErr.message ? lastErr.message : 'error desconocido'}`,
+    );
 
   } catch (e) {
     log(`Error procesando ${file.name}: ${e.message}`);
@@ -409,24 +500,42 @@ function main() {
   }, 10000);
 }
 
-fs.writeFileSync(path.join(PIPELINE, 'svc-drive.pid'), String(process.pid));
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
+// CA-4 / RS-2 (#3927) — exportamos las funciones puras para el test de
+// integración (`node --test`). Sin esto, requerir el módulo arrancaba el
+// servicio (pidfile + setInterval), colgando el runner.
+module.exports = {
+  resolveVideoPath,
+  isWithinAllowedVideoDir,
+  notifyDriveFailure,
+  extractIssue,
+  extractTitle,
+  isStructuralEvidenceJob,
+  processJob,
+  ALLOWED_VIDEO_DIRS,
+};
 
-// Crash handlers — loguear antes de morir para diagnóstico
-const LOG_DIR = path.join(PIPELINE, 'logs');
-process.on('uncaughtException', (err) => {
-  // #2334: sanitizar antes de persistir stack a disco.
-  const msg = sanitize(`[${new Date().toISOString()}] [svc-drive] CRASH uncaughtException: ${err.stack || err.message}\n`);
-  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-drive.log'), msg); } catch {}
-  console.error(msg);
-  process.exit(1);
-});
-process.on('unhandledRejection', (reason) => {
-  const msg = sanitize(`[${new Date().toISOString()}] [svc-drive] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
-  try { fs.appendFileSync(path.join(LOG_DIR, 'svc-drive.log'), msg); } catch {}
-  console.error(msg);
-  process.exit(1);
-});
+// Arranque del servicio: SOLO cuando se ejecuta directamente (`node servicio-drive.js`),
+// nunca al ser requerido como módulo desde un test.
+if (require.main === module) {
+  fs.writeFileSync(path.join(PIPELINE, 'svc-drive.pid'), String(process.pid));
+  process.on('SIGINT', () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
 
-main();
+  // Crash handlers — loguear antes de morir para diagnóstico
+  const LOG_DIR = path.join(PIPELINE, 'logs');
+  process.on('uncaughtException', (err) => {
+    // #2334: sanitizar antes de persistir stack a disco.
+    const msg = sanitize(`[${new Date().toISOString()}] [svc-drive] CRASH uncaughtException: ${err.stack || err.message}\n`);
+    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-drive.log'), msg); } catch {}
+    console.error(msg);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    const msg = sanitize(`[${new Date().toISOString()}] [svc-drive] CRASH unhandledRejection: ${reason?.stack || reason}\n`);
+    try { fs.appendFileSync(path.join(LOG_DIR, 'svc-drive.log'), msg); } catch {}
+    console.error(msg);
+    process.exit(1);
+  });
+
+  main();
+}

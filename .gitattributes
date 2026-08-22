@@ -1,3 +1,8 @@
 
 # Shell scripts siempre con LF — bash no tolera CRLF
 *.sh text eol=lf
+
+# Workflows de GitHub Actions siempre con LF — los CRLF rompieron la
+# transformación del gate de publicación del kernel (#4695 · CRITICAL-1)
+*.yml text eol=lf
+*.yaml text eol=lf

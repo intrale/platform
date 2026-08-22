@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1080, initial-scale=1" />
+<title>Mockup KPIs V3 — Ventana KPIs + DORA + Commander Routing + Sistema</title>
+<!--
+  Mockup integral de la ventana "KPIs" del dashboard V3.
+  Issue: #3733 (split de #3715).
+  Convención:
+    - UN solo HTML/CSS auto-contenido que reproduce el SSR del partial.
+    - Tokens importados desde `../design-tokens.css` (V3 — fuente única de verdad).
+    - Iconografía referenciada via `../icons/sprite.svg#ic-*` (sin SVG inline).
+    - Sin fetch externo, sin scripts. Render con Puppeteer para comparación visual del PR (CA-26).
+  Layout: kiosk vertical 1080×1920 — coherente con 27-bloqueados-v3 / 28-ops-v3 / 28-pipeline-v3 / 29-matriz-v3.
+  Estados representados:
+    - KPI row con 6 contadores principales + sys-mini card (CPU/RAM/Salud).
+    - DORA metrics (rolling 7d).
+    - Commander Routing (det. vs LLM, 7d).
+    - Card de KPIs por proveedor (TODO de migración a /providers documentado).
+    - Acceso visual al endpoint /metrics (reincorporación CA-9 — entry point perdido recuperado).
+  Tooltips:
+    - Cada acción operativa lleva `title` + `aria-label` (CA-12 / CA-13).
+    - Cada KPI lleva chip de leyenda y tooltip con la fórmula y el target.
+-->
+<link rel="stylesheet" href="../design-tokens.css" />
+<style>
+  /* Mockup-only — todo via tokens V3, prohibido HEX libres acá adentro. */
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .kiosk-frame {
+    width: 1080px;
+    min-height: 1920px;
+    margin: 0 auto;
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .mockup-banner {
+    background: var(--purple-bg);
+    border: 1px dashed var(--purple-dim);
+    color: var(--purple);
+    padding: 8px 14px;
+    border-radius: var(--radius-md, 6px);
+    font-size: 12px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: center;
+  }
+  .icon {
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.15em;
+    fill: currentColor;
+    stroke: currentColor;
+  }
+
+  /* =========================================================================
+     HEADER de ventana (slug `kpis`)
+     ========================================================================= */
+  .view-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 2px;
+  }
+  .view-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-size: 1.35em;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .view-title .v3-badge {
+    background: var(--teal-bg);
+    color: var(--teal);
+    border: 1px solid var(--teal-dim);
+    padding: 2px 8px;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .view-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .view-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 8px 14px;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    text-decoration: none;
+    min-height: 36px; /* WCAG touch ~44px con margen; aquí 36 lleva línea + padding visual */
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  }
+  .view-link:hover, .view-link:focus-visible {
+    background: var(--surface-2);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+  }
+  .view-link.primary {
+    background: var(--info-bg);
+    color: var(--info);
+    border-color: var(--info-dim);
+  }
+
+  /* =========================================================================
+     KPI ROW principal (6 cards + sys-mini)
+     ========================================================================= */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr) auto;
+    gap: 10px;
+    align-items: stretch;
+  }
+  .kpi {
+    position: relative;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 92px;
+    cursor: help;
+  }
+  .kpi-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .kpi-value {
+    font-size: 1.85em;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi-value.success { color: var(--success); }
+  .kpi-value.warn    { color: var(--warning); }
+  .kpi-value.danger  { color: var(--danger); }
+  .kpi-value.purple  { color: var(--purple); }
+  .kpi-value.muted   { color: var(--text-dim); }
+  .kpi-trend {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .kpi-help {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: help;
+  }
+  .kpi-clickable {
+    cursor: pointer;
+  }
+  .kpi-clickable:hover, .kpi-clickable:focus-visible {
+    border-color: var(--border-strong);
+    background: var(--surface-2);
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+  }
+  .kpi-needs-human.has-blocked {
+    border-color: var(--danger-dim);
+    background: linear-gradient(180deg, var(--danger-bg), var(--surface-1) 55%);
+  }
+  .kpi-pulse {
+    color: var(--danger);
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.65; transform: scale(1); }
+    50%      { opacity: 1;    transform: scale(1.10); }
+  }
+
+  /* sys-mini card al final del row */
+  .sys-mini-card {
+    grid-column: span 1;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 220px;
+  }
+  .sys-mini-score {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-width: 56px;
+  }
+  .sys-mini-lbl {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+  }
+  .sys-mini-val {
+    font-size: 1.5em;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .sys-mini-val.ok   { color: var(--success); }
+  .sys-mini-val.warn { color: var(--warning); }
+  .sys-mini-val.crit { color: var(--danger); }
+  .sys-mini-tag {
+    font-size: 9px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    letter-spacing: 0.03em;
+  }
+  .sys-mini-gauge {
+    position: relative;
+    width: 62px;
+    height: 62px;
+  }
+  .sys-mini-svg {
+    width: 62px;
+    height: 62px;
+    transform: rotate(-90deg);
+  }
+  .sys-mini-track {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 6;
+  }
+  .sys-mini-fill {
+    fill: none;
+    stroke-width: 6;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.4s ease;
+  }
+  .sys-mini-fill.ok   { stroke: var(--success); }
+  .sys-mini-fill.warn { stroke: var(--warning); }
+  .sys-mini-fill.crit { stroke: var(--danger); }
+  .sys-mini-center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+  .sys-mini-center .v {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* =========================================================================
+     LEYENDA (CA-13 — explica colores/iconos antes de usar el dashboard)
+     ========================================================================= */
+  .legend {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    padding: 10px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .legend-dot.success { background: var(--success); }
+  .legend-dot.warn    { background: var(--warning); }
+  .legend-dot.danger  { background: var(--danger); }
+  .legend-dot.info    { background: var(--info); }
+  .legend-dot.purple  { background: var(--purple); }
+  .legend-readonly {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  /* =========================================================================
+     SECCIONES (DORA + Commander Routing + Providers + Metrics link)
+     ========================================================================= */
+  .section {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg, 10px);
+    padding: 14px 18px 16px;
+    box-shadow: var(--shadow-elev-1, 0 1px 3px rgba(0,0,0,0.30));
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 0 12px 0;
+  }
+  .section-header h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-size: 1.05em;
+    color: var(--text-primary);
+  }
+  .section-header .sub {
+    font-size: 0.72em;
+    color: var(--text-dim);
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .section-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 5px 10px;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 11.5px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .section-link:hover, .section-link:focus-visible {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+  }
+
+  /* Grid DORA / Routing — 4 columnas iguales */
+  .metric-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  .metric-card {
+    background: var(--surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md, 6px);
+    padding: 14px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    text-align: center;
+    cursor: help;
+  }
+  .metric-value {
+    font-size: 1.65em;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--info);
+  }
+  .metric-value.ok    { color: var(--success); }
+  .metric-value.warn  { color: var(--warning); }
+  .metric-value.crit  { color: var(--danger); }
+  .metric-value.muted { color: var(--text-dim); }
+  .metric-value.brand { color: var(--brand-cyan); }
+  .metric-value.purple{ color: var(--purple); }
+  .metric-label {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+  .metric-target {
+    font-size: 10.5px;
+    color: var(--text-dim);
+    margin-top: 1px;
+  }
+
+  /* =========================================================================
+     PROVIDER ROW — KPIs operativos de cada proveedor LLM
+     (Decisión D-UX-1 documentada en narrativa: queda en KPIs con TODO
+      de migración a /providers cuando aterrice esa ventana hija.)
+     ========================================================================= */
+  .provider-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+  }
+  .provider-card {
+    background: var(--surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md, 6px);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    cursor: help;
+  }
+  .provider-name {
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .provider-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .provider-name.claude   { color: var(--brand-cyan); }
+  .provider-name.codex    { color: var(--success); }
+  .provider-name.gemini   { color: var(--info); }
+  .provider-name.groq     { color: var(--warning); }
+  .provider-name.cerebras { color: var(--purple); }
+  .provider-stats {
+    display: flex;
+    justify-content: space-between;
+    gap: 4px;
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+  .provider-stats .v {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .provider-todo {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-top: 4px;
+  }
+
+  /* =========================================================================
+     ENTRY POINT a /metrics (CA-9 — entry visual perdido, ahora recuperado)
+     ========================================================================= */
+  .metrics-cta {
+    background: linear-gradient(180deg, var(--info-bg), var(--surface-1) 50%);
+    border: 1px solid var(--info-dim);
+    border-radius: var(--radius-lg, 10px);
+    padding: 16px 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .metrics-cta-icon {
+    color: var(--info);
+    font-size: 22px;
+  }
+  .metrics-cta-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .metrics-cta-text h3 {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text-primary);
+  }
+  .metrics-cta-text p {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .metrics-cta-btn {
+    background: var(--info);
+    color: var(--surface-0);
+    border: none;
+    padding: 9px 16px;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    min-height: 44px;     /* WCAG AA touch target */
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .metrics-cta-btn:hover, .metrics-cta-btn:focus-visible {
+    background: var(--info-dim);
+    color: var(--text-primary);
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+  }
+
+  /* =========================================================================
+     FOOTER (canales redundantes — coherente con matriz-v3)
+     ========================================================================= */
+  .footer-note {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    padding: 6px 0;
+    font-style: italic;
+  }
+  .footer-note kbd {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+</style>
+</head>
+<body>
+  <!-- Sprite SVG inline (ref via <use href="#ic-*"/>) — en la integración SSR
+       lo inyecta dashboard.js una sola vez al inicio del body. Acá hacemos
+       fallback con emoji unicode para mantener el mockup self-contained. -->
+
+  <div class="kiosk-frame">
+
+    <div class="mockup-banner">
+      MOCKUP UX · ISSUE #3733 · VENTANA KPIs V3 — 1080×1920 — TOKENS V3
+    </div>
+
+    <!-- ===================================================================
+         HEADER de la ventana
+         =================================================================== -->
+    <header class="view-header" role="banner">
+      <h1 class="view-title">
+        <span aria-hidden="true">📊</span>
+        KPIs <span class="v3-badge" aria-label="Versión 3">V3</span>
+      </h1>
+      <nav class="view-actions" aria-label="Acciones de la ventana KPIs">
+        <a class="view-link" href="/dashboard?view=home"
+           title="Volver a la vista Home del dashboard"
+           aria-label="Ir a la vista Home del dashboard">
+          <span aria-hidden="true">←</span> Home
+        </a>
+        <a class="view-link primary" href="/metrics" rel="noopener"
+           title="Abrir el reporte histórico completo de /metrics (snapshots del Pulpo, throughput por fase, tokens estimados)"
+           aria-label="Abrir reporte histórico completo de métricas">
+          <span aria-hidden="true">🔬</span> Reporte completo →
+        </a>
+      </nav>
+    </header>
+
+    <!-- ===================================================================
+         KPI ROW — 6 cards principales + sys-mini
+         =================================================================== -->
+    <section class="kpi-row" aria-label="Indicadores operativos principales">
+
+      <div class="kpi" tabindex="0" role="group"
+           title="Definidos: backlog total con criterios aceptados, listos para que el planner asigne sizing y entren al desarrollo. Fórmula: count(issues con label 'Ready' + label de fase 'criterios:aprobado')."
+           aria-label="Definidos: 47 issues en backlog total con criterios aceptados">
+        <div class="kpi-label">Definidos <span class="kpi-help" aria-hidden="true">ⓘ</span></div>
+        <div class="kpi-value purple">47</div>
+        <div class="kpi-trend">backlog total</div>
+      </div>
+
+      <div class="kpi" tabindex="0" role="group"
+           title="En cola: issues con criterios aprobados esperando que un agente con slot libre los tome. Fórmula: count(archivos en .pipeline/desarrollo/*/pendiente). Si crece sostenidamente, hay cuello de botella."
+           aria-label="En cola: 8 issues esperando agente">
+        <div class="kpi-label">En cola <span class="kpi-help" aria-hidden="true">ⓘ</span></div>
+        <div class="kpi-value warn">8</div>
+        <div class="kpi-trend">esperando agente</div>
+      </div>
+
+      <div class="kpi" tabindex="0" role="group"
+           title="Ejecución: archivos en .pipeline/desarrollo/*/trabajando. Mientras esté > 0, hay agentes corriendo. Si queda en 0 más de 5 min con cola > 0, hay un problema de admission del Pulpo."
+           aria-label="Ejecución: 3 agentes activos">
+        <div class="kpi-label">Ejecución <span class="kpi-help" aria-hidden="true">ⓘ</span></div>
+        <div class="kpi-value warn">3</div>
+        <div class="kpi-trend">agentes activos</div>
+      </div>
+
+      <div class="kpi" tabindex="0" role="group"
+           title="Entregados últimas 24h: count(archivos en .pipeline/desarrollo/entrega/procesado con mtime < 24h). Métrica de throughput diario."
+           aria-label="Entregados últimas 24 horas: 12 issues">
+        <div class="kpi-label">Entregados 24h <span class="kpi-help" aria-hidden="true">ⓘ</span></div>
+        <div class="kpi-value success">12</div>
+        <div class="kpi-trend">últimas 24 horas</div>
+      </div>
+
+      <div class="kpi kpi-clickable" tabindex="0" role="button"
+           title="Bloqueados por dependencias: issues con label 'blocked:dependencies' o etiquetados como esperando otro PR. Click filtra el Issue Tracker por estos."
+           aria-label="Bloqueados por dependencias: 2 issues — click para filtrar el Issue Tracker">
+        <div class="kpi-label">Bloqueados <span aria-hidden="true">🚫</span></div>
+        <div class="kpi-value danger">2</div>
+        <div class="kpi-trend">click para filtrar</div>
+      </div>
+
+      <div class="kpi kpi-needs-human has-blocked kpi-clickable" tabindex="0" role="button"
+           title="Necesitan humano: issues que excedieron el circuit breaker (3 rebotes), o quedaron en pausa parcial, o requieren decisión que el agente no puede tomar. Click colapsa/expande el listado de incidentes en la ventana Matriz."
+           aria-label="Necesitan humano: 1 incidente — click para colapsar o expandir">
+        <div class="kpi-label">
+          <span class="kpi-pulse" aria-hidden="true">🚨</span> Necesitan humano
+        </div>
+        <div class="kpi-value danger">1</div>
+        <div class="kpi-trend">click colapsar / expandir</div>
+      </div>
+
+      <!-- sys-mini card (CPU/RAM/Salud) -->
+      <div class="sys-mini-card" role="group" aria-label="Salud del sistema">
+        <div class="sys-mini-score">
+          <div class="sys-mini-lbl">Salud</div>
+          <div class="sys-mini-val ok">82</div>
+          <div class="sys-mini-tag">sano</div>
+        </div>
+        <div class="sys-mini-gauge"
+             title="CPU del proceso Pulpo. Verde &lt; 60%, amarillo 60-85%, rojo &gt; 85%. Sostenido en rojo indica que el Pulpo necesita pausa parcial o se está saturando la cola."
+             aria-label="CPU: 34 por ciento">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg" aria-hidden="true">
+            <circle class="sys-mini-track" cx="31" cy="31" r="26"/>
+            <circle class="sys-mini-fill ok" cx="31" cy="31" r="26" stroke-dasharray="163" stroke-dashoffset="108"/>
+          </svg>
+          <div class="sys-mini-center">
+            <div class="v">34%</div>
+            <div class="l">CPU</div>
+          </div>
+        </div>
+        <div class="sys-mini-gauge"
+             title="Memoria RAM del proceso Pulpo. Verde &lt; 65%, amarillo 65-85%, rojo &gt; 85%. Si llega a rojo, riesgo de OOM kill del Pulpo."
+             aria-label="RAM: 51 por ciento">
+          <svg viewBox="0 0 62 62" class="sys-mini-svg" aria-hidden="true">
+            <circle class="sys-mini-track" cx="31" cy="31" r="26"/>
+            <circle class="sys-mini-fill ok" cx="31" cy="31" r="26" stroke-dasharray="163" stroke-dashoffset="80"/>
+          </svg>
+          <div class="sys-mini-center">
+            <div class="v">51%</div>
+            <div class="l">RAM</div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ===================================================================
+         LEYENDA (CA-13) — explicita colores, iconos y carácter read-only
+         =================================================================== -->
+    <div class="legend" role="group" aria-label="Leyenda de la ventana KPIs">
+      <span class="legend-item"><span class="legend-dot success"></span> Healthy / dentro del target</span>
+      <span class="legend-item"><span class="legend-dot warn"></span> Atención / cerca del límite</span>
+      <span class="legend-item"><span class="legend-dot danger"></span> Crítico / fuera del target</span>
+      <span class="legend-item"><span class="legend-dot info"></span> Informativo / neutro</span>
+      <span class="legend-item"><span class="legend-dot purple"></span> Definición / planificación</span>
+      <span class="legend-readonly">
+        Ventana <strong>read-only</strong> · sin acciones state-changing
+      </span>
+    </div>
+
+    <!-- ===================================================================
+         DORA Metrics (rolling 7d · Nicole Forsgren)
+         =================================================================== -->
+    <section class="section" aria-labelledby="dora-title">
+      <div class="section-header">
+        <h2 id="dora-title">
+          <span aria-hidden="true">📐</span> DORA Metrics
+          <span class="sub">rolling 7d · Nicole Forsgren</span>
+        </h2>
+        <a class="section-link" href="/metrics#dora"
+           title="Ver el detalle histórico de las 4 métricas DORA"
+           aria-label="Ver detalle histórico DORA">
+          Ver detalle →
+        </a>
+      </div>
+      <div class="metric-grid">
+        <div class="metric-card" tabindex="0"
+             title="Lead Time: tiempo promedio desde que un issue entra a 'criterios:aprobado' hasta que se mergea el PR. Suma de promedios por fase de los últimos 7 días. Target: &lt; 6 horas. Verde si dentro del target, amarillo si excede, gris si no hay datos suficientes."
+             aria-label="Lead Time: 4 horas 12 minutos">
+          <div class="metric-value ok">4h 12m</div>
+          <div class="metric-label">Lead Time</div>
+          <div class="metric-target">target &lt; 6h</div>
+        </div>
+        <div class="metric-card" tabindex="0"
+             title="Throughput: issues entregados por día (promedio rolling 7d). Target: &gt; 2/día. Indica capacidad real de entrega del pipeline."
+             aria-label="Throughput: 1.7 issues por día">
+          <div class="metric-value warn">1.7/d</div>
+          <div class="metric-label">Throughput</div>
+          <div class="metric-target">target &gt; 2/día</div>
+        </div>
+        <div class="metric-card" tabindex="0"
+             title="Failure Rate: porcentaje de rebotes sobre total procesado en los últimos 7 días. Target: &lt; 15%. Si sube, hay regresión de calidad o criterios poco claros."
+             aria-label="Failure Rate: 9 por ciento">
+          <div class="metric-value ok">9%</div>
+          <div class="metric-label">Failure Rate</div>
+          <div class="metric-target">target &lt; 15%</div>
+        </div>
+        <div class="metric-card" tabindex="0"
+             title="Entregas en los últimos 7 días: count(archivos en entrega/procesado con mtime &lt; 7d). Útil para proyección mensual."
+             aria-label="Entregas en los últimos 7 días: 12 issues, proyectado 51 por mes">
+          <div class="metric-value brand">12</div>
+          <div class="metric-label">Entregas 7d</div>
+          <div class="metric-target">~51/mes proyectado</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================
+         Commander Routing (det. vs LLM)
+         =================================================================== -->
+    <section class="section" aria-labelledby="cmd-title">
+      <div class="section-header">
+        <h2 id="cmd-title">
+          <span aria-hidden="true">⚙️</span> Commander Routing
+          <span class="sub">determinístico vs LLM · 7d</span>
+        </h2>
+        <a class="section-link" href="/api/metrics/commander/routing" rel="noopener"
+           title="Descargar el JSON crudo del routing del Commander (audit logs en .pipeline/logs/commander-audit-*.jsonl)"
+           aria-label="Descargar JSON crudo del routing del Commander">
+          JSON →
+        </a>
+      </div>
+      <div class="metric-grid">
+        <div class="metric-card" tabindex="0"
+             title="Porcentaje de comandos resueltos HOY por el commander determinístico (sin invocar LLM). Target: &gt; 60%. Cada comando determinístico ahorra ~3-5k tokens."
+             aria-label="74 por ciento determinístico hoy">
+          <div class="metric-value ok">74%</div>
+          <div class="metric-label">% Determinístico hoy</div>
+          <div class="metric-target">target &gt; 60%</div>
+        </div>
+        <div class="metric-card" tabindex="0"
+             title="Cantidad de comandos resueltos HOY sin invocar LLM (parseo regex / lookup directo)."
+             aria-label="29 comandos sin LLM hoy">
+          <div class="metric-value brand">29</div>
+          <div class="metric-label">Sin LLM hoy</div>
+          <div class="metric-target">comandos resueltos</div>
+        </div>
+        <div class="metric-card" tabindex="0"
+             title="Cantidad de comandos HOY que sí invocaron LLM (porque el determinístico no pudo clasificar). Los 'no clasificados' aparecen como informativos."
+             aria-label="10 comandos con LLM hoy">
+          <div class="metric-value purple">10</div>
+          <div class="metric-label">Con LLM hoy</div>
+          <div class="metric-target">2 no clasificados</div>
+        </div>
+        <div class="metric-card" tabindex="0"
+             title="Porcentaje determinístico acumulado en los últimos 7 días."
+             aria-label="69 por ciento determinístico en últimos 7 días">
+          <div class="metric-value brand">69%</div>
+          <div class="metric-label">% Determinístico 7d</div>
+          <div class="metric-target">189 / 274 cmd</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================
+         Providers (decisión D-UX-1: queda acá con TODO de migración)
+         =================================================================== -->
+    <section class="section" aria-labelledby="prov-title">
+      <div class="section-header">
+        <h2 id="prov-title">
+          <span aria-hidden="true">🧠</span> Proveedores LLM
+          <span class="sub">vista resumida · sin secretos</span>
+        </h2>
+        <a class="section-link" href="/dashboard?view=providers"
+           title="Vista completa de Proveedores: configuración, health checks, allowlist, masking de API keys"
+           aria-label="Ir a la vista completa de Proveedores">
+          Ver detalle →
+        </a>
+      </div>
+      <div class="provider-row">
+        <div class="provider-card" tabindex="0"
+             title="Anthropic Claude — Modelo principal del pipeline. Tasa de éxito = sesiones cerradas / sesiones iniciadas. P95 = latencia 95th percentile de respuesta. La API key NO se muestra en este dashboard (vive masked en /providers)."
+             aria-label="Claude: 97 por ciento éxito, latencia p95 1.8 segundos, 1.2 millones de tokens, costo estimado 4.32 dólares">
+          <div class="provider-name claude">
+            <span class="provider-dot" style="background: var(--brand-cyan)"></span>
+            Claude
+          </div>
+          <div class="provider-stats">
+            <span>Éxito</span><span class="v">97%</span>
+          </div>
+          <div class="provider-stats">
+            <span>p95</span><span class="v">1.8s</span>
+          </div>
+          <div class="provider-stats">
+            <span>Tokens</span><span class="v">1.2M</span>
+          </div>
+          <div class="provider-stats">
+            <span>Costo est.</span><span class="v">USD 4.32</span>
+          </div>
+        </div>
+        <div class="provider-card" tabindex="0"
+             title="Codex (Anthropic) — Fallback de Claude. Mismas métricas, sin API key visible."
+             aria-label="Codex: 94 por ciento éxito, latencia p95 2.4 segundos, 380 mil tokens, costo estimado 1.10 dólares">
+          <div class="provider-name codex">
+            <span class="provider-dot" style="background: var(--success)"></span>
+            Codex
+          </div>
+          <div class="provider-stats">
+            <span>Éxito</span><span class="v">94%</span>
+          </div>
+          <div class="provider-stats">
+            <span>p95</span><span class="v">2.4s</span>
+          </div>
+          <div class="provider-stats">
+            <span>Tokens</span><span class="v">380k</span>
+          </div>
+          <div class="provider-stats">
+            <span>Costo est.</span><span class="v">USD 1.10</span>
+          </div>
+        </div>
+        <div class="provider-card" tabindex="0"
+             title="Gemini (Google) — Free tier. Tasa de éxito, latencia y tokens igual. Costo USD 0 — siempre free tier."
+             aria-label="Gemini: 88 por ciento éxito, latencia p95 3.1 segundos, 240 mil tokens, free tier">
+          <div class="provider-name gemini">
+            <span class="provider-dot" style="background: var(--info)"></span>
+            Gemini
+          </div>
+          <div class="provider-stats">
+            <span>Éxito</span><span class="v">88%</span>
+          </div>
+          <div class="provider-stats">
+            <span>p95</span><span class="v">3.1s</span>
+          </div>
+          <div class="provider-stats">
+            <span>Tokens</span><span class="v">240k</span>
+          </div>
+          <div class="provider-stats">
+            <span>Costo est.</span><span class="v">FREE</span>
+          </div>
+        </div>
+        <div class="provider-card" tabindex="0"
+             title="Groq — Free tier. Muy rápido pero con throttling agresivo, por eso el éxito puede bajar bajo carga."
+             aria-label="Groq: 76 por ciento éxito, latencia p95 0.9 segundos, 95 mil tokens, free tier">
+          <div class="provider-name groq">
+            <span class="provider-dot" style="background: var(--warning)"></span>
+            Groq
+          </div>
+          <div class="provider-stats">
+            <span>Éxito</span><span class="v">76%</span>
+          </div>
+          <div class="provider-stats">
+            <span>p95</span><span class="v">0.9s</span>
+          </div>
+          <div class="provider-stats">
+            <span>Tokens</span><span class="v">95k</span>
+          </div>
+          <div class="provider-stats">
+            <span>Costo est.</span><span class="v">FREE</span>
+          </div>
+        </div>
+        <div class="provider-card" tabindex="0"
+             title="Cerebras — Free tier. Última opción del fallback. Bajo uso esperado."
+             aria-label="Cerebras: 71 por ciento éxito, latencia p95 1.4 segundos, 40 mil tokens, free tier">
+          <div class="provider-name cerebras">
+            <span class="provider-dot" style="background: var(--purple)"></span>
+            Cerebras
+          </div>
+          <div class="provider-stats">
+            <span>Éxito</span><span class="v">71%</span>
+          </div>
+          <div class="provider-stats">
+            <span>p95</span><span class="v">1.4s</span>
+          </div>
+          <div class="provider-stats">
+            <span>Tokens</span><span class="v">40k</span>
+          </div>
+          <div class="provider-stats">
+            <span>Costo est.</span><span class="v">FREE</span>
+          </div>
+        </div>
+      </div>
+      <div class="provider-todo">
+        TODO migrar a la ventana <code>?view=providers</code> cuando aterrice
+        (sub-historia hermana). Sólo metadata operativa — la API key vive
+        masked en /providers, jamás acá (CA-19 de #3733).
+      </div>
+    </section>
+
+    <!-- ===================================================================
+         CTA — entry point a /metrics (CA-9 reincorporación)
+         =================================================================== -->
+    <section class="metrics-cta" aria-labelledby="metrics-cta-title">
+      <div class="metrics-cta-icon" aria-hidden="true">📈</div>
+      <div class="metrics-cta-text">
+        <h3 id="metrics-cta-title">¿Necesitás el reporte histórico completo?</h3>
+        <p>
+          Snapshots del Pulpo (CPU/RAM en el tiempo), throughput acumulado por
+          fase/skill, timeline de archivos procesados, tokens estimados por sesión.
+        </p>
+      </div>
+      <a class="metrics-cta-btn" href="/metrics" rel="noopener"
+         title="Abrir el reporte HTML completo del endpoint /metrics — vive en .pipeline/dashboard.js. La sesión queda truncada a 8 chars por privacidad."
+         aria-label="Abrir reporte histórico completo de métricas">
+        <span aria-hidden="true">🔬</span> Abrir /metrics
+      </a>
+    </section>
+
+    <!-- ===================================================================
+         FOOTER — recordatorio de canales redundantes
+         =================================================================== -->
+    <div class="footer-note">
+      Tip: si esta ventana se cae, también podés pedir el snapshot por Telegram con
+      <kbd>/kpis</kbd> o <kbd>/metrics</kbd>. El JSON crudo está en <kbd>/api/metrics</kbd>.
+    </div>
+
+  </div>
+</body>
+</html>

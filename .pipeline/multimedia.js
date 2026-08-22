@@ -1,6 +1,10 @@
 // multimedia.js — Preprocesamiento de multimedia para el Commander V2
-// Transcribe audio (OpenAI) y describe imágenes (Anthropic Vision)
+// Transcribe audio (whisper local, motor gratuito) y describe imágenes (Anthropic Vision)
 // Se ejecuta ANTES de pasar el mensaje a Claude
+//
+// EP1-H2 (#3917): el STT corre 100% en whisper local — sin llamadas a APIs pagas.
+// La cadena de fallback se conserva como arquitectura para futuros motores
+// gratuitos, hoy con un solo motor (local).
 
 const https = require('https');
 const fs = require('fs');
@@ -13,17 +17,13 @@ const TG_CONFIG_PATH = path.join(ROOT, '.claude', 'hooks', 'telegram-config.json
 const { loadTelegramSecrets, loadApiKeys } = require('./lib/telegram-secrets');
 const { transcribeLocal: whisperLocal, isAvailable: whisperLocalAvailable } = require('./lib/whisper-local');
 
-// errorKinds de la API que ameritan probar el fallback local (cuota, auth,
-// rate limit, network, timeout). 'parse'/'no_key' tampoco deberían volar la
-// transcripción si tenemos whisper local disponible.
-const LOCAL_FALLBACK_KINDS = new Set(['quota', 'auth', 'rate_limit', 'network', 'timeout', 'no_key']);
-
 // Merge en 3 capas para que TTS/STT/Vision nunca se rompa por la migracion
 // del archivo committed a placeholders:
 //   - base = archivo committed (configs no-secretas: voice_id, retries, etc.)
 //   - bot_token + chat_id desde el helper de secrets criticos (home preferido)
-//   - api keys (OpenAI/Anthropic/ElevenLabs) desde loadApiKeys (ENV → home → legacy)
+//   - api keys (Anthropic, sólo para Vision) desde loadApiKeys (ENV → home → legacy)
 // Cualquier valor del home pisa el placeholder vacio del archivo committed.
+// EP1-H2 (#3917): la openai_api_key dejó de leerse — STT/TTS son 100% gratuitos.
 function loadConfig() {
   let base = {};
   try { base = JSON.parse(fs.readFileSync(TG_CONFIG_PATH, 'utf8')); } catch {}
@@ -33,10 +33,7 @@ function loadConfig() {
     base.chat_id = sec.chat_id;
   } catch {}
   const keys = loadApiKeys({ legacyConfigPath: TG_CONFIG_PATH });
-  if (keys.openai_api_key) base.openai_api_key = keys.openai_api_key;
   if (keys.anthropic_api_key) base.anthropic_api_key = keys.anthropic_api_key;
-  if (keys.elevenlabs_api_key) base.elevenlabs_api_key = keys.elevenlabs_api_key;
-  if (keys.elevenlabs_voice_id) base.elevenlabs_voice_id = keys.elevenlabs_voice_id;
   return base;
 }
 
@@ -78,131 +75,334 @@ function downloadTelegramFile(fileId, botToken) {
   });
 }
 
-// --- OpenAI Whisper transcription ---
-// Devuelve siempre {ok, text, errorKind, raw} para que el caller decida si
-// degrada con gracia. errorKind ∈ {'no_key','quota','auth','rate_limit',
-// 'network','timeout','parse','api','unknown'}.
+// --- Whisper local transcription (motor primario, gratuito) ---
+// EP1-H2 (#3917): el STT corre 100% en whisper local (`lib/whisper-local.js`).
+// Ya no hay llamada a APIs pagas: cada audio se transcribe offline sin pagar la
+// latencia muerta de un primario caído.
+//
+// Devuelve siempre {ok, text, source, errorKind, raw} para que el caller degrade
+// con gracia. errorKind (cuando ok=false) ∈ los del motor local:
+// {'no_binary','no_input','missing_file','spawn_error','timeout','cli_error',
+//  'no_output','read_error','unavailable'}.
+//
+// La firma conserva el shape histórico (audioBuffer, audioPath, filename) y el
+// campo `source` para que el resto del pipeline (logs, extras) siga auditando
+// qué motor respondió. La arquitectura de fallback se mantiene: si mañana se
+// suma otro motor gratuito, este orquestador es el punto de extensión.
+// El motor local (`whisper-local`) corre un solo audio a la vez (lock single-flight
+// por los ~2 GB de RAM del modelo large-v3-turbo). Cuando llega un audio mientras
+// otro se está transcribiendo, devuelve `busy`. ANTES eso descartaba el audio sin
+// avisar: si el operador mandaba varias notas de voz pegadas, las del medio se
+// perdían. Después se agregó una espera acotada por presupuesto (6 min), que seguía
+// descartando: con el motor ocupado, un audio encolado agotaba el presupuesto SIN
+// HABER ENTRADO NUNCA al motor y salía como `busy`.
+//
+// #5336 (CA-7): la espera en cola deja de ser un presupuesto que descarta. Un audio
+// encolado entra al motor cuando se libera el lock, sin importar cuánto esperó. Eso
+// es seguro porque el motor ahora SIEMPRE termina por sí solo (watchdog de
+// inactividad de whisper-local), así que la cola drena: la espera está acotada por
+// el trabajo real que tiene adelante, no por un reloj arbitrario.
+const BUSY_RETRY_DELAY_MS = Number(process.env.WHISPER_BUSY_RETRY_DELAY_MS || 3000);
 
-function classifyOpenAIError(errObj) {
-  if (!errObj) return 'unknown';
-  const code = (errObj.code || '').toLowerCase();
-  const type = (errObj.type || '').toLowerCase();
-  const msg  = (errObj.message || '').toLowerCase();
-  if (code === 'insufficient_quota' || type === 'insufficient_quota' || msg.includes('exceeded your current quota')) return 'quota';
-  if (code === 'invalid_api_key' || type === 'invalid_request_error' && msg.includes('api key')) return 'auth';
-  if (code === 'rate_limit_exceeded' || type === 'rate_limit_error') return 'rate_limit';
-  return 'api';
-}
+// Backstop de LOCK FILTRADO, no presupuesto de trabajo. Si el lock quedara tomado
+// por un bug (proceso que ni siquiera el watchdog liberó), no queremos esperar para
+// siempre dentro del turno del commander. El valor está deliberadamente por encima
+// del ciclo de vida máximo del motor, de modo que una cola sana JAMÁS lo alcanza:
+// alcanzarlo es señal de bug, no de carga, y por eso tiene su propio errorKind.
+const QUEUE_STUCK_GUARD_MS = Number(process.env.WHISPER_QUEUE_STUCK_GUARD_MS || 60 * 60 * 1000); // 1 h
 
-function transcribeAudio(audioBuffer, filename) {
-  const config = loadConfig();
-  const apiKey = config.openai_api_key || process.env.OPENAI_API_KEY;
-  if (!apiKey) return Promise.resolve({ ok: false, text: '', errorKind: 'no_key', raw: 'falta openai_api_key' });
+// #5336 (CA-2/CA-8): umbrales de aviso. Dos estados visibles y DISTINGUIBLES para
+// el usuario — esperando turno vs. siendo transcripto. Un solo aviso por estado.
+const QUEUE_NOTICE_MS = Number(process.env.WHISPER_QUEUE_NOTICE_MS || 45000);
+const ENGINE_NOTICE_MS = Number(process.env.WHISPER_ENGINE_NOTICE_MS || 45000);
+const NOTICE_TICK_MS = Number(process.env.WHISPER_NOTICE_TICK_MS || 1000);
 
-  return new Promise((resolve) => {
-    const boundary = 'boundary' + Date.now();
-    const parts = [];
-    parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-4o-mini-transcribe\r\n`);
-    parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename || 'audio.ogg'}"\r\nContent-Type: audio/ogg\r\n\r\n`);
+// Copys de los avisos de progreso. Literales planos y cerrados (SEC-1/SEC-2): NO se
+// interpola `raw`, `e.message` ni paths. No prometen tiempo estimado — comunican
+// estado, no promesa (guideline UX del issue).
+const QUEUE_NOTICE_TEXT = '🎤 Recibí tu audio. Hay otro procesándose adelante — arranco con el tuyo apenas se libere.';
+const ENGINE_NOTICE_TEXT = '🎤 Recibí tu audio y lo estoy transcribiendo. Está tardando más de lo normal porque la máquina está cargada — te respondo apenas termine.';
 
-    const header = Buffer.from(parts.join(''));
-    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([header, audioBuffer, footer]);
+// #5336 (CA-3): reintentos automáticos ante fallo del motor.
+const TRANSCRIBE_MAX_ATTEMPTS = Number(process.env.WHISPER_MAX_ATTEMPTS || 3); // 1 intento + 2 reintentos
+// Backoff entre reintentos. Env-pisable (lista separada por comas) para que los
+// tests no tengan que esperar segundos reales; si el override viene vacío o basura,
+// caemos al default en vez de quedarnos sin backoff.
+const RETRY_BACKOFF_MS = (() => {
+  const raw = process.env.WHISPER_RETRY_BACKOFF_MS;
+  if (!raw) return [2000, 5000];
+  const parsed = String(raw).split(',').map((n) => Number(n.trim())).filter((n) => Number.isFinite(n) && n >= 0);
+  return parsed.length > 0 ? parsed : [2000, 5000];
+})();
 
-    const req = https.request({
-      hostname: 'api.openai.com',
-      path: '/v1/audio/transcriptions',
-      method: 'POST',
-      headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Length': body.length
-      },
-      timeout: 60000
-    }, (res) => {
-      let d = '';
-      res.on('data', c => d += c);
-      res.on('end', () => {
-        try {
-          const r = JSON.parse(d);
-          if (r.error) {
-            resolve({ ok: false, text: '', errorKind: classifyOpenAIError(r.error), raw: r.error.message || JSON.stringify(r.error) });
-            return;
-          }
-          if (r.text) { resolve({ ok: true, text: r.text }); return; }
-          resolve({ ok: false, text: '', errorKind: 'parse', raw: 'respuesta sin campo text' });
-        } catch (e) {
-          resolve({ ok: false, text: '', errorKind: 'parse', raw: e.message });
-        }
-      });
+// Solo reintentamos lo que puede salir distinto en otra pasada (crash por presión
+// de memoria, proceso colgado, salida ilegible). Los fallos DETERMINÍSTICOS —falta
+// el binario, no hay input, el archivo no existe, supera el cap— dan exactamente lo
+// mismo en el reintento: reintentarlos solo retrasa el aviso al usuario.
+const RETRYABLE_ERROR_KINDS = new Set(['cli_error', 'spawn_error', 'no_output', 'read_error', 'stalled', 'timeout']);
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// Espera a que el motor se libere y transcribe. Devuelve el resultado del motor.
+// `signalStage` reporta el estado visible ('queue' | 'engine') al notificador.
+async function transcribeWhenEngineFree(audioBuffer, audioPath, signalStage) {
+  const waitStart = Date.now();
+  let announcedWait = false;
+
+  for (;;) {
+    // OJO: acá NO se marca 'engine'. Cada poll de la cola vuelve a llamar al
+    // motor, y marcar el estado en cada vuelta reiniciaba el reloj de espera cada
+    // pocos segundos — con lo cual el aviso de cola no se emitía NUNCA por más
+    // que el audio llevara media hora esperando. El estado sólo cambia a 'engine'
+    // cuando el motor da su primer latido, que es la señal real de que arrancó.
+    const result = await whisperLocal({
+      audioPath,
+      audioBuffer,
+      logger: log,
+      onProgress: () => signalStage('engine'),
     });
-    req.on('error', (e) => resolve({ ok: false, text: '', errorKind: 'network', raw: e.message }));
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, text: '', errorKind: 'timeout', raw: 'timeout' }); });
-    req.write(body);
-    req.end();
-  });
+
+    if (!result.ok && result.errorKind === 'busy') {
+      signalStage('queue');
+      const waitedMs = Date.now() - waitStart;
+      if (waitedMs >= QUEUE_STUCK_GUARD_MS) {
+        log(`[whisper local] el lock lleva ${Math.round(waitedMs / 1000)}s tomado — probable lock filtrado, no carga normal`);
+        return { ok: false, text: '', errorKind: 'queue_stuck', raw: `el motor no se liberó en ${Math.round(waitedMs / 1000)}s` };
+      }
+      if (!announcedWait) {
+        log('[whisper local] motor ocupado — el audio espera turno (sin presupuesto de descarte, CA-7)');
+        announcedWait = true;
+      }
+      await sleep(BUSY_RETRY_DELAY_MS);
+      continue;
+    }
+
+    if (announcedWait && result.ok) {
+      log(`[whisper local] lock liberado tras ~${Math.round((Date.now() - waitStart) / 1000)}s en cola — audio transcripto (no se perdió)`);
+    }
+    return result;
+  }
 }
 
-// Orquesta API + fallback local. Devuelve la misma forma {ok,text,errorKind,raw}
-// más un campo `source` ∈ {'openai','local'} para que se pueda auditar/loguear
-// cuál motor terminó respondiendo.
-async function transcribeAudioWithFallback(audioBuffer, audioPath, filename) {
-  const apiResult = await transcribeAudio(audioBuffer, filename);
-  if (apiResult.ok) return { ...apiResult, source: 'openai' };
-
-  // Sólo intentamos local cuando el motivo de falla es uno que el local puede
-  // resolver (cuota agotada, key inválida, network). Errores de parseo o de
-  // formato de respuesta no se arreglan re-corriendo en local.
-  if (!LOCAL_FALLBACK_KINDS.has(apiResult.errorKind)) {
-    return { ...apiResult, source: 'openai' };
-  }
+async function transcribeAudioWithFallback(audioBuffer, audioPath, filename, opts = {}) { // eslint-disable-line no-unused-vars
   if (!whisperLocalAvailable()) {
-    log(`API falló (${apiResult.errorKind}) y whisper local no está disponible`);
-    return { ...apiResult, source: 'openai' };
+    log('whisper local no está disponible (binario ausente)');
+    return { ok: false, text: '', source: 'local', errorKind: 'unavailable', raw: 'whisper CLI no encontrado' };
   }
 
-  log(`API falló (${apiResult.errorKind}) — fallback a whisper local`);
-  const localResult = await whisperLocal({ audioPath, audioBuffer, logger: log });
-  if (localResult.ok) {
-    return { ok: true, text: localResult.text, source: 'local', apiErrorKind: apiResult.errorKind };
-  }
-  // Si el local también falló, devolvemos el error original de la API (es el
-  // que tiene contexto más útil para el operador). Anotamos el fallo del local.
-  return {
-    ...apiResult,
-    source: 'openai',
-    localErrorKind: localResult.errorKind,
-    localRaw: localResult.raw,
+  // Notificador inyectado por el caller (pulpo tiene la ruta autorizada a Telegram
+  // y el dedup por chat). Sin notificador, el módulo funciona igual: los avisos son
+  // aditivos y jamás afectan el resultado de la transcripción.
+  const notify = typeof opts.notify === 'function' ? opts.notify : null;
+
+  // --- Avisos de progreso (CA-2/CA-8) ---
+  // Un solo aviso por estado, y CANCELADOS al resolver: un "estoy procesando" que
+  // llega después de la respuesta final es peor que el silencio.
+  let stage = 'engine';
+  let stageSince = Date.now();
+  const notified = { queue: false, engine: false };
+  let finished = false;
+
+  const signalStage = (next) => {
+    if (finished || next === stage) return;
+    stage = next;
+    stageSince = Date.now();
   };
+
+  const noticeTimer = notify ? setInterval(() => {
+    if (finished) return;
+    const elapsed = Date.now() - stageSince;
+    if (stage === 'queue' && !notified.queue && elapsed >= QUEUE_NOTICE_MS) {
+      notified.queue = true;
+      try { notify(QUEUE_NOTICE_TEXT, 'queue'); } catch (e) { log(`[whisper local] aviso de cola no enviado: ${e.message}`); }
+    } else if (stage === 'engine' && !notified.engine && elapsed >= ENGINE_NOTICE_MS) {
+      notified.engine = true;
+      try { notify(ENGINE_NOTICE_TEXT, 'engine'); } catch (e) { log(`[whisper local] aviso de proceso no enviado: ${e.message}`); }
+    }
+  }, NOTICE_TICK_MS) : null;
+  if (noticeTimer && typeof noticeTimer.unref === 'function') noticeTimer.unref();
+
+  try {
+    // --- Reintentos con backoff (CA-3) ---
+    // El audio original persiste todo el ciclo: cuando viene `audioPath`, es el .ogg
+    // que bajó el listener (nadie lo borra); cuando viene sólo buffer, sigue en
+    // memoria. Cada reintento relee la misma fuente, así que reprocesar es seguro.
+    let localResult = null;
+    for (let attempt = 1; attempt <= TRANSCRIBE_MAX_ATTEMPTS; attempt++) {
+      localResult = await transcribeWhenEngineFree(audioBuffer, audioPath, signalStage);
+      if (localResult.ok) {
+        if (attempt > 1) log(`[whisper local] transcripción OK en el intento ${attempt}/${TRANSCRIBE_MAX_ATTEMPTS}`);
+        break;
+      }
+      if (!RETRYABLE_ERROR_KINDS.has(localResult.errorKind)) {
+        log(`[whisper local] fallo no reintentable (${localResult.errorKind}) — no tiene sentido repetir`);
+        break;
+      }
+      if (attempt < TRANSCRIBE_MAX_ATTEMPTS) {
+        const backoff = RETRY_BACKOFF_MS[attempt - 1] || RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1];
+        log(`[whisper local] intento ${attempt}/${TRANSCRIBE_MAX_ATTEMPTS} falló (${localResult.errorKind}) — reintento en ${backoff}ms`);
+        await sleep(backoff);
+      } else {
+        log(`[whisper local] agotados los ${TRANSCRIBE_MAX_ATTEMPTS} intentos (último: ${localResult.errorKind})`);
+      }
+    }
+
+    if (localResult.ok) {
+      // #3918: propagamos `confidence` cuando el motor local la expone (whisper
+      // local deriva la métrica de los logprobs del JSON). Extensión aditiva: si
+      // el motor no la trae, queda undefined → "confianza desconocida".
+      const out = { ok: true, text: localResult.text, source: 'local' };
+      if (localResult.confidence) out.confidence = localResult.confidence;
+      return out;
+    }
+    return { ...localResult, source: 'local' };
+  } finally {
+    // Cancelación del aviso pendiente (CA-8): idempotente y a prueba de excepciones.
+    finished = true;
+    if (noticeTimer) clearInterval(noticeTimer);
+  }
 }
 
-// Mensaje human-friendly que va a Telegram cuando whisper no pudo transcribir.
-// Es lo que va a leer Leo, así que tiene que ser breve y accionable.
-// Cuando ambos engines (API + local) fallan, el mensaje refleja eso —
-// no podemos echarle la culpa solo a la cuota de OpenAI si el local crasheó.
-function transcriptionFailureMessage(errorKind, localErrorKind = null) {
-  if (localErrorKind) {
-    const apiPart = errorKind === 'quota' ? 'cuota OpenAI agotada'
-                  : errorKind === 'auth'  ? 'key OpenAI inválida'
-                  : errorKind === 'rate_limit' ? 'rate-limit OpenAI'
-                  : errorKind === 'network' ? 'no llegué a OpenAI'
-                  : errorKind === 'timeout' ? 'timeout OpenAI'
-                  : `OpenAI ${errorKind}`;
-    const localHint = localErrorKind === 'cli_error' ? 'crasheó (probable OOM con audio largo)'
-                    : localErrorKind === 'timeout'  ? 'tardó demasiado'
-                    : localErrorKind === 'no_binary' ? 'no está instalado'
-                    : `falló (${localErrorKind})`;
-    return `🎤 Audio recibido. Falló API (${apiPart}) y también whisper local — ${localHint}. Repetímelo por texto cuando puedas. Si el local sigue crasheando: bajar \`WHISPER_LOCAL_MODEL\` a \`small\` o reiniciar la máquina.`;
+// Mensaje human-friendly que va a Telegram cuando no se pudo transcribir. Es lo
+// que va a leer Leo, así que tiene que ser breve, honesto y accionable.
+//
+// FUENTE ÚNICA DE COPY (#5336 CA-4): este es el ÚNICO lugar donde se redacta el
+// mensaje de fallo de transcripción. El router (`commander-deterministic.js`) NO
+// escribe un copy paralelo — detecta el marcador y deja que el caller use esta
+// función. Dos textos para el mismo evento se desincronizan.
+//
+// SEC-1/SEC-2 — enum CERRADO de motivos, espejo de TTS_DEGRADED_REASONS. Jamás se
+// interpola `e.message`, `raw`, paths ni nombres de temp: sólo strings curados.
+// Un errorKind desconocido cae en 'unknown' (degradación segura).
+//
+// #5336 (CA-9) — ningún motivo da un consejo que dejó de aplicar:
+//  - `timeout`/`stalled` ya NO dicen "reenvialo más cortito": eliminado el corte
+//    por duración, el largo del audio dejó de ser la causa, y ese consejo mandaba
+//    al operador a mutilar su mensaje por un problema que no era suyo.
+//  - `no_binary` ya NO sugiere `pip install openai-whisper`: el motor es
+//    faster-whisper desde #3916, así que ese comando no habilitaba nada.
+//
+// El motivo de motor ausente SÍ nombra el motor (`faster-whisper`), espejo de
+// TTS_DEGRADED_REASONS.no_binary que nombra `edge-tts`: es un fallo accionable
+// por el operador y sin el nombre no sabe qué instalar. Contrato verificado por
+// `__tests__/multimedia-free-stack.test.js` ("el mensaje de motor ausente
+// menciona el remedio local").
+const TRANSCRIPTION_FAILURE_REASONS = {
+  unavailable:     'El motor de transcripción (faster-whisper) no está instalado en la máquina.',
+  no_binary:       'El motor de transcripción (faster-whisper) no está instalado en la máquina.',
+  cli_error:       'El motor de transcripción crasheó, probablemente por falta de memoria.',
+  stalled:         'El motor de transcripción se quedó sin dar señales de vida y lo tuve que cortar.',
+  timeout:         'El motor de transcripción arrancó pero nunca terminó.',
+  queue_stuck:     'El motor de transcripción quedó trabado y no se liberó para tomar tu audio.',
+  no_output:       'El motor de transcripción terminó pero no devolvió texto.',
+  read_error:      'El motor de transcripción terminó pero no devolvió texto.',
+  no_input:        'No encontré el archivo de audio para transcribir.',
+  missing_file:    'No encontré el archivo de audio para transcribir.',
+  spawn_error:     'No pude lanzar el motor de transcripción.',
+  too_large:       'El audio supera el tamaño máximo que puedo procesar.',
+  busy:            'El motor de transcripción estuvo ocupado con otros audios.',
+  download_failed: 'No pude descargar el audio de Telegram.',
+  unknown:         'El motor de transcripción falló.',
+};
+
+function transcriptionFailureMessage(errorKind, _localErrorKind = null) {
+  const reason = TRANSCRIPTION_FAILURE_REASONS[errorKind] || TRANSCRIPTION_FAILURE_REASONS.unknown;
+  // Sólo mencionamos el reintento cuando REALMENTE hubo reintentos (CA-3): sirve
+  // para que el operador no insista al pedo. En los fallos no reintentables sería
+  // mentira. El detalle de cuántos/por qué va al log, no al chat.
+  const retried = RETRYABLE_ERROR_KINDS.has(errorKind)
+    ? ' Ya lo reintenté un par de veces sin suerte.'
+    : '';
+  // El encabezado es deliberadamente explícito sobre QUÉ falló: la infraestructura,
+  // no la comprensión. Nunca "no te entendí", que comunica algo falso.
+  return `🎤 Recibí tu audio pero no pude transcribirlo.${retried} ${reason} Repetímelo por texto o mandámelo de nuevo.`;
+}
+
+// EP1-H4 (#3919): aviso de degradación de TTS. Cuando el motor de voz falla y la
+// respuesta sale solo por texto, el usuario que esperaba audio se entera del modo
+// degradado y del motivo.
+//
+// SEC-1/SEC-2: enum CERRADO de motivos. Prohibido interpolar `e.message`, `raw`,
+// paths o nombres de temp en el mensaje — solo strings curados. `errorKind` debe
+// ser una de estas claves; cualquier otra cae en 'unknown'.
+const TTS_DEGRADED_REASONS = {
+  no_binary:   'El motor de voz (edge-tts) no está instalado en la máquina.',
+  spawn_error: 'No pude lanzar el motor de voz.',
+  cli_error:   'El motor de voz crasheó al generar el audio.',
+  timeout:     'El motor de voz se colgó (timeout).',
+  no_output:   'El motor de voz no devolvió audio.',
+  ffmpeg:      'No pude convertir el audio a formato de voz.',
+  unknown:     'El motor de voz no está disponible.',
+};
+
+function ttsDegradedMessage(errorKind) {
+  const reason = TTS_DEGRADED_REASONS[errorKind] || TTS_DEGRADED_REASONS.unknown;
+  // canned, sin interpolar el objeto de error crudo (SEC-1/SEC-2)
+  return `🔇 ${reason} Te respondo solo por texto.`;
+}
+
+// EP1-H4 (#3919): dedup de avisos de degradación por ventana de tiempo.
+//
+// Dimensión del dedup = (chatId, tipo) con tipo ∈ {'stt','tts'} — NO global, para
+// no acallar avisos de un chat por culpa de otro. Modelo espejo del debounce de
+// quotaNotifier (DEBOUNCE_CANNED_MS = 2 min).
+//
+// SEC-4: el estado guarda SOLO timestamps (jamás contenido/transcripción) y purga
+// entradas vencidas en cada llamada (cota de crecimiento frente a chat_id externo).
+// Es función pura sobre `stateObj`: devuelve `{ notify, nextState }` sin tocar I/O.
+const DEGRADATION_NOTIFY_WINDOW_MS = 2 * 60 * 1000;
+
+function shouldNotifyDegradation(stateObj, chatId, tipo, nowMs, windowMs = DEGRADATION_NOTIFY_WINDOW_MS) {
+  // Tolerante a corrupción: si el estado no es un objeto usable, arrancamos limpio.
+  const base = (stateObj && typeof stateObj === 'object' && stateObj.entries && typeof stateObj.entries === 'object')
+    ? stateObj.entries
+    : {};
+  const nextEntries = {};
+  // Purga de entradas vencidas (SEC-4: cota de crecimiento).
+  for (const [k, ts] of Object.entries(base)) {
+    if (typeof ts === 'number' && Number.isFinite(ts) && (nowMs - ts) < windowMs) {
+      nextEntries[k] = ts;
+    }
   }
-  switch (errorKind) {
-    case 'no_key':     return '🎤 Audio recibido. No tengo `openai_api_key` cargada — repetímelo por texto cuando puedas.';
-    case 'quota':      return '🎤 Audio recibido. La cuota de OpenAI está agotada (Whisper no responde) — repetímelo por texto cuando puedas. Para volver a habilitar la transcripción: subir cuota o rotar la key en `~/.claude/secrets/telegram-config.json`.';
-    case 'auth':       return '🎤 Audio recibido. La `openai_api_key` está inválida — repetímelo por texto y revisá la key en `~/.claude/secrets/telegram-config.json`.';
-    case 'rate_limit': return '🎤 Audio recibido. Whisper está rate-limited ahora mismo — esperá unos segundos y reenviá, o repetímelo por texto.';
-    case 'timeout':    return '🎤 Audio recibido. La transcripción se colgó (timeout) — repetímelo por texto, o reenvialo más cortito.';
-    case 'network':    return '🎤 Audio recibido. No pude llegar a la API de OpenAI (network) — repetímelo por texto.';
-    default:           return '🎤 Audio recibido pero no pude transcribirlo — repetímelo por texto cuando puedas.';
+  const key = `${chatId}::${tipo}`;
+  const last = nextEntries[key];
+  const notify = !(typeof last === 'number' && (nowMs - last) < windowMs);
+  if (notify) nextEntries[key] = nowMs;
+  return { notify, nextState: { entries: nextEntries } };
+}
+
+// Estado persistente dedicado para los avisos de degradación (SEC-4: escritura
+// atómica write-tmp + rename porque el pipeline es event-driven con escrituras
+// concurrentes; load tolerante a corrupción).
+const DEGRADATION_NOTIFY_STATE_PATH = path.join(ROOT, '.pipeline', '.degradation-notify-state.json');
+
+function loadDegradationNotifyState() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DEGRADATION_NOTIFY_STATE_PATH, 'utf8'));
+    if (parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object') {
+      return parsed;
+    }
+  } catch { /* archivo ausente o corrupto → estado limpio */ }
+  return { entries: {} };
+}
+
+function saveDegradationNotifyState(state) {
+  try {
+    const tmp = `${DEGRADATION_NOTIFY_STATE_PATH}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, DEGRADATION_NOTIFY_STATE_PATH); // rename atómico
+  } catch (e) {
+    log(`Degradation notify state save error: ${e.message}`);
   }
+}
+
+// Helper de conveniencia: combina load + dedup + save. Devuelve true si hay que
+// avisar (y ya persistió el timestamp), false si está dentro de la ventana.
+function noteDegradationAndShouldNotify(chatId, tipo, nowMs) {
+  const state = loadDegradationNotifyState();
+  const { notify, nextState } = shouldNotifyDegradation(state, chatId, tipo, nowMs);
+  if (notify) saveDegradationNotifyState(nextState);
+  return notify;
 }
 
 // --- Anthropic Vision ---
@@ -261,7 +461,10 @@ function describeImage(imageBuffer, mediaType) {
 
 // --- Preprocesar mensaje completo ---
 
-async function preprocessMessage(msg, botToken) {
+// `opts.notify(text, stage)` es opcional (#5336 CA-2/CA-8): el caller inyecta la
+// ruta autorizada a Telegram para los avisos de "esperá que estoy con tu audio".
+// Sin notificador el preprocesado funciona idéntico — los avisos son aditivos.
+async function preprocessMessage(msg, botToken, opts = {}) {
   const result = { text: msg.text || '', extras: [], audio: null };
 
   // Transcribir audio
@@ -281,16 +484,21 @@ async function preprocessMessage(msg, botToken) {
 
     if (audioBuffer) {
       log(`Transcribiendo audio (${audioBuffer.length} bytes)...`);
-      const tx = await transcribeAudioWithFallback(audioBuffer, msg.voice_path || null, 'audio.ogg');
+      const tx = await transcribeAudioWithFallback(audioBuffer, msg.voice_path || null, 'audio.ogg', { notify: opts.notify });
       if (tx.ok) {
-        const sourceTag = tx.source === 'local' ? ' [whisper local]' : '';
-        log(`Transcripcion${sourceTag}: "${tx.text.slice(0, 100)}"`);
+        log(`Transcripcion [whisper local]: "${tx.text.slice(0, 100)}"`);
         result.text = tx.text;
-        const extra = tx.source === 'local'
-          ? '(mensaje de voz transcripto · whisper local · API en fallback)'
-          : '(mensaje de voz transcripto)';
-        result.extras.push(extra);
-        result.audio = { ok: true, source: tx.source };
+        result.extras.push('(mensaje de voz transcripto · whisper local)');
+        // #3918 (CA-1/CA-2/CA-3): además de ok/source, propagamos la
+        // transcripción cruda (para el eco, sin el sufijo de `extras`) y la
+        // confianza (para el gate de confirmación). `confidence` es null cuando
+        // el parseo del JSON local no derivó métricas.
+        result.audio = {
+          ok: true,
+          source: tx.source,
+          transcript: tx.text,
+          confidence: tx.confidence || null,
+        };
       } else {
         log(`Transcripcion FALLO (${tx.errorKind}): ${tx.raw}${tx.localErrorKind ? ` | local=${tx.localErrorKind}: ${tx.localRaw}` : ''}`);
         // No metemos el error como texto del mensaje — el caller decide qué hacer.
@@ -301,7 +509,9 @@ async function preprocessMessage(msg, botToken) {
     } else {
       log('Audio no disponible');
       result.extras.push('(audio no disponible)');
-      result.audio = { ok: false, errorKind: 'download_failed', raw: 'no se pudo bajar el audio', fallbackMessage: '🎤 Audio recibido pero no pude descargarlo de Telegram — reintentá o repetímelo por texto.' };
+      // CA-4/CA-5: también este camino de excepción usa la fuente única de copy —
+      // sin esto el operador recibía un texto paralelo que se desincronizaba.
+      result.audio = { ok: false, errorKind: 'download_failed', raw: 'no se pudo bajar el audio', fallbackMessage: transcriptionFailureMessage('download_failed') };
     }
   }
 
@@ -351,35 +561,29 @@ const TTS_CONFIG_PATH = path.join(ROOT, '.pipeline', 'tts-config.json');
 // tiene schema inválido, o se pide un perfil inexistente (queremos audio
 // genérico antes que no audio). Cualquier agente del pipeline puede declarar
 // su propio perfil en tts-config.json → profiles.<nombre>.
+//
+// EP1-H2 (#3917): Edge TTS es el motor oficial y único. La arquitectura de
+// fallback se conserva (`fallback` puede apuntar a un futuro motor gratuito),
+// hoy con `fallback: null` porque sólo existe un motor.
 const DEFAULT_PROFILE = {
-  primary: 'openai',
-  fallback: 'edge',
-  openai: {
-    model: 'gpt-4o-mini-tts',
-    voice: 'ash',
-    instructions: 'Hablas como un porteño de Buenos Aires, con tonada rioplatense. Usas vos en vez de tu, decis dale, che, mira. El ritmo es de charla entre amigos. Sos inteligente pero cero formal.',
-    response_format: 'opus',
-    character_name: 'Claudito'
-  },
+  primary: 'edge',
+  fallback: null,
   edge: {
     voice: 'es-AR-TomasNeural',
     rate: '+8%',
     pitch: '+4Hz',
     character_name: 'Tommy',
     personality: 'Sos Tommy, un pibe joven que recién arranca en el equipo. Tenés la frescura de la juventud, hablas con energía, onda y entusiasmo. Usas vos, che, dale, mira. Sos piola, curioso, con ganas de aprender. Nunca sos engreído — tenés el respeto del que recién se inicia pero la garra de querer comerse la cancha.'
-  },
-  intros: {
-    openai_from_edge: 'Hola Leo, volvió Claudito. Gracias Tommy por cubrirme, te saliste, pibe.',
-    edge_from_openai: 'Eeeeh Leo, todo bien. Soy Tommy, recién me sumo al equipo. Claudito se tomó una licencia y me dejó la posta mientras vuelve. La rompo yo hasta que regrese.'
   }
 };
 
 /**
  * Carga un perfil TTS por nombre. Soporta dos shapes de tts-config.json:
  *   - Nuevo: { profiles: { default: {...}, qa: {...}, ... } }
- *   - Viejo: { primary, fallback, providers: { openai, edge }, intros } → interpretado como profiles.default
+ *   - Viejo: { primary, fallback, providers: { edge }, ... } → interpretado como profiles.default
  * Si el perfil pedido no existe, cae a `default`. Si tampoco hay default, usa DEFAULT_PROFILE hardcoded.
- * Retorna objeto con { primary, fallback, openai, edge, intros, profileName, profileFound }.
+ * Retorna objeto con { primary, fallback, edge, profileName, profileFound }.
+ * EP1-H2 (#3917): motor único Edge — ya no se exponen `openai` ni `intros`.
  */
 function loadTtsConfig(profileName = 'default') {
   let raw = null;
@@ -400,9 +604,7 @@ function loadTtsConfig(profileName = 'default') {
     profileRaw = {
       primary: raw.primary,
       fallback: raw.fallback,
-      openai: raw.providers?.openai,
       edge: raw.providers?.edge,
-      intros: raw.intros,
     };
   }
 
@@ -410,12 +612,12 @@ function loadTtsConfig(profileName = 'default') {
     return { ...DEFAULT_PROFILE, profileName: 'default', profileFound: false };
   }
 
+  // Motor único Edge: aunque un perfil legacy declare primary='openai', lo
+  // normalizamos a 'edge' para no intentar un motor pago que ya no existe.
   return {
-    primary: profileRaw.primary || DEFAULT_PROFILE.primary,
-    fallback: profileRaw.fallback === null ? null : (profileRaw.fallback || DEFAULT_PROFILE.fallback),
-    openai: { ...DEFAULT_PROFILE.openai, ...(profileRaw.openai || {}) },
+    primary: 'edge',
+    fallback: null,
     edge: { ...DEFAULT_PROFILE.edge, ...(profileRaw.edge || {}) },
-    intros: { ...DEFAULT_PROFILE.intros, ...(profileRaw.intros || {}) },
     profileName,
     profileFound: true,
   };
@@ -434,63 +636,17 @@ function saveTtsState(state) {
   catch (e) { log(`TTS state save error: ${e.message}`); }
 }
 
-function getTransitionIntro(newProvider, prevProvider, profileName = 'default') {
-  if (!prevProvider || prevProvider === newProvider) return null;
-  const cfg = loadTtsConfig(profileName);
-  if (newProvider === 'openai' && prevProvider === 'edge') return cfg.intros?.openai_from_edge || null;
-  if (newProvider === 'edge' && prevProvider === 'openai') return cfg.intros?.edge_from_openai || null;
+// EP1-H2 (#3917): con un único motor TTS (Edge) ya no hay transiciones de
+// personaje (Claudito↔Tommy). Se conserva la firma porque pulpo.js la invoca,
+// pero retorna siempre null — no hay intro de cambio de motor que narrar.
+function getTransitionIntro(_newProvider, _prevProvider, _profileName = 'default') { // eslint-disable-line no-unused-vars
   return null;
 }
 
-// --- OpenAI TTS ---
-
-function textToSpeechOpenAI(text, profileName = 'default') {
-  const config = loadConfig();
-  const apiKey = config.openai_api_key || process.env.OPENAI_API_KEY;
-  if (!apiKey) { log('TTS[openai]: falta openai_api_key'); return Promise.resolve(null); }
-
-  const ttsCfg = loadTtsConfig(profileName).openai;
-
-  return new Promise((resolve) => {
-    // OpenAI TTS soporta hasta 4096 chars — NO truncar, los callers manejan chunking
-    const body = JSON.stringify({
-      model: ttsCfg.model,
-      input: text.substring(0, 4096),
-      voice: ttsCfg.voice,
-      instructions: ttsCfg.instructions,
-      response_format: ttsCfg.response_format || 'opus'
-    });
-
-    const req = https.request({
-      hostname: 'api.openai.com',
-      path: '/v1/audio/speech',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Length': Buffer.byteLength(body)
-      },
-      timeout: 60000
-    }, (res) => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        const buffer = Buffer.concat(chunks);
-        if (res.statusCode === 200 && buffer.length > 100) {
-          log(`TTS[openai] generado: ${buffer.length} bytes`);
-          resolve(buffer);
-        } else {
-          log(`TTS[openai] error: status=${res.statusCode}, size=${buffer.length}`);
-          resolve(null);
-        }
-      });
-    });
-    req.on('error', (e) => { log(`TTS[openai] error: ${e.message}`); resolve(null); });
-    req.on('timeout', () => { req.destroy(); log('TTS[openai] timeout'); resolve(null); });
-    req.write(body);
-    req.end();
-  });
-}
+// --- (legacy) OpenAI TTS removido en EP1-H2 (#3917) ---
+// La función `textToSpeechOpenAI` y su llamada al endpoint pago de OpenAI fueron retiradas:
+// Edge es el motor oficial y único. La arquitectura de fallback (textToSpeechWithMeta)
+// se conserva para sumar futuros motores gratuitos sin reescribir el orquestador.
 
 // --- Edge TTS (Microsoft, gratis) ---
 
@@ -557,13 +713,28 @@ function mp3ToOpus(mp3Path) {
   });
 }
 
-function textToSpeechEdge(text, profileName = 'default') {
+// #3485: estimación de duración para detectar truncado interno de Edge TTS.
+// Para español, ~15 chars/seg es una regla pragmática que aproxima el ritmo
+// natural de la voz "es-AR" usada. Útil como leading indicator si el archivo
+// generado sale más corto de lo esperado.
+function estimateTtsDurationSec(chars) {
+  return Math.max(1, Math.round(chars / 15));
+}
+
+function formatChunkInfo(chunkInfo) {
+  if (!chunkInfo || typeof chunkInfo.index !== 'number' || typeof chunkInfo.total !== 'number') return '';
+  return ` chunk=${chunkInfo.index + 1}/${chunkInfo.total} total_parts=${chunkInfo.total}`;
+}
+
+function textToSpeechEdge(text, profileName = 'default', chunkInfo = null) {
   const ttsCfg = loadTtsConfig(profileName).edge;
   const tmpDir = path.join(os.tmpdir(), 'intrale-edge-tts');
   try { fs.mkdirSync(tmpDir, { recursive: true }); } catch {}
   const mp3Path = path.join(tmpDir, `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp3`);
   const bin = findEdgeTtsExe();
   const input = text.substring(0, 5000);
+  const estimatedSec = estimateTtsDurationSec(input.length);
+  const chunkTag = formatChunkInfo(chunkInfo);
 
   return new Promise((resolve) => {
     const args = [
@@ -587,7 +758,7 @@ function textToSpeechEdge(text, profileName = 'default') {
       const opusBuf = await mp3ToOpus(mp3Path);
       try { fs.unlinkSync(mp3Path); } catch {}
       if (opusBuf && opusBuf.length > 100) {
-        log(`TTS[edge] generado: ${opusBuf.length} bytes (voz=${ttsCfg.voice})`);
+        log(`TTS[edge] generado: ${opusBuf.length} bytes (voz=${ttsCfg.voice}) chars=${input.length} duracion_est=${estimatedSec}s${chunkTag}`);
         resolve(opusBuf);
       } else {
         log(`TTS[edge] conversion fallida`);
@@ -598,71 +769,26 @@ function textToSpeechEdge(text, profileName = 'default') {
 }
 
 // --- Sanitizer markdown → texto natural para TTS ---
-// El TTS lee literal: "**bold**" se pronuncia "asterisco asterisco bold asterisco
-// asterisco". Limpiamos antes de mandarle el chunk al provider.
+// Delegado al adaptador dedicado en lib/text-to-speech-adapter.js (issue #2958).
+// El adaptador cubre: secretos (JWT/AWS keys/Telegram tokens), modelos IA,
+// paths, hashes, URLs reformuladas, markdown, emojis, tablas a frase natural
+// y resumen heuristico para inputs > 1500 chars. Idempotente.
+const { sanitizeForTts: adapterSanitizeForTts } = require('./lib/text-to-speech-adapter');
+
 function sanitizeForTts(text) {
   if (!text) return text;
-  let s = String(text);
-  // Bloques de código triple-backtick: descartarlos completamente.
-  s = s.replace(/```[\s\S]*?```/g, ' ');
-  // Inline code `xxx` → xxx
-  s = s.replace(/`([^`]+)`/g, '$1');
-  // Negrita **xxx** y __xxx__
-  s = s.replace(/\*\*([^*]+)\*\*/g, '$1');
-  s = s.replace(/__([^_]+)__/g, '$1');
-  // Itálicas *xxx* y _xxx_ (cuidando de no romper identificadores con _ dentro)
-  s = s.replace(/(^|[\s(])\*([^*\n]+)\*([\s).,:;!?]|$)/g, '$1$2$3');
-  s = s.replace(/(^|[\s(])_([^_\n]+)_([\s).,:;!?]|$)/g, '$1$2$3');
-  // Links markdown [texto](url) → texto
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
-  // Headers (# ## ### al inicio de línea)
-  s = s.replace(/^#{1,6}\s+/gm, '');
-  // Issue/PR refs "#1234" → "número 1234" (el TTS los lee "almohadilla", molesto)
-  s = s.replace(/#(\d+)/g, 'número $1');
-  // Emojis y símbolos visuales: el TTS los narra por nombre Unicode
-  // ("mano hacia la derecha", "casilla de verificación") y arruina el audio.
-  // Drop: pictographs/symbols/dingbats + variation selectors + ZWJ + checkbox-like.
-  s = s.replace(
-    /[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{2190}-\u{21FF}\u{25A0}-\u{25FF}\u{2460}-\u{24FF}\u{2B00}-\u{2BFF}\u{20D0}-\u{20FF}\u{FE0E}\u{FE0F}\u{200D}]/gu,
-    ''
-  );
-  // Blockquotes ">"
-  s = s.replace(/^\s*>\s?/gm, '');
-  // Tablas: separador --- | --- y filas con |
-  // OJO: usar [ \t] en lugar de \s para no engullir \n (la clase con \s greedy
-  // pegaba las filas adyacentes al separador).
-  s = s.replace(/^[ \t|:\-]+$/gm, '');
-  s = s.replace(/^[ \t]*\|(.+)\|[ \t]*$/gm, (_, inner) =>
-    inner
-      .split('|')
-      .map((c) => c.trim())
-      .filter(Boolean)
-      .join(', ')
-  );
-  // Bullets/numeradas al inicio de línea
-  s = s.replace(/^\s*[-*+]\s+/gm, '');
-  s = s.replace(/^\s*\d+\.\s+/gm, '');
-  // Asteriscos sueltos remanentes (énfasis sin cierre, separadores)
-  s = s.replace(/\*+/g, '');
-  // Backticks remanentes
-  s = s.replace(/`+/g, '');
-  // Tildes de tachado ~~xxx~~
-  s = s.replace(/~~/g, '');
-  // Saltos triples → dobles
-  s = s.replace(/\n{3,}/g, '\n\n');
-  // Espacios múltiples
-  s = s.replace(/[ \t]+/g, ' ');
-  return s.trim();
+  return adapterSanitizeForTts(text);
 }
 
 // --- TTS con priorización dinámica + fallback ---
 
-async function textToSpeechByProvider(provider, text, profileName = 'default') {
+async function textToSpeechByProvider(provider, text, profileName = 'default', chunkInfo = null) {
   const cleaned = sanitizeForTts(text);
-  if (provider === 'openai') return textToSpeechOpenAI(cleaned, profileName);
-  if (provider === 'edge') return textToSpeechEdge(cleaned, profileName);
-  log(`TTS: provider desconocido '${provider}'`);
-  return null;
+  if (provider === 'edge') return textToSpeechEdge(cleaned, profileName, chunkInfo);
+  // EP1-H2 (#3917): Edge es el único motor. Cualquier otro provider (incluido el
+  // legacy 'openai') se trata como edge para no fallar audios por config vieja.
+  log(`TTS: provider '${provider}' no soportado — usando edge (motor único)`);
+  return textToSpeechEdge(cleaned, profileName, chunkInfo);
 }
 
 /**
@@ -673,17 +799,21 @@ async function textToSpeechByProvider(provider, text, profileName = 'default') {
  */
 async function textToSpeechWithMeta(text, opts = {}) {
   const profileName = opts.profile || 'default';
+  // #3485: chunkInfo opcional { index, total } para que el log del provider
+  // identifique la pieza dentro de la respuesta total y permita detectar
+  // truncados a futuro.
+  const chunkInfo = opts.chunkInfo || null;
   const cfg = loadTtsConfig(profileName);
   const forced = process.env.TTS_PROVIDER;
   if (forced) {
     log(`TTS[${profileName}] forzado por env: ${forced}`);
-    const buf = await textToSpeechByProvider(forced, text, profileName);
+    const buf = await textToSpeechByProvider(forced, text, profileName, chunkInfo);
     return buf ? { buffer: buf, provider: forced, profile: profileName } : null;
   }
 
-  const primary = cfg.primary || 'openai';
+  const primary = cfg.primary || 'edge';
   log(`TTS[${profileName}]: intentando primary=${primary}`);
-  const bufPrimary = await textToSpeechByProvider(primary, text, profileName);
+  const bufPrimary = await textToSpeechByProvider(primary, text, profileName, chunkInfo);
   if (bufPrimary) return { buffer: bufPrimary, provider: primary, profile: profileName };
 
   const fallback = cfg.fallback;
@@ -692,7 +822,7 @@ async function textToSpeechWithMeta(text, opts = {}) {
     return null;
   }
   log(`TTS[${profileName}]: primary fallo, probando fallback=${fallback}`);
-  const bufFallback = await textToSpeechByProvider(fallback, text, profileName);
+  const bufFallback = await textToSpeechByProvider(fallback, text, profileName, chunkInfo);
   return bufFallback ? { buffer: bufFallback, provider: fallback, profile: profileName } : null;
 }
 
@@ -743,8 +873,12 @@ function sendVoiceTelegram(audioBuffer, botToken, chatId) {
   });
 }
 
-// Partir texto en chunks para TTS respetando límites de oraciones
-function splitTextForTTSChunks(text, maxChars) {
+// Partir texto en chunks para TTS respetando límites de oraciones.
+// Default 1500 chars: Edge TTS empieza a truncar audios internamente cerca de
+// 2500-3000 chars en español; con 1500 más prefijo "Parte X de N. " (≤17 chars)
+// el texto efectivo queda muy por debajo del umbral observado (margen ~1000).
+// Issue #3485.
+function splitTextForTTSChunks(text, maxChars = 1500) {
   if (text.length <= maxChars) return [text];
   const sentences = text.split(/(?<=[.!?])\s+/);
   const chunks = [];
@@ -778,14 +912,17 @@ function splitTextForTTSChunks(text, maxChars) {
 
 module.exports = {
   preprocessMessage,
-  transcribeAudio,
   transcribeAudioWithFallback,
   transcriptionFailureMessage,
+  ttsDegradedMessage,
+  shouldNotifyDegradation,
+  loadDegradationNotifyState,
+  saveDegradationNotifyState,
+  noteDegradationAndShouldNotify,
   describeImage,
   downloadTelegramFile,
   textToSpeech,
   textToSpeechWithMeta,
-  textToSpeechOpenAI,
   textToSpeechEdge,
   loadTtsConfig,
   loadTtsState,
@@ -793,5 +930,11 @@ module.exports = {
   getTransitionIntro,
   sendVoiceTelegram,
   splitTextForTTSChunks,
-  sanitizeForTts
+  sanitizeForTts,
+  // #5336: expuestos para los tests de contrato (avisos, reintentos, copys).
+  TRANSCRIPTION_FAILURE_REASONS,
+  RETRYABLE_ERROR_KINDS,
+  QUEUE_NOTICE_TEXT,
+  ENGINE_NOTICE_TEXT,
+  TRANSCRIBE_MAX_ATTEMPTS
 };

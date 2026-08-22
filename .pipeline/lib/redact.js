@@ -255,6 +255,208 @@ function redactSensitive(input, opts) {
     return redactValue(input);
 }
 
+// =============================================================================
+// #3724 — Patrones de VALOR de secretos (no de clave) + heurística de entropía.
+//
+// `SENSITIVE_JSON_KEYS` (arriba) redacta por NOMBRE de clave. El audit log de
+// los wizards (#3715) puede recibir params con secretos embebidos en valores
+// bajo claves NO sensibles (ej. un texto libre que contiene una API key). Para
+// cerrar A09 del análisis de `/security` agregamos un escaneo por VALOR:
+//   - Tabla de regex específicas por proveedor (Object.freeze, exportada para
+//     reuso de tests — NO se mezcla con SENSITIVE_JSON_KEYS).
+//   - Heurística Shannon ≥ 4.5 sobre tokens >40 chars sin espacios → cubre
+//     secretos opacos sin formato conocido.
+//
+// Cero-regresión sobre #2307: estas funciones son NUEVAS, no tocan
+// `redactValue`/`redactSensitive`. El walk vive en `redactObject`, que es el
+// único punto de entrada que aplica el escaneo por valor.
+// =============================================================================
+
+const HIGH_ENTROPY_MARKER = '[REDACTED:high-entropy]';
+const HIGH_ENTROPY_MIN_LEN = 40;
+const HIGH_ENTROPY_THRESHOLD = 4.5;
+
+// Cada patrón matchea el VALOR de un secreto conocido. El orden importa:
+// `sk-ant-` antes que el genérico `sk-` (aunque no se solapan porque el
+// genérico exige 20+ alfanuméricos pegados y `sk-ant-` corta con guiones).
+//
+// #5135 CA-7/SEC-11 — `topology: true` marca patrones que NO son secretos sino
+// TOPOLOGÍA (ARN, account-id). Se redactan igual, pero quedan EXCLUIDOS del gate
+// de la heurística de entropía de `redactSecretValue` (ver ahí el porqué).
+const SECRET_VALUE_PATTERNS = Object.freeze([
+    { name: 'anthropic', re: /sk-ant-[A-Za-z0-9_-]+/g },
+    { name: 'openai', re: /sk-[A-Za-z0-9]{20,}/g },
+    { name: 'groq', re: /gsk_[A-Za-z0-9]+/g },
+    { name: 'aws_access_key', re: /AKIA[0-9A-Z]{16}/g },
+    { name: 'jwt', re: /eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
+    // #5135 CA-7 — Defensa en profundidad contra la fuga de topología AWS en los
+    // stderr del AWS CLI (`provisioner-infra.js` los re-lanza tal cual como
+    // `Error.message`). El control PRIMARIO es el template fijo de
+    // `kernel-degradation-alert.js`; esto es la segunda capa, no la red de
+    // contención (GURU-10).
+    //
+    // R5 · Anclados al CONTEXTO AWS a propósito. Un `\b\d{12}\b` suelto redactaría
+    // cualquier número de 12 dígitos del pipeline (ids, contadores, epochs
+    // recortados) y ensuciaría los logs de los 100+ callers de `redactSecretValue`
+    // /`redactObject`. El ARN se ancla a su prefijo; el account-id, a los
+    // delimitadores `::` … `:` que sólo aparecen dentro de un ARN.
+    { name: 'aws_arn', re: /arn:aws[a-z0-9-]*:[^\s"'`,)\]}]*/g, topology: true },
+    { name: 'aws_account_id', re: /(?<=::)\d{12}(?=:)/g, topology: true },
+]);
+
+/**
+ * Entropía de Shannon (bits por carácter) de un string.
+ * @param {string} str
+ * @returns {number}
+ */
+function shannonEntropy(str) {
+    if (typeof str !== 'string' || str.length === 0) return 0;
+    const freq = new Map();
+    for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
+    let entropy = 0;
+    const len = str.length;
+    for (const count of freq.values()) {
+        const p = count / len;
+        entropy -= p * Math.log2(p);
+    }
+    return entropy;
+}
+
+/**
+ * Redacta secretos embebidos en un string-valor:
+ *   1. Aplica cada patrón de SECRET_VALUE_PATTERNS.
+ *   2. Si NINGÚN patrón de SECRETO matcheó y el string es un token opaco
+ *      (>40 chars, sin espacios) con entropía ≥ 4.5 → `[REDACTED:high-entropy]`.
+ *
+ * #5135 SEC-11 — El gate del paso 2 mira SÓLO los patrones de secreto: los de
+ * topología (`topology: true`) no lo desactivan. Antes el gate era `out === str`,
+ * o sea "ningún patrón tocó el string". Con `aws_arn` —un patrón ANCHO que
+ * matchea texto no-secreto— ese gate se apagaba para cualquier string que
+ * contuviera un ARN, y el residuo de alta entropía (p. ej. un token opaco de 80
+ * chars en la misma línea) SOBREVIVÍA EN CLARO. Como el propósito mismo de CA-7
+ * es meter strings de AWS por esta función, habría sido una regresión de
+ * redacción sobre los 100+ callers de `redactSecretValue`/`redactObject`.
+ *
+ * No toca emails/URLs (eso lo hace el walk con las funciones existentes).
+ * @param {string} str
+ * @returns {string}
+ */
+function redactSecretValue(str) {
+    if (typeof str !== 'string' || str.length === 0) return str;
+    let out = str;
+    let secretMatched = false;
+    for (const { re, topology } of SECRET_VALUE_PATTERNS) {
+        const before = out;
+        out = out.replace(re, REDACTION_MARKER);
+        if (!topology && out !== before) secretMatched = true;
+    }
+    if (!secretMatched) {
+        const trimmed = str.trim();
+        if (
+            trimmed.length > HIGH_ENTROPY_MIN_LEN &&
+            !/\s/.test(trimmed) &&
+            shannonEntropy(trimmed) >= HIGH_ENTROPY_THRESHOLD
+        ) {
+            return HIGH_ENTROPY_MARKER;
+        }
+    }
+    return out;
+}
+
+// =============================================================================
+// #3837 (SEC-1 barrera B) — Redacción de CONTENIDO para el material RAG que se
+// envía a providers non_anthropic (Cerebras/NVIDIA). Un log con
+// token/credencial NUNCA debe llegar a un tercero.
+//
+// `redactSecretValue` sola (lo que aplicaba api-rag) sólo cubre 5 formatos de
+// key + entropía sobre el string COMPLETO. En líneas de log reales (con
+// espacios) deja pasar: token de bot Telegram, query token=/apikey=, userinfo
+// user:pass@host, emails/PII y secretos opacos embebidos. Esta función compone
+// las tres pasadas para cerrar esas clases:
+//   1. `redactSensitive` → emails, userinfo, query keys sensibles
+//      (token/apikey/signature/x-amz-*), path /bot<TOKEN>/ de Telegram.
+//   2. `redactSecretValue` → patrones por proveedor (anthropic/openai/groq,
+//      AWS access-key-id AKIA…, JWT) sobre toda la línea.
+//   3. Escaneo por token → secretos OPACOS de alta entropía embebidos en una
+//      línea con espacios (ej. AWS secret access key de 40 chars), que la
+//      heurística whole-string de `redactSecretValue` no alcanza.
+// =============================================================================
+
+// Longitud mínima del token para el escaneo de entropía por-token. El contrato
+// #4524 usa un ejemplo opaco de 38 chars; git SHA-40 es hex (entropía < 4.5) y
+// queda intacto.
+const RAG_TOKEN_MIN_LEN = 38;
+
+/**
+ * Redacta secretos/PII embebidos en un fragmento de texto libre (línea de log,
+ * snippet de código) antes de exponerlo a un provider non_anthropic.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function redactRagContent(text) {
+    if (typeof text !== 'string' || text.length === 0) return text;
+    // Pasadas 1 + 2: URL/email/userinfo/query + patrones de key por proveedor.
+    let out = redactSecretValue(redactSensitive(text));
+    // Pasada 3: token opaco de alta entropía embebido en línea con espacios.
+    out = out.replace(/\S+/g, (tok) => {
+        if (tok.includes(REDACTION_MARKER) || tok.includes(HIGH_ENTROPY_MARKER)) {
+            return tok; // ya redactado por las pasadas previas
+        }
+        if (tok.length >= RAG_TOKEN_MIN_LEN && shannonEntropy(tok) >= HIGH_ENTROPY_THRESHOLD) {
+            return HIGH_ENTROPY_MARKER;
+        }
+        return tok;
+    });
+    return out;
+}
+
+/**
+ * Walk recursivo para AUDIT LOG (#3724). Combina:
+ *   - Redacción por clave sensible (igual que `redactValue`).
+ *   - Redacción de headers.
+ *   - Escaneo por VALOR (`redactSecretValue`) + emails/URLs sobre cada string.
+ *
+ * Detecta ciclos con WeakSet. Devuelve copia, no muta.
+ * @param {any} value
+ * @param {WeakSet} [seen]
+ * @returns {any}
+ */
+function redactObject(value, seen) {
+    if (value == null) return value;
+    if (typeof value === 'string') {
+        let out = value;
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(out) || /\?[^=]+=/.test(out)) {
+            out = redactUrlLike(out);
+        }
+        out = redactEmailsInText(out);
+        out = redactSecretValue(out);
+        return out;
+    }
+    if (typeof value !== 'object') return value;
+
+    seen = seen || new WeakSet();
+    if (seen.has(value)) return '[CIRCULAR]';
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+        return value.map((v) => redactObject(v, seen));
+    }
+    if (Buffer.isBuffer(value) || value instanceof Date) return value;
+
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+        if (NORMALIZED_JSON_KEYS.has(normalizeKey(k))) {
+            out[k] = REDACTION_MARKER;
+        } else if (k.toLowerCase() === 'headers' && v && typeof v === 'object') {
+            out[k] = redactHeaders(v);
+        } else {
+            out[k] = redactObject(v, seen);
+        }
+    }
+    return out;
+}
+
 module.exports = {
     redactSensitive,
     redactHeaders,
@@ -266,4 +468,13 @@ module.exports = {
     redactError,
     isSensitiveHeader,
     REDACTION_MARKER,
+    // #3724 — escaneo por valor para audit log de wizards.
+    redactObject,
+    redactSecretValue,
+    // #3837 — barrera B de contenido RAG (Cerebras/NVIDIA).
+    redactRagContent,
+    shannonEntropy,
+    SECRET_VALUE_PATTERNS,
+    HIGH_ENTROPY_MARKER,
+    HIGH_ENTROPY_THRESHOLD,
 };

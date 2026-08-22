@@ -12,7 +12,7 @@ El Pulpo te pasa la variable `QA_MODE` que determina qué tipo de QA ejecutar:
 |---------|-----------|-------------------|
 | `android` | QA E2E con emulador, APK, video narrado | Sí |
 | `api` | QA-API con requests HTTP contra backend | **No** |
-| `structural` | Validación mínima (lint, estructura, docs) | **No** |
+| `structural` | Validación sin APK/backend; puede incluir render visual del propio pipeline | **No** |
 
 **Variables de entorno que recibís del Pulpo:**
 - `QA_MODE` — `android`, `api`, o `structural`
@@ -25,7 +25,7 @@ El Pulpo te pasa la variable `QA_MODE` que determina qué tipo de QA ejecutar:
 if QA_MODE == "api":
     → Ir a sección "QA-API (backend sin emulador)"
 elif QA_MODE == "structural":
-    → Ir a sección "QA Estructural"
+    → Primero aplicar "Preflight de UI visible"; si no aplica, ir a "QA Estructural"
 else (QA_MODE == "android" o vacío):
     → Ir a sección "QA-Android (UI con emulador)"
 ```
@@ -58,6 +58,48 @@ Verificar: 1) Conectividad de red  2) Estado del deploy en Lambda  3) gh workflo
 
 Para verificar emulador (solo QA_MODE=android): `node .pipeline/qa-environment.js status`
 Si el emulador no esta levantado: avisar en el resultado (NO intentar levantarlo vos).
+
+---
+
+## Preflight de UI visible (bloqueante para QA_MODE=structural)
+
+Antes de aceptar `QA_MODE=structural`, verificá labels y diff:
+
+```bash
+gh issue view $QA_ISSUE --json labels
+git diff --name-only origin/main..HEAD
+git diff --unified=0 origin/main..HEAD -- .pipeline/dashboard.js .pipeline/lib/mission-ola-eta.js .pipeline/views/dashboard 2>/dev/null
+```
+
+Si el issue tiene `area:dashboard`, toca `dashboard.js`, `mission-ola-eta.js`,
+`views/dashboard/`, o cambia un banner/card/copy visible del dashboard, **NO podés
+cerrar como structural**, aunque el cambio viva bajo `.pipeline/`. En ese caso
+tenés que producir evidencia visual con audio narrado:
+
+- Render/video del dashboard visible en `.pipeline/logs/media/qa-<issue>.mp4`.
+- Audio TTS integrado que narre qué criterios se verifican.
+- `video_size_kb`, `tiene_audio: true`, `evidencia` y `screenshot` en tu YAML.
+
+Si no podés generar esa evidencia, rechazá con motivo accionable; no apruebes
+como `structural`.
+
+La misma prohibición aplica si el issue o el diff referencia un mockup versionado
+bajo `.pipeline/assets/mockups/`, o si los criterios exigen inspeccionar el PDF de
+`rejection-report.js`. `structural` significa **sin emulador**, no "sin render".
+En esos casos ejecutá QA visual de infraestructura en el worktree:
+
+1. Generá `qa/evidence/<issue>/visual-comparison.json` con el render real y el
+   mockup, cobertura completa y todos los desvíos, siguiendo el contrato de
+   `docs/pipeline/visual-validation.md §4.7`.
+2. Ejecutá el flujo real que genera el rejection report con `--visual-json`; no
+   alcanza con invocar `renderHtml()` o afirmar que los tests unitarios pasan.
+3. Conservá el PDF real en `.pipeline/logs/rejection-<issue>-qa.pdf` y una captura
+   lado a lado en `qa/evidence/<issue>/screenshot-pdf-vs-mockup.png`.
+4. Inspeccioná ambos artefactos y registrá sus paths y hashes SHA-256 en el YAML.
+
+Si falta cualquiera de esos artefactos, el veredicto es rechazado por evidencia
+incompleta. No se debe pedir otro `QA_MODE`: este camino visual sigue sin requerir
+APK, backend ni emulador.
 
 ---
 
@@ -147,6 +189,29 @@ evidencia: "Validación estructural — archivos modificados verificados"
 modo: structural
 ```
 
+Antes de cerrar, QA debe conservar la evidencia estructural en un Markdown
+auditable y encolar su descriptor en Drive. Aunque este modo no sube video, el
+job es obligatorio para que aprobación pueda verificar la trazabilidad:
+
+```bash
+mkdir -p "qa/evidence/<issue>"
+# Escribir en qa/evidence/<issue>/qa-<issue>-structural.md los comandos,
+# outputs y criterios verificados durante esta misma pasada.
+cat > .pipeline/servicios/drive/pendiente/qa-<issue>-structural.json << 'JSON'
+{
+  "action": "upload",
+  "file": "qa/evidence/<issue>/qa-<issue>-structural.md",
+  "issue": <issue>,
+  "mode": "structural",
+  "source": "qa-structural"
+}
+JSON
+```
+
+Los campos `mode: structural` y `source: qa-structural` son obligatorios. El
+servicio Drive reconoce ese schema canónico, registra el artefacto sin intentar
+tratar el Markdown como video y mueve el descriptor a `listo/`.
+
 ---
 
 ## QA-Android (UI con emulador)
@@ -231,6 +296,27 @@ Tenés 45 minutos de timeout, usá el tiempo.
 - [ ] Screenshots del defecto como evidencia
 - [ ] Label `qa:failed` encolado en `.pipeline/servicios/github/pendiente/`
 
+**Campos estructurados del reporte (OBLIGATORIO — #4512):**
+
+Independientemente del veredicto, tu YAML DEBE incluir los campos estructurados
+que alimentan el reporte de QA E2E persistido por el Pulpo (`writeDeliverable` →
+`.pipeline/deliverables/<issue>.json`, adjunto a Telegram). El Pulpo materializa
+el reporte SIEMPRE al cerrar la fase; si no emitís estos campos, el reporte queda
+con secciones degradadas ("no reportado por el agente"):
+
+- [ ] `veredicto`: `passed` | `failed`
+- [ ] `criterios`: lista de `{ id, estado, detalle }` con `estado` ∈ `cumple | falla | no-aplica`
+- [ ] `entorno`: `{ modo, backend, apk }` (`modo` ∈ `android | api | structural`)
+- [ ] `defectos`: lista accionable `{ esperado, paso, donde }`, o `ninguno`
+- [ ] `evidencia`: path/link al video E2E
+- [ ] `screenshot`: path/link al screenshot de la pantalla final
+
+> ⚠️ Estos campos alimentan el REPORTE persistido, NO son labels de bypass del
+> gate. Los labels autoritativos (`qa:skipped`, etc.) siguen viniendo de GitHub
+> — el gate de evidencia NUNCA confía en el YAML del agente para saltearse
+> (CA-5). Poner `modo: api` en el YAML no evita el gate si el preflight
+> determinó `android`.
+
 Si `tts-generate.js` falla (primary + fallback agotados), reintentar una vez. Si sigue fallando, documentar el error
 en el YAML pero **NO omitir el intento** — siempre ejecutar el comando.
 
@@ -239,18 +325,51 @@ en el YAML pero **NO omitir el intento** — siempre ejecutar el comando.
 Si todo OK (video con relato narrado — solo después de completar el checklist):
 ```yaml
 resultado: aprobado
+veredicto: passed
 evidencia: "qa/evidence/<issue>/qa-<issue>.mp4"
 evidencia_frames: "qa/evidence/<issue>/qa-<issue>-frame-*.png"
+screenshot: "qa/evidence/<issue>/qa-<issue>-frame-final.png"
 video_size_kb: <tamano en KB>
 video_duration: "<duracion>"
 tiene_audio: true
+entorno:
+  modo: android            # android | api | structural
+  backend: "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
+  apk: "assembleClientDebug"   # o el flavor probado, si aplica
+criterios:
+  - id: "CA-1"
+    estado: cumple         # cumple | falla | no-aplica
+    detalle: "El login navega al home con el token persistido"
+  - id: "CA-2"
+    estado: cumple
+    detalle: "El listado carga los negocios del backend remoto"
+defectos: ninguno
 ```
 
 Si hay defecto:
 ```yaml
 resultado: rechazado
+veredicto: failed
 motivo: "Descripcion clara del defecto encontrado"
+evidencia: "qa/evidence/<issue>/qa-<issue>.mp4"
+screenshot: "qa/evidence/<issue>/qa-<issue>-defecto.png"
+entorno:
+  modo: android
+  backend: "https://mgnr0htbvd.execute-api.us-east-2.amazonaws.com/dev"
+criterios:
+  - id: "CA-1"
+    estado: falla
+    detalle: "El login queda en la pantalla sin navegar"
+defectos:
+  - esperado: "Tras login, navegar al home"
+    paso: "La app queda en la pantalla de login sin feedback"
+    donde: "qa/evidence/<issue>/qa-<issue>-defecto.png"
 ```
+
+> El Pulpo consume estos campos para armar el reporte de QA E2E estructurado
+> (veredicto en el título, estado por criterio, entorno, defectos accionables y
+> referencias a la evidencia) y lo persiste + notifica automáticamente al cerrar
+> la fase. No tenés que generar el `.md` a mano.
 
 ### Subir evidencia a Drive (OBLIGATORIO antes de aprobar)
 
@@ -341,3 +460,19 @@ Al terminar, dejar pedido en `.pipeline/servicios/github/pendiente/`:
 - SIEMPRE extraer frames del video antes de aprobar
 - SIEMPRE encolar subida del video final a Drive
 - SIEMPRE guardar evidencia en `qa/evidence/<issue>/`
+
+## Observación accionable vs ruido (#4160)
+
+El Pulpo clasifica cada rechazo como **accionable** o **ruido** (`lib/observation-classifier.js`). Si un rechazo es ruido y el dev produce el mismo diff que en el rebote anterior con el build verde, el pipeline **auto-promueve** en lugar de seguir rebotando hasta agotar reintentos. Para que tu rechazo cuente como observación real, tiene que ser accionable.
+
+**Es accionable** (rechazá con confianza) cuando el motivo incluye al menos uno:
+- Una referencia `archivo:línea` concreta o el frame del video donde se evidencia el defecto.
+- Un comando / paso E2E reproducible que muestra el fallo (request + HTTP status, pantalla + acción).
+- La cita de un criterio de aceptación fallido (ej. "CA-2 no se cumple: el botón no responde").
+
+**Es ruido** (NO rechaces por esto):
+- Observación estética sin defecto funcional ("el color podría ser otro") → eso es feedback de UX, no rechazo de QA.
+- Repetición textual de una observación ya resuelta en un ciclo previo.
+- Sugerencia de mejora futura sin defecto verificable → issue separado, no rechazo.
+
+Regla práctica: si no podés señalar el frame/request/CA exacto que falla, probablemente sea ruido. Adjuntá siempre la evidencia concreta del defecto.

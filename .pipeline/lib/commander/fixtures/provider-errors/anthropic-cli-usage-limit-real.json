@@ -1,0 +1,12 @@
+{
+  "_doc": "Fixture REAL del incidente 2026-05-20: Anthropic CLI claude-code emitió un evento stream-json con shape estructural type=result, is_error=true, error_type=usage_limit_error. Es el caso ideal para el detector: shape canónico, no requiere regex.",
+  "synthetic": false,
+  "source_url": "logs/commander-dispatch-2026-05-20.jsonl",
+  "captured_at": "2026-05-20T14:16:00Z",
+  "provider": "anthropic",
+  "transport": "cli",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "{\"type\":\"result\",\"is_error\":true,\"error_type\":\"usage_limit_error\",\"error\":\"You have reached your weekly usage limit. Resets at 2026-05-27T00:00:00Z.\",\"session_id\":\"sess_abc123\"}"
+}

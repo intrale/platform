@@ -1,0 +1,4007 @@
+// =============================================================================
+// commander-deterministic.js — Router + handlers determinísticos del Commander
+// Issue #3257
+//
+// Camino "feliz" del Commander que NO invoca a Claude. Cubre comandos de
+// status/listado/snapshot/logs/health que son lectura de filesystem +
+// render de plantilla Markdown. Diseñado para responder SIEMPRE — incluso con
+// cuota Claude agotada o multi-provider caído.
+//
+// Arquitectura:
+//
+//   classify(text)        → { class, command, args, raw, rawTruncated }
+//                            class ∈ {'deterministic','llm','unknown'}
+//   dispatch(ctx, intent) → { reply, status, handler, durationMs }
+//                            reply: string MarkdownV2 listo para enviar
+//                            status: 'ok' | 'rate_limited' | 'invalid_args' | 'error'
+//
+// El router clasifica con allowlist explícita (CA-7). Los handlers validan args
+// con schemas cerrados (CA-8). Toda salida pasa por la plantilla con escape
+// MarkdownV2 (CA-12) y, cuando lee FS, por redactReadOutput (CA-9).
+//
+// Reglas inquebrantables:
+// - Sin `eval`/`new Function`/`vm`. Solo regex, switch y validators de args.
+// - Para spawn de subprocess (dashboard up/down, procesos node), usar
+//   `execFile`/`spawn` con argv array. JAMÁS shell-concat.
+// - Cada dispatch persiste en audit-log (CA-10), con args hasheados.
+// - Rate limit por chat_id antes de cualquier handler (CA-11).
+// =============================================================================
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { spawn, spawnSync, execFileSync } = require('child_process');
+const { fillTemplate, escapeMarkdownV2 } = require('./commander/fill-template');
+// #5176 CA-UX-3 — rótulo canónico de la ventana de dispatch (issues / skills).
+const { dispatchWindowLabel } = require('./dispatch-window-label');
+// #5176 — cota de largo del render de `/allowlist`: el listado no puede exceder
+// el saliente de Telegram ni perder issues en silencio al recortarse.
+const allowlistBudget = require('./allowlist-render-budget');
+const { createAuditLog } = require('./commander/audit-log');
+const { createRateLimiter } = require('./commander/rate-limit');
+const {
+    createDestructiveCooldown,
+    humanizeRetryAfter,
+    DEFAULT_COOLDOWN_MS,
+} = require('./commander/destructive-cooldown');
+const { redactReadOutput } = require('./commander/redact-read');
+const baseRedact = require('./redact');
+// #5176 — envoltorio único de acceso al estado operativo (contrato §2).
+const operationalState = require('./operational-state');
+
+/**
+ * Ejecuta `fn` (SÍNCRONA) haciendo que el envoltorio de estado operativo
+ * resuelva su ruta contra el `pipelineRoot` con el que se creó el dispatcher.
+ *
+ * #5176 — el dispatcher está parametrizado por `pipelineRoot`; el envoltorio
+ * resuelve la ruta por su cuenta. Cuando coinciden (SIEMPRE en producción) esto
+ * es un no-op y no se toca el entorno. Mismo mecanismo que `wave-resolver.js`
+ * ya usaba para `waves.js`, y por eso `fn` debe ser síncrona: el swap se
+ * restaura en `finally`, así que un `await` adentro liberaría el override antes
+ * de tiempo.
+ */
+function withOperationalStateRoot(pipelineRoot, fn) {
+    const current = process.env.PIPELINE_DIR_OVERRIDE || path.resolve(__dirname, '..');
+    if (!pipelineRoot || path.resolve(pipelineRoot) === path.resolve(current)) return fn();
+    const prev = process.env.PIPELINE_DIR_OVERRIDE;
+    process.env.PIPELINE_DIR_OVERRIDE = pipelineRoot;
+    try {
+        return fn();
+    } finally {
+        if (prev === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
+        else process.env.PIPELINE_DIR_OVERRIDE = prev;
+    }
+}
+
+// Issue #3541 — Notificación CUA fire-and-forget. Se carga lazy en
+// `createDispatcher` para no encarecer el require del módulo cuando el feature
+// está apagado (default OFF en config.yaml). Tests pueden inyectar un stub vía
+// `opts.cua.deps`.
+let _deliverableNotifyModule = null;
+function _loadDeliverableNotify() {
+    if (_deliverableNotifyModule) return _deliverableNotifyModule;
+    try {
+        _deliverableNotifyModule = require('./deliverable-notify');
+        return _deliverableNotifyModule;
+    } catch (e) {
+        return null;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// CLASIFICADOR (CA-1 / CA-7)
+// -----------------------------------------------------------------------------
+
+// Allowlist explícita de slash-commands clasificados como `deterministic`.
+// El comando llega en lowercase. Cualquier slash-command que NO esté acá NO
+// se trata como determinístico — eventualmente cae a `llm` o `unknown`.
+const DETERMINISTIC_SLASH = new Set([
+    'status',
+    'snapshot',
+    'wave',            // #3262 — snapshot ejecutivo de ola (avance %, ETA, intervención)
+    'listado',
+    'allowlist',
+    'tail',
+    'dashboard-up',
+    'dashboard-down',
+    'screenshot',
+    'procesos',
+    'salud',
+    'descanso',
+    // Issue #3253 — /quota read-only sin LLM (CA-1).
+    'quota',
+    // Comandos legacy del switch original que también son determinísticos:
+    'help', 'start',
+    'actividad',
+    'ghostbusters',
+    'pausar', 'pause',
+    'reanudar', 'resume',
+    'pause-partial', 'pause_partial', 'pausarparcial',
+    'costos',
+    'limpiar',
+    'restart',
+    'bloqueados',
+    'unblock',
+    // Issue #4068 — acciones rápidas de needs-human (path tipeado, complemento
+    // de los botones URL de la alerta de Telegram). `pausar` queda FUERA (PO).
+    'mas-contexto',
+    'devolver-definicion',
+    'priorizar',
+    'stop',
+    // Issue #3415 — `/rechazar` y sus aliases. El handler vive en
+    // `commander/rechazar-handler.js` y se inyecta como default handler.
+    'rechazar',
+    'reject',
+    'rebobinar',
+    // Issue #3897 (épico #3894) — `/verificar`: validación de claims contra
+    // hechos canónicos (`lib/canonical-facts.js`). CA-5: la respuesta cita el
+    // comando canónico ejecutado en forma hecho+fuente legible.
+    'verificar',
+    'verify',
+    // Issue #4090 — `/entregado <issue> [pr <n>]`: fuente ÚNICA determinística de
+    // "¿está entregado = mergeado en main?". Compone hechos canónicos vía
+    // `resolveDeliveryState` (sin inferencia ad-hoc contra ramas). Alias legible.
+    'entregado',
+    'estado-entrega',
+]);
+
+// Slash-commands que SE clasifican como `llm` (creación/análisis con razonamiento).
+const LLM_SLASH = new Set([
+    'intake',
+    'proponer',
+]);
+
+// Patrones NLP determinísticos para texto natural corto. Cada entrada produce
+// `command` y opcionalmente `args` extraídos del input.
+//
+// IMPORTANTE: mantener compatibilidad con los patrones legacy en pulpo.js
+// (parseCommand:7189-7208) para no romper la UX existente (CA-18 no-regresión).
+const NLP_PATTERNS = [
+    { regex: /\b(status|estado del pipeline|tablero|que hay en el pipeline|qué hay en el pipeline)\b/i, command: 'status' },
+    // #3262 — `/wave` y "¿cómo va la ola?" / "estado de la ola con audio" — snapshot ejecutivo.
+    // El patrón captura "estado/avance/cómo/cómo viene/cómo va" + "ola" para los pedidos naturales.
+    { regex: /\b(wave|cómo (viene|va|anda) la ola|c[oó]mo (viene|va|anda) la ola|avance de (la )?ola|estado de (la )?ola)\b/i, command: 'wave' },
+    { regex: /\b(snapshot|snapshot de (la )?ola|ola en curso)\b/i, command: 'snapshot' },
+    { regex: /\b(listado|listar issues|qué issues|que issues|mostrame los issues|mostr[áa] los issues)\b/i, command: 'listado', argsFromResidual: true },
+    { regex: /\b(allowlist|pausa parcial actual|qué hay en la allowlist|que hay en la allowlist)\b/i, command: 'allowlist' },
+    { regex: /^tail\s+([\w.-]+)/i, command: 'tail', argsFromCapture: 1 },
+    { regex: /\b(tail (de )?logs?|últimas líneas del log|ultimas lineas del log)\b/i, command: 'tail', argsFromResidual: true },
+    { regex: /\b(levant[áa]r? (el )?dashboard|prend[éa] (el )?dashboard|arranc[áa] (el )?dashboard)\b/i, command: 'dashboard-up' },
+    { regex: /\b(baj[áa] (el )?dashboard|apag[áa] (el )?dashboard|matá (el )?dashboard|mata (el )?dashboard)\b/i, command: 'dashboard-down' },
+    { regex: /\b(screenshot|captur[áa] (el )?dashboard|sacale una foto al dashboard|mostrame el dashboard)\b/i, command: 'screenshot' },
+    { regex: /\b(procesos node|node procesos|qu[eé] procesos node hay|listar procesos|ver procesos)\b/i, command: 'procesos' },
+    { regex: /\b(salud (del )?pulpo|health (del )?pulpo|c[oó]mo (est[áa]|esta) el pulpo)\b/i, command: 'salud' },
+    { regex: /\b(modo descanso|descanso lookup|ventana de descanso|cu[áa]ndo descansa|cuando descansa)\b/i, command: 'descanso' },
+    // Issue #3253 — NLP para /quota (CA-1). Texto natural: "cómo está la cuota", "cuota claude".
+    { regex: /\b(cuota|quota|c[oó]mo (esta|est[áa]) la cuota|claude cuota|cuota claude)\b/i, command: 'quota' },
+    // Patrones legacy (presentes en parseCommand original)
+    { regex: /\b(pausar|paus[áa] el|fren[áa] el|par[áa] el pulpo)\b/i, command: 'pausar' },
+    { regex: /\b(reanudar|reanud[áa] el|arranc[áa] el pulpo)\b/i, command: 'reanudar' },
+    { regex: /\b(mostrame la actividad|qué pas[óo] en el pipeline|timeline)\b/i, command: 'actividad' },
+    { regex: /\b(mostrame los costos|cuánto gastamos|reporte de costos)\b/i, command: 'costos' },
+    { regex: /\b(ayuda|help|comandos disponibles)\b/i, command: 'help' },
+    { regex: /\b(stop|apag[áa] el commander|cerr[áa] el commander)\b/i, command: 'stop' },
+    { regex: /\b(limpi[áa]|limpiar daemons|matar gradle|matar daemons|kill gradle)\b/i, command: 'limpiar' },
+    { regex: /\b(bloqueados|qu[eé] est[áa] bloqueado|que necesita humano|necesitan intervenci[óo]n)\b/i, command: 'bloqueados' },
+    { regex: /\b(ghostbusters|matar fantasmas|matar zombis)\b/i, command: 'ghostbusters' },
+    { regex: /\b(intake|met[eé] .* issue|tra[eé] .* issue|ingres[áa] issue)\b/i, command: 'intake', llm: true, argsFromResidual: true },
+    { regex: /\b(proponer historias|propon[eé] historias|historias nuevas)\b/i, command: 'proponer', llm: true, argsFromResidual: true },
+    // Issue #3415 — NLP para `/rechazar` (texto natural). El residual del
+    // replace queda como args ("3381 ux el mockup..."). Capturamos verbos
+    // típicos: rechazá/rechazar, rebobiná/rebobinar, reject. El parser del
+    // handler tolera espacios y comas en el residual.
+    { regex: /^(?:rech[áa]z[áa]?|rech[áa]ce|rebobin[áa]?|reject)\s+/i, command: 'rechazar', argsFromResidual: true },
+    // Issue #3897 — NLP para `/verificar` (texto natural corto). El residual
+    // del replace queda como args ("pr 3890", "issue #3897"). Solo verbos al
+    // inicio del mensaje para no colisionar con conversación libre.
+    { regex: /^(?:verific[áa](?:r|me)?|verify)\s+/i, command: 'verificar', argsFromResidual: true },
+    // Issue #4090 — NLP para `/entregado` (texto natural corto). Captura
+    // "¿está entregado <n>?", "entregado <n>", "<n> mergeado en main", "se mergeó
+    // <n>". El residual queda como args (ej. "4090", "4090 pr 4091"). Solo formas
+    // acotadas al inicio para no colisionar con conversación libre.
+    { regex: /^(?:(?:est[áa]\s+)?entregad[oa]|se\s+merge[óo]|mergead[oa]\s+en\s+main)\b/i, command: 'entregado', argsFromResidual: true },
+];
+
+const MAX_SHORT_LENGTH = 80;     // Texto > 80 chars es conversación libre (CA-18)
+const RAW_TRUNC_LEN = 120;       // Para echo en plantillas de error
+
+// #4089 — Detector "sticky" de pedido de estado de la ola. Un pedido EXPLÍCITO
+// de estado de la ola debe rutearse SIEMPRE al handler determinístico `wave`,
+// sin importar el largo del mensaje. Antes, un pedido con contexto/correcciones
+// (ej. "el tablero marca 100% pero no está en main") superaba los 80 chars y
+// caía al camino LLM, que armaba la tabla a mano rompiendo el formato fijo que
+// pidió Leo. Por eso el detector se evalúa ANTES del corte por longitud.
+//
+// SEGURIDAD (SEC-1, ReDoS): el regex corre sobre input arbitrario de Telegram
+// (longitud no acotada, evaluado antes del corte por 80 chars). Es LINEAL y
+// anclado a un verbo de pedido: sin cuantificadores anidados ni alternancias
+// solapadas. El puente entre el verbo y "ola" usa una clase negada acotada
+// (`[^.!?\n]{0,40}?`, lazy) que limita el backtracking a una ventana fija.
+//
+// FALSOS POSITIVOS (CA-4): es ESTRICTO — exige un verbo de pedido
+// (estado/cómo va/avance/status/situación/resumen) + "ola". NO captura
+// conversación libre que sólo menciona "la ola" (ej. "la ola de calor de ayer").
+const WAVE_INTENT_RE = /\b(?:estado|c[oó]mo (?:va|viene|anda)|avance|status|situaci[oó]n|resumen)\b[^.!?\n]{0,40}?\bola\b/i;
+
+// #5835 — Detector de PREGUNTA ANALÍTICA que apenas MENCIONA la ola.
+//
+// El sticky de #4089 es correcto para un PEDIDO de estado, pero se comía las
+// preguntas de opinión/causa que mencionan "el avance de la ola" al pasar: el
+// operador pedía una mirada y recibía el cuadro. Dos veces seguidas sobre el
+// mismo tema (transcriptos 2026-08-11 23:13 y 2026-08-12 10:15), y desde su
+// lado se percibe como "el bot no me contesta".
+//
+// DISCRIMINANTE LÉXICO, NO SIGNO DE PREGUNTA: `avance de la ola?` es un pedido
+// legítimo y debe seguir yendo a `wave`. Lo que distingue una pregunta
+// analítica es el marcador de OPINIÓN o de CAUSA ("está bien que", "por qué",
+// "me gustaría", "tu mirada", "debería", "lo revisás"), no el `?`.
+//
+// Los marcadores alcanzan POR SÍ SOLOS, sin exigir además el umbral de largo:
+// "¿está bien que baje el avance de la ola?" son 45 chars y es exactamente la
+// misma pregunta que hoy se come la tabla.
+//
+// OJO `porque` vs `por qué`: `porque` (conjunción causal, sin espacio ni tilde)
+// es lenguaje normal de un pedido con contexto ("...porque el dashboard me
+// marca cualquier cosa", regresión viva de #4089) y NO debe marcar analítica.
+// Por eso el marcador exige separador + tilde opcional sólo en `qué`.
+//
+// SEGURIDAD (SEC-1, ReDoS): igual que WAVE_INTENT_RE, corre sobre input
+// arbitrario de Telegram sin cota de longitud. Es una alternancia LINEAL de
+// literales, sin cuantificadores anidados ni alternancias solapadas; el único
+// cuantificador es `\s+` entre palabras fijas.
+const WAVE_ANALYTIC_RE = new RegExp(
+    '(?:'
+    + 'por\\s+qu[eé]'                                  // "¿por qué baja el avance?"
+    + '|porqu[eé]\\s+(?:baja|sube|disminuye|cambia)'   // "porqué" mal tildado + verbo
+    + '|est[aá]\\s+bien\\s+que'                        // "¿está bien que ...?"
+    + '|cu[aá]l\\s+es\\s+la\\s+l[oó]gica'
+    + '|qu[eé]\\s+opin[aá]s'
+    + '|tu\\s+(?:mirada|opini[oó]n|visi[oó]n|parecer|an[aá]lisis)'
+    + '|me\\s+gustar[ií]a'
+    + '|deber[ií]a(?:mos)?'
+    + '|(?:lo|los|la|las)\\s+revis[aá]s'
+    + '|revisalo|revisalos'
+    + '|ten[eé]s\\s+idea'
+    + '|qu[eé]\\s+te\\s+parece'
+    + '|no\\s+entiendo\\s+por'
+    + ')',
+    'i',
+);
+
+// #5835 — Umbral de refuerzo por longitud (sobre el texto YA limpio de las
+// anotaciones del preprocesador de voz: el sufijo "(mensaje de voz transcripto
+// · whisper local)" no debe inflar el conteo). Es DELIBERADAMENTE alto: los dos
+// transcriptos reales superan los 400 chars, mientras que la regresión viva de
+// #4089 ("che necesito saber cómo viene la ola ... porque el dashboard me marca
+// cualquier cosa") ronda los 100 y debe seguir yendo a `wave`.
+const WAVE_ANALYTIC_MIN_LENGTH = 400;
+
+/**
+ * ¿El texto es una pregunta analítica y no un pedido de estado de ola?
+ * Marcador léxico de opinión/causa, o mensaje desproporcionadamente largo.
+ * @param {string} text texto ya limpio de anotaciones del preprocesador.
+ */
+function isWaveAnalyticQuestion(text) {
+    const t = String(text || '');
+    return WAVE_ANALYTIC_RE.test(t) || t.length >= WAVE_ANALYTIC_MIN_LENGTH;
+}
+
+// El preprocesador (multimedia.js) añade anotaciones entre paréntesis/corchetes
+// al final del texto transcripto: "(mensaje de voz transcripto · whisper local)",
+// "(audio sin transcribir: ...)", "(audio no disponible)", "(imagen no disponible)",
+// "[Imagen: ...]". Esas anotaciones NO son parte del comando del usuario y deben
+// removerse ANTES de clasificar para que (a) el conteo de longitud sea el del
+// mensaje real (no inflado por el sufijo) y (b) el residual NLP no arrastre
+// "... whisper local)" como args (bug del comando /wave por voz).
+const ANNOTATION_TRAIL = /\s*[\(\[][^)\]]*(?:transcript|audio|imagen)[^)\]]*[\)\]]\s*$/i;
+
+// Issue #5336 (CA-4) — Marcador de audio que NO se pudo transcribir.
+//
+// El bug que arregla: cuando whisper fallaba, `multimedia.js` dejaba el texto
+// vacío + el marcador "(audio sin transcribir: <kind>)". `stripPreprocessAnnotations`
+// borraba ese marcador ANTES de clasificar, el residual quedaba vacío, y el mensaje
+// caía en `unknown` → plantilla `error-unknown` → "🤔 No te entendí, Leito".
+// Eso le comunicaba al operador algo FALSO: que su mensaje llegó y no se comprendió,
+// cuando en realidad la infraestructura nunca llegó a escucharlo.
+//
+// Por eso la detección corre ANTES del strip. `classify` expone el hallazgo en
+// campos ADITIVOS (`audioFailed` / `audioErrorKind`) en vez de agregar un valor
+// nuevo al enum de `class`: el enum es contrato con el dispatcher y con pulpo, y
+// romperlo obligaría a tocar todos los consumidores. Los que no conocen los campos
+// nuevos siguen viendo exactamente el mismo `class` que antes.
+//
+// NO se redacta el copy acá: la fuente única del mensaje es
+// `transcriptionFailureMessage()` en multimedia.js. Este módulo sólo enruta.
+const AUDIO_FAILURE_MARKER = /[\(\[]\s*audio (?:sin transcribir|no disponible)\s*(?::\s*([a-z_]+))?\s*[\)\]]/i;
+
+function detectAudioFailure(text) {
+    const m = String(text || '').match(AUDIO_FAILURE_MARKER);
+    if (!m) return null;
+    // `audio no disponible` no lleva kind explícito → download_failed, que es la
+    // única causa por la que multimedia.js emite ese marcador.
+    return { errorKind: (m[1] || 'download_failed').toLowerCase() };
+}
+
+function stripPreprocessAnnotations(text) {
+    let out = String(text || '');
+    let prev;
+    do { prev = out; out = out.replace(ANNOTATION_TRAIL, '').replace(/\s+$/, ''); } while (out !== prev);
+    return out;
+}
+
+/**
+ * Clasifica un mensaje entrante. Devuelve siempre un objeto.
+ *
+ * @param {string} text
+ * @returns {{ class: 'deterministic'|'llm'|'unknown', command: string|null, args: string, raw: string, rawTruncated: string, audioFailed?: boolean, audioErrorKind?: string }}
+ */
+function classify(text) {
+    const raw = typeof text === 'string' ? text : '';
+    // #5336 (CA-4): detectar el marcador de audio fallido ANTES de que el strip
+    // lo borre. Sin esto la señal se pierde y el mensaje termina en `unknown`.
+    const audioFailure = detectAudioFailure(raw);
+    // Quitar anotaciones del preprocesador (voz/imagen) antes de clasificar.
+    const trimmed = stripPreprocessAnnotations(raw).trim();
+    const rawTruncated = trimmed.slice(0, RAW_TRUNC_LEN);
+
+    if (!trimmed) {
+        const base = { class: 'unknown', command: null, args: '', raw, rawTruncated };
+        // Audio fallido SIN texto acompañante: el usuario no dijo nada que se
+        // pueda malinterpretar, sólo falló la transcripción. El caller usa estos
+        // campos para responder el fallo real en vez del "no te entendí".
+        if (audioFailure) {
+            base.audioFailed = true;
+            base.audioErrorKind = audioFailure.errorKind;
+        }
+        return base;
+    }
+
+    // Slash-command — admite guiones (`/pause-partial`, `/dashboard-up`).
+    const slash = trimmed.match(/^\/([\w-]+)\s*([\s\S]*)?$/);
+    if (slash) {
+        const cmd = slash[1].toLowerCase();
+        const args = (slash[2] || '').trim();
+        if (DETERMINISTIC_SLASH.has(cmd)) {
+            return { class: 'deterministic', command: cmd, args, raw, rawTruncated };
+        }
+        if (LLM_SLASH.has(cmd)) {
+            return { class: 'llm', command: cmd, args, raw, rawTruncated };
+        }
+        return { class: 'unknown', command: cmd, args, raw, rawTruncated };
+    }
+
+    // #4089 — Sticky wave: un pedido EXPLÍCITO de estado de la ola se rutea
+    // forzosamente al handler determinístico `wave`, sin importar el largo del
+    // mensaje. Se evalúa ANTES del corte por longitud para que un pedido con
+    // contexto/correcciones (>80 chars) no caiga a LLM y rompa el formato fijo.
+    // El residual (texto menos la frase de intent) viaja en `waveResidual` para
+    // que brazoCommander decida si hay contexto extra que aclarar (CA-2). La
+    // tabla del handler `wave` es inviolable; el residual NUNCA la reescribe.
+    if (WAVE_INTENT_RE.test(trimmed)) {
+        // #5835 — MENCIÓN incidental dentro de una pregunta analítica ≠ PEDIDO de
+        // estado. Cuando hay marcador de opinión/causa (o el mensaje es
+        // desproporcionadamente largo), la pregunta va al LLM para que se
+        // RESPONDA. `waveMentioned` es un campo ADITIVO (no toca el enum de
+        // `class`, contrato del dispatcher y de pulpo) que le indica al caller
+        // que debe anexar el render del handler `wave` DESPUÉS de la respuesta.
+        // La invariante de #4089 queda intacta: la tabla la sigue produciendo
+        // SIEMPRE el handler, el LLM nunca la reconstruye.
+        if (isWaveAnalyticQuestion(trimmed)) {
+            return { class: 'llm', command: null, args: trimmed, waveMentioned: true, raw, rawTruncated };
+        }
+        const waveResidual = trimmed.replace(WAVE_INTENT_RE, ' ').replace(/\s+/g, ' ').trim();
+        return { class: 'deterministic', command: 'wave', args: '', waveResidual, raw, rawTruncated };
+    }
+
+    // Texto largo → conversación libre → LLM
+    if (trimmed.length > MAX_SHORT_LENGTH) {
+        return { class: 'llm', command: null, args: trimmed, raw, rawTruncated };
+    }
+
+    // Texto corto: probar NLP patterns
+    for (const p of NLP_PATTERNS) {
+        const m = trimmed.match(p.regex);
+        if (m) {
+            // Preferir captura explícita (`tail commander.log` → args=commander.log).
+            // El residual del replace SOLO se usa para patrones que opt-in con
+            // `argsFromResidual` (rechazar/verificar/intake/proponer/listado/tail):
+            // ahí el texto que sigue al verbo ES el argumento. Para el resto
+            // (wave/status/snapshot/…) el residual es ruido del lenguaje natural
+            // ("pasame el estado de la ola actual" → "pasame el actual") y se
+            // descarta → args='' → el comando corre en su forma base (CA-8).
+            let args = '';
+            if (p.argsFromCapture && m[p.argsFromCapture]) {
+                args = m[p.argsFromCapture].trim();
+            } else if (p.argsFromResidual) {
+                args = trimmed.replace(p.regex, '').trim();
+            }
+            return {
+                class: p.llm ? 'llm' : 'deterministic',
+                command: p.command,
+                args,
+                raw,
+                rawTruncated,
+            };
+        }
+    }
+
+    // No matchea — clasificar como `llm` (texto libre corto que el LLM puede
+    // interpretar) o `unknown` si parece comando fallido (empieza con `/`).
+    // Ya cubrimos slash arriba, así que cae a `llm`.
+    return { class: 'llm', command: null, args: trimmed, raw, rawTruncated };
+}
+
+// -----------------------------------------------------------------------------
+// VALIDADORES DE ARGS (CA-8)
+// -----------------------------------------------------------------------------
+
+const TAIL_ALLOWED_FILES = new Set([
+    'commander.log',
+    'pulpo.log',
+    'svc-telegram.log',
+    'dashboard-v2.log',
+    'listener-telegram.log',
+    'multi-provider.log',
+    'restart.log',
+]);
+
+const LISTADO_FILTERS = new Set([
+    '', 'pendientes', 'en-curso', 'en curso', 'listos', 'ola', 'todo',
+]);
+
+// #3262 — `/wave` admite el flag opcional `--audio` para activar TTS opt-in (CA-9 / PO-CA-9).
+// #3493 — H5 expande la sintaxis a subcomandos: `/wave [status [--audio] | next | add <num> #issue | promote]`.
+// La forma antigua `/wave` y `/wave --audio` se preservan (backward compat → status).
+// #4376 (split #4351) — `create` suma la creación de olas planificadas desde
+// Telegram (`/wave create --nombre ... --issues #1,#2 ...`). Op mutante: reusa
+// el cooldown/allowlist/rate-limit del resto de subcomandos mutantes.
+// #4377 — H8.3 Parte B suma `remove` (desasociar issue de ola planificada) y
+// `reorder` (permutar orden de olas planificadas). Ambos destructivos.
+// #4378 — `archive <num>` suma un subcomando destructivo (mueve una ola a
+// `archived_waves[]` vía waves.archiveWave).
+// #4371 — `history [<ola>|#<issue>]` suma consulta del audit trail de olas/issues.
+const WAVE_SUBCOMMANDS = new Set(['status', 'next', 'add', 'promote', 'create', 'remove', 'reorder', 'archive', 'history']);
+
+/**
+ * Parsea `args` de `/wave` y devuelve `{ subcommand, audio, waveNumber, issueNumber }`
+ * o `null` si la sintaxis no matchea ningún subcomando válido.
+ *
+ * Reglas de validación estricta (CA-5 security refuerzo pt.2):
+ *   - Sin args, o solo `--audio` → backward-compat con #3262 → `status`.
+ *   - `status [--audio]`         → status con audio opt-in.
+ *   - `next`                     → próxima ola, sin args extra.
+ *   - `add <num> #issue`         → `num` entero positivo, `#issue` matchea `^#\d+$`.
+ *   - `remove <num> #issue`      → mismo gate estricto que `add` (#4377 CA-8).
+ *   - `reorder <n1> <n2> [...]`  → ≥2 enteros positivos, sin duplicados (#4377 CA-8).
+ *   - `promote`                  → promote, sin args extra.
+ *   - Cualquier otra combinación devuelve `null` (handler genera error claro).
+ */
+function parseWaveArgs(rawArgs) {
+    const tokens = String(rawArgs || '').trim().split(/\s+/).filter(Boolean);
+    // Caso vacío → status backward-compat.
+    if (tokens.length === 0) {
+        return { subcommand: 'status', audio: false };
+    }
+    const head = tokens[0].toLowerCase();
+    // Backward-compat: `/wave --audio` (sin subcomando explícito) → status con audio.
+    if (head === '--audio' && tokens.length === 1) {
+        return { subcommand: 'status', audio: true };
+    }
+    if (!WAVE_SUBCOMMANDS.has(head)) return null;
+
+    if (head === 'status') {
+        if (tokens.length === 1) return { subcommand: 'status', audio: false };
+        if (tokens.length === 2 && tokens[1].toLowerCase() === '--audio') {
+            return { subcommand: 'status', audio: true };
+        }
+        return null;
+    }
+    if (head === 'next' || head === 'promote') {
+        if (tokens.length !== 1) return null;
+        return { subcommand: head };
+    }
+    if (head === 'archive') {
+        // Schema estricto: exactamente 2 tokens (`archive`, num) — sin extras.
+        // `num` entero positivo decimal puro (mismo patrón que `add`).
+        if (tokens.length !== 2) return null;
+        const numToken = tokens[1];
+        if (!/^\d+$/.test(numToken)) return null;
+        const waveNumber = parseInt(numToken, 10);
+        if (!Number.isInteger(waveNumber) || waveNumber < 1) return null;
+        return { subcommand: 'archive', waveNumber };
+    }
+    if (head === 'add') {
+        // Schema estricto: exactamente 3 tokens (`add`, num, #issue) — sin extras.
+        if (tokens.length !== 3) return null;
+        const numToken = tokens[1];
+        const issueToken = tokens[2];
+        // `num` debe ser entero positivo decimal puro (no floats, no negativos, no hex).
+        if (!/^\d+$/.test(numToken)) return null;
+        const waveNumber = parseInt(numToken, 10);
+        if (!Number.isInteger(waveNumber) || waveNumber < 1) return null;
+        // `#issue` matchea exacto `#` + dígitos.
+        if (!/^#\d+$/.test(issueToken)) return null;
+        const issueNumber = parseInt(issueToken.slice(1), 10);
+        if (!Number.isInteger(issueNumber) || issueNumber < 1) return null;
+        return { subcommand: 'add', waveNumber, issueNumber };
+    }
+    if (head === 'remove') {
+        // #4377 CA-8 — MISMO gate estricto que `add`: exactamente 3 tokens.
+        if (tokens.length !== 3) return null;
+        const numToken = tokens[1];
+        const issueToken = tokens[2];
+        if (!/^\d+$/.test(numToken)) return null;
+        const waveNumber = parseInt(numToken, 10);
+        if (!Number.isInteger(waveNumber) || waveNumber < 1) return null;
+        if (!/^#\d+$/.test(issueToken)) return null;
+        const issueNumber = parseInt(issueToken.slice(1), 10);
+        if (!Number.isInteger(issueNumber) || issueNumber < 1) return null;
+        return { subcommand: 'remove', waveNumber, issueNumber };
+    }
+    if (head === 'history') {
+        // #4371 CA-10 — `/wave history` (todo) | `history <num>` (por ola) |
+        // `history #<issue>` (por issue). Un solo filtro opcional.
+        if (tokens.length === 1) return { subcommand: 'history' };
+        if (tokens.length !== 2) return null;
+        const arg = tokens[1];
+        if (/^\d+$/.test(arg)) {
+            const waveNumber = parseInt(arg, 10);
+            if (!Number.isInteger(waveNumber) || waveNumber < 1) return null;
+            return { subcommand: 'history', waveNumber };
+        }
+        if (/^#\d+$/.test(arg)) {
+            const issueNumber = parseInt(arg.slice(1), 10);
+            if (!Number.isInteger(issueNumber) || issueNumber < 1) return null;
+            return { subcommand: 'history', issueNumber };
+        }
+        return null;
+    }
+    if (head === 'reorder') {
+        // #4377 CA-8 — lista de `number`: ≥2 enteros positivos decimales puros,
+        // sin duplicados. La validación de permutación exacta contra el estado
+        // real vive en `waves.reorderPlannedWaves` (server-side).
+        const numTokens = tokens.slice(1);
+        if (numTokens.length < 2) return null;
+        const order = [];
+        for (const t of numTokens) {
+            if (!/^\d+$/.test(t)) return null;
+            const num = parseInt(t, 10);
+            if (!Number.isInteger(num) || num < 1) return null;
+            order.push(num);
+        }
+        if (new Set(order).size !== order.length) return null; // sin duplicados
+        return { subcommand: 'reorder', order };
+    }
+    if (head === 'create') {
+        // #4376 — parseo por flags nombrados (texto libre con espacios). Toda la
+        // validación (bounds decimal-puro, length, control-strip, injection) vive
+        // en `wave-create-input.validateCreateInput`, la MISMA que usa el CLI
+        // `crear-ola` (CA-4 BLOQUEANTE: no delegar solo al core, fallar temprano).
+        // Cualquier violación → null → dispatcher responde `wave-error` claro.
+        const wci = require('./wave-create-input');
+        // Reconstruimos la sub-cadena posterior a `create` para preservar espacios
+        // en nombre/objetivo (el split por \s+ del tope los rompería).
+        const afterCreate = String(rawArgs || '').replace(/^\s*create\b/i, '').trim();
+        const flags = wci.parseNamedFlags(afterCreate);
+        const res = wci.validateCreateInput(flags);
+        if (!res.ok) return null;
+        return {
+            subcommand: 'create',
+            name: res.spec.name,
+            goal: res.spec.goal,
+            concurrencyMax: res.spec.concurrency_max,
+            windowMinutes: res.spec.window_minutes,
+            issues: res.spec.issues,
+        };
+    }
+    return null;
+}
+
+// -----------------------------------------------------------------------------
+// Issue #3897 (épico #3894) — `/verificar <tipo> <numero>`: validación de un
+// claim contra su hecho canónico (`lib/canonical-facts.js`, #3895).
+//
+// CA-5: la respuesta a Telegram cita el comando canónico ejecutado en forma
+// `<hecho> (<fuente legible>)` — verificable, no proxy ambiguo (UX-2).
+// A09/CWE-200: NUNCA el argv crudo con flags/paths/tokens; toda la cita pasa
+// por `redactReadOutput` + `redactSecretValue` antes de salir al chat.
+// -----------------------------------------------------------------------------
+
+// Mapeo `<tipo>` del comando → claim canónico + nombre del param. SEC-1 vive
+// en `canonical-facts.js` (argsBuilder valida y lanza); acá solo gateamos la
+// sintaxis con una allowlist cerrada de tipos + entero decimal puro.
+const VERIFICAR_CLAIM_TYPES = {
+    pr: { claimKey: 'pr_mergeado', param: 'pr' },
+    issue: { claimKey: 'issue_cerrado', param: 'issue' },
+    rama: { claimKey: 'rama_contiene_commits', param: 'issue' },
+    main: { claimKey: 'entregable_en_main', param: 'issue' },
+    entregable: { claimKey: 'entregable_en_main', param: 'issue' },
+};
+
+/**
+ * Parsea `args` de `/verificar` → `{ tipo, claimKey, param, numero }` o `null`.
+ * Schema estricto: exactamente 2 tokens (`<tipo>`, `<numero>`), tipo en la
+ * allowlist, numero entero positivo decimal puro (con `#` opcional).
+ */
+function parseVerificarArgs(rawArgs) {
+    const tokens = String(rawArgs || '').trim().split(/\s+/).filter(Boolean);
+    if (tokens.length !== 2) return null;
+    const tipo = tokens[0].toLowerCase();
+    const meta = VERIFICAR_CLAIM_TYPES[tipo];
+    if (!meta) return null;
+    const numToken = tokens[1].startsWith('#') ? tokens[1].slice(1) : tokens[1];
+    if (!/^\d+$/.test(numToken)) return null;
+    const numero = parseInt(numToken, 10);
+    if (!Number.isInteger(numero) || numero < 1) return null;
+    return { tipo, claimKey: meta.claimKey, param: meta.param, numero };
+}
+
+/**
+ * Issue #4090 — parsea `args` de `/entregado` → `{ issue, pr? }` o `null`.
+ *
+ * Sintaxis estricta (SEC-1 / A03 — el `<issue>` llega de texto Telegram no
+ * confiable): `<issue>` o `<issue> pr <numero>`. Enteros decimales puros (con
+ * `#` opcional), positivos. Rechaza `5;rm`, backticks, `--flag`, floats, vacío y
+ * tokens extra. El SEC-1 profundo lo re-valida el argsBuilder de canonical-facts.
+ *
+ * @param {string} rawArgs
+ * @returns {{ issue: number, pr: number|null } | null}
+ */
+function parseEntregadoArgs(rawArgs) {
+    const tokens = String(rawArgs || '').trim().split(/\s+/).filter(Boolean);
+    if (tokens.length !== 1 && tokens.length !== 3) return null;
+
+    const issueTok = tokens[0].startsWith('#') ? tokens[0].slice(1) : tokens[0];
+    if (!/^\d+$/.test(issueTok)) return null;
+    const issue = parseInt(issueTok, 10);
+    if (!Number.isInteger(issue) || issue < 1) return null;
+
+    let pr = null;
+    if (tokens.length === 3) {
+        if (tokens[1].toLowerCase() !== 'pr') return null;
+        const prTok = tokens[2].startsWith('#') ? tokens[2].slice(1) : tokens[2];
+        if (!/^\d+$/.test(prTok)) return null;
+        pr = parseInt(prTok, 10);
+        if (!Number.isInteger(pr) || pr < 1) return null;
+    }
+    return { issue, pr };
+}
+
+// UX-2 — lenguaje claro y honesto cuando no hay hecho canónico verificable.
+// Nunca inventar una fuente ni volcar el error crudo del comando.
+const VERIFICAR_NOT_VERIFIABLE_MSG =
+    'No pude verificar esto contra un hecho canónico. ' +
+    'Lo dejo como no verificable en lugar de inventar una fuente.';
+
+// Cadena de redacción: reusar `redactAll` del audit writer de #3896
+// (`sherlock-audit-jsonl.js`), que encadena el patrón `github_pat_*` (gap no
+// cubierto por los redactores oficiales) + `redactReadOutput` +
+// `redactSecretValue`. Require defensivo con fallback a la cadena local de
+// dos pasos por si el módulo no está (checkout parcial).
+let _sherlockRedactAll = null;
+try { _sherlockRedactAll = require('./sherlock-audit-jsonl').redactAll; } catch { /* opcional */ }
+
+/**
+ * Arma la cita `<hecho> (<fuente legible>)` y la redacta SIEMPRE (A09/UX-2).
+ *
+ * @param {{hecho: string, fuente: string}} parts
+ * @returns {string} cita redactada, lista para interpolar con escape MarkdownV2.
+ */
+function renderCanonicalCitation({ hecho, fuente } = {}) {
+    const s = `${String(hecho || '').trim()} (${String(fuente || '').trim()})`;
+    if (typeof _sherlockRedactAll === 'function') {
+        return _sherlockRedactAll(s);
+    }
+    const read = redactReadOutput(s);
+    const txt = (read && typeof read === 'object' && typeof read.text === 'string')
+        ? read.text
+        : (typeof read === 'string' ? read : s);
+    return baseRedact.redactSecretValue(txt);
+}
+
+// Hecho + fuente legible por claim (UX-2: ej. `#3890 mergeado (gh pr view →
+// state: MERGED)`). La "fuente" cita el comando canónico SIN flags ruidosos,
+// paths ni tokens — es la forma lógica verificable, no el argv crudo.
+const VERIFICAR_CITATION_BUILDERS = {
+    pr_mergeado: (n, v) => ({
+        hecho: v ? `PR #${n} mergeado` : `PR #${n} NO mergeado`,
+        fuente: `gh pr view ${n} → state: ${v ? 'MERGED' : 'sin merge'}`,
+    }),
+    issue_cerrado: (n, v) => ({
+        hecho: v ? `#${n} cerrado` : `#${n} abierto`,
+        fuente: `gh issue view ${n} → state: ${v ? 'CLOSED' : 'OPEN'}`,
+    }),
+    rama_contiene_commits: (n, v) => ({
+        hecho: v ? `#${n} tiene rama de trabajo` : `#${n} sin rama de trabajo`,
+        fuente: `git branch --list agent/${n}-* → ${v ? 'presente' : 'ausente'}`,
+    }),
+    entregable_en_main: (n, v) => ({
+        hecho: v ? `#${n} entregado en main` : `#${n} NO entregado en main`,
+        fuente: `git branch --merged origin/main → rama agent/${n}-* ${v ? 'mergeada' : 'sin mergear'}`,
+    }),
+};
+
+/**
+ * Cita canónica para un resultado de `resolveClaim` (#3895).
+ * `not_verifiable` → mensaje claro y honesto (UX-2), sin fuente inventada.
+ *
+ * @param {string} claimKey
+ * @param {number} numero — identificador validado (issue/pr).
+ * @param {{value: *, status: string}} result — retorno de resolveClaim.
+ * @returns {string}
+ */
+function canonicalCitationFor(claimKey, numero, result) {
+    if (!result || result.status === 'not_verifiable') {
+        return VERIFICAR_NOT_VERIFIABLE_MSG;
+    }
+    const builder = VERIFICAR_CITATION_BUILDERS[claimKey];
+    if (!builder) return VERIFICAR_NOT_VERIFIABLE_MSG;
+    return renderCanonicalCitation(builder(numero, result.value === true));
+}
+
+/**
+ * Issue #4090 — cita determinística (forma lógica hecho+fuente) para un estado
+ * de entrega resuelto por `resolveDeliveryState`. Siempre redactada (A09) vía
+ * `renderCanonicalCitation` — nunca vuelca argv crudo, paths ni tokens. La fuente
+ * cita el hecho canónico que decidió el estado, NO el comando con flags.
+ *
+ * @param {number} issue — issue validado.
+ * @param {{state: string, fase?: string}} delivery — retorno de resolveDeliveryState.
+ * @returns {string}
+ */
+function deliveryCitationFor(issue, delivery) {
+    const state = delivery && delivery.state;
+    switch (state) {
+        case 'mergeado_en_main': {
+            const prMerged = delivery.facts && delivery.facts.prMerged;
+            // Si el PR confirmó el merge, citamos el PR; sino la rama mergeada en main.
+            if (prMerged && prMerged.value === true) {
+                return renderCanonicalCitation({
+                    hecho: `#${issue} entregado en main`,
+                    fuente: 'gh pr view → state: MERGED',
+                });
+            }
+            return renderCanonicalCitation({
+                hecho: `#${issue} entregado en main`,
+                fuente: `git branch --merged origin/main → rama agent/${issue}-* mergeada`,
+            });
+        }
+        case 'pusheado_sin_merge':
+            return renderCanonicalCitation({
+                hecho: `#${issue} pusheado, SIN merge a main`,
+                fuente: `git branch --list agent/${issue}-* → presente; --merged origin/main → ausente`,
+            });
+        case 'en_pipeline':
+            return renderCanonicalCitation({
+                hecho: `#${issue} en pipeline — fase ${delivery.fase || '—'}`,
+                fuente: `work-file .pipeline → fase: ${delivery.fase || '—'}`,
+            });
+        default:
+            return VERIFICAR_NOT_VERIFIABLE_MSG;
+    }
+}
+
+const ARG_SCHEMAS = {
+    status: { allow: () => true },
+    snapshot: { allow: () => true },
+    wave: {
+        allow(args) {
+            // #3493 — Acepta subcomandos status/next/add/promote y backward-compat.
+            // Validación estricta delegada en parseWaveArgs (rechaza floats, regex
+            // mismatch, tokens extra → security CA-5).
+            return parseWaveArgs(args) !== null;
+        },
+        usage: 'wave [status [--audio] | next | add <num> #issue | remove <num> #issue | reorder <n1> <n2> ... | promote | create --nombre <n> --concurrency <c> --window <m> --issues <#a #b> [--objetivo <o>] | archive <num> | history [<ola>|#<issue>]]',
+        allowedValues: ['status', 'status --audio', 'next', 'add <num> #issue', 'remove <num> #issue', 'reorder <n1> <n2> ...', 'promote', 'create --nombre ... --concurrency ... --window ... --issues ...', 'archive <num>', 'history [<ola>|#<issue>]'],
+        hint: 'Subcomandos: `status` (con `--audio` opcional), `next`, `add <num> #issue`, `remove <num> #issue`, `reorder <n1> <n2> ...`, `promote`, `create` (crear ola planificada: `--nombre`, `--concurrency`, `--window`, `--issues #a #b`, y `--objetivo` opcional), `archive <num>`, `history [<ola>|#<issue>]`. Sin subcomando equivale a `status`.',
+    },
+    listado: {
+        allow(args) {
+            const norm = String(args || '').toLowerCase().trim();
+            return LISTADO_FILTERS.has(norm);
+        },
+        usage: 'listado [pendientes|en curso|listos|ola|todo]',
+        allowedValues: [...LISTADO_FILTERS].filter(Boolean),
+    },
+    allowlist: { allow: () => true },
+    tail: {
+        allow(args) {
+            const norm = String(args || '').trim();
+            if (!norm) return false;
+            // Allowlist estricta: nombre exacto, sin path. Sin slashes/dotdot.
+            if (norm.includes('/') || norm.includes('\\') || norm.includes('..')) return false;
+            return TAIL_ALLOWED_FILES.has(norm);
+        },
+        usage: 'tail <archivo>',
+        allowedValues: [...TAIL_ALLOWED_FILES],
+        hint: 'Indicá uno de los archivos permitidos (ej. `tail commander.log`).',
+    },
+    'dashboard-up': { allow: () => true },
+    'dashboard-down': { allow: () => true },
+    screenshot: { allow: () => true },
+    procesos: { allow: () => true },
+    salud: { allow: () => true },
+    descanso: { allow: () => true },
+    // Issue #3253 — /quota es estrictamente read-only (CA-S1).
+    // Cualquier argumento (clear, reset, delete, force, etc.) se rechaza
+    // antes de invocar al handler para impedir bypass del rate-limit de
+    // Claude desde el chat. El handler nunca modifica el archivo del flag.
+    quota: {
+        allow(args) {
+            const norm = String(args || '').trim();
+            return norm.length === 0;
+        },
+        usage: 'quota',
+        allowedValues: [],
+        hint: 'El comando es read-only — no acepta argumentos. Para destrabar la cuota, esperá al reset o borrá el flag manualmente con `rm .pipeline/quota-exhausted.json` (consola).',
+    },
+    // Issue #3415 — `/rechazar` valida MÍNIMAMENTE acá. El parser estricto
+    // (SEC-1.5 issue + SEC-1.4 fase) vive en rechazar-handler.js para que
+    // el handler pueda diferenciar entre texto y audio transcripto.
+    // Acá solo gateamos: si llega texto plano (no audio), debe haber al
+    // menos algo de input. Para audio (sin args), dejamos pasar y que el
+    // handler decida (puede haber transcripción válida en _textoFinal).
+    rechazar: { allow: () => true },
+    reject: { allow: () => true },
+    rebobinar: { allow: () => true },
+    // Issue #3897 — `/verificar <tipo> <numero>`. Sintaxis estricta (allowlist
+    // de tipos + entero decimal puro). SEC-1 profundo (anti-inyección) vive en
+    // el argsBuilder de canonical-facts, que re-valida y lanza.
+    verificar: {
+        allow(args) { return parseVerificarArgs(args) !== null; },
+        usage: 'verificar <pr|issue|rama|main> <numero>',
+        allowedValues: ['pr <numero>', 'issue <numero>', 'rama <numero>', 'main <numero>'],
+        hint: 'Ej: `verificar pr 3890` (¿está mergeado?), `verificar issue 3897` (¿está cerrado?), `verificar main 3897` (¿el entregable está en main?).',
+    },
+    verify: {
+        allow(args) { return parseVerificarArgs(args) !== null; },
+        usage: 'verify <pr|issue|rama|main> <numero>',
+        allowedValues: ['pr <numero>', 'issue <numero>', 'rama <numero>', 'main <numero>'],
+        hint: 'Alias de `verificar`.',
+    },
+    // Issue #4090 — `/entregado <issue> [pr <n>]`. Sintaxis estricta (enteros
+    // decimales puros). SEC-1 profundo (anti-inyección) re-validado en el
+    // argsBuilder de canonical-facts. Read-only: no merge/push/cierre.
+    entregado: {
+        allow(args) { return parseEntregadoArgs(args) !== null; },
+        usage: 'entregado <issue> [pr <numero>]',
+        allowedValues: ['<issue>', '<issue> pr <numero>'],
+        hint: 'Ej: `entregado 4090` (¿mergeado en main?), `entregado 4090 pr 4091` (corrobora con el PR).',
+    },
+    'estado-entrega': {
+        allow(args) { return parseEntregadoArgs(args) !== null; },
+        usage: 'estado-entrega <issue> [pr <numero>]',
+        allowedValues: ['<issue>', '<issue> pr <numero>'],
+        hint: 'Alias de `entregado`.',
+    },
+    // Issue #4068 — acciones rápidas de needs-human: `<accion> <issue>` (entero).
+    'mas-contexto':        quickActionArgSchema('mas-contexto'),
+    'devolver-definicion': quickActionArgSchema('devolver-definicion'),
+    'priorizar':           quickActionArgSchema('priorizar'),
+};
+
+// Issue #4068 — schema de args para las acciones rápidas de needs-human. Solo
+// acepta un entero positivo (issue), con `#` opcional. Cap 999999 (CA-SEC-3).
+function quickActionArgSchema(action) {
+    return {
+        allow(args) {
+            const m = String(args || '').trim().match(/^#?(\d+)$/);
+            if (!m) return false;
+            const n = Number(m[1]);
+            return n > 0 && n <= 999999;
+        },
+        usage: `${action} <issue>`,
+        allowedValues: [`${action} <issue>`],
+        hint: `Indicá el número de issue. Ej: \`/${action} 4068\`.`,
+    };
+}
+
+function validateArgs(command, args) {
+    const schema = ARG_SCHEMAS[command];
+    if (!schema) return { ok: true };
+    if (schema.allow(args)) return { ok: true };
+    return {
+        ok: false,
+        message: `El valor "${escapeMarkdownV2((args || '').slice(0, 40))}" no es válido para \`${escapeMarkdownV2(command)}\`.`,
+        usage: schema.usage || command,
+        allowedValues: schema.allowedValues || null,
+        hint: schema.hint || null,
+    };
+}
+
+// -----------------------------------------------------------------------------
+// CUA NOTIFY EMITTER (#3541)
+// -----------------------------------------------------------------------------
+
+/**
+ * Crea un emisor de notificaciones CUA atado al config del pipeline. La
+ * fachada `emit(entregable)` se inyecta en cada handler determinístico vía
+ * `ctx.cuaEmit`. Si el feature está apagado (default), `emit` es un noop que
+ * devuelve `{ ok: false, action: 'skipped', reason: 'disabled' }` sin tocar
+ * ningún side-effect.
+ *
+ * CA-TEC-2 — Filtrado de stages se aplica acá (el caller). `notifyCua` también
+ * lo verifica como defensa, pero el camino feliz nunca llega allá si el stage
+ * no está en `cua.notifiable_stages`.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - bloque `cua` del config.yaml.
+ * @param {string} opts.pipelineRoot
+ * @param {string} opts.telegramQueueDir
+ * @param {object} [opts.deps]
+ * @param {function} [opts.log] - logger del caller (pulpo.log) para visibilidad.
+ * @returns {{ emit: function, enabled: boolean, notifiableStages: string[], allowedCommands: string[], queryOnlyCommands: string[] }}
+ */
+function createCuaEmitter(opts) {
+    const o = opts || {};
+    const cfg = o.config || {};
+    const enabled = cfg.enabled === true && cfg.kill_switch !== true;
+    const notifiableStages = Array.isArray(cfg.notifiable_stages) && cfg.notifiable_stages.length > 0
+        ? cfg.notifiable_stages
+        : [];
+    const allowedCommands = Array.isArray(cfg.allowed_commands) ? cfg.allowed_commands : [];
+    // #4145 — comandos solo-consulta: saltean el auto-emit de notis
+    // `init`/`completion`. La respuesta del handler ya es la entrega; las notis
+    // serían ruido (header `⚙️ /wave · init` + envelope `<!-- pipeline-meta -->`).
+    // Default `[]` si ausente (rollout seguro: sin la lista, comportamiento previo).
+    const queryOnlyCommands = Array.isArray(cfg.query_only_commands) ? cfg.query_only_commands : [];
+    const log = typeof o.log === 'function' ? o.log : (() => {});
+
+    function emit(entregable) {
+        if (!enabled) {
+            return { ok: false, action: 'skipped', reason: 'disabled' };
+        }
+        if (!entregable || typeof entregable !== 'object') {
+            return { ok: false, action: 'skipped', reason: 'invalid_entregable' };
+        }
+        // CA-TEC-2 — filtro stage en el caller. Si el stage no está en la
+        // lista, ni siquiera invocamos notifyCua (más barato).
+        if (notifiableStages.length > 0 && !notifiableStages.includes(entregable.stage)) {
+            return { ok: false, action: 'skipped', reason: 'stage_not_notifiable' };
+        }
+        const mod = (o.deps && o.deps.deliverableNotify) || _loadDeliverableNotify();
+        if (!mod || typeof mod.notifyCua !== 'function') {
+            return { ok: false, action: 'skipped', reason: 'module_unavailable' };
+        }
+        let result;
+        try {
+            result = mod.notifyCua({
+                entregable,
+                config: cfg,
+                // #4586 — política de audio por tipo de evento (stage CUA →
+                // texto-only por default). Si el caller no la provee, `notifyCua`
+                // cae al flag legacy `audio_enabled` del bloque `cua`.
+                audioPolicy: o.audioPolicy || null,
+                pipelineRoot: o.pipelineRoot,
+                telegramQueueDir: o.telegramQueueDir,
+                deps: o.deps,
+            });
+        } catch (e) {
+            // notifyCua ya captura todo; si llegamos acá es algo del módulo.
+            return { ok: false, action: 'error', reason: (e && e.message) || String(e) };
+        }
+
+        // CA-FUNC-9 — fire-and-forget. El audit ya quedó persistido sync;
+        // sólo el audioTask es async. Lo enganchamos a un .catch defensivo
+        // para que cualquier rejection sin handler quede silenciada.
+        if (result && result.audioTask && typeof result.audioTask.then === 'function') {
+            result.audioTask.catch(() => {});
+        }
+        if (result && result.ok) {
+            log('cua', `⚙️ /${entregable.command} ${entregable.stage} → enqueued`);
+        } else if (result && result.action === 'rejected') {
+            log('cua', `⚙️ /${entregable.command || '?'} rechazado: ${result.reason}`);
+        } else if (result && result.action === 'skipped' && result.reason !== 'disabled') {
+            log('cua', `⚙️ /${entregable.command || '?'} skipped (${result.reason})`);
+        }
+        return result;
+    }
+
+    return {
+        emit,
+        enabled,
+        notifiableStages,
+        allowedCommands,
+        queryOnlyCommands,
+    };
+}
+
+// -----------------------------------------------------------------------------
+// FACTORY DE DISPATCHER
+// -----------------------------------------------------------------------------
+
+/**
+ * @param {object} opts
+ * @param {string} opts.pipelineRoot       - root del pipeline (`.pipeline`)
+ * @param {string} opts.logsDir            - directorio de logs (`.pipeline/logs`)
+ * @param {string} [opts.expectedChatId]   - chat_id autorizado (CA-17)
+ * @param {object} [opts.handlers]         - override por comando (para tests / pulpo)
+ * @param {object} [opts.rateLimit]        - { burst, ratePerMin }
+ * @param {object} [opts.destructiveCooldown]
+ *        - { cooldownMs, destructiveCommands } — issue #3253 CA-4. Si se omite,
+ *          se crea uno con defaults (60s sobre restart/limpiar/ghostbusters/reset).
+ *          Pasar `false` lo deshabilita (tests aislados que no quieren cooldown).
+ * @param {function} [opts.now]            - clock injectable
+ */
+function createDispatcher(opts) {
+    const options = opts || {};
+    if (!options.pipelineRoot) throw new Error('createDispatcher: pipelineRoot es obligatorio');
+    if (!options.logsDir) throw new Error('createDispatcher: logsDir es obligatorio');
+
+    const auditLog = createAuditLog({
+        dir: options.logsDir,
+        redact: (s) => baseRedact.redactSensitive(String(s || '')),
+        now: options.now,
+    });
+    const rateLimiter = createRateLimiter({
+        burst: options.rateLimit && options.rateLimit.burst,
+        ratePerMin: options.rateLimit && options.rateLimit.ratePerMin,
+        now: options.now,
+    });
+    // Issue #3253 — CA-4: cooldown destructivo. Layer adicional al rate-limit.
+    // Si el caller pasa `false` explícito, lo deshabilitamos (tests que quieren
+    // ejecutar el mismo destructivo varias veces sin esperar 60s).
+    const destructiveCooldown = options.destructiveCooldown === false
+        ? null
+        : createDestructiveCooldown({
+            cooldownMs: options.destructiveCooldown && options.destructiveCooldown.cooldownMs,
+            destructiveCommands: options.destructiveCooldown && options.destructiveCooldown.destructiveCommands,
+            now: options.now,
+        });
+    const customHandlers = options.handlers || {};
+    const now = typeof options.now === 'function' ? options.now : () => Date.now();
+
+    const expectedChatId = options.expectedChatId ? String(options.expectedChatId) : null;
+
+    // Issue #3541 — Emisor de notificaciones CUA. Si el caller no inyecta el
+    // bloque `cua`, queda un emitter "noop" que devuelve `disabled`. Esto deja
+    // toda la lógica downstream homogénea — los handlers siempre tienen un
+    // `cuaEmit` válido aunque el feature esté apagado.
+    const cuaOpts = options.cua || {};
+    const cuaEmitter = createCuaEmitter({
+        config: cuaOpts.config,
+        pipelineRoot: cuaOpts.pipelineRoot || options.pipelineRoot,
+        telegramQueueDir: cuaOpts.telegramQueueDir,
+        deps: cuaOpts.deps,
+        log: cuaOpts.log,
+    });
+
+    // Defaults: handlers stub que el caller (pulpo.js) puede overridear con
+    // implementaciones reales. El módulo no asume infra — devuelve "stub" si
+    // no se inyectó nada, para que el router siga siendo testable aislado.
+    const defaultHandlers = buildDefaultHandlers({
+        pipelineRoot: options.pipelineRoot,
+        logsDir: options.logsDir,
+        now: options.now,
+        // Issue #3415 — overrides para el handler de `/rechazar`. El caller
+        // (pulpo.js o tests) puede inyectar `whisperLocal`/`githubClient`/etc.
+        // Si no se inyectan, se usan los defaults reales (whisper-local.js + gh CLI).
+        rechazarDeps: options.rechazarDeps || null,
+        // Issue #3897 — impls inyectables para `/verificar` (gitImpl/ghApi/
+        // processCheck/timeoutMs). Tests usan fakes; producción usa los
+        // defaults reales de canonical-facts (#3895).
+        canonicalImpls: options.canonicalImpls || null,
+        canonicalFacts: options.canonicalFacts || null,
+        // Issue #4068 — módulo human-block inyectable para los handlers de
+        // acciones rápidas (tests usan fake; producción usa el real).
+        humanBlock: options.humanBlock || null,
+    });
+    const handlers = { ...defaultHandlers, ...customHandlers };
+
+    /**
+     * @param {{from?: string, chat_id?: string|number, text: string}} message
+     * @returns {Promise<{ reply: string|null, status: string, handler: string|null, intent: object, durationMs: number }>}
+     */
+    async function dispatch(message) {
+        const start = now();
+        const intent = classify(message && message.text);
+        const chatId = message && message.chat_id !== undefined ? String(message.chat_id) : null;
+
+        // Auth re-verificada por handler crítico (CA-17). El listener ya filtró
+        // por CHAT_ID; acá protegemos contra construcciones internas que se salten.
+        if (expectedChatId && chatId && chatId !== expectedChatId) {
+            const row = auditLog.record({
+                from: message && message.from,
+                chat_id: chatId,
+                raw_command: intent.rawTruncated,
+                intent_class: 'unknown',
+                handler: null,
+                args: intent.args,
+                result_status: 'error',
+                duration_ms: now() - start,
+            });
+            return {
+                reply: null,
+                status: 'unauthorized',
+                handler: null,
+                intent,
+                durationMs: row.duration_ms,
+            };
+        }
+
+        // Solo determinísticos pasan por el rate limiter (CA-11).
+        if (intent.class === 'deterministic' && chatId) {
+            const decision = rateLimiter.consume(chatId);
+            if (!decision.allowed) {
+                rateLimiter.recordBlocked(chatId, intent.command || intent.raw);
+                const reply = fillTemplate('error-rate-limit', {
+                    'recent-requests': decision.recentRequests,
+                    'limit-per-min': rateLimiter._config.ratePerMin,
+                    'retry-after-seconds': Math.ceil(decision.retryAfterMs / 1000),
+                    'last-blocked-commands': rateLimiter.getRecentBlocked(chatId).map((b) => ({
+                        command: b.command,
+                        elapsed: formatElapsed(now() - b.ts),
+                    })),
+                });
+                const row = auditLog.record({
+                    from: message && message.from,
+                    chat_id: chatId,
+                    raw_command: intent.rawTruncated,
+                    intent_class: 'deterministic',
+                    handler: intent.command,
+                    args: intent.args,
+                    result_status: 'rate_limited',
+                    duration_ms: now() - start,
+                });
+                return { reply, status: 'rate_limited', handler: intent.command, intent, durationMs: row.duration_ms };
+            }
+        }
+
+        // Comandos `unknown` → plantilla de error con sugerencias.
+        if (intent.class === 'unknown') {
+            const reply = fillTemplate('error-unknown', {
+                'raw-command-truncated': intent.rawTruncated,
+                'quota-degraded': false,
+            });
+            const row = auditLog.record({
+                from: message && message.from,
+                chat_id: chatId,
+                raw_command: intent.rawTruncated,
+                intent_class: 'unknown',
+                handler: null,
+                args: intent.args,
+                result_status: 'ok',
+                duration_ms: now() - start,
+            });
+            return { reply, status: 'ok', handler: null, intent, durationMs: row.duration_ms };
+        }
+
+        // Comandos `llm` → el router devuelve null para que el caller llame a Claude.
+        if (intent.class === 'llm') {
+            const row = auditLog.record({
+                from: message && message.from,
+                chat_id: chatId,
+                raw_command: intent.rawTruncated,
+                intent_class: 'llm',
+                handler: intent.command || null,
+                args: intent.args,
+                result_status: 'ok',
+                duration_ms: now() - start,
+            });
+            return { reply: null, status: 'delegated_to_llm', handler: intent.command, intent, durationMs: row.duration_ms };
+        }
+
+        // -------- DETERMINISTIC --------
+        const validation = validateArgs(intent.command, intent.args);
+        if (!validation.ok) {
+            const reply = fillTemplate('error-invalid-args', {
+                command: intent.command,
+                'validation-error-message': validation.message,
+                'usage-example': validation.usage,
+                'allowed-values': validation.allowedValues,
+                hint: validation.hint,
+            });
+            const row = auditLog.record({
+                from: message && message.from,
+                chat_id: chatId,
+                raw_command: intent.rawTruncated,
+                intent_class: 'deterministic',
+                handler: intent.command,
+                args: intent.args,
+                result_status: 'invalid_args',
+                duration_ms: now() - start,
+            });
+            return { reply, status: 'invalid_args', handler: intent.command, intent, durationMs: row.duration_ms };
+        }
+
+        // Issue #3253 — CA-4: cooldown destructivo. Aplica DESPUÉS del
+        // rate-limit y de la validación de args, ANTES del handler. Si el
+        // comando es destructivo y está dentro de la ventana, devolvemos
+        // template con tiempo restante y NO invocamos al handler. No
+        // grabamos `recordSuccess` acá — el caller lo hace explícitamente
+        // después de confirmar éxito (ver `markDestructiveSuccess`).
+        if (destructiveCooldown && chatId && destructiveCooldown.isDestructive(intent.command)) {
+            const cd = destructiveCooldown.check(chatId, intent.command);
+            if (!cd.allowed) {
+                const reply = fillTemplate('error-destructive-cooldown', {
+                    command: intent.command,
+                    'retry-after-ms': cd.retryAfterMs,
+                    'retry-after-human': humanizeRetryAfter(cd.retryAfterMs),
+                    'cooldown-seconds': Math.round((destructiveCooldown._config.cooldownMs || DEFAULT_COOLDOWN_MS) / 1000),
+                });
+                const row = auditLog.record({
+                    from: message && message.from,
+                    chat_id: chatId,
+                    raw_command: intent.rawTruncated,
+                    intent_class: 'deterministic',
+                    handler: intent.command,
+                    args: intent.args,
+                    result_status: 'cooldown',
+                    duration_ms: now() - start,
+                });
+                return { reply, status: 'cooldown', handler: intent.command, intent, durationMs: row.duration_ms };
+            }
+        }
+
+        const handler = handlers[intent.command];
+        if (typeof handler !== 'function') {
+            const row = auditLog.record({
+                from: message && message.from,
+                chat_id: chatId,
+                raw_command: intent.rawTruncated,
+                intent_class: 'deterministic',
+                handler: intent.command,
+                args: intent.args,
+                result_status: 'error',
+                duration_ms: now() - start,
+            });
+            return { reply: null, status: 'no_handler', handler: intent.command, intent, durationMs: row.duration_ms };
+        }
+
+        let reply = null;
+        let audioText = null;
+        let extraMessages = [];
+        // #4130 — parse_mode del reply. Por defecto null (el caller usa el
+        // legacy 'Markdown'). Handlers que producen MarkdownV2 (ej. `/wave`,
+        // cuyo cuadro lo genera `wave-renderer` con escapes `\#`/`\(`) lo
+        // declaran explícito para que el saliente se envíe con el dialecto
+        // correcto y no muestre los escapes literales en pantalla.
+        let parseMode = null;
+        let status = 'ok';
+        // Issue #3541 — Si el comando ejecutado está en `cua.allowed_commands`
+        // y el feature está habilitado, emitimos automáticamente `init` antes
+        // del handler y `completion` después. Los handlers pueden también
+        // emitir `validation`/`analysis` desde dentro usando `ctx.cuaEmit`.
+        // Cumple CA-FUNC-6 (enqueue por stage) y CA-TEC-2 (filtro en caller).
+        // #4145 — los comandos solo-consulta (`cua.query_only_commands`, ej.
+        // `wave`) saltean el auto-emit: su respuesta YA es la entrega y las
+        // notis init/completion (con su envelope) son ruido en Telegram. NO se
+        // toca `ctx.cuaEmit` (un handler query-only puede emitir stages manuales
+        // si los necesita) ni `buildCuaText`/`buildCuaEnvelope` (el envelope
+        // legítimo del path reply-to de entregables de issues queda intacto).
+        const cuaShouldAutoEmit = cuaEmitter.enabled
+            && cuaEmitter.allowedCommands.length > 0
+            && cuaEmitter.allowedCommands.includes(intent.command)
+            && !cuaEmitter.queryOnlyCommands.includes(intent.command);
+        const handlerStartedAt = now();
+        if (cuaShouldAutoEmit) {
+            cuaEmitter.emit({
+                command: intent.command,
+                stage: 'init',
+                status: 'in_progress',
+                preview: `⏳ Comando \`${intent.command}\` iniciado.`,
+                args: typeof intent.args === 'string' && intent.args.length > 0 ? intent.args : undefined,
+            });
+        }
+        try {
+            const result = await handler({
+                args: intent.args,
+                message,
+                intent,
+                // Issue #3541 — `cuaEmit` disponible para que handlers complejos
+                // emitan stages intermedios (`validation`, `analysis`) cuando
+                // identifican un hito interno. Es noop si CUA está apagado.
+                cuaEmit: cuaEmitter.emit,
+            });
+            if (typeof result === 'string') {
+                reply = result;
+            } else if (result && typeof result === 'object') {
+                reply = result.reply || null;
+                // #3262 — handlers que quieren emitir audio TTS (opt-in, no
+                // bloqueante) devuelven `audioText` adicional. El dispatcher
+                // lo forwardea para que el caller (pulpo.brazoCommander) decida
+                // si invocar sendVoiceTelegram. Si el caller no lo soporta,
+                // simplemente lo ignora — el reply Markdown llega igual.
+                audioText = result.audioText || null;
+                // #4075 — mensajes de continuación del paginado de `/wave`. El
+                // caller (pulpo.brazoCommander) los envía consecutivos tras el
+                // reply principal. Si no los soporta, se ignoran sin romper.
+                if (Array.isArray(result.extraMessages)) extraMessages = result.extraMessages;
+                // #4130 — parse_mode opcional del handler (ej. MarkdownV2 para
+                // `/wave`). Si el caller no lo soporta, lo ignora y usa su default.
+                if (typeof result.parseMode === 'string') parseMode = result.parseMode;
+            }
+        } catch (e) {
+            status = 'error';
+            try { process.stderr.write(`[commander-deterministic] handler ${intent.command} falló: ${e.message}\n`); } catch (_) {}
+        }
+        // Issue #3541 — completion stage. `status` mapea a `ok`/`fail` según
+        // cómo terminó el handler.
+        if (cuaShouldAutoEmit) {
+            const durationS = Math.max(0, (now() - handlerStartedAt) / 1000);
+            const completedOk = status === 'ok' && reply !== null;
+            cuaEmitter.emit({
+                command: intent.command,
+                stage: 'completion',
+                status: completedOk ? 'ok' : 'fail',
+                preview: completedOk
+                    ? `Comando \`${intent.command}\` completado.`
+                    : `Comando \`${intent.command}\` terminó con errores.`,
+                args: typeof intent.args === 'string' && intent.args.length > 0 ? intent.args : undefined,
+                duration: durationS,
+            });
+        }
+        // Issue #3253 — CA-4: grabar success solo si efectivamente devolvimos
+        // una respuesta no nula. Si el handler retornó null (ej. legacy
+        // resuelto en pulpo.js via no_handler fallback), no grabamos —
+        // pulpo.js llamará a `markDestructiveSuccess` cuando confirme éxito.
+        if (destructiveCooldown && chatId && status === 'ok' && reply !== null && destructiveCooldown.isDestructive(intent.command)) {
+            destructiveCooldown.recordSuccess(chatId, intent.command);
+        }
+        const durationMs = now() - start;
+        auditLog.record({
+            from: message && message.from,
+            chat_id: chatId,
+            raw_command: intent.rawTruncated,
+            intent_class: 'deterministic',
+            handler: intent.command,
+            args: intent.args,
+            result_status: status,
+            duration_ms: durationMs,
+        });
+        return { reply, audioText, extraMessages, parseMode, status, handler: intent.command, intent, durationMs };
+    }
+
+    /**
+     * Issue #3253 — CA-4: API explícita para que pulpo.js marque éxito
+     * de un comando destructivo cuyo handler vive en el switch legacy
+     * (cmdLimpiar / cmdRestart / cmdGhostbusters). Sin esto, los comandos
+     * que NO tienen handler default en el dispatcher (porque están en
+     * pulpo.js) nunca activarían el cooldown.
+     */
+    function markDestructiveSuccess(chatId, command) {
+        if (!destructiveCooldown || !chatId || !command) return false;
+        if (!destructiveCooldown.isDestructive(command)) return false;
+        destructiveCooldown.recordSuccess(chatId, command);
+        return true;
+    }
+
+    /**
+     * Issue #3253 — CA-4: API explícita para que pulpo.js consulte si un
+     * destructivo está en cooldown antes de invocar el switch legacy.
+     */
+    function checkDestructiveCooldown(chatId, command) {
+        if (!destructiveCooldown || !chatId || !command) {
+            return { allowed: true, retryAfterMs: 0, lastSuccessAt: null };
+        }
+        return destructiveCooldown.check(chatId, command);
+    }
+
+    return {
+        classify,
+        validateArgs,
+        dispatch,
+        auditLog,
+        rateLimiter,
+        destructiveCooldown,
+        markDestructiveSuccess,
+        checkDestructiveCooldown,
+        // Issue #3541 — expuesto para que callers externos (ej. handlers que
+        // viven fuera del switch del dispatcher) puedan emitir entregables
+        // CUA con el mismo emisor inicializado.
+        cuaEmit: cuaEmitter.emit,
+        cuaEmitter,
+        DETERMINISTIC_SLASH,
+        LLM_SLASH,
+        ARG_SCHEMAS,
+    };
+}
+
+// -----------------------------------------------------------------------------
+// HANDLERS POR DEFECTO
+//
+// Los handlers default cubren los comandos NUEVOS del CA-2 (tail, dashboard
+// up/down, screenshot, procesos, salud, descanso) y usan ÚNICAMENTE lectura
+// de FS + spawn con argv array. Los comandos legacy (status, actividad,
+// ghostbusters, etc.) se siguen sirviendo desde `pulpo.js` vía override.
+// -----------------------------------------------------------------------------
+
+function buildDefaultHandlers(ctx) {
+    const PIPELINE = path.resolve(ctx.pipelineRoot);
+    const LOG_DIR = path.resolve(ctx.logsDir);
+
+    // #3493 — Cooldown destructivo específico para subcomandos de `/wave`.
+    // El cooldown global del dispatcher es per-comando (`wave`), no per-subcomando.
+    // Como `/wave status` y `/wave next` son read-only y `/wave add`,
+    // `/wave promote` y `/wave archive` son destructivos, NO podemos meter `wave`
+    // en el set global (gatearía las lecturas). Spawneamos uno aislado con claves
+    // virtuales (`wave-add`, `wave-promote`, `wave-create`, `wave-remove`,
+    // `wave-reorder`, `wave-archive`) y ventana de 30s — más corta que el default
+    // 60s porque las mutaciones son granulares y la idempotencia de
+    // `waves.addIssueToWave`/`archiveWave` (no-op si ya está) ya cubre el
+    // doble-tap accidental.
+    // CA-9 — destructiveCooldown MUST en add/promote/archive (refuerzo security).
+    // #4377 REQ-SEC-5 — `wave-remove` y `wave-reorder` también mutan estado
+    // irreversible → cooldown destructivo obligatorio.
+    const waveSubCooldown = createDestructiveCooldown({
+        cooldownMs: 30 * 1000,
+        destructiveCommands: ['wave-add', 'wave-promote', 'wave-create', 'wave-remove', 'wave-reorder', 'wave-archive'],
+        now: ctx.now,
+    });
+
+    // Issue #3415 — handler de `/rechazar` (singleton dentro del dispatcher,
+    // mantiene el auditor de rejections vivo entre dispatches).
+    const rechazarDeps = ctx.rechazarDeps || {};
+    const { createRechazarHandler } = require('./commander/rechazar-handler');
+    const rechazarHandler = createRechazarHandler({
+        pipelineRoot: PIPELINE,
+        auditDir: rechazarDeps.auditDir || path.join(PIPELINE, 'audit'),
+        rejectionsDir: rechazarDeps.rejectionsDir || path.join(PIPELINE, 'rejections'),
+        redactSensitive: rechazarDeps.redactSensitive || ((s) => baseRedact.redactSensitive(String(s || ''))),
+        whisperLocal: rechazarDeps.whisperLocal,
+        githubClient: rechazarDeps.githubClient,
+        now: ctx.now || rechazarDeps.now,
+        randomVariant: rechazarDeps.randomVariant,
+        maxAudioBytes: rechazarDeps.maxAudioBytes,
+        maxAudioDurationS: rechazarDeps.maxAudioDurationS,
+        maxStaleMs: rechazarDeps.maxStaleMs,
+        noReturnLabels: rechazarDeps.noReturnLabels,
+        logger: rechazarDeps.logger,
+        // Issue #3541 / CA-SEC-6 — propagar la allowlist de operadores
+        // autorizados a rebobinar entregables CUA + whitelist de comandos
+        // desde el caller (pulpo.js). Sin esto, todo `/rechazar <cua>` cae en
+        // `unauthorized_rebobinar` aunque pulpo wiree `cua.enabled: true`.
+        cuaOperatorChatIds: Array.isArray(rechazarDeps.cuaOperatorChatIds)
+            ? rechazarDeps.cuaOperatorChatIds
+            : [],
+        allowedCuaCommands: Array.isArray(rechazarDeps.allowedCuaCommands)
+            ? rechazarDeps.allowedCuaCommands
+            : [],
+    });
+
+    // Issue #3897 CA-5 — handler de `/verificar`: resuelve el claim contra su
+    // fuente canónica (#3895) y responde citando el comando canónico ejecutado
+    // en forma hecho+fuente legible (UX-2). Fail-open: cualquier falla del
+    // canonical (gh/git ausente, timeout, parse) → not_verifiable comunicado
+    // con lenguaje claro — NUNCA una afirmación especulativa.
+    const VERIFICAR_TIMEOUT_MS = 8000; // interactivo (gh tarda ~1s); el batch usa 200ms.
+    const verificarHandler = async ({ args }) => {
+        const parsed = parseVerificarArgs(args);
+        if (!parsed) {
+            // Defensa redundante: ARG_SCHEMAS ya rechazó esta forma.
+            throw new Error('verificar: args inválidos');
+        }
+        let result = null;
+        try {
+            const canonical = ctx.canonicalFacts || require('./canonical-facts');
+            result = await canonical.resolveClaim(
+                parsed.claimKey,
+                { [parsed.param]: parsed.numero },
+                {
+                    cwd: path.dirname(PIPELINE),
+                    timeoutMs: VERIFICAR_TIMEOUT_MS,
+                    ...(ctx.canonicalImpls || {}),
+                }
+            );
+        } catch {
+            result = null; // fail-open → not_verifiable (UX-2)
+        }
+        const verifiable = !!(result && result.status && result.status !== 'not_verifiable');
+        return fillTemplate('verificar', {
+            'claim-tipo': parsed.tipo,
+            numero: parsed.numero,
+            verifiable,
+            'claim-true': !!(result && result.value === true),
+            citation: canonicalCitationFor(parsed.claimKey, parsed.numero, result),
+        });
+    };
+
+    // Issue #4090 — handler de `/entregado <issue> [pr <n>]`: fuente ÚNICA de la
+    // verdad sobre entrega. Compone hechos canónicos vía `resolveDeliveryState`
+    // (NO infiere comparando ramas a mano). Read-only, fail-open a `not_verifiable`
+    // (NUNCA colapsa a "no entregado"), timeout duro, cita redactada (A09).
+    const entregadoHandler = async ({ args }) => {
+        const parsed = parseEntregadoArgs(args);
+        if (!parsed) {
+            // Defensa redundante: ARG_SCHEMAS ya rechazó esta forma.
+            throw new Error('entregado: args inválidos');
+        }
+        let delivery = null;
+        try {
+            const canonical = ctx.canonicalFacts || require('./canonical-facts');
+            delivery = await canonical.resolveDeliveryState(
+                parsed.issue,
+                (parsed.pr != null ? { pr: parsed.pr } : {}),
+                {
+                    cwd: path.dirname(PIPELINE),
+                    timeoutMs: VERIFICAR_TIMEOUT_MS,
+                    ...(ctx.canonicalImpls || {}),
+                }
+            );
+        } catch {
+            delivery = null; // fail-open → not_verifiable (SEC-5, NUNCA "no entregado")
+        }
+        const state = (delivery && delivery.state) || 'not_verifiable';
+        return fillTemplate('estado-entrega', {
+            numero: parsed.issue,
+            state,
+            'is-mergeado': state === 'mergeado_en_main',
+            'is-pusheado': state === 'pusheado_sin_merge',
+            'is-pipeline': state === 'en_pipeline',
+            'is-no-verificable': state === 'not_verifiable',
+            fase: delivery && delivery.fase ? delivery.fase : '',
+            citation: deliveryCitationFor(parsed.issue, delivery),
+        });
+    };
+
+    // =========================================================================
+    // Issue #4068 — Acciones rápidas de needs-human por slash-command (path
+    // Telegram tipeado, complemento de los botones URL de la Opción A). Cada
+    // handler re-valida el origen contra la allowlist de operadores (CA-SEC-6) y
+    // asienta audit authorized/unauthorized (CA-SEC-2). La ejecución se delega en
+    // human-block.executeQuickAction — single source con el endpoint del dashboard.
+    // =========================================================================
+    const quickActionOperatorChatIds = Array.isArray(ctx.rechazarDeps && ctx.rechazarDeps.cuaOperatorChatIds)
+        ? ctx.rechazarDeps.cuaOperatorChatIds.map(String)
+        : [];
+    function quickActionAuthorized(message) {
+        // Sin allowlist configurada, el filtro CHAT_ID del listener es el gate.
+        if (quickActionOperatorChatIds.length === 0) return true;
+        const chatId = message && message.chat_id !== undefined && message.chat_id !== null ? String(message.chat_id) : null;
+        let fromId = null;
+        if (message && message.from && typeof message.from === 'object' && message.from.id !== undefined) fromId = String(message.from.id);
+        else if (message && typeof message.from === 'string') fromId = message.from;
+        return (!!chatId && quickActionOperatorChatIds.includes(chatId))
+            || (!!fromId && quickActionOperatorChatIds.includes(fromId));
+    }
+    function makeQuickActionHandler(action) {
+        return async ({ args, message }) => {
+            const hb = ctx.humanBlock || require('./human-block');
+            const m = String(args || '').trim().match(/^#?(\d+)$/);
+            const issue = m ? Number(m[1]) : null;
+            if (!issue || issue > 999999) return `❌ Uso: \`/${action} <issue>\` — ej: \`/${action} 4068\`.`;
+            const from = message && message.from;
+            const chat_id = message && message.chat_id;
+            if (!quickActionAuthorized(message)) {
+                hb.auditQuickAction({ issue, action, from, chat_id, result_status: 'unauthorized' });
+                return '🔒 No estás autorizado para ejecutar esta acción.';
+            }
+            let result;
+            try { result = hb.executeQuickAction({ issue, action }); }
+            catch (e) {
+                hb.auditQuickAction({ issue, action, from, chat_id, result_status: 'error' });
+                return `❌ Error ejecutando \`${action}\` sobre #${issue}: ${e.message}`;
+            }
+            hb.auditQuickAction({ issue, action, from, chat_id, result_status: result.ok ? 'authorized' : 'error' });
+            return result.ok ? `✅ ${result.msg}` : `❌ ${result.error || 'error ejecutando acción'}`;
+        };
+    }
+
+    return {
+        // Issue #3415 — aliases todos mapean al mismo handler.
+        rechazar: rechazarHandler.handle,
+        reject: rechazarHandler.handle,
+        rebobinar: rechazarHandler.handle,
+
+        // Issue #4068 — acciones rápidas de needs-human.
+        'mas-contexto': makeQuickActionHandler('mas-contexto'),
+        'devolver-definicion': makeQuickActionHandler('devolver-definicion'),
+        'priorizar': makeQuickActionHandler('priorizar'),
+
+        // Issue #3897 — `/verificar` + alias inglés.
+        verificar: verificarHandler,
+        verify: verificarHandler,
+
+        // Issue #4090 — `/entregado` + alias `/estado-entrega`.
+        entregado: entregadoHandler,
+        'estado-entrega': entregadoHandler,
+
+        // Issue #3253 — CA-1: `/quota` read-only. Lee
+        // `.pipeline/quota-exhausted.json` con whitelist estricta de campos
+        // (CA-S2: nunca emite el JSON crudo, nunca expone paths absolutos).
+        // El handler jamás modifica el archivo (CA-S1) — los args mutativos
+        // (clear/reset/delete) ya rebotaron en ARG_SCHEMAS.quota antes de
+        // llegar acá.
+        quota: async () => {
+            const flagPath = path.join(PIPELINE, 'quota-exhausted.json');
+            let parsed = null;
+            try {
+                if (fs.existsSync(flagPath)) {
+                    const raw = fs.readFileSync(flagPath, 'utf8');
+                    parsed = JSON.parse(raw);
+                }
+            } catch (_) {
+                // Lectura defensiva: si está corrupto el JSON, NO emitimos
+                // el contenido crudo en la respuesta (CA-S2). Devolvemos el
+                // estado "sin cuota activa" como safe-default.
+                parsed = null;
+            }
+
+            const exhausted = !!(parsed && parsed.exhausted === true);
+            if (!exhausted) {
+                return fillTemplate('quota', { exhausted: false });
+            }
+
+            // Whitelist estricta de campos para Telegram (CA-S2).
+            // - provider: string identificador (ej "anthropic"), sanitizado.
+            // - since-iso: detected_at en ISO8601 humanizado a HH:MM:SS.
+            // - since-elapsed: tiempo desde detected_at.
+            // - resets-iso / resets-in: si hay resets_at, humanizamos; sino "—".
+            // - reason-kind: el campo `pattern_matched` truncado a 64 chars.
+            const provider = typeof parsed.provider === 'string' ? parsed.provider : 'anthropic';
+            const reasonKindRaw = typeof parsed.pattern_matched === 'string'
+                ? parsed.pattern_matched
+                : 'desconocido';
+            const reasonKind = reasonKindRaw.slice(0, 64);
+
+            const nowMs = Date.now();
+            const detectedAtMs = parsed.detected_at ? Date.parse(parsed.detected_at) : NaN;
+            const resetsAtMs = parsed.resets_at ? Date.parse(parsed.resets_at) : NaN;
+
+            const sinceElapsed = Number.isFinite(detectedAtMs)
+                ? formatElapsed(nowMs - detectedAtMs)
+                : 'desconocido';
+            const sinceIso = Number.isFinite(detectedAtMs)
+                ? new Date(detectedAtMs).toISOString()
+                : '—';
+            const hasResets = Number.isFinite(resetsAtMs);
+            const resetsIn = hasResets ? formatElapsed(resetsAtMs - nowMs) : '—';
+            const resetsIso = hasResets ? new Date(resetsAtMs).toISOString() : '—';
+
+            return fillTemplate('quota', {
+                exhausted: true,
+                provider,
+                'reason-kind': reasonKind,
+                'since-elapsed': sinceElapsed,
+                'since-iso': sinceIso,
+                'has-resets': hasResets,
+                'resets-in': resetsIn,
+                'resets-iso': resetsIso,
+            });
+        },
+
+        tail: async ({ args }) => {
+            const file = String(args || '').trim();
+            const safeFile = path.resolve(LOG_DIR, file);
+            // Defensa adicional: el path resuelto debe vivir dentro de LOG_DIR.
+            if (!safeFile.startsWith(LOG_DIR + path.sep) && safeFile !== LOG_DIR) {
+                throw new Error('tail: path traversal detectado');
+            }
+            if (!fs.existsSync(safeFile)) {
+                return fillTemplate('tail-logs', {
+                    'log-file': file,
+                    'lines-count': 0,
+                    'file-size-human': '0 B',
+                    'last-write': 'n/a',
+                    'log-content': '(archivo no existe todavía)',
+                    'redacted-count': 0,
+                    truncated: false,
+                });
+            }
+            const stat = fs.statSync(safeFile);
+            const raw = fs.readFileSync(safeFile, 'utf8');
+            const allLines = raw.split('\n');
+            const LIMIT = 30;
+            const tail = allLines.slice(-LIMIT).join('\n');
+            const { text: safeText, redactedCount } = redactReadOutput(tail);
+            return fillTemplate('tail-logs', {
+                'log-file': file,
+                'lines-count': Math.min(allLines.length, LIMIT),
+                'file-size-human': humanBytes(stat.size),
+                'last-write': new Date(stat.mtimeMs).toISOString(),
+                'log-content': clipForTelegram(safeText),
+                'redacted-count': redactedCount,
+                truncated: allLines.length > LIMIT,
+            });
+        },
+
+        descanso: async () => {
+            // Lee la config de modo descanso desde `.pipeline/config.yaml`
+            // sin parsearlo agresivamente: solo extraemos la sección con regex
+            // (alcanza para read-only display, no es la fuente de verdad).
+            const configPath = path.join(PIPELINE, 'config.yaml');
+            const cfg = { active: false, until: null, remaining: null, start: '--', end: '--', tz: 'America/Argentina/Buenos_Aires', days: 'L–V' };
+            try {
+                if (fs.existsSync(configPath)) {
+                    const yaml = fs.readFileSync(configPath, 'utf8');
+                    const m = yaml.match(/rest_mode:\s*\n((?:\s{2,}.+\n)+)/);
+                    if (m) {
+                        const block = m[1];
+                        const start = (block.match(/start:\s*['"]?([\d:]+)['"]?/) || [])[1];
+                        const end = (block.match(/end:\s*['"]?([\d:]+)['"]?/) || [])[1];
+                        const tz = (block.match(/timezone:\s*['"]?([^'"\s]+)['"]?/) || [])[1];
+                        if (start) cfg.start = start;
+                        if (end) cfg.end = end;
+                        if (tz) cfg.tz = tz;
+                    }
+                }
+            } catch (_) { /* lectura best-effort */ }
+
+            return fillTemplate('modo-descanso', {
+                timestamp: new Date().toISOString(),
+                active: cfg.active,
+                until: cfg.until || '--',
+                'remaining-human': cfg.remaining || '--',
+                'window-start': cfg.start,
+                'window-end': cfg.end,
+                timezone: cfg.tz,
+                'days-display': cfg.days,
+                'snooze-cap-h': 24,
+                'has-snooze': false,
+            });
+        },
+
+        wave: async ({ args, message }) => {
+            // #3262 — Snapshot ejecutivo de la ola para Telegram.
+            // #3493 — H5 expande a 4 subcomandos:
+            //   status [--audio] | next | add <num> #issue | promote
+            //
+            // Reutiliza la infraestructura existente:
+            //   - wave-resolver / wave-snapshot / wave-renderer → render `status`.
+            //   - lib/waves.js (H1 #3489) → CRUD de `waves.json` (next/add/promote).
+            //   - partial-pause.js → actualizar `.partial-pause.json` post-promote.
+            //   - destructive-cooldown (waveSubCooldown) → MUST en add/promote (CA-9).
+            //   - audit-log via dispatcher → CA-10. Acá solo retornamos reply/status.
+            //
+            // Performance (CA-11): todo el handler corre sin red, sin LLM, sin
+            // subprocess. < 500ms p99 incluso con scan FS de issues conocidos
+            // (cache 30s vía getKnownIssues).
+            const parsed = parseWaveArgs(args);
+            // Defensa en profundidad: si validateArgs dejó pasar algo malformado
+            // (no debería suceder por ARG_SCHEMAS.wave.allow), respondemos error
+            // en español sin colgar el dispatcher.
+            if (!parsed) {
+                return {
+                    reply: fillTemplate('wave-error', {
+                        'error-kind': 'subcomando-invalido',
+                        message: 'Subcomando inválido. Usá: `status` · `next` · `add <num> #issue` · `promote` · `archive <num>`.',
+                    }),
+                    parseMode: 'MarkdownV2', // #4130 — el template wave-error es MarkdownV2
+                };
+            }
+
+            // Mapeo subcomando → handler dedicado. Cada uno responde { reply, audioText? }
+            // (o un string para los de error). TODO el árbol `/wave` produce
+            // MarkdownV2: el cuadro lo arma `wave-renderer` y los templates
+            // (`wave-error`/`wave-next`/`wave-add-ok`/`wave-promote-ok`) escapan
+            // con `\#`/`\(`/`\-`. #4130 — normalizamos a objeto con
+            // `parseMode: 'MarkdownV2'` para que el saliente NO se envíe con el
+            // legacy 'Markdown' (que mostraría los escapes literales en pantalla).
+            let res;
+            switch (parsed.subcommand) {
+                case 'status':
+                    res = await handleWaveStatus({ pipelineRoot: PIPELINE, audio: parsed.audio });
+                    break;
+                case 'next':
+                    res = await handleWaveNext({ pipelineRoot: PIPELINE });
+                    break;
+                case 'add':
+                    res = await handleWaveAdd({
+                        pipelineRoot: PIPELINE,
+                        waveNumber: parsed.waveNumber,
+                        issueNumber: parsed.issueNumber,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'promote':
+                    res = await handleWavePromote({
+                        pipelineRoot: PIPELINE,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'remove':
+                    res = await handleWaveRemove({
+                        pipelineRoot: PIPELINE,
+                        waveNumber: parsed.waveNumber,
+                        issueNumber: parsed.issueNumber,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'reorder':
+                    res = await handleWaveReorder({
+                        pipelineRoot: PIPELINE,
+                        order: parsed.order,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'create':
+                    res = await handleWaveCreate({
+                        pipelineRoot: PIPELINE,
+                        name: parsed.name,
+                        goal: parsed.goal,
+                        concurrencyMax: parsed.concurrencyMax,
+                        windowMinutes: parsed.windowMinutes,
+                        issues: parsed.issues,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'archive':
+                    res = await handleWaveArchive({
+                        pipelineRoot: PIPELINE,
+                        waveNumber: parsed.waveNumber,
+                        cooldown: waveSubCooldown,
+                        chatId: message && message.chat_id !== undefined ? String(message.chat_id) : null,
+                        from: message && message.from ? String(message.from) : 'Leo',
+                    });
+                    break;
+                case 'history':
+                    // #4371 CA-10 — consulta read-only del audit trail de olas/issues.
+                    res = handleWaveHistory({
+                        waveNumber: parsed.waveNumber,
+                        issueNumber: parsed.issueNumber,
+                    });
+                    break;
+                default:
+                    res = fillTemplate('wave-error', {
+                        'error-kind': 'subcomando-no-soportado',
+                        message: `Subcomando "${parsed.subcommand}" no soportado.`,
+                    });
+            }
+            // #4130 — stamp MarkdownV2 preservando el resto del shape (audioText,
+            // extraMessages). Un string se promueve a { reply, parseMode }.
+            if (typeof res === 'string') return { reply: res, parseMode: 'MarkdownV2' };
+            if (res && typeof res === 'object') return { ...res, parseMode: 'MarkdownV2' };
+            return res;
+        },
+
+        snapshot: async () => {
+            // Lee `.pipeline/desarrollo/<fase>/<estado>/*.{<skill>,yaml}` y arma
+            // un snapshot agregado del estado actual del pipeline. Sin LLM ni red:
+            // solo `fs.readdirSync` sobre la jerarquía de carpetas.
+            const desarrollo = path.join(PIPELINE, 'desarrollo');
+            const PHASES = ['dev', 'build', 'verificacion', 'aprobacion', 'entrega', 'validacion'];
+            const STATES = ['pendiente', 'trabajando', 'listo'];
+            const issuesMap = new Map(); // issue → { phase, state, file, mtimeMs }
+            let blockedCount = 0;
+            const interventionItems = [];
+
+            for (const phase of PHASES) {
+                for (const state of STATES) {
+                    const dir = path.join(desarrollo, phase, state);
+                    let files = [];
+                    try { files = fs.readdirSync(dir); } catch (_) { continue; }
+                    for (const f of files) {
+                        const m = f.match(/^(\d+)\.([\w-]+)$/);
+                        if (!m) continue;
+                        const issue = Number(m[1]);
+                        const fullPath = path.join(dir, f);
+                        let mtimeMs = 0;
+                        try { mtimeMs = fs.statSync(fullPath).mtimeMs; } catch (_) {}
+                        // Si ya existía el issue en otra fase, conservamos la más avanzada
+                        // (la fase con índice mayor en PHASES).
+                        const prev = issuesMap.get(issue);
+                        const idx = PHASES.indexOf(phase);
+                        const prevIdx = prev ? PHASES.indexOf(prev.phase) : -1;
+                        if (!prev || idx > prevIdx) {
+                            issuesMap.set(issue, { phase, state, file: f, mtimeMs });
+                        }
+                        // Detección heurística de bloqueo: archivos `.reason*.json` o
+                        // contenido con `rebote: true` / `motivo_rechazo`.
+                        try {
+                            if (state === 'pendiente') {
+                                const content = fs.readFileSync(fullPath, 'utf8');
+                                if (/^rebote:\s*true/m.test(content) || /motivo_rechazo:/m.test(content)) {
+                                    blockedCount += 1;
+                                    if (interventionItems.length < 5) {
+                                        const reasonMatch = content.match(/motivo_rechazo:\s*\|?\s*\n?\s*(.{0,140})/);
+                                        const reason = (reasonMatch ? reasonMatch[1].trim() : 'rebote pendiente').slice(0, 140);
+                                        interventionItems.push({ number: issue, reason });
+                                    }
+                                }
+                            }
+                        } catch (_) {}
+                    }
+                }
+            }
+
+            const totalIssues = issuesMap.size;
+            // Progreso: % de issues en fases finales (aprobacion/entrega) sobre total.
+            const advancedPhases = new Set(['aprobacion', 'entrega']);
+            let advanced = 0;
+            for (const meta of issuesMap.values()) {
+                if (advancedPhases.has(meta.phase)) advanced += 1;
+            }
+            const progressPercent = totalIssues > 0 ? Math.round((advanced / totalIssues) * 100) : 0;
+            const progressBar = renderProgressBar(progressPercent);
+
+            // Render: orden por issue desc, máximo 12 issues para no pasarnos del límite.
+            const shown = [...issuesMap.entries()]
+                .sort((a, b) => b[0] - a[0])
+                .slice(0, 12);
+            // Issue #4090 (CA-4) — NO colapsar "fase 100%" con "entregado". Para
+            // issues en fase avanzada (aprobacion/entrega) consultamos la fuente
+            // ÚNICA `resolveDeliveryState`; si NO está mergeado_en_main, anotamos
+            // literalmente "fase completa, NO mergeado en main" con respaldo
+            // determinístico — sin comparar ramas a mano. Best-effort y fail-open:
+            // cualquier falla deja el issue SIN nota (jamás afirma "no entregado").
+            const canonical = ctx.canonicalFacts || require('./canonical-facts');
+            const issues = [];
+            for (const [num, meta] of shown) {
+                const item = {
+                    number: num,
+                    phase: meta.phase,
+                    title: `(${meta.file})`,
+                    'status-icon': stateIcon(meta.state),
+                    blocked: false,
+                    'last-event': null,
+                    'last-event-elapsed': null,
+                    'delivery-note': null,
+                };
+                if (advancedPhases.has(meta.phase)) {
+                    try {
+                        const delivery = await canonical.resolveDeliveryState(
+                            num, {},
+                            { cwd: path.dirname(PIPELINE), timeoutMs: 4000, ...(ctx.canonicalImpls || {}) }
+                        );
+                        // Solo anotamos cuando el estado es VERIFICABLE y no mergeado.
+                        // `not_verifiable` NO se anota (no afirmar lo que no se sabe).
+                        if (delivery && (delivery.state === 'pusheado_sin_merge' || delivery.state === 'en_pipeline')) {
+                            item['delivery-note'] = 'fase completa, *NO mergeado en main*';
+                        }
+                    } catch (_) { /* fail-open: sin nota */ }
+                }
+                issues.push(item);
+            }
+
+            // Número de ola: best-effort. Si existe `.pipeline/ola-actual.json` lo
+            // usamos, sino lo dejamos en "—" (no inventamos).
+            let olaNumero = '—';
+            try {
+                const olaFile = path.join(PIPELINE, 'ola-actual.json');
+                if (fs.existsSync(olaFile)) {
+                    const data = JSON.parse(fs.readFileSync(olaFile, 'utf8'));
+                    if (data && data.numero) olaNumero = String(data.numero);
+                }
+            } catch (_) {}
+
+            return fillTemplate('snapshot-ola', {
+                'ola-numero': olaNumero,
+                timestamp: new Date().toISOString(),
+                'progress-bar': progressBar,
+                'progress-percent': progressPercent,
+                'eta-human': '—',
+                'eta-model': 'sin modelo determinístico',
+                'blocked-count': blockedCount,
+                'total-issues': totalIssues,
+                issues,
+                'intervencion-requerida': interventionItems.length > 0,
+                'intervencion-items': interventionItems,
+            });
+        },
+
+        listado: async ({ args }) => {
+            // Lectura puro-FS del estado actual del pipeline. Filtros aceptados
+            // (validados por ARG_SCHEMAS antes de llegar acá): pendientes / en
+            // curso / listos / ola / todo / '' (default = todo).
+            const filter = String(args || '').toLowerCase().trim() || 'todo';
+            const desarrollo = path.join(PIPELINE, 'desarrollo');
+            const PHASES = ['dev', 'build', 'verificacion', 'aprobacion', 'entrega', 'validacion'];
+
+            // Mapeo filtro → conjunto de estados aceptados.
+            const STATE_MAP = {
+                pendientes: new Set(['pendiente']),
+                'en-curso': new Set(['trabajando']),
+                'en curso': new Set(['trabajando']),
+                listos: new Set(['listo']),
+                ola: new Set(['pendiente', 'trabajando', 'listo']),
+                todo: new Set(['pendiente', 'trabajando', 'listo']),
+                '': new Set(['pendiente', 'trabajando', 'listo']),
+            };
+            const acceptedStates = STATE_MAP[filter] || STATE_MAP.todo;
+
+            const issueRows = new Map(); // issue → row
+            for (const phase of PHASES) {
+                for (const state of acceptedStates) {
+                    const dir = path.join(desarrollo, phase, state);
+                    let files = [];
+                    try { files = fs.readdirSync(dir); } catch (_) { continue; }
+                    for (const f of files) {
+                        const m = f.match(/^(\d+)\.([\w-]+)$/);
+                        if (!m) continue;
+                        const issue = Number(m[1]);
+                        const skill = m[2];
+                        const fullPath = path.join(dir, f);
+                        let elapsed = null;
+                        try {
+                            const st = fs.statSync(fullPath);
+                            elapsed = formatElapsed(Date.now() - st.mtimeMs);
+                        } catch (_) {}
+                        const prev = issueRows.get(issue);
+                        const idx = PHASES.indexOf(phase);
+                        const prevIdx = prev ? PHASES.indexOf(prev._phaseIdx) : -1;
+                        if (!prev || idx > prevIdx) {
+                            issueRows.set(issue, {
+                                number: issue,
+                                _phaseIdx: phase,
+                                phase,
+                                state,
+                                labels: skill,
+                                title: `(${f})`,
+                                elapsed,
+                                'priority-icon': stateIcon(state),
+                            });
+                        }
+                    }
+                }
+            }
+
+            const total = issueRows.size;
+            const sortedRows = [...issueRows.values()].sort((a, b) => b.number - a.number);
+            const MAX_SHOW = 15;
+            const shown = Math.min(sortedRows.length, MAX_SHOW);
+            const issues = sortedRows.slice(0, MAX_SHOW);
+
+            return fillTemplate('listado-issues', {
+                'filter-description': filter || 'todo',
+                empty: total === 0,
+                total,
+                shown,
+                truncated: total > MAX_SHOW,
+                issues,
+            });
+        },
+
+        // #5176 · A-1 + SEC-5 — Render de `/allowlist`.
+        //
+        // CORRECCIÓN INTENCIONAL DOCUMENTADA, no paridad literal.
+        // ------------------------------------------------------
+        // La versión previa parseaba `parsed.issues`, `parsed.allowlist` o un
+        // array pelado — tres formatos que NINGÚN escritor produce. El schema
+        // canónico que escriben `setAllowlist` / `addToAllowlist` es
+        // `allowed_issues` (`partial-pause.js`), así que con 17 issues
+        // realmente autorizados el comando respondía "allowlist vacía / nunca
+        // modificada". Es la clase de evento que termina en el operador
+        // re-autorizando a mano porque cree que se perdió el estado — el
+        // camino exacto del dispatch masivo de #5060.
+        //
+        // Migrar la lectura al envoltorio CORRIGE el defecto: es un cambio
+        // observable para el operador y se declara como tal, en vez de
+        // preservar el bug para "cumplir" la paridad de CA-8.
+        //
+        // Los TRES estados quedan separados (SEC-5), no colapsados en "vacía":
+        //   - marker ausente        → "nunca", sin pausa parcial.
+        //   - marker presente vacío → allowlist vacía explícita.
+        //   - halt total presente   → se anuncia el halt Y se sigue mostrando
+        //     el contenido real de la allowlist. Son markers separados y el
+        //     halt gana sobre la allowlist (contrato §4); leerlo por
+        //     `getDispatchState()` habría rendido `allowed_issues: []` y
+        //     reintroducido justo la confusión que SEC-5 previene (R7).
+        //
+        // CA-UX-1 / CA-UX-2 — el halt total es un TERCER estado del template,
+        // mutuamente excluyente con los otros dos y con precedencia sobre
+        // cualquier lectura de allowlist (contrato §4). La versión anterior de
+        // este render agregaba una línea suelta de halt DEBAJO de un
+        // `*Estado:* 🟢 sin pausa parcial`: el operador leía las dos cosas a la
+        // vez y la primera es la que fija la impresión. El modo se pasa
+        // EXPLÍCITO (`full-pause`, derivado de `getDispatchState().mode`), no
+        // como booleano derivado de `allowed.length`.
+        //
+        // CA-UX-3 — una ventana por skill NO se rotula por issues. Con
+        // `allowed_skills` no vacío y `allowed_issues` vacío, el copy nombra los
+        // skills y NO afirma "equivale a running normal": la ventana por skill
+        // restringe el dispatch (#3680 CA-A15).
+        //
+        // CA-UX-5 — `last-modified-by` sale del contrato del template: ningún
+        // escritor emite `modified_by` en el marker, así que era un campo
+        // permanentemente vacío (la fuente real es #5195). Y la rama de marker
+        // ausente dice "sin pausa parcial registrada", no "nunca", que no
+        // distinguía "nunca hubo" de "se levantó y se borró el archivo".
+        allowlist: async () => {
+            let snapshot = null;
+            let haltTotal = false;
+            let pauseOrigin = null;
+            try {
+                snapshot = withOperationalStateRoot(PIPELINE, () => operationalState.readDispatchAllowlist());
+            } catch (_) { snapshot = null; }
+            // El eje "halt total" se lee por el MODO del envoltorio, que es
+            // donde vive la precedencia `paused > partial_pause > running`
+            // (contrato §4). No se deriva de la allowlist.
+            try {
+                haltTotal = withOperationalStateRoot(
+                    PIPELINE, () => operationalState.getDispatchState().mode,
+                ) === 'paused';
+            } catch (_) { haltTotal = false; }
+            if (haltTotal) {
+                try {
+                    const origin = withOperationalStateRoot(
+                        PIPELINE, () => operationalState.readFullPauseOrigin(),
+                    );
+                    const parts = [];
+                    if (origin && typeof origin.source === 'string' && origin.source && origin.source !== 'unknown') {
+                        parts.push(origin.source);
+                    }
+                    if (origin && typeof origin.detail === 'string' && origin.detail.trim()) {
+                        parts.push(origin.detail.trim().slice(0, 120));
+                    }
+                    pauseOrigin = parts.length ? parts.join(' · ') : null;
+                } catch (_) { pauseOrigin = null; }
+            }
+
+            if (!snapshot) {
+                return fillTemplate('allowlist', {
+                    active: false,
+                    'full-pause': haltTotal,
+                    'pause-origin': pauseOrigin,
+                    'window-label': '',
+                    'last-modified': 'sin pausa parcial registrada',
+                    'empty-allowlist': true,
+                    count: 0,
+                    issues: [],
+                    compact: false,
+                    'compact-list': '',
+                    truncated: false,
+                    shown: 0,
+                    'hidden-count': 0,
+                    'skills-count': 0,
+                    'has-skills': false,
+                    'skills-display': '',
+                    'con-deps-recursivas': false,
+                    deps: [],
+                });
+            }
+
+            const issues = snapshot.issues.map((number) => ({
+                number,
+                'title-short': '(sin metadata)',
+                'labels-display': null,
+            }));
+            const skills = Array.isArray(snapshot.skills) ? snapshot.skills : [];
+            const isEmpty = issues.length === 0;
+
+            // #5176 (rebote rev-3) — COTA DE LARGO DEL LISTADO.
+            // ------------------------------------------------
+            // Corregir A-1 destapó un segundo defecto: con la cascada vieja el
+            // render SIEMPRE contaba 0 issues, así que el mensaje siempre era
+            // corto. Al empezar a mostrar los `allowed_issues` reales, el
+            // listado sin cota pasó a 4652 chars con el marker de producción
+            // (139 autorizados) y el transporte lo recortaba a 4000: 16 issues
+            // perdidos SIN aviso, pie del mensaje descartado y corte a mitad de
+            // token MarkdownV2 (`\(sin metadata\` → riesgo de 400 Can't parse
+            // entities). El operador pasaba de leer "vacía con 139 autorizados"
+            // a leer "123 de 139" sin saber que faltaban: los dos caminos
+            // terminan en la re-autorización manual del dispatch de #5060, que
+            // es justo lo que SEC-5 / A-1 buscan evitar.
+            //
+            // `fitAllowlistRender` degrada por DENSIDAD antes que por corte
+            // (detallada → compacta → compacta acotada con "y N más"), y elige
+            // MIDIENDO el render, no estimando: a escala de producción los 139
+            // entran completos y, si algún día no entraran, el mensaje lo
+            // declara con el total real en vez de callarlo.
+            //
+            // Los campos de largo variable que vienen del MARKER (los escribe
+            // otro proceso) se acotan en origen para que la degradación por
+            // issues no tenga que compensar un campo desbordado.
+            const baseCtx = {
+                // CA-UX-3 · "activa" = hay una restricción vigente por CUALQUIER
+                // eje (issues O skills), igual que `getPipelineMode()` (#3680
+                // CA-A15). Antes miraba sólo issues: una ventana por skill se
+                // rendía como "sin pausa parcial" con el dispatch acotado.
+                // Sigue sin derivarse del halt total: son ejes distintos.
+                active: !isEmpty || skills.length > 0,
+                'full-pause': haltTotal,
+                'pause-origin': pauseOrigin,
+                'window-label': dispatchWindowLabel(issues.length, skills.length),
+                'last-modified': allowlistBudget.clampLastModified(snapshot.createdAt),
+                'empty-allowlist': isEmpty,
+                count: issues.length,
+                'skills-count': skills.length,
+                'has-skills': skills.length > 0,
+                'skills-display': allowlistBudget.clampSkillsDisplay(skills),
+                'con-deps-recursivas': false,
+                deps: [],
+            };
+
+            // `issues` / `compact-list` / `truncated` / `shown` / `hidden-count`
+            // los aporta la vista elegida por el presupuesto.
+            const fitted = allowlistBudget.fitAllowlistRender({
+                rows: issues,
+                renderWith: (view) => fillTemplate('allowlist', { ...baseCtx, ...view }),
+            });
+            return fitted.text;
+        },
+
+        'dashboard-up': async () => {
+            // Levanta el dashboard. Sin shell-concat: spawn con argv array.
+            const port = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+            const dashboardScript = path.join(PIPELINE, 'dashboard.js');
+            if (!fs.existsSync(dashboardScript)) {
+                return fillTemplate('dashboard-up', {
+                    'dashboard-url': '—',
+                    pid: '—',
+                    port,
+                    'startup-ms': 0,
+                    'was-already-running': false,
+                    'smoke-test-passed': false,
+                });
+            }
+
+            // Check si ya corre alguien en el puerto.
+            const existingPid = portInUse(port);
+            if (existingPid) {
+                return fillTemplate('dashboard-up', {
+                    'dashboard-url': `http://localhost:${port}/`,
+                    pid: existingPid,
+                    port,
+                    'startup-ms': 0,
+                    'was-already-running': true,
+                    'smoke-test-passed': false,
+                });
+            }
+
+            const startedAt = Date.now();
+            const logPath = path.join(LOG_DIR, 'dashboard-v2.log');
+            let logFd = null;
+            try {
+                if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+                fs.appendFileSync(logPath, `--- dashboard-up commander ${new Date().toISOString()} ---\n`);
+                logFd = fs.openSync(logPath, 'a');
+            } catch (_) {}
+
+            // Spawn detached con argv array — node + dashboard.js. Sin shell.
+            let child;
+            try {
+                child = spawn(process.execPath, [dashboardScript], {
+                    cwd: path.resolve(PIPELINE, '..'),
+                    stdio: logFd ? ['ignore', logFd, logFd] : 'ignore',
+                    detached: true,
+                    windowsHide: true,
+                    env: { ...process.env },
+                });
+                child.unref();
+            } catch (e) {
+                return fillTemplate('dashboard-up', {
+                    'dashboard-url': '—',
+                    pid: '—',
+                    port,
+                    'startup-ms': Date.now() - startedAt,
+                    'was-already-running': false,
+                    'smoke-test-passed': false,
+                });
+            } finally {
+                if (logFd) try { fs.closeSync(logFd); } catch (_) {}
+            }
+
+            // Smoke test best-effort: esperar máximo 5s a que el puerto responda.
+            let smokeOk = false;
+            for (let i = 0; i < 25; i += 1) {
+                if (portInUse(port)) { smokeOk = true; break; }
+                // sleep 200ms sync sin tirar nuevo node
+                const until = Date.now() + 200;
+                while (Date.now() < until) { /* busy wait corto */ }
+            }
+
+            return fillTemplate('dashboard-up', {
+                'dashboard-url': `http://localhost:${port}/`,
+                pid: child && child.pid ? child.pid : '—',
+                port,
+                'startup-ms': Date.now() - startedAt,
+                'was-already-running': false,
+                'smoke-test-passed': smokeOk,
+            });
+        },
+
+        'dashboard-down': async () => {
+            const port = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+            const pid = portInUse(port);
+            if (!pid) {
+                return fillTemplate('dashboard-down', {
+                    pid: '—',
+                    'uptime-human': '—',
+                    reason: 'apagado manual desde Telegram',
+                    'was-not-running': true,
+                    'leftover-processes': false,
+                    'leftover-count': 0,
+                });
+            }
+
+            const startedAt = pidStartTime(pid);
+            const uptimeHuman = startedAt ? formatElapsed(Date.now() - startedAt) : 'desconocido';
+
+            let killed = false;
+            // En Windows usamos taskkill /F /T (mata árbol) sin shell-concat.
+            if (process.platform === 'win32') {
+                try {
+                    spawnSync('taskkill', ['/PID', String(pid), '/F', '/T'], {
+                        timeout: 5000, windowsHide: true, stdio: 'ignore',
+                    });
+                    killed = true;
+                } catch (_) {}
+            } else {
+                try {
+                    process.kill(pid, 'SIGTERM');
+                    killed = true;
+                } catch (_) {}
+            }
+
+            // Esperar hasta 2s a que el puerto se libere.
+            let leftover = false;
+            for (let i = 0; i < 10; i += 1) {
+                const until = Date.now() + 200;
+                while (Date.now() < until) { /* busy wait */ }
+                if (!portInUse(port)) { leftover = false; break; }
+                leftover = true;
+            }
+
+            return fillTemplate('dashboard-down', {
+                pid,
+                'uptime-human': uptimeHuman,
+                reason: killed ? 'apagado manual desde Telegram' : 'kill falló',
+                'was-not-running': false,
+                'leftover-processes': leftover,
+                'leftover-count': leftover ? 1 : 0,
+            });
+        },
+
+        screenshot: async () => {
+            // Sin puppeteer/playwright instalados en el repo, el handler
+            // determinístico responde con metadata útil + URL en vez de adjuntar
+            // imagen. Esto es honesto y testeable; no inventa adjuntos.
+            const port = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
+            const dashUrl = `http://localhost:${port}/`;
+            const dashAlive = !!portInUse(port);
+            return fillTemplate('screenshot', {
+                timestamp: new Date().toISOString(),
+                'view-name': 'home',
+                attached: false,
+                width: 0,
+                height: 0,
+                'size-human': '0 B',
+                redacted: false,
+                'redacted-areas': 0,
+                'available-views': dashAlive ? `home (${dashUrl})` : 'dashboard apagado',
+            });
+        },
+
+        procesos: async () => {
+            // Lectura del estado de procesos node del pipeline. Usa wmic/ps con
+            // argv array (sin shell-concat). pid-discovery YA aplica esa regla.
+            let scanner;
+            try { scanner = require('../pid-discovery'); }
+            catch (e) {
+                return fillTemplate('procesos-node', {
+                    timestamp: new Date().toISOString(),
+                    'total-count': 0,
+                    'total-ram-human': '0 B',
+                    processes: [],
+                    'has-orphans': false,
+                    'orphan-count': 0,
+                    orphans: [],
+                });
+            }
+
+            const all = scanner.scanNodeProcesses();
+            const SCRIPT_MAP = scanner.SCRIPT_MAP || {};
+            // Mapeo inverso script → rol
+            const SCRIPT_TO_ROLE = {};
+            for (const [role, script] of Object.entries(SCRIPT_MAP)) {
+                SCRIPT_TO_ROLE[script] = role;
+            }
+
+            const procesos = [];
+            const orphans = [];
+            for (const p of all) {
+                if (!p.commandLine || !p.commandLine.includes('.pipeline')) continue;
+                let role = null;
+                for (const [script, r] of Object.entries(SCRIPT_TO_ROLE)) {
+                    if (p.commandLine.includes(script)) { role = r; break; }
+                }
+                if (role) {
+                    procesos.push({
+                        'status-icon': '🟢',
+                        role,
+                        pid: p.pid,
+                        'cpu-percent': '—',
+                        'ram-human': '—',
+                        uptime: '—',
+                        'is-zombie': false,
+                    });
+                } else {
+                    // Huérfano: corre dentro de .pipeline pero no matchea ningún script conocido.
+                    const safeCmd = redactReadOutput(String(p.commandLine).slice(0, 160)).text;
+                    orphans.push({ pid: p.pid, 'cmdline-redacted': safeCmd });
+                }
+            }
+
+            return fillTemplate('procesos-node', {
+                timestamp: new Date().toISOString(),
+                'total-count': procesos.length,
+                'total-ram-human': '—',
+                processes: procesos,
+                'has-orphans': orphans.length > 0,
+                'orphan-count': orphans.length,
+                orphans,
+            });
+        },
+
+        salud: async () => {
+            // Datos básicos del estado del pulpo: lock activo, último tick, errores recientes.
+            const lockPath = path.join(PIPELINE, 'pulpo.lock');
+            let lockActive = false;
+            let lockPid = null;
+            if (fs.existsSync(lockPath)) {
+                try {
+                    const lockData = fs.readFileSync(lockPath, 'utf8').trim();
+                    lockPid = lockData;
+                    lockActive = true;
+                } catch (_) {}
+            }
+            // Último tick: tomamos `last-tick.json` si existe, sino fallback a mtime del lock.
+            let lastTickElapsed = 'desconocido';
+            try {
+                const tickPath = path.join(PIPELINE, 'last-tick.json');
+                if (fs.existsSync(tickPath)) {
+                    const tick = JSON.parse(fs.readFileSync(tickPath, 'utf8'));
+                    if (tick.timestamp) {
+                        const elapsed = Date.now() - new Date(tick.timestamp).getTime();
+                        lastTickElapsed = formatElapsed(elapsed);
+                    }
+                } else if (lockActive) {
+                    const stat = fs.statSync(lockPath);
+                    lastTickElapsed = formatElapsed(Date.now() - stat.mtimeMs);
+                }
+            } catch (_) {}
+
+            // Recolectar errores recientes de commander.log + pulpo.log (últimos 60min).
+            const recentErrors = collectRecentErrors(LOG_DIR);
+
+            return fillTemplate('salud-pulpo', {
+                timestamp: new Date().toISOString(),
+                healthy: lockActive && !lastTickElapsed.startsWith('+'),
+                'last-tick-elapsed': lastTickElapsed,
+                'lock-active': lockActive,
+                'lock-pid': lockPid || '--',
+                phases: [],
+                'watchdog-stuck-state': 'activo',
+                'watchdog-cost-state': 'activo',
+                'watchdog-cb-state': 'activo',
+                'recent-errors': recentErrors.length > 0 ? recentErrors : null,
+                'recent-errors-count': recentErrors.length,
+            });
+        },
+    };
+}
+
+// -----------------------------------------------------------------------------
+// #3493 — SUB-HANDLERS DE `/wave` (H5)
+//
+// Cuatro funciones puras que reciben el contexto necesario y devuelven el shape
+// `{ reply, audioText? }` que el dispatcher espera. Separadas del handler
+// principal para mantener cada subcomando testeable de forma aislada.
+//
+// Reglas comunes:
+//   - Sin red, sin LLM, sin subprocess. Solo `lib/waves.js` (FS atómico) +
+//     `partial-pause.js` + `wave-renderer.js`.
+//   - Antes de operaciones destructivas (add/promote) → `waves.invalidateCache()`
+//     (CA-7 / CA-8 — read-fresh para evitar TOCTOU sobre el TTL de 2s).
+//   - Mutaciones SIEMPRE marcan `meta.source: 'telegram-commander/wave-<sub>'`
+//     y `meta.updated_by` con el chat. CA-7 / CA-8 visibilidad de origen.
+//   - Errores rebotan al template `wave-error` con `error-kind` semántico.
+// -----------------------------------------------------------------------------
+
+// Cache de issues conocidos del pipeline (CA-6 — existence check < 500ms).
+// Scope: in-memory por proceso. TTL 30s — suficiente para ráfagas de
+// `/wave add` consecutivos sin recorrer FS otra vez.
+const knownIssuesCache = new Map(); // pipelineRoot → { issues: Set<number>, ts }
+
+/**
+ * Lista los issues con artefactos vivos en el pipeline. Recorre
+ * `desarrollo/**` y `definicion/**` buscando archivos `<num>.<skill>`.
+ * No consulta GitHub (CA-6 — sin `gh issue view` sincrónico).
+ *
+ * @param {string} pipelineRoot
+ * @returns {Set<number>}
+ */
+function getKnownIssues(pipelineRoot) {
+    const nowMs = Date.now();
+    const cached = knownIssuesCache.get(pipelineRoot);
+    if (cached && (nowMs - cached.ts) < 30 * 1000) return cached.issues;
+
+    const issues = new Set();
+    const roots = [
+        path.join(pipelineRoot, 'desarrollo'),
+        path.join(pipelineRoot, 'definicion'),
+    ];
+    function walk(dir, depth) {
+        if (depth > 4) return; // guardia anti-loop simbólico
+        let entries;
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+        catch (_) { return; }
+        for (const e of entries) {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) { walk(full, depth + 1); continue; }
+            // Convención del pipeline: artefactos se nombran `<issue>.<skill>` o
+            // `<issue>.<skill>.<sufijo>` (ej. `3493.pipeline-dev`, `3493.guru.json`).
+            const m = e.name.match(/^(\d+)\.[\w.-]+$/);
+            if (m) issues.add(Number(m[1]));
+        }
+    }
+    for (const r of roots) walk(r, 0);
+
+    knownIssuesCache.set(pipelineRoot, { issues, ts: nowMs });
+    return issues;
+}
+
+/**
+ * Invalida la cache de issues conocidos. Útil para tests deterministas.
+ */
+function invalidateKnownIssuesCache(pipelineRoot) {
+    if (pipelineRoot === undefined) knownIssuesCache.clear();
+    else knownIssuesCache.delete(pipelineRoot);
+}
+
+/**
+ * #4099 — Calcula el set de issues CERRADOS de la ola, usando el estado real
+ * de GitHub como fuente de verdad de entrega.
+ *
+ * Fuentes (en orden de precedencia):
+ *   1. `state.issueTitles[id].state === 'CLOSED'` — estado real cacheado en
+ *      `.issue-title-cache.json` (presente desde #3905). Cubre épicos cerrados
+ *      por merge de hijos, que no tienen matriz en el pipeline.
+ *   2. Labels `closed`/`done` (camino viejo) desde la matriz o la cache — se
+ *      mantiene como fallback de compatibilidad.
+ *
+ * Función PURA: no toca disco ni red, no construye queries `gh` (sin vector de
+ * inyección). Sólo lee el `state` ya materializado por wave-state.js.
+ *
+ * @param {object} opts
+ * @param {object} opts.wave  - { issues: number[] }
+ * @param {object} opts.state - getCachedWaveState() output (issueMatrix, issueTitles)
+ * @returns {Set<number>} números de issue cerrados
+ */
+function computeClosedSet({ wave, state } = {}) {
+    const closedIssues = new Set();
+    const issues = wave && Array.isArray(wave.issues) ? wave.issues : [];
+    const titleCache = (state && state.issueTitles) || {};
+    const issueMatrix = (state && state.issueMatrix) || {};
+    for (const id of issues) {
+        const idNum = Number(id);
+        if (!Number.isInteger(idNum)) continue;
+        const key = String(id);
+
+        // Camino primario: estado real CLOSED de GitHub (cache cruda). Cubre el
+        // caso de épicos cerrados por merge de hijos, que no tienen matriz.
+        const cached = titleCache[key];
+        if (cached && cached.state === 'CLOSED') {
+            closedIssues.add(idNum);
+            continue;
+        }
+
+        // Fallback (camino viejo): labels `closed`/`done` desde matriz o cache.
+        const data = issueMatrix[key];
+        const matrixLabels = data && Array.isArray(data.labels) ? data.labels : [];
+        const cacheLabels = cached && Array.isArray(cached.labels) ? cached.labels : [];
+        const labelNames = [...matrixLabels, ...cacheLabels]
+            .map((l) => (typeof l === 'string' ? l : (l && l.name) || ''))
+            .filter(Boolean);
+        if (labelNames.includes('closed') || labelNames.includes('done')) {
+            closedIssues.add(idNum);
+        }
+    }
+    return closedIssues;
+}
+
+/**
+ * `/wave status [--audio]` — Reusa el snapshot ejecutivo de #3262 (CA-3 DRY).
+ *
+ * Post-#3502: el resolver delega internamente en `lib/waves.js` como
+ * source-of-truth única. Ya no necesitamos rama dual acá — la cascada
+ * (waves.json → partial-pause → fs-fallback) vive del lado del resolver.
+ * `usingLegacy` se infiere del `wave.source` para mantener la nota discreta
+ * del template `wave-status` cuando no se está leyendo de `waves.json`.
+ */
+async function handleWaveStatus({ pipelineRoot, audio, readOnly }) {
+    const resolver = require('./wave-resolver');
+    const snapshotMod = require('./wave-snapshot');
+    const rendererMod = require('./wave-renderer');
+    const stateMod = require('./wave-state');
+
+    const wave = resolver.resolveActiveWave({ pipelineRoot });
+    const usingLegacy = wave.source !== 'waves.json';
+
+    const state = stateMod.getCachedWaveState({ pipelineRoot });
+
+    let blocked = [];
+    try {
+        const humanBlock = require('./human-block');
+        if (typeof humanBlock.listBlockedIssues === 'function') {
+            blocked = humanBlock.listBlockedIssues() || [];
+        }
+    } catch (_) { /* sin bloqueados */ }
+
+    // #4099 — `closedSet` = fuente de verdad de entrega (estado real CLOSED de
+    // GitHub, no labels). Ver `computeClosedSet`. Sin query `gh` nueva → sin
+    // vector de inyección.
+    const closedIssues = computeClosedSet({ wave, state });
+
+    // #4075 — Dependencias inline en bloqueos: mapa parent→children desde
+    // `.partial-pause.json` (authorization_ttls). Fail-open: si no se puede
+    // resolver, el snapshot queda con bloqueos genéricos (fallback).
+    let blockDependencies = {};
+    try {
+        if (typeof resolver.resolveBlockDependencies === 'function') {
+            blockDependencies = resolver.resolveBlockDependencies({ pipelineRoot }) || {};
+        }
+    } catch (_) { /* sin dependencias resueltas */ }
+
+    const snapshot = snapshotMod.buildWaveSnapshot({ state, wave, blocked, closedIssues, blockDependencies });
+
+    // #4039 — ETA por velocidad media de la ola. Cada lectura del operador es
+    // un punto válido de la serie temporal (la tabla del issue son dos lecturas
+    // de `/wave`). Registramos el snapshot y, si hay ritmo medido, sobrescribimos
+    // el ETA absoluto (presupuesto teórico → velocidad observada). Si no hay
+    // suficientes snapshots, dejamos el `etaAbsoluteMs` de `computeLaneEmptyEta`
+    // (fallback documentado, CA-4/CA-8).
+    let etaSource = 'fallback';
+    try {
+        const waves = require('./waves');
+        const waveProgress = require('./wave-progress');
+        const etaWave = require('./eta-wave');
+        const activeWave = waves.getActiveWave();
+        const waveKey = activeWave && activeWave.number;
+        const now = typeof snapshot.generatedAt === 'number' ? snapshot.generatedAt : Date.now();
+        if (Number.isInteger(waveKey) && waveKey > 0 && Number.isFinite(snapshot.totalPct)) {
+            // #5835 — `readOnly`: render SIN efecto de lado sobre la serie temporal.
+            // Una LECTURA del operador que pide el estado es un punto válido de la
+            // serie (#4039), pero una PREGUNTA ANALÍTICA que sólo menciona la ola no
+            // lo es: preguntar no es avanzar. Si cada consulta inyectara un snapshot,
+            // el ETA que lee el operador quedaría sesgado — exactamente la
+            // degradación silenciosa que costó #4566. El cálculo de velocidad SÍ
+            // corre (es lectura pura), así que el ETA mostrado es el mismo.
+            //
+            // #5836 — mismo payload que el dashboard: peso + conteo + fórmula,
+            // para que la serie sea comparable venga de donde venga el punto.
+            // Se usa la variante `WithDelta` porque este handler SÍ renderiza la
+            // nota de CA-5: necesita el punto previo, que hay que leer antes de
+            // apendear el actual.
+            if (!readOnly) {
+                const { delta } = waveProgress.appendSnapshotWithDelta({
+                    pipelineRoot,
+                    waveKey,
+                    avancePct: snapshot.totalPct,
+                    now,
+                    totalWeight: snapshot.totalWeight,
+                    issueCount: snapshot.totalIssues,
+                    formulaV: snapshot.formulaV,
+                });
+                // CA-5 — la causa de la variación viaja al renderer, que decide si
+                // vale la pena anotarla (sólo caída por altas o corte de serie).
+                snapshot.progressDelta = delta;
+            }
+            const vel = await etaWave.calculateWaveVelocityETA(waveKey, snapshot.totalPct, now);
+            // #4734 — CA-1: el handler `/wave` DELEGA en el módulo único y unifica el
+            // mapeo de `etaSource` con el dashboard: acepta tanto el ritmo MEDIDO
+            // ('velocity') como la estimación HISTÓRICA cross-ola ('historical'). Antes
+            // aceptaba SOLO 'velocity' (divergencia real con el dashboard). El
+            // `absoluteMs` ya viene proyectado a reloj de pared (reposo de proveedor).
+            if (vel && (vel.source === 'velocity' || vel.source === 'historical')
+                && Number.isFinite(vel.absoluteMs)) {
+                snapshot.etaAbsoluteMs = vel.absoluteMs;
+                snapshot.etaAvailable = true;
+                etaSource = vel.source;
+            }
+        }
+    } catch (_) { /* ante cualquier error, queda el ETA fallback ya calculado */ }
+    snapshot.etaSource = etaSource;
+
+    // #4075 — Render paginado: la ola se lista COMPLETA, sin "+N más". Para olas
+    // que entran en un mensaje, `messages` tiene un solo elemento (comportamiento
+    // idéntico al anterior). Para olas que exceden el límite de Telegram, se
+    // parte en mensajes consecutivos sin ocultar issues.
+    const messages = rendererMod.renderWaveSnapshotMessages(snapshot);
+    const firstMd = messages[0] || '';
+    const extraMessages = messages.slice(1);
+    const audioText = audio ? rendererMod.renderAudioText(snapshot) : null;
+    // CA-13 — render por template wave-status (`{{{snapshot}}}` triple-brace para
+    // no re-escapar MarkdownV2 ya producido por wave-renderer). La nota legacy/
+    // audio va sólo en el 1er mensaje; los de continuación van crudos.
+    const reply = fillTemplate('wave-status', {
+        snapshot: firstMd,
+        'using-legacy': usingLegacy,
+        'audio-sent': !!audioText,
+    });
+    return { reply, audioText, extraMessages };
+}
+
+/**
+ * `/wave next` — Lista candidatos de la próxima ola desde `waves.json`.
+ * Si no hay `planned_waves[0]`, mensaje cálido (UX guidelines).
+ */
+async function handleWaveNext({ pipelineRoot }) {
+    const waves = require('./waves');
+    waves.invalidateCache(); // CA-16 — opcional acá pero garantiza freshness.
+    const state = waves.loadWaves();
+    const next = Array.isArray(state.planned_waves) && state.planned_waves.length > 0
+        ? state.planned_waves[0]
+        : null;
+    if (!next) {
+        return { reply: fillTemplate('wave-next', { 'has-next': false }) };
+    }
+    const issues = Array.isArray(next.issues) ? next.issues : [];
+    return {
+        reply: fillTemplate('wave-next', {
+            'has-next': true,
+            'wave-number': next.number,
+            goal: next.goal || '',
+            'has-goal': !!next.goal,
+            'issues-count': issues.length,
+            'has-issues': issues.length > 0,
+            issues: issues.map((i) => {
+                const num = typeof i === 'object' && i ? i.number : i;
+                const size = typeof i === 'object' && i && typeof i.size === 'string' ? i.size : null;
+                const rationale = typeof i === 'object' && i && typeof i.rationale === 'string' ? i.rationale : null;
+                return {
+                    number: Number(num),
+                    'has-size': !!size,
+                    size: size || '',
+                    'has-rationale': !!rationale,
+                    rationale: rationale || '(sin rationale aún)',
+                };
+            }),
+        }),
+    };
+}
+
+// =============================================================================
+// #5882 CA-2 — Logger de fallos de sincronización.
+//
+// Este módulo históricamente no logueaba NADA (`grep -c "console\." → 0`): todo
+// su output era el `reply` de Telegram. Eso está bien para los caminos felices,
+// pero dejaba el fallo de sync de la allowlist sin ningún rastro — ni en el log
+// del pipeline, ni en el audit. El incidente del 2026-08-13 no dejó una sola
+// línea que explicara por qué el pipeline se había frenado.
+//
+// El logger EFECTIVO en producción es el default `console.error`, que cae en el
+// log del proceso que hostea al Commander. `setSyncLogger` es hoy un seam de
+// TEST solamente: nadie lo inyecta en runtime (`grep -rn "setSyncLogger"` sólo
+// devuelve definición, export y tests). Queda como punto de inyección por si el
+// host quiere redirigir el output, pero no describe un cableado vigente con
+// `pulpo.js`. Lo NO aceptable es que este camino quede mudo.
+// =============================================================================
+let syncLogger = null;
+
+function setSyncLogger(fn) {
+    syncLogger = typeof fn === 'function' ? fn : null;
+}
+
+// Normaliza a STRING plano un mensaje de error que va a terminar en el log.
+//
+// Ojo con la firma de `sanitizeJustification`: devuelve un OBJETO
+// `{sanitized, didRedact, didTruncate}` (partial-pause-audit.js:171-196), NO un
+// string. Interpolarlo directo en un template literal produce "[object Object]"
+// — que es exactamente lo que hacía que la línea de CA-2 apareciera pero no
+// dijera POR QUÉ falló, dejando el próximo diagnóstico a ciegas (el objetivo de
+// #5882 es que el incidente deje rastro LEGIBLE, no que deje una línea muda).
+//
+// Además `sanitizeJustification` sólo redacta secretos y trunca: NO toca CR/LF
+// ni control chars. Sin ese colapso no existe el control anti log-injection que
+// este camino declara — y el mensaje deriva de input de Telegram (`from`,
+// `note`). Por eso se compone con `sanitizeField` de `wave-audit`, que ya
+// colapsa control chars (wave-audit.js:87-95). No se escribe sanitizador nuevo.
+function safeSyncText(value) {
+    const raw = String((value && value.message) || value);
+    let out;
+    try {
+        const r = require('./partial-pause-audit').sanitizeJustification(raw);
+        // Tolerante a que el sanitizador cambie de forma: string u objeto.
+        out = (r && typeof r === 'object') ? String(r.sanitized ?? '') : String(r ?? '');
+    } catch {
+        out = raw;   // el sanitizado nunca rompe el comando
+    }
+    try {
+        out = String(require('./wave-audit').sanitizeField(out) ?? '');
+    } catch {
+        out = out.replace(/[\u0000-\u001F\u007F]+/g, ' ');
+    }
+    return out;
+}
+
+function logSyncError(msg) {
+    // Backstop de una-línea-es-una-línea: aunque un caller olvide sanitizar, de
+    // acá no sale un CR/LF que parta la línea ni un null byte.
+    const line = `[commander] ERROR ${String(msg).replace(/[\u0000-\u001F\u007F]+/g, ' ')}`;
+    try {
+        if (syncLogger) syncLogger(line);
+        else console.error(line);
+    } catch { /* el logging nunca rompe el comando */ }
+}
+
+/**
+ * `/wave add <num> #issue` — Mueve un issue a una ola específica.
+ * Aplica:
+ *   - destructiveCooldown (CA-9, MUST).
+ *   - Existence check del issue (CA-6).
+ *   - Validación waveNumber ∈ [1, totalOlas] (CA-5).
+ *   - Read-fresh (`invalidateCache`) antes de mutación (CA-7).
+ *   - Atomic write via `waves.save` (CA-7).
+ *   - Conflict detection si el issue ya está en otra ola.
+ */
+async function handleWaveAdd({ pipelineRoot, waveNumber, issueNumber, cooldown, chatId, from }) {
+    // CA-9 — Cooldown previo. Defensa contra doble-tap accidental.
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-add');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave add\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+    // CA-7 — read-fresh: invalidamos el TTL cache antes de leer y mutar.
+    waves.invalidateCache();
+    const state = waves.loadWaves();
+    const planned = Array.isArray(state.planned_waves) ? state.planned_waves : [];
+    const active = state.active_wave || null;
+    const totalOlas = (active ? 1 : 0) + planned.length;
+
+    // CA-5 — Validación de rango. `waveNumber` debe corresponder a una ola
+    // existente. La política simple: aceptamos `waveNumber` ∈ [1, totalOlas]
+    // mapeando 1 = active_wave (si existe) y 2..N = planned_waves[0..N-2].
+    // Si el caller pide una ola que no existe, error semántico claro.
+    let targetWaveExists = false;
+    let targetWaveResolved = null;
+    if (active && active.number === waveNumber) {
+        targetWaveExists = true;
+        targetWaveResolved = active;
+    } else {
+        const w = planned.find((p) => p.number === waveNumber);
+        if (w) { targetWaveExists = true; targetWaveResolved = w; }
+    }
+    if (!targetWaveExists) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'wave_not_found',
+                message: `No encontré la ola \`${waveNumber}\`. Olas disponibles: ${describeAvailableWaves(active, planned)}.`,
+            }),
+        };
+    }
+
+    // CA-6 — Existence check del issue. Cache 30s + recorrido FS, sin red.
+    const known = getKnownIssues(pipelineRoot);
+    if (!known.has(issueNumber)) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'unknown_issue',
+                message: `No encontré #${issueNumber} en el pipeline. ¿Lo escribiste bien? ¿O es de un repo distinto?`,
+            }),
+        };
+    }
+
+    // CA-7 — Mutación. addIssueToWave es atómico (waves.save → tmp+rename).
+    // #5882 — el resultado ya NO se descarta: su `version` es el input del CAS
+    // del rollback si la sincronización de la allowlist falla.
+    let addResult = null;
+    try {
+        addResult = waves.addIssueToWave(waveNumber, { number: issueNumber }, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-add',
+            note: `move issue #${issueNumber} → wave ${waveNumber}`,
+        });
+    } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+        // Detección de conflict: addIssueToWave lanza con "ya está en ola N".
+        if (/ya está en ola/i.test(msg)) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'conflict',
+                    message: msg + '. Si querés moverlo de verdad, primero sacalo de allá.',
+                }),
+            };
+        }
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló escribiendo el estado: ${msg}`,
+            }),
+        };
+    }
+
+    // Releer estado para devolver el tamaño actualizado de la ola destino.
+    waves.invalidateCache();
+    const refreshed = waves.loadWaves();
+    const refreshedTarget = (refreshed.active_wave && refreshed.active_wave.number === waveNumber)
+        ? refreshed.active_wave
+        : (refreshed.planned_waves || []).find((w) => w.number === waveNumber);
+    const newSize = refreshedTarget && Array.isArray(refreshedTarget.issues)
+        ? refreshedTarget.issues.length
+        : 1;
+
+    // #4439 CA-1 — Suma COHERENTE en el mismo acto. Si el destino es la ola
+    // ACTIVA y hay una pausa parcial vigente (allowlist activa), agregamos el
+    // issue a la allowlist junto con la suma a la ola, para que waves.json y
+    // .partial-pause.json nunca queden desincronizados por el propio flujo
+    // (el bug del 2026-07-03: allowlist actualizada, ola no → ambiguo espurio).
+    //
+    // Sólo tocamos la allowlist cuando YA existe una pausa parcial: en modo
+    // running no hay marker y crearlo restringiría el pipeline a un solo issue.
+    // Sólo aplica a la ola ACTIVA: el desync-detector compara contra
+    // active_wave.issues; sumar a una ola PLANIFICADA no debe entrar al allowlist
+    // (sería, justamente, un extra ambiguo autogenerado).
+    //
+    // La mutación pasa por el gate auditado (authorizedBy:'wave-promote'):
+    //   - escritura tmp+rename atómica bajo lock;
+    //   - deja audit-entry encadenada → traza para el auto-resync legítimo (CA-3);
+    //   - orden audit-before-write preservado por el propio gate (SEC-4439-6).
+    //
+    // #5882 CA-7 — Este bloque YA NO es best-effort, y el comentario que decía
+    // que lo era describía una reconciliación que NO ocurre. La verdad medida:
+    // el realign del Pulpo sólo reparaba la divergencia reductiva cuando los
+    // issues involucrados estaban CERRADOS. Con un issue ABIERTO — exactamente
+    // el escenario de una promoción recién hecha — el desync quedaba vivo, el
+    // detector lo veía y el pipeline se frenaba fail-closed esperando a un
+    // humano (incidente 2026-08-13: ~40 min sin despacho, segundo episodio de
+    // la semana).
+    //
+    // Ahora las dos escrituras se resuelven como una unidad: si la allowlist no
+    // entra, se revierte la suma a la ola y el comando responde con error
+    // explícito. El estado final es el previo al comando, nunca un desync mudo.
+    let syncError = null;
+    try {
+        const isActiveTarget = refreshed.active_wave
+            && refreshed.active_wave.number === waveNumber;
+        if (isActiveTarget) {
+            const partialPause = require('./partial-pause');
+            // #5179 grupo 3 — la MUTACIÓN va por el envoltorio único; el lector
+            // (`getPipelineMode`) queda en `partial-pause` (superficie ancha → #5164).
+            const operationalState = require('./operational-state');
+            const mode = partialPause.getPipelineMode();
+            if (mode.mode === 'partial_pause') {
+                const current = Array.isArray(mode.allowedIssues) ? mode.allowedIssues : [];
+                if (!current.includes(issueNumber)) {
+                    const r = operationalState.setAllowlist([...current, issueNumber], {
+                        source: 'wave-promote:wave-add',
+                        authorizedBy: 'wave-promote',
+                        justification: `Suma coherente /wave add #${issueNumber} -> ola ${waveNumber} (#4439)`,
+                    });
+                    // `setAllowlist` NO tira cuando el gate rechaza: devuelve
+                    // { ok:false, rejected:true }. Sin este chequeo, un rechazo
+                    // del gate producía exactamente el desync silencioso que
+                    // este issue viene a eliminar.
+                    if (r && r.ok === false) {
+                        syncError = new Error(r.msg || 'setPartialPause rechazado por el gate de autorización');
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        syncError = e;
+    }
+
+    if (syncError) {
+        const partialPause = require('./partial-pause');
+
+        // NO asumir "falló ⇒ no escribió". `setPartialPause` puede fallar
+        // DESPUÉS de que el write aterrizó (o el proceso morir entre el rename
+        // y el retorno). Releemos el estado real antes de decidir. `getPipelineMode`
+        // lee del disco en cada llamada, sin cache.
+        let landed = false;
+        try {
+            const after = partialPause.getPipelineMode();
+            landed = after.mode === 'partial_pause'
+                && Array.isArray(after.allowedIssues)
+                && after.allowedIssues.includes(issueNumber);
+        } catch {
+            landed = null;   // indeterminado ⇒ NO revertir (fail-safe).
+        }
+
+        // El mensaje deriva de input de Telegram (`from`, `note`): sanitizar
+        // SIEMPRE antes de loguear o responder (anti log-injection / leak de
+        // paths). Reusamos el sanitizador existente, no escribimos uno nuevo.
+        const safe = safeSyncText(syncError);
+
+        if (landed === true) {
+            // Ambas escrituras aterrizaron pese al error reportado. El estado es
+            // COHERENTE: revertir acá produciría un desync ADITIVO con issue
+            // abierto (ambiguo → human-block), peor que el bug original.
+            // Reconciliamos hacia adelante.
+            logSyncError(`wave-add #${issueNumber} ola ${waveNumber}: sync reportó error pero la allowlist SÍ quedó escrita (${safe}). Estado coherente, sin rollback.`);
+            if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-add');
+            // CA-UX-1 — este camino NO puede responder el ✅ pelado del happy
+            // path: el operador vería el mismo tilde verde ante una anomalía que
+            // obligó al sistema a razonar sobre si revertir. El objetivo de
+            // #5882 es eliminar el silencio, no moverlo al lado del humano.
+            // `sync-warning` activa un bloque condicional aditivo en el template
+            // (informativo, no alarma: el estado final ES coherente).
+            return {
+                reply: fillTemplate('wave-add-ok', {
+                    'issue-number': issueNumber,
+                    'wave-number': waveNumber,
+                    'wave-name': (targetWaveResolved && targetWaveResolved.name) || `Ola ${waveNumber}`,
+                    'new-size': newSize,
+                    'sync-warning': true,
+                }),
+            };
+        }
+
+        // `addIssueToWave` es IDEMPOTENTE: si el issue YA estaba en la ola
+        // devuelve `{added:false}` sin escribir ni auditar (waves.js:531-533).
+        // En ese caso este comando no sumó NADA, así que no hay nada que
+        // revertir: llamar al rollback removería de la ola un issue preexistente
+        // que el comando nunca agregó. El escenario no es teórico — es el de
+        // recuperación natural del propio bug de #5882 (issue en la ola, falta
+        // en la allowlist → el operador re-corre `/wave add`, que es lo que el
+        // copy de más abajo le sugiere) y las causas de fallo de la allowlist
+        // son PERSISTENTES (FS read-only, disco lleno, lock tomado, gate).
+        // Encima, tras ese borrado ambos archivos coincidirían, dejando CIEGO al
+        // detector de desync: el issue se cae de la ola activa en silencio,
+        // nadie lo despacha y no hay alerta (misma clase que #5876/#4753).
+        const noopAdd = !(addResult && addResult.added === true);
+
+        let rolledBack = false;
+        let rollbackErr = null;
+        if (landed === false && !noopAdd) {
+            try {
+                waves.rollbackIssueAdd(waveNumber, issueNumber, {
+                    expectedVersion: addResult && addResult.version,   // CAS
+                    // Evidencia de que la suma es de este mismo acto: sólo el
+                    // add que realmente escribió acuña token (el no-op da null).
+                    rollbackToken: addResult && addResult.rollbackToken,
+                    authorizedBy: 'wave-add-rollback',
+                    updated_by: from || 'Leo',
+                    source: 'wave-add-rollback',
+                    note: `rollback de /wave add #${issueNumber} por partial_sync_failed`,
+                });
+                rolledBack = true;
+            } catch (re) {
+                rollbackErr = safeSyncText(re);
+            }
+        }
+
+        logSyncError(
+            `wave-add #${issueNumber} ola ${waveNumber}: partial_sync_failed (${safe}) ` +
+            `added=${!noopAdd} landed=${landed} rollback=${rolledBack}` +
+            `${rollbackErr ? ` rollback_error=${rollbackErr}` : ''}`,
+        );
+
+        // CA-UX-2 — léxico único: se dice "Allowlist", y ninguna variante nueva
+        // (el sinónimo que proponía la receta técnica está prohibido por el
+        // contrato UX; hay un test que lo grepea acá para que no vuelva por
+        // copy/paste). Es el vocabulario que ya usan `allowlist.md` y
+        // `wave-promote-ok.md`, y encima es el nombre del comando que el
+        // operador va a correr para diagnosticar.
+        // CA-UX-3 — el peor caso lleva pasos concretos con comandos textuales, y
+        // distingue estado CONOCIDO-malo de INDETERMINADO (el operador actúa
+        // distinto en cada uno). Un solo `error-kind`: la diferenciación va en el
+        // cuerpo, no en el kind (respeta CA-2).
+        // El `e.message` crudo NO se interpola acá — va sanitizado al log
+        // (`safe`); al operador se le habla en castellano, no en stack trace.
+        // El texto va en PLANO: `fill-template` lo escapa a MarkdownV2 solo.
+        //
+        // Desvíos deliberados del copy propuesto en el contrato UX (que lo
+        // habilita si se documenta el porqué) — ambos verificados contra HEAD:
+        //   1. La sintaxis real es `/wave add <ola> #<issue>` (parser en L481-494:
+        //      exige `^\d+$` y `^#\d+$`). El copy proponía `/wave add 5698 12`,
+        //      que el parser RECHAZA por orden y por el `#` faltante.
+        //   2. El copy proponía `/wave remove <issue> <ola>` como vía de reversa.
+        //      Además del orden, `/wave remove` sobre la ola ACTIVA rebota con
+        //      `active_wave_locked` (política A04, L3195-3200) — y estos caminos
+        //      SIEMPRE son sobre la ola activa. Mandar al operador a un comando
+        //      que rebota es peor que no darle el paso: se reemplaza por la vía
+        //      que sí existe (la Allowlist) + `/wave status` para confirmar.
+        let message;
+        if (rolledBack) {
+            // A · rollback exitoso — el estado final es el previo al comando.
+            message = `No pude sumar el #${issueNumber} a la Allowlist, así que deshice la promoción `
+                + `para no dejarte el pipeline desincronizado. El #${issueNumber} NO quedó en la ola `
+                + `${waveNumber} — todo volvió a como estaba. `
+                + `Probá de nuevo con \`/wave add ${waveNumber} #${issueNumber}\`.`;
+        } else if (noopAdd) {
+            // D · el issue YA estaba en la ola: este comando no sumó nada, así
+            // que no hubo nada que revertir (y revertir habría BORRADO de la ola
+            // un issue preexistente). El estado de la ola no cambió; lo que
+            // falló es sólo la sync de la Allowlist. No se le puede decir al
+            // operador "todo volvió a como estaba": nada se deshizo porque nada
+            // se hizo, y el desync que venía a reparar sigue vivo.
+            message = `El #${issueNumber} ya estaba en la ola ${waveNumber}, así que no sumé nada — `
+                + `pero tampoco pude agregarlo a la Allowlist, que es justo lo que faltaba. `
+                + `La ola quedó intacta y no deshice nada.\n\n`
+                + `Qué hacer:\n`
+                + `1. Corré \`allowlist\` para ver el estado real.\n`
+                + (landed === null
+                    ? `2. No pude releer la Allowlist, así que de su contenido no tengo certeza.\n`
+                    : `2. Si falta el #${issueNumber}, pedí que se agregue — la Allowlist no se toca sin tu OK.\n`)
+                + `3. Reintentar \`/wave add\` no lo va a resolver: la suma a la ola ya está hecha, `
+                + `lo que falla es la Allowlist.`;
+        } else if (landed === null) {
+            // C · indeterminado — no se tocó nada más, a propósito.
+            message = `Promoción a medias y no pude releer la Allowlist para saber cómo quedó. `
+                + `El #${issueNumber} SÍ está en la ola ${waveNumber}; de la Allowlist no tengo certeza, `
+                + `así que no toqué nada más para no empeorarlo.\n\n`
+                + `Qué hacer:\n`
+                + `1. Corré \`allowlist\` para ver el estado real antes de reintentar.\n`
+                + `2. Si el #${issueNumber} figura ahí, ya está todo en orden y no hace falta nada más.\n`
+                + `3. Si no figura, pedí que se agregue — la Allowlist no se toca sin tu OK.`;
+        } else {
+            // B · conocido-malo — quedó a medias y el rollback tampoco salió.
+            message = `Promoción a medias y tampoco pude deshacerla. El #${issueNumber} quedó en la ola `
+                + `${waveNumber} pero NO entró a la Allowlist, así que el pipeline puede frenarse `
+                + `fail-closed por desync.\n\n`
+                + `Qué hacer:\n`
+                + `1. Corré \`allowlist\` para ver cómo quedó.\n`
+                + `2. Si falta el #${issueNumber}, pedí que se agregue — la Allowlist no se toca sin tu OK.\n`
+                + `3. Corré \`/wave status\` para confirmar la ola. Ojo: \`/wave remove\` no aplica acá, `
+                + `la ola activa está bloqueada para desasociar — la vía es la Allowlist.`;
+        }
+
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'partial_sync_failed',
+                message,
+            }),
+        };
+    }
+
+    // CA-9 — Marcar éxito en el cooldown DESPUÉS del write.
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-add');
+
+    return {
+        reply: fillTemplate('wave-add-ok', {
+            'issue-number': issueNumber,
+            'wave-number': waveNumber,
+            'wave-name': (targetWaveResolved && targetWaveResolved.name) || `Ola ${waveNumber}`,
+            'new-size': newSize,
+        }),
+    };
+}
+
+/**
+ * `/wave create` — Crea una ola planificada nueva (#4376, split de #4351).
+ *
+ * Espeja `handleWaveAdd`:
+ *   - CA-5: cooldown destructivo (`waveSubCooldown`, key `wave-create`) anti
+ *     doble-tap. Gate chat_id/rate-limit ya cableados en el dispatcher.
+ *   - CA-3: único punto de mutación = `waves.createPlannedWave` (file-lock +
+ *     atomicWriteFile + validateStateStrict pre-write + audit encadenado). Cero
+ *     escrituras directas a `waves.json` desde acá.
+ *   - CA-4: el input ya llega validado por `parseWaveArgs`/`wave-create-input`.
+ *     Acá solo mapeamos errores SEMÁNTICOS del core (duplicado nombre/issue) a
+ *     mensajes accionables (UX-2). El escape MarkdownV2 lo hace `fillTemplate`.
+ *   - CA-5 audit: `chatId`/`from` viajan a `meta` para el audit encadenado.
+ *
+ * @param {Object} p
+ * @param {string} p.name
+ * @param {string|null} p.goal
+ * @param {number} p.concurrencyMax
+ * @param {number} p.windowMinutes
+ * @param {number[]} p.issues
+ * @param {Object} [p.cooldown]
+ * @param {string|null} [p.chatId]
+ * @param {string} [p.from]
+ */
+async function handleWaveCreate({ name, goal, concurrencyMax, windowMinutes, issues, cooldown, chatId, from }) {
+    // CA-5 — Cooldown previo (anti doble-tap de creación).
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-create');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave create\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    // Defensa en profundidad: el dispatcher solo llega acá con input validado por
+    // parseWaveArgs, pero re-chequeamos el shape mínimo para no romper si alguien
+    // invoca el handler directo (tests / callers alternativos).
+    if (typeof name !== 'string' || name.trim().length === 0 || !Array.isArray(issues) || issues.length === 0) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'invalid_input',
+                message: 'Faltan datos para crear la ola. Usá `/wave create --nombre <n> --concurrency <c> --window <m> --issues #a #b`.',
+            }),
+        };
+    }
+
+    const waves = require('./waves');
+
+    // CA-3 — Único punto de mutación. `createPlannedWave` es atómico
+    // (file-lock + atomicWriteFile + validateStateStrict pre-write + audit).
+    let result;
+    try {
+        result = waves.createPlannedWave(
+            {
+                name,
+                goal: goal || undefined,
+                concurrency_max: concurrencyMax,
+                window_minutes: windowMinutes,
+                issues,
+            },
+            {
+                updated_by: from || 'Leo',
+                source: 'telegram-commander/wave-create',
+                note: `create planned wave "${name}" con ${issues.length} issue(s)` + (chatId ? ` (chat ${chatId})` : ''),
+            },
+        );
+    } catch (e) {
+        const code = e && e.code;
+        const msg = String(e && e.message ? e.message : e);
+        // Errores SEMÁNTICOS del core → mensaje accionable (UX-2).
+        if (code === 'EWAVES_DUPLICATE_NAME') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'duplicate_name',
+                    message: `Ya existe una ola con ese nombre. Elegí otro. (${msg})`,
+                }),
+            };
+        }
+        if (code === 'EWAVES_DUPLICATE_ISSUE') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'duplicate_issue',
+                    message: `Uno de los issues ya está asignado a otra ola. Sacalo de allá primero. (${msg})`,
+                }),
+            };
+        }
+        if (code === 'EWAVES_BOUNDS' || code === 'EWAVES_SHAPE') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'invalid_input',
+                    message: `El input no cumple los límites: ${msg}`,
+                }),
+            };
+        }
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló creando la ola: ${msg}`,
+            }),
+        };
+    }
+
+    // CA-5 — Marcar éxito en el cooldown DESPUÉS del write.
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-create');
+
+    // Confirmación legible (UX-3): número asignado, nombre, objetivo, ventana,
+    // concurrency, #issues. El texto de usuario se escapa vía `{{var}}`.
+    return {
+        reply: fillTemplate('wave-create-ok', {
+            'wave-number': result.waveNumber,
+            'wave-name': result.wave.name,
+            'has-goal': !!result.wave.goal,
+            goal: result.wave.goal || '',
+            'window-minutes': result.wave.window_minutes,
+            'concurrency-max': result.wave.concurrency_max,
+            'issue-count': result.wave.issues.length,
+        }),
+    };
+}
+
+/**
+ * `/wave promote` — Promueve `planned_waves[0]` a `active_wave`.
+ *
+ * #3520 — Ejecuta la transacción atómica multi-archivo vía
+ * `waves.promoteWaveAtomic`, que internamente:
+ *   - Crea snapshot de waves.json y .partial-pause.json en archived/.
+ *   - Escribe marker `wave-promote.in-progress.json` con fsync.
+ *   - Aplica `promoteWaveToActive` (waves.json) y `setPartialPauseAtomic`
+ *     (.partial-pause.json) secuencialmente.
+ *   - Si la segunda escritura falla, rollback inline desde el snapshot.
+ *   - Si crashea entre las dos escrituras, el boot recovery del próximo
+ *     pulpo (pulpo.js → waves.recoverIncompletePromote()) restaura.
+ *
+ * Aplica además:
+ *   - destructiveCooldown (CA-9, MUST).
+ *   - Gate fail-closed: si hay `wave-promote.failed.*.json` activo,
+ *     bloquea con mensaje accionable (CA-C3 / CA-D3).
+ *   - Read-fresh antes de mutación (CA-8).
+ */
+async function handleWavePromote({ pipelineRoot, cooldown, chatId, from }) {
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-promote');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave promote\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+
+    // #3520 — Gate fail-closed: si recovery automático no pudo restaurar
+    // una transacción anterior, NO permitimos nuevas promociones hasta que
+    // un humano inspeccione y borre el .failed.
+    const blocked = waves.isWavePromoteBlocked();
+    if (blocked.blocked) {
+        const markerNames = blocked.markers.map((p) => require('path').basename(p)).join(', ');
+        return {
+            reply: fillTemplate('wave-promote-blocked', {
+                'failed-markers': markerNames,
+                'archived-dir': '.pipeline/archived/',
+            }),
+        };
+    }
+
+    waves.invalidateCache();
+    const state = waves.loadWaves();
+    const planned = Array.isArray(state.planned_waves) ? state.planned_waves : [];
+    if (planned.length === 0) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'no_next_wave',
+                message: 'No hay ola próxima para promover. El planner tiene que componer una primero.',
+            }),
+        };
+    }
+
+    const newWave = planned[0];
+    const newWaveNumber = newWave.number;
+
+    // #4350 — Sincronización fuente-única: computar el set EXPANDIDO
+    // (hijos/deps recursivos) + FILTRADO de cerrados FUERA de waves.js (regla
+    // inquebrantable "sin red / sin GitHub API" del módulo de olas). El walk
+    // puro vive en allowlist-recursive-promote; el predicado isClosed se deriva
+    // del cache de títulos (`.issue-title-cache.json` vía wave-state), no de
+    // GitHub en el hot path. Si algo falla, degradamos al comportamiento
+    // histórico (getAllowlist) dejando `expandedIssues` sin definir.
+    let expandedIssues;
+    try {
+        const allowlistPromote = require('./allowlist-recursive-promote');
+        const stateMod = require('./wave-state');
+        const waveState = stateMod.getCachedWaveState({ pipelineRoot });
+        const titleCache = (waveState && waveState.issueTitles) || {};
+        const isClosed = (n) => {
+            const entry = titleCache[String(n)];
+            // SEC-4 fail-safe: sin entrada o estado ausente → INDETERMINADO
+            // (undefined) → el walk lo conserva, nunca lo excluye a ciegas.
+            if (!entry || entry.state === undefined || entry.state === null) return undefined;
+            return String(entry.state).toUpperCase() === 'CLOSED';
+        };
+        const seed = (Array.isArray(newWave.issues) ? newWave.issues : [])
+            .map((i) => (i && typeof i === 'object')
+                ? { n: i.number, status: i.status }
+                : { n: i, status: undefined })
+            .filter((x) => x.status !== 'completed')
+            .map((x) => x.n);
+        const getDeps = (n) => { try { return waves.getBlockingIssues(n); } catch { return []; } };
+        expandedIssues = allowlistPromote.expandRecursiveOpenIssues({ seedIssues: seed, isClosed, getDeps });
+    } catch (e) {
+        expandedIssues = undefined; // degradar a getAllowlist() dentro de waves.js
+    }
+
+    let result;
+    try {
+        result = waves.promoteWaveAtomic(newWaveNumber, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-promote',
+            note: `promote wave ${newWaveNumber} → active (desde Telegram, atomic)`,
+            ...(Array.isArray(expandedIssues) ? { expandedIssues } : {}),
+        });
+    } catch (e) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló promoviendo la ola: ${String(e && e.message ? e.message : e)}`,
+            }),
+        };
+    }
+
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-promote');
+
+    return {
+        reply: fillTemplate('wave-promote-ok', {
+            'has-old-wave': result.oldWaveNumber !== null,
+            'old-wave-number': result.oldWaveNumber || 0,
+            'new-wave-number': result.newWaveNumber,
+            'new-wave-name': result.newWaveName,
+            'allowlist-size': result.newAllowlist.length,
+            'added-count': result.added.length,
+            'removed-count': result.removed.length,
+            'allowlist-applied': true,
+            'has-allowlist-error': false,
+            'allowlist-error': '',
+        }),
+    };
+}
+
+/**
+ * `/wave remove <num> #issue` — Desasocia un issue de una ola PLANIFICADA.
+ * #4377 CA-2. Aplica:
+ *   - destructiveCooldown (REQ-SEC-5, MUST).
+ *   - Política A04 (REQ-SEC-3): rechazo si la ola es la ACTIVA. El enforcement
+ *     real vive en `waves.removeIssueFromWave`; acá lo detectamos temprano para
+ *     dar un mensaje accionable (UX guideline 1) sin depender del throw.
+ *   - No-op idempotente con confirmación explícita si el issue no pertenecía
+ *     (UX guideline 2).
+ *   - Read-fresh (`invalidateCache`) + atomic write (vía `waves.removeIssueFromWave`).
+ */
+async function handleWaveRemove({ pipelineRoot, waveNumber, issueNumber, cooldown, chatId, from }) {
+    // REQ-SEC-5 — Cooldown previo. Defensa contra doble-tap accidental.
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-remove');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave remove\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+    waves.invalidateCache();
+    const state = waves.loadWaves();
+    const active = state.active_wave || null;
+    const planned = Array.isArray(state.planned_waves) ? state.planned_waves : [];
+
+    // Política A04 (REQ-SEC-3): mensaje accionable si apuntan a la ola activa.
+    if (active && active.number === waveNumber) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'active_wave_locked',
+                message: `La ola \`${waveNumber}\` está *activa*: desasociar ahí re-sincronizaría la allowlist, así que está bloqueado. Sólo se puede desasociar de olas *planificadas* — mirá \`/wave next\` para ver cuáles.`,
+            }),
+        };
+    }
+
+    const target = planned.find((w) => w.number === waveNumber);
+    if (!target) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'wave_not_found',
+                message: `No encontré la ola planificada \`${waveNumber}\`. Olas disponibles: ${describeAvailableWaves(active, planned)}.`,
+            }),
+        };
+    }
+
+    // ¿El issue pertenecía a la ola? Define no-op vs removido (UX guideline 2).
+    const wasPresent = Array.isArray(target.issues)
+        && target.issues.some((i) => Number(String(i.number).replace(/^#/, '')) === issueNumber);
+
+    try {
+        waves.removeIssueFromWave(waveNumber, issueNumber, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-remove',
+            note: `remove issue #${issueNumber} ← wave ${waveNumber}`,
+        });
+    } catch (e) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló escribiendo el estado: ${String(e && e.message ? e.message : e)}`,
+            }),
+        };
+    }
+
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-remove');
+
+    if (!wasPresent) {
+        return {
+            reply: fillTemplate('wave-remove-noop', {
+                'issue-number': issueNumber,
+                'wave-number': waveNumber,
+                'wave-name': target.name || `Ola ${waveNumber}`,
+            }),
+        };
+    }
+
+    // Releer para reportar el tamaño actualizado de la ola.
+    waves.invalidateCache();
+    const refreshed = waves.loadWaves();
+    const refreshedTarget = (refreshed.planned_waves || []).find((w) => w.number === waveNumber);
+    const newSize = refreshedTarget && Array.isArray(refreshedTarget.issues)
+        ? refreshedTarget.issues.length
+        : 0;
+
+    return {
+        reply: fillTemplate('wave-remove-ok', {
+            'issue-number': issueNumber,
+            'wave-number': waveNumber,
+            'wave-name': target.name || `Ola ${waveNumber}`,
+            'new-size': newSize,
+        }),
+    };
+}
+
+/**
+ * `/wave reorder <n1> <n2> [...]` — Reordena las olas PLANIFICADAS.
+ * #4377 CA-3. Aplica:
+ *   - destructiveCooldown (REQ-SEC-5, MUST).
+ *   - Validación de permutación exacta: la impone `waves.reorderPlannedWaves`
+ *     server-side; acá pre-computamos faltantes/sobrantes para dar un mensaje
+ *     específico (UX guideline 4) antes de tocar el estado.
+ *   - Read-fresh + atomic write (vía `waves.reorderPlannedWaves`).
+ *   - Mensaje de éxito con orden previo → nuevo (UX guideline 3).
+ */
+async function handleWaveReorder({ pipelineRoot, order, cooldown, chatId, from }) {
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-reorder');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave reorder\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+    waves.invalidateCache();
+    const state = waves.loadWaves();
+    const planned = Array.isArray(state.planned_waves) ? state.planned_waves : [];
+    const current = planned.map((w) => w.number);
+
+    if (current.length < 2) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'not_enough_waves',
+                message: `Necesitás al menos 2 olas planificadas para reordenar. Ahora hay ${current.length}.`,
+            }),
+        };
+    }
+
+    // UX guideline 4 — mensaje específico: qué number falta o cuál no existe.
+    const currentSet = new Set(current);
+    const orderSet = new Set(order);
+    const missing = current.filter((n) => !orderSet.has(n));
+    const unknown = order.filter((n) => !currentSet.has(n));
+    if (missing.length > 0 || unknown.length > 0) {
+        const parts = [];
+        if (missing.length > 0) parts.push(`falta(n): ${missing.join(', ')}`);
+        if (unknown.length > 0) parts.push(`no existe(n): ${unknown.join(', ')}`);
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'not_a_permutation',
+                message: `El nuevo orden tiene que ser una permutación exacta de las olas planificadas [${current.join(', ')}]. Problema: ${parts.join(' · ')}.`,
+            }),
+        };
+    }
+
+    try {
+        waves.reorderPlannedWaves(order, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-reorder',
+            note: `reorder planned waves [${current.join(', ')}] → [${order.join(', ')}]`,
+        });
+    } catch (e) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló reordenando las olas: ${String(e && e.message ? e.message : e)}`,
+            }),
+        };
+    }
+
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-reorder');
+
+    return {
+        reply: fillTemplate('wave-reorder-ok', {
+            'prev-order': current.join(', '),
+            'new-order': order.join(', '),
+        }),
+    };
+}
+
+/**
+ * `/wave archive <num>` — Archiva una ola (activa o planificada) a
+ * `archived_waves[]` conservando sus issues (CA-5), vía `waves.archiveWave`.
+ *
+ * #4378 — Operación destructiva. Aplica:
+ *   - destructiveCooldown (`wave-archive`, MUST anti doble-tap).
+ *   - Gate fail-closed: si hay `wave-archive.failed.*.json` activo, bloquea.
+ *   - La transacción (lock + snapshot + marker + recovery boot-time) vive en
+ *     waves.js; este handler sólo traduce el resultado/errores a Telegram.
+ *   - NO toca `.partial-pause.json` (CA-6 diferido a #4350).
+ *
+ * Política A04: `waves.archiveWave` rechaza la activa con issues no cerrados sin
+ * force; desde Telegram NO exponemos `force` (operación de mayor riesgo) —
+ * el operador que quiera forzar usa el CLI `planner-waves-cli archivar <N> --force`.
+ */
+async function handleWaveArchive({ waveNumber, cooldown, chatId, from }) {
+    if (cooldown && chatId) {
+        const cd = cooldown.check(chatId, 'wave-archive');
+        if (!cd.allowed) {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'cooldown_blocked',
+                    message: `Esperá ${humanizeRetryAfter(cd.retryAfterMs)} antes de repetir \`/wave archive\` (anti doble-tap).`,
+                }),
+            };
+        }
+    }
+
+    const waves = require('./waves');
+
+    // Gate fail-closed: si un recovery anterior de archive no pudo restaurar,
+    // NO permitimos nuevos archivados hasta intervención manual.
+    const blocked = waves.isWaveArchiveBlocked();
+    if (blocked.blocked) {
+        const markerNames = blocked.markers.map((p) => require('path').basename(p)).join(', ');
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'archive_blocked',
+                message: `\`/wave archive\` bloqueado por fail-closed marker(s): \`${markerNames}\`. Inspeccioná \`.pipeline/archived/\` y borrá el \`.failed\` para destrabar.`,
+            }),
+        };
+    }
+
+    let result;
+    try {
+        result = waves.archiveWave(waveNumber, {
+            updated_by: from || 'Leo',
+            source: 'telegram-commander/wave-archive',
+            note: `archive wave ${waveNumber} (desde Telegram)`,
+        });
+    } catch (e) {
+        const code = e && e.code ? e.code : '';
+        // A04 in-flight → mensaje accionable que apunta al CLI --force.
+        if (code === 'ACTIVE_IN_FLIGHT') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'active_in_flight',
+                    message: `La ola ${waveNumber} está activa con issues no cerrados. Si querés archivarla igual, usá el CLI \`planner-waves-cli archivar ${waveNumber} --force\`.`,
+                }),
+            };
+        }
+        if (code === 'NOT_FOUND') {
+            return {
+                reply: fillTemplate('wave-error', {
+                    'error-kind': 'wave_not_found',
+                    message: `La ola ${waveNumber} no existe en la activa ni en las planificadas.`,
+                }),
+            };
+        }
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `Algo falló archivando la ola: ${String(e && e.message ? e.message : e)}`,
+            }),
+        };
+    }
+
+    if (cooldown && chatId) cooldown.recordSuccess(chatId, 'wave-archive');
+
+    if (!result.archived && result.reason === 'already-archived') {
+        return {
+            reply: fillTemplate('wave-archive-ok', {
+                'wave-number': waveNumber,
+                'already-archived': true,
+                'source': 'archivada',
+                'issues-preserved': 0,
+            }),
+        };
+    }
+
+    return {
+        reply: fillTemplate('wave-archive-ok', {
+            'wave-number': result.waveNumber,
+            'already-archived': false,
+            'source': result.source,
+            'issues-preserved': result.issuesPreserved,
+        }),
+    };
+}
+
+/**
+ * `/wave history [<ola>|#<issue>]` — Consulta read-only del audit trail de
+ * olas/issues (#4371 CA-10). Orden cronológico, actor, evento, previo→posterior
+ * y timestamp legible (`es-AR`). Reusa `wave-audit.history`/`verifyChain`
+ * (readAll/verifyChain de audit-log.js). No muta nada → sin cooldown.
+ *
+ * @param {object} args
+ * @param {number} [args.waveNumber] — filtra por ola.
+ * @param {number} [args.issueNumber] — filtra por issue.
+ * @returns {{ reply: string }}
+ */
+function handleWaveHistory({ waveNumber, issueNumber } = {}) {
+    const HISTORY_MAX = 15;
+    let entries = [];
+    let chain = { ok: true, entriesChecked: 0 };
+    try {
+        const waveAudit = require('./wave-audit');
+        entries = waveAudit.history({ wave: waveNumber, issue: issueNumber, limit: HISTORY_MAX });
+        chain = waveAudit.verifyChain();
+    } catch (e) {
+        return {
+            reply: fillTemplate('wave-error', {
+                'error-kind': 'fs_error',
+                message: `No pude leer el audit trail de olas: ${escapeMarkdownV2(String(e && e.message ? e.message : e))}`,
+            }),
+        };
+    }
+
+    // Encabezado según filtro.
+    let scope = 'todas las olas e issues';
+    if (Number.isInteger(waveNumber)) scope = `ola ${waveNumber}`;
+    else if (Number.isInteger(issueNumber)) scope = `issue #${issueNumber}`;
+
+    if (!entries.length) {
+        return {
+            reply: `📜 *Historial de olas & issues* \\(${escapeMarkdownV2(scope)}\\)\n\n`
+                + `_Sin movimientos registrados todavía\\._`,
+        };
+    }
+
+    const EVENT_LABEL = {
+        issue_added: '➕ issue agregado',
+        issue_removed: '➖ issue quitado',
+        priority_changed: '↕️ prioridad',
+        wave_promoted: '⬆️ ola promovida',
+        wave_archived: '📦 ola archivada',
+    };
+
+    const fmtEstado = (v) => {
+        if (v == null) return '—';
+        if (typeof v === 'string' || typeof v === 'number') return String(v);
+        if (v && Array.isArray(v.issues)) {
+            const list = v.issues.filter((n) => Number.isInteger(n));
+            if (!list.length) return 'sin issues';
+            if (list.length <= 4) return list.map((n) => '#' + n).join(', ');
+            return `${list.length} issues`;
+        }
+        return '—';
+    };
+
+    const lines = entries.map((e) => {
+        let when = '—';
+        try {
+            const d = e.timestamp ? new Date(e.timestamp) : null;
+            if (d && !isNaN(d.getTime())) {
+                when = d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            }
+        } catch (_) { /* '—' */ }
+        const label = EVENT_LABEL[e.event] || (e.event || '—');
+        const actor = e.actor || 'desconocido';
+        // Objeto.
+        let objeto = '';
+        if (Number.isInteger(e.issue) && Number.isInteger(e.wave)) objeto = `#${e.issue} → ola ${e.wave}`;
+        else if (Number.isInteger(e.issue)) objeto = `#${e.issue}`;
+        else if (Number.isInteger(e.wave)) objeto = `ola ${e.wave}`;
+        // Previo → posterior.
+        let prev; let post;
+        if (e.event === 'priority_changed') {
+            prev = e.prioridad_previa || '—'; post = e.prioridad_nueva || '—';
+        } else {
+            prev = fmtEstado(e.estado_previo); post = fmtEstado(e.estado_posterior);
+        }
+        let line = `\`${escapeMarkdownV2(when)}\` · ${escapeMarkdownV2(label)} · _${escapeMarkdownV2(actor)}_`;
+        if (objeto) line += `\n   ${escapeMarkdownV2(objeto)} · ${escapeMarkdownV2(prev)} → ${escapeMarkdownV2(post)}`;
+        else line += `\n   ${escapeMarkdownV2(prev)} → ${escapeMarkdownV2(post)}`;
+        if (e.note) line += `\n   _${escapeMarkdownV2(String(e.note).slice(0, 80))}_`;
+        return line;
+    });
+
+    let header = `📜 *Historial de olas & issues* \\(${escapeMarkdownV2(scope)}\\)\n`;
+    header += `_Mostrando ${entries.length} movimiento${entries.length === 1 ? '' : 's'} más reciente${entries.length === 1 ? '' : 's'}\\._\n`;
+    // Estado de la cadena (integridad, CA-5).
+    if (chain.ok) {
+        header += `🔗 hash\\-chain verificado \\(${chain.entriesChecked} entradas\\)\n`;
+    } else {
+        header += `⚠️ *hash\\-chain ROTO* en la entrada ${chain.brokenAt != null ? chain.brokenAt : '?'} — posible manipulación\n`;
+    }
+
+    return { reply: header + '\n' + lines.join('\n\n') };
+}
+
+/**
+ * Helper de UX: humaniza las olas disponibles para el mensaje de error
+ * `wave_not_found`. Devuelve algo como "1 (activa) o 2, 3".
+ */
+function describeAvailableWaves(active, planned) {
+    const parts = [];
+    if (active) parts.push(`${active.number} (activa)`);
+    for (const p of planned) parts.push(String(p.number));
+    return parts.length > 0 ? parts.join(', ') : 'ninguna';
+}
+
+// -----------------------------------------------------------------------------
+// UTILIDADES INTERNAS
+// -----------------------------------------------------------------------------
+
+function humanBytes(n) {
+    if (!Number.isFinite(n) || n < 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let v = n;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+        v /= 1024;
+        i += 1;
+    }
+    return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+function formatElapsed(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return 'desconocido';
+    const sec = Math.floor(ms / 1000);
+    if (sec < 60) return `${sec}s`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ${sec % 60}s`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `${h}h ${min % 60}m`;
+    return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+function clipForTelegram(text) {
+    // Telegram limita 4096 chars por mensaje; dejamos buffer holgado.
+    const LIMIT = 3000;
+    if (text.length <= LIMIT) return text;
+    return text.slice(-LIMIT);
+}
+
+function renderProgressBar(percent) {
+    // Barra ASCII de 20 caracteres. Defensivo: percent fuera de rango lo clampeamos.
+    const pct = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
+    const filled = Math.round((pct / 100) * 20);
+    return '█'.repeat(filled) + '░'.repeat(20 - filled);
+}
+
+function stateIcon(state) {
+    switch (String(state || '').toLowerCase()) {
+        case 'pendiente': return '⏳';
+        case 'trabajando': return '⚙️';
+        case 'listo': return '✅';
+        case 'procesado': return '📦';
+        default: return '•';
+    }
+}
+
+function portInUse(port) {
+    // Reusa pid-discovery.findPidByPort si está disponible; defensivo si el
+    // módulo no carga (test aislado del commander).
+    try {
+        const scanner = require('../pid-discovery');
+        return scanner.findPidByPort(port) || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function pidStartTime(pid) {
+    try {
+        const scanner = require('../pid-discovery');
+        const all = scanner.scanNodeProcesses();
+        for (const p of all) {
+            if (p.pid === pid && p.creationDate) {
+                // wmic CreationDate: yyyyMMddHHmmss.ffffff+TZ
+                const m = String(p.creationDate).match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+                if (m) {
+                    const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
+                    const t = Date.parse(iso);
+                    if (Number.isFinite(t)) return t;
+                }
+            }
+        }
+    } catch (_) {}
+    return null;
+}
+
+function collectRecentErrors(logDir) {
+    const out = [];
+    const cutoff = Date.now() - 60 * 60 * 1000;
+    const files = ['commander.log', 'pulpo.log'];
+    for (const f of files) {
+        const p = path.join(logDir, f);
+        if (!fs.existsSync(p)) continue;
+        try {
+            const stat = fs.statSync(p);
+            if (stat.mtimeMs < cutoff) continue;
+            const content = fs.readFileSync(p, 'utf8').split('\n').slice(-200);
+            for (const line of content) {
+                if (/ERROR|error|⚠️|exception/i.test(line)) {
+                    const tsMatch = line.match(/\[([\dT:.Z-]+)\]/);
+                    const ts = tsMatch ? tsMatch[1] : '';
+                    out.push({
+                        'ts-short': ts.slice(11, 16),
+                        'message-short': redactReadOutput(line.slice(0, 120)).text,
+                    });
+                    if (out.length >= 5) return out;
+                }
+            }
+        } catch (_) { /* silencio */ }
+    }
+    return out;
+}
+
+// -----------------------------------------------------------------------------
+// MÉTRICAS (CA-4)
+// -----------------------------------------------------------------------------
+
+/**
+ * Lee `commander-audit-*.jsonl` y calcula % determinístico vs LLM vs unknown
+ * por día. El resultado se consume desde el dashboard (`/metrics/commander/routing`).
+ *
+ * @param {string} logsDir
+ * @param {object} [opts]
+ * @param {number} [opts.days=7]  - ventana de días hacia atrás
+ * @param {Date}   [opts.now]
+ */
+function computeRoutingMetrics(logsDir, opts) {
+    const options = opts || {};
+    const days = Number.isFinite(options.days) ? options.days : 7;
+    const nowMs = options.now instanceof Date ? options.now.getTime() : Date.now();
+    const buckets = []; // por día
+
+    for (let i = days - 1; i >= 0; i -= 1) {
+        const date = new Date(nowMs - i * 86400000);
+        const stamp = date.toISOString().slice(0, 10);
+        const file = path.join(logsDir, `commander-audit-${stamp}.jsonl`);
+        const bucket = { date: stamp, deterministic: 0, llm: 0, unknown: 0, total: 0, percentDeterministic: 0 };
+        if (fs.existsSync(file)) {
+            try {
+                const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+                for (const ln of lines) {
+                    try {
+                        const row = JSON.parse(ln);
+                        if (row.intent_class === 'deterministic') bucket.deterministic += 1;
+                        else if (row.intent_class === 'llm') bucket.llm += 1;
+                        else bucket.unknown += 1;
+                        bucket.total += 1;
+                    } catch (_) { /* skip */ }
+                }
+            } catch (_) { /* skip */ }
+        }
+        bucket.percentDeterministic = bucket.total > 0
+            ? Math.round((bucket.deterministic / bucket.total) * 1000) / 10
+            : 0;
+        buckets.push(bucket);
+    }
+    return { window_days: days, buckets };
+}
+
+module.exports = {
+    classify,
+    validateArgs,
+    createDispatcher,
+    computeRoutingMetrics,
+    // Issue #3541 — emisor CUA reutilizable por callers que no usan el
+    // dispatcher completo (ej. handlers de pulpo.js fuera del switch
+    // determinístico). Pasa por la misma validación + dedup + audio fire-and-forget.
+    createCuaEmitter,
+    DETERMINISTIC_SLASH,
+    LLM_SLASH,
+    NLP_PATTERNS,
+    ARG_SCHEMAS,
+    // #3493 — exports para tests de subcomandos `/wave`.
+    parseWaveArgs,
+    // #3897 — exports para tests de `/verificar` (CA-5: cita canónica + UX-2).
+    parseVerificarArgs,
+    renderCanonicalCitation,
+    canonicalCitationFor,
+    VERIFICAR_NOT_VERIFIABLE_MSG,
+    VERIFICAR_CLAIM_TYPES,
+    // #4090 — exports para tests de `/entregado` (estado de entrega determinístico).
+    parseEntregadoArgs,
+    deliveryCitationFor,
+    // #4099 — helper puro para tests del closedSet (estado CLOSED real de GitHub).
+    computeClosedSet,
+    // #5336 (CA-4) — detección del marcador de audio sin transcribir.
+    detectAudioFailure,
+    AUDIO_FAILURE_MARKER,
+    // #5835 — detector de pregunta analítica que sólo menciona la ola de pasada.
+    isWaveAnalyticQuestion,
+    WAVE_ANALYTIC_MIN_LENGTH,
+    _waveInternal: {
+        handleWaveStatus,
+        handleWaveNext,
+        handleWaveAdd,
+        // #5882 — logger inyectable del fallo de sync (pulpo/tests).
+        setSyncLogger,
+        handleWavePromote,
+        handleWaveCreate,
+        handleWaveRemove,
+        handleWaveReorder,
+        handleWaveHistory,
+        getKnownIssues,
+        invalidateKnownIssuesCache,
+        describeAvailableWaves,
+    },
+};

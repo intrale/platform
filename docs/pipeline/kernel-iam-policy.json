@@ -1,0 +1,153 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RuntimeReadWriteNoRepudiation",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE"
+    },
+    {
+      "Sid": "DenyMutateNonRepudiation",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:TransactWriteItems",
+        "dynamodb:PartiQLUpdate",
+        "dynamodb:PartiQLDelete",
+        "dynamodb:PartiQLInsert"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE"
+    },
+    {
+      "Sid": "CoordinationReadWrite",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:Query",
+        "dynamodb:DescribeTable"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/COORD_TABLE"
+    },
+    {
+      "Sid": "AllowIdentityCheck",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyDynamoDbControlPlane",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateContinuousBackups",
+        "dynamodb:UpdateTimeToLive",
+        "dynamodb:CreateBackup",
+        "dynamodb:DeleteBackup",
+        "dynamodb:RestoreTableFromBackup",
+        "dynamodb:RestoreTableToPointInTime",
+        "dynamodb:CreateGlobalTable",
+        "dynamodb:UpdateGlobalTable",
+        "dynamodb:UpdateGlobalTableSettings",
+        "dynamodb:TagResource",
+        "dynamodb:UntagResource"
+      ],
+      "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/*"
+    },
+    {
+      "Sid": "DenyDynamoDbAccountLevelControlPlane",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:ListTables",
+        "dynamodb:ListBackups",
+        "dynamodb:ListGlobalTables",
+        "dynamodb:ListExports",
+        "dynamodb:ListImports",
+        "dynamodb:DescribeLimits"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyKmsAdministration",
+      "Effect": "Deny",
+      "Action": [
+        "kms:CreateKey",
+        "kms:CreateGrant",
+        "kms:RetireGrant",
+        "kms:RevokeGrant",
+        "kms:PutKeyPolicy",
+        "kms:ScheduleKeyDeletion",
+        "kms:CancelKeyDeletion",
+        "kms:DisableKey",
+        "kms:EnableKey",
+        "kms:DisableKeyRotation",
+        "kms:EnableKeyRotation",
+        "kms:ReplicateKey",
+        "kms:CreateAlias",
+        "kms:UpdateAlias",
+        "kms:DeleteAlias",
+        "kms:TagResource",
+        "kms:UntagResource",
+        "kms:ImportKeyMaterial",
+        "kms:DeleteImportedKeyMaterial"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyIamSelfAdministration",
+      "Effect": "Deny",
+      "Action": [
+        "iam:AttachUserPolicy",
+        "iam:DetachUserPolicy",
+        "iam:PutUserPolicy",
+        "iam:DeleteUserPolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:CreatePolicy",
+        "iam:CreatePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:DeletePolicy",
+        "iam:DeletePolicyVersion",
+        "iam:CreateUser",
+        "iam:CreateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:CreateAccessKey",
+        "iam:UpdateAccessKey",
+        "iam:ListAttachedUserPolicies",
+        "iam:ListUserPolicies",
+        "iam:GetUserPolicy",
+        "iam:GetPolicyVersion"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyEverythingOutsideKernelTables",
+      "Effect": "Deny",
+      "NotAction": [
+        "sts:GetCallerIdentity"
+      ],
+      "NotResource": [
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/TABLE",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/COORD_TABLE",
+        "arn:aws:kms:REGION:ACCOUNT:key/CMK_KEY_ID"
+      ]
+    }
+  ]
+}

@@ -1,13 +1,65 @@
-# Secrets — defensa en profundidad. La ubicacion oficial de credenciales es
+# =============================================================================
+# Secrets — inventario cerrado de paths sensibles (#5463, split de #5451).
+#
+# Defensa en profundidad. La ubicacion oficial de credenciales es
 # ~/.claude/secrets/ (home del usuario, fuera del repo); estos patrones
 # bloquean cualquier intento accidental de crear esos paths dentro del repo.
+#
+# ⚠️ Fuente unica de verdad: `.pipeline/lib/sensitive-paths.js`. Este bloque, el
+# scanner de `.husky/pre-commit` y la suite
+# `.pipeline/lib/__tests__/credential-path-guards.test.js` derivan del MISMO
+# inventario. Un alta se hace en el modulo; el test falla si esta lista no lo
+# refleja. No editar solo aca.
+#
+# `.gitignore` NO desindexa lo ya trackeado: el test verifica ademas, con
+# `git ls-files`, que ninguno de estos paths este en el indice.
+# =============================================================================
+
+# -- Stores de credenciales -------------------------------------------------
 .claude/secrets/
 **/.claude/secrets/
+.claude/.credentials.json
+**/.claude/.credentials.json
 secrets.json
 **/secrets.json
 .env
 .env.*
 !.env.example
+# Copias dentro del repo de los stores del pipeline (bot_token + chat_id y las
+# API keys de providers). Detectadas por el inventario del spike #5216 — son la
+# via mas corta de fuga porque el pipeline escribe en el root donde corre.
+.pipeline/credentials.json
+.pipeline/telegram-config.json
+# Cuarto almacen (respaldo ad-hoc) relevado por #5216.
+.intrale-api-keys.json
+**/.intrale-api-keys.json
+# Perfiles del AWS CLI: el vault no reemplaza ~/.aws, pero una copia adentro del
+# arbol es fuga directa de access key + secret.
+.aws/credentials
+**/.aws/credentials
+# Config de npm: suele traer `_authToken` del registry.
+.npmrc
+**/.npmrc
+# Configs de Firebase/Google con API keys de la app (hoy no existen — preventivo).
+**/google-services.json
+**/GoogleService-Info.plist
+
+# -- Material criptografico -------------------------------------------------
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ppk
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+
+# -- Estado del Commander (puede arrastrar secretos pegados por el operador) --
+# (#3310) El scanner de pre-commit ya los pasaba por el sanitizer, pero la regla
+# de ignore faltaba: la segunda capa no puede ser la unica.
+.pipeline/commander-session.json
 
 # Build outputs
 build/
@@ -43,6 +95,9 @@ app/local.properties
 app/logs/
 logs/
 
+# Estado runtime del pipeline (nunca versionar)
+.pipeline/state/
+
 # Node (Wasm)
 node_modules/
 kotlin-js-store/
@@ -64,11 +119,31 @@ qa/artifacts/
 # QA E2E — tests generados (efímeros, se regeneran con /qa validate)
 qa/generated/
 
-# QA E2E — evidencias versionadas (NO ignorar)
+# QA E2E — evidencias versionadas (NO ignorar la carpeta)
 !qa/evidence/
-# QA E2E — videos locales (pesados, se suben a Google Drive)
+# QA E2E — assets binarios locales (pesados / posible PII, se suben a Google Drive — #4173)
 qa/evidence/**/*.mp4
 qa/evidence/**/*.mp4.tmp
+qa/evidence/**/*.png
+qa/evidence/**/*.zip
+qa/evidence/**/*.html
+qa/evidence/**/*.mp3
+# Re-incluir SOLO los metadatos tracked (orden importa: el ! va DESPUES del ignore — #4173)
+!qa/evidence/**/*.json
+!qa/evidence/**/.gitkeep
+# #5708 / SEC-8 · SEC-9 · CA-12 · CA-15 — excepciones a la excepción.
+# El allowlist de `.json` de arriba era un lavadero: el contrato visual
+# transportaba las capturas como `data:image/png;base64,...` adentro de un
+# `.json`, o sea el único tipo de archivo que la política deja pasar. El repo es
+# PÚBLICO y esos PNG están ignorados justamente por posible PII. Los artefactos
+# de corrida no son metadatos: no entran a git (el canal de evidencia pesada es
+# Google Drive — #4173). El `.pdf` además no estaba cubierto por ningún patrón.
+qa/evidence/**/visual-comparison.json
+qa/evidence/**/visual-coverage-rev*.json
+qa/evidence/**/*.pdf
+# SEC-3 — configs con credenciales nunca a git (defensivo, aunque no existan hoy — #4173)
+qa/scripts/telegram-config.json
+**/service-account*.json
 .maestro/tests/
 
 # Claude Code — estado de sesión y logs (no commitear)
@@ -98,6 +173,10 @@ gh.zip
 Workspacesgh-cli/
 Workspacesgh.zip
 
+# (#3943) Volcados de crash — pueden contener tokens/credenciales en claro (RS-5)
+*.stackdump
+hs_err_pid*.log
+
 # Archivos generados desde los packs base64 del branding
 app/composeApp/src/androidMain/res/mipmap-*/ic_launcher*.png
 app/composeApp/src/wasmJsMain/resources/*.png
@@ -121,28 +200,102 @@ scripts/planner-plan.json
 # Pipeline V2 — estado efímero (no commitear)
 .pipeline/logs/
 .pipeline/*.pid
+# Temporales de gh CLI (query bodies de `gh api graphql -F ...`): artefactos
+# runtime que se generan en cada corrida y quedan huérfanos. Un `git add -A`
+# los barre por decenas al índice y provocan conflictos de rebase en delivery
+# (mismo patrón que los .ready de #4371). NO commitear (#4524).
+.pipeline/.gh-summary-*.graphql
+# Ready-markers de servicios: estado runtime (pid/port/timestamps reescritos en
+# cada arranque). NO commitear — el proceso vivo los reescribe durante rebase/merge
+# y provoca conflictos en delivery (#4371).
+.pipeline/ready/*.ready
 .pipeline/.paused
 .pipeline/.partial-pause.json
 .pipeline/rest-mode.json
 .pipeline/blocked-issues.json
 .pipeline/cooldowns.json
+# #5337 — estado del recordatorio de bloqueos humanos. Va acá y no versionado:
+# el repo principal hace `reset --hard` en cada respawn y pisaria el archivo,
+# reiniciando el escalado de recordatorios solo (lo mismo que paso con waves.json).
+.pipeline/human-block-reminder-state.json
+.pipeline/human-block-reminder-state.json.*.tmp
+# #5724 — estado del ciclo de recordatorios del dispatch suspendido por desync.
+# Mismo criterio que el de arriba: es runtime puro y el `reset --hard` del repo
+# principal lo pisaria, reiniciando la escalera de avisos en cada respawn.
+.pipeline/.desync-block-notify.json
 .pipeline/last-restart.json
+# #5646 — registro de servicios que quedaron con codigo viejo tras un
+# `reset --hard` y guard de ronda del restart selectivo. Estado runtime puro:
+# versionarlos haria que el propio reset los pise (mismo problema que waves.json).
+.pipeline/stale-services.json
+.pipeline/stale-services.json.*.tmp
+.pipeline/last-selective-restart.json
+.pipeline/last-selective-restart.json.tmp
 .pipeline/listener-offset.json
+# #5821 — Heartbeat y señal de progreso del Pulpo. Estado runtime puro, con la
+# misma razón que `stale-services.json`: versionarlos haría que el propio
+# `reset --hard` del respawn los pise. `last-progress` además se reescribe cada
+# 5s, así que commitearlo sería churn permanente y conflictos garantizados.
+.pipeline/last-tick.json
+.pipeline/last-tick.json.tmp
+.pipeline/last-progress
 .pipeline/commander-history.jsonl
+.pipeline/commander-summary.json
+.pipeline/commander-summary.json.tmp
+# #4412 — estado runtime del SWRR del balanceo de providers del Commander
+# (best-effort, se regenera; contadores por provider, sin secrets). NO versionar.
+.pipeline/commander-balancer-state.json
+.pipeline/wave-progress.jsonl
+# #4532 — Estado de runtime de la ola (identidad + planificacion). SE SACA del
+# control de versiones: estaba trackeado y cada `git checkout agent/<rama>` /
+# `reset --hard main` del pipeline lo pisaba con el template vacio commiteado,
+# borrando la ola activa y forzando un re-seed que reseteaba comienzo/numero/
+# nombre. Se versiona `waves.json.template` en su lugar; el bootstrap
+# (`ensureWavesFile`) lo copia solo si el runtime no existe.
+.pipeline/waves.json
+# #4532 — Serie historica de velocidad cross-ola (%/issue/min). Efimera por
+# maquina, se regenera; una ola nueva hereda la estimacion previa desde aca.
+.pipeline/wave-velocity-history.jsonl
+.pipeline/commander-presence.json
+.pipeline/.commander-presence.json.*.tmp
 .pipeline/node_modules/
 .pipeline/package-lock.json
 .pipeline/circuit-breaker-infra.json
 .pipeline/circuit-breaker-infra.json.tmp
+# #5723 — contador de rollbacks consecutivos. Va fuera del arbol versionado a
+# proposito: el rollback hace `git checkout <target> -- .pipeline/` y se
+# llevaria puesto el estado si estuviera trackeado.
+.pipeline/rollback-state.json
+.pipeline/rollback-state.json.tmp
+# #4900 — estado runtime del provider-quota-guard: snapshot de cuota viva y
+# marker de degradacion preventiva. Los reescribe `provider-quota-guard.js` en
+# cada boot; versionarlos produce dirty-tree perpetuo y fuga de estado operativo
+# (cuota de providers) a git. El runtime los regenera. NO commitear.
+.pipeline/.provider-quota-guard-state.json
+.pipeline/.provider-preventive-degrade.json
+# #4900 — `.dur` es el scratch de duracion que dejan los wrappers de timing del
+# runtime en la raiz del worktree. Se colo al diff del PR #4902; no es codigo.
+.dur
+# #5216 (R-1, hallazgo bloqueante de `security`) — el flag `sensible: true` de
+# `writeDeliverable` SOLO excluye el entregable del canal Drive; NO lo excluye de
+# git. Los .md de `.pipeline/assets/docs/` estan trackeados y este repo es PUBLICO,
+# asi que un entregable sensible se publicaria igual. Esta regla es la unica
+# contencion real. El inventario detallado de credenciales de #5216 mapea
+# `archivo:linea` de cada consumidor y su cadena de resolucion: es un mapa de
+# ataque, no documentacion. NO commitear.
+.pipeline/assets/docs/5216/
 .pipeline/definicion/*/pendiente/*
 .pipeline/definicion/*/trabajando/*
 .pipeline/definicion/*/listo/*
 .pipeline/definicion/*/procesado/*
 .pipeline/definicion/*/bloqueado-humano/*
+.pipeline/definicion/*/bloqueado-dependencias/*
 .pipeline/desarrollo/*/pendiente/*
 .pipeline/desarrollo/*/trabajando/*
 .pipeline/desarrollo/*/listo/*
 .pipeline/desarrollo/*/procesado/*
 .pipeline/desarrollo/*/bloqueado-humano/*
+.pipeline/desarrollo/*/bloqueado-dependencias/*
 .pipeline/servicios/*/pendiente/*
 .pipeline/servicios/*/trabajando/*
 .pipeline/servicios/*/listo/*
@@ -151,17 +304,52 @@ scripts/planner-plan.json
 .pipeline/connectivity-state.json
 .pipeline/blocked-by-infra.json
 .pipeline/infra-health.json
+# #5243 — reporte del health-check de secretos. Nombra qué secreto falta en
+# ESTA máquina: en un repo público es un mapa de ataque. Mismo tratamiento que
+# infra-health.json, y la regla entra en el mismo commit que su writer.
+.pipeline/secrets-health.json
 .pipeline/events/
 .pipeline/tmp/
 # #2337 — estado reintentando + metricas UX rotadas (no comitear)
 .pipeline/retrying-state.json
 # Estado TTS (último provider usado) — efímero por sesión
 .pipeline/.tts-state.json
+# EP1-H4 (#3919) — estado de dedup de avisos de degradación multimedia — efímero
+.pipeline/.degradation-notify-state.json
+# #6144 — cooldown del aviso hablado de cadena de IA caída — efímero, por máquina
+.pipeline/.provider-down-audio-state.json
 # #2653 — cache de recomendaciones pendientes (refresca desde gh) — efímero
 .pipeline/recommendations-cache.json
 # #2895 — caches de issue title/summary (refresca desde gh) — efímero
+# #4882 — puro cache derivado: el reset --hard del restart lo pisaba con la
+#   version de main y falseaba el avance de la ola (94%->18%). Untrackeado para
+#   que syncWithMain() no lo borre. Mismo patron que #4532 (waves.json).
 .pipeline/.issue-title-cache.json
 .pipeline/.issue-summary-cache.json
+# #4631 — caches runtime de salud/reprobe de providers (mutan en cada corrida) — efímero.
+# Estaban trackeados y colisionaban en cada rebase de delivery. Se regeneran solos.
+.pipeline/cache/
+# #3489 — backups timestamped de waves.json (snapshots de planificación multi-ola).
+# Solo se versiona el HEAD de waves.json; archived/ es efímero por máquina.
+.pipeline/archived/
+
+# #3638 CA-SEC-6 — ghost artifacts cleaner: nada del archivado (español) ni del
+# audit JSONL operacional debe ir al repo. Contienen paths internos, CAs viejos,
+# motivos de rechazo y metadata del pipeline. El cleaner verifica esto en boot
+# y aborta si los paths no están ignored (anti-regresión).
+.pipeline/archivado/
+.pipeline/audit/
+
+# #4136 — histórico de artefactos del pipeline (frontera activo/histórico).
+# Contiene YAML de tareas terminadas (motivos de rechazo, metadata interna).
+# Igual que `archivado/`: efímero por máquina, NO se versiona.
+.pipeline/historico/
+.pipeline/historico-transitions.jsonl
+
+# #3539 — audios .ogg generados por deliverable-notify (CA-SEC-8).
+# El cleanup/retencion sera tratado en #3544.
+.pipeline/audio/
+
 # #3012 — snapshots de cuota Claude Desktop (PNG + JSONL + lockfile + estado alerter)
 # CA-7: PNG con email Max + % uso + USD overage NO se commitea (PII at-rest).
 .pipeline/quota-snapshots/
@@ -174,7 +362,79 @@ scripts/planner-plan.json
 !.pipeline/metrics/aggregator.js
 !.pipeline/metrics/projections.js
 !.pipeline/metrics/report-daily.js
+!.pipeline/metrics/night-throughput.js
+# #3962 EP8-H9 CA-4: código fuente del módulo de presupuesto sí se commitea
+# (el estado runtime budget-config.JSON queda ignorado por el patrón de arriba).
+!.pipeline/metrics/budget-config.js
 !.pipeline/metrics/pricing.json
 !.pipeline/metrics/__tests__/
 !.pipeline/metrics/__tests__/**
 !.pipeline/**/.gitkeep
+.pipeline/agent-models-last-notified.json
+
+# Python bytecode cache (whisper_fw.py / STT local, #3916)
+__pycache__/
+*.pyc
+
+# #6110 — estado operativo local del pipeline. Esta regla cubre snapshots,
+# cursores, logs y markers actuales o futuros bajo `.pipeline/state/`.
+# Ignorarlo no constituye un backup: `git clean -xdf` elimina también archivos
+# ignorados; confirmar el target y contar con respaldo antes de ejecutarlo.
+.pipeline/state/*
+
+# #4536 — estado runtime del scheduler de ventanas OFF por proveedor (#3871) y
+# del disable manual por proveedor. Fail-open, con updated_at, generado/persistido
+# en ejecución (lib/provider-schedule.js, lib/provider-disabled.js). NO commitear:
+# si entran al índice, restart.js (git reset --hard) pisaría el horario operativo.
+.pipeline/provider-schedule.json
+.pipeline/provider-disabled.json
+
+# #4512 — reporte de auditoría de seguridad por-issue (raíz del repo). Lo
+# genera el gate /security en cada corrida y lo sobrescribe por issue. Trackear-
+# lo produce conflictos add/add recurrentes en el rebase de /delivery (ver
+# rebotes #4512/#4516/#4565/#4568). Los reportes sensibles se persisten vía
+# writeDeliverable(sensible:true), no en git. NO commitear.
+security-report.md
+# Tambien la variante con sufijo por issue (ej. security-report-4507.md): mismo
+# artefacto del gate /security, se coló al repo root por no matchear el patron
+# sin sufijo (rebote #4507). Debe seguir la doctrina de entregables, no git.
+security-report-*.md
+
+# Backups de la migración JSON→DynamoDB (#4745): artefactos runtime que genera
+# `kernel-store-migrate.js` antes de escribir al store durable. Contienen un
+# snapshot del estado de coordinación local; se retienen sólo para rollback y NO
+# deben versionarse (ni filtrarse por un `git add -A`).
+.pipeline/backup/
+
+# #5110 (Ola 9.4 · E2 · R2) — estado operativo namespaceado por projectId.
+#
+# BLOQUEANTE, y va en el MISMO commit que el cambio de layout. Las entradas del
+# layout plano (`.pipeline/waves.json:255`, `.pipeline/.partial-pause.json:213`,
+# `.pipeline/archived/:332`, `.pipeline/audit/`) son paths LITERALES: ninguna
+# cubre `.pipeline/projects/<projectId>/...`. Verificado antes del cambio:
+#
+#   $ git check-ignore -q .pipeline/waves.json                             → IGNORADO
+#   $ git check-ignore -q .pipeline/projects/intrale-platform/waves.json   → TRACKEABLE
+#
+# O sea que al namespacear, el estado operativo (que incluye la allowlist, el
+# registro de olas y el audit JSONL con motivos de rechazo y metadata interna)
+# dejaba de estar ignorado en un repo PÚBLICO. Mismo precedente que `27d790aba`,
+# que destrackeó `.pipeline/state/`.
+#
+# Cubre `waves.json`, `.partial-pause.json`, `archived/`, `audit/` y los markers
+# de promote/archive de TODOS los proyectos, presentes y futuros.
+.pipeline/projects/
+
+# #5110 (rev-2, B3) — lock de exclusión mutua del migrador de estado operativo.
+#
+# `migrate-operational-state-namespace.js` aplica `git check-ignore` al backup y
+# al destino (regla R2/SEC-7 propia del script) pero se salteaba el ÚNICO otro
+# archivo que él mismo crea: su lock. Verificado antes del cambio:
+#
+#   $ git check-ignore -q .pipeline/.opstate-migration.lock ; echo $?
+#   1     → TRACKEABLE
+#
+# En un repo público, un `git add -A` durante una migración lo levantaba (con el
+# PID del operador adentro). Ahora el script también lo pasa por `assertIgnored()`,
+# así que sin esta entrada la migración aborta antes de escribir un solo byte.
+.pipeline/.opstate-migration.lock

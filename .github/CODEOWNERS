@@ -1,17 +1,37 @@
-# CODEOWNERS — Review obligatorio para componentes que el rollback NO cubre
+# CODEOWNERS — Declaracion de responsabilidad (SIN gate de aprobacion obligatoria)
 #
 # Sintaxis: <pattern> <owner-or-team>
-# Último match gana. Los patrones son glob-style (similar a .gitignore).
+# Ultimo match gana. Los patrones son glob-style (similar a .gitignore).
 #
-# Rationale (post acción 3 — issue ciclo rollback/CODEOWNERS):
-#   - .pipeline/ ya NO requiere review humano: el smoke-test del restart corre
-#     self-checks de los skills determinísticos (tester, builder, delivery,
-#     linter) y dispara rollback automático al tag pipeline-stable si alguno
-#     rompe. Auto-merge habilitado.
-#   - .github/workflows/: NO se puede smoke-testear localmente (corren en
-#     GitHub Actions). Único path donde el rollback no nos cubre — sigue
-#     bloqueado a review humano.
-#   - .github/CODEOWNERS: protege el protocolo de protección.
-
-# Workflows GitHub Actions y este archivo: rollback no aplica
-/.github/                   @leitolarreta
+# ── Estado actual (issue #5175) ────────────────────────────────────
+# Este archivo NO declara reglas activas a proposito. El gate de
+# "aprobacion obligatoria de code owner" sobre /.github/ resultaba
+# inaplicable: el pipeline abre los PRs con la misma cuenta que era
+# code owner (@leitolarreta) y GitHub no permite auto-aprobarse, con lo
+# cual todo cambio en /.github/ quedaba trabado esperando una firma
+# imposible (caso testigo: PR #5202).
+#
+# La proteccion de esos cambios NO se relaja: pasa a apoyarse en
+# controles automaticos verificables sobre `main`:
+#   - PR obligatorio + historia lineal (ruleset `protect-main`)
+#   - todos los hilos de revision resueltos antes de mergear
+#   - review automatico en cada push (Copilot code review)
+#   - checks de PR agregados en `pr-status` (required)
+#   - SAST: Semgrep, detect-secrets, OWASP Dependency Check
+#   - Actions fijadas por SHA en los workflows
+#   - ghost-artifact-lint y operational-state-lint
+#
+# ── Responsabilidad declarada (informativa, no bloqueante) ─────────
+#   /.github/       responsable: @leitolarreta
+#   /.pipeline/     responsable: @leitolarreta
+#
+#   Guardrail operational-state-lint (#5202 · CA-5 / SEC-1) — se declara
+#   path por path porque el binario y su allowlist son la frontera del
+#   guardrail: quien los edita puede bajarlo.
+#   /.pipeline/lib/operational-state-lint.js            responsable: @leitolarreta
+#   /.pipeline/lib/operational-state-lint.allowlist.json  responsable: @leitolarreta
+#   /.pipeline/lib/__tests__/operational-state-lint.test.js  responsable: @leitolarreta
+#
+# Si en el futuro aparece un caso que exija de verdad separacion entre
+# autor y aprobador, la salida correcta es una identidad de servicio
+# propia del pipeline — no reactivar una regla que solo se auto-bloquea.

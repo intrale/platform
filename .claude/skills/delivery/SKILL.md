@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "<descripcion> [--issue <N>] [--draft] [--all] [--clean] [--dev-skill <nombre>]"
 allowed-tools: Bash, Read, Glob, Grep, Skill, TaskCreate, TaskUpdate, TaskList
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn, network_out, tool_use_gated]
 ---
 
 # /delivery — DeliveryManager
@@ -429,67 +430,29 @@ gh pr merge "$PR_NUMBER" --repo intrale/platform --squash --delete-branch
 
 Este paso se ejecuta **tanto en modo individual como en modo `--all`**. El delivery SIEMPRE cierra el ciclo con merge.
 
-## Paso 6.6: Limpieza de worktree post-merge
+## Paso 6.6: Limpieza de worktree post-merge (determinística — #3943)
 
-Después de un merge exitoso, **limpiar el worktree automáticamente** si:
-- El directorio actual NO es el repo principal, Y
-- El worktree a limpiar NO es donde está corriendo la sesión actual de Claude Code
+Después de un merge exitoso, limpiar el worktree invocando **la lib determinística** `cleanupWorktree()` de `.pipeline/lib/delivery/worktree-cleanup.js`. **Prohibido** reimplementar la limpieza con bash inline: toda la lógica defensiva ya vive en la lib, con tests (`lib/__tests__/worktree-cleanup.test.js`):
 
-### 0. Detectar si el worktree es la sesión activa (CRITICO — fix #2867)
+- Guard de sesión activa (fix #2867, `isActiveSession`): si `/delivery` corre desde dentro del propio worktree, la lib skipea el cleanup completo (solo `worktree prune`) y devuelve `{ skipped: true, reason: 'active_session' }`. **No duplicar este guard en el SKILL.**
+- `.claude/` se desmonta con `rmdir` SOLO si es junction; si es copia real, la deja para `git worktree remove` (incidente #2867).
+- `git worktree remove --force` + borrado de branch local + `git worktree prune`, todo vía `spawnSync` con array de argumentos (sin shell interpolado).
 
-Si `/delivery` se invoca desde dentro del propio worktree, la limpieza voltea los skills y deja el CLI sin `ghostbusters`, etc.
-
-```bash
-SESSION_CWD=$(cd "$(pwd)" && pwd -P)
-WORKTREE_REAL=$(cd "$WORKTREE_PATH" 2>/dev/null && pwd -P || echo "")
-
-if [ -n "$WORKTREE_REAL" ] && [[ "$SESSION_CWD" == "$WORKTREE_REAL"* ]]; then
-  echo "⚠️ Skip cleanup: el worktree es donde corre la sesión actual del CLI"
-  echo "   Worktree: $WORKTREE_PATH"
-  echo "   Branch local se conserva. Worktree quedará como huérfano hasta /ghostbusters --worktrees --run manual."
-  git -C /c/Workspaces/Intrale/platform worktree prune 2>/dev/null || true
-  # Saltar al Paso 7 (reportar)
-fi
-```
-
-### 1. Volver al repo principal
-```bash
-cd /c/Workspaces/Intrale/platform
-```
-
-### 2. Desmontar `.claude/` SOLO si es un junction (defensivo — fix #2867)
-
-Hay worktrees con `.claude/` como junction (`mklink /J`) y otros con copia real (memory `worktrees-claude-copy.md`). Hacer `rmdir` sobre una copia real **borra todo el contenido** y se lleva los skills del proyecto.
+### Invocación (one-liner, único comando del paso)
 
 ```bash
-# fsutil reparsepoint query devuelve exit 0 solo si es junction/symlink
-if cmd //c "fsutil reparsepoint query \"$WORKTREE_PATH\\.claude\"" >/dev/null 2>&1; then
-  cmd //c "rmdir \"$WORKTREE_PATH\\.claude\"" 2>/dev/null || true
-  echo "  → .claude junction desmontado"
-else
-  echo "  → .claude es copia real (o no existe), git worktree remove se encarga"
-fi
+node -e "require('C:/Workspaces/Intrale/platform/.pipeline/lib/delivery/worktree-cleanup').cleanupWorktree({ worktreePath: '$WORKTREE_PATH', branch: '$BRANCH' }).then(r => console.log(JSON.stringify(r)))"
 ```
 
-### 3. Eliminar el worktree con git
-```bash
-git worktree remove "$WORKTREE_PATH" --force
-```
-
-### 4. Eliminar branch local (la remota ya se borró con `--delete-branch` del merge)
-```bash
-git branch -D "$BRANCH" 2>/dev/null || true
-```
-
-### 5. Podar referencias huérfanas
-```bash
-git worktree prune
-```
+- `worktreePath` y `branch` son obligatorios; `sessionCwd` defaultea a `process.cwd()` (por eso ejecutar el one-liner desde el cwd real de la sesión, sin `cd` previo).
+- Interpretar el resultado JSON:
+  - `{ ok: true, skipped: false, worktreeRemoved: true, branchDeleted: ... }` → limpieza completa.
+  - `{ ok: true, skipped: true, reason: 'active_session' }` → sesión activa adentro; el worktree queda huérfano hasta que el cron de ghostbusters (#3943) o `/ghostbusters --worktrees --run` lo retire. Reportar el motivo y seguir al Paso 7.
+  - `{ ok: false, ... }` → loguear el error y seguir al Paso 7 (la limpieza es best-effort, nunca bloquea el delivery).
 
 **CRITICO**:
-- NUNCA usar `rm -rf` sobre directorios de worktrees — sigue symlinks/junctions y puede borrar `.claude/` del repo principal. SIEMPRE usar `git worktree remove`.
-- NUNCA hacer `rmdir` ciego sobre `.claude/` de un worktree — verificar antes que sea junction. Si es copia real, `rmdir` la borra entera y deja el CLI sin skills (incidente #2867).
-- NUNCA limpiar el worktree donde corre la sesión actual del CLI — el cleanup voltea los skills desde adentro.
+- NUNCA usar `rm -rf` ni `rmdir` manual sobre directorios de worktrees — la lib ya maneja junctions/symlinks de forma segura.
+- NUNCA reimplementar el guard de sesión activa en bash — vive dentro de la lib.
 
 ## Paso 7: Reportar resultado
 
@@ -527,6 +490,54 @@ node .claude/hooks/delivery-report.js \
 - Si el merge falla (estado=ERROR), invocar con `--state ERROR` para notificar el fallo
 - Ejecutar con `&` en background para no bloquear el flujo del delivery
 - Si el script falla, no debe afectar el resultado del delivery (best-effort)
+
+### 7.2: Constancia de entrega (obligatoria — #4517)
+
+Al cerrar la fase **entrega**, delivery DEBE persistir **SIEMPRE** su constancia de entrega, cierre exitoso o no. Es la fila 13 del épico #4255: *no puede volver a pasar que delivery cierre la fase sin producir el entregable*. Se persiste por el **punto de escritura único** `writeDeliverable`, que redacta secrets por default (`redact=true`) e indexa en `.pipeline/deliverables/<issue>.json`. **Nunca** `redact:false`, **nunca** `writeFileSync` directo, **nunca** ruta directa a Telegram.
+
+Construir la constancia como **metadata estructurada** (SEC-DEL-2) — **jamás** volcar el PR body crudo ni logs de CI crudos, que son el vector más probable de arrastrar tokens/URLs firmadas:
+
+```js
+// Incondicional al cerrar (CA-1). Ejecutar ANTES de terminar el skill.
+const { writeDeliverable } = require('.pipeline/lib/write-deliverable');
+const ROOT = process.env.PIPELINE_REPO_ROOT || 'C:/Workspaces/Intrale/platform';
+
+const md = [
+  `# Constancia de entrega — issue #${issue}`,
+  ``,
+  `## PR`,
+  `- Nº: #${PR_NUM}`,
+  `- Título: ${PR_TITLE}`,
+  `- Link: ${PR_URL}`,           // URL de PR de GitHub (sin query-params) → sobrevive redacción
+  `- Rama base: ${BASE_BRANCH}`,
+  ``,
+  `## Commits mergeados`,
+  COMMIT_SHAS.map((s) => `- ${s}`).join('\n'),
+  ``,
+  `## Gates de merge`,
+  `- QA: ${QA_LABEL}`,           // qa:passed | qa:skipped
+  `- CI: ${CI_STATE}`,
+  `- Review: ${REVIEW_STATE}`,
+  ``,
+  `## Issues cerrados`,
+  `- Closes #${issue}`,
+  ``,
+  `## Artefacto desplegado`,
+  DEPLOY_INFO || '- N/A',
+].join('\n');
+
+writeDeliverable('delivery', issue, { fase: 'entrega', md, pipelineRoot: ROOT });
+```
+
+**Excepción explícita cuando la constancia no aplica (CA-4, no silencio):** si por la naturaleza del issue el entregable no aplica (doc puro con `qa:skipped`, o el merge falló y el issue fue a `backlog-tecnico`), **no omitir** la escritura — persistir igual con el **motivo explícito**. El `motivo` no debe incluir paths absolutos del host, contenido de `.env`/`application.conf` ni stack traces con credenciales (SEC-DEL-4):
+
+```js
+const md = `# Constancia de entrega — issue #${issue}\n\n## Excepción\nConstancia no aplica. Motivo: ${MOTIVO}\n`;
+writeDeliverable('delivery', issue, { fase: 'entrega', md, pipelineRoot: ROOT });
+```
+
+- **Idempotencia (SEC-DEL-5):** `writeDeliverable` es snapshot (overwrite) con filename phase-scoped determinístico (`delivery-entrega-<issue>.md`). Un rebote sobrescribe, nunca concatena crudo + redactado.
+- **Defensa en profundidad:** si por cualquier motivo delivery no llega a ejecutar este paso, `pulpo.js` garantiza la constancia al cerrar la fase (`lib/delivery-constancia.js`, #4517) desde las `notas`/`motivo` del resultado, sin el umbral anti-ruido de 80 chars. Este paso del SKILL produce la constancia **rica y estructurada**; el backstop de pulpo asegura que **nunca** quede un cierre silencioso.
 
 ## Paso 8: Modo `--clean` (limpieza de worktrees)
 

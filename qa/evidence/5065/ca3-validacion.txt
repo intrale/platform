@@ -1,0 +1,9 @@
+Gherkin 1 - manifiesto valida contra el esquema: true
+Gherkin 2 - manifiesto SIN branch.base valida?: false
+  error: [{"instancePath":"/branch","schemaPath":"#/properties/branch/required","keyword":"required","params":{"missingProperty":"base"},"message":"must have required property 'base'"}]
+
+-- rechazo por cada obligatorio de raiz --
+  sin contractVersion -> valida:false | contractVersion
+  sin repo -> valida:false | repo
+  sin branch -> valida:false | branch
+  sin workspace -> valida:false | workspace

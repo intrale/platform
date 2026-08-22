@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://intrale.com.ar/schemas/skill-metadata.schema.json",
+  "title": "Skill Metadata Schema",
+  "description": "Schema canónico para el frontmatter YAML de .claude/skills/<skill>/SKILL.md. Issue #3082 (CA-6, CA-S5). Los nombres válidos para required_permissions son el subset de KNOWN_CAPABILITIES exportado por .pipeline/lib/capabilities.js.",
+  "type": "object",
+  "required": ["description", "required_permissions"],
+  "additionalProperties": true,
+  "properties": {
+    "description": {
+      "type": "string",
+      "description": "Resumen humano del skill — máx 200 chars."
+    },
+    "user-invocable": {
+      "type": "boolean",
+      "description": "Si el skill puede llamarse desde el CLI del usuario (/<skill>)."
+    },
+    "argument-hint": {
+      "type": "string",
+      "description": "Sintaxis de invocación humana (mostrado al usuario por el harness)."
+    },
+    "allowed-tools": {
+      "type": "string",
+      "description": "Lista de tools del harness (Bash, Read, Grep, ...). Es metadata del harness, NO la fuente de verdad de capabilities cross-provider. Para multi-provider, ver required_permissions."
+    },
+    "model": {
+      "type": "string",
+      "description": "Modelo preferido (Anthropic). Puede ser override a nivel agent-models.json. Mantener en sync con docs/agents-model-optimization.md."
+    },
+    "required_permissions": {
+      "type": "array",
+      "minItems": 0,
+      "uniqueItems": true,
+      "description": "Lista de capabilities que el skill requiere para correr. Validación: cada valor debe estar en KNOWN_CAPABILITIES (lib/capabilities.js). Skill con capability fuera del catálogo → boot fail-fast. Skill que omita este campo → pre-commit fail.",
+      "items": {
+        "type": "string",
+        "enum": [
+          "file_read",
+          "file_write_repo",
+          "file_write_outside_repo",
+          "bash",
+          "bash_elevated",
+          "network_out",
+          "network_in",
+          "child_spawn",
+          "long_running_watcher",
+          "tool_use_gated"
+        ]
+      }
+    }
+  }
+}

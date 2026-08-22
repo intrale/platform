@@ -1,0 +1,9 @@
+{
+  "object": "list",
+  "data": [
+    { "id": "gpt-oss-120b", "object": "model", "created": 1751830839, "owned_by": "Cerebras" },
+    { "id": "llama-3.3-70b", "object": "model", "created": 1733443200, "owned_by": "Meta" },
+    { "id": "qwen-3-235b-a22b-instruct-2507", "object": "model", "created": 1753731447, "owned_by": "Alibaba" },
+    { "id": "llama3.1-8b", "object": "model", "created": 1721692800, "owned_by": "Meta" }
+  ]
+}

@@ -115,3 +115,81 @@ los tokens. El tercero, telegram más banner más acuse, usa el mockup seis
 completo. Yo vuelvo en validación de cada uno a verificar que los assets
 estén donde los dejé, y vuelvo en aprobación a revisar el video. Cualquier
 duda estoy al pie del cañón.
+
+## Addendum · issue 3230 — calendario semanal con N periodos por día
+
+Tres meses después del PR-A original, Leo nos pidió un upgrade estructural:
+una sola ventana por configuración era demasiado rígida. La gente del
+operativo quiere distinguir siesta de noche, viernes corto de fin de
+semana libre, y tener domingos enteros sin pipeline. El issue tres dos tres
+cero rediseña el schema de `rest-mode.json` y, en consecuencia, fuerza
+también el rediseño completo del form del dashboard. Yo entregué dos
+mockups nuevos para que pipeline-dev no improvise.
+
+El primero, mockup cinco actualizado, reemplaza al form viejo. En vez del
+único bloque hora inicio más hora fin más siete checkboxes, ahora hay un
+grid semanal con siete columnas, una por día. Cada columna tiene tres
+elementos visuales: un header con el nombre del día y un contador chico
+con la cantidad de periodos configurados; un listado vertical de periodos
+con su rango horario en monoespaciada, un caption corto que indica
+contexto, siesta, noche, cruce de medianoche, día completo, y un botón
+equis para eliminar; y al pie un botón punteado con texto más periodo que
+sirve para agregar un bloque nuevo. La columna del lunes está resaltada
+con tinte indigo translúcido porque es el día que se está mirando, y
+dentro de ella el primer periodo, trece a dieciséis, está pintado en
+indigo macizo con un puntito verde pulsante para indicar que el modo
+descanso está activo en este momento. El sábado tiene una placeholder
+discreta, un círculo gris con la leyenda sin descanso, día libre completo,
+para que el operador entienda que ese día no hay restricción. El domingo
+muestra el caso de día completo, cero cero a veintitrés cincuenta y nueve,
+con tinte indigo claro, demostrando que ese es el único caso permitido
+donde inicio igual a fin tiene sentido. El jueves muestra un estado
+adicional, periodo en edición, con el borde resaltado en cian y un cursor
+parpadeando dentro del input, más una tarjeta inline debajo que avisa que
+mientras el operador esté editando, el polling de ocho segundos queda
+pausado para no pisarle el cambio.
+
+El segundo, mockup cinco be, es un complemento que muestra los cuatro
+estados de error de validación de cliente que el pipeline tiene que
+implementar. Cuatro tarjetas en fila. La primera, solapamiento entre dos
+periodos del mismo día, lunes trece a dieciséis y catorce treinta a
+dieciocho, ambos marcados en rojo con un tooltip explicativo. La segunda,
+cross midnight overlap, martes veintidós a siete cruzando medianoche
+contra un matinal seis a ocho, los dos en rojo porque el periodo nocturno
+incluye al matinal cuando se expande al día siguiente, este es el caso
+trampa que cubre el requisito seguridad tres del análisis. La tercera,
+inicio igual a fin, miércoles trece a trece marcado como inválido, con un
+ejemplo válido al lado, cero cero a veintitrés cincuenta y nueve, en
+indigo para enseñar la única excepción permitida. La cuarta, cap de
+veinticuatro periodos por día alcanzado, ámbar warning con el botón más
+periodo deshabilitado, este es el control anti denegación de servicio que
+pidió seguridad dos. Abajo, una barra de acciones con un contador rojo de
+tres errores y el botón guardar deshabilitado mientras quede algún rojo
+sin resolver. Y al pie de todo, un timeline visual de veinticuatro horas
+del lunes con dos bandas indigo representando los dos periodos
+configurados y una línea cian con el marcador ahora catorce veintitrés,
+para que el operador vea geométricamente cómo queda el día.
+
+Tres decisiones de diseño que vale la pena destacar para este addendum.
+Primero, el header pill del dashboard cambia de modo descanso veintitrés
+cero cero a cero siete cero cero, formato viejo, a activo, dos periodos
+hoy, próximo veintidós a siete, formato nuevo. La diferencia es semántica,
+ahora el operador ve cuántos bloques aplican hoy y cuál es el siguiente,
+no la ventana cruda. Segundo, los periodos que cruzan medianoche se
+identifican con el ícono de luna chico al costado y el caption más un día,
+para que sea visualmente obvio que ese bloque se extiende al día
+siguiente. Tercero, la validación de cliente, todas las tarjetas del
+mockup cinco be, vive en un helper compartido entre cliente y servidor,
+lib barra rest mode schedule punto js, así no duplicamos lógica de
+detección de solapamientos. La nota técnica al pie del mockup lo recuerda
+explícitamente, validación cliente es uxe, el backend revalida igual,
+seguridad nueve.
+
+Lo que viene esta vez. Pipeline-dev toma estos dos mockups nuevos más el
+addendum, refactoriza rest mode window punto js para soportar el schema
+con esquedule por día, actualiza el endpoint post barra api barra rest
+mode para aceptar el payload nuevo manteniendo retrocompat con el viejo,
+reemplaza el form del dashboard por el grid semanal, y agrega tests para
+todos los casos de error que dibujé en cinco be. Yo vuelvo en validación
+a verificar que los assets están donde los dejé y que el grid renderiza
+bien con datos reales, y vuelvo en aprobación a revisar el video del qa.

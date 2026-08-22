@@ -289,7 +289,7 @@ Durante tu análisis en cualquier fase (`criterios`, `validacion`, `aprobacion`)
 export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 gh issue create --repo intrale/platform \
   --title "[ux] <descripción imperativa breve>" \
-  --label "enhancement,source:recommendation,tipo:recomendacion,needs-human,priority:low<,app:client|,app:business|,app:delivery>" \
+  --label "enhancement,source:recommendation,tipo:recomendacion,needs:triage-backlog,priority:low<,app:client|,app:business|,app:delivery>" \
   --body "## Contexto
 
 <qué observaste / qué motivó la recomendación>
@@ -301,7 +301,7 @@ gh issue create --repo intrale/platform \
 ## Referencia
 
 > Propuesto automáticamente por el agente \`ux\` durante el análisis del issue #<origen>.
-> **Es una recomendación pendiente de aprobación humana** — no entra al pipeline automático hasta que un humano remueva el label \`needs-human\` y agregue \`recommendation:approved\` (o cierre con \`recommendation:rejected\`).
+> **Es una recomendación pendiente de triaje humano** — no entra al pipeline automático hasta que un humano agregue el label \`recommendation:approved\` (o la cierre con \`recommendation:rejected\`). Lo que la frena es tener \`tipo:recomendacion\` **sin** \`recommendation:approved\`; \`needs:triage-backlog\` sólo señala que falta triaje y **no** bloquea nada.
 > **No depende ni bloquea a #<origen>** — es una oportunidad independiente."
 ```
 
@@ -311,8 +311,8 @@ gh issue create --repo intrale/platform \
 2. **Máximo 3 recomendaciones por issue analizado** (anti-explosión, issue #2653). Si detectás más de 3 oportunidades, priorizá las top 3 por impacto en la experiencia del usuario y mencioná el resto en un párrafo "Otras oportunidades observadas" del comentario del issue origen, sin crear los issues.
 3. **Título con prefijo `[ux]`** + frase imperativa breve.
 4. **Heredar** labels `app:*` del issue origen cuando apliquen (si el origen tiene `app:business`, el nuevo issue también).
-5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs-human` para que el pulpo no procese el issue hasta aprobación humana.
-6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana). La referencia es sólo contextual en el body.
+5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs:triage-backlog`. Lo que frena al pulpo es `tipo:recomendacion` **sin** `recommendation:approved` — el freno ya vive en ese par y no requiere ningún label de bloqueo. `needs:triage-backlog` sólo marca que la recomendación espera triaje humano y **no** bloquea el pipeline.
+6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana) y `needs-human` (reservado a bloqueos reales que exigen intervención inmediata del operador: mezclarlo con `tipo:recomendacion` ahoga las alertas que sí hay que atender). La referencia es sólo contextual en el body.
 7. **Prioridad inicial siempre `priority:low`** — PO/planner re-prioriza cuando el issue se apruebe y entre a definicion.
 8. **Listar en `notas` del YAML** de tu resultado los issues creados (ej: `notas: "Recomendaciones pendientes de aprobación: #2601, #2602"`).
 9. **Mencionar en el comentario del issue origen** los issues creados, con formato: `Recomendaciones pendientes de aprobación humana: #xxxx, #xxxx.`

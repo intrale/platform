@@ -6,6 +6,8 @@
 > Fecha del relevamiento empírico v1: 2026-05-06. Refinamiento v2: 2026-05-07.
 > Autor v1: pipeline-dev (agente). Refinamiento v2: pipeline-dev (agente) sobre análisis de guru, security, po y ux.
 
+> **¿Buscás la guía operativa "cómo agregar un proveedor / rotar una key / configurar un fallback"?** → leé [`docs/pipeline/multi-provider.md`](pipeline/multi-provider.md). Ese documento describe el flujo día-a-día sobre la implementación ya cerrada (ola N+1 multi-provider). Este documento (`pipeline-multi-provider.md`) mantiene la narrativa de diseño v2 + decisiones arquitectónicas que motivaron la implementación.
+
 ---
 
 ## Changelog v2 (refinamiento del 2026-05-07)
@@ -310,10 +312,12 @@ Hoy `pulpo.js:4851` define `DETERMINISTIC_SKILLS = new Set(['builder', 'tester',
 |---|---|---|---|
 | `anthropic` | `anthropic-stream-json` | `evt.type === 'result' && evt.is_error === true && evt.error_type ∈ allowlist` | `usage_limit_error`, `weekly_quota_exhausted`, `snapshot_threshold_90` |
 | `openai-codex` | `openai-sse` | `evt.event === 'error' && evt.data.error.type ∈ allowlist` (canónico)<br>`evt.type === 'response.error' && evt.error.type ∈ allowlist` (alternativo) | `insufficient_quota`, `billing_hard_limit_reached`, `tokens_exhausted` |
-| `gemini` | `gemini-stream` | (reservado, adaptador no entregado) | `quota_exceeded`, `resource_exhausted` |
+| `gemini-google` | `gemini-stream` | (reservado, handler estructurado pendiente — #3226) | `quota_exceeded`, `resource_exhausted` |
+| `groq` | `openai-sse` (API drop-in OpenAI-compat) | mismo dispatcher que `openai-codex` (`_detectOpenAI`) | `rate_limit_exceeded`, `tokens_exhausted`, `quota_exceeded` |
+| `cerebras` | `openai-sse` (API drop-in OpenAI-compat) | mismo dispatcher que `openai-codex` (`_detectOpenAI`) | `rate_limit_exceeded`, `quota_exceeded` |
 | `deterministic`, `ollama` | `none` | sin detección de cuota basada en eventos | `[]` |
 
-**Tipos "externos" vs "internos"**: los strings que vienen del CLI del provider son externos (ej. `usage_limit_error`). Los strings emitidos por integraciones del propio pipeline son internos — el caso canónico es `snapshot_threshold_90`, emitido por `quota-snapshot-integration.js` cuando el snapshot real reporta `weekly_all_models_pct >= 90` (#3013). Los internos pertenecen al provider Anthropic exclusivamente y NO se propagan a OpenAI ni Gemini (#3077 SEC-8).
+**Tipos "externos" vs "internos"**: los strings que vienen del CLI del provider son externos (ej. `usage_limit_error`). Los strings emitidos por integraciones del propio pipeline son internos — el caso canónico es `snapshot_threshold_90`, emitido por `quota-snapshot-integration.js` cuando el snapshot real reporta `weekly_all_models_pct >= 90` (#3013). Los internos pertenecen al provider Anthropic exclusivamente y NO se propagan a OpenAI/Codex, Gemini, Groq ni Cerebras (#3077 SEC-8).
 
 **Meta-allowlist** (#3077 SEC-2): cada string declarado en `quota_error_types` se cross-valida en `lib/agent-models.js.loadAndValidate()` contra `KNOWN_QUOTA_ERROR_TYPES_BY_LAUNCHER` (hardcoded). Si un PR introduce un valor opaco fuera de la meta-allowlist → boot fail-fast con mensaje accionable. Defensa anti-supply-chain. Para ampliar la meta-allowlist se requiere review humano explícito (PR a `lib/agent-models.js` + `lib/quota-exhausted.js`).
 
@@ -333,6 +337,204 @@ Hoy `pulpo.js:4851` define `DETERMINISTIC_SKILLS = new Set(['builder', 'tester',
 **Sanitización del `raw_excerpt`** (#3077 SEC-4): el campo `raw_excerpt` del audit log pasa por `lib/redact.js` y por una segunda capa de patrones de API keys multi-proveedor (`sk-`, `sk-ant-`, `AIza`, `ya29.`, `Bearer`, JWT) ANTES de logear. Cierra el vector "OpenAI emite eventos de error con context que contiene fragmentos de la API key o del system prompt → audit log se vuelve vector de exfiltración pasivo". S2 (#3073) generaliza esta defensa a sanitizer extendido global.
 
 **Fuente de verdad y deprecación**: `agent-models.json` es la fuente canónica. `config.yaml:quota_detector.error_types` y `config.yaml:quota_detector.resets_at_cap_max_days` quedan como `@deprecated` para callers legacy de `detectFromResultEvent(evt, cfg)` que aún no resuelvan `providerDef`. Se eliminarán en una historia de cleanup posterior, después de migrar todos los callers a `detectQuotaError(evt, providerDef)`.
+
+### 3.8 Providers sign-off 2026-05-15 (#3220 — gemini-google, groq, cerebras)
+
+El sign-off multi-provider del 2026-05-15 (memoria `project_multi-provider-per-agent-order`) cerró el orden de providers para los 15 skills con componente LLM. Este issue (#3220) extiende el schema y allowlists para los 3 providers nuevos. La carga del orden sign-off en `skills.<x>.fallbacks[]` queda en #3221 (bloqueado por este).
+
+#### 3.8.1 Rename `gemini` → `gemini-google`
+
+Coordinación cross-archivo del rename (consistencia naming con el sign-off):
+
+| Archivo | Cambio |
+|---|---|
+| `lib/agent-models-validate.js` | `ALLOWED_LAUNCHERS`: `gemini` → `gemini-google` |
+| `lib/quota-exhausted.js` | key `gemini` → `gemini-google` en `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` |
+| `lib/quota-adapters/index.js` | `ALLOWED_PROVIDERS`: `gemini` → `gemini-google` |
+| `lib/quota-adapters/gemini.js` | renombrado a `gemini-google.js` |
+| `lib/agent-launcher/providers/` | nuevo stub `gemini-google.js` |
+| `agent-models.schema.json` | enum literal informativo actualizado |
+
+Migración: cualquier `agent-models.json` local de devs que use `provider: 'gemini'` debe migrar a `provider: 'gemini-google'`. El validador rechaza el viejo nombre con mensaje accionable.
+
+#### 3.8.2 Campos requeridos por provider (sign-off 2026-05-15)
+
+| Campo | gemini-google | groq | cerebras |
+|---|---|---|---|
+| `launcher` | `gemini-google` | `groq` | `cerebras` |
+| `model` default | `gemini-2.0-flash` | `llama-3.3-70b-versatile` | `llama-3.3-70b` |
+| `output_parser` | `gemini-stream` (declarativo) | `openai-sse` (drop-in OpenAI-compat) | `openai-sse` (drop-in OpenAI-compat) |
+| `quota_error_types` | `quota_exceeded`, `resource_exhausted` | `rate_limit_exceeded`, `tokens_exhausted`, `quota_exceeded` | `rate_limit_exceeded`, `quota_exceeded` |
+| `resets_at_cap_max_days` | 31 | 31 | 31 |
+| `supports_tool_use` | `true` (2.0-flash) | `false` (llama 3.3) | `false` (llama 3.3) |
+| `prompt_caching.supported` | `false` | `false` | `false` |
+| `credentials_env` | `['GEMINI_API_KEY']` | `['GROQ_API_KEY']` | `['CEREBRAS_API_KEY']` |
+| `permissions_mode` | `bypassPermissions` | `bypassPermissions` | `bypassPermissions` |
+
+#### 3.8.3 Estado del handler de cuota
+
+- **Groq + Cerebras**: el handler estructurado existe (`_detectOpenAI` en `quota-exhausted.js`). La detección de cuota es funcional cuando el runtime spawnee el wrapper real — consumer runtime ya operativo desde #3198 (ver §3.9).
+- **Gemini-google**: el handler `_detectGemini` NO existe todavía. La declaración `quota_error_types` queda **declarativa** (passa el validador del schema y la meta-allowlist) pero **sin defensa funcional** (el detector no lo consume con parser estructurado). Issue de recomendación: #3226. Riesgo aceptado: detección Gemini via string-matching heurístico hasta que #3226 entregue el handler real.
+
+#### 3.8.4 Runtime / wrappers Node
+
+Decisión PO (opción A del análisis del guru): launchers nuevos `groq` y `cerebras` con wrapper Node interno. Este issue declara los launchers en la allowlist + crea handlers stub en `lib/agent-launcher/providers/{gemini-google,groq,cerebras}.js` que tiran error accionable si se les pide spawn. El consumer runtime que integra estos handlers con el flow del pulpo se materializó en #3198 (ver §3.9). El hardening de wrappers (TLS-only, timeouts, no-log payloads, etc.) se trackea en #3227.
+
+#### 3.8.5 Modelos soportados por launcher (`ALLOWED_MODELS_BY_LAUNCHER`)
+
+Cross-validación nueva (#3220) en `lib/agent-models-validate.js`: cada `provider.model` y `skill.model_override` se valida contra la allowlist de su launcher. Boot fail-fast si un modelo está fuera del set.
+
+| Launcher | Modelos permitidos |
+|---|---|
+| `claude` | `claude-opus-4-7`, `claude-sonnet-4-7`, `claude-haiku-4-5` |
+| `codex` | `gpt-5-codex`, `gpt-5` |
+| `gemini-google` | `gemini-2.0-flash` |
+| `groq` | `llama-3.3-70b-versatile`, `qwen2.5-coder-32b` |
+| `cerebras` | `llama-3.3-70b` |
+| `node`, `ollama` | (allowlist vacía → cualquier `model` string aceptado, son alias informativos) |
+
+Para sumar un modelo nuevo: editar `ALLOWED_MODELS_BY_LAUNCHER` en `lib/agent-models-validate.js` (review humano). El validador exporta la constante; tests detectan drift.
+
+Anti-leak (#3220): si el valor de `model` parece un secret hardcoded conocido (matchea `HARDCODED_SECRET_PATTERNS`), el mensaje de error del cross-validate redacta con `[REDACTED]` para no exfiltrar el valor en stderr/Telegram/PDF.
+
+#### 3.8.6 Credentials env vars (allowlist hardcoded #3080 SEC-1)
+
+`ALLOWED_CREDENTIAL_ENV_VARS` agregó `GROQ_API_KEY` y `CEREBRAS_API_KEY` para los providers nuevos. La env var sólo se exige al boot si algún skill referencia el provider (lazy gate). Mantener fuera de la allowlist: `PATH`, `AWS_SECRET_ACCESS_KEY` o cualquier var del SO — bloquea exfiltración cross-provider.
+
+#### 3.8.7 Follow-ups (no bloqueantes — issues separados)
+
+- **#3221**: cargar el orden sign-off 2026-05-15 en `skills.<x>.fallbacks[]` (bloqueado por este).
+- **#3198**: ✅ **CERRADO** — consumer runtime de `fallbacks[]` implementado por `lib/agent-launcher/dispatch-with-fallback.js`. Ver §3.9 abajo para el contrato operativo completo.
+- **#3226**: handler `_detectGemini` estructurado (defensa funcional anti-DoS para Gemini).
+- **#3227**: hardening de wrappers Node Groq/Cerebras (TLS-only, timeouts, no-log payloads).
+- **#3228**: agregar patrones `gsk_` y `csk-` a `HARDCODED_SECRET_PATTERNS` (defensa en profundidad).
+
+---
+
+### 3.9 Consumer runtime de fallbacks (#3198)
+
+> **Estado**: ✅ implementado y mergeado (2026-05-15). Cierra el gap que dejaron PRs anteriores (#3177 entregó schema + UI + lib RW pero NO consumer en runtime). A partir de este PR, declarar `skills.<x>.fallbacks[]` en `agent-models.json` deja de ser decorativo: el pipeline efectivamente itera la cadena cuando el provider primario está gated por cuota.
+
+#### 3.9.1 Cómo se configura `fallbacks[]` por skill
+
+La declaración vive en `agent-models.json` (raíz `.pipeline/`), schema vigente desde #3177. Forma canónica:
+
+```json
+{
+  "skills": {
+    "pipeline-dev": {
+      "provider": "claude",
+      "model": "claude-opus-4-7",
+      "fallbacks": ["codex", "gemini-google", "groq"]
+    }
+  }
+}
+```
+
+Reglas del array (validadas en boot por `lib/agent-models-validate.js`):
+
+- Cada item debe ser un nombre de provider existente en `providers.<name>` del mismo archivo (fail-fast si no).
+- El primario (`provider`) NO debe aparecer en su propio `fallbacks` (anti-cycle estático).
+- El array es ordenado: el dispatcher itera de izquierda a derecha. Convención: poner primero los pagos de mayor calidad (Codex) y al final los free-tier (Groq, Cerebras).
+- Schema acepta array vacío `[]` → comportamiento idéntico al pre-#3198 (sin failover).
+
+La edición autoritativa se hace desde la UI del dashboard multi-provider (`/.pipeline/views/dashboard/multi-provider.js`, secciones 525-572 — corrección menor del cuerpo del issue, que citaba erróneamente las líneas 421-467). Cada save de `fallbacks[]` desde la UI es opt-in humano explícito en sí mismo (S-7 del análisis security): la presencia del array ES la aprobación, no se requiere doble barrera.
+
+#### 3.9.2 Qué hace el dispatcher cuando el primario está gated
+
+Punto de entrada: `resolveSpawnWithFallback({ skill, quotaModule, attempt })`, llamado pre-spawn en `pulpo.js:4937` y `pulpo.js:4967` (handlers de despacho del archivo de trabajo). Reemplaza al check binario `shouldGateSpawn` por un resolver que devuelve `{ gated, provider, model, depth, source }`.
+
+Flujo:
+
+1. Resuelve el provider/model primario del skill (vía `resolveProviderForSkill`).
+2. Si `quotaModule.shouldGateSpawn(skill, { provider: primary })` devuelve `false` → spawn primario, fin.
+3. Si está gated → itera `fallbacks[]` en orden, llamando a `getProviderHandler(name)` + re-evaluando el gate por cada candidato.
+4. El primer fallback con `gated:false` y handler válido es devuelto. El caller spawnea con ese `provider`/`model`.
+5. Si la cadena entera está gated → devuelve `{ gated: true }`; el pulpo mueve el archivo a `pendiente/` (comportamiento legacy, espera al reset de cuota).
+
+El happy path (primario disponible) NO paga overhead: el dispatcher es pasivo, sólo activa cuando hay flag de cuota.
+
+#### 3.9.3 Política dual (consistente con §4.1)
+
+- **Cross-MODELO** (mismo provider, distinto modelo): NO se configura via `fallbacks[]` (el array lista provider names). Cross-modelo se hace via `skill.model_override` + selector autónomo §4.3. Fuera del scope #3198.
+- **Cross-PROVIDER**: el opt-in humano ES la declaración del array. No agregamos doble barrera (rompería la promesa "configurá fallbacks y el pipeline sigue funcionando"). Las defensas adyacentes (audit log + Telegram + caps) cubren la observabilidad post-hoc.
+
+#### 3.9.4 Cap MAX_FALLBACK_DEPTH y anti-ciclo
+
+- **`MAX_FALLBACK_DEPTH = 5`** (constante en `dispatch-with-fallback.js`). Si la chain efectiva del skill (primario + fallbacks) supera 5 candidatos, el dispatcher trunca con warning en el audit log. Es generoso para configs típicas (Anthropic → Codex → Gemini → Groq → Cerebras = 5) sin permitir recursión patológica.
+- **Anti-ciclo**: `Set<providerName>` de candidatos ya intentados en el dispatch corriente. Si un fallback ya fue probado en un nivel anterior (caso raro pero posible si la config tiene duplicados), se saltea.
+- **Skip same-provider-gate**: si el fallback comparte el provider del primario gated (caso de mala config), se saltea — el flag de cuota del primario también gatearía al fallback.
+
+#### 3.9.5 Audit log dedicado
+
+Cada decisión del dispatcher (resolución, gate, skip por ciclo, skip por depth) escribe a:
+
+```
+logs/cross-provider-dispatch-YYYY-MM-DD.jsonl
+```
+
+Formato append-only con hash-chain SHA-256 (delegado a `audit-log.appendChained`, que ya redacta y firma cada entrada). Campos principales por línea:
+
+- `ts`, `issue`, `skill`, `attempt`
+- `primary: { provider, model }`
+- `chain: [{ provider, gated, source }]` (cada candidato intentado)
+- `resolved: { provider, model, depth } | null` (null si todo gated)
+- `prev_hash`, `hash` (hash-chain SHA-256 para detectar tampering)
+
+El `raw_excerpt` del detector de cuota pasa por `quotaModule.sanitizeRawExcerpt` antes de logguearse — sin tokens, sin payloads.
+
+#### 3.9.6 Notificación Telegram via filesystem queue
+
+Cuando el dispatcher resuelve un fallback (decisión cross-PROVIDER consumada), encola un mensaje informativo en:
+
+```
+.pipeline/servicios/telegram/pendiente/<ts>-cross-provider-<issue>-<skill>.json
+```
+
+El servicio `servicio-telegram.js` drena la cola fuera del path crítico del pulpo. Sin `curl` directo, sin LLM en el camino — patrón S-9 consistente con `sendTelegram` ya existente. Plantilla del mensaje:
+
+> 🔀 **Fallback cross-provider activado**
+> Issue #&lt;n&gt; · skill `<skill>`
+> Primary: `<provider>:<model>` (gated por cuota)
+> Fallback elegido: `<fb_provider>:<fb_model>` (depth `<n>`)
+> Audit: `logs/cross-provider-dispatch-YYYY-MM-DD.jsonl`
+
+Es post-hoc informativo, no decisorio — la decisión ya quedó autorizada por la presencia del array en `agent-models.json`.
+
+#### 3.9.7 Defensas S-1 a S-9 (resumen del análisis security cerrado por este PR)
+
+| ID | Defensa | Dónde |
+|---|---|---|
+| S-1 | Detección de cuota por shape estructurado, NUNCA substring | `quotaModule.shouldGateSpawn` (reutilizado) |
+| S-2 | Aislamiento de credenciales en el spawn del fallback | `lib/build-child-env.js` filtra env vars al provider resuelto |
+| S-3 | Validación del nombre del provider contra `PROVIDER_HANDLERS` | `getProviderHandler` + boot validator |
+| S-4 | Path traversal en flag pending | N/A — el opt-in es la presencia del array, no flags por skill |
+| S-5 | Cycle/depth limit | `MAX_FALLBACK_DEPTH = 5` + `Set` anti-ciclo |
+| S-6 | Audit log redactado con hash-chain | `audit-log.appendChained` + `sanitizeRawExcerpt` |
+| S-7 | Política dual cross-MODELO/cross-PROVIDER | Opt-in vía array; sin doble barrera |
+| S-8 | Quota flag scoping per-provider | `clearFlag` respeta scope (#3077 CA-8); fallback NO limpia flag del primario |
+| S-9 | Telegram sin LLM en el camino | Filesystem queue + drainer Node puro |
+
+#### 3.9.8 Aprobar / desaprobar un fallback en operación
+
+- **Sumar un provider a la chain**: editar `skills.<x>.fallbacks[]` en la UI del dashboard multi-provider, guardar. Boot validation confirma que el provider existe; el dispatcher empieza a usarlo desde el próximo despacho.
+- **Sacar un provider**: removerlo del array en la UI. No requiere restart del pulpo (el archivo se relee por dispatch).
+- **Pausar todos los fallbacks (kill switch)**: vaciar `fallbacks[]` del skill (`[]`). El dispatcher cae al comportamiento pre-#3198: si el primario está gated, el archivo va a `pendiente/`.
+- **Inspeccionar decisiones recientes**: `tail -n 50 logs/cross-provider-dispatch-$(date -u +%F).jsonl | jq .` — cada entrada muestra chain completa, decisión y hash.
+- **Detectar tampering del audit**: `node .pipeline/scripts/verify-audit-chain.js logs/cross-provider-dispatch-*.jsonl` (verificador existente reutilizado).
+
+#### 3.9.9 Tests y verificación
+
+61/61 tests del scope verdes a HEAD `1b7836ef`:
+
+```
+node --test .pipeline/tests/build-child-env.test.js \
+            .pipeline/tests/dispatch-with-fallback.test.js \
+            .pipeline/tests/dispatch-build-env-integration.test.js
+# tests 61, pass 61, fail 0
+```
+
+Cobertura: unit (cada defensa S-1 a S-9) + integración env+dispatch + scenarios de chain (happy path, all-gated, ciclo, depth overflow, same-provider skip, fallback con env aislado).
 
 ---
 
@@ -682,16 +884,50 @@ Resumen de salida:
 
 ### 6.5 Sanitizado universal de output
 
-Estado actual: `lib/sanitize-log-stream.js` usa `createSanitizeStream` (#2334) — funciona para Anthropic. Multi-proveedor exige extender el set de regex:
+**Estado: S2 ABSORBIDO en issue #3073 / PR `agent/3073-pipeline-dev`** (mayo 2026).
 
-| Proveedor | Regex sugerido |
-|-----------|---------------|
-| Anthropic | `claude_[A-Za-z0-9_-]+`, `sk-ant-[A-Za-z0-9_-]+` |
-| OpenAI | `sk-[A-Za-z0-9]{48,}`, `sk-proj-[A-Za-z0-9_-]+` |
-| Google | `AIza[A-Za-z0-9_-]{35}`, OAuth tokens `ya29\.[A-Za-z0-9_-]+` |
-| GitHub | `ghp_[A-Za-z0-9]{36}`, `gho_[A-Za-z0-9]{36}` (ya existen pero dejamos explícito) |
+El sanitizer central (`.pipeline/sanitizer.js`) y el módulo satélite de filenames (`.pipeline/lib/sanitize-payload.js::FILENAME_SECRET_RE`) cubren ahora los siguientes proveedores LLM. Los placeholders son específicos por proveedor para preservar forensia ("¿qué provider hay que rotar?") y consistencia visual con los 13 placeholders previos del sanitizer.
 
-Tests de regresión obligatorios (issue S2): **stub de cada parser que reciba una API key embedida en el output** del proveedor → verificar que NO aparece en el log final.
+| Proveedor | Regex (sobre texto NFC + zero-width strip + homoglyph fold) | Placeholder | Fuente del formato |
+|-----------|---|---|---|
+| Anthropic | `(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])` | `[REDACTED:ANTHROPIC_KEY]` | <https://docs.anthropic.com/claude/reference/getting-started-with-the-api> |
+| OpenAI project | `(?<![A-Za-z0-9_-])sk-proj-[A-Za-z0-9_-]{40,}(?![A-Za-z0-9_-])` | `[REDACTED:OPENAI_PROJECT_KEY]` | <https://platform.openai.com/docs/api-reference/authentication> |
+| OpenAI clásico | `(?<![A-Za-z0-9_-])sk-(?!ant-\|proj-)[A-Za-z0-9]{48,}(?![A-Za-z0-9])` | `[REDACTED:OPENAI_KEY]` | <https://platform.openai.com/docs/api-reference/authentication> |
+| Google OAuth access | `(?<![A-Za-z0-9_-])ya29\.[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])` | `[REDACTED:GOOGLE_OAUTH_TOKEN]` | <https://developers.google.com/identity/protocols/oauth2> |
+| Google API key | `\bAIza[0-9A-Za-z_-]{35}\b` (preexistente) | `[REDACTED:GOOGLE_API_KEY]` | preexistente |
+| Google OAuth refresh | `\b1//[0-9A-Za-z_-]{43,}\b` (preexistente) | `[REDACTED:GOOGLE_OAUTH_REFRESH]` | preexistente |
+| GitHub | `gh[pousr]_[A-Za-z0-9]{30,}` / `github_pat_[A-Za-z0-9_]{80,}` (preexistente) | `[REDACTED:GITHUB_TOKEN]` | preexistente |
+
+**Orden de evaluación crítico** (`.pipeline/sanitizer.js::PATTERNS`): los patrones con prefijo más específico corren ANTES que los genéricos para preservar la atribución por proveedor:
+
+1. `sk-ant-…` (Anthropic)
+2. `sk-proj-…` (OpenAI project)
+3. `sk-…` clásico (OpenAI, con negative lookahead `(?!ant-|proj-)`)
+4. `ya29.…` (Google OAuth access)
+
+Si un patrón estructural anterior (`HEADER_AUTHORIZATION`, `HEADER_X_API_KEY`, `CONF_STRUCTURED`) matchea primero, el secreto queda redactado con el placeholder genérico (`BEARER_TOKEN`, `API_KEY`, `CONF_VALUE`) — es comportamiento aceptado: no leak, sólo pierde detalle de provider en algunos contextos. Para `apiKey="sk-ant-…"` el patrón Anthropic sí gana primero (preserva forensia).
+
+**Anchors** (lookbehind/lookahead negativos sobre `[A-Za-z0-9_-]` en lugar de `\b`): se usan así porque `_` es word-char y `-` no, lo que vuelve a `\b` frágil cuando una key termina en `-` o aparece pegada a otro identificador. Los anchors explícitos garantizan match sólo cuando hay separador claro alrededor (espacio, comilla, igual, punto y coma, salto de línea, fin de string).
+
+**Tests obligatorios** (cubiertos en `.pipeline/tests/sanitizer.test.js` + `.pipeline/tests/sanitize-payload.test.js`):
+
+- Positivos por proveedor (Anthropic / OpenAI clásico / OpenAI project / Google OAuth access).
+- Orden mixto: input con `sk-ant-X` + `sk-Y` redacta cada uno con su placeholder (no se pisan).
+- Prefijo malicioso: `sk-ant-AAA` corto NO matchea como OpenAI clásico ni como Anthropic.
+- Falsos positivos en código legítimo: `sk-button-primary` (Tailwind), `sk-thumbnail-default` (slug), `claude_session_id` (identificador), `ya29` suelto sin punto.
+- Idempotencia: doble pasada sobre output ya saneado no altera placeholders.
+- Anti-bypass: ZWSP en medio de `sk-ant-` → se redacta gracias a normalización NFC + strip de zero-width.
+- Chunk-split en `createSanitizeStream`: secreto Anthropic / Google partido en 2-3 chunks → se redacta correctamente con la ventana deslizante de 256 bytes.
+- Panic dump simulado: stack trace con la key como string literal y header `x-api-key` con la key → ambos casos redactados antes de tocar disco.
+- Filenames de Drive (`FILENAME_SECRET_RE`): `dump-sk-ant-X.log`, `qa-${ya29}-X.txt`, `oai-sk-Y.log`, `leak-sk-proj-X.txt` → renombrados a `redacted-<hash8>.<ext>` antes del upload.
+
+**Cobertura de salidas** (CA3 del PO):
+
+- Logs (`logs/*.log`) — `sanitize-log-stream.js` heredan del core.
+- Telegram (`text`, `caption`, filenames) — `sanitize-payload.js::sanitizeTelegramPayload` + `sanitizeDriveFilename`.
+- Rejection report PDF — `rejection-report.js:1512` aplica `sanitizeReportText` antes del HTML→PDF.
+- Audit trail (`lib/traceability.js`) — verificado: ningún `prompt` plaintext se persiste; los hashes son SHA-256.
+- Drive (descripción, título, filenames) — `sanitize-payload.js::sanitizeDrivePayload` + `sanitizeDriveFilename`.
 
 ### 6.6 Anti command-injection del template de spawn args
 
@@ -702,30 +938,78 @@ Tests de regresión obligatorios (issue S2): **stub de cada parser que reciba un
 
 ### 6.7 Permission model mapping
 
-Tabla explícita de equivalencias (issue S4):
+> **Estado**: implementado por issue [#3082](https://github.com/intrale/platform/issues/3082) (S4 multi-provider). El **documento canónico** vive en [`docs/pipeline-multi-provider/permission-mapping.md`](./pipeline-multi-provider/permission-mapping.md). Esta sección es índice.
 
-| Capacidad harness Claude | Equivalente codex | Equivalente Gemini CLI | Equivalente Ollama |
-|--------------------------|-------------------|------------------------|--------------------|
-| `--permission-mode bypassPermissions` (Claude Code) | `--no-confirm` | n/a (sin gating built-in) | n/a |
-| `--permission-mode acceptEdits` | `--auto-edit` | n/a | n/a |
-| `--permission-mode plan` | n/a (codex no tiene plan mode propio) | n/a | n/a |
+#### Por qué la tabla canónica es **capability-level**, no flag-level
 
-Si un provider no tiene equivalente semántico para un permission mode requerido por un skill, ese skill **NO puede correr en ese provider** hasta validación manual y excepción documentada.
+La versión v1 de este doc proponía mapear flags entre providers (`bypassPermissions ↔ --no-confirm`). El análisis de security identificó el problema: dos flags pueden **parecer equivalentes** y conceder **conjuntos distintos** de capabilities. Sin un catálogo cerrado de capacidades, queda margen para privilege escalation cross-provider.
+
+La matriz canónica mapea **capabilities** (file_read, file_write_repo, bash, child_spawn, tool_use_gated, …) → `(provider, mode)`. La tabla flag↔flag es **derivada**, no fuente.
+
+#### Fuentes de verdad (código)
+
+- Catálogo canónico de capabilities: [`.pipeline/lib/capabilities.js`](../.pipeline/lib/capabilities.js) (`KNOWN_CAPABILITIES` — Set inmutable).
+- Matriz `(provider, mode) → Set<capability>`: [`.pipeline/lib/permission-validator.js`](../.pipeline/lib/permission-validator.js) (`CAPABILITY_MATRIX`).
+- Validación en cada spawn (CA-S3): `validateSpawn(skill, provider, mode, requiredCapabilities)`.
+- Catálogo `NON_DEGRADABLE_SKILLS` hardcoded: mismo archivo.
+- Schema del frontmatter de skills: [`docs/skills/skill-metadata.schema.json`](./skills/skill-metadata.schema.json).
+- Audit log tamper-evident de overrides: `.pipeline/audit/permission-overrides.jsonl` (hash chain SHA-256).
+- CLI atómicos: `.pipeline/scripts/{override-permission,revoke-permission}.js`.
+
+#### Garantías declaradas
+
+1. **Fail-CLOSED por default** (CA-S2): mode desconocido o capability ausente del catálogo → spawn rechazado con mensaje accionable.
+2. **At-spawn-time** (CA-S3): cada `launchAgent` revalida — `agent-models.json` puede cambiar runtime y los rebotes cross-phase cambian el skill.
+3. **Audit log con hash chain** (CA-S4): cada override registra `{skill, provider, mode_requerido, mode_otorgado, capabilities_diff, justificacion, autor, ttl_horas, created_at, hash_prev, hash_self}`. Tamper-evident — un edit manual rompe la chain y todos los overrides se ignoran.
+4. **Notificación Telegram inmediata** (CA-17): el spawn con override aplicado corre **después** de que el operador recibe la notificación natural en el chat.
+5. **NON_DEGRADABLE skills** (CA-S6): `security`, `review`, `builder`, `tester`, `backend-dev` NO admiten override — fail-CLOSED indefectible si el provider no concede sus capabilities.
+
+#### Tabla flag↔flag derivada (informativa)
+
+Estas equivalencias son **derivadas** de la matriz canónica. Si entran en conflicto con la matriz, manda la matriz.
+
+| Flag Anthropic | Flag OpenAI-Codex | Equivalencia capability (resumen) |
+|----------------|-------------------|-----------------------------------|
+| `bypassPermissions` | `full-auto` (parcial — pierde `tool_use_gated`, `long_running_watcher` hasta CA-19) | Mayoría de capabilities; lo perdido motiva `NON_DEGRADABLE_SKILLS`. |
+| `acceptEdits` | (sin equivalente directo) | Mismo set otorgado que `bypassPermissions` en el pipeline (no-interactivo). |
+| `plan` | `default` (sin flag) | Read-only seguro; sin `bash`, sin `file_write_repo`. |
+
+#### Detalles operativos
+
+Para la matriz completa con justificación por celda, mecanismos de override, casos extremos, diagrama de flujo del decisor, y procedimiento para agregar provider/capability nueva → leer la doc canónica.
 
 ### 6.8 Audit trail dinámico
 
 Hoy `pulpo.js:4903` y `lib/traceability.js:11` reportan `model: 'claude-opus-4-7'` hardcoded — **ya estamos rompiendo el audit trail con un solo provider** (sería false claim si corremos Sonnet). Multi-modelo lo amplifica.
 
-Cada `session:start` debe registrar:
+> **Estado**: implementado por issue [#3083](https://github.com/intrale/platform/issues/3083) (S5). Esta sección documenta el contrato resultante.
 
-- `provider` (anthropic | openai-codex | gemini | ollama | deterministic).
-- `model` (string completo del modelo, ej. `claude-opus-4-7`, `gpt-5-codex`).
-- `cli_version` (resolver al boot del pulpo, persistir en handle de sesión).
-- `git_sha_provider_adapter` (sha del archivo del adaptador en uso).
+Cada `session:start` registra:
 
-Cada `session:end` registra: prompt hash (SHA-256 del system+user prompt, NO el contenido), token counts, costo estimado.
+- `provider` (anthropic | openai-codex | gemini | ollama | deterministic) — resuelto por `agent-models.json` (#3072). **Nunca inferido por substring del model name** (frágil + colisiona con futuros routers).
+- `model` (string completo del modelo, ej. `claude-opus-4-7`, `gpt-5-codex`). Si el resolver no entregó un modelo concreto, el campo queda como `deterministic` (default explícito); **NO se inventa un modelo Claude por fallback** — el log refleja la realidad para forensia.
+- `cli_version` — resuelto al boot del pulpo via `<launcher> --version`. Caché por `launcherPath` para amortizar el costo. Si el spawn falla → `'unknown'`. Si el provider es deterministic → `'n/a'`. **Nunca `null`/`undefined`** (el log siempre lleva string no-vacío).
+- `git_sha_provider_adapter` — SHA del archivo del adaptador en uso (`git hash-object <adapter_path>`). `null` cuando provider es deterministic. **PROHIBIDO leerlo de env vars** (`PROVIDER_ADAPTER_SHA` y similares se ignoran): un atacante con control de spawn args podría spoofear el SHA y mentir sobre qué adaptador estaba activo.
 
-Logs de sesión inmutables (append-only) por X días para forensia (X = config). Issue S5 implementa el fix.
+Cada `session:end` registra: `prompt_hash` (SHA-256 del system+user prompt, **NO el contenido**), token counts (`tokens_in/out/cache_read/cache_write`), y `cost_usd_estimated` (calculado por `estimateCostUsd(provider, model, tokens)` con la tabla de `pricing.json`).
+
+Logs de sesión append-only (`fs.appendFileSync`, **prohibidos** flags `w`/`r+`/`a+`/truncate) por al menos 30 días para forensia (`pipeline.audit_retention_days` en `config.yaml`, default 90, **clamp ≥30 hardcoded** en `lib/traceability.js` — una config maliciosa con `audit_retention_days: 1` se eleva automáticamente al piso).
+
+#### 6.8.0 Algoritmo de hash de prompts (S5 / #3083 — CA-10)
+
+`prompt_hash` viaja en `session:end` y es la única forma de correlacionar sesiones equivalentes en forensia. Su algoritmo está fijado y bumpear la versión requiere coordinación cross-equipo (rompe correlación histórica).
+
+**Especificación `prompt_hash_v1`** (implementación: `lib/traceability.js:hashPromptPair`):
+
+1. **Inputs**: `systemContent` (contenido del system prompt) y `userContent` (contenido del user prompt). Ambos son strings.
+2. **Normalización**: UTF-8 NFC (`String.normalize('NFC')`). **Sin trim** (espacios en bordes son significativos para el hash). Los bytes literales se conservan.
+3. **Concatenación**: `system + SOH + user`, donde `SOH` es el byte `` (Start Of Heading, ``, no imprimible). Razón: cualquier separador imprimible (`\n`, `\t`, `|`, etc.) puede aparecer en prompts en texto y crear colisiones donde dos pares distintos producen el mismo hash; SOH no aparece naturalmente en prompts editados por humanos.
+4. **Hash**: SHA-256 (`crypto.createHash('sha256')`), output en **hex lowercase de 64 chars** (`.digest('hex')`).
+5. **Inputs nulos**: si `systemContent` o `userContent` son `null`/`undefined` → el helper devuelve `null` (sesiones sin prompt: skills determinísticos, tests).
+
+**Contrato de no-leak (SEC-1)**: el módulo `traceability.js` **NUNCA** recibe el contenido del prompt como parámetro a `emitSessionStart` o `emitSessionEnd`. El caller (`pulpo.js`) hashea con `hashPromptPair(systemContent, userContent)` ANTES del spawn y pasa solo el digest al handle. Defensa en profundidad contra leaks accidentales del contenido al audit log.
+
+**Bump de versión**: cualquier cambio al algoritmo (otro separador, otro hash, otra normalización) **requiere bumpear a `prompt_hash_v2`** y exponerlo como helper nuevo (`hashPromptPairV2`). El campo en el log puede agregar `prompt_hash_version` (default `v1`) para preservar correlación histórica. No hacerlo destruye la utilidad forense del campo.
 
 #### 6.8.1 Restricción de contenido en notificaciones post-hoc
 
@@ -786,7 +1070,7 @@ Sin este audit log, reconstruir forensia post-incidente requiere cruzar múltipl
 
 ### 6.10 Threat model adversario interno (PR malicioso)
 
-- Un atacante con permiso de PR puede inyectar `agent-models.json` apuntando a un launcher arbitrario (`launcher: "curl"`). **Mitigación**: allowlist hardcoded en `pulpo.js` (`ALLOWED_LAUNCHERS = new Set(['claude', 'codex', 'gemini', 'ollama', 'node'])`) + verificación de hash del binario detectado al boot (opcional, fase 3).
+- Un atacante con permiso de PR puede inyectar `agent-models.json` apuntando a un launcher arbitrario (`launcher: "curl"`). **Mitigación**: allowlist hardcoded en `lib/agent-models-validate.js` (`ALLOWED_LAUNCHERS = ['claude', 'codex', 'gemini-google', 'groq', 'cerebras', 'ollama', 'node']`, post #3220) + verificación de hash del binario detectado al boot (opcional, fase 3).
 - Un atacante puede modificar `spawn_args_template` para incluir flags peligrosos (e.g. `--api-base http://attacker.com`). **Mitigación**: allowlist de flags por proveedor + validación schema rechaza flags fuera de allowlist.
 - Un atacante puede agregar variables de env al `extraEnv` del spawn que filtren credenciales. **Mitigación**: §6.3 (allowlist de env del child).
 - Un atacante puede pegar un secret literal en cualquier campo string de `agent-models.json` (ej: `permissions_mode: "sk-ant-..."`). **Mitigación** (S1, #3080): el validador walks recursivamente el JSON con denylist de prefijos públicos (`HARDCODED_SECRET_PATTERNS` en `lib/agent-models-validate.js`). El mensaje de rechazo nombra el patrón (ej: "Anthropic key (sk-ant-)") sin pegar el valor.
@@ -818,16 +1102,17 @@ Al pasar el flag `quota-exhausted.json` de global a granularidad `provider:model
 
 Bajo el régimen automático cross-MODELO (Política A), el algoritmo de §4.3 puede degradar un skill a un modelo más barato si el costo histórico es alto y la tasa de rebote es baja. Hay skills cuya capacidad de detección es crítica para la postura de seguridad del propio pipeline — degradarlos silenciosamente puede dejar pasar vulnerabilidades sutiles.
 
-**Lista inicial de skills no-degradables** (default):
+**Lista actual de skills no-degradables** (#3082 lo hardcodeó en `permission-validator.js`):
 
 ```js
-// .pipeline/lib/agent-launcher.js (post-H2)
+// .pipeline/lib/permission-validator.js (entregado en #3082)
 // NO mover a agent-models.json: cualquier cambio debe requerir PR auditable.
-const NO_DEGRADABLE_SKILLS = new Set([
-    'security',   // detección de vulnerabilidades
-    'review',     // last gate antes de merge
-    'builder',    // determinístico ya, no aplica el algoritmo
-    'tester',     // determinístico ya, no aplica el algoritmo
+const NON_DEGRADABLE_SKILLS = immutableSet([
+    'security',     // detección de vulnerabilidades — necesita tool_use_gated
+    'review',       // last gate antes de merge — necesita tool_use_gated
+    'builder',      // builds Gradle reales — necesita bash + long_running_watcher
+    'tester',       // ejecución de tests + cobertura — necesita tool_use_gated
+    'backend-dev',  // refactors arquitecturales sensibles — necesita tool_use_gated
 ]);
 ```
 
@@ -839,7 +1124,7 @@ const NO_DEGRADABLE_SKILLS = new Set([
 
 **Algoritmo cuando un skill está en la lista**: `lib/model-selector.js` retorna directamente `cfg.skills[skill].phase_overrides[fase]` o `cfg.skills[skill].model` sin pasar por la rama de degradación. El audit log (§6.8.3) registra `motivo: 'no_degradable_skill'` para que el operador pueda verificar que la lista está activa.
 
-Hardening pendiente: issue [#3066](https://github.com/intrale/platform/issues/3066).
+Hardening pendiente: issue [#3066](https://github.com/intrale/platform/issues/3066) (queda como recomendación independiente — #3082 ya entregó la lista hardcoded y el gate fail-CLOSED para non-degradables).
 
 ---
 

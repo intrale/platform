@@ -156,27 +156,100 @@ test('CA-5: orden desc por count en queuedSkills', () => {
 // según estado del flag (SSR para que `curl | grep` sea determinístico).
 // -----------------------------------------------------------------------------
 
-test('CA-14: HTML SIN flag NO contiene "cuota Anthropic" (curl|grep no debe matchear)', () => {
+test('CA-14 #4731: HTML SIN flag NO revela proveedor ni copy del banner (curl|grep no debe matchear)', () => {
     clearFlag();
     const html = home.renderHomeHTML({ quotaState: { active: false } });
-    assert.ok(!html.includes('cuota Anthropic'),
-        'sin flag activo, el HTML no debe traer el texto del banner');
+    // El copy dinámico del banner (por-proveedor o global) NO debe aparecer en
+    // el HTML servido inactivo: los nombres de proveedor y "Modo determinístico"
+    // sólo salen con flag activo (data-active="true").
+    assert.ok(!html.includes('Modo determinístico'),
+        'sin flag activo, el HTML no debe traer el copy global del banner');
+    assert.ok(!html.includes('Proveedor Anthropic'),
+        'sin flag activo, el HTML no debe revelar el proveedor afectado');
+    assert.ok(!html.includes('Proveedor Codex'),
+        'sin flag activo, el HTML no debe revelar el proveedor afectado');
+    assert.ok(html.includes('data-active="false"'), 'el skeleton debe quedar inactivo');
 });
 
-test('CA-14: HTML CON flag activo SÍ contiene "cuota Anthropic" en el title del banner', () => {
+test('CA-2/CA-3 #4731: banner PARTIAL nombra al proveedor afectado y su motivo (no "global")', () => {
+    // Codex agotado, Anthropic/Cerebras operativos → degradación PUNTUAL.
     const html = home.renderHomeHTML({
         quotaState: {
             active: true,
-            error_type: 'usage_limit_error',
-            detected_at: '2026-05-05T01:00:00.000Z',
-            resets_at: '2026-05-05T05:00:00.000Z',
-            resets_at_ms: Date.parse('2026-05-05T05:00:00.000Z'),
+            scope: 'partial',
+            operational: ['anthropic', 'cerebras'],
+            operationalCount: 2,
+            providers: [{
+                id: 'openai-codex',
+                error_type: 'usage_limit_reached',
+                resets_at: '2026-07-16T22:00:00.000Z',
+                resets_at_ms: Date.parse('2026-07-16T22:00:00.000Z'),
+                detected_at: '2026-07-15T10:00:00.000Z',
+            }],
+            error_type: 'usage_limit_reached',
+            detected_at: '2026-07-15T10:00:00.000Z',
+            resets_at: '2026-07-16T22:00:00.000Z',
+            resets_at_ms: Date.parse('2026-07-16T22:00:00.000Z'),
         },
     });
-    assert.ok(html.includes('cuota Anthropic'),
-        'con flag activo, el banner SSR debe incluir el texto literal');
-    assert.ok(html.includes('Modo determinístico'),
-        'el title debe seguir el formato exacto definido por CA-1');
+    assert.ok(html.includes('Proveedor Codex degradado'),
+        'el banner debe nombrar al proveedor real (Codex), no un genérico');
+    assert.ok(html.includes('límite de uso del plan'),
+        'el banner debe mostrar el motivo normalizado del error_type');
+    assert.ok(html.includes('data-scope="partial"'), 'scope puntual');
+    assert.ok(html.includes('data-provider="openai-codex"'), 'acento por proveedor afectado');
+    assert.ok(html.includes('2 operativos:'), 'health strip: evidencia de "no global" (CA-2)');
+    assert.ok(!html.includes('Modo determinístico'),
+        'un flag de un proveedor NO debe mostrar "modo determinístico global"');
+});
+
+test('CA-2 #4731: banner GLOBAL sólo cuando 0 proveedores LLM operativos', () => {
+    const html = home.renderHomeHTML({
+        quotaState: {
+            active: true,
+            scope: 'global',
+            operational: [],
+            operationalCount: 0,
+            providers: [{
+                id: 'anthropic',
+                error_type: 'usage_limit_error',
+                resets_at: '2026-07-16T22:00:00.000Z',
+                resets_at_ms: Date.parse('2026-07-16T22:00:00.000Z'),
+                detected_at: '2026-07-15T10:00:00.000Z',
+            }],
+            error_type: 'usage_limit_error',
+            detected_at: '2026-07-15T10:00:00.000Z',
+            resets_at: '2026-07-16T22:00:00.000Z',
+            resets_at_ms: Date.parse('2026-07-16T22:00:00.000Z'),
+        },
+    });
+    assert.ok(html.includes('Modo determinístico — sin proveedores LLM disponibles'),
+        'sin ningún LLM operativo, el banner sí es global');
+    assert.ok(html.includes('data-scope="global"'), 'scope global');
+});
+
+test('CA-3 #4731: banner MULTI muestra un chip por proveedor afectado', () => {
+    const html = home.renderHomeHTML({
+        quotaState: {
+            active: true,
+            scope: 'partial',
+            operational: ['anthropic'],
+            operationalCount: 1,
+            providers: [
+                { id: 'openai-codex', error_type: 'usage_limit_reached', resets_at: '2026-07-16T22:00:00.000Z', resets_at_ms: 1, detected_at: 'x' },
+                { id: 'cerebras', error_type: 'rate_limit_exceeded', resets_at: '2026-07-16T23:00:00.000Z', resets_at_ms: 2, detected_at: 'x' },
+            ],
+            error_type: 'usage_limit_reached',
+            detected_at: 'x',
+            resets_at: '2026-07-16T22:00:00.000Z',
+            resets_at_ms: 1,
+        },
+    });
+    assert.ok(html.includes('2 proveedores degradados — 1 operativos'),
+        'título plural con conteo de afectados y operativos');
+    // Un chip por proveedor afectado (data-provider por cada uno).
+    assert.ok(html.includes('data-provider="openai-codex"'));
+    assert.ok(html.includes('data-provider="cerebras"'));
 });
 
 test('CA-12: HTML siempre expone el banner con id quota-exhausted-banner', () => {
@@ -294,6 +367,90 @@ test('Defensa: slice tolera state.issueMatrix con entries malformados', () => {
     } finally {
         clearFlag();
     }
+});
+
+// -----------------------------------------------------------------------------
+// #4731 — slice expone scope/providers/operational cruzando provider-health
+// -----------------------------------------------------------------------------
+
+test('#4731: slice con flag por-proveedor expone scope=partial + providers + operational', () => {
+    // Flag nuevo shape: sólo openai-codex agotado.
+    writeFlag({
+        providers: {
+            'openai-codex': {
+                exhausted: true,
+                resets_at: new Date(Date.now() + 3600000).toISOString(),
+                detected_at: new Date(Date.now() - 60000).toISOString(),
+                pattern_matched: 'usage_limit_reached',
+            },
+        },
+    });
+    try {
+        const out = slices.quotaExhaustedSlice(fakeState({ pendiente: [{ skill: 'guru' }] }));
+        assert.equal(out.active, true);
+        // Codex agotado, el resto del catálogo LLM operativo → puntual.
+        assert.equal(out.scope, 'partial');
+        assert.equal(out.providers.length, 1);
+        assert.equal(out.providers[0].id, 'openai-codex');
+        assert.equal(out.providers[0].error_type, 'usage_limit_reached');
+        // operational NO incluye al proveedor agotado y sí a los demás.
+        assert.ok(!out.operational.includes('openai-codex'));
+        assert.ok(out.operationalCount >= 1);
+    } finally {
+        clearFlag();
+    }
+});
+
+test('#4731: dos proveedores agotados coexisten en el slice (CA-3)', () => {
+    writeFlag({
+        providers: {
+            'openai-codex': { exhausted: true, resets_at: new Date(Date.now() + 3600000).toISOString(), detected_at: new Date().toISOString(), pattern_matched: 'usage_limit_reached' },
+            'cerebras': { exhausted: true, resets_at: new Date(Date.now() + 7200000).toISOString(), detected_at: new Date().toISOString(), pattern_matched: 'rate_limit_exceeded' },
+        },
+    });
+    try {
+        const out = slices.quotaExhaustedSlice(fakeState({}));
+        assert.equal(out.active, true);
+        const ids = out.providers.map(p => p.id).sort();
+        assert.deepEqual(ids, ['cerebras', 'openai-codex']);
+        // Reset más próximo primero (codex +1h antes que cerebras +2h).
+        assert.equal(out.providers[0].id, 'openai-codex');
+    } finally {
+        clearFlag();
+    }
+});
+
+// -----------------------------------------------------------------------------
+// #4731 — sanitización de provider/error_type dinámicos (CA-6 / A03)
+// -----------------------------------------------------------------------------
+
+test('#4731: provider id fuera de allowlist NO inyecta HTML/JS (data-provider=unknown)', () => {
+    const html = home.renderHomeHTML({
+        quotaState: {
+            active: true,
+            scope: 'partial',
+            operational: ['anthropic'],
+            operationalCount: 1,
+            providers: [{
+                id: '"><img src=x onerror=alert(1)>',
+                error_type: '<script>alert(1)</script>',
+                resets_at: '2026-07-16T22:00:00.000Z',
+                resets_at_ms: 1,
+                detected_at: 'x',
+            }],
+            error_type: '<script>alert(1)</script>',
+            detected_at: 'x',
+            resets_at: '2026-07-16T22:00:00.000Z',
+            resets_at_ms: 1,
+        },
+    });
+    // El id crudo NO se inyecta en data-provider (cae a 'unknown' por allowlist).
+    assert.ok(!html.includes('onerror=alert(1)>'), 'el id malicioso no debe inyectar HTML');
+    assert.ok(html.includes('data-provider="unknown"'), 'id no allowlisteado → unknown');
+    // El error_type fuera del allowlist se muestra como label genérico, no crudo.
+    assert.ok(html.includes('degradado'), 'error_type desconocido → label neutro');
+    // Y el payload XSS del sub queda escapado (defensa en profundidad).
+    assert.ok(!html.match(/<script>alert\(1\)<\/script>/), 'sin <script> ejecutable');
 });
 
 // Cleanup global del dir temporal después de todos los tests del file.

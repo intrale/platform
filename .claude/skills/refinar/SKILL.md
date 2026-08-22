@@ -4,6 +4,7 @@ user-invocable: true
 argument-hint: "<numero-de-issue> [mas numeros...]"
 allowed-tools: Bash, Read, Grep, Glob
 model: claude-haiku-4-5-20251001
+required_permissions: [file_read, bash, child_spawn, network_out]
 ---
 
 # /refinar — Refinar

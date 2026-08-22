@@ -23,12 +23,30 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const trace = require('../lib/traceability');
+const { writeDeliverable } = require('../lib/write-deliverable');
 const { parseGradleOutput, renderMarkdownReport } = require('./lib/gradle-parser');
+const { withGradleLock } = require('../lib/gradle-lock');
 
 // ── Constantes y paths ──────────────────────────────────────────────
+// REPO_ROOT: main checkout (shared outputs — logs, QA artifacts, hooks).
+// WORKTREE_ROOT: agent's worktree (compilation source, gradle cwd, artifact sources).
+// Cuando no hay worktree (test, scope all desde root) cae a REPO_ROOT.
+//
+// CRÍTICO: hasta este fix gradle se ejecutaba en cwd=REPO_ROOT siempre. Eso
+// causaba dos regresiones acopladas (rebote build #3073 rev-1, 2026-05-12):
+//   1. smart-build.sh calculaba `git diff origin/main...HEAD` desde el main
+//      checkout (rama distinta a la del agente) → detectaba 1156 archivos
+//      falsos y disparaba `./gradlew check` aunque el agente solo tocara
+//      `.pipeline/*`.
+//   2. Varios builds concurrentes compartían `platform/.gradle/` → colisión
+//      en el lock `buildOutputCleanup` (PID 6400 vs 10720 en el incidente).
+// Con PIPELINE_WORKTREE como cwd, cada worktree usa su propio `.gradle/`
+// y el diff de smart-build resuelve contra la rama del agente.
 const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, '..', '..');
+const WORKTREE_ROOT = process.env.PIPELINE_WORKTREE || REPO_ROOT;
 const HOOKS_DIR = path.join(REPO_ROOT, '.claude', 'hooks');
 const LOG_DIR = path.join(REPO_ROOT, '.pipeline', 'logs');
 const QA_ARTIFACTS_DIR = path.join(REPO_ROOT, 'qa', 'artifacts');
@@ -102,13 +120,72 @@ function buildGradleCommand(scope, mod) {
     }
 }
 
+// ── Resolución de `bash` en Windows ──────────────────────────────────
+// Cuando `spawn('bash', args, { shell: true })` corre en Windows, Node
+// delega a `cmd.exe /d /s /c "bash ..."`. cmd.exe busca `bash` en el PATH
+// del sistema, donde típicamente aparece primero `C:\Windows\System32\
+// bash.exe` (wrapper a WSL). Si la máquina no tiene una distro Linux
+// instalada en WSL, ese wrapper falla con:
+//   <3>WSL (9 - Relay) ERROR: CreateProcessCommon:818:
+//     execvpe(/bin/bash) failed: No such file or directory
+// y el build muere en ~4s sin output (regresión vista en builds desde
+// que `build` pasó a determinístico — #3157).
+//
+// Solución: en Windows, resolver explícitamente a Git Bash (que viene
+// con Git for Windows y está instalado en todos los workstations del
+// pipeline). Se usa `shell: false` cuando hay path absoluto a bash.exe
+// para que cmd.exe no se entrometa con la resolución (y para que no
+// rompa el path con espacios de "Program Files").
+//
+// Devuelve { cmd, useShell } — el caller debe usar ambos al spawn.
+function resolveBashCommand(cmd) {
+    if (process.platform !== 'win32') {
+        return { cmd, useShell: false };
+    }
+    if (cmd !== 'bash') {
+        // ./gradlew y otros: usar shell para que cmd.exe encuentre .bat
+        return { cmd, useShell: true };
+    }
+    const candidates = [
+        process.env.GIT_BASH_PATH,
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        try {
+            if (fs.existsSync(candidate)) {
+                return { cmd: candidate, useShell: false };
+            }
+        } catch {}
+    }
+    // No se encontró Git Bash — fallback a 'bash' por PATH (puede caer
+    // en WSL bash). Mejor fallar con stack trace claro que silenciosamente.
+    return { cmd, useShell: true };
+}
+
 // ── Spawn con captura completa ───────────────────────────────────────
-function runGradle({ cmd, args, cwd, env }) {
+// #4155 — `runGradle` envuelve el spawn con el lock global de Gradle para que
+// NUNCA corra en simultáneo con otra invocación pesada (build/tester) de otro
+// agente (CA-4). Si el lock está tomado, encola hasta que se libera. El lock se
+// libera en `finally` aunque el spawn falle (auto-release, CA-5).
+// `spawnFn` es un parámetro de inyección OPCIONAL exclusivo para tests (#4164):
+// permite reemplazar el `spawn` real por un stub in-process y volver determinista
+// el test del probe. SEGURIDAD: NUNCA debe leerse de env/config/runtime — solo se
+// inyecta como argumento de función desde el test — para no convertir la DI en un
+// sink de RCE. El default preserva el comportamiento productivo exacto.
+function runGradle({ cmd, args, cwd, env, spawnFn }) {
+    return withGradleLock(() => spawnGradle({ cmd, args, cwd, env, spawnFn }));
+}
+
+function spawnGradle({ cmd, args, cwd, env, spawnFn }) {
+    const _spawn = spawnFn || spawn;
     return new Promise((resolve) => {
         const started = Date.now();
         let stdout = '';
         let stderr = '';
-        const child = spawn(cmd, args, { cwd, env, shell: process.platform === 'win32', windowsHide: true });
+        const { cmd: resolvedCmd, useShell } = resolveBashCommand(cmd);
+        const child = _spawn(resolvedCmd, args, { cwd, env, shell: useShell, windowsHide: true });
         if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString(); });
         if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (e) => {
@@ -137,15 +214,18 @@ function copyArtifacts(result) {
         }
     };
 
+    // Source paths viven en el worktree (la build corrió ahí); destino en el
+    // main checkout (qa/artifacts/ es compartido). En tests sin PIPELINE_WORKTREE
+    // WORKTREE_ROOT === REPO_ROOT, así que se mantiene compat con fixtures.
     if (result.modules.includes('users')) {
-        tryCopy(path.join(REPO_ROOT, 'users', 'build', 'libs', 'users-all.jar'),
+        tryCopy(path.join(WORKTREE_ROOT, 'users', 'build', 'libs', 'users-all.jar'),
             path.join(QA_ARTIFACTS_DIR, 'users-all.jar'));
     }
 
     if (result.modules.includes('app')) {
         // Buscar primer APK client debug
         try {
-            const apkDir = path.join(REPO_ROOT, 'app', 'composeApp', 'build', 'outputs', 'apk', 'client', 'debug');
+            const apkDir = path.join(WORKTREE_ROOT, 'app', 'composeApp', 'build', 'outputs', 'apk', 'client', 'debug');
             if (fs.existsSync(apkDir)) {
                 const apk = fs.readdirSync(apkDir).find((f) => f.endsWith('.apk'));
                 if (apk) tryCopy(path.join(apkDir, apk), path.join(QA_ARTIFACTS_DIR, 'composeApp-client-debug.apk'));
@@ -161,6 +241,139 @@ function copyArtifacts(result) {
     } catch {}
 
     return artifacts;
+}
+
+function relativeRepoPath(absPath, root = REPO_ROOT) {
+    return path.relative(root, absPath).replace(/\\/g, '/');
+}
+
+function fileSha256(file) {
+    const hash = crypto.createHash('sha256');
+    hash.update(fs.readFileSync(file));
+    return hash.digest('hex');
+}
+
+function collectArtifactMetadata(artifactNames, opts = {}) {
+    const qaDir = opts.qaArtifactsDir || QA_ARTIFACTS_DIR;
+    const repoRoot = opts.repoRoot || REPO_ROOT;
+    const names = Array.isArray(artifactNames) ? artifactNames : [];
+    const out = [];
+    for (const name of names) {
+        if (!name || name === 'BUILD_TIMESTAMP') continue;
+        const file = path.join(qaDir, name);
+        try {
+            const stat = fs.statSync(file);
+            if (!stat.isFile()) continue;
+            out.push({
+                name,
+                type: path.extname(name).replace(/^\./, '') || 'file',
+                bytes: stat.size,
+                sha256: fileSha256(file),
+                path: relativeRepoPath(file, repoRoot),
+            });
+        } catch {}
+    }
+    return out;
+}
+
+function appendBuildDeliverableSections(report, meta = {}) {
+    const lines = [report || '## Build: FALLIDO'];
+    const artifacts = Array.isArray(meta.artifacts) ? meta.artifacts : [];
+    const logPath = meta.logPath || null;
+    const status = meta.status || 'desconocido';
+    const timestamp = meta.timestamp || new Date().toISOString();
+
+    lines.push('');
+    lines.push('### Resumen operativo');
+    lines.push(`- Issue: #${meta.issue}`);
+    lines.push('- Fase/agente: build/build');
+    lines.push(`- Estado: ${status}`);
+    lines.push(`- Modulo/target: ${meta.scope || 'n/a'}`);
+    lines.push(`- Timestamp: ${timestamp}`);
+
+    lines.push('');
+    lines.push('### Artefacto producido');
+    if (artifacts.length === 0) {
+        const reason = meta.noArtifactReason || 'No se produjo JAR/APK notificable para este cierre.';
+        lines.push(`- Excepcion explicita: ${reason}`);
+    } else {
+        for (const artifact of artifacts) {
+            lines.push(`- ${artifact.name}`);
+            lines.push(`  - Tipo: ${artifact.type}`);
+            lines.push(`  - Tamano: ${artifact.bytes} bytes`);
+            lines.push(`  - SHA-256: ${artifact.sha256}`);
+            lines.push(`  - Ruta relativa: ${artifact.path}`);
+        }
+    }
+
+    if (meta.failureClassification) {
+        lines.push('');
+        lines.push('### Diagnostico de fallo');
+        lines.push(`- Clasificacion: ${meta.failureClassification}`);
+        if (meta.failureDetail) lines.push(`- Detalle: ${String(meta.failureDetail).slice(0, 500)}`);
+    }
+
+    lines.push('');
+    lines.push('### Referencia al log local');
+    lines.push(`- Log crudo local: ${logPath || 'no disponible'}`);
+    lines.push('- Nota: el log crudo no se adjunta como entregable notificable.');
+
+    return lines.join('\n');
+}
+
+function buildExceptionReport({ issue, scope, motivo, logPath, durationMs = 0, timestamp }) {
+    const report = [
+        '## Build: FALLIDO',
+        '',
+        '### Compilacion',
+        '- Modulo(s): n/a',
+        '- Resultado: FALLO',
+        `- Tiempo: ${Math.floor(durationMs / 1000)}s`,
+        `- Scope: ${scope || 'n/a'}${issue ? ` - issue #${issue}` : ''}`,
+        '- Tareas: 0 ejecutadas - 0 up-to-date - 0 desde cache',
+        '',
+        '### Verificaciones',
+        '- Strings legacy: no ejecutado',
+        '- Recursos Compose: no ejecutado',
+        '- ASCII fallbacks: no ejecutado',
+        '',
+        '### Errores',
+        '- **[pipeline_exception]** (sin task)',
+        `  - Detalle: ${motivo || 'Excepcion no clasificada en build.js'}`,
+        '',
+        '### Veredicto del Builder',
+        'El build fallo antes de completar Gradle. Se persiste este reporte rojo para evitar silencio de fase.',
+    ].join('\n');
+
+    return appendBuildDeliverableSections(report, {
+        issue,
+        scope,
+        status: 'rojo',
+        artifacts: [],
+        noArtifactReason: 'El build fallo antes de producir artefacto.',
+        failureClassification: 'pipeline_exception',
+        failureDetail: motivo,
+        logPath,
+        timestamp,
+    });
+}
+
+function sanitizeBuildReportContent(content) {
+    return String(content || '')
+        .replace(/[A-Za-z]:[\\/][^\s`'")]+/g, '[ruta-local-redactada]')
+        .replace(/\/(?:Users|home|tmp|var|private|mnt|c|Workspaces)\/[^\s`'")]+/g, '[ruta-local-redactada]');
+}
+
+function materializeBuildDeliverable(issue, report, opts = {}) {
+    if (!report || !String(report).trim()) {
+        throw new Error('reporte de build vacio');
+    }
+    return writeDeliverable('build', issue, {
+        fase: 'build',
+        md: sanitizeBuildReportContent(report),
+        pipelineRoot: opts.pipelineRoot || REPO_ROOT,
+        timestamp: opts.timestamp,
+    });
 }
 
 // ── Actualización del marker (YAML trabajando/) ──────────────────────
@@ -223,17 +436,20 @@ async function main() {
     const handle = trace.emitSessionStart({
         skill: 'build', issue, phase: process.env.PIPELINE_FASE || 'build',
         model: 'deterministic',
+        provider: 'deterministic',
     });
 
     let gradleResult;
     let parsed;
-    let report;
+    let report = '';
     let artifacts = [];
     let exitCode = 0;
     let motivo = null;
 
     try {
-        gradleResult = await runGradle({ cmd, args: gArgs, cwd: REPO_ROOT, env });
+        // cwd: WORKTREE_ROOT — gradle corre en la rama del agente, no en main.
+        // Ver constantes arriba para el contexto del incidente que motivó este split.
+        gradleResult = await runGradle({ cmd, args: gArgs, cwd: WORKTREE_ROOT, env });
         logAppend(`[build] gradle exit_code=${gradleResult.exit_code} wall_ms=${gradleResult.wall_ms}`);
         logAppend('[build] --- stdout (último 2000 chars) ---');
         logAppend(gradleResult.stdout.slice(-2000));
@@ -241,6 +457,15 @@ async function main() {
         logAppend(gradleResult.stderr.slice(-1000));
 
         parsed = parseGradleOutput(gradleResult.stdout, gradleResult.stderr);
+
+        // Guard defensivo: si Gradle salió 0 pero el parser no detectó status,
+        // asumimos no-op (smart-build sin módulos compilables). Evita rebote
+        // espurio por output no reconocido. Si exit_code != 0, sí es fallo real.
+        if (gradleResult.exit_code === 0 && parsed.build_status === 'UNKNOWN') {
+            parsed.success = true;
+            parsed.build_status = 'NO_OP';
+            logAppend('[build] no-op detectado por exit_code=0 sin BUILD SUCCESSFUL/FAILED (heurística defensiva)');
+        }
 
         if (parsed.success) {
             artifacts = copyArtifacts(parsed);
@@ -257,6 +482,18 @@ async function main() {
         report = renderMarkdownReport(parsed, {
             issue, scope: label, duration_override_ms: gradleResult.wall_ms,
         });
+        report = appendBuildDeliverableSections(report, {
+            issue,
+            scope: label,
+            status: parsed.build_status === 'NO_OP' ? 'no aplica' : (parsed.success ? 'verde' : 'rojo'),
+            artifacts: collectArtifactMetadata(artifacts),
+            noArtifactReason: parsed.build_status === 'NO_OP'
+                ? 'Smart-build no encontro modulos compilables afectados.'
+                : (parsed.success ? 'Build exitoso sin JAR/APK copiado a qa/artifacts.' : 'Build fallido antes de producir artefacto.'),
+            failureClassification: parsed.errors[0] ? parsed.errors[0].classification : null,
+            failureDetail: parsed.errors[0] ? parsed.errors[0].message : null,
+            logPath: relativeRepoPath(agentLog),
+        });
         // Escribir reporte al log + a disco
         logAppend('[build] --- REPORTE ---');
         logAppend(report);
@@ -266,7 +503,21 @@ async function main() {
         exitCode = 2;
         motivo = `Excepción en build.js: ${e.message}`;
         logAppend(`[build] EXCEPTION: ${e.stack || e.message}`);
+        report = buildExceptionReport({
+            issue,
+            scope: label,
+            motivo,
+            logPath: relativeRepoPath(agentLog),
+            durationMs: gradleResult ? gradleResult.wall_ms : 0,
+        });
     } finally {
+        try {
+            const res = materializeBuildDeliverable(issue, report, { pipelineRoot: REPO_ROOT });
+            logAppend(`[build] deliverable escrito: ${relativeRepoPath(res.path)} bytes=${res.bytes}`);
+        } catch (e) {
+            logAppend(`[build] writeDeliverable FAILED: ${e.message}`);
+        }
+
         // Actualizar marker con resultado
         updateMarker(args.trabajando, {
             resultado: exitCode === 0 ? 'aprobado' : 'rechazado',
@@ -335,7 +586,20 @@ if (require.main === module) {
 module.exports = {
     parseArgs,
     buildGradleCommand,
+    resolveBashCommand,
     startHeartbeat,
     copyArtifacts,
+    collectArtifactMetadata,
+    appendBuildDeliverableSections,
+    buildExceptionReport,
+    sanitizeBuildReportContent,
+    materializeBuildDeliverable,
     updateMarker,
+    // Exportados para tests del lock global de Gradle (#4155): `runGradle` es la
+    // variante con lock, `spawnGradle` el spawn crudo sin lock.
+    runGradle,
+    spawnGradle,
+    // Exportados para tests de regresión del split REPO_ROOT/WORKTREE_ROOT
+    // (rebote build #3073 rev-1).
+    _paths: { REPO_ROOT, WORKTREE_ROOT, QA_ARTIFACTS_DIR, LOG_DIR },
 };

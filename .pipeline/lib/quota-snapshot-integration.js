@@ -9,8 +9,9 @@
 //
 //   1. `evaluateSnapshotAndGate(snapshot, opts)` — invocada por el scheduler
 //      del #3012 después de cada parse exitoso. Decide si llamar
-//      `setFlag({errorType:'snapshot_threshold_90', resetsAt})` y/o
-//      `saveCalibration(metricsDir, obs)` con defense-in-depth (CA-S1).
+//      `setFlag({errorType:'snapshot_threshold_90', resetsAt})`.
+//      #4861: la calibración EMA (`saveCalibration`) se retiró de esta cadena;
+//      la fuente única de cuota Anthropic es el snapshot real de `/usage`.
 //
 //   2. `getBannerState(opts)` — lectura pasiva para el dashboard
 //      (`/api/dash/quota-snapshot`). Devuelve `{state, lastSnapshot, ageMs,
@@ -59,14 +60,8 @@ function integrationStateFile() {
     return path.join(pipelineDir(), '.quota-snapshot-integration-state.json');
 }
 
-function metricsDir() {
-    return path.join(pipelineDir(), 'metrics');
-}
-
-function activityLogPath() {
-    if (process.env.ACTIVITY_LOG_PATH) return process.env.ACTIVITY_LOG_PATH;
-    return path.resolve(pipelineDir(), '..', '.claude', 'activity-log.jsonl');
-}
+// #4861: metricsDir()/activityLogPath() se retiraron junto con la calibración
+// EMA — eran sólo insumos de weeklyQuota.computeQuota, ya fuera del flujo.
 
 // TTL/STALE/GATE defaults (configurables por env, narrativa §2.1).
 const DEFAULT_TTL_MIN = 90;             // QUOTA_BANNER_TTL_MIN
@@ -632,7 +627,9 @@ function evaluateSnapshotAndGate(snapshot, opts = {}) {
     }
 
     let didGate = false;
-    let didCalibrate = false;
+    // #4861: didCalibrate queda en false permanente — la calibración EMA se
+    // retiró de la cadena Anthropic (fuente única = snapshot real de /usage).
+    const didCalibrate = false;
     const gatePct = getGatePct();
 
     // CA-12 / CA-S5: gate al detector binario (con kill switch granular).
@@ -678,35 +675,97 @@ function evaluateSnapshotAndGate(snapshot, opts = {}) {
         }
     }
 
-    // CA-13: calibración EMA con dato real. Importante: computeQuota ANTES
-    // para tener el pct heurístico SIN calibrar (ver guru §"Calibración:
-    // secuencia obligatoria"). Si computeQuota falla (sin metrics dir),
-    // saltea calibración pero NO falla todo el wire.
+    // #4861: la calibración EMA (computeQuota + saveCalibration) se retiró de
+    // la cadena Anthropic. La fuente única de verdad es el snapshot real de
+    // `claude -p /usage` vía lib/anthropic-usage.js + quota-adapters/anthropic.js.
+    // El snapshot ya no se usa para calibrar una heurística; sólo alimenta el
+    // gate y las alertas más arriba. Ver docs/quota-tracking.md.
+
+    // #4282 — evaluación anticipatoria multi-provider. Best-effort: nunca debe
+    // romper el wire del snapshot. Reusa el ciclo periódico de este módulo como
+    // ticker host (no crea cron nuevo). El guard tiene dedupe propio, así que
+    // re-invocarlo en cada tick es idempotente.
     try {
-        const baseline = weeklyQuota.computeQuota(metricsDir(), activityLogPath());
-        weeklyQuota.saveCalibration(metricsDir(), {
-            realWeeklyPct: snapshot.weekly_all_models_pct,
-            realSessionPct: snapshot.session_pct,
-            pipelineWeeklyPct: baseline && Number.isFinite(baseline.pct) ? baseline.pct : 0,
-            pipelineSessionPct: baseline && baseline.session && Number.isFinite(baseline.session.pct)
-                ? baseline.session.pct : 0,
-            sessionResetsInMinutes: snapshot.session_minutes_to_reset,
-        });
-        didCalibrate = true;
-        const state = loadIntegrationState();
-        state.last_calibration_at = new Date(now).toISOString();
-        saveIntegrationState(state);
+        evaluateProviderQuotaGuard({ now, log, sendTelegram });
     } catch (e) {
-        // Logs sin PII (R7): solo categoría.
-        log('warn', `quota-snapshot-integration: calibration skipped — ${e.message ? 'io_error' : 'unknown'}`);
+        log('warn', `quota-snapshot-integration: provider-quota-guard skip — ${e && e.message ? 'error' : 'unknown'}`);
     }
 
+    // #4861: didCalibrate ya no puede ser true (calibración EMA retirada). El
+    // action 'calibrated'/'gated_and_calibrated' queda como legacy inalcanzable.
     let action = 'none';
     if (didGate && didCalibrate) action = 'gated_and_calibrated';
     else if (didGate) action = 'gated';
     else if (didCalibrate) action = 'calibrated';
 
     return { ok: true, action, reason: 'success', alerts };
+}
+
+// -----------------------------------------------------------------------------
+// #4282 — Hook del guard anticipatorio multi-provider
+// -----------------------------------------------------------------------------
+
+/**
+ * Obtiene el slice multi-provider (quotaSlice) sin re-extraer cuota (CA-11).
+ * Lazy-require para evitar el ciclo de require con dashboard-slices (que a su
+ * vez requiere este módulo para `getBannerState`).
+ */
+function _defaultGuardSlice() {
+    const slices = require('./dashboard-slices');
+    const PIPELINE = pipelineDir();
+    const ROOT = path.resolve(PIPELINE, '..');
+    return slices.quotaSlice({}, { PIPELINE, ROOT });
+}
+
+/**
+ * Configuración cruda para el guard de cuota por proveedor.
+ *
+ * #5172 — Pasa por el punto único (`lib/config-resolver`). El `catch { return {} }`
+ * anterior NO daba "defaults conservadores": como los defaults del codebase son
+ * apagados por diseño de rollout, ese `{}` era **el guard apagado en silencio**
+ * ante un config ilegible — el fail-open que la historia viene a matar. Ahora el
+ * error tipado se PROPAGA.
+ *
+ * La política (D-3) es del llamador: `evaluateProviderQuotaGuard` ya envuelve
+ * esta llamada en su `try/catch` y devuelve `{error}` sin lanzar, así que con
+ * configuración ilegible el guard simplemente NO CORRE (no se evalúa contra una
+ * config inventada) en vez de correr creyéndose apagado.
+ *
+ * Una sección ausente en un config VÁLIDO sigue siendo un caso legítimo: el
+ * guard aplica sus defaults sobre el documento validado (D-4).
+ */
+function _defaultGuardConfig() {
+    // Lazy-require deliberado (G-3): el resolver arrastra `js-yaml` + `ajv`.
+    const configResolver = require('./config-resolver');
+    return configResolver.resolve({ pipelineDir: pipelineDir() });
+}
+
+/**
+ * Invoca el guard de cuota por proveedor (#4282). Best-effort y fail-safe:
+ * obtiene el slice + config, delega en `provider-quota-guard.evaluate`. Devuelve
+ * el resultado del guard o `{error}` sin lanzar.
+ *
+ * Inyectables (tests): opts.guard, opts.slice, opts.rawConfig, opts.sendTelegram.
+ */
+function evaluateProviderQuotaGuard(opts = {}) {
+    if (!isEnabled()) return { skipped: 'kill_switch' };
+    try {
+        const guard = opts.guard || require('./provider-quota-guard');
+        const slice = opts.slice || _defaultGuardSlice();
+        const rawConfig = opts.rawConfig || _defaultGuardConfig();
+        return guard.evaluate({
+            slice,
+            rawConfig,
+            now: Number.isFinite(opts.now) ? opts.now : Date.now(),
+            log: typeof opts.log === 'function'
+                ? (msg) => opts.log('info', msg)
+                : () => {},
+            sendTelegram: opts.sendTelegram,
+            pipelineDir: opts.pipelineDir,
+        });
+    } catch (e) {
+        return { error: e && e.message ? e.message : 'unknown' };
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -803,6 +862,7 @@ function pctText(n) {
 module.exports = {
     // API pública
     evaluateSnapshotAndGate,
+    evaluateProviderQuotaGuard,   // #4282
     getBannerState,
     buildStatusSnapshotBlock,
 

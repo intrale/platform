@@ -1,9 +1,10 @@
 ---
 description: Planner — Planificación estratégica del proyecto — Gantt, dependencias, priorización y nuevas historias
 user-invocable: true
-argument-hint: "[planificar | sprint [N] [foco] | proponer | validar-tamaño <issue> | split <issue> | estado | <foco> [N]]"
+argument-hint: "[planificar | sprint [N] [foco] | olas | horizonte <N> | componer-ola <N> [--force] | proponer | validar-tamaño <issue> | split <issue> | estado | <foco> [N]]"
 allowed-tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 model: claude-sonnet-4-6
+required_permissions: [file_read, bash, child_spawn, network_out]
 ---
 
 # /planner — Planner
@@ -34,6 +35,9 @@ Tu pensamiento esta moldeado por tres referentes de planificacion de producto:
 |-----------|------|
 | `planificar` | Plan completo: Gantt, dependencias, streams paralelos |
 | `sprint [N] [foco]` | Qué hacer en los próximos días — top N accionables (default: 7, rango recomendado: 7-10) |
+| `olas` | **Multi-ola (#3488)** — listar olas activa + planeadas + cerradas con % completion |
+| `horizonte <N>` | **Multi-ola (#3488)** — propuesta de composición para las próximas N olas (1 ≤ N ≤ 12) |
+| `componer-ola <N> [--force]` | **Multi-ola (#3488)** — armar ola N combinando carry-over + Ready + needs-definition |
 | `proponer` | Sugerir nuevas historias basadas en gaps del codebase |
 | `validar-tamaño <issue>` | Clasificar una historia como S/M/L/XL con criterios objetivos |
 | `split <issue>` | Dividir una historia L/XL en sub-historias, crearlas con `/doc nueva` y lanzar `/po acceptance` para cada una |
@@ -714,21 +718,110 @@ Invocar `/planner validar-tamaño <N>` para obtener la clasificación formal:
 - Si el resultado es S o M y no se pasó `--force`: detener y reportar.
 - Si L o XL: continuar al siguiente paso.
 
+#### SP2.b: Freno de cascada — ¿el issue ya es hijo de un split? (#5837 CA-3)
+
+Antes de seguir, chequear que el issue no sea **hijo de un split previo**. Sin este
+freno la cascada se multiplica sola: en la ola 9.4, #5440 se volvió doce issues
+(#5791-5793 → #5794-5805) y hubo hasta nietos de nietos (#5793 → #5800 → #5803/#5805).
+
+Ni el issue ni la justificación se interpolan en el comando (ver "Regla de quoting" en
+SP6): el issue va a un archivo y la justificación a una variable ya asignada, siempre
+entrecomillada.
+
+> **Por qué a archivo y no a argv.** No es porque `"$(gh issue view ...)"` se expanda:
+> bash **no** re-expande el resultado de una sustitución de comandos, así que un título
+> con `$(id -u)` llega literal aunque el repo sea público (verificado: `argv recibido:
+> "Titulo con $(id -u) ..."`). El motivo real es otro: el body de un issue trae saltos de
+> línea, comillas y hasta megabytes de texto, y pasarlo por argv lo expone a límites de
+> longitud, a `IFS` si alguien olvida una comilla, y a errores de encoding. El archivo
+> saca al shell del medio por completo — el JSON viaja de `gh` a Node sin intermediarios.
+> Regla práctica: **datos por archivo, identificadores por variable entrecomillada**.
+
+```bash
+ISSUE=<N>                              # sólo dígitos
+case "$ISSUE" in ''|*[!0-9]*) echo "⛔ N no numérico"; exit 1;; esac
+mkdir -p .pipeline/tmp
+ISSUE_FILE=".pipeline/tmp/issue-$ISSUE.json"
+gh issue view "$ISSUE" --repo "$GH_REPO" --json number,title,labels > "$ISSUE_FILE"
+# JUSTIFICACION: escribila con `Write` a .pipeline/tmp/force-$ISSUE.txt si trae comillas.
+JUSTIFICACION_FILE=".pipeline/tmp/force-$ISSUE.txt"
+[ -f "$JUSTIFICACION_FILE" ] || : > "$JUSTIFICACION_FILE"
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const i=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const j=fs.readFileSync(process.argv[2],'utf8'); const r=g.checkResplit({issue:i, force:process.argv[3]==='1', justificacion:j}); console.log(JSON.stringify(r,null,2)); if(!r.allowed) process.exit(1);" "$ISSUE_FILE" "$JUSTIFICACION_FILE" "<1_SI_FORCE_SINO_0>"
+```
+
+- `allowed: false` → **detener el split** y mostrar el `message` tal cual sale del guard:
+  ```
+  ⛔ Issue #<N> ya es hijo del split de #<padre> — no se re-parte automáticamente.
+  Si el corte del padre quedó mal, reportalo sobre #<padre>.
+  Para partir igual: /planner split <N> --force "<justificación escrita>"
+  ```
+- `--force` **sin** justificación escrita tampoco alcanza: el guard lo rechaza aparte
+  (`reason: 'force-sin-justificacion'`).
+- `allowed: true` con `reason: 'force-justificado'` → continuar, dejando la advertencia
+  `⚠️` en el reporte final (SP7).
+
+La detección usa el **título canónico** `[Split de #N]` — el mismo patrón ya testeado en
+`lib/split-orphan-reconciler.js` (#5516). El label `split` **no** sirve para esto: está
+aplicado de forma inconsistente (#5800 lo tiene, #5803 y #5805 no) y en
+`pulpo.js#isSplitParent` marca al **padre paraguas**, con lo cual usarlo para detectar
+hijos es un falso positivo invertido.
+
+#### SP2.c: Un hijo L/XL es un defecto del corte del PADRE (#5837 CA-4)
+
+Si `/planner validar-tamaño` clasifica como **L/XL a un issue que ya es hijo de un
+split**, la conclusión no es "hay que partirlo de nuevo" sino que **el corte del padre
+estuvo mal**. Reportarlo hacia arriba en vez de crear nietos en silencio:
+
+`<HIJO>`, `<PADRE>` y `<L|XL>` son los únicos valores que se interpolan acá, y los tres
+son cerrados (dígitos y una de dos constantes). El mensaje se pasa por **archivo**, no por
+`$(...)` anidado dentro de comillas dobles:
+
+```bash
+HIJO=<HIJO>; PADRE=<PADRE>; SIZE=<L|XL>   # HIJO y PADRE: sólo dígitos
+case "$HIJO$PADRE" in ''|*[!0-9]*) echo "⛔ HIJO/PADRE no numéricos"; exit 1;; esac
+case "$SIZE" in L|XL) ;; *) echo "⛔ SIZE debe ser L o XL"; exit 1;; esac
+mkdir -p .pipeline/tmp
+MSG_FILE=".pipeline/tmp/oversized-$HIJO.md"
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const r=g.reportOversizedChild({issue:process.argv[1], parent:process.argv[2], size:process.argv[3]}); if(!r.oversized){console.error('⛔ El hijo no es L/XL: no hay defecto que reportar.'); process.exit(1);} fs.writeFileSync(process.argv[4], r.message);" "$HIJO" "$PADRE" "$SIZE" "$MSG_FILE" \
+  && cat "$MSG_FILE" \
+  && gh issue comment "$PADRE" --repo "$GH_REPO" --body-file "$MSG_FILE"
+```
+
+> El `if(!r.oversized)` no es decorativo: sin él, un `SIZE` no sobredimensionado hace
+> `message: null` y `writeFileSync` revienta con un `TypeError` críptico
+> (`The "data" argument must be of type string ... Received null`) en vez de decir qué
+> pasó. Es el mismo guard que usa el camino autónomo en `roles/planner.md`, para que
+> ambos caminos fallen igual.
+
 ### Paso SP3: Proponer el plan de split
 
-Analizar el body del issue y **descomponer en N sub-historias** (típicamente 2–5).
+Analizar el body del issue y **descomponer en N sub-historias**. **No hay N recomendado**:
+el N sale del criterio de corte. Hasta #5837 acá decía "típicamente 2–5" y el rol autónomo
+decía "2-3", y en la práctica **todos los splits salían en 3** — el 3 era sesgo del modelo,
+no decisión. No se busca prohibir el 3: se busca que el 3 sea el resultado de un criterio.
 
-**Criterios de descomposición:**
-1. **Por módulo**: separar backend de app, o módulos independientes (backend, users, app)
-2. **Por funcionalidad entregable**: cada sub-historia debe tener valor por sí misma
-3. **Por capa**: si el issue abarca UI + backend, separar en al menos 2 historias
-4. **Por flujo**: si hay múltiples flujos de usuario, uno por historia
-5. **Tamaño objetivo**: cada sub-historia debe quedar en S o M (no más de M)
+**Criterios de corte** (elegir **uno** y nombrarlo **por nombre** en el plan, nunca por
+número: escribir `criterio 3` obliga al que lee a volver a este skill):
+1. **por módulo**: separar backend de app, o módulos independientes (backend, users, app)
+2. **por funcionalidad entregable**: cada sub-historia debe tener valor por sí misma
+3. **por capa**: si el issue abarca UI + backend, separar en al menos 2 historias
+4. **por flujo**: si hay múltiples flujos de usuario, uno por historia
+5. **por tamaño objetivo**: cada sub-historia debe quedar en S o M (no más de M)
+
+El plan **encabeza** con el corte declarado (#5837 CA-1):
+```
+### Corte del split
+- **Criterio de corte**: [por módulo / por funcionalidad entregable / por capa / por flujo / por tamaño objetivo]
+- **N elegido**: [cantidad]
+- **Por qué N y no N±1**: [una línea, no un párrafo]
+```
 
 Para cada sub-historia propuesta, generar:
 ```
 ### Sub-historia [N/Total]: [Título]
 - **Módulo**: [backend / app / users / tools]
+- **Capa**: [ui / backend / datos / infra]
+- **Flujo**: [flujo de usuario que cubre, o "n/a"]
 - **Stream**: [A/B/C/D/E]
 - **Tamaño estimado**: [S/M]
 - **Justificación del split**: [Por qué esta porción es independiente y entregable]
@@ -736,9 +829,98 @@ Para cada sub-historia propuesta, generar:
 - **Descripción**: [Qué hace esta sub-historia en 2-3 oraciones]
 ```
 
+**Validar el plan ANTES de crear un solo issue** (#5837 CA-1/CA-2):
+
+El plan va **en un archivo**, nunca pegado como argumento (ver "Regla de quoting" en SP6).
+Escribí `.pipeline/tmp/split-plan-<PADRE>.json` con la herramienta `Write` — no con
+`echo`/`printf`/heredoc:
+
+```json
+{"criterio":"por capa","n":2,"justificacionN":"UI y backend son entregas separables; no hay una tercera capa.","partes":[{"titulo":"Endpoint de perfil","modulo":"backend","capa":"backend","flujo":"perfil"},{"titulo":"Pantalla de perfil","modulo":"app","capa":"ui","flujo":"perfil"}]}
+```
+
+```bash
+PADRE=<PADRE>                          # sólo dígitos
+case "$PADRE" in ''|*[!0-9]*) echo "⛔ PADRE no numérico"; exit 1;; esac
+PLAN_FILE=".pipeline/tmp/split-plan-$PADRE.json"
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const r=g.validateSplitPlan(JSON.parse(fs.readFileSync(process.argv[1],'utf8'))); console.log(JSON.stringify(r,null,2)); if(!r.ok) process.exit(1);" "$PLAN_FILE"
+```
+
+Con `ok: false` el split **se detiene y no se crea ninguna sub-historia**. Los rechazos
+posibles son todos accionables:
+- criterio de corte ausente, inventado o escrito como número;
+- falta el "por qué N y no N±1", o excede una línea (240 caracteres);
+- el criterio o la justificación traen **saltos de línea o un encabezado markdown** (`##`):
+  ese texto termina embebido en el body del padre y un encabezado corre la frontera del
+  bloque `## Registro del split`, dejando lo colado fuera del alcance de todo re-split;
+- la justificación invoca un default ("por default", "como siempre", "típicamente") —
+  el N tiene que salir del criterio, no de la costumbre;
+- **el `n` declarado no coincide con la cantidad de `partes`** → el N que se registra en
+  el padre es el entregable que permite auditar el patrón "siempre 3": si puede diferir
+  de las partes reales, la auditoría miente. Corregí el `n` o completá las partes;
+- **hay partes indistinguibles entre sí** (comparten módulo, capa y flujo) → no hay corte
+  entre ellas, es el mismo issue escrito dos veces. Se rechaza tanto si **todas** las
+  partes son iguales como si **sólo un par** lo es: dos partes idénticas dentro de un plan
+  de tres inflan el N igual. Fusionalas, cortá por otro eje o **dejá el issue entero**.
+
 Mostrar el plan completo y obtener confirmación antes de crear los issues.
 
-**Si el modo es autónomo** (invocado por otro agente o con flag `--auto`): crear directamente sin confirmación.
+**Si el modo es autónomo** (invocado por otro agente o con flag `--auto`): crear directamente
+sin confirmación. La validación del plan y el freno de cascada **no se saltean** en modo
+autónomo — son justo el camino que produjo la cascada de la ola 9.4.
+
+### Paso SP3.5: Chequeo de duplicados semánticos por sub-historia (#4110 CA-2/CA-5/CA-6)
+
+`split` es uno de los **4 puntos de entrada** que invocan el **mismo service**
+de deduplicación (`semantic-dedup.checkSemanticDuplicate`) — CA-2. Antes de
+crear cada sub-historia vía `/doc nueva`, chequear que su contenido no duplique
+un issue abierto existente:
+
+```bash
+# Por cada sub-historia propuesta (título + descripción). Service async.
+node -e "(async () => { const d=require('./.pipeline/lib/semantic-dedup'); const r=await d.checkSemanticDuplicate(process.argv[1], process.argv[2]); console.log(JSON.stringify(r)); })()" "TÍTULO SUB-HISTORIA" "DESCRIPCIÓN SUB-HISTORIA"
+```
+
+**La decisión la concentra el planner (CA-5)** — los puntos de entrada solo
+**detectan**; acá se decide crear / redefinir / fusionar:
+
+- `level: 'alta'` → **no crear** la sub-historia: vincularla al issue existente
+  (`#<topMatch.number>`, "similitud X%"). Si la decisión implica
+  **fusionar/cerrar un issue abierto**, eso pasa **obligatoriamente por el gate
+  humano** (ver Paso SP3.6) — NUNCA automático (CA-6).
+- `level: 'parcial'` → crear, acotando el alcance para no solapar; documentar el
+  ajuste en el body de la sub-historia.
+- `level: 'ninguna'` → crear normal.
+
+Copy sin jerga ("similitud X%", nunca "Jaccard"/"LLM-judge"/"embeddings").
+Fail-open (A04): si el service falla, crear sin chequear por contenido (jamás
+cerrar/fusionar por un error del service).
+
+### Paso SP3.6: Gate humano para fusión/cierre destructivo (#4110 CA-6 — BLOCKER)
+
+Cuando la decisión del planner implica **cerrar o fusionar un issue abierto**,
+NUNCA hacerlo de forma automática. Reusar los primitivos existentes (no rodar
+auth propia): `lib/human-block.js#reportHumanBlock` (operador autenticado
+SEC-1..SEC-5 de `commander-deterministic`) + `lib/audit-log.js#appendChained`
+(hash-chain SHA-256, fail-closed con lock):
+
+```bash
+# 1) Bloquear y pedir confirmación explícita del operador autenticado.
+node -e "const { reportHumanBlock } = require('./.pipeline/lib/human-block'); reportHumanBlock({ issue: Number(process.argv[1]), skill: 'planner', phase: 'criterios', reason: process.argv[2], question: process.argv[3] });" "<ISSUE_GANADOR>" "Fusión/cierre de #<victima> contra #<ganador> (similitud <nivel>, score <pct>%)" "¿Confirmás cerrar #<victima> y fusionar en #<ganador>? Requiere operador autenticado."
+
+# 2) SOLO tras la confirmación del operador, registrar en el audit hash-chain
+#    (quién/qué/score/decisión — también los RECHAZOS, no solo aprobaciones).
+node -e "const { appendChained } = require('./.pipeline/lib/audit-log'); appendChained({ file: '.pipeline/audit/dedup-decisions.jsonl', entry: { operator: process.argv[1], victima: Number(process.argv[2]), ganador: Number(process.argv[3]), score: Number(process.argv[4]), nivel: process.argv[5], decision: process.argv[6], issue: Number(process.argv[3]) } });" "<OPERADOR>" "<VICTIMA>" "<GANADOR>" "<SCORE>" "<NIVEL>" "fusion|cierre|rechazo"
+```
+
+Reglas inquebrantables del gate:
+- **NUNCA** `writeFileSync`/append manual sobre `dedup-decisions.jsonl` — rompe
+  la cadena. Exclusivamente `appendChained`.
+- El gate **no acepta** confirmaciones de identidad no verificada (A07): valida
+  operador autenticado, no mera presencia en el canal.
+- El mensaje del gate es auto-explicativo (G2): qué issue se cerraría, contra
+  cuál se fusiona, score+nivel en %, opciones confirmar/rechazar explícitas; en
+  español neutro, sin IDs internos ni stack traces.
 
 ### Paso SP4: Crear cada sub-historia con `/doc nueva`
 
@@ -793,50 +975,100 @@ Para cada sub-historia creada, agregar un comentario al issue padre indicando la
 gh issue comment <PADRE> --repo $GH_REPO --body "Sub-historia creada: #<HIJO> — <título>"
 ```
 
-Luego actualizar el body del issue padre para incluir la lista de sub-historias:
+Luego actualizar el body del issue padre para incluir la lista de sub-historias y el
+**registro del corte** (#5837 CA-5).
+
+> ⚠️ **Nunca componer el body con un heredoc que embeba `$PADRE_BODY`.** La versión
+> anterior de este paso usaba `<<'BODY_EOF'` (delimitador entrecomillado, que **no**
+> expande variables): ejecutarla reemplazaba el body del padre por la cadena literal
+> `$PADRE_BODY` y **perdía la historia original**. Aun sin comillas el patrón es frágil:
+> el body real trae backticks, `$` y comillas que rompen el escapado. Se usa
+> `--body-file` sobre un archivo temporal, siempre.
+
+> ⛔ **Regla de quoting: ningún texto libre se interpola en un comando — va por archivo
+> o por stdin.** Hermana de la regla del heredoc y más grave que ella: el heredoc *perdía*
+> datos, esto *ejecuta código*. En bash una comilla simple **no se puede escapar** dentro
+> de un literal `'...'`; la primera comilla del texto cierra el literal y el resto lo
+> interpreta el shell. Una justificación tan normal como `no hay una 'tercera capa'`
+> alcanza — y esta misma doctrina empuja a citar frases entre comillas, porque prohíbe
+> `"por default"` / `"como siempre"` / `"típicamente"`. Con `$(...)` del otro lado el
+> comando corre con las credenciales de `gh` y AWS del pipeline, y `intrale/platform` es
+> **público**: el título y el body de un issue son entrada de cualquiera, y el planner los
+> parafrasea en `criterio` / `justificacionN`. Por eso el JSON se escribe con `Write` a
+> `.pipeline/tmp/` (ya cubierto por `.gitignore`; nunca `/tmp/` con nombre predecible) y el
+> comando sólo recibe **paths**, siempre entrecomillados.
 
 ```bash
-# Obtener body actual del padre
-PADRE_BODY=$(gh issue view <PADRE> --repo $GH_REPO --json body --jq '.body')
+PADRE=<PADRE>                          # sólo dígitos
+case "$PADRE" in ''|*[!0-9]*) echo "⛔ PADRE no numérico"; exit 1;; esac
+PADRE_FILE=".pipeline/tmp/padre-$PADRE.md"
+PLAN_FILE=".pipeline/tmp/split-plan-$PADRE.json"   # el mismo de SP3, ahora con `hijas`
+mkdir -p .pipeline/tmp
 
-# Agregar sección de sub-historias al final
-gh issue edit <PADRE> --repo $GH_REPO --body "$(cat <<'BODY_EOF'
-$PADRE_BODY
+# 1) Bajar el body actual TAL CUAL (sin pasar por el shell más que como redirección).
+gh issue view "$PADRE" --repo "$GH_REPO" --json body --jq '.body' > "$PADRE_FILE"
 
----
+# 2) Upsert IDEMPOTENTE del bloque `## Registro del split`: re-ejecutar el split
+#    ACTUALIZA el bloque existente en vez de apilar registros contradictorios.
+#    La validación va ENCADENADA antes del upsert: ningún camino escribe sin filtro.
+node -e "const fs=require('fs'),g=require('./.pipeline/lib/split-guard'); const f=process.argv[1]; const d=JSON.parse(fs.readFileSync(process.argv[2],'utf8')); const v=g.validateSplitPlan(d); if(!v.ok){console.error(v.errors.join('\n')); process.exit(1);} fs.writeFileSync(f, g.upsertSplitRegistro(fs.readFileSync(f,'utf8'), d));" "$PADRE_FILE" "$PLAN_FILE"
+
+# 3) Lista de sub-historias con checkboxes (sólo si todavía no está en el body).
+grep -q '^## Sub-historias' "$PADRE_FILE" || cat >> "$PADRE_FILE" <<'BODY_EOF'
 
 ## Sub-historias
 
 Este issue fue dividido en las siguientes sub-historias:
 - [ ] #<HIJO1> — <título sub-historia 1>
 - [ ] #<HIJO2> — <título sub-historia 2>
-- [ ] #<HIJO3> — <título sub-historia 3> (si aplica)
 
 **Cerrar este issue cuando todas las sub-historias estén completadas.**
 BODY_EOF
-)"
+
+# 4) Subir el body compuesto.
+gh issue edit "$PADRE" --repo "$GH_REPO" --body-file "$PADRE_FILE"
+```
+
+El bloque que queda en el padre se ve así, y es lo que permite auditar a posteriori si
+el patrón "siempre 3" persiste:
+
+```markdown
+## Registro del split
+
+- **Criterio de corte**: por capa
+- **N elegido**: 2
+- **Por qué 2 y no 1/3**: UI y backend son entregas separables; no hay una tercera capa.
+- **Sub-historias**: #5791, #5792
 ```
 
 Agregar label `split` al issue padre (si existe en el repo):
 ```bash
-gh issue edit <PADRE> --repo $GH_REPO --add-label "split" 2>/dev/null || true
+gh issue edit "$PADRE" --repo "$GH_REPO" --add-label "split" 2>/dev/null || true
 ```
+
+> El label `split` marca al **padre paraguas** (así lo lee `pulpo.js#isSplitParent`), no
+> al hijo. Para reconocer hijos se usa el título canónico `[Split de #N]` (ver SP2.b).
 
 ### Paso SP7: Reporte del split
 
 ```
 ## Split completado — Issue #[N]: [Título]
 
+### Corte del split
+- **Criterio de corte**: [por capa]
+- **N elegido**: [2]
+- **Por qué 2 y no 1/3**: [una línea]
+- **Registro en el padre**: ✅ bloque `## Registro del split` actualizado en #[N]
+
 ### Clasificación
 Tamaño original: [L/XL] → Split en [N] sub-historias
 
 ### Sub-historias creadas
 
-| # | Título | Issue | Módulo | Stream | Tamaño | /po acceptance |
-|---|--------|-------|--------|--------|--------|----------------|
-| 1 | [título] | #NNN | backend | A | M | ✅ Aprobado |
-| 2 | [título] | #NNN | app | B | S | ✅ Aprobado |
-| 3 | [título] | #NNN | app | C | S | ⚠️ Con observaciones |
+| # | Título | Issue | Módulo | Capa | Flujo | Stream | Tamaño | /po acceptance |
+|---|--------|-------|--------|------|-------|--------|--------|----------------|
+| 1 | [título] | #NNN | backend | backend | perfil | A | M | ✅ Aprobado |
+| 2 | [título] | #NNN | app | ui | perfil | B | S | ⚠️ Con observaciones |
 
 ### Dependencias entre sub-historias
 - #NNN1 debe completarse antes que #NNN2 (comparte modelo de datos)
@@ -847,6 +1079,193 @@ Tamaño original: [L/XL] → Split en [N] sub-historias
 2. Las sub-historias ya están en los backlogs correspondientes
 3. Cerrar el issue padre #[N] cuando todas estén Done
 ```
+
+Cuando el split **no se hace**, el reporte es el mensaje del guard, sin tabla:
+
+```
+⛔ Issue #5791 ya es hijo del split de #5440 — no se re-parte automáticamente.
+Si el corte del padre quedó mal, reportalo sobre #5440.
+Para partir igual: /planner split 5791 --force "<justificación escrita>"
+```
+
+```
+⛔ Corte no justificado: las partes comparten módulo, capa y flujo — es el mismo issue
+escrito 3 veces. Rehacé el corte con otro criterio o dejá el issue entero.
+No se crea ninguna sub-historia.
+```
+
+Y si se partió igual con `--force`, la advertencia va **arriba** de la tabla:
+
+```
+⚠️ Issue #5791 es hijo del split de #5440; se parte igual por `--force`: <justificación>.
+```
+
+---
+
+## Modos multi-ola: `olas`, `horizonte`, `componer-ola` (#3488 Spike #3378 H2)
+
+Estos tres comandos extienden el skill con planificación multi-ola sobre el
+source-of-truth `.pipeline/waves.json` entregado por #3489 (H1) y la API
+`lib/waves.js`. La lógica vive en `.pipeline/scripts/planner-waves-cli.js`
+(invocable directamente con Node) y `.pipeline/lib/planner-waves.js` (lib
+pura testeable).
+
+**Por qué un script Node y no un prompt LLM**: los CA del issue exigen orden
+determinístico (carry-over → Ready → needs-def, cada grupo por prioridad),
+capacidad configurable, idempotencia y output JSON parseable. Hacerlo con
+texto en el skill es frágil y costoso en tokens; un script Node garantiza
+determinismo, tiene tests unitarios (`.pipeline/lib/__tests__/planner-waves.test.js`)
+y respeta los 7 requisitos de seguridad (SEC-1..SEC-7) del análisis de
+security del issue.
+
+### Configuración (`.pipeline/config.yaml` → sección `waves:`)
+
+```yaml
+waves:
+  capacity: 9       # CA-F5: máximo de issues por ola
+  max_horizon: 12   # SEC-1: tope para `horizonte N`
+```
+
+### Comando: `olas`
+
+Lista todas las olas con estado (activa, planificadas, archivadas) y %
+completion. Fuente: `lib/waves.js#listWaves()`.
+
+**Invocación:**
+```bash
+node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js olas
+```
+
+**Output esperado (markdown):**
+```
+## Olas del pipeline — 2026-05-24
+
+| Ola | Estado | Issues | Completado | Fecha objetivo | Goal |
+|-----|--------|--------|------------|----------------|------|
+| 5   | 🟢 active   | 7  | 4/7 (57%)  | 2026-05-30 | Wave foundations |
+| 6   | 🟡 planned  | 9  | 0/9 (0%)   | 2026-06-06 | Planner multi-wave |
+| 4   | ✅ archived | 6  | 6/6 (100%) | 2026-05-23 | Pre-wave hardening |
+
+**Resumen:** 1 activa · 1 planeada(s) · 1 cerrada(s)
+```
+
+**Si no hay olas registradas:** mensaje `⚠️ No hay olas registradas...` con
+sugerencia `/planner componer-ola 1` para crear la primera.
+
+### Comando: `horizonte <N>`
+
+Propone composición para las próximas `N` olas a partir de la siguiente a la
+activa. Cada ola consume del backlog (Ready + needs-definition) sin duplicar.
+
+**Restricciones (SEC-1):** `N` debe ser entero en `[1, 12]`.
+
+**Invocación:**
+```bash
+node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js horizonte 3
+```
+
+**Output esperado (markdown):**
+```
+## Horizonte propuesto — próximas 3 ola(s)
+
+### Ola 6 — propuesta (capacidad: 9 issues)
+- Carry-over: 2 issue(s)
+  1. 🟡 #NNN título... (M) priority:high → Stream A
+  2. 🟡 #NNN título... (S) priority:high → Stream B
+- Ready: 4 issue(s)
+  3. 🟢 #NNN título... (M) priority:high → Stream A
+  ...
+- Needs-definition (por prioridad): 3 issue(s)
+  ...
+
+### Ola 7 — propuesta (capacidad: 9 issues)
+...
+
+**Backlog restante post-horizonte:** 5 issue(s) (3 Ready, 2 needs-definition)
+```
+
+### Comando: `componer-ola <N> [--force] [--json]`
+
+Compone la ola `N` combinando: **carry-over** (issues incompletos de la ola
+N-1 que siguen OPEN en GitHub) → **Ready** (por prioridad) →
+**needs-definition** (por prioridad). Respeta `waves.capacity` y emite
+warnings cuando hay alertas (carry-over masivo, backlog remanente, ola vacía).
+
+**Restricciones:**
+- SEC-1: `N` entero en `[1, 9999]`.
+- SEC-5: si la ola N ya existe (activa o planeada), responde con mensaje
+  idempotente — **no sobrescribe** sin `--force`.
+
+**Flags:**
+- `--force` — recomponer aunque la ola exista (planeado para H3; por ahora
+  responde "NOT IMPLEMENTED" para evitar destruir estado por accidente).
+- `--json` — devolver solo el bloque JSON estructurado (para pipes
+  downstream).
+
+**Invocación:**
+```bash
+node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js componer-ola 6
+```
+
+**Output esperado:** El CLI imprime markdown legible seguido de un bloque
+fenced \`\`\`json\`\`\` con la estructura completa. Ver el test
+`renderComposeWave: bloque JSON es parseable (SEC-3)` para el shape exacto.
+Resumen:
+
+- `## Ola N — composición propuesta`
+- `**Capacidad configurada:** N`
+- 3 secciones (`### Carry-over...`, `### Ready (...)`, `### Needs-definition...`)
+  con bullets numerados continuos.
+- `### Validación` con checks `✅ Capacidad respetada`, `✅ Orden` y warnings
+  cuando aplique (`⚠️`, `🔴 CARRY_OVER_DOMINANT`, `⛔ EMPTY_WAVE`).
+- Bloque JSON estructurado con `wave`, `composed_at`, `capacity`, `groups`,
+  `warnings`, `issues[]` (cada issue con `number, source, priority, size, stream`).
+
+**Si el backlog está vacío (CA-V1):** mensaje `⛔ No hay issues disponibles...`
+con sugerencias (`/doc nueva`, revisar labels). NO modifica `waves.json`.
+
+### Cómo invocarlo desde un mensaje del usuario al skill
+
+Cuando el usuario escribe `/planner olas`, `/planner horizonte 3` o
+`/planner componer-ola 5`, ejecutar **directamente** el script con bash y
+emitir su output verbatim (sin interpretación LLM ni resumen):
+
+```bash
+# Detectar el subcomando del argumento
+case "$1" in
+  olas)
+    node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js olas
+    ;;
+  horizonte)
+    node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js horizonte "$2"
+    ;;
+  componer-ola)
+    # Pasar todos los argumentos extra (--force, --json) al CLI
+    node /c/Workspaces/Intrale/platform/.pipeline/scripts/planner-waves-cli.js componer-ola "$2" "${@:3}"
+    ;;
+esac
+```
+
+**No re-interpretar el output del script** — su markdown ya respeta las
+guidelines de UX (paleta de emojis del skill, encabezados `##/###`,
+ancho 80 chars para Telegram mobile, escape de markdown en títulos). Cualquier
+"mejora" del LLM lo único que hace es romper el bloque JSON parseable o
+introducir variaciones que rompen consumers downstream.
+
+### Garantías de seguridad (referencia)
+
+| ID | Riesgo OWASP | Mitigación |
+|----|--------------|------------|
+| SEC-1 | A03 Injection en CLI args | `parseWaveNum` regex `^\d+$` + rango [1, 9999]; `parseHorizon` rango [1, 12] |
+| SEC-2 | A03 Markdown injection en títulos GitHub | `escapeMd` escapa `\ * _ [ ] ( ) \` ~ \| < > #`, strip control + zero-width |
+| SEC-3 | A03 JSON injection | output JSON SIEMPRE via `JSON.stringify` |
+| SEC-4 | A04 Race en writes | H2 NO escribe a `waves.json` (read-only); cuando lo necesite, delegará a `lib/waves.js` que ya es atomic |
+| SEC-5 | A04 Sobrescritura accidental | `componer-ola N` idempotente; requiere `--force` (no implementado en H2) |
+| SEC-6 | A05 Rate limit / OOM | `gh issue list --limit 200` con warning si pega el cap |
+| SEC-7 | A08 Schema corrupto | `assertWaveState` valida shape antes de operar; mensajes claros si `waves.json` está roto |
+
+Ver `.pipeline/lib/__tests__/planner-waves.test.js` para los 45 tests que
+verifican estas garantías.
 
 ---
 
@@ -874,6 +1293,34 @@ Para cada nueva historia sugerida, mostrar al usuario:
 ```
 
 Presentar máximo 5 propuestas a la vez.
+
+### Chequeo de duplicados semánticos por propuesta (#4110 CA-2/CA-5/CA-6)
+
+`proponer` es uno de los **4 puntos de entrada** que invocan el **mismo service**
+de deduplicación (`semantic-dedup.checkSemanticDuplicate`) — CA-2. Antes de
+persistir cada propuesta en `planner-proposals.json`, chequear que su contenido
+no duplique un issue abierto existente:
+
+```bash
+# Por cada propuesta (título + body). Service async.
+node -e "(async () => { const d=require('./.pipeline/lib/semantic-dedup'); const r=await d.checkSemanticDuplicate(process.argv[1], process.argv[2]); console.log(JSON.stringify(r)); })()" "TÍTULO PROPUESTA" "BODY PROPUESTA"
+```
+
+**La decisión la concentra el planner (CA-5)** — el chequeo solo **detecta**;
+acá se decide crear / redefinir / fusionar:
+
+- `level: 'alta'` → **no persistir** la propuesta: vincularla al issue existente
+  (`#<topMatch.number>`, "similitud X%"). Si la decisión implica
+  **fusionar/cerrar un issue abierto**, eso pasa **obligatoriamente por el gate
+  humano** (mismos pasos SP3.6: `human-block.reportHumanBlock` +
+  `audit-log.appendChained`) — NUNCA automático (CA-6).
+- `level: 'parcial'` → persistir, acotando el alcance para no solapar; documentar
+  el ajuste en el `body` de la propuesta.
+- `level: 'ninguna'` → persistir normal.
+
+Copy sin jerga ("similitud X%", nunca "Jaccard"/"LLM-judge"/"embeddings").
+Fail-open (A04): si el service falla, persistir sin chequear por contenido
+(jamás cerrar/fusionar por un error del service).
 
 ### Persistir propuestas y enviar botones Telegram
 
@@ -989,3 +1436,25 @@ Luego agregar al Project V2 siguiendo el patrón de `../doc/api-patterns.md`.
 - Cuando dos issues son paralelos, mencionarlo explícitamente
 - Citar el número de issue en todas las referencias (#NNN)
 - No modificar issues cerrados
+
+## Entregable de cierre de fase
+
+> Doctrina común (#3929 / EP3-H3): cada productor deja el **artefacto físico** de su fase, no sólo un comentario en el issue. Reglas completas de formato, paths y seguridad (CA-5..CA-9): [`docs/pipeline/entregables-multimedia-por-agente.md`](../../../docs/pipeline/entregables-multimedia-por-agente.md) → §5.bis "Doctrina de cierre de fase".
+
+Antes de salir (después de escribir tu resultado), generá el artefacto en el root issue-scoped:
+
+- **Path:** `.pipeline/assets/docs/{issue}/`
+- **Formato:** Markdown o PDF + diagrama en SVG (plan / Gantt)
+
+Usá el helper compartido, que centraliza validación de `issue` (CA-5), redacción de secrets (CA-6) y sanitización SVG (CA-8) — **no reimplementes estas reglas**:
+
+```js
+const path = require("path");
+const { writeDeliverable } = require(path.resolve(".pipeline/lib/write-deliverable"));
+// #4466 — pasar `fase` puebla el índice .pipeline/deliverables/<issue>.json (store #4255)
+// y da filename phase-scoped. Tomamos la fase real del pipeline desde el env inyectado.
+const fase = process.env.PIPELINE_FASE || "sizing";
+writeDeliverable("planner", issue, { fase, md /* o svg para mockups/diagramas */ });
+```
+
+El enforcement es **warn-only**: no generar el archivo no bloquea el pipeline, pero cuenta para la cobertura ≥80% de la ola (CA-4).

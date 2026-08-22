@@ -1,0 +1,11 @@
+{
+  "_doc": "Fixture sintético: respuesta JSON de error de tipo context_length_exceeded — categoría 'permanent_failure'. El fallback NO resuelve esta clase de error (otro provider también va a fallar o requerirá truncado), pero el parser igualmente emite shouldFallback=true por defensa: el caller NO debe setFlag, y el siguiente spawn intenta otro provider que PODRÍA soportar context mayor.",
+  "synthetic": true,
+  "source_url": "https://platform.openai.com/docs/guides/error-codes",
+  "provider": "openai-codex",
+  "transport": "api",
+  "expected_error_class": "permanent_failure",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "{\"error\":{\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\",\"message\":\"This model's maximum context length is 200000 tokens. However, your messages resulted in 250000 tokens.\"}}"
+}

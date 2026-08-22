@@ -73,18 +73,31 @@ const SENSITIVE_JSON_KEYS = Object.freeze([
 ]);
 
 // Claves sensibles en query string (CA-17).
+// `key` agregado en #3260: la API de Gemini Google acepta la API key como
+// `?key=<key>` (https://generativelanguage.googleapis.com/...?key=AIza...).
+// Si esa URL termina en un log o body excerpt del live-ping, sin esta entrada
+// la key quedaría leakeada en claro. La redaction es defense-in-depth — el
+// implementador siempre debería pasar la key como header `x-goog-api-key`,
+// pero por compat con SDKs ajenos protegemos el query también.
 const SENSITIVE_QUERY_KEYS = Object.freeze([
     'token',
     'access_token',
     'refresh_token',
     'api_key',
     'apikey',
+    'key',
     'password',
     'code',
     'otp',
     'secret',
     'sig',
     'signature',
+    // #3837 — params sensibles de URLs presigned de AWS S3 (aparecen en logs de
+    // upload a Drive/S3). `normalizeKey` colapsa guiones → 'xamzsignature', etc.,
+    // por eso NO los cubre el genérico 'signature'/'token'.
+    'x-amz-signature',
+    'x-amz-credential',
+    'x-amz-security-token',
 ]);
 
 // --- User agent fijo (SEC-11 no bloqueante pero recomendado) -----------------

@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 37 — Wizard de onboarding del descriptor de producto (#4691 · P6)
+  ----------------------------------------------------------------------------
+  Superficie A del issue #4691, pieza CA-1.1 / CA-1.2. Alta de un producto
+  nuevo desde interfaz, sin editar archivos a mano (CA-5.2). El wizard escribe
+  y valida contra contracts/project.schema.json via lib/project-descriptor.js
+  (Ajv fail-closed + anti-injection). Migraciones via
+  lib/project-descriptor-migrations.js.
+
+  Estructura del wizard (5 pasos, reusa patron de wizard-ola.js / wizard-providers.js):
+    Paso 1 · Identidad        -> identity.projectId + nombre
+    Paso 2 · Repositorios     -> repositories[] (URL con allowlist de host, SEC-6/SSRF)
+    Paso 3 · Tablero + Skills -> board.{interface, skills}
+    Paso 4 · Entorno (env)    -> env por REFERENCIA (credentials.js), nunca valor crudo (SEC-4)
+    Paso 5 · Autoridad + firma-> authority.{signers, gates}
+  Cierre: revision -> POST /api/product/onboard (CSRF/SameSite, sin GET con efecto).
+
+  Decisiones UX consolidadas:
+    - Validacion inline por campo, fail-closed: input invalido -> mensaje
+      accionable, no se persiste (CA-1.1). El boton "Crear producto" queda
+      deshabilitado hasta que el schema valida.
+    - Los secretos se ingresan y muestran SOLO como referencia (nombre de la
+      key en credentials.js). La UI nunca acepta ni renderiza el valor crudo
+      (SEC-4). Placeholder explicito "ref://credentials/<key>".
+    - Las URLs de repos se validan contra allowlist de host antes de aceptar
+      (defensa SSRF/clone arbitrario aguas abajo, SEC-6). Host no permitido ->
+      error inline, no avanza.
+    - El paso de Autoridad advierte que agregarse a si mismo como firmante
+      queda auditado y sujeto a separacion de deberes (SEC-2).
+    - Editar un descriptor existente reusa el mismo wizard precargado
+      (CA-1.2), con re-validacion de schema al guardar.
+
+  Tokens: --surface-0/1/2/3, --border(-subtle/-strong), --text-*, --brand-cyan,
+  --brand-blue, --success-bg, --danger-bg, --warning-bg, --radius(-sm/-md/-lg).
+  WCAG AA. SVG sin codigo activo. Render 1600x1200.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <linearGradient id="brandGrad37" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1890FF"/>
+      <stop offset="100%" stop-color="#00D6FF"/>
+    </linearGradient>
+    <filter id="elev37" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="1200" fill="#0D1117"/>
+
+  <!-- HEADER -->
+  <text x="40" y="52" fill="#E6EDF3" font-size="24" font-weight="700">Issue #4691 — Wizard de onboarding del descriptor</text>
+  <text x="40" y="80" fill="#8B949E" font-size="14">Superficie A · alta de producto desde interfaz (CA-1.1) · validacion fail-closed contra project.schema.json · secretos por referencia (SEC-4) · SSRF allowlist (SEC-6)</text>
+
+  <!-- STEPPER -->
+  <g transform="translate(40, 110)">
+    <rect x="0" y="0" width="1520" height="76" rx="14" fill="#161B22" stroke="#30363D"/>
+    <g transform="translate(40, 38)" font-size="12">
+      <!-- paso 1 activo -->
+      <circle cx="0" cy="0" r="16" fill="#00D6FF"/><text x="0" y="5" fill="#0D1117" font-size="13" font-weight="700" text-anchor="middle">1</text>
+      <text x="26" y="5" fill="#E6EDF3" font-weight="600">Identidad</text>
+      <line x1="140" y1="0" x2="240" y2="0" stroke="#30363D" stroke-width="2"/>
+      <!-- paso 2 -->
+      <circle cx="270" cy="0" r="16" fill="#1C2128" stroke="#30363D"/><text x="270" y="5" fill="#8B949E" text-anchor="middle">2</text>
+      <text x="296" y="5" fill="#8B949E">Repositorios</text>
+      <line x1="420" y1="0" x2="520" y2="0" stroke="#30363D" stroke-width="2"/>
+      <circle cx="550" cy="0" r="16" fill="#1C2128" stroke="#30363D"/><text x="550" y="5" fill="#8B949E" text-anchor="middle">3</text>
+      <text x="576" y="5" fill="#8B949E">Tablero + Skills</text>
+      <line x1="720" y1="0" x2="820" y2="0" stroke="#30363D" stroke-width="2"/>
+      <circle cx="850" cy="0" r="16" fill="#1C2128" stroke="#30363D"/><text x="850" y="5" fill="#8B949E" text-anchor="middle">4</text>
+      <text x="876" y="5" fill="#8B949E">Entorno (env)</text>
+      <line x1="1010" y1="0" x2="1110" y2="0" stroke="#30363D" stroke-width="2"/>
+      <circle cx="1140" cy="0" r="16" fill="#1C2128" stroke="#30363D"/><text x="1140" y="5" fill="#8B949E" text-anchor="middle">5</text>
+      <text x="1166" y="5" fill="#8B949E">Autoridad + firma</text>
+    </g>
+  </g>
+
+  <!-- FORM CARD (paso 2 mostrado, con validacion) -->
+  <g transform="translate(40, 210)">
+    <rect x="0" y="0" width="1000" height="760" rx="14" fill="#161B22" stroke="#30363D" filter="url(#elev37)"/>
+    <text x="30" y="44" fill="#E6EDF3" font-size="18" font-weight="700">Paso 2 · Repositorios</text>
+    <text x="30" y="70" fill="#8B949E" font-size="13">Declara los repos del producto. Cada URL se valida contra la allowlist de host antes de aceptarse (SEC-6 · defensa SSRF).</text>
+
+    <!-- campo repo 1 valido -->
+    <g transform="translate(30, 100)">
+      <text x="0" y="0" fill="#B1BAC4" font-size="13" font-weight="600">Repositorio principal</text>
+      <rect x="0" y="14" width="940" height="46" rx="8" fill="#0D1117" stroke="#3FB950"/>
+      <text x="16" y="42" fill="#E6EDF3" font-size="14">https://github.com/intrale/platform</text>
+      <text x="920" y="42" fill="#3FB950" font-size="16" text-anchor="end">✓</text>
+      <text x="0" y="80" fill="#3FB950" font-size="11">host github.com en allowlist · formato valido</text>
+    </g>
+
+    <!-- campo repo 2 invalido -->
+    <g transform="translate(30, 210)">
+      <text x="0" y="0" fill="#B1BAC4" font-size="13" font-weight="600">Repositorio adicional</text>
+      <rect x="0" y="14" width="940" height="46" rx="8" fill="#0D1117" stroke="#F85149"/>
+      <text x="16" y="42" fill="#E6EDF3" font-size="14">http://169.254.169.254/latest/meta-data</text>
+      <text x="920" y="42" fill="#F85149" font-size="16" text-anchor="end">✕</text>
+      <rect x="0" y="70" width="940" height="30" rx="6" fill="rgba(248,81,73,0.14)"/>
+      <text x="12" y="90" fill="#F85149" font-size="12">Host no permitido (posible SSRF). Solo se aceptan hosts de la allowlist: github.com. Corregi la URL para continuar.</text>
+    </g>
+
+    <!-- boton agregar -->
+    <g transform="translate(30, 330)">
+      <rect x="0" y="0" width="180" height="40" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="90" y="25" fill="#8B949E" font-size="13" text-anchor="middle">+ Agregar repo</text>
+    </g>
+
+    <!-- separador -->
+    <line x1="30" y1="400" x2="970" y2="400" stroke="#21262D"/>
+
+    <!-- nota de validacion fail-closed -->
+    <g transform="translate(30, 420)">
+      <rect x="0" y="0" width="940" height="70" rx="10" fill="rgba(210,153,34,0.14)" stroke="rgba(210,153,34,0.3)"/>
+      <text x="16" y="28" fill="#D29922" font-size="12" font-weight="700">Validacion fail-closed (CA-1.1 · Ajv contra project.schema.json)</text>
+      <text x="16" y="50" fill="#B1BAC4" font-size="12">El descriptor no se persiste si algun campo no valida. El boton "Crear producto" del ultimo paso queda deshabilitado hasta que TODO el schema valida.</text>
+    </g>
+
+    <!-- navegacion -->
+    <g transform="translate(30, 690)">
+      <rect x="0" y="0" width="140" height="46" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <text x="70" y="29" fill="#8B949E" font-size="14" text-anchor="middle">← Atras</text>
+      <rect x="800" y="0" width="140" height="46" rx="8" fill="#1C2128" stroke="#484F58"/>
+      <text x="870" y="29" fill="#6E7681" font-size="14" text-anchor="middle">Siguiente →</text>
+      <text x="180" y="29" fill="#6E7681" font-size="11">Siguiente deshabilitado: hay 1 repo con host no permitido</text>
+    </g>
+  </g>
+
+  <!-- PANEL LATERAL: resumen del descriptor + reglas -->
+  <g transform="translate(1060, 210)">
+    <rect x="0" y="0" width="500" height="760" rx="14" fill="#161B22" stroke="#30363D"/>
+    <text x="24" y="40" fill="#00D6FF" font-size="14" font-weight="700">Descriptor en construccion</text>
+    <text x="24" y="62" fill="#8B949E" font-size="11">contracts/project.schema.json · schemaVersion actual</text>
+
+    <!-- json preview -->
+    <g transform="translate(24, 84)">
+      <rect x="0" y="0" width="452" height="330" rx="10" fill="#0D1117" stroke="#21262D"/>
+      <g font-family="Consolas, Menlo, monospace" font-size="12">
+        <text x="16" y="30" fill="#8B949E">{</text>
+        <text x="32" y="52" fill="#79C0FF">"identity"</text><text x="110" y="52" fill="#8B949E">: {</text>
+        <text x="48" y="74" fill="#79C0FF">"projectId"</text><text x="140" y="74" fill="#A5D6FF">: "comercios-ar"</text>
+        <text x="32" y="96" fill="#8B949E">},</text>
+        <text x="32" y="118" fill="#79C0FF">"repositories"</text><text x="150" y="118" fill="#8B949E">: [ ... ],</text>
+        <text x="32" y="140" fill="#79C0FF">"board"</text><text x="90" y="140" fill="#8B949E">: {</text>
+        <text x="48" y="162" fill="#79C0FF">"interface"</text><text x="140" y="162" fill="#A5D6FF">: "github"</text>
+        <text x="48" y="184" fill="#79C0FF">"skills"</text><text x="115" y="184" fill="#8B949E">: [ ... ]</text>
+        <text x="32" y="206" fill="#8B949E">},</text>
+        <text x="32" y="228" fill="#79C0FF">"env"</text><text x="72" y="228" fill="#8B949E">: {</text>
+        <text x="48" y="250" fill="#79C0FF">"AWS_KEY"</text><text x="128" y="250" fill="#7EE787">: "ref://credentials/aws-ar"</text>
+        <text x="32" y="272" fill="#8B949E">},</text>
+        <text x="32" y="294" fill="#79C0FF">"authority"</text><text x="120" y="294" fill="#8B949E">: { ... },</text>
+        <text x="32" y="316" fill="#79C0FF">"status"</text><text x="105" y="316" fill="#A5D6FF">: "onboarding"</text>
+      </g>
+    </g>
+
+    <!-- reglas de seguridad -->
+    <g transform="translate(24, 434)">
+      <text x="0" y="0" fill="#B1BAC4" font-size="13" font-weight="700">Reglas aplicadas</text>
+
+      <rect x="0" y="14" width="452" height="66" rx="8" fill="rgba(126,231,135,0.10)" stroke="rgba(126,231,135,0.3)"/>
+      <text x="14" y="36" fill="#7EE787" font-size="12" font-weight="700">SEC-4 · Secretos por referencia</text>
+      <text x="14" y="56" fill="#B1BAC4" font-size="11">env muestra "ref://credentials/&lt;key&gt;", nunca el valor crudo.</text>
+      <text x="14" y="72" fill="#8B949E" font-size="11">Ver/editar descriptor de un producto no filtra refs de otro.</text>
+
+      <rect x="0" y="92" width="452" height="66" rx="8" fill="rgba(88,166,255,0.10)" stroke="rgba(88,166,255,0.3)"/>
+      <text x="14" y="114" fill="#58A6FF" font-size="12" font-weight="700">SEC-6 · Input validado (Konform/Ajv)</text>
+      <text x="14" y="134" fill="#B1BAC4" font-size="11">URLs de repos con allowlist de host. Todo campo validado.</text>
+      <text x="14" y="150" fill="#8B949E" font-size="11">Fail-closed: input invalido no se persiste.</text>
+
+      <rect x="0" y="170" width="452" height="66" rx="8" fill="rgba(248,81,73,0.10)" stroke="rgba(248,81,73,0.3)"/>
+      <text x="14" y="192" fill="#F85149" font-size="12" font-weight="700">SEC-2 · Autoridad = separacion de deberes</text>
+      <text x="14" y="212" fill="#B1BAC4" font-size="11">Agregarse como firmante queda auditado y no se autoaplica.</text>
+      <text x="14" y="228" fill="#8B949E" font-size="11">Requiere firma del respaldo (paso 5).</text>
+    </g>
+
+    <text x="24" y="710" fill="#6E7681" font-size="11">Cierre → POST /api/product/onboard (CSRF/SameSite · sin GET con efecto · SEC-7)</text>
+  </g>
+</svg>

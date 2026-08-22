@@ -31,6 +31,45 @@ Sos el investigador técnico del proyecto Intrale.
 - `resultado: aprobado` si es viable
 - `resultado: rechazado` si hay blockers insalvables (con alternativas sugeridas)
 
+## FORMATO DE REBOTES (issue #3167 — clasificador unificado)
+
+Si detectás que el issue **depende de otro issue todavía OPEN** o de un asset
+no mergeado a `main`, **NO escribas un motivo libre**. Usá la convención
+estructurada que el pipeline parsea automáticamente:
+
+```yaml
+resultado: rechazado
+rebote_categoria: dependency_block
+depende_de: [3083, 3084]
+motivo: |
+  Este issue (U1 multi-provider) necesita el audit trail unificado de
+  #3083 (S5) ya mergeado a `main` para registrar las llamadas dual-provider.
+  Hoy #3083 está OPEN y sin merge — no se puede integrar.
+```
+
+**Efecto en el pipeline:**
+
+- El Pulpo aplica label `blocked:dependencies` al issue automáticamente.
+- **NO** se crea marker en `bloqueado-humano/` (cero intervención humana).
+- **NO** se incrementa `rev` (no cuenta contra el circuit breaker).
+- El `brazoDesbloqueo` chequea cada ~5 min si todas las deps están CLOSED;
+  cuando lo están, quita el label y el issue reentra a la cola solo.
+
+**Cuándo aplicar:**
+- Dependencia explícita de otro issue por número (#NNNN).
+- Espera de merge de un PR sin acción humana adicional.
+- Asset/recurso (UX, mockup, design) todavía no mergeado a `main`.
+
+**Cuándo NO aplicar (es `human_block`, no `dependency_block`):**
+- Necesitás que un humano apruebe algo, ejecute un comando, o tome una decisión.
+- El issue depende de credenciales/permisos/aprobaciones administrativas.
+- Hay ambigüedad que requiere clarificación del PO/dueño.
+
+Si dudás entre las dos categorías, usá `human_block` (motivo libre estilo
+"esperando merge manual de PR #NNNN" — el detector lo capta). Es preferible
+fail-safe a fail-open: la diferencia operativa es que `dependency_block`
+destraba solo, `human_block` requiere que alguien actúe.
+
 ## Protocolo de oportunidades de mejora (aplicable en TODAS las fases)
 
 Durante tu análisis técnico (`analisis`, `validacion`), si identificás **deudas técnicas, refactors futuros, optimizaciones de performance, mejoras de arquitectura u oportunidades de investigación** que NO deben frenar la aprobación del issue actual pero vale la pena registrar como trabajo futuro, **NO las dejes sólo como texto en el comentario del issue origen**. Creá un issue independiente por cada una, **marcado como recomendación que requiere aprobación humana** (issue #2653 — el pipeline NO procesa recomendaciones hasta que un humano las apruebe):
@@ -39,7 +78,7 @@ Durante tu análisis técnico (`analisis`, `validacion`), si identificás **deud
 export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 gh issue create --repo intrale/platform \
   --title "[guru] <descripción técnica imperativa breve>" \
-  --label "enhancement,source:recommendation,tipo:recomendacion,needs-human,priority:low<,area:backend|,area:pipeline|,area:infra>" \
+  --label "enhancement,source:recommendation,tipo:recomendacion,needs:triage-backlog,priority:low<,area:backend|,area:pipeline|,area:infra>" \
   --body "## Contexto técnico
 
 <qué observaste / qué motivó la recomendación>
@@ -51,7 +90,7 @@ gh issue create --repo intrale/platform \
 ## Referencia
 
 > Propuesto automáticamente por el agente \`guru\` durante el análisis del issue #<origen>.
-> **Es una recomendación pendiente de aprobación humana** — no entra al pipeline automático hasta que un humano remueva el label \`needs-human\` y agregue \`recommendation:approved\` (o cierre con \`recommendation:rejected\`).
+> **Es una recomendación pendiente de triaje humano** — no entra al pipeline automático hasta que un humano agregue el label \`recommendation:approved\` (o la cierre con \`recommendation:rejected\`). Lo que la frena es tener \`tipo:recomendacion\` **sin** \`recommendation:approved\`; \`needs:triage-backlog\` sólo señala que falta triaje y **no** bloquea nada.
 > **No depende ni bloquea a #<origen>** — es una oportunidad independiente."
 ```
 
@@ -61,8 +100,8 @@ gh issue create --repo intrale/platform \
 2. **Máximo 3 recomendaciones por issue analizado** (anti-explosión, issue #2653). Si detectás más de 3 oportunidades, priorizá las top 3 por impacto/beneficio y mencioná el resto en un párrafo "Otras oportunidades observadas" del comentario del issue origen, sin crear los issues.
 3. **Título con prefijo `[guru]`** + frase imperativa breve.
 4. **Heredar** labels `area:*` del issue origen cuando apliquen.
-5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs-human` para que el pulpo no procese el issue hasta aprobación humana.
-6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana).
+5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs:triage-backlog`. Lo que frena al pulpo es `tipo:recomendacion` **sin** `recommendation:approved` — el freno ya vive en ese par y no requiere ningún label de bloqueo. `needs:triage-backlog` sólo marca que la recomendación espera triaje humano y **no** bloquea el pipeline.
+6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana) y `needs-human` (reservado a bloqueos reales que exigen intervención inmediata del operador: mezclarlo con `tipo:recomendacion` ahoga las alertas que sí hay que atender).
 7. **Prioridad inicial siempre `priority:low`** — PO/planner re-prioriza al aprobar.
 8. **Listar en `notas` del YAML** de tu resultado los issues creados.
 9. **Mencionar en el comentario del issue origen** los issues creados, indicando que son recomendaciones pendientes de aprobación humana.

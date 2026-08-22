@@ -1,0 +1,351 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 39 — Panel de gestion del roadmap de olas (#4351 — Ola 8.3)
+  -----------------------------------------------------------------------------
+  Superficie de GESTION (no solo lectura) del roadmap de olas del pipeline V3.
+  Complementa al mockup 20 (widget read-only "Proximas Olas", lookahead 1):
+  este panel es la consola donde el operador CREA, ASOCIA/DESASOCIA, REORDENA,
+  PROMUEVE y ARCHIVA olas sin tocar waves.json a mano.
+
+  Mapeo a Criterios de Aceptacion (PO, issue #4351):
+    CA-1  Crear ola          -> panel derecho "Crear ola" (form/wizard), boton
+                                 primario "Crear ola" en el header, hint de
+                                 rechazo por numero duplicado.
+    CA-2  Asociar/desasociar -> chips de issue con boton (ic-remove-circle) en
+                                 olas PLANIFICADAS; en la ACTIVA los chips estan
+                                 BLOQUEADOS (candado) — politica A04 explicita.
+    CA-3  Reordenar          -> ic-drag-handle a la izquierda de cada ola
+                                 planificada + indicador de posicion (1,2,3).
+    CA-4  Consultar roadmap  -> tres secciones: ACTIVA / PLANIFICADAS / ARCHIVADAS
+                                 cada una con sus issues.
+    CA-5  Archivar           -> boton "Archivar" (ic-archive-box) en ola cerrada;
+                                 seccion ARCHIVADAS colapsable.
+    CA-6  Promover + sync    -> boton "Promover" (ic-promote) en la 1a planificada;
+                                 nota de sync de habilitados (dep #4350).
+    CA-7  Integridad         -> banda inferior "lock + atomic + snapshot + audit".
+    CA-8  Input seguro       -> hints de validacion en el form (bounds + escape).
+
+  Sistema visual (100% reuso de design-tokens.css — sin tonos nuevos):
+    - Acento ola ACTIVA:     --purple      #BC8CFF   (lane-definicion / planning)
+    - Acento PLANIFICADAS:   --purple-dim  #8957E5   (mismo arbol, desaturado)
+    - Acento ARCHIVADAS:     --text-dim    #8B949E   (neutro, "cerrado")
+    - Superficies:  --surface-0 #0D1117 / -1 #161B22 / -2 #1C2128 / -3 #252B33
+    - Bordes:       --border #30363D / --border-subtle #21262D
+    - Texto:        primary #E6EDF3 / secondary #B1BAC4 / dim #8B949E
+    - Semanticos de estado de issue (whitelist cerrada, igual que mockup 20):
+        ready       --success #3FB950 | needs-def --warning #D29922
+        in-progress --info    #58A6FF | blocked   --danger  #F85149
+        unknown     --text-dim #8B949E (fallback seguro)
+    - Pills de prioridad (whitelist): critical --danger / high --retry
+        / medium --warning / low --text-dim
+    - Iconos (sprite.svg): ic-wave, ic-wave-add (NUEVO), ic-drag-handle,
+        ic-remove-circle, ic-promote, ic-archive-box, ic-shield-lock,
+        ic-overflow-more, ic-expand, ic-info.
+
+  Accesibilidad (WCAG AA):
+    - Nunca informacion solo por color: estado = color + glyph + texto;
+      prioridad = color + texto; posicion de reorder = numero + drag-handle.
+    - Touch targets de acciones (drag, remove, promover, archivar) >= 32px.
+    - Contrastes heredados de los tokens (primary 14.8:1, dim 5.3:1).
+
+  Seguridad (alineado a security #4351):
+    - Todo texto de waves.json (nombre/objetivo/titulo de issue) se escapa al
+      render (textContent / escapeHtml). El mockup muestra titulos truncados.
+    - El form ilustra bounds: numero entero puro, concurrency_max y
+      window_minutes con min/max, nombre length-bound. Prompt-injection en
+      texto libre se rechaza antes de interpolar.
+    - Toda accion mutante pasa por lock + atomic + snapshot + audit (banda inf).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1180" viewBox="0 0 1440 1180"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif"
+     role="img" aria-label="Mockup panel de gestion del roadmap de olas del pipeline V3: crear, asociar, reordenar, promover y archivar olas">
+  <defs>
+    <linearGradient id="brandGradWR" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="purpleGradWR" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#BC8CFF"/>
+      <stop offset="100%" stop-color="#8957E5"/>
+    </linearGradient>
+    <linearGradient id="progGradWR" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#8957E5"/>
+      <stop offset="100%" stop-color="#BC8CFF"/>
+    </linearGradient>
+
+    <!-- Iconos usados (subset del sprite; en produccion se referencian del sprite global) -->
+    <symbol id="ic-wave" viewBox="0 0 24 24">
+      <path d="M3 9 C 6 6, 9 6, 12 9 S 18 12, 21 9" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M3 15 C 6 12, 9 12, 12 15 S 18 18, 21 15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
+    </symbol>
+    <symbol id="ic-wave-add" viewBox="0 0 24 24">
+      <path d="M3 8 C 5.5 5.5, 8 5.5, 10.5 8 S 15 10, 17 8.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M3 13.5 C 5.5 11, 8 11, 10.5 13.5 S 15 15.5, 17 14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
+      <circle cx="18" cy="18" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M18 15.7 V20.3 M15.7 18 H20.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="ic-drag-handle" viewBox="0 0 24 24">
+      <circle cx="9" cy="7" r="1.5" fill="currentColor"/><circle cx="15" cy="7" r="1.5" fill="currentColor"/>
+      <circle cx="9" cy="12" r="1.5" fill="currentColor"/><circle cx="15" cy="12" r="1.5" fill="currentColor"/>
+      <circle cx="9" cy="17" r="1.5" fill="currentColor"/><circle cx="15" cy="17" r="1.5" fill="currentColor"/>
+    </symbol>
+    <symbol id="ic-remove-circle" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M8.4 12 H15.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="ic-promote" viewBox="0 0 24 24">
+      <path d="M12 4 V18" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+      <path d="M7 9 L12 4 L17 9" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="4" y="18" width="16" height="3" rx="0.8" fill="currentColor" opacity="0.55"/>
+    </symbol>
+    <symbol id="ic-archive-box" viewBox="0 0 24 24">
+      <rect x="3" y="5" width="18" height="4.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M5 9.5 V19 A1.5 1.5 0 0 0 6.5 20.5 H17.5 A1.5 1.5 0 0 0 19 19 V9.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M9.5 13.5 H14.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="ic-shield-lock" viewBox="0 0 24 24">
+      <path d="M12 3 L19 6 V11 C19 16 15.5 19.5 12 21 C8.5 19.5 5 16 5 11 V6 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <rect x="9.2" y="11" width="5.6" height="4.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M10.4 11 V9.6 A1.6 1.6 0 0 1 13.6 9.6 V11" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    </symbol>
+    <symbol id="ic-overflow-more" viewBox="0 0 24 24">
+      <circle cx="12" cy="5.5" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="18.5" r="1.6" fill="currentColor"/>
+    </symbol>
+    <symbol id="ic-expand" viewBox="0 0 24 24">
+      <rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M8.5 10.5 L12 14 L15.5 10.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="ic-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M12 11 V16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      <circle cx="12" cy="8" r="1.1" fill="currentColor"/>
+    </symbol>
+  </defs>
+
+  <!-- ===================== Fondo ===================== -->
+  <rect width="1440" height="1180" fill="#0D1117"/>
+
+  <!-- ===================== Header ===================== -->
+  <g transform="translate(40,32)">
+    <g transform="translate(0,4)" color="#BC8CFF"><use href="#ic-wave" width="30" height="30"/></g>
+    <text x="42" y="18" fill="#E6EDF3" font-size="24" font-weight="700">Roadmap de Olas</text>
+    <text x="42" y="42" fill="#8B949E" font-size="14">Gestion centralizada — crear, asociar, reordenar, promover y archivar sin editar waves.json a mano</text>
+
+    <!-- Boton primario: Crear ola -->
+    <g transform="translate(1140,-2)">
+      <rect width="220" height="44" rx="10" fill="url(#purpleGradWR)"/>
+      <g transform="translate(20,10)" color="#0D1117"><use href="#ic-wave-add" width="24" height="24"/></g>
+      <text x="52" y="28" fill="#0D1117" font-size="15" font-weight="700">Crear ola</text>
+    </g>
+  </g>
+
+  <line x1="40" y1="94" x2="1400" y2="94" stroke="#21262D" stroke-width="1"/>
+
+  <!-- ===================== Columna izquierda: roadmap ===================== -->
+  <!-- ------- OLA ACTIVA ------- -->
+  <g transform="translate(40,118)">
+    <text x="0" y="0" fill="#8B949E" font-size="12" font-weight="700" letter-spacing="1.5">OLA ACTIVA</text>
+
+    <rect x="0" y="14" width="900" height="196" rx="14" fill="#161B22" stroke="#8957E5" stroke-width="1.5"/>
+    <rect x="0" y="14" width="4" height="196" rx="2" fill="#BC8CFF"/>
+
+    <!-- header de la ola activa -->
+    <g transform="translate(24,40)">
+      <circle cx="6" cy="6" r="6" fill="#3FB950"/>
+      <text x="22" y="11" fill="#3FB950" font-size="12" font-weight="700" letter-spacing="1">ACTIVA</text>
+      <text x="96" y="12" fill="#E6EDF3" font-size="18" font-weight="700">Ola 8.3 — Gestion de olas</text>
+      <text x="0" y="38" fill="#B1BAC4" font-size="13">Objetivo: superficie unica y auditable para operar el roadmap del pipeline.</text>
+
+      <!-- meta chips -->
+      <g transform="translate(0,54)" font-size="12">
+        <rect x="0" y="0" width="150" height="26" rx="6" fill="#1C2128" stroke="#30363D"/>
+        <text x="12" y="17" fill="#8B949E">concurrency_max</text><text x="112" y="17" fill="#E6EDF3" font-weight="700">3</text>
+        <rect x="162" y="0" width="168" height="26" rx="6" fill="#1C2128" stroke="#30363D"/>
+        <text x="174" y="17" fill="#8B949E">window_minutes</text><text x="300" y="17" fill="#E6EDF3" font-weight="700">15</text>
+      </g>
+
+      <!-- barra de progreso -->
+      <g transform="translate(0,96)">
+        <rect x="0" y="0" width="620" height="8" rx="4" fill="#1C2128"/>
+        <rect x="0" y="0" width="248" height="8" rx="4" fill="url(#progGradWR)"/>
+        <text x="632" y="8" fill="#B1BAC4" font-size="12">2 de 5 listas — 40%</text>
+      </g>
+    </g>
+
+    <!-- issues de la ola activa: chips BLOQUEADOS (candado) -->
+    <g transform="translate(560,44)">
+      <g color="#8B949E"><use href="#ic-shield-lock" width="15" height="15"/></g>
+      <text x="20" y="12" fill="#8B949E" font-size="11">Issues bloqueados en activa (politica A04)</text>
+
+      <!-- chip 1 -->
+      <g transform="translate(0,26)">
+        <rect width="152" height="30" rx="8" fill="#1C2128" stroke="#30363D"/>
+        <text x="12" y="19" fill="#E6EDF3" font-size="12" font-weight="600">#4351</text>
+        <rect x="58" y="7" width="52" height="16" rx="8" fill="rgba(245,158,11,0.14)"/>
+        <text x="66" y="19" fill="#F59E0B" font-size="10" font-weight="700">high</text>
+        <g transform="translate(128,7)" color="#3FB950"><circle cx="6" cy="6" r="4"/></g>
+      </g>
+      <g transform="translate(160,26)">
+        <rect width="152" height="30" rx="8" fill="#1C2128" stroke="#30363D"/>
+        <text x="12" y="19" fill="#E6EDF3" font-size="12" font-weight="600">#4350</text>
+        <rect x="58" y="7" width="60" height="16" rx="8" fill="rgba(210,153,34,0.14)"/>
+        <text x="65" y="19" fill="#D29922" font-size="10" font-weight="700">medium</text>
+        <g transform="translate(136,7)" color="#58A6FF"><circle cx="6" cy="6" r="4"/></g>
+      </g>
+    </g>
+
+    <!-- accion: Archivar (ola cerrada) -->
+    <g transform="translate(738,178)">
+      <rect width="138" height="34" rx="8" fill="#1C2128" stroke="#30363D"/>
+      <g transform="translate(12,8)" color="#8B949E"><use href="#ic-archive-box" width="18" height="18"/></g>
+      <text x="38" y="22" fill="#B1BAC4" font-size="13" font-weight="600">Archivar</text>
+    </g>
+  </g>
+
+  <!-- ------- PLANIFICADAS ------- -->
+  <g transform="translate(40,352)">
+    <text x="0" y="0" fill="#8B949E" font-size="12" font-weight="700" letter-spacing="1.5">PLANIFICADAS</text>
+    <text x="132" y="0" fill="#6E7681" font-size="11">en orden de procesamiento — arrastrar para reordenar</text>
+
+    <!-- Planificada #1 -->
+    <g transform="translate(0,16)">
+      <rect x="0" y="0" width="900" height="98" rx="12" fill="#161B22" stroke="#30363D"/>
+      <g transform="translate(18,38)" color="#6E7681"><use href="#ic-drag-handle" width="22" height="22"/></g>
+      <circle cx="66" cy="49" r="13" fill="#252B33"/><text x="66" y="53" fill="#BC8CFF" font-size="13" font-weight="700" text-anchor="middle">1</text>
+      <text x="94" y="34" fill="#E6EDF3" font-size="16" font-weight="700">Ola 9.0 — Kernel/producto desacople</text>
+      <text x="94" y="56" fill="#8B949E" font-size="12">Independizar el modelo operativo del producto Intrale.</text>
+
+      <!-- issues chips removibles -->
+      <g transform="translate(94,66)">
+        <g><rect width="132" height="24" rx="7" fill="#1C2128" stroke="#30363D"/>
+          <text x="10" y="16" fill="#B1BAC4" font-size="11" font-weight="600">#4255</text>
+          <g transform="translate(108,4)" color="#8B949E"><use href="#ic-remove-circle" width="16" height="16"/></g></g>
+        <g transform="translate(142,0)"><rect width="132" height="24" rx="7" fill="#1C2128" stroke="#30363D"/>
+          <text x="10" y="16" fill="#B1BAC4" font-size="11" font-weight="600">#4360</text>
+          <g transform="translate(108,4)" color="#8B949E"><use href="#ic-remove-circle" width="16" height="16"/></g></g>
+      </g>
+
+      <!-- acciones: Promover (1a planificada) + overflow -->
+      <g transform="translate(720,32)">
+        <rect width="118" height="34" rx="8" fill="rgba(188,140,255,0.14)" stroke="#8957E5"/>
+        <g transform="translate(12,8)" color="#BC8CFF"><use href="#ic-promote" width="18" height="18"/></g>
+        <text x="36" y="22" fill="#BC8CFF" font-size="13" font-weight="700">Promover</text>
+      </g>
+      <g transform="translate(852,36)" color="#8B949E"><use href="#ic-overflow-more" width="22" height="22"/></g>
+    </g>
+
+    <!-- Planificada #2 -->
+    <g transform="translate(0,126)">
+      <rect x="0" y="0" width="900" height="86" rx="12" fill="#161B22" stroke="#21262D"/>
+      <g transform="translate(18,32)" color="#6E7681"><use href="#ic-drag-handle" width="22" height="22"/></g>
+      <circle cx="66" cy="43" r="13" fill="#252B33"/><text x="66" y="47" fill="#8957E5" font-size="13" font-weight="700" text-anchor="middle">2</text>
+      <text x="94" y="30" fill="#E6EDF3" font-size="16" font-weight="700">Ola 9.1 — Adaptador de producto</text>
+      <text x="94" y="52" fill="#8B949E" font-size="12">Capa que conecta el kernel operativo con el producto concreto.</text>
+      <g transform="translate(94,62)">
+        <g><rect width="132" height="24" rx="7" fill="#1C2128" stroke="#30363D"/>
+          <text x="10" y="16" fill="#B1BAC4" font-size="11" font-weight="600">#4361</text>
+          <g transform="translate(108,4)" color="#8B949E"><use href="#ic-remove-circle" width="16" height="16"/></g></g>
+      </g>
+      <g transform="translate(852,30)" color="#8B949E"><use href="#ic-overflow-more" width="22" height="22"/></g>
+    </g>
+
+    <!-- nota: promover sincroniza habilitados (dep #4350) -->
+    <g transform="translate(0,226)">
+      <g color="#58A6FF"><use href="#ic-info" width="16" height="16"/></g>
+      <text x="24" y="12" fill="#8B949E" font-size="12">Promover una ola sincroniza la lista de habilitados (allowlist / .partial-pause.json) — depende de #4350.</text>
+    </g>
+  </g>
+
+  <!-- ------- ARCHIVADAS (colapsable) ------- -->
+  <g transform="translate(40,952)">
+    <text x="0" y="0" fill="#8B949E" font-size="12" font-weight="700" letter-spacing="1.5">ARCHIVADAS</text>
+    <rect x="0" y="14" width="900" height="60" rx="12" fill="#0D1117" stroke="#21262D" stroke-dasharray="0"/>
+    <g transform="translate(18,34)" color="#6E7681"><use href="#ic-archive-box" width="22" height="22"/></g>
+    <text x="52" y="42" fill="#B1BAC4" font-size="14" font-weight="600">Ola 8.2 — Deliverables por fase</text>
+    <text x="330" y="42" fill="#6E7681" font-size="12">cerrada · 6 issues · conserva sus issues</text>
+    <g transform="translate(858,38)" color="#8B949E"><use href="#ic-expand" width="22" height="22"/></g>
+  </g>
+
+  <!-- ===================== Columna derecha: Crear ola (form/wizard) ===================== -->
+  <g transform="translate(972,118)">
+    <text x="0" y="0" fill="#8B949E" font-size="12" font-weight="700" letter-spacing="1.5">CREAR OLA</text>
+    <rect x="0" y="14" width="428" height="720" rx="14" fill="#161B22" stroke="#30363D"/>
+
+    <g transform="translate(24,44)">
+      <g color="#BC8CFF"><use href="#ic-wave-add" width="22" height="22"/></g>
+      <text x="32" y="16" fill="#E6EDF3" font-size="16" font-weight="700">Nueva ola planificada</text>
+
+      <!-- Campo: numero -->
+      <g transform="translate(0,44)">
+        <text x="0" y="0" fill="#B1BAC4" font-size="12" font-weight="600">Numero</text>
+        <rect x="0" y="10" width="180" height="40" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="35" fill="#E6EDF3" font-size="14">9.2</text>
+        <text x="0" y="66" fill="#6E7681" font-size="11">entero/decimal puro · unico</text>
+      </g>
+
+      <!-- Campo: nombre -->
+      <g transform="translate(0,124)">
+        <text x="0" y="0" fill="#B1BAC4" font-size="12" font-weight="600">Nombre</text>
+        <rect x="0" y="10" width="380" height="40" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="35" fill="#E6EDF3" font-size="14">Observabilidad del roadmap</text>
+        <text x="0" y="66" fill="#6E7681" font-size="11">texto libre · max WAVE_NAME_MAX_LEN · escapado al render</text>
+      </g>
+
+      <!-- Campo: objetivo -->
+      <g transform="translate(0,204)">
+        <text x="0" y="0" fill="#B1BAC4" font-size="12" font-weight="600">Objetivo</text>
+        <rect x="0" y="10" width="380" height="72" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="34" fill="#B1BAC4" font-size="13">Metricas y trazabilidad del avance</text>
+        <text x="14" y="54" fill="#B1BAC4" font-size="13">por ola.</text>
+      </g>
+
+      <!-- Campos: concurrency + window -->
+      <g transform="translate(0,304)">
+        <text x="0" y="0" fill="#B1BAC4" font-size="12" font-weight="600">concurrency_max</text>
+        <rect x="0" y="10" width="180" height="40" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <text x="14" y="35" fill="#E6EDF3" font-size="14">2</text>
+        <text x="200" y="0" fill="#B1BAC4" font-size="12" font-weight="600">window_minutes</text>
+        <rect x="200" y="10" width="180" height="40" rx="8" fill="#0D1117" stroke="#30363D"/>
+        <text x="214" y="35" fill="#E6EDF3" font-size="14">15</text>
+        <text x="0" y="66" fill="#6E7681" font-size="11">bounds: readWaveMaxConcurrency · WAVE_WINDOW_MIN/MAX_MINUTES</text>
+      </g>
+
+      <!-- Hint de validacion: numero duplicado -->
+      <g transform="translate(0,390)">
+        <rect x="0" y="0" width="380" height="52" rx="8" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+        <g transform="translate(14,16)" color="#F85149"><use href="#ic-info" width="18" height="18"/></g>
+        <text x="42" y="22" fill="#F85149" font-size="12" font-weight="700">El numero de ola ya existe</text>
+        <text x="42" y="40" fill="#B1BAC4" font-size="11">Se rechaza la creacion — no se corrompe waves.json.</text>
+      </g>
+
+      <!-- Botones del form -->
+      <g transform="translate(0,466)">
+        <rect x="0" y="0" width="184" height="44" rx="10" fill="url(#purpleGradWR)"/>
+        <text x="92" y="28" fill="#0D1117" font-size="14" font-weight="700" text-anchor="middle">Crear ola</text>
+        <rect x="200" y="0" width="180" height="44" rx="10" fill="#1C2128" stroke="#30363D"/>
+        <text x="290" y="28" fill="#B1BAC4" font-size="14" font-weight="600" text-anchor="middle">Cancelar</text>
+      </g>
+
+      <!-- nota de seguridad del form -->
+      <g transform="translate(0,538)">
+        <text x="0" y="0" fill="#6E7681" font-size="11">Se crea en planned_waves. La ola ACTIVA no se altera.</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ===================== Banda inferior: integridad (CA-7) ===================== -->
+  <g transform="translate(40,1052)">
+    <rect x="0" y="0" width="1360" height="88" rx="12" fill="#161B22" stroke="#21262D"/>
+    <g transform="translate(24,30)" color="#2DD4BF"><use href="#ic-shield-lock" width="30" height="30"/></g>
+    <text x="70" y="34" fill="#E6EDF3" font-size="15" font-weight="700">Toda operacion mutante es transaccional y auditada</text>
+    <text x="70" y="58" fill="#8B949E" font-size="13">crear · asociar · desasociar · reordenar · archivar · promover  →  file-lock + atomicWriteFile + snapshot/restore + audit NDJSON encadenado. Cero escrituras directas a waves.json / .partial-pause.json.</text>
+
+    <!-- pills de patron -->
+    <g transform="translate(1010,26)" font-size="11" font-weight="700">
+      <rect x="0" y="0" width="76" height="24" rx="12" fill="rgba(45,212,191,0.14)"/><text x="38" y="16" fill="#2DD4BF" text-anchor="middle">lock</text>
+      <rect x="84" y="0" width="88" height="24" rx="12" fill="rgba(45,212,191,0.14)"/><text x="128" y="16" fill="#2DD4BF" text-anchor="middle">atomic</text>
+      <rect x="180" y="0" width="98" height="24" rx="12" fill="rgba(45,212,191,0.14)"/><text x="229" y="16" fill="#2DD4BF" text-anchor="middle">snapshot</text>
+      <rect x="286" y="0" width="60" height="24" rx="12" fill="rgba(45,212,191,0.14)"/><text x="316" y="16" fill="#2DD4BF" text-anchor="middle">audit</text>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,447 @@
+# waves-schema — Modelo de planificación multi-ola (#3616)
+
+Documento operativo del schema 1.0 de `waves.json` y `.partial-pause.json`,
+del modelo de confianza, y del flujo Opción A que conecta planificación
+canónica con operación real del pipeline V3.
+
+> **Cobertura**: docs/pipeline/modelo-planificacion-multi-ola.md define el
+> *qué* y el *por qué* de las olas; este documento es el *cómo* a nivel
+> archivo + flujo + recuperación.
+
+---
+
+## TL;DR
+
+- `waves.json` es la **fuente de verdad canónica** de toda la planificación
+  (activa, planificadas, archivadas, dependencias).
+- `.partial-pause.json` es un **espejo operacional derivado**: lo lee el
+  pulpo en el intake para saber qué issues procesar.
+- `/wave promote N+X` actualiza ambos archivos atómicamente (waves.json →
+  .partial-pause.json). Nunca editar `.partial-pause.json` a mano.
+- El **boot del pulpo** corre `init-waves-from-partial.js` antes del
+  desync-detector para sembrar `waves.json` si está vacío (idempotente,
+  fail-closed).
+- Si quedan inconsistentes → `desync-detector` alerta Telegram + pone el
+  pipeline en `human-block`. **No auto-repara**.
+
+---
+
+## Diagrama del flujo (Opción A)
+
+```
+                    +--------------------+
+                    |   /wave promote N  |
+                    | (Telegram + CLI)   |
+                    +---------+----------+
+                              |
+                              v
+            +-----------------+-----------------+
+            |   promoteWaveAtomic (lib/waves)   |
+            |  1. snapshot bak + marker fsync   |
+            |  2. write waves.json (active=N)   |
+            |  3. write .partial-pause.json     |
+            |     (mismos issues de la ola N)   |
+            |  4. commit marker → unlink        |
+            +-----------------+-----------------+
+                              |
+            +-----------------+-----------------+
+            |                                   |
+            v                                   v
+    +-------+-------+                  +--------+--------+
+    |  waves.json   |                  | .partial-pause  |
+    |  (canónica)   |                  |   (espejo del   |
+    |  active+plan+ |                  |   intake)       |
+    |  archived     |                  +--------+--------+
+    +-------+-------+                           |
+            |                                   v
+            |                          +--------+--------+
+            |                          |  pulpo intake   |
+            |                          |  isIssueAllowed |
+            |                          +--------+--------+
+            |                                   |
+            v                                   v
+       +----+-----+                        +----+-----+
+       | dashboard |                        | dispatch |
+       | "Próximas |                        | a skills |
+       |  Olas"    |                        +----------+
+       +-----------+
+```
+
+Lectura del diagrama:
+- `waves.json` es la fuente de verdad; el resto del sistema deriva de ahí.
+- El pulpo **no lee `waves.json` directamente** para decidir intake. Lee
+  `.partial-pause.json` (más barato, más simple). El espejo se mantiene
+  sincronizado vía `/wave promote`.
+- El dashboard sí lee `waves.json` (vía `getHorizon(5)`) para mostrar el
+  panel "Próximas Olas".
+
+---
+
+## Schema 1.0 de `waves.json`
+
+```jsonc
+{
+  "version": "1.0",
+  "meta": {
+    "created_at": "2026-05-24T00:00:00Z",
+    "updated_at": "2026-05-29T13:00:00Z",
+    "updated_by": "init-waves-from-partial",   // o Commander, planner, etc.
+    "source": "auto-seed",                     // o "telegram", "manual", "planner"
+    "note": "Seed inicial desde .partial-pause.json (#3616). 9 issue(s) sembrados."
+  },
+  "active_wave": {                             // null si no hay ola activa
+    "number": 1,
+    "name": "Ola seed #1",
+    "goal": "Estabilizar el pipeline post-3518",
+    "started_at": "2026-05-29T13:00:00Z",
+    "issues": [
+      { "number": 3559, "status": "in_progress" },
+      { "number": 3616, "status": "in_progress" },
+      { "number": 3638, "status": "in_progress" }
+    ]
+  },
+  "planned_waves": [                           // array (vacío si no hay)
+    {
+      "number": 2,
+      "name": "Ola N+2 — Multi-provider",
+      "goal": "Bajar costo Anthropic 30%",
+      "issues": [
+        { "number": 3700, "notes": "blocker: depende de #3616" }
+      ]
+    }
+  ],
+  "archived_waves": [                          // array (vacío si no hay)
+    {
+      "number": 0,
+      "name": "Ola N — Foundations",
+      "closed_at": "2026-04-19T00:00:00Z",
+      "issues_completed": 12,
+      "issues_failed": 1,
+      "actual_duration_days": 5
+    }
+  ],
+  "dependencies": [                            // grafo de bloqueos
+    { "blocker": 3559, "blocked": 3700, "reason": "API contract" }
+  ],
+  "integrity_hash": "3f1a…64hex"               // #4370 — SHA-256 canónico (ver abajo)
+}
+```
+
+### Glosario de campos
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `version` | string | Siempre `"1.0"`. Bump rompe contracts (PRs grandes). |
+| `meta.created_at` | ISO 8601 | Inmutable post-creación. |
+| `meta.updated_at` | ISO 8601 | Toca en cada save. |
+| `meta.updated_by` | string | Quién/qué hizo el último write (audit trail). |
+| `meta.source` | string | `manual` / `telegram` / `commander` / `planner` / `auto-seed` / `wave-promote-atomic`. |
+| `meta.note` | string | Descripción humana del cambio. |
+| `active_wave` | object\|null | La ola en curso. `null` cuando no hay nada activo. |
+| `active_wave.number` | int positivo | Identificador único de la ola. |
+| `active_wave.name` | string | Nombre legible (ej. "Ola N+5 — Dashboard"). |
+| `active_wave.goal` | string | Objetivo de negocio. |
+| `active_wave.started_at` | ISO 8601 | Cuándo se promovió a activa. |
+| `active_wave.issues[].number` | int positivo | Issue de GitHub. |
+| `active_wave.issues[].status` | enum | `in_progress` \| `completed` \| `failed` \| `blocked`. |
+| `planned_waves[]` | array | Olas futuras planificadas (orden = prioridad). |
+| `archived_waves[]` | array | Olas cerradas con métricas. |
+| `archived_waves[].issues_completed` | int | Cuántos issues terminaron OK. |
+| `archived_waves[].issues_failed` | int | Cuántos fallaron o quedaron bloqueados. |
+| `archived_waves[].actual_duration_days` | int | Días reales. |
+| `dependencies[]` | array | Grafo bloqueador → bloqueado. |
+| `integrity_hash` | string (hex 64) | #4370 — SHA-256 canónico del estado (omite el propio campo). Sellado en cada save; verificado al boot/load. Opcional en legacy (se sella en el primer save). |
+
+### Validación
+
+`lib/waves.validateStateStrict(state)` aplica antes de cada write. Si devuelve
+errores, el write se rechaza con `EWAVES_SCHEMA` + alerta Telegram. **Cero
+escritura de basura**.
+
+Desde **#4370** la validación estricta cubre además (defensa ante estados
+hostiles que disparan trabajo automático del pipeline):
+
+- **`issue.number` como entero positivo** en `active_wave`, `planned_waves[]` y
+  `archived_waves[]` (no strings arbitrarios — el número construye trabajo real).
+- **Tipos string** de los campos libres (`name`, `goal`, `note`, `updated_by`,
+  `source`, `status`, `notes`). `null` se tolera como "ausente". Estos campos
+  fluyen a sinks (dashboard = XSS almacenado, Telegram = markdown injection); el
+  tipo estricto en el schema + el escape en el punto de render (`esc()` en el
+  dashboard, `escapeMarkdownV2`/`fill-template` en Telegram) son las dos capas.
+- **Límites anti-OOM**: `MAX_WAVES_PER_BUCKET=500`, `MAX_ISSUES_PER_WAVE=2000`,
+  `MAX_FREE_STRING_LEN=20000`, `MAX_STATE_BYTES=5MB`. Un `waves.json` inflado por
+  un atacante se rechaza antes de recorrerse en el load de arranque.
+
+La variante permisiva `loadWaves()` se mantiene intacta para los consumers
+legacy (dashboard, commander-deterministic, planner-waves, wave-resolver,
+eta-wave, canonical-facts, wizards): la strictness sólo aplica en los caminos de
+**escritura / restore / boot**.
+
+### Hash de integridad — `integrity_hash` (#4370)
+
+`waves.json` persiste un campo top-level `integrity_hash`: el **SHA-256 del
+estado canónico** (claves ordenadas recursivamente) **omitiendo el propio campo**
+para evitar recursión. Se computa y sella en cada `saveStateLocked` dentro del
+write atómico existente.
+
+```jsonc
+{
+  "version": "1.0",
+  "meta": { /* ... */ },
+  "active_wave": { /* ... */ },
+  "planned_waves": [],
+  "archived_waves": [],
+  "dependencies": [],
+  "integrity_hash": "3f1a…64hex"   // SHA-256 canónico, sellado en cada save
+}
+```
+
+- **Verificación al boot** (`waves.checkStateIntegrity()`, llamado por `pulpo.js`):
+  distingue *corrupción silenciosa* / *tampering schema-válido* de un estado
+  sano. `ok` → log; `mismatch` → log WARN + alerta Telegram (human-block blando:
+  el pipeline sigue con el estado actual hasta revisión humana, no se autodestruye);
+  `missing` → estado legacy (ver migración); `schema_invalid`/`unreadable` → log.
+- **Verificación en `loadStateStrict()`**: `mismatch` tira `EWAVES_INTEGRITY` +
+  alerta (fail-closed para los caminos que exigen estado íntegro).
+- **Migración tolerante (CA-9)**: un `waves.json` **legacy sin `integrity_hash`**
+  se carga OK (`missing`, no falla) y queda **sellado en el primer save**. No se
+  bumpea `SCHEMA_VERSION` porque el shape sólo agrega un campo opcional
+  retrocompatible.
+
+### Retención / rotación de backups en `archived/` (#4370)
+
+`saveStateLocked` deja un backup timestamped `waves.<ts>.json` antes de
+sobreescribir, y `snapshotForTransaction` deja `waves-rollback.<ts>.json` /
+`partial-pause-rollback.<ts>.json` por transacción de `/wave promote`. Sin cota,
+`archived/` crecía sin fin (baseline previo: 29 backups) → DoS por disco, parse
+lento en restart y exposición indefinida de secretos.
+
+`waves.rotateArchivedBackups(keep = WAVES_ARCHIVED_KEEP || 20)`:
+
+- Conserva los **N más recientes por familia** (por `mtime`) y **borra el resto,
+  logueando cada descarte** (`[rotación] descartado backup … — excede retención`).
+- **No toca** backups referenciados por un `wave-promote.in-progress.json` vivo
+  (evita romper un restore en curso). Si el marker está presente pero ilegible,
+  es conservador y **no rota nada**.
+- Corre best-effort al final de cada save (nunca bloquea el write).
+- **Redacción defensiva**: `meta.note` / `meta.source` pasan por
+  `redact.redactSecretValue` antes de persistir — un secreto pegado desde
+  Telegram no queda en texto plano en `waves.json` ni en sus backups. Texto
+  normal ("add issue #123 → wave 5") queda intacto.
+
+---
+
+## Schema de `.partial-pause.json`
+
+```jsonc
+{
+  "allowed_issues": [3559, 3616, 3638],       // array<int positivo> obligatorio
+  "created_at": "2026-05-29T13:00:00Z",
+  "source": "wave-promote-atomic",            // quién escribió
+  "accepted_dep_risk": true,                  // opcional (#2893)
+  "dep_sources": { "3616": "auto-deps" }      // opcional (#2893)
+}
+```
+
+- Compatible con consumidores legacy del intake (`partialPause.isIssueAllowed`).
+- Lo escribe **exclusivamente** `partial-pause.setPartialPauseAtomic`,
+  invocado desde `waves.promoteWaveAtomic` o desde el Commander para pausar
+  con allowlist explícito.
+- **Nunca editar a mano**. Si necesitás cambiar el set: `/wave add #N`
+  + `/wave promote`, o re-promover la misma ola.
+
+---
+
+## Modelo de confianza
+
+Estos dos archivos son **fuente de verdad operacional del pipeline V3**.
+Las garantías que ofrecen dependen de que NUNCA sean escritos por fuera de
+la API de `lib/waves.js` y `lib/partial-pause.js`.
+
+> **Regla operativa**: cualquier escritura no atómica fuera de la API puede
+> dejar el sistema en `human-block`. El desync-detector está diseñado
+> precisamente para detectar y bloquear cuando aparece inconsistencia.
+
+### Lo que **sí podés** hacer
+
+- Leer ambos archivos a mano (con `cat`, `jq`, etc.) — son JSON estable.
+- Usar `/wave promote`, `/wave add`, `/wave status`, `/wave next` desde
+  Telegram o como CLI.
+- Restaurar manualmente desde `archived/waves.*.json` si hay corrupción,
+  copiando el snapshot deseado al lugar de `waves.json` mientras el pulpo
+  está parado.
+
+### Lo que **NO debés** hacer
+
+- Editar `.partial-pause.json` con un editor de texto en caliente.
+- Editar `waves.json` saltando la API (no toleramos last-write-wins).
+- Disparar `setPartialPause` y `saveState(active_wave=...)` por separado
+  para "fingir" un promote — eso es exactamente lo que evita
+  `promoteWaveAtomic`.
+
+---
+
+## Recuperación ante desync
+
+### Escalera de convergencia automática
+
+Antes de bloquear, el pulpo intenta converger solo. El orden importa: cada
+escalón es más permisivo que el anterior y sólo corre si el previo no aplicó.
+
+| # | Caso | Dirección | Qué hace |
+|---|------|-----------|----------|
+| 1 | Toda la divergencia son issues **cerrados** (#4753) | allowlist ← ola | Marca `completed` en `waves.json` y realinea la allowlist |
+| 2 | `added = []` y los faltantes son issues **abiertos de la ola activa** (#5724) | allowlist ← ola | Suma los faltantes a la allowlist (la ola ya los autorizó) |
+| 3 | Extra en la allowlist con **traza legítima reciente** del Commander (#4439) | ola ← allowlist | Agrega el issue a la ola activa |
+| 4 | Extra que es **hijo de un split** del propio pipeline (#4525) | ola ← allowlist | Agrega el hijo + declara la dependencia padre→hijo |
+| — | Cualquier otro caso | — | `human-block` (ver más abajo) |
+
+**De dónde sale el estado de cierre (SEC-4)**: del title-cache local, sin
+GitHub en el hot path.
+
+El predicado de producción es **binario, no tri-estado**:
+`makeIsClosedFromTitleCache()` devuelve `Boolean(entry && entry.state === 'CLOSED')`,
+así que **un cache miss se lee como ABIERTO**, nunca como indeterminado. Es
+deliberado y no hay que "arreglarlo": los hijos de un split recién creados
+(#5689-#5691, el incidente que originó #5724) todavía no están en el
+title-cache, y leerlos como indeterminados los mandaría de vuelta al
+`human-block` — exactamente el bloqueo que este cambio vino a eliminar. Leerlos
+como abiertos es lo correcto: un issue abierto de la ola activa se converge
+sumándolo a la allowlist (escalón 2), que es la dirección segura.
+
+Consecuencia a tener presente: el guard `estadoConfirmado` del escalón 2 **no
+rechaza nada en producción** — es un seguro para el seam de test `opts.isClosed`
+(por donde sí puede entrar un predicado tri-estado) y para un futuro predicado
+que consulte GitHub y pueda no saber. No confundirlo con una garantía vigente
+de que "el estado indeterminado nunca habilita una mutación": hoy no existe
+estado indeterminado en el camino real.
+
+Lo que sí sigue aplicando: si el title-cache **no se puede leer**,
+`makeIsClosedFromTitleCache()` devuelve `null` y el escalón 1 (que necesita
+confirmar cierre) no puede aplicar.
+
+**Qué sigue bloqueando a propósito**: si hay un issue ABIERTO en la allowlist
+que NO está en la ola (`added` no vacío sin traza), converger revocaría en
+silencio una autorización deliberada. Eso es `ambiguo` y lo decide un humano.
+
+### Qué se comunica de cada convergencia (#6117)
+
+Los escalones 2 y 3 avisaban por Telegram cada vez que reparaban con éxito. Se
+sacó: **una reparación exitosa no pide ninguna decisión del operador** — ya se
+ejecutó, salió bien y el pipeline siguió andando. El aviso sólo competía en el
+mismo canal con las alertas que sí requieren intervención, y las diluía.
+
+Criterio vigente:
+
+| Situación | Telegram | Dónde queda |
+|---|---|---|
+| Reparación **exitosa** (escalones 2 y 3) | **No** | `pulpo.log`, audit de olas, métrica y dashboard |
+| Reparación **no aplicada** o que lanzó | **Sí**, con causa y cómo destrabar | + `WARN` en `pulpo.log` |
+| Reparación OK pero el **audit no se pudo escribir** | **Sí** | Se mutó la autorización de despacho sin dejar rastro |
+| La **misma** reparación se repite N veces en la ventana | **Sí**, como anomalía recurrente | Ver config abajo |
+| El caso cae a `human-block` | **Sí**, escalonado por `desync-block-notifier` | Sin cambios |
+
+El cierre de ciclo (`desyncBlockNotifier.onResolved`) **no se tocó**: sigue
+avisando que el trabajo volvió, pero sólo si el operador había recibido antes el
+aviso de bloqueo. Nunca un cierre huérfano.
+
+**Métrica** — cada reparación exitosa se registra en
+`.pipeline/state/auto-repair.jsonl` (append-only) con `{tipo, issues, count,
+timestamp}` y nada más. `tipo` es un enum cerrado
+(`convergencia_aditiva` | `reparacion_aditiva_wave_add`).
+
+**Detector de repetición** — que la misma reparación se repita no es sanidad: es
+el síntoma de una causa raíz que sigue desarmando la lista. Se configura en
+`config.yaml` bajo `desync:`:
+
+```yaml
+desync:
+  repair_alert_threshold: 3        # reparaciones del mismo tipo…
+  repair_alert_window_ms: 3600000  # …dentro de esta ventana ⇒ aviso
+```
+
+Dos decisiones de diseño que conviene no "arreglar":
+
+- **La firma es sólo el tipo**, no el set de issues. Si el set agrupara, una
+  causa raíz que rompe issues distintos en cada vuelta nunca alcanzaría el
+  umbral — justo el caso que la alerta busca detectar.
+- **El conteo se deriva del JSONL, no de memoria.** El Pulpo se reinicia seguido
+  (watchdog, `restart.js`, respawn) y un contador in-memory se resetearía
+  precisamente cuando la causa raíz agita el sistema.
+
+Si el JSONL no se puede leer o parsear, el detector **avisa igual**
+(`motivo: 'estado_ilegible'`): no poder contar no puede traducirse en silencio.
+
+El aviso de **fallo** se dedupea por firma (`tipo` + causa) durante la misma
+ventana. Sin eso, una divergencia irreparable dispararía un mensaje en cada tick
+periódico (~5 min) — un flood peor que los avisos que #6117 vino a sacar.
+
+### Protección del trabajo vivo frente al TTL (#5724)
+
+Las autorizaciones heredadas de un split (`recursive-deps:from-N`) caducan a las
+48 h (#3625) para que no se acumulen permisos obsoletos. Ese TTL aplica a
+**residuos**, no a trabajo pendiente: un issue vencido se poda de la allowlist
+sólo si NO pertenece a la ola activa, o si pertenece pero está **confirmado
+cerrado**.
+
+Sin ese guard, un issue abierto y `Ready` de la ola activa caducaba por no
+haber sido despachado a tiempo — que es justo lo que pasa cuando el pipeline ya
+está frenado. El bucle de realimentación (freno → caducidad → más freno) dejó el
+dispatch suspendido 10 h el 2026-08-09. Si `waves.json` no se puede leer, la
+poda no corre (conservador: podar de más es lo que produjo el incidente).
+
+### Cuando igual hay que destrabar a mano
+
+1. `desync-detector.detectDesync()` crea `.pipeline/.desync-detected.flag`.
+2. Telegram alerta con paths + diff added/removed **y sigue recordando** con
+   backoff (15 min, 1 h, 3 h, 6 h y después cada 6 h) mientras el dispatch siga
+   suspendido, informando cuánto lleva frenado. El estado del ciclo de avisos
+   vive en `.pipeline/.desync-block-notify.json` y se cierra solo al converger.
+3. El pipeline entra en `human-block` (no procesa intake). El dashboard lo
+   muestra como **"Dispatch suspendido"** con la divergencia concreta y la
+   antigüedad del bloqueo. En la vista **Pipeline** figura además la línea
+   *"Última auto-reparación"* (tipo, issues repuestos y hace cuánto), que sirve
+   para distinguir un bloqueo nuevo de uno que viene reparándose en loop —
+   consultable sin depender de Telegram (#6117).
+4. **Acción manual**:
+   - `cat .pipeline/.desync-detected.flag | jq .` para ver el diff exacto.
+   - Decidir cuál archivo refleja la realidad operativa.
+   - Restaurar manualmente o, si querés re-sembrar desde
+     `.partial-pause.json`, podés correr `node .pipeline/scripts/init-waves-from-partial.js`
+     con `waves.json` vacío (idempotente: si waves.json tiene active_wave,
+     NO toca; si está corrupto, aborta).
+   - Borrar `.desync-detected.flag` cuando esté resuelto.
+5. Confirmar con `/wave status` y, si querés, reiniciar el pulpo
+   (`node .pipeline/restart.js`).
+
+Si la inconsistencia vino de un crash mid-promote, el boot ya lo recupera
+solo con `recoverIncompletePromote()` (#3520) — restaura desde snapshot y
+loggea WARN.
+
+---
+
+## `/wave repair` (futuro)
+
+A día de hoy la recuperación es manual (paso 4 de arriba). El issue **#3618**
+trackea la creación de un comando `/wave repair` que automatice el
+diagnóstico y proponga acciones (sin auto-aplicar — siempre con
+confirmación humana).
+
+---
+
+## Referencias cruzadas
+
+- `docs/pipeline/modelo-planificacion-multi-ola.md` — modelo conceptual.
+- `lib/waves.js` — implementación de la canónica.
+- `lib/partial-pause.js` — implementación del espejo operacional.
+- `lib/desync-detector.js` — detector de inconsistencia.
+- `lib/desync-block-notifier.js` — recordatorios del dispatch suspendido (#5724).
+- `lib/allowlist-recursive-promote.js` — TTL de autorizaciones heredadas + guard
+  de ola activa (#3625, #5724).
+- `lib/wave-dispatch.js` — algoritmo de realineación allowlist ← ola.
+- `.pipeline/scripts/init-waves-from-partial.js` — seed inicial (#3616).
+- `.pipeline/WAVES_CHEATSHEET.md` — cheat sheet operativa de los comandos.
+- Issues: #3487 (widget dashboard), #3488 (planner), #3489 (lib/waves),
+  #3492 (ETA por ola), #3493 (comandos Telegram), #3518 (atomic writes +
+  desync detector), #3520 (rollback transaccional), **#3616 (init + sin
+  fallback)**.

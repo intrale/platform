@@ -1,0 +1,525 @@
+'use strict';
+
+// =============================================================================
+// deliverable-index.js — Índice estructurado de entregables por issue (#4255)
+//
+// Registro consultable `issue → fase → agente` de los entregables físicos que
+// cada productor deja al cerrar su fase. Es la CAPA DE DIRECCIONAMIENTO que
+// habilita el consumo agnóstico del canal (notificación Telegram hoy, app
+// mobile mañana): el filesystem sigue siendo la fuente de verdad del binario,
+// este manifest es el índice que dice "para el issue N, en la fase F, el agente
+// A dejó el artefacto en <path>".
+//
+// Espeja estructuralmente a `handoff.js` (#2993):
+//   - Un archivo JSON por issue: `.pipeline/deliverables/<issue>.json`.
+//   - Upsert idempotente por clave `agente::fase` ("último write por fase"):
+//     dos fases del mismo agente (PO en Definición + Aprobación) CONVIVEN, pero
+//     un segundo write de la misma fase pisa al anterior.
+//   - Redacción de metadata vía `lib/redact.js` antes de persistir.
+//   - Atomic write (write-to-temp + rename).
+//
+// Reglas de seguridad (receta del Arquitecto, análisis SEC-1..SEC-6):
+//   - CA-5 (path traversal): `issue` DEBE matchear `^\d+$` antes de tocar el FS.
+//   - SEC-2 (path injection por `fase`/`agente`): AMBOS son enums CERRADOS.
+//     `fase` deriva de `config.yaml → skills_por_fase`; `agente` de las claves
+//     de `SKILL_SOURCES`. NUNCA son segmentos de path libres ni free-form.
+//   - SEC-1 (canal Drive): cada entry porta `sensible:true|false` para que el
+//     canal de consumo decida visibilidad (el flag se diseña acá; el canal lo
+//     aplica en su sub-issue).
+//   - Determinismo en tests: `timestamp` es inyectable por parámetro. Sin
+//     `Date.now()`/`new Date()` implícito en la ruta testeada.
+//
+// Doctrina y contexto: docs/pipeline/entregables-multimedia-por-agente.md
+// =============================================================================
+
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const { getSkillSourcesCatalog } = require('./skill-deliverable-attachments');
+const { redactSecretValue, redactSensitive, redactRagContent } = require('./redact');
+
+// -----------------------------------------------------------------------------
+// Enum de fases (SEC-2) — CERRADO, derivado de config.yaml → skills_por_fase.
+// -----------------------------------------------------------------------------
+//
+// FALLBACK espeja el estado actual de `config.yaml` (definicion + desarrollo).
+// #5172 — YA NO se usa ante config ILEGIBLE (eso ahora propaga el error tipado
+// del resolver): sólo aplica cuando el config es válido pero no declara
+// `pipelines.*.skills_por_fase`. El enum efectivo se recalcula desde el config
+// real en `getPhaseEnum`, cacheado por proceso.
+
+const FALLBACK_PHASES = Object.freeze([
+    // definicion
+    'analisis', 'criterios', 'sizing',
+    // desarrollo
+    'validacion', 'dev', 'build', 'verificacion', 'linteo', 'aprobacion', 'entrega',
+]);
+
+let _phaseEnumCache = null;
+
+/**
+ * Lee `config.yaml` vía el punto ÚNICO `lib/config-resolver` (#5172) y extrae el
+ * set cerrado de nombres de fase presentes en `pipelines.*.skills_por_fase`. El
+ * resultado se cachea por proceso.
+ *
+ * FALLBACK ELIMINADO (#5172): el `catch {}` que envolvía la lectura convertía un
+ * FALLO DE LECTURA (config.yaml ausente, YAML roto, permisos, schema violado) en
+ * `FALLBACK_PHASES`. El enum seguía cerrado, sí, pero congelado en una copia
+ * hardcodeada del config de hace meses: si alguien agregaba una fase nueva y al
+ * mismo tiempo rompía el YAML, el índice rechazaba silenciosamente entregables
+ * de esa fase y el operador leía "fase fuera del enum cerrado" en vez de "tu
+ * config no se puede leer". Ahora el error tipado del resolver se PROPAGA.
+ *
+ * Lo que NO cambia (no es error): si el config parsea bien pero no declara
+ * `pipelines:` / `skills_por_fase`, el enum queda vacío y se aplica igual
+ * `FALLBACK_PHASES`. La ausencia de una sección opcional no es corrupción; sólo
+ * se eliminó el catch que enmascaraba el fallo de lectura.
+ *
+ * @param {object} [opts]
+ * @param {string[]} [opts.phaseEnum] - override explícito (tests).
+ * @param {string} [opts.pipelineRoot] - dir `.pipeline` o repo root (se normaliza
+ *        con `resolvePipelineDir`; default: padre de lib/).
+ * @returns {Set<string>}
+ * @throws {ConfigParseViolation|ConfigSchemaViolation} config ilegible/invalida.
+ */
+function getPhaseEnum(opts = {}) {
+    if (Array.isArray(opts.phaseEnum)) {
+        return new Set(opts.phaseEnum.map(String));
+    }
+    if (_phaseEnumCache) return _phaseEnumCache;
+
+    const phases = new Set();
+    // #5172 — se reusa `resolvePipelineDir` (la MISMA normalización tolerante
+    // repo-root → `.pipeline` de #4507 que ya usa `deliverablesDir`) en vez de
+    // tomar `opts.pipelineRoot` crudo. Antes se leía `<pipelineRoot>/config.yaml`
+    // literal: los callers que pasan el REPO ROOT (`write-deliverable.js:172`,
+    // `:280` ← `pulpo.js` con `pipelineRoot: ROOT`) apuntaban a un archivo que
+    // NUNCA existe y caían al catch → FALLBACK. Al quitar el catch ese bug
+    // latente pasaría de silencioso a fatal, así que se corrige la resolución:
+    // el enum sale del `.pipeline/config.yaml` real, igual que el índice.
+    // Se inyecta como `pipelineDir` (DIRECTORIO): el nombre del archivo lo pone
+    // el resolver (CA-12).
+    // eslint-disable-next-line global-require
+    const cfg = require('./config-resolver').resolve({ pipelineDir: resolvePipelineDir(opts) });
+    const pipelines = cfg.pipelines || {};
+    for (const pipelineCfg of Object.values(pipelines)) {
+        const spf = (pipelineCfg && pipelineCfg.skills_por_fase) || {};
+        for (const fase of Object.keys(spf)) phases.add(String(fase));
+    }
+
+    if (phases.size === 0) {
+        for (const f of FALLBACK_PHASES) phases.add(f);
+    }
+    _phaseEnumCache = phases;
+    return phases;
+}
+
+/** Invalida el cache del enum de fases (tests). */
+function _resetPhaseEnumCache() {
+    _phaseEnumCache = null;
+}
+
+/**
+ * Valida `fase` contra el enum cerrado (SEC-2). Lanza si no matchea.
+ * @param {string} fase
+ * @param {object} [opts]
+ * @returns {string} fase normalizada
+ */
+function validatePhase(fase, opts = {}) {
+    if (typeof fase !== 'string' || fase.length === 0) {
+        throw new Error(`fase inválida (vacía): ${fase}`);
+    }
+    const enumSet = getPhaseEnum(opts);
+    if (!enumSet.has(fase)) {
+        throw new Error(`fase fuera del enum cerrado: ${fase}`);
+    }
+    return fase;
+}
+
+/**
+ * Valida `agente` contra las claves de `SKILL_SOURCES` (SEC-2). Lanza si no
+ * matchea. Es el mismo perfil que resuelve el directorio de escritura, así el
+ * índice nunca referencia un agente sin perfil de entrega.
+ * @param {string} agente
+ * @returns {string} agente normalizado
+ */
+function validateAgent(agente) {
+    if (typeof agente !== 'string' || agente.length === 0) {
+        throw new Error(`agente inválido (vacío): ${agente}`);
+    }
+    const catalog = getSkillSourcesCatalog();
+    if (!Object.prototype.hasOwnProperty.call(catalog, agente)) {
+        throw new Error(`agente sin perfil en SKILL_SOURCES: ${agente}`);
+    }
+    return agente;
+}
+
+/**
+ * Valida `issue` como entero positivo (CA-5 / path traversal). Devuelve string
+ * canónico o lanza.
+ * @param {string|number} issue
+ * @returns {string}
+ */
+function validateIssueId(issue) {
+    if (issue == null) throw new Error('deliverable-index: issue requerido');
+    const s = String(issue).trim();
+    if (!/^\d+$/.test(s) || s === '0') {
+        throw new Error(`issue inválido (no ^\\d+$, > 0): ${issue}`);
+    }
+    return s;
+}
+
+// -----------------------------------------------------------------------------
+// Paths
+// -----------------------------------------------------------------------------
+
+function resolvePipelineDir(opts) {
+    if (opts && typeof opts.pipelineRoot === 'string' && opts.pipelineRoot.length > 0) {
+        // Normalización tolerante repo-root → `.pipeline` (#4507). El índice vive
+        // SIEMPRE en `<repo>/.pipeline/deliverables/`. Los callers pasan `pipelineRoot`
+        // de dos formas: el dir `.pipeline` canónico (p.ej. write-deliverable.js:236 y
+        // el callsite de excepción en pulpo `upsertDeliverableException({pipelineRoot:PIPELINE})`)
+        // o el REPO ROOT crudo (pulpo → collectAttachmentsForSkill → buildManifest*Map,
+        // que reenvían `ROOT`=repo root). Es idempotente para un dir `.pipeline`
+        // (basename==='.pipeline' → se devuelve tal cual), así que el primer grupo no
+        // se rompe; y traduce el repo root al canónico, así el manifest fase/sensible
+        // no queda vacío (gate sensible #4514 + trazabilidad #4255).
+        const root = path.resolve(opts.pipelineRoot);
+        return path.basename(root) === '.pipeline' ? root : path.join(root, '.pipeline');
+    }
+    // __dirname = .pipeline/lib → padre = .pipeline
+    return path.resolve(__dirname, '..');
+}
+
+function deliverablesDir(opts) {
+    return path.join(resolvePipelineDir(opts), 'deliverables');
+}
+
+function indexPathFor(issue, opts) {
+    return path.join(deliverablesDir(opts), `${issue}.json`);
+}
+
+// -----------------------------------------------------------------------------
+// Redacción de metadata (CA-6 / SEC-1)
+// -----------------------------------------------------------------------------
+
+/**
+ * Redacta los campos string de metadata de una entry antes de persistir.
+ * Cubre secrets embebidos (`redactSecretValue`) y emails/URLs (`redactSensitive`)
+ * en `path`, `caption` y `descriptor` si existen. Los campos estructurales
+ * (issue/fase/agente/tipo/bytes/sensible/timestamp) NO se tocan.
+ * @param {object} entry
+ * @returns {object} copia redactada
+ */
+function redactMeta(entry) {
+    const out = { ...entry };
+    for (const field of ['path', 'caption', 'descriptor', 'filename', 'motivo', 'motivo_no_aplica']) {
+        if (typeof out[field] === 'string' && out[field].length > 0) {
+            // RE-1: los campos de texto libre (`motivo`/`motivo_no_aplica`) usan
+            // redacción per-token (cubre secreto opaco embebido en oración); el
+            // resto mantiene la redacción whole-string existente.
+            out[field] = (field === 'motivo' || field === 'motivo_no_aplica')
+                ? redactRagContent(out[field])
+                : redactSensitive(redactSecretValue(out[field]));
+        }
+    }
+    return out;
+}
+
+// -----------------------------------------------------------------------------
+// Lectura
+// -----------------------------------------------------------------------------
+
+/**
+ * Lee el índice del issue. Si no existe o está corrupto, devuelve el shape
+ * inicial `{ issue, entries: [] }` sin tirar (defensa: el índice es best-effort
+ * sobre el FS que ya es fuente de verdad).
+ * @param {string|number} issue
+ * @param {object} [opts]
+ * @returns {{issue:number, entries:Array}}
+ */
+function readDeliverableIndex(issue, opts = {}) {
+    const issueId = validateIssueId(issue);
+    const file = indexPathFor(issueId, opts);
+    let raw = '';
+    try {
+        raw = fs.readFileSync(file, 'utf8');
+    } catch (e) {
+        if (e.code === 'ENOENT') return { issue: Number(issueId), entries: [] };
+        return { issue: Number(issueId), entries: [] };
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.entries)) {
+            return { issue: Number(issueId), entries: [] };
+        }
+        return { issue: Number(issueId), entries: parsed.entries };
+    } catch {
+        // JSON corrupto → tratamos como índice vacío (el FS manda).
+        return { issue: Number(issueId), entries: [] };
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Escritura (upsert idempotente por clave `agente::fase`)
+// -----------------------------------------------------------------------------
+
+function entryKey(e) {
+    return `${e.agente}::${e.fase}`;
+}
+
+// -----------------------------------------------------------------------------
+// Excepción explícita `no_aplica` (CA-3, #4506)
+// -----------------------------------------------------------------------------
+//
+// Cuando el entregable genuinamente no aplica (cierre `aprobado` sin adjuntos y
+// sin nota sustantiva), en vez de silencio se persiste UNA entry `tipo:
+// "exception"` / `estado: "no_aplica"` con un `motivo` string. La entry:
+//   - NO representa un binario → no requiere `path` (validación relajada SÓLO
+//     para este tipo; todo otro tipo sigue exigiendo `path` no vacío).
+//   - Comparte la clave idempotente `agente::fase` → un entregable real
+//     posterior del mismo agente/fase la PISA.
+//   - Redacta el `motivo` (REQ-SEC-1) y lo capa (REQ-SEC-3) antes de persistir.
+
+// REQ-SEC-3: cap de longitud del `motivo`. Es un string de índice (pocos KiB),
+// NO un artefacto — el cap de 5 MiB de `write-deliverable` no aplica acá.
+const MOTIVO_MAX_CHARS = 2048;
+const MOTIVO_TRUNCATE_MARKER = '\n[truncado por limite 2048]';
+
+/**
+ * Capa el `motivo` a `MOTIVO_MAX_CHARS` (REQ-SEC-3). Si excede, corta en límite
+ * de palabra (UX G-1: no a mitad de token) y agrega un marcador `…`. El
+ * resultado nunca supera `MOTIVO_MAX_CHARS`.
+ * @param {string} s
+ * @returns {string}
+ */
+function capMotivo(s) {
+    if (typeof s !== 'string') return '';
+    if (s.length <= MOTIVO_MAX_CHARS) return s;
+    const hard = s.slice(0, MOTIVO_MAX_CHARS - 1);
+    const lastSpace = hard.lastIndexOf(' ');
+    const body = lastSpace > MOTIVO_MAX_CHARS * 0.5 ? hard.slice(0, lastSpace) : hard;
+    return `${body}…`;
+}
+
+function redactAndTruncateMotivo(motivo) {
+    const raw = typeof motivo === 'string' ? motivo : (motivo == null ? '' : String(motivo));
+    let out = redactSensitive(redactSecretValue(raw));
+    if (out.length > MOTIVO_MAX_CHARS) {
+        out = out.slice(0, MOTIVO_MAX_CHARS) + MOTIVO_TRUNCATE_MARKER;
+    }
+    return out;
+}
+
+/**
+ * Agrega o reemplaza la entry del `agente` en la `fase` para `issue`. Clave
+ * multi-fase (`agente::fase`): un segundo write de la misma fase pisa al
+ * anterior ("último write por fase"), pero dos fases del mismo agente conviven.
+ *
+ * @param {object} entry
+ * @param {string|number} entry.issue          - `^\d+$` (CA-5).
+ * @param {string} entry.fase                  - enum cerrado (SEC-2).
+ * @param {string} entry.agente                - clave de SKILL_SOURCES (SEC-2).
+ * @param {string} entry.tipo                  - document|image|video|animation|exception.
+ * @param {string} [entry.path]                - path del binario (relativo al repo).
+ *                                               Requerido salvo `tipo:'exception'`.
+ * @param {string} [entry.motivo_no_aplica]    - motivo canónico de la excepción
+ *                                               (#4524, CA-3). Requerido (y no vacío)
+ *                                               sólo si `tipo:'exception'`. Se redacta
+ *                                               per-token en `redactMeta` y se capa a
+ *                                               MOTIVO_MAX_CHARS (#4506, REQ-SEC-3).
+ * @param {string} [entry.motivo]              - alias compat de `motivo_no_aplica`
+ *                                               (#4504/#4506). Se persiste además como
+ *                                               `motivo` + `estado:'no_aplica'` por compat.
+ * @param {number} [entry.bytes]               - tamaño del binario.
+ * @param {boolean} [entry.sensible=false]     - flag de sensibilidad (SEC-1).
+ * @param {string} [entry.timestamp]           - ISO inyectable (determinismo tests).
+ *                                               Default: `new Date().toISOString()`.
+ * @param {string} [entry.pipelineRoot]        - dir `.pipeline` (default `path.resolve(__dirname,'..')`).
+ *                                               OJO: NO es el repo root — es el dir `.pipeline`.
+ *                                               El adapter `write-deliverable.js` traduce
+ *                                               repo-root → `.pipeline` antes de llamar acá (CA-4).
+ * @returns {object} la entry persistida (redactada).
+ */
+function upsertDeliverableIndex(entry = {}) {
+    const opts = { pipelineRoot: entry.pipelineRoot, phaseEnum: entry.phaseEnum };
+    const issueId = validateIssueId(entry.issue);
+    const fase = validatePhase(entry.fase, opts);
+    const agente = validateAgent(entry.agente);
+
+    if (typeof entry.tipo !== 'string' || entry.tipo.length === 0) {
+        throw new Error(`tipo inválido: ${entry.tipo}`);
+    }
+    // Validación condicional por tipo. La entry `tipo:'exception'` registra
+    // "el entregable no aplica + motivo" y por diseño NO tiene binario asociado.
+    // No exige `path`; en su lugar exige `motivo_no_aplica` no vacío para no
+    // degradar a un registro silencioso. El resto de tipos sigue requiriendo `path`.
+    // `motivo` sigue aceptado como alias compat (#4504).
+    const isException = entry.tipo === 'exception';
+    const motivo = entry.motivo_no_aplica ?? entry.motivo;
+    if (isException) {
+        if (typeof motivo !== 'string' || motivo.trim().length === 0) {
+            throw new Error(`motivo_no_aplica requerido para tipo=exception: ${motivo}`);
+        }
+    } else if (typeof entry.path !== 'string' || entry.path.length === 0) {
+        throw new Error(`path inválido: ${entry.path}`);
+    }
+
+    const timestamp =
+        typeof entry.timestamp === 'string' && entry.timestamp.length > 0
+            ? entry.timestamp
+            : new Date().toISOString();
+
+    const record = redactMeta({
+        issue: Number(issueId),
+        fase,
+        agente,
+        tipo: entry.tipo,
+        // Para excepciones se persiste el campo canónico `motivo_no_aplica`
+        // (#4524) y, por compat con #4504/#4506, también `motivo` + el flag
+        // `estado:"no_aplica"`. Ambos motivos toman el mismo valor (el alias ya
+        // se resolvió arriba en `motivo`). Para binarios se persiste `path`.
+        ...(isException
+            ? { motivo_no_aplica: String(motivo), motivo: String(motivo), estado: 'no_aplica' }
+            : { path: entry.path }),
+        bytes: Number.isFinite(entry.bytes) ? Number(entry.bytes) : null,
+        sensible: Boolean(entry.sensible),
+        timestamp,
+    });
+    // #4506 (REQ-SEC-3): capar el `motivo` de la excepción. `redactMeta` ya lo
+    // redactó (secrets/PII fuera) — recién ahí se capa a MOTIVO_MAX_CHARS, para
+    // no partir un secret a la mitad (redact-then-cap). Sólo aplica a `exception`;
+    // `path`/`caption` de binarios no se capan.
+    if (isException) {
+        if (typeof record.motivo === 'string') {
+            record.motivo = capMotivo(record.motivo);
+        }
+        if (typeof record.motivo_no_aplica === 'string') {
+            record.motivo_no_aplica = capMotivo(record.motivo_no_aplica);
+        }
+    }
+
+    const idx = readDeliverableIndex(issueId, opts);
+    const key = entryKey(record);
+    idx.entries = idx.entries.filter((e) => entryKey(e) !== key).concat(record);
+    idx.issue = Number(issueId);
+
+    const file = indexPathFor(issueId, opts);
+    const dir = path.dirname(file);
+    fs.mkdirSync(dir, { recursive: true });
+
+    // Atomic write: write-to-temp + rename.
+    const tmp = path.join(
+        dir,
+        `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`,
+    );
+    fs.writeFileSync(tmp, JSON.stringify(idx, null, 2), 'utf8');
+    fs.renameSync(tmp, file);
+
+    return record;
+}
+
+/**
+ * Registra una entry de EXCEPCIÓN autoritativa "el entregable no aplica + motivo"
+ * (#4502 / CA-3). Reusa el choke point atómico de `upsertDeliverableIndex` con la
+ * misma clave `agente::fase` (idempotente: un segundo registro de la misma fase
+ * pisa al anterior). El `motivo` pasa por `redactMeta` antes de persistir. NO
+ * exige `path` — la excepción es la válvula de escape de la obligatoriedad y no
+ * apunta a ningún binario.
+ *
+ * Autoridad (SEC-REQ-1 / OWASP A01/A08): esta entry SÓLO la escribe el pulpo tras
+ * validar el input del agente. El agente NUNCA escribe el índice a mano ni se
+ * auto-otorga la excepción vía su YAML editable.
+ *
+ * @param {object} entry
+ * @param {string|number} entry.issue      - `^\d+$` (CA-5).
+ * @param {string} entry.fase              - enum cerrado (SEC-2).
+ * @param {string} entry.agente            - clave de SKILL_SOURCES (SEC-2).
+ * @param {string} entry.motivo            - motivo legible (se redacta).
+ * @param {string} [entry.timestamp]       - ISO inyectable (determinismo tests).
+ * @param {string} [entry.pipelineRoot]    - root del store (default padre de lib/).
+ * @returns {object} la entry persistida (redactada).
+ */
+function upsertException(entry = {}) {
+    return upsertDeliverableIndex({
+        issue: entry.issue,
+        fase: entry.fase,
+        agente: entry.agente,
+        tipo: 'exception',
+        motivo: entry.motivo,
+        sensible: false,
+        timestamp: entry.timestamp,
+        pipelineRoot: entry.pipelineRoot,
+        phaseEnum: entry.phaseEnum,
+    });
+}
+
+function upsertDeliverableException(entry = {}) {
+    return upsertDeliverableIndex({
+        issue: entry.issue,
+        fase: entry.fase,
+        agente: entry.agente,
+        tipo: 'exception',
+        motivo: redactAndTruncateMotivo(entry.motivo),
+        bytes: 0,
+        sensible: Boolean(entry.sensible),
+        timestamp: entry.timestamp,
+        pipelineRoot: entry.pipelineRoot,
+        phaseEnum: entry.phaseEnum,
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Consultas
+// -----------------------------------------------------------------------------
+
+/**
+ * Devuelve las entries del issue en una fase dada.
+ * @param {string|number} issue
+ * @param {string} fase
+ * @param {object} [opts]
+ * @returns {Array}
+ */
+function queryByPhase(issue, fase, opts = {}) {
+    const idx = readDeliverableIndex(issue, opts);
+    return idx.entries.filter((e) => e.fase === fase);
+}
+
+/**
+ * Devuelve las entries del issue producidas por un agente dado (puede haber
+ * más de una si el agente participa en varias fases).
+ * @param {string|number} issue
+ * @param {string} agente
+ * @param {object} [opts]
+ * @returns {Array}
+ */
+function queryByAgent(issue, agente, opts = {}) {
+    const idx = readDeliverableIndex(issue, opts);
+    return idx.entries.filter((e) => e.agente === agente);
+}
+
+module.exports = {
+    upsertDeliverableIndex,
+    upsertDeliverableException,
+    upsertException,
+    readDeliverableIndex,
+    queryByPhase,
+    queryByAgent,
+    // Validaciones (reuso desde write-deliverable.js + tests)
+    validatePhase,
+    validateAgent,
+    validateIssueId,
+    getPhaseEnum,
+    redactMeta,
+    redactAndTruncateMotivo,
+    // Paths (tests / debugging)
+    indexPathFor,
+    deliverablesDir,
+    // Constantes / helpers de test
+    FALLBACK_PHASES,
+    MOTIVO_MAX_CHARS,
+    MOTIVO_TRUNCATE_MARKER,
+    capMotivo,
+    _resetPhaseEnumCache,
+};

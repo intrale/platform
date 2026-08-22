@@ -34,12 +34,18 @@ test('isEnabled: respeta QUOTA_SNAPSHOT_ENABLED=false', () => {
   }
 });
 
-test('isEnabled: default es habilitado', () => {
+// #4597 — El snapshot OCR del panel "Uso" de Claude Desktop quedó DEPRECADO: la
+// cuota Anthropic ahora se lee directo de `claude -p /usage`. Por eso el default
+// del scheduler pasó a DESHABILITADO; sólo corre con opt-in explícito.
+test('isEnabled: default es deshabilitado (#4597, OCR deprecado)', () => {
   const prev = process.env.QUOTA_SNAPSHOT_ENABLED;
   try {
     delete process.env.QUOTA_SNAPSHOT_ENABLED;
-    assert.strictEqual(scheduler.isEnabled(), true);
+    assert.strictEqual(scheduler.isEnabled(), false);
+    // Sólo con opt-in explícito se habilita.
     process.env.QUOTA_SNAPSHOT_ENABLED = 'true';
+    assert.strictEqual(scheduler.isEnabled(), true);
+    process.env.QUOTA_SNAPSHOT_ENABLED = '1';
     assert.strictEqual(scheduler.isEnabled(), true);
   } finally {
     if (prev === undefined) delete process.env.QUOTA_SNAPSHOT_ENABLED;
@@ -87,40 +93,58 @@ test('runOnce: kill switch ON → retorna sin error', async () => {
 });
 
 test('runOnce: capture exit 2 (operador enfocado) es skip silencioso, sin alerta', async () => {
-  const calls = { failure: 0, success: 0, mismatch: 0, accountOk: 0 };
-  const fakeAlerter = {
-    recordFailure: () => { calls.failure += 1; },
-    recordSuccess: () => { calls.success += 1; },
-    recordAccountMismatch: () => { calls.mismatch += 1; },
-    recordAccountOk: () => { calls.accountOk += 1; },
-  };
-  const r = await scheduler.runOnce({
-    runCapture: async () => ({ exitCode: 2, stdout: '', stderr: '' }),
-    alerter: fakeAlerter,
-  });
-  assert.strictEqual(r.ok, false);
-  assert.strictEqual(r.reason, 'capture_skipped');
-  assert.strictEqual(calls.failure, 0);
+  // #4597 — con el scheduler default-OFF, hay que optar explícitamente para
+  // ejercitar el pipeline de captura (el kill switch se cubre aparte).
+  const prev = process.env.QUOTA_SNAPSHOT_ENABLED;
+  process.env.QUOTA_SNAPSHOT_ENABLED = 'true';
+  try {
+    const calls = { failure: 0, success: 0, mismatch: 0, accountOk: 0 };
+    const fakeAlerter = {
+      recordFailure: () => { calls.failure += 1; },
+      recordSuccess: () => { calls.success += 1; },
+      recordAccountMismatch: () => { calls.mismatch += 1; },
+      recordAccountOk: () => { calls.accountOk += 1; },
+    };
+    const r = await scheduler.runOnce({
+      runCapture: async () => ({ exitCode: 2, stdout: '', stderr: '' }),
+      alerter: fakeAlerter,
+    });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.reason, 'capture_skipped');
+    assert.strictEqual(calls.failure, 0);
+  } finally {
+    if (prev === undefined) delete process.env.QUOTA_SNAPSHOT_ENABLED;
+    else process.env.QUOTA_SNAPSHOT_ENABLED = prev;
+  }
 });
 
 test('runOnce: capture exit 5 (timeout) registra fallo categorizado session_disconnected', async () => {
-  let lastFailure = null;
-  const fakeAlerter = {
-    recordFailure: (cat) => { lastFailure = cat; },
-    recordSuccess: () => {},
-    recordAccountMismatch: () => {},
-    recordAccountOk: () => {},
-  };
-  const r = await scheduler.runOnce({
-    runCapture: async () => ({ exitCode: 5, stdout: '', stderr: '' }),
-    alerter: fakeAlerter,
-  });
-  assert.strictEqual(r.ok, false);
-  assert.strictEqual(r.category, 'session_disconnected');
-  assert.strictEqual(lastFailure, 'session_disconnected');
+  const prev = process.env.QUOTA_SNAPSHOT_ENABLED;
+  process.env.QUOTA_SNAPSHOT_ENABLED = 'true';
+  try {
+    let lastFailure = null;
+    const fakeAlerter = {
+      recordFailure: (cat) => { lastFailure = cat; },
+      recordSuccess: () => {},
+      recordAccountMismatch: () => {},
+      recordAccountOk: () => {},
+    };
+    const r = await scheduler.runOnce({
+      runCapture: async () => ({ exitCode: 5, stdout: '', stderr: '' }),
+      alerter: fakeAlerter,
+    });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.category, 'session_disconnected');
+    assert.strictEqual(lastFailure, 'session_disconnected');
+  } finally {
+    if (prev === undefined) delete process.env.QUOTA_SNAPSHOT_ENABLED;
+    else process.env.QUOTA_SNAPSHOT_ENABLED = prev;
+  }
 });
 
 test('runOnce: ciclo completo OK con fakes ejecuta append + recordSuccess + recordAccountOk', async () => {
+  const prev = process.env.QUOTA_SNAPSHOT_ENABLED;
+  process.env.QUOTA_SNAPSHOT_ENABLED = 'true';
   const tmp = path.join(os.tmpdir(), `sched-${process.pid}-${Date.now()}`);
   fs.mkdirSync(tmp, { recursive: true });
   const fakePng = path.join(tmp, 'quota-fake.png');
@@ -140,27 +164,33 @@ test('runOnce: ciclo completo OK con fakes ejecuta append + recordSuccess + reco
     parse_confidence: 91,
   };
 
-  const r = await scheduler.runOnce({
-    runCapture: async () => ({ exitCode: 0, stdout: fakePng + '\n', stderr: '' }),
-    parseSnapshot: async () => ({ ok: true, snapshot: fakeSnapshot }),
-    appendSnapshot: () => { calls.append += 1; },
-    rotateIfNeeded: () => { calls.rotate += 1; return { rotated: false }; },
-    cleanupOldPngs: () => { calls.cleanup += 1; return { deleted: 0 }; },
-    alerter: fakeAlerter,
-    allowedRoot: tmp,
-  });
+  try {
+    const r = await scheduler.runOnce({
+      runCapture: async () => ({ exitCode: 0, stdout: fakePng + '\n', stderr: '' }),
+      parseSnapshot: async () => ({ ok: true, snapshot: fakeSnapshot }),
+      appendSnapshot: () => { calls.append += 1; },
+      rotateIfNeeded: () => { calls.rotate += 1; return { rotated: false }; },
+      cleanupOldPngs: () => { calls.cleanup += 1; return { deleted: 0 }; },
+      alerter: fakeAlerter,
+      allowedRoot: tmp,
+    });
 
-  assert.strictEqual(r.ok, true);
-  assert.strictEqual(calls.append, 1);
-  assert.strictEqual(calls.success, 1);
-  assert.strictEqual(calls.accountOk, 1);
-  assert.strictEqual(calls.rotate, 1);
-  assert.strictEqual(calls.cleanup, 1);
-
-  fs.rmSync(tmp, { recursive: true, force: true });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(calls.append, 1);
+    assert.strictEqual(calls.success, 1);
+    assert.strictEqual(calls.accountOk, 1);
+    assert.strictEqual(calls.rotate, 1);
+    assert.strictEqual(calls.cleanup, 1);
+  } finally {
+    if (prev === undefined) delete process.env.QUOTA_SNAPSHOT_ENABLED;
+    else process.env.QUOTA_SNAPSHOT_ENABLED = prev;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('runOnce: account_mismatch llama recordAccountMismatch, no recordFailure', async () => {
+  const prev = process.env.QUOTA_SNAPSHOT_ENABLED;
+  process.env.QUOTA_SNAPSHOT_ENABLED = 'true';
   const tmp = path.join(os.tmpdir(), `sched-mismatch-${process.pid}-${Date.now()}`);
   fs.mkdirSync(tmp, { recursive: true });
   const fakePng = path.join(tmp, 'quota-mm.png');
@@ -174,21 +204,25 @@ test('runOnce: account_mismatch llama recordAccountMismatch, no recordFailure', 
     recordAccountOk: () => {},
   };
 
-  const r = await scheduler.runOnce({
-    runCapture: async () => ({ exitCode: 0, stdout: fakePng + '\n', stderr: '' }),
-    parseSnapshot: async () => ({ ok: false, category: 'account_mismatch', reason: 'account_mismatch' }),
-    appendSnapshot: () => {},
-    rotateIfNeeded: () => ({ rotated: false }),
-    cleanupOldPngs: () => ({ deleted: 0 }),
-    alerter: fakeAlerter,
-    allowedRoot: tmp,
-  });
+  try {
+    const r = await scheduler.runOnce({
+      runCapture: async () => ({ exitCode: 0, stdout: fakePng + '\n', stderr: '' }),
+      parseSnapshot: async () => ({ ok: false, category: 'account_mismatch', reason: 'account_mismatch' }),
+      appendSnapshot: () => {},
+      rotateIfNeeded: () => ({ rotated: false }),
+      cleanupOldPngs: () => ({ deleted: 0 }),
+      alerter: fakeAlerter,
+      allowedRoot: tmp,
+    });
 
-  assert.strictEqual(r.ok, false);
-  assert.strictEqual(calls.mismatch, 1);
-  assert.strictEqual(calls.failure, 0);
-
-  fs.rmSync(tmp, { recursive: true, force: true });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(calls.mismatch, 1);
+    assert.strictEqual(calls.failure, 0);
+  } finally {
+    if (prev === undefined) delete process.env.QUOTA_SNAPSHOT_ENABLED;
+    else process.env.QUOTA_SNAPSHOT_ENABLED = prev;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('categorizeCaptureExit: mapea exit codes a la whitelist o null', () => {

@@ -1,0 +1,289 @@
+// =============================================================================
+// providers/nvidia-nim.js — Handler real del provider NVIDIA NIM (#3791)
+//
+// NVIDIA NIM es una API REST drop-in OpenAI-compatible
+// (`https://integrate.api.nvidia.com/v1`) con free tier real (API key
+// `nvapi-...`). A diferencia de Codex y Gemini NO publica un CLI, así que el
+// "binario" que spawneamos es un runner Node propio
+// (`runners/nvidia-nim-runner.js`) que hace la llamada HTTP y emite UN único
+// objeto JSON a stdout (mismo patrón de salida que Gemini con `-o json`).
+//
+// Wiring acá:
+//   1) detectLauncher — siempre `node <runner.js>` (sin shell, sin binario
+//      externo). El runner vive junto al adapter, ruta hardcoded (sin require
+//      dinámico) para no abrir path-traversal.
+//   2) buildSpawn — traduce los args legacy del pulpo (estilo Claude CLI:
+//      `-p`, `--system-prompt-file`, `--output-format stream-json`) al contrato
+//      del runner (`--model <id> --system-file <path> --prompt <text>`). El
+//      modelo sale de env `NVIDIA_NIM_MODEL` (lo inyecta el pulpo por
+//      env-isolation) o el default del runner.
+//   3) parseTokensFromLog — el runner emite el shape OpenAI chat-completion;
+//      mapeamos `usage.prompt_tokens → input`, `completion_tokens (+ reasoning)
+//      → output`, `prompt_tokens_details.cached_tokens → cache_read`.
+//   4) detectQuotaExhausted — inspecciona el objeto `error` del JSON y matchea
+//      por shape estructural (status/code/type normalizados a lowercase) contra
+//      la allowlist canónica `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['nvidia-nim']`.
+//
+// Auth: API key free-tier en env `NVIDIA_NIM_API_KEY` (la hidrata
+// `lib/credentials.js`). No hay OAuth como Codex/Gemini — NVIDIA da créditos
+// free directo con la key.
+//
+// Seguridad:
+//  - Runner con ruta hardcoded (sin require dinámico de provider).
+//  - Args como argv estricto (sin shell concat — shell:false siempre).
+//  - Detección de cuota SOLO por shape estructural sobre campos dedicados de
+//    error (status/code/type). NUNCA substring sobre el contenido del modelo.
+// =============================================================================
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+// #5795 — contrato compartido de la clase cerrada 'authentication_rejected'.
+const authRejection = require('../auth-rejection');
+
+const RUNNER_PATH = path.join(__dirname, '..', 'runners', 'nvidia-nim-runner.js');
+
+// -----------------------------------------------------------------------------
+// detectLauncher — NVIDIA no tiene CLI; ejecutamos el runner Node propio.
+// `node <runner.js>` sin shell (cmd = process.execPath, prefixArgs = [runner]).
+// -----------------------------------------------------------------------------
+function detectLauncher() {
+    return {
+        kind: 'node-runner',
+        cmd: process.execPath,
+        prefixArgs: [RUNNER_PATH],
+        shell: false,
+    };
+}
+
+let cachedLauncher = null;
+function getLauncher() {
+    if (!cachedLauncher) cachedLauncher = detectLauncher();
+    return cachedLauncher;
+}
+function _setLauncherForTesting(launcher) { cachedLauncher = launcher; }
+function _resetLauncherCacheForTesting() { cachedLauncher = null; }
+
+// -----------------------------------------------------------------------------
+// translateClaudeArgsToNvidia — extrae prompt y system file del args estilo
+// Claude CLI y arma el argv del runner. Args desconocidos
+// (`--output-format`, `--verbose`, `--permission-mode`, etc.) se descartan.
+//
+// Contrato de entrada (lo que el pulpo construye, estilo Claude CLI):
+//   ['-p', userPrompt, '--system-prompt-file', systemFile, ...]
+//
+// Contrato de salida (lo que entiende el runner):
+//   ['--model', model?, '--system-file', systemFile?, '--prompt', '-']
+//
+// #4529 — El `--prompt` YA NO lleva el texto inline: se pasa `--prompt -` y el
+// runner lee el prompt del usuario por STDIN. El system prompt sigue por
+// `--system-file` (es un PATH). Evita `spawn ENAMETOOLONG` en Windows con
+// prompts grandes. El texto real lo devuelve `buildSpawn` en `stdinPayload`.
+// -----------------------------------------------------------------------------
+function _extractUserPrompt(args) {
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '-p') return typeof args[i + 1] === 'string' ? args[i + 1] : '';
+    }
+    return '';
+}
+
+function translateClaudeArgsToNvidia(args, env) {
+    let systemFile = null;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '-p') { i++; } // el valor va por stdin (ver header)
+        else if (a === '--system-prompt-file') { systemFile = args[i + 1]; i++; }
+        // Otros flags no aplican al runner REST; los descartamos.
+    }
+
+    const model = env && env.NVIDIA_NIM_MODEL;
+    const out = [];
+    if (model) out.push('--model', model);
+    if (systemFile && typeof systemFile === 'string') out.push('--system-file', systemFile);
+    // `-` = leer el prompt por stdin (ver header).
+    out.push('--prompt', '-');
+    return out;
+}
+
+// -----------------------------------------------------------------------------
+// buildSpawn — { cmd, args, spawnOpts } para child_process.spawn.
+// `args` vienen en formato Claude; los traducimos y prependemos el prefijo del
+// launcher (node + runner.js).
+// -----------------------------------------------------------------------------
+function buildSpawn({ args, cwd, env, interactive_supported }) {
+    const launcher = getLauncher();
+    const nvidiaArgs = translateClaudeArgsToNvidia(args || [], env || {});
+    // #4529 — prompt del usuario por STDIN, nunca por argv.
+    const stdinPayload = _extractUserPrompt(args || []);
+    return {
+        cmd: launcher.cmd,
+        args: [...launcher.prefixArgs, ...nvidiaArgs],
+        kind: launcher.kind,
+        stdinPayload,
+        spawnOpts: {
+            cwd,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            detached: false,
+            shell: launcher.shell,
+            windowsHide: true,
+            env,
+        },
+    };
+}
+
+// -----------------------------------------------------------------------------
+// _parseNvidiaJson — extrae el objeto JSON del log del runner. Robusto frente a
+// prefijo/sufijo basura (warnings residuales). Mismo enfoque que Gemini.
+// -----------------------------------------------------------------------------
+function _parseNvidiaJson(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    try { return JSON.parse(trimmed); } catch { /* sigue */ }
+    const first = trimmed.indexOf('{');
+    const last = trimmed.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+        try { return JSON.parse(trimmed.slice(first, last + 1)); } catch { /* nada */ }
+    }
+    return null;
+}
+
+// -----------------------------------------------------------------------------
+// parseTokensFromLog — mapea el `usage` OpenAI al shape canónico del pulpo.
+//
+// Shape re-capturado en smoke real (2026-08-13, deepseek-v4-flash-0731 — #5887,
+// tras el end-of-life del modelo con el que se capturó el shape original el
+// 2026-06-01):
+//   { "choices": [...], "usage": {
+//       "prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13 } }
+// `prompt_tokens_details.cached_tokens` y `reasoning_tokens` son opcionales: el
+// sucesor los omite cuando valen 0, así que el mapeo de abajo los trata como
+// ausentes-o-null y no asume su presencia.
+//
+// Mapeo:
+//   prompt_tokens                      → input
+//   completion_tokens + reasoning      → output  (reasoning = thinking, facturable)
+//   prompt_tokens_details.cached_tokens→ cache_read
+//   tool_calls: sin conteo en usage    → 0
+// -----------------------------------------------------------------------------
+function parseTokensFromLog(logPath, fsImpl) {
+    const _fs = fsImpl || fs;
+    const totals = { input: 0, output: 0, cache_read: 0, cache_create: 0, tool_calls: 0 };
+    let raw = '';
+    try { raw = _fs.readFileSync(logPath, 'utf8'); } catch { return totals; }
+    const obj = _parseNvidiaJson(raw);
+    if (!obj || !obj.usage || typeof obj.usage !== 'object') return totals;
+    const u = obj.usage;
+    totals.input = Number(u.prompt_tokens || 0) || 0;
+    const completion = Number(u.completion_tokens || 0) || 0;
+    const reasoning = Number(u.reasoning_tokens || 0) || 0;
+    totals.output = completion + reasoning;
+    const details = u.prompt_tokens_details;
+    if (details && typeof details === 'object') {
+        totals.cache_read = Number(details.cached_tokens || 0) || 0;
+    }
+    return totals;
+}
+
+// -----------------------------------------------------------------------------
+// _extractErrorTokens — candidatos estructurales (lowercased) a matchear contra
+// la allowlist. SOLO campos dedicados de error (status/code/type), nunca el
+// contenido del modelo.
+// -----------------------------------------------------------------------------
+function _extractErrorTokens(err) {
+    if (!err || typeof err !== 'object') return [];
+    const out = [];
+    const push = (v) => { if (typeof v === 'string' && v) out.push(v.toLowerCase()); };
+    push(err.type);
+    push(err.code);
+    push(err.reason);
+    if (typeof err.status === 'string') push(err.status);
+    return out;
+}
+
+// -----------------------------------------------------------------------------
+// detectQuotaExhausted — matchea el objeto `error` del JSON del runner contra la
+// allowlist canónica `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER['nvidia-nim']`
+// (= ['rate_limit_exceeded', 'quota_exceeded', 'insufficient_quota']).
+// -----------------------------------------------------------------------------
+function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl) {
+    const _fs = fsImpl || fs;
+    if (!quotaExhaustedModule) return { matched: false };
+    const allowlist = (quotaExhaustedModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})['nvidia-nim']
+        || (cfg && cfg.error_types)
+        || [];
+    if (!allowlist || allowlist.length === 0) return { matched: false };
+
+    let raw = '';
+    try { raw = _fs.readFileSync(logPath, 'utf8'); } catch { return { matched: false }; }
+    if (!raw) return { matched: false };
+
+    const obj = _parseNvidiaJson(raw);
+    if (!obj) return { matched: false };
+
+    // El error puede venir como `error` directo o anidado en `error.error`.
+    const errObj = (obj.error && typeof obj.error === 'object')
+        ? (obj.error.error && typeof obj.error.error === 'object' ? obj.error.error : obj.error)
+        : null;
+    if (!errObj) return { matched: false };
+
+    const candidates = _extractErrorTokens(errObj);
+    for (const cand of candidates) {
+        if (allowlist.includes(cand)) {
+            return {
+                matched: true,
+                errorType: cand,
+                resetsAt: errObj.resets_at || errObj.retry_after || null,
+                rawLine: JSON.stringify(errObj).slice(0, 500),
+                evt: obj,
+            };
+        }
+    }
+    return { matched: false };
+}
+
+// -----------------------------------------------------------------------------
+// detectAuthenticationRejected (#5795) — clase cerrada `authentication_rejected`.
+//
+// NVIDIA NIM (`integrate.api.nvidia.com/v1`) sirve el contrato OpenAI, así que
+// el error estructurado llega como `{error:{message, type, code}}` y los tokens
+// documentados de credencial inválida son los de OpenAI.
+//
+// TABLA DELIBERADAMENTE CORTA: el gateway de NVIDIA también devuelve respuestas
+// tipo RFC-7807 (`{status:401, title:'Unauthorized', detail:'...'}`) donde el
+// único indicio es `title`, un campo de PROSA. Esas NO clasifican — `title` ni
+// siquiera entra en los tokens estructurales, y un 401 pelado nunca alcanza
+// para invalidar una credencial. Preferimos no clasificar antes que clasificar
+// por texto libre (el issue lo pide explícito: sin señal inequívoca, negativo).
+//
+// POSITIVOS: invalid_api_key, authentication_error
+// NEGATIVOS: permisos, cuota, transitorios y permanentes que conviven con 401/403.
+// `invalid_request_error` NO se veta: es el `type` que acompaña a
+// `code: invalid_api_key` en el shape OpenAI.
+// -----------------------------------------------------------------------------
+const detectAuthenticationRejected = authRejection.makeDetector({
+    adapter: 'nvidia-nim',
+    positives: ['invalid_api_key', 'authentication_error'],
+    negatives: [
+        'permission_denied', 'permission_error', 'forbidden', 'insufficient_permissions',
+        'rate_limit_exceeded', 'quota_exceeded', 'insufficient_quota', 'billing_error',
+        'context_length_exceeded', 'model_not_found', 'service_unavailable',
+        'internal_server_error', 'overloaded_error',
+    ],
+});
+
+module.exports = {
+    name: 'nvidia-nim',
+    detectLauncher: getLauncher,
+    buildSpawn,
+    parseTokensFromLog,
+    detectQuotaExhausted,
+    detectAuthenticationRejected,
+    // exports internos para tests
+    _detectLauncherFresh: detectLauncher,
+    _translateClaudeArgsToNvidia: translateClaudeArgsToNvidia,
+    _parseNvidiaJson,
+    _extractErrorTokens,
+    _setLauncherForTesting,
+    _resetLauncherCacheForTesting,
+    RUNNER_PATH,
+};

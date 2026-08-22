@@ -27,6 +27,263 @@
 
 const SKIPPABLE_QA_MODES = Object.freeze(['api', 'structural']);
 
+// =============================================================================
+// resolveApkRequirement — Issue #4046
+//
+// Decide si un issue requiere efectivamente un APK por el flavor REAL de su
+// trabajo, no por la mera presencia de `app:client` (que puede convivir con
+// trabajo 100% de dashboard/pipeline, caso #3954 "Home Kiosk → mission
+// control").
+//
+// La heurística clave es "¿este issue produce un artefacto APK?", no "¿tiene
+// label app:client?":
+//
+//   - Un issue con `area:pipeline`/`area:dashboard` y SIN cambios reales en
+//     `app/composeApp/` resuelve `{ requiresApk:false, reason:'infra-no-apk' }`
+//     (equivalente al bypass `qa:skipped`), aunque tenga `app:client`.
+//   - Un issue con cambios reales en `app/composeApp/` + `app:*` sigue
+//     exigiendo APK del flavor correspondiente (no se afloja el gate legítimo).
+//
+// FAIL-CLOSED: el bypass `infra-no-apk` se habilita SÓLO con evidencia positiva
+// del origen de cambios (paths conocidos). Si `changedFiles` no se pudo
+// resolver (sin worktree/PR), NO se relaja el gate sólo por ausencia de datos:
+// se cae a la decisión por label (`app:*` → requiere APK). El llamador indica
+// si el origen es conocido vía `changedFilesKnown`; si no lo pasa, se infiere
+// de la presencia de paths.
+//
+// Pure JS — sin fs/net — para testear con `node --test`.
+// =============================================================================
+
+const APP_LABELS = Object.freeze(['app:client', 'app:business', 'app:delivery']);
+const LABEL_TO_FLAVOR = Object.freeze({
+    'app:client': 'client',
+    'app:business': 'business',
+    'app:delivery': 'delivery',
+});
+const INFRA_AREA_LABELS = Object.freeze(['area:pipeline', 'area:dashboard']);
+const APP_PATH_PREFIX = 'app/composeApp/';
+
+/**
+ * Normaliza un label (string o {name}) a string lowercase trimado. '' si inválido.
+ */
+function normalizeLabelName(label) {
+    if (typeof label === 'string') return label.trim().toLowerCase();
+    if (label && typeof label === 'object' && typeof label.name === 'string') {
+        return label.name.trim().toLowerCase();
+    }
+    return '';
+}
+
+/**
+ * Normaliza una lista de labels a strings lowercase (descarta vacíos).
+ */
+function normalizeLabels(labels) {
+    if (!Array.isArray(labels)) return [];
+    return labels.map(normalizeLabelName).filter(Boolean);
+}
+
+/**
+ * Normaliza un path de archivo a separadores POSIX, sin `./` ni `/` inicial,
+ * lowercase-insensitive para el prefijo de comparación.
+ */
+function normalizeRepoPath(file) {
+    return String(file == null ? '' : file)
+        .replace(/\\/g, '/')
+        .replace(/^\.\//, '')
+        .replace(/^\/+/, '')
+        .trim();
+}
+
+/**
+ * Resuelve si un issue requiere APK y qué flavors, dado sus labels y los
+ * archivos tocados. PURE — la lectura de `changedFiles` queda fuera (la hace
+ * el llamador con una función defensiva/inyectable).
+ *
+ * @param {object} opts
+ * @param {Array<string|{name:string}>} [opts.labels]
+ * @param {string[]} [opts.changedFiles] — paths tocados (relativos al repo).
+ * @param {boolean} [opts.changedFilesKnown] — true si el origen de cambios se
+ *        pudo resolver. Si se omite, se infiere de la presencia de paths.
+ * @returns {{ requiresApk: boolean, reason: 'infra-no-apk'|'app-flavor'|'no-app-label', flavors: string[] }}
+ */
+function resolveApkRequirement({ labels = [], changedFiles = [], changedFilesKnown } = {}) {
+    const names = normalizeLabels(labels);
+    const appLabels = APP_LABELS.filter((label) => names.includes(label));
+    const files = Array.isArray(changedFiles)
+        ? changedFiles.map(normalizeRepoPath).filter(Boolean)
+        : [];
+    const touchesApp = files.some((file) => file.startsWith(APP_PATH_PREFIX));
+    const isInfraArea = INFRA_AREA_LABELS.some((l) => names.includes(l));
+
+    // Evidencia positiva del origen de cambios: explícito o por presencia de paths.
+    const known = changedFilesKnown === undefined ? files.length > 0 : Boolean(changedFilesKnown);
+
+    // Bypass infra-no-apk: área pipeline/dashboard, origen de cambios conocido y
+    // ningún path en app/composeApp/. Fail-closed si el origen es desconocido.
+    if (isInfraArea && known && !touchesApp) {
+        return { requiresApk: false, reason: 'infra-no-apk', flavors: [] };
+    }
+
+    if (appLabels.length > 0) {
+        return {
+            requiresApk: true,
+            reason: 'app-flavor',
+            flavors: appLabels.map((label) => LABEL_TO_FLAVOR[label]),
+        };
+    }
+
+    return { requiresApk: false, reason: 'no-app-label', flavors: [] };
+}
+
+// =============================================================================
+// hasVisualReference — Issue #3383 (CA-1, CA-3, CA-7, CA-UX-3)
+//
+// Valida que el body de un issue tenga sección "## Screenshots & Mockups" con
+// al menos 2 attachments markdown antes de que el pulpo promueva a verificación.
+//
+// Reglas de seguridad (CA-7, CA-8):
+//   - Trunca el body a los primeros 100 KB (anti-DOS).
+//   - Regex bounded sin backtracking (negated char classes, sin nested
+//     quantifiers). No usa eval/Function/exec.
+//   - Soft-timeout de 100 ms vía Date.now() — corta el conteo si tarda más,
+//     devuelve `ok: false` con reason 'timeout'. JS no tiene regex timeout
+//     nativo pero los patrones son ReDoS-safe (verificado en tests adversarial).
+//
+// Bypass (CA-3):
+//   - Si labels contiene 'qa:skipped', retorna `ok: true, reason: 'qa-skipped'`
+//     sin parsear el body.
+//
+// CA-UX-3:
+//   - Match case-insensitive del título de sección, variantes 'Screenshots &
+//     Mockups', 'Screenshots y Mockups', 'Screenshots and Mockups'.
+// =============================================================================
+
+const MAX_BODY_BYTES = 100 * 1024; // 100 KB
+const MAX_PARSE_MS = 100; // soft-timeout
+// Header de sección: '##' + 'Screenshots' + separador (&|y|and) + 'Mockups'.
+// Negated char classes y anclas — ReDoS-safe.
+const SECTION_HEADER_RE = /^\s{0,3}#{2,6}\s+screenshots\s+(?:&|y|and)\s+mockups\s*$/im;
+// Header de cualquier otra sección al mismo nivel (para delimitar fin).
+const ANY_HEADER_RE = /^\s{0,3}#{2,6}\s+\S/m;
+// Image markdown: ![alt](url). Negated char classes, sin backtracking peligroso.
+const IMAGE_RE = /!\[[^\]\n]{0,500}\]\([^)\s\n]{1,2000}(?:\s+"[^"\n]{0,500}")?\)/g;
+
+/**
+ * Trunca el body a los primeros MAX_BODY_BYTES (CA-7, anti-DOS).
+ * Usa Buffer.byteLength para contar bytes, no chars (UTF-8 puede inflar).
+ */
+function truncateBody(body) {
+    if (typeof body !== 'string') return '';
+    const buf = Buffer.from(body, 'utf8');
+    if (buf.byteLength <= MAX_BODY_BYTES) return body;
+    return buf.subarray(0, MAX_BODY_BYTES).toString('utf8');
+}
+
+/**
+ * Detecta si labels contiene qa:skipped (CA-3, bypass por whitelist).
+ */
+function hasQaSkippedLabel(labels) {
+    if (!Array.isArray(labels)) return false;
+    return labels.some((l) => {
+        if (typeof l === 'string') return l.toLowerCase() === 'qa:skipped';
+        if (l && typeof l === 'object' && typeof l.name === 'string') {
+            return l.name.toLowerCase() === 'qa:skipped';
+        }
+        return false;
+    });
+}
+
+/**
+ * Extrae la porción del body que está dentro de la sección "## Screenshots &
+ * Mockups", desde su header hasta el siguiente header del mismo nivel o EOF.
+ *
+ * Devuelve null si no encuentra la sección.
+ */
+function extractSectionSlice(truncated) {
+    const headerMatch = SECTION_HEADER_RE.exec(truncated);
+    if (!headerMatch) return null;
+    const start = headerMatch.index + headerMatch[0].length;
+    // Buscar siguiente header DESPUÉS del actual.
+    const rest = truncated.slice(start);
+    const nextHeaderMatch = ANY_HEADER_RE.exec(rest);
+    const end = nextHeaderMatch ? start + nextHeaderMatch.index : truncated.length;
+    return truncated.slice(start, end);
+}
+
+/**
+ * Cuenta attachments markdown (`![alt](url)`) en el slice, con soft-timeout.
+ * Devuelve { count, timedOut }.
+ */
+function countImages(slice) {
+    const start = Date.now();
+    let count = 0;
+    // Regex con flag /g — exec en loop es ReDoS-safe por construcción del patrón.
+    IMAGE_RE.lastIndex = 0;
+    let m;
+    while ((m = IMAGE_RE.exec(slice)) !== null) {
+        count += 1;
+        if (count >= 2 && Date.now() - start <= MAX_PARSE_MS) {
+            // Optimización: con 2 ya alcanza para el CA-1. Seguimos contando hasta 10
+            // para diagnóstico, pero capamos para evitar inputs adversariales.
+            if (count >= 10) break;
+        }
+        if (Date.now() - start > MAX_PARSE_MS) {
+            return { count, timedOut: true };
+        }
+        // Defensa adicional: si el regex no avanza (no debería pasar con este patrón),
+        // forzar avance para evitar loops.
+        if (IMAGE_RE.lastIndex === m.index) IMAGE_RE.lastIndex += 1;
+    }
+    return { count, timedOut: false };
+}
+
+/**
+ * Valida si el body del issue tiene referencia visual obligatoria (CA-1).
+ *
+ * @param {string} body - Body crudo del issue (markdown).
+ * @param {object} [opts]
+ * @param {Array<string|{name:string}>} [opts.labels] - Labels del issue (para bypass qa:skipped).
+ * @returns {{ ok: boolean, reason: string, images?: number }}
+ */
+function hasVisualReference(body, opts = {}) {
+    const labels = opts.labels || [];
+
+    // CA-3: bypass por whitelist qa:skipped.
+    if (hasQaSkippedLabel(labels)) {
+        return { ok: true, reason: 'qa-skipped' };
+    }
+
+    // CA-7: truncar antes de cualquier parse.
+    const truncated = truncateBody(body);
+    if (!truncated) {
+        return { ok: false, reason: 'empty-body' };
+    }
+
+    // Soft-timeout del parse entero.
+    const t0 = Date.now();
+    const slice = extractSectionSlice(truncated);
+    if (Date.now() - t0 > MAX_PARSE_MS) {
+        return { ok: false, reason: 'timeout' };
+    }
+    if (slice === null) {
+        return { ok: false, reason: 'section-missing' };
+    }
+
+    const { count, timedOut } = countImages(slice);
+    if (timedOut) {
+        return { ok: false, reason: 'timeout', images: count };
+    }
+    if (count < 2) {
+        return {
+            ok: false,
+            reason: count === 0 ? 'no-images' : 'needs-at-least-2-images',
+            images: count,
+        };
+    }
+
+    return { ok: true, reason: 'has-visual-reference', images: count };
+}
+
 /**
  * Normaliza un valor cualquiera a string lowercase trimado.
  * Devuelve '' para null/undefined/no-string.
@@ -101,9 +358,24 @@ function formatBypassLogLine(event) {
 
 module.exports = {
     SKIPPABLE_QA_MODES,
+    // Issue #4046 — requerimiento de APK por flavor real, no por label.
+    resolveApkRequirement,
+    normalizeLabels,
+    normalizeLabelName,
+    normalizeRepoPath,
+    APP_LABELS,
+    LABEL_TO_FLAVOR,
+    INFRA_AREA_LABELS,
     normalizeMode,
     resolveQaMode,
     shouldSkipVisualEvidence,
     buildBypassEvent,
     formatBypassLogLine,
+    // Issue #3383
+    hasVisualReference,
+    truncateBody,
+    hasQaSkippedLabel,
+    extractSectionSlice,
+    MAX_BODY_BYTES,
+    MAX_PARSE_MS,
 };

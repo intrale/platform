@@ -10,16 +10,85 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+// #5172 — punto único de lectura/validación de config.yaml.
+const configResolver = require('./config-resolver');
 
 // #2890 PR-A — Modo descanso (ventana horaria).
 let restModeWindow = null;
 try { restModeWindow = require('./rest-mode-window'); } catch { /* opcional */ }
+
+// #3962 EP8-H9 — Pantalla Costos rediseñada. Requires defensivos: si alguno no
+// carga, el slice degrada (presupuesto default, sin anomalía) sin romper el
+// resto del dashboard.
+let budgetConfig = null;
+try { budgetConfig = require('../metrics/budget-config'); } catch { /* opcional */ }
+let restModeState = null;
+try { restModeState = require('./rest-mode-state'); } catch { /* opcional */ }
+let redactLib = null;
+try { redactLib = require('../redact'); } catch { /* opcional */ }
+function _redact(s) {
+    if (s == null) return s;
+    return redactLib ? redactLib.redact(String(s)) : String(s);
+}
 
 // #2976 — Estado del flag de cuota Anthropic agotada (lectura defensiva).
 // Tolerante a la ausencia del módulo: si #2974 todavía no aterrizó, el slice
 // degrada a `{ active: false }` y nada del dashboard se rompe.
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
+
+// #4731 — Cruce con salud de proveedores para decidir el SCOPE del banner de
+// cuota (puntual vs global). Sólo usamos `listConfiguredProviders()` (lectura
+// del catálogo, sin pings HTTP). Tolerante a la ausencia del módulo.
+let providerHealthLib = null;
+try { providerHealthLib = require('./provider-health'); } catch { /* opcional */ }
+
+// #4709 — Causa declarada del no-despacho (cola ociosa). Lectura defensiva del
+// artifact `dispatch-cause.json`; si el módulo no carga, el slice degrada a
+// `{ active: false }` sin romper el dashboard.
+let dispatchCause = null;
+try { dispatchCause = require('./dispatch-cause'); } catch { /* opcional */ }
+
+// #5400 — estampa del último despacho efectivo (para "hace cuánto no sale trabajo").
+let lastDispatchMod = null;
+try { lastDispatchMod = require('./last-dispatch'); } catch { /* opcional */ }
+
+// #4460 — Trust anchor del SHA vivo + detección de drift del modelo operativo.
+// Requires defensivos: si no cargan (checkout viejo), el slice degrada a
+// `{ items: [], unknown: true }` (estado desconocido) sin romper el dashboard.
+let runtimeBoot = null;
+try { runtimeBoot = require('./runtime-boot'); } catch { /* opcional */ }
+let operativoDrift = null;
+try { operativoDrift = require('./operativo-drift'); } catch { /* opcional */ }
+
+// #4202 — Estado de frescura del snapshot real de Anthropic (OCR del panel
+// "Uso" de Claude Desktop). Reusado para derivar la `confidence` por proveedor
+// del desglose de cuotas. Tolerante a la ausencia del módulo (kill switch /
+// feature off): si no está disponible, la confianza degrada a 'missing'.
+let quotaSnapshotIntegration = null;
+try { quotaSnapshotIntegration = require('./quota-snapshot-integration'); } catch { /* opcional */ }
+
+// #4282 — Guard de cuota por proveedor (alerta + switch preventivo). El slice
+// expone el banner anticipado (read-only) y `quotaSlice` lo evalúa en vivo
+// (idempotente, con dedupe propio) en cada poll del dashboard. Tolerante a la
+// ausencia del módulo.
+let providerQuotaGuard = null;
+try { providerQuotaGuard = require('./provider-quota-guard'); } catch { /* opcional */ }
+
+// #4289 — Presupuesto de ritmo (pacing budget) por proveedor. El slice expone el
+// estado (verde/amarillo/rojo + saldo del bucket) junto a las barras de cuota.
+// `quotaSlice` evalúa el pacing en vivo en cada poll (reusa el slice ya
+// normalizado, mismo patrón que #4282). Tolerante a la ausencia del módulo
+// (kill-switch / feature off): si no carga, el slice degrada sin romper nada.
+let pacingBucket = null;
+try { pacingBucket = require('./pacing-bucket'); } catch { /* opcional */ }
+
+// #4533 — Agregador de cuota DISPONIBLE por proveedor × ventana. Enriquece el
+// sub-shape normalizado con available%, reset propio por bucket, rótulo de
+// ventana y modo de render (gauge/event/nodata). Tolerante a la ausencia del
+// módulo: si no carga, el slice degrada al shape previo sin romper.
+let providerQuotaAgg = null;
+try { providerQuotaAgg = require('./provider-quota'); } catch { /* opcional */ }
 
 // #2976 — Skills determinísticos: corren en Node puro sin tokens LLM y por
 // eso siguen ejecutándose aún con `quota-exhausted.json` activo. Mantener
@@ -34,17 +103,102 @@ const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 
+// #5176 — Envoltorio único de acceso al estado operativo. Mismo criterio de
+// require defensivo que el resto del módulo: si no carga, `headerSlice` degrada
+// a `running` sin romper el header del dashboard.
+let operationalState = null;
+try { operationalState = require('./operational-state'); } catch { /* opcional */ }
+
 // Detector de artifacts auxiliares (.guidance.txt, .reason.json, .comment.md,
 // y cualquier filename con > 2 segmentos). Compartido con human-block para
 // que ambos listadores excluyan los mismos fantasmas. Fallback defensivo si
 // el módulo no carga.
-let isMarkerArtifact;
-try { ({ isMarkerArtifact } = require('./human-block')); } catch { /* opcional */ }
-if (typeof isMarkerArtifact !== 'function') {
-    isMarkerArtifact = (name) => name.split('.').length > 2
-        || name.endsWith('.reason.json')
-        || name.endsWith('.guidance.txt')
-        || name.endsWith('.comment.md');
+// Artifacts auxiliares: detección centralizada en `lib/marker-artifact.js`
+// (#3638 CA-F-1).
+const { isMarkerArtifact } = require('./marker-artifact');
+
+// #3948 (EP-7) — Presencia observacional del Commander. Canal separado del
+// filesystem de fases: el archivo vive en la raíz de runtime del pipeline
+// (`commander-presence.json`), NO bajo `<pipeline>/<fase>/trabajando/`, así los
+// contadores de concurrencia (`countRunningBySkill`/`countRunningDevs`) nunca lo
+// ven (CA-2). Importación defensiva del enum/path; si el módulo no carga, el
+// merge se degrada a no-op y `/api/dash/active` sigue funcionando.
+let commanderPresence = null;
+try { commanderPresence = require('./commander-presence'); } catch { /* opcional */ }
+
+// #4332 — Presencia observacional del Sherlock (validación del Commander). Mismo
+// patrón que el Commander: canal separado en la raíz de runtime del pipeline
+// (`sherlock-presence.json`), fuera de `trabajando/` → no lo cuentan los slots de
+// concurrencia (CA-5). Import defensivo: si no carga, el merge es no-op.
+let sherlockPresence = null;
+try { sherlockPresence = require('./sherlock-presence'); } catch { /* opcional */ }
+
+// TTL para considerar la presencia stale (CA-8 / SEC-4). Alineado con el default
+// del helper; si el Commander crashea a mitad de petición, la card no queda
+// colgada más de ~5 min.
+const COMMANDER_PRESENCE_TTL_MS = 5 * 60 * 1000;
+
+// #4332 — TTL análogo para la presencia del Sherlock (CA-4). Si el Sherlock queda
+// colgado o lo matan sin `clearPresence`, la card se descarta tras ~5 min.
+const SHERLOCK_PRESENCE_TTL_MS = 5 * 60 * 1000;
+
+// #3955 EP8-H2 (CA-4 / SEC-6) — Cooldowns por fast-fail. Fuente única y
+// server-authoritative: `<pipeline>/cooldowns.json`, escrita por pulpo.js
+// (`registerFastFail`), con shape `{ "<skill>:<issue>": { failures, cooldownUntil } }`.
+// El dashboard SOLO lee y expone; nunca habilita acciones por su cuenta.
+const COOLDOWNS_FILE = path.join(__dirname, '..', 'cooldowns.json');
+
+// #4195 — Catálogo de asignación de proveedores por skill (provider visible en
+// la ficha de cada agente y en el roster de Equipo). Lectura defensiva.
+const AGENT_MODELS_FILE = path.join(__dirname, '..', 'agent-models.json');
+
+// #4195 — Roster de dotación + agregados del banner de Equipo (módulo puro).
+let equipoRoster = null;
+try { equipoRoster = require('./equipo-roster'); } catch { /* opcional */ }
+
+// #4284 — Markers de runtime del provider EFECTIVO por agente en curso. El pulpo
+// los escribe en el spawn con la decisión real del router (`dispatchResolution`)
+// y los limpia en `onSpawnExit`. `activeAgents` los prioriza sobre el provider
+// CONFIGURADO por skill. Lectura defensiva: si el módulo no carga, se cae al
+// comportamiento previo (provider configurado) sin romper nada.
+let runningProviders = null;
+try { runningProviders = require('./running-providers'); } catch { /* opcional */ }
+
+// #4195 — Registro de agentes (branch/worktree por issue). Es fuente best-effort
+// (la fuente de verdad operativa es el filesystem): se usa solo para enriquecer
+// la rama mostrada en la ficha; si falta, se cae a la convención agent/<issue>.
+const AGENT_REGISTRY_FILE = path.join(__dirname, '..', '..', '.claude', 'hooks', 'agent-registry.json');
+
+// Construye un mapa issue → branch leyendo el agent-registry (best-effort). El
+// registry guarda el issue como "#1234"; normalizamos a numérico.
+function branchByIssueFromRegistry() {
+    const map = {};
+    const reg = safeReadJsonModule(AGENT_REGISTRY_FILE, null);
+    const agents = reg && reg.agents && typeof reg.agents === 'object' ? reg.agents : {};
+    for (const a of Object.values(agents)) {
+        if (!a || !a.branch) continue;
+        const num = String(a.issue || '').replace(/[^0-9]/g, '');
+        if (num) map[num] = String(a.branch);
+    }
+    return map;
+}
+
+// safeReadJson local hoisting: se define más abajo; alias para usar arriba.
+function safeReadJsonModule(filepath, fallback) {
+    try { return JSON.parse(fs.readFileSync(filepath, 'utf8')); }
+    catch { return fallback; }
+}
+
+// Lee el cooldown vigente para un par skill+issue. Devuelve `null` si no hay
+// cooldown o si ya venció (no exponemos contadores stale como activos). El
+// objeto de cooldowns se pasa pre-leído para no pegarle al FS por agente.
+function cooldownFor(cooldowns, skill, issue, now) {
+    if (!cooldowns) return null;
+    const entry = cooldowns[`${skill}:${issue}`];
+    if (!entry || !entry.cooldownUntil) return null;
+    const untilMs = Date.parse(entry.cooldownUntil);
+    if (!Number.isFinite(untilMs) || untilMs <= now) return null;
+    return { failures: entry.failures || 0, cooldownUntil: entry.cooldownUntil };
 }
 
 function isDeterministicSkill(skill) {
@@ -56,13 +210,123 @@ function safeReadJson(filepath, fallback) {
     catch { return fallback; }
 }
 
-function activeAgents(state) {
+function readBuildStatus(pipelineDir) {
+    const raw = safeReadJson(path.join(pipelineDir, 'build-status.json'), null);
+    if (!raw || typeof raw !== 'object') return { status: 'unknown', branch: '', commit: '' };
+    const allowed = { passing: 1, failing: 1, running: 1, unknown: 1 };
+    return {
+        status: allowed[raw.status] ? raw.status : 'unknown',
+        branch: typeof raw.branch === 'string' ? raw.branch.slice(0, 80) : '',
+        commit: typeof raw.commit === 'string' ? raw.commit.slice(0, 12) : '',
+    };
+}
+
+// #4335 — Directorio de logs servido por los endpoints genéricos del dashboard
+// (`/logs/view|stream/<file>`). __dirname = `.pipeline/lib` → `.pipeline/logs`.
+// `_logDirOverride` permite aislar el directorio en tests (mismo patrón que el
+// override de `presencePath`); en producción es `null` y se usa el real.
+const LOG_DIR = path.join(__dirname, '..', 'logs');
+let _logDirOverride = null;
+function currentLogDir() { return _logDirOverride || LOG_DIR; }
+
+// #4335 — Resuelve, SERVER-SIDE, el `.log` de corrida más reciente para un
+// prefijo dado (`commander` / `sherlock`) dentro del TTL de presencia. Devuelve
+// el BASENAME del archivo (para que el front lo pase al endpoint genérico ya
+// redactado) o `null` si no hay ninguno vigente.
+//
+// Por qué resolución por `mtime` + TTL (y no un puntero en el presence.json):
+//   - Los archivos de presencia (`commander-presence.json` / `sherlock-presence.json`)
+//     NO guardan el nombre del log a propósito: el filename incluye el chat_id
+//     (PII) y meterlo en el presence rompería SEC-1. Resolvemos acá, en el
+//     server, cruzando el patrón de nombre con el mtime.
+//   - El TTL evita "logs fantasma": si el más reciente quedó fuera del TTL (no
+//     hay corrida activa), devolvemos `null` y la card no linkea nada (cubre el
+//     CA "sin ejecución activa no hay log fantasma").
+//
+// El filtro exige que el nombre matchee EXACTAMENTE `<prefix>-<algo>.log` para
+// no colar sidecars (`commander-<id>.meta.json` termina en `.json`, no matchea).
+function resolveRecentRunLog(prefix, ttlMs, nowMs, dirOverride) {
+    try {
+        const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+        const dir = dirOverride || currentLogDir();
+        const re = new RegExp(`^${prefix}-[a-zA-Z0-9-]+\\.log$`);
+        let best = null; // { name, mtimeMs }
+        for (const name of fs.readdirSync(dir)) {
+            if (!re.test(name)) continue;
+            let mtimeMs;
+            try { mtimeMs = fs.statSync(path.join(dir, name)).mtimeMs; }
+            catch { continue; }
+            if (!best || mtimeMs > best.mtimeMs) best = { name, mtimeMs };
+        }
+        if (!best) return null;
+        const age = now - best.mtimeMs;
+        if (age < 0 || age >= ttlMs) return null; // fuera del TTL → sin link (no fantasma)
+        return best.name;
+    } catch {
+        return null; // LOG_DIR ausente o ilegible → degradar sin romper
+    }
+}
+
+// `opts` (additivo, #4335) permite inyectar el reloj y el dir de logs en tests
+// sin pisar el estado del módulo: `opts.now` reemplaza a `Date.now()` en TODOS
+// los chequeos de TTL (presencia + resolución de log) y `opts.logDir` reemplaza
+// a `currentLogDir()`. Ambos con default al comportamiento real → los callers de
+// producción (`activeAgents(state)`) no cambian.
+//
+// #4255 (rebote) — `opts.commanderPresencePath` / `opts.sherlockPresencePath`
+// permiten inyectar la ruta del archivo de presencia SIN monkeypatchear el
+// singleton compartido `presencePath()` de los módulos. Esto elimina la
+// contaminación cross-file entre los .test.js de este slice cuando `node --test`
+// corre todos los archivos en un mismo proceso (isolation off): antes, la
+// asignación top-level `commanderPresence.presencePath = …` del último archivo
+// cargado pisaba a los demás y provocaba fallos dependientes del orden de carga.
+// Default al `presencePath()` real → los callers de producción no cambian.
+function activeAgents(state, opts = {}) {
+    const nowMs = Number.isFinite(opts && opts.now) ? opts.now : Date.now();
+    const logDir = (opts && opts.logDir) || currentLogDir();
+    const commanderPresPath = (opts && opts.commanderPresencePath) ||
+        (commanderPresence ? commanderPresence.presencePath() : null);
+    const sherlockPresPath = (opts && opts.sherlockPresencePath) ||
+        (sherlockPresence ? sherlockPresence.presencePath() : null);
     const out = [];
+    // #3955 — Cooldowns leídos una sola vez por request (CA-4/SEC-6).
+    const cooldowns = safeReadJson(COOLDOWNS_FILE, null);
+    // #4195 — Catálogo de proveedores + mapa de ramas, leídos una sola vez por
+    // request para enriquecer la ficha de cada agente (provider/branch/rebotes).
+    const agentModels = safeReadJson(AGENT_MODELS_FILE, null);
+    const branchMap = branchByIssueFromRegistry();
+    // #4284 — Markers del provider EFECTIVO, leídos una sola vez por request (TTL
+    // aplicado al leer → markers stale descartados, CA-4). Mapa por clave
+    // canónica `<pipeline>/<fase>/<skill>:<issue>`.
+    const effectiveMarkers = runningProviders ? runningProviders.readRunningProviders() : {};
+    const now = nowMs;
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         if (data.estadoActual !== 'trabajando') continue;
         const entries = data.fases[data.faseActual] || [];
         for (const e of entries) {
             if (e.estado !== 'trabajando') continue;
+            // #4195 — Proveedor configurado para el skill (provider visible) y
+            // rama del worktree (registry best-effort → convención agent/<issue>).
+            // #4284 — Si hay marker del provider EFECTIVO para este agente, lo
+            // priorizamos sobre el configurado (CA-1/CA-2); si no hay marker (TTL
+            // vencido o no escrito), caemos al configurado (CA-3, happy path
+            // intacto). Mantenemos el shape `{ id, label, model }` que consume el
+            // front; el `label` sale de `PROVIDER_LABELS` (CA-8 naming canónico).
+            const issueNum = String(issueId).replace(/[^0-9]/g, '');
+            const markerKey = `${e.pipeline}/${e.fase}/${e.skill}:${issueNum}`;
+            const effective = effectiveMarkers[markerKey] || null;
+            let provider = equipoRoster ? equipoRoster.resolveProvider(agentModels, e.skill) : null;
+            if (effective && effective.provider) {
+                const labels = equipoRoster ? equipoRoster.PROVIDER_LABELS : null;
+                provider = {
+                    id: effective.provider,
+                    label: (labels && labels[effective.provider]) || effective.provider,
+                    // Modelo efectivo del marker; si no vino, preservamos el del
+                    // provider configurado (no romper el shape).
+                    model: effective.model || (provider && provider.model) || null,
+                };
+            }
+            const branch = branchMap[issueNum] || `agent/${issueNum || issueId}-${e.skill}`;
             out.push({
                 issue: issueId,
                 title: data.title || '',
@@ -73,12 +337,102 @@ function activeAgents(state) {
                 ageMin: e.ageMin || 0,
                 hasLog: !!e.hasLog,
                 logFile: e.logFile,
+                // #4195 — campos para la ficha de Equipo (additivos).
+                provider,
+                branch,
+                bounces: data.bounces || 0,
                 etaMs: (state.etaAverages && state.etaAverages[`${e.fase}/${e.skill}`]?.avgMs) ||
                        (state.etaAverages && state.etaAverages[e.fase]?.avgMs) || null,
+                // #3955 CA-3 — defaults explícitos para que el front no tenga que
+                // inferir; el Commander (más abajo) los pisa con false/true.
+                cancelable: true,
+                observational: false,
+                // #3955 CA-4/SEC-6 — estado de cooldown server-authoritative.
+                cooldown: cooldownFor(cooldowns, e.skill, issueId, now),
             });
         }
     }
     out.sort((a, b) => b.durationMs - a.durationMs);
+
+    // #3948 (EP-7) — Mergear la presencia del Commander como agente SINTÉTICO
+    // observacional, leído del canal separado (NO del issueMatrix de fases). Va
+    // al frente (`unshift`) para que aparezca primero en la banda "Ejecutando
+    // ahora". Lectura defensiva (`safeReadJson` ya tolera corrupción) + TTL por
+    // `startedAt` (SEC-4 / CA-8) + validación de fase contra el enum cerrado
+    // (SEC-2). NO afecta `totalRunning` como slot real: es presencia, los
+    // contadores de concurrencia del pulpo viven en otro lado y no lo cuentan
+    // (CA-2). El archivo NO contiene PII (CA-6, garantizado por el writer).
+    // #4332 — Mergear la presencia del Sherlock como agente SINTÉTICO
+    // observacional, leído del canal separado (`sherlock-presence.json`). Se hace
+    // ANTES del `unshift` del Commander a propósito: el Sherlock se prepende
+    // primero (queda en índice 0) y luego el Commander lo desplaza a índice 1, así
+    // el Commander queda primero y el Sherlock inmediatamente al lado (UX-3). Misma
+    // validación defensiva que el Commander (TTL + enum de fase + shape), sin PII
+    // (CA-6). NO ocupa slot de concurrencia: el archivo vive fuera de `trabajando/`
+    // (CA-5, por construcción).
+    if (sherlockPresence && sherlockPresPath) {
+        const pres = safeReadJson(sherlockPresPath, null);
+        if (pres && typeof pres === 'object' &&
+            sherlockPresence.isValidPhase(pres.fase) &&
+            typeof pres.petitionId === 'string' && pres.petitionId &&
+            typeof pres.startedAt === 'number') {
+            const ageMs = nowMs - pres.startedAt;
+            if (ageMs >= 0 && ageMs < SHERLOCK_PRESENCE_TTL_MS) {
+                // #4335 — enganchar el `sherlock-*.log` de la corrida más reciente
+                // dentro del TTL (server-side, por mtime; sin PII en el presence).
+                const logFile = resolveRecentRunLog('sherlock', SHERLOCK_PRESENCE_TTL_MS, nowMs, logDir);
+                out.unshift({
+                    issue: null,
+                    title: 'Sherlock',
+                    skill: 'sherlock',
+                    pipeline: null,
+                    fase: pres.fase,
+                    petitionId: pres.petitionId, // id opaco (SEC-1)
+                    durationMs: ageMs,
+                    ageMin: Math.floor(ageMs / 60000),
+                    observational: true,         // CA-2 / CA-5
+                    cancelable: false,           // CA-2 / CA-5
+                    hasLog: !!logFile,           // #4335 — link a log crudo si hay corrida vigente
+                    logFile: logFile || undefined,
+                    etaMs: null,                 // presencia sin ETA (barra indeterminada)
+                });
+            }
+        }
+    }
+
+    if (commanderPresence && commanderPresPath) {
+        const pres = safeReadJson(commanderPresPath, null);
+        if (pres && typeof pres === 'object' &&
+            commanderPresence.isValidPhase(pres.fase) &&
+            typeof pres.petitionId === 'string' && pres.petitionId &&
+            typeof pres.startedAt === 'number') {
+            const ageMs = nowMs - pres.startedAt;
+            if (ageMs >= 0 && ageMs < COMMANDER_PRESENCE_TTL_MS) {
+                // #4335 — enganchar el `commander-*.log` de la corrida más reciente
+                // dentro del TTL. El filename incluye chat_id (PII), pero ese
+                // basename YA se expone hoy en la card "Logs recientes"
+                // (`renderCommanderRequestLogs`), así que no hay leak nuevo; y la
+                // vista pasa por el endpoint genérico que redacta secrets.
+                const logFile = resolveRecentRunLog('commander', COMMANDER_PRESENCE_TTL_MS, nowMs, logDir);
+                out.unshift({
+                    issue: null,
+                    title: 'Commander',
+                    skill: 'commander',
+                    pipeline: null,
+                    fase: pres.fase,
+                    petitionId: pres.petitionId, // id opaco (SEC-1)
+                    durationMs: ageMs,
+                    ageMin: Math.floor(ageMs / 60000),
+                    observational: true,         // CA-3 / CA-4
+                    cancelable: false,           // CA-3 / CA-4
+                    hasLog: !!logFile,           // #4335 — link a log crudo si hay corrida vigente
+                    logFile: logFile || undefined,
+                    etaMs: null,                 // presencia sin ETA (barra indeterminada en UI)
+                });
+            }
+        }
+    }
+
     return out;
 }
 
@@ -198,19 +552,47 @@ function nextInQueue(state, ctx, limit = 3, opts = {}) {
 
 function headerSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
-    const partialFile = path.join(PIPELINE, '.partial-pause.json');
-    const pauseFile = path.join(PIPELINE, '.paused');
+    // #5176 — El modo de dispatch del header sale del envoltorio único, no de
+    // dos `fs.existsSync` sobre paths construidos acá. Dos consecuencias
+    // DELIBERADAS y declaradas (no efectos colaterales):
+    //
+    //   R7 · el halt total sigue ganando. `getDispatchState()` aplica la
+    //   precedencia `paused > partial_pause > running` del contrato §4: con
+    //   `.paused` presente devuelve `mode: 'paused'` sin siquiera leer el
+    //   marker de allowlist. El header NO puede confundir halt total con
+    //   "allowlist vacía" porque son ramas distintas del mismo retorno, no dos
+    //   lecturas independientes que alguien pueda reordenar.
+    //
+    //   SEC-4 · ventana por skill. El header activaba `partial_pause` SÓLO con
+    //   `allowed_issues.length > 0`; `getPipelineMode()` lo activa con issues
+    //   O skills (#3680 CA-A15). Con una ventana por skill (sin issues), el
+    //   header mostraba `running` mientras el Pulpo estaba en `partial_pause`
+    //   — el operador leía "sin pausa" con el dispatch acotado. La semántica
+    //   del envoltorio es la correcta y se adopta: es un cambio observable
+    //   DECLARADO, no una regresión.
+    //
+    // El envoltorio resuelve la ruta física por su cuenta (contrato §2:
+    // `PIPELINE_DIR_OVERRIDE` o `.pipeline/`), así que este slice deja de
+    // derivar el estado operativo de `ctx.PIPELINE`. En producción son el
+    // mismo directorio; el resto del slice sigue usando `PIPELINE` para lo
+    // suyo (build status, rest-mode, métricas).
+    //
+    // CA-UX-3 / CA-UX-4 · el slice publica también `allowedSkills`. Sin ese
+    // campo el cliente no puede distinguir una ventana por skill de una pausa
+    // parcial vacía: rotulaba `⏸ Parcial · 0 issues` y escondía el toggle de
+    // inspección de la allowlist justo cuando había una restricción vigente.
+    // `views/dashboard/multi-provider-coverage.js` ya lo leía del header y
+    // recibía `undefined` — este es el productor que faltaba.
     let mode = 'running';
     let allowedIssues = [];
-    if (fs.existsSync(pauseFile)) {
-        mode = 'paused';
-    } else if (fs.existsSync(partialFile)) {
-        const data = safeReadJson(partialFile, {});
-        const arr = Array.isArray(data.allowed_issues) ? data.allowed_issues : [];
-        if (arr.length > 0) {
-            mode = 'partial_pause';
-            allowedIssues = arr;
-        }
+    let allowedSkills = [];
+    if (operationalState && typeof operationalState.getDispatchState === 'function') {
+        try {
+            const dispatch = operationalState.getDispatchState();
+            mode = dispatch.mode;
+            allowedIssues = Array.isArray(dispatch.allowedIssues) ? dispatch.allowedIssues : [];
+            allowedSkills = Array.isArray(dispatch.allowedSkills) ? dispatch.allowedSkills : [];
+        } catch { /* envoltorio degradado → header en running, nunca rompe */ }
     }
     const procesos = state.procesos || {};
     const pulpoAlive = !!(procesos.pulpo && procesos.pulpo.alive);
@@ -223,8 +605,42 @@ function headerSlice(state, ctx) {
             for (const e of entries) if (e.estado === 'trabajando') equipoActive++;
         }
     }
-    const pipelineActive = Object.keys(state.issueMatrix || {}).length;
-    const bloqueadosCount = (state.bloqueados || []).length;
+    // #4454 (defecto 1) — Los badges Pipeline/Issues/Matriz deben reflejar la
+    // OLA ACTIVA, no el pipeline global. Antes: Object.keys(state.issueMatrix)
+    // contaba TODO el pipeline (p.ej. 72) en vez de los issues de la ola (p.ej.
+    // 18/20). Fuente de verdad = `state.activeWave.issues` (poblado por
+    // wave-resolver.resolveActiveWave() en dashboard.js — mismo origen que la
+    // vista de ola). Shape confirmado: number[] (enteros planos ordenados).
+    const waveIssues = (state.activeWave && Array.isArray(state.activeWave.issues))
+        ? state.activeWave.issues
+        : [];
+    // Fallback anti-0-engañoso: si el resolver degradó y la ola viene vacía,
+    // mostramos placeholder '·' en vez de 0 para no reintroducir el defecto
+    // invertido (el badge SSR ya arranca en '·' con clase area-pill-badge-zero).
+    const pipelineActive = waveIssues.length > 0 ? waveIssues.length : '·';
+
+    // #4454 (defecto 1, bloqueados) — El contador de bloqueados sólo miraba
+    // `state.bloqueados` (bloqueados-humano, hoy vacío → 0). Debe UNIR los
+    // bloqueados-humano con los bloqueados-por-dependencias (markers en
+    // `bloqueado-dependencias/`, misma fuente filesystem que consume el
+    // brazoDesbloqueo y la vista /bloqueados). Dedup por número de issue. NO se
+    // acota a la ola activa a propósito: un issue puede estar bloqueado fuera de
+    // la ola y el operador necesita verlo (evita reintroducir el 0 engañoso).
+    const humanBlocked = (state.bloqueados || [])
+        .map(b => b && (b.issue ?? b.number))
+        .filter(n => Number.isFinite(Number(n)))
+        .map(Number);
+    let depBlocked = [];
+    try {
+        const rebote = require('./rebote-classifier');
+        if (typeof rebote.listDependencyBlockedMarkers === 'function') {
+            depBlocked = rebote.listDependencyBlockedMarkers()
+                .map(m => m && m.issue)
+                .filter(n => Number.isFinite(Number(n)))
+                .map(Number);
+        }
+    } catch { /* sin lib → sólo bloqueados-humano; nunca revienta el header */ }
+    const bloqueadosCount = new Set([...humanBlocked, ...depBlocked]).size;
     const historialCount = (state.actividad || []).length;
 
     // Priority windows (QA/Build) — bloquean dev/build cuando la cola QA
@@ -261,18 +677,37 @@ function headerSlice(state, ctx) {
     // #2890 PR-A — Modo descanso: pill indigo en header (CA-3.1) cuando la
     // ventana está activa. Devolvemos `restMode` aun cuando esté inactivo
     // para que el cliente pueda morphear sin re-fetchear otra cosa.
+    //
+    // #3241 CA-Slice — shape enriquecido para la UI nueva (#3242):
+    //   { active, isWithinNow, currentPeriod, nextPeriod, periodsToday, manual }
+    // Conservamos los campos legacy (`start`, `end`, `days`, `timezone`,
+    // `isWithinWindow`, `updatedAt`) para retrocompat del pill viejo durante
+    // la transición — `getWindow()` los sintetiza desde `schedule`.
     let restMode = { active: false };
     if (restModeWindow) {
         try {
+            const now = Date.now();
             const w = restModeWindow.getWindow({ pipelineDir: PIPELINE });
-            const within = restModeWindow.isWithinWindow(w, Date.now());
+            const within = restModeWindow.isWithinWindow(w, now);
+            const describe = typeof restModeWindow.describeRestModeNow === 'function'
+                ? restModeWindow.describeRestModeNow(w, now)
+                : { active: !!w.active, isWithinNow: within, currentPeriod: null,
+                    nextPeriod: null, periodsToday: 0, manual: !!w.manual };
             restMode = {
-                active: !!w.active,
+                // Campos enriquecidos #3241 (CA-Slice — UI nueva los consume)
+                active: describe.active,
+                isWithinNow: describe.isWithinNow,
+                currentPeriod: describe.currentPeriod,
+                nextPeriod: describe.nextPeriod,
+                periodsToday: describe.periodsToday,
+                manual: describe.manual,
+                // Schedule completo para clientes que necesitan iterar
+                schedule: w.schedule || null,
+                // Campos legacy sintetizados (retrocompat pill viejo)
                 start: w.start || null,
                 end: w.end || null,
                 timezone: w.timezone || null,
                 days: Array.isArray(w.days) ? w.days : [],
-                manual: !!w.manual,
                 isWithinWindow: within,
                 updatedAt: w.updatedAt || null,
             };
@@ -284,6 +719,7 @@ function headerSlice(state, ctx) {
     return {
         mode,
         allowedIssues,
+        allowedSkills,
         pulpoAlive,
         pulpoUptimeMs: procesos.pulpo?.uptime || 0,
         counts: {
@@ -296,6 +732,7 @@ function headerSlice(state, ctx) {
         },
         priorityWindows,
         resources,
+        build: readBuildStatus(PIPELINE),
         restMode,
         timestamp: Date.now(),
     };
@@ -303,14 +740,35 @@ function headerSlice(state, ctx) {
 
 // `gh pr list` tarda ~3-4s y los PRs mergeados de 7 días no cambian rápido.
 // Cache de 5 min para no bloquear el endpoint /api/dash/kpis cada poll.
+//
+// CA-1.3 (#3357): si `gh` falla, conservamos el valor anterior del cache.
+// Cuando nunca tuvo valor, prsLast7d sigue como `null` (UI muestra "—"); si
+// ya teníamos un conteo previo, lo mantenemos hasta que vuelva la conexión.
+//
+// CA-1.4 (#3357): la ventana se calcula con UTC (`slice(0,10)` sobre toISO).
+// El operador en hora local AR (UTC-3) puede ver una "ventana corrida"
+// cerca de medianoche UTC — bajo impacto, documentado acá.
 let _prsCache = { value: null, at: 0 };
 const PRS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// Cache de issues cerrados — sirve a `issueCycleTimeMs` (CA-3.2 #3357).
+// TTL = 5 min, mismo patrón defensivo que `_prsCache`. Si `gh` falla,
+// el valor previo se preserva.
+let _closedIssuesCache = { value: null, at: 0 };
+const CLOSED_ISSUES_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // Snapshot del aggregator V3 — TTL más agresivo (10 min) porque generar el
 // snapshot es lento (escanea activity-log.jsonl entero) y los tokens no
 // cambian en milisegundos. Refresh en background sin bloquear la response.
+//
+// CA-2.1 (#3357): escribimos DOS snapshots en paralelo — `snapshot.json`
+// (window=all, consumidores externos pre-existentes) y `snapshot-24h.json`
+// (window=24h, lectura del `tokens24h` del kpisSlice). Cada uno con su
+// flag de refresh para no superponer spawns.
 let _snapshotRefreshing = false;
 let _snapshotLastRefresh = 0;
+let _snapshot24hRefreshing = false;
+let _snapshot24hLastRefresh = 0;
 const SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 
 function maybeRefreshSnapshot(ROOT, snapshotPath) {
@@ -335,99 +793,696 @@ function maybeRefreshSnapshot(ROOT, snapshotPath) {
     } catch { _snapshotRefreshing = false; }
 }
 
+// CA-2.1 (#3357): refresh dedicado del snapshot 24h. El aggregator escribe
+// `snapshot.json` para el window pedido — para tener DOS snapshots paralelos
+// pasamos `--out snapshot-24h.json` (flag opcional aceptada por aggregator
+// post-#3357, fallback a comportamiento legacy si no se reconoce).
+function maybeRefreshSnapshot24h(ROOT, snapshot24hPath) {
+    if (_snapshot24hRefreshing) return;
+    let mtimeMs = 0;
+    try { mtimeMs = require('fs').statSync(snapshot24hPath).mtimeMs; } catch {}
+    const ageMs = Date.now() - mtimeMs;
+    if (ageMs < SNAPSHOT_TTL_MS && Date.now() - _snapshot24hLastRefresh < SNAPSHOT_TTL_MS) return;
+    _snapshot24hRefreshing = true;
+    _snapshot24hLastRefresh = Date.now();
+    try {
+        const { spawn } = require('child_process');
+        const aggregatorPath = path.join(__dirname, '..', 'metrics', 'aggregator.js');
+        const child = spawn(
+            process.execPath,
+            [aggregatorPath, '--once', '--window', '24h', '--out', 'snapshot-24h.json'],
+            { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true },
+        );
+        child.unref();
+        child.on('exit', () => { _snapshot24hRefreshing = false; });
+        child.on('error', () => { _snapshot24hRefreshing = false; });
+    } catch { _snapshot24hRefreshing = false; }
+}
+
+// CA-1 (#3357): query simplificada. `--search "merged:>=<date>"` ya implica
+// `state:merged`, así que eliminamos el `--state merged` redundante.
+// `--limit 500` da margen frente a semanas pico (51 PRs hoy, techo 500).
+//
+// NOTA UTC (CA-1.4): `since` se calcula vía `toISOString().slice(0,10)`, que
+// es UTC. El operador en hora local AR (UTC-3) puede percibir la ventana
+// "corrida" 1 día cerca de medianoche UTC — bajo impacto operativo.
+function ghPrCommand(ghBin, sinceUtc) {
+    return `"${ghBin}" pr list --search "merged:>=${sinceUtc}" --json number,createdAt,mergedAt --limit 500`;
+}
+
+// CA-3.2 (#3357): query a `gh issue list` con `closed:>=<date>` para
+// `issueCycleTimeMs`. Trae `createdAt` + `closedAt` para calcular la
+// duración real del flujo (issue creation → close ≈ DORA cycle time).
+function ghClosedIssuesCommand(ghBin, sinceUtc) {
+    return `"${ghBin}" issue list --state closed --search "closed:>=${sinceUtc}" --json number,createdAt,closedAt --limit 500`;
+}
+
+function _todayUtcMinus(days) {
+    return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+}
+
+// CA-3 (#3357): mediana sobre array numérico. Vacío → null.
+function _median(arr) {
+    if (!arr || arr.length === 0) return null;
+    const sorted = [...arr].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+}
+
 function kpisSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
     const ROOT = ctx.ROOT;
     const GH_BIN = ctx.GH_BIN;
 
+    // -------------------------------------------------------------------
+    // CA-1 (#3357): PRs últimos 7 días con cache defensivo
+    // -------------------------------------------------------------------
     let prsLast7d = _prsCache.value;
     if (Date.now() - _prsCache.at > PRS_CACHE_TTL_MS) {
         try {
-            const since = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+            const since = _todayUtcMinus(7);
             const result = execSync(
-                `"${GH_BIN}" pr list --state merged --search "merged:>=${since}" --json number --limit 200`,
+                ghPrCommand(GH_BIN, since),
                 { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true }
             );
-            prsLast7d = JSON.parse(result || '[]').length;
-            _prsCache = { value: prsLast7d, at: Date.now() };
-        } catch { /* gh offline — mantener valor previo del cache si existe */ }
+            const parsed = JSON.parse(result || '[]');
+            prsLast7d = parsed.length;
+            // Solo persistimos el cache cuando `gh` respondió OK. Si la query
+            // tirara en el próximo poll, el valor previo se preserva.
+            _prsCache = { value: prsLast7d, at: Date.now(), prs: parsed };
+        } catch {
+            // CA-1.3: NO sobreescribir _prsCache.value con null. Si nunca tuvo
+            // valor, sigue null (UI: "—"). Si tenía valor previo, lo conservamos.
+        }
     }
 
+    // -------------------------------------------------------------------
+    // CA-2 (#3357): tokens últimas 24h con breakdown por provider
+    // -------------------------------------------------------------------
     let tokens24h = null;
-    let snapshot = null;
+    let snapshot24h = null;
     try {
-        const snapPath = path.join(PIPELINE, 'metrics', 'snapshot.json');
-        // Lanzar refresh background si el snapshot es viejo (>10 min). No
-        // bloquea la response actual; el siguiente poll va a leer fresh.
-        maybeRefreshSnapshot(ROOT, snapPath);
-        snapshot = safeReadJson(snapPath, null);
-        if (snapshot && snapshot.totals) {
-            // El snapshot del aggregator usa snake_case (tokens_in, tokens_out).
-            // Suma puede ser 0 si el log no tiene eventos con tokens contables;
-            // en ese caso retornamos null para que la UI muestre "—".
-            const sum = (snapshot.totals.tokens_in || 0) + (snapshot.totals.tokens_out || 0);
-            tokens24h = sum > 0 ? sum : null;
+        const snap24hPath = path.join(PIPELINE, 'metrics', 'snapshot-24h.json');
+        // Refresh paralelo del snapshot 24h (no bloquea response actual).
+        maybeRefreshSnapshot24h(ROOT, snap24hPath);
+        snapshot24h = safeReadJson(snap24hPath, null);
+        // Fallback al snapshot all-time si el 24h aún no se generó (primer arranque).
+        if (!snapshot24h) {
+            const snapPath = path.join(PIPELINE, 'metrics', 'snapshot.json');
+            maybeRefreshSnapshot(ROOT, snapPath);
+            snapshot24h = safeReadJson(snapPath, null);
         }
-    } catch { /* ignore */ }
+        if (snapshot24h && snapshot24h.totals) {
+            const totals = snapshot24h.totals;
+            const totalSum = (totals.tokens_in || 0) + (totals.tokens_out || 0);
+            // Breakdown por provider — CA-2.2/2.3. El aggregator expone
+            // `totals.by_provider: { <provider>: { tokens_in, tokens_out, ... } }`
+            // post-#3357. Si el snapshot todavía no lo tiene (versión vieja),
+            // degrade limpio: solo `total`, sin `by_provider`.
+            let byProvider = null;
+            if (totals.by_provider && typeof totals.by_provider === 'object') {
+                byProvider = {};
+                for (const [prov, bucket] of Object.entries(totals.by_provider)) {
+                    if (!bucket || typeof bucket !== 'object') continue;
+                    const tokSum = (bucket.tokens_in || 0) + (bucket.tokens_out || 0);
+                    byProvider[prov] = tokSum;
+                }
+            }
+            if (totalSum > 0) {
+                tokens24h = { total: totalSum, by_provider: byProvider };
+            } else {
+                // Sin datos en 24h → null (UI: "—"). Distinguir de "estado vacío".
+                tokens24h = null;
+            }
+        }
+    } catch { /* snapshot ausente / corrupto — degrade a null */ }
 
-    let cycleTimeMs = null;
+    // -------------------------------------------------------------------
+    // CA-3 (#3357): agentDurationMedianMs (renombrado) + issueCycleTimeMs
+    // -------------------------------------------------------------------
+    let agentDurationMedianMs = null;
     try {
-        const allDurations = [];
-        for (const data of Object.values(state.issueMatrix || {})) {
-            for (const entries of Object.values(data.fases || {})) {
+        // CA-3.3: fix doble conteo `listo` + `procesado`. Por (issue, fase, skill)
+        // preferimos `procesado` (estado final). Si no hay `procesado`, usamos
+        // `listo`. Así un marker reciclado cuenta UNA sola vez.
+        //
+        // CA-3.4: cap superior de duración subido de 24h → 7d para no enmascarar
+        // builds grandes / QA E2E con video que legítimamente duran horas.
+        const MAX_DUR_MS = 7 * 24 * 3600 * 1000;
+        const bestPerKey = new Map(); // `${issue}|${fase}|${skill}` → entry
+        for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
+            for (const [faseKey, entries] of Object.entries(data.fases || {})) {
                 for (const e of entries) {
-                    // Filtros: estado terminal + duración entre 1 segundo y 24 horas.
-                    // < 1s descarta ruido del FS (timestamps casi iguales).
-                    // > 24h descarta archivos huérfanos antiguos que distorsionan la mediana.
-                    if ((e.estado === 'procesado' || e.estado === 'listo')
-                        && e.durationMs >= 1000
-                        && e.durationMs < 24 * 3600000) {
-                        allDurations.push(e.durationMs);
+                    if (e.estado !== 'procesado' && e.estado !== 'listo') continue;
+                    if (!(e.durationMs >= 1000) || e.durationMs >= MAX_DUR_MS) continue;
+                    const key = `${issueId}|${faseKey}|${e.skill}`;
+                    const prev = bestPerKey.get(key);
+                    // Preferir `procesado` sobre `listo`; si ambos son procesado,
+                    // tomar el más reciente por updatedAt.
+                    if (!prev) {
+                        bestPerKey.set(key, e);
+                    } else if (prev.estado === 'listo' && e.estado === 'procesado') {
+                        bestPerKey.set(key, e);
+                    } else if (prev.estado === e.estado && (e.updatedAt || 0) > (prev.updatedAt || 0)) {
+                        bestPerKey.set(key, e);
                     }
                 }
             }
         }
-        if (allDurations.length > 0) {
-            allDurations.sort((a, b) => a - b);
-            cycleTimeMs = allDurations[Math.floor(allDurations.length / 2)];
+        const allDurations = [...bestPerKey.values()].map(e => e.durationMs);
+        agentDurationMedianMs = _median(allDurations);
+    } catch { /* ignore */ }
+
+    // CA-3.2 (#3357): nuevo issueCycleTimeMs = mediana de (closedAt - createdAt)
+    // de issues cerrados en los últimos 7d. Usamos `gh issue list` cacheado.
+    let issueCycleTimeMs = null;
+    try {
+        let closedIssues = _closedIssuesCache.value;
+        if (Date.now() - _closedIssuesCache.at > CLOSED_ISSUES_CACHE_TTL_MS) {
+            try {
+                const since = _todayUtcMinus(7);
+                const result = execSync(
+                    ghClosedIssuesCommand(GH_BIN, since),
+                    { cwd: ROOT, encoding: 'utf8', timeout: 8000, windowsHide: true }
+                );
+                closedIssues = JSON.parse(result || '[]');
+                _closedIssuesCache = { value: closedIssues, at: Date.now() };
+            } catch { /* gh offline — preservar valor previo */ }
+        }
+        if (Array.isArray(closedIssues) && closedIssues.length > 0) {
+            const durations = closedIssues
+                .map(i => {
+                    const c = i.createdAt ? Date.parse(i.createdAt) : NaN;
+                    const cl = i.closedAt ? Date.parse(i.closedAt) : NaN;
+                    if (!Number.isFinite(c) || !Number.isFinite(cl) || cl < c) return null;
+                    return cl - c;
+                })
+                .filter(d => d != null && d > 0);
+            issueCycleTimeMs = _median(durations);
         }
     } catch { /* ignore */ }
 
+    // -------------------------------------------------------------------
+    // CA-4 (#3357): bouncePct con denominador = issues, breakdown por fase
+    // -------------------------------------------------------------------
     let bouncePct = null;
     try {
-        let total = 0;
-        let rejected = 0;
-        for (const data of Object.values(state.issueMatrix || {})) {
-            for (const entries of Object.values(data.fases || {})) {
+        const WINDOW_MS = 7 * 24 * 3600 * 1000;
+        const cutoff = Date.now() - WINDOW_MS;
+        const issuesInWindow = new Set();         // issues con cualquier marker activo/terminado en 7d
+        const issuesWithBounce = new Set();       // issues con ≥1 marker rechazado en 7d
+        const phaseTotals = new Map();            // fase → { issues:Set, bouncedIssues:Set }
+
+        for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
+            // Track per-fase: ¿el issue terminó algo en esa fase dentro de la ventana?
+            // ¿fue rebotado en esa fase?
+            for (const [faseKey, entries] of Object.entries(data.fases || {})) {
+                let phaseFinishedInWindow = false;
+                let phaseRejectedInWindow = false;
                 for (const e of entries) {
                     if (e.estado !== 'procesado' && e.estado !== 'listo') continue;
                     if (!e.resultado) continue;
-                    total++;
-                    if (e.resultado === 'rechazado') rejected++;
+                    const ts = e.updatedAt || 0;
+                    if (ts < cutoff) continue;
+                    phaseFinishedInWindow = true;
+                    issuesInWindow.add(issueId);
+                    if (e.resultado === 'rechazado') {
+                        phaseRejectedInWindow = true;
+                        issuesWithBounce.add(issueId);
+                    }
+                }
+                if (phaseFinishedInWindow) {
+                    if (!phaseTotals.has(faseKey)) {
+                        phaseTotals.set(faseKey, { issues: new Set(), bouncedIssues: new Set() });
+                    }
+                    const slot = phaseTotals.get(faseKey);
+                    slot.issues.add(issueId);
+                    if (phaseRejectedInWindow) slot.bouncedIssues.add(issueId);
                 }
             }
         }
-        if (total > 0) bouncePct = Math.round((rejected / total) * 1000) / 10;
+
+        // CA-4.4: si total = 0, devolver null (NO 0%, NO div/0).
+        if (issuesInWindow.size > 0) {
+            const overall = (issuesWithBounce.size / issuesInWindow.size) * 1000;
+            const byPhase = {};
+            for (const [faseKey, slot] of phaseTotals.entries()) {
+                if (slot.issues.size === 0) continue;
+                byPhase[faseKey] = Math.round((slot.bouncedIssues.size / slot.issues.size) * 1000) / 10;
+            }
+            bouncePct = {
+                overall: Math.round(overall) / 10,
+                byPhase,
+                windowDays: 7,
+                issuesTotal: issuesInWindow.size,
+                issuesBounced: issuesWithBounce.size,
+            };
+        }
     } catch { /* ignore */ }
 
     return {
         prsLast7d,
         tokens24h,
-        cycleTimeMs,
+        // CA-3.1: nombre semánticamente correcto (lo que mide HOY).
+        agentDurationMedianMs,
+        // CA-3.2: nueva métrica DORA-like (issue creation → close).
+        issueCycleTimeMs,
+        // CA-3.1: alias legacy deprecado — mantener durante 1 release para
+        // no romper consumidores externos. Borrar después de la próxima review.
+        // @deprecated usar agentDurationMedianMs
+        cycleTimeMs: agentDurationMedianMs,
         bouncePct,
         timestamp: Date.now(),
     };
 }
 
+// -----------------------------------------------------------------------------
+// #3897 CA-4 — Métrica de precisión de Sherlock (épico #3894, hija 3/3).
+//
+// Lee los audit logs canónicos `sherlock-*.jsonl` (writer de #3896,
+// `lib/sherlock-audit-jsonl.js`) y computa SOLO agregados numéricos/booleanos.
+//
+// SEC-6 (NO NEGOCIABLE): el payload NUNCA incluye claims, comandos crudos,
+// stdout/stderr, session-ids ni ningún string derivado del contenido del
+// audit. NO replicar `partialPauseAuditSlice` (expone texto por-entry) —
+// SEC-6 es estrictamente más restrictivo. La capa de color/semáforo (UX-1)
+// vive en el front (`views/dashboard/*.js`), no acá.
+//
+// Definición de "contradicción/validación correcta": la resolución registrada
+// es COHERENTE con el tri-estado del árbitro canónico —
+//   - commander_vs_sherlock 'consistent'   + resolucion 'accepted' → correcta
+//   - commander_vs_sherlock 'inconsistent' + resolucion 'rejected' → correcta
+//     (contradicción respaldada por hecho canónico)
+//   - cualquier otra combinación → incorrecta (ej. contradicción emitida sin
+//     respaldo del árbitro = falso positivo estilo #3729).
+// `resultado === 'not_verifiable'` cuenta aparte (no entra al denominador).
+// -----------------------------------------------------------------------------
+const SHERLOCK_PRECISION_TARGET = 0.90;          // UX-1: verde ≥ 90%
+const SHERLOCK_PRECISION_ALERT_BELOW = 0.80;     // CA-4: alerta visible < 80%
+const SHERLOCK_PRECISION_MIN_SAMPLE = 5;         // UX-1: n<5 → muestra insuficiente
+
+// CA-3 (#3921) — meta de verificaciones same-provider: < 10%. Con cross-provider
+// por defecto, una verificación same-provider solo debería ocurrir en el fallback
+// de último recurso (chain alternativa agotada). Si el % sube de la meta, la
+// adversariality cross-provider se está degradando seguido → alerta visible.
+const SHERLOCK_SAME_PROVIDER_TARGET = 0.10;      // meta visible: < 10%
+
+// #3923 EP2-H3 — ENUM CERRADO de fuentes (LOCKSTEP con AUDIT_SOURCE_ENUM de
+// sherlock-audit-jsonl.js y el enum `source` de canonical-facts.js). El objeto
+// not_verifiable_by_source SIEMPRE emite estas claves (default 0).
+const SHERLOCK_NV_SOURCES = ['git', 'github-api', 'heartbeat', 'filesystem', 'pipeline-state', 'waves'];
+function _emptyNvBySource() {
+    const o = {};
+    for (const s of SHERLOCK_NV_SOURCES) o[s] = 0;
+    return o;
+}
+
+function _sherlockRecordCorrecto(rec) {
+    const cmp = rec && rec.commander_vs_sherlock;
+    const res = rec && rec.resolucion;
+    return (cmp === 'consistent' && res === 'accepted')
+        || (cmp === 'inconsistent' && res === 'rejected');
+}
+
+function sherlockPrecisionSlice(state, ctx) {
+    try {
+        const PIPELINE = (ctx && ctx.PIPELINE) || path.join(process.cwd(), '.pipeline');
+        const auditDir = path.join(PIPELINE, 'audit');
+        let files = [];
+        try {
+            files = fs.readdirSync(auditDir)
+                .filter((f) => f.startsWith('sherlock-') && f.endsWith('.jsonl'));
+        } catch { files = []; /* dir ausente → estado vacío, no error */ }
+
+        let correctas = 0;
+        let totales = 0;
+        let notVerifiable = 0;
+        // CA-3 (#3921) — agregado de same-provider sobre el total de records que
+        // declaran el campo `same_provider` (booleano). SEC-3: cuenta TODAS las
+        // same-provider, incluido el fallback de último recurso (el verifier
+        // persiste el flag en cada validación canónica del veredicto). SEC-4: solo
+        // booleans/contadores, sin claims/comandos/PII.
+        let sameProviderTotal = 0;
+        let sameProviderCount = 0;
+        // #3923 EP2-H3 — tasa de not_verifiable POR FUENTE (insumo EP8-H8). SEC-6:
+        // solo contadores por enum cerrado, nunca claims/comandos/stdout.
+        const notVerifiableBySource = _emptyNvBySource();
+        // #3961 EP8-H8 (CA-5a) — desglose por proveedor del verifier. La clave es
+        // `rec.provider` (el provider de Sherlock que produjo el veredicto; lo
+        // persiste el writer cuando el verifier lo provee, mismo patrón que
+        // `same_provider`). SEC-1: el provider es un enum acotado de IDs
+        // (anthropic/openai/...), pero NO se confía — el render lo escapa igual.
+        // SEC-2: sólo contadores numéricos por provider, nunca líneas crudas.
+        // Tasa de rechazo por provider = incorrectas / total (1 - precisión).
+        const byProvider = Object.create(null);
+        // #3961 EP8-H8 (CA-2) — muestras temporales para la sparkline diaria:
+        // precisión por día (v=1 correcta / 0 incorrecta) y same-provider por día.
+        const _now = (ctx && Number.isFinite(ctx.now)) ? ctx.now : Date.now();
+        const verdictSamples = [];
+        const sameProviderSamples = [];
+        for (const f of files) {
+            let raw = '';
+            try { raw = fs.readFileSync(path.join(auditDir, f), 'utf8'); }
+            catch { continue; }
+            for (const line of raw.split('\n')) {
+                if (!line.trim()) continue;
+                let rec = null;
+                try { rec = JSON.parse(line); } catch { continue; }
+                if (typeof (rec && rec.same_provider) === 'boolean') {
+                    sameProviderTotal += 1;
+                    if (rec.same_provider === true) sameProviderCount += 1;
+                    sameProviderSamples.push({ ts: rec.timestamp, v: rec.same_provider ? 1 : 0 });
+                }
+                const resultado = rec && rec.resultado;
+                if (resultado === 'not_verifiable') {
+                    notVerifiable += 1;
+                    // Acumula por fuente SOLO si pertenece al enum cerrado (records
+                    // viejos sin `source` no rompen el shape).
+                    const src = rec && rec.source;
+                    if (typeof src === 'string'
+                        && Object.prototype.hasOwnProperty.call(notVerifiableBySource, src)) {
+                        notVerifiableBySource[src] += 1;
+                    }
+                    continue;
+                }
+                if (resultado !== 'true' && resultado !== 'false') continue;
+                totales += 1;
+                const correcto = _sherlockRecordCorrecto(rec);
+                if (correcto) correctas += 1;
+                verdictSamples.push({ ts: rec.timestamp, v: correcto ? 1 : 0 });
+                // #3961 EP8-H8 (CA-5a) — acumulado por provider. Sólo cuando el
+                // record trae un `provider` string no vacío (records viejos sin el
+                // campo no crean una clave espuria). Guarda contra prototype
+                // pollution: nunca usar `__proto__`/`constructor`/`prototype`.
+                const prov = rec && typeof rec.provider === 'string' ? rec.provider.trim() : '';
+                if (prov && prov !== '__proto__' && prov !== 'constructor' && prov !== 'prototype') {
+                    let acc = byProvider[prov];
+                    if (!acc) { acc = { totales: 0, correctas: 0 }; byProvider[prov] = acc; }
+                    acc.totales += 1;
+                    if (correcto) acc.correctas += 1;
+                }
+            }
+        }
+
+        // #3961 EP8-H8 (CA-5a) — materializa el desglose por provider con la tasa
+        // de rechazo (incorrectas/total) y el flag de muestra insuficiente por
+        // provider (mismo umbral que el global). Sin strings derivados de logs.
+        const by_provider = {};
+        for (const prov of Object.keys(byProvider)) {
+            const acc = byProvider[prov];
+            const incorrectas = acc.totales - acc.correctas;
+            by_provider[prov] = {
+                totales: acc.totales,
+                correctas: acc.correctas,
+                incorrectas,
+                rejection_rate: acc.totales > 0 ? incorrectas / acc.totales : null,
+                insufficient_sample: acc.totales < SHERLOCK_PRECISION_MIN_SAMPLE,
+            };
+        }
+
+        const ratio = totales > 0 ? correctas / totales : null; // null => muestra vacía
+        const sameProviderRatio = sameProviderTotal > 0
+            ? sameProviderCount / sameProviderTotal
+            : null;                                             // null => muestra vacía
+        return {
+            correctas,
+            totales,
+            not_verifiable: notVerifiable,
+            // #3923 EP2-H3 — contadores por fuente (insumo EP8-H8). SEC-6: solo numbers.
+            not_verifiable_by_source: notVerifiableBySource,
+            ratio,                                              // number|null, sin string
+            insufficient_sample: totales < SHERLOCK_PRECISION_MIN_SAMPLE,
+            // #3961 EP8-H8 (CA-5a) — tasa de rechazo por provider (derivada).
+            by_provider,
+            // #3961 EP8-H8 (CA-2) — sparkline diaria 7d: precisión por día (0..1)
+            // y same-provider por día (0..1). 0 en días sin muestra.
+            spark7d: dailyBuckets(verdictSamples, { days: 7, now: _now, agg: 'avg' }),
+            same_provider_spark7d: dailyBuckets(sameProviderSamples, { days: 7, now: _now, agg: 'avg' }),
+            target: SHERLOCK_PRECISION_TARGET,
+            alert: ratio !== null && ratio < SHERLOCK_PRECISION_ALERT_BELOW,
+            // CA-3 (#3921) — % verificaciones same-provider (meta < 10%).
+            same_provider_count: sameProviderCount,
+            same_provider_total: sameProviderTotal,
+            same_provider_ratio: sameProviderRatio,             // number|null
+            same_provider_target: SHERLOCK_SAME_PROVIDER_TARGET,
+            same_provider_alert: sameProviderRatio !== null && sameProviderRatio >= SHERLOCK_SAME_PROVIDER_TARGET,
+        };
+    } catch {
+        // Degrade limpio: mismo shape numérico/booleano + código de error de
+        // allowlist (literal constante, NO derivado del contenido del audit).
+        return {
+            correctas: 0,
+            totales: 0,
+            not_verifiable: 0,
+            // #3923 EP2-H3 — mismo shape con ceros en el degrade (insumo EP8-H8).
+            not_verifiable_by_source: _emptyNvBySource(),
+            ratio: null,
+            insufficient_sample: true,
+            // #3961 EP8-H8 (CA-5a) — degrade: sin desglose por provider.
+            by_provider: {},
+            spark7d: new Array(7).fill(0),
+            same_provider_spark7d: new Array(7).fill(0),
+            target: SHERLOCK_PRECISION_TARGET,
+            alert: false,
+            same_provider_count: 0,
+            same_provider_total: 0,
+            same_provider_ratio: null,
+            same_provider_target: SHERLOCK_SAME_PROVIDER_TARGET,
+            same_provider_alert: false,
+            error: 'sherlock_precision_unavailable',
+        };
+    }
+}
+
+// #3955 EP8-H2 (CA-5) — Sparkline de carga 24h por skill. Fuente: mtimes de los
+// archivos en `<pipeline>/<fase>/procesado/` agrupados en 24 buckets horarios.
+// NO introduce proceso de muestreo nuevo: deriva del FS existente (documentado
+// en el PR). Cada bucket cuenta cuántos markers terminó ese skill en esa hora.
+// El array tiene 24 enteros, índice 0 = hace 23h … índice 23 = hora actual.
+const SPARK_BUCKETS = 24;
+const SPARK_HOUR_MS = 3600 * 1000;
+const SPARK_CACHE_TTL_MS = 30 * 1000;
+let _sparkCache = { at: 0, data: null };
+
+function skillSpark24h(state, now) {
+    now = now || Date.now();
+    if (_sparkCache.data && (now - _sparkCache.at) < SPARK_CACHE_TTL_MS) {
+        return _sparkCache.data;
+    }
+    const PIPELINE = path.join(__dirname, '..');
+    const windowStart = now - SPARK_BUCKETS * SPARK_HOUR_MS;
+    const bySkill = {};
+    const fases = Array.isArray(state.allFases) ? state.allFases : [];
+    for (const { pipeline: pName, fase } of fases) {
+        const dir = path.join(PIPELINE, pName, fase, 'procesado');
+        let files;
+        try { files = fs.readdirSync(dir); } catch { continue; }
+        for (const f of files) {
+            if (f.startsWith('.') || isMarkerArtifact(f)) continue;
+            // marker `<issue>.<skill>` → skill es lo que sigue al primer punto.
+            const dot = f.indexOf('.');
+            if (dot < 0) continue;
+            const skill = f.slice(dot + 1);
+            if (!/^[a-z0-9-]+$/.test(skill)) continue;
+            let mtime;
+            try { mtime = fs.statSync(path.join(dir, f)).mtimeMs; } catch { continue; }
+            if (mtime < windowStart || mtime > now) continue;
+            const bucket = Math.min(SPARK_BUCKETS - 1, Math.floor((mtime - windowStart) / SPARK_HOUR_MS));
+            if (!bySkill[skill]) bySkill[skill] = new Array(SPARK_BUCKETS).fill(0);
+            bySkill[skill][bucket]++;
+        }
+    }
+    _sparkCache = { at: now, data: bySkill };
+    return bySkill;
+}
+
+// -----------------------------------------------------------------------------
+// #3961 EP8-H8 — Helpers de agregación histórica (CA-1) reutilizables.
+// -----------------------------------------------------------------------------
+
+const DAY_MS = 24 * 3600 * 1000;
+
+// Percentil (interpolación lineal, método "linear"/R-7) sobre una copia
+// ordenada. Devuelve null para muestra vacía. p en [0,100].
+function _percentile(values, p) {
+    if (!Array.isArray(values) || values.length === 0) return null;
+    const arr = values.filter((v) => Number.isFinite(v)).slice().sort((a, b) => a - b);
+    if (arr.length === 0) return null;
+    if (arr.length === 1) return arr[0];
+    const rank = (Math.min(100, Math.max(0, p)) / 100) * (arr.length - 1);
+    const lo = Math.floor(rank);
+    const hi = Math.ceil(rank);
+    if (lo === hi) return arr[lo];
+    const frac = rank - lo;
+    return arr[lo] + (arr[hi] - arr[lo]) * frac;
+}
+
+// Bucketización por día reutilizable (CA-1). Agrupa items con timestamp en `days`
+// cubetas diarias terminando en `now`. Cada item es `{ ts, v }` donde ts es ms
+// epoch o ISO string y v un número (default 1 → conteo). Devuelve un array de
+// longitud `days`: índice 0 = día más viejo, índice days-1 = hoy. La agregación
+// se elige con `agg`: 'count' | 'sum' | 'avg' | 'p95' | 'median'. Items fuera de
+// la ventana se descartan. Robusto a entradas basura (no lanza).
+function dailyBuckets(items, opts) {
+    const o = opts || {};
+    const days = Number.isFinite(o.days) && o.days > 0 ? Math.floor(o.days) : 7;
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const agg = o.agg || 'count';
+    const windowStart = now - days * DAY_MS;
+    const perBucket = Array.from({ length: days }, () => []);
+    if (Array.isArray(items)) {
+        for (const it of items) {
+            if (!it) continue;
+            let tsMs = it.ts;
+            if (typeof tsMs === 'string') tsMs = Date.parse(tsMs);
+            if (!Number.isFinite(tsMs)) continue;
+            if (tsMs < windowStart || tsMs > now) continue;
+            let idx = Math.floor((tsMs - windowStart) / DAY_MS);
+            if (idx < 0) idx = 0;
+            if (idx > days - 1) idx = days - 1;
+            const v = Number.isFinite(it.v) ? it.v : 1;
+            perBucket[idx].push(v);
+        }
+    }
+    return perBucket.map((vals) => {
+        if (vals.length === 0) return 0;
+        switch (agg) {
+            case 'sum': return vals.reduce((a, b) => a + b, 0);
+            case 'avg': return vals.reduce((a, b) => a + b, 0) / vals.length;
+            case 'p95': return _percentile(vals, 95) || 0;
+            case 'median': return _percentile(vals, 50) || 0;
+            case 'count':
+            default: return vals.length;
+        }
+    });
+}
+
+// -----------------------------------------------------------------------------
+// #3961 EP8-H8 (CA-5c) — p95 de latencia de voz. Lee eventos `tts:generated` del
+// activity-log persistido y computa SÓLO agregados numéricos (p95, conteo, serie
+// 7d). SEC-2: nunca vuelca líneas crudas (que traen cost/provider/voice). SEC-4:
+// ruta fija derivada de REPO_ROOT, sin concatenar input externo.
+//
+// Fuente del dato: `latency_ms` (instrumentación de 1 campo aprobada por PO,
+// opción (b) — el `elapsedMs` ya se computaba y se descartaba en tts-logger.js).
+// Con muestra baja (< MIN) devuelve insufficient_sample en vez de un p95 que
+// engañaría al operador (riesgo de muestra insuficiente, hoy ~1 evento TTS).
+// -----------------------------------------------------------------------------
+const VOICE_MIN_SAMPLE = 5;
+const VOICE_WINDOW_DAYS = 7;
+
+function _repoRootFromCtx(ctx) {
+    return (ctx && ctx.REPO_ROOT)
+        || process.env.PIPELINE_REPO_ROOT
+        || process.env.CLAUDE_PROJECT_DIR
+        || path.resolve(__dirname, '..', '..');
+}
+
+function voiceLatencySlice(state, ctx) {
+    const now = (ctx && Number.isFinite(ctx.now)) ? ctx.now : Date.now();
+    const windowStart = now - VOICE_WINDOW_DAYS * DAY_MS;
+    try {
+        const repoRoot = _repoRootFromCtx(ctx);
+        const logPath = path.join(repoRoot, '.claude', 'activity-log.jsonl');
+        let raw = '';
+        try { raw = fs.readFileSync(logPath, 'utf8'); }
+        catch { raw = ''; /* archivo ausente → muestra vacía, no error */ }
+
+        const samples = [];   // { ts, v: latency_ms } dentro de la ventana
+        for (const line of raw.split('\n')) {
+            if (!line.trim()) continue;
+            let rec = null;
+            try { rec = JSON.parse(line); } catch { continue; }
+            if (!rec || rec.event !== 'tts:generated') continue;
+            const lat = Number(rec.latency_ms);
+            if (!Number.isFinite(lat) || lat < 0) continue;   // sólo records con latencia fiel
+            let tsMs = rec.ts;
+            if (typeof tsMs === 'string') tsMs = Date.parse(tsMs);
+            if (!Number.isFinite(tsMs)) continue;
+            if (tsMs < windowStart || tsMs > now) continue;
+            samples.push({ ts: tsMs, v: lat });
+        }
+
+        const latencies = samples.map((s) => s.v);
+        const count = latencies.length;
+        const insufficient = count < VOICE_MIN_SAMPLE;
+        const p95 = insufficient ? null : Math.round(_percentile(latencies, 95));
+        const median = insufficient ? null : Math.round(_percentile(latencies, 50));
+        // Serie 7d para la sparkline: p95 por día (0 en días sin muestra).
+        const spark7d = dailyBuckets(samples, { days: VOICE_WINDOW_DAYS, now, agg: 'p95' })
+            .map((v) => Math.round(v));
+        return {
+            p95_ms: p95,                 // number|null
+            median_ms: median,           // number|null
+            count,
+            insufficient_sample: insufficient,
+            min_sample: VOICE_MIN_SAMPLE,
+            window_days: VOICE_WINDOW_DAYS,
+            spark7d,                     // array<number> longitud 7
+        };
+    } catch {
+        return {
+            p95_ms: null,
+            median_ms: null,
+            count: 0,
+            insufficient_sample: true,
+            min_sample: VOICE_MIN_SAMPLE,
+            window_days: VOICE_WINDOW_DAYS,
+            spark7d: new Array(VOICE_WINDOW_DAYS).fill(0),
+            error: 'voice_latency_unavailable',
+        };
+    }
+}
+
 function equipoSlice(state) {
     const skillLoad = state.skillLoad || {};
+    const spark = skillSpark24h(state);
     const skills = Object.entries(skillLoad).map(([skill, load]) => ({
         skill,
         running: load.running,
         max: load.max,
         utilization: load.max > 0 ? load.running / load.max : 0,
+        // #3955 CA-5 — sparkline de carga 24h (vacío si el skill no tuvo
+        // actividad en la ventana).
+        spark24h: spark[skill] || new Array(SPARK_BUCKETS).fill(0),
     }));
-    return { skills };
+
+    // #4195 — Vista de dotación (MIZPÁ): roster por categoría + banner de misión.
+    // Degrada limpio si el módulo no cargó: el cliente cae al acordeón simple.
+    let roster = null, banner = null, providersBySkill = {};
+    if (equipoRoster) {
+        try {
+            const liveAgents = activeAgents(state);
+            const agentModels = safeReadJson(AGENT_MODELS_FILE, null);
+            const cooldowns = safeReadJson(COOLDOWNS_FILE, null);
+            roster = equipoRoster.buildRoster({ skillLoad, liveAgents });
+            // tok/min agregado: proxy honesto = promedio de las últimas 24h
+            // (no hay resolución por-minuto en vivo). Etiquetado como aproximado
+            // en la UI. Lectura DIRECTA del snapshot de tokens (sin execSync de
+            // gh/git, a diferencia de kpisSlice) para no encarecer el poll.
+            let tokPerMin = null;
+            try {
+                const snapDir = path.join(__dirname, '..', 'metrics');
+                const snap = safeReadJson(path.join(snapDir, 'snapshot-24h.json'), null)
+                    || safeReadJson(path.join(snapDir, 'snapshot.json'), null);
+                const totals = snap && snap.totals;
+                if (totals) {
+                    const total24h = (totals.tokens_in || 0) + (totals.tokens_out || 0);
+                    if (total24h > 0) tokPerMin = Math.round(total24h / (24 * 60));
+                }
+            } catch { /* sin dato de tokens */ }
+            banner = equipoRoster.buildBanner({ liveAgents, roster, cooldowns, tokPerMin });
+            // Proveedor por skill para el roster (rol dormido también muestra su
+            // proveedor asignado).
+            for (const cat of roster.categories) {
+                for (const r of cat.roles) {
+                    const p = equipoRoster.resolveProvider(agentModels, r.skill);
+                    if (p) providersBySkill[r.skill] = p;
+                }
+            }
+        } catch { roster = null; banner = null; providersBySkill = {}; }
+    }
+
+    return { skills, roster, banner, providersBySkill };
 }
 
 // #2894 — Resolución del skill efectivo para fase `dev` cuando todavía no
@@ -435,8 +1490,27 @@ function equipoSlice(state) {
 // `dev_routing_priority`, cae a `dev_skill_mapping.default` si no hay match.
 function resolveDevSkillFromLabels(config, labels) {
     if (!config) return null;
-    const priority = Array.isArray(config.dev_routing_priority) ? config.dev_routing_priority : [];
-    const mapping = config.dev_skill_mapping || {};
+    // #5174 · CA-6 — quinto call-site de las claves migradas al lado producto.
+    // Acá el `|| {}` / `: []` no producía un ruteo malo (esto es una vista), pero
+    // sí una MENTIRA en el dashboard: el operador vería "sin skill resuelto"
+    // cuando la causa real es que la clave no llegó al lector. Se distingue el
+    // caso: config sin la clave ⇒ error explícito y ruidoso; config completa sin
+    // match ⇒ `null`, que es la respuesta legítima de siempre.
+    //
+    // NO se lanza: esta función corre dentro del armado de un slice del
+    // dashboard y una excepción acá tumbaría la vista entera. La regla #1 del
+    // pipeline es que no se muere; el error se hace visible por log y por el
+    // valor centinela, no matando el proceso.
+    const priority = config.dev_routing_priority;
+    const mapping = config.dev_skill_mapping;
+    if (!Array.isArray(priority) || !mapping || typeof mapping !== 'object') {
+        try {
+            console.error('[dashboard-slices] [config partida #5174] faltan dev_routing_priority /'
+                + ' dev_skill_mapping en la configuración resuelta (viven en pipeline.config.json →'
+                + ' productConfig). El lector quedó fuera de lib/config-resolver.');
+        } catch { /* best-effort */ }
+        return null;
+    }
     const labelSet = new Set(labels || []);
     for (const lab of priority) {
         if (labelSet.has(lab) && mapping[lab]) return mapping[lab];
@@ -550,11 +1624,40 @@ function pipelineSlice(state, ctx) {
     // (pendiente/trabajando/listo); procesado/archivado no cuentan porque
     // ya salieron del flujo.
     const matrixCounts = {};
+    // #3959 (CA-1) — matrixIssues[faseKey][skill] = [issueId, ...]: lista
+    // server-authoritative de los issues que componen cada celda. Evita que el
+    // drill-down del cliente diverja del conteo de la celda.
+    const matrixIssues = {};
+    // #3959 (CA-3) — acumulador de edad para la edad media por celda. Se divide
+    // por matrixCounts al final para obtener matrixAgeAvg (cuello de botella =
+    // conteo × edad media). Derivado server-side para no recalcular en cliente.
+    const matrixAgeSum = {};
     const ACTIVE_STATES = new Set(['pendiente', 'trabajando', 'listo']);
     // #2894 — Umbral para marcar un issue como "estancado" en su fase
     // actual. Configurable vía env para que el operador pueda calibrar
     // sin redeploy. Default 30 min según el issue.
     const STALE_THRESHOLD_MIN = Number(process.env.PIPELINE_STALE_MIN_THRESHOLD) || 30;
+    // #4362 — Señales para derivar el estado de avance de issues sin marcador de
+    // fase activo (entre fases). Se computan UNA vez fuera del loop: el set de
+    // fases terminales del flujo y el set de issues con actividad reciente
+    // (lectura única del activity-log). Los tests pueden inyectar
+    // `ctx.recentActivityIssues` (Set) o `ctx.REPO_ROOT` con un log temporal.
+    const progressLib = require('./progress-state');
+    const _now = (ctx && Number.isFinite(ctx.now)) ? ctx.now : Date.now();
+    const terminalFaseKeys = progressLib.terminalFaseKeySet(state.allFases);
+    let recentActivityIssues;
+    if (ctx && ctx.recentActivityIssues instanceof Set) {
+        recentActivityIssues = ctx.recentActivityIssues;
+    } else {
+        const repoRoot = (ctx && ctx.REPO_ROOT)
+            || process.env.PIPELINE_REPO_ROOT
+            || process.env.CLAUDE_PROJECT_DIR
+            || path.resolve(__dirname, '..', '..');
+        recentActivityIssues = progressLib.readRecentActivityIssues(repoRoot, {
+            now: _now,
+            windowMin: STALE_THRESHOLD_MIN,
+        });
+    }
     for (const [issueId, data] of Object.entries(state.issueMatrix || {})) {
         // #2894 — Lista de agentes en la fase activa con su estado UI.
         const { agents, expectedSkills } = buildAgentsForActiveFase(issueId, data, state);
@@ -574,13 +1677,33 @@ function pipelineSlice(state, ctx) {
         }
         const stale = blockerAgeMin >= STALE_THRESHOLD_MIN;
 
+        // #4192 — logFile del agente para que la vista Issues (rediseño MIZPÁ)
+        // enlace al log y atenúe el acceso cuando el issue todavía no corrió.
+        // Prioridad: una entrada con log en la fase activa; si no hay, la última
+        // entrada con log de cualquier fase. Campo aditivo (no rompe consumidores).
+        let issueLogFile = null;
+        const _activeFaseEntries = (data.faseActual && data.fases && data.fases[data.faseActual]) || [];
+        for (const e of _activeFaseEntries) { if (e && e.hasLog && e.logFile) { issueLogFile = e.logFile; break; } }
+        if (!issueLogFile) {
+            for (const entries of Object.values(data.fases || {})) {
+                for (const e of (entries || [])) { if (e && e.hasLog && e.logFile) issueLogFile = e.logFile; }
+            }
+        }
+
         matrix[issueId] = {
             title: data.title,
             labels: data.labels,
             faseActual: data.faseActual,
             estadoActual: data.estadoActual,
+            // #4362 — estado de avance derivado (aditivo). 'activo' cuando hay
+            // marcador de fase; si no, 'entre-fases' | 'terminado' | 'sin-arrancar'.
+            progressState: progressLib.deriveProgressState(data, {
+                terminalFaseKeys,
+                recentActivity: recentActivityIssues.has(String(issueId)),
+            }),
             bounces: data.bounces,
             staleMin: data.staleMin,
+            logFile: issueLogFile,
             rebote: !!data.rebote,
             rebote_tipo: data.rebote_tipo || null,
             motivo_rechazo: data.motivo_rechazo || null,
@@ -594,13 +1717,37 @@ function pipelineSlice(state, ctx) {
             stale,
             blockerSkill: stale ? blockerSkill : null,
             blockerAgeMin: stale ? blockerAgeMin : 0,
+            // #4640 — dependencias que bloquean al issue (campo aditivo).
+            // Fuente canónica: state.blockedIssues.blockedBy (poblado en
+            // dashboard.js desde blocked-issues.json vía dep-resolver, el
+            // MISMO map que consume el handler `wave`). El frontend pinta el
+            // badge 🛑 exclusivamente desde acá, sin re-derivar de labels.
+            blockedBy: (state.blockedIssues && state.blockedIssues.blockedBy && state.blockedIssues.blockedBy[String(issueId)]) || null,
         };
         for (const [faseKey, entries] of Object.entries(data.fases || {})) {
             for (const e of entries) {
                 if (!ACTIVE_STATES.has(e.estado)) continue;
                 if (!matrixCounts[faseKey]) matrixCounts[faseKey] = {};
                 matrixCounts[faseKey][e.skill] = (matrixCounts[faseKey][e.skill] || 0) + 1;
+                // CA-1: registrar el issue en la celda (mismo loop → mismo
+                // criterio de conteo, consistencia garantizada).
+                if (!matrixIssues[faseKey]) matrixIssues[faseKey] = {};
+                if (!matrixIssues[faseKey][e.skill]) matrixIssues[faseKey][e.skill] = [];
+                matrixIssues[faseKey][e.skill].push(String(issueId));
+                // CA-3: acumular edad para la media por celda.
+                if (!matrixAgeSum[faseKey]) matrixAgeSum[faseKey] = {};
+                matrixAgeSum[faseKey][e.skill] = (matrixAgeSum[faseKey][e.skill] || 0) + (Number(e.ageMin) || 0);
             }
+        }
+    }
+    // CA-3 — edad media por celda = suma de edades ÷ conteo. Server-side para
+    // que el cliente solo compare `conteo × edadMedia` sin recalcular.
+    const matrixAgeAvg = {};
+    for (const [faseKey, bySkill] of Object.entries(matrixAgeSum)) {
+        matrixAgeAvg[faseKey] = {};
+        for (const [skill, sum] of Object.entries(bySkill)) {
+            const count = (matrixCounts[faseKey] && matrixCounts[faseKey][skill]) || 0;
+            matrixAgeAvg[faseKey][skill] = count > 0 ? Math.round(sum / count) : 0;
         }
     }
     // Orden manual de prioridad (#2801) — el cliente lo usa para ordenar
@@ -611,12 +1758,83 @@ function pipelineSlice(state, ctx) {
         const data = issueOrder.load();
         priorityOrder = (data && Array.isArray(data.order)) ? data.order.map(String) : [];
     } catch { /* lib no disponible */ }
+
+    // #3905 — waveIssues: cruce de la allowlist (ola actual) con el matrix.
+    // Los issues de la allowlist que NO tienen work-file en ninguna fase
+    // (faltantes = allowlist − matrix) se representan en la franja terminal
+    // "Ola — fuera de flujo" del board: estado `no-ingreso` (open en GitHub) o
+    // `finalizado` (closed). Reutiliza classifyStatus de wave-snapshot (#3262)
+    // en vez de duplicar la lógica de derivación.
+    //
+    // Nota (staleness): un issue recién cerrado puede tardar en reflejar
+    // `finalizado` hasta que expire el TTL del title-cache. Aceptable para un
+    // dashboard de operador (el dato no es de seguridad).
+    const waveIssues = [];
+    try {
+        const { _internal } = require('./wave-snapshot');
+        let allowlist = [];
+        if (ctx && Array.isArray(ctx.allowlist)) {
+            // Override inyectable (tests / callers que ya leyeron la allowlist).
+            allowlist = ctx.allowlist;
+        } else if (partialPause && typeof partialPause.readPreviousAllowlist === 'function') {
+            allowlist = partialPause.readPreviousAllowlist() || [];
+        }
+        // SEC-2: .partial-pause.json es editable a mano → validar enteros
+        // antes de usarlos. (readPreviousAllowlist ya normaliza, pero el filtro
+        // explícito documenta el requisito de seguridad y es defensivo ante
+        // cambios futuros del módulo.)
+        allowlist = allowlist.filter((n) => Number.isInteger(n));
+        const titles = state.issueTitles || {};
+        for (const n of allowlist) {
+            // Anti-duplicado (CA-6): si ya está en el matrix tiene fase actual y
+            // se dibuja en su columna — no va a la franja terminal.
+            if (matrix[String(n)]) continue;
+            const meta = titles[String(n)] || {};
+            const isClosed = String(meta.state).toUpperCase() === 'CLOSED';
+            const cls = _internal.classifyStatus({
+                isClosed, isBlocked: false, isPaused: false, faseActual: null, pct: 0,
+            });
+            waveIssues.push({
+                issue: String(n),
+                title: meta.title || '',
+                estado: cls === 'closed' ? 'finalizado' : 'no-ingreso',
+            });
+        }
+    } catch { /* wave-snapshot opcional: degradamos a franja vacía */ }
+
+    // #3959 (CA-4) — orden canónico de skills desde la fuente única
+    // (lib/skill-catalog). Matriz lo consume para ordenar filas y así coincidir
+    // con Equipo/Pipeline. Degrada a [] si el módulo no cargó.
+    let skillOrder = [];
+    try {
+        skillOrder = require('./skill-catalog').skillOrder();
+    } catch { /* lib opcional */ }
+
+    // #3959 (CA-2) — tendencia ▲▼ por celda: el slice expone el `matrixCounts`
+    // de ≈24h atrás (baseline) leído del historial horario. El cliente solo
+    // dibuja la flecha comparando el conteo actual contra este baseline. Si no
+    // hay historial de 24h, queda {} y la UI no muestra flecha (degrada sin
+    // romper). El delta se calcula server-side acá, no en el cliente.
+    let matrixTrend = {};
+    try {
+        const matrixHistory = require('./matrix-history');
+        const baseline = matrixHistory.baselineCounts({
+            pipelineDir: ctx && ctx.PIPELINE ? ctx.PIPELINE : undefined,
+        });
+        if (baseline && typeof baseline === 'object') matrixTrend = baseline;
+    } catch { /* lib opcional / sin historial → sin flecha */ }
+
     return {
         matrix,
         fases: state.allFases,
         priorityOrder,
         matrixCounts,
+        matrixIssues,
+        matrixAgeAvg,
+        skillOrder,
+        matrixTrend,
         staleThresholdMin: STALE_THRESHOLD_MIN,
+        waveIssues,
     };
 }
 
@@ -643,6 +1861,183 @@ function bloqueadosSlice(state) {
     return { bloqueados: enriched };
 }
 
+// =============================================================================
+// #4373 (Ola 8.3) — Slice consolidado de la vista Roadmap de olas.
+//
+// Reúne en un solo payload whitelisteado y OFFLINE (sin `gh` en runtime): ola
+// activa + planificadas (con hijos/prioridad/estado, vía buildWavesPayload),
+// olas archivadas (vía lib/waves.js), avance de la ola activa, bloqueos
+// (state.bloqueados) y ETA de ejecución (state.olaETA). Consolida piezas que hoy
+// ya viven dispersas — NO recomputa ni lee FS pesado ni llama a `gh`.
+//
+// Seguridad (CA-S3): NO vuelca objetos crudos de waves.json / state. Cada campo
+// se copia/whitelistea explícitamente (números coaccionados, strings recortados,
+// prioridad contra allowlist). Degrada a payload vacío sin throw (CA-7).
+// =============================================================================
+const ROADMAP_PRIORITY_WHITELIST = new Set(['critical', 'high', 'medium', 'low']);
+const ROADMAP_REASON_MAX = 280;
+const ROADMAP_NAME_MAX = 200;
+
+function _roadmapSafeInt(raw) {
+    const n = Number(raw);
+    return (Number.isInteger(n) && n > 0) ? n : null;
+}
+
+// Normaliza un issue de una ola archivada al shape mínimo whitelisteado.
+function _roadmapNormalizeArchivedIssue(raw) {
+    if (!raw || typeof raw !== 'object') {
+        const n = _roadmapSafeInt(raw);
+        return n === null ? null : { id: n, title: '', status: '', priority: '' };
+    }
+    const id = _roadmapSafeInt(raw.number != null ? raw.number : raw.id);
+    if (id === null) return null;
+    const title = typeof raw.title === 'string' ? raw.title.slice(0, ROADMAP_NAME_MAX) : '';
+    const status = typeof raw.status === 'string' ? raw.status.slice(0, 40) : '';
+    const p = typeof raw.priority === 'string' ? raw.priority.toLowerCase() : '';
+    const priority = ROADMAP_PRIORITY_WHITELIST.has(p) ? p : '';
+    return { id, title, status, priority };
+}
+
+// Normaliza una ola archivada: campo por campo (sin spread), CA-S3.
+function _roadmapNormalizeArchivedWave(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const number = Number(raw.number);
+    if (!Number.isInteger(number)) return null;
+    const name = typeof raw.name === 'string' ? raw.name.slice(0, ROADMAP_NAME_MAX) : '';
+    const goal = typeof raw.goal === 'string' ? raw.goal.slice(0, ROADMAP_NAME_MAX) : '';
+    const closedAt = typeof raw.closed_at === 'string' ? raw.closed_at.slice(0, 40) : null;
+    const completed = Number.isFinite(Number(raw.issues_completed)) ? Number(raw.issues_completed) : null;
+    const failed = Number.isFinite(Number(raw.issues_failed)) ? Number(raw.issues_failed) : null;
+    const durationDays = Number.isFinite(Number(raw.actual_duration_days)) ? Number(raw.actual_duration_days) : null;
+    const issues = Array.isArray(raw.issues)
+        ? raw.issues.map(_roadmapNormalizeArchivedIssue).filter(Boolean)
+        : [];
+    return { number, name, goal, closedAt, issuesCompleted: completed, issuesFailed: failed, durationDays, issues };
+}
+
+// Avance de una ola (CA-6 / #4399): cerrados/total + %.
+//
+// #4399 — FUENTE ÚNICA de cerrados. Antes contaba `i.status==='completed' ||
+// i.merged` sobre la foto enriquecida del title-cache (`enrichWaveIssue`), una
+// fuente "de prestado" que quedaba desincronizada y mostraba "2 de 14" mientras
+// la lista del pipeline (`computeLiveWaveStatus` → `computeClosedSet`) mostraba
+// "11 de 14". Ahora el panel de métricas deriva los cerrados del MISMO set que
+// la lista: `computeClosedSet({ wave, state })` sobre `state.issueTitles`
+// (cache cruda, sin query `gh` viva → sin vector de inyección, A03). `total` y
+// `closed` salen de la MISMA `wave` canónica para garantizar closed ≤ total.
+//
+// @param {object} wave  - ola canónica con `issues: number[]` (resolver output).
+// @param {object} state - state del dashboard con `issueTitles`/`issueMatrix`.
+function _roadmapAvance(wave, state) {
+    const issues = (wave && Array.isArray(wave.issues)) ? wave.issues : [];
+    const total = issues.length;
+    let closed = 0;
+    try {
+        // Require lazy DENTRO de la función (patrón anti-circular, idem otras
+        // slices que requieren commander-deterministic en request-time).
+        const { computeClosedSet } = require('./commander-deterministic');
+        closed = computeClosedSet({ wave, state }).size;
+    } catch {
+        // Degradación grácil: sin el set no inventamos cerrados (0), nunca > total.
+        closed = 0;
+    }
+    const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
+    return { closed, total, pct };
+}
+
+function roadmapSlice(state, ctx) {
+    const s = state || {};
+    let activeWave = null;
+    let plannedWaves = [];
+    // CA-1/CA-2/CA-4/CA-5 — Reutiliza el builder ya probado (normalizeWave aplica
+    // whitelist por campo; enrichWave resuelve título/prioridad/estado desde el
+    // title-cache local, CA-10). Require perezoso: dashboard-routes requiere a
+    // este módulo en carga, así que sólo se resuelve en request-time (ya cacheado,
+    // sin ciclo de require en module-load).
+    try {
+        const routes = require('./dashboard-routes');
+        const build = routes && routes._internal && routes._internal.buildWavesPayload;
+        if (typeof build === 'function') {
+            const payload = build(s, ctx && ctx.PIPELINE) || {};
+            activeWave = payload.active_wave || null;
+            plannedWaves = Array.isArray(payload.planned) ? payload.planned : [];
+        }
+    } catch { /* degradado: sin activa/planificadas */ }
+
+    // CA-3 — Archivadas: buildWavesPayload sólo trae el horizonte (activa +
+    // planned). Las cerradas se leen aparte de lib/waves.js y se whitelistean acá.
+    let archivedWaves = [];
+    try {
+        const wavesLib = require('./waves');
+        const full = wavesLib.loadWaves() || {};
+        archivedWaves = (Array.isArray(full.archived_waves) ? full.archived_waves : [])
+            .map(_roadmapNormalizeArchivedWave)
+            .filter(Boolean);
+    } catch { /* degradado: sin archivadas */ }
+
+    // CA-7 — Bloqueos: whitelist {issue, blocker, reason}. reason recortado.
+    const blocked = (Array.isArray(s.bloqueados) ? s.bloqueados : [])
+        .map((b) => {
+            const issue = _roadmapSafeInt(b && b.issue);
+            if (issue === null) return null;
+            const blocker = _roadmapSafeInt(b && b.blocker);
+            const rawReason = (b && (b.reason || b.question)) || '';
+            const reason = typeof rawReason === 'string' ? rawReason.slice(0, ROADMAP_REASON_MAX) : '';
+            return { issue, blocker, reason };
+        })
+        .filter(Boolean);
+
+    // CA-8 — ETA: p50/p75/p90 de state.olaETA. lowSample=true cuando no hay
+    // muestra real (samples=0 en todos los issues) → la vista muestra el aviso
+    // honesto "estimación con poca muestra" en vez de un número engañoso.
+    let eta = { ready: false, lowSample: true, p50: null, p75: null, p90: null, totalPct: null };
+    const od = s.olaETA;
+    if (od && typeof od === 'object') {
+        const byIssue = (od.byIssue && typeof od.byIssue === 'object') ? od.byIssue : {};
+        const anySamples = Object.keys(byIssue).some((k) => Number(byIssue[k] && byIssue[k].samples) > 0);
+        eta = {
+            ready: true,
+            lowSample: !anySamples,
+            p50: Number.isFinite(od.totalP50) ? od.totalP50 : null,
+            p75: Number.isFinite(od.totalP75) ? od.totalP75 : null,
+            p90: Number.isFinite(od.totalP90) ? od.totalP90 : null,
+            totalPct: Number.isFinite(od.totalPct) ? od.totalPct : null,
+        };
+    }
+
+    // #4399 — el avance deriva de `s.activeWave` (ola canónica del resolver, con
+    // `issues: number[]`) + `s` (title-cache), la MISMA fuente que la lista del
+    // pipeline (`computeLiveWaveStatus` en dashboard-routes). NO de `activeWave`
+    // (la foto enriquecida de `buildWavesPayload`), que era la fuente "de
+    // prestado" desincronizada. Así lista y panel muestran el mismo "N de M".
+    const avance = _roadmapAvance(s.activeWave, s);
+
+    // #4436 CA-4 — modo del pipeline (running | paused | partial_pause) para que
+    // la tarjeta de la ola activa sepa qué botón de ciclo de vida pintar
+    // server-side (Pausar con running/partial, Reanudar con paused) y muestre el
+    // pill de estado. Mismo require perezoso ya usado para `ppState` (líneas
+    // ~448): lectura barata del filesystem, con fallback defensivo a 'running'
+    // para no romper el render si el módulo o el marker no están disponibles.
+    let mode = 'running';
+    try {
+        if (partialPause && typeof partialPause.getPipelineMode === 'function') {
+            const pm = partialPause.getPipelineMode();
+            if (pm && typeof pm.mode === 'string') mode = pm.mode;
+        }
+    } catch { /* degradado: se asume 'running' */ }
+
+    return {
+        activeWave,
+        plannedWaves,
+        archivedWaves,
+        blocked,
+        eta,
+        avance,
+        mode,
+        updatedAt: new Date().toISOString(),
+    };
+}
+
 function opsSlice(state) {
     return {
         procesos: state.procesos || {},
@@ -659,21 +2054,608 @@ function historialSlice(state) {
     return { actividad: (state.actividad || []).slice(-30) };
 }
 
+// -----------------------------------------------------------------------------
+// #3963 EP8-H? — Historial como línea de tiempo agrupada por día (CA-1..CA-5).
+//
+// Núcleo lógico server-side del rediseño del Historial: recibe `agentHistory[]`
+// (o lo deriva de `state.issueMatrix`), aplica filtros (skill / resultado / issue
+// / query literal / período), agrupa por día, pagina (cursor + límite máximo) y
+// computa los agregados del período visible (count, %aprobado, mediana p50).
+//
+// Decisiones de diseño / seguridad:
+//   - REQ-SEC-5 / CA-6: la búsqueda es match LITERAL (`String.includes`
+//     case-insensitive), NUNCA `new RegExp(input)` — evita ReDoS y DoS.
+//   - Límite máximo por request (HIST_PAGE_MAX) obligatorio: el endpoint NUNCA
+//     devuelve el historial completo (paginación server-side).
+//   - Mediana reusa `_percentile(durations, 50)` (no duplica lógica, ver :959).
+//   - Pura y testeable: con `{ agentHistory: [...] }` no toca el filesystem.
+// -----------------------------------------------------------------------------
+
+const HIST_PAGE_DEFAULT = 50;
+const HIST_PAGE_MAX = 200;
+
+// Deriva el array plano `agentHistory[]` desde el estado del pipeline.
+// Si `state.agentHistory` ya viene armado (path SSR del monolito / tests), se
+// usa tal cual. Si no, se reconstruye desde `state.issueMatrix` + `state.prInfo`
+// (mismo shape que arma `dashboard.js:3705-3739`). Orden: en ejecución primero,
+// luego por timestamp descendente.
+function buildAgentHistory(state) {
+    if (state && Array.isArray(state.agentHistory)) return state.agentHistory;
+    const matrix = (state && state.issueMatrix) || {};
+    const prInfo = (state && state.prInfo) || {};
+    const out = [];
+    for (const [issueNum, data] of Object.entries(matrix)) {
+        if (!data || typeof data !== 'object') continue;
+        const pr = prInfo[String(issueNum)] || null;
+        for (const [faseKey, faseEntries] of Object.entries(data.fases || {})) {
+            if (!Array.isArray(faseEntries)) continue;
+            for (const e of faseEntries) {
+                if (!e) continue;
+                if (e.estado !== 'trabajando' && e.estado !== 'listo' && e.estado !== 'procesado') continue;
+                const [pline, fse] = String(faseKey).split('/');
+                out.push({
+                    issue: issueNum,
+                    titulo: data.titulo || data.title || '',
+                    skill: e.skill,
+                    pipeline: pline,
+                    fase: fse,
+                    estado: e.estado,
+                    resultado: e.resultado || null,
+                    motivo: e.motivo || data.motivo_rechazo || null,
+                    duration: e.durationMs || 0,
+                    startedAt: e.startedAt || 0,
+                    finishedAt: (e.estado !== 'trabajando') ? (e.updatedAt || 0) : 0,
+                    hasLog: !!e.hasLog,
+                    logFile: e.logFile,
+                    hasRejectionPdf: !!e.hasRejectionPdf,
+                    rejectionPdf: e.rejectionPdf,
+                    prUrl: (pr && pr.url) ? pr.url : null,
+                    reboteNumero: e.rebote_numero || 0,
+                    crossphaseCount: data.crossphaseCount || 0,
+                    costo: null, // best-effort; degrada a s/d (CA-3, no hay costo por ejecución)
+                });
+            }
+        }
+    }
+    out.sort((a, b) => {
+        if (a.estado === 'trabajando' && b.estado !== 'trabajando') return -1;
+        if (b.estado === 'trabajando' && a.estado !== 'trabajando') return 1;
+        const tsA = a.estado === 'trabajando' ? a.startedAt : a.finishedAt;
+        const tsB = b.estado === 'trabajando' ? b.startedAt : b.finishedAt;
+        return (tsB || 0) - (tsA || 0);
+    });
+    return out;
+}
+
+// Timestamp de referencia de una entrada (en ejecución → inicio; finalizada →
+// fin). Robusto a strings ISO y a 0/null.
+function _entryTs(h) {
+    let ts = (h && h.estado === 'trabajando') ? h.startedAt : (h && h.finishedAt);
+    if (!ts && h) ts = h.finishedAt || h.startedAt || 0;
+    if (typeof ts === 'string') ts = Date.parse(ts);
+    return Number.isFinite(ts) ? ts : 0;
+}
+
+// Clave de día local YYYY-MM-DD a partir de un epoch ms.
+function _dayKey(ts) {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return '0000-00-00';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+// Etiqueta humana del día: "Hoy" / "Ayer" / "DD de <mes>" (es-AR). `now` ancla
+// la referencia para Hoy/Ayer.
+const _MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+function _dayLabel(ts, now) {
+    const key = _dayKey(ts);
+    const todayKey = _dayKey(now);
+    const yesterdayKey = _dayKey(now - DAY_MS);
+    if (key === todayKey) return 'Hoy';
+    if (key === yesterdayKey) return 'Ayer';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return key;
+    return `${d.getDate()} de ${_MESES_ES[d.getMonth()] || ''}`.trim();
+}
+
+function _toInt(v, def) {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : def;
+}
+
+// #4199 — Clasificación del «tipo de evento» de una ejecución para el filtro de
+// la bitácora del Historial. Se DERIVA de los campos existentes (no hay un
+// store nuevo): el orden de prioridad refleja el evento más significativo de la
+// ejecución.
+//   - merge:      la ejecución tiene PR asociado (issue entregado/mergeable).
+//   - rebote:     hubo rebote (mismo skill repetido) o cross-phase.
+//   - rechazo:    la fase terminó rechazada.
+//   - aprobacion: la fase terminó aprobada.
+//   - ejecucion:  el agente está corriendo ahora (lanzamiento en curso).
+//   - fase:       cualquier otro cierre de fase sin resultado clasificable.
+const HIST_EVENT_TYPES = ['merge', 'rebote', 'rechazo', 'aprobacion', 'ejecucion', 'fase'];
+function _eventType(h) {
+    if (!h) return 'fase';
+    if (h.prUrl) return 'merge';
+    if (Number(h.reboteNumero) > 0 || Number(h.crossphaseCount) > 0) return 'rebote';
+    const r = String(h.resultado || '').toLowerCase();
+    if (r === 'rechazado') return 'rechazo';
+    if (r === 'aprobado') return 'aprobacion';
+    if (h.estado === 'trabajando') return 'ejecucion';
+    return 'fase';
+}
+
+function historialTimelineSlice(state, ctx, opts) {
+    const o = opts || {};
+    const now = (ctx && Number.isFinite(ctx.now)) ? ctx.now
+        : (Number.isFinite(o.now) ? o.now : Date.now());
+
+    // --- normalización de filtros ---
+    const fSkill = (typeof o.skill === 'string' && o.skill.trim()) ? o.skill.trim() : null;
+    const fResultado = (typeof o.resultado === 'string' && o.resultado.trim()) ? o.resultado.trim().toLowerCase() : null;
+    const fIssue = (o.issue !== undefined && o.issue !== null && String(o.issue).trim() !== '')
+        ? String(o.issue).trim() : null;
+    // REQ-SEC-5 / CA-6 — query literal, NO regex. Se normaliza a minúsculas y se
+    // acota la longitud para no procesar inputs absurdos.
+    const fQuery = (typeof o.q === 'string' && o.q.trim()) ? o.q.trim().slice(0, 200).toLowerCase() : null;
+    // período: 'today' | '7d' | '30d' | 'all' (default all → sin recorte temporal).
+    const period = (typeof o.period === 'string') ? o.period.trim().toLowerCase() : 'all';
+    // #4199 — filtros nuevos: tipo de evento (derivado) y proveedor (join del
+    // activity-log). Ambos opcionales y aditivos.
+    const fEventType = (typeof o.eventType === 'string' && o.eventType.trim()) ? o.eventType.trim().toLowerCase() : null;
+    const fProvider = (typeof o.provider === 'string' && o.provider.trim()) ? o.provider.trim() : null;
+    // Resolver de proveedor inyectado por la capa de ruta (mismo patrón que
+    // collectAttachments): mantiene el slice FS-free/testable. Si no se provee,
+    // el provider degrada a null (filtro sin opciones, CA-3).
+    const resolveProvider = (typeof o.resolveProvider === 'function') ? o.resolveProvider : null;
+
+    // --- paginación: límite acotado + cursor (offset) no negativo ---
+    let limit = _toInt(o.limit, HIST_PAGE_DEFAULT);
+    if (limit <= 0) limit = HIST_PAGE_DEFAULT;
+    if (limit > HIST_PAGE_MAX) limit = HIST_PAGE_MAX;
+    let cursor = _toInt(o.cursor, 0);
+    if (cursor < 0) cursor = 0;
+
+    let items = buildAgentHistory(state);
+
+    // Ventana temporal del período (sobre el ts de referencia de cada entrada).
+    let windowStart = null;
+    if (period === 'today') windowStart = new Date(_dayKey(now) + 'T00:00:00').getTime();
+    else if (period === '7d') windowStart = now - 7 * DAY_MS;
+    else if (period === '30d') windowStart = now - 30 * DAY_MS;
+    if (Number.isFinite(windowStart)) {
+        items = items.filter((h) => _entryTs(h) >= windowStart);
+    }
+
+    // #4199 — Enriquecer cada entrada (de la ventana temporal) con `eventType`
+    // (derivado) y `provider` (join del activity-log). Se clona cada item para
+    // NO mutar `state.agentHistory` (buildAgentHistory puede devolver la misma
+    // referencia). Es la base tanto de los filtros nuevos como de las facetas.
+    items = items.map((h) => {
+        if (!h) return h;
+        const provider = resolveProvider ? (resolveProvider(h.skill, h.issue, h.fase) || null) : null;
+        return Object.assign({}, h, { eventType: _eventType(h), provider });
+    });
+
+    // Facetas para poblar los selects del cliente: se calculan sobre el set de
+    // la VENTANA TEMPORAL (antes de los filtros categóricos), para que las
+    // opciones disponibles no se vacíen al elegir un filtro. Orden estable.
+    const facetSkills = new Set();
+    const facetProviders = new Set();
+    const facetEventTypes = new Set();
+    for (const h of items) {
+        if (!h) continue;
+        if (h.skill) facetSkills.add(h.skill);
+        if (h.provider) facetProviders.add(h.provider);
+        if (h.eventType) facetEventTypes.add(h.eventType);
+    }
+    const facets = {
+        skills: Array.from(facetSkills).sort(),
+        providers: Array.from(facetProviders).sort(),
+        // Orden canónico de tipos de evento (HIST_EVENT_TYPES), filtrado a los
+        // presentes para no ofrecer opciones vacías.
+        eventTypes: HIST_EVENT_TYPES.filter((t) => facetEventTypes.has(t)),
+    };
+
+    if (fSkill) items = items.filter((h) => h && h.skill === fSkill);
+    if (fEventType) items = items.filter((h) => h && h.eventType === fEventType);
+    if (fProvider) items = items.filter((h) => h && h.provider === fProvider);
+    if (fResultado) {
+        items = items.filter((h) => {
+            if (!h) return false;
+            if (fResultado === 'trabajando' || fResultado === 'en ejecución') return h.estado === 'trabajando';
+            return String(h.resultado || '').toLowerCase() === fResultado;
+        });
+    }
+    if (fIssue) items = items.filter((h) => h && String(h.issue) === fIssue);
+    if (fQuery) {
+        items = items.filter((h) => {
+            if (!h) return false;
+            const hay = `${h.titulo || ''}\n${h.skill || ''}\n${h.motivo || ''}\n${h.issue || ''}`.toLowerCase();
+            return hay.includes(fQuery); // match literal — sin RegExp (ReDoS-safe)
+        });
+    }
+
+    // --- agregados del período visible (todo el set FILTRADO, no solo la página) ---
+    const total = items.length;
+    const approved = items.reduce((n, h) => n + (String(h.resultado || '').toLowerCase() === 'aprobado' ? 1 : 0), 0);
+    const finishedDurations = items
+        .filter((h) => h && h.estado !== 'trabajando')
+        .map((h) => Number(h.duration))
+        .filter((v) => Number.isFinite(v) && v > 0);
+    const medianMs = _percentile(finishedDurations, 50);
+    const pctApproved = total > 0 ? approved / total : 0;
+
+    // --- paginación + agrupación por día (solo la página) ---
+    const pageItems = items.slice(cursor, cursor + limit);
+    const nextCursor = (cursor + limit < total) ? (cursor + limit) : null;
+
+    // Entregables parciales (CA-2): inyección opcional de un colector
+    // issue-scoped. Se mantiene FUERA del slice (FS-free/testable) y se inyecta
+    // en la capa de ruta. Conexión soft con EP-3 #3926 (OPEN): si no hay colector
+    // o falla, los entregables degradan a [] (CA-3, no bloquea).
+    const collect = (typeof o.collectAttachments === 'function') ? o.collectAttachments : null;
+
+    const groups = [];
+    const byKey = new Map();
+    for (const h0 of pageItems) {
+        let h = h0;
+        if (collect) {
+            let attachments = [];
+            try {
+                const a = collect(h0.skill, h0.issue, h0.fase);
+                if (Array.isArray(a)) attachments = a;
+            } catch { attachments = []; }
+            h = Object.assign({}, h0, { attachments });
+        }
+        const ts = _entryTs(h);
+        const key = _dayKey(ts);
+        let g = byKey.get(key);
+        if (!g) {
+            g = {
+                dayKey: key,
+                dayLabel: _dayLabel(ts, now),
+                items: [],
+                count: 0,
+                approved: 0,
+            };
+            byKey.set(key, g);
+            groups.push(g); // preserva el orden de pageItems (trabajando-first + ts desc)
+        }
+        g.items.push(h);
+        g.count++;
+        if (String(h.resultado || '').toLowerCase() === 'aprobado') g.approved++;
+    }
+    for (const g of groups) {
+        g.pctApproved = g.count > 0 ? g.approved / g.count : 0;
+    }
+
+    return {
+        groups,
+        aggregates: { count: total, approved, pctApproved, medianMs },
+        nextCursor,
+        total,
+        page: { cursor, limit, returned: pageItems.length },
+        // #4199 — facetas para los selects del cliente (tipos de evento, skills,
+        // proveedores disponibles en el período) + echo de los filtros nuevos.
+        facets,
+        filters: { skill: fSkill, resultado: fResultado, issue: fIssue, q: fQuery, period, eventType: fEventType, provider: fProvider },
+    };
+}
+
 // #2801 — Cuota semanal del Plan Max de Anthropic. Sin API pública,
 // aproximamos sumando duration_ms de session:end del activity-log.
 // Auto-ajuste pasivo: si el observado supera el effective_limit sin
 // bloqueos detectados, sube el límite. Ver lib/weekly-quota.js.
+//
+// #3357 CA-5: multi-provider. El slice devuelve quota por cada provider
+// declarado en `agent-models.json` (vía `quotaUsage(provider, ...)` del
+// dispatcher de quota-adapters). Retrocompat:
+//   - Campos legacy (hoursUsed7d, pct, status, session.*, etc.) quedan en
+//     el TOP-LEVEL del objeto retornado — son el resultado del adapter de
+//     Anthropic, idéntico byte-a-byte al shape pre-#3357. Esto evita romper
+//     consumidores del banner del dashboard.
+//   - Campo nuevo `providers: { anthropic, openai-codex, groq, ... }` expone
+//     el shape multi-provider para la UI nueva del kpi panel (CA-UX-2).
+//
+// #4202 — `providers[p]` se NORMALIZA al shape de cliente
+// `{ provider, adapterStatus, session:{pct,confidence}, weekly:{pct,confidence} }`.
+// Exposición mínima (security req#5): por proveedor/bucket SOLO viaja
+// `{pct, confidence}` — NO `cost_usd`, tokens crudos ni ruta del snapshot.
+
+// #4202 — Normaliza un QuotaResult de adapter al shape mínimo de cliente.
+// Solo expone `{pct, confidence}` por bucket (security req#5). El mapeo de
+// buckets sesión/semanal por proveedor sigue la decisión validada por PO:
+//   - anthropic: session ← session.pct; weekly ← pct (números REALES de /usage).
+//   - openai-codex: session = "sin dato" (null); weekly ← realPct ?? pct (budget mensual).
+//   - gemini-google + resto: ambos "sin dato" salvo que el adapter dé un pct real.
+// `confidence` (#4597): ya NO deriva del snapshot OCR (deprecado). Para TODOS los
+// providers es 'fresh' cuando el adapter respondió `ok` con un pct válido, y
+// 'missing' ("sin dato") cuando no. El adapter Anthropic degrada a
+// `adapterStatus:'unknown'` cuando el dato de /usage está stale → confidence
+// 'missing' → pacing/presión lo ignoran (no actúan sobre un número viejo).
+function normalizeProviderQuota(provider, result) {
+    const out = {
+        provider,
+        adapterStatus: (result && result.adapterStatus) || 'unknown',
+        session: { pct: null, confidence: 'missing' },
+        weekly: { pct: null, confidence: 'missing' },
+    };
+    if (!result || typeof result !== 'object') return out;
+
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+    if (provider === 'anthropic') {
+        const isOk = result.adapterStatus === 'ok';
+        const sess = result.session && typeof result.session === 'object' ? result.session : {};
+        const sessPct = num(sess.realPct != null ? sess.realPct : sess.pct);
+        const weekPct = num(result.realPct != null ? result.realPct : result.pct);
+        out.session = { pct: sessPct, confidence: (isOk && sessPct != null) ? 'fresh' : 'missing' };
+        out.weekly = { pct: weekPct, confidence: (isOk && weekPct != null) ? 'fresh' : 'missing' };
+        return out;
+    }
+
+    // Codex / Gemini / resto: cada bucket que el adapter pueda poblar.
+    // #4598 — Codex ahora SÍ tiene ventana de sesión: `primary` (5h) del log
+    // real de `/status` se mapea a `session`, `secondary` (7d) a `weekly`.
+    // Cuando un bucket queda en null (p.ej. Gemini sin sesión, o dato stale),
+    // se reporta "missing" — nunca 0% silencioso.
+    const isOk = result.adapterStatus === 'ok';
+    const sess = result.session && typeof result.session === 'object' ? result.session : {};
+    const sessPct = num(sess.realPct != null ? sess.realPct : sess.pct);
+    const weekPct = num(result.realPct != null ? result.realPct : result.pct);
+    out.session = {
+        pct: sessPct,
+        confidence: (isOk && sessPct != null) ? 'fresh' : 'missing',
+    };
+    out.weekly = {
+        pct: weekPct,
+        confidence: (isOk && weekPct != null) ? 'fresh' : 'missing',
+    };
+    return out;
+}
+
 function quotaSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
     const ROOT = ctx.ROOT;
+    // #4327 — Cuando el compositor de `/api/state` reusa quotaSlice para poblar
+    // el bloque de cuota por proveedor (worker de background), pide SOLO el shape
+    // normalizado sin re-disparar los efectos secundarios (guard anticipatorio
+    // #4282 + pacing #4289). Esos evalúan/persisten estado y disparan alertas:
+    // su cadencia debe seguir atada al poll real de `/api/dash/quota`, no al tick
+    // del snapshot de estado. Default false → comportamiento intacto.
+    const skipSideEffects = !!(ctx && ctx.skipSideEffects);
+    const metricsDir = path.join(PIPELINE, 'metrics');
+    const activityLog = path.join(ROOT, '.claude', 'activity-log.jsonl');
+    const configLimitHours = Number(process.env.ANTHROPIC_MAX_WEEKLY_HOURS) || undefined;
+
+    // Resolver providers declarados en agent-models.json. Si el archivo no
+    // está disponible (caso edge), cae al set mínimo conocido. NO usar `eval`
+    // ni `require` dinámico con paths construidos — siempre el path fijo.
+    // #4327 (CA-3) — Fallback alineado EXACTAMENTE con los `providers` reales de
+    // agent-models.json (sin `deterministic`, que no consume cuota, y sin `groq`,
+    // descontinuado en #3353). Blinda contra un provider fantasma si la lectura de
+    // config falla. El path config-driven (abajo) es el primario.
+    let declaredProviders = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim'];
     try {
-        const quotaLib = require('./weekly-quota');
-        const metricsDir = path.join(PIPELINE, 'metrics');
-        const activityLog = path.join(ROOT, '.claude', 'activity-log.jsonl');
-        const configLimitHours = Number(process.env.ANTHROPIC_MAX_WEEKLY_HOURS) || undefined;
-        return quotaLib.computeQuota(metricsDir, activityLog, { configLimitHours });
+        const modelsPath = path.join(PIPELINE, 'agent-models.json');
+        const models = safeReadJson(modelsPath, null);
+        if (models && models.providers && typeof models.providers === 'object') {
+            // Filtrar `deterministic` (no consume cuota) y deduplicar.
+            const fromConfig = Object.keys(models.providers).filter(p => p !== 'deterministic');
+            if (fromConfig.length > 0) declaredProviders = fromConfig;
+        }
+    } catch { /* fallback al set mínimo */ }
+
+    // Anthropic primero — su resultado se flat-mergea al top-level para
+    // backward-compat con consumidores legacy (banner del dashboard).
+    let anthropicResult = null;
+    const providers = {};
+    try {
+        const { quotaUsage } = require('./quota-adapters');
+        for (const provider of declaredProviders) {
+            try {
+                const result = quotaUsage(provider, {
+                    metricsDir,
+                    activityLogPath: activityLog,
+                    configLimitHours: provider === 'anthropic' ? configLimitHours : undefined,
+                });
+                providers[provider] = result;
+                if (provider === 'anthropic') anthropicResult = result;
+            } catch (err) {
+                // Defensa: el dispatcher es fail-secure, pero por si acaso.
+                const failClosed = {
+                    provider,
+                    adapterStatus: 'error',
+                    errorReason: err && err.message ? err.message : 'unknown',
+                    pct: null,
+                    status: 'unknown',
+                };
+                providers[provider] = failClosed;
+                // #4861 / CA-4 (OWASP A04): si el adapter de Anthropic falla,
+                // el resultado top-level debe ser sin-dato explícito, NUNCA un
+                // default permisivo (pct:0) — la cuota gobierna pacing/gating y
+                // un fail-open habilita cost-DoS por sobreconsumo pago.
+                if (provider === 'anthropic') anthropicResult = failClosed;
+            }
+        }
     } catch (e) {
-        return { error: e.message, hoursUsed7d: 0, pct: 0, status: 'unknown' };
+        // #4861 — quota-adapters no está disponible. Antes se caía a la
+        // heurística `computeQuota` (calibración EMA), que producía el valor
+        // divergente 57%/76%. Ahora fail-closed: sin dato de cuota Anthropic,
+        // NO un default permisivo. La fuente única es `claude -p /usage` vía
+        // quota-adapters/anthropic.js; si no carga, se reporta unknown/stale.
+        anthropicResult = {
+            provider: 'anthropic',
+            adapterStatus: 'error',
+            errorReason: e && e.message ? e.message : 'quota-adapters unavailable',
+            pct: null,
+            status: 'unknown',
+        };
+        providers.anthropic = anthropicResult;
+    }
+
+    // Retrocompat: campos legacy de Anthropic en el top-level (alimentan
+    // `renderQuotaCard`/`tickQuota` — % agregado real, CA-5). El flat-merge
+    // es un shallow copy: NO mutar `anthropicResult.session` después de esto
+    // o se rompería `out.session` (misma referencia).
+    const out = anthropicResult && typeof anthropicResult === 'object'
+        ? { ...anthropicResult }
+        // #4861 / CA-4: fail-closed por defensa (pct:null, no pct:0 permisivo).
+        : { hoursUsed7d: 0, pct: null, status: 'unknown', adapterStatus: 'error' };
+
+    // #4202 — `providers` se entrega NORMALIZADO al shape mínimo de cliente
+    // (security req#5): por proveedor/bucket solo `{pct, confidence}`. Se
+    // construyen objetos nuevos — no se mutan los resultados de los adapters,
+    // así el flat-merge de Anthropic al top-level (out.session/realPct/pct)
+    // queda intacto (CA-5).
+    const providersClient = {};
+    // #4533 — cache de muestras reales (headers/eventos) por proveedor+bucket,
+    // leída una vez por poll. Best-effort: si el módulo no está o falla, el
+    // enrich degrada a "sin dato" sin romper el slice.
+    let quotaCache = {};
+    if (providerQuotaAgg && typeof providerQuotaAgg.readCache === 'function') {
+        try { quotaCache = providerQuotaAgg.readCache(PIPELINE) || {}; } catch { quotaCache = {}; }
+    }
+    const nowMs = Date.now();
+    // #4863 — Proveedores con tope de cuota REALMENTE activo, leídos de la MISMA
+    // fuente que alimenta el banner de degradación (`quota-exhausted-state`, que
+    // lee `quota-exhausted.json` read-only). Se pasa a `enrich` para reconciliar
+    // la tarjeta "cuota por proveedor" con el banner: en el mode 'event' (Codex)
+    // la tarjeta deriva "agotada" del mismo snapshot que el banner, y nunca
+    // muestra "sin límite" mientras el banner dice "agotada" (CA-1/CA-2).
+    let exhaustedProviders = new Set();
+    if (quotaExhaustedState && typeof quotaExhaustedState.getQuotaState === 'function') {
+        try {
+            const qflag = quotaExhaustedState.getQuotaState({ now: nowMs });
+            if (qflag && qflag.active && Array.isArray(qflag.providers)) {
+                for (const slot of qflag.providers) {
+                    if (slot && typeof slot.id === 'string' && slot.id) exhaustedProviders.add(slot.id);
+                }
+            }
+        } catch { /* fail-safe: sin la señal, no marcamos ningún provider agotado */ }
+    }
+    for (const [p, result] of Object.entries(providers)) {
+        const normalized = normalizeProviderQuota(p, result);
+        // #4533 — agrega available%, reset propio por bucket, ventana y modo.
+        // #4863 — exhaustedProviders reconcilia el estado 'event' con el banner.
+        if (providerQuotaAgg && typeof providerQuotaAgg.enrich === 'function') {
+            try { providerQuotaAgg.enrich(p, normalized, result, { cache: quotaCache, now: nowMs, exhaustedProviders }); }
+            catch { /* fail-safe: el enrich nunca tumba el slice de cuota */ }
+        }
+        providersClient[p] = normalized;
+    }
+    out.providers = providersClient;
+
+    // #4282 — Evaluación anticipatoria en vivo. quotaSlice es el path que el
+    // dashboard poll-ea periódicamente (/api/dash/quota): aprovechamos ESE ciclo
+    // para correr el guard, reusando el slice ya normalizado (CA-11, sin
+    // re-extracción). Idempotente: el guard dedup-ea (una alerta por cruce) y
+    // solo escribe estado si algo cambió. Best-effort: NUNCA rompe el slice.
+    out.preventiveAlert = { active: false };
+    if (!skipSideEffects && providerQuotaGuard && typeof providerQuotaGuard.evaluate === 'function') {
+        try {
+            const rawConfig = _loadGuardRawConfig(PIPELINE);
+            const res = providerQuotaGuard.evaluate({
+                slice: { providers: providersClient },
+                rawConfig,
+                pipelineDir: PIPELINE,
+            });
+            out.preventiveAlert = (res && res.banner) ? { active: true, ...res.banner }
+                : providerQuotaGuard.readBanner({ pipelineDir: PIPELINE });
+        } catch { /* fail-safe: el banner anticipado nunca tumba el slice */ }
+    }
+
+    // #4289 — Evaluación del pacing budget en vivo, reusando el MISMO ciclo de
+    // poll que ya corre el guard de #4282 (sin re-extracción). El consumo real
+    // viene del slice ya normalizado (`providersClient[p].weekly`). El módulo es
+    // idempotente, persiste el bucket y dispara transiciones (disable/clear +
+    // Telegram). Best-effort: NUNCA rompe el slice de cuota. Si `pacing.enabled`
+    // está en false (default), `evaluate` es no-op y `out.pacing` queda vacío.
+    out.pacing = { enabled: false, providers: {} };
+    if (!skipSideEffects && pacingBucket && typeof pacingBucket.evaluate === 'function') {
+        try {
+            const rawConfig = _loadGuardRawConfig(PIPELINE);
+            pacingBucket.evaluate({
+                slice: { providers: providersClient },
+                rawConfig,
+                pipelineDir: PIPELINE,
+            });
+            const pslice = pacingBucket.readPacingSlice({ pipelineDir: PIPELINE });
+            const cfg = pacingBucket.loadPacingConfig(rawConfig);
+            out.pacing = {
+                enabled: !!(cfg && cfg.enabled),
+                providers: (pslice && pslice.providers) || {},
+            };
+        } catch { /* fail-safe: el pacing nunca tumba el slice de cuota */ }
+    }
+    return out;
+}
+
+// #4282 — Configuración para el guard de cuota y el pacing budget.
+//
+// #5172 — Pasa por el punto único (`lib/config-resolver`). Antes degradaba
+// a `{}` ante cualquier error; como los defaults del codebase son
+// apagados por diseño, ese `{}` NO era "defaults conservadores": era el guard
+// apagado en silencio. Ahora PROPAGA el error tipado.
+//
+// La política de este consumidor (D-3) la aplican sus tres call-sites, que ya
+// envuelven la llamada en su propio `try/catch` best-effort: con configuración
+// inválida el guard simplemente NO CORRE (no se evalúa con una config
+// inventada) y el slice sigue sirviendo el resto de sus datos. El estado de
+// error de configuración lo expone `dashboard.js` (CA-8), que es la superficie
+// que el operador mira.
+function _loadGuardRawConfig(pipelineDir) {
+    return configResolver.resolve({ pipelineDir, reload: true });
+}
+
+// =============================================================================
+// #4282 — providerQuotaBannerSlice: banner anticipado de cuota por proveedor.
+//
+// Read-only: expone el flag de banner que el guard mantiene en su estado
+// (`.provider-quota-guard-state.json`). Shape mínimo (REQ-SEC-1): solo
+// `{active, provider, pct, window, confidence, level}` — sin material de auth.
+// La evaluación efectiva (alerta + marker) ocurre en `quotaSlice` (in vivo) y
+// en `quota-snapshot-integration`. Aquí solo se LEE el estado vigente.
+// =============================================================================
+function providerQuotaBannerSlice(state, ctx) {
+    if (!providerQuotaGuard || typeof providerQuotaGuard.readBanner !== 'function') {
+        return { active: false };
+    }
+    try {
+        const PIPELINE = ctx && ctx.PIPELINE;
+        return providerQuotaGuard.readBanner({ pipelineDir: PIPELINE });
+    } catch {
+        return { active: false };
+    }
+}
+
+// =============================================================================
+// #4289 — pacingSlice: estado del presupuesto de ritmo por proveedor.
+//
+// Read-only: lee el bucket persistido (`state/pacing-bucket.json`) vía
+// `pacing-bucket.readPacingSlice`. Shape por proveedor: `{state, balance,
+// real_pct, expected_pct}`. FAIL-OPEN: ante ausencia del módulo o error ⇒
+// `{enabled:false, providers:{}}`. La evaluación efectiva (acreditación +
+// transiciones) ocurre en `quotaSlice` (en vivo, mismo poll que #4282).
+// =============================================================================
+function pacingSlice(state, ctx) {
+    const empty = { enabled: false, providers: {} };
+    if (!pacingBucket || typeof pacingBucket.readPacingSlice !== 'function') return empty;
+    try {
+        const PIPELINE = ctx && ctx.PIPELINE;
+        const slice = pacingBucket.readPacingSlice({ pipelineDir: PIPELINE });
+        let enabled = false;
+        try {
+            const cfg = pacingBucket.loadPacingConfig(_loadGuardRawConfig(PIPELINE));
+            enabled = !!(cfg && cfg.enabled);
+        } catch { /* enabled queda false */ }
+        return { enabled, providers: (slice && slice.providers) || {} };
+    } catch {
+        return empty;
     }
 }
 
@@ -699,9 +2681,37 @@ function quotaSlice(state, ctx) {
 // `state.issueMatrix` ya cacheado por el dashboard. Cero IO extra contra
 // el filesystem además del flag.
 // =============================================================================
+// #4731 — Proveedor que NO cuenta como "operativo LLM" para el cómputo de scope
+// (no es un launcher de IA gateable).
+const NON_LLM_PROVIDER_IDS = new Set(['deterministic']);
+
+// #4731 — Cómputo del SCOPE del banner (puntual vs global) cruzando los
+// proveedores agotados (`affected`) con el catálogo de proveedores LLM
+// configurados (`lib/provider-health.listConfiguredProviders`, sin pings).
+//   operationalProviders = proveedores LLM configurados NO agotados
+//   scope = (hay catálogo && 0 operativos) ? 'global' : 'partial'
+// Fail-safe hacia 'partial': si no podemos enumerar el catálogo (módulo ausente
+// o vacío), NUNCA declaramos 'global' — así evitamos el falso "modo
+// determinístico global" del incidente 14–15/07 (CA-2).
+function computeQuotaScope(affectedIds) {
+    let configured = [];
+    try {
+        if (providerHealthLib && typeof providerHealthLib.listConfiguredProviders === 'function') {
+            const list = providerHealthLib.listConfiguredProviders();
+            if (Array.isArray(list)) configured = list;
+        }
+    } catch { /* degradar a partial */ }
+    const llm = configured.filter((id) => id && !NON_LLM_PROVIDER_IDS.has(id));
+    const affected = new Set(affectedIds);
+    const operational = llm.filter((id) => !affected.has(id));
+    const scope = (llm.length > 0 && operational.length === 0) ? 'global' : 'partial';
+    return { scope, operational, operationalCount: operational.length };
+}
+
 function quotaExhaustedSlice(state) {
+    const emptyResult = { active: false, scope: 'partial', providers: [], operational: [], operationalCount: 0, deterministicRunning: 0, queuedSkills: [] };
     if (!quotaExhaustedState) {
-        return { active: false, deterministicRunning: 0, queuedSkills: [] };
+        return { ...emptyResult };
     }
     let flag;
     try {
@@ -709,10 +2719,10 @@ function quotaExhaustedSlice(state) {
     } catch {
         // Defensa extra: aún si el módulo tiene un bug, el banner no debe
         // tumbar el dashboard.
-        return { active: false, deterministicRunning: 0, queuedSkills: [] };
+        return { ...emptyResult };
     }
     if (!flag || !flag.active) {
-        return { active: false, deterministicRunning: 0, queuedSkills: [] };
+        return { ...emptyResult };
     }
 
     // Conteo: agentes determinísticos `trabajando` (panel "Determinísticos
@@ -750,9 +2760,27 @@ function quotaExhaustedSlice(state) {
         .map(([skill, count]) => ({ skill, count }))
         .sort((a, b) => b.count - a.count); // más esperando arriba
 
+    // #4731 — proveedores afectados (por-slot) + scope puntual/global.
+    const affected = Array.isArray(flag.providers) ? flag.providers : [];
+    const affectedIds = affected.map((p) => p.id).filter(Boolean);
+    const { scope, operational, operationalCount } = computeQuotaScope(affectedIds);
+
     return {
         active: true,
-        // Campos del flag, ya normalizados por quota-exhausted-state.js.
+        // #4731 — semántica por-proveedor. `scope` = 'partial' (≥1 LLM operativo)
+        // o 'global' (0 LLM operativo). `providers` = lista de afectados con su
+        // motivo y reset. `operational` = ids de proveedores LLM sanos.
+        scope,
+        providers: affected.map((p) => ({
+            id: p.id,
+            error_type: p.error_type,
+            resets_at: p.resets_at,
+            resets_at_ms: p.resets_at_ms,
+            detected_at: p.detected_at,
+        })),
+        operational,
+        operationalCount,
+        // Espejo del slot primario (compat con el countdown/banner legacy).
         error_type: flag.error_type,
         detected_at: flag.detected_at,
         resets_at: flag.resets_at,
@@ -763,6 +2791,351 @@ function quotaExhaustedSlice(state) {
         // Conveniencia para el banner: total de LLM esperando.
         queuedCount: queuedSkills.reduce((s, x) => s + x.count, 0),
     };
+}
+
+// =============================================================================
+// #4709 — dispatchCauseSlice: causa declarada del no-despacho de la cola.
+//
+// Lee el artifact `dispatch-cause.json` (publicado por el Pulpo cuando la cola
+// queda ociosa con pendientes) y lo normaliza para el render del dashboard.
+// Prohíbe el estado "ocioso sin explicación": si el artifact declara una
+// anomalía (`anomalia_no_determinable`), el slice la marca como el estado más
+// grave para que el operador la vea destacada (UX-2).
+//
+// NOTA DE SEGURIDAD (SEC-1 / AC-4): este slice devuelve `detalle` y `label` como
+// STRINGS CRUDOS (posiblemente con contenido de títulos/labels de issues). El
+// RENDER en `dashboard.js` DEBE escaparlos con `escapeHtmlText`/`escapeHtmlAttr`
+// (lib/escape-html.js) — nunca inyectar vía innerHTML sin escape.
+//
+// Read-only y fail-safe: cualquier error de lectura/parse degrada a
+// `{ active: false }` (sin causa declarada visible) sin tumbar el dashboard.
+// =============================================================================
+function dispatchCauseSlice(state, ctx) {
+    const inactivo = { active: false };
+    if (!dispatchCause) return inactivo;
+    const PIPELINE = (ctx && ctx.PIPELINE) || path.join(__dirname, '..');
+    const nowMs = (ctx && Number.isFinite(ctx.nowMs)) ? ctx.nowMs : Date.now();
+
+    // #5400 — Estado del propio watchdog (SEC-5 / C-1). El meta-bug de #5400 fue
+    // que el control estuvo apagado desde su merge y nada lo avisaba: la ausencia
+    // de banner se leía como "todo OK". Ahora un watchdog OFF o degradado se
+    // muestra explícitamente, aunque no haya ninguna causa declarada.
+    const wd = readWatchdogStatus(PIPELINE, nowMs);
+
+    // #5400 — Hace cuánto no sale trabajo (CA-6). Independiente de la causa:
+    // el artifact de causa se borra cuando hay despacho, la estampa no.
+    const disp = readLastDispatchInfo(PIPELINE, nowMs);
+
+    let artifact;
+    try {
+        artifact = dispatchCause.readArtifact(PIPELINE);
+    } catch {
+        artifact = null;
+    }
+
+    // Validación defensiva del enum: si el artifact trae una causa fuera del
+    // catálogo cerrado (corrupción / versión vieja), no lo tratamos como causa
+    // válida — fail-safe, no confiar en el disco.
+    const causasValidas = dispatchCause.CAUSAS_VALIDAS;
+    const causaOk = artifact && typeof artifact === 'object' && artifact.causa
+        && !(causasValidas && !causasValidas.has(artifact.causa));
+
+    // Sin causa declarada: el banner sólo aparece si el watchdog está caído o
+    // apagado (SEC-5). Con el watchdog sano y la cola despachando, no hay banner
+    // — se conserva la conducta de #4709.
+    if (!causaOk) {
+        if (wd.watchdogEnabled !== null || wd.watchdogDegraded !== null) {
+            return {
+                active: true,
+                // rev-6 (S1/B3) — "silencio SANO" exige watchdog no degradado Y
+                // última decisión `skip`. Con sólo lo primero, un watchdog vivo
+                // que estaba ALERTANDO se pintaba como silencio saludable.
+                //
+                // rev-11 (BLOQUEANTE 1) — pero `skip` TAMPOCO alcanza: es la
+                // acción de cuatro situaciones distintas y sólo una es sana.
+                // `cooldown` (ya alertó, sigue parado), `within-threshold`
+                // (parado, todavía por debajo del umbral) y `declared-cause:*`
+                // (parado por una pausa declarada) son `skip` con la cola llena.
+                // Afirmar salud ahí es el defecto exacto que este issue cierra.
+                //
+                // Silencio sano ⇔ NO HAY TRABAJO ELEGIBLE. Se acepta por la
+                // razón explícita del watchdog o por un conteo de elegibles en
+                // cero observado. `null` (no consta) nunca cuenta como sano:
+                // ausencia de dato no es evidencia de salud.
+                healthySilence: esSilencioSano(wd),
+                causa: null,
+                label: null,
+                detalle: '',
+                anomalia: false,
+                ts: null,
+                ageMs: null,
+                relTime: null,
+                ...disp,
+                ...wd,
+                // #5400 (rev-10) — Cuántos elegibles está esperando la cola según
+                // el ÚLTIMO tick del watchdog. Sin causa declarada no hay artifact
+                // de donde sacarlo, y sin este dato el banner de una detención sin
+                // causa no podía nombrar el mismo número que el aviso de Telegram
+                // ("9 issue(s) habilitado(s) esperando").
+                elegiblesEsperando: wd.watchdogElegibles,
+            };
+        }
+        return inactivo;
+    }
+
+    const ts = Number.isFinite(artifact.ts) ? artifact.ts : null;
+    const ageMs = ts != null ? Math.max(0, nowMs - ts) : null;
+
+    return {
+        active: true,
+        causa: artifact.causa,
+        // Label humano legible (UX-1): preferimos el del artifact; si falta,
+        // caemos al catálogo del módulo; último recurso, la causa cruda.
+        label: artifact.label || (dispatchCause.LABELS && dispatchCause.LABELS[artifact.causa]) || artifact.causa,
+        detalle: typeof artifact.detalle === 'string' ? artifact.detalle : '',
+        anomalia: artifact.anomalia === true,
+        ts,
+        ageMs,
+        // Tiempo relativo legible (UX-3): "hace 2 min", "hace 45 s".
+        relTime: ageMs != null ? formatRelativeAge(ageMs) : null,
+        // #5400 — la causa sostenida demasiado tiempo ya escaló a alertable.
+        escaladoPorDuracion: artifact.escaladoPorDuracion === true,
+        // rev-10 — si el artifact no lo trae, cae al conteo del último tick del
+        // watchdog (mismo número que Telegram). Sólo rellena huecos: el artifact
+        // sigue teniendo prioridad.
+        elegiblesEsperando: Number.isInteger(artifact.elegiblesEsperando)
+            ? artifact.elegiblesEsperando
+            : wd.watchdogElegibles,
+        ...disp,
+        ...wd,
+    };
+}
+
+// #5400 — Lee la estampa del último despacho efectivo. Read-only y fail-safe:
+// cualquier problema degrada a "no consta" en vez de tumbar el dashboard.
+function readLastDispatchInfo(PIPELINE, nowMs) {
+    const vacio = {
+        lastDispatchTs: null, lastDispatchAgeMs: null, lastDispatchRelTime: null,
+        lastDispatchIssue: null, lastDispatchSkill: null, lastDispatchFase: null,
+        lastDispatchClock: null,
+    };
+    if (!lastDispatchMod) return vacio;
+    try {
+        const stamp = lastDispatchMod.readLastDispatch(path.join(PIPELINE, 'state'));
+        if (!stamp) return vacio;
+        const ageMs = Math.max(0, nowMs - stamp.ts);
+        return {
+            lastDispatchTs: stamp.ts,
+            lastDispatchAgeMs: ageMs,
+            lastDispatchRelTime: formatRelativeAge(ageMs),
+            // #5400 (rev-8) — IDENTIDAD del último despacho. La estampa ya
+            // persiste issue/skill/fase (allowlist saneada en `last-dispatch.js`)
+            // y el banner los tiraba a la basura: "hace 1 h" no le dice al
+            // operador si lo último que salió fue lo que él esperaba o algo de
+            // otra ola. Mockup 47 A3: "último despacho 13:09 · #5388 pipeline-dev".
+            lastDispatchIssue: stamp.issue != null ? String(stamp.issue) : null,
+            lastDispatchSkill: stamp.skill != null ? String(stamp.skill) : null,
+            lastDispatchFase: stamp.fase != null ? String(stamp.fase) : null,
+            lastDispatchClock: formatClock(stamp.ts),
+        };
+    } catch {
+        return vacio;
+    }
+}
+
+// #5400 (rev-8) — Hora local HH:MM de un timestamp, para el copy del mockup
+// ("último despacho 13:09", "desde 13:12"). Fail-soft: un ts inválido devuelve
+// null y el render omite el dato en vez de mostrar "Invalid Date".
+function formatClock(ts) {
+    if (!Number.isFinite(ts) || ts <= 0) return null;
+    try {
+        const d = new Date(ts);
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${hh}:${mm}`;
+    } catch {
+        return null;
+    }
+}
+
+// #5400 (rev-11) — ¿El silencio del despacho es SANO?
+//
+// Sano significa UNA sola cosa: no hay trabajo elegible esperando, así que no
+// despachar es la conducta correcta. Cualquier otro `skip` es un pipeline
+// parado con cola, y pintarlo en verde es el defecto que este issue cierra.
+//
+// Fail-closed por diseño: se exige evidencia POSITIVA de que la cola está sin
+// trabajo elegible. Con `null` (no consta) devuelve `false` y el banner cae a
+// "estado sin confirmar", que es honesto; el error caro es el falso verde.
+function esSilencioSano(wd) {
+    if (!wd) return false;
+    // El control tiene que estar sano: un watchdog degradado no puede afirmar
+    // nada sobre el pipeline.
+    if (wd.watchdogDegraded !== false) return false;
+    // Y su última decisión tiene que haber sido no-actuar.
+    if (wd.watchdogAction !== 'skip') return false;
+    // Razón explícita del propio watchdog: la cola no tiene trabajo habilitado.
+    if (wd.watchdogDecisionReason === 'no-enabled-work') return true;
+    // O bien un conteo de elegibles observado en CERO (estrictamente 0, no
+    // falsy: `null` es "no consta" y no habilita el verde). Cubre el caso
+    // legítimo de `within-threshold` con la cola realmente vacía.
+    if (wd.watchdogElegibles === 0) return true;
+    return false;
+}
+
+// #5400 — Lee el estado del watchdog de inactividad de despacho.
+//
+// `degraded` es TRI-ESTADO a propósito:
+//   true   → apagado, kill-switch o brazo sin latir (hay que avisarlo).
+//   false  → corriendo y al día.
+//   null   → no consta (archivo ausente). NO se asume nada: reportar "degradado"
+//            sin evidencia sería una alarma falsa, y reportar "sano" sería el
+//            mismo error que este issue vino a arreglar.
+function readWatchdogStatus(PIPELINE, nowMs) {
+    const desconocido = {
+        watchdogEnabled: null, watchdogDegraded: null,
+        watchdogStaleTick: null, watchdogReason: null,
+        watchdogAction: null,
+        // #5400 (rev-11) — RAZÓN de la última decisión y causa clasificada.
+        watchdogDecisionReason: null, watchdogCauseKind: null,
+        // #5400 (rev-8) — autoría + backoff: sin status file no consta NADA.
+        // Ausencia de dato jamás se rellena con un default optimista.
+        autoriaDeclarada: null, autoriaDesdeTs: null, autoriaDesdeClock: null,
+        episodioId: null, avisosEmitidos: null,
+        avisoUltimoClock: null, avisoProximoClock: null,
+        avisoEtaMin: null, avisoUmbralMin: null,
+        watchdogElegibles: null,
+    };
+    let raw;
+    try {
+        raw = JSON.parse(fs.readFileSync(
+            path.join(PIPELINE, 'state', 'dispatch-watchdog-status.json'), 'utf8'
+        ));
+    } catch {
+        return desconocido;
+    }
+    if (!raw || typeof raw !== 'object') return desconocido;
+
+    const enabled = raw.enabled === true && raw.killSwitch !== true;
+    // Brazo mudo: el tick corre cada minuto, así que 10 min sin latir es un
+    // watchdog que se murió sin avisar — exactamente lo que no puede pasar.
+    const lastTickTs = Number.isFinite(raw.lastTickTs) ? raw.lastTickTs : null;
+    const stale = lastTickTs == null || (nowMs - lastTickTs) > 10 * 60 * 1000;
+    // #5400 (rev-1, SEC-5) — el brazo también declara degradación cuando el
+    // RELOJ está degradado: estampa de despacho ausente, corrida hacia el futuro
+    // o imposible de escribir. En esos casos el watchdog sigue vigilando, pero
+    // con una medición peor que la honesta y el operador tiene que saberlo.
+    const relojDegradado = raw.degraded === true && enabled && !stale;
+    const degraded = !enabled || stale || relojDegradado;
+
+    return {
+        watchdogEnabled: enabled,
+        watchdogDegraded: degraded,
+        watchdogStaleTick: stale,
+        // rev-6 (S1/B3) — la ÚLTIMA decisión del brazo. `degraded: false` sólo
+        // dice que el watchdog está sano; no dice que el pipeline lo esté.
+        watchdogAction: typeof raw.action === 'string' ? raw.action : null,
+
+        // #5400 (rev-11, BLOQUEANTE 1) — RAZÓN de la última decisión, cruda.
+        //
+        // `action` sola es ambigua: `decide()` emite CUATRO `skip` distintos
+        // (`no-enabled-work`, `within-threshold`, `declared-cause:<kind>` y
+        // `cooldown`) y sólo el primero significa "no hay nada para despachar".
+        // Sin este campo el render no podía distinguirlos y pintaba en verde
+        // "nada que despachar no es una falla" con la cola llena: en `cooldown`
+        // —donde el watchdog pasa la mayor parte de un episodio largo, por el
+        // backoff 30→60→120 con tick de 1 min— el banner volvía al verde DESPUÉS
+        // de haber alertado, con el pipeline todavía parado.
+        //
+        // OJO: `watchdogReason` (abajo) es otra cosa — describe la salud del
+        // CONTROL ('apagado' / 'sin latido' / 'con reloj degradado'). No se
+        // fusionan: una habla del watchdog, la otra del pipeline.
+        watchdogDecisionReason: typeof raw.reason === 'string' && raw.reason.length > 0
+            ? raw.reason
+            : null,
+        // #5400 (rev-11) — CAUSA clasificada del último tick. El Pulpo ya la
+        // escribía y el slice la tiraba, así que el banner de fallback decía
+        // "sin causa declarada" mientras Telegram nombraba la pausa (rompía CA-6
+        // y la regla de copy 7: banner y Telegram cuentan el mismo episodio).
+        watchdogCauseKind: typeof raw.causeKind === 'string' && raw.causeKind.length > 0
+            ? raw.causeKind
+            : null,
+
+        watchdogReason: !enabled
+            ? (raw.killSwitch === true ? 'kill-switch' : 'apagado')
+            : (stale ? 'sin latido' : (relojDegradado ? 'con reloj degradado' : null)),
+
+        // #5400 (rev-8) — AUTORÍA declarada de la causa (SEC-2). Se expone cruda
+        // y SIEMPRE junto a su instante de inicio: el render es el que agrega el
+        // rótulo "(sin verificar, desde HH:MM)". Sin dato queda en null y el
+        // banner dice "autoría no registrada" — prohibido defaultear a alguien.
+        autoriaDeclarada: typeof raw.authorDeclared === 'string' && raw.authorDeclared.trim().length > 0
+            ? raw.authorDeclared.trim()
+            : null,
+        autoriaDesdeTs: Number.isFinite(raw.causeSinceTs) && raw.causeSinceTs > 0 ? raw.causeSinceTs : null,
+        autoriaDesdeClock: formatClock(raw.causeSinceTs),
+
+        // #5400 (rev-8) — BACKOFF observable (CA-4 en el dashboard).
+        episodioId: typeof raw.episodeId === 'string' && raw.episodeId.length > 0 ? raw.episodeId : null,
+        avisosEmitidos: Number.isInteger(raw.alertCount) && raw.alertCount >= 0 ? raw.alertCount : null,
+        avisoUltimoClock: formatClock(raw.lastAlertTs),
+        avisoProximoClock: formatClock(raw.nextAlertTs),
+        // Minutos que faltan para el primer aviso del episodio, si todavía no se
+        // emitió ninguno. Negativo/0 ⇒ ya está en tiempo de avisar: se omite en
+        // vez de mostrar "en -3 min".
+        avisoEtaMin: Number.isFinite(raw.alertEtaTs) && raw.alertEtaTs > nowMs
+            ? Math.max(1, Math.round((raw.alertEtaTs - nowMs) / 60000))
+            : null,
+        avisoUmbralMin: Number.isInteger(raw.alertThresholdMinutes) && raw.alertThresholdMinutes > 0
+            ? raw.alertThresholdMinutes
+            : null,
+
+        // #5400 (rev-10) — Elegibles esperando según el último tick (`pendientes`
+        // es el conteo ELEGIBLE, el mismo que gobierna la decisión y el mismo que
+        // viaja en el aviso de Telegram). Nombre propio para no pisar el
+        // `elegiblesEsperando` que viene del artifact cuando SÍ hay causa.
+        watchdogElegibles: Number.isInteger(raw.pendientes) && raw.pendientes >= 0
+            ? raw.pendientes
+            : null,
+    };
+}
+
+// #4709 / #5400 (rev-8) — Formateo relativo compacto en español (UX-3).
+//
+// BLOQUEANTE que arregla (rev-8): esta función era de UNA SOLA UNIDAD
+// (`hace ${h} h`), y #5400 la reusó tal cual para el tiempo desde el último
+// despacho. Resultado: el episodio de 1h33 que ORIGINÓ este issue se mostraba
+// en el banner como "hace 1 h" — 33 minutos de detención evaporados justo en el
+// panel que mira el operador — mientras el aviso de Telegram del MISMO episodio
+// decía "1 h 33 min". Dos duraciones para un solo hecho, que es exactamente lo
+// que prohíbe la regla de copy 7 del mockup 47 ("un episodio, una conversación")
+// y lo que la regla 5 nombra por su nombre ("1 h 33 min", no "hace 1 h").
+//
+// El fix es tener UN SOLO formateador por episodio: se delega en
+// `wave-stall-watchdog.formatDurationEs()`, el mismo que produce el string
+// correcto en Telegram. Acá sólo se le antepone el "hace ".
+//
+// Fail-soft: si el módulo del watchdog no carga (dashboard corriendo sobre un
+// checkout parcial), cae a un formateador local equivalente de dos unidades —
+// nunca vuelve a la granularidad de una sola unidad.
+function formatRelativeAge(ms) {
+    const total = Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : 0;
+    if (total < 60) return `hace ${total} s`;
+    try {
+        return `hace ${require('./wave-stall-watchdog').formatDurationEs(ms)}`;
+    } catch {
+        return `hace ${formatDurationDosUnidades(total)}`;
+    }
+}
+
+// Espejo local de `formatDurationEs` (dos unidades) para el caso degradado.
+// Se mantiene idéntico a propósito: divergir acá reintroduce el bug de rev-7.
+function formatDurationDosUnidades(totalSegundos) {
+    const mins = Math.floor(totalSegundos / 60);
+    if (mins < 60) return `${mins} min`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m > 0 ? `${h} h ${m} min` : `${h} h`;
 }
 
 // =============================================================================
@@ -1027,22 +3400,936 @@ function handoffMetricsSlice(state, ctx) {
     };
 }
 
+// #3932 EP3-H6 — Slice del KPI "Entregables por skill". Thin wrapper que delega
+// en el módulo agregador `lib/kpi-deliverables-by-skill.js` (mismo patrón que
+// `handoffMetricsSlice` delega en `readActivityLog`). NO mete lógica de parsing
+// acá: resuelve REPO_ROOT/config desde ctx/env y devuelve SÓLO agregados
+// numéricos (CA-5: nunca preview/content_hash/dropfile/attachment_path).
+function deliverablesBySkillSlice(state, ctx) {
+    const repoRoot = (ctx && ctx.REPO_ROOT)
+        || process.env.PIPELINE_REPO_ROOT
+        || process.env.CLAUDE_PROJECT_DIR
+        || path.resolve(__dirname, '..', '..');
+    // Config: preferimos el ya cargado en state/ctx (evita re-parsear el YAML).
+    const config = (state && state.config) || (ctx && ctx.config) || null;
+    try {
+        const agg = require('./kpi-deliverables-by-skill');
+        return agg.getDeliverablesBySkill({ REPO_ROOT: repoRoot, config });
+    } catch (e) {
+        // Módulo opcional / error de lectura → payload vacío, nunca rompe el
+        // endpoint (read-only, fail-open).
+        return { skills: [], meta: { numeratorAvailable: false, generatedAt: new Date().toISOString(), error: true } };
+    }
+}
+
+// #3625 CA-5 — Widget de audit trail de mutaciones a la allowlist.
+//
+// Devuelve un slice consumible por el dashboard con:
+//   - Las últimas N entries del audit log (default 3, configurable via opts).
+//   - Stats de las últimas 24h (total, autorizadas, rechazadas, sin autoría).
+//   - Estado del hash-chain (`verifyChain`).
+//
+// Cada entry se mapea a 4 estados visuales (UX-#3625):
+//   - 'human'        → mutación OK por humano (commander:leo).
+//   - 'subsystem'    → mutación OK por subsistema (waves, planner-split, etc.).
+//   - 'rejected'     → action: 'reject' (gate bloqueó la mutación).
+//   - 'unauthorized' → action 'write' pero authorized_by null (puerta trasera).
+//
+// La UI usa estos estados para colores/iconos. Si el hash-chain está roto,
+// emitimos `chain_broken: true` para que la UI dispare el banner crítico.
+function partialPauseAuditSlice(state, ctx) {
+    const _ctx = ctx || {};
+    const limit = Number.isFinite(_ctx.limit) && _ctx.limit > 0 ? _ctx.limit : 3;
+    let entries = [];
+    let stats = { total: 0, authorized: 0, rejected: 0, unknown: 0, since: null };
+    let chainStatus = { ok: true, entriesChecked: 0 };
+    try {
+        const ppa = require('./partial-pause-audit');
+        entries = ppa.tail(limit);
+        stats = ppa.statsSince({});
+        chainStatus = ppa.verifyChain();
+    } catch (err) {
+        return {
+            entries: [],
+            stats,
+            chain_broken: false,
+            chain_error: err && err.message,
+            error: 'partial_pause_audit_unavailable',
+        };
+    }
+
+    const mapped = entries.map((e) => {
+        let visual = 'human';
+        if (e.action === 'reject') visual = 'rejected';
+        else if (!e.authorized_by) visual = 'unauthorized';
+        else if (e.authorized_by === 'commander:leo') visual = 'human';
+        else visual = 'subsystem';
+        return {
+            timestamp: e.timestamp,
+            source: e.source,
+            action: e.action,
+            authorized_by: e.authorized_by,
+            justification: (e.justification || '').slice(0, 80),
+            justification_truncated: (e.justification || '').length > 80,
+            justification_redacted: !!e.justification_redacted,
+            diff: e.diff || { added: [], removed: [] },
+            visual,
+            backfill: !!e._backfill,
+        };
+    });
+
+    // Cualquier entry con autoría null y NO marcada como backfill dispara el
+    // banner condicional "Sin autoría".
+    const hasUnauthorizedNonBackfill = mapped.some(
+        (e) => e.visual === 'unauthorized' && !e.backfill
+    );
+
+    return {
+        entries: mapped,
+        stats,
+        chain_broken: !chainStatus.ok,
+        chain_broken_at: chainStatus.brokenAt || null,
+        chain_broken_reason: chainStatus.reason || null,
+        chain_entries_checked: chainStatus.entriesChecked || 0,
+        has_unauthorized_non_backfill: hasUnauthorizedNonBackfill,
+    };
+}
+
+// -----------------------------------------------------------------------------
+// #4375 — Slice del indicador de estado de sincronización allowlist↔ola.
+// Superficie READ-ONLY (CA-5): consume `desync-detector.detectDesync()` con
+// `skipFlag:true, skipAlert:true` → observa sin mutar estado ni disparar
+// Telegram. NO pasa `isClosed` (CA-7): sin llamadas de red a GitHub; el peor
+// caso es marcar ámbar/rojo de más (fail-safe), nunca un falso verde.
+//
+// Mapeo estado→color (fuente: classifyDesync en desync-detector.js:170 +
+// contrato PO CA-1..CA-4):
+//   🟢 sincronizado          → desync===false && reason===null
+//   🟡 realineado_reductivo  → desync===true && classification==='resoluble_reductivo'
+//   🔴 divergencia_bloqueada → (desync===true && classification==='ambiguo') || isDesyncFlagSet()
+//   ⚪ desconocido           → reason 'no_waves_yet'/'no_partial_pause', o try/catch capturó error
+//
+// Riesgo del FALSO VERDE (receta): detectDesync devuelve `desync:false` con
+// `reason` seteado en los casos degradados. Por eso el slice chequea `reason`
+// ANTES de concluir `sincronizado`. Todo envuelto en try/catch (CA-4): ante
+// cualquier error → `{ estado:'desconocido', error }` sin propagar.
+// -----------------------------------------------------------------------------
+
+// Detector real (opcional; si el módulo no carga, el slice degrada a
+// 'desconocido'). Override inyectable para tests (CA-10) sin tocar el estado
+// global del pipeline — mismo patrón que `_setLogDir`.
+let desyncDetector = null;
+try { desyncDetector = require('./desync-detector'); } catch { /* opcional */ }
+let _desyncDetectorOverride = null;
+
+// #5724 CA-4 — Copy compartido del semáforo. El slice expone la presentación ya
+// resuelta (`presentacion`) además del dato crudo: el banner de la vista Inicio
+// se hidrata client-side y sin esto tendría que reimplementar en el browser el
+// mapeo estado→label/detalle/antigüedad, que es exactamente cómo el pill del
+// panel Pipeline terminó divergiendo del renderer del monolito. Campo ADITIVO:
+// los consumidores viejos leen los mismos campos de antes.
+let desyncCopy = null;
+try { desyncCopy = require('./desync-copy'); } catch { /* opcional: degradamos sin presentacion */ }
+function _desyncPresentacion(payload) {
+    if (!desyncCopy || typeof desyncCopy.buildDesyncPresentation !== 'function') return null;
+    try { return desyncCopy.buildDesyncPresentation(payload); } catch { return null; }
+}
+
+// #6117 CA-UX-5 — presentación de la línea de última auto-reparación (P1–P6),
+// resuelta con el mismo módulo de copy. Degrada a `null` si el módulo no cargó:
+// la vista tiene su propio empty-state y no se rompe por esto.
+function _autoRepairPresentacion(ultima, repeticion) {
+    if (!desyncCopy || typeof desyncCopy.autoRepairLineaDashboard !== 'function') return null;
+    try { return desyncCopy.autoRepairLineaDashboard(ultima, { repeticion }); } catch { return null; }
+}
+
+function desyncStatusSlice(state, ctx) {
+    const detector = _desyncDetectorOverride || desyncDetector;
+    // Base defensiva del contrato JSON (CA-6): siempre devolvemos el shape
+    // completo aunque falte el detector o algo falle.
+    const base = {
+        estado: 'desconocido',
+        classification: null,
+        desync: null,
+        reason: null,
+        added: [],
+        removed: [],
+        bloqueado: false,
+        count: 0,
+        // #5724 CA-4 — antigüedad del bloqueo. Sin esto un dispatch suspendido
+        // hace 10 horas se ve idéntico a uno de 10 minutos, y la duración es
+        // justamente lo que convierte una divergencia en incidente.
+        detected_at: null,
+        // #6117 CA-7 — parte del contrato: presente (en `null`) también en los
+        // caminos degradados, para que la UI no tenga que distinguir "no hubo
+        // reparación" de "el slice falló".
+        ultima_auto_reparacion: null,
+        auto_reparacion_repeticion: null,
+    };
+    if (!detector || typeof detector.detectDesync !== 'function') {
+        return { ...base, presentacion: _desyncPresentacion(base), error: 'desync_detector_unavailable' };
+    }
+    try {
+        const probe = detector.detectDesync({ skipFlag: true, skipAlert: true }) || {};
+        const bloqueado = typeof detector.isDesyncFlagSet === 'function'
+            ? detector.isDesyncFlagSet() === true
+            : false;
+        // El `detected_at` vive en el flag de bloqueo. Sin flag (o con flag
+        // ilegible) queda `null` y la UI simplemente no muestra antigüedad.
+        let detectedAt = null;
+        if (bloqueado && typeof detector.readDesyncFlag === 'function') {
+            try {
+                const flag = detector.readDesyncFlag();
+                const v = flag && flag.detected_at;
+                if (typeof v === 'string' && Number.isFinite(Date.parse(v))) detectedAt = v;
+            } catch { /* degradar a null */ }
+        }
+        // CA-8: issue numbers sólo enteros validados antes de exponerlos.
+        const added = (Array.isArray(probe.added) ? probe.added : []).filter(Number.isInteger);
+        const removed = (Array.isArray(probe.removed) ? probe.removed : []).filter(Number.isInteger);
+        const reason = probe.reason != null ? probe.reason : null;
+        const classification = probe.classification != null ? probe.classification : null;
+        const count = (Array.isArray(probe.waves_allowlist) ? probe.waves_allowlist : []).length;
+
+        // Mapeo estado→color. El orden importa: flag y casos degradados se
+        // evalúan ANTES de concluir 'sincronizado' (evita el falso verde).
+        let estado;
+        if (bloqueado) {
+            estado = 'divergencia_bloqueada';
+        } else if (reason === 'no_waves_yet' || reason === 'no_partial_pause') {
+            estado = 'desconocido';
+        } else if (probe.desync === false && reason === null) {
+            estado = 'sincronizado';
+        } else if (probe.desync === true && classification === 'resoluble_reductivo') {
+            estado = 'realineado_reductivo';
+        } else if (probe.desync === true && classification === 'ambiguo') {
+            estado = 'divergencia_bloqueada';
+        } else {
+            estado = 'desconocido';
+        }
+
+        // #6117 CA-7 — última auto-reparación del despacho. Desde que las
+        // reparaciones exitosas dejaron de avisarse por Telegram, ésta es la
+        // superficie donde el operador las consulta cuando quiere, en vez de
+        // recibirlas empujadas al chat.
+        // SEC-6: shape acotado a `{tipo, issues, timestamp}` y SÓLO lectura. El
+        // dashboard (3200) no tiene autenticación, así que acá no se expone
+        // nada más ni se ofrece ninguna acción que dispare una reparación.
+        // `readLastAutoRepair` nunca lanza: degrada a `null`.
+        let ultimaAutoReparacion = null;
+        // CA-UX-5 · P6 — el único caso que sube de jerarquía visual es el umbral
+        // superado. Viaja en un campo HERMANO y no dentro de
+        // `ultima_auto_reparacion`, para que ese shape siga siendo exactamente
+        // `{tipo, issues, timestamp}` (SEC-6). Derivado del mismo JSONL, sólo
+        // lectura: no expone nada que no estuviera ya.
+        let repeticion = null;
+        try {
+            const autoRepair = require('./metrics/auto-repair');
+            ultimaAutoReparacion = autoRepair.readLastAutoRepair();
+            if (ultimaAutoReparacion) {
+                let cfg = {};
+                // Si la config no resuelve, el módulo de métrica clampea a sus
+                // defaults (3 / 1 h): el umbral nunca queda indefinido.
+                try { cfg = (configResolver.resolve({}).config || {}).desync || {}; } catch { cfg = {}; }
+                const rep = autoRepair.shouldAlertRepetition({
+                    tipo: ultimaAutoReparacion.tipo,
+                    threshold: cfg.repair_alert_threshold,
+                    windowMs: cfg.repair_alert_window_ms,
+                });
+                // `estado_ilegible` no es "se repitió": es "no pude contar". No
+                // se pinta warning por no saber — para eso está el Telegram.
+                repeticion = {
+                    count: rep.count,
+                    ventana_ms: rep.windowMs,
+                    superado: rep.alert === true && rep.motivo === 'umbral',
+                };
+            }
+        } catch { /* degradar a null — el slice nunca falla por esto */ }
+
+        const payload = {
+            estado,
+            classification,
+            desync: typeof probe.desync === 'boolean' ? probe.desync : null,
+            reason,
+            added,
+            removed,
+            bloqueado,
+            count,
+            detected_at: detectedAt,
+            ultima_auto_reparacion: ultimaAutoReparacion,
+            auto_reparacion_repeticion: repeticion,
+            // CA-UX-5 — el copy de la línea se resuelve SERVER-SIDE con
+            // `desync-copy`, igual que `presentacion`. El cliente sólo hace
+            // `setText`: si armara el texto en el browser sería una segunda
+            // redacción del mismo dato, que es el problema que ese módulo
+            // existe para evitar.
+            auto_reparacion_presentacion: _autoRepairPresentacion(ultimaAutoReparacion, repeticion),
+        };
+        // Presentación resuelta server-side (label/detalle/antigüedad/chips) para
+        // que toda superficie diga lo mismo sin reimplementar el copy.
+        return { ...payload, presentacion: _desyncPresentacion(payload) };
+    } catch (err) {
+        return { ...base, presentacion: _desyncPresentacion(base), error: String((err && err.message) || err) };
+    }
+}
+
+// -----------------------------------------------------------------------------
+// #4371 (Ola 8.3) CA-8/CA-10 — Slice del widget "Audit trail · Olas & Issues".
+// Modelado 1:1 sobre `partialPauseAuditSlice`: tail de eventos de olas/issues
+// (add/remove/priority/promote/archive) con actor, evento, estados previo/
+// posterior y timestamp, más stats de 24h y verificación de la cadena.
+//
+// El slice NO renderiza HTML: expone datos ya normalizados. El render server-side
+// (XSS-safe) lo hace `wave-audit-renderer.js`. La clasificación `visual`
+// (A humano / B subsistema / C sin autoría / D prioridad) se calcula acá.
+//
+// @param {object} [ctx] - { limit } (default 5, como el widget).
+// @returns {{ entries, stats, chain_broken, ... }}
+// -----------------------------------------------------------------------------
+
+// Actores reconocidos como subsistema (autoría de máquina legítima). Se comparan
+// por prefijo/igualdad; cualquier otro actor no vacío se considera humano, y el
+// vacío/'desconocido' dispara el estado C (sin autoría).
+const WAVE_AUDIT_SUBSYSTEM_ACTORS = Object.freeze([
+    'System',
+    'wave-promote',
+    'wave-rollback',
+    'pulpo:cleanup',
+    'planner-split:auto',
+    'restart:rollback',
+]);
+
+function classifyWaveAuditVisual(entry) {
+    const event = entry && entry.event;
+    const actor = entry && entry.actor;
+    // Sin autoría / actor nulo o placeholder → estado C (alerta crítica).
+    if (!actor || actor === 'desconocido' || actor === 'null') return 'unauthorized';
+    // Cambio de prioridad → estado D (atención suave), sin importar el origen.
+    if (event === 'priority_changed') return 'priority';
+    // Subsistema conocido (por igualdad o prefijo `foo:`) → estado B.
+    const isSubsystem = WAVE_AUDIT_SUBSYSTEM_ACTORS.some(
+        (s) => actor === s || (typeof actor === 'string' && actor.startsWith(s + ':')) || (typeof actor === 'string' && actor.startsWith(s.split(':')[0] + ':'))
+    );
+    if (isSubsystem) return 'subsystem';
+    // Resto → humano (estado A).
+    return 'human';
+}
+
+function waveIssueAuditSlice(state, ctx) {
+    const _ctx = ctx || {};
+    const limit = Number.isFinite(_ctx.limit) && _ctx.limit > 0 ? _ctx.limit : 5;
+    let raw = [];
+    let chainStatus = { ok: true, entriesChecked: 0 };
+    let waveAudit;
+    try {
+        waveAudit = require('./wave-audit');
+        raw = waveAudit.readAllEvents();
+        chainStatus = waveAudit.verifyChain();
+    } catch (err) {
+        return {
+            entries: [],
+            stats: { total: 0, con_autoria: 0, sin_autoria: 0, cambios_prioridad: 0, since: null },
+            chain_broken: false,
+            chain_error: err && err.message,
+            error: 'wave_audit_unavailable',
+        };
+    }
+    if (!Array.isArray(raw)) raw = [];
+
+    // Stats 24h.
+    const windowMs = 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - windowMs;
+    let total = 0; let conAutoria = 0; let sinAutoria = 0; let cambiosPrioridad = 0;
+    for (const e of raw) {
+        const t = Date.parse(e && e.timestamp || '');
+        if (!Number.isFinite(t) || t < cutoff) continue;
+        total++;
+        const visual = classifyWaveAuditVisual(e);
+        if (visual === 'unauthorized') sinAutoria++; else conAutoria++;
+        if (e && e.event === 'priority_changed') cambiosPrioridad++;
+    }
+
+    // Últimas `limit` entries, mapeadas + clasificadas.
+    const N = Math.max(0, Math.min(limit, raw.length));
+    const tail = raw.slice(raw.length - N);
+    const entries = tail.map((e) => ({
+        timestamp: e && e.timestamp || null,
+        event: e && e.event || null,
+        wave: Number.isInteger(e && e.wave) ? e.wave : null,
+        issue: Number.isInteger(e && e.issue) ? e.issue : null,
+        actor: e && e.actor || 'desconocido',
+        estado_previo: e ? e.estado_previo : null,
+        estado_posterior: e ? e.estado_posterior : null,
+        prioridad_previa: e ? (e.prioridad_previa || null) : null,
+        prioridad_nueva: e ? (e.prioridad_nueva || null) : null,
+        note: e && e.note || '',
+        visual: classifyWaveAuditVisual(e),
+    }));
+
+    const hasUnauthorized = entries.some((e) => e.visual === 'unauthorized');
+
+    return {
+        entries,
+        stats: {
+            total,
+            con_autoria: conAutoria,
+            sin_autoria: sinAutoria,
+            cambios_prioridad: cambiosPrioridad,
+            since: new Date(cutoff).toISOString(),
+        },
+        chain_broken: !chainStatus.ok,
+        chain_broken_at: chainStatus.brokenAt != null ? chainStatus.brokenAt : null,
+        chain_broken_reason: chainStatus.reason || null,
+        chain_entries_checked: chainStatus.entriesChecked || 0,
+        has_unauthorized: hasUnauthorized,
+    };
+}
+
+// -----------------------------------------------------------------------------
+// #3961 EP8-H8 (CA-6) — Deriva las alertas de umbral de los KPIs. NO escribe en
+// `alert-tray-audit.js` (que es audit trail append-only de acciones del operador):
+// estas alertas surfacean como datos read-only a través de `alertTraySlice()`.
+//
+// Cada entrada tiene shape acotado: { id, kpi, severity, message, value,
+// threshold, provider?, skill? }. `message` se arma con templates constantes +
+// números; `provider`/`skill` son strings de log (vector XSS SEC-1) → el RENDER
+// los escapa con escapeHtmlText/Attr (no acá, para no romper igualdad de tests).
+//
+// @param {object} kpis - { sherlock, voice, deliverables, dora } (slices ya
+//                        computados; cualquiera puede faltar → se omite su check).
+// @param {object} thresholds - salida de lib/dashboard-thresholds.loadThresholds.
+// @returns {Array<object>} - lista de alertas (vacía si nada excede umbral).
+// -----------------------------------------------------------------------------
+function computeThresholdAlerts(kpis, thresholds) {
+    const out = [];
+    const k = kpis || {};
+    const t = thresholds || {};
+    const num = (x) => (Number.isFinite(x) ? x : null);
+
+    // Sherlock precisión global: ratio por debajo del piso de alerta.
+    const sh = k.sherlock;
+    if (sh && sh.ratio !== null && sh.ratio !== undefined && !sh.insufficient_sample) {
+        const below = num(t.sherlock_precision_alert_below);
+        if (below !== null && sh.ratio < below) {
+            out.push({
+                id: 'sherlock_precision', kpi: 'sherlock_precision', severity: 'bad',
+                message: `Precisión de Sherlock ${(sh.ratio * 100).toFixed(0)}% < ${(below * 100).toFixed(0)}%`,
+                value: sh.ratio, threshold: below,
+            });
+        }
+        // Same-provider por encima de la meta (independencia del juez degradada).
+        const spTarget = num(t.sherlock_same_provider_target);
+        if (spTarget !== null && sh.same_provider_ratio !== null && sh.same_provider_ratio !== undefined
+            && sh.same_provider_ratio >= spTarget) {
+            out.push({
+                id: 'sherlock_same_provider', kpi: 'sherlock_same_provider', severity: 'warn',
+                message: `Same-provider ${(sh.same_provider_ratio * 100).toFixed(0)}% ≥ meta ${(spTarget * 100).toFixed(0)}%`,
+                value: sh.same_provider_ratio, threshold: spTarget,
+            });
+        }
+        // Rechazo por provider: tasa de rechazo por encima del complemento del target.
+        const precTarget = num(t.sherlock_precision_target);
+        if (precTarget !== null && sh.by_provider && typeof sh.by_provider === 'object') {
+            const maxReject = 1 - precTarget;
+            for (const prov of Object.keys(sh.by_provider)) {
+                const bp = sh.by_provider[prov];
+                if (bp && !bp.insufficient_sample && bp.rejection_rate !== null
+                    && bp.rejection_rate > maxReject) {
+                    out.push({
+                        id: `sherlock_provider:${prov}`, kpi: 'sherlock_provider', severity: 'warn',
+                        provider: prov,
+                        message: `Rechazo de Sherlock ${(bp.rejection_rate * 100).toFixed(0)}% > ${(maxReject * 100).toFixed(0)}%`,
+                        value: bp.rejection_rate, threshold: maxReject,
+                    });
+                }
+            }
+        }
+    }
+
+    // p95 latencia de voz por encima de la banda saludable.
+    const vo = k.voice;
+    if (vo && !vo.insufficient_sample && vo.p95_ms !== null && vo.p95_ms !== undefined) {
+        const maxMs = num(t.voice_p95_max_ms);
+        if (maxMs !== null && vo.p95_ms > maxMs) {
+            out.push({
+                id: 'voice_p95', kpi: 'voice_p95', severity: 'warn',
+                message: `p95 latencia de voz ${vo.p95_ms}ms > ${maxMs}ms`,
+                value: vo.p95_ms, threshold: maxMs,
+            });
+        }
+    }
+
+    // % entregables por skill por debajo del mínimo.
+    const de = k.deliverables;
+    const minPct = num(t.deliverables_min_pct);
+    if (de && Array.isArray(de.skills) && minPct !== null) {
+        for (const row of de.skills) {
+            if (row && row.pct !== null && row.pct !== undefined && Number.isFinite(row.pct)
+                && row.total > 0 && row.pct < minPct) {
+                out.push({
+                    id: `deliverables:${row.skill}`, kpi: 'deliverables', severity: 'warn',
+                    skill: row.skill,
+                    message: `Entregables ${Math.round(row.pct)}% < ${minPct}%`,
+                    value: row.pct, threshold: minPct,
+                });
+            }
+        }
+    }
+
+    // DORA: lead time / throughput / fail rate fuera de target.
+    const dora = k.dora;
+    if (dora && typeof dora === 'object') {
+        const ltMaxH = num(t.dora_lead_time_max_h);
+        if (ltMaxH !== null && Number.isFinite(dora.leadTimeMs) && dora.leadTimeMs > 0
+            && dora.leadTimeMs > ltMaxH * 3600 * 1000) {
+            out.push({
+                id: 'dora_lead_time', kpi: 'dora_lead_time', severity: 'warn',
+                message: `Lead time ${(dora.leadTimeMs / 3600000).toFixed(1)}h > ${ltMaxH}h`,
+                value: dora.leadTimeMs, threshold: ltMaxH,
+            });
+        }
+        const tpMin = num(t.dora_throughput_min_per_day);
+        if (tpMin !== null && Number.isFinite(dora.throughputPerDay) && dora.throughputPerDay < tpMin) {
+            out.push({
+                id: 'dora_throughput', kpi: 'dora_throughput', severity: 'warn',
+                message: `Throughput ${dora.throughputPerDay}/d < ${tpMin}/d`,
+                value: dora.throughputPerDay, threshold: tpMin,
+            });
+        }
+        const frMax = num(t.dora_fail_rate_max_pct);
+        if (frMax !== null && Number.isFinite(dora.failRatePct) && dora.failRatePct > frMax) {
+            out.push({
+                id: 'dora_fail_rate', kpi: 'dora_fail_rate', severity: 'bad',
+                message: `Failure rate ${Math.round(dora.failRatePct)}% > ${frMax}%`,
+                value: dora.failRatePct, threshold: frMax,
+            });
+        }
+    }
+
+    return out;
+}
+
+// #3954 EP8-H1 CA-5 — Bandeja de alertas del Home mission-control. Slice
+// modelado 1:1 sobre `partialPauseAuditSlice`: tail de acciones del operador
+// (ack/snooze) con timestamp/actor/justificación truncada a 80, stats de 24h,
+// verificación de la cadena de hashes y supresiones vigentes.
+//
+// El actor SIEMPRE es `operador-local` (grabado server-side, REQ-SEC-3) — el
+// slice no lo deriva del cliente. Degrada a `{error}` si el store no está
+// disponible (espejo de partial-pause), sin romper el dashboard.
+//
+// #3961 EP8-H8 (CA-6) — si el caller pasa `ctx.kpis` + `ctx.thresholds`, el
+// slice deriva las alertas de umbral con computeThresholdAlerts() y las expone
+// en `threshold_alerts` (read-only, NO se escriben al audit trail).
+function alertTraySlice(state, ctx) {
+    const _ctx = ctx || {};
+    const limit = Number.isFinite(_ctx.limit) && _ctx.limit > 0 ? _ctx.limit : 5;
+    let entries = [];
+    let stats = { total: 0, ack: 0, snooze: 0, rejected: 0, since: null };
+    let chainStatus = { ok: true, entriesChecked: 0 };
+    let suppressions = {};
+    try {
+        const ata = require('./alert-tray-audit');
+        entries = ata.tail(limit);
+        stats = ata.statsSince({});
+        chainStatus = ata.verifyChain();
+        suppressions = ata.activeSuppressions();
+    } catch (err) {
+        return {
+            entries: [],
+            stats,
+            suppressions: {},
+            chain_broken: false,
+            chain_error: err && err.message,
+            // #3961 EP8-H8 (CA-6) — aún sin audit trail, las alertas de umbral
+            // surfacean (son independientes del store de acciones del operador).
+            threshold_alerts: _safeThresholdAlerts(_ctx),
+            error: 'alert_tray_audit_unavailable',
+        };
+    }
+
+    const mapped = entries.map((e) => {
+        let visual = 'ack';
+        if (e.action === 'reject') visual = 'rejected';
+        else if (e.action === 'snooze') visual = 'snooze';
+        else visual = 'ack';
+        return {
+            timestamp: e.timestamp,
+            actor: e.actor || null,
+            action: e.action,
+            alert_id: e.alert_id || null,
+            snooze_until: e.snooze_until || null,
+            snooze_hours: e.snooze_hours || null,
+            justification: (e.justification || '').slice(0, 80),
+            justification_truncated: (e.justification || '').length > 80,
+            justification_redacted: !!e.justification_redacted,
+            reject_reason: e.reject_reason || null,
+            visual,
+        };
+    });
+
+    return {
+        entries: mapped,
+        stats,
+        suppressions,
+        chain_broken: !chainStatus.ok,
+        chain_broken_at: chainStatus.brokenAt || null,
+        chain_broken_reason: chainStatus.reason || null,
+        chain_entries_checked: chainStatus.entriesChecked || 0,
+        // #3961 EP8-H8 (CA-6) — alertas de umbral derivadas (read-only).
+        threshold_alerts: _safeThresholdAlerts(_ctx),
+    };
+}
+
+// Wrapper defensivo: deriva las alertas de umbral si el caller pasó kpis +
+// thresholds en ctx; nunca lanza (un fallo del cómputo no debe romper la bandeja).
+function _safeThresholdAlerts(ctx) {
+    try {
+        if (!ctx || !ctx.kpis || !ctx.thresholds) return [];
+        return computeThresholdAlerts(ctx.kpis, ctx.thresholds);
+    } catch { return []; }
+}
+
+// #3642 — Widget architect 4 estados. Slice consume el resolver puro
+// (lib/architect-state-resolver) y devuelve la informacion que el badge del
+// dashboard necesita para un issue dado. Defensivo si el resolver falta.
+let _architectResolver = null;
+try { _architectResolver = require('./architect-state-resolver'); } catch { /* opcional */ }
+let _architectBadge = null;
+try { _architectBadge = require('./architect-badge-renderer'); } catch { /* opcional */ }
+
+function architectStateSlice(state, issueNum) {
+    if (!_architectResolver || !state || !state.issueMatrix) return null;
+    const key = String(issueNum);
+    const data = state.issueMatrix[key];
+    if (!data || !data.fases) return null;
+    try {
+        return _architectResolver.resolveArchitectState(data.fases);
+    } catch {
+        return null;
+    }
+}
+
+// #3642 CA-1/CA-4/CA-5/CA-6/CA-IMPL-B6-XSS-DEFENSIVE — Renderer del badge.
+// Recibe `info` (resultado del resolver) y `{ esc, ic }` inyectados (las
+// helpers reales viven en dashboard.js; los tests pueden inyectar fakes).
+//
+// Switch explicito por estado — necesario para que el grep CA-2 sobre
+// `.pipeline/lib/dashboard-slices.js` encuentre las 4 referencias a
+// `ic('architect-<state>')`. Mantener las 4 literales (no concatenar).
+//
+// Defensa XSS: `esc()` sobre cada valor dinamico interpolado en title="" /
+// aria-label="" y en el cuerpo del span. El text/a11y vienen del helper
+// puro `architect-badge-renderer.js`, que ya garantiza formato HH:MM manual
+// + fallback `—` para fechas invalidas.
+function architectBadgeHTML(info, deps) {
+    if (!info || !info.state || !_architectBadge) return '';
+    if (!deps || typeof deps.esc !== 'function' || typeof deps.ic !== 'function') return '';
+    const { esc, ic } = deps;
+    const a11y = _architectBadge.architectAriaLabel(info);
+    const text = _architectBadge.architectBadgeText(info);
+    let svg = '';
+    switch (info.state) {
+        case 'pending':  svg = ic('architect-pending', a11y);  break;
+        case 'running':  svg = ic('architect-running', a11y);  break;
+        case 'approved': svg = ic('architect-approved', a11y); break;
+        case 'rejected': svg = ic('architect-rejected', a11y); break;
+        default: return '';
+    }
+    return `<span class="lc-state-badge lc-state-architect-${info.state}" title="${esc(a11y)}" aria-label="${esc(a11y)}">${svg} ${esc(text)}</span>`;
+}
+
+// #3962 EP8-H9 — Slice de la pantalla Costos rediseñada. Arma el payload desde
+// el snapshot del aggregator + presupuesto persistido + estado de la anomalía:
+//   - dailyByProvider : serie diaria por proveedor (área apilada, CA-1)
+//   - budget          : presupuesto mensual persistido (línea de presupuesto, CA-4)
+//   - anomaly         : { active, startTs } del detector (banda sombreada, CA-2)
+//   - snooze          : { until } derivado del estado server-side (CA-5)
+//   - projections     : proyecciones con `method` (CA-6)
+//   - sessionsBySkill : drill-down REDACTADO, solo campos públicos (CA-3)
+//
+// Redacción belt-and-suspenders: el aggregator ya pasa el drill-down por
+// whitelist + redact; el slice re-redacta provider/ts por defensa en
+// profundidad (REQ-SEC A01/A02).
+function costosSlice(state, ctx) {
+    const PIPELINE = (ctx && ctx.PIPELINE) || path.join(process.cwd(), '.pipeline');
+    const ROOT = ctx && ctx.ROOT;
+
+    // Snapshot all-time (mismo que consume el resto de Costos).
+    let snap = {};
+    try {
+        const snapPath = path.join(PIPELINE, 'metrics', 'snapshot.json');
+        try { if (ROOT) maybeRefreshSnapshot(ROOT, snapPath); } catch { /* refresh best-effort */ }
+        snap = safeReadJson(snapPath, null) || {};
+    } catch { snap = {}; }
+
+    const dailyByProvider = Array.isArray(snap.dailyByProvider) ? snap.dailyByProvider : [];
+    const projections = (snap.projections && typeof snap.projections === 'object') ? snap.projections : null;
+
+    // Drill-down redactado (CA-3). NUNCA exponemos issue/tokens/paths/prompts.
+    const sessionsBySkill = {};
+    const rawSessions = (snap.sessionsBySkill && typeof snap.sessionsBySkill === 'object') ? snap.sessionsBySkill : {};
+    for (const [skill, list] of Object.entries(rawSessions)) {
+        if (!Array.isArray(list)) continue;
+        sessionsBySkill[skill] = list.map((s) => ({
+            provider: _redact(String((s && s.provider) || 'unknown')),
+            cost_usd: Number((s && s.cost_usd) || 0),
+            duration_ms: Number((s && s.duration_ms) || 0),
+            ts: (s && s.ts) ? _redact(String(s.ts)) : null,
+        }));
+    }
+
+    // Presupuesto mensual persistido (CA-4). Default si no hay archivo.
+    let budget = { monthly_usd: (budgetConfig ? budgetConfig.DEFAULT_MONTHLY_USD : 100), source: 'default', updated_at: null, actor: null };
+    if (budgetConfig) {
+        try { budget = budgetConfig.readBudget(); } catch { /* default */ }
+    }
+
+    // #4194 — Totales por proveedor (leyenda del gráfico + tarjetas de cuota).
+    // El aggregator deja el desglose en `totals.by_provider`. Sólo exponemos
+    // campos públicos agregados (sessions/cost/duration); nunca tokens crudos.
+    const byProvider = {};
+    const rawByProvider = (snap.totals && snap.totals.by_provider && typeof snap.totals.by_provider === 'object')
+        ? snap.totals.by_provider : {};
+    for (const [prov, v] of Object.entries(rawByProvider)) {
+        if (!v || typeof v !== 'object') continue;
+        byProvider[_redact(String(prov))] = {
+            sessions: Number(v.sessions || 0),
+            cost_usd: Number(v.cost_usd || 0),
+            duration_ms: Number(v.duration_ms || 0),
+        };
+    }
+
+    // #4194 — Cuota estimada de Claude (Anthropic) para la tarjeta "Cuota por
+    // proveedor". Reusa quotaSlice (mismo cómputo que /api/dash/quota). Sólo
+    // Anthropic tiene adapter implementado: su % es real-estimado. El resto de
+    // los proveedores se muestran con su modelo de límite declarativo + uso del
+    // activity-log en la capa de vista. Defensivo: si quotaSlice falla, la
+    // tarjeta de Claude degrada a "estimado" sin romper el slice.
+    let claudeQuota = null;
+    try {
+        const q = quotaSlice(state || {}, { PIPELINE, ROOT });
+        const sess = (q && q.session) || {};
+        claudeQuota = {
+            sessionPct: Number.isFinite(Number(sess.pct)) ? Number(sess.pct) : null,
+            sessionStatus: sess.status || 'unknown',
+            weeklyPct: Number.isFinite(Number(q && q.pct)) ? Number(q.pct) : null,
+            weeklyStatus: (q && q.status) || 'unknown',
+            daysToReset: (q && Number.isFinite(Number(q.daysToReset))) ? Number(q.daysToReset) : null,
+            calibrated: !!(q && q.calibration),
+        };
+    } catch { claudeQuota = null; }
+
+    // Estado de la anomalía + snooze (CA-2 / CA-5), derivado SOLO del estado
+    // server-side (rest-mode-state). El startTs es el `raised_at` del detector;
+    // el view lo valida como ISO antes de pintar.
+    let anomaly = { active: false, startTs: null };
+    let snooze = { until: null };
+    if (restModeState) {
+        try {
+            const a = restModeState.getAlertState({ pipelineDir: PIPELINE });
+            const nowMs = Date.now();
+            const active = !!(a && a.active);
+            anomaly = { active, startTs: active ? (a.raised_at || null) : null };
+            const until = (a && a.snoozed_until && Date.parse(a.snoozed_until) > nowMs) ? a.snoozed_until : null;
+            snooze = { until };
+        } catch { /* sin anomalía */ }
+    }
+
+    // #4403 (D4 · CA-4) — desglose de costo por provider leído del JSONL
+    // append-only `.pipeline/state/provider-cost.jsonl`. Independiente del
+    // snapshot de métricas: es la fuente granular por ejecución. Degrada a
+    // empty-state si el archivo no existe o está vacío (UX-G3, nunca ceros).
+    const providerCostLog = providerCostSlice(state, { PIPELINE, ROOT });
+
+    return {
+        generated_at: snap.generated_at || null,
+        dailyByProvider,
+        budget,
+        anomaly,
+        snooze,
+        projections,
+        sessionsBySkill,
+        // #4194 — datos multi-proveedor para la pantalla COSTOS rediseñada.
+        byProvider,
+        claudeQuota,
+        // #4403 — telemetría granular de costo por provider (D4).
+        providerCostLog,
+    };
+}
+
+// #4403 (D4 · CA-4 · UX-G3) — slice de telemetría de costo por provider.
+// Lee `.pipeline/state/provider-cost.jsonl` (una línea por ejecución, whitelist
+// de 7 campos) vía el módulo `lib/metrics/provider-cost` y agrega por provider.
+// Retorna siempre un objeto estable; degrada a empty-state (`hasData:false`) si
+// el archivo falta o está vacío. Never-throws.
+function providerCostSlice(state, ctx) {
+    const PIPELINE = (ctx && ctx.PIPELINE) || path.join(process.cwd(), '.pipeline');
+    const empty = { hasData: false, byProvider: {}, totalSessions: 0 };
+    try {
+        const providerCost = require('./metrics/provider-cost');
+        const file = path.join(PIPELINE, 'state', 'provider-cost.jsonl');
+        return providerCost.readProviderCostBreakdown({ file });
+    } catch {
+        return empty;
+    }
+}
+
+// #4460 — Slice del banner "Reiniciar modelo operativo". Cruza el trust anchor
+// del SHA vivo (runtime-boot.json) con la detección de drift (operativo-drift)
+// para exponer los issues entregados a `main` que tocaron el modelo operativo
+// pero aún no corren en el runtime vivo.
+//
+// Contrato de saneo (REQ-SEC-4460-6): el payload expone SÓLO issue# (número),
+// una etiqueta corta de componente y un motivo corto. NUNCA paths absolutos,
+// SHAs completos ni contenido de diff. Se re-sanea acá aunque operativo-drift
+// ya devuelva shape limpio (defensa en profundidad).
+//
+// Estados:
+//   - { items: [...], unknown: false } → hay drift; el botón se renderiza.
+//   - { items: [],    unknown: false } → sin drift; el botón NO se renderiza (CA-2).
+//   - { items: [],    unknown: true }  → marker ausente/corrupto o git falló;
+//     la UI muestra "refrescar", NUNCA afirma "sin pendientes" (CA-8).
+const RESTART_COMPONENTE_MAX = 40;
+const RESTART_MOTIVO_MAX = 120;
+
+function _sanitizeRestartItem(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    // issue: entero positivo o null.
+    let issue = null;
+    if (Number.isInteger(raw.issue) && raw.issue > 0) issue = raw.issue;
+    // componente: slug corto de etiqueta (sin paths ni separadores).
+    let componente = typeof raw.componente === 'string' ? raw.componente : '';
+    componente = componente.replace(/[^a-z0-9 +()-]/gi, '').slice(0, RESTART_COMPONENTE_MAX);
+    // motivo: texto corto sin caracteres de control.
+    let motivo = typeof raw.motivo === 'string' ? raw.motivo : '';
+    // eslint-disable-next-line no-control-regex
+    motivo = motivo.replace(/[ -]/g, ' ').slice(0, RESTART_MOTIVO_MAX);
+    return { issue, componente: componente || 'pipeline', motivo };
+}
+
+function restartPendienteSlice(state, ctx) {
+    // Sin libs (checkout viejo / require falló) → estado desconocido honesto.
+    if (!runtimeBoot || !operativoDrift) {
+        return { items: [], unknown: true };
+    }
+    const pipelineDir = (ctx && ctx.PIPELINE) || path.join(__dirname, '..');
+    const repoRoot = (ctx && ctx.ROOT) || path.resolve(pipelineDir, '..');
+
+    let marker;
+    try { marker = runtimeBoot.readBootMarker({ pipelineDir }); }
+    catch { marker = null; }
+    // Marker ausente/corrupto → desconocido (CA-8), nunca "sin pendientes".
+    if (!marker || !marker.sha) {
+        return { items: [], unknown: true };
+    }
+
+    let detected;
+    try {
+        // #4448 (rebote rev-1) — seam `skipFetch` para tests herméticos. En
+        // producción `ctx.skipFetch` es undefined → detectPendingRestart hace su
+        // `git fetch origin main` normal (freshness de CA-1). En unit tests que
+        // fijan bootSha=origin/main, saltear el fetch evita el race: sin él,
+        // origin/main podía avanzar bajo el bootSha capturado (una entrega de
+        // pipeline recién mergeada aparecía como drift espurio) y volvía el test
+        // flaky. No cambia el comportamiento del runtime vivo.
+        detected = operativoDrift.detectPendingRestart({
+            bootSha: marker.sha, pipelineDir, repoRoot,
+            skipFetch: !!(ctx && ctx.skipFetch),
+        });
+    } catch {
+        return { items: [], unknown: true };
+    }
+    if (!detected || typeof detected !== 'object') {
+        return { items: [], unknown: true };
+    }
+    if (detected.unknown) {
+        return { items: [], unknown: true };
+    }
+    const items = (Array.isArray(detected.items) ? detected.items : [])
+        .map(_sanitizeRestartItem)
+        .filter(Boolean);
+    return { items, unknown: false };
+}
+
 module.exports = {
     activeAgents,
+    // #4335 — resolución de log de corrida por mtime+TTL + override de dir (tests)
+    resolveRecentRunLog,
+    _setLogDir: (dir) => { _logDirOverride = dir || null; },
+    _resetLogDir: () => { _logDirOverride = null; },
     recentlyFinished,
     nextInQueue,
     headerSlice,
     kpisSlice,
     equipoSlice,
+    // #3955 EP8-H2 — helpers exportados para test unitario.
+    skillSpark24h,
+    cooldownFor,
     pipelineSlice,
     bloqueadosSlice,
+    // #4373 (Ola 8.3) — slice consolidado de la vista Roadmap de olas.
+    roadmapSlice,
+    // #4399 — helper de avance (cerrados/total/%) exportado para test unitario:
+    // asserta que deriva del MISMO `computeClosedSet` que la lista del pipeline.
+    _roadmapAvance,
     opsSlice,
     historialSlice,
+    // #3963 — Historial timeline agrupado por día (CA-1..CA-5)
+    historialTimelineSlice,
+    buildAgentHistory,
+    HIST_PAGE_DEFAULT,
+    HIST_PAGE_MAX,
+    // #4199 — clasificación de tipo de evento de la bitácora del Historial
+    _eventType,
+    HIST_EVENT_TYPES,
     quotaSlice,
+    // #4202 — normalización por proveedor del desglose de cuotas (test unitario)
+    normalizeProviderQuota,
     quotaExhaustedSlice,
+    // #4709 — causa declarada del no-despacho (cola ociosa con pendientes).
+    dispatchCauseSlice,
+    // #5400 (rev-8) — expuesto SÓLO para el test de granularidad: el contrato de
+    // dos unidades ("1 h 33 min", nunca "1 h") es lo que rompió el QA visual y
+    // tiene que estar cubierto directamente, no por inferencia desde el HTML.
+    __test__formatRelativeAge: formatRelativeAge,
+    providerQuotaBannerSlice,
+    // #4289 — slice del presupuesto de ritmo (pacing budget) por proveedor
+    pacingSlice,
+    // #3962 EP8-H9 — slice de la pantalla Costos rediseñada
+    costosSlice,
+    // #4403 (D4) — desglose de costo por provider (lee provider-cost.jsonl)
+    providerCostSlice,
     reconcilerStaleOrdersSlice,
+    // #4460 — banner "Reiniciar modelo operativo" (drift bootSHA↔origin/main)
+    restartPendienteSlice,
+    _sanitizeRestartItem,
     // #2993 — widget de handoff
     handoffMetricsSlice,
+    // #3932 EP3-H6 — KPI entregables por skill
+    deliverablesBySkillSlice,
+    // #3625 — widget de audit trail de allowlist
+    partialPauseAuditSlice,
+    // #4375 — indicador de estado de sync allowlist↔ola (semáforo read-only)
+    desyncStatusSlice,
+    _setDesyncDetector: (d) => { _desyncDetectorOverride = d || null; },
+    _resetDesyncDetector: () => { _desyncDetectorOverride = null; },
+    // #4371 — widget de audit trail de olas & issues
+    waveIssueAuditSlice,
+    _classifyWaveAuditVisual: classifyWaveAuditVisual,
+    // #3954 EP8-H1 — bandeja de alertas del Home mission-control
+    alertTraySlice,
+    // #3897 CA-4 — métrica de precisión de Sherlock (solo agregados, SEC-6)
+    sherlockPrecisionSlice,
+    _sherlockRecordCorrecto,
+    // #3961 EP8-H8 — p95 latencia de voz, helpers de agregación y alertas de umbral
+    voiceLatencySlice,
+    dailyBuckets,
+    computeThresholdAlerts,
+    _percentile,
+    // #3642 — widget architect 4 estados
+    architectStateSlice,
+    architectBadgeHTML,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,

@@ -1,14 +1,14 @@
 // =============================================================================
-// Tests quota-adapters/anthropic.js — adapter Anthropic Plan Max (#3092)
+// Tests quota-adapters/anthropic.js — adapter Anthropic Plan Max (reescrito #4597)
 //
-// Cubre los CAs verificables del adapter (delega lógica a `computeQuota`,
-// los tests bordes finos de reset/calibración ya están en otros archivos):
+// El adapter ya NO usa la heurística de duración (`computeQuota`): su fuente es
+// el uso REAL de `claude -p "/usage"`, cacheado por lib/anthropic-usage.js en
+// `metrics/anthropic-usage.json`. Estos tests cubren el mapeo cache→shape:
 //
-//   * Shape envelope correcto cuando OK (provider/adapterStatus/...).
-//   * Errores controlados → fail-secure con `pct: null`, NO 0.
-//   * Reset boundary, salto de mes, snapshot integration están cubiertos
-//     en quota-snapshot-integration.test.js (que ya pasa) — acá nos
-//     concentramos en lo nuevo del adapter.
+//   * pct = semanal% real; session.pct = sesión% real; status derivado del %.
+//   * dato stale → adapterStatus 'unknown' pero conserva el número.
+//   * sin cache / error → fallback degradado 'unknown', pct null (NUNCA 0).
+//   * error de input (sin metricsDir) → fail-secure 'error'.
 // =============================================================================
 'use strict';
 
@@ -18,101 +18,113 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-function makeTmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'quota-anthropic-')); }
-function writeJsonl(filePath, events) {
-    fs.writeFileSync(filePath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+function makeTmpMetrics() {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-anthropic-'));
+    const metricsDir = path.join(tmp, 'metrics');
+    fs.mkdirSync(metricsDir, { recursive: true });
+    return metricsDir;
+}
+
+function writeUsageCache(metricsDir, data) {
+    fs.writeFileSync(path.join(metricsDir, 'anthropic-usage.json'), JSON.stringify(data));
 }
 
 function freshAdapter() {
     delete require.cache[require.resolve('../../quota-adapters/anthropic')];
     delete require.cache[require.resolve('../../quota-adapters/_shape')];
-    delete require.cache[require.resolve('../../weekly-quota')];
+    delete require.cache[require.resolve('../../anthropic-usage')];
     return require('../../quota-adapters/anthropic');
 }
 
-test('anthropic adapter devuelve adapterStatus=ok y campos legacy completos cuando hay datos', () => {
-    const tmp = makeTmpDir();
-    const metricsDir = path.join(tmp, 'metrics');
-    fs.mkdirSync(metricsDir);
-    const log = path.join(tmp, 'activity-log.jsonl');
-    writeJsonl(log, [
-        { event: 'session:end', ts: new Date().toISOString(), duration_ms: 3600000, model: 'claude' },
-    ]);
+test('adapter mapea el número real de /usage: pct=semanal, session.pct=sesión, status derivado', () => {
+    const metricsDir = makeTmpMetrics();
+    const now = Date.now();
+    writeUsageCache(metricsDir, {
+        schema: 1, source: 'claude -p /usage',
+        capturedAt: new Date(now).toISOString(), capturedAtMs: now,
+        sessionPct: 20, weeklyPct: 64,
+        sessionResetsRaw: 'Jul 8, 10pm (America/Buenos_Aires)',
+        weeklyResetsRaw: 'Jul 12, 9pm (America/Buenos_Aires)',
+        sessionResetsAt: null, weeklyResetsAt: '2026-07-12T21:00:00.000Z',
+    });
 
     const adapter = freshAdapter();
-    const r = adapter({ metricsDir, activityLogPath: log });
+    const r = adapter({ metricsDir, now });
 
     assert.equal(r.provider, 'anthropic');
     assert.equal(r.adapterStatus, 'ok');
     assert.equal(r.errorReason, null);
     assert.equal(r.schemaVersion, 2);
+    assert.equal(r.pct, 64);
+    assert.equal(r.status, 'normal');      // 50 ≤ 64 < 75
+    assert.equal(r.session.pct, 20);
+    assert.equal(r.session.status, 'ok');  // < 50
+    assert.equal(r.realPct, null);         // ya no hay calibración
+    assert.equal(r.calibration, null);
+    assert.equal(r.nextResetAt, '2026-07-12T21:00:00.000Z');
     assert.deepEqual(r.breakdown, []);
-    // Campos legacy presentes
-    assert.equal(typeof r.pct, 'number');
-    assert.equal(typeof r.status, 'string');
-    assert.equal(typeof r.session, 'object');
 });
 
-test('anthropic adapter sin metricsDir devuelve error explícito (no lanza)', () => {
+test('adapter clasifica critical cuando el semanal ≥ 90%', () => {
+    const metricsDir = makeTmpMetrics();
+    const now = Date.now();
+    writeUsageCache(metricsDir, {
+        schema: 1, capturedAtMs: now, sessionPct: 95, weeklyPct: 92,
+    });
     const adapter = freshAdapter();
-    const r = adapter({ activityLogPath: '/tmp/x.jsonl' });
+    const r = adapter({ metricsDir, now });
+    assert.equal(r.adapterStatus, 'ok');
+    assert.equal(r.status, 'critical');
+    assert.equal(r.session.status, 'critical');
+});
+
+test('adapter con dato stale (> 30 min) degrada a unknown pero conserva el número', () => {
+    const metricsDir = makeTmpMetrics();
+    const now = Date.now();
+    writeUsageCache(metricsDir, {
+        schema: 1, capturedAtMs: now - 40 * 60 * 1000, // 40 min → stale
+        sessionPct: 10, weeklyPct: 55,
+    });
+    const adapter = freshAdapter();
+    const r = adapter({ metricsDir, now });
+    assert.equal(r.adapterStatus, 'unknown');   // degradado
+    assert.equal(r.pct, 55);                     // pero muestra el último número
+    assert.match(r.errorReason, /stale/);
+    assert.equal(r.usageSource.stale, true);
+});
+
+test('adapter sin cache de /usage → fallback degradado unknown, pct null (nunca 0)', () => {
+    const metricsDir = makeTmpMetrics();
+    const adapter = freshAdapter();
+    const r = adapter({ metricsDir });
+    assert.equal(r.adapterStatus, 'unknown');
+    assert.equal(r.pct, null);
+    assert.match(r.errorReason, /fallback degradado/);
+});
+
+test('adapter sin metricsDir devuelve error explícito (no lanza)', () => {
+    const adapter = freshAdapter();
+    const r = adapter({});
     assert.equal(r.adapterStatus, 'error');
     assert.match(r.errorReason, /metricsDir/);
     assert.equal(r.pct, null);
 });
 
-test('anthropic adapter sin activityLogPath devuelve error explícito (no lanza)', () => {
-    const tmp = makeTmpDir();
-    const metricsDir = path.join(tmp, 'metrics');
-    fs.mkdirSync(metricsDir);
+test('adapter es resiliente a cache corrupto (no lanza, degrada a unknown)', () => {
+    const metricsDir = makeTmpMetrics();
+    fs.writeFileSync(path.join(metricsDir, 'anthropic-usage.json'), 'not json {{{');
     const adapter = freshAdapter();
     const r = adapter({ metricsDir });
-    assert.equal(r.adapterStatus, 'error');
-    assert.match(r.errorReason, /activityLogPath/);
+    assert.equal(r.adapterStatus, 'unknown');
+    assert.equal(r.pct, null);
 });
 
-test('anthropic adapter excluye eventos model:deterministic igual que computeQuota legacy', () => {
-    const tmp = makeTmpDir();
-    const metricsDir = path.join(tmp, 'metrics');
-    fs.mkdirSync(metricsDir);
-    const log = path.join(tmp, 'activity-log.jsonl');
-    const now = Date.now();
-    writeJsonl(log, [
-        { event: 'session:end', ts: new Date(now - 3600000).toISOString(), duration_ms: 3600000, model: 'claude' },
-        { event: 'session:end', ts: new Date(now - 7200000).toISOString(), duration_ms: 9000000, model: 'deterministic' },
-    ]);
-
+test('adapter NO spawnea al leer (getUsage read-only): sin cache y sin refresh explícito', () => {
+    const metricsDir = makeTmpMetrics();
+    let spawnCalls = 0;
     const adapter = freshAdapter();
-    const r = adapter({ metricsDir, activityLogPath: log });
-    assert.equal(r.adapterStatus, 'ok');
-    // 1h Claude + 0h determinístico (excluido) = 1h total — no 3.5h.
-    assert.ok(r.hoursUsed7d <= 1.1, `hoursUsed7d (${r.hoursUsed7d}) debe contar solo Claude`);
-});
-
-test('anthropic adapter respeta configLimitHours opcional', () => {
-    const tmp = makeTmpDir();
-    const metricsDir = path.join(tmp, 'metrics');
-    fs.mkdirSync(metricsDir);
-    const log = path.join(tmp, 'activity-log.jsonl');
-    fs.writeFileSync(log, '');
-
-    const adapter = freshAdapter();
-    const r = adapter({ metricsDir, activityLogPath: log, configLimitHours: 80 });
-    assert.equal(r.adapterStatus, 'ok');
-    assert.equal(r.configLimitHours, 80);
-    assert.ok(r.effectiveLimitHours >= 80);
-});
-
-test('anthropic adapter es resiliente a JSONL corrupto (no lanza, devuelve ok con counts=0)', () => {
-    const tmp = makeTmpDir();
-    const metricsDir = path.join(tmp, 'metrics');
-    fs.mkdirSync(metricsDir);
-    const log = path.join(tmp, 'activity-log.jsonl');
-    fs.writeFileSync(log, 'this is not json\n{"missing": true}\n');
-
-    const adapter = freshAdapter();
-    const r = adapter({ metricsDir, activityLogPath: log });
-    assert.equal(r.adapterStatus, 'ok');
-    assert.equal(r.hoursUsed7d, 0);
-    assert.equal(r.sessionsCount7d, 0);
+    // spawnImpl no debería invocarse nunca porque el adapter no pide autoRefresh.
+    const r = adapter({ metricsDir, spawnImpl: () => { spawnCalls++; throw new Error('no debe spawnear'); } });
+    assert.equal(spawnCalls, 0);
+    assert.equal(r.adapterStatus, 'unknown');
 });

@@ -1,0 +1,198 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PROPUESTA de release.yml para el repo SEPARADO `intrale/kernel`
+# Destino real: intrale/kernel/.github/workflows/release.yml  (hoy 404 · greenfield)
+#
+# ⚠️ CA-C0 (BLOQUEANTE · #4695 · OWASP A01): este YAML NO se commitea al repo del
+#    kernel hasta el sign-off de `security` sobre este archivo concreto. Se versiona
+#    acá (repo del producto) como artefacto revisable para que la fase de
+#    verificación lo evalúe contra el checklist §4 de kernel-repo-design.md.
+#
+# ⚠️ Este archivo se guarda con finales de línea LF (ver .gitattributes). La
+#    transformación `--gate=dispatch` de `.pipeline/bin/kernel-release.js` normaliza
+#    igual los CRLF y valida el resultado con una aserción fail-closed, pero el
+#    formato canónico es LF (regresión CRITICAL-1 de la auditoría 2026-07-26).
+#
+# Controles de seguridad incorporados (verificables punto por punto):
+#  · CA-C1 (A01): sin auto-publish. El job `publish` está detrás de un
+#    `environment: release` con required reviewers → GitHub PAUSA el job hasta la
+#    aprobación humana. `permissions:` a nivel workflow = `contents: read`;
+#    `packages/id-token/contents: write` se elevan SÓLO en `publish`.
+#  · CA-C1: chequeo `tag == package.json.version` antes de publicar (job `verify`,
+#    sin permisos elevados) → impide publicar una versión que no corresponde al tag.
+#  · CA-C2 (A08): firma del tag con sigstore/cosign OIDC keyless (id-token: write),
+#    sin gestión de claves privadas de larga vida. La firma se adjunta al GitHub
+#    Release; el consumidor la verifica en kernel-resolver.assertReleaseSignature.
+#  · CA-C4 (A01): token de publish = `secrets.GITHUB_TOKEN` scoped al job (NO PAT de
+#    larga vida embebido). Branch protection + 2FA se configuran fuera del YAML
+#    (Settings del repo del kernel) y forman parte del checklist de CA-C0.
+#  · A03: NINGUNA expresión `${{ }}` se interpola dentro del cuerpo de un `run:`.
+#    Todo valor externo entra por `env:` y se lee como variable de shell (HIGH-1).
+#  · A08: las tres actions de terceros están pineadas por SHA de commit; el tag
+#    legible queda como comentario (HIGH-2). Los tags son mutables, los SHA no.
+#  · A08: se empaqueta UNA sola vez; se publica y se firma exactamente el mismo
+#    tarball, y su sha256 se adjunta al Release (MEDIUM-1).
+#  · A05: el input `tag` se valida contra `^v[0-9]+\.[0-9]+\.[0-9]+$` en un job
+#    `guard` previo, y los checkouts usan la ref calificada `refs/tags/...` para que
+#    una rama homónima no pueda suplantar al tag (MEDIUM-2 / LOW-1).
+#  · A05/A07: sin secretos hardcodeados; sólo el GITHUB_TOKEN builtin. Escaneo de
+#    secretos antes del primer commit (parte de CA-C0).
+# ─────────────────────────────────────────────────────────────────────────────
+name: release
+
+# Dispara al pushear un tag de versión (vX.Y.Z), o manualmente sobre un tag
+# existente. El PUBLISH NO es automático: queda detrás del gate humano del
+# environment `release` (required reviewers). Nada se publica sin aprobación.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag de release existente a publicar (vX.Y.Z)'
+        required: true
+
+# Permisos mínimos a nivel workflow: SÓLO lectura. Se elevan por-job.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # 0) Guard de entrada (A05): valida el formato del ref ANTES de cualquier
+  #    checkout. `workflow_dispatch` acepta cualquier string; sin esta validación
+  #    un valor arbitrario llegaría como `ref:` del checkout.
+  guard:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+    steps:
+      - name: Validar formato del tag (fail-closed)
+        id: validate
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$REF" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Ref invalido ('$REF'). Se espera vX.Y.Z."
+            exit 1
+          fi
+          echo "tag=$REF" >> "$GITHUB_OUTPUT"
+
+  # 1) Validación SIN permisos elevados: el tag debe coincidir con
+  #    package.json.version y ser un pin exacto (nada de rangos).
+  verify:
+    needs: guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Checkout del tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: refs/tags/${{ needs.guard.outputs.tag }}
+          persist-credentials: false
+      - name: Verificar tag == package.json.version (pin exacto)
+        id: check
+        env:
+          REF: ${{ needs.guard.outputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${REF#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "tag=$TAG_VERSION package.json=$PKG_VERSION"
+          if ! printf '%s' "$PKG_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::package.json.version ($PKG_VERSION) no es un pin exacto X.Y.Z."
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::El tag ($TAG_VERSION) no coincide con package.json.version ($PKG_VERSION)."
+            exit 1
+          fi
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+  # 2) Publish + firma. GATE HUMANO: environment `release` con required reviewers.
+  #    GitHub pausa este job hasta la aprobación de un reviewer autorizado ⇒ no hay
+  #    auto-publish (CA-C1). Permisos elevados SÓLO en este job.
+  publish:
+    needs: [guard, verify]
+    runs-on: ubuntu-latest
+    environment: release   # required reviewers en Settings → Environments (gate humano)
+    permissions:
+      contents: write      # adjuntar los assets de firma al GitHub Release
+      packages: write      # publicar a GitHub Packages
+      id-token: write      # OIDC keyless para cosign (CA-C2)
+    steps:
+      - name: Checkout del tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: refs/tags/${{ needs.guard.outputs.tag }}
+          persist-credentials: false
+      - name: Setup Node + registry de GitHub Packages
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@intrale'
+      - name: Instalar dependencias (reproducible, sin ejecutar scripts de terceros)
+        # --ignore-scripts (MEDIUM-3): este job tiene id-token/packages/contents write.
+        # Sin el flag, el postinstall de cualquier dependencia (puppeteer y sharp bajan
+        # binarios de la red) correria ANTES de empaquetar y firmar: podria manipular el
+        # tarball o pedir un token OIDC y firmar en nombre del kernel. El paquete no tiene
+        # prepare/prepack y `files:` es una lista estatica, asi que empaquetar no necesita
+        # los scripts.
+        run: npm ci --ignore-scripts
+      - name: Empaquetar UNA sola vez (el mismo tarball se publica y se firma)
+        id: pack
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm pack
+          BLOB="$(ls intrale-operating-kernel-*.tgz)"
+          sha256sum "$BLOB" | tee "kernel-${VERSION}.sha256"
+          echo "blob=$BLOB" >> "$GITHUB_OUTPUT"
+      - name: Publicar a GitHub Packages (ese mismo tarball)
+        env:
+          # Token scoped al job (builtin), NO un PAT de larga vida embebido (CA-C4).
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BLOB: ${{ steps.pack.outputs.blob }}
+        run: |
+          set -euo pipefail
+          npm publish "$BLOB"
+      - name: Instalar cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159  # v3.9.2
+      - name: Firmar el tarball publicado con cosign (OIDC keyless · CA-C2)
+        env:
+          COSIGN_YES: 'true'
+          VERSION: ${{ needs.verify.outputs.version }}
+          BLOB: ${{ steps.pack.outputs.blob }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --output-signature "kernel-${VERSION}.sig" \
+            --output-certificate "kernel-${VERSION}.pem" \
+            "$BLOB"
+      - name: Adjuntar firma + sha256 al GitHub Release (el consumidor cierra la cadena)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # El tag no crea el Release: si no existe, lo creamos sobre ESE tag
+          # (--verify-tag falla si el tag no existe en el remoto, en vez de crearlo).
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --verify-tag \
+              --title "$TAG" \
+              --notes "Release automatico de @intrale/operating-kernel@${VERSION}. Artefactos de firma cosign (keyless OIDC) adjuntos."
+          fi
+          gh release upload "$TAG" \
+            "kernel-${VERSION}.sig" "kernel-${VERSION}.pem" "kernel-${VERSION}.sha256" \
+            --clobber

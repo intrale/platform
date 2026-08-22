@@ -1,0 +1,83 @@
+{
+  "schemaVersion": "1.0",
+  "status": "active",
+  "identity": {
+    "projectId": "intrale-platform",
+    "name": "Intrale Platform",
+    "description": "Monorepo Kotlin: backend Ktor + app Compose Multiplatform (Android, iOS, Desktop/JVM, Web/Wasm). Descriptor del producto Intrale expresado con el esquema multi-producto del kernel (Ola Puente P2)."
+  },
+  "repositories": [
+    {
+      "id": "platform",
+      "url": "https://github.com/intrale/platform",
+      "role": "primary",
+      "defaultBaseRef": "main"
+    },
+    {
+      "id": "kernel",
+      "url": "https://github.com/intrale/kernel",
+      "role": "secondary",
+      "defaultBaseRef": "main"
+    }
+  ],
+  "providers": {
+    "order": ["anthropic", "openai-codex", "gemini-google", "cerebras", "nvidia-nim"]
+  },
+  "pullRequests": {
+    "policy": "required"
+  },
+  "board": {
+    "ref": "https://github.com/orgs/intrale/projects/2",
+    "admissionLabels": ["needs-definition", "Ready"],
+    "routing": [
+      { "label": "area:pipeline", "capability": "pipeline" },
+      { "label": "area:dashboard", "capability": "pipeline" },
+      { "label": "area:infra", "capability": "backend" },
+      { "label": "area:backend", "capability": "backend" },
+      { "label": "area:web", "capability": "frontend" },
+      { "label": "app:client", "capability": "frontend" },
+      { "label": "app:business", "capability": "frontend" },
+      { "label": "app:delivery", "capability": "frontend" }
+    ]
+  },
+  "credentials": [
+    {
+      "ref": "~/.claude/secrets/credentials.json#intrale",
+      "scopes": ["github", "aws", "telegram-hooks", "providers"]
+    }
+  ],
+  "capabilities": [
+    { "interface": "backend", "skills": ["backend-dev"] },
+    { "interface": "frontend", "skills": ["android-dev", "web-dev"] },
+    { "interface": "pipeline", "skills": ["pipeline-dev"] },
+    { "interface": "generic", "skills": ["dev"] }
+  ],
+  "authority": {
+    "signers": ["leitolarreta"],
+    "backup": "leitolarreta",
+    "gates": {
+      "gate0": "enforce",
+      "gate2": "enforce",
+      "visual": "enforce"
+    }
+  },
+  "thresholds": {
+    "concurrency": {
+      "backend-dev": 3,
+      "android-dev": 2,
+      "web-dev": 2,
+      "pipeline-dev": 2,
+      "dev": 1,
+      "tester": 2,
+      "qa": 1,
+      "linter": 3,
+      "review": 2,
+      "build": 1,
+      "delivery": 1
+    },
+    "priorityWindows": {
+      "activationThreshold": 3,
+      "safetyTimeoutHours": 2
+    }
+  }
+}

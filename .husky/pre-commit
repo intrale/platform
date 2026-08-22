@@ -19,6 +19,53 @@
 #   - Caso contrario → no validar (evita ruido en commits que no tocan el área).
 TOUCHED_FILES=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
 
+# Guard compartido local/CI (#6111). Debe ejecutarse antes de cualquier
+# early-exit de RUN_VALIDATE y exactamente una vez.
+if [ -f ".pipeline/lib/precommit-secret-scan.js" ]; then
+  node .pipeline/lib/precommit-secret-scan.js --staged || exit $?
+fi
+
+# =============================================================================
+# Issue #5175 CA-4b — Guardrail del envoltorio de estado operativo
+# (`.pipeline/lib/operational-state.js`), capa local del doble wiring.
+#
+# POR QUE ESTE BLOQUE ESTA ACA ARRIBA Y NO ABAJO CON EL DE ghost-artifact-lint:
+# el `exit 0` de la validacion de agent-models (unas lineas mas abajo) corta el
+# hook entero cuando no se stagea `agent-models.json`. Verificado con `sh -x`:
+# en un commit que toca `.pipeline/**/*.js` el hook sale en ese `exit 0` y NUNCA
+# llega al final del archivo. Un bloque puesto abajo seria codigo muerto, y
+# "doble wiring" con una capa que no corre es wiring simple (CA-4a).
+#
+# NO mover este bloque hacia abajo "para agrupar con los otros lints" sin antes
+# arreglar ese early-exit. El secret-scan ya quedó por encima en #6111; el
+# ghost-artifact-lint sigue fuera del alcance de este cambio.
+#
+# MODO `--check` (BLOQUEANTE) desde #5179 — el flip de la parte 3 del split.
+#
+# Historia de por que estuvo en `--report-only` hasta aca (R5 del issue): al
+# momento del merge de la parte 1 el repo tenia 18 violations reales — la
+# migracion de lectores fue la parte 2 (#5176) y la de escritores la parte 3
+# (#5179). Con `--check` desde el principio, TODO commit que tocara `.pipeline/`
+# habria fallado, el remedio obvio habria sido `--no-verify`, y eso mata la capa
+# local del doble wiring de forma permanente.
+#
+# Con el inventario de produccion en CERO ese riesgo ya no existe: el hook solo
+# bloquea cuando alguien AGREGA un acceso directo nuevo, que es exactamente lo
+# que se quiere frenar. Ahora si propaga el exit code, como el bloque de
+# ghost-artifact-lint.
+#
+# Se filtra a los archivos staged (`--only`): sin filtro escupe avisos de
+# archivos que el dev no toco en cada commit que roce `.pipeline/`, y eso
+# entrena a ignorar el hook (UX-1). Con el hook bloqueante el filtro ademas
+# garantiza que nadie quede bloqueado por una violation que no introdujo.
+# =============================================================================
+if [ -f ".pipeline/lib/operational-state-lint.js" ]; then
+  OPSTATE_ONLY=$(printf '%s\n' "$TOUCHED_FILES" | grep '^\.pipeline/.*\.js$' | paste -sd, - 2>/dev/null || true)
+  if [ -n "$OPSTATE_ONLY" ]; then
+    node .pipeline/lib/operational-state-lint.js --check --only="$OPSTATE_ONLY" || exit 1
+  fi
+fi
+
 RUN_VALIDATE=0
 case "$TOUCHED_FILES" in
   *".pipeline/agent-models.json"*) RUN_VALIDATE=1 ;;
@@ -55,6 +102,32 @@ EXIT=$?
 # Exit code 0 = OK → propagar.
 if [ "$EXIT" = "3" ]; then
   printf '[warn] agent-models validate skip: toolchain incompleto (correr "npm install")\n' >&2
-  exit 0
+elif [ "$EXIT" != "0" ]; then
+  exit $EXIT
 fi
-exit $EXIT
+
+# =============================================================================
+# Issue #3638 CA-F-11 — Ghost-artifact lint sobre archivos del pipeline.
+#
+# Bloquea commits que introduzcan readdirSync sobre carpetas operacionales
+# (.pipeline/definicion/**, .pipeline/desarrollo/**) sin aplicar el filtro
+# `isMarkerArtifact`. Defensa en profundidad complementada por el job CI
+# `ghost-artifact-lint` (CA-SEC-8) que captura bypass con --no-verify.
+#
+# Solo corre cuando se tocan archivos bajo `.pipeline/`. Sin matches,
+# no consume tiempo del flujo normal de commits.
+# =============================================================================
+RUN_GHOST_LINT=0
+case "$TOUCHED_FILES" in
+  *".pipeline/"*) RUN_GHOST_LINT=1 ;;
+esac
+
+if [ "$RUN_GHOST_LINT" = "1" ] && [ -f ".pipeline/lib/ghost-artifact-lint.js" ]; then
+  node .pipeline/lib/ghost-artifact-lint.js --check
+  LINT_EXIT=$?
+  if [ "$LINT_EXIT" != "0" ]; then
+    exit $LINT_EXIT
+  fi
+fi
+
+exit 0

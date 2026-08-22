@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/intrale/platform/.pipeline/agent-models.schema.json",
   "title": "agent-models.json — schema multi-proveedor del pipeline V3 (#3081 + #3065 + #3077)",
-  "description": "Schema canónico para .pipeline/agent-models.json. Source-of-truth del enum de 'launcher' y 'output_parser' es lib/agent-models-validate.js — el validador inyecta los enums programáticamente al cargar el schema (composición), evitando drift schema↔código. La cross-validación de quota_error_types contra la meta-allowlist por provider vive en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — #3077 SEC-2 (defensa anti-supply-chain).",
+  "description": "Schema canónico para .pipeline/agent-models.json. Source-of-truth del enum de 'launcher' y 'output_parser' es lib/agent-models-validate.js — el validador inyecta los enums programáticamente al cargar el schema (composición), evitando drift schema↔código. La cross-validación de quota_error_types contra la meta-allowlist por provider vive en lib/quota-exhausted.js (KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER) — #3077 SEC-2 (defensa anti-supply-chain). #3613 (bootstrap del skill `architect`): la sección `skills` usa `additionalProperties: { $ref: skillAssignment }` sin allowlist explícita de nombres, por lo que el agregado del skill `architect` no requiere cambio funcional al schema. Este `_doc` se actualiza primero (commit aparte) para auditar el orden inquebrantable schema → JSON (SEC-2 #3081).",
   "type": "object",
   "required": ["default_provider", "providers", "skills"],
   "additionalProperties": false,
@@ -51,8 +51,8 @@
       "properties": {
         "launcher": {
           "type": "string",
-          "description": "Alias del launcher. DEBE estar dentro de ALLOWED_LAUNCHERS (lib/agent-models-validate.js). El enum se inyecta programáticamente al cargar el schema; el literal abajo es informativo.",
-          "enum": ["claude", "codex", "gemini", "ollama", "node"]
+          "description": "Alias del launcher. DEBE estar dentro de ALLOWED_LAUNCHERS (lib/agent-models-validate.js). El enum se inyecta programáticamente al cargar el schema; el literal abajo es informativo (post #3220 + #3243 + #3353).",
+          "enum": ["claude", "codex", "gemini-google", "cerebras", "nvidia-nim", "ollama", "node"]
         },
         "model": {
           "type": "string",
@@ -120,6 +120,34 @@
           "type": "string",
           "description": "Modo de permisos del CLI. Mapeado en la tabla §6.7 del doc multi-provider.",
           "minLength": 1
+        },
+        "auth_mode": {
+          "type": "string",
+          "description": "Cómo se autentica el provider. 'oauth' = login interactivo (Claude Max), no usa API key configurada acá. 'api_key' = key gestionada en credentials.json. Default 'api_key' si está ausente. #3361 — permite distinguir Anthropic (OAuth Max) sin hardcodear nombres en el frontend.",
+          "enum": ["oauth", "api_key"]
+        },
+        "display_in_health": {
+          "type": "string",
+          "description": "Cómo se exhibe este provider en la ventana Providers del dashboard. 'live' = se pingea y se muestra el semáforo en vivo. 'not_applicable' = se muestra como 'NO APLICA' (badge informativo, sin semáforo). Default 'live'. #3361 — separa la visualización de la lista canónica para que listConfiguredProviders() siga siendo la fuente de verdad única.",
+          "enum": ["live", "not_applicable"]
+        },
+        "alternative_models": {
+          "type": "array",
+          "description": "Modelos alternativos del mismo provider que Sherlock puede usar para preservar adversariality parcial cuando el Commander y Sherlock coinciden en provider (#3501). Lista ordenada por preferencia. Si `commanderProvider === sherlockProvider` y `commanderModel === sherlockModel`, el resolver itera estos modelos antes de saltar al siguiente provider de la chain. Cada entry se cross-valida contra `ALLOWED_MODELS_BY_LAUNCHER` en lib/agent-models-validate.js (defensa anti-supply-chain CA-SEC-SWAP-1). Caps `maxItems: 3` + `uniqueItems: true` evitan cost-amplification (CA-SEC-SWAP-2). Ausencia o lista vacía → política inactiva para este provider, comportamiento idéntico al actual (CA-4 default-safe).",
+          "items": { "type": "string", "minLength": 1 },
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "#4839 — Capabilities de EJECUCIÓN que el motor del provider declara sostener (eje CAPACIDAD DEL MOTOR, NO el eje autorización de lib/capabilities.js). El enum de valores válidos se inyecta programáticamente desde EXECUTION_CAPABILITY_CATALOG (lib/execution-capabilities.js) al cargar el schema — el literal abajo es informativo. Opcional: la AUSENCIA de `capabilities` se trata FAIL-CLOSED como 'no ofrece ninguna' en el matching de fallbacks (validateCrossReferences), nunca 'asumir capaz' (SEC-3). Enum cerrado + uniqueItems para que no se pueda inyectar una capability arbitraria que evada el matching (SEC-2).",
+          "items": { "type": "string", "enum": ["agentic-tool-use"] },
+          "uniqueItems": true
+        },
+        "billing": {
+          "type": "string",
+          "description": "#4870 — Clasificación de facturación del provider: 'paid' (Anthropic, OpenAI-Codex) o 'free' (Gemini, Cerebras, NVIDIA NIM). Fuente única de verdad de '¿hay pago disponible?' para el modo reducido (isReducedMode en lib/commander/multi-provider.js). Opcional (retrocompat): la AUSENCIA de `billing` se trata FAIL-SAFE como 'free' en todo lookup del código — un provider sin marcar NUNCA se confunde con pago. Los providers determinísticos/canned (sin LLM tarifado) quedan sin `billing`. Enum cerrado para que no se pueda inyectar un tier arbitrario.",
+          "enum": ["paid", "free"]
         }
       }
     },
@@ -138,8 +166,74 @@
           "type": "string",
           "description": "Modelo específico que sobrescribe el 'model' default del provider. La cross-validación contra la allowlist de modelos por launcher (ALLOWED_MODELS_BY_LAUNCHER) se hace en lib/agent-models-validate.js durante el boot.",
           "minLength": 1
+        },
+        "fallbacks": {
+          "type": "array",
+          "description": "Lista ordenada de providers fallback para este skill. Si el provider primario falla (cuota / 5xx / circuit-breaker), el pulpo intenta con el siguiente. Cada item DEBE existir en 'providers'. Validación cruzada en lib/agent-models-validate.js. Vacío o ausente = usar solo el provider primario. Issue #3177 (UI dashboard) + apertura para H7/M2. Issue #3221 (multi-provider per-agent order): cada item puede ser (a) un string con el nombre del provider (legacy, usa el `model` default del provider) o (b) un objeto `{provider, model_override}` que pin-ea el modelo del provider para este skill — necesario para el orden sign-off 2026-05-15 donde, por ejemplo, qa quiere `gpt-5` (vision) en lugar del `gpt-5-codex` default de openai-codex.",
+          "items": { "$ref": "#/$defs/fallbackEntry" }
+        },
+        "interactive_supported": {
+          "type": "boolean",
+          "description": "Issue #3605: opt-in para habilitar chat operador↔agente vía stdin pipe. Si true, agent-launcher abre stdio[0]='pipe' (en vez de 'ignore' default), pulpo registra el child en lib/agent-ipc y el endpoint /api/agent-chat acepta mensajes para este skill. Default false preserva el invariante I3 del agent-launcher (regresión cero CA-4). Solo válido para providers que soportan input incremental por stdin (anthropic CLI sí; gemini-google HTTP no). El endpoint responde 412 Precondition Failed si el cliente intenta usar este flag con un provider que no lo soporta. NO documentar en agent-models.json sin coordinar con docs/pipeline/multi-provider.md."
+        },
+        "required_capabilities": {
+          "type": "array",
+          "description": "#4839 — Capabilities de EJECUCIÓN que el rol EXIGE a su provider primario y a cada fallback. El enum de valores válidos se inyecta programáticamente desde EXECUTION_CAPABILITY_CATALOG (lib/execution-capabilities.js) al cargar el schema — el literal abajo es informativo. Opcional: ausente o `[]` ⇒ rol sin exigencia (habilita providers de razonamiento/texto sin agentic-tool-use, ej. review/po). Los roles agénticos (dev *, qa, tester, build) declaran ['agentic-tool-use']: el validador rechaza FAIL-CLOSED cualquier provider (primario o fallback) que no declare la capability requerida (validateCrossReferences). Enum cerrado + uniqueItems (SEC-2).",
+          "items": { "type": "string", "enum": ["agentic-tool-use"] },
+          "uniqueItems": true
+        },
+        "balancing": {
+          "type": "object",
+          "description": "Issue #4412 (Parte 2/3 de #4363): balanceo ponderado de providers del Commander detrás de feature flag. SOLO pondera providers ya declarados en 'fallbacks[]' (+ el primario) — NUNCA expande la superficie de lanzamiento (req A01 / SEC-1, defensas #3080/#3081/#3085; ALLOWED_LAUNCHERS sigue siendo la fuente única en lib/agent-models-validate.js). Schema cerrado (additionalProperties:false) para que config malformada/inyectada no introduzca claves arbitrarias ni valores fuera de rango que desvíen el ruteo (SEC-2). Con 'enabled:false' (default) el dispatch es idéntico al orden estricto actual (regresión cero, CA-7).",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Feature flag maestro. Default false (regresión cero): el Commander cae a la cadena estricta de resolveSpawnWithFallback. Con true, el selector ponderado (lib/commander/provider-balancer.js) reparte los requests entre los providers sanos de 'fallbacks[]'."
+            },
+            "quality_bias": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Sesgo hacia el orden de calidad canónico (Claude > Codex > Gemini > Cerebras). A mayor valor, más concentra el primario. Acotado [0,1]."
+            },
+            "min_primary_quota_pct": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Umbral de cuota disponible por debajo del cual el peso del provider se degrada y el reparto se corre hacia los siguientes en orden de calidad. Entero [0,100]."
+            }
+          }
         }
       }
+    },
+
+    "fallbackEntry": {
+      "description": "Item de fallbacks[]. Backward-compatible: acepta string (legacy, solo provider name) o object {provider, model_override}. La cross-validation contra ALLOWED_MODELS_BY_LAUNCHER + providers[] vive en lib/agent-models-validate.js.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": ["provider"],
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "description": "Nombre del provider fallback. DEBE existir en 'providers'.",
+              "minLength": 1
+            },
+            "model_override": {
+              "type": "string",
+              "description": "Modelo específico del provider fallback para este skill. La cross-validación contra ALLOWED_MODELS_BY_LAUNCHER se hace en lib/agent-models-validate.js durante el boot.",
+              "minLength": 1
+            }
+          }
+        }
+      ]
     }
   }
 }

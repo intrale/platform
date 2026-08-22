@@ -9,6 +9,8 @@ import org.kodein.di.singleton
 import org.slf4j.LoggerFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class LambdaRequestHandlerTest {
     private fun cfg(vararg businesses: String) = object : Config("us-east-1", "pool", "client") {
@@ -75,6 +77,44 @@ class LambdaRequestHandlerTest {
         }
         val response = handler.handle(module, request, null)
         assertEquals(200, response.statusCode)
+    }
+
+    @Test
+    fun `OPTIONS Lambda nunca emite Access-Control-Allow-Origin wildcard`() {
+        // CA-S6: el path real de AWS Lambda no debe devolver ACAO '*' ante un origen desconocido.
+        val request = APIGatewayProxyRequestEvent().apply {
+            httpMethod = "OPTIONS"
+            headers = mapOf("Origin" to "https://evil.example.com")
+        }
+        val response = buildCorsPreflightResponse(request, allowedOrigins = emptySet())
+        assertEquals(200, response.statusCode)
+        val acao = response.headers?.get("Access-Control-Allow-Origin")
+        assertTrue(acao != "*", "CORS Lambda no debe emitir wildcard '*'")
+        assertNull(acao, "un Origin fuera de la allowlist no debe recibir ACAO")
+    }
+
+    @Test
+    fun `OPTIONS Lambda refleja solo un Origin de la allowlist`() {
+        // CA-S6: sólo se refleja el Origin permitido; el resto no recibe ACAO.
+        val allowlist = setOf("https://app.intrale.com")
+
+        val allowed = APIGatewayProxyRequestEvent().apply {
+            httpMethod = "OPTIONS"
+            headers = mapOf("origin" to "https://app.intrale.com") // header case-insensitive
+        }
+        val allowedResp = buildCorsPreflightResponse(allowed, allowedOrigins = allowlist)
+        assertEquals("https://app.intrale.com", allowedResp.headers?.get("Access-Control-Allow-Origin"))
+        assertEquals("Origin", allowedResp.headers?.get("Vary"))
+
+        val rejected = APIGatewayProxyRequestEvent().apply {
+            httpMethod = "OPTIONS"
+            headers = mapOf("Origin" to "https://evil.example.com")
+        }
+        val rejectedResp = buildCorsPreflightResponse(rejected, allowedOrigins = allowlist)
+        assertNull(
+            rejectedResp.headers?.get("Access-Control-Allow-Origin"),
+            "Origin no permitido no recibe ACAO en el path Lambda"
+        )
     }
 
     @Test

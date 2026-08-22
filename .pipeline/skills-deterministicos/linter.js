@@ -151,7 +151,25 @@ function runAllChecks({ issue, cwd, base }) {
     const changedFiles = hasBase ? getChangedFilePaths(cwd, base) : [];
     const stats = hasBase ? git.getDiffStats(cwd, base) : { files_changed: 0, additions: 0, deletions: 0 };
 
-    findings.push(...checks.checkClosesIssue(commitMsgs, issue));
+    // (#3819) Rama sin commits propios: antes de bloquear con pr:no-commits,
+    // buscar si la base YA contiene la entrega del issue (trabajo arrastrado
+    // por el PR de otro issue). Con evidencia, checkClosesIssue emite
+    // pr:already-delivered (warn) y el ciclo no rebota contra una rama
+    // legítimamente vacía. Sólo se consulta git en el caso 0-commits — costo
+    // cero para el flujo normal.
+    const priorDeliveryRefs = (hasBase && commitMsgs.length === 0)
+        ? git.getPriorDeliveryRefs(cwd, issue, base)
+        : [];
+
+    // (#5067) Segundo escape: el entregable puede haber aterrizado en un repo
+    // HERMANO declarado (kernel, Ola 9.x) en vez de en este repo. Sólo se
+    // consulta si la rama está vacía Y el origin/main propio tampoco tiene la
+    // entrega — costo cero para el flujo normal y para el caso #3819.
+    const siblingDeliveryRefs = (commitMsgs.length === 0 && priorDeliveryRefs.length === 0)
+        ? git.getSiblingDeliveryRefs(issue, git.loadSiblingRepos(REPO_ROOT))
+        : [];
+
+    findings.push(...checks.checkClosesIssue(commitMsgs, issue, { priorDeliveryRefs, siblingDeliveryRefs }));
     findings.push(...checks.checkCommitSubjects(commitMsgs));
     findings.push(...checks.checkSensitiveFiles(changedFiles));
     findings.push(...checks.checkSecretsInDiff(diffText));
@@ -181,6 +199,8 @@ async function main() {
     const handle = trace.emitSessionStart({
         skill: 'linter', issue, phase: process.env.PIPELINE_FASE || 'linteo',
         model: 'deterministic',
+        // (#3078) Provider explícito para el dispatch del classifier por allowlist.
+        provider: 'deterministic',
     });
 
     const startedAt = Date.now();

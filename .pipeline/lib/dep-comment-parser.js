@@ -239,8 +239,37 @@ function parseDependencyComment(comments, selfIssue) {
     return extractIssueNumbers(block, selfIssue);
 }
 
+/**
+ * #3167 — Wrapper conveniente para callers que tienen UN único body
+ * (no la lista de comments completa) y quieren la lista de números detectados.
+ *
+ * Devuelve siempre un `number[]` (nunca null). Si el body no contiene el
+ * marker, devuelve `[]`. Esto difiere de `parseDependencyComment` que
+ * devuelve `null` para que el caller pueda diferenciar "fail-closed" (no
+ * tocar labels) de "marker presente pero sin numeros". Para el brazo de
+ * desbloqueo se mantiene `parseDependencyComment` con su semántica de null.
+ *
+ * Reglas adicionales del spec del clasificador:
+ *  - Resultado deduplicado y ordenado ascendente.
+ *  - Acotado a 20 elementos (MAX_DEPS_PER_BLOCK).
+ *
+ * @param {string} body — body del comentario.
+ * @returns {number[]}
+ */
+function parseDependenciesFromComment(body) {
+    if (typeof body !== 'string' || body.length === 0) return [];
+    const block = extractDependencyBlock(body);
+    if (block === null) return [];
+    // selfIssue=null → no excluimos nada porque no tenemos contexto del paraguas.
+    const nums = extractIssueNumbers(block, null);
+    // Ordenar ascendente + cap a 20.
+    const sorted = nums.slice().sort((a, b) => a - b);
+    return sorted.slice(0, 20);
+}
+
 module.exports = {
     parseDependencyComment,
+    parseDependenciesFromComment,
     // Helpers exportados para tests unitarios — NO consumir fuera del módulo.
     extractDependencyBlock,
     extractIssueNumbers,

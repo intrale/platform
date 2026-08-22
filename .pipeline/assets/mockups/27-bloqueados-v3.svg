@@ -1,0 +1,431 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 27 — Ventana Bloqueados V3 (split de #3715, sub-historia #3729)
+  Resolucion target: 1080x1920 (kiosk vertical, identica al mockup 26-dashboard-main-v3)
+  Demuestra:
+    - Layout de la ventana standalone, con boundary <main id="view-content"> del router #3773.
+    - Jerarquia de fila: head (skill+phase pill, #issue, titulo, edad) -> summary -> reason -> events.
+    - Severity dual-encoding (no solo color): rail vertical por edad + pill de edad con
+      forma + icono. WCAG AA: nunca informacion solo por color.
+    - Empty-state explicito celebrando estado healthy.
+    - Tooltips obligatorios (CA-C1) marcados como bocadillos amarillos sobre cada accion.
+    - Tipografia y espaciado: tokens del sistema (--fs-*, --space-*).
+    - Iconografia: solo sprite.svg con <use href="#ic-...">.
+
+  IDs DOM que el dev debe emitir en SSR (CA-B1 + CA-A1):
+    - bloqueados-view              (root del modulo)
+    - bloqueados-header            (encabezado con badge + chevron + popout)
+    - bloqueados-list              (contenedor de filas)
+    - bloqueados-row-${issueNum}   (cada fila, issueNum coerced a Number.isInteger)
+    - bloqueados-empty             (empty-state, solo cuando length===0)
+
+  Acciones (POST /api/needs-human/:issueNum/{reactivate|dismiss}):
+    - Reactivar: quita label needs-human y devuelve a la cola.
+    - Desestimar: cierra issue como not_planned. Destructiva: NO ejecutar sin confirm.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+
+  <!-- ============================================================
+       Tokens embebidos (self-contained, alineado con design-tokens.css)
+       ============================================================ -->
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0D274D" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#161B22" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="dangerStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F85149"/>
+      <stop offset="100%" stop-color="#8B1A14"/>
+    </linearGradient>
+    <linearGradient id="warningStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#9E6A03"/>
+    </linearGradient>
+    <linearGradient id="infoStripe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#58A6FF"/>
+      <stop offset="100%" stop-color="#1F6FEB"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+  </defs>
+
+  <!-- ============================================================
+       Fondo kiosk
+       ============================================================ -->
+  <rect width="1080" height="1920" fill="#0D1117"/>
+
+  <!-- ============================================================
+       BRAND BAR superior (referencia visual del frame, NO scope de #3729)
+       Se renderiza en gris para indicar que pertenece a #3725, esta sub
+       solo se encarga del area dentro de <main id="view-content">.
+       ============================================================ -->
+  <rect x="0" y="0" width="1080" height="68" fill="url(#headerGrad)"/>
+  <rect x="0" y="67" width="1080" height="1" fill="#30363D"/>
+  <g opacity="0.55">
+    <circle cx="40" cy="34" r="14" fill="url(#brandGrad)"/>
+    <text x="68" y="40" font-size="18" font-weight="700" fill="#E6EDF3">INTRALE V3</text>
+    <text x="180" y="40" font-size="14" fill="#8B949E">/ Bloqueados</text>
+  </g>
+  <text x="1040" y="40" font-size="11" fill="#6E7681" text-anchor="end">[area de #3725 — fuera de scope]</text>
+
+  <!-- ============================================================
+       CONTROL BAR (referencia, fuera de scope) — tab activa "Bloqueados"
+       ============================================================ -->
+  <rect x="0" y="68" width="1080" height="56" fill="#161B22"/>
+  <rect x="0" y="123" width="1080" height="1" fill="#21262D"/>
+  <g opacity="0.6">
+    <rect x="22" y="82" width="84" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="64" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Home</text>
+    <rect x="116" y="82" width="118" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="175" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Pipeline</text>
+    <!-- Tab activa de Bloqueados (esta ventana) -->
+    <rect x="244" y="82" width="138" height="28" rx="14" fill="rgba(248,81,73,0.14)" stroke="#F85149" stroke-width="1.5"/>
+    <g transform="translate(258,88)">
+      <circle cx="8" cy="8" r="7" fill="none" stroke="#F85149" stroke-width="1.5"/>
+      <text x="8" y="12" font-size="10" font-weight="700" fill="#F85149" text-anchor="middle">!</text>
+    </g>
+    <text x="313" y="100" font-size="12" font-weight="600" fill="#F85149" text-anchor="middle">Bloqueados · 3</text>
+    <rect x="392" y="82" width="86" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+    <text x="435" y="100" font-size="12" fill="#B1BAC4" text-anchor="middle">Issues</text>
+    <text x="1040" y="100" font-size="11" fill="#6E7681" text-anchor="end">view=bloqueados</text>
+  </g>
+
+  <!-- ============================================================
+       MAIN VIEW BOUNDARY — <main id="view-content"> del router #3773.
+       Todo lo de abajo es scope de #3729.
+       ============================================================ -->
+  <rect x="20" y="142" width="1040" height="1760" rx="14"
+        fill="#161B22" stroke="#30363D" stroke-width="1"/>
+  <text x="40" y="170" font-size="11" fill="#6E7681" font-family="monospace">&lt;main id="view-content" data-slug="bloqueados"&gt;</text>
+
+  <!-- ============================================================
+       HEADER de la ventana — bloqueados-header
+       ============================================================ -->
+  <g transform="translate(40,190)">
+    <!-- Banda lateral de severidad (rail) — codifica el panel completo cuando hay >=1 critico -->
+    <rect x="0" y="0" width="4" height="64" fill="url(#dangerStripe)" rx="2"/>
+
+    <!-- Icono needs-human animado (representado con pulse halo) -->
+    <circle cx="36" cy="32" r="20" fill="rgba(248,81,73,0.18)"/>
+    <circle cx="36" cy="32" r="14" fill="none" stroke="#F85149" stroke-width="2"/>
+    <text x="36" y="38" font-size="18" font-weight="700" fill="#F85149" text-anchor="middle">!</text>
+
+    <!-- Titulo + badge -->
+    <text x="72" y="28" font-size="22" font-weight="700" fill="#E6EDF3">Necesitan intervencion humana</text>
+    <rect x="72" y="40" width="56" height="20" rx="10" fill="#F85149"/>
+    <text x="100" y="54" font-size="12" font-weight="700" fill="#FFFFFF" text-anchor="middle">3</text>
+    <text x="136" y="55" font-size="13" fill="#8B949E">issues esperando que alguien decida</text>
+
+    <!-- Chevron colapsar -->
+    <g transform="translate(940,24)">
+      <rect x="0" y="0" width="28" height="28" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <path d="M8 12 L14 18 L20 12" stroke="#B1BAC4" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <!-- Popout -->
+    <g transform="translate(972,24)">
+      <rect x="0" y="0" width="28" height="28" rx="6" fill="#1C2128" stroke="#30363D"/>
+      <path d="M10 18 L18 10 M12 10 L18 10 L18 16" stroke="#58A6FF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+    </g>
+    <!-- Tooltip de ejemplo sobre el chevron -->
+    <g transform="translate(820,62)" opacity="0.95">
+      <rect x="0" y="0" width="180" height="22" rx="4" fill="#FFD166" stroke="#9E6A03"/>
+      <text x="90" y="15" font-size="10" font-weight="600" fill="#0D1117" text-anchor="middle">"Colapsar/expandir panel"</text>
+      <path d="M126 0 L132 -6 L138 0" fill="#FFD166" stroke="#9E6A03"/>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       FILA 1 — URGENT (>24h, danger rail, badge "5h pasaron del SLA")
+       ============================================================ -->
+  <g transform="translate(40,272)">
+    <rect x="0" y="0" width="1000" height="240" rx="8"
+          fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="4" height="240" fill="url(#dangerStripe)" rx="2"/>
+
+    <!-- HEAD: linea 1 -->
+    <g transform="translate(24,18)">
+      <!-- Skill+phase pill -->
+      <rect x="0" y="0" width="128" height="24" rx="12" fill="rgba(248,81,73,0.14)" stroke="#F85149"/>
+      <circle cx="14" cy="12" r="6" fill="none" stroke="#F85149" stroke-width="1.5"/>
+      <path d="M11 12 L13.5 14.5 L17 11" stroke="#F85149" stroke-width="1.5" fill="none"/>
+      <text x="26" y="16" font-size="11" font-weight="600" fill="#F85149">ux · validacion</text>
+
+      <!-- Issue link -->
+      <text x="148" y="17" font-size="16" font-weight="700" fill="#58A6FF">#2891</text>
+      <text x="200" y="17" font-size="14" fill="#E6EDF3" font-weight="500">[ux] Renovar vista Bloqueados con jerarquia visual...</text>
+
+      <!-- Edad badge (pill rojo con icono reloj) -->
+      <g transform="translate(760,0)">
+        <rect x="0" y="0" width="76" height="24" rx="12" fill="rgba(248,81,73,0.22)" stroke="#F85149"/>
+        <circle cx="14" cy="12" r="6" fill="none" stroke="#F85149" stroke-width="1.4"/>
+        <path d="M14 8 L14 12 L17 14" stroke="#F85149" stroke-width="1.4" fill="none"/>
+        <text x="26" y="16" font-size="11" font-weight="700" fill="#F85149">hace 29h</text>
+      </g>
+
+      <!-- Acciones -->
+      <g transform="translate(848,-2)">
+        <rect x="0" y="0" width="64" height="28" rx="4" fill="rgba(63,185,80,0.10)" stroke="#3FB950"/>
+        <path d="M14 8 L14 20 L24 14 Z" fill="#3FB950"/>
+        <text x="44" y="18" font-size="11" font-weight="600" fill="#3FB950" text-anchor="middle">Reactivar</text>
+      </g>
+      <g transform="translate(918,-2)">
+        <rect x="0" y="0" width="62" height="28" rx="4" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+        <circle cx="14" cy="14" r="6" fill="none" stroke="#F85149" stroke-width="1.4"/>
+        <path d="M10 10 L18 18 M18 10 L10 18" stroke="#F85149" stroke-width="1.4"/>
+        <text x="42" y="18" font-size="11" font-weight="600" fill="#F85149" text-anchor="middle">Desestimar</text>
+      </g>
+    </g>
+
+    <!-- SUMMARY linea -->
+    <g transform="translate(24,56)">
+      <rect x="0" y="0" width="20" height="20" rx="4" fill="rgba(45,212,191,0.14)"/>
+      <text x="10" y="14" font-size="11" font-weight="700" fill="#2DD4BF" text-anchor="middle">i</text>
+      <text x="32" y="14" font-size="13" fill="#B1BAC4">Resumen: Aplicar contrato V3 (paleta + jerarquia + tooltips) a la ventana de</text>
+      <text x="32" y="32" font-size="13" fill="#B1BAC4">issues bloqueados, extraida del monolito a su modulo propio.</text>
+    </g>
+
+    <!-- REASON -->
+    <g transform="translate(24,108)">
+      <rect x="0" y="0" width="20" height="20" rx="4" fill="rgba(248,81,73,0.14)"/>
+      <text x="10" y="14" font-size="12" font-weight="700" fill="#F85149" text-anchor="middle">?</text>
+      <text x="32" y="14" font-size="13" fill="#FFB3B3">Motivo: el agente pregunto si el rediseño debe esperar al wizard #3724 antes</text>
+      <text x="32" y="32" font-size="13" fill="#FFB3B3">de implementar la confirmacion de Desestimar, o se mantiene el prompt() actual.</text>
+    </g>
+
+    <!-- EVENTS -->
+    <g transform="translate(24,156)">
+      <text x="0" y="12" font-size="10" font-weight="700" fill="#8B949E" letter-spacing="0.6">ACTIVIDAD RECIENTE</text>
+      <line x1="0" y1="20" x2="952" y2="20" stroke="#21262D" stroke-width="1" stroke-dasharray="2,3"/>
+
+      <text x="0" y="40" font-size="12" fill="#8B949E" font-variant-numeric="tabular-nums">29h</text>
+      <text x="44" y="40" font-size="12" font-weight="600" fill="#9DB7E0">ux</text>
+      <text x="72" y="40" font-size="12" fill="#C9D1D9">: pregunta posteada al issue, esperando criterio de Leo.</text>
+
+      <text x="0" y="60" font-size="12" fill="#8B949E" font-variant-numeric="tabular-nums">25h</text>
+      <text x="44" y="60" font-size="12" font-weight="600" fill="#9DB7E0">leitolarreta</text>
+      <text x="106" y="60" font-size="12" fill="#C9D1D9">: comente que prefiero esperar #3724 para no romper compat. ▶</text>
+
+      <text x="0" y="80" font-size="12" fill="#8B949E" font-variant-numeric="tabular-nums">5h</text>
+      <text x="44" y="80" font-size="12" font-weight="600" fill="#9DB7E0">github-bot</text>
+      <text x="98" y="80" font-size="12" fill="#C9D1D9">: label needs-human renovado, sigue bloqueado.</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       FILA 2 — WARNING (4-24h, warning rail)
+       ============================================================ -->
+  <g transform="translate(40,532)">
+    <rect x="0" y="0" width="1000" height="190" rx="8"
+          fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="4" height="190" fill="url(#warningStripe)" rx="2"/>
+
+    <g transform="translate(24,18)">
+      <rect x="0" y="0" width="148" height="24" rx="12" fill="rgba(245,158,11,0.14)" stroke="#F59E0B"/>
+      <rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="#F59E0B" stroke-width="1.4"/>
+      <path d="M9 12 L11.5 14.5 L15 11" stroke="#F59E0B" stroke-width="1.3" fill="none"/>
+      <text x="26" y="16" font-size="11" font-weight="600" fill="#F59E0B">guru · analisis</text>
+
+      <text x="168" y="17" font-size="16" font-weight="700" fill="#58A6FF">#3681</text>
+      <text x="220" y="17" font-size="14" fill="#E6EDF3">[ux] Coverage assets para reportes de cobertura del pipeline</text>
+
+      <g transform="translate(760,0)">
+        <rect x="0" y="0" width="76" height="24" rx="12" fill="rgba(245,158,11,0.22)" stroke="#F59E0B"/>
+        <circle cx="14" cy="12" r="6" fill="none" stroke="#F59E0B" stroke-width="1.4"/>
+        <path d="M14 8 L14 12 L17 14" stroke="#F59E0B" stroke-width="1.4" fill="none"/>
+        <text x="26" y="16" font-size="11" font-weight="700" fill="#F59E0B">hace 12h</text>
+      </g>
+
+      <g transform="translate(848,-2)">
+        <rect x="0" y="0" width="64" height="28" rx="4" fill="rgba(63,185,80,0.10)" stroke="#3FB950"/>
+        <path d="M14 8 L14 20 L24 14 Z" fill="#3FB950"/>
+        <text x="44" y="18" font-size="11" font-weight="600" fill="#3FB950" text-anchor="middle">Reactivar</text>
+      </g>
+      <g transform="translate(918,-2)">
+        <rect x="0" y="0" width="62" height="28" rx="4" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+        <text x="32" y="18" font-size="11" font-weight="600" fill="#F85149" text-anchor="middle">Desestimar</text>
+      </g>
+    </g>
+
+    <g transform="translate(24,56)">
+      <text x="0" y="14" font-size="13" fill="#B1BAC4">i  Resumen: Generar el sprite + tokens visuales de la familia de reportes</text>
+      <text x="20" y="32" font-size="13" fill="#B1BAC4">de cobertura para que el dashboard renderice consistente con el resto.</text>
+    </g>
+
+    <g transform="translate(24,108)">
+      <text x="0" y="14" font-size="13" fill="#FFD9A0">?  Motivo: el architect pidio confirmar si el sprite suma 3 simbolos nuevos o</text>
+      <text x="20" y="32" font-size="13" fill="#FFD9A0">si reutiliza ic-cell-pass/warn/fail existentes — depende de criterio UX.</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       FILA 3 — FRESH (<4h, info rail)
+       ============================================================ -->
+  <g transform="translate(40,742)">
+    <rect x="0" y="0" width="1000" height="160" rx="8"
+          fill="#1C2128" stroke="#30363D" stroke-width="1"/>
+    <rect x="0" y="0" width="4" height="160" fill="url(#infoStripe)" rx="2"/>
+
+    <g transform="translate(24,18)">
+      <rect x="0" y="0" width="148" height="24" rx="12" fill="rgba(188,140,255,0.14)" stroke="#BC8CFF"/>
+      <text x="74" y="16" font-size="11" font-weight="600" fill="#BC8CFF" text-anchor="middle">architect · validacion</text>
+
+      <text x="168" y="17" font-size="16" font-weight="700" fill="#58A6FF">#3754</text>
+      <text x="220" y="17" font-size="14" fill="#E6EDF3">[architect] revisar contrato handoff cross-agente Ola N+1</text>
+
+      <g transform="translate(760,0)">
+        <rect x="0" y="0" width="76" height="24" rx="12" fill="rgba(88,166,255,0.22)" stroke="#58A6FF"/>
+        <circle cx="14" cy="12" r="6" fill="none" stroke="#58A6FF" stroke-width="1.4"/>
+        <path d="M14 8 L14 12 L17 14" stroke="#58A6FF" stroke-width="1.4" fill="none"/>
+        <text x="26" y="16" font-size="11" font-weight="700" fill="#58A6FF">hace 47min</text>
+      </g>
+
+      <g transform="translate(848,-2)">
+        <rect x="0" y="0" width="64" height="28" rx="4" fill="rgba(63,185,80,0.10)" stroke="#3FB950"/>
+        <text x="32" y="18" font-size="11" font-weight="600" fill="#3FB950" text-anchor="middle">Reactivar</text>
+      </g>
+      <g transform="translate(918,-2)">
+        <rect x="0" y="0" width="62" height="28" rx="4" fill="rgba(248,81,73,0.10)" stroke="#F85149"/>
+        <text x="32" y="18" font-size="11" font-weight="600" fill="#F85149" text-anchor="middle">Desestimar</text>
+      </g>
+    </g>
+
+    <g transform="translate(24,56)">
+      <text x="0" y="14" font-size="13" fill="#B1BAC4">i  Resumen: el architect quedo en standby pidiendo decision binaria sobre</text>
+      <text x="20" y="32" font-size="13" fill="#B1BAC4">la inyeccion automatica del handoff en agentes de definicion.</text>
+    </g>
+
+    <g transform="translate(24,108)">
+      <text x="0" y="14" font-size="13" fill="#A8D5FF">?  Motivo: necesito un OK explicito para inyectar automaticamente en criterios.</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       FOOTER hint
+       ============================================================ -->
+  <g transform="translate(40,922)">
+    <rect x="0" y="0" width="1000" height="46" rx="8"
+          fill="rgba(45,212,191,0.06)" stroke="#0D9488" stroke-dasharray="3,3"/>
+    <text x="20" y="20" font-size="12" fill="#8B949E">Tambien podes desbloquear desde Telegram:</text>
+    <text x="20" y="38" font-size="12" font-family="monospace" fill="#2DD4BF" font-weight="600">/unblock &lt;issue&gt; &lt;orientacion para el agente&gt;</text>
+    <text x="980" y="28" font-size="11" fill="#6E7681" text-anchor="end">o sacando el label needs-human en GitHub</text>
+  </g>
+
+  <!-- ============================================================
+       SEPARADOR VISUAL — variante empty-state (solo visible cuando length===0)
+       ============================================================ -->
+  <line x1="40" y1="1010" x2="1040" y2="1010" stroke="#30363D" stroke-dasharray="6,6"/>
+  <text x="540" y="1040" font-size="13" font-weight="700" fill="#8B949E" text-anchor="middle" letter-spacing="1">VARIANTE EMPTY STATE — cuando state.bloqueados.length === 0</text>
+
+  <g transform="translate(40,1062)">
+    <rect x="0" y="0" width="1000" height="220" rx="14"
+          fill="rgba(63,185,80,0.06)" stroke="#196C2E" stroke-width="1"/>
+    <rect x="0" y="0" width="4" height="220" fill="#3FB950" rx="2"/>
+
+    <!-- Icono check grande -->
+    <circle cx="120" cy="110" r="48" fill="rgba(63,185,80,0.12)" stroke="#3FB950" stroke-width="2"/>
+    <path d="M96 110 L114 128 L148 92" stroke="#3FB950" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <text x="200" y="92" font-size="22" font-weight="700" fill="#E6EDF3">Nada esperando que alguien decida</text>
+    <text x="200" y="124" font-size="14" fill="#B1BAC4">Ningun agente del pipeline pidio intervencion humana en este momento.</text>
+    <text x="200" y="148" font-size="14" fill="#B1BAC4">Si aparece un nuevo bloqueo, se notifica por Telegram y aparece aca arriba.</text>
+
+    <!-- Mini stat -->
+    <g transform="translate(200,172)">
+      <rect x="0" y="0" width="180" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="14" cy="14" r="6" fill="#3FB950"/>
+      <text x="26" y="18" font-size="11" font-weight="600" fill="#B1BAC4">SLA promedio: 2h 14min</text>
+    </g>
+    <g transform="translate(388,172)">
+      <rect x="0" y="0" width="200" height="28" rx="14" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="14" cy="14" r="6" fill="#58A6FF"/>
+      <text x="26" y="18" font-size="11" font-weight="600" fill="#B1BAC4">Bloqueos resueltos hoy: 7</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       SEPARADOR — leyenda de severidad (CA-C3)
+       ============================================================ -->
+  <line x1="40" y1="1322" x2="1040" y2="1322" stroke="#30363D" stroke-dasharray="6,6"/>
+  <text x="540" y="1352" font-size="13" font-weight="700" fill="#8B949E" text-anchor="middle" letter-spacing="1">LEYENDA DE SEVERIDAD POR EDAD (CA-C3) — dual encoding: color + forma + icono</text>
+
+  <g transform="translate(40,1376)">
+    <rect x="0" y="0" width="1000" height="100" rx="8" fill="#161B22" stroke="#30363D"/>
+
+    <!-- Fresh -->
+    <g transform="translate(40,30)">
+      <rect x="0" y="0" width="4" height="40" fill="url(#infoStripe)" rx="2"/>
+      <rect x="14" y="8" width="76" height="24" rx="12" fill="rgba(88,166,255,0.22)" stroke="#58A6FF"/>
+      <circle cx="28" cy="20" r="6" fill="none" stroke="#58A6FF" stroke-width="1.4"/>
+      <path d="M28 16 L28 20 L31 22" stroke="#58A6FF" stroke-width="1.4" fill="none"/>
+      <text x="40" y="24" font-size="11" font-weight="700" fill="#58A6FF">&lt; 4h</text>
+      <text x="0" y="58" font-size="12" fill="#B1BAC4">Fresh — nuevo bloqueo, sin urgencia.</text>
+    </g>
+
+    <!-- Warning -->
+    <g transform="translate(340,30)">
+      <rect x="0" y="0" width="4" height="40" fill="url(#warningStripe)" rx="2"/>
+      <rect x="14" y="8" width="76" height="24" rx="12" fill="rgba(245,158,11,0.22)" stroke="#F59E0B"/>
+      <circle cx="28" cy="20" r="6" fill="none" stroke="#F59E0B" stroke-width="1.4"/>
+      <path d="M28 16 L28 20 L31 22" stroke="#F59E0B" stroke-width="1.4" fill="none"/>
+      <text x="40" y="24" font-size="11" font-weight="700" fill="#F59E0B">4-24h</text>
+      <text x="0" y="58" font-size="12" fill="#B1BAC4">Warning — atencion en el dia, no urgente.</text>
+    </g>
+
+    <!-- Danger -->
+    <g transform="translate(680,30)">
+      <rect x="0" y="0" width="4" height="40" fill="url(#dangerStripe)" rx="2"/>
+      <rect x="14" y="8" width="76" height="24" rx="12" fill="rgba(248,81,73,0.22)" stroke="#F85149"/>
+      <circle cx="28" cy="20" r="6" fill="none" stroke="#F85149" stroke-width="1.4"/>
+      <path d="M28 16 L28 20 L31 22" stroke="#F85149" stroke-width="1.4" fill="none"/>
+      <text x="40" y="24" font-size="11" font-weight="700" fill="#F85149">&gt;= 24h</text>
+      <text x="0" y="58" font-size="12" fill="#B1BAC4">Danger — fuera de SLA, accion humana inmediata.</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       Sección de DECISIONES (apuntes textuales sobre el mockup)
+       ============================================================ -->
+  <line x1="40" y1="1500" x2="1040" y2="1500" stroke="#30363D" stroke-dasharray="6,6"/>
+  <text x="540" y="1530" font-size="13" font-weight="700" fill="#8B949E" text-anchor="middle" letter-spacing="1">DECISIONES CONGELADAS</text>
+
+  <g transform="translate(60,1552)">
+    <text x="0" y="0" font-size="13" font-weight="600" fill="#E6EDF3">1.</text>
+    <text x="22" y="0" font-size="13" fill="#B1BAC4">Severidad dual-encoded: rail vertical + pill con icono. Nunca solo color (WCAG AA · CA-E1).</text>
+
+    <text x="0" y="26" font-size="13" font-weight="600" fill="#E6EDF3">2.</text>
+    <text x="22" y="26" font-size="13" fill="#B1BAC4">Tooltips obligatorios en chevron, popout, ▶ Reactivar y ✕ Desestimar (CA-C1). Helper attr-context.</text>
+
+    <text x="0" y="52" font-size="13" font-weight="600" fill="#E6EDF3">3.</text>
+    <text x="22" y="52" font-size="13" fill="#B1BAC4">b.issue coerced a Number.isInteger antes de href y onclick. Fila descartada si no entero (CA-D1).</text>
+
+    <text x="0" y="78" font-size="13" font-weight="600" fill="#E6EDF3">4.</text>
+    <text x="22" y="78" font-size="13" fill="#B1BAC4">Empty-state celebratorio con icono check verde y mini-stats (SLA promedio + resueltos hoy).</text>
+
+    <text x="0" y="104" font-size="13" font-weight="600" fill="#E6EDF3">5.</text>
+    <text x="22" y="104" font-size="13" fill="#B1BAC4">Footer permanente con pista de /unblock por Telegram + remover label needs-human en GitHub.</text>
+
+    <text x="0" y="130" font-size="13" font-weight="600" fill="#E6EDF3">6.</text>
+    <text x="22" y="130" font-size="13" fill="#B1BAC4">Iconos: solo sprite.svg (ic-estado-needs-human, ic-link-out, ic-play, ic-remove-circle, ic-retry-clock).</text>
+
+    <text x="0" y="156" font-size="13" font-weight="600" fill="#E6EDF3">7.</text>
+    <text x="22" y="156" font-size="13" fill="#B1BAC4">Estilos migran al theme.css con prefijo .v3-bloqueados-*; las clases .needs-human-* del monolito se dejan en hold para retirar despues.</text>
+
+    <text x="0" y="182" font-size="13" font-weight="600" fill="#E6EDF3">8.</text>
+    <text x="22" y="182" font-size="13" fill="#B1BAC4">Compat retro: el dev mantiene ?section=needs-human con redirect server-side a ?view=bloqueados.</text>
+
+    <text x="0" y="208" font-size="13" font-weight="600" fill="#E6EDF3">9.</text>
+    <text x="22" y="208" font-size="13" fill="#B1BAC4">"Desestimar" hoy queda con prompt() (compat); migra a wizard #3724 cuando este merge. Ver narrativa.</text>
+
+    <text x="0" y="234" font-size="13" font-weight="600" fill="#E6EDF3">10.</text>
+    <text x="22" y="234" font-size="13" fill="#B1BAC4">Sin tokens nuevos. Sin iconos nuevos. Sin componentes nuevos del design-system: reusar todo lo existente.</text>
+  </g>
+
+  <text x="40" y="1880" font-size="11" fill="#6E7681" font-family="monospace">&lt;/main&gt;</text>
+  <text x="1040" y="1880" font-size="11" fill="#6E7681" text-anchor="end">Mockup 27 · Ventana Bloqueados V3 · sub #3729 de épico #3715</text>
+</svg>

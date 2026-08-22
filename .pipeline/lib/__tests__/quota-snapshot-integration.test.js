@@ -5,7 +5,8 @@
 // quota-exhausted.js ni weekly-quota.js — CA-15):
 //
 //   CA-12 — setFlag con errorType 'snapshot_threshold_90', firma intacta.
-//   CA-13 — saveCalibration invocado con dato real, algoritmo EMA intacto.
+//   CA-13 — (#4861) RETIRADO: la calibración EMA salió de la cadena Anthropic;
+//           integrar un snapshot ya NO invoca saveCalibration/computeQuota.
 //   CA-14 — getBannerState con 4 estados (fresh/stale/missing/parser-offline).
 //   CA-15 — kill switch (QUOTA_SNAPSHOT_ENABLED=false) → comportamiento
 //           idéntico al pre-feature.
@@ -17,7 +18,7 @@
 //   CA-S3 — sanitizeSnapshotForOutput elimina account_handle (no PII leak).
 //   CA-S4 — anti-spam: una sola alerta gate por ventana semanal; mismatch
 //           account no spammea.
-//   CA-S6 — kill switch granular: GATE_ENABLED=false mantiene calibración.
+//   CA-S6 — kill switch granular: GATE_ENABLED=false → no setFlag (#4861: sin calibración).
 //   CA-S8 — race en lectura del JSONL durante rotación → fallback silencioso.
 // =============================================================================
 'use strict';
@@ -27,6 +28,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 function freshModule(tmpDir) {
     process.env.PIPELINE_DIR_OVERRIDE = tmpDir;
@@ -46,6 +48,11 @@ function setupTmp() {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qsi-test-'));
     fs.mkdirSync(path.join(tmpDir, 'metrics'), { recursive: true });
     fs.mkdirSync(path.join(tmpDir, 'logs'), { recursive: true });
+    // #5172: el sandbox hace de `.pipeline/`; sin `config.yaml` el `setFlag`
+    // que dispara el gate por snapshot muere con `ConfigParseViolation` en vez
+    // de resolver TTLs. Documento mínimo para no alterar los defaults que estos
+    // CAs afirman.
+    seedPipelineConfig(tmpDir);
     return tmpDir;
 }
 
@@ -388,7 +395,7 @@ test('CA-15 / CA-S6 · QUOTA_SNAPSHOT_ENABLED=false → evaluateSnapshotAndGate 
     } finally { teardownTmp(tmp); }
 });
 
-test('CA-S6 · QUOTA_SNAPSHOT_GATE_ENABLED=false → no setFlag, sí calibración', () => {
+test('CA-S6 · QUOTA_SNAPSHOT_GATE_ENABLED=false → no setFlag (y #4861: ya no calibra)', () => {
     const tmp = setupTmp();
     try {
         process.env.QUOTA_SNAPSHOT_GATE_ENABLED = 'false';
@@ -401,8 +408,12 @@ test('CA-S6 · QUOTA_SNAPSHOT_GATE_ENABLED=false → no setFlag, sí calibració
 
         const r = m.evaluateSnapshotAndGate(validSnapshot({ weekly_all_models_pct: 95 }));
         assert.equal(r.ok, true);
-        // Calibración sí ocurrió, gate no.
-        assert.equal(r.action, 'calibrated');
+        // #4861 — La calibración EMA se retiró de la cadena Anthropic; con el
+        // gate deshabilitado no queda ninguna acción → 'none'.
+        assert.equal(r.action, 'none');
+        // El wire de snapshot ya NO escribe estado de calibración (weekly-quota.json).
+        assert.equal(fs.existsSync(path.join(tmp, 'metrics', 'weekly-quota.json')), false,
+            'integrar snapshot no debe invocar saveCalibration/computeQuota');
 
         const after = exhausted.isQuotaExhausted();
         assert.equal(after, false, 'gate deshabilitado → flag no se setea');
@@ -410,7 +421,7 @@ test('CA-S6 · QUOTA_SNAPSHOT_GATE_ENABLED=false → no setFlag, sí calibració
 });
 
 // ---------------------------------------------------------------------------
-// CA-12 / CA-13 — Wire al setFlag y saveCalibration
+// CA-12 — Wire al setFlag (#4861: saveCalibration retirado de la cadena)
 // ---------------------------------------------------------------------------
 
 test('CA-12 · evaluateSnapshotAndGate dispara setFlag con errorType correcto al cruzar umbral', () => {
@@ -443,7 +454,8 @@ test('CA-12 · evaluateSnapshotAndGate NO dispara setFlag debajo del umbral', ()
 
         const r = m.evaluateSnapshotAndGate(validSnapshot({ weekly_all_models_pct: 80 }));
         assert.equal(r.ok, true);
-        assert.equal(r.action, 'calibrated');
+        // #4861 — debajo del umbral no hay gate, y la calibración se retiró → 'none'.
+        assert.equal(r.action, 'none');
         assert.equal(exhausted.isQuotaExhausted(), false);
     } finally { teardownTmp(tmp); }
 });

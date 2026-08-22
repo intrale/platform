@@ -426,3 +426,334 @@ test('#2895 rev-1 — exporta resolveGitDir, clearGitDirCache y ensureGitInPath'
     assert.equal(typeof ops.clearGitDirCache, 'function');
     assert.equal(typeof ops.ensureGitInPath, 'function');
 });
+
+// #2551 — Helpers de redacción de paths sensibles.
+// El delivery loguea `git status` antes del rebase: en log local va sin filtrar
+// (forense), pero en outputs visibles (motivo del marker, comentario PR,
+// Telegram) hay que ocultar paths que puedan contener secrets.
+
+test('#2551 — isSensitivePath detecta .env, credentials, .key, .pem, secret, application.conf', () => {
+    assert.equal(ops.isSensitivePath('.env'), true);
+    assert.equal(ops.isSensitivePath('.env.local'), true);
+    assert.equal(ops.isSensitivePath('config/.env'), true);
+    assert.equal(ops.isSensitivePath('users/src/main/resources/application.conf'), true);
+    assert.equal(ops.isSensitivePath('credentials.json'), true);
+    assert.equal(ops.isSensitivePath('fake-credentials.json'), true);
+    assert.equal(ops.isSensitivePath('something.key'), true);
+    assert.equal(ops.isSensitivePath('cert.pem'), true);
+    assert.equal(ops.isSensitivePath('id_rsa'), true);
+    assert.equal(ops.isSensitivePath('id_rsa.pub'), true);
+    assert.equal(ops.isSensitivePath('secret-config.json'), true);
+});
+
+test('#2551 — isSensitivePath ignora paths inocuos del pipeline', () => {
+    assert.equal(ops.isSensitivePath('.pipeline/logs/2551-delivery.log'), false);
+    assert.equal(ops.isSensitivePath('app/composeApp/src/Main.kt'), false);
+    assert.equal(ops.isSensitivePath('docs/readme.md'), false);
+    assert.equal(ops.isSensitivePath(''), false);
+    assert.equal(ops.isSensitivePath(null), false);
+});
+
+test('#2551 — redactSensitivePaths preserva código + redacta path en formato porcelain', () => {
+    const input = [
+        ' M .env',
+        '?? fake-credentials.json',
+        ' M docs/readme.md',
+        '?? .pipeline/logs/2551.log',
+    ].join('\n');
+    const out = ops.redactSensitivePaths(input);
+    const lines = out.split('\n');
+    assert.equal(lines[0], ' M <sensitive-path-redacted>');
+    assert.equal(lines[1], '?? <sensitive-path-redacted>');
+    assert.equal(lines[2], ' M docs/readme.md');
+    assert.equal(lines[3], '?? .pipeline/logs/2551.log');
+});
+
+test('#2551 — redactSensitivePaths preserva líneas vacías y separadores', () => {
+    const input = ' M docs/x.md\n\n M app/y.kt';
+    const out = ops.redactSensitivePaths(input);
+    assert.equal(out, ' M docs/x.md\n\n M app/y.kt');
+});
+
+test('#2551 — redactInline tokeniza por espacio y reemplaza tokens sensibles', () => {
+    const input = 'cannot rebase: Your local changes to .env would be overwritten';
+    const out = ops.redactInline(input);
+    assert.ok(out.includes('<sensitive-path-redacted>'));
+    assert.ok(!out.includes('.env '));
+});
+
+test('#2551 — redactInline no toca tokens inocuos', () => {
+    const input = 'cannot rebase: Your local changes to docs/readme.md would be overwritten';
+    const out = ops.redactInline(input);
+    assert.equal(out, input);
+});
+
+test('#2551 — SENSITIVE_PATH_PATTERNS está exportado y es un array', () => {
+    assert.ok(Array.isArray(ops.SENSITIVE_PATH_PATTERNS));
+    assert.ok(ops.SENSITIVE_PATH_PATTERNS.length > 0);
+    for (const rx of ops.SENSITIVE_PATH_PATTERNS) {
+        assert.ok(rx instanceof RegExp, 'cada patrón debe ser RegExp');
+    }
+});
+
+// #2551 — parseGitStatusOutput (pura) separa tracked-modified, untracked y ignored.
+test('#2551 — parseGitStatusOutput categoriza tracked/untracked/ignored', () => {
+    const stdout = [
+        ' M app/Main.kt',         // tracked-modified
+        'M  staged/file.txt',     // staged → tracked-modified
+        '?? new-file.txt',        // untracked
+        '?? .pipeline/logs/x.log',// untracked
+        '!! ignored/node_modules',// ignored
+        '!! build/output.jar',    // ignored
+    ].join('\n');
+    const state = ops.parseGitStatusOutput(stdout);
+    assert.deepEqual(state.tracked_modified.sort(), ['app/Main.kt', 'staged/file.txt'].sort());
+    assert.deepEqual(state.untracked.sort(), ['.pipeline/logs/x.log', 'new-file.txt'].sort());
+    assert.deepEqual(state.ignored.sort(), ['build/output.jar', 'ignored/node_modules'].sort());
+});
+
+test('#2551 — parseGitStatusOutput con stdout vacío devuelve listas vacías', () => {
+    assert.deepEqual(ops.parseGitStatusOutput(''), { tracked_modified: [], untracked: [], ignored: [] });
+    assert.deepEqual(ops.parseGitStatusOutput(null), { tracked_modified: [], untracked: [], ignored: [] });
+    assert.deepEqual(ops.parseGitStatusOutput('\n\n'), { tracked_modified: [], untracked: [], ignored: [] });
+});
+
+// #2551 — findOrphanStashes (pura) decide qué stashes dropear.
+test('#2551 — findOrphanStashes filtra por issue + pid muerto + no current', () => {
+    const deadPid = 99999999;
+    const stdout = [
+        `stash@{0}: On agent/2551-x: delivery-2551-${deadPid}`,
+        `stash@{1}: On agent/2551-x: delivery-2551-${process.pid}`, // PID actual — no dropear
+        `stash@{2}: On agent/3000-x: delivery-3000-${deadPid}`,    // Otro issue — no dropear
+        `stash@{3}: WIP on agent/2551-x: 1234567 algun otro stash`, // No match formato — ignorar
+    ].join('\n');
+    const isAlive = (pid) => pid === process.pid; // solo current está vivo
+    const out = ops.findOrphanStashes(stdout, { issue: 2551, isAlive });
+    assert.equal(out.length, 1);
+    assert.equal(out[0].pid, deadPid);
+    assert.equal(out[0].ref, 'stash@{0}');
+});
+
+test('#2551 — findOrphanStashes con issue=null retorna []', () => {
+    const stdout = `stash@{0}: On agent/2551-x: delivery-2551-99999\n`;
+    assert.deepEqual(ops.findOrphanStashes(stdout, {}), []);
+});
+
+test('#2551 — findOrphanStashes preserva PID vivo', () => {
+    const stdout = `stash@{0}: On agent/2551-x: delivery-2551-12345\n`;
+    const isAlive = () => true; // todos vivos
+    assert.deepEqual(ops.findOrphanStashes(stdout, { issue: 2551, isAlive }), []);
+});
+
+test('#2551 — findOrphanStashes ignora stashes que no son de delivery', () => {
+    const stdout = [
+        `stash@{0}: WIP on agent/2551-x: feature branch in progress`,
+        `stash@{1}: On agent/2551-x: random-2551-12345`,
+        `stash@{2}: On agent/2551-x: not-matching-pattern`,
+    ].join('\n');
+    const isAlive = () => false;
+    assert.deepEqual(ops.findOrphanStashes(stdout, { issue: 2551, isAlive }), []);
+});
+
+test('#2551 — isProcessAlive devuelve true para process.pid (self) y false para PID muy alto', () => {
+    assert.equal(ops.isProcessAlive(process.pid), true);
+    // 2^31-1 — improbable que esté asignado; en Windows process.kill devuelve ESRCH
+    assert.equal(ops.isProcessAlive(2147483646), false);
+});
+
+test('#2551 — isProcessAlive con PID inválido devuelve false', () => {
+    assert.equal(ops.isProcessAlive(null), false);
+    assert.equal(ops.isProcessAlive(0), false);
+    assert.equal(ops.isProcessAlive(-1), false);
+});
+
+// #2551 — Integración con git real: verifica que stashAll guarda y stashPop
+// restaura untracked. Skip si git no está disponible o si estamos en CI sin
+// permisos para crear repos temp.
+test('#2551 — stashAll + stashPop integración con git real preserva untracked', () => {
+    const gitDir = ops.resolveGitDir();
+    if (process.platform === 'win32' && !gitDir) return; // git no disponible
+    const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitops-stash-'));
+    const runHere = (args) => ops.runGit(args, { cwd: tmpRepo, timeoutMs: 30000 });
+    try {
+        // Setup repo mínimo
+        assert.equal(runHere(['init', '-q']).exit_code, 0);
+        runHere(['config', 'user.email', 'test@test.com']);
+        runHere(['config', 'user.name', 'Test']);
+        runHere(['config', 'commit.gpgsign', 'false']);
+        fs.writeFileSync(path.join(tmpRepo, 'tracked.txt'), 'v1');
+        assert.equal(runHere(['add', 'tracked.txt']).exit_code, 0);
+        const commitRes = runHere(['commit', '-m', 'init', '--no-verify']);
+        assert.equal(commitRes.exit_code, 0, `init commit falló: ${commitRes.stderr}`);
+
+        // Crear cambio tracked + untracked
+        fs.writeFileSync(path.join(tmpRepo, 'tracked.txt'), 'v2-modified');
+        fs.writeFileSync(path.join(tmpRepo, 'new-untracked.txt'), 'new content');
+
+        const before = ops.getDirtyState(tmpRepo);
+        assert.equal(before.tracked_modified.length, 1, 'pre-stash debe tener tracked-modified');
+        assert.equal(before.untracked.length, 1, 'pre-stash debe tener untracked');
+
+        // Stash con --include-untracked
+        const { message, result } = ops.stashAll(tmpRepo, { issue: 9999, pid: 12345 });
+        assert.equal(message, 'delivery-9999-12345');
+        assert.equal(result.exit_code, 0, `stashAll falló: ${result.stderr}`);
+
+        // Post-stash: árbol limpio
+        const mid = ops.getDirtyState(tmpRepo);
+        assert.equal(mid.tracked_modified.length, 0, 'post-stash debe estar limpio (tracked)');
+        assert.equal(mid.untracked.length, 0, 'post-stash debe estar limpio (untracked)');
+
+        // Pop restaura ambos
+        const popRes = ops.stashPop(tmpRepo);
+        assert.equal(popRes.exit_code, 0, `stashPop falló: ${popRes.stderr}`);
+        const after = ops.getDirtyState(tmpRepo);
+        assert.equal(after.tracked_modified.length, 1);
+        assert.equal(after.untracked.length, 1);
+    } finally {
+        // Limpieza recursiva — en Windows puede fallar por handles abiertos,
+        // damos best-effort.
+        try { fs.rmSync(tmpRepo, { recursive: true, force: true }); } catch {}
+    }
+});
+
+// #2551 — rebaseOnto con autostash:false omite la flag. Verificamos contra
+// repo temp para evitar mocks frágiles.
+test('#2551 — rebaseOnto sin --autostash opera sobre árbol limpio', () => {
+    const gitDir = ops.resolveGitDir();
+    if (process.platform === 'win32' && !gitDir) return;
+    const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitops-rebase-'));
+    const runHere = (args) => ops.runGit(args, { cwd: tmpRepo, timeoutMs: 30000 });
+    try {
+        assert.equal(runHere(['init', '-q', '-b', 'main']).exit_code, 0);
+        runHere(['config', 'user.email', 'test@test.com']);
+        runHere(['config', 'user.name', 'Test']);
+        runHere(['config', 'commit.gpgsign', 'false']);
+        fs.writeFileSync(path.join(tmpRepo, 'a.txt'), 'a');
+        runHere(['add', 'a.txt']);
+        runHere(['commit', '-m', 'a', '--no-verify']);
+        // Branch feature
+        runHere(['checkout', '-b', 'feat-x']);
+        fs.writeFileSync(path.join(tmpRepo, 'b.txt'), 'b');
+        runHere(['add', 'b.txt']);
+        runHere(['commit', '-m', 'b', '--no-verify']);
+
+        // Rebase a main desde árbol limpio sin autostash debe ser exit 0.
+        const rebaseRes = ops.rebaseOnto(tmpRepo, 'main', { autostash: false });
+        assert.equal(rebaseRes.exit_code, 0, `rebase falló: ${rebaseRes.stderr}`);
+    } finally {
+        try { fs.rmSync(tmpRepo, { recursive: true, force: true }); } catch {}
+    }
+});
+
+test('#2551 — exporta getDirtyState, parseGitStatusOutput, stashAll, stashPop, stashDrop, cleanupOrphanStashes, findOrphanStashes, isProcessAlive, redactSensitivePaths, redactInline, isSensitivePath', () => {
+    assert.equal(typeof ops.getDirtyState, 'function');
+    assert.equal(typeof ops.parseGitStatusOutput, 'function');
+    assert.equal(typeof ops.stashAll, 'function');
+    assert.equal(typeof ops.stashPop, 'function');
+    assert.equal(typeof ops.stashDrop, 'function');
+    assert.equal(typeof ops.cleanupOrphanStashes, 'function');
+    assert.equal(typeof ops.findOrphanStashes, 'function');
+    assert.equal(typeof ops.isProcessAlive, 'function');
+    assert.equal(typeof ops.redactSensitivePaths, 'function');
+    assert.equal(typeof ops.redactInline, 'function');
+    assert.equal(typeof ops.isSensitivePath, 'function');
+});
+
+// ============================================================================
+// #4658 — Helpers de integración por merge (mergeInto/mergeAbort/isMergeable)
+// y reproducción del caso #4632 (merge limpio + rebase conflictivo).
+// ============================================================================
+
+// fs/os/path ya están declarados arriba (línea ~210).
+const { execFileSync } = require('node:child_process');
+
+test('#4658 — exporta mergeInto, mergeAbort, isMergeable', () => {
+    assert.equal(typeof ops.mergeInto, 'function');
+    assert.equal(typeof ops.mergeAbort, 'function');
+    assert.equal(typeof ops.isMergeable, 'function');
+});
+
+// Helper: monta un repo git real y determinístico en un tmpdir. Devuelve el path.
+function setupRepo() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-git4658-'));
+    const g = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+    g('init', '-q');
+    g('config', 'user.email', 'test@intrale.local');
+    g('config', 'user.name', 'test');
+    g('config', 'commit.gpgsign', 'false');
+    return { dir, g };
+}
+
+test('#4658 CA-1 — isMergeable: rama que mergea LIMPIO no reporta conflicto (repro #4632: merge limpio + rebase conflictivo)', () => {
+    const { dir, g } = setupRepo();
+    // base: archivo con 3 líneas.
+    fs.writeFileSync(path.join(dir, 'file.txt'), '1\n2\n3\n');
+    g('add', '.'); g('commit', '-q', '-m', 'base');
+    // main avanza: línea 2 → "2main".
+    g('branch', '-m', 'main');
+    fs.writeFileSync(path.join(dir, 'file.txt'), '1\n2main\n3\n');
+    g('commit', '-qam', 'main cambia linea 2');
+    // rama de agente desde base: commit1 cambia línea 2 a "2branch", commit2 la
+    // deja igual a la de main ("2main"). El MERGE de endpoints es limpio (misma
+    // línea final que main); un REBASE replayearía commit1 y CHOCARÍA.
+    g('checkout', '-q', '-b', 'agent/4632-x', 'HEAD~1');
+    fs.writeFileSync(path.join(dir, 'file.txt'), '1\n2branch\n3\n');
+    g('commit', '-qam', 'branch commit1');
+    fs.writeFileSync(path.join(dir, 'file.txt'), '1\n2main\n3\n');
+    g('commit', '-qam', 'branch commit2 (converge con main)');
+
+    // El pre-check de delivery: merge-tree contra main. Debe ser LIMPIO.
+    const mc = ops.isMergeable(dir, 'main');
+    assert.equal(mc.supported, true, 'merge-tree debe estar soportado (git >= 2.38)');
+    assert.equal(mc.mergeable, true, 'el merge de endpoints es limpio → NO debe escalar/rebotar (repro #4632)');
+
+    // Prueba de contraste: un rebase REAL sobre main sí choca (el defecto viejo).
+    let rebaseConflicto = false;
+    try {
+        g('rebase', 'main');
+    } catch { rebaseConflicto = true; }
+    try { g('rebase', '--abort'); } catch {}
+    assert.equal(rebaseConflicto, true, 'el rebase sí conflictúa — confirmando que el viejo flujo rebotaba en falso');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#4658 CA-2 — isMergeable: conflicto de merge REAL se reporta como no-mergeable', () => {
+    const { dir, g } = setupRepo();
+    fs.writeFileSync(path.join(dir, 'file.txt'), 'base\n');
+    g('add', '.'); g('commit', '-q', '-m', 'base');
+    g('branch', '-m', 'main');
+    fs.writeFileSync(path.join(dir, 'file.txt'), 'main-version\n');
+    g('commit', '-qam', 'main edita');
+    g('checkout', '-q', '-b', 'agent/x', 'HEAD~1');
+    fs.writeFileSync(path.join(dir, 'file.txt'), 'branch-version\n');
+    g('commit', '-qam', 'branch edita la misma linea');
+
+    const mc = ops.isMergeable(dir, 'main');
+    assert.equal(mc.supported, true);
+    assert.equal(mc.mergeable, false, 'edición divergente de la misma línea → conflicto real');
+    assert.ok(Array.isArray(mc.conflicts));
+
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('#4658 — mergeInto trae main a la rama con merge-commit (--no-ff, no reescribe historia)', () => {
+    const { dir, g } = setupRepo();
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    g('add', '.'); g('commit', '-q', '-m', 'base');
+    g('branch', '-m', 'main');
+    fs.writeFileSync(path.join(dir, 'b.txt'), 'b\n');
+    g('add', '.'); g('commit', '-q', '-m', 'main agrega b');
+    g('checkout', '-q', '-b', 'agent/x', 'HEAD~1');
+    fs.writeFileSync(path.join(dir, 'c.txt'), 'c\n');
+    g('add', '.'); g('commit', '-q', '-m', 'branch agrega c');
+
+    const res = ops.mergeInto(dir, 'main');
+    assert.equal(res.exit_code, 0, `merge limpio esperado: ${res.stderr}`);
+    // b.txt (de main) ahora está en la rama.
+    assert.ok(fs.existsSync(path.join(dir, 'b.txt')), 'mergeInto debe traer b.txt de main');
+    assert.ok(fs.existsSync(path.join(dir, 'c.txt')), 'c.txt de la rama se conserva');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+});

@@ -19,7 +19,20 @@
 //     pipelineExtras: { PIPELINE_ISSUE: '1234', ... },
 //     // inyectables para tests:
 //     fsImpl, skillConfigOverride: { skill: {...}, providers: {...} },
+//     // o partial-override #3198 (cross-provider fallback runtime):
+//     skillConfigOverride: { provider: 'openai-codex' },
 //   });
+//
+// **Override shapes** (`skillConfigOverride`):
+//   - Full: `{ skill: {...}, providers: {...} }` — reemplaza por completo lo
+//     que se hubiera leído de `agent-models.json`. Usado por tests y por el
+//     commander (pulpo.js).
+//   - Partial (#3198): `{ provider: '<name>' }` — el dispatcher de fallback
+//     resolvió que el child debe correr con otro provider. Mergeamos el
+//     skill leído de disk con `{ provider: <override> }` y conservamos el
+//     `providers` config completo del disk para resolver `credentials_env`
+//     del fallback. Indispensable para S-2: garantiza que el child del
+//     fallback reciba SOLO la API key del fallback (no la del primary).
 //
 // **Estrategia**:
 //   1. Allowlist hardcoded de variables del sistema (Windows-compatible).
@@ -27,8 +40,8 @@
 //   3. UNA sola API key del LLM: la del provider declarado por el skill.
 //   4. Scopes adicionales declarados por el skill (`requires_credentials` en
 //      agent-models.json o defaults hardcoded por skill).
-//   5. `telegram-hooks` SIEMPRE (los hooks `agent-concurrency-check.js` y
-//      `worktree-guard.js` corren dentro del child y necesitan TELEGRAM_*).
+//   5. `telegram-hooks` SIEMPRE, sin material criptográfico: las
+//      notificaciones se delegan a la frontera local privilegiada.
 //   6. Fail-fast: si el provider declara una `credentials_env` y la var no
 //      está en el env del pulpo → throw con mensaje accionable.
 //
@@ -134,16 +147,95 @@ const CREDENTIAL_SCOPES = Object.freeze({
         'ANDROID_SDK_ROOT',
         'ANDROID_AVD_HOME',
     ]),
-    // 'telegram-hooks' se inyecta siempre (ver SCOPES_ALWAYS_ON), pero queda
-    // declarado acá para que sea explícito en agent-models.json y para tests.
-    'telegram-hooks': Object.freeze(['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID']),
+    // Los hooks pueden conservar contexto de destino, pero nunca reciben el
+    // token: notifican mediante la cola/frontera local privilegiada.
+    'telegram-hooks': Object.freeze(['TELEGRAM_CHAT_ID']),
 });
 
-// Scopes inyectados SIEMPRE (los hooks de Claude Code corren dentro del child
-// y los necesitan: `agent-concurrency-check.js` y `worktree-guard.js` alertan
-// vía Telegram). Si querés removerlos en el futuro, hay que reescribir los
-// hooks para postear a un endpoint local del pulpo.
+// Scope always-on sin secretos, conservado por compatibilidad de hooks.
 const SCOPES_ALWAYS_ON = Object.freeze(['telegram-hooks']);
+
+// Material reservado que jamás puede cruzar al child, ni con aislamiento
+// desactivado ni reintroducido desde pipelineExtras bajo otro nombre.
+const RESERVED_CHILD_SECRET_NAMES = Object.freeze(['TELEGRAM_BOT_TOKEN']);
+
+function stripReservedChildSecrets(candidateEnv = {}, operatorEnv = process.env) {
+    const reservedValues = new Set();
+    for (const name of RESERVED_CHILD_SECRET_NAMES) {
+        const value = operatorEnv && operatorEnv[name];
+        if (value !== undefined && value !== null && String(value) !== '') {
+            reservedValues.add(String(value));
+        }
+    }
+
+    const safe = {};
+    for (const [name, value] of Object.entries(candidateEnv || {})) {
+        if (RESERVED_CHILD_SECRET_NAMES.includes(name)) continue;
+        if (value !== undefined && reservedValues.has(String(value))) continue;
+        safe[name] = value;
+    }
+    return safe;
+}
+
+// -----------------------------------------------------------------------------
+// PROVIDER_STATIC_ENV — variables de entorno ESTÁTICAS por provider (#4880).
+//
+// A diferencia de las API keys (que vienen del env del pulpo hidratado desde
+// credentials.json), estas son CONSTANTES DE CÓDIGO: no derivan del issue, del
+// prompt, del título ni de ningún input de usuario. Se vuelcan al env del child
+// SOLO cuando el provider activo coincide con la clave del mapa.
+//
+// Caso `kimi-moonshot` (SEC-2, #4880): Kimi (Moonshot) se integra como drop-in
+// de Claude Code apuntando `ANTHROPIC_BASE_URL` a su endpoint Anthropic-compat.
+// Requisitos de seguridad que este diseño satisface:
+//   - La URL es una CONSTANTE HTTPS literal (no `NODE_TLS_REJECT_UNAUTHORIZED=0`,
+//     sin proxy, jamás derivada de input). Previene SSRF / redirección de
+//     tráfico Anthropic a un endpoint atacante.
+//   - Se inyecta SOLO en el child con `providerName === 'kimi-moonshot'`. NUNCA
+//     global en el pulpo ni en childs de anthropic/codex/otros → no envenena el
+//     tráfico Anthropic legítimo (que va a api.anthropic.com por default).
+//   - `ANTHROPIC_BASE_URL` no está en SYSTEM_ALLOWLIST ni en ningún scope, así
+//     que aunque el operador la exporte global NUNCA se propaga desde processEnv:
+//     el único origen posible es este mapa.
+//
+// **NO agregar entradas sin justificación de seguridad** — cada var estática es
+// una decisión de plataforma (igual criterio que SYSTEM_ALLOWLIST / SCOPES).
+const PROVIDER_STATIC_ENV = Object.freeze({
+    'kimi-moonshot': Object.freeze({
+        // Endpoint Anthropic-compatible de Moonshot (spike #4871). El launcher
+        // `claude` habla contra esta base URL en vez de api.anthropic.com.
+        ANTHROPIC_BASE_URL: 'https://api.moonshot.ai/anthropic',
+    }),
+});
+
+// -----------------------------------------------------------------------------
+// PROVIDER_MODEL_ENV — nombre de la variable de entorno por la que cada provider
+// NO-Anthropic espera recibir el modelo a usar (#6272).
+//
+// Mismo criterio de diseño que PROVIDER_STATIC_ENV (#4880): CONSTANTE de código,
+// scopeada al provider ACTIVO del despacho, jamás derivada de `processEnv` ni de
+// input del operador. El valor que se inyecta es el modelo resuelto, y pasa antes
+// por la whitelist estricta de `lib/model-propagation.js` (SR-A.1).
+//
+// Los providers cuyo launcher es `claude` (anthropic, kimi-moonshot) NO figuran
+// acá a propósito: reciben el modelo por el flag `--model` en el array de args
+// (ver providers/anthropic.js::buildSpawn), no por env. `lib/model-propagation.js`
+// decide el canal (`arg` vs `env`) y usa este mapa como fuente única de nombres.
+//
+// Los nombres coinciden con lo que cada handler YA lee hoy:
+//   - openai-codex   → providers/openai-codex.js  (`env.CODEX_MODEL`)
+//   - gemini-google  → providers/gemini-google.js (`env.AGY_MODEL || env.GEMINI_MODEL`)
+//   - cerebras       → providers/cerebras.js      (`env.CEREBRAS_MODEL`)
+//   - nvidia-nim     → providers/nvidia-nim.js    (`env.NVIDIA_NIM_MODEL`)
+//
+// **NO agregar entradas sin que el handler correspondiente lea esa variable** —
+// el guardrail anti-regresión (CA-7) verifica justamente esa correspondencia.
+const PROVIDER_MODEL_ENV = Object.freeze({
+    'openai-codex': 'CODEX_MODEL',
+    'gemini-google': 'GEMINI_MODEL',
+    'cerebras': 'CEREBRAS_MODEL',
+    'nvidia-nim': 'NVIDIA_NIM_MODEL',
+});
 
 // -----------------------------------------------------------------------------
 // DEFAULT_REQUIRES_BY_SKILL — defaults usados cuando agent-models.json no
@@ -166,7 +258,6 @@ const DEFAULT_REQUIRES_BY_SKILL = Object.freeze({
     priorizar: ['github'],
     historia: ['github'],
     doc: ['github'],
-    scrum: ['github'],
     handoff: ['github'],
 
     // Skills LLM que tocan código → necesitan github (comentarios + branches).
@@ -214,10 +305,34 @@ function readAgentModelsDefensive(pipelineDir, fsImpl) {
 function resolveSkillConfig(skill, opts = {}) {
     const { pipelineDir, fsImpl, skillConfigOverride } = opts;
 
+    // Full override: tests + commander pasan ambos campos.
     if (skillConfigOverride && skillConfigOverride.skill !== undefined) {
         return {
             skillCfg: skillConfigOverride.skill || {},
             providersCfg: skillConfigOverride.providers || {},
+        };
+    }
+
+    // Partial override (#3198): el dispatcher de fallback decide en runtime
+    // que el child debe correr con otro provider (ej. anthropic→openai-codex).
+    // Mergeamos el skillCfg leído de disk con `{ provider: <override> }` para
+    // que el resto de la config (requires_credentials, model, etc.) se
+    // preserve, pero el `provider` apunte al FALLBACK. Conservamos los
+    // `providers` config completos del disk para que `credentials_env` del
+    // fallback se resuelva correctamente.
+    //
+    // INVARIANTE S-2 (defensa cross-provider credential isolation):
+    //   Cuando esta rama dispara, el `providerKeyVar` resultante DEBE ser el
+    //   del fallback (ej. OPENAI_API_KEY), nunca el del primary
+    //   (ej. ANTHROPIC_API_KEY). Tests dedicados en
+    //   build-child-env.test.js (#3198) verifican el invariante.
+    if (skillConfigOverride && typeof skillConfigOverride.provider === 'string') {
+        const models = readAgentModelsDefensive(pipelineDir, fsImpl);
+        const diskSkillCfg = (models && models.skills && models.skills[skill]) || {};
+        const providersCfg = (models && models.providers) || {};
+        return {
+            skillCfg: { ...diskSkillCfg, provider: skillConfigOverride.provider },
+            providersCfg,
         };
     }
 
@@ -268,9 +383,17 @@ function buildChildEnv(opts = {}) {
     // Provider del skill (default: anthropic).
     const providerName = skillCfg.provider || 'anthropic';
     const providerEntry = providersCfg[providerName] || {};
-    const providerKeyVar = (providerEntry.credentials_env !== undefined)
-        ? providerEntry.credentials_env
-        : PROVIDER_DEFAULT_CREDENTIAL_ENV[providerName];
+    // #4306 — providers OAuth/CLI login (auth_mode: 'oauth') autentican fuera
+    // del env (~/.codex, cuenta Google, OAuth Max). NO exigimos ni inyectamos
+    // su key: ni desde `credentials_env` ni desde el fallback
+    // PROVIDER_DEFAULT_CREDENTIAL_ENV (REQ-SEC-3, env-isolation). Default-safe:
+    // provider sin auth_mode → camino api_key (exige key, fail-fast más abajo).
+    const isOauthProvider = providerEntry.auth_mode === 'oauth';
+    const providerKeyVar = isOauthProvider
+        ? null
+        : ((providerEntry.credentials_env !== undefined)
+            ? providerEntry.credentials_env
+            : PROVIDER_DEFAULT_CREDENTIAL_ENV[providerName]);
 
     // 1. SYSTEM_ALLOWLIST.
     const out = Object.create(null);
@@ -281,6 +404,15 @@ function buildChildEnv(opts = {}) {
     }
 
     // 2. PIPELINE_* — siempre se propagan (contexto del child).
+    //
+    // #5110 · SEC-1 — este loop es exactamente la mecánica que hace que
+    // `PIPELINE_PROJECT_ID` NO pueda ser autoridad: cualquier `PIPELINE_*` que
+    // esté en el env del pulpo (o que un agente exporte y herede un nieto) se
+    // propaga sin validar. Por eso `lib/project-context.js` trata esa var como
+    // TRANSPORTE y exige que venga apareada con `PIPELINE_PROJECT_BINDING`, un
+    // nonce que sólo el pulpo escribe en `.pipeline/state/project-bindings/`.
+    // El comportamiento de este loop NO cambia — se documenta la razón por la
+    // que el consumidor desconfía de lo que acá se propaga.
     for (const k of Object.keys(processEnv)) {
         if (k.startsWith('PIPELINE_') && processEnv[k] !== undefined) {
             out[k] = processEnv[k];
@@ -298,6 +430,19 @@ function buildChildEnv(opts = {}) {
             );
         }
         out[providerKeyVar] = processEnv[providerKeyVar];
+    }
+
+    // 3.b Env estático por provider (#4880). Constantes de código scopeadas al
+    //     provider activo (ej. ANTHROPIC_BASE_URL → endpoint Kimi para
+    //     `kimi-moonshot`). Se vuelca DESPUÉS de la key del provider y ANTES de
+    //     los scopes/pipelineExtras. Nunca se toma de processEnv (SEC-2): el
+    //     único origen es PROVIDER_STATIC_ENV, así el operador no puede
+    //     envenenar el tráfico Anthropic legítimo con una var global.
+    const staticEnv = PROVIDER_STATIC_ENV[providerName];
+    if (staticEnv) {
+        for (const [k, v] of Object.entries(staticEnv)) {
+            out[k] = v;
+        }
     }
 
     // 4. Scopes declarados por el skill (`requires_credentials`) o defaults
@@ -327,9 +472,11 @@ function buildChildEnv(opts = {}) {
         }
     }
 
-    // 5. pipelineExtras al final (PIPELINE_ISSUE, PIPELINE_SKILL, etc.). Puede
-    //    sobreescribir entries previos — esperado, el caller sabe qué hace.
-    return { ...out, ...pipelineExtras };
+    // 5. pipelineExtras al final (PIPELINE_ISSUE, PIPELINE_SKILL, etc.). El
+    //    filtro final impide reintroducir el nombre reservado o un alias cuyo
+    //    valor coincida con el material del operador. El descarte es silencioso
+    //    para no revelar nombres alternativos ni valores en logs.
+    return stripReservedChildSecrets({ ...out, ...pipelineExtras }, processEnv);
 }
 
 // -----------------------------------------------------------------------------
@@ -358,11 +505,17 @@ function auditDroppedEnvVars(processEnv = process.env) {
     }
 
     const dropped = [];
+    const reservedValues = new Set(RESERVED_CHILD_SECRET_NAMES
+        .map((name) => processEnv[name])
+        .filter((value) => value !== undefined && value !== null && String(value) !== '')
+        .map(String));
     for (const k of Object.keys(processEnv)) {
+        if (RESERVED_CHILD_SECRET_NAMES.includes(k)) continue;
         if (k.startsWith('PIPELINE_')) continue; // siempre van
         if (allowed.has(k)) continue;
         const v = processEnv[k];
         if (v === undefined) continue;
+        if (reservedValues.has(String(v))) continue;
         const hash = crypto.createHash('sha256').update(String(v)).digest('hex').slice(0, 12);
         dropped.push({ key: k, hash });
     }
@@ -393,9 +546,13 @@ module.exports = {
     // Constantes exportadas para inspección (tests + dashboard futuro).
     SYSTEM_ALLOWLIST,
     PROVIDER_DEFAULT_CREDENTIAL_ENV,
+    PROVIDER_STATIC_ENV,
+    PROVIDER_MODEL_ENV,
     CREDENTIAL_SCOPES,
     SCOPES_ALWAYS_ON,
+    RESERVED_CHILD_SECRET_NAMES,
     DEFAULT_REQUIRES_BY_SKILL,
+    stripReservedChildSecrets,
     // Internos exportados para tests.
     _resolveSkillConfig: resolveSkillConfig,
     _readAgentModelsDefensive: readAgentModelsDefensive,

@@ -1,0 +1,394 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 23 — Widget "Ghost artifacts · Filesystem operacional" + estados (#3638)
+  -----------------------------------------------------------------------------
+  Widget que reporta el estado del invariant "ningun archivo no-marker viejo en
+  carpetas operacionales" y que muestra las ultimas operaciones del
+  ghost-artifact-cleaner. Vive en la solapa Pipeline del dashboard V3, al lado
+  del widget de "Audit trail · Allowlist mutations" (mockup 22, #3625).
+
+  Tres estados visuales que el dev DEBE implementar (CA-F-12 de #3638):
+
+    A) CLEAN (no actividad en 7 dias)
+       - Card con borde --success-dim y banner verde
+       - Icono ic-ghost-clean tintado --success
+       - Texto "Ghost artifacts: clean"
+       - KPI "0 cleanups · 7d" en verde
+       - Tabla vacia con mensaje pacifico
+
+    B) RECENT CLEANUP (al menos 1 entrada con action=cleanup en ultimas 24h)
+       - Card con borde --warning y banner ambar
+       - Icono ic-ghost-cleanup tintado --warning
+       - Texto "Cleanup reciente · hace N min"
+       - KPI "N cleanups · 24h" en ambar
+       - Tabla con las ultimas 10 lineas del JSONL, action coloreada por tipo
+       - Boton "Ver archivo de auditoria" lleva al JSONL
+
+    C) WARN/SKIP (gh CLI down o lock busy en ultimas 24h)
+       - Card con borde --info y banner azul informativo
+       - Icono ic-ghost-clean + badge "skip" tintado --info
+       - Texto "Cleanup postergado · gh CLI no disponible" (segun reason)
+       - KPI "M skips · 24h" en azul info
+       - Tabla muestra los skips con razon textual
+
+  Sistema visual: dashboard V3 (design-tokens.css, sprite.svg).
+
+  Convenciones:
+    - Paleta: design-tokens.css (var(--success), var(--warning), var(--info),
+      var(--surface-*), var(--text-*))
+    - Iconos: sprite.svg referenciados con <use href="#ic-*"/>. En este mockup
+      standalone se inlinen como <symbol id="m-*"/> para preview sin sprite.
+    - Tipografia: var(--font-sans) system stack, monospace en hashes/paths.
+    - WCAG AA: contraste >=4.5:1 verificado contra surface-0/1.
+    - Anti-info-solo-por-color: cada estado tiene icono + texto, no solo color.
+    - escapeHtml: TODOS los campos del JSONL (file, reason, archived_to, context,
+      error) se rendean escapados — el mockup los muestra con caracteres seguros
+      pero el dev DEBE aplicar escape entitario en runtime (CA-SEC-9).
+
+  Tamano: 1440x900 (encaja como section card en la solapa Pipeline).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900"
+     font-family="-apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <!-- ===== Iconos inline (preview standalone) ===== -->
+    <symbol id="m-ghost-clean" viewBox="0 0 24 24">
+      <path d="M12 3 L20 6 V12 C20 16.5 16.5 19.5 12 21 C7.5 19.5 4 16.5 4 12 V6 Z"
+            fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M8.5 12.5 L11 15 L15.5 9.5" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-ghost-cleanup" viewBox="0 0 24 24">
+      <path d="M20 4 L13 11" fill="none" stroke="currentColor" stroke-width="1.75"
+            stroke-linecap="round"/>
+      <path d="M9 15 L15 9 L19 13 L13 19 Z" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M11 17 L9.5 19 M13 19 L12 21 M15 19.5 L14.5 21.5" stroke="currentColor"
+            stroke-width="1.4" stroke-linecap="round"/>
+      <circle cx="6" cy="7" r="0.9" fill="currentColor"/>
+      <circle cx="4.5" cy="11" r="0.7" fill="currentColor"/>
+      <circle cx="7.5" cy="4" r="0.6" fill="currentColor"/>
+    </symbol>
+    <symbol id="m-archive-box" viewBox="0 0 24 24">
+      <rect x="3" y="5" width="18" height="4.5" rx="1" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M5 9.5 V19 A1.5 1.5 0 0 0 6.5 20.5 H17.5 A1.5 1.5 0 0 0 19 19 V9.5"
+            fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+      <path d="M10 13 H14" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="8" r="1" fill="currentColor"/>
+      <path d="M12 11 V17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="m-link" viewBox="0 0 24 24">
+      <path d="M10 14 L14 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M9 7 H7 A5 5 0 0 0 7 17 H9" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M15 7 H17 A5 5 0 0 1 17 17 H15" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="m-skip" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M8 10 L11 13 L8 16 M13 10 L16 13 L13 16" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+
+  <!-- ========================================================================= -->
+  <!-- FONDO (surface-0)                                                          -->
+  <!-- ========================================================================= -->
+  <rect width="1440" height="900" fill="#0D1117"/>
+
+  <!-- ========================================================================= -->
+  <!-- BREADCRUMB + TITULO                                                        -->
+  <!-- ========================================================================= -->
+  <text x="24" y="36" fill="#8B949E" font-size="13">Pipeline · Ghost artifacts · Filesystem operacional</text>
+  <text x="24" y="68" fill="#E6EDF3" font-size="24" font-weight="600">Ghost artifacts · Salud del filesystem operacional</text>
+  <text x="24" y="92" fill="#B1BAC4" font-size="13">El garbage collector barre definicion/ y desarrollo/ cada 6h, archiva (no elimina) huerfanos en .pipeline/archivado/ghost-&lt;timestamp&gt;/ y registra cada operacion en JSONL append-only con hash de archivo y razon textual.</text>
+
+  <!-- ========================================================================= -->
+  <!-- ESTADO A — CLEAN (sin actividad 7 dias)                                    -->
+  <!-- ========================================================================= -->
+  <g transform="translate(24,120)">
+    <!-- Card -->
+    <rect width="448" height="240" rx="10" fill="#161B22" stroke="#196C2E" stroke-width="1.5"/>
+    <!-- Header del estado -->
+    <rect x="0" y="0" width="448" height="56" rx="10" fill="rgba(63,185,80,0.10)"/>
+    <rect x="0" y="50" width="448" height="6" fill="rgba(63,185,80,0.10)"/>
+    <g transform="translate(16,16)" color="#3FB950">
+      <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-ghost-clean"/></svg>
+    </g>
+    <text x="50" y="34" fill="#3FB950" font-size="15" font-weight="600">Ghost artifacts: clean</text>
+    <g transform="translate(376,18)">
+      <rect width="56" height="20" rx="10" fill="#196C2E" opacity="0.4"/>
+      <text x="28" y="14" fill="#E6EDF3" font-size="10" font-weight="600" text-anchor="middle" letter-spacing="0.08em">ESTADO A</text>
+    </g>
+
+    <!-- KPI principal -->
+    <g transform="translate(16,76)">
+      <text x="0" y="14" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.08em">CLEANUPS · 7 DIAS</text>
+      <text x="0" y="56" fill="#3FB950" font-size="40" font-weight="600"
+            font-family="'SF Mono', Consolas, monospace">0</text>
+      <text x="80" y="56" fill="#8B949E" font-size="13">sin actividad desde 2026-05-22 13:39Z</text>
+    </g>
+
+    <!-- Mensaje pacifico (estado vacio) -->
+    <g transform="translate(16,164)">
+      <rect width="416" height="60" rx="6" fill="#0D1117" stroke="#21262D" stroke-width="1"/>
+      <g transform="translate(16,18)" color="#8B949E">
+        <svg width="18" height="18" viewBox="0 0 24 24"><use href="#m-info"/></svg>
+      </g>
+      <text x="42" y="26" fill="#B1BAC4" font-size="12">El invariant se mantiene. Proximo barrido en 4h 12m.</text>
+      <text x="42" y="44" fill="#8B949E" font-size="11">Filtro isMarkerArtifact aplicado en 8 componentes.</text>
+    </g>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- ESTADO B — RECENT CLEANUP (banner ambar, action en 24h)                    -->
+  <!-- ========================================================================= -->
+  <g transform="translate(496,120)">
+    <!-- Card -->
+    <rect width="448" height="240" rx="10" fill="#161B22" stroke="#D29922" stroke-width="1.5"/>
+    <!-- Header del estado -->
+    <rect x="0" y="0" width="448" height="56" rx="10" fill="rgba(210,153,34,0.12)"/>
+    <rect x="0" y="50" width="448" height="6" fill="rgba(210,153,34,0.12)"/>
+    <g transform="translate(16,16)" color="#D29922">
+      <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-ghost-cleanup"/></svg>
+    </g>
+    <text x="50" y="34" fill="#D29922" font-size="15" font-weight="600">Cleanup reciente · hace 4 min</text>
+    <g transform="translate(376,18)">
+      <rect width="56" height="20" rx="10" fill="#9E6A03" opacity="0.6"/>
+      <text x="28" y="14" fill="#E6EDF3" font-size="10" font-weight="600" text-anchor="middle" letter-spacing="0.08em">ESTADO B</text>
+    </g>
+
+    <!-- KPI principal -->
+    <g transform="translate(16,76)">
+      <text x="0" y="14" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.08em">CLEANUPS · 24 HORAS</text>
+      <text x="0" y="56" fill="#D29922" font-size="40" font-weight="600"
+            font-family="'SF Mono', Consolas, monospace">3</text>
+      <text x="80" y="56" fill="#8B949E" font-size="13">archivados a ghost-20260529-133929</text>
+    </g>
+
+    <!-- Banner con accion -->
+    <g transform="translate(16,164)">
+      <rect width="416" height="60" rx="6" fill="rgba(210,153,34,0.10)" stroke="#9E6A03" stroke-width="1"/>
+      <text x="14" y="22" fill="#D29922" font-size="12" font-weight="600">Operacion reciente · revisar audit log</text>
+      <text x="14" y="40" fill="#B1BAC4" font-size="11">3 archivos huerfanos archivados sin error. Sin perdida de datos.</text>
+      <g transform="translate(280,12)">
+        <rect width="124" height="36" rx="6" fill="#0D1117" stroke="#D29922" stroke-width="1"/>
+        <g transform="translate(10,10)" color="#D29922">
+          <svg width="16" height="16" viewBox="0 0 24 24"><use href="#m-archive-box"/></svg>
+        </g>
+        <text x="62" y="22" fill="#D29922" font-size="11" font-weight="600" text-anchor="middle">Ver auditoria</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- ESTADO C — WARN/SKIP (gh down, lock busy)                                  -->
+  <!-- ========================================================================= -->
+  <g transform="translate(968,120)">
+    <!-- Card -->
+    <rect width="448" height="240" rx="10" fill="#161B22" stroke="#58A6FF" stroke-width="1.5"/>
+    <!-- Header del estado -->
+    <rect x="0" y="0" width="448" height="56" rx="10" fill="rgba(88,166,255,0.10)"/>
+    <rect x="0" y="50" width="448" height="6" fill="rgba(88,166,255,0.10)"/>
+    <g transform="translate(16,16)" color="#58A6FF">
+      <svg width="24" height="24" viewBox="0 0 24 24"><use href="#m-skip"/></svg>
+    </g>
+    <text x="50" y="34" fill="#58A6FF" font-size="15" font-weight="600">Cleanup postergado · fail-safe</text>
+    <g transform="translate(376,18)">
+      <rect width="56" height="20" rx="10" fill="#1F6FEB" opacity="0.5"/>
+      <text x="28" y="14" fill="#E6EDF3" font-size="10" font-weight="600" text-anchor="middle" letter-spacing="0.08em">ESTADO C</text>
+    </g>
+
+    <!-- KPI principal -->
+    <g transform="translate(16,76)">
+      <text x="0" y="14" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.08em">SKIPS · 24 HORAS</text>
+      <text x="0" y="56" fill="#58A6FF" font-size="40" font-weight="600"
+            font-family="'SF Mono', Consolas, monospace">2</text>
+      <text x="80" y="56" fill="#8B949E" font-size="13">archivos NO archivados — invariant preservado</text>
+    </g>
+
+    <!-- Banner con razon -->
+    <g transform="translate(16,164)">
+      <rect width="416" height="60" rx="6" fill="rgba(88,166,255,0.10)" stroke="#1F6FEB" stroke-width="1"/>
+      <text x="14" y="22" fill="#58A6FF" font-size="12" font-weight="600">Razon: gh CLI no disponible &gt;10s timeout</text>
+      <text x="14" y="40" fill="#B1BAC4" font-size="11">Reintento automatico al proximo tick. Nunca archivar en duda.</text>
+    </g>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- SECCION — Tabla de ultimas 10 operaciones del JSONL                        -->
+  <!-- ========================================================================= -->
+  <g transform="translate(24,388)">
+    <!-- Titulo + nota -->
+    <g color="#58A6FF">
+      <svg x="0" y="-14" width="20" height="20" viewBox="0 0 24 24"><use href="#m-archive-box"/></svg>
+    </g>
+    <text x="30" y="4" fill="#E6EDF3" font-size="17" font-weight="600">Ultimas operaciones · ghost-artifacts-cleanup.jsonl</text>
+    <text x="430" y="4" fill="#8B949E" font-size="13">append-only, hash de archivo SHA-256, lectura tail -n 10</text>
+    <g transform="translate(1238,-16)">
+      <rect width="154" height="28" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+      <g transform="translate(12,6)" color="#B1BAC4">
+        <svg width="14" height="14" viewBox="0 0 24 24"><use href="#m-link"/></svg>
+      </g>
+      <text x="84" y="18" fill="#B1BAC4" font-size="12" font-weight="500" text-anchor="middle">Abrir audit JSONL</text>
+    </g>
+
+    <!-- Card contenedora de la tabla -->
+    <rect x="0" y="24" width="1392" height="464" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+
+    <!-- Headers de la tabla -->
+    <g transform="translate(20,52)">
+      <text x="0" y="14" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.08em">TIMESTAMP (UTC)</text>
+      <text x="180" y="14" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.08em">ACTION</text>
+      <text x="290" y="14" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.08em">FILE</text>
+      <text x="700" y="14" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.08em">REASON</text>
+      <text x="1100" y="14" fill="#8B949E" font-size="11" font-weight="600" letter-spacing="0.08em">ARCHIVED TO</text>
+      <line x1="-4" y1="22" x2="1356" y2="22" stroke="#21262D" stroke-width="1"/>
+    </g>
+
+    <!-- Row 1 — cleanup OK -->
+    <g transform="translate(20,84)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+      <rect x="-4" y="-12" width="1360" height="32" rx="4" fill="rgba(63,185,80,0.06)"/>
+      <text x="0" y="6" fill="#B1BAC4">2026-05-29 14:21:08Z</text>
+      <g transform="translate(180,-9)">
+        <rect width="84" height="20" rx="10" fill="rgba(63,185,80,0.16)" stroke="#196C2E" stroke-width="1"/>
+        <text x="42" y="14" fill="#3FB950" font-weight="600" text-anchor="middle" font-size="10">cleanup</text>
+      </g>
+      <text x="290" y="6" fill="#E6EDF3">desarrollo/dev/pendiente/3201.guru.comment.md</text>
+      <text x="700" y="6" fill="#B1BAC4">orphaned (issue #3201 CLOSED, no .work/.build in parent)</text>
+      <text x="1100" y="6" fill="#8B949E" font-size="10">archivado/ghost-20260529-142108/...</text>
+    </g>
+
+    <!-- Row 2 — cleanup OK -->
+    <g transform="translate(20,124)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+      <rect x="-4" y="-12" width="1360" height="32" rx="4" fill="rgba(63,185,80,0.06)"/>
+      <text x="0" y="6" fill="#B1BAC4">2026-05-29 14:21:08Z</text>
+      <g transform="translate(180,-9)">
+        <rect width="84" height="20" rx="10" fill="rgba(63,185,80,0.16)" stroke="#196C2E" stroke-width="1"/>
+        <text x="42" y="14" fill="#3FB950" font-weight="600" text-anchor="middle" font-size="10">cleanup</text>
+      </g>
+      <text x="290" y="6" fill="#E6EDF3">desarrollo/build/pendiente/3201.guidance.txt</text>
+      <text x="700" y="6" fill="#B1BAC4">orphaned (issue #3201 CLOSED, no .work/.build in parent)</text>
+      <text x="1100" y="6" fill="#8B949E" font-size="10">archivado/ghost-20260529-142108/...</text>
+    </g>
+
+    <!-- Row 3 — cleanup OK -->
+    <g transform="translate(20,164)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+      <rect x="-4" y="-12" width="1360" height="32" rx="4" fill="rgba(63,185,80,0.06)"/>
+      <text x="0" y="6" fill="#B1BAC4">2026-05-29 14:21:08Z</text>
+      <g transform="translate(180,-9)">
+        <rect width="84" height="20" rx="10" fill="rgba(63,185,80,0.16)" stroke="#196C2E" stroke-width="1"/>
+        <text x="42" y="14" fill="#3FB950" font-weight="600" text-anchor="middle" font-size="10">cleanup</text>
+      </g>
+      <text x="290" y="6" fill="#E6EDF3">definicion/criterios/pendiente/3104.po.reason.json</text>
+      <text x="700" y="6" fill="#B1BAC4">orphaned (issue #3104 CLOSED, no .work/.build in parent)</text>
+      <text x="1100" y="6" fill="#8B949E" font-size="10">archivado/ghost-20260529-142108/...</text>
+    </g>
+
+    <!-- Row 4 — no-op (ya archivado) -->
+    <g transform="translate(20,204)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+      <text x="0" y="6" fill="#B1BAC4">2026-05-29 13:39:43Z</text>
+      <g transform="translate(180,-9)">
+        <rect width="84" height="20" rx="10" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-width="1"/>
+        <text x="42" y="14" fill="#B1BAC4" font-weight="600" text-anchor="middle" font-size="10">no-op</text>
+      </g>
+      <text x="290" y="6" fill="#E6EDF3">definicion/criterios/pendiente/3076.po.comment.md</text>
+      <text x="700" y="6" fill="#B1BAC4">already archived (bucket ghost-20260529-133929 existe)</text>
+      <text x="1100" y="6" fill="#8B949E" font-size="10">— sin nuevo bucket</text>
+    </g>
+
+    <!-- Row 5 — skip por gh down -->
+    <g transform="translate(20,244)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+      <rect x="-4" y="-12" width="1360" height="32" rx="4" fill="rgba(88,166,255,0.06)"/>
+      <text x="0" y="6" fill="#B1BAC4">2026-05-29 08:15:02Z</text>
+      <g transform="translate(180,-9)">
+        <rect width="84" height="20" rx="10" fill="rgba(88,166,255,0.16)" stroke="#1F6FEB" stroke-width="1"/>
+        <text x="42" y="14" fill="#58A6FF" font-weight="600" text-anchor="middle" font-size="10">skip</text>
+      </g>
+      <text x="290" y="6" fill="#E6EDF3">desarrollo/dev/pendiente/3555.android-dev.comment.md</text>
+      <text x="700" y="6" fill="#58A6FF">gh unavailable (timeout 10s, exit 1) — fail-safe</text>
+      <text x="1100" y="6" fill="#8B949E" font-size="10">— sin accion (reintento al proximo tick)</text>
+    </g>
+
+    <!-- Row 6 — skip por symlink (CA-SEC-2) -->
+    <g transform="translate(20,284)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+      <text x="0" y="6" fill="#B1BAC4">2026-05-29 02:00:00Z</text>
+      <g transform="translate(180,-9)">
+        <rect width="84" height="20" rx="10" fill="rgba(88,166,255,0.16)" stroke="#1F6FEB" stroke-width="1"/>
+        <text x="42" y="14" fill="#58A6FF" font-weight="600" text-anchor="middle" font-size="10">skip</text>
+      </g>
+      <text x="290" y="6" fill="#E6EDF3">definicion/criterios/pendiente/9999.po.comment.md</text>
+      <text x="700" y="6" fill="#58A6FF">symlink rechazado (lstat.isSymbolicLink === true)</text>
+      <text x="1100" y="6" fill="#8B949E" font-size="10">— sin accion (anti-attack)</text>
+    </g>
+
+    <!-- Row 7 — skip por lock busy -->
+    <g transform="translate(20,324)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+      <rect x="-4" y="-12" width="1360" height="32" rx="4" fill="rgba(88,166,255,0.06)"/>
+      <text x="0" y="6" fill="#B1BAC4">2026-05-28 20:00:00Z</text>
+      <g transform="translate(180,-9)">
+        <rect width="84" height="20" rx="10" fill="rgba(88,166,255,0.16)" stroke="#1F6FEB" stroke-width="1"/>
+        <text x="42" y="14" fill="#58A6FF" font-weight="600" text-anchor="middle" font-size="10">skip</text>
+      </g>
+      <text x="290" y="6" fill="#E6EDF3">— (sweep no inicio)</text>
+      <text x="700" y="6" fill="#58A6FF">lock busy (.pipeline/locks/ghost-cleaner.lock, timeout 5s)</text>
+      <text x="1100" y="6" fill="#8B949E" font-size="10">— sin accion (otro proceso activo)</text>
+    </g>
+
+    <!-- Row 8 — cleanup OK (entrada del bootstrap inicial) -->
+    <g transform="translate(20,364)" font-family="'SF Mono', Consolas, monospace" font-size="11">
+      <text x="0" y="6" fill="#B1BAC4">2026-05-29 13:39:43Z</text>
+      <g transform="translate(180,-9)">
+        <rect width="84" height="20" rx="10" fill="rgba(63,185,80,0.16)" stroke="#196C2E" stroke-width="1"/>
+        <text x="42" y="14" fill="#3FB950" font-weight="600" text-anchor="middle" font-size="10">cleanup</text>
+      </g>
+      <text x="290" y="6" fill="#E6EDF3">definicion/criterios/pendiente/3076.po.comment.md</text>
+      <text x="700" y="6" fill="#B1BAC4">orphaned (issue #3076 CLOSED, manual bootstrap)</text>
+      <text x="1100" y="6" fill="#8B949E" font-size="10">archivado/ghost-20260529-133929/...</text>
+    </g>
+
+    <!-- Footer de la tabla -->
+    <g transform="translate(20,420)">
+      <line x1="-4" y1="0" x2="1356" y2="0" stroke="#21262D" stroke-width="1"/>
+      <text x="0" y="22" fill="#8B949E" font-size="12">8 de 8 entries · archivo 4.2 KB · rotacion pendiente a 10 MB (issue #3645)</text>
+      <g transform="translate(1080,8)">
+        <rect width="124" height="28" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+        <text x="62" y="18" fill="#B1BAC4" font-size="12" font-weight="500" text-anchor="middle">Filtrar action</text>
+      </g>
+      <g transform="translate(1216,8)">
+        <rect width="140" height="28" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+        <text x="70" y="18" fill="#B1BAC4" font-size="12" font-weight="500" text-anchor="middle">Descargar JSONL</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- LEYENDA INFERIOR — semantica de action chips                              -->
+  <!-- ========================================================================= -->
+  <g transform="translate(24,876)">
+    <text x="0" y="0" fill="#8B949E" font-size="12">Leyenda:</text>
+    <g transform="translate(72,-10)">
+      <rect width="84" height="20" rx="10" fill="rgba(63,185,80,0.16)" stroke="#196C2E" stroke-width="1"/>
+      <text x="42" y="14" fill="#3FB950" font-weight="600" text-anchor="middle" font-size="10" font-family="'SF Mono', Consolas, monospace">cleanup</text>
+    </g>
+    <text x="166" y="0" fill="#B1BAC4" font-size="11">archivado OK</text>
+    <g transform="translate(260,-10)">
+      <rect width="84" height="20" rx="10" fill="rgba(177,186,196,0.10)" stroke="#484F58" stroke-width="1"/>
+      <text x="42" y="14" fill="#B1BAC4" font-weight="600" text-anchor="middle" font-size="10" font-family="'SF Mono', Consolas, monospace">no-op</text>
+    </g>
+    <text x="354" y="0" fill="#B1BAC4" font-size="11">ya archivado (idempotencia)</text>
+    <g transform="translate(520,-10)">
+      <rect width="84" height="20" rx="10" fill="rgba(88,166,255,0.16)" stroke="#1F6FEB" stroke-width="1"/>
+      <text x="42" y="14" fill="#58A6FF" font-weight="600" text-anchor="middle" font-size="10" font-family="'SF Mono', Consolas, monospace">skip</text>
+    </g>
+    <text x="614" y="0" fill="#B1BAC4" font-size="11">postergado por fail-safe (gh down · symlink · lock busy)</text>
+    <g transform="translate(908,-10)">
+      <rect width="84" height="20" rx="10" fill="rgba(248,81,73,0.16)" stroke="#8B1A14" stroke-width="1"/>
+      <text x="42" y="14" fill="#F85149" font-weight="600" text-anchor="middle" font-size="10" font-family="'SF Mono', Consolas, monospace">error</text>
+    </g>
+    <text x="1002" y="0" fill="#B1BAC4" font-size="11">excepcion no recuperable (sweep abortado)</text>
+  </g>
+</svg>

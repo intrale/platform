@@ -1,0 +1,331 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mockup 27 — Rediseño ventana Equipo V3 (#3727, split de #3715)
+  ============================================================================
+  Spec de diseño vinculante para la extracción de la ventana Equipo del
+  monolito .pipeline/dashboard.js → .pipeline/views/dashboard/equipo.js.
+
+  Render previsto: kiosk dashboard del operador (localhost, dark-first).
+  Todos los colores provienen de .pipeline/assets/design-tokens.css — CERO
+  colores nuevos. Emojis de AGENT_PERSONA se mantienen literales (identidad
+  de cada agente).
+
+  Estructura de la ventana (entry point único renderEquipoSsr(state)):
+    1. eq-head      → título 🧠 Equipo + chevron colapsable + popout ↗ + summary
+    2. active-strip → eq-active-cards: agentes corriendo ahora (provider badge)
+    3. eq-areas-grid 2×2 → Producto · Desarrollo · Calidad · Operaciones,
+                            cada categoría con sus persona-chips
+    4. eq-svc-section → Servicios en 3 capas (Intake / Processing / Output)
+                        — Opción A: Servicios viaja con Equipo (#3732 migra a Ops)
+
+  Decisiones cerradas (alineadas con architect signoff + criterios PO):
+    - Rail vertical 4px gradient brand-cyan→purple→success como identidad
+      del panel (.bar-section.panel-equipo::before, L4256).
+    - Función pura renderEquipoSsr(state); personaCard + eqAreaGrid + servicios
+      como helpers privados del módulo.
+    - Tokens consumidos exclusivamente desde design-tokens.css.
+    - Fallback visible '<span class="empty-label">Equipo no disponible</span>'.
+    - Tooltips obligatorios en cada chip persona y cada acción de servicio,
+      escapados con escapeHtmlAttr() de lib/escape-html.js (#3722, CLOSED).
+
+  Seguridad (CA-Equipo-2/3/4):
+    - escapeHtmlBody() en cuerpo, escapeHtmlAttr() en title=/aria-label=/data-*=.
+    - tip.replace(/"/g,'&quot;') (L2607) → escapeHtmlAttr(tip).
+    - style="background:${p.color}" validado regex ^#[0-9a-fA-F]{3,8}$|^var\(--[a-z0-9-]+\)$.
+    - href de logs: whitelist /logs/view/ + encodeURIComponent.
+
+  WCAG AA: todos los ratios de texto ≥ 4.5:1 sobre surface-0/surface-1;
+  estados nunca sólo por color (icono + badge ×N + texto en tooltip).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1680 1500"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <linearGradient id="railEquipo" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#00D6FF"/>
+      <stop offset="50%"  stop-color="#BC8CFF"/>
+      <stop offset="100%" stop-color="#3FB950"/>
+    </linearGradient>
+    <linearGradient id="brandText" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#00D6FF"/>
+      <stop offset="100%" stop-color="#1890FF"/>
+    </linearGradient>
+    <filter id="elev" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#000" flood-opacity="0.40"/>
+    </filter>
+  </defs>
+
+  <!-- ============================================================ BACKGROUND -->
+  <rect x="0" y="0" width="1680" height="1500" fill="#0D1117"/>
+
+  <!-- ============================================================ HEADER -->
+  <text x="40" y="52" fill="#E6EDF3" font-size="26" font-weight="700">Issue #3727 — Rediseño ventana Equipo V3</text>
+  <text x="40" y="82" fill="#8B949E" font-size="15">Mockup UX · split de #3715 · personas + servicios · eq-areas-grid 2×2 · 3 capas de servicios · tokens design-tokens.css · WCAG AA</text>
+  <rect x="40" y="98" width="1600" height="1" fill="#21262D"/>
+
+  <!-- ============================================================ PANEL V3 (principal) -->
+  <g transform="translate(40, 120)">
+    <!-- card -->
+    <rect x="0" y="0" width="1000" height="1340" rx="16" fill="#161B22" stroke="#30363D" stroke-width="1" filter="url(#elev)"/>
+    <!-- rail identidad: cyan→purple→success -->
+    <rect x="0" y="0" width="5" height="1340" rx="2.5" fill="url(#railEquipo)"/>
+
+    <!-- ─────────────────────────── eq-head ─────────────────────────── -->
+    <g transform="translate(28, 30)">
+      <text x="0" y="22" fill="#8B949E" font-size="16">▼</text>
+      <text x="26" y="24" fill="#E6EDF3" font-size="22" font-weight="700">🧠 Equipo</text>
+      <!-- popout -->
+      <text x="922" y="22" fill="#8B949E" font-size="20">↗</text>
+      <!-- summary -->
+      <g transform="translate(0, 46)" font-size="14" fill="#8B949E">
+        <text x="0" y="14">Activos <tspan fill="#E6EDF3" font-weight="700">3</tspan>/15</text>
+        <text x="120" y="14">·</text>
+        <text x="140" y="14">Utilización <tspan fill="#E6EDF3" font-weight="700">20%</tspan></text>
+        <text x="300" y="14">·</text>
+        <text x="320" y="14">Cola <tspan fill="#E6EDF3" font-weight="700">4</tspan></text>
+      </g>
+      <rect x="0" y="72" width="944" height="1" fill="#30363D"/>
+    </g>
+
+    <!-- ─────────────────────────── active-strip ─────────────────────────── -->
+    <g transform="translate(28, 142)">
+      <text x="0" y="12" fill="#6E7681" font-size="11" font-weight="700" letter-spacing="0.8">EN EJECUCIÓN AHORA</text>
+      <!-- card android-dev #1949 -->
+      <g transform="translate(0, 22)">
+        <rect x="0" y="0" width="300" height="62" rx="10" fill="#1C2128" stroke="#30363D"/>
+        <circle cx="26" cy="31" r="15" fill="#58A6FF"/>
+        <text x="26" y="36" text-anchor="middle" font-size="15">📱</text>
+        <text x="50" y="26" fill="#E6EDF3" font-size="14" font-weight="700">AndroidDev</text>
+        <text x="50" y="44" fill="#8B949E" font-size="12">#1949 · validando</text>
+        <rect x="214" y="10" width="76" height="18" rx="9" fill="rgba(88,166,255,0.14)"/>
+        <text x="252" y="23" text-anchor="middle" fill="#58A6FF" font-size="10" font-weight="700">claude:opus</text>
+        <rect x="214" y="36" width="76" height="6" rx="3" fill="#30363D"/>
+        <rect x="214" y="36" width="50" height="6" rx="3" fill="#58A6FF"/>
+      </g>
+      <!-- card backend-dev #3722 -->
+      <g transform="translate(322, 22)">
+        <rect x="0" y="0" width="300" height="62" rx="10" fill="#1C2128" stroke="#30363D"/>
+        <circle cx="26" cy="31" r="15" fill="#3FB950"/>
+        <text x="26" y="36" text-anchor="middle" font-size="15">⚡</text>
+        <text x="50" y="26" fill="#E6EDF3" font-size="14" font-weight="700">BackendDev</text>
+        <text x="50" y="44" fill="#8B949E" font-size="12">#3736 · escribiendo</text>
+        <rect x="214" y="10" width="76" height="18" rx="9" fill="rgba(63,185,80,0.14)"/>
+        <text x="252" y="23" text-anchor="middle" fill="#3FB950" font-size="10" font-weight="700">codex</text>
+        <rect x="214" y="36" width="76" height="6" rx="3" fill="#30363D"/>
+        <rect x="214" y="36" width="32" height="6" rx="3" fill="#3FB950"/>
+      </g>
+      <!-- card ux #3727 (este issue) -->
+      <g transform="translate(644, 22)">
+        <rect x="0" y="0" width="300" height="62" rx="10" fill="#1C2128" stroke="#f778ba" stroke-opacity="0.5"/>
+        <circle cx="26" cy="31" r="15" fill="#F778BA"/>
+        <text x="26" y="36" text-anchor="middle" font-size="15">🎨</text>
+        <text x="50" y="26" fill="#E6EDF3" font-size="14" font-weight="700">UX</text>
+        <text x="50" y="44" fill="#8B949E" font-size="12">#3727 · mockup Equipo</text>
+        <rect x="214" y="10" width="76" height="18" rx="9" fill="rgba(247,120,186,0.16)"/>
+        <text x="252" y="23" text-anchor="middle" fill="#F778BA" font-size="10" font-weight="700">claude</text>
+        <rect x="214" y="36" width="76" height="6" rx="3" fill="#30363D"/>
+        <rect x="214" y="36" width="60" height="6" rx="3" fill="#F778BA"/>
+      </g>
+    </g>
+
+    <!-- ─────────────────────────── eq-areas-grid 2×2 ─────────────────────────── -->
+    <!-- Cada area-card: head (dot color categoría + label + sub) + chips persona -->
+
+    <!-- PRODUCTO (#d29922) -->
+    <g transform="translate(28, 252)">
+      <rect x="0" y="0" width="458" height="232" rx="12" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="20" cy="28" r="6" fill="#D29922"/>
+      <text x="34" y="33" fill="#E6EDF3" font-size="15" font-weight="700">Producto</text>
+      <text x="438" y="33" text-anchor="end" fill="#8B949E" font-size="12"><tspan fill="#E6EDF3" font-weight="700">2</tspan>/3 libres · <tspan fill="#3FB950">1 activo</tspan></text>
+      <!-- chips -->
+      <g transform="translate(18, 56)">
+        <!-- po -->
+        <g><rect x="0" y="0" width="138" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#D29922"/><text x="22" y="25" text-anchor="middle" font-size="13">📋</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">PO</text></g>
+        <!-- ux (busy ×1) -->
+        <g transform="translate(154, 0)"><rect x="0" y="0" width="158" height="40" rx="20" fill="#252B33" stroke="#F778BA" stroke-opacity="0.7"/><circle cx="22" cy="20" r="13" fill="#F778BA"/><text x="22" y="25" text-anchor="middle" font-size="13">🎨</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">UX</text><circle cx="140" cy="20" r="5" fill="#3FB950"/></g>
+        <!-- planner -->
+        <g transform="translate(0, 52)"><rect x="0" y="0" width="158" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#A371F7"/><text x="22" y="25" text-anchor="middle" font-size="13">📐</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">Planner</text></g>
+      </g>
+      <text x="18" y="218" fill="#6E7681" font-size="11">tooltip: «UX — 1 issue en ejecución (#3727)» · escapeHtmlAttr()</text>
+    </g>
+
+    <!-- DESARROLLO (#3fb950) -->
+    <g transform="translate(514, 252)">
+      <rect x="0" y="0" width="458" height="232" rx="12" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="20" cy="28" r="6" fill="#3FB950"/>
+      <text x="34" y="33" fill="#E6EDF3" font-size="15" font-weight="700">Desarrollo</text>
+      <text x="438" y="33" text-anchor="end" fill="#8B949E" font-size="12"><tspan fill="#E6EDF3" font-weight="700">1</tspan>/3 libres · <tspan fill="#3FB950">2 activos</tspan></text>
+      <g transform="translate(18, 56)">
+        <!-- backend-dev busy ×2 -->
+        <g><rect x="0" y="0" width="178" height="40" rx="20" fill="#252B33" stroke="#3FB950" stroke-opacity="0.7"/><circle cx="22" cy="20" r="13" fill="#3FB950"/><text x="22" y="25" text-anchor="middle" font-size="13">⚡</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">BackendDev</text><rect x="138" y="9" width="30" height="20" rx="10" fill="#3FB950"/><text x="153" y="23" text-anchor="middle" fill="#0D1117" font-size="11" font-weight="800">×2</text></g>
+        <!-- android-dev busy ×1 -->
+        <g transform="translate(0, 52)"><rect x="0" y="0" width="178" height="40" rx="20" fill="#252B33" stroke="#58A6FF" stroke-opacity="0.7"/><circle cx="22" cy="20" r="13" fill="#58A6FF"/><text x="22" y="25" text-anchor="middle" font-size="13">📱</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">AndroidDev</text><circle cx="160" cy="20" r="5" fill="#3FB950"/></g>
+        <!-- web-dev idle -->
+        <g transform="translate(194, 52)"><rect x="0" y="0" width="150" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#79C0FF"/><text x="22" y="25" text-anchor="middle" font-size="13">🌐</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">WebDev</text></g>
+      </g>
+      <text x="18" y="218" fill="#6E7681" font-size="11">badge ×N + borde + dot: estado nunca sólo por color (WCAG)</text>
+    </g>
+
+    <!-- CALIDAD (#d2a8ff) -->
+    <g transform="translate(28, 504)">
+      <rect x="0" y="0" width="458" height="232" rx="12" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="20" cy="28" r="6" fill="#D2A8FF"/>
+      <text x="34" y="33" fill="#E6EDF3" font-size="15" font-weight="700">Calidad</text>
+      <text x="438" y="33" text-anchor="end" fill="#8B949E" font-size="12"><tspan fill="#E6EDF3" font-weight="700">4</tspan> libres</text>
+      <g transform="translate(18, 56)">
+        <g><rect x="0" y="0" width="140" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#D2A8FF"/><text x="22" y="25" text-anchor="middle" font-size="13">🧪</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">Tester</text></g>
+        <g transform="translate(156, 0)"><rect x="0" y="0" width="120" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#3FB950"/><text x="22" y="25" text-anchor="middle" font-size="13">✅</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">QA</text></g>
+        <g transform="translate(0, 52)"><rect x="0" y="0" width="140" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#FFA657"/><text x="22" y="25" text-anchor="middle" font-size="13">👁</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">Review</text></g>
+        <g transform="translate(156, 52)"><rect x="0" y="0" width="150" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#F85149"/><text x="22" y="25" text-anchor="middle" font-size="13">🔒</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">Security</text></g>
+      </g>
+      <text x="18" y="218" fill="#6E7681" font-size="11">tasa de aprobación + 📈 runs en tooltip de cada persona-card</text>
+    </g>
+
+    <!-- OPERACIONES (#58a6ff) -->
+    <g transform="translate(514, 504)">
+      <rect x="0" y="0" width="458" height="232" rx="12" fill="#1C2128" stroke="#30363D"/>
+      <circle cx="20" cy="28" r="6" fill="#58A6FF"/>
+      <text x="34" y="33" fill="#E6EDF3" font-size="15" font-weight="700">Operaciones</text>
+      <text x="438" y="33" text-anchor="end" fill="#8B949E" font-size="12"><tspan fill="#E6EDF3" font-weight="700">4</tspan> libres</text>
+      <g transform="translate(18, 56)">
+        <g><rect x="0" y="0" width="130" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#BC8CFF"/><text x="22" y="25" text-anchor="middle" font-size="13">🧠</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">Guru</text></g>
+        <g transform="translate(146, 0)"><rect x="0" y="0" width="120" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#D29922"/><text x="22" y="25" text-anchor="middle" font-size="13">⚡</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">Perf</text></g>
+        <g transform="translate(0, 52)"><rect x="0" y="0" width="130" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#8B949E"/><text x="22" y="25" text-anchor="middle" font-size="13">🏗</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">Builder</text></g>
+        <g transform="translate(146, 52)"><rect x="0" y="0" width="150" height="40" rx="20" fill="#252B33" stroke="#30363D"/><circle cx="22" cy="20" r="13" fill="#F0883E"/><text x="22" y="25" text-anchor="middle" font-size="13">🚀</text><text x="44" y="25" fill="#E6EDF3" font-size="13" font-weight="600">Delivery</text></g>
+      </g>
+      <text x="18" y="218" fill="#6E7681" font-size="11">AGENT_PERSONA hardcoded — no se vuelve dinámico (CA-Equipo-3)</text>
+    </g>
+
+    <!-- ─────────────────────────── eq-svc-section (3 capas) ─────────────────────────── -->
+    <g transform="translate(28, 766)">
+      <rect x="0" y="0" width="944" height="1" fill="#30363D"/>
+      <text x="0" y="26" fill="#8B949E" font-size="12" font-weight="700" letter-spacing="0.8">⚙ SERVICIOS · Opción A (migración → Ops en #3732)</text>
+
+      <!-- INTAKE -->
+      <g transform="translate(0, 40)">
+        <text x="0" y="12" fill="#58A6FF" font-size="11" font-weight="700">INTAKE</text>
+        <g transform="translate(0, 20)">
+          <rect x="0" y="0" width="300" height="56" rx="10" fill="#1C2128" stroke="#30363D"/>
+          <text x="18" y="34" font-size="18">📨</text><text x="44" y="28" fill="#E6EDF3" font-size="13" font-weight="600">Telegram</text><text x="44" y="45" fill="#8B949E" font-size="11">listener · svc-telegram</text>
+          <circle cx="280" cy="28" r="6" fill="#3FB950"/>
+        </g>
+        <g transform="translate(322, 20)">
+          <rect x="0" y="0" width="300" height="56" rx="10" fill="#1C2128" stroke="#30363D"/>
+          <text x="18" y="34" font-size="18">🐙</text><text x="44" y="28" fill="#E6EDF3" font-size="13" font-weight="600">GitHub</text><text x="44" y="45" fill="#8B949E" font-size="11">svc-github</text>
+          <circle cx="280" cy="28" r="6" fill="#3FB950"/>
+        </g>
+      </g>
+
+      <!-- PROCESSING -->
+      <g transform="translate(0, 140)">
+        <text x="0" y="12" fill="#BC8CFF" font-size="11" font-weight="700">PROCESSING</text>
+        <g transform="translate(0, 20)">
+          <rect x="0" y="0" width="300" height="56" rx="10" fill="#1C2128" stroke="#30363D"/>
+          <text x="18" y="34" font-size="18">🐙</text><text x="44" y="28" fill="#E6EDF3" font-size="13" font-weight="600">Pulpo</text><text x="44" y="45" fill="#8B949E" font-size="11">orquestador</text>
+          <circle cx="280" cy="28" r="6" fill="#3FB950"/>
+        </g>
+        <g transform="translate(322, 20)">
+          <rect x="0" y="0" width="300" height="56" rx="10" fill="#1C2128" stroke="#30363D"/>
+          <text x="18" y="34" font-size="18">📤</text><text x="44" y="28" fill="#E6EDF3" font-size="13" font-weight="600">Outbox</text><text x="44" y="45" fill="#8B949E" font-size="11">outbox-drain</text>
+          <circle cx="280" cy="28" r="6" fill="#3FB950"/>
+        </g>
+        <g transform="translate(644, 20)">
+          <rect x="0" y="0" width="300" height="56" rx="10" fill="#1C2128" stroke="#30363D"/>
+          <text x="18" y="34" font-size="18">📊</text><text x="44" y="28" fill="#E6EDF3" font-size="13" font-weight="600">Dashboard</text><text x="44" y="45" fill="#8B949E" font-size="11">kiosk localhost</text>
+          <circle cx="280" cy="28" r="6" fill="#3FB950"/>
+        </g>
+      </g>
+
+      <!-- OUTPUT -->
+      <g transform="translate(0, 240)">
+        <text x="0" y="12" fill="#D29922" font-size="11" font-weight="700">OUTPUT</text>
+        <g transform="translate(0, 20)">
+          <rect x="0" y="0" width="300" height="56" rx="10" fill="#1C2128" stroke="#30363D"/>
+          <text x="18" y="34" font-size="18">📁</text><text x="44" y="28" fill="#E6EDF3" font-size="13" font-weight="600">Drive</text><text x="44" y="45" fill="#8B949E" font-size="11">svc-drive</text>
+          <circle cx="280" cy="28" r="6" fill="#3FB950"/>
+        </g>
+        <g transform="translate(322, 20)">
+          <rect x="0" y="0" width="300" height="56" rx="10" fill="#1C2128" stroke="#30363D"/>
+          <text x="18" y="34" font-size="18">📱</text><text x="44" y="28" fill="#E6EDF3" font-size="13" font-weight="600">Emulador</text><text x="44" y="45" fill="#8B949E" font-size="11">svc-emulador</text>
+          <circle cx="280" cy="28" r="6" fill="#3FB950"/>
+        </g>
+        <!-- acción operativa con tooltip -->
+        <g transform="translate(644, 20)">
+          <rect x="0" y="0" width="300" height="56" rx="10" fill="#161B22" stroke="#30363D" stroke-dasharray="4 3"/>
+          <text x="18" y="34" font-size="14" fill="#8B949E">⏯</text>
+          <text x="44" y="28" fill="#B1BAC4" font-size="12">start/stop por servicio</text>
+          <text x="44" y="45" fill="#6E7681" font-size="10">title + aria-label escapados</text>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- ============================================================ SIDEBAR ANOTACIONES -->
+  <g transform="translate(1080, 120)">
+
+    <!-- Tokens consumidos -->
+    <rect x="0" y="0" width="560" height="318" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="30" fill="#E6EDF3" font-size="15" font-weight="700">Tokens consumidos · design-tokens.css</text>
+    <text x="20" y="50" fill="#8B949E" font-size="11">cero colores hardcoded — todo referencia variables CSS</text>
+    <g transform="translate(20, 66)" font-size="12">
+      <g><rect x="0" y="0" width="22" height="22" rx="4" fill="#0D1117" stroke="#30363D"/><text x="32" y="16" fill="#B1BAC4">--surface-0 · #0D1117 (body)</text></g>
+      <g transform="translate(0,30)"><rect x="0" y="0" width="22" height="22" rx="4" fill="#161B22" stroke="#30363D"/><text x="32" y="16" fill="#B1BAC4">--surface-1 · #161B22 (panel)</text></g>
+      <g transform="translate(0,60)"><rect x="0" y="0" width="22" height="22" rx="4" fill="#1C2128"/><text x="32" y="16" fill="#B1BAC4">--surface-2 · #1C2128 (cards)</text></g>
+      <g transform="translate(0,90)"><rect x="0" y="0" width="22" height="22" rx="4" fill="#252B33"/><text x="32" y="16" fill="#B1BAC4">--surface-3 · #252B33 (chips)</text></g>
+      <g transform="translate(0,120)"><rect x="0" y="0" width="22" height="22" rx="4" fill="#D29922"/><rect x="120" y="0" width="22" height="22" rx="4" fill="#3FB950"/><rect x="240" y="0" width="22" height="22" rx="4" fill="#D2A8FF"/><rect x="360" y="0" width="22" height="22" rx="4" fill="#58A6FF"/><text x="0" y="40" fill="#8B949E" font-size="11">CATEGORY_META: Producto · Desarrollo · Calidad · Operaciones</text></g>
+      <g transform="translate(0,182)"><rect x="0" y="0" width="22" height="22" rx="4" fill="#E6EDF3"/><text x="32" y="16" fill="#B1BAC4">--text-primary #E6EDF3 · 14.8:1 sobre surface-0</text></g>
+    </g>
+
+    <!-- WCAG AA -->
+    <rect x="0" y="338" width="560" height="262" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="368" fill="#E6EDF3" font-size="15" font-weight="700">WCAG AA — contrastes verificados</text>
+    <g transform="translate(20, 388)" font-size="12" fill="#B1BAC4">
+      <text x="0" y="16">Texto principal (#E6EDF3 / surface-0)</text><text x="540" y="16" text-anchor="end" fill="#3FB950" font-weight="700">14.8:1 ✓</text>
+      <text x="0" y="42">Texto secundario (#B1BAC4 / surface-1)</text><text x="540" y="42" text-anchor="end" fill="#3FB950" font-weight="700">9.7:1 ✓</text>
+      <text x="0" y="68">Texto dim (#8B949E / surface-0)</text><text x="540" y="68" text-anchor="end" fill="#3FB950" font-weight="700">5.3:1 ✓</text>
+      <text x="0" y="94">Categoría Producto (#D29922 / surface-2)</text><text x="540" y="94" text-anchor="end" fill="#3FB950" font-weight="700">≥3:1 ✓ (icono)</text>
+      <text x="0" y="120">Activo verde (#3FB950 / surface-2)</text><text x="540" y="120" text-anchor="end" fill="#3FB950" font-weight="700">≥3:1 ✓</text>
+      <text x="0" y="152" fill="#8B949E" font-size="11">Estado nunca sólo por color: icono + badge ×N + dot + texto</text>
+      <text x="0" y="172" fill="#8B949E" font-size="11">en tooltip. Touch targets ≥ 24×24px. Foco con --border-strong.</text>
+      <text x="0" y="200" fill="#8B949E" font-size="11">aria-label redundante en iconos sin texto (chevron, popout, ⏯).</text>
+    </g>
+
+    <!-- Seguridad -->
+    <rect x="0" y="620" width="560" height="276" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="650" fill="#E6EDF3" font-size="15" font-weight="700">Seguridad · lib/escape-html.js (#3722 CLOSED)</text>
+    <g transform="translate(20, 670)" font-size="12" fill="#B1BAC4">
+      <text x="0" y="16"><tspan fill="#F778BA" font-weight="700">CA-2</tspan> escapeHtmlBody() en cuerpo · escapeHtmlAttr() en</text>
+      <text x="0" y="34">title= / aria-label= / data-*= / href= parcial.</text>
+      <text x="0" y="60"><tspan fill="#F778BA" font-weight="700">CA-2</tspan> tip.replace(/"/g,'&amp;quot;') (L2607) → escapeHtmlAttr(tip).</text>
+      <text x="0" y="86"><tspan fill="#F778BA" font-weight="700">CA-3</tspan> style="background:${p.color}" validado regex</text>
+      <text x="0" y="104" font-family="monospace" fill="#8B949E" font-size="11">^#[0-9a-fA-F]{3,8}$|^var\(--[a-z0-9-]+\)$</text>
+      <text x="0" y="130"><tspan fill="#F778BA" font-weight="700">CA-4</tspan> href logs: whitelist /logs/view/ + encodeURIComponent.</text>
+      <text x="0" y="156"><tspan fill="#F778BA" font-weight="700">CA-5</tspan> test SSR con 5 vectores XSS canónicos (img onerror,</text>
+      <text x="0" y="174">javascript:, ';alert//, &lt;/script&gt;, doble-escape).</text>
+      <text x="0" y="200" fill="#8B949E" font-size="11">No leak de internals: nada de process.env ni paths del FS.</text>
+      <text x="0" y="226" fill="#8B949E" font-size="11">Fallback visible (no return ''): «Equipo no disponible».</text>
+    </g>
+
+    <!-- Mapa de criterios -->
+    <rect x="0" y="916" width="560" height="424" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="20" y="946" fill="#E6EDF3" font-size="15" font-weight="700">Mapa de criterios (CA-Equipo-1..12)</text>
+    <g transform="translate(20, 966)" font-size="12" fill="#B1BAC4">
+      <text x="0" y="16"><tspan fill="#58A6FF" font-weight="700">CA-1</tspan> renderEquipoSsr(state) función pura · registro try/catch</text>
+      <text x="0" y="42"><tspan fill="#58A6FF" font-weight="700">CA-2</tspan> escape-html.js obligatorio (sin helper local)</text>
+      <text x="0" y="68"><tspan fill="#58A6FF" font-weight="700">CA-3</tspan> CSS injection mitigado · AGENT_PERSONA hardcoded</text>
+      <text x="0" y="94"><tspan fill="#58A6FF" font-weight="700">CA-4</tspan> href seguro (whitelist + encodeURIComponent)</text>
+      <text x="0" y="120"><tspan fill="#58A6FF" font-weight="700">CA-5</tspan> tests node --test · ≥80% líneas · 5 vectores XSS</text>
+      <text x="0" y="146"><tspan fill="#58A6FF" font-weight="700">CA-6</tspan> smoke curl id="equipo" + bar-section panel-equipo</text>
+      <text x="0" y="172"><tspan fill="#58A6FF" font-weight="700">CA-7</tspan> inventario dashboard-v3-inventory.md + nota Ops→#3732</text>
+      <text x="0" y="198"><tspan fill="#58A6FF" font-weight="700">CA-8</tspan> CSS .eq-* / .persona-* migra a views/dashboard/theme.css</text>
+      <text x="0" y="224"><tspan fill="#58A6FF" font-weight="700">CA-9</tspan> tooltips operativos (Servicios start/stop) escapados</text>
+      <text x="0" y="250"><tspan fill="#58A6FF" font-weight="700">CA-10</tspan> fallback visible (no silencioso)</text>
+      <text x="0" y="276"><tspan fill="#58A6FF" font-weight="700">CA-11</tspan> WCAG AA · contraste ≥4.5:1 · navegación teclado</text>
+      <text x="0" y="302"><tspan fill="#58A6FF" font-weight="700">CA-12</tspan> este mockup + screenshot real vs mockup lado a lado</text>
+      <text x="0" y="338" fill="#8B949E" font-size="11">Layout = eq-head + active-strip + eq-areas-grid 2×2 +</text>
+      <text x="0" y="356" fill="#8B949E" font-size="11">eq-svc-section (3 capas). Servicios = Opción A confirmada PO.</text>
+    </g>
+  </g>
+
+  <!-- footer -->
+  <text x="40" y="1486" fill="#6E7681" font-size="12">UX · Intrale Pipeline V3 · mockup vinculante para .pipeline/views/dashboard/equipo.js · narrativa: narrativa-equipo-panel-v3.md</text>
+</svg>

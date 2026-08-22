@@ -1,93 +1,177 @@
 // =============================================================================
-// quota-adapters/anthropic.js — Adapter Anthropic Plan Max (#3092 + #3065 §5.4).
+// quota-adapters/anthropic.js — Adapter Anthropic Plan Max (#3092, reescrito #4597).
 //
-// Estrategia:
+// FUENTE DE VERDAD: el uso REAL que expone `claude -p "/usage"` (client-side,
+// coincide con la app de Claude). Reemplaza por completo la cadena vieja:
 //
-//   * Anthropic NO expone API pública del uso del Plan Max, así que el
-//     pipeline aproxima sumando `duration_ms` de eventos `session:end` del
-//     activity-log. Esa heurística vive en `weekly-quota.js#computeQuota`,
-//     se mantiene intacta y el adapter la **delega** sin reimplementar.
+//   * ❌ heurística de `duration_ms` de sesiones (`weekly-quota.js#computeQuota`)
+//        — daba 2.6–4.9% cuando el real era ~62%.
+//   * ❌ calibración manual (factor EMA `saveCalibration`) — drifteaba, quedó
+//        en 20× absurdo.
+//   * ❌ snapshot OCR del panel "Uso" de Claude Desktop.
 //
-//   * Adicionalmente, el operador puede calibrar contra dato real de
-//     claude.ai (snapshots #3055/#3057 + EMA #3008) — esos campos vienen
-//     ya incluidos en `computeQuota`, así que pasan transparentes al shape.
+// El número lo obtiene y cachea `lib/anthropic-usage.js` (spawn throttled +
+// fallback stale, sin bloquear el pipeline). Este adapter sólo MAPEA ese cache
+// al shape canónico QuotaResult.
 //
-//   * Reset semantics — domingo 21:00 hora local (ART por default), con
-//     drift de TZ persistido si el operador reporta otra hora en calibración.
+// MAPEO (decisión #4597):
+//   * `pct`          = semanal% (all models) — YA es el real, no hay `realPct`.
+//   * `session.pct`  = sesión 5h%.
+//   * `status`/`session.status` derivan del % con los cortes estándar
+//     (ok<50, normal<75, warning<90, critical≥90).
+//   * `nextResetAt`/`sessionResetsAt` = resets parseados de /usage (best-effort).
 //
-// Backward-compat byte-a-byte (regresión cero del banner):
-//
-//   * Cuando `adapterStatus === 'ok'`, el shape devuelto por este adapter
-//     es **idéntico** al que devolvía `computeQuota` en M1, con tres
-//     campos nuevos no-rompedores: `provider`, `adapterStatus`, `errorReason`,
-//     `schemaVersion`, `breakdown`.
-//
-//   * El test de regresión `weekly-quota.test.js` verifica esto con assertions
-//     campo-a-campo sobre el subset que el banner consume (UX G5 + security
-//     CA-#7).
+// ESTADOS (security CA-#3 / UX G1):
+//   * dato fresco/tolerable   → adapterStatus 'ok', pct real.
+//   * dato demasiado viejo    → adapterStatus 'unknown' PERO con el último número
+//                               (degradado: el dashboard lo pinta stale, no lo
+//                               presenta como fresco; pacing lo ignora).
+//   * sin dato / CLI caído    → adapterStatus 'unknown', pct null (emptyResult).
+//   Nunca pct:0 silencioso (eso daría "luz verde" a la degradación).
 // =============================================================================
 'use strict';
 
-const { ADAPTER_STATUS, SCHEMA_VERSION, emptyResult } = require('./_shape');
+const { ADAPTER_STATUS, QUOTA_STATUS, SCHEMA_VERSION, emptyResult } = require('./_shape');
+
+const round1 = (n) => Math.round(n * 10) / 10;
+
+function statusFromPct(pct) {
+    if (pct >= 90) return QUOTA_STATUS.CRITICAL;
+    if (pct >= 75) return QUOTA_STATUS.WARNING;
+    if (pct >= 50) return QUOTA_STATUS.NORMAL;
+    return QUOTA_STATUS.OK;
+}
+
+/**
+ * Construye el QuotaResult con los números reales de /usage. Cuando `ok` es
+ * false (dato stale) mantiene los números pero marca adapterStatus 'unknown'
+ * para que el consumidor NO los trate como frescos.
+ */
+function buildResult(d, ok, errorReason) {
+    const weeklyPct = Number.isFinite(d.weeklyPct) ? round1(d.weeklyPct) : null;
+    const sessPct = Number.isFinite(d.sessionPct) ? round1(d.sessionPct) : null;
+    const weeklyStatus = weeklyPct != null ? statusFromPct(weeklyPct) : QUOTA_STATUS.UNKNOWN;
+    const sessStatus = sessPct != null ? statusFromPct(sessPct) : QUOTA_STATUS.UNKNOWN;
+
+    return {
+        provider: 'anthropic',
+        adapterStatus: ok ? ADAPTER_STATUS.OK : ADAPTER_STATUS.UNKNOWN,
+        errorReason: ok ? null : (errorReason || null),
+        schemaVersion: SCHEMA_VERSION,
+
+        // Semanal — número REAL de /usage. Sin heurística de duración: los
+        // campos de horas/límite/burn quedan null (ya no aplican).
+        hoursUsed7d: null,
+        sessionsCount7d: null,
+        hoursLast24h: null,
+        effectiveLimitHours: null,
+        configLimitHours: null,
+        pct: weeklyPct,
+        // `realPct` era el pct calibrado; ya no calibramos: pct ES el real.
+        realPct: null,
+        realPctRaw: null,
+        realPctCapped: false,
+        realStatus: weeklyStatus,
+        hoursRemaining: null,
+        burnRatePerDay: null,
+        daysToLimit: null,
+        status: weeklyStatus,
+        adjustmentsCount: 0,
+        observedMaxHours: null,
+        observedMaxAt: null,
+        autoAdjusted: false,
+
+        lastResetAt: null,
+        nextResetAt: d.weeklyResetsAt || null,
+        daysToReset: null,
+
+        session: {
+            hoursUsed: null,
+            sessionsCount: null,
+            limitHours: 5,
+            pct: sessPct,
+            realPct: null,
+            realPctRaw: null,
+            realPctCapped: false,
+            realStatus: sessStatus,
+            hoursRemaining: null,
+            status: sessStatus,
+        },
+
+        // Calibración deprecada (#4597): ya no se usa ni se requiere.
+        calibration: null,
+        calibrations: [],
+        weeklyResetDriftMin: 0,
+        calibrationAgeDays: null,
+        calibrationStale: false,
+        sessionResetsAt: d.sessionResetsAt || null,
+        weeklyResetsAtReported: d.weeklyResetsAt || null,
+
+        // Metadata de frescura del snapshot de /usage (UX: affordance de stale).
+        usageSource: {
+            capturedAt: d.capturedAt || null,
+            ageMs: Number.isFinite(d._ageMs) ? d._ageMs : null,
+            stale: !ok,
+        },
+        sessionResetsRaw: d.sessionResetsRaw || null,
+        weeklyResetsRaw: d.weeklyResetsRaw || null,
+
+        breakdown: [],
+    };
+}
 
 /**
  * Adapter Anthropic. Recibe sessionData y devuelve un QuotaResult.
- *
- * Errores → fail-secure (devuelve emptyResult con motivo, no lanza).
+ * Fail-secure: ante cualquier error devuelve emptyResult con motivo, no lanza.
  *
  * @param {Object} sessionData
- *   @property {string} metricsDir        path a .pipeline/metrics
- *   @property {string} activityLogPath   path a .claude/activity-log.jsonl
- *   @property {number} [configLimitHours]
+ *   @property {string}   metricsDir     path a .pipeline/metrics (requerido)
+ *   @property {number}   [now]          reloj override (tests)
+ *   @property {Object}   [usageImpl]    inyección del módulo anthropic-usage (tests)
+ *   @property {boolean}  [autoRefresh]  default true; false = no spawnear (tests)
+ *   @property {function} [spawnImpl]    inyección de spawn (tests)
+ *   @property {Object}   [launcher]     launcher override (tests)
  * @returns {QuotaResult}
  */
 function anthropicAdapter(sessionData) {
     const metricsDir = sessionData && sessionData.metricsDir;
-    const activityLogPath = sessionData && sessionData.activityLogPath;
-
     if (typeof metricsDir !== 'string' || metricsDir.length === 0) {
         return emptyResult('anthropic', ADAPTER_STATUS.ERROR,
             'metricsDir requerido para adapter Anthropic');
     }
-    if (typeof activityLogPath !== 'string' || activityLogPath.length === 0) {
-        return emptyResult('anthropic', ADAPTER_STATUS.ERROR,
-            'activityLogPath requerido para adapter Anthropic');
-    }
 
-    // Cargar la lógica legacy. require dinámico para evitar ciclo
-    // weekly-quota → quota-adapters → weekly-quota.
-    const weekly = require('../weekly-quota');
-    const opts = {};
-    if (sessionData.configLimitHours) {
-        opts.configLimitHours = sessionData.configLimitHours;
-    }
+    const usageLib = (sessionData && sessionData.usageImpl) || require('../anthropic-usage');
 
-    let legacy;
+    let u;
     try {
-        legacy = weekly.computeQuota(metricsDir, activityLogPath, opts);
+        u = usageLib.getUsage({
+            metricsDir,
+            now: Number.isFinite(sessionData.now) ? sessionData.now : undefined,
+            autoRefresh: sessionData.autoRefresh,
+            spawnImpl: sessionData.spawnImpl,
+            launcher: sessionData.launcher,
+        });
     } catch (err) {
         const reason = err && err.message ? String(err.message).slice(0, 200) : 'unknown';
-        return emptyResult('anthropic', ADAPTER_STATUS.ERROR,
-            `Cuota Anthropic: error calculando (${reason})`);
-    }
-
-    // Defensa: computeQuota nunca debería devolver null/undefined, pero
-    // si pasa, lo tratamos como estado degradado.
-    if (!legacy || typeof legacy !== 'object') {
         return emptyResult('anthropic', ADAPTER_STATUS.UNKNOWN,
-            'Cuota Anthropic: computeQuota devolvió shape inválido');
+            `Cuota Anthropic: error leyendo /usage (${reason}) — fallback degradado`);
     }
 
-    // Wrappear el shape legacy con el envelope multi-provider. Backward-compat:
-    // todos los campos legacy quedan exactamente como estaban.
-    return {
-        ...legacy,
-        provider: 'anthropic',
-        adapterStatus: ADAPTER_STATUS.OK,
-        errorReason: null,
-        schemaVersion: SCHEMA_VERSION,
-        breakdown: [],
-    };
+    // Sin dato todavía (primer arranque) o CLI caído → degradar, NUNCA congelar.
+    if (!u || !u.data) {
+        const reason = (u && u.reason)
+            ? `Cuota Anthropic: ${u.reason} (fallback degradado)`
+            : 'Cuota Anthropic: sin dato de /usage (fallback degradado)';
+        return emptyResult('anthropic', ADAPTER_STATUS.UNKNOWN, reason);
+    }
+
+    const d = { ...u.data, _ageMs: u.ageMs };
+    if (u.stale) {
+        const mins = Number.isFinite(u.ageMs) ? Math.round(u.ageMs / 60000) : '?';
+        return buildResult(d, false,
+            `Cuota Anthropic: dato de /usage stale (${mins} min) — refrescando en background`);
+    }
+    return buildResult(d, true, null);
 }
 
 module.exports = anthropicAdapter;

@@ -1,0 +1,17 @@
+{
+  "_doc": "Fixture saneado: builder colgó 10 minutos esperando un spawn LLM que no devolvió shape. ctx.timedOut=true + ctx.durationMs > TIMEOUT_THRESHOLD_MS → transient_5xx. Caso típico del incidente 2026-05-20 traducido a builder.",
+  "synthetic": false,
+  "source": "sanitized from .pipeline/logs/<issue>-builder.log (timeout HARD_TIMEOUT_MS)",
+  "skill": "builder",
+  "provider": "anthropic",
+  "transport": "cli",
+  "expected_error_class": "transient_5xx",
+  "expected_should_fallback": true,
+  "expected_retriable": true,
+  "raw": "",
+  "ctx": {
+    "timedOut": true,
+    "exitCode": null,
+    "durationMs": 600156
+  }
+}

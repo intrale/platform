@@ -4,6 +4,83 @@
 > los pasos están numerados, son cortos, y al final hay una checklist de
 > verificación + sección "si algo sale mal".
 
+## Ubicación canónica de credenciales (#3311)
+
+Desde #3311 todas las credenciales del proyecto viven en un **único archivo**:
+
+```
+~/.claude/secrets/credentials.json
+```
+
+**Estructura**:
+
+```json
+{
+  "_note": "...",
+  "_version": 1,
+  "telegram":  { "bot_token": "...", "chat_id": "..." },
+  "providers": {
+    "openai":   { "api_key": "..." },
+    "anthropic":{ "api_key": "..." },
+    "google":   { "api_key": "..." },
+    "groq":     { "api_key": "..." },
+    "cerebras": { "api_key": "..." },
+    "nvidia":   { "api_key": "..." }
+  },
+
+  // #5217 — namespaces que NO pasan por ENV_MAPPING (ver más abajo)
+  "google_drive": {
+    "oauth_client_id":     "...",
+    "oauth_client_secret": "...",
+    "oauth_refresh_token": "...",
+    "drive_folder_id":     "..."
+  },
+  "r2": {
+    "account_id":        "...",   // sin provisionar
+    "access_key_id":     "...",
+    "secret_access_key": "...",
+    "bucket":            "..."
+  }
+}
+```
+
+> **Dos formas de consumir el store, y no son intercambiables (#5217):**
+>
+> | Mecanismo | Qué hace | Quién lo usa |
+> |---|---|---|
+> | `loadIntoEnv()` | itera `ENV_MAPPING` y escribe en el **`process.env` global** | Telegram + API keys de IA |
+> | `resolveScopedRefs()` | lee **un namespace puntual** del JSON, sin tocar `process.env` | Google Drive, R2, brokering por producto |
+>
+> Drive y R2 **no están en `ENV_MAPPING` a propósito**: `loadIntoEnv()` se
+> invoca en el boot de `pulpo.js` y `restart.js`, así que todo lo que entre ahí
+> lo hereda **cada proceso hijo de cada agente**, incluidos los de providers de
+> IA de terceros. Credenciales que usa un solo consumidor puntual se resuelven
+> bajo demanda. Agregarlas a `ENV_MAPPING` es una regresión de mínimo privilegio.
+
+**Cómo se carga**: `.pipeline/lib/credentials.js#loadIntoEnv()` se invoca al
+boot de `pulpo.js` y `restart.js`, mapea cada path a su env var canónica
+(`providers.groq.api_key` → `GROQ_API_KEY`, etc.) y popula `process.env`.
+`telegram-secrets.js` también lee este archivo para sus consumidores legacy.
+
+**Precedencia**:
+1. `process.env` ya seteado (no se sobrescribe — `setx` sigue funcionando como override manual)
+2. `~/.claude/secrets/credentials.json` (canónico)
+3. `~/.claude/secrets/telegram-config.json` (legacy flat, fallback con warning)
+4. `<repo>/.claude/hooks/telegram-config.json` (legacy committed, último recurso)
+
+**Editar el archivo**: abrir con tu editor preferido y modificar el JSON.
+Después correr `node .pipeline/restart.js` para que el pipeline reinicie con
+las nuevas credenciales hidratadas.
+
+**Verificar qué se hidrata** (sin imprimir valores):
+
+```bash
+node .pipeline/lib/credentials.js
+```
+
+Devuelve `source` (canonical/legacy/none), `hydrated` (nombres de env vars
+hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
+
 ## Contexto general
 
 - **Por qué rotar**: política `≤ 90 días` por convención (ver
@@ -16,20 +93,20 @@
 
 ## Anthropic
 
+> _Provider opcional — sólo aplica si activaste Vision multimedia directo
+> (no via CLI Claude). Sin `anthropic_api_key` en `credentials.json`, Vision
+> sigue funcionando via OAuth Max del CLI (ver `multimedia.js:213`)._
+
 1. Abrí <https://console.anthropic.com/settings/keys> con la cuenta que figura
    en `account_id` del inventario.
 2. Generá una **nueva key** (botón "Create Key"), nombrá con `intrale-pipeline-v3-YYYYMMDD`.
-3. Actualizá la env var del operador:
-   ```bash
-   # Linux/macOS — editá ~/.zshrc o ~/.bashrc
-   export ANTHROPIC_API_KEY="<nueva-key>"
-   # Windows — Panel de Control → Sistema → Variables de Entorno
-   #   o:  setx ANTHROPIC_API_KEY "<nueva-key>"
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "anthropic": { "api_key": "<nueva-key>" } } }
    ```
-   Cerrá y reabrí la terminal donde corre el pulpo (sin reiniciar la terminal,
-   `process.env` queda con el valor viejo).
 4. Revocá la **vieja** key desde la misma consola (botón "Revoke").
-5. Actualizá `last_rotated` en [`docs/secrets-inventory.md`](../secrets-inventory.md)
+5. `node .pipeline/restart.js` para que el pipeline recargue con la key nueva.
+6. Actualizá `last_rotated` en [`docs/secrets-inventory.md`](../secrets-inventory.md)
    con la fecha de hoy en formato ISO `YYYY-MM-DD`. Commiteá.
 
 ### Cómo verificar que rotaste bien (Anthropic)
@@ -51,19 +128,108 @@
 1. Abrí <https://platform.openai.com/api-keys> con la cuenta `account_id`.
 2. Generá una nueva key (botón "Create new secret key"), nombrá con
    `intrale-pipeline-v3-YYYYMMDD`. Limitá scope a `Codex` si corresponde.
-3. Actualizá la env var del operador:
-   ```bash
-   export OPENAI_API_KEY="<nueva-key>"
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "openai": { "api_key": "<nueva-key>" } } }
    ```
-   Cerrá y reabrí la terminal del pulpo.
 4. Revocá la vieja key desde la misma consola (botón "Revoke key").
-5. Actualizá `last_rotated` en `docs/secrets-inventory.md`. Commiteá.
+5. `node .pipeline/restart.js`.
+6. Actualizá `last_rotated` en `docs/secrets-inventory.md`. Commiteá.
 
 ### Cómo verificar que rotaste bien (OpenAI)
 
 - [ ] Vieja key revocada falla con `401` (probar con `curl -H "Authorization: Bearer <vieja>" https://api.openai.com/v1/models`).
 - [ ] El pulpo arranca sin `[FATAL]` (CA-2).
 - [ ] Commit pusheado con `last_rotated` actualizado.
+
+## Groq (free tier — multi-provider fallback)
+
+> _Free tier, regla `feedback_free-providers-rule`. Nunca pago._
+
+1. Abrí <https://console.groq.com> y andá a "API Keys".
+2. "Create API Key" — nombrá `intrale-pipeline-YYYYMMDD`. Copiar `gsk_...`
+   (se muestra una sola vez).
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "groq": { "api_key": "<nueva-key>" } } }
+   ```
+4. Revocá la vieja key en la misma página.
+5. `node .pipeline/restart.js`.
+
+## Gemini (Google AI Studio — free tier)
+
+> **NO REPONER salvo que vuelva un consumidor.** El provider `gemini-google`
+> autentica por OAuth con `agy` (ver `providers/gemini-google.js`: «Auth: OAuth
+> via `agy`; nunca API key») y `agent-models.json` no le declara
+> `credentials_env`. Ningún módulo lee `GEMINI_API_KEY`, por eso el manifiesto la
+> declara `required_when: never` + `consumer_status: no_consumer`. Cargarla no
+> habilita nada y el health-check no debe pedirla. Los pasos de abajo aplican
+> sólo si en el futuro se recablea el provider a API key.
+
+1. Abrí <https://aistudio.google.com/apikey> con la cuenta GCP del proyecto.
+2. "Create API key" — asociar a un proyecto de Google Cloud existente o nuevo.
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "google": { "api_key": "<nueva-key>" } } }
+   ```
+4. Verificar que la **Generative Language API** esté habilitada en el proyecto
+   de GCP (sino tira 403 al primer request).
+5. Revocá la vieja key desde la consola.
+6. `node .pipeline/restart.js`.
+
+## Cerebras (free tier — multi-provider fallback)
+
+1. Abrí <https://cloud.cerebras.ai/platform> y andá a "API Keys".
+2. "Create API Key" — nombrá `intrale-pipeline-YYYYMMDD`. Copiar `csk-...`.
+3. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "cerebras": { "api_key": "<nueva-key>" } } }
+   ```
+4. Revocá la vieja key.
+5. `node .pipeline/restart.js`.
+
+## NVIDIA NIM (preparada para #3243 — Ola N+5)
+
+> _Provider declarado pero todavía no consumido. La key vive en `credentials.json`
+> y se hidrata a `NVIDIA_NIM_API_KEY`, pero ningún `agent-models.json` la usa
+> hasta que #3243 entre en producción._
+
+1. Abrí <https://build.nvidia.com> y elegí cualquier modelo (sugerido:
+   DeepSeek V4-Pro o Kimi K2.6). Click "Get API Key".
+2. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "nvidia": { "api_key": "<nueva-key>" } } }
+   ```
+3. Revocá la vieja key desde la consola de NVIDIA.
+4. `node .pipeline/restart.js` (no impacta a nada hasta que se implemente #3243).
+
+## Moonshot Kimi (fallback multi-provider)
+
+> _Provider **activo y cableado**: `kimi-moonshot` es el último eslabón de las
+> cadenas de fallback de `review` y `po` en `agent-models.json`. Autentica por
+> `auth_mode: api_key` contra el endpoint Anthropic-compat, así que su token es
+> **fail-fast**: si la cadena degrada hasta Kimi y `ANTHROPIC_AUTH_TOKEN` no
+> está en el env del Pulpo, el child **no arranca** (`build-child-env` corta el
+> spawn). Ojo: es una var distinta de `ANTHROPIC_API_KEY` (la OAuth/Max real);
+> no las mezcles._
+
+1. Abrí <https://platform.moonshot.ai/console/api-keys> y creá una key nueva
+   nombrada `intrale-pipeline-YYYYMMDD`.
+2. Editá `~/.claude/secrets/credentials.json`:
+   ```json
+   { "providers": { "moonshot": { "api_key": "<nueva-key>" } } }
+   ```
+3. Revocá la vieja key desde la consola de Moonshot.
+4. `node .pipeline/restart.js`.
+
+### Cómo verificar que rotaste bien (Moonshot Kimi)
+
+- La clave está **ausente** del store mientras no la aprovisiones, y el health
+  check la reporta como faltante: es un provider requerido, no opcional. No la
+  declares como "no reponer" para silenciar el rojo — el rojo es correcto y
+  significa que `review` y `po` se quedan sin último fallback.
+- `node -e "console.log(!!require('os') && !!(JSON.parse(require('fs').readFileSync(require('path').join(require('os').homedir(),'.claude','secrets','credentials.json'),'utf8')).providers||{}).moonshot)"`
+  debe imprimir `true` después de rotar.
 
 ## GitHub (token de gh CLI / `GH_TOKEN`)
 
@@ -89,6 +255,205 @@
 - [ ] Viejo token revocado falla en `gh issue view 1` con `Bad credentials`.
 - [ ] Pulpo arranca y procesa `intake` sin errores `gh CLI`.
 - [ ] Commit pusheado con `last_rotated`.
+
+## Google Drive (OAuth — evidencia de QA)
+
+> _Aplica cuando vence o se revoca el `refresh_token` de Drive y
+> `qa-video-share.js` deja de subir la evidencia de video._
+
+**Dónde vive**: namespace `google_drive` de `credentials.json` (ver estructura
+arriba). **No** en `.claude/hooks/telegram-config.json` — ese archivo está
+trackeado en git, un `reset --hard` restauraría la versión sin credenciales y la
+subida se caería en silencio (es el bug que cerró #5217).
+
+1. Abrí <https://console.cloud.google.com/apis/credentials> con la cuenta del
+   inventario y ubicá el OAuth Client ID de tipo *Desktop app*.
+2. Re-autorizá:
+   ```bash
+   node scripts/google-drive-oauth-setup.js <client_id>
+   ```
+   El **client secret NO se pasa por argumento**: se pide por prompt (sin eco) o
+   se toma de `GOOGLE_OAUTH_CLIENT_SECRET`. Los argumentos son visibles en la
+   tabla de procesos del SO y quedan en el historial del shell (CWE-214).
+3. El script también pide el **Drive folder ID** de la carpeta de QA (o lo toma
+   de `GOOGLE_DRIVE_FOLDER_ID`). Dejarlo vacío conserva el que ya esté guardado.
+   Si `google_drive.drive_folder_id` no resuelve en ninguna fuente, la evidencia
+   se sube a la **raíz** del Drive en vez de la carpeta de QA: no rompe la
+   subida, pero `qa-video-share.js` lo avisa por consola. No es secreto, pero sí
+   parte de la provisión — antes sólo podía setearse a mano en el archivo
+   trackeado del repo, o sea que se perdía en cada respawn.
+4. El script persiste en el store canónico con backup pre-save, escritura
+   atómica y `0600`, y te lista **los nombres** de las claves escritas.
+5. Actualizá `last_rotated` en `docs/secrets-inventory.md`. Commiteá.
+
+> **Si el store está corrupto**, `writeCanonicalPaths` **aborta sin escribir** en
+> vez de degradar el archivo a `{}` — si escribiera, se perderían Telegram y
+> todos los providers de IA de una sola vez. Reparalo a mano o restaurá el
+> backup más reciente de `~/.claude/secrets/backups/` antes de reintentar.
+
+### Cómo verificar que rotaste bien (Drive)
+
+- [ ] El script imprimió `Guardado en el store canónico: ~/.claude/secrets/credentials.json`.
+- [ ] `git status --porcelain .claude/hooks/telegram-config.json` **sin salida**
+      (ningún secreto quedó en el archivo del repo).
+- [ ] Una corrida de `qa-video-share.js` sube la evidencia sin emitir
+      `Google Drive no configurado`.
+- [ ] Sobrevive al respawn: tras `git reset --hard` + `git clean -fd`, la subida
+      sigue funcionando sin intervención humana.
+
+## Cloudflare R2 (sin provisionar)
+
+R2 está **cableado pero no provisionado**: el consumidor lee el namespace `r2`
+del store, y hoy **no existe ninguna clave `r2.*` en ningún almacén**. Por eso
+los mensajes al operador dicen `no provisionado` y no `no configurado` — son
+estados distintos:
+
+| Estado | Qué significa | Cómo se resuelve |
+|---|---|---|
+| `no configurado` | falta escribir el valor | editar el store canónico |
+| `no provisionado` | la credencial no existe en ningún lado | crear las credenciales en Cloudflare, y recién ahí escribirlas |
+
+Darlas de alta requiere crear un API token de R2 en Cloudflare y escribir
+`r2.account_id`, `r2.access_key_id`, `r2.secret_access_key` y `r2.bucket` en
+`credentials.json`. Es trabajo humano; ningún criterio del pipeline depende de
+que R2 suba.
+
+## AWS y GitHub: ya son durables, no se duplican en el store
+
+Estas dos **no se migran** al store canónico (#5217 · CA-15). No es un pendiente:
+ya se resuelven por mecanismos externos al repo y persistentes a los respawns.
+Duplicar el material de clave dentro de `credentials.json` agregaría una copia
+más para custodiar y rotar, sin ningún beneficio.
+
+| Credencial | Dónde vive realmente | Cómo se rota |
+|---|---|---|
+| AWS | perfiles de `~/.aws/credentials` + `~/.aws/config` (fuera del repo) | por AWS CLI / consola IAM; el pipeline los consume vía perfil |
+| GitHub | credential helper del sistema (`git credential fill`) y `gh auth` | ver la sección **GitHub** de este runbook |
+
+Notas:
+
+- El namespace `aws` que aparezca en `credentials.json` es de **brokering por
+  producto** (`resolveScopedRefs`), no la fuente que usa el AWS CLI.
+- `GH_TOKEN` / `GITHUB_TOKEN` **ya están** en
+  `ALLOWED_CREDENTIAL_ENV_VARS` (`.pipeline/lib/agent-models-validate.js`). Esa
+  lista **no se amplía** con credenciales de cloud: existe justamente para
+  impedir que un `agent-models.json` declare `AWS_SECRET_ACCESS_KEY` como env de
+  un provider de IA de terceros (refinamiento Security #3 de #3080).
+## Telegram (reposicion)
+
+Para **rotar** una credencial viva, seguí el flujo del proveedor. Esta sección
+cubre una credencial **ausente** en una máquina limpia.
+
+1. Creá un bot con BotFather o recuperá el token del bot operativo.
+2. Obtené el identificador del chat autorizado desde Telegram, sin publicarlo.
+3. Escribí `telegram.bot_token` y `telegram.chat_id` en
+   `~/.claude/secrets/credentials.json`.
+4. Ejecutá `node .pipeline/lib/credentials.js` y verificá que el resumen nombre
+   `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`, sin mostrar sus valores.
+
+### Chat del operador firmante (GATE 2 y Commander)
+
+`telegram.leo_operator_chat_id` → `TELEGRAM_LEO_OPERATOR_CHAT_ID`. **No es un
+chat opcional de notificaciones**: es el allowlist de operadores autorizados a
+**firmar**. Sus consumidores:
+
+| Consumidor | Qué hace con la clave | Qué pasa si falta |
+|---|---|---|
+| `.pipeline/lib/operator-gate.js` | única fuente del allowlist del gate de firma **GATE 2** | fail-closed: el `Set` queda vacío y **todo callback de firma se rechaza** |
+| `.pipeline/listener-telegram.js` | reusa ese mismo allowlist para el **Commander** | fail-closed: el Commander se queda sin operador autorizado |
+| `.pipeline/delivery.js` | suma el chat a los firmantes autorizados del delivery | el delivery pierde ese firmante |
+| `.pipeline/pulpo.js` | lo suma a los operadores del CUA | cae al chat principal como último recurso |
+| `.pipeline/lib/telegram-notifier.js` | handler proactivo (#3384) | **único caso** donde el faltante sólo autodeshabilita una función opcional |
+
+Su ausencia **no** degrada un handler: deja GATE 2 y el Commander sin ningún
+firmante autorizado. Por eso se declara `required_when: service_active`, no
+`never`.
+
+Esta sección cubre la credencial **ausente** en una máquina limpia; para
+**rotar** una viva, repetí los pasos con el chat nuevo y recién después retirá
+el viejo.
+
+1. Obtené el `chat.id` del chat privado 1:1 con el operador autorizado, sin
+   publicarlo. En chat privado el `chat.id` coincide con el `from.id`, y por eso
+   sirve como identidad de operador.
+2. Escribí el dot-path `telegram.leo_operator_chat_id` en
+   `~/.claude/secrets/credentials.json`.
+3. Ejecutá `node .pipeline/lib/credentials.js` y verificá que el resumen nombre
+   `TELEGRAM_LEO_OPERATOR_CHAT_ID`, sin mostrar su valor.
+4. Verificá el gate: un callback de firma emitido desde ese chat debe ser
+   aceptado, y uno desde cualquier otro chat debe ser rechazado.
+
+## AWS (reposicion)
+
+Para **rotar** credenciales vivas, usá el procedimiento de IAM correspondiente.
+Esta sección cubre credenciales **ausentes** en una máquina limpia.
+
+1. Solicitá al administrador un acceso de mínimo privilegio para el servicio.
+2. Escribí los dot-paths `aws.access_key_id`, `aws.secret_access_key`,
+   `aws.region` y `aws.profile` en `~/.claude/secrets/credentials.json`.
+3. No agregues nombres de tablas: hoy no tienen consumidor operativo.
+4. Las claves AWS permanecen `deferred`; `node .pipeline/lib/credentials.js`
+   no debe informar variables AWS hidratadas. Un `AWS_PROFILE` ya presente en
+   la terminal conserva precedencia sobre cualquier configuración durable.
+
+## Google Drive (reposicion)
+
+Para **rotar** una credencial viva, ver el flujo específico de OAuth. Esta
+sección cubre credenciales **ausentes** en una máquina limpia.
+
+1. En Google Cloud Console creá o seleccioná un cliente OAuth de aplicación.
+2. Completá la autorización y obtené las credenciales requeridas sin copiarlas
+   a issues, logs ni documentación.
+3. Escribí `google_drive.oauth_client_id`,
+   `google_drive.oauth_client_secret`, `google_drive.oauth_refresh_token` y
+   `google_drive.drive_folder_id` en `~/.claude/secrets/credentials.json`.
+4. Ejecutá `node .pipeline/lib/credentials.js`: las cuatro
+   (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+   `GOOGLE_OAUTH_REFRESH_TOKEN`, `GOOGLE_DRIVE_FOLDER_ID`) **NO** deben figurar
+   como hidratadas: desde #5217 son `hydration: "deferred"` y quedan fuera de
+   `ENV_MAPPING` a propósito (CA-6). El comando lista **nombres** de variable,
+   nunca valores.
+
+   > Esto cambió respecto de #5242, que las declaró `eager`. En aquel momento el
+   > nivel *store* de `qa-video-share.js` resolvía vía `loadIntoEnv`, así que
+   > sacarlas del env global rompía la subida de evidencia. Hoy el consumidor las
+   > lee con `resolveScopedRefs` (namespace directo del JSON, sin `process.env`),
+   > y hidratarlas sólo expondría un refresh token de Google en el ambiente de
+   > todo agente hijo sin que nadie lo lea de ahí. Para comprobar que resuelven,
+   > usá el paso 5, no la salida de hidratación.
+5. Verificá el consumo real: `qa/scripts/qa-video-share.js` resuelve estas
+   credenciales con precedencia `env` > store (`~/.claude/secrets/credentials.json`)
+   > legacy. Si el log dice `credenciales de Google Drive no configuradas`,
+   el mensaje nombra cuál falta y en qué orden se consultaron las fuentes.
+6. Aviso al operador: el store externo es la fuente canónica **porque sobrevive
+   al `git reset --hard` de cada respawn**. No repongas estas claves en
+   `.claude/hooks/telegram-config.json`: ese archivo está trackeado en un repo
+   público y su purga está pendiente en #5226.
+
+## Cloudflare R2 (reposicion)
+
+Para **rotar** credenciales vivas, usá el panel de tokens de Cloudflare. Esta
+sección cubre variables **ausentes** en una máquina limpia.
+
+1. Creá un token R2 de mínimo privilegio desde el panel de Cloudflare.
+2. Configurá `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` y
+   `R2_BUCKET` como variables de entorno del operador.
+3. La fuente declarada de R2 en el manifiesto es `env`, y es la que conviene usar:
+   el consumidor consulta primero las env vars. Existe además un fallback al
+   namespace `r2` del store canónico, pero **hoy no hay ninguna clave `r2.*` en
+   ningún almacén** — de ahí el estado `no provisionado`. No dupliques el material
+   de clave en los dos lados: elegí uno.
+4. Verificá únicamente la presencia por nombre en el proceso que comparte la
+   evidencia; nunca imprimas sus valores.
+
+## Multimedia ElevenLabs (reposicion)
+
+Para **rotar** una credencial viva, usá el panel del proveedor. Esta sección
+cubre el caso **ausente** en una máquina limpia.
+
+`ELEVENLABS_API_KEY` y `ELEVENLABS_VOICE_ID` están inventariadas, pero no
+tienen consumidor activo. No deben reponerse ni hidratarse mientras su
+`required_when` sea `never`.
 
 ## Si algo sale mal
 

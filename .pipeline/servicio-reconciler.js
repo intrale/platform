@@ -28,10 +28,28 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+// #5172 — punto único de lectura/validación de `config.yaml`. El reconciler ya
+// no hace su propio `yaml.load`: o la config es válida, o `resolve()` lanza el
+// error tipado (ya redactado).
+const configResolver = require('./lib/config-resolver');
+const configSchema = require('./lib/config-schema');
 
 require('./lib/sanitize-console').install();
 const { sanitize } = require('./sanitizer');
 const humanBlock = require('./lib/human-block');
+const { isMarkerArtifact } = require('./lib/marker-artifact');
+const admissionGate = require('./lib/admission-gate');
+const { reconcileStateLabels, isReconciliableStateLabel } = require('./lib/label-reconciler-core');
+const { allChildrenDone, isFreshEntry, DEFAULT_FRESHNESS_MS } = require('./lib/epic-children-oracle');
+// #3381 — Gate de screenshots+mockup (default OFF, activable por env var).
+const screenshotsMockupGate = require('./hooks/screenshots-mockup-gate');
+const waves = require('./lib/waves');
+const waveResolver = require('./lib/wave-resolver');
+const waveState = require('./lib/wave-state');
+const waveSnapshot = require('./lib/wave-snapshot');
+const { computeClosedSet } = require('./lib/commander-deterministic');
+const { notifyTelegram } = require('./lib/notify-telegram');
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
@@ -41,6 +59,62 @@ const GH_QUEUE = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
 
 const RECONCILE_INTERVAL_MS = parseInt(process.env.RECONCILER_INTERVAL_MS || '300000', 10); // 5 min default
 const RECONCILER_LABEL = 'needs-human';
+
+// #3175 — Sweep paralelo de admission gate. Kill-switch para poder cortar
+// instantáneo sin reiniciar el reconciler. Default ON.
+//
+// #5172 · CA-5 — La fuente de verdad pasó a ser `admission_gate.*` de la
+// configuración RESUELTA. Antes se leía `process.env.ADMISSION_SWEEP_ENABLED` /
+// `ADMISSION_GATE_DRY_RUN` directo y **en el load del módulo**, con dos
+// consecuencias: (1) apagar el gate por env no dejaba NINGUNA traza — el
+// operador auditaba `config.yaml`, lo veía en `true` y no entendía por qué el
+// gate estaba muerto; (2) el bloque `admission_gate:` del archivo era decorativo.
+// Ahora el override por env lo aplica y lo TRAZEA el resolver (`ENV_OVERRIDES`),
+// que es el único que lee esas variables. Ver `lib/config-resolver.js`.
+const ADMISSION_TELEGRAM_QUEUE = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
+
+// Defaults del consumidor, alineados con `config.yaml`. Se usan sólo si la
+// sección `admission_gate:` no está o si el archivo no se pudo leer.
+const ADMISSION_DEFAULTS = Object.freeze({ sweep_enabled: true, dry_run: false });
+
+/**
+ * Valores EFECTIVOS del admission gate en el momento de la llamada.
+ *
+ * Se resuelve por llamada (con `reload: true`) a propósito: el kill-switch tiene
+ * que cortar instantáneo, y cachearlo lo volvería un valor de arranque —
+ * justamente lo que se rompía cuando eran constantes de load del módulo.
+ *
+ * Config ilegible NO apaga el gate: se conservan los defaults del archivo y se
+ * aplican igual los overrides por env vía el resolver, para que la traza salga
+ * en los dos caminos. Degradar a "gate apagado" ante config rota es el fallo
+ * silencioso que #5172 elimina.
+ *
+ * @returns {{sweepEnabled: boolean, dryRun: boolean, origen: string}}
+ */
+function admissionGateSettings() {
+    let seccion;
+    let origen;
+    try {
+        const cfg = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
+        const ag = cfg && cfg.admission_gate;
+        seccion = (ag && typeof ag === 'object' && !Array.isArray(ag))
+            ? { ...ADMISSION_DEFAULTS, ...ag }
+            : { ...ADMISSION_DEFAULTS };
+        origen = 'config';
+    } catch (e) {
+        logConfigFailure(e);
+        // El resolver no llegó a aplicar los overrides (lanzó antes), así que se
+        // aplican acá sobre los defaults — mismo código, misma traza.
+        seccion = (configResolver.applyOverridesOnly({ admission_gate: { ...ADMISSION_DEFAULTS } }) || {}).admission_gate
+            || { ...ADMISSION_DEFAULTS };
+        origen = 'defaults+env';
+    }
+    return {
+        sweepEnabled: seccion.sweep_enabled !== false,
+        dryRun: seccion.dry_run === true,
+        origen,
+    };
+}
 
 // Labels que indican que `needs-human` está pegado por origen de recomendación
 // (security/guru/planner generan issues auto y los marcan así para triaje humano
@@ -52,7 +126,13 @@ const RECONCILER_LABEL = 'needs-human';
 //
 // Mantenemos el label `needs-human` en GitHub (visibilidad para `/doc priorizar`).
 // Solo cortamos la creación automática de markers en filesystem.
-const RECOMMENDATION_LABELS = new Set(['source:recommendation', 'tipo:recomendacion']);
+// #5337 CA-6 — la constante y el predicado viven ahora en `lib/recommendation-labels.js`
+// (fuente única compartida con `human-block.js` y el dashboard). Acá quedan
+// re-exportados para no romper a los consumidores históricos del reconciler.
+const {
+    RECOMMENDATION_LABELS,
+    isRecommendationIssue: isRecommendationIssueShared,
+} = require('./lib/recommendation-labels');
 
 function log(msg) {
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -92,6 +172,135 @@ function getIssueState(issueNum) {
     }
 }
 
+function readJsonFileSafe(file) {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+function normalizeIssueNumber(value) {
+    const n = Number(value);
+    return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function loadIssueStateCache(opts = {}) {
+    return readJsonFileSafe(opts.titleCacheFile || path.join(PIPELINE, '.issue-title-cache.json')) || {};
+}
+
+function loadSplitChildrenMap(opts = {}) {
+    // #5179 grupo 3b — los TTLs se piden al envoltorio único de estado operativo
+    // en vez de parsear `.partial-pause.json` a mano.
+    //
+    // CA-6c: el seam de inyección `opts.partialPauseFile` sigue vivo. Cuando el
+    // caller declara un archivo explícito (tests herméticos sobre un tmp), se lee
+    // ESE archivo — el envoltorio resuelve el path real del pipeline y no lo
+    // honraría. Sin archivo inyectado se usa la superficie pública.
+    let ttls = {};
+    if (opts.partialPauseFile) {
+        const parsed = readJsonFileSafe(opts.partialPauseFile);
+        ttls = parsed && typeof parsed === 'object' && parsed.authorization_ttls
+            && typeof parsed.authorization_ttls === 'object'
+            ? parsed.authorization_ttls
+            : {};
+    } else {
+        try {
+            const state = require('./lib/operational-state').getDispatchState();
+            ttls = state && state.authorizationTtls && typeof state.authorizationTtls === 'object'
+                ? state.authorizationTtls
+                : {};
+        } catch {
+            ttls = {};   // sin TTLs resolubles ⇒ mapa vacío (igual que el parse fallido previo)
+        }
+    }
+    const map = new Map();
+    for (const [childKey, info] of Object.entries(ttls)) {
+        const child = normalizeIssueNumber(childKey);
+        const parent = info && typeof info === 'object' ? normalizeIssueNumber(info.parent) : null;
+        if (!child || !parent) continue;
+        if (!map.has(parent)) map.set(parent, []);
+        map.get(parent).push(child);
+    }
+    for (const [parent, children] of map.entries()) {
+        map.set(parent, [...new Set(children)].sort((a, b) => a - b));
+    }
+    return map;
+}
+
+// #4672 — Pide el estado de un issue live a GitHub y lo devuelve como entrada
+// FRESCA `{ state, fetchedAt }` para el oráculo. Reusa getIssueState (que hace
+// `gh issue view <n> --json state`). Si el fetch no es autoritativo (UNKNOWN por
+// error/timeout de `gh`) devuelve null → el oráculo lo descarta (fail-closed).
+function getIssueStateEntry(issueNum, now) {
+    const state = getIssueState(issueNum);
+    if (!state || state === 'UNKNOWN') return null;
+    return { state, fetchedAt: typeof now === 'number' ? now : Date.now() };
+}
+
+// #4672 — Resuelve el estado de cada hijo con frescura garantizada en la
+// frontera del ciclo. Reusa la entrada del cache SÓLO si es fresca (evita
+// martillar `gh`); si está stale/ausente la re-pide live a GitHub y sella
+// `fetchedAt` con el `now` del ciclo. Ante fallo del fetch live la entrada queda
+// no-verificable → el oráculo falla cerrado y NO abre el gate humano.
+function resolveChildrenStatesFresh(children, opts = {}) {
+    const cache = opts.cache && typeof opts.cache === 'object' ? opts.cache : {};
+    const now = typeof opts.now === 'number' ? opts.now : Date.now();
+    const freshnessMs = Number.isFinite(opts.freshnessMs) && opts.freshnessMs > 0
+        ? opts.freshnessMs : DEFAULT_FRESHNESS_MS;
+    const fetchState = typeof opts.fetchState === 'function' ? opts.fetchState : getIssueStateEntry;
+    const resolved = {};
+    for (const child of Array.isArray(children) ? children : []) {
+        const key = String(child);
+        const cached = cache[key];
+        if (isFreshEntry(cached, now, freshnessMs)) {
+            resolved[key] = cached;
+            continue;
+        }
+        try {
+            const live = fetchState(child, now);
+            if (live && typeof live === 'object') resolved[key] = live;
+        } catch {
+            // Fail-closed: sin entrada fresca el oráculo descarta este hijo.
+        }
+    }
+    return resolved;
+}
+
+function resolveEpicStateSources(issue, ctx = {}) {
+    const labels = Array.isArray(issue && issue.labels) ? issue.labels.map(String) : [];
+    const issueNum = normalizeIssueNumber(issue && issue.number);
+    if (!issueNum) return { isEpic: false };
+
+    const childrenMap = ctx.childrenMap || loadSplitChildrenMap(ctx);
+    const children = childrenMap instanceof Map ? (childrenMap.get(issueNum) || []) : [];
+    const isEpic = labels.includes('epic') || children.length > 0;
+    if (!isEpic) return { isEpic: false };
+
+    const hasActiveHumanMarker = ctx.blockedByIssue instanceof Map ? ctx.blockedByIssue.has(issueNum) : false;
+
+    // El oráculo sólo abre el gate cuando el issue tiene `needs-human` y no hay
+    // marker activo. Sólo en ese caso vale la pena (y es seguro) resolver estados
+    // de hijos live. Fuera de él evitamos IO y devolvemos epicChildrenAllDone=false
+    // (fail-closed): nunca afirmamos "Done" sin necesidad.
+    const gateRelevant = labels.includes('needs-human') && !hasActiveHumanMarker;
+    if (!gateRelevant) {
+        return { isEpic: true, epicChildrenAllDone: false, hasActiveHumanMarker };
+    }
+
+    const now = typeof ctx.now === 'number' ? ctx.now : Date.now();
+    const freshnessMs = Number.isFinite(ctx.freshnessMs) && ctx.freshnessMs > 0
+        ? ctx.freshnessMs : DEFAULT_FRESHNESS_MS;
+    const issueStates = resolveChildrenStatesFresh(children, {
+        cache: ctx.issueStates || loadIssueStateCache(ctx),
+        now,
+        freshnessMs,
+        fetchState: ctx.fetchIssueState,
+    });
+
+    return {
+        isEpic: true,
+        epicChildrenAllDone: allChildrenDone({ children, issueStates, now, maxAgeMs: freshnessMs }),
+        hasActiveHumanMarker,
+    };
+}
+
 // #2994 — `meta` opcional permite que el worker (servicio-github.js) re-valide
 // que el estado del FS sigue justificando esta orden antes de invocar `gh`.
 //
@@ -117,10 +326,47 @@ function enqueueLabelApply(issueNum, label, meta = null) {
         if (meta.snapshot_at) payload.snapshot_at = meta.snapshot_at;
         if (typeof meta.marker_mtime === 'number') payload.marker_mtime = meta.marker_mtime;
     }
-    fs.writeFileSync(
-        path.join(GH_QUEUE, filename),
-        JSON.stringify(payload),
-    );
+    // #6226 - escritura fail-closed: dos ordenes del mismo issue+label en el
+    // mismo milisegundo resolvian al mismo path y la segunda pisaba a la
+    // primera. Se conserva el nombre; solo ante colision se desambigua.
+    dropfileWriter.writeUniqueFileSync({
+        dir: GH_QUEUE,
+        filename,
+        data: JSON.stringify(payload),
+        onCollision: (name, attempt) => console.warn(
+            `[servicio-reconciler] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+        ),
+    });
+}
+
+// #3186 — encola orden `remove-label` para que el servicio-github le quite
+// el label en GitHub. La action `remove-label` ya está soportada por
+// `servicio-github.js` (línea ~451) y es idempotente: si el label ya fue
+// removido, `gh issue edit --remove-label` no falla.
+function enqueueLabelRemove(issueNum, label) {
+    fs.mkdirSync(GH_QUEUE, { recursive: true });
+    const filename = `${issueNum}-rm-${label}-reconciler-${Date.now()}.json`;
+    // #6226 - escritura fail-closed (ver `enqueueLabelApply`).
+    dropfileWriter.writeUniqueFileSync({
+        dir: GH_QUEUE,
+        filename,
+        onCollision: (name, attempt) => console.warn(
+                `[servicio-reconciler] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        // #5690 SEC-B — procedencia declarada para el guardrail de labels.
+        // El reconciliador sólo emite `remove-label needs-human` cuando el
+        // oráculo de `label-reconciler-core` confirmó que la épica tiene todos
+        // los hijos verificables cerrados y NO hay marker humano activo. No es
+        // una acción humana (por eso el campo no se llama `human_*`), pero sí
+        // es una decisión de un productor identificado y state-checked.
+        data: JSON.stringify({
+            action: 'remove-label',
+            issue: issueNum,
+            label,
+            guardrail_authorized: true,
+            authorized_by: 'servicio-reconciler:label-reconciler-core',
+        }),
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -147,17 +393,150 @@ function decidirFasePlaceholder(labels) {
 // Reconciliación: las 3 reglas
 // -----------------------------------------------------------------------------
 
+// #5337 CA-6 — delega en el predicado compartido. Además de la constante, la
+// versión compartida contempla `recommendation:approved`: una recomendación ya
+// aprobada por un humano es trabajo real del pipeline y deja de filtrarse
+// (mismo criterio que ya aplicaba el intake del pulpo).
 function isRecommendationIssue(labels) {
-    if (!Array.isArray(labels)) return false;
-    for (const l of labels) {
-        if (RECOMMENDATION_LABELS.has(l)) return true;
-    }
-    return false;
+    return isRecommendationIssueShared(labels);
 }
 
-function reconcileLabelToFilesystem(ghIssues, blockedByIssue) {
+// -----------------------------------------------------------------------------
+// #4222 — Cruce label needs-human ↔ avance físico de fases (anti bloqueo fantasma)
+// -----------------------------------------------------------------------------
+//
+// Caso #4191: un issue ya había avanzado físicamente a `verificacion`/`aprobacion`
+// (sus markers en disco existían), pero en GitHub quedó pegado un `needs-human`
+// stale. El reconciler veía el label, no lo cruzaba contra el avance real y
+// plantaba un placeholder de bloqueo "para no perderlo" → bloqueo fantasma que
+// figuraba como decisión humana pendiente cuando el issue ya venía resuelto.
+//
+// La guarda: antes de crear el placeholder, calcular la fase física más avanzada
+// que alcanzó el issue (markers en `listo/` o `procesado/`) y compararla con la
+// fase donde se plantaría el bloqueo. Si el issue progresó MÁS ALLÁ de esa fase,
+// el label es stale: se limpia en GitHub y NO se planta bloqueo.
+
+// Estados que evidencian que el issue YA superó (o cerró el trabajo de) una fase.
+//   - `listo`     = la fase terminó su trabajo y espera evaluación.
+//   - `procesado` = la fase siguiente ya tomó el issue (trabajo de la fase cerrado).
+// Deliberadamente NO miramos `pendiente`/`trabajando`: estar encolado o en curso
+// en una fase no implica haberla superado. Solo declaramos `stale` ante evidencia
+// fuerte de avance (conservador: minimiza el riesgo de limpiar un bloqueo legítimo).
+const PROGRESS_STATES = ['listo', 'procesado'];
+
+// Orden canónico de fases. Debe mantenerse sincronizado con
+// `pipelines.<p>.fases` de config.yaml.
+//
+// #5172 — NO es el "fallback permisivo" que la historia elimina: no apaga
+// ningún gate ni degrada a objeto vacío, es el mismo orden que declara el
+// config. Lo que se eliminó es el `catch {}` MUDO que lo aplicaba sin que nadie
+// se enterara de que la config no se pudo leer.
+const FALLBACK_PHASE_ORDER = {
+    definicion: ['analisis', 'criterios', 'sizing'],
+    desarrollo: ['validacion', 'dev', 'build', 'verificacion', 'linteo', 'aprobacion', 'entrega'],
+};
+
+let _globalPhaseOrderCache = null;
+/** Último `detalle` de fallo de config ya logueado (anti-spam del loop de 5min). */
+let _lastConfigFailureDetail = null;
+
+// #5172 — Fail-closed RUIDOSO, sin `process.exit`: el reconciler es un servicio
+// continuo y si muere nadie reconcilia `needs-human` (el pipeline queda sin esa
+// pata). Se loguea el fallo YA redactado por `config-schema` y se deja que el
+// próximo ciclo reintente.
+function logConfigFailure(err) {
+    const estado = configSchema.describeConfigFailure(err, { archivo: err && err.archivo });
+    if (_lastConfigFailureDetail === estado.detalle) return;
+    _lastConfigFailureDetail = estado.detalle;
+    log(configSchema.formatConfigFailureLog(estado, {
+        titulo: 'CONFIG INVÁLIDA — orden de fases sin confirmar contra config.yaml',
+    }));
+}
+
+// Construye el orden GLOBAL de fases (pipeline+fase) leyendo el orden canónico
+// de config.yaml. El orden global encadena los pipelines en el orden en que
+// aparecen en config (definicion → desarrollo), reflejando el flujo natural del
+// issue. Se cachea: el orden de fases no cambia en runtime.
+//
+// #5172 — El caché AD-HOC del CONFIG desapareció (el resolver cachea por ruta);
+// sobrevive el caché del ORDEN YA CALCULADO, cuya semántica no cambia. Sólo se
+// cachea el orden confirmado contra el archivo: si la config estaba ilegible, no
+// se cachea, así el orden real entra en cuanto el archivo vuelve a ser válido.
+function loadGlobalPhaseOrder() {
+    if (_globalPhaseOrderCache) return _globalPhaseOrderCache;
+    let orders = FALLBACK_PHASE_ORDER;
+    let confirmado = false;
+    try {
+        const cfg = configResolver.resolve({ pipelineDir: PIPELINE });
+        confirmado = true;
+        // D-4: `pipelines:` ausente NO es corrupción — se conserva el default del
+        // consumidor. Lo eliminado es el `|| {}` + catch mudo sobre el FALLO DE
+        // LECTURA, no el default de sección ausente.
+        if (cfg.pipelines && typeof cfg.pipelines === 'object') {
+            const parsed = {};
+            for (const [pname, pcfg] of Object.entries(cfg.pipelines)) {
+                if (pcfg && Array.isArray(pcfg.fases)) parsed[pname] = pcfg.fases.slice();
+            }
+            if (Object.keys(parsed).length > 0) orders = parsed;
+        }
+    } catch (e) {
+        logConfigFailure(e);
+    }
+    const global = [];
+    for (const pname of Object.keys(orders)) {
+        for (const fase of orders[pname]) global.push({ pipeline: pname, phase: fase });
+    }
+    if (confirmado) _globalPhaseOrderCache = global;
+    return global;
+}
+
+// Índice en el orden global de una terna (pipeline, fase). -1 si no existe.
+function globalPhaseIndex(globalOrder, pipeline, phase) {
+    return globalOrder.findIndex(g => g.pipeline === pipeline && g.phase === phase);
+}
+
+// Devuelve el índice (en el orden global) de la fase física más avanzada que
+// alcanzó el issue, mirando markers en `listo/`/`procesado/` de cada fase.
+// -1 si el issue no tiene evidencia física de avance en ninguna fase.
+function findFurthestPhysicalPhaseIndex(issueNum, globalOrder) {
+    const prefix = String(issueNum) + '.';
+    let furthest = -1;
+    for (let i = 0; i < globalOrder.length; i++) {
+        const { pipeline, phase } = globalOrder[i];
+        for (const state of PROGRESS_STATES) {
+            const dir = path.join(PIPELINE, pipeline, phase, state);
+            let entries;
+            try { entries = fs.readdirSync(dir); } catch { continue; }
+            const hasMarker = entries.some(
+                f => f.startsWith(prefix) && f !== '.gitkeep' && !isMarkerArtifact(f),
+            );
+            if (hasMarker) { furthest = i; break; }
+        }
+    }
+    return furthest;
+}
+
+// Decide si el `needs-human` de un issue es stale por avance físico de fases.
+// Devuelve { stale: bool, furthestPhase?: string } — stale cuando el issue
+// progresó ESTRICTAMENTE más allá de la fase donde se plantaría el bloqueo.
+function isNeedsHumanStaleByProgress(issueNum, placeholderPipeline, placeholderPhase, opts = {}) {
+    const globalOrder = opts.globalOrder || loadGlobalPhaseOrder();
+    const findFurthest = opts.findFurthest || findFurthestPhysicalPhaseIndex;
+    const placeholderIdx = globalPhaseIndex(globalOrder, placeholderPipeline, placeholderPhase);
+    if (placeholderIdx < 0) return { stale: false };
+    const furthestIdx = findFurthest(issueNum, globalOrder);
+    if (furthestIdx > placeholderIdx) {
+        return { stale: true, furthestPhase: `${globalOrder[furthestIdx].pipeline}/${globalOrder[furthestIdx].phase}` };
+    }
+    return { stale: false };
+}
+
+function reconcileLabelToFilesystem(ghIssues, blockedByIssue, opts = {}) {
     let created = 0;
     let skippedRecommendations = 0;
+    let staleCleared = 0;
+    const enqueueRemoveFn = opts.enqueueLabelRemove || enqueueLabelRemove;
+    const logStaleFn = opts.logStaleOrder || appendStaleOrderLog;
     for (const issue of ghIssues) {
         if (blockedByIssue.has(issue.number)) continue;
         // Skip: recomendaciones auto-generadas (security/guru/planner) que
@@ -169,6 +548,28 @@ function reconcileLabelToFilesystem(ghIssues, blockedByIssue) {
         }
         // Issue tiene label `needs-human` pero no hay marker físico → crear placeholder
         const { pipeline, phase, skill } = decidirFasePlaceholder(issue.labels);
+        // #4222 — Guarda anti bloqueo fantasma: si el issue ya progresó más allá
+        // de la fase donde se plantaría el bloqueo, el `needs-human` es stale.
+        // Limpiar el label en GitHub y NO crear placeholder.
+        const staleCheck = isNeedsHumanStaleByProgress(issue.number, pipeline, phase, opts);
+        if (staleCheck.stale) {
+            try { enqueueRemoveFn(issue.number, RECONCILER_LABEL); } catch (e) {
+                log(`Error encolando remove-label stale #${issue.number}: ${e.message.slice(0, 120)}`);
+            }
+            try {
+                logStaleFn({
+                    reason: 'stale-needs-human-phase-progress',
+                    issue: issue.number,
+                    label: RECONCILER_LABEL,
+                    snapshot_at: null,
+                    current_mtime: null,
+                    detail: `needs-human stale: issue progresó a ${staleCheck.furthestPhase} (más allá de ${pipeline}/${phase}); label limpiado, sin bloqueo`,
+                });
+            } catch {}
+            log(`#${issue.number} needs-human stale (progresó a ${staleCheck.furthestPhase} > ${pipeline}/${phase}) — label limpiado, sin placeholder`);
+            staleCleared++;
+            continue;
+        }
         const targetDir = path.join(PIPELINE, pipeline, phase, humanBlock.BLOCK_SUBDIR);
         const targetFile = path.join(targetDir, `${issue.number}.${skill}`);
         if (fs.existsSync(targetFile)) continue;
@@ -192,6 +593,9 @@ function reconcileLabelToFilesystem(ghIssues, blockedByIssue) {
     }
     if (skippedRecommendations > 0) {
         log(`Skipped ${skippedRecommendations} issues con labels de recomendación (no se crean placeholders)`);
+    }
+    if (staleCleared > 0) {
+        log(`Limpiados ${staleCleared} labels needs-human stale por avance físico de fases (sin bloqueo)`);
     }
     return created;
 }
@@ -282,6 +686,96 @@ function reconcileClosedMarkers(blockedMarkers, ghIssueSet, getStateFn = getIssu
 }
 
 // -----------------------------------------------------------------------------
+// #4231 — Barrido de markers de fase huérfanos de issues CLOSED en colas normales
+// -----------------------------------------------------------------------------
+//
+// Hueco que cierra: `reconcileClosedMarkers` (arriba) solo archiva markers de
+// issues CLOSED que están en `bloqueado-humano/`. Los markers de fase normales
+// (pendiente/trabajando/listo/procesado) de un issue ya cerrado nunca se
+// archivaban — quedaban huérfanos y la vista del pipeline los leía como trabajo
+// activo. El limpiador de ghost artifacts tampoco los toca (por diseño no pisa
+// markers de fase, contrato Pulpo↔agente).
+//
+// Reusa el mismo patrón de archivado: rename del marker a `<pipeline>/<phase>/
+// archivado/`. Nunca borra. Solo archiva markers de issues CLOSED; los OPEN no
+// se tocan (trabajo activo).
+//
+// Costo `gh`: el caller (reconcileOnce) resuelve el estado con UNA sola consulta
+// batch (`gh issue list --state closed`) por ciclo y pasa un resolver sobre ese
+// Set, en vez de N `gh issue view`. Igual deduplicamos el chequeo por issue acá
+// (un issue puede tener markers en varias fases/colas) para no consultar de más
+// si el resolver hiciera I/O.
+function reconcileClosedPhaseMarkers(phaseMarkers, getStateFn = getIssueState, opts = {}) {
+    const now = opts.now || Date.now();
+    const logFn = opts.logStaleOrder || appendStaleOrderLog;
+    let archived = 0;
+    const stateCache = new Map(); // issue -> state (dedup del chequeo, no del archivado)
+    for (const m of phaseMarkers) {
+        let state = stateCache.get(m.issue);
+        if (state === undefined) {
+            state = getStateFn(m.issue);
+            stateCache.set(m.issue, state);
+        }
+        if (state !== 'CLOSED') continue; // OPEN/UNKNOWN → trabajo activo, no tocar
+
+        const baseName = `${m.issue}.${m.skill}`;
+        const srcMarker = m.marker_path
+            || path.join(PIPELINE, m.pipeline, m.phase, m.state, baseName);
+        const archiveDir = path.join(PIPELINE, m.pipeline, m.phase, 'archivado');
+        try {
+            if (!fs.existsSync(srcMarker)) continue; // movido entre listado y ahora
+            fs.mkdirSync(archiveDir, { recursive: true });
+            // Colisión: mismo issue.skill ya archivado (otra cola/ciclo previo) →
+            // sufijo timestamp Windows-safe para no pisar el histórico.
+            let dstMarker = path.join(archiveDir, baseName);
+            if (fs.existsSync(dstMarker)) {
+                dstMarker = path.join(archiveDir, `${baseName}.${safeTsSuffix(now)}`);
+            }
+            fs.renameSync(srcMarker, dstMarker);
+            // Sidecar .reason.json (raro en colas normales) — limpiar si quedó.
+            try { fs.unlinkSync(srcMarker + '.reason.json'); } catch {}
+            archived++;
+            try {
+                logFn({
+                    reason: 'closed-phase-marker-archived',
+                    issue: m.issue,
+                    label: null,
+                    snapshot_at: null,
+                    current_mtime: null,
+                    detail: `${m.pipeline}/${m.phase}/${m.state}/${baseName} → archivado/`,
+                });
+            } catch {}
+        } catch (e) {
+            log(`Error archivando phase marker #${m.issue}.${m.skill}: ${e.message.slice(0, 120)}`);
+        }
+    }
+    return archived;
+}
+
+// #4231 — Resuelve en UNA consulta el set de issues CLOSED del repo. El sweep de
+// markers de fase recorre ~decenas de issues por ciclo; un `gh issue view` por
+// cada uno multiplicaría las llamadas (nota de guru en #4231). Una sola
+// `gh issue list --state closed` cubre todo el histórico (gh pagina internamente)
+// y el resolver queda como lookup O(1) sobre el Set. Devuelve null si GitHub no
+// responde → el caller saltea el sweep (degradación segura: jamás archiva OPEN).
+const CLOSED_SWEEP_LIMIT = parseInt(process.env.RECONCILER_CLOSED_LIMIT || '5000', 10);
+
+function listClosedIssueNumbers(opts = {}) {
+    const limit = opts.limit || CLOSED_SWEEP_LIMIT;
+    try {
+        const raw = execSync(
+            `"${GH_BIN}" issue list --state closed --json number --limit ${limit}`,
+            { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true },
+        );
+        const issues = JSON.parse(raw || '[]');
+        return new Set(issues.map(i => i.number));
+    } catch (e) {
+        log(`Error listando closed issues (phase-marker sweep): ${e.message.slice(0, 120)}`);
+        return null;
+    }
+}
+
+// -----------------------------------------------------------------------------
 // CA3 (#2994) — Detectar destrabe humano y reconciliar siguiendo a GitHub
 // -----------------------------------------------------------------------------
 //
@@ -369,6 +863,175 @@ function reconcileHumanUnblockDetected(blockedMarkers, ghIssueSet, opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// #3186 — Reconciliar markers resueltos por el guardian (re-aprobación)
+// -----------------------------------------------------------------------------
+//
+// Asimetría histórica: `reconcileClosedMarkers` archiva markers cuando el
+// issue queda CLOSED en GitHub, pero **no hay equivalente para el caso
+// "guardian re-aprobó"**. Si guru rechaza, deja marker en
+// `bloqueado-humano/3082.guru`. Si en una corrida posterior el mismo skill
+// re-aprueba y dropea `listo/3082.guru`, el marker queda zombie: el reconciler
+// sigue viéndolo y re-aplica `needs-human` cada ciclo (loop label↔reconciler).
+//
+// Esta función detecta dos casos:
+//
+//   A) GUARDIAN-RESOLVED:
+//      Existe `<pipeline>/<phase>/{listo,procesado}/<issue>.<skill>` con
+//      `mtime > marker.mtime`. Esto indica que el mismo skill que generó el
+//      bloqueo emitió un resultado posterior — implícitamente, re-aprobó.
+//
+//      Por qué buscar en `listo/` Y `procesado/`: el pulpo promueve archivos
+//      `listo/` → `procesado/` al instante en que la fase siguiente toma el
+//      issue. Si el reconciler corre tarde (intervalo default 5min), el
+//      archivo ya puede estar en `procesado/`. Sin esta extensión, el bug
+//      original (#3082) se reproduce parcialmente.
+//
+//   B) TTL-EXPIRED:
+//      `now - marker.mtime > RESOLVED_TTL_MS` (default 7 días). Red de
+//      seguridad para markers que nadie tocó en una semana — típicamente
+//      casos donde el archivo `listo/` fue borrado a mano o nunca existió
+//      (humano intervino fuera del pipeline). Sin este TTL los markers
+//      podrían acumularse indefinidamente.
+//
+// Al archivar:
+//   - Marker → `<pipeline>/<phase>/archivado/<issue>.<skill>.<reason>-<ts>`
+//     con timestamp sanitizado para Windows (sin `:` ni `.`).
+//   - `.reason.json` se elimina (mismo patrón que `reconcileClosedMarkers`).
+//   - `appendStaleOrderLog({ reason })` con reasons `guardian-resolved` o
+//     `ttl-expired` para que `reconcilerStaleOrdersSlice` los cuente.
+//
+// Cross-fase remove-label: si después de archivar no quedan otros markers
+// para el mismo issue (un issue puede estar bloqueado por varios skills en
+// fases diferentes), encolar `remove-label needs-human`. Sin esta verificación
+// podríamos quitar el label aunque haya otros bloqueos pendientes.
+
+const RESOLVED_TTL_MS = parseInt(
+    process.env.RECONCILER_RESOLVED_TTL_MS || String(7 * 24 * 60 * 60 * 1000),
+    10,
+); // 7 días default
+
+// Busca resolución del guardian: archivo `<issue>.<skill>` en `listo/` o
+// `procesado/` de la misma fase, con mtime > markerMtime.
+// Devuelve { state, path, mtimeMs } o null.
+function findGuardianResolution(marker, markerMtime) {
+    const base = `${marker.issue}.${marker.skill}`;
+    for (const state of ['listo', 'procesado']) {
+        const candidate = path.join(PIPELINE, marker.pipeline, marker.phase, state, base);
+        let stat;
+        try { stat = fs.statSync(candidate); } catch { continue; }
+        if (stat.mtimeMs > markerMtime) {
+            return { state, path: candidate, mtimeMs: stat.mtimeMs };
+        }
+    }
+    return null;
+}
+
+// Sanitiza un timestamp ISO para usarlo como sufijo de archivo en Windows.
+// `2026-05-14T22:30:45.123Z` → `2026-05-14T22-30-45-123Z`.
+function safeTsSuffix(ms) {
+    return new Date(ms).toISOString().replace(/[:.]/g, '-');
+}
+
+function reconcileResolvedMarkers(blockedMarkers, opts = {}) {
+    const now = opts.now || Date.now();
+    const ttlMs = typeof opts.ttlMs === 'number' ? opts.ttlMs : RESOLVED_TTL_MS;
+    const logFn = opts.logStaleOrder || appendStaleOrderLog;
+    const enqueueRemoveFn = opts.enqueueLabelRemove || enqueueLabelRemove;
+    const findResolutionFn = opts.findGuardianResolution || findGuardianResolution;
+
+    const archivedMarkerKeys = new Set(); // `${issue}.${skill}`
+    const archivedIssues = new Set();
+    const archivedEntries = [];
+
+    for (const m of blockedMarkers) {
+        const markerPath = path.join(
+            PIPELINE, m.pipeline, m.phase, humanBlock.BLOCK_SUBDIR, `${m.issue}.${m.skill}`,
+        );
+        let markerMtime;
+        try { markerMtime = fs.statSync(markerPath).mtimeMs; }
+        catch { continue; } // marker desapareció entre listado y stat — saltar
+
+        let resolved = null;
+        const guardian = findResolutionFn(m, markerMtime);
+        if (guardian) {
+            resolved = {
+                reason: 'guardian-resolved',
+                detail: `${m.pipeline}/${m.phase}/${guardian.state}/${m.issue}.${m.skill}`,
+            };
+        } else if ((now - markerMtime) > ttlMs) {
+            const daysIdle = Math.round((now - markerMtime) / (24 * 3600 * 1000));
+            resolved = {
+                reason: 'ttl-expired',
+                detail: `marker sin movimiento por ${daysIdle}d (TTL=${Math.round(ttlMs / (24 * 3600 * 1000))}d)`,
+            };
+        }
+
+        if (!resolved) continue;
+
+        // Archivar marker en <pipeline>/<phase>/archivado/ con sufijo
+        // `<reason>-<ts>` para que sea evidente por qué se cerró.
+        const archiveDir = path.join(PIPELINE, m.pipeline, m.phase, 'archivado');
+        const base = `${m.issue}.${m.skill}`;
+        const archivedName = `${base}.${resolved.reason}-${safeTsSuffix(now)}`;
+        const dst = path.join(archiveDir, archivedName);
+
+        try {
+            fs.mkdirSync(archiveDir, { recursive: true });
+            fs.renameSync(markerPath, dst);
+        } catch (e) {
+            log(`Error archivando marker resuelto #${m.issue}.${m.skill}: ${e.message.slice(0, 120)}`);
+            continue;
+        }
+        try { fs.unlinkSync(markerPath + '.reason.json'); } catch {}
+
+        archivedMarkerKeys.add(`${m.issue}.${m.skill}`);
+        archivedIssues.add(m.issue);
+        archivedEntries.push({
+            issue: m.issue, skill: m.skill, reason: resolved.reason, archived_as: dst,
+        });
+
+        try {
+            logFn({
+                reason: resolved.reason,
+                issue: m.issue,
+                label: RECONCILER_LABEL,
+                snapshot_at: null,
+                current_mtime: markerMtime,
+                detail: resolved.detail,
+            });
+        } catch {}
+
+        log(`#${m.issue}.${m.skill} resuelto (${resolved.reason}) → archivado/${archivedName}`);
+    }
+
+    // Cross-fase: por cada issue con marker archivado, verificar si quedan
+    // otros markers activos en blockedMarkers (en cualquier fase). Solo si
+    // todos los markers del issue fueron archivados, encolamos remove-label
+    // para que GitHub también quede sin `needs-human`.
+    let removeLabelsEnqueued = 0;
+    for (const issue of archivedIssues) {
+        const stillBlocked = blockedMarkers.some(
+            m => m.issue === issue && !archivedMarkerKeys.has(`${m.issue}.${m.skill}`),
+        );
+        if (stillBlocked) continue;
+        try {
+            enqueueRemoveFn(issue, RECONCILER_LABEL);
+            removeLabelsEnqueued++;
+        } catch (e) {
+            log(`Error encolando remove-label #${issue}: ${e.message.slice(0, 120)}`);
+        }
+    }
+
+    return {
+        archived: archivedEntries.length,
+        archivedIssues,
+        archivedMarkerKeys,
+        removeLabelsEnqueued,
+        entries: archivedEntries,
+    };
+}
+
+// -----------------------------------------------------------------------------
 // Telemetría: log append-only de descartes/detecciones (CA5 #2994)
 // -----------------------------------------------------------------------------
 //
@@ -398,6 +1061,396 @@ function appendStaleOrderLog(entry) {
     }
 }
 
+function logLabelReconcilerAudit(entry, logFn = appendStaleOrderLog) {
+    if (!entry || typeof entry !== 'object') return;
+    logFn({
+        reason: 'state-label-reconciled',
+        issue: entry.issue,
+        label: entry.label,
+        snapshot_at: null,
+        current_mtime: null,
+        detail: {
+            issue: entry.issue,
+            label: entry.label,
+            action: entry.action,
+            oracle: entry.oracle,
+            reason: entry.reason,
+            timestamp: new Date().toISOString(),
+            actor: 'reconciler',
+        },
+    });
+}
+
+function reconcileStateLabelsStep(ghIssues, opts = {}) {
+    const issues = Array.isArray(ghIssues) ? ghIssues : [];
+    const resolveSources = opts.resolveSources || resolveEpicStateSources;
+    const enqueueRemoveFn = opts.enqueueLabelRemove || enqueueLabelRemove;
+    const logAuditFn = opts.logAudit || logLabelReconcilerAudit;
+    const removedIssues = new Set();
+    let removed = 0;
+
+    for (const issue of issues) {
+        const issueNum = normalizeIssueNumber(issue && issue.number);
+        if (!issueNum) continue;
+        const sources = resolveSources(issue, opts) || {};
+        const rec = reconcileStateLabels({
+            issue: issueNum,
+            currentLabels: issue.labels || [],
+            sources,
+        });
+        for (const label of rec.toRemove || []) {
+            if (!isReconciliableStateLabel(label)) continue;
+            enqueueRemoveFn(issueNum, label);
+            removed++;
+            removedIssues.add(issueNum);
+        }
+        for (const audit of rec.audit || []) {
+            if (!isReconciliableStateLabel(audit.label)) continue;
+            try { logAuditFn(audit); } catch {}
+        }
+    }
+
+    return { removed, removedIssues };
+}
+
+// -----------------------------------------------------------------------------
+// #3175 — Admission gate sweep (huérfanos sin needs-definition/Ready)
+// -----------------------------------------------------------------------------
+//
+// El workflow `.github/workflows/admission-gate.yml` cubre el caso event-driven
+// (issue/PR recién creado). Pero hay paths que escapan al workflow:
+//   - Issues creados durante un downtime de Actions.
+//   - Issues creados antes del deploy del workflow (huérfanos históricos).
+//   - PRs creados desde un fork con permisos limitados.
+//
+// Este sweep es defensa en profundidad: cada ciclo del reconciler escanea
+// todos los issues/PRs OPEN del repo, filtra los que NO tengan label de
+// admisión, aplica `needs-definition` y avisa por Telegram.
+//
+// El sweep es idempotente: aplicar un label ya existente es no-op en la API
+// de GitHub. Y el formatTelegramAlert devuelve null cuando hay 0 huérfanos,
+// así que no se alerta cuando todo está limpio (modo silencioso, CA-UX5).
+
+function listGhItemsAll(kind) {
+    // kind: 'issue' | 'pr'. Listamos open con labels/title/url para que
+    // admissionGate.filterOrphans pueda decidir sin más I/O.
+    const cmd = kind === 'pr' ? 'pr list' : 'issue list';
+    try {
+        const raw = execSync(
+            `"${GH_BIN}" ${cmd} --state open --limit 500 --json number,labels,title,url`,
+            { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true },
+        );
+        const items = JSON.parse(raw || '[]');
+        return items;
+    } catch (e) {
+        log(`Error consultando GitHub (${kind}): ${e.message.slice(0, 120)}`);
+        return null;
+    }
+}
+
+function applyAdmissionLabel(issueNumber) {
+    // Idempotente del lado de GitHub. Reusamos la cola de svc-github para
+    // que el apply no bloquee el reconciler ni dependa de la latencia de
+    // la API.
+    try {
+        fs.mkdirSync(GH_QUEUE, { recursive: true });
+        const filename = `${issueNumber}-${admissionGate.DEFAULT_ADMISSION_LABEL}-admission-${Date.now()}.json`;
+        const payload = {
+            action: 'label',
+            issue: issueNumber,
+            label: admissionGate.DEFAULT_ADMISSION_LABEL,
+        };
+        // #6226 - escritura fail-closed (ver `enqueueLabelApply`).
+        dropfileWriter.writeUniqueFileSync({
+            dir: GH_QUEUE,
+            filename,
+            data: JSON.stringify(payload),
+            onCollision: (name, attempt) => console.warn(
+                `[servicio-reconciler] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
+        return true;
+    } catch (e) {
+        log(`Error encolando admission label #${issueNumber}: ${e.message.slice(0, 120)}`);
+        return false;
+    }
+}
+
+function enqueueTelegramAlert(text) {
+    // Patrón estándar del pipeline: drop JSON en servicios/telegram/pendiente/
+    // y svc-telegram lo envía. El svc-telegram ya hace sanitización doble
+    // (sanitize-console + sanitize-payload + redact), pero el módulo
+    // admission-gate ya redacta el título por nuestro lado — defensa en
+    // profundidad.
+    try {
+        fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE, { recursive: true });
+        const payload = { text, parse_mode: 'Markdown' };
+        // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+        // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+        dropfileWriter.writeDropfileSync({
+            dir: ADMISSION_TELEGRAM_QUEUE,
+            suffix: 'admission-sweep.json',
+            data: JSON.stringify(payload),
+            onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
+        });
+        return true;
+    } catch (e) {
+        log(`Error encolando alerta Telegram admission: ${e.message.slice(0, 120)}`);
+        return false;
+    }
+}
+
+function reconcileAdmissionOrphans(opts = {}) {
+    // Devuelve {appliedCount, deferredCount, bootstrap, alertSent, dryRun}.
+    // El opts.listIssues/opts.listPrs/opts.applyLabel/opts.enqueueAlert son
+    // hooks para tests (todos opcionales; defaultean a las funciones reales).
+    // #5172 · CA-5 — valor EFECTIVO (archivo + override por env ya trazado por el
+    // resolver), resuelto en el momento de decidir. No es una constante de load.
+    const gate = admissionGateSettings();
+    if (!gate.sweepEnabled) {
+        return { skipped: true, reason: 'admission_gate.sweep_enabled=false' };
+    }
+
+    const listIssuesFn = opts.listIssues || (() => listGhItemsAll('issue'));
+    const listPrsFn = opts.listPrs || (() => listGhItemsAll('pr'));
+    const applyFn = opts.applyLabel || applyAdmissionLabel;
+    const alertFn = opts.enqueueAlert || enqueueTelegramAlert;
+    const dryRun = opts.dryRun != null ? !!opts.dryRun : gate.dryRun;
+
+    const issues = listIssuesFn();
+    const prs = listPrsFn();
+    if (issues === null && prs === null) {
+        return { skipped: true, reason: 'GitHub no respondió' };
+    }
+
+    const orphans = [
+        ...admissionGate.filterOrphans(issues || []),
+        ...admissionGate.filterOrphans(prs || []),
+    ];
+
+    if (orphans.length === 0) {
+        // Modo silencioso (CA-UX5). No publicamos nada cuando todo OK.
+        return { appliedCount: 0, deferredCount: 0, bootstrap: false, alertSent: false, dryRun };
+    }
+
+    const decision = admissionGate.applyBootstrapCap(orphans);
+    let appliedCount = 0;
+    if (!dryRun) {
+        for (const o of decision.apply) {
+            if (applyFn(o.number)) appliedCount++;
+        }
+    } else {
+        // En dry-run reportamos cuántos se aplicarían pero no encolamos.
+        appliedCount = decision.apply.length;
+    }
+
+    const alertText = admissionGate.formatTelegramAlert(decision);
+    let alertSent = false;
+    if (alertText && !dryRun) {
+        alertSent = alertFn(alertText);
+    }
+
+    return {
+        appliedCount,
+        deferredCount: decision.deferred.length,
+        bootstrap: decision.bootstrap,
+        alertSent,
+        dryRun,
+    };
+}
+
+// -----------------------------------------------------------------------------
+// #3381 — Sweep del screenshots+mockup gate (default OFF)
+// -----------------------------------------------------------------------------
+//
+// Cuando SCREENSHOTS_MOCKUPS_GATE_ENABLED=1, escanea issues `Ready` en scope
+// (app:* o area:pipeline con archivos de dashboard) y alerta por Telegram si
+// alguno no tiene la sección `## Screenshots & Mockups` o el opt-out
+// `ux:no-visual`. NO revierte labels automáticamente — solo señaliza para
+// triaje humano + agente /ux. Mantener el principio "fail-soft" del rollout.
+
+function listReadyIssuesWithBody() {
+    try {
+        const raw = execSync(
+            `"${GH_BIN}" issue list --label "Ready" --state open --json number,labels,title,url,body --limit 500`,
+            { cwd: ROOT, encoding: 'utf8', timeout: 30000, windowsHide: true },
+        );
+        return JSON.parse(raw || '[]');
+    } catch (e) {
+        log(`Error listando Ready issues (screenshots gate): ${e.message.slice(0, 120)}`);
+        return null;
+    }
+}
+
+function enqueueScreenshotsGateAlert(issues) {
+    if (!Array.isArray(issues) || issues.length === 0) return false;
+    const lines = [
+        `🟠 Screenshots & Mockups gate — ${issues.length} issues Ready sin sección visual completa`,
+        '',
+    ];
+    for (const it of issues) {
+        const url = typeof it.url === 'string' && it.url ? it.url : `#${it.number}`;
+        const title = admissionGate.safeTitle(it.title || '');
+        const missing = Array.isArray(it.missing) ? it.missing.join(',') : 'unknown';
+        lines.push(`[#${it.number}](${url}) — ${title} — falta: ${missing}`);
+    }
+    lines.push('');
+    lines.push('Acción: invocar `/ux` o aplicar `ux:no-visual` con justificación.');
+    lines.push('Más detalle: docs/pipeline/ux-visual-flow.md');
+
+    const text = lines.join('\n');
+    try {
+        fs.mkdirSync(ADMISSION_TELEGRAM_QUEUE, { recursive: true });
+        // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+        // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+        dropfileWriter.writeDropfileSync({
+            dir: ADMISSION_TELEGRAM_QUEUE,
+            suffix: 'screenshots-gate.json',
+            data: JSON.stringify({ text, parse_mode: 'Markdown' }),
+            onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
+        });
+        return true;
+    } catch (e) {
+        log(`Error encolando alerta screenshots-gate: ${e.message.slice(0, 120)}`);
+        return false;
+    }
+}
+
+function reconcileScreenshotsMockupGate(opts = {}) {
+    // Devuelve {appliedCount, skipped, reason}.
+    if (process.env[screenshotsMockupGate.FLAG_ENV_NAME] !== '1') {
+        return { skipped: true, reason: 'flag-off' };
+    }
+    const listFn = opts.listReady || listReadyIssuesWithBody;
+    const alertFn = opts.enqueueAlert || enqueueScreenshotsGateAlert;
+    const items = listFn();
+    if (items === null) return { skipped: true, reason: 'github-error' };
+
+    const blocked = [];
+    for (const it of items) {
+        const result = screenshotsMockupGate.evaluate({
+            labels: it.labels || [],
+            body: it.body || '',
+        }, { flag: '1' });
+        if (result.gate === 'block') {
+            blocked.push({
+                number: it.number,
+                title: it.title,
+                url: it.url,
+                missing: result.missing,
+            });
+        }
+    }
+
+    if (blocked.length === 0) {
+        return { appliedCount: 0, skipped: false };
+    }
+    const sent = alertFn(blocked);
+    return { appliedCount: blocked.length, alertSent: sent };
+}
+
+// -----------------------------------------------------------------------------
+// #4673 -- Aviso proactivo de finalizacion de ola
+// -----------------------------------------------------------------------------
+
+function escapeMarkdownText(value) {
+    return String(value || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/([_*[\]()`])/g, '\\$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function waveTitle(wave) {
+    const name = wave && typeof wave.name === 'string' ? wave.name.trim() : '';
+    const goal = wave && typeof wave.goal === 'string' ? wave.goal.trim() : '';
+    return name || goal || 'ola activa';
+}
+
+function buildWaveCompletionMessage(wave, snapshot) {
+    const waveNumber = wave && Number.isInteger(wave.number) ? wave.number : null;
+    const heading = `Ola ${waveNumber || '?'} completada - ${escapeMarkdownText(waveTitle(wave))}`;
+    const goal = escapeMarkdownText(wave && wave.goal ? wave.goal : waveTitle(wave));
+    const issues = Array.isArray(snapshot && snapshot.issues) ? snapshot.issues : [];
+    const closedIssues = issues.filter((issue) => issue && issue.isClosed);
+    const maxListed = 15;
+    const lines = [
+        `🎉 ${heading}`,
+        '',
+        'Todos los issues cerrados y en `main`:',
+    ];
+
+    for (const issue of closedIssues.slice(0, maxListed)) {
+        const id = Number.isInteger(issue.id) ? issue.id : '?';
+        const title = escapeMarkdownText(issue.title || '(sin titulo)');
+        lines.push(`- #${id} - ${title}`);
+    }
+    if (closedIssues.length > maxListed) {
+        lines.push(`- ... ${closedIssues.length - maxListed} issues cerrados mas`);
+    }
+
+    lines.push('');
+    lines.push(`Objetivo: ${goal}`);
+    lines.push(`${snapshot.closedCount}/${snapshot.totalIssues} issues - 100%`);
+    return lines.join('\n');
+}
+
+function reconcileWaveCompletion(opts = {}) {
+    const wavesApi = opts.waves || waves;
+    const resolver = opts.waveResolver || waveResolver;
+    const stateApi = opts.waveState || waveState;
+    const snapshotApi = opts.waveSnapshot || waveSnapshot;
+    const closedSetFn = opts.computeClosedSet || computeClosedSet;
+    const notifyFn = opts.notifyTelegram || notifyTelegram;
+    const pipelineRoot = opts.pipelineRoot || PIPELINE;
+
+    const activeWave = wavesApi.getActiveWave();
+    if (!activeWave || !Number.isInteger(activeWave.number)) {
+        return { skipped: true, reason: 'no_active_wave' };
+    }
+
+    const resolvedWave = resolver.resolveActiveWave({ pipelineRoot });
+    const state = stateApi.getCachedWaveState({ pipelineRoot });
+    const closedIssues = closedSetFn({ wave: resolvedWave, state });
+    const snapshot = snapshotApi.buildWaveSnapshot({ state, wave: resolvedWave, closedIssues });
+    const complete = !!snapshot && snapshot.totalIssues > 0 && snapshot.closedCount === snapshot.totalIssues;
+
+    if (complete && activeWave.completion_notified !== true) {
+        const message = buildWaveCompletionMessage(activeWave, snapshot);
+        const notifyResult = notifyFn({
+            level: 'info',
+            component: 'wave-completion',
+            message,
+            context: {
+                wave: activeWave.number,
+                issues: `${snapshot.closedCount}/${snapshot.totalIssues}`,
+            },
+        });
+        if (notifyResult && notifyResult.ok) {
+            const marked = wavesApi.setWaveCompletionNotified(activeWave.number, {
+                updated_by: 'svc-reconciler',
+            });
+            return { complete: true, notified: true, marked, dropPath: notifyResult.dropPath || null };
+        }
+        return {
+            complete: true,
+            notified: false,
+            notifyFailed: true,
+            reason: notifyResult && notifyResult.reason ? notifyResult.reason : 'notify_failed',
+        };
+    }
+
+    if (!complete && activeWave.completion_notified === true) {
+        const reset = wavesApi.clearWaveCompletionNotified(activeWave.number, {
+            updated_by: 'svc-reconciler',
+            note: `wave ${activeWave.number} completion notification reset: ${snapshot.closedCount}/${snapshot.totalIssues}`,
+        });
+        return { complete: false, reset };
+    }
+
+    return { complete, notified: false, reset: false };
+}
+
 // -----------------------------------------------------------------------------
 // Loop principal
 // -----------------------------------------------------------------------------
@@ -423,26 +1476,117 @@ function reconcileOnce() {
         blockedByIssue.get(m.issue).push(m);
     }
 
-    const created = reconcileLabelToFilesystem(ghIssues, blockedByIssue);
+    // #3186 — primero, archivar markers ya resueltos por el guardian (re-aprobó)
+    // o expirados por TTL. Corre ANTES que reconcileMarkerToLabel para no
+    // re-aplicar el label sobre un issue que está funcionalmente destrabado;
+    // ANTES que reconcileHumanUnblockDetected porque el guardian-resolved es
+    // más específico (sabemos exactamente qué skill resolvió) que la detección
+    // por "label ausente" — si ambos disparan, preferimos archivar a `archivado/`
+    // (estado terminal) en vez de mover a `pendiente/` (estado de re-ejecución).
+    const resolvedResult = reconcileResolvedMarkers(blockedMarkers);
+    const resolved = resolvedResult.archived;
+    const resolvedRemovedLabels = resolvedResult.removeLabelsEnqueued;
+    const afterResolved = resolvedResult.archivedMarkerKeys.size > 0
+        ? blockedMarkers.filter(m => !resolvedResult.archivedMarkerKeys.has(`${m.issue}.${m.skill}`))
+        : blockedMarkers;
 
-    // CA3 (#2994) — primero detectar destrabes humanos: corre ANTES que
+    // CA3 (#2994) — detectar destrabes humanos: corre ANTES que
     // reconcileMarkerToLabel para no encolar órdenes que tendríamos que
     // descartar como stale por GitHub-autoritativo.
-    const unblockResult = reconcileHumanUnblockDetected(blockedMarkers, ghIssueSet);
+    const unblockResult = reconcileHumanUnblockDetected(afterResolved, ghIssueSet);
     const detected = unblockResult.detected;
     // Filtrar markers ya movidos para que reconcileMarkerToLabel/Closed
     // no vuelvan a procesarlos en este mismo ciclo.
     const remaining = unblockResult.movedIssues.size > 0
-        ? blockedMarkers.filter(m => !unblockResult.movedIssues.has(m.issue))
-        : blockedMarkers;
+        ? afterResolved.filter(m => !unblockResult.movedIssues.has(m.issue))
+        : afterResolved;
 
-    const enqueued = reconcileMarkerToLabel(remaining, ghIssueSet);
-    const archived = reconcileClosedMarkers(remaining, ghIssueSet);
+    let stateLabelResult = { removed: 0, removedIssues: new Set() };
+    try {
+        stateLabelResult = reconcileStateLabelsStep(ghIssues, {
+            blockedByIssue,
+            childrenMap: loadSplitChildrenMap(),
+            issueStates: loadIssueStateCache(),
+        });
+    } catch (e) {
+        log(`State-label sweep error: ${e.message.slice(0, 120)}`);
+        stateLabelResult = { error: true, removed: 0, removedIssues: new Set() };
+    }
+
+    const effectiveGhIssues = stateLabelResult.removedIssues && stateLabelResult.removedIssues.size > 0
+        ? ghIssues.filter(i => !stateLabelResult.removedIssues.has(i.number))
+        : ghIssues;
+    const effectiveGhIssueSet = stateLabelResult.removedIssues && stateLabelResult.removedIssues.size > 0
+        ? new Set([...ghIssueSet].filter(issue => !stateLabelResult.removedIssues.has(issue)))
+        : ghIssueSet;
+
+    const created = reconcileLabelToFilesystem(effectiveGhIssues, blockedByIssue);
+    const enqueued = reconcileMarkerToLabel(remaining, effectiveGhIssueSet);
+    const archived = reconcileClosedMarkers(remaining, effectiveGhIssueSet);
+
+    // #4231 — Barrido de markers de fase huérfanos de issues CLOSED en las colas
+    // NORMALES (pendiente/trabajando/listo/procesado). reconcileClosedMarkers de
+    // arriba solo cubre bloqueado-humano/; este cierra el hueco. Fail-soft: si
+    // GitHub no responde para el batch de cerrados, se saltea (nunca archiva OPEN).
+    let archivedPhase = 0;
+    try {
+        const phaseMarkers = humanBlock.listPhaseMarkers();
+        if (phaseMarkers.length > 0) {
+            const closedSet = listClosedIssueNumbers();
+            if (closedSet) {
+                const closedResolver = (issueNum) => (closedSet.has(issueNum) ? 'CLOSED' : 'OPEN');
+                archivedPhase = reconcileClosedPhaseMarkers(phaseMarkers, closedResolver);
+            }
+        }
+    } catch (e) {
+        log(`Phase-marker sweep error: ${e.message.slice(0, 120)}`);
+    }
+
+    // #3175 — Sweep paralelo del admission gate (defensa en profundidad).
+    // Fallas del sweep son no-fatales: si GH no responde o falla la cola,
+    // el ciclo del reconciler debe completar igual.
+    let admissionResult = null;
+    try {
+        admissionResult = reconcileAdmissionOrphans();
+    } catch (e) {
+        log(`Admission sweep error: ${e.message.slice(0, 120)}`);
+        admissionResult = { error: true };
+    }
+
+    // #3381 — Sweep del screenshots+mockup gate (default OFF). Mismo principio
+    // que admission: fail-soft, no rompe el ciclo. Solo alerta — no auto-revert.
+    let screenshotsResult = null;
+    try {
+        screenshotsResult = reconcileScreenshotsMockupGate();
+    } catch (e) {
+        log(`Screenshots+mockup sweep error: ${e.message.slice(0, 120)}`);
+        screenshotsResult = { error: true };
+    }
+
+    let waveCompletionResult = null;
+    try {
+        waveCompletionResult = reconcileWaveCompletion();
+    } catch (e) {
+        log(`Wave completion notice error: ${e.message.slice(0, 120)}`);
+        waveCompletionResult = { error: true };
+    }
 
     const elapsed = Date.now() - t0;
     lastRunAt = Date.now();
-    if (created || enqueued || archived || detected) {
-        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados, +${detected} destrabes humanos detectados`);
+    const admissionSummary = admissionResult && !admissionResult.skipped && !admissionResult.error
+        ? `, +${admissionResult.appliedCount || 0} admission${admissionResult.bootstrap ? ' [BOOTSTRAP]' : ''}`
+        : '';
+    const screenshotsSummary = screenshotsResult && !screenshotsResult.skipped && !screenshotsResult.error && screenshotsResult.appliedCount
+        ? `, +${screenshotsResult.appliedCount} screenshots-gate`
+        : '';
+    const waveCompletionSummary = waveCompletionResult && !waveCompletionResult.error && (waveCompletionResult.notified || waveCompletionResult.reset || waveCompletionResult.notifyFailed)
+        ? `, wave-completion=${waveCompletionResult.notified ? 'notified' : (waveCompletionResult.reset ? 'reset' : 'retry-pending')}`
+        : '';
+    const phaseSummary = archivedPhase ? `, +${archivedPhase} markers de fase archivados (closed)` : '';
+    const stateLabelsRemoved = stateLabelResult && stateLabelResult.removed ? stateLabelResult.removed : 0;
+    const stateLabelSummary = stateLabelsRemoved ? `, -${stateLabelsRemoved} labels stale` : '';
+    if (created || enqueued || archived || archivedPhase || detected || resolved || stateLabelsRemoved || (admissionResult && admissionResult.appliedCount) || (screenshotsResult && screenshotsResult.appliedCount) || waveCompletionSummary) {
+        log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} → +${created} placeholders, +${enqueued} labels encolados, +${archived} archivados (closed), +${detected} destrabes humanos, +${resolved} resueltos por guardian/TTL (-${resolvedRemovedLabels} labels removidos)${stateLabelSummary}${phaseSummary}${admissionSummary}${screenshotsSummary}${waveCompletionSummary}`);
     } else {
         log(`Ciclo ${cycleCount} (${elapsed}ms): GH=${ghIssues.length} markers=${blockedMarkers.length} — sincronizado`);
     }
@@ -491,14 +1635,49 @@ module.exports = {
     reconcileLabelToFilesystem,
     reconcileMarkerToLabel,
     reconcileClosedMarkers,
+    // #4231 — barrido de markers de fase huérfanos (colas normales)
+    reconcileClosedPhaseMarkers,
+    listClosedIssueNumbers,
+    CLOSED_SWEEP_LIMIT,
     reconcileHumanUnblockDetected,
+    reconcileResolvedMarkers,
+    findGuardianResolution,
+    safeTsSuffix,
     decidirFasePlaceholder,
     isRecommendationIssue,
     RECOMMENDATION_LABELS,
+    // #4222 — Cruce label↔avance físico de fases (anti bloqueo fantasma)
+    loadGlobalPhaseOrder,
+    globalPhaseIndex,
+    findFurthestPhysicalPhaseIndex,
+    isNeedsHumanStaleByProgress,
+    PROGRESS_STATES,
+    FALLBACK_PHASE_ORDER,
     listGhIssuesWithLabel,
     getIssueState,
     enqueueLabelApply,
+    enqueueLabelRemove,
     buildMarkerMeta,
     appendStaleOrderLog,
+    logLabelReconcilerAudit,
+    reconcileStateLabelsStep,
+    resolveEpicStateSources,
+    resolveChildrenStatesFresh,
+    getIssueStateEntry,
+    loadSplitChildrenMap,
+    loadIssueStateCache,
     HUMAN_UNBLOCK_GRACE_MS,
+    RESOLVED_TTL_MS,
+    // #3175 — Admission gate sweep
+    reconcileAdmissionOrphans,
+    applyAdmissionLabel,
+    enqueueTelegramAlert,
+    listGhItemsAll,
+    // #5172 · CA-5 — reemplaza a las constantes `ADMISSION_SWEEP_ENABLED` /
+    // `ADMISSION_DRY_RUN`, que congelaban el valor en el load del módulo y se
+    // salteaban la traza del resolver.
+    admissionGateSettings,
+    reconcileWaveCompletion,
+    buildWaveCompletionMessage,
+    escapeMarkdownText,
 };

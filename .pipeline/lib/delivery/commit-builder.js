@@ -40,11 +40,40 @@ function buildFallbackMessage(type, description) {
   return message;
 }
 
+// Garantiza que el mensaje de commit referencie "Closes #N" (#4080).
+//
+// El linter determinístico (static-checks.checkClosesIssue) evalúa SOLO los
+// mensajes de commit — no el body del PR — por lo que la referencia tiene que
+// vivir en el commit para que GitHub cierre el issue al mergear y el warning
+// `pr:missing-closes` deje de dispararse en el flujo normal.
+//
+// Es idempotente: si el mensaje ya referencia el issue con
+// closes/fixes/resolves #N (mismo patrón que usa el linter), no agrega nada.
+// El número se deriva del contexto de la fase (rama `agent/<issue>-<slug>`),
+// así que la inyección es determinística y confiable sin depender del LLM.
+function ensureClosesReference(message, issueNumber) {
+  if (!issueNumber) return message;
+  const issue = String(issueNumber).trim().replace(/^#/, '');
+  if (!/^\d+$/.test(issue)) return message;
+
+  // Mismo patrón que static-checks.checkClosesIssue: evita doble inyección.
+  const rx = new RegExp(`\\b(?:closes|fixes|resolves)\\s+#${issue}\\b`, 'i');
+  if (rx.test(message)) return message;
+
+  const base = (message || '').replace(/\s+$/, '');
+  if (!base) return `Closes #${issue}`;
+  return `${base}\n\nCloses #${issue}`;
+}
+
 // API principal. Lee el issue, extrae el payload o cae a fallback.
 //
 // `issue` puede ser:
 // - null/undefined: usa fallback
 // - { body, comments: [{ body, ... }, ...] }: búsqueda en comments
+//
+// `issueNumber`: cuando está presente, garantiza que el mensaje final
+// referencie "Closes #N" (idempotente). Aplica tanto al payload como al
+// fallback, para que el PR cierre el issue al mergear (#4080).
 //
 // Retorna { message, source }
 function build({
@@ -52,6 +81,7 @@ function build({
   issueComments = [],
   type = null,
   description = null,
+  issueNumber = null,
 } = {}) {
   // Buscar payload en comments (orden reverso: el último gana)
   for (let i = issueComments.length - 1; i >= 0; i--) {
@@ -61,7 +91,7 @@ function build({
     const payload = parseDeliveryPayload(commentText);
     if (payload) {
       return {
-        message: payload,
+        message: ensureClosesReference(payload, issueNumber),
         source: 'issue-payload',
       };
     }
@@ -72,7 +102,7 @@ function build({
     const payload = parseDeliveryPayload(issueBody);
     if (payload) {
       return {
-        message: payload,
+        message: ensureClosesReference(payload, issueNumber),
         source: 'issue-payload',
       };
     }
@@ -80,7 +110,7 @@ function build({
 
   // Template fallback
   return {
-    message: buildFallbackMessage(type, description),
+    message: ensureClosesReference(buildFallbackMessage(type, description), issueNumber),
     source: 'fallback',
   };
 }
@@ -89,6 +119,7 @@ module.exports = {
   build,
   parseDeliveryPayload,
   buildFallbackMessage,
+  ensureClosesReference,
   // exports para tests
-  _internals: { parseDeliveryPayload, buildFallbackMessage },
+  _internals: { parseDeliveryPayload, buildFallbackMessage, ensureClosesReference },
 };

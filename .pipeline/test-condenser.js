@@ -15,6 +15,13 @@ const TRABAJANDO = path.join(QUEUE_DIR, 'trabajando');
 const LISTO = path.join(QUEUE_DIR, 'listo');
 const FALLIDO = path.join(QUEUE_DIR, 'fallido');
 
+// Los directorios de cola son runtime (gitignored): en un worktree fresco pueden
+// no existir. Se crean idempotentemente para que el test sea self-contained y no
+// falle por ENOENT al escribir en `fallido/` (fuente de falsos rechazos del tester).
+for (const dir of [PENDIENTE, TRABAJANDO, LISTO, FALLIDO]) {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
 let passed = 0;
 let failed = 0;
 

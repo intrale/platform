@@ -18,14 +18,20 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync, spawn, spawnSync } = require('child_process');
+const { exec, execSync, execFile, spawn, spawnSync } = require('child_process');
 const yaml = require('js-yaml');
+// #5172 — punto único de lectura/validación de la configuración del pipeline.
+// El dashboard NO tiene fallback permisivo: config inválida ⇒ `configErrorState`
+// explícito y cero decisiones derivadas (CA-8).
+const configResolver = require('./lib/config-resolver');
+const configSchema = require('./lib/config-schema');
+const pidDiscovery = require('./pid-discovery');
 const {
   findPidByComponent,
   findPidByPort,
   pidAlive,
   invalidateCache,
-} = require('./pid-discovery');
+} = pidDiscovery;
 // #2337 CA8 — estado `reintentando` (anti-parpadeo FS-driven).
 // Best-effort require: si el modulo no existe (pipeline antiguo), degradamos
 // silenciosamente sin el estado `retrying`.
@@ -46,6 +52,42 @@ try { recommendationsLib = require('./lib/recommendations'); } catch { /* opcion
 // con `etaHTML = ''` para no romper el render por una utility opcional.
 let etaLib = null;
 try { etaLib = require('./lib/eta'); } catch { /* opcional */ }
+// #3958 EP8-H5 — Riesgo explicable (server-side) para la vista tabla + drawer.
+let issueRiskLib = null;
+try { issueRiskLib = require('./lib/issue-risk'); } catch { /* opcional */ }
+
+// ETA por ola (issue #3492 / Spike #3378 H4): calculadora probabilística
+// p50/p75/p90 a partir de markers FS + metrics-history.jsonl. Best-effort
+// require: si el módulo no carga (pipeline antiguo) el dashboard sigue
+// funcionando sin el panel "Ola actual · ETA". Las funciones son async,
+// por eso el refresh corre fire-and-forget contra un cache TTL 30s y el
+// `state.olaETA` sale del cache (la lectura sigue siendo sync).
+let etaWaveLib = null;
+try { etaWaveLib = require('./lib/eta-wave'); } catch { /* opcional */ }
+
+// #4039 — writer de la serie temporal de avance de ola + módulos para resolver
+// la ola activa y su `totalPct`. Best-effort: si no cargan, el dashboard sigue
+// con el ETA por presupuesto teórico (fallback).
+let waveProgressLib = null;
+let wavesLib = null;
+let waveResolverLib = null;
+let waveSnapshotLib = null;
+let waveStateLib = null;
+try { waveProgressLib = require('./lib/wave-progress'); } catch { /* opcional */ }
+try { wavesLib = require('./lib/waves'); } catch { /* opcional */ }
+try { waveResolverLib = require('./lib/wave-resolver'); } catch { /* opcional */ }
+try { waveSnapshotLib = require('./lib/wave-snapshot'); } catch { /* opcional */ }
+try { waveStateLib = require('./lib/wave-state'); } catch { /* opcional */ }
+
+// Infra compartida de scanning de markers FS (#3517). Best-effort require:
+// si el módulo no está, el builder de `state.etaAverages` cae al inline
+// histórico para no romper el dashboard.
+let etaMarkersLib = null;
+try { etaMarkersLib = require('./lib/eta-markers'); } catch { /* opcional */ }
+
+// #3951 EP7-H4 — Render puro de los badges de resultado del Commander.
+let commanderResultBadge = null;
+try { commanderResultBadge = require('./lib/commander/result-badge'); } catch { /* opcional */ }
 
 // #2892 PR-C — Estado del banner de alerta de consumo anómalo + cap de snooze.
 let restModeState = null;
@@ -55,24 +97,71 @@ try { restModeState = require('./lib/rest-mode-state'); } catch { /* opcional */
 let restModeWindow = null;
 try { restModeWindow = require('./lib/rest-mode-window'); } catch { /* opcional */ }
 
-// Detector de artifacts auxiliares compartido con human-block.js: excluye
-// `.guidance.txt`, `.reason.json`, `.comment.md` y cualquier filename con
-// > 2 segmentos del listado de markers, así no aparecen como agentes fantasma.
-let _isMarkerArtifact;
-try { ({ isMarkerArtifact: _isMarkerArtifact } = require('./lib/human-block')); } catch { /* opcional */ }
-function isMarkerArtifact(name) {
-  if (typeof _isMarkerArtifact === 'function') return _isMarkerArtifact(name);
-  return name.split('.').length > 2
-      || name.endsWith('.reason.json')
-      || name.endsWith('.guidance.txt')
-      || name.endsWith('.comment.md');
-}
+// Artifacts auxiliares: detección centralizada en `lib/marker-artifact.js`
+// (#3638 CA-F-1).
+const { isMarkerArtifact } = require('./lib/marker-artifact');
+// #4099 — predicado puro de frescura del title-cache (reactiva TITLE_CACHE_TTL).
+const { needsRefetch: titleCacheNeedsRefetch } = require('./lib/title-cache-freshness');
+// #4566 — clasificación de respuestas/errores de gh: distingue 404 genuino de
+// error transitorio (rate-limit/red/timeout) para NO envenenar el title-cache.
+const {
+    parseGraphqlBody: _ghParseGraphqlBody,
+    applyGraphqlBatch: _ghApplyGraphqlBatch,
+    applyFallbackError: _ghApplyFallbackError,
+} = require('./lib/gh-title-fetch');
+// #4360 — helper puro que filtra la cola por la ola activa. Se requiere a nivel de
+// módulo (no dentro del IIFE del render) porque el test dashboard-header-cola-xss
+// extrae el cuerpo del IIFE y lo corre en un sandbox `vm` sin `require`. El IIFE
+// referencia `filterPendientesByWave` con guarda `typeof` para degradar allí.
+const { filterPendientesByWave } = require('./lib/cola-wave-filter');
+
+// EP8-H7 (#3960) — sanitizer central para redactar secrets del SSE de logs
+// (REQ-SEC-H7-1, crítico) ANTES de emitir al browser. Best-effort: si falta,
+// usamos identidad (mejor un texto sin redactar que romper el stream).
+let _sanitizeLog = (s) => s;
+try { _sanitizeLog = require('./sanitizer').sanitize; } catch { /* opcional */ }
+// EP8-H7 (#3960) — store de transiciones vivo↔muerto (CA-1) + audit del
+// restart por servicio (CA-3) + serie temporal del reconciler (CA-4).
+let processTransitions = null;
+try { processTransitions = require('./lib/process-transitions'); } catch { /* opcional */ }
+let opsRestartAudit = null;
+try { opsRestartAudit = require('./lib/ops-restart-audit'); } catch { /* opcional */ }
+let reconcilerHistory = null;
+try { reconcilerHistory = require('./lib/reconciler-history'); } catch { /* opcional */ }
+
+// EP8-H3 (#3956) — "ola en una sola línea". Lógica pura + requisitos de
+// seguridad (escaping CA-8, links GitHub CA-9, etapas terminales No
+// ingresados/Finalizados CA-5/CA-6). Best-effort require: si falta, el board
+// degrada a las 3 lanes clásicas sin etapas terminales (no rompe el render).
+let laneLineLib = null;
+try { laneLineLib = require('./lib/pipeline-lane-line'); } catch { /* opcional */ }
+
+// EP8-H3 (#3956) — la resolución de la ola activa para la etapa "No ingresados"
+// reusa `waveResolverLib`, ya declarado/cargado más arriba (#4039). No se
+// re-declara para evitar el "Identifier already declared" del merge.
+
+// EP8-H3 (#3956) — info de PR mergeado para la etapa "Finalizados". El fetch
+// (`gh pr list`) es bloqueante (spawnSync 5s), así que se consume vía un cache
+// con TTL refrescado fire-and-forget (mismo patrón que la ETA de ola).
+let prInfoFetcherLib = null;
+try { prInfoFetcherLib = require('./lib/pr-info-fetcher'); } catch { /* opcional */ }
+
+// #4444 — módulo compartido de logs de agente por intento (listado, retención,
+// tope de bytes). Se reusa el mismo naming/glob que persiste el pulpo.
+let agentLogHistory = null;
+try { agentLogHistory = require('./lib/agent-log-history'); } catch { /* opcional */ }
 
 const PORT = parseInt(process.env.DASHBOARD_PORT) || 3200;
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
+
+// #5179 grupo 3b / CA-6b — Halt total leído por el envoltorio único de estado
+// operativo, NUNCA por `existsSync('.paused')` a mano. La lectura es FAIL-CLOSED
+// y vive en `lib/full-pause-state.js`, compartida con `restart.js` y cubierta
+// por tests del camino degradado.
+const { isFullPauseActive } = require('./lib/full-pause-state');
 
 // Sistema visual unificado (issue #2523).
 // Los assets viven en .pipeline/assets/ y son producidos por el agente UX.
@@ -99,12 +188,72 @@ function loadIconSprite() {
   }
   return _iconSpriteCache;
 }
+// #3958 EP8-H5 — Inyección isomórfica de la lógica pura de la vista tabla de
+// issues (CSV anti-injection + filtros con allowlist). El MISMO código que se
+// testea con `node --test` (lib/issue-csv.js, lib/issue-filters.js, UMD) corre
+// en el browser expuesto como window.IssueCsv / window.IssueFilters. Así no
+// diverge cliente/servidor. Degrada a '' si falta el archivo (la tabla cae a
+// filtrado básico inline sin romper el board).
+let _issueLibsClientCache = null;
+function loadIssueLibsClientJs() {
+  if (_issueLibsClientCache !== null) return _issueLibsClientCache;
+  let out = '';
+  for (const f of ['issue-csv.js', 'issue-filters.js']) {
+    try { out += fs.readFileSync(path.join(__dirname, 'lib', f), 'utf8') + '\n'; }
+    catch { /* opcional: degrada */ }
+  }
+  _issueLibsClientCache = out ? `<script>\n${out}</script>` : '';
+  return _issueLibsClientCache;
+}
+// #3642 R2 — Setter test-only para resetear _iconSpriteCache desde tests sin
+// que la produccion pueda alterar el cache. El guard NODE_ENV=test garantiza
+// no-op fuera del runner de node --test. Permite cubrir CA-6 (degradacion
+// gracil) inyectando '' antes del subcase y verificando el render sin glifo.
+function __setIconSpriteCacheForTesting(value) {
+  if (process.env.NODE_ENV !== 'test') return;
+  _iconSpriteCache = value;
+}
 // Helper para inyectar un icono del sprite con aria-label.
 // Uso: ${ic('fase-dev', 'fase: desarrollo')}
 function ic(name, ariaLabel, extraClass) {
   const cls = 'pl-ic' + (extraClass ? ' ' + extraClass : '');
   const aria = ariaLabel ? ` role="img" aria-label="${String(ariaLabel).replace(/"/g, '&quot;')}"` : ' aria-hidden="true"';
   return `<svg class="${cls}"${aria}><use href="#ic-${name}"/></svg>`;
+}
+
+// #3642 — Resolver puro del estado del rol architect (Fase 1 criterios + Fase 2
+// aprobacion) + slice/renderer del badge. Modulos separados para test unitario
+// aislado. Defensivos por si los archivos faltan (no debe romper el dashboard).
+let _architectStateResolver = null;
+try { _architectStateResolver = require('./lib/architect-state-resolver'); } catch { /* opcional */ }
+let _architectSlices = null;
+try { _architectSlices = require('./lib/dashboard-slices'); } catch { /* opcional */ }
+
+// #3625 CA-5 — Renderer del widget de Audit trail · Allowlist mutations.
+// Wrapper alrededor de lib/audit-trail-renderer.js para mantener el dashboard
+// "simétrico" (el slice vive en lib/dashboard-slices.js, las rows en
+// lib/audit-trail-renderer.js). Si el módulo falla al cargar, fallback a
+// empty-state para no romper el render del dashboard entero.
+let _auditTrailRenderer = null;
+try { _auditTrailRenderer = require('./lib/audit-trail-renderer'); } catch {}
+function renderPartialPauseAuditRows(entries) {
+  if (_auditTrailRenderer && typeof _auditTrailRenderer.renderRows === 'function') {
+    return _auditTrailRenderer.renderRows(entries);
+  }
+  return '<tr><td colspan="6" class="ppa-empty">Renderer no disponible — recargá el dashboard tras restart del pulpo.</td></tr>';
+}
+
+// #4371 CA-8/CA-10 — Renderer del widget "Audit trail · Olas & Issues".
+// Simétrico a renderPartialPauseAuditRows: el slice vive en lib/dashboard-slices.js
+// (waveIssueAuditSlice), las rows en lib/wave-audit-renderer.js. Si el módulo no
+// carga, fallback a empty-state para no romper el render del dashboard.
+let _waveAuditRenderer = null;
+try { _waveAuditRenderer = require('./lib/wave-audit-renderer'); } catch {}
+function renderWaveAuditRows(entries) {
+  if (_waveAuditRenderer && typeof _waveAuditRenderer.renderRows === 'function') {
+    return _waveAuditRenderer.renderRows(entries);
+  }
+  return '<tr><td colspan="6" class="wia-empty">Renderer no disponible — recargá el dashboard tras restart del pulpo.</td></tr>';
 }
 
 // --- Componentes gestionables (start/stop) ---
@@ -142,52 +291,151 @@ function saveIssueTitleCache(cache) {
 
 function fetchIssueTitles(issueIds, cache) {
   const ghPath = GH_BIN;
+  // SEC-1 (#4096, CWE-78 command injection): los IDs se derivan de nombres de
+  // archivo del filesystem (`<issue>.<skill>`) y terminan interpolados en
+  // `issue(number:${id})` (GraphQL) y `gh issue view ${id}` (fallback shell).
+  // El worker de snapshot corre desatendido en background, así que blindamos:
+  // sólo IDs estrictamente numéricos pasan a cualquier `gh`/execSync. Un
+  // nombre no-numérico (ej. `4096; rm -rf .build`) se descarta acá.
+  const safeIds = (Array.isArray(issueIds) ? issueIds : [])
+    .filter(id => /^\d+$/.test(String(id)));
   // GraphQL batch: up to 50 issues per query
   const batches = [];
-  for (let i = 0; i < issueIds.length; i += 50) batches.push(issueIds.slice(i, i + 50));
+  for (let i = 0; i < safeIds.length; i += 50) batches.push(safeIds.slice(i, i + 50));
   for (const batch of batches) {
     const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
     try {
-      const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title labels(first:10) { nodes { name } } }`).join(' ');
+      // #3905 — `state` (OPEN/CLOSED) necesario para distinguir en la franja
+      // "fuera de flujo" del board un issue de la allowlist sin ingresar (open)
+      // de uno finalizado (closed).
+      const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title state labels(first:10) { nodes { name } } }`).join(' ');
       const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
       // Write query to temp file to avoid shell escaping issues on Windows
       fs.writeFileSync(tmpQuery, query);
       const cmd = `${ghPath} api graphql -F query=@${tmpQuery}`;
-      const out = execSync(cmd, { encoding: 'utf8', timeout: 30000, windowsHide: true });
-      const data = JSON.parse(out)?.data?.repository || {};
-      // Negative cache: issues ausentes/null en la respuesta se marcan como notFound
-      // para que no vuelvan a consultarse en cada refresh (evita loop gh api).
-      batch.forEach((id, i) => {
-        const val = data[`i${i}`];
-        if (val?.number) {
-          cache[String(val.number)] = {
-            title: val.title,
-            labels: (val.labels?.nodes || []).map(l => l.name),
-            fetchedAt: Date.now()
-          };
-        } else {
-          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
-        }
-      });
-    } catch (e) {
-      // Fallback: fetch one by one
-      for (const id of batch) {
-        try {
-          const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels`;
-          const out2 = execSync(cmd2, { encoding: 'utf8', timeout: 10000, windowsHide: true });
-          const iss = JSON.parse(out2);
-          cache[id] = { title: iss.title, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
-        } catch {
-          // Issue no resoluble: cachear como notFound para evitar re-consulta en cada refresh
-          cache[String(id)] = { title: '', labels: [], notFound: true, fetchedAt: Date.now() };
+      // #4566 — gh imprime el body en stdout aun con exit≠0 (errores GraphQL como
+      // RATE_LIMITED / NOT_FOUND). Capturamos stdout del error para clasificar en
+      // vez de asumir que TODO falló y envenenar el cache.
+      let out;
+      try {
+        out = execSync(cmd, { encoding: 'utf8', timeout: 30000, windowsHide: true });
+      } catch (e) {
+        out = (e && e.stdout) ? String(e.stdout) : '';
+      }
+      const body = _ghParseGraphqlBody(out);
+      if (body.ok) {
+        // #4566 — clasifica por issue: bueno / 404 genuino / transitorio (no envenena).
+        _ghApplyGraphqlBatch(cache, batch, body, Date.now());
+      } else {
+        // Body ilegible (fallo real del comando): fallback 1×1.
+        for (const id of batch) {
+          try {
+            const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels,state`;
+            const out2 = execSync(cmd2, { encoding: 'utf8', timeout: 10000, windowsHide: true });
+            const iss = JSON.parse(out2);
+            cache[id] = { title: iss.title, state: iss.state, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
+          } catch (e2) {
+            // #4566 — sólo notFound ante evidencia real de 404; error transitorio se reintenta.
+            _ghApplyFallbackError(cache, id, e2, Date.now());
+          }
         }
       }
+    } catch (eOuter) {
+      // #4566 — error inesperado del batch (p.ej. writeFileSync): tratar como
+      // transitorio para NO envenenar (conserva entradas previas buenas).
+      for (const id of batch) _ghApplyFallbackError(cache, id, eOuter, Date.now());
     } finally {
       // Garantiza limpieza del tmp aunque execSync falle (evita acumulación .gh-query-*.graphql)
       try { fs.unlinkSync(tmpQuery); } catch {}
     }
   }
   saveIssueTitleCache(cache);
+}
+
+// #4128 — `exec` async (mismo shell que la versión sync: preserva la resolución
+// de `gh` por PATH y el arg `query=@tmpfile`) envuelto en Promise. La diferencia
+// crítica vs `execSync` es que el event loop sigue atendiendo /api/health y el
+// resto de rutas mientras gh hace su llamada de red (hasta 30s).
+function _execGhAsync(cmd, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
+      if (err) reject(err); else resolve(stdout);
+    });
+  });
+}
+
+// #4128 — versión ASÍNCRONA de fetchIssueTitles. El fetch a GitHub es de red y
+// puede tardar segundos; hacerlo con execSync DENTRO del worker de snapshot
+// clavaba el event loop entero durante la llamada → /api/health no respondía y
+// el smoke del restart lo leía como caída y disparaba rollback en loop. Esa era
+// la pata que #4096/#4126 no cubrieron: trocearon el escaneo del FS y movieron
+// wmic/tasklist a async, pero dejaron este execSync(gh) sincrónico en el camino.
+// La lógica (batch GraphQL 50/query, negative-cache, fallback 1×1) es idéntica a
+// la sync; sólo cambia execSync → await _execGhAsync.
+async function fetchIssueTitlesAsync(issueIds, cache) {
+  const ghPath = GH_BIN;
+  const safeIds = (Array.isArray(issueIds) ? issueIds : [])
+    .filter(id => /^\d+$/.test(String(id)));
+  const batches = [];
+  for (let i = 0; i < safeIds.length; i += 50) batches.push(safeIds.slice(i, i + 50));
+  for (const batch of batches) {
+    const tmpQuery = path.join(PIPELINE, '.gh-query-' + Date.now() + '.graphql');
+    try {
+      const fields = batch.map((id, i) => `i${i}: issue(number:${id}) { number title state labels(first:10) { nodes { name } } }`).join(' ');
+      const query = `{ repository(owner:"intrale",name:"platform") { ${fields} } }`;
+      fs.writeFileSync(tmpQuery, query);
+      const cmd = `${ghPath} api graphql -F query=@${tmpQuery}`;
+      // #4566 — mismo criterio que la versión sync: capturar stdout aun con exit≠0
+      // y clasificar (bueno / 404 genuino / transitorio) en vez de envenenar.
+      let out;
+      try {
+        out = await _execGhAsync(cmd, 30000);
+      } catch (e) {
+        out = (e && e.stdout) ? String(e.stdout) : '';
+      }
+      const body = _ghParseGraphqlBody(out);
+      if (body.ok) {
+        _ghApplyGraphqlBatch(cache, batch, body, Date.now());
+      } else {
+        for (const id of batch) {
+          try {
+            const cmd2 = `${ghPath} issue view ${id} --repo intrale/platform --json title,labels,state`;
+            const out2 = await _execGhAsync(cmd2, 10000);
+            const iss = JSON.parse(out2);
+            cache[id] = { title: iss.title, state: iss.state, labels: (iss.labels || []).map(l => l.name), fetchedAt: Date.now() };
+          } catch (e2) {
+            _ghApplyFallbackError(cache, id, e2, Date.now());
+          }
+        }
+      }
+    } catch (eOuter) {
+      // #4566 — error inesperado del batch: transitorio, no envenenar.
+      for (const id of batch) _ghApplyFallbackError(cache, id, eOuter, Date.now());
+    } finally {
+      try { fs.unlinkSync(tmpQuery); } catch {}
+    }
+  }
+  saveIssueTitleCache(cache);
+}
+
+// #4128 — refresh fire-and-forget del cache de títulos/labels. El worker de
+// snapshot ya NO resuelve títulos sincrónicamente (clavaba el event loop con
+// execSync(gh)). En su lugar registra los ids faltantes en el snapshot y acá los
+// resolvemos async, FUERA del tick. El siguiente refresh lee el cache en disco
+// ya poblado (mismo patrón fire-and-forget que prInfo/olaETA). Un flag inflight
+// evita solapar fetches y un cap acota cuántos ids consulta por ronda.
+let _titleRefreshInflight = false;
+const TITLE_REFRESH_BATCH_CAP = Number(process.env.DASHBOARD_TITLE_BATCH_CAP) || 100;
+function _scheduleTitleRefresh(missingIds) {
+  if (_titleRefreshInflight) return;
+  const ids = Array.isArray(missingIds) ? missingIds.filter(id => /^\d+$/.test(String(id))) : [];
+  if (ids.length === 0) return;
+  _titleRefreshInflight = true;
+  const batch = ids.slice(0, TITLE_REFRESH_BATCH_CAP);
+  Promise.resolve()
+    .then(() => fetchIssueTitlesAsync(batch, loadIssueTitleCache()))
+    .catch((err) => { try { log(`title refresh error: ${err && err.message ? err.message : err}`); } catch {} })
+    .finally(() => { _titleRefreshInflight = false; });
 }
 
 function isProcessAlive(pid) {
@@ -232,6 +480,50 @@ function startComponent(name) {
     return { ok: true, msg: `${name} iniciado (PID ${child.pid})` };
   } catch (e) { return { ok: false, msg: `Error iniciando ${name}: ${e.message}` }; }
 }
+
+// EP8-H7 (#3960) — restart por servicio AISLADO (CA-3, REQ-SEC-H7-3).
+// `restartComponent` = stopComponent + startComponent sobre el MISMO `name`
+// resuelto en COMPONENTS (allowlist canónica, REQ-SEC-H7-2). NO importa ni
+// invoca nada de `restart.js`: aquél hace killAll() global + smoke-test +
+// launchRollbackOrphan(), que tumbaría todo el pipeline desde un click de UI.
+// Un restart por nodo NUNCA debe gatillar ese plano global.
+function restartComponent(name) {
+  const comp = COMPONENTS.find(c => c.name === name);   // allowlist estricta
+  if (!comp) return { ok: false, msg: `Componente "${name}" no permitido` };
+  const stop = stopComponent(name);                     // stop+start AISLADO
+  const start = startComponent(name);
+  return { ok: stop.ok && start.ok, msg: `${stop.msg} | ${start.msg}` };
+}
+
+// EP8-H7 (#3960) — orquestador puro del restart (allowlist + rate-limit +
+// audit) en `lib/ops-restart-handler.js`. El rate-limiter (REQ-SEC-H7-5) es un
+// Map en memoria por target que rechaza ráfagas < 5s (DoS auto-infligido).
+const _opsRestartHandler = require('./lib/ops-restart-handler');
+const _opsRestartRateLimiter = _opsRestartHandler.makeRateLimiter(5000);
+// #5646 (CA-9) — Cota AGREGADA: el rate-limiter de arriba es por target, así que
+// al reiniciar N componentes afectados en vez de sólo el pulpo, N targets
+// distintos pasarían la misma ráfaga. Esta cota corta el total por ventana; lo
+// que no entra queda pendiente en `stale-services.json` y lo toma el watchdog.
+const _opsRestartAggregateLimiter = _opsRestartHandler.makeAggregateLimiter(4, 60000);
+// #5646 — Marcador de servicios con código viejo. Require defensivo: si no
+// carga, el endpoint sigue funcionando como antes (restart del pulpo) y lo dice.
+let _staleServices = null;
+try { _staleServices = require('./lib/stale-services'); } catch { /* opcional */ }
+let _runtimeBoot = null;
+try { _runtimeBoot = require('./lib/runtime-boot'); } catch { /* opcional */ }
+// #4460 — Gate de defensa-en-profundidad (loopback + Origin/Referer +
+// Content-Type) para el restart del modelo operativo. Require defensivo: si no
+// carga, el endpoint dedicado responde 503 (nunca ejecuta restart sin gate).
+let _opsRestartGate = null;
+try { _opsRestartGate = require('./lib/ops-restart-gate'); } catch { /* opcional */ }
+// #4460 (fix rebote rev-1) — sync del modelo operativo a origin/main SIN killAll.
+// El restart del pulpo por sí solo NO aplica entregas: respawnea el MISMO código
+// on-disk. Este módulo avanza el tree a origin/main y reescribe el boot marker
+// ANTES del respawn, para que el pulpo relanzado lea el código nuevo y la señal
+// de drift desaparezca (CA-4/CA-7). Require defensivo: si no carga, el endpoint
+// hace restart sin sync (degradado) pero lo reporta en el mensaje.
+let _operativoSync = null;
+try { _operativoSync = require('./lib/operativo-sync'); } catch { /* opcional */ }
 
 // QA Environment
 const QA_ENV_SCRIPT = path.join(PIPELINE, 'qa-environment.js');
@@ -311,9 +603,212 @@ function log(msg) {
   console.log(`[${ts}] [dashboard] ${msg}`);
 }
 
+// #3142 — Comentario automático en GH cuando se promueve issue a allowlist (CA-Sec-16).
+// Best-effort, fire-and-forget. Usamos spawn con array de args (CA-Sec-06) — nunca
+// shell con string concatenado (anti command injection).
+function tryCommentPromoted(issueNum, addedDeps) {
+  try {
+    const ghPath = process.env.GH_PATH || 'gh';
+    const ts = new Date().toISOString();
+    const depsTxt = (addedDeps && addedDeps.length)
+      ? ' Deps incluidas recursivamente: ' + addedDeps.map(d => '#' + d).join(', ') + '.'
+      : '';
+    const body = `Issue #${issueNum} agregado a allowlist activa desde dashboard a las ${ts}.${depsTxt}`;
+    const { spawn } = require('child_process');
+    const args = ['issue', 'comment', String(issueNum), '--body', body];
+    const ch = spawn(ghPath, args, { detached: true, stdio: 'ignore' });
+    ch.on('error', () => {});
+    ch.unref();
+  } catch {}
+}
+
+// =============================================================================
+// #5172 · CA-8 — Fail-closed en el dashboard = negarse a servir, NO morir
+// =============================================================================
+//
+// ANTES: `catch { return { pipelines: {}, concurrencia: {} } }`. Como los
+// defaults del codebase son apagados por diseño de rollout, ese objeto casi
+// vacío no se veía como un error: se veía como *"el pipeline anda pero no hay
+// nada en las fases"*. Esa es exactamente la clase de fallo silencioso que
+// #5172 elimina.
+//
+// AHORA: un único `loadConfigOrError()` que setea `configErrorState` y devuelve
+// `null`; los consumidores chequean `null`. Envolver cada uno en su propio
+// `try/catch` es donde reaparecerían los fallbacks permisivos por la ventana.
+//
+// PROHIBIDO `process.exit`: si el dashboard muere, el operador pierde la única
+// pantalla que le diría que el pipeline está pausado por configuración inválida.
+
+/**
+ * Estado de error de configuración, consumible por la UI (contrato alineado con
+ * #5171). Trae `detalle` y `accion` YA redactados: la vista los renderiza tal
+ * cual y NO re-deriva copy desde `causa` (CA-UX-5) — es lo que garantiza que
+ * log, Telegram y pantalla digan lo mismo.
+ * @type {null|{ok:false, archivo:string, via:string, causa:string,
+ *               linea:number|null, columna:number|null, detalle:string,
+ *               accion:string, ts:string}}
+ */
+let configErrorState = null;
+
+function getConfigErrorState() { return configErrorState; }
+
+// #3722 — escaper compartido. Se requiere acá (y no se reimplementa) porque las
+// pantallas de error de abajo viven ANTES del `escapeHtml` local del archivo.
+const { escapeHtmlAttr: escHtml } = require('./lib/escape-html');
+
+/**
+ * #5172 · CA-8 — Pantalla de "configuración inválida".
+ *
+ * Es LA pantalla que justifica el contrato de más arriba: si el dashboard muere
+ * (o peor: renderiza un tablero vacío), el operador no tiene forma de enterarse
+ * de que el pipeline está pausado por config rota. Sólo se renderizan `detalle`
+ * y `accion`, que `config-schema.js` ya entrega redactados — acá NO se re-deriva
+ * copy ni se vuelca el valor crudo que falló (CA-UX-5 / SEC-1).
+ *
+ * @param {null|{archivo:string, via:string, detalle:string, accion:string, ts:string}} err
+ * @returns {string} HTML autocontenido (sin assets externos: la config está rota,
+ *                   no podemos depender de nada derivado de ella).
+ */
+function renderConfigErrorPage(err) {
+  const detalle = escHtml((err && err.detalle) || 'configuración del pipeline ilegible o inválida');
+  const accion = escHtml((err && err.accion) || 'revisá config.yaml y corregí el error de sintaxis o de schema');
+  // El nombre del archivo sale SIEMPRE de `err.archivo` (el resolver ya reporta
+  // la ruta efectiva, que puede no ser la del repo si el proceso corre con
+  // override). Hardcodearlo acá le mentiría al operador sobre qué archivo tocar.
+  const archivo = escHtml((err && err.archivo) || '(archivo de configuración del pipeline)');
+  const via = escHtml((err && err.via) || '');
+  const ts = escHtml((err && err.ts) || new Date().toISOString());
+  return `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<title>Configuración inválida — Pipeline</title>
+<meta http-equiv="refresh" content="15">
+<style>
+  body { background:#0d1117; color:#c9d1d9; font-family:'Segoe UI',system-ui,sans-serif;
+         margin:0; padding:48px 24px; display:flex; justify-content:center; }
+  .card { max-width:760px; width:100%; background:#161b22; border:1px solid #f85149;
+          border-radius:10px; padding:28px 32px; }
+  h1 { margin:0 0 4px; font-size:20px; color:#f85149; }
+  .sub { color:#8b949e; font-size:13px; margin-bottom:22px; }
+  .row { margin-bottom:16px; }
+  .lbl { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:#8b949e; margin-bottom:4px; }
+  .val { font-size:14px; line-height:1.5; }
+  code { background:#0d1117; border:1px solid #30363d; border-radius:4px; padding:2px 6px; font-size:13px; }
+  .foot { margin-top:24px; padding-top:16px; border-top:1px solid #30363d; color:#8b949e; font-size:12px; }
+</style></head>
+<body><div class="card">
+  <h1>⛔ Configuración inválida</h1>
+  <div class="sub">El tablero no sirve decisiones derivadas de una configuración que no pudo validarse.
+  Un board vacío sería indistinguible de "no hay trabajo", así que no se renderiza.</div>
+  <div class="row"><div class="lbl">Archivo</div><div class="val"><code>${archivo}</code>${via ? ` <span style="color:#8b949e">(vía ${via})</span>` : ''}</div></div>
+  <div class="row"><div class="lbl">Causa</div><div class="val">${detalle}</div></div>
+  <div class="row"><div class="lbl">Acción</div><div class="val">${accion}</div></div>
+  <div class="foot">El dashboard sigue vivo y reintenta solo: apenas la configuración vuelva a validar,
+  esta pantalla se reemplaza por el tablero (auto-refresh cada 15s). Detectado: ${ts}</div>
+</div></body></html>`;
+}
+
+/**
+ * #5172 · CA-8 — Rutas que devuelven una PÁGINA del tablero. Son las que se
+ * reemplazan por `renderConfigErrorPage` cuando la config no valida. Las APIs y
+ * `/logs/*` quedan fuera a propósito (ver el corte en el handler).
+ */
+const PAGINAS_HTML = new Set(['/', '', '/v3', '/v3/', '/dashboard', '/dashboard/', '/legacy', '/legacy/']);
+
+/**
+ * #5172 · CA-8 — Última red antes del `uncaughtException`. Un error de RENDER no
+ * puede costar el proceso: el dashboard es la única pantalla de diagnóstico del
+ * operador y matarlo es perder la vista justo cuando algo anda mal.
+ */
+function renderInternalErrorPage(e) {
+  return `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><title>Error interno — Pipeline</title>
+<meta http-equiv="refresh" content="15">
+<style>body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',system-ui,sans-serif;padding:48px 24px}
+h1{color:#f85149;font-size:20px} code{background:#161b22;border:1px solid #30363d;border-radius:4px;padding:2px 6px}</style>
+</head><body>
+<h1>⚠️ Error al renderizar el tablero</h1>
+<p>El dashboard sigue vivo. El detalle quedó en <code>logs/dashboard.log</code>.</p>
+<p><code>${escHtml(e && e.message)}</code></p>
+</body></html>`;
+}
+
+/**
+ * Punto único de lectura de config del dashboard.
+ * @returns {object|null} config válida, o `null` si es ilegible/inválida.
+ */
+function loadConfigOrError() {
+  try {
+    // `reload: true` = paridad con el comportamiento previo (antes se leía el
+    // archivo en cada llamada), y necesario para que una corrección en caliente
+    // de config.yaml se refleje sin reiniciar el dashboard.
+    const cfg = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
+    if (configErrorState) {
+      log(`configuración válida de nuevo: ${configErrorState.archivo} — estado de error levantado`);
+      configErrorState = null;
+    }
+    return cfg;
+  } catch (e) {
+    const estado = configSchema.describeConfigFailure(e, { archivo: e && e.archivo });
+    // Log throttleado: `loadConfig()` se llama por request y el visor de logs
+    // quedaría inservible si cada uno emitiera una línea.
+    if (!configErrorState || configErrorState.detalle !== estado.detalle) {
+      log(configSchema.formatConfigFailureLog(estado, {
+        titulo: 'CONFIG INVÁLIDA — el dashboard no sirve decisiones derivadas de config',
+      }));
+    }
+    configErrorState = estado;
+    return null;
+  }
+}
+
 function loadConfig() {
-  try { return yaml.load(fs.readFileSync(path.join(PIPELINE, 'config.yaml'), 'utf8')); }
-  catch { return { pipelines: {}, concurrencia: {} }; }
+  return loadConfigOrError();
+}
+
+// #4444 / REQ-SEC-1 — Allowlist de skills conocidos, derivada de
+// `pipelines[*].skills_por_fase` de config.yaml. Se usa para validar el
+// parámetro `agente` de /logs/history antes de tocar el filesystem: un agente
+// arbitrario no debe poder mapear a rutas fuera del patrón esperado. Cacheado
+// con TTL corto: el catálogo cambia sólo al editar config.yaml.
+let _knownSkillsCache = null;
+let _knownSkillsCacheAt = 0;
+function getKnownSkills() {
+  const now = Date.now();
+  if (_knownSkillsCache && (now - _knownSkillsCacheAt) < 30000) return _knownSkillsCache;
+  const set = new Set();
+  try {
+    const pipelines = (loadConfig() || {}).pipelines || {};
+    for (const pk of Object.keys(pipelines)) {
+      const spf = pipelines[pk] && pipelines[pk].skills_por_fase;
+      if (!spf) continue;
+      for (const fk of Object.keys(spf)) {
+        const arr = spf[fk];
+        if (Array.isArray(arr)) for (const s of arr) set.add(String(s));
+      }
+    }
+  } catch { /* set queda vacío → todo agente se rechaza (fail-closed) */ }
+  _knownSkillsCache = set;
+  _knownSkillsCacheAt = now;
+  return set;
+}
+
+// #3955 EP8-H2 (SEC-4) — Redacta secrets (AWS keys, JWT, gh/Anthropic/OpenAI
+// tokens, Authorization, password/token genéricos) de los logs antes de
+// servirlos inline en el dashboard. Reusa el redactor central de lib/handoff.
+// Defensivo: si el módulo no carga, devuelve el texto tal cual (mejor servir el
+// log que romper el visor) — el redactor es una capa, no la única defensa.
+let _handoffSanitizer = undefined;
+function redactLogText(text) {
+  if (typeof text !== 'string') return text;
+  if (_handoffSanitizer === undefined) {
+    try { _handoffSanitizer = require('./lib/handoff').sanitize; }
+    catch { _handoffSanitizer = null; }
+  }
+  if (!_handoffSanitizer) return text;
+  try {
+    const r = _handoffSanitizer(text);
+    return (r && typeof r.text === 'string') ? r.text : text;
+  } catch { return text; }
 }
 
 function listWorkFiles(dir) {
@@ -366,7 +861,446 @@ let _stateCache = null;
 let _stateCacheAt = 0;
 const STATE_CACHE_TTL_MS = 2000;
 
+// #4096 — Snapshot servido por /api/state, poblado FUERA del request por un
+// worker en background (ver refreshStateSnapshot + arranque en startListen).
+// Motivación: getPipelineState() es un escaneo sincrónico O(N archivos) del
+// histórico; ejecutarlo en el hot path del request clava un núcleo de CPU al
+// 100% y deja /api/state colgado bajo carga. El smoke (paso 2) lo detectaba
+// como caída → rollback en loop del restart. La solución estructural es sacar
+// el cómputo pesado del request: el handler sirve SIEMPRE esta vista en
+// memoria en O(1) y el refresh ocurre en un setInterval con setImmediate.
+let _stateSnapshot = null;          // última vista computada (o null en cold start)
+let _stateSnapshotAt = 0;           // timestamp del último refresh exitoso
+let _stateRefreshInflight = false;  // evita solapar cómputos pesados
+let _stateRefreshTimer = null;      // handle del setInterval (para clearInterval)
+let _usageRefreshTimer = null;      // #4597 — handle del poller de `claude -p /usage`
+let _loopMonitor = null;            // #4131-followup — handle del monitor de lag del event loop
+let _freezeWatchdog = null;         // #4131-followup-2 — handle del watchdog externo de freeze
+let _logServeInflight = false;      // #4521 — servido de logs en vuelo (lectura de disco)
+// #4521 — tope de bytes leídos del disco para el preview inicial del SSE de
+// logs. Cubre de sobra las últimas 1000 líneas de un log típico sin leer el
+// archivo entero (que en logs multi-MB clavaba el event loop varios segundos).
+const SSE_INIT_TAIL_BYTES = Number(process.env.DASHBOARD_SSE_INIT_TAIL_BYTES) || (512 * 1024);
+
+// #4521 — marca el servido de logs como en vuelo y lo PUBLICA sincrónicamente al
+// SAB del freeze-watchdog. La publicación inmediata es clave: el latido del
+// watchdog corre cada 200ms, pero una lectura de disco que se clave arranca y
+// congela el loop dentro del mismo tick, sin latido intermedio; sin publicar en
+// el acto, el freeze se reportaría como "ninguno-inflight". Best-effort: si el
+// watchdog aún no arrancó, sólo togglea el flag (lo tomará el próximo latido).
+function _markLogServe(on) {
+  _logServeInflight = on;
+  try { if (_freezeWatchdog && _freezeWatchdog.publishInflight) _freezeWatchdog.publishInflight(); } catch {}
+}
+// #4126 — cadencia configurable por env para que los tests puedan forzar un
+// worker casi-siempre-activo y verificar que /api/health no se cuelga.
+const STATE_REFRESH_MS = Number(process.env.DASHBOARD_STATE_REFRESH_MS) || 3000;
+// Tamaño de chunk del scan del FS: cada N archivos procesados el generador
+// cede el event loop (setImmediate) para que /api/health y el resto de rutas
+// sigan respondiendo mientras el worker reconstruye el snapshot.
+const STATE_SCAN_CHUNK = Number(process.env.DASHBOARD_STATE_SCAN_CHUNK) || 250;
+
+// #4126 — Cache async de estado de procesos + QA env. Los scans del SO
+// (`wmic` para PIDs, `tasklist` para servicios QA) eran spawnSync/execSync
+// DENTRO del worker de snapshot: un único `wmic` podía clavar el event loop
+// hasta 15s y dejaba /api/health sin responder → el smoke del restart lo leía
+// como caída y disparaba rollback en loop (regresión #4119). Ahora se computan
+// con `exec`/`execFile` async, fuera del tick, y el snapshot lee este cache en
+// O(1). Swap atómico del objeto (nunca mutación in-place).
+let _procStatusCache = null;        // { procesos, qaEnv } | null en cold start
+let _procStatusCacheAt = 0;
+let _procStatusInflight = false;
+const PROC_STATUS_TTL_MS = Number(process.env.DASHBOARD_PROC_STATUS_TTL_MS) || 10000;
+
+// #4126 — Cache TTL del walk de eta-markers. Es una agregación histórica
+// (lstat sobre ~todos los `procesado/`) que cambia lento; recomputarla en cada
+// tick (cada 3s) era trabajo de FS caro e innecesario.
+let _etaAveragesCache = null;
+let _etaAveragesCacheAt = 0;
+const ETA_AVERAGES_TTL_MS = Number(process.env.DASHBOARD_ETA_TTL_MS) || 30000;
+
+// #3492 — Cache de la ETA agregada por ola actual. El cálculo es async (depende
+// de streaming de metrics-history.jsonl + markers FS) pero el `state` se construye
+// sync. Patrón fire-and-forget: cada llamada a `getPipelineState()` programa un
+// refresh si el cache es viejo, y publica el último valor cacheado. TTL 30s
+// (alineado con `ANALYSIS_CACHE_TTL_MS` de `lib/eta-wave.js`).
+let _olaETACache = null;
+let _olaETACacheAt = 0;
+let _olaETARefreshInflight = false;
+const OLA_ETA_CACHE_TTL_MS = 30000;
+const OLA_ETA_CONCURRENCY = 3;   // mismo límite que coordinator.js (3 agentes simultáneos)
+
+// #4588 — Proyección de campos públicos (CA-10) del ETA descompuesto + espera de
+// operador. Filtra a SÓLO números finitos y labels de gate fijos: nunca expone
+// paths, nombres de archivo de estado ni tokens. Robusto ante `olaResult`
+// parcial/nulo (degrada a `enabled:false`).
+function _projectOperatorWaitPublic(olaResult) {
+  const num = (v) => (Number.isFinite(v) ? v : null);
+  if (!olaResult || typeof olaResult !== 'object') return { enabled: false };
+  const ow = olaResult.operatorWait;
+  const proj = olaResult.projectedOperatorWait || {};
+  const byGate = {};
+  if (ow && ow.byGate && typeof ow.byGate === 'object') {
+    for (const [gate, v] of Object.entries(ow.byGate)) {
+      // `gate` es un label CONGELADO (GATE 1/2/0) — seguro para render.
+      byGate[String(gate)] = {
+        waitMin: num(v && v.waitMin),
+        issues: Number.isInteger(v && v.issues) ? v.issues : null,
+        openIssues: Number.isInteger(v && v.openIssues) ? v.openIssues : null,
+      };
+    }
+  }
+  const waitingNow = Array.isArray(ow && ow.waitingNow)
+    ? ow.waitingNow
+        .filter((w) => w && Number.isInteger(w.issue) && Number.isFinite(w.waitMin))
+        .map((w) => ({ issue: w.issue, gateClass: String(w.gateClass), waitMin: num(w.waitMin) }))
+    : [];
+  const lat = (ow && ow.operatorLatency) || {};
+  return {
+    enabled: true,
+    // Dos ETAs (CA-2) — el gap es el costo visible de los gates.
+    etaPipelineBoundMin: num(olaResult.etaPipelineBoundMin),
+    etaOperatorBoundMin: num(olaResult.etaOperatorBoundMin),
+    operatorGapMin: num(olaResult.operatorGapMin),
+    // Métrica agregada de espera de operador (CA-1/CA-4).
+    totalWaitMin: num(ow && ow.totalWaitMin),
+    openWaitMin: num(ow && ow.openWaitMin),
+    byGate,
+    waitingNow,
+    operatorLatency: {
+      p50: num(lat.p50), p75: num(lat.p75), p90: num(lat.p90),
+      samples: Number.isInteger(lat.samples) ? lat.samples : 0,
+    },
+    projected: {
+      projectedWaitMin: num(proj.projectedWaitMin),
+      pendingSignatures: Number.isInteger(proj.pendingSignatures) ? proj.pendingSignatures : 0,
+      overdueSignatures: Number.isInteger(proj.overdueSignatures) ? proj.overdueSignatures : 0,
+    },
+  };
+}
+
+function _scheduleOlaETARefresh(state) {
+  if (!etaWaveLib) return;
+  const now = Date.now();
+  if (_olaETARefreshInflight) return;
+  if (_olaETACache && (now - _olaETACacheAt) < OLA_ETA_CACHE_TTL_MS) return;
+
+  // Determinar la "ola actual": issues con estado != procesado en alguna fase.
+  // Reuso el `issueMatrix` ya construido por getPipelineState() — sin re-escaneo FS.
+  //
+  // #3529 — Precedencia D3 (label > roadmap > fallback M): si el issue tiene un
+  // label `size:*` en `info.labels` (poblado vía titleCache desde GitHub), lo
+  // pasamos a `calculateOlaETA` como `{ number, size }` para que la librería
+  // use el label fresco en lugar del roadmap. Si no hay label `size:*`, se
+  // pushea `num` plano y la librería resuelve vía roadmap/fallback.
+  //
+  // Requisitos de seguridad (security SEC-1..SEC-4):
+  // - Match anclado al prefijo `size:` (case-insensitive) → evita falsos
+  //   positivos con labels que casualmente contengan "size" (ej. `app:client-sized`).
+  // - Determinístico ante labels duplicados: primer match del array.
+  // - Tolera labels malformados sin abortar el render: try/catch + fallback a `num`.
+  // - No persiste el size derivado: queda en memoria de `olaIssues[]`.
+  // #4320 (RC1) — La fuente de `olaIssues` es la OLA ACTIVA vigente, no el
+  // escaneo de `state.issueMatrix` (que tomaba todo issue con `estadoActual !==
+  // 'procesado'` → capturaba ~58 archivos huérfanos residuales en
+  // pendiente/trabajando/listo, sin relación con la ola). La fuente canónica es
+  // `waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE })` (mismo patrón
+  // ya usado en dashboard.js para `state.activeWave`), que resuelve
+  // `[4308,4309,4313,4318,4320]` (Ola 8.1) desde `waves.json`.
+  //
+  // Si `waveResolverLib` no está cargado o el resolver devuelve `issues: []`
+  // (degradado honesto — ej. `waves.json` ausente), `olaIssues` queda vacío
+  // (CA-3: estado sin-dato explícito, NO re-caemos al escaneo de issueMatrix
+  // que reintroduciría el bug de la lista fosilizada).
+  const olaIssues = [];
+  const seen = new Set();
+  let activeIssues = [];
+  // #4449 (CA-3) — Resolver la ola activa, el wave-state y el set de CERRADOS una
+  // sola vez, ANTES de armar `olaIssues`, para: (a) excluir los issues cerrados del
+  // presupuesto teórico (`totalP50` = trabajo RESTANTE real, no histórico total →
+  // corrige el sesgo optimista sin introducir uno pesimista), y (b) reusar las
+  // mismas refs en el bloque de velocidad de abajo, sin duplicar la llamada costosa
+  // a `resolveActiveWave` / `getCachedWaveState`.
+  let resolvedWave = null;
+  let resolvedWaveState = null;
+  let closedIssues = new Set();
+  let closedComputed = false;
+  try {
+    if (waveResolverLib) {
+      resolvedWave = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+      if (resolvedWave && Array.isArray(resolvedWave.issues)) activeIssues = resolvedWave.issues;
+      if (!activeIssues.length) {
+        try { log(`olaETA: ola activa sin issues (source=${resolvedWave && resolvedWave.source}) → métricas en estado sin-dato`); } catch {}
+      }
+    }
+  } catch { activeIssues = []; resolvedWave = null; }
+  try {
+    if (waveStateLib) resolvedWaveState = waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE });
+    if (resolvedWave && resolvedWaveState) {
+      // Require lazy DENTRO de la función (patrón anti-circular, idem L829).
+      const { computeClosedSet } = require('./lib/commander-deterministic');
+      closedIssues = computeClosedSet({ wave: resolvedWave, state: resolvedWaveState });
+      closedComputed = true;
+    }
+  } catch { closedIssues = new Set(); closedComputed = false; }
+  for (const raw of activeIssues) {
+    const num = Number(raw);
+    if (!Number.isInteger(num) || num <= 0) continue;
+    if (seen.has(num)) continue;
+    seen.add(num);
+    // #4449 (CA-3) — saltear los issues CERRADOS: ya no son trabajo restante, así
+    // que NO deben aportar a `totalP50` (si sumaran, el ETA sesgaría pesimista
+    // contando trabajo ya hecho).
+    if (closedIssues.has(num)) continue;
+    // Conservar el enriquecimiento de `size:` label (#3529, SEC-1..SEC-4):
+    // cruzar el número de la ola contra `state.issueMatrix[num].labels` y, si hay
+    // un label anclado al prefijo `size:` (case-insensitive, primer match),
+    // pushear `{ number, size }` — la forma que consume `calculateOlaETA`. Si no,
+    // pushear `num` plano. El contrato con la librería NO cambia.
+    const info = (state.issueMatrix || {})[String(num)];
+    let sizeLabel = null;
+    try {
+      const labels = info && Array.isArray(info.labels) ? info.labels : null;
+      if (labels) {
+        for (const l of labels) {
+          if (typeof l !== 'string') continue;
+          if (l.toLowerCase().startsWith('size:')) { sizeLabel = l; break; }
+        }
+      }
+    } catch {
+      sizeLabel = null;
+    }
+    if (sizeLabel) olaIssues.push({ number: num, size: sizeLabel });
+    else olaIssues.push(num);
+  }
+
+  _olaETARefreshInflight = true;
+  // CA-20: invocación con `await` semántico vía Promise (la función es async).
+  Promise.resolve()
+    .then(async () => {
+      // #4588 — ETA descompuesto (pipeline-bound vs operador-bound) + métrica de
+      // espera de operador. `calculateDecomposedOlaETA` es un superconjunto de
+      // `calculateOlaETA` (mantiene totalP50/75/90/byIssue) → drop-in seguro.
+      const olaResult = await etaWaveLib.calculateDecomposedOlaETA(olaIssues, OLA_ETA_CONCURRENCY);
+      const historical = await etaWaveLib.analyzeHistoricalMetrics();
+      // #4039 — punto natural del writer periódico de la serie de avance de ola.
+      // Computa el `totalPct` de la ola activa (misma fuente que el `/wave`:
+      // resolver → wave-state → buildWaveSnapshot), registra un snapshot y
+      // proyecta el ETA por velocidad media para que el dashboard consuma el
+      // mismo ETA que el Commander (CA-8). Best-effort: si algo falla, queda el
+      // presupuesto teórico (fallback) sin romper el refresh.
+      let velocityETA = null;
+      // #4287 (CA-1) — el `totalPct` del snapshot determinístico se eleva al
+      // cache (no solo embebido en velocityETA) para que la HOME hidrate el
+      // avance % desde la MISMA fuente que el handler de estado de ola, incluso
+      // cuando todavía no hay ritmo medido (etaSource === 'fallback').
+      let waveTotalPct = null;
+      // #4399 — conteo de cerrados/total del MISMO `computeClosedSet` que la
+      // lista, elevado al cache para que el panel de métricas exponga el mismo
+      // "N de M" (CA-2). null si no se pudo derivar.
+      let waveClosedCount = null;
+      let waveTotalIssues = null;
+      // #4450 — throughput de entrega (issues/día) de la ola. Reusa el mismo
+      // `closedCount` que el panel de métricas y la fecha de inicio de ola
+      // (`wave.openedAt`, aportada por #4447; fallback al primer snapshot de la
+      // serie de avance). `insufficient` por defecto: la vista muestra la
+      // leyenda explícita hasta que haya ventana medible (G-UX-3).
+      let waveThroughputPerDay = null;
+      let waveThroughputState = 'insufficient';
+      // #4500 — serie temporal de avance de la ola para el sparkline de ritmo del
+      // banner (Timeline). Se lee de `wave-progress.readSnapshots` y se recorta a
+      // los últimos N puntos, con whitelist numérico `{ts, avancePct}` (SEC: sólo
+      // agregados numéricos, sin metadata interna de issues). null → placeholder.
+      let waveSeries = null;
+      try {
+        if (waveProgressLib && wavesLib && waveResolverLib && waveSnapshotLib && waveStateLib) {
+          const activeWave = wavesLib.getActiveWave();
+          const waveKey = activeWave && activeWave.number;
+          if (Number.isInteger(waveKey) && waveKey > 0) {
+            // #4320 (RC2) — pasar `pipelineRoot` a ambos libs. Sin él,
+            // `resolveActiveWave` hace early-return con `issues: []`
+            // (wave-resolver.js:279) → snapshot con `totalPct: 0` →
+            // `velocityETA: null` → `etaSource: 'fallback'`; y
+            // `getCachedWaveState` corre `buildWaveState` sobre contexto
+            // incompleto (wave-state.js:268). `PIPELINE` está en scope de módulo.
+            // #4449 — Reusar `resolvedWave`/`resolvedWaveState`/`closedIssues` ya
+            // resueltos en el scope sync (evita duplicar las llamadas costosas). El
+            // `||` preserva la robustez si la resolución sync falló (fallback local).
+            const wave = resolvedWave || waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+            const wState = resolvedWaveState || waveStateLib.getCachedWaveState({ pipelineRoot: PIPELINE });
+            // #4325 — sin `closedIssues`, `buildWaveSnapshot` deja `closedCount`
+            // en 0 y `totalPct` colapsa a ~2% aunque la ola tenga issues CLOSED
+            // en GitHub. `computeClosedSet` deriva los cerrados de la cache cruda
+            // (`state.issueTitles`) igual que `handleWaveStatus`. Require lazy DENTRO
+            // de la función para preservar el patrón anti-circular (idem arriba).
+            const closed = closedComputed
+              ? closedIssues
+              : require('./lib/commander-deterministic').computeClosedSet({ wave, state: wState });
+            // #4399 — el conteo de cerrados/total sale del MISMO set que la lista.
+            waveClosedCount = closed.size;
+            waveTotalIssues = Array.isArray(wave && wave.issues) ? wave.issues.length : 0;
+            // #4450 — fecha de inicio de ola para el tiempo transcurrido del
+            // throughput. Primario: `wave.openedAt` (= `active_wave.started_at`,
+            // #4447). Fallback: primer snapshot de la serie de avance de la ola
+            // (ventana derivada) si `openedAt` falta o no parsea.
+            let waveStartTs = (wave && typeof wave.openedAt === 'string') ? Date.parse(wave.openedAt) : NaN;
+            if (!Number.isFinite(waveStartTs)) {
+              try {
+                const snaps = waveProgressLib.readSnapshots({ pipelineRoot: PIPELINE, waveKey });
+                if (Array.isArray(snaps) && snaps.length) waveStartTs = snaps[0].ts;
+              } catch { /* sin fallback → estado insufficient */ }
+            }
+            const tp = etaWaveLib.calculateWaveThroughput({
+              closedCount: waveClosedCount,
+              waveStartTs,
+              now: Date.now(),
+            });
+            waveThroughputPerDay = tp.throughputPerDay;
+            waveThroughputState = tp.state;
+            // #4449 — el snapshot usa el MISMO set de cerrados (`closed`) que
+            // alimenta `waveClosedCount`, para que `totalPct` excluya cerrados.
+            const wSnap = waveSnapshotLib.buildWaveSnapshot({ state: wState, wave, closedIssues: closed });
+            if (wSnap && Number.isFinite(wSnap.totalPct)) {
+              waveTotalPct = wSnap.totalPct;
+              const nowTs = Date.now();
+              // #5836 — persistir peso total, conteo y versión de fórmula: sin
+              // ellos, dos puntos de la serie no permiten distinguir una caída
+              // por altas de una por retroceso (CA-5).
+              waveProgressLib.appendSnapshot({
+                waveKey,
+                avancePct: wSnap.totalPct,
+                now: nowTs,
+                totalWeight: wSnap.totalWeight,
+                issueCount: wSnap.totalIssues,
+                formulaV: wSnap.formulaV,
+              });
+              const vel = await etaWaveLib.calculateWaveVelocityETA(waveKey, wSnap.totalPct, nowTs);
+              // #4532 — aceptar tanto el ritmo MEDIDO ('velocity') como la
+              // estimación HISTÓRICA cross-ola ('historical'), para que una ola
+              // nueva muestre velocidad/ETA desde el primer tick en vez de "—".
+              if (vel && (vel.source === 'velocity' || vel.source === 'historical')) {
+                velocityETA = { ...vel, totalPct: wSnap.totalPct };
+              }
+            }
+            // #4500 — serie temporal de avance para el sparkline de ritmo. Se lee
+            // DESPUÉS de `appendSnapshot` para incluir el punto recién escrito.
+            // Whitelist numérico estricto y recorte a los últimos 60 puntos: sólo
+            // `{ts, avancePct}` — nunca metadata interna (SEC A03/A08). Placeholder
+            // (serie con <2 puntos) queda a cargo del render del cliente.
+            try {
+              const allSnaps = waveProgressLib.readSnapshots({ pipelineRoot: PIPELINE, waveKey });
+              if (Array.isArray(allSnaps) && allSnaps.length) {
+                waveSeries = allSnaps
+                  .filter((s) => s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct))
+                  .slice(-60)
+                  .map((s) => ({ ts: s.ts, avancePct: s.avancePct }));
+              }
+            } catch { /* sin serie → sparkline en placeholder */ }
+          }
+        }
+      } catch { /* fallback: sin velocityETA */ }
+      return { olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState, waveSeries };
+    })
+    .then(({ olaResult, historical, velocityETA, waveTotalPct, waveClosedCount, waveTotalIssues, waveThroughputPerDay, waveThroughputState, waveSeries }) => {
+      _olaETACache = {
+        issues: olaIssues,
+        totalP50: olaResult.totalP50,
+        totalP75: olaResult.totalP75,
+        totalP90: olaResult.totalP90,
+        byIssue: olaResult.byIssue,
+        concurrencyUsed: olaResult.concurrencyUsed,
+        bySize: historical.bySize,
+        rebounceRate: historical.rebounceRate,
+        // #4039 — ETA por velocidad (null si no hay ritmo medido todavía).
+        // #4532 — `etaSource` distingue ritmo MEDIDO ('velocity') de la estimación
+        // HISTÓRICA cross-ola ('historical'); ambos habilitan la celda de velocidad.
+        velocityETA: velocityETA || null,
+        etaSource: velocityETA ? (velocityETA.source === 'historical' ? 'historical' : 'velocity') : 'fallback',
+        // #4287 (CA-1) — avance % determinístico (null si no hubo snapshot).
+        totalPct: Number.isFinite(waveTotalPct) ? waveTotalPct : null,
+        // #4399 — conteo cerrados/total del MISMO `computeClosedSet` que la lista
+        // del pipeline, para que el panel de métricas muestre idéntico "N de M"
+        // (CA-2). null cuando no se pudo derivar la ola canónica.
+        closedCount: Number.isInteger(waveClosedCount) ? waveClosedCount : null,
+        totalIssues: Number.isInteger(waveTotalIssues) ? waveTotalIssues : null,
+        // #4450 — throughput de entrega (issues/día) + estado measured/insufficient.
+        throughputPerDay: Number.isFinite(waveThroughputPerDay) ? waveThroughputPerDay : null,
+        throughputState: waveThroughputState === 'measured' ? 'measured' : 'insufficient',
+        // #4500 — serie temporal de avance (últimos 60 puntos) para el sparkline
+        // de ritmo del Timeline. `[]` cuando no hay serie (placeholder cliente).
+        series: Array.isArray(waveSeries) ? waveSeries : [],
+        // #4588 — ETA descompuesto (pipeline-bound vs operador-bound) + métrica de
+        // espera de operador. Proyección de campos públicos (CA-10): SÓLO números
+        // y labels de gate fijos (GATE 1/2/0), sin paths/tokens/nombres de estado.
+        operatorWait: _projectOperatorWaitPublic(olaResult),
+        refreshedAt: Date.now(),
+      };
+      _olaETACacheAt = Date.now();
+    })
+    .catch((err) => {
+      // Log silencioso — el dashboard sigue sirviendo el cache viejo (o null) sin romper.
+      try { log(`olaETA refresh error: ${err && err.message ? err.message : err}`); } catch {}
+    })
+    .finally(() => { _olaETARefreshInflight = false; });
+}
+
+// #3956 — Cache de PR info para la etapa terminal "Finalizados". El fetcher
+// hace `gh pr list` por issue (spawnSync, timeout 5s) → llamarlo en el path de
+// render arriesga rate-limit + bloqueo del event loop. Lo consumimos vía cache
+// con TTL largo (el estado de un PR mergeado no cambia) y un refresh
+// fire-and-forget que acota cuántos issues consulta por tick. Degrada a
+// "sin link" mientras el cache no esté poblado (CA-6). El caching más fino vive
+// en el issue de mejora #4034 (no bloquea este).
+const _prInfoCache = new Map(); // issueStr → { mergedAt, url, state, fetchedAt }
+let _prInfoInflight = false;
+const PRINFO_TTL_MS = 10 * 60 * 1000;   // 10 min: un PR mergeado no se "des-mergea"
+const PRINFO_BATCH_PER_TICK = 3;        // cota de llamadas gh por refresh
+
+function _schedulePrInfoRefresh(doneIssues) {
+  if (!prInfoFetcherLib || typeof prInfoFetcherLib.fetchPrInfoForIssue !== 'function') return;
+  if (_prInfoInflight) return;
+  const now = Date.now();
+  const ids = Array.isArray(doneIssues) ? doneIssues : [];
+  const stale = ids.filter((n) => {
+    const c = _prInfoCache.get(String(n));
+    return !c || (now - c.fetchedAt) > PRINFO_TTL_MS;
+  });
+  if (stale.length === 0) return;
+  _prInfoInflight = true;
+  // #4133 — fire-and-forget REAL: usa fetchPrInfoForIssueAsync (execFile no
+  // bloqueante). Antes llamaba la versión sync (spawnSync) dentro de este
+  // Promise.then, lo cual NO la hacía async: clavaba el event loop hasta 5s por
+  // issue (15s/tick con batch 3) → /api/health no respondía → rollback falso del
+  // smoke. Ahora los fetches del batch corren en paralelo sin bloquear el loop.
+  Promise.resolve()
+    .then(async () => {
+      const batch = stale.slice(0, PRINFO_BATCH_PER_TICK);
+      await Promise.all(batch.map(async (n) => {
+        let info = null;
+        try {
+          info = await prInfoFetcherLib.fetchPrInfoForIssueAsync(n, { cwd: ROOT });
+        } catch { info = null; }
+        const ok = info && !info.error;
+        _prInfoCache.set(String(n), {
+          mergedAt: ok ? (info.mergedAt || null) : null,
+          url: ok ? (info.url || null) : null,
+          state: ok ? (info.state || null) : null,
+          fetchedAt: Date.now(),
+        });
+      }));
+    })
+    .catch((err) => { try { log(`prInfo refresh error: ${err && err.message ? err.message : err}`); } catch {} })
+    .finally(() => { _prInfoInflight = false; });
+}
+
 function getCachedPipelineState() {
+  // #4126 — preferir SIEMPRE el snapshot que el worker ya computó en background
+  // (no bloquea: está armado). Esto saca el escaneo pesado del path de render de
+  // `/` (legacy), SSE y dashRoutes, que antes llamaban getPipelineState() sync.
+  // Solo en cold start (el worker todavía no pobló _stateSnapshot) caemos a un
+  // cómputo sync acotado por el TTL para no romper vistas que necesitan estado
+  // inmediato.
+  if (_stateSnapshot) return _stateSnapshot;
   const now = Date.now();
   if (_stateCache && (now - _stateCacheAt) < STATE_CACHE_TTL_MS) return _stateCache;
   _stateCache = getPipelineState();
@@ -374,9 +1308,196 @@ function getCachedPipelineState() {
   return _stateCache;
 }
 
+// #4096 / #4126 — Worker de refresh del snapshot de estado. Corre FUERA del
+// request (arrancado por startListen via setInterval). El cómputo se trocea en
+// chunks con yields reales (`getPipelineStateAsync` cede el loop con setImmediate
+// entre chunks) para no starvar el event loop: /api/health y el resto de rutas
+// siguen respondiendo mientras el worker escanea el FS. Un flag inflight evita
+// solapar cómputos cuando un escaneo tarda más que el intervalo. El request de
+// /api/state NUNCA llama a esto: lee el último `_stateSnapshot` ya armado en O(1).
+// Swap atómico: se asigna el snapshot nuevo recién al terminar (nunca se muta
+// _stateSnapshot in-place durante el scan).
+function refreshStateSnapshot() {
+  if (_stateRefreshInflight) return;   // no solapar escaneos pesados
+  _stateRefreshInflight = true;
+  setImmediate(() => {
+    getPipelineStateAsync()
+      .then((snap) => {
+        _stateSnapshot = snap;
+        _stateSnapshotAt = Date.now();
+        // #4128 — fire-and-forget: resolver títulos/labels faltantes async, fuera
+        // del tick. El próximo refresh ya lee el cache poblado.
+        if (snap && snap._missingTitleIds) _scheduleTitleRefresh(snap._missingTitleIds);
+      })
+      .catch((e) => { try { log(`state snapshot refresh error: ${e && e.message ? e.message : e}`); } catch {} })
+      .finally(() => { _stateRefreshInflight = false; });
+  });
+}
+
+// #4126 — Refresh async (fire-and-forget, TTL) del estado de procesos + QA env.
+// Reemplaza los spawnSync(wmic)/execSync(tasklist) que vivían sincrónicos dentro
+// de getPipelineState(). El generador del snapshot solo lo agenda y lee el cache.
+function _scheduleProcStatusRefresh() {
+  const now = Date.now();
+  if (_procStatusInflight) return;
+  if (_procStatusCache && (now - _procStatusCacheAt) < PROC_STATUS_TTL_MS) return;
+  _procStatusInflight = true;
+  Promise.resolve()
+    .then(() => _computeProcStatusAsync())
+    .then((snap) => { _procStatusCache = snap; _procStatusCacheAt = Date.now(); })
+    .catch((err) => { try { log(`proc status refresh error: ${err && err.message ? err.message : err}`); } catch {} })
+    .finally(() => { _procStatusInflight = false; });
+}
+
+// tasklist async (Windows) para chequear si un PID de servicio QA sigue vivo.
+// Fuera de Windows no hay tasklist → degradamos a "no vivo" (mismo efecto que el
+// catch silencioso del código sync previo). Timeout corto + stderr ignorado para
+// que un filtro inválido nunca floodee el log.
+function _tasklistAliveAsync(n) {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') return resolve(false);
+    try {
+      execFile('tasklist', ['/FI', `PID eq ${n}`, '/NH', '/FO', 'CSV'],
+        { encoding: 'utf8', timeout: 3000, windowsHide: true },
+        (err, stdout) => { resolve(!err && String(stdout || '').includes(`"${n}"`)); });
+    } catch { resolve(false); }
+  });
+}
+
+async function _computeProcStatusAsync() {
+  // PIDs de componentes: un único scan async del SO + matcher puro por componente.
+  let list = [];
+  try { list = await pidDiscovery.scanNodeProcessesAsync(); } catch { list = []; }
+  const procesos = {};
+  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'svc-reconciler', 'outbox-drain', 'dashboard']) {
+    const script = pidDiscovery.SCRIPT_MAP[comp] || `${comp}.js`;
+    const found = pidDiscovery.findPidByScriptIn(list, script);
+    if (found && pidAlive(found.pid)) {
+      procesos[comp] = { pid: String(found.pid), alive: true, uptime: getProcessUptime(comp) };
+    } else {
+      procesos[comp] = { pid: null, alive: false };
+    }
+  }
+
+  // EP8-H7 (#3960) CA-1 — registrar el flanco vivo↔muerto por componente. Se
+  // movió acá desde getPipelineState() para que la persistencia/lectura del log
+  // de transiciones tampoco viva en el path sync del snapshot.
+  if (processTransitions) {
+    try { processTransitions.recordSnapshot(procesos, { pipelineDir: PIPELINE }); }
+    catch { /* best-effort: el store de transiciones no debe romper el state */ }
+  }
+
+  // QA env: tasklist async por PID de servicio QA registrado.
+  const qaEnv = { emulator: false };
+  try {
+    const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
+    // PID máximo válido en Windows (rango DWORD). Claves de metadata (timestamps)
+    // superan este rango y dispararían "filtro inválido" → se filtran.
+    const MAX_PID = 0xFFFFFFFF;
+    const checks = [];
+    for (const [svc, pid] of Object.entries(qaState)) {
+      const n = Number(pid);
+      if (!Number.isInteger(n) || n <= 0 || n > MAX_PID) continue;
+      checks.push(_tasklistAliveAsync(n).then((alive) => { qaEnv[svc] = alive; }).catch(() => {}));
+    }
+    await Promise.all(checks);
+  } catch {}
+
+  return { procesos, qaEnv };
+}
+
+// #4126 — etaAverages cacheado con TTL. collectMarkers hace un lstat-walk de
+// todos los `procesado/` (caro y de cambio lento). El fallback inline se usa solo
+// si la lib no cargó.
+function _getEtaAveragesCached(allFases) {
+  const now = Date.now();
+  if (_etaAveragesCache && (now - _etaAveragesCacheAt) < ETA_AVERAGES_TTL_MS) return _etaAveragesCache;
+  let result = {};
+  if (etaMarkersLib) {
+    try {
+      const markers = etaMarkersLib.collectMarkers({ root: PIPELINE, allFases, includeRejection: false });
+      result = markers.perFaseSkill || {};
+    } catch { result = {}; }
+  } else {
+    result = _computeEtaAveragesFallback(allFases);
+  }
+  _etaAveragesCache = result;
+  _etaAveragesCacheAt = now;
+  return result;
+}
+
+// Fallback histórico inline (idéntico al previo) por si el extracto a
+// `eta-markers.js` no está disponible. Mantiene vivo el dashboard.
+function _computeEtaAveragesFallback(allFases) {
+  const out = {};
+  for (const { pipeline: pName, fase } of allFases) {
+    const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
+    const listoDir = path.join(PIPELINE, pName, fase, 'listo');
+    for (const dir of [procesadoDir, listoDir]) {
+      for (const f of listWorkFiles(dir)) {
+        const skill = f.split('.').slice(1).join('.');
+        const st = fileStat(path.join(dir, f));
+        if (!st) continue;
+        const dur = st.ctimeMs - st.birthtimeMs;
+        if (dur <= 5000 || dur > 4 * 3600000) continue;
+        const key = `${fase}/${skill}`;
+        if (!out[key]) out[key] = { total: 0, count: 0 };
+        out[key].total += dur;
+        out[key].count++;
+      }
+    }
+  }
+  for (const [key, data] of Object.entries(out)) {
+    data.avgMs = Math.round(data.total / data.count);
+    const fase = key.split('/')[0];
+    if (!out[fase]) out[fase] = { total: 0, count: 0 };
+    out[fase].total += data.total;
+    out[fase].count += data.count;
+  }
+  for (const [key, data] of Object.entries(out)) {
+    if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
+  }
+  return out;
+}
+
+// #4126 — Driver SÍNCRONO del generador: corre el builder a fondo ignorando los
+// yields. Lo usan los callers legacy (cold start, getMetricsData, tests). Bloquea
+// igual que antes, pero esos callers NO están en el path del smoke (/api/health).
 function getPipelineState() {
+  const g = _genPipelineState();
+  let r = g.next();
+  while (!r.done) r = g.next();
+  return r.value;
+}
+
+// #4126 — Driver ASÍNCRONO: cede el event loop (setImmediate) en cada yield del
+// generador, de modo que el HTTP server atiende /api/health y otras rutas entre
+// chunks. Lo usa el worker de snapshot.
+async function getPipelineStateAsync() {
+  const g = _genPipelineState();
+  let r = g.next();
+  while (!r.done) {
+    await new Promise((resolve) => setImmediate(resolve));
+    r = g.next();
+  }
+  return r.value;
+}
+
+// #4126 — Generador del snapshot. Un único cuerpo (fuente de verdad) que cede
+// el event loop con `yield` en los loops pesados del FS. Lo manejan dos drivers:
+// getPipelineState() (sync, corre a fondo) y getPipelineStateAsync() (cede el
+// loop con setImmediate en cada yield). Así el worker no starva /api/health.
+function* _genPipelineState() {
   const config = loadConfig();
+  // #5172 · CA-8 — sin configuración válida no se sirve el tablero: un board
+  // vacío es indistinguible de "no hay trabajo" y ese es justo el fallo
+  // silencioso que la historia elimina. Se devuelve el estado de error explícito
+  // y el proceso sigue vivo (el operador necesita esta pantalla para enterarse).
+  if (!config) {
+    return { config: null, configError: getConfigErrorState(), fases: [], agentes: [] };
+  }
   const state = { config };
+  let _scanCount = 0;   // contador de archivos para trocear el scan en chunks
 
   // Todas las fases de ambos pipelines en orden
   const allFases = [];
@@ -424,6 +1545,13 @@ function getPipelineState() {
           const yamlData = readYamlSafe(filepath);
           entry.resultado = yamlData.resultado;
           entry.motivo = yamlData.motivo;
+          // #5629 — Señal ESTRUCTURADA de merge real. `resultado` y `motivo` NO
+          // sirven para saber si hubo merge (los markers de #5220/#5244 decían
+          // `aprobado` con el motivo confesando "merge bloqueado"); el único
+          // dato confiable es este SHA, que `delivery.js` escribe sólo en la
+          // rama de merge confirmado. Lo exponemos crudo: la validación de
+          // formato y la regla de "entregado" viven en `lib/delivery-status.js`.
+          entry.delivery_merge_sha = yamlData.delivery_merge_sha || null;
         }
 
         // #2801 — Si el archivo en pendiente/trabajando tiene contexto de
@@ -463,14 +1591,48 @@ function getPipelineState() {
             state.issueMatrix[issue].estadoActual = estado;
           }
         }
+
+        // #4126 — yield cada STATE_SCAN_CHUNK archivos: en el driver async esto
+        // cede el event loop (setImmediate) y deja respirar a /api/health; en el
+        // driver sync es un no-op.
+        if ((++_scanCount % STATE_SCAN_CHUNK) === 0) yield;
       }
     }
   }
   // Convert Sets to arrays for JSON + enriquecer con títulos/labels
   const issueIds = Object.keys(state.issueMatrix);
   const titleCache = loadIssueTitleCache();
-  const missing = issueIds.filter(id => !titleCache[id]);
-  if (missing.length > 0) fetchIssueTitles(missing, titleCache);
+  // #3905 — incluir la allowlist de la ola (pausa parcial) en el set a
+  // resolver: los issues que NUNCA ingresaron al pipeline no están en el
+  // matrix, pero la franja "fuera de flujo" del board necesita su title +
+  // state (open/closed) para clasificarlos. SEC-2: la lista sale de
+  // .partial-pause.json (editable a mano) → se filtra a enteros vía
+  // readPreviousAllowlist (normalizeIssue interno).
+  let allowlistIds = [];
+  try {
+    const pp = require('./lib/partial-pause');
+    allowlistIds = (pp.readPreviousAllowlist() || []).map(String);
+  } catch { /* módulo opcional: degradamos sin allowlist */ }
+  const wantedIds = [...new Set([...issueIds, ...allowlistIds])];
+  // missing = sin cache, O cacheado sin `state` (entradas previas a #3905), O
+  // entrada vencida por TTL (#4099 — refrescar labels/state obsoletos).
+  // Los notFound quedan excluidos (negative cache) para no re-consultar gh
+  // cada tick (SEC-3 resource exhaustion). El batching GraphQL (50/query) de
+  // fetchIssueTitles acota la carga del refetch.
+  // #4099 — TITLE_CACHE_TTL estaba definido pero nunca usado: una entrada con
+  // `state` quedaba congelada para siempre, así un issue que se cierra (o le
+  // cambian los labels) en GitHub nunca se refrescaba (caso #4050). Reactivamos
+  // el chequeo de TTL respetando negative-cache y batching.
+  const now = Date.now();
+  const missing = wantedIds.filter(id => titleCacheNeedsRefetch(titleCache[id], { now, ttlMs: TITLE_CACHE_TTL }));
+  // #4128 — NO resolver títulos acá: fetchIssueTitles usaba execSync(gh) (red,
+  // hasta 30s) y, aun corriendo dentro del generador troceado, clavaba el event
+  // loop ENTERO durante la llamada → /api/health no respondía y el smoke del
+  // restart disparaba rollback en loop. Sólo registramos los faltantes; el
+  // worker de snapshot los resuelve async fire-and-forget (_scheduleTitleRefresh)
+  // y el próximo refresh lee el cache ya poblado. La vista de este tick usa lo
+  // que haya en cache (igual que prInfo/olaETA degradan al cache previo).
+  if (missing.length > 0) state._missingTitleIds = missing;
   state.issueTitles = titleCache;
 
   // #2337 CA8 — snapshot del estado `reintentando` activo en este refresh.
@@ -494,6 +1656,9 @@ function getPipelineState() {
     data.pipelines = [...data.pipelines];
     data.title = titleCache[id]?.title || '';
     data.labels = titleCache[id]?.labels || [];
+    // #4362 — estado GitHub (OPEN | CLOSED) del cache: lo usa la derivación de
+    // `progressState` para clasificar un issue closed como "terminado".
+    data.state = titleCache[id]?.state || null;
     // Calcular rebotes: contar runs rechazados por fase
     let bounces = 0;
     for (const entries of Object.values(data.fases)) {
@@ -547,37 +1712,49 @@ function getPipelineState() {
     } catch { /* defensivo */ }
   }
 
-  // ETA: calcular promedios históricos por skill+fase desde archivos procesados
-  // Usa mtime (escritura resultado) - ctime (creación archivo) como proxy de duración
-  state.etaAverages = {}; // key: "fase/skill" → avgMs
-  for (const { pipeline: pName, fase } of allFases) {
-    const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
-    const listoDir = path.join(PIPELINE, pName, fase, 'listo');
-    for (const dir of [procesadoDir, listoDir]) {
-      for (const f of listWorkFiles(dir)) {
-        const skill = f.split('.').slice(1).join('.');
-        const st = fileStat(path.join(dir, f));
-        if (!st) continue;
-        // duración = ctime - birthtime (ctime = movido a procesado, birthtime = creación original)
-        const dur = st.ctimeMs - st.birthtimeMs;
-        if (dur <= 5000 || dur > 4 * 3600000) continue; // descartar <5s o >4h
-        const key = `${fase}/${skill}`;
-        if (!state.etaAverages[key]) state.etaAverages[key] = { total: 0, count: 0 };
-        state.etaAverages[key].total += dur;
-        state.etaAverages[key].count++;
-      }
+  // #3958 EP8-H5 (CA-4) — p90 de edad para la regla de riesgo "edad > p90".
+  // Población = issues ACTIVOS (con staleMin>0, i.e. con un agente trabajando),
+  // NO el histórico procesado/. Decisión cerrada (guru/PO): mantiene la regla
+  // estable y no ruidosa. Una sola pasada sobre issueMatrix; resultado en
+  // state.issueAgeP90 (Infinity si no hay población → la regla nunca dispara).
+  {
+    const ages = [];
+    for (const data of Object.values(state.issueMatrix)) {
+      if (data && typeof data.staleMin === 'number' && data.staleMin > 0) ages.push(data.staleMin);
+    }
+    if (ages.length === 0) {
+      state.issueAgeP90 = Infinity;
+    } else {
+      ages.sort((a, b) => a - b);
+      const idx = Math.ceil(ages.length * 0.9) - 1;
+      state.issueAgeP90 = ages[Math.max(0, Math.min(idx, ages.length - 1))];
     }
   }
-  // Calcular promedios y también por fase (sin skill)
-  for (const [key, data] of Object.entries(state.etaAverages)) {
-    data.avgMs = Math.round(data.total / data.count);
-    const fase = key.split('/')[0];
-    if (!state.etaAverages[fase]) state.etaAverages[fase] = { total: 0, count: 0 };
-    state.etaAverages[fase].total += data.total;
-    state.etaAverages[fase].count += data.count;
-  }
-  for (const [key, data] of Object.entries(state.etaAverages)) {
-    if (!key.includes('/')) data.avgMs = Math.round(data.total / data.count);
+
+  // ETA: promedios históricos por skill+fase desde archivos procesados.
+  // #3517 — el walk + filtros + agregación viven en `lib/eta-markers.js`.
+  // #4126 — doble defensa contra el bloqueo del event loop:
+  //   1) cache TTL (`_etaAveragesCache`): el walk es un lstat sobre todos los
+  //      `procesado/`, caro y de cambio lento; no se recomputa en cada tick.
+  //   2) cuando SÍ recomputa, lo hace con `collectMarkersChunked` vía `yield*`:
+  //      cede el event loop cada ~250 archivos (en el driver async). El shape
+  //      (`${fase}/${skill}` + `${fase}` coarse, `{ total, count, avgMs }`) es
+  //      idéntico al de `collectMarkers`.
+  yield;
+  const _nowEta = Date.now();
+  if (_etaAveragesCache && (_nowEta - _etaAveragesCacheAt) < ETA_AVERAGES_TTL_MS) {
+    state.etaAverages = _etaAveragesCache;
+  } else if (etaMarkersLib && typeof etaMarkersLib.collectMarkersChunked === 'function') {
+    let markers = null;
+    try {
+      markers = yield* etaMarkersLib.collectMarkersChunked({ root: PIPELINE, allFases, includeRejection: false });
+    } catch { markers = null; }
+    state.etaAverages = (markers && markers.perFaseSkill) || {};
+    _etaAveragesCache = state.etaAverages;
+    _etaAveragesCacheAt = _nowEta;
+  } else {
+    // Fallback sin lib (pipeline antiguo): TTL + cómputo inline.
+    state.etaAverages = _getEtaAveragesCached(allFases);
   }
 
   // V3 — Bloqueados esperando humano (issue #2478)
@@ -626,6 +1803,34 @@ function getPipelineState() {
     }
   } catch {}
 
+  // #3957 (EP8-H4 / CA-4) — Stats del header de Bloqueados (SLA promedio de
+  // desbloqueo + resueltos hoy) computadas desde el trace activity-log con
+  // ventana acotada. Hoy `bloqueadosStats` nunca se computaba → header en "—".
+  state.bloqueadosStats = { avgSla: null, resolvedToday: 0 };
+  try {
+    const { computeBloqueadosStats } = require('./lib/bloqueados-stats');
+    state.bloqueadosStats = computeBloqueadosStats({});
+  } catch {}
+
+  // #4580 — Bandeja "Esperando tu firma": los tres orígenes de firma del
+  // operador (waiting-operator/ · esperando-firma/ · GATE 3) unificados por
+  // lib/waiting-operator. Read-only: el lector valida el id (^\d+$, REQ-SEC-
+  // 4580-3) y redacta la evidencia (REQ-SEC-4580-5) antes de exponerla.
+  state.esperandoFirma = [];
+  try {
+    const waitingOperator = require('./lib/waiting-operator');
+    state.esperandoFirma = waitingOperator.listWaitingOperator();
+  } catch {}
+
+  // #3957 (CA-3) — username PÚBLICO del bot de Telegram para el deep-link de
+  // cada fila. Validado contra el charset de Telegram antes de exponerlo; si
+  // falta/inválido queda undefined y la vista no renderiza el deep-link.
+  try {
+    const rawUser = config && config.telegram && config.telegram.bot_username;
+    const u = (rawUser == null ? '' : String(rawUser)).trim();
+    state.telegramBotUsername = /^[A-Za-z0-9_]{5,32}$/.test(u) ? u : undefined;
+  } catch { state.telegramBotUsername = undefined; }
+
   // Servicios
   state.servicios = {};
   try {
@@ -660,34 +1865,21 @@ function getPipelineState() {
     }
   } catch {}
 
-  // Procesos — descubiertos al vuelo desde el SO, no desde archivos .pid.
-  state.procesos = {};
-  invalidateCache();
-  for (const comp of ['pulpo', 'listener', 'svc-telegram', 'svc-github', 'svc-drive', 'svc-reconciler', 'outbox-drain', 'dashboard']) {
-    const found = findPidByComponent(comp);
-    if (found && pidAlive(found.pid)) {
-      const uptime = getProcessUptime(comp);
-      state.procesos[comp] = { pid: String(found.pid), alive: true, uptime };
-    } else {
-      state.procesos[comp] = { pid: null, alive: false };
-    }
-  }
+  // Procesos + QA env — #4126: servidos desde el cache async (_procStatusCache),
+  // poblado por `_computeProcStatusAsync` con `exec`/`execFile` FUERA del tick.
+  // Antes esto hacía spawnSync(wmic) (invalidando el cache cada tick → ~15s de
+  // bloqueo posible) y execSync(tasklist) por servicio QA, clavando el event
+  // loop y colgando /api/health. El generador ahora solo agenda el refresh y
+  // lee el último valor en O(1). En cold start (cache aún null) degrada a vacío;
+  // el próximo tick ya trae datos. El registro de transiciones de proceso
+  // (#3960) también vive ahora en el refresh async.
+  _scheduleProcStatusRefresh();
+  const _ps = _procStatusCache || { procesos: {}, qaEnv: { emulator: false } };
+  state.procesos = _ps.procesos || {};
+  state.qaEnv = { emulator: false, ...(_ps.qaEnv || {}) };
 
-  // QA Environment
-  state.qaEnv = { emulator: false };
-  state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
-  try {
-    const qaState = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'qa-env-state.json'), 'utf8'));
-    for (const [svc, pid] of Object.entries(qaState)) {
-      if (pid) {
-        try {
-          const r = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
-          state.qaEnv[svc] = r.includes(`"${pid}"`);
-        } catch {}
-      }
-    }
-  } catch {}
   // QA Remote state
+  state.qaRemote = { active: false, url: '', ref: '', startedAt: '' };
   try {
     const remoteStateFile = path.join(ROOT, 'qa', '.qa-remote-state');
     if (fs.existsSync(remoteStateFile)) {
@@ -727,18 +1919,20 @@ function getPipelineState() {
     } catch {}
   }
 
-  // Rechazos recientes
+  // Rechazos recientes — #4126: derivados del `issueMatrix` ya construido (que
+  // ya leyó resultado/motivo de cada `procesado/`), en vez de re-walkear y
+  // re-parsear TODOS los YAML de procesado en cada tick. Eran ~miles de
+  // readYamlSafe extra por refresh que, junto con wmic/tasklist, starvaban el
+  // event loop. Mismo shape y mismo orden de salida (sort por ts desc + top 10).
   state.rechazos = [];
-  for (const { pipeline: pName, fase } of allFases) {
-    const procesadoDir = path.join(PIPELINE, pName, fase, 'procesado');
-    for (const f of listWorkFiles(procesadoDir)) {
-      const data = readYamlSafe(path.join(procesadoDir, f));
-      if (data.resultado === 'rechazado') {
-        const stat = fileStat(path.join(procesadoDir, f));
+  for (const [issueId, data] of Object.entries(state.issueMatrix)) {
+    for (const entries of Object.values(data.fases || {})) {
+      for (const e of entries) {
+        if (e.estado !== 'procesado' || e.resultado !== 'rechazado') continue;
         state.rechazos.push({
-          issue: f.split('.')[0], skill: f.split('.').slice(1).join('.'),
-          fase, pipeline: pName, motivo: data.motivo || '',
-          ts: stat?.mtimeMs || 0
+          issue: issueId, skill: e.skill,
+          fase: e.fase, pipeline: e.pipeline, motivo: e.motivo || '',
+          ts: e.updatedAt || 0,
         });
       }
     }
@@ -800,7 +1994,175 @@ function getPipelineState() {
     memHistory: resourceHistory.mem.slice()
   };
 
+  // #3492 — ETA agregada por ola (probabilística, p50/p75/p90). Refresh async
+  // fire-and-forget contra cache TTL 30s para no bloquear el render sync.
+  // Cuando el cache aún no está listo (primer tick), `state.olaETA = null`
+  // y el cliente muestra el placeholder hasta el siguiente polling.
+  _scheduleOlaETARefresh(state);
+  state.olaETA = _olaETACache;
+
+  // #3638 CA-F-12 — Ghost artifacts widget: lee últimas 10 líneas del audit
+  // JSONL. Si hubo cleanup en últimas 24h → bandera ⚠ . Sin actividad ≥ 7 días → ✅.
+  state.ghostArtifacts = readGhostArtifactSummary();
+
+  // #3956 — Ola activa para la etapa terminal "No ingresados" del board. Best
+  // effort: si el resolver no cargó, `activeWave.issues = []` y la etapa queda
+  // vacía (no rompe el render).
+  state.activeWave = { label: 'Ola actual', issues: [], source: null };
+  if (waveResolverLib && typeof waveResolverLib.resolveActiveWave === 'function') {
+    try {
+      const w = waveResolverLib.resolveActiveWave({ pipelineRoot: PIPELINE });
+      if (w && Array.isArray(w.issues)) state.activeWave = w;
+    } catch { /* degrada a ola vacía */ }
+  }
+  // #4369 — número de la ola activa (para el panel de priorización wave-scoped).
+  // resolveActiveWave() ordena los issues numéricamente y no expone el número de
+  // ola, así que lo tomamos de la source-of-truth canónica (waves.js). El panel
+  // solo se renderiza si hay ola activa; el orden de ejecución lo pide por AJAX.
+  state.activeWaveNumber = null;
+  if (wavesLib && typeof wavesLib.getActiveWave === 'function') {
+    try {
+      const aw = wavesLib.getActiveWave();
+      if (aw && aw.number != null) state.activeWaveNumber = Number(aw.number);
+    } catch { /* sin ola activa → panel oculto */ }
+  }
+
+  // #3956 — PR info de los issues finalizados (etapa "Finalizados"). Lectura
+  // sync desde el cache; el refresh fire-and-forget se programa con la lista de
+  // issues completos (sin fase activa). Construimos un snapshot plano para que
+  // el render no toque el Map directamente.
+  // #4362 — "Terminado" real = closed en GitHub o procesado en la fase terminal
+  // del flujo. Antes se metía TODO issue sin `estadoActual` en doneIssueIds, con
+  // lo que un issue "entre fases" (procesado intermedio + latido reciente) se
+  // confundía con terminado. Derivamos el estado de avance con las MISMAS
+  // señales que la grilla (progress-state.js) y sólo tratamos como done los que
+  // realmente terminaron (CA-5). Lectura única del activity-log por tick.
+  const progressLib = require('./lib/progress-state');
+  const _terminalFaseKeys = progressLib.terminalFaseKeySet(state.allFases);
+  const _recentActivityIssues = progressLib.readRecentActivityIssues(ROOT, {
+    windowMin: Number(process.env.PIPELINE_STALE_MIN_THRESHOLD) || 30,
+  });
+  const doneIssueIds = [];
+  for (const [id, data] of Object.entries(state.issueMatrix)) {
+    if (!data) continue;
+    const progressState = progressLib.deriveProgressState(data, {
+      terminalFaseKeys: _terminalFaseKeys,
+      recentActivity: _recentActivityIssues.has(String(id)),
+    });
+    data.progressState = progressState;   // exponer para consumidores del state
+    if (progressState === 'terminado') doneIssueIds.push(Number(id));
+  }
+  _schedulePrInfoRefresh(doneIssueIds);
+  state.prInfo = {};
+  for (const [id, info] of _prInfoCache.entries()) {
+    state.prInfo[id] = { mergedAt: info.mergedAt, url: info.url, state: info.state };
+  }
+
+  // #4327 (CA-4) — Bloque de cuota por proveedor servido por /api/state. Se
+  // compone de fuentes YA sanitizadas (getBannerState + quotaSlice) vía el helper
+  // dedicado `lib/quota-state-block`. Corre en el worker de background (el driver
+  // getPipelineStateAsync cede el loop entre chunks); /api/state sirve el snapshot
+  // prearmado en O(1), así que el costo NO cae en el hot path del request. Se pide
+  // `skipSideEffects` para no re-disparar el guard/pacing (su cadencia sigue atada
+  // al poll de /api/dash/quota). Fail-closed: si el helper no cargó o falla, el
+  // bloque queda en estado 'missing' con providers vacío (nunca dato viejo/0 como
+  // fresco). El helper NO expone account_handle (allowlist de sanitizeSnapshotForOutput).
+  state.quota = { snapshotAt: Date.now(), state: 'missing', ageMs: null, lastSnapshot: null, providers: {} };
+  try {
+    const { buildQuotaStateBlock } = require('./lib/quota-state-block');
+    state.quota = buildQuotaStateBlock({ PIPELINE, ROOT });
+  } catch { /* mantiene el default fail-closed */ }
+
+  // #4778 (Ola Puente P6 · CA-1.4/CA-1.5) — Catálogo de productos + estado
+  // NAMESPACEADO por projectId para el dashboard product-aware (switcher + grid
+  // "estado por producto"). Regla de aislamiento (A01): cada producto sólo ve su
+  // propio namespace; NUNCA se agrega estado cross-product. Para el producto
+  // primario/por defecto (retro-compat · CA-5.1) el estado deriva del snapshot
+  // vivo del pipeline — que ES el contexto de coordinación del producto por
+  // defecto; los productos adicionales que el kernel onboardee se materializan en
+  // este MISMO mapa segmentado, sin mezclar datos entre productos. Fail-open: si
+  // el catálogo no carga, el dashboard sigue operando single-product.
+  state.products = [];
+  state.productState = {};
+  try {
+    const productCatalog = require('./lib/product-catalog');
+    const catalog = productCatalog.listProducts(path.join(PIPELINE, 'descriptors'));
+    // Resumen de pipeline del producto por defecto desde el propio issueMatrix
+    // (NO se agrega estado de otros namespaces). Conteos honestos por estadoActual.
+    let activos = 0, pendientes = 0, bloqueados = 0;
+    for (const data of Object.values(state.issueMatrix)) {
+      if (!data) continue;
+      if (data.estadoActual === 'trabajando') activos++;
+      else if (data.estadoActual === 'pendiente' || data.estadoActual === 'listo') pendientes++;
+      if (typeof data.faseActual === 'string' && /bloqueados/.test(data.faseActual)) bloqueados++;
+    }
+    const primarySummary = { activos, pendientes, bloqueados, procesados: doneIssueIds.length };
+    const isPausedNow = isFullPauseActive();
+    const now = Date.now();
+    state.products = catalog;
+    for (const p of catalog) {
+      const isPrimaryActive = p.role === 'primary' && p.status === 'active';
+      state.productState[p.projectId] = isPrimaryActive
+        ? { projectId: p.projectId, name: p.name, status: p.status, state: isPausedNow ? 'paused' : 'active', phase: 'operando', metrics: primarySummary, updatedAt: now }
+        : { projectId: p.projectId, name: p.name, status: p.status, state: p.status === 'onboarding' ? 'onboarding' : 'inactive', phase: p.status || 'inactive', metrics: { activos: 0, pendientes: 0, bloqueados: 0, procesados: 0 }, updatedAt: now };
+    }
+  } catch { /* product-aware opcional: single-product sin catálogo */ }
+
   return state;
+}
+
+/**
+ * Lee las últimas N líneas del audit JSONL del ghost-artifact-cleaner.
+ * Tolera líneas malformadas (CA-SEC-5): try/catch por línea, descarta y warn.
+ * Nunca crashea el dashboard.
+ *
+ * @returns {{ enabled, lastRunIso, lastCleanupIso, status, recent, cleanupCount24h }}
+ */
+function readGhostArtifactSummary() {
+  const file = path.join(PIPELINE, 'audit', 'ghost-artifacts-cleanup.jsonl');
+  let raw = '';
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch {
+    return {
+      enabled: false,
+      lastRunIso: null,
+      lastCleanupIso: null,
+      status: 'unknown',
+      recent: [],
+      cleanupCount24h: 0,
+    };
+  }
+  const lines = raw.split('\n').filter(Boolean);
+  const parsed = [];
+  for (const line of lines) {
+    try { parsed.push(JSON.parse(line)); }
+    catch { /* CA-SEC-5: skip malformed, no crash */ }
+  }
+  // últimas 10 entradas
+  const recent = parsed.slice(-10).reverse();
+  const lastRun = parsed.length > 0 ? parsed[parsed.length - 1].timestamp : null;
+  const cleanups = parsed.filter(e => e && e.action === 'cleanup');
+  const lastCleanup = cleanups.length > 0 ? cleanups[cleanups.length - 1].timestamp : null;
+  const now = Date.now();
+  const cutoff24h = now - (24 * 60 * 60 * 1000);
+  const cutoff7d = now - (7 * 24 * 60 * 60 * 1000);
+  const cleanupCount24h = cleanups.filter(e => {
+    const t = Date.parse(e.timestamp || '');
+    return Number.isFinite(t) && t >= cutoff24h;
+  }).length;
+  let status;
+  if (cleanupCount24h > 0) status = 'recent-cleanup';
+  else if (lastCleanup && Date.parse(lastCleanup) < cutoff7d) status = 'clean';
+  else if (!lastCleanup && lastRun && Date.parse(lastRun) < cutoff7d) status = 'clean';
+  else status = 'idle';
+  return {
+    enabled: true,
+    lastRunIso: lastRun,
+    lastCleanupIso: lastCleanup,
+    status,
+    recent,
+    cleanupCount24h,
+  };
 }
 
 // --- HTML generation helpers ---
@@ -870,13 +2232,11 @@ function fmtUptime(ms) {
   return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
 }
 
-// Categorías semánticas de skills (para agrupación en Equipo Disponible)
-const SKILL_CATEGORY = {
-  po: 'product', ux: 'product', planner: 'product', scrum: 'product',
-  'backend-dev': 'dev', 'android-dev': 'dev', 'web-dev': 'dev',
-  tester: 'quality', qa: 'quality', review: 'quality', security: 'quality',
-  guru: 'ops', perf: 'ops', build: 'ops', delivery: 'ops',
-};
+// Categorías semánticas de skills (para agrupación en Equipo Disponible).
+// #3959 (CA-4) — fuente única en lib/skill-catalog.js para que Matriz/Pipeline/
+// Equipo compartan el mismo orden. La estructura re-exportada es idéntica a la
+// que vivía inline acá, así el resto de dashboard.js no cambia su uso.
+const { SKILL_CATEGORY, CATEGORY_META } = require('./lib/skill-catalog');
 // Etiquetas cortas por fase (2 chars) para mostrar debajo de cada dot
 const FASE_LABEL_SHORT = {
   analisis: 'An', criterios: 'Cr', sizing: 'Si',
@@ -884,12 +2244,7 @@ const FASE_LABEL_SHORT = {
   verificacion: 'Vf', linteo: 'Li', aprobacion: 'Ap', entrega: 'En',
 };
 
-const CATEGORY_META = {
-  product:  { label: 'Producto', icon: '🎯', color: '#d29922' },
-  dev:      { label: 'Desarrollo', icon: '🛠', color: '#3fb950' },
-  quality:  { label: 'Calidad', icon: '🛡', color: '#d2a8ff' },
-  ops:      { label: 'Operaciones', icon: '⚙', color: '#58a6ff' },
-};
+// CATEGORY_META se importa desde lib/skill-catalog.js (ver require de arriba).
 
 // Capas semánticas de servicios
 const SERVICE_LAYER = {
@@ -937,25 +2292,12 @@ function formatInfraTs(iso) {
 }
 
 // Determina el semáforo global a partir de los 3 criterios del PO (CA-3).
-function computeInfraHealthLevel(h) {
-  // Stale: sin lastCheck o último healthcheck hace > 5 min (300000 ms)
-  const lastCheck = h && h.dns && h.dns.lastCheck;
-  const dnsAge = lastCheck ? (Date.now() - new Date(lastCheck).getTime()) : Infinity;
-  if (!isFinite(dnsAge) || dnsAge > 300000) return { level: 'stale', label: 'STALE' };
-
-  // Alert (rojo): circuit breaker abierto, DNS FAIL o retries > 20%
-  if (h.circuitBreaker && h.circuitBreaker.state === 'open') return { level: 'alert', label: 'CRITICO' };
-  if (h.dns && h.dns.status === 'FAIL') return { level: 'alert', label: 'CRITICO' };
-  const rate = h.retries && typeof h.retries.ratePercent === 'number' ? h.retries.ratePercent : 0;
-  if (rate > 20) return { level: 'alert', label: 'CRITICO' };
-
-  // Warn (amarillo): retries entre 5% y 20% o latencia DNS > 3s
-  if (rate >= 5) return { level: 'warn', label: 'DEGRADADO' };
-  const lat = h.dns && typeof h.dns.latencyMs === 'number' ? h.dns.latencyMs : 0;
-  if (lat > 3000) return { level: 'warn', label: 'DEGRADADO' };
-
-  return { level: 'ok', label: 'SALUDABLE' };
-}
+// #3954 EP8-H1 CA-2/CA-3 — Semáforo global explicable. La lógica pura se
+// extrajo a `lib/infra-health-level.js` para que la compartan SIN dependencia
+// circular `dashboard.js` y `views/dashboard/home.js` (Banda 1 del kiosk).
+// Extendido de "solo infra" a `pulpo + infra + cuota + anomalía` con `reasons[]`
+// para el tooltip CA-2. La firma sigue siendo retrocompatible (sólo `h`).
+const { computeInfraHealthLevel } = require('./lib/infra-health-level');
 
 // Renderiza la sección "Salud de Infra" como HTML. Devuelve '' si no hay
 // datos (feature flag OFF → CA-11).
@@ -1151,7 +2493,7 @@ function renderRecommendationsSection() {
   const errorTxt = cache.error ? `<div class="reco-err">⚠ ${escapeHtml(cache.error)}</div>` : '';
   const summary = `<summary>💡 Recomendaciones pendientes <span class="reco-count" data-count="${items.length}">${items.length}</span> <span class="reco-meta">· última sync: ${updatedAtTxt}</span></summary>`;
   if (items.length === 0) {
-    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs-human</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
+    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs:triage-backlog</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
   }
   const rows = items.map(it => {
     const fromTxt = it.fromIssue ? `desde #${it.fromIssue}` : '';
@@ -1174,13 +2516,217 @@ function renderRecommendationsSection() {
   return `<details class="collapse-section reco-section" open>${summary}<div class="collapse-body">${errorTxt}<div style="margin:6px 0 10px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar</button></div><table class="reco-table"><thead><tr><th>Issue</th><th>Agente</th><th>Título</th><th>Origen</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
 }
 
+const { escapeHtmlAttr: __escapeHtmlAttrShared } = require('./lib/escape-html');
+// #3722 (cierra #2901) — la implementación local delega al helper compartido.
+// Los 60+ call sites de escapeHtml(...) en este archivo se mantienen sin cambio;
+// las hijas de #3715 que extraigan ventanas a views/dashboard/<slug>.js van a
+// importar escapeHtmlText/escapeHtmlAttr directo desde el helper.
 function escapeHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return __escapeHtmlAttrShared(s);
+}
+
+// #4709 — Banner SSR de la causa declarada del no-despacho (cola ociosa). El
+// render vive en `lib/dispatch-cause-render.js` (extraído para ser testeable con
+// `node --test`); escapa `label`/`detalle` con escapeHtmlText/escapeHtmlAttr
+// antes de inyectarlos (requisito de seguridad AC-4/AC-6, stored XSS).
+let renderDispatchCauseBanner = () => '';
+try { ({ renderDispatchCauseBanner } = require('./lib/dispatch-cause-render')); } catch { /* opcional */ }
+
+// #4335 — TTL de presencia (espejo de dashboard-slices.js) para resolver el log
+// de la corrida vigente en las cards observacionales de la tira "Ejecutando ahora".
+const COMMANDER_PRESENCE_TTL_MS = 5 * 60 * 1000;
+const SHERLOCK_PRESENCE_TTL_MS = 5 * 60 * 1000;
+
+// #4335 — Devuelve el <a> hacia el log crudo (endpoint genérico `/logs/view`
+// que ya redacta secrets) de la corrida más reciente de un prefijo
+// (`commander`/`sherlock`) dentro del TTL, o '' si no hay corrida vigente
+// (sin log fantasma). Reusa el resolver server-side del slice (mtime+TTL) para
+// no duplicar la lógica; el basename se pasa encodeURIComponent + `?live=1`.
+function presenceLogLink(prefix, ttlMs) {
+  try {
+    if (!_architectSlices || typeof _architectSlices.resolveRecentRunLog !== 'function') return '';
+    const logFile = _architectSlices.resolveRecentRunLog(prefix, ttlMs);
+    if (!logFile) return '';
+    const href = '/logs/view/' + encodeURIComponent(String(logFile)) + '?live=1';
+    return '<a class="eq-work-log" href="' + escapeHtml(href) + '" target="_blank" rel="noopener noreferrer" title="Ver log en vivo" onclick="event.stopPropagation()">📄 log</a>';
+  } catch { return ''; }
+}
+
+// #4443 — Resolver del texto de la petición vigente (CA-3/CA-4/CA-5) para las
+// cards observacionales de Commander/Sherlock. Módulo puro `lib/presentation-petition`
+// (testeable con `node --test`); acá sólo lo bindeamos al history del pipeline +
+// `redactLogText` (SR-2). Server-side, sin tocar el canal de presencia (SEC-1/SR-3
+// intacto). Devuelve `{full, clipped}` o `null` (→ fallback idle en el render).
+let _presentationPetition;
+try { _presentationPetition = require('./lib/presentation-petition'); }
+catch { _presentationPetition = null; }
+
+function resolvePresentationPetition(startedAt, ttlMs) {
+  if (!_presentationPetition || typeof _presentationPetition.resolvePetitionText !== 'function') return null;
+  try {
+    return _presentationPetition.resolvePetitionText(
+      path.join(PIPELINE, 'commander-history.jsonl'),
+      startedAt,
+      ttlMs,
+      { redact: redactLogText },
+    );
+  } catch { return null; }
+}
+
+// #4443 — Render de la fila de petición dentro de `.eq-card-work` (UX-1: fila
+// propia, no inline con el chip fase·dur·log). Escapa el texto de usuario en el
+// cuerpo Y en el atributo `title` (SR-1/CA-6). Si no hay petición vigente →
+// estado idle explícito "Sin petición activa" (CA-5), sin ocultar la fila (UX-4:
+// altura estable entre estados).
+function presencePetitionRow(pet) {
+  if (pet && typeof pet.clipped === 'string' && pet.clipped) {
+    return '<div class="eq-work-petition" title="' + escapeHtml(pet.full) + '">' + escapeHtml(pet.clipped) + '</div>';
+  }
+  return '<div class="eq-work-petition eq-work-petition-idle">Sin petición activa</div>';
+}
+
+// #3638 CA-F-12 / CA-SEC-9 — Widget de estado del ghost-artifact-cleaner.
+// Renderiza los últimos eventos del audit JSONL escapando TODO valor por
+// escapeHtml() para prevenir XSS desde filenames maliciosos. Estados:
+//   - 'recent-cleanup': ic-ghost-cleanup + acento --warning (cleanup en últimas 24h)
+//   - 'clean':         ic-ghost-clean   + acento --success (sin actividad en 7 días)
+//   - 'idle' / 'unknown': ic-ghost-clean + acento --text-dim (info neutra)
+//
+// Iconografía y paleta tomadas de .pipeline/assets/mockups/narrativa-ghost-artifacts.md
+// (sección "Reglas de iconografia" + "Reglas de paleta"). Prohibido inventar
+// colores o usar emojis del SO: el sprite ya tiene los símbolos diseñados
+// (ic-ghost-clean, ic-ghost-cleanup, ic-archive-box) y design-tokens.css define
+// la familia semántica completa.
+function renderGhostArtifactsWidget(ghost) {
+  if (!ghost || ghost.enabled === false) {
+    return '<details class="collapse-section"><summary>' + ic('ghost-clean', 'Ghost artifacts') + ' Ghost artifacts<span>off</span></summary>'
+      + '<div class="collapse-body" style="padding:8px 12px"><div class="dim">Audit log no inicializado todavía. El cleaner crea <code>.pipeline/audit/ghost-artifacts-cleanup.jsonl</code> en su primer ciclo.</div></div></details>';
+  }
+  const status = ghost.status || 'idle';
+  let banner;
+  if (status === 'recent-cleanup') {
+    banner = `<div class="ga-banner ga-warn">${ic('ghost-cleanup', 'cleanup reciente')}<span>Ghost artifacts: ${ghost.cleanupCount24h} cleanup(s) en las últimas 24h. Revisá el audit log si es inesperado.</span></div>`;
+  } else if (status === 'clean') {
+    banner = `<div class="ga-banner ga-ok">${ic('ghost-clean', 'clean')}<span>Ghost artifacts: clean (sin actividad en últimos 7 días).</span></div>`;
+  } else {
+    banner = `<div class="ga-banner ga-idle">${ic('ghost-clean', 'idle')}<span>Ghost artifacts: idle. Última corrida ${ghost.lastRunIso ? escapeHtml(ghost.lastRunIso) : '—'}.</span></div>`;
+  }
+  const rows = (ghost.recent || []).map(e => {
+    const action = escapeHtml(e.action || '?');
+    const file = escapeHtml(e.file || '');
+    const reason = escapeHtml(e.reason || '');
+    const archivedTo = escapeHtml(e.archived_to || '');
+    const ts = escapeHtml(e.timestamp || '');
+    const context = escapeHtml(e.context || '');
+    const error = escapeHtml(e.error || '');
+    // ic-archive-box como icono auxiliar junto al destino archivado/ghost-*
+    // (convención de la narrativa: caja cerrada = destino del archivo movido).
+    const archivedCell = archivedTo
+      ? `<br><span class="dim ga-archived-to">${ic('archive-box', 'archivado a')} → ${archivedTo}</span>`
+      : '';
+    return `<tr>
+      <td>${ts}</td>
+      <td><span class="ga-action ga-action-${action}">${action}</span></td>
+      <td>${file}${archivedCell}</td>
+      <td>${reason}${error ? `<br><span class="dim">err: ${error}</span>` : ''}${context ? `<br><span class="dim">ctx: ${context}</span>` : ''}</td>
+    </tr>`;
+  }).join('');
+  const auditPath = '.pipeline/audit/ghost-artifacts-cleanup.jsonl';
+  return `<details class="collapse-section"><summary>${ic('ghost-clean', 'Ghost artifacts')} Ghost artifacts<span>${escapeHtml(status)}</span></summary>
+    <div class="collapse-body" style="padding:8px 12px">
+      <style>
+        /* Paleta reusa tokens semánticos de design-tokens.css §3.
+           Prohibido inventar colores; los fallbacks RGB son sólo defensivos. */
+        .ga-banner { padding:8px 12px; border-radius:4px; margin-bottom:8px; font-size:0.9em; display:flex; align-items:center; gap:8px; }
+        .ga-banner > .pl-ic { flex:none; width:16px; height:16px; }
+        .ga-banner.ga-warn { background:var(--warning-bg, rgba(210,153,34,0.18)); border-left:3px solid var(--warning, #D29922); }
+        .ga-banner.ga-warn > .pl-ic { color:var(--warning, #D29922); }
+        .ga-banner.ga-ok   { background:var(--success-bg, rgba(63,185,80,0.15)); border-left:3px solid var(--success, #3FB950); }
+        .ga-banner.ga-ok > .pl-ic { color:var(--success, #3FB950); }
+        .ga-banner.ga-idle { background:var(--deterministic-bg, rgba(110,118,129,0.15)); border-left:3px solid var(--text-dim, #8B949E); }
+        .ga-banner.ga-idle > .pl-ic { color:var(--text-dim, #8B949E); }
+        .ga-audit-table { width:100%; border-collapse:collapse; font-size:0.85em; }
+        .ga-audit-table th, .ga-audit-table td { padding:4px 8px; border-bottom:1px solid var(--border-subtle, rgba(110,118,129,0.2)); text-align:left; vertical-align:top; }
+        /* Chips de action: tokens semánticos por estado.
+           cleanup=success / no-op=neutro / skip=info / error=danger
+           (ver tabla "Chips de action" en narrativa-ghost-artifacts.md). */
+        .ga-action { padding:1px 6px; border-radius:3px; font-size:0.8em; border:1px solid transparent; }
+        .ga-action.ga-action-cleanup { background:var(--success-bg, rgba(63,185,80,0.14)); color:var(--success, #3FB950); border-color:var(--success-dim, #196C2E); }
+        .ga-action.ga-action-no-op   { background:var(--deterministic-bg, rgba(177,186,196,0.10)); color:var(--text-secondary, #B1BAC4); border-color:var(--border-strong, #484F58); }
+        .ga-action.ga-action-skip    { background:var(--info-bg, rgba(88,166,255,0.14)); color:var(--info, #58A6FF); border-color:var(--info-dim, #1F6FEB); }
+        .ga-action.ga-action-error   { background:var(--danger-bg, rgba(248,81,73,0.14)); color:var(--danger, #F85149); border-color:var(--danger-dim, #8B1A14); }
+        .ga-archived-to .pl-ic { width:12px; height:12px; color:var(--text-dim, #8B949E); margin-right:2px; }
+      </style>
+      ${banner}
+      <div style="margin-bottom:8px"><small class="dim">Audit log: <code>${escapeHtml(auditPath)}</code></small></div>
+      ${rows ? `<table class="ga-audit-table"><thead><tr><th>timestamp</th><th>action</th><th>file</th><th>reason / context</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="dim">Sin entradas en el audit log.</div>'}
+    </div>
+  </details>`;
+}
+
+// #3951 EP7-H4 — Wrapper local que delega en el módulo puro `result-badge.js`
+// inyectándole el `escapeHtml` del dashboard (fuente única de escape). Si el
+// módulo no cargó (require opcional falló) → '' (degradación: render sin badge).
+function renderCommanderResultBadges(meta) {
+  if (!commanderResultBadge) return '';
+  try { return commanderResultBadge.buildResultBadges(meta, escapeHtml); }
+  catch { return ''; }
+}
+
+// #3949 EP7-H2 — Render de los logs recientes del Commander (un log por
+// petición atendida) dentro de la card de Commander Routing. Reutiliza el
+// patrón `<a class="log-link">` (G1) y un label legible HH:MM:SS + chat (G3),
+// con estado vacío explícito (G4). El `<id>` es `<chat_id>-<epochms>`; el
+// epochms es el último segmento `-` del id.
+// #3951 EP7-H4 — enriquece cada item con el badge de resultado leyendo su
+// sidecar `commander-<id>.meta.json` (lectura defensiva: sin sidecar → sin badge).
+function renderCommanderRequestLogs(logDir, limit) {
+  const MAX = limit || 8;
+  let files = [];
+  try {
+    files = fs.readdirSync(logDir)
+      .filter(f => /^commander-.+\.log$/.test(f))
+      .map(f => {
+        // id = nombre sin prefijo `commander-` ni sufijo `.log`.
+        const id = f.replace(/^commander-/, '').replace(/\.log$/, '');
+        const parts = id.split('-');
+        const epochms = Number(parts[parts.length - 1]);
+        const chat = parts.slice(0, -1).join('-') || '?';
+        return { f, id, epochms: Number.isFinite(epochms) ? epochms : 0, chat };
+      })
+      .sort((a, b) => b.epochms - a.epochms)
+      .slice(0, MAX);
+  } catch { /* dir inexistente → estado vacío */ }
+
+  if (files.length === 0) {
+    return `
+      <div class="commander-reqlogs">
+        <div class="dora-mini-label" style="margin:10px 0 4px">📄 Logs recientes</div>
+        <div class="dim" style="font-size:0.8em">sin peticiones registradas</div>
+      </div>`;
+  }
+
+  const items = files.map(it => {
+    const hora = it.epochms ? new Date(it.epochms).toTimeString().slice(0, 8) : '??:??:??';
+    const label = `${hora} · chat ${escapeHtml(it.chat)}`;
+    // #3951 EP7-H4 — lectura defensiva del sidecar de metadata. Si no existe
+    // (peticiones previas al cambio) o está corrupto → sin badge, sin error.
+    let badges = '';
+    try {
+      const metaPath = path.join(logDir, `commander-${it.id}.meta.json`);
+      if (fs.existsSync(metaPath)) {
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        badges = renderCommanderResultBadges(meta);
+      }
+    } catch { /* sidecar ausente/corrupto → render sin badge */ }
+    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.f)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}${badges}</a>`;
+  }).join('');
+
+  return `
+      <div class="commander-reqlogs">
+        <div class="dora-mini-label" style="margin:10px 0 4px">📄 Logs recientes (${files.length})</div>
+        ${items}
+      </div>`;
 }
 
 // --- HTML generation ---
@@ -1201,7 +2747,7 @@ function generateHTML(state) {
   const pulpoBuild = fmtDate(path.join(PIPELINE, 'pulpo.js'));
   let pulpoUptime = '—';
   try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
-  const isPaused = fs.existsSync(path.join(PIPELINE, '.paused'));
+  const isPaused = isFullPauseActive();
 
   // #2490 — Pausa parcial (allowlist de issues)
   let partialPauseState = { mode: 'running', allowedIssues: [] };
@@ -1210,6 +2756,70 @@ function generateHTML(state) {
     partialPauseState = pp.getPipelineMode();
   } catch {}
   const isPartialPause = partialPauseState.mode === 'partial_pause';
+
+  // #3142 — Candidatos a allowlist (likes persistidos en .pipeline/allowlist-candidates.json)
+  let allowlistCandidatesList = [];
+  try {
+    const ac = require('./lib/allowlist-candidates');
+    allowlistCandidatesList = ac.readCandidates().candidates || [];
+  } catch {}
+
+  // #3625 CA-5 — Audit trail de mutaciones de .partial-pause.json (widget en panel Pipeline,
+  // debajo de "Allowlist & Candidatos"). Estados visuales A/B/C/D + 5 KPI cards + 2 banners
+  // condicionales (hash-chain roto / mutaciones sin autoría). Polling cada 30s vía
+  // /api/dash/partial-pause-audit. Spec en .pipeline/assets/mockups/narrativa-allowlist-audit-trail.md
+  let partialPauseAuditData = {
+    entries: [],
+    stats: { total: 0, authorized: 0, rejected: 0, unknown: 0, since: null },
+    chain_broken: false,
+    chain_broken_at: null,
+    chain_entries_checked: 0,
+    has_unauthorized_non_backfill: false,
+  };
+  try {
+    const slices = require('./lib/dashboard-slices');
+    const slice = slices.partialPauseAuditSlice({}, { limit: 3 });
+    if (slice && !slice.error) partialPauseAuditData = slice;
+  } catch {}
+
+  // #4371 CA-8/CA-10 — Audit trail de movimientos sobre olas e issues (widget en
+  // panel Pipeline, debajo de "Audit trail · Allowlist"). Estados visuales
+  // A/B/C/D + KPIs 24h + banner condicional de hash-chain roto. Polling cada 30s
+  // vía /api/dash/wave-issue-audit. Spec en
+  // .pipeline/assets/mockups/narrativa-wave-issue-audit-trail.md
+  let waveIssueAuditData = {
+    entries: [],
+    stats: { total: 0, con_autoria: 0, sin_autoria: 0, cambios_prioridad: 0, since: null },
+    chain_broken: false,
+    chain_broken_at: null,
+    chain_entries_checked: 0,
+    has_unauthorized: false,
+  };
+  try {
+    const slices = require('./lib/dashboard-slices');
+    const slice = slices.waveIssueAuditSlice({}, { limit: 3 });
+    if (slice && !slice.error) waveIssueAuditData = slice;
+  } catch {}
+
+  // #4375 — Semáforo de sincronización allowlist↔ola (read-only). SSR inicial +
+  // refresh cliente cada 30s vía /api/dash/desync-status. Ante error del slice
+  // dejamos el estado degradado 'desconocido' (gris), nunca falso verde.
+  let desyncStatusData = { estado: 'desconocido', added: [], removed: [], count: 0, bloqueado: false, detected_at: null };
+  try {
+    const slices = require('./lib/dashboard-slices');
+    const slice = slices.desyncStatusSlice({}, {});
+    if (slice && typeof slice === 'object') desyncStatusData = slice;
+  } catch {}
+
+  // #4709 — Banner SSR de la causa declarada del no-despacho (cola ociosa).
+  // Fail-safe: cualquier error deja el banner vacío (no se muestra), nunca tumba
+  // el render del dashboard.
+  let dispatchCauseBannerHTML = '';
+  try {
+    const slices = require('./lib/dashboard-slices');
+    const dcSlice = slices.dispatchCauseSlice({}, { PIPELINE });
+    dispatchCauseBannerHTML = renderDispatchCauseBanner(dcSlice);
+  } catch {}
 
   // V3 detection: workers determinísticos en .pipeline/workers/*.js
   let v3Workers = [];
@@ -1237,10 +2847,10 @@ function generateHTML(state) {
     qa:            { icon: '✅', name: 'QA',           tagline: 'James Bach · Lisa Crispin · Bolton',       color: '#3fb950' },
     review:        { icon: '👁️', name: 'Review',      tagline: 'Michaela Greiler · Google Eng Practices',  color: '#ffa657' },
     delivery:      { icon: '🚀', name: 'Delivery',    tagline: 'Jez Humble · Dave Farley �� Forsgren',      color: '#f0883e' },
-    scrum:         { icon: '📊', name: 'Scrum',       tagline: 'Sutherland · Vacanti · Mike Cohn',         color: '#79c0ff' },
     perf:          { icon: '⚡', name: 'Perf',         tagline: 'Brendan Gregg · Colt McAnlis · Wharton',   color: '#d29922' },
     build:         { icon: '🏗️', name: 'Builder',     tagline: 'Build pipeline',                           color: '#8b949e' },
     commander:     { icon: '🤖', name: 'Commander',   tagline: 'Pipeline orchestrator',                    color: '#8b949e' },
+    sherlock:      { icon: '🕵️', name: 'Sherlock',    tagline: 'Verificación adversarial del Commander',   color: '#e3b341' },
   };
   const skillIcon = (skill) => (AGENT_PERSONA[skill] || {}).icon || '⚙';
   const skillColor = (skill) => (AGENT_PERSONA[skill] || {}).color || 'var(--dim)';
@@ -1334,29 +2944,43 @@ function generateHTML(state) {
   }) : [];
   const definidos = definidosList.length;
 
-  // Entregados = completaron la fase final de desarrollo (entrega/procesado)
+  // #5629 — Acá vivían `entregadosList`/`entregados`/`ttEntregados` ("Entregados
+  // a producción"), que derivaban la entrega de "marker de la fase final en
+  // procesado". Eran código MUERTO (ninguno se renderizaba: la KPI viva es
+  // `entregados24h`) pero codificaban justo la regla R4 que
+  // `lib/delivery-status.js` prohíbe, así que se eliminan en vez de migrarse:
+  // dejarlas era sembrar la sexta derivación para el próximo que las reactive.
   const devFasesKpi = config.pipelines?.desarrollo?.fases || [];
   const lastDevFase = devFasesKpi[devFasesKpi.length - 1];
-  const entregadosList = lastDevFase ? matrixEntries.filter(([_, d]) => {
-    const entries = d.fases[`desarrollo/${lastDevFase}`] || [];
-    return entries.some(e => e.estado === 'procesado');
-  }) : [];
-  const entregados = entregadosList.length;
 
   const ttDefinidos  = buildTtData('Definidos listos',        definidosList, (_, d) => {
     const label = ttLabel(d);
     return label || 'definición completada';
   });
-  const ttEntregados = buildTtData('Entregados a producción',  entregadosList, (_, d) => {
-    // Para entregados, buscar el skill que hizo la entrega
-    const entregaEntries = d.fases[`desarrollo/${lastDevFase}`] || [];
-    const proc = entregaEntries.find(e => e.estado === 'procesado');
-    const skill = proc?.skill || '';
-    const label = ttLabel(d);
-    return skill ? `${skill}` + (label ? ` · ${label}` : '') : (label || 'entregado');
-  });
   const now24 = Date.now();
-  const entregados24hList = lastDevFase ? matrixEntries.filter(([_, d]) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; return ee.some(e => e.estado === 'procesado' && e.updatedAt && (now24 - e.updatedAt) < 86400000); }) : [];
+  // #5629 — QUINTA derivación de "Entregado", y la última de la pantalla
+  // principal: este KPI contaba "marker de la fase final en procesado", que es
+  // exactamente la regla R4 que `lib/delivery-status.js` prohíbe (la presencia
+  // del marker NO es entrega: los de #5220/#5244 estaban procesados con los PRs
+  // sin mergear). Ahora la ventana de 24h sigue anclada al `updatedAt` del
+  // marker —es el único timestamp del evento de entrega—, pero sólo cuenta si
+  // el helper único confirma la entrega por CLOSED en GitHub o por
+  // `delivery_merge_sha`. Así el KPI deja de contradecir a ENTREGADOS y al
+  // board (CA-1/CA-7).
+  const _deliveryStatus = (() => {
+    try { return require('./lib/delivery-status'); } catch (_) { return null; }
+  })();
+  const _entregadoReal = (id, d) => {
+    // Sin el helper NO degradamos a la regla vieja: fail-closed (preferimos no
+    // contar una entrega antes que inventar una que no ocurrió).
+    if (!_deliveryStatus) return false;
+    const meta = state.issueTitles?.[String(id)];
+    return _deliveryStatus.isDelivered({
+      closedInGitHub: !!meta && String(meta.state).toUpperCase() === 'CLOSED',
+      mergeSha: _deliveryStatus.extractMergeSha(d),
+    });
+  };
+  const entregados24hList = lastDevFase ? matrixEntries.filter(([id, d]) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; return ee.some(e => e.estado === 'procesado' && e.updatedAt && (now24 - e.updatedAt) < 86400000) && _entregadoReal(id, d); }) : [];
   const entregados24h = entregados24hList.length;
   const ttEntregados24h = buildTtData('Entregados 24h', entregados24hList, (_, d) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; const p = ee.find(e => e.estado === 'procesado'); return p ? p.skill || 'entregado' : 'entregado'; });
 
@@ -1541,13 +3165,20 @@ function generateHTML(state) {
     if (fase === 'validacion' || fase === 'dev' || fase === 'build') return 'dev';
     return 'qa'; // verificacion, linteo, aprobacion, entrega
   }
+  // #3956 — La ola completa vive en UNA sola línea de proceso, de punta a punta:
+  // etapa inicial "No ingresados" → fases del pipeline → etapa final "Finalizados".
+  // Las dos etapas terminales (`nentered`/`done`) son `terminal: true`: no tienen
+  // sub-breakdown ni stats de fase, solo conteo + cards. El acento de cada etapa
+  // usa tokens de design-tokens.css (sin hardcodear) vía `--lane-color`.
   const laneMeta = {
-    def: { label: 'Definición',        color: '#bc8cff', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
-    dev: { label: 'Desarrollo + Build', color: '#3fb950', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
-    qa:  { label: 'QA + Entrega',      color: '#2dd4bf', sub: 'verif · linteo · aprob · entrega', subFases: ['verificacion', 'linteo', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', linteo: 'Linteo', aprobacion: 'Aprob', entrega: 'Entrega' } },
+    nentered: { terminal: true, icon: 'stage-not-entered', label: 'No ingresados', color: 'var(--stage-not-entered, #8b949e)', sub: 'esperando ingreso' },
+    def: { label: 'Definición',        color: 'var(--purple, #bc8cff)', sub: 'análisis · criterios · sizing', subFases: ['analisis', 'criterios', 'sizing'], subLabels: { analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing' } },
+    dev: { label: 'Desarrollo + Build', color: 'var(--info, #3fb950)', sub: 'validación · dev · build',     subFases: ['validacion', 'dev', 'build'],       subLabels: { validacion: 'Validación', dev: 'Dev', build: 'Build' } },
+    qa:  { label: 'QA + Entrega',      color: 'var(--teal, #2dd4bf)', sub: 'verif · linteo · aprob · entrega', subFases: ['verificacion', 'linteo', 'aprobacion', 'entrega'], subLabels: { verificacion: 'Verif', linteo: 'Linteo', aprobacion: 'Aprob', entrega: 'Entrega' } },
+    done: { terminal: true, icon: 'stage-finalized', label: 'Finalizados', color: 'var(--stage-finalized, #3fb950)', sub: 'PR mergeado' },
   };
-  const laneCards = { def: [], dev: [], qa: [], done: [] };
-  const laneCounts = { def: 0, dev: 0, qa: 0, done: 0 };
+  const laneCards = { nentered: [], def: [], dev: [], qa: [], done: [] };
+  const laneCounts = { nentered: 0, def: 0, dev: 0, qa: 0, done: 0 };
   const laneStats = {
     def: { running: 0, failed: 0, stale: 0, subCounts: {}, issuesEta: [] },
     dev: { running: 0, failed: 0, stale: 0, subCounts: {}, issuesEta: [] },
@@ -1897,10 +3528,15 @@ function generateHTML(state) {
       lcRetryingIcon = `<span class="lc-retry-icon" role="img" aria-hidden="true">🔁</span>`
         + `<span class="lc-retry-label" role="status" aria-label="${ariaLabel}" title="${tooltipText}" tabindex="0" onclick="event.stopPropagation()"></span>`;
     }
-    const laneTitle = (data.title || `Issue #${issueNum}`).replace(/"/g, '&quot;');
+    // #2800 CA-2.3/CA-4.1 — escape unificado server-side (esc) tanto para
+    // atributos (title="...") como cuerpo (<div>${laneTitle}</div>) del card
+    // centerpiece. Antes solo se escapaban comillas (replace " → &quot;), lo
+    // que dejaba pasar `<script>` en el body de .lc-title (vector XSS).
+    const laneTitle = esc(data.title || `Issue #${issueNum}`);
     const flagSpan = data.staleMin > 60 ? '<span class="lc-flag">🚩</span>' : '';
-    // Data atributos para búsqueda client-side
-    const searchKey = (issueNum + ' ' + (data.title || '')).toLowerCase().replace(/"/g, '&quot;');
+    // Data atributos para búsqueda client-side. esc() ya escapa comillas,
+    // garantizando que no se rompa el atributo data-search.
+    const searchKey = esc((issueNum + ' ' + (data.title || '')).toLowerCase());
     // Prioridad para sort: orden manual del Issue Tracker es la única fuente
     // (#2691). Position 0 = más prioritario; cuanto menor el index, más arriba
     // en la lane. Sort es `b.priority - a.priority` (desc) → mayor priority =
@@ -1920,10 +3556,65 @@ function generateHTML(state) {
     if (data.labels?.includes('needs-human')) {
       stateBadges.push(`<span class="lc-state-badge lc-state-needshuman" title="Circuit breaker o pedido explicito de intervencion humana" aria-label="necesita intervencion humana">${ic('estado-needs-human')} needs-human</span>`);
     }
+    // #3642 CA-1/CA-4 — Widget architect (4 estados). Insertar SEMANTICAMENTE
+    // entre needshuman y stale; los numeros de linea pueden driftear pero el
+    // orden es: crossphase → rebote → needshuman → architect → stale.
+    // El resolver y el renderer son modulos puros — cargados con try/catch
+    // defensivo arriba en el archivo. Si fallan, el badge se omite (no rompe
+    // la tarjeta).
+    if (_architectStateResolver && _architectSlices && typeof _architectSlices.architectBadgeHTML === 'function') {
+      try {
+        const archInfo = _architectStateResolver.resolveArchitectState(data.fases);
+        if (archInfo) {
+          const badgeHTML = _architectSlices.architectBadgeHTML(archInfo, { esc, ic });
+          if (badgeHTML) stateBadges.push(badgeHTML);
+        }
+      } catch { /* defensa: no romper la tarjeta si el resolver/renderer falla */ }
+    }
     if (isStale && !isRetrying) {
       stateBadges.push(`<span class="lc-state-badge lc-state-stale" title="Sin actividad reciente: ${data.staleMin}m" aria-label="stale ${data.staleMin} minutos">${ic('estado-stale')} ${data.staleMin}m</span>`);
     }
     const stateBadgesHTML = stateBadges.length > 0 ? `<div class="lc-state-row" role="group" aria-label="Estados del issue">${stateBadges.join('')}</div>` : '';
+
+    // #3956 CA-2 — Popover del agente a nivel card. Payload server-side con solo
+    // los campos públicos (CA-10: sin paths/tokens). El cliente lo escapa de nuevo
+    // antes de inyectarlo (showCardPopup → escapePopupValue) — defensa en profundidad.
+    let cardLogFile = '';
+    for (const e of currentFaseEntries) { if (e.hasLog) { cardLogFile = e.logFile; break; } }
+    const cardMotivo = data.motivo_rechazo || (() => {
+      // último motivo de rechazo conocido entre las fases (para issues rebotados)
+      let m = '';
+      for (const entries of Object.values(data.fases || {})) {
+        for (const e of entries) { if (e.resultado && e.resultado !== 'aprobado' && e.motivo) m = e.motivo; }
+      }
+      return m;
+    })();
+    const cardPopupPayload = {
+      issue: String(issueNum),
+      skill: currentSkills.length > 0 ? currentSkills.join(', ') : (complete ? 'entregado' : '—'),
+      fase: currentFase || (complete ? 'finalizado' : 'pendiente'),
+      estado: data.estadoActual || (complete ? 'completado' : 'pendiente'),
+      edad: laneElapsedTxt,
+      motivo: cardMotivo ? String(cardMotivo).slice(0, 200) : '',
+      log: cardLogFile ? ('/logs/view/' + encodeURIComponent(cardLogFile) + (data.estadoActual === 'trabajando' ? '?live=1' : '')) : '',
+    };
+    const cardPopupAttr = esc(JSON.stringify(cardPopupPayload));
+    const cardInfoBtn = `<button class="lc-info-btn" data-card-popup="${cardPopupAttr}" onclick="event.stopPropagation();showCardPopup(event,this)" title="Detalle del agente (issue, skill, fase, estado, edad, rebote, log)" aria-label="Ver detalle del agente del issue ${issueNum}">${ic('info', 'detalle')}</button>`;
+
+    // #3956 CA-6 — Etapa "Finalizados": fecha de cierre + link al PR mergeado.
+    // Degrada a "sin link" si el fetch de PR falló o aún no está cacheado.
+    let finalizadoFooter = '';
+    if (complete) {
+      const meta = laneLineLib && typeof laneLineLib.finalizadoMeta === 'function'
+        ? laneLineLib.finalizadoMeta((state.prInfo || {})[String(issueNum)] || null)
+        : { dateLabel: null, href: null, hasLink: false };
+      const dateTxt = meta.dateLabel ? `<span class="lc-fin-date" title="Fecha de cierre">${esc(meta.dateLabel)}</span>` : '';
+      const prLink = meta.hasLink
+        ? `<a class="lc-fin-pr" href="${esc(meta.href)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="PR mergeado">${ic('stage-finalized')} PR</a>`
+        : `<span class="lc-fin-nolink" title="Link al PR no disponible (se reintenta en el próximo refresh)">sin link</span>`;
+      finalizadoFooter = `<div class="lc-finalizado">${dateTxt}${prLink}</div>`;
+    }
+
     const cardHTML = `<div class="lc-card ${laneCardCls}" data-issue="${issueNum}" data-lane="${lane}" data-status="${complete ? 'completed' : 'active'}" data-subfase="${currentFase}" data-search="${searchKey}" data-retrying-until="${isRetrying ? Number(data.retrying.retryingUntil) : ''}" title="${laneTitle}" aria-live="polite" draggable="${complete ? 'false' : 'true'}" ondragstart="onCardDragStart(event)" ondragover="onCardDragOver(event)" ondragleave="onCardDragLeave(event)" ondrop="onCardDrop(event)" ondragend="onCardDragEnd(event)">
       <div class="lc-card-main">
         <div class="lc-top">
@@ -1933,6 +3624,7 @@ function generateHTML(state) {
             ${lcBlockIcons}${lcRetryingIcon}
           </div>
           <div class="lc-top-right">
+            ${cardInfoBtn}
             <span class="lc-prio-actions">
               <button class="lc-prio-btn lc-prio-top" onclick="event.stopPropagation();issueMoveToTop(${issueNum})" title="Mover al tope de la columna">⏫</button>
               <button class="lc-prio-btn lc-prio-up" onclick="event.stopPropagation();issueMoveUp(${issueNum})" title="Subir una posición">▲</button>
@@ -1952,23 +3644,64 @@ function generateHTML(state) {
           </div>
           ${avatarsHTML}
         </div>
+        ${finalizadoFooter}
       </div>
     </div>`;
     laneCards[lane].push({ html: cardHTML, priority });
     laneCounts[lane]++;
   }
+
+  // #3956 CA-5 — Etapa inicial "No ingresados": issues de la ola activa que aún
+  // no entraron al flujo (sin work-file) y siguen abiertos. La lógica + el
+  // escaping/validación de links viven en lib/pipeline-lane-line.js (testeada).
+  if (laneLineLib && typeof laneLineLib.buildNotEnteredCards === 'function') {
+    try {
+      const ne = laneLineLib.buildNotEnteredCards({
+        waveIssues: (state.activeWave && state.activeWave.issues) || [],
+        matrix: state.issueMatrix,
+        blockedBy: state.blockedIssues.blockedBy,
+        titles: state.issueTitles,
+        ghIssueUrl: GH,
+      });
+      ne.cards.forEach((c, i) => {
+        // priority decreciente para conservar el orden ascendente por issue
+        laneCards.nentered.push({ html: c.html, priority: ne.cards.length - i });
+      });
+      laneCounts.nentered = ne.count;
+    } catch (e) { /* degrada a etapa vacía sin romper el board */ }
+  }
+
   // Sort dentro de cada lane por criticidad desc
   for (const k of Object.keys(laneCards)) {
     laneCards[k].sort((a, b) => b.priority - a.priority);
     laneCards[k] = laneCards[k].map(x => x.html).join('');
   }
 
-  // Render 3 lanes (Opción E) con sub-breakdown + cards ricas
-  const laneOrder = ['def', 'dev', 'qa'];
+  // #3956 — La ola completa en UNA línea: No ingresados → Definición → Desarrollo
+  // → QA+Entrega → Finalizados. Las etapas terminales (nentered/done) se renderean
+  // con un encabezado simple (icono + conteo) y sin sub-breakdown/stats de fase.
+  const laneOrder = ['nentered', 'def', 'dev', 'qa', 'done'];
   const lanesHTML = laneOrder.map(k => {
     const m = laneMeta[k];
+    const cards = laneCards[k] || '';
+    const cardsOrEmpty = cards || `<div class="lane-empty">Sin issues</div>`;
+
+    // Etapas terminales: encabezado con icono propio del sprite (sin emoji del
+    // SO) + conteo. Sin sub-breakdown ni badges de stats.
+    if (m.terminal) {
+      const stageIcon = m.icon ? ic(m.icon, m.label) : '';
+      return `<div class="it-lane it-lane-${k} it-lane-terminal" data-lane="${k}" style="--lane-color:${m.color}">
+      <div class="it-lane-head">
+        <span class="it-lane-name"><span class="it-lane-dot"></span>${stageIcon} ${m.label} <span class="it-lane-sub">${m.sub}</span></span>
+        <div class="it-lane-meta">
+          <span class="it-lane-count"><b>${laneCounts[k]}</b></span>
+        </div>
+      </div>
+      <div class="it-lane-cards">${cardsOrEmpty}</div>
+    </div>`;
+    }
+
     const stats = laneStats[k];
-    const cards = laneCards[k] || '<div class="lane-empty">Sin issues</div>';
     // Sub-breakdown: chips clickeables por sub-fase (filtra cards del lane)
     const maxSubCount = Math.max(...m.subFases.map(sf => stats.subCounts[sf] || 0), 1);
     const subBreakdown = '<div class="it-sub-breakdown">' +
@@ -2007,94 +3740,216 @@ function generateHTML(state) {
         </div>
       </div>
       ${subBreakdown}
-      <div class="it-lane-cards">${cards}</div>
+      <div class="it-lane-cards">${cards || '<div class="lane-empty">Sin issues</div>'}</div>
     </div>`;
   }).join('');
-  const doneLaneHTML = laneCounts.done > 0 ? `<details class="it-done-section" data-lane="done">
-    <summary class="it-done-head">
-      <span class="it-done-arrow">▸</span>
-      <span>✓ Completados recientes</span>
-      <span class="it-done-count"><b>${laneCounts.done}</b></span>
-    </summary>
-    <div class="it-done-grid">${laneCards.done}</div>
-  </details>` : '';
+  // #3956 CA-7 — la antigua sección aparte "Completados recientes" se fusionó
+  // como etapa terminal `done` dentro de la misma línea. No existe ninguna
+  // bandeja fuera del flujo.
+  const doneLaneHTML = '';
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // #3958 EP8-H5 — Vista TABLA configurable + drawer lateral con timeline.
+  // Render server-side (igual que las lane cards), reusa state.issueMatrix.
+  // Lógica pura (riesgo/CSV/filtros) en lib/ testeada; acá sólo se ubican los
+  // componentes con el vocabulario V3 (tokens + sprite), per UX narrativa H5.
+  // Seguridad: TODO valor interpolado pasa por escapeHtml (SEC-2). El href de
+  // íconos se arma SOLO desde allowlists internas, nunca desde input externo.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const IT_FASE_LABELS = {
+    analisis: 'Análisis', criterios: 'Criterios', sizing: 'Sizing',
+    validacion: 'Validación', dev: 'Dev', build: 'Build',
+    verificacion: 'Verificación', linteo: 'Linteo', aprobacion: 'Aprobación', entrega: 'Entrega',
+  };
+  const IT_TABLE_COLUMNS = [
+    { key: 'estado', label: 'Estado' },
+    { key: 'fase', label: 'Fase' },
+    { key: 'skill', label: 'Skill' },
+    { key: 'rebotes', label: 'Rebotes' },
+    { key: 'edad', label: 'Edad' },
+    { key: 'eta', label: 'ETA p50' },
+    { key: 'riesgo', label: 'Riesgo' },
+  ];
+  const _itAgeP90 = state.issueAgeP90;
+  const _computeRisk = (issueRiskLib && typeof issueRiskLib.computeRisk === 'function')
+    ? issueRiskLib.computeRisk
+    : ({ bounces = 0 }) => ({ level: bounces >= 2 ? 'medio' : 'bajo', reasons: [], score: bounces });
+  const _itRiskMeta = { alto: { icon: 'bad' }, medio: { icon: 'warn' }, bajo: { icon: 'ok' } };
+  const itRiskBadge = (risk, withText) => {
+    const m = _itRiskMeta[risk.level] || _itRiskMeta.bajo;
+    const tip = risk.reasons.length ? risk.reasons.join(' · ') : 'sin factores de riesgo';
+    return `<span class="it-risk-badge rk-${escapeHtml(risk.level)}" title="${escapeHtml(tip)}">${ic(m.icon, risk.level)}${withText ? ' ' + escapeHtml(risk.level) : ''}</span>`;
+  };
+  // Datos derivados por issue (una sola pasada), reusados por tabla + drawer + enums.
+  const _itEstados = new Set();
+  const _itFases = new Set();
+  const _itSkills = new Set();
+  const itRows = [];
+  for (const [issueNum, data] of sorted) {
+    const complete = isComplete(data);
+    const fa = data.faseActual || '';
+    const curPipe = fa ? fa.split('/')[0] : '';
+    const curFase = fa ? fa.split('/')[1] : '';
+    let curSkill = '';
+    if (fa) {
+      const ents = data.fases[fa] || [];
+      const w = ents.find(e => e.estado === 'trabajando') || ents.find(e => e.estado === 'pendiente') || ents[ents.length - 1];
+      curSkill = (w && w.skill) || '';
+    }
+    const estado = complete ? 'finalizado' : (data.estadoActual || '');
+    const bounces = data.bounces || 0;
+    const ageMin = Math.round(data.staleMin || 0);
+    const risk = _computeRisk({ bounces, ageMin: data.staleMin || 0, ageP90: _itAgeP90, labels: data.labels || [] });
+    let etaStr = '—';
+    if (etaLib) {
+      try {
+        const e = etaLib.computeIssueEta({ issueData: data, etaAverages: state.etaAverages, allFases, now: Date.now() });
+        if (e && e.hasEta) etaStr = '~' + fmtDuration(e.remainingMs);
+      } catch { /* degrada */ }
+    }
+    if (estado) _itEstados.add(estado);
+    if (curFase && IT_FASE_LABELS[curFase]) _itFases.add(curFase);
+    if (curSkill) _itSkills.add(curSkill);
+    itRows.push({ issueNum, data, complete, curPipe, curFase, curSkill, estado, bounces, ageMin, risk, etaStr });
+  }
+  // ── Filas de la tabla ──
+  const _faseCell = (curFase) => {
+    if (!curFase || !IT_FASE_LABELS[curFase]) return '<span class="it-dim">—</span>';
+    return `${ic('fase-' + curFase, IT_FASE_LABELS[curFase])} ${escapeHtml(IT_FASE_LABELS[curFase])}`;
+  };
+  const _estadoCell = (estado) => {
+    const dotCls = estado === 'trabajando' ? 'st-working' : estado === 'finalizado' ? 'st-processed' : estado === 'listo' ? 'st-done' : 'st-pending';
+    return `<span class="it-state-dot ${dotCls}"></span>${escapeHtml(estado || '—')}`;
+  };
+  const issueTableRows = itRows.map(r => {
+    const ageOver = (_itAgeP90 !== Infinity && r.ageMin > _itAgeP90) ? ' it-age-over' : '';
+    const bounceCls = r.bounces >= 2 ? ' it-bounce-hi' : '';
+    const ghHref = 'https://github.com/intrale/platform/issues/' + encodeURIComponent(r.issueNum);
+    return `<tr class="it-row" data-issue="${escapeHtml(r.issueNum)}" data-estado="${escapeHtml(r.estado)}" data-fase="${escapeHtml(r.curFase)}" data-skill="${escapeHtml(r.curSkill)}" data-bounces="${r.bounces}" data-age="${r.ageMin}" data-eta="${escapeHtml(r.etaStr)}" data-risk="${escapeHtml(r.risk.level)}" data-title="${escapeHtml(r.data.title || '')}" tabindex="0" onclick="openIssueDrawer('${escapeHtml(r.issueNum)}')" onkeydown="if(event.key==='Enter')openIssueDrawer('${escapeHtml(r.issueNum)}')">
+      <td class="it-col-id"><a href="${escapeHtml(ghHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">#${escapeHtml(r.issueNum)}</a></td>
+      <td class="it-col-title"><span class="it-title-txt">${escapeHtml(r.data.title || '(sin título)')}</span></td>
+      <td class="it-col col-estado">${_estadoCell(r.estado)}</td>
+      <td class="it-col col-fase">${_faseCell(r.curFase)}</td>
+      <td class="it-col col-skill">${escapeHtml(r.curSkill || '—')}</td>
+      <td class="it-col col-rebotes"><span class="it-bounces${bounceCls}">${r.bounces}</span></td>
+      <td class="it-col col-edad"><span class="it-age${ageOver}">${r.ageMin}m</span></td>
+      <td class="it-col col-eta">${escapeHtml(r.etaStr)}</td>
+      <td class="it-col col-riesgo">${itRiskBadge(r.risk, true)}</td>
+    </tr>`;
+  }).join('');
+  const issueTableHeadCols = IT_TABLE_COLUMNS
+    .map(c => `<th class="it-col col-${c.key}">${escapeHtml(c.label)}</th>`).join('');
+  const issueTableHTML = `<table class="it-table" id="it-table">
+    <thead><tr>
+      <th class="it-col-id">#</th>
+      <th class="it-col-title">Título</th>
+      ${issueTableHeadCols}
+    </tr></thead>
+    <tbody id="it-table-body">${issueTableRows || `<tr><td colspan="9" class="it-table-empty">Sin issues</td></tr>`}</tbody>
+  </table>`;
+
+  // ── Drawer: contenido pre-renderizado server-side por issue (hidden hosts).
+  // El cliente CLONA el nodo (no innerHTML de string) → escaping garantizado.
+  const _itTimeline = (data) => {
+    const segs = [];
+    let total = 0;
+    for (const { pipeline, fase } of allFases) {
+      const ents = data.fases[`${pipeline}/${fase}`] || [];
+      let dur = 0;
+      let started = false;
+      for (const e of ents) { if (e.durationMs) dur += e.durationMs; if (e.startedAt) started = true; }
+      segs.push({ pipeline, fase, dur, started, ents });
+      total += dur;
+    }
+    const bars = segs.map(s => {
+      if (s.dur <= 0) return '';
+      const pct = total > 0 ? (s.dur / total) * 100 : 0;
+      const famCls = s.pipeline === 'definicion' ? 'tl-def' : 'tl-dev';
+      const lbl = IT_FASE_LABELS[s.fase] || s.fase;
+      return `<span class="it-tl-seg ${famCls}" style="width:${Number(pct).toFixed(2)}%" title="${escapeHtml(lbl + ': ' + fmtDuration(s.dur))}"></span>`;
+    }).join('');
+    const rows = segs.map(s => {
+      const lbl = IT_FASE_LABELS[s.fase] || s.fase;
+      const cls = s.dur > 0 ? '' : ' it-tl-row-empty';
+      const skills = [...new Set(s.ents.map(e => e.skill).filter(Boolean))].join(', ');
+      const icName = IT_FASE_LABELS[s.fase] ? 'fase-' + s.fase : 'stage-not-entered';
+      return `<div class="it-tl-row${cls}">${ic(icName, lbl)} <span class="it-tl-name">${escapeHtml(lbl)}</span>
+        <span class="it-tl-dur">${s.dur > 0 ? escapeHtml(fmtDuration(s.dur)) : '—'}</span>
+        <span class="it-tl-skill">${escapeHtml(skills || '')}</span></div>`;
+    }).join('');
+    return `<div class="it-tl-bar">${bars || '<span class="it-dim">Sin actividad registrada</span>'}</div><div class="it-tl-rows">${rows}</div>`;
+  };
+  const issueDrawerHostsHTML = itRows.map(r => {
+    const d = r.data;
+    const ghHref = 'https://github.com/intrale/platform/issues/' + encodeURIComponent(r.issueNum);
+    const reasonsHTML = r.risk.reasons.length
+      ? `<ul class="it-risk-reasons">${r.risk.reasons.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`
+      : '<p class="it-dim">Sin factores de riesgo.</p>';
+    const chips = [
+      `<span class="it-chip">${_estadoCell(r.estado)}</span>`,
+      r.curFase && IT_FASE_LABELS[r.curFase] ? `<span class="it-chip">${_faseCell(r.curFase)}</span>` : '',
+      r.curSkill ? `<span class="it-chip">${escapeHtml(r.curSkill)}</span>` : '',
+    ].filter(Boolean).join('');
+    return `<div class="it-drawer-src" id="it-drawer-src-${escapeHtml(r.issueNum)}" hidden>
+      <div class="it-drawer-inner">
+        <div class="it-drawer-head">
+          <span class="it-drawer-id">#${escapeHtml(r.issueNum)}</span>
+          <a class="it-drawer-link" href="${escapeHtml(ghHref)}" target="_blank" rel="noopener noreferrer" title="Abrir en GitHub">${ic('link-out', 'Abrir en GitHub')}</a>
+          <button class="it-drawer-close" onclick="closeIssueDrawer()" title="Cerrar panel">${ic('collapse', 'Cerrar')}</button>
+        </div>
+        <div class="it-drawer-title">${escapeHtml(d.title || '(sin título)')}</div>
+        <div class="it-drawer-chips">${chips}</div>
+        <div class="it-drawer-risk">
+          <div class="it-drawer-sectlabel">Riesgo: ${itRiskBadge(r.risk, true)}</div>
+          ${reasonsHTML}
+        </div>
+        <div class="it-drawer-timeline">
+          <div class="it-drawer-sectlabel">Timeline de fases <span class="it-dim">(ancho ∝ tiempo)</span></div>
+          ${_itTimeline(d)}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // ── Filtros (CA-3): selects poblados desde la población (enums) + search q.
+  const _optsFrom = (set, labelMap) => [...set].sort().map(v =>
+    `<option value="${escapeHtml(v)}">${escapeHtml(labelMap ? (labelMap[v] || v) : v)}</option>`).join('');
+  const issueFiltersHTML = `<div class="it-filters" role="search" aria-label="Filtros de la tabla de issues">
+    <div class="it-filter-q">
+      ${ic('search')}
+      <input type="text" id="it-tfilter-q" class="it-tfilter-input" placeholder="filtrar por # o título…" oninput="onIssueFilterChange()" />
+    </div>
+    <select id="it-tfilter-estado" class="it-tfilter-sel" aria-label="Filtrar por estado" onchange="onIssueFilterChange()"><option value="">Estado</option>${_optsFrom(_itEstados)}</select>
+    <select id="it-tfilter-fase" class="it-tfilter-sel" aria-label="Filtrar por fase" onchange="onIssueFilterChange()"><option value="">Fase</option>${_optsFrom(_itFases, IT_FASE_LABELS)}</select>
+    <select id="it-tfilter-skill" class="it-tfilter-sel" aria-label="Filtrar por skill" onchange="onIssueFilterChange()"><option value="">Skill</option>${_optsFrom(_itSkills)}</select>
+    <span class="it-url-mirror" id="it-url-mirror" title="URL compartible — este link reconstruye exactamente esta vista">${ic('link-out')} <span id="it-url-mirror-q" class="it-url-mirror-q"></span></span>
+  </div>`;
 
   // V3 — Bloqueados esperando humano (issue #2478, refuerzo visual #2549)
   const bloqueados = Array.isArray(state.bloqueados) ? state.bloqueados : [];
-  // #2523 CA-10: usar el `esc()` server-side global (antes habia 5 escapadores duplicados).
-  const bloqueadosHTML = bloqueados.length === 0 ? '' : `
-    <div class="matrix-section needs-human-panel" id="bloqueados-humano" data-section="needs-human">
-      <h2 class="needs-human-header" onclick="toggleNeedsHumanPanel()" title="Click para colapsar/expandir">
-        <span class="needs-human-pulse">🚨</span>
-        Necesitan intervención humana
-        <span class="needs-human-badge">${bloqueados.length}</span>
-        <span class="needs-human-chevron">▼</span>
-        <a class="section-popout" href="/?section=needs-human" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-      </h2>
-      <div class="needs-human-body">
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
-        ${bloqueados.map(b => {
-          const ageStr = b.age_hours < 1 ? Math.max(1, Math.round(b.age_hours * 60)) + 'min' : Math.round(b.age_hours) + 'h';
-          const ageCls = b.age_hours >= 4 ? 'needs-human-age-old' : 'needs-human-age-fresh';
-          // #2523 CA-10: usar `esc()` server-side global (antes habia 5 escapadores duplicados).
-          const titleHtml = b.title ? ` — <span style="color:var(--dim)">${esc(b.title)}</span>` : '';
-          const reasonTxt = (b.question || b.reason || '').toString();
-          const summaryTxt = (b.summary || '').toString();
-          const events = Array.isArray(b.recent_events) ? b.recent_events : [];
-          // Tiempo relativo compacto para los eventos: "12h", "3d", "ahora"
-          const relTime = (whenIso) => {
-            if (!whenIso) return '';
-            const t = Date.parse(whenIso);
-            if (!t) return '';
-            const diffMs = Date.now() - t;
-            const min = Math.round(diffMs / 60000);
-            if (min < 1) return 'ahora';
-            if (min < 60) return `${min}min`;
-            const hr = Math.round(min / 60);
-            if (hr < 24) return `${hr}h`;
-            const d = Math.round(hr / 24);
-            return `${d}d`;
-          };
-          const eventsHtml = events.length === 0 ? '' : `
-            <div class="needs-human-events">
-              <div class="needs-human-events-label">📜 Actividad reciente</div>
-              <ul class="needs-human-events-list">
-                ${events.map(ev => `<li><span class="nh-ev-when">${esc(relTime(ev.when))}</span> <span class="nh-ev-author">${esc(ev.author || '?')}</span>: <span class="nh-ev-text">${esc(ev.preview || '')}</span></li>`).join('')}
-              </ul>
-            </div>`;
-          const summaryHtml = summaryTxt
-            ? `<div class="needs-human-summary">📄 ${esc(summaryTxt)}</div>`
-            : (b.summary_stale ? `<div class="needs-human-summary needs-human-summary-loading">📄 <em>Cargando resumen funcional…</em></div>` : '');
-          return `<div class="needs-human-row">
-            <div class="needs-human-row-head">
-              <div class="needs-human-row-info">
-                <a href="https://github.com/intrale/platform/issues/${b.issue}" target="_blank" rel="noopener noreferrer"><b>#${b.issue}</b></a>${titleHtml}
-                <span style="color:var(--dim)"> · ${esc(b.skill)} en ${esc(b.phase)}</span>
-                <span class="${ageCls}"> · hace ${ageStr}</span>
-              </div>
-              <div class="needs-human-row-actions">
-                <button class="nh-btn nh-btn-reactivate" onclick="needsHumanReactivate(${b.issue})" title="Quitar el label needs-human y devolver el issue a la cola del pipeline">▶ Reactivar</button>
-                <button class="nh-btn nh-btn-dismiss" onclick="needsHumanDismiss(${b.issue})" title="Cerrar el issue como desestimado y limpiarlo del panel">✕ Desestimar</button>
-              </div>
-            </div>
-            ${summaryHtml}
-            ${reasonTxt ? `<div class="needs-human-reason">❓ ${esc(reasonTxt.slice(0, 280))}${reasonTxt.length > 280 ? '…' : ''}</div>` : ''}
-            ${eventsHtml}
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="margin-top:10px;font-size:0.82em;color:var(--dim)">
-        Desbloquear desde Telegram: <code>/unblock &lt;issue&gt; &lt;orientación&gt;</code> · o quitá el label <code>needs-human</code> en GitHub
-      </div>
-      </div>
-    </div>`;
+  // #3729 — el panel se extrajo a views/dashboard/bloqueados.js (split de #3715).
+  // El dashboard legacy delega el render al módulo (renderBloqueadosSsr); si el
+  // require falló, degrada a string vacío (CA-A3) sin romper la página. Los
+  // handlers cliente needsHuman*/toggleNeedsHumanPanel siguen definidos en el
+  // <script> de generateHTML (más abajo) — el SSR del módulo los referencia.
+  const bloqueadosHTML = (bloqueadosView && typeof bloqueadosView.renderBloqueadosSsr === 'function')
+    ? bloqueadosView.renderBloqueadosSsr(state)
+    : '';
+
+  // #4580 — panel "Esperando tu firma" junto al de Bloqueados. Degrada a string
+  // vacío si el require de la vista falló (no rompe la página).
+  const esperandoFirmaHTML = (esperandoFirmaView && typeof esperandoFirmaView.renderEsperandoFirmaSsr === 'function')
+    ? esperandoFirmaView.renderEsperandoFirmaSsr(state)
+    : '';
 
   const matrixHTML = `
+    ${esperandoFirmaHTML}
     ${bloqueadosHTML}
-    <div class="matrix-section section-collapsible section-collapsed" id="issue-tracker" data-section="issue-tracker">
+    <a id="board-kanban" class="board-kanban-anchor" aria-hidden="true"></a>
+    <div class="matrix-section section-collapsible board-kanban-centerpiece" id="issue-tracker" data-section="issue-tracker">
       <div class="matrix-header">
         <h2 class="section-title-clickable" onclick="toggleSection('issue-tracker')" title="Click para colapsar/expandir">
-          <span class="section-chevron">▼</span> 📊 Issue Tracker
+          <span class="section-chevron">▼</span> 🎯 Board Kanban · Pipeline <span class="kanban-v3-badge" aria-label="Versión 3">V3</span>
         </h2>
         <a class="section-popout" href="/?section=issue-tracker" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
         <div class="it-search-box">
@@ -2106,12 +3961,97 @@ function generateHTML(state) {
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="completed" onclick="filterIssueTab(this,'completed')">Completados <span class="ic-tab-count">${completedIssues.length}</span></button>
           <button class="ic-tab" role="tab" aria-selected="false" data-filter="all" onclick="filterIssueTab(this,'all')">Todos <span class="ic-tab-count">${sorted.length}</span></button>
         </div>
+        ${/* #3956 CA-1 — control de zoom semántico (lejos/normal/foco). La clase
+             la aplica el cliente sobre el contenedor .it-lanes; los tokens viven
+             en design-tokens.css §14. */''}
+        <div class="it-zoom" role="group" aria-label="Densidad del tablero (zoom)">
+          <button class="it-zoom-btn" data-zoom="lejos" onclick="setBoardZoom('lejos')" title="Modo kiosk — legible a ~3 m">Lejos</button>
+          <button class="it-zoom-btn it-zoom-active" data-zoom="normal" onclick="setBoardZoom('normal')" title="Densidad normal (default)">Normal</button>
+          <button class="it-zoom-btn" data-zoom="foco" onclick="setBoardZoom('foco')" title="Columna expandida con timeline">Foco</button>
+        </div>
+        ${/* #3958 CA-1 — toggle board ↔ tabla. Junto al it-zoom, mismo patrón de
+             segmented control. El estado se preserva en __it_state (SEC-4). */''}
+        <div class="it-viewtoggle" role="group" aria-label="Vista de issues">
+          <button class="it-view-btn it-view-active" data-view="board" onclick="setIssueView('board')" title="Tablero kanban (board)">Board</button>
+          <button class="it-view-btn" data-view="tabla" onclick="setIssueView('tabla')" title="Tabla densa configurable">Tabla</button>
+        </div>
+        ${/* #3958 CA-2 — selector de columnas (solo aplica a la vista tabla). */''}
+        <div class="it-colsel" data-view-tabla hidden>
+          <button class="it-colsel-btn" onclick="toggleColumnsMenu(event)" aria-haspopup="true" aria-expanded="false" title="Mostrar/ocultar columnas">${ic('expand')} Columnas <span class="it-colsel-count" id="it-colsel-count">7</span></button>
+          <div class="it-colsel-menu" id="it-colsel-menu" hidden>
+            ${IT_TABLE_COLUMNS.map(c => `<label class="it-colsel-item"><input type="checkbox" checked data-col="${escapeHtml(c.key)}" onchange="toggleColumn('${escapeHtml(c.key)}', this.checked)"> ${escapeHtml(c.label)}</label>`).join('')}
+          </div>
+        </div>
+        ${/* #3958 CA-6 — Export CSV del listado FILTRADO (client-side, anti-formula). */''}
+        <button class="it-csv-btn" data-view-tabla hidden onclick="exportIssuesCsv()" title="Descargar CSV del listado filtrado">${ic('archive-box')} CSV</button>
       </div>
       <div class="section-body">
-      <div class="it-lanes">${lanesHTML}</div>
+      ${/* #4369 — Panel de priorización wave-scoped. Solo se renderiza si hay ola
+           activa. Lista únicamente los issues de la ola (CA-1) y permite
+           reordenarlos con drag-drop + botones ↑/↓ (CA-2); el orden se persiste
+           en issue-manual-order.json vía POST con CSRF (CA-3/CA-7). El contenido
+           de la lista lo pide el cliente por AJAX en wavePrioLoad(). */''}
+      ${state.activeWaveNumber != null ? `
+      <div class="wave-prio-panel" id="wave-prio-panel" data-wave="${state.activeWaveNumber}">
+        <div class="wave-prio-head">
+          <h3 class="wave-prio-title">🌊 Priorización de la Ola ${state.activeWaveNumber}</h3>
+          <span class="wave-prio-hint">Reordená los issues de esta ola; el orden se refleja en la ejecución del Pulpo.</span>
+          <button class="wave-prio-refresh" type="button" onclick="wavePrioLoad()" title="Recargar orden de la ola" aria-label="Recargar orden de la ola">↻</button>
+        </div>
+        <ol class="wave-prio-list" id="wave-prio-list" aria-live="polite" aria-label="Issues de la ola ${state.activeWaveNumber} en orden de ejecución"><li class="wave-prio-empty">Cargando…</li></ol>
+        <div class="wave-prio-status" id="wave-prio-status" role="status" aria-live="polite"></div>
+      </div>` : ''}
+      ${/* #4460 — Banner condicional "Reiniciar modelo operativo". SSR oculto por
+           default (display:none): el cliente (refreshRestartOperativo) lo muestra
+           SÓLO cuando /api/dash/restart-pendiente devuelve items ≥ 1 (CA-1). Sin
+           drift → permanece oculto (CA-2). Estado desconocido → variante warning
+           con "Refrescar" en vez de reinicio (CA-8). El botón dispara el endpoint
+           endurecido /api/ops/restart-operativo (gate + CSRF, REQ-SEC-4460-1). */''}
+      <div class="restart-op-banner" id="restart-op-banner" role="region" aria-label="Reinicio del modelo operativo pendiente" style="display:none;align-items:flex-start;gap:12px;padding:12px 16px;margin:12px 0;border:1px solid #3b82f6;border-radius:8px;background:rgba(59,130,246,0.10)">
+        <span aria-hidden="true" style="font-size:20px;line-height:1.2">🔄</span>
+        <div style="flex:1;min-width:0">
+          <strong style="display:block;color:#93c5fd">Cambios del modelo operativo pendientes de aplicar</strong>
+          <span id="rob-count" style="font-size:12px;color:#cbd5e1"></span>
+          <ul id="rob-list" aria-live="polite" style="margin:6px 0 0;padding-left:18px;font-size:13px;color:#e2e8f0"></ul>
+        </div>
+        <button id="rob-btn" type="button" onclick="restartOperativoConfirm()" style="flex:none;align-self:center;padding:8px 14px;border:none;border-radius:6px;background:#3b82f6;color:#fff;font-weight:600;cursor:pointer">🔄 Reiniciar modelo</button>
+      </div>
+      <div class="restart-op-unknown" id="restart-op-unknown" role="region" aria-label="Estado del modelo operativo desconocido" style="display:none;align-items:center;gap:12px;padding:12px 16px;margin:12px 0;border:1px solid #f59e0b;border-radius:8px;background:rgba(245,158,11,0.10)">
+        <span aria-hidden="true" style="font-size:20px">⚠️</span>
+        <div style="flex:1">
+          <strong style="display:block;color:#fcd34d">Estado del modelo operativo indeterminado</strong>
+          <span style="font-size:12px;color:#cbd5e1">No se pudo verificar qué versión corre el runtime (marker ausente o git no disponible).</span>
+        </div>
+        <button id="rob-refresh" type="button" onclick="refreshRestartOperativo()" style="flex:none;padding:8px 14px;border:1px solid #f59e0b;border-radius:6px;background:transparent;color:#fcd34d;font-weight:600;cursor:pointer">↻ Refrescar estado</button>
+      </div>
+      ${/* #4709 — Banner de la causa declarada del no-despacho (cola ociosa con
+           pendientes). SSR: presente sólo cuando el artifact dispatch-cause.json
+           declara una causa. detalle/label ya ESCAPADOS en renderDispatchCauseBanner. */''}
+      ${dispatchCauseBannerHTML}
+      ${/* #3956 CA-4 — la línea hace scroll horizontal cuando hay más etapas que
+           ancho visible; el indicador "+N fases" lo calcula el cliente
+           (updateLaneOverflow) midiendo scrollWidth vs clientWidth. */''}
+      <div class="it-lanes-wrap" data-view-board>
+        <div class="it-lanes zoom-normal" id="it-lanes" onscroll="updateLaneOverflow()">${lanesHTML}</div>
+        <button class="it-lanes-overflow" id="it-lanes-overflow" style="display:none" onclick="scrollLanesToEnd()" aria-hidden="true" title="Hay etapas fuera de vista — click para ver el final">${ic('overflow-more')} <span id="it-lanes-overflow-n">+0</span> fases</button>
+      </div>
+      ${/* #3958 EP8-H5 — Vista TABLA (oculta por default; el toggle la activa).
+           Drawer lado a lado (no modal): la tabla queda visible detrás (CA-5). */''}
+      <div class="it-tableview" data-view-tabla hidden>
+        ${issueFiltersHTML}
+        <div class="it-table-layout">
+          <div class="it-table-wrap" id="it-table-wrap">${issueTableHTML}</div>
+          <aside class="it-drawer" id="it-drawer" hidden aria-label="Detalle del issue"></aside>
+        </div>
+        <div id="it-drawer-hosts" hidden aria-hidden="true">${issueDrawerHostsHTML}</div>
+      </div>
       ${doneLaneHTML}
       <div id="dot-popup" class="dot-popup" style="display:none">
         <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeDotPopup()">×</span></div>
+        <div class="dp-body"></div>
+      </div>
+      <div id="card-popup" class="dot-popup card-popup" style="display:none">
+        <div class="dp-head"><span class="dp-title"></span><span class="dp-close" onclick="closeCardPopup()">×</span></div>
         <div class="dp-body"></div>
       </div>
       </div>
@@ -2185,94 +4125,12 @@ function generateHTML(state) {
     const cat = SKILL_CATEGORY[skill] || 'ops';
     skillsByCategory[cat].push([skill, load]);
   }
-  // Mini strip histórico (últimos 5 issues con color)
-  function skillHistoryStrip(skill) {
-    const recents = (recentBySkill[skill] || []).slice(0, 5);
-    if (recents.length === 0) {
-      return '<div class="persona-strip persona-strip-empty" title="Sin historial">—</div>';
-    }
-    const dots = recents.map(r => {
-      const cls = r.resultado === 'aprobado' ? 'ok' : r.resultado === 'rechazado' ? 'bad' : 'live';
-      const icon = r.resultado === 'aprobado' ? '\u2713' : r.resultado === 'rechazado' ? '\u2717' : '\u25CF';
-      const label = (r.resultado || 'en curso') + ' #' + r.issue;
-      const href = r.hasLog ? '/logs/view/' + r.logFile + (r.resultado && r.resultado !== 'en curso' ? '' : '?live=1') : null;
-      const content = `<span class="persona-dot persona-dot-${cls}" title="${label}">${icon}</span>`;
-      return href ? `<a href="${href}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${content}</a>` : content;
-    }).join('');
-    return `<div class="persona-strip">${dots}</div>`;
-  }
-  // Render una tarjeta-persona por skill
-  function personaCard(skill, load) {
-    const p = AGENT_PERSONA[skill] || { icon: '⚙', name: skill, tagline: '', color: 'var(--dim2)' };
-    const pct = load.max > 0 ? load.running / load.max : 0;
-    const state = pct >= 1 ? 'full' : pct > 0 ? 'partial' : 'idle';
-    const statusLabel = pct >= 1 ? `${load.running}/${load.max} ocupado` : pct > 0 ? `${load.running}/${load.max} en trabajo` : `${load.max} libre${load.max === 1 ? '' : 's'}`;
-    const stats = skillStats[skill] || { ok: 0, bad: 0, total: 0 };
-    const successRate = stats.total > 0 ? Math.round((stats.ok / stats.total) * 100) : null;
-    const usage = skillUsageCount[skill] || 0;
-    return `<div class="persona-card persona-${state}" style="--agent-color:${p.color}" title="${skill} — ${p.tagline || ''}">
-      <div class="persona-head">
-        <span class="persona-avatar">${p.icon}</span>
-        <div class="persona-id">
-          <div class="persona-name">${p.name || skill}</div>
-          <div class="persona-tagline">${(p.tagline || '').split(' · ').slice(0, 2).join(' · ') || '\u00A0'}</div>
-        </div>
-        <span class="persona-pill persona-pill-${state}">${statusLabel}</span>
-      </div>
-      <div class="persona-body">
-        ${skillHistoryStrip(skill)}
-        <div class="persona-meta">
-          ${successRate !== null ? `<span class="persona-meta-item" title="Tasa de aprobación histórica">\u2713 ${successRate}%</span>` : ''}
-          <span class="persona-meta-item persona-meta-usage" title="Issues trabajados">\u{1F4C8} ${usage}</span>
-        </div>
-      </div>
-    </div>`;
-  }
-  // Heatmap legacy mantenido para compatibilidad (puede eliminarse luego)
-  let heatmapHTML = '';
-  const catOrder = ['product', 'dev', 'quality', 'ops'];
-
-  // ── Option B: Areas grid 2x2 con chips compactos ──
-  let eqAreaGridHTML = '';
-  let eqTotalSkills = 0, eqTotalBusy = 0;
-  for (const cat of catOrder) {
-    const list = skillsByCategory[cat];
-    if (!list || list.length === 0) continue;
-    const m = CATEGORY_META[cat];
-    list.sort((a, b) => b[1].running - a[1].running || (skillUsageCount[b[0]] || 0) - (skillUsageCount[a[0]] || 0));
-    // Contar skills (no slots): busy = skills con al menos 1 running
-    const busySkills = list.filter(([_, l]) => (l.running || 0) > 0).length;
-    const totalSkills = list.length;
-    eqTotalBusy += busySkills; eqTotalSkills += totalSkills;
-    const freeSkills = totalSkills - busySkills;
-    const chips = list.map(([s, l]) => {
-      const p = AGENT_PERSONA[s] || { icon: '\u2699', name: s, color: 'var(--dim)' };
-      const running = l.running || 0;
-      const stateCls = running > 0 ? 'eq-chip-busy' : '';
-      const countBadge = running > 1 ? `<span class="eq-chip-badge">\u00D7${running}</span>` : '';
-      const usage = skillUsageCount[s] || 0;
-      const tip = running > 0
-        ? `${p.name} \u2014 ${running} issue${running > 1 ? 's' : ''} en ejecución (${usage} runs)`
-        : `${p.name} \u2014 libre (${usage} runs)`;
-      return `<span class="eq-chip ${stateCls}" title="${tip.replace(/"/g, '&quot;')}">
-        <span class="eq-chip-avatar" style="background:${p.color}">${p.icon}</span>
-        <span class="eq-chip-name">${p.name}</span>
-        ${countBadge}
-        <span class="eq-chip-dot"></span>
-      </span>`;
-    }).join('');
-    const subTxt = busySkills > 0
-      ? `<b>${freeSkills}</b>/${totalSkills} libres \u00B7 <span class="eq-area-card-active">${busySkills} activo${busySkills > 1 ? 's' : ''}</span>`
-      : `<b>${freeSkills}</b> libres`;
-    eqAreaGridHTML += `<div class="eq-area-card">
-      <div class="eq-area-card-head">
-        <span class="eq-area-card-name"><span class="eq-area-card-dot" style="background:${m.color}"></span>${m.label}</span>
-        <span class="eq-area-card-sub">${subTxt}</span>
-      </div>
-      <div class="eq-area-card-chips">${chips}</div>
-    </div>`;
-  }
-  if (eqAreaGridHTML) eqAreaGridHTML = '<div class="eq-areas-grid">' + eqAreaGridHTML + '</div>';
+  // #3727 — La logica de render de la ventana Equipo (skillHistoryStrip,
+  // personaCard, el grid de areas con chips y el calculo de eqTotalBusy/
+  // eqTotalSkills) se extrajo a views/dashboard/equipo.js. Aca solo se calculan
+  // los derivados (skillStats, skillsByCategory) que se pasan como input a
+  // equipoView.renderEquipoSsr() en el template de abajo. El heatmap legacy
+  // (heatmapHTML, nunca renderizado) se elimino como dead code en la extraccion.
 
   // ── Servicios agrupados por capa (Intake/Processing/Output) ──
   const fmtStat = (n) => n > 99 ? `<span title="${n}">99+</span>` : `${n}`;
@@ -2504,11 +4362,88 @@ function generateHTML(state) {
     return { skill, issues, maxDur };
   }).sort((a, b) => b.maxDur - a.maxDur);
 
+  // #3948 (EP-7) — Card observacional del Commander en la tira "Ejecutando ahora"
+  // de la vista Equipo. Presencia leída del canal separado (commander-presence.json)
+  // con TTL; sin botón de cancelar (CA-3/CA-4). Lectura defensiva: si el módulo o
+  // el archivo no están, la tira se renderiza igual (sin la card). Todos los
+  // campos van escapados (SEC-2); el archivo no contiene PII (CA-6).
+  let commanderPresenceCard = '';
+  try {
+    const _presence = require('./lib/commander-presence');
+    const _pres = _presence.readPresence();
+    if (_pres) {
+      const _p = AGENT_PERSONA.commander || { icon: '🎖', name: 'Commander', color: 'var(--in-info)' };
+      const _faseIcons = { transcribiendo: '🎙', pensando: '🧠', verificando: '🔍', enviando: '📤' };
+      const _faseLabel = ((_faseIcons[_pres.fase] || '') + ' ' + _pres.fase).trim();
+      // #4335 — link al log crudo de la corrida vigente (mtime+TTL, server-side).
+      // Mismo resolver que usa el slice del acordeón; si no hay corrida dentro del
+      // TTL devuelve null y la card no linkea (sin log fantasma).
+      const _logHtml = presenceLogLink('commander', COMMANDER_PRESENCE_TTL_MS);
+      // #4443 — CA-3/CA-4/CA-5: petición vigente resuelta server-side desde el
+      // history, correlacionada por la ventana viva de la presencia (startedAt+TTL).
+      const _petHtml = presencePetitionRow(resolvePresentationPetition(_pres.startedAt, COMMANDER_PRESENCE_TTL_MS));
+      commanderPresenceCard =
+        '<div class="eq-card eq-card-observational" title="' + escapeHtml('Presencia observacional — no ocupa slot ni se puede cancelar') + '">' +
+          '<span class="eq-card-avatar" style="background:' + escapeHtml(_p.color) + '">' + escapeHtml(_p.icon) + '</span>' +
+          '<div class="eq-card-body">' +
+            '<div class="eq-card-name"><span class="eq-card-ring"></span>' + escapeHtml(_p.name) + '</div>' +
+            '<div class="eq-card-work">' +
+              '<span class="eq-work-item eq-work-item-observe">' +
+                '<span class="eq-work-fase">' + escapeHtml(_faseLabel) + '</span>' +
+                '<span class="eq-work-dur">' + escapeHtml(fmtDuration(_pres.durationMs)) + '</span>' +
+                _logHtml +
+              '</span>' +
+              _petHtml +
+            '</div>' +
+          '</div>' +
+          '<span class="eq-card-observe-pill" aria-label="presencia observacional, no cancelable">👁 observa</span>' +
+        '</div>';
+    }
+  } catch { /* presencia opcional — la tira se renderiza sin la card */ }
+
+  // #4332 — Card observacional del Sherlock (validación del Commander), mismo
+  // tratamiento visual que el Commander (CA-2/UX-2): reusa `eq-card-observational`,
+  // la persona `AGENT_PERSONA.sherlock` (icono 🕵️, ámbar — UX-1), el patrón
+  // `_faseLabel` y la pill `👁 observa`, sin botón de cancelar. Presencia leída del
+  // canal separado (`sherlock-presence.json`) con TTL; lectura defensiva. Todos los
+  // campos escapados (SEC/CA-6); el archivo no contiene PII.
+  let sherlockPresenceCard = '';
+  try {
+    const _spresence = require('./lib/sherlock-presence');
+    const _spres = _spresence.readPresence();
+    if (_spres) {
+      const _sp = AGENT_PERSONA.sherlock || { icon: '🕵️', name: 'Sherlock', color: 'var(--in-info)' };
+      const _faseIcons = { verificando: '🔍' };
+      const _faseLabel = ((_faseIcons[_spres.fase] || '') + ' ' + _spres.fase).trim();
+      // #4335 — link al log crudo de la corrida vigente (mtime+TTL, server-side).
+      const _logHtml = presenceLogLink('sherlock', SHERLOCK_PRESENCE_TTL_MS);
+      // #4443 — CA-3/UX-5: la "petición" de Sherlock es la MISMA petición de
+      // usuario que está verificando; mismo resolver + TTL, sin rótulo distinto.
+      const _petHtml = presencePetitionRow(resolvePresentationPetition(_spres.startedAt, SHERLOCK_PRESENCE_TTL_MS));
+      sherlockPresenceCard =
+        '<div class="eq-card eq-card-observational" title="' + escapeHtml('Presencia observacional — no ocupa slot ni se puede cancelar') + '">' +
+          '<span class="eq-card-avatar" style="background:' + escapeHtml(_sp.color) + '">' + escapeHtml(_sp.icon) + '</span>' +
+          '<div class="eq-card-body">' +
+            '<div class="eq-card-name"><span class="eq-card-ring"></span>' + escapeHtml(_sp.name) + '</div>' +
+            '<div class="eq-card-work">' +
+              '<span class="eq-work-item eq-work-item-observe">' +
+                '<span class="eq-work-fase">' + escapeHtml(_faseLabel) + '</span>' +
+                '<span class="eq-work-dur">' + escapeHtml(fmtDuration(_spres.durationMs)) + '</span>' +
+                _logHtml +
+              '</span>' +
+              _petHtml +
+            '</div>' +
+          '</div>' +
+          '<span class="eq-card-observe-pill" aria-label="presencia observacional, no cancelable">👁 observa</span>' +
+        '</div>';
+    }
+  } catch { /* presencia opcional — la tira se renderiza sin la card */ }
+
   // Option B: Active Cards XL — cada agente activo es una card horizontal con work items (issue + fase + progreso)
   let agentTeamCards = '';
   let activeStripHTML = '';
-  if (sortedAgents.length > 0) {
-    const cards = sortedAgents.map(({ skill, issues }) => {
+  if (sortedAgents.length > 0 || commanderPresenceCard || sherlockPresenceCard) {
+    const cards = commanderPresenceCard + sherlockPresenceCard + sortedAgents.map(({ skill, issues }) => {
       const p = AGENT_PERSONA[skill] || { icon: '\u2699', name: skill, color: 'var(--dim)' };
       const count = issues.length;
       const badge = count > 1 ? `<span class="eq-card-badge">${count}</span>` : '';
@@ -2549,14 +4484,20 @@ function generateHTML(state) {
         // Incluir trabajando (en ejecución) + listo + procesado (finalizados)
         if (e.estado === 'trabajando' || e.estado === 'listo' || e.estado === 'procesado') {
           const [pline, fse] = faseKey.split('/');
+          // #3963 — el detalle expandible del timeline necesita prUrl (link a
+          // PR), rebote/crossphase y motivo (causa parseada). `costo` queda
+          // best-effort → null (degrada a "s/d" en la vista, CA-3: no hay costo
+          // por ejecución individual hoy). prInfo se lee del cache del padre.
+          const pr = (state.prInfo || {})[String(issueNum)] || null;
           agentHistory.push({
             issue: issueNum,
-            titulo: data.titulo || '',
+            titulo: data.titulo || data.title || '',
             skill: e.skill,
             pipeline: pline,
             fase: fse,
             estado: e.estado,
             resultado: e.resultado || null,
+            motivo: e.motivo || data.motivo_rechazo || null,
             duration: e.durationMs || 0,
             startedAt: e.startedAt || 0,
             finishedAt: (e.estado !== 'trabajando') ? (e.updatedAt || 0) : 0,
@@ -2564,6 +4505,10 @@ function generateHTML(state) {
             logFile: e.logFile,
             hasRejectionPdf: !!e.hasRejectionPdf,
             rejectionPdf: e.rejectionPdf,
+            prUrl: (pr && pr.url) ? pr.url : null,
+            reboteNumero: e.rebote_numero || 0,
+            crossphaseCount: data.crossphaseCount || 0,
+            costo: null,
           });
         }
       }
@@ -2578,77 +4523,17 @@ function generateHTML(state) {
     return tsB - tsA;
   });
 
-  // Generar HTML del historial (máximo 30 entradas visibles, el resto en toggle)
-  const HIST_VISIBLE = 15;
-  let historyHTML = '';
-  if (agentHistory.length > 0) {
-    const renderHistCard = (h, idx) => {
-      const p = AGENT_PERSONA[h.skill] || { icon: '\u2699', name: h.skill, color: 'var(--dim)' };
-      const isRunning = h.estado === 'trabajando';
-      const isOk = h.resultado === 'aprobado';
-      const isFail = h.resultado === 'rechazado';
-      const statusCls = isRunning ? 'ah-running' : isOk ? 'ah-ok' : isFail ? 'ah-fail' : 'ah-neutral';
-      const statusIcon = isRunning ? '\u25CF' : isOk ? '\u2713' : isFail ? '\u2717' : '\u2014';
-      const statusLabel = isRunning ? 'En ejecución' : (h.resultado || 'finalizado');
-      const ts = isRunning ? h.startedAt : h.finishedAt;
-      const timeStr = ts ? new Date(ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-      const durStr = fmtDuration(h.duration);
-      const href = h.hasLog ? `/logs/view/${h.logFile}${isRunning ? '?live=1' : ''}` : GH(h.issue);
-      const tip = h.hasLog ? `Ver log · ${h.skill} · #${h.issue}` : `Ver #${h.issue} en GitHub`;
-      const title = h.titulo ? ` · ${h.titulo.slice(0, 40)}` : '';
-      const pdfLink = h.hasRejectionPdf
-        ? ` <a class="ah-pdf" href="/logs/${h.rejectionPdf}" target="_blank" rel="noopener noreferrer" title="Reporte de rechazo" onclick="event.stopPropagation()">\u{1F4C4}</a>`
-        : '';
-      const prioActions = isRunning
-        ? `<span class="ah-prio-actions">
-            <button class="lc-prio-btn lc-prio-top" onclick="event.preventDefault();event.stopPropagation();issueMoveToTop(${h.issue})" title="Mover al tope de la columna">⏫</button>
-            <button class="lc-prio-btn lc-prio-up" onclick="event.preventDefault();event.stopPropagation();issueMoveUp(${h.issue})" title="Subir una posición">▲</button>
-            <button class="lc-prio-btn lc-prio-down" onclick="event.preventDefault();event.stopPropagation();issueMoveDown(${h.issue})" title="Bajar una posición">▼</button>
-            <button class="lc-prio-btn lc-prio-bottom" onclick="event.preventDefault();event.stopPropagation();issueMoveToBottom(${h.issue})" title="Mover al fondo de la columna">⏬</button>
-          </span>`
-        : '';
-      const ahPos = manualOrderIndex.has(String(h.issue)) ? manualOrderIndex.get(String(h.issue)) : null;
-      const ahPosLabel = ahPos !== null ? `<span class="lc-pos" title="Posición en el orden manual (1 = más prioritario)">#${ahPos + 1}</span>` : '';
-      // #2523 CA-12: rel="noopener noreferrer" anti-tabnabbing en links externos.
-      return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="ah-card ${statusCls}" title="${tip}">
-        <span class="ah-avatar" style="background:${p.color}">${p.icon}</span>
-        <span class="ah-skill">${p.name}</span>
-        ${ahPosLabel}
-        <span class="ah-issue">#${h.issue}${title}</span>
-        <span class="ah-fase">${h.fase}</span>
-        <span class="ah-status">${statusIcon} ${statusLabel}</span>
-        <span class="ah-dur">${durStr}</span>
-        <span class="ah-time">${timeStr}</span>
-        ${prioActions}
-        ${pdfLink}
-      </a>`;
-    };
-
-    const visible = agentHistory.slice(0, HIST_VISIBLE).map(renderHistCard).join('');
-    const hidden = agentHistory.length > HIST_VISIBLE
-      ? agentHistory.slice(HIST_VISIBLE, 50).map(renderHistCard).join('')
-      : '';
-    const moreToggle = hidden
-      ? `<details class="ah-more"><summary class="ah-more-btn">Ver ${Math.min(agentHistory.length - HIST_VISIBLE, 35)} más…</summary><div class="ah-more-list">${hidden}</div></details>`
-      : '';
-
-    historyHTML = `
-    <div class="matrix-section section-collapsible section-collapsed" id="agent-history" data-section="historial">
-      <div class="matrix-header">
-        <h2 class="section-title-clickable" onclick="toggleSection('historial')" title="Click para colapsar/expandir">
-          <span class="section-chevron">▼</span> \u{1F4DC} Historial de Ejecuciones
-        </h2>
-        <a class="section-popout" href="/?section=historial" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-        <span class="ah-count">${agentHistory.length} ejecuciones</span>
-      </div>
-      <div class="section-body">
-      <div class="ah-list">
-        ${visible}
-        ${moreToggle}
-      </div>
-      </div>
-    </div>`;
-  }
+  // #3734 — El render SSR del historial se delega a views/dashboard/historial.js
+  // (split #3715 del rediseño V3). El armado/orden de `agentHistory[]` queda
+  // arriba en el padre (decisión de contrato: el módulo recibe el array ya
+  // armado, no toca matrixEntries). Fallback: si el require del módulo falló,
+  // string vacío (no rompe el render del dashboard).
+  const historyHTML = historialView
+    ? historialView.renderHistorialSsr(
+        { agentHistory },
+        { agentPersona: AGENT_PERSONA, manualOrderIndex, fmtDuration, ghBaseUrl: GITHUB_BASE }
+      )
+    : '';
 
   // --- Mini DORA metrics on main dashboard ---
   let doraMinHTML = '';
@@ -2703,6 +4588,51 @@ function generateHTML(state) {
         </div>
       </div>
     </div>`;
+
+    // #3257 CA-4 — Tarjeta de routing del Commander (determinístico vs LLM).
+    // Resumen de hoy + total 7d. Datos de commander-audit-*.jsonl.
+    try {
+      const commanderDet = require('./lib/commander-deterministic');
+      const LOG_DIR = path.join(__dirname, 'logs');
+      const routing = commanderDet.computeRoutingMetrics(LOG_DIR, { days: 7 });
+      const today = routing.buckets[routing.buckets.length - 1] || { deterministic: 0, llm: 0, unknown: 0, total: 0, percentDeterministic: 0 };
+      const totalDet = routing.buckets.reduce((a, b) => a + b.deterministic, 0);
+      const totalLlm = routing.buckets.reduce((a, b) => a + b.llm, 0);
+      const totalAll = routing.buckets.reduce((a, b) => a + b.total, 0);
+      const pct7d = totalAll > 0 ? Math.round((totalDet / totalAll) * 1000) / 10 : 0;
+      const detColor = today.percentDeterministic >= 60 ? 'var(--gn)' : today.percentDeterministic >= 30 ? 'var(--yl)' : 'var(--dim)';
+      doraMinHTML += `
+    <div class="dora-mini" style="margin-top:12px">
+      <div class="matrix-header">
+        <h2>⚙️ Commander Routing <span style="font-size:0.7em;color:var(--dim);text-transform:none;letter-spacing:0">(determinístico vs LLM · 7d)</span></h2>
+        <a href="/api/metrics/commander/routing" class="matrix-count" style="text-decoration:none">JSON →</a>
+      </div>
+      <div class="dora-mini-grid">
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:${detColor}">${today.percentDeterministic}%</div>
+          <div class="dora-mini-label">% Determinístico hoy</div>
+          <div class="dora-mini-target">target &gt; 60%</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:var(--ac)">${today.deterministic}</div>
+          <div class="dora-mini-label">Sin LLM hoy</div>
+          <div class="dora-mini-target">comandos resueltos</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:var(--pu)">${today.llm}</div>
+          <div class="dora-mini-label">Con LLM hoy</div>
+          <div class="dora-mini-target">${today.unknown} no clasificados</div>
+        </div>
+        <div class="dora-mini-card">
+          <div class="dora-mini-value" style="color:var(--ac)">${pct7d}%</div>
+          <div class="dora-mini-label">% Determinístico 7d</div>
+          <div class="dora-mini-target">${totalDet}/${totalAll} cmd</div>
+        </div>
+      </div>${renderCommanderRequestLogs(LOG_DIR)}
+    </div>`;
+    } catch (e) {
+      log('[commander-routing] card error: ' + e.message);
+    }
   } catch {}
 
   let actHTML = state.actividad.slice(-15).reverse().map(a => {
@@ -2765,7 +4695,38 @@ ${loadDesignTokens()}
 .pipe-status-running{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gn));border-color:rgba(63,185,80,0.4)}
 .pipe-status-running:hover{background:rgba(63,185,80,0.22)}
 .pipe-status-paused{background:rgba(240,165,0,0.18);color:#F0A500;border-color:rgba(240,165,0,0.5);animation:pausePulse 2s infinite}
+/* #3956 CA-3 — el estado "fuera de allowlist" (pausa parcial) es una variante
+   del badge único de pausa; mismo ámbar, sin pulso para distinguirlo del halt
+   total. Se mantiene .pipe-status-partial por back-compat de otros call-sites. */
+.pipe-status-allowlist{animation:none;letter-spacing:0.8px}
 .pipe-status-partial{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.45)}
+
+/* #4375 — Semáforo de sync allowlist↔ola. 4 estados: nunca sólo color (icono +
+   texto, WCAG AA). Tokens semánticos --success/--warning/--danger/--text-dim con
+   fallback. Pulso sutil SÓLO en 🔴 y respetando prefers-reduced-motion. */
+.dss-wrap{display:flex;align-items:center;gap:8px;margin:8px 0 4px;flex-wrap:wrap}
+.dss-caption{font-size:var(--fs-xs,0.75rem);color:var(--text-dim,var(--dim));font-weight:var(--fw-semibold,600);letter-spacing:0.8px;text-transform:uppercase}
+.dss-pill{display:inline-flex;align-items:center;gap:8px;font-size:var(--fs-xs,0.78rem);font-weight:var(--fw-semibold,600);padding:5px 12px;border-radius:var(--radius-full,9999px);border:1px solid transparent}
+.dss-pill .pl-ic{width:14px;height:14px;flex:0 0 auto}
+.dss-label{font-weight:var(--fw-bold,700);letter-spacing:0.4px}
+.dss-detail{color:var(--text-secondary,var(--tx));opacity:0.85;font-size:var(--fs-xs,0.72rem)}
+.dss-chips{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
+.dss-chip{font-size:var(--fs-xs,0.68rem);font-weight:var(--fw-bold,700);padding:1px 6px;border-radius:var(--radius-full,9999px);font-variant-numeric:tabular-nums}
+.dss-chip-add{background:var(--warning-bg,rgba(210,153,34,0.16));color:var(--warning,var(--yl))}
+.dss-chip-rem{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd,#F85149))}
+/* #5724 UX-4 — indicador de overflow de la divergencia (tope de 6 chips). Sin
+   color propio: es metadato, no un issue más. */
+.dss-chip-more{background:var(--deterministic-bg,rgba(110,118,129,0.15));color:var(--text-dim,var(--dim))}
+.dss-ok{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gn));border-color:rgba(63,185,80,0.4)}
+.dss-ok .pl-ic{color:var(--success,var(--gn))}
+.dss-warn{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.45)}
+.dss-warn .pl-ic{color:var(--warning,var(--yl))}
+.dss-danger{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd,#F85149));border-color:rgba(248,81,73,0.45);animation:dssPulse 2.2s ease-in-out infinite}
+.dss-danger .pl-ic{color:var(--danger,var(--rd,#F85149))}
+.dss-unknown{background:var(--deterministic-bg,rgba(110,118,129,0.15));color:var(--text-dim,var(--dim));border-color:rgba(139,148,158,0.35)}
+.dss-unknown .pl-ic{color:var(--text-dim,var(--dim))}
+@keyframes dssPulse{0%,100%{box-shadow:0 0 0 rgba(248,81,73,0)}50%{box-shadow:0 0 10px rgba(248,81,73,0.45)}}
+@media (prefers-reduced-motion: reduce){.dss-danger{animation:none}}
 
 /* (#2892 PR-C) — Pill compacta de alerta de consumo anómalo en el header.
  * Usa los tokens --alert-anomaly-* del design system (fuente: assets/design-tokens.css).
@@ -2824,7 +4785,74 @@ ${loadDesignTokens()}
 .lc-state-needshuman{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd));border-color:rgba(248,81,73,0.5);animation:pausePulse 2s infinite}
 .lc-state-narrating{background:var(--teal-bg,rgba(45,212,191,0.14));color:var(--teal,#2DD4BF);border-color:rgba(45,212,191,0.4)}
 .lc-state-stale{background:rgba(139,148,158,0.12);color:var(--text-dim,var(--dim));border-color:rgba(139,148,158,0.3)}
+/* #3642 CA-3 — Widget architect 4 estados. Tokens semanticos firmados por UX. */
+.lc-state-architect-pending{background:rgba(139,148,158,0.12);color:var(--text-dim,var(--dim));border-color:rgba(139,148,158,0.3)}
+.lc-state-architect-running{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.4)}
+.lc-state-architect-approved{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gr));border-color:rgba(63,185,80,0.4)}
+.lc-state-architect-rejected{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd));border-color:rgba(248,81,73,0.5)}
 .lc-state-row{display:flex;flex-wrap:wrap;gap:5px;padding:0 var(--space-3,10px) var(--space-2,6px);margin-top:-2px}
+/* ── Cola detallada (#3356) — 5ta sub-seccion del large board principal ─── */
+/* Las 5 sub-secciones del header son: (1) brand bar / hdr-bar-v3,            */
+/* (2) pipeline-ctrl-bar, (3) infra-health, (4) kpis-row (incluye sys-mini),  */
+/* (5) cola-detallada (nueva). Cada una con border + radius + surface propio  */
+/* para que el operador distinga las agrupaciones de un vistazo (CA-2).       */
+.cola-detallada{
+  background:var(--surface-1,var(--sf));
+  border:1px solid var(--border,var(--bd));
+  border-radius:var(--radius-md,8px);
+  padding:var(--space-3,12px) var(--space-4,16px);
+  margin:var(--space-3,12px) 0;
+  display:flex;flex-direction:column;gap:var(--space-2,8px);
+}
+.cola-detallada-head{
+  display:flex;align-items:center;gap:var(--space-3,12px);
+  font-size:var(--fs-xs,0.75rem);font-weight:var(--fw-bold,700);
+  text-transform:uppercase;letter-spacing:1.2px;
+  color:var(--text-secondary,var(--tx));
+  border-bottom:1px solid var(--border-subtle,var(--bd2));
+  padding-bottom:var(--space-2,8px);
+}
+.cola-detallada-head-icon{font-size:1.05em;opacity:0.85}
+.cola-detallada-title{color:var(--text-secondary,var(--tx))}
+.cola-detallada-count{color:var(--text-primary,var(--tx));font-weight:700}
+.cola-detallada-note{color:var(--text-dim,var(--dim));font-weight:400;font-size:0.92em;text-transform:none;letter-spacing:0;margin-left:auto}
+.cola-detallada-list{
+  list-style:none;padding:0;margin:0;
+  display:flex;flex-direction:column;
+  max-height:360px;overflow-y:auto;
+}
+.cola-detallada-item{
+  display:flex;align-items:center;gap:var(--space-3,12px);
+  padding:7px 6px;font-size:var(--fs-sm,0.875rem);
+  border-bottom:1px solid var(--border-subtle,var(--bd2));
+  min-height:30px;
+}
+.cola-detallada-item:nth-child(even){background:var(--surface-2,#1c2128)}
+.cola-detallada-item:last-child{border-bottom:none}
+.cola-detallada-item.is-placeholder{color:var(--text-disabled,#484f58);font-style:italic;opacity:0.55}
+.cola-detallada-item.is-placeholder .cola-title{color:var(--text-disabled,#484f58)}
+.cola-num{font-family:'SF Mono',Consolas,monospace;color:var(--text-dim,var(--dim));font-weight:600;min-width:70px;flex-shrink:0}
+.cola-title{flex:1;color:var(--text-primary,var(--tx));overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.cola-phase{
+  font-size:var(--fs-xs,0.72rem);font-weight:var(--fw-bold,700);
+  text-transform:uppercase;letter-spacing:0.8px;
+  padding:2px 9px;border-radius:var(--radius-full,9999px);
+  border:1px solid transparent;flex-shrink:0;min-width:62px;text-align:center;
+}
+.cola-phase-definicion{background:var(--lane-definicion-bg,var(--purple-bg,rgba(188,140,255,0.14)));color:var(--lane-definicion,var(--purple,#bc8cff));border-color:rgba(188,140,255,0.4)}
+.cola-phase-desarrollo{background:var(--lane-desarrollo-bg,var(--info-bg,rgba(88,166,255,0.14)));color:var(--lane-desarrollo,var(--info,#58a6ff));border-color:rgba(88,166,255,0.4)}
+.cola-phase-qa{background:var(--lane-qa-bg,var(--teal-bg,rgba(45,212,191,0.14)));color:var(--lane-qa,var(--teal,#2dd4bf));border-color:rgba(45,212,191,0.4)}
+.cola-phase-entrega{background:var(--lane-entrega-bg,var(--success-bg,rgba(63,185,80,0.14)));color:var(--lane-entrega,var(--success,#3fb950));border-color:rgba(63,185,80,0.4)}
+.cola-skill{font-family:'SF Mono',Consolas,monospace;color:var(--text-dim,var(--dim));font-size:var(--fs-xs,0.72rem);min-width:110px;text-align:right;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cola-skill-arrow{opacity:0.5;margin-right:3px}
+.cola-empty{padding:var(--space-3,12px) 0;color:var(--text-dim,var(--dim));font-style:italic;text-align:center;font-size:var(--fs-sm,0.875rem)}
+.cola-detallada-foot{font-size:var(--fs-xs,0.72rem);color:var(--text-dim,var(--dim));border-top:1px solid var(--border-subtle,var(--bd2));padding-top:var(--space-2,6px)}
+@media (max-width: 900px){
+  .cola-phase{display:none}
+  .cola-skill{min-width:auto}
+  .cola-num{min-width:58px}
+  .cola-detallada-list{max-height:280px}
+}
 /* ── Reset ──────────────────────────────────────────────────────────────── */
 *{margin:0;padding:0;box-sizing:border-box}
 body{
@@ -3439,6 +5467,21 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .log-link{text-decoration:none}
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
 
+/* ── #3951 EP7-H4 — Badge de resultado de la petición del Commander.
+ *    Mapea el enum cerrado (ok/ajustada/fallback/error) a los 4 tokens
+ *    semánticos del design system. Glyph + label SIEMPRE (CA-4: no depender
+ *    sólo del color). Tokens con fallback legacy por si design-tokens.css no
+ *    está cargado. */
+.cmd-result{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:5px;font-size:0.72em;font-weight:600;line-height:1.5;border:1px solid transparent;margin-left:6px}
+.cmd-result-ok       {color:var(--success,var(--gn));background:var(--success-bg,rgba(63,185,80,0.14));border-color:var(--success-dim,var(--gn2))}
+.cmd-result-ajustada {color:var(--warning,var(--yl));background:var(--warning-bg,rgba(210,153,34,0.14));border-color:var(--warning-dim,var(--yl2))}
+.cmd-result-fallback {color:var(--info,var(--ac));   background:var(--info-bg,rgba(88,166,255,0.14));   border-color:var(--info-dim,var(--ac2))}
+.cmd-result-error    {color:var(--danger,var(--rd)); background:var(--danger-bg,rgba(248,81,73,0.14));  border-color:var(--danger-dim,var(--rd2))}
+.cmd-provider{font-size:0.72em;color:var(--dim);font-family:inherit;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
+.cmd-verif{font-size:0.72em;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
+.cmd-verif-cross{color:var(--info,var(--ac));border-color:var(--info-dim,var(--ac2));background:var(--info-bg,rgba(88,166,255,0.14))}
+.cmd-verif-same {color:var(--dim);border-color:var(--bd)}
+
 /* ── Log Viewer Panel ──────────────────────────────────────────────────── */
 .log-overlay{
   display:none;position:fixed;top:0;right:0;bottom:0;left:0;z-index:500;
@@ -4052,7 +6095,61 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .kpi-tooltip .tt-more{color:var(--dim);font-style:italic;margin-top:4px}
 
 /* ── Issue Tracker Lanes (Opción E): 3 columnas iguales ─────────────────── */
-.it-lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}
+/* #3956 — La ola en UNA línea: layout horizontal scrollable (reemplaza el grid
+   fijo de 3 columnas que no escala a N etapas). El ancho mínimo de cada etapa y
+   las densidades de zoom salen de los tokens --zoom-* de design-tokens.css §14. */
+.it-lanes-wrap{position:relative;margin-top:10px}
+.it-lanes{display:flex;flex-direction:row;gap:10px;overflow-x:auto;overflow-y:visible;scroll-behavior:smooth;padding-bottom:6px;scrollbar-width:thin}
+.it-lanes::-webkit-scrollbar{height:8px}
+.it-lanes::-webkit-scrollbar-thumb{background:var(--bd,#30363d);border-radius:4px}
+.it-lanes > .it-lane{flex:1 0 var(--zoom-lane-min-w,240px);min-width:var(--zoom-lane-min-w,240px);max-width:480px}
+/* Indicador "+N fases" (CA-4): aparece cuando hay overflow horizontal. */
+.it-lanes-overflow{position:absolute;top:0;right:0;height:38px;display:inline-flex;align-items:center;gap:5px;padding:0 12px;border:none;border-radius:0 8px 8px 0;background:var(--overflow-more-bg,rgba(88,166,255,0.14));color:var(--overflow-more,#58a6ff);font-size:0.72em;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;cursor:pointer;box-shadow:-12px 0 18px -6px var(--bg,#0d1117)}
+.it-lanes-overflow:hover{background:var(--overflow-more,#58a6ff);color:var(--bg,#0d1117)}
+.it-lanes-overflow .pl-ic{width:14px;height:14px}
+/* Densidades de zoom — la clase la fija el cliente sobre #it-lanes (CA-1). Los
+   valores --zoom-* los define design-tokens.css §14 (.zoom-lejos/.zoom-foco). */
+.it-lanes.zoom-lejos .it-lane-cards{gap:var(--zoom-card-gap,12px)}
+.it-lanes.zoom-lejos .it-lane-count b{font-size:var(--zoom-count-fs,32px)}
+.it-lanes.zoom-lejos .lc-pill{font-size:var(--zoom-pill-fs,18px);padding:var(--zoom-pill-pad-y,8px) var(--zoom-pill-pad-x,12px)}
+.it-lanes.zoom-lejos .it-lane-name{font-size:var(--zoom-stage-title-fs,26px)}
+.it-lanes.zoom-lejos .lc-card{padding:var(--zoom-card-pad,16px)}
+/* Kiosk: a 3 m no se leen los detalles; se priorizan conteo + semáforos. */
+.it-lanes.zoom-lejos .lc-prio-actions,.it-lanes.zoom-lejos .it-sub-breakdown,.it-lanes.zoom-lejos .lc-info-btn,.it-lanes.zoom-lejos .lc-state-row{display:none}
+.it-lanes.zoom-foco .it-lane{flex-basis:var(--zoom-lane-min-w,360px);min-width:var(--zoom-lane-min-w,360px)}
+.it-lanes.zoom-foco .lc-ps{display:block}
+.it-zoom{display:inline-flex;gap:2px;margin-left:8px;background:var(--sf2,#161b22);border:1px solid var(--bd,#30363d);border-radius:6px;padding:2px}
+.it-zoom-btn{background:transparent;border:none;color:var(--dim,#8b949e);font-size:0.72em;font-weight:600;padding:3px 9px;border-radius:4px;cursor:pointer;text-transform:uppercase;letter-spacing:0.4px}
+.it-zoom-btn:hover{color:var(--tx,#e6edf3)}
+.it-zoom-active{background:var(--ac,#58a6ff);color:var(--bg,#0d1117)!important}
+/* Etapas terminales (No ingresados / Finalizados) */
+.it-lane-terminal{border-style:dashed}
+.lc-nentered{opacity:0.92}
+.lc-foot-nentered{display:block;margin-top:6px}
+.nentered-reason{display:inline-flex;align-items:center;gap:4px;font-size:0.74em;padding:2px 7px;border-radius:10px}
+.nentered-reason-deps{background:var(--danger-bg,rgba(248,81,73,0.12));color:var(--danger,#f85149)}
+.nentered-reason-slot{background:var(--stage-not-entered-bg,rgba(139,148,158,0.12));color:var(--stage-not-entered,#8b949e)}
+.nentered-dep-link{color:inherit;font-weight:700;text-decoration:underline}
+.nentered-num{font-weight:700;color:var(--ac,#58a6ff);text-decoration:none}
+/* Footer "Finalizados": fecha de cierre + link al PR mergeado (CA-6) */
+.lc-finalizado{display:flex;align-items:center;gap:8px;margin-top:6px;padding-top:6px;border-top:1px solid var(--bd,#30363d);font-size:0.74em}
+.lc-fin-date{color:var(--dim,#8b949e);font-variant-numeric:tabular-nums}
+.lc-fin-pr{display:inline-flex;align-items:center;gap:3px;color:var(--success,#3fb950);font-weight:700;text-decoration:none}
+.lc-fin-pr:hover{text-decoration:underline}
+.lc-fin-pr .pl-ic{width:13px;height:13px}
+.lc-fin-nolink{color:var(--text-dim,#6e7681);font-style:italic}
+/* Botón ⓘ del popover de agente a nivel card (CA-2) */
+.lc-info-btn{background:transparent;border:none;color:var(--dim,#8b949e);cursor:pointer;padding:1px;display:inline-flex;align-items:center;border-radius:4px}
+.lc-info-btn:hover{color:var(--ac,#58a6ff);background:rgba(88,166,255,0.12)}
+.lc-info-btn .pl-ic{width:15px;height:15px}
+.card-popup .dp-body{padding:10px 12px;font-size:0.95em;line-height:1.5}
+.cp-row{display:flex;justify-content:space-between;gap:10px;padding:2px 0}
+.cp-k{color:var(--dim,#8b949e)}
+.cp-v{font-weight:600;text-align:right}
+.cp-motivo{margin-top:6px;padding:6px 8px;background:rgba(248,81,73,0.08);border-left:2px solid var(--danger,#f85149);border-radius:3px;font-size:0.92em;white-space:pre-wrap;word-break:break-word}
+.cp-actions{display:flex;gap:8px;margin-top:8px}
+.cp-btn{flex:1;text-align:center;padding:5px 8px;border-radius:5px;font-size:0.92em;font-weight:600;text-decoration:none;cursor:pointer;border:1px solid var(--bd,#30363d);background:var(--sf2,#161b22);color:var(--tx,#e6edf3)}
+.cp-btn:hover{border-color:var(--ac,#58a6ff)}
 .it-lane.it-lane-empty-search{opacity:0.35}
 
 /* Search input */
@@ -4062,6 +6159,82 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .it-search::placeholder{color:var(--dim)}
 .it-search-clear{position:absolute;right:8px;color:var(--dim);cursor:pointer;font-size:1.1em;padding:0 4px}
 .it-search-clear:hover{color:var(--rd)}
+/* ── #3958 EP8-H5 — Vista tabla configurable + drawer + riesgo explicable ── */
+.it-viewtoggle{display:inline-flex;gap:2px;margin-left:8px;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);border-radius:6px;padding:2px}
+.it-view-btn{background:transparent;border:none;color:var(--text-secondary,#8b949e);font-size:0.72em;font-weight:600;padding:3px 9px;border-radius:4px;cursor:pointer;text-transform:uppercase;letter-spacing:0.4px}
+.it-view-btn:hover{color:var(--text-primary,#e6edf3)}
+.it-view-active{background:var(--info-dim,#1f6feb);color:var(--text-primary,#e6edf3)!important}
+.it-colsel{position:relative;display:inline-block;margin-left:8px}
+.it-colsel-btn,.it-csv-btn{display:inline-flex;align-items:center;gap:5px;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);color:var(--text-secondary,#8b949e);font-size:0.72em;font-weight:600;padding:4px 9px;border-radius:6px;cursor:pointer;text-transform:uppercase;letter-spacing:0.4px}
+.it-colsel-btn:hover,.it-csv-btn:hover{color:var(--text-primary,#e6edf3);border-color:var(--info,#58a6ff)}
+.it-csv-btn{margin-left:6px}
+.it-csv-btn .pl-ic{color:var(--success,#3fb950)}
+.it-colsel-count{background:var(--info-dim,#1f6feb);color:var(--text-primary,#e6edf3);border-radius:var(--radius-full,999px);padding:0 6px;font-size:0.92em}
+.it-colsel-menu{position:absolute;top:calc(100% + 4px);right:0;z-index:30;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);border-radius:8px;padding:6px;min-width:160px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
+.it-colsel-item{display:flex;align-items:center;gap:7px;padding:4px 6px;font-size:0.8em;color:var(--text-secondary,#e6edf3);cursor:pointer;border-radius:4px}
+.it-colsel-item:hover{background:var(--surface-3,#21262d)}
+.it-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 4px;border-bottom:1px solid var(--border-subtle,#21262d);margin-bottom:8px}
+.it-filter-q{display:inline-flex;align-items:center;gap:5px;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);border-radius:6px;padding:4px 9px}
+.it-filter-q .pl-ic{color:var(--text-dim,#8b949e)}
+.it-tfilter-input{background:transparent;border:none;outline:none;color:var(--text-primary,#e6edf3);font-size:0.82em;min-width:180px}
+.it-tfilter-input::placeholder{color:var(--text-disabled,#6e7681)}
+.it-tfilter-sel{background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);color:var(--text-secondary,#e6edf3);font-size:0.78em;padding:5px 8px;border-radius:6px;cursor:pointer}
+.it-url-mirror{display:inline-flex;align-items:center;gap:5px;margin-left:auto;font-family:var(--font-mono,monospace);font-size:0.72em;color:var(--text-dim,#8b949e)}
+.it-url-mirror .pl-ic{color:var(--info,#58a6ff)}
+.it-url-mirror-q{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.it-table-layout{display:flex;gap:12px;align-items:flex-start}
+.it-table-wrap{flex:1;min-width:0;overflow-x:auto;max-height:620px;overflow-y:auto}
+.it-table{width:100%;border-collapse:collapse;font-size:var(--fs-xs,12px)}
+.it-table thead th{position:sticky;top:0;z-index:1;background:var(--surface-2,#161b22);color:var(--text-dim,#8b949e);text-align:left;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;padding:8px 10px;border-bottom:1px solid var(--border,#30363d);white-space:nowrap}
+.it-table tbody td{padding:7px 10px;border-bottom:1px solid var(--border-subtle,#21262d);color:var(--text-secondary,#c9d1d9);vertical-align:middle}
+.it-row{cursor:pointer;transition:background 0.1s}
+.it-row:hover{background:var(--surface-1,#161b22)}
+.it-row.it-row-sel{background:rgba(88,166,255,0.10);box-shadow:inset 3px 0 0 var(--info,#58a6ff)}
+.it-row.it-row-hidden{display:none}
+.it-col-id a{color:var(--info,#58a6ff);text-decoration:none;font-weight:600}
+.it-col-title{max-width:340px}
+.it-title-txt{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-primary,#e6edf3)}
+.it-state-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;background:var(--text-dim,#8b949e)}
+.it-state-dot.st-working{background:var(--success,#3fb950)}
+.it-state-dot.st-pending{background:var(--info,#58a6ff)}
+.it-state-dot.st-done{background:var(--info,#58a6ff)}
+.it-state-dot.st-processed{background:var(--text-dim,#8b949e)}
+.it-dim{color:var(--text-dim,#8b949e)}
+.it-bounces{color:var(--text-dim,#8b949e);font-weight:600}
+.it-bounces.it-bounce-hi{color:var(--danger,#f85149)}
+.it-age{color:var(--text-secondary,#c9d1d9)}
+.it-age.it-age-over{color:var(--warning,#d29922);font-weight:600}
+.it-table-empty,.it-table-no-match{text-align:center;color:var(--text-dim,#8b949e);padding:24px}
+.it-risk-badge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:var(--radius-full,999px);border:1px solid;text-transform:capitalize}
+.it-risk-badge .pl-ic{width:13px;height:13px}
+.rk-alto{color:var(--danger,#f85149);background:var(--danger-bg,rgba(248,81,73,0.12));border-color:var(--danger-dim,#f85149)}
+.rk-medio{color:var(--warning,#d29922);background:var(--warning-bg,rgba(210,153,34,0.12));border-color:var(--warning-dim,#d29922)}
+.rk-bajo{color:var(--success,#3fb950);background:var(--success-bg,rgba(63,185,80,0.12));border-color:var(--success-dim,#3fb950)}
+/* Drawer lateral (no modal) */
+.it-drawer{flex:0 0 360px;max-width:42%;align-self:stretch;background:var(--surface-2,#161b22);border:1px solid var(--border,#30363d);border-left:3px solid transparent;border-image:linear-gradient(180deg,var(--teal,#2dd4bf),var(--info,#58a6ff)) 1;border-radius:8px;max-height:620px;overflow-y:auto}
+.it-drawer-inner{padding:14px}
+.it-drawer-head{display:flex;align-items:center;gap:8px}
+.it-drawer-id{font-weight:700;color:var(--info,#58a6ff);font-size:1.05em}
+.it-drawer-link{color:var(--info,#58a6ff);margin-left:2px}
+.it-drawer-close{margin-left:auto;background:transparent;border:none;color:var(--text-dim,#8b949e);cursor:pointer;padding:2px}
+.it-drawer-close:hover{color:var(--text-primary,#e6edf3)}
+.it-drawer-title{margin:8px 0;font-size:0.95em;color:var(--text-primary,#e6edf3);font-weight:600;line-height:1.35}
+.it-drawer-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.it-chip{display:inline-flex;align-items:center;gap:4px;font-size:0.74em;padding:3px 8px;border-radius:var(--radius-full,999px);background:var(--surface-3,#21262d);color:var(--text-secondary,#c9d1d9)}
+.it-drawer-sectlabel{font-size:0.72em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-dim,#8b949e);font-weight:600;margin:14px 0 6px;display:flex;align-items:center;gap:6px}
+.it-risk-reasons{margin:0;padding-left:18px;font-size:0.82em;color:var(--text-secondary,#c9d1d9)}
+.it-risk-reasons li{margin:2px 0}
+.it-tl-bar{display:flex;height:14px;border-radius:4px;overflow:hidden;background:var(--surface-3,#21262d);margin-bottom:8px}
+.it-tl-seg{height:100%}
+.it-tl-seg.tl-def{background:var(--purple,#bc8cff)}
+.it-tl-seg.tl-dev{background:var(--info,#58a6ff)}
+.it-tl-rows{display:flex;flex-direction:column;gap:3px}
+.it-tl-row{display:flex;align-items:center;gap:7px;font-size:0.78em;color:var(--text-secondary,#c9d1d9)}
+.it-tl-row-empty{color:var(--text-disabled,#6e7681)}
+.it-tl-name{flex:1}
+.it-tl-dur{color:var(--text-dim,#8b949e);font-variant-numeric:tabular-nums}
+.it-tl-skill{color:var(--text-dim,#8b949e);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:900px){.it-table-layout{flex-direction:column}.it-drawer{flex-basis:auto;max-width:100%;width:100%}}
 
 /* Stepper cell (dot + initial) */
 .stepper-cell{display:inline-flex;flex-direction:column;align-items:center;gap:1px;position:relative}
@@ -4094,6 +6267,19 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
 .dp-links{display:flex;gap:8px;margin-left:20px;margin-top:3px}
 .dp-log{color:var(--ac);text-decoration:none;font-size:0.85em;padding:1px 0}
 .dp-log:hover{text-decoration:underline}
+/* #4444 — botón "ver log" (histórico) y selector de intentos/rebotes */
+button.dp-log{background:none;border:none;cursor:pointer;font-family:inherit;line-height:1.2}
+button.dp-log:focus-visible{outline:1px solid var(--ac);outline-offset:2px}
+.dp-hist{margin-left:20px}
+.dp-hist[data-open="1"]{margin-top:4px}
+.dp-hist-loading,.dp-hist-empty{font-size:0.8em;color:var(--dim);padding:2px 0}
+.dp-hist-item{display:flex;align-items:center;gap:6px;font-size:0.82em;color:var(--ac);text-decoration:none;padding:2px 0}
+.dp-hist-item:hover{text-decoration:underline}
+.dp-hist-mark{font-weight:700;width:1em;text-align:center;flex-shrink:0}
+.dp-hist-final{color:var(--gr,#3fb950)}
+.dp-hist-rebote{color:var(--rd)}
+.dp-hist-label{flex-shrink:0}
+.dp-hist-meta{color:var(--dim);font-size:0.92em;margin-left:auto}
 .it-lane{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px 10px 8px 10px;display:flex;flex-direction:column;min-width:0}
 .it-lane-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd);gap:8px;flex-wrap:wrap}
 .it-lane-name{font-size:0.78em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;display:flex;align-items:center;gap:6px;color:var(--lane-color);min-width:0}
@@ -4218,6 +6404,51 @@ a.skill-recent-item:hover{background:var(--bd2);color:var(--ac)}
   border:1px solid var(--bd,#2a3560);font-variant-numeric:tabular-nums;
   margin-right:4px;line-height:1.4;
 }
+/* #4369 — Panel de priorización wave-scoped (reúso del sistema visual del
+   dashboard: tokens de color, tarjetas, botones de prioridad). */
+.wave-prio-panel{
+  background:var(--sf);border:1px solid var(--bd);border-left:3px solid var(--ac);
+  border-radius:8px;padding:12px 14px;margin:0 0 16px;
+}
+.wave-prio-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.wave-prio-title{margin:0;font-size:0.95em;color:var(--tx);font-weight:700}
+.wave-prio-hint{font-size:0.76em;color:var(--dim);flex:1 1 auto;min-width:180px}
+.wave-prio-refresh{
+  background:transparent;color:var(--dim);border:1px solid var(--bd);
+  border-radius:4px;cursor:pointer;font-size:0.9em;padding:2px 8px;line-height:1.4;
+}
+.wave-prio-refresh:hover{color:var(--ac);border-color:var(--ac);background:rgba(88,166,255,0.08)}
+.wave-prio-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.wave-prio-item{
+  display:flex;align-items:center;gap:8px;background:var(--sf2);
+  border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:6px;
+  padding:6px 10px;font-size:0.82em;color:var(--tx);cursor:grab;
+  transition:border-color 0.15s,box-shadow 0.15s,opacity 0.15s;
+}
+.wave-prio-item:hover{border-left-color:var(--ac)}
+.wave-prio-item:active{cursor:grabbing}
+.wave-prio-item.wp-dragging{opacity:0.4;outline:1px dashed var(--ac)}
+.wave-prio-item.wp-drop-above{box-shadow:0 -3px 0 0 var(--ac)}
+.wave-prio-item.wp-drop-below{box-shadow:0 3px 0 0 var(--ac)}
+.wave-prio-pos{
+  display:inline-block;background:var(--sf);color:var(--dim);font-size:0.85em;
+  font-weight:700;padding:1px 7px;border-radius:8px;border:1px solid var(--bd);
+  font-variant-numeric:tabular-nums;min-width:22px;text-align:center;
+}
+.wave-prio-num{font-weight:600;color:var(--ac)}
+.wave-prio-spacer{flex:1 1 auto}
+.wave-prio-btn{
+  background:transparent;color:var(--dim);border:1px solid var(--bd);
+  border-radius:3px;cursor:pointer;font-size:0.85em;padding:1px 6px;line-height:1.4;min-width:22px;
+}
+.wave-prio-btn:hover:not(:disabled){background:rgba(255,255,255,0.06)}
+.wave-prio-btn:disabled{opacity:0.35;cursor:not-allowed}
+.wave-prio-up:hover:not(:disabled){border-color:var(--gn);color:var(--gn)}
+.wave-prio-down:hover:not(:disabled){border-color:var(--rd);color:var(--rd)}
+.wave-prio-empty{list-style:none;color:var(--dim);font-size:0.82em;padding:6px 2px}
+.wave-prio-status{margin-top:8px;font-size:0.78em;min-height:1em}
+.wave-prio-status.wp-ok{color:var(--gn)}
+.wave-prio-status.wp-err{color:var(--rd)}
 /* Secciones colapsables (Issue Tracker, Equipo, Historial) */
 .section-title-clickable{cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:6px}
 .section-title-clickable:hover{opacity:0.9}
@@ -4324,7 +6555,30 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .it-done-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px;margin-top:10px}
 .it-done-grid .lc-card{opacity:0.75}
 
-@media(max-width:900px){.it-lanes{grid-template-columns:1fr}}
+/* #3956 — en viewports angostos la línea sigue siendo horizontal-scrollable
+   (la ola vive en UNA sola línea, CA-7); solo reducimos el ancho mínimo de cada
+   etapa para que entren más en pantalla sin romper el flujo. */
+@media(max-width:900px){.it-lanes > .it-lane{flex-basis:200px;min-width:200px}}
+@media(max-width:768px){.it-lanes > .it-lane{flex-basis:180px;min-width:180px}}
+
+/* #2800 — Board Kanban centerpiece (rediseño V3). Damos aire vertical antes
+   y después del bloque y un anchor invisible para deep-links
+   /dashboard#board-kanban. */
+.board-kanban-anchor{display:block;position:relative;top:-12px;height:1px;width:1px;visibility:hidden}
+.board-kanban-centerpiece{margin-top:var(--space-6,24px);scroll-margin-top:100px}
+.board-kanban-centerpiece + .kpi-tooltip + .kpis-row,
+.board-kanban-centerpiece ~ .kpis-row{margin-top:var(--space-8,32px)}
+/* Badge V3 inline para el título del Kanban. Color teal coherente con
+   .hdr-v3-badge (línea 4680) que ya usa el mismo lenguaje visual V3. */
+.kanban-v3-badge{
+  display:inline-flex;align-items:center;justify-content:center;
+  margin-left:6px;padding:1px 7px;border-radius:6px;
+  background:var(--teal-bg,rgba(45,212,191,0.12));
+  color:var(--teal,#2dd4bf);
+  border:1px solid var(--teal,#2dd4bf);
+  font-size:0.62em;font-weight:700;letter-spacing:0.5px;line-height:1.5;
+  vertical-align:middle;
+}
 
 .ic-hidden{display:none !important}
 
@@ -4357,39 +6611,123 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .eq-work-bar-fill{height:100%;background:var(--teal,#2dd4bf);border-radius:2px}
 .eq-card-kill{color:var(--dim);cursor:pointer;font-weight:700;font-size:1.2em;padding:4px 8px;border-radius:6px}
 .eq-card-kill:hover{color:var(--rd);background:rgba(248,81,73,0.1)}
+/* #3948 — card observacional del Commander: borde punteado info + sin kill +
+   pill "observa" (señales redundantes, no sólo color). */
+.eq-card-observational{background:var(--in-info-soft,rgba(88,166,255,0.12));border:1px solid var(--in-info,#58a6ff);border-left:3px dashed var(--in-info,#58a6ff);opacity:0.94}
+.eq-card-observational .eq-card-name{color:var(--in-info,#58a6ff)}
+.eq-card-observational .eq-card-ring{background:var(--in-info,#58a6ff);box-shadow:0 0 0 0 rgba(88,166,255,0.6)}
+.eq-work-item-observe{background:var(--in-info-soft,rgba(88,166,255,0.12))}
+.eq-card-observe-pill{display:inline-flex;align-items:center;gap:4px;font-size:0.72em;color:var(--in-info,#58a6ff);border:1px solid var(--in-info,#58a6ff);border-radius:6px;padding:2px 8px;cursor:default}
+/* #4443 — linea de peticion del usuario (CA-3/CA-4/CA-5, spec UX-1..UX-5).
+   Fila propia dentro de .eq-card-work (flex-wrap): flex-basis:100% fuerza el
+   salto; min-width:0 es obligatorio para que el ellipsis funcione en flex.
+   Truncado 1 linea + contenido completo por title nativo (CA-4). Prefijo 💬
+   decorativo via ::before (fuera del arbol accesible, no interfiere con el
+   escapeHtml del contenido de usuario). */
+.eq-work-petition{flex-basis:100%;width:100%;min-width:0;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dim);font-size:1em;margin-top:2px}
+.eq-work-petition::before{content:"💬 ";opacity:0.7}
+.eq-work-petition-idle{color:var(--text-dim,#8b949e);font-style:italic}
 
 /* Agent History */
 #agent-history .matrix-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd)}
 #agent-history h2{margin:0;font-size:1.05em;font-weight:700}
+/* #3963 — Historial timeline (línea de tiempo agrupada por día). Copia inline
+   para el render embebido del monolito (la home no carga theme.css). */
 .ah-count{font-size:0.76em;color:var(--dim)}
-.ah-list{display:flex;flex-direction:column;gap:4px}
-.ah-card{display:grid;grid-template-columns:28px 80px 1fr 80px 110px 60px 90px auto;gap:8px;align-items:center;padding:6px 12px;border-radius:var(--radius);border:1px solid var(--bd);border-left:3px solid var(--dim);text-decoration:none;font-size:0.78em;transition:background 0.15s,border-color 0.15s}
-.ah-card:hover{background:rgba(255,255,255,0.04);border-color:var(--ac)}
-.ah-running{border-left-color:var(--teal,#2dd4bf);background:rgba(45,212,191,0.05)}
-.ah-ok{border-left-color:var(--gn,#3fb950)}
-.ah-fail{border-left-color:var(--rd,#f85149)}
-.ah-neutral{border-left-color:var(--dim)}
-.ah-avatar{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.9em;color:#fff;flex-shrink:0}
-.ah-skill{font-weight:700;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ah-aggr{font-size:0.74em;color:var(--dim);margin-left:auto;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.ah-aggr b{color:var(--tx)}
+.ah-aggr-sep{opacity:0.5}
+.ah-aggr .ah-ok{color:var(--gn,#3fb950)}
+.ah-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.ah-chips{display:inline-flex;gap:4px}
+.ah-chip{font-size:0.74em;color:var(--dim);background:var(--bg2,rgba(255,255,255,0.03));border:1px solid var(--bd);border-radius:var(--radius);padding:4px 10px;cursor:pointer;transition:all 0.15s}
+.ah-chip:hover{border-color:var(--ac);color:var(--tx)}
+.ah-chip-on{background:rgba(88,166,255,0.14);border-color:var(--ac);color:var(--ac);font-weight:600}
+.ah-sel{font-size:0.74em;color:var(--tx);background:var(--bg2,rgba(255,255,255,0.03));border:1px solid var(--bd);border-radius:var(--radius);padding:4px 8px;cursor:pointer}
+.ah-search{flex:1;min-width:160px;font-size:0.78em;color:var(--tx);background:var(--bg2,rgba(255,255,255,0.03));border:1px solid var(--bd);border-radius:var(--radius);padding:5px 10px}
+.ah-search:focus{outline:none;border-color:var(--ac)}
+.ah-timeline{display:flex;flex-direction:column;gap:12px}
+.ah-day-group{display:flex;flex-direction:column;gap:4px}
+.ah-day{display:flex;align-items:baseline;gap:8px;font-size:0.72em;text-transform:uppercase;letter-spacing:0.04em;color:var(--dim);font-weight:700;padding:2px 2px 4px;border-bottom:1px solid var(--bd)}
+.ah-day-label{color:var(--tx)}
+.ah-day-aggr{font-weight:400;text-transform:none;letter-spacing:0;opacity:0.8}
+.ah-day-items{display:flex;flex-direction:column;gap:4px}
+.ah-item{border-radius:var(--radius);border:1px solid var(--bd);border-left:3px solid var(--dim);overflow:hidden;transition:border-color 0.15s}
+.ah-item:hover{border-color:var(--ac)}
+.ah-item.ah-running{border-left-color:var(--teal,#2dd4bf);background:rgba(45,212,191,0.04)}
+.ah-item.ah-ok{border-left-color:var(--gn,#3fb950)}
+.ah-item.ah-fail{border-left-color:var(--rd,#f85149)}
+.ah-item.ah-neutral{border-left-color:var(--dim)}
+.ah-card{display:grid;grid-template-columns:18px 24px minmax(120px,1fr) 90px 130px 70px auto;gap:8px;align-items:center;padding:6px 12px;font-size:0.78em;cursor:pointer;list-style:none}
+.ah-card::-webkit-details-marker{display:none}
+.ah-card:hover{background:rgba(255,255,255,0.03)}
+.ah-status-ic{font-weight:700;text-align:center}
+.ah-running .ah-status-ic{color:var(--teal,#2dd4bf)}
+.ah-ok .ah-status-ic{color:var(--gn,#3fb950)}
+.ah-fail .ah-status-ic{color:var(--rd,#f85149)}
+.ah-neutral .ah-status-ic{color:var(--dim)}
+.ah-avatar{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:0.85em;color:#fff;flex-shrink:0}
 .ah-issue{color:var(--ac);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ah-fase{color:var(--dim);font-size:0.9em}
-.ah-status{font-weight:600;white-space:nowrap}
-.ah-running .ah-status{color:var(--teal,#2dd4bf)}
-.ah-ok .ah-status{color:var(--gn,#3fb950)}
-.ah-fail .ah-status{color:var(--rd,#f85149)}
-.ah-neutral .ah-status{color:var(--dim)}
-.ah-dur{color:var(--teal,#2dd4bf);font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
-.ah-time{color:var(--dim);font-size:0.9em;font-variant-numeric:tabular-nums;text-align:right}
-.ah-pdf{text-decoration:none;font-size:1.1em}
-.ah-more{margin-top:4px}
-.ah-more-btn{font-size:0.78em;color:var(--ac);cursor:pointer;padding:6px 12px;text-align:center;border-radius:var(--radius);background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.15);list-style:none}
-.ah-more-btn:hover{background:rgba(88,166,255,0.12)}
-.ah-more-list{display:flex;flex-direction:column;gap:4px;margin-top:4px}
-@media(max-width:900px){.ah-card{grid-template-columns:24px 60px 1fr 70px 50px 70px auto;font-size:0.72em}}
-@media(max-width:600px){.ah-card{grid-template-columns:24px 1fr 80px auto;}.ah-fase,.ah-dur,.ah-time{display:none}}
+.ah-issue .ah-title{color:var(--tx);font-weight:400}
+.ah-skill{font-weight:700;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:0.92em}
+.ah-meta{color:var(--dim);font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ah-time{color:var(--dim);font-size:0.9em;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.ah-actions{display:inline-flex;gap:6px;justify-content:flex-end}
+.ah-act{font-size:0.92em;color:var(--ac);text-decoration:none;border:1px solid var(--bd);border-radius:var(--radius);padding:2px 8px;white-space:nowrap;background:rgba(88,166,255,0.06)}
+.ah-act:hover{background:rgba(88,166,255,0.14);border-color:var(--ac)}
+.ah-detail{padding:8px 12px 10px 42px;border-top:1px dashed var(--bd);font-size:0.76em;color:var(--dim)}
+.ah-d-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.ah-d-item b{color:var(--tx)}
+.ah-d-sep{opacity:0.4}
+.ah-d-warn{color:var(--retry,#F59E0B)}
+.ah-d-cause{color:var(--rd,#f85149);max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.ah-d-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.ah-attach{font-size:0.95em;color:var(--tx);background:var(--bg2,rgba(255,255,255,0.04));border:1px solid var(--bd);border-radius:var(--radius);padding:1px 7px}
+.ah-empty{padding:24px 12px;text-align:center;color:var(--dim);font-size:0.82em}
+.ah-load-more{display:block;width:100%;margin-top:10px;font-size:0.78em;color:var(--ac);cursor:pointer;padding:7px 12px;text-align:center;border-radius:var(--radius);background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.15)}
+.ah-load-more:hover{background:rgba(88,166,255,0.12)}
+.ah-ok{color:var(--gn,#3fb950)}
+.ah-fail{color:var(--rd,#f85149)}
+@media(max-width:900px){.ah-card{grid-template-columns:18px 22px 1fr 70px auto;font-size:0.72em}.ah-meta,.ah-time{display:none}}
+@media(max-width:600px){.ah-card{grid-template-columns:18px 1fr auto}.ah-avatar,.ah-skill{display:none}.ah-detail{padding-left:16px}}
 
 /* Areas grid 2×2 */
 .eq-areas-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+/* #3955 EP8-H2 — Acordeón por skill (renderTeamAccordion SSR). */
+.eq-accordion{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.eq-accordion-empty{padding:12px;color:var(--muted,#8b949e)}
+.eq-acc-card{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius);overflow:hidden}
+.eq-acc-card-obs{border-color:#a371f7;border-left:3px solid #a371f7}
+.eq-acc-head{display:flex;align-items:center;gap:8px;padding:8px 11px;cursor:pointer}
+.eq-acc-head:hover{background:var(--sf)}
+.eq-acc-avatar{width:26px;height:26px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:14px;flex:0 0 auto}
+.eq-acc-name{font-weight:600;font-size:0.82em}
+.eq-acc-count{font-size:0.7em;color:var(--muted,#8b949e)}
+.eq-acc-obs-badge{font-size:0.7em;color:#c9b6ff}
+.eq-acc-spark-wrap{margin-left:auto}
+.eq-spark{display:inline-flex;align-items:flex-end;gap:1px;height:18px}
+.eq-spark-bar{width:3px;background:#1f6feb;border-radius:1px;min-height:1px}
+.eq-spark-bar-recent{background:#58a6ff}
+.eq-acc-body{display:flex;flex-direction:column;border-top:1px solid var(--bd)}
+.eq-ag-row{display:flex;flex-direction:column;gap:4px;padding:7px 12px 7px 30px;border-bottom:1px solid var(--bd)}
+.eq-ag-row:last-child{border-bottom:none}
+.eq-ag-row-cooldown{background:rgba(245,180,84,0.06)}
+.eq-ag-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.eq-ag-issue{color:#58a6ff;font-weight:700;font-size:0.74em}
+.eq-ag-issue-obs{color:#c9b6ff}
+.eq-ag-fase{font-size:0.66em;padding:1px 6px;border-radius:9px;background:var(--sf);color:var(--muted,#8b949e);border:1px solid var(--bd)}
+.eq-ag-title{font-size:0.74em;color:var(--muted,#8b949e);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px}
+.eq-ag-meta{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.eq-ag-bar{flex:0 0 80px;height:6px;border-radius:3px;background:var(--sf);overflow:hidden}
+.eq-ag-bar>span{display:block;height:100%;background:#58a6ff}
+.eq-ag-bar-indeterminate>span{width:30%;opacity:0.5}
+.eq-ag-pct{font-size:0.7em;color:#79c0ff;min-width:28px}
+.eq-ag-dur{font-size:0.7em;color:var(--muted,#8b949e)}
+.eq-ag-log{font-size:0.7em;color:#2dd4bf;text-decoration:none}
+.eq-ag-kill{margin-left:auto;background:transparent;border:1px solid var(--rd,#f85149);color:var(--rd,#f85149);border-radius:6px;padding:2px 9px;font-size:0.7em;cursor:pointer}
+.eq-ag-protected{margin-left:auto;font-size:0.7em;color:#c9b6ff;border:1px solid #a371f7;border-radius:6px;padding:2px 9px}
+.eq-ag-cooldown{font-size:0.7em;color:#f5b454}
+.eq-ag-wait{margin-left:auto;font-size:0.7em;color:var(--muted,#8b949e);border:1px solid var(--bd);border-radius:6px;padding:2px 9px;opacity:0.7}
 .eq-area-card{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--radius);padding:8px 10px}
 .eq-area-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:0.66em;text-transform:uppercase;letter-spacing:0.7px;font-weight:700}
 .eq-area-card-name{display:flex;align-items:center;gap:5px;color:var(--muted,#8b949e)}
@@ -4444,6 +6782,97 @@ body.standalone .section-collapsed .section-body{display:block !important}
 .reco-btn-reject{border-color:#f85149;color:#f85149}
 .reco-btn-reject:hover{background:rgba(248,81,73,0.12)}
 
+/* ============================================================
+ * #3625 CA-5 — Widget de Audit trail · Allowlist mutations
+ * Estados visuales A/B/C/D + 5 KPIs + banners condicionales.
+ * Spec: .pipeline/assets/mockups/narrativa-allowlist-audit-trail.md
+ * Mockup: .pipeline/assets/mockups/22-allowlist-audit-trail.svg
+ * Consume tokens de design-tokens.css (zero hardcoded colors).
+ * ============================================================ */
+.ppa-section{margin:8px 0;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.02)}
+.ppa-section > summary{cursor:pointer;padding:10px 12px;color:var(--text-secondary,var(--dim));font-weight:600;font-size:0.92em;list-style:none;display:flex;align-items:center;gap:8px}
+.ppa-section > summary::-webkit-details-marker{display:none}
+.ppa-section[open] > summary{border-bottom:1px solid rgba(255,255,255,0.06)}
+.ppa-section-body{padding:14px}
+.ppa-banner{padding:10px 14px;border-radius:6px;margin-bottom:12px;font-size:0.86em;display:flex;align-items:flex-start;gap:8px;line-height:1.4}
+.ppa-banner-critical{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,#f85149);border:1px solid var(--danger,rgba(248,81,73,0.45));border-left:4px solid var(--danger,#f85149)}
+.ppa-banner-warning{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,#d29922);border:1px solid var(--warning,rgba(210,153,34,0.45));border-left:4px solid var(--warning,#d29922)}
+.ppa-banner code{background:rgba(255,255,255,0.08);padding:1px 6px;border-radius:3px;font-family:'SF Mono',Consolas,monospace;font-size:0.92em}
+.ppa-kpis{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px;margin-bottom:14px}
+@media (max-width:1100px){.ppa-kpis{grid-template-columns:repeat(2,1fr)}.ppa-kpis > div:nth-child(5){grid-column:1/-1}}
+.ppa-kpi{background:var(--surface-1,var(--sf));border:1px solid var(--border-default,var(--bd));border-radius:8px;padding:12px 14px;position:relative;overflow:hidden}
+.ppa-kpi::before{content:'';position:absolute;left:0;top:0;right:0;height:3px;background:var(--border-default,var(--bd));border-radius:8px 8px 0 0}
+.ppa-kpi-auth::before{background:var(--success,#3fb950)}
+.ppa-kpi-rejected::before{background:var(--danger,#f85149)}
+.ppa-kpi-unknown::before{background:var(--warning,#d29922)}
+.ppa-kpi-chain::before{background:var(--info,#58a6ff)}
+.ppa-kpi-label{font-size:10px;color:var(--text-secondary,var(--dim));letter-spacing:1px;font-weight:600;text-transform:uppercase;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.ppa-kpi-label svg{width:14px;height:14px;flex:0 0 auto}
+.ppa-kpi-value{font-size:24px;font-weight:700;color:var(--text-primary,var(--tx));font-variant-numeric:tabular-nums;line-height:1.1}
+.ppa-kpi-value.ppa-value-success{color:var(--success,#3fb950)}
+.ppa-kpi-value.ppa-value-danger{color:var(--danger,#f85149)}
+.ppa-kpi-value.ppa-value-warning{color:var(--warning,#d29922)}
+.ppa-kpi-value.ppa-value-dim{color:var(--text-dim,var(--dim2))}
+.ppa-kpi-sub{font-size:10px;color:var(--text-secondary,var(--dim));margin-top:4px}
+.ppa-table-wrap{background:var(--surface-1,var(--sf));border:1px solid var(--border-default,var(--bd));border-radius:8px;overflow:hidden}
+.ppa-table{width:100%;border-collapse:collapse;font-size:12px}
+.ppa-table thead th{background:var(--surface-2,var(--sf2));text-align:left;padding:8px 12px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text-secondary,var(--dim));border-bottom:1px solid var(--border-default,var(--bd))}
+.ppa-table tbody td{padding:10px 12px;border-bottom:1px solid var(--border-default,var(--bd));vertical-align:top;color:var(--text-secondary,var(--tx))}
+.ppa-table tbody tr:last-child td{border-bottom:0}
+.ppa-row-A{background:transparent}
+.ppa-row-B{background:transparent}
+.ppa-row-C{background:var(--danger-bg,rgba(248,81,73,0.08));border-left:4px solid var(--danger,#f85149)}
+.ppa-row-D{background:var(--warning-bg,rgba(210,153,34,0.08));border-left:4px solid var(--warning,#d29922)}
+.ppa-source-pill,.ppa-action-pill,.ppa-auth-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.ppa-source-pill svg,.ppa-action-pill svg,.ppa-auth-pill svg{width:12px;height:12px}
+.ppa-pill-human{background:var(--purple-bg,rgba(188,140,255,0.15));color:var(--purple,#bc8cff)}
+.ppa-pill-machine{background:var(--info-bg,rgba(88,166,255,0.15));color:var(--info,#58a6ff)}
+.ppa-pill-unknown{background:var(--warning-bg,rgba(210,153,34,0.15));color:var(--warning,#d29922)}
+.ppa-pill-success{background:var(--success-bg,rgba(63,185,80,0.15));color:var(--success,#3fb950)}
+.ppa-pill-info{background:var(--info-bg,rgba(88,166,255,0.15));color:var(--info,#58a6ff)}
+.ppa-pill-danger{background:var(--danger-bg,rgba(248,81,73,0.15));color:var(--danger,#f85149)}
+.ppa-pill-warning{background:var(--warning-bg,rgba(210,153,34,0.15));color:var(--warning,#d29922)}
+.ppa-diff{font-family:'SF Mono',Consolas,monospace;font-size:11px;line-height:1.4}
+.ppa-diff-add{color:var(--success,#3fb950);font-weight:600}
+.ppa-diff-rem{color:var(--text-dim,var(--dim2));font-weight:600}
+.ppa-diff-rem-rejected{color:var(--danger,#f85149);font-weight:600}
+.ppa-just{max-width:220px;font-size:11px;color:var(--text-secondary,var(--dim));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ppa-just-redacted{font-style:italic;color:var(--warning,#d29922)}
+.ppa-microcopy{font-size:10px;color:var(--text-dim,var(--dim2));margin-top:2px;line-height:1.3}
+.ppa-microcopy-rejected{color:var(--danger,#f85149);font-weight:600}
+.ppa-microcopy-backfill{color:var(--warning,#d29922)}
+.ppa-when{font-family:'SF Mono',Consolas,monospace;font-size:11px;color:var(--text-secondary,var(--dim));white-space:nowrap}
+.ppa-footer{margin-top:10px;font-size:11px;color:var(--text-dim,var(--dim2));text-align:right}
+.ppa-footer code{background:rgba(255,255,255,0.06);padding:1px 6px;border-radius:3px;font-family:'SF Mono',Consolas,monospace}
+.ppa-footer a{color:var(--info,#58a6ff);text-decoration:none}
+.ppa-footer a:hover{text-decoration:underline}
+.ppa-empty{padding:20px;text-align:center;color:var(--text-dim,var(--dim));font-size:12px;font-style:italic}
+@media (prefers-reduced-motion: reduce){.ppa-banner,.ppa-table tbody tr{transition:none}}
+
+/* #4371 CA-8/CA-10 — Audit trail · Olas & Issues. Reusa el layout de .ppa-* del
+   widget hermano (allowlist), con clases wia-* propias para las filas. */
+.wia-row-A{background:transparent}
+.wia-row-B{background:transparent}
+.wia-row-C{background:var(--danger-bg,rgba(248,81,73,0.08));border-left:4px solid var(--danger,#f85149)}
+.wia-row-D{background:var(--warning-bg,rgba(210,153,34,0.08));border-left:4px solid var(--warning,#d29922)}
+.wia-when{font-family:'SF Mono',Consolas,monospace;font-size:11px;color:var(--text-secondary,var(--dim));white-space:nowrap}
+.wia-actor-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.wia-actor-pill svg{width:12px;height:12px}
+.wia-pill-human{background:var(--purple-bg,rgba(188,140,255,0.15));color:var(--purple,#bc8cff)}
+.wia-pill-machine{background:var(--info-bg,rgba(88,166,255,0.15));color:var(--info,#58a6ff)}
+.wia-pill-unknown{background:var(--warning-bg,rgba(210,153,34,0.15));color:var(--warning,#d29922)}
+.wia-event{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.wia-event svg{width:12px;height:12px}
+.wia-obj{font-family:'SF Mono',Consolas,monospace;font-size:11px;color:var(--text-secondary,var(--tx))}
+.wia-trans{font-family:'SF Mono',Consolas,monospace;font-size:11px;line-height:1.4}
+.wia-prev{color:var(--text-dim,var(--dim2))}
+.wia-post{color:var(--success,#3fb950);font-weight:600}
+.wia-note{max-width:220px;font-size:11px;color:var(--text-secondary,var(--dim));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:bottom}
+.wia-dim{color:var(--text-dim,var(--dim2))}
+.wia-microcopy{font-size:10px;color:var(--text-dim,var(--dim2));margin-top:2px;line-height:1.3}
+.wia-microcopy-alert{color:var(--danger,#f85149);font-weight:600}
+.wia-empty{padding:20px;text-align:center;color:var(--text-dim,var(--dim));font-size:12px;font-style:italic}
+
 </style></head>
 <body>
   ${loadIconSprite()}
@@ -4455,19 +6884,28 @@ body.standalone .section-collapsed .section-body{display:block !important}
         <span class="hdr-title-sub">Dashboard V3 · localhost:3200${v3Active ? ' · ' + v3Workers.length + ' workers V3' : ''}</span>
       </span>
       <div class="hdr-status-group" role="status" aria-live="polite">
-        <button class="pipe-status ${isPaused ? 'pipe-status-paused' : isPartialPause ? 'pipe-status-partial' : 'pipe-status-running'}" onclick="pauseAction('${isPaused || isPartialPause ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : isPartialPause ? 'Pausa parcial — click para reanudar completo' : 'Click para pausar el pipeline'}" aria-label="Estado del pipeline: ${isPaused ? 'pausado' : isPartialPause ? 'pausa parcial' : 'corriendo'}">
+        ${/* #3956 CA-3 — Badge ÚNICO de pausa. Reemplaza los 3 estados confusos
+             (running/paused/partial) por un solo badge con 2 estados claros:
+             "Pausado" (pausa total) y "Fuera de allowlist · N" (pausa parcial:
+             solo N issues de la allowlist procesan, el resto queda fuera). El
+             listado de issues permitidos se traslada al title/aria del mismo
+             badge — ya no existe la pill separada (un solo badge). */''}
+        <button class="pipe-status ${isPaused ? 'pipe-status-paused' : isPartialPause ? 'pipe-status-paused pipe-status-allowlist' : 'pipe-status-running'}" onclick="pauseAction('${isPaused || isPartialPause ? 'resume' : 'pause'}')" title="${isPaused ? 'Pipeline pausado — click para reanudar' : isPartialPause ? `Fuera de allowlist — solo procesan ${partialPauseState.allowedIssues.length} issue(s): ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}. Click para reanudar completo` : 'Click para pausar el pipeline'}" aria-label="Estado del pipeline: ${isPaused ? 'pausado' : isPartialPause ? `fuera de allowlist, ${partialPauseState.allowedIssues.length} issues permitidos` : 'corriendo'}">
           ${isPaused
             ? ic('estado-partial-pause', 'pausado') + '<span>Pausado</span>'
             : isPartialPause
-              ? ic('estado-partial-pause', 'pausa parcial') + `<span>Parcial · ${partialPauseState.allowedIssues.length}</span>`
+              ? ic('estado-partial-pause', 'fuera de allowlist') + `<span>Fuera de allowlist · ${partialPauseState.allowedIssues.length}</span>`
               : ic('health-ok', 'sano') + '<span>Running</span>'}
         </button>
-        ${isPartialPause ? `<span class="hdr-v3-badge" title="Pausa parcial — solo estos issues procesan" style="background:var(--warning-bg,rgba(240,165,0,0.15));color:var(--warning,#f0a500);border-color:rgba(240,165,0,0.4);" aria-label="Issues permitidos: ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}">${ic('estado-partial-pause')} ${partialPauseState.allowedIssues.map(i => '#' + i).join(', ')}</span>` : ''}
         ${(() => {
-          // (#2892 PR-C / CA-3.1, CA-3.4) Pill compacta "CONSUMO ANÓMALO · +N%"
-          // visible cuando hay alerta activa NO snoozed. Si está snoozed, la
-          // pill desaparece pero el alert sigue activo bajo el capó (vuelve
-          // a aparecer cuando expire el snooze o el operador haga ack manual).
+          // (#2892 PR-C / CA-3.1, CA-3.4) Pill compacta "CONSUMO ANÓMALO · +N%".
+          // #3735 — render delegado al módulo costos.js (pill + banner). Si el
+          // módulo no cargó, fallback inline inerte (CA-A3) que conserva el
+          // comportamiento histórico.
+          if (costosView && typeof costosView.renderCostosPill === 'function') {
+            try { return costosView.renderCostosPill(state, { ic }); }
+            catch (e) { log(`costos pill render fail: ${e.message}`); return ''; }
+          }
           const ca = state.costAnomaly || {};
           if (!ca.visible) return '';
           const a = ca.alert || {};
@@ -4505,9 +6943,16 @@ body.standalone .section-collapsed .section-body{display:block !important}
   </div>
   ${(() => {
     // (#2892 PR-C / CA-2.7, CA-3.4) Banner persistente de alerta de consumo
-    // anómalo. Se muestra cuando hay alerta activa Y NO está snoozed. Se
-    // cierra por: (a) acuse manual ("Ya lo vi"), (b) expira el snooze, o
-    // (c) auto-clear cuando vuelve a baseline 2 chequeos consecutivos.
+    // anómalo. #3735 — render delegado al módulo costos.js. Si el módulo no
+    // cargó, fallback inline inerte (CA-A3) que conserva el comportamiento
+    // histórico (solo se muestra cuando hay alerta visible).
+    if (costosView && typeof costosView.renderCostosBanner === 'function') {
+      try { return costosView.renderCostosBanner(state, { ic }); }
+      catch (e) {
+        log(`costos banner render fail: ${e.message}`);
+        return costosView.renderInert ? costosView.renderInert() : '';
+      }
+    }
     const ca = state.costAnomaly || {};
     if (!ca.visible) return '';
     const a = ca.alert || {};
@@ -4545,92 +6990,54 @@ body.standalone .section-collapsed .section-body{display:block !important}
     </div>
   </section>`;
   })()}
+  ${(costosView && typeof costosView.renderCostosClientScript === 'function')
+    ? costosView.renderCostosClientScript()
+    : ''}
   <a href="/consumo" class="hdr-v3-badge" style="text-decoration:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin:8px 0 4px" title="V3 · Consumo de tokens / tiempo / TTS por agente, fase e issue (#2477)">${ic('fase-build')} Consumo V3</a>
   <div class="hdr-status-line ${stale > 0 ? 'sl-danger' : isPaused ? 'sl-warn' : trabajando > 0 ? 'sl-active' : 'sl-idle'}"></div>
-  <!-- #2893 — Banner de deps faltantes en pausa parcial -->
-  <div id="partial-pause-deps-banner" role="alert" style="display:none;margin:8px 0 4px;padding:10px 14px;border-radius:8px;background:rgba(240,165,0,0.12);border:1px solid rgba(240,165,0,0.45);color:#f0a500;font-size:var(--fs-sm,0.85rem);">
-    <span style="font-weight:600;display:inline-flex;align-items:center;gap:6px;">${ic('estado-partial-pause')} Pausa parcial trabada</span>
-    <span id="partial-pause-deps-msg" style="margin-left:10px;color:var(--text,#c9d1d9);"></span>
-    <button onclick="includeMissingDeps()" style="margin-left:12px;padding:4px 10px;background:#f0a500;color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-weight:600;" title="Agregar todas las deps abiertas al allowlist">Agregar dependencias al allowlist</button>
-    <button onclick="dismissDepsBanner()" style="margin-left:6px;padding:4px 10px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;" title="Ocultar (volverá a aparecer en el próximo ciclo si persiste)">Ocultar</button>
-  </div>
-  ${(() => {
-    const pw = state.priorityWindows || {};
-    const qaActive = pw.qa && pw.qa.active;
-    const buildActive = pw.build && pw.build.active;
-    const blockedNow = (typeof blocked !== 'undefined') && blocked;
-    let barCls = 'ctrl-ok';
-    if (blockedNow) barCls = 'ctrl-blocked';
-    else if (isPaused) barCls = 'ctrl-paused';
-    else if (qaActive) barCls = 'ctrl-priority-qa';
-    else if (buildActive) barCls = 'ctrl-priority-build';
-    else if (stale > 0) barCls = 'ctrl-stale';
+  <!-- #3728 - Ventana Pipeline extraida al modulo views/dashboard/pipeline.js
+       (split de #3715). Antes inline aca: banner deps + allowlist + audit +
+       control bar + infra-health. El modulo es SSR puro: recibe el state ya
+       computado + helpers compartidos inyectados. Los 6 handlers state-changing
+       (pauseAction, allowlist*, includeMissingDeps) + pwAction siguen en el
+       <script> global de este archivo - la cadena CSRF same-origin se preserva. -->
+  ${pipelineView ? pipelineView.renderPipelineHTML({
+    partialPauseState,
+    allowlistCandidatesList,
+    partialPauseAuditData,
+    waveIssueAuditData,
+    desyncStatusData,
+    state,
+    stale,
+    blocked: (typeof blocked !== 'undefined') && blocked,
+    isPaused,
+    isPartialPause,
+    trabajando,
+    // #5172 · D-C — SEGUNDO lector de config del dashboard, independiente del
+    // de `loadConfig()`. Resolvía la raíz por `ROOT` en vez de por `PIPELINE`,
+    // así que IGNORABA `PIPELINE_STATE_DIR` (leía el config del repo aunque el
+    // proceso corriera contra otro directorio de estado) y encima degradaba con
+    // `catch { return 3 }`. No figuraba en ningún CA. Ahora pasa por el punto
+    // único, con la MISMA raíz que el resto del dashboard.
+    pwThreshold: (() => {
+      const cfgYaml = loadConfig();
+      if (!cfgYaml) return null;   // la vista muestra el estado de error, no un umbral inventado
+      return (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
+    })(),
+    now: Date.now(),
+    ic,
+    renderInfraHealth,
+    renderPartialPauseAuditRows,
+    renderWaveAuditRows,
+  }) : '<!-- pipeline view unavailable -->'}
 
-    let statusHtml;
-    if (blockedNow) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26D4</span>Recursos al l\u00EDmite \u2014 nuevos lanzamientos en espera</span>';
-    } else if (isPaused) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u23F8\uFE0F</span>Pipeline en pausa</span>'
-        + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Reanudar lanzamientos">\u25B6 Reanudar</button>';
-    } else if (isPartialPause) {
-      const allowedList = partialPauseState.allowedIssues.map(i => '#' + i).join(', ');
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F3AF}</span>Pausa parcial \u00B7 allowed: ' + allowedList + '</span>'
-        + '<button class="ctrl-bar-btn" onclick="pauseAction(\'resume\')" title="Desactivar pausa parcial y reanudar todo">\u25B6 Reanudar</button>';
-    } else if (qaActive) {
-      const elapsed = pw.qa.activatedAt ? Math.round((Date.now() - pw.qa.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F50D}</span>Ventana QA activa \u00B7 ' + elapsed + ' min</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'qa\',\'off\')" title="Desactivar ventana QA">\u2715 Cerrar</button>';
-    } else if (buildActive) {
-      const elapsed = pw.build.activatedAt ? Math.round((Date.now() - pw.build.activatedAt) / 60000) : 0;
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u{1F528}</span>Ventana Build activa \u00B7 ' + elapsed + ' min</span>'
-        + '<button class="ctrl-bar-btn" onclick="pwAction(\'build\',\'off\')" title="Desactivar ventana Build">\u2715 Cerrar</button>';
-    } else if (stale > 0) {
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u26A0\uFE0F</span>' + stale + ' issue' + (stale > 1 ? 's' : '') + ' sin avance (+30 min)</span>';
-    } else {
-      const msg = trabajando > 0 ? trabajando + ' agente' + (trabajando > 1 ? 's' : '') + ' trabajando' : 'Sin actividad';
-      statusHtml = '<span class="ctrl-bar-status"><span class="ctrl-bar-status-icon">\u2713</span>' + msg + '</span>';
-    }
-
-    // Toggles de Priority Windows (siempre visibles a la derecha, salvo si ya hay una activa en el status)
-    let pwThreshold = 3;
-    try {
-      const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
-      pwThreshold = (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
-    } catch {}
-    const items = [
-      { key: 'qa', emoji: '\u{1F50D}', label: 'QA', cls: '' },
-      { key: 'build', emoji: '\u{1F528}', label: 'Build', cls: ' pw-build' }
-    ];
-    const otherActive = (k) => items.some(j => j.key !== k && pw[j.key] && pw[j.key].active);
-    const togglesHtml = items.map(i => {
-      const s = pw[i.key];
-      const active = s && s.active;
-      const elapsed = active && s.activatedAt ? Math.round((Date.now() - s.activatedAt) / 60000) : 0;
-      const text = active ? i.emoji + ' ' + i.label + ' \u00B7 ' + elapsed + 'm' : i.emoji + ' ' + i.label;
-      let tip = active
-        ? i.label + ' Priority activa (' + elapsed + 'm) \u2014 click para desactivar'
-        : 'Activar ' + i.label + ' Priority (umbral auto: ' + pwThreshold + ' issues)';
-      if (!active && otherActive(i.key)) tip += ' \u2014 \u26A0 la otra ventana est\u00E1 activa (autoexcluyentes)';
-      const action = active ? 'off' : 'on';
-      const cls = active ? 'pw-toggle-active' : 'pw-toggle-inactive';
-      return '<span class="pw-toggle ' + cls + i.cls + '" title="' + tip + '" onclick="pwAction(\'' + i.key + '\',\'' + action + '\')">' + text + '</span>';
-    }).join('');
-
-    // Toggle de pausa (solo cuando no está pausado ni bloqueado — si está pausado, ya hay botón Reanudar en el status)
-    const pauseBtnHtml = (!isPaused && !blockedNow)
-      ? '<button class="ctrl-bar-btn" onclick="pauseAction(\'pause\')" title="Pausar todos los lanzamientos">\u23F8 Pausar</button>'
-      : '';
-
-    return '<div class="pipeline-ctrl-bar ' + barCls + '">'
-      + statusHtml
-      + '<span class="ctrl-bar-spacer"></span>'
-      + '<span class="ctrl-bar-label">Priority</span>'
-      + '<span class="pw-toggles">' + togglesHtml + '</span>'
-      + (pauseBtnHtml ? '<span class="ctrl-bar-sep"></span>' + pauseBtnHtml : '')
-      + '</div>';
-  })()}
-
-  ${renderInfraHealth(state)}
+  <!-- #2800 — Board Kanban centerpiece: protagonista visual del dashboard V3.
+       Antes vivía al final del template, después de KPIs/Cola/Equipo/Servicios y
+       colapsado por default (mockup 01-home-dashboard.svg). Ahora aparece
+       inmediatamente debajo del header de infra para que el operador vea el
+       estado del trabajo (3 lanes) sin scrollear. KPIs/Equipo/Servicios quedan
+       como info secundaria más abajo. -->
+  ${matrixHTML}
 
   <div id="kpi-tooltip" class="kpi-tooltip"></div>
   <div class="kpis-row">
@@ -4690,30 +7097,119 @@ body.standalone .section-collapsed .section-body{display:block !important}
     })()}
   </div>
 
-  <div class="bar-section panel-equipo panel-equipo-full section-collapsible" id="equipo" data-section="equipo">
-    <div class="eq-head">
-      <h2 class="eq-title section-title-clickable" onclick="toggleSection('equipo')" title="Click para colapsar/expandir">
-        <span class="section-chevron">▼</span> 🧠 Equipo
-      </h2>
-      <a class="section-popout" href="/?section=equipo" target="_blank" title="Abrir en ventana independiente" onclick="event.stopPropagation()">↗</a>
-      <div class="eq-summary">
-        <span>Activos <b>${eqTotalBusy}</b>/${eqTotalSkills}</span>
-        <span>\u00B7</span>
-        <span>Utilización <b>${eqTotalSkills > 0 ? Math.round(eqTotalBusy / eqTotalSkills * 100) : 0}%</b></span>
-        <span>\u00B7</span>
-        <span>Cola <b>${pendientes}</b></span>
-      </div>
+  ${(() => {
+    // #3356 — Sub-seccion "Cola detallada" del header del large board.
+    // Lista hasta 10 issues pendientes con formato `#num · titulo · [fase] · skill`.
+    // Datos provienen 100% de `pendientesList` (slice 0..10) ya consolidado en
+    // server-side. SIN endpoints HTTP nuevos (CA-4). Titulos escapados con
+    // esc() (CA-5 + tests dashboard-header-cola-xss).
+    const COLA_MAX = 10;
+    // #4360 — filtrar la cola por la ola activa (mismo origen de verdad que
+    // "No ingresados": state.activeWave.issues, normalizado por wave-resolver).
+    // Fail-safe Opción A (cerrada por PO): si la ola resuelve a issues:[] → cola
+    // vacía, nunca "mostrar todos". Helper puro testeable en lib/cola-wave-filter.js.
+    //
+    // Guarda `typeof`: en el render real de producción `state` y
+    // `filterPendientesByWave` viven en el closure y filtran. El test
+    // dashboard-header-cola-xss extrae ESTE IIFE y lo corre en un sandbox `vm`
+    // aislado (solo `pendientesList` + `esc`, sin `state` ni `require`); allí las
+    // guardas degradan a `pendientesList` sin filtrar, preservando la cobertura de
+    // escape XSS y de slice del bloque de render base (#3356).
+    const colaSource =
+      (typeof filterPendientesByWave === 'function'
+        && typeof state !== 'undefined' && state && state.activeWave)
+        ? filterPendientesByWave(pendientesList, state.activeWave.issues || [])
+        : pendientesList;
+    const items = colaSource.slice(0, COLA_MAX);
+    const ocultos = Math.max(0, colaSource.length - COLA_MAX);
+    const phaseInfo = (faseKey) => {
+      if (!faseKey) return { lane: 'desarrollo', name: '—' };
+      const idx = faseKey.indexOf('/');
+      const pipe = idx > 0 ? faseKey.slice(0, idx) : faseKey;
+      const fase = idx > 0 ? faseKey.slice(idx + 1) : '';
+      let lane;
+      if (pipe === 'definicion') lane = 'definicion';
+      else if (pipe === 'entrega') lane = 'entrega';
+      else if (pipe === 'desarrollo' && (fase === 'verificacion' || fase === 'qa')) lane = 'qa';
+      else lane = 'desarrollo';
+      return { lane, name: fase || pipe || '—' };
+    };
+    const pendingSkill = (d) => {
+      if (!d || !d.faseActual) return '';
+      const entries = (d.fases && d.fases[d.faseActual]) || [];
+      const e = entries.find(x => x.estado === 'pendiente') || entries.find(x => x.estado === 'trabajando');
+      return e ? (e.skill || '') : '';
+    };
+    let rowsHtml = '';
+    if (items.length === 0) {
+      rowsHtml = '<li class="cola-empty" role="listitem">Sin issues en cola — el pipeline está al día</li>';
+    } else {
+      rowsHtml = items.map(([num, d]) => {
+        const ph = phaseInfo(d.faseActual);
+        const skill = pendingSkill(d);
+        const title = d.title ? esc(d.title) : `Issue #${esc(String(num))}`;
+        const skillHtml = skill
+          ? `<span class="cola-skill" title="Skill esperado: ${esc(skill)}"><span class="cola-skill-arrow">↪</span>${esc(skill)}</span>`
+          : '<span class="cola-skill"></span>';
+        return `<li class="cola-detallada-item" role="listitem">
+          <span class="cola-num">#${esc(String(num))}</span>
+          <span class="cola-title" title="${title}">${title}</span>
+          <span class="cola-phase cola-phase-${ph.lane}" title="Fase actual: ${esc(ph.name)}">${esc(ph.name)}</span>
+          ${skillHtml}
+        </li>`;
+      }).join('');
+      // Placeholders para mantener altura estable cuando hay menos de COLA_MAX (UX narrativa).
+      const placeholders = Math.max(0, COLA_MAX - items.length);
+      for (let i = 0; i < placeholders; i++) {
+        rowsHtml += `<li class="cola-detallada-item is-placeholder" role="listitem" aria-hidden="true">
+          <span class="cola-num">—</span>
+          <span class="cola-title">(slot libre)</span>
+          <span class="cola-skill"></span>
+        </li>`;
+      }
+    }
+    const total = colaSource.length; // #4360 — contadores sobre lista filtrada por ola (CA-3)
+    const noteParts = [];
+    if (total > 0) {
+      noteParts.push(`mostrando ${items.length} de ${total}`);
+      if (ocultos > 0) noteParts.push(`${ocultos} oculto${ocultos === 1 ? '' : 's'} (scroll)`);
+      noteParts.push('orden FIFO');
+    } else {
+      noteParts.push('orden FIFO');
+    }
+    const noteHtml = noteParts.join(' · ');
+    return `
+  <section class="cola-detallada" aria-label="Cola del pipeline" data-test-id="cola-detallada">
+    <div class="cola-detallada-head">
+      <span class="cola-detallada-head-icon" aria-hidden="true">\u{1F4CB}</span>
+      <span class="cola-detallada-title">Cola</span>
+      <span class="cola-detallada-count">${total} issue${total === 1 ? '' : 's'}</span>
+      <span class="cola-detallada-note">${esc(noteHtml)}</span>
     </div>
-    <div class="section-body">
-    ${activeStripHTML}
-    ${eqAreaGridHTML || '<span class="empty-label">Sin skills configurados</span>'}
-    ${svcCardsHTML ? '<div class="eq-svc-section"><div class="eq-svc-head">⚙ Servicios</div><div class="svc-grid eq-svc-grid">' + svcCardsHTML + '</div></div>' : ''}
-    </div>
-  </div>
+    <ul class="cola-detallada-list" role="list">${rowsHtml}</ul>
+  </section>`;
+  })()}
 
-  ${matrixHTML}
+  ${equipoView ? equipoView.renderEquipoSsr(Object.assign({
+    skillsByCategory, recentBySkill, skillUsageCount, skillStats,
+    agentPersona: AGENT_PERSONA, categoryMeta: CATEGORY_META,
+    pendientes, activeStripHTML, svcCardsHTML,
+  }, (function(){
+    // #3955 EP8-H2 — acordeón por skill: agentes vivos + sparkline 24h.
+    try {
+      return {
+        teamAgents: _architectSlices ? _architectSlices.activeAgents(state) : [],
+        teamSpark: _architectSlices ? _architectSlices.skillSpark24h(state) : {},
+      };
+    } catch { return { teamAgents: [], teamSpark: {} }; }
+  })())) : `<div class="bar-section panel-equipo panel-equipo-full" id="equipo"><span class="empty-label">Equipo no disponible</span></div>`}
+
+  <!-- #2800 — matrixHTML antes vivía aquí (post Equipo/Servicios). Migrado al
+       centerpiece debajo del header de infra para el rediseño V3. -->
 
   ${historyHTML}
+
+  ${renderGhostArtifactsWidget(state.ghostArtifacts)}
 
   ${renderRecommendationsSection()}
 
@@ -4753,6 +7249,10 @@ body.standalone .section-collapsed .section-body{display:block !important}
   </div>
 </div>
 
+${/* #3958 EP8-H5 \u2014 l\u00f3gica pura isom\u00f3rfica (CSV anti-injection + filtros allowlist)
+     inyectada como window.IssueCsv / window.IssueFilters. Mismo c\u00f3digo testeado
+     con node --test \u2192 cero divergencia cliente/servidor. */''}
+${loadIssueLibsClientJs()}
 <script>
 // #2523 CA-10 \u2014 escape HTML client-side unico (antes habia replace inline en renderLine y esc duplicado en otro script).
 // Cubre los 5 caracteres XSS-relevantes (& < > " '), igual que el esc() server-side.
@@ -4787,7 +7287,18 @@ function saveIssueTrackerState() {
       if (lane) subFilters[lane] = sf;
     });
     const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
-    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, laneExpanded, filter, subFilters, scrollY }));
+    // #3958 — estado de la vista tabla (sobrevive el DOM morphing de softRefresh).
+    const viewBtn = document.querySelector('.it-view-btn.it-view-active');
+    const view = viewBtn ? (viewBtn.dataset.view || 'board') : 'board';
+    const columns = {};
+    document.querySelectorAll('.it-colsel-item input[data-col]').forEach(cb => {
+      columns[cb.dataset.col] = cb.checked;
+    });
+    const drawerEl = document.getElementById('it-drawer');
+    const drawer = { open: !!(drawerEl && !drawerEl.hidden), issue: (window.__itDrawerIssue || null) };
+    const tableWrap = document.getElementById('it-table-wrap');
+    const tableScroll = tableWrap ? (tableWrap.scrollTop || 0) : 0;
+    sessionStorage.setItem('__it_state', JSON.stringify({ expanded, laneExpanded, filter, subFilters, scrollY, view, columns, drawer, tableScroll }));
   } catch(_) {}
 }
 
@@ -5003,8 +7514,26 @@ function restoreIssueTrackerState() {
   try {
     const saved = sessionStorage.getItem('__it_state');
     if (!saved) return;
-    const { expanded, laneExpanded, filter, subFilters, scrollY } = JSON.parse(saved);
+    const { expanded, laneExpanded, filter, subFilters, scrollY, view, columns, drawer, tableScroll } = JSON.parse(saved);
     __itRestoring = true;
+    // #3958 — restaurar vista tabla/board + columnas + drawer + scroll de tabla.
+    if (columns && typeof columns === 'object') {
+      document.querySelectorAll('.it-colsel-item input[data-col]').forEach(cb => {
+        if (Object.prototype.hasOwnProperty.call(columns, cb.dataset.col)) {
+          cb.checked = !!columns[cb.dataset.col];
+          applyColumnVisibility(cb.dataset.col, cb.checked);
+        }
+      });
+      updateColumnsCount();
+    }
+    if (view === 'tabla') setIssueView('tabla', true);
+    // Filtros desde URL SIEMPRE (SEC-4: re-validar en cada rehidratación).
+    hydrateIssueFiltersFromUrl();
+    if (drawer && drawer.open && drawer.issue) openIssueDrawer(drawer.issue, true);
+    if (tableScroll) {
+      const tw = document.getElementById('it-table-wrap');
+      if (tw) requestAnimationFrame(() => { tw.scrollTop = tableScroll; });
+    }
     if (expanded && expanded.length > 0) {
       expanded.forEach(id => {
         const detail = document.getElementById('detail-' + id);
@@ -5040,6 +7569,181 @@ function restoreIssueTrackerState() {
     __itRestoring = false;
     if (scrollY > 0) requestAnimationFrame(() => window.scrollTo(0, scrollY));
   } catch(_) { __itRestoring = false; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #3958 EP8-H5 — Vista TABLA: toggle, columnas, filtros URL, CSV, drawer.
+// La lógica pura (parse/serialize de filtros con allowlist, CSV anti-injection)
+// vive en window.IssueFilters / window.IssueCsv (inyectado, mismo código que
+// node --test). Acá sólo el wiring del DOM. Todo el contenido del drawer se
+// CLONA de nodos server-rendered (escaping garantizado, SEC-2).
+// ═══════════════════════════════════════════════════════════════════════════
+window.__itDrawerIssue = null;
+
+function setIssueView(view, skipSave) {
+  view = (view === 'tabla') ? 'tabla' : 'board';
+  document.querySelectorAll('.it-view-btn').forEach(b => {
+    const on = b.dataset.view === view;
+    b.classList.toggle('it-view-active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-view-board]').forEach(el => { el.hidden = (view !== 'board'); });
+  document.querySelectorAll('[data-view-tabla]').forEach(el => { el.hidden = (view !== 'tabla'); });
+  // Al entrar a la tabla, hidratar filtros desde la URL (SEC-1/SEC-4: revalida).
+  if (view === 'tabla') hydrateIssueFiltersFromUrl();
+  if (!skipSave) saveIssueTrackerState();
+}
+
+function toggleColumnsMenu(ev) {
+  if (ev) ev.stopPropagation();
+  const menu = document.getElementById('it-colsel-menu');
+  const btn = document.querySelector('.it-colsel-btn');
+  if (!menu) return;
+  const willOpen = menu.hidden;
+  menu.hidden = !willOpen;
+  if (btn) btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+}
+document.addEventListener('click', function(e) {
+  const menu = document.getElementById('it-colsel-menu');
+  if (!menu || menu.hidden) return;
+  if (e.target.closest && e.target.closest('.it-colsel')) return;
+  menu.hidden = true;
+  const btn = document.querySelector('.it-colsel-btn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+});
+function applyColumnVisibility(key, visible) {
+  document.querySelectorAll('.it-table .col-' + key).forEach(c => { c.style.display = visible ? '' : 'none'; });
+}
+function updateColumnsCount() {
+  const n = document.querySelectorAll('.it-colsel-item input[data-col]:checked').length;
+  const el = document.getElementById('it-colsel-count');
+  if (el) el.textContent = String(n);
+}
+function toggleColumn(key, visible) {
+  applyColumnVisibility(key, visible);
+  updateColumnsCount();
+  saveIssueTrackerState();
+}
+
+function itAllowlists() {
+  const grab = (id) => Array.from(document.querySelectorAll('#' + id + ' option')).map(o => o.value).filter(Boolean);
+  return { estados: grab('it-tfilter-estado'), fases: grab('it-tfilter-fase'), skills: grab('it-tfilter-skill') };
+}
+function currentIssueFilters() {
+  return {
+    estado: (document.getElementById('it-tfilter-estado') || {}).value || '',
+    fase: (document.getElementById('it-tfilter-fase') || {}).value || '',
+    skill: (document.getElementById('it-tfilter-skill') || {}).value || '',
+    q: (document.getElementById('it-tfilter-q') || {}).value || '',
+  };
+}
+function applyIssueFilters() {
+  const f = currentIssueFilters();
+  const q = f.q.trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll('#it-table-body .it-row').forEach(row => {
+    let ok = true;
+    if (f.estado && row.dataset.estado !== f.estado) ok = false;
+    if (ok && f.fase && row.dataset.fase !== f.fase) ok = false;
+    if (ok && f.skill && row.dataset.skill !== f.skill) ok = false;
+    if (ok && q) {
+      const hay = ('#' + row.dataset.issue + ' ' + (row.dataset.title || '')).toLowerCase();
+      if (hay.indexOf(q) === -1) ok = false;
+    }
+    row.classList.toggle('it-row-hidden', !ok);
+    if (ok) shown++;
+  });
+  const body = document.getElementById('it-table-body');
+  let empty = document.getElementById('it-table-nomatch');
+  if (shown === 0 && body) {
+    if (!empty) {
+      empty = document.createElement('tr');
+      empty.id = 'it-table-nomatch';
+      // Texto fijo (sin input externo) → innerHTML estático seguro.
+      empty.innerHTML = '<td colspan="9" class="it-table-no-match">Sin issues que coincidan con el filtro</td>';
+      body.appendChild(empty);
+    }
+    empty.hidden = false;
+  } else if (empty) {
+    empty.hidden = true;
+  }
+  updateUrlFromFilters(f);
+}
+function onIssueFilterChange() { applyIssueFilters(); saveIssueTrackerState(); }
+function updateUrlFromFilters(f) {
+  const qs = window.IssueFilters ? window.IssueFilters.serializeFilters(f) : '';
+  const mirror = document.getElementById('it-url-mirror-q');
+  if (mirror) mirror.textContent = qs ? ('?' + qs) : '(sin filtros)';
+  try {
+    const url = new URL(window.location.href);
+    ['estado', 'fase', 'skill', 'q'].forEach(k => url.searchParams.delete(k));
+    if (f.estado) url.searchParams.set('estado', f.estado);
+    if (f.fase) url.searchParams.set('fase', f.fase);
+    if (f.skill) url.searchParams.set('skill', f.skill);
+    if (f.q) url.searchParams.set('q', f.q);
+    // Preserva ?section= (kiosk) y cualquier otro param no-filtro.
+    history.replaceState(null, '', url.pathname + (url.search || '') + url.hash);
+  } catch(_) {}
+}
+function hydrateIssueFiltersFromUrl() {
+  if (!window.IssueFilters) { applyIssueFilters(); return; }
+  let parsed;
+  try { parsed = window.IssueFilters.parseFilters(window.location.search, itAllowlists()); }
+  catch(_) { applyIssueFilters(); return; }
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+  set('it-tfilter-estado', parsed.estado);
+  set('it-tfilter-fase', parsed.fase);
+  set('it-tfilter-skill', parsed.skill);
+  set('it-tfilter-q', parsed.q);
+  applyIssueFilters();
+}
+function exportIssuesCsv() {
+  if (!window.IssueCsv) return;
+  const colMeta = [
+    { key: 'issue', label: '#' }, { key: 'title', label: 'Título' }, { key: 'estado', label: 'Estado' },
+    { key: 'fase', label: 'Fase' }, { key: 'skill', label: 'Skill' }, { key: 'bounces', label: 'Rebotes' },
+    { key: 'age', label: 'Edad (min)' }, { key: 'eta', label: 'ETA p50' }, { key: 'risk', label: 'Riesgo' },
+  ];
+  const rows = [];
+  document.querySelectorAll('#it-table-body .it-row').forEach(row => {
+    if (row.classList.contains('it-row-hidden')) return;
+    rows.push({
+      issue: row.dataset.issue, title: row.dataset.title || '', estado: row.dataset.estado || '',
+      fase: row.dataset.fase || '', skill: row.dataset.skill || '', bounces: row.dataset.bounces || '0',
+      age: row.dataset.age || '0', eta: row.dataset.eta || '', risk: row.dataset.risk || '',
+    });
+  });
+  const csv = window.IssueCsv.toCsv(rows, colMeta);
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'issues-pipeline.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function openIssueDrawer(issue, skipSave) {
+  const host = document.getElementById('it-drawer-src-' + issue);
+  const drawer = document.getElementById('it-drawer');
+  if (!host || !drawer) return;
+  const node = host.firstElementChild;
+  drawer.textContent = '';
+  if (node) drawer.appendChild(node.cloneNode(true));
+  drawer.hidden = false;
+  window.__itDrawerIssue = String(issue);
+  document.querySelectorAll('#it-table-body .it-row').forEach(r => {
+    r.classList.toggle('it-row-sel', r.dataset.issue === String(issue));
+  });
+  if (!skipSave) saveIssueTrackerState();
+}
+function closeIssueDrawer() {
+  const drawer = document.getElementById('it-drawer');
+  if (drawer) { drawer.hidden = true; drawer.textContent = ''; }
+  window.__itDrawerIssue = null;
+  document.querySelectorAll('#it-table-body .it-row.it-row-sel').forEach(r => r.classList.remove('it-row-sel'));
+  saveIssueTrackerState();
 }
 
 // KPI Tooltips
@@ -5274,6 +7978,160 @@ function showPartialPauseDepsModal(requestedIssues, missing, chains) {
   };
 }
 
+// #3142 — Handlers de allowlist & candidatos (sub-sección del tab Pipeline).
+// CA-Sec-08: likedBy NUNCA se envía del cliente — server-derived.
+function _aclEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function allowlistLike() {
+  const inp = document.getElementById('allowlist-like-input');
+  const reasonInp = document.getElementById('allowlist-like-reason');
+  if (!inp) return;
+  const raw = String(inp.value || '').trim();
+  if (!/^\d+$/.test(raw)) {
+    showToast('Issue debe ser un número (ej: 3140)', false);
+    return;
+  }
+  const issue = parseInt(raw, 10);
+  if (!Number.isInteger(issue) || issue <= 0 || issue > 999999) {
+    showToast('Número de issue inválido', false);
+    return;
+  }
+  const reason = reasonInp ? String(reasonInp.value || '').trim().slice(0, 500) : '';
+  try {
+    const resp = await fetch('/api/allowlist-candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue: issue, reason: reason })
+    });
+    const r = await resp.json();
+    if (!r.ok) {
+      showToast('Error: ' + (r.error || r.msg || 'desconocido'), false);
+      return;
+    }
+    showToast(r.alreadyExisted ? '#' + issue + ' ya estaba likeado' : '❤️ Likeado #' + issue, true);
+    setTimeout(function() { location.reload(); }, 800);
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+async function allowlistUnlike(issue) {
+  if (!Number.isInteger(issue) || issue <= 0) return;
+  try {
+    const resp = await fetch('/api/allowlist-candidates/' + issue, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const r = await resp.json();
+    if (!r.ok) { showToast('Error: ' + (r.error || 'desconocido'), false); return; }
+    showToast('Unlike #' + issue, true);
+    setTimeout(function() { location.reload(); }, 600);
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+async function allowlistRemove(issue) {
+  if (!Number.isInteger(issue) || issue <= 0) return;
+  if (!confirm('Quitar #' + issue + ' de la allowlist activa?\\n\\nEsto modifica .partial-pause.json — el Pulpo dejará de procesar este issue inmediatamente.')) return;
+  try {
+    // Reusamos /api/pause-partial: leemos el estado actual y mandamos la lista sin el issue.
+    const state = await fetch('/api/allowlist-candidates').then(r => r.json());
+    if (!state.ok) { showToast('Error obteniendo estado', false); return; }
+    const newList = (state.allowlistActive || []).filter(function(n) { return n !== issue; });
+    const resp = await fetch('/api/pause-partial', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issues: newList, detectDeps: false })
+    });
+    const r = await resp.json();
+    showToast(r.ok ? '➖ Quitado #' + issue + ' de allowlist' : 'Error: ' + (r.msg || 'desconocido'), r.ok);
+    setTimeout(function() { location.reload(); }, 800);
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+async function allowlistPromote(issue) {
+  if (!Number.isInteger(issue) || issue <= 0) return;
+  try {
+    // Paso 1: preview (sin confirmed)
+    const previewResp = await fetch('/api/allowlist-candidates/' + issue + '/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    if (previewResp.status === 409) {
+      const data = await previewResp.json();
+      if (data.code === 'PROMOTE_CAP_EXCEEDED') {
+        alert('Promote rechazado: sumaría ' + (data.toAdd || []).length + ' issues a la allowlist (cap ' + data.cap + ').\\n\\nDividí el promote en varios candidatos o ajustá las deps manualmente.');
+        return;
+      }
+    }
+    const preview = await previewResp.json();
+    if (!preview.ok || !preview.preview) {
+      showToast('Error en preview: ' + (preview.msg || preview.error || 'desconocido'), false);
+      return;
+    }
+    // Mostrar modal de confirmación
+    showAllowlistPromoteModal(issue, preview);
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+function showAllowlistPromoteModal(issue, preview) {
+  const toAdd = preview.toAdd || [];
+  const chains = preview.chains || {};
+  const finalAllowlist = preview.finalAllowlist || [];
+  const truncated = preview.truncated === true;
+
+  const toAddList = toAdd.length === 0
+    ? '<li class="dim" style="font-style:italic">Sin deps adicionales — el candidato no tiene dependencias abiertas faltantes.</li>'
+    : toAdd.map(function(d) {
+        const c = chains[String(d)] || {};
+        const t = c.title ? ' — ' + _aclEsc(String(c.title).slice(0, 70)) : '';
+        return '<li><a href="https://github.com/intrale/platform/issues/' + d + '" target="_blank" style="color:#58a6ff;font-family:\'SF Mono\',Consolas,monospace">#' + d + '</a>' + t + '</li>';
+      }).join('');
+
+  const overlay = document.createElement('div');
+  overlay.id = 'allowlist-promote-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  overlay.innerHTML = '<div role="dialog" aria-modal="true" aria-labelledby="acl-promote-title" style="background:#161b22;border:1px solid rgba(63,185,80,0.5);border-radius:10px;padding:20px;max-width:620px;width:92%;color:#c9d1d9;box-shadow:0 10px 40px rgba(0,0,0,0.6);">'
+    + '<h3 id="acl-promote-title" style="margin:0 0 10px;color:#3fb950;display:flex;align-items:center;gap:8px;">➕ Promover #' + issue + ' a allowlist activa</h3>'
+    + '<div style="margin-bottom:10px;padding:8px 12px;background:rgba(188,140,255,0.08);border-left:3px solid #bc8cff;border-radius:4px;">'
+      + '<strong>Candidato:</strong> <a href="https://github.com/intrale/platform/issues/' + issue + '" target="_blank" style="color:#58a6ff;font-family:\'SF Mono\',Consolas,monospace">#' + issue + '</a>'
+    + '</div>'
+    + '<div style="margin-bottom:8px;font-size:0.88rem;">Se sumarán <strong>' + toAdd.length + '</strong> issue' + (toAdd.length === 1 ? '' : 's') + ' a la allowlist activa (incluyendo deps recursivas abiertas):</div>'
+    + '<ul style="margin:0 0 12px;padding-left:22px;font-size:0.82rem;max-height:240px;overflow-y:auto;">' + toAddList + '</ul>'
+    + (truncated ? '<div style="margin-bottom:10px;font-size:0.78rem;color:#d29922;">⚠ Detección truncada por profundidad máxima — puede haber más deps no resueltas.</div>' : '')
+    + '<div style="margin-bottom:14px;font-size:0.78rem;color:var(--dim,#8b949e)">Allowlist final: ' + finalAllowlist.length + ' issue' + (finalAllowlist.length === 1 ? '' : 's') + '. Se modificará <code>.partial-pause.json</code>.</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">'
+      + '<button id="acl-promote-cancel" style="padding:8px 14px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:5px;cursor:pointer;">Cancelar</button>'
+      + '<button id="acl-promote-confirm" style="padding:8px 14px;background:#3fb950;color:#1c2128;border:0;border-radius:5px;cursor:pointer;font-weight:600;">Confirmar promover</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+
+  const closeModal = function() { try { overlay.remove(); } catch (_) {} };
+  overlay.querySelector('#acl-promote-cancel').onclick = closeModal;
+  overlay.querySelector('#acl-promote-confirm').onclick = async function() {
+    closeModal();
+    try {
+      const resp = await fetch('/api/allowlist-candidates/' + issue + '/promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true })
+      });
+      const r = await resp.json();
+      if (!r.ok) {
+        showToast('Error promoviendo: ' + (r.msg || r.error || 'desconocido'), false);
+        return;
+      }
+      showToast('✅ Promovido #' + issue + ' (+' + (r.addedDeps || []).length + ' deps)', true);
+      setTimeout(function() { location.reload(); }, 1200);
+    } catch (e) { showToast('Error: ' + e.message, false); }
+  };
+}
+
 // #2893 — Banner: "Agregar dependencias al allowlist".
 async function includeMissingDeps() {
   try {
@@ -5327,6 +8185,497 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// #3625 CA-5 — Refresh client-side del widget de Audit trail.
+// Polling cada 30s + skip si tab oculto (no quemar batería).
+// Renderer client-side equivalente al server-side renderPartialPauseAuditRows.
+function _ppaClientEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function _ppaIcUse(name, label) {
+  // Replica el helper server-side ic() — usa <use href="#ic-NAME"/>
+  const aria = label ? ' role="img" aria-label="' + _ppaClientEsc(label) + '"' : ' aria-hidden="true"';
+  return '<svg class="pl-ic"' + aria + '><use href="#ic-' + _ppaClientEsc(name) + '"/></svg>';
+}
+function _ppaRenderRow(e) {
+  const visual = e && e.visual ? String(e.visual) : 'human';
+  const stateCls = visual === 'rejected' ? 'ppa-row-C'
+    : visual === 'unauthorized' ? 'ppa-row-D'
+    : visual === 'subsystem' ? 'ppa-row-B' : 'ppa-row-A';
+  let whenLocal = '—', whenIso = '';
+  try {
+    const d = e.timestamp ? new Date(e.timestamp) : null;
+    if (d && !isNaN(d.getTime())) {
+      whenIso = d.toISOString();
+      whenLocal = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+  } catch (_) {}
+  const source = _ppaClientEsc(e.source || 'unknown');
+  let sourcePillCls = 'ppa-pill-machine';
+  if (visual === 'human') sourcePillCls = 'ppa-pill-human';
+  else if (visual === 'rejected' || visual === 'unauthorized') sourcePillCls = 'ppa-pill-unknown';
+  const action = String(e.action || 'write');
+  let actionPillCls = 'ppa-pill-info';
+  if (action === 'reject') actionPillCls = 'ppa-pill-danger';
+  else if (action === 'backfill') actionPillCls = 'ppa-pill-warning';
+  else if (action === 'write') actionPillCls = visual === 'unauthorized' ? 'ppa-pill-warning' : 'ppa-pill-success';
+  const diff = e.diff || { added: [], removed: [] };
+  const added = Array.isArray(diff.added) ? diff.added : [];
+  const removed = Array.isArray(diff.removed) ? diff.removed : [];
+  const remCls = visual === 'rejected' ? 'ppa-diff-rem-rejected' : 'ppa-diff-rem';
+  let diffHtml = '';
+  if (added.length) diffHtml += '<div class="ppa-diff-add">+ [' + added.map(function(n){return '#' + Number(n);}).join(', ') + ']</div>';
+  if (removed.length) diffHtml += '<div class="' + remCls + '">- [' + removed.map(function(n){return '#' + Number(n);}).join(', ') + ']' + (visual === 'rejected' ? ' <span class="ppa-diff-rem" style="font-weight:normal;">propuesto, no aplicado</span>' : '') + '</div>';
+  if (!diffHtml) diffHtml = '<span class="ppa-diff-rem">—</span>';
+  const authBy = e.authorized_by;
+  let authChip = '';
+  if (visual === 'rejected') {
+    authChip = '<span class="ppa-auth-pill ppa-pill-danger">' + _ppaIcUse('architect-rejected', 'gate REJECTED') + '<span>null · gate REJECTED</span></span>';
+  } else if (visual === 'unauthorized') {
+    const tag = e.backfill ? 'null · BACKFILL' : 'null';
+    authChip = '<span class="ppa-auth-pill ppa-pill-warning">' + _ppaIcUse('health-warn', 'sin autoria') + '<span>' + _ppaClientEsc(tag) + '</span></span>';
+  } else if (visual === 'human') {
+    authChip = '<span class="ppa-auth-pill ppa-pill-success">' + _ppaIcUse('architect-approved', 'autorizado humano') + '<span>' + _ppaClientEsc(authBy || 'commander:leo') + '</span></span>';
+  } else {
+    authChip = '<span class="ppa-auth-pill ppa-pill-info">' + _ppaIcUse('estado-partial-pause', 'autorizado subsistema') + '<span>' + _ppaClientEsc(authBy || 'subsystem') + '</span></span>';
+  }
+  const just = String(e.justification || '');
+  const justTrunc = e.justification_truncated ? ' …' : '';
+  const justRedacted = e.justification_redacted;
+  const justCls = justRedacted ? 'ppa-just ppa-just-redacted' : 'ppa-just';
+  const justHtml = just ? '<div class="' + justCls + '" title="' + _ppaClientEsc(just + justTrunc) + '">' + _ppaClientEsc(just) + _ppaClientEsc(justTrunc) + '</div>' : '<span class="ppa-diff-rem">—</span>';
+  let microcopy = '';
+  if (visual === 'rejected') microcopy = '<div class="ppa-microcopy ppa-microcopy-rejected">REJECTED por gate · CA-2 enum cerrado</div>';
+  else if (visual === 'unauthorized' && e.backfill) microcopy = '<div class="ppa-microcopy ppa-microcopy-backfill">Backfill · entry preexistente al gate</div>';
+  else if (visual === 'unauthorized') microcopy = '<div class="ppa-microcopy ppa-microcopy-rejected">Bypass detectado · revisar urgente</div>';
+  return ''
+    + '<tr class="' + stateCls + '" data-visual="' + _ppaClientEsc(visual) + '">'
+    + '<td><span class="ppa-when" title="' + _ppaClientEsc(whenIso) + '">' + _ppaClientEsc(whenLocal) + '</span></td>'
+    + '<td><span class="ppa-source-pill ' + sourcePillCls + '" title="Origen: ' + _ppaClientEsc(source) + '"><span>' + source + '</span></span></td>'
+    + '<td><span class="ppa-action-pill ' + actionPillCls + '"><span>' + _ppaClientEsc(action) + '</span></span></td>'
+    + '<td><div class="ppa-diff">' + diffHtml + '</div></td>'
+    + '<td>' + authChip + '</td>'
+    + '<td>' + justHtml + microcopy + '</td>'
+    + '</tr>';
+}
+function renderAuditTrail(data) {
+  if (!data || typeof data !== 'object') return;
+  const stats = data.stats || {};
+  const total = Number(stats.total || 0);
+  const auth = Number(stats.authorized || 0);
+  const rej = Number(stats.rejected || 0);
+  const unk = Number(stats.unknown || 0);
+  const tEl = document.getElementById('ppa-kpi-total'); if (tEl) tEl.textContent = String(total);
+  const aEl = document.getElementById('ppa-kpi-auth'); if (aEl) aEl.textContent = String(auth);
+  const rEl = document.getElementById('ppa-kpi-rejected');
+  if (rEl) { rEl.textContent = String(rej); rEl.className = 'ppa-kpi-value ' + (rej > 0 ? 'ppa-value-danger' : 'ppa-value-dim'); }
+  const uEl = document.getElementById('ppa-kpi-unknown');
+  if (uEl) { uEl.textContent = String(unk); uEl.className = 'ppa-kpi-value ' + (unk > 0 ? 'ppa-value-warning' : 'ppa-value-dim'); }
+  // Hash-chain card
+  const cEl = document.getElementById('ppa-kpi-chain');
+  if (cEl) {
+    cEl.textContent = data.chain_broken ? '✗ ROTO' : '✓ ' + Number(data.chain_entries_checked || 0);
+    cEl.className = 'ppa-kpi-value ' + (data.chain_broken ? 'ppa-value-danger' : 'ppa-value-success');
+  }
+  const cSub = document.getElementById('ppa-kpi-chain-sub');
+  if (cSub) cSub.textContent = data.chain_broken ? ('entry #' + String(data.chain_broken_at || '?')) : 'entries verificadas';
+  // Banner crítico hash-chain
+  const bChain = document.getElementById('ppa-banner-chain');
+  if (bChain) bChain.style.display = data.chain_broken ? 'flex' : 'none';
+  const bAt = document.getElementById('ppa-broken-at');
+  if (bAt && data.chain_broken) bAt.textContent = String(data.chain_broken_at || '?');
+  // Banner condicional sin autoría
+  const bUnauth = document.getElementById('ppa-banner-unauth');
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  const unauthCount = entries.filter(function(e){ return e.visual === 'unauthorized' && !e.backfill; }).length;
+  if (bUnauth) bUnauth.style.display = data.has_unauthorized_non_backfill ? 'flex' : 'none';
+  const uCount = document.getElementById('ppa-unauth-count'); if (uCount) uCount.textContent = String(unauthCount);
+  // Tabla
+  const tbody = document.getElementById('ppa-tbody');
+  if (tbody) {
+    if (!entries.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="ppa-empty">Sin mutaciones registradas todavía — el audit log se hidrata cuando se aplica la primera mutación a <code>.partial-pause.json</code>.</td></tr>';
+    } else {
+      tbody.innerHTML = entries.map(_ppaRenderRow).join('');
+    }
+  }
+  // Last updated stamp
+  const upd = document.getElementById('ppa-updated-at');
+  if (upd) {
+    try { upd.textContent = 'Última actualización: ' + new Date().toLocaleTimeString('es-AR'); } catch (_) {}
+  }
+}
+async function refreshAuditTrail() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  try {
+    const r = await fetch('/api/dash/partial-pause-audit', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderAuditTrail(data);
+  } catch (_) {
+    // Best-effort: silenciar errores de red transitorios; el polling vuelve a intentar en 30s.
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', function() {
+    refreshAuditTrail();
+    setInterval(refreshAuditTrail, 30 * 1000);
+  });
+}
+
+// #4375 — Refresh client-side del semáforo de sync allowlist↔ola.
+// Polling 30s (alineado con el resto de /api/dash/*, CA-6) + skip si tab oculto.
+// Repinta en silencio; ante error de fetch mantiene el último estado (no rompe
+// el layout). Render client-side equivalente al SSR renderDesyncPill del view
+// pipeline.js (mismas clases dss-*, mismos estados, CA-8: enteros escapados).
+var _DSS_META = {
+  sincronizado:          { icon: 'allowlist-check',   label: 'Sincronizado',          cls: 'dss-ok',      aria: 'sincronizado' },
+  realineado_reductivo:  { icon: 'estado-retrying',   label: 'Realineado',            cls: 'dss-warn',    aria: 'realineado, divergencia autoresoluble' },
+  divergencia_bloqueada: { icon: 'warn',              label: 'Divergencia bloqueada', cls: 'dss-danger',  aria: 'divergencia bloqueada, requiere intervención' },
+  desconocido:           { icon: 'stage-not-entered', label: 'Sin datos',             cls: 'dss-unknown', aria: 'sin datos de sincronización' },
+};
+// #5724 CA-4 / UX-1..UX-4 — Estado BLOQUEANTE: nombra la consecuencia (el
+// dispatch está suspendido), no el síntoma interno; candado en vez de warn;
+// role=alert; antigüedad visible; overflow explícito. Espejo exacto del SSR
+// (views/dashboard/pipeline.js) — los dos renderers tienen que decir lo mismo.
+var _DSS_META_BLOQUEADO = {
+  icon: 'pause-lock',
+  label: 'Dispatch suspendido',
+  cls: 'dss-danger',
+  aria: 'dispatch suspendido por divergencia entre la allowlist y la ola activa',
+};
+var _DSS_CHIPS_TOPE = 6;
+function _dssAgeText(detectedAt) {
+  var ts = Date.parse(detectedAt);
+  if (!Number.isFinite(ts)) return '';
+  var min = Math.floor((Date.now() - ts) / 60000);
+  if (!Number.isFinite(min) || min < 0) return '';
+  if (min < 1) return 'recién';
+  if (min < 60) return 'hace ' + min + ' min';
+  var h = Math.floor(min / 60);
+  var m = min % 60;
+  if (h >= 24) {
+    var dias = Math.floor(h / 24);
+    var restoH = h % 24;
+    return restoH > 0 ? ('hace ' + dias + ' d ' + restoH + ' h') : ('hace ' + dias + ' d');
+  }
+  return m > 0 ? ('hace ' + h + ' h ' + m + ' min') : ('hace ' + h + ' h');
+}
+function _dssDetailText(estado, count, d) {
+  var info = d && typeof d === 'object' ? d : {};
+  switch (estado) {
+    case 'sincronizado': return count > 0 ? (count + ' issues alineados') : 'allowlist alineada con la ola';
+    case 'realineado_reductivo': return 'divergencia autoresoluble por el Pulpo · no bloquea';
+    case 'divergencia_bloqueada': {
+      var added = (Array.isArray(info.added) ? info.added : []).filter(Number.isInteger);
+      var removed = (Array.isArray(info.removed) ? info.removed : []).filter(Number.isInteger);
+      var bloqueado = Boolean(info.bloqueado);
+      var partes = [];
+      if (removed.length > 0) partes.push(removed.length + (removed.length === 1 ? ' issue' : ' issues') + ' de la ola fuera de la allowlist');
+      if (added.length > 0) partes.push(added.length + (added.length === 1 ? ' issue' : ' issues') + ' de la allowlist fuera de la ola');
+      if (partes.length === 0) partes.push('la allowlist y la ola activa divergen');
+      if (bloqueado) partes.push('no se lanza ningún agente');
+      var edad = bloqueado ? _dssAgeText(info.detected_at) : '';
+      if (edad) partes.push(edad);
+      return partes.join(' · ');
+    }
+    default: return 'waves/partial-pause ausente o degradado';
+  }
+}
+function _dssChips(added, removed) {
+  var listaAdd = (Array.isArray(added) ? added : []).filter(Number.isInteger);
+  var listaRem = (Array.isArray(removed) ? removed : []).filter(Number.isInteger);
+  var parts = [];
+  listaAdd.slice(0, _DSS_CHIPS_TOPE)
+    .forEach(function(n) { parts.push('<span class="dss-chip dss-chip-add">+#' + _ppaClientEsc(String(n)) + '</span>'); });
+  listaRem.slice(0, _DSS_CHIPS_TOPE)
+    .forEach(function(n) { parts.push('<span class="dss-chip dss-chip-rem">−#' + _ppaClientEsc(String(n)) + '</span>'); });
+  if (parts.length === 0) return '';
+  var ocultos = Math.max(0, listaAdd.length - _DSS_CHIPS_TOPE) + Math.max(0, listaRem.length - _DSS_CHIPS_TOPE);
+  if (ocultos > 0) {
+    parts.push('<span class="dss-chip dss-chip-more" title="' + _ppaClientEsc(ocultos + ' issues más en la divergencia') + '">+' + _ppaClientEsc(String(ocultos)) + ' más</span>');
+  }
+  return '<span class="dss-chips">' + parts.join('') + '</span>';
+}
+function renderDesyncStatus(data) {
+  var pill = document.getElementById('dss-pill');
+  if (!pill) return;
+  var d = data && typeof data === 'object' ? data : {};
+  var estado = Object.prototype.hasOwnProperty.call(_DSS_META, d.estado) ? d.estado : 'desconocido';
+  var bloqueado = Boolean(d.bloqueado);
+  var meta = (estado === 'divergencia_bloqueada' && bloqueado) ? _DSS_META_BLOQUEADO : _DSS_META[estado];
+  var count = Number.isInteger(d.count) ? d.count : 0;
+  var detail = _dssDetailText(estado, count, d);
+  pill.className = 'dss-pill ' + meta.cls;
+  var ariaFull = 'Estado de sincronización allowlist↔ola: ' + meta.aria + '. ' + detail;
+  pill.setAttribute('aria-label', ariaFull);
+  pill.setAttribute('title', detail);
+  // UX-2: aria-live assertive cuando el pipeline está frenado; polite si no.
+  pill.setAttribute('role', bloqueado ? 'alert' : 'status');
+  pill.innerHTML = ''
+    + '<span class="dss-ic">' + _ppaIcUse(meta.icon, meta.aria) + '</span>'
+    + '<span class="dss-label">' + _ppaClientEsc(meta.label) + '</span>'
+    + '<span class="dss-detail">' + _ppaClientEsc(detail) + '</span>'
+    + _dssChips(d.added, d.removed);
+}
+async function refreshDesyncStatus() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  try {
+    const r = await fetch('/api/dash/desync-status', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderDesyncStatus(data);
+  } catch (_) {
+    // Best-effort: mantener el último estado pintado; reintenta en 30s.
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', function() {
+    refreshDesyncStatus();
+    setInterval(refreshDesyncStatus, 30 * 1000);
+  });
+}
+
+// #4371 CA-8/CA-10 — Refresh client-side del widget "Audit trail · Olas & Issues".
+// Polling cada 30s + skip si tab oculto. Renderer client-side equivalente al
+// server-side lib/wave-audit-renderer.js (mismas clases wia-*, mismos estados).
+var _WIA_EVENT_META = {
+  issue_added: { icon: 'issue-added', label: 'Issue agregado' },
+  issue_removed: { icon: 'remove-circle', label: 'Issue quitado' },
+  priority_changed: { icon: 'priority-change', label: 'Prioridad' },
+  wave_promoted: { icon: 'promote', label: 'Ola promovida' },
+  wave_archived: { icon: 'archive-box', label: 'Ola archivada' },
+};
+function _wiaFormatEstado(v) {
+  if (v == null) return '—';
+  if (typeof v === 'string' || typeof v === 'number') return _ppaClientEsc(String(v));
+  if (v && typeof v === 'object' && Array.isArray(v.issues)) {
+    var list = v.issues.filter(function(n){ return Number.isInteger(n); });
+    if (list.length === 0) return _ppaClientEsc('sin issues');
+    if (list.length <= 6) return _ppaClientEsc(list.map(function(n){ return '#' + n; }).join(', '));
+    return _ppaClientEsc(list.length + ' issues');
+  }
+  try { return _ppaClientEsc(JSON.stringify(v).slice(0, 80)); } catch (_) { return '—'; }
+}
+function _wiaRenderObjeto(e) {
+  var hasIssue = Number.isInteger(e && e.issue);
+  var hasWave = Number.isInteger(e && e.wave);
+  if (hasIssue && hasWave) return '<span class="wia-obj">#' + Number(e.issue) + ' → ola ' + Number(e.wave) + '</span>';
+  if (hasIssue) return '<span class="wia-obj">#' + Number(e.issue) + '</span>';
+  if (hasWave) return '<span class="wia-obj">ola ' + Number(e.wave) + '</span>';
+  return '<span class="wia-dim">—</span>';
+}
+function _wiaRenderRow(e) {
+  var visual = e && e.visual ? String(e.visual) : 'human';
+  var event = e && e.event ? String(e.event) : '';
+  var meta = _WIA_EVENT_META[event] || { icon: 'transition-history', label: event || '—' };
+  var stateCls = visual === 'unauthorized' ? 'wia-row-C'
+    : visual === 'priority' ? 'wia-row-D'
+    : visual === 'subsystem' ? 'wia-row-B' : 'wia-row-A';
+  var whenLocal = '—', whenIso = '';
+  try {
+    var d = e && e.timestamp ? new Date(e.timestamp) : null;
+    if (d && !isNaN(d.getTime())) {
+      whenIso = d.toISOString();
+      whenLocal = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+  } catch (_) {}
+  var actor = e && e.actor ? String(e.actor) : 'desconocido';
+  var actorPillCls, actorIcon, actorAria;
+  if (visual === 'unauthorized') { actorPillCls = 'wia-pill-unknown'; actorIcon = 'health-warn'; actorAria = 'sin autoría'; }
+  else if (visual === 'subsystem') { actorPillCls = 'wia-pill-machine'; actorIcon = 'estado-partial-pause'; actorAria = 'subsistema'; }
+  else { actorPillCls = 'wia-pill-human'; actorIcon = 'architect-approved'; actorAria = 'humano'; }
+  var actorText = visual === 'unauthorized' ? 'null · sin autoría' : actor;
+  var actorChip = '<span class="wia-actor-pill ' + actorPillCls + '">' + _ppaIcUse(actorIcon, actorAria) + '<span>' + _ppaClientEsc(actorText) + '</span></span>';
+  var eventHtml = '<span class="wia-event">' + _ppaIcUse(meta.icon, meta.label) + '<span>' + _ppaClientEsc(meta.label) + '</span></span>';
+  var prevHtml, postHtml;
+  if (event === 'priority_changed') {
+    prevHtml = e && e.prioridad_previa ? _ppaClientEsc(String(e.prioridad_previa)) : '—';
+    postHtml = e && e.prioridad_nueva ? _ppaClientEsc(String(e.prioridad_nueva)) : '—';
+  } else {
+    prevHtml = _wiaFormatEstado(e && e.estado_previo);
+    postHtml = _wiaFormatEstado(e && e.estado_posterior);
+  }
+  var transHtml = '<span class="wia-trans"><span class="wia-prev">' + prevHtml + '</span> → <span class="wia-post">' + postHtml + '</span></span>';
+  var note = String((e && e.note) || '');
+  var noteHtml;
+  if (note) {
+    var short = note.length > 50 ? note.slice(0, 50) + '…' : note;
+    noteHtml = '<span class="wia-note" title="' + _ppaClientEsc(note) + '">' + _ppaClientEsc(short) + '</span>';
+  } else { noteHtml = '<span class="wia-dim">—</span>'; }
+  var microcopy = '';
+  if (visual === 'unauthorized') microcopy = '<div class="wia-microcopy wia-microcopy-alert">Bypass detectado — revisar urgente</div>';
+  return ''
+    + '<tr class="' + stateCls + '" data-visual="' + _ppaClientEsc(visual) + '" data-event="' + _ppaClientEsc(event) + '">'
+    + '<td><span class="wia-when" title="' + _ppaClientEsc(whenIso) + '">' + _ppaClientEsc(whenLocal) + '</span></td>'
+    + '<td>' + actorChip + '</td>'
+    + '<td>' + eventHtml + '</td>'
+    + '<td>' + _wiaRenderObjeto(e) + '</td>'
+    + '<td>' + transHtml + '</td>'
+    + '<td>' + noteHtml + microcopy + '</td>'
+    + '</tr>';
+}
+function renderWaveAuditTrail(data) {
+  if (!data || typeof data !== 'object') return;
+  var stats = data.stats || {};
+  var tEl = document.getElementById('wia-kpi-total'); if (tEl) tEl.textContent = String(Number(stats.total || 0));
+  var aEl = document.getElementById('wia-kpi-auth'); if (aEl) aEl.textContent = String(Number(stats.con_autoria || 0));
+  var uEl = document.getElementById('wia-kpi-unauth');
+  var sinAutoria = Number(stats.sin_autoria || 0);
+  if (uEl) { uEl.textContent = String(sinAutoria); uEl.className = 'ppa-kpi-value ' + (sinAutoria > 0 ? 'ppa-value-warning' : 'ppa-value-dim'); }
+  var cEl = document.getElementById('wia-kpi-chain');
+  if (cEl) {
+    cEl.textContent = data.chain_broken ? '✗ ROTO' : '✓ ' + Number(data.chain_entries_checked || 0);
+    cEl.className = 'ppa-kpi-value ' + (data.chain_broken ? 'ppa-value-danger' : 'ppa-value-success');
+  }
+  var cSub = document.getElementById('wia-kpi-chain-sub');
+  if (cSub) cSub.textContent = data.chain_broken ? ('entry #' + String(data.chain_broken_at || '?')) : 'entries verificadas';
+  var bChain = document.getElementById('wia-banner-chain');
+  if (bChain) bChain.style.display = data.chain_broken ? 'flex' : 'none';
+  var bAt = document.getElementById('wia-broken-at');
+  if (bAt && data.chain_broken) bAt.textContent = String(data.chain_broken_at || '?');
+  var entries = Array.isArray(data.entries) ? data.entries : [];
+  var unauthCount = entries.filter(function(e){ return e && e.visual === 'unauthorized'; }).length;
+  var bUnauth = document.getElementById('wia-banner-unauth');
+  if (bUnauth) bUnauth.style.display = data.has_unauthorized ? 'flex' : 'none';
+  var uc = document.getElementById('wia-unauth-count'); if (uc) uc.textContent = String(unauthCount);
+  var tbody = document.getElementById('wia-tbody');
+  if (tbody) {
+    if (!entries.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="wia-empty">Sin movimientos registrados todavía — el audit trail se hidrata cuando se agrega/quita un issue de una ola, cambia una prioridad o se promueve/archiva una ola.</td></tr>';
+    } else {
+      tbody.innerHTML = entries.map(_wiaRenderRow).join('');
+    }
+  }
+  var upd = document.getElementById('wia-updated-at');
+  if (upd) { try { upd.textContent = 'Última actualización: ' + new Date().toLocaleTimeString('es-AR'); } catch (_) {} }
+}
+async function refreshWaveAuditTrail() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  try {
+    const r = await fetch('/api/dash/wave-issue-audit', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderWaveAuditTrail(data);
+  } catch (_) {
+    // Best-effort: el polling reintenta en 30s.
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', function() {
+    refreshWaveAuditTrail();
+    setInterval(refreshWaveAuditTrail, 30 * 1000);
+  });
+}
+
+// #4460 — Banner "Reiniciar modelo operativo". Poll /api/dash/restart-pendiente
+// (patrón anti-flicker: fetch no-store + mostrar/ocultar por id). El botón sólo
+// aparece con items >= 1 (CA-1); sin drift queda oculto (CA-2); estado
+// desconocido muestra la variante warning (CA-8). El disparo pasa por el
+// endpoint endurecido (gate + CSRF).
+var _robItems = [];
+function _robEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function renderRestartOperativo(data) {
+  var banner = document.getElementById('restart-op-banner');
+  var unknown = document.getElementById('restart-op-unknown');
+  if (!banner || !unknown) return;
+  var items = (data && Array.isArray(data.items)) ? data.items : [];
+  var isUnknown = !!(data && data.unknown);
+  _robItems = items;
+  // Estado desconocido: warning, sin ofrecer reinicio a ciegas (CA-8).
+  if (isUnknown) {
+    banner.style.display = 'none';
+    unknown.style.display = 'flex';
+    return;
+  }
+  unknown.style.display = 'none';
+  // Sin drift: no renderizar el botón (CA-2).
+  if (!items.length) {
+    banner.style.display = 'none';
+    return;
+  }
+  // Con drift: mostrar banner + lista de motivos (issue# + componente + motivo).
+  var count = document.getElementById('rob-count');
+  if (count) {
+    count.textContent = items.length === 1
+      ? '1 entrega tocó el modelo operativo y todavía no corre en el runtime vivo.'
+      : (items.length + ' entregas tocaron el modelo operativo y todavía no corren en el runtime vivo.');
+  }
+  var list = document.getElementById('rob-list');
+  if (list) {
+    list.innerHTML = items.map(function(it) {
+      var issue = (it && Number.isInteger(it.issue)) ? ('#' + it.issue) : '(sin issue)';
+      var comp = _robEscape(it && it.componente);
+      var motivo = _robEscape(it && it.motivo);
+      return '<li><strong>' + _robEscape(issue) + '</strong> · ' + comp
+        + (motivo ? ' — ' + motivo : '') + '</li>';
+    }).join('');
+  }
+  banner.style.display = 'flex';
+}
+async function refreshRestartOperativo() {
+  if (typeof document === 'undefined' || document.hidden) return;
+  try {
+    var r = await fetch('/api/dash/restart-pendiente', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var data = await r.json();
+    renderRestartOperativo(data);
+  } catch (_) {
+    // Best-effort: el polling reintenta en 30s.
+  }
+}
+async function _robGetCsrf() {
+  var r = await fetch('/api/kill-agent/csrf-token', { cache: 'no-store' });
+  if (!r.ok) throw new Error('no se pudo obtener token CSRF');
+  var j = await r.json();
+  return j.csrf_token;
+}
+async function restartOperativoConfirm() {
+  // CA-5 — confirmación previa mostrando el detalle de qué se va a aplicar.
+  var detalle = _robItems.map(function(it) {
+    var issue = (it && Number.isInteger(it.issue)) ? ('#' + it.issue) : '(sin issue)';
+    return '  • ' + issue + ' — ' + (it && it.componente || 'pipeline');
+  }).join('\n');
+  var msg = 'Reiniciar el modelo operativo (Pulpo) para aplicar estos cambios entregados?\n\n'
+    + detalle + '\n\nEl reinicio es selectivo (no mata agentes vivos). ¿Continuar?';
+  if (!window.confirm(msg)) return; // Cancelar no reinicia nada (CA-5).
+  var btn = document.getElementById('rob-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Reiniciando…'; }
+  try {
+    var token = await _robGetCsrf();
+    var r = await fetch('/api/ops/restart-operativo', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+      body: JSON.stringify({ actor: 'dashboard-operador' }),
+    });
+    var j = await r.json().catch(function() { return {}; });
+    if (r.ok && j.ok) {
+      if (btn) btn.textContent = '✓ Reinicio disparado';
+      // La señal desaparece sola cuando el runtime rearranca con el HEAD nuevo
+      // (CA-7): el próximo poll verá el rango operativo vacío. Refrescamos en 5s.
+      setTimeout(refreshRestartOperativo, 5000);
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 Reiniciar modelo'; }
+      window.alert('No se pudo reiniciar: ' + (j.msg || ('HTTP ' + r.status)));
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Reiniciar modelo'; }
+    window.alert('Error al reiniciar el modelo operativo: ' + (e && e.message || e));
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', function() {
+    refreshRestartOperativo();
+    setInterval(refreshRestartOperativo, 30 * 1000);
+  });
+}
+
 // QA component action (individual or all)
 async function qaComponentAction(component, action) {
   const btn = event && event.target ? event.target : null;
@@ -5349,15 +8698,35 @@ async function qaComponentAction(component, action) {
   if (btn) btn.classList.remove('loading');
 }
 
+// #3955 (SEC-2) — token CSRF para /api/kill-agent en la home legacy (sin
+// fetch-client.js). Mismo patrón: pedir token, cachear, reintentar 1 vez si 403.
+let _kaCsrfTokenLegacy = null;
+async function killCsrfHeadersLegacy(force) {
+  try {
+    if (force) _kaCsrfTokenLegacy = null;
+    if (!_kaCsrfTokenLegacy) {
+      const r = await fetch('/api/kill-agent/csrf-token', { cache: 'no-store' });
+      if (r && r.ok) { const j = await r.json(); _kaCsrfTokenLegacy = (j && j.csrf_token) || null; }
+    }
+    return _kaCsrfTokenLegacy ? { 'X-CSRF-Token': _kaCsrfTokenLegacy } : {};
+  } catch (e) { return {}; }
+}
+async function killAgentPost(payload) {
+  const doPost = async () => fetch('/api/kill-agent', {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, await killCsrfHeadersLegacy()),
+    body: JSON.stringify(payload)
+  });
+  let r = await doPost();
+  if (r && r.status === 403) { await killCsrfHeadersLegacy(true); r = await doPost(); }
+  return r;
+}
+
 // Kill agent
 async function killAgent(issue, skill, pipeline, fase) {
   if (!confirm('¿Cancelar agente ' + skill + ' en #' + issue + '?')) return;
   try {
-    const resp = await fetch('/api/kill-agent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ issue, skill, pipeline, fase })
-    });
+    const resp = await killAgentPost({ issue, skill, pipeline, fase });
     const result = await resp.json();
     showToast(result.msg, result.ok);
     setTimeout(() => location.reload(), 1500);
@@ -5372,11 +8741,7 @@ async function killSkillGroup(skill, agents) {
   let ok = 0, fail = 0;
   for (const a of agents) {
     try {
-      const resp = await fetch('/api/kill-agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase })
-      });
+      const resp = await killAgentPost({ issue: a.issue, skill: a.skill, pipeline: a.pipeline, fase: a.fase });
       const result = await resp.json();
       if (result.ok) ok++; else fail++;
     } catch { fail++; }
@@ -5481,12 +8846,34 @@ function clearIssueSearch() {
 }
 
 // Popup con detalle de la fase al click en un dot
+// #3956 CA-8 — Escape client-side para todo texto de origen no confiable
+// (motivo de rebote, skill, título — escritos por agentes/GitHub) antes de
+// inyectarlo vía innerHTML. Corrige el XSS confirmado en showDotPopup
+// (motivo/skill/log se concatenaban crudos). Gemelo de escapePopupValue() del
+// server (lib/pipeline-lane-line.js) — defensa en profundidad.
+function __popEsc(v){
+  return String(v == null ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+// #3956 CA-9 — solo permite hrefs relativos internos (/logs/..., /...) o
+// https://github.com/. Rechaza javascript:/data:/otros esquemas. Devuelve ''
+// (sin link) si no es seguro.
+function __popSafeHref(u){
+  if (typeof u !== 'string' || !u) return '';
+  if (u.charAt(0) === '/' && u.charAt(1) !== '/') return u; // relativo interno
+  try { var p = new URL(u, window.location.origin);
+    if (p.protocol === 'https:' && p.hostname === 'github.com') return p.href;
+    if (p.origin === window.location.origin) return p.pathname + p.search;
+  } catch(_) {}
+  return '';
+}
 function showDotPopup(event, dotEl) {
   let data;
   try { data = JSON.parse(dotEl.dataset.popup); } catch(_) { return; }
   const popup = document.getElementById('dot-popup');
   if (!popup) return;
-  popup.querySelector('.dp-title').innerHTML = '<b>' + data.fase + '</b> · ' + data.pipeline + ' · #' + data.issue;
+  popup.querySelector('.dp-title').innerHTML = '<b>' + __popEsc(data.fase) + '</b> · ' + __popEsc(data.pipeline) + ' · #' + __popEsc(data.issue);
   const body = popup.querySelector('.dp-body');
   if (!data.skills || data.skills.length === 0) {
     body.innerHTML = '<div class="dp-empty">Sin actividad</div>';
@@ -5498,7 +8885,7 @@ function showDotPopup(event, dotEl) {
       else if (s.estado === 'trabajando') { icon = '⚙'; cls = 'run'; }
       else if (s.estado === 'listo' || s.estado === 'procesado') { icon = '✓'; cls = 'ok'; }
       else { icon = '○'; cls = 'pending'; }
-      var retry = s.retry ? '<span class="dp-retry">×'+s.retry+'</span>' : '';
+      var retry = s.retry ? '<span class="dp-retry">×'+__popEsc(s.retry)+'</span>' : '';
       // #2895 — duraciones contextuales:
       //   - skill ejecutado:   "12m"           (s.dur, sin avg)
       //   - skill en curso:    "8m / ~25m"     (s.dur + avg)
@@ -5509,11 +8896,25 @@ function showDotPopup(event, dotEl) {
       else if (s.dur)        durTxt = s.dur;
       else if (s.avgDur)     durTxt = '~' + s.avgDur;
       else if (s.estado === 'pendiente') durTxt = '?';
-      var dur = durTxt ? '<span class="dp-dur">'+durTxt+'</span>' : '';
-      var log = s.log ? '<a href="'+s.log+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>' : '';
-      var pdf = s.pdf ? '<a href="'+s.pdf+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
-      var motivo = s.motivo ? '<div class="dp-motivo">' + s.motivo + '</div>' : '';
-      return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+s.skill+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div></div>';
+      var dur = durTxt ? '<span class="dp-dur">'+__popEsc(durTxt)+'</span>' : '';
+      var logHref = __popSafeHref(s.log);
+      var pdfHref = __popSafeHref(s.pdf);
+      // #4444 — "ver log" de un agente COMPLETADO abre el histórico de ejecuciones
+      // (instancias + rebotes). Si hay 1 solo intento abre el visor directo; si
+      // hay N, expande un selector inline. Reusa el mismo visor /logs/view/<file>.
+      // Los agentes EN EJECUCIÓN conservan el link live directo (streaming, #4443).
+      var isLiveSkill = s.estado === 'trabajando';
+      var log = '';
+      if (logHref && isLiveSkill) {
+        log = '<a href="'+__popEsc(logHref)+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📄 ver log</a>';
+      } else if (logHref) {
+        log = '<button type="button" class="dp-log dp-hist-btn" data-issue="'+__popEsc(data.issue)+'" data-skill="'+__popEsc(s.skill)+'"'
+          + ' onclick="event.stopPropagation();showLogHistory(this)"'
+          + ' aria-label="Ver logs de '+__popEsc(s.skill)+' (#'+__popEsc(data.issue)+')">📄 ver log</button>';
+      }
+      var pdf = pdfHref ? '<a href="'+__popEsc(pdfHref)+'" target="_blank" rel="noopener noreferrer" class="dp-log" onclick="event.stopPropagation()">📑 PDF rechazo</a>' : '';
+      var motivo = s.motivo ? '<div class="dp-motivo">' + __popEsc(s.motivo) + '</div>' : '';
+      return '<div class="dp-row dp-'+cls+'"><div class="dp-row-top"><span class="dp-state">'+icon+'</span><span class="dp-skill">'+__popEsc(s.skill)+'</span>'+retry+dur+'</div>'+motivo+'<div class="dp-links">'+log+pdf+'</div><div class="dp-hist" data-open="0"></div></div>';
     }).join('');
   }
   const rect = dotEl.getBoundingClientRect();
@@ -5534,14 +8935,175 @@ function closeDotPopup() {
   const p = document.getElementById('dot-popup');
   if (p) p.style.display = 'none';
 }
+// #4444 — Histórico de logs de un agente completado (incluye rebotes). Al click
+// en "ver log" del popup, fetchea /logs/history/<issue>/<skill>:
+//   - 1 intento  → abre el visor /logs/view/<file> directo (sin fricción).
+//   - N intentos → expande un selector inline con "Intento 1", "Intento 2
+//                  (rebote)", … cada uno abriendo su log por separado.
+//   - 0 / error  → mensaje claro y no técnico (retención), sin romper la UI.
+// El contenido de log ya se sirve redactado y escapado por el server (REQ-SEC-2/3);
+// acá sólo escapamos labels/metadata con __popEsc (defensa en profundidad).
+function __histFmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+function __histFmtWhen(ms) {
+  ms = Number(ms) || 0;
+  if (!ms) return '';
+  try {
+    var d = new Date(ms);
+    var pad = function(x){ return (x < 10 ? '0' : '') + x; };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  } catch (_) { return ''; }
+}
+function showLogHistory(btn) {
+  var issue = btn.getAttribute('data-issue');
+  var skill = btn.getAttribute('data-skill');
+  var row = btn.closest ? btn.closest('.dp-row') : null;
+  var box = row ? row.querySelector('.dp-hist') : null;
+  if (!box) return;
+  // Toggle: si ya está abierto, colapsar.
+  if (box.getAttribute('data-open') === '1') {
+    box.innerHTML = '';
+    box.setAttribute('data-open', '0');
+    return;
+  }
+  box.setAttribute('data-open', '1');
+  box.innerHTML = '<span class="dp-hist-loading">cargando…</span>';
+  fetch('/logs/history/' + encodeURIComponent(issue) + '/' + encodeURIComponent(skill))
+    .then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+    .then(function (items) {
+      if (!Array.isArray(items) || items.length === 0) {
+        box.innerHTML = '<div class="dp-hist-empty">El log de este intento ya no está disponible (retención).</div>';
+        return;
+      }
+      if (items.length === 1) {
+        // 1 intento → abrir el visor directo, sin selector intermedio.
+        var href = '/logs/view/' + encodeURIComponent(items[0].file);
+        window.open(href, '_blank', 'noopener,noreferrer');
+        box.innerHTML = '';
+        box.setAttribute('data-open', '0');
+        return;
+      }
+      var lastIntento = items[items.length - 1].intento;
+      box.innerHTML = items.map(function (it) {
+        var esFinal = it.intento === lastIntento;
+        var label = 'Intento ' + it.intento + (it.intento > 1 ? ' (rebote)' : '');
+        var mark = esFinal ? '✓' : '✗';
+        var markCls = esFinal ? 'dp-hist-final' : 'dp-hist-rebote';
+        var meta = __histFmtBytes(it.bytes);
+        var when = __histFmtWhen(it.mtime);
+        if (when) meta += ' · ' + when;
+        var href = '/logs/view/' + encodeURIComponent(it.file);
+        return '<a class="dp-hist-item" href="' + __popEsc(href) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">'
+          + '<span class="dp-hist-mark ' + markCls + '">' + mark + '</span> '
+          + '<span class="dp-hist-label">' + __popEsc(label) + '</span> '
+          + '<span class="dp-hist-meta">' + __popEsc(meta) + '</span></a>';
+      }).join('');
+    })
+    .catch(function () {
+      box.innerHTML = '<div class="dp-hist-empty">El log de este intento ya no está disponible (retención).</div>';
+    });
+}
+// #3956 CA-2 — Popover del agente a nivel card: issue, skill, fase, estado,
+// edad, motivo del último rebote + botones Ver log / Pausar. Todo el texto pasa
+// por __popEsc (CA-8) y los links por __popSafeHref (CA-9).
+function showCardPopup(event, btnEl) {
+  let d;
+  try { d = JSON.parse(btnEl.dataset.cardPopup); } catch(_) { return; }
+  const popup = document.getElementById('card-popup');
+  if (!popup) return;
+  popup.querySelector('.dp-title').innerHTML = '<b>#' + __popEsc(d.issue) + '</b> · ' + __popEsc(d.skill);
+  const rows = [
+    ['Fase', d.fase], ['Estado', d.estado], ['Edad', d.edad],
+  ].map(function(r){ return '<div class="cp-row"><span class="cp-k">'+__popEsc(r[0])+'</span><span class="cp-v">'+__popEsc(r[1])+'</span></div>'; }).join('');
+  const motivo = d.motivo ? '<div class="cp-motivo" title="Motivo del último rebote">'+__popEsc(d.motivo)+'</div>' : '';
+  const logHref = __popSafeHref(d.log);
+  const logBtn = logHref ? '<a class="cp-btn" href="'+__popEsc(logHref)+'" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">📄 Ver log</a>' : '';
+  const issueNum = parseInt(d.issue, 10);
+  const pauseBtn = (Number.isInteger(issueNum) && d.estado !== 'completado')
+    ? '<button class="cp-btn" onclick="event.stopPropagation();closeCardPopup();needsHumanBlock('+issueNum+')">⏸ Pausar</button>' : '';
+  popup.querySelector('.dp-body').innerHTML = rows + motivo + '<div class="cp-actions">' + logBtn + pauseBtn + '</div>';
+  const rect = btnEl.getBoundingClientRect();
+  popup.style.display = 'block';
+  popup.style.position = 'fixed';
+  popup.style.left = '0px';
+  popup.style.top = '0px';
+  const pr = popup.getBoundingClientRect();
+  let left = rect.left + rect.width/2 - pr.width/2;
+  let top = rect.bottom + 8;
+  if (left < 8) left = 8;
+  if (left + pr.width > window.innerWidth - 8) left = window.innerWidth - pr.width - 8;
+  if (top + pr.height > window.innerHeight - 8) top = rect.top - pr.height - 8;
+  popup.style.left = left + 'px';
+  popup.style.top = top + 'px';
+}
+function closeCardPopup() {
+  const p = document.getElementById('card-popup');
+  if (p) p.style.display = 'none';
+}
+// #3956 CA-1 — Zoom semántico: aplica la clase de densidad sobre #it-lanes.
+// Las variables --zoom-* las resuelve design-tokens.css §14.
+function setBoardZoom(level) {
+  const lanes = document.getElementById('it-lanes');
+  if (!lanes) return;
+  lanes.classList.remove('zoom-lejos', 'zoom-normal', 'zoom-foco');
+  lanes.classList.add('zoom-' + level);
+  document.querySelectorAll('.it-zoom-btn').forEach(function(b){
+    b.classList.toggle('it-zoom-active', b.dataset.zoom === level);
+  });
+  try { localStorage.setItem('boardZoom', level); } catch(_) {}
+  updateLaneOverflow();
+}
+// #3956 CA-4 — Indicador "+N fases": cuenta cuántas etapas quedan fuera de vista
+// cuando la línea hace scroll horizontal.
+function updateLaneOverflow() {
+  const lanes = document.getElementById('it-lanes');
+  const ind = document.getElementById('it-lanes-overflow');
+  if (!lanes || !ind) return;
+  const lanesEls = lanes.querySelectorAll('.it-lane');
+  if (!lanesEls.length) { ind.style.display = 'none'; return; }
+  const wrapRight = lanes.getBoundingClientRect().right;
+  let hidden = 0;
+  lanesEls.forEach(function(el){
+    // una etapa cuenta como "fuera de vista" si su borde izquierdo arranca más
+    // allá del borde derecho visible (con un margen de tolerancia).
+    if (el.getBoundingClientRect().left > wrapRight - 24) hidden++;
+  });
+  if (hidden > 0) {
+    ind.style.display = 'inline-flex';
+    const n = document.getElementById('it-lanes-overflow-n');
+    if (n) n.textContent = '+' + hidden;
+  } else {
+    ind.style.display = 'none';
+  }
+}
+function scrollLanesToEnd() {
+  const lanes = document.getElementById('it-lanes');
+  if (lanes) lanes.scrollTo({ left: lanes.scrollWidth, behavior: 'smooth' });
+}
+window.addEventListener('resize', function(){ try { updateLaneOverflow(); } catch(_){} });
+window.addEventListener('load', function(){
+  try {
+    var z = localStorage.getItem('boardZoom');
+    if (z && z !== 'normal') setBoardZoom(z); else updateLaneOverflow();
+  } catch(_) { try { updateLaneOverflow(); } catch(__){} }
+});
 document.addEventListener('click', function(e){
   const p = document.getElementById('dot-popup');
-  if (!p || p.style.display === 'none') return;
-  if (!p.contains(e.target) && !e.target.classList.contains('stepper-dot')) {
+  if (p && p.style.display !== 'none' && !p.contains(e.target) && !e.target.classList.contains('stepper-dot')) {
     p.style.display = 'none';
   }
+  // #3956 — cerrar el popover de card al click afuera (salvo sobre el botón ⓘ)
+  const cp = document.getElementById('card-popup');
+  if (cp && cp.style.display !== 'none' && !cp.contains(e.target) && !e.target.closest('.lc-info-btn')) {
+    cp.style.display = 'none';
+  }
 });
-document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeDotPopup(); });
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') { closeDotPopup(); closeCardPopup(); } });
 
 function filterIssueTab(tabEl, filter) {
   document.querySelectorAll('.ic-tab').forEach(t => {
@@ -5550,17 +9112,15 @@ function filterIssueTab(tabEl, filter) {
   });
   tabEl.classList.add('ic-tab-active');
   tabEl.setAttribute('aria-selected', 'true');
-  // Hide/show lanes container and completed section according to tab
-  const lanesEl = document.querySelector('.it-lanes');
-  const doneEl = document.querySelector('.it-done-section');
-  if (lanesEl) lanesEl.classList.toggle('ic-hidden', filter === 'completed');
-  if (doneEl) doneEl.classList.toggle('ic-hidden', filter === 'active');
-  // Also honor legacy ic-card cards (if any remain)
+  // #3956 CA-7 — Ya no hay sección "Completados" aparte: la etapa "Finalizados"
+  // vive dentro de la misma línea. El filtro de tabs solo oculta/muestra cards
+  // por estado; la línea (con todas sus etapas) permanece visible.
   document.querySelectorAll('.ic-card, .lc-card').forEach(card => {
     const status = card.dataset.status;
     if (filter === 'all') card.classList.remove('ic-hidden');
     else card.classList.toggle('ic-hidden', status !== filter);
   });
+  try { updateLaneOverflow(); } catch(_) {}
   saveIssueTrackerState();
 }
 
@@ -6114,6 +9674,153 @@ async function _persistDragOrder() {
   }
 }
 
+// ── #4369 — Panel de priorización wave-scoped ──────────────────────────────
+// Lista SOLO los issues de la ola activa (CA-1) y permite reordenarlos entre sí
+// con drag-drop + botones ↑/↓ (CA-2). Persiste vía POST /api/waves/:num/reorder
+// con CSRF (CA-3/CA-7). Ante error revierte al último orden confirmado por el
+// server (CA-4/CA-10 → recarga desde el endpoint, no queda inconsistente).
+let _wpOrder = [];          // orden confirmado (array de strings)
+let _wpStatuses = {};       // number → status (para el badge)
+let _wpDragEl = null;
+
+function _wpSetStatus(msg, kind) {
+  const el = document.getElementById('wave-prio-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.className = 'wave-prio-status' + (kind ? ' wp-' + kind : '');
+}
+function _wpWaveNum() {
+  const panel = document.getElementById('wave-prio-panel');
+  return panel ? panel.dataset.wave : null;
+}
+async function wavePrioLoad() {
+  const wave = _wpWaveNum();
+  const list = document.getElementById('wave-prio-list');
+  if (!wave || !list) return;
+  try {
+    const r = await fetch('/api/waves/' + wave + '/order', { cache: 'no-store' });
+    const j = await r.json();
+    if (!j.ok) { _wpSetStatus('No se pudo cargar la ola: ' + (j.msg || 'error'), 'err'); return; }
+    _wpOrder = (j.issues || []).map(i => String(i.number));
+    _wpStatuses = {};
+    (j.issues || []).forEach(i => { _wpStatuses[String(i.number)] = i.status || ''; });
+    _wpRender();
+    _wpSetStatus('', null);
+  } catch (e) {
+    _wpSetStatus('Error de red al cargar la ola: ' + e.message, 'err');
+  }
+}
+function _wpRender() {
+  const list = document.getElementById('wave-prio-list');
+  if (!list) return;
+  if (_wpOrder.length === 0) {
+    list.innerHTML = '<li class="wave-prio-empty">La ola no tiene issues.</li>';
+    return;
+  }
+  list.innerHTML = _wpOrder.map((num, i) => {
+    const st = _wpStatuses[num] ? ' · ' + _wpStatuses[num] : '';
+    const upDis = i === 0 ? ' disabled' : '';
+    const downDis = i === _wpOrder.length - 1 ? ' disabled' : '';
+    return '<li class="wave-prio-item" draggable="true" data-issue="' + num + '"'
+      + ' ondragstart="wpDragStart(event)" ondragover="wpDragOver(event)"'
+      + ' ondragleave="wpDragLeave(event)" ondrop="wpDrop(event)" ondragend="wpDragEnd(event)">'
+      + '<span class="wave-prio-pos">' + (i + 1) + '</span>'
+      + '<span class="wave-prio-num">#' + num + '</span>'
+      + '<span class="wave-prio-meta" style="color:var(--dim);font-size:0.9em">' + st + '</span>'
+      + '<span class="wave-prio-spacer"></span>'
+      + '<button class="wave-prio-btn wave-prio-up" type="button" title="Subir una posición"'
+      + ' aria-label="Subir #' + num + ' una posición" onclick="wavePrioMove(\'' + num + '\',-1)"' + upDis + '>▲</button>'
+      + '<button class="wave-prio-btn wave-prio-down" type="button" title="Bajar una posición"'
+      + ' aria-label="Bajar #' + num + ' una posición" onclick="wavePrioMove(\'' + num + '\',1)"' + downDis + '>▼</button>'
+      + '</li>';
+  }).join('');
+}
+function wavePrioMove(num, delta) {
+  const i = _wpOrder.indexOf(String(num));
+  if (i === -1) return;
+  const j = i + delta;
+  if (j < 0 || j >= _wpOrder.length) return;
+  const next = _wpOrder.slice();
+  [next[i], next[j]] = [next[j], next[i]];
+  _wpPersist(next);
+}
+// Drag-drop nativo dentro de la lista wave-scoped.
+function wpDragStart(e) {
+  _wpDragEl = e.currentTarget;
+  e.currentTarget.classList.add('wp-dragging');
+  try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', e.currentTarget.dataset.issue); } catch (err) {}
+}
+function wpDragOver(e) {
+  if (!_wpDragEl) return;
+  const item = e.currentTarget;
+  if (item === _wpDragEl) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const rect = item.getBoundingClientRect();
+  const above = (e.clientY - rect.top) < rect.height / 2;
+  item.classList.toggle('wp-drop-above', above);
+  item.classList.toggle('wp-drop-below', !above);
+}
+function wpDragLeave(e) { e.currentTarget.classList.remove('wp-drop-above', 'wp-drop-below'); }
+function wpDrop(e) {
+  if (!_wpDragEl) return;
+  const item = e.currentTarget;
+  item.classList.remove('wp-drop-above', 'wp-drop-below');
+  if (item === _wpDragEl) return;
+  e.preventDefault();
+  const rect = item.getBoundingClientRect();
+  const above = (e.clientY - rect.top) < rect.height / 2;
+  const from = _wpDragEl.dataset.issue;
+  const to = item.dataset.issue;
+  const next = _wpOrder.filter(n => n !== from);
+  let idx = next.indexOf(to);
+  if (!above) idx += 1;
+  next.splice(idx, 0, from);
+  _wpPersist(next);
+}
+function wpDragEnd() {
+  if (_wpDragEl) _wpDragEl.classList.remove('wp-dragging');
+  document.querySelectorAll('.wp-drop-above, .wp-drop-below').forEach(c => c.classList.remove('wp-drop-above', 'wp-drop-below'));
+  _wpDragEl = null;
+}
+async function _wpPersist(newOrder) {
+  const wave = _wpWaveNum();
+  if (!wave) return;
+  // Optimista: pintar el nuevo orden ya; si el server rechaza, recargamos.
+  const prev = _wpOrder.slice();
+  _wpOrder = newOrder.slice();
+  _wpRender();
+  _wpSetStatus('Guardando…', null);
+  const doPost = async () => fetch('/api/waves/' + wave + '/reorder', {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, await killCsrfHeadersLegacy()),
+    body: JSON.stringify({ order: newOrder })
+  });
+  try {
+    let r = await doPost();
+    if (r && r.status === 403) { await killCsrfHeadersLegacy(true); r = await doPost(); }
+    const j = await r.json().catch(() => ({ ok: false, msg: 'respuesta no-JSON' }));
+    if (r.ok && j.ok) {
+      _wpSetStatus('✓ Orden de la ola actualizado (' + newOrder.length + ' issues)', 'ok');
+    } else {
+      // Revert + recarga desde el server (fuente de verdad) — CA-10.
+      _wpOrder = prev;
+      _wpRender();
+      const hint = r.status === 400 ? 'la ola cambió, recargá el panel' : (j.msg || 'error');
+      _wpSetStatus('No se pudo reordenar: ' + hint, 'err');
+      wavePrioLoad();
+    }
+  } catch (e) {
+    _wpOrder = prev;
+    _wpRender();
+    _wpSetStatus('Error de red al reordenar: ' + e.message, 'err');
+  }
+}
+// Carga inicial del panel (si existe) al terminar de parsear el DOM.
+document.addEventListener('DOMContentLoaded', function () {
+  if (document.getElementById('wave-prio-panel')) wavePrioLoad();
+});
+
 // Toggle genérico de secciones colapsables (Issue Tracker, Equipo, Historial).
 // Estado persistido en localStorage por sección.
 function toggleSection(name) {
@@ -6157,6 +9864,72 @@ function toggleSection(name) {
   } catch (e) {}
 })();
 
+// #4068 — Pantalla de confirmación NO-MUTANTE de las acciones rápidas de
+// needs-human. El botón de Telegram abre /?action=A&issue=N&token=T (GET); acá
+// solo renderizamos una confirmación con la consecuencia de la acción. La
+// mutación real recién ocurre al confirmar (POST /api/human-block/action detrás
+// del gate CA-Sec). Anti-CSRF: jamás se muta en GET.
+(function applyHumanBlockActionConfirm(){
+  try {
+    var params = new URLSearchParams(location.search);
+    var action = params.get('action');
+    var issue = params.get('issue');
+    var token = params.get('token');
+    var ACTIONS = {
+      'unblock':             { title: 'Aprobar (desbloquear)',  consequence: 'Vas a desbloquear el issue y devolverlo a la cola del pipeline.', high: false },
+      'mas-contexto':        { title: 'Pedir más contexto',     consequence: 'Vas a pedir más contexto; el issue queda bloqueado hasta que respondas.', high: false },
+      'devolver-definicion': { title: 'Devolver a definición',  consequence: '⚠️ Vas a devolver el issue a definición. Se descarta el trabajo de desarrollo en curso y vuelve a re-analizarse.', high: true },
+      'priorizar':           { title: 'Priorizar',              consequence: 'Vas a subir la prioridad de este issue y desbloquearlo.', high: false }
+    };
+    if (!action || !ACTIONS[action] || !issue || !/^[0-9]+$/.test(issue) || !token) return;
+    var meta = ACTIONS[action];
+    var primary = meta.high ? '#d9822b' : '#2e7d32';
+    var ov = document.createElement('div');
+    ov.id = 'hb-action-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+    var card = document.createElement('div');
+    card.style.cssText = 'background:#1b1f27;color:#e8eaed;max-width:440px;width:100%;border-radius:12px;padding:22px;box-shadow:0 8px 40px rgba(0,0,0,.5);font-family:system-ui,Segoe UI,sans-serif;';
+    var btnBase = 'border:0;border-radius:8px;padding:10px 16px;cursor:pointer;font-size:14px;';
+    card.innerHTML =
+      '<div style="font-size:13px;opacity:.7;margin-bottom:6px;">Issue #' + issue + '</div>' +
+      '<div style="font-size:19px;font-weight:600;margin-bottom:12px;">' + meta.title + '</div>' +
+      '<div id="hb-action-body" style="font-size:14px;line-height:1.5;margin-bottom:20px;">' + meta.consequence + '</div>' +
+      '<div id="hb-action-cta" style="display:flex;gap:10px;justify-content:flex-end;">' +
+        '<button id="hb-cancel" style="' + btnBase + 'background:#33373f;color:#e8eaed;">Cancelar</button>' +
+        '<button id="hb-confirm" style="' + btnBase + 'background:' + primary + ';color:#fff;font-weight:600;">Confirmar</button>' +
+      '</div>';
+    ov.appendChild(card);
+    document.body.appendChild(ov);
+    function cleanUrl(){ try { history.replaceState({}, document.title, location.pathname); } catch (e) {} }
+    function close(){ try { ov.remove(); } catch (e) {} cleanUrl(); }
+    function showCloseOnly(html){
+      document.getElementById('hb-action-body').innerHTML = html;
+      var cta = document.getElementById('hb-action-cta');
+      cta.innerHTML = '<button id="hb-close2" style="' + btnBase + 'background:#33373f;color:#e8eaed;">Cerrar</button>';
+      document.getElementById('hb-close2').onclick = close;
+      cleanUrl();
+    }
+    document.getElementById('hb-cancel').onclick = close;
+    document.getElementById('hb-confirm').onclick = function(){
+      document.getElementById('hb-action-cta').innerHTML = '<span style="opacity:.7;">Procesando…</span>';
+      fetch('/api/human-block/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issue: Number(issue), action: action, token: token })
+      })
+        .then(function(r){ return r.json().then(function(j){ return { status: r.status, j: j }; }); })
+        .then(function(o){
+          if (o.status === 200 && o.j && o.j.ok) {
+            showCloseOnly('✅ Hecho — ' + (o.j.msg || ('#' + issue + ' actualizado')));
+          } else {
+            showCloseOnly((o.j && o.j.msg) ? o.j.msg : '🔒 No se pudo ejecutar la acción.');
+          }
+        })
+        .catch(function(e){ showCloseOnly('⚠️ Error de red: ' + e.message); });
+    };
+  } catch (e) {}
+})();
+
 // Toggle de la sección "Salud de Infra" — colapsable + persistente (default: colapsada)
 function toggleInfraHealth() {
   const sec = document.querySelector('section.infra-health');
@@ -6174,6 +9947,49 @@ function toggleInfraHealth() {
     }
   } catch (e) {}
 })();
+
+// #4580 — Bandeja "Esperando tu firma". Handlers del panel de firma del operador.
+// REQ-SEC-4580-1: la acción es POST-only + X-CSRF-Token same-origin (GET token →
+// POST decide). El dashboard NO muta estado: reenvía la decisión al backend de
+// firma (#4579) que delega la transición al kernel.
+function toggleEsperandoFirmaPanel() {
+  var p = document.getElementById('esperando-firma-panel');
+  if (!p) return;
+  var collapse = !p.classList.contains('ef-collapsed');
+  p.classList.toggle('ef-collapsed');
+  try { localStorage.setItem('ef-panel-collapsed', collapse ? '1' : '0'); } catch (e) {}
+}
+(function restoreEsperandoFirmaPanel() {
+  try {
+    if (localStorage.getItem('ef-panel-collapsed') === '1') {
+      var p = document.getElementById('esperando-firma-panel');
+      if (p) p.classList.add('ef-collapsed');
+    }
+  } catch (e) {}
+})();
+function efDisableRow(issueNum) {
+  var row = document.getElementById('esperando-firma-row-' + issueNum);
+  if (row) { row.querySelectorAll('button').forEach(function (b) { b.disabled = true; }); }
+}
+async function gateSignatureDecide(issueNum, decision) {
+  var verbo = decision === 'aprobar' ? 'Aprobar' : 'Rechazar';
+  if (!window.confirm(verbo + ' la firma del issue #' + issueNum + '?')) return;
+  efDisableRow(issueNum);
+  try {
+    var t = await fetch('/api/gate-signature/csrf-token', { cache: 'no-store' });
+    var tj = await t.json();
+    var token = tj && tj.csrf_token;
+    if (!token) { alert('No pude obtener el token CSRF; recargá y reintentá.'); location.reload(); return; }
+    var r = await fetch('/api/gate-signature/decide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+      body: JSON.stringify({ issue: issueNum, decision: decision })
+    });
+    var j = await r.json();
+    if (j && j.ok) { location.reload(); }
+    else { alert('Error firmando #' + issueNum + ': ' + ((j && j.msg) || 'desconocido')); location.reload(); }
+  } catch (e) { alert('Error firmando #' + issueNum + ': ' + e.message); location.reload(); }
+}
 
 // Toggle del panel "Necesitan intervención humana" — colapsable + persistente
 function toggleNeedsHumanPanel(scrollOnExpand) {
@@ -6277,6 +10093,9 @@ function inferHistoricalActivity() {
 
   // 1. Archivos procesados/listo de todas las fases — cada uno es un "agente terminó"
   const config = loadConfig();
+  // #5172 · CA-8 — sin config válida no se infiere actividad: devolver una serie
+  // vacía es honesto (no hay datos), inventar una derivada de defaults no lo es.
+  if (!config) return events;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     for (const fase of pConfig.fases) {
       for (const estado of ['procesado', 'listo', 'trabajando', 'pendiente']) {
@@ -6344,133 +10163,35 @@ function inferHistoricalActivity() {
   return snapshots;
 }
 
+// #3733 — El cuerpo de getMetricsData() se extrajo a `lib/kpis-data.js`
+// (getMetricsSlice) para testearlo en aislamiento y reusarlo desde la ventana
+// KPIs V3. Esta función mantiene el contrato histórico (mismo shape de retorno)
+// y delega vía ctx inyectado. Fallback inerte (CA-A3) si el módulo no cargó.
 function getMetricsData() {
-  const metricsFile = path.join(PIPELINE, 'metrics-history.jsonl');
-  let snapshots = [];
-  try {
-    const lines = fs.readFileSync(metricsFile, 'utf8').split('\n').filter(Boolean);
-    for (const l of lines) {
-      try { snapshots.push(JSON.parse(l)); } catch {}
-    }
-  } catch {}
-
-  // El archivo `metrics-history.jsonl` mezcla dos shapes:
-  //   - pulse del Pulpo: { ts: number, cpu, mem, agents, level, ... }
-  //   - anomaly del detector (#2891): { type: 'anomaly', ts: ISO, hour, baseline_usd, ... }
-  // El dashboard solo consume las pulse → filtramos por shape.
-  snapshots = snapshots.filter(s => typeof s.cpu === 'number' && typeof s.mem === 'number' && typeof s.ts === 'number');
-
-  // Si no hay snapshots del Pulpo, inferir actividad histórica desde archivos procesados
-  // Esto da una timeline de cuándo hubo trabajo en cada fase
-  if (snapshots.length < 10) {
-    const inferred = inferHistoricalActivity();
-    if (inferred.length > snapshots.length) snapshots = inferred;
+  if (!kpisData) {
+    log('kpis-data unavailable — getMetricsData devuelve slice vacío');
+    return { snapshots: [], etaAverages: {}, entregas: [], tokenEstimates: { totalSessions: 0, totalTools: 0, totalEstimatedTokens: 0, bySession: [] }, totalProcessed: 0, totalRejected: 0, agentPerf: {} };
   }
-
-  // Promedios de duración por fase/skill (reusar lógica de ETA)
-  const state = getPipelineState();
-  const etaAverages = state.etaAverages || {};
-
-  // Throughput: issues completados por período (de archivos en entrega/procesado)
-  const entregas = [];
-  try {
-    const dir = path.join(PIPELINE, 'desarrollo', 'entrega', 'procesado');
-    for (const f of listWorkFiles(dir)) {
-      const st = fileStat(path.join(dir, f));
-      if (st) entregas.push({ issue: f.split('.')[0], ts: st.ctimeMs });
-    }
-  } catch {}
-  entregas.sort((a, b) => a.ts - b.ts);
-
-  // Cuota Anthropic estimada (del activity log)
-  const tokenEstimates = { totalSessions: 0, totalTools: 0, totalEstimatedTokens: 0, bySession: [] };
-  try {
-    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
-    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
-    const sessions = {};
-    for (const l of lines) {
-      try {
-        const d = JSON.parse(l);
-        if (!d.session) continue;
-        if (!sessions[d.session]) sessions[d.session] = { tools: 0, firstTs: d.ts, lastTs: d.ts };
-        sessions[d.session].tools++;
-        sessions[d.session].lastTs = d.ts;
-      } catch {}
-    }
-    for (const [id, s] of Object.entries(sessions)) {
-      const durSeg = typeof s.firstTs === 'string' && typeof s.lastTs === 'string'
-        ? (new Date(s.lastTs) - new Date(s.firstTs)) / 1000
-        : typeof s.firstTs === 'number' ? (s.lastTs - s.firstTs) / 1000 : 0;
-      const estimated = Math.round((durSeg * 15) + (s.tools * 500));
-      tokenEstimates.totalSessions++;
-      tokenEstimates.totalTools += s.tools;
-      tokenEstimates.totalEstimatedTokens += estimated;
-      tokenEstimates.bySession.push({ id: id.slice(0, 8), tools: s.tools, durMin: Math.round(durSeg / 60), tokens: estimated });
-    }
-  } catch {}
-
-  // Tasa de rebotes (rechazos / total)
-  let totalProcessed = 0, totalRejected = 0;
-  const config = loadConfig();
-  const allFases = [];
-  for (const [pName, pConfig] of Object.entries(config.pipelines)) {
-    for (const fase of pConfig.fases) allFases.push({ pipeline: pName, fase });
-  }
-  for (const { pipeline: pName, fase } of allFases) {
-    for (const estado of ['procesado', 'listo']) {
-      const dir = path.join(PIPELINE, pName, fase, estado);
-      for (const f of listWorkFiles(dir)) {
-        totalProcessed++;
-        const data = readYamlSafe(path.join(dir, f));
-        if (data.resultado === 'rechazado') totalRejected++;
-      }
-    }
-  }
-
-  // Agent performance: issues procesados por skill, duración promedio, rechazos
-  const agentPerf = {};
-  for (const { pipeline: pName, fase } of allFases) {
-    for (const estado of ['procesado', 'listo']) {
-      const dir = path.join(PIPELINE, pName, fase, estado);
-      for (const f of listWorkFiles(dir)) {
-        const skill = f.split('.').slice(1).join('.');
-        if (!skill) continue;
-        if (!agentPerf[skill]) agentPerf[skill] = { issues: 0, rejected: 0, totalDurMs: 0, durCount: 0, toolCalls: 0 };
-        agentPerf[skill].issues++;
-        const data = readYamlSafe(path.join(dir, f));
-        if (data.resultado === 'rechazado') agentPerf[skill].rejected++;
-        const st = fileStat(path.join(dir, f));
-        if (st) {
-          const dur = st.ctimeMs - st.birthtimeMs;
-          if (dur > 5000 && dur < 4 * 3600000) {
-            agentPerf[skill].totalDurMs += dur;
-            agentPerf[skill].durCount++;
-          }
-        }
-      }
-    }
-  }
-  // Enriquecer con tool calls del activity log
-  try {
-    const archiveFile = path.join(path.dirname(PIPELINE), '.claude', 'activity-log.archive.jsonl');
-    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean);
-    const sessionSkill = {};
-    for (const l of lines) {
-      try {
-        const d = JSON.parse(l);
-        if (d.session && d.skill) sessionSkill[d.session] = d.skill;
-        if (d.session && d.tool) {
-          const sk = sessionSkill[d.session] || d.session;
-          if (agentPerf[sk]) agentPerf[sk].toolCalls++;
-        }
-      } catch {}
-    }
-  } catch {}
-
-  return { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected, agentPerf };
+  return kpisData.getMetricsSlice({
+    ROOT: path.dirname(PIPELINE),
+    PIPELINE,
+    getPipelineState,
+    loadConfig,
+    listWorkFiles,
+    fileStat,
+    readYamlSafe,
+    inferHistoricalActivity,
+  });
 }
 
 function generateMetricsHTML() {
+  // #3733 — Render de /metrics delegado a la vista extraída (XSS hardening:
+  // skill names + session IDs escapados). El endpoint NUNCA se borra
+  // (decisión cerrada #3). Si la vista no cargó, cae al body legacy de abajo
+  // como fallback inerte (CA-A3).
+  if (kpisViewMod && typeof kpisViewMod.renderMetricsPage === 'function') {
+    return kpisViewMod.renderMetricsPage({ data: getMetricsData() });
+  }
   const data = getMetricsData();
   const { snapshots, etaAverages, entregas, tokenEstimates, totalProcessed, totalRejected, agentPerf } = data;
 
@@ -6813,7 +10534,7 @@ ${maxCpu(snap1h) > 90 ? '<p class="red">⚠️ <strong>Perf (Gregg):</strong> CP
 ${reboteRate > 30 ? '<p class="orange">⚠️ <strong>QA (James Bach):</strong> Tasa de rechazo ${reboteRate}% — Explorar root cause en prompts de agentes dev.</p>' : ''}
 ${reboteRate > 15 && reboteRate <= 30 ? '<p class="yellow">⚠️ <strong>Delivery (Forsgren):</strong> Change failure rate ${reboteRate}% — Por encima del target DORA elite (< 15%).</p>' : ''}
 ${levelPct.red > 10 ? '<p class="red">⚠️ <strong>Planner (Reinertsen):</strong> Sistema en rojo ' + levelPct.red + '% del tiempo — Batch size excesivo, limitar WIP.</p>' : ''}
-${levelPct.green > 80 ? '<p class="green">✅ <strong>Scrum (Vacanti):</strong> Flow saludable — recursos bien dimensionados para la carga actual.</p>' : ''}
+${levelPct.green > 80 ? '<p class="green">✅ <strong>Flow (Vacanti):</strong> Flow saludable — recursos bien dimensionados para la carga actual.</p>' : ''}
 ${delivered24h === 0 && snap24h.length > 0 ? '<p class="yellow">⚠️ <strong>PO (Cagan):</strong> 0 entregas en 24h con pipeline activo — Verificar si el trabajo avanza hacia outcomes.</p>' : ''}
 <p class="dim" style="margin-top:8px">${dataSourceLabel}</p>
 </div>
@@ -7604,17 +11325,62 @@ setInterval(refreshHandoff, 30 * 1000); // CA-C2: refresh cada 30s
 // --- Log Viewer (standalone page) ---
 
 function generateLogViewerHTML(filename, isLive) {
+  // Ola 7.1 (#4191) — nuevo shell MIZPÁ de la pantalla LOGS. Best-effort: si el
+  // módulo lanza (rollout transitorio, dep faltante, dato inesperado), caemos al
+  // viewer legacy de abajo. El pipeline no puede morir y el render nunca queda en
+  // blanco (CA-A3). El módulo parsea issue/skill del filename; acá sólo le
+  // inyectamos issueData desde el estado del pipeline (la ficha degrada a "sin
+  // datos" si falta), evitando que el módulo dependa de dashboard.js (sin ciclo).
+  try {
+    const logsView = require('./views/dashboard/logs');
+    let issueData = null;
+    try {
+      const parsed = require('./views/log-viewer/chat-panel').parseLogFileName(filename);
+      if (parsed && parsed.issue != null) {
+        const st = getPipelineState();
+        issueData = (st && st.issueMatrix && st.issueMatrix[parsed.issue]) || null;
+      }
+    } catch { /* ficha degrada a "sin datos" */ }
+    return logsView.renderLogViewer(filename, isLive, { issueData });
+  } catch (e) {
+    log(`logs viewer MIZPÁ deshabilitado, fallback legacy: ${e.message}`);
+  }
+
+  // ---- Viewer legacy (fallback ante fallo del módulo nuevo) ----
   const title = filename.replace('.log', '').replace(/-/g, ' ');
   // Import theme compartido (#2801) — el log viewer es un satélite más,
   // hereda paleta y tipografía del resto del dashboard nuevo.
   let sharedTheme = '';
   try { sharedTheme = fs.readFileSync(path.join(__dirname, 'views', 'dashboard', 'theme.css'), 'utf8'); }
   catch { /* fallback al CSS local de abajo */ }
+
+  // #3605 — Panel de chat operador↔agente. Best-effort: si el módulo no se
+  // puede cargar (rollout transitorio, dep faltante), el log viewer sigue
+  // funcionando sin la feature en vez de fallar.
+  let chatBundle = null;
+  try {
+    const chatPanel = require('./views/log-viewer/chat-panel');
+    const parsed = chatPanel.parseLogFileName(filename);
+    if (parsed) {
+      // La fase no se infiere del filename; el endpoint /api/agent-chat la
+      // recibe del cliente. Para el frontend del panel pasamos string vacío
+      // (el JS la lee del dataset si está; si no, el server resuelve por
+      // (issue, skill) buscando el agente activo).
+      chatBundle = chatPanel.buildChatPanel({
+        logFile: filename,
+        issue: parsed.issue,
+        skill: parsed.skill,
+        fase: '',
+      });
+    }
+  } catch (e) { log(`chat-panel disabled: ${e.message}`); }
+
   return `<!DOCTYPE html>
 <html lang="es"><head>
 <meta charset="utf-8">
 <title>${title} — Log Viewer · Intrale</title>
 <style>${sharedTheme}</style>
+<style>${chatBundle ? chatBundle.css : ''}</style>
 <style>
 :root{--bg:var(--in-bg);--sf:var(--in-bg-2);--tx:var(--in-fg);--dim:var(--in-fg-dim);--bd:var(--in-border);--ac:var(--in-info);--gn:var(--in-ok);--rd:var(--in-bad);--yl:var(--in-warn);--or:#d18616}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -7656,6 +11422,7 @@ input[type=text]:focus{outline:none;border-color:var(--ac)}
 .scroll-btn.visible{display:block}
 </style>
 </head><body>
+${chatBundle ? chatBundle.sprite : ''}
 <div class="lv-topbar">
   <a class="lv-back" href="/" target="_self">Operación</a>
   <span class="lv-logo">i</span>
@@ -7674,6 +11441,7 @@ input[type=text]:focus{outline:none;border-color:var(--ac)}
 </div>
 <div class="log-body" id="body"></div>
 <button class="scroll-btn" id="scrollBtn" onclick="scrollBottom()">⬇ Ir al final</button>
+${chatBundle ? chatBundle.html : ''}
 <script>
 const body = document.getElementById('body');
 const statsEl = document.getElementById('stats');
@@ -7905,13 +11673,358 @@ es.onerror = function() {
   document.querySelector('.badge').className = 'badge badge-done';
   document.querySelector('.badge').textContent = '✓ Desconectado';
 };
+${chatBundle ? chatBundle.js : ''}
 </script>
 </body></html>`;
 }
 
 // --- Server ---
 
-const server = http.createServer((req, res) => {
+// #3177 — Panel UI Multi-Provider. Lazy require para que el dashboard arranque
+// aún si el módulo (o sus deps como ajv) no están disponibles en un checkout
+// transitorio. Si falla → log + degradación silenciosa.
+let multiProviderApi = null;
+let multiProviderView = null;
+try { multiProviderApi = require('./lib/multi-provider/api'); } catch (e) { log(`multi-provider api unavailable: ${e.message}`); }
+try { multiProviderView = require('./views/dashboard/multi-provider'); } catch (e) { log(`multi-provider view unavailable: ${e.message}`); }
+// EP8-H12 (#3965) — pantalla "Salud Multi-Provider" (aditiva). Lazy-require
+// defensivo igual que multiProviderView: si el módulo no carga, el dashboard
+// sigue funcionando sin la pantalla nueva.
+let mpHealthView = null;
+try { mpHealthView = require('./views/dashboard/multi-provider-health'); } catch (e) { log(`multi-provider-health view unavailable: ${e.message}`); }
+
+// #3737 — Panel UI Providers (NUEVO, split del épico #3715). Read-only: lista
+// credenciales gestionadas (masked + fingerprint). Lazy require defensivo
+// (patrón #3177): si el módulo falla, el dashboard arranca igual y `/providers`
+// queda servido por el fallback inerte de dashboard-routes.js. Coexiste con
+// /multi-provider (decisión D0 del PO).
+let providersView = null;
+try { providersView = require('./views/dashboard/providers'); } catch (e) { log(`providers view unavailable: ${e.message}`); }
+
+// #3735 — API del banner de consumo anómalo migrada al módulo
+// lib/cost-anomaly/api.js (split de la ventana Costos). Lazy require: si falla,
+// el dashboard arranca sin los endpoints POST de ack/snooze.
+let costAnomalyApi = null;
+try { costAnomalyApi = require('./lib/cost-anomaly/api'); } catch (e) { log(`cost-anomaly api unavailable: ${e.message}`); }
+
+// #3681 (hijo B del épico #3669) — Widget Multi-Provider Coverage.
+// - El POST de disparo del harness vive en un módulo aparte porque
+//   `dashboard-routes.js::handle()` filtra `req.method !== 'GET'` y no puede
+//   registrar verbos POST. Lo mounteamos acá antes del catch-all.
+// - El GET de lectura del JSON sí va por dashboard-routes.js::API_ROUTES.
+// - La vista HTML del widget (/multi-provider-coverage) la servimos también
+//   acá, replicando el patrón de #3177.
+let multiProviderCoverageApi = null;
+let multiProviderCoverageView = null;
+try { multiProviderCoverageApi = require('./lib/multi-provider-coverage/api'); } catch (e) { log(`multi-provider-coverage api unavailable: ${e.message}`); }
+try { multiProviderCoverageView = require('./views/dashboard/multi-provider-coverage'); } catch (e) { log(`multi-provider-coverage view unavailable: ${e.message}`); }
+
+// #3736 — Ventana Descanso extraída a su propio módulo (padre #3715). Require
+// defensivo (mismo patrón que las vistas multi-provider). El routing legacy
+// `/modo-descanso` y el slug nuevo `?view=descanso` los resuelve
+// dashboard-routes.js, que también carga este módulo con su propio guard.
+let descansoView = null;
+try { descansoView = require('./views/dashboard/descanso'); } catch (e) { log(`descanso view unavailable: ${e.message}`); }
+
+// #3735 — Ventana Costos: pill + banner de consumo anómalo extraídos del shell
+// del monolito a su propio módulo (split de #3715). Require defensivo: si falla,
+// el render del header degrada a un fallback inerte (CA-A3) sin tirar el
+// dashboard. La página standalone /consumo queda intacta (consolidación en
+// #3779).
+let costosView = null;
+try { costosView = require('./views/dashboard/costos'); } catch (e) { log(`costos view unavailable: ${e.message}`); }
+
+// #3728 — Ventana Pipeline extraída del monolito (split de #3715). SSR puro:
+// recibe el state ya computado + helpers compartidos (renderInfraHealth,
+// renderPartialPauseAuditRows, ic) inyectados. Require defensivo: si falla, el
+// bloque degrada a un comentario inerte y el dashboard sigue rindiendo.
+let pipelineView = null;
+try { pipelineView = require('./views/dashboard/pipeline'); } catch (e) { log(`pipeline view unavailable: ${e.message}`); }
+
+// #3733 — Ventana KPIs extraída del monolito (split de #3715). `kpisData`
+// provee el slice data-only (getMetricsData portado con ctx inyectado) y
+// `kpisView` la presentación SSR (renderKpis + renderMetricsPage). Require
+// defensivo: si fallan, getMetricsData()/generateMetricsHTML() degradan a un
+// fallback inerte (CA-A3) — el endpoint /metrics nunca se cae.
+let kpisData = null;
+let kpisViewMod = null;
+try { kpisData = require('./lib/kpis-data'); } catch (e) { log(`kpis-data unavailable: ${e.message}`); }
+try { kpisViewMod = require('./views/dashboard/kpis'); } catch (e) { log(`kpis view unavailable: ${e.message}`); }
+
+// #3734 — Vista Historial (split #3715 del rediseño V3 dashboard).
+let historialView = null;
+try { historialView = require('./views/dashboard/historial'); } catch (e) { log(`historial view unavailable: ${e.message}`); }
+
+// #3729 — Ventana Bloqueados extraída del monolito (split de #3715). El bloque
+// `bloqueadosHTML` del dashboard legacy (generateHTML) delega al módulo nuevo.
+// Require defensivo: si falla, el bloque degrada a string vacío (CA-A3) sin
+// tirar el dashboard. El router (`/bloqueados` y `?view=bloqueados`) carga su
+// propia copia del módulo en lib/dashboard-routes.js con su guard.
+let bloqueadosView = null;
+try { bloqueadosView = require('./views/dashboard/bloqueados'); } catch (e) { log(`bloqueados view unavailable: ${e.message}`); }
+
+// #4580 — Bandeja "Esperando tu firma" (gates de firma del operador). Require
+// defensivo: si falla, el panel degrada a string vacío sin tirar el dashboard.
+let esperandoFirmaView = null;
+try { esperandoFirmaView = require('./views/dashboard/esperando-firma'); } catch (e) { log(`esperando-firma view unavailable: ${e.message}`); }
+
+// #4580 — Delegación de la firma del operador (POST /api/gate-signature/decide).
+// El dashboard encola el pedido; el kernel ejecuta la transición (CA-2).
+let gateSignatureRequest = null;
+try { gateSignatureRequest = require('./lib/gate-signature-request'); } catch (e) { log(`gate-signature-request unavailable: ${e.message}`); }
+
+// #4778 — Control del kernel multi-producto (onboard/start/pause). El dashboard
+// valida fail-closed (schema + SSRF vía project-bootstrap) y encola el pedido; el
+// kernel registra/arranca/pausa (invariante "el adaptador pide, el kernel ejecuta").
+let productControl = null;
+try { productControl = require('./lib/product-control-request'); } catch (e) { log(`product-control-request unavailable: ${e.message}`); }
+let productDescriptor = null;
+try { productDescriptor = require('./lib/project-descriptor'); } catch (e) { log(`project-descriptor unavailable: ${e.message}`); }
+const productDeactivateNonces = new Map();
+function issueProductActionNonce(projectId) {
+  const nonce = crypto.randomBytes(18).toString('base64url');
+  productDeactivateNonces.set(nonce, { projectId, expiresAt: Date.now() + 5 * 60 * 1000 });
+  return nonce;
+}
+function consumeProductActionNonce(projectId, nonce) {
+  const key = typeof nonce === 'string' ? nonce : '';
+  const rec = productDeactivateNonces.get(key);
+  productDeactivateNonces.delete(key);
+  return !!(rec && rec.projectId === projectId && rec.expiresAt >= Date.now());
+}
+
+// #3727 (split de #3715) — Vista Equipo extraída a su propio módulo SSR.
+// Patrón espejo de las vistas de arriba: si el require falla (typo, dep faltante),
+// generateHTML cae al fallback visible (<span class="empty-label">Equipo no
+// disponible</span>) en lugar de romper todo el dashboard.
+let equipoView = null;
+try { equipoView = require('./views/dashboard/equipo'); } catch (e) { log(`equipo view unavailable: ${e.message}`); }
+
+// #3955 EP8-H2 — CSRF para el endpoint destructivo /api/kill-agent (SEC-2).
+// Lazy require defensivo: si falla, el guard del handler degrada a "sin token
+// no se mata" (fail-closed) en lugar de crashear el dashboard.
+let killAgentCsrf = null;
+try { killAgentCsrf = require('./lib/kill-agent-csrf'); } catch (e) { log(`kill-agent-csrf unavailable: ${e.message}`); }
+
+// #3724 — Wizard session endpoint (split de #3715 / paraguas #3669).
+// Lazy require — si el módulo falla, el dashboard arranca sin wizards.
+let wizardSession = null;
+try { wizardSession = require('./lib/wizard-session'); } catch (e) { log(`wizard-session unavailable: ${e.message}`); }
+// #3742 — Registrar el flow "allowlist" en la infra de wizards. El require
+// dispara el auto-registro vía registerFlow('allowlist', ...). Best-effort:
+// si falla, el dashboard arranca sin ese wizard.
+try { require('./lib/wizards/allowlist'); } catch (e) { log(`wizard allowlist unavailable: ${e.message}`); }
+
+// #3741 — Registrar el flow "pausa" (pausar / despausar issues parciales) en la
+// infra de wizards. El require dispara el auto-registro vía registerFlow('pausa',
+// ...). Best-effort: si falla, el dashboard arranca sin ese wizard.
+try { require('./lib/wizards/pausa'); } catch (e) { log(`wizard pausa unavailable: ${e.message}`); }
+
+// #3738 — Registrar el flow "ola" (crear nueva ola de trabajo) en la infra de
+// wizards. El require dispara el auto-registro vía registerFlow('ola', ...).
+// Best-effort: si falla, el dashboard arranca sin ese wizard.
+let wizardOlaView = null;
+try {
+  if (wizardSession) {
+    require('./lib/wizards/ola');
+    wizardOlaView = require('./views/dashboard/wizard-ola');
+  }
+} catch (e) { log(`wizard ola unavailable: ${e.message}`); }
+
+// #3739 — Wizard "Configurar período de descanso": registra el flow `descanso`
+// sobre la infra compartida y carga la vista SSR. Si algo falla, el dashboard
+// arranca igual (sin el wizard de descanso) — degradación silenciosa.
+let wizardDescansoView = null;
+try {
+  if (wizardSession) {
+    const descansoFlow = require('./lib/wizard-descanso-flow');
+    wizardSession.registerFlow('descanso', descansoFlow.createFlow({
+      pipelineDir: PIPELINE,
+      loadConfig,
+    }));
+    wizardDescansoView = require('./views/dashboard/wizard-descanso');
+  }
+} catch (e) { log(`wizard-descanso unavailable: ${e.message}`); }
+
+// #3740 — Wizard "Configurar / rotar provider": registra el flow `providers`
+// sobre la infra compartida y carga la vista SSR. Degradación silenciosa si algo
+// falla (el dashboard arranca sin este wizard).
+let wizardProvidersView = null;
+try {
+  if (wizardSession) {
+    const providersFlow = require('./lib/wizards/providers');
+    wizardSession.registerFlow('providers', providersFlow.createFlow({}));
+    wizardProvidersView = require('./views/dashboard/wizard-providers');
+  }
+} catch (e) { log(`wizard-providers unavailable: ${e.message}`); }
+
+// #5172 · CA-8 — El cuerpo del handler vive en una función propia para poder
+// envolverlo en la red de contención de `http.createServer` (más abajo): una
+// excepción sincrónica acá NO puede escaparse al `uncaughtException`, porque ese
+// handler termina en `process.exit(1)` y matar el dashboard es dejar al operador
+// sin la única pantalla que le explica qué está pasando.
+function handleRequest(req, res) {
+  // #4096 — /api/health: readiness liviano para el smoke (paso 2). DEBE ser lo
+  // primero del handler, antes de cualquier ruta que toque el FS, y O(1): nunca
+  // lee el histórico ni computa estado. El gate de rollback del restart depende
+  // de este endpoint, así que no puede colgarse bajo carga.
+  // SEC (#4096, CWE-200): responde únicamente { ok, uptime }. PROHIBIDO exponer
+  // paths, PIDs, versiones, motivos de rechazo o estado del pipeline.
+  if (req.url === '/api/health') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(JSON.stringify({ ok: true, uptime: Math.round(process.uptime()) }));
+    return;
+  }
+
+  // #3724 — Wizards: endpoint POST mount-first (antes del catch-all GET-only).
+  if (wizardSession && wizardSession.route(req, res)) return;
+
+  // #3739 — Página GET del wizard de descanso. Emite la cookie CSRF HttpOnly
+  // y embebe el token derivado en <meta name="csrf-token">. El step API
+  // (POST /dashboard/wizard/descanso/step) lo maneja wizardSession.route().
+  if (wizardDescansoView && wizardSession && req.method === 'GET'
+      && (req.url || '').split('?')[0] === '/dashboard/wizard/descanso') {
+    const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
+    const token = wizardSession._csrf.deriveCsrfToken(raw);
+    const html = wizardDescansoView.renderWizardDescanso({ csrfToken: token });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin',
+      'Set-Cookie': setCookie,
+      'Content-Length': Buffer.byteLength(html),
+    });
+    res.end(html);
+    return;
+  }
+
+  // #3738 — Página GET del wizard "Crear nueva ola". Emite la cookie CSRF
+  // HttpOnly y embebe el token derivado en <meta name="csrf-token">. El step API
+  // (POST /dashboard/wizard/ola/step) lo maneja wizardSession.route().
+  // TODO #3723: migrar a ?view=wizard-ola cuando el router cliente esté en HEAD.
+  if (wizardOlaView && wizardSession && req.method === 'GET'
+      && (req.url || '').split('?')[0] === '/dashboard/wizard/ola') {
+    const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
+    const token = wizardSession._csrf.deriveCsrfToken(raw);
+    const html = wizardOlaView.renderWizardOla({ csrfToken: token });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin',
+      'Set-Cookie': setCookie,
+      'Content-Length': Buffer.byteLength(html),
+    });
+    res.end(html);
+    return;
+  }
+
+  // #3740 — Página GET del wizard de providers. Emite la cookie CSRF HttpOnly
+  // y embebe el token derivado en <meta name="csrf-token">. El step API
+  // (POST /dashboard/wizard/providers/step) lo maneja wizardSession.route().
+  if (wizardProvidersView && wizardSession && req.method === 'GET'
+      && (req.url || '').split('?')[0] === '/dashboard/wizard/providers') {
+    const { raw, setCookie } = wizardSession._csrf.newCsrfCookie();
+    const token = wizardSession._csrf.deriveCsrfToken(raw);
+    const html = wizardProvidersView.renderWizardProviders({ csrfToken: token });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin',
+      'Set-Cookie': setCookie,
+      'Content-Length': Buffer.byteLength(html),
+    });
+    res.end(html);
+    return;
+  }
+
+  // #3177 — Multi-Provider: HTML del panel y API REST asociada.
+  // Mounted antes que el catch-all para que `/multi-provider` no caiga al legacy.
+  if (multiProviderApi && multiProviderApi.route(req, res)) {
+    return;
+  }
+
+  // #3735 — Banner de consumo anómalo: GET /state + POST /ack + /snooze con
+  // defensas CSRF D1/D2/D3. Mounted antes del catch-all GET-only.
+  if (costAnomalyApi && costAnomalyApi.route(req, res, { pipelineDir: PIPELINE, log })) {
+    return;
+  }
+  if (multiProviderView && (req.url === '/multi-provider' || req.url === '/multi-provider/')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(multiProviderView.renderMultiProvider());
+    return;
+  }
+
+  // EP8-H12 (#3965) — Salud Multi-Provider: HTML de la pantalla nueva. Montado
+  // antes del catch-all legacy para que `/multi-provider-health` no caiga al
+  // legacy. La API de agregación la sirve multiProviderApi.route (arriba).
+  if (mpHealthView && (req.url === '/multi-provider-health' || req.url === '/multi-provider-health/')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(mpHealthView.renderMultiProviderHealth());
+    return;
+  }
+
+  // #3737 — Providers: HTML del panel read-only. Mounted antes que el catch-all
+  // para que `/providers` no caiga al legacy. Coexiste con /multi-provider.
+  if (providersView && (req.url === '/providers' || req.url === '/providers/')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(providersView.renderProviders());
+    return;
+  }
+
+  // #3681 — Multi-Provider Coverage widget.
+  // POST de disparo del harness (mounteado primero porque tiene método propio).
+  if (multiProviderCoverageApi && multiProviderCoverageApi.route(req, res)) {
+    return;
+  }
+  if (multiProviderCoverageView && (req.url === '/multi-provider-coverage' || req.url === '/multi-provider-coverage/')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(multiProviderCoverageView.renderMultiProviderCoverage());
+    return;
+  }
+
+  // #4444 — Histórico de ejecuciones (instancias + rebotes) de un agente para un
+  // issue. Lista los intentos persistidos derivando de un glob dentro de LOG_DIR
+  // (REQ-SEC-1: NO de input del cliente; el cliente solo aporta issue+agente, que
+  // se validan con tipo y allowlist antes del lookup). Cada item ya trae el
+  // nombre de archivo validado que consume `/logs/view/<file>` para el detalle.
+  // SEC (REQ-SEC-5): se cuelga del server loopback existente, sin listener nuevo.
+  if (req.url.startsWith('/logs/history/')) {
+    const rest = req.url.slice('/logs/history/'.length).split('?')[0];
+    const segs = rest.split('/').filter(Boolean);
+    const issueRaw = segs[0] || '';
+    const agenteRaw = decodeURIComponent(segs[1] || '');
+    res.setHeader('Cache-Control', 'no-store');
+    // REQ-SEC-1: issue numérico estricto.
+    if (!/^\d+$/.test(issueRaw)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'issue inválido' }));
+      return;
+    }
+    // REQ-SEC-1: agente contra allowlist de skills conocidos (skills_por_fase).
+    const agente = String(agenteRaw).replace(/[^a-zA-Z0-9\-]/g, '');
+    if (!agente || !getKnownSkills().has(agente)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'agente desconocido' }));
+      return;
+    }
+    let items = [];
+    try {
+      items = agentLogHistory ? agentLogHistory.listExecutions(LOG_DIR, issueRaw, agente) : [];
+    } catch { items = []; }
+    // Cada item: { intento, file, bytes, mtime }. El `file` ya está validado
+    // (derivado del glob), listo para pasarse a /logs/view/<file>.
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(items));
+    return;
+  }
+
   // Log viewer en ventana dedicada
   if (req.url.startsWith('/logs/view/')) {
     const parts = req.url.slice(11).split('?');
@@ -7934,7 +12047,35 @@ const server = http.createServer((req, res) => {
       const headers = { 'Content-Type': contentType, 'Cache-Control': 'no-cache' };
       if (isPdf) headers['Content-Disposition'] = `inline; filename="${filename}"`;
       res.writeHead(200, headers);
-      res.end(fs.readFileSync(logPath));
+      // SEC-4 — PDFs se sirven binarios tal cual; los logs de texto pasan por
+      // el redactor de secrets antes de salir al browser.
+      // #4444 / REQ-SEC-4 — tope de bytes por request para logs de texto: hay
+      // logs multi-MB (>4MB) en disco; leerlos enteros con readFileSync es un
+      // vector de DoS por memoria. Servimos la cola capeada (config
+      // logs_history.max_bytes_per_log) con un marcador si se truncó.
+      // #4521 — marcamos el servido como en vuelo: son lecturas de disco
+      // sincrónicas y, si una clava el loop, el freeze queda NOMBRADO (logServe)
+      // en el freeze-watchdog en vez de "operacion sync NO rastreada".
+      _markLogServe(true);
+      try {
+        if (isPdf) {
+          res.end(fs.readFileSync(logPath));
+        } else {
+          let raw;
+          try {
+            const cap = (agentLogHistory && agentLogHistory.resolveRetentionConfig(
+              (loadConfig() || {}).logs_history)).max_bytes_per_log;
+            raw = agentLogHistory
+              ? agentLogHistory.readLogCapped(logPath, cap).text
+              : fs.readFileSync(logPath, 'utf8');
+          } catch {
+            raw = fs.readFileSync(logPath, 'utf8');
+          }
+          res.end(redactLogText(raw));
+        }
+      } finally {
+        _markLogServe(false);
+      }
     } else {
       res.writeHead(404); res.end('Log no encontrado: ' + filename);
     }
@@ -7957,9 +12098,30 @@ const server = http.createServer((req, res) => {
     });
 
     // Send initial content (last 1000 lines)
-    const content = fs.readFileSync(logPath, 'utf8');
-    const lines = content.split('\n');
-    const initialLines = lines.slice(-1000);
+    // EP8-H7 (#3960) REQ-SEC-H7-1 (crítico) — redacción server-side de secrets
+    // ANTES de emitir el SSE. El stream embebido en cada nodo del rediseño Ops
+    // muestra logs heterogéneos que pueden contener AWS keys / JWT / tokens;
+    // `_sanitizeLog` los redacta a `[REDACTED:...]`. Sin esto, los secrets
+    // llegarían crudos al browser.
+    // #4521 — leer sólo la COLA acotada, NO el archivo entero. Antes esto hacía
+    // fs.readFileSync(logPath,'utf8') del archivo COMPLETO (logs multi-MB) sólo
+    // para quedarse con las últimas 1000 líneas → clavaba el event loop varios
+    // segundos (freeze-watchdog: "operacion sync NO rastreada"). readLogCapped
+    // trae sólo los últimos SSE_INIT_TAIL_BYTES del disco; de ahí tomamos las
+    // últimas 1000 líneas. El flag logServe deja nombrado cualquier freeze.
+    _markLogServe(true);
+    let initialContent = '';
+    try {
+      initialContent = agentLogHistory
+        ? agentLogHistory.readLogCapped(logPath, SSE_INIT_TAIL_BYTES).text
+        : fs.readFileSync(logPath, 'utf8');
+    } catch {
+      initialContent = '';
+    } finally {
+      _markLogServe(false);
+    }
+    const lines = initialContent.split('\n');
+    const initialLines = lines.slice(-1000).map(l => _sanitizeLog(l));
     res.write(`data: ${JSON.stringify({ type: 'init', lines: initialLines })}\n\n`);
 
     // Watch for changes
@@ -7973,7 +12135,7 @@ const server = http.createServer((req, res) => {
           const buf = Buffer.alloc(stat.size - lastSize);
           fs.readSync(fd, buf, 0, buf.length, lastSize);
           fs.closeSync(fd);
-          const newLines = buf.toString('utf8').split('\n').filter(l => l.length > 0);
+          const newLines = buf.toString('utf8').split('\n').filter(l => l.length > 0).map(l => _sanitizeLog(l));
           if (newLines.length > 0) {
             res.write(`data: ${JSON.stringify({ type: 'append', lines: newLines })}\n\n`);
           }
@@ -7986,13 +12148,52 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Endpoint: métricas de routing del Commander determinístico (#3257 CA-4).
+  // Devuelve % determinístico vs LLM por día (ventana 7d default).
+  if (req.url && req.url.startsWith('/api/metrics/commander/routing')) {
+    try {
+      const commanderDet = require('./lib/commander-deterministic');
+      const u = new URL(req.url, 'http://localhost');
+      const daysParam = parseInt(u.searchParams.get('days') || '7', 10);
+      const days = Number.isFinite(daysParam) && daysParam > 0 && daysParam <= 30 ? daysParam : 7;
+      const LOG_DIR = path.join(__dirname, 'logs');
+      const result = commanderDet.computeRoutingMetrics(LOG_DIR, { days });
+      // Totales agregados de la ventana
+      const totals = result.buckets.reduce((acc, b) => {
+        acc.deterministic += b.deterministic;
+        acc.llm += b.llm;
+        acc.unknown += b.unknown;
+        acc.total += b.total;
+        return acc;
+      }, { deterministic: 0, llm: 0, unknown: 0, total: 0 });
+      totals.percentDeterministic = totals.total > 0
+        ? Math.round((totals.deterministic / totals.total) * 1000) / 10
+        : 0;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ...result, totals }, null, 2));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // SSE endpoint para live refresh
   if (req.url === '/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
     const send = () => {
       try {
-        const state = getPipelineState();
-        const hash = crypto.createHash('md5').update(JSON.stringify(state.issueMatrix)).digest('hex').slice(0, 8);
+        // #4126 — leer el snapshot del worker (no recomputar en el path del SSE):
+        // antes este tick reescaneaba todo el FS cada 5s por cada cliente SSE.
+        const state = getCachedPipelineState();
+        // #5172 · CA-8 — con config inválida el estado degradado no trae
+        // `issueMatrix`. Se hashea el error en su lugar: así el cliente igual
+        // detecta el cambio y recarga (y ve la pantalla de config inválida) en
+        // vez de quedarse con el último tablero bueno en pantalla para siempre.
+        const payload = (state && state.config)
+          ? state.issueMatrix
+          : { configError: (state && state.configError && state.configError.detalle) || 'config inválida' };
+        const hash = crypto.createHash('md5').update(JSON.stringify(payload || {})).digest('hex').slice(0, 8);
         res.write(`data: ${hash}\n\n`);
       } catch {}
     };
@@ -8008,7 +12209,8 @@ const server = http.createServer((req, res) => {
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
-        const { target, action, component } = JSON.parse(body);
+        const parsed = JSON.parse(body);
+        const { target, action, component } = parsed;
         let result;
         if (target === 'qa') {
           result = qaAction(action, component); // component: 'emulator' (dynamo/backend are remote AWS)
@@ -8016,6 +12218,31 @@ const server = http.createServer((req, res) => {
           result = startComponent(target);
         } else if (action === 'stop') {
           result = stopComponent(target);
+        } else if (action === 'restart') {
+          // EP8-H7 (#3960) CA-3 — restart por servicio aislado + auditado.
+          // Delega la decisión a la lib pura: allowlist (REQ-SEC-H7-2, 400 si
+          // fuera de COMPONENTS), rate-limit (REQ-SEC-H7-5, 429 en ráfaga <5s),
+          // ejecución AISLADA vía restartComponent (REQ-SEC-H7-3: stop+start,
+          // NUNCA killAll/rollback global de restart.js) y audit (REQ-SEC-H7-4).
+          const decision = _opsRestartHandler.runRestart(
+            {
+              target,
+              source: parsed.source || 'dashboard-ui',
+              sourceIp: (req.socket && req.socket.remoteAddress) || '',
+              actor: parsed.actor || '',
+            },
+            {
+              allowlist: COMPONENTS.map(c => c.name),
+              restartFn: restartComponent,
+              rateLimiter: _opsRestartRateLimiter,
+              audit: opsRestartAudit
+                ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
+                : null,
+            }
+          );
+          log(`Action: restart ${target} → ${decision.body.ok ? '✓' : '✗'} (${decision.status}) ${decision.body.msg}`);
+          res.writeHead(decision.status, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify(decision.body));
         } else {
           result = { ok: false, msg: `Acción "${action}" no válida` };
         }
@@ -8030,6 +12257,548 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // #4460 — API: restart del MODELO OPERATIVO (banner condicional del header de
+  // ola). Endpoint DEDICADO y ENDURECIDO (REQ-SEC-4460-1): a diferencia de
+  // `/api/action` restart, éste exige el gate completo antes de disparar:
+  //   1. loopback + Origin/Referer + Content-Type (ops-restart-gate)
+  //   2. CSRF HMAC double-submit (kill-agent-csrf.requireCSRF)
+  // Sólo entonces delega a runRestart con target='pulpo' (restart selectivo por
+  // servicio, REQ-SEC-4460-4: NUNCA restart.js killAll que mata claude.exe y
+  // agentes vivos). Reusa rate-limit + audit del handler existente.
+  if (req.url === '/api/ops/restart-operativo' && req.method === 'POST') {
+    // 1. Gate loopback/Origin/Content-Type (fail-closed si el lib no cargó).
+    if (!_opsRestartGate) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'gate de seguridad no disponible' }));
+    }
+    const gate = _opsRestartGate.checkGate(req);
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, code: gate.code, msg: gate.msg }));
+    }
+    // 2. CSRF HMAC (fail-closed si el lib no cargó).
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+    // 3. Cuerpo + ejecución selectiva.
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        // #5646 (CA-9 / REQ-SEC-5646-4) — del body se lee SÓLO `actor`. El
+        // conjunto de componentes a reiniciar se computa SERVER-SIDE a partir
+        // del diff del sync: una lista de componentes en el request se ignora
+        // por completo. Aceptarla convertiría este endpoint en un selector
+        // arbitrario de procesos a matar, a un request de distancia.
+        //
+        // #5646 (CA-3) — el HEAD previo se lee ANTES de `syncOperativoTree`:
+        // esa llamada PISA el boot marker (`operativo-sync.js`), así que
+        // después ya no queda ninguna referencia previa recuperable.
+        const _prevMarker = _runtimeBoot ? _runtimeBoot.readBootMarker({ pipelineDir: PIPELINE }) : null;
+        const _prevSha = (_prevMarker && _prevMarker.sha) ? _prevMarker.sha : null;
+        // #4460 (fix rebote rev-1) — PASO CLAVE: avanzar el working tree a
+        // origin/main ANTES de respawnear el Pulpo. Sin esto el restart es un
+        // no-op respecto de aplicar entregas: `restartComponent` sólo hace
+        // taskkill+spawn del MISMO código on-disk. `syncOperativoTree` hace el
+        // fetch+reset (sin killAll, REQ-SEC-4460-4) y reescribe el boot marker,
+        // de modo que el Pulpo relanzado lee el código entregado y la señal de
+        // drift desaparece (CA-4/CA-7). Si el sync falla, se reporta y NO se
+        // reescribe el marker (el banner persiste, honesto con el operador).
+        let syncMsg = '';
+        let _headSha = null;
+        if (_operativoSync) {
+          const sync = _operativoSync.syncOperativoTree({ repoRoot: ROOT, pipelineDir: PIPELINE });
+          _headSha = (typeof sync.sha === 'string') ? sync.sha : null;
+          syncMsg = sync.ok
+            ? `sync✓ ${sync.msg}`
+            : `sync✗ ${sync.msg} (restart de todos modos, cambios NO aplicados hasta próximo sync)`;
+          log(`Action: restart-operativo sync → ${sync.ok ? '✓' : '✗'} ${sync.msg}`);
+        } else {
+          syncMsg = 'sync no disponible (operativo-sync.js no cargó)';
+          log('Action: restart-operativo sync → módulo operativo-sync no disponible');
+        }
+
+        // #5646 (CA-3) — El sync avanzó el código EN DISCO de todos los
+        // servicios; los que siguen vivos quedaron con el código viejo en su
+        // require-cache. Se marcan acá y el ejecutor los relanza: los que están
+        // en COMPONENTS, este mismo endpoint; el resto (incluido el propio
+        // `dashboard`, que no puede matarse a sí mismo) queda pendiente en disco
+        // y lo relanza el watchdog, único ejecutor externo (REQ-SEC-5646-5).
+        let _afectados = [];
+        if (_staleServices && _headSha) {
+          try {
+            // Sin `prevSha` NO se puede caer al boot marker: `syncOperativoTree`
+            // ya lo pisó con el HEAD nuevo, así que el diff daría vacío y
+            // dejaría servicios stale invisibles (fail-open). Se marca todo el
+            // registro, que es el comportamiento conservador correcto.
+            const aff = _prevSha
+              ? _staleServices.computeAffectedComponents({
+                prevSha: _prevSha,
+                headSha: _headSha,
+                repoRoot: ROOT,
+                pipelineDir: PIPELINE,
+              })
+              : {
+                components: _staleServices.ALL_COMPONENTS.slice(),
+                reasons: _staleServices.ALL_COMPONENTS.map(n => ({ component: n, path: '(estado desconocido)' })),
+                headSha: _headSha,
+              };
+            _afectados = aff.components;
+            const mark = _staleServices.markAffected(_afectados, { sha: aff.headSha, reasons: aff.reasons });
+            for (const r of aff.reasons) {
+              if (!mark.marked.includes(r.component)) continue;
+              log(`restart selectivo: ${r.component} quedó con código viejo — cambio en ${r.path}`);
+            }
+            if (!_afectados.length) log('restart selectivo: sin componentes afectados por el reset');
+          } catch (e) {
+            log(`restart selectivo: no se pudo computar el conjunto afectado (${(e && e.message || '').slice(0, 80)})`);
+          }
+        }
+
+        // Targets: SIEMPRE el pulpo (contrato del botón, #4460) más los
+        // afectados que estén en la allowlist estática. El orden es el de
+        // COMPONENTS, nunca el del diff.
+        const _allowlist = COMPONENTS.map(c => c.name);
+        const _targets = _allowlist.filter(n => n === 'pulpo' || _afectados.includes(n));
+        // Cota AGREGADA por ventana (CA-9): sin esto una request pasa de matar 1
+        // proceso a matar N. Lo que no entra sigue pendiente en disco → watchdog.
+        const _cupos = _opsRestartAggregateLimiter.grant(_targets.length);
+        if (_cupos === 0) {
+          const msg429 = 'restart ignorado: se alcanzó la cota de restarts por minuto (anti-bucle). '
+            + 'Los servicios pendientes los relanza el watchdog en su próximo ciclo.';
+          log(`Action: restart-operativo → (429) ${msg429}`);
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, msg: `${syncMsg} | ${msg429}`, applied: false }));
+        }
+        const _ejecutables = _targets.slice(0, _cupos);
+        const _diferidos = _targets.slice(_cupos);
+
+        const _resultados = [];
+        for (const _target of _ejecutables) {
+          const decision = _opsRestartHandler.runRestart(
+            {
+              target: _target,
+              source: 'restart-operativo-4460',
+              sourceIp: (req.socket && req.socket.remoteAddress) || '',
+              actor: parsed.actor || '',
+            },
+            {
+              allowlist: _allowlist,
+              restartFn: restartComponent,
+              rateLimiter: _opsRestartRateLimiter,
+              audit: opsRestartAudit
+                ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
+                : null,
+            }
+          );
+          log(`Action: restart-operativo ${_target} → ${decision.body.ok ? '✓' : '✗'} (${decision.status}) ${decision.body.msg}`);
+          // El pendiente se baja SÓLO con el restart confirmado (CA-5): si falló,
+          // el componente sigue marcado y lo toma el watchdog.
+          if (decision.body.ok && _staleServices) {
+            try { _staleServices.clearComponent(_target, { pipelineDir: PIPELINE }); } catch { /* best-effort */ }
+          }
+          _resultados.push({ target: _target, decision });
+        }
+        if (_diferidos.length) {
+          log(`restart selectivo: diferidos al watchdog por cota — ${_diferidos.join(', ')}`);
+        }
+
+        // El resultado que gobierna la respuesta HTTP es el del pulpo (contrato
+        // original del botón); el resto se resume en el mensaje.
+        const _principal = (_resultados.find(r => r.target === 'pulpo') || _resultados[0]).decision;
+        const _otros = _resultados.filter(r => r.target !== 'pulpo');
+        const _extraMsg = _otros.length
+          ? ` | además: ${_otros.map(r => `${r.target} ${r.decision.body.ok ? '✓' : '✗'}`).join(', ')}`
+          : '';
+        const _pendMsg = _diferidos.length ? ` | diferidos al watchdog: ${_diferidos.join(', ')}` : '';
+        // Combinar el resultado del sync con el del restart para que el operador
+        // sepa si los cambios se aplicaron (sync✓) o sólo se respawneó (sync✗).
+        const combined = Object.assign({}, _principal.body, {
+          msg: `${syncMsg} | ${_principal.body.msg}${_extraMsg}${_pendMsg}`,
+          applied: !!(_principal.body.ok && /^sync✓/.test(syncMsg)),
+        });
+        res.writeHead(_principal.status, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(combined));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // #4580 — Emisión del token CSRF para la firma del operador (REQ-SEC-4580-1).
+  // Mismo molde que /api/kill-agent/csrf-token (double-submit cookie compartida).
+  if (req.url === '/api/gate-signature/csrf-token' && req.method === 'GET') {
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+      return;
+    }
+    killAgentCsrf.issueTokenResponse(req, res);
+    return;
+  }
+
+  // #4580 — Acción de firma del operador (Aprobar/Rechazar) desde la bandeja
+  // "Esperando tu firma". Endpoint ENDURECIDO (REQ-SEC-4580-1), calca el patrón
+  // de /api/ops/restart-operativo:
+  //   1. Gate loopback/Origin/Content-Type (ops-restart-gate).
+  //   2. CSRF HMAC double-submit (kill-agent-csrf.requireCSRF).
+  // El dashboard NO muta `.pipeline/**` (CA-2): delega en gate-signature-request
+  // que encola el pedido para que el kernel (pulpo) ejecute la transición de
+  // forma idempotente (invariante "el adaptador pide, el kernel ejecuta").
+  if (req.url === '/api/gate-signature/decide' && req.method === 'POST') {
+    // 1. Gate loopback/Origin/Content-Type (fail-closed si el lib no cargó).
+    if (!_opsRestartGate) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'gate de seguridad no disponible' }));
+    }
+    const gate = _opsRestartGate.checkGate(req);
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, code: gate.code, msg: gate.msg }));
+    }
+    // 2. CSRF HMAC (fail-closed si el lib no cargó).
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+    // 3. Delegación al backend de firma (nunca muta estado desde el dashboard).
+    if (!gateSignatureRequest) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, msg: 'backend de firma no disponible' }));
+    }
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = gateSignatureRequest.enqueueDecision({
+          issue: parsed.issue,
+          decision: parsed.decision,
+          origen: parsed.origen,
+          productId: parsed.productId, // #4778 · CA-2.2 — firma atada al producto (no repudio).
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: gate-signature decide #${parsed.issue} → ${out.decision || parsed.decision} (${out.status}) ${out.msg}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ===========================================================================
+  // #4778 — Dashboard product-aware: onboarding (wizard) + control por producto.
+  // Endpoints ENDURECIDOS (mismo molde que /api/gate-signature/decide):
+  //   1. Gate loopback/Origin/Content-Type (_opsRestartGate.checkGate).
+  //   2. CSRF double-submit (killAgentCsrf.requireCSRF).
+  //   3. Delegación en product-control-request (encola; el kernel ejecuta).
+  // El dashboard NUNCA registra/arranca/pausa por su cuenta (CA-1.5 · SEC-1):
+  // encola el pedido y el kernel autoriza contra el contexto de la instancia.
+  // Ningún endpoint mutante por GET (SEC-7a).
+  // ===========================================================================
+
+  // Emisión del token CSRF para las acciones de producto (reusa el double-submit
+  // cookie compartido `ka_csrf`, mismo molde que /api/gate-signature/csrf-token).
+  if (req.url === '/api/product/csrf-token' && req.method === 'GET') {
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+      return;
+    }
+    killAgentCsrf.issueTokenResponse(req, res);
+    return;
+  }
+
+  if (req.url.startsWith('/api/product/descriptor') && req.method === 'GET') {
+    if (!_opsRestartGate) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'gate de seguridad no disponible' }));
+      return;
+    }
+    const gate = _opsRestartGate.checkGate(req);
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: gate.code, msg: gate.msg }));
+      return;
+    }
+    try {
+      if (!productDescriptor || typeof productDescriptor.isSafeId !== 'function') throw new Error('descriptor unavailable');
+      const u = new URL(req.url, 'http://localhost');
+      const projectId = u.searchParams.get('productId') || u.searchParams.get('projectId') || '';
+      if (!productDescriptor.isSafeId(projectId)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'projectId invalido' }));
+        return;
+      }
+      const descriptorsDir = path.join(PIPELINE, 'descriptors');
+      const descriptorPath = path.join(descriptorsDir, `${projectId}.json`);
+      if (!path.resolve(descriptorPath).startsWith(path.resolve(descriptorsDir) + path.sep)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'projectId invalido' }));
+        return;
+      }
+      const loaded = productDescriptor.loadDescriptor(descriptorPath);
+      if (!loaded || loaded.valid !== true || !loaded.descriptor) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'descriptor no disponible' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, projectId, descriptor: loaded.descriptor }));
+    } catch (e) {
+      log(`Action: product descriptor (error) ${e && e.message ? e.message : e}`);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'no se pudo cargar el descriptor' }));
+    }
+    return;
+  }
+
+  // Helper local: aplica el gate + CSRF de los endpoints mutantes de producto.
+  // Devuelve true si ya respondió (rechazo) y el caller debe abortar.
+  const _productGuardRejected = () => {
+    if (!_opsRestartGate) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'gate de seguridad no disponible' }));
+      return true;
+    }
+    const gate = _opsRestartGate.checkGate(req);
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: gate.code, msg: gate.msg }));
+      return true;
+    }
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+      return true;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return true; // ya respondió 403
+    if (!productControl) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'control de producto no disponible' }));
+      return true;
+    }
+    return false;
+  };
+
+  if (req.url === '/api/product/deactivate-nonce' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        if (!productDescriptor || typeof productDescriptor.isSafeId !== 'function') throw new Error('descriptor unavailable');
+        const parsed = body ? JSON.parse(body) : {};
+        const projectId = parsed.productId || parsed.projectId;
+        if (!productDescriptor.isSafeId(projectId)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, msg: 'projectId invalido' }));
+        }
+        const nonce = issueProductActionNonce(projectId);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify({ ok: true, projectId, nonce }));
+      } catch (e) {
+        log(`Action: product deactivate-nonce (error) ${e && e.message ? e.message : e}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, msg: 'no se pudo preparar la confirmacion' }));
+      }
+    });
+    return;
+  }
+
+  // CA-1.1 · Alta de producto (wizard). Valida fail-closed (schema + prompt-
+  // injection + path-traversal + SSRF + gate de firma) vía project-bootstrap y
+  // encola el registro onboarding (INACTIVO) para el kernel.
+  if (req.url === '/api/product/onboard' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueOnboard({
+          descriptor: parsed.descriptor,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product onboard ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || out.stage || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        // CA-4 · info-disclosure: no propagar `e.message` (stack/paths/parser) al
+        // cliente. Mensaje genérico; el detalle real queda sólo en el log server-side.
+        log(`Action: product onboard (error) ${e && e.message ? e.message : e}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar el alta (payload inválido)' }));
+      }
+    });
+    return;
+  }
+
+  // CA-1.5 · Arranque/pausa por producto. `projectId` en banda se valida
+  // (isSafeId) y se encola; el kernel autoriza contra el contexto de la instancia
+  // al drenar la cola (SEC-1b: nunca concede acceso desde el id en banda).
+  const _productControlAction = req.url === '/api/product/start' ? 'start'
+    : (req.url === '/api/product/pause' ? 'pause' : null);
+  if (_productControlAction && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueControl({
+          action: _productControlAction,
+          projectId: parsed.productId || parsed.projectId,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product ${_productControlAction} ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // #4805 · CA-1 · Activación de producto (onboarding→active). Acción DURABLE:
+  // encola un pedido que el kernel drena invocando project-descriptor.
+  // transitionStatus (writer atómico, validación fail-closed del descriptor). Mismo
+  // molde endurecido que /start,/pause (gate loopback/Origin + CSRF double-submit).
+  // Prohibido GET (SEC-7a/SR-A01); body ≤16KB como /start. "Activar" NO spawnea por
+  // sí sola (el spawn lo dispara "Arrancar"): no requiere confirmación destructiva.
+  if (req.url === '/api/product/activate' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueActivate({
+          projectId: parsed.productId || parsed.projectId,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product activate ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // #4809 · CA-1 · Crear/asociar la PRIMERA ola de un producto. Acción DURABLE:
+  // encola un pedido `create-wave` que el kernel drena con autorización out-of-band
+  // contra el contexto de la instancia (CA-5), gate fail-closed del descriptor
+  // (CA-2) y `associateFirstWave` create-once (CA-3). Mismo molde endurecido que
+  // /start,/pause,/activate (gate loopback/Origin + CSRF double-submit vía
+  // `_productGuardRejected`). Prohibido GET con efecto de estado (SEC-7a); body ≤16KB.
+  if (req.url === '/api/product/wave' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueCreateWave({
+          projectId: parsed.productId || parsed.projectId,
+          wave: parsed.wave,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product create-wave ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar la creación de la ola (payload inválido)' }));
+      }
+    });
+    return;
+  }
+
+  function _publicProductEditResult(out) {
+    if (!out || out.ok) return out;
+    return {
+      ok: false,
+      status: out.status || 400,
+      action: out.action || 'edit',
+      projectId: out.projectId,
+      msg: 'no se pudo procesar la edicion del producto',
+    };
+  }
+
+  if (req.url === '/api/product/edit' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const out = productControl.enqueueEdit({
+          projectId: parsed.productId || parsed.projectId,
+          descriptor: parsed.descriptor,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product edit ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || out.stage || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(_publicProductEditResult(out)));
+      } catch (e) {
+        log(`Action: product edit (error) ${e && e.message ? e.message : e}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar la edicion (payload invalido)' }));
+      }
+    });
+    return;
+  }
+
+  if (req.url === '/api/product/deactivate' && req.method === 'POST') {
+    if (_productGuardRejected()) return;
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const parsed = body ? JSON.parse(body) : {};
+        const projectId = parsed.productId || parsed.projectId;
+        if (!consumeProductActionNonce(projectId, parsed.nonce)) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, msg: 'confirmacion expirada; reintenta la baja' }));
+        }
+        const out = productControl.enqueueDeactivate({
+          projectId,
+          nonce: parsed.nonce,
+          actor: parsed.actor,
+          remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+        });
+        log(`Action: product deactivate ${out.projectId || '(rechazado)'} (${out.status}) ${out.msg || ''}`);
+        res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        log(`Action: product deactivate (error) ${e && e.message ? e.message : e}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'no se pudo procesar la baja (payload invalido)' }));
+      }
+    });
+    return;
+  }
+
   // API: pause/resume pipeline
   if (req.url === '/api/pause' && req.method === 'POST') {
     let body = '';
@@ -8037,19 +12806,35 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const { action } = JSON.parse(body);
-        const pauseFile = path.join(PIPELINE, '.paused');
+        // #5179 grupo 3b — el marker `.paused` NO se toca con fs directo: toda
+        // mutación pasa por el envoltorio único (lock + audit + sanitización).
         if (action === 'resume' || action === 'remove') {
           // #2490 — resume limpia tanto pausa completa como parcial
-          try { fs.unlinkSync(pauseFile); } catch {}
+          // #3625 — resume requiere authorizedBy: 'resume:operator' para que el gate
+          // acepte el removal masivo de allowlist.
+          // El `unlinkSync('.paused')` previo era redundante: `resumeAll()` ya
+          // borra el marker total (devuelve `removedFull`) además del parcial.
           try {
-            const { resumeAll } = require('./lib/partial-pause');
-            resumeAll();
+            const { resumeAll } = require('./lib/operational-state');
+            resumeAll({
+              source: 'dashboard',
+              authorizedBy: 'resume:operator',
+              justification: `Dashboard /api/pause action=${action}`,
+            });
           } catch {}
           log(`Pausa eliminada por dashboard (${action})`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pipeline reanudado — lanzamientos activos' }));
         } else if (action === 'pause') {
-          fs.writeFileSync(pauseFile, new Date().toISOString());
+          // El write crudo del marker (ISO plano, sin lock ni audit) queda
+          // reemplazado por el gate. `source: 'dashboard'` NO está en
+          // AUTO_LIFTABLE_SOURCES, así que la pausa se sigue leyendo como
+          // `manual` — igual que el marker legacy. Paridad preservada (CA-8).
+          require('./lib/operational-state').setFullPause({
+            source: 'dashboard',
+            authorizedBy: 'pause:dashboard',
+            justification: 'Dashboard /api/pause action=pause (halt total)',
+          });
           log('Pipeline pausado desde dashboard');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pipeline pausado — solo Telegram activo' }));
@@ -8086,7 +12871,12 @@ const server = http.createServer((req, res) => {
           .map(function(n){ return Number(n); })
           .filter(function(n){ return Number.isInteger(n) && n > 0; });
         if (list.length === 0) {
-          clearPartialPause();
+          // #3625 — clear requiere authorizedBy del operador humano.
+          clearPartialPause({
+            source: source || 'dashboard',
+            authorizedBy: 'commander:leo',
+            justification: 'Pausa parcial limpiada desde dashboard (lista vacía)',
+          });
           log('Pausa parcial eliminada desde dashboard');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pausa parcial desactivada', mode: 'running' }));
@@ -8138,11 +12928,19 @@ const server = http.createServer((req, res) => {
           }
         }
 
+        // #3625 — Operador autoriza explícitamente la mutación desde dashboard.
         const result = setPartialPause(finalList, {
           source: source || (includeDeps ? 'dashboard-auto-deps' : 'dashboard'),
           acceptedDepRisk: acceptedDepRisk === true,
           depSources: Object.keys(depSources).length > 0 ? depSources : undefined,
+          authorizedBy: 'commander:leo',
+          justification: `Pausa parcial desde dashboard${includeDeps ? ' con auto-deps' : ''}${acceptedDepRisk ? ' [accepted_dep_risk]' : ''}`,
         });
+        if (result.rejected) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: result.msg, code: 'GATE_REJECTED' }));
+          return;
+        }
         const state = getPipelineMode();
         log(`Pausa parcial activada desde dashboard (${result.allowedIssues.join(',')})${acceptedDepRisk ? ' [accepted_dep_risk]' : ''}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -8186,10 +12984,14 @@ const server = http.createServer((req, res) => {
           if (!(k in depSources)) depSources[k] = v;
         }
       }
+      // #3625 — include-deps suma issues sin remover → no requiere authorizedBy
+      // estricto, pero igual lo pasamos para que el audit trail quede limpio.
       const result = setPartialPause(finalList, {
         source: 'dashboard-auto-deps',
         acceptedDepRisk: false, // al incluir deps, ya no hay riesgo aceptado.
         depSources: Object.keys(depSources).length > 0 ? depSources : undefined,
+        authorizedBy: 'commander:leo',
+        justification: 'Auto-include deps de allowlist actual desde dashboard',
       });
       // Limpiar el state de deps (ya no hay missing).
       try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}
@@ -8205,6 +13007,84 @@ const server = http.createServer((req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, msg: e.message }));
     }
+    return;
+  }
+
+  // ===========================================================================
+  // #5923 — Las otras 2 resoluciones de "pausa parcial trabada".
+  //
+  // Hasta ahora los 3 botones de la alerta eran `url` al dashboard, y sólo
+  // `include-deps` tenía endpoint: `keep-original` y `cancel-partial-pause`
+  // tenían CERO ocurrencias en este archivo. O sea que aunque el saliente
+  // hubiera llegado (no llegaba: la Bot API rechaza URLs a localhost), 2 de 3
+  // botones eran botones muertos. Con la degradación a `callback_data` el
+  // callback-handler POSTea acá, así que los endpoints tienen que existir.
+  //
+  // Gate copiado de `/api/allowlist-candidates` (loopback + Origin/Referer +
+  // Content-Type estricto), NO del molde de `include-deps`, que no tiene ningún
+  // control de request (CSRF preexistente → fuera de alcance, issue #5929).
+  // El `409` cuando `mode !== 'partial_pause'` es además el anti-replay natural:
+  // el `callback_data` no tiene nonce ni TTL y el mensaje vive para siempre en
+  // el chat, así que el segundo tap tiene que morir server-side.
+  // ===========================================================================
+  if ((req.url === '/api/partial-pause/keep-original'
+       || req.url === '/api/partial-pause/cancel-partial-pause')
+      && req.method === 'POST') {
+    const ppGate = require('./lib/dashboard-request-gate');
+    const ppResolution = require('./lib/partial-pause-resolution');
+
+    const gate = ppGate.evaluateLocalMutationGate({
+      remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+      method: req.method,
+      headers: req.headers,
+    });
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: gate.msg }));
+      return;
+    }
+
+    const ppAction = req.url.endsWith('/keep-original') ? 'keep-original' : 'cancel-partial-pause';
+    let ppBody = '';
+    let ppAborted = false;
+    req.on('data', (chunk) => {
+      ppBody += chunk;
+      if (ppBody.length > 16 * 1024) { ppAborted = true; req.destroy(); }
+    });
+    req.on('end', () => {
+      if (ppAborted) return;
+      try {
+        const payload = ppBody ? JSON.parse(ppBody) : {};
+        const pp = require('./lib/partial-pause');
+        // `authorizedBy` es una CLASE de origen del enum cerrado de #3625
+        // (`telegram:operator`), no una identidad. La identidad fina del
+        // operador que apretó el botón (su `from.id`, ya validado fail-closed
+        // contra la allowlist del listener) viaja aparte en `operatorRef` y
+        // termina en la justification del audit. Mandar `telegram:<from.id>`
+        // como authorizedBy dejaba el valor FUERA del enum: pasaba sólo por el
+        // grace period y con `PARTIAL_PAUSE_STRICT_AUTH=1` daba 403 para siempre.
+        const authorizedBy = ppGate.sanitizeAuthorizedBy(payload.authorizedBy);
+        const out = ppResolution.applyResolution({
+          action: ppAction,
+          authorizedBy,
+          operatorRef: ppGate.sanitizeAuthorizedBy(payload.operatorRef, ''),
+          deps: {
+            getPipelineMode: pp.getPipelineMode,
+            markDepRiskAccepted: pp.markDepRiskAccepted,
+            clearPartialPause: pp.clearPartialPause,
+            clearDepsState: () => {
+              try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}
+            },
+          },
+        });
+        log(`Pausa parcial: ${ppAction} por ${authorizedBy} → ${out.status} ${out.body.msg || ''}`);
+        res.writeHead(out.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(out.body));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
     return;
   }
 
@@ -8254,13 +13134,397 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // =========================================================================
+  // #3605 — Chat operador↔agente (canal en ventana de logs)
+  //
+  //   POST /api/agent-chat                  → envía mensaje al agente activo
+  //     body: { issue, skill, fase, message, messageId? }
+  //     resp: { ok:true, status, queued_at, message_id }
+  //     errors: 400 / 403 / 410 / 412 / 415 / 429 / 500
+  //
+  //   GET /api/agent-chat/history?logFile=X → historial completo desde JSONL
+  //     resp: { ok:true, entries:[...], truncated?:true }
+  //     errors: 400 / 403 / 404 / 500
+  //
+  // Defensa (CA-S1..S8):
+  //   - isLoopback (127.0.0.1/::1 only) → 403
+  //   - Origin/Referer contra localhost:3200 / 127.0.0.1:3200 → 403
+  //   - Content-Type application/json estricto en POST → 415
+  //   - logFile validado contra regex ^\d+\.[\w-]+\.log$ o build-\d+\.log → 400
+  //   - rate limit token-bucket 10 msg/s por (issue,skill,fase) → 429
+  //   - sanitización del mensaje: slice(0,2000) + strip ctrl chars
+  //   - framing XML <operator-message> server-side (defensa anti prompt-injection)
+  //   - redact.js antes de persistir en .chat.jsonl
+  //   - file-lock para append atómico (.chat.jsonl)
+  //   - rotación a 5MB (.chat.jsonl.1, .chat.jsonl.2, max 3)
+  //   - audit log enriquecido: message_id server-derived, remoteAddress, userAgent
+  // =========================================================================
+  if (req.url && req.url.startsWith('/api/agent-chat')) {
+    const agentChat = require('./lib/agent-chat-handler');
+    return agentChat.handle(req, res, { PIPELINE, LOG_DIR, log });
+  }
+
+  // =========================================================================
+  // #4068 — Acción rápida de needs-human (botones de la alerta de Telegram).
+  // POST mutante detrás del gate CA-Sec + token HMAC. El GET del botón es
+  // no-mutante: lo maneja el cliente (renderiza confirmación) — ver IIFE
+  // applyHumanBlockActionConfirm en el HTML. La mutación SOLO ocurre acá.
+  // =========================================================================
+  if (req.url && req.url.split('?')[0] === '/api/human-block/action') {
+    const hbActionHandler = require('./lib/human-block-action-handler');
+    return hbActionHandler.handle(req, res, { log });
+  }
+
+  // =========================================================================
+  // #3142 — Allowlist Candidates (likes a issues candidatos a allowlist)
+  //
+  //   GET    /api/allowlist-candidates                  → state actual (candidatos + allowlist activa)
+  //   POST   /api/allowlist-candidates                  → like (body: {issue, reason?})
+  //   DELETE /api/allowlist-candidates/:issue           → unlike
+  //   POST   /api/allowlist-candidates/:issue/promote   → preview (sin confirmed) o promueve (con confirmed:true)
+  //
+  // Defensa en profundidad (CA-Sec-01..16):
+  //   - isLoopback obligatorio (rechaza requests no-loopback con 403)
+  //   - Origin/Referer validados contra localhost:3200 / 127.0.0.1:3200
+  //   - Content-Type estricto application/json en mutaciones
+  //   - :issue validado contra regex ^\d+$ + cap 999999
+  //   - reason saneada (trim, cap 500, sin chars de control)
+  //   - likedBy NUNCA del cliente — server-derived a "dashboard-local"
+  //   - promote en 2 pasos (preview → confirmed) — anti-mutación accidental
+  //   - cap 50 issues por promote (anti-explosión recursiva)
+  //   - logs estructurados en .pipeline/logs/allowlist-mutations.log
+  // =========================================================================
+  if (req.url && req.url.startsWith('/api/allowlist-candidates')) {
+    // --- 1. Loopback gate (CA-Sec-01) ---
+    const remote = (req.socket && req.socket.remoteAddress) || '';
+    const isLoopback = remote === '127.0.0.1'
+        || remote === '::1'
+        || remote === '::ffff:127.0.0.1'
+        || remote.startsWith('127.');
+    if (!isLoopback) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: `loopback-only endpoint, got remote=${remote}` }));
+      return;
+    }
+
+    // --- 2. Origin/Referer gate para mutaciones (CA-Sec-02) ---
+    const ALLOWED_ORIGINS = ['http://localhost:3200', 'http://127.0.0.1:3200'];
+    const isMutation = req.method === 'POST' || req.method === 'DELETE';
+    if (isMutation) {
+      const origin = req.headers['origin'] || '';
+      const referer = req.headers['referer'] || '';
+      let originOk = !origin; // si no manda Origin, lo dejamos (curl/tests locales)
+      if (origin) originOk = ALLOWED_ORIGINS.includes(origin);
+      let refererOk = !referer;
+      if (referer) refererOk = ALLOWED_ORIGINS.some(o => referer.startsWith(o + '/'));
+      if (!originOk || !refererOk) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'cross-origin request rejected' }));
+        return;
+      }
+      // --- 3. Content-Type estricto (CA-Sec-03) — solo si hay body ---
+      if (req.method === 'POST') {
+        const ct = String(req.headers['content-type'] || '').toLowerCase();
+        if (!ct.startsWith('application/json')) {
+          res.writeHead(415, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'Content-Type must be application/json' }));
+          return;
+        }
+      }
+    }
+
+    // --- helpers ---
+    const allowlistCandidates = require('./lib/allowlist-candidates');
+    const promoteCapIssues = 50;
+    const promoteMaxDepth = 5;
+
+    function readBodyJson(cb) {
+      let body = '';
+      let aborted = false;
+      req.on('data', chunk => {
+        body += chunk;
+        if (body.length > 16 * 1024) { aborted = true; req.destroy(); }
+      });
+      req.on('end', () => {
+        if (aborted) return;
+        try { cb(null, body ? JSON.parse(body) : {}); }
+        catch (e) { cb(e); }
+      });
+    }
+
+    function logMutation(action, payload) {
+      try {
+        const logDir = path.join(PIPELINE, 'logs');
+        if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+        const line = JSON.stringify({
+          timestamp: new Date().toISOString(),
+          action,
+          origin: 'dashboard-local',
+          remote,
+          ...payload,
+        }) + '\n';
+        fs.appendFileSync(path.join(logDir, 'allowlist-mutations.log'), line, 'utf8');
+      } catch (e) {
+        // No fatal: el log es para forensia, no interrumpir el flow del usuario.
+        log(`Warning: allowlist-mutations.log no se pudo escribir: ${e.message}`);
+      }
+    }
+
+    // ROUTE: GET /api/allowlist-candidates → estado completo
+    if (req.url === '/api/allowlist-candidates' && req.method === 'GET') {
+      try {
+        const { getPipelineMode } = require('./lib/partial-pause');
+        const state = getPipelineMode();
+        const c = allowlistCandidates.readCandidates();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          mode: state.mode,
+          allowlistActive: state.allowedIssues || [],
+          candidates: c.candidates,
+          caps: {
+            maxCandidates: allowlistCandidates.MAX_CANDIDATES,
+            maxReason: allowlistCandidates.MAX_REASON_LEN,
+            maxPromoteIssues: promoteCapIssues,
+            maxPromoteDepth: promoteMaxDepth,
+          },
+        }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+      return;
+    }
+
+    // ROUTE: POST /api/allowlist-candidates → like
+    if (req.url === '/api/allowlist-candidates' && req.method === 'POST') {
+      readBodyJson((err, data) => {
+        if (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + err.message }));
+          return;
+        }
+        // CA-Sec-08: likedBy del cliente IGNORADO. Server-derived.
+        const result = allowlistCandidates.addCandidate({
+          issue: data.issue,
+          reason: data.reason,
+        });
+        if (!result.ok) {
+          const code = result.error === 'cap_reached' ? 409 : 400;
+          res.writeHead(code, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: result.error }));
+          return;
+        }
+        logMutation('like', { issue: result.candidate.issue, alreadyExisted: result.alreadyExisted });
+        log(`Allowlist-candidate: liked #${result.candidate.issue} (alreadyExisted=${result.alreadyExisted})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          candidate: result.candidate,
+          alreadyExisted: result.alreadyExisted,
+        }));
+      });
+      return;
+    }
+
+    // ROUTE: DELETE /api/allowlist-candidates/:issue → unlike
+    const unlikeMatch = req.url.match(/^\/api\/allowlist-candidates\/(\d+)$/);
+    if (unlikeMatch && req.method === 'DELETE') {
+      const issueStr = unlikeMatch[1];
+      const v = allowlistCandidates.validateIssueId(issueStr);
+      if (!v.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: v.error }));
+        return;
+      }
+      const result = allowlistCandidates.removeCandidate(v.value);
+      if (result.existed) {
+        logMutation('unlike', { issue: v.value });
+        log(`Allowlist-candidate: unliked #${v.value}`);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, existed: result.existed }));
+      return;
+    }
+
+    // ROUTE: POST /api/allowlist-candidates/:issue/promote → preview o confirm
+    const promoteMatch = req.url.match(/^\/api\/allowlist-candidates\/(\d+)\/promote$/);
+    if (promoteMatch && req.method === 'POST') {
+      const issueStr = promoteMatch[1];
+      const v = allowlistCandidates.validateIssueId(issueStr);
+      if (!v.ok) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: v.error }));
+        return;
+      }
+      readBodyJson((err, data) => {
+        if (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + err.message }));
+          return;
+        }
+        const confirmed = data && data.confirmed === true;
+        try {
+          const { getPipelineMode, setPartialPause } = require('./lib/partial-pause');
+          const ppDeps = require('./lib/partial-pause-deps');
+          const state = getPipelineMode();
+          const currentAllowlist = state.allowedIssues || [];
+
+          // Resolver deps abiertas recursivas del candidato (maxDepth=5 — CA-Sec-12).
+          const { openDeps, chains, truncated } = ppDeps.resolveOpenDeps(v.value, { maxDepth: promoteMaxDepth });
+          const allowedSet = new Set(currentAllowlist);
+          const toAdd = [v.value, ...openDeps].filter(n => !allowedSet.has(n));
+          const finalAllowlist = [...new Set([...currentAllowlist, v.value, ...openDeps])].sort((a, b) => a - b);
+
+          // CA-Sec-13: cap defensivo. Si excede el cap, rechazamos sin escribir.
+          if (toAdd.length > promoteCapIssues) {
+            res.writeHead(409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              ok: false,
+              code: 'PROMOTE_CAP_EXCEEDED',
+              msg: `Promote sumaría ${toAdd.length} issues a la allowlist (cap ${promoteCapIssues}).`,
+              candidate: v.value,
+              toAdd,
+              cap: promoteCapIssues,
+              chains,
+            }));
+            return;
+          }
+
+          // Modo PREVIEW (sin confirmed:true): solo devolvemos los datos sin escribir.
+          if (!confirmed) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              ok: true,
+              preview: true,
+              candidate: v.value,
+              currentAllowlist,
+              toAdd,
+              finalAllowlist,
+              chains,
+              truncated,
+            }));
+            return;
+          }
+
+          // Modo CONFIRMED: persistir. Preservamos depSources existentes y marcamos los nuevos.
+          const depSources = Object.assign({}, state.depSources || {});
+          for (const d of openDeps) {
+            if (!(String(d) in depSources)) depSources[String(d)] = 'auto-deps';
+          }
+          // #3625 — promote suma issues (no remueve) → audit trail con autoría operador.
+          const result = setPartialPause(finalAllowlist, {
+            source: 'dashboard-promote',
+            acceptedDepRisk: state.acceptedDepRisk === true,
+            depSources: Object.keys(depSources).length > 0 ? depSources : undefined,
+            authorizedBy: 'commander:leo',
+            justification: `Promote candidate #${v.value} + ${openDeps.length} deps recursivas`,
+          });
+
+          // Sacar el candidato (ya está en allowlist activa, no es más "candidato").
+          allowlistCandidates.removeCandidate(v.value);
+
+          logMutation('promote', {
+            issue: v.value,
+            addedDeps: openDeps,
+            finalAllowlistSize: result.allowedIssues.length,
+          });
+          log(`Allowlist-candidate: promoted #${v.value} → allowlist (+${openDeps.length} deps recursivas)`);
+
+          // CA-Sec-16: comentario automático en el issue de GH (best-effort).
+          // No bloquea la respuesta — se hace fire-and-forget.
+          tryCommentPromoted(v.value, openDeps);
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ok: true,
+            preview: false,
+            candidate: v.value,
+            addedDeps: openDeps,
+            allowlistActive: result.allowedIssues,
+            msg: result.msg,
+          }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: e.message }));
+        }
+      });
+      return;
+    }
+
+    // Si llegó acá, no matcheó ningún sub-route.
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, msg: 'allowlist-candidates: route no encontrada' }));
+    return;
+  }
+
   // API: Kill agent (cancelar agente activo)
+  // #3955 EP8-H2 — Emisión de token CSRF para el kill por agente (SEC-2). GET
+  // mismo-origen: el front lo pide antes del primer POST y lo cachea. Devuelve
+  // el token en el body + setea cookie ka_csrf (double-submit).
+  if (req.url === '/api/kill-agent/csrf-token' && req.method === 'GET') {
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible' }));
+      return;
+    }
+    killAgentCsrf.issueTokenResponse(req, res);
+    return;
+  }
+
   if (req.url === '/api/kill-agent' && req.method === 'POST') {
+    // SEC-2 — CSRF ANTES de leer el body o tocar el FS. Fail-closed: si el
+    // módulo no cargó, rechazamos en vez de degradar a "sin protección".
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — kill deshabilitado' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024) req.destroy(); });
     req.on('end', () => {
       try {
-        const { issue, skill, pipeline: pl, fase } = JSON.parse(body);
+        const parsed = JSON.parse(body);
+        const { issue, skill, pipeline: pl, fase } = parsed;
+        // #4195 — "Reiniciar" usa el MISMO mecanismo que matar (kill PID +
+        // devolver el marker a pendiente/ para que el Pulpo lo relance); el flag
+        // `restart` solo ajusta el mensaje/log para reflejar la intención. El
+        // ciclo de vida sigue siendo dueño del Pulpo (no relanzamos nosotros).
+        const isRestart = parsed.restart === true;
+
+        // SEC-1 — validación estricta de inputs ANTES de cualquier path.join /
+        // renameSync. Sin esto, `pipeline="../.."` o `fase` con segmentos
+        // relativos permite operar fuera del árbol del pipeline (A03/CWE-22).
+        const cfg = loadConfig();
+        const pipelineCfg = cfg && cfg.pipelines && cfg.pipelines[pl];
+        if (!pipelineCfg || !Array.isArray(pipelineCfg.fases) || !pipelineCfg.fases.includes(fase)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `pipeline/fase inválido: ${pl}/${fase}` }));
+          return;
+        }
+        if (!/^[0-9]+$/.test(String(issue))) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'issue inválido (se espera numérico)' }));
+          return;
+        }
+        if (!/^[a-z0-9-]+$/.test(String(skill))) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'skill inválido' }));
+          return;
+        }
+
+        // SEC-3 — guard server-side de skills no cancelables (commander). El
+        // front oculta el botón, pero el endpoint es la barrera real: rechaza
+        // 403 aunque se invoque directo.
+        const NO_CANCELABLE = new Set(['commander']);
+        if (NO_CANCELABLE.has(String(skill))) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `skill no cancelable: ${skill}` }));
+          return;
+        }
+
         const trabajandoDir = path.join(PIPELINE, pl, fase, 'trabajando');
         const pendienteDir = path.join(PIPELINE, pl, fase, 'pendiente');
         const filename = `${issue}.${skill}`;
@@ -8303,10 +13567,11 @@ const server = http.createServer((req, res) => {
           return;
         }
 
+        const verb = isRestart ? 'reiniciado' : 'cancelado';
         const msg = killed
-          ? `Agente ${skill} #${issue} cancelado (PIDs ${pidsKilled.join(', ')} + devuelto a pendiente)`
+          ? `Agente ${skill} #${issue} ${verb} (PIDs ${pidsKilled.join(', ')} + devuelto a pendiente)`
           : `Agente ${skill} #${issue} devuelto a pendiente (proceso no encontrado — ya terminó o nunca arrancó)`;
-        log(`Kill agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? `killed ${pidsKilled.join(',')}` : 'no PID'}`);
+        log(`${isRestart ? 'Restart' : 'Kill'} agent: ${skill} #${issue} en ${pl}/${fase} — ${killed ? `killed ${pidsKilled.join(',')}` : 'no PID'}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, msg }));
       } catch (e) {
@@ -8399,6 +13664,53 @@ const server = http.createServer((req, res) => {
   //                          (CA-Sec-A03). Audit trail en rest-mode-audit.jsonl
   //                          (CA-Sec-A08). bypass_labels NO editable (CA-Sec-A04a).
   // =========================================================================
+  // #3964 (EP8-H11) — helpers read-only del GET /api/rest-mode. Definidos como
+  // closures dentro del handler para no contaminar el scope del módulo; ambos
+  // son puros respecto del request (sólo leen config/window ya cargados).
+  function computeNowLocal(rmw, window, nowMs) {
+    try {
+      if (typeof rmw.partsInTz !== 'function') return null;
+      const tz = (window && window.timezone) || rmw.DEFAULT_TIMEZONE || 'America/Argentina/Buenos_Aires';
+      const parts = rmw.partsInTz(tz, nowMs);
+      if (!parts) return null;
+      const minuteOfDay = parts.hour * 60 + parts.minute;
+      const dayKeys = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const dayKey = dayKeys[parts.weekday] || 'monday';
+      const hhmm = (parts.hour < 10 ? '0' + parts.hour : '' + parts.hour)
+        + ':' + (parts.minute < 10 ? '0' + parts.minute : '' + parts.minute);
+      return { timezone: tz, weekday: parts.weekday, dayKey, hour: parts.hour, minute: parts.minute, minuteOfDay, hhmm };
+    } catch { return null; }
+  }
+  function computeWouldPauseSkills(rmw, window, cfg, nowMs) {
+    try {
+      const fullCfg = loadConfig();
+      // #5172 · CA-8 — `null` (config inválida) NO es "ningún skill se pausa":
+      // sería una decisión derivada de config servida como si fuera válida. El
+      // endpoint que lo consume expone `configError` en su lugar.
+      if (!fullCfg) return null;
+      const pipelines = fullCfg.pipelines || {};
+      const catalog = new Set();
+      for (const pk of Object.keys(pipelines)) {
+        const spf = pipelines[pk] && pipelines[pk].skills_por_fase;
+        if (!spf) continue;
+        for (const fk of Object.keys(spf)) {
+          const arr = spf[fk];
+          if (Array.isArray(arr)) for (const s of arr) catalog.add(String(s));
+        }
+      }
+      const out = [];
+      for (const skill of catalog) {
+        // Un skill se pausa durante el descanso si NO es determinístico (el
+        // bypass es por-issue via label, no a nivel skill). `isSkillAllowedNow`
+        // expone `deterministic` de forma estable aun fuera de ventana.
+        const cls = rmw.isSkillAllowedNow(skill, nowMs, { window, cfg });
+        if (cls && cls.deterministic === false) out.push(skill);
+      }
+      out.sort();
+      return out;
+    } catch { return []; }
+  }
+
   if (req.url === '/api/rest-mode' && req.method === 'GET') {
     if (!restModeWindow) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -8406,10 +13718,31 @@ const server = http.createServer((req, res) => {
       return;
     }
     try {
-      const cfg = (loadConfig() || {}).rest_mode || {};
+      // #5172 · CA-8 — el modo descanso es una decisión derivada de config:
+      // con config inválida se reporta el error explícito, no un default.
+      const fullCfg = loadConfig();
+      if (!fullCfg) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'configuración inválida', configError: getConfigErrorState() }));
+        return;
+      }
+      const cfg = fullCfg.rest_mode || {};
       const window = restModeWindow.getWindow({ pipelineDir: PIPELINE });
       const now = Date.now();
       const within = restModeWindow.isWithinWindow(window, now);
+      // #3241: incluir slice enriquecido para consumidores que quieran datos
+      // derivados sin recomputar.
+      const describe = typeof restModeWindow.describeRestModeNow === 'function'
+        ? restModeWindow.describeRestModeNow(window, now) : null;
+      // #3964 (EP8-H11) CA-4 — hora local en la TZ configurada, computada
+      // server-side. La UI del timeline posiciona el marcador "ahora" con esto
+      // y NO con `new Date()` del browser (evita mismatch de zona horaria).
+      const nowLocal = computeNowLocal(restModeWindow, window, now);
+      // #3964 (EP8-H11) CA-6 — preview read-only y acotado de qué skills
+      // quedarían pausados durante un periodo de descanso. Reutiliza la lista
+      // canónica DETERMINISTIC_SKILLS + isSkillAllowedNow; NO se mirrorea en el
+      // cliente. Catálogo de skills derivado de config (finito).
+      const wouldPauseSkills = computeWouldPauseSkills(restModeWindow, window, cfg, now);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
@@ -8417,6 +13750,11 @@ const server = http.createServer((req, res) => {
         bypassLabels: Array.isArray(cfg.bypass_labels) ? cfg.bypass_labels : ['priority:critical'],
         isWithinWindow: within,
         now: new Date(now).toISOString(),
+        // #3241 CA-Slice: shape enriquecido que la UI de #3242 va a consumir.
+        restMode: describe,
+        // #3964 EP8-H11: slices nuevos read-only para el timeline.
+        nowLocal,
+        wouldPauseSkills,
       }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -8431,9 +13769,10 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: false, msg: 'rest-mode-window no disponible' }));
       return;
     }
-    // CA-Sec-A01 — solo loopback. El servidor escucha en 0.0.0.0 por default
-    // y queremos que un POST desde otra IP (LAN, túnel, etc.) sea rechazado
-    // explícitamente con 403, sin parsear body.
+    // CA-Sec-A01 / PO-SEC-7 — solo loopback. El servidor escucha en 0.0.0.0 por
+    // default y queremos que un POST desde otra IP (LAN, túnel, etc.) sea
+    // rechazado explícitamente con 403, sin parsear body.
+    // #3241 CA-Endpoint-Loopback: este bloque NO se modifica.
     const remote = (req.socket && req.socket.remoteAddress) || '';
     const isLoopback = remote === '127.0.0.1'
         || remote === '::1'
@@ -8448,6 +13787,10 @@ const server = http.createServer((req, res) => {
     req.on('data', c => { body += c; if (body.length > 16 * 1024) req.destroy(); });
     req.on('end', () => {
       try {
+        // #3241 CA-8.6: el payload puede traer `schedule:{...}` (modelo nuevo)
+        // o el shape legacy `{start, end, days}`. Si trae ambos, schedule gana
+        // y se loguea warning (PO-SEC-5). El módulo `rest-mode-window` maneja
+        // la precedencia.
         const payload = body ? JSON.parse(body) : {};
         const result = restModeWindow.setWindow(payload, {
           pipelineDir: PIPELINE,
@@ -8458,98 +13801,13 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ ok: false, errors: result.errors }));
           return;
         }
-        log(`rest-mode window actualizada via /api/rest-mode (active=${result.state.active}, start=${result.state.start}, end=${result.state.end}, tz=${result.state.timezone}, days=[${result.state.days.join(',')}])`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, state: result.state }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, msg: e.message }));
-      }
-    });
-    return;
-  }
-
-  // =========================================================================
-  // #2892 PR-C — Banner de alerta de consumo anómalo (CA-2.7, CA-2.8, CA-3.4).
-  // GET  /api/cost-anomaly/state    → estado actual { active, raised_at,
-  //                                    actual_usd, baseline_usd, ratio,
-  //                                    top_skills, snoozed_until, ... }
-  // POST /api/cost-anomaly/ack      → "Ya lo vi" → limpia el banner
-  // POST /api/cost-anomaly/snooze   → body { hours: 1|4|24 }, cap 24h
-  // =========================================================================
-  if (req.url === '/api/cost-anomaly/state' && req.method === 'GET') {
-    if (!restModeState) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-state no disponible' }));
-      return;
-    }
-    try {
-      const state = restModeState.getAlertState({ pipelineDir: PIPELINE });
-      const visible = restModeState.shouldShowBanner(state);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        ok: true,
-        state,
-        visible,
-        max_snooze_hours: restModeState.MAX_SNOOZE_HOURS,
-      }));
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: e.message }));
-    }
-    return;
-  }
-
-  if (req.url === '/api/cost-anomaly/ack' && req.method === 'POST') {
-    if (!restModeState) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-state no disponible' }));
-      return;
-    }
-    // No body necesario — el ack es siempre el mismo gesto idempotente.
-    try {
-      const result = restModeState.ackAlert({ pipelineDir: PIPELINE });
-      log(`Cost-anomaly ack desde dashboard (acked=${result.acked})`);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, acked: result.acked, state: result.state }));
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: e.message }));
-    }
-    return;
-  }
-
-  if (req.url === '/api/cost-anomaly/snooze' && req.method === 'POST') {
-    if (!restModeState) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: 'rest-mode-state no disponible' }));
-      return;
-    }
-    let body = '';
-    req.on('data', c => { body += c; if (body.length > 4 * 1024) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const payload = body ? JSON.parse(body) : {};
-        const hours = Number(payload.hours);
-        // CA-Sec-A04b — el backend RECHAZA snooze > MAX_SNOOZE_HOURS aun
-        // cuando la UI debiera filtrarlos. snoozeAlert() devuelve ok:false
-        // con reason 'exceeds_cap' para esos casos.
-        const result = restModeState.snoozeAlert(hours, { pipelineDir: PIPELINE });
-        if (!result.ok) {
-          // 422 si el payload viene roto (cap superado, alert no activa,
-          // hours inválido). El frontend muestra un toast.
-          res.writeHead(422, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            ok: false,
-            reason: result.reason,
-            cap_hours: result.cap_hours || restModeState.MAX_SNOOZE_HOURS,
-            state: result.state,
-          }));
-          return;
+        if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+          for (const w of result.warnings) log(`rest-mode warning: ${w}`);
         }
-        log(`Cost-anomaly snooze desde dashboard (hours=${hours}, until=${result.state.snoozed_until})`);
+        const daysWithPeriods = Array.isArray(result.state.days) ? result.state.days.join(',') : '';
+        log(`rest-mode window actualizada via /api/rest-mode (active=${result.state.active}, tz=${result.state.timezone}, days=[${daysWithPeriods}])`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, state: result.state }));
+        res.end(JSON.stringify({ ok: true, state: result.state, warnings: result.warnings || [] }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, msg: e.message }));
@@ -8557,6 +13815,11 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+
+  // #3735 — Los endpoints del banner de consumo anómalo (GET /state,
+  // POST /ack, POST /snooze) se migraron a `lib/cost-anomaly/api.js` con las
+  // defensas CSRF D1/D2/D3 (CA-3.4) y se montean arriba vía
+  // `costAnomalyApi.route(...)` antes del catch-all. Ya no viven inline acá.
 
   const recoMatch = req.url && req.url.match(/^\/api\/recommendations\/(\d+)\/(approve|reject)$/);
   if (recoMatch && req.method === 'POST') {
@@ -8927,7 +14190,11 @@ const server = http.createServer((req, res) => {
     try {
       const titleCache = loadIssueTitleCache();
       delete titleCache[issueNum];
-      fetchIssueTitles([issueNum], titleCache);
+      saveIssueTitleCache(titleCache);
+      // #4128 — refresh async fire-and-forget en vez de execSync(gh) en el path
+      // del request: el borrado + persist ya fuerza el refetch en el próximo
+      // refresh del worker; esto sólo lo adelanta sin bloquear el event loop.
+      _scheduleTitleRefresh([issueNum]);
     } catch (e) { log(`pauseIssue: cache refresh failed for #${issueNum}: ${e.message}`); }
     _stateCache = null; _stateCacheAt = 0;
     log(`pauseIssue: #${issueNum} ${action === 'pause' ? 'pausado (+blocked:dependencies)' : 'reanudado (-blocked:dependencies)'}`);
@@ -8969,23 +14236,344 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API JSON
-  if (req.url === '/api/state' || req.url === '/api/status') {
+  // #4369 — Priorización wave-scoped. Lee SOLO los issues de la ola activa en su
+  // orden de ejecución actual (proyecta issue-manual-order.json sobre la
+  // membresía de la ola). GUARDRAIL #4096 (CA-9): NO invoca getPipelineState();
+  // lee de wavesLib.getActiveWave() + issueOrder.load().
+  const waveOrderMatch = req.url && req.url.match(/^\/api\/waves\/(\d+)\/order$/);
+  if (waveOrderMatch && req.method === 'GET') {
+    const waveNum = String(waveOrderMatch[1]);
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    const active = wavesLib.getActiveWave();
+    if (!active || String(active.number) !== waveNum) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: `ola ${waveNum} no está activa` }));
+      return;
+    }
+    const membership = (active.issues || []).map(i => String(i.number));
+    let issueOrder;
+    try { issueOrder = require('./lib/issue-order'); }
+    catch (e) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+      return;
+    }
+    // Proyectar el orden global sobre la membresía: primero los que tienen entrada
+    // manual (en su orden), luego los que no la tienen (en orden de la ola).
+    const state = issueOrder.load();
+    const inManual = state.order.filter(n => membership.includes(n));
+    const notInManual = membership.filter(n => !inManual.includes(n));
+    const ordered = inManual.concat(notInManual);
+    const byNumber = new Map((active.issues || []).map(i => [String(i.number), i]));
+    const issues = ordered.map(n => ({
+      number: Number(n),
+      status: (byNumber.get(n) && byNumber.get(n).status) || null,
+    }));
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(getPipelineState(), null, 2));
+    res.end(JSON.stringify({ ok: true, wave: Number(waveNum), issues }));
     return;
   }
 
-  // /metrics — Métricas históricas para decisiones de hardware/servicio
+  // #4369 — POST reorder wave-scoped. Muta la fuente de verdad del orden de
+  // ejecución del Pulpo (issue-manual-order.json) → requiere CSRF (SEC-2/CA-7) y
+  // validación server-side estricta (SEC-1/CA-5) ANTES de escribir.
+  const waveReorderMatch = req.url && req.url.match(/^\/api\/waves\/(\d+)\/reorder$/);
+  if (waveReorderMatch && req.method === 'POST') {
+    const waveNum = String(waveReorderMatch[1]);
+    // SEC-2 — CSRF fail-closed ANTES de leer body o tocar el FS.
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — reorder deshabilitado' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload;
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      // Membresía real de la ola activa (fuente de verdad de pertenencia).
+      const active = wavesLib.getActiveWave();
+      if (!active || String(active.number) !== waveNum) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: `ola ${waveNum} no está activa` }));
+        return;
+      }
+      const membership = (active.issues || []).map(i => String(i.number));
+      let issueOrder;
+      try { issueOrder = require('./lib/issue-order'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'issue-order lib no disponible: ' + e.message }));
+        return;
+      }
+      // SEC-1/CA-5 — validación estricta: numéricos, sin duplicados, todos ∈ ola,
+      // y conjunto == membresía completa (no se agregan ni pierden issues).
+      const check = issueOrder.validateWaveReorder(membership, payload.order);
+      if (!check.ok) {
+        // NO escribe el state file.
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: `payload de orden inválido (${check.reason}): debe ser una permutación exacta de la membresía de la ola (numéricos, sin duplicados, sin faltantes)` }));
+        return;
+      }
+      const order = payload.order.map(String);
+      const state = issueOrder.load();
+      issueOrder.reorderWithinSubset(state, membership, order);
+      log(`order: wave-reorder ola ${waveNum} (${order.length} issues, head=${order.slice(0,3).join(',')})`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, msg: `Orden de la ola ${waveNum} actualizado (${order.length} issues)`, wave: Number(waveNum), count: order.length }));
+    });
+    return;
+  }
+
+  // ── #4433 — Gestión de olas desde la ventana Roadmap ─────────────────────
+  // Tres mutaciones que cablean el motor de dominio (lib/waves.js) a la UI del
+  // Roadmap, clonando el patrón CSRF fail-closed del handler de reorder de
+  // arriba: `killAgentCsrf.requireCSRF` ANTES de leer body o tocar el FS
+  // (REQ-SEC-1/CA-7). Reusan `validateCreateInput` (lib/wave-create-input) y el
+  // dominio para no reparsear validaciones a mano (REQ-SEC-2). Precedencia
+  // intencional sobre la superficie agnóstica de lib/waves-api.js para estas
+  // rutas de mutación: acá se inyectan defaults server-side de concurrency/
+  // window (decisión PO camino b) que la superficie agnóstica no aplica. Las
+  // lecturas GET /api/waves siguen resueltas por waves-api.js (fall-through).
+
+  // POST /api/waves — crear una ola planificada (CA-1/CA-2).
+  if (req.url === '/api/waves' && req.method === 'POST') {
+    // REQ-SEC-1/CA-7 — CSRF fail-closed ANTES de leer body o tocar el FS.
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — creación de olas deshabilitada' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return; // ya respondió 403
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload;
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'El cuerpo debe ser un objeto JSON' }));
+        return;
+      }
+      // REQ-SEC-5 (decisión PO camino b): concurrency/window NO se piden en el
+      // form; se completan del techo de dominio server-side, NUNCA del input.
+      // Sólo se inyectan si el cliente no los mandó (defaults, no override).
+      if (payload.concurrency === undefined || payload.concurrency === null || payload.concurrency === '') {
+        payload.concurrency = String(wavesLib.readWaveMaxConcurrency());
+      }
+      if (payload.window === undefined || payload.window === null || payload.window === '') {
+        payload.window = String(wavesLib.WAVE_WINDOW_MAX_MINUTES);
+      }
+      let wci;
+      try { wci = require('./lib/wave-create-input'); }
+      catch (e) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'validador de olas no disponible: ' + e.message }));
+        return;
+      }
+      // REQ-SEC-2 — validación canónica; no re-armar el spec a mano.
+      const v = wci.validateCreateInput(payload);
+      if (!v.ok) {
+        // NO escribe el state file (CA-2).
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, field: v.field, msg: v.error }));
+        return;
+      }
+      try {
+        const created = wavesLib.createPlannedWave(v.spec, {
+          updated_by: 'Dashboard-Roadmap',
+          source: 'dashboard/roadmap:create',
+        });
+        log(`waves: ola ${created.waveNumber} creada (${v.spec.issues.length} issue(s)) desde Roadmap`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `Ola ${created.waveNumber} creada`, number: created.waveNumber, wave: created.wave }));
+      } catch (e) {
+        // Errores de dominio traen `code` (EWAVES_SHAPE/BOUNDS/DUPLICATE_*) →
+        // 4xx accionable, sin escritura parcial (createPlannedWave es atómico).
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: e.code, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/waves/:num/issues — asociar un issue a una ola planificada (CA-3).
+  const waveAssocMatch = req.url && req.url.match(/^\/api\/waves\/(\d+)\/issues$/);
+  if (waveAssocMatch && req.method === 'POST') {
+    const waveNum = Number(waveAssocMatch[1]);
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — asociación deshabilitada' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return;
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      let payload;
+      try { payload = body ? JSON.parse(body) : {}; }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'JSON inválido: ' + e.message }));
+        return;
+      }
+      // CA-6/REQ-SEC-4 — componer sólo sobre olas planificadas. La membresía de
+      // la ola activa dispara re-sync de allowlist (dep #4350/#4435, fuera de
+      // scope): se rechaza en el server, no sólo se oculta en la UI.
+      const active = wavesLib.getActiveWave();
+      if (active && Number(active.number) === waveNum) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: 'EWAVES_ACTIVE_LOCKED', msg: `No se pueden asociar issues a la ola activa ${waveNum}; sólo a olas planificadas.` }));
+        return;
+      }
+      // REQ-SEC-2 — el número de issue lo normaliza `addIssueToWave`
+      // (EWAVES_SHAPE si inválido); no se parsea a mano.
+      const rawIssue = (payload && payload.issue != null) ? payload.issue : (payload && payload.number);
+      try {
+        const r = wavesLib.addIssueToWave(waveNum, { number: rawIssue, status: 'pending' }, {
+          updated_by: 'Dashboard-Roadmap',
+          source: 'dashboard/roadmap:associate',
+        });
+        log(`waves: issue #${r.issue} ${r.added ? 'asociado a' : 'ya estaba en'} la ola ${waveNum} (Roadmap)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: r.added ? `Issue #${r.issue} asociado a la ola ${waveNum}` : `Issue #${r.issue} ya estaba en la ola ${waveNum}`, wave: waveNum, issue: r.issue, added: r.added }));
+      } catch (e) {
+        // Issue inválido / ola inexistente / duplicado en otra ola → 4xx claro
+        // sin modificar la ola (CA-4). `e.code` puede ser undefined (input shape).
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: e.code, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // POST /api/waves/:num/issues/:issue/remove — desasociar (CA-5/CA-6). El id de
+  // issue viaja en el path (no en el body). removeIssueFromWave ya rechaza operar
+  // sobre la ola activa (EWAVES_ACTIVE_LOCKED, REQ-SEC-4).
+  const waveDisassocMatch = req.url && req.url.match(/^\/api\/waves\/(\d+)\/issues\/(\d+)\/remove$/);
+  if (waveDisassocMatch && req.method === 'POST') {
+    const waveNum = Number(waveDisassocMatch[1]);
+    const issueNum = Number(waveDisassocMatch[2]);
+    if (!killAgentCsrf) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'CSRF no disponible — desasociación deshabilitada' }));
+      return;
+    }
+    if (!killAgentCsrf.requireCSRF(req, res)) return;
+    if (!wavesLib) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: 'waves lib no disponible' }));
+      return;
+    }
+    // Drenar (y capear) cualquier body para no dejar el socket colgado.
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 256 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const r = wavesLib.removeIssueFromWave(waveNum, issueNum, {
+          updated_by: 'Dashboard-Roadmap',
+          source: 'dashboard/roadmap:disassociate',
+        });
+        log(`waves: issue #${issueNum} desasociado de la ola ${waveNum} (Roadmap)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, msg: `Issue #${issueNum} desasociado de la ola ${waveNum}`, wave: waveNum, issue: issueNum, removed: r.removed }));
+      } catch (e) {
+        // EWAVES_ACTIVE_LOCKED (activa) / EWAVES_NOT_FOUND → 4xx accionable (CA-6),
+        // sin forzar la operación.
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: e.code, msg: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API JSON
+  // GUARDRAIL (#4096): este handler NO debe invocar getPipelineState() ni hacer
+  // I/O sincrónico sobre el histórico. Sirve SIEMPRE desde `_stateSnapshot`,
+  // poblado por refreshStateSnapshot() en background. Reintroducir un escaneo
+  // pesado acá vuelve a clavar la CPU y a colgar el smoke (paso 2) → rollback en
+  // loop del restart. El test dashboard-state-hotpath.test.js falla si alguien
+  // reintroduce getPipelineState() en este bloque. La vista puede tener hasta
+  // STATE_REFRESH_MS (~3s) de antigüedad: aceptable para un dashboard.
+  if (req.url === '/api/state' || req.url === '/api/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (!_stateSnapshot) {
+      // Cold start: todavía no corrió el primer refresh. Responder liviano, NO
+      // computar sincrónicamente. El consumidor degrada con gracia (G-1/CA-3).
+      res.end(JSON.stringify({ ready: false, snapshotAt: 0 }, null, 2));
+      return;
+    }
+    res.end(JSON.stringify(_stateSnapshot, null, 2));
+    return;
+  }
+
+  // /metrics — Métricas históricas para decisiones de hardware/servicio.
+  // #3733 (CA-15) — headers de seguridad: no-store (respuesta mutable con
+  // data de cuota), nosniff (no reinterpretación MIME), no-referrer (no leak
+  // a terceros). NO se setea Access-Control-Allow-Origin: endpoint local-only.
   if (req.url === '/metrics') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+    });
     res.end(generateMetricsHTML());
     return;
   }
 
-  // /api/metrics — Raw metrics data
+  // /api/metrics — Raw metrics data (mismos headers CA-15).
   if (req.url === '/api/metrics') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    // #3733 (CA-18) — same-origin enforcement (defense in depth). Scripts/CLI/
+    // Telegram no envían `Origin` → pasan. Un fetch cross-site desde el browser
+    // manda `Origin` distinto al host → 403. El bind ya es loopback; esto evita
+    // que una pestaña maliciosa lea el JSON via CORS si algún día se relajara.
+    const origin = req.headers['origin'];
+    if (origin) {
+      let originHost = '';
+      try { originHost = new URL(origin).host; } catch { originHost = ' '; }
+      if (originHost !== req.headers['host']) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'cross-origin denegado' }));
+        return;
+      }
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+    });
     res.end(JSON.stringify(getMetricsData()));
     return;
   }
@@ -9050,61 +14638,32 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // #2801 — Calibración manual de la cuota Plan Max contra el real de claude.ai.
-  // El operador pega los % que ve en claude.ai/settings/usage; el sistema guarda
-  // factor = real/pipeline para extrapolar futuras lecturas.
-  if (req.url === '/api/dash/quota/calibrate' && req.method === 'POST') {
-    let body = '';
-    req.on('data', c => { body += c; if (body.length > 4 * 1024) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const payload = body ? JSON.parse(body) : {};
-        const realWeekly = Number(payload.real_weekly_pct);
-        const realSession = Number(payload.real_session_pct);
-        if (!Number.isFinite(realWeekly) || !Number.isFinite(realSession)) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, msg: 'real_weekly_pct y real_session_pct son requeridos (números)' }));
-          return;
-        }
-        const quotaLib = require('./lib/weekly-quota');
-        const metricsDir = path.join(PIPELINE, 'metrics');
-        const activityLog = path.join(ROOT, '.claude', 'activity-log.jsonl');
-        const current = quotaLib.computeQuota(metricsDir, activityLog);
-        const calibration = quotaLib.saveCalibration(metricsDir, {
-          realWeeklyPct: realWeekly,
-          realSessionPct: realSession,
-          pipelineWeeklyPct: current.pct,
-          pipelineSessionPct: current.session ? current.session.pct : 0,
-          // Opcionales — tiempos de reset reportados por el operador.
-          // Acepta ISO absoluto (preferido) o minutos relativos (legacy).
-          sessionResetsAt: payload.session_resets_at || null,
-          weeklyResetsAt: payload.weekly_resets_at || null,
-          sessionResetsInMinutes: Number.isFinite(payload.session_resets_in_minutes) ? Number(payload.session_resets_in_minutes) : null,
-          weeklyResetsInMinutes: Number.isFinite(payload.weekly_resets_in_minutes) ? Number(payload.weekly_resets_in_minutes) : null,
-        });
-        log(`quota: calibrado #${calibration.sample_count} real(w=${realWeekly}%, s=${realSession}%) → pipeline(w=${current.pct}%, s=${current.session?.pct}%) → factor smooth(w=${calibration.weekly_factor}, s=${calibration.session_factor}) raw(w=${calibration.weekly_factor_obs}, s=${calibration.session_factor_obs}) α=${calibration.ema_alpha}`);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, msg: `Calibración #${calibration.sample_count} guardada · factor semanal ×${calibration.weekly_factor} · sesión ×${calibration.session_factor} (EMA α=${calibration.ema_alpha})`, calibration }));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, msg: 'Error: ' + e.message }));
-      }
-    });
-    return;
-  }
+  // #4861 — Endpoints POST/DELETE /api/dash/quota/calibrate ELIMINADOS.
+  // La calibración manual EMA (factor real/pipeline sobre la heurística
+  // duration_ms) producía el valor divergente 57%/76%. La fuente única de
+  // verdad de la cuota Anthropic es ahora `claude -p /usage` vía
+  // lib/anthropic-usage.js + lib/quota-adapters/anthropic.js. Se retiran
+  // ambas rutas mutantes no autenticadas (mejora de postura OWASP A01/A05).
 
-  if (req.url === '/api/dash/quota/calibrate' && req.method === 'DELETE') {
-    try {
-      const quotaLib = require('./lib/weekly-quota');
-      const metricsDir = path.join(PIPELINE, 'metrics');
-      const result = quotaLib.clearCalibration(metricsDir);
-      log('quota: calibración borrada por operador');
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, msg: result.msg }));
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, msg: 'Error: ' + e.message }));
-    }
+  // #5172 · CA-8 — Pantalla de configuración inválida en las rutas de PÁGINA.
+  //
+  // Va ANTES de `dashboard-routes` a propósito: la home V3 (`/`) es un shell SSR
+  // que no depende de config y se hidrata por JSON, así que sin este corte el
+  // operador veía un tablero prolijo y VACÍO — indistinguible de "no hay
+  // trabajo" — mientras el pipeline estaba pausado por config rota. Ese es el
+  // fallo silencioso que la historia elimina, y sólo se cierra si la pantalla
+  // lo DICE.
+  //
+  // Alcance deliberadamente acotado a las rutas HTML: `/api/health` (readiness
+  // del smoke del restart), `/logs/*` y el resto de las APIs siguen su curso —
+  // con la config rota, los logs son justo lo que el operador necesita leer.
+  if (PAGINAS_HTML.has((req.url || '').split('?')[0]) && !loadConfig()) {
+    res.writeHead(503, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(renderConfigErrorPage(getConfigErrorState()));
     return;
   }
 
@@ -9115,31 +14674,199 @@ const server = http.createServer((req, res) => {
     const dashRoutes = require('./lib/dashboard-routes');
     const url = req.url || '';
     const isLegacy = (url === '/legacy' || url === '/legacy/');
-    if (!isLegacy && dashRoutes.handle(req, res, { getState: getCachedPipelineState, PIPELINE, ROOT, GH_BIN })) {
+    if (!isLegacy && dashRoutes.handle(req, res, { getState: getCachedPipelineState, PIPELINE, ROOT, GH_BIN, getMetricsData, loadConfig })) {
       return;
     }
   } catch (e) {
     log(`dashboard-routes error: ${e.message}`);
   }
 
-  // HTML dashboard legacy (accesible vía /legacy o como fallback de URLs no matcheadas).
-  const state = getPipelineState();
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(generateHTML(state));
+  // HTML dashboard legacy (accesible vía /legacy o como fallback de URLs no
+  // matcheadas). #4126 — sirve desde el snapshot del worker (no recomputa en el
+  // request) para que `/` no se cuelgue bajo el ciclo de refresh (CA-3).
+  const state = getCachedPipelineState();
+
+  // #5172 · CA-8 — Con config inválida `_genPipelineState()` corta temprano y
+  // devuelve el estado degradado (`config: null` + `configError`), que NO tiene
+  // las claves del snapshot completo que `generateHTML` asume (`issueMatrix`,
+  // `allFases`, ...). Renderizarlo igual tiraba `TypeError` en el primer
+  // `Object.entries(state.issueMatrix)` → `uncaughtException` → `process.exit(1)`,
+  // y como CUALQUIER URL no matcheada cae acá (incluido el `/favicon.ico` que
+  // pide todo navegador al abrir el tablero), alcanzaba con abrir el dashboard
+  // para matarlo. Servimos la pantalla de configuración inválida: es la única
+  // forma de que el operador se entere de por qué el pipeline está pausado.
+  if (!state || !state.config) {
+    res.writeHead(503, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(renderConfigErrorPage(state ? state.configError : getConfigErrorState()));
+    return;
+  }
+  try {
+    const html = generateHTML(state);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+  } catch (e) {
+    // El render se hace ANTES del `writeHead(200)` justamente para poder
+    // responder 500 acá sin haber emitido ya un header de éxito.
+    log(`generateHTML falló: ${e && e.message}`);
+    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(renderInternalErrorPage(e));
+  }
+}
+
+// #5172 · CA-8 — Red de contención del proceso. Cualquier excepción sincrónica
+// de una ruta se responde como 500 en vez de escalar a `uncaughtException`
+// (que hace `process.exit(1)`). El dashboard degrada la RESPUESTA, nunca el
+// PROCESO: mientras siga vivo el operador puede ver logs y el estado de config.
+const server = http.createServer((req, res) => {
+  try {
+    handleRequest(req, res);
+  } catch (e) {
+    log(`request handler falló (${req && req.method} ${req && req.url}): ${e && (e.stack || e.message)}`);
+    try {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      }
+      res.end(renderInternalErrorPage(e));
+    } catch { try { res.destroy(); } catch {} }
+  }
 });
 
-server.listen(PORT, () => {
-  log(`Dashboard en http://localhost:${PORT}`);
-  log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3`);
-  try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT }); } catch {}
+// #3177 + #3191 — bind explícito a 127.0.0.1 por default (mitiga DNS rebinding
+// y reduce superficie de ataque para los nuevos endpoints PUT/POST de Multi-Provider).
+// Override controlado por env (`DASHBOARD_HOST`) para no bloquear setups
+// excepcionales donde el dashboard se expone en LAN intencionalmente.
+const HOST = process.env.DASHBOARD_HOST || '127.0.0.1';
+
+// Red de contención para EADDRINUSE: durante un restart hay una carrera entre
+// el proceso viejo soltando el puerto y el watchdog relanzando el nuevo. Sin
+// este handler, `listen` tira `EADDRINUSE` no capturado y el proceso muere en
+// seco (crash-loop), haciendo fallar el smoke del restart. Reintentamos unas
+// pocas veces con backoff antes de rendirnos.
+let _listenRetries = 0;
+const MAX_LISTEN_RETRIES = 5;
+const LISTEN_RETRY_MS = 1500;
+function startListen() {
+  server.listen(PORT, HOST, () => {
+    _listenRetries = 0;
+    log(`Dashboard en http://${HOST}:${PORT}`);
+    log(`API: /api/state | Logs: /logs/{file} | SSE: /events | V3 kiosk: /v3 | Multi-Provider: /multi-provider`);
+    try { require('./lib/ready-marker').signalReady('dashboard', { port: PORT, host: HOST }); } catch {}
+    // #4096 — Arranque del worker de snapshot DESPUÉS de signalReady: el primer
+    // refresh es async (setImmediate) para no demorar el listen/ready, y el
+    // setInterval mantiene la vista fresca fuera del hot path. `.unref()` evita
+    // que el timer mantenga vivo el proceso al cerrar.
+    refreshStateSnapshot();
+    if (!_stateRefreshTimer) {
+      _stateRefreshTimer = setInterval(refreshStateSnapshot, STATE_REFRESH_MS);
+      if (_stateRefreshTimer.unref) _stateRefreshTimer.unref();
+    }
+    // #4597 — Poller del uso REAL de Anthropic (`claude -p /usage`). Es la
+    // fuente de verdad de la cuota Anthropic (reemplaza la heurística de
+    // duración + calibración + OCR). Refresca el cache en background con
+    // throttle; el adapter (quota-adapters/anthropic.js) SÓLO LEE ese cache y
+    // nunca spawnea en el hot path. Fire-and-forget, no bloquea el loop.
+    // `.unref()` evita que el timer mantenga vivo el proceso al cerrar.
+    if (!_usageRefreshTimer) {
+      try {
+        const anthropicUsage = require('./lib/anthropic-usage');
+        const usageMetricsDir = path.join(PIPELINE, 'metrics');
+        const kickUsage = () => {
+          try { anthropicUsage.triggerRefreshAsync({ metricsDir: usageMetricsDir }); } catch { /* noop */ }
+        };
+        setImmediate(kickUsage);
+        _usageRefreshTimer = setInterval(kickUsage, anthropicUsage.THROTTLE_MS);
+        if (_usageRefreshTimer.unref) _usageRefreshTimer.unref();
+      } catch { /* noop: no bloquear el boot del dashboard */ }
+    }
+    // #4460 — Asegurar que el trust anchor `runtime-boot.json` refleje el HEAD
+    // real al bootear. Mitiga el "restart manual sin restart.js": si el marker
+    // quedó stale, lo reescribimos con el HEAD que este proceso está corriendo.
+    // Best-effort: si git no está disponible, el slice trata el marker como
+    // estado desconocido, nunca como "sin pendientes". Se corre DESPUÉS de
+    // arrancar el worker de snapshot: el marker es best-effort y no debe
+    // demorar el primer refresh ni el listen/ready.
+    try {
+      const rb = require('./lib/runtime-boot').ensureBootMarker({ pipelineDir: PIPELINE, repoRoot: ROOT });
+      if (rb && rb.wrote) log(`Boot marker actualizado al arrancar: ${String(rb.sha || '').slice(0, 8)}`);
+    } catch { /* noop: no bloquear el boot del dashboard */ }
+    // #4131-followup — Monitor de lag del event loop. Tras toda la cadena de
+    // fixes async (#4128/#4126/#4132) el dashboard seguía colgándose de forma
+    // intermitente y parchábamos a ciegas porque NO sabíamos qué operación
+    // clavaba el loop. Esto deja evidencia dura: cuando el loop estuvo clavado
+    // por encima del umbral, logueamos el lag pico Y qué refresh estaba inflight
+    // en ese instante. El próximo cuelgue se diagnostica con datos, no teoría.
+    if (!_loopMonitor) {
+      try {
+        const { startEventLoopMonitor } = require('./lib/event-loop-monitor');
+        _loopMonitor = startEventLoopMonitor({
+          thresholdMs: Number(process.env.DASHBOARD_LOOP_LAG_THRESHOLD_MS) || 1500,
+          onStall: ({ lagMs, meanMs, p99Ms }) => {
+            // Qué operación pesada estaba en vuelo durante el stall. La que esté
+            // en `true` es la principal sospechosa de haber bloqueado el loop.
+            const inflight = [];
+            if (_stateRefreshInflight) inflight.push('stateSnapshot');
+            if (_procStatusInflight) inflight.push('procStatus');
+            if (_prInfoInflight) inflight.push('prInfo');
+            if (_olaETARefreshInflight) inflight.push('olaETA');
+            if (_titleRefreshInflight) inflight.push('titleRefresh');
+            if (_logServeInflight) inflight.push('logServe');
+            const who = inflight.length ? inflight.join('+') : 'ninguno-inflight';
+            log(`⚠️ event-loop STALL: lag pico ${lagMs}ms (mean ${meanMs}ms, p99 ${p99Ms}ms) — inflight: ${who}`);
+          },
+        });
+      } catch (e) { try { log(`no se pudo arrancar el monitor de event-loop: ${e && e.message ? e.message : e}`); } catch {} }
+    }
+    // #4131-followup-2 — Watchdog EXTERNO de freeze. El monitor de arriba es
+    // ciego al freeze TOTAL (su timer vive dentro del loop congelado y nunca
+    // dispara). Este corre en un Worker thread con su propio loop y un heartbeat
+    // por SharedArrayBuffer: detecta cuando el main deja de latir AUNQUE esté
+    // 100% clavado, y deja en `logs/freeze-watchdog.log` el timestamp, la
+    // duración y la operación que estaba en vuelo al congelarse. Es el testigo
+    // que nos faltaba para el cuelgue intermitente del /restart.
+    if (!_freezeWatchdog) {
+      try {
+        const { startFreezeWatchdog } = require('./lib/freeze-watchdog');
+        _freezeWatchdog = startFreezeWatchdog({
+          logDir: LOG_DIR,
+          thresholdMs: Number(process.env.DASHBOARD_FREEZE_THRESHOLD_MS) || 3000,
+          getInflight: () => ({
+            stateSnapshot: _stateRefreshInflight,
+            procStatus: _procStatusInflight,
+            prInfo: _prInfoInflight,
+            olaETA: _olaETARefreshInflight,
+            titleRefresh: _titleRefreshInflight,
+            logServe: _logServeInflight,
+          }),
+          onLog: (line) => { try { log(line.replace(/^\[[^\]]+\]\s*/, '')); } catch {} },
+        });
+      } catch (e) { try { log(`no se pudo arrancar el watchdog de freeze: ${e && e.message ? e.message : e}`); } catch {} }
+    }
+  });
+}
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE' && _listenRetries < MAX_LISTEN_RETRIES) {
+    _listenRetries++;
+    log(`Puerto ${PORT} ocupado (EADDRINUSE), reintento ${_listenRetries}/${MAX_LISTEN_RETRIES} en ${LISTEN_RETRY_MS}ms`);
+    setTimeout(() => { try { server.close(); } catch {} startListen(); }, LISTEN_RETRY_MS);
+    return;
+  }
+  const msg = `[${new Date().toISOString()}] [dashboard] listen error: ${err?.stack || err}\n`;
+  try { fs.appendFileSync(path.join(LOG_DIR, 'dashboard.log'), msg); } catch {}
+  console.error(msg);
+  process.exit(1);
 });
+startListen();
 
 // dashboard.pid se mantiene como hint informativo (útil para mtime →
 // uptime y para diagnóstico humano). NO es fuente de verdad: el dashboard
 // descubre sus peers vía pid-discovery.
 try { fs.writeFileSync(path.join(PIPELINE, 'dashboard.pid'), String(process.pid)); } catch {}
-process.on('SIGINT', () => { server.close(); process.exit(0); });
-process.on('SIGTERM', () => { server.close(); process.exit(0); });
+process.on('SIGINT', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); if (_freezeWatchdog) _freezeWatchdog.stop(); server.close(); process.exit(0); });
+process.on('SIGTERM', () => { if (_stateRefreshTimer) clearInterval(_stateRefreshTimer); if (_loopMonitor) _loopMonitor.stop(); if (_freezeWatchdog) _freezeWatchdog.stop(); server.close(); process.exit(0); });
 
 // Crash handlers — loguear antes de morir para diagnóstico
 process.on('uncaughtException', (err) => {

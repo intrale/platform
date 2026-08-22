@@ -1,0 +1,4 @@
+# Artefactos de ejecucion de la demo del ciclo (#4700). El ciclo corre en un
+# sandbox temporal (os.tmpdir); estos paths solo aparecen si se ejecuta en-place.
+target/node_modules/
+runs/

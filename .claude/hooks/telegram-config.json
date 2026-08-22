@@ -1,5 +1,5 @@
 {
-  "_secrets_note": "bot_token y chat_id MOVIDOS a ~/.claude/secrets/telegram-config.json (fuera del repo, inmune a checkouts/pulls). NO restaurar credenciales aqui — quedan trackeadas en git. Ver .pipeline/lib/telegram-secrets.js.",
+  "_secrets_note": "Este archivo esta TRACKEADO en git: NO es destino de credenciales, solo config no sensible. Todos los secretos viven en ~/.claude/secrets/credentials.json (fuera del repo, inmune a reset --hard / checkouts / pulls). Telegram -> telegram.bot_token / telegram.chat_id. Google Drive -> google_drive.oauth_client_id / oauth_client_secret / oauth_refresh_token / drive_folder_id (#5217; las claves flat google_oauth_* quedaron obsoletas y NO deben reponerse aca). Cloudflare R2 -> r2.* (sin provisionar). AWS -> perfiles de ~/.aws. GitHub -> credential helper del sistema. Re-autorizar Drive con: node scripts/google-drive-oauth-setup.js (persiste en el store canonico). Ver .pipeline/lib/credentials.js y docs/runbooks/credential-rotation.md.",
   "bot_token": "MOVED_TO_HOME_DOT_CLAUDE_SECRETS",
   "chat_id": "MOVED_TO_HOME_DOT_CLAUDE_SECRETS",
   "permission_timeout_min": 60,
@@ -47,7 +47,5 @@
     "cost_per_action_usd": 0.003,
     "weekly_budget_usd": 50
   },
-  "elevenlabs_api_key": "",
-  "elevenlabs_voice_id": "pNInz6obpgDQGcFmaJgB",
   "openai_api_key": ""
 }

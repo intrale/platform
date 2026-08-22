@@ -32,11 +32,27 @@ fun start(appModule: DI.Module) {
         }
 
         healthRoute()
+        swaggerRoute()
         deliveryAvailabilityRoutes()
         configureDynamicRouting()
 
     }.start(wait = true)
 }
+
+/**
+ * Orígenes permitidos para CORS (CA-S6). Se configuran por la variable de entorno
+ * [ENV_CORS_ALLOWED_ORIGINS] (lista separada por comas). Sin configuración, no se emite
+ * ningún `Access-Control-Allow-Origin` (comportamiento mismo-origen), NUNCA `*`.
+ */
+const val ENV_CORS_ALLOWED_ORIGINS = "CORS_ALLOWED_ORIGINS"
+
+fun allowedCorsOrigins(): Set<String> =
+    System.getenv(ENV_CORS_ALLOWED_ORIGINS)
+        ?.split(",")
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.toSet()
+        ?: emptySet()
 
 fun Application.healthRoute() {
     routing {
@@ -50,7 +66,7 @@ fun Application.healthRoute() {
     }
 }
 
-fun Application.configureDynamicRouting() {
+fun Application.configureDynamicRouting(corsAllowedOrigins: Set<String> = allowedCorsOrigins()) {
     routing {
         route("/{business}/{function...}") {
             registerDynamicHandler(HttpMethod.Post)
@@ -59,11 +75,17 @@ fun Application.configureDynamicRouting() {
             registerDynamicHandler(HttpMethod.Delete)
         }
         options {
-            call.response.headers.append("Access-Control-Allow-Origin", "*")
+            // CA-S6: allowlist estricta por origen. Nunca `*`. Sólo se refleja el Origin si
+            // está en la lista permitida; en caso contrario no se emite ACAO (mismo origen).
+            val origin = call.request.headers[HttpHeaders.Origin]
+            if (origin != null && corsAllowedOrigins.contains(origin)) {
+                call.response.headers.append("Access-Control-Allow-Origin", origin)
+                call.response.headers.append(HttpHeaders.Vary, HttpHeaders.Origin)
+            }
             call.response.headers.append("Access-Control-Allow-Methods", "GET, OPTIONS, HEAD, PUT, POST, DELETE")
             call.response.headers.append(
                 "Access-Control-Allow-Headers",
-                "Content-Type,Accept,Referer,User-Agent,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,Access-Control-Allow-Origin,Access-Control-Allow-Headers,function,idToken,businessName,filename"
+                "Content-Type,Accept,Referer,User-Agent,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,function,idToken,businessName,filename"
             )
             call.respond(HttpStatusCode.OK)
         }

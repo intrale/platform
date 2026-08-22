@@ -14,15 +14,31 @@
 // =============================================================================
 'use strict';
 
-const test = require('node:test');
+const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 // Aislamiento por test: cada test setea su propio PIPELINE_DIR_OVERRIDE en un
 // tmp dir único, requiere fresh el módulo, y limpia al final. Esto evita
 // race entre tests que comparten `.pipeline/quota-exhausted.json`.
+// La suite también fija la fuente Codex para que reconcile nunca lea sesiones
+// reales de la máquina. node:test ejecuta cada archivo en un proceso aislado.
+const previousCodexSessionsDir = process.env.CODEX_SESSIONS_DIR;
+let isolatedCodexSessionsDir;
+
+before(() => {
+    isolatedCodexSessionsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-codex-sessions-'));
+    process.env.CODEX_SESSIONS_DIR = isolatedCodexSessionsDir;
+});
+
+after(() => {
+    if (previousCodexSessionsDir === undefined) delete process.env.CODEX_SESSIONS_DIR;
+    else process.env.CODEX_SESSIONS_DIR = previousCodexSessionsDir;
+    fs.rmSync(isolatedCodexSessionsDir, { recursive: true, force: true });
+});
 
 function freshModule(tmpDir) {
     process.env.PIPELINE_DIR_OVERRIDE = tmpDir;
@@ -31,7 +47,14 @@ function freshModule(tmpDir) {
 }
 
 function newTmpDir() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'v3-quota-exhausted-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-quota-exhausted-'));
+    // #5172: el sandbox ES el `.pipeline/` del test, y desde que la lectura de
+    // config pasa por `config-resolver` un directorio sin `config.yaml` es un
+    // fallo de lectura tipado, no "el operador no configuró TTLs". Sembramos el
+    // documento MÍNIMO: sin sección `quota_detector:` los defaults clampeados
+    // son los mismos que estos tests venían afirmando.
+    seedPipelineConfig(dir);
+    return dir;
 }
 
 function readFlag(tmpDir) {
@@ -516,13 +539,13 @@ const PROVIDER_DEF_OPENAI = Object.freeze({
     launcher: 'codex',
     model: 'gpt-5-codex',
     output_parser: 'openai-sse',
-    quota_error_types: ['insufficient_quota', 'billing_hard_limit_reached', 'tokens_exhausted'],
+    quota_error_types: ['insufficient_quota', 'billing_hard_limit_reached', 'tokens_exhausted', 'usage_limit_reached'],
     resets_at_cap_max_days: 31,
 });
 
 const PROVIDER_DEF_GEMINI = Object.freeze({
-    launcher: 'gemini',
-    model: 'gemini-2-5-pro',
+    launcher: 'gemini-google',
+    model: 'gemini-2.0-flash',
     output_parser: 'gemini-stream',
     quota_error_types: ['quota_exceeded', 'resource_exhausted'],
     resets_at_cap_max_days: 31,
@@ -559,6 +582,79 @@ test('CA-4 #3077 · detectQuotaError(openai-codex) matchea shape alternativo res
     const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
     assert.equal(det.matched, true);
     assert.equal(det.errorType, 'billing_hard_limit_reached');
+});
+
+// -----------------------------------------------------------------------------
+// Codex CLI con cuenta ChatGPT (OAuth) — usage_limit_reached por canal de control
+//
+// El CLI reporta el cap rolling como texto libre SIN error_type estructurado,
+// en frames de control `turn.failed` / `error`. Estos frames NO son inyectables
+// por el modelo, así que el regex acotado sobre `message` es seguro. Cierra el
+// gap de la cascada Codex→Gemini: sin esta detección el flag nunca se seteaba y
+// el agente moría en codex en vez de cascadear al free tier.
+// -----------------------------------------------------------------------------
+
+test('codex ChatGPT · detectQuotaError matchea turn.failed con "usage limit" (canal de control)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const evt = { type: 'turn.failed', error: { message: "You've hit your usage limit. Upgrade to Pro or try again at Jul 6th, 2026 2:19 AM." } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
+    assert.equal(det.matched, true);
+    assert.equal(det.errorType, 'usage_limit_reached');
+});
+
+test('codex ChatGPT · detectQuotaError matchea evento type=error con message top-level', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const evt = { type: 'error', message: "You've hit your usage limit. Upgrade to Pro." };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
+    assert.equal(det.matched, true);
+    assert.equal(det.errorType, 'usage_limit_reached');
+});
+
+test('codex ChatGPT · ANTI-INJECTION: mismo texto en canal de contenido del modelo NO matchea', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    // item.completed/agent_message es el canal de CONTENIDO — el modelo podría
+    // escribir el texto adversarialmente; NO debe activar el flag.
+    const evt = { type: 'item.completed', item: { type: 'agent_message', text: "you've hit your usage limit (texto del modelo)" } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
+    assert.equal(det.matched, false);
+});
+
+test('codex ChatGPT · turn.failed con otro error (no usage-limit) NO matchea', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const evt = { type: 'turn.failed', error: { message: 'network unreachable: ECONNRESET' } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_OPENAI);
+    assert.equal(det.matched, false);
+});
+
+test('codex ChatGPT · usage_limit_reached fuera de la allowlist del provider NO matchea (SR-7)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    // providerDef legacy sin usage_limit_reached → el gate por allowlist protege.
+    const legacyDef = { ...PROVIDER_DEF_OPENAI, quota_error_types: ['insufficient_quota'] };
+    const evt = { type: 'turn.failed', error: { message: "You've hit your usage limit." } };
+    const det = q.detectQuotaError(evt, legacyDef);
+    assert.equal(det.matched, false);
+});
+
+test('codex ChatGPT · setFlag(usage_limit_reached) sin resets_at usa ventana corta (no fallback semanal)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    try {
+        const now = 1777000000000;
+        const r = q.setFlag({ provider: 'openai-codex', errorType: 'usage_limit_reached', now });
+        const deltaMs = Date.parse(r.payload.resets_at) - now;
+        assert.equal(deltaMs, q.CODEX_USAGE_LIMIT_RESET_MS, 'reset debe ser la ventana corta rolling (1h), no el fallback semanal');
+        // Verifica la cascada: codex gateado, gemini libre.
+        assert.equal(q.shouldGateSpawn('po', { provider: 'openai-codex', now }), true);
+        assert.equal(q.shouldGateSpawn('po', { provider: 'gemini-google', now }), false);
+    } finally {
+        delete process.env.PIPELINE_DIR_OVERRIDE;
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
 });
 
 test('CA-4 #3077 · detectQuotaError NO matchea cuando providerDef es null/inválido', () => {
@@ -751,17 +847,27 @@ test('CA-8 #3077 · clearFlag sin provider (legacy) sigue limpiando (backward-co
     assert.equal(q.clearFlag({ event: 'success_spawn' }), true);
 });
 
-test('CA-8 #3077 · clearFlag con provider mismatch deja audit log explícito', () => {
+test('#4731 · clearFlag de un provider sin slot activo es no-op silencioso (sin mismatch)', () => {
+    // #4731 — Con estado por-proveedor el guard `clear_skipped_provider_mismatch`
+    // desaparece por diseño: `clearFlag({provider:'openai-codex'})` opera SÓLO
+    // sobre el slot de codex (inexistente) → no-op, sin evento de mismatch, y
+    // el slot de anthropic queda intacto (el vector de #3077 queda cerrado por
+    // construcción, no por guard).
     const tmp = newTmpDir();
     const q = freshModule(tmp);
     const now = Date.parse('2026-05-05T00:00:00Z');
     const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
     q.setFlag({ errorType: 'usage_limit_error', provider: 'anthropic', resetsAt, now });
-    q.clearFlag({ provider: 'openai-codex', event: 'success_spawn' });
+    assert.equal(q.clearFlag({ provider: 'openai-codex', event: 'success_spawn' }), false,
+        'clearFlag de un provider sin slot no debe drenar nada');
+    // El slot de anthropic sigue activo: un provider sano NO borra el ajeno.
+    assert.equal(q.isQuotaExhausted({ now }), true);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'anthropic', now }), true);
+    // No debe emitirse el evento legacy de mismatch (ya no existe).
     const audits = readAuditLines(tmp);
-    assert.ok(
-        audits.some(a => a.event === 'clear_skipped_provider_mismatch'),
-        'debe haber entry clear_skipped_provider_mismatch en audit log'
+    assert.equal(
+        audits.some(a => a.event === 'clear_skipped_provider_mismatch'), false,
+        'el guard clear_skipped_provider_mismatch fue eliminado por el modelo por-proveedor'
     );
 });
 
@@ -794,7 +900,7 @@ test('CA-9 / SEC-8 #3077 · snapshot_threshold_90 NO está en allowlist openai-c
     const meta = q.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER;
     assert.ok(meta.anthropic.includes('snapshot_threshold_90'), 'anthropic incluye snapshot_threshold_90');
     assert.ok(!meta['openai-codex'].includes('snapshot_threshold_90'), 'openai-codex NO incluye snapshot_threshold_90');
-    assert.ok(!meta.gemini.includes('snapshot_threshold_90'), 'gemini NO incluye snapshot_threshold_90');
+    assert.ok(!meta['gemini-google'].includes('snapshot_threshold_90'), 'gemini-google NO incluye snapshot_threshold_90');
 });
 
 // -----------------------------------------------------------------------------
@@ -1021,4 +1127,297 @@ test('lifecycle multi-provider · flag anthropic + skill openai pasa + skill ant
     // 6. clearFlag con anthropic limpia
     assert.equal(q.clearFlag({ provider: 'anthropic' }), true);
     assert.equal(q.isQuotaExhausted({ now }), false);
+});
+
+// =============================================================================
+// #3220 — Tests multi-provider sign-off 2026-05-15 (gemini-google, cerebras)
+// #3353 — Tests específicos de groq eliminados: provider descontinuado.
+// =============================================================================
+
+const PROVIDER_DEF_CEREBRAS = Object.freeze({
+    launcher: 'cerebras',
+    model: 'llama-3.3-70b',
+    output_parser: 'openai-sse', // API drop-in OpenAI-compatible
+    quota_error_types: ['rate_limit_exceeded', 'quota_exceeded'],
+    resets_at_cap_max_days: 31,
+});
+
+test('#3220 + #3353 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye gemini-google y cerebras (sin groq)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const meta = q.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER;
+    assert.ok(meta['gemini-google'], 'falta gemini-google');
+    assert.ok(meta.cerebras, 'falta cerebras');
+    // #3353 — groq fue removido tras la descontinuación.
+    assert.ok(!meta.groq, 'groq debería estar removido tras #3353');
+    // Inmutabilidad
+    assert.ok(Object.isFrozen(meta['gemini-google']));
+    assert.ok(Object.isFrozen(meta.cerebras));
+    // Valores esperados
+    assert.deepEqual([...meta['gemini-google']].sort(), ['quota_exceeded', 'resource_exhausted']);
+    assert.deepEqual([...meta.cerebras].sort(), ['quota_exceeded', 'rate_limit_exceeded']);
+    // Rename: bare 'gemini' ya no existe
+    assert.ok(!meta.gemini, "key 'gemini' debe haber sido renombrado a 'gemini-google'");
+});
+
+test('#3220 · detectQuotaError(cerebras) matchea SSE event=error data.error.type', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const evt = { event: 'error', data: { error: { type: 'rate_limit_exceeded', message: 'Rate limit hit' } } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_CEREBRAS);
+    assert.equal(det.matched, true);
+    assert.equal(det.errorType, 'rate_limit_exceeded');
+});
+
+test('#3220 · detectQuotaError(cerebras) matchea shape alternativo response.error', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const evt = { type: 'response.error', error: { type: 'rate_limit_exceeded' } };
+    const det = q.detectQuotaError(evt, PROVIDER_DEF_CEREBRAS);
+    assert.equal(det.matched, true);
+    assert.equal(det.errorType, 'rate_limit_exceeded');
+});
+
+test('#3220 · detectQuotaError(cerebras) NO matchea error_type fuera de allowlist cerebras', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    // billing_hard_limit_reached pertenece a openai-codex, no cerebras
+    const evt = { event: 'error', data: { error: { type: 'billing_hard_limit_reached' } } };
+    assert.equal(q.detectQuotaError(evt, PROVIDER_DEF_CEREBRAS).matched, false);
+});
+
+test('#3220 · setFlag con provider=cerebras + skill cerebras → gateado; skill anthropic NO gateado', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-05-15T00:00:00Z');
+    const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+    q.setFlag({
+        errorType: 'rate_limit_exceeded',
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
+        resetsAt,
+        now,
+        maxDays: 31,
+    });
+    // skill que usa cerebras SÍ se gatea
+    assert.equal(q.shouldGateSpawn('qa', { provider: 'cerebras', now }), true);
+    // skill que usa anthropic NO se gatea (scope cross-provider)
+    assert.equal(q.shouldGateSpawn('qa', { provider: 'anthropic', now }), false);
+});
+
+test('#3220 · setFlag con provider=cerebras (segundo caso) + maxDays=31 produce flag con campos esperados', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-05-15T00:00:00Z');
+    const resetsAt = new Date(now + 10 * 24 * 60 * 60 * 1000).toISOString();
+    const r = q.setFlag({
+        errorType: 'quota_exceeded',
+        provider: 'cerebras',
+        model: 'llama-3.3-70b',
+        resetsAt,
+        now,
+        maxDays: 31,
+    });
+    assert.equal(r.payload.provider, 'cerebras');
+    assert.equal(r.payload.model, 'llama-3.3-70b');
+    assert.equal(r.payload.pattern_matched, 'quota_exceeded');
+    const persisted = readFlag(tmp);
+    assert.equal(persisted.provider, 'cerebras');
+});
+
+test('#3220 · flag cerebras NO limpia con clearFlag(provider=gemini-google) (scope cross-provider)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-05-15T00:00:00Z');
+    const resetsAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+    q.setFlag({ errorType: 'rate_limit_exceeded', provider: 'cerebras', resetsAt, now, maxDays: 31 });
+    assert.equal(q.clearFlag({ provider: 'gemini-google' }), false, 'gemini-google no debería limpiar flag de cerebras');
+    assert.equal(q.isQuotaExhausted({ now }), true);
+    assert.equal(q.clearFlag({ provider: 'cerebras' }), true, 'cerebras sí limpia su propio flag');
+    assert.equal(q.isQuotaExhausted({ now }), false);
+});
+
+test('#3220 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER coincide con agent-models.json canónico', () => {
+    // Drift detector: cada provider declarado en agent-models.json debe
+    // tener su set de quota_error_types incluido en la meta-allowlist.
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const fs = require('fs');
+    const path = require('path');
+    const canonical = path.resolve(__dirname, '..', '..', 'agent-models.json');
+    const cfg = JSON.parse(fs.readFileSync(canonical, 'utf8'));
+    const meta = q.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER;
+    for (const [providerKey, providerDef] of Object.entries(cfg.providers || {})) {
+        if (!providerDef.quota_error_types || providerDef.quota_error_types.length === 0) continue;
+        const allowlist = meta[providerKey];
+        if (!allowlist) continue; // deterministic no tiene meta — ya validado por validateCrossReferences
+        for (const errType of providerDef.quota_error_types) {
+            assert.ok(allowlist.includes(errType),
+                `agent-models.json declara error_type "${errType}" para "${providerKey}" pero no está en la meta-allowlist`);
+        }
+    }
+});
+
+// =============================================================================
+// #4353 CA-3 — Revalidación del flag `no_quota` contra generación real.
+//
+// El pulpo drena el flag de cuota del provider no-Anthropic que devuelve texto
+// REAL (drenado proactivo, `clearFlag({ provider })`). Estos tests fijan las
+// dos garantías de las que depende ese drenado:
+//   1. `clearFlag({ provider: X })` limpia el flag SI es de X → el provider
+//      re-ingresa a la cadena (deja de estar gated) tras responder.
+//   2. `clearFlag({ provider: X })` NO limpia el flag de otro provider Y
+//      (scope per-provider, #3077 CA-8): un `no_quota` de Y no se drena por un
+//      éxito de X, y un `invalid_credentials`/`forbidden` (que nunca setea el
+//      flag de cuota) tampoco reingresa por esta vía.
+// =============================================================================
+test('#4353 CA-3 · éxito real de un provider drena SU flag no_quota (revalidación)', () => {
+    const tmpDir = newTmpDir();
+    const q = freshModule(tmpDir);
+    try {
+        const resetsAt = Date.now() + 3600 * 1000; // 1h en el futuro (no expira solo)
+        const sinDatoCanonico = () => ({ adapterStatus: 'no_usage_data', pct: null });
+        q.setFlag({
+            errorType: 'insufficient_quota',
+            provider: 'openai-codex',
+            resetsAt,
+            maxDays: 31,
+            _quotaUsageImpl: sinDatoCanonico,
+        });
+        // Antes del drenado: el provider está gated.
+        assert.equal(q.shouldGateSpawn('telegram-commander', {
+            provider: 'openai-codex',
+            // El caso prueba drenado explícito, no reconciliación con sesiones
+            // reales del host. Sin dato canónico, el gate conserva el flag.
+            _quotaUsageImpl: sinDatoCanonico,
+        }), true);
+        // El pulpo drena tras recibir generación real del provider.
+        const drained = q.clearFlag({ event: 'success_spawn_fallback', reason: 'commander_fallback_success', provider: 'openai-codex' });
+        assert.equal(drained, true, 'debe drenar el flag del provider que respondió');
+        // Después: el provider volvió a la cadena (ya no gated) sin esperar resets_at.
+        assert.equal(q.shouldGateSpawn('telegram-commander', { provider: 'openai-codex' }), false);
+    } finally {
+        delete process.env.PIPELINE_DIR_OVERRIDE;
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('#4353 CA-3 · el drenado es scoped: un éxito de X NO revalida el flag de Y', () => {
+    const tmpDir = newTmpDir();
+    const q = freshModule(tmpDir);
+    try {
+        const resetsAt = Date.now() + 3600 * 1000;
+        // Flag activo de gemini-google (otro provider).
+        q.setFlag({ errorType: 'quota_exhausted', provider: 'gemini-google', resetsAt });
+        // Un éxito de nvidia-nim NO debe drenar el flag de gemini.
+        const drained = q.clearFlag({ event: 'success_spawn_fallback', reason: 'commander_fallback_success', provider: 'nvidia-nim' });
+        assert.equal(drained, false, 'no debe drenar el flag de otro provider');
+        assert.equal(q.shouldGateSpawn('telegram-commander', { provider: 'gemini-google' }), true, 'gemini sigue gated');
+    } finally {
+        delete process.env.PIPELINE_DIR_OVERRIDE;
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+// =============================================================================
+// #4731 — Estado por-proveedor (mapa `providers`): coexistencia, drenado por
+// slot independiente, backward-compat legacy y auditoría por proveedor.
+// =============================================================================
+
+test('#4731 · dos proveedores agotados COEXISTEN sin pisarse (CA-3)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    q.setFlag({ errorType: 'usage_limit_error', provider: 'anthropic', resetsAt: new Date(now + 2 * 3600000).toISOString(), now });
+    q.setFlag({ errorType: 'usage_limit_reached', provider: 'openai-codex', resetsAt: new Date(now + 1 * 3600000).toISOString(), now, maxDays: 31 });
+    const persisted = readFlag(tmp);
+    assert.ok(persisted.providers, 'debe persistir el mapa por-proveedor');
+    assert.deepEqual(Object.keys(persisted.providers).sort(), ['anthropic', 'openai-codex']);
+    // Ambos gatean su propio provider; ninguno gatea al otro fuera de scope.
+    assert.equal(q.shouldGateSpawn('po', { provider: 'anthropic', now }), true);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'openai-codex', now }), true);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'cerebras', now }), false);
+    // El espejo top-level apunta al reset más próximo (codex, +1h).
+    assert.equal(persisted.provider, 'openai-codex');
+});
+
+test('#4731 · un provider sano NO borra el slot activo de otro (clearFlag scoped)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    q.setFlag({ errorType: 'usage_limit_error', provider: 'anthropic', resetsAt: new Date(now + 3600000).toISOString(), now });
+    q.setFlag({ errorType: 'usage_limit_reached', provider: 'openai-codex', resetsAt: new Date(now + 3600000).toISOString(), now, maxDays: 31 });
+    // Codex se recupera y drena SU slot.
+    assert.equal(q.clearFlag({ provider: 'openai-codex', now }), true);
+    // El slot de anthropic sigue intacto (el vector #3077 queda cerrado).
+    const r = q.readDefensive({ now });
+    assert.equal(r.exhausted, true);
+    assert.deepEqual(r.providers.map(p => p.provider), ['anthropic']);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'anthropic', now }), true);
+    assert.equal(q.shouldGateSpawn('po', { provider: 'openai-codex', now }), false);
+});
+
+test('#4731 · cada slot expira INDEPENDIENTE por su resets_at (drenado por-slot)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    q.setFlag({ errorType: 'usage_limit_reached', provider: 'openai-codex', resetsAt: new Date(now + 1 * 3600000).toISOString(), now, maxDays: 31 });
+    q.setFlag({ errorType: 'usage_limit_error', provider: 'anthropic', resetsAt: new Date(now + 5 * 3600000).toISOString(), now });
+    // A las +2h: codex ya venció, anthropic sigue.
+    const mid = now + 2 * 3600000;
+    const r = q.readDefensive({ now: mid });
+    assert.equal(r.exhausted, true);
+    assert.deepEqual(r.providers.map(p => p.provider), ['anthropic'], 'sólo anthropic sigue activo');
+    // El archivo se reescribió sin el slot de codex (drenado parcial).
+    const persisted = readFlag(tmp);
+    assert.deepEqual(Object.keys(persisted.providers), ['anthropic']);
+    // A las +6h: todos vencieron → archivo borrado.
+    assert.equal(q.isQuotaExhausted({ now: now + 6 * 3600000 }), false);
+    assert.equal(fs.existsSync(path.join(tmp, 'quota-exhausted.json')), false);
+});
+
+test('#4731 · backward-compat: flag legacy sin providers-map → slot anthropic', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    fs.writeFileSync(path.join(tmp, 'quota-exhausted.json'), JSON.stringify({
+        exhausted: true,
+        resets_at: new Date(now + 3600000).toISOString(),
+        detected_at: new Date(now).toISOString(),
+        pattern_matched: 'usage_limit_error',
+    }));
+    const r = q.readDefensive({ now });
+    assert.equal(r.exhausted, true);
+    assert.equal(r.provider, 'anthropic');
+    assert.deepEqual(r.providers.map(p => p.provider), ['anthropic']);
+});
+
+test('#4731 · TTL configurable por proveedor: maxDays explícito clampea (A05)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    // maxDays absurdo se acota a MAX_TTL_DAYS; el default cae al conservador.
+    assert.equal(q.resolveMaxDays('anthropic', { maxDays: 9999 }), q.MAX_TTL_DAYS);
+    assert.ok(q.resolveMaxDays('anthropic', { maxDays: 0.0001 }) >= q.MIN_TTL_DAYS);
+    // Sin config accesible (tmp aislado), cae al default legacy 7d.
+    assert.equal(q.resolveMaxDays('zzz-unknown'), q.DEFAULT_MAX_RESETS_AT_DAYS);
+});
+
+test('#4731 · auditoría por proveedor: set/clear/expire emiten evento con provider (A09)', () => {
+    const tmp = newTmpDir();
+    const q = freshModule(tmp);
+    const now = Date.parse('2026-07-15T00:00:00Z');
+    q.setFlag({ errorType: 'usage_limit_reached', provider: 'openai-codex', resetsAt: new Date(now + 3600000).toISOString(), now, maxDays: 31, agent: 'po' });
+    q.clearFlag({ provider: 'openai-codex', event: 'success_spawn', now });
+    // set flag de anthropic que vence → drenado con provider.
+    fs.writeFileSync(path.join(tmp, 'quota-exhausted.json'), JSON.stringify({
+        providers: { anthropic: { exhausted: true, resets_at: new Date(now - 1000).toISOString(), detected_at: new Date(now - 3600000).toISOString(), pattern_matched: 'usage_limit_error' } },
+    }));
+    q.readDefensive({ now });
+    const audits = readAuditLines(tmp);
+    const setEvt = audits.find(a => a.event === 'flag_set' && a.provider === 'openai-codex');
+    const clearEvt = audits.find(a => a.event === 'success_spawn' && a.provider === 'openai-codex');
+    const drainEvt = audits.find(a => a.event === 'drained_post_reset' && a.provider === 'anthropic');
+    assert.ok(setEvt, 'flag_set debe registrar el provider');
+    assert.ok(clearEvt, 'clear debe registrar el provider');
+    assert.ok(drainEvt, 'drenado por-slot debe registrar el provider');
 });

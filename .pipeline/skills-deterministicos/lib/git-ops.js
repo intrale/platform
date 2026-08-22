@@ -8,14 +8,25 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 function runCmd(cmd, args, opts = {}) {
     const started = Date.now();
-    const res = spawnSync(cmd, args, {
+    const spawnOpts = {
         cwd: opts.cwd,
         env: opts.env || process.env,
         encoding: 'utf8',
         timeout: opts.timeoutMs || DEFAULT_TIMEOUT_MS,
         windowsHide: true,
         shell: opts.shell ?? (process.platform === 'win32'),
-    });
+    };
+    // #5426 (rev-1): permitir alimentar el stdin del proceso hijo. Lo usa
+    // `addPaths` para pasarle a `git add` la lista de pathspecs por stdin en
+    // lugar de por argv, que en Windows está limitada a 8191 caracteres.
+    // `encoding: 'utf8'` aplica a stdout/stderr; para stdin pasamos un Buffer
+    // explícito para no depender de esa conversión con separadores NUL.
+    if (opts.input != null) {
+        spawnOpts.input = Buffer.isBuffer(opts.input)
+            ? opts.input
+            : Buffer.from(String(opts.input), 'utf8');
+    }
+    const res = spawnSync(cmd, args, spawnOpts);
     return {
         cmd: `${cmd} ${args.join(' ')}`,
         exit_code: res.status == null ? 1 : res.status,
@@ -227,6 +238,325 @@ function getChangedFiles(cwd) {
     return files;
 }
 
+// #5426 (rev-1) — `git add` inmune al límite de línea de comandos de Windows.
+//
+// Rebote de la fase `entrega`: «git add falló: La línea de comandos es
+// demasiado larga». `delivery.js` hacía `runGit(['add', '--', ...stagePaths])`
+// con un path por argumento. Como `runCmd` usa `shell: true` en win32, el
+// comando pasa por `cmd.exe`, cuyo límite duro es **8191 caracteres** — no los
+// 32767 de CreateProcess. En el worktree del rebote había 406 archivos
+// cambiados que sumaban ~16,9 KB de paths: más del doble del límite.
+//
+// El límite de cmd.exe no es configurable, así que la lista deja de viajar por
+// argv. Estrategia, en orden:
+//
+//   1. `git add --pathspec-from-file=- --pathspec-file-nul`, leyendo la lista
+//      por **stdin**. argv queda de tamaño constante sin importar cuántos
+//      archivos haya. El separador NUL además elimina el problema de quoting:
+//      con `shell: true` Node NO escapa los argumentos, así que hoy un path con
+//      espacios ya se partía en dos pathspecs. Por el mismo motivo desaparece
+//      la necesidad del separador `--`: dentro del archivo de pathspecs nada se
+//      interpreta como opción (en el worktree del rebote había un archivo
+//      llamado literalmente `--`).
+//   2. Si git no soporta esas flags (< 2.25), se cae a `git add --` por lotes,
+//      cada uno holgadamente debajo del límite. Ese lote es el único que viaja
+//      por argv, así que va con `shell: false` (ver el comentario en el cuerpo
+//      de `addPaths`): sin cmd.exe de por medio no hay metacaracteres que
+//      interpretar en los nombres de archivo.
+//
+// El fallback se dispara ante cualquier exit distinto de 0 y no solo ante
+// "unknown option": detectar falta de soporte por el texto del stderr
+// dependería del locale del git instalado (el error que originó este rebote
+// vino en español). Reintentar por lotes es idempotente, y si el fallo era
+// real — por ejemplo un path ignorado por .gitignore — el lote falla con el
+// mismo error, que es el que se devuelve.
+const GIT_ADD_ARGV_BUDGET = 6000;
+
+function emptyCmdResult(cmd) {
+    return { cmd, exit_code: 0, stdout: '', stderr: '', wall_ms: 0, signal: null, error: null };
+}
+
+// Parte una lista de paths en lotes cuyo largo acumulado queda debajo del
+// presupuesto de argv. Siempre emite al menos un path por lote: un path que por
+// sí solo exceda el presupuesto no se puede partir, y es preferible dejar que
+// git falle con su propio mensaje a entrar en un bucle infinito.
+function chunkPathsByBudget(paths, budget = GIT_ADD_ARGV_BUDGET) {
+    const chunks = [];
+    let current = [];
+    let used = 0;
+    for (const p of paths) {
+        // +3: el separador y las comillas que pueda agregar el shell.
+        const cost = Buffer.byteLength(p, 'utf8') + 3;
+        if (current.length && used + cost > budget) {
+            chunks.push(current);
+            current = [];
+            used = 0;
+        }
+        current.push(p);
+        used += cost;
+    }
+    if (current.length) chunks.push(current);
+    return chunks;
+}
+
+function addPaths(paths, opts = {}) {
+    const list = (Array.isArray(paths) ? paths : [])
+        .filter((p) => typeof p === 'string' && p !== '');
+    if (!list.length) return emptyCmdResult('git add (sin paths)');
+
+    // 1) Ruta principal: pathspecs por stdin, separadas por NUL.
+    // `shell: false` explícito: los argumentos son constantes, así que hoy no
+    // hay nada inyectable acá, pero dejamos de depender de esa propiedad —
+    // basta con que alguien parametrice un argumento para reabrir el agujero.
+    const viaStdin = runGit(
+        ['add', '--pathspec-from-file=-', '--pathspec-file-nul'],
+        { ...opts, input: list.join('\0'), shell: false }
+    );
+    if (viaStdin.exit_code === 0) return viaStdin;
+
+    // 2) Fallback por lotes para git sin soporte de --pathspec-from-file.
+    //
+    // `shell: false` es OBLIGATORIO acá, no una preferencia de estilo: este es
+    // el único lote que viaja por argv y sus elementos son datos controlados
+    // por el contenido del worktree. Con `shell: true` Node concatena los
+    // argumentos sin escaparlos (el propio Node emite DEP0190) y los pasa a
+    // cmd.exe, donde `&`, `^`, `%`, `(` y `)` — todos VÁLIDOS en nombres de
+    // archivo de Windows — son metacaracteres. Un archivo llamado `a&ver`
+    // hacía que cmd.exe cortara el nombre en el `&` y ejecutara `ver` como
+    // comando propio, con los permisos del operador; y como el exit code que
+    // volvía era el del comando inyectado y no el de git, un `git add` fallido
+    // se reportaba como éxito (exit 0) y la entrega avanzaba sin los cambios.
+    //
+    // Sin cmd.exe de por medio, Node pasa cada argumento tal cual y el límite
+    // de largo pasa a ser el de CreateProcess (32767), muy por encima del
+    // presupuesto de 6000 que ya aplica `chunkPathsByBudget`.
+    let last = emptyCmdResult('git add (por lotes)');
+    for (const chunk of chunkPathsByBudget(list)) {
+        last = runGit(['add', '--', ...chunk], { ...opts, shell: false });
+        if (last.exit_code !== 0) return last;
+    }
+    return last;
+}
+
+// #2551 — Estado granular del worktree previo al rebase.
+//
+// `getChangedFiles` mezcla todo en un solo array; getDirtyState lo separa en
+// las tres categorías que delivery.js necesita para tomar decisiones distintas:
+//
+//   - `tracked_modified`: archivos que git ya conoce y fueron tocados desde el
+//     último commit. Se stashean con stash plain (--autostash equivalente).
+//   - `untracked`: archivos nuevos generados por skills previos (linter, review,
+//     po, ux) que escribieron en el worktree. Necesitan `--include-untracked`
+//     en el stash, sino el rebase aborta si main toca alguno de esos paths.
+//   - `ignored`: archivos cubiertos por .gitignore. No suelen aparecer en
+//     `status --porcelain` salvo con `--ignored`, pero los exponemos para
+//     completitud y para que el logging granular pueda distinguirlos.
+//
+// Se usa para logging redactado (delivery.js loguea conteo por categoría) y
+// como input al decisor de qué estrategia de stash aplicar.
+function parseGitStatusOutput(stdout) {
+    const out = { tracked_modified: [], untracked: [], ignored: [] };
+    for (const ln of (stdout || '').split(/\r?\n/)) {
+        if (!ln.trim()) continue;
+        const code = ln.slice(0, 2);
+        const filepath = ln.slice(3);
+        if (code === '??') {
+            out.untracked.push(filepath);
+        } else if (code === '!!') {
+            out.ignored.push(filepath);
+        } else if (code[0] !== ' ' || code[1] !== ' ') {
+            // Cualquier marca distinta a "  " es un cambio tracked (staged o no).
+            out.tracked_modified.push(filepath);
+        }
+    }
+    return out;
+}
+
+function getDirtyState(cwd) {
+    const r = runGit(['status', '--porcelain=v1', '--ignored'], { cwd });
+    if (r.exit_code !== 0) return { tracked_modified: [], untracked: [], ignored: [] };
+    return parseGitStatusOutput(r.stdout);
+}
+
+// #2551 — Patrones de paths sensibles que NUNCA deben aparecer en outputs
+// visibles del pipeline (motivo de rechazo del marker YAML, comentario PR,
+// mensajes a Telegram). El log local de delivery (.pipeline/logs/<issue>-
+// delivery.log) sí los conserva sin redactar para forense post-incidente
+// (CA-S1 + CA-S3: log local es el único lugar con audit trail completo).
+//
+// Sumá patrones acá solamente si el rechazo cubre filenames con secrets que
+// no son cazables por los patrones existentes. Mantener allowlist conservadora
+// — falsos positivos solo redactan información, falsos negativos leakean
+// credenciales.
+const SENSITIVE_PATH_PATTERNS = [
+    /(?:^|[\\/])\.env(?:\.|$)/i,
+    /credentials/i,
+    /\.key$/i,
+    /\.pem$/i,
+    /^id_rsa(?:\.|$)/i,
+    /[\\/]id_rsa(?:\.|$)/i,
+    /secret/i,
+    /application\.conf$/i,
+];
+
+// #2551 — Reemplaza por `<sensitive-path-redacted>` cualquier path que matchee
+// SENSITIVE_PATH_PATTERNS. Idempotente: si el input no tiene paths sensibles,
+// devuelve el mismo string. Recibe el output crudo de `git status --porcelain`
+// (multi-línea, con códigos de 2 chars + espacio + path) y respeta los códigos
+// para que la salida siga siendo legible.
+function redactSensitivePaths(text) {
+    if (!text) return text;
+    return text.split(/\r?\n/).map((line) => {
+        if (!line.trim()) return line;
+        // status --porcelain: 2 chars de código + espacio + path
+        const m = line.match(/^([ ?!MADRCU][ ?!MADRCU]) (.+)$/);
+        if (!m) {
+            // Línea suelta (probablemente del stderr de git rebase). Redactamos
+            // cualquier substring que matchee un patrón sensible.
+            return redactInline(line);
+        }
+        const code = m[1];
+        const filepath = m[2];
+        if (isSensitivePath(filepath)) {
+            return `${code} <sensitive-path-redacted>`;
+        }
+        return line;
+    }).join('\n');
+}
+
+function isSensitivePath(filepath) {
+    if (!filepath) return false;
+    return SENSITIVE_PATH_PATTERNS.some((rx) => rx.test(filepath));
+}
+
+// #2551 — Redacción inline para mensajes de error / stderr que mencionan
+// paths sin formato porcelain. Estrategia: tokenizar por espacios y reemplazar
+// el token entero por placeholder si matchea uno de los patrones sensibles.
+// Es coarse-grained adrede — preferimos sobre-redactar a leakear.
+function redactInline(text) {
+    if (!text) return text;
+    return text.replace(/[^\s'"`]+/g, (token) => {
+        if (isSensitivePath(token)) return '<sensitive-path-redacted>';
+        return token;
+    });
+}
+
+// #2551 — Stash explícito con --include-untracked. El `--autostash` del rebase
+// NO incluye untracked (solo modified tracked), por lo que archivos nuevos
+// generados por skills previos (linter, review, po, ux) no se stashean y el
+// rebase puede abortar con "untracked working tree files would be overwritten"
+// si main toca alguno de esos paths.
+//
+// El message lleva PID embebido (`delivery-<issue>-<pid>`) para que un próximo
+// run pueda identificar y dropear stashes huérfanos de procesos muertos
+// (`cleanupOrphanStashes`).
+function stashAll(cwd, { issue, pid = process.pid } = {}) {
+    const message = `delivery-${issue}-${pid}`;
+    return {
+        message,
+        result: runGit(
+            ['stash', 'push', '--include-untracked', '--message', message],
+            { cwd, timeoutMs: 60 * 1000 },
+        ),
+    };
+}
+
+// #2551 — Pop del stash recién creado (top of stack). Si el pop falla por
+// conflicto (caso patológico: main movió el mismo path), drop fuerza la
+// limpieza y no perdemos audit trail porque los archivos eran transitorios
+// del pipeline (logs/heartbeats/reports).
+function stashPop(cwd) {
+    return runGit(['stash', 'pop'], { cwd, timeoutMs: 60 * 1000 });
+}
+
+function stashDrop(cwd, stashRef = 'stash@{0}') {
+    return runGit(['stash', 'drop', stashRef], { cwd, timeoutMs: 30 * 1000 });
+}
+
+// #2551 — Identifica candidatos a dropear desde la salida de `git stash list`.
+// Pura: no toca git, recibe el stdout + decisor de PID vivo. Permite testearse
+// sin invocar git real (ver __tests__/git-ops.test.js).
+//
+// Returns: array de { ref, pid } que cumplen TODAS las condiciones:
+//   - matchean el formato `delivery-<issue>-<pid>` en la cola del message.
+//   - el issue del stash == issue del run actual (no tocamos stashes ajenos).
+//   - el pid del stash != currentPid (nunca dropear el del proceso actual).
+//   - isAlive(pid) === false (owner muerto).
+function findOrphanStashes(stashListStdout, { issue, currentPid = process.pid, isAlive = isProcessAlive } = {}) {
+    const candidates = [];
+    if (!issue) return candidates;
+    const lines = (stashListStdout || '').split(/\r?\n/).filter(Boolean);
+    lines.forEach((ln) => {
+        const m = ln.match(/^(stash@\{\d+\}):.*delivery-(\d+)-(\d+)\s*$/);
+        if (!m) return;
+        const ref = m[1];
+        const stashIssue = parseInt(m[2], 10);
+        const pid = parseInt(m[3], 10);
+        if (stashIssue !== issue) return;
+        if (pid === currentPid) return;
+        if (isAlive(pid)) return;
+        candidates.push({ ref, pid });
+    });
+    return candidates;
+}
+
+// #2551 — Limpia stashes huérfanos del delivery cuando el PID que los creó
+// ya no está vivo (proceso anterior crasheó entre stash y pop). Match por
+// regex `delivery-<issue>-<pid>` con verificación de PID por `kill 0`.
+//
+// Estrategia conservadora: si NO podemos confirmar que el PID está muerto
+// (ej. proceso de otro usuario, EPERM), dejamos el stash como está. Mejor
+// dejar un stash huérfano que dropear el de otro delivery activo.
+function cleanupOrphanStashes(cwd, { issue, currentPid = process.pid } = {}) {
+    const dropped = [];
+    if (!issue) return dropped;
+    const list = runGit(['stash', 'list'], { cwd, timeoutMs: 30 * 1000 });
+    if (list.exit_code !== 0) return dropped;
+    // Output ej.:
+    //   stash@{0}: On agent/2551-pipeline-dev: delivery-2551-12345
+    //   stash@{1}: On agent/2551-pipeline-dev: delivery-2551-67890
+    const candidates = findOrphanStashes(list.stdout, { issue, currentPid });
+    // Importante: los índices stash@{N} cambian a medida que dropeamos. Para
+    // ser robustos, dropeamos por message (--all + filter) cuando hay más de
+    // uno. Acá usamos refs directos pero re-listamos por seguridad.
+    for (const c of candidates) {
+        const drop = runGit(['stash', 'drop', c.ref], { cwd, timeoutMs: 30 * 1000 });
+        if (drop.exit_code === 0) {
+            dropped.push({ ref: c.ref, pid: c.pid });
+        } else {
+            // Si la referencia stash@{N} cambió por dropeos anteriores, hacemos
+            // un fallback: re-listar y buscar por message.
+            const reList = runGit(['stash', 'list'], { cwd, timeoutMs: 30 * 1000 });
+            const target = (reList.stdout || '').split(/\r?\n/).find(
+                (ln) => ln.includes(`delivery-${issue}-${c.pid}`),
+            );
+            if (target) {
+                const m = target.match(/^(stash@\{\d+\})/);
+                if (m) {
+                    const retry = runGit(['stash', 'drop', m[1]], { cwd, timeoutMs: 30 * 1000 });
+                    if (retry.exit_code === 0) dropped.push({ ref: m[1], pid: c.pid });
+                }
+            }
+        }
+    }
+    return dropped;
+}
+
+// #2551 — Helper para `cleanupOrphanStashes`. process.kill(pid, 0) tira
+// ESRCH si el PID no existe, EPERM si existe pero no tenemos permiso.
+// Tratamos EPERM como "vivo" (conservador) — no queremos dropear stashes
+// de otros usuarios por error.
+function isProcessAlive(pid) {
+    if (!pid || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        if (e.code === 'EPERM') return true; // Existe pero no tenemos permiso
+        return false; // ESRCH u otro: no existe
+    }
+}
+
 function getDiffStats(cwd, base = 'origin/main') {
     const r = runGit(['diff', '--shortstat', `${base}...HEAD`], { cwd });
     // Output ej: " 5 files changed, 123 insertions(+), 4 deletions(-)"
@@ -246,7 +576,192 @@ function fetchOrigin(cwd) {
     return runGit(['fetch', 'origin', 'main'], { cwd, timeoutMs: 60 * 1000 });
 }
 
-function rebaseOnto(cwd, base = 'origin/main') {
+/**
+ * (#3819) Busca commits YA mergeados en la base que referencien al issue.
+ *
+ * Caso real que motiva esto: el entregable de #3819 llegó a main arrastrado
+ * por el PR de OTRO issue (#3821, cuya rama compartía los commits). La rama
+ * del ciclo quedó sin commits propios y el gate `pr:no-commits` rebotaba el
+ * issue para siempre, aunque el trabajo ya estaba entregado.
+ *
+ * Implementación: `git log <base> --grep=#<issue>` (string fija — sin
+ * metacaracteres, porque runCmd usa shell:true en Windows y cmd.exe rompería
+ * con `|`/`(`/`)`) y luego filtro en JS con regex `#<issue>(?!\d)` sobre el
+ * mensaje completo para descartar falsos positivos tipo #38190.
+ *
+ * @returns {string[]} líneas "<sha7> <subject>" (máx 5), [] si no hay match.
+ */
+function getPriorDeliveryRefs(cwd, issue, base = 'origin/main') {
+    if (!issue) return [];
+    const r = runGit([
+        'log', base, `--grep=#${issue}`,
+        '--pretty=format:%H%n%B%n---END-COMMIT---',
+        '-n', '20',
+    ], { cwd, timeoutMs: 60 * 1000 });
+    if (r.exit_code !== 0) return [];
+    return parseDeliveryRefs(r.stdout, issue);
+}
+
+/**
+ * Parsea la salida de `git log --pretty=format:%H%n%B%n---END-COMMIT---` y
+ * devuelve "<sha7> <subject>" sólo para los commits cuyo mensaje COMPLETO
+ * referencia `#<issue>` sin dígitos pegados (descarta #38190 cuando se busca
+ * #3819). Compartido por getPriorDeliveryRefs y getSiblingDeliveryRefs.
+ *
+ * @param {string} stdout  salida cruda de git log
+ * @param {number} issue   número de issue
+ * @param {string} [prefix] etiqueta opcional antepuesta a cada ref (ej. nombre del repo)
+ * @returns {string[]} máx 5 refs
+ */
+function parseDeliveryRefs(stdout, issue, prefix = '') {
+    const rx = new RegExp(`#${issue}(?!\\d)`);
+    const refs = [];
+    for (const chunk of (stdout || '').split('---END-COMMIT---')) {
+        const lines = chunk.trim().split(/\r?\n/);
+        if (lines.length < 1 || !lines[0]) continue;
+        const sha = lines[0].trim();
+        const body = lines.slice(1).join('\n');
+        if (!/^[0-9a-f]{40}$/i.test(sha)) continue;
+        if (!rx.test(body)) continue;
+        const subject = (lines[1] || '').trim();
+        refs.push(`${prefix}${sha.slice(0, 7)} ${subject}`.trim());
+        if (refs.length >= 5) break;
+    }
+    return refs;
+}
+
+/**
+ * (#5067) Lee los repos HERMANOS declarados en `.pipeline/config.yaml`.
+ *
+ * Sección esperada (ausente => [] => comportamiento previo intacto):
+ *
+ *   cross_repo_delivery:
+ *     enabled: true
+ *     repos:
+ *       - name: kernel
+ *         path: ../kernel
+ *
+ * Defensivo por contrato: cualquier problema (archivo ausente, YAML corrupto,
+ * js-yaml no instalado, sección mal formada) devuelve [] en vez de tirar. El
+ * linter NUNCA debe caerse por culpa de esta config opcional — si no se puede
+ * leer, el gate simplemente vuelve al comportamiento estricto (`pr:no-commits`).
+ *
+ * #5172 — La lectura pasa por el punto único (`lib/config-resolver`), pero acá
+ * el `catch → []` SE CONSERVA, y no por comodidad: la degradación de este
+ * lector apunta al lado SEGURO. Devolver `[]` hace que el gate vuelva a su
+ * comportamiento ESTRICTO (`pr:no-commits` rebota), no que se apague — es lo
+ * contrario del fail-open que la historia viene a matar. Propagar el error acá
+ * tumbaría el linter entero por una sección opcional.
+ *
+ * Lo que SÍ cambia es el silencio: antes un config ilegible desactivaba la
+ * detección cross-repo sin dejar rastro, y ese silencio es lo que hizo que
+ * #5067 rebotara para siempre con el trabajo hecho. Ahora se avisa por stderr.
+ *
+ * G-3: el `require` del resolver es LAZY y va dentro del `try`. El linter corre
+ * en worktrees de agente que pueden no tener `node_modules` (el resolver
+ * arrastra `js-yaml` + `ajv`); un require en el tope lo mataría en el import,
+ * antes de llegar a esta política, y el fallo sería mudo.
+ *
+ * @param {string} repoRoot  raíz del checkout principal (donde vive .pipeline/)
+ * @returns {Array<{name: string, path: string}>} paths ya resueltos a absolutos
+ */
+function loadSiblingRepos(repoRoot) {
+    const cfgPath = path.join(repoRoot, '.pipeline', 'config.yaml');
+    try {
+        // Ausencia de config no es anomalía a reportar: es el caso normal de un
+        // checkout sin `.pipeline/`. Se corta antes de trazar nada.
+        if (!fs.existsSync(cfgPath)) return [];
+        // eslint-disable-next-line global-require
+        const raw = require('../../lib/config-resolver').resolve({ pipelineDir: path.dirname(cfgPath) });
+        const section = raw.cross_repo_delivery;
+        if (!section || section.enabled !== true) return [];
+        const repos = Array.isArray(section.repos) ? section.repos : [];
+        const out = [];
+        for (const entry of repos) {
+            if (!entry || typeof entry.path !== 'string' || !entry.path.trim()) continue;
+            const name = (typeof entry.name === 'string' && entry.name.trim())
+                ? entry.name.trim()
+                : path.basename(entry.path);
+            // Los paths relativos se resuelven contra la raíz del checkout
+            // principal, no contra el cwd del worktree del agente (que varía
+            // por issue). Así `../kernel` significa lo mismo siempre.
+            out.push({ name, path: path.resolve(repoRoot, entry.path) });
+        }
+        return out;
+    } catch (e) {
+        // Se reporta el NOMBRE del error tipado y la ruta, nunca `e.message` de
+        // js-yaml (SEC-1: su mensaje trae el snippet crudo del archivo).
+        try {
+            process.stderr.write(
+                `[git-ops] cross_repo_delivery deshabilitado: no se pudo resolver ${cfgPath}`
+                + ` (${(e && e.name) || 'error'}). El gate de entrega queda en modo estricto.\n`,
+            );
+        } catch { /* best-effort: el aviso nunca puede tumbar el linter */ }
+        return [];
+    }
+}
+
+/**
+ * (#5067) Busca la entrega del issue en repos HERMANOS declarados.
+ *
+ * Caso real que motiva esto: con la migración al kernel (Ola 9.x), el
+ * entregable de un issue puede aterrizar en `intrale/kernel` en vez de en
+ * `intrale/platform`. La rama del ciclo en platform queda legítimamente sin
+ * commits, y `pr:already-delivered` (#3819) no la salva porque sólo consulta
+ * el `origin/main` del PROPIO repo. Resultado: `pr:no-commits` rebota el issue
+ * para siempre aunque el trabajo esté hecho, revisado y pusheado (#5067 rev-1).
+ *
+ * Sólo cuenta trabajo PUSHEADO: se consulta `--remotes=origin`, no refs
+ * locales. Un commit local sin push no alcanza para saltear el gate — si no
+ * llegó al remoto, para el resto del pipeline no existe. Cubre tanto la rama
+ * de agente (`origin/agent/<issue>-*`) como el caso ya mergeado (`origin/main`).
+ *
+ * Se hace un `fetch` best-effort antes de consultar: el checkout hermano puede
+ * estar desactualizado y no ver el push reciente. Si el fetch falla (sin red,
+ * sin permisos) se consulta igual con lo que haya en local — nunca bloquea.
+ *
+ * Costo cero en el flujo normal: el caller sólo invoca esto cuando la rama
+ * tiene 0 commits propios.
+ *
+ * @param {number} issue     número de issue
+ * @param {Array<{name: string, path: string}>} siblings  repos declarados
+ * @returns {string[]} líneas "<repo>@<sha7> <subject>" (máx 5), [] si no hay match
+ */
+function getSiblingDeliveryRefs(issue, siblings) {
+    if (!issue || !Array.isArray(siblings) || !siblings.length) return [];
+    const refs = [];
+    for (const sib of siblings) {
+        if (refs.length >= 5) break;
+        if (!sib || typeof sib.path !== 'string') continue;
+        // El path viene de config, no del issue: igual se valida que exista y
+        // sea un repo git antes de correr nada, para no spawnear git contra
+        // un directorio arbitrario ni propagar un ENOENT.
+        let isRepo = false;
+        try {
+            isRepo = fs.existsSync(sib.path) && fs.statSync(sib.path).isDirectory();
+        } catch { isRepo = false; }
+        if (!isRepo) continue;
+        const inside = runGit(['rev-parse', '--is-inside-work-tree'], { cwd: sib.path, timeoutMs: 30 * 1000 });
+        if (inside.exit_code !== 0 || !/true/i.test(inside.stdout || '')) continue;
+
+        // Best-effort: el hermano puede no haber fetcheado el push del ciclo.
+        runGit(['fetch', 'origin', '--quiet'], { cwd: sib.path, timeoutMs: 60 * 1000 });
+
+        const r = runGit([
+            'log', '--remotes=origin', `--grep=#${issue}`,
+            '--pretty=format:%H%n%B%n---END-COMMIT---',
+            '-n', '20',
+        ], { cwd: sib.path, timeoutMs: 60 * 1000 });
+        if (r.exit_code !== 0) continue;
+        for (const ref of parseDeliveryRefs(r.stdout, issue, `${sib.name}@`)) {
+            refs.push(ref);
+            if (refs.length >= 5) break;
+        }
+    }
+    return refs;
+}
+
+function rebaseOnto(cwd, base = 'origin/main', { autostash = true } = {}) {
     // #2519 (rev-2): --autostash es defensa en profundidad para el caso en que
     // el árbol de trabajo tenga archivos tracked modificados que SAFE_IGNORE
     // (delivery.js) decidió no commitear (heartbeats, agent-registry, activity-
@@ -255,11 +770,70 @@ function rebaseOnto(cwd, base = 'origin/main') {
     // estado transitorio del pipeline en marcha. --autostash los stashea antes
     // del rebase y los reaplica después; como main nunca toca esos paths, el
     // pop es conflict-free.
-    return runGit(['rebase', '--autostash', base], { cwd, timeoutMs: 60 * 1000 });
+    //
+    // #2551: --autostash NO incluye untracked. Cuando un skill previo (linter,
+    // review, po, ux) genera archivos nuevos en el worktree y main por
+    // casualidad toca alguno de esos paths, rebase aborta con "untracked
+    // working tree files would be overwritten". Para esos casos, delivery.js
+    // hace un stash explícito con `--include-untracked` ANTES de llamar a
+    // rebaseOnto y pasa { autostash: false } para no doblar el trabajo.
+    // Default true para compat con callers existentes.
+    const args = autostash
+        ? ['rebase', '--autostash', base]
+        : ['rebase', base];
+    return runGit(args, { cwd, timeoutMs: 60 * 1000 });
 }
 
 function rebaseAbort(cwd) {
     return runGit(['rebase', '--abort'], { cwd });
+}
+
+// #4658 — Integración por merge (no rebase). El rebase local reescribe commits
+// y explota con conflictos FICTICIOS aunque el merge real (server-side squash)
+// sea limpio (caso #4632). `mergeInto` trae `base` a la rama con un merge-commit
+// (no reescribe historia), útil sólo si el diff del PR necesita `main` en la rama.
+//
+// R4 (seguridad): git se ejecuta con ARRAY de argumentos (execFile-style vía
+// runGit → spawnSync). `base` NUNCA se interpola en un string de shell — así un
+// nombre de rama derivado del título del issue no puede inyectar comandos.
+function mergeInto(cwd, base = 'origin/main', { noEdit = true, ffOnly = false } = {}) {
+    const args = ['merge'];
+    if (ffOnly) args.push('--ff-only');
+    else args.push('--no-ff');
+    if (noEdit) args.push('--no-edit');
+    args.push(base); // execFile-style: argumento posicional, no string de shell (R4)
+    return runGit(args, { cwd, timeoutMs: 60 * 1000 });
+}
+
+function mergeAbort(cwd) {
+    return runGit(['merge', '--abort'], { cwd });
+}
+
+// #4658 — Predice si `base` mergea limpio contra HEAD SIN mutar el árbol de
+// trabajo, usando `git merge-tree --write-tree` (git >= 2.38). Es la misma
+// operación 3-way que hará el squash server-side, así que un conflicto acá es
+// un conflicto REAL (no el ficticio del rebase). Semántica de exit codes de
+// merge-tree:
+//   - 0  → merge limpio.
+//   - 1  → conflictos reales (stdout lista los archivos en conflicto).
+//   - >1 → merge-tree no soportado / error (git viejo, ref inexistente): NO
+//          afirmamos nada; devolvemos supported=false para que el caller deje
+//          decidir a la señal autoritativa server-side (405/409).
+//
+// R4: `base` va como argv, nunca interpolado en shell.
+function isMergeable(cwd, base = 'origin/main') {
+    const r = runGit(['merge-tree', '--write-tree', 'HEAD', base], { cwd, timeoutMs: 60 * 1000 });
+    if (r.exit_code === 0) {
+        return { mergeable: true, supported: true, conflicts: [], raw: r };
+    }
+    if (r.exit_code === 1) {
+        // Con --write-tree, stdout = <tree-oid>\n seguido de mensajes informativos
+        // de conflicto. No parseamos nombres de forma frágil: exponemos el texto
+        // (truncado) para diagnóstico y marcamos mergeable=false.
+        const info = (r.stdout || '').split(/\r?\n/).slice(1).filter(Boolean).slice(0, 20);
+        return { mergeable: false, supported: true, conflicts: info, raw: r };
+    }
+    return { mergeable: null, supported: false, conflicts: [], raw: r };
 }
 
 function pushBranch(cwd, branch) {
@@ -422,10 +996,22 @@ module.exports = {
     getCurrentBranch,
     getCurrentSha,
     getChangedFiles,
+    addPaths,
+    chunkPathsByBudget,
+    GIT_ADD_ARGV_BUDGET,
+    getDirtyState,
+    parseGitStatusOutput,
     getDiffStats,
     fetchOrigin,
+    getPriorDeliveryRefs,
+    parseDeliveryRefs,
+    loadSiblingRepos,
+    getSiblingDeliveryRefs,
     rebaseOnto,
     rebaseAbort,
+    mergeInto,
+    mergeAbort,
+    isMergeable,
     pushBranch,
     pushAndVerify,
     decidePushOutcome,
@@ -434,4 +1020,14 @@ module.exports = {
     inferScope,
     buildCommitMessage,
     buildPRBody,
+    stashAll,
+    stashPop,
+    stashDrop,
+    cleanupOrphanStashes,
+    findOrphanStashes,
+    isProcessAlive,
+    redactSensitivePaths,
+    redactInline,
+    isSensitivePath,
+    SENSITIVE_PATH_PATTERNS,
 };

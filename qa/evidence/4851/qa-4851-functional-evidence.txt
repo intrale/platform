@@ -1,0 +1,7 @@
+# QA 4851 functional evidence
+steps=5
+stepLabels=Identidad | Repos y tablero | Credenciales | Capacidades | Autoridad y firma
+htmlHasGroq=false
+scriptHasGroq=false
+operationalGroqHits=0
+keyboardHarness=qa-4851-step-capabilities-keyboard.html dispatches Alt+ArrowUp on openai-codex row and appends owBuildDescriptor().providers.order

@@ -1,0 +1,11 @@
+{
+  "_doc": "Fixture sintético: Anthropic CLI emite stderr texto libre 'API Error: Usage credits required' cuando la sesión OAuth Max no tiene créditos disponibles. Sin shape estructural — el parser cae al regex heurístico.",
+  "synthetic": true,
+  "source_url": "https://docs.anthropic.com/en/api/errors (referencia)",
+  "provider": "anthropic",
+  "transport": "cli",
+  "expected_error_class": "quota_exhausted",
+  "expected_should_fallback": true,
+  "expected_retriable": false,
+  "raw": "API Error: Usage credits required. Visit console.anthropic.com to add credits."
+}

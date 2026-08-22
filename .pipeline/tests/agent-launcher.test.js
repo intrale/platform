@@ -38,7 +38,17 @@ function fakeFs(existingPaths, files = {}) {
 function fakeSpawn() {
     const calls = [];
     const fake = (cmd, args, opts) => {
-        const handle = { cmd, args, opts, _isFakeChild: true };
+        // #4529 — stub de stdin que captura lo que el launcher pipea al provider
+        // (los providers no-Anthropic reciben el prompt por stdin, no por argv).
+        let stdinData = '';
+        const stdin = {
+            write: (chunk) => { stdinData += String(chunk); return true; },
+            end: () => {},
+        };
+        const handle = {
+            cmd, args, opts, stdin, _isFakeChild: true,
+            get stdinData() { return stdinData; },
+        };
         calls.push(handle);
         return handle;
     };
@@ -229,9 +239,10 @@ test('launchAgent usa defaults.model cuando el skill no está listado en agent-m
 });
 
 // -----------------------------------------------------------------------------
-// 6. Provider 'openai-codex' (stub) tira error accionable en buildSpawn.
+// 6. Provider 'openai-codex' real (post #3791): launchAgent dispara el spawn
+//    del codex CLI traduciendo los args estilo Claude al shape Codex.
 // -----------------------------------------------------------------------------
-test('launchAgent con provider openai-codex tira error accionable (stub para H3)', () => {
+test('launchAgent con provider openai-codex spawnea el codex CLI con args traducidos', () => {
     const modelsPath = path.join(PIPELINE, 'agent-models.json');
     const fsi = fakeFs([modelsPath], {
         [modelsPath]: JSON.stringify({
@@ -243,23 +254,176 @@ test('launchAgent con provider openai-codex tira error accionable (stub para H3)
     });
     const spi = fakeSpawn();
 
-    assert.throws(
-        () =>
-            launchAgent({
-                skill: 'planner',
-                issue: 1,
-                args: [],
-                cwd: ROOT,
-                env: {},
-                PIPELINE,
-                ROOT,
-                fsImpl: fsi,
-                spawnImpl: spi,
-            }),
-        /openai-codex.*no está implementado/i
-    );
-    // El spawn no debe haberse llamado.
-    assert.equal(spi.calls.length, 0);
+    // Forzamos un launcher determinístico para el test (evita depender de fs
+    // real para detectar codex.exe / wrapper / shim).
+    PROVIDERS['openai-codex']._setLauncherForTesting({
+        kind: 'native-exe',
+        cmd: '/fake/codex.exe',
+        prefixArgs: [],
+        shell: false,
+    });
+    try {
+        launchAgent({
+            skill: 'planner',
+            issue: 1,
+            args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md'],
+            cwd: ROOT,
+            env: { CODEX_MODEL: 'gpt-5-codex' },
+            PIPELINE,
+            ROOT,
+            fsImpl: fsi,
+            spawnImpl: spi,
+        });
+    } finally {
+        PROVIDERS['openai-codex']._resetLauncherCacheForTesting();
+    }
+    assert.equal(spi.calls.length, 1);
+    const call = spi.calls[0];
+    assert.equal(call.cmd, '/fake/codex.exe');
+    assert.deepEqual(call.args.slice(0, 3), ['exec', '--json', '--skip-git-repo-check']);
+    assert.ok(call.args.includes('-m'));
+    assert.ok(call.args.includes('gpt-5-codex'));
+    // #4529 — el prompt YA NO va por argv: el posicional es `-` (leer stdin) y el
+    // prompt 'probe' viaja por stdin (evita spawn ENAMETOOLONG en Windows).
+    assert.equal(call.args[call.args.length - 1], '-');
+    assert.ok(!call.args.includes('probe'));
+    assert.ok(call.stdinData.includes('probe'));
+    // Paridad de permisos con Claude (`bypassPermissions`): codex debe correr
+    // sin sandbox ni aprobaciones para no chocar con "no tengo permisos".
+    assert.ok(call.args.includes('--dangerously-bypass-approvals-and-sandbox'));
+    // `--system` NO existe en codex exec: el system prompt se foldea al prompt,
+    // nunca se pasa como flag.
+    assert.ok(!call.args.includes('--system'));
+});
+
+// -----------------------------------------------------------------------------
+// 6a-bis. #4529 — codex NO foldea el system prompt en argv: el posicional es `-`
+//         (leer stdin) y el payload folded (persona + mensaje) lo devuelve
+//         `_foldCodexPayload`. El bypass de sandbox/aprobaciones sigue presente.
+// -----------------------------------------------------------------------------
+test('codex pasa `-` como posicional y foldea persona+mensaje para stdin (#4529)', () => {
+    const realFs = require('node:fs');
+    const os = require('node:os');
+    const sysFile = path.join(os.tmpdir(), `codex-sys-${process.pid}.md`);
+    realFs.writeFileSync(sysFile, 'Sos el Commander. Hablá natural.', 'utf8');
+    try {
+        const codex = PROVIDERS['openai-codex'];
+        const out = codex._translateClaudeArgsToCodex(
+            ['-p', 'Hola, cómo estamos?', '--system-prompt-file', sysFile],
+            { CODEX_MODEL: 'gpt-5-codex' },
+            '/repo/platform',
+        );
+        // Permisos: bypass siempre presente.
+        assert.ok(out.includes('--dangerously-bypass-approvals-and-sandbox'));
+        // `--system` jamás se pasa como flag.
+        assert.ok(!out.includes('--system'));
+        // El posicional final es `-` (leer stdin), NO el prompt folded.
+        assert.equal(out[out.length - 1], '-');
+        assert.ok(!out.some((a) => typeof a === 'string' && a.includes('Sos el Commander')));
+        // El payload folded (persona + mensaje) sale por el helper de stdin.
+        const folded = codex._foldCodexPayload(
+            ['-p', 'Hola, cómo estamos?', '--system-prompt-file', sysFile],
+            { CODEX_MODEL: 'gpt-5-codex' },
+        );
+        assert.ok(folded.startsWith('Sos el Commander. Hablá natural.'));
+        assert.ok(folded.includes('Hola, cómo estamos?'));
+    } finally {
+        try { realFs.unlinkSync(sysFile); } catch {}
+    }
+});
+
+// -----------------------------------------------------------------------------
+// 6b. Provider 'gemini-google' real (post adapter): launchAgent dispara el
+//     spawn del gemini CLI traduciendo los args estilo Claude al shape Gemini
+//     (`agy --print --model <model>`).
+// -----------------------------------------------------------------------------
+test('launchAgent con provider gemini-google spawnea agy con args traducidos', () => {
+    const modelsPath = path.join(PIPELINE, 'agent-models.json');
+    const fsi = fakeFs([modelsPath], {
+        [modelsPath]: JSON.stringify({
+            defaults: { model: 'claude-opus-4-7' },
+            skills: {
+                guru: { provider: 'gemini-google', model: 'gemini-3-flash-preview' },
+            },
+        }),
+    });
+    const spi = fakeSpawn();
+
+    // Forzamos un launcher determinístico (evita depender de fs real para
+    // detectar el bundle / shim de gemini).
+    PROVIDERS['gemini-google']._setLauncherForTesting({
+        kind: 'native-exe',
+        cmd: '/fake/agy',
+        prefixArgs: [],
+        shell: false,
+    });
+    try {
+        launchAgent({
+            skill: 'guru',
+            issue: 1,
+            args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md'],
+            cwd: ROOT,
+            env: { GEMINI_MODEL: 'gemini-3-flash-preview' },
+            PIPELINE,
+            ROOT,
+            fsImpl: fsi,
+            spawnImpl: spi,
+        });
+    } finally {
+        PROVIDERS['gemini-google']._resetLauncherCacheForTesting();
+    }
+    assert.equal(spi.calls.length, 1);
+    const call = spi.calls[0];
+    assert.equal(call.cmd, '/fake/agy');
+    assert.deepEqual(call.args.slice(0, 4), [
+        '--print', '--dangerously-skip-permissions', '--print-timeout', '5m',
+    ]);
+    assert.ok(call.args.includes('--model'));
+    assert.ok(call.args.includes('gemini-3-flash-preview'));
+    assert.ok(!call.args.includes('probe'));
+    assert.ok(call.stdinData.includes('probe'));
+});
+
+// -----------------------------------------------------------------------------
+// 6c. parseTokensFromLog de gemini-google agrega tokens multi-modelo y el
+//     detector de cuota matchea por shape estructural.
+// -----------------------------------------------------------------------------
+test('gemini-google parseTokensFromLog agrega tokens de todos los modelos', () => {
+    const gemini = PROVIDERS['gemini-google'];
+    const logPath = '/tmp/gemini.json';
+    const payload = JSON.stringify({
+        session_id: 'abc',
+        response: 'OK',
+        stats: {
+            models: {
+                'gemini-3.1-flash-lite': { tokens: { input: 100, candidates: 5, cached: 10, thoughts: 2 } },
+                'gemini-3-flash-preview': { tokens: { input: 200, candidates: 8, cached: 0, thoughts: 0 } },
+            },
+        },
+    });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const tokens = gemini.parseTokensFromLog(logPath, fsi);
+    assert.equal(tokens.input, 300);            // 100 + 200
+    assert.equal(tokens.output, 15);            // (5+2) + (8+0)
+    assert.equal(tokens.cache_read, 10);        // 10 + 0
+});
+
+test('gemini-google detectQuotaExhausted matchea RESOURCE_EXHAUSTED por shape', () => {
+    const gemini = PROVIDERS['gemini-google'];
+    const QE = require('../lib/quota-exhausted');
+    const logPath = '/tmp/gemini-err.json';
+    const payload = JSON.stringify({
+        error: { status: 'RESOURCE_EXHAUSTED', code: 429, message: 'quota' },
+    });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const res = gemini.detectQuotaExhausted(logPath, null, QE, fsi);
+    assert.equal(res.matched, true);
+    assert.equal(res.errorType, 'resource_exhausted');
+
+    // Respuesta normal (sin error) → no matchea.
+    const okPayload = JSON.stringify({ response: 'OK', stats: { models: {} } });
+    const fsiOk = { readFileSync: () => okPayload };
+    assert.equal(gemini.detectQuotaExhausted(logPath, null, QE, fsiOk).matched, false);
 });
 
 // -----------------------------------------------------------------------------
@@ -369,4 +533,232 @@ test('resolveProviderForSkill: skills determinísticos ignoran agent-models.json
     // build está en la allowlist → siempre deterministic, agent-models.json ignorado.
     assert.equal(r.provider, 'deterministic');
     assert.equal(r.source, 'deterministic-allowlist');
+});
+
+// -----------------------------------------------------------------------------
+// 12a. Provider 'nvidia-nim' real (#3791): launchAgent spawnea el runner Node
+//      (node <runner.js>) traduciendo los args estilo Claude al contrato del
+//      runner (`--model <id> --system-file <path> --prompt <text>`).
+// -----------------------------------------------------------------------------
+test('launchAgent con provider nvidia-nim spawnea el runner Node con args traducidos', () => {
+    const modelsPath = path.join(PIPELINE, 'agent-models.json');
+    const fsi = fakeFs([modelsPath], {
+        [modelsPath]: JSON.stringify({
+            skills: {
+                guru: { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
+            },
+        }),
+    });
+    const spi = fakeSpawn();
+
+    PROVIDERS['nvidia-nim']._setLauncherForTesting({
+        kind: 'node-runner',
+        cmd: '/fake/node',
+        prefixArgs: ['/fake/nvidia-nim-runner.js'],
+        shell: false,
+    });
+    try {
+        launchAgent({
+            skill: 'guru',
+            issue: 1,
+            args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md', '--output-format', 'stream-json'],
+            cwd: ROOT,
+            env: { NVIDIA_NIM_MODEL: 'deepseek-ai/deepseek-v4-flash-0731' },
+            PIPELINE,
+            ROOT,
+            fsImpl: fsi,
+            spawnImpl: spi,
+        });
+    } finally {
+        PROVIDERS['nvidia-nim']._resetLauncherCacheForTesting();
+    }
+    assert.equal(spi.calls.length, 1);
+    const call = spi.calls[0];
+    assert.equal(call.cmd, '/fake/node');
+    assert.equal(call.args[0], '/fake/nvidia-nim-runner.js');
+    assert.ok(call.args.includes('--model'));
+    assert.ok(call.args.includes('deepseek-ai/deepseek-v4-flash-0731'));
+    assert.ok(call.args.includes('--system-file'));
+    assert.ok(call.args.includes('/tmp/sys.md'));
+    assert.ok(call.args.includes('--prompt'));
+    // #4529 — `--prompt -` (marcador stdin); el prompt real ('probe') va por stdin.
+    const pIdx = call.args.indexOf('--prompt');
+    assert.equal(call.args[pIdx + 1], '-');
+    assert.ok(!call.args.includes('probe'));
+    assert.ok(call.stdinData.includes('probe'));
+    // El flag --output-format (estilo Claude) se descarta en la traducción.
+    assert.ok(!call.args.includes('--output-format'));
+});
+
+// -----------------------------------------------------------------------------
+// 12b. parseTokensFromLog de nvidia-nim mapea el `usage` OpenAI al shape canónico.
+// -----------------------------------------------------------------------------
+test('nvidia-nim parseTokensFromLog mapea usage OpenAI (prompt/completion/cached/reasoning)', () => {
+    const nvidia = PROVIDERS['nvidia-nim'];
+    const logPath = '/tmp/nvidia.json';
+    const payload = JSON.stringify({
+        id: 'cmpl-1',
+        model: 'deepseek-ai/deepseek-v4-flash-0731',
+        choices: [{ message: { role: 'assistant', content: 'OK' } }],
+        usage: {
+            prompt_tokens: 100,
+            completion_tokens: 8,
+            reasoning_tokens: 2,
+            total_tokens: 110,
+            prompt_tokens_details: { cached_tokens: 30 },
+        },
+    });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const tokens = nvidia.parseTokensFromLog(logPath, fsi);
+    assert.equal(tokens.input, 100);
+    assert.equal(tokens.output, 10);          // completion 8 + reasoning 2
+    assert.equal(tokens.cache_read, 30);
+
+    // prompt_tokens_details null (sin cache) no rompe.
+    const noCache = JSON.stringify({ usage: { prompt_tokens: 17, completion_tokens: 2, prompt_tokens_details: null } });
+    const fsi2 = { readFileSync: () => noCache };
+    const t2 = nvidia.parseTokensFromLog(logPath, fsi2);
+    assert.equal(t2.input, 17);
+    assert.equal(t2.output, 2);
+    assert.equal(t2.cache_read, 0);
+});
+
+// -----------------------------------------------------------------------------
+// 12c. detectQuotaExhausted de nvidia-nim matchea por shape estructural.
+// -----------------------------------------------------------------------------
+test('nvidia-nim detectQuotaExhausted matchea rate_limit/insufficient_quota por shape', () => {
+    const nvidia = PROVIDERS['nvidia-nim'];
+    const QE = require('../lib/quota-exhausted');
+    const logPath = '/tmp/nvidia-err.json';
+
+    // 429 normalizado por el runner a code 'rate_limit_exceeded'.
+    const payload = JSON.stringify({ error: { status: 429, code: 'rate_limit_exceeded', message: 'too many requests' } });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const res = nvidia.detectQuotaExhausted(logPath, null, QE, fsi);
+    assert.equal(res.matched, true);
+    assert.equal(res.errorType, 'rate_limit_exceeded');
+
+    // insufficient_quota (type) también matchea.
+    const payload2 = JSON.stringify({ error: { type: 'insufficient_quota', message: 'no credits' } });
+    const fsi2 = { readFileSync: () => payload2 };
+    assert.equal(nvidia.detectQuotaExhausted(logPath, null, QE, fsi2).errorType, 'insufficient_quota');
+
+    // Respuesta normal (sin error) → no matchea.
+    const okPayload = JSON.stringify({ choices: [{ message: { content: 'OK' } }], usage: { prompt_tokens: 1 } });
+    const fsiOk = { readFileSync: () => okPayload };
+    assert.equal(nvidia.detectQuotaExhausted(logPath, null, QE, fsiOk).matched, false);
+});
+
+// -----------------------------------------------------------------------------
+// 13a. Provider 'cerebras' real (#3791): launchAgent spawnea el runner Node
+//      (node <runner.js>) traduciendo los args estilo Claude al contrato del
+//      runner (`--model <id> --system-file <path> --prompt <text>`).
+// -----------------------------------------------------------------------------
+test('launchAgent con provider cerebras spawnea el runner Node con args traducidos', () => {
+    const modelsPath = path.join(PIPELINE, 'agent-models.json');
+    const fsi = fakeFs([modelsPath], {
+        [modelsPath]: JSON.stringify({
+            skills: {
+                guru: { provider: 'cerebras', model: 'llama-3.3-70b' },
+            },
+        }),
+    });
+    const spi = fakeSpawn();
+
+    PROVIDERS['cerebras']._setLauncherForTesting({
+        kind: 'node-runner',
+        cmd: '/fake/node',
+        prefixArgs: ['/fake/cerebras-runner.js'],
+        shell: false,
+    });
+    try {
+        launchAgent({
+            skill: 'guru',
+            issue: 1,
+            args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md', '--output-format', 'stream-json'],
+            cwd: ROOT,
+            env: { CEREBRAS_MODEL: 'llama-3.3-70b' },
+            PIPELINE,
+            ROOT,
+            fsImpl: fsi,
+            spawnImpl: spi,
+        });
+    } finally {
+        PROVIDERS['cerebras']._resetLauncherCacheForTesting();
+    }
+    assert.equal(spi.calls.length, 1);
+    const call = spi.calls[0];
+    assert.equal(call.cmd, '/fake/node');
+    assert.equal(call.args[0], '/fake/cerebras-runner.js');
+    assert.ok(call.args.includes('--model'));
+    assert.ok(call.args.includes('llama-3.3-70b'));
+    assert.ok(call.args.includes('--system-file'));
+    assert.ok(call.args.includes('/tmp/sys.md'));
+    assert.ok(call.args.includes('--prompt'));
+    // #4529 — `--prompt -` (marcador stdin); el prompt real ('probe') va por stdin.
+    const pIdx = call.args.indexOf('--prompt');
+    assert.equal(call.args[pIdx + 1], '-');
+    assert.ok(!call.args.includes('probe'));
+    assert.ok(call.stdinData.includes('probe'));
+    // El flag --output-format (estilo Claude) se descarta en la traducción.
+    assert.ok(!call.args.includes('--output-format'));
+});
+
+// -----------------------------------------------------------------------------
+// 13b. parseTokensFromLog de cerebras mapea el `usage` OpenAI al shape canónico.
+// -----------------------------------------------------------------------------
+test('cerebras parseTokensFromLog mapea usage OpenAI (prompt/completion/cached/reasoning)', () => {
+    const cerebras = PROVIDERS['cerebras'];
+    const logPath = '/tmp/cerebras.json';
+    const payload = JSON.stringify({
+        id: 'cmpl-1',
+        model: 'llama-3.3-70b',
+        choices: [{ message: { role: 'assistant', content: 'OK' } }],
+        usage: {
+            prompt_tokens: 100,
+            completion_tokens: 8,
+            reasoning_tokens: 2,
+            total_tokens: 110,
+            prompt_tokens_details: { cached_tokens: 30 },
+        },
+    });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const tokens = cerebras.parseTokensFromLog(logPath, fsi);
+    assert.equal(tokens.input, 100);
+    assert.equal(tokens.output, 10);          // completion 8 + reasoning 2
+    assert.equal(tokens.cache_read, 30);
+
+    // prompt_tokens_details null (sin cache) no rompe.
+    const noCache = JSON.stringify({ usage: { prompt_tokens: 17, completion_tokens: 2, prompt_tokens_details: null } });
+    const fsi2 = { readFileSync: () => noCache };
+    const t2 = cerebras.parseTokensFromLog(logPath, fsi2);
+    assert.equal(t2.input, 17);
+    assert.equal(t2.output, 2);
+    assert.equal(t2.cache_read, 0);
+});
+
+// -----------------------------------------------------------------------------
+// 13c. detectQuotaExhausted de cerebras matchea por shape estructural.
+// -----------------------------------------------------------------------------
+test('cerebras detectQuotaExhausted matchea rate_limit/quota_exceeded por shape', () => {
+    const cerebras = PROVIDERS['cerebras'];
+    const QE = require('../lib/quota-exhausted');
+    const logPath = '/tmp/cerebras-err.json';
+
+    // 429 normalizado por el runner a code 'rate_limit_exceeded'.
+    const payload = JSON.stringify({ error: { status: 429, code: 'rate_limit_exceeded', message: 'too many requests' } });
+    const fsi = { readFileSync: (p) => (p === logPath ? payload : (() => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; })()) };
+    const res = cerebras.detectQuotaExhausted(logPath, null, QE, fsi);
+    assert.equal(res.matched, true);
+    assert.equal(res.errorType, 'rate_limit_exceeded');
+
+    // quota_exceeded (type) también matchea.
+    const payload2 = JSON.stringify({ error: { type: 'quota_exceeded', message: 'no credits' } });
+    const fsi2 = { readFileSync: () => payload2 };
+    assert.equal(cerebras.detectQuotaExhausted(logPath, null, QE, fsi2).errorType, 'quota_exceeded');
+
+    // Respuesta normal (sin error) → no matchea.
+    const okPayload = JSON.stringify({ choices: [{ message: { content: 'OK' } }], usage: { prompt_tokens: 1 } });
+    const fsiOk = { readFileSync: () => okPayload };
+    assert.equal(cerebras.detectQuotaExhausted(logPath, null, QE, fsiOk).matched, false);
 });

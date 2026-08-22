@@ -1,0 +1,1 @@
+Necesito que el repartidor pase a buscar el pedido por la sucursal del centro antes de las seis de la tarde.

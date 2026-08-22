@@ -18,6 +18,15 @@ const readline = require('readline');
 const { LOG_FILE, REPO_ROOT, estimateCostUsd, MODEL_PRICING } = require('../lib/traceability');
 const pricing = require('../lib/pricing');
 const { computeProjections } = require('./projections');
+// (#3962 EP8-H9 CA-4) Presupuesto mensual persistido — sobreescribe el default
+// `METRICS_QUOTA_MONTHLY_USD` que usa projections. Require defensivo: si el
+// módulo no cargó, el aggregator sigue con el default (degradación segura).
+let budgetConfig = null;
+try { budgetConfig = require('./budget-config'); } catch (_) { /* opcional */ }
+// (#3962 CA-3) Redacción del drill-down por skill (belt-and-suspenders sobre el
+// whitelist explícito de campos). Require defensivo.
+let redactLib = null;
+try { redactLib = require('../redact'); } catch (_) { /* opcional */ }
 
 const METRICS_DIR = path.join(REPO_ROOT, '.pipeline', 'metrics');
 const SNAPSHOT_FILE = path.join(METRICS_DIR, 'snapshot.json');
@@ -40,10 +49,55 @@ function clampLookbackDays(value) {
     return Math.floor(n);
 }
 
-// Normaliza el modelo a "deterministic" | "llm" para comparativa (#2488)
-function classifyExecutionMode(model) {
+// Allowlist congelada provider → modo de ejecución (#3078).
+// La dispatch es por provider explícito en lugar de inferir por substring del
+// nombre del modelo (fragil + fail-open). Cualquier provider fuera de esta
+// tabla cae a `unknown` para que el dashboard lo evidencie sin degradar
+// silenciosamente.
+//
+// `openai-codex` es el nombre real del provider en `agent-models.json`; los
+// alias `openai`/`google`/`ollama` están listados por forward-compat (multi-
+// provider §5.1) — agregar aliases nuevos requiere actualizar también la
+// allowlist del schema en `agent-models.schema.json`.
+const PROVIDER_MODES = Object.freeze({
+    anthropic: 'llm',
+    'openai-codex': 'llm',
+    openai: 'llm',
+    google: 'llm',
+    ollama: 'llm',
+    deterministic: 'deterministic',
+});
+
+const VALID_EXECUTION_MODES = Object.freeze(['llm', 'deterministic', 'legacy_llm', 'unknown']);
+
+// Normaliza un evento a su modo de ejecución (#2488 + #3078).
+//
+// Firma nueva: `classifyExecutionMode({ provider, model })`
+// Firma legacy: `classifyExecutionMode(model)` — soportada para back-compat.
+//
+// Reglas:
+//  1. Provider explícito en allowlist → mapea a `llm` o `deterministic`.
+//  2. Provider explícito fuera de allowlist → `unknown` (NO degrada a `llm`).
+//  3. Sin provider, model='deterministic' → `deterministic` (legacy det).
+//  4. Sin provider, modelo no determinístico → `legacy_llm` (subtipo de llm,
+//     visible como distinto en métricas históricas pero combinado en
+//     comparativas LLM-vs-det para no romper continuidad).
+function classifyExecutionMode(input) {
+    // Back-compat: arg primitivo o null/undefined = firma legacy (solo model).
+    const args = (input == null || typeof input === 'string' || typeof input === 'number')
+        ? { model: input }
+        : input;
+    const provider = args && args.provider;
+    const model = args && args.model;
+
+    if (provider && Object.prototype.hasOwnProperty.call(PROVIDER_MODES, provider)) {
+        return PROVIDER_MODES[provider];
+    }
+    if (provider) return 'unknown';
+
     const m = String(model || '').toLowerCase().trim();
-    return m === 'deterministic' ? 'deterministic' : 'llm';
+    if (m === 'deterministic') return 'deterministic';
+    return 'legacy_llm';
 }
 
 function ensureDir(dir) {
@@ -131,7 +185,19 @@ async function buildSnapshot(options) {
     const byProvider = new Map();     // provider → bucket (TTS)
     const byAgentProvider = new Map();// `${skill}|${provider}` → bucket (TTS)
     const byAgentMode = new Map();    // `${skill}|${mode}` → bucket (#2488 — LLM vs determinístico)
+    // (#3357 CA-2.2) Totals por provider para session:end. Permite que el
+    // dashboard muestre breakdown "Anthropic X · Codex Y · Groq Z" en el KPI
+    // de tokens 24h. Mismo shape que `emptyBucket()` para reusar `addToBucket`.
+    const tokensByProvider = new Map(); // provider → bucket (session:end)
     const dailySeries = new Map();    // YYYY-MM-DD → { cost_usd, tts_cost_usd, sessions } (para proyecciones)
+    // (#3962 EP8-H9 CA-1) Serie diaria CRUZADA por proveedor para el área
+    // apilada del gráfico de Costos. Clave "YYYY-MM-DD|provider". Costo marginal
+    // nulo: se acumula en el mismo recorrido O(n) sobre session:end.
+    const dailyByProvider = new Map(); // "YYYY-MM-DD|provider" → { cost_usd, sessions }
+    // (#3962 EP8-H9 CA-3) Drill-down por skill → sesiones individuales. WHITELIST
+    // EXPLÍCITO de campos: SOLO { provider, cost_usd, duration_ms, ts }. NUNCA
+    // issue, tokens_*, paths, prompts ni IDs internos (REQ-SEC A01/A02).
+    const sessionsBySkill = new Map(); // skill → [{ provider, cost_usd, duration_ms, ts }]
     const hourlyBuckets = new Map();  // "YYYY-MM-DD HH" → { cost_usd, tokens, sessions } (#2891 baseline horario)
     // Top consumidores por hora-del-dia (#2892 PR-C). Bucket "YYYY-MM-DD HH|skill" → cost_usd.
     // Permite que el alert builder de Telegram extraiga top 3 de la franja anómala.
@@ -165,7 +231,11 @@ async function buildSnapshot(options) {
         const phase = evt.phase || 'unknown';
         const issue = evt.issue || null;
         const provider = evt.provider || null;
-        const mode = evt.event === 'session:end' ? classifyExecutionMode(evt.model) : null;
+        // (#3078) Dispatch por `provider` explícito en lugar de inferir por
+        // string del modelo. Mantiene compat para eventos legacy sin provider.
+        const mode = evt.event === 'session:end'
+            ? classifyExecutionMode({ provider: evt.provider, model: evt.model })
+            : null;
 
         if (!byAgent.has(skill)) byAgent.set(skill, emptyBucket());
         addToBucket(byAgent.get(skill), evt);
@@ -220,6 +290,42 @@ async function buildSnapshot(options) {
             const key = `${skill}|${mode}`;
             if (!byAgentMode.has(key)) byAgentMode.set(key, emptyBucket());
             addToBucket(byAgentMode.get(key), evt);
+        }
+
+        // (#3357 CA-2.2) Sumar al bucket de provider para `totals.by_provider`.
+        // Eventos sin provider explícito se imputan a la clave 'unknown' para
+        // que el operador detecte log histórico (pre M2 multi-provider) sin
+        // confundir el total con datos faltantes.
+        if (evt.event === 'session:end') {
+            const provKey = provider || 'unknown';
+            if (!tokensByProvider.has(provKey)) tokensByProvider.set(provKey, emptyBucket());
+            addToBucket(tokensByProvider.get(provKey), evt);
+        }
+
+        // (#3962 EP8-H9 CA-1) Serie diaria por proveedor para el área apilada.
+        // Mismo fallback 'unknown' que `tokensByProvider`. Solo session:end aporta
+        // costo de tokens al gráfico (TTS se reporta aparte).
+        if (evt.event === 'session:end' && evt.ts) {
+            const day = String(evt.ts).substring(0, 10); // YYYY-MM-DD
+            const provKey = provider || 'unknown';
+            const dpKey = `${day}|${provKey}`;
+            if (!dailyByProvider.has(dpKey)) dailyByProvider.set(dpKey, { cost_usd: 0, sessions: 0 });
+            const dp = dailyByProvider.get(dpKey);
+            dp.cost_usd += estimateCostUsd(evt.provider || null, evt.model, evt);
+            dp.sessions += 1;
+        }
+
+        // (#3962 EP8-H9 CA-3) Drill-down por skill → sesiones individuales.
+        // WHITELIST EXPLÍCITO: solo estos 4 campos públicos. NO se toca `issue`,
+        // `tokens_*`, paths, prompts ni IDs internos (REQ-SEC A01/A02).
+        if (evt.event === 'session:end') {
+            if (!sessionsBySkill.has(skill)) sessionsBySkill.set(skill, []);
+            sessionsBySkill.get(skill).push({
+                provider: provider || 'unknown',
+                cost_usd: Math.round(estimateCostUsd(evt.provider || null, evt.model, evt) * 10000) / 10000,
+                duration_ms: Number(evt.duration_ms || 0),
+                ts: typeof evt.ts === 'string' ? evt.ts : null,
+            });
         }
 
         // Serie temporal diaria para proyecciones (#2488)
@@ -316,16 +422,23 @@ async function buildSnapshot(options) {
         modeBySkill[row.skill] = modeBySkill[row.skill] || {};
         modeBySkill[row.skill][row.execution_mode] = row;
     }
+    // (#3078) Para la comparativa LLM-vs-det combinamos `llm` (eventos con
+    // provider conocido en la allowlist) + `legacy_llm` (eventos históricos
+    // sin provider). Mantiene la métrica estable para usuarios del dashboard
+    // mientras el subtipo sigue distinguible en el timeline por issue.
     const llmVsDeterministic = Object.entries(modeBySkill).map(([skill, byMode]) => {
-        const llm = byMode.llm || null;
+        const llmFresh = byMode.llm || null;
+        const llmLegacy = byMode.legacy_llm || null;
         const det = byMode.deterministic || null;
-        const llmAvgCost = llm && llm.sessions > 0 ? llm.cost_usd / llm.sessions : 0;
+        const llmSessions = (llmFresh ? llmFresh.sessions : 0) + (llmLegacy ? llmLegacy.sessions : 0);
+        const llmCostUsd = (llmFresh ? llmFresh.cost_usd : 0) + (llmLegacy ? llmLegacy.cost_usd : 0);
+        const llmAvgCost = llmSessions > 0 ? llmCostUsd / llmSessions : 0;
         const detSessions = det ? det.sessions : 0;
         const savingsUsd = Math.round(detSessions * llmAvgCost * 10000) / 10000;
         return {
             skill,
-            llm_sessions: llm ? llm.sessions : 0,
-            llm_cost_usd: llm ? llm.cost_usd : 0,
+            llm_sessions: llmSessions,
+            llm_cost_usd: Math.round(llmCostUsd * 10000) / 10000,
             llm_avg_cost_per_session: Math.round(llmAvgCost * 10000) / 10000,
             deterministic_sessions: detSessions,
             deterministic_cost_usd: det ? det.cost_usd : 0,
@@ -346,7 +459,52 @@ async function buildSnapshot(options) {
         .map(([day, d]) => ({ day, ...d, cost_usd: Math.round(d.cost_usd * 10000) / 10000, tts_cost_usd: Math.round(d.tts_cost_usd * 10000) / 10000 }))
         .sort((a, b) => a.day.localeCompare(b.day));
 
-    const projections = computeProjections({ daily, now: new Date(nowMs) });
+    // (#3962 EP8-H9 CA-1) Serie diaria por proveedor ordenada (día asc, luego
+    // provider alfabético para estabilidad de render).
+    const dailyByProviderArr = [...dailyByProvider.entries()]
+        .map(([key, v]) => {
+            const sep = key.lastIndexOf('|');
+            return {
+                day: key.slice(0, sep),
+                provider: key.slice(sep + 1),
+                cost_usd: Math.round(v.cost_usd * 10000) / 10000,
+                sessions: v.sessions,
+            };
+        })
+        .sort((a, b) => (a.day.localeCompare(b.day) || a.provider.localeCompare(b.provider)));
+
+    // (#3962 EP8-H9 CA-3) Drill-down por skill → sesiones. Belt-and-suspenders:
+    // los strings ya vienen por whitelist (4 campos), pero igual pasamos
+    // provider/ts por `redact()` para neutralizar cualquier path/token que se
+    // hubiera colado en un valor inesperado (REQ-SEC A01/A02). Orden: más
+    // reciente primero. Cap defensivo de 200 sesiones por skill (anti-payload).
+    const sessionsBySkillObj = {};
+    for (const [skill, list] of sessionsBySkill.entries()) {
+        const safe = list
+            .slice()
+            .sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')))
+            .slice(0, 200)
+            .map((s) => ({
+                provider: redactLib ? redactLib.redact(String(s.provider || 'unknown')) : String(s.provider || 'unknown'),
+                cost_usd: Number(s.cost_usd || 0),
+                duration_ms: Number(s.duration_ms || 0),
+                ts: s.ts ? (redactLib ? redactLib.redact(String(s.ts)) : String(s.ts)) : null,
+            }));
+        sessionsBySkillObj[skill] = safe;
+    }
+
+    // (#3962 EP8-H9 CA-4) Presupuesto mensual persistido sobreescribe el default
+    // de projections. Lectura tolerante (default si no hay archivo).
+    let monthlyBudgetUsd = null;
+    if (budgetConfig) {
+        try { monthlyBudgetUsd = Number(budgetConfig.readBudget().monthly_usd); }
+        catch (_) { monthlyBudgetUsd = null; }
+    }
+    const projectionsOpts = { daily, now: new Date(nowMs) };
+    if (Number.isFinite(monthlyBudgetUsd) && monthlyBudgetUsd > 0) {
+        projectionsOpts.quotas = { monthly_token_usd: monthlyBudgetUsd };
+    }
+    const projections = computeProjections(projectionsOpts);
 
     // Baseline horario y hora actual (#2891 PR-B).
     // hourlySeries[HH] = promedio por hora-del-día calculado sobre los días en
@@ -354,6 +512,16 @@ async function buildSnapshot(options) {
     // es la "actual" parcial — eso evita auto-confirmar anomalías.
     const hourly = computeHourlySeries({ hourlyBuckets, nowMs, lookbackCutoffMs });
     const currentHour = computeCurrentHour({ hourlyBuckets, hourlyBySkill, nowMs });
+
+    // (#3357 CA-2.2) Breakdown por provider para los `totals`. Cada entrada
+    // tiene la forma { tokens_in, tokens_out, cost_usd, sessions, cache_read,
+    // cache_write, duration_ms, tool_calls } — mismo shape que `emptyBucket()`
+    // post-`withAvg`. El consumidor (dashboard kpisSlice tokens24h) suma
+    // tokens_in+tokens_out y rinde Anthropic/Codex/Groq/etc separados.
+    const totalsByProvider = {};
+    for (const [prov, bucket] of tokensByProvider.entries()) {
+        totalsByProvider[prov] = withAvg(bucket);
+    }
 
     return {
         generated_at: new Date().toISOString(),
@@ -371,6 +539,8 @@ async function buildSnapshot(options) {
             tts_cost_usd: Math.round(agents.reduce((s, a) => s + a.tts_cost_usd, 0) * 10000) / 10000,
             v3_events: v3Events,
             total_log_lines: totalEvents,
+            // (#3357 CA-2.2) breakdown por provider — solo session:end.
+            by_provider: totalsByProvider,
         },
         agents,
         phases,
@@ -378,6 +548,9 @@ async function buildSnapshot(options) {
         tts,
         llm_vs_deterministic: llmVsDeterministic,
         daily,
+        // (#3962 EP8-H9 CA-1/CA-3) Series para la pantalla Costos rediseñada.
+        dailyByProvider: dailyByProviderArr,
+        sessionsBySkill: sessionsBySkillObj,
         projections,
         hourlySeries: hourly.series,
         hourlyMeta: hourly.meta,
@@ -486,11 +659,16 @@ function emitEmptySnapshot(options) {
         generated_at: new Date(nowMs).toISOString(),
         window: (options && options.window) || 'all',
         cutoff_ts: null,
-        totals: emptyBucket(),
+        // (#3357 CA-2.2) Empty snapshot también expone `by_provider: {}` para
+        // que consumidores (kpisSlice) no necesiten guard extra contra undefined.
+        totals: Object.assign(emptyBucket(), { by_provider: {} }),
         agents: [], phases: [], issues: [],
         tts: { by_provider: [], by_agent: [], by_issue: [] },
         llm_vs_deterministic: [],
         daily: [],
+        // (#3962 EP8-H9) Series vacías para que el slice/view no necesiten guard.
+        dailyByProvider: [],
+        sessionsBySkill: {},
         projections: computeProjections({ daily: [], now: new Date(nowMs) }),
         hourlySeries: hourly.series,
         hourlyMeta: hourly.meta,
@@ -503,29 +681,41 @@ function emitEmptySnapshot(options) {
     };
 }
 
-function writeSnapshot(snap) {
+// (#3357 CA-2.1) writeSnapshot acepta `outName` opcional para escribir
+// snapshots paralelos (`snapshot.json` all-time + `snapshot-24h.json` para
+// el tokens24h del kpisSlice). Sanitización: el nombre no puede contener
+// path separators ni `..` — defensa contra path-traversal vía CLI flag.
+function writeSnapshot(snap, outName) {
     ensureDir(METRICS_DIR);
-    const tmp = SNAPSHOT_FILE + '.tmp';
+    let target = SNAPSHOT_FILE;
+    if (outName) {
+        const safe = String(outName).trim();
+        if (safe.length > 0 && !safe.includes('/') && !safe.includes('\\') && !safe.includes('..')) {
+            target = path.join(METRICS_DIR, safe);
+        }
+    }
+    const tmp = target + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(snap, null, 2), 'utf8');
-    fs.renameSync(tmp, SNAPSHOT_FILE);
+    fs.renameSync(tmp, target);
 }
 
 async function runOnce(options) {
     const snap = await buildSnapshot(options);
-    writeSnapshot(snap);
+    writeSnapshot(snap, options && options.out);
     return snap;
 }
 
 function parseArgs(argv) {
-    const args = { once: false, window: 'all', refreshMs: DEFAULT_REFRESH_MS, lookbackDays: DEFAULT_LOOKBACK_DAYS };
+    const args = { once: false, window: 'all', refreshMs: DEFAULT_REFRESH_MS, lookbackDays: DEFAULT_LOOKBACK_DAYS, out: null };
     for (let i = 2; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--once') args.once = true;
         else if (a === '--window' && argv[i + 1]) { args.window = argv[++i]; }
         else if (a === '--refresh' && argv[i + 1]) { args.refreshMs = Math.max(5000, parseInt(argv[++i], 10) || DEFAULT_REFRESH_MS); }
         else if (a === '--lookback-days' && argv[i + 1]) { args.lookbackDays = clampLookbackDays(parseInt(argv[++i], 10)); }
+        else if (a === '--out' && argv[i + 1]) { args.out = String(argv[++i] || '').trim(); }
         else if (a === '--help' || a === '-h') {
-            process.stdout.write('Uso: aggregator.js [--once] [--window 1h|24h|7d|all] [--refresh ms] [--lookback-days 7-14]\n');
+            process.stdout.write('Uso: aggregator.js [--once] [--window 1h|24h|7d|all] [--refresh ms] [--lookback-days 7-14] [--out snapshot-24h.json]\n');
             process.exit(0);
         }
     }
@@ -563,6 +753,8 @@ module.exports = {
     runOnce,
     writeSnapshot,
     classifyExecutionMode,
+    PROVIDER_MODES,
+    VALID_EXECUTION_MODES,
     computeHourlySeries,
     computeCurrentHour,
     clampLookbackDays,

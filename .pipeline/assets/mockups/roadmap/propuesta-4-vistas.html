@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<style>
+:root{
+  --in-bg:#0d1117; --in-bg-2:#161b22; --in-bg-3:#1f2937;
+  --in-fg:#e6edf3; --in-fg-dim:#8b949e; --in-fg-soft:#6e7681;
+  --in-border:#30363d;
+  --in-brand:#34D9E0; --in-accent:#2ee6c1; --in-accent2:#bc8cff;
+  --in-ok:#3fb950; --in-ok-soft:rgba(63,185,80,.16);
+  --in-warn:#d29922; --in-warn-soft:rgba(210,153,34,.16);
+  --in-bad:#f85149; --in-bad-soft:rgba(248,81,73,.16);
+  --in-info:#58a6ff; --in-info-soft:rgba(88,166,255,.16);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--in-bg);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:var(--in-fg);padding:26px;-webkit-font-smoothing:antialiased}
+.wrap{width:1160px;display:flex;flex-direction:column;gap:26px}
+.title{font-size:19px;font-weight:800}
+.subt{font-size:12.5px;color:var(--in-fg-dim);margin-top:2px}
+
+.view{border:1px solid var(--in-border);border-radius:16px;overflow:hidden;background:var(--in-bg-2)}
+.vhead{display:flex;align-items:center;gap:11px;padding:12px 18px;background:rgba(255,255,255,.02);border-bottom:1px solid var(--in-border)}
+.vnum{width:26px;height:26px;border-radius:8px;background:var(--in-accent2);color:#100a1e;font-weight:900;font-size:14px;display:flex;align-items:center;justify-content:center;flex:none}
+.vt{font-size:14px;font-weight:800}
+.vwhen{margin-left:auto;font-size:10.5px;color:var(--in-fg-soft);font-weight:600;font-style:italic}
+.vbody{padding:16px 18px}
+
+.eyebrow{font-size:10px;font-weight:800;letter-spacing:.6px;color:var(--in-fg-dim);margin-bottom:8px}
+/* strip destino */
+.target{display:flex;align-items:center;gap:11px;background:linear-gradient(90deg,rgba(52,217,224,.08),transparent 60%);border:1px solid rgba(52,217,224,.2);border-radius:10px;padding:10px 14px;font-size:12px;margin-bottom:14px}
+.target .dot{width:8px;height:8px;border-radius:50%;background:var(--in-brand);flex:none}
+.target .chip{font-size:9px;font-weight:800;color:#9fe9ee;background:rgba(52,217,224,.12);border:1px solid rgba(52,217,224,.3);border-radius:6px;padding:2px 7px}
+.target .note{margin-left:auto;color:var(--in-fg-soft);font-weight:600;font-size:10.5px}
+.linkb{font-size:10.5px;font-weight:700;color:var(--in-brand);background:rgba(52,217,224,.08);border:1px solid rgba(52,217,224,.3);border-radius:7px;padding:4px 10px}
+
+/* olas planificadas rows */
+.pw{display:flex;align-items:center;gap:11px;background:var(--in-bg-3);border:1px solid var(--in-border);border-radius:9px;padding:9px 12px;margin-bottom:7px}
+.grip{color:var(--in-fg-soft);font-size:14px;flex:none}
+.ord{width:24px;height:24px;border-radius:7px;background:rgba(188,140,255,.14);border:1px solid rgba(188,140,255,.35);color:var(--in-accent2);font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center;flex:none}
+.pw .meta{flex:1;min-width:0}
+.pn{font-size:12.5px;font-weight:800}
+.pg{font-size:10.5px;color:var(--in-fg-dim);font-weight:600;margin-top:1px}
+.cnt{font-size:10.5px;font-weight:800;color:var(--in-accent2);background:rgba(188,140,255,.12);border-radius:20px;padding:2px 9px;flex:none}
+.acts{display:flex;gap:5px;flex:none}
+.iconb{width:26px;height:26px;border-radius:7px;background:var(--in-bg-2);border:1px solid var(--in-border);color:var(--in-fg-dim);display:flex;align-items:center;justify-content:center;font-size:11px}
+.iconb.del{color:var(--in-bad)} .iconb.pri{color:var(--in-brand);border-color:rgba(52,217,224,.3)}
+.newbtn{font-size:11px;font-weight:700;color:var(--in-accent2);background:rgba(188,140,255,.1);border:1px solid rgba(188,140,255,.35);border-radius:8px;padding:6px 12px}
+.rowh{display:flex;align-items:center;justify-content:space-between;margin:14px 0 8px}
+.ex{display:flex;align-items:center;gap:11px;padding:8px 4px;font-size:12px;border-top:1px solid var(--in-border)}
+.ex .ck{color:var(--in-ok)} .ex .en{font-weight:800} .ex .et{color:var(--in-fg-dim);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis} .ex .em{font-size:10.5px;color:var(--in-fg-soft);font-weight:600}
+
+/* detalle: board de issues */
+.dhead{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.back{font-size:11px;font-weight:700;color:var(--in-fg-dim);background:var(--in-bg-3);border:1px solid var(--in-border);border-radius:7px;padding:5px 10px}
+.wtag{font-size:9px;font-weight:800;color:#9fe9ee;background:rgba(52,217,224,.12);border:1px solid rgba(52,217,224,.3);border-radius:6px;padding:2px 7px}
+.dname{font-size:14px;font-weight:800}
+.board{display:grid;grid-template-columns:repeat(2,1fr);gap:7px}
+.iss{display:flex;align-items:center;gap:8px;background:var(--in-bg-3);border:1px solid var(--in-border);border-radius:8px;padding:7px 10px;font-size:11.5px}
+.st{width:7px;height:7px;border-radius:50%;flex:none}
+.st.done{background:var(--in-ok)} .st.run{background:var(--in-brand)} .st.blk{background:var(--in-bad)}
+.iss .num{font-weight:800;font-variant-numeric:tabular-nums}
+.iss .ttl{flex:1;color:var(--in-fg-dim);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.iss .x{color:var(--in-fg-soft);opacity:.5;font-weight:700}
+.dfoot{margin-top:12px}
+.addbtn{font-size:12px;font-weight:800;color:#06121a;background:var(--in-accent);border-radius:8px;padding:8px 14px}
+
+/* agregar issues */
+.searchrow{display:flex;gap:9px;margin-bottom:11px}
+.search{flex:1;display:flex;align-items:center;gap:8px;background:var(--in-bg-3);border:1px solid var(--in-border);border-radius:8px;padding:8px 11px;font-size:12px;color:var(--in-fg-soft)}
+.tgtsel{display:flex;align-items:center;gap:7px;background:var(--in-bg-3);border:1px solid var(--in-border);border-radius:8px;padding:8px 12px;font-size:11.5px;font-weight:700}
+.tgtsel .k{color:var(--in-fg-soft);font-weight:600}
+.r{display:flex;align-items:center;gap:10px;background:var(--in-bg-3);border:1px solid var(--in-border);border-radius:8px;padding:8px 11px;font-size:12px;margin-bottom:6px}
+.cbx{width:15px;height:15px;border-radius:4px;border:1.5px solid var(--in-fg-soft);flex:none;display:flex;align-items:center;justify-content:center;font-size:10px}
+.r.sel .cbx{background:var(--in-accent);border-color:var(--in-accent);color:#06121a;font-weight:900}
+.r .num{font-weight:800}.r .ttl{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.lbl{font-size:8.5px;font-weight:700;border-radius:5px;padding:2px 6px}
+.lbl.ready{color:var(--in-ok);background:var(--in-ok-soft)} .lbl.dash{color:var(--in-info);background:var(--in-info-soft)} .lbl.def{color:var(--in-warn);background:var(--in-warn-soft)}
+.r.excl{opacity:.5;border-style:dashed;background:transparent}
+.why{font-size:9.5px;font-weight:700;border-radius:6px;padding:3px 8px}
+.why.inwave{color:var(--in-brand);background:rgba(52,217,224,.1);border:1px solid rgba(52,217,224,.3)}
+.why.state{color:var(--in-fg-soft);background:rgba(255,255,255,.04);border:1px solid var(--in-border)}
+.addbar{display:flex;align-items:center;gap:10px;margin-top:10px}
+.addbar .sum{font-size:11px;color:var(--in-fg-dim);font-weight:600}
+.addbar .go{margin-left:auto;font-size:12px;font-weight:800;color:#06121a;background:var(--in-accent);border-radius:8px;padding:8px 15px}
+
+/* form ABM */
+.fld{margin-bottom:12px}
+.flbl{font-size:10px;font-weight:800;letter-spacing:.4px;color:var(--in-fg-soft);text-transform:uppercase;margin-bottom:5px}
+.finp{background:var(--in-bg-3);border:1px solid var(--in-border);border-radius:8px;padding:9px 12px;font-size:12.5px;color:var(--in-fg)}
+.finp.ph{color:var(--in-fg-soft)}
+.frow{display:flex;gap:12px}
+.frow > *{flex:1}
+.poschips{display:flex;gap:6px}
+.poschip{font-size:11px;font-weight:700;border:1px solid var(--in-border);border-radius:7px;padding:5px 11px;color:var(--in-fg-dim);background:var(--in-bg-3)}
+.poschip.on{color:var(--in-accent2);border-color:rgba(188,140,255,.4);background:rgba(188,140,255,.12)}
+.selchips{display:flex;flex-wrap:wrap;gap:6px}
+.selc{font-size:11px;font-weight:700;background:rgba(46,230,193,.1);border:1px solid rgba(46,230,193,.3);color:var(--in-accent);border-radius:7px;padding:4px 9px}
+.fbtns{display:flex;gap:9px;margin-top:6px}
+.save{font-size:12.5px;font-weight:800;color:#100a1e;background:var(--in-accent2);border-radius:8px;padding:9px 18px}
+.cancel{font-size:12.5px;font-weight:700;color:var(--in-fg-dim);background:transparent;border:1px solid var(--in-border);border-radius:8px;padding:9px 16px}
+
+.flowline{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--in-fg-soft);font-weight:600;padding:2px 4px}
+.flowline b{color:var(--in-accent2)}
+</style></head>
+<body><div class="wrap">
+  <div>
+    <div class="title">🗺️ Roadmap · Gestión de olas — set completo de vistas</div>
+    <div class="subt">4 vistas conectadas. La ③ (agregar issues) se reutiliza dentro de ② y ④.</div>
+  </div>
+
+  <!-- VISTA 1 -->
+  <div class="view">
+    <div class="vhead"><span class="vnum">1</span><span class="vt">Vista principal — Gestión de olas</span><span class="vwhen">pantalla por defecto</span></div>
+    <div class="vbody">
+      <div class="target"><span class="dot"></span><span class="chip">EN CURSO · OLA 1</span> <b>Ola fixes encabezado/métricas dashboard</b><span class="note">27 issues · destino por defecto</span><a class="linkb">Ver issues ▸</a></div>
+
+      <div class="rowh"><div class="eyebrow">≈ OLAS PLANIFICADAS · orden de ejecución</div><a class="newbtn">+ Nueva ola</a></div>
+      <div class="pw"><span class="grip">⠿</span><span class="ord">1</span><div class="meta"><div class="pn">Ola métricas &amp; ETA</div><div class="pg">Cálculo de velocidad/ETA + persistencia de identidad</div></div><span class="cnt">6 issues</span><div class="acts"><span class="iconb pri">👁</span><span class="iconb">✎</span><span class="iconb del">🗑</span></div></div>
+      <div class="pw"><span class="grip">⠿</span><span class="ord">2</span><div class="meta"><div class="pn">Ola cuota multi-proveedor</div><div class="pg">Cuota por proveedor × ventana con fuente fidedigna</div></div><span class="cnt">4 issues</span><div class="acts"><span class="iconb pri">👁</span><span class="iconb">✎</span><span class="iconb del">🗑</span></div></div>
+      <div class="pw"><span class="grip">⠿</span><span class="ord">3</span><div class="meta"><div class="pn">Ola onboarding negocio</div><div class="pg">Alta de comercio + verificación + primeros productos</div></div><span class="cnt">9 issues</span><div class="acts"><span class="iconb pri">👁</span><span class="iconb">✎</span><span class="iconb del">🗑</span></div></div>
+
+      <div class="rowh"><div class="eyebrow">✅ EJECUTADAS · 2</div></div>
+      <div class="ex" style="border-top:none"><span class="ck">✓</span><span class="en">Ola 0</span><span class="et">Cascada de providers + resiliencia del dashboard</span><span class="em">18 issues · 05/07</span><a class="linkb">Ver ▸</a></div>
+      <div class="ex"><span class="ck">✓</span><span class="en">Ola −1</span><span class="et">Timeline de la ola + cards de métricas</span><span class="em">11 issues · 03/07</span><a class="linkb">Ver ▸</a></div>
+    </div>
+  </div>
+
+  <div class="flowline">▼ &nbsp; <b>«Ver issues»</b> en cualquier ola abre →</div>
+
+  <!-- VISTA 2 -->
+  <div class="view">
+    <div class="vhead"><span class="vnum">2</span><span class="vt">Detalle de ola — issues que la forman</span><span class="vwhen">al tocar «Ver issues» de una ola</span></div>
+    <div class="vbody">
+      <div class="dhead"><a class="back">← Olas</a><span class="wtag">OLA 1</span><span class="dname">Ola fixes encabezado/métricas dashboard</span><span style="margin-left:auto;font-size:11px;color:var(--in-fg-soft);font-weight:600">27 issues · 4 hechos · 22 en curso · 1 bloq.</span></div>
+      <div class="board">
+        <div class="iss"><span class="st done"></span><span class="num">#4492</span><span class="ttl">rediseñar cards barra métricas</span><span class="x">×</span></div>
+        <div class="iss"><span class="st done"></span><span class="num">#4493</span><span class="ttl">unificar pills del encabezado</span><span class="x">×</span></div>
+        <div class="iss"><span class="st run"></span><span class="num">#4531</span><span class="ttl">rediseñar encabezado común</span><span class="x">×</span></div>
+        <div class="iss"><span class="st run"></span><span class="num">#4532</span><span class="ttl">corregir métricas de la ola</span><span class="x">×</span></div>
+        <div class="iss"><span class="st run"></span><span class="num">#4533</span><span class="ttl">rediseñar estado del sistema</span><span class="x">×</span></div>
+        <div class="iss"><span class="st blk"></span><span class="num">#4509</span><span class="ttl">pipeline-dev · bloqueado</span><span class="x">×</span></div>
+      </div>
+      <div class="dfoot"><a class="addbtn">＋ Agregar issues a esta ola</a> <span style="font-size:10.5px;color:var(--in-fg-soft);margin-left:8px">· el × quita el issue y lo libera para otra ola</span></div>
+    </div>
+  </div>
+
+  <div class="flowline">▼ &nbsp; <b>«Agregar issues»</b> (desde ② o para la ola en curso) abre →</div>
+
+  <!-- VISTA 3 -->
+  <div class="view">
+    <div class="vhead"><span class="vnum">3</span><span class="vt">Agregar issues — buscar + auto-exclusión</span><span class="vwhen">panel/modal; se reutiliza en ④</span></div>
+    <div class="vbody">
+      <div class="searchrow"><div class="search">🔍 <b style="color:var(--in-fg)">fix</b> — buscar por #, título o label…</div><div class="tgtsel"><span class="k">Destino:</span> Ola 1 ▾</div></div>
+      <div class="r sel"><span class="cbx">✓</span><span class="num">#4601</span><span class="ttl">fix: validación de formulario de alta</span><span class="lbl ready">Ready</span></div>
+      <div class="r sel"><span class="cbx">✓</span><span class="num">#4605</span><span class="ttl">fix: reintentos de dispatch en 5xx</span><span class="lbl dash">area:pipeline</span></div>
+      <div class="r"><span class="cbx"></span><span class="num">#4612</span><span class="ttl">fix: ordenar providers por salud</span><span class="lbl def">needs-definition</span></div>
+      <div class="r excl"><span class="cbx">⊘</span><span class="num">#4530</span><span class="ttl">fix stall detector 30s→180s</span><span class="why inwave">● ya en Ola 1</span></div>
+      <div class="r excl"><span class="cbx">⊘</span><span class="num">#4207</span><span class="ttl">fix: freeze del sync al servir logs</span><span class="why state">✓ cerrado · no elegible</span></div>
+      <div class="addbar"><span class="sum"><b style="color:var(--in-accent)">2</b> seleccionados · los ya-en-ola y no-elegibles quedan bloqueados</span><a class="go">＋ Agregar 2 a Ola 1</a></div>
+    </div>
+  </div>
+
+  <div class="flowline">▲ &nbsp; <b>«+ Nueva ola»</b> / <b>«✎ Editar»</b> (desde ①) abre →</div>
+
+  <!-- VISTA 4 -->
+  <div class="view">
+    <div class="vhead"><span class="vnum">4</span><span class="vt">Crear / Editar ola (ABM)</span><span class="vwhen">al tocar «+ Nueva ola» o «✎»</span></div>
+    <div class="vbody">
+      <div class="frow">
+        <div class="fld"><div class="flbl">Nombre *</div><div class="finp">Ola cuota multi-proveedor</div></div>
+        <div class="fld" style="flex:0 0 220px"><div class="flbl">Posición en el orden</div><div class="poschips"><span class="poschip">1</span><span class="poschip on">2</span><span class="poschip">3</span><span class="poschip">Final</span></div></div>
+      </div>
+      <div class="fld"><div class="flbl">Objetivo</div><div class="finp">Cuota disponible por proveedor × ventana con fuente fidedigna</div></div>
+      <div class="fld"><div class="flbl">Issues de la ola <span style="color:var(--in-fg-soft);font-weight:600;text-transform:none">· usa el buscador de ③ (con auto-exclusión)</span></div>
+        <div class="selchips"><span class="selc">#4533 ×</span><span class="selc">#4612 ×</span><span class="selc">#4620 ×</span><span class="selc">#4622 ×</span><span class="search" style="flex:0 0 auto;padding:5px 10px">🔍 buscar y agregar…</span></div>
+      </div>
+      <div class="fbtns"><a class="save">💾 Guardar ola</a><a class="cancel">Cancelar</a></div>
+    </div>
+  </div>
+
+</div></body></html>

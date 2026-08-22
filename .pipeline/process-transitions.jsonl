@@ -1,0 +1,77 @@
+{"ts":"2026-07-23T23:06:42.753Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:06:42.753Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:06:42.753Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:06:42.753Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:06:42.753Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:06:42.753Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:06:42.753Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:07:14.393Z","service":"pulpo","from":"alive","to":"dead","reason":"CORRUPCI","lastError":"[2026-07-23T22:58:40.287Z] [pulpo] CORRUPCIÓN config.yaml (config.yaml parse-error) → .paused global. Detalle: YAML inválido (línea 1, col 6)"}
+{"ts":"2026-07-23T23:07:14.393Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:07:14.393Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:07:14.393Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:07:14.393Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:07:14.393Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:07:14.393Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-07-23T23:08:04.082Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:08:04.082Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:08:04.082Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:08:04.082Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:08:04.082Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:08:04.082Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:08:04.082Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:09:45.399Z","service":"pulpo","from":"alive","to":"dead","reason":"CORRUPCI","lastError":"[2026-07-23T22:58:40.287Z] [pulpo] CORRUPCIÓN config.yaml (config.yaml parse-error) → .paused global. Detalle: YAML inválido (línea 1, col 6)"}
+{"ts":"2026-07-23T23:09:45.399Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:09:45.399Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:09:45.399Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:09:45.399Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:09:45.399Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:09:45.399Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-07-23T23:10:18.355Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:10:18.355Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:10:18.355Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:10:18.355Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:10:18.355Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:10:18.355Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:10:18.355Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:11:04.478Z","service":"pulpo","from":"alive","to":"dead","reason":"CORRUPCI","lastError":"[2026-07-23T22:58:40.287Z] [pulpo] CORRUPCIÓN config.yaml (config.yaml parse-error) → .paused global. Detalle: YAML inválido (línea 1, col 6)"}
+{"ts":"2026-07-23T23:11:04.478Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:11:04.478Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:11:04.478Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:11:04.478Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:11:04.478Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:11:04.478Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-07-23T23:11:20.518Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:11:20.518Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:11:20.518Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:11:20.518Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:11:20.518Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:11:20.518Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:11:20.518Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:16:57.792Z","service":"pulpo","from":"alive","to":"dead","reason":"CORRUPCI","lastError":"[2026-07-23T22:58:40.287Z] [pulpo] CORRUPCIÓN config.yaml (config.yaml parse-error) → .paused global. Detalle: YAML inválido (línea 1, col 6)"}
+{"ts":"2026-07-23T23:16:57.792Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:16:57.792Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:16:57.792Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:16:57.792Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:16:57.792Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-23T23:16:57.792Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":"at process.processTicksAndRejections (node:internal/process/task_queues:89:21)"}
+{"ts":"2026-07-23T23:17:09.486Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:17:09.486Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:17:09.486Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:17:09.486Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:17:09.486Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:17:09.486Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-23T23:17:09.486Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"pulpo","from":"alive","to":"dead","reason":"CORRUPCI","lastError":"[2026-07-23T23:57:12.214Z] [pulpo] CORRUPCIÓN config.yaml (config.yaml parse-error) → .paused global. Detalle: YAML inválido (línea 1, col 6)"}
+{"ts":"2026-07-25T14:29:34.807Z","service":"listener","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"svc-telegram","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"svc-github","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"svc-drive","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"svc-reconciler","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:34.807Z","service":"dashboard","from":"alive","to":"dead","reason":"unknown","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"pulpo","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"listener","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"svc-telegram","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"svc-github","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"svc-drive","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"svc-reconciler","from":"dead","to":"alive","reason":"recovered","lastError":""}
+{"ts":"2026-07-25T14:29:46.717Z","service":"dashboard","from":"dead","to":"alive","reason":"recovered","lastError":""}

@@ -34,6 +34,17 @@ Cualquiera de estas condiciones es suficiente:
   deserialización, firmas de servicios) claramente justificado como tal y con
   `resultado: aprobado` + `modo: structural` en el `.qa`.
 
+> **⚠️ EXCEPCIÓN CRÍTICA — mockup acordado anula la exención (issue #4568, escape #4531).**
+> Si el issue referencia un **mockup UI versionado** (una imagen bajo
+> `.pipeline/assets/mockups/…` — `.png`/`.svg`/`.jpg`/etc. — o un mockup adjunto en el
+> body), la exención "tooling interno → solo QA estructural" **NO aplica, sin importar el
+> label de área** (`area:pipeline`/`area:dashboard`/`area:infra` incluidos). Hay un diseño
+> acordado, así que la aceptación DEBE incluir **QA visual**: un screenshot del render real
+> comparado lado a lado contra el mockup. Un rediseño visual con mockup no se valida por QA
+> estructural (comparar IDs de contrato o "render sin error" NO alcanza).
+> Esto es lo que dejó pasar #4531 (header entregado en 2 filas ≠ mockup de 1 fila).
+> Ver PASO 0.B abajo.
+
 **Cómo actuar en estos casos:**
 1. Leer el `.qa` y verificar que tenga `resultado: aprobado` y `modo: structural` o `modo: api`.
 2. Saltear PASO 0 (evidencia de video) y PASO 1 (ver video completo).
@@ -49,6 +60,29 @@ Cualquiera de estas condiciones es suficiente:
 - Cualquier label `app:client`, `app:business`, `app:delivery`.
 - Cualquier feature/bug con impacto directo en UI o flujo del usuario.
 - Endpoints backend nuevos o modificados que el usuario percibe (`area:backend` sin `qa:skipped`).
+- **Cualquier issue con mockup UI versionado** (imagen bajo `.pipeline/assets/mockups/…` o mockup
+  adjunto en el body), sin importar el `area:*` → requiere QA **visual** (ver PASO 0.B). Nota: no
+  siempre exige video E2E completo; exige como mínimo el screenshot render-vs-mockup.
+
+### PASO 0.B — QA visual obligatorio para issues con mockup (BLOQUEANTE — issue #4568)
+
+Aplica cuando el issue referencia un mockup UI versionado (ver EXCEPCIÓN CRÍTICA arriba).
+La detección automática la hace el gate `screenshots-mockup-gate.js` (dispara por presencia
+de una imagen bajo `mockups/`, no por el label de área). Antes de aprobar:
+
+1. **Localizá el mockup acordado** referenciado en el issue (ej. `.pipeline/assets/mockups/<nombre>/propuesta.png`).
+2. **Obtené el render real** del cambio entregado. Para el dashboard, capturalo headless:
+   ```bash
+   node -e "require('./.pipeline/lib/screenshot-capture').capture({ dashboardPath: '/', outputPath: 'logs/media/render-<issue>.png', allowedRoot: '.pipeline' }).then(r => console.log(r))"
+   ```
+   (respeta la allowlist de paths, el `allowedRoot` anti path-traversal y la URL
+   hardcodeada anti-SSRF del módulo; requiere `puppeteer` instalado en `.pipeline/`).
+3. **Compará lado a lado** el render vs el mockup. No basta con "compila" / "IDs de contrato
+   presentes" / "render sin error": el layout entregado debe **matchear el diseño acordado**
+   (filas, posición, no pisar banners, jerarquía visual).
+4. **Adjuntá la evidencia** (screenshot render + mockup) en el issue/PR antes de aprobar.
+5. Si el render **no coincide** con el mockup → `resultado: rechazado` con el detalle del mismatch
+   (ej. "entregado en 2 filas, mockup = 1 fila"). NO aprobar por QA estructural.
 
 ### PASO 0 — Verificación de evidencia (BLOQUEANTE — sin esto, RECHAZAR)
 
@@ -151,7 +185,7 @@ Durante tu análisis en cualquier fase (`criterios`, `validacion`, `aprobacion`)
 export PATH="/c/Workspaces/gh-cli/bin:$PATH"
 gh issue create --repo intrale/platform \
   --title "[po] <descripción imperativa breve>" \
-  --label "enhancement,source:recommendation,tipo:recomendacion,needs-human,priority:low<,app:client|,app:business|,app:delivery>" \
+  --label "enhancement,source:recommendation,tipo:recomendacion,needs:triage-backlog,priority:low<,app:client|,app:business|,app:delivery>" \
   --body "## Contexto
 
 <qué observaste / qué motivó la recomendación>
@@ -163,7 +197,7 @@ gh issue create --repo intrale/platform \
 ## Referencia
 
 > Propuesto automáticamente por el agente \`po\` durante el análisis del issue #<origen>.
-> **Es una recomendación pendiente de aprobación humana** — no entra al pipeline automático hasta que un humano remueva el label \`needs-human\` y agregue \`recommendation:approved\` (o cierre con \`recommendation:rejected\`).
+> **Es una recomendación pendiente de triaje humano** — no entra al pipeline automático hasta que un humano agregue el label \`recommendation:approved\` (o la cierre con \`recommendation:rejected\`). Lo que la frena es tener \`tipo:recomendacion\` **sin** \`recommendation:approved\`; \`needs:triage-backlog\` sólo señala que falta triaje y **no** bloquea nada.
 > **No depende ni bloquea a #<origen>** — es una oportunidad independiente."
 ```
 
@@ -173,8 +207,8 @@ gh issue create --repo intrale/platform \
 2. **Máximo 3 recomendaciones por issue analizado** (anti-explosión, issue #2653). Si detectás más de 3 oportunidades, priorizá las top 3 por impacto/valor y mencioná el resto en un párrafo "Otras oportunidades observadas" del comentario del issue origen, sin crear los issues.
 3. **Título con prefijo `[po]`** + frase imperativa breve.
 4. **Heredar** labels `app:*` del issue origen cuando apliquen.
-5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs-human` para que el pulpo no procese el issue hasta aprobación humana.
-6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana). La referencia es sólo contextual en el body.
+5. **OBLIGATORIO**: incluir labels `tipo:recomendacion` + `needs:triage-backlog`. Lo que frena al pulpo es `tipo:recomendacion` **sin** `recommendation:approved` — el freno ya vive en ese par y no requiere ningún label de bloqueo. `needs:triage-backlog` sólo marca que la recomendación espera triaje humano y **no** bloquea el pipeline.
+6. **Prohibido** labels `blocks`, `depends-on`, `blocked:dependencies`, `needs-definition` (este último porque sacaría a la recomendación del flujo de aprobación humana) y `needs-human` (reservado a bloqueos reales que exigen intervención inmediata del operador: mezclarlo con `tipo:recomendacion` ahoga las alertas que sí hay que atender). La referencia es sólo contextual en el body.
 7. **Prioridad inicial siempre `priority:low`** — el propio PO re-prioriza cuando el issue se apruebe y entre a definicion (puedes priorizar alto desde el día uno si ya sabés que es crítico, pero por defecto es `low`).
 8. **Listar en `notas` del YAML** de tu resultado los issues creados (ej: `notas: "Recomendaciones pendientes de aprobación: #2601, #2602"`).
 9. **Mencionar en el comentario del issue origen** los issues creados: `Recomendaciones pendientes de aprobación humana: #xxxx, #xxxx.`

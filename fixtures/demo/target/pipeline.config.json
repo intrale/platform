@@ -1,0 +1,13 @@
+{
+  "projectId": "kernel-fixtures",
+  "contractVersion": "0.1.0",
+  "phases": ["dev", "build", "qa", "delivery"],
+  "lifecycle": ["pendiente", "trabajando", "listo", "procesado"],
+  "routing": {
+    "demo-skill": "demo-phase"
+  },
+  "integrity": {
+    "pinned": true,
+    "install": "npm ci"
+  }
+}

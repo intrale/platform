@@ -1,0 +1,25 @@
+{
+  "issue": 4513,
+  "entries": [
+    {
+      "issue": 4513,
+      "fase": "verificacion",
+      "agente": "security",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/4513/security-verificacion-4513.md",
+      "bytes": 2404,
+      "sensible": true,
+      "timestamp": "2026-07-08T10:44:55.567Z"
+    },
+    {
+      "issue": 4513,
+      "fase": "aprobacion",
+      "agente": "review",
+      "tipo": "document",
+      "path": ".pipeline/assets/docs/4513/review-aprobacion-4513.md",
+      "bytes": 1392,
+      "sensible": false,
+      "timestamp": "2026-07-08T11:11:14.309Z"
+    }
+  ]
+}

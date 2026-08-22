@@ -7,28 +7,28 @@
     "lastUpdated": "2026-04-24T20:20:25.231Z"
   },
   "qa": {
-    "avgCpu": 5.2,
-    "avgMem": 3.2,
-    "samples": 8,
-    "lastUpdated": "2026-04-24T23:21:03.379Z"
+    "avgCpu": 5.7,
+    "avgMem": 2.8,
+    "samples": 10,
+    "lastUpdated": "2026-05-26T23:00:38.972Z"
   },
   "security": {
-    "avgCpu": 7.2,
-    "avgMem": 2.3,
-    "samples": 41,
-    "lastUpdated": "2026-04-24T23:19:08.454Z"
+    "avgCpu": 7,
+    "avgMem": 2.2,
+    "samples": 42,
+    "lastUpdated": "2026-05-26T23:06:48.294Z"
   },
   "po": {
-    "avgCpu": 8.5,
-    "avgMem": 2.7,
-    "samples": 37,
-    "lastUpdated": "2026-04-25T01:39:02.454Z"
+    "avgCpu": 8.3,
+    "avgMem": 2.5,
+    "samples": 40,
+    "lastUpdated": "2026-05-26T23:17:08.225Z"
   },
   "tester": {
-    "avgCpu": 7.3,
-    "avgMem": 2.3,
-    "samples": 4,
-    "lastUpdated": "2026-04-22T02:22:43.494Z"
+    "avgCpu": 11.1,
+    "avgMem": 1.8,
+    "samples": 6,
+    "lastUpdated": "2026-05-26T22:57:35.008Z"
   },
   "build": {
     "avgCpu": 20.6,
@@ -43,10 +43,10 @@
     "lastUpdated": "2026-04-24T22:28:29.550Z"
   },
   "ux": {
-    "avgCpu": 7.2,
-    "avgMem": 2.4,
-    "samples": 39,
-    "lastUpdated": "2026-04-24T20:59:06.030Z"
+    "avgCpu": 6.9,
+    "avgMem": 2.2,
+    "samples": 41,
+    "lastUpdated": "2026-05-26T23:17:53.474Z"
   },
   "planner": {
     "avgCpu": 9.2,
@@ -67,10 +67,10 @@
     "lastUpdated": "2026-04-22T01:00:22.372Z"
   },
   "pipeline-dev": {
-    "avgCpu": 3.1,
-    "avgMem": 1.8,
-    "samples": 4,
-    "lastUpdated": "2026-04-25T01:38:25.339Z"
+    "avgCpu": 3.6,
+    "avgMem": 1.5,
+    "samples": 6,
+    "lastUpdated": "2026-05-26T23:18:12.274Z"
   },
   "android-dev": {
     "avgCpu": 8.4,

@@ -19,7 +19,7 @@
 //   GET /costos                     tab Costos
 //
 //   GET /api/dash/header              {mode, allowedIssues, pulpoAlive, ...}
-//   GET /api/dash/kpis                {prsLast7d, tokens24h, cycleTimeMs, bouncePct}
+//   GET /api/dash/kpis                {prsLast7d, tokens24h:{total,by_provider}, agentDurationMedianMs, issueCycleTimeMs, bouncePct:{overall,byPhase,...}, cycleTimeMs(deprecated)}
 //   GET /api/dash/active              {agents:[], totalRunning}
 //   GET /api/dash/recent              {recent:[]}
 //   GET /api/dash/queue               {queue:[]}
@@ -36,8 +36,563 @@
 
 const path = require('path');
 const slices = require('./dashboard-slices');
+// #5629 — Fuente ÚNICA del estado "Entregado" (CLOSED en GitHub o
+// `delivery_merge_sha` estructurado). Compartida con `wave-snapshot.js` y con
+// el payload que consume la ventana de Pipeline. No re-derivar la regla acá.
+const deliveryStatus = require('./delivery-status');
+// #3961 EP8-H8 — loader de umbrales configurables del dashboard (CA-6/CA-9).
+let dashboardThresholds = null;
+try { dashboardThresholds = require('./dashboard-thresholds'); } catch { /* opcional */ }
 const home = require('../views/dashboard/home');
 const sat = require('../views/dashboard/satellites');
+
+// #3732 — Vista Ops extraída del monolito `satellites.js` a su propio módulo
+// (split del épico #3715). Require defensivo (patrón CA-A2): si el módulo falla
+// al cargar, `renderOpsView` cae a un fallback inerte VISIBLE (CA-A3 / REQ-SEC-7)
+// en lugar de dejar la ventana en blanco o tirar 500.
+let opsView = null;
+try { opsView = require('../views/dashboard/ops'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] ops view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+// EP8-H7 (#3960) — store de transiciones vivo↔muerto (CA-1) y serie temporal
+// del reconciler (CA-4). Best-effort: si faltan, los endpoints degradan a
+// payload vacío sin romper el resto del dashboard.
+let opsTransitions = null;
+try { opsTransitions = require('./process-transitions'); } catch { /* opcional */ }
+let opsReconcilerHistory = null;
+try { opsReconcilerHistory = require('./reconciler-history'); } catch { /* opcional */ }
+// #3959 (EP8-H6) CA-2 — historial horario de matrixCounts para la tendencia
+// ▲▼ por celda de la Matriz. Opcional: si no cargó, el slice degrada sin flecha.
+let matrixHistory = null;
+try { matrixHistory = require('./matrix-history'); } catch { /* opcional */ }
+
+// Render de la ventana Ops con el state en vivo (opsSlice) + fallback inerte.
+// Consumido por el path legacy `/ops` (HTML_ROUTES) y por `?view=ops` (VIEW_SLUGS).
+// Ambos resuelven al MISMO thunk para que no diverjan (riesgo declarado en #3732).
+function renderOpsView(ctx, opts) {
+    if (!opsView || typeof opsView.renderOps !== 'function') {
+        return _opsInertFallback('módulo views/dashboard/ops no disponible (require falló)');
+    }
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : null;
+        return opsView.renderOps(slices.opsSlice(state || {}), opts);
+    } catch (e) {
+        if (typeof opsView.renderInert === 'function') return opsView.renderInert((e && e.message) || 'error de render');
+        return _opsInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo ops NO cargó (no podemos
+// usar opsView.renderInert porque opsView es null). Escapa el motivo.
+function _opsInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Ops</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Ops no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3 / REQ-SEC-7).</p></main></body></html>';
+}
+
+// #3737 — Vista Providers (NUEVA, split del épico #3715). Lista las
+// credenciales gestionadas (masked + fingerprint desde secrets-rw.listKeys()),
+// READ-ONLY. Require defensivo (patrón CA-A2): si el módulo falla al cargar,
+// `renderProvidersView` cae a un fallback inerte VISIBLE (CA-A3 / SEC-7) en
+// lugar de dejar la ventana en blanco o tirar 500. Coexiste con /multi-provider.
+let providersView = null;
+try { providersView = require('../views/dashboard/providers'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] providers view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+// Render de la ventana Providers + fallback inerte. La vista NO necesita el
+// state en vivo (lee `secrets.listKeys()` por sí misma), por eso el thunk no
+// consume ctx. Consumido por el path legacy `/providers` (HTML_ROUTES) y por
+// `?view=providers` (VIEW_SLUGS) — ambos resuelven al MISMO thunk para que no
+// diverjan (CA-PRV-3).
+function renderProvidersView() {
+    if (!providersView || typeof providersView.renderProviders !== 'function') {
+        return _providersInertFallback('módulo views/dashboard/providers no disponible (require falló)');
+    }
+    try {
+        return providersView.renderProviders();
+    } catch (e) {
+        if (typeof providersView.renderInert === 'function') return providersView.renderInert((e && e.message) || 'error de render');
+        return _providersInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo providers NO cargó.
+function _providersInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Providers</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Providers no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3 / SEC-7).</p></main></body></html>';
+}
+
+// #3736 — Ventana Descanso extraída a su propio módulo (padre #3715). Require
+// defensivo: si el módulo aún no aterrizó, HTML_ROUTES/VIEW_SLUGS caen al
+// renderer legacy de satellites.js (delegante de una línea).
+let descansoView = null;
+try { descansoView = require('../views/dashboard/descanso'); } catch { /* fallback a sat.renderModoDescanso */ }
+
+// #3731 — Ventana Matriz extraída del monolito `satellites.js` a su propio
+// módulo (split del épico #3715). Require defensivo (patrón CA-A2): si el
+// módulo falla al cargar, `renderMatrizView` cae a un fallback inerte VISIBLE
+// (CA-A3) en lugar de dejar la ventana en blanco o tirar 500. Ventana
+// READ-ONLY: hidrata client-side desde `/api/dash/pipeline`.
+let matrizView = null;
+try { matrizView = require('../views/dashboard/matriz'); } catch { /* opcional */ }
+
+// Render de la ventana Matriz con fallback inerte. Consumido por el path
+// legacy `/matriz` (HTML_ROUTES) y por `?view=matriz` (VIEW_SLUGS), ambos al
+// MISMO thunk para que no diverjan (CA-A2). No requiere state inyectado: la
+// grilla se hidrata 100% client-side.
+function renderMatrizView() {
+    if (!matrizView || typeof matrizView.renderMatriz !== 'function') {
+        return _matrizInertFallback('módulo views/dashboard/matriz no disponible (require falló)');
+    }
+    try {
+        return matrizView.renderMatriz();
+    } catch (e) {
+        return _matrizInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo matriz NO cargó. Escapa el
+// motivo para no abrir reflexión cruda (CA-A3).
+function _matrizInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Matriz</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Matriz no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+}
+
+// #3729 — Vista Bloqueados extraída (split de #3715). Require defensivo: si el
+// módulo (o sus deps, ej. lib/escape-html.js) no carga, `renderBloqueadosView`
+// degrada a un panel inerte visible (CA-A3) en vez de tirar 500.
+let bloqueadosView = null;
+try { bloqueadosView = require('../views/dashboard/bloqueados'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] bloqueados view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+// Render de la ventana Bloqueados con el state en vivo (bloqueadosSlice) +
+// fallback inerte. Consumido por el path legacy `/bloqueados` (HTML_ROUTES) y por
+// `?view=bloqueados` (VIEW_SLUGS), ambos al MISMO thunk para que no diverjan
+// (CA-A2). El slice ordena por prioridad manual y enriquece `priorityIndex`.
+function renderBloqueadosView(ctx, opts) {
+    if (!bloqueadosView || typeof bloqueadosView.renderBloqueados !== 'function') {
+        return _bloqueadosInertFallback('módulo views/dashboard/bloqueados no disponible (require falló)');
+    }
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        const sliceState = Object.assign({}, state || {}, slices.bloqueadosSlice(state || {}));
+        return bloqueadosView.renderBloqueados(sliceState, opts);
+    } catch (e) {
+        return _bloqueadosInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo bloqueados NO cargó. Escapa el
+// motivo para no abrir reflexión cruda (CA-A3).
+function _bloqueadosInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Bloqueados</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Bloqueados no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+}
+
+// #4778 — Vista Onboarding de producto (`?view=onboarding`). Require defensivo:
+// si el módulo no carga, la entry del router degrada a un panel inerte visible
+// (CA-A3) en vez de tirar 500. Vista estática (form + client script); la
+// validación autoritativa del descriptor la hace el backend fail-closed.
+let onboardingWizardView = null;
+try { onboardingWizardView = require('../views/dashboard/onboarding-wizard'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] onboarding-wizard view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+function renderOnboardingView() {
+    if (!onboardingWizardView || typeof onboardingWizardView.renderOnboarding !== 'function') {
+        const safe = 'módulo views/dashboard/onboarding-wizard no disponible (require falló)';
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Onboarding</title></head>' +
+            '<body><main style="padding:32px"><h1>Wizard de onboarding no disponible</h1><p>' + safe + '</p>' +
+            '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+    }
+    try {
+        return onboardingWizardView.renderOnboarding();
+    } catch (e) {
+        const safe = String((e && e.message) || 'error de render').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Onboarding</title></head>' +
+            '<body><main style="padding:32px"><h1>Wizard de onboarding no disponible</h1><p>' + safe + '</p></main></body></html>';
+    }
+}
+
+// #4778 (Ola Puente P6) — Vista "Estado por producto" (`?view=estado-productos`).
+// Grid product-aware (pieza 2 del mockup 36): una card por producto con su estado
+// AISLADO (namespaceado por projectId) + Arrancar/Pausar. Require defensivo: si el
+// módulo no carga, la entry degrada a un panel inerte visible (CA-A3). El render
+// recibe (opts, ctx) para inyectar `state.products` + `state.productState` en vivo.
+let estadoProductosView = null;
+try { estadoProductosView = require('../views/dashboard/estado-productos'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] estado-productos view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+function renderEstadoProductosView(ctx, opts) {
+    if (!estadoProductosView || typeof estadoProductosView.renderEstadoProductos !== 'function') {
+        const safe = 'módulo views/dashboard/estado-productos no disponible (require falló)';
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Estado por producto</title></head>' +
+            '<body><main style="padding:32px"><h1>Estado por producto no disponible</h1><p>' + safe + '</p>' +
+            '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+    }
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        // CA-1.4: se pasan el catálogo y el mapa namespaceado tal cual; la vista lee
+        // por-producto (nunca agrega cross-product). `productId` activo viene de opts
+        // (extraído y validado del query en el dispatch `/dashboard`).
+        return estadoProductosView.renderEstadoProductos(Object.assign({}, opts || {}, {
+            products: Array.isArray(state.products) ? state.products : [],
+            productState: (state.productState && typeof state.productState === 'object') ? state.productState : {},
+            // Bandeja GATE 2 (pieza 3): ítems esperando firma; la vista los filtra
+            // por el producto activo (CA-2.1) vía el módulo de firma.
+            esperandoFirma: Array.isArray(state.esperandoFirma) ? state.esperandoFirma : [],
+            // El router transporta el producto activo como `productId` (nombre del
+            // query param); la vista lo consume como `activeProductId` (semántico).
+            activeProductId: (opts && opts.productId) || undefined,
+        }));
+    } catch (e) {
+        const safe = String((e && e.message) || 'error de render').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+        return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Estado por producto</title></head>' +
+            '<body><main style="padding:32px"><h1>Estado por producto no disponible</h1><p>' + safe + '</p></main></body></html>';
+    }
+}
+
+// #4378 — Vista Roadmap de olas (`?view=roadmap`). Require defensivo: si el
+// módulo (o sus deps, ej. lib/escape-html.js) no carga, `renderRoadmapView`
+// degrada a un panel inerte visible (CA-A3) en vez de tirar 500. READ-ONLY:
+// el render lee waves.json directamente (loadWaves); las acciones mutantes van
+// por la ruta POST `/dashboard/wave/archive`.
+let waveRoadmapView = null;
+try { waveRoadmapView = require('../views/dashboard/wave-roadmap'); }
+catch (e) {
+    try { console.warn('[dashboard-routes] wave-roadmap view unavailable: ' + (e && e.message)); } catch { /* logger no debe romper el require */ }
+}
+
+// #4373 (Ola 8.3) — Enriquecemos el render con el payload consolidado del
+// `roadmapSlice` (avance/ETA/bloqueos/prioridad) desde el state vivo del pipeline
+// (mismo patrón que renderBloqueadosView). Si el state o el slice fallan, se pasa
+// `opts` sin `roadmap` → la vista degrada al render read-only de #4378 (loadWaves).
+function renderRoadmapView(ctx, opts) {
+    if (!waveRoadmapView || typeof waveRoadmapView.renderRoadmap !== 'function') {
+        return _roadmapInertFallback('módulo views/dashboard/wave-roadmap no disponible (require falló)');
+    }
+    try {
+        // Sólo enriquecemos con el slice cuando hay state VIVO (ctx.getState). Si
+        // el caller inyecta `opts.wavesState` (tests) o no hay getState, pasamos
+        // `opts` tal cual → la vista degrada a leer waves.json (comportamiento
+        // #4378) sin que el slice pise la inyección.
+        let roadmap = null;
+        if (ctx && typeof ctx.getState === 'function' && !(opts && opts.wavesState)) {
+            try { roadmap = slices.roadmapSlice(ctx.getState() || {}, ctx); }
+            catch { roadmap = null; }
+        }
+        const mergedOpts = roadmap
+            ? Object.assign({}, opts || {}, { roadmap })
+            : (opts || undefined);
+        return waveRoadmapView.renderRoadmap(mergedOpts);
+    } catch (e) {
+        return _roadmapInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+function _roadmapInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · Roadmap</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana Roadmap no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+}
+
+// #3733 — Vista KPIs extraída (split de #3715). Require defensivo: si el
+// módulo (o sus deps, ej. lib/escape-html.js) no carga, la entry `kpis` del
+// router degrada a un panel inerte visible (CA-A3) en vez de tirar 500.
+let kpisView = null;
+try { kpisView = require('../views/dashboard/kpis'); } catch { /* opcional */ }
+
+// Render de la ventana KPIs con el state en vivo + fallback inerte. Consumido
+// por el path legacy `/kpis` (HTML_ROUTES) y por `?view=kpis` (VIEW_SLUGS),
+// ambos al MISMO thunk para que no diverjan (CA-A2). Compone:
+//   - kpisSlice (DORA-like: PRs/tokens24h/duración/cycle/rebote) — slice existente.
+//   - matrixDerived (Definidos/Pendientes/Trabajando/Bloqueados/Necesitan humano).
+//   - sysMini (CPU/RAM/salud) desde state.resources.
+//   - routingMetrics (Commander determinístico vs LLM, 7d).
+//   - metricsSlice (agentPerf + sesiones) vía ctx.getMetricsData (DI desde dashboard.js).
+// #3961 EP8-H8 — helper try/catch que nunca rompe el render (fail-open).
+function _safe(fn) {
+    try { return fn(); } catch { return null; }
+}
+
+// #3961 EP8-H8 (CA-4) — series diarias de tendencia para las cards DORA. Deriva
+// el throughput/PRs por día contando las entregas con timestamp; las métricas
+// sin serie disponible quedan en `null` → la sparkline muestra "muestra
+// insuficiente" (degrade honesto, G-5). No instrumenta nada nuevo.
+function _buildDoraSpark(metricsSlice) {
+    try {
+        const entregas = (metricsSlice && Array.isArray(metricsSlice.entregas)) ? metricsSlice.entregas : [];
+        const items = entregas
+            .map((e) => (e && (e.ts != null) ? { ts: e.ts } : null))
+            .filter(Boolean);
+        const prs = slices.dailyBuckets(items, { days: 7, agg: 'count' });
+        return { prs, cycle: null, duration: null, bounce: null };
+    } catch {
+        return { prs: null, cycle: null, duration: null, bounce: null };
+    }
+}
+
+// #3961 EP8-H8 (CA-6) — normaliza los valores DORA para el chequeo de umbral.
+function _buildDoraForAlerts(kSlice, metricsSlice) {
+    try {
+        const k = kSlice || {};
+        const m = metricsSlice || {};
+        const now = Date.now();
+        const entregas = Array.isArray(m.entregas) ? m.entregas : [];
+        const toMs = (ts) => (typeof ts === 'number' ? ts : Date.parse(String(ts || '')));
+        const delivered7d = entregas.filter((e) => {
+            const ms = e ? toMs(e.ts) : NaN;
+            return Number.isFinite(ms) && (now - ms) < 7 * 86400000;
+        }).length;
+        const throughputPerDay = Math.round((delivered7d / 7) * 10) / 10;
+        const totalProcessed = Number(m.totalProcessed) || 0;
+        const totalRejected = Number(m.totalRejected) || 0;
+        const failRatePct = totalProcessed > 0 ? (totalRejected / totalProcessed) * 100 : null;
+        return {
+            leadTimeMs: Number.isFinite(k.issueCycleTimeMs) ? k.issueCycleTimeMs : null,
+            throughputPerDay,
+            failRatePct,
+        };
+    } catch {
+        return { leadTimeMs: null, throughputPerDay: null, failRatePct: null };
+    }
+}
+
+function renderKpisView(ctx, opts) {
+    if (!kpisView || typeof kpisView.renderKpis !== 'function') {
+        return _kpisInertFallback('módulo views/dashboard/kpis no disponible (require falló)');
+    }
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        const kSlice = slices.kpisSlice(state || {}, ctx || {});
+        const metricsSlice = (ctx && typeof ctx.getMetricsData === 'function') ? ctx.getMetricsData() : null;
+        // #3932 EP3-H6 — panel "Entregables por skill" (sólo agregados, CA-5).
+        let deliverablesBySkill = null;
+        try { deliverablesBySkill = slices.deliverablesBySkillSlice(state || {}, ctx || {}); }
+        catch { deliverablesBySkill = null; }
+
+        // #3961 EP8-H8 — umbrales configurables + KPIs operativos + alertas.
+        const config = (ctx && typeof ctx.loadConfig === 'function') ? _safe(() => ctx.loadConfig())
+            : ((state && state.config) || null);
+        const thresholds = dashboardThresholds
+            ? dashboardThresholds.loadThresholds(config)
+            : null;
+        const sherlock = _safe(() => slices.sherlockPrecisionSlice(state || {}, ctx || {}));
+        const voice = _safe(() => slices.voiceLatencySlice(state || {}, ctx || {}));
+
+        // CA-4 — series diarias de tendencia DORA. El throughput/PRs diario sale
+        // de las entregas (count por día); el resto degrada a insuficiente (G-5).
+        const doraSpark = _buildDoraSpark(metricsSlice);
+
+        // CA-6 — objeto DORA para detectar excesos de umbral.
+        const dora = _buildDoraForAlerts(kSlice, metricsSlice);
+
+        // CA-6 — bandeja de alertas de umbral derivada por alertTraySlice
+        // (read-only; NO escribe en alert-tray-audit). Le pasamos los KPIs ya
+        // computados + thresholds por ctx para no releer el FS.
+        const alertCtx = Object.assign({}, ctx || {}, {
+            kpis: { sherlock, voice, deliverables: deliverablesBySkill, dora },
+            thresholds,
+        });
+        const alertTray = _safe(() => slices.alertTraySlice(state || {}, alertCtx));
+
+        return kpisView.renderKpis(Object.assign({}, opts || {}, {
+            kpisSlice: kSlice,
+            metricsSlice,
+            deliverablesBySkill,
+            matrixDerived: _deriveKpiCounts(state || {}, ctx),
+            sysMini: _deriveSysMini(state || {}),
+            routingMetrics: _computeRoutingMetricsSafe(),
+            // #3961 EP8-H8
+            sherlock,
+            voice,
+            thresholds,
+            doraSpark,
+            alertTray,
+            // #4198 (Ola 7.1) — DORA normalizado (lead time / throughput / rebote)
+            // para el banner de misión que diagnostica + badges de las cards DORA.
+            dora,
+        }));
+    } catch (e) {
+        if (typeof kpisView.renderInert === 'function') return kpisView.renderInert((e && e.message) || 'error de render');
+        return _kpisInertFallback((e && e.message) || 'error de render');
+    }
+}
+
+// Fallback inerte standalone para cuando el módulo kpis NO cargó.
+function _kpisInertFallback(reason) {
+    const safe = String(reason || 'módulo no disponible').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Intrale · KPIs</title></head>' +
+        '<body><main style="padding:32px"><h1>Ventana KPIs no disponible</h1><p>' + safe + '</p>' +
+        '<p>Revisá los logs del dashboard. El render no queda en blanco (CA-A3).</p></main></body></html>';
+}
+
+// #3730 — Vista Issues extraída (split de #3715, Interpretación B: vista
+// operacional cards). Require defensivo: si el módulo (o sus deps, ej.
+// lib/escape-html.js) no carga, la ruta degrada al renderer legacy
+// `sat.renderIssues` (fallback conservado en el MISMO commit como cinturón de
+// runtime, R-4) en vez de tirar 500.
+let issuesView = null;
+try { issuesView = require('../views/dashboard/issues'); } catch { /* fallback a sat.renderIssues */ }
+
+// #4734 — CA-1: el banner SSR de Issues DELEGA la velocidad/ETA en el módulo único
+// (`deriveMissionOlaEta`), en vez de re-derivar sus propios `velocityPctPerMin`/
+// `remainingMs` (tercera cuenta paralela). Require defensivo: si no carga, el
+// banner degrada a null y la vista muestra chrome neutro (CA-A3).
+let missionOlaEta = null;
+try { missionOlaEta = require('./mission-ola-eta'); } catch { /* banner degradado */ }
+
+// Render de la ventana Issues con el snapshot del pipeline para SSR de cards.
+// Consumido por el path legacy `/issues` (HTML_ROUTES) y por `?view=issues`
+// (VIEW_SLUGS), ambos al MISMO thunk para que no diverjan (CA-A2). El cliente
+// re-hidrata vía /api/dash/pipeline. Si el módulo nuevo no cargó o su render
+// tira, degrada a `sat.renderIssues` (defensa en profundidad, R-4).
+// #4192 — Banner de misión del rediseño MIZPÁ de la ventana Issues. Deriva la
+// ola protagonista (label/número), entregados N/M y ETA/velocidad desde el state
+// en vivo (activeWave + olaETA). Defensivo: si falta cualquier pieza, devuelve
+// null y la vista degrada a un banner neutro sin romper (CA-A3 del épico).
+function deriveIssuesMission(state) {
+    try {
+        const s = state || {};
+        const wave = s.activeWave || {};
+        const issuesArr = Array.isArray(wave.issues) ? wave.issues : [];
+        const titles = s.issueTitles || {};
+        const matrix = s.issueMatrix || {};
+        let entregados = 0;
+        for (const it of issuesArr) {
+            const n = (it && typeof it === 'object') ? it.number : it;
+            const meta = titles[String(n)];
+            // #5629 — Mismo helper que `enrichWaveIssue` y `wave-snapshot`: el
+            // conteo de ENTREGADOS del banner no puede discrepar del board
+            // (CA-7). Suma el caso `delivery_merge_sha` para no esperar el TTL
+            // de 1h del title-cache (CA-5).
+            if (deliveryStatus.isDelivered({
+                closedInGitHub: !!meta && String(meta.state).toUpperCase() === 'CLOSED',
+                mergeSha: deliveryStatus.extractMergeSha(matrix[String(n)]),
+            })) entregados++;
+        }
+        const eta = s.olaETA || null;
+        const vel = (eta && eta.velocityETA) || null;
+        // #4734 — CA-1: velocidad/ETA DELEGADAS al módulo único (misma fórmula y
+        // unidad %/hora que el banner de HOME y el handler `/wave`). Sin el módulo,
+        // degrada a null sin re-derivar una fórmula paralela.
+        const derived = (missionOlaEta && typeof missionOlaEta.deriveMissionOlaEta === 'function' && eta)
+            ? missionOlaEta.deriveMissionOlaEta(eta)
+            : null;
+        return {
+            label: wave.name || wave.label || (wave.number ? ('Ola ' + wave.number) : 'Ola actual'),
+            number: Number.isInteger(wave.number) ? wave.number : null,
+            total: issuesArr.length,
+            entregados,
+            // #4734 — unidad canónica %/hora + ETA de reloj de pared (con reposo de
+            // proveedor), provenientes del módulo único.
+            velocityPctPerHour: derived ? derived.velocityPctPerHour : null,
+            etaRemainingMin: derived ? derived.etaRemainingMin : null,
+            // Compat: campos previos derivados del MISMO `velocityETA` (no re-cálculo).
+            etaRemainingMs: (vel && Number.isFinite(vel.remainingMs)) ? vel.remainingMs : null,
+            velocityPctPerMin: (vel && Number.isFinite(vel.velocityPctPerMin)) ? vel.velocityPctPerMin : null,
+            // #4450 — throughput de entrega (issues/día) leído del olaETA cache.
+            throughputPerDay: (eta && Number.isFinite(eta.throughputPerDay)) ? eta.throughputPerDay : null,
+            throughputState: (eta && eta.throughputState === 'measured') ? 'measured' : 'insufficient',
+            totalPct: (vel && Number.isFinite(vel.totalPct)) ? vel.totalPct : null,
+        };
+    } catch { return null; }
+}
+
+function renderIssuesView(ctx, opts) {
+    if (!issuesView || typeof issuesView.renderIssuesHTML !== 'function') {
+        return sat.renderIssues();
+    }
+    // El snapshot para el SSR de cards es best-effort: si pipelineSlice tira
+    // (state parcial, dep faltante), el módulo nuevo igual renderiza su chrome
+    // y el cliente hidrata vía /api/dash/pipeline. NO degradamos a la tabla
+    // legacy sólo por falta de datos iniciales.
+    let pSlice = null;
+    let mission = null;
+    try {
+        const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+        pSlice = slices.pipelineSlice(state || {}, ctx || {});
+        mission = deriveIssuesMission(state || {});
+    } catch { pSlice = null; }
+    try {
+        return issuesView.renderIssuesHTML(Object.assign({}, opts || {}, {
+            matrix: pSlice ? pSlice.matrix : null,
+            priorityOrder: pSlice ? pSlice.priorityOrder : [],
+            mission,
+        }));
+    } catch (e) {
+        if (typeof issuesView.renderInert === 'function') {
+            return issuesView.renderInert((e && e.message) || 'error de render');
+        }
+        return sat.renderIssues();
+    }
+}
+
+// Conteos del KPI row, replicando la lógica del home (dashboard.js:1577-1689).
+// Consumidor de state (R2): no recomputa el matrix, lo lee.
+function _deriveKpiCounts(state, ctx) {
+    const entries = Object.entries(state.issueMatrix || {});
+    const trabajando = entries.filter(([, d]) => d && d.estadoActual === 'trabajando').length;
+    const pendientes = entries.filter(([, d]) => d && d.estadoActual === 'pendiente').length;
+    const blockedBy = (state.blockedIssues && state.blockedIssues.blockedBy) || {};
+    const blockedCount = entries.filter(([num, d]) => blockedBy[num] != null && d && d.estadoActual).length;
+    const needsHuman = Array.isArray(state.bloqueados) ? state.bloqueados.length : 0;
+    let definidos = 0;
+    try {
+        const config = (ctx && typeof ctx.loadConfig === 'function') ? ctx.loadConfig() : null;
+        const defFases = (config && config.pipelines && config.pipelines.definicion && config.pipelines.definicion.fases) || [];
+        const lastDef = defFases[defFases.length - 1];
+        if (lastDef) {
+            definidos = entries.filter(([, d]) => {
+                const e = (d && d.fases && d.fases['definicion/' + lastDef]) || [];
+                return e.some(x => x && x.estado === 'procesado');
+            }).length;
+        }
+    } catch { /* sin config → definidos = 0 */ }
+    return { definidos, pendientes, trabajando, blockedCount, needsHuman };
+}
+
+// Mini-card de salud del sistema (CPU/RAM + score), espejo de dashboard.js:2745-2765.
+function _deriveSysMini(state) {
+    const r = state.resources || {};
+    const cpu = (r.cpuPercent == null) ? null : r.cpuPercent;
+    const mem = (r.memPercent == null) ? null : r.memPercent;
+    const maxCpu = r.maxCpu || 70;
+    const maxMem = r.maxMem || 70;
+    const worstUtil = Math.min(1, Math.max((cpu || 0) / Math.max(1, maxCpu), (mem || 0) / Math.max(1, maxMem)));
+    const healthScore = Math.max(0, Math.round((1 - worstUtil) * 100));
+    const health = healthScore > 60 ? 'Óptimo' : healthScore > 30 ? 'Presionado' : healthScore > 10 ? 'Crítico' : 'Saturado';
+    return { cpu, mem, health, healthScore };
+}
+
+// Commander routing (determinístico vs LLM, 7d). Lectura defensiva: si el módulo
+// o los logs faltan, devuelve {} y la vista degrada a "—".
+function _computeRoutingMetricsSafe() {
+    try {
+        const commanderDet = require('./commander-deterministic');
+        const LOG_DIR = path.join(__dirname, '..', 'logs');
+        const routing = commanderDet.computeRoutingMetrics(LOG_DIR, { days: 7 });
+        const today = (routing.buckets && routing.buckets[routing.buckets.length - 1]) || {};
+        return { today };
+    } catch { return {}; }
+}
 
 // #2976 — Lectura defensiva del flag de cuota Anthropic agotada.
 // El módulo `./quota-exhausted-state` envuelve a `./quota-exhausted` (#2974,
@@ -61,18 +616,787 @@ try { quotaSnapshotIntegration = require('./quota-snapshot-integration'); } catc
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
 
+// #3954 EP8-H1 — Store del audit de la bandeja de alertas (ack/snooze). Lectura
+// defensiva: si el módulo no carga, los endpoints POST devuelven 503 y el slice
+// degrada a `{error}` (el dashboard se ve idéntico al pre-feature).
+let alertTrayAudit = null;
+try { alertTrayAudit = require('./alert-tray-audit'); } catch { /* opcional */ }
+
+// #3962 EP8-H9 — Presupuesto mensual persistido (endpoint mutante de Costos) +
+// módulo de render del rediseño. Requires defensivos: si no cargan, el endpoint
+// devuelve 503 y la vista cae al render legacy sin el bloque rediseñado.
+let budgetConfig = null;
+try { budgetConfig = require('../metrics/budget-config'); } catch { /* opcional */ }
+let costosView = null;
+try { costosView = require('../views/dashboard/costos'); } catch { /* opcional */ }
+// Cota máxima del presupuesto (REQ-SEC A03). Reusa la del módulo si está, sino
+// un default razonable.
+const BUDGET_MAX = (budgetConfig && budgetConfig.BUDGET_MAX) || 1000000;
+
+// #3962 EP8-H9 — Render de la pantalla Costos con el bloque rediseñado (gráfico
+// área apilada + presupuesto + proyecciones + drill-down) inyectado ARRIBA del
+// contenido legacy (cuota Plan Max + consumo). SSR: el slice se arma server-side
+// para que el deep-link `/dashboard?view=costos` y `/costos` muestren el gráfico
+// sin esperar JS. Aditivo (CA-7): si el módulo de render o el slice fallan, cae
+// al render legacy intacto. Resuelve al MISMO thunk desde `/costos` (HTML_ROUTES)
+// y `?view=costos` (VIEW_SLUGS) para que no diverjan (CA-A2).
+function renderCostosView(ctx, opts) {
+    let redesignHtml = '';
+    if (costosView && typeof costosView.renderCostosRedesign === 'function') {
+        try {
+            const state = (ctx && typeof ctx.getState === 'function') ? ctx.getState() : {};
+            const slice = slices.costosSlice(state || {}, ctx || {});
+            redesignHtml = costosView.renderCostosRedesign(slice);
+        } catch (e) {
+            try { console.warn('[dashboard-routes] costos redesign unavailable: ' + (e && e.message)); } catch { /* noop */ }
+            redesignHtml = '';
+        }
+    }
+    return sat.renderCostos(Object.assign({}, opts || {}, { redesignHtml }));
+}
+
+// #3259 — Health por provider (cache TTL 5min, allowlist live-ping) +
+// dispatch-by-provider (activity log 24h). Lectura defensiva: si el módulo
+// no carga, los endpoints devuelven 503.
+let providerHealth = null;
+try { providerHealth = require('./provider-health'); } catch { /* opcional */ }
+
+// #3487 — Lectura defensiva de la fuente de verdad multi-ola (#3489 H1).
+// Si el módulo no carga (pre-merge en un checkout antiguo), el endpoint
+// `/api/dash/waves` devuelve estructura vacía con `message`, alineado
+// con el CA-7 (Planificación no disponible) sin tirar 500.
+let waves = null;
+try { waves = require('./waves'); } catch { /* opcional */ }
+
+// #4372 — Superficie HTTP `/api/waves/*` (API de gestión de olas, Ola 8.3).
+// Módulo autocontenido: reads + mutaciones con su propio cinturón de gates,
+// If-Match/ETag, idempotencia, rate-limit y auditoría. Si no carga, la superficie
+// simplemente no se ofrece (el resto del dashboard sigue intacto).
+let wavesApi = null;
+try { wavesApi = require('./waves-api'); } catch { /* opcional */ }
+
+// #4330 — Resolver de hijos de split vivos en la allowlist. El board "Issues de
+// la ola" se arma desde `waves.json → active_wave.issues`, pero los hijos que un
+// split del pipeline agrega a la allowlist (`.partial-pause.json`) nunca llegan
+// a `waves.json` → quedan invisibles aunque el Pulpo los ejecute. Reutilizamos
+// `resolveLiveSplitChildren` para unirlos. Lectura defensiva: si el módulo no
+// carga, la unión se omite y el board sirve sólo el set original (degradado).
+let waveResolver = null;
+try { waveResolver = require('./wave-resolver'); } catch { /* opcional */ }
+
+// #4248 — Snapshot ejecutivo de la ola para enriquecer el status de cada issue
+// de la ola activa con el estado VIVO del pipeline (cerrado/en-curso/bloqueado),
+// en lugar del `status` estático y stale de waves.json (D2). Lectura defensiva:
+// si el módulo no carga, el enriquecimiento se omite y se sirve el status crudo
+// (degrada al comportamiento previo sin tirar 500).
+let waveSnapshot = null;
+try { waveSnapshot = require('./wave-snapshot'); } catch { /* opcional */ }
+
+// #3681 (hijo B del épico #3669) — Endpoint del widget Multi-Provider Coverage.
+// Lectura defensiva: si el módulo (o sus deps, ej. ajv) no cargan, el endpoint
+// devuelve el envelope `coverage_unavailable` con status 503 — degrada a
+// "widget vacío" sin romper el dashboard (CA-B2).
+let multiProviderCoverage = null;
+try { multiProviderCoverage = require('./multi-provider-coverage'); } catch { /* opcional */ }
+
+// #4764 (Ola Puente P4) — núcleo fail-closed de la vista de estado segmentada por
+// producto (`projectId`). Módulo puro sin deps pesadas. Si no cargó, el endpoint
+// segmentado degrada a fail-closed (403), nunca al agregado global.
+let productStateSegment = null;
+try { productStateSegment = require('./product-state-segment'); } catch { /* opcional */ }
+
+// #3259 — Rate-limit inline (security A05): hasta #3285 entregue el middleware
+// reusable, mantenemos un semáforo simple en memoria por IP. 6 req/min cubre
+// auto-refresh del dashboard (cada 30s = 2 req/min) + headroom para debugging.
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 6;
+const _rateLimitState = new Map(); // ip → array de timestamps
+function rateLimitAllow(ip, now = Date.now()) {
+    if (!ip) ip = 'unknown';
+    const arr = (_rateLimitState.get(ip) || []).filter(ts => now - ts < RATE_LIMIT_WINDOW_MS);
+    if (arr.length >= RATE_LIMIT_MAX) {
+        _rateLimitState.set(ip, arr);
+        return false;
+    }
+    arr.push(now);
+    _rateLimitState.set(ip, arr);
+    return true;
+}
+
+// #3487 — Whitelists cerrados para el endpoint /api/dash/waves. Cualquier
+// valor fuera de estos sets se reemplaza por "unknown" antes de servirlo
+// (security review: no propagar campos crudos del filesystem al cliente).
+const WAVES_PRIORITY_WHITELIST = new Set(['critical', 'high', 'medium', 'low']);
+const WAVES_SIZE_WHITELIST = new Set(['s', 'm', 'l', 'xl']);
+const WAVES_STATUS_WHITELIST = new Set(['ready', 'needs-def', 'in-progress', 'blocked', 'completed']);
+const WAVES_TITLE_MAX_CHARS = 200;
+const WAVES_UNKNOWN = 'unknown';
+
+/**
+ * Normaliza un issue de una ola al shape mínimo {id, title, priority, size,
+ * status}. NO usa spread — copia campo por campo para que cualquier campo
+ * extra que venga de waves.json (intencional o accidental) NO se propague.
+ *
+ * @param {*} raw — entrada cruda (puede ser cualquier cosa)
+ * @returns {{id:number,title:string,priority:string,size:string,status:string}|null}
+ */
+function normalizeWaveIssue(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const idNum = Number(typeof raw.number !== 'undefined' ? raw.number : raw.id);
+    if (!Number.isInteger(idNum) || idNum <= 0) return null;
+    const rawTitle = typeof raw.title === 'string' ? raw.title : '';
+    const title = rawTitle.length > WAVES_TITLE_MAX_CHARS
+        ? rawTitle.slice(0, WAVES_TITLE_MAX_CHARS)
+        : rawTitle;
+    const p = typeof raw.priority === 'string' ? raw.priority.toLowerCase() : '';
+    const priority = WAVES_PRIORITY_WHITELIST.has(p) ? p : WAVES_UNKNOWN;
+    const s = typeof raw.size === 'string' ? raw.size.toLowerCase() : '';
+    const size = WAVES_SIZE_WHITELIST.has(s) ? s : WAVES_UNKNOWN;
+    const st = typeof raw.status === 'string' ? raw.status.toLowerCase() : '';
+    const status = WAVES_STATUS_WHITELIST.has(st) ? st : WAVES_UNKNOWN;
+    return { id: idNum, title, priority, size, status };
+}
+
+/**
+ * Normaliza una ola al shape público {number, name, goal, started_at, openedAt,
+ * issues}. Igual que normalizeWaveIssue: campo por campo, sin spread.
+ *
+ * #4248 (D3) — Expone `openedAt` (alias de `started_at`) porque el header de ola
+ * en `home.js` (`_mzMirrorMission`) lee `wave.openedAt` para calcular la
+ * velocidad (issues/hora). Antes el payload sólo traía `started_at`, así que la
+ * velocidad mostraba siempre "—". Se mantiene `started_at` por backward-compat
+ * (la vista issues consume el mismo payload): cambio aditivo, no breaking.
+ */
+function normalizeWave(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const number = Number(raw.number);
+    if (!Number.isInteger(number)) return null;
+    const name = typeof raw.name === 'string' ? raw.name.slice(0, WAVES_TITLE_MAX_CHARS) : '';
+    const goal = typeof raw.goal === 'string' ? raw.goal.slice(0, WAVES_TITLE_MAX_CHARS) : '';
+    const started_at = typeof raw.started_at === 'string' ? raw.started_at : null;
+    const issues = Array.isArray(raw.issues)
+        ? raw.issues.map(normalizeWaveIssue).filter(Boolean)
+        : [];
+    return { number, name, goal, started_at, openedAt: started_at, issues };
+}
+
+// #4248 (D1+D2) — Mapea el status del snapshot ejecutivo (wave-snapshot.js:
+// 'closed'|'blocked'|'paused'|'approval'|'dev'|'definition'|'pending') al
+// vocabulario que consume el header de ola en home.js (`_mzMirrorMission`) y la
+// vista issues, que coincide con `WAVES_STATUS_WHITELIST`:
+//   - closed                         → 'completed'  (ENTREGADOS / done)
+//   - approval | dev | definition    → 'in-progress' (un agente lo está procesando)
+//   - blocked | paused               → 'blocked'    (no avanza, requiere atención)
+//   - pending                        → 'queued'     (en cola, sin fase iniciada)
+//   - resto                          → 'ready'      (fail-safe: valores desconocidos)
+// El resultado siempre cae dentro de la whitelist → no se propaga texto crudo.
+function mapSnapshotStatusToWave(snapStatus) {
+    switch (snapStatus) {
+        case 'closed': return 'completed';
+        case 'approval':
+        case 'dev':
+        case 'definition': return 'in-progress';
+        case 'blocked':
+        case 'paused': return 'blocked';
+        case 'pending': return 'queued';   // #4331 — sin fase iniciada = En cola, no Lista
+        default: return 'ready';           // fail-safe: valores desconocidos
+    }
+}
+
+/**
+ * #4248 (D1+D2) — Calcula el status VIVO por issue de la ola activa cruzando
+ * `buildWaveSnapshot` (deriva {isClosed, isBlocked, status, pct} desde
+ * `state.issueMatrix` + cerrados) en vez de confiar en el `status` estático de
+ * waves.json (que queda stale en "planned"). Devuelve `Map<id, statusWhitelist>`
+ * o `null` si no hay datos suficientes (sin snapshot, sin matriz, sin ola
+ * activa) — en ese caso el caller degrada al status crudo.
+ *
+ * @param {object} state — getPipelineState() output (issueMatrix, activeWave, bloqueados)
+ * @returns {Map<number,string>|null}
+ */
+function computeLiveWaveStatus(state) {
+    if (!waveSnapshot || typeof waveSnapshot.buildWaveSnapshot !== 'function') return null;
+    if (!state || typeof state !== 'object') return null;
+    if (!state.issueMatrix || typeof state.issueMatrix !== 'object') return null;
+    const activeWave = state.activeWave;
+    if (!activeWave || !Array.isArray(activeWave.issues) || activeWave.issues.length === 0) return null;
+    let snap;
+    try {
+        // #4325 — pasar `closedIssues` para que el status vivo por lane sea
+        // coherente con el avance (sin él, `buildWaveSnapshot` no marca los
+        // issues CLOSED y el board queda desalineado con el % de la ola).
+        // `computeClosedSet` deriva los cerrados de `state.issueTitles`. Require
+        // lazy DENTRO de la función (patrón anti-circular, idem L445).
+        const { computeClosedSet } = require('./commander-deterministic');
+        snap = waveSnapshot.buildWaveSnapshot({
+            state,
+            wave: activeWave,
+            blocked: Array.isArray(state.bloqueados) ? state.bloqueados : [],
+            closedIssues: computeClosedSet({ wave: activeWave, state }),
+        });
+    } catch {
+        return null;
+    }
+    if (!snap || !Array.isArray(snap.issues)) return null;
+    const byId = new Map();
+    for (const it of snap.issues) {
+        if (it && Number.isInteger(it.id)) byId.set(it.id, mapSnapshotStatusToWave(it.status));
+    }
+    return byId.size > 0 ? byId : null;
+}
+
+// #4250 — Enriquecimiento del board "Issues de la ola" (mockup HOME MIZPÁ).
+// waves.json sólo persiste {number, status} por issue (sin título resuelto ni
+// estado real de pipeline). El mockup pide, por issue: título, estado real
+// (hecho/ejecutando/listo/en cola/bloqueado), agente·fase y acceso al log.
+// Esos datos YA viven en el proceso del dashboard (title-cache + issueMatrix);
+// acá los cruzamos por id SIN salir a la red (regla de waves.js) y SIN propagar
+// campos crudos: cada campo derivado se sanitiza/whitelistea.
+const WAVES_AGENT_SAFE_REGEX = /[^a-z0-9-]/g;     // skill/fase: slug en minúsculas
+const WAVES_LOGFILE_SAFE_REGEX = /[^a-z0-9._-]/gi; // filename de log: sin separadores de path
+const WAVES_RICH_STATUS = new Set(['completed', 'in-progress', 'ready', 'queued', 'blocked']);
+
+function _safeAgentSlug(s) {
+    if (typeof s !== 'string') return null;
+    const clean = s.toLowerCase().replace(WAVES_AGENT_SAFE_REGEX, '').slice(0, 40);
+    return clean || null;
+}
+function _safeLogFile(s) {
+    if (typeof s !== 'string') return null;
+    const clean = s.replace(WAVES_LOGFILE_SAFE_REGEX, '').slice(0, 120);
+    return clean || null;
+}
+
+/**
+ * Deriva el estado rico + metadatos de UI de un issue de la ola cruzando contra
+ * el estado vivo del dashboard. Devuelve SIEMPRE el shape extendido; si no hay
+ * `state` o no hay match, degrada a {status:'queued', progress:0} sin romper.
+ *
+ * @param {{id:number,title:string,priority:string,size:string,status:string}} base
+ * @param {*} state — state plano del dashboard (issueTitles + issueMatrix)
+ * @returns shape extendido con agent/phase/hasLog/logFile/progress/merged
+ */
+function enrichWaveIssue(base, state) {
+    const titles = (state && state.issueTitles) || {};
+    const matrix = (state && state.issueMatrix) || {};
+    const key = String(base.id);
+    const meta = titles[key] || {};
+    const m = matrix[key] || null;
+
+    // Título real desde el cache si waves.json no lo trae (caso normal).
+    let title = base.title;
+    if (!title && typeof meta.title === 'string') {
+        title = meta.title.slice(0, WAVES_TITLE_MAX_CHARS);
+    }
+
+    // #5629 — "Entregado" por el helper único: CLOSED en GitHub (fuente de
+    // verdad, #4099/#4732) o `delivery_merge_sha` estructurado. El SHA cierra la
+    // ventana del TTL de 1h del title-cache: un PR mergeado hace un minuto ya
+    // cuenta como entregado aunque el cache todavía lo reporte OPEN (CA-5).
+    // NO mirar `resultado`/`motivo` del marker: los de #5220/#5244 decían
+    // `aprobado` con el merge frenado.
+    const isClosed = deliveryStatus.isDelivered({
+        closedInGitHub: String(meta.state || '').toUpperCase() === 'CLOSED',
+        mergeSha: deliveryStatus.extractMergeSha(m),
+    });
+    const labels = Array.isArray(meta.labels) ? meta.labels : [];
+    const isBlocked = labels.some((l) => String(l).toLowerCase().includes('blocked'));
+
+    let status = 'queued';
+    let agent = null;
+    let phase = null;
+    let hasLog = false;
+    let logFile = null;
+    let progress = 0;
+    let merged = false;
+
+    if (isClosed) {
+        // Cerrado en GitHub → hecho/mergeado (barra llena).
+        status = 'completed';
+        progress = 100;
+        merged = true;
+    } else if (m) {
+        // Tiene work-file en alguna fase del pipeline → derivamos fase + agente.
+        const faseActual = typeof m.faseActual === 'string' ? m.faseActual : null;
+        const entries = (faseActual && m.fases && m.fases[faseActual]) || [];
+        const entry = entries[0] || null;
+        if (faseActual) phase = _safeAgentSlug(faseActual.split('/')[1] || faseActual);
+        if (entry) {
+            agent = _safeAgentSlug(entry.skill);
+            hasLog = !!entry.hasLog;
+            logFile = hasLog ? _safeLogFile(entry.logFile) : null;
+        }
+        if (isBlocked) {
+            status = 'blocked';
+        } else if (m.estadoActual === 'trabajando') {
+            status = 'in-progress'; // ejecutando ahora (barra indeterminada en UI)
+        } else {
+            status = 'ready';       // entre fases / esperando slot
+        }
+    } else if (isBlocked) {
+        status = 'blocked';
+    } else {
+        status = 'queued';          // abierto, sin work-file todavía
+    }
+
+    return {
+        id: base.id,
+        title,
+        priority: base.priority,
+        size: base.size,
+        status: WAVES_RICH_STATUS.has(status) ? status : WAVES_UNKNOWN,
+        agent,
+        phase,
+        hasLog,
+        logFile,
+        progress,
+        merged,
+        // #5629 — Veredicto de entrega YA RESUELTO por el helper único, para que
+        // la ventana de Pipeline (`pipeline-redesign.js`, browser) lo consuma
+        // tal cual en vez de re-derivarlo con su propia regla
+        // (`status === 'completed' || merged === true`). Un solo cálculo para
+        // las tres vistas (CA-7).
+        delivered: isClosed,
+    };
+}
+
+/**
+ * Aplica enrichWaveIssue a todos los issues de una ola normalizada. No-op
+ * defensivo si `wave` es null o no hay `state` (mantiene el shape base).
+ */
+function enrichWave(wave, state) {
+    if (!wave || !Array.isArray(wave.issues)) return wave;
+    if (!state) return wave;
+    wave.issues = wave.issues.map((iss) => enrichWaveIssue(iss, state));
+    return wave;
+}
+
+/**
+ * Construye el payload de /api/dash/waves desde lib/waves.js. Si la librería
+ * no cargó o falla la lectura, retorna estructura vacía con `message` —
+ * NUNCA expone paths, ENOENT ni stack traces (security CA-4/CA-8).
+ *
+ * #3616 — Usa `getHorizon(5)` para devolver la ola activa + las próximas 5
+ * planificadas. Cada wave pasa por `normalizeWave` (whitelist por campo) —
+ * no se expone path interno, hash, timestamp de boot ni stack traces.
+ *
+ * Backward compat: el payload mantiene `active_wave` + `next_wave` (la primera
+ * planificada) por si algún cliente viejo los lee directamente — el frontend
+ * nuevo prefiere iterar `planned[]`.
+ */
+// #4330 — Resuelve el `pipelineDir` efectivo para leer la allowlist. Espeja el
+// cálculo de `waves.js`/`wave-resolver.js` (`PIPELINE_DIR_OVERRIDE` o
+// `__dirname/..`) para que, si `buildWavesPayload` se invoca sin `pipelineDir`
+// explícito (tests viejos, callers legacy), la unión de hijos de split apunte
+// al mismo `.partial-pause.json` que el resto del pipeline.
+function _effectivePipelineDir(pipelineDir) {
+    if (typeof pipelineDir === 'string' && pipelineDir) return pipelineDir;
+    if (process.env.PIPELINE_DIR_OVERRIDE) return process.env.PIPELINE_DIR_OVERRIDE;
+    return path.resolve(__dirname, '..');
+}
+
+// #4330 — Une a `rawActive.issues` los hijos de split presentes y VIGENTES en la
+// allowlist cuyo `parent` pertenece a la ola activa. Opera sobre el shape crudo
+// (números pelados vía `{ number }`) para que `normalizeWave` + `enrichWave` +
+// el overlay `computeLiveWaveStatus` resuelvan título y estado real igual que
+// con cualquier otro issue del board (CA-1/CA-2). Dedup por id contra el set
+// original (CA-3). Filtra TTL vencido / fuera de `allowed_issues` vía
+// `resolveLiveSplitChildren` (CA-4). No-op defensivo: sin `wave-resolver`, sin
+// issues, o sin hijos vivos, devuelve `rawActive` intacto.
+function mergeSplitChildren(rawActive, pipelineDir) {
+    if (!rawActive || !Array.isArray(rawActive.issues)) return rawActive;
+    if (!waveResolver || typeof waveResolver.resolveLiveSplitChildren !== 'function') return rawActive;
+    // Ids de los issues de la ola (padres candidatos + dedup). Acepta el shape
+    // rico ({number}|{id}) y el número pelado.
+    const existing = new Set();
+    for (const it of rawActive.issues) {
+        let n;
+        if (it && typeof it === 'object') n = Number(it.number != null ? it.number : it.id);
+        else n = Number(it);
+        if (Number.isInteger(n) && n > 0) existing.add(n);
+    }
+    if (existing.size === 0) return rawActive;
+    let children = [];
+    try {
+        children = waveResolver.resolveLiveSplitChildren({
+            pipelineRoot: _effectivePipelineDir(pipelineDir),
+            parentIds: existing,
+        }) || [];
+    } catch {
+        return rawActive;
+    }
+    const extra = [];
+    for (const child of children) {
+        if (existing.has(child)) continue; // ya estaba en el set original (CA-3)
+        existing.add(child);
+        extra.push({ number: child }); // shape crudo → normalizeWaveIssue lo resuelve
+    }
+    if (extra.length === 0) return rawActive;
+    // Copia campo por campo (sin spread) para no propagar campos crudos de
+    // waves.json — coherente con normalizeWave/normalizeWaveIssue.
+    return {
+        number: rawActive.number,
+        name: rawActive.name,
+        goal: rawActive.goal,
+        started_at: rawActive.started_at,
+        status: rawActive.status,
+        issues: rawActive.issues.concat(extra),
+    };
+}
+
+function buildWavesPayload(state, pipelineDir) {
+    const updated_at = new Date().toISOString();
+    if (!waves) {
+        return {
+            active_wave: null,
+            next_wave: null,
+            planned: [],
+            updated_at,
+            message: 'Planificación no disponible',
+        };
+    }
+    let horizon = [];
+    try {
+        // getHorizon devuelve [activa, planned[0], ..., planned[N-1]] con
+        // status taggeado por la lib. Lo desempacamos por status para
+        // construir el payload público.
+        horizon = waves.getHorizon(5) || [];
+    } catch {
+        horizon = [];
+    }
+    const rawActiveBase = horizon.find((w) => w && w.status === 'active') || null;
+    // #4330 — Une los hijos de split vivos de la allowlist a la ola activa ANTES
+    // de normalizar/enriquecer, para que resuelvan título y estado igual que
+    // cualquier otro issue del board. No-op si no hay hijos vivos o falta el
+    // resolver (degradado defensivo, no rompe el resto del payload).
+    const rawActive = mergeSplitChildren(rawActiveBase, pipelineDir);
+    const rawPlanned = horizon.filter((w) => w && w.status === 'planned');
+    // #4250 — Enriquecimiento del board HOME: cruza cada issue con el estado
+    // vivo del dashboard (title-cache + issueMatrix) para resolver título real,
+    // estado de pipeline, agente·fase y log. Defensivo: sin `state` devuelve el
+    // shape base (back-comp con el widget "Próximas Olas" y con tests viejos).
+    const normActive = enrichWave(normalizeWave(rawActive), state);
+    // #4248 (D1+D2) — Overlay del status VIVO autoritativo (waveSnapshot) sobre la
+    // ola activa. enrichWave (#4250) ya resolvió el shape rico del board; acá sólo
+    // corregimos `status` con la fuente más autoritativa (snapshot ejecutivo) para
+    // que el header (ENTREGADOS / AVANCE) cuente bien — sin esto los issues con
+    // `status:"planned"` en waves.json contaban como "cola". Si el snapshot marca
+    // un issue como 'completed', alineamos progress/merged para que la barra del
+    // board no quede vacía bajo un pill "hecho". Sin datos vivos se mantiene el
+    // status que derivó enrichWaveIssue (comportamiento #4250).
+    if (normActive && Array.isArray(normActive.issues) && normActive.issues.length > 0) {
+        const liveById = computeLiveWaveStatus(state);
+        if (liveById && liveById.size > 0) {
+            normActive.issues = normActive.issues.map((it) => {
+                const live = liveById.get(it.id);
+                if (!live || live === it.status) return it;
+                const completed = live === 'completed';
+                // Copia campo por campo (sin spread) para no propagar campos extra;
+                // preserva el shape rico de enrichWaveIssue (#4250).
+                return {
+                    id: it.id,
+                    title: it.title,
+                    priority: it.priority,
+                    size: it.size,
+                    status: live,
+                    agent: it.agent,
+                    phase: it.phase,
+                    hasLog: it.hasLog,
+                    logFile: it.logFile,
+                    progress: completed ? 100 : it.progress,
+                    merged: completed ? true : it.merged,
+                    // #5629 — `delivered` viaja en la copia campo por campo (sin
+                    // spread) o se perdería y el cliente lo leería `undefined`.
+                    // El snapshot vivo deriva 'completed' del MISMO helper que
+                    // `enrichWaveIssue`, así que ambos coinciden por
+                    // construcción: si el snapshot dice completed, hubo CLOSED o
+                    // merge SHA real — nunca un marker `aprobado` sin merge.
+                    delivered: completed ? true : it.delivered,
+                };
+            });
+        }
+    }
+    // #4451 — ENTREGADOS autoritativo: el cliente NO recomputa contando
+    // status==='completed' sobre la foto enriquecida; lee este entero.
+    //
+    // #5629 — Este contador era la CUARTA derivación de "Entregado" y la última
+    // sin migrar: derivaba de `computeClosedSet`, que ignora
+    // `delivery_merge_sha`. Como `home.js` pinta ENTREGADOS con este entero
+    // (`wave.delivered`) mientras el board pinta cada issue con `it.delivered`,
+    // el MISMO payload llevaba dos nociones distintas de entregado y el banner
+    // podía discrepar del board (CA-7) y esperar el TTL de 1h del title-cache
+    // para reflejar un merge (CA-5).
+    //
+    // Ahora se cuenta sobre los veredictos per-issue YA resueltos por
+    // `deliveryStatus` en `enrichWaveIssue` (más el overlay del snapshot vivo).
+    // Contar la misma lista que define `total` mantiene el invariante
+    // 0 ≤ delivered ≤ total (#3487) por construcción, y banner == board deja de
+    // ser una coincidencia para ser una identidad.
+    //
+    // Se abandona a propósito el fallback por labels `closed`/`done` que traía
+    // `computeClosedSet`: son exactamente los "labels residuales" que #4099 y
+    // #4732 declararon perdedores frente al CLOSED de GitHub, y contarlos
+    // violaba CA-1 (un issue abierto y sin merge no puede sumar a ENTREGADOS).
+    // El caso que ese fallback protegía —épicos cerrados por merge de hijos, sin
+    // matriz— lo cubre igual el camino primario (CLOSED en el title-cache), que
+    // el helper también consulta.
+    if (normActive && Array.isArray(normActive.issues)) {
+        const delivered = normActive.issues
+            .filter((it) => it && it.delivered === true).length;
+        normActive.delivered = Number.isInteger(delivered) ? delivered : 0;
+    }
+    const normPlanned = rawPlanned.map((w) => enrichWave(normalizeWave(w), state)).filter(Boolean);
+    const normNext = normPlanned.length > 0 ? normPlanned[0] : null;
+    const payload = {
+        active_wave: normActive,
+        next_wave: normNext,
+        planned: normPlanned,
+        updated_at,
+    };
+    if (!normActive && normPlanned.length === 0) {
+        payload.message = 'Planificación no disponible';
+    }
+    return payload;
+}
+
 const HTML_ROUTES = {
     '/equipo': sat.renderEquipo,
     '/pipeline': sat.renderPipeline,
-    '/bloqueados': sat.renderBloqueados,
-    '/issues': sat.renderIssues,
-    '/matriz': sat.renderMatriz,
-    '/ops': sat.renderOps,
-    '/kpis': sat.renderKpisDetail,
+    // #3729 — `/bloqueados` resuelve al módulo extraído (mismo thunk que
+    // `?view=bloqueados`). Si el módulo no cargó, degrada a fallback inerte (CA-A3).
+    '/bloqueados': (ctx) => renderBloqueadosView(ctx),
+    // #3730 — `/issues` resuelve al módulo extraído (vista operacional cards)
+    // con el snapshot del pipeline para SSR. Indirección por arrow: HTML_ROUTES
+    // se evalúa una sola vez en module-load; sin la arrow agarraríamos `null`
+    // si el require de issues.js fallara (R-4). Degrada a sat.renderIssues.
+    '/issues': (ctx) => renderIssuesView(ctx),
+    // #3731 — `/matriz` resuelve al módulo extraído (mismo thunk que
+    // `?view=matriz`). Si el módulo no cargó, degrada a fallback inerte (CA-A3).
+    '/matriz': () => renderMatrizView(),
+    // #3732 — /ops ahora resuelve al módulo extraído views/dashboard/ops.js
+    // con el state en vivo (opsSlice). Recibe ctx desde handle().
+    '/ops': (ctx) => renderOpsView(ctx),
+    // #3737 — /providers resuelve al módulo NUEVO views/dashboard/providers.js
+    // (read-only, lee secrets.listKeys() por sí mismo; ignora ctx).
+    '/providers': () => renderProvidersView(),
+    // #3733 — /kpis resuelve al módulo extraído views/dashboard/kpis.js con el
+    // state en vivo. Mismo thunk que `?view=kpis` (VIEW_SLUGS) para no divergir.
+    '/kpis': (ctx) => renderKpisView(ctx),
     '/historial': sat.renderHistorial,
-    '/costos': sat.renderCostos,
-    '/modo-descanso': sat.renderModoDescanso,
+    // #3962 EP8-H9 — /costos resuelve al render con el bloque rediseñado SSR.
+    '/costos': (ctx) => renderCostosView(ctx),
+    // #3736 — guard: usa el módulo extraído si está disponible, si no el legacy.
+    '/modo-descanso': () => (descansoView && descansoView.renderDescanso)
+        ? descansoView.renderDescanso()
+        : sat.renderModoDescanso(),
+    // #4378 — /roadmap resuelve al módulo views/dashboard/wave-roadmap.js (mismo
+    // thunk que `?view=roadmap`). READ-ONLY: lee waves.json. Degrada a fallback
+    // inerte (CA-A3) si el módulo no cargó.
+    '/roadmap': (ctx) => renderRoadmapView(ctx),
 };
+
+// #3723 — Router cliente `?view=<slug>` + endpoint `/dashboard/partial`.
+//
+// Allowlist cerrada de slugs. Object.freeze para inmutabilidad runtime
+// (CA-S1 + CA-T1). Lookup directo por clave — NUNCA concatenar `slug` a
+// require()/fs.readFile/path.join. Las extracciones #3727..#3737 suman
+// entries acá (`'multi-provider'`, `'equipo'`, `'pipeline'`, etc.).
+//
+// `title` (sin prefijo "Intrale · ") se usa para el `document.title` desde
+// el cliente (CA-U2). El SSR ya emite el título completo dentro de cada
+// renderer (ver `home.js` → `<title>Intrale · Operación</title>`).
+//
+// `render(opts)` devuelve el HTML completo de la vista. Por ahora es el
+// mismo renderer del SSR, sin separación inner/shell — las extracciones
+// futuras (#3727..#3737) refactorizan a `renderXxxInner()`. R4 del análisis
+// de guru: los `<head>`/`<body>` redundantes insertados vía innerHTML los
+// browsers los ignoran; `<style>` queda inerte; `<script>` no se ejecuta.
+function _getQuotaStateSafe() {
+    if (!quotaExhaustedState) return null;
+    try { return quotaExhaustedState.getQuotaState(); } catch { return null; }
+}
+
+const VIEW_SLUGS = Object.freeze({
+    home: {
+        title: 'Operación',
+        render: (opts) => home.renderHomeHTML(Object.assign(
+            {},
+            opts || {},
+            { quotaState: _getQuotaStateSafe() }
+        )),
+    },
+    // #3732 — Ventana Ops extraída (split del épico #3715). El render recibe
+    // (opts, ctx) desde handle() para inyectar el state en vivo (opsSlice).
+    // Resuelve al MISMO thunk que el path legacy `/ops` (HTML_ROUTES) para que
+    // ambos no diverjan (CA-A2 + smoke CA-G2).
+    ops: {
+        title: 'Ops',
+        render: (opts, ctx) => renderOpsView(ctx, opts),
+    },
+    // #3737 — Ventana Providers extraída (split del épico #3715). NUEVA, no
+    // existía en el monolito. Read-only: el render no consume ctx (la vista lee
+    // `secrets.listKeys()`). Resuelve al MISMO thunk que el path legacy
+    // `/providers` (HTML_ROUTES) para no diverger (CA-PRV-3 + smoke CA-G2).
+    providers: {
+        title: 'Providers',
+        render: () => renderProvidersView(),
+    },
+    // #3736 — Ventana Descanso (slug nuevo `descanso`; el path legacy
+    // `/modo-descanso` sigue vivo en HTML_ROUTES sin redirect — orígenes
+    // operativos distintos: deep-link directo vs router cliente).
+    descanso: {
+        title: 'Descanso',
+        render: (opts) => (descansoView && descansoView.renderDescanso)
+            ? descansoView.renderDescanso(opts)
+            : sat.renderModoDescanso(),
+    },
+    // #3733 — Ventana KPIs extraída (split de #3715). El render recibe
+    // (opts, ctx) desde handle() para inyectar el state en vivo (slice KPIs)
+    // y resolver al MISMO thunk que el path legacy `/kpis` (HTML_ROUTES), para
+    // que ambos no diverjan (CA-A2). Degrada a panel inerte visible (CA-A3) si
+    // el módulo no cargó.
+    kpis: {
+        title: 'KPIs',
+        render: (opts, ctx) => renderKpisView(ctx, opts),
+    },
+    // #3729 — Ventana Bloqueados (slug `bloqueados`). Resuelve al MISMO thunk
+    // que el path legacy `/bloqueados` (HTML_ROUTES) para que ambos no diverjan
+    // (CA-A2). Recibe (opts, ctx) desde handle() para inyectar el state en vivo
+    // (bloqueadosSlice). Degrada a panel inerte visible (CA-A3) si el módulo no
+    // cargó. La compat retro `?section=needs-human` redirige acá (D9 narrativa UX).
+    bloqueados: {
+        title: 'Bloqueados',
+        render: (opts, ctx) => renderBloqueadosView(ctx, opts),
+    },
+    // #3731 — Ventana Matriz (slug `matriz`). Resuelve al MISMO thunk que el
+    // path legacy `/matriz` (HTML_ROUTES) para que ambos no diverjan (CA-A2).
+    // Degrada a panel inerte visible (CA-A3) si el módulo no cargó. READ-ONLY:
+    // no requiere ctx/state, hidrata client-side desde `/api/dash/pipeline`.
+    matriz: {
+        title: 'Matriz',
+        render: () => renderMatrizView(),
+    },
+    // #3730 — Ventana Issues (slug `issues`). Resuelve al MISMO thunk que el
+    // path legacy `/issues` (HTML_ROUTES) para que ambos no diverjan (CA-A2).
+    // Recibe (opts, ctx) desde handle() para inyectar el snapshot del pipeline
+    // (SSR de cards). Degrada a sat.renderIssues si el módulo no cargó (R-4).
+    issues: {
+        title: 'Issues',
+        render: (opts, ctx) => renderIssuesView(ctx, opts),
+    },
+    // #3735 — Ventana Costos (split de #3715). Resuelve al MISMO renderer que
+    // el path legacy `/costos` (HTML_ROUTES → sat.renderCostos) para que
+    // `?view=costos` y `/costos` no diverjan (CA-A2). El banner/pill embebido en
+    // home se extrajo a views/dashboard/costos.js; esta entry habilita el
+    // deep-link `/dashboard?view=costos` (CA-1.2).
+    costos: {
+        title: 'Costos',
+        // #3962 EP8-H9 — render con el bloque rediseñado SSR (mismo thunk que
+        // el path legacy `/costos`). Recibe ctx desde handle() para armar el slice.
+        render: (opts, ctx) => renderCostosView(ctx, opts),
+    },
+    // #4378 — Ventana Roadmap de olas (slug `roadmap`). READ-ONLY: el render lee
+    // waves.json (loadWaves); la acción "Archivar" va por POST
+    // `/dashboard/wave/archive` con su propio cinturón de gates. Degrada a panel
+    // inerte visible (CA-A3) si el módulo no cargó.
+    roadmap: {
+        title: 'Roadmap',
+        render: (opts, ctx) => renderRoadmapView(ctx, opts),
+    },
+    // #4778 — Wizard de onboarding de producto (slug `onboarding`). READ-ONLY:
+    // el render es estático (form + client script); el alta va por POST
+    // /api/product/onboard con CSRF (validación fail-closed en el backend).
+    onboarding: {
+        title: 'Onboarding',
+        render: () => renderOnboardingView(),
+    },
+    // #4778 — Grid "Estado por producto" (`?view=estado-productos`). Recibe
+    // (opts, ctx): inyecta `state.products` + `state.productState` en vivo y el
+    // `productId` activo (opts.productId, extraído/validado del query). El switch
+    // cambia el estado mostrado (card activa resaltada + detalle scopeado · CA-1.4);
+    // Arrancar/Pausar delega en el kernel por POST (CA-1.5).
+    'estado-productos': {
+        title: 'Productos',
+        render: (opts, ctx) => renderEstadoProductosView(ctx, opts),
+    },
+    // #3727..#3737 sumarán acá:
+    // 'multi-provider':          { title: 'Multi-provider',          render: () => mp.renderMultiProvider() },
+    // 'multi-provider-coverage': { title: 'Multi-provider Coverage', render: () => mpc.renderMultiProviderCoverage() },
+    // 'equipo':                  { title: 'Equipo',                  render: () => sat.renderEquipo() },
+    // 'pipeline':                { title: 'Pipeline',                render: () => sat.renderPipeline() },
+    // ... una entry por cada ventana extraída.
+});
+
+// CA-S1 — fast-reject regex antes del lookup en allowlist. Defensa en
+// profundidad: si alguien renombrara un slug a algo "raro" igualmente
+// quedaría bloqueado por estructura. Acotado a 31 chars para evitar
+// memory pressure y para alinearse con conveniones de URLs cortas.
+const VIEW_SLUG_REGEX = /^[a-z][a-z0-9-]{0,30}$/;
+
+// Cap de tamaño del query param antes de regex (evita pasar payloads
+// arbitrarios al motor regex).
+const VIEW_SLUG_MAX_LEN = 64;
+
+// #4778 — Validación fail-closed del `productId` del query (switch product-aware).
+// Espeja project-descriptor.isSafeId / product-state-segment.isSafeProjectId. El
+// productId NUNCA se refleja crudo en el HTML: sólo se propaga a la vista si pasa
+// esta validación; un id inseguro se descarta (opts.productId = undefined).
+const PRODUCT_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+function _safeProductIdFromQuery(q) {
+    const raw = q && typeof q.get === 'function' ? q.get('productId') : null;
+    if (typeof raw !== 'string' || raw.length > 64) return undefined;
+    if (!PRODUCT_ID_RE.test(raw) || raw.includes('..') || raw.includes('/') || raw.includes('\\')) return undefined;
+    return raw;
+}
+
+// CA-S2 — loopback gate (defense-in-depth). El bind ya es 127.0.0.1 por
+// default (#3177 + #3191), pero validamos también acá por si en algún
+// momento se levanta con DASHBOARD_HOST=0.0.0.0 intencionalmente.
+function isLoopbackReq(req) {
+    const ra = (req && req.socket && req.socket.remoteAddress) || '';
+    return ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
+}
+
+// CA-S3 — `Sec-Fetch-Site` defense-in-depth. SI el header está presente
+// debe ser `same-origin`. Ausencia se acepta (reload directo, browsers
+// viejos, herramientas tipo curl) — la barrera dura para esos casos es
+// CA-S2 (loopback). Documentado en el header del endpoint partial.
+function isSameOriginFetch(req) {
+    const site = req && req.headers && req.headers['sec-fetch-site'];
+    if (!site) return true;
+    return site === 'same-origin';
+}
+
+// CA-S5 — headers fijos del partial endpoint. Cache-Control no-store
+// evita que intermediarios cacheen un slice mutable; nosniff evita
+// reinterpretación por el navegador; Referrer-Policy no-referrer no
+// filtra a terceros.
+function sendPartialHtml(res, html) {
+    res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+        'Content-Length': Buffer.byteLength(html),
+    });
+    res.end(html);
+}
+
+// Log estructurado de rechazo del partial (CA-S6). NO loggea el slug
+// completo crudo — sólo flags de control para detectar probing/abuse
+// sin dar pie a log-injection.
+function _logPartialRejected(req, reason, slugLen) {
+    try {
+        console.warn(JSON.stringify({
+            event: 'partial_rejected',
+            reason,
+            remoteAddr: (req && req.socket && req.socket.remoteAddress) || null,
+            secFetchSite: (req && req.headers && req.headers['sec-fetch-site']) || null,
+            slugLen: typeof slugLen === 'number' ? slugLen : null,
+            ts: new Date().toISOString(),
+        }));
+    } catch { /* logger no debe romper la respuesta */ }
+}
 
 const API_ROUTES = {
     '/api/dash/header': (state, ctx) => slices.headerSlice(state, ctx),
@@ -108,11 +1432,27 @@ const API_ROUTES = {
         return { queue, partialPause: { active, allowedIssues } };
     },
     '/api/dash/equipo': (state) => slices.equipoSlice(state),
-    '/api/dash/pipeline': (state) => slices.pipelineSlice(state),
+    '/api/dash/pipeline': (state, ctx) => {
+        const payload = slices.pipelineSlice(state, ctx);
+        // #3959 (EP8-H6) CA-2 — persistir un snapshot horario de matrixCounts
+        // para la serie temporal de la tendencia por celda (debounceado a
+        // ~1/hora dentro del lib). Best-effort: no romper el endpoint si falla
+        // (mismo patrón que /api/dash/reconciler-stale-orders).
+        if (matrixHistory && ctx && ctx.PIPELINE && payload && payload.matrixCounts) {
+            try { matrixHistory.recordSnapshot(payload.matrixCounts, { pipelineDir: ctx.PIPELINE }); }
+            catch { /* no romper el endpoint por el snapshot */ }
+        }
+        return payload;
+    },
     '/api/dash/bloqueados': (state) => slices.bloqueadosSlice(state),
     '/api/dash/ops': (state) => slices.opsSlice(state),
     '/api/dash/historial': (state) => slices.historialSlice(state),
     '/api/dash/quota': (state, ctx) => slices.quotaSlice(state, ctx),
+    // #3962 EP8-H9 — hidrata la pantalla Costos rediseñada: serie diaria por
+    // proveedor + presupuesto + estado de anomalía + proyecciones (con método)
+    // + drill-down REDACTADO. Hereda el gate loopback CA-S2 + Sec-Fetch-Site del
+    // dispatch de API_ROUTES.
+    '/api/dash/costos': (state, ctx) => slices.costosSlice(state, ctx),
     // #2976 — banner amarillo de cuota Anthropic agotada (modo determinístico).
     // Polling natural del dashboard cubre aparición/desaparición sin reload.
     '/api/dash/quota-exhausted': (state) => slices.quotaExhaustedSlice(state),
@@ -136,8 +1476,44 @@ const API_ROUTES = {
     // dashboard kiosk y `/api/diagnostico/*` es el alias documentado en CA5
     // para que humanos puedan consultarlo con `curl` sin acordarse del
     // namespace interno.
-    '/api/dash/reconciler-stale-orders': (state, ctx) => slices.reconcilerStaleOrdersSlice(state, ctx),
+    '/api/dash/reconciler-stale-orders': (state, ctx) => {
+        const payload = slices.reconcilerStaleOrdersSlice(state, ctx);
+        // EP8-H7 (#3960) CA-4 — persistir un snapshot del breakdown para la
+        // serie temporal (debounceado a ~1/hora dentro del lib). Best-effort.
+        if (opsReconcilerHistory && ctx && ctx.PIPELINE) {
+            try { opsReconcilerHistory.recordSnapshot({ total: payload.total_24h, by_reason: payload.by_reason }, { pipelineDir: ctx.PIPELINE }); }
+            catch { /* no romper el endpoint por el snapshot */ }
+        }
+        return payload;
+    },
     '/api/diagnostico/reconciler-stale-orders': (state, ctx) => slices.reconcilerStaleOrdersSlice(state, ctx),
+    // #4460 — banner "Reiniciar modelo operativo". Devuelve {items:[], unknown}.
+    // `items` = issues entregados a `main` que tocaron el modelo operativo
+    // (.pipeline/**, .claude/hooks/**) pero aún no corren en el runtime vivo
+    // (bootSHA↔origin/main). `items:[]` + `unknown:false` = sin drift → el botón
+    // NO se renderiza (CA-2). `unknown:true` = marker ausente/corrupto → la UI
+    // muestra refresh, nunca "sin pendientes" (CA-8). Refresh natural 30s desde
+    // el cliente; cache TTL 45s server-side en operativo-drift.
+    '/api/dash/restart-pendiente': (state, ctx) => slices.restartPendienteSlice(state, ctx),
+    // EP8-H7 (#3960) CA-1 — historial de transiciones vivo↔muerto por servicio
+    // con agregación por motivo en ventana 7d. `?service=<svc>` filtra; sin
+    // param devuelve todos. El `lastError` ya viene redactado del store
+    // (REQ-SEC-H7-1). Degrada a payload vacío si el lib no cargó.
+    '/api/dash/ops-transitions': (state, ctx, query) => {
+        if (!opsTransitions) return { service: null, downCount: 0, byReason: {}, summary: 'caídas 7 d: 0', lastError: '', transitions: [] };
+        const service = query && typeof query.get === 'function' ? (query.get('service') || null) : null;
+        const pipelineDir = (ctx && ctx.PIPELINE) || undefined;
+        try { return opsTransitions.readTransitions(service, { pipelineDir }); }
+        catch { return { service, downCount: 0, byReason: {}, summary: 'caídas 7 d: 0', lastError: '', transitions: [] }; }
+    },
+    // EP8-H7 (#3960) CA-4 — serie temporal 7d del reconciler (sparkline). Lee
+    // del store persistido por el endpoint reconciler-stale-orders.
+    '/api/dash/reconciler-history': (state, ctx) => {
+        if (!opsReconcilerHistory) return { points: [], totals: [], windowDays: 7 };
+        const pipelineDir = (ctx && ctx.PIPELINE) || undefined;
+        try { return opsReconcilerHistory.readSeries({ pipelineDir }); }
+        catch { return { points: [], totals: [], windowDays: 7 }; }
+    },
     // #2993 — widget de handoff cross-agente. CA-C2: % hit rate, ahorro USD
     // estimado mensual, sparkline 7d. Refresh natural cada 30s desde el
     // cliente (el endpoint es stateless). Bajo `/api/dash/*` para seguir la
@@ -145,7 +1521,989 @@ const API_ROUTES = {
     // documentado en CA-C2 (nombre humano-friendly para curl/debug).
     '/api/dash/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
     '/api/handoff-metrics': (state, ctx) => slices.handoffMetricsSlice(state, ctx),
+    // #3932 EP3-H6 — KPI "Entregables por skill" (% de cierres de fase con
+    // entregable notificado, por skill). Sólo agregados numéricos (CA-5: el
+    // payload NO contiene preview/content_hash/dropfile/attachment_path).
+    // Refresh natural ~30s desde el cliente; cache 5min server-side en el lib.
+    '/api/dash/deliverables-by-skill': (state, ctx) => slices.deliverablesBySkillSlice(state, ctx),
+    // #3625 CA-5 — widget de audit trail de mutaciones a la allowlist
+    // (partial-pause). Devuelve las últimas N entries del audit log, stats
+    // de 24h y estado del hash-chain. Refresh natural 30s desde el cliente.
+    '/api/dash/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
+    '/api/partial-pause-audit': (state, ctx) => slices.partialPauseAuditSlice(state, ctx),
+    // #4371 CA-8/CA-10 — widget de audit trail de movimientos sobre olas e
+    // issues (agregar/quitar issue, cambio de prioridad, promoción/archivado).
+    // Devuelve las últimas N entries del audit log, stats de 24h y estado del
+    // hash-chain. Refresh natural 30s desde el cliente. Mismo gate loopback /
+    // Sec-Fetch-Site / no-store que el resto de `/api/dash/*`.
+    '/api/dash/wave-issue-audit': (state, ctx) => slices.waveIssueAuditSlice(state, ctx),
+    '/api/wave-issue-audit': (state, ctx) => slices.waveIssueAuditSlice(state, ctx),
+    // #4375 — indicador de estado de sincronización allowlist↔ola (semáforo
+    // read-only). Consume desync-detector.detectDesync({skipFlag,skipAlert}):
+    // observa sin mutar estado ni alertar (CA-5) y sin llamadas de red a
+    // GitHub (CA-7). Hereda el gate loopback / Sec-Fetch-Site / no-store del
+    // resto de `/api/dash/*`. Alias humano para curl/debug.
+    '/api/dash/desync-status': (state, ctx) => slices.desyncStatusSlice(state, ctx),
+    '/api/desync-status': (state, ctx) => slices.desyncStatusSlice(state, ctx),
+    // #3954 EP8-H1 CA-5 — Bandeja de alertas del Home mission-control. Lectura
+    // del audit trail (ack/snooze): últimas N entries, stats 24h, estado del
+    // hash-chain y supresiones vigentes. Refresh natural 30s desde el cliente.
+    // Hereda gate loopback CA-S2 + Sec-Fetch-Site + no-store del partial
+    // (registrado dentro de API_ROUTES). Alias humano para curl/debug.
+    '/api/dash/alert-tray': (state, ctx) => slices.alertTraySlice(state, ctx),
+    '/api/alert-tray': (state, ctx) => slices.alertTraySlice(state, ctx),
+    // #3897 CA-4 — métrica de precisión de Sherlock (épico #3894). SEC-6: el
+    // slice devuelve SOLO agregados numéricos/booleanos (ratio, contadores,
+    // not_verifiable count) — nunca claims/comandos/stdout del audit JSONL.
+    // Registrado DENTRO de API_ROUTES (no handler propio) para heredar el
+    // gate loopback CA-S2 + Sec-Fetch-Site CA-S3 + no-store/nosniff CA-S5
+    // del endpoint partial (A01). Alias humano para curl/debug, mismo patrón
+    // que `/api/handoff-metrics`.
+    '/api/dash/sherlock-precision': (state, ctx) => slices.sherlockPrecisionSlice(state, ctx),
+    '/api/sherlock-precision': (state, ctx) => slices.sherlockPrecisionSlice(state, ctx),
+    // #3492 — ETA agregada por ola (probabilística p50/p75/p90). El cálculo
+    // vive en `lib/eta-wave.js`; dashboard.js lo refresca fire-and-forget en
+    // un cache TTL 30s y lo publica en `state.olaETA`. Si el módulo no cargó
+    // (pipeline antiguo) o el primer refresh aún no completó, devolvemos
+    // `{ ready: false }` para que la vista muestre placeholder sin error.
+    // Formato de minutos (`45m` / `1h 2m`) se calcula en la VISTA (CA-23).
+    '/api/dash/ola-eta': (state) => {
+        const data = state && state.olaETA;
+        if (!data) return { ready: false };
+        return {
+            ready: true,
+            issues: data.issues || [],
+            totalP50: data.totalP50,
+            totalP75: data.totalP75,
+            totalP90: data.totalP90,
+            byIssue: data.byIssue || {},
+            concurrencyUsed: data.concurrencyUsed,
+            bySize: data.bySize,
+            rebounceRate: data.rebounceRate,
+            // #4287 (CA-1) — fuente determinística de avance/velocidad de la ola
+            // para que la HOME hidrate `mission-avance-pct`/`mission-vel-value`
+            // desde el MISMO cómputo que el handler de estado de ola (no desde
+            // conteos de issues client-side). `velocityETA` es null hasta que hay
+            // ritmo medido; `etaSource` distingue 'velocity' de 'fallback'.
+            velocityETA: data.velocityETA || null,
+            etaSource: data.etaSource || 'fallback',
+            totalPct: Number.isFinite(data.totalPct) ? data.totalPct : null,
+            // #4450 (R-2) — throughput de entrega de la ola (issues/día) + estado.
+            // Sólo agregados numéricos/estado; sin metadata interna de issues.
+            throughputPerDay: Number.isFinite(data.throughputPerDay) ? data.throughputPerDay : null,
+            throughputState: data.throughputState === 'measured' ? 'measured' : 'insufficient',
+            // #4500 — serie temporal de avance para el sparkline de ritmo del
+            // Timeline. Whitelist numérico estricto: SÓLO `{ts, avancePct}` finitos,
+            // nunca metadata interna de issues (A03/A08). Degrada a `[]` si el cache
+            // no la trae (pipeline previo a #4500 o primer refresh sin snapshots).
+            series: Array.isArray(data.series)
+                ? data.series
+                    .filter((s) => s && Number.isFinite(s.ts) && Number.isFinite(s.avancePct))
+                    .map((s) => ({ ts: s.ts, avancePct: s.avancePct }))
+                : [],
+            // #4588 — ETA descompuesto (pipeline-bound vs operador-bound) + métrica
+            // de espera de operador. El cache ya lo trae proyectado a campos
+            // públicos (`_projectOperatorWaitPublic`): SÓLO números finitos y labels
+            // de gate CONGELADOS (GATE 1/2/0), sin paths/tokens/nombres de estado
+            // (CA-10 / A01). Degrada a `{enabled:false}` si el cache no lo trae.
+            operatorWait: (data.operatorWait && typeof data.operatorWait === 'object')
+                ? data.operatorWait
+                : { enabled: false },
+            refreshedAt: data.refreshedAt,
+        };
+    },
+    // #3259 / CA-6 — Despachos por provider últimas 24h (lectura del activity
+    // log). Síncrono y barato; el card en la home dashboard lo poltea cada 30s.
+    '/api/dash/dispatch-by-provider': () => {
+        if (!providerHealth) return { error: 'module_unavailable', total: 0, totals: {} };
+        return providerHealth.getDispatchByProvider();
+    },
+    '/api/dashboard/dispatch-by-provider': () => {
+        if (!providerHealth) return { error: 'module_unavailable', total: 0, totals: {} };
+        return providerHealth.getDispatchByProvider();
+    },
+    // #3487 — Widget "Próximas Olas". Endpoint best-effort: consume
+    // lib/waves.js, retorna {active_wave, next_wave, updated_at} con
+    // whitelist explícito de campos y normalización a strings/numbers
+    // conocidos. Cualquier error de lectura/parse degrada a payload
+    // vacío con `message: "Planificación no disponible"` y HTTP 200
+    // (CA-7). Reusa sendJson() → Cache-Control: no-store coherente
+    // con el resto de /api/dash/*.
+    '/api/dash/waves': (state, ctx) => buildWavesPayload(state, ctx && ctx.PIPELINE),
+    // #4373 (Ola 8.3) — Vista operativa consolidada del roadmap de olas.
+    // Consolida activa + planificadas + archivadas + hijos/prioridad + avance +
+    // bloqueos + ETA en un payload whitelisteado (CA-S3, vía roadmapSlice). Lectura
+    // OFFLINE (title-cache + waves.json + state.olaETA/bloqueados), sin `gh` en
+    // runtime (CA-10). Hereda el dispatch GET de API_ROUTES + headers no-store de
+    // sendJson (CA-S2). Degrada a payload con activa/archivadas vacías sin throw.
+    '/api/dash/roadmap': (state, ctx) => slices.roadmapSlice(state || {}, ctx),
+    // #3681 — Widget Multi-Provider Coverage. Lee `.pipeline/multi-provider-coverage.json`
+    // (output runtime del harness #3680), valida con ajv contra el schema canónico
+    // y sanitiza el payload con whitelist explícita por campo. NUNCA expone
+    // API key prefixes, hostnames, latencias absolutas ni raw output (CA-B3 +
+    // REQ-SEC-B4). Si el JSON falta, no valida o el módulo (o ajv) no cargan,
+    // retorna `{error: 'coverage_unavailable', reason, _status: 503}` — el
+    // mapper de status en handle() lo convierte a HTTP 503 (CA-B2). Síncrono
+    // (lectura FS local barata, no se registra en ASYNC_API_ROUTES).
+    '/api/dash/multi-provider-coverage': () => {
+        if (!multiProviderCoverage) {
+            return { error: 'coverage_unavailable', reason: 'module_unavailable', _status: 503 };
+        }
+        try {
+            return multiProviderCoverage.buildCoveragePayload();
+        } catch {
+            return { error: 'coverage_unavailable', reason: 'io_error', _status: 503 };
+        }
+    },
+    // #3963 EP8 — Historial como timeline agrupado por día, paginado y filtrado
+    // server-side. Parsea el querystring (skill / resultado / issue / q / period
+    // / cursor / limit) y delega el cómputo a `historialTimelineSlice`. NUNCA
+    // devuelve el historial completo: el slice acota el límite máximo por request
+    // (HIST_PAGE_MAX) y la búsqueda es match literal (no RegExp → ReDoS-safe).
+    // Hereda Cache-Control: no-store de sendJson() como el resto de /api/dash/*.
+    '/api/dash/historial': (state, ctx, query) => {
+        const q = query || new URLSearchParams();
+        // Colector de entregables best-effort (CA-2). Issue-scoped, repo-root
+        // como base. Si el módulo no carga o falla, degrada a [] (CA-3).
+        const repoRoot = (ctx && ctx.ROOT) ? ctx.ROOT : process.cwd();
+        let collectAttachments = null;
+        try {
+            const deliverables = require('./skill-deliverable-attachments');
+            collectAttachments = (skill, issue, fase) => {
+                try { return deliverables.collectAttachmentsForSkill(skill, issue, fase, { pipelineRoot: repoRoot }); }
+                catch { return []; }
+            };
+        } catch { collectAttachments = null; }
+        // #4199 — Resolver de proveedor por ejecución (join issue/skill/fase →
+        // provider del activity-log). Inyectado como función (mismo patrón que
+        // collectAttachments) para que el slice quede FS-free/testable. Si el
+        // índice no carga, degrada a null → el filtro de proveedor no ofrece
+        // opciones pero la pantalla sigue funcionando (CA-3).
+        let resolveProvider = null;
+        try {
+            const providerIndex = require('./activity-provider-index');
+            const activityLogPath = path.join(repoRoot, '.claude', 'activity-log.jsonl');
+            const idx = providerIndex.buildProviderIndex(activityLogPath);
+            resolveProvider = (skill, issue, fase) => {
+                try { return idx.resolve(issue, skill, fase); } catch { return null; }
+            };
+        } catch { resolveProvider = null; }
+        return slices.historialTimelineSlice(state, ctx, {
+            skill: q.get('skill') || null,
+            resultado: q.get('resultado') || null,
+            issue: q.get('issue') || null,
+            q: q.get('q') || null,
+            period: q.get('period') || 'all',
+            eventType: q.get('eventType') || q.get('tipo') || null,
+            provider: q.get('provider') || q.get('proveedor') || null,
+            cursor: q.get('cursor'),
+            limit: q.get('limit'),
+            collectAttachments,
+            resolveProvider,
+        });
+    },
+    '/api/historial': (state, ctx, query) => API_ROUTES['/api/dash/historial'](state, ctx, query),
+    // #4764 (Ola Puente P4 · split 3/3 de #4689) — Estado SEGMENTADO por producto.
+    // CA-4 · A01 (aislamiento cross-tenant / anti-IDOR): devuelve SÓLO el estado
+    // (métricas/tokens/tiempos/estado/`audit#`) del `projectId` autorizado. Es
+    // FAIL-CLOSED: sin `projectId`, o inválido/inexistente/no-autorizado → `_status:
+    // 403`, NUNCA el agregado global de todos los productos (CA-4.3).
+    //
+    // La autorización se deriva OUT-OF-BAND del propio estado (`state.productState`,
+    // el mapa `projectId → estado` que publica el supervisor), no del query crudo
+    // (anti-IDOR CA-4.2). El `projectId` del request se valida contra ese contexto.
+    // Hereda el gate loopback CA-S2 + Sec-Fetch-Site + no-store del dispatch de
+    // API_ROUTES. Alias humano `/api/product-state` para curl/debug.
+    '/api/dash/product-state': (state, ctx, query) => productStateHandler(state, ctx, query),
+    '/api/product-state': (state, ctx, query) => productStateHandler(state, ctx, query),
 };
+
+// #4764 — Handler compartido del estado segmentado. Fuera del literal para poder
+// reutilizarlo entre `/api/dash/product-state` y su alias sin duplicar lógica.
+// Fail-closed en cada rama; el `_status: 403` lo mapea el dispatcher a HTTP 403.
+function productStateHandler(state, ctx, query) {
+    // Módulo no disponible (pipeline previo a #4764) → fail-closed, nunca agregado.
+    if (!productStateSegment) {
+        return { error: 'forbidden', reason: 'module_unavailable', _status: 403 };
+    }
+    // Fuente de estado por producto publicada por el supervisor. Ausente (modo
+    // single-product / aún no cableado) → fail-closed, jamás el agregado global.
+    const stateByProjectId = (state && state.productState && typeof state.productState === 'object')
+        ? state.productState
+        : {};
+    // Autorización out-of-band: si el contexto declara ids autorizados, se usan;
+    // si no, sólo los productos conocidos (una consulta = un producto, nunca todos).
+    const authorizedProjectIds = (ctx && Array.isArray(ctx.authorizedProjectIds))
+        ? ctx.authorizedProjectIds
+        : undefined;
+    const requestedProjectId = (query && typeof query.get === 'function') ? query.get('projectId') : null;
+    const res = productStateSegment.segmentProductState({
+        requestedProjectId,
+        authorizedProjectIds,
+        stateByProjectId,
+    });
+    // Traducir el `status` del núcleo al patrón `_status` opt-in del dispatcher.
+    if (res.status !== 200) {
+        return { ...res.payload, _status: res.status };
+    }
+    return res.payload;
+}
+
+// #3259 / CA-5 — Rutas ASYNC (devuelven Promise). El handler las awaitea.
+// `/api/pulpo/provider-health` corre live-ping detrás del cache TTL 5min, no
+// martilla las APIs. Allowlist de providers fija en live-ping.js (SSRF
+// defense). Rate-limit aplicado en `handle()`.
+const ASYNC_API_ROUTES = {
+    '/api/pulpo/provider-health': async () => {
+        if (!providerHealth) return { error: 'module_unavailable', providers: [] };
+        return await providerHealth.getProviderHealth();
+    },
+};
+
+// #3954 EP8-H1 CA-12 — Headers fijos de las respuestas de los endpoints
+// mutantes (ack/snooze): no-store evita cache de un POST, nosniff evita
+// reinterpretación MIME, no-referrer no filtra a terceros. Mismo criterio que
+// `sendPartialHtml`.
+function sendMutationJson(res, payload, status = 200) {
+    const body = JSON.stringify(payload);
+    res.writeHead(status, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+        'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+}
+
+// #3954 REQ-SEC-8 — Lectura de body con cap de bytes. ack/snooze son payloads
+// minúsculos; cualquier cosa por encima de 4KB se rechaza (413) y la conexión
+// se corta (`req.destroy()`) para no mantener un socket abierto leyendo basura
+// (defensa DoS).
+const ALERT_BODY_MAX_BYTES = 4096;
+function readBodyCapped(req, cap, onDone) {
+    let size = 0;
+    const chunks = [];
+    let finished = false;
+    const finish = (err, body) => { if (finished) return; finished = true; onDone(err, body); };
+    req.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > cap) {
+            finish(new Error('body_too_large'));
+            try { req.destroy(); } catch { /* noop */ }
+            return;
+        }
+        chunks.push(chunk);
+    });
+    req.on('end', () => finish(null, Buffer.concat(chunks).toString('utf8')));
+    req.on('error', (e) => finish(e));
+}
+
+// #3954 EP8-H1 CA-12 — Endpoints mutantes (PRIMEROS POST del dashboard).
+// Replica LITERALMENTE el cinturón de gates de `/dashboard/partial`, en orden:
+//   método incorrecto → 405
+//   no-loopback       → 403 (gatea aun si DASHBOARD_HOST cambia el bind — REQ-SEC-7)
+//   cross-site        → 403 (anti-CSRF — REQ-SEC-1)
+//   Content-Type inválido → 415
+//   body sobre el cap → 413 (REQ-SEC-8)
+//   snooze fuera de allowlist / alertId inválido → 400 (validado server-side)
+// El actor se graba server-side fijo (`operador-local`), NUNCA del body (REQ-SEC-3).
+// Devuelve true si la ruta es una de las mutantes (la maneja, con respuesta
+// sync o async); false si no le corresponde (sigue el resto del router).
+function handleAlertMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    const isAck = pathnameOnly === '/dashboard/alert/ack';
+    const isSnooze = pathnameOnly === '/dashboard/alert/snooze';
+    if (!isAck && !isSnooze) return false;
+
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, 'alert_method_not_allowed');
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-1/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, 'alert_non_loopback');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, 'alert_cross_origin');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, 'alert_bad_content_type');
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+    // Módulo de store disponible.
+    if (!alertTrayAudit) {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    // Gate 5 — body con cap (REQ-SEC-8) + parseo + acción.
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? 'alert_body_too_large' : 'alert_body_read_error');
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        // NUNCA leemos `actor` del body (REQ-SEC-3): lo graba el store fijo.
+        const alertId = parsed.alertId != null ? parsed.alertId : parsed.alert_id;
+        const justification = typeof parsed.justification === 'string' ? parsed.justification : undefined;
+        try {
+            let result;
+            if (isSnooze) {
+                const hours = parsed.hours != null ? parsed.hours : parsed.snoozeHours;
+                result = alertTrayAudit.recordSnooze({ alertId, snoozeHours: hours, justification });
+            } else {
+                result = alertTrayAudit.recordAck({ alertId, justification });
+            }
+            if (!result.applied) {
+                // Validación server-side falló (alertId fuera de allowlist o
+                // snooze fuera de 1/4/24h). Body genérico — no reflejamos input.
+                sendMutationJson(res, { error: 'bad_request', applied: false }, 400);
+                return;
+            }
+            sendMutationJson(res, { ok: true, applied: true, actor: alertTrayAudit.FIXED_ACTOR }, 200);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'alert_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
+// #3962 EP8-H9 CA-4 — Endpoint mutante del presupuesto mensual. Replica
+// LITERALMENTE el cinturón de gates de `handleAlertMutation`, en el MISMO orden:
+//   método≠POST → 405
+//   no-loopback → 403 (REQ-SEC-1/7, independiente del bind)
+//   cross-site  → 403 (anti-CSRF, REQ-SEC-1)
+//   Content-Type≠json → 415
+//   body sobre cap → 413 (REQ-SEC-8)
+//   valor inválido (no-number / NaN / Infinity / ≤0 / > cota / notación
+//     científica / string) → 400 SIN reflejar el input (REQ-SEC A03)
+// El actor se graba server-side FIJO (`operador-local`), NUNCA del body
+// (REQ-SEC-3). Persistencia atómica tmp+rename (en budget-config.writeBudget).
+function handleBudgetMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/costos/budget') return false;
+
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, 'budget_method_not_allowed');
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-1/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, 'budget_non_loopback');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, 'budget_cross_origin');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, 'budget_bad_content_type');
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+    // Módulo de persistencia disponible.
+    if (!budgetConfig) {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    // Gate 5 — body con cap (REQ-SEC-8) + parseo + validación estricta del valor.
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? 'budget_body_too_large' : 'budget_body_read_error');
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        // Validación server-side ESTRICTA (REQ-SEC A03):
+        const value = parsed.monthlyUsd;
+        const n = Number(value);
+        const rawStr = String(value);
+        const valid = typeof value === 'number'        // rechaza strings ("100")
+            && Number.isFinite(n)                       // rechaza NaN / Infinity
+            && n > 0                                     // rechaza ≤ 0
+            && n <= BUDGET_MAX                           // rechaza por encima de la cota
+            && !/[eE]/.test(rawStr);                     // rechaza notación científica (1e3)
+        if (!valid) {
+            // Body genérico — NO reflejamos el input crudo.
+            sendMutationJson(res, { error: 'bad_request', applied: false }, 400);
+            return;
+        }
+        try {
+            budgetConfig.writeBudget(n, { actor: 'operador-local' }); // actor FIJO, atómico tmp+rename
+            sendMutationJson(res, { ok: true, applied: true, actor: 'operador-local' }, 200);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'budget_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
+// #4378 — Endpoint mutante para archivar una ola. Replica LITERALMENTE el
+// cinturón de gates de `handleBudgetMutation`, en el MISMO orden:
+//   método≠POST → 405
+//   no-loopback → 403 (REQ-SEC-1/7, independiente del bind)
+//   cross-site  → 403 (anti-CSRF, REQ-SEC-1)
+//   Content-Type≠json → 415
+//   body sobre cap → 413 (REQ-SEC-8)
+//   waveNumber inválido (no-int / ≤0 / float / string) → 400 SIN reflejar input
+// El actor se graba server-side FIJO (`operador-local`), NUNCA del body.
+// La ruta SOLO llama `waves.archiveWave(num, ...)` — cero fs.writeFileSync sobre
+// waves.json (CA-7). NO expone `force` (operación de mayor riesgo — vía CLI).
+function handleWaveArchiveMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/archive') return false;
+
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, 'wave_archive_method_not_allowed');
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-1/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, 'wave_archive_non_loopback');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, 'wave_archive_cross_origin');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, 'wave_archive_bad_content_type');
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+
+    // Módulo de olas disponible.
+    let waves;
+    try { waves = require('./waves'); } catch { waves = null; }
+    if (!waves || typeof waves.archiveWave !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    // Gate 5 — body con cap (REQ-SEC-8) + parseo + validación estricta.
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? 'wave_archive_body_too_large' : 'wave_archive_body_read_error');
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        // Validación server-side ESTRICTA del número de ola (path safety CA-7):
+        // entero positivo. Rechaza float / string / ≤0 / NaN SIN reflejar input.
+        const value = parsed.waveNumber != null ? parsed.waveNumber : parsed.wave_number;
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+            sendMutationJson(res, { error: 'bad_request', applied: false }, 400);
+            return;
+        }
+        // Gate fail-closed (marker .failed de archive activo).
+        try {
+            if (typeof waves.isWaveArchiveBlocked === 'function' && waves.isWaveArchiveBlocked().blocked) {
+                sendMutationJson(res, { error: 'archive_blocked', applied: false }, 409);
+                return;
+            }
+        } catch { /* si el check falla, seguimos: archiveWave revalida el gate */ }
+
+        try {
+            const result = waves.archiveWave(value, {
+                updated_by: 'operador-local',   // actor FIJO, nunca del body (REQ-SEC-3)
+                source: 'dashboard/wave-archive',
+                note: `archive wave ${value} (dashboard)`,
+            });
+            sendMutationJson(res, {
+                ok: true,
+                applied: !!result.archived,
+                alreadyArchived: result.reason === 'already-archived',
+                actor: 'operador-local',
+            }, 200);
+        } catch (e) {
+            const code = e && e.code ? e.code : '';
+            if (code === 'ACTIVE_IN_FLIGHT') {
+                // 409 Conflict — la activa tiene issues no cerrados (sin force).
+                sendMutationJson(res, { error: 'active_in_flight', applied: false }, 409);
+                return;
+            }
+            if (code === 'NOT_FOUND') {
+                sendMutationJson(res, { error: 'not_found', applied: false }, 404);
+                return;
+            }
+            if (code === 'ARCHIVE_BLOCKED') {
+                sendMutationJson(res, { error: 'archive_blocked', applied: false }, 409);
+                return;
+            }
+            try { console.error(JSON.stringify({ event: 'wave_archive_mutation_error', code, msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
+// #4435 — Cap defensivo de issues que una promoción puede sumar a la allowlist
+// (REQ-SEC-4/CA-4). Espejo del `promoteCapIssues` de dashboard.js:11525 — misma
+// semántica anti-DoS que el promote de candidatos.
+const WAVE_PROMOTE_CAP_ISSUES = 50;
+
+// #4435 — Set de issues cerrados CONFIRMADOS según waves.json (filesystem propio,
+// in-process). Un issue se considera cerrado si su `status` en cualquier ola es
+// `completed`. Alimenta el predicado `isClosed` de `expandRecursiveOpenIssues`
+// SIN consultar GitHub ni shell (REQ-SEC-3). Fail-safe (SEC-4): lo que no
+// aparezca acá queda indeterminado → se conserva en la allowlist.
+function _buildWaveClosedSet(waves) {
+    const closed = new Set();
+    try {
+        const state = waves.loadWaves();
+        const buckets = [];
+        if (state && state.active_wave) buckets.push(state.active_wave);
+        if (state && Array.isArray(state.planned_waves)) buckets.push(...state.planned_waves);
+        if (state && Array.isArray(state.archived_waves)) buckets.push(...state.archived_waves);
+        for (const w of buckets) {
+            if (!w || !Array.isArray(w.issues)) continue;
+            for (const it of w.issues) {
+                if (it && Number.isInteger(it.number) && it.status === 'completed') {
+                    closed.add(it.number);
+                }
+            }
+        }
+    } catch { /* fail-safe: sin datos legibles → nada cerrado, todo se conserva */ }
+    return closed;
+}
+
+// #4435 — Endpoint mutante para PROMOVER una ola planificada → activa,
+// sincronizando la allowlist (`.partial-pause.json`) con los issues de la ola +
+// hijos/dependencias recursivas ABIERTOS (motor #4350). Replica LITERALMENTE el
+// cinturón de gates de `handleWaveArchiveMutation`, en el MISMO orden:
+//   método≠POST → 405 · no-loopback → 403 · cross-site → 403 (anti-CSRF,
+//   REQ-SEC-1) · Content-Type≠json → 415 · body sobre cap → 413 · waveNumber
+//   inválido → 400 (SIN reflejar input — REQ-SEC-2/CA-6).
+//
+// Sobre esa base agrega el flujo preview→confirm + cap (plantilla
+// `/api/allowlist-candidates/:issue/promote`), gobernado por `body.confirmed`:
+//   - Invariante "una sola ola activa" (REQ-SEC-5/CA-3): chequeo server-side
+//     ANTES de escribir; la carrera doble-submit la corta el marker
+//     transaccional de `promoteWaveAtomic` (lanza si hay otra promoción en curso).
+//   - Expansión 100% in-process (REQ-SEC-3/CA-2): `expandRecursiveOpenIssues`
+//     camina el grafo `dependencies[]` de waves.json (`getBlockingIssues`) — sin
+//     red, sin shell, sin interpolar `waveNumber` en un path. El set expandido
+//     se pasa como AUTORITATIVO a `promoteWaveAtomic` (`metadata.expandedIssues`);
+//     waves.js NO re-consulta GitHub.
+//   - Cap defensivo (REQ-SEC-4/CA-4): si el set supera `WAVE_PROMOTE_CAP_ISSUES`
+//     → `PROMOTE_CAP_EXCEEDED` (409) sin escribir.
+//   - Preview (sin `confirmed:true`): devuelve el total sin mutar.
+// El actor se graba server-side FIJO (`operador-local`), NUNCA del body
+// (REQ-SEC-6). El audit `wave_promoted` lo emite `promoteWaveAtomic`
+// (`emitPromoteAudit`) → CA-8.
+function handleWavePromoteMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/promote') return false;
+
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, 'wave_promote_method_not_allowed');
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-1/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, 'wave_promote_non_loopback');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, 'wave_promote_cross_origin');
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, 'wave_promote_bad_content_type');
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+
+    // Módulos de dominio disponibles (motor #4350 in-process).
+    let waves, recursivePromote;
+    try { waves = require('./waves'); } catch { waves = null; }
+    try { recursivePromote = require('./allowlist-recursive-promote'); } catch { recursivePromote = null; }
+    if (!waves
+        || typeof waves.promoteWaveAtomic !== 'function'
+        || typeof waves.getActiveWave !== 'function'
+        || typeof waves.getPlannedWave !== 'function'
+        || typeof waves.getBlockingIssues !== 'function'
+        || !recursivePromote
+        || typeof recursivePromote.expandRecursiveOpenIssues !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    // Gate 5 — body con cap (REQ-SEC-8) + parseo + validación estricta.
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? 'wave_promote_body_too_large' : 'wave_promote_body_read_error');
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        // Validación server-side ESTRICTA del número de ola (path safety CA-6):
+        // entero positivo. Rechaza float / string / ≤0 / NaN SIN reflejar input.
+        const value = parsed.waveNumber != null ? parsed.waveNumber : parsed.wave_number;
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+            sendMutationJson(res, { error: 'bad_request', applied: false }, 400);
+            return;
+        }
+        const confirmed = parsed.confirmed === true;
+
+        try {
+            // Gate fail-closed (marker .failed de promote activo).
+            if (typeof waves.isWavePromoteBlocked === 'function' && waves.isWavePromoteBlocked().blocked) {
+                sendMutationJson(res, { error: 'promote_blocked', applied: false }, 409);
+                return;
+            }
+            // Invariante "una sola ola activa" (REQ-SEC-5/CA-3) — server-side,
+            // ANTES de escribir. La carrera doble-submit la corta el marker de
+            // promoteWaveAtomic (ver catch abajo).
+            const active = waves.getActiveWave();
+            if (active) {
+                sendMutationJson(res, { error: 'active_wave_exists', applied: false }, 409);
+                return;
+            }
+            // La ola planificada debe existir.
+            const planned = waves.getPlannedWave(value);
+            if (!planned) {
+                sendMutationJson(res, { error: 'not_found', applied: false }, 404);
+                return;
+            }
+
+            // Expansión recursiva IN-PROCESS (REQ-SEC-3/CA-2): seeds = issues de
+            // la ola; getDeps camina el grafo `dependencies[]` de waves.json;
+            // isClosed filtra SOLO cierres confirmados por filesystem (fail-safe:
+            // indeterminado se conserva). Sin red, sin GitHub, sin shell.
+            const seedIssues = Array.isArray(planned.issues)
+                ? planned.issues.map((i) => i && i.number).filter((n) => Number.isInteger(n) && n > 0)
+                : [];
+            const closedSet = _buildWaveClosedSet(waves);
+            const expandedIssues = recursivePromote.expandRecursiveOpenIssues({
+                seedIssues,
+                isClosed: (n) => closedSet.has(n),
+                getDeps: (n) => waves.getBlockingIssues(n),
+            });
+
+            // Cap defensivo (REQ-SEC-4/CA-4). Como el chequeo de invariante ya
+            // garantizó que NO hay ola activa, la allowlist final ES el set
+            // expandido → el cap aplica sobre su tamaño total.
+            if (expandedIssues.length > WAVE_PROMOTE_CAP_ISSUES) {
+                sendMutationJson(res, {
+                    error: 'PROMOTE_CAP_EXCEEDED',
+                    applied: false,
+                    total: expandedIssues.length,
+                    cap: WAVE_PROMOTE_CAP_ISSUES,
+                }, 409);
+                return;
+            }
+
+            // Preview (sin confirmed:true) — NO escribe (REQ-SEC-4/CA-4).
+            if (!confirmed) {
+                sendMutationJson(res, {
+                    ok: true,
+                    preview: true,
+                    waveNumber: value,
+                    toAdd: expandedIssues,
+                    finalAllowlist: expandedIssues,
+                    total: expandedIssues.length,
+                }, 200);
+                return;
+            }
+
+            // Confirmado — promoción atómica con el set expandido AUTORITATIVO.
+            // Actor FIJO server-side (REQ-SEC-6); waves.js emite `wave_promoted`.
+            const result = waves.promoteWaveAtomic(value, {
+                expandedIssues,
+                updated_by: 'operador-local',
+                source: 'dashboard/wave-promote',
+                note: `promote wave ${value} → active (dashboard)`,
+            });
+            sendMutationJson(res, {
+                ok: true,
+                applied: true,
+                preview: false,
+                actor: 'operador-local',
+                waveNumber: value,
+                total: (result && Array.isArray(result.newAllowlist))
+                    ? result.newAllowlist.length
+                    : expandedIssues.length,
+            }, 200);
+        } catch (e) {
+            const msg = (e && e.message) ? e.message : '';
+            // Doble-submit / carrera: el marker transaccional de promoteWaveAtomic
+            // lanza si hay otra promoción en curso (REQ-SEC-5). 409, no 500.
+            if (/transacci[oó]n en curso/i.test(msg) || /crear marker/i.test(msg)) {
+                sendMutationJson(res, { error: 'promote_in_progress', applied: false }, 409);
+                return;
+            }
+            try { console.error(JSON.stringify({ event: 'wave_promote_mutation_error', msg, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
+// =============================================================================
+// #4436 — Endpoints mutantes de ciclo de vida de la ola activa desde la ventana
+// Roadmap: pausar / reanudar / relanzar despacho. Cablean a los MISMOS
+// primitivos que hoy usa la consola (sin lógica nueva de pausa, CA-6): cada uno
+// pasa el idéntico "cinturón de gates" de `handleWaveArchiveMutation`
+// (método POST → 405 · loopback → 403 · same-origin → 403 · Content-Type JSON →
+// 415 · body cap+parse → 413/400), y la mutación pasa SIEMPRE por
+// `lib/partial-pause.js` / `lib/wave-dispatch.js` (single-writer de los markers,
+// REQ-SEC-3/A08) con un `authorizedBy` FIJO server-side (REQ-SEC-6, nunca del
+// body). NINGUNA de estas rutas escribe `.paused` / `.partial-pause.json` directo.
+// =============================================================================
+
+// Corre el cinturón de gates común a las 3 rutas de ciclo de vida. Devuelve
+// `true` si YA respondió (rechazo) — el caller debe cortar. `false` si pasó
+// todos los gates (sin cuerpo aún: el body se lee en el caller con readBodyCapped
+// porque cada primitivo interpreta el payload distinto).
+function _waveLifecycleGates(req, res, rejectTag) {
+    // Gate 1 — método.
+    if (req.method !== 'POST') {
+        _logPartialRejected(req, `${rejectTag}_method_not_allowed`);
+        sendMutationJson(res, { error: 'method_not_allowed' }, 405);
+        return true;
+    }
+    // Gate 2 — loopback (REQ-SEC-2/7, independiente del bind).
+    if (!isLoopbackReq(req)) {
+        _logPartialRejected(req, `${rejectTag}_non_loopback`);
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 3 — same-origin (anti-CSRF, REQ-SEC-1).
+    if (!isSameOriginFetch(req)) {
+        _logPartialRejected(req, `${rejectTag}_cross_origin`);
+        sendMutationJson(res, { error: 'forbidden' }, 403);
+        return true;
+    }
+    // Gate 4 — Content-Type debe ser JSON.
+    const ct = (req.headers && req.headers['content-type']) || '';
+    if (!/^application\/json\b/i.test(ct)) {
+        _logPartialRejected(req, `${rejectTag}_bad_content_type`);
+        sendMutationJson(res, { error: 'unsupported_media_type' }, 415);
+        return true;
+    }
+    return false;
+}
+
+// Gate 5 (body cap + parse JSON defensivo) compartido. Invoca `onParsed(parsed)`
+// con el objeto parseado (o `{}` si el body venía vacío). Ante cap → 413, ante
+// JSON malformado → 400 (REQ-SEC-4). Estas rutas no exigen ningún campo del body
+// (pausar/reanudar/relanzar operan sobre el estado global / la ola activa), pero
+// igual aplican el cap y el parse estricto para no diferir del contrato de gates.
+function _waveLifecycleBody(req, res, rejectTag, onParsed) {
+    readBodyCapped(req, ALERT_BODY_MAX_BYTES, (err, raw) => {
+        if (err) {
+            const tooLarge = err.message === 'body_too_large';
+            _logPartialRejected(req, tooLarge ? `${rejectTag}_body_too_large` : `${rejectTag}_body_read_error`);
+            sendMutationJson(res, { error: tooLarge ? 'payload_too_large' : 'bad_request' }, tooLarge ? 413 : 400);
+            return;
+        }
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') {
+            sendMutationJson(res, { error: 'bad_request' }, 400);
+            return;
+        }
+        onParsed(parsed);
+    });
+}
+
+// POST /dashboard/wave/pause — halt total del pipeline (equivalente exacto de
+// `/pausar` de consola). Mapea a `setFullPause` (CA-1). Marker `.paused` bajo
+// lock + audit con `authorizedBy: 'pause:dashboard'`.
+function handleWavePauseMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/pause') return false;
+    if (_waveLifecycleGates(req, res, 'wave_pause')) return true;
+
+    // #5179 grupo 3 — mutación vía el envoltorio único de estado operativo.
+    let pp;
+    try { pp = require('./operational-state'); } catch { pp = null; }
+    if (!pp || typeof pp.setFullPause !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    _waveLifecycleBody(req, res, 'wave_pause', () => {
+        try {
+            const result = pp.setFullPause({
+                source: 'dashboard/wave-pause',
+                authorizedBy: 'pause:dashboard',       // actor FIJO (REQ-SEC-6), nunca del body
+                justification: 'Pausar la ola activa desde el dashboard (halt total)',
+            });
+            sendMutationJson(res, {
+                ok: true,
+                applied: !!(result && result.ok),
+                alreadyPaused: !!(result && result.existedBefore),
+                authorizedBy: 'pause:dashboard',
+            }, 200);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'wave_pause_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
+// POST /dashboard/wave/resume — reanudar (equivalente exacto de `/reanudar` de
+// consola). Mapea a `resumeAll` (CA-2): levanta el halt total y limpia la pausa
+// parcial. Si el gate de allowlist rechaza el removal → 409.
+function handleWaveResumeMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/resume') return false;
+    if (_waveLifecycleGates(req, res, 'wave_resume')) return true;
+
+    // #5179 grupo 3 — mutación vía el envoltorio único de estado operativo.
+    let pp;
+    try { pp = require('./operational-state'); } catch { pp = null; }
+    if (!pp || typeof pp.resumeAll !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    _waveLifecycleBody(req, res, 'wave_resume', () => {
+        try {
+            const result = pp.resumeAll({
+                source: 'dashboard/wave-resume',
+                authorizedBy: 'resume:dashboard',      // actor FIJO (REQ-SEC-6)
+                justification: 'Reanudar la ola desde el dashboard',
+            });
+            if (result && result.rejected) {
+                sendMutationJson(res, { error: 'gate_rejected', applied: false }, 409);
+                return;
+            }
+            sendMutationJson(res, {
+                ok: true,
+                applied: !!(result && (result.removedFull || result.removedPartial)),
+                removedFull: !!(result && result.removedFull),
+                removedPartial: !!(result && result.removedPartial),
+                authorizedBy: 'resume:dashboard',
+            }, 200);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'wave_resume_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
+
+// POST /dashboard/wave/dispatch — relanzar el despacho de la ola YA ACTIVA
+// (decisión PO: re-kick, NO promover una nueva ola). Mapea a
+// `wave-dispatch.realignActiveWaveDispatch` (CA-3): re-materializa la allowlist a
+// los issues abiertos de la ola activa vía el gate auditado de partial-pause con
+// `authorizedBy: 'dispatch:dashboard'`. Sin ola activa → 409.
+function handleWaveDispatchMutation(req, res) {
+    const pathnameOnly = (req.url || '').split('?')[0];
+    if (pathnameOnly !== '/dashboard/wave/dispatch') return false;
+    if (_waveLifecycleGates(req, res, 'wave_dispatch')) return true;
+
+    let dispatch;
+    try { dispatch = require('./wave-dispatch'); } catch { dispatch = null; }
+    if (!dispatch || typeof dispatch.realignActiveWaveDispatch !== 'function') {
+        sendMutationJson(res, { error: 'module_unavailable' }, 503);
+        return true;
+    }
+
+    _waveLifecycleBody(req, res, 'wave_dispatch', () => {
+        try {
+            const result = dispatch.realignActiveWaveDispatch({
+                source: 'dashboard/wave-dispatch',
+                authorizedBy: 'dispatch:dashboard',    // actor FIJO (REQ-SEC-6)
+                justification: 'Relanzar el despacho de la ola activa desde el dashboard',
+            });
+            if (result && result.ok) {
+                sendMutationJson(res, {
+                    ok: true,
+                    applied: true,
+                    activeWave: result.activeWave != null ? result.activeWave : null,
+                    count: Array.isArray(result.allowlist) ? result.allowlist.length : 0,
+                    authorizedBy: 'dispatch:dashboard',
+                }, 200);
+                return;
+            }
+            const reason = (result && result.reason) || 'unknown';
+            if (reason === 'no_active_wave') {
+                sendMutationJson(res, { error: 'no_active_wave', applied: false }, 409);
+                return;
+            }
+            if (reason === 'gate_rejected') {
+                sendMutationJson(res, { error: 'gate_rejected', applied: false }, 409);
+                return;
+            }
+            if (reason === 'empty_expansion') {
+                // Fail-safe: no había issues abiertos para re-materializar. No es un
+                // error del operador — la ola no tiene trabajo pendiente.
+                sendMutationJson(res, { ok: true, applied: false, reason: 'empty_expansion' }, 200);
+                return;
+            }
+            sendMutationJson(res, { error: 'internal_error', reason }, 500);
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'wave_dispatch_mutation_error', msg: e && e.message, ts: new Date().toISOString() })); } catch {}
+            sendMutationJson(res, { error: 'internal_error' }, 500);
+        }
+    });
+    return true;
+}
 
 function sendJson(res, payload, status = 200) {
     const body = JSON.stringify(payload);
@@ -171,7 +2529,52 @@ function sendHtml(res, html) {
  */
 function handle(req, res, ctx) {
     const url = req.url;
+
+    // #3954 EP8-H1 — Endpoints mutantes (ack/snooze). Se evalúan ANTES del
+    // gate GET-only: son las ÚNICAS rutas de escritura habilitadas. Cada una
+    // pasa su propio cinturón de gates (loopback + same-origin + Content-Type
+    // + cap de body). El resto del dashboard sigue siendo read-only.
+    if (handleAlertMutation(req, res)) return true;
+    // #3962 EP8-H9 CA-4 — endpoint mutante del presupuesto mensual. Mismo lugar
+    // que ack/snooze: ANTES del gate GET-only, con su propio cinturón de gates.
+    if (handleBudgetMutation(req, res)) return true;
+    // #4378 — endpoint mutante para archivar una ola. Mismo lugar que los
+    // anteriores: ANTES del gate GET-only, con su propio cinturón de gates.
+    if (handleWaveArchiveMutation(req, res)) return true;
+    // #4435 — endpoint mutante para promover una ola planificada → activa
+    // (sync de allowlist). Hermano de archive: ANTES del gate GET-only, con su
+    // propio cinturón de gates + flujo preview→confirm + cap.
+    if (handleWavePromoteMutation(req, res)) return true;
+    // #4436 — endpoints mutantes de ciclo de vida de la ola activa (pausar /
+    // reanudar / relanzar despacho). Mismo lugar y mismo cinturón de gates.
+    if (handleWavePauseMutation(req, res)) return true;
+    if (handleWaveResumeMutation(req, res)) return true;
+    if (handleWaveDispatchMutation(req, res)) return true;
+
+    // #4372 — API de gestión de olas `/api/waves/*` + `/api/roadmap/status`.
+    // Se evalúa ANTES del gate GET-only: incluye mutaciones (POST/PATCH/DELETE/PUT)
+    // con su propio cinturón de gates (loopback + same-origin + credencial +
+    // If-Match + rate-limit). Las lecturas GET también las maneja este módulo.
+    if (wavesApi && wavesApi.handleWavesApi(req, res, ctx)) return true;
+
     if (req.method !== 'GET') return false;
+
+    // #3729 (D9 narrativa UX) — compat retro del popout legacy. El link viejo
+    // `/?section=needs-human` (y `/legacy?section=...`) redirige server-side a
+    // `/dashboard?view=bloqueados` para no romper marcadores guardados por el
+    // operador. 302 (temporal) — el slug nuevo es el canónico.
+    {
+        const qIdx = url.indexOf('?');
+        if (qIdx !== -1) {
+            let sp;
+            try { sp = new URL(url, 'http://x').searchParams; } catch { sp = new URLSearchParams(); }
+            if (sp.get('section') === 'needs-human') {
+                res.writeHead(302, { 'Location': '/dashboard?view=bloqueados', 'Cache-Control': 'no-store' });
+                res.end();
+                return true;
+            }
+        }
+    }
 
     // `/` y `/v3` (alias retrocompat) sirven la nueva home kiosk vertical.
     // El render legacy se preserva en `/legacy` (servido por el catch-all
@@ -190,7 +2593,98 @@ function handle(req, res, ctx) {
         return true;
     }
 
-    const apiPath = url.split('?')[0];
+    const pathnameOnly = url.split('?')[0];
+
+    // #3723 — `/dashboard?view=<slug>` SSR shell + view inicial.
+    //
+    // CA-T1: deep-link directo (`/dashboard?view=foo` pegado en la barra
+    // del browser) renderiza SSR la vista correcta sin esperar JS. Slug
+    // desconocido → fallback a `home` con bandera `unknownViewRequested`
+    // para que el cliente muestre el banner CA-U5. NO devolvemos 400 en
+    // el SSR (el 400 vive solo en el partial endpoint, CA-S1) para no
+    // dejar al operador con pantalla en blanco si copió mal una URL.
+    //
+    // CA-S4: el slug NUNCA se refleja en el body — sólo el flag bool
+    // y el slug "efectivo" (que pertenece a la allowlist por
+    // construcción) se pasan al renderer.
+    if (pathnameOnly === '/dashboard' || pathnameOnly === '/dashboard/') {
+        let q;
+        try { q = new URL(url, 'http://x').searchParams; } catch { q = new URLSearchParams(); }
+        const raw = (q.get('view') || 'home').slice(0, VIEW_SLUG_MAX_LEN);
+        const valid = VIEW_SLUG_REGEX.test(raw) && Object.prototype.hasOwnProperty.call(VIEW_SLUGS, raw);
+        const slug = valid ? raw : 'home';
+        const opts = {
+            currentView: slug,
+            unknownViewRequested: !valid,
+            // #4778 — producto activo del switcher (validado fail-closed). Las
+            // vistas product-aware lo consumen para scopear el estado mostrado.
+            productId: _safeProductIdFromQuery(q),
+        };
+        try {
+            // #3732 — `ctx` como 2º arg: las vistas con state en vivo (ops)
+            // lo consumen; las que no (home) lo ignoran (firma retrocompatible).
+            sendHtml(res, VIEW_SLUGS[slug].render(opts, ctx));
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'dashboard_render_error', slug, msg: e.message, ts: new Date().toISOString() })); } catch {}
+            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('internal error');
+        }
+        return true;
+    }
+
+    // #3723 — `/dashboard/partial?view=<slug>` — lazy-load por DOM morphing.
+    //
+    // Orden de gates (acordado por architect + security):
+    //   CA-S2 loopback → CA-S3 Sec-Fetch-Site (sólo si presente) →
+    //   CA-S1 allowlist+regex → render.
+    //
+    // CA-S4: body genérico `'bad request'` en 400 — el slug NUNCA se refleja.
+    // Sólo va al logger estructurado JSON (CA-S6) con `slugLen` (no el slug
+    // crudo) para que probing automatizado quede visible sin abrir log-injection.
+    //
+    // CA-S7: este endpoint NO se agrega a `lib/screenshot-capture.js`
+    // ALLOWED_PATHS — el cliente browser lo invoca via `fetch` desde el
+    // propio dashboard ya cargado, NO via screenshot-capture headless.
+    if (pathnameOnly === '/dashboard/partial') {
+        // CA-S2 — loopback gate (defense-in-depth; bind ya es 127.0.0.1).
+        if (!isLoopbackReq(req)) {
+            _logPartialRejected(req, 'non_loopback');
+            res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end('forbidden');
+            return true;
+        }
+        // CA-S3 — Sec-Fetch-Site mismatch (sólo si está presente).
+        if (!isSameOriginFetch(req)) {
+            _logPartialRejected(req, 'cross_origin_fetch');
+            res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end('forbidden');
+            return true;
+        }
+        // CA-S1 — slug allowlist + regex.
+        let q;
+        try { q = new URL(url, 'http://x').searchParams; } catch { q = new URLSearchParams(); }
+        const reqSlug = (q.get('view') || '').slice(0, VIEW_SLUG_MAX_LEN);
+        if (!VIEW_SLUG_REGEX.test(reqSlug) || !Object.prototype.hasOwnProperty.call(VIEW_SLUGS, reqSlug)) {
+            _logPartialRejected(req, 'unknown_slug', reqSlug.length);
+            // CA-S1: 400, NO 404 (no leak de existencia).
+            // CA-S4: body genérico, el slug NUNCA se refleja.
+            res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end('bad request');
+            return true;
+        }
+        try {
+            // #4778 — forward del productId activo también en el morphing parcial,
+            // para que el switch mantenga el scope al recargar la vista por fetch.
+            sendPartialHtml(res, VIEW_SLUGS[reqSlug].render({ currentView: reqSlug, productId: _safeProductIdFromQuery(q) }, ctx));
+        } catch (e) {
+            try { console.error(JSON.stringify({ event: 'partial_render_error', slug: reqSlug, msg: e.message, ts: new Date().toISOString() })); } catch {}
+            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.end('internal error');
+        }
+        return true;
+    }
+
+    const apiPath = pathnameOnly;
     if (API_ROUTES[apiPath]) {
         try {
             const state = ctx.getState();
@@ -206,15 +2700,46 @@ function handle(req, res, ctx) {
                 query = new URLSearchParams();
             }
             const payload = API_ROUTES[apiPath](state, ctx, query);
-            sendJson(res, payload);
+            // #3681 — Patrón opt-in: si el handler emite `_status` (o el
+            // envelope canónico `coverage_unavailable`), lo mapeamos a HTTP
+            // 503 sin requerir refactor del resto de handlers. El campo
+            // `_status` se elimina del body — defensa: no exponer el
+            // mecanismo al cliente.
+            if (payload && typeof payload === 'object'
+                && (Number.isInteger(payload._status) || payload.error === 'coverage_unavailable')) {
+                const status = Number.isInteger(payload._status) ? payload._status : 503;
+                const { _status, ...body } = payload;
+                sendJson(res, body, status);
+            } else {
+                sendJson(res, payload);
+            }
         } catch (e) {
             sendJson(res, { error: e.message || String(e) }, 500);
         }
         return true;
     }
 
+    // #3259 / CA-5 — Rutas async (provider-health). Rate-limit inline + cache
+    // TTL 5min internamente. La respuesta nunca incluye API keys (security A02).
+    if (ASYNC_API_ROUTES[apiPath]) {
+        const ip = (req.socket && req.socket.remoteAddress) || 'unknown';
+        if (!rateLimitAllow(ip)) {
+            sendJson(res, { error: 'rate_limited', retry_after_s: 60 }, 503);
+            return true;
+        }
+        // Fire-and-forget: no awaiteamos para no bloquear el sync handle()
+        // del dashboard. El cliente cierra cuando el body llega.
+        Promise.resolve()
+            .then(() => ASYNC_API_ROUTES[apiPath](ctx.getState(), ctx))
+            .then(payload => sendJson(res, payload))
+            .catch(e => sendJson(res, { error: e.message || String(e) }, 500));
+        return true;
+    }
+
     if (HTML_ROUTES[apiPath]) {
-        try { sendHtml(res, HTML_ROUTES[apiPath]()); }
+        // #3732 — `ctx` pasado a los renderers HTML: ops lo usa para el state
+        // en vivo; el resto (sat.*) lo ignora (firma sin args, retrocompatible).
+        try { sendHtml(res, HTML_ROUTES[apiPath](ctx)); }
         catch (e) {
             res.writeHead(500, { 'Content-Type': 'text/plain' });
             res.end('error rendering page: ' + (e.message || e));
@@ -225,4 +2750,58 @@ function handle(req, res, ctx) {
     return false;
 }
 
-module.exports = { handle };
+module.exports = {
+    handle,
+    // #3723 — Allowlist canónica de slugs del router cliente.
+    // Fuente única consumida por el navbar (#3726). NO duplicar en otra parte.
+    VIEW_SLUGS,
+    VIEW_SLUG_REGEX,
+    // Exportados para tests (#3487, #3723).
+    _internal: {
+        buildWavesPayload,
+        // #4330 — unión de hijos de split de la allowlist a la ola activa.
+        mergeSplitChildren,
+        _effectivePipelineDir,
+        normalizeWave,
+        normalizeWaveIssue,
+        // #4248 — status vivo de la ola activa en el header.
+        computeLiveWaveStatus,
+        mapSnapshotStatusToWave,
+        // #4250 — enriquecimiento del board "Issues de la ola".
+        enrichWaveIssue,
+        enrichWave,
+        WAVES_RICH_STATUS,
+        WAVES_PRIORITY_WHITELIST,
+        WAVES_SIZE_WHITELIST,
+        WAVES_STATUS_WHITELIST,
+        WAVES_TITLE_MAX_CHARS,
+        WAVES_UNKNOWN,
+        // #3723
+        isLoopbackReq,
+        isSameOriginFetch,
+        sendPartialHtml,
+        VIEW_SLUG_MAX_LEN,
+        // #3954 — endpoints mutantes ack/snooze
+        handleAlertMutation,
+        ALERT_BODY_MAX_BYTES,
+        // #3962 EP8-H9 — endpoint mutante del presupuesto mensual
+        handleBudgetMutation,
+        BUDGET_MAX,
+        renderCostosView,
+        // #4378 — endpoint mutante para archivar una ola + vista roadmap.
+        handleWaveArchiveMutation,
+        // #4435 — endpoint mutante para promover una ola planificada → activa.
+        handleWavePromoteMutation,
+        WAVE_PROMOTE_CAP_ISSUES,
+        // #4436 — endpoints mutantes de ciclo de vida de la ola activa.
+        handleWavePauseMutation,
+        handleWaveResumeMutation,
+        handleWaveDispatchMutation,
+        renderRoadmapView,
+        // #4192 — banner de misión de la ventana Issues (rediseño MIZPÁ).
+        deriveIssuesMission,
+        // #4287 — map de rutas API expuesto para tests del passthrough de
+        // /api/dash/ola-eta (velocityETA/etaSource/totalPct).
+        API_ROUTES,
+    },
+};
