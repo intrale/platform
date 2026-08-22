@@ -382,6 +382,12 @@ __pycache__/
 # ignorados; confirmar el target y contar con respaldo antes de ejecutarlo.
 .pipeline/state/*
 
+# #6206 — depósito de pendientes de firma del canal único de aprobación.
+# Índice de presentación, NUNCA autoridad (CA-A4). No versionar: el repo hace
+# `reset --hard` en cada respawn y git podría resucitar un pendiente resuelto
+# o borrar uno vivo sin dejar rastro en la cadena de audit.
+.pipeline/approval-channel/*
+
 # #4536 — estado runtime del scheduler de ventanas OFF por proveedor (#3871) y
 # del disable manual por proveedor. Fail-open, con updated_at, generado/persistido
 # en ejecución (lib/provider-schedule.js, lib/provider-disabled.js). NO commitear:
