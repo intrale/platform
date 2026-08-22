@@ -514,16 +514,29 @@ test('R7 · __tests__/ y *.test.js quedan fuera (sus fixtures tienen literales a
 test('CA-10 · SELF_EXEMPT: el sustrato del envoltorio y el propio guardrail no se autoauditan', () => {
     const root = makeTmpPipeline();
     const body = "const path=require('path');\nconst w = path.join(D, 'waves.json');\nconst p = path.join(D, '.partial-pause.json');";
-    for (const rel of ['lib/operational-state.js', 'lib/waves.js', 'lib/partial-pause.js', 'lib/operational-state-lint.js']) {
+    for (const rel of [
+        'lib/operational-state.js', 'lib/waves.js', 'lib/partial-pause.js', 'lib/operational-state-lint.js',
+        // #5110 — sustrato del namespaceo por projectId.
+        'lib/project-context.js', 'scripts/migrate-operational-state-namespace.js',
+    ]) {
         placeJs(root, rel, body);
     }
     const { violations } = lint.lint({ pipelineRoot: root, allowlist: emptyAllowlist() });
     assert.equal(violations.length, 0);
+    // El set se pinea a propósito: agrandar el scope del control es una decisión
+    // que tiene que pasar por este test (y por CODEOWNERS), no colarse en un
+    // refactor. #5110 suma dos entradas y ninguna es un consumidor:
+    //   - `lib/project-context.js` RESUELVE el namespace `.pipeline/projects/<id>/`.
+    //   - el migrador MUEVE el layout plano a ese namespace.
+    // Ambos manipulan los literales de estado por definición, igual que
+    // `waves.js`. Auditarlos sería tautológico.
     assert.deepEqual([...I.SELF_EXEMPT].sort(), [
         'lib/operational-state-lint.js',
         'lib/operational-state.js',
         'lib/partial-pause.js',
+        'lib/project-context.js',
         'lib/waves.js',
+        'scripts/migrate-operational-state-namespace.js',
     ]);
 });
 

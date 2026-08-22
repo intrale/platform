@@ -316,6 +316,8 @@ scripts/planner-plan.json
 .pipeline/.tts-state.json
 # EP1-H4 (#3919) — estado de dedup de avisos de degradación multimedia — efímero
 .pipeline/.degradation-notify-state.json
+# #6144 — cooldown del aviso hablado de cadena de IA caída — efímero, por máquina
+.pipeline/.provider-down-audio-state.json
 # #2653 — cache de recomendaciones pendientes (refresca desde gh) — efímero
 .pipeline/recommendations-cache.json
 # #2895 — caches de issue title/summary (refresca desde gh) — efímero
@@ -403,3 +405,36 @@ security-report-*.md
 # snapshot del estado de coordinación local; se retienen sólo para rollback y NO
 # deben versionarse (ni filtrarse por un `git add -A`).
 .pipeline/backup/
+
+# #5110 (Ola 9.4 · E2 · R2) — estado operativo namespaceado por projectId.
+#
+# BLOQUEANTE, y va en el MISMO commit que el cambio de layout. Las entradas del
+# layout plano (`.pipeline/waves.json:255`, `.pipeline/.partial-pause.json:213`,
+# `.pipeline/archived/:332`, `.pipeline/audit/`) son paths LITERALES: ninguna
+# cubre `.pipeline/projects/<projectId>/...`. Verificado antes del cambio:
+#
+#   $ git check-ignore -q .pipeline/waves.json                             → IGNORADO
+#   $ git check-ignore -q .pipeline/projects/intrale-platform/waves.json   → TRACKEABLE
+#
+# O sea que al namespacear, el estado operativo (que incluye la allowlist, el
+# registro de olas y el audit JSONL con motivos de rechazo y metadata interna)
+# dejaba de estar ignorado en un repo PÚBLICO. Mismo precedente que `27d790aba`,
+# que destrackeó `.pipeline/state/`.
+#
+# Cubre `waves.json`, `.partial-pause.json`, `archived/`, `audit/` y los markers
+# de promote/archive de TODOS los proyectos, presentes y futuros.
+.pipeline/projects/
+
+# #5110 (rev-2, B3) — lock de exclusión mutua del migrador de estado operativo.
+#
+# `migrate-operational-state-namespace.js` aplica `git check-ignore` al backup y
+# al destino (regla R2/SEC-7 propia del script) pero se salteaba el ÚNICO otro
+# archivo que él mismo crea: su lock. Verificado antes del cambio:
+#
+#   $ git check-ignore -q .pipeline/.opstate-migration.lock ; echo $?
+#   1     → TRACKEABLE
+#
+# En un repo público, un `git add -A` durante una migración lo levantaba (con el
+# PID del operador adentro). Ahora el script también lo pasa por `assertIgnored()`,
+# así que sin esta entrada la migración aborta antes de escribir un solo byte.
+.pipeline/.opstate-migration.lock

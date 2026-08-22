@@ -138,11 +138,20 @@ const SKIP_DIRS = new Set([
 // archivo contiene los literales del matcher. Auditarlos sería tautológico.
 // Esto NO son entradas de allowlist: es scope del control, revisado vía
 // CODEOWNERS junto con el binario.
+// #5110 — `lib/project-context.js` es el dueño de la RESOLUCIÓN del namespace
+// (`.pipeline/projects/<projectId>/`) y `scripts/migrate-operational-state-namespace.js`
+// es el migrador que mueve el layout plano a ese namespace: ambos manipulan los
+// literales de estado por definición, igual que el resto del sustrato. NO se
+// usa `operational-state-lint.allowlist.json` para esto — esa allowlist es por
+// LÍNEA y su propósito es documentar excepciones de consumidores, no declarar
+// scope del control.
 const SELF_EXEMPT = new Set([
     'lib/operational-state.js',
     'lib/waves.js',
     'lib/partial-pause.js',
     'lib/operational-state-lint.js',
+    'lib/project-context.js',
+    'scripts/migrate-operational-state-namespace.js',
 ]);
 
 // ─── Regla 1 · path-level ───────────────────────────────────────────────────

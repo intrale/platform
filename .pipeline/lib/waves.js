@@ -93,22 +93,48 @@ function pipelineDir() {
     return path.join(__dirname, '..');
 }
 
-function wavesFile() { return path.join(pipelineDir(), 'waves.json'); }
+// ─── Namespace por proyecto (#5110 · D3) ────────────────────────────────────
+//
+// El namespaceo entra por la RAÍZ DE PATH del sustrato, no por la fachada. Es
+// la decisión de diseño central de #5110: hay 26 archivos de producción (69
+// call sites) que hacen `require` directo a `waves.js`/`partial-pause.js` —
+// `pulpo.js`, `dashboard.js`, `restart.js`, `servicio-github.js`,
+// `lib/wave-dispatch.js`, `lib/waves-api.js`, los wizards, etc. Si el namespaceo
+// viviera sólo en `operational-state.js`, esos 26 seguirían leyendo el
+// `waves.json` plano y aparecerían las "dos verdades" del spike §4.
+//
+// Poniéndolo acá, los 26 quedan correctos SIN tocarlos, #5164 no entra al
+// alcance, y el guardrail `path-level` sigue verde sin entradas nuevas de
+// allowlist.
+//
+// Lo que #5164 sí deja pendiente: poder ELEGIR un proyecto distinto del
+// ambiente desde un consumidor. Hoy y post-#5110 los `require` directos toman
+// el contexto ambiente.
+//
+// `pipelineDir()` queda como está (raíz FÍSICA) y `PIPELINE_DIR_OVERRIDE` se
+// preserva y compone: elige la raíz física, el namespace se aplica adentro.
+
+function stateDir() { return require('./project-context').stateDir(); }
+
+function wavesFile() { return path.join(stateDir(), 'waves.json'); }
+// El template es un artefacto VERSIONADO del repo (`waves.json.template`), no
+// estado de un proyecto: queda en la raíz física.
 function wavesTemplateFile() { return path.join(pipelineDir(), 'waves.json.template'); }
-function archivedDir() { return path.join(pipelineDir(), 'archived'); }
-function partialFile() { return path.join(pipelineDir(), '.partial-pause.json'); }
+function archivedDir() { return path.join(stateDir(), 'archived'); }
+function partialFile() { return path.join(stateDir(), '.partial-pause.json'); }
 
 // #3520 — markers de la transacción /wave promote (multi-archivo).
-function promoteMarkerFile() { return path.join(pipelineDir(), 'wave-promote.in-progress.json'); }
+function promoteMarkerFile() { return path.join(stateDir(), 'wave-promote.in-progress.json'); }
 function promoteRecoveringMarkerFile(pid) {
-    return path.join(pipelineDir(), `wave-promote.recovering.${pid}.json`);
+    return path.join(stateDir(), `wave-promote.recovering.${pid}.json`);
 }
-function promoteFailedDir() { return pipelineDir(); }
+function promoteFailedDir() { return stateDir(); }
 function listPromoteFailedMarkers() {
     try {
-        return fs.readdirSync(pipelineDir())
+        const dir = stateDir();
+        return fs.readdirSync(dir)
             .filter((f) => /^wave-promote\.failed\..+\.json$/.test(f))
-            .map((f) => path.join(pipelineDir(), f));
+            .map((f) => path.join(dir, f));
     } catch {
         return [];
     }
@@ -118,33 +144,37 @@ function listPromoteFailedMarkers() {
 // A diferencia de promote, archive SOLO muta waves.json (NO .partial-pause.json:
 // la sincronización de la allowlist es CA-6, diferida a #4350). Por eso el
 // snapshot/recovery de archive toca únicamente waves.json.
-function archiveMarkerFile() { return path.join(pipelineDir(), 'wave-archive.in-progress.json'); }
+function archiveMarkerFile() { return path.join(stateDir(), 'wave-archive.in-progress.json'); }
 function archiveRecoveringMarkerFile(pid) {
-    return path.join(pipelineDir(), `wave-archive.recovering.${pid}.json`);
+    return path.join(stateDir(), `wave-archive.recovering.${pid}.json`);
 }
 function listArchiveFailedMarkers() {
     try {
-        return fs.readdirSync(pipelineDir())
+        const dir = stateDir();
+        return fs.readdirSync(dir)
             .filter((f) => /^wave-archive\.failed\..+\.json$/.test(f))
-            .map((f) => path.join(pipelineDir(), f));
+            .map((f) => path.join(dir, f));
     } catch {
         return [];
     }
 }
 
-// CA-7: validar que archived/ resuelva dentro de .pipeline/ — defensa en
-// profundidad ante symlink traversal.
+// CA-7: validar que archived/ resuelva dentro del namespace del proyecto —
+// defensa en profundidad ante symlink traversal. #5110: el root pasa de
+// `pipelineDir()` a `stateDir()`, que es estrictamente más chico, así que el
+// control se APRIETA (un `archived/` que apunte a otro proyecto ahora también
+// se rechaza, no sólo uno que escape de `.pipeline/`).
 function assertArchivedDirSafe() {
-    const root = path.resolve(pipelineDir());
+    const root = path.resolve(stateDir());
     const target = path.resolve(archivedDir());
     if (target !== root && !target.startsWith(root + path.sep)) {
-        throw new Error(`archived/ resuelve fuera de pipelineDir: ${target} ∉ ${root}`);
+        throw new Error(`archived/ resuelve fuera del namespace del proyecto: ${target} ∉ ${root}`);
     }
     if (fs.existsSync(target)) {
         let real;
         try { real = fs.realpathSync(target); } catch { real = target; }
         if (real !== root && !real.startsWith(root + path.sep)) {
-            throw new Error(`archived/ symlink apunta fuera de pipelineDir: ${real} ∉ ${root}`);
+            throw new Error(`archived/ symlink apunta fuera del namespace del proyecto: ${real} ∉ ${root}`);
         }
     }
 }
@@ -3688,6 +3718,12 @@ module.exports = {
         PARTIAL_FILE: partialFile(),
         PROMOTE_MARKER_FILE: promoteMarkerFile(),
         ARCHIVE_MARKER_FILE: archiveMarkerFile(),
+        // #5110 — namespace en el que resolvieron los paths de arriba.
+        // `PROJECT_ID` es informativo (`null` si el contexto no resuelve): que
+        // `_paths()` sea introspección no debe volverlo un punto de fallo.
+        STATE_DIR: stateDir(),
+        NAMESPACED: require('./project-context').namespaceEnabled(),
+        PROJECT_ID: require('./project-context').currentProjectIdOrNull(),
     }),
     _internal: {
         normalizeIssue,
