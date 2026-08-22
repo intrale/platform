@@ -121,3 +121,11 @@ test('#6226 · el aislamiento no filtra al caso base y restaura el valor previo'
         assert.strictEqual(process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID, '6529617704');
     });
 });
+
+// Aporte de #6179 preservado en el merge: la variable seteada pero en blanco no
+// debe sumar un firmante vacio (resolveAuthorizedSigners la trimea y descarta).
+test('resolveAuthorizedSigners ignora el operador de env vacio o en blanco', () => {
+    const signers = withOperatorEnv('   ', () =>
+        delivery.resolveAuthorizedSigners({ cua: { operator_chat_ids: ['1'] } }));
+    assert.deepStrictEqual([...signers], ['1']);
+});
