@@ -198,7 +198,8 @@ async function executeVaultCutFallback(opts = {}) {
         throw new VaultCutError('coverage_incomplete', 'La cobertura positiva del vault no habilita el corte');
       }
       assertActive();
-      if (!opts.authorization || typeof opts.authorization.consume !== 'function') {
+      if (!opts.authorization || (opts.authorization.consumed !== true
+          && typeof opts.authorization.consume !== 'function')) {
         throw new VaultCutError('authorization_missing', 'Falta una autorización consumible para el corte');
       }
       const issuedAt = new Date(opts.authorization.issuedAt);
@@ -208,7 +209,8 @@ async function executeVaultCutFallback(opts = {}) {
       }
       // Gate irreversible: una operación vencida jamás inicia el consumo.
       assertActive();
-      if (!accepted(await opts.authorization.consume({ signal }))) {
+      if (opts.authorization.consumed !== true
+          && !accepted(await opts.authorization.consume({ signal }))) {
         throw new VaultCutError('authorization_consumed', 'La autorización del corte ya fue consumida');
       }
 
@@ -262,9 +264,13 @@ const PRECONDITION_CODES = new Set([
 
 /** Adapta el ejecutor al vocabulario cerrado consumido por operationalToast(). */
 function createOperationalExecutor(options = {}) {
-  return async function operationalVaultCutExecutor() {
+  return async function operationalVaultCutExecutor(context = {}) {
     try {
-      const result = await executeVaultCutFallback(options);
+      const resolved = typeof options.resolveOptions === 'function'
+        ? { ...options, ...options.resolveOptions(context) }
+        : options;
+      delete resolved.resolveOptions;
+      const result = await executeVaultCutFallback(resolved);
       return { ok: true, status: result.alreadyCut ? 'already-cut' : 'cut' };
     } catch (error) {
       // El journal durable prueba que el estado ya fue aplicado; no mentir al

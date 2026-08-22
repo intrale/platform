@@ -658,7 +658,8 @@ function createOperatorGate(opts = {}) {
             try {
                 outcome = run({
                     issue: res.issue, action: res.action,
-                    operatorId, nonce: res.nonce, tenant: entry.tenant || null,
+                    operatorId, nonce: res.nonce, issuedAt: res.issuedAt,
+                    tenant: entry.tenant || null,
                 }) || { ok: false, status: 'unavailable' };
             } catch (_) {
                 // El detalle del error NO se propaga al toast (A09): puede traer

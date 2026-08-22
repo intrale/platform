@@ -337,7 +337,7 @@ function createTokenSigner(opts = {}) {
         const claim = claimNonce(String(nonce), { issue, action });
         if (claim === 'replayed') return { ok: false, reason: 'replayed' };
         if (claim !== 'claimed') return { ok: false, reason: 'unavailable' };
-        return { ok: true, issue, action, nonce: String(nonce) };
+        return { ok: true, issue, action, nonce: String(nonce), issuedAt: Number(payload.t) };
     }
 
     return { sign, verify, nonceFile, claimDir, ttlMs };
