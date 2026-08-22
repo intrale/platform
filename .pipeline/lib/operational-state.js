@@ -431,18 +431,50 @@ function unscopedDispatchEnabled() {
 // Allowlist efectiva · mutación — `authorizedBy` + `justification` OBLIGATORIOS
 // -----------------------------------------------------------------------------
 
+/**
+ * Proyecto en contexto para el estado operativo (#5110). Sólo LECTURA: la
+ * fachada no deja elegir proyecto. Cambiar de namespace es una decisión del
+ * punto de entrada (el pulpo en el spawn, o una CLI que pasa `projectId`
+ * explícito a `project-context`), no de un caller de la allowlist.
+ *
+ * @returns {Readonly<{ projectId: string, source: string }>}
+ */
+function getProjectContext() {
+    return require('./project-context').resolveProjectContext();
+}
+
 function requireAuthorization(fnName, opts) {
     const o = opts && typeof opts === 'object' ? opts : {};
+
+    // #5110 · SEC-4 — la autorización se valida PARA EL PROYECTO EN CONTEXTO.
+    // Resolverlo acá (y no en el call site) hace que ninguna mutación de
+    // allowlist pueda ejecutarse con el contexto ambiguo: si `resolveProjectContext()`
+    // no puede decidir, tira fail-closed y la mutación no ocurre, en vez de
+    // escribir en el namespace de otro proyecto.
+    //
+    // Sin regresión para `HOST_PROJECT_ID`: el conjunto de `authorizedBy`
+    // habilitado sigue siendo el enum cerrado actual de `partial-pause-audit.js`,
+    // que valida `appendMutation()` aguas abajo.
+    // Con el namespaceo APAGADO (default del rollout) el layout es plano y no
+    // hay partición que proteger: se resuelve de forma informativa para el
+    // mensaje de error, sin agregar un modo de fallo que antes no existía.
+    // Con el namespaceo ENCENDIDO la resolución es obligatoria y falla cerrado.
+    const projectContext = require('./project-context');
+    const ctx = projectContext.namespaceEnabled()
+        ? projectContext.resolveProjectContext()
+        : { projectId: projectContext.currentProjectIdOrNull() || '(layout plano)' };
+
     if (!o.authorizedBy || typeof o.authorizedBy !== 'string' || !o.authorizedBy.trim()) {
         throw new OperationalStateError(
             `${fnName} requiere authorizedBy (#3625): identificá quién autoriza la mutación ` +
-            'con un valor del enum cerrado de partial-pause-audit.',
+            `con un valor del enum cerrado de partial-pause-audit (proyecto en contexto: ${ctx.projectId}).`,
             { code: 'EOPSTATE_UNAUTHORIZED', stage: `mutate:${fnName}` },
         );
     }
     if (!o.justification || typeof o.justification !== 'string' || !o.justification.trim()) {
         throw new OperationalStateError(
-            `${fnName} requiere justification (#3625): explicá por qué se muta la allowlist.`,
+            `${fnName} requiere justification (#3625): explicá por qué se muta la allowlist ` +
+            `(proyecto en contexto: ${ctx.projectId}).`,
             { code: 'EOPSTATE_UNAUTHORIZED', stage: `mutate:${fnName}` },
         );
     }
@@ -792,6 +824,8 @@ module.exports = {
     unscopedDispatchEnabled,
     readFullPauseOrigin,
     readDispatchAllowlist,
+    // ── Aislamiento por proyecto (#5110) · SÓLO lectura ──────────────────────
+    getProjectContext,
     // ── Allowlist efectiva · mutación (authorizedBy OBLIGATORIO) ─────────────
     setAllowlist,
     setAllowlistAtomic,

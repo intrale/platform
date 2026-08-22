@@ -737,7 +737,13 @@ function resolverVaultConPlan({ cfg, projectId, plan, requiredScopes, sharedScop
       // SEC-2 — el ambiente de origen del runner es EXPLÍCITO y es el del
       // proceso padre. `opts.env` es el ambiente DESTINO (los scripts de QA
       // pasan un scratch descartable); la identidad AWS no sale de ahí.
-      const runner = sv.createAwsCliVaultRunner(process.env, cfg.region);
+      // #5426 · SEC-2/G-1 — el 2º argumento dejó de ser la región: es la config
+      // del vault. `buildVaultAwsEnv` necesita `authMode`/`awsProfile` para
+      // descartar de `process.env` todo lo que pueda ELEGIR principal
+      // (`AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`).
+      // Pasarle un string acá falla ruidoso a propósito: un modo de identidad
+      // implícito es exactamente lo que T2-2 prohíbe.
+      const runner = sv.createAwsCliVaultRunner(process.env, cfg);
       return sv.createAwsCliVaultDriver({ run: runner.run });
     })();
 
@@ -820,21 +826,37 @@ function resolverVault(opts, logger) {
     };
   }
 
+  // D-SYNC-8 — recién acá se carga `secret-vault.js`: con el gate cerrado el
+  // módulo no se toca (el `return` de arriba ya salió).
+  const sv = require('./secret-vault');
+
+  // #5426 · CA-12(b) — el `hostId` del namespace se resuelve en RUNTIME cuando
+  // `vault.hostIdFromHostname` lo habilita. `.pipeline/config.yaml` está
+  // trackeado en un repo PÚBLICO y el hostname expone la estructura
+  // `hosts/<hostId>/`, así que el VALOR nunca se commitea (D9). Si no resuelve,
+  // queda vacío y `validateVaultConfig` falla NOMBRANDO `vault.hostId`
+  // (CA-12.e): jamás se sigue contra un namespace colapsado `hosts//`.
+  const cfgHost = { ...cfg, hostId: sv.resolveVaultHostId(cfg) };
+
   // CA-5/CA-7 — overrides EXPLÍCITOS de instancia. Sin ellos, la identidad y la
   // allowlist son las del kernel (`config.yaml`), o sea el comportamiento de
   // siempre. Un override inválido NO se sanitiza: falla cerrado más abajo.
-  const projectId = opts.projectId !== undefined ? opts.projectId : cfg.projectId;
+  const projectId = opts.projectId !== undefined ? opts.projectId : cfgHost.projectId;
   const requiredScopes = Array.isArray(opts.requiredScopes)
     ? opts.requiredScopes
-    : (Array.isArray(cfg.required_scopes) ? cfg.required_scopes : []);
+    : (Array.isArray(cfgHost.required_scopes) ? cfgHost.required_scopes : []);
   const sharedScopes = Array.isArray(opts.sharedScopes)
     ? opts.sharedScopes
-    : (Array.isArray(cfg.shared_secrets) ? cfg.shared_secrets : []);
+    : (Array.isArray(cfgHost.shared_secrets) ? cfgHost.shared_secrets : []);
   const plan = opts.vaultPlan || vaultScopePlan(ENV_DESCRIPTORS);
 
   try {
+    // MERGE #5426 x #5804 — la memo por clave fina, la cota de namespaces y los
+    // overrides de instancia vienen de `main`. Lo que aporta #5426 es el
+    // `cfgHost` (hostId resuelto en RUNTIME) propagado como config EFECTIVA:
+    // `resolverVaultConPlan` valida el namespace y arma el runner con él.
     return resolverVaultConPlan(
-      { cfg, projectId, plan, requiredScopes, sharedScopes, opts }, logger,
+      { cfg: cfgHost, projectId, plan, requiredScopes, sharedScopes, opts }, logger,
     );
   } catch (err) {
     // CA-22 — un fallo del vault se PROPAGA como fallo, jamás se degrada a
@@ -855,7 +877,7 @@ function resolverVault(opts, logger) {
       namespace: (err && err.vaultNamespace) || null,
       payload: null,
       error: { name: (err && err.name) || 'Error', code: (err && err.code) || null, message: (err && err.message) || '' },
-      cfg,
+      cfg: cfgHost,
     };
   }
 }

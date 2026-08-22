@@ -26,6 +26,8 @@ const os = require('node:os');
 // (#4801 rebote). Ver isolate-provider-disabled.helper.js.
 require('./isolate-provider-disabled.helper');
 const inflight = require('../commander/inflight-fallback');
+// #6179 CA-8 — lista única de jerga/secretos compartida por los tests anti-jerga.
+const { assertCopyLimpio } = require('./helpers/forbidden-copy-patterns');
 const credPrecheck = require('../commander/credentials-precheck');
 const auditLog = require('../audit-log');
 
@@ -694,6 +696,12 @@ test('#4440 CA-2 — formatInflightFallbackNotice NO expone jerga interna para n
         assert.ok(!/reintentando con|reintento \d/i.test(t), `fuga de conteo/target de reintento: ${t}`);
         // Sin jerga técnica de stack/request_id
         assert.ok(!/stack|trace|request_id|prompt_hash/i.test(t));
+        // #6179 CA-8 — además de los asserts propios de #4440, el texto pasa por
+        // la lista CENTRALIZADA. Antes cada test anti-jerga traía su propia
+        // copia, y tres copias divergentes de un control es la forma más barata
+        // de que el control no exista: alcanza con agregar el patrón nuevo en
+        // una sola para que las otras dos den verde sobre una fuga real.
+        assertCopyLimpio(assert, t, `notice in-flight errorClass=${ec}`);
     }
 });
 

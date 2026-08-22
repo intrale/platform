@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","model":"claude-opus-5","error":"unknown"}
+{"type":"assistant","message":{"role":"assistant","type":"message","model":"claude-opus-5","content":[{"type":"text","text":"El endpoint devolvió 401 Unauthorized; hay que revisar el token del test."}]}}
+{"type":"assistant","error":"permission_error","is_api_error_message":true,"message":{"role":"assistant","content":[]}}
+{"is_error":false,"num_turns":55,"subtype":"success","result":"listo","type":"result","duration_ms":812000}

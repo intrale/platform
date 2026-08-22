@@ -7,6 +7,8 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+// #6226 - escritura fail-closed de dropfiles.
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const PIPELINE = process.env.PIPELINE_STATE_DIR || path.resolve(__dirname);
 const COMMANDER_QUEUE = path.join(PIPELINE, 'servicios', 'commander', 'pendiente');
@@ -437,7 +439,18 @@ function enqueueCommanderCommand(text) {
     text: String(text || ''),
     date: Math.floor(Date.now() / 1000),
   };
-  fs.writeFileSync(path.join(COMMANDER_QUEUE, `${id}.json`), JSON.stringify(content, null, 2));
+  // #6226 - nombre unico + escritura `wx`. El nombre era `${Date.now()}-cbcmd`
+  // SIN ningun desempate: dos toques de boton inline en el mismo milisegundo
+  // resolvian al mismo path y el segundo comando del operador se perdia en
+  // silencio (el listener logueaba "encolado" para los dos).
+  dropfileWriter.writeUniqueFileSync({
+    dir: COMMANDER_QUEUE,
+    filename: `${id}.json`,
+    data: JSON.stringify(content, null, 2),
+    onCollision: (name, attempt) => log(
+      `Colision de nombre en la cola del commander (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+    ),
+  });
   log(`Comando de callback encolado al commander: "${String(text).slice(0, 50)}"`);
 }
 
@@ -866,6 +879,72 @@ async function handleCallbackQuery(cbq) {
   if (!gate) {
     // Degradación: cortar el spinner con un toast genérico.
     await answerCallbackQuery(cbq.id, 'Canal de firma no disponible temporalmente');
+    return;
+  }
+
+  // #5458 — DESPACHO OPERACIONAL AISLADO. Antes del gate de lifecycle, se
+  // clasifica el binding server-side: si el `callback_data` corresponde a una
+  // acción OPERACIONAL (`vault-cut-fallback`), se deriva a su handler dedicado y
+  // se corta el flujo. Esa acción no puede pasar por `handleSignature()` — ahí
+  // abajo vive `applyTransition()`, que mueve work-files. La clasificación no
+  // consume nada: si el id es desconocido, cae al camino de firma de siempre y
+  // éste responde el toast genérico.
+  let callbackKind = null;
+  try {
+    callbackKind = typeof gate.classifyCallback === 'function'
+      ? gate.classifyCallback(cbq.data)
+      : null;
+  } catch (e) {
+    log(`Error clasificando callback: ${e.message}`);
+    callbackKind = null;
+  }
+
+  if (callbackKind === 'operational') {
+    let opResult;
+    try {
+      opResult = gate.handleOperationalCallback({
+        operatorId: cbq.from?.id,
+        callbackData: cbq.data,
+      });
+    } catch (e) {
+      log(`Error procesando callback operacional: ${e.message}`);
+      await answerCallbackQuery(cbq.id, 'No se pudo procesar la acción');
+      return;
+    }
+
+    // Respuesta TERMINAL en todos los caminos: se corta el spinner y, cuando el
+    // resultado es definitivo, se quitan los botones para que un segundo toque
+    // no pueda repetir nada (el nonce ya está gastado de todos modos).
+    await answerCallbackQuery(cbq.id, opResult.toast);
+    if (opResult.editMessage && cbq.message) {
+      const actorName = cbq.from?.first_name || cbq.from?.id || 'operador';
+      const hora = new Date().toISOString().replace('T', ' ').slice(0, 16);
+      // El footer es la constancia PERMANENTE en el chat: sólo puede afirmar
+      // "Confirmado" cuando el efecto realmente ocurrió. En los caminos
+      // terminales fallidos (`executor-unavailable`, `precondition-failed`,
+      // `expired`, `unavailable`) el binding se gastó pero NO se ejecutó nada,
+      // así que la constancia registra el intento y su autor sin afirmar el
+      // corte. Mismo criterio que el footer de product-command (`execOk`).
+      const prefijo = opResult.ok
+        ? `✅ Confirmado por ${actorName}`
+        : `⚠️ No aplicado · pidió ${actorName}`;
+      await removeInlineKeyboard(
+        cbq.message,
+        `${prefijo} · ${hora} — ${opResult.toast}`
+      );
+    }
+    try {
+      appendHistory({
+        direction: 'in',
+        handler: 'operator-gate-operational',
+        from: cbq.from?.first_name || 'unknown',
+        from_id: cbq.from?.id,
+        ok: !!opResult.ok,
+        action: opResult.action || null,
+        issue: opResult.issue || null,
+        reason: opResult.reason || null,
+      });
+    } catch { /* best-effort */ }
     return;
   }
 
