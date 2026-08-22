@@ -11531,6 +11531,22 @@ function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config
 const orphanRetries = new Map(); // key: "pipeline/fase/filename" → count
 const MAX_ORPHAN_RETRIES = 3;
 
+/**
+ * Marca el agotamiento de huérfanos como caída de infraestructura sintetizada
+ * por el Pulpo. El agente nunca emitió una decisión de contenido, por lo que
+ * omitir esta procedencia haría que el rebote cuente falsamente como código.
+ */
+function synthesizeOrphanExhaustion(data, maxRetries = MAX_ORPHAN_RETRIES) {
+  return {
+    ...(data || {}),
+    resultado: 'rechazado',
+    motivo: `Huérfano tras ${maxRetries} reintentos — proceso muere repetidamente`,
+    veredicto_sintetizado_por: 'pulpo',
+    agente_exit_code: -1,
+    rebote_categoria: 'infra_agent_crash',
+  };
+}
+
 function brazoHuerfanos(config) {
   const timeoutMinutes = config.timeouts?.orphan_timeout_minutes || 10;
 
@@ -11599,9 +11615,10 @@ function brazoHuerfanos(config) {
           // Demasiados reintentos → marcar como rechazado y mover a listo
           log('huerfanos', `${archivo.name} excedió ${MAX_ORPHAN_RETRIES} reintentos → rechazado`);
           try {
-            const data = readYamlSafe(archivo.path);
-            data.resultado = 'rechazado';
-            data.motivo = `Huérfano tras ${MAX_ORPHAN_RETRIES} reintentos — proceso muere repetidamente`;
+            const data = synthesizeOrphanExhaustion(
+              readYamlSafe(archivo.path),
+              MAX_ORPHAN_RETRIES
+            );
             writeYaml(archivo.path, data);
             moveFile(archivo.path, listoDir);
             orphanRetries.delete(retryKey);
@@ -22764,6 +22781,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #2335 — connectivity-state + clasificacion de reason
     mapPrecheckFailureToReason,
     connectivityState,
+    // #6347 — un huérfano agotado es caída de infra, no veredicto de código.
+    synthesizeOrphanExhaustion,
     // #2404 — exponer utilidades de staleness al test de integración.
     staleness,
     _precheckState: () => ({ lastPrecheckResult, lastPrecheckAt, lastInfraBlockedIssues: Array.from(lastInfraBlockedIssues) }),

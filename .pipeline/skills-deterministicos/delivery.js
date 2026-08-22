@@ -21,6 +21,7 @@ const prProvenance = require('../lib/pr-provenance');
 // Se CONSUME la implementación canónica (#5419): es `git fetch` + `git log`
 // contra la allowlist de committers, no necesita worktree y no se duplica acá.
 const { verifyRemoteBranchOrigin } = require('../lib/worktree-resolver');
+const { classifyChecks } = require('../lib/human-block-triggers');
 
 // #5420 — Ref desde la que se carga CODEOWNERS para el gate de merge. Fija a
 // `origin/main` a propósito: el head del PR podría estar modificando el propio
@@ -435,8 +436,8 @@ function normalizeMergeState(parsed = {}) {
 }
 
 // Campos del snapshot. `SNAPSHOT_FIELDS_LEGACY` es el fallback si el `gh`
-// instalado no conoce los 3 campos nuevos (ver degradación más abajo).
-const SNAPSHOT_FIELDS = 'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state';
+// instalado no conoce los campos nuevos (ver degradación más abajo).
+const SNAPSHOT_FIELDS = 'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state,statusCheckRollup';
 const SNAPSHOT_FIELDS_LEGACY = 'labels,files,headRefOid,headRefName';
 
 function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR } = {}) {
@@ -448,10 +449,10 @@ function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR } = {}) {
     try {
         res = view(SNAPSHOT_FIELDS);
         // #6012 — Degradación explícita: un `gh` viejo que no conozca alguno de
-        // los 3 campos nuevos sale != 0 con "Unknown JSON field". Sin este
+        // los campos nuevos sale != 0 con "Unknown JSON field". Sin este
         // fallback, ese `gh` bloquearía TODAS las entregas (riesgo ALTO
         // identificado por el arquitecto). Al reintentar con el set legacy, los
-        // 3 campos quedan en `null` y el clasificador cae en su default
+        // campos quedan ausentes y el clasificador cae en su default
         // terminal = exactamente el comportamiento previo a este issue.
         if (res && res.exit_code !== 0 && /unknown\s+json\s+field/i.test(`${res.stderr || ''}\n${res.stdout || ''}`)) {
             res = view(SNAPSHOT_FIELDS_LEGACY);
@@ -497,7 +498,11 @@ function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR } = {}) {
         return { ok: false, reason: 'gh pr view no devolvió archivos del PR (lectura degradada)' };
     }
 
-    return { ok: true, labels, files, headRefOid, headRefName, ...normalizeMergeState(parsed) };
+    return {
+        ok: true, labels, files, headRefOid, headRefName,
+        statusCheckRollup: parsed.statusCheckRollup,
+        ...normalizeMergeState(parsed),
+    };
 }
 
 function applyNeedsHumanLabel(issue, prNumber, owners, repoRoot) {
@@ -550,18 +555,19 @@ function tmpFile(prefix, content) {
 // #6010 / #6011, mergeados después sin un solo cambio de código).
 //
 // La señal autoritativa NO es el status HTTP pelado ni `mergeable`: es
-// `mergeStateStatus`, que distingue los cuatro casos que el 405 mezcla:
+// `mergeStateStatus` + `statusCheckRollup`, que distinguen estos cinco casos:
 //
 //   UNKNOWN  → GitHub está calculando       → transitorio, se espera y reintenta
 //   DIRTY    → conflicto CONFIRMADO         → escala al operador
-//   BLOCKED  → protección de rama frenando  → escala, JAMÁS reintenta
+//   BLOCKED + checks pending                → transitorio, se espera y reintenta
+//   BLOCKED + checks failing/green/unknown  → escala, JAMÁS reintenta
 //   DRAFT    → PR en borrador               → escala, JAMÁS reintenta
 //   null/otro→ sin señal                    → default fail-closed (= hoy)
 //
-// BLOCKED y DRAFT no entran al camino de reintento a propósito: son controles
-// de seguridad haciendo su trabajo, y reintentar contra ellos los convertiría
-// en un bucle silencioso que esconde "faltan aprobaciones" (hallazgo ALTO de
-// security, OWASP A04). `mergeable` NO se usa para decidir: con branch
+// BLOCKED sólo entra al reintento con checks pendientes explícitos y techo
+// temporal. Checks rojos, verdes o ilegibles mantienen el fail-closed, evitando
+// un bucle silencioso que esconda "faltan aprobaciones" (OWASP A04). DRAFT jamás
+// reintenta. `mergeable` NO se usa para decidir: con branch
 // protection frenando el merge vale `MERGEABLE`, así que clasificar por él
 // mandaría un control activo al camino transitorio.
 //
@@ -571,7 +577,7 @@ function tmpFile(prefix, content) {
 //
 // Shape: { conflict, retryable, kind, httpStatus, confirmed, reason }.
 //   kind: 'ok' | 'head-changed' | 'not-mergeable' | 'mergeability-unknown'
-//       | 'gate-block' | 'generic'
+//       | 'checks-in-flight' | 'gate-block' | 'generic'
 function classifyMergeFailure(res = {}, ctx = {}) {
     if (!res || res.exit_code === 0) {
         return { conflict: false, retryable: false, kind: 'ok', httpStatus: null, reason: 'ok' };
@@ -609,10 +615,24 @@ function classifyMergeFailure(res = {}, ctx = {}) {
                 httpStatus, confirmed: false, reason: 'http_405_mergeability_unknown',
             };
         }
-        if (mergeState === 'BLOCKED' || mergeState === 'DRAFT') {
+        if (mergeState === 'BLOCKED') {
+            const checks = classifyChecks(ctx.statusCheckRollup);
+            if (checks.state === 'pending') {
+                return {
+                    conflict: false, retryable: true, kind: 'checks-in-flight',
+                    httpStatus, confirmed: false, checks, reason: 'required_checks_in_flight',
+                };
+            }
             return {
                 conflict: false, retryable: false, kind: 'gate-block', httpStatus, confirmed: false,
-                gate: mergeState === 'BLOCKED' ? 'branch-protection' : 'pr-draft',
+                gate: checks.state === 'failing' ? 'checks-failing' : 'branch-protection',
+                checks, reason: `http_${httpStatus}_blocked_checks_${checks.state}`,
+            };
+        }
+        if (mergeState === 'DRAFT') {
+            return {
+                conflict: false, retryable: false, kind: 'gate-block', httpStatus, confirmed: false,
+                gate: 'pr-draft',
                 reason: `http_${httpStatus}_${mergeState.toLowerCase()}`,
             };
         }
@@ -679,6 +699,20 @@ const MAX_MERGEABILITY_WAITS = 6;
 // Backoff acotado: 1+2+4+8+8+8 = 31 s de techo TOTAL por invocación (no por
 // intento). Queda muy por debajo del timeoutMs de 3 min del propio PUT.
 const MERGEABILITY_BACKOFF_MS = [1000, 2000, 4000, 8000, 8000, 8000];
+const DEFAULT_MERGE_CHECKS_TIMEOUT_MS = 6 * 60 * 1000;
+const CHECKS_BACKOFF_MS = [15000, 30000, 60000];
+
+function loadMergeChecksTimeoutMs() {
+    try {
+        const config = require('../lib/config-resolver').resolve({
+            pipelineDir: path.join(WORK_DIR, '.pipeline'),
+        });
+        const value = config && config.delivery && Number(config.delivery.merge_checks_timeout_ms);
+        return Number.isFinite(value) && value > 0 ? value : DEFAULT_MERGE_CHECKS_TIMEOUT_MS;
+    } catch {
+        return DEFAULT_MERGE_CHECKS_TIMEOUT_MS;
+    }
+}
 
 // Buffer compartido de 4 bytes para `sleepSync`. Nunca hacemos `Atomics.notify`:
 // se usa puramente como sleep que CEDE la CPU (a diferencia de un busy-wait,
@@ -746,6 +780,7 @@ function attemptMergeWithGates({
     // no espere 31 s reales por cada caso de polling.
     sleepImpl = sleepSync,
     maxMergeabilityWaits = MAX_MERGEABILITY_WAITS,
+    mergeChecksTimeoutMs = loadMergeChecksTimeoutMs(),
     // Resultado del pre-check local `git merge-tree`. SÓLO se usa para loguear
     // la contradicción con el servidor — nunca para decidir (CA-7).
     mergeTreeClean = false,
@@ -756,9 +791,14 @@ function attemptMergeWithGates({
         ? maxMergeabilityWaits
         : MAX_MERGEABILITY_WAITS;
     const sleep = typeof sleepImpl === 'function' ? sleepImpl : sleepSync;
+    const checksTimeoutMs = Number.isFinite(mergeChecksTimeoutMs) && mergeChecksTimeoutMs >= 0
+        ? mergeChecksTimeoutMs
+        : DEFAULT_MERGE_CHECKS_TIMEOUT_MS;
 
     let attempt = 0;
     let waits = 0;
+    let checksWaits = 0;
+    let checksWaitedMs = 0;
 
     while (attempt < attemptsMax) {
         attempt++;
@@ -847,6 +887,7 @@ function attemptMergeWithGates({
         const classification = classifyMergeFailure(mergeRes, {
             mergeStateStatus: snapshot.mergeStateStatus,
             state: snapshot.state,
+            statusCheckRollup: snapshot.statusCheckRollup,
         });
 
         // #6012 CA-7 — El pre-check local corre contra el `origin/main` que
@@ -873,6 +914,26 @@ function attemptMergeWithGates({
             // NO es conflicto y NO escala: es transitorio y reintentable.
             log(`[delivery] gate merge: mergeStateStatus siguió en UNKNOWN tras ${waits} esperas — resultado TRANSITORIO (no es conflicto, no escala)`);
             return { status: 'transient', classification, waits, mergeRes, snapshot, attempt };
+        }
+
+        if (classification.kind === 'checks-in-flight') {
+            if (checksWaitedMs < checksTimeoutMs) {
+                const backoff = CHECKS_BACKOFF_MS[Math.min(checksWaits, CHECKS_BACKOFF_MS.length - 1)];
+                const delay = Math.min(backoff, checksTimeoutMs - checksWaitedMs);
+                checksWaits++;
+                checksWaitedMs += delay;
+                log(`[delivery] gate merge: checks requeridos en curso — espera ${delay}ms (${checksWaitedMs}/${checksTimeoutMs}ms) y reevaluación completa de gates`);
+                sleep(delay);
+                attempt--;
+                continue;
+            }
+            const minutes = Math.round((checksWaitedMs / 60000) * 10) / 10;
+            const reason = `la CI no terminó en ${minutes} minutos; los checks requeridos siguen corriendo`;
+            log(`[delivery] gate merge: ${reason} — escala como timeout de CI`);
+            return {
+                status: 'blocked', gate: 'checks-timeout', reason, classification,
+                checksWaits, checksWaitedMs, mergeRes, snapshot, attempt,
+            };
         }
 
         // #6012 CA-5 — Controles activos (branch protection / draft). Escalan
@@ -1167,7 +1228,9 @@ const GATE_BLOCK_LABELS = {
     // está acá: "No es un conflicto de merge: el PR puede estar perfecto…".
     // La acción que se le pide al operador es la de SU estado — aprobar/esperar
     // checks o sacar el draft, no resolver un conflicto que no existe.
-    'branch-protection': 'la protección de rama bloquea el merge (faltan reviews o checks obligatorios)',
+    'branch-protection': 'la protección de rama (ruleset de main) exige una aprobación humana (los checks están en verde o no pudieron leerse)',
+    'checks-failing': 'hay checks requeridos en rojo',
+    'checks-timeout': 'la CI no terminó dentro del techo de espera (los checks requeridos siguen corriendo)',
     'pr-draft': 'el PR está en borrador (draft) y GitHub no permite mergearlo',
     'pr-closed': 'el PR ya no está abierto',
 };
@@ -1189,25 +1252,35 @@ function buildGateBlockMotivo({ prNumber, branch, gate, reason } = {}) {
     const rama = branch ? ` (rama ${sanitizeGateText(branch, 120)})` : '';
     const que = GATE_BLOCK_LABELS[gate] || `gate ${sanitizeGateText(gate || 'desconocido', 60)}`;
     const detalle = reason ? ` Detalle: ${sanitizeGateText(reason, 240)}.` : '';
+    const cierre = gate === 'checks-timeout'
+        ? 'Delivery esperó la CI sin omitir los gates ya verificados. main quedó intacto.'
+        : 'Delivery frenado fail-closed: el pipeline NO mergea sin poder verificar owners, procedencia y SHA. main quedó intacto.';
     return (
         `Merge bloqueado en ${pr}${rama} — requiere intervención humana: ${que}.${detalle} `
-        + `Delivery frenado fail-closed: el pipeline NO mergea sin poder verificar owners, procedencia y SHA. `
-        + `main quedó intacto.`
+        + cierre
     );
 }
 
 function buildGateBlockEscalation({ issue, prNumber, branch, gate, reason } = {}) {
     const safe = (v) => sanitizeGateText(v, 300).replace(/[\r\n]+/g, ' ');
     const que = GATE_BLOCK_LABELS[gate] || `gate ${safe(gate)}`;
+    const contexto = gate === 'checks-timeout'
+        ? [
+            'Los gates de seguridad ya se verificaron, pero los checks requeridos siguieron en curso hasta agotar el techo.',
+            '`main` quedó INTACTO. Nada se mergeó.',
+        ]
+        : [
+            'No es un conflicto de merge: el PR puede estar perfecto. Lo que no pude hacer es *comprobar* que',
+            'se cumplen los gates de seguridad, y mergear sin esa comprobación sería saltearlos.',
+            '`main` quedó INTACTO. Nada se mergeó. Esta espera es intencional (fail-closed).',
+        ];
     const lines = [
         '🛑 GATE · Delivery frenado: no pude VERIFICAR el merge — necesito que decidas',
         `Issue/PR: #${safe(issue)} / ${prNumber ? `PR #${safe(prNumber)}` : '(sin PR)'}  ·  Rama: ${safe(branch)}`,
         `Qué falló: ${que}.`,
         reason ? `Detalle: ${safe(reason).slice(0, 240)}` : '',
         '',
-        'No es un conflicto de merge: el PR puede estar perfecto. Lo que no pude hacer es *comprobar* que',
-        'se cumplen los gates de seguridad, y mergear sin esa comprobación sería saltearlos.',
-        '`main` quedó INTACTO. Nada se mergeó. Esta espera es intencional (fail-closed).',
+        ...contexto,
         '',
         'Opciones:',
         '• *resolver* — revisás y mergeás el PR vos.',
@@ -1971,6 +2044,9 @@ module.exports = {
     normalizeMergeState,
     MAX_MERGEABILITY_WAITS,
     MERGEABILITY_BACKOFF_MS,
+    DEFAULT_MERGE_CHECKS_TIMEOUT_MS,
+    CHECKS_BACKOFF_MS,
+    loadMergeChecksTimeoutMs,
     buildTransientMergeMotivo,
     // #4658 — detección de conflicto real + escalado fail-closed.
     classifyMergeFailure,
