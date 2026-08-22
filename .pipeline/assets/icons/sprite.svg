@@ -1571,4 +1571,15 @@
     <path d="M11.4 11.3 L14.6 14.5 L11.4 17.7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M14.6 7.2 L17.1 9.7 L21.4 5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
   </symbol>
+
+  <!-- #5978: entregado por UX en la validación del issue. Semántica "no me
+       avises más por este caso" (silencio PERSISTENTE y por caso). No confundir
+       con `ic-eye-off` (ocultar de la vista: temporal, por sesión, botón
+       "Ocultar" del banner) ni con `ic-watchdog-off` (watchdog caído). Trazo
+       1.75 + tachado 2, mismo molde óptico que `ic-watchdog-off`. -->
+  <symbol id="ic-bell-off" viewBox="0 0 24 24">
+    <path d="M12 3.4 C9 3.4 7.3 5.5 7.3 8.5 V12.3 C7.3 13.9 6.6 14.9 5.7 15.8 H18.3 C17.4 14.9 16.7 13.9 16.7 12.3 V8.5 C16.7 5.5 15 3.4 12 3.4 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>
+    <path d="M10.2 18.3 C10.5 19.3 11.2 19.9 12 19.9 C12.8 19.9 13.5 19.3 13.8 18.3" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+    <path d="M4.6 4.4 L19.4 19.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  </symbol>
 </svg>

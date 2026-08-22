@@ -321,6 +321,10 @@ const waveAutoTransition = require('./lib/wave-auto-transition');
 const { resolveReboteDestino } = require('./lib/rebote-destino');
 // #2893 — Detección de dependencias del allowlist en pausa parcial
 const partialPauseDeps = require('./lib/partial-pause-deps');
+// #5978 — store PERSISTENTE de silencios por caso `(issue, deps-set)`. El
+// cooldown de `partialPauseDepsAlertCache` vive en memoria y se pierde en cada
+// restart; esto es lo que sobrevive.
+const partialPauseMutes = require('./lib/partial-pause-mutes');
 // #4614 — self-healing de fases varadas (reconciler).
 const { runStuckPhaseReconciler } = require('./lib/stuck-phase-reconciler-runner');
 // #5396 — el cableado de deps del reconciler vive en su propio módulo para que
@@ -21103,7 +21107,25 @@ async function brazoPartialPauseDeps(config) {
       return;
     }
 
-    // Persistir state para el banner del dashboard.
+    // #5978 — Podar los silencios que ya no corresponden a un caso vivo (issue
+    // fuera de la ola, o sin deps faltantes). Se hace ANTES de consultar los
+    // silencios para que una entrada zombi no pueda callar un caso reaparecido.
+    // `pruneStale` nunca tira: si falla la escritura deja todo como estaba.
+    const activeSignatures = Object.entries(missingByIssue)
+      .map(([iss, deps]) => partialPauseDeps.alertSignature(iss, deps));
+    let mutedCases = [];
+    try {
+      partialPauseMutes.pruneStale({ allowedIssues: mode.allowedIssues, activeSignatures });
+      mutedCases = partialPauseMutes.listMutes();
+    } catch (e) {
+      // Fail-open hacia el aviso: sin lista de silencios se alerta todo.
+      log('pulpo', `[partial-pause-deps] Warning: store de silencios ilegible (${e.message}); se alerta igual`);
+      mutedCases = [];
+    }
+
+    // Persistir state para el banner del dashboard. `mutes` viaja acá para que
+    // el banner muestre los casos silenciados COMO silenciados en vez de
+    // hacerlos desaparecer: un caso invisible es justo el fallo que #5978 evita.
     writePartialPauseDepsState({
       detectedAt: new Date().toISOString(),
       allowedIssues: mode.allowedIssues,
@@ -21111,18 +21133,32 @@ async function brazoPartialPauseDeps(config) {
       chains: result.chains || {},
       truncated: !!result.truncated,
       acceptedDepRisk: !!mode.acceptedDepRisk,
+      mutes: mutedCases,
     });
+
+    const mutedSignatures = new Set(mutedCases.map(m => m.signature));
 
     // Alertar con cooldown por (issue, deps-set).
     for (const [issueKey, deps] of Object.entries(missingByIssue)) {
       const sig = partialPauseDeps.alertSignature(issueKey, deps);
-      const lastTs = partialPauseDepsAlertCache.get(sig) || 0;
       const now = Date.now();
-      if (now - lastTs < ppCfg.alertCooldownMs) {
+      // #5978 — La decisión (silencio persistente vs. cooldown en memoria vs.
+      // alertar) vive en `partial-pause-mutes.decideAlert`, no acá: este archivo
+      // es un daemon que ningún test puede `require()`, así que la lógica
+      // inline sólo se podía testear por réplica. Ahora el test corre la MISMA
+      // función que corre en producción.
+      const decision = partialPauseMutes.decideAlert({
+        isMutedSignature: mutedSignatures.has(sig),
+        lastAlertTs: partialPauseDepsAlertCache.get(sig) || 0,
+        now,
+        cooldownMs: ppCfg.alertCooldownMs,
+      });
+      if (!decision.alert) {
         appendPartialPauseDepsLog({
           issue: Number(issueKey),
           missing_deps: deps,
-          action: 'detected_within_cooldown',
+          signature: sig,
+          action: decision.action,
         });
         continue;
       }
@@ -21130,7 +21166,8 @@ async function brazoPartialPauseDeps(config) {
       appendPartialPauseDepsLog({
         issue: Number(issueKey),
         missing_deps: deps,
-        action: 'alert_sent',
+        signature: sig,
+        action: decision.action,
       });
       // Mensaje de Telegram (CA-2): texto + botones de acción.
       // #5923 — antes los botones eran `url` al dashboard, y como el dashboard
@@ -21147,6 +21184,14 @@ async function brazoPartialPauseDeps(config) {
         [
           { action: 'include-deps',  text: `✅ Sí, incluir las ${deps.length}`, issue: issueKey },
           { action: 'keep-original', text: `🎯 Seguir sólo con #${issueKey}`,   issue: issueKey },
+        ],
+        // #5978 — `mute-case` va en la MISMA fila que `keep-original` sería lo
+        // ideal (se leen como alternativas), pero la fila 1 ya está llena y un
+        // tercer botón ahí rompe el ancho en mobile. Fila propia, arriba de la
+        // acción destructiva, para que quede claro que es una alternativa a
+        // "seguir sólo con #N" y no un paso posterior.
+        [
+          { action: 'mute-case', text: '🔕 No avisar más por este caso', issue: issueKey },
         ],
         [
           { action: 'cancel-partial-pause', text: '🔓 Levantar la pausa parcial' },

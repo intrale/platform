@@ -333,3 +333,147 @@ test('#5923 RESOLUTIONS coincide con los paths que rutea el callback-handler', (
     // `include-deps` ya existía y sigue ruteado.
     assert.equal(handler.PP_ROUTES['include-deps'], '/api/partial-pause/include-deps');
 });
+
+// ─── #5978 · `mute-case` ─────────────────────────────────────────────────────
+//
+// El punto entero del issue es que `mute-case` y `keep-original` DEJEN de ser
+// sinónimos: hasta acá `keep-original` llamaba a `markDepRiskAccepted` y el
+// flag no suprimía nada, así que "mantener bloqueado" y "no volver a avisar"
+// habrían hecho exactamente lo mismo. Estos tests fijan la diferencia.
+
+/** Helper con el store de silencios fakeado (no toca disco). */
+function makeMuteDeps(overrides = {}) {
+    const h = makeDeps('partial_pause', {});
+    const muted = [];
+    h.calls.muted = muted;
+    h.deps.muteCase = (args) => {
+        muted.push(args);
+        const sorted = [...args.deps].sort((a, b) => a - b);
+        return { ok: true, signature: `${args.issue}:${sorted.join(',')}` };
+    };
+    Object.assign(h.deps, overrides);
+    return h;
+}
+
+test('#5978 mute-case está en el enum de resoluciones', () => {
+    assert.ok(RESOLUTIONS.includes('mute-case'));
+});
+
+test('#5978 mute-case silencia la firma y devuelve la que REALMENTE silenció', () => {
+    const h = makeMuteDeps();
+    const out = applyResolution({
+        action: 'mute-case', authorizedBy: BY, operatorRef: '111222333',
+        issue: 6033, missingDeps: [6041, 6032], waveNumber: 10, deps: h.deps,
+    });
+    assert.equal(out.status, 200);
+    assert.equal(out.body.ok, true);
+    // La firma va en la respuesta para que el toast no mienta: entre que salió
+    // la alerta y el operador apretó, las deps pueden haber cambiado.
+    assert.equal(out.body.signature, '6033:6032,6041');
+    assert.equal(h.calls.muted.length, 1);
+    assert.equal(h.calls.muted[0].authorizedBy, BY, 'origen del enum cerrado (#3625)');
+    assert.equal(h.calls.muted[0].operatorRef, '111222333');
+    assert.equal(h.calls.muted[0].wave, 10);
+});
+
+test('#5978 CA-3/CA-4: mute-case NO muta allowlist ni accepted_dep_risk (≠ keep-original)', () => {
+    const h = makeMuteDeps();
+    applyResolution({ action: 'mute-case', authorizedBy: BY, issue: 6033, missingDeps: [6032], deps: h.deps });
+    assert.equal(h.calls.mark.length, 0, 'NO llama a markDepRiskAccepted');
+    assert.equal(h.calls.clear.length, 0, 'NO levanta la pausa parcial');
+    // Y no borra el state de deps: el caso sigue existiendo, sólo que callado.
+    // Si lo borrara, el banner no podría mostrarlo como "silenciado" y el caso
+    // desaparecería de la vista — el fallo que #5978 vino a evitar.
+    assert.equal(h.calls.depsState, 0, 'NO borra el state de deps');
+
+    // Contraste explícito: keep-original SÍ acepta el riesgo y SÍ limpia.
+    const k = makeMuteDeps();
+    applyResolution({ action: 'keep-original', authorizedBy: BY, deps: k.deps });
+    assert.equal(k.calls.mark.length, 1, 'keep-original sigue aceptando el riesgo');
+    assert.equal(k.calls.muted.length, 0, 'keep-original NO silencia');
+    assert.equal(k.calls.depsState, 1);
+});
+
+test('#5978 CA-5: authorizedBy fuera del enum ⇒ 403 y CERO escritura en el store', () => {
+    for (const by of ['telegram:111222333', 'dashboard-local', '', null, 'commander:otro']) {
+        const h = makeMuteDeps();
+        const out = applyResolution({
+            action: 'mute-case', authorizedBy: by, issue: 6033, missingDeps: [6032], deps: h.deps,
+        });
+        assert.equal(out.status, 403, `${by} no está en el enum`);
+        assert.equal(h.calls.muted.length, 0, 'no se escribió el silencio');
+    }
+});
+
+test('#5978 mute-case con anti-replay: fuera de partial_pause ⇒ 409 sin escribir', () => {
+    const h = makeMuteDeps();
+    h.deps.getPipelineMode = () => ({ mode: 'running', allowedIssues: [] });
+    const out = applyResolution({
+        action: 'mute-case', authorizedBy: BY, issue: 6033, missingDeps: [6032], deps: h.deps,
+    });
+    assert.equal(out.status, 409);
+    assert.equal(h.calls.muted.length, 0);
+});
+
+test('#5978 sin deps vigentes ⇒ 409 explícito y CERO escritura (fail-open al aviso)', () => {
+    // Pasa cuando el state de deps ya no tiene entrada para el issue: después de
+    // un include-deps o de un cancel-partial-pause, que lo borran. No hay firma
+    // que silenciar, así que se responde error en vez de inventar un silencio.
+    for (const missingDeps of [[], undefined, null, 'no-es-array', [0, -3, NaN]]) {
+        const h = makeMuteDeps();
+        const out = applyResolution({
+            action: 'mute-case', authorizedBy: BY, issue: 6033, missingDeps, deps: h.deps,
+        });
+        assert.equal(out.status, 409, `missingDeps=${JSON.stringify(missingDeps)}`);
+        assert.equal(h.calls.muted.length, 0, 'no se escribe un silencio sin firma');
+    }
+});
+
+test('#5978 sin issue ⇒ 400 y CERO escritura', () => {
+    for (const issue of [undefined, null, '', 0, -1, 'abc', '../etc']) {
+        const h = makeMuteDeps();
+        const out = applyResolution({
+            action: 'mute-case', authorizedBy: BY, issue, missingDeps: [6032], deps: h.deps,
+        });
+        assert.equal(out.status, 400, `issue=${JSON.stringify(issue)}`);
+        assert.equal(h.calls.muted.length, 0);
+    }
+});
+
+test('#5978 sin el store inyectado ⇒ 500, nunca un 200 que no silenció nada', () => {
+    const h = makeMuteDeps();
+    delete h.deps.muteCase;
+    const out = applyResolution({
+        action: 'mute-case', authorizedBy: BY, issue: 6033, missingDeps: [6032], deps: h.deps,
+    });
+    assert.equal(out.status, 500);
+    assert.equal(out.body.ok, false);
+});
+
+test('#5978 si el store falla al escribir ⇒ 500, no un toast mentiroso', () => {
+    const h = makeMuteDeps();
+    h.deps.muteCase = () => ({ ok: false, reason: 'write_failed:EACCES' });
+    const out = applyResolution({
+        action: 'mute-case', authorizedBy: BY, issue: 6033, missingDeps: [6032], deps: h.deps,
+    });
+    assert.equal(out.status, 500);
+    assert.match(out.body.msg, /write_failed/);
+});
+
+test('#5978 re-silenciar el mismo caso es idempotente y lo dice en el toast', () => {
+    const h = makeMuteDeps();
+    h.deps.muteCase = () => ({ ok: true, signature: '6033:6032', alreadyMuted: true });
+    const out = applyResolution({
+        action: 'mute-case', authorizedBy: BY, issue: 6033, missingDeps: [6032], deps: h.deps,
+    });
+    assert.equal(out.status, 200);
+    assert.equal(out.body.alreadyMuted, true);
+    assert.match(out.body.msg, /ya estaba silenciado/);
+});
+
+test('#5978 el copy de keep-original avisa que el aviso SIGUE (para distinguirlo)', () => {
+    const h = makeMuteDeps();
+    const out = applyResolution({ action: 'keep-original', authorizedBy: BY, deps: h.deps });
+    assert.match(out.body.msg, /aviso sigue saliendo/i,
+        'sin esto, desde Telegram las dos acciones son indistinguibles');
+});

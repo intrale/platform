@@ -58,6 +58,9 @@ const TOOLTIPS = {
     resumeGlobal: 'Reanuda tomas y limpia el estado partial-pause.',
     resumePartial: 'Desactiva la pausa parcial y reanuda todo el pipeline.',
     includeDeps: 'Agrega todas las deps abiertas al allowlist en bloque (includeMissingDeps).',
+    // #5978 — "Ocultar" y "Silenciar" tienen que leerse como cosas distintas:
+    // el primero es del BANNER ENTERO, temporal y por sesión; el segundo es de
+    // la FILA (un caso), persistente y sobrevive al restart del Pulpo.
     dismissDeps: 'Oculta el aviso — volverá a aparecer en el próximo ciclo si persiste.',
     sumarLike: 'Persiste un like con razón en allowlist-candidates.json.',
     auditLink: 'Endpoint JSONL de las mutaciones con hash-chain auditable.',
@@ -242,13 +245,38 @@ function renderControlBar({ ic, state, stale, blocked, isPaused, partialActive, 
         + '</div>';
 }
 
-// --- 2. Banner partial-pause-deps (#2893) ------------------------------------
+// --- 2. Banner partial-pause-deps (#2893, reestructurado en #5978) -----------
+//
+// #5978 — Antes el banner colapsaba TODOS los casos en una sola frase de texto
+// plano dentro de un `<span>` único (`#partial-pause-deps-msg`). Sobre esa
+// estructura el CA "el banner distingue los casos silenciados de los activos"
+// no es implementable: no hay entidad por caso donde colgar el estado. Ahora la
+// cabecera lleva el conteo y `#partial-pause-deps-rows` recibe UNA FILA POR
+// FIRMA `(issue, deps-set)` — que es además la unidad que indexa el store de
+// silencios, así que la UI y el modelo de datos comparten granularidad.
+//
+// Contrato visual (mismo que fija el semáforo de sync de #4375): NUNCA sólo
+// color. Cada estado se distingue por ícono + chip TEXTUAL. Atenuar una fila
+// sin chip no cumple: un operador con daltonismo o en un monitor lavado no
+// podría saber si el caso está vivo o mudo, y ése es justamente el estado que
+// decide si el pipeline se traba en silencio.
+//
+// Sin colores hardcodeados: este bloque migra a tokens (`--warning`,
+// `--warning-bg`, `--text`, `--text-dim`, `--border-strong`) la deuda que
+// arrastraba de #2893 (`rgba(240,165,0,0.12)`, `#f0a500`, `#c9d1d9`, `#1c2128`).
 function renderDepsBanner({ ic }) {
-    return `<div id="partial-pause-deps-banner" role="alert" style="display:none;margin:8px 0 4px;padding:10px 14px;border-radius:8px;background:rgba(240,165,0,0.12);border:1px solid rgba(240,165,0,0.45);color:#f0a500;font-size:var(--fs-sm,0.85rem);">
-    <span style="font-weight:600;display:inline-flex;align-items:center;gap:6px;">${ic('estado-partial-pause')} Pausa parcial trabada</span>
-    <span id="partial-pause-deps-msg" style="margin-left:10px;color:var(--text,#c9d1d9);"></span>
-    <button onclick="includeMissingDeps()" style="margin-left:12px;padding:4px 10px;background:#f0a500;color:#1c2128;border:0;border-radius:4px;cursor:pointer;font-weight:600;" title="${escapeHtmlAttr(TOOLTIPS.includeDeps)}">Agregar dependencias al allowlist</button>
-    <button onclick="dismissDepsBanner()" style="margin-left:6px;padding:4px 10px;background:transparent;color:#c9d1d9;border:1px solid rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;" title="${escapeHtmlAttr(TOOLTIPS.dismissDeps)}">Ocultar</button>
+    return `<div id="partial-pause-deps-banner" role="alert" style="display:none;margin:8px 0 4px;padding:10px 14px;border-radius:8px;background:var(--warning-bg,rgba(210,153,34,0.14));border:1px solid var(--warning,#D29922);color:var(--warning,#D29922);font-size:var(--fs-sm,0.85rem);">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span style="font-weight:600;display:inline-flex;align-items:center;gap:6px;">${ic('estado-partial-pause')} Pausa parcial trabada</span>
+      <span id="partial-pause-deps-count" style="color:var(--text-dim,#8B949E);font-weight:500;"></span>
+      <span style="flex:1 1 auto;"></span>
+      <button onclick="includeMissingDeps()" style="padding:4px 10px;background:var(--warning,#D29922);color:var(--bg,#0D1117);border:0;border-radius:4px;cursor:pointer;font-weight:600;" title="${escapeHtmlAttr(TOOLTIPS.includeDeps)}">Agregar dependencias al allowlist</button>
+      <button onclick="dismissDepsBanner()" style="padding:4px 10px;background:transparent;color:var(--text,#C9D1D9);border:1px solid var(--border-strong,#484F58);border-radius:4px;cursor:pointer;" title="${escapeHtmlAttr(TOOLTIPS.dismissDeps)}">Ocultar</button>
+    </div>
+    <div id="partial-pause-deps-rows" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;"></div>
+    <!-- Compat: lectores viejos (y los tests de humo del banner) siguen
+         encontrando este span. Se mantiene con el resumen en texto plano. -->
+    <span id="partial-pause-deps-msg" hidden style="color:var(--text,#C9D1D9);"></span>
   </div>`;
 }
 

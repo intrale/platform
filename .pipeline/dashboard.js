@@ -8142,11 +8142,121 @@ async function includeMissingDeps() {
   } catch (e) { showToast('Error: ' + e.message, false); }
 }
 
+// "Ocultar" es del BANNER ENTERO y es TEMPORAL (sessionStorage, 5 min).
+// #5978 — deliberadamente distinto de "Silenciar", que es de UNA FILA, es
+// PERSISTENTE y sobrevive al restart del Pulpo. Si los dos se leyeran igual,
+// el operador no podría distinguir "sacámelo de la vista un rato" de "no me
+// avises nunca más por esto".
 function dismissDepsBanner() {
   const el = document.getElementById('partial-pause-deps-banner');
   if (el) el.style.display = 'none';
   // Marcar dismiss en sessionStorage para no re-mostrar hasta refresh real.
   try { sessionStorage.setItem('pp-deps-banner-dismissed', String(Date.now())); } catch (_) {}
+}
+
+// #5978 — Firma canónica del caso, réplica client-side de
+// partial-pause-deps.alertSignature: deps numerizadas, ordenadas y unidas por
+// coma. Si esta función y la del servidor divergieran, el botón "Silenciar"
+// mandaría a silenciar una firma que el barrido nunca consulta — el silencio
+// parecería aplicado y el aviso seguiría saliendo. Un solo formato, dos
+// implementaciones que deben coincidir exactamente.
+function _ppDepsSignature(issue, deps) {
+  const sorted = (deps || []).map(Number).filter(function(n){ return n > 0; }).sort(function(a,b){ return a - b; });
+  return String(Number(issue)) + ':' + sorted.join(',');
+}
+
+function _ppDepsEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// #5978 — Silenciar un caso desde el dashboard. Mismo endpoint que usa el botón
+// de Telegram; acá operatorRef es el origen dashboard, no un from.id.
+async function muteDepsCase(issue) {
+  try {
+    const resp = await fetch('/api/partial-pause/mute-case', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ authorizedBy: 'commander:leo', operatorRef: 'dashboard', issue: Number(issue) }),
+    });
+    const r = await resp.json();
+    showToast(r.msg || (r.ok ? 'Caso silenciado.' : 'No se pudo silenciar.'), !!r.ok);
+    refreshDepsBanner();
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+// #5978 — Salida del estado silenciado (CA del PO). Sin esto el operador entra
+// al silencio con un botón y sale editando un JSON a mano.
+async function unmuteDepsCase(signature) {
+  try {
+    const resp = await fetch('/api/partial-pause/unmute-case', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signature: String(signature), operatorRef: 'dashboard' }),
+    });
+    const r = await resp.json();
+    showToast(r.msg || (r.ok ? 'Aviso reactivado.' : 'No se pudo reactivar.'), !!r.ok);
+    refreshDepsBanner();
+  } catch (e) { showToast('Error: ' + e.message, false); }
+}
+
+const _PP_DEPS_BTN_STYLE = 'padding:3px 9px;background:transparent;color:var(--text,#C9D1D9);'
+  + 'border:1px solid var(--border-strong,#484F58);border-radius:4px;cursor:pointer;font-size:0.78rem;';
+
+// Delegación: un solo listener sobre el contenedor, montado una única vez. Las
+// filas se re-renderizan cada 30s con innerHTML, así que cablear listeners
+// por botón acumularía handlers muertos en cada poll.
+let _ppDepsRowsBound = false;
+function _ppDepsBindRows() {
+  if (_ppDepsRowsBound) return;
+  const rows = document.getElementById('partial-pause-deps-rows');
+  if (!rows) return;
+  rows.addEventListener('click', function(ev) {
+    const target = ev.target && ev.target.closest ? ev.target.closest('button') : null;
+    if (!target) return;
+    const sig = target.getAttribute('data-pp-unmute');
+    if (sig) { unmuteDepsCase(sig); return; }
+    const issue = target.getAttribute('data-pp-mute');
+    if (issue) { muteDepsCase(issue); }
+  });
+  _ppDepsRowsBound = true;
+}
+
+// Una fila por caso (issue, deps-set). Estado por ÍCONO + CHIP TEXTUAL, nunca
+// sólo por color/opacidad (contrato WCAG AA del semáforo de #4375).
+function _ppDepsRow(issue, deps, muteEntry) {
+  const sig = _ppDepsSignature(issue, deps);
+  const depList = (deps || []).map(function(d){ return '#' + Number(d); }).join(', ');
+  const silenciado = !!muteEntry;
+  const chip = silenciado
+    ? '<span style="display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:10px;background:rgba(255,255,255,0.06);color:var(--text-dim,#8B949E);font-size:0.76rem;font-weight:600;">'
+        + _ppaIcUse('bell-off', 'Silenciado') + 'Silenciado</span>'
+    : '<span style="display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:10px;background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,#D29922);font-size:0.76rem;font-weight:600;">'
+        + _ppaIcUse('warn', 'Activo') + 'Activo</span>';
+  const detalle = silenciado
+    ? '#' + Number(issue) + ' depende de ' + _ppDepsEsc(depList) + ' — silenciado el '
+        + _ppDepsEsc(String(muteEntry.muted_at || '').slice(0, 16).replace('T', ' '))
+    : '#' + Number(issue) + ' depende de ' + _ppDepsEsc(depList) + ' — sin habilitar en la ola';
+  const acciones = silenciado
+    // Sin onclick inline: las acciones se cablean por DELEGACION sobre el
+    // contenedor (ver _ppDepsBindRows). Un onclick con string literal obligaria
+    // a anidar comillas dentro de un atributo, dentro de un string JS, dentro del
+    // template literal que emite este script: cuatro niveles de escape para pasar
+    // un dato que un data- attribute transporta sin ninguno.
+    ? '<button type="button" data-pp-unmute="' + _ppDepsEsc(sig) + '" style="' + _PP_DEPS_BTN_STYLE + '"'
+        + ' title="Vuelve a avisar por este caso en el proximo barrido.">Reactivar aviso</button>'
+    : '<button type="button" data-pp-mute="' + Number(issue) + '" style="' + _PP_DEPS_BTN_STYLE + '"'
+        + ' title="No volver a avisar por #' + Number(issue) + ' mientras dependa exactamente de '
+        + _ppDepsEsc(depList) + '. Si cambian las dependencias, el aviso vuelve.">Silenciar</button>';
+  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 9px;border-radius:5px;'
+    + 'border-left:3px solid ' + (silenciado ? 'var(--border-strong,#484F58)' : 'var(--warning,#D29922)') + ';'
+    + 'background:rgba(255,255,255,0.03);' + (silenciado ? 'opacity:.72;' : '') + '">'
+    + chip
+    + '<span style="color:var(--text,#C9D1D9);">' + detalle + '</span>'
+    + '<span style="flex:1 1 auto;"></span>'
+    + acciones
+    + '</div>';
 }
 
 async function refreshDepsBanner() {
@@ -8155,6 +8265,8 @@ async function refreshDepsBanner() {
     const data = await resp.json();
     const banner = document.getElementById('partial-pause-deps-banner');
     const msg = document.getElementById('partial-pause-deps-msg');
+    const rows = document.getElementById('partial-pause-deps-rows');
+    const countEl = document.getElementById('partial-pause-deps-count');
     if (!banner || !msg) return;
     if (!data.hasMissing) {
       banner.style.display = 'none';
@@ -8165,6 +8277,34 @@ async function refreshDepsBanner() {
       const d = sessionStorage.getItem('pp-deps-banner-dismissed');
       if (d && (Date.now() - Number(d)) < 5 * 60 * 1000) return;
     } catch (_) {}
+
+    // #5978 — Índice de silencios por firma. mutes puede no venir (state de
+    // un Pulpo viejo, o store ilegible): en ese caso TODO se pinta como activo,
+    // que es el fail-open correcto — mostrar de más, nunca ocultar de menos.
+    const mutedBySig = {};
+    for (const m of (data.mutes || [])) {
+      if (m && m.signature) mutedBySig[m.signature] = m;
+    }
+
+    const entries = Object.entries(data.missing || {})
+      .sort(function(a, b) { return Number(a[0]) - Number(b[0]); });
+    let activos = 0, silenciados = 0;
+    const html = entries.map(function(pair) {
+      const issue = pair[0], deps = pair[1] || [];
+      const entry = mutedBySig[_ppDepsSignature(issue, deps)];
+      if (entry) silenciados++; else activos++;
+      return _ppDepsRow(issue, deps, entry);
+    }).join('');
+    if (rows) { rows.innerHTML = html; _ppDepsBindRows(); }
+
+    // El conteo importa: los casos silenciados NO desaparecen de la vista, y
+    // sin cabecera se perderían entre las filas atenuadas.
+    if (countEl) {
+      countEl.textContent = '· ' + activos + ' caso' + (activos === 1 ? '' : 's') + ' activo' + (activos === 1 ? '' : 's')
+        + (silenciados > 0 ? ', ' + silenciados + ' silenciado' + (silenciados === 1 ? '' : 's') : '');
+    }
+
+    // Compat: resumen en texto plano en el span histórico (oculto).
     const allDeps = new Set();
     for (const deps of Object.values(data.missing || {})) {
       for (const d of deps) allDeps.add(Number(d));
@@ -13028,10 +13168,26 @@ function handleRequest(req, res) {
   // el chat, así que el segundo tap tiene que morir server-side.
   // ===========================================================================
   if ((req.url === '/api/partial-pause/keep-original'
-       || req.url === '/api/partial-pause/cancel-partial-pause')
+       || req.url === '/api/partial-pause/cancel-partial-pause'
+       // #5978 — `mute-case` entra por el MISMO bloque, y por lo tanto por el
+       // mismo gate de request (loopback + Origin/Referer + Content-Type), el
+       // mismo `validateAuthorizedBy` y el mismo anti-replay. Un endpoint
+       // paralelo habría sido una segunda superficie que envejece distinto.
+       || req.url === '/api/partial-pause/mute-case')
       && req.method === 'POST') {
     const ppGate = require('./lib/dashboard-request-gate');
     const ppResolution = require('./lib/partial-pause-resolution');
+
+    // #5978 — Nro de ola activa, sólo como metadata de diagnóstico del silencio
+    // (permite reconstruir a posteriori en qué ola se calló qué). Nunca puede
+    // tumbar la acción: si `waves.json` no se puede leer, devuelve `undefined`
+    // y el silencio se registra igual, sin el campo.
+    const ppActiveWaveNumber = () => {
+      try {
+        const w = require('./lib/waves').getActiveWave();
+        return w && Number.isInteger(w.number) ? w.number : undefined;
+      } catch { return undefined; }
+    };
 
     const gate = ppGate.evaluateLocalMutationGate({
       remoteAddress: (req.socket && req.socket.remoteAddress) || '',
@@ -13044,7 +13200,9 @@ function handleRequest(req, res) {
       return;
     }
 
-    const ppAction = req.url.endsWith('/keep-original') ? 'keep-original' : 'cancel-partial-pause';
+    const ppAction = req.url.endsWith('/keep-original') ? 'keep-original'
+      : req.url.endsWith('/mute-case') ? 'mute-case'
+      : 'cancel-partial-pause';
     let ppBody = '';
     let ppAborted = false;
     req.on('data', (chunk) => {
@@ -13064,14 +13222,36 @@ function handleRequest(req, res) {
         // como authorizedBy dejaba el valor FUERA del enum: pasaba sólo por el
         // grace period y con `PARTIAL_PAUSE_STRICT_AUTH=1` daba 403 para siempre.
         const authorizedBy = ppGate.sanitizeAuthorizedBy(payload.authorizedBy);
+        // #5978 — Las deps que arman la firma del caso NO llegan del cliente:
+        // se resuelven acá, server-side, desde el state que escribe el barrido.
+        // El `callback_data` de Telegram transporta sólo el issue (contrato
+        // congelado de ≤64 bytes) y dejar que el cliente eligiera las deps
+        // habría convertido la firma en un dato controlable por el que aprieta.
+        // Si no hay entrada para ese issue (el state se borra tras un
+        // include-deps o un cancel-partial-pause), el array va vacío y
+        // `applyResolution` responde 409 sin escribir nada: fail-open hacia el
+        // aviso, nunca un silencio nacido de un state ausente.
+        let ppMissingDeps = [];
+        if (ppAction === 'mute-case') {
+          try {
+            const st = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'partial-pause-deps-state.json'), 'utf8'));
+            const issueKey = String(Number(payload.issue));
+            ppMissingDeps = Array.isArray(st && st.missing && st.missing[issueKey])
+              ? st.missing[issueKey] : [];
+          } catch { ppMissingDeps = []; }
+        }
         const out = ppResolution.applyResolution({
           action: ppAction,
           authorizedBy,
           operatorRef: ppGate.sanitizeAuthorizedBy(payload.operatorRef, ''),
+          issue: payload.issue,
+          missingDeps: ppMissingDeps,
+          waveNumber: ppActiveWaveNumber(),
           deps: {
             getPipelineMode: pp.getPipelineMode,
             markDepRiskAccepted: pp.markDepRiskAccepted,
             clearPartialPause: pp.clearPartialPause,
+            muteCase: require('./lib/partial-pause-mutes').mute,
             clearDepsState: () => {
               try { fs.unlinkSync(path.join(PIPELINE, 'partial-pause-deps-state.json')); } catch {}
             },
@@ -13088,19 +13268,98 @@ function handleRequest(req, res) {
     return;
   }
 
+  // ===========================================================================
+  // #5978 — Reactivar el aviso de un caso silenciado.
+  //
+  // Es el CA que sumó el PO sobre la guideline de UX: sin esta salida, el
+  // operador entra al estado silenciado con un botón de Telegram y sale
+  // editando un JSON a mano. Un estado con entrada por UI y salida por editor
+  // de texto es una trampa operativa, y encima en el estado que decide si un
+  // issue queda trabado sin que nadie lo vea.
+  //
+  // Mismo gate de request que `mute-case`. `authorizedBy` NO viene del cliente:
+  // se fija server-side igual que `include-deps` (el otro botón de este mismo
+  // banner), porque el request nace de un click loopback ya gateado y no de un
+  // canal con identidad propia. La acción es de DE-ESCALACIÓN: su peor efecto
+  // posible es una alerta de más, nunca un silencio.
+  // ===========================================================================
+  if (req.url === '/api/partial-pause/unmute-case' && req.method === 'POST') {
+    const umGate = require('./lib/dashboard-request-gate');
+    const umDecision = umGate.evaluateLocalMutationGate({
+      remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+      method: req.method,
+      headers: req.headers,
+    });
+    if (!umDecision.ok) {
+      res.writeHead(umDecision.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: umDecision.msg }));
+      return;
+    }
+    let umBody = '';
+    let umAborted = false;
+    req.on('data', (chunk) => {
+      umBody += chunk;
+      if (umBody.length > 16 * 1024) { umAborted = true; req.destroy(); }
+    });
+    req.on('end', () => {
+      if (umAborted) return;
+      try {
+        const payload = umBody ? JSON.parse(umBody) : {};
+        // La firma es `<issue>:<dep1,dep2,...>`. Se valida con un regex estricto
+        // ANTES de tocar el store: sin esto, un valor arbitrario del cliente se
+        // usaría como clave de objeto.
+        const signature = String(payload.signature == null ? '' : payload.signature).trim();
+        if (!/^\d{1,7}:\d{1,7}(,\d{1,7})*$/.test(signature)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: 'Firma de caso inválida.' }));
+          return;
+        }
+        const out = require('./lib/partial-pause-mutes').unmute(signature, {
+          authorizedBy: 'commander:leo',
+          operatorRef: umGate.sanitizeAuthorizedBy(payload.operatorRef, ''),
+        });
+        log(`Pausa parcial: unmute-case ${signature} → ${out.ok ? 'ok' : out.reason}`);
+        if (!out.ok) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, msg: `No se pudo reactivar el aviso (${out.reason}).` }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          signature,
+          existed: !!out.existed,
+          msg: out.existed
+            ? `Aviso reactivado para el caso ${signature}. Vuelve a alertar en el próximo barrido.`
+            : 'Ese caso ya no estaba silenciado.',
+        }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
+    return;
+  }
+
   // #2893 — API: estado de detección de deps (alimenta el banner del dashboard).
   if (req.url === '/api/partial-pause/deps-state' && req.method === 'GET') {
     try {
       const stateFile = path.join(PIPELINE, 'partial-pause-deps-state.json');
+      // #5978 — Los silencios se leen del store, NO del state del barrido.
+      // El state lo escribe el Pulpo cada N ticks; el store lo escribe el
+      // operador al instante. Leyendo el store, el banner refleja el silenciado
+      // en el próximo poll de 30s en vez de esperar al barrido siguiente.
+      let mutes = [];
+      try { mutes = require('./lib/partial-pause-mutes').listMutes(); } catch { mutes = []; }
       if (!fs.existsSync(stateFile)) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, hasMissing: false }));
+        res.end(JSON.stringify({ ok: true, hasMissing: false, mutes }));
         return;
       }
       const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
       const hasMissing = data.missing && Object.keys(data.missing).length > 0;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, hasMissing, ...data }));
+      res.end(JSON.stringify({ ok: true, hasMissing, ...data, mutes }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, msg: e.message }));

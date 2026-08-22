@@ -11,26 +11,44 @@
 // =============================================================================
 'use strict';
 
-const RESOLUTIONS = Object.freeze(['keep-original', 'cancel-partial-pause']);
+// #5978 — `mute-case` se suma acá y NO es sinónimo de `keep-original`:
+//
+//   keep-original → no toco la lista de trabajo; el riesgo de las deps abiertas
+//                   queda ASUMIDO (`accepted_dep_risk`), pero se sigue avisando.
+//   mute-case     → no toco NADA del marker; suprimo la RE-ALERTA de esta firma
+//                   `(issue, deps-set)` de forma persistente.
+//
+// Hasta #5978 las dos habrían hecho lo mismo (`keep-original` ya llamaba a
+// `markDepRiskAccepted`, y ese flag no suprimía nada). Separarlas es el punto
+// del issue: son dos decisiones distintas del operador.
+const RESOLUTIONS = Object.freeze(['keep-original', 'cancel-partial-pause', 'mute-case']);
 
 /**
  * @param {object} args
- * @param {string} args.action        - 'keep-original' | 'cancel-partial-pause'
+ * @param {string} args.action        - 'keep-original' | 'cancel-partial-pause' | 'mute-case'
  * @param {string} args.authorizedBy  - origen autorizado; DEBE estar en el enum
  *                                      cerrado de #3625 (ver validación abajo).
  * @param {string} [args.operatorRef] - identidad fina del operador (from.id de
  *                                      Telegram). Viaja por justification/extra,
  *                                      NO por authorizedBy: el enum es de clase
  *                                      de origen, no de identidad.
+ * @param {number|string} [args.issue]      - #5978: sólo `mute-case`. Con `missingDeps`
+ *                                      arma la firma del caso a silenciar.
+ * @param {Array<number|string>} [args.missingDeps] - #5978: deps faltantes VIGENTES al
+ *                                      momento del click. Se llaman `missingDeps` y no
+ *                                      `deps` porque `args.deps` ya es el bag de
+ *                                      inyección de dependencias de este módulo.
  * @param {object} args.deps
  * @param {function} args.deps.getPipelineMode
  * @param {function} args.deps.markDepRiskAccepted - merge no destructivo (#5923).
  * @param {function} args.deps.clearPartialPause
  * @param {function} [args.deps.validateAuthorizedBy] - default: el del audit real.
  * @param {function} [args.deps.clearDepsState] - borra partial-pause-deps-state.json.
+ * @param {number} [args.waveNumber]  - #5978: nro de ola activa, sólo metadata del silencio.
+ * @param {function} [args.deps.muteCase] - #5978: `partial-pause-mutes.mute`.
  * @returns {{status:number, body:object}}
  */
-function applyResolution({ action, authorizedBy, operatorRef, deps } = {}) {
+function applyResolution({ action, authorizedBy, operatorRef, issue, missingDeps, waveNumber, deps } = {}) {
     if (!RESOLUTIONS.includes(action)) {
         return { status: 404, body: { ok: false, msg: 'resolución desconocida' } };
     }
@@ -83,10 +101,92 @@ function applyResolution({ action, authorizedBy, operatorRef, deps } = {}) {
         };
     }
 
+    if (action === 'mute-case') {
+        // ---------------------------------------------------------------------
+        // #5978 — "No avisar más por este caso".
+        //
+        // Escribe SÓLO en el store de silencios. No llama a `markDepRiskAccepted`
+        // ni toca `allowed_issues`: silenciar el ruido no es aceptar el riesgo ni
+        // cambiar la lista de trabajo de la ola. Tampoco llama a `clearDepsState`
+        // —a diferencia de las otras dos resoluciones— porque el caso SIGUE
+        // existiendo: el banner del dashboard tiene que poder mostrarlo como
+        // "silenciado" en vez de hacerlo desaparecer.
+        //
+        // La firma se arma con las deps VIGENTES al momento del click, que el
+        // caller resuelve desde `partial-pause-deps-state.json` (el contrato
+        // `pp:<action>[:<issue>]` transporta sólo el issue y no se toca). Entre
+        // que salió la alerta y el operador apretó pueden haber cambiado: es el
+        // comportamiento deseado, y por eso la respuesta devuelve la firma
+        // efectivamente silenciada para que el toast no mienta.
+        // ---------------------------------------------------------------------
+        if (typeof d.muteCase !== 'function') {
+            return {
+                status: 500,
+                body: { ok: false, action, msg: 'Falta el store de silencios; no se silencia a ciegas.' },
+            };
+        }
+        const muteIssue = Number(String(issue == null ? '' : issue).replace(/^#/, '').trim());
+        const muteDeps = Array.isArray(missingDeps)
+            ? missingDeps.map(Number).filter(n => Number.isInteger(n) && n > 0)
+            : [];
+        if (!Number.isInteger(muteIssue) || muteIssue <= 0) {
+            return { status: 400, body: { ok: false, action, msg: 'Falta el issue del caso a silenciar.' } };
+        }
+        // Sin deps no hay firma que silenciar. Pasa cuando el state de deps ya
+        // no tiene entrada para el issue (p.ej. después de un include-deps o de
+        // un cancel-partial-pause, que lo borran). Error explícito y CERO
+        // escritura: fail-open hacia el aviso, igual que con estado corrupto.
+        if (muteDeps.length === 0) {
+            return {
+                status: 409,
+                body: {
+                    ok: false,
+                    action,
+                    msg: `#${muteIssue} ya no tiene dependencias faltantes registradas; no hay caso que silenciar.`,
+                },
+            };
+        }
+        const muted = d.muteCase({
+            issue: muteIssue,
+            deps: muteDeps,
+            authorizedBy: authorizedByValid,
+            operatorRef: operatorRef ? String(operatorRef).slice(0, 64) : undefined,
+            // `getPipelineMode()` no expone la ola (el marker la guarda aparte),
+            // así que la resuelve el caller y viaja como argumento. Es metadata
+            // de diagnóstico: si no llega, el silencio se registra igual.
+            wave: waveNumber,
+            source: 'telegram-partial-pause-deps',
+        });
+        if (!muted || muted.ok !== true) {
+            return {
+                status: 500,
+                body: { ok: false, action, msg: `No se pudo silenciar el caso (${(muted && muted.reason) || 'error'}).` },
+            };
+        }
+        const depList = muteDeps.map(n => `#${n}`).join(', ');
+        return {
+            status: 200,
+            body: {
+                ok: true,
+                action,
+                signature: muted.signature,
+                issue: muteIssue,
+                deps: muteDeps,
+                alreadyMuted: !!muted.alreadyMuted,
+                msg: muted.alreadyMuted
+                    ? `Ese caso ya estaba silenciado (#${muteIssue} → ${depList}).`
+                    : `No se vuelve a avisar por #${muteIssue} mientras dependa exactamente de ${depList}. Si cambian las deps, el aviso vuelve.`,
+            },
+        };
+    }
+
     if (action === 'keep-original') {
         // ---------------------------------------------------------------------
         // "Seguir sólo con el issue original" = NO cambiar el allowlist. Sólo se
         // deja constancia de que el riesgo de deps abiertas fue aceptado.
+        //
+        // #5978 — Esto NO silencia nada: el aviso sigue saliendo. Silenciar es
+        // `mute-case`, una decisión distinta con su propio store.
         //
         // Por eso NO se usa `setPartialPause`: esa primitiva REESCRIBE el marker
         // desde sus argumentos, así que perdía `allowed_skills` (#3680) y la
@@ -136,7 +236,10 @@ function applyResolution({ action, authorizedBy, operatorRef, deps } = {}) {
                 action,
                 allowedIssues,
                 allowedSkills,
-                msg: `Se mantiene el allowlist actual (${scope}); el riesgo de deps abiertas queda asumido.`,
+                // #5978 — el copy dice explícitamente que el aviso sigue: es la
+                // única forma de que el operador distinga esta acción de
+                // `mute-case` desde el toast, que es lo único que ve en Telegram.
+                msg: `Se mantiene el allowlist actual (${scope}); el riesgo de deps abiertas queda asumido. El aviso sigue saliendo: para callarlo usá "No avisar más por este caso".`,
             },
         };
     }

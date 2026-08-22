@@ -313,8 +313,11 @@ test('#5923 cancelar la confirmación (pp:x:) restaura el teclado original y no 
         assert.equal(edit.params.text, MESSAGE.text, 'restaura el texto original, sin el bloque de confirmación');
         const kb = edit.params.reply_markup.inline_keyboard.flat();
         assert.deepEqual(kb.map(b => b.callback_data),
-            ['pp:include-deps', 'pp:keep-original', 'pp:cancel-partial-pause'],
-            'CA-UX-3: cancelar RESTAURA el teclado, no lo retira');
+            ['pp:include-deps', 'pp:keep-original', 'pp:mute-case', 'pp:cancel-partial-pause'],
+            'CA-UX-3: cancelar RESTAURA el teclado COMPLETO, no lo retira ni lo recorta. '
+            + '#5978 sumo pp:mute-case al teclado que emite el barrido del Pulpo: si el '
+            + 'teclado restaurado no lo trajera, dudar una vez le costaria al operador la '
+            + 'accion de silenciar.');
     } finally { requests.restore(); }
 });
 
@@ -339,10 +342,13 @@ test('#5923 hb: no destructivo NO pide confirmación (un tap y listo)', async ()
 
 // ─── Contrato del mapa de rutas ──────────────────────────────────────────────
 
-test('#5923 PP_ROUTES está congelado y cubre exactamente los 3 botones emitidos', () => {
+test('#5923 PP_ROUTES está congelado y cubre exactamente los botones emitidos', () => {
     assert.ok(Object.isFrozen(handler.PP_ROUTES));
+    // #5978 sumo 'mute-case'. El alta es una clave mas en el mapa congelado: el
+    // `action` del cliente se USA COMO CLAVE, nunca se interpola en la URL, asi
+    // que la superficie de ataque no crece con la accion nueva.
     assert.deepEqual(Object.keys(handler.PP_ROUTES).sort(),
-        ['cancel-partial-pause', 'include-deps', 'keep-original']);
+        ['cancel-partial-pause', 'include-deps', 'keep-original', 'mute-case']);
     for (const [action, route] of Object.entries(handler.PP_ROUTES)) {
         assert.equal(route, `/api/partial-pause/${action}`);
     }

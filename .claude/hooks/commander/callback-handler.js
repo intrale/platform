@@ -634,6 +634,9 @@ const PP_ROUTES = Object.freeze({
     'include-deps':         '/api/partial-pause/include-deps',
     'keep-original':        '/api/partial-pause/keep-original',
     'cancel-partial-pause': '/api/partial-pause/cancel-partial-pause',
+    // #5978 — silenciar la re-alerta de ESTE caso. Alta de una clave más en el
+    // mapa congelado: sin superficie nueva, el `action` sigue sin interpolarse.
+    'mute-case':            '/api/partial-pause/mute-case',
 });
 
 const PP_META = Object.freeze({
@@ -645,7 +648,15 @@ const PP_META = Object.freeze({
     'keep-original': {
         text: '🎯 Seguir sólo con el issue original',
         highImpact: false,
-        consequence: 'Vas a dejar el allowlist como está; las deps abiertas quedan asumidas como riesgo.',
+        // #5978 — la consecuencia dice explícitamente que el aviso SIGUE: antes
+        // esta acción era indistinguible de "no me avises más", y ahora que
+        // `mute-case` existe la diferencia tiene que leerse en el propio botón.
+        consequence: 'Vas a dejar el allowlist como está; las deps abiertas quedan asumidas como riesgo. El aviso va a seguir saliendo.',
+    },
+    'mute-case': {
+        text: '🔕 No avisar más por este caso',
+        highImpact: false,
+        consequence: 'Vas a silenciar la re-alerta de este issue con estas dependencias exactas. No cambia la lista de trabajo. Si cambian las deps, el aviso vuelve.',
     },
     'cancel-partial-pause': {
         text: '🔓 Levantar la pausa parcial',
@@ -737,6 +748,11 @@ function _degradedOriginalKeyboard(ns, issue) {
                     { action: "include-deps",  text: PP_META["include-deps"].text,  issue },
                     { action: "keep-original", text: PP_META["keep-original"].text, issue },
                 ],
+                // #5978 — mismo layout que emite el barrido del Pulpo. Si acá
+                // faltara la fila, cancelar una confirmación restauraría un
+                // teclado SIN el botón de silenciar: el operador perdería la
+                // acción por haber dudado una vez.
+                [{ action: "mute-case", text: PP_META["mute-case"].text, issue }],
                 [{ action: "cancel-partial-pause", text: PP_META["cancel-partial-pause"].text }],
             ], { callbackPrefix: "pp" }));
         }
@@ -835,7 +851,7 @@ function _execHumanBlock(action, issue, operator, chatId, messageId) {
  * `operator` es el `from.id` REAL, ya validado como no vacío por el guard
  * fail-closed del caller: acá no hay ningún fallback a literal (R-SEC-9.a).
  */
-async function _execPartialPause(action, operator) {
+async function _execPartialPause(action, operator, issue) {
     const route = PP_ROUTES[action];
     if (!route) return { ok: false, msg: "Acción no reconocida." };
     // Loopback explícito: el dashboard corre en esta misma máquina. No se usa
@@ -856,9 +872,17 @@ async function _execPartialPause(action, operator) {
             // sobre `cancel-partial-pause` (la acción que libera TODO el backlog)
             // es peor que no registrar nada, porque el log AFIRMA algo falso. Si
             // la identidad no llega, no se llega hasta acá.
+            // #5978 — `issue` viaja para las acciones que son POR CASO
+            // (`mute-case`). Las otras tres lo ignoran server-side: el endpoint
+            // sólo lo lee cuando la acción lo necesita, así que mandarlo
+            // siempre no les cambia nada. Las DEPS no viajan desde acá: las
+            // resuelve el dashboard desde `partial-pause-deps-state.json` al
+            // momento del click, porque el `callback_data` de Telegram (≤64
+            // bytes) transporta sólo el issue y ese contrato no se toca.
             body: JSON.stringify({
                 authorizedBy: "telegram:operator",
                 operatorRef: operator,
+                issue: issue || undefined,
             }),
             signal: AbortSignal.timeout(10000),
         });
@@ -997,7 +1021,7 @@ async function handleDegradedActionCallback(cbData, callbackQueryId, message, fr
     let result;
     try {
         result = ns === "pp"
-            ? await _execPartialPause(action, operator)
+            ? await _execPartialPause(action, operator, issue)
             : _execHumanBlock(action, issue, operator, chatId, messageId);
     } catch (e) {
         _log("#5923 error ejecutando " + cbData + ": " + e.message);
