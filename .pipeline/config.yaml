@@ -205,6 +205,10 @@ timeouts:
     linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
+# Merge automático: espera acotada para checks requeridos explícitamente en curso.
+delivery:
+  merge_checks_timeout_ms: 360000  # 6 min; cubre la CI observada de 3-4 min sin bloquear el slot por 10 min
+
 # Procedencia de ramas para auto-recovery. Agregar una identidad confiable es
 # una decisión de seguridad y requiere review humana; nunca usar comodines.
 worktree_provenance:

@@ -183,6 +183,7 @@ const SIDE_MAP = Object.freeze({
     intake: 'kernel',
     resource_limits: 'kernel',
     timeouts: 'kernel',
+    delivery: 'kernel',
     worktree_provenance: 'kernel',
     desync: 'kernel',
     precheck: 'kernel',
@@ -359,6 +360,14 @@ const SCHEMA = {
 
         routing: OBJ(),
         intake: OBJ(),
+
+        delivery: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                merge_checks_timeout_ms: { type: 'integer', minimum: 1 },
+            },
+        },
 
         worktree_provenance: {
             type: 'object',
