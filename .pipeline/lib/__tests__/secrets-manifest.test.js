@@ -529,6 +529,9 @@ test('ninguna entrada con lector real en el repo puede declararse no_consumer', 
     findEnvVarReaders('TELEGRAM_LEO_OPERATOR_CHAT_ID', { files: sources }),
     [
       '.pipeline/delivery.js',
+      // #6206 — el canal unico de firma la lee para resolver la allowlist del
+      // gate `aceptacion` (semantica de delivery.resolveAuthorizedSigners).
+      '.pipeline/lib/approval-channel.js',
       '.pipeline/lib/notify-telegram.js',
       '.pipeline/lib/operator-gate.js',
       '.pipeline/lib/telegram-notifier.js',
