@@ -975,3 +975,90 @@ El **runbook operativo** — invocación segura, estados, códigos de salida,
 recuperación y política de rotación en origen — vive en
 `docs/pipeline/vault-provisioning.md`. Lo que sigue acá es el diseño; lo que se
 ejecuta a mano está allá.
+
+## Capability del corte del fallback — `vault-cut-fallback`, #5458
+
+Apagar `vault.bootstrap_fallback` es la última acción del cutover y la más
+peligrosa de todo el flujo: hecha antes de tiempo deja al pipeline sin
+credenciales; hecha dos veces por una carrera, el estado queda ambiguo. Por eso
+el corte **no es un botón más** del canal de firma del operador.
+
+`vault-cut-fallback` es una **acción operacional**. Comparte con los gates de
+firma (#4579) la parte criptográfica —id opaco en `callback_data`, token HMAC
+firmado, binding resuelto server-side, nonce de un solo uso— y **no comparte
+nada del lifecycle**.
+
+### Las dos allowlists son distintas a propósito
+
+| Allowlist | Módulo | Qué autoriza | ¿Incluye `vault-cut-fallback`? |
+|---|---|---|---|
+| `ACTION_ALLOWLIST` | `action-token.js` | qué acciones se pueden **firmar** | **sí** |
+| `GATE_ACTIONS` | `operator-gate.js` | qué acciones transicionan un gate | no |
+| `OPERATIONAL_ACTIONS` | `operator-gate.js` | qué acciones van al ejecutor operacional | **sí** |
+| `HUMAN_BLOCK_ACTIONS` / `isQuickAction()` | `human-block.js` | botones de la alerta `needs-human` y endpoint local del dashboard | no |
+
+Unificarlas volvería el corte ejecutable desde el teclado de `needs-human` y
+desde el endpoint HTTP local del dashboard. Los tests de los cuatro módulos
+cementan la separación; si alguien la rompe, fallan.
+
+### Aislamiento del lifecycle
+
+- `applyTransition()` rechaza la acción (`invalid-action`) aunque la llamen
+  directo: no está en `GATE_ACTIONS`.
+- `handleSignature()` la rechaza con `not-a-gate-action` **sin consumir el
+  binding** — ahí abajo vive `applyTransition()`, que mueve work-files.
+- El listener clasifica el `callback_data` con `gate.classifyCallback()`
+  **antes** del dispatch de firma y deriva lo operacional a
+  `handleOperationalCallback()`. Un gate sin `classifyCallback` (versión vieja)
+  degrada al canal de firma sin romper.
+- El camino operacional no mueve ni un archivo: el test de integración siembra
+  un ítem en `waiting-operator/` y verifica que sigue exactamente donde estaba.
+
+### TTL corto con máximo explícito
+
+Las acciones operacionales llevan un cap propio (`OPERATIONAL_TTL_MS`,
+10 min para el corte) que **no se aplica sólo al firmar**: `sign()` guarda el
+instante de emisión `t` dentro del cuerpo firmado y `verify()` revalida
+`exp - t <= cap`. Un token operacional emitido con `exp` largo —por un bug
+futuro o un caller hostil— se rechaza como `invalid`. Un token operacional sin
+`t` también: la acción es nueva, no hay tokens legacy que proteger.
+
+### Consumo del nonce: exclusión cross-process
+
+El patrón anterior (`readUsedNonces()` → `appendFileSync`) sólo era atómico
+*dentro* de un proceso. El pipeline corre varios que verifican contra el mismo
+store (dashboard, listener y sus respawns), así que dos podían leer el nonce
+libre antes de que ninguno appendeara.
+
+El consumo ahora es un claim exclusivo: `open(<claims>/<nonce>.json, 'wx')`
+(`O_CREAT|O_EXCL`, `CREATE_NEW` en Windows). Gana exactamente un proceso; el
+resto recibe `EEXIST` → `replayed`. Si el claim **no se puede decidir** (error
+de disco), `verify()` devuelve `unavailable` y no se autoriza nada: fail-closed.
+El JSONL histórico se sigue leyendo —los nonces consumidos antes de la
+migración siguen muertos— y se sigue appendeando como traza de auditoría.
+
+El test `action-token-vault-cut-5458.test.js` lanza **cuatro procesos node
+reales** con barrera de arranque común y exige exactamente un consumo exitoso.
+Degradado al patrón viejo, ese test falla.
+
+Los claims se podan de forma oportunista (>500 entradas, corte de 7 días,
+best-effort). Podar no puede resucitar un token: `verify()` chequea la
+expiración **antes** del claim, y el corte de poda es varias veces el TTL máximo
+que emite el módulo.
+
+### Qué falla cerrado
+
+HMAC inválido, expiración, replay, acción o issue alterados respecto del token
+firmado (`binding-mismatch`), firmante removido entre la publicación del botón y
+el toque (la allowlist se **re-resuelve** al ejecutar, no se usa el snapshot del
+constructor), allowlist vacía, ejecutor ausente o que explota. En todos los
+casos el fallback se conserva y el toast es genérico: nunca expone token, firma,
+nonce, chat/operator ID, ARN, hostname ni paths.
+
+### Qué NO está acá
+
+El ejecutor del corte —revalidación de cobertura, escritura atómica de
+`vault.bootstrap_fallback: false`, relectura e idempotencia— es #5459 y se
+inyecta como `executor` / `operationalExecutor`. Sin él, el corte no ocurre y la
+respuesta es `executor-unavailable`. La propuesta del botón, la política de
+ausencia del operador y el break-glass son #5460.

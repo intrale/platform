@@ -127,7 +127,7 @@ test('_extractPidFromFilename: fallback null si no matchea', () => {
 test('CA-3: burst con N=1 → no consolida (file queda solo en su grupo)', () => {
     const dir = mkTmpDir();
     const f1 = writeQueueFile(dir, 'cross-provider-1000-9999.json', {
-        type: 'cross-provider-fallback',
+        type: 'provider-exhaustion',
         text: 'mensaje individual',
         meta: { skill: 'verificacion-sherlock', issue: 3668, pid: 9999 },
     }, 1700_000_000_000);
@@ -147,22 +147,22 @@ test('CA-3: 4 archivos con mismo skill/issue/pid/type → 1 grupo', () => {
     const base = 1700_000_000_000;
     const meta = { skill: 'verificacion-sherlock', issue: 3668, pid: 9999 };
     const f1 = writeQueueFile(dir, 'cross-provider-1000-9999.json', {
-        type: 'cross-provider-fallback',
+        type: 'provider-exhaustion',
         text: 'intento 1',
         meta: { ...meta, fallback_provider: 'cerebras', error_class: 'rate_limit' },
     }, base + 0);
     const f2 = writeQueueFile(dir, 'cross-provider-1001-9999.json', {
-        type: 'cross-provider-fallback',
+        type: 'provider-exhaustion',
         text: 'intento 2',
         meta: { ...meta, fallback_provider: 'gemini-google', error_class: 'quota_exhausted' },
     }, base + 2);
     const f3 = writeQueueFile(dir, 'cross-provider-1002-9999.json', {
-        type: 'cross-provider-fallback',
+        type: 'provider-exhaustion',
         text: 'intento 3',
         meta: { ...meta, fallback_provider: 'nvidia-nim', error_class: 'timeout' },
     }, base + 5);
     const f4 = writeQueueFile(dir, 'cross-provider-1003-9999.json', {
-        type: 'cross-provider-fallback',
+        type: 'provider-exhaustion',
         text: 'intento 4',
         meta: { ...meta, fallback_provider: 'groq', error_class: 'auth' },
     }, base + 7);
@@ -181,22 +181,22 @@ test('CA-3 / S-5: enumeración preserva provider+status+error_class de cada inte
     const meta = { skill: 'verificacion-sherlock', issue: 3668, pid: 9999 };
     const files = [
         writeQueueFile(dir, 'cross-provider-1000-9999.json', {
-            type: 'cross-provider-fallback',
+            type: 'provider-exhaustion',
             text: 't1',
             meta: { ...meta, fallback_provider: 'cerebras', error_class: 'rate_limit' },
         }, base + 0),
         writeQueueFile(dir, 'cross-provider-1001-9999.json', {
-            type: 'cross-provider-fallback',
+            type: 'provider-exhaustion',
             text: 't2',
             meta: { ...meta, fallback_provider: 'gemini-google', error_class: 'quota_exhausted' },
         }, base + 2),
         writeQueueFile(dir, 'cross-provider-1002-9999.json', {
-            type: 'cross-provider-fallback',
+            type: 'provider-exhaustion',
             text: 't3',
             meta: { ...meta, fallback_provider: 'nvidia-nim', error_class: 'timeout' },
         }, base + 5),
         writeQueueFile(dir, 'cross-provider-1003-9999.json', {
-            type: 'cross-provider-fallback',
+            type: 'provider-exhaustion',
             text: 't4',
             meta: { ...meta, fallback_provider: 'groq', error_class: 'auth' },
         }, base + 7),
@@ -231,11 +231,11 @@ test('S-3: archivos con mismo skill+issue pero distinto pid → grupos separados
     const meta = { skill: 'verificacion-sherlock', issue: 3668 };
     const files = [
         writeQueueFile(dir, 'cross-provider-1000-1111.json', {
-            type: 'cross-provider-fallback', text: 't1',
+            type: 'provider-exhaustion', text: 't1',
             meta: { ...meta, pid: 1111, fallback_provider: 'cerebras' },
         }, base + 0),
         writeQueueFile(dir, 'cross-provider-1001-2222.json', {
-            type: 'cross-provider-fallback', text: 't2',
+            type: 'provider-exhaustion', text: 't2',
             meta: { ...meta, pid: 2222, fallback_provider: 'gemini-google' },
         }, base + 5),
     ];
@@ -253,11 +253,11 @@ test('CA-2: archivos del mismo skill/pid pero >window separación → grupos dis
     const meta = { skill: 'verificacion-sherlock', issue: 3668, pid: 9999 };
     const files = [
         writeQueueFile(dir, 'cross-provider-1000-9999.json', {
-            type: 'cross-provider-fallback', text: 't1',
+            type: 'provider-exhaustion', text: 't1',
             meta: { ...meta, fallback_provider: 'cerebras' },
         }, base + 0),
         writeQueueFile(dir, 'cross-provider-2000-9999.json', {
-            type: 'cross-provider-fallback', text: 't2',
+            type: 'provider-exhaustion', text: 't2',
             meta: { ...meta, fallback_provider: 'gemini-google' },
         }, base + 120_000), // 2 minutos después
     ];
@@ -274,7 +274,7 @@ test('CA-2: archivos con distinto type → no se agrupan aunque coincidan pid+sk
     const baseMeta = { skill: 'verificacion-sherlock', issue: 3668, pid: 9999 };
     const files = [
         writeQueueFile(dir, 'cross-provider-1000-9999.json', {
-            type: 'cross-provider-fallback', text: 't1',
+            type: 'provider-exhaustion', text: 't1',
             meta: { ...baseMeta, fallback_provider: 'cerebras' },
         }, base + 0),
         writeQueueFile(dir, 'cost-anomaly-1001-9999.json', {
@@ -287,6 +287,79 @@ test('CA-2: archivos con distinto type → no se agrupan aunque coincidan pid+sk
 });
 
 // =============================================================================
+// #6179 CA-17 — el aviso por episodio NO se degrada al pasar por el agrupador.
+//
+// Por qué importa: el camino consolidado fuerza `parse_mode: 'MarkdownV2'`
+// (`servicio-telegram.js:966`) ignorando el `plain: true` del dropfile, y su
+// encabezado REINYECTA `skill=` (`:351`). Si dos avisos de episodio cayeran en
+// la misma ventana —heartbeat de 6 h + cambio de estado es el caso realista—,
+// el operador recibiría jerga y Markdown por más impecable que sea el copy.
+//
+// La exclusión va en `groupByBurst` y no en el `switch` cosmético del
+// `typeLabel`: aquella línea sólo elige la etiqueta del encabezado.
+// =============================================================================
+test('#6179 CA-17: cross-provider-fallback NUNCA se agrupa, aunque coincida todo', () => {
+    const dir = mkTmpDir();
+    const base = 1700_000_000_000;
+    const meta = { skill: 'verificacion-sherlock', issue: 3668, pid: 9999 };
+    const files = [0, 2, 5, 7].map((offset, i) => writeQueueFile(
+        dir,
+        `cross-provider-100${i}-9999.json`,
+        { type: 'cross-provider-fallback', text: `aviso ${i}`, plain: true, meta: { ...meta } },
+        base + offset,
+    ));
+
+    const groups = bg.groupByBurst({ fileEntries: files, windowMs: 60_000 });
+
+    assert.equal(groups.length, 4, 'cada aviso cae en su propio grupo');
+    for (const g of groups) {
+        assert.equal(g.files.length, 1, 'grupo de tamaño 1 ⇒ camino individual');
+        assert.equal(
+            bg.formatConsolidatedMessage(g), null,
+            'un grupo de 1 no consolida: el flag plain sobrevive',
+        );
+    }
+});
+
+test('#6179 CA-17: la exclusión está declarada y es inspeccionable', () => {
+    assert.ok(Array.isArray(bg.NON_GROUPABLE_TYPES));
+    assert.ok(bg.NON_GROUPABLE_TYPES.includes('cross-provider-fallback'),
+        'si el tipo vuelve a ser agrupable, este test lo detecta');
+    assert.ok(Object.isFrozen(bg.NON_GROUPABLE_TYPES));
+});
+
+test('#6179 CA-17: excluir un tipo no afecta el agrupamiento de los demás', () => {
+    const dir = mkTmpDir();
+    const base = 1700_000_000_000;
+    const meta = { skill: 'verificacion-sherlock', issue: 3668, pid: 9999 };
+    const files = [
+        writeQueueFile(dir, 'cross-provider-1000-9999.json',
+            { type: 'cross-provider-fallback', text: 'episodio', meta: { ...meta } }, base + 0),
+        writeQueueFile(dir, 'cross-provider-1001-9999.json',
+            { type: 'provider-exhaustion', text: 'e1', meta: { ...meta } }, base + 1),
+        writeQueueFile(dir, 'cross-provider-1002-9999.json',
+            { type: 'provider-exhaustion', text: 'e2', meta: { ...meta } }, base + 2),
+    ];
+
+    const groups = bg.groupByBurst({ fileEntries: files, windowMs: 60_000 });
+    assert.equal(groups.length, 2, 'el episodio solo + los dos exhaustion juntos');
+    const agrupado = groups.find((g) => g.files.length === 2);
+    assert.ok(agrupado, 'provider-exhaustion sigue consolidando normalmente');
+    assert.equal(agrupado.files[0].type, 'provider-exhaustion');
+});
+
+test('#6179 CA-17: el typeLabel ya no tiene rama para el tipo excluido', () => {
+    // El `switch` es cosmético: lo que se verifica acá es que no quede una rama
+    // muerta sugiriendo que el agrupamiento se desactiva desde ahí.
+    const src = fs.readFileSync(
+        path.resolve(__dirname, '..', 'telegram-burst-grouper.js'), 'utf8',
+    );
+    const bloqueLabel = src.slice(src.indexOf('const typeLabel ='), src.indexOf('const lines = []'));
+    assert.ok(!/'cross-provider-fallback'/.test(bloqueLabel),
+        'la rama cosmética se limpió junto con la exclusión real');
+});
+
+// =============================================================================
 // CA-4 — Sanitización MarkdownV2 en mensaje consolidado
 // =============================================================================
 test('CA-4: error.message con caracteres MarkdownV2 escapado en consolidado', () => {
@@ -295,11 +368,11 @@ test('CA-4: error.message con caracteres MarkdownV2 escapado en consolidado', ()
     const meta = { skill: 'verificacion-sherlock', issue: 3668, pid: 9999 };
     const files = [
         writeQueueFile(dir, 'cross-provider-1000-9999.json', {
-            type: 'cross-provider-fallback', text: 't1',
+            type: 'provider-exhaustion', text: 't1',
             meta: { ...meta, fallback_provider: 'cer*ebras', error_class: '*evil*' },
         }, base + 0),
         writeQueueFile(dir, 'cross-provider-1001-9999.json', {
-            type: 'cross-provider-fallback', text: 't2',
+            type: 'provider-exhaustion', text: 't2',
             meta: { ...meta, fallback_provider: 'g[em]ini', error_class: '_hack_\n[link](url)' },
         }, base + 5),
     ];
@@ -326,7 +399,7 @@ test('UX-4: burst con N>MAX_ENUMERATED_ATTEMPTS → muestra primeros + +N más',
     const files = [];
     for (let i = 0; i < bg.MAX_ENUMERATED_ATTEMPTS + 3; i++) {
         files.push(writeQueueFile(dir, `cross-provider-${i}-9999.json`, {
-            type: 'cross-provider-fallback', text: `t${i}`,
+            type: 'provider-exhaustion', text: `t${i}`,
             meta: { ...meta, fallback_provider: `provider-${i}`, error_class: 'timeout' },
         }, base + i));
     }
@@ -345,11 +418,11 @@ test('CA-5 / S-4: groupByBurst es puro, NO escribe nada al filesystem', () => {
     const meta = { skill: 'verificacion-sherlock', issue: 3668, pid: 9999 };
     const files = [
         writeQueueFile(dir, 'cross-provider-1000-9999.json', {
-            type: 'cross-provider-fallback', text: 't1',
+            type: 'provider-exhaustion', text: 't1',
             meta: { ...meta, fallback_provider: 'cerebras' },
         }, base + 0),
         writeQueueFile(dir, 'cross-provider-1001-9999.json', {
-            type: 'cross-provider-fallback', text: 't2',
+            type: 'provider-exhaustion', text: 't2',
             meta: { ...meta, fallback_provider: 'gemini-google' },
         }, base + 5),
     ];
@@ -369,7 +442,7 @@ test('Defensive: archivo con JSON inválido → grupo __unparseable__ separado',
     fs.writeFileSync(malformedPath, 'not json {');
     const malformed = { name: 'cross-provider-1000-9999.json', path: malformedPath };
     const ok = writeQueueFile(dir, 'cross-provider-1001-9999.json', {
-        type: 'cross-provider-fallback', text: 't',
+        type: 'provider-exhaustion', text: 't',
         meta: { skill: 's', issue: 3668, pid: 9999, fallback_provider: 'cerebras' },
     }, 1700_000_000_000);
     const groups = bg.groupByBurst({ fileEntries: [malformed, ok], windowMs: 60_000 });
