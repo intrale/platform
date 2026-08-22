@@ -1,0 +1,5236 @@
+#!/usr/bin/env node
+// Dashboard Monitor Web v3 — Servidor HTTP + SSE + Screenshot + API
+// Rediseño #1225: Ejecución unificada, grafo de flujo, feed chat, métricas Claude
+// Uso: node .claude/dashboard-server.js [--port 3100]
+// Endpoints:
+//   GET /           → HTML dashboard con datos embebidos
+//   GET /events     → SSE stream (auto-refresh cada 5s)
+//   GET /screenshot → Puppeteer screenshot PNG (?w=375&h=640)
+//   GET /api/status → JSON con KPIs para /monitor
+// Auto-stop: si no hay sesiones activas por 30 min, el servidor se cierra
+
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const { execSync } = require("child_process");
+const zlib = require("zlib");
+
+// Permission severity classifier
+let classifySeverity;
+try {
+  const permUtils = require(path.resolve(__dirname, "hooks", "permission-utils.js"));
+  classifySeverity = permUtils.classifySeverity;
+} catch { classifySeverity = null; }
+
+// --- Config ---
+// Resolver REPO_ROOT al repo principal (no al worktree) — igual que activity-logger.js
+function resolveMainRepoRoot() {
+  const candidate = path.resolve(__dirname, "..");
+  try {
+    const gitCommon = execSync("git rev-parse --git-common-dir", {
+      cwd: candidate, timeout: 3000, windowsHide: true,
+    }).toString().trim().replace(/\\/g, "/");
+    // Si retorna ".git" → estamos en el repo principal
+    if (gitCommon === ".git") return candidate;
+    // Si retorna ruta absoluta (ej: /c/Workspaces/Intrale/platform/.git/worktrees/...)
+    const gitIdx = gitCommon.indexOf("/.git");
+    if (gitIdx !== -1) return gitCommon.substring(0, gitIdx);
+    return path.resolve(gitCommon, "..");
+  } catch (e) { return candidate; }
+}
+const REPO_ROOT = resolveMainRepoRoot();
+const CLAUDE_DIR = path.join(REPO_ROOT, ".claude");
+const SESSIONS_DIR = path.join(CLAUDE_DIR, "sessions");
+const SESSIONS_ARCHIVE_ROOT = path.join(CLAUDE_DIR, "sessions-archive"); // #1734: historial permanente por sprint
+const LOG_FILE = path.join(CLAUDE_DIR, "activity-log.jsonl");
+const PID_FILE = path.join(CLAUDE_DIR, "hooks", "dashboard-server.pid");
+const TG_CONFIG_FILE = path.join(CLAUDE_DIR, "hooks", "telegram-config.json");
+const SERVER_LOG_FILE = path.join(CLAUDE_DIR, "hooks", "hook-debug.log");
+const SPRINT_PLAN_FILE = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+const ROADMAP_FILE = path.join(REPO_ROOT, "scripts", "roadmap.json");
+const AGENT_METRICS_FILE = path.join(CLAUDE_DIR, "hooks", "agent-metrics.json");
+const AGENT_REGISTRY_FILE = path.join(CLAUDE_DIR, "hooks", "agent-registry.json");
+const DELIVERY_GATE_AUDIT_FILE = path.join(CLAUDE_DIR, "hooks", "delivery-gate-audit.jsonl");
+const ICONS_DIR = path.join(CLAUDE_DIR, "icons");
+
+// Agent Registry — fuente de verdad centralizada (#1642)
+let agentRegistry = null;
+try { agentRegistry = require(path.join(CLAUDE_DIR, "hooks", "agent-registry")); } catch (e) { /* módulo no disponible */ }
+
+// --- Load agent icons as base64 data URIs (once at startup) ---
+function loadIconDataUri(filename) {
+  try {
+    const filePath = path.join(ICONS_DIR, filename);
+    const buf = fs.readFileSync(filePath);
+    const ext = path.extname(filename).toLowerCase();
+    const mime = ext === ".svg" ? "image/svg+xml" : "image/png";
+    return "data:" + mime + ";base64," + buf.toString("base64");
+  } catch { return ""; }
+}
+
+const AGENT_ICON_MAP = {
+  "Guru": loadIconDataUri("guru.png"),
+  "Doc": loadIconDataUri("doc.png"),
+  "Doc (historia)": loadIconDataUri("doc.png"),
+  "Doc (refinar)": loadIconDataUri("doc.png"),
+  "Doc (priorizar)": loadIconDataUri("doc.png"),
+  "Planner": loadIconDataUri("planner.png"),
+  "DeliveryManager": loadIconDataUri("delivery.png"),
+  "Tester": loadIconDataUri("tester.png"),
+  "Monitor": loadIconDataUri("monitor.png"),
+  "Builder": loadIconDataUri("builder.png"),
+  "Review": loadIconDataUri("review.png"),
+  "QA": loadIconDataUri("qa.png"),
+  "Auth": loadIconDataUri("auth.png"),
+  "UX Specialist": loadIconDataUri("ux.png"),
+  "Scrum Master": loadIconDataUri("scrum.png"),
+  "PO": loadIconDataUri("po.png"),
+  "BackendDev": loadIconDataUri("backend.png"),
+  "AndroidDev": loadIconDataUri("android.png"),
+  "iOSDev": loadIconDataUri("ios.png"),
+  "WebDev": loadIconDataUri("web.png"),
+  "DesktopDev": loadIconDataUri("desktop.png"),
+  "Ops": loadIconDataUri("ops.png"),
+  "Branch": loadIconDataUri("branch.png"),
+  "Security": loadIconDataUri("security.png"),
+  "Cleanup": loadIconDataUri("clean.svg"),
+  "Perf": loadIconDataUri("perf.png"),
+  "Cost": loadIconDataUri("cost.png"),
+  "Config": loadIconDataUri("config.svg"),
+  "Done": loadIconDataUri("done.svg"),
+  "Error": loadIconDataUri("failure.svg"),
+  "Start": loadIconDataUri("start.svg"),
+};
+const CLAUDE_ICONS = [
+  loadIconDataUri("claude-1.svg"),
+  loadIconDataUri("claude-2.svg"),
+  loadIconDataUri("claude-3.svg"),
+  loadIconDataUri("claude-4.svg"),
+].filter(Boolean);
+if (CLAUDE_ICONS.length > 0) {
+  AGENT_ICON_MAP["Claude"] = CLAUDE_ICONS[0];
+  AGENT_ICON_MAP["Main"] = CLAUDE_ICONS[0];
+}
+
+// Iconos de robots para agentes raíz del sprint (#1544)
+// Carga robot1.svg a robot10.svg como SVG inline (data URI)
+const ROBOT_ICONS = {};
+for (let i = 1; i <= 10; i++) {
+  ROBOT_ICONS[i] = loadIconDataUri("robots/robot" + i + ".svg");
+}
+
+// Leer SVG raw para inline rendering en nodos del grafo (#1544)
+function loadRobotSvgInline(robotId) {
+  try {
+    const filePath = path.join(ICONS_DIR, "robots", "robot" + robotId + ".svg");
+    return fs.readFileSync(filePath, "utf8");
+  } catch { return ""; }
+}
+const ROBOT_SVGS_INLINE = {};
+for (let i = 1; i <= 10; i++) {
+  ROBOT_SVGS_INLINE[i] = loadRobotSvgInline(i);
+}
+
+// Skill-name → canonical agent name mapping
+const SKILL_TO_AGENT = {
+  "/guru": "Guru", "/doc": "Doc", "/historia": "Doc", "/refinar": "Doc", "/priorizar": "Doc",
+  "/planner": "Planner", "/delivery": "DeliveryManager", "/tester": "Tester",
+  "/monitor": "Monitor", "/builder": "Builder", "/review": "Review", "/qa": "QA",
+  "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
+  "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
+  "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
+  "/security": "Security", "/ghostbusters": "Ghostbusters", "/perf": "Perf", "/cost": "Cost",
+  "/update-config": "Config", "/simplify": "Simplify",
+};
+// Case-insensitive lookup for AGENT_ICON_MAP
+const _ICON_MAP_LC = {};
+for (const k of Object.keys(AGENT_ICON_MAP)) _ICON_MAP_LC[k.toLowerCase()] = AGENT_ICON_MAP[k];
+
+function resolveIconUri(name) {
+  if (AGENT_ICON_MAP[name]) return AGENT_ICON_MAP[name];
+  const lc = (name || "").toLowerCase();
+  const mapped = SKILL_TO_AGENT[lc] || SKILL_TO_AGENT["/" + lc];
+  if (mapped && AGENT_ICON_MAP[mapped]) return AGENT_ICON_MAP[mapped];
+  if (_ICON_MAP_LC[lc]) return _ICON_MAP_LC[lc];
+  // Generic/unknown → rotate among Claude variants
+  if (CLAUDE_ICONS.length > 0) {
+    let hash = 0;
+    for (let i = 0; i < (name || "").length; i++) hash = ((hash << 5) - hash + (name || "").charCodeAt(i)) | 0;
+    return CLAUDE_ICONS[Math.abs(hash) % CLAUDE_ICONS.length];
+  }
+  return AGENT_ICON_MAP["Claude"] || "";
+}
+
+// Logging a archivo (detached processes no tienen stdio)
+const _origLog = console.log;
+console.log = function() {
+  const msg = Array.prototype.join.call(arguments, " ");
+  _origLog.apply(console, arguments);
+  try { fs.appendFileSync(SERVER_LOG_FILE, "[" + new Date().toISOString() + "] " + msg + "\n"); } catch {}
+};
+
+const DEFAULT_PORT = 3100;
+const SSE_INTERVAL_MS = 5000;
+const ACTIVE_THRESHOLD_MS = 5 * 60 * 1000;
+const IDLE_THRESHOLD_MS = 15 * 60 * 1000;
+const AUTO_STOP_MS = 30 * 60 * 1000;
+const RECENT_ACTIVITY_COUNT = 20;
+const MAX_CI_ENTRIES = 5;
+const FEED_LIMIT = 15;
+const PENDING_QUESTIONS_FILE = path.join(CLAUDE_DIR, "hooks", "pending-questions.json");
+const APPROVAL_HISTORY_FILE = path.join(CLAUDE_DIR, "hooks", "approval-history.json");
+
+// --- Parse args ---
+const portIdx = process.argv.indexOf("--port");
+const PORT = portIdx !== -1 ? parseInt(process.argv[portIdx + 1], 10) || DEFAULT_PORT : DEFAULT_PORT;
+
+// --- State ---
+let lastActivityTs = Date.now();
+let cachedData = null;
+let cachedDataTs = 0;
+const DATA_CACHE_MS = 2000;
+let etag = "0";
+let cachedHtml = null;
+let cachedHtmlDataTs = 0;
+// Freshness: mtime del sprint-plan.json — si cambia, invalida el cache aunque no expire el TTL (#1417)
+let sprintPlanMtime = 0;
+// Watcher mtime: para broadcast SSE inmediato al detectar cambio en sprint-plan.json (#1434)
+// Se inicializa con el valor actual al arrancar para no hacer un broadcast espurio en el primer tick.
+let sprintPlanWatchMtime = (() => { try { return fs.statSync(SPRINT_PLAN_FILE).mtimeMs; } catch { return 0; } })();
+
+// --- Helpers ---
+function readJson(filePath) {
+  try { return JSON.parse(fs.readFileSync(filePath, "utf8")); } catch { return null; }
+}
+
+function formatAge(isoTs) {
+  if (!isoTs) return "???";
+  const diff = Date.now() - new Date(isoTs).getTime();
+  if (diff < 0) return "ahora";
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return secs + "s";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + "m";
+  const hrs = Math.floor(mins / 60);
+  const rm = mins % 60;
+  return hrs + "h " + (rm > 0 ? rm + "m" : "");
+}
+
+function formatDuration(startTs, endTs) {
+  const ms = (endTs || Date.now()) - new Date(startTs).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return mins + "min";
+  const hrs = Math.floor(mins / 60);
+  return hrs + "h " + (mins % 60) + "min";
+}
+
+function getSessionStatus(session) {
+  const elapsed = Date.now() - new Date(session.last_activity_ts).getTime();
+  if (session.status === "done") return "done";
+  if (elapsed < ACTIVE_THRESHOLD_MS) return "active";
+  if (elapsed < IDLE_THRESHOLD_MS) return "idle";
+  return "stale";
+}
+
+function escHtml(s) {
+  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function formatIssueLink(issueNumber) {
+  if (!issueNumber || isNaN(Number(issueNumber))) return "";
+  const num = Number(issueNumber);
+  const url = `https://github.com/intrale/platform/issues/${num}`;
+  const displayText = `#${num}`;
+  return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="issue-link">${escHtml(displayText)}</a>`;
+}
+
+// Auto-linkificar referencias #NNNN en texto HTML (#1422)
+// Convierte cada ocurrencia de #NNNN (3-5 dígitos) en un link a GitHub Issues
+function linkifyIssueRefs(text) {
+  if (!text) return "";
+  return String(text).replace(/#(\d{3,5})\b/g, (match, num) => {
+    const url = `https://github.com/intrale/platform/issues/${num}`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="issue-link">#${num}</a>`;
+  });
+}
+
+// --- Auto-regeneración de sprint-plan.json (#1651) ---
+// Si no existe o tiene sprint_id divergente del roadmap activo, regenerar desde roadmap.
+// Garantiza que el dashboard refleje el sprint activo sin intervención manual.
+let _sprintPlanRegenState = { sprintId: null, lastCheckTs: 0 };
+const SPRINT_PLAN_REGEN_INTERVAL_MS = 30 * 1000; // recheck cada 30s
+
+function ensureSprintPlanExists() {
+  try {
+    const now = Date.now();
+    if (now - _sprintPlanRegenState.lastCheckTs < SPRINT_PLAN_REGEN_INTERVAL_MS) return;
+    _sprintPlanRegenState.lastCheckTs = now;
+
+    const roadmap = readJson(ROADMAP_FILE);
+    if (!roadmap || !Array.isArray(roadmap.sprints)) return;
+    const activeSprint = roadmap.sprints.find(s => s.status === 'active');
+    if (!activeSprint) return;
+
+    const existing = readJson(SPRINT_PLAN_FILE);
+    if (existing && existing.sprint_id === activeSprint.id && existing._generated_from === 'roadmap.json') {
+      _sprintPlanRegenState.sprintId = activeSprint.id;
+      return; // Ya sincronizado
+    }
+
+    // Regenerar desde roadmap (#1651)
+    let sprintDataMod;
+    try { sprintDataMod = require(path.join(REPO_ROOT, 'scripts', 'sprint-data')); } catch (e) { return; }
+    sprintDataMod.generateSprintPlanCache(roadmap);
+    _sprintPlanRegenState.sprintId = activeSprint.id;
+    sprintPlanMtime = 0;       // forzar invalidación de cache HTML
+    sprintPlanWatchMtime = 0;  // forzar broadcast SSE inmediato
+
+    const reason = !existing ? 'no existía' :
+      existing._generated_from !== 'roadmap.json' ? 'no era del roadmap' :
+      'sprint_id divergente (' + (existing.sprint_id || '?') + ' vs ' + activeSprint.id + ')';
+    console.log('[dashboard-server] sprint-plan.json regenerado — ' + reason);
+    try { fs.appendFileSync(SERVER_LOG_FILE, '[' + new Date().toISOString() + '] dashboard-server: sprint-plan.json regenerado — ' + reason + '\n'); } catch {}
+  } catch (e) {
+    try { fs.appendFileSync(SERVER_LOG_FILE, '[' + new Date().toISOString() + '] dashboard-server: ensureSprintPlanExists error: ' + e.message + '\n'); } catch {}
+  }
+}
+function collectData() {
+  const now = Date.now();
+  // Invalidar cache si sprint-plan.json cambió (mtime-based freshness, #1417)
+  let currentSprintPlanMtime = 0;
+  try { currentSprintPlanMtime = fs.statSync(SPRINT_PLAN_FILE).mtimeMs; } catch {}
+  // Si sprint-plan.json no existe, regenerar desde roadmap (#1651)
+  if (currentSprintPlanMtime === 0) ensureSprintPlanExists();
+  const sprintPlanUnchanged = currentSprintPlanMtime === sprintPlanMtime;
+  if (cachedData && (now - cachedDataTs) < DATA_CACHE_MS && sprintPlanUnchanged) return cachedData;
+  sprintPlanMtime = currentSprintPlanMtime;
+
+  // Sprint plan (leído antes para decidir qué sesiones retener)
+  let sprintPlan = null;
+  try { sprintPlan = readJson(SPRINT_PLAN_FILE); } catch {}
+  // sprintIssueSet incluye TODOS los issues del sprint (agentes + _queue + _completed + _incomplete)
+  // para retener sesiones activas y evitar que se clasifiquen como zombie.
+  // Si el sprint está cancelado, vaciar el set para que las sesiones huérfanas se descarten normalmente.
+  const sprintCancelled = sprintPlan && (sprintPlan.estado || "").toLowerCase() === "cancelado";
+  const sprintIssueSet = new Set(
+    (sprintPlan && !sprintCancelled) ? [
+      ...(Array.isArray(sprintPlan.agentes) ? sprintPlan.agentes : []),
+      ...(Array.isArray(sprintPlan._queue) ? sprintPlan._queue : []),
+      ...(Array.isArray(sprintPlan._completed) ? sprintPlan._completed : []),
+      ...(Array.isArray(sprintPlan._incomplete) ? sprintPlan._incomplete : []),
+    ].map(a => String(a.issue)) : []
+  );
+
+  // Sessions
+  // Solo mostrar sesiones active y stale (no done).
+  // - active: con actividad reciente (incluyendo sprint sessions que pueden compilar largos)
+  // - stale: sin actividad >2h, marcadas por activity-logger.js
+  // - done: excluidas — el session-gc.js las limpia después de 1h
+  const ZOMBIE_THRESHOLD_MS = 30 * 60 * 1000;
+  const sessions = [];
+  // Recolectar sesiones del repo principal + worktrees de agentes activos
+  const sessionDirs = [SESSIONS_DIR];
+  try {
+    // Buscar worktrees sibling con sesiones de agentes
+    const parentDir = path.resolve(REPO_ROOT, "..");
+    const baseName = path.basename(REPO_ROOT);
+    const siblings = fs.readdirSync(parentDir).filter(d =>
+      d.startsWith(baseName + ".agent-") || d.startsWith(baseName + ".codex-"));
+    for (const s of siblings) {
+      const wtSessions = path.join(parentDir, s, ".claude", "sessions");
+      if (fs.existsSync(wtSessions)) sessionDirs.push(wtSessions);
+    }
+  } catch(e) { /* ignore */ }
+  // #1734: incluir sessions-archive/SPR-NNN/ del sprint activo y los mas recientes
+  try {
+    if (fs.existsSync(SESSIONS_ARCHIVE_ROOT)) {
+      const archiveSubs = fs.readdirSync(SESSIONS_ARCHIVE_ROOT).filter(d => d.startsWith("SPR-") && d.length > 4);
+      const activeSprint = sprintPlan && sprintPlan.sprint_id;
+      const relevantSprints = new Set(archiveSubs.slice(-3));
+      if (activeSprint) relevantSprints.add(activeSprint);
+      for (const sprintId of relevantSprints) {
+        const archDir = path.join(SESSIONS_ARCHIVE_ROOT, sprintId);
+        if (fs.existsSync(archDir)) sessionDirs.push(archDir);
+      }
+    }
+  } catch(e) { /* ignore */ }
+  const seenSessionIds = new Set();
+  try {
+    for (const sessDir of sessionDirs) {
+    if (!fs.existsSync(sessDir)) continue;
+      const files = fs.readdirSync(sessDir).filter(f => f.endsWith(".json"));
+      for (const f of files) {
+        if (seenSessionIds.has(f)) continue; // Deduplicar por filename
+        seenSessionIds.add(f);
+        const s = readJson(path.join(sessDir, f));
+        if (!s) continue;
+        // Solo sesiones parent (ignorar sub-agentes)
+        if (s.type && s.type !== "parent") continue;
+        const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+        let isSprintSession = issueMatch && sprintIssueSet.has(issueMatch[1]);
+        // Sesiones done: conservar si son del sprint activo (para el flujo), sino 30min max
+        const fromArchive = sessDir.includes("sessions-archive"); // #1734
+        if (s.status === "done" && !isSprintSession && !fromArchive) {
+          const doneAge = now - new Date(s.last_activity_ts || s.started_ts).getTime();
+          const DONE_KEEP_MS = 30 * 60 * 1000; // 30 min
+          if (doneAge > DONE_KEEP_MS) continue;
+        }
+        const status = getSessionStatus(s);
+        const elapsed = now - new Date(s.last_activity_ts).getTime();
+        // Fallback: detectar sprint session por modified_files path (worktrees con branch "unknown")
+        if (!isSprintSession && Array.isArray(s.modified_files) && s.modified_files.length > 0) {
+          for (const issueNum of sprintIssueSet) {
+            if (s.modified_files.some(f => f.includes("agent-" + issueNum + "-") || f.includes("codex-" + issueNum + "-"))) {
+              isSprintSession = true; break;
+            }
+          }
+        }
+        if (!isSprintSession) {
+          // Zombie: status active pero sin actividad >30min → omitir (stale se muestra igual)
+          if (s.status === "active" && elapsed > ZOMBIE_THRESHOLD_MS) continue;
+        }
+        // Sprint sessions activas: nunca se descartan por edad (agentes pueden compilar largos)
+        sessions.push({ ...s, _status: status });
+      }
+    }
+  } catch {}
+
+  // Activity log (last N entries)
+  const activities = [];
+  try {
+    if (fs.existsSync(LOG_FILE)) {
+      const content = fs.readFileSync(LOG_FILE, "utf8").trim();
+      if (content) {
+        const lines = content.split("\n").slice(-RECENT_ACTIVITY_COUNT * 2);
+        for (const line of lines) {
+          try { activities.push(JSON.parse(line)); } catch {}
+        }
+      }
+    }
+  } catch {}
+
+  // Git info
+  let branch = "unknown";
+  let lastCommits = [];
+  try {
+    branch = execSync("git branch --show-current", { cwd: REPO_ROOT, timeout: 3000, windowsHide: true }).toString().trim();
+  } catch {}
+  try {
+    const gitLog = execSync('git log --oneline -5 --format="%h|%s|%cr|%an"', { cwd: REPO_ROOT, timeout: 5000, windowsHide: true }).toString().trim();
+    lastCommits = gitLog.split("\n").filter(Boolean).map(l => {
+      const [hash, ...rest] = l.split("|");
+      return { hash, message: rest[0] || "", age: rest[1] || "", author: rest[2] || "" };
+    });
+  } catch {}
+
+  // CI status via gh
+  let ciRuns = [];
+  try {
+    const ghPath = "C:\\Workspaces\\gh-cli\\bin\\gh.exe";
+    if (fs.existsSync(ghPath)) {
+      const raw = execSync('"' + ghPath + '" run list --limit 3 --json status,conclusion,headBranch,displayTitle,createdAt,databaseId', { cwd: REPO_ROOT, timeout: 5000, windowsHide: true }).toString().trim();
+      ciRuns = JSON.parse(raw || "[]");
+    }
+  } catch {}
+
+  // Sprint plan (ya leído arriba)
+
+  // Agent metrics history (#1226)
+  let agentMetrics = null;
+  try { agentMetrics = readJson(AGENT_METRICS_FILE); } catch {}
+
+  // Pending questions (all + pending-only for blocking)
+  let allQuestions = [];
+  let pendingQuestions = [];
+  try {
+    const pq = readJson(PENDING_QUESTIONS_FILE);
+    if (pq && Array.isArray(pq.questions)) {
+      allQuestions = pq.questions;
+      pendingQuestions = pq.questions.filter(q => q.status === "pending");
+    }
+  } catch {}
+
+  // Approval history (pattern stats)
+  let approvalHistory = {};
+  try {
+    const ah = readJson(APPROVAL_HISTORY_FILE);
+    if (ah && ah.patterns) approvalHistory = ah.patterns;
+  } catch {}
+
+  // Permission stats
+  const permissionStats = { auto: 0, approved: 0, denied: 0, pending: 0 };
+  for (const q of allQuestions) {
+    if (q.status === "pending") permissionStats.pending++;
+    else if (q.answered_via === "auto" || q.answered_via === "auto_allow" || q.answered_via === "fast_path") permissionStats.auto++;
+    else if (q.action_result === "deny" || q.action_result === "deny_once" || q.action_result === "deny_always") permissionStats.denied++;
+    else permissionStats.approved++;
+  }
+  // Blocking relations (build pid→session map first, used by enrichment too)
+  const pidToSession = {};
+  for (const s of sessions) {
+    if (s.pid) pidToSession[s.pid] = s;
+  }
+
+  // Enrich questions with agent, issue, severity
+  for (const q of allQuestions) {
+    const html = q.original_html || "";
+    // Try parse from original_html (format with robot emoji: "🤖 AgentName (#issue)  ·  🔀 branch")
+    const agentHtmlMatch = html.match(/\u{1F916}\s*([^(\u00B7\n]+)/u);
+    const issueHtmlMatch = html.match(/#(\d+)/);
+    // Fallback: cross-reference approver_pid with sessions
+    const linkedSession = q.approver_pid ? pidToSession[q.approver_pid] : null;
+    const sessionAgent = linkedSession ? (linkedSession.agent_name || null) : null;
+    const sessionBranch = linkedSession ? (linkedSession.branch || "") : "";
+    const branchIssueMatch = sessionBranch.match(/^(?:agent|feature|bugfix)\/(\d+)/);
+
+    q._agent = (agentHtmlMatch ? agentHtmlMatch[1].trim() : null) || sessionAgent || (q.action_data && q.action_data.agent) || null;
+    q._issue = (issueHtmlMatch ? issueHtmlMatch[1] : null) || (branchIssueMatch ? branchIssueMatch[1] : null);
+    // Severity
+    if (classifySeverity && q.action_data) {
+      try {
+        q._severity = classifySeverity(q.action_data.tool_name, q.action_data.tool_input || {}, REPO_ROOT);
+      } catch { q._severity = null; }
+    }
+  }
+  // Recent permissions (last 10, most recent first)
+  const recentPermissions = allQuestions.slice(-10).reverse();
+  const blockingRelations = [];
+  for (const q of pendingQuestions) {
+    if (q.approver_pid && pidToSession[q.approver_pid]) {
+      const blockedSession = pidToSession[q.approver_pid];
+      blockingRelations.push({
+        blockedAgent: blockedSession.agent_name || "Agente (" + blockedSession.id + ")",
+        blockedSessionId: blockedSession.id,
+        reason: q.type === "permission" ? "Esperando permiso" : "Pregunta pendiente",
+        message: (q.message || "").substring(0, 120),
+        waitingSince: q.timestamp,
+        waitingMs: Date.now() - new Date(q.timestamp).getTime(),
+      });
+    }
+  }
+
+  // Compute KPIs
+  const activeSessions = sessions.filter(s => s._status === "active");
+  const idleSessions = sessions.filter(s => s._status === "idle");
+  const allTasks = [];
+  for (const s of sessions) {
+    if (Array.isArray(s.current_tasks)) {
+      for (const t of s.current_tasks) {
+        allTasks.push({ ...t, _session: s.id, _agent: s.agent_name || "Agente" });
+      }
+    }
+  }
+  const completedTasks = allTasks.filter(t => t.status === "completed");
+  const inProgressTasks = allTasks.filter(t => t.status === "in_progress");
+  const pendingTasks = allTasks.filter(t => t.status === "pending");
+  const totalActions = sessions.reduce((sum, s) => sum + (s.action_count || 0), 0);
+  const velocity = computeVelocity(activities);
+
+  // Alerts
+  const alerts = [];
+  const failedCI = ciRuns.filter(r => r.conclusion === "failure" && r.headBranch === "main");
+  if (failedCI.length > 0) {
+    alerts.push({ type: "critical", message: "CI ROJO en main: " + failedCI[0].displayTitle });
+  }
+  for (const t of allTasks) {
+    if (t.status === "pending" && !t._agent) {
+      alerts.push({ type: "warning", message: "Tarea sin owner: " + t.subject });
+    }
+  }
+  // Idle alerts removed from global alerts — shown only in agent cards (Ejecución panel)
+
+  const ciStatus = ciRuns.length > 0
+    ? (ciRuns[0].conclusion === "success" ? "ok" : ciRuns[0].conclusion === "failure" ? "fail" : "running")
+    : "unknown";
+
+  // Helper para resolver nombre de agente desde issue en el registry (#1733)
+  function resolveRegistryAgentName(issueStr) {
+    try {
+      const issueNum = parseInt(String(issueStr).replace(/^#/, ""), 10);
+      if (isNaN(issueNum)) return "Agente (?)";
+      if (sprintPlan) {
+        const all = [
+          ...(sprintPlan.agentes || []), ...(sprintPlan._queue || []),
+          ...(sprintPlan._completed || []), ...(sprintPlan._incomplete || []),
+        ];
+        const match = all.find(a => a.issue === issueNum);
+        if (match && match.numero) return "Agente " + match.numero;
+      }
+      return "Agente " + issueNum; // fallback: usar número de issue como aproximación
+    } catch(e) { return "Agente (?)"; }
+  }
+  // Normalizar nombres de agentes: "Agente (#NNNN)" → "Agente N" usando sprint plan
+  // Esto evita nodos duplicados en el flujo cuando sesiones/registry usan formatos diferentes
+  if (sprintPlan) {
+    const issueToAgentNum = {};
+    [...(sprintPlan.agentes || []), ...(sprintPlan._queue || []), ...(sprintPlan._completed || []), ...(sprintPlan._incomplete || [])].forEach(a => {
+      if (a.issue && a.numero) issueToAgentNum[String(a.issue)] = a.numero;
+    });
+    for (const s of sessions) {
+      // Normalizar agent_name
+      if (s.agent_name) {
+        const issueMatch = s.agent_name.match(/#(\d+)/);
+        if (issueMatch && issueToAgentNum[issueMatch[1]]) {
+          s.agent_name = "Agente " + issueToAgentNum[issueMatch[1]];
+        }
+      }
+      // Si no tiene agent_name pero tiene branch con issue del sprint, asignar
+      if (!s.agent_name && s.branch) {
+        const branchIssue = s.branch.match(/^agent\/(\d+)/);
+        if (branchIssue && issueToAgentNum[branchIssue[1]]) {
+          s.agent_name = "Agente " + issueToAgentNum[branchIssue[1]];
+        }
+      }
+      // Normalizar transiciones
+      if (Array.isArray(s.agent_transitions)) {
+        for (const t of s.agent_transitions) {
+          const fromMatch = t.from.match(/Agente\s*\(#(\d+)\)/i);
+          if (fromMatch && issueToAgentNum[fromMatch[1]]) t.from = "Agente " + issueToAgentNum[fromMatch[1]];
+          const toMatch = t.to.match(/Agente\s*\(#(\d+)\)/i);
+          if (toMatch && issueToAgentNum[toMatch[1]]) t.to = "Agente " + issueToAgentNum[toMatch[1]];
+        }
+      }
+    }
+  }
+
+  // Classify sessions into execution categories
+  // Todas las sesiones en `sessions` ya pasaron el filtro zombie (30min).
+  // No descartar stale aquí: ○ (stale 15-30min) debe ser visible en EJECUCIÓN.
+  const sprintSessions = [];
+  const standaloneSessions = [];
+  const adhocSessions = [];
+  for (const s of sessions) {
+    const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+    const issueNum = issueMatch ? issueMatch[1] : null;
+    const isSprintSession = issueNum && sprintIssueSet.has(issueNum);
+    if (isSprintSession) {
+      sprintSessions.push(s);
+    } else if (issueNum) {
+      standaloneSessions.push(s);
+    } else {
+      adhocSessions.push(s);
+    }
+  }
+
+  // Aggregate agent transitions from sessions of the ACTIVE sprint only
+  // Usar normalizeSkillName para deduplicar nodos (#1542)
+  const agentTransitions = [];
+  const agentNodes = new Set();
+  // Track which issues have transitions (to detect missing agents)
+  const issuesWithTransitions = new Set();
+  // Filter: only sessions belonging to the current sprint's issues
+  const _flowPlan = readJson(SPRINT_PLAN_FILE);
+  const _flowPlanCancelled = _flowPlan && (_flowPlan.estado || "").toLowerCase() === "cancelado";
+  const _flowIssues = new Set();
+  if (_flowPlan && !_flowPlanCancelled) {
+    for (const a of (_flowPlan.agentes || [])) _flowIssues.add(String(a.issue));
+    for (const a of (_flowPlan._queue || [])) _flowIssues.add(String(a.issue));
+    for (const a of (_flowPlan._completed || [])) _flowIssues.add(String(a.issue));
+    for (const a of (_flowPlan._incomplete || [])) _flowIssues.add(String(a.issue));
+  // Agent Registry como fuente primaria para agentes activos del sprint (#1651)
+  // Si el registry tiene agentes activos no reflejados aún en sprint-plan, incluirlos en el flujo.
+  const _registryRawFlow = readJson(AGENT_REGISTRY_FILE);
+  if (_registryRawFlow && _registryRawFlow.agents) {
+    for (const ra of Object.values(_registryRawFlow.agents)) {
+      if (ra.status !== 'done' && ra.status !== 'zombie' && ra.issue) {
+        _flowIssues.add(String(ra.issue).replace('#', ''));
+      }
+    }
+  }
+  }
+  for (const s of sessions) {
+    const issueMatch = (s.branch || "").match(/(\d+)/);
+    const issueNum = issueMatch ? issueMatch[1] : null;
+    const isMainSession = !s.branch || !s.branch.startsWith("agent/");
+    // Skip agent sessions when sprint is cancelled (no flow to show)
+    if (_flowPlanCancelled && !isMainSession) continue;
+    // Skip sessions not related to the active sprint
+    if (_flowIssues.size > 0 && !isMainSession && issueNum && !_flowIssues.has(issueNum)) continue;
+    // Resolve sprint agent name to "Agente N" (used by transitions and node registration)
+    const isSprintAgent = s.branch && s.branch.startsWith("agent/") && s.agent_name;
+    let agentRootName = null;
+    if (isSprintAgent) {
+      const normalized = normalizeSkillName(s.agent_name);
+      if (/^Agente\s+\d+/i.test(normalized)) {
+        agentRootName = normalized;
+      } else if (issueNum) {
+        try {
+          const spFile = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+          if (fs.existsSync(spFile)) {
+            const sp = JSON.parse(fs.readFileSync(spFile, "utf8"));
+            const all = [...(sp.agentes||[]), ...(sp._queue||[]), ...(sp._completed||[]), ...(sp._incomplete||[])];
+            const match = all.find(a => String(a.issue) === issueNum);
+            if (match && match.numero) agentRootName = "Agente " + match.numero;
+          }
+        } catch(e) {}
+        if (!agentRootName) agentRootName = "Agente " + issueNum;
+      }
+    }
+    if (Array.isArray(s.agent_transitions)) {
+      for (const t of s.agent_transitions) {
+        let normFrom = normalizeSkillName(t.from);
+        // Replace "Claude"/"Main" with the agent's own name for sprint agents
+        if (agentRootName && (normFrom === "Claude" || normFrom === "Main")) normFrom = agentRootName;
+        const normTo = normalizeSkillName(t.to);
+        agentTransitions.push({ ...t, from: normFrom, to: normTo, _session: s.id });
+        agentNodes.add(normFrom);
+        agentNodes.add(normTo);
+        if (issueNum) issuesWithTransitions.add(issueNum);
+      }
+    }
+    // Also add agents from skills_invoked
+    if (Array.isArray(s.skills_invoked)) {
+      for (const sk of s.skills_invoked) {
+        const mapped = AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "");
+        agentNodes.add(normalizeSkillName(mapped));
+      }
+    }
+    // Add session agent itself (use resolved agentRootName for sprint agents)
+    if (isSprintAgent && agentRootName) {
+      agentNodes.add(agentRootName);
+    } else if (s.agent_name) {
+      agentNodes.add(normalizeSkillName(s.agent_name));
+    }
+
+    // Synthetic Main transitions: si la sesión Main tiene skills o tools Agent
+    // pero no tiene agent_transitions, generar edges sintéticos
+    if (isMainSession && (!s.agent_transitions || s.agent_transitions.length === 0)) {
+      const mainSkills = (s.skills_invoked || []).map(sk => normalizeSkillName(AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, "")));
+      // También contar Agent tool invocations como actividad Main
+      const hasAgentTool = s.tool_counts && s.tool_counts.Agent > 0;
+      if (mainSkills.length > 0 || hasAgentTool) {
+        agentNodes.add("Main");
+        // Generar transición Main → cada skill invocado
+        let prevNode = "Main";
+        for (const sk of mainSkills) {
+          agentTransitions.push({ from: prevNode, to: sk, ts: s.last_activity_ts, _session: s.id });
+          agentNodes.add(sk);
+          prevNode = sk;
+        }
+        // Si usó Agent tool pero no invocó skills, crear edge Main → cada agente del sprint
+        // Esto refleja que Main coordina/lanza los agentes
+        if (mainSkills.length === 0 && hasAgentTool) {
+          const sprintAgentNodes = [...agentNodes].filter(n => /^Agente\s+\d+/i.test(n));
+          for (const an of sprintAgentNodes) {
+            agentTransitions.push({ from: "Main", to: an, ts: s.last_activity_ts, _session: s.id, _synthetic: true });
+          }
+        }
+      }
+    }
+  }
+
+  // Inject "Start" node as sprint root — all agents connect from Start
+  // Map agentNodeName → issue number (para mostrar #issue en nodos sin sesión activa)
+  const agentIssueMap = {};
+  // Set de agentes en cola (para grisarlos en el flujo)
+  const queuedAgents = new Set();
+  if (_flowPlan && _flowIssues.size > 0) {
+    agentNodes.add("Start");
+    // Marcar agentes en _queue
+    for (const ag of (_flowPlan._queue || [])) {
+      queuedAgents.add("Agente " + ag.numero);
+    }
+    const allSprintStories = [
+      ...(_flowPlan.agentes || []),
+      ...(_flowPlan._queue || []),
+      ...(_flowPlan._completed || []),
+      ...(_flowPlan._incomplete || [])
+    ];
+    for (const ag of allSprintStories) {
+      const agSession = sessions.find(s => {
+        const m = (s.branch || "").match(/(\d+)/);
+        return m && m[1] === String(ag.issue) && s.agent_name;
+      });
+      const agentNodeName = agSession ? normalizeSkillName(agSession.agent_name) : ("Agente " + ag.numero);
+      if (!agentNodes.has(agentNodeName)) agentNodes.add(agentNodeName);
+      // Guardar issue number para este agente (funciona con o sin sesión)
+      if (ag.issue) agentIssueMap[agentNodeName] = String(ag.issue);
+      // Use the agent's session id so the edge gets colored with the agent's color
+      const sessionId = agSession ? agSession.id : "synthetic-" + ag.issue;
+      agentTransitions.push({ from: "Start", to: agentNodeName, _session: sessionId, _synthetic: true });
+    }
+  }
+
+  // Inject synthetic transitions for completed sprint agents (pipeline_mode=scripts)
+  // When agent-runner.js handles post-Claude phases, the session ends at Review
+  // but the agent actually reached Done via the external pipeline
+  const sprintPlanData = readJson(SPRINT_PLAN_FILE);
+  if (sprintPlanData) {
+    // Helper: find session id for an issue
+    const findSessionForIssue = (issueStr) => {
+      const s = sessions.find(s => { const m = (s.branch || "").match(/(\d+)/); return m && m[1] === issueStr; });
+      return s ? s.id : "synthetic-" + issueStr;
+    };
+
+    // Completed agents -> Done node (edge desde último skill, no desde agente raíz)
+    const completedIssues = (sprintPlanData._completed || []).map(a => String(a.issue));
+    for (const issueStr of completedIssues) {
+      const sid = findSessionForIssue(issueStr);
+      const sessionTransitions = agentTransitions.filter(t => {
+        const sess = sessions.find(s => s.id === t._session);
+        if (!sess) return false;
+        const m = (sess.branch || "").match(/(\d+)/);
+        return m && m[1] === issueStr;
+      });
+      if (sessionTransitions.length > 0) {
+        // Buscar el último skill real: filtrar solo transiciones del agente (no de Claude/Main)
+        // y excluir Done/Error/Start y agentes raíz como destino
+        const skillTransitions = sessionTransitions.filter(t =>
+          t.to !== "Done" && t.to !== "Error" && t.to !== "Start"
+          && !/^Agente\s+/i.test(t.to) && t.from !== "Claude" && t.from !== "Main");
+        const lastNode = skillTransitions.length > 0
+          ? skillTransitions[skillTransitions.length - 1].to
+          : sessionTransitions[sessionTransitions.length - 1].to;
+        // Solo agregar si lastNode no es Done/Error (evitar duplicados)
+        if (lastNode !== "Done" && lastNode !== "Error") {
+          agentTransitions.push({ from: lastNode, to: "Done", _session: sid, _synthetic: true });
+        }
+      }
+      agentNodes.add("Done");
+    }
+
+    // Failed/incomplete agents -> Error node
+    const incompleteIssues = (sprintPlanData._incomplete || []).map(a => String(a.issue));
+    for (const issueStr of incompleteIssues) {
+      const sid = findSessionForIssue(issueStr);
+      const sessionTransitions = agentTransitions.filter(t => {
+        const sess = sessions.find(s => s.id === t._session);
+        if (!sess) return false;
+        const m = (sess.branch || "").match(/(\d+)/);
+        return m && m[1] === issueStr;
+      });
+      if (sessionTransitions.length > 0) {
+        const skillTrans = sessionTransitions.filter(t =>
+          t.to !== "Done" && t.to !== "Error" && t.to !== "Start"
+          && !/^Agente\s+/i.test(t.to) && t.from !== "Claude" && t.from !== "Main");
+        const lastNode = skillTrans.length > 0
+          ? skillTrans[skillTrans.length - 1].to
+          : sessionTransitions[sessionTransitions.length - 1].to;
+        if (lastNode !== "Done" && lastNode !== "Error") {
+          agentTransitions.push({ from: lastNode, to: "Error", _session: sid, _synthetic: true });
+        }
+      } else {
+        agentTransitions.push({ from: "Claude", to: "Error", _session: sid, _synthetic: true });
+      }
+      agentNodes.add("Error");
+    }
+  }
+
+  // Active time
+  const totalActiveTime = sessions.reduce((sum, s) => {
+    if (!s.started_ts || !s.last_activity_ts) return sum;
+    return sum + (new Date(s.last_activity_ts).getTime() - new Date(s.started_ts).getTime());
+  }, 0);
+
+  // Skill/agent usage stats (from ALL session files, not just recent)
+  const skillUsage = {};
+  try {
+    const allFiles = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+    for (const f of allFiles) {
+      const s = readJson(path.join(SESSIONS_DIR, f));
+      if (!s || !s.skills_invoked) continue;
+      for (const sk of s.skills_invoked) {
+        const name = sk.replace(/^\//, "");
+        if (!skillUsage[name]) skillUsage[name] = { count: 0, lastUsed: null };
+        skillUsage[name].count++;
+        const ts = s.last_activity_ts || s.started_ts;
+        if (ts && (!skillUsage[name].lastUsed || ts > skillUsage[name].lastUsed)) {
+          skillUsage[name].lastUsed = ts;
+        }
+      }
+    }
+  } catch {}
+
+  // Skill duration stats — agrupa skill_invocations de sesiones y historial (#1754)
+  const skillDurationStats = {};
+  try {
+    // Leer de agent-metrics.json (sesiones con skill_invocations)
+    const allMetricsSessions = (agentMetrics && Array.isArray(agentMetrics.sessions)) ? agentMetrics.sessions : [];
+    for (const ms of allMetricsSessions) {
+      if (!Array.isArray(ms.skill_invocations)) continue;
+      for (const inv of ms.skill_invocations) {
+        if (!inv.skill || typeof inv.duration_ms !== "number") continue;
+        const name = inv.skill.replace(/^\//, "");
+        if (!skillDurationStats[name]) skillDurationStats[name] = { count: 0, total_ms: 0, min_ms: Infinity, max_ms: 0 };
+        skillDurationStats[name].count++;
+        skillDurationStats[name].total_ms += inv.duration_ms;
+        if (inv.duration_ms < skillDurationStats[name].min_ms) skillDurationStats[name].min_ms = inv.duration_ms;
+        if (inv.duration_ms > skillDurationStats[name].max_ms) skillDurationStats[name].max_ms = inv.duration_ms;
+      }
+    }
+    // También leer de agent-metrics-history.jsonl (registros tipo skill_timing)
+    const historyFile = path.join(CLAUDE_DIR, "hooks", "agent-metrics-history.jsonl");
+    if (fs.existsSync(historyFile)) {
+      const lines = fs.readFileSync(historyFile, "utf8").split("\n").filter(l => l.trim());
+      for (const line of lines) {
+        try {
+          const rec = JSON.parse(line);
+          if (rec.type !== "skill_timing" || !Array.isArray(rec.skill_invocations)) continue;
+          for (const inv of rec.skill_invocations) {
+            if (!inv.skill || typeof inv.duration_ms !== "number") continue;
+            const name = inv.skill.replace(/^\//, "");
+            if (!skillDurationStats[name]) skillDurationStats[name] = { count: 0, total_ms: 0, min_ms: Infinity, max_ms: 0 };
+            skillDurationStats[name].count++;
+            skillDurationStats[name].total_ms += inv.duration_ms;
+            if (inv.duration_ms < skillDurationStats[name].min_ms) skillDurationStats[name].min_ms = inv.duration_ms;
+            if (inv.duration_ms > skillDurationStats[name].max_ms) skillDurationStats[name].max_ms = inv.duration_ms;
+          }
+        } catch {}
+      }
+    }
+    // Calcular promedios y limpiar infinito
+    for (const name of Object.keys(skillDurationStats)) {
+      const s = skillDurationStats[name];
+      s.avg_ms = s.count > 0 ? Math.round(s.total_ms / s.count) : 0;
+      if (s.min_ms === Infinity) s.min_ms = 0;
+    }
+  } catch {}
+
+  // Group activities for feed (collapse consecutive same-agent same-tool)
+  const groupedActivities = groupActivities(activities.slice(-RECENT_ACTIVITY_COUNT * 2).reverse(), FEED_LIMIT);
+
+  // Roadmap macro (#1382)
+  let roadmap = null;
+  try { roadmap = readJson(ROADMAP_FILE); } catch {}
+
+  // Agent Registry — fuente de verdad centralizada para agentes activos (#1642)
+  // Sweep: detectar zombies, purgar entradas viejas
+  let registryAgents = [];
+  let registryActiveCount = 0;
+  if (agentRegistry) {
+    try {
+      agentRegistry.sweepRegistry();
+      registryAgents = agentRegistry.getAllAgents();
+      registryActiveCount = agentRegistry.countActiveAgents();
+    } catch (e) { /* no bloquear dashboard */ }
+  }
+
+  // Normalizar también agentes del registry: usar agent_name o resolver desde issue (#1733)
+  if (sprintPlan && registryAgents) {
+    const issueToAgentNum2 = {};
+    [...(sprintPlan.agentes || []), ...(sprintPlan._queue || []),
+     ...(sprintPlan._completed || []), ...(sprintPlan._incomplete || [])].forEach(a => {
+      if (a.issue && a.numero) issueToAgentNum2[String(a.issue)] = a.numero;
+    });
+    for (const ra of registryAgents) {
+      if (ra.skill && /#\d+/.test(ra.skill)) {
+        const m = ra.skill.match(/#(\d+)/);
+        if (m && issueToAgentNum2[m[1]]) ra.skill = "Agente " + issueToAgentNum2[m[1]];
+      }
+      if (ra.agent_name && /#\d+/.test(ra.agent_name)) {
+        const m = ra.agent_name.match(/#(\d+)/);
+        if (m && issueToAgentNum2[m[1]]) ra.agent_name = "Agente " + issueToAgentNum2[m[1]];
+      }
+      if (!ra.agent_name && ra.issue) {
+        const issueNum = String(ra.issue).replace(/^#/, "");
+        if (issueToAgentNum2[issueNum]) ra.agent_name = "Agente " + issueToAgentNum2[issueNum];
+      }
+    }
+  }
+
+  // Conteo de agentes activos: solo contar sesiones realmente activas (status "active"),
+  // no confiar en el registry que puede tener agentes fantasma con PIDs muertos.
+  const effectiveActiveAgents = activeSessions.filter(s => s._status === "active").length;
+
+  const data = {
+    timestamp: new Date().toISOString(),
+    sessions,
+    activeSessions: effectiveActiveAgents,
+    idleSessions: idleSessions.length,
+    totalTasks: allTasks.length,
+    completedTasks: completedTasks.length,
+    inProgressTasks: inProgressTasks.length,
+    pendingTasks: pendingTasks.length,
+    totalActions,
+    ciStatus,
+    ciRuns,
+    alerts,
+    activities: activities.slice(-RECENT_ACTIVITY_COUNT).reverse(),
+    groupedActivities,
+    velocity,
+    branch,
+    lastCommits,
+    allTasks,
+    pendingQuestions,
+    allQuestions,
+    approvalHistory,
+    permissionStats,
+    recentPermissions,
+    blockingRelations,
+    sprintPlan,
+    sprintSessions,
+    standaloneSessions,
+    adhocSessions,
+    agentTransitions,
+    agentNodes: Array.from(agentNodes),
+    agentIssueMap,
+    queuedAgents: Array.from(queuedAgents),
+    skillUsage,
+    skillDurationStats,
+    agentMetrics,
+    roadmap,
+    registryAgents,
+    registryActiveCount,
+    metrics: {
+      totalActions,
+      totalActiveTimeMs: totalActiveTime,
+    },
+  };
+
+  cachedData = data;
+  cachedDataTs = now;
+  etag = String(now);
+  return data;
+}
+
+// Agent map for dashboard (matches activity-logger.js)
+const AGENT_MAP_DASHBOARD = {
+  "/guru": "Guru", "/planner": "Planner", "/doc": "Doc",
+  "/delivery": "DeliveryManager", "/tester": "Tester", "/monitor": "Monitor",
+  "/auth": "Auth", "/refinar": "Doc", "/priorizar": "Doc",
+  "/historia": "Doc", "/builder": "Builder", "/review": "Review",
+  "/qa": "QA", "/po": "PO", "/ux": "UX Specialist",
+  "/scrum": "Scrum Master", "/ops": "Ops",
+  "/backend-dev": "BackendDev", "/android-dev": "AndroidDev",
+  "/ios-dev": "iOSDev", "/web-dev": "WebDev", "/desktop-dev": "DesktopDev",
+  "/branch": "Branch", "/security": "Security", "/ghostbusters": "Ghostbusters",
+  "/perf": "Perf", "/cost": "Cost", "/config": "Config",
+};
+
+// Normalizar nombres de skill/agente a nombre canónico (#1542)
+// "PO", "/po", "Po" → "PO"; "tester", "/tester", "Tester" → "Tester"
+function normalizeSkillName(name) {
+  if (!name) return "Claude";
+  const raw = String(name).trim();
+  if (!raw) return "Claude";
+  // Normalize "Agente (#NNNN)" → "Agente N" using sprint-plan issue→numero mapping
+  // This handles sessions that register as "Agente (#1656)" instead of "Agente 1"
+  const issueMatch = raw.match(/^Agente\s*\(#?(\d+)\)$/i);
+  if (issueMatch) {
+    const issueNum = issueMatch[1];
+    try {
+      const spFile = path.join(REPO_ROOT, "scripts", "sprint-plan.json");
+      if (fs.existsSync(spFile)) {
+        const sp = JSON.parse(fs.readFileSync(spFile, "utf8"));
+        const all = [...(sp.agentes||[]), ...(sp._queue||[]), ...(sp._completed||[]), ...(sp._incomplete||[])];
+        const match = all.find(a => String(a.issue) === issueNum);
+        if (match && match.numero) return "Agente " + match.numero;
+      }
+    } catch(e) {}
+    return "Agente " + issueNum; // fallback: use issue number
+  }
+  // Direct match in AGENT_ICON_MAP (canonical names)
+  if (typeof AGENT_ICON_MAP !== "undefined" && AGENT_ICON_MAP[raw]) return raw;
+  // Buscar en SKILL_TO_AGENT (con y sin slash)
+  const clean = raw.replace(/^\/+/, "").toLowerCase();
+  const slashVersion = "/" + clean;
+  if (SKILL_TO_AGENT[slashVersion]) return SKILL_TO_AGENT[slashVersion];
+  if (AGENT_MAP_DASHBOARD[slashVersion]) return AGENT_MAP_DASHBOARD[slashVersion];
+  // Buscar en SKILL_NAME_ALIASES (definido más abajo, lazy check)
+  if (typeof SKILL_NAME_ALIASES !== "undefined") {
+    if (SKILL_NAME_ALIASES[raw]) return SKILL_NAME_ALIASES[raw];
+    if (SKILL_NAME_ALIASES[clean]) return SKILL_NAME_ALIASES[clean];
+    if (SKILL_NAME_ALIASES[slashVersion]) return SKILL_NAME_ALIASES[slashVersion];
+  }
+  // Coincidencia case-insensitive contra nombres canónicos
+  for (const val of Object.values(SKILL_TO_AGENT)) {
+    if (val.toLowerCase() === clean) return val;
+  }
+  // Coincidencia case-insensitive contra AGENT_ICON_MAP keys
+  if (typeof AGENT_ICON_MAP !== "undefined") {
+    for (const key of Object.keys(AGENT_ICON_MAP)) {
+      if (key.toLowerCase() === clean) return key;
+    }
+  }
+  return raw;
+}
+
+function groupActivities(activities, limit) {
+  if (activities.length === 0) return [];
+  const groups = [];
+  let current = null;
+  for (const a of activities) {
+    if (current && current.session === a.session && current.tool === a.tool &&
+        groups.length < limit * 2) {
+      current.count++;
+      current.targets.push(a.target || "");
+      current.lastTs = a.ts;
+    } else {
+      if (current) groups.push(current);
+      current = { ...a, count: 1, targets: [a.target || ""], lastTs: a.ts, firstTs: a.ts };
+    }
+  }
+  if (current) groups.push(current);
+  return groups.slice(0, limit);
+}
+
+// Formatear estado de espera para HTML/texto
+function formatWaitingBadge(waitingState) {
+  if (!waitingState) return null;
+  const icons = { ci: "⏳", merge: "⏳", merge_pending: "⏳", build: "🔨", delivery: "⏳", approval: "⏳" };
+  const statusIcons = { success: "✅", failure: "❌", timeout: "⚠️", starting: "⏳", in_progress: "⏳", no_runs: "❓" };
+  const icon = waitingState.status === "success" ? "✅"
+    : waitingState.status === "failure" ? "❌"
+    : waitingState.status === "timeout" ? "⚠️"
+    : (icons[waitingState.reason] || "⏳");
+  const elapsed = waitingState.started_at
+    ? formatAge(waitingState.started_at)
+    : null;
+  const detail = (waitingState.detail || "Esperando...").replace(/\n/g, " ");
+  return { icon, detail, elapsed, run_url: waitingState.run_url || null, status: waitingState.status };
+}
+
+function computeVelocity(activities) {
+  const now = Date.now();
+  const buckets = Array(6).fill(0);
+  for (const a of activities) {
+    const ts = new Date(a.ts).getTime();
+    const hoursAgo = (now - ts) / (3600 * 1000);
+    if (hoursAgo >= 0 && hoursAgo < 6) {
+      buckets[Math.floor(hoursAgo)]++;
+    }
+  }
+  return buckets;
+}
+
+// --- Mock Data for Testing ---
+function mockEjecucionData() {
+  const now = new Date().toISOString();
+  const ago = (mins) => new Date(Date.now() - mins * 60000).toISOString();
+
+  const mockSessions = [
+    // Sprint agent - active, progressing
+    { id: "mock-sprint-1", agent_name: "BackendDev", branch: "agent/1300-api-pedidos", pid: 1001,
+      _status: "active", started_ts: ago(45), last_activity_ts: ago(1), action_count: 87,
+      last_tool: "Edit", last_target: "backend/src/main/kotlin/Pedidos.kt",
+      current_tasks: [
+        { subject: "Crear endpoint POST /pedidos", status: "completed" },
+        { subject: "Validar request con Konform", status: "completed" },
+        { subject: "Integrar DynamoDB", status: "in_progress" },
+        { subject: "Tests unitarios", status: "pending" },
+      ],
+      skills_invoked: ["/backend-dev", "/tester", "/guru"],
+      agent_transitions: [{ from: "BackendDev", to: "Tester" }, { from: "BackendDev", to: "Guru" }, { from: "Tester", to: "BackendDev" }] },
+    // Sprint agent - idle, waiting
+    { id: "mock-sprint-2", agent_name: "AndroidDev", branch: "agent/1301-catalogo-ui", pid: 1002,
+      _status: "idle", started_ts: ago(30), last_activity_ts: ago(8), action_count: 42,
+      last_tool: "Bash", last_target: "gradlew :app:composeApp:installDebug",
+      current_tasks: [
+        { subject: "Pantalla CatalogoScreen", status: "completed" },
+        { subject: "ViewModel con paginacion", status: "in_progress" },
+        { subject: "Integracion Coil imagenes", status: "pending" },
+      ],
+      skills_invoked: ["/android-dev", "/builder", "/ux"],
+      agent_transitions: [{ from: "AndroidDev", to: "Builder" }, { from: "AndroidDev", to: "UX Specialist" }] },
+    // Sprint agent - done
+    { id: "mock-sprint-3", agent_name: "Doc", branch: "agent/1302-docs-api", pid: 1003,
+      _status: "done", started_ts: ago(60), last_activity_ts: ago(15), action_count: 23,
+      last_tool: "Write", last_target: "docs/api-reference.md", status: "done",
+      current_tasks: [
+        { subject: "Documentar endpoints auth", status: "completed" },
+        { subject: "Documentar endpoints pedidos", status: "completed" },
+      ],
+      skills_invoked: ["/doc", "/delivery"],
+      agent_transitions: [{ from: "Doc", to: "DeliveryManager" }] },
+    // Standalone issue - active
+    { id: "mock-standalone-1", agent_name: "QA", branch: "agent/1310-qa-login", pid: 2001,
+      _status: "active", started_ts: ago(20), last_activity_ts: ago(2), action_count: 35,
+      last_tool: "Bash", last_target: "maestro test qa/flows/login.yaml",
+      current_tasks: [
+        { subject: "Flow login happy path", status: "completed" },
+        { subject: "Flow login error cases", status: "in_progress" },
+        { subject: "Generar evidencia video", status: "pending" },
+      ],
+      skills_invoked: ["/qa", "/android-dev"],
+      agent_transitions: [{ from: "QA", to: "AndroidDev" }] },
+    // Standalone issue - blocked
+    { id: "mock-standalone-2", agent_name: "Planner", branch: "agent/1311-sprint-next", pid: 2002,
+      _status: "active", started_ts: ago(10), last_activity_ts: ago(3), action_count: 12,
+      last_tool: "Bash", last_target: "gh issue list --repo intrale/platform",
+      current_tasks: [
+        { subject: "Recolectar issues abiertos", status: "completed" },
+        { subject: "Scoring y priorizacion", status: "in_progress" },
+      ],
+      skills_invoked: ["/planner", "/scrum", "/historia"],
+      agent_transitions: [{ from: "Planner", to: "Scrum Master" }, { from: "Planner", to: "Doc" }] },
+    // Ad-hoc session - active
+    { id: "mock-adhoc-1", agent_name: "Claude", branch: "main", pid: 3001,
+      _status: "active", started_ts: ago(5), last_activity_ts: ago(0), action_count: 8,
+      last_tool: "Read", last_target: "CLAUDE.md",
+      current_tasks: [], skills_invoked: [], agent_transitions: [] },
+    // Ad-hoc session - idle
+    { id: "mock-adhoc-2", agent_name: "Claude", branch: "main", pid: 3002,
+      _status: "idle", started_ts: ago(25), last_activity_ts: ago(12), action_count: 15,
+      last_tool: "Grep", last_target: "TODO",
+      current_tasks: [], skills_invoked: [], agent_transitions: [] },
+  ];
+
+  const mockSprintPlan = {
+    sprint_id: "SPR-013",
+    estado: "activo",
+    size: "medio",
+    started_at: new Date().toISOString(),
+    tema: "Sprint demo — todos los estados de ejecucion",
+    agentes: [
+      { numero: 1, issue: 1300, slug: "api-pedidos", titulo: "API REST de pedidos", stream: "A", size: "M" },
+      { numero: 2, issue: 1301, slug: "catalogo-ui", titulo: "Pantalla catalogo con paginacion", stream: "B", size: "M" },
+      { numero: 3, issue: 1302, slug: "docs-api", titulo: "Documentar API reference", stream: "E", size: "S" },
+      { numero: 4, issue: 1303, slug: "refactor-di", titulo: "Refactor modulos Kodein", stream: "E", size: "L" },
+    ],
+  };
+
+  const mockBlockingRelations = [
+    {
+      blockedAgent: "Planner",
+      blockedSessionId: "mock-standalone-2",
+      reason: "Esperando permiso",
+      message: "Aprobar: gh issue create --title 'Nueva historia' --repo intrale/platform",
+      waitingSince: ago(3),
+      waitingMs: 3 * 60000,
+    },
+  ];
+
+  // Classify
+  const sprintIssues = mockSprintPlan.agentes.map(a => String(a.issue));
+  const sprintSessions = [], standaloneSessions = [], adhocSessions = [];
+  for (const s of mockSessions) {
+    const issueMatch = (s.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+    const issueNum = issueMatch ? issueMatch[1] : null;
+    if (issueNum && sprintIssues.includes(issueNum)) sprintSessions.push(s);
+    else if (issueNum) standaloneSessions.push(s);
+    else adhocSessions.push(s);
+  }
+
+  const allTasks = [];
+  for (const s of mockSessions) {
+    if (Array.isArray(s.current_tasks)) {
+      for (const t of s.current_tasks) allTasks.push({ ...t, _session: s.id, _agent: s.agent_name });
+    }
+  }
+
+  return {
+    timestamp: now,
+    sessions: mockSessions,
+    activeSessions: mockSessions.filter(s => s._status === "active").length,
+    idleSessions: mockSessions.filter(s => s._status === "idle").length,
+    totalTasks: allTasks.length,
+    completedTasks: allTasks.filter(t => t.status === "completed").length,
+    inProgressTasks: allTasks.filter(t => t.status === "in_progress").length,
+    pendingTasks: allTasks.filter(t => t.status === "pending").length,
+    totalActions: mockSessions.reduce((sum, s) => sum + (s.action_count || 0), 0),
+    ciStatus: "ok",
+    ciRuns: [{ status: "completed", conclusion: "success", headBranch: "main", displayTitle: "Build & Test", createdAt: ago(30) }],
+    alerts: [
+      { type: "info", message: "AndroidDev idle hace 8 min" },
+    ],
+    activities: [],
+    groupedActivities: [
+      { agent: "BackendDev", tool: "Edit", targets: ["Pedidos.kt", "PedidosRoute.kt", "PedidosService.kt"], count: 5, ts: ago(1), session: "mock-sprint-1" },
+      { agent: "QA", tool: "Bash", targets: ["maestro test login.yaml"], count: 2, ts: ago(2), session: "mock-standalone-1" },
+      { agent: "Planner", tool: "Bash", targets: ["gh issue list"], count: 1, ts: ago(3), session: "mock-standalone-2" },
+      { agent: "AndroidDev", tool: "Read", targets: ["CatalogoScreen.kt", "CatalogoViewModel.kt"], count: 3, ts: ago(5), session: "mock-sprint-2" },
+      { agent: "Doc", tool: "Write", targets: ["docs/api-reference.md"], count: 2, ts: ago(15), session: "mock-sprint-3" },
+    ],
+    velocity: [12, 18, 25, 30, 22, 15],
+    branch: "main",
+    lastCommits: [
+      { hash: "abc1234", message: "feat: API pedidos endpoint", age: "1 hour ago", author: "Claude" },
+      { hash: "def5678", message: "fix: catalogo scroll", age: "2 hours ago", author: "Claude" },
+    ],
+    allTasks,
+    pendingQuestions: [
+      { type: "permission", status: "pending", approver_pid: 2002, message: "Aprobar: gh issue create", timestamp: ago(3), action_data: { tool_name: "Bash" } },
+    ],
+    allQuestions: [
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "TaskCreate", timestamp: ago(2), action_data: { tool_name: "TaskCreate" } },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "WebFetch", timestamp: ago(5), action_data: { tool_name: "WebFetch" } },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "git push agent/...", timestamp: ago(8), action_data: { tool_name: "Bash" } },
+      { type: "permission", status: "answered", answered_via: "telegram", action_result: "allow", message: "curl -X POST", timestamp: ago(12), action_data: { tool_name: "Bash" } },
+      { type: "permission", status: "answered", answered_via: "telegram", action_result: "deny", message: "rm -rf /tmp/*", timestamp: ago(60), action_data: { tool_name: "Bash" } },
+      { type: "permission", status: "pending", approver_pid: 2002, message: "gh issue create", timestamp: ago(3), action_data: { tool_name: "Bash" } },
+    ],
+    approvalHistory: {
+      "Bash(node:*)": { count: 42, first: ago(120), last: ago(2) },
+      "Edit(*)": { count: 38, first: ago(120), last: ago(1) },
+      "WebFetch": { count: 15, first: ago(60), last: ago(5) },
+      "Bash(export:*)": { count: 12, first: ago(90), last: ago(10) },
+    },
+    permissionStats: { auto: 3, approved: 1, denied: 1, pending: 1 },
+    recentPermissions: [
+      { type: "permission", status: "pending", message: "gh issue create", timestamp: ago(3), action_data: { tool_name: "Bash" }, _agent: "Planner", _issue: "1302", _severity: "MEDIUM" },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "TaskCreate", timestamp: ago(2), action_data: { tool_name: "TaskCreate" }, _agent: "BackendDev", _issue: "1300", _severity: "AUTO_ALLOW" },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "WebFetch context7", timestamp: ago(5), action_data: { tool_name: "WebFetch" }, _agent: "Guru", _issue: "1301", _severity: "LOW" },
+      { type: "permission", status: "answered", answered_via: "fast_path", message: "git push agent/1300-api-pedidos", timestamp: ago(8), action_data: { tool_name: "Bash" }, _agent: "DeliveryManager", _issue: "1300", _severity: "MEDIUM" },
+      { type: "permission", status: "answered", answered_via: "telegram", action_result: "allow", message: "curl -X POST https://api.example.com", timestamp: ago(12), action_data: { tool_name: "Bash" }, _agent: "BackendDev", _issue: "1300", _severity: "MEDIUM" },
+      { type: "permission", status: "answered", answered_via: "telegram", action_result: "deny", message: "rm -rf /tmp/*", timestamp: ago(60), action_data: { tool_name: "Bash" }, _agent: "QA", _issue: "1303", _severity: "HIGH" },
+    ],
+    blockingRelations: mockBlockingRelations,
+    sprintPlan: mockSprintPlan,
+    sprintSessions,
+    standaloneSessions,
+    adhocSessions,
+    agentTransitions: [
+      // BackendDev invocó Tester para correr tests
+      { from: "BackendDev", to: "Tester", _session: "mock-sprint-1" },
+      // BackendDev invocó Guru para investigar DynamoDB
+      { from: "BackendDev", to: "Guru", _session: "mock-sprint-1" },
+      // AndroidDev invocó Builder para compilar
+      { from: "AndroidDev", to: "Builder", _session: "mock-sprint-2" },
+      // AndroidDev invocó UX Specialist para revisar layout
+      { from: "AndroidDev", to: "UX Specialist", _session: "mock-sprint-2" },
+      // Doc invocó DeliveryManager para commit+PR
+      { from: "Doc", to: "DeliveryManager", _session: "mock-sprint-3" },
+      // QA invocó AndroidDev para diagnosticar un flow roto
+      { from: "QA", to: "AndroidDev", _session: "mock-standalone-1" },
+      // Planner invocó Scrum Master para auditar el board
+      { from: "Planner", to: "Scrum Master", _session: "mock-standalone-2" },
+      // Planner invocó Doc para crear historia
+      { from: "Planner", to: "Doc", _session: "mock-standalone-2" },
+      // Claude (ad-hoc) invocó Guru
+      { from: "Claude", to: "Guru", _session: "mock-adhoc-1" },
+      // Claude invocó Ops para health check
+      { from: "Claude", to: "Ops", _session: "mock-adhoc-1" },
+      // Ciclo: Tester encontró fallo, volvió a BackendDev
+      { from: "Tester", to: "BackendDev", _session: "mock-sprint-1" },
+    ],
+    agentNodes: ["BackendDev", "AndroidDev", "Doc", "QA", "Planner", "Claude",
+                 "Tester", "Guru", "Builder", "UX Specialist", "DeliveryManager",
+                 "Scrum Master", "Ops"],
+    skillUsage: {
+      delivery:     { count: 18, lastUsed: ago(15) },
+      "backend-dev":{ count: 12, lastUsed: ago(1) },
+      "android-dev":{ count: 10, lastUsed: ago(8) },
+      guru:         { count: 9,  lastUsed: ago(2) },
+      tester:       { count: 8,  lastUsed: ago(5) },
+      branch:       { count: 7,  lastUsed: ago(20) },
+      builder:      { count: 6,  lastUsed: ago(10) },
+      doc:          { count: 5,  lastUsed: ago(60) },
+      planner:      { count: 4,  lastUsed: ago(30) },
+      qa:           { count: 3,  lastUsed: ago(45) },
+      review:       { count: 3,  lastUsed: ago(120) },
+      scrum:        { count: 2,  lastUsed: ago(90) },
+      historia:     { count: 2,  lastUsed: ago(40) },
+      monitor:      { count: 1,  lastUsed: ago(60) },
+      ops:          { count: 1,  lastUsed: ago(180) },
+      ux:           { count: 1,  lastUsed: ago(200) },
+    },
+    metrics: {
+      totalActions: 222,
+      totalActiveTimeMs: 45 * 60000,
+    },
+  };
+}
+
+// Helper: format a duration in ms to "Xm" or "Xh Ym"
+function formatMinutes(ms) {
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return mins + 'm';
+  const hrs = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem > 0 ? hrs + 'h ' + rem + 'm' : hrs + 'h';
+}
+
+// --- Normalize skill/agent name to canonical form (#1542) ---
+// Alias map: variantes comunes → nombre canónico en AGENT_ICON_MAP / AGENT_COLORS
+const SKILL_NAME_ALIASES = {
+  // Slash-command forms
+  "/guru": "Guru", "/doc": "Doc", "/historia": "Doc", "/refinar": "Doc", "/priorizar": "Doc",
+  "/planner": "Planner", "/delivery": "DeliveryManager", "/tester": "Tester",
+  "/monitor": "Monitor", "/builder": "Builder", "/review": "Review", "/qa": "QA",
+  "/auth": "Auth", "/ux": "UX Specialist", "/scrum": "Scrum Master", "/po": "PO",
+  "/backend-dev": "BackendDev", "/android-dev": "AndroidDev", "/ios-dev": "iOSDev",
+  "/web-dev": "WebDev", "/desktop-dev": "DesktopDev", "/ops": "Ops", "/branch": "Branch",
+  "/security": "Security", "/ghostbusters": "Ghostbusters", "/perf": "Perf", "/cost": "Cost",
+  // Lowercase canonical
+  "guru": "Guru", "doc": "Doc", "planner": "Planner", "deliverymanager": "DeliveryManager",
+  "tester": "Tester", "monitor": "Monitor", "builder": "Builder", "review": "Review",
+  "qa": "QA", "auth": "Auth", "ux specialist": "UX Specialist", "scrum master": "Scrum Master",
+  "po": "PO", "backenddev": "BackendDev", "androiddev": "AndroidDev", "iosdev": "iOSDev",
+  "webdev": "WebDev", "desktopdev": "DesktopDev", "ops": "Ops", "branch": "Branch",
+  "cleanup": "Cleanup", "perf": "Perf", "cost": "Cost",
+  "security": "Security", "claude": "Claude",
+  // Hyphenated / spaced variants
+  "backend-dev": "BackendDev", "android-dev": "AndroidDev", "ios-dev": "iOSDev",
+  "web-dev": "WebDev", "desktop-dev": "DesktopDev",
+  "delivery": "DeliveryManager", "delivery-manager": "DeliveryManager",
+  "ux": "UX Specialist", "scrum": "Scrum Master",
+  // Doc sub-skills
+  "historia": "Doc", "refinar": "Doc", "priorizar": "Doc",
+  "doc (historia)": "Doc", "doc (refinar)": "Doc", "doc (priorizar)": "Doc",
+};
+
+// normalizeSkillName ya definida arriba (línea 588) — esta versión fue removida para evitar duplicación (#1594)
+
+// --- Assign robot SVG icons to root sprint agents (#1544) ---
+// Solo agentes raíz (los del sprint-plan.json), no sub-agentes invocados por ellos.
+const ROBOT_SVGS_DIR = path.join(ICONS_DIR, "robots");
+let _robotSvgFiles = null;
+
+function loadRobotSvgFiles() {
+  if (_robotSvgFiles !== null) return _robotSvgFiles;
+  try {
+    _robotSvgFiles = fs.readdirSync(ROBOT_SVGS_DIR)
+      .filter(f => f.endsWith(".svg"))
+      .sort()
+      .map(f => {
+        const buf = fs.readFileSync(path.join(ROBOT_SVGS_DIR, f));
+        return "data:image/svg+xml;base64," + buf.toString("base64");
+      });
+  } catch {
+    _robotSvgFiles = [];
+  }
+  return _robotSvgFiles;
+}
+
+function assignRobotIcons(sprintAgents) {
+  const robots = loadRobotSvgFiles();
+  if (robots.length === 0 || !Array.isArray(sprintAgents)) return {};
+  const result = {};
+  for (let i = 0; i < sprintAgents.length; i++) {
+    const ag = sprintAgents[i];
+    // Resolver nombre canónico del agente raíz
+    const canonical = normalizeSkillName(
+      ag.agent_name || AGENT_MAP_DASHBOARD["/" + ag.skill] || ag.skill || ""
+    );
+    if (canonical && !result[canonical]) {
+      result[canonical] = robots[i % robots.length];
+    }
+  }
+  return result;
+}
+
+// --- BUILD FLOW GRAPH SVG (force-directed organic layout) ---
+// rootAgentRobotMap: { canonicalName -> robotId } para asignar icono robot a agentes raíz (#1544)
+function buildFlowTree(sessions, agentNodes, agentTransitions, AGENT_ICONS, AGENT_COLORS, rootAgentRobotMap, agentIssueMap, queuedAgentsList) {
+  const robotMap = rootAgentRobotMap || {};
+  const queuedAgents = new Set(queuedAgentsList || []);
+  // Deduplicar nodos normalizados (#1542)
+  const rawNodes = Array.isArray(agentNodes) ? agentNodes : [];
+  const nodeSet = new Set();
+  for (const n of rawNodes) {
+    nodeSet.add(normalizeSkillName(n));
+  }
+  const transitions = Array.isArray(agentTransitions) ? agentTransitions : [];
+  const nodesWithEdges = new Set();
+  for (const t of transitions) { nodesWithEdges.add(normalizeSkillName(t.from)); nodesWithEdges.add(normalizeSkillName(t.to)); }
+  // Infrastructure skills invoked automatically — exclude from flow graph
+  const INFRA_SKILLS_FILTER = new Set(["Ops", "Checkup", "Cleanup", "Monitor", "Cost"]);
+  const nodes = [...nodeSet].filter(n => nodesWithEdges.has(n) && !INFRA_SKILLS_FILTER.has(n));
+
+  if (nodes.length === 0) {
+    return '<div class="empty-state">Sin flujo de agentes registrado</div>';
+  }
+
+  // Renombrar nodos "Claude" a "Main" — es el agente principal (esta sesión)
+  // Los "Agente N" del sprint son entidades diferentes (worktrees independientes)
+  const sessionsList = Array.isArray(sessions) ? sessions : [];
+  const claudeIdx = nodes.indexOf("Claude");
+  if (claudeIdx !== -1) {
+    nodes[claudeIdx] = "Main";
+    for (const e of transitions) {
+      if (e.from === "Claude") e.from = "Main";
+      if (e.to === "Claude") e.to = "Main";
+    }
+  }
+
+  // Determine agent states and current skill per agent
+  const activeAgents = new Set();   // corriendo ahora
+  const idleAgents = new Set();     // idle/stale/esperando
+  const doneAgents = new Set();     // completados
+  const currentSkillMap = {};       // agentName → skill que usa AHORA
+  const agentWaitingReason = {};    // agentName → razón de espera
+  for (const s of sessionsList) {
+    if (s.agent_name) {
+      const norm = normalizeSkillName(s.agent_name);
+      const st = s._status || s.status;
+      if (st === "active") {
+        activeAgents.add(norm);
+        // Detectar skill actual: si last_tool es Skill, el target es el skill
+        if (s.last_tool === "Skill" && s.last_target) {
+          const skillName = normalizeSkillName(AGENT_MAP_DASHBOARD["/" + s.last_target] || s.last_target);
+          currentSkillMap[norm] = skillName;
+        }
+      } else if (st === "idle" || st === "stale") {
+        idleAgents.add(norm);
+        // Detectar razón de espera
+        if (s.last_tool === "AskUserQuestion") {
+          agentWaitingReason[norm] = "Esperando respuesta del usuario";
+        } else {
+          const idleMs = s.last_activity_ts ? Date.now() - new Date(s.last_activity_ts).getTime() : 0;
+          agentWaitingReason[norm] = "Sin actividad hace " + Math.round(idleMs / 60000) + "min";
+        }
+      } else if (st === "done") {
+        doneAgents.add(norm);
+      }
+    }
+    if (Array.isArray(s.skills_invoked)) {
+      for (const sk of s.skills_invoked) {
+        const mapped = normalizeSkillName(AGENT_MAP_DASHBOARD[sk] || sk.replace(/^\//, ""));
+        if (!activeAgents.has(mapped)) doneAgents.add(mapped);
+      }
+    }
+  }
+
+  // Build session map for quick lookup (used to resolve branch → issue number)
+  const sessionMap = {};
+  for (const s of sessionsList) {
+    if (s.id) sessionMap[s.id] = s;
+  }
+
+  // --- Per-agent edge lists (no global dedup — each agent has its own numbered flow) ---
+  const edgeList = [];
+  const edgeSet = new Set(); // for layout adjacency (unique node pairs)
+  const now = Date.now();
+
+  // Group transitions by root agent (session → root agent name)
+  const sessionToRoot = {};
+  for (const s of sessionsList) {
+    if (s.id && s.agent_name) sessionToRoot[s.id] = s.agent_name;
+  }
+  // Map synthetic session ids to their agent names
+  for (const t of transitions) {
+    if (t._synthetic && t._session && t._session.startsWith("synthetic-")) {
+      // "synthetic-1659" → find agent name from real sessions
+      const issueStr = t._session.replace("synthetic-", "");
+      const realSess = sessionsList.find(s => { const m = (s.branch || "").match(/(\d+)/); return m && m[1] === issueStr && s.agent_name; });
+      if (realSess) sessionToRoot[t._session] = realSess.agent_name;
+    }
+  }
+
+  // Identify which sessions belong to Main: any session whose transitions include
+  // "Main" as source node (i.e. Claude-renamed sessions)
+  const mainSessionIds = new Set();
+  for (const t of transitions) {
+    if (t.from === "Main" && t._session) mainSessionIds.add(t._session);
+  }
+
+  // Collect transitions per root agent
+  const agentEdges = {}; // rootName → [{from, to, ...}]
+  const mainEdgeSet = new Set(); // Main edges dedup globally (no duplicates — reduces noise)
+  for (const t of transitions) {
+    if (!nodes.includes(t.from) || !nodes.includes(t.to)) continue;
+    // If this session ever had a Main→X transition, ALL its transitions belong to Main
+    let rootName = mainSessionIds.has(t._session) ? "Main"
+      : (t._session ? (sessionToRoot[t._session] || "Main") : "Main");
+    if (rootName === "Claude") rootName = "Main";
+    if (!agentEdges[rootName]) agentEdges[rootName] = [];
+    // Dedup: same agent, same from→to pair = skip (covers retries/multiple sessions)
+    const globalPairKey = rootName + ":" + t.from + "->" + t.to;
+    if (mainEdgeSet.has(globalPairKey)) continue;
+    mainEdgeSet.add(globalPairKey);
+    agentEdges[rootName].push({ from: t.from, to: t.to, ts: t.ts, _session: t._session });
+    edgeSet.add(t.from + "->" + t.to);
+  }
+
+  // Build edgeList with per-agent sequence numbers
+  // Format: "agentNum.stepNum" (e.g. "1.1", "1.2", "2.1")
+  let edgeSeq = 0;
+  for (const [rootName, edges] of Object.entries(agentEdges)) {
+    const agentMatch = rootName.match(/^Agente\s+(\d+)$/i);
+    if (!agentMatch && rootName !== "Main") continue; // Skip unresolved roots (duplicates)
+    const agentNum = agentMatch ? agentMatch[1] : "0";
+    const session = edges[0] && edges[0]._session ? (sessionMap[edges[0]._session] || null) : null;
+    const branchMatch = session ? (session.branch || "").match(/(\d+)/) : null;
+    const issueNum = branchMatch ? branchMatch[1] : null;
+    const seenInAgent = new Set();
+    let stepNum = 0;
+    edges.forEach((e) => {
+      const dk = e.from + "->" + e.to;
+      if (seenInAgent.has(dk)) return; // skip duplicate edge within same agent
+      seenInAgent.add(dk);
+      edgeSeq++;
+      stepNum++;
+      const isRecent = e.ts ? (now - new Date(e.ts).getTime() < 5 * 60 * 1000) : false;
+      edgeList.push({ from: e.from, to: e.to, seq: edgeSeq, agentSeq: agentNum + "." + stepNum, agentRoot: rootName, issueNum, isRecent });
+    });
+  }
+
+  // Remove orphan nodes (no edges after filtering unresolved roots)
+  const nodesInEdges = new Set();
+  for (const e of edgeList) { nodesInEdges.add(e.from); nodesInEdges.add(e.to); }
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    if (!nodesInEdges.has(nodes[i])) nodes.splice(i, 1);
+  }
+
+  // --- Terminal nodes: Done (success) and Error (failure) ---
+  const _out = {}, _in = {};
+  for (const n of nodes) { _out[n] = new Set(); _in[n] = new Set(); }
+  for (const e of edgeList) { if (_out[e.from]) _out[e.from].add(e.to); if (_in[e.to]) _in[e.to].add(e.from); }
+  for (const root of nodes.filter(n => /^Agente\s+\d+/i.test(n))) {
+    // Find last SKILL node in this agent's chain (not the agent itself, not Start)
+    const myEdges = edgeList.filter(e => e.agentRoot === root);
+    // Infrastructure skills that are auto-invoked (not part of dev pipeline)
+    const INFRA_SKILLS = new Set(["Ops", "Checkup", "Cleanup", "Monitor", "Cost", "Scrum"]);
+    let last = root;
+    if (myEdges.length > 0) {
+      // Walk the chain to find the real last skill node, excluding infra skills
+      const chain = myEdges.filter(e => e.from !== "Start" && e.to !== "Done" && e.to !== "Error" && !INFRA_SKILLS.has(normalizeSkillName(e.to)));
+      last = chain.length > 0 ? chain[chain.length - 1].to : root;
+    }
+    const sess = sessionsList.find(s => s.agent_name === root);
+    const isDone = sess && (sess._status === "done" || sess.status === "done" || sess._status === "stale" || sess.status === "stale");
+    const isError = sess && (sess._status === "error" || sess.status === "error");
+    const isActive = sess && (sess._status === "active" || sess.status === "active");
+    // Solo agregar edge terminal si este agente no tiene ya uno a Done/Error
+    const alreadyHasDone = myEdges.some(e => e.to === "Done");
+    const alreadyHasError = myEdges.some(e => e.to === "Error");
+    if (isDone && !isActive && !alreadyHasDone) {
+      if (!nodes.includes("Done")) nodes.push("Done");
+      const agentMatch = root.match(/^Agente\s+(\d+)$/i);
+      const agentNum = agentMatch ? agentMatch[1] : "0";
+      const stepNum = myEdges.length + 1;
+      edgeSeq++;
+      edgeList.push({ from: last, to: "Done", seq: edgeSeq, agentSeq: agentNum + "." + stepNum, agentRoot: root, issueNum: null, isRecent: false });
+    } else if (isError && !alreadyHasError) {
+      if (!nodes.includes("Error")) nodes.push("Error");
+      const agentMatch = root.match(/^Agente\s+(\d+)$/i);
+      const agentNum = agentMatch ? agentMatch[1] : "0";
+      const stepNum = myEdges.length + 1;
+      edgeSeq++;
+      edgeList.push({ from: last, to: "Error", seq: edgeSeq, agentSeq: agentNum + "." + stepNum, agentRoot: root, issueNum: null, isRecent: false });
+    }
+  }
+
+  // --- Layered layout con grid routing ---
+  const nodeR = 56;
+
+  // Build directed adjacency (from → [to])
+  const outEdges = {};
+  const inEdges = {};
+  for (const n of nodes) { outEdges[n] = []; inEdges[n] = []; }
+  for (const e of edgeList) {
+    if (outEdges[e.from]) outEdges[e.from].push(e.to);
+    if (inEdges[e.to]) inEdges[e.to].push(e.from);
+  }
+
+  // Assign layers via BFS — cycle-safe: each node visited at most once
+  const layer = {};
+  const visited = new Set();
+  const roots = nodes.filter(n => inEdges[n].length === 0);
+  if (roots.length === 0 && nodes.length > 0) roots.push(nodes[0]);
+  const queue = [...roots];
+  for (const r of roots) { layer[r] = 0; visited.add(r); }
+  while (queue.length > 0) {
+    const n = queue.shift();
+    for (const next of (outEdges[n] || [])) {
+      if (!visited.has(next)) {
+        visited.add(next);
+        layer[next] = layer[n] + 1;
+        queue.push(next);
+      }
+    }
+  }
+  const maxLayer = Math.max(0, ...Object.values(layer));
+  for (const n of nodes) {
+    if (layer[n] === undefined) layer[n] = Math.min(maxLayer + 1, nodes.length - 1);
+  }
+
+  // Force specific layers for sprint structure:
+  // Layer 0: Start only
+  // Layer 1: Agent nodes only (Agente 1, Agente 2, etc.)
+  // Layer 2+: Skills (PO, BackendDev, Review, etc.)
+  // Last layer: Done, Error
+  if (nodes.includes("Start")) {
+    layer["Start"] = 0;
+    // Push all agent nodes to layer 1
+    const agentPattern = /^Agente\s+/i;
+    for (const n of nodes) {
+      if (agentPattern.test(n)) layer[n] = 1;
+    }
+    // Semantic layer assignment based on skill role in the pipeline
+    // Layer 0: Start
+    // Layer 1: Agents
+    // Layer 2: Discovery (PO, UX, Guru, Doc)
+    // Layer 3: Developers (BackendDev, AndroidDev, WebDev, Builder, etc.)
+    // Layer 4: Gates (Tester, QA, Security, Review)
+    // Layer 5: Delivery (Delivery, Ops, Scrum)
+    // Layer 6: Done/Error (set below)
+    const SKILL_LAYER = {
+      // Discovery & planning
+      "PO": 2, "UX": 2, "Guru": 2, "Doc": 2, "Planner": 2, "Historia": 2, "Refinar": 2, "Priorizar": 2,
+      // Development
+      "BackendDev": 3, "AndroidDev": 3, "WebDev": 3, "Perf": 3,
+      // Gates & validation
+      "Tester": 4, "QA": 4, "Security": 4, "Review": 4, "Auth": 4,
+      // Delivery & ops
+      "Delivery": 5, "DeliveryManager": 5, "Builder": 5, "Ops": 5, "Scrum": 5, "Checkup": 5, "Cleanup": 5, "Monitor": 5, "Cost": 5,
+    };
+    for (const n of nodes) {
+      if (n === "Start" || n === "Done" || n === "Error" || agentPattern.test(n)) continue;
+      const normalized = normalizeSkillName(n);
+      if (SKILL_LAYER[normalized] !== undefined) {
+        layer[n] = SKILL_LAYER[normalized];
+      } else if (layer[n] <= 1) {
+        // Unknown skills default to layer 3 (dev)
+        layer[n] = 3;
+      }
+    }
+  }
+
+  // Force terminal nodes right after the last skill layer (sin gap extra)
+  const terminalLayer = Math.max(0, ...Object.values(layer)) + 1;
+  if (nodes.includes("Done")) { layer["Done"] = terminalLayer; }
+  if (nodes.includes("Error")) { layer["Error"] = terminalLayer; }
+
+  // Identify Main-only nodes (skills used exclusively by Main, not by any agent)
+  // These will be positioned peripherally to avoid cluttering agent flows
+  const mainOnlyNodes = new Set();
+  const agentPattern3 = /^Agente\s+/i;
+  for (const n of nodes) {
+    if (n === "Main" || n === "Start" || n === "Done" || n === "Error" || agentPattern3.test(n)) continue;
+    const nodeEdgesIn = edgeList.filter(e => e.to === n);
+    const nodeEdgesOut = edgeList.filter(e => e.from === n);
+    const allEdges = [...nodeEdgesIn, ...nodeEdgesOut];
+    if (allEdges.length > 0 && allEdges.every(e => e.agentRoot === "Main")) {
+      mainOnlyNodes.add(n);
+    }
+  }
+  if (nodes.includes("Main")) mainOnlyNodes.add("Main");
+
+  // Agrupar nodos por capa (excluyendo Main-only del layout principal)
+  const layers = {};
+  for (const n of nodes) {
+    if (mainOnlyNodes.has(n)) continue; // Main-only se posiciona aparte
+    const l = layer[n];
+    if (!layers[l]) layers[l] = [];
+    layers[l].push(n);
+  }
+  // Ensure at least one layer exists
+  if (Object.keys(layers).length === 0) layers[0] = [];
+  const numLayers = Math.max(...Object.keys(layers).map(Number)) + 1;
+
+  // Spacing: usar todo el ancho disponible
+  const maxNodesInLayer = Math.max(1, ...Object.values(layers).map(l => l.length));
+  const colSpacing = numLayers <= 5 ? 300 : numLayers <= 8 ? 240 : 200;
+  // Minimum row spacing: 2*nodeR + gap for rings + labels
+  const minRowSpacing = nodeR * 2 + 80; // ~192px min between node centers
+  const rowSpacing = Math.max(minRowSpacing, maxNodesInLayer <= 3 ? 260 : maxNodesInLayer <= 5 ? 230 : 200);
+  const padding = 70;
+  const mainZoneW = numLayers * colSpacing + padding * 2;
+  // Main peripheral zone: positioned below the agent flow
+  const mainNodesList = [...mainOnlyNodes];
+  const mainZoneH = mainNodesList.length > 0 ? 200 : 0;
+  const mainRowSpacing = 140;
+  const svgW = Math.max(900, mainZoneW);
+  const agentZoneH = Math.max(500, maxNodesInLayer * rowSpacing + padding * 2);
+  const svgH = agentZoneH + mainZoneH;
+
+  // --- Barycenter ordering to minimize edge crossings ---
+  // Build adjacency for ordering: neighbors in adjacent layers
+  const edgeAdj = {}; // node → Set of connected nodes
+  for (const n of nodes) edgeAdj[n] = new Set();
+  for (const e of edgeList) {
+    if (edgeAdj[e.from]) edgeAdj[e.from].add(e.to);
+    if (edgeAdj[e.to]) edgeAdj[e.to].add(e.from);
+  }
+
+  // Initial order: assign temporary Y positions (index within layer)
+  const nodeOrder = {}; // node → index within its layer
+  for (const [, layerNodes] of Object.entries(layers)) {
+    layerNodes.forEach((n, i) => { nodeOrder[n] = i; });
+  }
+
+  // Iterate barycenter sweeps (forward + backward) to reduce crossings
+  const sortedLayerKeys = Object.keys(layers).map(Number).sort((a, b) => a - b);
+  for (let sweep = 0; sweep < 4; sweep++) {
+    // Forward sweep: order each layer based on avg position of left neighbors
+    for (let li = 1; li < sortedLayerKeys.length; li++) {
+      const lk = String(sortedLayerKeys[li]);
+      const prevLk = String(sortedLayerKeys[li - 1]);
+      const prevNodes = layers[prevLk] || [];
+      if (!layers[lk] || layers[lk].length <= 1) continue;
+      layers[lk].sort((a, b) => {
+        const aNeighbors = [...(edgeAdj[a] || [])].filter(n => prevNodes.includes(n));
+        const bNeighbors = [...(edgeAdj[b] || [])].filter(n => prevNodes.includes(n));
+        const aBar = aNeighbors.length > 0 ? aNeighbors.reduce((s, n) => s + (nodeOrder[n] || 0), 0) / aNeighbors.length : nodeOrder[a] || 0;
+        const bBar = bNeighbors.length > 0 ? bNeighbors.reduce((s, n) => s + (nodeOrder[n] || 0), 0) / bNeighbors.length : nodeOrder[b] || 0;
+        return aBar - bBar;
+      });
+      layers[lk].forEach((n, i) => { nodeOrder[n] = i; });
+    }
+    // Backward sweep: order each layer based on avg position of right neighbors
+    for (let li = sortedLayerKeys.length - 2; li >= 0; li--) {
+      const lk = String(sortedLayerKeys[li]);
+      const nextLk = String(sortedLayerKeys[li + 1]);
+      const nextNodes = layers[nextLk] || [];
+      if (!layers[lk] || layers[lk].length <= 1) continue;
+      layers[lk].sort((a, b) => {
+        const aNeighbors = [...(edgeAdj[a] || [])].filter(n => nextNodes.includes(n));
+        const bNeighbors = [...(edgeAdj[b] || [])].filter(n => nextNodes.includes(n));
+        const aBar = aNeighbors.length > 0 ? aNeighbors.reduce((s, n) => s + (nodeOrder[n] || 0), 0) / aNeighbors.length : nodeOrder[a] || 0;
+        const bBar = bNeighbors.length > 0 ? bNeighbors.reduce((s, n) => s + (nodeOrder[n] || 0), 0) / bNeighbors.length : nodeOrder[b] || 0;
+        return aBar - bBar;
+      });
+      layers[lk].forEach((n, i) => { nodeOrder[n] = i; });
+    }
+  }
+
+  // Posicionar nodos del flujo de agentes (zona principal, centrada verticalmente)
+  const positions = {};
+  for (const [layerIdx, layerNodes] of Object.entries(layers)) {
+    const col = Number(layerIdx);
+    const x = padding + col * colSpacing + colSpacing / 2;
+    const count = layerNodes.length;
+    const layerRowSpacing = count <= 1 ? rowSpacing : Math.max(minRowSpacing, agentZoneH / (count + 1));
+    const totalH = (count - 1) * layerRowSpacing;
+    const startY = agentZoneH / 2 - totalH / 2;
+    layerNodes.forEach((name, i) => {
+      positions[name] = { x, y: startY + i * layerRowSpacing };
+    });
+  }
+
+  // Post-layout: swap positions + extra vertical spread for gate/delivery nodes
+  const swapNodes = ["Security", "Review", "DeliveryManager"];
+  const swapPositions = swapNodes.map(n => positions[n] ? { x: positions[n].x, y: positions[n].y } : null);
+  if (swapPositions.every(p => p)) {
+    positions["Security"].x = swapPositions[2].x; positions["Security"].y = swapPositions[2].y;
+    positions["Review"].x = swapPositions[0].x; positions["Review"].y = swapPositions[0].y;
+    positions["DeliveryManager"].x = swapPositions[1].x; positions["DeliveryManager"].y = swapPositions[1].y;
+  }
+  // Extra vertical spread: push gate nodes (Tester/Review/DeliveryManager) further apart
+  const spreadNodes = ["Tester", "Review", "DeliveryManager"];
+  const spreadPresent = spreadNodes.filter(n => positions[n]);
+  if (spreadPresent.length >= 2) {
+    spreadPresent.sort((a, b) => positions[a].y - positions[b].y);
+    const topY = padding + nodeR + 30;
+    const bottomY = agentZoneH - padding - nodeR - 30;
+    const step = (bottomY - topY) / (spreadPresent.length - 1);
+    spreadPresent.forEach((n, i) => { positions[n].y = topY + i * step; });
+  }
+
+  // Posicionar nodos Main-only en zona periférica inferior
+  if (mainNodesList.length > 0) {
+    const mainStartY = agentZoneH + 40; // separación de la zona de agentes
+    const mainColSpacing = Math.min(200, (svgW - padding * 2) / mainNodesList.length);
+    mainNodesList.forEach((name, i) => {
+      positions[name] = {
+        x: padding + i * mainColSpacing + mainColSpacing / 2,
+        y: mainStartY + 60,
+      };
+    });
+  }
+
+  // Asignar colores por agente raíz (Agente N), NO por layer 0 (que ahora es solo Start)
+  // 20 distinct colors — enough for any sprint, never repeat between agents
+  const rootColors = [
+    "#f87171", "#60a5fa", "#4ade80", "#fbbf24", "#a78bfa",
+    "#f472b6", "#fb923c", "#22d3ee", "#e879f9", "#84cc16",
+    "#f59e0b", "#06b6d4", "#ec4899", "#14b8a6", "#8b5cf6",
+    "#ef4444", "#3b82f6", "#10b981", "#f97316", "#6366f1",
+  ];
+  // Color roots = Agent nodes (layer 1), not Start (layer 0)
+  const agentPattern2 = /^Agente\s+/i;
+  const agentNodeList = nodes.filter(n => agentPattern2.test(n));
+  const agentColorMap = {};
+  agentNodeList.forEach((a, i) => { agentColorMap[a] = rootColors[i % rootColors.length]; });
+  // Start and Main get neutral colors
+  agentColorMap["Start"] = "#6C7086";
+  agentColorMap["Main"] = "#9ca3af";
+  agentColorMap["Done"] = "#4ade80";
+  agentColorMap["Error"] = "#f87171";
+
+  // BFS desde cada agente raíz para asignar "owner" a cada nodo downstream
+  const nodeOwner = {};
+  for (const agent of agentNodeList) {
+    nodeOwner[agent] = agent;
+    const bfsQ = [agent];
+    while (bfsQ.length > 0) {
+      const cur = bfsQ.shift();
+      for (const next of (outEdges[cur] || [])) {
+        if (!nodeOwner[next] && next !== "Done" && next !== "Error") {
+          nodeOwner[next] = agent;
+          bfsQ.push(next);
+        }
+      }
+    }
+  }
+  // Asignar color de edge según el agente raíz
+  function edgeColor(nodeOrAgent) {
+    // Si es un agente conocido, usar su color directo
+    if (agentColorMap[nodeOrAgent]) return agentColorMap[nodeOrAgent];
+    // Sino, buscar owner
+    const owner = nodeOwner[nodeOrAgent];
+    return owner ? (agentColorMap[owner] || "#60a5fa") : "#60a5fa";
+  }
+
+  // Build SVG defs — markers dinámicos por color de agente raíz
+  const usedColors = new Set();
+  for (const e of edgeList) {
+    // Incluir colores de Start→Agent (que usan color del target)
+    if (e.from === "Start" && agentColorMap[e.to]) usedColors.add(agentColorMap[e.to]);
+    else if (e.agentRoot && agentColorMap[e.agentRoot]) usedColors.add(agentColorMap[e.agentRoot]);
+    else usedColors.add(edgeColor(e.from));
+  }
+  let markerDefs = "";
+  for (const c of usedColors) {
+    const id = "fa-" + c.replace("#", "");
+    markerDefs += '<marker id="' + id + '" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0, 7 2.5, 0 5" fill="' + c + '" opacity="0.85"/></marker>';
+  }
+
+  let svg = '<defs>' + markerDefs + `
+    <filter id="node-glow"><feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="icon-brighten" color-interpolation-filters="sRGB">
+      <feComponentTransfer>
+        <feFuncR type="linear" slope="1.5" intercept="0.2"/>
+        <feFuncG type="linear" slope="1.5" intercept="0.2"/>
+        <feFuncB type="linear" slope="1.5" intercept="0.2"/>
+      </feComponentTransfer>
+    </filter>
+    <style>
+      @keyframes flow-dash { to { stroke-dashoffset: 0; } }
+      @keyframes node-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+      .flow-edge { stroke-dasharray: 8 6; stroke-dashoffset: 28; animation: flow-dash 1.2s linear infinite; }
+      .node-active { animation: node-pulse 2s ease-in-out infinite; }
+    </style>
+  </defs>`;
+
+  // --- Grid-based A* routing para flechas sin colisiones ---
+  // Resolución fina para ruteo preciso
+  const gridCell = Math.max(8, Math.round(nodeR * 0.3)); // finer grid for better edge separation
+  const gridW = Math.ceil(svgW / gridCell);
+  const gridH = Math.ceil(svgH / gridCell);
+  // Grid de ocupación: 0=libre, 1=nodo (bloqueante duro), 2+=flecha previa (penalizada, acumulativo)
+  const grid = Array.from({ length: gridH }, () => new Uint8Array(gridW));
+
+  // Helper: marcar celda si está en rango
+  function markCell(gx, gy, val) {
+    if (gy >= 0 && gy < gridH && gx >= 0 && gx < gridW) {
+      grid[gy][gx] = Math.max(grid[gy][gx], val);
+    }
+  }
+
+  // Marcar celdas ocupadas por nodos — área circular + zona del label + issue number
+  // Pre-compute per-node ring count for accurate blocking radius
+  const nodeRingCount = {};
+  const ringStep = 5; // must match: ringWidth(3) + ringGap(2)
+  for (const name of nodes) {
+    const isSkillNode = !(/^Agente\s+/i.test(name)) && name !== "Start" && name !== "Done" && name !== "Error" && name !== "Main";
+    if (isSkillNode) {
+      const pa = [...new Set(edgeList.filter(e => e.to === name || e.from === name).map(e => e.agentRoot).filter(r => r && r !== "Main"))];
+      nodeRingCount[name] = pa.length > 1 ? pa.length : 0;
+    } else {
+      nodeRingCount[name] = 0;
+    }
+  }
+  const baseBlockMargin = 15;
+  const softMargin = 15;
+  const labelExtraBelow = 55;
+  for (const name of nodes) {
+    const p = positions[name];
+    if (!p) continue;
+    const rings = nodeRingCount[name] || 0;
+    // Use actual visual radius: robots are nodeR+4, rings add (N-1)*ringStep on top
+    const isRobot = /^Agente\s+/i.test(name);
+    const visualR = (isRobot ? nodeR + 4 : nodeR) + (rings > 1 ? (rings - 1) * ringStep : 0);
+    const blockRadius = visualR + baseBlockMargin; // hard block = outermost ring + margin
+    const gcx = Math.round(p.x / gridCell);
+    const gcy = Math.round(p.y / gridCell);
+    const hardR = Math.ceil(blockRadius / gridCell);
+    const softR = Math.ceil((blockRadius + softMargin) / gridCell);
+    const labelCells = Math.ceil((blockRadius + labelExtraBelow) / gridCell);
+    for (let dy = -softR; dy <= labelCells; dy++) {
+      for (let dx = -softR; dx <= softR; dx++) {
+        const px = dx * gridCell, py = dy * gridCell;
+        // Full circular distance (not clamped — rings are circular in ALL directions)
+        const dist = Math.sqrt(px * px + py * py);
+        // Hard block: full circle around node including all rings
+        if (dist <= blockRadius) {
+          markCell(gcx + dx, gcy + dy, 1);
+        }
+        // Soft penalty: margin zone — expensive but passable if no alternative
+        else if (dist <= blockRadius + softMargin) {
+          markCell(gcx + dx, gcy + dy, 3);
+        }
+        // Label zone below: hard block (rectangular, extends further down)
+        if (dy > 0 && dy <= labelCells && Math.abs(dx) <= Math.ceil(85 / gridCell)) {
+          markCell(gcx + dx, gcy + dy, 1);
+        }
+      }
+    }
+  }
+
+  // Block grid cells to the right of Done/Error terminal nodes
+  // No edge should route past these nodes
+  for (const termName of ["Done", "Error"]) {
+    const tp = positions[termName];
+    if (!tp) continue;
+    const tgcx = Math.round(tp.x / gridCell);
+    // Block everything to the right of the terminal node (hard wall)
+    for (let gy = 0; gy < gridH; gy++) {
+      for (let gx = tgcx + 3; gx < gridW; gx++) {
+        markCell(gx, gy, 1);
+      }
+    }
+  }
+
+  // A* pathfinding en la grilla
+  function gridRoute(sx, sy, tx, ty) {
+    const sgx = Math.max(0, Math.min(gridW - 1, Math.round(sx / gridCell)));
+    const sgy = Math.max(0, Math.min(gridH - 1, Math.round(sy / gridCell)));
+    const tgx = Math.max(0, Math.min(gridW - 1, Math.round(tx / gridCell)));
+    const tgy = Math.max(0, Math.min(gridH - 1, Math.round(ty / gridCell)));
+
+    // Liberar celdas de start y target (están dentro de nodos)
+    const savedS = grid[sgy][sgx]; grid[sgy][sgx] = 0;
+    const savedT = grid[tgy][tgx]; grid[tgy][tgx] = 0;
+
+    const key = (x, y) => y * gridW + x;
+    const open = [{ x: sgx, y: sgy, g: 0, f: 0, px: sgx, py: sgy }];
+    const gScore = new Map(); gScore.set(key(sgx, sgy), 0);
+    const cameFrom = new Map();
+    const dirs = [[1,0],[0,1],[-1,0],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+
+    let found = false;
+    let maxIter = Math.min(15000, gridW * gridH * 3);
+    while (open.length > 0 && maxIter-- > 0) {
+      // Binary insertion would be faster, but sort is OK for this scale
+      open.sort((a, b) => a.f - b.f);
+      const cur = open.shift();
+      if (cur.x === tgx && cur.y === tgy) { found = true; break; }
+
+      for (const [ddx, ddy] of dirs) {
+        const nx = cur.x + ddx, ny = cur.y + ddy;
+        if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) continue;
+        if (grid[ny][nx] === 1) continue; // nodo bloqueante hard
+        const cost = (ddx !== 0 && ddy !== 0) ? 1.41 : 1;
+        const cellVal = grid[ny][nx];
+        // Minimal penalties — prefer straightest path possible
+        const edgePenalty = cellVal >= 2 ? cellVal * 0.3 : 0;
+        // Strong penalty for direction changes — keeps paths straight
+        const prevDx = cur.x - cur.px, prevDy = cur.y - cur.py;
+        const turnPenalty = (prevDx !== 0 || prevDy !== 0) && (ddx !== prevDx || ddy !== prevDy) ? 2.0 : 0;
+        const ng = cur.g + cost + edgePenalty + turnPenalty;
+        const k = key(nx, ny);
+        if (!gScore.has(k) || ng < gScore.get(k)) {
+          gScore.set(k, ng);
+          const h = Math.abs(nx - tgx) + Math.abs(ny - tgy);
+          open.push({ x: nx, y: ny, g: ng, f: ng + h, px: cur.x, py: cur.y });
+          cameFrom.set(k, key(cur.x, cur.y));
+        }
+      }
+    }
+
+    // Restaurar grid
+    grid[sgy][sgx] = savedS;
+    grid[tgy][tgx] = savedT;
+
+    if (!found) {
+      // Fallback: curved detour instead of straight line (avoids visual collisions)
+      const midX = (sx + tx) / 2;
+      const midY = (sy + ty) / 2;
+      const detourY = midY < svgH / 2 ? midY - 80 : midY + 80; // detour away from center
+      return [{ x: sx, y: sy }, { x: midX, y: detourY }, { x: tx, y: ty }];
+    }
+
+    // Reconstruir path
+    const path = [];
+    let ck = key(tgx, tgy);
+    while (ck !== undefined) {
+      const cy = Math.floor(ck / gridW), cx = ck % gridW;
+      path.unshift({ x: cx * gridCell, y: cy * gridCell });
+      ck = cameFrom.get(ck);
+    }
+
+    // Marcar celdas de esta flecha como ocupadas con ancho de 5 celdas
+    for (const pt of path) {
+      const gx = Math.round(pt.x / gridCell), gy = Math.round(pt.y / gridCell);
+      for (let ddy = -2; ddy <= 2; ddy++) {
+        for (let ddx = -2; ddx <= 2; ddx++) {
+          const nx = gx + ddx, ny = gy + ddy;
+          if (ny >= 0 && ny < gridH && nx >= 0 && nx < gridW && grid[ny][nx] !== 1) {
+            grid[ny][nx] = Math.min(255, grid[ny][nx] + 2);
+          }
+        }
+      }
+    }
+
+    return path;
+  }
+
+  // Simplificar path: eliminar puntos colineales
+  function simplifyPath(pts) {
+    if (pts.length <= 2) return pts;
+    const result = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const prev = result[result.length - 1];
+      const next = pts[i + 1];
+      const cur = pts[i];
+      // Si los 3 puntos son colineales, skip el del medio
+      const dx1 = cur.x - prev.x, dy1 = cur.y - prev.y;
+      const dx2 = next.x - cur.x, dy2 = next.y - cur.y;
+      if (Math.abs(dx1 * dy2 - dy1 * dx2) > 0.1) result.push(cur);
+    }
+    result.push(pts[pts.length - 1]);
+    return result;
+  }
+
+  // Convertir path a SVG con esquinas redondeadas
+  function pathToSvg(pts, fromPos, toPos) {
+    if (!pts || pts.length < 2) {
+      return "M" + fromPos.x.toFixed(1) + "," + fromPos.y.toFixed(1) + " L" + toPos.x.toFixed(1) + "," + toPos.y.toFixed(1);
+    }
+    const simple = simplifyPath(pts);
+    simple[0] = { ...fromPos };
+    simple[simple.length - 1] = { ...toPos };
+
+    if (simple.length === 2) {
+      return "M" + simple[0].x.toFixed(1) + "," + simple[0].y.toFixed(1) + " L" + simple[1].x.toFixed(1) + "," + simple[1].y.toFixed(1);
+    }
+
+    // Path con esquinas redondeadas usando arcos cuadráticos
+    const r = gridCell * 0.6; // radio de redondeo
+    let d = "M" + simple[0].x.toFixed(1) + "," + simple[0].y.toFixed(1);
+    for (let i = 1; i < simple.length - 1; i++) {
+      const prev = simple[i - 1], cur = simple[i], next = simple[i + 1];
+      const d1 = Math.sqrt((cur.x - prev.x) ** 2 + (cur.y - prev.y) ** 2);
+      const d2 = Math.sqrt((next.x - cur.x) ** 2 + (next.y - cur.y) ** 2);
+      const rr = Math.min(r, d1 / 2, d2 / 2);
+      if (rr < 1) { d += " L" + cur.x.toFixed(1) + "," + cur.y.toFixed(1); continue; }
+      const ux1 = (cur.x - prev.x) / d1, uy1 = (cur.y - prev.y) / d1;
+      const ux2 = (next.x - cur.x) / d2, uy2 = (next.y - cur.y) / d2;
+      const bx = cur.x - ux1 * rr, by = cur.y - uy1 * rr;
+      const cx = cur.x + ux2 * rr, cy = cur.y + uy2 * rr;
+      d += " L" + bx.toFixed(1) + "," + by.toFixed(1);
+      d += " Q" + cur.x.toFixed(1) + "," + cur.y.toFixed(1) + " " + cx.toFixed(1) + "," + cy.toFixed(1);
+    }
+    d += " L" + simple[simple.length - 1].x.toFixed(1) + "," + simple[simple.length - 1].y.toFixed(1);
+    return d;
+  }
+
+  // Draw edges con A* routing — track label positions for collision avoidance
+  const placedLabels = [];
+  for (const e of edgeList) {
+    const from = positions[e.from];
+    const to = positions[e.to];
+    if (!from || !to) continue;
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 1) continue;
+    const ux = dx / dist, uy = dy / dist;
+    // Offset perpendicular for parallel edges between same node pair
+    const pairKey = e.from + "->" + e.to;
+    const pairEdges = edgeList.filter(x => x.from === e.from && x.to === e.to);
+    const pairIdx = pairEdges.indexOf(e);
+    const pairCount = pairEdges.length;
+    const perpOff = pairCount > 1 ? (pairIdx - (pairCount - 1) / 2) * 12 : 0;
+    const px = -uy * perpOff, py = ux * perpOff; // perpendicular vector
+    // Use actual visual radius per node (includes rings)
+    const fromRings = nodeRingCount[e.from] || 0;
+    const fromVisualR = (/^Agente\s+/i.test(e.from) ? nodeR + 4 : nodeR) + (fromRings > 1 ? (fromRings - 1) * ringStep : 0);
+    const toRings = nodeRingCount[e.to] || 0;
+    const toVisualR = (/^Agente\s+/i.test(e.to) ? nodeR + 4 : nodeR) + (toRings > 1 ? (toRings - 1) * ringStep : 0);
+    const x1 = from.x + ux * (fromVisualR + 8) + px;
+    const y1 = from.y + uy * (fromVisualR + 8) + py;
+    const x2 = to.x - ux * (toVisualR + 12) + px;
+    const y2 = to.y - uy * (toVisualR + 12) + py;
+
+    // Try straight line first — only use A* routing if the line intersects a node
+    let route, pathD;
+    const straightLineClear = (function() {
+      // Check if straight line from (x1,y1) to (x2,y2) crosses any node
+      for (const nodeName of nodes) {
+        if (nodeName === e.from || nodeName === e.to) continue;
+        const np = positions[nodeName];
+        if (!np) continue;
+        const nRings = nodeRingCount[nodeName] || 0;
+        const nR = (/^Agente\s+/i.test(nodeName) ? nodeR + 4 : nodeR) + (nRings > 1 ? (nRings - 1) * ringStep : 0) + 35;
+        // Distance from point to line segment
+        const ldx = x2 - x1, ldy = y2 - y1;
+        const len2 = ldx * ldx + ldy * ldy;
+        if (len2 < 1) return true;
+        var t = Math.max(0, Math.min(1, ((np.x - x1) * ldx + (np.y - y1) * ldy) / len2));
+        const closestX = x1 + t * ldx, closestY = y1 + t * ldy;
+        const dd = Math.sqrt((np.x - closestX) ** 2 + (np.y - closestY) ** 2);
+        if (dd < nR) return false;
+      }
+      return true;
+    })();
+    if (straightLineClear) {
+      route = [{ x: x1, y: y1 }, { x: x2, y: y2 }];
+      pathD = "M" + x1.toFixed(1) + "," + y1.toFixed(1) + " L" + x2.toFixed(1) + "," + y2.toFixed(1);
+    } else {
+      route = gridRoute(x1, y1, x2, y2);
+      pathD = pathToSvg(route, { x: x1, y: y1 }, { x: x2, y: y2 });
+    }
+
+    // Color by root agent — Start→Agent edges use the TARGET agent's color
+    let ec;
+    if (e.from === "Start" && agentColorMap[e.to]) {
+      ec = agentColorMap[e.to]; // Start edges inherit target agent color
+    } else if (e.agentRoot && agentColorMap[e.agentRoot]) {
+      ec = agentColorMap[e.agentRoot];
+    } else {
+      ec = edgeColor(e.from);
+    }
+    const markerId = "fa-" + ec.replace("#", "");
+
+    const isStartEdge = e.from === "Start" || e.to === "Start";
+    const edgeRootAttr = isStartEdge ? ' data-flow-root="sprint"' : (e.agentRoot === "Main") ? ' data-flow-root="main"' : ' data-flow-root="agent"';
+    svg += '<g class="flow-edge-group"' + edgeRootAttr + ' data-from="' + escHtml(e.from) + '" data-to="' + escHtml(e.to) + '" data-agent-root="' + escHtml(e.agentRoot || '') + '">';
+    svg += '<path class="flow-edge" d="' + pathD + '" fill="none" stroke="' + ec + '" stroke-width="2.5" stroke-opacity="0.8" marker-end="url(#' + markerId + ')"/>';
+    // Edge label: placed at path midpoint (not endpoint midpoint) for accuracy
+    const label = e.agentSeq || String(e.seq);
+    const labelR = label.length > 3 ? 16 : 14;
+    // Use actual path midpoint if route exists, otherwise endpoint midpoint
+    let lx, ly;
+    if (route && route.length >= 3) {
+      const midIdx = Math.floor(route.length / 2);
+      lx = route[midIdx].x;
+      ly = route[midIdx].y;
+    } else {
+      lx = (x1 + x2) / 2;
+      ly = (y1 + y2) / 2;
+    }
+    // Nudge label to avoid overlapping with previously placed labels
+    const labelCollisionR = labelR * 2.5;
+    for (const prev of placedLabels) {
+      const ddx = lx - prev.x, ddy = ly - prev.y;
+      const dd = Math.sqrt(ddx * ddx + ddy * ddy);
+      if (dd < labelCollisionR) {
+        // Push perpendicular to the edge direction
+        const edx = x2 - x1, edy = y2 - y1;
+        const elen = Math.sqrt(edx * edx + edy * edy) || 1;
+        const perpX = -edy / elen, perpY = edx / elen;
+        const nudge = labelCollisionR - dd + 8;
+        lx += perpX * nudge;
+        ly += perpY * nudge;
+      }
+    }
+    placedLabels.push({ x: lx, y: ly });
+    svg += `<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="${labelR}" fill="var(--bg, #0a0b10)" stroke="${ec}" stroke-width="1.5"/>`;
+    svg += `<text x="${lx.toFixed(1)}" y="${(ly + 5).toFixed(1)}" text-anchor="middle" font-size="${label.length > 3 ? 12 : 14}" font-weight="700" fill="${ec}">${label}</text>`;
+    svg += '</g>';
+  }
+
+  // Draw nodes
+  const imgSize = nodeR * 1.4;
+  let _claudeIdx = 0;
+  for (const name of nodes) {
+    const pos = positions[name];
+    if (!pos) continue;
+    const isActive = activeAgents.has(name);
+    const isIdle = idleAgents.has(name);
+    const isDone = doneAgents.has(name);
+    const isQueued = queuedAgents.has(name);
+    const isAgentNode = /^Agente\s+/i.test(name);
+    const isSkillNode = !isAgentNode && name !== "Start" && name !== "Done" && name !== "Error" && name !== "Main";
+    // Para skills: encontrar todos los agentes que pasaron por este nodo
+    const passingAgents = isSkillNode
+      ? [...new Set(edgeList.filter(e => e.to === name || e.from === name).map(e => e.agentRoot).filter(r => r && r !== "Main"))]
+      : [];
+    const passingColors = passingAgents.map(a => agentColorMap[a] || "#6C7086").filter((c, i, arr) => arr.indexOf(c) === i);
+    // ¿Está este skill siendo usado AHORA por algún agente activo?
+    const isSkillActiveNow = isSkillNode && Object.values(currentSkillMap).includes(name);
+    // Color del nodo: skills usan color neutral propio, agentes usan su color
+    const baseColor = isSkillNode ? "#8b95a5" : (agentColorMap[name] || (nodeOwner[name] && agentColorMap[nodeOwner[name]]) || (AGENT_COLORS && AGENT_COLORS[name]) || "#6C7086");
+    const color = isQueued ? "#6C7086" : baseColor;
+    // Resolve icon: usar robot SVG para agentes raíz (#1544)
+    // Primero intentar robotMap (sprint-plan), luego patrón "Agente N"
+    let robotId = robotMap[name];
+    if (!robotId) {
+      const agentMatch = name.match(/^Agente\s+(\d+)/i);
+      if (agentMatch) robotId = ((parseInt(agentMatch[1], 10) - 1) % 10) + 1;
+    }
+    const hasRobot = robotId && ROBOT_ICONS[robotId];
+    const iconUrl = hasRobot ? ROBOT_ICONS[robotId] : resolveIconUri(name);
+    // Opacity: cola=grisado, idle=semitransparente, done=normal, active=normal
+    const opacity = isQueued ? "0.4" : isIdle ? "0.65" : "1";
+    // Glow: solo agentes activos y skills usados AHORA
+    const shouldGlow = (isAgentNode && isActive) || isSkillActiveNow;
+    const filterAttr = shouldGlow ? 'filter="url(#node-glow)"' : '';
+    // Nodo raíz con robot tiene radio ligeramente mayor
+    const effectiveR = hasRobot ? nodeR + 4 : nodeR;
+    const effectiveImgSize = hasRobot ? effectiveR * 1.6 : imgSize;
+
+    // Determine visibility category for toggle:
+    // "sprint" = always visible (Start, Done, Error, Agent nodes)
+    // "agent" = visible by default (skills used by agents)
+    // "main" = hidden by default (Main session skills)
+    const isSprintInfra = name === "Start" || name === "Done" || name === "Error" || /^Agente\s+/i.test(name);
+    let flowRootAttr;
+    if (isSprintInfra) {
+      flowRootAttr = 'data-flow-root="sprint"';
+    } else if (name === "Main") {
+      flowRootAttr = 'data-flow-root="main"';
+    } else {
+      const nodeEdgesAsTarget = edgeList.filter(e => e.to === name);
+      const nodeEdgesAsSource = edgeList.filter(e => e.from === name);
+      const allNodeEdges = [...nodeEdgesAsTarget, ...nodeEdgesAsSource];
+      const isMainOnly = allNodeEdges.length > 0 && allNodeEdges.every(e => e.agentRoot === "Main");
+      flowRootAttr = isMainOnly ? 'data-flow-root="main"' : 'data-flow-root="agent"';
+    }
+
+    const activeClass = (isAgentNode && isActive && !isDone) || isSkillActiveNow ? ' node-active' : '';
+    const opacityStyle = isQueued ? `opacity:${opacity};` : '';
+    const safeName4click = escHtml(name).replace(/'/g, "&#39;");
+    svg += `<g class="flow-node${activeClass}" data-agent="${escHtml(name)}" ${flowRootAttr} style="cursor:pointer;${opacityStyle}" ${filterAttr}>`;
+    // Hit area rect for click capture + inline onclick
+    svg += `<rect x="${(pos.x - effectiveR - 15).toFixed(0)}" y="${(pos.y - effectiveR - 15).toFixed(0)}" width="${((effectiveR + 15) * 2).toFixed(0)}" height="${((effectiveR + 15) * 2).toFixed(0)}" fill="rgba(0,0,0,0.001)" stroke="none" onclick="flowClickNode('${safeName4click}')"/>`;
+    // Fondo del nodo
+    if (isSkillNode && passingColors.length > 1) {
+      // Multi-agent: concentric rings, one per agent (outermost = first agent)
+      const ringWidth = 3;
+      const ringGap = 2;
+      const ringStep = ringWidth + ringGap; // 5px per ring
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.08)" stroke="none"/>`;
+      for (let ai = 0; ai < passingColors.length; ai++) {
+        const ringR = effectiveR + (ai * ringStep);
+        svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${ringR.toFixed(1)}" fill="none" stroke="${passingColors[ai]}" stroke-width="${ringWidth}" stroke-opacity="0.85"/>`;
+      }
+    } else if (isSkillNode && passingColors.length === 1) {
+      // Single agent: borde con el color de ese agente
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.08)" stroke="${passingColors[0]}" stroke-width="3"/>`;
+    } else {
+      // Agent/Start/Done/Error nodes: borde sólido con su propio color
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR}" fill="rgba(255,255,255,0.10)" stroke="${color}" stroke-width="${hasRobot ? '4' : '3'}"/>`;
+    }
+    // Halo pulsante: SOLO agentes en ejecución activa y skills usados AHORA
+    if (isAgentNode && isActive && !isDone && !isQueued) {
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR + 8}" fill="none" stroke="${color}" stroke-width="2"><animate attributeName="r" values="${effectiveR + 4};${effectiveR + 14};${effectiveR + 4}" dur="2s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.8;0.1;0.8" dur="2s" repeatCount="indefinite"/></circle>`;
+    } else if (isSkillActiveNow) {
+      // Skill usado AHORA: pulsar con el color del agente que lo usa
+      const usingAgent = Object.entries(currentSkillMap).find(([_, sk]) => sk === name);
+      const pulseColor = usingAgent ? (agentColorMap[usingAgent[0]] || "#60a5fa") : "#60a5fa";
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR + 8}" fill="none" stroke="${pulseColor}" stroke-width="2"><animate attributeName="r" values="${effectiveR + 4};${effectiveR + 14};${effectiveR + 4}" dur="2s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.8;0.1;0.8" dur="2s" repeatCount="indefinite"/></circle>`;
+    } else if (isAgentNode && isIdle) {
+      // Agente idle: borde punteado indicando espera
+      svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${effectiveR + 4}" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.6"/>`;
+    }
+    // Círculo de color semitransparente detrás del icono para contraste
+    const fillColor = isSkillNode ? "#8b95a5" : color;
+    svg += `<circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${(effectiveR - 3).toFixed(1)}" fill="${fillColor}" fill-opacity="${hasRobot ? '0.15' : '0.20'}"/>`;
+    // Icon: filter brighten para garantizar visibilidad sobre fondo oscuro
+    if (iconUrl) {
+      svg += `<image href="${iconUrl}" x="${(pos.x - effectiveImgSize / 2).toFixed(1)}" y="${(pos.y - effectiveImgSize / 2).toFixed(1)}" width="${effectiveImgSize.toFixed(0)}" height="${effectiveImgSize.toFixed(0)}" style="pointer-events:none;" filter="url(#icon-brighten)"/>`;
+      if (isDone && !isActive) {
+        svg += `<circle cx="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" cy="${(pos.y - effectiveImgSize/2 + 2).toFixed(1)}" r="5" fill="${color}"/>`;
+        svg += `<text x="${(pos.x + effectiveImgSize/2 - 2).toFixed(1)}" y="${(pos.y - effectiveImgSize/2 + 5).toFixed(1)}" text-anchor="middle" font-size="10" fill="white">&#10003;</text>`;
+      }
+    } else if (isDone && !isActive) {
+      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + 6).toFixed(1)}" text-anchor="middle" font-size="20" fill="${color}">&#10003;</text>`;
+    }
+    // Badge de robot ID para agentes raíz (#1544)
+    if (hasRobot) {
+      svg += `<circle cx="${(pos.x + effectiveR - 2).toFixed(1)}" cy="${(pos.y - effectiveR + 2).toFixed(1)}" r="12" fill="${color}" stroke="var(--bg, #0a0b10)" stroke-width="1.5"/>`;
+      svg += `<text x="${(pos.x + effectiveR - 2).toFixed(1)}" y="${(pos.y - effectiveR + 7).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="700" fill="white">${robotId}</text>`;
+    }
+    // Label below node — nombre limpio (sin sufijo #issue que es solo para unicidad interna)
+    const displayName = name.replace(/\s+#\d+$/, "");
+    svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 22).toFixed(1)}" text-anchor="middle" font-size="20" fill="var(--text-dim)" font-weight="600">${escHtml(displayName)}</text>`;
+    // Issue number debajo del nombre para agentes raíz
+    if (hasRobot) {
+      const agentSession = sessionsList.find(s => s.agent_name === name);
+      const branchMatch = agentSession ? (agentSession.branch || "").match(/(\d+)/) : null;
+      // Fallback: usar agentIssueMap del sprint-plan (para agentes sin sesión activa)
+      const issueNum = branchMatch ? branchMatch[1] : (agentIssueMap && agentIssueMap[name]);
+      if (issueNum) {
+        const issueUrl = "https://github.com/intrale/platform/issues/" + issueNum;
+        svg += `<a href="${issueUrl}" target="_blank"><text x="${pos.x.toFixed(1)}" y="${(pos.y + effectiveR + 42).toFixed(1)}" text-anchor="middle" font-size="18" fill="${isQueued ? '#6C7086' : '#60a5fa'}" font-weight="500" style="cursor:pointer;text-decoration:underline;">#${issueNum}</text></a>`;
+      }
+    }
+    // Status label para agentes idle/waiting
+    if (isAgentNode && isIdle && agentWaitingReason[name]) {
+      const yOff = hasRobot ? effectiveR + 58 : effectiveR + 38;
+      svg += `<text x="${pos.x.toFixed(1)}" y="${(pos.y + yOff).toFixed(1)}" text-anchor="middle" font-size="11" fill="#fbbf24" opacity="0.8">${escHtml(agentWaitingReason[name])}</text>`;
+    }
+    svg += `</g>`;
+  }
+
+  // Divider line between agent zone and Main zone (if Main nodes exist)
+  if (mainNodesList.length > 0) {
+    const divY = agentZoneH + 10;
+    svg += `<g data-flow-root="main">`;
+    svg += `<line x1="${padding}" y1="${divY}" x2="${svgW - padding}" y2="${divY}" stroke="var(--border, #2a2d3a)" stroke-width="1" stroke-dasharray="6 4" opacity="0.5"/>`;
+    svg += `<text x="${padding + 4}" y="${divY - 6}" font-size="16" fill="var(--text-muted, #6C7086)" font-weight="500" opacity="0.7">Main</text>`;
+    svg += `</g>`;
+  }
+
+  // SVG responsivo: ocupa todo el ancho, altura proporcional al contenido
+  const maxDisplayH = 1000;
+  const displayH = Math.min(svgH, maxDisplayH);
+  return `<div style="overflow:auto;max-height:${displayH + 40}px;"><svg class="flow-graph-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:${displayH}px;display:block;">${svg}</svg></div>`;
+}
+
+// --- BUILD GANTT CHART SVG (Roadmap macro #1382) ---
+function buildGanttChart(roadmap) {
+  if (!roadmap || !Array.isArray(roadmap.sprints) || roadmap.sprints.length === 0) {
+    return '<div class="empty-state">Sin roadmap generado — ejecutar /scrum roadmap</div>';
+  }
+
+  const STREAM_COLORS = {
+    A: "#f87171",   // Backend — rojo
+    B: "#60a5fa",   // Cliente — azul
+    C: "#fbbf24",   // Negocio — amarillo
+    D: "#34d399",   // Delivery — verde
+    E: "#a78bfa",   // Cross-cutting — violeta
+  };
+  const STREAM_LABELS = { A: "Backend", B: "Cliente", C: "Negocio", D: "Delivery", E: "Cross" };
+  const STATUS_OPACITY = { done: 0.45, deferred: 0.25, blocked: 1, in_progress: 1, planned: 1 };
+
+  // Filter to show exactly 5 sprints: last executed (done) + active (if any) + next planned
+  const allSprints = [...roadmap.sprints].sort((a, b) => a.id.localeCompare(b.id));
+  const doneList = allSprints.filter(s => s.status === "done");
+  const activeList = allSprints.filter(s => s.status === "active" || s.status === "in_progress");
+  const plannedList = allSprints.filter(s => s.status === "planned");
+  // Last done: most recently closed (by closed_at timestamp, fallback to last by ID)
+  doneList.sort((a, b) => (b.closed_at || "").localeCompare(a.closed_at || "") || b.id.localeCompare(a.id));
+  const lastDone = doneList.length > 0 ? [doneList[0]] : [];
+  // Fill remaining 4 slots: active first, then planned by ID order
+  const remaining = [...activeList, ...plannedList].slice(0, 5 - lastDone.length);
+  const sprints = [...lastDone, ...remaining].slice(0, 5);
+  const numSprints = sprints.length;
+
+  // Collect all issues with sprint index
+  const allIssues = [];
+  for (let si = 0; si < sprints.length; si++) {
+    const spr = sprints[si];
+    for (const iss of (spr.stories || spr.issues || [])) {
+      // Normalizar campos: roadmap usa issue/effort, chart espera number/size
+      const normalized = { ...iss };
+      if (!normalized.number && normalized.issue) normalized.number = normalized.issue;
+      if (!normalized.size && normalized.effort) {
+        const effortMap = { "simple": "S", "medio": "M", "grande": "L" };
+        normalized.size = effortMap[normalized.effort] || "M";
+      }
+      allIssues.push({ ...normalized, _sprintIdx: si, _sprintId: spr.id });
+    }
+  }
+
+  // Build issue index for dependency arrows
+  const issueByNum = {};
+  for (const iss of allIssues) issueByNum[iss.number] = iss;
+
+  // Group by stream for Y axis
+  const streams = ["E", "B", "C", "D", "A"];
+  const streamGroups = {};
+  for (const s of streams) streamGroups[s] = [];
+  for (const iss of allIssues) {
+    const s = iss.stream || "E";
+    if (!streamGroups[s]) streamGroups[s] = [];
+    streamGroups[s].push(iss);
+  }
+
+  // Layout constants (large for readability — scroll handles overflow)
+  const colW = 220;           // width per sprint column
+  const rowH = 44;            // height per issue row
+  const barPad = 5;           // vertical padding inside row
+  const labelColW = 100;      // left label column (stream names)
+  const headerH = 72;         // top header for sprint labels
+  const streamGap = 18;       // gap between stream groups
+  const streamLabelH = 30;    // height of stream group header
+
+  // Compute total height
+  let totalY = headerH;
+  const streamYMap = {}; // stream -> { y, issues }
+  for (const s of streams) {
+    const group = streamGroups[s];
+    if (group.length === 0) continue;
+    // Issues per row per sprint column — stack vertically within sprint
+    // Count max issues per sprint for this stream
+    const perSprint = {};
+    for (const iss of group) {
+      const si = iss._sprintIdx;
+      if (!perSprint[si]) perSprint[si] = 0;
+      perSprint[si]++;
+    }
+    const maxRows = Math.max(...Object.values(perSprint), 1);
+    const groupH = streamLabelH + maxRows * rowH + streamGap;
+    streamYMap[s] = { y: totalY, h: groupH, maxRows };
+    totalY += groupH;
+  }
+  const svgH = Math.max(totalY + 10, 120);
+  const svgW = labelColW + numSprints * colW + 20;
+
+  let defs = `<defs>
+    <marker id="gantt-arrow" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto">
+      <polygon points="0 0, 6 2.5, 0 5" fill="var(--text-muted)" opacity="0.7"/>
+    </marker>`;
+
+  // Hatch pattern for in_progress
+  defs += `<pattern id="hatch-inprogress" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,255,255,0.35)" stroke-width="2"/>
+    </pattern>`;
+  defs += `</defs>`;
+
+  let svg = defs;
+
+  // --- Header: sprint columns ---
+  // Background header
+  svg += `<rect x="${labelColW}" y="0" width="${numSprints * colW}" height="${headerH}" fill="var(--surface-2,#1e2030)" rx="4"/>`;
+
+  for (let si = 0; si < numSprints; si++) {
+    const spr = sprints[si];
+    const x = labelColW + si * colW;
+    // Column separator
+    svg += `<line x1="${x}" y1="0" x2="${x}" y2="${svgH}" stroke="var(--border)" stroke-width="0.5" stroke-opacity="0.4"/>`;
+
+    // Status icon + Sprint label (ID)
+    const statusIcon = spr.status === "done" ? "✅" : (spr.status === "active" || spr.status === "in_progress") ? "▶️" : "⏳";
+    svg += `<text x="${x + colW / 2}" y="24" text-anchor="middle" font-size="18" font-weight="700" fill="var(--white)" opacity="0.9">${statusIcon} ${escHtml(spr.id)}</text>`;
+    // Size badge: simple→S (verde), medio→M (azul), grande→L (ámbar)
+    const sprintSizeMap = { "simple": "S", "medio": "M", "grande": "L" };
+    const sprintSizeCode = sprintSizeMap[spr.size] || "";
+    if (sprintSizeCode) {
+      const sprintSizeColor = sprintSizeCode === "L" ? "#f59e0b" : sprintSizeCode === "M" ? "#60a5fa" : "#34d399";
+      const sbx = x + colW - 26;
+      svg += `<rect x="${sbx}" y="8" width="18" height="14" fill="${sprintSizeColor}" fill-opacity="0.2" rx="3" stroke="${sprintSizeColor}" stroke-width="1"/>`;
+      svg += `<text x="${sbx + 9}" y="19" text-anchor="middle" font-size="9" font-weight="700" fill="${sprintSizeColor}">${sprintSizeCode}</text>`;
+    }
+    // Date range
+    const start = (spr.start || "").substring(5); // MM-DD
+    const end = (spr.end || "").substring(5);
+    svg += `<text x="${x + colW / 2}" y="44" text-anchor="middle" font-size="13" fill="var(--text-dim)">${escHtml(start)}→${escHtml(end)}</text>`;
+    // Sprint tema (truncated)
+    const tema = (spr.tema || "").substring(0, 30);
+    svg += `<text x="${x + colW / 2}" y="62" text-anchor="middle" font-size="11" fill="var(--text-muted)" opacity="0.7">${escHtml(tema)}</text>`;
+  }
+
+  // --- Stream groups and bars ---
+  const barPositions = {}; // issueNum -> { cx, cy } for arrow rendering
+
+  for (const s of streams) {
+    const group = streamGroups[s];
+    if (group.length === 0) continue;
+    const sm = streamYMap[s];
+    const color = STREAM_COLORS[s] || "#888";
+
+    // Stream label background
+    svg += `<rect x="0" y="${sm.y}" width="${labelColW - 2}" height="${sm.h - streamGap}" fill="${color}" fill-opacity="0.12" rx="3"/>`;
+    svg += `<text x="${(labelColW - 2) / 2}" y="${sm.y + streamLabelH - 6}" text-anchor="middle" font-size="15" font-weight="700" fill="${color}">${STREAM_LABELS[s] || s}</text>`;
+
+    // Background stripe for stream area
+    svg += `<rect x="${labelColW}" y="${sm.y}" width="${numSprints * colW}" height="${sm.h - streamGap}" fill="${color}" fill-opacity="0.04" rx="2"/>`;
+
+    // Track row position per sprint for stacking
+    const sprintRowCount = {};
+
+    for (const iss of group) {
+      const si = iss._sprintIdx;
+      if (!sprintRowCount[si]) sprintRowCount[si] = 0;
+      const rowInSprint = sprintRowCount[si]++;
+
+      const barX = labelColW + si * colW + 3;
+      const barY = sm.y + streamLabelH + rowInSprint * rowH + barPad;
+      const barW = colW - 6;
+      const barH = rowH - barPad * 2;
+      const cx = barX + barW / 2;
+      const cy = barY + barH / 2;
+      barPositions[iss.number] = { cx, cy };
+
+      const status = iss.status || "planned";
+      const isDone = status === "done";
+      const opacity = isDone ? 0.5 : (STATUS_OPACITY[status] !== undefined ? STATUS_OPACITY[status] : 1);
+      const fillColor = isDone ? "#6b7280" : status === "blocked" ? "#f87171" : color;
+      const barFillOpacity = isDone ? 0.35 : 0.22;
+      const barStroke = isDone ? "#9ca3af" : fillColor;
+
+      // Main bar
+      const issueUrl = `https://github.com/intrale/platform/issues/${iss.number}`;
+      svg += `<g opacity="${opacity}">`;
+      svg += `<a href="${issueUrl}" target="_blank" rel="noopener noreferrer" class="gantt-bar-link">`;
+      svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="${fillColor}" fill-opacity="${barFillOpacity}" stroke="${barStroke}" stroke-width="1" rx="3" style="cursor:pointer;">`;
+      svg += `<title>#${iss.number} ${iss.title}\nStream: ${s} | Size: ${iss.size || "M"} | Status: ${status}</title>`;
+      svg += `</rect>`;
+
+      // Hatch overlay for in_progress
+      if (status === "in_progress") {
+        svg += `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="url(#hatch-inprogress)" rx="3" opacity="0.5" style="pointer-events:none;"/>`;
+      }
+
+      // Checkmark for done
+      if (status === "done") {
+        svg += `<text x="${barX + 7}" y="${barY + barH - 6}" font-size="16" fill="${fillColor}" opacity="0.9" style="pointer-events:none;">✓</text>`;
+      }
+
+      // Label: #NUM + title truncated
+      const maxChars = Math.floor((barW - (status === "done" ? 26 : 8)) / 7.5);
+      const title = iss.title.substring(0, maxChars);
+      const labelX = barX + (status === "done" ? 26 : 8);
+      svg += `<text x="${labelX}" y="${barY + barH - 7}" font-size="13" fill="var(--white)" font-weight="600" opacity="0.9" style="pointer-events:none">${escHtml(title)}</text>`;
+
+      // Issue number chip
+      svg += `<text x="${barX + 4}" y="${barY + 15}" font-size="12" fill="${fillColor}" font-weight="700" opacity="0.85" style="pointer-events:none;">#${iss.number}</text>`;
+
+      // Size badge — esquina superior derecha de la barra: S (verde), M (azul), L (ámbar)
+      if (iss.size) {
+        const sizeBadgeColor = iss.size === "L" ? "#f59e0b" : iss.size === "M" ? "#60a5fa" : "#34d399";
+        const sbx = barX + barW - 16;
+        const sby = barY + 2;
+        svg += `<rect x="${sbx}" y="${sby}" width="14" height="11" fill="${sizeBadgeColor}" fill-opacity="0.2" rx="2" stroke="${sizeBadgeColor}" stroke-width="0.8" style="pointer-events:none;"/>`;
+        svg += `<text x="${sbx + 7}" y="${sby + 8.5}" text-anchor="middle" font-size="8" font-weight="700" fill="${sizeBadgeColor}" style="pointer-events:none;">${escHtml(iss.size)}</text>`;
+      }
+
+      svg += `</a>`;
+      svg += `</g>`;
+    }
+  }
+
+  // --- Dependency arrows (Bézier curves) ---
+  const drawnArrows = new Set();
+  for (const iss of allIssues) {
+    const to = barPositions[iss.number];
+    if (!to) continue;
+    for (const depNum of (iss.depends_on || [])) {
+      const from = barPositions[depNum];
+      if (!from) continue;
+      const arrowKey = `${depNum}->${iss.number}`;
+      if (drawnArrows.has(arrowKey)) continue;
+      drawnArrows.add(arrowKey);
+
+      // Only draw if different sprint (same sprint deps are fine but arrows get cluttered)
+      if (issueByNum[depNum] && issueByNum[depNum]._sprintIdx === iss._sprintIdx) continue;
+
+      const x1 = from.cx + (colW / 2 - 4);
+      const y1 = from.cy;
+      const x2 = to.cx - (colW / 2 - 4);
+      const y2 = to.cy;
+      const midX = (x1 + x2) / 2;
+      // Slight S-curve
+      const cp1x = midX;
+      const cp1y = y1;
+      const cp2x = midX;
+      const cp2y = y2;
+      svg += `<path d="M${x1.toFixed(1)},${y1.toFixed(1)} C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}" fill="none" stroke="var(--text-muted)" stroke-width="1" stroke-opacity="0.5" stroke-dasharray="3,2" marker-end="url(#gantt-arrow)"/>`;
+    }
+  }
+
+  // Legend
+  const legendY = svgH - 16;
+  let legendX = labelColW + 4;
+  const legendStreams = streams.filter(s => streamGroups[s].length > 0);
+  for (const s of legendStreams) {
+    const color = STREAM_COLORS[s];
+    svg += `<rect x="${legendX}" y="${legendY}" width="8" height="8" fill="${color}" rx="2"/>`;
+    svg += `<text x="${legendX + 11}" y="${legendY + 7}" font-size="7.5" fill="var(--text-dim)">${STREAM_LABELS[s]}</text>`;
+    legendX += 55;
+  }
+
+  // Size legend: S/M/L — separador + ítems
+  legendX += 8;
+  svg += `<line x1="${legendX}" y1="${legendY}" x2="${legendX}" y2="${legendY + 8}" stroke="var(--border)" stroke-width="0.5" stroke-opacity="0.5"/>`;
+  legendX += 6;
+  const sizeItems = [["S", "#34d399", "Simple"], ["M", "#60a5fa", "Medio"], ["L", "#f59e0b", "Grande"]];
+  for (const [code, color, label] of sizeItems) {
+    svg += `<rect x="${legendX}" y="${legendY}" width="8" height="8" fill="${color}" fill-opacity="0.2" rx="2" stroke="${color}" stroke-width="0.8"/>`;
+    svg += `<text x="${legendX + 11}" y="${legendY + 7}" font-size="7.5" fill="var(--text-dim)">${code}=${label}</text>`;
+    legendX += 58;
+  }
+
+  const updatedLabel = roadmap.updated_ts ? roadmap.updated_ts.substring(0, 10) : "";
+  svg += `<text x="${svgW - 4}" y="${legendY + 7}" text-anchor="end" font-size="7" fill="var(--text-muted)" opacity="0.6">actualizado ${updatedLabel}</text>`;
+
+  const horizTotal = numSprints * colW + labelColW + 20;
+  // Scrollable wrapper
+  return `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
+    <svg viewBox="0 0 ${horizTotal} ${svgH}" style="min-width:${Math.min(horizTotal, 900)}px;width:100%;max-height:${svgH}px;display:block;" preserveAspectRatio="xMinYMin meet">
+      ${svg}
+    </svg>
+  </div>`;
+}
+
+// --- HTML Template ---
+function renderHTML(data, theme, section) {
+  const isDark = theme !== "light";
+  const sprintProgress = data.totalTasks > 0
+    ? Math.round((data.completedTasks / data.totalTasks) * 100) : 0;
+  const completedDeg = Math.round((data.completedTasks / Math.max(data.totalTasks, 1)) * 360);
+  const inProgressDeg = Math.round((data.inProgressTasks / Math.max(data.totalTasks, 1)) * 360);
+
+  // Velocity sparkline SVG
+  const velMax = Math.max(...data.velocity, 1);
+  const velPoints = data.velocity.map((v, i) => {
+    const x = 10 + i * (80 / 5);
+    const y = 45 - (v / velMax) * 35;
+    return `${x},${y}`;
+  }).join(" ");
+
+  // Agent icons — resolves any name (case/skill-insensitive) to <img> tag
+  function agentIconHtml(name) {
+    // Para agentes raíz "Agente N", usar robot SVG igual que en el flujo
+    const agentMatch = (name || "").match(/^Agente\s+(\d+)$/i);
+    if (agentMatch) {
+      const rId = ((parseInt(agentMatch[1], 10) - 1) % 10) + 1;
+      if (ROBOT_ICONS[rId]) {
+        return '<img src="' + ROBOT_ICONS[rId] + '" width="20" height="20" style="vertical-align:middle;margin-right:2px;border-radius:50%;" alt="' + escHtml(name) + '">';
+      }
+    }
+    const uri = resolveIconUri(name);
+    return uri
+      ? '<img src="' + uri + '" width="20" height="20" style="vertical-align:middle;margin-right:2px;" alt="' + escHtml(name || "") + '">'
+      : "&#129302;";
+  }
+  const AGENT_ICONS = {};
+  for (const name of Object.keys(AGENT_ICON_MAP)) AGENT_ICONS[name] = agentIconHtml(name);
+  for (const [skill, agent] of Object.entries(SKILL_TO_AGENT)) AGENT_ICONS[skill] = agentIconHtml(agent);
+
+  // Robot icons para agentes raíz del sprint (#1544)
+  const sprintAgentsList = data.sprintPlan && Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : [];
+  const robotIconMap = assignRobotIcons(sprintAgentsList);
+  // Generar HTML para robot icons y mergear (prioridad sobre default solo en grafo)
+  const ROBOT_ICON_HTML = {};
+  for (const [name, uri] of Object.entries(robotIconMap)) {
+    ROBOT_ICON_HTML[name] = '<img src="' + uri + '" width="18" height="18" style="vertical-align:middle;margin-right:2px;border-radius:50%;" alt="' + escHtml(name) + '">';
+  }
+
+  const AGENT_GRADIENTS = {
+    "Guru": "linear-gradient(135deg, #6366f1, #a78bfa)",
+    "Doc": "linear-gradient(135deg, #8b5cf6, #a78bfa)",
+    "Planner": "linear-gradient(135deg, #eab308, #fbbf24)",
+    "DeliveryManager": "linear-gradient(135deg, #10b981, #34d399)",
+    "Tester": "linear-gradient(135deg, #a855f7, #ec4899)",
+    "QA": "linear-gradient(135deg, #a855f7, #ec4899)",
+    "Builder": "linear-gradient(135deg, #f97316, #fb923c)",
+    "Review": "linear-gradient(135deg, #3b82f6, #8b5cf6)",
+    "Monitor": "linear-gradient(135deg, #06b6d4, #22d3ee)",
+    "Auth": "linear-gradient(135deg, #64748b, #94a3b8)",
+    "PO": "linear-gradient(135deg, #0ea5e9, #38bdf8)",
+    "UX Specialist": "linear-gradient(135deg, #ec4899, #f472b6)",
+    "Scrum Master": "linear-gradient(135deg, #14b8a6, #2dd4bf)",
+    "Ops": "linear-gradient(135deg, #78716c, #a8a29e)",
+    "BackendDev": "linear-gradient(135deg, #ef4444, #f87171)",
+    "AndroidDev": "linear-gradient(135deg, #22c55e, #4ade80)",
+    "WebDev": "linear-gradient(135deg, #3b82f6, #60a5fa)",
+    "Branch": "linear-gradient(135deg, #65a30d, #84cc16)",
+    "Claude": "linear-gradient(135deg, #555872, #6C7086)",
+  };
+
+  const AGENT_COLORS = {
+    "Guru": "#818cf8", "Doc": "#a78bfa", "Planner": "#fbbf24",
+    "DeliveryManager": "#34d399", "Tester": "#d946ef", "QA": "#d946ef",
+    "Builder": "#fb923c", "Review": "#818cf8", "Monitor": "#22d3ee",
+    "Auth": "#cbd5e1", "PO": "#38bdf8", "UX Specialist": "#f472b6",
+    "Scrum Master": "#2dd4bf", "Ops": "#e7e5e4",
+    "BackendDev": "#f87171", "AndroidDev": "#4ade80", "WebDev": "#60a5fa",
+    "Branch": "#84cc16", "Cleanup": "#78716c", "Security": "#ef4444",
+    "Perf": "#eab308", "Cost": "#06b6d4",
+    "Claude": "#9399b2", "Main": "#D4A574", "Config": "#a8a29e",
+    "Done": "#34d399", "Error": "#ef4444",
+  };
+
+  const STATUS_COLORS = { active: "#34d399", idle: "#fbbf24", done: "#6C7086", stale: "#555872" };
+  const STATUS_LABELS = { active: "Activo", idle: "Idle", done: "Terminado", stale: "Stale" };
+
+  const blockedPids = new Set(data.blockingRelations.map(b => b.blockedSessionId));
+
+  // --- EJECUCIÓN PANEL ---
+  let ejecutionHtml = "";
+
+  // Sprint sub-view — combinar agentes + _queue + _completed para vista completa
+  // Fuente de verdad: sprint-plan.json (agentes activos + cola + completados)
+  const spAgentes = data.sprintPlan && Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : [];
+  const spQueue = data.sprintPlan && Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : [];
+  const spCompleted = data.sprintPlan && Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : [];
+  const spIncomplete = data.sprintPlan && Array.isArray(data.sprintPlan._incomplete) ? data.sprintPlan._incomplete : [];
+  const allSprintAgentes = [...spAgentes, ...spQueue, ...spCompleted, ...spIncomplete];
+
+  // Helper para renderizar una fila de agente del sprint
+  function renderSprintAgentRow(ag, forcedStatus) {
+    // Buscar sesión del agente: por branch, modified_files path, o slug
+    const agIssueStr = String(ag.issue);
+    const agSlug = ag.slug || "";
+    const worktreePattern = "agent-" + agIssueStr + "-";
+    const matchSession = [...data.sprintSessions, ...(data.sessions || [])].find(s => {
+      // Match por branch con issue number
+      const issueMatch = (s.branch || "").match(/(\d+)/);
+      if (issueMatch && issueMatch[1] === agIssueStr) return true;
+      // Match por modified_files path que contenga el worktree name (platform.agent-NNN-slug)
+      if (Array.isArray(s.modified_files) && s.modified_files.length > 0) {
+        if (s.modified_files.some(f => f.includes(worktreePattern))) return true;
+      }
+      // Match por current_task que mencione el issue
+      if (s.current_task && s.current_task.includes("#" + agIssueStr)) return true;
+      return false;
+    });
+    const agStatus = forcedStatus || (matchSession ? matchSession._status : "pending");
+    const statusIcon = agStatus === "active" ? "&#9679;" : agStatus === "idle" ? "&#9684;" : agStatus === "done" ? "&#10003;" : agStatus === "stale" ? "&#9632;" : "&#9675;";
+    const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
+    const isBlocked = matchSession && blockedPids.has(matchSession.id);
+    const tasks = matchSession ? (matchSession.current_tasks || []) : [];
+    const tasksDone = tasks.filter(t => t.status === "completed").length;
+    const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+    let tasksPct;
+    if (forcedStatus === "done") {
+      tasksPct = 100;
+    } else if (tasks.length > 0) {
+      tasksPct = Math.round((tasksDone / tasks.length) * 100);
+    } else if (agStatus === "done" || agStatus === "stale") {
+      tasksPct = 100;
+    } else if (actionCount > 0) {
+      const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
+      tasksPct = Math.min(90, Math.round((actionCount / (sizeExpected[ag.size] || 60)) * 100));
+    } else {
+      tasksPct = 0;
+    }
+    const barColor = (agStatus === "done" || forcedStatus === "done") ? "var(--gradient-green)"
+      : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : statusColor;
+    const waitingState = matchSession ? (matchSession.waiting_state || null) : null;
+    const wb = waitingState ? formatWaitingBadge(waitingState) : null;
+    const isWaiting = wb && (wb.status === "in_progress" || wb.status === "starting");
+    const isFailed = wb && wb.status === "failure";
+    const waitingBarColor = isWaiting ? "linear-gradient(90deg, #fbbf24, #f59e0b)"
+      : isFailed ? "linear-gradient(90deg, #ef4444, #f87171)"
+      : wb && wb.status === "success" ? "var(--gradient-green)" : barColor;
+    const statusText = isBlocked ? "&#128721; Bloqueado"
+      : wb ? (wb.icon + " " + escHtml(wb.detail) + (wb.elapsed ? " (" + wb.elapsed + ")" : ""))
+      : forcedStatus === "pending" ? "En cola"
+      : forcedStatus === "done" ? "Completado"
+      : agStatus === "pending" ? "Pendiente"
+      : agStatus === "done" && tasks.length === 0 ? "Completado"
+      : agStatus === "stale" ? "&#128164; Inactivo · " + actionCount + " acciones"
+      : tasks.length > 0 ? `${tasksDone}/${tasks.length} tareas · ${tasksPct}%`
+      : `${actionCount} acciones · ${tasksPct}%`;
+    const duration = matchSession ? formatDuration(matchSession.started_ts) : "";
+    // Estimado de tiempo restante basado en tamaño y progreso
+    let etaHtml = "";
+    if (agStatus === "active" && matchSession && matchSession.started_ts) {
+      const sizeMinutes = { S: 15, M: 45, L: 90, XL: 180 };
+      const expectedMin = sizeMinutes[ag.size] || 45;
+      const elapsedMin = Math.round((Date.now() - new Date(matchSession.started_ts).getTime()) / 60000);
+      const progress = tasksPct / 100;
+      let remainMin;
+      if (progress > 0.1) {
+        // Extrapolación basada en progreso real
+        const totalEstimated = elapsedMin / progress;
+        remainMin = Math.max(0, Math.round(totalEstimated - elapsedMin));
+      } else {
+        // Sin progreso suficiente — usar estimado por tamaño
+        remainMin = Math.max(0, expectedMin - elapsedMin);
+      }
+      if (remainMin > 0) {
+        etaHtml = remainMin < 60
+          ? " · ~" + remainMin + "min restante"
+          : " · ~" + Math.round(remainMin / 60) + "h " + (remainMin % 60) + "min restante";
+      } else {
+        etaHtml = " · deberia finalizar pronto";
+      }
+    }
+    const safeRunUrl = wb && wb.run_url && /^https:\/\/github\.com\//.test(wb.run_url) ? wb.run_url : null;
+    const ciLinkHtml = safeRunUrl
+      ? ` <a href="${escHtml(safeRunUrl)}" target="_blank" rel="noopener noreferrer" style="color:#60a5fa;font-size:9px;">&#9654; CI</a>`
+      : "";
+    // Robot icon para agente raíz del sprint (#1544)
+    const agCanonical = normalizeSkillName(ag.agent_name || AGENT_MAP_DASHBOARD["/" + ag.skill] || ag.skill || "");
+    const robotHtml = ROBOT_ICON_HTML[agCanonical] || "";
+    return `<div class="exec-row" style="flex-direction:column;gap:4px;padding:8px 10px;">
+      <div style="display:flex;align-items:center;gap:8px;width:100%;">
+        ${robotHtml}<span class="exec-issue" style="min-width:52px;">${formatIssueLink(ag.issue)}</span>
+        <span class="exec-slug" style="flex:1;">${linkifyIssueRefs(escHtml(ag.slug || ""))}</span>
+        <span class="exec-size chip chip-blue">${escHtml(ag.size || "?")}</span>
+        <span style="color:${statusColor};font-size:14px;">${statusIcon}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;width:100%;">
+        <div class="exec-bar" style="flex:1;height:6px;"><div class="exec-bar-fill" style="width:${tasksPct}%;background:${isWaiting ? waitingBarColor : barColor};${isWaiting ? 'animation:pulse 1.5s infinite alternate;' : ''}"></div></div>
+        <span style="font-size:11px;color:${isWaiting ? '#fbbf24' : statusColor};min-width:32px;text-align:right;font-weight:600;">${tasksPct}%</span>
+      </div>
+      <div style="font-size:10px;color:${isWaiting ? '#fbbf24' : isFailed ? '#f87171' : 'var(--text-muted)'};">${statusText}${!wb && actionCount ? ' · ' + actionCount + ' acc' : ''}${duration ? ' · ' + duration : ''}${etaHtml}${ciLinkHtml}</div>
+    </div>`;
+  }
+
+  // Calcular sprintPct antes de los bloques que lo usan
+  let sprintPct = 0;
+  const completedCount = spCompleted.length;
+  const agentesTotal = (data.sprintPlan && data.sprintPlan.total_stories) || allSprintAgentes.length || 1;
+  // No mostrar sprint si está cancelado — evitar mostrar datos obsoletos
+  const sprintEstadoCheck = data.sprintPlan ? (data.sprintPlan.estado || "activo").toLowerCase() : "";
+  const isSprintCancelled = sprintEstadoCheck === "cancelado";
+  // Variables de reclasificación — definidas fuera del if para que estén disponibles en tarjetas unificadas
+  let reallyRunning = [];
+  let reallyQueued = [...spQueue];
+  let dedupedDone = [...spCompleted];
+  if (data.sprintPlan && allSprintAgentes.length > 0 && !isSprintCancelled) {
+    const spDate = data.sprintPlan.fecha || "";
+    const sprintId = data.sprintPlan.sprint_id || null;
+    const sprintEstado = sprintEstadoCheck;
+    const isFinalizado = sprintEstado === "finalizado";
+    // Progreso del sprint: basado en issues completados (fuente de verdad)
+    // + progreso parcial de agentes activos basado en tareas o acciones
+    let totalPctSum = completedCount * 100; // Cada issue completado = 100%
+    for (const ag of spAgentes) {
+      // Agentes activos: progreso basado en tareas o action_count
+      const match = data.sprintSessions.find(s => {
+        const m = (s.branch || "").match(/(\d+)/);
+        return m && m[1] === String(ag.issue);
+      });
+      if (match) {
+        const tasks = match.current_tasks || [];
+        const tasksDone = tasks.filter(t => t.status === "completed").length;
+        if (tasks.length > 0) {
+          totalPctSum += Math.round((tasksDone / tasks.length) * 100);
+        } else if (match.action_count > 0) {
+          const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
+          totalPctSum += Math.min(90, Math.round((match.action_count / (sizeExpected[ag.size] || 60)) * 100));
+        }
+      }
+      // Agentes en cola sin sesión contribuyen 0%
+    }
+    sprintPct = agentesTotal > 0 ? Math.round(totalPctSum / agentesTotal) : 0;
+
+    const sprintLabelId = sprintId ? escHtml(sprintId) : (spDate ? escHtml(spDate) : "Sprint");
+    const sprintEstadoBadge = isFinalizado
+      ? `<span class="sprint-status-badge sprint-finalizado">&#10003; FINALIZADO</span>`
+      : `<span class="sprint-status-badge sprint-activo">ACTIVO</span>`;
+
+    // Incurrido + ETA del sprint
+    let sprintTimingExecHtml = "";
+    if (data.sprintPlan.started_at) {
+      const _startMs = new Date(data.sprintPlan.started_at).getTime();
+      const _elapsedMs = Date.now() - _startMs;
+      const _elapsedMin = Math.round(_elapsedMs / 60000);
+      const _elTxt = _elapsedMin >= 60 ? Math.floor(_elapsedMin / 60) + "h " + (_elapsedMin % 60) + "min" : _elapsedMin + "min";
+      if (isFinalizado || sprintPct >= 100) {
+        sprintTimingExecHtml = ` <span style="font-size:11px;color:var(--green);font-weight:600;">&#10003; ${_elTxt}</span>`;
+      } else if (sprintPct > 0 && sprintPct < 100) {
+        const _prog = sprintPct / 100;
+        const _remMin = Math.max(0, Math.round((_elapsedMin / _prog) - _elapsedMin));
+        const _etaTxt = _remMin >= 60 ? "~" + Math.floor(_remMin / 60) + "h " + (_remMin % 60) + "min" : "~" + _remMin + "min";
+        sprintTimingExecHtml = ` <span style="font-size:10px;color:var(--text-muted);">${_elTxt}</span> <span style="font-size:10px;color:#60a5fa;font-weight:600;">&#9202; ${_etaTxt} rest.</span>`;
+      } else {
+        sprintTimingExecHtml = ` <span style="font-size:10px;color:var(--text-muted);">${_elTxt}</span>`;
+      }
+    }
+
+    ejecutionHtml += `<div class="exec-subview">
+      <div class="exec-subview-header">
+        <span class="exec-label">&#128640; Sprint ${sprintLabelId} &#9656; ${sprintEstadoBadge}${sprintTimingExecHtml}</span>
+        <span class="exec-progress-badge">${completedCount}/${agentesTotal} &middot; ${sprintPct}%</span>
+      </div>
+      <div class="exec-bar"><div class="exec-bar-fill" style="width:${sprintPct}%;background:var(--gradient-green);"></div></div>`;
+
+    // Reclasificar agentes del plan: el sprint-plan puede tener agentes en "agentes"
+    // que ya completaron (100%, done) o que nunca arrancaron (status pending/en cola).
+    // Cruzar con el estado real de la sesión para clasificar correctamente.
+    reallyRunning = [];
+    reallyQueued = [...spQueue];
+    const reallyDone = [...spCompleted];
+    for (const ag of spAgentes) {
+      const agIssueStr = String(ag.issue);
+      const matchSession = [...data.sprintSessions, ...(data.sessions || [])].find(s => {
+        const issueMatch = (s.branch || "").match(/(\d+)/);
+        return issueMatch && issueMatch[1] === agIssueStr;
+      });
+      const sessionStatus = matchSession ? matchSession._status : null;
+      if (sessionStatus === "done" || sessionStatus === "stale") {
+        // Agente completó pero sigue en el array "agentes" del plan → mover a completados
+        reallyDone.push(ag);
+      } else if (!matchSession || sessionStatus === "pending" || ag.status === "queued" || ag.status === "promoted") {
+        // Sin sesión activa o status pending → está en cola realmente
+        // Pero solo si no tiene un PID activo en el plan
+        if (!ag._pid) {
+          reallyQueued.push(ag);
+        } else {
+          reallyRunning.push(ag);
+        }
+      } else {
+        reallyRunning.push(ag);
+      }
+    }
+
+    // Sección 1: Agentes realmente en ejecución
+    if (reallyRunning.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--accent-green);letter-spacing:.04em;">&#9654; EN EJECUCIÓN (${reallyRunning.length}/${data.sprintPlan.concurrency_limit || 3})</div>`;
+      ejecutionHtml += `<div class="exec-table">`;
+      for (const ag of reallyRunning) { ejecutionHtml += renderSprintAgentRow(ag, null); }
+      ejecutionHtml += `</div>`;
+    }
+
+    // Sección 2: Cola
+    if (reallyQueued.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:#fbbf24;letter-spacing:.04em;">&#9711; EN COLA (${reallyQueued.length})</div>`;
+      ejecutionHtml += `<div class="exec-table">`;
+      for (const ag of reallyQueued) { ejecutionHtml += renderSprintAgentRow(ag, "pending"); }
+      ejecutionHtml += `</div>`;
+    }
+
+    // Sección 3: Completados (deduplicated — usa reallyDone que incluye reclasificados)
+    // Deduplicar por issue para evitar que un agente aparezca 2 veces
+    const doneIssues = new Set();
+    dedupedDone = reallyDone.filter(ag => {
+      const key = String(ag.issue);
+      if (doneIssues.has(key)) return false;
+      doneIssues.add(key);
+      return true;
+    });
+    if (dedupedDone.length > 0) {
+      ejecutionHtml += `<div style="padding:4px 10px 2px;font-size:10px;font-weight:600;color:var(--text-muted);letter-spacing:.04em;">&#10003; COMPLETADOS (${dedupedDone.length})</div>`;
+      ejecutionHtml += `<div class="exec-table">`;
+      for (const ag of dedupedDone) { ejecutionHtml += renderSprintAgentRow(ag, "done"); }
+      ejecutionHtml += `</div>`;
+    }
+
+    ejecutionHtml += `</div>`;
+  }
+
+  // Standalone issues sub-view
+  if (data.standaloneSessions.length > 0) {
+    ejecutionHtml += `<div class="exec-subview">
+      <div class="exec-subview-header">
+        <span class="exec-label">&#128204; Historias en curso</span>
+        <span class="chip chip-blue">${data.standaloneSessions.length}</span>
+      </div>`;
+    for (const s of data.standaloneSessions) {
+      const icon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
+      const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
+      const statusColor = STATUS_COLORS[s._status] || "#555872";
+      const tasks = s.current_tasks || [];
+      const done = tasks.filter(t => t.status === "completed").length;
+      const pct = tasks.length > 0 ? Math.round((done / tasks.length) * 100) : 0;
+      ejecutionHtml += `<div class="exec-card">
+        <div class="exec-card-avatar" style="background:${gradient};">${icon}</div>
+        <div class="exec-card-info">
+          <div class="exec-card-name">${escHtml(s.agent_name || "Agente")} <span style="color:var(--text-muted);font-weight:400;">${escHtml(s.branch || "")}</span></div>
+          <div class="exec-bar" style="margin-top:4px;"><div class="exec-bar-fill" style="width:${pct}%;background:${statusColor};"></div></div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${done}/${tasks.length} tareas · ${s.action_count || 0} acc · ${formatDuration(s.started_ts)}</div>
+        </div>
+        <span class="exec-card-pct" style="color:${statusColor}">${pct}%</span>
+      </div>`;
+    }
+    ejecutionHtml += `</div>`;
+  }
+
+  // Ad-hoc sessions sub-view
+  if (data.adhocSessions.length > 0) {
+    ejecutionHtml += `<div class="exec-subview">
+      <div class="exec-subview-header">
+        <span class="exec-label">&#9889; Prompts ad-hoc</span>
+        <span class="chip chip-yellow">${data.adhocSessions.length}</span>
+      </div>`;
+    for (const s of data.adhocSessions) {
+      if (s._status === "stale") continue;
+      const statusColor = STATUS_COLORS[s._status] || "#555872";
+      ejecutionHtml += `<div class="exec-adhoc-row">
+        <span class="dot" style="background:${statusColor};"></span>
+        <span class="exec-adhoc-id">${escHtml(s.id)}</span>
+        <span class="exec-adhoc-action">${escHtml(s.last_tool || "")}${s.last_target ? ": " + escHtml((s.last_target || "").substring(0, 40)) : ""}</span>
+        <span class="exec-adhoc-meta">${s.action_count || 0} acc · ${formatDuration(s.started_ts)}</span>
+      </div>`;
+    }
+    ejecutionHtml += `</div>`;
+  }
+
+  if (!ejecutionHtml) {
+    ejecutionHtml = '<div class="empty-state">Sin ejecuciones activas</div>';
+  }
+
+  // --- AGENT CARDS ---
+  let agentsHtml = "";
+  const visibleSessions = data.sessions.filter(s => s._status !== "stale");
+  for (const s of visibleSessions) {
+    const icon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
+    const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
+    const statusColor = STATUS_COLORS[s._status] || "#555872";
+    const statusLabel = STATUS_LABELS[s._status] || s._status;
+    const name = escHtml(s.agent_name || "Agente (" + s.id + ")");
+    const branchDisplay = escHtml(s.branch || "unknown");
+    const duration = formatDuration(s.started_ts);
+    const idleInfo = s._status === "idle" ? " " + formatAge(s.last_activity_ts) : "";
+    const lastAction = s.last_tool ? (escHtml(s.last_tool) + ": " + escHtml((s.last_target || "").substring(0, 50))) : "--";
+    const isBlocked = blockedPids.has(s.id);
+
+    agentsHtml += `
+      <div class="agent-card ${isBlocked ? 'agent-blocked' : ''}">
+        <div class="agent-avatar" style="background:${gradient};">${icon}</div>
+        <div class="agent-info">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div class="agent-name">${name}</div>
+            ${isBlocked
+              ? '<span class="agent-status agent-status-blocked">&#128721; Bloqueado</span>'
+              : '<span class="agent-status" style="background:' + statusColor + '20;color:' + statusColor + ';border-color:' + statusColor + '40;">' + statusLabel + idleInfo + '</span>'
+            }
+          </div>
+          <div class="agent-meta">${branchDisplay} &middot; ${s.action_count || 0} acc &middot; ${duration}</div>
+          <div class="agent-action"><div class="dot" style="background:${isBlocked ? 'var(--red)' : statusColor};${isBlocked ? 'animation:pulse-red 1.5s infinite;' : ''}"></div>${lastAction}</div>
+        </div>
+      </div>`;
+  }
+  if (visibleSessions.length === 0) {
+    // Verificar registry como fallback (#1642): puede haber agentes activos no detectados por sesiones
+    if (data.registryActiveCount > 0) {
+      agentsHtml = '<div class="empty-state">Agentes activos en registry: ' + data.registryActiveCount + ' (sesiones no visibles)</div>';
+    } else {
+      agentsHtml = '<div class="empty-state">Sin agentes activos</div>';
+    }
+  }
+
+  // --- UNIFIED AGENT CARDS (combina sprint execution + session info) ---
+  let unifiedAgentsHtml = "";
+  if (data.sprintPlan && allSprintAgentes.length > 0 && !isSprintCancelled) {
+    const sprintId = data.sprintPlan.sprint_id || "Sprint";
+    const sprintTema = data.sprintPlan.tema || "";
+    const sprintPctColor = sprintPct >= 80 ? "var(--green)" : sprintPct >= 40 ? "#fbbf24" : "var(--text-muted)";
+    // Incurrido y ETA para el encabezado del sprint
+    let sprintTimingHtml = "";
+    const unifiedSprintEstado = (data.sprintPlan.estado || "activo").toLowerCase();
+    const unifiedIsFinalizado = unifiedSprintEstado === "finalizado";
+    if (data.sprintPlan.started_at) {
+      const startMs = new Date(data.sprintPlan.started_at).getTime();
+      const elapsedMs = Date.now() - startMs;
+      const elapsedMin = Math.round(elapsedMs / 60000);
+      const elapsedTxt = elapsedMin >= 60
+        ? Math.floor(elapsedMin / 60) + "h " + (elapsedMin % 60) + "min"
+        : elapsedMin + "min";
+
+      if (unifiedIsFinalizado || sprintPct >= 100) {
+        sprintTimingHtml = `<span style="font-size:11px;color:var(--green);font-weight:600;">&#10003; ${elapsedTxt}</span>`;
+      } else if (sprintPct > 0 && sprintPct < 100) {
+        const prog = sprintPct / 100;
+        const totalEstMin = Math.round(elapsedMin / prog);
+        const remMin = Math.max(0, totalEstMin - elapsedMin);
+        const etaTxt = remMin >= 60
+          ? "~" + Math.floor(remMin / 60) + "h " + (remMin % 60) + "min"
+          : "~" + remMin + "min";
+        sprintTimingHtml = `<span style="font-size:11px;color:var(--text-muted);">${elapsedTxt} incurrido</span> <span style="font-size:11px;color:#60a5fa;font-weight:600;">&#9202; ${etaTxt} rest.</span>`;
+      } else {
+        sprintTimingHtml = `<span style="font-size:11px;color:var(--text-muted);">${elapsedTxt} incurrido</span>`;
+      }
+    }
+    unifiedAgentsHtml += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+      <span style="font-size:14px;font-weight:700;color:var(--white);">${escHtml(sprintId)}</span>
+      <span style="font-size:13px;font-weight:700;color:${sprintPctColor};">${sprintPct}%</span>
+      <span style="font-size:11px;color:var(--text-muted);flex:1;">${escHtml(sprintTema)}</span>
+      ${sprintTimingHtml}
+      <span style="font-size:10px;color:var(--text-dim);">${dedupedDone.length}/${agentesTotal} completados</span>
+    </div>`;
+
+    // Renderizar secciones: reclasificadas según estado real
+    // (reutilizar reallyRunning/reallyQueued/dedupedDone del bloque de ejecución)
+    const sections = [
+      { items: reallyRunning, label: "EN EJECUCI\u00D3N", color: "var(--accent-green)", icon: "&#9654;" },
+      { items: reallyQueued, label: "EN COLA", color: "#fbbf24", icon: "&#9711;" },
+      { items: dedupedDone, label: "COMPLETADOS", color: "var(--text-muted)", icon: "&#10003;" },
+      { items: spIncomplete, label: "FALLIDOS", color: "#f87171", icon: "&#10007;" }
+    ];
+
+    for (const sec of sections) {
+      if (sec.items.length === 0) continue;
+      unifiedAgentsHtml += `<div style="padding:4px 0 6px;font-size:10px;font-weight:600;color:${sec.color};letter-spacing:.04em;">${sec.icon} ${sec.label} (${sec.items.length})</div>`;
+      unifiedAgentsHtml += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;margin-bottom:12px;">`;
+
+      for (const ag of sec.items) {
+        const matchSession = data.sprintSessions.find(s => {
+          const m = (s.branch || "").match(/(\d+)/);
+          return m && m[1] === String(ag.issue);
+        });
+        const agStatus = sec.label.includes("COLA") ? "pending" : sec.label.includes("COMPLETADO") ? "done" : (matchSession ? matchSession._status : "pending");
+        const statusColor = STATUS_COLORS[agStatus] || "var(--text-muted)";
+        const statusLabel = STATUS_LABELS[agStatus] || agStatus;
+        const agentName = matchSession ? (matchSession.agent_name || "Agente") : "Agente " + ag.numero;
+        const icon = AGENT_ICONS[agentName] || agentIconHtml(agentName);
+        const gradient = AGENT_GRADIENTS[agentName] || AGENT_GRADIENTS["Claude"];
+        const actionCount = matchSession ? (matchSession.action_count || 0) : 0;
+        const isFailed = sec.label.includes("FALLIDO");
+        // Para agentes done/failed, calcular duración real (started → last_activity), no hasta ahora
+        let duration = "";
+        if (matchSession && matchSession.started_ts) {
+          const endTs = (agStatus === "done" || isFailed) && matchSession.last_activity_ts
+            ? new Date(matchSession.last_activity_ts).getTime()
+            : Date.now();
+          const durMs = endTs - new Date(matchSession.started_ts).getTime();
+          const durMin = Math.round(durMs / 60000);
+          duration = durMin >= 60 ? Math.floor(durMin / 60) + "h " + (durMin % 60) + "min" : durMin + "min";
+        }
+        const lastAction = matchSession && matchSession.last_tool ? (escHtml(matchSession.last_tool) + ": " + escHtml((matchSession.last_target || "").substring(0, 40))) : "";
+        const tasks = matchSession ? (matchSession.current_tasks || []) : [];
+        const tasksDone = tasks.filter(t => t.status === "completed").length;
+        const tasksInProg = tasks.filter(t => t.status === "in_progress").length;
+
+        // Barra de progreso
+        const sizeExpected = { S: 40, M: 80, L: 160, XL: 300 };
+        let pct = agStatus === "done" ? 100 : tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : Math.min(90, Math.round((actionCount / (sizeExpected[ag.size] || 60)) * 100));
+
+        const isBlocked = matchSession && blockedPids.has(matchSession.id);
+        const isIdle = agStatus === "idle";
+        const isPending = agStatus === "pending" || sec.label.includes("COLA");
+        const barColor = agStatus === "done" ? "var(--gradient-green)" : isBlocked ? "linear-gradient(90deg, #ef4444, #f87171)" : isFailed ? "#f87171" : statusColor;
+
+        // Compute status reason message
+        let statusReason = "";
+        if (isFailed && ag.motivo) {
+          statusReason = ag.motivo;
+        } else if (isFailed && ag.resultado) {
+          statusReason = ag.resultado === "suspicious" ? "Sesi\u00F3n finaliz\u00F3 sin completar el trabajo (duraci\u00F3n insuficiente o sin PR)" : ag.resultado;
+        } else if (isIdle && matchSession) {
+          const idleMs = matchSession.last_activity_ts ? Date.now() - new Date(matchSession.last_activity_ts).getTime() : 0;
+          const idleMin = Math.round(idleMs / 60000);
+          if (matchSession.last_tool === "AskUserQuestion") {
+            statusReason = "Esperando respuesta del usuario (" + idleMin + "m)";
+          } else if (idleMin > 10) {
+            statusReason = "Sin actividad hace " + idleMin + "m";
+          } else {
+            statusReason = "Idle hace " + idleMin + "m \u2014 \u00FAltima acci\u00F3n: " + (matchSession.last_tool || "desconocida");
+          }
+        } else if (isPending && !isFailed) {
+          statusReason = "En cola \u2014 ser\u00E1 promovido cuando se libere un slot de ejecuci\u00F3n";
+        }
+
+        // Calcular ETA por agente en tarjeta unificada
+        let cardEtaHtml = "";
+        // Calcular promedio de duración de agentes completados para estimar cola
+        const avgCompletedMin = (() => {
+          const durs = [];
+          for (const c of spCompleted) {
+            const cs = data.sprintSessions.find(s => { const m = (s.branch||"").match(/(\d+)/); return m && m[1] === String(c.issue); });
+            if (cs && cs.started_ts && cs.last_activity_ts) {
+              durs.push((new Date(cs.last_activity_ts).getTime() - new Date(cs.started_ts).getTime()) / 60000);
+            }
+          }
+          return durs.length > 0 ? Math.round(durs.reduce((a,b) => a+b, 0) / durs.length) : 0;
+        })();
+
+        if (isPending && !isFailed) {
+          // Cola: ETA estimado basado en promedio de completados
+          if (avgCompletedMin > 0) {
+            const etaQTxt = avgCompletedMin >= 60
+              ? "~" + Math.floor(avgCompletedMin / 60) + "h " + (avgCompletedMin % 60) + "min est."
+              : "~" + avgCompletedMin + "min est.";
+            cardEtaHtml = '<span style="font-size:11px;color:#fbbf24;font-weight:600;">&#9202; En cola &middot; ' + etaQTxt + '</span>';
+          } else {
+            cardEtaHtml = '<span style="font-size:11px;color:#fbbf24;font-weight:600;">&#9202; En cola</span>';
+          }
+        } else if (agStatus === "done" || isFailed) {
+          // Done/Failed: no mostrar ETA, solo duración está en el campo `duration`
+          cardEtaHtml = "";
+        } else if (matchSession && matchSession.started_ts && pct > 5) {
+          const elMs = Date.now() - new Date(matchSession.started_ts).getTime();
+          const elMin = Math.round(elMs / 60000);
+          const prog = pct / 100;
+          const remMin = Math.max(0, Math.round((elMin / prog) - elMin));
+          if (remMin > 0) {
+            const etaTxt = remMin >= 60
+              ? "~" + Math.floor(remMin / 60) + "h " + (remMin % 60) + "min"
+              : "~" + remMin + "min";
+            cardEtaHtml = '<span style="font-size:11px;color:#60a5fa;font-weight:600;">&#9202; ' + etaTxt + ' rest.</span>';
+          } else {
+            cardEtaHtml = '<span style="font-size:11px;color:#60a5fa;font-weight:600;">&#9202; finalizando...</span>';
+          }
+        }
+
+        unifiedAgentsHtml += `
+          <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:12px;border-left:3px solid ${statusColor};">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+              <div class="agent-avatar" style="background:${gradient};width:36px;height:36px;min-width:36px;">${icon}</div>
+              <div style="flex:1;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="font-weight:700;color:var(--white);font-size:13px;">${escHtml(agentName)}</span>
+                  <span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${statusColor}20;color:${statusColor};font-weight:600;">${isBlocked ? '&#128721; Bloqueado' : statusLabel}</span>
+                </div>
+                <div style="font-size:11px;color:var(--text-muted);">${formatIssueLink(ag.issue)} &middot; ${escHtml(ag.slug || "")} &middot; <span class="chip chip-blue" style="font-size:9px;padding:1px 4px;">${escHtml(ag.size || "?")}</span></div>
+              </div>
+            </div>${statusReason ? `
+            <div style="margin:0 0 8px;padding:6px 8px;border-radius:4px;background:${isFailed ? '#f8717115' : isIdle ? '#fbbf2415' : '#60a5fa15'};border:1px solid ${isFailed ? '#f8717130' : isIdle ? '#fbbf2430' : '#60a5fa30'};font-size:10px;color:${isFailed ? '#f87171' : isIdle ? '#fbbf24' : '#60a5fa'};">
+              ${isFailed ? '&#10007;' : isIdle ? '&#9888;' : '&#9711;'} ${escHtml(statusReason)}
+            </div>` : ''}
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+              <div class="exec-bar" style="flex:1;height:5px;"><div class="exec-bar-fill" style="width:${pct}%;background:${barColor};"></div></div>
+              <span style="font-size:11px;color:${statusColor};font-weight:600;min-width:28px;text-align:right;">${pct}%</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--text-muted);">
+              <span>${actionCount} acc${duration ? ' &middot; ' + duration : ''}</span>
+              ${cardEtaHtml || ''}
+              ${lastAction ? '<span style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + lastAction + '</span>' : ''}
+            </div>${tasks.length > 0 ? `
+            <div style="margin-top:8px;border-top:1px solid var(--surface3);padding-top:6px;">
+              ${tasks.map(t => {
+                const checked = t.status === "completed";
+                const inProg = t.status === "in_progress";
+                const checkColor = checked ? "var(--green)" : inProg ? "#fbbf24" : "var(--text-muted)";
+                const checkIcon = checked ? "&#9745;" : inProg ? "&#9654;" : "&#9744;";
+                const textStyle = checked ? "text-decoration:line-through;opacity:0.6;" : inProg ? "color:#fbbf24;font-weight:600;" : "";
+                return '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;color:var(--text-dim);">' +
+                  '<span style="color:' + checkColor + ';font-size:13px;">' + checkIcon + '</span>' +
+                  '<span style="' + textStyle + '">' + escHtml(t.subject || t.name || "Tarea") + '</span></div>';
+              }).join("")}
+            </div>` : ""}
+          </div>`;
+      }
+      unifiedAgentsHtml += `</div>`;
+    }
+  } else {
+    unifiedAgentsHtml = '<div class="empty-state">Sin sprint activo</div>';
+  }
+
+  // Sesiones standalone (fuera del sprint)
+  // Solo mostrar sesiones ACTIVAS que no pertenecen al sprint actual
+  // Excluir done/stale/idle para no mostrar residuos de sprints anteriores
+  const sprintIssueNums = new Set(allSprintAgentes.map(a => String(a.issue)));
+  const standaloneSessions = visibleSessions.filter(s => {
+    if (!s.branch || !s.branch.startsWith("agent/")) return false;
+    // Excluir sesiones terminadas o inactivas — son residuo de ejecuciones anteriores
+    if (s._status === "done" || s._status === "stale" || s._status === "idle") return false;
+    const m = (s.branch || "").match(/(\d+)/);
+    const issueNum = m ? m[1] : null;
+    return !issueNum || !sprintIssueNums.has(issueNum);
+  });
+  if (standaloneSessions.length > 0) {
+    unifiedAgentsHtml += `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--surface3);">
+      <div style="font-size:10px;font-weight:600;color:#a78bfa;letter-spacing:.04em;margin-bottom:8px;">&#9881; FUERA DEL SPRINT (${standaloneSessions.length})</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;">`;
+    for (const s of standaloneSessions) {
+      const icon = AGENT_ICONS[s.agent_name] || agentIconHtml(s.agent_name);
+      const gradient = AGENT_GRADIENTS[s.agent_name] || AGENT_GRADIENTS["Claude"];
+      const statusColor = STATUS_COLORS[s._status] || "#555872";
+      const statusLabel = STATUS_LABELS[s._status] || s._status;
+      const branchMatch = (s.branch || "").match(/(\d+)/);
+      const issueNum = branchMatch ? branchMatch[1] : null;
+      const actionCount = s.action_count || 0;
+      const duration = formatDuration(s.started_ts);
+      const lastAction = s.last_tool ? (escHtml(s.last_tool) + ": " + escHtml((s.last_target || "").substring(0, 40))) : "";
+      const tasks = s.current_tasks || [];
+      const tasksDone = tasks.filter(t => t.status === "completed").length;
+
+      unifiedAgentsHtml += `
+        <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:12px;border-left:3px solid #a78bfa;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+            <div class="agent-avatar" style="background:${gradient};width:36px;height:36px;min-width:36px;">${icon}</div>
+            <div style="flex:1;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-weight:700;color:var(--white);font-size:13px;">${escHtml(s.agent_name || "Agente")}</span>
+                <span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${statusColor}20;color:${statusColor};font-weight:600;">${statusLabel}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);">${issueNum ? formatIssueLink(issueNum) + ' &middot; ' : ''}${escHtml(s.branch || "")}</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <div class="exec-bar" style="flex:1;height:5px;"><div class="exec-bar-fill" style="width:${tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0}%;background:${statusColor};"></div></div>
+            <span style="font-size:11px;color:${statusColor};font-weight:600;min-width:28px;text-align:right;">${tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">
+            <span>${actionCount} acc &middot; ${duration}</span>
+            ${lastAction ? '<span>' + lastAction + '</span>' : ''}
+          </div>${tasks.length > 0 ? `
+          <div style="margin-top:8px;border-top:1px solid var(--surface3);padding-top:6px;">
+            ${tasks.map(t => {
+              const checked = t.status === "completed";
+              const inProg = t.status === "in_progress";
+              const checkColor = checked ? "var(--green)" : inProg ? "#fbbf24" : "var(--text-muted)";
+              const checkIcon = checked ? "&#9745;" : inProg ? "&#9654;" : "&#9744;";
+              const textStyle = checked ? "text-decoration:line-through;opacity:0.6;" : inProg ? "color:#fbbf24;font-weight:600;" : "";
+              return '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;color:var(--text-dim);">' +
+                '<span style="color:' + checkColor + ';font-size:13px;">' + checkIcon + '</span>' +
+                '<span style="' + textStyle + '">' + escHtml(t.subject || t.name || "Tarea") + '</span></div>';
+            }).join("")}
+          </div>` : ""}
+        </div>`;
+    }
+    unifiedAgentsHtml += `</div></div>`;
+  }
+
+  // --- FLOW TREE (force-directed layout) ---
+  // Construir mapa de agentes raíz → robotId desde sprint-plan.json (#1544)
+  const rootAgentRobotMap = {};
+  if (data.sprintPlan) {
+    // Incluir agentes activos + completados + incompletos para asignar robots
+    const allAgents = [
+      ...(Array.isArray(data.sprintPlan.agentes) ? data.sprintPlan.agentes : []),
+      ...(Array.isArray(data.sprintPlan._completed) ? data.sprintPlan._completed : []),
+      ...(Array.isArray(data.sprintPlan._incomplete) ? data.sprintPlan._incomplete : []),
+      ...(Array.isArray(data.sprintPlan._queue) ? data.sprintPlan._queue : [])
+    ];
+    for (const ag of allAgents) {
+      // Buscar sesión para obtener agent_name canónico
+      const matchSession = data.sprintSessions.find(s => {
+        const m = (s.branch || "").match(/(\d+)/);
+        return m && m[1] === String(ag.issue);
+      });
+      if (matchSession && matchSession.agent_name) {
+        const robotId = ((ag.numero - 1) % 10) + 1;
+        rootAgentRobotMap[normalizeSkillName(matchSession.agent_name)] = robotId;
+      }
+    }
+  }
+  const flowGraphHtml = buildFlowTree(data.sessions, data.agentNodes, data.agentTransitions, AGENT_ICONS, AGENT_COLORS, rootAgentRobotMap, data.agentIssueMap || {}, data.queuedAgents || []);
+
+  // --- GANTT ROADMAP (#1382) ---
+  const ganttHtml = buildGanttChart(data.roadmap);
+  const roadmapNumSprints = (data.roadmap && data.roadmap.horizon_sprints) || 0;
+
+  // --- ACTIVITY FEED (chat-style with grouping) ---
+  let feedHtml = "";
+  // Blocking events first
+  for (const b of data.blockingRelations) {
+    const waitTime = formatAge(b.waitingSince);
+    feedHtml += `<div class="feed-item feed-blocked">
+      <div class="feed-time">&#128721;</div>
+      <div class="feed-icon" style="filter:grayscale(1) brightness(1.5);">&#9888;&#65039;</div>
+      <div class="feed-body">
+        <span class="feed-agent">${escHtml(b.blockedAgent)}</span>
+        <span class="feed-reason">${linkifyIssueRefs(escHtml(b.reason))} (${waitTime})</span>
+      </div>
+    </div>`;
+  }
+  for (const g of data.groupedActivities) {
+    const time = g.ts ? new Date(g.ts).toLocaleTimeString("es-AR", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "??:??";
+    let agentName = g.session || "?";
+    let agentIcon = "&#129302;";
+    // Buscar en sesiones activas primero, luego en disco para sesiones done
+    let matchedSession = data.sessions.find(s => s.id === g.session);
+    if (!matchedSession && g.session) {
+      try {
+        const sFile = path.join(SESSIONS_DIR, g.session + ".json");
+        if (fs.existsSync(sFile)) matchedSession = readJson(sFile);
+      } catch {}
+    }
+    if (matchedSession) {
+      agentName = matchedSession.agent_name || "Agente (" + g.session + ")";
+      agentIcon = AGENT_ICONS[matchedSession.agent_name] || agentIconHtml(matchedSession.agent_name);
+    }
+    const toolLabel = escHtml(g.tool || "");
+    let targetText;
+    if (g.count > 1) {
+      // Grouped: show summary
+      const uniqueTargets = [...new Set(g.targets.filter(Boolean).map(t => {
+        const parts = t.replace(/\\/g, "/").split("/");
+        return parts[parts.length - 1] || t;
+      }))];
+      if (g.tool === "Edit" || g.tool === "Write") {
+        targetText = g.count + " archivos";
+        if (uniqueTargets.length <= 3) targetText += " (" + uniqueTargets.join(", ").substring(0, 60) + ")";
+      } else {
+        targetText = g.count + " acciones";
+      }
+    } else {
+      const t = (g.target || "").substring(0, 80);
+      const parts = t.replace(/\\/g, "/").split("/");
+      targetText = parts[parts.length - 1] || t;
+    }
+    const relTime = formatAge(g.ts);
+    feedHtml += `<div class="feed-item">
+      <div class="feed-time" title="${escHtml(time)}">${relTime}</div>
+      <div class="feed-icon">${agentIcon}</div>
+      <div class="feed-body">
+        <span class="feed-agent">${escHtml(agentName)}</span>
+        <span class="feed-tool">${toolLabel}${g.count > 1 ? ' x' + g.count : ''}</span>
+        <span class="feed-target">${linkifyIssueRefs(escHtml(targetText))}</span>
+      </div>
+    </div>`;
+  }
+  if (!feedHtml) {
+    feedHtml = '<div class="empty-state">Sin actividad reciente</div>';
+  }
+
+  // --- AGENT USAGE PANEL ---
+  const skillEntries = Object.entries(data.skillUsage || {})
+    .map(([name, info]) => ({ name, count: info.count || 0, lastUsed: info.lastUsed }))
+    .sort((a, b) => b.count - a.count);
+  const maxSkillCount = skillEntries.length > 0 ? skillEntries[0].count : 1;
+  const totalSkillInvocations = skillEntries.reduce((s, e) => s + e.count, 0);
+  const uniqueAgentsUsed = skillEntries.length;
+
+  // Color palette for agent bars
+  const agentColors = ["var(--blue)", "var(--green)", "var(--orange)", "var(--purple)", "var(--red)", "var(--yellow)"];
+
+  let agentBarsHtml = "";
+  for (let i = 0; i < skillEntries.length; i++) {
+    const e = skillEntries[i];
+    const pct = Math.round((e.count / maxSkillCount) * 100);
+    const color = agentColors[i % agentColors.length];
+    const lastUsedText = e.lastUsed ? formatAge(e.lastUsed) : "—";
+    agentBarsHtml += `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+        <span style="font-size:11px;min-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">/${escHtml(e.name)}</span>
+        <div style="flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;background:${color};border-radius:4px;transition:width 0.3s;"></div>
+        </div>
+        <span style="font-size:11px;font-weight:600;min-width:24px;text-align:right;">${e.count}</span>
+        <span style="font-size:9px;color:var(--text-muted);min-width:40px;text-align:right;">${lastUsedText}</span>
+      </div>`;
+  }
+  if (!agentBarsHtml) {
+    agentBarsHtml = '<div class="empty-state">Sin datos de uso</div>';
+  }
+
+  // Tabla de duración por skill (#1754)
+  let skillDurationHtml = "";
+  const skillDurationEntries = Object.entries(data.skillDurationStats || {})
+    .map(([name, s]) => ({ name, count: s.count || 0, avg_ms: s.avg_ms || 0, min_ms: s.min_ms || 0, max_ms: s.max_ms || 0 }))
+    .filter(e => e.count > 0)
+    .sort((a, b) => b.avg_ms - a.avg_ms);
+  if (skillDurationEntries.length > 0) {
+    skillDurationHtml = `<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px;">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Duraci&oacute;n por skill</div>
+      <table style="width:100%;font-size:10px;border-collapse:collapse;">
+        <tr style="color:var(--text-muted);">
+          <th style="text-align:left;padding:3px 4px;">Skill</th>
+          <th style="text-align:right;padding:3px 4px;" title="Invocaciones">N</th>
+          <th style="text-align:right;padding:3px 4px;">Prom.</th>
+          <th style="text-align:right;padding:3px 4px;">M&aacute;x.</th>
+        </tr>
+        ${skillDurationEntries.map(e => {
+          const avgMin = Math.round(e.avg_ms / 60000);
+          const maxMin = Math.round(e.max_ms / 60000);
+          const avgStr = avgMin < 1 ? "<1m" : avgMin >= 60 ? Math.floor(avgMin/60) + "h" + (avgMin%60) + "m" : avgMin + "m";
+          const maxStr = maxMin < 1 ? "<1m" : maxMin >= 60 ? Math.floor(maxMin/60) + "h" + (maxMin%60) + "m" : maxMin + "m";
+          // Color por duración promedio: verde <5m, amarillo <20m, rojo >=20m
+          const avgColor = avgMin < 5 ? "var(--green)" : avgMin < 20 ? "var(--yellow)" : "var(--red)";
+          return `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:3px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90px;">/${escHtml(e.name)}</td>
+            <td style="padding:3px 4px;text-align:right;color:var(--text-muted);">${e.count}</td>
+            <td style="padding:3px 4px;text-align:right;color:${avgColor};font-weight:600;">${avgStr}</td>
+            <td style="padding:3px 4px;text-align:right;color:var(--text-muted);">${maxStr}</td>
+          </tr>`;
+        }).join("")}
+      </table>
+    </div>`;
+  }
+
+  const metricsHtml = `
+    <div class="metrics-grid">
+      <div class="metric-item">
+        <div class="metric-value" style="color:var(--blue)">${uniqueAgentsUsed}</div>
+        <div class="metric-label">Agentes</div>
+      </div>
+      <div class="metric-item">
+        <div class="metric-value" style="color:var(--orange)">${totalSkillInvocations}</div>
+        <div class="metric-label">Invocaciones</div>
+      </div>
+      <div class="metric-item">
+        <div class="metric-value" style="color:var(--green)">${data.activeSessions}</div>
+        <div class="metric-label">Sesiones</div>
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      ${agentBarsHtml}
+    </div>
+    ${skillDurationHtml}`;
+
+  // --- PERMISOS ---
+  const permStats = data.permissionStats || { auto: 0, approved: 0, denied: 0, pending: 0 };
+  const permTotal = permStats.auto + permStats.approved + permStats.denied + permStats.pending;
+
+  let permissionsListHtml = "";
+  const recentPerms = data.recentPermissions || [];
+  // Mostrar últimas 10 solicitudes (#1404)
+  for (const q of recentPerms.slice(0, 10)) {
+    const isPending = q.status === "pending";
+    const isDenied = q.action_result === "deny" || q.action_result === "deny_once" || q.action_result === "deny_always";
+    const isAuto = q.answered_via === "auto" || q.answered_via === "auto_allow" || q.answered_via === "fast_path";
+    const isTelegram = q.answered_via === "telegram";
+    const isConsole = q.answered_via === "console";
+
+    let statusIcon, statusLabel, statusClass;
+    if (isPending) { statusIcon = "&#9711;"; statusLabel = "PEND"; statusClass = "perm-pending"; }
+    else if (isDenied) { statusIcon = "&#10007;"; statusLabel = "RECH"; statusClass = "perm-denied"; }
+    else if (isAuto) { statusIcon = "&#10003;"; statusLabel = "AUTO"; statusClass = "perm-auto"; }
+    else if (isTelegram) { statusIcon = "&#10003;"; statusLabel = "TELE"; statusClass = "perm-telegram"; }
+    else if (isConsole) { statusIcon = "&#10003;"; statusLabel = "CONS"; statusClass = "perm-console"; }
+    else { statusIcon = "&#10003;"; statusLabel = "OK"; statusClass = "perm-auto"; }
+
+    const toolName = (q.action_data && q.action_data.tool_name) || "???";
+    const msgShort = escHtml((q.message || "").replace(/<[^>]*>/g, "").substring(0, 50));
+    const age = formatAge(q.timestamp);
+    const severity = q._severity || "???";
+    const agentName = q._agent || "";
+    const issueNum = q._issue || "";
+    const sevColor = severity === "HIGH" ? "var(--red)" : severity === "MEDIUM" ? "var(--yellow)" : severity === "LOW" ? "var(--green)" : severity === "AUTO_ALLOW" ? "var(--text-dim)" : "var(--text-muted)";
+
+    permissionsListHtml += `<div class="perm-item">
+      <div class="perm-status ${statusClass}">${statusIcon}</div>
+      <div class="perm-method">${statusLabel}</div>
+      <div class="perm-detail">
+        <div class="perm-row1">
+          <span class="perm-tool">${escHtml(toolName)}</span>
+          <span class="perm-severity" style="color:${sevColor}">${escHtml(severity)}</span>
+          ${issueNum ? '<span class="perm-issue">' + formatIssueLink(issueNum) + '</span>' : ''}
+          ${agentName ? '<span style="color:var(--text-muted);font-size:9px">' + escHtml(agentName) + '</span>' : ''}
+        </div>
+        <div class="perm-msg">${linkifyIssueRefs(msgShort)}</div>
+      </div>
+      <div class="perm-age">${age}</div>
+    </div>`;
+  }
+  if (recentPerms.length === 0) {
+    permissionsListHtml = '<div class="empty-state">Sin permisos registrados</div>';
+  }
+
+  // Top patterns
+  const patterns = data.approvalHistory || {};
+  const topPatterns = Object.entries(patterns)
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 4)
+    .map(([pat, info]) => escHtml(pat) + " &times;" + info.count)
+    .join(" &middot; ");
+
+  let permissionsHtml = `
+    <div class="perm-summary">
+      <div class="perm-stat"><span class="perm-stat-val" style="color:var(--green)">${permStats.auto}</span><span class="perm-stat-lbl">Auto</span></div>
+      <div class="perm-stat"><span class="perm-stat-val" style="color:var(--blue)">${permStats.approved}</span><span class="perm-stat-lbl">Aprobados</span></div>
+      <div class="perm-stat"><span class="perm-stat-val" style="color:var(--red)">${permStats.denied}</span><span class="perm-stat-lbl">Rechazados</span></div>
+      <div class="perm-stat"><span class="perm-stat-val" style="color:var(--yellow)">${permStats.pending}</span><span class="perm-stat-lbl">Pendientes</span></div>
+    </div>
+    ${permissionsListHtml}
+    ${topPatterns ? '<div class="perm-patterns">Top: ' + topPatterns + '</div>' : ''}`;
+
+  // --- CI ---
+  let ciHtml = "";
+  for (const r of data.ciRuns.slice(0, MAX_CI_ENTRIES)) {
+    const isOk = r.conclusion === "success";
+    const isFail = r.conclusion === "failure";
+    const iconClass = isOk ? "ci-ok" : isFail ? "ci-fail" : "ci-run";
+    const icon = isOk ? "&#10003;" : isFail ? "&#10007;" : "&#9203;";
+    const iconColor = isOk ? "var(--green)" : isFail ? "var(--red)" : "var(--yellow)";
+    const branchIssue = (r.headBranch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+    const issueLink = branchIssue ? formatIssueLink(branchIssue[1]) + " &middot; " : "";
+    const runUrl = r.databaseId ? "https://github.com/intrale/platform/actions/runs/" + r.databaseId : null;
+    ciHtml += `<div class="ci-row">
+      <div class="ci-icon ${iconClass}" style="color:${iconColor}">${icon}</div>
+      <div class="ci-text">${issueLink}${runUrl ? '<a href="' + runUrl + '" target="_blank" rel="noopener noreferrer" style="color:var(--white);text-decoration:none;font-weight:700;">' + escHtml(r.headBranch) + '</a>' : '<strong>' + escHtml(r.headBranch) + '</strong>'} &middot; ${linkifyIssueRefs(escHtml((r.displayTitle || "").substring(0, 60)))}</div>
+      <div class="ci-time">${formatAge(r.createdAt)}</div>
+    </div>`;
+  }
+  if (data.ciRuns.length === 0) {
+    ciHtml = '<div class="empty-state">Sin ejecuciones recientes de CI/CD</div>';
+  }
+
+  // --- AGENT METRICS TABLE (#1226, #1419) ---
+  let agentMetricsHtml = "";
+  const currentSprintId = (data.sprintPlan && data.sprintPlan.sprint_id) || null;
+  const metricsEntries = [];
+  const activeSessionIds = new Set();
+  for (const s of data.sessions) {
+    if (s.type === "sub") continue;
+    const st = getSessionStatus(s);
+    if (st === "stale") continue;
+    activeSessionIds.add(s.id);
+    const startMs = new Date(s.started_ts).getTime();
+    const durMin = Math.round((Date.now() - startMs) / 60000);
+    const tc = s.tool_counts || {};
+    const totalCalls = Object.values(tc).reduce((a, b) => a + b, 0);
+    metricsEntries.push({
+      agent: s.agent_name || "Claude",
+      session: s.id,
+      sprintId: s.sprint_id || currentSprintId || "",
+      calls: totalCalls || s.action_count || 0,
+      files: Array.isArray(s.modified_files) ? s.modified_files.length : 0,
+      tasksCreated: s.tasks_created || 0,
+      tasksCompleted: s.tasks_completed || 0,
+      durMin,
+      active: true,
+    });
+  }
+  if (data.agentMetrics && Array.isArray(data.agentMetrics.sessions)) {
+    for (const ms of data.agentMetrics.sessions.slice(-10).reverse()) {
+      if (activeSessionIds.has(ms.id)) continue;
+      metricsEntries.push({
+        agent: ms.agent_name || "Claude",
+        session: ms.id,
+        sprintId: ms.sprint_id || "",
+        calls: ms.total_tool_calls || 0,
+        files: ms.modified_files_count || 0,
+        tasksCreated: ms.tasks_created || 0,
+        tasksCompleted: ms.tasks_completed || 0,
+        durMin: ms.duration_min || 0,
+        active: false,
+      });
+    }
+  }
+  const metricsToShow = metricsEntries.slice(0, 12);
+  const totalHistoric = data.agentMetrics && Array.isArray(data.agentMetrics.sessions) ? data.agentMetrics.sessions.length : 0;
+  const sprintSessionCount = currentSprintId
+    ? metricsToShow.filter(m => m.sprintId === currentSprintId).length
+    : 0;
+  if (metricsToShow.length > 0) {
+    // Filtro toggle por sprint (#1419): botón que muestra solo el sprint activo
+    const filterToggleId = "agMetricsFilter_" + Date.now();
+    agentMetricsHtml = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <span style="font-size:10px;color:var(--text-muted);">${totalHistoric > 0 ? 'Hist&oacute;rico: ' + totalHistoric + ' ses.' : ''}</span>
+      ${currentSprintId ? `<button id="${filterToggleId}" onclick="(function(btn){
+        var tbl=btn.closest('.ag-metrics-wrap').querySelector('.ag-metrics-tbl');
+        var rows=tbl.querySelectorAll('tr[data-sprint]');
+        var isFiltered=btn.dataset.filtered==='1';
+        rows.forEach(function(r){
+          if(isFiltered){r.style.display='';}
+          else{r.style.display=(r.dataset.sprint==='${escHtml(currentSprintId)}')?'':'none';}
+        });
+        btn.dataset.filtered=isFiltered?'0':'1';
+        btn.textContent=isFiltered?'Sprint actual':'Todos';
+        btn.style.background=isFiltered?'var(--surface3)':'var(--blue-dim)';
+        btn.style.color=isFiltered?'var(--text-muted)':'var(--blue)';
+      })(this)" data-filtered="0" style="font-size:10px;padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface3);color:var(--text-muted);cursor:pointer;">${escHtml(currentSprintId)}</button>` : ''}
+    </div>`;
+    agentMetricsHtml += '<div class="ag-metrics-wrap"><table class="ag-metrics-tbl" style="width:100%;font-size:11px;border-collapse:collapse;">';
+    agentMetricsHtml += '<tr style="color:var(--text-muted);border-bottom:1px solid var(--border);">'
+      + '<th style="text-align:left;padding:4px;">Agente</th>'
+      + '<th style="text-align:left;padding:4px;">Sesi&oacute;n</th>'
+      + '<th style="text-align:right;padding:4px;">Calls</th>'
+      + '<th style="text-align:right;padding:4px;">Arch.</th>'
+      + '<th style="text-align:right;padding:4px;">Tareas</th>'
+      + '<th style="text-align:right;padding:4px;">Dur.</th></tr>';
+    for (const m of metricsToShow) {
+      const indicator = m.active ? '<span style="color:var(--green);">&#9679;</span> ' : '';
+      const tasksStr = m.tasksCompleted + "/" + m.tasksCreated;
+      const durStr = m.durMin < 60 ? m.durMin + "m" : Math.floor(m.durMin / 60) + "h " + (m.durMin % 60) + "m";
+      const sprintAttr = m.sprintId ? ' data-sprint="' + escHtml(m.sprintId) + '"' : '';
+      const isCurrentSprint = currentSprintId && m.sprintId === currentSprintId;
+      const rowStyle = isCurrentSprint
+        ? 'border-bottom:1px solid var(--border);background:var(--blue-dim);'
+        : 'border-bottom:1px solid var(--border);';
+      agentMetricsHtml += `<tr style="${rowStyle}"${sprintAttr}>`
+        + '<td style="padding:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">' + indicator + escHtml(m.agent) + '</td>'
+        + '<td style="padding:4px;font-family:monospace;font-size:10px;">' + escHtml(m.session) + '</td>'
+        + '<td style="text-align:right;padding:4px;font-weight:600;">' + m.calls + '</td>'
+        + '<td style="text-align:right;padding:4px;">' + m.files + '</td>'
+        + '<td style="text-align:right;padding:4px;">' + tasksStr + '</td>'
+        + '<td style="text-align:right;padding:4px;">' + durStr + '</td></tr>';
+    }
+    agentMetricsHtml += '</table></div>';
+    if (totalHistoric > 0) {
+      const lastTs = data.agentMetrics.updated_ts;
+      agentMetricsHtml += '<div style="font-size:10px;color:var(--text-muted);margin-top:4px;">'
+        + '&uacute;ltima: ' + formatAge(lastTs)
+        + (currentSprintId && sprintSessionCount > 0 ? ' &mdash; ' + sprintSessionCount + ' en ' + escHtml(currentSprintId) : '')
+        + '</div>';
+    }
+  } else {
+    agentMetricsHtml = '<div class="empty-state">Sin m&eacute;tricas de agentes</div>';
+  }
+
+  // --- ALERTS ---
+  let alertsHtml = "";
+  for (const a of data.alerts) {
+    const color = a.type === "critical" ? "var(--red)" : a.type === "warning" ? "var(--yellow)" : "var(--blue)";
+    const icon = a.type === "critical" ? "&#128680;" : a.type === "warning" ? "&#9888;&#65039;" : "&#8505;&#65039;";
+    alertsHtml += `<div class="alert-item" style="border-left-color:${color};">${icon} ${linkifyIssueRefs(escHtml(a.message))}</div>`;
+  }
+
+  return `<!DOCTYPE html>
+<html lang="es" data-theme="${isDark ? 'dark' : 'light'}">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Intrale Monitor</title>
+  <style>
+    :root {
+      --bg: #0a0b10; --surface: #12141d; --surface2: #1a1d2b; --surface3: #222639;
+      --border: #2a2e42; --border-light: #363b54;
+      --text: #e2e4ed; --text-dim: #8b8fa5; --text-muted: #555872; --white: #ffffff;
+      --green: #34d399; --green-dim: rgba(52,211,153,0.12);
+      --yellow: #fbbf24; --yellow-dim: rgba(251,191,36,0.12);
+      --red: #f87171; --red-dim: rgba(248,113,113,0.12);
+      --blue: #60a5fa; --blue-dim: rgba(96,165,250,0.12);
+      --purple: #a78bfa; --purple-dim: rgba(167,139,250,0.12);
+      --cyan: #22d3ee; --orange: #fb923c; --orange-dim: rgba(251,146,60,0.12);
+      --pink: #f472b6;
+      --gradient-blue: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      --gradient-green: linear-gradient(135deg, #10b981, #34d399);
+      --shadow: 0 4px 24px rgba(0,0,0,0.3);
+      --radius: 16px; --radius-sm: 10px; --radius-xs: 6px;
+    }
+    [data-theme="light"] {
+      --bg: #f8fafc; --surface: #ffffff; --surface2: #f1f5f9; --surface3: #e2e8f0;
+      --border: #cbd5e1; --border-light: #94a3b8;
+      --text: #1e293b; --text-dim: #475569; --text-muted: #94a3b8; --white: #0f172a;
+      --green-dim: rgba(52,211,153,0.15); --yellow-dim: rgba(251,191,36,0.15);
+      --red-dim: rgba(248,113,113,0.15); --blue-dim: rgba(96,165,250,0.15);
+      --purple-dim: rgba(167,139,250,0.15); --orange-dim: rgba(251,146,60,0.15);
+      --shadow: 0 4px 24px rgba(0,0,0,0.08);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.6; }
+
+    /* Header */
+    .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px); }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .header-title { font-size: 14px; font-weight: 700; color: var(--white); }
+    .header-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+    .header-right { display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--text-muted); }
+    .theme-toggle { background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; font-size: 11px; color: var(--text-dim); cursor: pointer; }
+    .theme-toggle:hover { border-color: var(--blue); color: var(--blue); }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+
+    /* KPI row */
+    .kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
+    .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; text-align: center; position: relative; overflow: hidden; }
+    .kpi::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+    .kpi-green::before { background: var(--gradient-green); }
+    .kpi-blue::before { background: var(--gradient-blue); }
+    .kpi-orange::before { background: linear-gradient(135deg, #f59e0b, #fb923c); }
+    .kpi-red::before { background: linear-gradient(135deg, #ef4444, #f87171); }
+    .kpi-purple::before { background: linear-gradient(135deg, #8b5cf6, #a78bfa); }
+    .kv { font-size: 28px; font-weight: 800; line-height: 1.2; }
+    .kl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 500; margin-top: 4px; }
+    .kt { font-size: 10px; margin-top: 2px; font-weight: 600; }
+
+    /* Layout */
+    .grid-2col { display: grid; grid-template-columns: 1fr 340px; gap: 14px; margin-bottom: 16px; }
+    .grid-2equal { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+    .grid-flow { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 16px; }
+    .grid-activity { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+
+    /* Panel base */
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; }
+    .panel-title { font-size: 12px; font-weight: 700; color: var(--white); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .chip { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 100px; }
+    .chip-green { background: var(--green-dim); color: var(--green); }
+    .chip-blue { background: var(--blue-dim); color: var(--blue); }
+    .chip-red { background: var(--red-dim); color: var(--red); }
+    .chip-yellow { background: var(--yellow-dim); color: var(--yellow); }
+    .chip-purple { background: var(--purple-dim); color: var(--purple); }
+
+    /* Execution panel */
+    .exec-subview { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .exec-subview:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+    .exec-subview-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .exec-label { font-size: 12px; font-weight: 700; color: var(--white); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .exec-progress-badge { font-size: 13px; font-weight: 800; color: var(--green); }
+    .sprint-status-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 100px; letter-spacing: 0.04em; }
+    .sprint-activo { background: var(--green-dim, rgba(34,197,94,0.15)); color: var(--green, #22c55e); }
+    .sprint-finalizado { background: var(--blue-dim, rgba(59,130,246,0.15)); color: var(--blue, #60a5fa); }
+    .exec-bar { height: 6px; background: var(--surface3); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+    .exec-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+    .exec-table { display: flex; flex-direction: column; gap: 4px; }
+    .exec-row { display: flex; align-items: center; gap: 10px; padding: 4px 8px; border-radius: var(--radius-xs); font-size: 11px; }
+    .exec-row:hover { background: var(--surface2); }
+    .exec-issue { font-weight: 700; color: var(--blue); min-width: 48px; }
+    .exec-slug { color: var(--text-dim); flex: 1; }
+    .exec-size { min-width: 24px; text-align: center; }
+    .exec-status { font-size: 12px; }
+    .exec-card { display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--surface2); border-radius: var(--radius-xs); margin-bottom: 6px; }
+    .exec-card-avatar { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+    .exec-card-info { flex: 1; min-width: 0; }
+    .exec-card-name { font-size: 12px; font-weight: 600; color: var(--white); }
+    .exec-card-pct { font-size: 16px; font-weight: 800; }
+    .exec-adhoc-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px; }
+    .exec-adhoc-id { font-weight: 600; color: var(--text-dim); min-width: 64px; font-family: monospace; }
+    .exec-adhoc-action { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .exec-adhoc-meta { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
+
+    /* Agent cards */
+    .agent-card { display: flex; gap: 12px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; transition: border-color 0.2s; }
+    .agent-card:hover { border-color: var(--border-light); }
+    .agent-avatar { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+    .agent-info { flex: 1; min-width: 0; }
+    .agent-name { font-weight: 700; font-size: 13px; color: var(--white); }
+    .agent-status { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 100px; border: 1px solid; white-space: nowrap; }
+    .agent-meta { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+    .agent-action { font-size: 11px; color: var(--text-dim); margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+    /* Flow graph */
+    .flow-graph-svg { overflow: visible; }
+    .flow-node:hover circle { filter: brightness(1.4) drop-shadow(0 0 10px rgba(255,255,255,0.35)); }
+    .flow-node:hover text { fill: var(--white) !important; }
+
+    /* Feed */
+    .feed-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; max-height: 400px; overflow-y: auto; }
+    .feed-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: var(--radius-xs); margin-bottom: 2px; transition: background 0.15s; }
+    .feed-item:hover { background: var(--surface2); }
+    .feed-blocked { background: var(--red-dim) !important; border-left: 3px solid var(--red); }
+    .feed-time { font-size: 10px; color: var(--text-muted); font-weight: 600; min-width: 40px; flex-shrink: 0; font-family: 'SF Mono', 'Cascadia Code', monospace; }
+    .feed-icon { font-size: 14px; flex-shrink: 0; width: 20px; text-align: center; }
+    .feed-body { font-size: 11px; color: var(--text-dim); flex: 1; min-width: 0; }
+    .feed-agent { font-weight: 700; color: var(--white); margin-right: 4px; }
+    .feed-tool { background: var(--blue-dim); color: var(--blue); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 600; margin-right: 4px; }
+    .feed-target { color: var(--text-dim); word-break: break-all; }
+    .feed-reason { color: var(--red); font-weight: 600; }
+
+    /* Metrics */
+    .metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+    .metric-item { text-align: center; padding: 8px; background: var(--surface2); border-radius: var(--radius-xs); }
+    .metric-value { font-size: 18px; font-weight: 800; line-height: 1.3; }
+    .metric-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-weekly { margin-top: 8px; }
+    .metric-weekly-header { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-bottom: 4px; }
+    .metric-gauge { height: 8px; background: var(--surface3); border-radius: 4px; overflow: hidden; }
+    .metric-gauge-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+
+    /* Permissions */
+    .perm-summary { display: flex; gap: 12px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+    .perm-stat { display: flex; flex-direction: column; align-items: center; flex: 1; }
+    .perm-stat-val { font-size: 18px; font-weight: 800; }
+    .perm-stat-lbl { font-size: 9px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .perm-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+    .perm-item:last-child { border-bottom: none; }
+    .perm-status { width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; margin-top: 2px; }
+    .perm-auto { background: var(--green-dim); color: var(--green); }
+    .perm-telegram { background: var(--blue-dim); color: var(--blue); }
+    .perm-console { background: var(--purple-dim); color: var(--purple); }
+    .perm-denied { background: var(--red-dim); color: var(--red); }
+    .perm-pending { background: var(--yellow-dim); color: var(--yellow); animation: pulse 2s infinite; }
+    .perm-method { font-size: 9px; font-weight: 700; color: var(--text-muted); width: 32px; flex-shrink: 0; text-align: center; margin-top: 3px; }
+    .perm-detail { flex: 1; min-width: 0; }
+    .perm-row1 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .perm-tool { font-size: 11px; font-weight: 600; color: var(--text); }
+    .perm-severity { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: var(--surface2); white-space: nowrap; }
+    .perm-msg { font-size: 10px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: block; margin-top: 2px; }
+    .perm-origin { font-size: 9px; color: var(--text-muted); margin-top: 2px; display: flex; align-items: center; gap: 4px; }
+    .perm-issue { color: var(--blue); font-weight: 600; }
+    .issue-link { color: var(--accent-blue, #60a5fa); text-decoration: none; border-bottom: 1px solid var(--accent-blue, #60a5fa); cursor: pointer; transition: color 0.2s, border-bottom-color 0.2s; }
+    .issue-link:hover { color: var(--accent-bright, #93c5fd); border-bottom-color: var(--accent-bright, #93c5fd); }
+    .gantt-bar-link:hover rect { filter: brightness(1.2); cursor: pointer; }
+    .perm-age { font-size: 10px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; margin-top: 2px; }
+    .perm-patterns { font-size: 10px; color: var(--text-dim); margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .tasks-progress-bar { height: 4px; background: var(--surface3); border-radius: 2px; margin-bottom: 12px; overflow: hidden; }
+    .tasks-progress-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
+
+    /* CI */
+    .ci-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .ci-row:last-child { border-bottom: none; }
+    .ci-icon { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; }
+    .ci-ok { background: var(--green-dim); }
+    .ci-fail { background: var(--red-dim); }
+    .ci-run { background: var(--yellow-dim); }
+    .ci-text { flex: 1; font-size: 11px; color: var(--text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ci-text strong { color: var(--text); font-weight: 600; }
+    .ci-time { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+
+    /* Alerts */
+    .alerts-panel { margin-bottom: 16px; }
+    .alert-item { padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid; border-radius: var(--radius-xs); margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
+
+    /* Sparkline */
+    .sparkline-svg { width: 100%; height: 50px; }
+
+    /* Blocked states */
+    .agent-blocked { border-color: var(--red) !important; border-left: 3px solid var(--red); animation: pulse-blocked 2s infinite; }
+    .agent-status-blocked { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,113,113,0.4); font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 100px; white-space: nowrap; animation: pulse-red 1.5s infinite; }
+
+    /* Empty state */
+    .empty-state { font-size: 12px; color: var(--text-muted); font-style: italic; padding: 12px 0; text-align: center; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .kpi-row { grid-template-columns: repeat(3, 1fr); }
+      .grid-2col, .grid-2equal, .grid-flow, .grid-activity { grid-template-columns: 1fr; }
+      .kv { font-size: 22px; }
+      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 480px) {
+      .kpi-row { grid-template-columns: repeat(2, 1fr); }
+      .container { padding: 8px; }
+      .feed-panel { max-height: 300px; }
+    }
+
+    /* Animations */
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes pulse-blocked { 0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); } 50% { box-shadow: 0 0 12px 2px rgba(248,113,113,0.15); } }
+    @keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <div class="header-dot"></div>
+      <div class="header-title">Intrale Monitor</div>
+    </div>
+    <div class="header-right">
+      <span id="update-time">Actualizado hace 0s</span>
+      <span>&middot; Auto-refresh ON</span>
+      <button class="theme-toggle" onclick="toggleTheme()">&#9790; / &#9788;</button>
+    </div>
+  </div>
+
+  <div class="container">
+
+    <!-- Alerts -->
+    ${data.alerts.length > 0 ? '<div class="alerts-panel">' + alertsHtml + '</div>' : ''}
+
+    <!-- KPI Row (clickeable → scroll al panel) -->
+    <div class="kpi-row">
+      <a href="#" onclick="document.querySelector('[data-panel=exec]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-green" style="text-decoration:none;cursor:pointer;">
+        <div class="kv" style="color:var(--green)">${data.activeSessions}</div>
+        <div class="kl">Agentes activos</div>
+        <div class="kt" style="color:var(--green)">${data.idleSessions > 0 ? data.idleSessions + ' idle' : 'Todos trabajando'}</div>
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=activity]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-blue" style="text-decoration:none;cursor:pointer;">
+        <div class="kv" style="color:var(--blue)">${permTotal}</div>
+        <div class="kl">Permisos</div>
+        <div class="kt" style="color:${permStats.pending > 0 ? 'var(--yellow)' : 'var(--green)'}">${permStats.pending > 0 ? permStats.pending + ' pendiente(s)' : permStats.auto + ' auto'}</div>
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=ci]').scrollIntoView({behavior:'smooth'});return false;" class="kpi ${data.ciStatus === 'ok' ? 'kpi-green' : data.ciStatus === 'fail' ? 'kpi-red' : data.ciStatus === 'unknown' ? 'kpi-blue' : 'kpi-orange'}" style="text-decoration:none;cursor:pointer;">
+        <div class="kv" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : data.ciStatus === 'unknown' ? 'var(--text-muted)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? '&#10003;' : data.ciStatus === 'fail' ? '&#10007;' : data.ciStatus === 'unknown' ? '&#8212;' : '&#9203;'}</div>
+        <div class="kl">CI / CD</div>
+        <div class="kt" style="color:${data.ciStatus === 'ok' ? 'var(--green)' : data.ciStatus === 'fail' ? 'var(--red)' : data.ciStatus === 'unknown' ? 'var(--text-muted)' : 'var(--yellow)'}">${data.ciStatus === 'ok' ? 'Build OK' : data.ciStatus === 'fail' ? 'Build FAIL' : data.ciStatus === 'unknown' ? 'Sin ejecuciones recientes' : 'En curso...'}</div>
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=sessions]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-orange" style="text-decoration:none;cursor:pointer;">
+        <div class="kv" style="color:var(--orange)">${data.totalActions}</div>
+        <div class="kl">Acciones hoy</div>
+        <div class="kt" style="color:var(--orange)">${data.velocity[0] || 0} esta hora</div>
+      </a>
+      <a href="#" onclick="document.querySelector('[data-panel=metrics]').scrollIntoView({behavior:'smooth'});return false;" class="kpi kpi-purple" style="text-decoration:none;cursor:pointer;">
+        <div class="kv" style="color:${data.alerts.length > 0 ? 'var(--red)' : 'var(--green)'}">${data.alerts.length}</div>
+        <div class="kl">Alertas</div>
+        <div class="kt" style="color:${data.alerts.length > 0 ? 'var(--red)' : 'var(--green)'}">${data.alerts.length > 0 ? data.alerts.length + ' activa(s)' : 'Todo limpio'}</div>
+      </a>
+    </div>
+
+    <!-- Ejecución & Agentes (tarjetas unificadas, ancho completo) -->
+    <div class="panel" data-panel="exec" style="margin-bottom:16px;">
+      <div class="panel-title">Ejecuci&oacute;n &amp; Agentes</div>
+      ${unifiedAgentsHtml}
+    </div>
+
+    <!-- Fila 1: Flujo de agentes (ancho completo) #1378 -->
+    <div class="grid-flow" data-panel="sessions">
+      <div class="panel">
+        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Flujo de agentes <span class="chip chip-blue">${data.agentNodes.length} nodos</span></span>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted);cursor:pointer;font-weight:400;">
+            <input type="checkbox" id="toggle-main-flow" style="cursor:pointer;" onchange="toggleMainFlow(this.checked)">
+            Mostrar flujo Main${data.agentTransitions.some(t => t.from === 'Claude' || t.from === 'Main') ? '' : ' <span style="opacity:0.5">(sin actividad)</span>'}
+          </label>
+        </div>
+        ${flowGraphHtml}
+      </div>
+    </div>
+
+    <!-- Fila 2: Actividad en vivo | Permisos #1378 -->
+    <div class="grid-activity" data-panel="activity">
+      <div class="feed-panel" id="activity-feed">
+        <div class="panel-title">Actividad en vivo <span class="chip ${data.blockingRelations.length > 0 ? 'chip-red' : 'chip-green'}">${data.blockingRelations.length > 0 ? data.blockingRelations.length + ' bloq.' : 'Sin bloqueos'}</span></div>
+        ${feedHtml}
+      </div>
+      <div class="panel">
+        <div class="panel-title">Permisos <span class="chip chip-blue">${permTotal} total</span></div>
+        ${permissionsHtml}
+      </div>
+    </div>
+
+    <!-- Fila 3: Uso de agentes | Métricas de agentes #1378 -->
+    <div class="grid-2equal" data-panel="metrics">
+      <div class="panel">
+        <div class="panel-title">Uso de agentes <span class="chip chip-purple">${totalSkillInvocations} inv.</span></div>
+        ${metricsHtml}
+      </div>
+      <div class="panel">
+        <div class="panel-title">M&eacute;tricas de agentes <span class="chip chip-purple">${metricsToShow.length} ses.</span></div>
+        ${agentMetricsHtml}
+      </div>
+    </div>
+
+    <!-- Roadmap Gantt (#1382) -->
+    <div class="panel" style="margin-bottom:16px;" data-panel="roadmap">
+      <div class="panel-title">Roadmap <span class="chip chip-purple">${roadmapNumSprints} sprints</span></div>
+      <div style="overflow-x:auto;overflow-y:hidden;max-width:100%;padding-bottom:8px;">
+        ${ganttHtml}
+      </div>
+    </div>
+
+    <!-- CI/CD — siempre visible (#1413) -->
+    <div class="panel" style="margin-bottom:16px;" data-panel="ci">
+      <div class="panel-title">CI / CD <span class="chip ${data.ciStatus === 'ok' ? 'chip-green' : data.ciStatus === 'fail' ? 'chip-red' : 'chip-blue'}">${data.ciRuns.length} ejecuciones</span></div>
+      ${ciHtml}
+    </div>
+
+  </div>
+
+  <script>
+    function toggleTheme() {
+      var html = document.documentElement;
+      var current = html.getAttribute('data-theme');
+      html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+      localStorage.setItem('theme', html.getAttribute('data-theme'));
+    }
+    var saved = localStorage.getItem('theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+
+    // Auto-scroll feed
+    var feed = document.getElementById('activity-feed');
+    if (feed) { feed.scrollTop = 0; }
+
+    // Toggle Main flow visibility (default: hidden)
+    function toggleMainFlow(show) {
+      document.querySelectorAll('[data-flow-root="main"]').forEach(function(el) {
+        el.style.display = show ? '' : 'none';
+      });
+      localStorage.setItem('showMainFlow', show ? '1' : '0');
+    }
+    // Apply saved preference (default: hidden)
+    (function() {
+      var show = localStorage.getItem('showMainFlow') === '1';
+      var cb = document.getElementById('toggle-main-flow');
+      if (cb) cb.checked = show;
+      toggleMainFlow(show);
+    })();
+
+    // Flow graph: hover effect handled by CSS (no JS transform/scale)
+    document.querySelectorAll('.flow-node').forEach(function(node) {
+    });
+
+    // SSE auto-refresh con polling real-time (#1212)
+    if (!location.search.includes('nosse=1')) {
+      var lastUpdate = Date.now();
+      var lastReload = Date.now();
+      var evtSource = new EventSource('/events');
+      evtSource.onmessage = function(event) {
+        lastUpdate = Date.now();
+        var data = JSON.parse(event.data);
+        // Actualizar KPIs en vivo sin recargar la página
+        if (data.activeSessions !== undefined) {
+          var kpis = document.querySelectorAll('.kv');
+          if (kpis[0]) kpis[0].textContent = data.activeSessions;
+        }
+        // Recargar página completa cada 30s para refrescar todos los paneles
+        if (data.reload && (Date.now() - lastReload > 30000)) {
+          lastReload = Date.now();
+          location.reload();
+        }
+      };
+      evtSource.onerror = function() {
+        document.getElementById('update-time').textContent = 'Desconectado...';
+        // Reconectar automáticamente después de 5s
+        setTimeout(function() {
+          evtSource.close();
+          evtSource = new EventSource('/events');
+        }, 5000);
+      };
+      setInterval(function() {
+        var secs = Math.floor((Date.now() - lastUpdate) / 1000);
+        document.getElementById('update-time').textContent = 'Actualizado hace ' + secs + 's';
+      }, 1000);
+    }
+
+    // --- Flow graph: click-to-filter ---
+    var flowFilterActive = false;
+    window.flowClickNode = function(name) {
+      console.log('[flow] flowClickNode called with:', name);
+      if (flowFilterActive) window.flowResetFilter();
+      localStorage.setItem('flowFilterNode', name);
+      // BFS to find all connected nodes
+      var adj = {};
+      document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+        var f = g.getAttribute('data-from'), t = g.getAttribute('data-to');
+        if (!f || !t) return;
+        if (!adj[f]) adj[f] = [];
+        if (!adj[t]) adj[t] = [];
+        adj[f].push(t);
+        adj[t].push(f);
+      });
+      // Determine if clicked node is an agent root (Agente N) or a skill
+      var isAgent = /^Agente\s+/i.test(name);
+      var isStart = name === 'Start';
+      // Collect relevant agent roots for filtering
+      var relevantRoots = {};
+      if (isAgent) {
+        relevantRoots[name] = true;
+      } else if (isStart) {
+        // Start connects to all agents
+        document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+          var root = g.getAttribute('data-agent-root');
+          if (root) relevantRoots[root] = true;
+        });
+      } else {
+        // Skill node: find which agent roots pass through this skill
+        document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+          var f = g.getAttribute('data-from'), t = g.getAttribute('data-to');
+          var root = g.getAttribute('data-agent-root');
+          if (root && (f === name || t === name)) relevantRoots[root] = true;
+        });
+      }
+      // Collect all edges belonging to relevant agent roots
+      var visibleEdges = new Set();
+      var visited = {};
+      visited[name] = true;
+      if (isStart) visited['Start'] = true;
+      document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+        var root = g.getAttribute('data-agent-root');
+        if (relevantRoots[root]) {
+          visibleEdges.add(g);
+          var f = g.getAttribute('data-from'), t = g.getAttribute('data-to');
+          visited[f] = true;
+          visited[t] = true;
+        }
+      });
+      // Also include Start→Agent edges for relevant agents
+      document.querySelectorAll('.flow-edge-group').forEach(function(g) {
+        var f = g.getAttribute('data-from'), t = g.getAttribute('data-to');
+        if (f === 'Start' && relevantRoots[t]) { visibleEdges.add(g); visited['Start'] = true; }
+      });
+      console.log('[flow] filter:', name, '| roots:', Object.keys(relevantRoots), '| nodes:', Object.keys(visited).length, '| edges:', visibleEdges.size);
+      flowFilterActive = true;
+      document.querySelectorAll('.flow-node').forEach(function(el) {
+        var n = el.getAttribute('data-agent');
+        el.style.opacity = visited[n] ? '1' : '0.08';
+      });
+      document.querySelectorAll('.flow-edge-group').forEach(function(el) {
+        el.style.opacity = visibleEdges.has(el) ? '1' : '0.05';
+      });
+      var btn = document.getElementById('flow-reset-btn');
+      if (btn) btn.style.display = '';
+    };
+    window.flowResetFilter = function() {
+      flowFilterActive = false;
+      localStorage.removeItem('flowFilterNode');
+      document.querySelectorAll('.flow-node').forEach(function(el) { el.style.opacity = ''; });
+      document.querySelectorAll('.flow-edge-group').forEach(function(el) { el.style.opacity = ''; });
+      var btn = document.getElementById('flow-reset-btn');
+      if (btn) btn.style.display = 'none';
+      var show = localStorage.getItem('showMainFlow') === '1';
+      toggleMainFlow(show);
+    };
+    // Restore filter after page reload (SSE triggers location.reload every 30s)
+    (function() {
+      var saved = localStorage.getItem('flowFilterNode');
+      if (saved) { setTimeout(function() { flowClickNode(saved); }, 200); }
+    })();
+    // SVG click delegation — only on the SVG element, not the whole document
+    var flowSvg = document.querySelector('.flow-graph-svg');
+    if (flowSvg) {
+      flowSvg.addEventListener('click', function(ev) {
+        var el = ev.target;
+        for (var i = 0; i < 5 && el && el !== flowSvg; i++) {
+          var agent = el.getAttribute && el.getAttribute('data-agent');
+          if (agent) {
+            ev.stopPropagation();
+            flowClickNode(agent);
+            return;
+          }
+          el = el.parentNode;
+        }
+      });
+    }
+
+    // Section filter — muestra solo el panel de la ruta especificada (#1765)
+    (function() {
+      var sec = '${section || ""}';
+      if (!sec) return;
+      var pm = {overview:['exec'],flow:['sessions'],activity:['activity','metrics'],roadmap:['roadmap'],cicd:['ci']};
+      var ps = pm[sec] || [];
+      if (!ps.length) return;
+      document.querySelectorAll("[data-panel]").forEach(function(el) {
+        if (ps.indexOf(el.getAttribute("data-panel")) === -1) el.style.display = "none";
+      });
+      var kr = document.querySelector(".kpi-row");
+      if (kr) kr.style.display = sec === "overview" ? "" : "none";
+      var al = document.querySelector(".alerts-panel");
+      if (al) al.style.display = sec === "overview" ? "" : "none";
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+
+// --- Rich agent log builder ---
+// Dado un issueId, reúne sesiones, timeline, gates y resumen estructurado para /api/logs
+function buildRichAgentLog(agentId) {
+  const issueStr = String(agentId);
+
+  // 1. Directorios de sesiones (repo principal + worktrees + archive últimos 5 sprints)
+  const sessionDirs = [SESSIONS_DIR];
+  try {
+    const parentDir = path.resolve(REPO_ROOT, "..");
+    const baseName = path.basename(REPO_ROOT);
+    const siblings = fs.readdirSync(parentDir).filter(d =>
+      d.startsWith(baseName + ".agent-") || d.startsWith(baseName + ".codex-"));
+    for (const s of siblings) {
+      const wt = path.join(parentDir, s, ".claude", "sessions");
+      if (fs.existsSync(wt)) sessionDirs.push(wt);
+    }
+  } catch {}
+  try {
+    if (fs.existsSync(SESSIONS_ARCHIVE_ROOT)) {
+      const subs = fs.readdirSync(SESSIONS_ARCHIVE_ROOT).filter(d => d.startsWith("SPR-"));
+      for (const s of subs.slice(-5)) {
+        const d = path.join(SESSIONS_ARCHIVE_ROOT, s);
+        if (fs.existsSync(d)) sessionDirs.push(d);
+      }
+    }
+  } catch {}
+
+  // 2. Colectar sesiones con branch agent/<id>-* o feature/<id>-* o bugfix/<id>-*
+  const sessions = [];
+  const seenFiles = new Set();
+  for (const dir of sessionDirs) {
+    if (!fs.existsSync(dir)) continue;
+    let files = [];
+    try { files = fs.readdirSync(dir).filter(f => f.endsWith(".json")); } catch { continue; }
+    for (const f of files) {
+      if (seenFiles.has(f)) continue;
+      const sess = readJson(path.join(dir, f));
+      if (!sess) continue;
+      if (sess.type && sess.type !== "parent") continue;
+      const m = (sess.branch || "").match(/^(?:agent|feature|bugfix)\/(\d+)/);
+      if (!m || m[1] !== issueStr) continue;
+      seenFiles.add(f);
+      sessions.push(sess);
+    }
+  }
+  // Ordenar por started_ts desc (intento más reciente primero)
+  sessions.sort((a, b) => new Date(b.started_ts || 0) - new Date(a.started_ts || 0));
+  const primary = sessions[0] || null;
+
+  // 3. Timeline estructurado desde activity-log.jsonl filtrado por sesión primaria
+  let timeline = [];
+  if (primary) {
+    const shortId = String(primary.id || primary.full_id || "").slice(0, 8);
+    const fullId = String(primary.full_id || primary.id || "");
+    try {
+      if (fs.existsSync(LOG_FILE)) {
+        const raw = fs.readFileSync(LOG_FILE, "utf8").trim().split("\n");
+        for (const line of raw) {
+          try {
+            const j = JSON.parse(line);
+            if (!j || !j.session) continue;
+            if (j.session === shortId || j.session === fullId) timeline.push(j);
+          } catch {}
+        }
+      }
+    } catch {}
+    timeline = timeline.slice(-30).reverse(); // últimos 30 en orden desc
+  }
+
+  // 4. Gates desde delivery-gate-audit.jsonl (último registro para el issue)
+  let gates = null;
+  try {
+    if (fs.existsSync(DELIVERY_GATE_AUDIT_FILE)) {
+      const raw = fs.readFileSync(DELIVERY_GATE_AUDIT_FILE, "utf8").trim().split("\n");
+      let latest = null;
+      for (const line of raw) {
+        try {
+          const j = JSON.parse(line);
+          if (String(j.issue) === issueStr) {
+            if (!latest || new Date(j.ts) > new Date(latest.ts)) latest = j;
+          }
+        } catch {}
+      }
+      if (latest) {
+        const details = latest.details || {};
+        const ev = details.evidence || {};
+        const vid = details.videoEvidence || {};
+        gates = {
+          result: latest.result || null,
+          summary: latest.summary || null,
+          ts: latest.ts || null,
+          tester: ev.tester ? { status: "pass", ts: ev.tester.ts || null, session: ev.tester.session || null } : { status: "pending" },
+          security: ev.security ? { status: "pass", ts: ev.security.ts || null, session: ev.security.session || null } : { status: "pending" },
+          po: ev.po ? { status: "pass", ts: ev.po.ts || null, session: ev.po.session || null } : { status: "pending" },
+          video: {
+            status: vid.hasVideos ? "pass" : (details.videoWarning ? "warn" : "pending"),
+            count: vid.count || 0,
+            warning: details.videoWarning || null,
+          },
+          ci: {
+            status: details.ciWarning ? "warn" : (latest.result === "pass" ? "pass" : "pending"),
+            warning: details.ciWarning || null,
+          },
+        };
+      }
+    }
+  } catch {}
+
+  // 5. Raw tail (compat: últimas líneas de scripts/logs/agente_<id>.log si existe)
+  let rawTail = [];
+  try {
+    const logFile = path.join(REPO_ROOT, "scripts", "logs", "agente_" + issueStr + ".log");
+    if (fs.existsSync(logFile)) {
+      const content = fs.readFileSync(logFile, "utf8").trim();
+      if (content) rawTail = content.split("\n").filter(l => l.trim()).slice(-50);
+    }
+  } catch {}
+
+  // 6. Summary computado (badge de estado priorizado por el job "¿por qué no avanza?")
+  let summary = null;
+  if (primary) {
+    const lastActMs = new Date(primary.last_activity_ts || primary.started_ts).getTime();
+    const elapsed = Date.now() - lastActMs;
+    const STALLED_MS = 10 * 60 * 1000; // 10 min sin actividad = stalled
+    let badge;
+    if (primary.status === "done") {
+      badge = ((primary.action_count || 0) < 5) ? "failed_early" : "done";
+    } else if (elapsed > STALLED_MS) {
+      badge = "stalled";
+    } else {
+      badge = "running";
+    }
+    const tc = primary.tool_counts || {};
+    const topTools = Object.entries(tc).sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([name, count]) => ({ name, count }));
+    const tasks = Array.isArray(primary.current_tasks) ? primary.current_tasks : [];
+    const tasksCompleted = tasks.filter(t => t.status === "completed").length;
+    const tasksInProgress = tasks.find(t => t.status === "in_progress") || null;
+    const mf = Array.isArray(primary.modified_files) ? primary.modified_files : [];
+    summary = {
+      badge,
+      branch: primary.branch || null,
+      session_id: primary.id || primary.full_id || null,
+      agent_name: primary.agent_name || null,
+      started_ts: primary.started_ts || null,
+      last_activity_ts: primary.last_activity_ts || null,
+      last_activity_age: formatAge(primary.last_activity_ts),
+      duration: formatDuration(primary.started_ts, primary.status === "done" ? lastActMs : null),
+      action_count: primary.action_count || 0,
+      sub_count: primary.sub_count || 0,
+      tokens_estimated: primary.tokens_estimated || 0,
+      skills_invoked: Array.isArray(primary.skills_invoked) ? primary.skills_invoked : [],
+      top_tools: topTools,
+      tool_counts: tc,
+      last_tool: primary.last_tool || null,
+      last_target: primary.last_target || null,
+      tasks_total: tasks.length,
+      tasks_completed: tasksCompleted,
+      task_in_progress: tasksInProgress ? {
+        subject: tasksInProgress.subject || tasksInProgress.activeForm || "",
+        steps: (tasksInProgress.metadata && tasksInProgress.metadata.steps) || null,
+        current_step: (tasksInProgress.metadata && tasksInProgress.metadata.current_step) || null,
+        completed_steps: (tasksInProgress.metadata && tasksInProgress.metadata.completed_steps) || null,
+      } : null,
+      modified_files_count: mf.length,
+    };
+  }
+
+  // 7. Intentos (todas las sesiones del issue, metadata liviana)
+  const attempts = sessions.map(s => ({
+    session_id: s.id || s.full_id,
+    started_ts: s.started_ts,
+    last_activity_ts: s.last_activity_ts,
+    status: s.status,
+    action_count: s.action_count || 0,
+    branch: s.branch,
+  }));
+
+  return {
+    agent: issueStr,
+    summary,
+    tasks: primary && Array.isArray(primary.current_tasks) ? primary.current_tasks : [],
+    modified_files: primary && Array.isArray(primary.modified_files) ? primary.modified_files : [],
+    timeline,
+    gates,
+    attempts,
+    rawTail,
+  };
+}
+
+// --- Logs page HTML (#1765) ---
+function renderLogsHTML(theme) {
+  const isDark = theme !== 'light';
+  const css = [
+    ':root{--bg:#0a0b10;--surface:#12141d;--surface2:#1a1d2b;--border:#2a2e42;--text:#e2e4ed;--text-dim:#8b8fa5;--text-muted:#555872;--white:#fff;--green:#34d399;--red:#f87171;--blue:#60a5fa;--yellow:#fbbf24;}',
+    '[data-theme="light"]{--bg:#f8fafc;--surface:#fff;--surface2:#f1f5f9;--border:#cbd5e1;--text:#1e293b;--text-dim:#475569;--text-muted:#94a3b8;--white:#0f172a;}',
+    '*{box-sizing:border-box;margin:0;padding:0;}',
+    'body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;}',
+    '.header{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100;}',
+    '.header-title{font-size:14px;font-weight:700;color:var(--white);}',
+    '.container{max-width:100%;margin:0 auto;padding:16px;}',
+    '.panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px;}',
+    '.panel-title{font-size:12px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px;}',
+    '.grid2{display:grid;grid-template-columns:260px 1fr;gap:16px;height:calc(100vh - 80px);}',
+    'table{width:100%;border-collapse:collapse;font-size:12px;}',
+    'th{padding:6px 10px;text-align:left;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);}',
+    'td{padding:6px 10px;border-bottom:1px solid var(--border);color:var(--text);}',
+    'tr:hover td{background:var(--surface2);}',
+    'tr.selected td{background:rgba(96,165,250,.1);border-left:2px solid var(--blue);}',
+    '.status-active{color:var(--green);font-weight:600;}.status-idle{color:var(--yellow);}.status-done,.status-dead{color:var(--text-muted);}',
+    '.grid2>.panel{display:flex;flex-direction:column;overflow:hidden;}',
+    '.grid2>.panel.rich-wrap{padding:0;}',
+    '.btn{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:4px 12px;font-size:11px;color:var(--text-dim);cursor:pointer;}',
+    '.btn:hover{border-color:var(--blue);color:var(--blue);}.btn.paused{background:rgba(251,191,36,.1);border-color:var(--yellow);color:var(--yellow);}',
+    '.empty-state{padding:40px 20px;text-align:center;color:var(--text-muted);font-size:12px;}',
+    '@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}',
+    '.dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;display:inline-block;margin-right:6px;}',
+    /* Rich log panel */
+    '.rich-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;}',
+    '.rich-hdr{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface2);}',
+    '.rich-hdr-title{font-size:14px;font-weight:700;color:var(--white);margin-bottom:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}',
+    '.rich-hdr-meta{font-size:11px;color:var(--text-muted);font-family:monospace;}',
+    '.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;}',
+    '.badge-running{background:rgba(96,165,250,.15);color:var(--blue);border:1px solid rgba(96,165,250,.4);animation:pulse 2s infinite;}',
+    '.badge-stalled{background:rgba(251,191,36,.15);color:var(--yellow);border:1px solid rgba(251,191,36,.4);}',
+    '.badge-done{background:rgba(52,211,153,.15);color:var(--green);border:1px solid rgba(52,211,153,.4);}',
+    '.badge-failed{background:rgba(248,113,113,.15);color:var(--red);border:1px solid rgba(248,113,113,.4);}',
+    '.badge-queued{background:var(--surface);color:var(--text-muted);border:1px solid var(--border);}',
+    '.rich-alerts{padding:0 16px;}',
+    '.rich-alert{padding:8px 12px;margin-top:10px;border-radius:6px;font-size:11px;font-weight:500;}',
+    '.rich-alert-warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.35);color:var(--yellow);}',
+    '.rich-alert-error{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.35);color:var(--red);}',
+    '.chips-row{display:flex;gap:6px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--border);}',
+    '.chip{background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:3px 10px;font-size:11px;color:var(--text-dim);display:inline-flex;align-items:center;gap:4px;white-space:nowrap;}',
+    '.chip b{color:var(--text);font-weight:700;}',
+    '.chip-skill{background:rgba(96,165,250,.1);border-color:rgba(96,165,250,.3);color:var(--blue);}',
+    '.gates-row{display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--border);align-items:center;flex-wrap:wrap;}',
+    '.gate{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:6px;font-size:11px;font-weight:600;background:var(--surface2);border:1px solid var(--border);color:var(--text-muted);}',
+    '.gate-pass{color:var(--green);border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.08);}',
+    '.gate-fail{color:var(--red);border-color:rgba(248,113,113,.35);background:rgba(248,113,113,.08);}',
+    '.gate-warn{color:var(--yellow);border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08);}',
+    '.tabs-row{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 16px;align-items:center;}',
+    '.tab{padding:10px 14px;font-size:11px;font-weight:600;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;text-transform:uppercase;letter-spacing:.05em;user-select:none;}',
+    '.tab:hover{color:var(--text-dim);}',
+    '.tab.active{color:var(--blue);border-bottom-color:var(--blue);}',
+    '.tab-controls{margin-left:auto;display:flex;gap:6px;padding:6px 0;}',
+    '.tab-content{flex:1;overflow-y:auto;padding:14px 16px;min-height:200px;}',
+    '.task-item{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px;color:var(--text);display:flex;align-items:flex-start;gap:6px;}',
+    '.task-item.in-progress{color:var(--blue);font-weight:600;}',
+    '.task-item.completed{color:var(--text-muted);}',
+    '.task-item.completed .task-subject{text-decoration:line-through;}',
+    '.task-icon{flex-shrink:0;font-family:monospace;}',
+    '.task-steps{margin:4px 0 4px 24px;font-size:11px;color:var(--text-dim);line-height:1.6;}',
+    '.timeline-entry{display:grid;grid-template-columns:70px 90px 1fr;gap:10px;padding:5px 0;font-size:11px;border-bottom:1px solid rgba(255,255,255,.04);align-items:start;}',
+    '.timeline-ts{color:var(--text-muted);font-variant-numeric:tabular-nums;font-family:monospace;}',
+    '.timeline-tool{color:var(--blue);font-weight:600;font-family:monospace;}',
+    '.timeline-target{color:var(--text-dim);font-family:monospace;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}',
+    '.file-item{padding:4px 0;font-family:monospace;font-size:11px;color:var(--text-dim);border-bottom:1px solid rgba(255,255,255,.04);}',
+    '.raw-pre{font-family:monospace;font-size:11px;color:var(--text-dim);white-space:pre-wrap;word-break:break-all;line-height:1.5;}',
+    '.raw-pre .raw-err{color:var(--red);}.raw-pre .raw-warn{color:var(--yellow);}',
+    '.attempts-row{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--border);font-size:10px;align-items:center;color:var(--text-muted);}',
+    '.attempt-btn{padding:2px 8px;border-radius:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);cursor:pointer;font-size:10px;}',
+    '.attempt-btn.active{background:rgba(96,165,250,.15);border-color:var(--blue);color:var(--blue);}'
+  ].join('');
+  const body = [
+    '<div class="header">',
+    '  <div style="display:flex;align-items:center;gap:10px;"><div class="dot"></div><div class="header-title">Intrale Monitor &mdash; Logs por agente</div></div>',
+    '  <div style="display:flex;gap:16px;font-size:11px;color:var(--text-muted);align-items:center;">',
+    '    <a href="/" style="color:var(--blue);text-decoration:none;">&larr; Overview</a>',
+    '    <span id="upd">Cargando...</span>',
+    '  </div>',
+    '</div>',
+    '<div class="container">',
+    '  <div class="grid2">',
+    '    <div class="panel">',
+    '      <div class="panel-title">Fuentes de logs</div>',
+    '      <table><thead><tr><th>#</th><th>Issue</th><th>Branch</th><th>Estado</th></tr></thead>',
+    '        <tbody id="agents-body"><tr><td colspan="4" class="empty-state">Cargando...</td></tr></tbody>',
+    '      </table>',
+    '    </div>',
+    '    <div class="panel rich-wrap">',
+    '      <div class="rich-panel" id="rich-panel">',
+    '        <div class="empty-state" id="empty-hint">Seleccion&aacute; un agente o log de sistema<br/><span style="font-size:10px;opacity:.7;">Ver\u00e1s resumen, gates de delivery, tareas, timeline y archivos modificados</span></div>',
+    '        <div id="rich-content" style="display:none;flex-direction:column;flex:1;overflow:hidden;">',
+    '          <div class="rich-hdr" id="rich-hdr"></div>',
+    '          <div class="rich-alerts" id="rich-alerts"></div>',
+    '          <div class="chips-row" id="chips-row"></div>',
+    '          <div class="gates-row" id="gates-row"></div>',
+    '          <div id="attempts-wrap"></div>',
+    '          <div class="tabs-row" id="tabs-row">',
+    '            <div class="tab active" data-tab="progreso" onclick="switchTab(\'progreso\')">Progreso</div>',
+    '            <div class="tab" data-tab="timeline" onclick="switchTab(\'timeline\')">Timeline</div>',
+    '            <div class="tab" data-tab="archivos" onclick="switchTab(\'archivos\')">Archivos</div>',
+    '            <div class="tab" data-tab="raw" onclick="switchTab(\'raw\')">Raw</div>',
+    '            <div class="tab-controls">',
+    '              <button class="btn" id="btn-pause" onclick="togglePause()">&#9208; Pausar</button>',
+    '              <button class="btn" onclick="exportLogs()">&#8595; Exportar</button>',
+    '            </div>',
+    '          </div>',
+    '          <div class="tab-content" id="tab-content"></div>',
+    '        </div>',
+    '      </div>',
+    '    </div>',
+    '  </div>',
+    '</div>'
+  ].join('\n');
+  const script = [
+    'var selAgent=null,paused=false,currentTab="progreso",richData=null;',
+    'function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}',
+    'function togglePause(){paused=!paused;var b=document.getElementById("btn-pause");if(b){b.innerHTML=paused?"\u25b6 Reanudar":"\u23f8 Pausar";b.className=paused?"btn paused":"btn";}}',
+    'function exportLogs(){var data=richData||{agent:selAgent,note:"sin datos"};var bl=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});var a=document.createElement("a");a.href=URL.createObjectURL(bl);a.download="log-"+(selAgent||"agent")+".json";a.click();}',
+    'function switchTab(name){currentTab=name;document.querySelectorAll("#tabs-row .tab").forEach(function(el){el.className="tab"+(el.getAttribute("data-tab")===name?" active":"");});renderTabContent();}',
+    'function badgeInfo(b){var m={running:["running","badge-running"],stalled:["stalled","badge-stalled"],done:["done","badge-done"],failed_early:["failed","badge-failed"],queued:["en cola","badge-queued"]};return m[b]||["?","badge-queued"];}',
+    'function fmtTokens(n){if(!n)return "0";if(n<1000)return n+"";if(n<1e6)return Math.round(n/1000)+"k";return (n/1e6).toFixed(1)+"M";}',
+    'function relTs(iso){var t=new Date(iso).getTime();if(!t)return "?";var diff=Math.floor((Date.now()-t)/1000);if(diff<60)return "hace "+diff+"s";if(diff<3600)return "hace "+Math.floor(diff/60)+"m";if(diff<86400){var h=Math.floor(diff/3600);var m=Math.floor(diff/60)%60;return "hace "+h+"h"+(m>0?" "+m+"m":"");}return "hace "+Math.floor(diff/86400)+"d";}',
+    'function renderHdr(d){var s=d.summary;var h="";if(!s){var hist=d.gates&&d.gates.result;var blabel=hist?(d.gates.result==="pass"?"hist\u00f3rico":"hist (fail)"):"en cola";var bclass=hist?(d.gates.result==="pass"?"badge-done":"badge-failed"):"badge-queued";var sub=hist?"Sesi\u00f3n archivada \u00b7 gates del audit":"Sin sesi\u00f3n activa ni hist\u00f3rica";h="<div class=\\"rich-hdr-title\\">#"+esc(d.agent)+" <span class=\\"badge "+bclass+"\\">"+blabel+"</span></div><div class=\\"rich-hdr-meta\\">"+sub+"</div>";}else{var bi=badgeInfo(s.badge);h="<div class=\\"rich-hdr-title\\">#"+esc(d.agent)+" "+esc(s.agent_name||"")+" <span class=\\"badge "+bi[1]+"\\">"+bi[0]+"</span></div>";h+="<div class=\\"rich-hdr-meta\\">"+esc(s.branch||"-")+" \u00b7 \u00faltima actividad "+esc(s.last_activity_age||"?")+" atr\u00e1s"+(d.attempts&&d.attempts.length>1?" \u00b7 "+d.attempts.length+" intentos":"")+"</div>";}document.getElementById("rich-hdr").innerHTML=h;}',
+    'function renderAlerts(d){var s=d.summary;var al="";if(s){if(s.badge==="stalled")al+="<div class=\\"rich-alert rich-alert-warn\\">\u26a0 Sin actividad hace "+esc(s.last_activity_age)+" \u2014 posible stall. \u00daltimo tool: "+esc(s.last_tool||"?")+"</div>";if(s.badge==="failed_early")al+="<div class=\\"rich-alert rich-alert-error\\">\u2717 Muerte prematura ("+(s.action_count||0)+" acciones) \u2014 posible fallo de infra</div>";}if(d.gates&&d.gates.result==="fail")al+="<div class=\\"rich-alert rich-alert-error\\">\u2717 Delivery gates fallaron: "+esc(d.gates.summary||"")+"</div>";document.getElementById("rich-alerts").innerHTML=al;}',
+    'function renderChips(d){var s=d.summary;var row=document.getElementById("chips-row");if(!s){row.innerHTML="";row.style.display="none";return;}row.style.display="flex";var c=[];if(s.duration)c.push("<span class=\\"chip\\"><b>\u23f1</b> "+esc(s.duration)+"</span>");if(s.tasks_total)c.push("<span class=\\"chip\\"><b>\u2611</b> "+s.tasks_completed+"/"+s.tasks_total+" tareas</span>");if(s.action_count)c.push("<span class=\\"chip\\"><b>\u26a1</b> "+s.action_count+" acciones</span>");if(s.top_tools&&s.top_tools.length){var tt=s.top_tools.map(function(t){return t.name+" "+t.count;}).join(" \u00b7 ");c.push("<span class=\\"chip\\"><b>\u{1f527}</b> "+esc(tt)+"</span>");}if(s.tokens_estimated)c.push("<span class=\\"chip\\"><b>\u{1f9e0}</b> ~"+fmtTokens(s.tokens_estimated)+" tok</span>");if(s.sub_count)c.push("<span class=\\"chip\\"><b>\u{1f916}</b> "+s.sub_count+" sub-agentes</span>");if(s.skills_invoked&&s.skills_invoked.length){s.skills_invoked.forEach(function(sk){c.push("<span class=\\"chip chip-skill\\">"+esc(sk)+"</span>");});}row.innerHTML=c.join("");}',
+    'function renderGates(d){var g=d.gates;var row=document.getElementById("gates-row");if(!g){row.innerHTML="<span style=\\"font-size:11px;color:var(--text-muted);\\">Sin delivery gates a\u00fan \u2014 agente no pas\u00f3 por /delivery</span>";return;}function cell(name,slot){var st=slot.status||"pending";var cls=st==="pass"?"gate-pass":(st==="fail"?"gate-fail":(st==="warn"?"gate-warn":""));var icon=st==="pass"?"\u2713":(st==="fail"?"\u2717":(st==="warn"?"\u26a0":"\u23f3"));var tip=slot.ts?" title=\\""+esc(slot.ts)+(slot.warning?" \u2014 "+esc(slot.warning):"")+"\\"":"";return "<span class=\\"gate "+cls+"\\""+tip+">"+icon+" "+name+"</span>";}var h=cell("Test",g.tester)+cell("Sec",g.security)+cell("PO",g.po)+cell("Video",g.video)+cell("CI",g.ci);if(g.result)h+="<span style=\\"margin-left:auto;font-size:10px;color:"+(g.result==="pass"?"var(--green)":"var(--red)")+";font-weight:700;text-transform:uppercase;\\">"+esc(g.result)+"</span>";row.innerHTML=h;}',
+    'function renderAttempts(d){var w=document.getElementById("attempts-wrap");if(!d.attempts||d.attempts.length<=1){w.innerHTML="";return;}var total=d.attempts.length;var shown=d.attempts.slice(0,8);var h="<div class=\\"attempts-row\\"><span>Intentos ("+total+"):</span>";shown.forEach(function(a,i){h+="<button class=\\"attempt-btn"+(i===0?" active":"")+"\\" title=\\""+esc(a.session_id)+" \u00b7 "+esc(a.started_ts)+" \u00b7 "+(a.action_count||0)+" acciones\\">#"+(total-i)+" "+esc(a.status||"?")+"</button>";});if(total>8)h+="<span style=\\"color:var(--text-muted);font-size:10px;margin-left:4px;\\">+"+(total-8)+" m\u00e1s</span>";h+="</div>";w.innerHTML=h;}',
+    'function renderProgresoTab(d){var s=d.summary;if(!s)return "<div class=\\"empty-state\\">Sin sesi\u00f3n. Agente en cola o no arranc\u00f3 todav\u00eda.</div>";var tasks=d.tasks||[];var h="";if(s.last_tool){h+="<div style=\\"font-size:11px;color:var(--text-dim);margin-bottom:12px;padding:8px;background:var(--surface2);border-radius:6px;\\"><div style=\\"color:var(--text-muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;\\">\u00daltimo tool ejecutado</div><b style=\\"color:var(--blue);\\">"+esc(s.last_tool)+"</b> \u2192 <span style=\\"font-family:monospace;\\">"+esc((s.last_target||"").slice(0,180))+"</span></div>";}if(!tasks.length){h+="<div class=\\"empty-state\\">Sin tareas registradas (el agente no us\u00f3 TaskCreate)</div>";return h;}tasks.forEach(function(t){var st=t.status||"pending";var icon=st==="completed"?"\u2611":(st==="in_progress"?"\u2611\u25b6":"\u2610");var cls=st==="completed"?"completed":(st==="in_progress"?"in-progress":"");h+="<div class=\\"task-item "+cls+"\\"><span class=\\"task-icon\\">"+icon+"</span><span class=\\"task-subject\\">"+esc(t.subject||t.activeForm||t.description||"Tarea")+"</span></div>";var meta=t.metadata||{};if(meta.steps&&st==="in_progress"){var steps=meta.steps;var curr=meta.current_step||0;var done=meta.completed_steps||[];var sh="<div class=\\"task-steps\\">";steps.forEach(function(stp,i){var ok=done.indexOf(stp)>=0;var ic=ok?"\u2713":(i+1===curr?"\u25b6":"\u25cb");sh+="<div>"+ic+" "+esc(stp)+"</div>";});sh+="</div>";h+=sh;}});return h;}',
+    'function renderTimelineTab(d){var tl=d.timeline||[];if(!tl.length)return "<div class=\\"empty-state\\">Sin eventos en activity-log para esta sesi\u00f3n</div>";var h="";tl.forEach(function(e){var target=(e.target||"").slice(0,200);h+="<div class=\\"timeline-entry\\"><div class=\\"timeline-ts\\" title=\\""+esc(e.ts)+"\\">"+relTs(e.ts)+"</div><div class=\\"timeline-tool\\">"+esc(e.tool||"?")+"</div><div class=\\"timeline-target\\">"+esc(target)+"</div></div>";});return h;}',
+    'function renderArchivosTab(d){var mf=d.modified_files||[];if(!mf.length)return "<div class=\\"empty-state\\">Sin archivos modificados registrados</div>";var h="<div style=\\"font-size:11px;color:var(--text-dim);margin-bottom:8px;\\"><b>"+mf.length+"</b> archivos modificados</div>";mf.forEach(function(f){h+="<div class=\\"file-item\\">"+esc(f)+"</div>";});return h;}',
+    'function renderRawTab(d){var lines=(d.rawTail&&d.rawTail.length)?d.rawTail:(d.lines||[]);if(!lines.length)return "<div class=\\"empty-state\\">Sin raw log<br/><span style=\\"font-size:10px;opacity:.7;\\">scripts/logs/agente_"+esc(d.agent||"?")+".log no existe</span></div>";var h="<div class=\\"raw-pre\\">";lines.forEach(function(l){var lo=String(l).toLowerCase();var cls=(lo.indexOf("error")>=0||lo.indexOf("fail")>=0)?"raw-err":(lo.indexOf("warn")>=0?"raw-warn":"");h+="<div class=\\""+cls+"\\">"+esc(l)+"</div>";});h+="</div>";return h;}',
+    'function renderTabContent(){var tc=document.getElementById("tab-content");if(!richData){tc.innerHTML="";return;}if(currentTab==="progreso")tc.innerHTML=renderProgresoTab(richData);else if(currentTab==="timeline")tc.innerHTML=renderTimelineTab(richData);else if(currentTab==="archivos")tc.innerHTML=renderArchivosTab(richData);else if(currentTab==="raw")tc.innerHTML=renderRawTab(richData);}',
+    'function renderSystemLog(d){var labels={"_commander":"Telegram Commander","_hooks":"Hooks (debug)","_activity":"Activity log","_watcher":"Agent watcher","_coordinator":"Agent Coordinator"};document.getElementById("rich-hdr").innerHTML="<div class=\\"rich-hdr-title\\">"+esc(labels[d.agent]||d.agent)+" <span class=\\"badge badge-queued\\">system</span></div><div class=\\"rich-hdr-meta\\">"+esc(d.file||"")+" \u00b7 "+(d.lines||[]).length+" l\u00edneas</div>";document.getElementById("rich-alerts").innerHTML="";document.getElementById("chips-row").innerHTML="";document.getElementById("chips-row").style.display="none";document.getElementById("gates-row").innerHTML="";document.getElementById("gates-row").style.display="none";document.getElementById("attempts-wrap").innerHTML="";switchTab("raw");}',
+    'function renderRich(d){richData=d;document.getElementById("empty-hint").style.display="none";document.getElementById("rich-content").style.display="flex";if(d.isSystem){renderSystemLog(d);return;}document.getElementById("chips-row").style.display="flex";document.getElementById("gates-row").style.display="flex";renderHdr(d);renderAlerts(d);renderChips(d);renderGates(d);renderAttempts(d);renderTabContent();}',
+    'function selA(id){selAgent=id;document.querySelectorAll("#agents-body tr").forEach(function(tr){tr.className=tr.getAttribute("data-id")===id?"selected":"";});fetchLogs(id);}',
+    'function fetchAgents(){fetch("/api/logs?agents=1").then(function(r){return r.json();}).then(function(d){var tb=document.getElementById("agents-body");var h="";var sysLogs=d.systemLogs||[];if(sysLogs.length){h+="<tr><td colspan=4 style=\\"font-size:10px;font-weight:700;color:var(--blue);letter-spacing:.04em;padding:8px 10px 4px;border:none;\\">SISTEMA</td></tr>";sysLogs.forEach(function(s){h+="<tr class=\\""+(s.id===selAgent?"selected":"")+"\\" data-id=\\""+esc(s.id)+"\\" onclick=\\"selA(\'"+s.id+"\')\\" style=cursor:pointer>"+"<td>\u2699</td><td>-</td>"+"<td style=font-size:11px;>"+esc(s.label)+"</td>"+"<td><span style=\\"color:var(--blue);\\">system</span></td></tr>";});}if(d.agents&&d.agents.length){var active=d.agents.filter(function(a){return a.status==="active"||a.status==="idle";});var done=d.agents.filter(function(a){return a.status!=="active"&&a.status!=="idle";});if(active.length){h+="<tr><td colspan=4 style=\\"font-size:10px;font-weight:700;color:var(--green);letter-spacing:.04em;padding:8px 10px 4px;border:none;\\">AGENTES ACTIVOS</td></tr>";active.forEach(function(a){h+=agentRow(a);});}if(done.length){h+="<tr><td colspan=4 style=\\"font-size:10px;font-weight:700;color:var(--text-muted);letter-spacing:.04em;padding:8px 10px 4px;border:none;\\">COMPLETADOS / HIST\\u00d3RICOS</td></tr>";done.forEach(function(a){h+=agentRow(a);});}}if(!h)h="<tr><td colspan=4 class=empty-state>Sin agentes</td></tr>";tb.innerHTML=h;}).catch(function(){});}',
+    'function agentRow(a){var sc=a.status==="active"?"status-active":(a.status==="idle"?"status-idle":"status-done");var issue=a.issue?"<a href=https://github.com/intrale/platform/issues/"+a.issue+" target=_blank style=color:var(--blue);>#"+a.issue+"</a>":"-";return "<tr class=\\""+(a.id===selAgent?"selected":"")+"\\" data-id=\\""+esc(a.id)+"\\" onclick=\\"selA(\'"+a.id+"\')\\" style=cursor:pointer>"+"<td>"+esc(a.numero||a.id)+"</td><td>"+issue+"</td>"+"<td style=font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap title=\\""+esc(a.branch||"")+"\\">"+esc(a.label||a.branch||"-")+"</td>"+"<td><span class=\\""+sc+"\\">"+esc(a.status||"?")+"</span></td></tr>";}',
+    'function fetchLogs(id){if(paused||!id)return;fetch("/api/logs?agent="+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){if(d&&!d.error)renderRich(d);document.getElementById("upd").textContent="Actualizado "+new Date().toLocaleTimeString("es-AR",{hour12:false});}).catch(function(){});}',
+    'setInterval(function(){fetchAgents();if(selAgent&&!paused)fetchLogs(selAgent);},3000);',
+    'fetchAgents();',
+    '(function(){var p=new URLSearchParams(location.search);var pre=p.get("select");if(pre){selAgent=pre;fetchLogs(pre);}})();'
+  ].join('\n');
+  return '<!DOCTYPE html><html lang="es" data-theme="' + (isDark ? 'dark' : 'light') + '">'
+    + '<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>'
+    + '<title>Intrale Monitor \u2014 Logs</title>'
+    + '<style>' + css + '</style>'
+    + '</head><body>'
+    + body
+    + '<script>' + script + '<\/script>'
+    + '</body></html>';
+}
+
+// --- HTTP Server ---
+const sseClients = new Set();
+
+function handleRequest(req, res) {
+  const url = new URL(req.url, "http://localhost:" + PORT);
+  const pathname = url.pathname;
+
+  lastActivityTs = Date.now();
+
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
+  if (pathname === "/" || pathname === "/index.html") {
+    const theme = url.searchParams.get("theme") || "dark";
+    const mockMode = url.searchParams.get("mock");
+    const data = mockMode === "ejecucion" ? mockEjecucionData() : collectData();
+    let html;
+    const htmlCacheFresh = cachedHtml && (Date.now() - cachedHtmlDataTs < 5000) && !mockMode;
+    if (htmlCacheFresh) {
+      html = cachedHtml;
+    } else {
+      try {
+        html = renderHTML(data, theme);
+        if (!mockMode) { cachedHtml = html; cachedHtmlDataTs = Date.now(); }
+      } catch (renderErr) {
+        console.log("[dashboard-server] renderHTML error: " + renderErr.message + "\n" + renderErr.stack);
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end("renderHTML error: " + renderErr.message + "\n" + renderErr.stack);
+        return;
+      }
+    }
+    const body = Buffer.from(html, "utf8");
+
+    const acceptEncoding = req.headers["accept-encoding"] || "";
+    if (acceptEncoding.includes("gzip")) {
+      zlib.gzip(body, (err, compressed) => {
+        if (err) {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "ETag": etag });
+          res.end(body);
+        } else {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Encoding": "gzip", "ETag": etag, "Cache-Control": "no-cache" });
+          res.end(compressed);
+        }
+      });
+    } else {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "ETag": etag, "Cache-Control": "no-cache" });
+      res.end(body);
+    }
+  } else if (pathname === '/overview' || pathname === '/flow' || pathname === '/activity' || pathname === '/roadmap' || pathname === '/cicd') {
+    // Rutas de sección dedicada (#1765)
+    const sectionMap = {'/overview':'overview','/flow':'flow','/activity':'activity','/roadmap':'roadmap','/cicd':'cicd'};
+    const theme = url.searchParams.get("theme") || "dark";
+    const data = collectData();
+    const sectionKey = sectionMap[pathname];
+    let html;
+    try { html = renderHTML(data, theme, sectionKey); } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" }); res.end("renderHTML error: " + e.message); return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" });
+    res.end(Buffer.from(html, "utf8"));
+  } else if (pathname === "/logs") {
+    // Vista de logs en vivo (#1765)
+    const theme = url.searchParams.get("theme") || "dark";
+    const html = renderLogsHTML(theme);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" });
+    res.end(Buffer.from(html, "utf8"));
+  } else if (pathname === "/events") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    });
+    res.write("data: {\"connected\":true}\n\n");
+    const client = { res, alive: true };
+    sseClients.add(client);
+    req.on("close", () => { client.alive = false; sseClients.delete(client); });
+  } else if (pathname === "/api/history") {
+    // Endpoint de historial de métricas (#1716)
+    const SESSIONS_HISTORY_FILE = path.join(REPO_ROOT, ".claude", "hooks", "sessions-history.jsonl");
+    const sprintFilter = url.searchParams.get("sprint");
+    
+    try {
+      let sessions = [];
+      if (fs.existsSync(SESSIONS_HISTORY_FILE)) {
+        const lines = fs.readFileSync(SESSIONS_HISTORY_FILE, "utf8").split("\n").filter(l => l.trim());
+        sessions = lines.map(line => {
+          try { return JSON.parse(line); } catch(e) { return null; }
+        }).filter(s => s !== null);
+      }
+      
+      // Filtrar por sprint si se especifica
+      if (sprintFilter) {
+        sessions = sessions.filter(s => s.sprint_id === sprintFilter);
+      }
+      
+      // Agrupar por sprint y agregar metrics
+      const bySprintId = {};
+      sessions.forEach(s => {
+        const sid = s.sprint_id || "unknown";
+        if (!bySprintId[sid]) {
+          bySprintId[sid] = {
+            sprint_id: sid,
+            sessions: [],
+            summary: {
+              total_sessions: 0,
+              total_duration_min: 0,
+              total_tokens_input: 0,
+              total_tokens_output: 0,
+              total_cost_usd: 0,
+              total_tool_calls: 0,
+              agents: {}
+            }
+          };
+        }
+        bySprintId[sid].sessions.push(s);
+        bySprintId[sid].summary.total_sessions++;
+        bySprintId[sid].summary.total_duration_min += (s.duration_min || 0);
+        bySprintId[sid].summary.total_tokens_input += (s.tokens.input || 0);
+        bySprintId[sid].summary.total_tokens_output += (s.tokens.output || 0);
+        bySprintId[sid].summary.total_cost_usd += parseFloat(s.cost_usd || 0);
+        bySprintId[sid].summary.total_tool_calls += (s.model_usage && s.model_usage.tool_calls || 0);
+        
+        const agent = s.agent_name || "Unknown";
+        if (!bySprintId[sid].summary.agents[agent]) {
+          bySprintId[sid].summary.agents[agent] = { count: 0, duration_min: 0, cost_usd: 0 };
+        }
+        bySprintId[sid].summary.agents[agent].count++;
+        bySprintId[sid].summary.agents[agent].duration_min += (s.duration_min || 0);
+        bySprintId[sid].summary.agents[agent].cost_usd += parseFloat(s.cost_usd || 0);
+      });
+      
+      const result = sprintFilter && bySprintId[sprintFilter] 
+        ? bySprintId[sprintFilter]
+        : { sprints: Object.values(bySprintId), total_sprints: Object.keys(bySprintId).length };
+      
+      const json = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        data: result
+      });
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
+      res.end(json);
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+  } else if (pathname === "/api/status") {
+    const data = collectData();
+    const json = JSON.stringify({
+      timestamp: data.timestamp,
+      activeSessions: data.activeSessions,
+      idleSessions: data.idleSessions,
+      totalTasks: data.totalTasks,
+      completedTasks: data.completedTasks,
+      inProgressTasks: data.inProgressTasks,
+      pendingTasks: data.pendingTasks,
+      totalActions: data.totalActions,
+      ciStatus: data.ciStatus,
+      alertCount: data.alerts.length,
+      alerts: data.alerts,
+      velocity: data.velocity,
+      sessions: data.sessions.map(s => ({
+        id: s.id,
+        agent: s.agent_name || "Agente",
+        branch: s.branch,
+        status: s._status,
+        actions: s.action_count,
+        lastTool: s.last_tool,
+        lastTarget: (s.last_target || "").substring(0, 80),
+        duration: formatDuration(s.started_ts),
+        tasks: (s.current_tasks || []).map(t => ({
+          id: t.id, subject: t.subject, status: t.status, progress: t.progress || 0
+        })),
+        agentTransitions: s.agent_transitions || [],
+      })),
+      activities: data.activities,
+      groupedActivities: data.groupedActivities,
+      blockingRelations: data.blockingRelations,
+      pendingQuestionsCount: data.pendingQuestions.length,
+      permissionStats: data.permissionStats,
+      approvalHistory: data.approvalHistory,
+      sprintPlan: data.sprintPlan,
+      metrics: data.metrics,
+      agentMetrics: data.agentMetrics,
+      agentNodes: data.agentNodes,
+      agentTransitions: data.agentTransitions,
+    });
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
+    res.end(json);
+  } else if (pathname === "/api/activity") {
+    // Endpoint de actividad en vivo (#1212) — polling ligero para feeds externos
+    const data = collectData();
+    const since = url.searchParams.get("since");
+    let filtered = data.groupedActivities;
+    if (since) {
+      const sinceMs = new Date(since).getTime();
+      if (!isNaN(sinceMs)) {
+        filtered = filtered.filter(g => new Date(g.lastTs || g.ts).getTime() > sinceMs);
+      }
+    }
+    const json = JSON.stringify({
+      timestamp: data.timestamp,
+      activities: filtered.slice(0, 50),
+      activeSessions: data.activeSessions,
+      alerts: data.alerts,
+      pendingQuestionsCount: data.pendingQuestions.length,
+    });
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
+    res.end(json);
+  } else if (pathname === "/screenshot") {
+    const width = parseInt(url.searchParams.get("w")) || 375;
+    const height = parseInt(url.searchParams.get("h")) || 640;
+    // route param para screenshot de sección específica (#1765)
+    const routeParam = url.searchParams.get("route") || null;
+    const screenshotOpts = routeParam ? { targetPath: routeParam } : {};
+    takeScreenshot(width, height, screenshotOpts).then(buf => {
+      res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+      res.end(buf);
+    }).catch(err => {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Screenshot error: " + err.message + "\nInstall puppeteer: npm install puppeteer");
+    });
+  } else if (pathname === "/screenshots") {
+    const width = parseInt(url.searchParams.get("w")) || 600;
+    const height = parseInt(url.searchParams.get("h")) || 800;
+    takeScreenshot(width, height, { split: true }).then(parts => {
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ top: parts[0].toString("base64"), bottom: parts[1].toString("base64") }));
+    }).catch(err => {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Screenshots error: " + err.message);
+    });
+  } else if (pathname === "/screenshots/sections") {
+    const width = parseInt(url.searchParams.get("w")) || 390;
+    takeScreenshotSections(width).then(sections => {
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify(sections));
+    }).catch(err => {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Sections screenshot error: " + err.message);
+    });
+  } else if (pathname === "/api/activity") {
+    // Endpoint liviano para polling de actividad en vivo (#1212)
+    // Retorna tool calls, skill invocations y progreso de agentes
+    const data = collectData();
+    const activityPayload = {
+      ts: data.timestamp,
+      activeSessions: data.activeSessions,
+      totalActions: data.totalActions,
+      pendingPermissions: data.pendingQuestions.length,
+      groupedActivities: (data.groupedActivities || []).slice(0, 10).map(g => ({
+        tool: g.tool,
+        target: (g.target || "").substring(0, 80),
+        session: g.session,
+        count: g.count,
+        ts: g.ts,
+      })),
+      agentProgress: (() => {
+        // Fuente primaria: sesiones activas
+        const fromSessions = data.sessions.filter(s => s._status === "active").map(s => ({
+          id: s.id,
+          agent: s.agent_name || "Agente",
+          lastTool: s.last_tool,
+          lastTarget: (s.last_target || "").substring(0, 60),
+          actions: s.action_count,
+          skillsInvoked: s.skills_invoked || [],
+        }));
+        // Fallback: agentes del registry no presentes en sesiones (#1642)
+        const sessionIds = new Set(fromSessions.map(s => s.id));
+        const fromRegistry = (data.registryAgents || [])
+          .filter(a => a.status === "active" && !sessionIds.has(a.session_id))
+          .map(a => ({
+            id: a.session_id,
+            agent: a.agent_name || a.skill || (a.issue ? resolveRegistryAgentName(a.issue) : "Agente (?)"),
+            lastTool: null,
+            lastTarget: a.branch || "",
+            actions: 0,
+            skillsInvoked: [],
+            _source: "registry",
+          }));
+        return [...fromSessions, ...fromRegistry];
+      })(),
+    };
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
+    res.end(JSON.stringify(activityPayload));
+  } else if (pathname === '/api/logs') {
+    // Logs API (#1765) — lista de agentes o logs de un agente específico
+    const agentsOnly = url.searchParams.get('agents') === '1';
+    const agentId = url.searchParams.get('agent') || null;
+    const lineCount = Math.min(parseInt(url.searchParams.get('n') || '50', 10), 100);
+    if (agentsOnly) {
+      const registryRaw = (() => { try { return JSON.parse(fs.readFileSync(AGENT_REGISTRY_FILE, 'utf8')); } catch { return {}; } })();
+      const sprintData = readJson(SPRINT_PLAN_FILE) || {};
+      const allAgentes = [
+        ...(sprintData.agentes || []).map(a => ({ ...a, _sec: 'active' })),
+        ...(sprintData._queue || []).map(a => ({ ...a, _sec: 'queue' })),
+        ...(sprintData._incomplete || []).map(a => ({ ...a, _sec: 'incomplete' })),
+        ...(sprintData._completed || []).map(a => ({ ...a, _sec: 'done' })),
+      ];
+      const regAgents = (registryRaw.agents) || {};
+      const agents = allAgentes.map((a, i) => {
+        const regEntry = regAgents[String(a.issue)] || {};
+        const status = regEntry.status || a._sec || 'queue';
+        return { id: String(a.issue || (i + 1)), numero: a.numero || (i + 1), issue: a.issue, branch: a.branch || ('agent/' + a.issue + '-' + (a.slug || '')), status };
+      });
+      // Logs de sistema (siempre disponibles)
+      const systemLogs = [
+        { id: '_commander', numero: '-', issue: null, branch: null, status: 'system', label: 'Telegram Commander' },
+        { id: '_hooks', numero: '-', issue: null, branch: null, status: 'system', label: 'Hooks (debug)' },
+        { id: '_activity', numero: '-', issue: null, branch: null, status: 'system', label: 'Activity log' },
+        { id: '_watcher', numero: '-', issue: null, branch: null, status: 'system', label: 'Agent watcher' },
+        { id: '_coordinator', numero: '-', issue: null, branch: null, status: 'system', label: 'Agent Coordinator' },
+      ];
+      // Logs históricos de agentes (archivos agente_*.log en scripts/logs/)
+      const logsDir = path.join(REPO_ROOT, 'scripts', 'logs');
+      const seenIds = new Set(agents.map(a => a.id));
+      try {
+        const logFiles = fs.readdirSync(logsDir).filter(f => f.startsWith('agente_') && f.endsWith('.log'));
+        for (const f of logFiles) {
+          const m = f.match(/agente_(\d+)\.log/);
+          if (m && !seenIds.has(m[1])) {
+            const stat = fs.statSync(path.join(logsDir, f));
+            agents.push({ id: m[1], numero: '-', issue: parseInt(m[1], 10), branch: 'agent/' + m[1], status: 'done', label: 'Agente #' + m[1] + ' (hist.)', size: stat.size });
+          }
+        }
+      } catch {}
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+      res.end(JSON.stringify({ agents, systemLogs }));
+    } else if (agentId) {
+      // Logs de sistema por ID especial → comportamiento crudo (compat)
+      const sysLogMap = {
+        '_commander': path.join(REPO_ROOT, '.claude', 'hooks', 'telegram-commander.log'),
+        '_hooks': path.join(REPO_ROOT, '.claude', 'hooks', 'hook-debug.log'),
+        '_activity': path.join(REPO_ROOT, '.claude', 'activity-log.jsonl'),
+        '_watcher': path.join(REPO_ROOT, '.claude', 'hooks', 'agent-watcher.log'),
+        '_coordinator': path.join(REPO_ROOT, '.claude', 'hooks', 'agent-coordinator.log'),
+      };
+      if (sysLogMap[agentId]) {
+        const targetFile = sysLogMap[agentId];
+        let lines = [];
+        try {
+          const rawContent = fs.readFileSync(targetFile, 'utf8');
+          const allFileLines = rawContent.split('\n').filter(l => l.trim());
+          lines = allFileLines.slice(Math.max(0, allFileLines.length - lineCount));
+        } catch { lines = ['No se encontro log para ' + agentId]; }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+        res.end(JSON.stringify({ agent: agentId, lines, file: path.basename(targetFile), isSystem: true }));
+      } else {
+        // Agente de issue → payload rico (summary, gates, tasks, timeline, files, rawTail)
+        try {
+          const rich = buildRichAgentLog(agentId);
+          // Compat: 'lines' expone rawTail o mensaje si no hay nada
+          const lines = (rich.rawTail && rich.rawTail.length)
+            ? rich.rawTail
+            : (rich.summary ? [] : ['Sin sesion ni log para agente ' + agentId + ' (en cola o aun no arrancó)']);
+          const payload = Object.assign({}, rich, { lines });
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+          res.end(JSON.stringify(payload));
+        } catch (richErr) {
+          try { fs.appendFileSync(SERVER_LOG_FILE, '[' + new Date().toISOString() + '] buildRichAgentLog error: ' + richErr.message + '\n' + richErr.stack + '\n'); } catch {}
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: richErr.message, agent: agentId }));
+        }
+      }
+    } else {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Especificar ?agents=1 o ?agent=ID' }));
+    }
+  } else if (pathname === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", uptime: process.uptime(), port: PORT }));
+  } else {
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("Not found");
+  }
+}
+
+// --- Screenshot via Puppeteer ---
+let puppeteerBrowser = null;
+
+async function takeScreenshot(width, height, options) {
+  const opts = options || {};
+  let puppeteer;
+  try { puppeteer = require("puppeteer"); } catch {
+    try { puppeteer = require(path.join(REPO_ROOT, "docs", "qa", "node_modules", "puppeteer")); }
+    catch { throw new Error("puppeteer not installed — run: cd docs/qa && npm install"); }
+  }
+
+  if (!puppeteerBrowser || !puppeteerBrowser.isConnected()) {
+    puppeteerBrowser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
+    });
+  }
+
+  const page = await puppeteerBrowser.newPage();
+  try {
+    await page.setViewport({ width, height });
+    const targetPath = opts.targetPath || '/';
+    const targetQuery = targetPath.includes('?') ? '&theme=dark&nosse=1' : '?theme=dark&nosse=1';
+    await page.goto("http://localhost:" + PORT + targetPath + targetQuery, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await new Promise(r => setTimeout(r, 1000));
+
+    if (opts.split) {
+      const fullHeight = await page.evaluate(() => document.body.scrollHeight);
+      const splitPoint = Math.min(height, Math.ceil(fullHeight / 2));
+      const topBuf = await page.screenshot({ type: "png", clip: { x: 0, y: 0, width, height: splitPoint } });
+      const bottomBuf = await page.screenshot({ type: "png", clip: { x: 0, y: splitPoint, width, height: Math.max(100, fullHeight - splitPoint) } });
+      return [topBuf, bottomBuf];
+    }
+
+    return await page.screenshot({ type: "png", fullPage: true });
+  } finally {
+    await page.close();
+  }
+}
+
+// Captura cada sección semántica del dashboard usando getBoundingClientRect()
+// Retorna array de { id, image: "<base64>" } — omite paneles vacíos o inexistentes
+async function takeScreenshotSections(width) {
+  let puppeteer;
+  try { puppeteer = require("puppeteer"); } catch {
+    try { puppeteer = require(path.join(REPO_ROOT, "docs", "qa", "node_modules", "puppeteer")); }
+    catch { throw new Error("puppeteer not installed — run: cd docs/qa && npm install"); }
+  }
+
+  if (!puppeteerBrowser || !puppeteerBrowser.isConnected()) {
+    puppeteerBrowser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
+    });
+  }
+
+  const page = await puppeteerBrowser.newPage();
+  try {
+    // Viewport alto para que todos los paneles rendericen antes del scroll
+    await page.setViewport({ width, height: 2400 });
+    await page.goto("http://localhost:" + PORT + "/?theme=dark&nosse=1", { waitUntil: "load", timeout: 15000 });
+    // Esperar 3000ms (aumentado desde 2000ms) para dar tiempo a renders con datos
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Obtener altura total de la página para bounds checking
+    const pageHeight = await page.evaluate(() => document.body.scrollHeight);
+    console.log("[dashboard-server] takeScreenshotSections: pageHeight=" + pageHeight + " width=" + width);
+
+    const sectionData = await page.evaluate(() => {
+      const selectors = [
+        { id: "kpis",               sel: ".kpi-row",                                  w: 0 },
+        { id: "ejecucion",          sel: "[data-panel='exec']",                       w: 0 },
+        { id: "flujo",              sel: "[data-panel='sessions']",                   w: 0 },
+        { id: "actividad",          sel: "[data-panel='activity'] .feed-panel",       w: 0 },
+        { id: "permisos",           sel: "[data-panel='activity'] .panel:last-child", w: 0 },
+        { id: "uso-agentes",        sel: "[data-panel='metrics'] > .panel:first-child", w: 0 },
+        { id: "metricas-agentes",   sel: "[data-panel='metrics'] > .panel:last-child",  w: 0 },
+        { id: "roadmap",            sel: "[data-panel='roadmap']",                    w: 1200 },
+        { id: "ci",                 sel: "[data-panel='ci']",                         w: 0 },
+      ];
+      return selectors.map(function(s) {
+        var el = document.querySelector(s.sel);
+        if (!el) return { id: s.id, found: false, customWidth: s.w };
+        var r = el.getBoundingClientRect();
+        if (r.height < 20 || r.width < 20) return { id: s.id, found: true, visible: false, rect: { h: r.height, w: r.width }, customWidth: s.w };
+        return {
+          id: s.id,
+          found: true,
+          visible: true,
+          x: Math.max(0, Math.round(r.x)),
+          y: Math.max(0, Math.round(r.y + window.scrollY)),
+          width: Math.round(r.width),
+          height: Math.round(r.height),
+          customWidth: s.w,
+        };
+      });
+    });
+
+    // Logear resultado del DOM scan
+    const found = sectionData.filter(s => s.found && s.visible);
+    const missing = sectionData.filter(s => !s.found).map(s => s.id);
+    const hidden = sectionData.filter(s => s.found && !s.visible).map(s => s.id);
+    console.log("[dashboard-server] Paneles encontrados: [" + found.map(s => s.id).join(", ") + "]" +
+      (missing.length ? " | Faltantes en DOM: [" + missing.join(", ") + "]" : "") +
+      (hidden.length ? " | Ocultos (rect<20): [" + hidden.join(", ") + "]" : ""));
+
+    const results = [];
+    for (const section of found) {
+      try {
+        const needsWider = section.customWidth && section.customWidth > width;
+
+        // Si la sección necesita más ancho, re-renderizar con viewport más ancho
+        if (needsWider) {
+          await page.setViewport({ width: section.customWidth, height: 2400 });
+          await page.reload({ waitUntil: "load", timeout: 15000 });
+          await new Promise(r => setTimeout(r, 2000));
+          // Re-obtener bounds con el nuevo viewport
+          const newRect = await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return { x: Math.max(0, Math.round(r.x)), y: Math.max(0, Math.round(r.y + window.scrollY)), width: Math.round(r.width), height: Math.round(r.height) };
+          }, "[data-panel='" + section.id + "']");
+          if (newRect) {
+            section.x = newRect.x;
+            section.y = newRect.y;
+            section.width = newRect.width;
+            section.height = newRect.height;
+          }
+        }
+
+        // Bounds check: el clip no puede superar el alto total de la página ni 1200px max
+        const currentPageHeight = needsWider ? await page.evaluate(() => document.body.scrollHeight) : pageHeight;
+        const clampedHeight = Math.min(section.height, Math.max(1, currentPageHeight - section.y), 1200);
+        if (clampedHeight < 20) {
+          console.log("[dashboard-server] Sección " + section.id + " clampedHeight=" + clampedHeight + " < 20 — omitida");
+          if (needsWider) { await page.setViewport({ width, height: 2400 }); await page.reload({ waitUntil: "load", timeout: 15000 }); await new Promise(r => setTimeout(r, 2000)); }
+          continue;
+        }
+
+        const captureWidth = needsWider ? section.customWidth : Math.min(section.width, width);
+        const buf = await page.screenshot({
+          type: "png",
+          clip: {
+            x: section.x,
+            y: section.y,
+            width: captureWidth,
+            height: clampedHeight,
+          },
+        });
+
+        // Restaurar viewport original si se cambió
+        if (needsWider) {
+          await page.setViewport({ width, height: 2400 });
+          await page.reload({ waitUntil: "load", timeout: 15000 });
+          await new Promise(r => setTimeout(r, 2000));
+        }
+        // Solo incluir si la imagen tiene contenido real (> 5KB)
+        if (buf.length > 5000) {
+          results.push({ id: section.id, image: buf.toString("base64") });
+          console.log("[dashboard-server] Sección " + section.id + " capturada: " + buf.length + " bytes");
+        } else {
+          console.log("[dashboard-server] Sección " + section.id + " descartada: solo " + buf.length + " bytes (umbral 5KB)");
+        }
+      } catch (sectionErr) {
+        // Una sección fallida no rompe las demás
+        console.error("[dashboard-server] Error capturando sección " + section.id + ": " + (sectionErr.stack || sectionErr.message));
+      }
+    }
+    console.log("[dashboard-server] takeScreenshotSections completado: " + results.length + "/" + found.length + " secciones capturadas");
+    return results;
+  } finally {
+    await page.close();
+  }
+}
+
+// --- SSE Broadcaster ---
+// Envía datos parciales de actividad para actualización en vivo (#1212)
+// El cliente recibe: reload (para refrescar HTML completo) + actividad + KPIs
+function broadcastSSE() {
+  const data = collectData();
+  const msg = JSON.stringify({
+    reload: true,
+    ts: data.timestamp,
+    // Datos parciales para actualización en vivo (#1212)
+    activeSessions: data.activeSessions,
+    idleSessions: data.idleSessions,
+    totalActions: data.totalActions,
+    ciStatus: data.ciStatus,
+    alertCount: data.alerts.length,
+    pendingPermissions: data.pendingQuestions.length,
+    // Últimas 5 actividades para feed en vivo
+    recentActivity: (data.groupedActivities || []).slice(0, 5).map(g => ({
+      tool: g.tool,
+      target: (g.target || "").substring(0, 60),
+      session: g.session,
+      count: g.count,
+      ts: g.ts,
+    })),
+  });
+  for (const client of sseClients) {
+    if (client.alive) {
+      try { client.res.write("data: " + msg + "\n\n"); } catch { client.alive = false; sseClients.delete(client); }
+    }
+  }
+}
+
+// --- Sprint-plan freshness watcher (#1434) ---
+// Polling de mtime cada 1s (O(1), sin reread completo).
+// Si sprint-plan.json cambió, hace broadcast SSE inmediato sin esperar el ciclo de 5s.
+function checkSprintPlanFreshness() {
+  let currentMtime = 0;
+  try { currentMtime = fs.statSync(SPRINT_PLAN_FILE).mtimeMs; } catch {}
+  if (currentMtime !== 0 && currentMtime !== sprintPlanWatchMtime) {
+    sprintPlanWatchMtime = currentMtime;
+    console.log("[dashboard-server] sprint-plan.json cambió → broadcast SSE inmediato");
+    broadcastSSE();
+  }
+}
+
+// --- Auto-stop ---
+function checkAutoStop() {
+  if (process.env.DASHBOARD_NO_AUTO_STOP === "1") return;
+  const data = collectData();
+  if (data.activeSessions === 0 && data.idleSessions === 0) {
+    const elapsed = Date.now() - lastActivityTs;
+    if (elapsed > AUTO_STOP_MS) {
+      console.log("[dashboard-server] Auto-stop: sin sesiones activas por " + Math.round(elapsed / 60000) + " min");
+      cleanup();
+      process.exit(0);
+    }
+  }
+}
+
+// --- PID file ---
+function writePid() {
+  const dir = path.dirname(PID_FILE);
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  fs.writeFileSync(PID_FILE, String(process.pid), "utf8");
+}
+
+function cleanup() {
+  try { fs.unlinkSync(PID_FILE); } catch {}
+  if (puppeteerBrowser) { try { puppeteerBrowser.close(); } catch {} }
+}
+
+// --- Telegram Heartbeat (opcional — puede haber sido eliminado) ---
+let startHeartbeat;
+try { startHeartbeat = require("./hooks/heartbeat-manager.js").startHeartbeat; } catch { startHeartbeat = () => {}; }
+
+// --- Start server ---
+const server = http.createServer(handleRequest);
+
+// Pre-check: verificar si el puerto ya está en uso antes de intentar bind (#1415)
+// Esto previene instancias zombie desde worktrees de agentes.
+const net = require("net");
+let preCheckDone = false;
+const preCheckSocket = net.createConnection({ port: PORT, host: "localhost" });
+preCheckSocket.setTimeout(1000);
+preCheckSocket.on("connect", () => {
+  preCheckDone = true;
+  preCheckSocket.end();
+  console.log("[dashboard-server] Port " + PORT + " in use, exiting (otra instancia corriendo).");
+  process.exit(0);
+});
+preCheckSocket.on("error", () => {
+  if (preCheckDone) return;
+  preCheckDone = true;
+  // Puerto libre — continuar con startup normal
+  startServer();
+});
+preCheckSocket.on("timeout", () => {
+  if (preCheckDone) return;
+  preCheckDone = true;
+  preCheckSocket.destroy();
+  // Timeout → puerto libre — continuar
+  startServer();
+});
+
+function startServer() {
+  server.listen(PORT, () => {
+    console.log("[dashboard-server] Escuchando en http://localhost:" + PORT);
+    writePid();
+
+    ensureSprintPlanExists(); // Regenerar sprint-plan.json si falta o diverge (#1651)
+
+    setInterval(broadcastSSE, SSE_INTERVAL_MS);
+    setInterval(checkSprintPlanFreshness, 1000); // Watcher freshness sprint-plan.json (#1434)
+    setInterval(ensureSprintPlanExists, 30 * 1000); // Auto-sync sprint-plan desde roadmap (#1651)
+    setInterval(checkAutoStop, 5 * 60 * 1000);
+
+    startHeartbeat({ collectDataFn: collectData, takeScreenshotFn: takeScreenshot, takeScreenshotSectionsFn: takeScreenshotSections, port: PORT });
+  });
+
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.log("[dashboard-server] Puerto " + PORT + " ya en uso, otro servidor corriendo.");
+      process.exit(0);
+    }
+    console.error("[dashboard-server] Error:", err.message);
+    process.exit(1);
+  });
+}
+
+process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+process.on("SIGINT", () => { cleanup(); process.exit(0); });
+process.on("exit", cleanup);

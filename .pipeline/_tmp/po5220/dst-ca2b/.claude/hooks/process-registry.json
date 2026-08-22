@@ -1,0 +1,11 @@
+{
+  "22384": {
+    "role": "commander",
+    "policy": "ignore",
+    "lastHeartbeat": 1773655007410,
+    "startedAt": 1773655007410,
+    "restartCmd": null,
+    "restartArgs": [],
+    "cwd": "C:\\Workspaces\\Intrale\\platform\\.claude\\hooks"
+  }
+}

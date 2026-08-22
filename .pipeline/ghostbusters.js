@@ -19,6 +19,7 @@
 //   7. Consistencia agentes vs PRs (solo reporte)
 //   8. Entorno (Java, gh, disco — solo reporte)
 //   9. Branches stale (agent/* sin worktree, tip ya en origin/main) — issue #2398
+//  10. Secretos filtrados en copias de `.claude/` fuera del repo — issue #5220
 //
 // Uso CLI:
 //   node ghostbusters.js                 → dry-run completo (default seguro)
@@ -34,6 +35,14 @@
 //   node ghostbusters.js --agents        → solo consistencia agentes
 //   node ghostbusters.js --env           → solo entorno
 //   node ghostbusters.js --branches      → solo branches agent/* stale
+//   node ghostbusters.js --secrets       → solo barrido de credenciales filtradas
+//
+// Exit codes (#5220 · CA-5/UX-6) — gana el número más alto:
+//   0 → sin hallazgos de secretos
+//   1 → error del propio comando (reservado)
+//   2 → purgables pendientes (dry-run con hallazgos untracked)
+//   3 → no-verificables presentes → fail-closed
+//   4 → credencial persistente por historial SIN rotación registrada
 //
 // API programática:
 //   const gb = require('./ghostbusters');
@@ -56,6 +65,8 @@ const { execSync, spawnSync } = require('child_process');
 const staleBranchesLib = require('./lib/stale-branches');
 const gbWorktrees = require('./lib/ghostbusters-worktrees');
 const { isMarkerArtifact } = require('./lib/marker-artifact');
+// #5220 — barrido de credenciales replicadas en copias de `.claude/`.
+const secretLeak = require('./lib/secret-leak-scan');
 // CA-B2/CA-SEC-5 — derivación de prefijo/regex compartida (sin re-duplicar 'platform.').
 const wtPrefix = require('./lib/worktree-prefix');
 const GB_MAIN = gbWorktrees.MAIN_REPO.replace(/\\/g, '/').toLowerCase();
@@ -171,9 +182,25 @@ function parseCliArgs(argv) {
     explicitRun: flags.has('--run') || flags.has('--deep'),
     categories: new Set(),
   };
-  const knownCats = ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env', 'branches'];
+  const knownCats = ['processes', 'worktrees', 'sessions', 'locks', 'logs', 'qa', 'agents', 'env', 'branches', 'secrets'];
   for (const c of knownCats) if (flags.has(`--${c}`)) opts.categories.add(c);
-  if (opts.categories.size === 0) for (const c of knownCats) opts.categories.add(c);
+  // #5220 CA-8 / R1 — `secrets` NO entra en la corrida default.
+  //
+  // El motivo ORIGINAL era el tiempo: con un `git rev-parse` por raíz el barrido
+  // tardaba ~11,5 s, muy por encima del techo de 5 s que fija CA-8. Resolver el
+  // toplevel por fs (ver `gitTopLevel`) lo bajó a ~1 s medido sobre el mismo
+  // disco (68 raíces, 3261 archivos, 4 corridas: 880/960/1078/1144 ms), así que
+  // ese motivo YA NO APLICA.
+  //
+  // Sigue fuera del default por una razón distinta y vigente: el barrido es lo
+  // único que mueve el exit code del comando (R10), y hoy hay callers
+  // (dashboard, watchdogs) que asumen que la corrida sin flags sale 0. Meterlo
+  // al default cambiaría ese contrato en silencio. Reevaluarlo es un cambio de
+  // contrato con su propia decisión, no un ajuste de performance.
+  //
+  // La corrida sin flags hace sólo el chequeo barato (`quickNestedClaudeCheck`).
+  const defaultCats = knownCats.filter((c) => c !== 'secrets');
+  if (opts.categories.size === 0) for (const c of defaultCats) opts.categories.add(c);
   opts.dryRun = opts.explicitDryRun || !opts.explicitRun;
   // #3943 — knobs del sweep de worktrees: --cap=N y --age-days=N
   for (const a of argv) {
@@ -884,6 +911,13 @@ function run(opts = {}) {
     envIssues: [],
     staleBranches: [],
     staleBranchesSkipped: [],
+    // #5220 — credenciales replicadas en copias de `.claude/`. `leakedSecrets`
+    // NUNCA lleva el valor de la credencial: sólo path, clave, sha256[0:8] y
+    // longitud (CA-3, control estructural en lib/secret-leak-scan.js).
+    leakedSecrets: [],
+    secretsScanErrors: [],
+    secretsUnparseable: 0,
+    secretsScanMs: 0,
     ramFreedBytes: 0,
     diskFreedBytes: 0,
   };
@@ -983,6 +1017,77 @@ function run(opts = {}) {
     }
   }
 
+  // #5220 — Credenciales replicadas en copias de `.claude/` fuera del repo
+  // principal. Orden de operaciones (R8 / SEC-1 / CA-7): la purga es el ÚLTIMO
+  // paso y sólo toca archivos untracked. Purgar antes de rotar destruiría la
+  // evidencia de qué hay que rotar, por eso el default del comando es dry-run.
+  if (cats.has('secrets')) {
+    const t0 = Date.now();
+    try {
+      const roots = secretLeak.enumerateScanRoots({ mainRepo: ROOT, workspaces: WORKSPACES });
+      const scan = secretLeak.scanLeakedSecrets({ roots });
+      const classified = secretLeak.classifyAll(scan.findings);
+
+      // CA-7 — la credencial que persiste por historial sólo cuenta como
+      // remediada si constan rotación Y revocación verificada. Sin registro,
+      // todo queda PENDIENTE (fail-closed).
+      const registry = secretLeak.loadRotationRegistry({
+        file: path.join(PIPELINE, secretLeak.ROTATIONS_FILE),
+      });
+      const withRotation = classified.map((f) => {
+        if (f.category !== 'historial') return f;
+        const st = secretLeak.rotationStatusOf(f, registry);
+        return { ...f, rotated: st.rotated, rotationLabel: st.label };
+      });
+
+      // CA-9 / R4 / R5 — purga por ARCHIVO, sólo untracked, jamás directorios
+      // ni worktrees. En dry-run no toca el disco.
+      const { purged, skipped } = secretLeak.purgeFindings(withRotation, { dryRun, mainRepo: ROOT });
+      const purgedByFile = new Map(purged.map((p) => [p.file + '|' + p.key, p]));
+
+      report.leakedSecrets = withRotation.map((f) => {
+        const p = purgedByFile.get(f.file + '|' + f.key);
+        return p ? { ...f, removed: !!p.removed } : { ...f, removed: false };
+      });
+      // `secretsScanErrors` guarda SÓLO errores estructurales del barrido
+      // (readdir, excepción). Los archivos no parseables ya viajan como
+      // hallazgos `no-verificable`: sumarlos también acá los contaba dos veces.
+      report.secretsScanErrors = scan.errors;
+      report.secretsUnparseable = scan.filesUnparseable;
+      // Un skip REAL es el de un hallazgo `purgable` que no se pudo borrar
+      // (path protegido, no es archivo regular, unlink falló). Los skips de
+      // `historial`/`no-verificable` son la política, no una anomalía: esos ya
+      // se reportan en su propia sección. Se guarda el detalle, no sólo el
+      // conteo: «0/13 eliminados» sin motivo al lado deja al operador a ciegas.
+      const skipsReales = skipped.filter((s) => s.category === 'purgable');
+      report.secretsSkippedPurge = skipsReales.length;
+      report.secretsPurgeSkips = skipsReales.map((s) => ({
+        root: s.root, rel: s.rel, key: s.key, skipReason: s.skipReason,
+      }));
+      report.secretsRootsScanned = roots.length;
+      report.secretsFilesScanned = scan.filesScanned;
+      log(`🔐 secretos: ${roots.length} raíces, ${scan.filesScanned} archivos, ${withRotation.length} hallazgos`);
+    } catch (e) {
+      // R7 / CA-5 — un barrido que falla NUNCA se reporta como limpio.
+      report.secretsScanErrors.push({ root: ROOT, file: '(barrido)', reason: String(e.message).slice(0, 200) });
+      report.secretsUnparseable += 1;
+    }
+    report.secretsScanMs = Date.now() - t0;
+  } else {
+    // CA-8 — corrida default: sólo el chequeo barato (un `stat` por raíz, sin
+    // parsear ni consultar git). Detecta la firma exacta de la fuga: copias
+    // ANIDADAS `.claude/.claude`, producidas por un `cp -r` de `.claude` sin
+    // `rm -rf` previo del destino.
+    const t0 = Date.now();
+    try {
+      const roots = secretLeak.enumerateScanRoots({ mainRepo: ROOT, workspaces: WORKSPACES });
+      report.secretsQuickCheck = secretLeak.quickNestedClaudeCheck({ roots });
+    } catch (e) {
+      report.secretsQuickCheck = { nestedClaudeCopies: 0, roots: [], error: String(e.message).slice(0, 200) };
+    }
+    report.secretsScanMs = Date.now() - t0;
+  }
+
   if (cats.has('agents')) {
     report.agentInconsistencies = findInconsistentAgents(procs);
   }
@@ -1056,6 +1161,126 @@ function run(opts = {}) {
 // Formato del reporte
 // -----------------------------------------------------------------------------
 
+// #5220 — Sección «Secretos filtrados». NO usa `section()` a propósito: ese
+// helper trunca a MAX_PER_SECTION=10 y cada línea oculta es una credencial que
+// el operador no va a rotar (UX-1). Acá se AGRUPA por credencial distinta
+// (hash8+kind), que comprime sin perder ninguna unidad de acción.
+//
+// Regla de UX-1: `historial` y `no-verificable` van completos, sin excepción;
+// `purgable` puede resumirse por conteo porque tras `--run` queda en 0 y no
+// pide nada al humano.
+function fmtSecretsSection(r, lines) {
+  const findings = r.leakedSecrets || [];
+  const byCat = (c) => findings.filter((f) => f.category === c);
+
+  // UX-5 — vocabulario propio. Reusar 🗑 (basura borrada) para un secreto que
+  // sigue vivo en el historial comunicaría lo contrario de la verdad.
+  // UX-7 — glifo + PALABRA: en escala de grises o texto plano se lee igual.
+  const BLOCKS = [
+    {
+      cat: 'historial', glyph: '● ROTAR',
+      title: 'Secretos filtrados · re-materializables por historial',
+      action: 'Trackeado en git — borrarlo no remedia. Acción: rotar y revocar en el proveedor.',
+    },
+    {
+      cat: 'no-verificable', glyph: '● REVISAR',
+      title: 'Secretos filtrados · no verificables',
+      action: 'No se pudo leer/parsear — no cuenta como limpio. Acción: revisar a mano.',
+    },
+    {
+      cat: 'purgable', glyph: '● PURGAR',
+      title: 'Secretos filtrados · purgables',
+      action: r.dryRun
+        ? 'Untracked — el barrido lo elimina. Acción: correr con `--run`.'
+        : 'Untracked — eliminados por el barrido.',
+    },
+  ];
+
+  // Acorta un path absoluto a `<worktree>/<rel>`: el operador identifica el
+  // archivo sin cargar con 80 chars de prefijo repetido en cada línea.
+  const shortPath = (f) => `${path.basename(f.root)}/${f.rel}`;
+
+  for (const b of BLOCKS) {
+    const items = byCat(b.cat);
+    if (items.length === 0) continue;
+
+    // UX-1 — `no-verificable` no tiene credencial que agrupar: su unidad de
+    // acción es EL ARCHIVO («revisar a mano»). Se agrupa por archivo+motivo
+    // para dar estructura, y se listan TODOS, sin truncar: cada línea oculta
+    // sería un archivo que nadie va a revisar.
+    if (b.cat === 'no-verificable') {
+      const byReason = new Map();
+      for (const f of items) {
+        const k = `${path.basename(f.file)}|${f.reason || 'sin motivo'}`;
+        if (!byReason.has(k)) byReason.set(k, []);
+        byReason.get(k).push(f);
+      }
+      lines.push(`*${b.title}:* ${items.length} archivo(s) en ${byReason.size} patrón(es)`);
+      lines.push(`  ${b.action}`);
+      for (const [k, group] of byReason) {
+        const [base, reason] = k.split('|');
+        lines.push(`  ${b.glyph} ${base} — ${reason} · ${group.length} archivo(s)`);
+        for (const f of group) lines.push(`      ${shortPath(f)}`);
+      }
+      lines.push('');
+      continue;
+    }
+
+    const groups = secretLeak.groupFindings(items);
+    // CA-1 — conteo SEPARADO por categoría. Nunca un total agregado que las mezcle.
+    lines.push(`*${b.title}:* ${items.length} en ${groups.length} credencial(es) distinta(s)`);
+    lines.push(`  ${b.action}`);
+    for (const g of groups) {
+      const id = g.hash8 ? `sha256:${g.hash8} · ${g.len} chars` : '(sin valor legible)';
+      const nWt = g.roots.length;
+      const where = `x${g.count} archivo(s) en ${nWt} worktree(s)`;
+      const keys = g.keys.slice(0, 3).join(', ');
+      let line = `  ${b.glyph} ${g.kind} ${id} — ${keys} · ${where}`;
+      if (b.cat === 'historial') {
+        // UX-4 / CA-7 — el estado de rotación es lo que sostiene la definición
+        // de «cero secretos» del PO. Sin este campo el reporte no la puede sostener.
+        const label = items.find((f) => f.hash8 === g.hash8 && f.rotationLabel);
+        line += ` · ${label ? label.rotationLabel : 'rotación PENDIENTE'}`;
+      }
+      // (el bloque `no-verificable` sale por `continue` más arriba, así que
+      //  acá `b.cat` sólo puede ser `historial` o `purgable`)
+      if (b.cat === 'purgable' && !r.dryRun) {
+        const done = items.filter((f) => f.hash8 === g.hash8 && f.removed).length;
+        line += ` · ${done}/${g.count} eliminados`;
+      }
+      lines.push(line);
+      // UX-1 — en `historial` la unidad de acción es la credencial (una
+      // rotación), pero el operador necesita saber dónde persiste. Se listan
+      // todos los worktrees, sin truncar. `purgable` se resume por conteo:
+      // tras `--run` queda en 0 y no pide nada al humano.
+      if (b.cat === 'historial') {
+        for (const f of items.filter((x) => x.hash8 === g.hash8)) {
+          lines.push(`      ${shortPath(f)}`);
+        }
+      }
+    }
+    lines.push('');
+  }
+
+  // Un purgable que NO se pudo borrar nunca queda mudo: sin esto el operador
+  // lee «0/13 eliminados» sin ninguna explicación al lado.
+  const skips = r.secretsPurgeSkips || [];
+  if (skips.length > 0) {
+    lines.push(`*Purgas omitidas:* ${skips.length}`);
+    lines.push('  Untracked que el barrido NO pudo eliminar. Acción: revisar el motivo.');
+    for (const s of skips) {
+      lines.push(`  ● REVISAR ${path.basename(s.root || '')}/${s.rel} — ${s.key} · ${s.skipReason}`);
+    }
+    lines.push('');
+  }
+
+  if ((r.secretsScanErrors || []).length > 0) {
+    lines.push(`*Errores del barrido de secretos:* ${r.secretsScanErrors.length}`);
+    for (const e of r.secretsScanErrors) lines.push(`  ● REVISAR ${e.file} — ${e.reason}`);
+    lines.push('');
+  }
+}
+
 function fmtReport(r) {
   const lines = [];
   const dryTag = r.dryRun ? ' [DRY-RUN]' : '';
@@ -1066,15 +1291,52 @@ function fmtReport(r) {
     r.zombies.length + r.emulators.length + r.bashOrphans.length +
     r.extBotZombies.length + r.duplicateWatchdogs.length +
     r.idleClaude.length + r.idleNodeHooks.length;
+  // #5220 R2/CA-6 (bloqueante) — los hallazgos de secretos se suman a
+  // `otherCounts` EN EL MISMO LUGAR donde se decide el early-return. Sin esto,
+  // el reporte imprime `✅ Sistema sano` con tokens vivos en disco: la lógica
+  // encontró los secretos y la salida dice lo contrario.
+  const nestedCopies = (r.secretsQuickCheck && r.secretsQuickCheck.nestedClaudeCopies) || 0;
+  const secretCounts =
+    (r.leakedSecrets ? r.leakedSecrets.length : 0) +
+    (r.secretsScanErrors ? r.secretsScanErrors.length : 0) +
+    nestedCopies;
   const otherCounts =
     r.worktrees.length + r.sessions.length + r.locks.length +
     r.logs.length + r.qaArtifacts.length +
     r.agentInconsistencies.length + r.envIssues.length +
-    (r.staleBranches ? r.staleBranches.length : 0);
+    (r.staleBranches ? r.staleBranches.length : 0) +
+    secretCounts;
 
   if (procCounts === 0 && otherCounts === 0) {
     lines.push('✅ Sistema sano. No hay fantasmas.');
     return lines.join('\n');
+  }
+
+  // UX-2 — La severidad viaja en la primera línea, no al fondo. Los secretos son
+  // la única categoría de /ghostbusters que representa RIESGO en vez de
+  // desprolijidad: banner antes del encabezado y sección impresa PRIMERA.
+  if (secretCounts > 0) {
+    const nHist = (r.leakedSecrets || []).filter((f) => f.category === 'historial').length;
+    const nUnver = (r.leakedSecrets || []).filter((f) => f.category === 'no-verificable').length;
+    const nPurg = (r.leakedSecrets || []).filter((f) => f.category === 'purgable').length;
+    // CA-1 — el banner NUNCA presenta un total agregado que mezcle las tres
+    // categorías: enumera cada una con su conteo propio. Mezclarlas sugiere que
+    // «purgar 52» equivale a «rotar 13», que es justo la confusión que la
+    // historia viene a cerrar.
+    if (r.leakedSecrets && r.leakedSecrets.length > 0) {
+      lines.unshift(
+        `🔴 *EXPUESTO* — credenciales replicadas: ` +
+        `${nHist} a ROTAR · ${nUnver} a REVISAR · ${nPurg} a PURGAR`
+      );
+      fmtSecretsSection(r, lines);
+    } else if (nestedCopies > 0) {
+      // Corrida default: el barrido completo no corrió, pero el chequeo barato
+      // encontró la firma de la fuga. Nunca «Sistema sano» con esto en disco.
+      lines.unshift(
+        `🟠 *POSIBLE EXPOSICIÓN* — ${nestedCopies} copia(s) anidada(s) de \`.claude/.claude\`. ` +
+        `Correr \`/ghostbusters --secrets\` para el barrido completo.`
+      );
+    }
   }
 
   // Trunca a 10 items con un "...y N más" para no romper el dashboard ante
@@ -1210,10 +1472,20 @@ if (require.main === module) {
   } else {
     console.log(fmtReport(report));
   }
+  // #5220 CA-5 / UX-6 (A3) — hasta acá el comando salía SIEMPRE con 0. Contar
+  // los no-verificables en el `report` no alcanzaba: el cron del Pulpo loguea
+  // el código literal (`pulpo.js`), o sea que el número termina en un log que
+  // alguien lee SIN el reporte al lado. Códigos semánticos, gana el más alto:
+  //   0 sin hallazgos · 1 error del comando · 2 purgables pendientes
+  //   3 no-verificables (fail-closed) · 4 historial sin rotación registrada
+  const exitCode = secretLeak.computeExitCode(report);
+  if (exitCode !== 0) process.exitCode = exitCode;
 }
 
 module.exports = {
   run, fmtReport, parseCliArgs, isWhitelisted, WHITELIST, TH,
   // #3943 — lógica de worktrees extraída (testeable con spawnImpl/fsImpl)
   removeWorktree, isWorktreeSafeToDelete, findAbandonedWorktrees,
+  // #5220 — barrido de credenciales filtradas (sección de reporte + exit codes)
+  fmtSecretsSection, EXIT_CODES: secretLeak.EXIT_CODES,
 };

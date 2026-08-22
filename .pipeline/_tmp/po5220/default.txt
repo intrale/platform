@@ -1,0 +1,96 @@
+🔍 [dry-run] C:/Workspaces/Intrale/platform.agent-2463-backend-dev — issue #2463 abierto pero sin PR ni trabajo en pipeline; rama agent/2463-backend-dev inexistente en remoto (899 MB)
+🔍 [dry-run] C:/Workspaces/Intrale/platform.agent-2469-backend-dev — issue #2469 abierto pero sin PR ni trabajo en pipeline; rama agent/2469-backend-dev inexistente en remoto (220 MB)
+🔍 [dry-run] C:/Workspaces/Intrale/platform.agent-3729-pipeline-dev — issue #3729 cerrado y sin trabajo activo; antigüedad 54d > umbral 30d (230 MB)
+🔍 [dry-run] C:/Workspaces/Intrale/platform.agent-4126-pipeline-dev — issue #4126 cerrado y sin trabajo activo; rama agent/4126-pipeline-dev inexistente en remoto (233 MB)
+🔍 [dry-run] C:/Workspaces/Intrale/platform.session-fixcommander-20260706-151415 — session sin PR abierto; rama session/20260706-151415-fixcommander inexistente en remoto (508 MB)
+🟠 *POSIBLE EXPOSICIÓN* — 33 copia(s) anidada(s) de `.claude/.claude`. Correr `/ghostbusters --secrets` para el barrido completo.
+👻 *Ghostbusters* [DRY-RUN] — 2026-08-01 16:00:18
+
+*Worktrees abandonados:* 53 (0 borrados, 48 protegidos)
+  🛡️ platform.agent-4098-pipeline-dev (0.23 GB) — issue #4098 cerrado y sin trabajo activo · NO borrado: 1 commit(s) ahead de origin/agent/4098-pipeline-dev
+  🛡️ platform.agent-4109-pipeline-dev (0.23 GB) — issue #4109 cerrado y sin trabajo activo · NO borrado: 1 archivo(s) sin commitear
+  🛡️ platform.agent-4300-pipeline-dev (0.23 GB) — issue #4300 cerrado y sin trabajo activo · NO borrado: 1 archivo(s) sin commitear
+  🛡️ platform.agent-4403-pipeline-dev (0.23 GB) — issue #4403 cerrado y sin trabajo activo · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.agent-4446-pipeline-dev (0.23 GB) — issue #4446 cerrado y sin trabajo activo · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.agent-4451-pipeline-dev (0.23 GB) — issue #4451 cerrado y sin trabajo activo · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.agent-4533-pipeline-dev (0.78 GB) — issue #4533 cerrado y sin trabajo activo · NO borrado: 1 commit(s) ahead de origin/agent/4533-pipeline-dev
+  🛡️ platform.agent-4700-pipeline-dev (0.24 GB) — issue #4700 cerrado y sin trabajo activo · NO borrado: 1 archivo(s) sin commitear
+  🛡️ platform.agent-4807-pipeline-dev (0.25 GB) — issue #4807 cerrado y sin trabajo activo · NO borrado: 1 archivo(s) sin commitear
+  🛡️ platform.agent-4810-android-dev (0.89 GB) — issue #4810 cerrado y sin trabajo activo · NO borrado: rama viva en remoto y antigüedad ≤ 30d
+  🛡️ platform.agent-4821-pipeline-dev (0.24 GB) — issue #4821 cerrado y sin trabajo activo · NO borrado: rama viva en remoto y antigüedad ≤ 30d
+  🛡️ platform.agent-4898-pipeline-dev (0.24 GB) — issue #4898 cerrado y sin trabajo activo · NO borrado: rama viva en remoto y antigüedad ≤ 30d
+  🛡️ platform.agent-5066-pipeline-dev (0.24 GB) — issue #5066 cerrado y sin trabajo activo · NO borrado: 1 archivo(s) sin commitear
+  🛡️ platform.fix-delivery-skip-active (0.22 GB) — rama sin PR abierto · NO borrado: rama no pusheada con 3 commit(s) sobre main
+  🛡️ platform.session-fispipe-20260429-215454 (0.22 GB) — session sin PR abierto · NO borrado: 1 archivo(s) sin commitear
+  🛡️ platform.session-fix-20260413-122542 (0.07 GB) — session sin PR abierto · NO borrado: 2 archivo(s) sin commitear
+  🛡️ platform.session-fixdash-20260408-210948 (0.07 GB) — session sin PR abierto · NO borrado: 1 archivo(s) sin commitear
+  🛡️ platform.session-fixmodelo-20260726-120421 (0.51 GB) — session sin PR abierto · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.session-fixpipe-20260410-193755 (0.07 GB) — session sin PR abierto · NO borrado: 1 archivo(s) sin commitear
+  🛡️ platform.session-fixpipe-20260411-220349 (0.07 GB) — session sin PR abierto · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.session-fixpipe-20260413-102156 (0.07 GB) — session sin PR abierto · NO borrado: 2 archivo(s) sin commitear
+  🛡️ platform.session-fixpipe-20260413-140105 (0.07 GB) — session sin PR abierto · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.session-fixpipe-20260413-172057 (0.11 GB) — session sin PR abierto · NO borrado: 2 archivo(s) sin commitear
+  🛡️ platform.session-fixpipe-20260413-205734 (0.07 GB) — session sin PR abierto · NO borrado: 2 archivo(s) sin commitear
+  🛡️ platform.session-fixpipe-20260414-233146 (0.07 GB) — session sin PR abierto · NO borrado: 1 archivo(s) sin commitear
+  🛡️ platform.session-fixpipe-20260415-111955 (0.07 GB) — session sin PR abierto · NO borrado: 4 archivo(s) sin commitear
+  🛡️ platform.session-fixpipe-20260415-114331 (0.07 GB) — session sin PR abierto · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.session-fixpipe-20260424-081815 (0.08 GB) — session sin PR abierto · NO borrado: 1156 archivo(s) sin commitear
+  🛡️ platform.session-fixpipe-20260429-181521 (0.23 GB) — session sin PR abierto · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.session-fixpipe-20260429-214149 (0.22 GB) — session sin PR abierto · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.session-fixpipe-20260705-225918 (0.50 GB) — session sin PR abierto · NO borrado: rama viva en remoto y antigüedad ≤ 30d
+  🛡️ platform.session-fixpipe-20260708-083008 (0.50 GB) — session sin PR abierto · NO borrado: rama viva en remoto y antigüedad ≤ 30d
+  🛡️ platform.session-fixtelegram-20260727-075534 (0.50 GB) — session sin PR abierto · NO borrado: rama viva en remoto y antigüedad ≤ 30d
+  🛡️ platform.session-pipereview-20260417-103317 (0.07 GB) — session sin PR abierto · NO borrado: rama no pusheada con 1 commit(s) sobre main
+  🛡️ platform.ux-4460-restart-operativo (0.23 GB) — rama sin PR abierto · NO borrado: rama viva en remoto y antigüedad ≤ 30d
+  🛡️ platform.session-fixcuota-20260722-094103 (0.51 GB) — session sin PR abierto; rama session/20260722-094103-fixcuota inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixcuota-20260722-112111 (0.51 GB) — session sin PR abierto; rama session/20260722-112111-fixcuota inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixcuota-20260722-121527 (0.51 GB) — session sin PR abierto; rama session/20260722-121527-fixcuota inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixcuota-20260722-220106 (0.51 GB) — session sin PR abierto; rama session/20260722-220106-fixcuota inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixpe-20260711-024715 (0.50 GB) — session sin PR abierto; rama session/20260711-024715-fixpe inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixpipe-20260630-232134 (0.24 GB) — session sin PR abierto; rama session/20260630-232134-fixpipe inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixpipe-20260706-000554 (0.50 GB) — session sin PR abierto; rama session/20260706-000554-fixpipe inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixpipe-20260706-224429 (0.50 GB) — session sin PR abierto; rama session/20260706-224429-fixpipe inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixpipe-20260709-153800 (0.50 GB) — session sin PR abierto; rama session/20260709-153800-fixpipe inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixpipe-20260709-154318 (0.50 GB) — session sin PR abierto; rama session/20260709-154318-fixpipe inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.session-fixpipe-20260711-022755 (0.50 GB) — session sin PR abierto; rama session/20260711-022755-fixpipe inexistente en remoto · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.ux-3605-chat-panel-assets (0.22 GB) — rama sin PR abierto; antigüedad 64d > umbral 30d · NO borrado: cap de 5 por corrida alcanzado
+  🛡️ platform.ux-3726-nav-tabs-assets (0.22 GB) — rama sin PR abierto; antigüedad 62d > umbral 30d · NO borrado: cap de 5 por corrida alcanzado
+  🔍 platform.agent-2463-backend-dev (0.88 GB) — issue #2463 abierto pero sin PR ni trabajo en pipeline; rama agent/2463-backend-dev inexistente en remoto
+  🔍 platform.agent-2469-backend-dev (0.22 GB) — issue #2469 abierto pero sin PR ni trabajo en pipeline; rama agent/2469-backend-dev inexistente en remoto
+  🔍 platform.agent-3729-pipeline-dev (0.22 GB) — issue #3729 cerrado y sin trabajo activo; antigüedad 54d > umbral 30d
+  🔍 platform.agent-4126-pipeline-dev (0.23 GB) — issue #4126 cerrado y sin trabajo activo; rama agent/4126-pipeline-dev inexistente en remoto
+  🔍 platform.session-fixcommander-20260706-151415 (0.50 GB) — session sin PR abierto; rama session/20260706-151415-fixcommander inexistente en remoto
+
+*Sesiones done viejas:* 113
+  🔍 0217860b.json (0 MB, 71.7h)
+  🔍 069390ff.json (0 MB, 44.8h)
+  🔍 0703eaf9.json (0 MB, 21.9h)
+  🔍 072d854e.json (0 MB, 72.2h)
+  🔍 091650e7.json (0 MB, 63.0h)
+  🔍 09a6af52.json (0 MB, 21.4h)
+  🔍 0dc810c6.json (0 MB, 43.0h)
+  🔍 133fd556.json (0 MB, 43.6h)
+  🔍 18c14acd.json (0 MB, 44.7h)
+  🔍 18df19cb.json (0 MB, 43.7h)
+  …y 103 más
+
+*Logs oversized:* 2
+  🔍 hook-debug.log: 7385 → 500 líneas
+  🔍 activity-log.jsonl: 316 → 200 entradas
+
+*Branches stale (agent/*):* 61 (dry-run)
+  Tip en origin/main, sin worktree, sin contenido único
+  🔍 agent/3506-cli-1m-context-glitch (issue #3506 MERGED)
+  🔍 agent/3518-wiring-desync-detector (issue #3518 MERGED)
+  🔍 agent/3638-ux-deliver-assets (issue #3638 MERGED)
+  🔍 agent/3723-backend-dev (issue #3723 MERGED)
+  🔍 agent/3725-pipeline-dev (issue #3725 MERGED)
+  🔍 agent/3726-backend-dev (issue #3726 MERGED)
+  🔍 agent/3735-backend-dev (issue #3735 MERGED)
+  🔍 agent/3736-backend-dev (issue #3736 MERGED)
+  🔍 agent/3774-pipeline-loop-fix (issue #3774 MERGED)
+  🔍 agent/3791-qwen-adapter-real (issue #3791 MERGED)
+  …y 51 más
+
+*Liberación potencial:* 0.00 GB disco · 0.00 GB RAM
+Ejecutá `/ghostbusters --run` para aplicar.

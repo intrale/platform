@@ -289,6 +289,20 @@ const SECRET_VALUE_PATTERNS = Object.freeze([
     { name: 'groq', re: /gsk_[A-Za-z0-9]+/g },
     { name: 'aws_access_key', re: /AKIA[0-9A-Z]{16}/g },
     { name: 'jwt', re: /eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
+    // #5220 (R3) — Segunda capa, NO control primario. El control primario del
+    // barrido de secretos filtrados es estructural: el `Finding` de
+    // `lib/secret-leak-scan.js` no tiene campo `value`, así que no hay nada que
+    // redactar. Estos tres patrones se agregan igual porque benefician a los
+    // 100+ callers de `redactSecretValue`/`redactObject`, que hoy dejan pasar:
+    //   - el `client_secret` de Google en claro: mide 35 chars, por debajo de
+    //     `HIGH_ENTROPY_MIN_LEN = 40`, y no tenía patrón propio;
+    //   - el `refresh_token` de Google (prefijo `1//`);
+    //   - el bot token de Telegram (`<id>:<secreto>`).
+    // Van SIN `topology`: son secretos, no topología. Con `topology: true`
+    // matchearían pero NO apagarían la red de entropía y cambiarían la semántica.
+    { name: 'google_client_secret', re: /GOCSPX-[A-Za-z0-9_-]{20,}/g },
+    { name: 'google_refresh_token', re: /1\/\/[A-Za-z0-9_-]{20,}/g },
+    { name: 'telegram_bot_token', re: /\b\d{6,}:[A-Za-z0-9_-]{35,}/g },
     // #5135 CA-7 — Defensa en profundidad contra la fuga de topología AWS en los
     // stderr del AWS CLI (`provisioner-infra.js` los re-lanza tal cual como
     // `Error.message`). El control PRIMARIO es el template fijo de
