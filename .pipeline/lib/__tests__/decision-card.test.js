@@ -544,8 +544,13 @@ test('rev-2: la tabla de caracteres de control es UNA sola, compartida con el re
     const src = fs.readFileSync(path.join(__dirname, '..', 'decision-card-render.js'), 'utf8');
     assert.match(src, /decisionCard\.CONTROL_RANGES/,
         'el renderer tiene que consumir la tabla del armador, no tener la suya');
-    assert.match(src, /decisionCard\.URL_RE/,
-        'y lo mismo con el regex de URLs: duplicarlo es cómo divergieron');
+    // rev-9 / SEC-C: ya no alcanza con compartir el regex de URLs. El defecto
+    // de rev-8 no estuvo en ningún regex sino en el ORDEN de aplicación, y el
+    // orden estaba escrito DOS veces. Ahora se comparte la secuencia entera.
+    assert.match(src, /decisionCard\.neutralizarMarkupYEnlaces/,
+        'el renderer tiene que consumir la neutralización del armador, no una copia de la secuencia');
+    assert.ok(!/decisionCard\.URL_RE/.test(src),
+        'el renderer volvió a armar su propia secuencia de neutralización: el orden va a divergir de nuevo');
     assert.ok(!/\[0x200B, 0x200F\]/.test(src),
         'el renderer volvió a declarar rangos de control propios: van a divergir de nuevo');
 
@@ -1157,5 +1162,117 @@ test('SEC-B · la neutralización no mutila títulos legítimos', () => {
         )[0];
         assert.ok(card.que_esta_frenado.titulo.includes(titulo),
             `se mutiló un título legítimo: ${card.que_esta_frenado.titulo}`);
+    }
+});
+
+// =============================================================================
+// rev-9 / SEC-C — el orden de saneamiento estaba invertido.
+//
+// Defecto encontrado por `review` en la fase de aprobación y reproducido acá
+// antes de corregirlo: se neutralizaban las URLs PRIMERO y recién después se
+// borraban los metacaracteres de markup. Un título hostil con un metacaracter
+// intercalado en el esquema esquiva `URL_RE`, y el paso siguiente borra el
+// metacaracter y deja la URL viva, bien formada y CLICKEABLE.
+//
+//   "valida en ht*tps://intrale-login.evil.tld/qa"
+//     → "#999001 «valida en https://intrale-login.evil.tld/qa»"   (BYPASS)
+//
+// Afectaba las DOS superficies de texto, incluida la degradada fail-closed —
+// que es justo la que corre cuando la entrada es rara, o sea cuando hay
+// atacante. La causa de fondo: el orden estaba escrito dos veces, y compartir
+// sólo las tablas de regex no protege una secuencia duplicada.
+// =============================================================================
+
+// Un metacaracter de cada clase, intercalado en el esquema y en el `www.`.
+const VECTORES_EVASION_URL = [
+    ['asterisco en el esquema',   'URGENTE: validá en ht*tps://intrale-login.evil.tld/qa'],
+    ['asterisco en el www',       'Entrá a ww*w.intrale-login.evil.tld ya'],
+    ['backtick en el esquema',    'Mirá htt`ps://evil.tld/robo'],
+    ['backtick en el www',        'Ver www`.evil.tld ya'],
+    ['angulares en el esquema',   'Revisá ht<>tps://evil.tld/pwn ahora'],
+    ['angulares en el www',       'Abrí ww<>w.evil.tld/pwn'],
+    ['barra colada antes del esquema', 'Revisar login./https://evil.tld/robo'],
+];
+
+// El dominio de cada vector, tal como quedaría si el saneador lo dejara vivo.
+const DOMINIOS_HOSTILES = /(?:intrale-login\.evil\.tld|evil\.tld)/;
+// Un enlace "vivo" es el que Telegram auto-enlaza en texto plano: esquema
+// completo o `www.` pegado al dominio. La aserción mira eso, no el dominio
+// suelto, porque es lo que efectivamente le llega tappable al operador.
+const ENLACE_VIVO = /(?:https?:\/\/|\bwww\.)\S/i;
+
+for (const [nombre, titulo] of VECTORES_EVASION_URL) {
+    test(`SEC-C · ${nombre}: el enlace no revive en NINGUNA superficie`, () => {
+        const raw = { issue: 999001, titulo, reason: '', blocked_at: '2026-08-19T19:00:00Z' };
+
+        // 1. Camino principal: la ficha.
+        const card = dc.buildDecisionCard(raw, AHORA);
+        for (const [ruta, v] of camposString(card)) {
+            assert.doesNotMatch(v, ENLACE_VIVO,
+                `${ruta}: quedó un enlace vivo con ${JSON.stringify(titulo)} → ${v}`);
+            assert.doesNotMatch(v, DOMINIOS_HOSTILES,
+                `${ruta}: filtró el dominio hostil con ${JSON.stringify(titulo)} → ${v}`);
+        }
+        // Y se DECLARA que había un enlace: no se borra en silencio.
+        assert.ok(card.que_esta_frenado.titulo.includes(dc.URL_MARCA),
+            `la ficha no declaró que había un enlace: ${card.que_esta_frenado.titulo}`);
+
+        // 2. Camino degradado fail-closed: el aviso crudo del renderer.
+        const fb = cardRender.renderFallbackAviso([raw], AHORA);
+        assert.doesNotMatch(fb, ENLACE_VIVO, `el aviso degradado dejó un enlace vivo:\n${fb}`);
+        assert.doesNotMatch(fb, DOMINIOS_HOSTILES, `el aviso degradado filtró el dominio:\n${fb}`);
+        assert.ok(fb.includes(dc.URL_MARCA), `el aviso degradado no declaró el enlace:\n${fb}`);
+
+        // 3. Y las dos superficies producen EXACTAMENTE el mismo título saneado:
+        //    es la asimetría que se pagó en rev-2/SEC-A y en rev-8/SEC-B.
+        const cuerpo = card.que_esta_frenado.titulo.replace(/^[^«]*«/, '').replace(/»[^»]*$/, '');
+        assert.ok(fb.includes(cuerpo),
+            `las dos superficies divergieron con ${JSON.stringify(titulo)}\nficha: ${cuerpo}\nfallback: ${fb}`);
+    });
+}
+
+test('SEC-C · el camino de producción de human-block tampoco revive el enlace', () => {
+    // La superficie que efectivamente sale a Telegram: `buildBlockedSummaryPlain`
+    // es la que usan los 6 emisores de `pulpo.js` y el recordatorio. Los vectores
+    // llegan por el título (input no confiable: el repo es público) y por el
+    // motivo (que puede traer un volcado de cualquier cosa).
+    //
+    // El dialecto Markdown (`buildBlockedSummaryMarkdown`) queda deliberadamente
+    // fuera: está CONGELADO por el test de compat de `human-block.test.js:493`,
+    // no tiene emisores productivos y retirarlo es #6193.
+    const humanBlock = require('../human-block');
+
+    for (const [nombre, titulo] of VECTORES_EVASION_URL) {
+        const texto = humanBlock.buildBlockedSummaryPlain({
+            nowMs: AHORA,
+            highlight: { issue: 999001, titulo, reason: titulo, skill: 'ux', phase: 'criterios' },
+            blocked: [],
+        });
+        assert.doesNotMatch(texto, ENLACE_VIVO,
+            `[${nombre}] el aviso de producción dejó un enlace vivo:\n${texto}`);
+        assert.doesNotMatch(texto, DOMINIOS_HOSTILES,
+            `[${nombre}] el aviso de producción filtró el dominio:\n${texto}`);
+    }
+});
+
+test('SEC-C · la neutralización es idempotente: aplicarla dos veces no cambia nada', () => {
+    // Garantía de que la doble pasada converge. Si un futuro paso de limpieza
+    // pudiera reconstruir un enlace, esta aserción lo caza sin depender de que
+    // alguien piense el vector.
+    const corpus = VECTORES_EVASION_URL.map(([, t]) => t).concat([
+        TITULO_HOSTIL,
+        'Control: https://evil.tld/limpio',
+        'Split de #6173 cliente/negocio',
+        'Migrar A/B testing',
+        'Soporte 24/7',
+        '[Split de #6173](https://evil.tld) ojo',
+    ]);
+    for (const entrada of corpus) {
+        const una = dc.neutralizarMarkupYEnlaces(entrada);
+        const dos = dc.neutralizarMarkupYEnlaces(una);
+        assert.strictEqual(dos, una,
+            `la neutralización no es idempotente con ${JSON.stringify(entrada)}: ${JSON.stringify(una)} → ${JSON.stringify(dos)}`);
+        assert.doesNotMatch(una, ENLACE_VIVO,
+            `quedó un enlace vivo con ${JSON.stringify(entrada)} → ${JSON.stringify(una)}`);
     }
 });

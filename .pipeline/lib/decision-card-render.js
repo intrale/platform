@@ -329,33 +329,29 @@ const CONTROL_MINIMO_RE = new RegExp(
 function sanearMinimo(v, max) {
     let s = String(v == null ? '' : v);
     if (!s) return '';
-    // MISMO ORDEN que `sec()` en `decision-card`: controles → secretos → URLs →
-    // markup. El orden importa (redactar antes de truncar; sacar controles
-    // antes de buscar URLs, para que un carácter invisible metido en el medio
-    // no parta el match) y tenerlo igual en ambos lados es lo que evita que
-    // esta superficie vuelva a quedarse atrás.
+    // MISMO ORDEN que `sec()` en `decision-card`: controles → secretos →
+    // markup → enlaces. Sacar controles antes de todo, para que un carácter
+    // invisible metido en el medio no parta ningún match.
     //
     // Saltos y controles a espacio: sin esto un título hostil fabrica líneas
     // falsas que imitan la estructura del mensaje.
     s = s.replace(CONTROL_MINIMO_RE, ' ');
     s = String(redactAll(s));
-    // rev-2 / SEC-A: en TEXTO PLANO Telegram auto-enlaza las URLs desnudas.
-    // Sin esto, el aviso degradado le entregaba al operador un link CLICKEABLE
-    // escrito por un tercero (el repo es público, el título lo escribe
-    // cualquiera) dentro de un mensaje que él lee como propio del pipeline —
-    // y este es justo el camino que corre cuando la entrada es rara, o sea
-    // cuando hay atacante. Se consume el regex del armador, no se copia.
-    s = s.replace(decisionCard.URL_RE, decisionCard.URL_MARCA);
-    s = s.replace(/\]\(/g, '] (').replace(/[*`<>]/g, '').replace(/_/g, ' ');
-    // rev-7 / SEC-B: las «comillas angulares» son la frontera de atribución que
-    // este mismo renderer agrega abajo. Si el título trae un `»` propio, cierra
-    // la cita antes de tiempo y forja una entrada falsa con un `/unblock` sobre
-    // un issue que nadie bloqueó. Se consume el regex del armador, no se copia.
-    s = s.replace(decisionCard.GUILLEMET_RE, decisionCard.GUILLEMET_REEMPLAZO);
-    // Y el `/comando` tappable que Telegram linkifica solo. Mismo motivo que
-    // arriba: el camino degradado es JUSTO el que corre cuando la entrada es
-    // rara, o sea cuando hay atacante. No puede ser el más flojo.
-    s = s.replace(decisionCard.COMANDO_RE, decisionCard.COMANDO_REEMPLAZO);
+    // rev-9 / SEC-C: markup y enlaces se neutralizan con la MISMA función del
+    // armador, no con una copia de la secuencia.
+    //
+    // Hasta rev-8 acá vivía una segunda copia de los mismos pasos, y el defecto
+    // que encontró `review` no estuvo en ningún regex sino en el ORDEN —URLs
+    // antes que markup, en los dos archivos—: un `*` intercalado en el esquema
+    // esquivaba `URL_RE` y el paso siguiente lo borraba dejando el enlace vivo y
+    // clickeable. Compartir sólo las tablas no alcanzaba porque la secuencia
+    // también es parte del contrato de seguridad. Ahora hay una sola definición
+    // del orden y esta superficie no puede volver a quedarse atrás.
+    //
+    // Sigue sin invocar al armador de fichas —que es justo el que acaba de
+    // fallar cuando corre este camino—: `neutralizarMarkupYEnlaces` es puro,
+    // sin estado y sin dependencias de `buildDecisionCard`.
+    s = decisionCard.neutralizarMarkupYEnlaces(s);
     s = s.replace(/\s+/g, ' ').trim();
     return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
 }

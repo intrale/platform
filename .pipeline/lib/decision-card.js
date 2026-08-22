@@ -260,10 +260,58 @@ function truncar(s, max) {
     return base.replace(/[\s,;:.]+$/, '') + '…';
 }
 
+// rev-9 / SEC-C. Una sola pasada de limpieza de markup. El ORDEN interno de
+// esta cadena ya es significativo y está ganado a golpes: `MARKUP_BORRAR_RE`
+// antes que `COMANDO_RE` (si no, un `*` intercalado tapa el `/comando` y la
+// limpieza posterior lo destapa tappable) y `GUILLEMET_RE` antes que
+// `COMANDO_RE` (el `»` se vuelve `"`, que tampoco frena la linkificación).
+function limpiarMarkup(s) {
+    return s
+        .replace(MARKDOWN_LINK_RE, '] (')
+        .replace(MARKUP_BORRAR_RE, '')
+        .replace(MARKUP_ESPACIO_RE, ' ')
+        .replace(GUILLEMET_RE, GUILLEMET_REEMPLAZO)
+        .replace(COMANDO_RE, COMANDO_REEMPLAZO);
+}
+
 /**
- * Nivel 1: control chars → redacción de secretos → neutralización de markup →
- * colapso de espacios → cap. En ese orden: redactar ANTES de truncar (truncar
- * primero podría dejar la mitad de una credencial visible).
+ * rev-9 / SEC-C. Neutralización de markup y de enlaces, en el ÚNICO orden que
+ * no se puede esquivar, y expuesta como función compartida: hasta rev-8 cada
+ * superficie tenía su propia copia de la secuencia y el defecto vivía en el
+ * ORDEN, no en los regex —así que compartir sólo las tablas no alcanzaba—.
+ *
+ * El defecto de rev-8: se neutralizaban las URLs PRIMERO y recién después se
+ * borraban los metacaracteres de markup. Un metacaracter intercalado en el
+ * esquema hace que `URL_RE` no matchee, y el paso siguiente lo borra y deja el
+ * enlace vivo, bien formado y clickeable:
+ *
+ *   "valida en ht*tps://intrale-login.evil.tld/qa"
+ *     → URL_RE no matchea (el `*` parte el esquema)
+ *     → se borra el `*`  →  "https://intrale-login.evil.tld/qa"  ← VIVO
+ *
+ * La corrección es limpiar ANTES de buscar enlaces. Y se hace en DOS pasadas
+ * porque la propia limpieza es capaz de reconstruir un enlace: `COMANDO_RE`
+ * borra barras (`x./https://evil.tld` → `x.https://evil.tld`), así que la
+ * neutralización de URLs se re-aplica sobre el texto ya limpio. La segunda
+ * pasada de `limpiarMarkup` es idempotente por construcción (después de la
+ * primera no queda ninguno de esos caracteres, y `URL_MARCA` no introduce
+ * ninguno): está para que ningún reordenamiento futuro reabra el hueco.
+ */
+function neutralizarMarkupYEnlaces(value) {
+    let s = String(value == null ? '' : value);
+    if (!s) return '';
+    for (let i = 0; i < 2; i += 1) {
+        s = limpiarMarkup(s);
+        s = s.replace(URL_RE, URL_MARCA);
+    }
+    return s;
+}
+
+/**
+ * Nivel 1: control chars → redacción de secretos → neutralización de markup y
+ * enlaces → colapso de espacios → cap. En ese orden: redactar ANTES de truncar
+ * (truncar primero podría dejar la mitad de una credencial visible) y limpiar
+ * markup ANTES de neutralizar enlaces (ver `neutralizarMarkupYEnlaces`).
  */
 function sec(value, max = MAX_CAMPO) {
     if (value == null) return '';
@@ -271,12 +319,7 @@ function sec(value, max = MAX_CAMPO) {
     if (!s) return '';
     s = sinControles(s);
     s = String(redactAll(s));
-    s = s.replace(URL_RE, URL_MARCA);
-    s = s.replace(MARKDOWN_LINK_RE, '] (')
-        .replace(MARKUP_BORRAR_RE, '')
-        .replace(MARKUP_ESPACIO_RE, ' ')
-        .replace(GUILLEMET_RE, GUILLEMET_REEMPLAZO)
-        .replace(COMANDO_RE, COMANDO_REEMPLAZO);
+    s = neutralizarMarkupYEnlaces(s);
     s = s.replace(/\s+/g, ' ').trim();
     return truncar(s, max);
 }
@@ -1414,6 +1457,12 @@ module.exports = {
     CONTROL_RANGES,
     URL_RE,
     URL_MARCA,
+    // rev-9 / SEC-C: además de las tablas se comparte el ORDEN de aplicación.
+    // El defecto de rev-8 no estuvo en ningún regex sino en la secuencia
+    // (enlaces antes que markup), y estaba escrito dos veces. Una secuencia
+    // duplicada diverge igual que una tabla duplicada; esta función es la
+    // única definición del orden para las DOS superficies de texto.
+    neutralizarMarkupYEnlaces,
     // rev-7 / SEC-B: misma razón que URL_RE. El camino degradado no puede
     // quedar más flojo que el principal —esa asimetría ya se pagó en rev-2/
     // SEC-A con las URLs— y una copia del regex diverge; esta, no.
