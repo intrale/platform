@@ -814,6 +814,38 @@ test('#4068 HUMAN_BLOCK_ACTIONS son las 4 acciones sin pausar', () => {
 });
 
 // =============================================================================
+// #5458 — AISLAMIENTO de `vault-cut-fallback` respecto de las acciones rápidas.
+// La acción se puede FIRMAR (está en la allowlist criptográfica de
+// `action-token.js`), pero eso NO la convierte en acción rápida de needs-human:
+// las dos allowlists son deliberadamente distintas. Si alguien las unificara,
+// el corte del fallback se volvería ejecutable desde el endpoint local del
+// dashboard y desde el teclado de la alerta — exactamente lo que el split
+// prohíbe.
+// =============================================================================
+
+test('#5458 `vault-cut-fallback` NO es quick action ni está en HUMAN_BLOCK_ACTIONS', () => {
+    assert.equal(hb.isQuickAction('vault-cut-fallback'), false);
+    assert.equal(hb.HUMAN_BLOCK_ACTIONS.includes('vault-cut-fallback'), false);
+    // La allowlist criptográfica SÍ la tiene: son universos distintos a propósito.
+    const { ACTION_ALLOWLIST } = require('../action-token');
+    assert.ok(ACTION_ALLOWLIST.includes('vault-cut-fallback'));
+    // Ninguna acción operacional puede colarse en el teclado de needs-human.
+    const { OPERATIONAL_ACTIONS } = require('../operator-gate');
+    for (const a of OPERATIONAL_ACTIONS) {
+        assert.equal(hb.isQuickAction(a), false, `${a} no debe ser quick action`);
+        assert.equal(hb.HUMAN_BLOCK_ACTIONS.includes(a), false);
+    }
+});
+
+test('#5458 el teclado de needs-human no ofrece ninguna acción operacional', () => {
+    const markup = hb.buildBlockedActionMarkup
+        ? hb.buildBlockedActionMarkup({ issue: 5458 })
+        : null;
+    const serializado = JSON.stringify(markup || {});
+    assert.equal(serializado.includes('vault-cut-fallback'), false);
+});
+
+// =============================================================================
 // #4067 (split de #4050) — buildNeedHumanAudioText: guion narrable del audio TTS
 // de la alerta needs-human. Cubre formato (CA-2), redacción SEC-3 y degradación.
 // =============================================================================
