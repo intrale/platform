@@ -170,6 +170,39 @@ function readPartialFile() {
 }
 
 /**
+ * #6118 — Snapshot de metadata de ola guardado EN EL MARKER, en el shape que
+ * espera `setPartialPause` por `opts`.
+ *
+ * Existe porque `setPartialPause` reescribe el marker desde sus argumentos: lo
+ * que no se le pasa, se pierde. `getPipelineMode()` no expone estos campos, así
+ * que cualquier caller que sume un issue al allowlist borraba la identidad de la
+ * ola como daño colateral (#4030). Con esto, re-inyectarla es un round-trip.
+ *
+ * Es deliberadamente la metadata DEL MARKER y no la de `waves.json`: el marker
+ * es el snapshot vigente, y leer del registro podría cambiar la ola registrada
+ * como efecto secundario de habilitar una dependencia.
+ *
+ * La lectura vive acá —y no en el caller— porque este módulo es el dueño de
+ * `.partial-pause.json`: construir ese path afuera duplica el conocimiento del
+ * layout de estado que #5109 está centralizando.
+ *
+ * @returns {{waveNumber?:number, waveName?:string, waveGoal?:string}} vacío si
+ *          el marker no existe, es ilegible o no tiene metadata de ola.
+ */
+function readWaveMetaFromMarker() {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(partialFile(), 'utf8'));
+        const out = {};
+        if (Number.isInteger(parsed.wave_number)) out.waveNumber = parsed.wave_number;
+        if (typeof parsed.wave_name === 'string') out.waveName = parsed.wave_name;
+        if (typeof parsed.wave_goal === 'string') out.waveGoal = parsed.wave_goal;
+        return out;
+    } catch {
+        return {};
+    }
+}
+
+/**
  * Lee el snapshot raw del archivo (allowlist sin filtrar a lista vacía).
  * Útil para callers del gate que necesitan la "previous" exacta antes del
  * write — `getPipelineMode()` mapea a `running` cuando la lista está vacía
@@ -1275,6 +1308,9 @@ module.exports = {
     MAX_PAUSE_MARKER_BYTES,
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
     readPreviousAllowlist,
+    // #6118 — metadata de ola del marker, para re-inyectarla en setPartialPause
+    // y no perderla al sumar un issue al allowlist.
+    readWaveMetaFromMarker,
     evaluateAndAudit,
     // #4030 — saneado de metadata de ola (expuesto para tests).
     sanitizeWaveMetaForWrite,
