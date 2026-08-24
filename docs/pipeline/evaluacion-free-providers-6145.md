@@ -5,7 +5,9 @@
 > un paso posterior y trazable: este documento **no** da de baja a nadie.
 >
 > Registro de auditoría append-only asociado: `.pipeline/audit/provider-permanence.jsonl`
-> (entrada `provider_permanence_evaluated`, `executed_action: none`).
+> (entrada `provider_permanence_evaluated`, `executed_action: none`, ventana
+> `2026-07-25T23:59:59.999Z` → `2026-08-24T23:59:59.999Z`, hash
+> `0e0cbaca95e7424493225a94c4e5dd5bafd3ff51f500ac76c5abad30de0e978a`).
 
 > **rev-2 (rebote de `aprobacion`).** Los números de este documento fueron **regenerados
 > por completo** respecto de rev-1, porque la revisión encontró tres defectos que los
@@ -34,19 +36,19 @@
 1. **No se propone dar de baja a ningún proveedor en esta ventana.** La premisa que abrió
    el issue — *"varios gratuitos permanentemente secos"* — no se sostiene con los datos.
 2. **Gemini figura rojo en el panel por un flag de entorno nuestro, y es el proveedor con
-   la mejor tasa de aporte de la cadena declarada**: 153 dispatches ganados sobre 153
+   la mejor tasa de aporte de la cadena declarada**: 145 dispatches ganados sobre 145
    intentos que le son imputables (**100 %**), el 99 % de ellos conversacionales. Con el
-   gateo local descontado le quedan 153 evaluables, por debajo de `min_sample=200`, así que
+   gateo local descontado le quedan 145 evaluables, por debajo de `min_sample=200`, así que
    el criterio lo deja en **no evaluable** — sin muestra no se decide. Se **recupera**, no
    se baja. Seguimiento: **#6225**.
 3. **Cerebras y NVIDIA aportan de forma sostenida y sin un solo gateo por salud**
-   (**100 %** de tasa cada uno: 716/716 y 370/370). No es que hayan mejorado — es que ya
+   (**100 %** de tasa cada uno: 707/707 y 367/367). No es que hayan mejorado — es que ya
    no se les descuenta de la tasa el kill-switch con el que los apagamos nosotros (rev-3).
 4. **`kimi-moonshot` participa del dispatch pero no está declarado en `config.yaml`**:
    queda **sin evaluar** hasta que se reconcilie (#6153). No se decide sobre él.
-5. **Sólo el 11,7 % del costo de failover es un bloqueo imputable a un proveedor.** El
-   resto es cadena (34,6 %), cupo agotado (25,7 %), política horaria (24,4 %) y nuestro
-   propio kill-switch (1,6 %). Atribuirlo a los gratuitos sería vender un número falso al
+5. **Sólo el 11,8 % del costo de failover es un bloqueo imputable a un proveedor.** El
+   resto es cadena (34,7 %), cupo agotado (25,6 %), política horaria (24,4 %) y nuestro
+   propio kill-switch (1,7 %). Atribuirlo a los gratuitos sería vender un número falso al
    operador.
 
 **El hallazgo que cambia la pregunta:** los gratuitos no le quitan carga al proveedor
@@ -62,7 +64,7 @@ pago: convierte esos dispatches en `chain_exhausted` (ver §5).
 | **Ventana** | 2026-07-25 → 2026-08-24 (30 días) |
 | **Fuente** | `.pipeline/logs/cross-provider-dispatch-*.jsonl` (append-only con hash-chain) |
 | **Archivos** | 30 archivos diarios |
-| **Eventos leídos** | 162.058 |
+| **Eventos leídos** | 160.910 |
 | **Integridad** | `hash-chain: OK` — los 30 archivos verifican con `audit-log.verifyChain` |
 | **Comando** | `node .pipeline/scripts/provider-contribution-report.js --dias=30 --hasta=2026-08-24` |
 
@@ -135,21 +137,21 @@ el módulo llega a importarla (`el modulo no lee activity-log.jsonl`).
 
 | Proveedor | Intentos evaluables | Aportes | Tasa | Último live-ping (no es mediana) | Bloqueo dominante | Último aporte | Rol (conversacional / pipeline) | Recomendación |
 |---|---:|---:|---:|---|---|---|---|---|
-| openai-codex | 15.384 | 1.879 | 12,2 % | sin instrumentar (#6152) | cupo | 2026-08-23 09:17 | 25 % / 75 % | mantener |
-| cerebras | 716 | 716 | 100,0 % | 274 ms | sin muestra | 2026-08-22 14:48 | 59 % / 41 % | mantener |
-| nvidia-nim | 370 | 370 | 100,0 % | 4,9 s | sin muestra | 2026-08-22 14:31 | 79 % / 21 % | mantener |
-| gemini-google | 153 | 153 | 100,0 % | sin instrumentar (#6152) | observabilidad local (`cli_license_unavailable`) | 2026-08-22 02:30 | 99 % / 1 % | no evaluable |
+| openai-codex | 15.323 | 1.818 | 11,9 % | sin instrumentar (#6152) | cupo | 2026-08-24 03:16 | 24 % / 76 % | mantener |
+| cerebras | 707 | 707 | 100,0 % | 525 ms | sin muestra | 2026-08-22 14:48 | 59 % / 41 % | mantener |
+| nvidia-nim | 367 | 367 | 100,0 % | 1,4 s | sin muestra | 2026-08-22 14:31 | 79 % / 21 % | mantener |
+| gemini-google | 145 | 145 | 100,0 % | sin instrumentar (#6152) | observabilidad local (`cli_license_unavailable`) | 2026-08-22 02:30 | 100 % / 0 % | no evaluable |
 | kimi-moonshot | 124 | 124 | 100,0 % | sin instrumentar (#6152) | sin muestra | 2026-08-22 15:14 | 0 % / 100 % | sin declarar (#6153) |
 | anthropic | 0 | 0 | sin muestra | sin instrumentar (#6152) | sin muestra | sin muestra | sin muestra | mantener |
 
-> Ventana **2026-07-25 → 2026-08-24**, hash-chain OK sobre 30 archivos. Regenerable con
-> `node .pipeline/scripts/provider-contribution-report.js --dias=30`.
+> Ventana **2026-07-25 → 2026-08-24**, hash-chain OK sobre 31 archivos. Regenerable con
+> `node .pipeline/scripts/provider-contribution-report.js --dias=30 --hasta=2026-08-24`.
 
 **Qué cambió respecto de rev-2 y por qué.** Las tasas de `cerebras` (27,2 % → 100 %) y
 `nvidia-nim` (63,1 % → 100 %) **no subieron porque los proveedores mejoraran**: subieron
 porque se sacó del denominador el kill-switch con el que **nosotros** los apagamos. Sus
 bloqueos "por cupo" de rev-2 eran, en su totalidad, saltos por kill-switch. `gemini-google`
-pasa a `no evaluable`: con el gateo por observabilidad local descontado le quedan 153
+pasa a `no evaluable`: con el gateo por observabilidad local descontado le quedan 145
 intentos evaluables, por debajo de `min_sample=200`. Es el comportamiento correcto —
 **sin muestra no se decide** — y refuerza la conclusión de §7: hay que arreglar el chequeo
 antes de medirlo, no darlo de baja.
@@ -188,14 +190,14 @@ no es de los gratuitos:
 
 | Causa | Eventos | % del total |
 |---|---:|---:|
-| Eventos de cadena (`chain_exhausted`, `gated_no_fallbacks`, forzados) | 56.101 | 34,6 % |
-| Cupo del proveedor — flag de agotamiento (`fallback_also_gated`) | 41.591 | 25,7 % |
-| Política horaria (`*_by_schedule`) | 39.556 | 24,4 % |
-| Bloqueo imputable a un proveedor (salud / credencial) | 18.907 | 11,7 % |
-| Dispatch resuelto (`fallback_selected`) | 3.242 | 2,0 % |
-| Kill-switch del operador (`provider_disabled` + `fallback_provider_disabled` + pacing) | 2.661 | 1,6 % |
+| Eventos de cadena (`chain_exhausted`, `gated_no_fallbacks`, forzados) | 55.780 | 34,7 % |
+| Cupo del proveedor — flag de agotamiento (`fallback_also_gated`) | 41.213 | 25,6 % |
+| Política horaria (`*_by_schedule`) | 39.190 | 24,4 % |
+| Bloqueo imputable a un proveedor (salud / credencial) | 18.907 | 11,8 % |
+| Dispatch resuelto (`fallback_selected`) | 3.161 | 2,0 % |
+| Kill-switch del operador (`provider_disabled` + `fallback_provider_disabled` + pacing) | 2.659 | 1,7 % |
 | Fuera de taxonomía | 0 | 0,0 % |
-| **TOTAL** | **162.058** | **100 %** |
+| **TOTAL** | **160.910** | **100 %** |
 
 **rev-3 — dos filas de esta tabla estaban mal, y `security` las rebotó.** La fila del
 kill-switch publicaba **`0 | 0,0 %`** cuando en la ventana hubo **2.661** saltos por
@@ -222,7 +224,7 @@ De esos 18.907 bloqueos imputables, **5.402 son gateos de `gemini-google` y el 1
 ellos tiene causa local** (`cli_license_unavailable`). Es decir: una parte sustancial del
 "ruido de proveedores" es, en realidad, un bug de instrumentación nuestro.
 
-Y **el 1,6 % del kill-switch no es ruido del proveedor en absoluto**: son 2.661 saltos que
+Y **el 1,7 % del kill-switch no es ruido del proveedor en absoluto**: son 2.659 saltos que
 originó el operador. Aparecen en la tabla para que el costo esté completo, pero por
 construcción no bajan la tasa de aporte de nadie (REQ-SEC-3).
 
@@ -232,12 +234,12 @@ construcción no bajan la tasa de aporte de nadie (REQ-SEC-3).
 
 ### 5.1 Los gratuitos no descargan al pago: recogen lo que el pago rechazó
 
-Evidencia sobre las 1.332 selecciones ganadas por proveedores gratuitos declarados en la
+Evidencia sobre las 1.219 selecciones ganadas por proveedores gratuitos declarados en la
 ventana:
 
 ```
 $ # primary_provider en los dispatches ganados por un gratuito
-{"anthropic": 1332}          # 1.332 de 1.332 — el 100%
+{"anthropic": 1219}          # 1.219 de 1.219 — el 100%
 
 $ # cadenas efectivamente probadas antes de llegar al gratuito (top 5)
 670  anthropic > openai-codex > gemini-google > cerebras
@@ -267,7 +269,7 @@ que trasladarle.
 
 `chain_exhausted` fue 31.049 eventos en la ventana, **todos** con
 `reason: all_gated` (ninguno `todos_inactivos_por_horario`). Dar de baja a los tres
-gratuitos declarados agregaría ~1.332 eventos más a ese total (**+4,3 %**), cada uno
+gratuitos declarados agregaría ~1.219 eventos más a ese total (**+3,9 %**), cada uno
 equivalente a un agente que no se lanzó.
 
 El costo de tener un proveedor **muerto** por delante es real pero acotado: el dispatcher
@@ -304,10 +306,10 @@ es un argumento para declararlo (#6153).
 |---|---|---|
 | **anthropic** | **mantener** | `billing: paid` — excluido del criterio automático por invariante. Es el primario de todos los skills LLM. |
 | **openai-codex** | **mantener** | `billing: paid` — excluido por invariante. Además es el mayor aportante en volumen absoluto (2.007). |
-| **cerebras** | **mantener** | 716 aportes / 716 evaluables = **100 %**, muy por encima del umbral del 5 %. Cero gateos por salud, estado `green`. Sus 2.444 "bloqueos por cupo" de rev-2 eran, en su totalidad, saltos por kill-switch del operador: no son del proveedor y ya no entran al denominador (rev-3). |
-| **nvidia-nim** | **mantener** | 370 aportes / 370 evaluables = **100 %**. Cero gateos por salud, estado `green`. Sus 215 bloqueos también eran kill-switch. |
-| **gemini-google** | **no evaluable** + **recuperar** (#6225) | 153 aportes / 153 evaluables = **100 %**, pero por debajo de `min_sample=200`: sin muestra no se decide. Sus 5.402 gateos son 100 % `cli_license_unavailable`, causa **local**, y por eso no entran al denominador. Ver §7. |
-| **kimi-moonshot** | **sin declarar** — no se decide | 87 dispatches ganados, pero ausente de `config.yaml` y del snapshot de salud. Evaluarlo contra umbrales inexistentes sería peor que no evaluarlo. Se reconcilia en #6153 y se re-mide después. |
+| **cerebras** | **mantener** | 707 aportes / 707 evaluables = **100 %**, muy por encima del umbral del 5 %. Cero gateos por salud, estado `green`. Sus 2.444 "bloqueos por cupo" de rev-2 eran, en su totalidad, saltos por kill-switch del operador: no son del proveedor y ya no entran al denominador (rev-3). |
+| **nvidia-nim** | **mantener** | 367 aportes / 367 evaluables = **100 %**. Cero gateos por salud, estado `green`. Sus 215 bloqueos también eran kill-switch. |
+| **gemini-google** | **no evaluable** + **recuperar** (#6225) | 145 aportes / 145 evaluables = **100 %**, pero por debajo de `min_sample=200`: sin muestra no se decide. Sus 5.402 gateos son 100 % `cli_license_unavailable`, causa **local**, y por eso no entran al denominador. Ver §7. |
+| **kimi-moonshot** | **sin declarar** — no se decide | 124 dispatches ganados, pero ausente de `config.yaml` y del snapshot de salud. Evaluarlo contra umbrales inexistentes sería peor que no evaluarlo. Se reconcilia en #6153 y se re-mide después. |
 
 > **Ninguna de estas recomendaciones se apoya en la latencia.** En rev-1, la de
 > `nvidia-nim` se sostenía parcialmente sobre *"latencia alta (15,9 s)"* — un número que
@@ -499,7 +501,7 @@ Se declaran para que quien lea el documento no le atribuya más precisión de la
 - **La medición de `gemini-google` sigue conviviendo con el gate roto.** El 100 % ya
   excluye los 5.402 gateos de causa local, así que no está sesgado *a la baja* como en
   rev-1; pero el volumen de intentos que Gemini habría podido atender sin el gate es
-  desconocido, y con 153 evaluables queda **por debajo de `min_sample`**, o sea *no
+  desconocido, y con 145 evaluables queda **por debajo de `min_sample`**, o sea *no
   evaluable*. Ninguna decisión de baja puede apoyarse en sus números hasta cerrar #6225.
 - **`kimi-moonshot` tiene muestra chica** (124 eventos) además de estar sin declarar.
 - **Las tasas de esta revisión son "limpias de decisiones nuestras", no "de laboratorio".**
@@ -528,6 +530,6 @@ Se declaran para que quien lea el documento no le atribuya más precisión de la
 | Umbrales | `.pipeline/config.yaml` → `multi_provider.permanence` |
 | Implementación | `.pipeline/lib/multi-provider/provider-contribution.js` |
 | Reporte reejecutable | `.pipeline/scripts/provider-contribution-report.js` |
-| Registro append-only | `.pipeline/audit/provider-permanence.jsonl` |
+| Registro append-only | `.pipeline/audit/provider-permanence.jsonl` — entrada `created_at=1787541486871`, ventana `2026-07-25T23:59:59.999Z` → `2026-08-24T23:59:59.999Z`, `hash_self=0e0cbaca95e7424493225a94c4e5dd5bafd3ff51f500ac76c5abad30de0e978a` |
 | Seguimiento Gemini | #6225 |
 | Dependencias no bloqueantes | #6152 (latencia real por invocación), #6153 (declarar `kimi-moonshot`), #6160 / #6165 (UI) |
