@@ -75,6 +75,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #6226 - nombres unicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('../dropfile-writer');
 
 // #4052 — clasificador puro de "muerte al spawnear del provider". Distingue una
 // muerte de spawn-failure (infra del provider) de un fallo legítimo del issue,
@@ -91,7 +93,7 @@ const { AUTH_REJECTED_CLASS } = require('./auth-rejection');
 // 'full-auto', free providers → 'bypassPermissions'). Sin esto el fallback
 // perdía el `mode` y el launcher caía a un default fail-open peligroso.
 // `resolve-provider` ya se importa acá sin ciclo de require — solo sumamos un símbolo.
-const { resolveProviderForSkill, getProviderHandler, resolvePermissionMode } = require('./resolve-provider');
+const { resolveProviderForSkill, getProviderHandler, resolvePermissionMode, resolveModelForSkillProvider } = require('./resolve-provider');
 // MP-05 (#3803) — reutilizamos la validación de credenciales del precheck del
 // Commander para hacer pre-check de credenciales también en los skills antes de
 // elegir un fallback (no solo el Commander la tenía).
@@ -841,22 +843,42 @@ function evaluateHealthGate(providerKey, healthSnapshot, now) {
 // Best-effort: errores de IO se silencian para no romper el pipeline (el
 // dispatcher NUNCA debe ser causa de crash).
 // -----------------------------------------------------------------------------
-function enqueueTelegramNotice({ pipelineDir, fsImpl, text, meta }) {
+function enqueueTelegramNotice({ pipelineDir, fsImpl, text, meta, plain }) {
     const _fs = fsImpl || fs;
     if (!pipelineDir || !text) return false;
     try {
         const queueDir = path.join(pipelineDir, TELEGRAM_QUEUE_SUBDIR);
         _fs.mkdirSync(queueDir, { recursive: true });
-        // Nombre con timestamp + pid para evitar colisiones entre procesos
-        // concurrentes (caller puede ser pulpo + un script de mantenimiento).
-        const fname = `cross-provider-${Date.now()}-${process.pid}.json`;
         const payload = JSON.stringify({
             type: 'cross-provider-fallback',
             text,
+            // #6179 — sin este flag `resolveOutboundParseMode`
+            // (`servicio-telegram.js:916-921`) cae al default `'Markdown'` y manda
+            // el texto SIN escapar: cualquier `_`, `*` o `` ` `` del copy rompe el
+            // render o directamente el envío. `sendTelegramPlain` vive en
+            // `pulpo.js` y NO es alcanzable desde acá (procesos distintos), así
+            // que el flag en el dropfile es la única vía (SEC-4 / CA-9).
+            plain: plain === true,
             meta: meta || {},
             queued_at: new Date().toISOString(),
         }, null, 2);
-        _fs.writeFileSync(path.join(queueDir, fname), payload, { mode: 0o600 });
+        // #6226 - escritura fail-closed. El nombre lleva timestamp + pid, pero
+        // el pid es CONSTANTE dentro de un proceso: dos avisos del mismo proceso
+        // en el mismo milisegundo resolvian al mismo path y el segundo pisaba al
+        // primero. Se conserva el nombre tal cual (su prefijo define la posicion
+        // del archivo en el drenado por orden de nombre) y solo ante colision
+        // real se desambigua con `-<n>`.
+        const fname = `cross-provider-${Date.now()}-${process.pid}.json`;
+        dropfileWriter.writeUniqueFileSync({
+            dir: queueDir,
+            filename: fname,
+            data: payload,
+            fsImpl: _fs,
+            mode: 0o600,
+            onCollision: (name, attempt) => console.warn(
+                `[dispatch-with-fallback] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
         return true;
     } catch {
         return false;
@@ -1081,6 +1103,72 @@ function resolveSpawnWithFallback(opts = {}) {
     const _resolveHandler = providerHandlerResolver || getProviderHandler;
     const _notify = notify || enqueueTelegramNotice;
     const _now = Number.isFinite(now) ? now : Date.now();
+
+    // -------------------------------------------------------------------------
+    // #6179 — política de emisión por EPISODIO.
+    //
+    // Antes de este issue, CADA despacho que caía a un proveedor de respaldo
+    // encolaba un mensaje de Telegram: 8.984 en 85 días (~106/día), ninguno con
+    // una acción para el operador. El aviso ahora sale sólo cuando CAMBIA la
+    // situación (entra en respaldo / vuelve al principal / baja de escalón), y
+    // quien lo decide es `fallback-episode-state.recordDispatch` — la ÚNICA
+    // política viva (CA-3). Acá no se decide nada, sólo se emite.
+    //
+    // Se llama en los DOS sentidos: en el path de fallback (para abrir o cambiar
+    // el episodio) y en el happy path del primario (para cerrarlo). Sin la
+    // segunda llamada la vuelta a la normalidad nunca se detecta y el operador
+    // se queda esperando un mensaje que no llega.
+    // -------------------------------------------------------------------------
+    // `recordEpisode: false` lo pasan las consultas READ-ONLY que re-resuelven la
+    // cadena sin despachar nada (`isReducedMode`, `isCommanderChainGated`,
+    // `resolveCommanderProviderQuiet`, el failover-probe). Esas sondas ya
+    // neutralizan `notify`, `onLog` y `auditLog`; el episodio es un CUARTO canal
+    // de efecto y necesita el mismo trato.
+    //
+    // No alcanzaba con silenciar `notify`: una sonda que persiste el episodio
+    // hace que el despacho REAL siguiente lea "no cambió nada" y se calle. O
+    // sea, una consulta read-only terminaría suprimiendo el aviso verdadero —
+    // exactamente el modo de falla que CA-10 existe para evitar.
+    const _episodeEnabled = opts.recordEpisode !== false;
+
+    const _recordEpisode = ({ provider, crossProvider, chainTried, models }) => {
+        if (!_episodeEnabled) return null;
+        try {
+            const episodeState = opts.episodeStateModule || require('../fallback-episode-state');
+            const res = episodeState.recordDispatch({
+                pipelineDir,
+                provider,
+                crossProvider,
+                chain: chainTried,
+                models,
+                now: _now,
+            });
+            if (!res || !res.notify) return res;
+
+            const commanderMP = opts.copyModule || require('../commander/multi-provider');
+            _notify({
+                pipelineDir,
+                fsImpl,
+                text: commanderMP.formatEpisodeNotice(res.episode, { now: _now }),
+                plain: true,
+                // El `meta` es para el audit/diagnóstico del dropfile, NO para el
+                // texto: nada de esto se interpola en lo que ve el operador.
+                meta: {
+                    event: 'fallback_episode',
+                    episode_mode: res.episode && res.episode.mode,
+                    episode_tier: res.episode && res.episode.tier,
+                    episode_reason: res.reason,
+                    changed: res.changed,
+                },
+            });
+            return res;
+        } catch (e) {
+            // Best-effort absoluto: el avisador NUNCA puede ser causa de que un
+            // agente no se lance (regla #1 — el pipeline no puede morir).
+            log('lanzamiento', `⚠️ #6179 registro de episodio falló (best-effort): ${e && e.message}`);
+            return null;
+        }
+    };
     // #3811 — módulo del kill-switch. Inyectable para tests (opts.disabledModule).
     const _disabled = opts.disabledModule || providerDisabledModule;
     const _isProviderDisabled = (p) => {
@@ -1473,6 +1561,17 @@ function resolveSpawnWithFallback(opts = {}) {
 
     if (!primaryGated && !primarySoftGated) {
         // Happy path: primary disponible.
+        // #6179 — cierra el episodio si veníamos degradados. Es la única forma
+        // de que salga el aviso de "vuelta al motor principal" (CA-2): si sólo
+        // registráramos los despachos con fallback, el episodio quedaría abierto
+        // para siempre y el operador nunca sabría cuándo dejar de preocuparse.
+        // Cuando ya estábamos en el primario, `recordDispatch` no emite nada.
+        _recordEpisode({
+            provider: primaryProvider,
+            crossProvider: false,
+            chainTried: [primaryProvider],
+            models: _billingModels,
+        });
         return {
             ...primary,
             source: primary.source || 'primary',
@@ -1876,11 +1975,13 @@ function resolveSpawnWithFallback(opts = {}) {
         // distinto). Si todavía hay configs legacy con `fallbacks: [string]`,
         // `fbModelOverride` queda null y el fallback usa el `model` default
         // del provider (comportamiento previo preservado).
-        const fbProviderDef = (models && models.providers && models.providers[fbName]) || null;
+        // #6271 — la precedencia vive en resolveModelForSkillProvider (fuente
+        // única). `fbModelOverride` se sigue respetando explícitamente porque
+        // el shape ya fue normalizado arriba; si es null, el helper resuelve
+        // por (skill, fbName) con la MISMA cadena de antes:
+        //   fallbacks[i].model_override → providers.<fbName>.model → models.defaults.model → null.
         const fbModel = fbModelOverride
-            || (fbProviderDef && fbProviderDef.model)
-            || (models && models.defaults && models.defaults.model)
-            || null;
+            || resolveModelForSkillProvider(models, skill, fbName, { fallbackModel: null });
 
         // Audit + notify (S-6 / S-9).
         auditAppend({
@@ -1900,27 +2001,20 @@ function resolveSpawnWithFallback(opts = {}) {
             },
         });
 
-        const notice =
-            `⚠️ Cross-provider fallback activo\n` +
-            `skill=${skill} issue=${issue || '?'}\n` +
-            `primary=${primaryProvider} (gated)\n` +
-            `fallback=${fbName} (índice ${i})\n` +
-            `model=${fbModel || 'n/a'}`;
-        try {
-            _notify({
-                pipelineDir,
-                fsImpl,
-                text: notice,
-                meta: {
-                    skill,
-                    issue: issue || null,
-                    primary_provider: primaryProvider,
-                    fallback_provider: fbName,
-                    fallback_index: i,
-                    fallback_model: fbModel,
-                },
-            });
-        } catch { /* best-effort */ }
+        // #6179 — acá vivía un `_notify` por CADA despacho, con el texto
+        // `skill=… primary=… (gated) fallback=… (índice N) model=…`. Era la
+        // fuente principal de los ~106 mensajes diarios y de toda la jerga que
+        // CA-8 prohíbe. La emisión pasa a decidirla `recordDispatch`.
+        //
+        // El `auditAppend({event:'fallback_selected'})` de arriba NO se toca
+        // (CA-16 / SEC-8): sólo cambia el canal de SALIDA, no la auditoría.
+        // Cambiar ruido por ceguera no sería una mejora.
+        _recordEpisode({
+            provider: fbName,
+            crossProvider: true,
+            chainTried,
+            models,
+        });
 
         log('lanzamiento', `↪️ ${skill}:#${issue} primary=${primaryProvider} gated, usando fallback="${fbName}" (índice ${i})`);
 

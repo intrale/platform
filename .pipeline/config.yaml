@@ -205,6 +205,10 @@ timeouts:
     linter: 5                     # Determinístico — sólo lee diff/git log, debería durar segundos
     delivery: 90                  # Espera CI completo (OWASP ~28min, check-app ~15min) + gate de review + merge + reporte
 
+# Merge automático: espera acotada para checks requeridos explícitamente en curso.
+delivery:
+  merge_checks_timeout_ms: 360000  # 6 min; cubre la CI observada de 3-4 min sin bloquear el slot por 10 min
+
 # Procedencia de ramas para auto-recovery. Agregar una identidad confiable es
 # una decisión de seguridad y requiere review humana; nunca usar comodines.
 worktree_provenance:
@@ -230,6 +234,21 @@ desync:
   # Vacía o ausente → manda sólo la asociación con el repo (fail-closed).
   # Ejemplo: ["intrale-bot"]
   split_orphan_trusted_logins: []
+  # #6117 — Detector de auto-reparaciones REPETIDAS de la lista de trabajo.
+  # Una auto-reparación exitosa es sana y ya no se avisa por Telegram (queda en
+  # log, audit, métrica y dashboard). Pero que la MISMA reparación se repita
+  # varias veces en poco tiempo no es sanidad: es el síntoma de una causa raíz
+  # que sigue desarmando la lista. A partir de `repair_alert_threshold`
+  # reparaciones del mismo tipo dentro de `repair_alert_window_ms`, el operador
+  # recibe un aviso de anomalía recurrente.
+  # La firma es SÓLO el tipo de reparación; el set de issues no agrupa (si
+  # agrupara, la misma causa raíz rompiendo issues distintos nunca alcanzaría el
+  # umbral, que es justo lo que queremos detectar).
+  # Valores fuera de rango se clampean en lib/metrics/auto-repair.js
+  # (threshold 2..50, ventana 1 min..24 h): una config rota nunca desactiva la
+  # alerta ni frena el pipeline.
+  repair_alert_threshold: 3
+  repair_alert_window_ms: 3600000
 
 # build: movida al lado PRODUCTO (#5174) → pipeline.config.json · productConfig.build (la prosa viajó a productConfigNotes)
 
@@ -318,6 +337,24 @@ human_block_reminder:
   kill_switch: false         # true  → idem, para cortar en caliente sin editar enabled
   tick_ms: 1800000           # 30 min. Es la resolución del recordatorio, no su frecuencia:
                              # el escalado real lo fija REMINDER_STEPS_HOURS del módulo.
+
+# (#2893 / #6118) Aviso de dependencias faltantes: un issue habilitado que no
+# puede avanzar porque depende de otro que quedó fuera de la selección de la ola.
+#
+# El aviso tiene DOS frenos distintos, que no hay que confundir:
+#   - alert_cooldown_ms: automático. Evita repetir el mismo aviso mientras la
+#     situación no cambia. Vive en memoria del Pulpo y se pierde al reiniciar.
+#   - mute_ttl_ms: lo pide el operador apretando "No avisarme por …". Vive en
+#     .pipeline/partial-pause-deps-mute.json y sobrevive al reinicio.
+#
+# mute_ttl_ms es lo que el botón y su confirmación DECLARAN en el texto: bajarlo
+# a 6h hace que el botón diga "por 6 h" sin tocar código. Nunca es infinito —un
+# aviso silenciado para siempre convierte un issue trabado en un punto ciego—:
+# el módulo lo acota a [1 min, 7 días].
+partial_pause_deps:
+  check_every_n_ticks: 5     # cada cuántos ciclos del Pulpo se rastrean las deps
+  alert_cooldown_ms: 1800000 # 30 min — freno automático entre avisos iguales
+  mute_ttl_ms: 86400000      # 24 h  — ventana del silencio pedido por el operador
 
 # (#2892 PR-C) Alertas de consumo anómalo: canales y snooze.
 # El pulpo enchufa el detector con dos canales: Telegram (mensaje sanitizado
@@ -969,6 +1006,43 @@ pipeline:
   # Default: 90 días. Recomendado mínimo: 30 días (piso hardcoded).
   audit_retention_days: 90
 
+  # ---------------------------------------------------------------------------
+  # (#6272, split de #6270) Propagación del modelo resuelto al proceso hijo.
+  #
+  # Hasta este issue el modelo declarado en `agent-models.json` se resolvía y se
+  # logueaba, pero NUNCA llegaba al hijo: Anthropic nunca recibía `--model`, y
+  # CODEX_MODEL / GEMINI_MODEL / CEREBRAS_MODEL / NVIDIA_NIM_MODEL nunca se
+  # seteaban para agentes. Los cinco proveedores corrían con el default de su CLI.
+  #
+  # APAGADO POR DEFAULT. Con `enabled: false` (o sin esta sección) el objeto que
+  # recibe `child_process.spawn` es byte-idéntico al de antes del cambio.
+  #
+  # NO ENCENDER antes de que #6271 (resolución correcta del modelo) esté
+  # entregado: con la resolución vieja, prender esto sólo repartiría el literal
+  # legacy a los cinco proveedores. El encendido escalonado y el rollback son
+  # scope de #6274.
+  #
+  # Modos:
+  #   off      → no se toca nada (default).
+  #   dry-run  → se loguea el modelo que SE HABRÍA pasado, con prefijo
+  #              `[dry-run]`, sin alterar el comando. Sirve para verificar qué
+  #              resolvería cada actor antes de prender de verdad.
+  #   on       → se propaga (flag `--model` en anthropic/kimi-moonshot; variable
+  #              de entorno en el resto, según PROVIDER_MODEL_ENV).
+  #
+  # Precedencia: by_skill (actor) > by_provider > default_mode > off. El más
+  # específico gana, así se puede prender un actor sin prender a su proveedor
+  # entero. Un valor de modo inválido se IGNORA y cae al siguiente nivel: un typo
+  # nunca enciende la propagación.
+  #
+  # `enabled: false` es kill-switch duro: apaga todo sin tener que desarmar las
+  # granularidades (rollback de un renglón).
+  model_propagation:
+    enabled: false
+    default_mode: 'off'
+    by_provider: {}
+    by_skill: {}
+
 # =============================================================================
 # #4821 (Split de #4804) — Cutover a persistencia durable del alta de producto.
 #
@@ -1497,6 +1571,61 @@ vault:
   # Al ENCENDER el gate, un hostId vacío o inválido falla con un mensaje que
   # nombra esta clave (`vault.hostId`), no el regex.
   hostId: ""
+  # #5426 · CA-12(b) — habilita resolver el `hostId` en RUNTIME desde
+  # `os.hostname()`. Lo que se commitea es el MECANISMO, nunca el VALOR: este
+  # archivo está trackeado en un repo PÚBLICO y publicar el hostname entrega
+  # gratis la estructura de namespaces `hosts/<hostId>/` que sostiene el
+  # aislamiento entre hosts (T2-5). Con esto, el alta de un host nuevo NO
+  # requiere editar este archivo: `git status --porcelain .pipeline/config.yaml`
+  # queda sin salida después del alta.
+  #
+  # Es una señal POSITIVA y explícita, no el default silencioso: si resolver por
+  # hostname fuera implícito, un `hostId` vacío dejaría de distinguirse de «sin
+  # configurar» y se perdería el fail-closed que hoy nombra la clave. Si el
+  # hostname no resuelve a un segmento válido (por ejemplo un FQDN con puntos —
+  # que NO se trunca, porque `a.uno.local` y `a.dos.local` colapsarían al mismo
+  # namespace), el gate falla nombrando `vault.hostId`.
+  hostIdFromHostname: true
+  # ---------------------------------------------------------------------------
+  # #5426 · CA-11 — mecanismo de identidad del host (raíz de confianza)
+  # ---------------------------------------------------------------------------
+  # Cómo prueba este host quién es ANTES de poder leer el vault. Es la señal
+  # POSITIVA del guard de `createAwsCliVaultRunner`: el ambiente puede
+  # TRANSPORTAR material de credencial, pero nunca ELIGE con qué principal corre
+  # la AWS CLI (T2-1). Un valor vacío o fuera del enum falla nombrando esta
+  # clave — nunca «faltan variables», que es una remediación que el operador no
+  # puede accionar.
+  #
+  # Enum CERRADO (`VAULT_AUTH_MODES`, secret-vault.js):
+  #
+  #   assume-role-chain  perfil de la AWS CLI con `role_arn` + `source_profile`.
+  #                      Entrega credencial con `Expiration` (vida corta) y NO
+  #                      requiere habilitación administrativa en AWS. Es la
+  #                      opción firmada por el operador para este host (D7), con
+  #                      su riesgo residual escrito en la tabla de
+  #                      `docs/pipeline/vault-secretos-aws.md` § Raíz de
+  #                      confianza: la cadena TERMINA en una key estática del
+  #                      perfil source.
+  #   session-token      par + `AWS_SESSION_TOKEN` ya emitidos, en el ambiente.
+  #   static-key         par estático. Sólo con las condiciones de § Estado
+  #                      transitorio; degrada el vault a «un archivo en vez de
+  #                      varios», con peor blast radius.
+  #   instance-profile   el host corre sobre cómputo de AWS. No deja señal en el
+  #                      ambiente: la señal es JUSTAMENTE esta clave, y por eso
+  #                      el enum existe en vez de mirar qué variables hay.
+  authMode: "assume-role-chain"
+  # Perfil de la AWS CLI que usa SÓLO el vault, con `authMode:
+  # assume-role-chain`. Se commitea VACÍO por el mismo criterio que `hostId`: es
+  # un nombre local del host y este repo es público. Con el gate abierto, vacío
+  # falla nombrando `vault.awsProfile`.
+  #
+  # NO es un alias del perfil de trabajo del operador ni de `intrale` /
+  # `kernel-runtime` (D8: esos quedan fuera de alcance, no se migran ni se
+  # cuentan). El perfil del vault existe para asumir el rol de LECTURA del host.
+  # Con cualquier otro `authMode` esta clave debe quedar vacía: perfil + material
+  # de credencial en el mismo ambiente es ambiguo — la CLI resuelve por el
+  # material y el perfil queda de adorno.
+  awsProfile: ""
   # SEC-6 — TTL de la caché en memoria. Tope DURO de 300 s: un valor mayor se
   # RECHAZA (no se recorta en silencio), porque una credencial rotada seguiría
   # sirviéndose de la caché hasta que expire.
@@ -1918,6 +2047,52 @@ gates:
 waves:
   capacity: 9
   max_horizon: 12
+
+# =============================================================================
+# Estado operativo — aislamiento por proyecto (#5110, Ola 9.4 · E2)
+# =============================================================================
+# Namespacea el estado operativo (registro de olas, allowlist de ejecución,
+# archived/, audit y markers de transacción) por `projectId`:
+#
+#   enabled: false  →  .pipeline/waves.json                          (PLANO)
+#   enabled: true   →  .pipeline/projects/<projectId>/waves.json     (NAMESPACEADO)
+#
+# `.pipeline/.paused` NO se namespacea en ningún caso: es el halt TOTAL y es un
+# control de seguridad. Degradarlo a per-proyecto lo haría fallar ABIERTO.
+#
+# DEFAULT OFF a propósito. Prender esto ANTES de correr el migrador deja al
+# pipeline mirando un namespace vacío — cero olas, dispatch detenido. Secuencia:
+#
+#   1. Pausar (`.pipeline/.paused`).
+#   2. node .pipeline/scripts/migrate-operational-state-namespace.js --dry-run
+#   3. node .pipeline/scripts/migrate-operational-state-namespace.js
+#   4. enabled: true
+#   5. node .pipeline/restart.js
+#
+# Rollback (R8, minutos): pausar + enabled: false + `--rollback` + restart.
+# El migrador EXIGE `.paused` en disco (migrar y rollback por igual): es la única
+# guarda que frena al pulpo. No hay flag de bypass — ver §12.6 del contrato.
+#
+# La identidad del host NO se declara acá. Vive en `pipeline.config.json`
+# (`projectId: intrale-platform`), que es la MISMA fuente que usa el kernel-store
+# y que ya coincide con `.pipeline/descriptors/intrale-platform.json`. Un
+# `host_project_id` en este archivo sería una segunda fuente de verdad que el
+# código no lee: editarlo daría un no-op silencioso, justo lo contrario de la
+# tesis de #5110 ("el contexto debe ser explícito, no inferido"). Se eliminó.
+operational_state:
+  namespaced:
+    enabled: false
+    # true → el contexto de proyecto debe venir DECLARADO (projectId explícito
+    # in-process, o binding de spawn escrito por el pulpo). Con esto en true se
+    # apagan los dos caminos de compat que resuelven por convención —
+    # `single-project` (un único descriptor) y `host-fallback` (cero
+    # descriptores) — y ambos pasan a tirar EOPSTATE_NO_PROJECT_CONTEXT.
+    #
+    # DEFAULT false: hoy sólo el pulpo emite binding; el dashboard, los hooks y
+    # los skills caen a `single-project`. Prenderlo antes de #5164 (contexto
+    # explícito en cada punto de entrada) deja al tablero sin estado operativo.
+    # Se prende recién con 2 proyectos reales, después de #5164.
+    strict_context: false
 
 # =============================================================================
 # Transición automática de ola (#4368, Ola 8.3)

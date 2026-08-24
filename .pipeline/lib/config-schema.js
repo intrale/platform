@@ -184,6 +184,7 @@ const SIDE_MAP = Object.freeze({
     intake: 'kernel',
     resource_limits: 'kernel',
     timeouts: 'kernel',
+    delivery: 'kernel',
     worktree_provenance: 'kernel',
     desync: 'kernel',
     precheck: 'kernel',
@@ -191,6 +192,10 @@ const SIDE_MAP = Object.freeze({
     // #5337 — cadencia del recordatorio de bloqueos humanos. Es mecanismo del
     // pipeline (cuándo insiste), no política de producto.
     human_block_reminder: 'kernel',
+    // #6118 — cuándo se chequean las dependencias faltantes y cuánto dura el
+    // silencio del aviso. Es mecanismo del pipeline (cada cuánto insiste), no
+    // política de producto.
+    partial_pause_deps: 'kernel',
     cost_anomaly_alert: 'kernel',
     ghostbusters_cron: 'kernel',
     rest_mode: 'kernel',
@@ -227,6 +232,9 @@ const SIDE_MAP = Object.freeze({
     // mecanismo de orquestación, se muda al kernel sin conocer el producto.
     vault: 'kernel',
     waves: 'kernel',
+    // #5110 — el namespaceo del estado operativo por projectId es mecanismo de
+    // orquestación puro (aislamiento multi-proyecto), no política de producto.
+    operational_state: 'kernel',
     architect: 'kernel',
     'architect.poll_cap_min': 'producto',        // calibración, no gate
     'architect.poll_interval_seconds': 'producto',
@@ -359,6 +367,14 @@ const SCHEMA = {
         routing: OBJ(),
         intake: OBJ(),
 
+        delivery: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                merge_checks_timeout_ms: { type: 'integer', minimum: 1 },
+            },
+        },
+
         worktree_provenance: {
             type: 'object',
             additionalProperties: false,
@@ -399,6 +415,12 @@ const SCHEMA = {
         precheck: OBJ(),
         anomaly_detector: OBJ(),
         human_block_reminder: OBJ(),   // #5337 CA-5
+        // #6118 CA-13 — cadencia y ventana de silencio del aviso de
+        // dependencias faltantes. El Pulpo ya leía `config.partial_pause_deps`
+        // desde #2893, pero la sección nunca se había declarado: con la raíz
+        // cerrada (#5173), escribirla en `config.yaml` sin esta línea tiraba
+        // ConfigSchemaViolation y dejaba al pipeline sin arrancar.
+        partial_pause_deps: OBJ(),
         cost_anomaly_alert: OBJ(),
         ghostbusters_cron: OBJ(),
         rest_mode: OBJ(),
@@ -487,6 +509,19 @@ const SCHEMA = {
                 prefix: { type: 'string' },
                 projectId: { type: 'string' },
                 hostId: { type: 'string' },
+                // #5426 · CA-11/CA-12 — mecanismo de identidad del host. Se
+                // tipan por el mismo motivo que `enabled`: son fail-closed. Un
+                // `hostIdFromHostname: "false"` string sería truthy para el
+                // YAML, y un `authMode` fuera del enum sólo se descubriría al
+                // encender el gate. El enum se declara acá ADEMÁS de en
+                // `VAULT_AUTH_MODES` porque los dos controles fallan en momentos
+                // distintos: el schema al arrancar, el módulo al leer el vault.
+                hostIdFromHostname: { type: 'boolean' },
+                authMode: {
+                    type: 'string',
+                    enum: ['assume-role-chain', 'session-token', 'static-key', 'instance-profile'],
+                },
+                awsProfile: { type: 'string' },
                 // Tope DURO de SEC-6: el módulo también lo rechaza, pero acá el
                 // operador se entera al arrancar y no al encender el gate.
                 cache_ttl_seconds: { type: 'number', minimum: 1, maximum: 300 },
@@ -521,6 +556,41 @@ const SCHEMA = {
         },
 
         waves: OBJ(),
+
+        // --- operational_state: aislamiento del estado operativo (#5110) -----
+        //
+        // `namespaced.enabled` es el interruptor del layout:
+        //   false (DEFAULT) → layout PLANO `.pipeline/waves.json` — exactamente
+        //                     el comportamiento pre-#5110, sin regresión.
+        //   true            → `.pipeline/projects/<projectId>/waves.json`.
+        //
+        // Poner el interruptor en config (y no en código) es lo que hace que R8
+        // — "rollback al modelo plano en minutos" — sea real: se baja el flag y
+        // se corre el migrador con `--rollback`.
+        operational_state: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                namespaced: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        // `true` → el contexto de proyecto debe venir DECLARADO
+                        // (projectId explícito o binding de spawn del pulpo): se
+                        // apagan los caminos de compat `single-project` y
+                        // `host-fallback`, que resuelven por convención. Lo lee
+                        // `project-context.js` (`strictContextEnabled()`).
+                        //
+                        // NO hay `host_project_id`: la identidad del host sale de
+                        // `pipeline.config.json`, fuente única compartida con el
+                        // kernel-store. Declararla también acá sería una segunda
+                        // verdad que nadie lee.
+                        strict_context: { type: 'boolean' },
+                    },
+                },
+            },
+        },
 
         // --- architect: el GATE es autoridad, la cadencia es calibración -----
         architect: {

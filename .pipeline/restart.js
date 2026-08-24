@@ -34,6 +34,7 @@ const { annotateAndMoveOrphans } = require('./lib/restart-orphan-annotator');
 // se resuelve vía el kernel-resolver: apunta al kernel migrado cuando el consumo
 // está habilitado, y al motor local de `.pipeline/` en coexistencia (default).
 const kernelResolver = require('./lib/kernel-resolver');
+const dropfileWriter = require('./lib/dropfile-writer');
 
 // Saneado global de JAVA_HOME — si restart.js heredó una ruta stale (ej. JBR
 // de IntelliJ obsoleto), la corregimos antes de spawnear pulpo/servicios, así
@@ -702,8 +703,14 @@ function enqueueTelegramAlert(text) {
   const svcDir = path.join(PIPELINE, 'servicios', 'telegram', 'pendiente');
   try {
     if (!fs.existsSync(svcDir)) fs.mkdirSync(svcDir, { recursive: true });
-    const filename = `${Date.now()}-restart-alert.json`;
-    fs.writeFileSync(path.join(svcDir, filename), JSON.stringify({ text: msg, parse_mode: 'Markdown' }));
+    // #6226 — nombre único + escritura `wx`: dos dropfiles del mismo
+    // milisegundo ya no se pisan entre sí ni pisan los de otro proceso.
+    dropfileWriter.writeDropfileSync({
+      dir: svcDir,
+      suffix: 'restart-alert.json',
+      data: JSON.stringify({ text: msg, parse_mode: 'Markdown' }),
+      onCollision: (name) => log(`Colisión de nombre de dropfile (${name}) — se reintenta`),
+    });
     log(`Alerta Telegram encolada (${msg.length} chars)`);
   } catch (e) {
     log(`No se pudo encolar alerta Telegram: ${e.message}`);

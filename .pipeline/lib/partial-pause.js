@@ -82,7 +82,22 @@ function pipelineDir() {
     return path.join(__dirname, '..');
 }
 
-function partialFile() { return path.join(pipelineDir(), '.partial-pause.json'); }
+// #5110 (D3) — la allowlist de ejecución se namespacea por proyecto. Se le
+// pregunta directamente a `project-context.js` (dueño del namespace) y NO a
+// `waves.js`: los tests del dashboard reemplazan el módulo `waves` por un fake
+// parcial en `require.cache`, y hacer pasar la resolución de paths de la
+// allowlist por ahí la rompería en cuanto el fake no exponga `_paths()`.
+function stateDir() { return require('./project-context').stateDir(); }
+
+function partialFile() { return path.join(stateDir(), '.partial-pause.json'); }
+
+// #5110 (D4 · SEC-6) — `.paused` NO se namespacea: es el halt TOTAL del
+// pipeline y es un control de seguridad. Degradarlo a per-proyecto lo haría
+// fallar ABIERTO (un proyecto sin marker despacharía con el sistema pausado).
+// Queda en la raíz física, con precedencia máxima. Si algún día se agrega pausa
+// por proyecto, es ADITIVA: `pausaEfectiva = globalPaused || projectPaused`.
+// `lib/full-pause-state.js` (`isFullPauseActive()`, fail-closed) no cambia de
+// semántica.
 function pauseFile() { return path.join(pipelineDir(), '.paused'); }
 
 function normalizeIssue(issue) {
@@ -151,6 +166,39 @@ function readPartialFile() {
         };
     } catch {
         return null;
+    }
+}
+
+/**
+ * #6118 — Snapshot de metadata de ola guardado EN EL MARKER, en el shape que
+ * espera `setPartialPause` por `opts`.
+ *
+ * Existe porque `setPartialPause` reescribe el marker desde sus argumentos: lo
+ * que no se le pasa, se pierde. `getPipelineMode()` no expone estos campos, así
+ * que cualquier caller que sume un issue al allowlist borraba la identidad de la
+ * ola como daño colateral (#4030). Con esto, re-inyectarla es un round-trip.
+ *
+ * Es deliberadamente la metadata DEL MARKER y no la de `waves.json`: el marker
+ * es el snapshot vigente, y leer del registro podría cambiar la ola registrada
+ * como efecto secundario de habilitar una dependencia.
+ *
+ * La lectura vive acá —y no en el caller— porque este módulo es el dueño de
+ * `.partial-pause.json`: construir ese path afuera duplica el conocimiento del
+ * layout de estado que #5109 está centralizando.
+ *
+ * @returns {{waveNumber?:number, waveName?:string, waveGoal?:string}} vacío si
+ *          el marker no existe, es ilegible o no tiene metadata de ola.
+ */
+function readWaveMetaFromMarker() {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(partialFile(), 'utf8'));
+        const out = {};
+        if (Number.isInteger(parsed.wave_number)) out.waveNumber = parsed.wave_number;
+        if (typeof parsed.wave_name === 'string') out.waveName = parsed.wave_name;
+        if (typeof parsed.wave_goal === 'string') out.waveGoal = parsed.wave_goal;
+        return out;
+    } catch {
+        return {};
     }
 }
 
@@ -1260,6 +1308,9 @@ module.exports = {
     MAX_PAUSE_MARKER_BYTES,
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
     readPreviousAllowlist,
+    // #6118 — metadata de ola del marker, para re-inyectarla en setPartialPause
+    // y no perderla al sumar un issue al allowlist.
+    readWaveMetaFromMarker,
     evaluateAndAudit,
     // #4030 — saneado de metadata de ola (expuesto para tests).
     sanitizeWaveMetaForWrite,
@@ -1267,5 +1318,10 @@ module.exports = {
     // para declarar la causa del wave-stall watchdog (#4708/#4709) cuando el
     // dispatch está detenido por falta de ola y no por halt humano.
     unscopedDispatchEnabled,
-    _paths: () => ({ PARTIAL_FILE: partialFile(), PAUSE_FILE: pauseFile() }),
+    _paths: () => ({
+        PARTIAL_FILE: partialFile(),
+        PAUSE_FILE: pauseFile(),
+        // #5110 — `PARTIAL_FILE` está namespaceado; `PAUSE_FILE` NO (D4/SEC-6).
+        PROJECT_ID: require('./project-context').currentProjectIdOrNull(),
+    }),
 };

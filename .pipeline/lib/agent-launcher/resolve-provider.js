@@ -97,6 +97,128 @@ function readAgentModels(pipelineDir, fsImpl) {
 }
 
 // -----------------------------------------------------------------------------
+// #6271 — Resolución del modelo por par (skill, provider).
+//
+// El schema canónico de agent-models.json declara el modelo del skill en
+// `model_override` (NO en `model`). Pre-#6271 este archivo leía `skillCfg.model`,
+// campo que no existe en el JSON real, con lo cual TODOS los skills resolvían
+// el literal legacy `claude-opus-4-7` — incluidos los que declaran otro modelo.
+//
+// `model` se sigue aceptando como **alias de compatibilidad** para no romper
+// configs externas que usen el nombre viejo. `model_override` tiene precedencia.
+// -----------------------------------------------------------------------------
+function pickDeclaredModel(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    if (typeof entry.model_override === 'string' && entry.model_override.length > 0) {
+        return entry.model_override;
+    }
+    // Alias legacy: sólo se usa si no hay model_override.
+    if (typeof entry.model === 'string' && entry.model.length > 0) return entry.model;
+    return null;
+}
+
+// -----------------------------------------------------------------------------
+// findFallbackEntry — busca en `skillCfg.fallbacks` el entry de un provider.
+//
+// #3221 dejó el shape dual: el item puede ser `string` (legacy, sin modelo
+// pin-eado) u `{provider, model_override}`. Devolvemos siempre un objeto
+// normalizado o null.
+// -----------------------------------------------------------------------------
+function findFallbackEntry(fallbacks, providerName) {
+    if (!Array.isArray(fallbacks)) return null;
+    for (const entry of fallbacks) {
+        if (typeof entry === 'string') {
+            if (entry === providerName) return { provider: entry };
+        } else if (entry && typeof entry === 'object' && !Array.isArray(entry)
+                   && entry.provider === providerName) {
+            return entry;
+        }
+    }
+    return null;
+}
+
+// -----------------------------------------------------------------------------
+// resolveModelForSkillProvider — CONTRATO CANÓNICO (#6271).
+//
+// Devuelve el modelo que corresponde correr para el par (skill, provider).
+// Es la ÚNICA fuente de verdad del mapeo: `dispatch-with-fallback.js` la
+// consume para el modelo del fallback y `resolveProviderForSkill` para el
+// del primario. No duplicar esta lógica — divergen al próximo cambio de schema.
+//
+// Precedencia (simétrica para primario y fallback):
+//   1. Modelo declarado para ESE provider:
+//        - si `providerName` es el provider PRIMARIO del skill → `skillCfg.model_override`
+//        - si es un provider de la cadena de respaldo → `fallbacks[i].model_override`
+//      OJO (#3221): el `model_override` del skill aplica SÓLO al primario. Cada
+//      fallback corre su propio modelo; usar el del primario acá es un bug.
+//   2. `providers.<providerName>.model` — default declarado por proveedor.
+//   3. `models.defaults.model` — escalón histórico (hoy ausente del JSON real).
+//   4. `opts.fallbackModel` — terminal. Default `LEGACY_ANTHROPIC_MODEL`; los
+//      callers que prefieren "sin modelo" a "modelo legacy" pasan `null`.
+//
+// Defensivo: no tira nunca. Con `models` null/inválido devuelve el terminal.
+// -----------------------------------------------------------------------------
+function resolveModelForSkillProvider(models, skill, providerName, opts = {}) {
+    const fallbackModel = Object.prototype.hasOwnProperty.call(opts, 'fallbackModel')
+        ? opts.fallbackModel
+        : LEGACY_ANTHROPIC_MODEL;
+
+    if (!models || typeof models !== 'object' || models.__readError) return fallbackModel;
+
+    const skillCfg = (models.skills && models.skills[skill]) || null;
+
+    let declared = null;
+    if (skillCfg && typeof providerName === 'string') {
+        const primaryName = skillCfg.provider || 'anthropic';
+        if (providerName === primaryName) {
+            // Primario: el override del skill es el suyo.
+            declared = pickDeclaredModel(skillCfg);
+        } else {
+            // Respaldo: sólo el override del propio entry de fallback.
+            declared = pickDeclaredModel(findFallbackEntry(skillCfg.fallbacks, providerName));
+        }
+    }
+
+    const providerDef = (models.providers && models.providers[providerName]) || null;
+    const providerModel = providerDef && typeof providerDef.model === 'string' && providerDef.model.length > 0
+        ? providerDef.model
+        : null;
+    const defaultsModel = (models.defaults && typeof models.defaults.model === 'string' && models.defaults.model.length > 0)
+        ? models.defaults.model
+        : null;
+
+    return declared || providerModel || defaultsModel || fallbackModel;
+}
+
+// -----------------------------------------------------------------------------
+// resolveModelsByProvider — mapa {provider: model} de TODA la cadena del skill
+// (primario + fallbacks declarados), usando la precedencia de arriba.
+//
+// Es lo que expone `resolveProviderForSkill().models_by_provider`: permite al
+// caller saber qué modelo corre cada eslabón sin re-leer el JSON.
+// -----------------------------------------------------------------------------
+function resolveModelsByProvider(models, skill) {
+    const out = {};
+    if (!models || typeof models !== 'object' || models.__readError) return out;
+    const skillCfg = (models.skills && models.skills[skill]) || null;
+    if (!skillCfg) return out;
+
+    const names = [skillCfg.provider || 'anthropic'];
+    if (Array.isArray(skillCfg.fallbacks)) {
+        for (const entry of skillCfg.fallbacks) {
+            const name = typeof entry === 'string'
+                ? entry
+                : (entry && typeof entry === 'object' ? entry.provider : null);
+            if (typeof name === 'string' && !names.includes(name)) names.push(name);
+        }
+    }
+    for (const name of names) {
+        out[name] = resolveModelForSkillProvider(models, skill, name);
+    }
+    return out;
+}
+
+// -----------------------------------------------------------------------------
 // resolveProviderForSkill — devuelve { provider, model, handler, source } para
 // un skill dado.
 //
@@ -154,12 +276,11 @@ function resolveProviderForSkill(skill, opts = {}) {
     }
 
     const skillCfg = (models.skills && models.skills[skill]) || null;
-    const defaultModel = (models.defaults && models.defaults.model) || LEGACY_ANTHROPIC_MODEL;
 
     if (!skillCfg) {
         return {
             provider: 'anthropic',
-            model: defaultModel,
+            model: resolveModelForSkillProvider(models, skill, 'anthropic'),
             mode: resolvePermissionMode(models, 'anthropic'),
             handler: PROVIDER_HANDLERS.anthropic,
             source: 'fallback-skill-not-found',
@@ -169,14 +290,15 @@ function resolveProviderForSkill(skill, opts = {}) {
 
     const providerName = skillCfg.provider || 'anthropic';
     const handler = getProviderHandler(providerName); // valida contra tabla hardcoded
-    const providerModel = models.providers && models.providers[providerName]
-        ? models.providers[providerName].model
-        : null;
     return {
         provider: providerName,
-        // El contrato canónico usa model_override para el pin por skill. El
-        // campo model se conserva como compatibilidad con configs legacy.
-        model: skillCfg.model_override || skillCfg.model || providerModel || defaultModel,
+        // #6271 — modelo del par (skill, providerPrimario). Antes leía
+        // `skillCfg.model`, campo inexistente en el schema real, y por eso
+        // todos los skills caían al literal legacy.
+        model: resolveModelForSkillProvider(models, skill, providerName),
+        // #6271 — contrato: mapa {provider: model} de toda la cadena declarada
+        // (primario + fallbacks), para saber qué modelo corre cada eslabón.
+        models_by_provider: resolveModelsByProvider(models, skill),
         // #3082 (CA-8): el mode efectivo del provider para este skill es lo
         // que la matriz capability×(provider, mode) consume. Lo extraemos del
         // bloque providers.<X>.permissions_mode de agent-models.json. Si no
@@ -230,6 +352,8 @@ module.exports = {
     LEGACY_ANTHROPIC_MODEL,
     getProviderHandler,
     resolveProviderForSkill,
+    resolveModelForSkillProvider,
+    resolveModelsByProvider,
     readAgentModels,
     resolvePermissionMode,
 };

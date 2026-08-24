@@ -56,6 +56,8 @@
 
 const fs = require('fs');
 const path = require('path');
+// #6226 - escritura fail-closed de dropfiles.
+const dropfileWriter = require('./dropfile-writer');
 const yaml = require('js-yaml');
 const trace = require('./traceability');
 const humanBlock = require('./human-block');
@@ -568,12 +570,16 @@ function reportDependencyBlock(opts) {
 
     // 1. Encolar label
     try {
-        const labelFile = path.join(GH_QUEUE_DIR, `${issue}-${DEPS_LABEL.replace(/:/g, '-')}-block-${Date.now()}.json`);
-        fs.writeFileSync(labelFile, JSON.stringify({
-            action: 'label',
-            issue,
-            label: DEPS_LABEL,
-        }));
+        // #6226 - escritura fail-closed. Se conserva el nombre; solo ante
+        // colision real se desambigua con `-<n>`.
+        dropfileWriter.writeUniqueFileSync({
+            dir: GH_QUEUE_DIR,
+            filename: `${issue}-${DEPS_LABEL.replace(/:/g, '-')}-block-${Date.now()}.json`,
+            data: JSON.stringify({ action: 'label', issue, label: DEPS_LABEL }),
+            onCollision: (name, attempt) => console.warn(
+                `[rebote-classifier] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
         labelQueued = true;
     } catch (e) {
         // Si falla el label NO encolamos comment: sin label, el brazo de
@@ -584,12 +590,16 @@ function reportDependencyBlock(opts) {
     // 2. Encolar comment con marker
     try {
         const body = buildDependencyComment({ dependsOn, reason: opts.reason, skill: opts.skill });
-        const commentFile = path.join(GH_QUEUE_DIR, `${issue}-deps-comment-${Date.now() + 1}.json`);
-        fs.writeFileSync(commentFile, JSON.stringify({
-            action: 'comment',
-            issue,
-            body,
-        }));
+        // #6226 - escritura fail-closed. El `+1` desempataba a mano contra el
+        // label de arriba, pero no contra otra invocacion concurrente.
+        dropfileWriter.writeUniqueFileSync({
+            dir: GH_QUEUE_DIR,
+            filename: `${issue}-deps-comment-${Date.now() + 1}.json`,
+            data: JSON.stringify({ action: 'comment', issue, body }),
+            onCollision: (name, attempt) => console.warn(
+                `[rebote-classifier] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
         commentQueued = true;
     } catch (e) {
         // Label ya aplicado, comment falló: el brazo lo va a interpretar
