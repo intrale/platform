@@ -17,6 +17,11 @@ const {
   verifyHandoffIntegrity,
 } = require('./gate-verdict');
 
+// #6258 — aislamiento de `process.env`: sin esto el resultado de este archivo
+// depende del entorno del proceso que lo corre (con PIPELINE_GATE0_ENABLED=1
+// exportado daba 37/38, sin la variable 38/38, en el mismo commit).
+const { withEnv } = require('./test-helpers/with-env');
+
 // ----------------------------------------------------------------------------
 // Flag de enforcement — default OFF (CA-8, SEC-R6)
 // ----------------------------------------------------------------------------
@@ -32,8 +37,14 @@ test('isGate0Enabled es true sólo con PIPELINE_GATE0_ENABLED=1', () => {
 });
 
 test('isGate0Enabled usa process.env por default sin argumentos', () => {
-  // En el entorno de test el flag no está seteado → false.
-  assert.strictEqual(isGate0Enabled(), false);
+  // #6258 (D-2 / CA-6258-14): la rama del default-arg se ejercita con el flag
+  // FORZADO A AUSENTE, no con el que herede el proceso. Es la dirección
+  // permitida por SEC-7 (fail-closed); habilitarlo desde `withEnv` está
+  // prohibido a propósito (D-6258-10), y la rama `true` ya está cubierta por
+  // inyección explícita en el test de acá arriba.
+  withEnv({ PIPELINE_GATE0_ENABLED: undefined }, () => {
+    assert.strictEqual(isGate0Enabled(), false);
+  });
 });
 
 test('shouldEvaluateGate0 sólo corre en desarrollo/verificacion con flag ON', () => {
