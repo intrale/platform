@@ -438,6 +438,15 @@ staleness:
 # Override por env: WATCHDOG_STALE_MINUTES (entero positivo; inválido → default,
 # NUNCA "nunca stale" — SEC-2).
 watchdog:
+  # #6441 - Barrido de liveness de servicios (service-liveness-run.js).
+  # Un servicio supervisado caido avisa UNA vez de inmediato y despues recuerda
+  # cada N horas mientras siga caido. No degrada a silencio permanente: un
+  # servicio caido hace tres dias tiene que seguir doliendo.
+  service_liveness_reminder_hours: 6
+  # "Vivo pero mudo": proceso presente pero log sin crecer en esta ventana.
+  # Solo se REGISTRA en logs/service-liveness.log, no escala a alerta: hay
+  # servicios que loguean 200 bytes por semana sin estar rotos (svc-emulador).
+  service_liveness_quiet_hours: 24
   stale_minutes: 6                 # heartbeat más viejo que esto = watchdog stale (3 ciclos de 2 min)
   supervisor_max_restarts: 3       # SEC-4: cap duro de relanzamientos por ventana antes de escalar a needs-human
   supervisor_cooldown_seconds: 90  # mín. entre relanzamientos (reusa semántica del cooldown de last-restart.json)
