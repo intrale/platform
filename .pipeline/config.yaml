@@ -646,6 +646,7 @@ multi_provider:
     alert_enabled: false
     min_runs: 20
     max_divergence_pct: 10
+    dedup_window_hours: 24
   # Cron de health por provider (#4402 CA-3).
   health:
     # Cadencia del cron de health. Default 5 min.

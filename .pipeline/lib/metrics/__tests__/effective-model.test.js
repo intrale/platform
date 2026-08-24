@@ -63,9 +63,30 @@ test('alerta una vez sobre umbral e identifica actor y proveedor', () => {
     const records = Array.from({ length: 3 }, () => ({ skill: 'guru', provider: 'anthropic',
         model_declared: 'old', model_resolved: 'old', model_effective: 'new', source: 'agent-log' }));
     const alerts = m.evaluateDivergence({ records, config: { alert_enabled: true, min_runs: 2, max_divergence_pct: 10 },
-        shouldNotify: () => true, notify: (p) => sent.push(p) });
+        shouldNotify: () => true, markNotified: () => true,
+        notify: (p) => { sent.push(p); return { ok: true }; } });
     assert.equal(alerts.length, 1); assert.equal(sent[0].context.actor, 'guru');
     assert.equal(sent[0].context.proveedor, 'anthropic');
+});
+
+test('reintenta una alerta fallida y permite recurrencia después de la ventana de dedupe', () => {
+    const dedupFile = tempFile();
+    const records = Array.from({ length: 3 }, () => ({ skill: 'guru', provider: 'anthropic',
+        model_declared: 'old', model_resolved: 'old', model_effective: 'new', source: 'agent-log' }));
+    const config = { alert_enabled: true, min_runs: 2, max_divergence_pct: 10, dedup_window_hours: 1 };
+    let now = Date.parse('2026-08-24T10:00:00Z');
+    let attempts = 0;
+    const deps = { records, config, dedupFile, now: () => now,
+        notify: () => ({ ok: ++attempts > 1 }) };
+
+    assert.equal(m.evaluateDivergence(deps).length, 0, 'la entrega rechazada no cuenta como alerta');
+    assert.equal(fs.existsSync(dedupFile), false, 'la falla no debe persistir el dedupe');
+    assert.equal(m.evaluateDivergence(deps).length, 1, 'el tick siguiente debe reintentar');
+    assert.equal(m.evaluateDivergence(deps).length, 0, 'deduplica dentro de la ventana');
+
+    now += 60 * 60 * 1000;
+    assert.equal(m.evaluateDivergence(deps).length, 1, 'la recurrencia vuelve a alertar al vencer la ventana');
+    assert.equal(attempts, 3);
 });
 
 test('no alerta por debajo del piso y nunca lanza ante fallos de fs', () => {

@@ -180,10 +180,13 @@ function evaluateDivergence(deps = {}) {
             const key = `${row.skill}|${row.provider}|${row.model_effective_top}`;
             const shouldNotify = deps.shouldNotify || persistentShouldNotify;
             if (!shouldNotify(key, row, deps)) continue;
-            notify({ level: 'warn', component: 'multi-provider/effective-model',
+            const delivered = notify({ level: 'warn', component: 'multi-provider/effective-model',
                 message: `${row.skill} corre con ${row.model_effective_top} pero tiene declarado ${row.model_declared} (${row.match_pct}% de coincidencia en ${observable} corridas)`,
                 context: { actor: row.skill, proveedor: row.provider, modelo_declarado: row.model_declared,
                     modelo_efectivo: row.model_effective_top, corridas: observable, coincidencia_pct: row.match_pct } });
+            if (!delivered || delivered.ok !== true) continue;
+            const markNotified = deps.markNotified || persistentMarkNotified;
+            if (!markNotified(key, row, deps)) continue;
             alerts.push({ key, ...row });
         }
         return alerts;
@@ -196,12 +199,41 @@ function persistentShouldNotify(key, _row, deps = {}) {
         const file = deps.dedupFile || path.join(__dirname, '..', '..', 'state', 'effective-model-alerts.json');
         let state = {};
         try { state = JSON.parse(_fs.readFileSync(file, 'utf8')); } catch {}
-        if (state[key]) return false;
-        state[key] = new Date().toISOString();
+        const now = resolveNow(deps);
+        const windowMs = resolveDedupWindowMs(deps);
+        const notifiedAt = Date.parse(state[key]);
+        return !Number.isFinite(notifiedAt) || now - notifiedAt >= windowMs;
+    } catch { return true; }
+}
+
+function persistentMarkNotified(key, _row, deps = {}) {
+    try {
+        const _fs = deps.fs || fs;
+        const file = deps.dedupFile || path.join(__dirname, '..', '..', 'state', 'effective-model-alerts.json');
+        let state = {};
+        try { state = JSON.parse(_fs.readFileSync(file, 'utf8')); } catch {}
+        const now = resolveNow(deps);
+        const windowMs = resolveDedupWindowMs(deps);
+        for (const [storedKey, timestamp] of Object.entries(state)) {
+            const storedAt = Date.parse(timestamp);
+            if (!Number.isFinite(storedAt) || now - storedAt >= windowMs) delete state[storedKey];
+        }
+        state[key] = new Date(now).toISOString();
         try { _fs.mkdirSync(path.dirname(file), { recursive: true }); } catch {}
         _fs.writeFileSync(file, JSON.stringify(state, null, 2), 'utf8');
         return true;
-    } catch { return true; }
+    } catch { return false; }
+}
+
+function resolveNow(deps) {
+    const value = typeof deps.now === 'function' ? deps.now() : deps.now;
+    const parsed = value instanceof Date ? value.getTime() : Number(value);
+    return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function resolveDedupWindowMs(deps) {
+    const hours = Number((deps.config || {}).dedup_window_hours);
+    return (Number.isFinite(hours) && hours > 0 ? hours : 24) * 60 * 60 * 1000;
 }
 
 function recordsFromLogs(logDir, deps = {}) {
@@ -245,4 +277,4 @@ function recordsFromLogs(logDir, deps = {}) {
 
 module.exports = { NOT_OBSERVABLE, WHITELIST, normalizeModelId, extractEffectiveModel,
     recordEffectiveModel, recordEffectiveModelForRun, auditDeclaredVsEffective, evaluateDivergence, readRecords,
-    persistentShouldNotify, recordsFromLogs };
+    persistentShouldNotify, persistentMarkNotified, recordsFromLogs };
