@@ -175,6 +175,10 @@ const repoTarget = require('./lib/repo-target');
 // repo-target global (getRepoForIssue/getPrimaryRepo) sin cambio de comportamiento.
 const kernelSupervisor = require('./lib/kernel-supervisor');
 const productControlDrainer = require('./lib/product-control-drainer'); // #4801 · CA-3
+// #6208 · CA-6 — drenador de `gate-signature/pendiente` (los pedidos de firma
+// que encola la bandeja del dashboard). Sin esto el endpoint devolvia 202 y no
+// pasaba nada: un falso exito silencioso para el operador (A-2).
+const gateSignatureDrainer = require('./lib/gate-signature-drainer');
 // #4775 (Ola Puente P5a) — Scheduler global de dos niveles del kernel multi-producto.
 // Módulo puro: consume la señal de presión (getResourcePressure) y reparte slots.
 const kernelScheduler = require('./lib/kernel-scheduler');
@@ -22747,6 +22751,19 @@ async function mainLoop() {
           log('kernel', `onboarding: ${drained.registered.length} producto(s) registrado(s) → ${drained.registered.join(', ')}`);
         }
       } catch (e) { log('kernel', `[onboard-drain] tick error: ${e.message}`); }
+
+      // #6208 · CA-6 — Drenar la cola de pedidos de firma del dashboard. La
+      // bandeja solo ENCOLA (CA-12: el dashboard no firma); aca el drenador
+      // valida contra el enum congelado del kernel y despacha la intencion al
+      // medio con identidad. Sin carrier conectado (#6207 abierta) el pedido
+      // queda en `pendiente/` y la fila muestra el estado real, nunca "firmado".
+      // Best-effort: fail-open interno, nunca rompe el loop principal.
+      try {
+        const firmas = gateSignatureDrainer.drainGateSignatureQueue();
+        if (firmas && firmas.dispatched && firmas.dispatched.length) {
+          log('kernel', `gate-signature: ${firmas.dispatched.length} pedido(s) despachado(s)`);
+        }
+      } catch (e) { log('kernel', `[gate-signature-drain] tick error: ${e.message}`); }
 
       // Context bridge tick (sync preguntas pendientes, relay, cleanup)
       try {
