@@ -162,6 +162,45 @@ function findBlockedMarker(issue) {
     return null;
 }
 
+/**
+ * #6448 CA-25 — TODOS los markers de bloqueo humano de un issue, no el primero.
+ *
+ * `findBlockedMarker()` queda intacto (lo usan otros call sites y devolver el
+ * primero es lo correcto para ellos). El problema que esto cierra es distinto:
+ * el 2026-08-24 un issue quedó con DOS markers vivos sobre la misma causa —el
+ * gate de decisión de arquitectura en `definicion`, y la fase siguiente por el
+ * label `needs-human` que había puesto el primero—. Al destrabar, la
+ * reconciliación tomaba uno solo y el otro quedaba huérfano: el issue seguía
+ * apareciendo frenado y no volvía al despacho.
+ *
+ * @returns {Array<{pipeline: string, phase: string, skill: string, file: string}>}
+ */
+function listBlockedMarkers(issue) {
+    const prefix = String(issue) + '.';
+    const out = [];
+    for (const pipeline of PIPELINES) {
+        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        let phases = [];
+        try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
+        catch { continue; }
+        for (const phase of phases) {
+            const dir = path.join(pipeRoot, phase, BLOCK_SUBDIR);
+            let entries = [];
+            try { entries = fs.readdirSync(dir); } catch { continue; }
+            for (const f of entries) {
+                if (f.startsWith(prefix) && f !== '.gitkeep' && !isMarkerArtifact(f)) {
+                    out.push({
+                        pipeline, phase,
+                        skill: f.slice(prefix.length),
+                        file: path.join(dir, f),
+                    });
+                }
+            }
+        }
+    }
+    return out;
+}
+
 function reasonFilePath(blockedFile) {
     return blockedFile + '.reason.json';
 }
@@ -262,8 +301,8 @@ function reportHumanBlock(opts) {
 
     let pipeline = opts.pipeline;
     let srcFile = null;
+    const active = findActiveMarker(issue);
     if (!pipeline || opts.moveFromActive !== false) {
-        const active = findActiveMarker(issue);
         if (active) {
             pipeline = pipeline || active.pipeline;
             srcFile = active.file;
@@ -289,9 +328,27 @@ function reportHumanBlock(opts) {
     // precondición estructurada → juicio humano → nunca auto-re-evaluable (SEC-4).
     const precondition = normalizePrecondition(opts.precondition);
 
+    // #6448 A-7 — MARKER SINTÉTICO. Cuando el llamador pide explícitamente NO
+    // mover un work-file activo (`moveFromActive: false`) y no había ninguno,
+    // el archivo que queda en `bloqueado-humano/` es un marker VACÍO fabricado
+    // por el gate: no representa trabajo de ningún skill.
+    //
+    // Declararlo acá es lo que permite que la reconciliación lo DESCARTE en vez
+    // de "destrabarlo" — destrabarlo fabricaría un work-file en `pendiente/`
+    // para un skill que no existe en `skills_por_fase`, y ese archivo se queda
+    // dando vueltas para siempre. Clasificar por origen declarado es
+    // determinístico; inferirlo por tamaño de archivo es frágil (queda sólo
+    // como fallback para markers anteriores a este cambio).
+    const synthetic = opts.moveFromActive === false && !active;
+
     fs.writeFileSync(reasonFilePath(targetFile), JSON.stringify({
         issue, skill, phase, pipeline, reason, question,
         precondition,
+        // #6448 UX-1 / CA-17 — la cita del issue que disparó el freno viaja en
+        // CAMPO PROPIO, nunca concatenada dentro de `reason`. Se persiste para
+        // que el recordatorio muestre la misma evidencia que el aviso inicial.
+        ...(String(opts.evidence || '').trim() ? { evidence: String(opts.evidence).trim() } : {}),
+        ...(synthetic ? { synthetic: true } : {}),
         blocked_at: new Date().toISOString(),
     }, null, 2));
 
@@ -326,13 +383,15 @@ function listBlockedIssues() {
                 const skill = f.slice(dot + 1);
                 if (!Number.isFinite(issue)) continue;
                 const file = path.join(dir, f);
-                let reason = '', question = '', blockedAt = null, precondition = null;
+                let reason = '', question = '', blockedAt = null, precondition = null, evidence = '';
                 try {
                     const meta = JSON.parse(fs.readFileSync(reasonFilePath(file), 'utf8'));
                     reason = meta.reason || '';
                     question = meta.question || '';
                     blockedAt = meta.blocked_at || null;
                     precondition = meta.precondition || null;
+                    // #6448 UX-1 — la cita del issue, si el gate la dejó.
+                    evidence = meta.evidence || '';
                 } catch {}
                 // #4748 — Markers legacy sin `precondition` (backward-compat,
                 // SEC-4) o con forma inválida → default juicio humano → jamás
@@ -343,7 +402,7 @@ function listBlockedIssues() {
                 const ageHours = (Date.now() - mtime) / 3600000;
                 result.push({
                     issue, skill, phase, pipeline,
-                    reason, question, precondition,
+                    reason, question, precondition, evidence,
                     blocked_at: blockedAt || new Date(mtime).toISOString(),
                     age_hours: Math.round(ageHours * 10) / 10,
                     marker_path: file,
@@ -468,7 +527,11 @@ function unblockIssue(opts) {
     const guidance = String(opts.guidance || '').trim();
     const unlocker = opts.unlocker || 'commander';
 
-    const blocked = findBlockedMarker(issue);
+    // #6448 — `opts.marker` permite operar sobre UN marker concreto cuando el
+    // issue tiene varios (reconciliación). Sin él, el comportamiento es
+    // exactamente el de siempre: el primero que aparezca. Los call sites
+    // históricos (`/unblock`, tests) no cambian una coma.
+    const blocked = opts.marker || findBlockedMarker(issue);
     if (!blocked) {
         return { ok: false, error: `Issue ${issue} no está en bloqueado-humano/` };
     }
@@ -504,7 +567,8 @@ function dismissBlockedIssue(opts) {
     const reason = String(opts.reason || '').trim();
     const unlocker = opts.unlocker || 'commander';
 
-    const blocked = findBlockedMarker(issue);
+    // #6448 — ver `unblockIssue`: `opts.marker` opcional, mismo contrato.
+    const blocked = opts.marker || findBlockedMarker(issue);
     if (!blocked) {
         return { ok: false, error: `Issue ${issue} no está en bloqueado-humano/` };
     }
@@ -521,6 +585,149 @@ function dismissBlockedIssue(opts) {
         ok: true, issue, skill: blocked.skill, pipeline: blocked.pipeline,
         phase: blocked.phase, reason,
     };
+}
+
+// =============================================================================
+// #6448 — RECONCILIACIÓN DE **TODOS** LOS MARKERS DE UN ISSUE (punto 4)
+//
+// EL DEFECTO QUE ESTO CIERRA (incidente del 2026-08-24). #6431 quedó con dos
+// bloqueos vivos sobre la MISMA causa: el gate de decisión de arquitectura lo
+// frenó en `definicion` a las 13:29, y a las 13:43 la fase `sizing` lo volvió a
+// frenar por el label `needs-human` — el label que había puesto el primer
+// bloqueo. Al destrabar, la ruta de reconciliación tomaba el primer marker que
+// encontraba y el segundo quedaba huérfano: el tablero seguía mostrando frenado
+// un issue ya despachado, y esa contradicción es la que hacía dudar al operador
+// de si el destrabe había tomado efecto.
+//
+// DIRECCIÓN DEL FAIL (RS-4.1 / CA-26). Esta función QUITA FRENOS, así que un
+// bug de clasificación acá no ensucia el tablero: libera issues que un humano
+// frenó a propósito. Por eso DESCARTAR es la excepción y CONSERVAR es el
+// default: ante cualquier duda, `unblockIssue()`, que preserva el trabajo.
+// =============================================================================
+
+/**
+ * Skills declarados para una fase, tolerando las dos formas de config que
+ * conviven en el pipeline:
+ *   · `{ <pipeline>: { skills_por_fase: { <fase>: [...] } } }`  (config.pipelines)
+ *   · `{ <fase>: [...] }`                                        (mapa plano)
+ *
+ * @returns {string[]|null} `null` = NO SE PUDO RESOLVER. El llamador lo trata
+ *   como duda y conserva el trabajo (CA-26).
+ */
+function resolverSkillsDeFase(skillsPorFase, pipeline, phase) {
+    if (!skillsPorFase || typeof skillsPorFase !== 'object') return null;
+    const porPipeline = skillsPorFase[pipeline];
+    if (porPipeline && typeof porPipeline === 'object') {
+        const mapa = porPipeline.skills_por_fase || porPipeline;
+        const v = mapa && mapa[phase];
+        if (Array.isArray(v)) return v;
+    }
+    const plano = skillsPorFase[phase];
+    if (Array.isArray(plano)) return plano;
+    return null;
+}
+
+/** Lee el `.reason.json` de un marker. `null` si no existe o no parsea. */
+function leerReason(markerFile) {
+    try { return JSON.parse(fs.readFileSync(reasonFilePath(markerFile), 'utf8')); }
+    catch { return null; }
+}
+
+/**
+ * ¿Este marker es un artefacto sintético del gate y no trabajo real?
+ *
+ * Fuente primaria: el campo DECLARADO `synthetic: true` que escribe
+ * `reportHumanBlock()` (A-7). Determinístico, no adivina nada.
+ *
+ * Fallback SÓLO para markers anteriores a este cambio: archivo vacío **y**
+ * skill ausente de `skills_por_fase`. Las DOS condiciones, y si la config no se
+ * pudo resolver la respuesta es `false` — fail-closed (CA-26 / RS-4.1).
+ */
+function esMarkerSintetico(marker, skillsPorFase) {
+    const meta = leerReason(marker.file);
+    if (meta && meta.synthetic === true) return true;
+    let vacio;
+    try { vacio = fs.statSync(marker.file).size === 0; } catch { return false; }
+    if (!vacio) return false;
+    const skills = resolverSkillsDeFase(skillsPorFase, marker.pipeline, marker.phase);
+    if (!Array.isArray(skills)) return false;   // sin config resoluble ⇒ duda ⇒ conservar
+    return !skills.includes(marker.skill);
+}
+
+/**
+ * Barre TODOS los markers de bloqueo humano de un issue y los resuelve uno por
+ * uno (CA-23 / CA-25). No lanza: un marker que falla se registra y el barrido
+ * sigue con el resto — dejar el resto sin reconciliar por un fallo aislado
+ * reproduce el defecto que esto viene a cerrar.
+ *
+ * @param {object} args
+ * @param {number} args.issue
+ * @param {string} [args.unlocker]
+ * @param {object} [args.skillsPorFase] — `config.pipelines` o mapa plano.
+ * @param {object} [args.io] — inyectable: `appendUnblockAudit` (tests).
+ * @returns {{reconciled: Array<{pipeline,phase,skill,action,error?}>}}
+ */
+function reconcileBlockedMarkers({ issue, unlocker = 'github:label-removed', skillsPorFase = null, io = null } = {}) {
+    const n = Number(issue);
+    const reconciled = [];
+    if (!Number.isFinite(n) || n <= 0) return { reconciled };
+
+    let auditor = io;
+    if (!auditor) {
+        // Lazy y tolerante: la traza no puede tumbar el destrabe.
+        try { auditor = require('./design-decision-gate-io'); } catch { auditor = null; }
+    }
+    const auditar = (rec) => {
+        try { if (auditor && auditor.appendUnblockAudit) auditor.appendUnblockAudit(rec); } catch { /* la traza nunca frena el destrabe */ }
+    };
+
+    let markers = [];
+    try { markers = listBlockedMarkers(n); } catch { markers = []; }
+
+    for (const m of markers) {
+        let action = 'none';
+        try {
+            // (1) RESIDUO PURO — ya hay un work-file vivo en el destino. Mover
+            //     el marker encima lo pisaría con un archivo vacío y destruiría
+            //     trabajo real (#5863). Se aplica POR CADA MARKER, no sólo al
+            //     primero: ese "sólo al primero" es justo el bug de CA-25.
+            const destino = path.join(
+                PIPELINE_DIR, m.pipeline, m.phase, 'pendiente', path.basename(m.file));
+            if (fs.existsSync(destino)) {
+                try { fs.unlinkSync(m.file); } catch { /* best-effort */ }
+                try { fs.unlinkSync(reasonFilePath(m.file)); } catch { /* puede no existir */ }
+                action = 'residuo-eliminado';
+            } else if (esMarkerSintetico(m, skillsPorFase)) {
+                // (2) MARKER SINTÉTICO — destrabarlo fabricaría un work-file
+                //     para un skill que no existe en la fase. Se descarta.
+                dismissBlockedIssue({
+                    issue: n, marker: m, unlocker,
+                    reason: 'marker sintético del gate: se descarta en vez de fabricar un work-file (#6448)',
+                });
+                action = 'descartado';
+            } else {
+                // (3) CUALQUIER OTRO CASO — conservar el trabajo. Es el default
+                //     y es fail-closed a propósito (CA-26).
+                const rec = unblockIssue({ issue: n, marker: m, guidance: '', unlocker });
+                action = rec && rec.ok ? 'destrabado' : 'sin-efecto';
+            }
+            reconciled.push({ pipeline: m.pipeline, phase: m.phase, skill: m.skill, action });
+        } catch (e) {
+            reconciled.push({
+                pipeline: m.pipeline, phase: m.phase, skill: m.skill,
+                action: 'error', error: String((e && e.message) || e).slice(0, 120),
+            });
+            action = 'error';
+        }
+        // CA-29 / RS-4.4 — cada destrabe queda registrado con issue, fase,
+        // marker y qué lo originó.
+        auditar({
+            issue: n, pipeline: m.pipeline, phase: m.phase, skill: m.skill,
+            action, origin: unlocker,
+        });
+    }
+
+    return { reconciled };
 }
 
 // #2549 — Heurística para detectar motivos de rechazo que en realidad son
@@ -1339,6 +1546,9 @@ module.exports = {
     PHASE_QUEUE_STATES,
     findActiveMarker,
     findBlockedMarker,
+    // #6448 — barrido de TODOS los markers + reconciliación por marker.
+    listBlockedMarkers,
+    reconcileBlockedMarkers,
     isHumanBlockReason,
     inferHumanBlockQuestion,
     classifyPrecondition,

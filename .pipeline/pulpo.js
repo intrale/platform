@@ -8264,39 +8264,61 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
         // trazabilidad de que el destrabe vino de GitHub y no de un `/unblock`.
         // Sin guidance: el operador destrabó quitando el label, no escribió
         // orientación, y fabricarla sería ponerle palabras que no dijo.
+        //
+        // #6448 CA-23/CA-25 — el barrido pasa a ser por TODOS los markers. La
+        // versión anterior tomaba `findBlockedMarker()` (el PRIMERO) y dejaba
+        // huérfano cualquier otro: con dos bloqueos vivos sobre la misma causa
+        // —el caso del 2026-08-24— remover el label destrabar sólo la mitad.
+        // La rama de "destino ya existe → residuo puro" (#5863) se mudó adentro
+        // del lib y ahora se aplica POR CADA MARKER, que era el riesgo real de
+        // iterar: pisar un work-file vivo con un archivo vacío.
         try {
-          const marcado = humanBlock.findBlockedMarker(parseInt(issue, 10));
-          if (marcado) {
-            // Colisión posible: estamos procesando un work-file VIVO en
-            // `pendiente/`. Si el marker bloqueado apunta al mismo destino, el
-            // rename de `unblockIssue` choca contra un archivo existente y su
-            // fallback lo reescribiría vacío — destruiría el work-file real. En
-            // ese caso el marker es un residuo puro: se borra junto a su
-            // `.reason.json` y listo, que es el mismo estado final.
-            const destino = path.join(
-              fasePath(marcado.pipeline, marcado.phase), 'pendiente', path.basename(marcado.file));
-            if (fs.existsSync(destino)) {
-              try { fs.unlinkSync(marcado.file); } catch { /* best-effort */ }
-              try { fs.unlinkSync(`${marcado.file}.reason.json`); } catch { /* puede no existir */ }
-              log('lanzamiento', `♻️ #${issue} marker residual de bloqueado-humano/ eliminado tras el destrabe en GitHub (ya había work-file vivo en ${marcado.pipeline}/${marcado.phase}/pendiente, #5863)`);
-            } else {
-              const rec = humanBlock.unblockIssue({
-                issue: parseInt(issue, 10),
-                guidance: '',
-                unlocker: 'github:label-removed',
-              });
-              if (rec && rec.ok) {
-                log('lanzamiento', `♻️ #${issue} marker de bloqueado-humano/ reconciliado tras el destrabe en GitHub (${rec.from_phase} → ${rec.to_phase}, #5863)`);
-              }
-            }
+          const rec = humanBlock.reconcileBlockedMarkers({
+            issue: parseInt(issue, 10),
+            unlocker: 'github:label-removed',
+            skillsPorFase: config.pipelines,
+          });
+          for (const r of rec.reconciled) {
+            log('lanzamiento', `♻️ #${issue} marker ${r.pipeline}/${r.phase}/${r.skill} → ${r.action} tras el destrabe en GitHub (#5863/#6448)`);
           }
-          // Sin marker previo: el caso normal cuando el label se aplicó y se
-          // removió sin que el issue llegara a bloquearse. Nada que reconciliar.
+          // Sin markers: el caso normal cuando el label se aplicó y se removió
+          // sin que el issue llegara a bloquearse. Nada que reconciliar.
         } catch (e) {
           log('lanzamiento', `[WARN] #${issue} no se pudo reconciliar el marker de bloqueado-humano/: ${e.message}`);
         }
       } else {
       const noVerificable = veredictoHumano.estado === 'NO_VERIFICABLE';
+
+      // #6448 CA-22 — UN SOLO BLOQUEO POR CAUSA.
+      //
+      // El 2026-08-24 el mismo issue quedó con dos markers vivos: uno del gate
+      // de decisión de arquitectura en `definicion`, y catorce minutos después
+      // otro acá, disparado por el label `needs-human` que había puesto el
+      // PRIMERO. Dos markers independientes sobre la misma causa: el operador
+      // ve el issue frenado dos veces en `/bloqueados`, y al destrabar uno
+      // queda huérfano.
+      //
+      // Con un bloqueo vivo, esta fase RECONOCE el existente y no crea uno
+      // nuevo. El work-file NO se mueve a propósito: moverlo crearía justamente
+      // el segundo marker que esto prohíbe. Dejarlo en `pendiente/` y saltar el
+      // despacho da el mismo efecto operativo (el issue no avanza), deja un
+      // solo bloqueo por causa, y al removerse el label el despacho se reanuda
+      // solo — sin ningún rename que pueda pisar un archivo. Es el mismo patrón
+      // que ya usa la rama `AUSENTE` de arriba.
+      //
+      // La rama `noVerificable` (#5856) queda INTACTA: el bloqueo por
+      // precaución es fail-closed y sí escribe su marker.
+      if (!noVerificable) {
+        let yaVivo = [];
+        try { yaVivo = humanBlock.listBlockedMarkers(parseInt(issue, 10)); } catch { yaVivo = []; }
+        if (yaVivo.length) {
+          const { pipeline: pVivo, phase: fVivo } = yaVivo[0];
+          log('lanzamiento', `🚧 #${issue} ya tiene bloqueo humano vivo en ${pVivo}/${fVivo} — se reconoce el existente, sin segundo marker (#6448)`);
+          _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, `#${issue} bloqueado por label needs-human`);
+          continue;
+        }
+      }
+
       const blockedDir = path.join(fasePath(pipelineName, fase), 'bloqueado-humano');
       try { fs.mkdirSync(blockedDir, { recursive: true }); } catch {}
       const targetFile = path.join(blockedDir, archivo.name);
@@ -18198,20 +18220,108 @@ function brazoIntake(config) {
               labels: issueLabels,
             });
             if (veredicto.escalate) {
+              const nIssue = parseInt(issueNum, 10);
               const yaBloqueadoDD = humanBlock.findBlockedMarker(issueNum);
+              let final = veredicto;
+              let saltar = false;
+
               if (yaBloqueadoDD) {
-                log('intake', `#${issueNum} decisión de arquitectura ya escalada — sin re-notificar`);
-                continue;
+                // #6448 — EL CICLO CERRADO. Acá había un `continue` seco: el
+                // gate saltaba el issue porque había marker, y como lo saltaba
+                // nadie borraba el marker. Remover el label en GitHub no
+                // destrababa nada, y el issue quedaba frenado para siempre.
+                //
+                // Ahora se relee EN VIVO (#5856): sólo `AUSENTE` —lectura
+                // exitosa que confirma que el label ya no está— reconcilia.
+                // `NO_VERIFICABLE` sigue siendo fail-closed.
+                const live = _verifyHumanBlockLive(nIssue);
+                if (live.estado === 'AUSENTE') {
+                  try {
+                    const rec = humanBlock.reconcileBlockedMarkers({
+                      issue: nIssue,
+                      unlocker: 'github:label-removed',
+                      skillsPorFase: config.pipelines,
+                    });
+                    log('intake', `♻️ #${issueNum} destrabado en GitHub — ${rec.reconciled.length} marker(s) reconciliado(s) (#6448)`);
+                  } catch (e) {
+                    log('intake', `[WARN] #${issueNum} no se pudo reconciliar el bloqueo de decisión: ${e.message}`);
+                  }
+                  // SIN `continue`: el issue sigue evaluándose por el resto de
+                  // los gates, igual que la rama de deps.
+                  saltar = true;
+                } else {
+                  log('intake', `#${issueNum} decisión de arquitectura ya escalada — sin re-notificar`);
+                  continue;
+                }
+              } else {
+                // #6448 CA-12 — COSTO DE RED CONDICIONAL. Ésta es la ÚNICA
+                // llamada nueva del gate y sólo ocurre acá: cuando el detector
+                // YA decidió escalar. En el camino feliz (el 99% de los issues,
+                // sin ninguna señal) no se agrega ni una llamada, ni se carga
+                // el módulo — el `require` es lazy a propósito.
+                const io = require('./lib/design-decision-gate-io');
+                const ctx = io.fetchSignoffContext(nIssue);
+                const auditoria = io.readSignoffAudit(nIssue);   // local, sin red (A-8)
+                const firma = ctx.ok
+                  ? designDecision.evaluateArchitectSignoff({
+                      issue: nIssue, comments: ctx.comments,
+                      lastEditedAt: ctx.lastEditedAt, audit: auditoria,
+                    })
+                  // CA-14 / RS-3.1 — fail-closed del carril de firma: si no se
+                  // pudo comprobar que un humano firmó, se escala. El motivo
+                  // técnico va al log y a la traza, nunca al operador.
+                  : { settled: false, reason: `firma no verificable: ${ctx.error}`, rejected: [] };
+
+                final = designDecision.detectDesignDecision({
+                  issue: nIssue,
+                  title: issue.title || '',
+                  body: issue.body || '',
+                  labels: issueLabels,
+                  signoff: firma,
+                });
+
+                // Punto 5 — traza auditable. Sin esto no hay forma de medir
+                // cuántas veces el gate frenó de más (CA-27/CA-28).
+                io.appendGateAudit({
+                  issue: nIssue,
+                  signals: final.signals,
+                  fragment: final.fragment,
+                  signoff_present: firma.settled,
+                  signoff_reason: firma.reason,
+                  signoff_rejected: firma.rejected,
+                  signoff_corroboracion: !ctx.ok
+                    ? null
+                    : (auditoria.available ? auditoria.corroborated : 'traza-no-disponible'),
+                  escalated: final.escalate,
+                  error: ctx.ok ? null : ctx.error,
+                });
+
+                if (!ctx.ok) {
+                  log('intake', `[WARN] #${issueNum} no se pudo verificar la firma del arquitecto (se escala, fail-closed): ${ctx.error}`);
+                }
+
+                if (!final.escalate) {
+                  // UX-8 — el camino feliz es SILENCIOSO: no se le notifica
+                  // nada al operador. Un aviso de "no te molesté" es un aviso
+                  // igual. Queda en el log y en la traza, que es donde se mide.
+                  log('intake', `#${issueNum} señales de decisión (${final.signals.join(', ')}) pero hay firma del arquitecto — se deja pasar (#6448)`);
+                  saltar = true;
+                }
               }
-              log('intake', `🧭 #${issueNum} FRENA en definición — decisión de arquitectura (señales: ${veredicto.signals.join(', ')})`);
+
+              if (!saltar) {
+              log('intake', `🧭 #${issueNum} FRENA en definición — decisión de arquitectura (señales: ${final.signals.join(', ')})`);
               try {
                 humanBlock.reportHumanBlock({
-                  issue: parseInt(issueNum),
+                  issue: nIssue,
                   skill: 'definicion',
                   phase: faseEntrada,
                   pipeline: pipelineName,
-                  reason: veredicto.reason,
-                  question: veredicto.question,
+                  reason: final.reason,
+                  question: final.question,
+                  // #6448 UX-1 — la cita va en campo propio, nunca concatenada
+                  // dentro del motivo (medido: concatenada no llega nunca).
+                  evidence: final.fragment,
                   moveFromActive: false,
                 });
               } catch (e) {
@@ -18221,23 +18331,26 @@ function brazoIntake(config) {
                 // #5421 — texto plano, sin `parse_mode` (aviso crítico).
                 const summaryDD = humanBlock.buildBlockedSummaryPlain({
                   highlight: {
-                    issue: parseInt(issueNum), skill: 'definicion',
-                    reason: veredicto.reason, question: veredicto.question,
-                    recommendation: veredicto.recommendation,
+                    issue: nIssue, skill: 'definicion', phase: faseEntrada,
+                    titulo: issue.title || '',
+                    reason: final.reason, question: final.question,
+                    recommendation: final.recommendation,
+                    evidence: final.fragment,
                   },
                 });
                 let markupDD;
-                try { markupDD = humanBlock.buildBlockedActionMarkup(parseInt(issueNum)); }
+                try { markupDD = humanBlock.buildBlockedActionMarkup(nIssue); }
                 catch { markupDD = undefined; }
                 sendTelegramWithMarkup(summaryDD, markupDD || null, { plain: true });
               } catch (e) {
                 log('intake', `Error notificando decisión de arquitectura #${issueNum}: ${e.message}`);
               }
               continue; // NO entra a definición hasta que el operador decida.
+              }
             }
             // CA-4b — dejar pasar y registrar. Sólo se loguea si hubo señales
             // parciales; el caso normal (sin señales) no ensucia el log.
-            if (veredicto.signals.length) {
+            if (veredicto.signals.length && !veredicto.escalate) {
               log('intake', `#${issueNum} señales de decisión parciales (${veredicto.signals.join(', ')}) — se deja pasar`);
             }
           } catch (e) {
