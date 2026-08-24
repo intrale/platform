@@ -1388,5 +1388,174 @@ test('SEC-D · el saneamiento acota la entrada: un texto enorme no lo vuelve cos
     const salida = dc.neutralizarMarkupYEnlaces(bomba);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     assert.ok(ms < 1000, `el saneamiento tardó ${ms.toFixed(0)}ms con entrada patológica`);
-    assert.ok(salida.length <= 4000, `no se aplicó el tope de entrada: ${salida.length}`);
+    assert.ok(salida.length <= 512, `no se aplicó el tope de entrada: ${salida.length}`);
+});
+
+// =============================================================================
+// rev-11 / SEC-E — la cobertura del regex se quedaba corta, un nivel más abajo.
+//
+// SEC-C arregló el ORDEN, SEC-D arregló el ESQUEMA y la FORMA. Quedaba abierto
+// el ALFABETO: la etiqueta de host era `[a-z0-9][a-z0-9-]*`, así que cualquier
+// host con un carácter no-ASCII escapaba ENTERO al saneador y llegaba tappable
+// al Telegram del operador —el mismo mensaje con el que destraba o firma—.
+//
+// El oráculo del rechazo no fue una opinión sobre Telegram sino la propia API:
+// un `sendMessage` en texto plano devuelve las `entities` que detectó el
+// servidor, y una de tipo `url` significa "esto es tocable". Las tres formas de
+// abajo dieron tappable en esa medición, ya pasadas por el saneador. Se fijan
+// literales para que si alguien vuelve a angostar la clase de caracteres,
+// falle acá con el caso REPORTADO y no con una variante inventada.
+//
+// Es la misma lección que SEC-D dejó escrita para los TLD —"una lista blanca
+// deja pasar al primero que no está en ella"— aplicada al alfabeto: enumerar
+// qué caracteres VALEN en un host es una carrera que se pierde contra Unicode.
+// Por eso el fix define la etiqueta por lo que la CORTA (espacio y puntuación
+// ASCII, conjunto cerrado) y no por lo que la compone.
+// =============================================================================
+
+const FORMAS_ENLACE_SEC_E = [
+    // Homógrafo: se lee «sberbank.com» pero está en cirílico.
+    ['host cirílico + TLD ASCII', 'сбербанк.com/verificar'],
+    // TLD real, no ASCII: `.рф` existe y `[a-z]{2,}` no lo veía.
+    ['host y TLD cirílicos', 'сбербанк.рф'],
+    // Fuera del plano básico: en UTF-16 son pares suplentes, y sin flag `u` una
+    // clase de caracteres los parte al medio.
+    ['host emoji astral', '\u{1F4B0}\u{1F4B3}.la/x'],
+];
+
+for (const [nombre, forma] of FORMAS_ENLACE_SEC_E) {
+    test(`SEC-E · ${nombre}: no sobrevive en NINGUNA superficie`, () => {
+        const titulo = `Fallo el cobro: verifica en ${forma} ahora`;
+        const raw = { issue: 999003, titulo, reason: '', blocked_at: '2026-08-19T19:00:00Z' };
+
+        // 1. Camino principal: la ficha, campo por campo.
+        const card = dc.buildDecisionCard(raw, AHORA);
+        for (const [ruta, v] of camposString(card)) {
+            assert.ok(!v.includes(forma),
+                `${ruta}: sobrevivió ${JSON.stringify(forma)} → ${v}`);
+        }
+        assert.ok(card.que_esta_frenado.titulo.includes(dc.URL_MARCA),
+            `la ficha no declaró que había un enlace: ${card.que_esta_frenado.titulo}`);
+
+        // 2. Camino degradado fail-closed: el mismo dato por el aviso crudo.
+        const fb = cardRender.renderFallbackAviso([raw], AHORA);
+        assert.ok(!fb.includes(forma), `el aviso degradado dejó vivo ${forma}:\n${fb}`);
+        assert.ok(fb.includes(dc.URL_MARCA), `el aviso degradado no declaró el enlace:\n${fb}`);
+
+        // 3. Superficie de producción: es la que sale a Telegram.
+        const texto = require('../human-block').buildBlockedSummaryPlain({
+            nowMs: AHORA,
+            highlight: { issue: 999003, titulo, reason: titulo, skill: 'ux', phase: 'criterios' },
+            blocked: [],
+        });
+        assert.ok(!texto.includes(forma), `el aviso de producción dejó vivo ${forma}:\n${texto}`);
+    });
+}
+
+test('SEC-E · el PoC del rechazo, textual, no sobrevive en ninguna superficie', () => {
+    // El campo exacto que el reporte mostró como "lo que ve el operador".
+    const host = 'сбербанк.com/verificar';
+    const titulo = `Fallo el cobro: verifica en ${host} ahora`;
+    const raw = { issue: 9999, titulo, reason: '', blocked_at: '2026-08-19T19:00:00Z' };
+
+    const card = dc.buildDecisionCard(raw, AHORA);
+    assert.ok(!card.que_esta_frenado.titulo.includes(host),
+        `la ficha filtró el homógrafo:\n${card.que_esta_frenado.titulo}`);
+
+    const plain = cardRender.renderDecisionCardsPlain(dc.buildDecisionCards([raw], AHORA));
+    assert.ok(!plain.includes(host), `la ficha renderizada filtró el homógrafo:\n${plain}`);
+
+    const fb = cardRender.renderFallbackAviso([raw], AHORA);
+    assert.ok(!fb.includes(host), `el aviso degradado filtró el homógrafo:\n${fb}`);
+
+    const texto = require('../human-block').buildBlockedSummaryPlain({
+        nowMs: AHORA,
+        highlight: { issue: 9999, titulo, reason: titulo, skill: 'ux', phase: 'criterios' },
+        blocked: [],
+    });
+    assert.ok(!texto.includes(host), `el camino de producción filtró el homógrafo:\n${texto}`);
+});
+
+test('SEC-E · las formas que NO son tappables se dejan en paz', () => {
+    // La contracara del fail-closed, y la razón por la que el fix se define por
+    // lo que CORTA la etiqueta y no por "todo carácter raro es sospechoso".
+    // Las cinco se midieron con el mismo oráculo del API y dieron tappable
+    // false. Perseguirlas sería ruido y mutilaría títulos legítimos —los puntos
+    // no-ASCII aparecen en cualquier texto en japonés o chino—.
+    const inertes = [
+        ['punto fullwidth U+FF0E', 'algo．com'],
+        ['punto ideográfico U+3002', 'algo。com'],
+        ['punto halfwidth U+FF61', 'algo｡com'],
+        ['IPv6 con puerto', '[2001:db8::1]:8080'],
+        ['IP en decimal', '3232235777/x'],
+    ];
+    for (const [nombre, forma] of inertes) {
+        const salida = dc.neutralizarMarkupYEnlaces(`Revisar ${forma} cuanto antes`);
+        assert.ok(salida.includes(forma),
+            `${nombre}: se marcó una forma inerte y se mutiló el texto → ${salida}`);
+    }
+});
+
+test('SEC-E · un título en otro alfabeto no se mutila si no tiene forma de enlace', () => {
+    // Que la clase de etiqueta sea Unicode no puede volver sospechoso a todo
+    // texto no-ASCII. Sin punto + TLD no hay host, y el título tiene que llegar
+    // entero: el operador decide leyéndolo.
+    const legitimos = [
+        'Revisión del alta de negocio en producción',
+        'Falló el envío: reintentar con el proveedor griego Αθήνα',
+        '日本語のタイトル: 決済の確認',
+        'Split de #6173: cliente/negocio A/B 24/7 v1.23',
+    ];
+    for (const titulo of legitimos) {
+        const salida = dc.neutralizarMarkupYEnlaces(titulo);
+        assert.ok(!salida.includes(dc.URL_MARCA),
+            `se marcó como enlace un título legítimo: ${titulo} → ${salida}`);
+    }
+});
+
+test('SEC-E · la excepción de extensión de archivo no se dispara de más en Unicode', () => {
+    // `\b` es ASCII: en `evil.jsфront.com` marcaba frontera entre `js` y `ф`, la
+    // exención de "nombre de archivo" se disparaba y el host quedaba VIVO. La
+    // frontera correcta pregunta si sigue habiendo carácter de etiqueta.
+    const conCola = dc.neutralizarMarkupYEnlaces('Entrá a evil.jsфront.com ya');
+    assert.ok(conCola.includes(dc.URL_MARCA),
+        `la exención de extensión dejó vivo un host: ${conCola}`);
+    // Y el control: los nombres de archivo REALES siguen intactos.
+    for (const nombre of ['pulpo.js', 'config.yaml', 'vista.jsx', 'notas.txt']) {
+        const salida = dc.neutralizarMarkupYEnlaces(`Mirá ${nombre} para el detalle`);
+        assert.ok(salida.includes(nombre),
+            `se mutiló un nombre de archivo legítimo: ${nombre} → ${salida}`);
+    }
+});
+
+test('SEC-E · un esquema precedido por un carácter no-ASCII se sigue marcando', () => {
+    // El lookbehind de "carácter de etiqueta" es correcto para los HOSTS pero
+    // sería una regresión aplicado a los esquemas: bloquearía el match cuando
+    // el carácter previo es una letra no-ASCII. Por eso las formas con esquema
+    // conservan `\b`, que ahí es exacto. Sin este test, el día que alguien
+    // "unifique" los dos arranques la regresión pasa en verde.
+    const salida = dc.neutralizarMarkupYEnlaces('фhttps://evil.example/x');
+    assert.ok(salida.includes(dc.URL_MARCA), `el esquema sobrevivió: ${salida}`);
+    assert.ok(!salida.includes('evil.example'), `el host sobrevivió: ${salida}`);
+});
+
+test('SEC-E · abrir la clase a Unicode no volvió costoso el saneamiento', () => {
+    // El punto 6 del rechazo, verificado y no asumido: `\p{L}` y una clase por
+    // complemento amplían lo que el motor prueba en cada posición, y el costo
+    // es CUADRÁTICO en el largo de la entrada. Medido antes de bajar el tope,
+    // la bomba cirílica pasó de ~139ms (ASCII) a ~1003ms — por encima del techo
+    // de un segundo del test de SEC-D. La respuesta NO fue angostar la clase
+    // —ese es justo el agujero de SEC-E— sino bajar `MAX_ENTRADA_SANEO`.
+    const bombas = [
+        ['ASCII', `${'a.'.repeat(100000)}1`],
+        ['cirílica', `${'б.'.repeat(100000)}1`],
+        ['emoji astral', `${'\u{1F4B0}.'.repeat(100000)}1`],
+    ];
+    for (const [nombre, bomba] of bombas) {
+        const t0 = process.hrtime.bigint();
+        const salida = dc.neutralizarMarkupYEnlaces(bomba);
+        const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+        assert.ok(ms < 250, `bomba ${nombre}: el saneamiento tardó ${ms.toFixed(0)}ms`);
+        assert.ok(salida.length <= 512, `bomba ${nombre}: no se aplicó el tope: ${salida.length}`);
+    }
 });

@@ -122,7 +122,18 @@ const MAX_PREGUNTA_LITERAL = 160; // UX §4.6: más largo que esto → indetermi
 const MAX_EVIDENCIAS = 3;   // UX §1.5: máximo 3 ítems
 // rev-10 / SEC-D: techo de entrada del saneador. Muy por encima de cualquier
 // campo real (220) y muy por debajo de lo que haría costoso al saneamiento.
-const MAX_ENTRADA_SANEO = 4000;  // tope duro de texto externo antes de sanear
+//
+// rev-11 / SEC-E: baja de 4000 a 512. Abrir la etiqueta de host a Unicode
+// amplía la clase que el motor tiene que probar en cada posición, y el costo
+// del saneamiento es CUADRÁTICO en el largo de la entrada, no lineal. Medido
+// sobre este mismo módulo, una entrada patológica de puntos y letras cirílicas
+// pasó de ~139ms (ASCII, rev-10) a ~1003ms: por encima del segundo que el test
+// de DoS fija como techo. El regex no es el lugar donde arreglarlo —achicar la
+// clase es justo el agujero que SEC-E vino a cerrar—; el lugar es la entrada.
+// 512 sigue siendo 2,3x el campo más largo que existe (`MAX_CAMPO` = 220, y
+// toda superficie corta la SALIDA en 220 o menos), así que no recorta nada
+// real, y al ser cuadrático el costo baja ~60x: la misma bomba queda en ~16ms.
+const MAX_ENTRADA_SANEO = 512;  // tope duro de texto externo antes de sanear
 
 const TIPOS = Object.freeze([
     'dependencia', 'circuit', 'firma', 'infra', 'rebote', 'pregunta', 'indeterminado',
@@ -234,29 +245,99 @@ const MARKDOWN_LINK_RE = /\]\(/g;
 const EXT_ARCHIVO_NO_TLD = 'js|json|ya?ml|kts?|tsx?|jsx|txt|xml|csv|html?|css'
     + '|png|jpe?g|gif|svg|webp|java|py|rb|rs|go|php|sql|gradle|properties'
     + '|lock|cfg|ini|bat|jar|apk|class|exe|dll|tar|gz|pdf|docx?|xlsx?|pptx?';
-// Etiqueta de host sin ambigüedad interna: un solo cuantificador que no puede
-// consumir puntos. Importa para el costo: `sec()` corre por cada campo de cada
-// ficha y un regex con cuantificadores anidados sobre la misma clase es un
-// candidato a retroceso cuadrático (ver `MAX_ENTRADA_SANEO`).
+// rev-11 / SEC-E. Hasta rev-10 la etiqueta de host era `[a-z0-9][a-z0-9-]*`:
+// una lista blanca de ALFABETO. Es el mismo error que rev-10 ya había rechazado
+// para los TLD ("una lista blanca deja pasar al primero que no está en ella"),
+// pero un nivel más abajo: cubierto el ESQUEMA y cubierta la FORMA, quedaba
+// abierto el ALFABETO. Un host escrito en cirílico (`сбербанк.com`,
+// `сбербанк.рф`) o en emoji (`💰💳.la/x`) atravesaba el saneador ENTERO y le
+// llegaba tappable al operador, dentro del mismo mensaje con el que destraba o
+// firma. Confirmado contra la propia API de Telegram, que devuelve una entity
+// `url` por cada tramo que hace tocable.
+//
+// La corrección invierte la definición: en vez de enumerar qué caracteres VALEN
+// dentro de una etiqueta —infinitos, y crecen con cada bloque Unicode nuevo—,
+// se enumera qué caracteres la CORTAN, que sí es un conjunto cerrado y chico:
+// el espacio (en todas sus formas Unicode) y la puntuación ASCII. Todo lo demás
+// —cualquier letra, dígito, marca combinante, ideograma o emoji, de cualquier
+// escritura— es carácter de etiqueta. Es fail-closed sobre el ALFABETO igual
+// que rev-10 lo es sobre el TLD.
+//
+// El detalle de los rangos es el contrato de esta clase:
+//   \x00-\x2C  control, espacio y `!"#$%&'()*+,`   → cortan
+//   \x2D       `-`                                 → NO corta (va en etiqueta)
+//   \x2E-\x2F  `.` y `/`                           → cortan; es lo que impide
+//                                                     que la etiqueta se trague
+//                                                     un punto o la ruta
+//   \x3A-\x40  `:;<=>?@`                           → cortan
+//   \x5B-\x60  `[\]^_` y la comilla invertida      → cortan
+//   \x7B-\x7F  `{|}~` y DEL                        → cortan
+//   \s         cualquier espacio Unicode (NBSP…)   → corta
+//   ≥ \x80     TODO lo no-ASCII                    → NO corta
+// `_` corta a propósito: `evil_site.com` NO es tappable (medido), y tratarlo
+// como enlace mutilaría snake_case legítimo del propio pipeline.
+//
+// Sigue siendo UN cuantificador sobre UNA clase, sin anidamiento: importa para
+// el costo, porque `sec()` corre por cada campo de cada ficha y un regex
+// ambiguo es candidato a retroceso cuadrático (ver `MAX_ENTRADA_SANEO`).
 // `String.raw` a propósito: el fuente del regex se lee igual que si fuera un
 // literal `/…/`, sin la capa de barras dobles que hace ilegible —y frágil— a
 // un regex armado con strings comunes.
-const _ETIQUETA = String.raw`[a-z0-9][a-z0-9-]*`;
-const _HOST = String.raw`${_ETIQUETA}(?:\.${_ETIQUETA})*\.[a-z]{2,}`;
-const _HOST_SIN_EXT = String.raw`${_ETIQUETA}(?:\.${_ETIQUETA})*\.(?!(?:${EXT_ARCHIVO_NO_TLD})\b)[a-z]{2,}`;
+const _CORTA_ETIQUETA = String.raw`\x00-\x2C\x2E-\x2F\x3A-\x40\x5B-\x60\x7B-\x7F\s`;
+const _ETIQUETA = String.raw`[^${_CORTA_ETIQUETA}]+`;
+// El TLD se queda en LETRAS, no en «carácter de etiqueta». Ampliarlo a dígitos
+// marcaría como enlace cualquier versión (`v1.23`) y a emoji sería ruido puro:
+// no existe TLD emoji. Lo único que cambia frente a rev-10 es el alfabeto —`.рф`
+// es un TLD real y `[a-z]{2,}` no lo veía—.
+const _TLD = String.raw`\p{L}{2,}`;
+// Frontera de fin de la excepción de extensión de archivo. Era `\b`, que aun
+// con flag `u` sigue siendo ASCII: en `pulpo.jsфront` veía frontera entre `js`
+// y `ф`, la exención se disparaba de más y el host quedaba sin marcar. La
+// pregunta correcta no es «¿hay frontera ASCII?» sino «¿sigue habiendo carácter
+// de etiqueta?»; si sigue, no era una extensión de archivo.
+const _FIN_EXT = String.raw`(?![^${_CORTA_ETIQUETA}])`;
+const _HOST = String.raw`${_ETIQUETA}(?:\.${_ETIQUETA})*\.${_TLD}`;
+const _HOST_SIN_EXT = String.raw`${_ETIQUETA}(?:\.${_ETIQUETA})*\.(?!(?:${EXT_ARCHIVO_NO_TLD})${_FIN_EXT})${_TLD}`;
 const _RESTO = String.raw`[^\s<>"']*`;
 const _IPV4 = String.raw`\d{1,3}(?:\.\d{1,3}){3}`;
+// Arranque de las formas de HOST. No puede ser `\b`: `\b` se define sobre
+// `[A-Za-z0-9_]`, así que ante `сбербанк.com` no hay frontera antes de la `с`
+// cirílica y el match arrancaba tarde, en medio del host. Se pregunta lo que de
+// verdad importa —que el carácter previo no sea de etiqueta—, y así el match
+// toma el host ENTERO.
+// Las formas con ESQUEMA (1-3) y la IPv4 (4) conservan `\b`: arrancan sí o sí
+// en ASCII (`http`, `www`, un dígito), ahí `\b` es exacto y además deja pasar
+// el match cuando el carácter previo es no-ASCII (`фhttps://evil.tld`), que un
+// lookbehind de «carácter de etiqueta» bloquearía.
+// Ojo con la clase, que NO es la misma que la de la etiqueta: `_` cae adentro
+// del rango `\x5B-\x60` (corta etiqueta), pero acá se lo saca del rango para
+// que TAMPOCO sea una frontera válida de arranque. Si fuese frontera,
+// `evil_site.com` arrancaría en `site` y el saneador marcaría medio texto que
+// no es enlace. Es el mismo carácter con dos roles distintos.
+// Defensa en profundidad, no el camino caliente: hoy `MARKUP_ESPACIO_RE` mapea
+// `_` a espacio ANTES de llegar acá (neutralización de itálicas de Markdown),
+// así que un `_` real nunca alcanza este lookbehind. Se escribe correcto igual
+// para que el día que ese orden cambie, esta clase no sea la que se rompa.
+const _CORTA_INICIO_HOST = String.raw`\x00-\x2C\x2E-\x2F\x3A-\x40\x5B-\x5E\x60\x7B-\x7F\s`;
+const _INICIO_HOST = String.raw`(?<![^${_CORTA_INICIO_HOST}])`;
 const URL_RE = new RegExp(
-    String.raw`\b(?:`
+    String.raw`(?:`
+    + String.raw`\b(?:`
     + String.raw`[a-z][a-z0-9+.-]*://${_RESTO}`                  // 1
     + String.raw`|(?:mailto|tel|sms|data|javascript|vbscript|callto|skype|whatsapp|tg|intent|market):${_RESTO}` // 2
     + String.raw`|www\.${_RESTO}`                                // 3
     + String.raw`|${_IPV4}(?::\d{1,5})?(?:/${_RESTO})?`          // 4
-    + String.raw`|${_HOST}(?::\d{1,5})?/${_RESTO}`               // 5
+    + String.raw`)`
+    + String.raw`|${_INICIO_HOST}(?:`
+    + String.raw`${_HOST}(?::\d{1,5})?/${_RESTO}`                // 5
     + String.raw`|${_HOST}:\d{1,5}`                              // 5b
     + String.raw`|${_HOST_SIN_EXT}`                              // 6
+    + String.raw`)`
     + String.raw`)`,
-    'gi',
+    // `u` es obligatorio para que `\p{L}` sea propiedad Unicode y no la letra
+    // `p` literal, y para que clases y lookbehind razonen por CODE POINT: sin
+    // `u` un emoji es un par suplente y la clase lo parte al medio.
+    'giu',
 );
 // Sin paréntesis propios: la marca puede caer justo dentro de un `](…)` que
 // venía en el texto, y sumar los suyos deja un `((enlace omitido)` ilegible.
