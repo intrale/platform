@@ -72,7 +72,8 @@ git diff --unified=0 origin/main..HEAD -- .pipeline/dashboard.js .pipeline/lib/m
 ```
 
 Si el issue tiene `area:dashboard`, toca `dashboard.js`, `mission-ola-eta.js`,
-`views/dashboard/`, o cambia un banner/card/copy visible del dashboard, **NO podés
+`views/dashboard/`, cambia un banner/card/copy visible del dashboard, o modifica
+mensajes, botones, comandos o audio que recibe el operador por Telegram, **NO podés
 cerrar como structural**, aunque el cambio viva bajo `.pipeline/`. En ese caso
 tenés que producir evidencia visual con audio narrado:
 
@@ -82,6 +83,11 @@ tenés que producir evidencia visual con audio narrado:
 
 Si no podés generar esa evidencia, rechazá con motivo accionable; no apruebes
 como `structural`.
+
+Para Telegram, la evidencia debe ejecutar el renderer y el camino de encolado reales,
+mostrar el mensaje final tal como lo recibe el operador y narrar la cobertura de todos
+los criterios aplicables. Un dump de strings o un harness structural no reemplaza el
+video E2E.
 
 La misma prohibición aplica si el issue o el diff referencia un mockup versionado
 bajo `.pipeline/assets/mockups/`, o si los criterios exigen inspeccionar el PDF de

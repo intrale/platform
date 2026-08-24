@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1060" viewBox="0 0 1280 1060" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <!--
+    Mockup UX #6173 — Telegram: de dato crudo a ficha de decision agrupada.
+    Columna izquierda = SALIDA REAL verificada el 19/08 (no ilustrativa):
+      · resumen agrupado: node -e "require('.pipeline/lib/human-block').buildBlockedSummaryPlain({...})"
+      · aviso de firma: literal de .pipeline/pulpo.js:5935
+    Columna derecha = copy propuesto por UX, renderizado desde la misma ficha
+    que consume el dashboard (decision-card.js). Un solo origen de texto.
+  -->
+  <rect width="1280" height="1060" fill="#0D1117"/>
+
+  <!-- cabecera -->
+  <text x="32" y="34" font-size="19" font-weight="700" fill="#E6EDF3">Telegram &#183; el aviso de decisi&#243;n humana</text>
+  <text x="32" y="56" font-size="12.5" fill="#B1BAC4">Izquierda: salida real de hoy. Derecha: la misma informaci&#243;n como ficha de decisi&#243;n, agrupada en un solo mensaje.</text>
+  <rect x="1084" y="20" width="164" height="24" rx="12" fill="rgba(0,214,255,0.14)" stroke="#1890FF"/>
+  <text x="1166" y="36" font-size="11" font-weight="600" fill="#00D6FF" text-anchor="middle">MOCKUP UX &#183; #6173</text>
+
+  <!-- ======================= COLUMNA IZQUIERDA ======================= -->
+  <rect x="32" y="88" width="20" height="20" rx="4" fill="rgba(248,81,73,0.14)" stroke="#8B1A14"/>
+  <text x="42" y="103" font-size="12" fill="#F85149" text-anchor="middle">&#10007;</text>
+  <text x="62" y="104" font-size="14.5" font-weight="700" fill="#F85149">HOY &#8212; lo que llega al operador</text>
+  <text x="62" y="124" font-size="11" fill="#8B949E">salida verificada el 19/08, textual</text>
+
+  <!-- burbuja 1: resumen agrupado real -->
+  <rect x="32" y="140" width="560" height="164" rx="12" fill="#1C2128" stroke="#30363D"/>
+  <text x="48" y="168" font-size="12" fill="#E6EDF3">&#128203; Incidentes bloqueados esperando humano (3)</text>
+  <text x="48" y="184.5" font-size="12" fill="#E6EDF3">&#8226; #6173 &#8212; ux en criterios (3h)</text>
+  <text x="48" y="201" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#8627; dependency_block: espera #6110</text>
+  <text x="48" y="217.5" font-size="12" fill="#E6EDF3">&#8226; #6144 &#8212; po en criterios (30min)</text>
+  <text x="48" y="234" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#8627; Confirmar alcance?</text>
+  <text x="48" y="250.5" font-size="12" fill="#E6EDF3">&#8226; #6150 &#8212; guru en analisis (27h)</text>
+  <text x="48" y="283.5" font-size="12" fill="#B1BAC4">Us&#225; /unblock &lt;issue&gt; &lt;orientaci&#243;n&gt; para desbloquear.</text>
+
+  <!-- callout de defectos -->
+  <rect x="32" y="316" width="560" height="128" rx="8" fill="rgba(248,81,73,0.08)" stroke="#8B1A14" stroke-dasharray="4 3"/>
+  <text x="48" y="337" font-size="12" font-weight="700" fill="#F85149">Qu&#233; le falta para poder decidir</text>
+  <text x="48" y="356" font-size="11.5" fill="#B1BAC4">&#183; En ning&#250;n caso dice qu&#233; decisi&#243;n se le est&#225; pidiendo.</text>
+  <text x="48" y="373" font-size="11.5" fill="#B1BAC4">&#183; &#171;ux en criterios&#187;, &#171;guru en analisis&#187;: vocabulario de m&#225;quina.</text>
+  <text x="48" y="390" font-size="11.5" fill="#B1BAC4">&#183; &#171;dependency_block: espera #6110&#187;: dato crudo, sin traducir.</text>
+  <text x="48" y="407" font-size="11.5" fill="#B1BAC4">&#183; #6150 llega sin ning&#250;n motivo: una ficha vac&#237;a.</text>
+  <text x="48" y="424" font-size="11.5" fill="#B1BAC4">&#183; &#171;&lt;issue&gt;&#187; es un molde: con 3 frenados no sabe qu&#233; n&#250;mero poner.</text>
+  <text x="48" y="441" font-size="11.5" fill="#B1BAC4">&#183; Cero opciones, cero consecuencias, cero costo de no decidir.</text>
+
+  <!-- burbujas 2/3/4: aviso de firma repetido -->
+  <text x="32" y="480" font-size="11.5" font-weight="600" fill="#8B949E">El aviso de la firma de definici&#243;n, tal cual sale hoy:</text>
+  <rect x="32" y="492" width="560" height="60" rx="12" fill="#1C2128" stroke="#30363D"/>
+  <text x="48" y="516" font-size="12" fill="#E6EDF3">&#128721; #6144 GATE 1 (firma de definici&#243;n) retuvo admisi&#243;n a</text>
+  <text x="48" y="533" font-size="12" fill="#E6EDF3">desarrollo [ruta]: sin firma del operador para la definici&#243;n</text>
+
+  <g opacity="0.55">
+    <rect x="32" y="562" width="560" height="60" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <text x="48" y="586" font-size="12" fill="#E6EDF3">&#128721; #6144 GATE 1 (firma de definici&#243;n) retuvo admisi&#243;n a</text>
+    <text x="48" y="603" font-size="12" fill="#E6EDF3">desarrollo [ruta]: sin firma del operador para la definici&#243;n</text>
+  </g>
+  <g opacity="0.3">
+    <rect x="32" y="632" width="560" height="60" rx="12" fill="#1C2128" stroke="#30363D"/>
+    <text x="48" y="656" font-size="12" fill="#E6EDF3">&#128721; #6144 GATE 1 (firma de definici&#243;n) retuvo admisi&#243;n a</text>
+    <text x="48" y="673" font-size="12" fill="#E6EDF3">desarrollo [ruta]: sin firma del operador para la definici&#243;n</text>
+  </g>
+
+  <rect x="32" y="706" width="560" height="112" rx="8" fill="rgba(248,81,73,0.08)" stroke="#8B1A14" stroke-dasharray="4 3"/>
+  <text x="48" y="727" font-size="12" font-weight="700" fill="#F85149">Y se repite</text>
+  <text x="48" y="746" font-size="11.5" fill="#B1BAC4">&#183; No hay guarda de &#171;ya avisado&#187;: cada revisi&#243;n vuelve a emitirlo.</text>
+  <text x="48" y="763" font-size="11.5" fill="#B1BAC4">&#183; Una l&#237;nea, sin t&#237;tulo del trabajo, sin desde cu&#225;ndo.</text>
+  <text x="48" y="780" font-size="11.5" fill="#B1BAC4">&#183; Sin botones: el canal de firma existe y no est&#225; cableado ac&#225;.</text>
+  <text x="48" y="797" font-size="11.5" fill="#B1BAC4">&#183; &#171;GATE 1&#187;, &#171;[ruta]&#187;, &#171;retuvo admisi&#243;n&#187;: jerga del pipeline.</text>
+  <text x="48" y="814" font-size="11.5" fill="#B1BAC4">&#183; No dice qu&#233; queda frenado detr&#225;s ni qu&#233; opciones hay.</text>
+
+  <!-- ======================= COLUMNA DERECHA ======================= -->
+  <rect x="624" y="88" width="20" height="20" rx="4" fill="rgba(63,185,80,0.14)" stroke="#196C2E"/>
+  <text x="634" y="103" font-size="12" fill="#3FB950" text-anchor="middle">&#10003;</text>
+  <text x="654" y="104" font-size="14.5" font-weight="700" fill="#3FB950">PROPUESTO &#8212; una ficha por trabajo, un solo mensaje</text>
+  <text x="654" y="124" font-size="11" fill="#8B949E">texto plano, mismo origen de copy que el dashboard</text>
+
+  <rect x="624" y="140" width="624" height="784" rx="12" fill="#1C2128" stroke="#30363D"/>
+
+  <text x="644" y="168" font-size="13" font-weight="700" fill="#E6EDF3">&#128682; 3 trabajos esperan una decisi&#243;n tuya</text>
+
+  <text x="644" y="201" font-size="12.5" font-weight="700" fill="#E6EDF3">1 &#183; &#191;Esperamos que cierre #6110, o dejamos que #6173 avance sin eso?</text>
+  <text x="644" y="217.5" font-size="12" fill="#B1BAC4">Qu&#233; est&#225; frenado: #6173 &#171;Los avisos de issues que esperan una decisi&#243;n</text>
+  <text x="644" y="234" font-size="12" fill="#B1BAC4">humana no dicen qu&#233; hay que decidir&#187; &#8212; frenado hace 3 h 20 min.</text>
+  <text x="644" y="250.5" font-size="12" fill="#B1BAC4">Por qu&#233;: no puede avanzar hasta que se cierre otro trabajo del que depende.</text>
+  <text x="644" y="267" font-size="12" fill="#E6EDF3">Opciones:</text>
+  <text x="644" y="283.5" font-size="12" fill="#E6EDF3">&#160;1. Esperar a que cierre #6110 &#8592; recomendada</text>
+  <text x="644" y="300" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#160;Qu&#233; pasa: #6173 queda en espera y arranca solo cuando #6110 cierre.</text>
+  <text x="644" y="316.5" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#160;No hay que hacer nada m&#225;s.</text>
+  <text x="644" y="333" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#160;Por qu&#233; la recomiendo: #6110 ya est&#225; en desarrollo y cierra en esta ola.</text>
+  <text x="644" y="349.5" font-size="12" fill="#E6EDF3">&#160;2. Avanzar igual, sin esperar</text>
+  <text x="644" y="366" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#160;Qu&#233; pasa: arranca ahora. Si lo de #6110 hac&#237;a falta, este trabajo</text>
+  <text x="644" y="382.5" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#160;puede rehacerse despu&#233;s.</text>
+  <text x="644" y="399" font-size="12" fill="#E6EDF3">&#160;3. Sacarlo del plan de esta ola</text>
+  <text x="644" y="415.5" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#160;Qu&#233; pasa: vuelve a la lista de pendientes y deja de ocupar lugar en la</text>
+  <text x="644" y="432" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#160;ola. No se pierde nada de lo hecho.</text>
+  <text x="644" y="448.5" font-size="12" fill="#B1BAC4">Para saber m&#225;s: #6110 sigue abierto &#183; su &#250;ltima actividad fue hace 2 d&#237;as.</text>
+  <text x="644" y="465" font-size="12" fill="#D29922">Si no decid&#237;s: #6173 y los 2 trabajos que dependen de &#233;l no avanzan.</text>
+  <text x="644" y="481.5" font-size="12" fill="#58A6FF">Para decidir, respond&#233;: /unblock 6173 esperar</text>
+
+  <text x="644" y="514.5" font-size="12.5" font-weight="700" fill="#E6EDF3">2 &#183; &#191;Aprob&#225;s el alcance de #6144 para que arranque el desarrollo?</text>
+  <text x="644" y="531" font-size="12" fill="#B1BAC4">Qu&#233; est&#225; frenado: #6144 &#171;Reordenar la ventana de bloqueados por urgencia</text>
+  <text x="644" y="547.5" font-size="12" fill="#B1BAC4">de la decisi&#243;n&#187; &#8212; retenido hace 6 h 12 min, listo para arrancar.</text>
+  <text x="644" y="564" font-size="12" fill="#B1BAC4">Por qu&#233;: est&#225; listo, pero el alcance necesita tu visto bueno antes.</text>
+  <text x="644" y="580.5" font-size="12" fill="#E6EDF3">Opciones:</text>
+  <text x="644" y="597" font-size="12" fill="#B1BAC4">&#160;1. Aprobar el alcance &#8212; arranca el desarrollo con los criterios tal como</text>
+  <text x="644" y="613.5" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#160;est&#225;n.</text>
+  <text x="644" y="630" font-size="12" fill="#B1BAC4">&#160;2. Rechazar &#8212; no arranca; el alcance vuelve a replantearse.</text>
+  <text x="644" y="646.5" font-size="12" fill="#B1BAC4">&#160;3. Ajustar los criterios &#8212; no arranca todav&#237;a; edit&#225;s y el pedido vuelve</text>
+  <text x="644" y="663" font-size="12" fill="#B1BAC4">&#160;&#160;&#160;&#160;con el texto nuevo.</text>
+  <text x="644" y="679.5" font-size="12" fill="#8B949E">&#160;(No hay recomendaci&#243;n: la decisi&#243;n es tuya.)</text>
+  <text x="644" y="696" font-size="12" fill="#B1BAC4">Para saber m&#225;s: son 9 criterios de aceptaci&#243;n y ninguno est&#225; firmado.</text>
+  <text x="644" y="712.5" font-size="12" fill="#D29922">Si no decid&#237;s: nada arranca; el trabajo queda listo pero parado.</text>
+  <text x="644" y="729" font-size="12" fill="#58A6FF">Us&#225; los botones de abajo, o respond&#233;: /unblock 6144 aprobar</text>
+
+  <text x="644" y="762" font-size="12.5" font-weight="700" fill="#E6EDF3">3 &#183; &#191;Qu&#233; quer&#233;s hacer con #6150? No tengo el dato para proponer opciones.</text>
+  <text x="644" y="778.5" font-size="12" fill="#B1BAC4">Qu&#233; est&#225; frenado: #6150 &#171;La alerta de autorreparaci&#243;n muda es indescifrable</text>
+  <text x="644" y="795" font-size="12" fill="#B1BAC4">para el operador&#187; &#8212; frenado hace 1 d 3 h.</text>
+  <text x="644" y="811.5" font-size="12" fill="#B1BAC4">Por qu&#233;: qued&#243; frenado por algo que no supe clasificar.</text>
+  <text x="644" y="828" font-size="12" fill="#D29922">Qu&#233; me falta: el motivo del bloqueo. Quien lo fren&#243; no dej&#243; texto; el dato</text>
+  <text x="644" y="844.5" font-size="12" fill="#D29922">est&#225; en la actividad reciente del issue.</text>
+  <text x="644" y="861" font-size="12" fill="#8B949E">No te propongo opciones porque no las puedo justificar.</text>
+  <text x="644" y="877.5" font-size="12" fill="#D29922">Si no decid&#237;s: queda frenado por tiempo indefinido; nada lo va a mover solo.</text>
+  <text x="644" y="894" font-size="12" fill="#58A6FF">Para decidir, respond&#233;: /unblock 6150 &lt;qu&#233; hacer&gt;</text>
+
+  <!-- teclado inline de la firma -->
+  <rect x="624" y="934" width="200" height="36" rx="8" fill="#252B33" stroke="#484F58"/>
+  <text x="724" y="957" font-size="12.5" font-weight="600" fill="#E6EDF3" text-anchor="middle">&#9989; Aprobar</text>
+  <rect x="836" y="934" width="200" height="36" rx="8" fill="#252B33" stroke="#484F58"/>
+  <text x="936" y="957" font-size="12.5" font-weight="600" fill="#E6EDF3" text-anchor="middle">&#10060; Rechazar</text>
+  <rect x="1048" y="934" width="200" height="36" rx="8" fill="#252B33" stroke="#484F58"/>
+  <text x="1148" y="957" font-size="12.5" font-weight="600" fill="#E6EDF3" text-anchor="middle">&#9999; Ajustar</text>
+  <text x="624" y="994" font-size="11" fill="#8B949E">Los botones son de la ficha 2 (la firma). Autorizaci&#243;n por identidad de quien aprieta, no por el chat.</text>
+  <text x="624" y="1012" font-size="11" fill="#6E7681">Sin negritas ni monoespaciado: texto plano expl&#237;cito. Un mensaje mal balanceado se cae y la alerta se pierde sin rastro.</text>
+
+  <text x="32" y="852" font-size="11" fill="#6E7681">Los t&#237;tulos van entre &#171;comillas&#187; y se citan tal cual: son el identificador que el operador reconoce.</text>
+  <text x="32" y="870" font-size="11" fill="#6E7681">La regla anti-jerga aplica al texto que redacta la ficha, nunca al t&#237;tulo citado.</text>
+</svg>

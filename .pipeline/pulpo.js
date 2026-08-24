@@ -599,6 +599,16 @@ const PIPELINE = process.env.PIPELINE_DIR_OVERRIDE
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 
+// #6458 - Identidad del ARRANQUE de este proceso del pulpo. Se congela al
+// cargar el modulo, igual que `PIPELINE`: dos turnos con el mismo `boot_id`
+// corrieron bajo el mismo proceso, y un `boot_id` distinto al de la ultima
+// etapa asentada delata que el pulpo murio y respawneo en el medio.
+//
+// Es una etiqueta de correlacion, NO un identificador de usuario: sale del
+// runtime (`pid` + epoch de arranque), nunca del texto del modelo ni de datos
+// del operador.
+const PULPO_BOOT_ID = `${process.pid}-${Date.now()}`;
+
 // #5924 (CA-7) — Cola de salientes de Telegram resuelta EN CADA LLAMADA.
 //
 // `PIPELINE` se congela al cargar el módulo. Los tests que requieren `pulpo.js`
@@ -4527,6 +4537,9 @@ function brazoBarrido(config) {
                   reason: motivoTxt,
                   question,
                   recommendation: recomendacionBloqueo, // #5337 CA-2
+                  // #6190 — sin esto la ficha no puede nombrar el trabajo y el
+                  // audio narra "este trabajo" en vez del número.
+                  issue, skill: skillBloq, phase: fase,
                   profile: 'need-human',
                   botToken: getTelegramToken(),
                   chatId: getTelegramChatId(),
@@ -6067,6 +6080,7 @@ function brazoBarrido(config) {
                         reason: veredicto.reason,
                         question: veredicto.question,
                         recommendation: veredicto.recommendation,
+                        issue, // #6190 — contexto de la ficha
                         profile: 'need-human',
                         botToken: getTelegramToken(),
                         chatId: getTelegramChatId(),
@@ -7557,7 +7571,9 @@ function escalarACircuitBreaker(opts, deps) {
     try {
       const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
       return hb.sendNeedHumanAudio({
-        reason: motivoTxt, question: preguntaTxt, profile: 'need-human',
+        reason: motivoTxt, question: preguntaTxt,
+        issue: issueNum, skill: skillBloq, phase, // #6190 — contexto de la ficha
+        profile: 'need-human',
         botToken: getTelegramToken(), chatId: getTelegramChatId(),
         textToSpeechWithMeta, sendVoiceTelegram,
       });
@@ -8258,39 +8274,61 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
         // trazabilidad de que el destrabe vino de GitHub y no de un `/unblock`.
         // Sin guidance: el operador destrabó quitando el label, no escribió
         // orientación, y fabricarla sería ponerle palabras que no dijo.
+        //
+        // #6448 CA-23/CA-25 — el barrido pasa a ser por TODOS los markers. La
+        // versión anterior tomaba `findBlockedMarker()` (el PRIMERO) y dejaba
+        // huérfano cualquier otro: con dos bloqueos vivos sobre la misma causa
+        // —el caso del 2026-08-24— remover el label destrabar sólo la mitad.
+        // La rama de "destino ya existe → residuo puro" (#5863) se mudó adentro
+        // del lib y ahora se aplica POR CADA MARKER, que era el riesgo real de
+        // iterar: pisar un work-file vivo con un archivo vacío.
         try {
-          const marcado = humanBlock.findBlockedMarker(parseInt(issue, 10));
-          if (marcado) {
-            // Colisión posible: estamos procesando un work-file VIVO en
-            // `pendiente/`. Si el marker bloqueado apunta al mismo destino, el
-            // rename de `unblockIssue` choca contra un archivo existente y su
-            // fallback lo reescribiría vacío — destruiría el work-file real. En
-            // ese caso el marker es un residuo puro: se borra junto a su
-            // `.reason.json` y listo, que es el mismo estado final.
-            const destino = path.join(
-              fasePath(marcado.pipeline, marcado.phase), 'pendiente', path.basename(marcado.file));
-            if (fs.existsSync(destino)) {
-              try { fs.unlinkSync(marcado.file); } catch { /* best-effort */ }
-              try { fs.unlinkSync(`${marcado.file}.reason.json`); } catch { /* puede no existir */ }
-              log('lanzamiento', `♻️ #${issue} marker residual de bloqueado-humano/ eliminado tras el destrabe en GitHub (ya había work-file vivo en ${marcado.pipeline}/${marcado.phase}/pendiente, #5863)`);
-            } else {
-              const rec = humanBlock.unblockIssue({
-                issue: parseInt(issue, 10),
-                guidance: '',
-                unlocker: 'github:label-removed',
-              });
-              if (rec && rec.ok) {
-                log('lanzamiento', `♻️ #${issue} marker de bloqueado-humano/ reconciliado tras el destrabe en GitHub (${rec.from_phase} → ${rec.to_phase}, #5863)`);
-              }
-            }
+          const rec = humanBlock.reconcileBlockedMarkers({
+            issue: parseInt(issue, 10),
+            unlocker: 'github:label-removed',
+            skillsPorFase: config.pipelines,
+          });
+          for (const r of rec.reconciled) {
+            log('lanzamiento', `♻️ #${issue} marker ${r.pipeline}/${r.phase}/${r.skill} → ${r.action} tras el destrabe en GitHub (#5863/#6448)`);
           }
-          // Sin marker previo: el caso normal cuando el label se aplicó y se
-          // removió sin que el issue llegara a bloquearse. Nada que reconciliar.
+          // Sin markers: el caso normal cuando el label se aplicó y se removió
+          // sin que el issue llegara a bloquearse. Nada que reconciliar.
         } catch (e) {
           log('lanzamiento', `[WARN] #${issue} no se pudo reconciliar el marker de bloqueado-humano/: ${e.message}`);
         }
       } else {
       const noVerificable = veredictoHumano.estado === 'NO_VERIFICABLE';
+
+      // #6448 CA-22 — UN SOLO BLOQUEO POR CAUSA.
+      //
+      // El 2026-08-24 el mismo issue quedó con dos markers vivos: uno del gate
+      // de decisión de arquitectura en `definicion`, y catorce minutos después
+      // otro acá, disparado por el label `needs-human` que había puesto el
+      // PRIMERO. Dos markers independientes sobre la misma causa: el operador
+      // ve el issue frenado dos veces en `/bloqueados`, y al destrabar uno
+      // queda huérfano.
+      //
+      // Con un bloqueo vivo, esta fase RECONOCE el existente y no crea uno
+      // nuevo. El work-file NO se mueve a propósito: moverlo crearía justamente
+      // el segundo marker que esto prohíbe. Dejarlo en `pendiente/` y saltar el
+      // despacho da el mismo efecto operativo (el issue no avanza), deja un
+      // solo bloqueo por causa, y al removerse el label el despacho se reanuda
+      // solo — sin ningún rename que pueda pisar un archivo. Es el mismo patrón
+      // que ya usa la rama `AUSENTE` de arriba.
+      //
+      // La rama `noVerificable` (#5856) queda INTACTA: el bloqueo por
+      // precaución es fail-closed y sí escribe su marker.
+      if (!noVerificable) {
+        let yaVivo = [];
+        try { yaVivo = humanBlock.listBlockedMarkers(parseInt(issue, 10)); } catch { yaVivo = []; }
+        if (yaVivo.length) {
+          const { pipeline: pVivo, phase: fVivo } = yaVivo[0];
+          log('lanzamiento', `🚧 #${issue} ya tiene bloqueo humano vivo en ${pVivo}/${fVivo} — se reconoce el existente, sin segundo marker (#6448)`);
+          _dcMark(dispatchCause.CAUSAS.HALT_HUMANO, `#${issue} bloqueado por label needs-human`);
+          continue;
+        }
+      }
+
       const blockedDir = path.join(fasePath(pipelineName, fase), 'bloqueado-humano');
       try { fs.mkdirSync(blockedDir, { recursive: true }); } catch {}
       const targetFile = path.join(blockedDir, archivo.name);
@@ -10969,8 +11007,31 @@ ${g}
     // #2801 — emit session:end para agentes Claude. Damos un pequeño delay
     // para que el writer termine de flushear el último chunk del log antes
     // de parsearlo. No bloqueamos el resto del handler.
-    if (traceHandle) {
-      setTimeout(() => {
+    // #6273 — Captura observacional post-exit para TODA corrida. Este callback
+    // se agenda desde el flujo normal de `child.on('exit')`, no desde el
+    // watchdog: así también persisten las terminaciones normales. La observación
+    // vive en el mismo scope que `session:end`, que la consume más abajo.
+    setTimeout(() => {
+      let effectiveObservation = { model: null, source: 'not_observable', observable: false };
+      try {
+        const effectiveModel = require('./lib/metrics/effective-model');
+        const agentModels = require('./lib/agent-models');
+        let configuredProvider = 'unknown';
+        try { configuredProvider = resolveSkillProvider(skill) || 'unknown'; } catch {}
+        const declared = agentModels.resolveModel(skill);
+        const capture = effectiveModel.recordEffectiveModelForRun({
+          issue, skill,
+          launchResult,
+          dispatchResolution,
+          configuredProvider,
+          logPath: path.join(LOG_DIR, `${issue}-${skill}.log`),
+          model_declared: declared && declared.model,
+          model_resolved: traceHandle && traceHandle.model,
+        });
+        effectiveObservation = capture.observed;
+      } catch { /* observabilidad best-effort: nunca altera el lifecycle */ }
+
+      if (traceHandle) {
         try {
           const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
           const tk = parseTokensFromLog(logPath);
@@ -10995,6 +11056,8 @@ ${g}
             handoff_in_tokens: handoffStats.in_tokens || 0,
             handoff_out_bytes: handoffOutBytes,
             handoff_sections_in: handoffStats.total_sections || 0,
+            model_effective: effectiveObservation.model,
+            model_effective_source: effectiveObservation.source,
           });
         } catch (e) {
           log('lanzamiento', `traceability emitSessionEnd falló para ${skill}:#${issue}: ${e.message}`);
@@ -11025,8 +11088,8 @@ ${g}
             status: code === 0 ? 'ok' : 'error',
           });
         } catch { /* best-effort, no rompe el lifecycle */ }
-      }, 500);
-    }
+      }
+    }, 500);
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
     //
@@ -13476,6 +13539,20 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       now: startTimeForAudit,
     });
 
+    // #6458 - referencia SEUDONIMIZADA (`<chat_id_hash>-<ms>`) al log de la
+    // peticion del Commander. Es el puente entre CADA entrada de audit de este
+    // turno y su canal de etapas. Se deriva UNA sola vez.
+    //
+    // PROHIBIDO emitir `_trace.commanderReqId` crudo: contiene el chat id de
+    // Telegram en claro y esta cadena la sirve el dashboard por `/logs/`.
+    const _reqRef = (_trace && _trace.commanderReqId)
+      ? commanderRequestLog.buildAuditReqRef(_trace.commanderReqId)
+      : null;
+
+    // #6458 - se escribe DE VUELTA al trace: el caller necesita el requestId del
+    // turno para la etapa `dispatch` (alla `turnRequestId` no esta en scope).
+    if (_trace) _trace.requestId = turnRequestId;
+
     // #4309 — Ejecución del fallback in-flight (revive #3578).
     //   - `inflightExecEnabled`: gate de config. Default ON: un fix no puede
     //     shippear apagado y degradar al bug viejo (detecta pero no ejecuta).
@@ -13505,6 +13582,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       log('commander', `🛡️ Patrones de prompt-injection detectados (${sanRes.hits.length}) — input recortado.`);
       try {
         commanderMP.auditCommanderRequest({
+          commanderReqId: _reqRef, // #6458 - puente al canal de etapas
           pipelineDir: PIPELINE,
           event: 'prompt_injection_attempt',
           providerIntended: 'anthropic',
@@ -13546,6 +13624,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       }
       try {
         commanderMP.auditCommanderRequest({
+          commanderReqId: _reqRef, // #6458 - puente al canal de etapas
           pipelineDir: PIPELINE,
           event: 'resolver_error',
           providerIntended: 'anthropic',
@@ -13588,6 +13667,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           log('commander', '🚫 Primario deshabilitado y sin fallback resoluble tras error del resolver — respondo canned.');
           try {
             commanderMP.auditCommanderRequest({
+              commanderReqId: _reqRef, // #6458 - puente al canal de etapas
               pipelineDir: PIPELINE,
               event: 'gated_all',
               providerIntended: 'anthropic',
@@ -13652,6 +13732,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       log('commander', `🚫 Chain de fallback agotada (chain_tried=${(resolution.chainTried || []).join('->')})`);
       try {
         commanderMP.auditCommanderRequest({
+          commanderReqId: _reqRef, // #6458 - puente al canal de etapas
           pipelineDir: PIPELINE,
           event: 'gated_all',
           providerIntended: 'anthropic',
@@ -13697,6 +13778,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         log('commander', `🟡 Modo reducido: pagos gateados (${downProviders.join(', ') || 'n/a'}) + free sano — respondo advisory sin ejecutar acciones (no spawneo el free).`);
         try {
           commanderMP.auditCommanderRequest({
+            commanderReqId: _reqRef, // #6458 - puente al canal de etapas
             pipelineDir: PIPELINE,
             event: 'reduced_mode',
             providerIntended: 'anthropic',
@@ -13991,6 +14073,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           `eslabones evaluados: ${chainEvaluated.length}; sin más providers disponibles.`);
         try {
           commanderMP.auditCommanderRequest({
+            commanderReqId: _reqRef, // #6458 - puente al canal de etapas
             pipelineDir: PIPELINE,
             event: 'fallback_chain_exhausted',
             providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14062,6 +14145,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           onSyncThrow: (provider, reason, err) => {
             try {
               commanderMP.auditCommanderRequest({
+                commanderReqId: _reqRef, // #6458 - puente al canal de etapas
                 pipelineDir: PIPELINE,
                 event: 'spawn_error',
                 providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14103,6 +14187,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             if (!safe.ok) {
               try {
                 commanderMP.auditCommanderRequest({
+                  commanderReqId: _reqRef, // #6458 - puente al canal de etapas
                   pipelineDir: PIPELINE,
                   event: 'fallback_unavailable',
                   providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14185,6 +14270,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               if (extracted.text) {
                 try {
                   commanderMP.auditCommanderRequest({
+                    commanderReqId: _reqRef, // #6458 - puente al canal de etapas
                     pipelineDir: PIPELINE,
                     event: 'fallback_used',
                     providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14208,6 +14294,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                 // flag de cuota (auth_error ≠ quota_exhausted en el detector), así
                 // que este drenado revalida SOLO `no_quota`; `invalid_credentials`
                 // no reingresa por esta vía.
+                //
+                // #6458 - GENERO != ENTREGO. Este `clearFlag` prueba UNICAMENTE
+                // que el provider volvio a generar texto (su cuota se libero).
+                // NO prueba, ni insinua, que el operador haya recibido nada.
+                // PROHIBIDO que cualquier consumidor nuevo lo lea como senal de
+                // cierre de entrega: para eso esta `delivery_state` en el audit.
                 try {
                   quotaExhausted.clearFlag({
                     event: 'success_spawn_fallback',
@@ -14225,6 +14317,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               // cadena en vez de cortar seco.
               try {
                 commanderMP.auditCommanderRequest({
+                  commanderReqId: _reqRef, // #6458 - puente al canal de etapas
                   pipelineDir: PIPELINE,
                   event: 'fallback_used',
                   providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14523,12 +14616,22 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // código tuvo éxito — eso es la salud del adapter, fuera de alcance).
       if (res && res.executed) {
         try {
+          // #6458 - ESTA es la senal que mintio en el episodio del 2026-08-24:
+          // se asentaba `success: true` porque el secundario habia GENERADO
+          // texto, sin que nadie hubiera observado la entrega al operador.
+          //
+          // Aca sabemos que el secundario fue spawneado; NO sabemos si al
+          // operador le llego algo. Asi que no se afirma nada: `success` queda
+          // en `null` (no observado) y el estado de la entrega queda explicito
+          // en `delivery_pending`. Cerrarlo es un EVENTO NUEVO
+          // (`noteFallbackDeliveryResolved`), jamas una reescritura de este.
           inflightFallback.noteInflightCompleted({
             pipelineDir: PIPELINE,
             skill: commanderMP.COMMANDER_SKILL,
             primaryProvider: 'anthropic',
             secondaryProvider: res.secondaryProvider,
-            success: true,
+            deliveryState: 'delivery_pending',
+            commanderReqId: _reqRef,
             chatId,
             requestId: turnRequestId,
           });
@@ -14657,6 +14760,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           tool_calls: toolCount,
         } : { tool_calls: toolCount };
         commanderMP.auditCommanderRequest({
+          commanderReqId: _reqRef, // #6458 - puente al canal de etapas
           pipelineDir: PIPELINE,
           event: 'dispatch',
           providerIntended: resolution.primaryProvider || 'anthropic',
@@ -15319,6 +15423,21 @@ function cmdUnblock(args) {
   const issue = Number(m[1]);
   const guidance = m[2].trim();
   if (!guidance) return '❌ La orientación no puede estar vacía.';
+
+  // #6190 — el pie de destrabe de la ficha de decisión termina con palabras
+  // ("seguido de qué querés que se haga") cuando no hay un valor concreto que
+  // proponer. Ese texto se puede copiar entero: si lo aceptáramos, quedaría
+  // persistido en `<marker>.guidance.txt` y el pulpo lo inyectaría al prompt
+  // del agente como INDICACIONES HUMANAS que nadie escribió. Se rechaza acá,
+  // que es donde entra. Lazy + try/catch: un módulo de copy nunca puede tumbar
+  // el comando de destrabe.
+  try {
+    const { esOrientacionMolde } = require('./lib/decision-card');
+    if (typeof esOrientacionMolde === 'function' && esOrientacionMolde(guidance)) {
+      return `❌ Eso es el texto del aviso, no una orientación. Contame qué querés que se haga con #${issue}.
+Ej: \`/unblock ${issue} reintentar usando la API REST\``;
+    }
+  } catch {}
 
   let humanBlock;
   try { humanBlock = require('./lib/human-block'); }
@@ -16164,7 +16283,15 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     // #3949 EP7-H2 — Etapa 1: transcripción (con eco STT). SEC-2: el eco y el
     // texto consolidado pasan por el writable sanitizado (redacción de PII /
     // credenciales dictadas por voz) antes de tocar disco.
-    requestLog.stage('transcripción', { audios: transcriptsEco.length, mensajes: textoLibre.length });
+    // #6458 - claves de correlacion: `chat_id` es el chat REAL del mensaje
+    // (no el del texto del modelo) y `boot_id` ata la etapa al arranque del
+    // pulpo que la escribio. Van al canal estructurado, no falsificable.
+    requestLog.stage('transcripción', {
+      audios: transcriptsEco.length,
+      mensajes: textoLibre.length,
+      chat_id: chatId,
+      boot_id: PULPO_BOOT_ID,
+    });
     for (let i = 0; i < transcriptsEco.length; i++) {
       requestLog.line(`🎤 eco[${i + 1}]: ${transcriptsEco[i]}`);
     }
@@ -16562,6 +16689,12 @@ ${commanderConversation}`;
       // de provider/fallback vía `_trace.resolution`. Para el path issue-creation
       // ya se usaba para el trace de tool-use; ambos coexisten sin cambios.
       const claudeTrace = {};
+      // #6458 (A2) - el puente etapas <-> audit se siembra ANTES del await:
+      // la etapa `dispatch` se escribe DESPUES de que `ejecutarClaude` retorna y
+      // en el episodio real nunca llego a escribirse. Por eso el puente primario
+      // es el audit (que se emite en vuelo), y esta semilla es lo que se lo
+      // permite. La firma de `ejecutarClaude` NO cambia.
+      claudeTrace.commanderReqId = commanderReqId;
       // #3948 (CA-5) — transición a `pensando` al entrar al dispatch LLM.
       try { if (commanderPresence) commanderPresence.updatePhase('pensando'); } catch { /* no bloqueante */ }
       skillInvocationStartedAt = Date.now();
@@ -16589,6 +16722,11 @@ ${commanderConversation}`;
       // refleja la resolución efectiva (Anthropic primario o el fallback ganador).
       requestLog.stage('dispatch', {
         intent_class: 'llm',
+        // #6458 - correlacion con el audit del turno. OJO: esta etapa se escribe
+        // DESPUES del await de arriba; si el turno muere en el LLM nunca llega a
+        // asentarse. El puente que SI sobrevive es `commander_req_id` en el
+        // audit, que se emite en vuelo.
+        request_id: claudeTrace.requestId || 'desconocido',
         provider: commanderDispatch.provider,
         cross_provider: commanderDispatch.crossProvider,
         fallback_used: commanderDispatch.fallbackUsed || 'ninguno',
@@ -17116,6 +17254,8 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       // Audit de correlación turn-level (CA-A-3).
       try {
         commanderMP.auditCommanderRequest({
+          // #6458 - puente al canal de etapas del turno, SEUDONIMIZADO.
+          commanderReqId: commanderRequestLog.buildAuditReqRef(commanderReqId),
           pipelineDir: PIPELINE,
           event: 'commander_response',
           providerEffective: 'anthropic',
@@ -17248,6 +17388,10 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         // el writable sanitizado. `enviado` indica si salió también por voz.
         requestLog.stage('envío', {
           canal: esAudio ? 'voz+texto' : 'texto',
+          // #6458 - id del saliente encolado. Es la unica clave que ata esta
+          // etapa al recibo del API de Telegram. `directo` = no hubo encolado
+          // (path sin token / fallback directo), o sea sin reconciliacion posible.
+          correlation_id: outCorrelationId || 'directo',
           voz_ok: !!enviado,
           chars: outboundText.length,
           disclaimer: sherlockDisclaimerType || 'ninguno',
@@ -17429,6 +17573,14 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     // (`data.parse_mode || 'Markdown'`) reinyectaba Markdown, dejando este flag
     // sin ningún efecto. Ver `servicio-telegram.js::resolveOutboundParseMode`.
     const payload = plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
+    // #6190 / SEC-D — sin vista previa en los salientes de texto plano. Es el
+    // dialecto de los avisos que citan texto externo (la ficha de decisión del
+    // canal de bloqueados y el canned de cuota): aunque el saneador ya
+    // neutraliza los enlaces, la previa es una segunda superficie por la que el
+    // contenido de un tercero se dibuja adentro del aviso del pipeline.
+    // Complemento defensivo: si esto se cae, el filtro sigue siendo el que
+    // protege. Ver `decision-card.js::URL_RE`.
+    if (plain) payload.disable_web_page_preview = true;
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     payload._correlationId = correlationId;
     // #6226 — Nombre único (`<ts>-<seq>-cmd.json`) + escritura `wx`. Antes eran
@@ -18144,20 +18296,108 @@ function brazoIntake(config) {
               labels: issueLabels,
             });
             if (veredicto.escalate) {
+              const nIssue = parseInt(issueNum, 10);
               const yaBloqueadoDD = humanBlock.findBlockedMarker(issueNum);
+              let final = veredicto;
+              let saltar = false;
+
               if (yaBloqueadoDD) {
-                log('intake', `#${issueNum} decisión de arquitectura ya escalada — sin re-notificar`);
-                continue;
+                // #6448 — EL CICLO CERRADO. Acá había un `continue` seco: el
+                // gate saltaba el issue porque había marker, y como lo saltaba
+                // nadie borraba el marker. Remover el label en GitHub no
+                // destrababa nada, y el issue quedaba frenado para siempre.
+                //
+                // Ahora se relee EN VIVO (#5856): sólo `AUSENTE` —lectura
+                // exitosa que confirma que el label ya no está— reconcilia.
+                // `NO_VERIFICABLE` sigue siendo fail-closed.
+                const live = _verifyHumanBlockLive(nIssue);
+                if (live.estado === 'AUSENTE') {
+                  try {
+                    const rec = humanBlock.reconcileBlockedMarkers({
+                      issue: nIssue,
+                      unlocker: 'github:label-removed',
+                      skillsPorFase: config.pipelines,
+                    });
+                    log('intake', `♻️ #${issueNum} destrabado en GitHub — ${rec.reconciled.length} marker(s) reconciliado(s) (#6448)`);
+                  } catch (e) {
+                    log('intake', `[WARN] #${issueNum} no se pudo reconciliar el bloqueo de decisión: ${e.message}`);
+                  }
+                  // SIN `continue`: el issue sigue evaluándose por el resto de
+                  // los gates, igual que la rama de deps.
+                  saltar = true;
+                } else {
+                  log('intake', `#${issueNum} decisión de arquitectura ya escalada — sin re-notificar`);
+                  continue;
+                }
+              } else {
+                // #6448 CA-12 — COSTO DE RED CONDICIONAL. Ésta es la ÚNICA
+                // llamada nueva del gate y sólo ocurre acá: cuando el detector
+                // YA decidió escalar. En el camino feliz (el 99% de los issues,
+                // sin ninguna señal) no se agrega ni una llamada, ni se carga
+                // el módulo — el `require` es lazy a propósito.
+                const io = require('./lib/design-decision-gate-io');
+                const ctx = io.fetchSignoffContext(nIssue);
+                const auditoria = io.readSignoffAudit(nIssue);   // local, sin red (A-8)
+                const firma = ctx.ok
+                  ? designDecision.evaluateArchitectSignoff({
+                      issue: nIssue, comments: ctx.comments,
+                      lastEditedAt: ctx.lastEditedAt, audit: auditoria,
+                    })
+                  // CA-14 / RS-3.1 — fail-closed del carril de firma: si no se
+                  // pudo comprobar que un humano firmó, se escala. El motivo
+                  // técnico va al log y a la traza, nunca al operador.
+                  : { settled: false, reason: `firma no verificable: ${ctx.error}`, rejected: [] };
+
+                final = designDecision.detectDesignDecision({
+                  issue: nIssue,
+                  title: issue.title || '',
+                  body: issue.body || '',
+                  labels: issueLabels,
+                  signoff: firma,
+                });
+
+                // Punto 5 — traza auditable. Sin esto no hay forma de medir
+                // cuántas veces el gate frenó de más (CA-27/CA-28).
+                io.appendGateAudit({
+                  issue: nIssue,
+                  signals: final.signals,
+                  fragment: final.fragment,
+                  signoff_present: firma.settled,
+                  signoff_reason: firma.reason,
+                  signoff_rejected: firma.rejected,
+                  signoff_corroboracion: !ctx.ok
+                    ? null
+                    : (auditoria.available ? auditoria.corroborated : 'traza-no-disponible'),
+                  escalated: final.escalate,
+                  error: ctx.ok ? null : ctx.error,
+                });
+
+                if (!ctx.ok) {
+                  log('intake', `[WARN] #${issueNum} no se pudo verificar la firma del arquitecto (se escala, fail-closed): ${ctx.error}`);
+                }
+
+                if (!final.escalate) {
+                  // UX-8 — el camino feliz es SILENCIOSO: no se le notifica
+                  // nada al operador. Un aviso de "no te molesté" es un aviso
+                  // igual. Queda en el log y en la traza, que es donde se mide.
+                  log('intake', `#${issueNum} señales de decisión (${final.signals.join(', ')}) pero hay firma del arquitecto — se deja pasar (#6448)`);
+                  saltar = true;
+                }
               }
-              log('intake', `🧭 #${issueNum} FRENA en definición — decisión de arquitectura (señales: ${veredicto.signals.join(', ')})`);
+
+              if (!saltar) {
+              log('intake', `🧭 #${issueNum} FRENA en definición — decisión de arquitectura (señales: ${final.signals.join(', ')})`);
               try {
                 humanBlock.reportHumanBlock({
-                  issue: parseInt(issueNum),
+                  issue: nIssue,
                   skill: 'definicion',
                   phase: faseEntrada,
                   pipeline: pipelineName,
-                  reason: veredicto.reason,
-                  question: veredicto.question,
+                  reason: final.reason,
+                  question: final.question,
+                  // #6448 UX-1 — la cita va en campo propio, nunca concatenada
+                  // dentro del motivo (medido: concatenada no llega nunca).
+                  evidence: final.fragment,
                   moveFromActive: false,
                 });
               } catch (e) {
@@ -18167,23 +18407,26 @@ function brazoIntake(config) {
                 // #5421 — texto plano, sin `parse_mode` (aviso crítico).
                 const summaryDD = humanBlock.buildBlockedSummaryPlain({
                   highlight: {
-                    issue: parseInt(issueNum), skill: 'definicion',
-                    reason: veredicto.reason, question: veredicto.question,
-                    recommendation: veredicto.recommendation,
+                    issue: nIssue, skill: 'definicion', phase: faseEntrada,
+                    titulo: issue.title || '',
+                    reason: final.reason, question: final.question,
+                    recommendation: final.recommendation,
+                    evidence: final.fragment,
                   },
                 });
                 let markupDD;
-                try { markupDD = humanBlock.buildBlockedActionMarkup(parseInt(issueNum)); }
+                try { markupDD = humanBlock.buildBlockedActionMarkup(nIssue); }
                 catch { markupDD = undefined; }
                 sendTelegramWithMarkup(summaryDD, markupDD || null, { plain: true });
               } catch (e) {
                 log('intake', `Error notificando decisión de arquitectura #${issueNum}: ${e.message}`);
               }
               continue; // NO entra a definición hasta que el operador decida.
+              }
             }
             // CA-4b — dejar pasar y registrar. Sólo se loguea si hubo señales
             // parciales; el caso normal (sin señales) no ensucia el log.
-            if (veredicto.signals.length) {
+            if (veredicto.signals.length && !veredicto.escalate) {
               log('intake', `#${issueNum} señales de decisión parciales (${veredicto.signals.join(', ')}) — se deja pasar`);
             }
           } catch (e) {
@@ -22322,7 +22565,11 @@ async function mainLoop() {
           const r = humanBlockReminder.runReminderTick({
             pipelineDir: PIPELINE,
             listBlocked: () => humanBlock.listBlockedIssues(),
-            sendTelegram: (texto, markup) => sendTelegramWithMarkup(texto, markup || null),
+            // #6190 — `plain: true` es el 3er argumento que le faltaba a ESTE
+            // emisor: los otros 6 ya lo mandaban. Era el último camino con el
+            // riesgo de #5421 vivo (markup desbalanceado → 400 de Telegram →
+            // recordatorio perdido sin rastro).
+            sendTelegram: (texto, markup) => sendTelegramWithMarkup(texto, markup || null, { plain: true }),
             buildMarkup: (issue) => {
               try { return humanBlock.buildBlockedActionMarkup(issue); } catch { return undefined; }
             },
@@ -22643,7 +22890,17 @@ async function mainLoop() {
       // dispara LLM ni completion — solo /v1/models. Fire-and-forget.
       try {
         const healthCron = require(path.join(PIPELINE, 'lib', 'multi-provider', 'health-cron'));
-        healthCron.tickIfDue({}).catch(e => log('mp-health', `tickIfDue error: ${e.message}`));
+        healthCron.tickIfDue({}).then((tick) => {
+          if (tick && tick.skipped) return;
+          try {
+            const effectiveModel = require(path.join(PIPELINE, 'lib', 'metrics', 'effective-model'));
+            const notify = require(path.join(PIPELINE, 'lib', 'notify-telegram')).notifyTelegram;
+            effectiveModel.evaluateDivergence({
+              config: ((config.multi_provider || {}).effective_model_audit || {}),
+              notify,
+            });
+          } catch { /* auditoría fail-soft */ }
+        }).catch(e => log('mp-health', `tickIfDue error: ${e.message}`));
       } catch (e) {
         // require puede fallar si el módulo no existe (build viejo); no es fatal.
       }

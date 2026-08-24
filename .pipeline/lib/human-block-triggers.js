@@ -462,6 +462,12 @@ module.exports = {
     CODE_FIX_PATTERNS,
     CHECK_FAIL_CONCLUSIONS,
     CHECK_PENDING_STATUSES,
+    // #6431 — `required-checks.js` clasifica los mismos estados sobre los checks
+    // REQUERIDOS del ruleset. Los enums salen de aca, no se re-escriben: dos
+    // copias de la misma tabla divergen en cuanto GitHub agrega un valor, y la
+    // que quede vieja lee ese valor como "no bloqueante" (fail-open).
+    CHECK_FAIL_STATES,
+    CHECK_PENDING_STATES,
     alertBelongsToPr,
     classifyChecks,
     normalizeCause,

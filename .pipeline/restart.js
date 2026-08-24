@@ -34,6 +34,9 @@ const { annotateAndMoveOrphans } = require('./lib/restart-orphan-annotator');
 // se resuelve vía el kernel-resolver: apunta al kernel migrado cuando el consumo
 // está habilitado, y al motor local de `.pipeline/` en coexistencia (default).
 const kernelResolver = require('./lib/kernel-resolver');
+// #6441 — la verificación post-arranque vive en un módulo importable para que
+// `node --test` la ejercite sin spawnear el pipeline entero.
+const restartVerify = require('./lib/restart-verify');
 const dropfileWriter = require('./lib/dropfile-writer');
 
 // Saneado global de JAVA_HOME — si restart.js heredó una ruta stale (ej. JBR
@@ -487,9 +490,57 @@ function freeDashboardPortOrAbort() {
 
 // --- LAUNCH ---
 
+// #6441 — Spawn de UN componente. Extraído de `launchAll()` para que el
+// reintento de la verificación post-arranque use exactamente el mismo camino
+// (REQ-SEC-6441-6): `spawn` sin shell, script resuelto contra `PIPELINE` o el
+// kernel-resolver, nombre siempre proveniente de `COMPONENTS`. Nunca se arma
+// una command line con datos externos.
+//
+// `truncarLog`: en el primer intento el log se trunca (arranque limpio); en el
+// REINTENTO se appendea, porque truncarlo borraría justo el stack que explica
+// por qué el servicio no arrancó la primera vez.
+function lanzarComponente(comp, logsDir, truncarLog) {
+  // #4664 — pulpo y dashboard son los entrypoints del motor que migraron a
+  // `core/` del kernel: se resuelven vía kernel-resolver (kernel migrado vs
+  // motor local, según coexistencia). El resto de servicios (listener/svc-*)
+  // son del adaptador y quedan en `.pipeline/`.
+  let scriptPath;
+  if (comp.name === 'pulpo' || comp.name === 'dashboard') {
+    const resolved = kernelResolver.resolveEntry(comp.name);
+    scriptPath = resolved.path;
+    if (resolved.source === 'kernel') {
+      log(`  ${comp.name}: usando kernel migrado @${resolved.version} (${scriptPath})`);
+    }
+  } else {
+    scriptPath = path.join(PIPELINE, comp.script);
+  }
+  if (!fs.existsSync(scriptPath)) return null;
+
+  const logPath = path.join(logsDir, `${comp.name}.log`);
+  if (truncarLog !== false) {
+    fs.writeFileSync(logPath, `--- restart ${new Date().toISOString()} ---\n`);
+  } else {
+    try { fs.appendFileSync(logPath, `--- reintento ${new Date().toISOString()} ---\n`); } catch {}
+  }
+  const logFd = fs.openSync(logPath, 'a');
+
+  const child = spawn(process.execPath, [scriptPath], {
+    cwd: ROOT,
+    stdio: ['ignore', logFd, logFd],
+    detached: true,
+    windowsHide: true,
+    env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules') }
+  });
+  child.unref();
+  fs.closeSync(logFd);
+  return child.pid;
+}
+
 // #5646 — Devuelve los nombres de los componentes efectivamente lanzados. El
 // caller usa ESA lista (no una constante duplicada) para bajar pendientes del
 // registro de "código viejo": lo que no se lanzó, no se desmarca.
+// #6441 — Ojo: "lanzado" es "spawneado", NO "vivo". Quién quedó realmente vivo
+// lo decide `verificarArranque()`.
 function launchAll() {
   log('=== START ===');
 
@@ -498,42 +549,89 @@ function launchAll() {
 
   const lanzados = [];
   for (const comp of COMPONENTS) {
-    // #4664 — pulpo y dashboard son los entrypoints del motor que migraron a
-    // `core/` del kernel: se resuelven vía kernel-resolver (kernel migrado vs
-    // motor local, según coexistencia). El resto de servicios (listener/svc-*)
-    // son del adaptador y quedan en `.pipeline/`.
-    let scriptPath;
-    if (comp.name === 'pulpo' || comp.name === 'dashboard') {
-      const resolved = kernelResolver.resolveEntry(comp.name);
-      scriptPath = resolved.path;
-      if (resolved.source === 'kernel') {
-        log(`  ${comp.name}: usando kernel migrado @${resolved.version} (${scriptPath})`);
-      }
-    } else {
-      scriptPath = path.join(PIPELINE, comp.script);
-    }
-    if (!fs.existsSync(scriptPath)) continue;
-
-    const logPath = path.join(logsDir, `${comp.name}.log`);
-    fs.writeFileSync(logPath, `--- restart ${new Date().toISOString()} ---\n`);
-    const logFd = fs.openSync(logPath, 'a');
-
-    const child = spawn(process.execPath, [scriptPath], {
-      cwd: ROOT,
-      stdio: ['ignore', logFd, logFd],
-      detached: true,
-      windowsHide: true,
-      env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules') }
-    });
-    child.unref();
-    fs.closeSync(logFd);
-
+    const pid = lanzarComponente(comp, logsDir, true);
+    if (pid == null) continue;
     lanzados.push(comp.name);
-    log(`  ${comp.name}: PID ${child.pid}`);
+    log(`  ${comp.name}: PID ${pid}`);
   }
 
   sleep(3000);
   return lanzados;
+}
+
+// #6441 — Sonda de liveness por IDENTIDAD, no por pid file: `findPidByComponent`
+// matchea la command line del proceso node. Un pid file rancio cuyo número fue
+// reciclado por otro proceso (le pasó a `svc-emulador.pid`) daría vivo un
+// servicio muerto.
+function componenteVivo(name) {
+  const found = findPidByComponent(name);
+  return !!(found && pidAlive(found.pid));
+}
+
+// #6441 (CA-1/CA-2) — Verifica servicio por servicio que el arranque funcionó,
+// reintenta los que no quedaron vivos y devuelve el veredicto. NO decide el exit
+// code: eso lo hace el caller, para que el punto donde el restart se declara
+// degradado sea uno solo y visible.
+//
+// @returns {{vivos:string[], muertos:string[], degradado:boolean}}
+function verificarArranque(lanzados) {
+  const logsDir = path.join(PIPELINE, 'logs');
+  log('=== VERIFICACIÓN POST-ARRANQUE ===');
+
+  // Misma clasificación que usa el barrido del watchdog: un solo lugar decide
+  // qué ausencia es un incidente. `svc-emulador` sólo corre en la ventana QA,
+  // así que su ausencia se REPORTA pero no deja el restart en degradado — si no,
+  // cada /restart terminaría avisando y el aviso dejaría de significar algo.
+  let supervisados;
+  try { supervisados = require('./lib/stale-services').SUPERVISED_COMPONENTS; }
+  catch (e) {
+    // Fail-closed: sin la clasificación, TODO cuenta. Preferimos un falso
+    // degradado antes que dejar pasar un servicio caído en silencio.
+    supervisados = undefined;
+    log(`Warning: no se pudo leer la clasificación de servicios supervisados (${(e && e.message || '').slice(0, 80)}) — se exige que levanten todos`);
+  }
+
+  invalidateCache();
+  let res = restartVerify.evaluarArranque(lanzados, componenteVivo, supervisados);
+  for (const linea of restartVerify.lineasLog(res)) log(linea);
+  if (!res.degradado) return res;
+
+  log(`Reintentando los que no levantaron: ${res.muertosSupervisados.join(', ')}`);
+  const porNombre = new Map(COMPONENTS.map(c => [c.name, c]));
+  for (const name of res.muertosSupervisados) {
+    const comp = porNombre.get(name);
+    if (!comp) continue; // nombre fuera de COMPONENTS: no se spawnea nada
+    try {
+      const pid = lanzarComponente(comp, logsDir, false);
+      log(`  ${name}: reintento PID ${pid == null ? '(script ausente)' : pid}`);
+    } catch (e) {
+      log(`  ${name}: ERROR en el reintento — ${(e && e.message || '').slice(0, 120)}`);
+    }
+  }
+  sleep(3000);
+
+  invalidateCache();
+  res = restartVerify.evaluarArranque(lanzados, componenteVivo, supervisados);
+  log('--- tras el reintento ---');
+  for (const linea of restartVerify.lineasLog(res)) log(linea);
+  return res;
+}
+
+// #6441 — Cierra el ciclo de arranque: lanza, verifica, reintenta, baja del
+// registro de "código viejo" SÓLO lo que quedó vivo (bajar un servicio que no
+// arrancó es fail-open) y deja el restart en estado degradado si algo faltó.
+function launchAllVerificado() {
+  const res = verificarArranque(launchAll());
+  limpiarPendientesRelanzados(res.vivos);
+  if (res.degradado) {
+    log(`=== RESTART DEGRADADO: no levantaron ${res.muertosSupervisados.join(', ')} ===`);
+    enqueueTelegramAlert(restartVerify.textoAlerta(res.muertosSupervisados));
+    // `process.exitCode` y NO `process.exit()`: abajo siguen el smoke test, el
+    // avance del tag y el rollback, que no se pueden cortar acá. El código de
+    // salida se materializa cuando el proceso termina solo.
+    process.exitCode = 1;
+  }
+  return res;
 }
 
 // --- SMOKE TEST + TAG pipeline-stable + AUTO-ROLLBACK ---
@@ -903,7 +1001,8 @@ switch (action) {
     // se bajan del registro de "código viejo" para que el watchdog no los
     // reinicie de nuevo un minuto después. Lo que restart.js NO lanza (p. ej.
     // `outbox-drain`) queda pendiente a propósito.
-    limpiarPendientesRelanzados(launchAll());
+    // #6441 — ahora se bajan sólo los VERIFICADOS VIVOS, no los spawneados.
+    launchAllVerificado();
     const ok = status();
     log(ok ? '=== Pipeline operativo ===' : '=== Revisar componentes ===');
 
@@ -925,7 +1024,7 @@ switch (action) {
         // rollback de más abajo: el rollback no libera un puerto ocupado, sólo
         // reproduce el loop del incidente.
         freeDashboardPortOrAbort(); // #4308/#5722
-        limpiarPendientesRelanzados(launchAll());
+        launchAllVerificado();
         sleep(5000);
         smoke = runSmokeTest();
         if (smoke.ok) log('Segundo smoke test OK tras retry — pipeline recuperado sin rollback');

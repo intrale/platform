@@ -169,6 +169,22 @@ function hashFor(s) {
 }
 
 // -----------------------------------------------------------------------------
+// #6458 - Estados de ENTREGA (no de generacion). Enum CERRADO: cualquier valor
+// fuera de este set se persiste como `null` (fail-closed), nunca crudo.
+//
+//   delivery_pending  - se genero una respuesta pero NADIE observo la entrega.
+//   delivery_observed - hay evidencia de que el operador la recibio.
+//   delivery_failed   - hay evidencia de que la entrega fallo.
+//
+// `null` (ausencia de estado) significa NO OBSERVADO: ni exito ni fallo.
+// -----------------------------------------------------------------------------
+const DELIVERY_STATES = new Set(['delivery_pending', 'delivery_observed', 'delivery_failed']);
+
+function _normalizeDeliveryState(v) {
+    return (typeof v === 'string' && DELIVERY_STATES.has(v)) ? v : null;
+}
+
+// -----------------------------------------------------------------------------
 // auditFile — mismo path que `commander/multi-provider.js#auditFile` para
 // que todos los eventos del Commander vivan en la misma cadena hash-chain
 // del día. NO usamos un archivo separado para no fragmentar la auditoría.
@@ -611,12 +627,28 @@ function decideInflightFallback(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
-// noteInflightCompleted — el caller llama acá DESPUÉS de entregar la respuesta
-// del secundario al usuario (sea exitosa o no). Emite `inflight_fallback_completed`
-// con el shape final para que el audit log refleje el outcome real.
+// noteInflightCompleted - el caller llama aca cuando el secundario termino de
+// GENERAR. Emite `inflight_fallback_completed`.
 //
-// Conviene llamarlo desde el callback final del spawn secundario,
-// independientemente del éxito (success: bool).
+// #6458 - `success` es TRI-ESTADO y NO se colapsa:
+//     true  => el caller OBSERVO un desenlace exitoso.
+//     false => el caller OBSERVO un fallo.
+//     null  => NADIE OBSERVO NADA (default cuando el caller no lo afirma).
+//
+// El bug que motiva esto: el caller del Commander pasaba `success: true` por el
+// solo hecho de que el proveedor de respaldo devolviera texto, sin que nadie
+// hubiera visto la entrega al operador. En el episodio del 2026-08-24 el turno
+// quedo asentado como exitoso y al operador no le llego nada.
+//
+// GENERAR != ENTREGAR. Para el estado de la ENTREGA esta `deliveryState`
+// (enum cerrado `DELIVERY_STATES`); `success` describe el desenlace que el
+// caller observo, no la entrega.
+//
+// REQ-SEC-7 - quien LEA estas entradas tiene prohibido decidir entrega con
+// `if (e.success)` o `if (!e.success)`: `null` no es `false`. Y el cierre de una
+// entrega es SIEMPRE un evento nuevo (`noteFallbackDeliveryResolved`), JAMAS la
+// reescritura de una entrada ya asentada - reescribir rompe el hash-chain y
+// destruye la evidencia forense.
 // -----------------------------------------------------------------------------
 function noteInflightCompleted(opts = {}) {
     const {
@@ -634,6 +666,13 @@ function noteInflightCompleted(opts = {}) {
         // registrando `telegram-commander`. Los agentes de pipeline pasan su
         // propio skill para que el audit refleje quién cayó al secundario (CA-3).
         skill,
+        // #6458 - referencia SEUDONIMIZADA al log de la peticion del Commander
+        // (`<chat_id_hash>-<ms>`, via `request-log.buildAuditReqRef`). Es el
+        // puente entre esta entrada y el canal de etapas del turno. PROHIBIDO
+        // pasar el reqId crudo: contiene el chat id de Telegram en claro.
+        commanderReqId,
+        // #6458 - estado de la ENTREGA (enum cerrado). Ausente => null.
+        deliveryState,
         // inyectables
         auditLog,
         fsImpl,
@@ -647,15 +686,69 @@ function noteInflightCompleted(opts = {}) {
             skill: skill || COMMANDER_SKILL,
             primary_provider: primaryProvider || null,
             secondary_provider: secondaryProvider || null,
-            success: !!success,
+            // #6458 - tri-estado EXPLICITO. `undefined` NO colapsa a `false`:
+            // "no observado" y "observado como fallo" son cosas distintas.
+            success: success === true ? true : (success === false ? false : null),
             secondary_duration_ms: Number.isFinite(secondaryDurationMs) ? Math.round(secondaryDurationMs) : null,
             secondary_tokens: secondaryTokens || null,
             request_id: requestId || null,
             chat_id_hash: hashFor(chatId || 'unknown'),
             cache_miss_due_to_provider_change: !!cacheMissDueToProviderChange,
+            // #6458 - campos ADITIVOS estrictamente AL FINAL del entry (mismo
+            // patron que #4413/#4438): preservan el shape canonico y la
+            // hash-chain de las entradas que no los proveen.
+            commander_req_id: commanderReqId || null,
+            delivery_state: _normalizeDeliveryState(deliveryState),
         },
     });
     return ok;
+}
+
+// -----------------------------------------------------------------------------
+// noteFallbackDeliveryResolved - #6458. EVENTO TERMINAL de la entrega.
+//
+// Emite `inflight_fallback_delivery_resolved`: la contraparte honesta de un
+// `inflight_fallback_completed` que quedo en `delivery_pending`. El cierre de
+// una entrega es un evento NUEVO, jamas una reescritura del anterior (A08:
+// reescribir romperia la hash-chain y borraria la evidencia del episodio).
+//
+// La correlacion se hace por `commander_req_id` (seudonimizado) + `request_id`.
+//
+// ACA SOLO SE DEFINE. El emisor real -el que decide si una entrega quedo
+// huerfana- es #6459. Este bloque no detecta huerfanos ni notifica a nadie.
+// -----------------------------------------------------------------------------
+function noteFallbackDeliveryResolved(opts = {}) {
+    const {
+        pipelineDir,
+        primaryProvider,
+        secondaryProvider,
+        deliveryState,
+        resolvedBy,
+        chatId,
+        requestId,
+        commanderReqId,
+        skill,
+        auditLog,
+        fsImpl,
+        now,
+    } = opts;
+
+    return _appendAudit({
+        pipelineDir, auditLog, fsImpl, now,
+        entry: {
+            event: 'inflight_fallback_delivery_resolved',
+            skill: skill || COMMANDER_SKILL,
+            primary_provider: primaryProvider || null,
+            secondary_provider: secondaryProvider || null,
+            request_id: requestId || null,
+            chat_id_hash: hashFor(chatId || 'unknown'),
+            // Quien observo el desenlace (ej. 'telegram_receipt', 'reconciler').
+            // Texto acotado: si no es string, queda null.
+            resolved_by: typeof resolvedBy === 'string' ? resolvedBy.slice(0, 64) : null,
+            commander_req_id: commanderReqId || null,
+            delivery_state: _normalizeDeliveryState(deliveryState),
+        },
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -727,6 +820,9 @@ module.exports = {
     decideInflightFallback,
     noteInflightCompleted,
     noteLateResponseDiscarded,
+    // #6458 - evento terminal de entrega (lo consume #6459) + enum cerrado.
+    noteFallbackDeliveryResolved,
+    DELIVERY_STATES,
 
     // UX copy
     formatInflightFallbackNotice,

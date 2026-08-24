@@ -22,6 +22,10 @@ const prProvenance = require('../lib/pr-provenance');
 // contra la allowlist de committers, no necesita worktree y no se duplica acá.
 const { verifyRemoteBranchOrigin } = require('../lib/worktree-resolver');
 const { classifyChecks } = require('../lib/human-block-triggers');
+// #6431 - lector/clasificador de los checks REQUERIDOS del ruleset de la rama
+// base. Se importa el modulo entero (no funciones sueltas) para que el wiring
+// de produccion arme el reader con `EXPECTED_PR_REPO` y la rama base del merge.
+const requiredChecks = require('../lib/required-checks');
 
 // #5420 — Ref desde la que se carga CODEOWNERS para el gate de merge. Fija a
 // `origin/main` a propósito: el head del PR podría estar modificando el propio
@@ -407,11 +411,24 @@ function getPRChangedPaths(prNumber) {
 
 // Enums cerrados de la API de GitHub. Cualquier valor fuera de la lista se
 // normaliza a `null` — ver `normalizeMergeState`.
+// #6431 SEC-11/A-R9 — La rama base del merge es una CONSTANTE del codigo, no
+// un dato leido del PR. `fetchRequiredContexts` la interpola en el path de
+// `rules/branches/<branch>`, y usar ahi `snapshot.headRefName` (texto que
+// controla quien abre el PR) permitiria leer las reglas de OTRO recurso.
+const MERGE_BASE_BRANCH = 'main';
+
 const MERGE_STATE_VALUES = new Set([
     'BEHIND', 'BLOCKED', 'CLEAN', 'DIRTY', 'DRAFT', 'HAS_HOOKS', 'UNKNOWN', 'UNSTABLE',
 ]);
 const PR_STATE_VALUES = new Set(['OPEN', 'CLOSED', 'MERGED']);
 const MERGEABLE_VALUES = new Set(['MERGEABLE', 'CONFLICTING', 'UNKNOWN']);
+// #6431 D-E - Enum cerrado de `reviewDecision`. `''` (lo que devuelve
+// `gh pr view --json` cuando no hay review requerida) y `null` (lo que
+// devuelve GraphQL) normalizan los dos a `null`, y ese `null` NO significa
+// "no lei": quien codifica la distincion leido/no-leido es el flag
+// estructural `reviewDecisionRead`, jamas el valor. Usar el valor como
+// senal de lectura es exactamente el defecto que D-E documenta.
+const REVIEW_DECISION_VALUES = new Set(['REVIEW_REQUIRED', 'CHANGES_REQUESTED', 'APPROVED']);
 
 // #6012 CA-1/CA-4 — Normalizador PURO del estado de mergeabilidad.
 //
@@ -432,29 +449,63 @@ function normalizeMergeState(parsed = {}) {
         mergeStateStatus: pick(src.mergeStateStatus, MERGE_STATE_VALUES),
         state: pick(src.state, PR_STATE_VALUES),
         mergeable: pick(src.mergeable, MERGEABLE_VALUES),
+        reviewDecision: pick(src.reviewDecision, REVIEW_DECISION_VALUES),
     };
 }
 
-// Campos del snapshot. `SNAPSHOT_FIELDS_LEGACY` es el fallback si el `gh`
-// instalado no conoce los campos nuevos (ver degradación más abajo).
-const SNAPSHOT_FIELDS = 'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state,statusCheckRollup';
+// Campos del snapshot, en ESCALERA de 3 niveles (#6431 R8/G7).
+//
+// Antes eran dos y el fallback era todo-o-nada: un `gh` que no conociera UN
+// campo nuevo se caia al set legacy y apagaba de golpe `mergeStateStatus`
+// (#6012) Y `statusCheckRollup` (#6384) Y `reviewDecision` (#6431). O sea: un
+// binario viejo desactivaba en silencio tres fixes de una. Con la escalera, cada
+// nivel cede SOLO lo que el `gh` no entiende.
+const SNAPSHOT_FIELDS = 'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state,statusCheckRollup,reviewDecision';
+const SNAPSHOT_FIELDS_6012 = 'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state,statusCheckRollup';
 const SNAPSHOT_FIELDS_LEGACY = 'labels,files,headRefOid,headRefName';
 
-function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR } = {}) {
+function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR, logAppend } = {}) {
+    const log = typeof logAppend === 'function' ? logAppend : () => {};
     const view = (fields) => ghImpl(
         ['pr', 'view', String(prNumber), '--json', fields],
         { cwd, timeoutMs: 60 * 1000 },
     );
     let res;
+    let nivel = 1;
+    // #6012 — Degradación explícita: un `gh` viejo que no conozca alguno de los
+    // campos nuevos sale != 0 con "Unknown JSON field". Sin fallback, ese `gh`
+    // bloquearía TODAS las entregas (riesgo ALTO identificado por el arquitecto).
+    //
+    // #6431 R8/G7 — La degradación es DIRIGIDA, no ciega. `gh` dice EN EL ERROR
+    // qué campo no conoce, así que se salta directo al nivel que lo suelta en
+    // vez de bajar peldaño por peldaño:
+    //   - no conoce `reviewDecision`  → nivel 2 (conserva #6012 y #6384);
+    //   - no conoce `mergeStateStatus`/`statusCheckRollup` → nivel 3 directo.
+    // Antes de esto el fallback era todo-o-nada: un `gh` que no entendiera UN
+    // campo apagaba de golpe tres fixes. Y bajar de a un peldaño gastaría una
+    // llamada de más contra un binario que ya sabemos que no soporta el nivel 2.
+    const campoDesconocido = (r) => {
+        if (!r || r.exit_code === 0) return null;
+        const texto = `${r.stderr || ''}\n${r.stdout || ''}`;
+        if (!/unknown\s+json\s+field/i.test(texto)) return null;
+        const m = texto.match(/unknown\s+json\s+field:?\s*"?([A-Za-z]+)"?/i);
+        return (m && m[1]) || 'desconocido';
+    };
     try {
         res = view(SNAPSHOT_FIELDS);
-        // #6012 — Degradación explícita: un `gh` viejo que no conozca alguno de
-        // los campos nuevos sale != 0 con "Unknown JSON field". Sin este
-        // fallback, ese `gh` bloquearía TODAS las entregas (riesgo ALTO
-        // identificado por el arquitecto). Al reintentar con el set legacy, los
-        // campos quedan ausentes y el clasificador cae en su default
-        // terminal = exactamente el comportamiento previo a este issue.
-        if (res && res.exit_code !== 0 && /unknown\s+json\s+field/i.test(`${res.stderr || ''}\n${res.stdout || ''}`)) {
+        // #6431 CA-UX-5 — La degradación NUNCA es muda. Sin estos logs, un `gh`
+        // viejo apaga el fix en silencio y nadie se entera de por qué volvieron
+        // los `needs-human`.
+        let campo = campoDesconocido(res);
+        if (campo && /^reviewDecision$/i.test(campo)) {
+            nivel = 2;
+            log('[delivery] gate merge: snapshot degradado a nivel 2 (sin reviewDecision) — la review no se puede leer, la rama BLOCKED escala fail-closed; #6012 y #6384 siguen activos');
+            res = view(SNAPSHOT_FIELDS_6012);
+            campo = campoDesconocido(res);
+        }
+        if (campo) {
+            nivel = 3;
+            log(`[delivery] gate merge: snapshot degradado a nivel 3 (el gh instalado no conoce ${codeowners.sanitizeRefReason(campo, 40)}) — clasificación de checks deshabilitada, comportamiento previo a #6012`);
             res = view(SNAPSHOT_FIELDS_LEGACY);
         }
     } catch (e) {
@@ -500,9 +551,30 @@ function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR } = {}) {
 
     return {
         ok: true, labels, files, headRefOid, headRefName,
-        statusCheckRollup: parsed.statusCheckRollup,
+        // #6384/#6431 — Disciplina de dos valores: `null` = "no lo leí" (el `gh`
+        // no conoce el campo, o degradamos de nivel), `[]` = "lo leí y está
+        // vacío" (el commit todavía no tiene ningún check instanciado: la
+        // ventana ciega exacta del episodio). Colapsarlos haría que el pre-check
+        // de #6431 dispare sobre snapshots degradados, que es lo contrario de
+        // lo que queremos.
+        statusCheckRollup: Array.isArray(parsed.statusCheckRollup) ? parsed.statusCheckRollup : null,
+        // #6431 D-E — Flag ESTRUCTURAL de lectura. Sólo el nivel 1 de la
+        // escalera trae `reviewDecision`; en los niveles 2 y 3 el campo ni
+        // siquiera se pidió, así que su ausencia no dice NADA sobre la review —
+        // y leerla como "no hay review pendiente" sería reportar un "faltan
+        // aprobaciones" real como carrera de CI (A-R12).
+        reviewDecisionRead: nivel === 1,
+        snapshotFieldsLevel: nivel,
         ...normalizeMergeState(parsed),
     };
+}
+
+// #6431 — Fabrica del lector de checks requeridos, aislada para que el test de
+// wiring pueda verificar que produccion la usa. `baseBranch` sale de la
+// constante del merge (SEC-11) y `repo` de `EXPECTED_PR_REPO`, nunca de un
+// campo devuelto por GitHub.
+function buildRequiredChecksReader({ cwd = WORK_DIR, repo = EXPECTED_PR_REPO, baseBranch = MERGE_BASE_BRANCH } = {}) {
+    return requiredChecks.createRequiredChecksReader({ cwd, repo, baseBranch });
 }
 
 function applyNeedsHumanLabel(issue, prNumber, owners, repoRoot) {
@@ -616,18 +688,92 @@ function classifyMergeFailure(res = {}, ctx = {}) {
             };
         }
         if (mergeState === 'BLOCKED') {
-            const checks = classifyChecks(ctx.statusCheckRollup);
-            if (checks.state === 'pending') {
+            // #6431 A-4 — `ctx.requiredChecks` es el veredicto YA calculado por
+            // `lib/required-checks.js` (las lecturas impuras viven en
+            // `attemptMergeWithGates`; esta funcion sigue siendo pura y sincrona).
+            //
+            // Presente => decide EN EXCLUSIVA. `classifyChecks` NO se consulta:
+            // dos clasificadores para la misma rama es el defecto que G3 marco,
+            // y la forma en que se manifiesta es concreta — con el rollup
+            // poblado, `classifyChecks` cortaria antes y el cotejo de app
+            // (SEC-2, el control de seguridad entero) se saltearia.
+            //
+            // Ausente => camino legacy de #6384, byte por byte. Eso es lo que
+            // mantiene `delivery-merge-6347.test.js` verde sin tocarlo (T19) y
+            // la suite sin red (el reader tiene default `null`, A-2).
+            const rc = ctx.requiredChecks;
+            if (!rc || typeof rc !== 'object' || typeof rc.verdict !== 'string') {
+                const checks = classifyChecks(ctx.statusCheckRollup);
+                if (checks.state === 'pending') {
+                    return {
+                        conflict: false, retryable: true, kind: 'checks-in-flight',
+                        httpStatus, confirmed: false, checks, blockedByRuleset: true,
+                        reason: 'required_checks_in_flight',
+                    };
+                }
                 return {
-                    conflict: false, retryable: true, kind: 'checks-in-flight',
-                    httpStatus, confirmed: false, checks, reason: 'required_checks_in_flight',
+                    conflict: false, retryable: false, kind: 'gate-block', httpStatus, confirmed: false,
+                    gate: checks.state === 'failing' ? 'checks-failing' : 'branch-protection',
+                    checks, blockedByRuleset: true,
+                    reason: `http_${httpStatus}_blocked_checks_${checks.state}`,
                 };
             }
-            return {
+
+            const gateBlock = (gate, reason) => ({
                 conflict: false, retryable: false, kind: 'gate-block', httpStatus, confirmed: false,
-                gate: checks.state === 'failing' ? 'checks-failing' : 'branch-protection',
-                checks, reason: `http_${httpStatus}_blocked_checks_${checks.state}`,
-            };
+                gate, requiredChecks: rc, reason,
+            });
+
+            // ORDEN ESTRICTO (3.c). La review se evalua ANTES que los checks, y
+            // la LECTURA de la review antes que su valor.
+            //
+            // (1) CA-10/A-R12 — Si `reviewDecision` no se pudo leer (escalera
+            //     degradada a nivel 2 o 3), un "faltan aprobaciones" real es
+            //     indistinguible de "no hay review pendiente". Sin lectura no se
+            //     entra JAMAS al camino transitorio.
+            if (ctx.reviewDecisionRead !== true) {
+                return gateBlock('branch-protection-unreadable', `http_${httpStatus}_blocked_review_no_leida`);
+            }
+            // (2) CA-4 — Una review faltante escala aunque haya checks pendientes:
+            //     esperar por la CI no va a hacer aparecer una aprobacion humana.
+            const reviewDecision = normalizeMergeState(ctx).reviewDecision;
+            if (reviewDecision === 'REVIEW_REQUIRED' || reviewDecision === 'CHANGES_REQUESTED') {
+                return gateBlock('branch-protection-review', `http_${httpStatus}_blocked_review_${reviewDecision.toLowerCase()}`);
+            }
+            // (3) A-R6/CA-20 — No se pudo evaluar el requerido (ruleset ilegible,
+            //     truncamiento, homonimo de otra app, estado fuera del enum, head
+            //     movido). Fail-closed con la causa, nunca un gate-block mudo.
+            if (rc.verdict === 'unusable') {
+                return gateBlock('branch-protection-unreadable', `http_${httpStatus}_blocked_requeridos_${rc.cause || 'ilegibles'}`);
+            }
+            // (4) Un requerido en rojo. Esperar no lo va a poner en verde.
+            if (rc.verdict === 'blocking') {
+                return gateBlock('branch-protection-checks-red', `http_${httpStatus}_blocked_check_en_rojo`);
+            }
+            // (5) EL DELTA DE #6431. Un requerido que todavia no reporto: es una
+            //     carrera con la CI, no un control ejerciendose. El `kind` y el
+            //     `reason` conservan el nombre de #6384 a proposito — cambia la
+            //     implementacion, no el contrato (D-B/G3); renombrarlos obligaria
+            //     a editar `delivery-merge-6347.test.js`, que T19 prohibe.
+            if (rc.verdict === 'pending') {
+                return {
+                    conflict: false, retryable: true, kind: 'checks-in-flight',
+                    httpStatus, confirmed: false, requiredChecks: rc,
+                    reason: 'required_checks_in_flight',
+                };
+            }
+            // (6) CA-5 — TODOS los requeridos en verde y GitHub igual dice
+            //     BLOCKED => hay OTRO control ejerciendose que no deja rastro en
+            //     el rollup. Verificados tres activos en `main`:
+            //     `required_review_thread_resolution`,
+            //     `require_extra_approval_for_unattributed_changes` y
+            //     `copilot_code_review`. Nunca cae al camino transitorio.
+            if (rc.verdict === 'green') {
+                return gateBlock('branch-protection-other', `http_${httpStatus}_blocked_requeridos_verdes`);
+            }
+            // Veredicto desconocido (el enum crecio y esta funcion no se
+            // actualizo): fail-closed, jamas "asumo que se puede esperar".
+            return gateBlock('branch-protection-unreadable', `http_${httpStatus}_blocked_veredicto_desconocido`);
         }
         if (mergeState === 'DRAFT') {
             return {
@@ -700,7 +846,17 @@ const MAX_MERGEABILITY_WAITS = 6;
 // intento). Queda muy por debajo del timeoutMs de 3 min del propio PUT.
 const MERGEABILITY_BACKOFF_MS = [1000, 2000, 4000, 8000, 8000, 8000];
 const DEFAULT_MERGE_CHECKS_TIMEOUT_MS = 6 * 60 * 1000;
-const CHECKS_BACKOFF_MS = [15000, 30000, 60000];
+// #6431 D-C — Backoff propio del camino de checks requeridos. Los valores
+// arrancan CORTOS a proposito: el episodio se resolvia en 19 segundos, y el
+// backoff viejo ([15s, 30s, 60s]) gastaba la primera espera entera en una
+// ventana que ya se habia cerrado. Suma ~104 s de techo total por invocacion.
+const CHECKS_BACKOFF_MS = [2000, 4000, 8000, 15000, 15000, 30000, 30000];
+// #6431 CA-15 — Presupuesto DURO de esperas por checks, en enteros. La
+// terminacion del bucle deja de depender del wall-clock: con
+// `mergeChecksTimeoutMs: Infinity` el loop igual termina aca. Es el cuarto
+// presupuesto independiente, junto a MAX_MERGE_ATTEMPTS, MAX_MERGEABILITY_WAITS
+// y el propio `mergeChecksTimeoutMs`.
+const MAX_CHECKS_WAITS = 7;
 
 function loadMergeChecksTimeoutMs() {
     try {
@@ -781,6 +937,16 @@ function attemptMergeWithGates({
     sleepImpl = sleepSync,
     maxMergeabilityWaits = MAX_MERGEABILITY_WAITS,
     mergeChecksTimeoutMs = loadMergeChecksTimeoutMs(),
+    // #6431 A-2 — Lector de los checks REQUERIDOS del ruleset. Default `null`
+    // a proposito, y es una decision de diseno, no una omision:
+    //   - con `null`, la rama BLOCKED cae al comportamiento de #6384, que es lo
+    //     que mantiene `delivery-merge-6347.test.js` verde SIN tocarlo (T19);
+    //   - un default REAL haria que toda suite que no inyecte nada saliera a la
+    //     red contra `gh` (A-R4).
+    // El wiring de produccion SIEMPRE lo inyecta y hay un test que lo verifica.
+    // Cuando falta, se loguea: la desactivacion nunca es silenciosa (CA-20).
+    requiredChecksReader = null,
+    maxChecksWaits = MAX_CHECKS_WAITS,
     // Resultado del pre-check local `git merge-tree`. SÓLO se usa para loguear
     // la contradicción con el servidor — nunca para decidir (CA-7).
     mergeTreeClean = false,
@@ -791,9 +957,37 @@ function attemptMergeWithGates({
         ? maxMergeabilityWaits
         : MAX_MERGEABILITY_WAITS;
     const sleep = typeof sleepImpl === 'function' ? sleepImpl : sleepSync;
-    const checksTimeoutMs = Number.isFinite(mergeChecksTimeoutMs) && mergeChecksTimeoutMs >= 0
+    // `Infinity` es un valor VALIDO aca (CA-15): sirve para probar que el bucle
+    // termina por `MAX_CHECKS_WAITS` y no por el reloj. `NaN` no lo es.
+    const checksTimeoutMs = typeof mergeChecksTimeoutMs === 'number' && mergeChecksTimeoutMs >= 0
         ? mergeChecksTimeoutMs
         : DEFAULT_MERGE_CHECKS_TIMEOUT_MS;
+    const checksWaitsMax = Number.isInteger(maxChecksWaits) && maxChecksWaits >= 0
+        ? maxChecksWaits
+        : MAX_CHECKS_WAITS;
+    const leerRequeridos = typeof requiredChecksReader === 'function'
+        ? (snapshot) => {
+            // Toda excepcion o forma inesperada del lector es `unusable`, nunca
+            // "no hay control": un lector roto no puede relajar el gate.
+            let rc;
+            try {
+                rc = requiredChecksReader({ prNumber, headRefOid: snapshot.headRefOid });
+            } catch (e) {
+                rc = { verdict: 'unusable', cause: 'lector-excepcion', pending: [], failing: [], green: [] };
+            }
+            if (!rc || typeof rc !== 'object' || typeof rc.verdict !== 'string') {
+                rc = { verdict: 'unusable', cause: 'lector-forma-inesperada', pending: [], failing: [], green: [] };
+            }
+            if (Array.isArray(rc.logLines)) rc.logLines.forEach((l) => log(String(l)));
+            return rc;
+        }
+        : null;
+    if (!leerRequeridos) {
+        // CA-20/CA-UX-5 — Sin lector, la rama BLOCKED no puede distinguir "el
+        // check todavia no reporto" de "un control se esta ejerciendo", y todo
+        // BLOCKED escala como antes de #6431. Queda dicho.
+        log('[delivery] gate merge: sin lector de checks requeridos inyectado — la rama BLOCKED se clasifica con el rollup del snapshot (comportamiento #6384)');
+    }
 
     let attempt = 0;
     let waits = 0;
@@ -855,6 +1049,34 @@ function attemptMergeWithGates({
             return { status: 'blocked', gate: 'provenance', reason, snapshot, attempt };
         }
 
+        // (5a) #6431 A-3 — Pre-check de checks requeridos, ANTES del PUT.
+        //
+        // Dispara SOLO con `statusCheckRollup === []` — leido y vacio, que es la
+        // ventana ciega EXACTA del episodio (a t+4 s GitHub todavia no instancio
+        // ningun check). Con el rollup poblado no dispara: el camino post-405 lo
+        // cubre igual, a costa de un 405 extra. Dos razones para acotarlo asi:
+        // ahorra dos lecturas de API en el caso comun, y preserva la secuencia
+        // de sleeps que `delivery-merge-6347.test.js` assertea.
+        //
+        // NUNCA BLOQUEA (D3): cualquier veredicto que no sea `pending` cae al
+        // PUT y decide GitHub. Este pre-check solo puede DEMORAR el merge, no
+        // impedirlo — si se equivoca, el peor caso es una espera de mas.
+        if (leerRequeridos
+            && Array.isArray(snapshot.statusCheckRollup)
+            && snapshot.statusCheckRollup.length === 0) {
+            const rc = leerRequeridos(snapshot);
+            if (rc.verdict === 'pending' && checksWaits < checksWaitsMax && checksWaitedMs < checksTimeoutMs) {
+                const backoff = CHECKS_BACKOFF_MS[Math.min(checksWaits, CHECKS_BACKOFF_MS.length - 1)];
+                const delay = Math.min(backoff, checksTimeoutMs - checksWaitedMs);
+                checksWaits++;
+                checksWaitedMs += delay;
+                log(`[delivery] gate merge: requeridos pendientes [${(rc.pending || []).join(', ')}] — espera ${delay}ms (${checksWaits}/${checksWaitsMax}) y reevaluación completa de gates`);
+                sleep(delay);
+                attempt--;  // la espera NO consume presupuesto de gates (CA-8)
+                continue;
+            }
+        }
+
         // (5b) #6012 CA-2 — Espera pre-merge. Si GitHub todavía está calculando
         //      la mergeabilidad, disparar el PUT ahora produce el 405 que este
         //      issue vino a arreglar. Mejor esperar y reevaluar TODO que pegarle
@@ -884,11 +1106,33 @@ function attemptMergeWithGates({
             return { status: 'blocked', gate: 'merge-unconfirmed', reason: confirmed.reason, snapshot, attempt };
         }
 
-        const classification = classifyMergeFailure(mergeRes, {
+        let classification = classifyMergeFailure(mergeRes, {
             mergeStateStatus: snapshot.mergeStateStatus,
             state: snapshot.state,
             statusCheckRollup: snapshot.statusCheckRollup,
         });
+
+        // #6431 3.d.2 — Reclasificacion post-405. La primera pasada corre SIN
+        // `requiredChecks` (pura, con lo que ya estaba en el snapshot); si dio
+        // BLOCKED y hay lector, recien ahi se paga la lectura de red y se
+        // vuelve a clasificar con el veredicto autoritativo.
+        //
+        // El `headRefOid` va PINNEADO del snapshot VIGENTE (CA-11) — nunca
+        // `main` ni un ref simbolico. Si el head se movio entre el snapshot y
+        // esta lectura, la regla 4 del clasificador lo detecta (`oid !==
+        // headRefOid`) y devuelve `unusable`: no se reabre la ventana TOCTOU
+        // que cerro #5420.
+        if (classification.blockedByRuleset === true && leerRequeridos) {
+            const rc = leerRequeridos(snapshot);
+            classification = classifyMergeFailure(mergeRes, {
+                mergeStateStatus: snapshot.mergeStateStatus,
+                state: snapshot.state,
+                statusCheckRollup: snapshot.statusCheckRollup,
+                reviewDecision: snapshot.reviewDecision,
+                reviewDecisionRead: snapshot.reviewDecisionRead,
+                requiredChecks: rc,
+            });
+        }
 
         // #6012 CA-7 — El pre-check local corre contra el `origin/main` que
         // tenga el worktree, que puede estar viejo. Si contradice al servidor,
@@ -917,16 +1161,47 @@ function attemptMergeWithGates({
         }
 
         if (classification.kind === 'checks-in-flight') {
+            // ORDEN DELIBERADO (D-D). "Presupuesto agotado => transient" (CA-16)
+            // y "el `checks-timeout` de #6384 sigue intacto" (T19) son
+            // incompatibles si se implementan literal. Se resuelve por
+            // PRECEDENCIA, no por compromiso:
+            //
+            //   1o el contador duro de esperas  -> transient
+            //   2o el techo de wall-clock       -> checks-timeout (INTACTO)
+            //   3o esperar y reevaluar
+            //
+            // Con los defaults (104 s de backoff vs 360 s de techo) el contador
+            // corta SIEMPRE primero, asi que produccion sale por `transient` y
+            // nunca mas escala por esta causa. `checks-timeout` queda alcanzable
+            // solo con la config bajada — que es exactamente lo que hace
+            // `delivery-merge-6347.test.js` (`mergeChecksTimeoutMs: 20`), y por
+            // eso esa suite sigue verde sin tocarse.
+
+            // (1) CA-16 — Presupuesto propio agotado. NO escala: el resultado es
+            //     transitorio y reintentable. Cero mensajes al operador (C6):
+            //     no se le notifica un evento sobre el que no puede hacer nada.
+            if (checksWaits >= checksWaitsMax) {
+                const pendientes = (classification.requiredChecks && classification.requiredChecks.pending)
+                    || (classification.checks && classification.checks.pending)
+                    || [];
+                log(`[delivery] gate merge: requeridos siguen pendientes tras ${checksWaits} esperas — resultado TRANSITORIO (no escala)`);
+                return {
+                    status: 'transient', causa: 'checks-pending', pendientes,
+                    classification, checksWaits, checksWaitedMs, mergeRes, snapshot, attempt,
+                };
+            }
+            // (3) Esperar y reevaluar los 6 gates sobre snapshot fresco (CA-14).
             if (checksWaitedMs < checksTimeoutMs) {
                 const backoff = CHECKS_BACKOFF_MS[Math.min(checksWaits, CHECKS_BACKOFF_MS.length - 1)];
                 const delay = Math.min(backoff, checksTimeoutMs - checksWaitedMs);
                 checksWaits++;
                 checksWaitedMs += delay;
-                log(`[delivery] gate merge: checks requeridos en curso — espera ${delay}ms (${checksWaitedMs}/${checksTimeoutMs}ms) y reevaluación completa de gates`);
+                log(`[delivery] gate merge: checks requeridos en curso — espera ${delay}ms (${checksWaits}/${checksWaitsMax}, ${checksWaitedMs}/${checksTimeoutMs}ms) y reevaluación completa de gates`);
                 sleep(delay);
                 attempt--;
                 continue;
             }
+            // (2) Techo de wall-clock. Camino de #6384, sin cambios.
             const minutes = Math.round((checksWaitedMs / 60000) * 10) / 10;
             const reason = `la CI no terminó en ${minutes} minutos; los checks requeridos siguen corriendo`;
             log(`[delivery] gate merge: ${reason} — escala como timeout de CI`);
@@ -1039,8 +1314,38 @@ function buildConflictMotivo({ prNumber, branch, httpStatus, confirmed = false }
 // esas cadenas lo enrutaría como bloqueo humano en vez de rebote técnico — o
 // sea, reintroduciría exactamente el `needs-human` que este issue elimina.
 // Hay un test que lo verifica contra `isHumanBlockReason`.
-function buildTransientMergeMotivo({ prNumber, waits } = {}) {
+//
+// #6431 — Parametrizado por `causa`. Con la causa ausente el texto es BYTE A
+// BYTE el de #6012 (`delivery-merge-6012.test.js` lo assertea), asi que la
+// variante nueva es puramente aditiva.
+function buildTransientMergeMotivo({ prNumber, waits, causa = 'mergeability-unknown', pendientes = [] } = {}) {
     const pr = prNumber ? `PR #${prNumber}` : 'el PR';
+    if (causa === 'checks-pending') {
+        // Copy C1 de `.pipeline/assets/docs/6423/ux-copy-6423.md`, PEGADO TAL
+        // CUAL y verificado contra `isHumanBlockReason` (CA-UX-1).
+        //
+        // Antes de tocar una coma, corre el test: UX verifico empiricamente que
+        // CINCO redacciones naturales del mismo hecho matchean
+        // HUMAN_BLOCK_PATTERNS y reintroducen el `needs-human` que este issue
+        // viene a eliminar. Prohibido: "merge bloqueado", "requiere intervencion
+        // humana", "review manual", "ruleset de main ... exige/bloquea/impide",
+        // "PR #N pendiente ... merge".
+        //
+        // El cierre ("No hay defecto de dev ... sin cambios de codigo") es
+        // IDENTICO al de `mergeability-unknown` a proposito: es la frase que le
+        // dice al dev que no busque un bug suyo, y las dos causas transitorias
+        // tienen que sonar a la misma familia.
+        const esperasChecks = Number.isInteger(waits) && waits > 0 ? waits : MAX_CHECKS_WAITS;
+        const lista = Array.isArray(pendientes) && pendientes.length
+            ? pendientes.map((c) => sanitizeGateText(String(c), 80)).join(', ')
+            : 'sin reportar';
+        return (
+            `Checks requeridos todavía sin reportar en ${pr}: GitHub respondió 405 con estado `
+            + `BLOCKED porque el control automático [${lista}] seguía corriendo `
+            + `tras ${esperasChecks} esperas escalonadas (~104 s). No hay defecto de dev ni evidencia `
+            + `de integración sucia: la entrega se reintenta tal cual, sin cambios de código.`
+        );
+    }
     const esperas = Number.isInteger(waits) && waits > 0 ? waits : MAX_MERGEABILITY_WAITS;
     return (
         `Estado de merge transitorio de GitHub en ${pr}: mergeStateStatus siguió en UNKNOWN `
@@ -1228,7 +1533,20 @@ const GATE_BLOCK_LABELS = {
     // está acá: "No es un conflicto de merge: el PR puede estar perfecto…".
     // La acción que se le pide al operador es la de SU estado — aprobar/esperar
     // checks o sacar el draft, no resolver un conflicto que no existe.
-    'branch-protection': 'la protección de rama (ruleset de main) exige una aprobación humana (los checks están en verde o no pudieron leerse)',
+    'branch-protection': 'la protección de rama bloquea el merge (control no identificado)',
+    // #6431 C2/CA-UX-2 — Desdoble por control OBSERVADO. Se elimina el "o"
+    // disyuntivo ("faltan reviews *o* checks"): post-fix el codigo ya sabe cual
+    // de los dos es, y seguir diciendo "o" es esconder informacion que el
+    // sistema tiene. Cada texto nombra UNA causa.
+    //
+    // La key generica `branch-protection` SOBREVIVE como fallback: el camino
+    // legacy (sin lector inyectado) la sigue emitiendo, y
+    // `GATE_BLOCK_LABELS[gate] || ...` no puede quedar sin destino si manana
+    // aparece un veredicto nuevo.
+    'branch-protection-checks-red': 'un check requerido terminó en rojo y la protección de rama frena el merge',
+    'branch-protection-review': 'falta la review requerida por la protección de rama',
+    'branch-protection-other': 'los checks requeridos están en verde pero la protección de rama sigue frenando el merge (hilo de review sin resolver, revisión de Copilot o commit sin atribuir)',
+    'branch-protection-unreadable': 'no se pudo leer la lista de checks requeridos de la protección de rama',
     'checks-failing': 'hay checks requeridos en rojo',
     'checks-timeout': 'la CI no terminó dentro del techo de espera (los checks requeridos siguen corriendo)',
     'pr-draft': 'el PR está en borrador (draft) y GitHub no permite mergearlo',
@@ -1682,7 +2000,7 @@ async function main() {
                 'pr', 'create',
                 '--title', issueTitle,
                 '--body-file', bodyFile,
-                '--base', 'main',
+                '--base', MERGE_BASE_BRANCH,
                 '--head', branch,
                 '--assignee', 'leitolarreta',
                 '--label', qaLabel,
@@ -1733,10 +2051,15 @@ async function main() {
             const outcome = attemptMergeWithGates({
                 prNumber,
                 logAppend,
+                // #6431 A-2 — El wiring de produccion SIEMPRE inyecta el lector.
+                // El default `null` de la funcion existe solo para que las
+                // suites viejas no salgan a la red; que produccion lo inyecte es
+                // lo que hace que el fix exista, y hay un test que lo verifica.
+                requiredChecksReader: buildRequiredChecksReader(),
                 // #6012 CA-7 — El pre-check ya calculado se reusa SÓLO para
                 // loguear la contradicción con el servidor. No reclasifica nada.
                 mergeTreeClean: mergeCheck.supported === true && mergeCheck.mergeable === true,
-                getSnapshot: (n) => getPRSnapshot(n),
+                getSnapshot: (n) => getPRSnapshot(n, { logAppend }),
                 // #2652 + #5420 — CODEOWNERS desde origin/main, NO del worktree
                 // local (que puede estar podado) ni del head del PR (que podría
                 // estar modificando el propio CODEOWNERS para saltearse el gate).
@@ -1860,8 +2183,21 @@ async function main() {
                 // error técnico, acotado por el circuit breaker de 3 rebotes
                 // (que es el tope explícito que pide CA-10 — no se re-encola sin
                 // rev++, eso esquivaría el breaker y ciclaría quemando cuota).
-                logAppend(`[delivery] gh api merge → estado transitorio (${outcome.waits} esperas, mergeStateStatus=UNKNOWN) — rebote técnico, sin escalar al operador`);
-                throw new Error(buildTransientMergeMotivo({ prNumber, waits: outcome.waits }));
+                // #6431 CA-18/SEC-12 — El `throw` (y con el, el rebote tecnico
+                // acotado por el circuit breaker de 3) SE QUEDA. Mientras #6432
+                // no exista, ese rebote es la unica red que mantiene visible un
+                // BLOCKED real: sacarlo seria perdida neta de observabilidad
+                // frente al estado actual, no el fix.
+                const causaTransient = outcome.causa === 'checks-pending' ? 'checks-pending' : 'mergeability-unknown';
+                logAppend(causaTransient === 'checks-pending'
+                    ? `[delivery] gh api merge → estado transitorio (${outcome.checksWaits} esperas, checks requeridos sin reportar) — rebote técnico, sin escalar al operador`
+                    : `[delivery] gh api merge → estado transitorio (${outcome.waits} esperas, mergeStateStatus=UNKNOWN) — rebote técnico, sin escalar al operador`);
+                throw new Error(buildTransientMergeMotivo({
+                    prNumber,
+                    waits: causaTransient === 'checks-pending' ? outcome.checksWaits : outcome.waits,
+                    causa: causaTransient,
+                    pendientes: outcome.pendientes || [],
+                }));
             } else if (outcome.status !== 'merged') {
                 // Fallo genérico (infra: red, auth, 5xx): rebote técnico legítimo.
                 const mergeRes = outcome.mergeRes || {};
@@ -2048,6 +2384,14 @@ module.exports = {
     CHECKS_BACKOFF_MS,
     loadMergeChecksTimeoutMs,
     buildTransientMergeMotivo,
+    // #6431 — clasificacion de checks REQUERIDOS del ruleset (no del rollup).
+    MAX_CHECKS_WAITS,
+    SNAPSHOT_FIELDS,
+    SNAPSHOT_FIELDS_6012,
+    SNAPSHOT_FIELDS_LEGACY,
+    REVIEW_DECISION_VALUES,
+    MERGE_BASE_BRANCH,
+    buildRequiredChecksReader,
     // #4658 — detección de conflicto real + escalado fail-closed.
     classifyMergeFailure,
     shouldEscalateLocalMerge,
