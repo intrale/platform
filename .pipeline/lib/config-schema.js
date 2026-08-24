@@ -191,6 +191,10 @@ const SIDE_MAP = Object.freeze({
     // #5337 — cadencia del recordatorio de bloqueos humanos. Es mecanismo del
     // pipeline (cuándo insiste), no política de producto.
     human_block_reminder: 'kernel',
+    // #6118 — cuándo se chequean las dependencias faltantes y cuánto dura el
+    // silencio del aviso. Es mecanismo del pipeline (cada cuánto insiste), no
+    // política de producto.
+    partial_pause_deps: 'kernel',
     cost_anomaly_alert: 'kernel',
     ghostbusters_cron: 'kernel',
     rest_mode: 'kernel',
@@ -409,6 +413,12 @@ const SCHEMA = {
         precheck: OBJ(),
         anomaly_detector: OBJ(),
         human_block_reminder: OBJ(),   // #5337 CA-5
+        // #6118 CA-13 — cadencia y ventana de silencio del aviso de
+        // dependencias faltantes. El Pulpo ya leía `config.partial_pause_deps`
+        // desde #2893, pero la sección nunca se había declarado: con la raíz
+        // cerrada (#5173), escribirla en `config.yaml` sin esta línea tiraba
+        // ConfigSchemaViolation y dejaba al pipeline sin arrancar.
+        partial_pause_deps: OBJ(),
         cost_anomaly_alert: OBJ(),
         ghostbusters_cron: OBJ(),
         rest_mode: OBJ(),
