@@ -33,12 +33,15 @@
  * SEC-6 / R-8 — la resolucion es POR PATRON, no por enumeracion: el proximo
  * `PULPO_SKIP_*` que alguien agregue nace ya cubierto por el control.
  *
+ * Los patrones son case-insensitive porque `process.env` en Windows tambien lo
+ * es: una clave en minusculas no puede evadir el control y habilitar su alias.
+ *
  * @type {ReadonlyArray<RegExp>}
  */
 const SECURITY_CONTROL_VARS = Object.freeze([
-    /^PULPO_SKIP_[A-Z0-9_]+$/,              // PULPO_SKIP_DATA_RESIDENCY_VALIDATE, PULPO_SKIP_SECRETS_HALT, ...
-    /^PULPO_NO_[A-Z0-9_]+$/,                // PULPO_NO_AUTOSTART y los que vengan
-    /^[A-Z0-9_]*GATE[0-9A-Z_]*_ENABLED$/,   // PIPELINE_GATE0_ENABLED, QUOTA_SNAPSHOT_GATE_ENABLED, ...
+    /^PULPO_SKIP_[A-Z0-9_]+$/i,              // PULPO_SKIP_DATA_RESIDENCY_VALIDATE, PULPO_SKIP_SECRETS_HALT, ...
+    /^PULPO_NO_[A-Z0-9_]+$/i,                // PULPO_NO_AUTOSTART y los que vengan
+    /^[A-Z0-9_]*GATE[0-9A-Z_]*_ENABLED$/i,   // PIPELINE_GATE0_ENABLED, QUOTA_SNAPSHOT_GATE_ENABLED, ...
 ]);
 
 /**

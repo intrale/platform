@@ -359,8 +359,16 @@ test('CA-6258-10 · tampoco filtra el centinela por los paths de error GENERICOS
 
 test('CA-6258-11 · un PULPO_SKIP_* que NO existe hoy en el repo ya nace cubierto', () => {
     assert.strictEqual(isSecurityControlVar('PULPO_SKIP_FOO_BAR'), true);
+    assert.strictEqual(isSecurityControlVar('pulpo_skip_foo_bar'), true);
     assert.strictEqual(isSecurityControlVar('PULPO_NO_INVENTADA_2199'), true);
     assert.strictEqual(isSecurityControlVar('PIPELINE_INVENTADO_GATE_ENABLED'), true);
+});
+
+test('CA-6258-11 · el casing de Windows no permite evadir SEC-7', () => {
+    assert.throws(
+        () => withEnv({ pulpo_skip_data_residency_validate: '1' }, () => {}),
+        /pulpo_skip_data_residency_validate/,
+    );
 });
 
 test('CA-6258-11 · los 7 nombres de control reales del inventario matchean', () => {
@@ -382,6 +390,7 @@ test('CA-6258-11 · nombres corrientes NO quedan atrapados por el patron', () =>
     for (const n of ['PIPELINE_DIR_OVERRIDE', 'PATH', 'NODE_PATH', 'PIPELINE_STATE_DIR', 'GATEWAY_URL', '']) {
         assert.strictEqual(isSecurityControlVar(n), false, `${n} no deberia ser variable de control`);
     }
+    assert.strictEqual(isSecurityControlVar('pipeline_dir_override'), false);
     assert.strictEqual(isSecurityControlVar(undefined), false);
     assert.strictEqual(isSecurityControlVar(123), false);
 });
