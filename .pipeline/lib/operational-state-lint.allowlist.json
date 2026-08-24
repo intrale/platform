@@ -22,7 +22,7 @@
     {
       "file": "pulpo.js",
       "anchor": "const PAUSE_FILE = path.join(PIPELINE, '.paused');",
-      "line": 18286,
+      "line": 18315,
       "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -el fallback de setFullPause- y el seam de test SEC-3 (#4832). Version estructural: #6104."
     }
   ]
