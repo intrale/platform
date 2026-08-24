@@ -35,6 +35,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const dropfileWriter = require('./lib/dropfile-writer');
 
 const PIPELINE_DIR = path.resolve(__dirname);
 const DEFAULT_DEDUP_FILE = path.join(PIPELINE_DIR, 'dedup-connectivity.json');
@@ -399,10 +400,37 @@ function defaultSendTelegramMessage(text, opts, injected) {
   const fsMod = (injected && injected.fs) || fs;
   const dropDir = (opts && opts.dropDir) || DEFAULT_TELEGRAM_DROP_DIR;
   try { fsMod.mkdirSync(dropDir, { recursive: true }); } catch { /* exists */ }
-  const name = `notifier-${Date.now()}-${process.pid}.json`;
-  const filepath = path.join(dropDir, name);
-  writeJsonAtomic(filepath, { text, parse_mode: 'MarkdownV2' }, injected);
-  return { droppedAt: filepath };
+  // #6226 - este productor encolaba `notifier-${Date.now()}-${process.pid}.json`
+  // con `writeJsonAtomic` (tmp + rename, que SOBREESCRIBE sin error). El `pid`
+  // es constante dentro del proceso, asi que el unico desempate era el
+  // milisegundo... y `notify()` llama a este sender DOS veces en el mismo tick
+  // (mensaje principal + alerta global de rate limit de TTS): el segundo pisaba
+  // al primero y el operador recibia uno solo, en silencio. Es la MISMA cola y
+  // la MISMA clase de bug que motivo el issue.
+  //
+  // Se migra al esquema canonico de la cola (`<ts>-<seq>-<sufijo>`, ver
+  // `lib/dropfile-writer.js`): el `seq` desempata dentro del milisegundo y el
+  // flag `wx` deja la escritura fail-closed ante colision entre procesos.
+  //
+  // El `pid` se conserva AL FINAL del nombre a proposito:
+  // `telegram-burst-grouper.js::extractPidFromFilename` lo deriva con
+  // `/-(\d+)\.json$/`, y hoy este productor SI agrupa por pid. Con el sufijo
+  // `notifier-<pid>.json` sigue matcheando en todos los casos (tambien tras una
+  // colision), asi que el agrupamiento de bursts queda intacto.
+  //
+  // El `mode: 0o600` replica el permiso que ponia `writeJsonAtomic`: el payload
+  // es texto para el operador y no debe aflojarse al migrar.
+  const { filePath } = dropfileWriter.writeDropfileSync({
+    dir: dropDir,
+    suffix: `notifier-${process.pid}.json`,
+    data: JSON.stringify({ text, parse_mode: 'MarkdownV2' }, null, 2),
+    fsImpl: fsMod,
+    mode: 0o600,
+    onCollision: (name, attempt) => console.warn(
+      `[notifier-infra-recovered] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+    ),
+  });
+  return { droppedAt: filePath };
 }
 
 /**

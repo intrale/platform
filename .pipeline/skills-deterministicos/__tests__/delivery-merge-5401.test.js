@@ -234,7 +234,7 @@ test('#5420/#6012 — getPRSnapshot: labels, files, head, rama y estado de merge
     assert.deepEqual(calls[0].argv.slice(0, 4), ['pr', 'view', '777', '--json']);
     assert.equal(
         calls[0].argv[4],
-        'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state',
+        'labels,files,headRefOid,headRefName,mergeable,mergeStateStatus,state,statusCheckRollup',
         '#6012 CA-1: el estado de mergeabilidad viaja en la MISMA llamada que los gates',
     );
     // El PR de este fixture no devolvió los campos nuevos: se normalizan a null

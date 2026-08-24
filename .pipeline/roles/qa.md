@@ -162,6 +162,7 @@ test_cases_source: "definition" | "qa-fallback"
 Si hay defecto:
 ```yaml
 resultado: rechazado
+gravedad: grave         # grave | leve — ver "Gravedad del rechazo" abajo
 motivo: "Descripcion clara del defecto encontrado"
 criterios_fallidos: ["TC-01: ...", "TC-03: ..."]
 ```
@@ -350,6 +351,7 @@ Si hay defecto:
 ```yaml
 resultado: rechazado
 veredicto: failed
+gravedad: grave         # grave | leve — ver "Gravedad del rechazo" abajo
 motivo: "Descripcion clara del defecto encontrado"
 evidencia: "qa/evidence/<issue>/qa-<issue>.mp4"
 screenshot: "qa/evidence/<issue>/qa-<issue>-defecto.png"
@@ -476,3 +478,24 @@ El Pulpo clasifica cada rechazo como **accionable** o **ruido** (`lib/observatio
 - Sugerencia de mejora futura sin defecto verificable → issue separado, no rechazo.
 
 Regla práctica: si no podés señalar el frame/request/CA exacto que falla, probablemente sea ruido. Adjuntá siempre la evidencia concreta del defecto.
+
+## Gravedad del rechazo (#6296) — campo obligatorio
+
+Cuando rechazás, el pipeline **no espera a un humano**: tu campo `gravedad`
+decide el destino. Ver `_base.md` → "Campo `gravedad` en los rechazos".
+
+El campo es `gravedad`, **no `severidad`**: el gate ignora `severidad` y un
+rechazo que la use sale `grave` por fail-closed.
+
+| Gravedad | Cuándo |
+|---|---|
+| `grave` | Un criterio de aceptación **no se cumple** en la app o la API, la app crashea, un flujo queda bloqueado, o la evidencia muestra un defecto funcional. |
+| `leve` | Observación cosmética que **no rompe ningún CA**: un espaciado, un texto que podría decirse mejor, un detalle visual menor sin impacto de uso. |
+
+Reglas:
+
+- **Cualquier `criterios_fallidos` no vacío ⇒ `grave`.** Un CA que falla nunca
+  es leve, por chico que parezca el síntoma.
+- `veredicto: failed` con gravedad `leve` es una contradicción: si fallaste el
+  QA, es `grave`.
+- Ausente o ilegible ⇒ se trata como `grave` (fail-closed). Ante duda, `grave`.

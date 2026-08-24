@@ -16,10 +16,12 @@
 //     ROOT,            // ruta al repo (para resolveDeterministicScript)
 //     onWorktreeHit,   // callback opcional: invocado si el script determ. viene del worktree
 //     onLog,           // callback opcional para warnings (firma compatible con `log`)
+//     config,          // #6272: config.yaml completa (sólo se lee pipeline.model_propagation)
 //     // inyectables (tests):
 //     fsImpl, spawnImpl, execSyncImpl, resolveImpl,
 //   });
-//   // result = { child, provider, model, source, scriptPath?, handler, warning? }
+//   // result = { child, provider, model, source, scriptPath?, handler, warning?,
+//   //            modelPropagation? }
 //
 // **Invariantes preservados** (regresión cero corriendo solo Anthropic — CA-4):
 //   I1: skills determinísticos siempre con shell:false.
@@ -31,6 +33,10 @@
 //       on-exit handler, emit traceability, fast-fail/cooldown, mover archivo.
 //   I6: detector de quota agotada y parseo de tokens delega al `handler`
 //       devuelto, así que cada provider trae su propia implementación.
+//   I7 (#6272): la propagación del modelo al hijo está detrás de
+//       `pipeline.model_propagation`, APAGADA por default. Con el flag apagado
+//       ni `args` ni `env` se tocan y el objeto que recibe `child_process.spawn`
+//       es byte-idéntico al previo. El modo `dry-run` sólo loguea.
 //
 // **Rollout reversible**: si un skill determinístico no tiene script en disco
 // (caso "borré builder.js para volver al LLM" #2476), launchAgent cae al
@@ -45,6 +51,8 @@ const { spawn } = require('node:child_process');
 
 const { resolveProviderForSkill, resolvePermissionMode, readAgentModels } = require('./agent-launcher/resolve-provider');
 const permissionValidator = require('./permission-validator');
+// #6272 — política pura de propagación del modelo resuelto al proceso hijo.
+const modelPropagation = require('./model-propagation');
 const skillsMetadata = require('./skills-metadata');
 const PROVIDERS = {
     anthropic: require('./agent-launcher/providers/anthropic'),
@@ -109,6 +117,10 @@ function launchAgent({
     env,
     PIPELINE,
     ROOT,
+    // #6272 — config completa de `config.yaml` (el pulpo ya la tiene en mano).
+    // Sólo se lee `pipeline.model_propagation`; ausente ⇒ propagación 'off'
+    // (kill-switch), que es el default de rollout y preserva regresión cero.
+    config,
     onWorktreeHit,
     onLog,
     // inyectables para tests
@@ -277,11 +289,80 @@ function launchAgent({
         }
     }
 
+    // #6272 — Propagación del modelo resuelto al proceso hijo.
+    //
+    // Este es el ÚNICO punto del pipeline donde conviven las tres cosas que hacen
+    // falta: el provider EFECTIVO (ya resuelto el fallback de la cadena), el
+    // modelo de ESE provider (`effective.model`) y el env final del hijo (`env`,
+    // que el pulpo ya construyó por cualquiera de sus dos caminos —
+    // `buildChildEnv` con env-isolation prendido, o `stripReservedChildSecrets`
+    // con el flag apagado, que es el default vigente). Inyectar acá, y no dentro
+    // de `buildChildEnv`, evita que CA-2 quede como código muerto: hoy ningún
+    // agente pasa por esa rama (`pipeline.env_isolation_enabled: false`).
+    //
+    // Que el provider sea el EFECTIVO también cierra el 2º Gherkin: en una caída
+    // a un proveedor de respaldo, `effective` viene del `resolveImpl` que inyecta
+    // el pulpo con `dispatchResolution.{provider,model}`, así que se propaga el
+    // modelo del respaldo y NUNCA el del primario.
+    //
+    // La decisión es pura (`lib/model-propagation.js`); acá sólo se aplica y se
+    // emite la traza. Con el flag apagado (default) `apply` es false y `trace`
+    // null: ni `args` ni `env` se tocan, y el objeto que recibe
+    // `child_process.spawn` es byte-idéntico al previo (CA-4).
+    //
+    // El try/catch NO es decorativo: este bloque corre en el camino crítico de
+    // TODO spawn. Un bug acá no puede dejar al pipeline sin lanzar agentes, así
+    // que el fail-safe es "no propagar" (= comportamiento previo al issue),
+    // nunca "no spawnear".
+    let propagation;
+    try {
+        propagation = modelPropagation.plan({
+            provider: effective.provider,
+            skill,
+            model: effective.model,
+            config,
+            // Thunk, no valor: con el flag apagado (default de rollout) la
+            // política corta antes y NO se paga la lectura de agent-models.json
+            // en cada spawn.
+            agentModels: () => readAgentModels(PIPELINE, _fs),
+        });
+    } catch (e) {
+        log('agent-launcher', `⚠️ ${skill}:#${issue} la política de propagación de modelo falló `
+            + `(${e && e.message}); sigo SIN propagar (comportamiento previo). El spawn NO se aborta.`);
+        propagation = { mode: 'off', modeSource: 'error', target: 'none', envVar: null,
+            model: null, rejectedReason: null, configError: null, apply: false, trace: null };
+    }
+    if (propagation.trace) {
+        // Mismo canal y mismo formato `skill:#issue` que ya usa este archivo — el
+        // operador scanea por ese patrón; no introducimos prefijo nuevo. El emoji
+        // es señal secundaria: el texto se entiende sin él (tail sin color / Telegram).
+        const icono = propagation.configError ? '🛑' : (propagation.apply ? '🎛️' : '⚠️');
+        log('agent-launcher', `${icono} ${skill}:#${issue} ${propagation.trace}`);
+    }
+
+    // Canal `env`: copia superficial del env del hijo con la var del provider
+    // activo. Se hace una COPIA (no mutación) para no contaminar el objeto que el
+    // caller pueda reusar, y sólo cuando efectivamente se aplica.
+    const spawnEnv = (propagation.apply && propagation.target === 'env' && propagation.envVar)
+        ? { ...env, [propagation.envVar]: propagation.model }
+        : env;
+
     const spawnDef = handler.buildSpawn({
-        args, cwd, env,
+        args, cwd, env: spawnEnv,
         // #3605 — Opt-in por skill+provider. Default false preserva I3.
         interactive_supported: effective.interactive_supported === true,
+        // Canal `arg`: el handler agrega `['--model', id]` como elementos
+        // separados. La clave se omite salvo que se aplique, para que el input de
+        // `buildSpawn` sea idéntico al legacy con el flag apagado.
+        ...((propagation.apply && propagation.target === 'arg') ? { model: propagation.model } : {}),
     });
+    // #6272 — el handler es la última frontera antes de argv y revalida el id por
+    // su cuenta (defensa en profundidad). Si ahí lo rechazó, dejamos traza: sin
+    // esto un desacuerdo entre las dos validaciones sería invisible.
+    if (spawnDef.modelTrace && spawnDef.modelTrace.applied === false) {
+        log('agent-launcher', `⚠️ ${skill}:#${issue} el handler ${effective.provider} descartó el flag --model `
+            + `(razón: ${spawnDef.modelTrace.reason}); el agente arranca con el default del CLI. El spawn NO se aborta.`);
+    }
     const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
 
     // #4529 — payload grande (system foldeado + prompt) por STDIN, no por argv:
@@ -327,6 +408,9 @@ function launchAgent({
         scriptPath: null,
         handler,
         interactive_supported: effective.interactive_supported === true,
+        // #6272 — decisión de propagación, para que el caller pueda auditar
+        // "modelo declarado vs efectivamente propagado" sin re-derivarla (#6273).
+        modelPropagation: propagation,
     };
 }
 

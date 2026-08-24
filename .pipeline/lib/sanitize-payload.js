@@ -54,8 +54,8 @@ function sanitizeTelegramPayload(data) {
 
 // -----------------------------------------------------------------------------
 // GITHUB QUEUE
-// Acciones: `comment`, `label`, `remove-label`, `create-issue`.
-// Campos sanitizables: `body` (comment + create-issue), `title` (create-issue).
+// Acciones: `comment`, `pr-comment` (#6296), `label`, `remove-label`, `create-issue`.
+// Campos sanitizables: `body` (comment / pr-comment / create-issue), `title` (create-issue).
 // Los `label` son identifiers que no deberían traer secretos; los sanitizamos
 // igual (defensa en profundidad) pero devuelven copia idéntica en el 99% de
 // los casos.

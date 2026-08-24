@@ -1,22 +1,29 @@
 {
   "_doc": "Allowlist del operational-state-lint (#5175, parte 1 de 3 de #5109). NACE VACIA A PROPOSITO (CA-10) y deberia seguir asi: el sustrato del envoltorio (lib/operational-state.js, lib/waves.js, lib/partial-pause.js) y el propio guardrail estan exentos POR SCOPE via SELF_EXEMPT en codigo, y la convencion test-*.js de la raiz de .pipeline/ queda fuera POR REGLA DE SCOPE en walkJs — no por excepcion (D2/R2). Este archivo esta en .github/CODEOWNERS: agregar una entry requiere review humano de @leitolarreta.",
   "_shape_doc": {
-    "files": "Exencion de ARCHIVO ENTERO. Entries { file, reason }. Desvio deliberado del template ghost-artifact-lint.allowlist.json, que acepta strings pelados y documenta la razon aparte en un _files_doc que puede desincronizarse: una exencion mas amplia que { file, line, reason } no puede tener MENOS justificacion (CA-5). Preferir SIEMPRE una entry de `rules`.",
-    "rules": "Excepcion PUNTUAL. Entries { file, line, reason }. `file` es relativo a .pipeline/ (ej: lib/foo.js). `line` entero >= 1.",
+    "files": "Exencion de ARCHIVO ENTERO. Entries { file, reason }. Desvio deliberado del template ghost-artifact-lint.allowlist.json, que acepta strings pelados y documenta la razon aparte en un _files_doc que puede desincronizarse: una exencion mas amplia que { file, anchor, reason } no puede tener MENOS justificacion (CA-5). Preferir SIEMPRE una entry de `rules`.",
+    "rules": "Excepcion PUNTUAL, anclada por CONTENIDO desde #6106. Entries { file, anchor, reason } (+ `line` y `occurrence` opcionales). `file` es relativo a .pipeline/ (ej: lib/foo.js). `anchor` es la LINEA DE CODIGO exenta, EN CLARO: el guardrail la compara contra el archivo real tras normalizar CRLF/CR a LF y colapsar whitespace horizontal, asi que la firma es identica en el checkout Windows (core.autocrlf=true) y en el runner Linux de Actions.",
+    "anchor": "NO la escribas a mano. Genera la entry lista para pegar con `node .pipeline/lib/operational-state-lint.js --anchor=<archivo>:<linea>` y completa la `reason`. El ancla va en claro (no hasheada) a proposito: el reviewer de CODEOWNERS tiene que poder responder 'que acceso estoy autorizando' leyendo SOLO este JSON, sin salir del diff. Un hash opaco degradaria el review a 'confio en el dev', que es el mismo problema de autorizacion que #6106 vino a cerrar, movido de lugar.",
+    "line": "OPCIONAL e INDICATIVA desde #6106 — solo alimenta los mensajes y le da al reviewer un punto de referencia. NO participa del match: puede quedar desactualizada tras cualquier refactor y eso NO rompe nada. Antes era el ancla y era el bug: la entry de pulpo.js tuvo que re-apuntarse a mano en #6238, #6144, #6226, #5110, #6179, #6296 y en el merge de main de #6118.",
+    "occurrence": "OPCIONAL, entero >= 1. Unica forma de desambiguar un ancla que matchea VARIAS lineas del mismo archivo, y siempre EXPLICITA (CA-3): si el ancla matchea N>1 sin `occurrence`, el guardrail sale con exit 2 y NADIE queda exento. Desempatar solo extenderia en silencio a N call sites una exencion aprobada para uno — el mismo pecado que #6106 cierra, entrando por otra puerta.",
     "reason": "Obligatoria y real. El guardrail sale con exit 2 si esta ausente, vacia, es un placeholder (TODO/FIXME/TBD/wip/...), o empieza con '::' (workflow command de GitHub Actions — SEC-3). Se sanitiza de control chars y se trunca a 200 chars. OJO: esa validacion cubre ESTE campo, no la clase de amenaza 'texto del repo -> log de Actions'. La garantia de que ninguna linea emitida arranque con '::' la da el SINK (oneLineSink, aplicado en defaultLogger y en el camino de violations), no este campo.",
-    "no_hacer": "Sin excepciones amplias por carpeta (CA-5). Si el caso no cabe en { file, line, reason }, el problema es el matcher o la superficie publica del envoltorio, no la allowlist: ver docs/pipeline/contrato-estado-operativo.md §7."
+    "shape_viejo": "El shape { file, line, reason } (anclaje por numero de linea, sin `anchor`) se RECHAZA con exit 2, no se acepta en transicion. Aceptarlo mantendria vivo el falso negativo que motiva #6106 — la exencion migrando sola al acceso que caiga en esa coordenada — y las dos entries existentes se migraron en el MISMO commit, asi que no hay ventana que cubrir. Una clave desconocida dentro de una entry de `rules` tambien sale por exit 2: un `ancla`/`linea` mal tipeado se comeria la excepcion en silencio.",
+    "estado_de_las_anclas": "Si un ancla no matchea ninguna linea (excepcion OBSOLETA), matchea varias sin `occurrence` (AMBIGUA), o el `occurrence` queda fuera de rango, el guardrail lo REPORTA — nunca queda mudo, que era el estado que antes no se distinguia de 'excepcion viva'. Comportamiento por modo: `--check` sale con exit 2 (es error de CONFIGURACION del control, no violation del codigo auditado, que seria exit 1); `--report-only` avisa con prefijo AVISO: y sale 0; `--report` sale 0 y publica el detalle en la tabla 'Estado de las excepciones' (ese modo es la salida de diagnostico que el workflow publica con if: always(), su contrato es exit 0 SIEMPRE). Con `--only` (el hook pasa los staged) los diagnosticos se filtran por archivo igual que las violations, para que nadie quede bloqueado por una entry rota en un archivo que no toco; CI corre SIN `--only`.",
+    "no_hacer": "Sin excepciones amplias por carpeta (CA-5). Si el caso no cabe en { file, anchor, reason }, el problema es el matcher o la superficie publica del envoltorio, no la allowlist: ver docs/pipeline/contrato-estado-operativo.md §7."
   },
   "files": [],
   "rules": [
     {
       "file": "lib/desync-detector.js",
+      "anchor": "const wavesPath = path.join(pipelineDir(), 'waves.json');",
       "line": 122,
       "reason": "#5176 A-2: el detector necesita distinguir 'sin active_wave' (null, NO es desync) de 'ola vacia' ([]), no puede lanzar ante waves.json corrupto y no debe disparar la alerta dedupada de waves.getAllowlist (#3616). Ningun lector del envoltorio cumple las tres. Version estructural: #5191."
     },
     {
       "file": "pulpo.js",
-      "line": 18077,
-      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -- :12733 es el fallback de setFullPause -- y el seam de test SEC-3 (#4832). Estructural: #6104. Linea reubicada de 17827 a 18077 por los bloques observacionales de #6238 y #6273 (mismo call site, sin cambio de semantica)."
+      "anchor": "const PAUSE_FILE = path.join(PIPELINE, '.paused');",
+      "line": 18286,
+      "reason": "#5179 D3: const de modulo PAUSE_FILE (21 refs), no un call site. Lo usan 3 halts de ultimo recurso -el fallback de setFullPause- y el seam de test SEC-3 (#4832). Version estructural: #6104."
     }
   ]
 }

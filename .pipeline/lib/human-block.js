@@ -20,6 +20,8 @@
 
 const fs = require('fs');
 const path = require('path');
+// #6226 - escritura fail-closed de dropfiles.
+const dropfileWriter = require('./dropfile-writer');
 const trace = require('./traceability');
 const { redactAll } = require('./sherlock-audit-jsonl');
 // #5337 CA-6 — discriminador compartido "recomendación de agente" vs "bloqueo real".
@@ -39,10 +41,17 @@ function enqueueNeedsHumanLabel(issue) {
     try {
         fs.mkdirSync(GH_QUEUE_DIR, { recursive: true });
         const filename = `${issue}-${NEEDS_HUMAN_LABEL}-block-${Date.now()}.json`;
-        fs.writeFileSync(
-            path.join(GH_QUEUE_DIR, filename),
-            JSON.stringify({ action: 'label', issue: Number(issue), label: NEEDS_HUMAN_LABEL }),
-        );
+        // #6226 - escritura fail-closed: dos bloqueos del mismo issue en el
+        // mismo milisegundo resolvian al mismo path y el segundo pisaba al
+        // primero. Se conserva el nombre; solo ante colision se desambigua.
+        dropfileWriter.writeUniqueFileSync({
+            dir: GH_QUEUE_DIR,
+            filename,
+            data: JSON.stringify({ action: 'label', issue: Number(issue), label: NEEDS_HUMAN_LABEL }),
+            onCollision: (name, attempt) => console.warn(
+                `[human-block] colision de nombre de orden github (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
         return true;
     } catch {
         return false;
@@ -156,6 +165,23 @@ function reasonFilePath(blockedFile) {
 
 function guidanceFilePath(targetDir, marker) {
     return path.join(targetDir, marker + '.guidance.txt');
+}
+
+/**
+ * #6296 SEC-A — canal de guidance de origen AGENTE, separado del humano.
+ *
+ * El `.guidance.txt` lo escribe un OPERADOR autenticado y `pulpo.js` lo inyecta
+ * al prompt bajo el header "INDICACIONES HUMANAS … NO la ignores". Con el carril
+ * de rebote automático de #6296 el productor deja de ser un humano y pasa a ser
+ * un agente que CITA texto de issues/PRs de terceros. Reusar el mismo archivo le
+ * daría a ese texto autoridad de operador: escalada de privilegio por artefacto.
+ *
+ * Por eso la extensión es distinta y NO hay forma de confundirlos ni por
+ * accidente: son dos lecturas separadas, con dos headers separados, y el header
+ * de este declara explícitamente que NO es autoritativo.
+ */
+function guidanceAgentFilePath(targetDir, marker) {
+    return path.join(targetDir, marker + '.guidance.agent.txt');
 }
 
 // #4748 — Precondición del freeze. Dos tipos:
@@ -1087,4 +1113,7 @@ module.exports = {
     // conocer un segundo módulo sólo para filtrar ruido.
     isRecommendationIssue,
     normalizeLabelNames,
+    // #6296 SEC-A — canales de guidance: humano (autoritativo) vs agente (dato).
+    guidanceFilePath,
+    guidanceAgentFilePath,
 };

@@ -54,7 +54,33 @@ Si el linter pasó, esos puntos **están OK**. No los repitas ni los revalidés.
 ### Resultado
 
 - `resultado: aprobado` con resumen del review (qué está bien, riesgos residuales si los hay)
-- `resultado: rechazado` con lista concreta de cambios requeridos (con archivo:línea cuando aplique)
+- `resultado: rechazado` con lista concreta de cambios requeridos (con archivo:línea cuando aplique) **más el campo `gravedad`**
+
+### Gravedad del rechazo (#6296) — campo obligatorio
+
+Cuando rechazás, el pipeline **no espera a un humano**: usa tu campo `gravedad`
+para decidir el destino. `grave` devuelve el issue a `dev`; `leve` no frena y
+queda como observación en el PR. **Ausente o ilegible ⇒ `grave`** (fail-closed).
+Ver `_base.md` → "Campo `gravedad` en los rechazos".
+
+Escala para `review`:
+
+| Gravedad | Cuándo |
+|---|---|
+| `grave` | Bug real, violación de un patrón obligatorio del proyecto (strings, loggers, manejo de errores en `Do*`), problema de arquitectura, o cualquier cambio requerido antes de mergear. |
+| `leve` | Nit de naming/formato/comentarios que no bloquea el merge y que igual valía la pena decir. |
+
+**Ojo con el vocabulario homónimo**: en tu reporte ya usás "severidad" para
+clasificar cada hallazgo por separado, con una escala propia no binaria
+(`critical|high|medium|low`). Ese uso sigue siendo válido **dentro del reporte**.
+El campo del YAML es otro y se llama `gravedad`: la gravedad **del veredicto
+completo**, con sólo dos valores (`grave|leve`), y es el único que rutea. **El
+gate ignora `severidad`**: un `severidad: media` no declara nada y el rechazo
+sale `grave` por fail-closed. Si tenés un hallazgo grave y tres leves, el
+veredicto es `gravedad: grave`.
+
+Un cambio que vas a exigir antes de aprobar es `grave` por definición. Si es algo
+que aprobarías igual, es `leve` — y entonces preguntate si corresponde rechazar.
 
 ## Protocolo de oportunidades de mejora (aplicable en fase aprobacion)
 

@@ -183,10 +183,39 @@ test('#5923 un callback_data que se pasa de 64 bytes se cae, no rompe el envío'
 
 test('#5923 acción sin issue emite callback_data de 2 segmentos', () => {
     const r = btn.buildActionKeyboard(
-        [[{ action: 'cancel-partial-pause', text: '🔓 Levantar la pausa parcial' }]],
+        [[{ action: 'keep-original', text: '🎯 Seguir sin las dependencias' }]],
         { callbackPrefix: 'pp', hostAllowlist: [] },
     );
-    assert.equal(r.markup.inline_keyboard[0][0].callback_data, 'pp:cancel-partial-pause');
+    assert.equal(r.markup.inline_keyboard[0][0].callback_data, 'pp:keep-original');
+});
+
+// #6118 — El teclado de la alerta de dependencias faltantes: tres filas de un
+// botón, sin el de alcance global, y todo dentro del límite de la Bot API.
+// El `callback_data` es lo que limita el diseño: las dependencias NO entran en
+// 64 bytes, por eso el tap sólo lleva el issue y el servidor deriva el resto.
+test('#6118 el teclado de la alerta emite 3 filas de 1 botón y entra en 64 bytes', () => {
+    const copy = require('../partial-pause-deps-copy');
+    const issue = 6033;
+    const labels = copy.buildButtonLabels({ issue, deps: [6032, 6031, 6030], muteTtlMs: 24 * 3600 * 1000 });
+    const r = btn.buildActionKeyboard([
+        [{ action: 'include-deps-for-issue', text: labels['include-deps-for-issue'], issue }],
+        [{ action: 'keep-original',          text: labels['keep-original'],          issue }],
+        [{ action: 'mute-alert',             text: labels['mute-alert'],             issue }],
+    ], { callbackPrefix: 'pp', hostAllowlist: [] });
+
+    const rows = r.markup.inline_keyboard;
+    assert.equal(rows.length, 3, 'una fila por botón (UX-D-3)');
+    for (const row of rows) assert.equal(row.length, 1);
+    assert.deepEqual(rows.flat().map(b => b.callback_data), [
+        'pp:include-deps-for-issue:6033',
+        'pp:keep-original:6033',
+        'pp:mute-alert:6033',
+    ]);
+    for (const b of rows.flat()) {
+        assert.ok(btn.fitsCallbackData(b.callback_data), `${b.callback_data} tiene que entrar en el límite`);
+    }
+    // Peor caso realista de longitud: un issue de 7 dígitos.
+    assert.ok(btn.fitsCallbackData(btn.buildCallbackData('pp', 'include-deps-for-issue', 9999999)));
 });
 
 // ─── buildActionKeyboard · camino feliz (sin regresión) ──────────────────────
