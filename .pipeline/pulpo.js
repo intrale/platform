@@ -599,6 +599,16 @@ const PIPELINE = process.env.PIPELINE_DIR_OVERRIDE
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 
+// #6458 - Identidad del ARRANQUE de este proceso del pulpo. Se congela al
+// cargar el modulo, igual que `PIPELINE`: dos turnos con el mismo `boot_id`
+// corrieron bajo el mismo proceso, y un `boot_id` distinto al de la ultima
+// etapa asentada delata que el pulpo murio y respawneo en el medio.
+//
+// Es una etiqueta de correlacion, NO un identificador de usuario: sale del
+// runtime (`pid` + epoch de arranque), nunca del texto del modelo ni de datos
+// del operador.
+const PULPO_BOOT_ID = `${process.pid}-${Date.now()}`;
+
 // #5924 (CA-7) — Cola de salientes de Telegram resuelta EN CADA LLAMADA.
 //
 // `PIPELINE` se congela al cargar el módulo. Los tests que requieren `pulpo.js`
@@ -13507,6 +13517,20 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       now: startTimeForAudit,
     });
 
+    // #6458 - referencia SEUDONIMIZADA (`<chat_id_hash>-<ms>`) al log de la
+    // peticion del Commander. Es el puente entre CADA entrada de audit de este
+    // turno y su canal de etapas. Se deriva UNA sola vez.
+    //
+    // PROHIBIDO emitir `_trace.commanderReqId` crudo: contiene el chat id de
+    // Telegram en claro y esta cadena la sirve el dashboard por `/logs/`.
+    const _reqRef = (_trace && _trace.commanderReqId)
+      ? commanderRequestLog.buildAuditReqRef(_trace.commanderReqId)
+      : null;
+
+    // #6458 - se escribe DE VUELTA al trace: el caller necesita el requestId del
+    // turno para la etapa `dispatch` (alla `turnRequestId` no esta en scope).
+    if (_trace) _trace.requestId = turnRequestId;
+
     // #4309 — Ejecución del fallback in-flight (revive #3578).
     //   - `inflightExecEnabled`: gate de config. Default ON: un fix no puede
     //     shippear apagado y degradar al bug viejo (detecta pero no ejecuta).
@@ -13536,6 +13560,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       log('commander', `🛡️ Patrones de prompt-injection detectados (${sanRes.hits.length}) — input recortado.`);
       try {
         commanderMP.auditCommanderRequest({
+          commanderReqId: _reqRef, // #6458 - puente al canal de etapas
           pipelineDir: PIPELINE,
           event: 'prompt_injection_attempt',
           providerIntended: 'anthropic',
@@ -13577,6 +13602,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       }
       try {
         commanderMP.auditCommanderRequest({
+          commanderReqId: _reqRef, // #6458 - puente al canal de etapas
           pipelineDir: PIPELINE,
           event: 'resolver_error',
           providerIntended: 'anthropic',
@@ -13619,6 +13645,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           log('commander', '🚫 Primario deshabilitado y sin fallback resoluble tras error del resolver — respondo canned.');
           try {
             commanderMP.auditCommanderRequest({
+              commanderReqId: _reqRef, // #6458 - puente al canal de etapas
               pipelineDir: PIPELINE,
               event: 'gated_all',
               providerIntended: 'anthropic',
@@ -13683,6 +13710,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       log('commander', `🚫 Chain de fallback agotada (chain_tried=${(resolution.chainTried || []).join('->')})`);
       try {
         commanderMP.auditCommanderRequest({
+          commanderReqId: _reqRef, // #6458 - puente al canal de etapas
           pipelineDir: PIPELINE,
           event: 'gated_all',
           providerIntended: 'anthropic',
@@ -13728,6 +13756,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         log('commander', `🟡 Modo reducido: pagos gateados (${downProviders.join(', ') || 'n/a'}) + free sano — respondo advisory sin ejecutar acciones (no spawneo el free).`);
         try {
           commanderMP.auditCommanderRequest({
+            commanderReqId: _reqRef, // #6458 - puente al canal de etapas
             pipelineDir: PIPELINE,
             event: 'reduced_mode',
             providerIntended: 'anthropic',
@@ -14022,6 +14051,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           `eslabones evaluados: ${chainEvaluated.length}; sin más providers disponibles.`);
         try {
           commanderMP.auditCommanderRequest({
+            commanderReqId: _reqRef, // #6458 - puente al canal de etapas
             pipelineDir: PIPELINE,
             event: 'fallback_chain_exhausted',
             providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14093,6 +14123,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           onSyncThrow: (provider, reason, err) => {
             try {
               commanderMP.auditCommanderRequest({
+                commanderReqId: _reqRef, // #6458 - puente al canal de etapas
                 pipelineDir: PIPELINE,
                 event: 'spawn_error',
                 providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14134,6 +14165,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
             if (!safe.ok) {
               try {
                 commanderMP.auditCommanderRequest({
+                  commanderReqId: _reqRef, // #6458 - puente al canal de etapas
                   pipelineDir: PIPELINE,
                   event: 'fallback_unavailable',
                   providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14216,6 +14248,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               if (extracted.text) {
                 try {
                   commanderMP.auditCommanderRequest({
+                    commanderReqId: _reqRef, // #6458 - puente al canal de etapas
                     pipelineDir: PIPELINE,
                     event: 'fallback_used',
                     providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14239,6 +14272,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                 // flag de cuota (auth_error ≠ quota_exhausted en el detector), así
                 // que este drenado revalida SOLO `no_quota`; `invalid_credentials`
                 // no reingresa por esta vía.
+                //
+                // #6458 - GENERO != ENTREGO. Este `clearFlag` prueba UNICAMENTE
+                // que el provider volvio a generar texto (su cuota se libero).
+                // NO prueba, ni insinua, que el operador haya recibido nada.
+                // PROHIBIDO que cualquier consumidor nuevo lo lea como senal de
+                // cierre de entrega: para eso esta `delivery_state` en el audit.
                 try {
                   quotaExhausted.clearFlag({
                     event: 'success_spawn_fallback',
@@ -14256,6 +14295,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               // cadena en vez de cortar seco.
               try {
                 commanderMP.auditCommanderRequest({
+                  commanderReqId: _reqRef, // #6458 - puente al canal de etapas
                   pipelineDir: PIPELINE,
                   event: 'fallback_used',
                   providerIntended: resolution.primaryProvider || 'anthropic',
@@ -14554,12 +14594,22 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // código tuvo éxito — eso es la salud del adapter, fuera de alcance).
       if (res && res.executed) {
         try {
+          // #6458 - ESTA es la senal que mintio en el episodio del 2026-08-24:
+          // se asentaba `success: true` porque el secundario habia GENERADO
+          // texto, sin que nadie hubiera observado la entrega al operador.
+          //
+          // Aca sabemos que el secundario fue spawneado; NO sabemos si al
+          // operador le llego algo. Asi que no se afirma nada: `success` queda
+          // en `null` (no observado) y el estado de la entrega queda explicito
+          // en `delivery_pending`. Cerrarlo es un EVENTO NUEVO
+          // (`noteFallbackDeliveryResolved`), jamas una reescritura de este.
           inflightFallback.noteInflightCompleted({
             pipelineDir: PIPELINE,
             skill: commanderMP.COMMANDER_SKILL,
             primaryProvider: 'anthropic',
             secondaryProvider: res.secondaryProvider,
-            success: true,
+            deliveryState: 'delivery_pending',
+            commanderReqId: _reqRef,
             chatId,
             requestId: turnRequestId,
           });
@@ -14688,6 +14738,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           tool_calls: toolCount,
         } : { tool_calls: toolCount };
         commanderMP.auditCommanderRequest({
+          commanderReqId: _reqRef, // #6458 - puente al canal de etapas
           pipelineDir: PIPELINE,
           event: 'dispatch',
           providerIntended: resolution.primaryProvider || 'anthropic',
@@ -16210,7 +16261,15 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     // #3949 EP7-H2 — Etapa 1: transcripción (con eco STT). SEC-2: el eco y el
     // texto consolidado pasan por el writable sanitizado (redacción de PII /
     // credenciales dictadas por voz) antes de tocar disco.
-    requestLog.stage('transcripción', { audios: transcriptsEco.length, mensajes: textoLibre.length });
+    // #6458 - claves de correlacion: `chat_id` es el chat REAL del mensaje
+    // (no el del texto del modelo) y `boot_id` ata la etapa al arranque del
+    // pulpo que la escribio. Van al canal estructurado, no falsificable.
+    requestLog.stage('transcripción', {
+      audios: transcriptsEco.length,
+      mensajes: textoLibre.length,
+      chat_id: chatId,
+      boot_id: PULPO_BOOT_ID,
+    });
     for (let i = 0; i < transcriptsEco.length; i++) {
       requestLog.line(`🎤 eco[${i + 1}]: ${transcriptsEco[i]}`);
     }
@@ -16608,6 +16667,12 @@ ${commanderConversation}`;
       // de provider/fallback vía `_trace.resolution`. Para el path issue-creation
       // ya se usaba para el trace de tool-use; ambos coexisten sin cambios.
       const claudeTrace = {};
+      // #6458 (A2) - el puente etapas <-> audit se siembra ANTES del await:
+      // la etapa `dispatch` se escribe DESPUES de que `ejecutarClaude` retorna y
+      // en el episodio real nunca llego a escribirse. Por eso el puente primario
+      // es el audit (que se emite en vuelo), y esta semilla es lo que se lo
+      // permite. La firma de `ejecutarClaude` NO cambia.
+      claudeTrace.commanderReqId = commanderReqId;
       // #3948 (CA-5) — transición a `pensando` al entrar al dispatch LLM.
       try { if (commanderPresence) commanderPresence.updatePhase('pensando'); } catch { /* no bloqueante */ }
       skillInvocationStartedAt = Date.now();
@@ -16635,6 +16700,11 @@ ${commanderConversation}`;
       // refleja la resolución efectiva (Anthropic primario o el fallback ganador).
       requestLog.stage('dispatch', {
         intent_class: 'llm',
+        // #6458 - correlacion con el audit del turno. OJO: esta etapa se escribe
+        // DESPUES del await de arriba; si el turno muere en el LLM nunca llega a
+        // asentarse. El puente que SI sobrevive es `commander_req_id` en el
+        // audit, que se emite en vuelo.
+        request_id: claudeTrace.requestId || 'desconocido',
         provider: commanderDispatch.provider,
         cross_provider: commanderDispatch.crossProvider,
         fallback_used: commanderDispatch.fallbackUsed || 'ninguno',
@@ -17162,6 +17232,8 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       // Audit de correlación turn-level (CA-A-3).
       try {
         commanderMP.auditCommanderRequest({
+          // #6458 - puente al canal de etapas del turno, SEUDONIMIZADO.
+          commanderReqId: commanderRequestLog.buildAuditReqRef(commanderReqId),
           pipelineDir: PIPELINE,
           event: 'commander_response',
           providerEffective: 'anthropic',
@@ -17294,6 +17366,10 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
         // el writable sanitizado. `enviado` indica si salió también por voz.
         requestLog.stage('envío', {
           canal: esAudio ? 'voz+texto' : 'texto',
+          // #6458 - id del saliente encolado. Es la unica clave que ata esta
+          // etapa al recibo del API de Telegram. `directo` = no hubo encolado
+          // (path sin token / fallback directo), o sea sin reconciliacion posible.
+          correlation_id: outCorrelationId || 'directo',
           voz_ok: !!enviado,
           chars: outboundText.length,
           disclaimer: sherlockDisclaimerType || 'ninguno',
