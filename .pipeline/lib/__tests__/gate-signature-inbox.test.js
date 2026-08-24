@@ -170,6 +170,7 @@ test('UX §3: el ancla se traduce y NUNCA expone su nombre técnico', () => {
     assert.equal(bh.titulo, 'Contra qué queda atada tu firma');
     assert.equal(bh.chip, 'DATO DEL SISTEMA · NO SALE DEL ISSUE');
     assert.ok(bh.linea.startsWith('Los criterios escritos hoy en #6208'));
+    assert.ok(bh.linea.includes('huella sha256 abcdef01…beef'));
     assert.ok(bh.consecuencia.includes('la firma se anula sola'));
     const cs = inbox.describeAnchor({ kind: 'commit-sha', value: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678' }, 77);
     assert.ok(cs.linea.startsWith('El commit entregado en #77'));
@@ -332,6 +333,7 @@ test('§8: merge con los markers sin perder GATE 3', () => {
     assert.equal(g3.firmable, false);
     assert.deepEqual(g3.options, []);
     assert.ok(g3.no_firmable_copy.titulo.includes('no se firma desde la bandeja'));
+    assert.ok(g3.no_firmable_copy.lineas.join(' ').includes('No te pongo un botón de firmar que el sistema va a rechazar'));
 });
 
 test('§8: un marker del mismo (issue, gate) que ya tiene pendiente real NO se duplica', () => {

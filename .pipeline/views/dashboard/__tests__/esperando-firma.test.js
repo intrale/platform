@@ -245,6 +245,7 @@ test('#6208 · CA-4: el ancla mostrada es la que recalculó el servidor, no la q
     const anchorBlock = /<div class="ef-anchor">([\s\S]*?)<\/div>\s*<div class="ef-ev/.exec(html);
     assert.ok(anchorBlock, 'hay bloque de ancla');
     assert.ok(anchorBlock[1].includes('11111111'), 'la huella server-derived');
+    assert.ok(anchorBlock[1].includes('sha256 11111111'), 'conserva el token visual acordado en el mockup');
     assert.ok(!anchorBlock[1].includes('deadbeef'), 'el ancla falsa del body NO se muestra como ancla');
 });
 
@@ -333,6 +334,21 @@ test('#6208 · H-UX-6208-3: un botón por opción, con el label del kernel (GATE
     assert.ok(html.includes('Admitir a desarrollo'));
     assert.ok(html.includes('Devolver a definición'));
     assert.ok(html.includes('Rechazar la definición'));
+});
+
+test('#6208 · mockup: edad en píldora ámbar a la derecha y referencias issue/pr con numeral', () => {
+    const html = renderEsperandoFirmaSsr({ esperandoFirma: [firmaRow({
+        evidence: [{ kind: 'issue', ref: '6199' }, { kind: 'pr', ref: '6301' }, { kind: 'run', ref: '4821' }],
+    })] });
+    const head = /<div class="ef-row-head">([\s\S]*?)<\/div>\s*<div class="ef-title">/.exec(html);
+    assert.ok(head, 'la fila conserva su cabecera');
+    const info = /<div class="ef-row-info">([\s\S]*?)<\/div>/.exec(head[1]);
+    assert.ok(info && !info[1].includes('ef-age'), 'la edad no queda inline junto al issue');
+    assert.match(head[1], /ef-row-actions"><span class="ef-age-pill"[^>]*>esperando hace 3 h 20 min<\/span>/);
+    assert.match(html, /issue #6199/);
+    assert.match(html, /pr #6301/);
+    assert.match(html, /run 4821/);
+    assert.match(html, /\.ef-age-pill\{[^}]*background:rgba\(210,153,34,\.14\)[^}]*border:1px solid #9E6A03/);
 });
 
 test('#6208 · un verdict fuera del enum congelado no genera botón', () => {
@@ -473,6 +489,7 @@ test('#6208 · UX §7: origen fuera del enum ⇒ sin botones de firma, con link 
     assert.ok(!html.includes('ef-btn-decide'));
     assert.ok(html.includes('Abrir #4321 en GitHub'));
     assert.ok(html.includes('Esto no se firma desde la bandeja'));
+    assert.ok(html.includes('No te pongo un botón de firmar que el sistema va a rechazar'));
     assert.ok(html.includes('GATE 3 · Acción autónoma'));
 });
 
@@ -490,4 +507,3 @@ test('#6208 · el enum de la vista espeja el del kernel', () => {
 test('#6208 · D-3: la tabla ORIGENES de la vista NO se toca (waiting-operator-def ya decía GATE 1)', () => {
     assert.equal(ORIGENES['waiting-operator-def'].label, 'GATE 1 · Definición');
 });
-

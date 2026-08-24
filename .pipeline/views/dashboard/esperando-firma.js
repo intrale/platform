@@ -222,7 +222,12 @@ function renderEvidenceRefsSsr(evidence) {
     }
     const chips = list.map((e) => {
         const kind = escapeHtmlText((e && e.kind) || '?');
-        const ref = escapeHtmlText((e && e.ref) || '');
+        const rawKind = String((e && e.kind) || '').toLowerCase();
+        const rawRef = String((e && e.ref) || '');
+        const displayRef = (rawKind === 'issue' || rawKind === 'pr') && rawRef && rawRef.charAt(0) !== '#'
+            ? '#' + rawRef
+            : rawRef;
+        const ref = escapeHtmlText(displayRef);
         return `<span class="ef-ev-chip">${kind} ${ref}</span>`;
     }).join('');
     return '<div class="ef-ev"><div class="ef-ev-label">📎 Evidencia</div><div class="ef-ev-chips">' + chips + '</div></div>';
@@ -324,9 +329,8 @@ function renderFirmaRowSsr(p) {
         <div class="ef-row-info">
           <span class="ef-origen ${gm.cls}" title="${escapeHtmlAttr(gm.label)}"><span aria-hidden="true">${escapeHtmlText(gm.icon)}</span> ${escapeHtmlText(gm.label)}</span>
           <a href="https://github.com/intrale/platform/issues/${issueNum}" target="_blank" rel="noopener noreferrer"><b>#${issueNum}</b></a>
-          <span class="ef-age ef-age-${sev}" aria-label="${escapeHtmlAttr('Esperando ' + edad)}">⏱ esperando ${escapeHtmlText(edad)}</span>
         </div>
-        <div class="ef-row-actions">${botones}</div>
+        <div class="ef-row-actions"><span class="ef-age-pill" aria-label="${escapeHtmlAttr('Esperando ' + edad)}">esperando ${escapeHtmlText(edad)}</span>${botones}</div>
       </div>
       <div class="ef-title">${escapeHtmlText(String((p && p.title) || ''))}</div>
       <div class="ef-question">${escapeHtmlText(String((p && p.question) || ''))}</div>
@@ -462,7 +466,8 @@ function esperandoFirmaStyle() {
 .ef-age{font-size:11px;font-weight:700;color:var(--in-fg-dim,#8A93A6)}
 .ef-age-warning{color:#fdba74}
 .ef-age-danger{color:#fca5a5}
-.ef-row-actions{display:flex;gap:8px;flex-wrap:wrap}
+.ef-row-actions{display:flex;align-items:flex-start;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.ef-age-pill{display:inline-flex;align-items:center;min-height:24px;box-sizing:border-box;font-size:11px;font-weight:700;color:#D29922;background:rgba(210,153,34,.14);border:1px solid #9E6A03;border-radius:999px;padding:2px 12px;white-space:nowrap}
 .ef-btn{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:800;border-radius:9px;padding:8px 16px;border:1px solid transparent;cursor:pointer}
 .ef-btn:focus-visible{outline:2px solid var(--in-accent,#38bdf8);outline-offset:2px}
 .ef-btn-approve{color:#0a1f14;background:var(--in-success,#3FB950);border-color:rgba(63,185,80,.6)}

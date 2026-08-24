@@ -171,7 +171,7 @@ function describeAnchor(anchor, issue) {
     let linea;
     if (anchor.kind === 'body-hash') {
         if (hex.length < 12) return null;
-        linea = `Los criterios escritos hoy en #${issue} — huella ${hex.slice(0, 8)}…${hex.slice(-4)}`;
+        linea = `Los criterios escritos hoy en #${issue} — huella sha256 ${hex.slice(0, 8)}…${hex.slice(-4)}`;
     } else if (anchor.kind === 'commit-sha') {
         if (hex.length < 7) return null;
         linea = `El commit entregado en #${issue} — ${hex.slice(0, 7)} de la rama del PR`;
@@ -356,7 +356,7 @@ function rowFromMarker(m) {
             titulo: 'Esto no se firma desde la bandeja',
             lineas: [
                 'No es una firma tuya: es una acción que el pipeline te está avisando.',
-                'Te dejo el link para que la mires.',
+                'Te dejo el link para que la mires. No te pongo un botón de firmar que el sistema va a rechazar.',
             ],
         },
     };
