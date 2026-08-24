@@ -17450,6 +17450,14 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     // (`data.parse_mode || 'Markdown'`) reinyectaba Markdown, dejando este flag
     // sin ningún efecto. Ver `servicio-telegram.js::resolveOutboundParseMode`.
     const payload = plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
+    // #6190 / SEC-D — sin vista previa en los salientes de texto plano. Es el
+    // dialecto de los avisos que citan texto externo (la ficha de decisión del
+    // canal de bloqueados y el canned de cuota): aunque el saneador ya
+    // neutraliza los enlaces, la previa es una segunda superficie por la que el
+    // contenido de un tercero se dibuja adentro del aviso del pipeline.
+    // Complemento defensivo: si esto se cae, el filtro sigue siendo el que
+    // protege. Ver `decision-card.js::URL_RE`.
+    if (plain) payload.disable_web_page_preview = true;
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     payload._correlationId = correlationId;
     // #6226 — Nombre único (`<ts>-<seq>-cmd.json`) + escritura `wx`. Antes eran

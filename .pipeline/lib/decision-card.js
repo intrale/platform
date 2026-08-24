@@ -120,6 +120,9 @@ const MAX_EVIDENCIA = 120;  // cada ítem de evidencia
 const MAX_TITULO = 120;     // el título citado
 const MAX_PREGUNTA_LITERAL = 160; // UX §4.6: más largo que esto → indeterminado
 const MAX_EVIDENCIAS = 3;   // UX §1.5: máximo 3 ítems
+// rev-10 / SEC-D: techo de entrada del saneador. Muy por encima de cualquier
+// campo real (220) y muy por debajo de lo que haría costoso al saneamiento.
+const MAX_ENTRADA_SANEO = 4000;  // tope duro de texto externo antes de sanear
 
 const TIPOS = Object.freeze([
     'dependencia', 'circuit', 'firma', 'infra', 'rebote', 'pregunta', 'indeterminado',
@@ -202,7 +205,59 @@ const MARKDOWN_LINK_RE = /\]\(/g;
 //
 // Se marca en vez de borrar en silencio: si el texto original traía un enlace,
 // que se note que había uno y que lo sacamos nosotros.
-const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+// rev-10 / SEC-D. La cobertura del regex se quedaba corta: sólo tapaba
+// `http(s)://` y `www.`. Telegram, en TEXTO PLANO, también hace tappable un
+// host DESNUDO (`intrale-soporte.com/verificar`, `t.me/joinchat/…`), una IP
+// con puerto (`203.0.113.7:8080/x`) y cualquier otro esquema (`tg://`,
+// `ftp://`, `intrale://`). El repo es público: el título lo escribe cualquiera
+// y viaja citado literal hasta el mensaje con el que el operador destraba.
+//
+// Se arma por partes y se compone una sola vez, en carga, para que cada forma
+// sea legible y auditable por separado:
+//
+//   1. CUALQUIER esquema con `//` — no una lista de esquemas permitidos.
+//      Enumerar esquemas es una carrera que se pierde: `tg://`, `ftp://` e
+//      `intrale://` sobrevivieron justamente por no estar en la lista.
+//   2. Esquemas OPACOS (sin `//`). Acá sí va lista cerrada: `X:` es una forma
+//      demasiado común en prosa ("Nota: algo") para tratarla como enlace.
+//   3. `www.` — se mantiene explícito aunque (5) lo cubra: es la forma con la
+//      que Telegram linkifica sin esquema y no depende del TLD.
+//   4. IPv4 con puerto y/o ruta opcionales, y también desnuda.
+//   5. Host con TLD + ruta o + puerto: la forma explotable del rechazo.
+//   6. Host con TLD DESNUDO (sin ruta ni puerto). Fail-closed sobre el TLD:
+//      cualquier `.[a-z]{2,}` cuenta como enlace, porque una lista blanca de
+//      TLDs deja pasar al primero que no esté en ella (`evil.zone`). La ÚNICA
+//      excepción son extensiones de archivo que NO son TLD (`pulpo.js`,
+//      `config.yaml`): Telegram no las linkifica y marcarlas mutilaría títulos
+//      legítimos del propio pipeline. Con ruta o puerto detrás no hay
+//      excepción que valga: `pulpo.js/algo` sí tiene forma de enlace.
+const EXT_ARCHIVO_NO_TLD = 'js|json|ya?ml|kts?|tsx?|jsx|txt|xml|csv|html?|css'
+    + '|png|jpe?g|gif|svg|webp|java|py|rb|rs|go|php|sql|gradle|properties'
+    + '|lock|cfg|ini|bat|jar|apk|class|exe|dll|tar|gz|pdf|docx?|xlsx?|pptx?';
+// Etiqueta de host sin ambigüedad interna: un solo cuantificador que no puede
+// consumir puntos. Importa para el costo: `sec()` corre por cada campo de cada
+// ficha y un regex con cuantificadores anidados sobre la misma clase es un
+// candidato a retroceso cuadrático (ver `MAX_ENTRADA_SANEO`).
+// `String.raw` a propósito: el fuente del regex se lee igual que si fuera un
+// literal `/…/`, sin la capa de barras dobles que hace ilegible —y frágil— a
+// un regex armado con strings comunes.
+const _ETIQUETA = String.raw`[a-z0-9][a-z0-9-]*`;
+const _HOST = String.raw`${_ETIQUETA}(?:\.${_ETIQUETA})*\.[a-z]{2,}`;
+const _HOST_SIN_EXT = String.raw`${_ETIQUETA}(?:\.${_ETIQUETA})*\.(?!(?:${EXT_ARCHIVO_NO_TLD})\b)[a-z]{2,}`;
+const _RESTO = String.raw`[^\s<>"']*`;
+const _IPV4 = String.raw`\d{1,3}(?:\.\d{1,3}){3}`;
+const URL_RE = new RegExp(
+    String.raw`\b(?:`
+    + String.raw`[a-z][a-z0-9+.-]*://${_RESTO}`                  // 1
+    + String.raw`|(?:mailto|tel|sms|data|javascript|vbscript|callto|skype|whatsapp|tg|intent|market):${_RESTO}` // 2
+    + String.raw`|www\.${_RESTO}`                                // 3
+    + String.raw`|${_IPV4}(?::\d{1,5})?(?:/${_RESTO})?`          // 4
+    + String.raw`|${_HOST}(?::\d{1,5})?/${_RESTO}`               // 5
+    + String.raw`|${_HOST}:\d{1,5}`                              // 5b
+    + String.raw`|${_HOST_SIN_EXT}`                              // 6
+    + String.raw`)`,
+    'gi',
+);
 // Sin paréntesis propios: la marca puede caer justo dentro de un `](…)` que
 // venía en el texto, y sumar los suyos deja un `((enlace omitido)` ilegible.
 const URL_MARCA = 'enlace omitido';
@@ -300,6 +355,14 @@ function limpiarMarkup(s) {
 function neutralizarMarkupYEnlaces(value) {
     let s = String(value == null ? '' : value);
     if (!s) return '';
+    // rev-10 / SEC-D. Tope duro de entrada ANTES de cualquier regex. El campo
+    // más largo de una ficha son 220 caracteres (`MAX_CAMPO`), así que este
+    // techo no recorta nada real; está para que un texto externo enorme —que
+    // llega de un issue público— no pueda convertir el saneamiento en trabajo
+    // cuadrático y colgar al proceso que arma el aviso. La regla #1 del
+    // pipeline es que no se muere: un saneador es una superficie de DoS tanto
+    // como de inyección.
+    if (s.length > MAX_ENTRADA_SANEO) s = s.slice(0, MAX_ENTRADA_SANEO);
     for (let i = 0; i < 2; i += 1) {
         s = limpiarMarkup(s);
         s = s.replace(URL_RE, URL_MARCA);

@@ -1276,3 +1276,117 @@ test('SEC-C · la neutralización es idempotente: aplicarla dos veces no cambia 
             `quedó un enlace vivo con ${JSON.stringify(entrada)} → ${JSON.stringify(una)}`);
     }
 });
+
+// =============================================================================
+// rev-10 / SEC-D — la COBERTURA del regex se quedaba corta.
+//
+// SEC-C arregló el ORDEN del saneamiento; el regex siguió tapando sólo
+// `http(s)://` y `www.`. En TEXTO PLANO Telegram también hace tappable un host
+// DESNUDO (`intrale-soporte.com/verificar`), una IP con puerto
+// (`203.0.113.7:8080/x`) y cualquier otro esquema (`tg://`, `ftp://`,
+// `intrale://`). El repo es público con issues abiertos: el título lo elige el
+// atacante y se cita literal en la ficha con la que el operador destraba.
+//
+// Los tests de SEC-C pasaban en verde porque NINGUNO probaba una forma sin
+// esquema. Este bloque fija el barrido completo: cada forma, en las DOS
+// superficies de texto (la ficha y el aviso degradado), más el control de que
+// no se mutilan los nombres de archivo que el propio pipeline nombra.
+// =============================================================================
+
+// Cada forma que un cliente de Telegram puede volver tappable, incluidas las
+// que en Telegram son inertes (`javascript:`, `data:`): no se filtran porque
+// hagan daño ahí, sino porque el mismo texto se relee en otras superficies y
+// una lista de "esquemas peligrosos" es una carrera que se pierde.
+const FORMAS_ENLACE_SEC_D = [
+    ['esquema http', 'http://evil.example/a'],
+    ['esquema https', 'https://evil.example/a'],
+    ['www sin esquema', 'www.evil.example/pagar'],
+    ['file con tres barras', 'file:///c:/Windows/System32/x.exe'],
+    ['mailto', 'mailto:atacante@evil.example'],
+    ['dominio desnudo con ruta', 'evil.example/pagar'],
+    ['dominio desnudo sin ruta', 'intrale-soporte.com'],
+    ['dominio desnudo TLD raro', 'evil.zone'],
+    ['IP desnuda con puerto y ruta', '203.0.113.7:8080/x'],
+    ['IP desnuda sola', '198.51.100.9'],
+    ['acortador de telegram', 't.me/joinchat/AAAAAAAA'],
+    ['esquema ftp', 'ftp://evil.example/a'],
+    ['esquema tg', 'tg://resolve?domain=malo'],
+    ['esquema propio de la app', 'intrale://transferir?monto=9999'],
+    ['data uri', 'data:text/html;base64,PHNjcmlwdD4='],
+    ['javascript uri', 'javascript:alert(1)'],
+    ['host con puerto sin ruta', 'evil.example:8443'],
+    ['mayúsculas', 'EVIL.EXAMPLE/PAGAR'],
+];
+
+for (const [nombre, forma] of FORMAS_ENLACE_SEC_D) {
+    test(`SEC-D · ${nombre}: no sobrevive en NINGUNA superficie`, () => {
+        const titulo = `Fallo el cobro: verifica en ${forma} ahora`;
+        const raw = { issue: 999002, titulo, reason: '', blocked_at: '2026-08-19T19:00:00Z' };
+
+        // 1. Camino principal: la ficha, campo por campo.
+        const card = dc.buildDecisionCard(raw, AHORA);
+        for (const [ruta, v] of camposString(card)) {
+            assert.ok(!v.includes(forma),
+                `${ruta}: sobrevivió ${JSON.stringify(forma)} → ${v}`);
+        }
+        assert.ok(card.que_esta_frenado.titulo.includes(dc.URL_MARCA),
+            `la ficha no declaró que había un enlace: ${card.que_esta_frenado.titulo}`);
+
+        // 2. Camino degradado fail-closed: el mismo dato por el aviso crudo.
+        const fb = cardRender.renderFallbackAviso([raw], AHORA);
+        assert.ok(!fb.includes(forma), `el aviso degradado dejó vivo ${forma}:\n${fb}`);
+        assert.ok(fb.includes(dc.URL_MARCA), `el aviso degradado no declaró el enlace:\n${fb}`);
+
+        // 3. Superficie de producción: es la que sale a Telegram.
+        const texto = require('../human-block').buildBlockedSummaryPlain({
+            nowMs: AHORA,
+            highlight: { issue: 999002, titulo, reason: titulo, skill: 'ux', phase: 'criterios' },
+            blocked: [],
+        });
+        assert.ok(!texto.includes(forma), `el aviso de producción dejó vivo ${forma}:\n${texto}`);
+    });
+}
+
+test('SEC-D · el PoC del rechazo, textual, no sobrevive en ninguna superficie', () => {
+    // El título exacto del reporte, con las dos formas mezcladas en una frase
+    // creíble. Se fija literal para que si alguien afloja el regex, falle acá
+    // con el mismo caso que se reportó y no con una variante inventada.
+    const titulo = 'Fallo el cobro: verifica en intrale-soporte.com/verificar o entra a t.me/soporte_intrale';
+    const raw = { issue: 9999, titulo, reason: '', blocked_at: '2026-08-19T19:00:00Z' };
+
+    const plain = cardRender.renderDecisionCardsPlain(dc.buildDecisionCards([raw], AHORA));
+    assert.ok(!plain.includes('intrale-soporte.com'), `la ficha filtró el dominio:\n${plain}`);
+    assert.ok(!plain.includes('t.me/'), `la ficha filtró el acortador:\n${plain}`);
+
+    const fb = cardRender.renderFallbackAviso([raw], AHORA);
+    assert.ok(!fb.includes('intrale-soporte.com'), `el aviso degradado filtró el dominio:\n${fb}`);
+    assert.ok(!fb.includes('t.me/'), `el aviso degradado filtró el acortador:\n${fb}`);
+});
+
+test('SEC-D · un nombre de archivo NO es un enlace: no se mutila lo que el pipeline nombra', () => {
+    // La contracara del fail-closed sobre el TLD. `pulpo.js` y `config.yaml` no
+    // los linkifica ningún cliente (no son TLD), y marcarlos rompería la
+    // legibilidad de los títulos del propio pipeline, que hablan de archivos
+    // todo el tiempo. La excepción vale SÓLO desnudos: con ruta o puerto detrás
+    // ya tienen forma de enlace y se marcan igual (ver el caso de abajo).
+    for (const nombre of ['pulpo.js', 'config.yaml', 'agent-registry.json', 'notas.txt']) {
+        const salida = dc.neutralizarMarkupYEnlaces(`Revisar ${nombre} antes del deploy`);
+        assert.ok(salida.includes(nombre), `se mutiló un nombre de archivo legítimo: ${salida}`);
+    }
+    // Con ruta detrás, la excepción no aplica: es forma de enlace.
+    const conRuta = dc.neutralizarMarkupYEnlaces('Entrá a pulpo.js/robo ya');
+    assert.ok(!conRuta.includes('pulpo.js/robo'), `sobrevivió una forma de enlace: ${conRuta}`);
+});
+
+test('SEC-D · el saneamiento acota la entrada: un texto enorme no lo vuelve costoso', () => {
+    // Regla #1 del pipeline: no se muere. Un saneador es superficie de DoS
+    // tanto como de inyección, y el texto externo llega de un issue público.
+    // 200k de una forma que obliga a retroceder tienen que resolverse rápido y
+    // sin colgar el proceso que arma el aviso.
+    const bomba = `${'a.'.repeat(100000)}1`;
+    const t0 = process.hrtime.bigint();
+    const salida = dc.neutralizarMarkupYEnlaces(bomba);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 1000, `el saneamiento tardó ${ms.toFixed(0)}ms con entrada patológica`);
+    assert.ok(salida.length <= 4000, `no se aplicó el tope de entrada: ${salida.length}`);
+});
