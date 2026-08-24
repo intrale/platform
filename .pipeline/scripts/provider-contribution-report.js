@@ -408,9 +408,30 @@ function buildConclusion(ctx) {
         lines.push(`Despachan pero no están declarados en configuración (#6153): ${sinDeclarar.join(', ')}.`);
     }
     if (failoverCost && failoverCost.scheduleGating && failoverCost.scheduleGating.pct !== null) {
+        // rev-3 (#6145) — la frase decía "política horaria" sumando adentro los
+        // `fallback_also_gated`, que son cupo del proveedor. Ahora cada causa se
+        // nombra por separado y el operador ve las dos cifras reales.
+        const pctH = String(failoverCost.scheduleGating.pct).replace('.', ',');
+        const pctC = failoverCost.quotaFlagGating && failoverCost.quotaFlagGating.pct !== null
+            ? String(failoverCost.quotaFlagGating.pct).replace('.', ',')
+            : null;
         lines.push(
-            `El ${String(failoverCost.scheduleGating.pct).replace('.', ',')} % del gating de la ventana es `
-            + 'política horaria, no proveedores muertos: ese costo no es imputable a los gratuitos.',
+            `El ${pctH} % del gating de la ventana es política horaria, no proveedores muertos: `
+            + 'ese costo no es imputable a los gratuitos.'
+            + (pctC !== null
+                ? ` Otro ${pctC} % es el flag de cuota agotada del propio proveedor `
+                  + '(un corte emite un evento por cada intento de dispatch mientras dura, '
+                  + 'así que la cifra mide la duración del corte y no cuántas veces el proveedor se negó).'
+                : ''),
+        );
+    }
+    if (failoverCost && failoverCost.operatorGating && failoverCost.operatorGating.events > 0) {
+        // rev-3 (#6145) — el kill-switch del operador se publicaba como 0.
+        lines.push(
+            `Hubo ${failoverCost.operatorGating.events} saltos porque NOSOTROS apagamos el proveedor `
+            + `(${failoverCost.operatorGating.killSwitch} por kill-switch manual, `
+            + `${failoverCost.operatorGating.pacing} por freno de ritmo). No bajan la tasa de aporte de nadie: `
+            + 'un proveedor apagado a mano no es un proveedor que no aporta (REQ-SEC-3).',
         );
     }
     // rev-2 (#6145): "sin datos" y "cadena rota" dejan de ser la misma frase.
@@ -477,7 +498,11 @@ function renderHuman(report, argvLine) {
     const bucket = (label, b) => `   ${label.padEnd(26, '.')} ${String(b.events).padStart(7)} eventos`
         + ` (${b.pct === null ? contribution.ABSENCE.SIN_MUESTRA : String(b.pct).replace('.', ',')} %)`;
     out.push(bucket('política horaria ', fc.scheduleGating));
-    out.push(bucket('kill-switch del operador ', fc.operatorGating));
+    // rev-3 (#6145) — `fallback_also_gated` salió de "política horaria": es el
+    // flag de cuota agotada del proveedor, y va con su nombre real.
+    out.push(bucket('cupo del proveedor (flag) ', fc.quotaFlagGating));
+    out.push(bucket('kill-switch del operador ', fc.operatorGating)
+        + ` [manual ${fc.operatorGating.killSwitch} · ritmo ${fc.operatorGating.pacing}]`);
     out.push(bucket('bloqueo por proveedor ', fc.providerBlocking));
     out.push(bucket('dispatch resuelto ', fc.wins));
     out.push(bucket('eventos de cadena ', fc.chainExhausted));

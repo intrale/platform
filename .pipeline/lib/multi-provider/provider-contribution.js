@@ -84,11 +84,14 @@ const ENTRY_FIELD_WHITELIST = Object.freeze([
  *              aporte real.
  *   block    — el proveedor fue considerado pero descartado. Cuenta en el
  *              denominador y se imputa a una familia de bloqueo.
- *   schedule — gateo por ventana horaria. EXCLUIDO del denominador: es el 50,7%
- *              de los eventos y mide la politica de horarios, no al proveedor.
- *   operativo— salto por decision del operador (kill-switch #3811). EXCLUIDO
- *              del denominador por la misma razon que `schedule`: mide una
- *              politica nuestra, no al proveedor.
+ *   schedule — gateo por ventana horaria. EXCLUIDO del denominador: mide la
+ *              politica de horarios, no al proveedor.
+ *   operativo— salto por decision NUESTRA sobre el proveedor: el kill-switch
+ *              operacional (#3811) y el freno de ritmo (#4289). EXCLUIDO del
+ *              denominador por la misma razon que `schedule`.
+ *   cupo_gate— el flag de cuota agotada de ESE proveedor esta activo
+ *              (`quota-exhausted.shouldGateSpawn`). EXCLUIDO del denominador,
+ *              con columna y nombre propios (ver nota rev-3 mas abajo).
  *   chain    — evento de cadena, no imputable a ningun proveedor individual.
  *
  * rev-2 (#6145): la taxonomia estaba INCOMPLETA. Sobre los 89 archivos diarios
@@ -97,21 +100,84 @@ const ENTRY_FIELD_WHITELIST = Object.freeze([
  * `entriesRead` y `failoverCost.totalEvents`. Ahora estan clasificados, y
  * `computeFailoverCost` ademas reconcilia cualquier evento futuro en el bucket
  * `unclassified`: el total SIEMPRE cierra contra las entradas leidas.
+ *
+ * -----------------------------------------------------------------------------
+ * rev-3 (#6145) — REBOTE DE `security`. DOS ERRORES DE CLASIFICACION.
+ *
+ * (A) BLOQUEANTE / REQ-SEC-3 — el kill-switch del operador bajaba la tasa de
+ *     aporte del proveedor y lo empujaba a `candidato_baja`.
+ *
+ *     `provider_disabled` y `fallback_provider_disabled` son EL MISMO
+ *     kill-switch #3811, evaluado por la MISMA funcion `_isProviderDisabled()`:
+ *     el primero cuando el proveedor cae como PRIMARIO
+ *     (`dispatch-with-fallback.js:1407` -> emision :1460), el segundo cuando cae
+ *     como FALLBACK (:1822 -> emision :1829). Lo unico que cambia es la posicion
+ *     en la cadena. rev-2 excluia el primero como `operativo` y contaba el
+ *     segundo como `block`+`cupo`, es decir DENTRO del denominador.
+ *
+ *     El descuento era ademas VACUO sobre datos reales: en la ventana de 30 dias
+ *     hay 2.661 `fallback_provider_disabled` y CERO `provider_disabled`, con lo
+ *     cual `gatedByOperator` daba 0 para los cuatro gratuitos — los unicos que el
+ *     criterio puede marcar — y el 100% de los saltos por kill-switch caia en el
+ *     denominador. Medido sobre el log real: cerebras 719/3.163 = 22,7% con el
+ *     kill-switch adentro contra 719/719 = 100% sin el, y sus 2.444 bloqueos son
+ *     TODOS kill-switch. Reproducido en codigo: un proveedor con 10 intentos y 10
+ *     exitos (100% de aciertos) mas 400 bloqueos del kill-switch daba
+ *     `candidato_baja` por "tasa 2,4% < umbral 5,0%".
+ *
+ *     Es el modo de falla que REQ-SEC-3 existe para prevenir: apagamos un
+ *     proveedor a mano y el criterio automatico lo lee como que el proveedor no
+ *     aporta. El incidente del 19/08, auto-infligido y permanente.
+ *
+ *     `fallback_pacing_budget_red` sale de esa MISMA rama (:1829, es el ternario
+ *     que distingue `_disabledSourceOf(fb) === 'pacing'`) y #4289 lo define como
+ *     "una preferencia de ritmo, NO un override de permisos". Tambien es una
+ *     decision nuestra => tambien `operativo`. Hoy tiene 0 eventos en la ventana,
+ *     pero dejarlo como `block` reabriria el mismo agujero apenas se use.
+ *     `OPERATOR_GATE_SOURCE` mantiene separados kill-switch y pacing para que el
+ *     reporte no los funda en una sola cifra.
+ *
+ * (B) MEDIA — `fallback_also_gated` (41.600 eventos) se rotulaba `schedule`,
+ *     pero NO tiene nada que ver con la ventana horaria: sale de
+ *     `quotaModule.shouldGateSpawn(skill, {provider})`
+ *     (`dispatch-with-fallback.js:1797` -> emision :1805), que es el flag de
+ *     cuota agotada de ESE proveedor (`quota-exhausted.js:1802`). Contarlo como
+ *     "politica horaria" le imputaba a la ventana horaria 41.600 eventos que son
+ *     de cupo, y el documento publicaba esa suma como tal.
+ *
+ *     Se le da kind propio `cupo_gate`, columna propia y nombre real. Sigue
+ *     FUERA del denominador, y el motivo NO es que sea "politica nuestra" sino
+ *     amplificacion: `shouldGateSpawn` lee un flag que queda activo durante toda
+ *     la ventana de agotamiento, de modo que CADA intento de dispatch mientras
+ *     dura emite un evento. La cuenta mide "duracion del corte x trafico del
+ *     pipeline", no cuantas veces el proveedor se nego. Meterla en una tasa mide
+ *     lo ocupado que estaba el pipeline durante el corte.
+ *
+ *     Esto no ciega al criterio frente a un gratuito permanentemente seco: ese
+ *     proveedor tiene 0 `wins`, y sin muestra evaluable cae en `no_evaluable`,
+ *     que es exactamente lo que manda el invariante 2 del body ("sin dato => NO
+ *     EVALUABLE, jamas 'no aporta'").
+ * -----------------------------------------------------------------------------
  */
 const EVENT_KIND = Object.freeze({
     fallback_selected: 'win',
     fallback_health_gated: 'block',
-    fallback_provider_disabled: 'block',
-    fallback_pacing_budget_red: 'block',
     fallback_no_credentials: 'block',
     chain_exhausted: 'chain',
     primary_inactive_by_schedule: 'schedule',
-    fallback_also_gated: 'schedule',
     fallback_provider_inactive_by_schedule: 'schedule',
-    // --- rev-2: eventos reales que faltaban en la taxonomia ------------------
-    // Kill-switch operacional del primario (`dispatch-with-fallback.js:1372`).
-    // Lo imputa el OPERADOR, no el proveedor => fuera del denominador.
+    // --- rev-3: el kill-switch del operador NUNCA entra en el denominador ----
+    // Kill-switch operacional #3811, evaluado por `_isProviderDisabled()`:
+    //   `provider_disabled`          -> el proveedor caia como PRIMARIO (:1460)
+    //   `fallback_provider_disabled` -> el mismo, como FALLBACK       (:1829)
+    //   `fallback_pacing_budget_red` -> misma rama, origen 'pacing'   (:1829)
+    // Los tres los imputa el OPERADOR/nuestro pacing, no el proveedor.
     provider_disabled: 'operativo',
+    fallback_provider_disabled: 'operativo',
+    fallback_pacing_budget_red: 'operativo',
+    // --- rev-3: cuota del proveedor, NO ventana horaria ----------------------
+    fallback_also_gated: 'cupo_gate',
+    // --- rev-2: eventos reales que faltaban en la taxonomia ------------------
     // Cadena sin fallbacks declarados (`dispatch-with-fallback.js:1539`): es un
     // evento de cadena, no imputable a un proveedor individual.
     gated_no_fallbacks: 'chain',
@@ -123,12 +189,26 @@ const EVENT_KIND = Object.freeze({
 });
 
 /**
+ * rev-3 (#6145) — origen del gateo `operativo`, para que el reporte pueda
+ * distinguir "lo apagamos a mano" de "le frenamos el ritmo" en vez de publicar
+ * una sola cifra que mezcla dos decisiones distintas del operador.
+ */
+const OPERATOR_GATE_SOURCE = Object.freeze({
+    provider_disabled: 'kill_switch',
+    fallback_provider_disabled: 'kill_switch',
+    fallback_pacing_budget_red: 'pacing',
+});
+
+/**
  * Familia de bloqueo por evento. `fallback_health_gated` se refina despues
  * segun `health_reason` (ver `blockFamilyForHealthReason`).
+ *
+ * rev-3 (#6145): `fallback_provider_disabled` y `fallback_pacing_budget_red`
+ * salieron de aca al dejar de ser `block`. La familia `cupo` sobrevive unicamente
+ * por `health_reason` (`quota_exhausted`), que SI es un veredicto del proveedor
+ * sobre su propia cuota y no una decision nuestra.
  */
 const BLOCK_FAMILY_BY_EVENT = Object.freeze({
-    fallback_provider_disabled: 'cupo',
-    fallback_pacing_budget_red: 'cupo',
     fallback_no_credentials: 'credencial',
 });
 
@@ -417,14 +497,25 @@ function readWindow(opts = {}) {
  *
  * INVARIANTE DEL DENOMINADOR (riesgo 2 y 3 del body, confirmado por `guru`):
  *   evaluables = attempts - gatedBySchedule - gatedByOperator
- *                        - gatedByLocalObservability
+ *                        - gatedByLocalObservability - gatedByQuotaFlag
  *
- * Los tres descuentos son causas NUESTRAS, no del proveedor: la ventana
- * horaria, el kill-switch del operador y un chequeo de salud que se pone rojo
- * por un flag de entorno propio. Ninguna puede bajarle la tasa de aporte a un
- * proveedor (rev-2 #6145).
- * El 50,7% de los eventos de la ventana real es gateo por ventana horaria.
- * Incluirlo mide la politica de horarios, no al proveedor.
+ * Los primeros tres descuentos son causas NUESTRAS, no del proveedor: la ventana
+ * horaria, el kill-switch/pacing del operador y un chequeo de salud que se pone
+ * rojo por un flag de entorno propio. Ninguna puede bajarle la tasa de aporte a
+ * un proveedor. El 50,7% de los eventos de la ventana real es gateo por ventana
+ * horaria: incluirlo mide la politica de horarios, no al proveedor.
+ *
+ * rev-3 (#6145) — el cuarto descuento, `gatedByQuotaFlag`, tiene otro motivo: no
+ * es una politica nuestra sino una cuenta AMPLIFICADA. `fallback_also_gated` se
+ * emite en cada intento de dispatch mientras el flag de cuota del proveedor esta
+ * activo, con lo cual mide "duracion del corte x trafico del pipeline" y no
+ * cuantas veces el proveedor se nego. Ver la nota rev-3 (B) en `EVENT_KIND`.
+ *
+ * rev-3 (#6145) — `gatedByOperator` dejo de ser una columna vacia. Antes solo
+ * contaba `provider_disabled` (0 eventos reales en la ventana) mientras los
+ * 2.661 `fallback_provider_disabled` — el MISMO kill-switch, sobre el mismo
+ * proveedor, en posicion de fallback — caian en el denominador y hundian la
+ * tasa. Ver la nota rev-3 (A) en `EVENT_KIND`.
  *
  * @param {object[]} entries  Entradas ya proyectadas (salida de `readWindow`).
  * @param {{now?:number, healthSnapshot?:object}} [opts]
@@ -441,6 +532,11 @@ function computeContribution(entries, opts = {}) {
                 attempts: 0,
                 gatedBySchedule: 0,
                 gatedByOperator: 0,
+                // rev-3 (#6145) — desglose del gateo operativo: el kill-switch
+                // manual (#3811) y el freno de ritmo (#4289) son dos decisiones
+                // distintas del operador y el reporte no puede fundirlas.
+                operatorGates: { kill_switch: 0, pacing: 0 },
+                gatedByQuotaFlag: 0,
                 gatedByLocalObservability: 0,
                 evaluables: 0,
                 wins: 0,
@@ -481,8 +577,19 @@ function computeContribution(entries, opts = {}) {
             continue;                                  // fuera del denominador
         }
         if (kind === 'operativo') {
-            // Kill-switch del operador: misma clase que el gateo horario.
+            // Kill-switch / pacing del operador: misma clase que el gateo
+            // horario. rev-3 (#6145): incluye `fallback_provider_disabled`, que
+            // hasta rev-2 caia en el denominador siendo el MISMO kill-switch.
             m.gatedByOperator += 1;
+            const src = OPERATOR_GATE_SOURCE[entry.event] || 'kill_switch';
+            m.operatorGates[src] = (m.operatorGates[src] || 0) + 1;
+            continue;                                  // fuera del denominador
+        }
+        if (kind === 'cupo_gate') {
+            // rev-3 (#6145): flag de cuota agotada del proveedor. Fuera del
+            // denominador por amplificacion (un corte = miles de eventos), con
+            // columna propia para no imputarselo a la ventana horaria.
+            m.gatedByQuotaFlag += 1;
             continue;                                  // fuera del denominador
         }
 
@@ -724,6 +831,13 @@ function evaluatePermanence(metrics, thresholds, chainCtx = {}) {
                 ? {
                     attempts: m.attempts,
                     gatedBySchedule: m.gatedBySchedule,
+                    // rev-3 (#6145) — el audit debe dejar constancia de cuanto
+                    // del descarte fue decision NUESTRA. Sin estas dos cifras el
+                    // registro no permite auditar si un `candidato_baja` estaba
+                    // contaminado por el kill-switch (REQ-SEC-3).
+                    gatedByOperator: m.gatedByOperator,
+                    operatorGates: { ...m.operatorGates },
+                    gatedByQuotaFlag: m.gatedByQuotaFlag,
                     evaluables: m.evaluables,
                     wins: m.wins,
                     contributionRate: m.contributionRate,
@@ -921,16 +1035,23 @@ function computeFailoverCost(entries) {
     }
     const sum = (...names) => names.reduce((acc, n) => acc + (counts[n] || 0), 0);
 
+    // rev-3 (#6145) — `fallback_also_gated` SALE de la politica horaria: es el
+    // flag de cuota del proveedor (`shouldGateSpawn`). Publicar sus 41.600
+    // eventos como "ventana horaria" era la mitad del hallazgo MEDIA del rebote.
     const schedule = sum(
         'primary_inactive_by_schedule',
-        'fallback_also_gated',
         'fallback_provider_inactive_by_schedule',
     );
-    const operator = sum('provider_disabled');
-    const providerBlocks = sum(
-        'fallback_health_gated',
+    const quotaFlag = sum('fallback_also_gated');
+    // rev-3 (#6145) — el bucket del kill-switch publicaba "0 | 0,0%" mientras
+    // habia 2.661 saltos por kill-switch contados como bloqueo del proveedor.
+    const operator = sum(
+        'provider_disabled',
         'fallback_provider_disabled',
         'fallback_pacing_budget_red',
+    );
+    const providerBlocks = sum(
+        'fallback_health_gated',
         'fallback_no_credentials',
     );
     const wins = sum('fallback_selected');
@@ -947,14 +1068,22 @@ function computeFailoverCost(entries) {
         totalEvents: total,
         byEvent: counts,
         scheduleGating: { events: schedule, pct: pct(schedule) },
-        operatorGating: { events: operator, pct: pct(operator) },
+        quotaFlagGating: { events: quotaFlag, pct: pct(quotaFlag) },
+        operatorGating: {
+            events: operator,
+            pct: pct(operator),
+            // rev-3 (#6145) — desglose para que "kill-switch del operador" no se
+            // lea como un unico numero opaco.
+            killSwitch: sum('provider_disabled', 'fallback_provider_disabled'),
+            pacing: sum('fallback_pacing_budget_red'),
+        },
         providerBlocking: { events: providerBlocks, pct: pct(providerBlocks) },
         wins: { events: wins, pct: pct(wins) },
         chainExhausted: { events: chain, pct: pct(chain) },
         unclassified: { events: unclassified, pct: pct(unclassified), byEvent: unclassifiedByEvent },
     };
     // Contrato explicito: los buckets cierran contra el total, siempre.
-    out.reconciles = (schedule + operator + providerBlocks + wins + chain + unclassified) === total;
+    out.reconciles = (schedule + quotaFlag + operator + providerBlocks + wins + chain + unclassified) === total;
     return out;
 }
 
@@ -971,6 +1100,7 @@ module.exports = {
     // Constantes / helpers exportados para tests y para el CLI
     DEFAULT_THRESHOLDS,
     EVENT_KIND,
+    OPERATOR_GATE_SOURCE,
     ENTRY_FIELD_WHITELIST,
     HEALTH_REASON_FAMILY,
     HEALTH_PROVIDER_ALIAS,

@@ -41,6 +41,21 @@ function many(n, event, provider, extra = {}) {
     return Array.from({ length: n }, () => ev(event, provider, extra));
 }
 
+/**
+ * rev-3 (#6145) — N bloqueos GENUINAMENTE imputables al proveedor: el chequeo de
+ * salud lo encontro con la cuota agotada, que es un veredicto del proveedor
+ * sobre si mismo.
+ *
+ * Hasta rev-2 estos fixtures usaban `fallback_provider_disabled` como "bloqueo
+ * generico", pero ese evento es el kill-switch del OPERADOR (#3811) y ya no
+ * entra en el denominador. Seguir usandolo aca habria hecho que los tests
+ * midieran nuestra propia decision de apagar el proveedor en vez de medir al
+ * proveedor — exactamente el bug que este rebote corrige.
+ */
+function manyBlocked(n, provider, extra = {}) {
+    return many(n, 'fallback_health_gated', provider, { health_reason: 'quota_exhausted', ...extra });
+}
+
 const DECLARED = {
     anthropic: { billing: 'paid', declaredInConfig: true },
     'openai-codex': { billing: 'paid', declaredInConfig: true },
@@ -71,16 +86,15 @@ function evaluate(entries, { declared = DECLARED, thresholds = THRESHOLDS, chain
 test('el denominador excluye los gateos por ventana horaria', () => {
     const entries = [
         ...many(50, 'fallback_selected', 'cerebras'),
-        ...many(50, 'fallback_provider_disabled', 'cerebras'),
-        // 900 gateos por horario: si contaran, la tasa caería de 50% a 5%.
+        ...manyBlocked(50, 'cerebras'),
+        // 600 gateos por horario: si contaran, la tasa caería de 50% a ~7%.
         ...many(300, 'primary_inactive_by_schedule', null, { primary_provider: 'cerebras' }),
-        ...many(300, 'fallback_also_gated', 'cerebras'),
         ...many(300, 'fallback_provider_inactive_by_schedule', 'cerebras'),
     ];
     const m = mod.computeContribution(entries, { now: NOW }).cerebras;
 
-    assert.strictEqual(m.attempts, 1000, 'los 1000 eventos se cuentan como intentos');
-    assert.strictEqual(m.gatedBySchedule, 900, 'los 900 de horario se aíslan');
+    assert.strictEqual(m.attempts, 700, 'los 700 eventos se cuentan como intentos');
+    assert.strictEqual(m.gatedBySchedule, 600, 'los 600 de horario se aíslan');
     assert.strictEqual(m.evaluables, 100, 'evaluables = attempts - gatedBySchedule');
     assert.strictEqual(m.wins, 50);
     assert.strictEqual(m.contributionRate, 0.5, 'la tasa se calcula sobre evaluables, no sobre attempts');
@@ -97,6 +111,117 @@ test('chain_exhausted no se imputa a ningun proveedor', () => {
 });
 
 // -----------------------------------------------------------------------------
+// rev-3 (#6145) — REQ-SEC-3: el kill-switch del operador NO mide al proveedor
+//
+// Rebote de `security`. `provider_disabled` (primario, dispatch:1460) y
+// `fallback_provider_disabled` (fallback, dispatch:1829) son el MISMO kill-switch
+// #3811 resuelto por la misma `_isProviderDisabled()`. rev-2 excluia el primero
+// y contaba el segundo en el denominador, y sobre datos reales el primero tiene
+// CERO eventos: el descuento era vacuo y el 100% de los saltos por kill-switch
+// hundia la tasa del proveedor.
+// -----------------------------------------------------------------------------
+
+test('el kill-switch del operador no baja la tasa de aporte del proveedor', () => {
+    // El caso exacto del rebote: 10 intentos reales, 10 aciertos (100%), mas 400
+    // saltos porque NOSOTROS apagamos el proveedor.
+    const entries = [
+        ...many(10, 'fallback_selected', 'cerebras'),
+        ...many(400, 'fallback_provider_disabled', 'cerebras'),
+    ];
+    const m = mod.computeContribution(entries, { now: NOW }).cerebras;
+
+    assert.strictEqual(m.attempts, 410);
+    assert.strictEqual(m.gatedByOperator, 400, 'los 400 saltos son del operador, no del proveedor');
+    assert.strictEqual(m.operatorGates.kill_switch, 400, 'y se imputan al kill-switch');
+    assert.strictEqual(m.evaluables, 10, 'evaluables descuenta el kill-switch');
+    assert.strictEqual(m.contributionRate, 1, 'un proveedor con 10/10 aciertos mide 100%, no 2,4%');
+    assert.deepStrictEqual(Object.keys(m.blocks), [],
+        'el kill-switch no es un bloqueo imputable al proveedor');
+});
+
+test('el kill-switch del operador nunca empuja a un proveedor sano a candidato a baja', () => {
+    // Con dos gratuitos sanos el invariante de cadena minima no interviene, asi
+    // que el veredicto sale del criterio puro (era `candidato_baja` en rev-2).
+    const entries = [
+        ...many(10, 'fallback_selected', 'cerebras'),
+        ...many(400, 'fallback_provider_disabled', 'cerebras'),
+        ...many(300, 'fallback_selected', 'nvidia-nim'),
+    ];
+    const { verdicts } = evaluate(entries, { thresholds: { ...THRESHOLDS, min_sample: 10 } });
+
+    assert.strictEqual(verdicts.cerebras.verdict, mod.VERDICT.MANTENER,
+        'apagar un proveedor a mano no puede leerse como que el proveedor no aporta');
+    assert.strictEqual(verdicts.cerebras.evidence.gatedByOperator, 400,
+        'el audit deja constancia de cuanto del descarte fue decision nuestra');
+});
+
+test('el primario y el fallback del mismo kill-switch se clasifican igual', () => {
+    // Son la misma causa (#3811); lo unico que cambia es la posicion en la
+    // cadena. Si divergen, vuelve el agujero de REQ-SEC-3.
+    assert.strictEqual(mod.EVENT_KIND.provider_disabled, 'operativo');
+    assert.strictEqual(mod.EVENT_KIND.fallback_provider_disabled, 'operativo');
+    assert.strictEqual(mod.EVENT_KIND.fallback_pacing_budget_red, 'operativo',
+        'el freno de ritmo (#4289) tambien es una decision nuestra');
+
+    const porPrimario = mod.computeContribution(
+        many(100, 'provider_disabled', null, { primary_provider: 'cerebras' }), { now: NOW },
+    ).cerebras;
+    const porFallback = mod.computeContribution(
+        many(100, 'fallback_provider_disabled', 'cerebras'), { now: NOW },
+    ).cerebras;
+
+    assert.strictEqual(porPrimario.evaluables, porFallback.evaluables, 'mismo denominador');
+    assert.strictEqual(porPrimario.gatedByOperator, porFallback.gatedByOperator, 'mismo descuento');
+    assert.strictEqual(porFallback.evaluables, 0, 'ninguno de los dos entra al denominador');
+});
+
+test('el freno de ritmo se cuenta aparte del kill-switch manual', () => {
+    const m = mod.computeContribution([
+        ...many(30, 'fallback_provider_disabled', 'cerebras'),
+        ...many(12, 'fallback_pacing_budget_red', 'cerebras'),
+    ], { now: NOW }).cerebras;
+
+    assert.strictEqual(m.gatedByOperator, 42, 'ambos son gateo operativo');
+    assert.deepStrictEqual(m.operatorGates, { kill_switch: 30, pacing: 12 },
+        'pero el reporte no puede fundir dos decisiones distintas en una sola cifra');
+});
+
+// -----------------------------------------------------------------------------
+// rev-3 (#6145) — `fallback_also_gated` es cupo del proveedor, no ventana horaria
+// -----------------------------------------------------------------------------
+
+test('fallback_also_gated se imputa al cupo del proveedor y no a la ventana horaria', () => {
+    // Sale de `quotaModule.shouldGateSpawn` (dispatch:1797 -> :1805), que lee el
+    // flag de cuota agotada de ESE proveedor (quota-exhausted.js:1802). rev-2 lo
+    // rotulaba `schedule` y le imputaba a la politica horaria 41.600 eventos de
+    // cupo, que era lo que publicaba el documento.
+    assert.strictEqual(mod.EVENT_KIND.fallback_also_gated, 'cupo_gate');
+
+    const m = mod.computeContribution([
+        ...many(40, 'fallback_selected', 'cerebras'),
+        ...many(300, 'fallback_also_gated', 'cerebras'),
+    ], { now: NOW }).cerebras;
+
+    assert.strictEqual(m.gatedBySchedule, 0, 'no es ventana horaria');
+    assert.strictEqual(m.gatedByQuotaFlag, 300, 'tiene columna propia');
+    assert.strictEqual(m.evaluables, 40,
+        'sigue fuera del denominador: un corte de cuota emite un evento por intento (amplificacion)');
+});
+
+test('un gratuito seco cae en no_evaluable y nunca en candidato a baja por cupo amplificado', () => {
+    // Contracara del test anterior: excluir el flag de cuota no puede convertirse
+    // en una via para que un proveedor sin un solo aporte pase por sano.
+    const entries = [
+        ...many(500, 'fallback_selected', 'cerebras'),
+        ...many(5000, 'fallback_also_gated', 'nvidia-nim'),   // seco toda la ventana
+    ];
+    const { verdicts } = evaluate(entries);
+
+    assert.strictEqual(verdicts['nvidia-nim'].verdict, mod.VERDICT.NO_EVALUABLE,
+        'invariante 2 del body: sin dato evaluable es "no evaluable", jamas "no aporta"');
+});
+
+// -----------------------------------------------------------------------------
 // "Sin dato" nunca es "no aporta"
 // -----------------------------------------------------------------------------
 
@@ -105,7 +230,7 @@ test('un proveedor sin muestra suficiente queda no_evaluable y nunca candidato a
         // cerebras: sano, sostiene la cadena.
         ...many(200, 'fallback_selected', 'cerebras'),
         // nvidia-nim: 99 evaluables < min_sample=100, y 0 aportes.
-        ...many(99, 'fallback_provider_disabled', 'nvidia-nim'),
+        ...manyBlocked(99, 'nvidia-nim'),
     ];
     const { verdicts } = evaluate(entries);
 
@@ -140,7 +265,7 @@ test('un gateo durable por cli_license_unavailable no baja la tasa de aporte', (
         // evaluables reales, 80 % de tasa. Los 1.000 gateos por un flag de
         // entorno NUESTRO no entran al denominador.
         ...many(120, 'fallback_selected', 'gemini-google'),
-        ...many(30, 'fallback_provider_disabled', 'gemini-google'),
+        ...manyBlocked(30, 'gemini-google'),
         ...many(1000, 'fallback_health_gated', 'gemini-google', {
             health_state: 'red',
             health_reason: 'cli_license_unavailable',
@@ -174,7 +299,7 @@ test('el techo rol_acotado sigue tapando la baja si aun asi la tasa queda baja',
     const entries = [
         ...many(300, 'fallback_selected', 'cerebras'),   // sostiene la cadena
         ...many(2, 'fallback_selected', 'gemini-google'),
-        ...many(200, 'fallback_provider_disabled', 'gemini-google'),
+        ...manyBlocked(200, 'gemini-google'),
         ...many(1000, 'fallback_health_gated', 'gemini-google', {
             health_state: 'red',
             health_reason: 'cli_license_unavailable',
@@ -217,7 +342,7 @@ test('un bloqueo por causa del proveedor si habilita el candidato a baja', () =>
 test('cadena de hash corrupta o archivo faltante impide evaluar a todos los proveedores', () => {
     const entries = [
         ...many(500, 'fallback_selected', 'cerebras'),
-        ...many(500, 'fallback_provider_disabled', 'nvidia-nim'),
+        ...manyBlocked(500, 'nvidia-nim'),
     ];
     const { verdicts } = evaluate(entries, { chainOk: false });
 
@@ -267,7 +392,7 @@ test('nunca marca candidato al ultimo proveedor sano de la cadena', () => {
     const declared = { cerebras: { billing: 'free', declaredInConfig: true } };
     const entries = [
         ...many(5, 'fallback_selected', 'cerebras'),
-        ...many(500, 'fallback_provider_disabled', 'cerebras'),
+        ...manyBlocked(500, 'cerebras'),
     ];
     const { metrics, verdicts } = evaluate(entries, { declared });
 
@@ -296,9 +421,9 @@ test('el invariante de cadena minima no lo satisfacen los pagos de forma vacua',
             health_state: 'red', health_reason: 'quota_exhausted',
         }),
         ...many(5, 'fallback_selected', 'cerebras'),
-        ...many(500, 'fallback_provider_disabled', 'cerebras'),
+        ...manyBlocked(500, 'cerebras'),
         ...many(5, 'fallback_selected', 'nvidia-nim'),
-        ...many(500, 'fallback_provider_disabled', 'nvidia-nim'),
+        ...manyBlocked(500, 'nvidia-nim'),
         // Los pagos, con muestra de sobra y aporte alto.
         ...many(500, 'fallback_selected', 'anthropic'),
         ...many(500, 'fallback_selected', 'openai-codex'),
@@ -332,7 +457,7 @@ test('con gratuitos sanos de sobra el criterio si marca al que no aporta', () =>
         ...many(500, 'fallback_selected', 'gemini-google'),   // aporta
         ...many(500, 'fallback_selected', 'cerebras'),        // aporta
         ...many(5, 'fallback_selected', 'nvidia-nim'),        // no aporta
-        ...many(500, 'fallback_provider_disabled', 'nvidia-nim'),
+        ...manyBlocked(500, 'nvidia-nim'),
         ...many(500, 'fallback_selected', 'anthropic'),
         ...many(500, 'fallback_selected', 'openai-codex'),
     ];
@@ -355,7 +480,7 @@ test('min_survivors alto exige mas gratuitos sanos antes de marcar a nadie', () 
         ...many(500, 'fallback_selected', 'gemini-google'),
         ...many(500, 'fallback_selected', 'cerebras'),
         ...many(5, 'fallback_selected', 'nvidia-nim'),
-        ...many(500, 'fallback_provider_disabled', 'nvidia-nim'),
+        ...manyBlocked(500, 'nvidia-nim'),
         ...many(500, 'fallback_selected', 'anthropic'),
         ...many(500, 'fallback_selected', 'openai-codex'),
     ];
@@ -427,7 +552,7 @@ test('un proveedor pago nunca es candidato a baja', () => {
         ...many(300, 'fallback_selected', 'cerebras'),
         // openai-codex: 1 aporte sobre 1001 evaluables, último aporte hace 40 días.
         ...many(1, 'fallback_selected', 'openai-codex', { created_at: NOW - 40 * DAY }),
-        ...many(1000, 'fallback_provider_disabled', 'openai-codex'),
+        ...manyBlocked(1000, 'openai-codex'),
     ];
     const { verdicts } = evaluate(entries);
 
@@ -438,7 +563,7 @@ test('un proveedor pago nunca es candidato a baja', () => {
 test('un proveedor sin ningun aporte en la ventana queda marcado como candidato con evidencia', () => {
     const entries = [
         ...many(500, 'fallback_selected', 'cerebras'),
-        ...many(500, 'fallback_provider_disabled', 'nvidia-nim'),   // cero wins
+        ...manyBlocked(500, 'nvidia-nim'),   // cero wins
     ];
     const { verdicts } = evaluate(entries);
 
@@ -452,7 +577,7 @@ test('un proveedor que dejo de aportar hace mas dias que el umbral queda candida
     const entries = [
         ...many(500, 'fallback_selected', 'cerebras'),
         ...many(400, 'fallback_selected', 'nvidia-nim', { created_at: NOW - 20 * DAY }),
-        ...many(100, 'fallback_provider_disabled', 'nvidia-nim'),
+        ...manyBlocked(100, 'nvidia-nim'),
     ];
     const { verdicts } = evaluate(entries);
 
@@ -483,7 +608,7 @@ test('un proveedor en agent-models pero ausente de config.yaml tambien es sin_de
     };
     const entries = [
         ...many(500, 'fallback_selected', 'cerebras'),
-        ...many(500, 'fallback_provider_disabled', 'kimi-moonshot'),
+        ...manyBlocked(500, 'kimi-moonshot'),
     ];
     const { verdicts } = evaluate(entries, { declared });
 

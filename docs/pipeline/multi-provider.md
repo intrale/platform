@@ -2560,31 +2560,49 @@ alimentar el criterio; un archivo con la cadena rota se descarta y se reporta.
 | `fallback_selected` | **aporte real** — única señal de que el proveedor resolvió el pedido |
 | `fallback_health_gated` con causa de proveedor (`cupo` / `credencial`) | bloqueo, entra al denominador |
 | `fallback_health_gated` con causa `observabilidad local` | **excluido del denominador** — el rojo es nuestro |
-| `fallback_provider_disabled` · `fallback_pacing_budget_red` | bloqueo por `cupo` |
 | `fallback_no_credentials` | bloqueo por `credencial` |
-| `primary_inactive_by_schedule` · `fallback_also_gated` · `fallback_provider_inactive_by_schedule` | **excluidos del denominador** — política horaria |
-| `provider_disabled` | **excluido del denominador** — kill-switch del operador (#3811) |
+| `primary_inactive_by_schedule` · `fallback_provider_inactive_by_schedule` | **excluidos del denominador** — política horaria |
+| `provider_disabled` · `fallback_provider_disabled` · `fallback_pacing_budget_red` | **excluidos del denominador** — kill-switch / freno de ritmo del operador (#3811, #4289) |
+| `fallback_also_gated` | **excluido del denominador** — flag de cuota agotada del proveedor, con la cuenta amplificada |
 | `chain_exhausted` · `gated_no_fallbacks` · `forced_provider_override*` | eventos de cadena, no imputables a ningún proveedor |
 
 ```
 evaluables = intentos
              − gateos por ventana horaria
-             − saltos por kill-switch del operador
+             − saltos por kill-switch / freno de ritmo del operador
              − gateos de salud por causa nuestra (observabilidad local)
+             − gateos por el flag de cuota agotada (cuenta amplificada)
 
 tasa de aporte = aportes / evaluables
 ```
 
-**Los tres descuentos comparten una razón:** miden una política o un bug **nuestro**, no al
-proveedor.
+**Los primeros tres descuentos comparten una razón:** miden una política o un bug
+**nuestro**, no al proveedor.
 
-- *Ventana horaria* — es el **~51 %** de los eventos. Incluirla mediría el horario que
+- *Ventana horaria* — es el **~24 %** de los eventos. Incluirla mediría el horario que
   nosotros configuramos.
-- *Kill-switch* — es una decisión operativa explícita del operador.
+- *Kill-switch y freno de ritmo* — son decisiones operativas explícitas nuestras.
+  `provider_disabled` y `fallback_provider_disabled` son **el mismo** kill-switch #3811
+  resuelto por la misma `_isProviderDisabled()`; lo único que cambia es si el proveedor
+  cayó como primario (`dispatch-with-fallback.js:1460`) o como fallback (`:1829`).
+  **Tienen que clasificarse igual**: excluir sólo el primero deja un descuento vacío, dado
+  que en datos reales `provider_disabled` no ocurre casi nunca y `fallback_provider_disabled`
+  concentra los miles de saltos. Con el segundo dentro del denominador, apagar un proveedor
+  a mano lo empuja a `candidato_baja` — la violación de REQ-SEC-3 que rebotó `security` en
+  #6145: `cerebras` medía 22,7 % con el kill-switch adentro y **100 %** sin él.
 - *Observabilidad local* — el rojo lo produce un flag de entorno propio, sin round-trip al
-  proveedor. Es el caso `gemini-google`: con sus 3.658 gateos dentro del denominador su
-  tasa daba 7,6 %; con el denominador limpio da **93,1 %**. Un umbral ingenuo lo habría
-  sacado de la cadena por un bug de instrumentación nuestro.
+  proveedor. Es el caso `gemini-google`: con sus gateos dentro del denominador su tasa daba
+  7,6 %; con el denominador limpio da **100 %**. Un umbral ingenuo lo habría sacado de la
+  cadena por un bug de instrumentación nuestro.
+
+**El cuarto descuento tiene otra razón: amplificación, no política.** `fallback_also_gated`
+sale de `quotaModule.shouldGateSpawn` (`dispatch-with-fallback.js:1805` → `quota-exhausted.js:1802`),
+o sea el flag de **cuota agotada del propio proveedor** — no tiene nada que ver con la
+ventana horaria, pese a que hasta #6145 rev-2 se lo contaba ahí. Se excluye porque el flag
+queda activo durante todo el corte y **cada** intento de dispatch mientras dura emite un
+evento: la cuenta mide *duración del corte × tráfico del pipeline*, no cuántas veces el
+proveedor se negó. Excluirlo no deja pasar por sano a un gratuito seco: ése tiene 0 aportes
+y sin muestra evaluable cae en `no evaluable`, que es lo que corresponde.
 
 **La taxonomía es cerrada y reconcilia.** El reporte cuenta *todas* las entradas leídas, y
 cualquier evento que el dispatcher agregue en el futuro y todavía no esté clasificado cae

@@ -14,6 +14,16 @@
 > era en realidad un ping puntual y volátil, y una recomendación se apoyaba en él; (c) 261
 > eventos quedaban fuera del total sobre el que se calculaban los porcentajes. Los tres
 > están corregidos, y el cambio (a) mueve la tasa de Gemini de 7,6 % a **93,1 %**. Ver §11.
+>
+> **rev-3 (rebote de `security`, REQ-SEC-3).** Los números se regeneraron **otra vez**,
+> porque la auditoría encontró que el **kill-switch del operador seguía bajándole la tasa
+> de aporte al proveedor** y podía empujarlo a `candidato_baja`: `provider_disabled` y
+> `fallback_provider_disabled` son el mismo kill-switch #3811, y sólo el primero estaba
+> excluido — descuento **vacío**, porque en datos reales el primero tiene **cero** eventos
+> y el segundo **2.661**. Además `fallback_also_gated` (41.591 eventos) se publicaba como
+> *política horaria* cuando es el flag de cuota del propio proveedor. Ambos corregidos:
+> `cerebras` pasa de 27,2 % a **100 %**, `nvidia-nim` de 63,1 % a **100 %**, y la fila
+> *kill-switch del operador* del §4 deja de decir `0 | 0,0 %`. Ver §11.
 
 ---
 
@@ -24,15 +34,20 @@
 1. **No se propone dar de baja a ningún proveedor en esta ventana.** La premisa que abrió
    el issue — *"varios gratuitos permanentemente secos"* — no se sostiene con los datos.
 2. **Gemini figura rojo en el panel por un flag de entorno nuestro, y es el proveedor con
-   la mejor tasa de aporte de la cadena declarada**: 201 dispatches ganados sobre 216
-   intentos que le son imputables (**93,1 %**), el 96 % de ellos conversacionales. Se
-   **recupera**, no se baja. Seguimiento: **#6225**.
+   la mejor tasa de aporte de la cadena declarada**: 153 dispatches ganados sobre 153
+   intentos que le son imputables (**100 %**), el 99 % de ellos conversacionales. Con el
+   gateo local descontado le quedan 153 evaluables, por debajo de `min_sample=200`, así que
+   el criterio lo deja en **no evaluable** — sin muestra no se decide. Se **recupera**, no
+   se baja. Seguimiento: **#6225**.
 3. **Cerebras y NVIDIA aportan de forma sostenida y sin un solo gateo por salud**
-   (27,2 % y 63,1 % de tasa respectivamente).
+   (**100 %** de tasa cada uno: 716/716 y 370/370). No es que hayan mejorado — es que ya
+   no se les descuenta de la tasa el kill-switch con el que los apagamos nosotros (rev-3).
 4. **`kimi-moonshot` participa del dispatch pero no está declarado en `config.yaml`**:
    queda **sin evaluar** hasta que se reconcilie (#6153). No se decide sobre él.
-5. **La mitad del costo de failover es política horaria, no proveedores muertos.**
-   Atribuirlo a los gratuitos sería vender un número falso al operador.
+5. **Sólo el 11,7 % del costo de failover es un bloqueo imputable a un proveedor.** El
+   resto es cadena (34,6 %), cupo agotado (25,7 %), política horaria (24,4 %) y nuestro
+   propio kill-switch (1,6 %). Atribuirlo a los gratuitos sería vender un número falso al
+   operador.
 
 **El hallazgo que cambia la pregunta:** los gratuitos no le quitan carga al proveedor
 pago — recogen trabajo que la cadena paga **ya rechazó**. Darlos de baja no alivia al
@@ -44,12 +59,12 @@ pago: convierte esos dispatches en `chain_exhausted` (ver §5).
 
 | | |
 |---|---|
-| **Ventana** | 2026-07-22 → 2026-08-21 (30 días) |
+| **Ventana** | 2026-07-25 → 2026-08-24 (30 días) |
 | **Fuente** | `.pipeline/logs/cross-provider-dispatch-*.jsonl` (append-only con hash-chain) |
-| **Archivos** | 31 archivos diarios |
-| **Eventos leídos** | 106.614 |
-| **Integridad** | `hash-chain: OK` — los 31 archivos verifican con `audit-log.verifyChain` |
-| **Comando** | `node .pipeline/scripts/provider-contribution-report.js --dias=30 --hasta=2026-08-21` |
+| **Archivos** | 30 archivos diarios |
+| **Eventos leídos** | 162.058 |
+| **Integridad** | `hash-chain: OK` — los 30 archivos verifican con `audit-log.verifyChain` |
+| **Comando** | `node .pipeline/scripts/provider-contribution-report.js --dias=30 --hasta=2026-08-24` |
 
 > **El `--hasta` es parte del comando, no un adorno.** Sin él, `--dias=30` toma la ventana
 > que termina *hoy*: otra ventana, otros números. Cualquier intento de reproducir esta
@@ -68,19 +83,45 @@ el módulo llega a importarla (`el modulo no lee activity-log.jsonl`).
 
 - **Aporte real** = evento `fallback_selected`. Es la única señal de que el proveedor
   efectivamente resolvió un pedido.
-- **Denominador** = `intentos − causas nuestras`. Se descuentan tres, porque las tres
-  miden una política o un bug propio y no al proveedor:
+- **Denominador** = `intentos − causas nuestras − cupo amplificado`. Se descuentan cuatro:
 
   | Descuento | Eventos | Por qué no cuenta |
   |---|---|---|
-  | Ventana horaria | `primary_inactive_by_schedule`, `fallback_also_gated`, `fallback_provider_inactive_by_schedule` | Es el **51,1 %** del total. Mide el horario que nosotros configuramos. |
-  | Kill-switch del operador | `provider_disabled` | Es una decisión operativa nuestra (#3811). |
+  | Ventana horaria | `primary_inactive_by_schedule`, `fallback_provider_inactive_by_schedule` | Es el **24,4 %** del total. Mide el horario que nosotros configuramos. |
+  | Kill-switch del operador | `provider_disabled` (cae como primario), `fallback_provider_disabled` (el mismo, como fallback), `fallback_pacing_budget_red` (freno de ritmo) | Es una decisión operativa **nuestra** (#3811 / #4289). |
   | Observabilidad local | `fallback_health_gated` con causa de la familia `observabilidad_local` (p. ej. `cli_license_unavailable`) | El rojo lo produce un flag de entorno **nuestro**, sin round-trip al proveedor. |
+  | Cupo amplificado | `fallback_also_gated` | Sí es del proveedor, pero la cuenta está inflada: mientras el flag de cuota dura, **cada** intento de dispatch emite un evento. Mide duración del corte × tráfico del pipeline, no cuántas veces el proveedor se negó. |
 
-  El tercer descuento es la corrección más importante de rev-2: el body del issue lo pedía
-  explícitamente (*"un gateo durable por observabilidad NO baja la tasa de aporte"*) pero
-  rev-1 lo dejaba dentro del denominador y sólo lo compensaba a nivel de veredicto. Con
-  3.658 gateos de causa local, la tasa de Gemini salía 7,6 % en vez de 93,1 %.
+  El tercer descuento fue la corrección de rev-2: el body lo pedía explícitamente
+  (*"un gateo durable por observabilidad NO baja la tasa de aporte"*) pero rev-1 lo dejaba
+  dentro del denominador y sólo lo compensaba a nivel de veredicto.
+
+  **Los descuentos 2 y 4 son la corrección de rev-3, y salen de un rebote de `security`
+  por violación de REQ-SEC-3.** Hasta rev-2:
+
+  - `provider_disabled` y `fallback_provider_disabled` son **el mismo kill-switch #3811**,
+    resuelto por la misma función `_isProviderDisabled()`: el primero cuando el proveedor
+    cae como primario (`dispatch-with-fallback.js:1460`), el segundo cuando cae como
+    fallback (`:1829`). rev-2 excluía el primero y contaba el segundo **dentro** del
+    denominador. Sobre datos reales el descuento era **vacío**: en la ventana hay **2.661**
+    `fallback_provider_disabled` y **cero** `provider_disabled`, así que el 100 % de los
+    saltos por kill-switch le bajaba la tasa al proveedor. Medido: `cerebras` daba
+    **716/3.160 = 22,7 %** con el kill-switch adentro contra **716/716 = 100 %** sin él, y
+    sus 2.444 bloqueos eran **todos** kill-switch. Reproducido en código: un proveedor con
+    10 intentos y 10 aciertos (**100 %**) más 400 bloqueos del kill-switch daba
+    `candidato_baja` por *"tasa 2,4 % < umbral 5,0 %"*. Es exactamente el modo de falla que
+    REQ-SEC-3 existe para evitar: apagamos un proveedor a mano y el criterio automático lo
+    lee como que el proveedor no aporta — el incidente del 19/08, auto-infligido y
+    permanente.
+  - `fallback_also_gated` (**41.591** eventos) se rotulaba *ventana horaria*, pero no sale
+    del horario: sale de `quotaModule.shouldGateSpawn` (`dispatch-with-fallback.js:1805`),
+    que lee el flag de **cuota agotada de ese proveedor** (`quota-exhausted.js:1802`). Se
+    le dio bucket y nombre propios. Sigue fuera del denominador, pero por amplificación, no
+    por ser "política nuestra".
+
+  Excluir el cupo amplificado **no** deja pasar por sano a un gratuito seco: ese proveedor
+  tiene 0 aportes y sin muestra evaluable cae en `no evaluable`, que es justo lo que manda
+  el invariante 2 (*"sin dato ⇒ no evaluable, jamás 'no aporta'"*).
 - **Bloqueo dominante** se clasifica en familias que no se mezclan: `cupo`
   (recuperable por diseño), `observabilidad local` (bug nuestro, jamás imputable al
   proveedor) y `credencial`.
@@ -94,12 +135,24 @@ el módulo llega a importarla (`el modulo no lee activity-log.jsonl`).
 
 | Proveedor | Intentos evaluables | Aportes | Tasa | Último live-ping (no es mediana) | Bloqueo dominante | Último aporte | Rol (conversacional / pipeline) | Recomendación |
 |---|---:|---:|---:|---|---|---|---|---|
-| openai-codex | 13.526 | 2.007 | 14,8 % | sin instrumentar (#6152) | cupo | 2026-08-21 23:14 | 25 % / 75 % | mantener |
-| cerebras | 2.803 | 763 | 27,2 % | 258 ms | cupo | 2026-08-21 23:15 | 61 % / 39 % | mantener |
-| nvidia-nim | 583 | 368 | 63,1 % | 2,0 s | cupo | 2026-08-21 23:15 | 81 % / 19 % | mantener |
-| gemini-google | 216 | 201 | 93,1 % | sin instrumentar (#6152) | observabilidad local (`cli_license_unavailable`) | 2026-08-21 23:01 | 96 % / 4 % | mantener |
-| kimi-moonshot | 87 | 87 | 100,0 % | sin instrumentar (#6152) | sin muestra | 2026-08-21 00:01 | 0 % / 100 % | sin declarar (#6153) |
+| openai-codex | 15.384 | 1.879 | 12,2 % | sin instrumentar (#6152) | cupo | 2026-08-23 09:17 | 25 % / 75 % | mantener |
+| cerebras | 716 | 716 | 100,0 % | 274 ms | sin muestra | 2026-08-22 14:48 | 59 % / 41 % | mantener |
+| nvidia-nim | 370 | 370 | 100,0 % | 4,9 s | sin muestra | 2026-08-22 14:31 | 79 % / 21 % | mantener |
+| gemini-google | 153 | 153 | 100,0 % | sin instrumentar (#6152) | observabilidad local (`cli_license_unavailable`) | 2026-08-22 02:30 | 99 % / 1 % | no evaluable |
+| kimi-moonshot | 124 | 124 | 100,0 % | sin instrumentar (#6152) | sin muestra | 2026-08-22 15:14 | 0 % / 100 % | sin declarar (#6153) |
 | anthropic | 0 | 0 | sin muestra | sin instrumentar (#6152) | sin muestra | sin muestra | sin muestra | mantener |
+
+> Ventana **2026-07-25 → 2026-08-24**, hash-chain OK sobre 30 archivos. Regenerable con
+> `node .pipeline/scripts/provider-contribution-report.js --dias=30`.
+
+**Qué cambió respecto de rev-2 y por qué.** Las tasas de `cerebras` (27,2 % → 100 %) y
+`nvidia-nim` (63,1 % → 100 %) **no subieron porque los proveedores mejoraran**: subieron
+porque se sacó del denominador el kill-switch con el que **nosotros** los apagamos. Sus
+bloqueos "por cupo" de rev-2 eran, en su totalidad, saltos por kill-switch. `gemini-google`
+pasa a `no evaluable`: con el gateo por observabilidad local descontado le quedan 153
+intentos evaluables, por debajo de `min_sample=200`. Es el comportamiento correcto —
+**sin muestra no se decide** — y refuerza la conclusión de §7: hay que arreglar el chequeo
+antes de medirlo, no darlo de baja.
 
 **La columna de latencia no es una mediana, y por eso no se llama así.** CA-1 pide
 *"latencia mediana sobre una ventana de al menos 30 días"*. **Ese dato no existe hoy**: el
@@ -135,13 +188,23 @@ no es de los gratuitos:
 
 | Causa | Eventos | % del total |
 |---|---:|---:|
-| Política horaria (`*_by_schedule`, `fallback_also_gated`) | 54.431 | 51,1 % |
-| Eventos de cadena (`chain_exhausted`, `gated_no_fallbacks`, forzados) | 31.310 | 29,4 % |
-| Bloqueo imputable a un proveedor (salud / cupo / credencial) | 17.447 | 16,4 % |
-| Dispatch resuelto (`fallback_selected`) | 3.426 | 3,2 % |
-| Kill-switch del operador (`provider_disabled`) | 0 | 0,0 % |
+| Eventos de cadena (`chain_exhausted`, `gated_no_fallbacks`, forzados) | 56.101 | 34,6 % |
+| Cupo del proveedor — flag de agotamiento (`fallback_also_gated`) | 41.591 | 25,7 % |
+| Política horaria (`*_by_schedule`) | 39.556 | 24,4 % |
+| Bloqueo imputable a un proveedor (salud / credencial) | 18.907 | 11,7 % |
+| Dispatch resuelto (`fallback_selected`) | 3.242 | 2,0 % |
+| Kill-switch del operador (`provider_disabled` + `fallback_provider_disabled` + pacing) | 2.661 | 1,6 % |
 | Fuera de taxonomía | 0 | 0,0 % |
-| **TOTAL** | **106.614** | **100 %** |
+| **TOTAL** | **162.058** | **100 %** |
+
+**rev-3 — dos filas de esta tabla estaban mal, y `security` las rebotó.** La fila del
+kill-switch publicaba **`0 | 0,0 %`** cuando en la ventana hubo **2.661** saltos por
+kill-switch: contaba sólo `provider_disabled`, que no ocurre nunca en datos reales, y los
+2.661 `fallback_provider_disabled` — el mismo kill-switch en posición de fallback — se
+publicaban como *bloqueo imputable a un proveedor*. Y la fila de política horaria sumaba
+adentro los 41.591 `fallback_also_gated`, que son cupo del proveedor y no horario. El
+efecto combinado era publicar como culpa del proveedor dos cosas que no lo son, y como
+horario una que tampoco. Ahora cada causa tiene su fila.
 
 **Los buckets cierran contra el total.** Es una propiedad verificada por el propio reporte
 (`failoverCost.reconciles`) y por test. En rev-1 no cerraban: 261 eventos
@@ -151,12 +214,17 @@ verificó sobre los 88 archivos completos del log que la reconciliación es exac
 (139.658 entradas leídas = 139.658 eventos clasificados, `unclassified: 0`).
 
 **Lectura para el operador:** de cada 10 eventos que alargan el camino hasta la respuesta,
-**5 son la ventana horaria** que nosotros configuramos y sólo **1,6 son proveedores
-bloqueados**. Sacar gratuitos de la cadena no toca la mitad grande del problema.
+**3,5 son eventos de cadena**, **2,6 son cupo agotado**, **2,4 son la ventana horaria** que
+nosotros configuramos y sólo **1,2 son bloqueos imputables a un proveedor**. Sacar
+gratuitos de la cadena no toca ninguno de los tres bloques grandes.
 
-De esos 17.447 bloqueos imputables, **3.658 son gateos de `gemini-google` y el 100 % de
+De esos 18.907 bloqueos imputables, **5.402 son gateos de `gemini-google` y el 100 % de
 ellos tiene causa local** (`cli_license_unavailable`). Es decir: una parte sustancial del
 "ruido de proveedores" es, en realidad, un bug de instrumentación nuestro.
+
+Y **el 1,6 % del kill-switch no es ruido del proveedor en absoluto**: son 2.661 saltos que
+originó el operador. Aparecen en la tabla para que el costo esté completo, pero por
+construcción no bajan la tasa de aporte de nadie (REQ-SEC-3).
 
 ---
 
@@ -236,9 +304,9 @@ es un argumento para declararlo (#6153).
 |---|---|---|
 | **anthropic** | **mantener** | `billing: paid` — excluido del criterio automático por invariante. Es el primario de todos los skills LLM. |
 | **openai-codex** | **mantener** | `billing: paid` — excluido por invariante. Además es el mayor aportante en volumen absoluto (2.007). |
-| **cerebras** | **mantener** | 763 aportes / 2.803 evaluables = **27,2 %**, muy por encima del umbral del 5 %. Cero gateos por salud, estado `green`. Último aporte el mismo día de la medición. |
-| **nvidia-nim** | **mantener** | 368 aportes / 583 evaluables = **63,1 %**. Cero gateos por salud, estado `green`. Último aporte el mismo día. |
-| **gemini-google** | **mantener** + **recuperar** (#6225) | 201 aportes / 216 evaluables = **93,1 %**, la mejor tasa de la cadena declarada. Sus 3.658 gateos son 100 % `cli_license_unavailable`, causa **local**, y por eso no entran al denominador. Ver §7. |
+| **cerebras** | **mantener** | 716 aportes / 716 evaluables = **100 %**, muy por encima del umbral del 5 %. Cero gateos por salud, estado `green`. Sus 2.444 "bloqueos por cupo" de rev-2 eran, en su totalidad, saltos por kill-switch del operador: no son del proveedor y ya no entran al denominador (rev-3). |
+| **nvidia-nim** | **mantener** | 370 aportes / 370 evaluables = **100 %**. Cero gateos por salud, estado `green`. Sus 215 bloqueos también eran kill-switch. |
+| **gemini-google** | **no evaluable** + **recuperar** (#6225) | 153 aportes / 153 evaluables = **100 %**, pero por debajo de `min_sample=200`: sin muestra no se decide. Sus 5.402 gateos son 100 % `cli_license_unavailable`, causa **local**, y por eso no entran al denominador. Ver §7. |
 | **kimi-moonshot** | **sin declarar** — no se decide | 87 dispatches ganados, pero ausente de `config.yaml` y del snapshot de salud. Evaluarlo contra umbrales inexistentes sería peor que no evaluarlo. Se reconcilia en #6153 y se re-mide después. |
 
 > **Ninguna de estas recomendaciones se apoya en la latencia.** En rev-1, la de
@@ -428,11 +496,24 @@ Se declaran para que quien lea el documento no le atribuya más precisión de la
 - **`anthropic` no es medible con esta fuente**: como primario, el 100 % de sus eventos es
   gating por ventana horaria, que está excluido del denominador. Sus evaluables son 0 por
   construcción, no por falta de actividad.
-- **La medición de `gemini-google` sigue conviviendo con el gate roto.** El 93,1 % ya
-  excluye los 3.658 gateos de causa local, así que no está sesgado *a la baja* como en
+- **La medición de `gemini-google` sigue conviviendo con el gate roto.** El 100 % ya
+  excluye los 5.402 gateos de causa local, así que no está sesgado *a la baja* como en
   rev-1; pero el volumen de intentos que Gemini habría podido atender sin el gate es
-  desconocido. Ninguna decisión de baja puede apoyarse en sus números hasta cerrar #6225.
-- **`kimi-moonshot` tiene muestra chica** (87 eventos) además de estar sin declarar.
+  desconocido, y con 153 evaluables queda **por debajo de `min_sample`**, o sea *no
+  evaluable*. Ninguna decisión de baja puede apoyarse en sus números hasta cerrar #6225.
+- **`kimi-moonshot` tiene muestra chica** (124 eventos) además de estar sin declarar.
+- **Las tasas de esta revisión son "limpias de decisiones nuestras", no "de laboratorio".**
+  Tras rev-3, `cerebras` y `nvidia-nim` miden 100 % porque **todo** lo que no fue aporte
+  fue kill-switch nuestro. Eso dice que el proveedor respondió siempre que lo dejamos
+  intentar; **no** dice cuánto habría aportado si no lo hubiéramos apagado. La tasa mide al
+  proveedor cuando tuvo oportunidad — que es exactamente lo que el criterio necesita para
+  no dar de baja a alguien por una decisión propia — pero no es una medida de capacidad
+  total disponible.
+- **El cupo agotado se excluye del denominador por amplificación, y eso tiene un costo.**
+  Un gratuito permanentemente seco no puede salir `candidato_baja` por tasa: sale
+  `no evaluable` por falta de muestra. Es deliberado (invariante 2 del issue), pero
+  significa que el criterio **no** distingue por sí solo "seco de verdad" de "sin datos".
+  Esa distinción la tiene que hacer el operador leyendo la columna de cupo del §4.
 - **Los buckets del §4 usan porcentajes redondeados a un decimal**; la suma puede dar
   100,1 % por redondeo. Los conteos absolutos sí cierran exacto contra el total.
 

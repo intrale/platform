@@ -132,18 +132,29 @@ function makeFixture({ corromper = false, config = CONFIG_YAML } = {}) {
     writeChained(dia1, [
         ...repeat(200, () => entry('fallback_selected', 'cerebras', { skill: 'pipeline-dev' })),
         ...repeat(100, () => entry('fallback_selected', 'cerebras', { skill: 'telegram-commander' })),
-        ...repeat(150, () => entry('fallback_provider_disabled', 'cerebras')),
+        // rev-3: bloqueo imputable al PROVEEDOR (su cuota agotada, vista por el
+        // chequeo de salud). Antes era `fallback_provider_disabled`, que es el
+        // kill-switch del operador y ya no entra al denominador.
+        ...repeat(150, () => entry('fallback_health_gated', 'cerebras', {
+            health_reason: 'quota_exhausted',
+        })),
+        // rev-3: kill-switch del operador sobre cerebras. NO baja su tasa; sólo
+        // alimenta la columna `gatedByOperator` y el bucket del operador.
+        ...repeat(80, () => entry('fallback_provider_disabled', 'cerebras')),
         ...repeat(10, () => entry('fallback_selected', 'gemini-google', { skill: 'telegram-sherlock' })),
         // rev-2: los 400 gateos por NUESTRO flag de entorno ya no entran al
         // denominador. Para que gemini siga teniendo muestra suficiente y tasa
         // baja (el escenario que el techo `rol_acotado` protege), el fixture le
         // suma bloqueos por cupo, que sí son imputables al proveedor.
-        ...repeat(250, () => entry('fallback_provider_disabled', 'gemini-google')),
+        ...repeat(250, () => entry('fallback_health_gated', 'gemini-google', {
+            health_reason: 'quota_exhausted',
+        })),
         ...repeat(400, () => entry('fallback_health_gated', 'gemini-google', {
             health_reason: 'cli_license_unavailable',
         })),
         // Ruido que NO debe entrar al denominador (política horaria).
         ...repeat(500, () => entry('primary_inactive_by_schedule', null, { primary_provider: 'anthropic' })),
+        // rev-3: cupo del proveedor (flag de agotamiento), NO política horaria.
         ...repeat(300, () => entry('fallback_also_gated', 'cerebras')),
         ...repeat(100, () => entry('chain_exhausted', null)),
     ]);
@@ -218,8 +229,15 @@ test('el reporte end-to-end produce un veredicto por proveedor con la evidencia 
         // cerebras: aporta sostenido => mantener.
         assert.strictEqual(r.verdicts.cerebras.verdict, contribution.VERDICT.MANTENER);
         assert.strictEqual(r.metrics.cerebras.wins, 420);
-        assert.strictEqual(r.metrics.cerebras.gatedBySchedule, 300, 'los fallback_also_gated quedan fuera');
-        assert.strictEqual(r.metrics.cerebras.evaluables, 570, '420 wins + 150 bloqueos');
+        // rev-3 (#6145) — cada exclusión con su nombre real y su columna propia.
+        assert.strictEqual(r.metrics.cerebras.gatedBySchedule, 0,
+            'cerebras no tiene un solo evento de ventana horaria');
+        assert.strictEqual(r.metrics.cerebras.gatedByQuotaFlag, 300,
+            'los fallback_also_gated son cupo del proveedor, no política horaria');
+        assert.strictEqual(r.metrics.cerebras.gatedByOperator, 80,
+            'el kill-switch del operador se aísla en su propia columna');
+        assert.strictEqual(r.metrics.cerebras.operatorGates.kill_switch, 80);
+        assert.strictEqual(r.metrics.cerebras.evaluables, 570, '420 wins + 150 bloqueos del proveedor');
 
         // gemini-google: tasa por debajo del umbral PERO por causa nuestra.
         assert.ok(r.metrics['gemini-google'].contributionRate < 0.05);
@@ -685,7 +703,17 @@ test('el costo de failover cierra contra las entradas leidas y nombra lo no clas
             'el denominador de los porcentajes ES el total leído, sin huecos',
         );
         assert.strictEqual(r.failoverCost.reconciles, true);
-        assert.strictEqual(r.failoverCost.operatorGating.events, 12, 'kill-switch contabilizado');
+        // rev-3 (#6145) — el bucket del operador cuenta el kill-switch COMPLETO:
+        // 12 `provider_disabled` (cayó como primario) + 80
+        // `fallback_provider_disabled` (el mismo kill-switch, como fallback).
+        // Hasta rev-2 contaba sólo los 12 y publicaba "0 | 0,0 %" sobre datos
+        // reales, donde `provider_disabled` no ocurre nunca.
+        assert.strictEqual(r.failoverCost.operatorGating.events, 92, 'kill-switch contabilizado entero');
+        assert.strictEqual(r.failoverCost.operatorGating.killSwitch, 92);
+        assert.strictEqual(r.failoverCost.operatorGating.pacing, 0);
+        // Y `fallback_also_gated` dejó de imputarse a la política horaria.
+        assert.strictEqual(r.failoverCost.quotaFlagGating.events, 300,
+            'el flag de cuota tiene bucket propio');
         assert.strictEqual(r.failoverCost.unclassified.events, 4, 'el evento nuevo se ve, no se traga');
         assert.match(r.conclusion.join(' '), /Nota de taxonomía/);
         assert.match(r.conclusion.join(' '), /evento_nuevo_sin_declarar/);
