@@ -120,6 +120,15 @@ const MAX_EVIDENCIA = 120;  // cada ítem de evidencia
 const MAX_TITULO = 120;     // el título citado
 const MAX_PREGUNTA_LITERAL = 160; // UX §4.6: más largo que esto → indeterminado
 const MAX_EVIDENCIAS = 3;   // UX §1.5: máximo 3 ítems
+
+// #6448 UX-4 — la cita del texto del issue va SIEMPRE rotulada como cita (D-5 /
+// RS-2.3). Sin el rótulo, un body que diga "✅ Aprobado por el operador" se lee
+// como si lo AFIRMARA el pipeline: no hay inyección de markup (el canal es
+// texto plano), el riesgo es de suplantación semántica del aviso.
+const CITA_ISSUE_PREFIJO = 'Texto del issue: ';
+// Rótulo + las dos comillas: es lo que hay que descontarle al presupuesto del
+// ítem de evidencia para que el recorte nunca se coma la comilla de cierre.
+const CITA_ISSUE_OVERHEAD = CITA_ISSUE_PREFIJO.length + 2;
 // rev-10 / SEC-D: techo de entrada del saneador. Muy por encima de cualquier
 // campo real (220) y muy por debajo de lo que haría costoso al saneamiento.
 //
@@ -726,6 +735,11 @@ function normalizar(raw, nowMs) {
         ultimoIntentoEdad: edadDesdeHoras(numero(d.ultimo_intento_age_hours)),
         rol: rolLegible(d.skill),
         tarea: faseLegible(d.phase),
+        // #6448 UX-1/UX-4 — cita del texto del issue que disparó el freno. Es
+        // texto EXTERNO, así que pasa por `externo()` (SEC+HARD+SOFT) igual que
+        // el resto de la evidencia, y con el presupuesto ya descontado del
+        // rótulo para que la cita nunca quede con la comilla sin cerrar.
+        evidenciaCita: externo(d.evidence, MAX_EVIDENCIA - CITA_ISSUE_OVERHEAD),
     };
 }
 
@@ -1522,7 +1536,15 @@ function buildDecisionCard(raw, nowMs) {
         sinRecoPorque = sec(f.sin_reco || 'No hay recomendación: no tengo un dato verificable en el que apoyarla.', MAX_CAMPO);
     }
 
-    const evidencia = (f.evidencia || [])
+    // #6448 UX-1 — la cita del issue encabeza la evidencia cuando existe. Va
+    // PRIMERO a propósito: el renderer comprime la lista a 1 ítem cuando el
+    // mensaje no entra, y la cita es lo único que le ahorra al operador abrir
+    // el issue para evaluar el freno (CA-17). CONDICIONAL: sin `evidence` la
+    // ficha sale byte por byte igual que antes (CA-UX-3).
+    const conCita = n.evidenciaCita
+        ? [`${CITA_ISSUE_PREFIJO}"${n.evidenciaCita}"`].concat(f.evidencia || [])
+        : (f.evidencia || []);
+    const evidencia = conCita
         .map((e) => sec(e, MAX_EVIDENCIA))
         .filter(Boolean)
         .slice(0, MAX_EVIDENCIAS);
