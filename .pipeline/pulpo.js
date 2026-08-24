@@ -10969,8 +10969,31 @@ ${g}
     // #2801 — emit session:end para agentes Claude. Damos un pequeño delay
     // para que el writer termine de flushear el último chunk del log antes
     // de parsearlo. No bloqueamos el resto del handler.
-    if (traceHandle) {
-      setTimeout(() => {
+    // #6273 — Captura observacional post-exit para TODA corrida. Este callback
+    // se agenda desde el flujo normal de `child.on('exit')`, no desde el
+    // watchdog: así también persisten las terminaciones normales. La observación
+    // vive en el mismo scope que `session:end`, que la consume más abajo.
+    setTimeout(() => {
+      let effectiveObservation = { model: null, source: 'not_observable', observable: false };
+      try {
+        const effectiveModel = require('./lib/metrics/effective-model');
+        const agentModels = require('./lib/agent-models');
+        let configuredProvider = 'unknown';
+        try { configuredProvider = resolveSkillProvider(skill) || 'unknown'; } catch {}
+        const declared = agentModels.resolveModel(skill);
+        const capture = effectiveModel.recordEffectiveModelForRun({
+          issue, skill,
+          launchResult,
+          dispatchResolution,
+          configuredProvider,
+          logPath: path.join(LOG_DIR, `${issue}-${skill}.log`),
+          model_declared: declared && declared.model,
+          model_resolved: traceHandle && traceHandle.model,
+        });
+        effectiveObservation = capture.observed;
+      } catch { /* observabilidad best-effort: nunca altera el lifecycle */ }
+
+      if (traceHandle) {
         try {
           const logPath = path.join(LOG_DIR, `${issue}-${skill}.log`);
           const tk = parseTokensFromLog(logPath);
@@ -10995,6 +11018,8 @@ ${g}
             handoff_in_tokens: handoffStats.in_tokens || 0,
             handoff_out_bytes: handoffOutBytes,
             handoff_sections_in: handoffStats.total_sections || 0,
+            model_effective: effectiveObservation.model,
+            model_effective_source: effectiveObservation.source,
           });
         } catch (e) {
           log('lanzamiento', `traceability emitSessionEnd falló para ${skill}:#${issue}: ${e.message}`);
@@ -11025,8 +11050,8 @@ ${g}
             status: code === 0 ? 'ok' : 'error',
           });
         } catch { /* best-effort, no rompe el lifecycle */ }
-      }, 500);
-    }
+      }
+    }, 500);
 
     // Si murió en menos de 15 segundos con error → fallo de infra + COOLDOWN
     //
@@ -22643,7 +22668,17 @@ async function mainLoop() {
       // dispara LLM ni completion — solo /v1/models. Fire-and-forget.
       try {
         const healthCron = require(path.join(PIPELINE, 'lib', 'multi-provider', 'health-cron'));
-        healthCron.tickIfDue({}).catch(e => log('mp-health', `tickIfDue error: ${e.message}`));
+        healthCron.tickIfDue({}).then((tick) => {
+          if (tick && tick.skipped) return;
+          try {
+            const effectiveModel = require(path.join(PIPELINE, 'lib', 'metrics', 'effective-model'));
+            const notify = require(path.join(PIPELINE, 'lib', 'notify-telegram')).notifyTelegram;
+            effectiveModel.evaluateDivergence({
+              config: ((config.multi_provider || {}).effective_model_audit || {}),
+              notify,
+            });
+          } catch { /* auditoría fail-soft */ }
+        }).catch(e => log('mp-health', `tickIfDue error: ${e.message}`));
       } catch (e) {
         // require puede fallar si el módulo no existe (build viejo); no es fatal.
       }
