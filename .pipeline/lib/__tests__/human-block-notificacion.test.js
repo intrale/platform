@@ -662,9 +662,21 @@ test('CA-4/CA-5: los recordatorios se agrupan en UN mensaje distinguible del avi
     // Distinguible del aviso inicial (que usa 🚧 y "marcado como needs-human").
     assert.match(msg, /🔁/);
     assert.equal(msg.includes('🚧'), false);
-    // Antigüedad por ítem y garantía explícita de que nada se aprueba solo.
-    assert.match(msg, /30h/);
-    assert.match(msg, /nada se aprueba solo/i);
+    // #6190 (H-UX-8) — el encabezado dice el NÚMERO DE AVISO, no "recordatorio":
+    // el operador que ya vio dos lee "recordatorio" y archiva sin abrir.
+    assert.match(msg, /Tercer aviso:/, 'el número de aviso sube al encabezado');
+    // Antigüedad con la redacción unificada del contrato de copy (§5): "1 d 6 h",
+    // no "30h" — el operador no tiene que dividir por 24 para entenderlo.
+    assert.match(msg, /hace 1 d 6 h/);
+    // Garantía explícita de que el tiempo no aprueba nada: es la razón de ser
+    // del recordatorio y la única frase que no sale de la ficha.
+    assert.match(msg, /Nada se destraba solo por dejar pasar el tiempo./);
+    // #5421 — el recordatorio era el 7º camino, el único que salía con Markdown
+    // vivo y sin `plain`. Ahora es texto plano: cero metacaracteres.
+    assert.doesNotMatch(msg, /[*_`]/, `el recordatorio volvió a emitir markup: ${msg}`);
+    assert.doesNotMatch(msg, /<issue>|<orientación>/, 'el pie deja de ser un molde');
+    assert.match(msg, /\/unblock 5217 /, 'cada línea lleva su comando con el número real');
+    assert.match(msg, /\/unblock 5220 /);
 });
 
 test('CA-5: sin bloqueos vencidos no se manda nada', () => {

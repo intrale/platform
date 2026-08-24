@@ -4527,6 +4527,9 @@ function brazoBarrido(config) {
                   reason: motivoTxt,
                   question,
                   recommendation: recomendacionBloqueo, // #5337 CA-2
+                  // #6190 — sin esto la ficha no puede nombrar el trabajo y el
+                  // audio narra "este trabajo" en vez del número.
+                  issue, skill: skillBloq, phase: fase,
                   profile: 'need-human',
                   botToken: getTelegramToken(),
                   chatId: getTelegramChatId(),
@@ -6067,6 +6070,7 @@ function brazoBarrido(config) {
                         reason: veredicto.reason,
                         question: veredicto.question,
                         recommendation: veredicto.recommendation,
+                        issue, // #6190 — contexto de la ficha
                         profile: 'need-human',
                         botToken: getTelegramToken(),
                         chatId: getTelegramChatId(),
@@ -7557,7 +7561,9 @@ function escalarACircuitBreaker(opts, deps) {
     try {
       const { textToSpeechWithMeta, sendVoiceTelegram } = require('./multimedia');
       return hb.sendNeedHumanAudio({
-        reason: motivoTxt, question: preguntaTxt, profile: 'need-human',
+        reason: motivoTxt, question: preguntaTxt,
+        issue: issueNum, skill: skillBloq, phase, // #6190 — contexto de la ficha
+        profile: 'need-human',
         botToken: getTelegramToken(), chatId: getTelegramChatId(),
         textToSpeechWithMeta, sendVoiceTelegram,
       });
@@ -15345,6 +15351,21 @@ function cmdUnblock(args) {
   const guidance = m[2].trim();
   if (!guidance) return '❌ La orientación no puede estar vacía.';
 
+  // #6190 — el pie de destrabe de la ficha de decisión termina con palabras
+  // ("seguido de qué querés que se haga") cuando no hay un valor concreto que
+  // proponer. Ese texto se puede copiar entero: si lo aceptáramos, quedaría
+  // persistido en `<marker>.guidance.txt` y el pulpo lo inyectaría al prompt
+  // del agente como INDICACIONES HUMANAS que nadie escribió. Se rechaza acá,
+  // que es donde entra. Lazy + try/catch: un módulo de copy nunca puede tumbar
+  // el comando de destrabe.
+  try {
+    const { esOrientacionMolde } = require('./lib/decision-card');
+    if (typeof esOrientacionMolde === 'function' && esOrientacionMolde(guidance)) {
+      return `❌ Eso es el texto del aviso, no una orientación. Contame qué querés que se haga con #${issue}.
+Ej: \`/unblock ${issue} reintentar usando la API REST\``;
+    }
+  } catch {}
+
   let humanBlock;
   try { humanBlock = require('./lib/human-block'); }
   catch (e) { return `⚠️ No pude cargar el módulo de bloqueos: ${e.message}`; }
@@ -17454,6 +17475,14 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     // (`data.parse_mode || 'Markdown'`) reinyectaba Markdown, dejando este flag
     // sin ningún efecto. Ver `servicio-telegram.js::resolveOutboundParseMode`.
     const payload = plain ? { text: msg, plain: true } : { text: msg, parse_mode: parseMode };
+    // #6190 / SEC-D — sin vista previa en los salientes de texto plano. Es el
+    // dialecto de los avisos que citan texto externo (la ficha de decisión del
+    // canal de bloqueados y el canned de cuota): aunque el saneador ya
+    // neutraliza los enlaces, la previa es una segunda superficie por la que el
+    // contenido de un tercero se dibuja adentro del aviso del pipeline.
+    // Complemento defensivo: si esto se cae, el filtro sigue siendo el que
+    // protege. Ver `decision-card.js::URL_RE`.
+    if (plain) payload.disable_web_page_preview = true;
     if (replyMarkup && typeof replyMarkup === 'object') payload.reply_markup = replyMarkup;
     payload._correlationId = correlationId;
     // #6226 — Nombre único (`<ts>-<seq>-cmd.json`) + escritura `wx`. Antes eran
@@ -22347,7 +22376,11 @@ async function mainLoop() {
           const r = humanBlockReminder.runReminderTick({
             pipelineDir: PIPELINE,
             listBlocked: () => humanBlock.listBlockedIssues(),
-            sendTelegram: (texto, markup) => sendTelegramWithMarkup(texto, markup || null),
+            // #6190 — `plain: true` es el 3er argumento que le faltaba a ESTE
+            // emisor: los otros 6 ya lo mandaban. Era el último camino con el
+            // riesgo de #5421 vivo (markup desbalanceado → 400 de Telegram →
+            // recordatorio perdido sin rastro).
+            sendTelegram: (texto, markup) => sendTelegramWithMarkup(texto, markup || null, { plain: true }),
             buildMarkup: (issue) => {
               try { return humanBlock.buildBlockedActionMarkup(issue); } catch { return undefined; }
             },
