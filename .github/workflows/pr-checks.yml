@@ -302,10 +302,9 @@ jobs:
   e2e-qa:
     needs: detect-changes
     if: |
-      !contains(github.event.pull_request.labels.*.name, 'qa:skipped') &&
-      (needs.detect-changes.outputs.backend == 'true' ||
+      needs.detect-changes.outputs.backend == 'true' ||
       needs.detect-changes.outputs.users == 'true' ||
-      needs.detect-changes.outputs.shared == 'true')
+      needs.detect-changes.outputs.shared == 'true'
     runs-on: ubuntu-latest
     services:
       dynamodb-local:
@@ -426,6 +425,11 @@ jobs:
           DYNAMODB_ENDPOINT: http://localhost:8000
           COGNITO_ENDPOINT: http://localhost:5050
         run: |
+          # Warm-up: compilar ANTES de abrir la ventana del healthcheck. Si no, la
+          # compilacion de :users se come los 90s de espera y el check falla por
+          # timeout aunque el backend levante bien (#6362).
+          ./gradlew :users:classes
+
           ./gradlew :users:run &
           BACKEND_PID=$!
           echo "Backend PID: $BACKEND_PID"

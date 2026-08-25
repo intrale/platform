@@ -52,7 +52,7 @@ function scopesConEscritura(permisos) {
 // Documento parseado una sola vez, usado por la cobertura preexistente.
 const workflow = cargarWorkflow();
 
-// -- Cobertura preexistente del workflow (puerto, qa:skipped, evidencia) --
+// -- Cobertura preexistente del workflow (puerto, disparo de e2e-qa, evidencia) --
 test('e2e-qa inicia users en un puerto no privilegiado y usa la misma URL', () => {
   const steps = workflow.jobs['e2e-qa'].steps;
   const startBackend = steps.find((step) => step.name === 'Start backend');
@@ -67,10 +67,14 @@ test('e2e-qa inicia users en un puerto no privilegiado y usa la misma URL', () =
   assert.equal(runQa.env.QA_BASE_URL, `http://localhost:${port}`);
 });
 
-test('e2e-qa se omite formalmente cuando el PR declara qa:skipped', () => {
+test('e2e-qa se dispara solo por los cambios detectados, sin bypass por label', () => {
   const condition = workflow.jobs['e2e-qa'].if;
 
-  assert.match(condition, /!contains\(github\.event\.pull_request\.labels\.\*\.name, 'qa:skipped'\)/);
+  // El gate de QA no se puede desactivar declarando un label en el propio PR:
+  // qa:skipped es una decision de proceso, no un interruptor del workflow (#6362).
+  assert.doesNotMatch(condition, /qa:skipped/);
+  assert.doesNotMatch(condition, /github\.event\.pull_request\.labels/);
+
   assert.match(condition, /needs\.detect-changes\.outputs\.backend == 'true'/);
   assert.match(condition, /needs\.detect-changes\.outputs\.users == 'true'/);
   assert.match(condition, /needs\.detect-changes\.outputs\.shared == 'true'/);

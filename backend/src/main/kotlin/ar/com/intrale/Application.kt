@@ -25,8 +25,7 @@ import org.slf4j.Logger
  * with KTOR
  */
 fun start(appModule: DI.Module) {
-    val port = System.getenv("PORT")?.toIntOrNull() ?: 80
-    embeddedServer(Netty, port = port/*, host = "0.0.0.0", module = Application::module*/) {
+    embeddedServer(Netty, port = serverPort()/*, host = "0.0.0.0", module = Application::module*/) {
 
         di {
             import(appModule)
@@ -39,6 +38,19 @@ fun start(appModule: DI.Module) {
 
     }.start(wait = true)
 }
+
+/**
+ * Puerto de escucha del servidor embebido. Se configura por la variable de entorno
+ * [ENV_PORT]. Si la variable está ausente, vacía o no es un entero válido, se cae al
+ * puerto por defecto [DEFAULT_PORT] para preservar el comportamiento histórico.
+ */
+const val ENV_PORT = "PORT"
+
+const val DEFAULT_PORT = 80
+
+fun resolveServerPort(rawPort: String?): Int = rawPort?.trim()?.toIntOrNull() ?: DEFAULT_PORT
+
+fun serverPort(): Int = resolveServerPort(System.getenv(ENV_PORT))
 
 /**
  * Orígenes permitidos para CORS (CA-S6). Se configuran por la variable de entorno
