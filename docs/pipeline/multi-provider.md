@@ -86,6 +86,16 @@ Estructura literal aceptada por el schema Ajv 2020-12 ([`.pipeline/agent-models.
 - `spawn_args_template` — argv que recibe el child. Las llaves `{user_prompt}`, `{system_file}`, `{script_path}`, `{issue}`, `{trabajando_path}`, `{model}` son los **únicos placeholders válidos** (`ALLOWED_PLACEHOLDERS`). Sustitución 1:1 a elemento del argv — **nunca concatenación shell**.
 - `output_parser` — normalizador del output. Valores: `anthropic-stream-json`, `openai-sse`, `gemini-stream`, `ollama-jsonl`, `none` (deterministic).
 - `quota_error_types` — strings que el detector de cuota (`lib/quota-exhausted.js`) marca como "cuota agotada" para este provider. Cada item cross-validado contra la **meta-allowlist** en `KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER` ([#3077](https://github.com/intrale/platform/issues/3077) SEC-2, defensa anti supply-chain).
+
+  > **Shapes que entiende el handler `openai-sse`** ([#5978](https://github.com/intrale/platform/issues/5978)). El discriminador se lee de campos de **control**, nunca de texto libre ni del canal de contenido del modelo, y sólo matchea si el provider **declaró** ese tipo:
+  >
+  > | Shape | Ejemplo | Campo leído |
+  > |---|---|---|
+  > | SSE canónico | `{"event":"error","data":{"error":{"type":"rate_limit_exceeded"}}}` | `data.error.type` |
+  > | `response.error` | `{"type":"response.error","error":{"type":"quota_exceeded"}}` | `error.type` |
+  > | **Desnudo** | `{"error":{"status":402,"message":"Payment required…","code":"insufficient_quota"}}` | `error.type` → `error.code` |
+  >
+  > El shape **desnudo** es el que devuelve Cerebras (y varios OpenAI-compat) al agotarse el crédito. Antes de #5978 era invisible para el detector: el 402 no seteaba flag de cuota, el resolver seguía eligiendo el provider muerto, y cada relanzamiento quemaba un reintento **del issue** hasta rebotarlo como *"Huérfano tras 3 reintentos"*. Al agregar un provider OpenAI-compat nuevo, verificá con qué shape reporta el agotamiento antes de confiar en el failover.
 - `resets_at_cap_max_days` — cap superior del `resets_at` cuando el provider reporta cuota agotada (cuotas semanales = 7, mensuales = 31). Aplicado en `capResetsAt()` para evitar "drenado natural" falso por un `reset_at` lejano malicioso ([#3077](https://github.com/intrale/platform/issues/3077) SEC-6).
 - `supports_tool_use` — `true` / `false` / `"limited"`. Define paridad funcional cross-provider.
 - `prompt_caching` — capacidades de cache (`supported`, `auto`, `ttl_seconds_default`, `ttl_seconds_extended`). Necesario para normalizar costos cross-provider.
