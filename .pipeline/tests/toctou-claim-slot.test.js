@@ -167,25 +167,63 @@ function defineTests() {
     const winners = results.filter((r) => r && r.claimed === true);
     const losers = results.filter((r) => r && r.claimed === false);
 
-    assert.equal(winners.length, 1, `exactamente un proceso debe ganar el rename (ganaron ${winners.length})`);
-    assert.equal(losers.length, N - 1, 'el resto debe perder');
+    // -----------------------------------------------------------------------
+    // #6145 (3ra vuelta) — Qué se verifica y por qué en este orden.
+    //
+    // El invariante de SEGURIDAD es "a lo sumo un dueño": dos ganadores
+    // significan doble reencolado, que es exactamente el TOCTOU que #3939
+    // cerró. Ese se exige SIEMPRE, sin excepción ni condición de carga.
+    //
+    // El invariante de LIVENESS ("alguien ganó") es condicional desde que
+    // `claimByRename` deshace el rename cuando la propiedad no queda probada:
+    // bajo saturación de CPU (esta suite corre junto a ~830 archivos de test y
+    // un fork-storm de 8 hijos) puede pasar que NADIE logre garantizar la
+    // sección crítica. En producción eso es el comportamiento correcto — nadie
+    // reclama, el work file sigue visible y el próximo tick reintenta — y por
+    // lo tanto no puede reportarse como test en rojo. Lo que SÍ se exige en ese
+    // caso es que el cero-ganadores esté EXPLICADO por una falla de la capa de
+    // lock y que el filesystem quede consistente; si los 8 dijeran
+    // `ENOENT`/`EEXIST` sin ganador, el archivo se habría evaporado y eso sí es
+    // un bug.
+    // -----------------------------------------------------------------------
+    assert.ok(winners.length <= 1, `a lo sumo un proceso puede ganar el rename (ganaron ${winners.length})`);
+    assert.equal(
+      winners.length + losers.length, N,
+      `los ${N} contendientes deben devolver un veredicto parseable: ${JSON.stringify(results)}`,
+    );
+
     // Razones legítimas de NO reclamar. Además de perder el rename
     // (`ENOENT`/`EEXIST`), un contendiente puede no llegar a garantizar la
     // sección crítica bajo saturación de CPU: `ELOCK_TIMEOUT` (no consiguió el
     // lock dentro del presupuesto) o `ELOCK_STOLEN` (la propiedad no quedó
     // probada al salir). En ambos casos `claimByRename` NO reclama y devuelve
-    // el motivo — nunca propaga la excepción al caller (#6145). El invariante
-    // que importa, exactamente-una-vez, se sigue verificando arriba.
-    const RAZONES_OK = ['ENOENT', 'EEXIST', 'ELOCK_TIMEOUT', 'ELOCK_STOLEN'];
+    // el motivo — nunca propaga la excepción al caller (#6145).
+    const RAZONES_CARRERA = ['ENOENT', 'EEXIST'];
+    const RAZONES_LOCK = ['ELOCK_TIMEOUT', 'ELOCK_STOLEN'];
+    const RAZONES_OK = [...RAZONES_CARRERA, ...RAZONES_LOCK];
     for (const l of losers) {
       assert.ok(!String(l.reason).startsWith('THROW:'), `claimByRename no debe propagar excepciones: ${l.reason}`);
       assert.ok(RAZONES_OK.includes(l.reason), `perdedor con razón inesperada: ${l.reason}`);
     }
 
-    // El archivo canónico ya NO está (lo tiene el ganador como *.claimed-<pid>).
-    assert.ok(!fs.existsSync(target), 'el work file canónico fue reclamado');
     const claimed = fs.readdirSync(dir).filter((f) => slotClaim.CLAIM_RE.test(f));
-    assert.equal(claimed.length, 1, 'debe existir exactamente un archivo .claimed-<pid>');
+    if (winners.length === 1) {
+      // Caso normal: el canónico ya NO está (lo tiene el ganador como
+      // *.claimed-<pid>) y hay exactamente un claim.
+      assert.ok(!fs.existsSync(target), 'el work file canónico fue reclamado');
+      assert.equal(claimed.length, 1, 'debe existir exactamente un archivo .claimed-<pid>');
+    } else {
+      // Caso saturación: nadie pudo probar la exclusión mutua.
+      const razones = losers.map((l) => l.reason);
+      assert.ok(
+        razones.some((r) => RAZONES_LOCK.includes(r)),
+        `sin ganador, el resultado debe explicarse por la capa de lock, no por un archivo evaporado: ${JSON.stringify(razones)}`,
+      );
+      // Fail-closed: el work file vuelve a estar disponible para el próximo tick
+      // y no queda ningún claim huérfano.
+      assert.ok(fs.existsSync(target), 'sin dueño, el work file debe seguir visible al scan');
+      assert.equal(claimed.length, 0, 'no debe quedar un *.claimed-<pid> sin dueño');
+    }
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -383,6 +421,64 @@ function defineTests() {
     };
 
     assert.throws(() => slotClaim.claimByRename(target, process.pid, { fl: flFake }), /disco lleno/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // ===========================================================================
+  // Suite 6 — #6145: saturación real de la capa de lock (cero ganadores)
+  // ===========================================================================
+  //
+  // La rama "nadie reclamó" de la Suite 1 sólo aparece bajo saturación de CPU,
+  // que es justamente lo que no se puede provocar de forma determinística en un
+  // test. Acá se la fuerza por el otro lado: un tercero VIVO (este mismo proceso
+  // de test) retiene el lock durante toda la carrera, así los contendientes
+  // agotan su presupuesto y salen por `ELOCK_TIMEOUT`.
+  //
+  // Lo que se fija es la semántica de producción del caso: ante la duda NADIE
+  // reclama, el work file queda visible para el próximo tick y no aparece ningún
+  // `*.claimed-<pid>` huérfano. Sin esto, el pulpo podría operar sobre un claim
+  // que la exclusión mutua no respalda.
+
+  test('claim-by-rename: con el lock retenido por un tercero vivo, NADIE reclama y el work file sobrevive', async () => {
+    const dir = mkTmpDir('toctou-saturado-');
+    const target = path.join(dir, '6145.pipeline-dev');
+    fs.writeFileSync(target, 'issue: 6145\n');
+
+    // Este proceso (vivo) retiene el lock: los hijos no pueden declararlo stale
+    // ni robarlo, sólo agotar el timeout.
+    const held = fileLock.acquireLockSync(target, { timeoutMs: 2000 });
+    assert.equal(held.acquired, true, 'el test debe poder tomar el lock antes de la carrera');
+
+    let results;
+    try {
+      const N = 4;
+      results = await raceWorkers(
+        Array.from({ length: N }, () => ({
+          SLOT_WORKER_ROLE: 'claim',
+          SLOT_TARGET: target,
+        })),
+      );
+      assert.equal(results.length, N, 'todos los contendientes deben responder');
+    } finally {
+      fileLock.releaseLock(target);
+    }
+
+    for (const r of results) {
+      assert.equal(r.claimed, false, `nadie puede reclamar con el lock tomado: ${JSON.stringify(r)}`);
+      assert.ok(
+        !String(r.reason).startsWith('THROW:'),
+        `claimByRename no debe propagar excepciones al caller: ${r.reason}`,
+      );
+      assert.equal(r.reason, 'ELOCK_TIMEOUT', `razón esperada ELOCK_TIMEOUT, llegó ${r.reason}`);
+    }
+
+    assert.ok(fs.existsSync(target), 'el work file debe seguir visible al scan del próximo tick');
+    assert.equal(
+      fs.readdirSync(dir).filter((f) => slotClaim.CLAIM_RE.test(f)).length,
+      0,
+      'no debe quedar ningún *.claimed-<pid> sin dueño',
+    );
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
