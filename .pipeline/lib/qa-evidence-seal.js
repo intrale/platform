@@ -134,9 +134,62 @@ function artifactSpec(value) {
   return null;
 }
 
+// #6495 (rebote de seguridad) — El campo de evidencia lo escribe el YAML del
+// agente QA: es entrada hostil y NO puede llegar cruda a un sink de log. Se
+// corrigen dos defectos del sanitizado anterior:
+//   1. Inyección de log: un CR/LF en la ruta declarada partía el mensaje en dos
+//      líneas y permitía forjar entradas ("[INFO] sellado aprobado por operador").
+//   2. Fuga de topología: la normalización sólo cubría drive letters de Windows
+//      (`C:\...`), así que una ruta absoluta POSIX (`/var/lib/...`) se emitía
+//      entera.
+// La política es fail-closed y CATEGÓRICA: toda ruta absoluta —Windows, UNC o
+// POSIX— y todo valor con caracteres de control se reemplazan ENTEROS por un
+// marcador. Nunca se emite una porción del valor original.
+const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
+const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
+const MAX_LOG_FIELD_CHARS = 120;
+
+// Los motivos son literales internos, pero el sink no confía en eso: sólo se
+// emite un motivo de la lista conocida.
+const KNOWN_REASONS = new Set([
+  'sin-evidencia', 'campos-oversize', 'tipo-invalido', 'traversal', 'fuera-de-recinto',
+  'no-regular', 'vacio', 'oversize', 'head-invalido', 'glob-invalido', 'glob-vacio',
+  'glob-oversize', 'hash-divergente', 'sellado-invalido',
+]);
+
+/**
+ * Normaliza un valor controlado por el YAML antes de mandarlo a un log.
+ * Garantiza: una sola línea, sin caracteres de control, sin rutas absolutas y
+ * acotado en largo.
+ * @param {*} value valor declarado por el agente (no confiable)
+ * @returns {string} valor seguro para concatenar en una línea de log
+ */
+function sanitizeLogField(value) {
+  if (value === undefined || value === null) return '';
+  const raw = typeof value === 'string' ? value : String(value);
+  if (raw === '') return '';
+  // El trim va ANTES del test de ruta: "  /etc/passwd" sigue siendo absoluta,
+  // y "\n/etc/passwd" no puede esquivar el marcador por un prefijo en blanco.
+  const trimmed = raw.trim();
+  if (trimmed === '') return '<ruta-vacia>';
+  if (ABSOLUTE_PATH.test(trimmed)) return '<ruta-absoluta>';
+  if (CONTROL_CHARS.test(trimmed)) return '<ruta-no-imprimible>';
+  const redacted = String(redactSensitive(trimmed));
+  // Defensa en profundidad: si la redacción reintrodujera un carácter de
+  // control, el valor entero se descarta igual.
+  if (CONTROL_CHARS.test(redacted)) return '<ruta-no-imprimible>';
+  if (redacted.length > MAX_LOG_FIELD_CHARS) return `${redacted.slice(0, MAX_LOG_FIELD_CHARS)}<truncado>`;
+  return redacted;
+}
+
+function sanitizeReason(reason) {
+  return KNOWN_REASONS.has(reason) ? reason : 'sellado-invalido';
+}
+
 function logFailure(error) {
-  const relative = redactSensitive(String(error.declaredPath || '').replace(/^[A-Za-z]:[\\/].*/, '<ruta-absoluta>'));
-  console.error(`[qa-evidence-seal] sellado rechazado (${error.reason})${relative ? ` campo=${relative}` : ''}`);
+  const campo = sanitizeLogField(error && error.declaredPath);
+  const reason = sanitizeReason(error && error.reason);
+  console.error(`[qa-evidence-seal] sellado rechazado (${reason})${campo ? ` campo=${campo}` : ''}`);
 }
 
 function sealQaVerdict({ root, issue, data, cwd } = {}) {
@@ -191,6 +244,6 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
 }
 
 module.exports = {
-  sealQaVerdict, normalizeHash, resolveConfined, deriveHead,
-  MAX_EVIDENCE_FIELDS, MAX_GLOB_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES,
+  sealQaVerdict, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
+  MAX_EVIDENCE_FIELDS, MAX_GLOB_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_LOG_FIELD_CHARS,
 };

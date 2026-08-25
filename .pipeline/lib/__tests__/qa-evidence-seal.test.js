@@ -8,7 +8,7 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   sealQaVerdict, normalizeHash, resolveConfined, deriveHead,
-  MAX_EVIDENCE_FIELDS, MAX_FILE_BYTES,
+  MAX_EVIDENCE_FIELDS, MAX_FILE_BYTES, MAX_LOG_FIELD_CHARS, sanitizeLogField,
 } = require('../qa-evidence-seal');
 
 function fixture(t, issue = 6258) {
@@ -142,4 +142,92 @@ test('deriveHead rechaza un cwd que no es repositorio e ignora datos YAML', t =>
   assert.throws(() => deriveHead(f.root), { reason: 'head-invalido' });
   const data = { resultado: 'aprobado', evidencia: f.write('ok.txt'), entorno: { worktree: f.root } };
   assert.equal(sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() }).sealed, true);
+});
+
+// ---------------------------------------------------------------------------
+// #6495 (rebote de seguridad) — Inyección de log en el sink de rechazos.
+// El campo `evidencia` lo controla el YAML del agente QA. Antes del fix, un
+// CR/LF sobrevivía hasta console.error y permitía forjar líneas de log, y la
+// normalización de rutas absolutas sólo cubría drive letters de Windows.
+// ---------------------------------------------------------------------------
+
+// Captura console.error y devuelve las líneas emitidas.
+function captureStderr(t, fn) {
+  const lines = [];
+  const original = console.error;
+  console.error = (...args) => { lines.push(args.join(' ')); };
+  t.after(() => { console.error = original; });
+  try { fn(); } finally { console.error = original; }
+  return lines;
+}
+
+test('el sink de rechazos nunca emite más de una línea aunque el YAML declare CR/LF', t => {
+  const f = fixture(t);
+  const payloads = [
+    'qa/evidence/6258/ok.png\n[INFO] sellado aprobado por operador',
+    'qa/evidence/6258/ok.png\r\n[INFO] sellado aprobado por operador',
+    'qa/evidence/6258/ok.png\u2028[INFO] falsificado',
+    'qa/evidence/6258/ok.png\u0000[INFO] falsificado',
+  ];
+  for (const payload of payloads) {
+    const data = { resultado: 'aprobado', evidencia: payload };
+    const emitted = captureStderr(t, () => sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() }));
+    assert.equal(emitted.length, 1, `payload ${JSON.stringify(payload)} emitió ${emitted.length} llamadas`);
+    const salida = emitted.join('');
+    assert.doesNotMatch(salida, /[\r\n\u2028\u2029\u0000]/, 'la línea de log contiene caracteres de control');
+    assert.doesNotMatch(salida, /\[INFO\]/, 'la línea de log contiene una entrada forjada');
+    assert.match(salida, /<ruta-no-imprimible>/);
+  }
+});
+
+test('el PoC del rechazo (ruta absoluta POSIX + salto de línea) queda en un marcador categórico', t => {
+  const f = fixture(t);
+  const data = { resultado: 'aprobado', evidencia: '/var/lib/private/token.txt\n[INFO] sellado aprobado por operador' };
+  const emitted = captureStderr(t, () => sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() }));
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0], '[qa-evidence-seal] sellado rechazado (fuera-de-recinto) campo=<ruta-absoluta>');
+  assert.doesNotMatch(emitted[0], /var|token|\[INFO\]/);
+});
+
+test('toda ruta absoluta se representa con marcador categórico, no sólo las de Windows', () => {
+  const absolutas = [
+    'C:\\Workspaces\\Intrale\\secreto.png',
+    'c:/Workspaces/Intrale/secreto.png',
+    '/var/lib/private/token.txt',
+    '/home/leito/.ssh/id_rsa',
+    '\\\\servidor\\share\\evidencia.png',
+    '//servidor/share/evidencia.png',
+    '   /etc/passwd',
+  ];
+  for (const ruta of absolutas) {
+    assert.equal(sanitizeLogField(ruta), '<ruta-absoluta>', `no se marcó como absoluta: ${ruta}`);
+  }
+});
+
+test('sanitizeLogField acota el largo y tolera valores no string', () => {
+  assert.equal(sanitizeLogField(undefined), '');
+  assert.equal(sanitizeLogField(null), '');
+  assert.equal(sanitizeLogField(''), '');
+  assert.equal(sanitizeLogField('   '), '<ruta-vacia>');
+  assert.equal(sanitizeLogField(42), '42');
+  assert.equal(sanitizeLogField({}), '[object Object]');
+  const largo = `qa/${'a'.repeat(500)}.png`;
+  const salida = sanitizeLogField(largo);
+  assert.ok(salida.length <= MAX_LOG_FIELD_CHARS + '<truncado>'.length, `salida sin truncar (${salida.length})`);
+  assert.match(salida, /<truncado>$/);
+});
+
+test('un motivo desconocido degrada a sellado-invalido en vez de viajar al log', t => {
+  const f = fixture(t);
+  const original = fs.realpathSync;
+  const forjado = new Error('boom');
+  forjado.reason = 'aprobado\n[INFO] todo bien';
+  forjado.declaredPath = 'qa/evidence/6258/ok.png';
+  const data = { resultado: 'aprobado', evidencia: f.write('ok.png') };
+  fs.realpathSync = () => { throw forjado; };
+  t.after(() => { fs.realpathSync = original; });
+  const emitted = captureStderr(t, () => sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() }));
+  fs.realpathSync = original;
+  assert.equal(emitted.length, 1);
+  assert.doesNotMatch(emitted.join(''), /\[INFO\]|[\r\n]/);
 });
