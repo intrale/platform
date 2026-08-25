@@ -119,6 +119,11 @@ Si un archivo tiene un falso positivo, agregar un comentario en línea:
 
 ### Alta manual de `NVD_API_KEY`
 
+> **Bloqueo humano explícito: [#6391](https://github.com/intrale/platform/issues/6391)** (`needs-human`, OPEN).
+> El secret **no está aprovisionado**: `gh secret list` sólo devuelve los cinco secrets de Firebase.
+> El alta y la medición de las tres corridas consecutivas viven en #6391, no en #6362.
+> Hasta que #6391 cierre, el job corre por la rama de credencial ausente y lo declara en el summary.
+
 El secret todavía requiere una acción humana porque NVD confirma el alta por correo:
 
 1. Solicitar una API key en https://nvd.nist.gov/developers/request-an-api-key y completar la confirmación recibida por correo.
