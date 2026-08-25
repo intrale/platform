@@ -272,9 +272,16 @@ const KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER = Object.freeze({
     // para groq ahora falla la cross-validation con mensaje accionable.
     //
     // #3220 — Cerebras también es OpenAI-compatible. Lista conservadora.
+    // #5978 — `insufficient_quota` verificado empíricamente: al agotarse el
+    // crédito, Cerebras devuelve HTTP 402 con
+    // `{"error":{"status":402,"message":"Payment required...","code":"insufficient_quota"}}`.
+    // Sin este tipo el 402 no seteaba flag de cuota y el provider seguía en la
+    // cadena, matando agentes al spawn y rebotando issues sanos. Alineado con
+    // nvidia-nim/kimi-moonshot, que ya lo declaran (mismo contrato OpenAI-compat).
     cerebras: Object.freeze([
         'rate_limit_exceeded',
         'quota_exceeded',
+        'insufficient_quota',
     ]),
     // #3243 — NVIDIA NIM, 4to free provider. API OpenAI-compat: `_detectOpenAI`
     // reusa el shape SSE sin código nuevo. Lista conservadora — NVIDIA no
@@ -1654,9 +1661,18 @@ function _detectAnthropic(evt, allowlist, opts = {}) {
  *   Alternativa observada en algunos clientes OpenAI:
  *   `evt.type === 'response.error' && evt.error.type ∈ allowlist`
  *
- * Soportamos ambos shapes para tolerancia. PROHIBIDO matchear por substring
+ *   Shape DESNUDO observado empíricamente en Cerebras (#5978, 2026-08-22), sin
+ *   sobre SSE y con el discriminador en `code` en vez de `type`:
+ *   `{"error":{"status":402,"message":"Payment required ...","code":"insufficient_quota"}}`
+ *   Este shape hacía invisible el 402 de billing: el detector devolvía
+ *   `matched:false`, nunca se seteaba el flag de cuota, el resolver seguía
+ *   eligiendo el provider muerto y cada relanzamiento quemaba un reintento del
+ *   ISSUE hasta rebotarlo por "huérfano tras 3 reintentos".
+ *
+ * Soportamos los tres shapes para tolerancia. PROHIBIDO matchear por substring
  * sobre texto libre. PROHIBIDO matchear contra campos controlados por el
- * modelo (canal de contenido).
+ * modelo (canal de contenido). El match sigue siendo fail-closed: `type`/`code`
+ * sólo cuentan si el provider DECLARÓ ese error_type en su allowlist.
  */
 function _detectOpenAI(evt, allowlist) {
     if (!evt || typeof evt !== 'object') return { matched: false };
@@ -1676,6 +1692,23 @@ function _detectOpenAI(evt, allowlist) {
         const errType = typeof evt.error.type === 'string' ? evt.error.type : null;
         if (errType && allowlist.includes(errType)) {
             return { matched: true, errorType: errType };
+        }
+    }
+
+    // Shape DESNUDO (#5978): `{ error: { status, message, code } }` — sin sobre
+    // SSE. Es lo que emite Cerebras (y varios OpenAI-compat) al morir por 402 de
+    // billing. Se leen SOLO los campos de control `type` y `code` del objeto
+    // `error` de nivel raíz; nunca texto libre ni canal de contenido. Se exige
+    // que NO haya discriminador de evento (`evt.event`/`evt.type`) para no pisar
+    // los shapes de arriba, y el valor debe estar en la allowlist del provider
+    // (fail-closed: un provider que no declara el tipo jamás matchea).
+    if (!evt.event && !evt.type && evt.error && typeof evt.error === 'object' && !Array.isArray(evt.error)) {
+        const bareType = typeof evt.error.type === 'string' ? evt.error.type : null;
+        const bareCode = typeof evt.error.code === 'string' ? evt.error.code : null;
+        for (const candidate of [bareType, bareCode]) {
+            if (candidate && allowlist.includes(candidate)) {
+                return { matched: true, errorType: candidate };
+            }
         }
     }
 

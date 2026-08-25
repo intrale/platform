@@ -935,6 +935,29 @@ function resolveOutboundParseMode(data) {
   return data.parse_mode || 'Markdown';
 }
 
+/**
+ * #6190 / SEC-D — ¿este saliente va SIN vista previa de enlaces?
+ *
+ * Complemento defensivo, NO el filtro. Quien neutraliza los enlaces del texto
+ * externo es el saneador de `decision-card.js` (`URL_RE`); esto sólo impide que
+ * el cliente de Telegram dibuje la vista previa de una página ajena DENTRO de
+ * un aviso que el operador lee como escrito por el pipeline.
+ *
+ * Se resuelve en una función exportada, y no inline en el armado de `params`,
+ * por la misma razón que `resolveOutboundParseMode`: es una decisión del
+ * contrato entre dos procesos y tiene que poder testearse sin red ni token.
+ *
+ * Default cerrado sobre el tipo: sólo el booleano `true` cuenta. Un `'true'` de
+ * un dropfile mal serializado no debe cambiar el comportamiento por accidente.
+ *
+ * @param {object} data — payload del dropfile.
+ * @returns {boolean} `true` si el saliente debe ir con `disable_web_page_preview`.
+ */
+function resolveOutboundPreview(data) {
+  if (!data || typeof data !== 'object') return false;
+  return data.disable_web_page_preview === true;
+}
+
 // #3668 — Procesa un grupo de burst (N>=2 archivos del mismo skill+issue+pid+type
 // dentro de la ventana). Mueve cada archivo a trabajando/, manda 1 solo mensaje
 // consolidado, y archiva todos los demás a listo/ con suffix
@@ -1238,6 +1261,7 @@ async function processQueue() {
           // el campo NO viaja, así que no hay nada que Telegram pueda rechazar.
           const params = { text: chunks[i] };
           if (parseMode) params.parse_mode = parseMode;
+          if (resolveOutboundPreview(data)) params.disable_web_page_preview = true;
           if (privateDestination.chatId != null) params.chat_id = privateDestination.chatId;
           if (textThreadId != null) params.message_thread_id = textThreadId;
           if (hasReplyMarkup && i === chunks.length - 1) {
@@ -1336,6 +1360,7 @@ module.exports = {
   // #5421 — resolutor del dialecto del saliente (puro). Expuesto para el test
   // que fija que `plain:true` produce envío SIN `parse_mode`.
   resolveOutboundParseMode,
+  resolveOutboundPreview,
   resolvePrivateDestination,
   // #4796 — helpers de normalización/allowlist de rutas de adjunto + guarda
   // fail-closed del solo-audio. Puros (o I/O acotado sobre disco); no arrancan el
