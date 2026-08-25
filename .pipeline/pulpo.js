@@ -11523,6 +11523,30 @@ ${g}
         }
       }
 
+      // #6495 (rebote 5, seguridad) — El sello lo DERIVA el pipeline; el agente
+      // nunca lo declara. Se descarta lo declarado en TODO dropfile de
+      // qa/verificación —aprobado o no— y ANTES de los dos gates.
+      //
+      // Que sea incondicional no es celo: `sealQaVerdict` sólo corre sobre
+      // `aprobado`, así que limpiar únicamente ese carril dejaba dos huecos por
+      // los que un sello forjado llegaba igual a `listo/` y `procesado/`, donde
+      // las partes 2-5 del split lo leen como autoridad — un dropfile que el
+      // agente escribe `rechazado`, y un `aprobado` que el gate hermano degrada
+      // a `rechazado` unas líneas más abajo antes de que el sellado lo mire.
+      //
+      // Va antes de los gates y no después porque ninguno de los dos lee
+      // `sello` ni `*_sha256` (los lee sólo el módulo de sellado), así que
+      // limpiar acá no le cambia el veredicto a nadie.
+      if (skill === 'qa' && fase === 'verificacion' && data && typeof data === 'object') {
+        const sealDeclarado = qaEvidenceSeal.stripDeclaredSeal(data);
+        const camposDescartados = Object.keys(sealDeclarado.hashes).length
+          + (sealDeclarado.sello !== undefined ? 1 : 0);
+        if (camposDescartados > 0) {
+          // Sólo la cantidad: el valor declarado es del agente y no se loguea.
+          log('lanzamiento', `QA:#${issue} descartó ${camposDescartados} campo(s) de sellado declarados en el YAML — el sello lo deriva el Pulpo`);
+        }
+      }
+
       // --- VALIDACIÓN ON-EXIT QA ---
       // Si el agente QA terminó diciendo "aprobado" pero sin evidencia, forzar rechazo.
       // R1 (issue #2351): pasamos `extraEnv.QA_MODE` como fuente de verdad autoritativa

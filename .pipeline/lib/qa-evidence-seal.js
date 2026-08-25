@@ -467,6 +467,55 @@ function logFailure(error) {
 }
 
 /**
+ * Saca de `data` TODO lo que el agente haya declarado a mano sobre el sellado y
+ * devuelve lo sacado como snapshot.
+ *
+ * #6495 (rebote 5, seguridad) — El sello es una afirmacion DEL PIPELINE, nunca
+ * del agente: `data` es el YAML que escribe el agente QA, o sea la entrada no
+ * confiable de SEC-1. Antes de este borrado el modulo era fail-open, porque
+ * `data.sello` se asignaba SOLO en el camino de exito y en ningun lado se
+ * borraba lo preexistente: un sello inventado (head y hashes arbitrarios)
+ * sobrevivia intacto al early return por veredicto no aprobado, al fail-closed
+ * del `catch`, y —el carril que de verdad importa— al best-effort de los modos
+ * structural/api, donde el veredicto queda `aprobado`. El Pulpo re-serializa el
+ * YAML entero con `writeYaml` antes de mover el dropfile a `listo/`, asi que
+ * ese sello forjado viajaba a `procesado/` y de ahi a las partes 2-5 del split,
+ * que lo consumen como autoridad (caducidad por `sello.head`, `sha256` del
+ * descriptor de Drive). Es el Objetivo del issue al reves.
+ *
+ * Alcance del borrado: `sello` y los `<campo>_sha256` de los campos de
+ * evidencia (`evidencia*` + `screenshot`), que son los unicos que el sellado
+ * deriva y que las partes rio abajo leen. El unico `<campo>_sha256` que puede
+ * volver a `data` es el que reescribe `sealQaVerdict` en el camino de exito,
+ * derivado de los bytes reales.
+ *
+ * Idempotente y acotado a `data`: se llama dos veces por dropfile —el Pulpo lo
+ * corre para TODO dropfile de qa/verificacion, aprobado o no, y `sealQaVerdict`
+ * lo repite para que el modulo sea seguro invocado por si solo.
+ *
+ * @param {object} data YAML del agente, mutado in-place
+ * @returns {{sello: *, hashes: Record<string, *>}} lo declarado, para trazarlo
+ */
+function stripDeclaredSeal(data) {
+  const declared = { sello: undefined, hashes: {} };
+  if (!data || typeof data !== 'object') return declared;
+  if (data.sello !== undefined) {
+    declared.sello = data.sello;
+    delete data.sello;
+  }
+  for (const key of Object.keys(data)) {
+    if (!/_sha256$/.test(key)) continue;
+    const base = key.slice(0, -'_sha256'.length);
+    // Mismo criterio de descubrimiento que `evidenceFields`, para no tocar
+    // campos ajenos al sellado que el dropfile pueda traer.
+    if (base !== 'screenshot' && !/^evidencia(?:_|$)/.test(base)) continue;
+    declared.hashes[key] = data[key];
+    delete data[key];
+  }
+  return declared;
+}
+
+/**
  * Deriva el sello de la evidencia de un veredicto aprobado de QA.
  *
  * ALCANCE DEL FAIL-CLOSED (#6495, rebote 3 · R-2). El módulo siempre intenta
@@ -489,7 +538,12 @@ function logFailure(error) {
  * @returns {{sealed: boolean, manifest: object|null, descartes: object[], reason: string|null}}
  */
 function sealQaVerdict({ root, issue, data, cwd } = {}) {
-  if (!data || data.resultado !== 'aprobado') return { sealed: false, manifest: null, descartes: [], reason: 'no-aplica' };
+  if (!data || typeof data !== 'object') return { sealed: false, manifest: null, descartes: [], reason: 'no-aplica' };
+  // #6495 (rebote 5, seguridad) — El borrado va ANTES del early return por
+  // veredicto no aprobado: si viviera adentro del `try`, un dropfile
+  // `rechazado` viajaria a listo/ con el sello que declaro el agente intacto.
+  const declared = stripDeclaredSeal(data);
+  if (data.resultado !== 'aprobado') return { sealed: false, manifest: null, descartes: [], reason: 'no-aplica' };
   try {
     const fields = evidenceFields(data);
     if (fields.length === 0) throw new SealError('sin-evidencia');
@@ -551,14 +605,17 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
           if (!source) throw new SealError('hash-divergente');
           artifact.derivado_de = source;
         }
-        const declared = normalizeHash(spec.sha256 || data[`${field}_sha256`]);
+        // #6495 (rebote 5): sale del SNAPSHOT, no de `data`. El campo ya no
+        // esta en `data` porque se borro al entrar, asi que leerlo de ahi
+        // daria siempre undefined y romperia la traza de CA-1/CA-2.
+        const declaredHash = normalizeHash(spec.sha256 || declared.hashes[`${field}_sha256`]);
         if (spec.tipo === 'copia') {
-          const source = normalizeHash(spec.derivado_de) || declared;
+          const source = normalizeHash(spec.derivado_de) || declaredHash;
           if (!source || source !== hashed.sha256) throw new SealError('hash-divergente');
           artifact.derivado_de = source;
         }
-        if (declared && declared !== hashed.sha256) {
-          discards.push({ campo: `${field}_sha256`, declarado: declared, real: hashed.sha256 });
+        if (declaredHash && declaredHash !== hashed.sha256) {
+          discards.push({ campo: `${field}_sha256`, declarado: declaredHash, real: hashed.sha256 });
         }
         artifacts.push(artifact);
       }
@@ -579,7 +636,7 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
     const evidenciaArtifacts = artifacts.filter(item => item.campo === 'evidencia');
     if (evidenciaArtifacts.length === 1) {
       data.evidencia_sha256 = evidenciaArtifacts[0].sha256;
-    } else if (data.evidencia_sha256 !== undefined) {
+    } else if (declared.hashes.evidencia_sha256 !== undefined) {
       // El descarte deja traza del hash declarado que se tira, sin filtrar el
       // valor crudo: si no es canónico se registra el marcador (CA-2/SEC-8).
       // `real: null` significa exactamente "el campo `evidencia` no produjo un
@@ -591,11 +648,11 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
       if (!discards.some(item => item.campo === 'evidencia_sha256')) {
         discards.push({
           campo: 'evidencia_sha256',
-          declarado: normalizeHash(data.evidencia_sha256) || '<no-canonico>',
+          declarado: normalizeHash(declared.hashes.evidencia_sha256) || '<no-canonico>',
           real: null,
         });
       }
-      delete data.evidencia_sha256;
+      // Sin `delete` aca: `stripDeclaredSeal` ya lo saco de `data` al entrar.
     }
 
     const manifest = { version: 1, derivado_por: 'qa-evidence-seal', head, artefactos: artifacts, descartes: discards };
@@ -663,7 +720,7 @@ function degradeVerdictForSeal(data, reason) {
 }
 
 module.exports = {
-  sealQaVerdict, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
+  sealQaVerdict, stripDeclaredSeal, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
   describeSealFailure, degradeVerdictForSeal, isSkipSentinel, looksLikeArtifactRef,
   resolvesToExistingFile,
   SEAL_REJECTED_BY,

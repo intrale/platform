@@ -11,6 +11,7 @@ const {
   sealQaVerdict, normalizeHash, resolveConfined, deriveHead,
   MAX_EVIDENCE_FIELDS, MAX_FILE_BYTES, MAX_LOG_FIELD_CHARS, sanitizeLogField,
   describeSealFailure, degradeVerdictForSeal, resolvesToExistingFile,
+  stripDeclaredSeal,
 } = require('../qa-evidence-seal');
 
 function fixture(t, issue = 6258) {
@@ -812,4 +813,120 @@ test('S-1: el centinela por prefijo tampoco puede sacar del sello a un archivo r
     conCentinela.descartes.map(d => [d.campo, d.motivo]),
     [['evidencia_hashes', 'centinela'], ['screenshot', 'centinela']],
   );
+});
+
+// #6495 (rebote 5, seguridad) — El sello que declara el AGENTE en su YAML no
+// puede sobrevivir a ningún camino. Antes de estos tests la suite entera pasaba
+// con el fail-open puesto: las 49 pruebas asertaban `data.sello === undefined`
+// partiendo de un `data` que NUNCA traía un sello preexistente, así que
+// verificaban que el módulo no INVENTA un sello, no que DESCARTA el ajeno.
+const SELLO_FORJADO = Object.freeze({
+  version: 1,
+  derivado_por: 'qa-evidence-seal',
+  head: 'a'.repeat(40),
+  artefactos: [{ campo: 'evidencia', ruta: 'qa/evidence/6258/inventado.md', sha256: `sha256:${'d'.repeat(64)}`, bytes: 999999, tipo: 'original' }],
+  descartes: [],
+});
+const forjado = () => JSON.parse(JSON.stringify(SELLO_FORJADO));
+
+test('S-3: un sello preexistente no sobrevive a un sellado fallido', t => {
+  const f = fixture(t);
+  const data = { resultado: 'aprobado', evidencia: 'qa/evidence/6258/ausente.md', sello: forjado() };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, false);
+  assert.equal(data.sello, undefined, 'el sello forjado sobrevivió al fail-closed');
+});
+
+test('S-3: un sello preexistente tampoco sobrevive al carril best-effort, con el veredicto intacto', t => {
+  const f = fixture(t);
+  // El carril real: modo structural, `evidencia` en prosa por contrato del rol.
+  // 11 de 11 dropfiles .qa aprobados del histórico caen acá, así que es el
+  // camino por defecto, no un borde.
+  const data = {
+    resultado: 'aprobado',
+    evidencia: 'Se corrió QA structural sobre el diff, sin artefactos binarios',
+    evidencia_sha256: `sha256:${'e'.repeat(64)}`,
+    sello: forjado(),
+  };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, false);
+  assert.equal(result.reason, 'sin-evidencia');
+  // El best-effort NO toca el veredicto (R-2/R-3)...
+  assert.equal(data.resultado, 'aprobado');
+  // ...pero tampoco deja viajar el sello ni el hash que el agente escribió.
+  assert.equal(data.sello, undefined, 'el sello forjado viajaría a procesado/');
+  assert.equal(data.evidencia_sha256, undefined, 'el hash forjado viajaría al descriptor de Drive');
+});
+
+test('S-3: el early return por veredicto no aprobado borra igual el sello declarado', t => {
+  const f = fixture(t);
+  const data = { resultado: 'rechazado', sello: forjado(), evidencia_sha256: `sha256:${'e'.repeat(64)}` };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+  assert.equal(result.reason, 'no-aplica');
+  assert.equal(data.sello, undefined);
+  assert.equal(data.evidencia_sha256, undefined);
+  assert.equal(data.resultado, 'rechazado');
+});
+
+test('S-3: evidencia_sha256 declarado no se persiste si el sellado no lo derivó', t => {
+  const f = fixture(t);
+  // El campo `evidencia` produce artefacto, pero otro campo hace fallar el
+  // sellado: el hash de compat declarado no puede quedar como si fuera derivado.
+  const data = {
+    resultado: 'aprobado',
+    evidencia: f.write('ok.md', 'contenido real'),
+    evidencia_sha256: `sha256:${'e'.repeat(64)}`,
+    evidencia_rota: 'qa/evidence/6258/ausente.md',
+  };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, false);
+  assert.equal(data.evidencia_sha256, undefined);
+  assert.equal(data.sello, undefined);
+});
+
+test('S-3: en el camino de éxito el sello derivado pisa al declarado, sin rastro del forjado', t => {
+  const f = fixture(t);
+  const route = f.write('qa-6258-structural.md', 'bytes canónicos');
+  const real = `sha256:${crypto.createHash('sha256').update('bytes canónicos').digest('hex')}`;
+  const data = { resultado: 'aprobado', evidencia: route, evidencia_sha256: `sha256:${'e'.repeat(64)}`, sello: forjado() };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, true);
+  assert.equal(data.sello.head, deriveHead(gitHeadCwd()));
+  assert.notEqual(data.sello.head, 'a'.repeat(40));
+  assert.equal(data.sello.artefactos.length, 1);
+  assert.equal(data.sello.artefactos[0].sha256, real);
+  assert.equal(data.evidencia_sha256, real);
+  // El descarte del hash declarado sigue trazado (CA-1/CA-2) pese al borrado.
+  assert.deepEqual(result.descartes, [{ campo: 'evidencia_sha256', declarado: `sha256:${'e'.repeat(64)}`, real }]);
+  assert.doesNotMatch(JSON.stringify(data.sello), new RegExp('d'.repeat(64)));
+});
+
+test('S-3: stripDeclaredSeal snapshotea, es idempotente y no toca campos ajenos al sellado', () => {
+  const data = {
+    resultado: 'aprobado',
+    sello: forjado(),
+    evidencia_sha256: `sha256:${'e'.repeat(64)}`,
+    screenshot_sha256: `sha256:${'f'.repeat(64)}`,
+    evidencia_frames_sha256: `sha256:${'c'.repeat(64)}`,
+    diff_hash_previo: 'no-es-del-sellado',
+    apk_sha256: 'tampoco-es-un-campo-de-evidencia',
+    evidencia: 'qa/evidence/6258/ok.md',
+  };
+  const declared = stripDeclaredSeal(data);
+  assert.deepEqual(declared.sello, forjado());
+  assert.deepEqual(Object.keys(declared.hashes).sort(), ['evidencia_frames_sha256', 'evidencia_sha256', 'screenshot_sha256']);
+  assert.equal(data.sello, undefined);
+  assert.equal(data.evidencia_sha256, undefined);
+  assert.equal(data.screenshot_sha256, undefined);
+  assert.equal(data.evidencia_frames_sha256, undefined);
+  // Campos que el sellado no deriva ni consume quedan intactos.
+  assert.equal(data.diff_hash_previo, 'no-es-del-sellado');
+  assert.equal(data.apk_sha256, 'tampoco-es-un-campo-de-evidencia');
+  assert.equal(data.evidencia, 'qa/evidence/6258/ok.md');
+  // Segunda pasada: sin sello que sacar y sin romperse (el Pulpo la llama, y
+  // después sealQaVerdict la repite sobre el mismo objeto).
+  const otra = stripDeclaredSeal(data);
+  assert.equal(otra.sello, undefined);
+  assert.deepEqual(otra.hashes, {});
+  assert.deepEqual(stripDeclaredSeal(null), { sello: undefined, hashes: {} });
 });
