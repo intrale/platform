@@ -10,7 +10,7 @@ const { spawnSync } = require('node:child_process');
 const {
   sealQaVerdict, normalizeHash, resolveConfined, deriveHead,
   MAX_EVIDENCE_FIELDS, MAX_FILE_BYTES, MAX_LOG_FIELD_CHARS, sanitizeLogField,
-  describeSealFailure, degradeVerdictForSeal,
+  describeSealFailure, degradeVerdictForSeal, resolvesToExistingFile,
 } = require('../qa-evidence-seal');
 
 function fixture(t, issue = 6258) {
@@ -633,4 +633,183 @@ test('el tope de campos se calibra sobre el histórico real (10 campos observado
   const conExceso = sealQaVerdict({ root: f.root, issue: 6118, data: exceso, cwd: gitHeadCwd() });
   assert.equal(conExceso.sealed, false);
   assert.equal(conExceso.reason, 'campos-oversize');
+});
+
+// ---------------------------------------------------------------------------
+// #6495 · rebote 4 — regresión de los dos PoC de la auditoría de seguridad rev-5.
+// ---------------------------------------------------------------------------
+
+test('S-1: un artefacto REAL con espacio en el nombre no se saltea como prosa', t => {
+  const f = fixture(t, 6495);
+  // PoC textual de la auditoría: el agente elige el nombre del archivo, así que
+  // el espacio no puede ser el criterio que lo saque del sello.
+  const video = f.write('video de qa.mp4', Buffer.alloc(60000, 7));
+  const thumb = f.write('qa-thumb.png', Buffer.alloc(200, 3));
+  const data = { resultado: 'aprobado', evidencia: video, screenshot: thumb };
+  const result = sealQaVerdict({ root: f.root, issue: 6495, data, cwd: gitHeadCwd() });
+
+  assert.equal(result.sealed, true, `el happy path no puede romperse: ${result.reason}`);
+  assert.deepEqual(result.manifest.artefactos.map(a => a.campo), ['evidencia', 'screenshot']);
+  const sellado = result.manifest.artefactos.find(a => a.campo === 'evidencia');
+  assert.equal(sellado.bytes, 60000, 'el video declarado tiene que estar cubierto por el sello');
+  assert.equal(sellado.sha256, `sha256:${crypto.createHash('sha256').update(Buffer.alloc(60000, 7)).digest('hex')}`);
+  assert.equal(result.descartes.length, 0, 'ya no hay descarte no-es-artefacto para un archivo real');
+});
+
+test('S-1: adulterar el artefacto cambia el sello (no hay desincronización sello-artefacto)', t => {
+  const f = fixture(t, 6495);
+  const video = f.write('video de qa.mp4', Buffer.alloc(60000, 7));
+  const primero = sealQaVerdict({ root: f.root, issue: 6495, data: { resultado: 'aprobado', evidencia: video }, cwd: gitHeadCwd() });
+  fs.writeFileSync(path.join(f.dir, 'video de qa.mp4'), Buffer.alloc(60000, 8));
+  const segundo = sealQaVerdict({ root: f.root, issue: 6495, data: { resultado: 'aprobado', evidencia: video }, cwd: gitHeadCwd() });
+
+  assert.equal(primero.sealed, true);
+  assert.equal(segundo.sealed, true);
+  assert.notEqual(
+    primero.manifest.artefactos[0].sha256,
+    segundo.manifest.artefactos[0].sha256,
+    'si el sello no cambia al adulterar el archivo, el sello no cubre nada',
+  );
+});
+
+test('S-1: un archivo real fuera del recinto frena el sellado en vez de saltearse como prosa', t => {
+  const f = fixture(t, 6495);
+  fs.writeFileSync(path.join(f.root, 'archivo del host.txt'), 'contenido fuera del recinto');
+  const data = { resultado: 'aprobado', evidencia: 'archivo del host.txt' };
+  const result = sealQaVerdict({ root: f.root, issue: 6495, data, cwd: gitHeadCwd() });
+
+  assert.equal(result.sealed, false, 'un archivo real nunca se saltea en silencio');
+  assert.equal(result.reason, 'fuera-de-recinto');
+  assert.equal(result.manifest, null);
+});
+
+test('S-1: la prosa estructural del rol qa.md sigue sin frenar el sellado', t => {
+  const f = fixture(t, 6495);
+  const thumb = f.write('qa-thumb.png', 'png chico');
+  for (const prosa of [
+    'Validación estructural — archivos modificados verificados',
+    'no aplica: el preflight confirmó que no hay superficie UI visible',
+    'Se revisaron 12 archivos del diff, sin regresiones',
+  ]) {
+    const data = { resultado: 'aprobado', evidencia: prosa, screenshot: thumb };
+    const result = sealQaVerdict({ root: f.root, issue: 6495, data, cwd: gitHeadCwd() });
+    assert.equal(result.sealed, true, `la prosa no puede frenar el sellado: ${result.reason}`);
+    assert.deepEqual(result.manifest.artefactos.map(a => a.campo), ['screenshot']);
+    assert.ok(
+      result.descartes.some(d => d.campo === 'evidencia' && ['no-es-artefacto', 'centinela'].includes(d.motivo)),
+      'la prosa se saltea CON traza, nunca en silencio',
+    );
+  }
+});
+
+test('S-1: la sonda de existencia contesta sobre archivos, no sobre directorios ni prosa', t => {
+  const f = fixture(t, 6495);
+  f.write('qa-6495-frame-01.png', 'frame1');
+  f.write('qa-6495-frame-02.png', 'frame2');
+  assert.equal(resolvesToExistingFile(f.root, 'qa/evidence/6495/qa-6495-frame-01.png'), true);
+  assert.equal(resolvesToExistingFile(f.root, 'qa/evidence/6495/qa-6495-frame-*.png'), true);
+  assert.equal(resolvesToExistingFile(f.root, 'qa/evidence/6495'), false, 'un directorio no es un artefacto');
+  assert.equal(resolvesToExistingFile(f.root, 'qa/evidence/6495/no-existe.png'), false);
+  assert.equal(resolvesToExistingFile(f.root, 'Validación estructural sin superficie visible'), false);
+  assert.equal(resolvesToExistingFile(f.root, ''), false);
+  assert.equal(resolvesToExistingFile(f.root, null), false);
+  assert.equal(resolvesToExistingFile(f.root, ['qa/evidence/6495/qa-6495-frame-01.png']), false);
+});
+
+test('S-2: el recinto de logs no acepta el transcript del agente ni profundidad libre', t => {
+  const f = fixture(t, 6495);
+  const logs = path.join(f.root, '.pipeline', 'logs');
+  fs.mkdirSync(path.join(logs, 'audit'), { recursive: true });
+  fs.mkdirSync(path.join(logs, 'media', 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(logs, '6495-qa.log'), 'transcript completo del agente QA');
+  fs.writeFileSync(path.join(logs, 'audit', 'deep-6495-audit.log'), 'auditoría profunda');
+  fs.writeFileSync(path.join(logs, 'media', 'nested', 'qa-6495.mp4'), 'un nivel de más');
+  fs.writeFileSync(path.join(logs, 'media', 'qa-6495.log'), 'extensión que no es media');
+  fs.writeFileSync(path.join(logs, 'rejection-6495-qa.txt'), 'rejection que no es pdf');
+
+  for (const ruta of [
+    '.pipeline/logs/6495-qa.log',
+    '.pipeline/logs/audit/deep-6495-audit.log',
+    '.pipeline/logs/media/nested/qa-6495.mp4',
+    '.pipeline/logs/media/qa-6495.log',
+    '.pipeline/logs/rejection-6495-qa.txt',
+  ]) {
+    assert.throws(
+      () => resolveConfined(f.root, 6495, ruta),
+      { reason: 'fuera-de-recinto' },
+      `${ruta} no puede promoverse a evidencia sellada`,
+    );
+    const data = { resultado: 'aprobado', evidencia: ruta };
+    const result = sealQaVerdict({ root: f.root, issue: 6495, data, cwd: gitHeadCwd() });
+    assert.equal(result.sealed, false, `${ruta} selló y no debía`);
+    assert.equal(result.reason, 'fuera-de-recinto');
+  }
+});
+
+test('S-2: las dos formas que CA-6 justifica siguen sellando', t => {
+  const f = fixture(t, 6495);
+  const logs = path.join(f.root, '.pipeline', 'logs');
+  fs.mkdirSync(path.join(logs, 'media'), { recursive: true });
+  fs.writeFileSync(path.join(logs, 'media', 'qa-6495.mp4'), 'remux faststart');
+  fs.writeFileSync(path.join(logs, 'media', 'qa-6495-screenshot-final.png'), 'captura final');
+  fs.writeFileSync(path.join(logs, 'rejection-6495-qa.pdf'), 'reporte de rechazo');
+
+  const data = {
+    resultado: 'aprobado',
+    evidencia: '.pipeline/logs/media/qa-6495.mp4',
+    evidencia_pdf: '.pipeline/logs/rejection-6495-qa.pdf',
+    screenshot: '.pipeline/logs/media/qa-6495-screenshot-final.png',
+  };
+  const result = sealQaVerdict({ root: f.root, issue: 6495, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, true, `las formas reales del histórico no pueden morir: ${result.reason}`);
+  assert.deepEqual(result.manifest.artefactos.map(a => a.ruta), [
+    '.pipeline/logs/media/qa-6495.mp4',
+    '.pipeline/logs/rejection-6495-qa.pdf',
+    '.pipeline/logs/media/qa-6495-screenshot-final.png',
+  ]);
+});
+
+test('S-2: el glob dentro de logs/media sigue expandiendo confinado y sin alcanzar los logs del pipeline', t => {
+  const f = fixture(t, 6495);
+  const media = path.join(f.root, '.pipeline', 'logs', 'media');
+  fs.mkdirSync(media, { recursive: true });
+  fs.writeFileSync(path.join(media, 'qa-6495-frame-01.png'), 'frame1');
+  fs.writeFileSync(path.join(media, 'qa-6495-frame-02.png'), 'frame2');
+  fs.writeFileSync(path.join(f.root, '.pipeline', 'logs', '6495-otro.log'), 'log del agente');
+
+  const data = { resultado: 'aprobado', evidencia_frames: '.pipeline/logs/media/qa-6495-frame-*.png' };
+  const result = sealQaVerdict({ root: f.root, issue: 6495, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, true, `el glob de media no puede romperse: ${result.reason}`);
+  assert.equal(result.manifest.artefactos.length, 2);
+
+  const conLogs = sealQaVerdict({
+    root: f.root, issue: 6495, cwd: gitHeadCwd(),
+    data: { resultado: 'aprobado', evidencia: '.pipeline/logs/6495-*.log' },
+  });
+  assert.equal(conLogs.sealed, false);
+  assert.equal(conLogs.reason, 'fuera-de-recinto');
+});
+
+test('S-1: el centinela por prefijo tampoco puede sacar del sello a un archivo real', t => {
+  const f = fixture(t, 6495);
+  // `SKIP_SENTINEL` matchea por prefijo, así que `-qa-video.mp4` entraba por la
+  // rama del centinela y salía del sello aunque el archivo exista.
+  const video = f.write('-qa-video.mp4', 'bytes del video');
+  const data = { resultado: 'aprobado', evidencia: video };
+  const result = sealQaVerdict({ root: f.root, issue: 6495, data, cwd: gitHeadCwd() });
+
+  assert.equal(result.sealed, true, `el archivo real tiene que sellarse: ${result.reason}`);
+  assert.deepEqual(result.manifest.artefactos.map(a => a.campo), ['evidencia']);
+  assert.equal(result.descartes.length, 0);
+
+  // Y el centinela legítimo sigue funcionando igual.
+  const conCentinela = sealQaVerdict({
+    root: f.root, issue: 6495, cwd: gitHeadCwd(),
+    data: { resultado: 'aprobado', evidencia: video, evidencia_hashes: null, screenshot: 'no aplica: sin superficie visible' },
+  });
+  assert.equal(conCentinela.sealed, true, `los centinelas reales no pueden frenar: ${conCentinela.reason}`);
+  assert.deepEqual(
+    conCentinela.descartes.map(d => [d.campo, d.motivo]),
+    [['evidencia_hashes', 'centinela'], ['screenshot', 'centinela']],
+  );
 });

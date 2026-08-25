@@ -11603,7 +11603,16 @@ ${g}
       }
 
       // El sello y el baseline se persisten juntos antes del rename atómico a listo/.
-      if (skill === 'qa' && fase === 'verificacion') writeYaml(workingPath, data);
+      //
+      // #6495 (rebote 4) — La guarda de `data` no es cosmética: con un dropfile
+      // que no parsea, `readYamlSafe` devuelve `{}` por contrato de #3941/SEC-3,
+      // y persistir ese `{}` PISA el archivo corrupto que hoy sobrevive para
+      // diagnóstico. No abre bypass de gate —un `{}` no tiene `resultado:
+      // aprobado`— pero destruye la única evidencia de por qué el agente escribió
+      // un YAML inválido. Se escribe sólo si hay algo que escribir.
+      if (skill === 'qa' && fase === 'verificacion' && data && Object.keys(data).length > 0) {
+        writeYaml(workingPath, data);
+      }
 
       // Solo movemos si el archivo sigue en trabajando/. Si ya estaba en listo/
       // (contrato viejo), el move lo completó el agente.

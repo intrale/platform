@@ -31,7 +31,7 @@ const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
 const TRAVERSAL_SEGMENT = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
 const ARTIFACT_EXTENSION = /\.[A-Za-z0-9]{1,8}$/;
 
-// #6495 (rebote 3, R-4) — Segundo recinto permitido.
+// #6495 (rebote 3, R-4 · rebote 4, S-2) — Segundo recinto permitido.
 //
 // CA-6 justifica `tipo: derivado` con `.pipeline/logs/media/qa-6190.mp4` (re-mux
 // faststart del original), pero confinar TODO a `qa/evidence/<issue>/` hacía que
@@ -41,11 +41,24 @@ const ARTIFACT_EXTENSION = /\.[A-Za-z0-9]{1,8}$/;
 // CA-5 (recinto estricto) y CA-6 (motivo fuera del recinto) se resuelve acá, a
 // favor de un segundo recinto explícito y acotado.
 //
-// El recinto de logs NO es libre: el basename tiene que referenciar el issue
-// como token propio, así que el veredicto de #A no puede sellar el artefacto de
-// #B ni un log arbitrario del pipeline. Sigue valiendo todo lo demás: sin
-// traversal, sin ruta sensible, containment por `realpath`, tope de bytes.
+// El recinto de logs NO es `.pipeline/logs/` entero ni recursivo: eso promovía a
+// evidencia sellada cualquier archivo del pipeline con el número de issue en el
+// basename —incluido `.pipeline/logs/<issue>-<skill>.log`, que es el transcript
+// completo del agente, y cualquier `logs/<subdir>/…-<issue>-….log`— en un canal
+// que las partes 2 y 3 del split consumen y publican. Lo permitido es una
+// ALLOWLIST DE FORMA, sin profundidad libre, que cubre exactamente las dos
+// formas que CA-6 justifica y que el histórico real usa:
+//
+//   - `logs/media/<basename con extensión de media>`  (un solo nivel)
+//   - `logs/rejection-<…>.pdf`                        (sin subdirectorio)
+//
+// y en las dos el basename tiene que referenciar el issue como token propio, así
+// que el veredicto de #A no puede sellar el artefacto de #B. Sigue valiendo todo
+// lo demás: sin traversal, sin ruta sensible, containment por `realpath`, topes.
 const LOG_RECINTO = ['.pipeline', 'logs'];
+const MEDIA_SUBDIR = 'media';
+const MEDIA_EXTENSION = /\.(?:mp4|webm|mkv|mov|m4v|gif|png|jpe?g|pdf)$/i;
+const REJECTION_BASENAME = /^rejection-[A-Za-z0-9._-]+\.pdf$/i;
 
 class SealError extends Error {
   constructor(reason, declaredPath = '') {
@@ -75,9 +88,33 @@ function isInside(parent, candidate) {
  */
 function confinementRoots(root, issue) {
   return [
-    { dir: path.join(root, 'qa', 'evidence', String(issue)), requiereTokenDeIssue: false },
-    { dir: path.join(root, ...LOG_RECINTO), requiereTokenDeIssue: true },
+    { dir: path.join(root, 'qa', 'evidence', String(issue)), permite: () => true },
+    { dir: path.join(root, ...LOG_RECINTO), permite: allowedLogShape },
   ];
+}
+
+/**
+ * Allowlist de forma del recinto de logs (#6495, rebote 4 · S-2). Recibe los
+ * segmentos de la ruta RELATIVOS al recinto, así que no hay profundidad libre:
+ * cualquier subdirectorio que no sea `media/` —y cualquier nivel extra dentro
+ * de `media/`— queda afuera.
+ *
+ * `esDirectorio` existe para la expansión de globs, que resuelve primero el
+ * directorio contenedor (`.pipeline/logs/media`) y recién después valida cada
+ * archivo expandido con esta misma función en modo archivo.
+ */
+function allowedLogShape(relParts, issue, esDirectorio) {
+  if (esDirectorio) {
+    if (relParts.length === 0) return true;
+    return relParts.length === 1 && relParts[0].toLowerCase() === MEDIA_SUBDIR;
+  }
+  const basename = relParts[relParts.length - 1] || '';
+  if (!referencesIssue(basename, issue)) return false;
+  if (relParts.length === 1) return REJECTION_BASENAME.test(basename);
+  if (relParts.length === 2 && relParts[0].toLowerCase() === MEDIA_SUBDIR) {
+    return MEDIA_EXTENSION.test(basename);
+  }
+  return false;
 }
 
 /**
@@ -105,7 +142,8 @@ function referencesIssue(basename, issue) {
  * La ruta devuelta (`ruta`) SIEMPRE es relativa al repo y con `/`: el
  * manifiesto no persiste rutas absolutas del host (SEC-8).
  */
-function resolveConfined(root, issue, declaredPath) {
+function resolveConfined(root, issue, declaredPath, options = {}) {
+  const esDirectorio = options.directorio === true;
   if (typeof declaredPath !== 'string') throw new SealError('fuera-de-recinto', declaredPath);
   const raw = declaredPath.trim();
   if (raw === '') throw new SealError('fuera-de-recinto', declaredPath);
@@ -117,7 +155,9 @@ function resolveConfined(root, issue, declaredPath) {
     .find(candidate => isInside(candidate.dir, absolute));
   // No distingue ausencia de rechazo: evita usar el motivo como oráculo (CA-11).
   if (!recinto) throw new SealError('fuera-de-recinto', declaredPath);
-  if (recinto.requiereTokenDeIssue && !referencesIssue(path.basename(absolute), issue)) {
+  const relativoAlRecinto = path.relative(recinto.dir, absolute);
+  const relParts = relativoAlRecinto === '' ? [] : relativoAlRecinto.split(/[\\/]/);
+  if (!recinto.permite(relParts, issue, esDirectorio)) {
     throw new SealError('fuera-de-recinto', declaredPath);
   }
 
@@ -154,6 +194,19 @@ function deriveHead(cwd) {
   return output.toLowerCase();
 }
 
+/**
+ * Compila el basename de un glob a matcher. Lo comparten `expandGlob` (camino
+ * autoritativo) y `resolvesToExistingFile` (sonda de existencia): si divergieran,
+ * la sonda podría declarar "no es artefacto" un patrón que el camino
+ * autoritativo sí expande, y volvería a abrirse el fail-open de S-1.
+ */
+function globMatcher(basename) {
+  const escaped = basename
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/[*?]/g, match => (match === '*' ? '.*' : '.'));
+  return new RegExp(`^${escaped}$`);
+}
+
 function expandGlob(root, issue, declaredPath) {
   if (!/[?*]/.test(declaredPath)) return [declaredPath];
   if (declaredPath.includes('?') || (declaredPath.match(/\*/g) || []).length !== 1) {
@@ -161,9 +214,8 @@ function expandGlob(root, issue, declaredPath) {
   }
   const directory = path.dirname(declaredPath);
   const basename = path.basename(declaredPath);
-  const confinedDir = resolveConfined(root, issue, path.join(directory, '.'));
-  const escaped = basename.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace('*', '.*');
-  const matcher = new RegExp(`^${escaped}$`);
+  const confinedDir = resolveConfined(root, issue, path.join(directory, '.'), { directorio: true });
+  const matcher = globMatcher(basename);
   let names;
   try { names = fs.readdirSync(confinedDir.real).filter(name => matcher.test(name)).sort(); }
   catch { throw new SealError('glob-vacio', declaredPath); }
@@ -278,6 +330,60 @@ function looksLikeArtifactRef(value) {
   if (CONTROL_CHARS.test(trimmed) || BIDI_CHARS.test(trimmed)) return true;
   if (/\s/.test(trimmed)) return false;
   return /[\\/]/.test(trimmed) || ARTIFACT_EXTENSION.test(trimmed);
+}
+
+/**
+ * #6495 (rebote 4, S-1) — Contrapeso empírico de `looksLikeArtifactRef`.
+ *
+ * La heurística de forma es una CONVENIENCIA para no frenar la prosa que el rol
+ * `qa.md` manda escribir en modo structural; nunca puede ser un canal para dejar
+ * un artefacto REAL fuera del sello. El PoC del security lo mostró: el agente
+ * guarda el video como `video de qa.mp4`, la heurística ve el espacio, decide
+ * "esto es prosa", saltea el campo y el módulo responde `sellado OK` con el
+ * video sin hashear — la desincronización sello↔artefacto de #6475, ahora con el
+ * sello afirmando que está todo bien.
+ *
+ * Por eso el salteo por prosa está condicionado a que el valor NO corresponda a
+ * un archivo regular existente. La sonda es deliberadamente PERMISIVA y ajena a
+ * la política: acá sólo se contesta "¿esto puede ser un archivo?". Si contesta
+ * que sí, el valor sigue el camino normal —`resolveConfined` + `readAndHash`— y
+ * es ESE camino, con toda la política de CA-5, el que decide sellar o
+ * fail-closed. Un archivo real fuera del recinto ya no se saltea en silencio:
+ * frena el sellado.
+ *
+ * No abre oráculo de existencia (CA-11): el resultado sólo elige entre "saltear
+ * con traza" y "resolver"; el motivo que sale al operador sigue siendo
+ * categórico y no distingue inexistente de rechazado.
+ *
+ * @param {string} root raíz del repo (fija, nunca del YAML)
+ * @param {*} value valor declarado por el agente (no confiable)
+ * @returns {boolean} true si el valor corresponde a al menos un archivo regular
+ */
+function resolvesToExistingFile(root, value) {
+  if (typeof value !== 'string') return false;
+  const raw = value.trim();
+  if (raw === '') return false;
+  let base;
+  try { base = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(root, raw); }
+  catch { return false; }
+  if (!/[?*]/.test(raw)) {
+    try { return fs.statSync(base).isFile(); } catch { return false; }
+  }
+  const directory = path.dirname(base);
+  const pattern = path.basename(base);
+  // Un comodín en el directorio no se sondea: la expansión soportada (y por lo
+  // tanto la única que puede producir artefactos) es sobre el basename.
+  if (/[?*]/.test(directory)) return false;
+  let matcher;
+  let names;
+  try {
+    matcher = globMatcher(pattern);
+    names = fs.readdirSync(directory);
+  } catch { return false; }
+  return names.some(name => {
+    if (!matcher.test(name)) return false;
+    try { return fs.statSync(path.join(directory, name)).isFile(); } catch { return false; }
+  });
 }
 
 // #6495 (rebote de seguridad) — El campo de evidencia lo escribe el YAML del
@@ -403,7 +509,14 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
       // promovía el hash del screenshot a `evidencia_sha256`, o sea la misma
       // desincronización sello-artefacto que este issue existe para eliminar.
       // Ahora todo valor que no produzca spec frena el sellado (fail-closed).
-      if (isSkipSentinel(data[field])) {
+      //
+      // #6495 (rebote 4, S-1): el centinela lleva el MISMO contrapeso empírico
+      // que la prosa. El centinela se reconoce por prefijo, así que un artefacto
+      // real cuyo nombre empiece con la forma del centinela (`-qa-video.mp4`)
+      // salía del sello en silencio: la misma clase de fail-open que el PoC.
+      // `undefined`/`null` no son strings y la sonda contesta `false`, así que
+      // el campo YAML vacío sigue siendo centinela como hasta ahora.
+      if (isSkipSentinel(data[field]) && !resolvesToExistingFile(root, data[field])) {
         discards.push({ campo: field, declarado: null, real: null, motivo: 'centinela' });
         continue;
       }
@@ -411,7 +524,16 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
       // traza explícita —nunca en silencio, que es lo que el rebote 2 cerró— y
       // el sellado sigue con los campos que sí declaran artefactos. Si ninguno
       // lo hace, el `sin-evidencia` de más abajo frena igual (fail-closed).
-      if (typeof data[field] === 'string' && !looksLikeArtifactRef(data[field])) {
+      //
+      // #6495 (rebote 4, S-1): el salteo por prosa exige LAS DOS condiciones —
+      // que no tenga forma de ruta Y que no corresponda a un archivo real. Con
+      // sólo la primera, cualquier nombre de archivo con un espacio
+      // (`video de qa.mp4`, elegido por el mismo agente que escribe el YAML)
+      // salía del sello con `sealed: true`, que es exactamente el fail-open que
+      // este issue existe para cerrar (CA-4 + CA-7).
+      if (typeof data[field] === 'string'
+        && !looksLikeArtifactRef(data[field])
+        && !resolvesToExistingFile(root, data[field])) {
         discards.push({ campo: field, declarado: null, real: null, motivo: 'no-es-artefacto' });
         continue;
       }
@@ -543,6 +665,7 @@ function degradeVerdictForSeal(data, reason) {
 module.exports = {
   sealQaVerdict, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
   describeSealFailure, degradeVerdictForSeal, isSkipSentinel, looksLikeArtifactRef,
+  resolvesToExistingFile,
   SEAL_REJECTED_BY,
   MAX_EVIDENCE_FIELDS, MAX_GLOB_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_LOG_FIELD_CHARS,
 };
