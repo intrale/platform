@@ -26,6 +26,10 @@ const RESULT_BADGES = Object.freeze({
   ajustada: { glyph: '✎', label: 'ajustada', title: 'Sherlock reelaboró la respuesta del Commander' },
   fallback: { glyph: '↪', label: 'fallback', title: 'Respondió con un proveedor distinto al primario' },
   error:    { glyph: '✗', label: 'error',    title: 'Error / timeout / sin-provider / respuesta vacía' },
+  // #6459 — el turno se ejecutó entero pero su respuesta nunca se confirmó como
+  // entregada. R-7: la CLAVE va sin tilde (de acá sale la clase CSS, abajo);
+  // el label y el tooltip sí la llevan, porque son texto para el operador.
+  huerfano: { glyph: '∅', label: 'huérfano', title: 'Se ejecutó, pero su respuesta nunca se confirmó como entregada' },
 });
 
 // Escape mínimo por defecto. El caller (dashboard.js) DEBE inyectar su propio

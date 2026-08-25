@@ -5468,7 +5468,7 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
 
 /* ── #3951 EP7-H4 — Badge de resultado de la petición del Commander.
- *    Mapea el enum cerrado (ok/ajustada/fallback/error) a los 4 tokens
+ *    Mapea el enum cerrado (ok/ajustada/fallback/error/huerfano) a los 5 tokens
  *    semánticos del design system. Glyph + label SIEMPRE (CA-4: no depender
  *    sólo del color). Tokens con fallback legacy por si design-tokens.css no
  *    está cargado. */
@@ -5477,6 +5477,13 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .cmd-result-ajustada {color:var(--warning,var(--yl));background:var(--warning-bg,rgba(210,153,34,0.14));border-color:var(--warning-dim,var(--yl2))}
 .cmd-result-fallback {color:var(--info,var(--ac));   background:var(--info-bg,rgba(88,166,255,0.14));   border-color:var(--info-dim,var(--ac2))}
 .cmd-result-error    {color:var(--danger,var(--rd)); background:var(--danger-bg,rgba(248,81,73,0.14));  border-color:var(--danger-dim,var(--rd2))}
+/* #6459 / UX-2 — FALLBACK HEX LITERAL, no var(--x, var(--legacy)).
+ * loadDesignTokens() degrada a cadena vacía si no puede leer design-tokens.css,
+ * y la paleta legacy inline de este archivo NO tiene ningún rosa al que caer
+ * (--gn/--yl/--ac/--rd/--or/--pu). Con el patrón de las cuatro reglas de arriba,
+ * el badge huerfano renderizaría MUDO — exactamente el escape #4531. Los hex
+ * son los valores resueltos de --alert-anomaly / -dim / -bg. */
+.cmd-result-huerfano {color:var(--result-huerfano,#FF6B8A);background:var(--result-huerfano-bg,rgba(255,107,138,0.16));border-color:var(--result-huerfano-dim,#B8254A)}
 .cmd-provider{font-size:0.72em;color:var(--dim);font-family:inherit;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
 .cmd-verif{font-size:0.72em;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
 .cmd-verif-cross{color:var(--info,var(--ac));border-color:var(--info-dim,var(--ac2));background:var(--info-bg,rgba(88,166,255,0.14))}
@@ -7215,7 +7222,24 @@ body.standalone .section-collapsed .section-body{display:block !important}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
-  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
+  ${/* #6459 — El listado "Logs recientes" (una fila por petición atendida, con
+        su badge de resultado) lo construye `renderCommanderRequestLogs` desde
+        #3949/#3951, pero su ÚNICO caller estaba dentro de `doraMinHTML`, que el
+        rediseño kiosk V3 (#2801/#2804) dejó de emitir: la variable se arma y no
+        se usa en ningún lado. Verificado sobre el dashboard vivo — `curl :3200`
+        y `:3299/`, `/v3`, `/multi-provider` ⇒ cero ocurrencias de "Logs
+        recientes" y cero de `cmd-result`.
+
+        Consecuencia: el badge de resultado NO se renderiza en ninguna parte, y
+        el estado `huerfano` nacería mudo — exactamente el escape #4531 que
+        CA-13 viene a cerrar.
+
+        La reparación es de RENDER PATH, no de layout: el listado se cuelga de la
+        sección de Commander que la página YA emite, sin card nueva, sin mover
+        nada y sin resucitar la card de DORA (que sigue muerta, fuera del alcance
+        de este issue). La anatomía de la fila es la del mockup acordado
+        `assets/mockups/6440/02-dashboard-badge-huerfano.svg`. */''}
+  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${renderCommanderRequestLogs(LOG_DIR)}${actHTML}</div></details>
 
   <div class="footer" id="dash-footer">🟢 Live · Refresh on-demand &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
