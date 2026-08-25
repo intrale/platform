@@ -323,7 +323,8 @@ function renderFirmaRowSsr(p) {
     const decidido = estado === 'encolado' || estado === 'despachado';
     const botones = renderOptionsSsr(issueNum, String(p.gate), p && p.options, decidido, p && p.estado_verdict);
 
-    return `<div class="ef-row ef-row-firma ef-sev-${sev}" id="esperando-firma-row-${issueNum}" data-issue="${issueNum}" data-gate="${escapeHtmlAttr(String(p.gate))}" data-estado="${escapeHtmlAttr(estado)}" data-severity="${sev}">
+    const rowKey = `${issueNum}-${String(p.gate)}`;
+    return `<div class="ef-row ef-row-firma ef-sev-${sev}" id="esperando-firma-row-${escapeHtmlAttr(rowKey)}" data-issue="${issueNum}" data-gate="${escapeHtmlAttr(String(p.gate))}" data-estado="${escapeHtmlAttr(estado)}" data-severity="${sev}">
       <span class="ef-rail" aria-hidden="true"></span>
       <div class="ef-row-head">
         <div class="ef-row-info">
@@ -337,7 +338,7 @@ function renderFirmaRowSsr(p) {
       ${renderAnchorSsr(p && p.anchorView)}
       ${renderEvidenceRefsSsr(p && p.evidence)}
       ${renderPresentedSsr(p)}
-      <div class="ef-estado-slot" id="esperando-firma-estado-${issueNum}">${renderEstadoSsr(p)}</div>
+      <div class="ef-estado-slot" id="esperando-firma-estado-${escapeHtmlAttr(rowKey)}">${renderEstadoSsr(p)}</div>
       <div class="ef-secnote" aria-hidden="true">El dashboard anota tu decisión · la firma la registra el kernel con tu identidad</div>
     </div>`;
 }
@@ -664,17 +665,17 @@ function toggleEsperandoFirmaPanel(){
   } catch(e){}
 })();
 
-function efRow(issueNum){ return document.getElementById('esperando-firma-row-' + issueNum); }
+function efRow(issueNum, gate){ return document.getElementById('esperando-firma-row-' + issueNum + '-' + gate); }
 
-function efDisableRow(issueNum){
-  var row = efRow(issueNum);
+function efDisableRow(issueNum, gate){
+  var row = efRow(issueNum, gate);
   if(!row) return;
   var bs = row.querySelectorAll('button');
   for(var i=0;i<bs.length;i++){ bs[i].disabled = true; }
 }
 
-function efEnableRow(issueNum){
-  var row = efRow(issueNum);
+function efEnableRow(issueNum, gate){
+  var row = efRow(issueNum, gate);
   if(!row) return;
   var bs = row.querySelectorAll('button');
   for(var i=0;i<bs.length;i++){ bs[i].disabled = false; }
@@ -682,8 +683,8 @@ function efEnableRow(issueNum){
 
 // El resultado se comunica EN LA FILA (UX §7), como texto inerte: se usa
 // textContent, nunca innerHTML — el dashboard ya tuvo XSS por innerHTML crudo.
-function efSetEstado(issueNum, tono, titulo, detalle){
-  var slot = document.getElementById('esperando-firma-estado-' + issueNum);
+function efSetEstado(issueNum, gate, tono, titulo, detalle){
+  var slot = document.getElementById('esperando-firma-estado-' + issueNum + '-' + gate);
   if(!slot) return;
   slot.textContent = '';
   var box = document.createElement('div');
@@ -702,8 +703,8 @@ function efSetEstado(issueNum, tono, titulo, detalle){
   slot.appendChild(box);
 }
 
-function efMarkChosen(issueNum, verdict){
-  var row = efRow(issueNum);
+function efMarkChosen(issueNum, gate, verdict){
+  var row = efRow(issueNum, gate);
   if(!row) return;
   row.setAttribute('data-estado','encolado');
   var bs = row.querySelectorAll('.ef-btn-decide');
@@ -721,18 +722,18 @@ async function gateSignatureDecide(issueNum, gate, verdict){
   // Revalidación client-side contra el enum congelado (defensa en profundidad;
   // la autoridad sigue siendo resolveGate del lado servidor).
   if(EF_GATES.indexOf(gate) === -1 || EF_VERDICTS.indexOf(verdict) === -1) return;
-  var row = efRow(issueNum);
+  var row = efRow(issueNum, gate);
   var btn = row ? row.querySelector('.ef-btn-decide[data-verdict="' + verdict + '"]') : null;
   var etiqueta = btn ? (btn.textContent || '').trim() : verdict;
   if(!window.confirm(etiqueta + ' — #' + issueNum + '?')) return;
-  efDisableRow(issueNum);
+  efDisableRow(issueNum, gate);
   try {
     var t = await fetch('/api/gate-signature/csrf-token', { cache: 'no-store' });
     var tj = await t.json();
     var token = tj && tj.csrf_token;
     if(!token){
-      efEnableRow(issueNum);
-      efSetEstado(issueNum, 'err', EF_COPY_ERROR.titulo, EF_COPY_ERROR.detalle);
+      efEnableRow(issueNum, gate);
+      efSetEstado(issueNum, gate, 'err', EF_COPY_ERROR.titulo, EF_COPY_ERROR.detalle);
       return;
     }
     var r = await fetch('/api/gate-signature/decide', {
@@ -743,16 +744,16 @@ async function gateSignatureDecide(issueNum, gate, verdict){
     var j = await r.json();
     if(j && j.ok){
       // CA-10 — NO se marca resuelta ni desaparece: eso lo decide el kernel.
-      efMarkChosen(issueNum, verdict);
-      efSetEstado(issueNum, 'warn', EF_COPY_ENCOLADO.titulo, EF_COPY_ENCOLADO.detalle);
+      efMarkChosen(issueNum, gate, verdict);
+      efSetEstado(issueNum, gate, 'warn', EF_COPY_ENCOLADO.titulo, EF_COPY_ENCOLADO.detalle);
     } else {
       // UX §7 — ningún \`msg\` del servidor se muestra crudo.
-      efEnableRow(issueNum);
-      efSetEstado(issueNum, 'err', EF_COPY_ERROR.titulo, EF_COPY_ERROR.detalle);
+      efEnableRow(issueNum, gate);
+      efSetEstado(issueNum, gate, 'err', EF_COPY_ERROR.titulo, EF_COPY_ERROR.detalle);
     }
   } catch(e){
-    efEnableRow(issueNum);
-    efSetEstado(issueNum, 'err', EF_COPY_ERROR.titulo, EF_COPY_ERROR.detalle);
+    efEnableRow(issueNum, gate);
+    efSetEstado(issueNum, gate, 'err', EF_COPY_ERROR.titulo, EF_COPY_ERROR.detalle);
   }
 }
 

@@ -493,6 +493,29 @@ test('#6208 · UX §7: origen fuera del enum ⇒ sin botones de firma, con link 
     assert.ok(html.includes('GATE 3 · Acción autónoma'));
 });
 
+test('#6208 · rebote rev-2: dos gates del mismo issue conservan identidad DOM independiente', () => {
+    const definicion = firmaRow({ gate: 'definicion' });
+    const aceptacion = firmaRow({
+        gate: 'aceptacion',
+        options: [
+            { value: 'signed', label: 'Aceptar entrega' },
+            { value: 'rejected', label: 'Rechazar entrega' },
+        ],
+    });
+    const html = renderEsperandoFirmaSsr({ esperandoFirma: [definicion, aceptacion] });
+    assert.equal((html.match(/id="esperando-firma-row-6208-definicion"/g) || []).length, 1);
+    assert.equal((html.match(/id="esperando-firma-row-6208-aceptacion"/g) || []).length, 1);
+    assert.equal((html.match(/id="esperando-firma-estado-6208-definicion"/g) || []).length, 1);
+    assert.equal((html.match(/id="esperando-firma-estado-6208-aceptacion"/g) || []).length, 1);
+
+    const js = renderEsperandoFirmaClientScript();
+    assert.ok(js.includes('efRow(issueNum, gate)'));
+    assert.ok(js.includes('efDisableRow(issueNum, gate)'));
+    assert.ok(js.includes('efEnableRow(issueNum, gate)'));
+    assert.ok(js.includes('efSetEstado(issueNum, gate,'));
+    assert.ok(js.includes('efMarkChosen(issueNum, gate, verdict)'));
+});
+
 test('#6208 · el enum de la vista espeja el del kernel', () => {
     const channel = require('../../../lib/approval-channel.js');
     assert.deepEqual([...GATE_KEYS].sort(), Object.keys(channel.GATES).sort());
