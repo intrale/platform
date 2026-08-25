@@ -367,6 +367,25 @@ test('un glob de evidencia con varios artefactos no elige un compat arbitrario',
   assert.equal(data.evidencia_sha256, undefined, 'el compat no puede representar a dos artefactos');
 });
 
+test('el descarte del compat no se duplica cuando el bucle ya trazo el mismo campo', t => {
+  const f = fixture(t);
+  f.write('qa-6258-frame-01.png', 'uno');
+  f.write('qa-6258-frame-02.png', 'dos');
+  const data = {
+    resultado: 'aprobado',
+    evidencia: 'qa/evidence/6258/qa-6258-frame-*.png',
+    evidencia_sha256: 'a'.repeat(64),
+  };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, true);
+  assert.equal(data.evidencia_sha256, undefined);
+  // El bucle ya dejó una entrada por artefacto divergente: la baja del compat
+  // no agrega una tercera con `real: null` que se leería como contradictoria.
+  const delCompat = result.descartes.filter(d => d.campo === 'evidencia_sha256');
+  assert.equal(delCompat.length, 2);
+  assert.ok(delCompat.every(d => d.real !== null));
+});
+
 test('un descriptor con ruta centinela se resuelve contra el recinto, no se saltea', t => {
   const f = fixture(t);
   const data = { resultado: 'aprobado', evidencia: { ruta: 'no-aplica', tipo: 'original' } };
