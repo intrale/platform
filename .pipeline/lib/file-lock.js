@@ -73,6 +73,14 @@ const LOCK_SCHEMA_VERSION = '1.0';
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_RETRIES = 3;
 const STALE_AGE_MS = 60 * 1000; // 60s — umbral de stale post-PID-reuse
+// #6145 — Gracia mínima antes de reclamar un lock cuyo PID se leyó como MUERTO.
+// Un holder que crashea deja su lock y hay que recuperarlo (por eso no usamos
+// los 60s de STALE_AGE_MS acá: bloquearía el control plane demasiado tiempo).
+// Pero una sonda de PID que responde mal sobre un lock recién creado roba el
+// lock a un holder VIVO. 2s separan las dos cosas: un crash real se recupera
+// dentro del presupuesto de timeout (5s default, 15s en waves), y un lock de
+// milisegundos nunca se roba por una lectura dudosa.
+const DEAD_PID_GRACE_MS = 2000;
 const POSIX_LOCK_MODE = 0o600;   // -rw-------
 const LOCK_CONTENTION_CODES = new Set(['EEXIST', 'EBUSY', 'EPERM', 'EACCES']);
 
@@ -244,9 +252,44 @@ function isPidAlive(pid) {
         process.kill(pid, 0);
         return true;
     } catch (err) {
+        // #6145 (regresión CA-8 #3518, tercera vuelta) — FAIL-CLOSED.
+        //
+        // Causa raíz del rebote: el `return false` catch-all de antes hacía que
+        // CUALQUIER código distinto de ESRCH/EPERM se leyera como "el holder
+        // está muerto". `isStale()` reclamaba entonces el lock SIN chequeo de
+        // antigüedad, y el contendiente unlinkeaba el lock de un holder VIVO
+        // que acababa de crearlo → dual-hold → los dos procesos hacen su
+        // read-modify-write sobre la misma base y el segundo pisa al primero.
+        // Los dos salen con código 0 y el write perdido no deja rastro
+        // (síntoma observado: `issues=5, exitosos=10` — 10 workers exit 0 y 5
+        // writes clobbereados).
+        //
+        // Por qué pega en Windows y no en el test aislado: `process.kill(pid, 0)`
+        // baja a `OpenProcess()`. Bajo fork-storm de la suite completa (~375
+        // archivos de test en paralelo, batches de `node --test`) esa llamada
+        // falla de formas variadas y transitorias que NO son ESRCH —
+        // EACCES/ENOMEM/EMFILE/EINVAL/UNKNOWN según presión de handles,
+        // antivirus o indexador. Todas caían en el catch-all.
+        //
+        // Regla nueva: sólo ESRCH PRUEBA que el proceso no existe. Todo lo
+        // demás es "la sonda no pudo responder" y se trata como VIVO. El costo
+        // del fail-closed es un lock huérfano que tarda un poco más en
+        // recuperarse (lo cubre el umbral de antigüedad); el costo del
+        // fail-open era corromper el estado en silencio.
         if (err && err.code === 'ESRCH') return false;
-        if (err && err.code === 'EPERM') return true; // existe, no podemos firmar
-        return false;
+        return true;
+    }
+}
+
+/**
+ * Antigüedad del archivo de lock en ms, o `null` si no se puede stat-ear
+ * (típicamente porque ya no existe).
+ */
+function readLockAgeMs(lockPath) {
+    try {
+        return Date.now() - fs.statSync(lockPath).mtimeMs;
+    } catch {
+        return null;
     }
 }
 
@@ -300,7 +343,27 @@ function isStale(meta, lockPath) {
         if (lockAgeMs < STALE_AGE_MS) return false; // creación en curso, NO stale
         return true;
     }
-    if (!isPidAlive(meta.pid)) return true;
+    if (!isPidAlive(meta.pid)) {
+        // #6145 — El reclamo por PID muerto es el camino legítimo de
+        // recuperación tras un crash del holder, pero era el ÚNICO de los tres
+        // que reclamaba SIN mirar la antigüedad del lock: una sola lectura
+        // dudosa sobre un lock de milisegundos alcanzaba para robárselo a un
+        // holder vivo. Con `isPidAlive` fail-closed eso ya es mucho más raro;
+        // estas dos guardas lo vuelven inalcanzable en la práctica.
+        const ageMs = readLockAgeMs(lockPath);
+        // El lock ya no está (lo liberó o lo reclamó otro): no hay nada que
+        // proteger y el acquirer reintenta el create igual.
+        if (ageMs === null) return true;
+        // Guarda 1 — antigüedad: un lock más joven que la gracia NO se reclama.
+        // Un holder que crashea deja el lock quieto y se recupera a los 2s; un
+        // holder vivo que acaba de crearlo nunca lo pierde.
+        if (ageMs < DEAD_PID_GRACE_MS) return false;
+        // Guarda 2 — segunda sonda: si la primera lectura fue transitoria, ésta
+        // la contradice y el lock se respeta. Cuesta un syscall y sólo corre en
+        // el camino de reclamo (nunca en el camino caliente).
+        if (isPidAlive(meta.pid)) return false;
+        return true;
+    }
 
     // PID vive — caso conservador. Solo declarar stale si el lock es VIEJO
     // (>60s) Y se cumple alguna heurística de PID reciclado.
@@ -433,13 +496,21 @@ function withLockSync(filePath, fn, opts = {}) {
         }
         throw err;
     }
+    let ret;
     try {
-        return fn();
+        ret = fn();
+        // #6145 — verificación de propiedad al salir de la sección crítica.
+        // En reentrancia no corresponde: el frame externo es el dueño y hará
+        // su propia verificación al terminar.
+        if (!acquisition.reentrant) {
+            assertStillOwned(filePath, component, opts);
+        }
     } finally {
         if (!acquisition.reentrant) {
             releaseLock(filePath);
         }
     }
+    return ret;
 }
 
 async function acquireLock(filePath, opts) {
@@ -501,6 +572,79 @@ async function acquireLock(filePath, opts) {
  * Libera el lock SI Y SOLO SI somos los dueños. No-op si el lock ya no existe
  * o pertenece a otro proceso (no robar locks ajenos).
  */
+/**
+ * #6145 — ¿Seguimos siendo dueños del lock?
+ *
+ * Tercera capa de defensa. Las dos anteriores (`isPidAlive` fail-closed y la
+ * gracia del reclamo por PID muerto) evitan que nos roben el lock. Ésta detecta
+ * el robo si igual llegara a pasar: cuando `fn()` termina, comparamos el
+ * contenido del lock contra nuestra identidad.
+ *
+ * Por qué importa: sin esto, un dual-hold termina en un write pisado que NADIE
+ * observa — el proceso que perdió su escritura sale con código 0 y reporta
+ * éxito. Con esto, la exclusión mutua violada se convierte en un error tipado
+ * (`ELOCK_STOLEN`) y el caller falla fuerte en vez de mentir. Fail-closed es la
+ * política correcta para el control plane: preferimos perder el write a
+ * corromper el estado en silencio.
+ *
+ * Es CONSERVADOR: sólo reporta robo cuando puede PROBARLO (el lock no está, o
+ * declara a otro holder). Si el lock no se puede leer por un error transitorio,
+ * `readLockMeta` ya devuelve `_corrupt` y lo tratamos como robo sólo porque a
+ * esta altura nuestro propio meta debería estar ahí íntegro.
+ *
+ * @returns {{ owned: boolean, reason?: string, holder?: object }}
+ */
+function checkStillOwned(filePath) {
+    const lockPath = lockPathOf(filePath);
+    const meta = readLockMeta(lockPath);
+    if (!meta) {
+        return { owned: false, reason: 'el archivo de lock desapareció mientras lo teníamos', holder: null };
+    }
+    if (meta._corrupt) {
+        return { owned: false, reason: 'el archivo de lock quedó ilegible mientras lo teníamos', holder: null };
+    }
+    if (meta.pid === process.pid && meta.startTime === PROCESS_START_ISO) {
+        return { owned: true };
+    }
+    return {
+        owned: false,
+        reason: `el lock fue tomado por otro holder (pid=${meta.pid}, host=${meta.hostname || '?'})`,
+        holder: meta,
+    };
+}
+
+/**
+ * Verifica la propiedad del lock al salir de la sección crítica y tira
+ * `ELOCK_STOLEN` si la exclusión mutua fue violada.
+ *
+ * Se puede desactivar con `opts.verifyOwnership === false` para call sites que
+ * prefieran la semántica vieja (best-effort silencioso). Default: ACTIVO.
+ */
+function assertStillOwned(filePath, component, opts) {
+    if (opts && opts.verifyOwnership === false) return;
+    const st = checkStillOwned(filePath);
+    if (st.owned) return;
+    const msg = `exclusión mutua violada sobre ${path.basename(filePath)}: ${st.reason}. `
+        + 'La escritura hecha bajo este lock pudo haberse pisado con la de otro proceso.';
+    if (opts && typeof opts.notify === 'function') {
+        try {
+            opts.notify({
+                level: 'error',
+                component: component || 'file-lock',
+                message: `lock robado durante la sección crítica sobre ${path.basename(filePath)}`,
+                diag: `cat ${lockPathOf(filePath)}`,
+                detail: msg,
+                holder: st.holder || null,
+            });
+        } catch { /* notify es best-effort: nunca puede tapar el error real */ }
+    }
+    const e = new Error(`withLock: ${msg}`);
+    e.code = 'ELOCK_STOLEN';
+    e.lockPath = lockPathOf(filePath);
+    e.holder = st.holder || null;
+    throw e;
+}
+
 function releaseLock(filePath) {
     const lockPath = lockPathOf(filePath);
     const meta = readLockMeta(lockPath);
@@ -555,14 +699,20 @@ async function withLock(filePath, fn, opts = {}) {
         throw err;
     }
 
+    let ret;
     try {
-        return await fn();
+        ret = await fn();
+        if (!acquisition.reentrant) {
+            // #6145 — misma verificación que en withLockSync (ver assertStillOwned).
+            assertStillOwned(filePath, component, opts);
+        }
     } finally {
         // En reentrancia, NO liberamos: el frame externo lo hará.
         if (!acquisition.reentrant) {
             releaseLock(filePath);
         }
     }
+    return ret;
 }
 
 module.exports = {
@@ -576,6 +726,9 @@ module.exports = {
         readLockMeta,
         isPidAlive,
         isStale,
+        readLockAgeMs,
+        checkStillOwned,
+        DEAD_PID_GRACE_MS,
         lockPathOf,
         PROCESS_START_ISO,
         LOCK_SCHEMA_VERSION,
