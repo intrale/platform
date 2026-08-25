@@ -384,7 +384,17 @@ test('un glob de evidencia con varios artefactos no elige un compat arbitrario',
   assert.equal(data.evidencia_sha256, undefined, 'el compat no puede representar a dos artefactos');
 });
 
-test('el descarte del compat no se duplica cuando el bucle ya trazo el mismo campo', t => {
+// #6495 (rebote 6, QA): antes este test exigía UNA ENTRADA POR ARTEFACTO
+// expandido, todas con el mismo `declarado` y distinto `real`. Esa forma era
+// inalcanzable en producción —el Pulpo vaciaba el snapshot antes de sellar, así
+// que `declarado` nunca llegaba— y al cablear el snapshot quedó expuesta: dos
+// entradas del mismo campo con `real` distinto se leen como una traza
+// contradictoria justo en el registro que las partes 2-5 del split consumen
+// como autoridad. El hash declarado es UNO POR CAMPO: cuando el campo expande a
+// varios artefactos no hay un `real` único al que apuntar, y eso es exactamente
+// lo que dice `real: null` (misma semántica que la rama de compat). Los hashes
+// reales de cada archivo siguen enteros en `sello.artefactos`.
+test('el descarte de un campo que expande a varios artefactos es UNO solo, con real:null', t => {
   const f = fixture(t);
   f.write('qa-6258-frame-01.png', 'uno');
   f.write('qa-6258-frame-02.png', 'dos');
@@ -396,11 +406,14 @@ test('el descarte del compat no se duplica cuando el bucle ya trazo el mismo cam
   const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
   assert.equal(result.sealed, true);
   assert.equal(data.evidencia_sha256, undefined);
-  // El bucle ya dejó una entrada por artefacto divergente: la baja del compat
-  // no agrega una tercera con `real: null` que se leería como contradictoria.
-  const delCompat = result.descartes.filter(d => d.campo === 'evidencia_sha256');
-  assert.equal(delCompat.length, 2);
-  assert.ok(delCompat.every(d => d.real !== null));
+  const delCampo = result.descartes.filter(d => d.campo === 'evidencia_sha256');
+  assert.equal(delCampo.length, 1, `traza duplicada: ${JSON.stringify(delCampo)}`);
+  assert.deepEqual(delCampo[0], {
+    campo: 'evidencia_sha256', declarado: `sha256:${'a'.repeat(64)}`, real: null,
+  });
+  // Los hashes reales no se pierden: viven en el manifiesto, uno por artefacto.
+  assert.equal(result.manifest.artefactos.length, 2);
+  assert.ok(result.manifest.artefactos.every(a => /^sha256:[a-f0-9]{64}$/.test(a.sha256)));
 });
 
 test('un descriptor con ruta centinela se resuelve contra el recinto, no se saltea', t => {

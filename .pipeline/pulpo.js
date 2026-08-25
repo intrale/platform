@@ -11537,8 +11537,17 @@ ${g}
       // Va antes de los gates y no después porque ninguno de los dos lee
       // `sello` ni `*_sha256` (los lee sólo el módulo de sellado), así que
       // limpiar acá no le cambia el veredicto a nadie.
+      //
+      // #6495 (rebote 6, QA) — El snapshot se guarda en `sealDeclarado` y viaja
+      // al sellado unas lineas mas abajo. `stripDeclaredSeal` es destructivo:
+      // si el Pulpo se queda con lo declarado y no se lo pasa a
+      // `sealQaVerdict`, el modulo no tiene contra que contrastar el hash real
+      // y el sello se persiste con `descartes: []` — CA-2 (la auditoria que las
+      // partes 2-5 del split leen como autoridad) se pierde justo en el unico
+      // camino de produccion.
+      let sealDeclarado = null;
       if (skill === 'qa' && fase === 'verificacion' && data && typeof data === 'object') {
-        const sealDeclarado = qaEvidenceSeal.stripDeclaredSeal(data);
+        sealDeclarado = qaEvidenceSeal.stripDeclaredSeal(data);
         const camposDescartados = Object.keys(sealDeclarado.hashes).length
           + (sealDeclarado.sello !== undefined ? 1 : 0);
         if (camposDescartados > 0) {
@@ -11578,7 +11587,7 @@ ${g}
       if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
         try {
           const sealResult = qaEvidenceSeal.sealQaVerdict({
-            root: ROOT, issue, data, cwd: spawnCwd,
+            root: ROOT, issue, data, cwd: spawnCwd, declared: sealDeclarado,
           });
           if (!sealResult.sealed) {
             const reason = sealResult.reason || 'sellado-invalido';

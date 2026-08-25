@@ -516,6 +516,46 @@ function stripDeclaredSeal(data) {
 }
 
 /**
+ * Une el snapshot que tomó un llamador previo con el que toma el sellado.
+ *
+ * #6495 (rebote 6, QA) — `stripDeclaredSeal` es DESTRUCTIVO: saca los campos de
+ * `data` y sólo el retorno conserva lo declarado. El Pulpo lo corre para TODO
+ * dropfile de qa/verificación (aprobado o no) ANTES de los gates, así que
+ * cuando `sealQaVerdict` corría su propio strip el campo ya no estaba en `data`
+ * y `declared.hashes` salía vacío: el sello se persistía con `descartes: []` y
+ * la auditoría de CA-2 se perdía en el ÚNICO camino de producción. Los tests no
+ * lo veían porque llamaban a `sealQaVerdict` aislado, sin cruzar el strip
+ * previo. La traza sobrevive porque el Pulpo ahora PASA su snapshot y acá se
+ * fusiona con el propio.
+ *
+ * Precedencia: gana lo que todavía está en `data` al momento de sellar (es lo
+ * más reciente que escribió el agente); el snapshot previo sólo aporta las
+ * claves que ya no están. Y el snapshot del llamador NO es confiable por venir
+ * de afuera: se aceptan únicamente claves con forma `<campo>_sha256` (mismo
+ * filtro que `stripDeclaredSeal`), para que un llamador no pueda inyectar
+ * claves arbitrarias —`__proto__` incluido— en el mapa de descartes.
+ *
+ * @param {{sello: *, hashes: Record<string, *>}|null|undefined} previo snapshot del llamador
+ * @param {{sello: *, hashes: Record<string, *>}} propio snapshot del strip local
+ * @returns {{sello: *, hashes: Record<string, *>}}
+ */
+function mergeDeclaredSnapshots(previo, propio) {
+  const merged = { sello: propio.sello, hashes: { ...propio.hashes } };
+  if (!previo || typeof previo !== 'object') return merged;
+  if (merged.sello === undefined && previo.sello !== undefined) merged.sello = previo.sello;
+  const hashesPrevios = previo.hashes;
+  if (!hashesPrevios || typeof hashesPrevios !== 'object') return merged;
+  for (const key of Object.keys(hashesPrevios)) {
+    if (!/_sha256$/.test(key)) continue;
+    const base = key.slice(0, -'_sha256'.length);
+    if (base !== 'screenshot' && !/^evidencia(?:_|$)/.test(base)) continue;
+    if (Object.prototype.hasOwnProperty.call(merged.hashes, key)) continue;
+    merged.hashes[key] = hashesPrevios[key];
+  }
+  return merged;
+}
+
+/**
  * Deriva el sello de la evidencia de un veredicto aprobado de QA.
  *
  * ALCANCE DEL FAIL-CLOSED (#6495, rebote 3 · R-2). El módulo siempre intenta
@@ -534,15 +574,23 @@ function stripDeclaredSeal(data) {
  * `cwd` viene exclusivamente del `spawnCwd` que el Pulpo tiene en scope, y el
  * módulo ignora cualquier ruta presente en `data` (incluido `data.entorno`).
  *
- * @param {{root: string, issue: string|number, data: object, cwd: string}} params
+ * `declared` (CA-2): snapshot OPCIONAL de un `stripDeclaredSeal` previo del
+ * llamador. El Pulpo ya corre el strip sobre todo dropfile de qa/verificación
+ * antes de los gates, así que sin este parámetro el sellado no tendría contra
+ * qué contrastar y persistiría `descartes: []` — ver `mergeDeclaredSnapshots`.
+ *
+ * @param {{root: string, issue: string|number, data: object, cwd: string, declared?: object}} params
  * @returns {{sealed: boolean, manifest: object|null, descartes: object[], reason: string|null}}
  */
-function sealQaVerdict({ root, issue, data, cwd } = {}) {
+function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio } = {}) {
   if (!data || typeof data !== 'object') return { sealed: false, manifest: null, descartes: [], reason: 'no-aplica' };
   // #6495 (rebote 5, seguridad) — El borrado va ANTES del early return por
   // veredicto no aprobado: si viviera adentro del `try`, un dropfile
   // `rechazado` viajaria a listo/ con el sello que declaro el agente intacto.
-  const declared = stripDeclaredSeal(data);
+  // (rebote 6, QA) El strip local sigue siendo obligatorio —el modulo tiene que
+  // ser seguro invocado solo—, pero lo que se traza es la union con el snapshot
+  // del llamador, que es el unico que todavia tiene lo que declaro el agente.
+  const declared = mergeDeclaredSnapshots(declaredPrevio, stripDeclaredSeal(data));
   if (data.resultado !== 'aprobado') return { sealed: false, manifest: null, descartes: [], reason: 'no-aplica' };
   try {
     const fields = evidenceFields(data);
@@ -595,6 +643,30 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
       if (!spec) throw new SealError('tipo-invalido');
       if (!['original', 'copia', 'derivado'].includes(spec.tipo)) throw new SealError('tipo-invalido');
       const expanded = expandGlob(root, issue, spec.ruta);
+      // #6495 (rebote 6, QA) — El hash declarado es UNO POR CAMPO, así que sólo
+      // tiene contra qué compararse cuando el campo produce UN artefacto. Con
+      // un glob que expande a varios, compararlo adentro del bucle emitía una
+      // entrada de descarte por archivo, todas con el mismo `declarado` y
+      // distinto `real`: exactamente la "traza contradictoria" que la rama de
+      // compat de más abajo ya evitaba duplicar. En ese caso el descarte se
+      // emite una sola vez, con `real: null`, que significa "el campo no
+      // produjo un artefacto único al que apuntar" (misma semántica que la
+      // rama de compat de `evidencia_sha256`).
+      const rawDeclaredHash = spec.sha256 !== undefined
+        ? spec.sha256
+        : declared.hashes[`${field}_sha256`];
+      // Sale del SNAPSHOT, no de `data`: el campo ya no está en `data` porque
+      // se borró al entrar —y el Pulpo lo había borrado antes—, así que leerlo
+      // de ahí daría siempre undefined y rompería la traza de CA-1/CA-2.
+      const declaredHash = expanded.length === 1 ? normalizeHash(rawDeclaredHash) : null;
+      if (expanded.length !== 1 && rawDeclaredHash !== undefined
+        && !discards.some(item => item.campo === `${field}_sha256`)) {
+        discards.push({
+          campo: `${field}_sha256`,
+          declarado: normalizeHash(rawDeclaredHash) || '<no-canonico>',
+          real: null,
+        });
+      }
       for (const route of expanded) {
         const confined = resolveConfined(root, issue, route);
         const hashed = readAndHash(confined, route, MAX_TOTAL_BYTES - totalBytes);
@@ -605,10 +677,6 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
           if (!source) throw new SealError('hash-divergente');
           artifact.derivado_de = source;
         }
-        // #6495 (rebote 5): sale del SNAPSHOT, no de `data`. El campo ya no
-        // esta en `data` porque se borro al entrar, asi que leerlo de ahi
-        // daria siempre undefined y romperia la traza de CA-1/CA-2.
-        const declaredHash = normalizeHash(spec.sha256 || declared.hashes[`${field}_sha256`]);
         if (spec.tipo === 'copia') {
           const source = normalizeHash(spec.derivado_de) || declaredHash;
           if (!source || source !== hashed.sha256) throw new SealError('hash-divergente');
@@ -720,7 +788,7 @@ function degradeVerdictForSeal(data, reason) {
 }
 
 module.exports = {
-  sealQaVerdict, stripDeclaredSeal, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
+  sealQaVerdict, stripDeclaredSeal, mergeDeclaredSnapshots, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
   describeSealFailure, degradeVerdictForSeal, isSkipSentinel, looksLikeArtifactRef,
   resolvesToExistingFile,
   SEAL_REJECTED_BY,
