@@ -99,3 +99,62 @@ test('el job no observa ni filtra el valor del secret pese al env de nivel job',
   }
   assert.deepEqual(Object.keys(dependencyCheckJob.env), ['NVD_API_KEY']);
 });
+
+// ── Aserciones estructurales (CA-13 / CA-14) ──────────────────────────────────
+// CA-8 exige que las dos ramas de credencial EXISTAN; CA-13 exige que sean
+// mutuamente excluyentes (nunca las dos juntas, nunca ninguna). CA-14 exige que
+// toda línea de estado sea autoexplicativa en texto plano: el summary también se
+// lee en logs y notificaciones, donde color, ícono y emoji se pierden.
+const lineasDeSummary = (run) =>
+  String(run)
+    .split('\n')
+    .filter((linea) => linea.includes('GITHUB_STEP_SUMMARY'))
+    .map((linea) => {
+      const entrecomillado = linea.match(/echo\s+"([^"]*)"/);
+      return entrecomillado ? entrecomillado[1] : linea.trim();
+    });
+
+const PREFIJO_DE_ESTADO = /^Estado (?:de|del) [A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+: \S/;
+
+test('las dos ramas de credencial son mutuamente excluyentes', () => {
+  const advertencia = dependencyCheckSteps[stepIndexByName('Advertir ejecución sin NVD API key')];
+  const confirmacion = dependencyCheckSteps[stepIndexByName('Confirmar NVD API key disponible')];
+  assert.ok(advertencia && confirmacion, 'faltan los steps de las dos ramas de credencial');
+
+  const operadorDe = (step) => {
+    const comparacion = String(step.if).match(/env\.NVD_API_KEY\s*(==|!=)\s*''/);
+    assert.ok(comparacion, `${step.name} no compara env.NVD_API_KEY contra vacío`);
+    return comparacion[1];
+  };
+
+  // Misma expresión, operadores opuestos: la disyunción cubre todo el dominio y
+  // la conjunción es vacía. Sin esto el summary puede quedar mudo o contradecirse.
+  assert.deepEqual([operadorDe(advertencia), operadorDe(confirmacion)].sort(), ['!=', '==']);
+});
+
+test('cada rama declara su estado con el prefijo "Estado de…" y sin íconos', () => {
+  for (const nombre of ['Advertir ejecución sin NVD API key', 'Confirmar NVD API key disponible']) {
+    const step = dependencyCheckSteps[stepIndexByName(nombre)];
+    const declaraciones = lineasDeSummary(step.run).filter((linea) => PREFIJO_DE_ESTADO.test(linea));
+    assert.equal(declaraciones.length, 1, `${nombre} debe declarar exactamente una línea de estado`);
+    assert.match(declaraciones[0], /^Estado de credencial: /);
+  }
+
+  // El step de reporte declara estado en sus dos ramas (presente / ausente) más
+  // la del scan fallido: tres líneas con el mismo vocabulario.
+  const reporte = dependencyCheckSteps[stepIndexByName('Validar reporte OWASP')];
+  const estadosDelReporte = lineasDeSummary(reporte.run).filter((linea) => PREFIJO_DE_ESTADO.test(linea));
+  assert.equal(estadosDelReporte.length, 3);
+
+  const todasLasLineas = dependencyCheckSteps
+    .filter((step) => typeof step.run === 'string')
+    .flatMap((step) => lineasDeSummary(step.run));
+  assert.ok(todasLasLineas.length > 0);
+  for (const linea of todasLasLineas) {
+    assert.doesNotMatch(
+      linea,
+      /[\u2190-\u2BFF\u2600-\u27BF\uFE0F\u{1F000}-\u{1FAFF}]/u,
+      `la línea del summary depende de un símbolo no textual: ${linea}`,
+    );
+  }
+});
