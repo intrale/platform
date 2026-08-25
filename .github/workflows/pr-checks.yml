@@ -286,11 +286,10 @@ jobs:
   e2e-qa:
     needs: detect-changes
     if: |
-      needs.detect-changes.outputs.backend == 'true' ||
+      !contains(github.event.pull_request.labels.*.name, 'qa:skipped') &&
+      (needs.detect-changes.outputs.backend == 'true' ||
       needs.detect-changes.outputs.users == 'true' ||
-      needs.detect-changes.outputs.shared == 'true'
-    permissions:
-      contents: write
+      needs.detect-changes.outputs.shared == 'true')
     runs-on: ubuntu-latest
     services:
       dynamodb-local:
@@ -459,15 +458,18 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      - name: Collect and commit QA evidence
+      - name: Collect QA evidence
         if: always()
-        run: |
-          bash qa/scripts/collect-evidence.sh
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add qa/evidence/
-          git diff --cached --quiet || git commit -m "chore(qa): evidencias E2E $(date +%Y-%m-%d)"
-          git push origin HEAD:${{ github.head_ref }}
+        run: bash qa/scripts/collect-evidence.sh
+
+      - name: Upload collected QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-e2e-evidence
+          path: qa/evidence/
+          retention-days: 14
+          if-no-files-found: ignore
 
   # ── Gate final — todos los checks deben pasar ───────────────────
   pr-status:
