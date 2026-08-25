@@ -9,12 +9,16 @@ on:
 # aprobacion de PRs habilitada; sin este bloque, los jobs que compilan y
 # ejecutan codigo del PR (e2e-qa corre ./gradlew, plugins y dependencias
 # transitivas) heredarian ese privilegio -> Poisoned Pipeline Execution
-# (CICD-SEC-4). Ningun job de este workflow usa GITHUB_TOKEN: solo
-# checkout/setup-java/setup-gradle/cache/paths-filter/upload-artifact.
-# 'contents: read' alcanza para los actions/checkout@v4.
-# Cubierto por .pipeline/tests/pr-checks-workflow.test.js
+# (CICD-SEC-4). El unico consumidor de GITHUB_TOKEN es dorny/paths-filter@v3;
+# checkout/setup-java/setup-gradle/cache/upload-artifact no usan scopes del token.
+# 'contents: read' alcanza para los actions/checkout@v4 y 'pull-requests: read'
+# es el minimo documentado que exige dorny/paths-filter@v3 en eventos
+# pull_request (usa la REST API para listar archivos modificados y aborta con
+# setFailed ante un 403). Ambos son scopes de LECTURA: ninguno habilita
+# escritura. Cubierto por .pipeline/tests/pr-checks-workflow.test.js
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   # ── Detectar qué módulos cambiaron ──────────────────────────────

@@ -127,6 +127,48 @@ test('el workflow raiz otorga contents: read', () => {
   );
 });
 
+test('el workflow raiz otorga pull-requests: read para dorny/paths-filter', () => {
+  const wf = cargarWorkflow();
+  const permisos = normalizarPermissions(wf.permissions) || {};
+
+  // Declarar cualquier scope pone TODOS los no declarados en `none`. El job
+  // `detect-changes` usa dorny/paths-filter@v3, que en eventos pull_request
+  // lista los archivos modificados via REST API y hace setFailed ante un 403.
+  // Como los 8 jobs dependen de detect-changes, dejar `pull-requests` sin
+  // declarar voltea el workflow entero: el gate que protege main deja de correr.
+  const nivel =
+    permisos['pull-requests'] !== undefined ? permisos['pull-requests'] : permisos.__all__;
+  assert.strictEqual(
+    String(nivel),
+    'read',
+    '`pull-requests` debe estar en read: dorny/paths-filter@v3 lo exige en ' +
+      'eventos pull_request y todos los jobs dependen de detect-changes.'
+  );
+});
+
+test('detect-changes sigue usando dorny/paths-filter sin base explicito', () => {
+  const wf = cargarWorkflow();
+  const job = (wf.jobs || {})['detect-changes'];
+  assert.ok(job, 'el job `detect-changes` ya no existe: revisar este test');
+
+  const filtro = (job.steps || []).find(
+    (step) => typeof step.uses === 'string' && step.uses.startsWith('dorny/paths-filter@')
+  );
+  // Si el dia de manana se reemplaza la action o se pasa `base` + `token: ''`
+  // (modo git, sin API), el scope `pull-requests: read` deja de ser necesario y
+  // este test avisa que hay que revisar el bloque `permissions`.
+  assert.ok(
+    filtro,
+    'detect-changes ya no usa dorny/paths-filter: revisar si sigue haciendo ' +
+      'falta `pull-requests: read` en el bloque permissions raiz.'
+  );
+  assert.equal(
+    (filtro.with || {}).token,
+    undefined,
+    'si se fuerza `token` vacio, paths-filter pasa a modo git y `pull-requests: read` sobra.'
+  );
+});
+
 test('ningun job de pr-checks.yml escala permisos a write', () => {
   const wf = cargarWorkflow();
   const jobs = wf.jobs || {};
