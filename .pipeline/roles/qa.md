@@ -198,26 +198,48 @@ modo: structural
 
 Antes de cerrar, QA debe conservar la evidencia estructural en un Markdown
 auditable y encolar su descriptor en Drive. Aunque este modo no sube video, el
-job es obligatorio para que aprobación pueda verificar la trazabilidad:
+job es obligatorio para que aprobación pueda verificar la trazabilidad.
+
+**CRÍTICO (#6145): NO escribas el descriptor a mano con un path relativo.**
+Vos corrés con CWD = worktree del issue, así que
+`.pipeline/servicios/drive/pendiente/qa-<issue>-structural.json` resuelve dentro
+del worktree — una cola que el servicio Drive **nunca** mira (lee la del repo
+principal) y que además está en `.gitignore`. El descriptor se pierde en
+silencio al podar el worktree, aprobación ve la pasada vieja en `listo/` y te
+rebota. Usá **siempre** el encolador, que ancla el destino en
+`PIPELINE_REPO_ROOT`:
 
 ```bash
-mkdir -p "qa/evidence/<issue>"
-# Escribir en qa/evidence/<issue>/qa-<issue>-structural.md los comandos,
-# outputs y criterios verificados durante esta misma pasada.
-cat > .pipeline/servicios/drive/pendiente/qa-<issue>-structural.json << 'JSON'
-{
-  "action": "upload",
-  "file": "qa/evidence/<issue>/qa-<issue>-structural.md",
-  "issue": <issue>,
-  "mode": "structural",
-  "source": "qa-structural"
-}
-JSON
+# 1. La evidencia va al repo CANÓNICO, no sólo al worktree: el servicio la
+#    resuelve contra $PIPELINE_REPO_ROOT.
+mkdir -p "$PIPELINE_REPO_ROOT/qa/evidence/<issue>"
+# Escribir en $PIPELINE_REPO_ROOT/qa/evidence/<issue>/qa-<issue>-structural.md
+# los comandos, outputs y criterios verificados durante ESTA misma pasada.
+
+# 2. Encolar el descriptor en la cola canónica del servicio Drive.
+node "$PIPELINE_REPO_ROOT/.pipeline/scripts/qa-evidence-enqueue.js" \
+  --issue <issue> \
+  --verdict aprobado \
+  --passed <N> --total <M> \
+  --head "$(git rev-parse HEAD)"
 ```
 
-Los campos `mode: structural` y `source: qa-structural` son obligatorios. El
-servicio Drive reconoce ese schema canónico, registra el artefacto sin intentar
-tratar el Markdown como video y mueve el descriptor a `listo/`.
+Si el veredicto es `rechazado`, agregá `--motivo "<causa>"` y
+`--criterios-fallidos CA-7`. El CLI sale 0 si encoló e imprime el JSON del
+resultado: **pegá ese output en las `notas` de tu YAML** junto con el nombre del
+descriptor que reporta. Si imprime `evidenciaEnRepoCanonico: false`, el Markdown
+no llegó al repo principal — copialo antes de salir.
+
+El encolador emite el schema canónico
+`servicios/drive/pendiente/qa-<issue>-structural-<ts>-NN.json` con los campos
+`"mode": "structural"` y `"source": "qa-structural"`, que son los que el
+servicio Drive exige para registrar el artefacto sin tratar el Markdown como
+video antes de moverlo a `listo/`. El nombre lleva marca de tiempo a propósito:
+**un nombre fijo por issue haría que cada re-pasada pise a la anterior** y
+destruiría la trazabilidad entre la pasada rechazada y la aprobada.
+
+El descriptor debe llevar **siempre** `verdict`, `passed`, `total` y `head`: sin
+eso, aprobación no puede distinguir qué pasada aprobó ni sobre qué commit.
 
 ---
 
@@ -385,42 +407,44 @@ Encolar el video (con audio narrado) para subida a Google Drive. El payload
 del job **DEBE** incluir los campos de veredicto para que el mensaje de Telegram
 que envía `qa-video-share.js` refleje el estado real (ver issue #2519):
 
+**CRÍTICO (#6145): NO escribas el descriptor a mano con un path relativo.**
+Si corrés en un worktree, `.pipeline/servicios/drive/pendiente/…` resuelve dentro
+del worktree — una cola que el servicio Drive **nunca** lee y que está en
+`.gitignore`: el descriptor se pierde en silencio. Usá el encolador, que ancla el
+destino en `PIPELINE_REPO_ROOT` y genera un nombre único por pasada (un nombre
+fijo por issue hace que cada re-pasada pise a la anterior):
+
 ```bash
 # Aprobado — modo android
-cat > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json << 'JSON'
-{
-  "action": "upload",
-  "file": "qa/evidence/<issue>/qa-<issue>.mp4",
-  "folder": "QA/evidence/<issue>",
-  "description": "QA video con relato narrado #<issue>",
-  "title": "<titulo del issue (se copia tal cual al mensaje)>",
-  "verdict": "aprobado",
-  "passed": 5,
-  "total": 5,
-  "mode": "android"
-}
-JSON
+node "$PIPELINE_REPO_ROOT/.pipeline/scripts/qa-evidence-enqueue.js" \
+  --issue <issue> --mode android \
+  --verdict aprobado --passed 5 --total 5 \
+  --head "$(git rev-parse HEAD)" \
+  --file "qa/evidence/<issue>/qa-<issue>.mp4" \
+  --title "<titulo del issue (se copia tal cual al mensaje)>" \
+  --description "QA video con relato narrado #<issue>"
 
 # Rechazado — modo android con motivo + criterios fallidos
-cat > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json << 'JSON'
-{
-  "action": "upload",
-  "file": "qa/evidence/<issue>/qa-<issue>.mp4",
-  "folder": "QA/evidence/<issue>",
-  "description": "QA video con relato narrado #<issue>",
-  "title": "<titulo del issue>",
-  "verdict": "rechazado",
-  "passed": 2,
-  "total": 5,
-  "mode": "android",
-  "motivo": "Primera frase: causa concreta y accionable. El detalle va al rejection-report PDF.",
-  "criteriosFallidos": ["CA-1", "CA-4", "CA-5"],
-  "rejectionPdf": "logs/rejection-<issue>-qa.pdf"
-}
-JSON
+node "$PIPELINE_REPO_ROOT/.pipeline/scripts/qa-evidence-enqueue.js" \
+  --issue <issue> --mode android \
+  --verdict rechazado --passed 2 --total 5 \
+  --head "$(git rev-parse HEAD)" \
+  --file "qa/evidence/<issue>/qa-<issue>.mp4" \
+  --title "<titulo del issue>" \
+  --description "QA video con relato narrado #<issue>" \
+  --motivo "Primera frase: causa concreta y accionable. El detalle va al rejection-report PDF." \
+  --criterios-fallidos CA-1,CA-4,CA-5 \
+  --rejection-pdf "logs/rejection-<issue>-qa.pdf"
 ```
 
-**Campos del payload (#2519):**
+El CLI escribe el descriptor canónico
+`servicios/drive/pendiente/qa-<issue>-video-<ts>-NN.json`, sale 0 si encoló e
+imprime el JSON del resultado: **pegá ese output en las `notas` de tu YAML**. Si
+imprime `evidenciaEnRepoCanonico: false`, el video no llegó al repo principal —
+copialo antes de salir, porque el servicio lo resuelve contra ese árbol.
+
+**Campos del payload que emite el CLI (#2519)** — documentados para que puedas
+**verificar** el JSON escrito, no para que lo escribas vos:
 
 | Campo | Tipo | Obligatorio | Semántica |
 |-------|------|-------------|-----------|
@@ -433,6 +457,8 @@ JSON
 | `passed` | int | Sí | Criterios verificados OK. Si no hay tests cuantificados, `0` |
 | `total` | int | Sí | Criterios totales. Si es `0`, el mensaje usa UX especial |
 | `mode` | string | Sí | `"android"`, `"api"` o `"structural"` |
+| `source` | string | Sí | `"qa-<mode>"`. `"qa-structural"` es el único que exime el uploader de video |
+| `head` | string | **Sí** (#6145) | SHA del commit sobre el que se corrió el QA — ancla la evidencia a un código concreto |
 | `motivo` | string | Sólo si rechazado | Primera frase = causa concreta, ≤500 chars |
 | `criteriosFallidos` | string[] | Sólo si rechazado | IDs de CAs fallidos, ej. `["CA-1", "CA-4"]` |
 | `rejectionPdf` | string | Opcional | Path relativo al PDF de rejection-report |
