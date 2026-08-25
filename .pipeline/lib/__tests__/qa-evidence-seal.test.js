@@ -10,6 +10,7 @@ const { spawnSync } = require('node:child_process');
 const {
   sealQaVerdict, normalizeHash, resolveConfined, deriveHead,
   MAX_EVIDENCE_FIELDS, MAX_FILE_BYTES, MAX_LOG_FIELD_CHARS, sanitizeLogField,
+  describeSealFailure, degradeVerdictForSeal,
 } = require('../qa-evidence-seal');
 
 function fixture(t, issue = 6258) {
@@ -310,7 +311,6 @@ test('todo valor de evidencia que no es ruta ni descriptor falla cerrado', t => 
   const hostiles = [
     ['lista', ['qa/evidence/6258/report.md', 'qa/evidence/6258/otro.md']],
     ['lista-vacia', []],
-    ['null', null],
     ['numero', 42],
     ['booleano', true],
     ['objeto-sin-ruta', { tipo: 'original' }],
@@ -333,7 +333,18 @@ test('el centinela textual sigue salteando el campo pero no arrastra el compat',
   const f = fixture(t);
   const shot = f.write('shot.png', 'pixeles');
   const hashShot = `sha256:${crypto.createHash('sha256').update('pixeles').digest('hex')}`;
-  for (const centinela of ['', '-', 'no-aplica', 'N/A', ' null ']) {
+  // #6495 (rebote 3, R-3): los centinelas del histórico real NUNCA están
+  // pelados — todos justifican. El `null` es `evidencia_sondas:` sin valor,
+  // que en YAML parsea a `null` y significa lo mismo (caso real `5172.qa`).
+  const centinelas = [
+    '', '-', 'no-aplica', 'N/A', ' null ', null,
+    'no aplica: el preflight confirmo que no hay superficie UI visible',
+    'n/a - QA_MODE=structural sin UI visible (preflight verificado)',
+    'no-aplica — preflight de UI visible NEGATIVO (sin area:dashboard)',
+    'no aplica (cambio de configuracion interna sin superficie visual)',
+    'N/A — modo structural sin UI visible (infra de CI, sin labels app:*)',
+  ];
+  for (const centinela of centinelas) {
     const data = { resultado: 'aprobado', evidencia: centinela, screenshot: shot, evidencia_sha256: 'a'.repeat(64) };
     const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
     assert.equal(result.sealed, true, `el centinela ${JSON.stringify(centinela)} no debería frenar el sellado`);
@@ -342,7 +353,12 @@ test('el centinela textual sigue salteando el campo pero no arrastra el compat',
     // hash del screenshot.
     assert.equal(data.evidencia_sha256, undefined, 'el compat quedó apuntando a otro artefacto');
     assert.notEqual(data.evidencia_sha256, hashShot);
-    assert.deepEqual(result.descartes, [{ campo: 'evidencia_sha256', declarado: `sha256:${'a'.repeat(64)}`, real: null }]);
+    // El salteo queda TRAZADO, nunca en silencio: es la propiedad que el
+    // rebote 2 exigía y que el `continue` mudo había roto.
+    assert.deepEqual(result.descartes, [
+      { campo: 'evidencia', declarado: null, real: null, motivo: 'centinela' },
+      { campo: 'evidencia_sha256', declarado: `sha256:${'a'.repeat(64)}`, real: null },
+    ]);
   }
 });
 
@@ -407,4 +423,214 @@ test('un motivo desconocido degrada a sellado-invalido en vez de viajar al log',
   fs.realpathSync = original;
   assert.equal(emitted.length, 1);
   assert.doesNotMatch(emitted.join(''), /\[INFO\]|[\r\n]/);
+});
+
+// ===========================================================================
+// #6495 · rebote 3 — Regresiones contra las FORMAS REALES del dropfile.
+//
+// El review marcó que ninguno de los 30 tests anteriores usaba una forma real,
+// y que por eso el fail-closed pasó verde mientras se comía el 22% de las
+// aprobaciones históricas. Estos tests fijan las formas que el pipeline
+// realmente produce hoy (barrido de `procesado/` + `archivado/`).
+// ===========================================================================
+
+test('R-1: la ruta absoluta que escribe el propio pulpo en data.evidencia sella OK', t => {
+  const f = fixture(t, 6495);
+  f.write('qa-6495-raw.mp4', 'bytes de video');
+  // Exactamente lo que arma el on-exit del pulpo: path.join(ROOT, 'qa',
+  // 'evidence', issue, `qa-${issue}-raw.mp4`) — absoluto.
+  const absoluta = path.join(f.root, 'qa', 'evidence', '6495', 'qa-6495-raw.mp4');
+  assert.ok(path.isAbsolute(absoluta), 'el fixture tiene que ser absoluto para probar la regresión');
+
+  const data = { resultado: 'aprobado', evidencia: absoluta, video_size_kb: 812 };
+  const result = sealQaVerdict({ root: f.root, issue: 6495, data, cwd: gitHeadCwd() });
+
+  assert.equal(result.sealed, true, `el happy path de android no puede caer: ${result.reason}`);
+  assert.equal(result.manifest.artefactos.length, 1);
+  // El manifiesto persiste la ruta RELATIVA, nunca la absoluta del host (SEC-8).
+  assert.equal(result.manifest.artefactos[0].ruta, 'qa/evidence/6495/qa-6495-raw.mp4');
+  assert.doesNotMatch(JSON.stringify(result.manifest), /[A-Za-z]:\\\\/);
+  assert.equal(
+    data.evidencia_sha256,
+    `sha256:${crypto.createHash('sha256').update('bytes de video').digest('hex')}`,
+  );
+});
+
+test('R-1: la ruta absoluta que cae FUERA del recinto sigue siendo fail-closed', t => {
+  const f = fixture(t, 6495);
+  const afuera = path.join(f.root, 'afuera', 'robado.txt');
+  fs.mkdirSync(path.dirname(afuera), { recursive: true });
+  fs.writeFileSync(afuera, 'no deberia sellarse');
+  const data = { resultado: 'aprobado', evidencia: afuera };
+  const result = sealQaVerdict({ root: f.root, issue: 6495, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, false, 'aceptar absolutos no puede aflojar el confinamiento');
+  assert.equal(result.reason, 'fuera-de-recinto');
+});
+
+test('R-2/R-3: un veredicto structural con evidencia en prosa no produce sello pero tampoco toca el veredicto', t => {
+  const f = fixture(t, 4869);
+  // Forma textual de `.pipeline/roles/qa.md:195` y de `4869.qa` / `4850.qa`.
+  const data = {
+    resultado: 'aprobado',
+    modo: 'structural',
+    evidencia: 'Validación estructural — infra sin UI/backend. area:infra, sin app:*.',
+    screenshot: 'no-aplica: cambio de infraestructura sin interfaz visible',
+  };
+  const result = sealQaVerdict({ root: f.root, issue: 4869, data, cwd: gitHeadCwd() });
+
+  // El módulo no puede sellar prosa, pero distingue "no es ruta" de "ruta rota":
+  // el motivo es `sin-evidencia`, no `fuera-de-recinto`.
+  assert.equal(result.sealed, false);
+  assert.equal(result.reason, 'sin-evidencia', 'la prosa no puede leerse como una ruta rota');
+  // Y el módulo NUNCA toca el veredicto: degradar es decisión del llamador, que
+  // sólo lo hace cuando la evidencia es exigible (ver el hook del pulpo).
+  assert.equal(data.resultado, 'aprobado');
+  assert.equal(data.motivo, undefined);
+  assert.equal(data.sello, undefined);
+  // CA-9 sigue mandando: un sellado que falla no persiste NADA, ni siquiera las
+  // trazas parciales. La traza del salteo sólo viaja cuando hay manifiesto (ver
+  // los casos 5110 y 6239 más abajo); acá el canal es el log + el motivo.
+  assert.deepEqual(result.descartes, []);
+});
+
+test('R-3: el caso 5110 — evidencia confinada + screenshot con centinela justificado sella igual', t => {
+  const f = fixture(t, 5110);
+  const route = f.write('qa-5110-structural.md', 'reporte estructural real');
+  const data = {
+    resultado: 'aprobado',
+    modo: 'structural',
+    evidencia: route,
+    screenshot: 'no aplica: el preflight confirmo que no hay superficie UI visible, mockup no aplica',
+    evidencia_sondas: null,
+  };
+  const result = sealQaVerdict({ root: f.root, issue: 5110, data, cwd: gitHeadCwd() });
+
+  assert.equal(result.sealed, true, `5110 tenía la evidencia BIEN confinada: ${result.reason}`);
+  assert.deepEqual(result.manifest.artefactos.map(a => a.campo), ['evidencia']);
+  assert.equal(
+    data.evidencia_sha256,
+    `sha256:${crypto.createHash('sha256').update('reporte estructural real').digest('hex')}`,
+  );
+});
+
+test('R-4: el derivado de .pipeline/logs/media alcanza su rama en vez de morir en el recinto', t => {
+  const f = fixture(t, 6190);
+  const original = f.write('qa-6190.mp4', 'video crudo');
+  const hashOriginal = `sha256:${crypto.createHash('sha256').update('video crudo').digest('hex')}`;
+  const mediaDir = path.join(f.root, '.pipeline', 'logs', 'media');
+  fs.mkdirSync(mediaDir, { recursive: true });
+  fs.writeFileSync(path.join(mediaDir, 'qa-6190.mp4'), 'remux faststart, bytes distintos');
+
+  const data = {
+    resultado: 'aprobado',
+    evidencia: original,
+    evidencia_remux: { ruta: '.pipeline/logs/media/qa-6190.mp4', tipo: 'derivado', derivado_de: hashOriginal },
+  };
+  const result = sealQaVerdict({ root: f.root, issue: 6190, data, cwd: gitHeadCwd() });
+
+  assert.equal(result.sealed, true, `el caso motivador de CA-6 no puede ser inalcanzable: ${result.reason}`);
+  const remux = result.manifest.artefactos.find(a => a.campo === 'evidencia_remux');
+  assert.equal(remux.tipo, 'derivado');
+  assert.equal(remux.derivado_de, hashOriginal, 'el derivado conserva el puntero, no el hash del original');
+  assert.notEqual(remux.sha256, hashOriginal, 'un derivado tiene hash propio');
+  assert.equal(remux.ruta, '.pipeline/logs/media/qa-6190.mp4');
+});
+
+test('R-4: el recinto de logs no es un comodín entre issues', t => {
+  const f = fixture(t, 6190);
+  const mediaDir = path.join(f.root, '.pipeline', 'logs', 'media');
+  fs.mkdirSync(mediaDir, { recursive: true });
+  fs.writeFileSync(path.join(mediaDir, 'qa-9999.mp4'), 'video de OTRO issue');
+  fs.writeFileSync(path.join(f.root, '.pipeline', 'logs', 'pulpo.log'), 'log arbitrario del pipeline');
+
+  for (const ajena of ['.pipeline/logs/media/qa-9999.mp4', '.pipeline/logs/pulpo.log']) {
+    const data = { resultado: 'aprobado', evidencia: ajena };
+    const result = sealQaVerdict({ root: f.root, issue: 6190, data, cwd: gitHeadCwd() });
+    assert.equal(result.sealed, false, `${ajena} no referencia al issue y no debería sellarse`);
+    assert.equal(result.reason, 'fuera-de-recinto');
+  }
+});
+
+test('CA-13: el fail-closed escribe motivo legible y rechazado_por, no deja el veredicto sin motivo', () => {
+  // El review marcó que el mapa de mensajes del hook no tenía ninguna prueba y
+  // que sin `motivo` el rejection-report emite PDF y audio que dicen
+  // literalmente "Sin motivo" (#6421).
+  const reasons = [
+    'traversal', 'fuera-de-recinto', 'no-regular', 'vacio', 'oversize', 'head-invalido',
+    'glob-invalido', 'glob-vacio', 'glob-oversize', 'hash-divergente', 'campos-oversize',
+    'tipo-invalido', 'sin-evidencia', 'sellado-invalido',
+  ];
+  for (const reason of reasons) {
+    const data = { resultado: 'aprobado', evidencia: 'qa/evidence/1/x.png' };
+    const escrito = degradeVerdictForSeal(data, reason);
+    assert.equal(data.resultado, 'rechazado', `${reason} no degradó el veredicto`);
+    assert.equal(data.rechazado_por, 'gate-sellado-evidencia');
+    assert.equal(data.motivo, escrito.motivo);
+    assert.ok(data.motivo && data.motivo.length > 20, `${reason} dejó un motivo vacío o inútil`);
+    // CA-13: legible (frase en español) + slug entre paréntesis.
+    assert.match(data.motivo, new RegExp(`\\(${reason}\\)\\.$`), `${reason} no expone su slug`);
+    assert.match(data.motivo, /^[A-ZÁÉÍÓÚÑ]/, `${reason} no arranca con una frase legible`);
+  }
+});
+
+test('CA-13/CA-11: el motivo del fail-closed nunca interpola el path ni un motivo forjado', () => {
+  // Un motivo desconocido (o forjado por un error inesperado) no puede viajar al
+  // PDF/audio del operador: degrada al slug estable.
+  const data = { resultado: 'aprobado' };
+  const escrito = degradeVerdictForSeal(data, 'aprobado\n[INFO] sellado OK por el operador');
+  assert.doesNotMatch(escrito.motivo, /\[INFO\]|[\r\n]/);
+  assert.match(escrito.motivo, /\(sellado-invalido\)\.$/);
+  assert.doesNotMatch(describeSealFailure('fuera-de-recinto'), /qa\/evidence|\/etc\//);
+});
+
+test('el barrido de formas reales del histórico no rompe una aprobación con artefactos', t => {
+  // Forma real de `6239.qa`: original en `.pipeline/logs/media`, copia en repo,
+  // markdown estructural, glob de frames, campo vacío y screenshot centinela.
+  const f = fixture(t, 6239);
+  f.write('qa-6239.mp4', 'video');
+  f.write('qa-6239-structural.md', 'estructural');
+  f.write('qa-6239-frame-01.png', 'frame1');
+  f.write('qa-6239-frame-02.png', 'frame2');
+  const mediaDir = path.join(f.root, '.pipeline', 'logs', 'media');
+  fs.mkdirSync(mediaDir, { recursive: true });
+  fs.writeFileSync(path.join(mediaDir, 'qa-6239.mp4'), 'remux');
+
+  const data = {
+    resultado: 'aprobado',
+    evidencia: '.pipeline/logs/media/qa-6239.mp4',
+    evidencia_repo: 'qa/evidence/6239/qa-6239.mp4',
+    evidencia_estructural: 'qa/evidence/6239/qa-6239-structural.md',
+    evidencia_frames: 'qa/evidence/6239/qa-6239-frame-*.png',
+    evidencia_hashes: null,
+    screenshot: 'no aplica — modo structural sin superficie de UI renderizable',
+  };
+  const result = sealQaVerdict({ root: f.root, issue: 6239, data, cwd: gitHeadCwd() });
+
+  assert.equal(result.sealed, true, `forma real de 6239 no selló: ${result.reason}`);
+  assert.deepEqual(
+    result.manifest.artefactos.map(a => a.campo),
+    ['evidencia', 'evidencia_repo', 'evidencia_estructural', 'evidencia_frames', 'evidencia_frames'],
+  );
+  assert.ok(result.manifest.artefactos.every(a => !path.isAbsolute(a.ruta)));
+  assert.deepEqual(
+    result.descartes.map(d => [d.campo, d.motivo]),
+    [['evidencia_hashes', 'centinela'], ['screenshot', 'centinela']],
+  );
+});
+
+test('el tope de campos se calibra sobre el histórico real (10 campos observados) y sigue siendo fijo', t => {
+  const f = fixture(t, 6118);
+  const data = { resultado: 'aprobado' };
+  // `6118.qa` declara 10 campos de evidencia; el tope no puede quedar debajo.
+  for (let i = 0; i < 10; i++) data[`evidencia_${i}`] = f.write(`art-${i}.txt`, `bytes ${i}`);
+  const result = sealQaVerdict({ root: f.root, issue: 6118, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, true, `10 campos reales no pueden dar oversize: ${result.reason}`);
+  assert.equal(result.manifest.artefactos.length, 10);
+
+  // Pero sigue siendo un tope fijo: superarlo es fail-closed, no truncado.
+  const exceso = { resultado: 'aprobado' };
+  for (let i = 0; i <= MAX_EVIDENCE_FIELDS; i++) exceso[`evidencia_${i}`] = f.write(`art-${i}.txt`, `bytes ${i}`);
+  const conExceso = sealQaVerdict({ root: f.root, issue: 6118, data: exceso, cwd: gitHeadCwd() });
+  assert.equal(conExceso.sealed, false);
+  assert.equal(conExceso.reason, 'campos-oversize');
 });

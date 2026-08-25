@@ -2880,6 +2880,53 @@ const QA_MIN_FRAME_PNGS = 3;             // Mínimo de frames PNG del agente QA 
  * El campo `video_size_kb` del YAML es solo informativo; si el archivo en disco
  * cumple el umbral, se acepta.
  */
+/**
+ * #6495 (rebote 3, R-2) — Decide si la evidencia audiovisual es EXIGIBLE para
+ * este veredicto, sin mirar el filesystem.
+ *
+ * Se extrajo de `validateQaEvidence` porque el gate de evidencia y el gate de
+ * sellado tienen que compartir exactamente el mismo bypass: el hook de sellado
+ * corría para todos los aprobados y, en `structural`/`api`, el campo `evidencia`
+ * es prosa por contrato del rol (`.pipeline/roles/qa.md`). Barrido de dropfiles
+ * reales: 16 de 73 aprobaciones (22%) se degradaban a `rechazado`.
+ *
+ * Devuelve `logLine` en vez de loguear para que se pueda computar una sola vez y
+ * emitir una sola línea de auditoría (R3/CA-3 de #2351), aunque la consulten dos
+ * gates. La fuente de los labels sigue siendo EXCLUSIVAMENTE GitHub.
+ *
+ * @returns {{bypassed: boolean, motivo: string|null, mode: string|null, logLine: string|null}}
+ */
+function resolveQaEvidenceEnforcement(issue, qaData, authoritativeQaMode = null, deps = {}) {
+  const getLabels = deps.getLabels || getIssueLabels;
+  if (qaEvidenceGate.hasQaSkippedLabel(getLabels(issue))) {
+    return {
+      bypassed: true,
+      motivo: 'qa-skipped',
+      mode: null,
+      logLine: `🟢 gate-bypass #${issue} reason=qa-skipped — label explícito qa:skipped, no requiere evidencia audiovisual ${JSON.stringify({ event: 'gate-bypass', issue: String(issue), source: 'label', decision: 'skip-video', reason: 'qa-skipped' })}`,
+    };
+  }
+  const resolution = qaEvidenceGate.resolveQaMode({
+    authoritative: authoritativeQaMode,
+    yamlMode: qaData && qaData.modo,
+  });
+  if (qaEvidenceGate.shouldSkipVisualEvidence(resolution.mode)) {
+    const evt = qaEvidenceGate.buildBypassEvent({
+      issue,
+      qaMode: resolution.mode,
+      source: resolution.source,
+      labels: Array.isArray(qaData && qaData.labels) ? qaData.labels : [],
+    });
+    return {
+      bypassed: true,
+      motivo: `qa-mode-${resolution.mode}`,
+      mode: resolution.mode,
+      logLine: qaEvidenceGate.formatBypassLogLine(evt),
+    };
+  }
+  return { bypassed: false, motivo: null, mode: resolution.mode, logLine: null };
+}
+
 function validateQaEvidence(issue, qaData, authoritativeQaMode = null, deps = {}) {
   // `getLabels` es inyectable para tests (default: la fuente autoritativa de
   // GitHub). NUNCA se cae al YAML del agente para resolver labels (R1 #2351).
@@ -2913,23 +2960,13 @@ function validateQaEvidence(issue, qaData, authoritativeQaMode = null, deps = {}
   // el gate sin que el label exista realmente en GitHub. El label vive en GitHub
   // y requiere permisos de escritura para asignarse: es una whitelist explícita y
   // confiable, no manipulable por el agente.
-  if (qaEvidenceGate.hasQaSkippedLabel(getLabels(issue))) {
-    log('gate-bypass', `🟢 gate-bypass #${issue} reason=qa-skipped — label explícito qa:skipped, no requiere evidencia audiovisual ${JSON.stringify({ event: 'gate-bypass', issue: String(issue), source: 'label', decision: 'skip-video', reason: 'qa-skipped' })}`);
-    return [];
-  }
-
-  const resolution = qaEvidenceGate.resolveQaMode({
-    authoritative: authoritativeQaMode,
-    yamlMode: qaData && qaData.modo,
-  });
-  if (qaEvidenceGate.shouldSkipVisualEvidence(resolution.mode)) {
-    const evt = qaEvidenceGate.buildBypassEvent({
-      issue,
-      qaMode: resolution.mode,
-      source: resolution.source,
-      labels: Array.isArray(qaData && qaData.labels) ? qaData.labels : [],
-    });
-    log('gate-bypass', qaEvidenceGate.formatBypassLogLine(evt));
+  // `deps.enforcement` permite que el llamador reuse la decisión (y su consulta
+  // de labels a GitHub) con el gate de sellado de #6495, sin duplicar la línea
+  // de auditoría ni la llamada de red.
+  const enforcement = deps.enforcement
+    || resolveQaEvidenceEnforcement(issue, qaData, authoritativeQaMode, { getLabels });
+  if (enforcement.bypassed) {
+    log('gate-bypass', enforcement.logLine);
     return [];
   }
 
@@ -11466,7 +11503,13 @@ ${g}
           log('lanzamiento', `🎬 Recording parado para qa:#${issue} — video: ${videoSizeKb}KB → ${localVideo}`);
           // Inyectar metadata de evidencia en el YAML (50KB es suficiente con swiftshader).
           if (videoSizeKb >= 50) {
-            data.evidencia = localVideo;
+            // #6495 (rebote 3, R-1): se declara RELATIVA al repo. Antes se
+            // asignaba `localVideo` crudo —absoluto, porque `evidenceDir` sale
+            // de `path.join(ROOT, …)`— y 58 líneas más abajo el sellado la
+            // rechazaba por estar fuera del recinto, degradando a `rechazado`
+            // todo QA android con video ≥50KB. Además, una ruta absoluta del
+            // host no tiene por qué viajar en el dropfile (SEC-8).
+            data.evidencia = path.relative(ROOT, localVideo).replace(/\\/g, '/');
             data.video_size_kb = videoSizeKb;
             // Audio narrado no se genera acá (el agente QA lo hace), pero el video crudo sí
             writeYaml(workingPath, data);
@@ -11486,9 +11529,15 @@ ${g}
       // (lo inyectó el preflight del Pulpo antes de lanzar al agente). El agente no
       // puede bypassear el gate inventando un `modo: api` falso en el YAML si el
       // preflight había determinado 'android'.
+      // #6495 (rebote 3, R-2): la decisión de exigibilidad se computa UNA vez y
+      // la comparten el gate de evidencia y el gate de sellado. Los dos tienen
+      // que honrar el mismo bypass por `qaMode`/`qa:skipped`, o el sellado se
+      // come aprobaciones que el gate hermano deja pasar.
+      let qaEnforcement = null;
       if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
         const authoritativeQaMode = extraEnv && extraEnv.QA_MODE ? extraEnv.QA_MODE : null;
-        const evidenceIssues = validateQaEvidence(issue, data, authoritativeQaMode);
+        qaEnforcement = resolveQaEvidenceEnforcement(issue, data, authoritativeQaMode);
+        const evidenceIssues = validateQaEvidence(issue, data, authoritativeQaMode, { enforcement: qaEnforcement });
         if (evidenceIssues.length > 0) {
           log('lanzamiento', `⛔ QA:#${issue} aprobó sin evidencia válida on-exit: ${evidenceIssues.join(', ')}`);
           data.resultado = 'rechazado';
@@ -11509,36 +11558,28 @@ ${g}
           });
           if (!sealResult.sealed) {
             const reason = sealResult.reason || 'sellado-invalido';
-            const messages = {
-              traversal: 'La ruta de evidencia declarada por QA sale del recinto permitido',
-              'fuera-de-recinto': 'La evidencia declarada por QA no es accesible dentro del recinto permitido',
-              'no-regular': 'La evidencia declarada por QA no es un archivo regular',
-              vacio: 'La evidencia declarada por QA está vacía',
-              oversize: 'La evidencia declarada por QA supera el tamaño permitido',
-              'head-invalido': 'No se pudo determinar el commit del worktree de QA',
-              'glob-vacio': 'El patrón de evidencia declarado por QA no produjo artefactos',
-              'hash-divergente': 'La copia de evidencia no coincide con su hash canónico',
-              'campos-oversize': 'QA declaró más campos de evidencia que el límite permitido',
-              'glob-oversize': 'El patrón de evidencia produjo más archivos que el límite permitido',
-              // #6495 (rebote 2): un campo de evidencia que no es ni una ruta
-              // ni un descriptor con `ruta` (lista, null, número, booleano) ya
-              // no se saltea en silencio — frena el sellado con este motivo.
-              'tipo-invalido': 'QA declaró un campo de evidencia con un valor que no es una ruta de artefacto',
-              'sin-evidencia': 'El veredicto aprobado de QA no declara ningún artefacto de evidencia',
-            };
-            data.resultado = 'rechazado';
-            data.motivo = `${messages[reason] || 'No se pudo derivar un sello confiable para la evidencia de QA'} (${reason}).`;
-            data.rechazado_por = 'gate-sellado-evidencia';
-            sendTelegram(`⛔ QA:#${issue} — ${data.motivo}`);
+            // #6495 (rebote 3, R-2): el fail-closed sólo alcanza a los modos
+            // donde el gate hermano TAMBIÉN exige evidencia. En `structural`,
+            // `api` y bajo `qa:skipped` el sellado es best-effort: se loguea y
+            // el veredicto queda intacto, porque ahí `evidencia` es prosa por
+            // contrato del rol y no una ruta rota.
+            if (qaEnforcement && qaEnforcement.bypassed) {
+              log('lanzamiento', `QA:#${issue} sin sello (${reason}) — modo sin evidencia exigible (${qaEnforcement.motivo}), el veredicto no se toca`);
+            } else {
+              const degraded = qaEvidenceSeal.degradeVerdictForSeal(data, reason);
+              sendTelegram(`⛔ QA:#${issue} — ${degraded.motivo}`);
+            }
           } else {
             log('lanzamiento', `QA:#${issue} selló ${sealResult.manifest.artefactos.length} artefacto(s) contra HEAD ${sealResult.manifest.head.slice(0, 8)}…`);
           }
         } catch (sealErr) {
-          data.resultado = 'rechazado';
-          data.motivo = 'No se pudo derivar un sello confiable para la evidencia de QA (sellado-invalido).';
-          data.rechazado_por = 'gate-sellado-evidencia';
           log('lanzamiento', `QA:#${issue} falló sellado de evidencia: ${redactSecretValue(sealErr.message)}`);
-          sendTelegram(`⛔ QA:#${issue} — ${data.motivo}`);
+          // Mismo alcance que arriba: fail-closed sólo donde la evidencia es
+          // exigible; nunca una excepción sin capturar hacia el loop (CA-7).
+          if (!(qaEnforcement && qaEnforcement.bypassed)) {
+            const degraded = qaEvidenceSeal.degradeVerdictForSeal(data, 'sellado-invalido');
+            sendTelegram(`⛔ QA:#${issue} — ${degraded.motivo}`);
+          }
         }
       }
 
@@ -23138,6 +23179,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #3956 — gate de evidencia QA: expuesto para test de integración del bypass
     // `qa:skipped` (la fuente de labels debe ser GitHub, nunca el YAML del agente).
     validateQaEvidence,
+    resolveQaEvidenceEnforcement,
     determinarDevSkill,
     getDevSkillPartitions,
     isDeclaredStackDevSkill,

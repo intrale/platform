@@ -6,11 +6,46 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { redactSensitive } = require('./redact');
 
-const MAX_EVIDENCE_FIELDS = 8;
+// #6495 (rebote 3) — CA-10 fija el tope con "el máximo observado en el
+// histórico es 7", pero el barrido real de `procesado/` + `archivado/` encuentra
+// dropfiles aprobados con 10 campos (`6118.qa`, `6226.qa`). El tope sigue siendo
+// fijo y explícito —no hay truncado silencioso, superarlo es fail-closed— pero
+// se calibra sobre el histórico real. La cota que acota el abuso de lectura de
+// archivos del host es `MAX_TOTAL_BYTES` + el confinamiento, no este número.
+const MAX_EVIDENCE_FIELDS = 16;
 const MAX_GLOB_FILES = 64;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
-const SKIPPED_VALUES = new Set(['', '-', 'no-aplica', 'no aplica', 'n/a', 'null']);
+// #6495 (rebote 3, R-3) — El centinela de "campo declarado sin artefacto" se
+// reconoce por PREFIJO, no por igualdad exacta. La igualdad exacta era una
+// invención del módulo: ningún dropfile real escribe el centinela pelado, todos
+// lo justifican ("no aplica: el preflight confirmo que no hay superficie UI
+// visible", "n/a - QA_MODE=structural sin UI visible"). Exigir la forma pelada
+// convertía en bloqueante la forma que el histórico usa todo el tiempo: en el
+// barrido de dropfiles reales, 49 de 247 campos de evidencia son prosa y la
+// mayoría son justamente centinelas justificados.
+const SKIP_SENTINEL = /^(?:-+|n\s*\/\s*a|null|no\s*[-_.]?\s*aplica|no\s+corresponde|not\s+applicable|sin\s+evidencia)(?:\b|$)/i;
+
+// Toda ruta absoluta: drive letter de Windows, POSIX o UNC.
+const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
+const TRAVERSAL_SEGMENT = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
+const ARTIFACT_EXTENSION = /\.[A-Za-z0-9]{1,8}$/;
+
+// #6495 (rebote 3, R-4) — Segundo recinto permitido.
+//
+// CA-6 justifica `tipo: derivado` con `.pipeline/logs/media/qa-6190.mp4` (re-mux
+// faststart del original), pero confinar TODO a `qa/evidence/<issue>/` hacía que
+// ese artefacto —y los 4 dropfiles reales que declaran esa ruta, más los
+// `evidencia_pdf: .pipeline/logs/rejection-<issue>-qa.pdf`— murieran en
+// `fuera-de-recinto` antes de llegar a la rama de derivado. La tensión entre
+// CA-5 (recinto estricto) y CA-6 (motivo fuera del recinto) se resuelve acá, a
+// favor de un segundo recinto explícito y acotado.
+//
+// El recinto de logs NO es libre: el basename tiene que referenciar el issue
+// como token propio, así que el veredicto de #A no puede sellar el artefacto de
+// #B ni un log arbitrario del pipeline. Sigue valiendo todo lo demás: sin
+// traversal, sin ruta sensible, containment por `realpath`, tope de bytes.
+const LOG_RECINTO = ['.pipeline', 'logs'];
 
 class SealError extends Error {
   constructor(reason, declaredPath = '') {
@@ -35,32 +70,69 @@ function isInside(parent, candidate) {
 }
 
 /**
- * Resuelve artefactos exclusivamente contra root/qa/evidence/<issue>.
+ * Recintos permitidos, en orden de preferencia. Son rutas FIJAS derivadas de
+ * `root` y del issue: ninguna sale del YAML del agente.
+ */
+function confinementRoots(root, issue) {
+  return [
+    { dir: path.join(root, 'qa', 'evidence', String(issue)), requiereTokenDeIssue: false },
+    { dir: path.join(root, ...LOG_RECINTO), requiereTokenDeIssue: true },
+  ];
+}
+
+/**
+ * `qa-6239.mp4`, `qa-5400-rebote.mp4` y `rejection-6208-qa.pdf` referencian el
+ * issue como token propio. `qa-62391.mp4` no: el borde numérico es lo que evita
+ * que el recinto de logs se vuelva un comodín entre issues.
+ */
+function referencesIssue(basename, issue) {
+  return new RegExp(`(?:^|[^0-9])${String(issue)}(?:[^0-9]|$)`).test(basename);
+}
+
+/**
+ * Resuelve artefactos exclusivamente contra los recintos de `confinementRoots`.
  * El cwd no participa: queda reservado para deriveHead y nunca se toma de data.
+ *
+ * #6495 (rebote 3, R-1) — La ruta ABSOLUTA se acepta si (y sólo si) cae dentro
+ * de un recinto, en vez de rechazarse por su forma. El rechazo por forma no era
+ * una defensa: el containment por `realpath` ya decide, y el propio Pulpo
+ * escribe una ruta absoluta en `data.evidencia` (`path.join(ROOT, 'qa',
+ * 'evidence', issue, ...)`) unas líneas antes de invocar el sellado, así que
+ * rechazarla degradaba a `rechazado` TODO QA android con video ≥50KB — el happy
+ * path del modo android. El Pulpo además ahora normaliza a relativa, pero el
+ * módulo no depende de que su llamador lo haga.
+ *
+ * La ruta devuelta (`ruta`) SIEMPRE es relativa al repo y con `/`: el
+ * manifiesto no persiste rutas absolutas del host (SEC-8).
  */
 function resolveConfined(root, issue, declaredPath) {
-  if (typeof declaredPath !== 'string' || path.isAbsolute(declaredPath)) {
+  if (typeof declaredPath !== 'string') throw new SealError('fuera-de-recinto', declaredPath);
+  const raw = declaredPath.trim();
+  if (raw === '') throw new SealError('fuera-de-recinto', declaredPath);
+  if (TRAVERSAL_SEGMENT.test(raw)) throw new SealError('traversal', declaredPath);
+  if (isSensitivePath(raw)) throw new SealError('fuera-de-recinto', declaredPath);
+
+  const absolute = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(root, raw);
+  const recinto = confinementRoots(root, issue)
+    .find(candidate => isInside(candidate.dir, absolute));
+  // No distingue ausencia de rechazo: evita usar el motivo como oráculo (CA-11).
+  if (!recinto) throw new SealError('fuera-de-recinto', declaredPath);
+  if (recinto.requiereTokenDeIssue && !referencesIssue(path.basename(absolute), issue)) {
     throw new SealError('fuera-de-recinto', declaredPath);
   }
-  const segments = declaredPath.split(/[\\/]/);
-  if (segments.includes('..')) throw new SealError('traversal', declaredPath);
-  if (isSensitivePath(declaredPath)) throw new SealError('fuera-de-recinto', declaredPath);
 
-  const evidenceDir = path.join(root, 'qa', 'evidence', String(issue));
-  const absolute = path.resolve(root, declaredPath);
-  if (!isInside(evidenceDir, absolute)) throw new SealError('fuera-de-recinto', declaredPath);
-
-  let realEvidenceDir;
+  let realRecinto;
   let real;
   try {
-    realEvidenceDir = fs.realpathSync(evidenceDir);
+    realRecinto = fs.realpathSync(recinto.dir);
     real = fs.realpathSync(absolute);
   } catch {
-    // No distingue ausencia de rechazo: evita usar el motivo como oráculo.
     throw new SealError('fuera-de-recinto', declaredPath);
   }
-  if (!isInside(realEvidenceDir, real)) throw new SealError('fuera-de-recinto', declaredPath);
-  return { absolute, real, evidenceDir: realEvidenceDir };
+  if (!isInside(realRecinto, real)) throw new SealError('fuera-de-recinto', declaredPath);
+  const ruta = path.relative(root, absolute).replace(/\\/g, '/');
+  if (ruta === '' || ruta.startsWith('..')) throw new SealError('fuera-de-recinto', declaredPath);
+  return { absolute, real, ruta, evidenceDir: realRecinto };
 }
 
 function deriveHead(cwd) {
@@ -160,11 +232,52 @@ function artifactSpec(value) {
 
 /**
  * El centinela de "campo declarado sin artefacto" es TEXTUAL y sólo vale en la
- * forma escalar del campo: `evidencia: "no-aplica"`. Un objeto con
- * `ruta: "no-aplica"` no se saltea — se resuelve contra el recinto y falla ahí.
+ * forma escalar del campo: `evidencia: "no-aplica: <justificación>"`. Un objeto
+ * con `ruta: "no-aplica"` no se saltea — se resuelve contra el recinto y falla
+ * ahí, porque un descriptor estructurado es una declaración explícita.
+ *
+ * `undefined`/`null` también son centinela: en YAML, `evidencia_sondas:` sin
+ * valor parsea como `null` y significa exactamente "campo declarado, sin
+ * artefacto" (caso real `5172.qa`, y 7 campos vacíos más en el histórico).
  */
 function isSkipSentinel(value) {
-  return typeof value === 'string' && SKIPPED_VALUES.has(value.trim().toLowerCase());
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return trimmed === '' || SKIP_SENTINEL.test(trimmed);
+}
+
+/**
+ * #6495 (rebote 3, R-2/R-3) — Distingue "campo que NO es una ruta" de "campo que
+ * es una ruta inválida". Es la distinción que faltaba: sin ella, la prosa que el
+ * contrato del rol `qa.md` manda escribir en modo structural
+ * ("Validación estructural — archivos modificados verificados") se leía como una
+ * ruta rota y disparaba `fuera-de-recinto`, degradando el 22% de las
+ * aprobaciones históricas.
+ *
+ * Se considera referencia a artefacto —y por lo tanto se RESUELVE, con
+ * fail-closed si no resuelve— cuando:
+ *   - es absoluta (aunque tenga espacios: una ruta del host nunca se saltea en
+ *     silencio, se resuelve y falla si está fuera del recinto), o
+ *   - contiene un segmento `..` (un intento de traversal jamás se saltea), o
+ *   - no tiene espacios y tiene separador de path o extensión de archivo.
+ *
+ * Todo lo demás es prosa: se saltea con traza, nunca en silencio.
+ */
+function looksLikeArtifactRef(value) {
+  const trimmed = String(value).trim();
+  if (ABSOLUTE_PATH.test(trimmed)) return true;
+  if (TRAVERSAL_SEGMENT.test(trimmed)) return true;
+  // Un carácter de control o una marca bidi NUNCA son prosa legítima: son un
+  // intento de inyección en el sink de log. No se saltean en silencio — se
+  // resuelven contra el recinto, fallan ahí, y el motivo sale por
+  // `sanitizeLogField` con marcador categórico. Saltearlos como prosa habría
+  // desactivado el PoC del rebote 1 de seguridad.
+  // (CONTROL_CHARS/BIDI_CHARS se declaran más abajo: esta función sólo corre en
+  // runtime, cuando el módulo ya terminó de evaluarse.)
+  if (CONTROL_CHARS.test(trimmed) || BIDI_CHARS.test(trimmed)) return true;
+  if (/\s/.test(trimmed)) return false;
+  return /[\\/]/.test(trimmed) || ARTIFACT_EXTENSION.test(trimmed);
 }
 
 // #6495 (rebote de seguridad) — El campo de evidencia lo escribe el YAML del
@@ -192,7 +305,6 @@ const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
 // Marcas bidi/invisibles: no son control C0/C1, pero reescriben la línea que ve
 // el operador, que es el daño concreto que este sanitizado tiene que evitar.
 const BIDI_CHARS = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
-const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
 // Allowlist: el alfabeto mínimo de una ruta de evidencia confinada.
 const SAFE_PATH_CHARS = /^[A-Za-z0-9._\-/*]+$/;
 const MAX_LOG_FIELD_CHARS = 120;
@@ -248,6 +360,28 @@ function logFailure(error) {
   console.error(`[qa-evidence-seal] sellado rechazado (${reason})${campo ? ` campo=${campo}` : ''}`);
 }
 
+/**
+ * Deriva el sello de la evidencia de un veredicto aprobado de QA.
+ *
+ * ALCANCE DEL FAIL-CLOSED (#6495, rebote 3 · R-2). El módulo siempre intenta
+ * sellar y siempre devuelve `sealed:false` + motivo categórico cuando no puede;
+ * **quién degrada el veredicto es el llamador**, y sólo lo hace en los modos en
+ * los que el gate hermano `validateQaEvidence` también exige evidencia:
+ *
+ *   - `qaMode: 'android'` sin label `qa:skipped` ⇒ ENFORCED. Un `sealed:false`
+ *     degrada el veredicto a `rechazado` (`degradeVerdictForSeal`).
+ *   - `qaMode ∈ {'api','structural'}` o label `qa:skipped` ⇒ BEST-EFFORT. Ahí
+ *     `evidencia` es prosa por contrato del rol (`.pipeline/roles/qa.md`), así
+ *     que un `sealed:false` sólo se loguea: el veredicto NO se toca. El sello se
+ *     escribe igual cuando el dropfile sí declara artefactos reales.
+ *
+ * Artefactos contra `root` (recintos fijos), `head` contra `cwd` (CA-12a): el
+ * `cwd` viene exclusivamente del `spawnCwd` que el Pulpo tiene en scope, y el
+ * módulo ignora cualquier ruta presente en `data` (incluido `data.entorno`).
+ *
+ * @param {{root: string, issue: string|number, data: object, cwd: string}} params
+ * @returns {{sealed: boolean, manifest: object|null, descartes: object[], reason: string|null}}
+ */
 function sealQaVerdict({ root, issue, data, cwd } = {}) {
   if (!data || data.resultado !== 'aprobado') return { sealed: false, manifest: null, descartes: [], reason: 'no-aplica' };
   try {
@@ -269,7 +403,18 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
       // promovía el hash del screenshot a `evidencia_sha256`, o sea la misma
       // desincronización sello-artefacto que este issue existe para eliminar.
       // Ahora todo valor que no produzca spec frena el sellado (fail-closed).
-      if (isSkipSentinel(data[field])) continue;
+      if (isSkipSentinel(data[field])) {
+        discards.push({ campo: field, declarado: null, real: null, motivo: 'centinela' });
+        continue;
+      }
+      // #6495 (rebote 3, R-2/R-3): la prosa NO es una ruta rota. Se saltea con
+      // traza explícita —nunca en silencio, que es lo que el rebote 2 cerró— y
+      // el sellado sigue con los campos que sí declaran artefactos. Si ninguno
+      // lo hace, el `sin-evidencia` de más abajo frena igual (fail-closed).
+      if (typeof data[field] === 'string' && !looksLikeArtifactRef(data[field])) {
+        discards.push({ campo: field, declarado: null, real: null, motivo: 'no-es-artefacto' });
+        continue;
+      }
       const spec = artifactSpec(data[field]);
       if (!spec) throw new SealError('tipo-invalido');
       if (!['original', 'copia', 'derivado'].includes(spec.tipo)) throw new SealError('tipo-invalido');
@@ -278,7 +423,7 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
         const confined = resolveConfined(root, issue, route);
         const hashed = readAndHash(confined, route, MAX_TOTAL_BYTES - totalBytes);
         totalBytes += hashed.bytes;
-        const artifact = { campo: field, ruta: route.replace(/\\/g, '/'), ...hashed, tipo: spec.tipo };
+        const artifact = { campo: field, ruta: confined.ruta, ...hashed, tipo: spec.tipo };
         if (spec.tipo === 'derivado') {
           const source = normalizeHash(spec.derivado_de);
           if (!source) throw new SealError('hash-divergente');
@@ -341,7 +486,63 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
   }
 }
 
+// #6495 (CA-11 + CA-13) — Traducción del motivo categórico a lenguaje llano.
+//
+// Vive acá y no inline en `pulpo.js` para que el fail-closed sea testeable: el
+// review del rebote 3 marcó que el mapa de mensajes no tenía ninguna prueba y
+// que sin motivo el consumidor de rejection-report emite PDF y audio que dicen
+// literalmente "Sin motivo" (mismo defecto que motivó #6421).
+//
+// CA-11 y CA-13 conviven: legible = frase en español + slug entre paréntesis;
+// categórico = describe la CLASE de fallo, nunca el path declarado ni un ENOENT
+// distinguible de un rechazo por recinto.
+const FAILURE_MESSAGES = {
+  traversal: 'La ruta de evidencia declarada por QA sale del recinto permitido',
+  'fuera-de-recinto': 'La evidencia declarada por QA no es accesible dentro del recinto permitido',
+  'no-regular': 'La evidencia declarada por QA no es un archivo regular',
+  vacio: 'La evidencia declarada por QA está vacía',
+  oversize: 'La evidencia declarada por QA supera el tamaño permitido',
+  'head-invalido': 'No se pudo determinar el commit del worktree de QA',
+  'glob-invalido': 'El patrón de evidencia declarado por QA no es un patrón soportado',
+  'glob-vacio': 'El patrón de evidencia declarado por QA no produjo artefactos',
+  'hash-divergente': 'La copia de evidencia no coincide con su hash canónico',
+  'campos-oversize': 'QA declaró más campos de evidencia que el límite permitido',
+  'glob-oversize': 'El patrón de evidencia produjo más archivos que el límite permitido',
+  'tipo-invalido': 'QA declaró un campo de evidencia con un valor que no es una ruta de artefacto',
+  'sin-evidencia': 'El veredicto aprobado de QA no declara ningún artefacto de evidencia',
+};
+
+const SEAL_REJECTED_BY = 'gate-sellado-evidencia';
+
+/**
+ * @param {string} reason motivo categórico devuelto por `sealQaVerdict`
+ * @returns {string} frase legible + slug entre paréntesis, sin interpolar rutas
+ */
+function describeSealFailure(reason) {
+  const slug = sanitizeReason(reason);
+  const texto = FAILURE_MESSAGES[slug] || 'No se pudo derivar un sello confiable para la evidencia de QA';
+  return `${texto} (${slug}).`;
+}
+
+/**
+ * Degrada in-place el veredicto aprobado que no pudo sellarse. Muta `data`
+ * ANTES de que corra el recorder #5708, que se autoexcluye con
+ * `data.resultado !== 'aprobado'`: el orden gate → sellado → recorder es por
+ * diseño, no por accidente.
+ *
+ * @returns {{motivo: string, rechazado_por: string}} lo que quedó escrito
+ */
+function degradeVerdictForSeal(data, reason) {
+  const motivo = describeSealFailure(reason);
+  data.resultado = 'rechazado';
+  data.motivo = motivo;
+  data.rechazado_por = SEAL_REJECTED_BY;
+  return { motivo, rechazado_por: SEAL_REJECTED_BY };
+}
+
 module.exports = {
   sealQaVerdict, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
+  describeSealFailure, degradeVerdictForSeal, isSkipSentinel, looksLikeArtifactRef,
+  SEAL_REJECTED_BY,
   MAX_EVIDENCE_FIELDS, MAX_GLOB_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_LOG_FIELD_CHARS,
 };
