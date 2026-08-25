@@ -25,7 +25,8 @@ import org.slf4j.Logger
  * with KTOR
  */
 fun start(appModule: DI.Module) {
-    embeddedServer(Netty/*, host = "0.0.0.0", module = Application::module*/) {
+    val port = System.getenv("PORT")?.toIntOrNull() ?: 80
+    embeddedServer(Netty, port = port/*, host = "0.0.0.0", module = Application::module*/) {
 
         di {
             import(appModule)
