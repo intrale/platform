@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { spawnSync } = require('node:child_process');
 const {
   sealQaVerdict, normalizeHash, resolveConfined, deriveHead,
   MAX_EVIDENCE_FIELDS, MAX_FILE_BYTES, MAX_LOG_FIELD_CHARS, sanitizeLogField,
@@ -204,17 +205,76 @@ test('toda ruta absoluta se representa con marcador categórico, no sólo las de
   }
 });
 
-test('sanitizeLogField acota el largo y tolera valores no string', () => {
+test('sanitizeLogField acota el largo y nunca coacciona un valor no string', () => {
   assert.equal(sanitizeLogField(undefined), '');
   assert.equal(sanitizeLogField(null), '');
   assert.equal(sanitizeLogField(''), '');
   assert.equal(sanitizeLogField('   '), '<ruta-vacia>');
-  assert.equal(sanitizeLogField(42), '42');
-  assert.equal(sanitizeLogField({}), '[object Object]');
+  assert.equal(sanitizeLogField(42), '<valor-no-textual>');
+  assert.equal(sanitizeLogField({}), '<valor-no-textual>');
   const largo = `qa/${'a'.repeat(500)}.png`;
   const salida = sanitizeLogField(largo);
   assert.ok(salida.length <= MAX_LOG_FIELD_CHARS + '<truncado>'.length, `salida sin truncar (${salida.length})`);
   assert.match(salida, /<truncado>$/);
+});
+
+// #6495 (rebote 1) — Clases que el denylist anterior dejaba pasar aunque ya
+// cerraba CR/LF y drive letters. Se verifican contra el sanitizado por
+// allowlist, que es el que las cubre a todas de una.
+test('la coerción de un valor no string no puede filtrar una ruta absoluta embebida', () => {
+  // String(['ok','/var/lib/private/token.txt']) === 'ok,/var/lib/private/token.txt',
+  // que ya no empieza con `/` y por lo tanto esquivaba el marcador de absoluta.
+  assert.equal(sanitizeLogField(['ok', '/var/lib/private/token.txt']), '<valor-no-textual>');
+  assert.equal(sanitizeLogField({ ruta: '/var/lib/private/token.txt' }), '<valor-no-textual>');
+  assert.equal(sanitizeLogField({ toString() { return 'ok,/var/lib/private/token.txt'; } }), '<valor-no-textual>');
+  for (const salida of [
+    sanitizeLogField(['ok', '/var/lib/private/token.txt']),
+    sanitizeLogField({ ruta: '/var/lib/private/token.txt' }),
+  ]) {
+    assert.doesNotMatch(salida, /var|lib|token/, 'la salida filtró parte de la ruta absoluta');
+  }
+});
+
+test('un valor fuera del alfabeto de una ruta de evidencia se descarta entero', () => {
+  const hostiles = [
+    'x) sellado OK campo=(y',                    // envenenamiento en una sola línea
+    'qa/evidence/6258/ok.png sellado aprobado',  // espacios: texto libre en el log
+    'qa/evidence/6258/ok.png‮gnp.ko',       // U+202E invierte la línea al operador
+    'qa/evidence/6258/ok​.png',             // zero-width space
+    'qa/evidence/﻿6258/ok.png',             // BOM intercalado (el del borde lo come trim)
+    'qa/evidence/6258/#{ok}.png',
+    'qa/evidence/6258/ok.png;rm -rf /',
+  ];
+  for (const payload of hostiles) {
+    const salida = sanitizeLogField(payload);
+    assert.match(salida, /^<ruta-(?:no-representable|no-imprimible)>$/, `no se descartó entero: ${JSON.stringify(payload)} -> ${salida}`);
+    assert.doesNotMatch(salida, /sellado|aprobado|rm |campo=\(/, 'la salida conserva texto hostil');
+  }
+});
+
+test('una ruta de evidencia legítima sobrevive al allowlist', () => {
+  for (const ruta of [
+    'qa/evidence/6258/qa-6258-structural.md',
+    'qa/evidence/6190/qa-6190-frame-*.png',
+    'qa/evidence/6258/../../../.claude/secrets/credentials.json', // relativa: va al log local (CA-11)
+  ]) {
+    assert.equal(sanitizeLogField(ruta), ruta, `se descartó una ruta representable: ${ruta}`);
+  }
+});
+
+test('deriveHead no deja que el stderr de git escriba en el sink sin sanitizar', t => {
+  // El hijo escribe en el fd 2 real, así que stubbear console.error no alcanza:
+  // hay que observar el stderr de un proceso aparte.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seal-nogit-'));
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } });
+  const modulo = path.resolve(__dirname, '..', 'qa-evidence-seal.js');
+  const guion = 'const m = require(process.argv[1]);'
+    + ' try { m.deriveHead(process.argv[2]); } catch (e) { process.stdout.write(String(e.reason)); }';
+  const salida = spawnSync(process.execPath, ['-e', guion, modulo, dir], { encoding: 'utf8' });
+  assert.equal(salida.stdout, 'head-invalido');
+  // git imprime "fatal: not a git repository (or any of the parent directories)"
+  // en su stderr; con stdio ignorado no debe llegar nada al sink del pipeline.
+  assert.equal(salida.stderr, '', `git filtró su stderr al sink: ${JSON.stringify(salida.stderr)}`);
 });
 
 test('un motivo desconocido degrada a sellado-invalido en vez de viajar al log', t => {

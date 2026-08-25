@@ -66,8 +66,14 @@ function resolveConfined(root, issue, declaredPath) {
 function deriveHead(cwd) {
   let output;
   try {
+    // #6495 (rebote de seguridad): `execFileSync` manda el stderr del hijo al
+    // stderr del padre por default, así que un `fatal: ...` de git escribía en
+    // el mismo sink SIN pasar por sanitizeLogField. Se descarta: el único dato
+    // que este módulo necesita es el stdout, y el motivo ya es categórico
+    // ('head-invalido').
     output = execFileSync('git', ['-C', cwd, 'rev-parse', 'HEAD'], {
       encoding: 'utf8', timeout: 10000, windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
   } catch {
     throw new SealError('head-invalido');
@@ -135,18 +141,33 @@ function artifactSpec(value) {
 }
 
 // #6495 (rebote de seguridad) — El campo de evidencia lo escribe el YAML del
-// agente QA: es entrada hostil y NO puede llegar cruda a un sink de log. Se
-// corrigen dos defectos del sanitizado anterior:
-//   1. Inyección de log: un CR/LF en la ruta declarada partía el mensaje en dos
-//      líneas y permitía forjar entradas ("[INFO] sellado aprobado por operador").
-//   2. Fuga de topología: la normalización sólo cubría drive letters de Windows
-//      (`C:\...`), así que una ruta absoluta POSIX (`/var/lib/...`) se emitía
-//      entera.
-// La política es fail-closed y CATEGÓRICA: toda ruta absoluta —Windows, UNC o
-// POSIX— y todo valor con caracteres de control se reemplazan ENTEROS por un
-// marcador. Nunca se emite una porción del valor original.
+// agente QA: es entrada hostil y NO puede llegar cruda a un sink de log.
+//
+// El sanitizado es por ALLOWLIST, no por denylist. El denylist ya se mostró
+// insuficiente dos veces sobre este mismo sink:
+//   1. Cubría sólo drive letters de Windows (`C:\...`), así que toda ruta
+//      absoluta POSIX (`/var/lib/...`) o UNC se emitía entera, y un CR/LF en la
+//      ruta partía el mensaje en dos líneas permitiendo forjar entradas
+//      ("[INFO] sellado aprobado por operador").
+//   2. Aun cerrando CR/LF y los controles C0/C1 quedaban afuera tres clases:
+//      la coerción de valores no string (`{ruta: ['ok','/var/lib/secreto']}`
+//      pasaba por String() y quedaba `ok,/var/lib/secreto`, que ya no empieza
+//      con `/` y esquivaba el marcador), los overrides bidireccionales
+//      (U+202E invierte visualmente el resto de la línea para el operador) y el
+//      envenenamiento dentro de una sola línea (`x) sellado OK campo=(y`).
+//
+// Una ruta legítima de evidencia vive confinada en `qa/evidence/<issue>/` y sólo
+// necesita `[A-Za-z0-9._-]`, `/` y el `*` del glob. Todo lo demás —espacios,
+// `:`, backslash, paréntesis, `=`, comas, bidi, cualquier no-ASCII— se
+// reemplaza ENTERO por un marcador categórico. Nunca se emite una porción del
+// valor original: un escape parcial es exactamente lo que reabre la inyección.
 const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
+// Marcas bidi/invisibles: no son control C0/C1, pero reescriben la línea que ve
+// el operador, que es el daño concreto que este sanitizado tiene que evitar.
+const BIDI_CHARS = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
 const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
+// Allowlist: el alfabeto mínimo de una ruta de evidencia confinada.
+const SAFE_PATH_CHARS = /^[A-Za-z0-9._\-/*]+$/;
 const MAX_LOG_FIELD_CHARS = 120;
 
 // Los motivos son literales internos, pero el sink no confía en eso: sólo se
@@ -159,25 +180,33 @@ const KNOWN_REASONS = new Set([
 
 /**
  * Normaliza un valor controlado por el YAML antes de mandarlo a un log.
- * Garantiza: una sola línea, sin caracteres de control, sin rutas absolutas y
+ * Garantiza: una sola línea, sin caracteres de control ni bidi, sin rutas
+ * absolutas, sin caracteres fuera del alfabeto de una ruta de evidencia y
  * acotado en largo.
+ *
+ * Fail-closed: ante cualquier duda devuelve un marcador categórico ENTERO, no
+ * una versión "limpiada" del valor.
+ *
  * @param {*} value valor declarado por el agente (no confiable)
  * @returns {string} valor seguro para concatenar en una línea de log
  */
 function sanitizeLogField(value) {
   if (value === undefined || value === null) return '';
-  const raw = typeof value === 'string' ? value : String(value);
-  if (raw === '') return '';
+  // Sin coerción: String(['ok','/var/lib/secreto']) producía una línea que
+  // filtraba la ruta absoluta porque el valor unido ya no empieza con `/`.
+  if (typeof value !== 'string') return '<valor-no-textual>';
+  if (value === '') return '';
   // El trim va ANTES del test de ruta: "  /etc/passwd" sigue siendo absoluta,
   // y "\n/etc/passwd" no puede esquivar el marcador por un prefijo en blanco.
-  const trimmed = raw.trim();
+  const trimmed = value.trim();
   if (trimmed === '') return '<ruta-vacia>';
   if (ABSOLUTE_PATH.test(trimmed)) return '<ruta-absoluta>';
-  if (CONTROL_CHARS.test(trimmed)) return '<ruta-no-imprimible>';
+  if (CONTROL_CHARS.test(trimmed) || BIDI_CHARS.test(trimmed)) return '<ruta-no-imprimible>';
+  if (!SAFE_PATH_CHARS.test(trimmed)) return '<ruta-no-representable>';
   const redacted = String(redactSensitive(trimmed));
   // Defensa en profundidad: si la redacción reintrodujera un carácter de
-  // control, el valor entero se descarta igual.
-  if (CONTROL_CHARS.test(redacted)) return '<ruta-no-imprimible>';
+  // control o bidi, el valor entero se descarta igual.
+  if (CONTROL_CHARS.test(redacted) || BIDI_CHARS.test(redacted)) return '<ruta-no-imprimible>';
   if (redacted.length > MAX_LOG_FIELD_CHARS) return `${redacted.slice(0, MAX_LOG_FIELD_CHARS)}<truncado>`;
   return redacted;
 }
