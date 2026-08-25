@@ -17,6 +17,12 @@ const os = require('os');
 const path = require('path');
 
 const slices = require('./lib/dashboard-slices');
+// #6259 (P2 / D-6259-3) — `PIPELINE_DIR_OVERRIDE` es variable COMUN
+// (`isSecurityControlVar` -> false). Este archivo ya restauraba a mano con un
+// par `prevOverride` / `else ... = prevOverride`; se migra al helper compartido
+// en vez de allowlistearlo: una allowlist de una sola entrada que ya cumple el
+// patron nace obsoleta y arranca dando ruido en el guardrail de #6260.
+const { withEnv } = require('./lib/test-helpers/with-env');
 
 // --- Helpers -----------------------------------------------------------------
 
@@ -139,11 +145,10 @@ test('CA-5 — N invocaciones del detector REAL no crean el flag ni mutan estado
     fs.writeFileSync(wavesPath, JSON.stringify({ active_wave: { issues: [{ number: 1 }, { number: 2 }] } }));
     fs.writeFileSync(partialPath, JSON.stringify({ allowed_issues: [1, 2, 9] }));
 
-    const prevOverride = process.env.PIPELINE_DIR_OVERRIDE;
-    process.env.PIPELINE_DIR_OVERRIDE = dir;
     // Aseguramos el detector REAL (no el fake de tests previos).
     slices._resetDesyncDetector();
     try {
+      withEnv({ PIPELINE_DIR_OVERRIDE: dir }, () => {
         const mtWavesBefore = fs.statSync(wavesPath).mtimeMs;
         const mtPartialBefore = fs.statSync(partialPath).mtimeMs;
 
@@ -159,9 +164,8 @@ test('CA-5 — N invocaciones del detector REAL no crean el flag ni mutan estado
         assert.strictEqual(fs.existsSync(flagPath), false, 'NO debe crearse .desync-detected.flag');
         assert.strictEqual(fs.statSync(wavesPath).mtimeMs, mtWavesBefore, 'waves.json no debe mutar');
         assert.strictEqual(fs.statSync(partialPath).mtimeMs, mtPartialBefore, '.partial-pause.json no debe mutar');
+      });
     } finally {
-        if (prevOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
-        else process.env.PIPELINE_DIR_OVERRIDE = prevOverride;
         try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
 });
@@ -170,16 +174,14 @@ test('CA-4 — waves.json corrupto → desconocido sin crash (detector REAL)', (
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'desync-4375-corrupt-'));
     fs.writeFileSync(path.join(dir, 'waves.json'), '{ esto no es json valido');
     fs.writeFileSync(path.join(dir, '.partial-pause.json'), JSON.stringify({ allowed_issues: [1] }));
-    const prevOverride = process.env.PIPELINE_DIR_OVERRIDE;
-    process.env.PIPELINE_DIR_OVERRIDE = dir;
     slices._resetDesyncDetector();
     try {
+      withEnv({ PIPELINE_DIR_OVERRIDE: dir }, () => {
         const r = slices.desyncStatusSlice({}, {});
         // waves ilegible → readWavesAllowlist null → reason no_waves_yet → desconocido.
         assert.strictEqual(r.estado, 'desconocido');
+      });
     } finally {
-        if (prevOverride === undefined) delete process.env.PIPELINE_DIR_OVERRIDE;
-        else process.env.PIPELINE_DIR_OVERRIDE = prevOverride;
         try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
 });

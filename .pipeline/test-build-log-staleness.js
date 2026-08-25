@@ -27,6 +27,9 @@ const os = require('os');
 const path = require('path');
 
 const staleness = require('./build-log-staleness');
+// #6259 (P2) — `PIPELINE_STALENESS_HOURS` es variable COMUN
+// (`isSecurityControlVar` -> false), asi que va con `withEnv` sincronico.
+const { withEnv } = require('./lib/test-helpers/with-env');
 
 let pass = 0;
 let fail = 0;
@@ -67,35 +70,43 @@ async function test(name, fn) {
 
   // S2 — getStalenessThresholdMs
   await test('S2: getStalenessThresholdMs respeta env, config, y clamp mínimo 5min', () => {
-    // Default sin env ni config
-    delete process.env.PIPELINE_STALENESS_HOURS;
-    const d = staleness.getStalenessThresholdMs();
-    assert.strictEqual(d.hours, staleness.DEFAULT_STALENESS_HOURS);
-    assert.strictEqual(d.clamped, false);
+    // #6259 — este bloque hacia `delete process.env.PIPELINE_STALENESS_HOURS`
+    // a pelo para probar el default: si el proceso heredaba la variable, el test
+    // se la COMIA para siempre (fuga que el probe de ausencia no ve, porque
+    // 'ausente' es justo lo que espera). `withEnv` con `undefined` fuerza la
+    // ausencia durante el test y devuelve el valor heredado al salir.
+    withEnv({ PIPELINE_STALENESS_HOURS: undefined }, () => {
+      const d = staleness.getStalenessThresholdMs();
+      assert.strictEqual(d.hours, staleness.DEFAULT_STALENESS_HOURS);
+      assert.strictEqual(d.clamped, false);
 
-    // Config válido
-    const c = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: 12 } });
-    assert.strictEqual(c.hours, 12);
-    assert.strictEqual(c.clamped, false);
+      // Config válido
+      const c = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: 12 } });
+      assert.strictEqual(c.hours, 12);
+      assert.strictEqual(c.clamped, false);
 
-    // Clamp mínimo: config 0 → elevado a 5min
-    const clamped = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: 0 } });
-    assert.strictEqual(clamped.ms, staleness.MIN_STALENESS_MS);
-    assert.strictEqual(clamped.clamped, true);
+      // Clamp mínimo: config 0 → elevado a 5min
+      const clamped = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: 0 } });
+      assert.strictEqual(clamped.ms, staleness.MIN_STALENESS_MS);
+      assert.strictEqual(clamped.clamped, true);
 
-    // Negativo → default
-    const neg = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: -5 } });
-    assert.strictEqual(neg.hours, staleness.DEFAULT_STALENESS_HOURS);
+      // Negativo → default
+      const neg = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: -5 } });
+      assert.strictEqual(neg.hours, staleness.DEFAULT_STALENESS_HOURS);
 
-    // String inválido → default
-    const bad = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: 'abc' } });
-    assert.strictEqual(bad.hours, staleness.DEFAULT_STALENESS_HOURS);
+      // String inválido → default
+      const bad = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: 'abc' } });
+      assert.strictEqual(bad.hours, staleness.DEFAULT_STALENESS_HOURS);
 
-    // Env pisa config
-    process.env.PIPELINE_STALENESS_HOURS = '6';
-    const e = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: 24 } });
-    assert.strictEqual(e.hours, 6);
-    delete process.env.PIPELINE_STALENESS_HOURS;
+      // Env pisa config.
+      // #6259 (R-5) — antes esto seteaba, asertaba y borraba a mano: si el assert
+      // fallaba, el `delete` nunca corria y la variable se filtraba al resto de la
+      // suite y al proceso. `withEnv` restaura pase lo que pase.
+      withEnv({ PIPELINE_STALENESS_HOURS: '6' }, () => {
+        const e = staleness.getStalenessThresholdMs({ staleness: { build_log_max_age_hours: 24 } });
+        assert.strictEqual(e.hours, 6);
+      });
+    });
   });
 
   // S3 — getMaxResetsPerIssue
