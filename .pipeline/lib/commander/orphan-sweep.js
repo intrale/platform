@@ -29,6 +29,40 @@
 //         ya asentado queda intacto y la hash-chain sigue verificando.
 //
 // -----------------------------------------------------------------------------
+// Los DOS desenlaces terminales (CA-2 + CA-3, "Cambios requeridos" #4).
+//
+// El barrido NO es sólo un detector de huérfanos: es el que CIERRA el ciclo de
+// vida de un `inflight_fallback_completed` que quedó en `delivery_pending`. Por
+// eso emite el evento terminal en LOS DOS desenlaces, no en uno solo:
+//
+//   ┌─ B-13 entrega NO confirmada → HUERFANO  ⇒ { success:false,
+//   │                                             delivery_state:'delivery_failed',
+//   │                                             error_code:'delivered=false' }   (CA-2)
+//   └─ B-12 entrega SÍ confirmada → SANO      ⇒ { success:true,
+//                                                 delivery_state:'delivery_observed' } (CA-3)
+//
+// Si sólo se emitiera el desenlace fallido, un fallback que SÍ se entregó se
+// quedaría en `delivery_pending` para siempre, indistinguible de una entrega sin
+// resolver — que es exactamente el síntoma que #6440 elimina, pero del lado del
+// éxito. Emitirlo también en el éxito es lo que hace que `delivery_pending`
+// signifique "todavía no se sabe" en vez de "no se supo nunca".
+//
+// Qué NO emite, y por qué:
+//   · B-09 `cerro_solo` — ese turno cerró in-process y su desenlace ya lo asentó
+//     el `finally` del propio turno. El barrido de rescate no lo toca (CA-6).
+//   · B-11 `correlacion_directa` / B-14 `correlacion_sin_rastro` — no hay hecho
+//     observado que asentar; afirmar cualquiera de los dos desenlaces sería
+//     afirmar algo no observado (SEC-0/B5).
+//
+// CA-10 sigue intacto: un turno sano produce cero MARCAS DE HUÉRFANO. El evento
+// de éxito no es una marca de huérfano — es el cierre positivo del ciclo, y lleva
+// `success: true` + `delivery_observed` justamente para no poder confundirse.
+//
+// CA-11 vale para AMBOS desenlaces por igual: los dos pasan por el mismo set
+// `yaResueltos` (`readResolvedRefs` sobre el audit encadenado), así que es UN
+// evento por `commander_req_id`, no uno por tick.
+//
+// -----------------------------------------------------------------------------
 // Forma del módulo: NÚCLEO PURO + capa de I/O.
 //
 //   `detectOrphans(...)`  no lee disco, no mira el reloj, no requiere pulpo.js.
@@ -103,6 +137,11 @@ const RESOLVED_EVENT = 'inflight_fallback_delivery_resolved';
 
 // Nombre del emisor, para que el audit distinga quién observó el desenlace.
 const RESOLVED_BY = 'orphan_sweep';
+
+// Razón del veredicto SANO que SÍ produce evento terminal (el desenlace EXITOSO
+// de CA-3). Ver el bloque "Los DOS desenlaces terminales" más abajo: `cerro_solo`
+// (B-09) queda deliberadamente afuera.
+const REASON_ENTREGA_CONFIRMADA = 'entrega_confirmada';
 
 // -----------------------------------------------------------------------------
 // parseReqIdParts — descompone `<chatSeg>-<epochms>[-<suffix>]`.
@@ -232,6 +271,9 @@ function chatIdFromStages(stages) {
 //   B-10 sin saliente encolado .............. HUERFANO       / sin_saliente
 //   B-11 correlation_id === 'directo' ....... NO_VERIFICABLE / correlacion_directa
 //   B-12 outboundStatus 'enviado' ........... SANO           / entrega_confirmada
+//        ^ ÚNICO veredicto SANO que emite evento terminal, y lo emite EXITOSO
+//          (`success:true` + `delivery_observed`) — CA-3. Cierra el
+//          `delivery_pending` del lado del éxito.
 //   B-13 outboundStatus 'fallido'/'encolado'. HUERFANO       / entrega_no_confirmada
 //   B-14 outboundStatus 'unknown' u otro .... NO_VERIFICABLE / correlacion_sin_rastro
 //
@@ -433,6 +475,10 @@ function detectOrphans(args) {
   return {
     resultados,
     huerfanos: resultados.filter((r) => r.verdict === OrphanVerdict.HUERFANO),
+    // CA-3 — el desenlace EXITOSO. SANO por `entrega_confirmada` (B-12) y NADA
+    // más: `cerro_solo` (B-09) cerró in-process y no lo toca el barrido.
+    entregados: resultados.filter((r) => r.verdict === OrphanVerdict.SANO
+      && r.reason === REASON_ENTREGA_CONFIRMADA),
     resumen,
   };
 }
@@ -526,7 +572,7 @@ function runOrphanSweep(opts) {
 
   if (!logDir) {
     _log('[orphan-sweep] sin logDir — barrido no ejecutado');
-    return { ok: false, error: 'sin logDir', resumen: resumenVacio, emitidos: [] };
+    return { ok: false, error: 'sin logDir', resumen: resumenVacio, emitidos: [], emitidosOk: [], emitidosFallidos: [] };
   }
 
   // 1 · Enumerar. SEC-2: un solo syscall con `withFileTypes`.
@@ -536,7 +582,7 @@ function runOrphanSweep(opts) {
   } catch (e) {
     // CA-14 — rastro observable con la causa. NO degrada a "todo sano".
     _log(`[orphan-sweep] no pude enumerar ${logDir}: ${e.message}`);
-    return { ok: false, error: e.message, resumen: resumenVacio, emitidos: [] };
+    return { ok: false, error: e.message, resumen: resumenVacio, emitidos: [], emitidosOk: [], emitidosFallidos: [] };
   }
 
   // 2 · Filtrar por ventana con el `epochms` del NOMBRE, antes de abrir nada.
@@ -580,7 +626,7 @@ function runOrphanSweep(opts) {
   }
 
   // 5 · Núcleo puro.
-  const { resultados, huerfanos, resumen } = detectOrphans({
+  const { resultados, huerfanos, entregados, resumen } = detectOrphans({
     stagesByReq: candidatos,
     historyRaw,
     nowMs,
@@ -590,16 +636,41 @@ function runOrphanSweep(opts) {
     deps: { outboundStatus: deps.outboundStatus },
   });
 
-  // 6 · Emitir el evento TERMINAL por cada huérfano (A3: evento nuevo, jamás
-  //     reescritura del `inflight_fallback_completed` ya asentado).
+  // 6 · Emitir el evento TERMINAL en LOS DOS desenlaces (A3 + CA-2 + CA-3:
+  //     evento nuevo, jamás reescritura del `inflight_fallback_completed` ya
+  //     asentado). Ver el bloque "Los DOS desenlaces terminales" en la cabecera:
+  //     sin la rama de éxito, un fallback que SÍ se entregó queda en
+  //     `delivery_pending` para siempre.
+  //
+  //     Los dos comparten el MISMO `yaResueltos`, así que CA-11 (un evento por
+  //     `commander_req_id`, no uno por tick) vale para ambos por construcción.
+  const terminales = [
+    // CA-2 — entrega no confirmada.
+    ...huerfanos.map((r) => ({
+      r,
+      etiqueta: 'huérfano',
+      payload: { deliveryState: 'delivery_failed', success: false, errorCode: 'delivered=false' },
+    })),
+    // CA-3 — entrega confirmada. `errorCode` ausente a propósito: el appender lo
+    // normaliza a null y un cierre exitoso no tiene código de error.
+    ...entregados.map((r) => ({
+      r,
+      etiqueta: 'entrega confirmada',
+      payload: { deliveryState: 'delivery_observed', success: true },
+    })),
+  ];
+
   const emitidos = [];
+  const emitidosOk = [];
+  const emitidosFallidos = [];
   const emit = typeof deps.noteFallbackDeliveryResolved === 'function'
     ? deps.noteFallbackDeliveryResolved
     : null;
   if (emit) {
-    for (const h of huerfanos) {
+    for (const t of terminales) {
+      const h = t.r;
       if (!h.auditRef) {
-        _log('[orphan-sweep] huérfano sin ref de audit derivable — no se emite evento');
+        _log(`[orphan-sweep] turno (${t.etiqueta}) sin ref de audit derivable — no se emite evento`);
         continue;
       }
       if (yaResueltos.has(h.auditRef)) continue; // CA-11, defensa dentro del run
@@ -608,28 +679,32 @@ function runOrphanSweep(opts) {
           pipelineDir,
           commanderReqId: h.auditRef,      // SEUDONIMIZADO (SEC-4)
           chatId: h.chatId || 'unknown',   // hashFor() internamente
-          deliveryState: 'delivery_failed',
-          success: false,
-          errorCode: 'delivered=false',
+          ...t.payload,
           resolvedBy: RESOLVED_BY,
           now: nowMs,
         });
         yaResueltos.add(h.auditRef);
         emitidos.push(h.auditRef);
+        (t.payload.success === true ? emitidosOk : emitidosFallidos).push(h.auditRef);
       } catch (e) {
-        _log(`[orphan-sweep] no pude asentar el evento terminal: ${e.message}`);
+        _log(`[orphan-sweep] no pude asentar el evento terminal (${t.etiqueta}): ${e.message}`);
       }
     }
   }
 
-  if (resumen.huerfanos > 0 || resumen.no_verificables > 0) {
+  // CA-14 — el barrido deja rastro cuando hay algo que contar. Un barrido que
+  // emitió eventos SIEMPRE lo loguea, incluso si no hubo ningún huérfano: si no,
+  // el cierre exitoso sería invisible y se leería igual que "no pasó nada".
+  if (resumen.huerfanos > 0 || resumen.no_verificables > 0 || emitidos.length > 0) {
     _log(`[orphan-sweep] ventana ${Math.round(windowMs / 3600000)}h: `
       + `${resumen.evaluados} evaluados, ${resumen.huerfanos} huérfano(s) `
-      + `(${emitidos.length} evento(s) nuevo(s)), ${resumen.no_verificables} no verificable(s), `
+      + `(${emitidos.length} evento(s) nuevo(s): ${emitidosFallidos.length} sin entrega, `
+      + `${emitidosOk.length} con entrega confirmada), `
+      + `${resumen.no_verificables} no verificable(s), `
       + `${resumen.sanos} sano(s), ${descartados} fuera de alcance`);
   }
 
-  return { ok: true, resumen, emitidos, resultados, descartados };
+  return { ok: true, resumen, emitidos, emitidosOk, emitidosFallidos, resultados, descartados };
 }
 
 module.exports = {
@@ -640,6 +715,7 @@ module.exports = {
   LEGACY_LIVENESS_MS,
   RESOLVED_EVENT,
   RESOLVED_BY,
+  REASON_ENTREGA_CONFIRMADA,
   // exportados para tests / reuso acotado
   correlationIdFromStages,
   reqIdFromStagesFileName,

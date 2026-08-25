@@ -15,16 +15,22 @@
 //   B-06 boot_actual ............... T-B06  (+ T-CA5 "no se abre")
 //   B-07 legacy_reciente ........... T-B07
 //   B-08 sin_transcripcion ......... T-B08
-//   B-09 cerro_solo ................ T-B09  (CA-6, early-return)
+//   B-09 cerro_solo ................ T-B09  (CA-6, early-return; T-CA3c: no emite)
 //   B-10 sin_saliente .............. T-B10  (huérfano canónico del episodio)
 //   B-11 correlacion_directa ....... T-B11  (R-2)
 //   B-12 entrega_confirmada ........ T-B12  (CA-10, turno sano)
+//                                     T-CA3a/b/d/e: desenlace terminal EXITOSO
 //   B-13 entrega_no_confirmada ..... T-B13  (fallido / encolado)
 //   B-14 correlacion_sin_rastro .... T-B14  (O-1: 'unknown' NO es huérfano)
 //
 // Ramas de la capa de I/O y del parser:
 //   T-CA8   ventana decidida por el nombre ANTES de abrir (lector espiado)
 //   T-CA11  N barridos ⇒ 1 solo evento por commander_req_id
+//   T-CA3a  entrega confirmada ⇒ evento EXITOSO por el camino REAL (runOrphanSweep)
+//   T-CA3b  idempotencia (CA-11) también en la rama de éxito
+//   T-CA3c  `cerro_solo` no emite nada
+//   T-CA3d  `entregados` del núcleo puro = exactamente B-12
+//   T-CA3e  los DOS desenlaces conviven en un mismo barrido
 //   T-CA14  readdirSync que tira ⇒ rastro logueado y sin excepción
 //   T-SEC0  cabecera de etapa FORJADA en el .log no cambia el veredicto
 //   T-SEC1  nombres con `..` / separadores ⇒ descartados
@@ -567,4 +573,164 @@ test('T-WIRING · ejecutarBarridoHuerfanos corre contra el pipeline real sin tir
   assert.equal(typeof r.ok, 'boolean');
   assert.equal(typeof r.resumen.evaluados, 'number');
   assert.ok(Array.isArray(r.emitidos));
+});
+
+// =============================================================================
+// CA-3 · EL DESENLACE TERMINAL **EXITOSO** (rebote rev-1 de `aprobacion`).
+//
+// El review rechazó la primera pasada con evidencia empírica: el loop de emisión
+// iteraba SÓLO `huerfanos`, así que un turno B-12 `entrega_confirmada` se
+// clasificaba SANO y NO emitía nada ⇒ el `delivery_pending` de un fallback que
+// SÍ se entregó no se cerraba nunca, y la rama `success:true` del appender era
+// código muerto sin caller de producción.
+//
+// Estos tests ejercitan el CAMINO REAL (`runOrphanSweep`, la capa que corre en
+// el pulpo), NO el appender directo: ese fue justamente el modo de falla que
+// dejó pasar el escape (un test que prueba que la API acepta el campo, no que
+// exista un camino que lo produzca).
+//
+//   T-CA3a  B-12 vía runOrphanSweep ⇒ evento EXITOSO emitido
+//   T-CA3b  N barridos ⇒ UN solo evento exitoso (CA-11 también en el éxito)
+//   T-CA3c  B-09 `cerro_solo` NO emite (cerró in-process, CA-6)
+//   T-CA3d  núcleo puro: `entregados` es exactamente el conjunto B-12
+//   T-CA3e  huérfano y entrega confirmada conviven en un mismo barrido
+// =============================================================================
+
+// --- T-CA3a -------------------------------------------------------------------
+test('T-CA3a · una entrega confirmada emite el evento terminal EXITOSO por el camino real', () => {
+  conDirTemporal((ctx) => {
+    const reqId = reqIdEn(5 * HORA);
+    // El sustrato EXACTO del rechazo: boot anterior, transcripción + envío con
+    // correlation_id real, SIN etapa `resultado`, y outboundStatus 'enviado'.
+    escribirEtapas(ctx.logDir, reqId, [etapaTranscripcion(BOOT_VIEJO), etapaEnvio('cid-real-1')]);
+
+    const { r, emitidos } = correrIO(ctx, { outboundStatus: () => 'enviado' });
+
+    assert.equal(r.resumen.huerfanos, 0, 'no es un huérfano: la entrega está confirmada');
+    assert.equal(r.resumen.sanos, 1);
+    assert.equal(emitidos.length, 1, 'CA-3: el desenlace exitoso TAMBIÉN emite evento terminal');
+
+    const e = emitidos[0];
+    assert.equal(e.deliveryState, 'delivery_observed', 'estado del ENUM real (R-1)');
+    assert.equal(e.success, true);
+    assert.ok(!e.errorCode, 'un cierre exitoso no lleva código de error');
+    assert.equal(e.resolvedBy, 'orphan_sweep');
+    assert.equal(e.commanderReqId, buildAuditReqRef(reqId));
+    assert.deepEqual(r.emitidosOk, [buildAuditReqRef(reqId)]);
+    assert.deepEqual(r.emitidosFallidos, []);
+    // SEC-4 en la rama de éxito: al emisor va el ref SEUDONIMIZADO, nunca el
+    // `reqId` crudo ni contenido de etapas. El `chatId` crudo sí viaja al
+    // emisor —igual que en la rama de huérfano— porque `noteFallbackDeliveryResolved`
+    // lo hashea con `hashFor()` antes de asentarlo; eso se verifica sobre el
+    // AUDIT en T-CA3b, que es donde SEC-4 aplica de verdad.
+    const serializado = JSON.stringify(e);
+    assert.ok(!serializado.includes(reqId), 'no viaja el reqId crudo');
+    assert.ok(!serializado.includes('etapa'), 'no viaja contenido de etapas');
+  });
+});
+
+// --- T-CA3b -------------------------------------------------------------------
+test('T-CA3b · N barridos sobre una entrega confirmada ⇒ UN solo evento exitoso (CA-11)', () => {
+  conDirTemporal((ctx) => {
+    const reqId = reqIdEn(5 * HORA);
+    escribirEtapas(ctx.logDir, reqId, [etapaTranscripcion(BOOT_VIEJO), etapaEnvio('cid-real-2')]);
+
+    // Emisor REAL contra el audit encadenado: la idempotencia del éxito tiene
+    // que salir del mismo precheck que la del fallo, no de un set aparte.
+    const inflight = require('../inflight-fallback');
+    const total = [];
+    for (let i = 0; i < 4; i++) {
+      const { r } = correrIO(ctx, {
+        outboundStatus: () => 'enviado',
+        emit: (o) => { total.push(o); return inflight.noteFallbackDeliveryResolved(o); },
+      });
+      assert.equal(r.ok, true);
+    }
+
+    assert.equal(total.length, 1, `emitió ${total.length} eventos exitosos en 4 barridos`);
+
+    const audit = require('../../audit-log');
+    const file = sweep.auditDayFiles(ctx.pipelineDir, NOW, ORPHAN_WINDOW_MS)
+      .find((f) => fs.existsSync(f));
+    const entradas = audit.readAll(file)
+      .filter((e) => e.event === sweep.RESOLVED_EVENT && e.commander_req_id === buildAuditReqRef(reqId));
+    assert.equal(entradas.length, 1);
+    // El evento asentado es el EXITOSO, con los campos aditivos de #6459.
+    assert.equal(entradas[0].success, true);
+    assert.equal(entradas[0].delivery_state, 'delivery_observed');
+    assert.equal(entradas[0].error_code, null);
+    // SEC-4 · lo que queda ASENTADO no tiene el chat id crudo ni el reqId crudo:
+    // el `chat_id` viaja hasheado y el ref del turno, seudonimizado.
+    const asentado = JSON.stringify(entradas[0]);
+    assert.ok(!asentado.includes(CHAT), 'el chat id crudo no llega al audit');
+    assert.ok(!asentado.includes(reqId), 'el reqId crudo no llega al audit');
+    assert.ok(entradas[0].chat_id_hash, 'el chat id va hasheado');
+    // CA-4: la hash-chain sigue verificando.
+    assert.equal(audit.verifyChain(file).ok, true);
+  });
+});
+
+// --- T-CA3c -------------------------------------------------------------------
+test('T-CA3c · B-09 `cerro_solo` NO emite evento: ese turno cerró in-process (CA-6)', () => {
+  conDirTemporal((ctx) => {
+    const reqId = reqIdEn(5 * HORA);
+    escribirEtapas(ctx.logDir, reqId, [
+      etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH, etapaEnvio('cid-x'), ETAPA_RESULTADO,
+    ]);
+
+    const { r, emitidos } = correrIO(ctx, { outboundStatus: () => 'enviado' });
+
+    assert.equal(r.resumen.sanos, 1);
+    assert.equal(r.resultados[0].verdict, OrphanVerdict.SANO);
+    assert.equal(r.resultados[0].reason, 'cerro_solo');
+    assert.equal(emitidos.length, 0, 'el barrido de rescate no toca un turno que ya asentó `resultado`');
+  });
+});
+
+// --- T-CA3d -------------------------------------------------------------------
+test('T-CA3d · el núcleo puro expone `entregados` = exactamente el conjunto B-12', () => {
+  const confirmado = reqIdEn(4 * HORA, 'aa');
+  const cerroSolo = reqIdEn(5 * HORA, 'bb');
+  const huerfano = reqIdEn(6 * HORA, 'cc');
+  const directo = reqIdEn(7 * HORA, 'dd');
+
+  const r = correr([
+    { reqId: confirmado, stages: [etapaTranscripcion(BOOT_VIEJO), etapaEnvio('cid-ok')] },
+    { reqId: cerroSolo, stages: [etapaTranscripcion(BOOT_VIEJO), etapaEnvio('cid-ok'), ETAPA_RESULTADO] },
+    { reqId: huerfano, stages: [etapaTranscripcion(BOOT_VIEJO)] },
+    { reqId: directo, stages: [etapaTranscripcion(BOOT_VIEJO), etapaEnvio('directo')] },
+  ], { outboundStatus: () => 'enviado' });
+
+  assert.deepEqual(r.entregados.map((x) => x.reqId), [confirmado],
+    'sólo B-12 entra: ni `cerro_solo`, ni el huérfano, ni la correlación directa');
+  assert.deepEqual(r.huerfanos.map((x) => x.reqId), [huerfano]);
+  // CA-10: el sano NO produce marca de huérfano (que es cosa distinta del
+  // evento de cierre exitoso).
+  assert.ok(!r.huerfanos.some((x) => x.reqId === confirmado));
+});
+
+// --- T-CA3e -------------------------------------------------------------------
+test('T-CA3e · un barrido con huérfano y entrega confirmada emite los DOS desenlaces', () => {
+  conDirTemporal((ctx) => {
+    const confirmado = reqIdEn(4 * HORA, 'aa');
+    const huerfano = reqIdEn(6 * HORA, 'cc');
+    escribirEtapas(ctx.logDir, confirmado, [etapaTranscripcion(BOOT_VIEJO), etapaEnvio('cid-ok')]);
+    escribirEtapas(ctx.logDir, huerfano, [etapaTranscripcion(BOOT_VIEJO)]);
+
+    const { r, emitidos } = correrIO(ctx, { outboundStatus: () => 'enviado' });
+
+    assert.equal(emitidos.length, 2);
+    const porRef = new Map(emitidos.map((e) => [e.commanderReqId, e]));
+    const ok = porRef.get(buildAuditReqRef(confirmado));
+    const ko = porRef.get(buildAuditReqRef(huerfano));
+
+    assert.equal(ok.success, true);
+    assert.equal(ok.deliveryState, 'delivery_observed');
+    assert.equal(ko.success, false);
+    assert.equal(ko.deliveryState, 'delivery_failed');
+    assert.equal(ko.errorCode, 'delivered=false', 'CA-2: distinguible de `empty_output`');
+
+    assert.deepEqual(r.emitidosOk, [buildAuditReqRef(confirmado)]);
+    assert.deepEqual(r.emitidosFallidos, [buildAuditReqRef(huerfano)]);
+  });
 });
