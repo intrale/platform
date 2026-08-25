@@ -3,10 +3,22 @@ name: PR Checks
 on:
   pull_request:
     branches: [ main, develop ]
+  # Corrida programada diaria sobre main (issue #6579): el suite e2e-qa esta
+  # condicionado por paths que casi nunca cambian, asi que se salteaba en
+  # silencio y la deuda recien explotaba contra el primer PR desprevenido.
+  # Esta corrida lo ejecuta completo todos los dias y expone el estado real.
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC / 03:00 ART — fuera de hora pico
+  # Permite validar a mano el mismo camino que usa el cron sin esperar 24h.
+  workflow_dispatch:
 
 jobs:
   # ── Detectar qué módulos cambiaron ──────────────────────────────
   detect-changes:
+    # dorny/paths-filter necesita un base ref de PR para comparar. En schedule
+    # o workflow_dispatch no lo hay, asi que el job no corre y los que dependen
+    # de el resuelven sus outputs a cadena vacia.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
@@ -285,10 +297,17 @@ jobs:
   # ── E2E QA Tests ──────────────────────────────────────────────
   e2e-qa:
     needs: detect-changes
+    # !cancelled() es obligatorio: sin el, este job se saltea automaticamente
+    # cuando detect-changes queda skipped (schedule / workflow_dispatch),
+    # que es justo el caso que el issue #6579 quiere cubrir.
     if: |
-      needs.detect-changes.outputs.backend == 'true' ||
-      needs.detect-changes.outputs.users == 'true' ||
-      needs.detect-changes.outputs.shared == 'true'
+      !cancelled() && (
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.detect-changes.outputs.backend == 'true' ||
+        needs.detect-changes.outputs.users == 'true' ||
+        needs.detect-changes.outputs.shared == 'true'
+      )
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -439,6 +458,41 @@ jobs:
           QA_BASE_URL: http://localhost:80
         run: ./gradlew :qa:test --info
 
+      # Issue #6579 (CA-2 / CA-3): el suite no puede quedar en verde escondiendo
+      # que parte de el no corre. Este paso enumera la cuarentena declarada y el
+      # conteo real de la corrida, para que la corrida programada reporte el
+      # estado honesto del suite y no solo "0 failures".
+      - name: Reporte de cuarentena y estado real del suite E2E
+        if: always()
+        shell: bash
+        run: |
+          echo "===== Tests E2E en cuarentena declarada (issue #6579) ====="
+          if grep -rq '@Disabled' qa/src/test/kotlin; then
+            grep -rn -A3 '@Disabled(' qa/src/test/kotlin
+          else
+            echo "(ninguna anotacion @Disabled en qa/src/test/kotlin)"
+          fi
+          echo
+          echo "Issues de deuda que reactivan la cuarentena:"
+          echo "  #6580 — Implementar el endpoint de resumen del dashboard de negocio"
+          echo "  #6581 — Productos y categorias rechazan con 401 un token valido en el CI"
+          echo "Al cerrarse cada uno hay que quitar su @Disabled y dejar las pruebas en verde."
+          echo
+          echo "===== Estado real de la corrida ====="
+          RESULTS_DIR="qa/build/test-results/test"
+          if ls "$RESULTS_DIR"/*.xml >/dev/null 2>&1; then
+            sum() { grep -ho "$1=\"[0-9]*\"" "$RESULTS_DIR"/*.xml | grep -o '[0-9][0-9]*' | awk '{s+=$1} END {print s+0}'; }
+            TOTAL=$(sum tests); SKIPPED=$(sum skipped); FAILURES=$(sum failures); ERRORS=$(sum errors)
+            RUN=$(( TOTAL - SKIPPED ))
+            echo "  ejecutados : $RUN"
+            echo "  en verde   : $(( RUN - FAILURES - ERRORS ))"
+            echo "  en rojo    : $(( FAILURES + ERRORS ))"
+            echo "  cuarentena : $SKIPPED  (pendientes conocidos, NO cuentan como aprobados)"
+            echo "  declarados : $TOTAL"
+          else
+            echo "  (sin resultados XML: el suite no llego a ejecutarse)"
+          fi
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -458,8 +512,10 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+      # Solo en pull_request: en schedule/workflow_dispatch github.head_ref viene
+      # vacio, y el push terminaria fallando o empujando evidencias a main.
       - name: Collect and commit QA evidence
-        if: always()
+        if: always() && github.event_name == 'pull_request'
         run: |
           bash qa/scripts/collect-evidence.sh
           git config user.name "github-actions[bot]"
@@ -475,27 +531,58 @@ jobs:
     if: always()
     steps:
       - name: Verify all checks passed
+        shell: bash
         run: |
-          echo "== PR Check Results =="
-          echo "verify-strings: ${{ needs.verify-strings.result }}"
-          echo "check-backend:  ${{ needs.check-backend.result }}"
-          echo "check-users:    ${{ needs.check-users.result }}"
-          echo "check-app:      ${{ needs.check-app.result }}"
-          echo "check-tools:    ${{ needs.check-tools.result }}"
-          echo "e2e-qa:         ${{ needs.e2e-qa.result }}"
+          # Issue #6579 (CA-4): un job "skipped" nunca corrio, asi que no puede
+          # contabilizarse como check aprobado. No lo tratamos como fallo — un PR
+          # de documentacion pura debe poder mergear, tal como pide el escenario
+          # Gherkin — pero se reporta aparte para que nadie lea "OK" y asuma que
+          # el suite se ejecuto.
+          declare -a PASSED=() SKIPPED=() BROKEN=()
 
-          # Un job skipped es OK (no hubo cambios en ese módulo)
-          # Un job con failure o cancelled es un error
-          for result in \
-            "${{ needs.verify-strings.result }}" \
-            "${{ needs.check-backend.result }}" \
-            "${{ needs.check-users.result }}" \
-            "${{ needs.check-app.result }}" \
-            "${{ needs.check-tools.result }}" \
-            "${{ needs.e2e-qa.result }}"; do
-            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
-              echo "FAILED: al menos un check falló o fue cancelado"
-              exit 1
-            fi
-          done
-          echo "OK: todos los checks pasaron o fueron skipped correctamente"
+          classify() {
+            local name="$1" result="${2:-skipped}"
+            echo "  $(printf '%-16s' "$name") $result"
+            case "$result" in
+              success) PASSED+=("$name") ;;
+              skipped) SKIPPED+=("$name") ;;
+              *)       BROKEN+=("$name ($result)") ;;
+            esac
+          }
+
+          echo "== PR Check Results =="
+          classify "verify-strings" "${{ needs.verify-strings.result }}"
+          classify "check-backend"  "${{ needs.check-backend.result }}"
+          classify "check-users"    "${{ needs.check-users.result }}"
+          classify "check-app"      "${{ needs.check-app.result }}"
+          classify "check-tools"    "${{ needs.check-tools.result }}"
+          classify "e2e-qa"         "${{ needs.e2e-qa.result }}"
+          echo
+
+          if [ ${#BROKEN[@]} -gt 0 ]; then
+            echo "FAILED: al menos un check fallo o fue cancelado:"
+            for b in "${BROKEN[@]}"; do echo "  - $b"; done
+            exit 1
+          fi
+
+          echo "APROBADOS     (${#PASSED[@]}): ${PASSED[*]:-ninguno}"
+          if [ ${#SKIPPED[@]} -gt 0 ]; then
+            echo "NO EJECUTADOS (${#SKIPPED[@]}): ${SKIPPED[*]}"
+            echo "  ^ quedaron en 'skipped': NO se contabilizan como checks aprobados."
+          fi
+
+          if [ "${{ needs.e2e-qa.result }}" != "success" ]; then
+            echo
+            echo "AVISO: e2e-qa NO aporto un resultado aprobado (estado: ${{ needs.e2e-qa.result }})."
+            echo "       El estado real del suite E2E se valida en la corrida programada"
+            echo "       diaria sobre main (este mismo workflow, evento schedule)."
+          fi
+
+          if [ ${#PASSED[@]} -eq 0 ]; then
+            echo
+            echo "ATENCION: ningun check se ejecuto. El gate no bloquea, pero tampoco hay"
+            echo "          evidencia de verificacion automatica en este PR."
+          fi
+
+          echo
+          echo "GATE OK: ${#PASSED[@]} aprobado(s), ${#SKIPPED[@]} no ejecutado(s), 0 en rojo."
