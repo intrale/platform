@@ -90,6 +90,7 @@ const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
 const visualCoverageRecorder = require('./lib/visual-coverage-recorder');
+const qaEvidenceSeal = require('./lib/qa-evidence-seal');
 // #3383 — Gate visual pre-promoción build→verificacion. Default OFF
 // (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
 const visualGate = require('./lib/visual-gate');
@@ -11498,6 +11499,44 @@ ${g}
         }
       }
 
+      // #6495: el gate valida primero; recién entonces el Pulpo deriva el sello
+      // desde los bytes en ROOT y el HEAD del worktree vivo en spawnCwd. Si el
+      // sellado degrada el veredicto, el recorder de #5708 se autoexcluye.
+      if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
+        try {
+          const sealResult = qaEvidenceSeal.sealQaVerdict({
+            root: ROOT, issue, data, cwd: spawnCwd,
+          });
+          if (!sealResult.sealed) {
+            const reason = sealResult.reason || 'sellado-invalido';
+            const messages = {
+              traversal: 'La ruta de evidencia declarada por QA sale del recinto permitido',
+              'fuera-de-recinto': 'La evidencia declarada por QA no es accesible dentro del recinto permitido',
+              'no-regular': 'La evidencia declarada por QA no es un archivo regular',
+              vacio: 'La evidencia declarada por QA está vacía',
+              oversize: 'La evidencia declarada por QA supera el tamaño permitido',
+              'head-invalido': 'No se pudo determinar el commit del worktree de QA',
+              'glob-vacio': 'El patrón de evidencia declarado por QA no produjo artefactos',
+              'hash-divergente': 'La copia de evidencia no coincide con su hash canónico',
+              'campos-oversize': 'QA declaró más campos de evidencia que el límite permitido',
+              'glob-oversize': 'El patrón de evidencia produjo más archivos que el límite permitido',
+            };
+            data.resultado = 'rechazado';
+            data.motivo = `${messages[reason] || 'No se pudo derivar un sello confiable para la evidencia de QA'} (${reason}).`;
+            data.rechazado_por = 'gate-sellado-evidencia';
+            sendTelegram(`⛔ QA:#${issue} — ${data.motivo}`);
+          } else {
+            log('lanzamiento', `QA:#${issue} selló ${sealResult.manifest.artefactos.length} artefacto(s) contra HEAD ${sealResult.manifest.head.slice(0, 8)}…`);
+          }
+        } catch (sealErr) {
+          data.resultado = 'rechazado';
+          data.motivo = 'No se pudo derivar un sello confiable para la evidencia de QA (sellado-invalido).';
+          data.rechazado_por = 'gate-sellado-evidencia';
+          log('lanzamiento', `QA:#${issue} falló sellado de evidencia: ${redactSecretValue(sealErr.message)}`);
+          sendTelegram(`⛔ QA:#${issue} — ${data.motivo}`);
+        }
+      }
+
       // #5708: una aprobación visual también es una pasada auditable y debe
       // quedar como baseline antes de mover el work-file. El reporte se lanza
       // sólo para rechazos, así que no puede ser dueño exclusivo del store.
@@ -11516,6 +11555,9 @@ ${g}
           log('lanzamiento', `⚠️ QA:#${issue} falló persistencia de cobertura visual aprobada: ${coverageErr.message}`);
         }
       }
+
+      // El sello y el baseline se persisten juntos antes del rename atómico a listo/.
+      if (skill === 'qa' && fase === 'verificacion') writeYaml(workingPath, data);
 
       // Solo movemos si el archivo sigue en trabajando/. Si ya estaba en listo/
       // (contrato viejo), el move lo completó el agente.
