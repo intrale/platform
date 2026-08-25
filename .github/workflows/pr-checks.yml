@@ -4,6 +4,18 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+# Privilegio minimo para TODO el workflow (#6362).
+# El default del repositorio esta en write sobre todos los scopes y con
+# aprobacion de PRs habilitada; sin este bloque, los jobs que compilan y
+# ejecutan codigo del PR (e2e-qa corre ./gradlew, plugins y dependencias
+# transitivas) heredarian ese privilegio -> Poisoned Pipeline Execution
+# (CICD-SEC-4). Ningun job de este workflow usa GITHUB_TOKEN: solo
+# checkout/setup-java/setup-gradle/cache/paths-filter/upload-artifact.
+# 'contents: read' alcanza para los actions/checkout@v4.
+# Cubierto por .pipeline/tests/pr-checks-workflow.test.js
+permissions:
+  contents: read
+
 jobs:
   # ── Detectar qué módulos cambiaron ──────────────────────────────
   detect-changes:
