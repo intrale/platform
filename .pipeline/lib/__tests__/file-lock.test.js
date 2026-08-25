@@ -538,3 +538,121 @@ test('checkStillOwned: reconoce nuestro propio lock y detecta cuando ya no lo te
         assert.equal(lock._internal.checkStillOwned(target).owned, false);
     } finally { rmrf(target); }
 });
+
+// ─── #6145 (2da vuelta) — "no pude leer el lock" NO es "me lo robaron" ───────
+//
+// Rebote del tester: `toctou-claim-slot.test.js` falló dentro de la suite
+// completa con `perdedor con razón inesperada: THROW:ELOCK_STOLEN`. Causa raíz:
+// `readLockMeta` colapsaba "archivo ausente" y "lectura fallida por I/O
+// transitorio" en el mismo `null`, y `checkStillOwned` leía ese `null` como
+// prueba de robo. Bajo fork-storm (~375 archivos de test) `readFileSync` sobre
+// el lock falla de formas transitorias en Windows igual que `process.kill`.
+
+// Fuerza a `readFileSync` a fallar con `code` para el path de lock indicado.
+function conLecturaFallando(lockPath, code, veces, fn) {
+    const orig = fs.readFileSync;
+    let restantes = veces;
+    fs.readFileSync = (p, ...rest) => {
+        if (String(p) === lockPath && restantes > 0) {
+            restantes--;
+            const e = new Error(`lectura transitoria simulada (${code})`);
+            e.code = code;
+            throw e;
+        }
+        return orig(p, ...rest);
+    };
+    try { return fn(); } finally { fs.readFileSync = orig; }
+}
+
+test('readLockMeta distingue lock ausente (null) de lock ilegible (_unreadable)', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        assert.equal(lock._internal.readLockMeta(lockPath), null, 'ausente ⇒ null');
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const meta = conLecturaFallando(lockPath, 'EBUSY', 1, () => lock._internal.readLockMeta(lockPath));
+        assert.ok(meta && meta._unreadable === true, 'error transitorio ⇒ _unreadable');
+        assert.equal(meta.code, 'EBUSY');
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('checkStillOwned: una lectura transitoria fallida NO se reporta como robo', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        // Falla la primera sonda; la segunda lee bien ⇒ propiedad confirmada.
+        const st = conLecturaFallando(lockPath, 'EPERM', 1, () => lock._internal.checkStillOwned(target));
+        assert.equal(st.owned, true);
+        assert.notEqual(st.unverified, true, 'debe confirmarse con la re-sonda, no quedar sin verificar');
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('checkStillOwned: si TODAS las sondas fallan, asume conservado y marca unverified', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const st = conLecturaFallando(lockPath, 'UNKNOWN', 99, () => lock._internal.checkStillOwned(target));
+        assert.equal(st.owned, true, 'no verificable ⇒ NO es robo');
+        assert.equal(st.unverified, true);
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('withLockSync: un fallo transitorio de lectura al salir NO tira ELOCK_STOLEN', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        let notificado = null;
+        const r = conLecturaFallando(lockPath, 'EACCES', 99, () => lock.withLockSync(
+            target,
+            () => 'trabajo-ok',
+            { timeoutMs: 1000, notify: (p) => { notificado = p; } },
+        ));
+        assert.equal(r, 'trabajo-ok');
+        assert.equal(notificado, null, 'no debe alertar robo por una sonda que no pudo leer');
+        // El lock se libera igual (no queda colgado bloqueando el control plane).
+        assert.equal(fs.existsSync(lockPath), false, 'el lock debe liberarse aunque la sonda falle');
+    } finally { rmrf(target); }
+});
+
+test('withLockSync: el robo PROBADO sigue tirando ELOCK_STOLEN (no se relajó la capa 3)', () => {
+    const target = mkTmpFile();
+    try {
+        assert.throws(() => lock.withLockSync(target, () => {
+            fs.unlinkSync(target + '.lock');
+            fs.writeFileSync(target + '.lock', JSON.stringify({
+                pid: 515151, startTime: '2026-01-01T00:00:00.000Z', hostname: 'ladron', version: '1.0',
+            }));
+        }, { timeoutMs: 1000 }), (err) => err.code === 'ELOCK_STOLEN' && err.holder.pid === 515151);
+        try { fs.unlinkSync(target + '.lock'); } catch {}
+    } finally { rmrf(target); }
+});
+
+test('isStale: un lock ilegible por I/O transitorio NUNCA se declara stale', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const meta = { _unreadable: true, code: 'EBUSY' };
+        assert.equal(lock._internal.isStale(meta, lockPath), false);
+        // Y el lock sobrevive a un acquire de un contendiente que lee mal:
+        // sin la guarda, `pid` indefinido caía en la rama de "PID muerto".
+        assert.equal(fs.existsSync(lockPath), true);
+        lock.releaseLock(target);
+    } finally { rmrf(target); }
+});
+
+test('releaseLock: reintenta la sonda y libera aunque la primera lectura falle', () => {
+    const target = mkTmpFile();
+    const lockPath = target + '.lock';
+    try {
+        lock.acquireLockSync(target, { timeoutMs: 1000 });
+        const liberado = conLecturaFallando(lockPath, 'EBUSY', 1, () => lock.releaseLock(target));
+        assert.equal(liberado, true);
+        assert.equal(fs.existsSync(lockPath), false);
+    } finally { rmrf(target); }
+});

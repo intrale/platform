@@ -169,8 +169,17 @@ function defineTests() {
 
     assert.equal(winners.length, 1, `exactamente un proceso debe ganar el rename (ganaron ${winners.length})`);
     assert.equal(losers.length, N - 1, 'el resto debe perder');
+    // Razones legítimas de NO reclamar. Además de perder el rename
+    // (`ENOENT`/`EEXIST`), un contendiente puede no llegar a garantizar la
+    // sección crítica bajo saturación de CPU: `ELOCK_TIMEOUT` (no consiguió el
+    // lock dentro del presupuesto) o `ELOCK_STOLEN` (la propiedad no quedó
+    // probada al salir). En ambos casos `claimByRename` NO reclama y devuelve
+    // el motivo — nunca propaga la excepción al caller (#6145). El invariante
+    // que importa, exactamente-una-vez, se sigue verificando arriba.
+    const RAZONES_OK = ['ENOENT', 'EEXIST', 'ELOCK_TIMEOUT', 'ELOCK_STOLEN'];
     for (const l of losers) {
-      assert.ok(['ENOENT', 'EEXIST'].includes(l.reason), `perdedor con razón inesperada: ${l.reason}`);
+      assert.ok(!String(l.reason).startsWith('THROW:'), `claimByRename no debe propagar excepciones: ${l.reason}`);
+      assert.ok(RAZONES_OK.includes(l.reason), `perdedor con razón inesperada: ${l.reason}`);
     }
 
     // El archivo canónico ya NO está (lo tiene el ganador como *.claimed-<pid>).
@@ -293,6 +302,87 @@ function defineTests() {
     assert.ok(!fs.existsSync(orphan), 'el huérfano redundante se descarta');
     assert.equal(res.discarded, 1, 'debe descartar exactamente 1');
     assert.equal(res.restored, 0, 'no debe restaurar ninguno');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // ===========================================================================
+  // Suite 5 — #6145: claimByRename NUNCA propaga fallas de la capa de lock
+  // ===========================================================================
+  //
+  // Rebote del tester: un perdedor de la carrera salió con
+  // `THROW:ELOCK_STOLEN`. Además de corregir la causa raíz en `file-lock`
+  // (una lectura transitoria fallida no es prueba de robo), `claimByRename`
+  // debe degradar cualquier falla del lock a `claimed: false` — el caller
+  // (`pulpo.js` reencolando candidatos) trata la excepción como error fatal del
+  // tick y abortaría el reencolado de todos los candidatos restantes.
+
+  for (const code of ['ELOCK_TIMEOUT', 'ELOCK_STOLEN']) {
+    test(`claimByRename devuelve claimed:false ante ${code} en vez de propagar`, () => {
+      const dir = mkTmpDir('toctou-lockfail-');
+      const target = path.join(dir, '6145.pipeline-dev');
+      fs.writeFileSync(target, 'issue: 6145\n');
+
+      const flFake = {
+        withLockSync: () => {
+          const e = new Error(`falla simulada de la capa de lock (${code})`);
+          e.code = code;
+          throw e;
+        },
+      };
+
+      const r = slotClaim.claimByRename(target, process.pid, { fl: flFake });
+      assert.equal(r.claimed, false);
+      assert.equal(r.reason, code);
+      assert.ok(fs.existsSync(target), 'el work file sigue visible al scan');
+
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+  }
+
+  test('claimByRename: si le roban el lock DESPUES del rename, deshace el claim', () => {
+    const dir = mkTmpDir('toctou-lockundo-');
+    const target = path.join(dir, '6146.pipeline-dev');
+    fs.writeFileSync(target, 'issue: 6146\n');
+
+    // El fake ejecuta la sección crítica (el rename ocurre) y recién después
+    // falla la verificación de propiedad, como haría `withLockSync` real.
+    const flFake = {
+      withLockSync: (filePath, fn) => {
+        fn();
+        const e = new Error('propiedad no probada al salir');
+        e.code = 'ELOCK_STOLEN';
+        throw e;
+      },
+    };
+
+    const r = slotClaim.claimByRename(target, process.pid, { fl: flFake });
+    assert.equal(r.claimed, false, 'sin exclusión probada NO se reclama');
+    assert.equal(r.reason, 'ELOCK_STOLEN');
+    assert.ok(fs.existsSync(target), 'el nombre canónico debe restaurarse');
+    assert.equal(
+      fs.readdirSync(dir).filter((f) => slotClaim.CLAIM_RE.test(f)).length,
+      0,
+      'no debe quedar un *.claimed-<pid> sin dueño',
+    );
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('claimByRename: un error ajeno a la capa de lock SI se propaga', () => {
+    const dir = mkTmpDir('toctou-lockother-');
+    const target = path.join(dir, '6147.pipeline-dev');
+    fs.writeFileSync(target, 'issue: 6147\n');
+
+    const flFake = {
+      withLockSync: () => {
+        const e = new Error('disco lleno');
+        e.code = 'ENOSPC';
+        throw e;
+      },
+    };
+
+    assert.throws(() => slotClaim.claimByRename(target, process.pid, { fl: flFake }), /disco lleno/);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });

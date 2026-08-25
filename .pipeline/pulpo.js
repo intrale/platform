@@ -1327,7 +1327,14 @@ function reencolarInfraBloqueados(config) {
     const claim = slotClaim.claimByRename(c.path, process.pid);
     if (!claim.claimed) {
       // Otro proceso/tick lo reclamó primero — saltar, no contar como error.
-      log('precheck', `#${c.issue} ya reclamado por otro proceso (${claim.reason}), salteando reencolado`);
+      // #6145: `claimByRename` tambien degrada las fallas de la capa de lock a
+      // `claimed:false` (ELOCK_TIMEOUT / ELOCK_STOLEN) para no abortar el
+      // reencolado de los candidatos restantes. Se distingue en el log porque
+      // no es lo mismo "otro lo tomo" que "no pude garantizar la exclusion".
+      const porLock = claim.reason === 'ELOCK_TIMEOUT' || claim.reason === 'ELOCK_STOLEN';
+      log('precheck', porLock
+        ? `#${c.issue} sin exclusion garantizada (${claim.reason}), salteando reencolado — reintenta el proximo tick`
+        : `#${c.issue} ya reclamado por otro proceso (${claim.reason}), salteando reencolado`);
       continue;
     }
     try {

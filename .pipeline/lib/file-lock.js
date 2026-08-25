@@ -43,6 +43,13 @@
 // `ELOCK_STOLEN` en vez de reportar éxito sobre una escritura posiblemente
 // pisada. Fail-closed: preferimos perder el write a corromper en silencio.
 //
+// La verificación sólo acusa robo cuando puede PROBARLO: lock ausente (ENOENT)
+// u otro holder declarado en un meta legible. Una lectura que falla por I/O
+// transitorio NO es prueba — se reintenta y, si sigue sin poder leerse, se
+// asume conservado. Colapsar "no pude leer" en "me lo robaron" producía
+// `ELOCK_STOLEN` espurios bajo fork-storm (mismo catch-all que se corrigió en
+// `isPidAlive`).
+//
 // Política de reintentos (security req #2)
 // -----------------------------------------
 //   timeout: 5000ms total (boundary primaria — el loop termina cuando se
@@ -100,6 +107,13 @@ const STALE_AGE_MS = 60 * 1000; // 60s — umbral de stale post-PID-reuse
 // dentro del presupuesto de timeout (5s default, 15s en waves), y un lock de
 // milisegundos nunca se roba por una lectura dudosa.
 const DEAD_PID_GRACE_MS = 2000;
+// #6145 (2da vuelta) — Sondas de verificación de propiedad al salir de la
+// sección crítica. Una lectura del lock que falla por I/O transitorio no puede
+// tratarse como robo (ver `checkStillOwned`); se reintenta un puñado de veces
+// con una espera mínima antes de declarar "no verificable". 3 × 20ms es
+// despreciable frente al costo de un ELOCK_STOLEN espurio.
+const OWNERSHIP_PROBE_ATTEMPTS = 3;
+const OWNERSHIP_PROBE_DELAY_MS = 20;
 const POSIX_LOCK_MODE = 0o600;   // -rw-------
 const LOCK_CONTENTION_CODES = new Set(['EEXIST', 'EBUSY', 'EPERM', 'EACCES']);
 
@@ -232,10 +246,22 @@ function atomicCreateLock(lockPath, meta) {
 }
 
 /**
- * Intenta leer + parsear el contenido del lock. Devuelve null si:
- *   - el archivo no existe (ENOENT)
- *   - el contenido no es JSON válido
- *   - el shape no matchea (pid faltante, no-objeto, etc.)
+ * Intenta leer + parsear el contenido del lock.
+ *
+ * Tres respuestas posibles, DELIBERADAMENTE distinguibles (#6145, 2da vuelta):
+ *   - `null`                       → el archivo NO existe (ENOENT). Es una
+ *                                    PRUEBA: el lock ya no está.
+ *   - `{ _unreadable: true, code }` → el archivo existe (o eso creemos) pero la
+ *                                    lectura falló por un error transitorio
+ *                                    (EBUSY/EPERM/EACCES/EMFILE/UNKNOWN…). NO
+ *                                    prueba nada: "no pude preguntar".
+ *   - `{ _corrupt: true }`          → se leyó pero el contenido no es un meta
+ *                                    válido (JSON roto, sin pid, archivo vacío).
+ *
+ * Por qué importa la distinción: colapsar "no pude leer" en `null` hacía que un
+ * fallo transitorio de I/O en Windows se interpretara como "el lock desapareció"
+ * y `checkStillOwned` lo reportara como ROBO (ELOCK_STOLEN espurio). Es el mismo
+ * catch-all que se corrigió en `isPidAlive`, replicado en la capa de lectura.
  */
 function readLockMeta(lockPath) {
     let raw;
@@ -244,7 +270,7 @@ function readLockMeta(lockPath) {
     } catch (err) {
         if (err && err.code === 'ENOENT') return null;
         logWarn(`No se pudo leer lock ${lockPath}: ${err.message}`);
-        return null;
+        return { _unreadable: true, code: (err && err.code) || 'UNKNOWN' };
     }
     let parsed;
     try {
@@ -340,6 +366,11 @@ function readLockAgeMs(lockPath) {
  */
 function isStale(meta, lockPath) {
     if (!meta) return false;
+    // #6145 (2da vuelta) — "no pude leer el lock" NUNCA es evidencia de stale.
+    // Sin esta guarda, un `_unreadable` (pid indefinido) caía en la rama de
+    // "PID muerto" e íbamos a unlinkear el lock de un holder vivo por un error
+    // transitorio de I/O. Fail-closed: si no puedo preguntar, respeto el lock.
+    if (meta._unreadable) return false;
     if (meta._corrupt) {
         // CRÍTICO: distinguir "lock corrupto antiguo" de "lock recién creado
         // sin contenido todavía". Hay una ventana entre `openSync('wx')` y
@@ -613,30 +644,67 @@ async function acquireLock(filePath, opts) {
  * política correcta para el control plane: preferimos perder el write a
  * corromper el estado en silencio.
  *
- * Es CONSERVADOR: sólo reporta robo cuando puede PROBARLO (el lock no está, o
- * declara a otro holder). Si el lock no se puede leer por un error transitorio,
- * `readLockMeta` ya devuelve `_corrupt` y lo tratamos como robo sólo porque a
- * esta altura nuestro propio meta debería estar ahí íntegro.
+ * Es CONSERVADOR: sólo reporta robo cuando puede PROBARLO. Hay exactamente dos
+ * pruebas admisibles (#6145, 2da vuelta — rebote del tester):
  *
- * @returns {{ owned: boolean, reason?: string, holder?: object }}
+ *   1. El archivo de lock NO existe (ENOENT confirmado).
+ *   2. El archivo de lock existe, es legible, y declara a OTRO holder.
+ *
+ * Todo lo demás — lectura fallida por error transitorio (`_unreadable`) o
+ * contenido ilegible (`_corrupt`) — es "no pude preguntar", NO evidencia de
+ * robo, y se reintenta un puñado de veces antes de rendirse. Si al final sigue
+ * sin poder verificarse, devolvemos `owned: true, unverified: true`: la sonda
+ * falló, no la exclusión mutua.
+ *
+ * Por qué: la versión anterior colapsaba ambos casos ambiguos en "robado". Bajo
+ * fork-storm de la suite completa (~375 archivos de test), `readFileSync` sobre
+ * el lock falla de formas transitorias en Windows exactamente igual que
+ * `process.kill(pid, 0)` — y el resultado era un `ELOCK_STOLEN` espurio que
+ * volteaba a un caller sano (síntoma: `claim-by-rename` con un perdedor
+ * `THROW:ELOCK_STOLEN` en vez de `ENOENT`/`EEXIST`). Un falso robo rompe un
+ * proceso que hizo todo bien; el costo de no detectar un robo real que la sonda
+ * no puede leer ya está cubierto por las capas 1 y 2.
+ *
+ * @returns {{ owned: boolean, unverified?: boolean, reason?: string, holder?: object }}
  */
-function checkStillOwned(filePath) {
+function checkStillOwned(filePath, opts = {}) {
     const lockPath = lockPathOf(filePath);
-    const meta = readLockMeta(lockPath);
-    if (!meta) {
-        return { owned: false, reason: 'el archivo de lock desapareció mientras lo teníamos', holder: null };
+    const probes = Number.isInteger(opts.probes) && opts.probes > 0
+        ? opts.probes
+        : OWNERSHIP_PROBE_ATTEMPTS;
+    const delayMs = opts.probeDelayMs != null ? opts.probeDelayMs : OWNERSHIP_PROBE_DELAY_MS;
+    let ambiguo = null;
+
+    for (let i = 0; i < probes; i++) {
+        const meta = readLockMeta(lockPath);
+        if (meta === null) {
+            // PRUEBA 1: el lock ya no está.
+            return { owned: false, reason: 'el archivo de lock desapareció mientras lo teníamos', holder: null };
+        }
+        if (!meta._corrupt && !meta._unreadable) {
+            if (meta.pid === process.pid && meta.startTime === PROCESS_START_ISO) {
+                return { owned: true };
+            }
+            // PRUEBA 2: hay otro holder declarado.
+            return {
+                owned: false,
+                reason: `el lock fue tomado por otro holder (pid=${meta.pid}, host=${meta.hostname || '?'})`,
+                holder: meta,
+            };
+        }
+        // Ambiguo (`_unreadable` / `_corrupt`) → reintentar la sonda.
+        ambiguo = meta;
+        if (i < probes - 1) sleepSync(delayMs);
     }
-    if (meta._corrupt) {
-        return { owned: false, reason: 'el archivo de lock quedó ilegible mientras lo teníamos', holder: null };
-    }
-    if (meta.pid === process.pid && meta.startTime === PROCESS_START_ISO) {
-        return { owned: true };
-    }
-    return {
-        owned: false,
-        reason: `el lock fue tomado por otro holder (pid=${meta.pid}, host=${meta.hostname || '?'})`,
-        holder: meta,
-    };
+
+    const causa = ambiguo && ambiguo._unreadable
+        ? `no se pudo leer el lock (${ambiguo.code})`
+        : 'el lock quedó ilegible';
+    logWarn(
+        `Propiedad del lock ${lockPath} NO verificable tras ${probes} sondas: ${causa}. `
+        + 'Se asume conservado (la sonda falló, no la exclusión mutua).',
+    );
+    return { owned: true, unverified: true, reason: causa };
 }
 
 /**
@@ -673,9 +741,19 @@ function assertStillOwned(filePath, component, opts) {
 
 function releaseLock(filePath) {
     const lockPath = lockPathOf(filePath);
-    const meta = readLockMeta(lockPath);
+    let meta = readLockMeta(lockPath);
+    // #6145 (2da vuelta) — Una lectura transitoria fallida no debe dejar el lock
+    // colgado: un lock con meta válido de un PID vivo NUNCA se declara stale, así
+    // que no liberarlo deadlockearía el control plane hasta el reinicio. Se
+    // reintenta la sonda y recién después se cae al camino best-effort.
+    for (let i = 0; meta && meta._unreadable && i < OWNERSHIP_PROBE_ATTEMPTS - 1; i++) {
+        sleepSync(OWNERSHIP_PROBE_DELAY_MS);
+        meta = readLockMeta(lockPath);
+    }
     if (!meta) return false;
-    if (meta._corrupt) {
+    if (meta._corrupt || meta._unreadable) {
+        // Llegamos acá sólo como holder no reentrante: el lock es nuestro con
+        // altísima probabilidad y dejarlo colgado es peor que borrarlo.
         try { fs.unlinkSync(lockPath); } catch {}
         return true;
     }
@@ -755,6 +833,8 @@ module.exports = {
         readLockAgeMs,
         checkStillOwned,
         DEAD_PID_GRACE_MS,
+        OWNERSHIP_PROBE_ATTEMPTS,
+        OWNERSHIP_PROBE_DELAY_MS,
         lockPathOf,
         PROCESS_START_ISO,
         LOCK_SCHEMA_VERSION,
