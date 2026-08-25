@@ -18,11 +18,30 @@
 // en POSIX y Windows. Si dos procesos llegan a la vez, solo uno gana — el otro
 // recibe `EEXIST` y reintenta con backoff.
 //
-// Stale detection (security req #1, requiere las DOS condiciones)
+// Stale detection (security req #1 + #6145)
 // ----------------------------------------------------------------
-//   (a) PID no existe (process.kill(pid, 0) tira ESRCH), O
-//   (b) el archivo de lock tiene > 60s de antigüedad Y la heurística
-//       (process.kill(0)+startTime) sugiere que el PID fue reciclado.
+// Reclamar un lock ajeno es ROBARLO: si el holder sigue vivo, los dos procesos
+// escriben sobre la misma base y uno pisa al otro en silencio. Por eso las tres
+// ramas de reclamo son conservadoras y ninguna reclama por una sola señal:
+//
+//   (a) PID no existe (sonda ESRCH) Y el lock tiene > DEAD_PID_GRACE_MS (2s)
+//       Y una SEGUNDA sonda lo confirma. Éste es el camino de recuperación
+//       tras un crash del holder.
+//   (b) lock ilegible/vacío (`_corrupt`) Y > 60s de antigüedad — un lock vacío
+//       más joven se asume "creación en curso" (#3735).
+//   (c) PID vive PERO el lock tiene > 60s Y la heurística (startTime) sugiere
+//       que el PID fue reciclado.
+//
+// La sonda de PID es FAIL-CLOSED (#6145): sólo ESRCH prueba que el proceso no
+// existe; cualquier otro código de error significa "no pude preguntar" y se
+// asume vivo. Ver el comentario largo en `isPidAlive()`.
+//
+// Verificación de salida (#6145)
+// ------------------------------
+// `withLock`/`withLockSync` comprueban al terminar `fn()` que el lock sigue
+// siendo nuestro. Si no lo es, la exclusión mutua fue violada y tiran
+// `ELOCK_STOLEN` en vez de reportar éxito sobre una escritura posiblemente
+// pisada. Fail-closed: preferimos perder el write a corromper en silencio.
 //
 // Política de reintentos (security req #2)
 // -----------------------------------------
@@ -241,10 +260,16 @@ function readLockMeta(lockPath) {
 }
 
 /**
- * Verifica si un PID está vivo. En POSIX usa `process.kill(pid, 0)`.
- * En Windows también funciona (Node mapea a OpenProcess + check).
- * Devuelve true si vive, false si ESRCH, throws (defensivo) si EPERM
- * (vive pero no podemos señalarlo — lo tratamos como vivo para no romper).
+ * Verifica si un PID está vivo con `process.kill(pid, 0)` (en Windows Node lo
+ * mapea a OpenProcess + check).
+ *
+ * FAIL-CLOSED (#6145): sólo `ESRCH` prueba que el proceso no existe. Cualquier
+ * otro código de error (EPERM, EACCES, ENOMEM, EMFILE, EINVAL, UNKNOWN…)
+ * significa "la sonda no pudo responder" y devuelve `true`. Un falso "vivo"
+ * sólo retrasa la recuperación de un lock huérfano; un falso "muerto" le roba
+ * el lock a un holder activo y corrompe el estado en silencio.
+ *
+ * @returns {boolean} true si vive o no se pudo determinar; false sólo con ESRCH.
  */
 function isPidAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -297,8 +322,9 @@ function readLockAgeMs(lockPath) {
  * Devuelve true si el lock referenciado por `meta` se considera stale.
  *
  * Requiere ambas condiciones (security req #1):
- *   - meta._corrupt === true, O
- *   - (PID no vive), O
+ *   - meta._corrupt === true Y el lock tiene > STALE_AGE_MS (#3735), O
+ *   - (PID no vive Y el lock tiene > DEAD_PID_GRACE_MS Y una segunda sonda lo
+ *     confirma — #6145), O
  *   - (PID vive PERO el lock tiene > STALE_AGE_MS Y startTime no matchea
  *     uno de los procesos activos plausibles — heurística para PID reciclado).
  *
