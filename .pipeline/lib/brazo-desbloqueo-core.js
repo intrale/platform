@@ -30,6 +30,8 @@
 
 'use strict';
 
+const { PR_PROVENANCE_FIELDS, checkPrProvenance } = require('./pr-provenance');
+
 const CLOSED = 'CLOSED';
 
 /**
@@ -135,9 +137,40 @@ function selectHumanBlocksToRelease({ markers, issueStates } = {}) {
   return { toRelease, blocked };
 }
 
+function selectMergeRaceBlocksToReclaim({ markers, prStates, ledger, maxAttempts = 3 } = {}) {
+  const toReclaim = [], toDegrade = [], skipped = [];
+  const states = prStates && typeof prStates === 'object' ? prStates : {};
+  const attemptsByIssue = ledger && typeof ledger === 'object' ? ledger : {};
+  const required = [...PR_PROVENANCE_FIELDS, 'state', 'mergeStateStatus', 'headRefOid', 'headRefName', 'labels'];
+  const skip = (marker, reason) => skipped.push({ marker, reason });
+  for (const marker of Array.isArray(markers) ? markers : []) {
+    const pc = marker && marker.precondition;
+    if (!pc || pc.type !== 'merge_checks_race') continue;
+    if (!Number.isInteger(pc.pr) || pc.pr <= 0 || !/^[0-9a-f]{40}$/.test(pc.head_sha || '')) { skip(marker, 'precondicion_invalida'); continue; }
+    const pr = states[pc.pr];
+    if (!pr || required.some((field) => pr[field] === undefined)) { skip(marker, 'pr_incompleto'); continue; }
+    const provenance = checkPrProvenance(pr, { repo: 'intrale/platform' });
+    if (!provenance.ok) { skip(marker, `procedencia:${provenance.reason}`); continue; }
+    const head = typeof pr.headRefOid === 'string' ? pr.headRefOid.toLowerCase() : '';
+    if (!/^[0-9a-f]{40}$/.test(head) || head !== pc.head_sha) { skip(marker, 'head_movido'); continue; }
+    if (pr.state !== 'OPEN') { skip(marker, 'pr_no_abierto'); continue; }
+    if (!['CLEAN', 'UNSTABLE'].includes(pr.mergeStateStatus)) { skip(marker, 'pr_no_mergeable'); continue; }
+    const branch = /^agent\/(\d+)-/.exec(pr.headRefName || '');
+    if (!branch || Number(branch[1]) !== Number(marker.issue)) { skip(marker, 'rama_ajena'); continue; }
+    const labels = pr.labels.map((label) => typeof label === 'string' ? label : label && label.name);
+    if (!labels.includes('qa:passed')) { skip(marker, 'qa_no_aprobado'); continue; }
+    const entry = attemptsByIssue[String(Number(marker.issue))];
+    const samePair = entry && Number(entry.pr) === pc.pr && String(entry.head_sha || '').toLowerCase() === pc.head_sha;
+    if (samePair && (entry.degraded === true || Number(entry.attempts || 0) >= maxAttempts)) { toDegrade.push(marker); continue; }
+    toReclaim.push(marker);
+  }
+  return { toReclaim, toDegrade, skipped };
+}
+
 module.exports = {
   selectMarkersToRelease,
   selectHumanBlocksToRelease,
+  selectMergeRaceBlocksToReclaim,
   allDepsClosed,
   depKey,
   CLOSED,

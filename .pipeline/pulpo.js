@@ -314,6 +314,7 @@ const workfileName = require('./lib/workfile-name');
 const brazoBarridoCore = require('./lib/brazo-barrido-core');
 const brazoLanzamientoCore = require('./lib/brazo-lanzamiento-core');
 const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
+const mergeRaceLedger = require('./lib/merge-race-reclaim-ledger');
 // #4368 — transición automática de ola (detector fail-closed + orquestador
 // notify/auto). Gated por config.wave_auto_transition (default OFF + notify).
 const waveAutoTransition = require('./lib/wave-auto-transition');
@@ -4144,7 +4145,13 @@ function brazoBarrido(config) {
             // decisión). Opcionales: undefined/null si el agente no los emite.
             paths: Array.isArray(r.paths) ? r.paths : null,
             source: (typeof r.source === 'string' && r.source) || null,
+            precondicion_merge_checks:
+              (pipelineName === 'desarrollo' && faseRechazo === 'entrega'
+                && skillFromFile(r.file.name) === 'delivery' && Number(r.issue) === Number(issue)
+                && r.precondicion_merge_checks && typeof r.precondicion_merge_checks === 'object')
+                ? r.precondicion_merge_checks : null,
           }));
+          const circuitPrecondition = humanBlock.classifyPrecondition(motivosClasificados, [], { issue });
           const esReboteDeInfra = motivosClasificados.length > 0
             && motivosClasificados.every(m => m.clasificacion === 'infra');
 
@@ -4429,7 +4436,7 @@ function brazoBarrido(config) {
                 for (const n of (det.dependsOn || [])) hintDeps.push(n);
               }
             }
-            const precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps);
+            const precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps, { issue });
 
             // Dedup: si ya hay marker activo en bloqueado-humano/ no spamear.
             const yaBloqueado = humanBlock.findBlockedMarker(issue);
@@ -4711,6 +4718,7 @@ function brazoBarrido(config) {
             escalarACircuitBreaker({
               issue, skill: skillInfra, phase: fase, pipeline: pipelineName,
               reason: motivoInfra, archivos, faseRechazo, kind: 'infra',
+              precondition: circuitPrecondition,
             });
             continue;
           }
@@ -4727,6 +4735,7 @@ function brazoBarrido(config) {
             escalarACircuitBreaker({
               issue, skill: skillCorte, phase: fase, pipeline: pipelineName,
               reason: motivoCorte, archivos, faseRechazo, kind: 'generico',
+              precondition: circuitPrecondition,
             });
             continue;
           }
@@ -7479,6 +7488,7 @@ function escalarACircuitBreaker(opts, deps) {
     hb.reportHumanBlock({
       issue: issueNum, skill: skillBloq, phase, pipeline,
       reason: motivoTxt, question: preguntaTxt, moveFromActive: false,
+      precondition: opts.precondition,
     });
     markerOk = true;
   } catch (e) {
@@ -21006,6 +21016,72 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
   }
 }
 
+function runReclaimChild({ issue, pr, headSha, timeoutMs, spawnImpl = spawn }) {
+  return new Promise((resolve) => {
+    let settled = false, out = '';
+    const finish = (value) => { if (settled) return; settled = true; resolve(value); };
+    const child = spawnImpl(process.execPath, [
+      path.join(PIPELINE, 'skills-deterministicos', 'delivery.js'), '--reclaim',
+      `--pr=${pr}`, `--issue=${issue}`, `--head-sha=${headSha}`,
+    ], { cwd: REPO_ROOT, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', (d) => { out += d; });
+    const timer = setTimeout(() => { try { child.kill(); } catch {} finish({ ok: false, status: 'timeout' }); }, timeoutMs);
+    timer.unref?.();
+    child.on('exit', (code) => {
+      clearTimeout(timer); let parsed = null;
+      try { parsed = JSON.parse(out.trim().split(/\r?\n/).pop()); } catch {}
+      finish({ ok: code === 0 && parsed && parsed.status === 'merged', status: parsed && parsed.status, sha: parsed && parsed.sha });
+    });
+    child.on('error', () => { clearTimeout(timer); finish({ ok: false, status: 'spawn_error' }); });
+  });
+}
+
+async function reapMergeChecksRaceBlocks({ allowlistSet, config, ghCall = ghDesbloqueoCall, spawnImpl = spawn } = {}) {
+  const cfg = config && config.brazo && config.brazo.reclaim_merge_race;
+  if (!cfg || cfg.enabled !== true || cfg.kill_switch === true) return;
+  let markers = humanBlock.listBlockedIssues().filter((m) => m.precondition && m.precondition.type === 'merge_checks_race');
+  if (allowlistSet) markers = markers.filter((m) => allowlistSet.has(String(m.issue)));
+  if (markers.length === 0) return;
+  const prStates = {};
+  for (const marker of markers) {
+    ghThrottle();
+    try {
+      const fields = 'number,url,labels,headRefName,isCrossRepository,headRepositoryOwner,state,mergeStateStatus,headRefOid';
+      const { stdout } = await ghCall(['pr', 'view', String(marker.precondition.pr), '--json', fields, '--repo', 'intrale/platform'], 30000);
+      prStates[marker.precondition.pr] = JSON.parse(stdout);
+    } catch (e) { log('desbloqueo', `[merge-race] #${marker.issue} PR ilegible: ${e.message}`); }
+  }
+  const ledger = mergeRaceLedger.readLedger();
+  const decision = brazoDesbloqueoCore.selectMergeRaceBlocksToReclaim({ markers, prStates, ledger, maxAttempts: cfg.max_attempts });
+  for (const marker of decision.toDegrade) {
+    mergeRaceLedger.markDegraded({ issue: marker.issue, pr: marker.precondition.pr, head_sha: marker.precondition.head_sha });
+    try {
+      const reasonFile = `${marker.marker_path}.reason.json`;
+      const meta = JSON.parse(fs.readFileSync(reasonFile, 'utf8'));
+      meta.precondition = { type: 'human_judgment' };
+      fs.writeFileSync(reasonFile, JSON.stringify(meta, null, 2));
+    } catch (e) { log('desbloqueo', `[merge-race] no se pudo degradar #${marker.issue}: ${e.message}`); }
+  }
+  for (const marker of decision.toReclaim) {
+    const pc = marker.precondition;
+    const counted = mergeRaceLedger.recordAttempt({ issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha });
+    if (!counted) { log('desbloqueo', `[merge-race] #${marker.issue} ledger no persistido; no se intenta`); continue; }
+    const result = await runReclaimChild({ issue: marker.issue, pr: pc.pr, headSha: pc.head_sha, timeoutMs: cfg.child_timeout_ms, spawnImpl });
+    if (!result.ok) continue;
+    const unblocked = humanBlock.unblockIssue({ issue: marker.issue, unlocker: 'brazo-desbloqueo:merge-race', guidance: 'Reclaim de merge confirmado por los gates de delivery.' });
+    if (!unblocked || !unblocked.ok) continue;
+    const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente'); fs.mkdirSync(ghQueueDir, { recursive: true });
+    encolarOrdenGithub(path.join(ghQueueDir, `${marker.issue}-remove-needs-human-${Date.now()}.json`), {
+      action: 'remove-label', issue: Number(marker.issue), label: humanBlock.NEEDS_HUMAN_LABEL,
+      guardrail_authorized: true, authorized_by: 'brazo-desbloqueo:merge-race-confirmed',
+    });
+    fs.writeFileSync(path.join(ghQueueDir, `${marker.issue}-merge-race-comment-${Date.now()}.json`), JSON.stringify({
+      action: 'comment', issue: Number(marker.issue), body: `## Reclaim automático confirmado\n\nEl PR #${pc.pr} fue reevaluado por los gates completos de delivery y el merge quedó confirmado (${String(result.sha || '').slice(0, 7)}). El pipeline retiró needs-human.`,
+    }));
+    try { sendTelegram(`Issue #${marker.issue}: reclaim automático del PR #${pc.pr} confirmado.`); } catch {}
+  }
+}
+
 async function brazoDesbloqueoImpl(config) {
   // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
   // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
@@ -21021,6 +21097,7 @@ async function brazoDesbloqueoImpl(config) {
   // ningún blocked:dependencies el barrido retorna, pero los needs-human de
   // precondición igual deben re-evaluarse cada ciclo).
   await reapStaleHumanBlocks({ allowlistSet });
+  await reapMergeChecksRaceBlocks({ allowlistSet, config });
 
   try {
     // 1. Buscar issues abiertos con label blocked:dependencies
@@ -23135,6 +23212,8 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #4707 — circuit breaker escalante (fail-closed): cap configurable + helper único.
     resolveRebotesMax,
     escalarACircuitBreaker,
+    reapMergeChecksRaceBlocks,
+    runReclaimChild,
     // #2957 — counter de fase build expuesto para tests del filtro por allowlist.
     countPendingBuild,
     // #3059 — wrapper robusto + watchdog del brazo de desbloqueo (testing).

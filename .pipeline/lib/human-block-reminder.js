@@ -142,6 +142,7 @@ function evaluateReminders({ now, blocked, state } = {}) {
 
     for (const b of list) {
         if (!b) continue;
+        if (b.precondition && b.precondition.type === 'merge_checks_race') continue;
         const issue = Number(b.issue);
         if (!Number.isFinite(issue)) continue;
         const key = String(issue);

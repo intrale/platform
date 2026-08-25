@@ -137,7 +137,7 @@ function updateMarker(trabajandoPath, payload) {
         const appended = [];
         for (const [k, v] of Object.entries(payload)) {
             if (v === null || v === undefined) continue;
-            const val = typeof v === 'string' ? JSON.stringify(v) : String(v);
+            const val = (typeof v === 'string' || (v && typeof v === 'object')) ? JSON.stringify(v) : String(v);
             appended.push(`${k}: ${val}`);
         }
         fs.writeFileSync(trabajandoPath, [...kept, ...appended].join('\n') + '\n', 'utf8');
@@ -575,6 +575,36 @@ function getPRSnapshot(prNumber, { ghImpl = git.runGh, cwd = WORK_DIR, logAppend
 // campo devuelto por GitHub.
 function buildRequiredChecksReader({ cwd = WORK_DIR, repo = EXPECTED_PR_REPO, baseBranch = MERGE_BASE_BRANCH } = {}) {
     return requiredChecks.createRequiredChecksReader({ cwd, repo, baseBranch });
+}
+
+function reclaimMergeWithGates({ prNumber, issueTitle, expectedHeadSha, cwd = REPO_ROOT, logAppend = () => {} } = {}) {
+    return attemptMergeWithGates({
+        prNumber,
+        logAppend,
+        maxAttempts: 1,
+        sleepImpl: () => {},
+        maxMergeabilityWaits: 0,
+        maxChecksWaits: 0,
+        mergeChecksTimeoutMs: 0,
+        requiredChecksReader: buildRequiredChecksReader({ cwd }),
+        getSnapshot: (n) => {
+            const snapshot = getPRSnapshot(n, { cwd, logAppend });
+            const observed = snapshot && typeof snapshot.headRefOid === 'string' ? snapshot.headRefOid.toLowerCase() : '';
+            if (expectedHeadSha && observed !== expectedHeadSha) return { ...snapshot, ok: false, error: 'head movido desde el escalado' };
+            return snapshot;
+        },
+        loadOwners: () => codeowners.loadCodeownersFromRef(cwd, OWNERS_REF),
+        verifyOrigin: (branchName) => {
+            try { return verifyRemoteBranchOrigin(cwd, branchName); }
+            catch (e) { return { ok: false, reason: `excepcion: ${((e && e.message) || '').slice(0, 120)}` }; }
+        },
+        mergePR: ({ prNumber: n, sha }) => git.runGh([
+            'api', '-X', 'PUT', `repos/{owner}/{repo}/pulls/${n}/merge`,
+            '-f', 'merge_method=squash',
+            '-f', `commit_title=${issueTitle || `reclaim PR #${n}`} (#${n})`,
+            '-f', `sha=${sha}`,
+        ], { cwd, timeoutMs: 3 * 60 * 1000 }),
+    });
 }
 
 function applyNeedsHumanLabel(issue, prNumber, owners, repoRoot) {
@@ -1684,6 +1714,7 @@ async function main() {
     // tener que adivinarlo parseando `motivo` (misma regla que aplica el
     // dashboard: el estado se lee de campos, nunca de prosa).
     let gateBlocked = false;
+    let preconditionHint = null;
 
     const phaseStart = () => Date.now();
     const phaseEnd = (key, t0) => { phases[key] = Date.now() - t0; };
@@ -2178,17 +2209,14 @@ async function main() {
                 phaseEnd('pr_merge', t);
                 return; // finally: marker con motivo human-block → NO rebota, escala a needs-human
             } else if (outcome.status === 'transient') {
-                // #6012 CA-10 — GitHub nunca terminó de calcular la
-                // mergeabilidad. NO es conflicto y NO se escala: se rebota como
-                // error técnico, acotado por el circuit breaker de 3 rebotes
-                // (que es el tope explícito que pide CA-10 — no se re-encola sin
-                // rev++, eso esquivaría el breaker y ciclaría quemando cuota).
-                // #6431 CA-18/SEC-12 — El `throw` (y con el, el rebote tecnico
-                // acotado por el circuit breaker de 3) SE QUEDA. Mientras #6432
-                // no exista, ese rebote es la unica red que mantiene visible un
-                // BLOCKED real: sacarlo seria perdida neta de observabilidad
-                // frente al estado actual, no el fix.
+                // #6012/#6431/#6432: conserva el rebote técnico acotado y, para
+                // checks pendientes, deja el hint que habilita el rescate posterior.
                 const causaTransient = outcome.causa === 'checks-pending' ? 'checks-pending' : 'mergeability-unknown';
+                const hintedSha = outcome.snapshot && typeof outcome.snapshot.headRefOid === 'string'
+                    ? outcome.snapshot.headRefOid.trim().toLowerCase() : '';
+                if (causaTransient === 'checks-pending' && Number.isInteger(prNumber) && /^[0-9a-f]{40}$/.test(hintedSha)) {
+                    preconditionHint = { pr: prNumber, head_sha: hintedSha };
+                }
                 logAppend(causaTransient === 'checks-pending'
                     ? `[delivery] gh api merge → estado transitorio (${outcome.checksWaits} esperas, checks requeridos sin reportar) — rebote técnico, sin escalar al operador`
                     : `[delivery] gh api merge → estado transitorio (${outcome.waits} esperas, mergeStateStatus=UNKNOWN) — rebote técnico, sin escalar al operador`);
@@ -2282,6 +2310,7 @@ async function main() {
             delivery_duration_ms: totalMs,
             delivery_phases: JSON.stringify(phases),
             delivery_mode: 'deterministic',
+            precondicion_merge_checks: preconditionHint,
         });
 
         trace.emitSessionEnd(handle, {
@@ -2302,7 +2331,21 @@ async function main() {
 }
 
 if (require.main === module) {
-    if (process.argv.includes('--self-check')) {
+    if (process.argv.includes('--reclaim')) {
+        const values = Object.fromEntries(process.argv.slice(2).map((a) => {
+            const m = a.match(/^--([\w-]+)=(.*)$/); return m ? [m[1], m[2]] : [a, true];
+        }));
+        const prNumber = Number(values.pr);
+        const issue = Number(values.issue);
+        const headSha = typeof values['head-sha'] === 'string' ? values['head-sha'].trim().toLowerCase() : '';
+        if (!Number.isInteger(prNumber) || prNumber <= 0 || !Number.isInteger(issue) || issue <= 0 || !/^[0-9a-f]{40}$/.test(headSha)) {
+            process.stderr.write('[delivery] argumentos --reclaim invalidos\n');
+            process.exit(2);
+        }
+        const outcome = reclaimMergeWithGates({ prNumber, issueTitle: `Issue #${issue}`, expectedHeadSha: headSha, cwd: REPO_ROOT });
+        process.stdout.write(JSON.stringify({ status: outcome.status, sha: outcome.sha || null, gate: outcome.gate || null, reason: outcome.reason || null }) + '\n');
+        process.exit(outcome.status === 'merged' ? 0 : 1);
+    } else if (process.argv.includes('--self-check')) {
         const { runSelfCheck } = require('./lib/self-check');
         runSelfCheck('delivery', [
             { name: 'parseArgs sin argumentos', fn: () => {
@@ -2349,6 +2392,7 @@ module.exports = {
     startHeartbeat,
     readMarker,
     updateMarker,
+    reclaimMergeWithGates,
     fetchIssueTitle,
     findExistingPR,
     getPRLabels,

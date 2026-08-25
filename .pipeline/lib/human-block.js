@@ -29,6 +29,7 @@ const { isRecommendationIssue, normalizeLabelNames } = require('./recommendation
 // #6190 — fuente única del copy del aviso de bloqueo. Este módulo NO redacta
 // texto para el operador: le pide la ficha a `decision-card` y la dibuja.
 const decisionCard = require('./decision-card');
+const mergeRaceLedger = require('./merge-race-reclaim-ledger');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const PIPELINES = ['desarrollo', 'definicion'];
@@ -243,6 +244,14 @@ const HUMAN_JUDGMENT = { type: 'human_judgment' };
  */
 function normalizePrecondition(pc) {
     if (!pc || typeof pc !== 'object') return { ...HUMAN_JUDGMENT };
+    if (pc.type === 'merge_checks_race') {
+        const pr = Number(pc.pr);
+        const head_sha = typeof pc.head_sha === 'string' ? pc.head_sha.trim().toLowerCase() : '';
+        if (typeof pc.pr !== 'number' || !Number.isInteger(pr) || pr <= 0 || !/^[0-9a-f]{40}$/.test(head_sha)) {
+            return { ...HUMAN_JUDGMENT };
+        }
+        return { type: 'merge_checks_race', pr, head_sha };
+    }
     if (pc.type !== 'dependency') return { ...HUMAN_JUDGMENT };
     const raw = Array.isArray(pc.depends_on) ? pc.depends_on : [];
     const seen = new Set();
@@ -272,7 +281,7 @@ function normalizePrecondition(pc) {
  * @param {Array<string|number>} [extraDeps]  deps ya validadas por hint estructural.
  * @returns {{type:'dependency',depends_on:number[]}|{type:'human_judgment'}}
  */
-function classifyPrecondition(rechazados, extraDeps = []) {
+function classifyPrecondition(rechazados, extraDeps = [], opts = {}) {
     const list = Array.isArray(rechazados) ? rechazados : [];
     const deps = [];
     for (const r of list) {
@@ -283,7 +292,16 @@ function classifyPrecondition(rechazados, extraDeps = []) {
     }
     if (Array.isArray(extraDeps)) for (const v of extraDeps) deps.push(v);
     // normalizePrecondition dedup + ordena + degrada a human_judgment si vacío.
-    return normalizePrecondition({ type: 'dependency', depends_on: deps });
+    const dependency = normalizePrecondition({ type: 'dependency', depends_on: deps });
+    if (dependency.type === 'dependency') return dependency;
+    for (const r of list) {
+        const candidate = normalizePrecondition({ type: 'merge_checks_race', ...(r && r.precondicion_merge_checks) });
+        if (candidate.type !== 'merge_checks_race') continue;
+        const entry = mergeRaceLedger.getEntry(opts.issue);
+        if (entry && entry.degraded === true) return { ...HUMAN_JUDGMENT };
+        return candidate;
+    }
+    return { ...HUMAN_JUDGMENT };
 }
 
 function reportHumanBlock(opts) {
