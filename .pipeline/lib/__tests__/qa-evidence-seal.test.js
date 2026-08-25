@@ -277,6 +277,104 @@ test('deriveHead no deja que el stderr de git escriba en el sink sin sanitizar',
   assert.equal(salida.stderr, '', `git filtró su stderr al sink: ${JSON.stringify(salida.stderr)}`);
 });
 
+// ---------------------------------------------------------------------------
+// #6495 (rebote 2 de seguridad) — Fail-OPEN por tipo del campo de evidencia.
+// `artifactSpec()` devolvía null para lista YAML, null, número y booleano, y
+// ese null caía en el mismo `continue` del centinela: el campo se salteaba en
+// silencio y el sellado seguía con menos artefactos que los declarados.
+// ---------------------------------------------------------------------------
+
+test('PoC del rebote: evidencia como lista + screenshot válido NO puede sellar', t => {
+  const f = fixture(t);
+  const report = f.write('report.md', 'reporte real');
+  const otro = f.write('otro.md', 'otro real');
+  const shot = f.write('shot.png', 'pixeles');
+  const hashReport = `sha256:${crypto.createHash('sha256').update('reporte real').digest('hex')}`;
+  const hashShot = `sha256:${crypto.createHash('sha256').update('pixeles').digest('hex')}`;
+  assert.notEqual(hashReport, hashShot);
+
+  const data = { resultado: 'aprobado', evidencia: [report, otro], screenshot: shot };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+
+  assert.equal(result.sealed, false, 'una lista de evidencia no puede producir sellado');
+  assert.equal(result.reason, 'tipo-invalido');
+  assert.equal(data.sello, undefined, 'no queda manifiesto parcial');
+  // El corazón del rebote: jamás promover el hash de OTRO campo al compat.
+  assert.notEqual(data.evidencia_sha256, hashShot);
+  assert.equal(data.evidencia_sha256, undefined);
+});
+
+test('todo valor de evidencia que no es ruta ni descriptor falla cerrado', t => {
+  const f = fixture(t);
+  const shot = f.write('shot.png', 'pixeles');
+  const hostiles = [
+    ['lista', ['qa/evidence/6258/report.md', 'qa/evidence/6258/otro.md']],
+    ['lista-vacia', []],
+    ['null', null],
+    ['numero', 42],
+    ['booleano', true],
+    ['objeto-sin-ruta', { tipo: 'original' }],
+    ['objeto-ruta-no-textual', { ruta: ['qa/evidence/6258/report.md'] }],
+    ['objeto-ruta-numerica', { ruta: 7 }],
+    ['objeto-tipo-vacio', { ruta: 'qa/evidence/6258/report.md', tipo: '' }],
+    ['objeto-tipo-no-textual', { ruta: 'qa/evidence/6258/report.md', tipo: ['original'] }],
+  ];
+  for (const [nombre, valor] of hostiles) {
+    const data = { resultado: 'aprobado', evidencia: valor, screenshot: shot };
+    const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+    assert.equal(result.sealed, false, `${nombre} selló igual`);
+    assert.equal(result.reason, 'tipo-invalido', `${nombre} falló por otro motivo: ${result.reason}`);
+    assert.equal(data.sello, undefined, `${nombre} dejó manifiesto`);
+    assert.equal(data.evidencia_sha256, undefined, `${nombre} promovió un hash ajeno`);
+  }
+});
+
+test('el centinela textual sigue salteando el campo pero no arrastra el compat', t => {
+  const f = fixture(t);
+  const shot = f.write('shot.png', 'pixeles');
+  const hashShot = `sha256:${crypto.createHash('sha256').update('pixeles').digest('hex')}`;
+  for (const centinela of ['', '-', 'no-aplica', 'N/A', ' null ']) {
+    const data = { resultado: 'aprobado', evidencia: centinela, screenshot: shot, evidencia_sha256: 'a'.repeat(64) };
+    const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+    assert.equal(result.sealed, true, `el centinela ${JSON.stringify(centinela)} no debería frenar el sellado`);
+    assert.deepEqual(result.manifest.artefactos.map(a => a.campo), ['screenshot']);
+    // `evidencia` no produjo artefacto ⇒ el compat se borra, nunca hereda el
+    // hash del screenshot.
+    assert.equal(data.evidencia_sha256, undefined, 'el compat quedó apuntando a otro artefacto');
+    assert.notEqual(data.evidencia_sha256, hashShot);
+    assert.deepEqual(result.descartes, [{ campo: 'evidencia_sha256', declarado: `sha256:${'a'.repeat(64)}`, real: null }]);
+  }
+});
+
+test('sin campo evidencia, el hash de otro campo no se promueve al compat', t => {
+  const f = fixture(t);
+  const data = { resultado: 'aprobado', screenshot: f.write('shot.png', 'pixeles') };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, true);
+  assert.equal(data.evidencia_sha256, undefined);
+  assert.equal(result.manifest.artefactos.length, 1);
+  assert.equal(result.manifest.artefactos[0].campo, 'screenshot');
+});
+
+test('un glob de evidencia con varios artefactos no elige un compat arbitrario', t => {
+  const f = fixture(t);
+  f.write('qa-6258-frame-01.png', 'uno');
+  f.write('qa-6258-frame-02.png', 'dos');
+  const data = { resultado: 'aprobado', evidencia: 'qa/evidence/6258/qa-6258-frame-*.png' };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, true);
+  assert.equal(result.manifest.artefactos.length, 2);
+  assert.equal(data.evidencia_sha256, undefined, 'el compat no puede representar a dos artefactos');
+});
+
+test('un descriptor con ruta centinela se resuelve contra el recinto, no se saltea', t => {
+  const f = fixture(t);
+  const data = { resultado: 'aprobado', evidencia: { ruta: 'no-aplica', tipo: 'original' } };
+  const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd() });
+  assert.equal(result.sealed, false);
+  assert.equal(result.reason, 'fuera-de-recinto');
+});
+
 test('un motivo desconocido degrada a sellado-invalido en vez de viajar al log', t => {
   const f = fixture(t);
   const original = fs.realpathSync;

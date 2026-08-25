@@ -132,12 +132,39 @@ function evidenceFields(data) {
     .filter(key => !/_sha256$/.test(key));
 }
 
+// #6495 (rebote 2 de seguridad) — Formas aceptadas de un campo de evidencia.
+//
+// Sólo dos: el escalar string (ruta o glob) y el objeto descriptor con `ruta`
+// string. TODO lo demás —lista YAML, null, número, booleano, objeto sin `ruta`
+// textual— devuelve null y el llamador lo convierte en `tipo-invalido`, que
+// frena el sellado entero.
+//
+// La LISTA se rechaza por decisión explícita, no por omisión: declarar varios
+// archivos ya tiene un canal soportado y acotado (el glob confinado, con tope
+// `MAX_GLOB_FILES` y fallo cerrado si expande a cero). Aceptar además una lista
+// agregaría un segundo parser —con su propio tope, su propio manejo de
+// centinelas y su propia relación con `<campo>_sha256`— sin agregar ninguna
+// capacidad que el glob no cubra. Menos superficie, mismo poder expresivo.
 function artifactSpec(value) {
   if (typeof value === 'string') return { ruta: value, tipo: 'original' };
   if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return { ruta: value.ruta || value.path, tipo: value.tipo || 'original', derivado_de: value.derivado_de, sha256: value.sha256 };
+    const ruta = value.ruta !== undefined ? value.ruta : value.path;
+    if (typeof ruta !== 'string') return null;
+    // `tipo` ausente asume 'original'; un `tipo` presente pero vacío/no textual
+    // NO se normaliza en silencio: cae en la validación de tipo del llamador.
+    const tipo = value.tipo === undefined ? 'original' : value.tipo;
+    return { ruta, tipo, derivado_de: value.derivado_de, sha256: value.sha256 };
   }
   return null;
+}
+
+/**
+ * El centinela de "campo declarado sin artefacto" es TEXTUAL y sólo vale en la
+ * forma escalar del campo: `evidencia: "no-aplica"`. Un objeto con
+ * `ruta: "no-aplica"` no se saltea — se resuelve contra el recinto y falla ahí.
+ */
+function isSkipSentinel(value) {
+  return typeof value === 'string' && SKIPPED_VALUES.has(value.trim().toLowerCase());
 }
 
 // #6495 (rebote de seguridad) — El campo de evidencia lo escribe el YAML del
@@ -233,8 +260,18 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
     let totalBytes = 0;
 
     for (const field of fields) {
+      // #6495 (rebote 2 de seguridad) — La ÚNICA omisión permitida es el
+      // centinela textual. Antes, `artifactSpec()` devolvía null para lista,
+      // null, número y booleano y ese null caía en el mismo `continue`: el
+      // campo se salteaba en silencio y el sellado seguía adelante con menos
+      // artefactos de los declarados. Con `evidencia: [a, b]` + `screenshot`
+      // válido el módulo devolvía `sealed: true` con un solo artefacto y
+      // promovía el hash del screenshot a `evidencia_sha256`, o sea la misma
+      // desincronización sello-artefacto que este issue existe para eliminar.
+      // Ahora todo valor que no produzca spec frena el sellado (fail-closed).
+      if (isSkipSentinel(data[field])) continue;
       const spec = artifactSpec(data[field]);
-      if (!spec || SKIPPED_VALUES.has(String(spec.ruta || '').trim().toLowerCase())) continue;
+      if (!spec) throw new SealError('tipo-invalido');
       if (!['original', 'copia', 'derivado'].includes(spec.tipo)) throw new SealError('tipo-invalido');
       const expanded = expandGlob(root, issue, spec.ruta);
       for (const route of expanded) {
@@ -260,10 +297,42 @@ function sealQaVerdict({ root, issue, data, cwd } = {}) {
       }
     }
     if (artifacts.length === 0) throw new SealError('sin-evidencia');
+
+    // #6495 (rebote 2 de seguridad) — `evidencia_sha256` es el campo de compat
+    // y su contrato es apuntar al artefacto de `data.evidencia`. Antes caía a
+    // `artefactos[0]` cuando el campo `evidencia` no había producido artefacto,
+    // así que el dropfile terminaba con `evidencia: <un archivo>` y
+    // `evidencia_sha256: <hash de OTRO archivo>`.
+    //
+    // Invariante nueva: se fija si y sólo si el campo `evidencia` produjo
+    // exactamente un artefacto. En cualquier otro caso —campo ausente,
+    // centinela, o glob que expandió a varios— el campo se borra y el
+    // manifiesto (`sello.artefactos`) queda como única autoridad. Que falte es
+    // verificable; que apunte al archivo equivocado no.
+    const evidenciaArtifacts = artifacts.filter(item => item.campo === 'evidencia');
+    if (evidenciaArtifacts.length === 1) {
+      data.evidencia_sha256 = evidenciaArtifacts[0].sha256;
+    } else if (data.evidencia_sha256 !== undefined) {
+      // El descarte deja traza del hash declarado que se tira, sin filtrar el
+      // valor crudo: si no es canónico se registra el marcador (CA-2/SEC-8).
+      // `real: null` significa exactamente "el campo `evidencia` no produjo un
+      // artefacto único al que apuntar", que es distinto de la divergencia
+      // hash-declarado-vs-hash-real que ya traza el bucle. Si el bucle ya
+      // trazó este mismo campo (glob con varios artefactos divergentes) no se
+      // duplica: dos entradas del mismo campo con `real` distinto se leerían
+      // como una traza contradictoria.
+      if (!discards.some(item => item.campo === 'evidencia_sha256')) {
+        discards.push({
+          campo: 'evidencia_sha256',
+          declarado: normalizeHash(data.evidencia_sha256) || '<no-canonico>',
+          real: null,
+        });
+      }
+      delete data.evidencia_sha256;
+    }
+
     const manifest = { version: 1, derivado_por: 'qa-evidence-seal', head, artefactos: artifacts, descartes: discards };
     data.sello = manifest;
-    const primary = artifacts.find(item => item.campo === 'evidencia') || artifacts[0];
-    data.evidencia_sha256 = primary.sha256;
     return { sealed: true, manifest, descartes: discards, reason: null };
   } catch (error) {
     const safeError = error instanceof SealError ? error : new SealError('sellado-invalido');

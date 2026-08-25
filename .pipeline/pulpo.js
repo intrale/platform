@@ -11520,6 +11520,11 @@ ${g}
               'hash-divergente': 'La copia de evidencia no coincide con su hash canónico',
               'campos-oversize': 'QA declaró más campos de evidencia que el límite permitido',
               'glob-oversize': 'El patrón de evidencia produjo más archivos que el límite permitido',
+              // #6495 (rebote 2): un campo de evidencia que no es ni una ruta
+              // ni un descriptor con `ruta` (lista, null, número, booleano) ya
+              // no se saltea en silencio — frena el sellado con este motivo.
+              'tipo-invalido': 'QA declaró un campo de evidencia con un valor que no es una ruta de artefacto',
+              'sin-evidencia': 'El veredicto aprobado de QA no declara ningún artefacto de evidencia',
             };
             data.resultado = 'rechazado';
             data.motivo = `${messages[reason] || 'No se pudo derivar un sello confiable para la evidencia de QA'} (${reason}).`;
