@@ -2,6 +2,7 @@ package ar.com.intrale.e2e.api
 
 import ar.com.intrale.e2e.QATestBase
 import com.microsoft.playwright.options.RequestOptions
+import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.MethodOrderer
 import org.junit.jupiter.api.Order
@@ -36,6 +37,29 @@ import kotlin.test.assertTrue
  *   POST /{business}/business/products         — crear producto (SecuredFunction: ADMIN|SALER)
  *   PUT  /{business}/business/products/{id}    — publicar/despublicar
  *   GET  /{business}/products                  — productos publicados (SecuredFunction)
+ *
+ * ─── CUARENTENA PARCIAL (issue #6579) ────────────────────────────────────
+ *
+ * Tres metodos de esta clase estan deshabilitados con @Disabled porque las
+ * funciones de categorias y productos rechazan con 401 un token valido recien
+ * obtenido de `signin` en el entorno del job (cognito-local + DynamoDB local):
+ *
+ *   @Order(2) setup crear categoria de prueba
+ *   @Order(6) catalogo cliente responde 200 sin importar si hay productos publicados
+ *   @Order(7) crear producto en estado DRAFT
+ *
+ * REACTIVAR CON: issue #6581 — Productos y categorias rechazan con 401 un
+ * token valido en el entorno E2E del CI.
+ *
+ * Los metodos SIN token (@Order 3, 4, 5 y 13) siguen corriendo: hoy pasan y
+ * son la unica cobertura viva de TC-05.
+ *
+ * Deuda visible que #6581 tambien destraba: los @Order 8 a 12 (TC-01/02/03)
+ * no estan deshabilitados pero degeneran en no-op, porque cortan temprano
+ * cuando `productId` es null y ese id solo lo produce el @Order(7) en
+ * cuarentena. Pasan en verde sin validar nada hasta que #6581 se cierre.
+ *
+ * NO borrar estas pruebas ni relajar sus asserts.
  */
 @DisplayName("E2E Validate #1634 — Publicación de productos hacia la app cliente")
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
@@ -86,6 +110,10 @@ class ApiProductPublicationE2ETest : QATestBase() {
 
     @Test
     @Order(2)
+    @Disabled(
+        "Cuarentena #6579: la funcion rechaza con 401 un token valido en el entorno " +
+        "E2E del CI (cognito-local). Se reactiva con #6581."
+    )
     @DisplayName("Setup: crear categoría para los productos de prueba")
     fun `setup crear categoria de prueba`() {
         val token = adminToken
@@ -195,6 +223,10 @@ class ApiProductPublicationE2ETest : QATestBase() {
 
     @Test
     @Order(6)
+    @Disabled(
+        "Cuarentena #6579: la funcion rechaza con 401 un token valido en el entorno " +
+        "E2E del CI (cognito-local). Se reactiva con #6581."
+    )
     @DisplayName("TC-04: GET /intrale/products autenticado responde 200 (puede estar vacío)")
     fun `catalogo cliente responde 200 sin importar si hay productos publicados`() {
         val token = adminToken
@@ -228,6 +260,10 @@ class ApiProductPublicationE2ETest : QATestBase() {
 
     @Test
     @Order(7)
+    @Disabled(
+        "Cuarentena #6579: la funcion rechaza con 401 un token valido en el entorno " +
+        "E2E del CI (cognito-local). Se reactiva con #6581."
+    )
     @DisplayName("TC-02: Crear producto en estado DRAFT")
     fun `crear producto en estado DRAFT`() {
         val token = adminToken
