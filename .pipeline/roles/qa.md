@@ -165,6 +165,13 @@ modo: qa-api
 test_cases_source: "definition" | "qa-fallback"
 ```
 
+> **Contrato del sello de evidencia (#6497) — modo `api`.** El `sha256` y los
+> `bytes` de todo artefacto que se registre en Drive **los deriva el pipeline**
+> (`servicio-drive.js`), leyendo los bytes locales del archivo después de pasar
+> el confinamiento. **Lo que declare el agente en esos campos se descarta y se
+> recomputa.** Vos declarás la **ruta**; la identidad la calcula el pipeline. Lo
+> mismo vale para el HEAD contra el que se validó la evidencia.
+
 Si hay defecto:
 ```yaml
 resultado: rechazado
@@ -218,6 +225,44 @@ JSON
 Los campos `mode: structural` y `source: qa-structural` son obligatorios. El
 servicio Drive reconoce ese schema canónico, registra el artefacto sin intentar
 tratar el Markdown como video y mueve el descriptor a `listo/`.
+
+#### Contrato del sello de evidencia (#6497) — modo `structural`
+
+`qa/evidence/**` es **efímero**: el artefacto se evapora y el registro de Drive
+queda como **la identidad autoritativa** de lo que se aprobó. Por eso el
+descriptor que llega a `listo/` no es el que escribiste vos — el servicio Drive
+le agrega el sello y lo persiste:
+
+```json
+{
+  "action": "upload",
+  "file": "qa/evidence/<issue>/qa-<issue>-structural.md",
+  "issue": <issue>,
+  "mode": "structural",
+  "source": "qa-structural",
+  "sha256": "sha256:<64 hex>",
+  "bytes": 4821
+}
+```
+
+Reglas del contrato:
+
+- **`sha256` y `bytes` los deriva el pipeline, no vos.** Se computan sobre los
+  bytes locales del artefacto, *después* del confinamiento. Si los declarás en
+  el JSON, **se descartan y se recomputan**: la ruta la declara el agente, la
+  identidad la calcula el pipeline. Idem el HEAD contra el que se validó.
+- **`file` debe ser una ruta canónica del repo principal**, relativa a la raíz.
+  Declarables: `qa/evidence/**`, `qa/recordings/**`, `.pipeline/assets/docs/**`,
+  `.pipeline/logs/media/**`, `docs/qa/**`. **NO** son declarables los dropfiles
+  del pipeline (`.pipeline/desarrollo/*/procesado/*.qa`): no son evidencia
+  publicable y el job va a `fallido/`.
+- **Promové el artefacto al repo principal antes de encolar el job.** Si el
+  archivo sólo existe en tu worktree, el descriptor va a `fallido/` con motivo
+  *"no promovido a la ruta canónica"* — distinto del motivo de seguridad
+  *"fuera de los directorios de evidencia permitidos"*.
+- Un descriptor que **no se puede sellar** (artefacto vacío, ilegible o fuera
+  del recinto) **no llega a `listo/`**: fail-closed, va a `fallido/` y se avisa
+  al operador. No hay evidencia estructural sin sello.
 
 ---
 
@@ -378,6 +423,21 @@ defectos:
 > (veredicto en el título, estado por criterio, entorno, defectos accionables y
 > referencias a la evidencia) y lo persiste + notifica automáticamente al cerrar
 > la fase. No tenés que generar el `.md` a mano.
+
+> **Contrato del sello de evidencia (#6497) — modo `android`.** El video y sus
+> derivados se registran en Drive con `sha256` (`sha256:<64 hex>`) y `bytes` que
+> **deriva el pipeline** sobre los bytes locales del archivo, después del
+> confinamiento. **Lo que declares vos en esos campos se descarta y se
+> recomputa** — igual que el HEAD contra el que se validó. Vos declarás la ruta
+> (`evidencia`, `screenshot`), el pipeline calcula la identidad.
+>
+> La ruta debe ser **canónica y del repo principal** (`qa/evidence/**`,
+> `qa/recordings/**`, `docs/qa/**`, `.pipeline/logs/media/**`): promové el
+> artefacto antes de que se encole el job. Un video que sólo existe en el
+> worktree del agente va a `fallido/` con motivo *"no promovido a la ruta
+> canónica"*, distinto del motivo de seguridad *"fuera de los directorios de
+> evidencia permitidos"*. La copia saneada (`.sanitized/`) es byte-idéntica:
+> arrastra el **mismo** `sha256` y apunta a la ruta canónica vía `derivado_de`.
 
 ### Subir evidencia a Drive (OBLIGATORIO antes de aprobar)
 

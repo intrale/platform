@@ -1147,6 +1147,18 @@ function buildPreview(args) {
     const sensibleBlocked = rejected.filter(
         (r) => r.sensible === true && DRIVE_QUEUEABLE_REJECT_REASONS.has(r.reject_reason),
     );
+    // R-5 (#6497) — DECISIÓN: este es el SEGUNDO productor de jobs de Drive, y
+    // NO sella. El `sha256`/`bytes` del registro los deriva EXCLUSIVAMENTE
+    // `servicio-drive.js`, al procesar el job y después de confinar el path
+    // (CA-6: "lo deriva el pipeline"). Dos derivaciones del hash sobre el mismo
+    // artefacto — una acá y otra allá — reproducirían exactamente la
+    // desincronización entre sello y artefacto que el épico #6475 busca cerrar.
+    //
+    // Lo que SÍ tiene que cumplir este productor es emitir `file` dentro de
+    // `ALLOWED_EVIDENCE_DIRS` (`servicio-drive.js`): sus rutas
+    // (`.pipeline/assets/docs/**`, `.pipeline/logs/media/**`) están en el
+    // allowlist ampliado por R-4; si se agrega un destino nuevo hay que
+    // agregarlo también allá o el job va a `fallido/`.
     const driveJobs = driveQueued.map((r) => {
         const relativeVideoPath = typeof r.relative === 'string' ? r.relative : '';
         const rawBasename = relativeVideoPath ? path.basename(relativeVideoPath) : '';
