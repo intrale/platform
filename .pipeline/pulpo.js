@@ -7822,6 +7822,167 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
 }
 
 // ---------------------------------------------------------------------------
+// #6496 — BRAZO DE REPARACIÓN POR CADUCIDAD DEL SELLO DE QA
+//
+// `delivery.js` detecta que el veredicto de QA fue sellado contra un HEAD que ya
+// no es el de la rama y ENCOLA una orden acá (CA-13 / SEC-G): no mueve ni
+// renombra dropfiles. El Pulpo es el único dueño del lifecycle del work-file —
+// escanea `procesado/` en el loop de routing— y un move desde otro proceso
+// produce una carrera que pierde el veredicto.
+//
+// Este drenador es el consumidor de esa cola. Por cada orden:
+//   (a) re-valida el issue fail-closed (SEC-B, path traversal);
+//   (b) INVALIDA el veredicto anterior — CA-11 / SEC-3, el riesgo #1 de #6475:
+//       está prohibido re-firmar. Nada sale de la reparación en `aprobado`;
+//   (c) re-encola la fase `verificacion` COMPLETA contra el HEAD actual, con el
+//       motivo como `motivo_rechazo` para que el agente aplique el protocolo de
+//       rebote de `roles/_base.md`;
+//   (d) mueve la orden a `procesado/`.
+//
+// NO toca el presupuesto de routing (CA-6): no escribe `rebote_tipo: 'routing'`
+// ni `rebote_routing_numero`, que son los únicos campos que alimentan
+// `MAX_ROUTING_BOUNCES` / `blocked:routing-manual`. El contador de caducidad es
+// propio y vive en `.pipeline/desarrollo/verificacion/.<issue>.seal-retries`.
+//
+// Idempotente y best-effort: si la fase ya está en vuelo para ese issue, la
+// orden se consume sin duplicar trabajo. Una falla acá jamás tumba el loop.
+// ---------------------------------------------------------------------------
+function drenarRequeueVerificacion(config) {
+  const pendDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_QUEUE_DIR);
+  const doneDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_DONE_DIR);
+  let ordenes;
+  try {
+    ordenes = fs.readdirSync(pendDir).filter(f => f.endsWith('.json') && !f.startsWith('.'));
+  } catch { return 0; }
+  if (ordenes.length === 0) return 0;
+
+  // Mismo acceso que el resto del Pulpo (`pulpo.js:1971`): `skills_por_fase`
+  // vive del lado PRODUCTO (#5174) y `loadConfig` ya lo fusiona en `config`.
+  const skills = (config.pipelines?.desarrollo?.skills_por_fase?.verificacion) || ['tester', 'security', 'qa'];
+  let drenadas = 0;
+
+  for (const fname of ordenes) {
+    const ordenPath = path.join(pendDir, fname);
+    let orden;
+    try {
+      orden = JSON.parse(fs.readFileSync(ordenPath, 'utf8'));
+    } catch (e) {
+      log('caducidad', `⚠️ orden de re-encolado ilegible (${fname}): ${e.message.slice(0, 80)} — descartada`);
+      try { fs.mkdirSync(doneDir, { recursive: true }); fs.renameSync(ordenPath, path.join(doneDir, fname)); } catch {}
+      continue;
+    }
+    const issueNum = qaEvidenceSeal.normalizeIssueNumber(orden && orden.issue);
+    if (orden === null || typeof orden !== 'object' || orden.tipo !== qaEvidenceSeal.REQUEUE_TYPE || issueNum === null) {
+      log('caducidad', `⚠️ orden de re-encolado inválida (${fname}) — descartada sin efecto`);
+      try { fs.mkdirSync(doneDir, { recursive: true }); fs.renameSync(ordenPath, path.join(doneDir, fname)); } catch {}
+      continue;
+    }
+    const issue = String(issueNum);
+
+    try {
+      const faseDir = fasePath('desarrollo', 'verificacion');
+      const motivoLegible = typeof orden.motivo_legible === 'string' && orden.motivo_legible.length <= 400
+        ? orden.motivo_legible
+        : qaEvidenceSeal.describeFreshnessFailure(orden.motivo);
+      const headSellado = /^[0-9a-f]{40}$/.test(String(orden.head_sellado || '')) ? String(orden.head_sellado) : 'desconocido';
+      const headActual = /^[0-9a-f]{40}$/.test(String(orden.head_actual || '')) ? String(orden.head_actual) : 'desconocido';
+      const motivoRechazo = [
+        `${motivoLegible}`,
+        '',
+        `El veredicto anterior de esta fase se emitió contra el commit ${headSellado} y la rama está en ${headActual}.`,
+        'Ese veredicto quedó INVALIDADO: hay que volver a verificar el código actual desde cero.',
+        'No alcanza con re-confirmar la pasada anterior — lo que hay que verificar es lo que cambió después de ella.',
+      ].join('\n');
+
+      const intentoDeclarado = Number.isInteger(orden.intentos) && orden.intentos > 0 ? orden.intentos : 1;
+      let encoladas = 0;
+      for (const skill of skills) {
+        const wf = `${issue}.${skill}`;
+        // Idempotencia: si ya hay algo en vuelo para ese skill, no se duplica.
+        const enVuelo = ['pendiente', 'trabajando', 'listo']
+          .some(estado => fs.existsSync(path.join(faseDir, estado, wf)));
+        if (enVuelo) continue;
+
+        // CA-11 / SEC-3 — el payload que se escribe NO conserva `resultado`,
+        // `sello` ni ningún campo del veredicto anterior: se reemplaza entero.
+        // Un re-encolado que preservara `aprobado` convertiría "provocar un
+        // desfasaje" en el bypass del gate de QA.
+        const payload = {
+          issue: issueNum,
+          fase: 'verificacion',
+          pipeline: 'desarrollo',
+          rebote: true,
+          rebote_tipo: 'seal-caduco',
+          rebote_caducidad_numero: intentoDeclarado,
+          rechazado_en_fase: 'entrega',
+          rechazado_por_skill: 'gate-caducidad-sello',
+          motivo_rechazo: motivoRechazo,
+          rechazado_ts: orden.ts || new Date().toISOString(),
+        };
+        const procFile = path.join(faseDir, 'procesado', wf);
+        if (fs.existsSync(procFile)) {
+          writeYaml(procFile, payload);
+          moveFile(procFile, path.join(faseDir, 'pendiente'));
+        } else {
+          writeYaml(path.join(faseDir, 'pendiente', wf), payload);
+        }
+        encoladas += 1;
+      }
+
+      if (encoladas > 0) {
+        log('caducidad', `♻️ #${issue}: veredicto de QA caduco (${qaEvidenceSeal.sanitizeFreshnessReason(orden.motivo)}) → verificación re-encolada (${encoladas} skill(s), intento ${intentoDeclarado}/${qaEvidenceSeal.MAX_SEAL_REQUEUES}). Sello ${headSellado.slice(0, 8)} ≠ HEAD ${headActual.slice(0, 8)}.`);
+        ghCommentOnIssue(issue, `♻️ La entrega se frenó sola: el veredicto de QA se había emitido contra el commit \`${headSellado.slice(0, 8)}\` y la rama ya está en \`${headActual.slice(0, 8)}\`. El pipeline volvió a pedir la verificación del código actual en vez de integrar algo que nadie revisó. No hace falta que hagas nada.`);
+      } else {
+        log('caducidad', `♻️ #${issue}: veredicto de QA caduco, pero verificación ya en vuelo — orden consumida sin duplicar`);
+      }
+      drenadas += 1;
+    } catch (e) {
+      log('caducidad', `⚠️ #${issue}: no se pudo re-encolar verificación — ${e.message.slice(0, 120)}`);
+    }
+
+    try {
+      fs.mkdirSync(doneDir, { recursive: true });
+      fs.renameSync(ordenPath, path.join(doneDir, fname));
+    } catch (e) {
+      // Si no se puede archivar la orden se BORRA: dejarla en `pendiente/`
+      // produciría un re-encolado en bucle en cada tick del loop.
+      log('caducidad', `⚠️ no se pudo archivar la orden ${fname}: ${e.message.slice(0, 80)} — se elimina para no reprocesarla`);
+      try { fs.rmSync(ordenPath, { force: true }); } catch {}
+    }
+  }
+  return drenadas;
+}
+
+/**
+ * #6496 (CA-4) — Migración one-shot del backlog pre-sellado.
+ *
+ * Corre una vez por arranque del Pulpo (es idempotente, así que repetirla no
+ * cambia nada) y ANTES de que el gate de caducidad pueda mirar esos dropfiles.
+ * Sin ella, los ~10 veredictos `aprobado` escritos antes de que existiera el
+ * sellado (#6495) caducarían todos juntos y dispararían 10 corridas E2E
+ * completas sobre issues sanos ya revisados por review/PO/UX/seguridad —
+ * exactamente el daño que esta historia viene a eliminar.
+ *
+ * La corre el PIPELINE, nunca un agente. El anuncio es único (flag en disco) y
+ * la lista exacta de exentos queda en `logs/audit-seal-migracion.jsonl`.
+ */
+function migrarBacklogPreSellado() {
+  try {
+    const res = qaEvidenceSeal.migratePreSealBacklog({ pipelineDir: PIPELINE });
+    if (!res.anunciar) return res;
+    const total = res.exentos.length;
+    log('caducidad', `🔖 Migración pre-sellado: ${total} veredicto(s) aprobado(s) sin sello quedaron exentos de caducidad (${res.exentos.map(n => '#' + n).join(', ') || 'ninguno'}). Auditoría: logs/audit-seal-migracion.jsonl`);
+    if (total > 0) {
+      sendTelegram(`🔖 Se activó el chequeo de caducidad del veredicto de QA (#6496).\n\n${total} issue(s) ya aprobados antes de que existiera el sello quedaron exentos, así no se re-verifica de cero algo que ya pasó review, PO, UX y seguridad: ${res.exentos.map(n => '#' + n).join(', ')}.\n\nLa exención no relaja ningún otro gate y queda auditada issue por issue.`);
+    }
+    return res;
+  } catch (e) {
+    log('caducidad', `⚠️ migración pre-sellado falló: ${e.message.slice(0, 120)} — el gate sigue fail-closed`);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // #4136 — Brazo de ARCHIVADO: muda al `historico/` los artefactos `procesado/`
 // de issues en reposo total (frontera activo/histórico). Mantiene el camino
 // vivo acotado solo, sin re-acumular, así `stateSnapshot` no se congela.
@@ -11669,7 +11830,25 @@ ${g}
             // el veredicto queda intacto, porque ahí `evidencia` es prosa por
             // contrato del rol y no una ruta rota.
             if (qaEnforcement && qaEnforcement.bypassed) {
-              log('lanzamiento', `QA:#${issue} sin sello (${reason}) — modo sin evidencia exigible (${qaEnforcement.motivo}), el veredicto no se toca`);
+              // #6496 (CA-1) — el veredicto no se toca, pero el dropfile IGUAL
+              // se sella con el HEAD. Caducidad y evidencia son cosas distintas:
+              // la caducidad sólo necesita saber CONTRA QUÉ COMMIT se aprobó, y
+              // eso existe también en `structural`/`api`/`qa:skipped` — 42 de 76
+              // aprobados reales. Sin este sello head-only, la parte 2 del split
+              // tenía que elegir entre dos patologías: "sin sello ⇒ caduco"
+              // re-encolaba el 55% de las aprobaciones en un bucle que nunca
+              // converge (QA re-aprueba sin sello ⇒ caduca otra vez), y "sin
+              // sello ⇒ no caduco" dejaba el gate auto-salteable con sólo no
+              // dejar sello.
+              //
+              // Único fail-closed: si el HEAD no se puede derivar el dropfile
+              // queda sin `sello`, y el gate de caducidad lo trata como caduco.
+              const headOnly = qaEvidenceSeal.sealHeadOnly({
+                data, cwd: spawnCwd, motivo: reason, modo: qaEnforcement.motivo,
+              });
+              log('lanzamiento', headOnly.sealed
+                ? `QA:#${issue} sin artefactos que sellar (${reason}) — modo sin evidencia exigible (${qaEnforcement.motivo}); sello head-only contra HEAD ${headOnly.manifest.head.slice(0, 8)}…, el veredicto no se toca`
+                : `QA:#${issue} sin sello (${reason}) — modo sin evidencia exigible (${qaEnforcement.motivo}) y HEAD no derivable (${headOnly.reason}); el veredicto no se toca pero queda sin sello`);
             } else {
               const degraded = qaEvidenceSeal.degradeVerdictForSeal(data, reason);
               sendTelegram(`⛔ QA:#${issue} — ${degraded.motivo}`);
@@ -11684,6 +11863,21 @@ ${g}
           if (!(qaEnforcement && qaEnforcement.bypassed)) {
             const degraded = qaEvidenceSeal.degradeVerdictForSeal(data, 'sellado-invalido');
             sendTelegram(`⛔ QA:#${issue} — ${degraded.motivo}`);
+          } else {
+            // #6496 (CA-1) — mismo carril bypassed que arriba, pero entrando por
+            // la excepción: el veredicto no se toca y el sello head-only se
+            // intenta igual. `sealHeadOnly` no lanza (devuelve `sealed:false`),
+            // así que no puede reabrir la excepción que este `catch` cierra.
+            try {
+              const headOnly = qaEvidenceSeal.sealHeadOnly({
+                data, cwd: spawnCwd, motivo: 'sellado-invalido', modo: qaEnforcement.motivo,
+              });
+              if (headOnly.sealed) {
+                log('lanzamiento', `QA:#${issue} sello head-only contra HEAD ${headOnly.manifest.head.slice(0, 8)}… tras fallo de sellado en modo sin evidencia exigible`);
+              }
+            } catch (headErr) {
+              log('lanzamiento', `QA:#${issue} tampoco pudo sellar head-only: ${redactSecretValue(headErr.message)}`);
+            }
           }
         }
       }
@@ -21974,6 +22168,14 @@ async function mainLoop() {
   log('pulpo', `Pipeline: ${PIPELINE}`);
   log('pulpo', `Claude launcher: ${CLAUDE_LAUNCHER.kind} → ${CLAUDE_LAUNCHER.cmd}`);
 
+  // #6496 (CA-4) — Migración one-shot del backlog pre-sellado. Va al BOOT y
+  // antes de cualquier tick: el gate de caducidad de `delivery.js` puede correr
+  // en cuanto haya un agente de entrega, y sin la exención materializada
+  // declararía caducos de golpe los ~10 veredictos aprobados que se escribieron
+  // antes de que existiera el sellado (#6495). Idempotente y best-effort: si
+  // falla, el gate sigue fail-closed y el operador se entera por el log.
+  migrarBacklogPreSellado();
+
   // #3520 — Boot hook: recovery automático si /wave promote crasheó mid-transaction.
   // Si encuentra marker stale (>TTL), restaura ambos archivos desde el snapshot
   // y pushea un Telegram proactivo a Leo (CA-D2). Si la recovery falla
@@ -23290,6 +23492,14 @@ async function mainLoop() {
         // reencolado ya lo cubre `reencolarInfraBloqueados` arriba.
         intentarAutoResumeCB(config);
 
+        // #6496 — brazo de reparación por caducidad del sello de QA. Drena las
+        // órdenes que encoló `delivery.js` cuando el veredicto de QA quedó
+        // hablando de un commit que ya no es el de la rama. Va ANTES del intake
+        // para que la verificación re-encolada entre en el mismo ciclo de
+        // despacho, y es best-effort: nunca tumba el loop.
+        try { drenarRequeueVerificacion(config); }
+        catch (e) { log('caducidad', `drenarRequeueVerificacion error: ${e.message}`); }
+
         brazoIntake(config);      // Segundo: traer trabajo nuevo de GitHub
         touchProgress(); // #5821 CA-4 — hito 3: pasó el intake (el brazo más pesado en gh)
         // #2801 — desbloqueo en background (fire-and-forget). Antes era síncrono
@@ -23457,6 +23667,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // `qa:skipped` (la fuente de labels debe ser GitHub, nunca el YAML del agente).
     validateQaEvidence,
     resolveQaEvidenceEnforcement,
+    // #6496 — reparación por caducidad del sello de QA (drenador + migración).
+    drenarRequeueVerificacion,
+    migrarBacklogPreSellado,
     determinarDevSkill,
     getDevSkillPartitions,
     isDeclaredStackDevSkill,

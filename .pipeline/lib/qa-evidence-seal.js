@@ -623,11 +623,21 @@ function logFailure(error) {
  * @returns {{sello: *, hashes: Record<string, *>}} lo declarado, para trazarlo
  */
 function stripDeclaredSeal(data) {
-  const declared = { sello: undefined, hashes: {} };
+  const declared = { sello: undefined, exencion: undefined, hashes: {} };
   if (!data || typeof data !== 'object') return declared;
   if (data.sello !== undefined) {
     declared.sello = data.sello;
     delete data.sello;
+  }
+  // #6496 (CA-5) — `sello_exencion` es la marca que exime de caducidad al
+  // backlog pre-sellado, y la escribe EXCLUSIVAMENTE la rutina de migración del
+  // pipeline sobre dropfiles ya archivados. Si el agente pudiera declararla en
+  // su YAML, escribir `sello_exencion:` sería EL bypass del gate de caducidad —
+  // exactamente la patología que CA-5 prohíbe para `modo`. Mismo borrado
+  // incondicional y mismo lugar que el `sello`.
+  if (data.sello_exencion !== undefined) {
+    declared.exencion = data.sello_exencion;
+    delete data.sello_exencion;
   }
   for (const key of Object.keys(data)) {
     if (!/_sha256$/.test(key)) continue;
@@ -666,9 +676,10 @@ function stripDeclaredSeal(data) {
  * @returns {{sello: *, hashes: Record<string, *>}}
  */
 function mergeDeclaredSnapshots(previo, propio) {
-  const merged = { sello: propio.sello, hashes: { ...propio.hashes } };
+  const merged = { sello: propio.sello, exencion: propio.exencion, hashes: { ...propio.hashes } };
   if (!previo || typeof previo !== 'object') return merged;
   if (merged.sello === undefined && previo.sello !== undefined) merged.sello = previo.sello;
+  if (merged.exencion === undefined && previo.exencion !== undefined) merged.exencion = previo.exencion;
   const hashesPrevios = previo.hashes;
   if (!hashesPrevios || typeof hashesPrevios !== 'object') return merged;
   for (const key of Object.keys(hashesPrevios)) {
@@ -929,6 +940,610 @@ function degradeVerdictForSeal(data, reason) {
   return { motivo, rechazado_por: SEAL_REJECTED_BY };
 }
 
+// =============================================================================
+// #6496 — CADUCIDAD DEL VEREDICTO SELLADO
+// -----------------------------------------------------------------------------
+// La parte 1 (#6495) DERIVA el sello. Esta parte lo CONSUME: convierte el
+// desfasaje entre el HEAD que QA verificó y el HEAD que delivery está por
+// integrar en una reparación automática ACOTADA (re-encolar verificación), en
+// vez del bloqueo permanente que hoy deja issues aprobados muertos con
+// `needs-human` + `blocked:routing-manual`.
+//
+// Doctrina (heredada de #6495 y del rebote de `definicion/criterios`):
+//   - Caducidad y evidencia son cosas DISTINTAS. La caducidad sólo necesita el
+//     HEAD; el sellado de artefactos necesita la evidencia. Por eso el carril
+//     con bypass de evidencia (`structural`/`api`/`qa:skipped`, 42 de 76
+//     aprobados reales) igual persiste un sello HEAD-ONLY (CA-1): sin eso el
+//     55% de las aprobaciones no tendría contra qué chequearse y el gate sería
+//     auto-salteable con sólo no dejar sello.
+//   - Fail-closed SIEMPRE que no se pueda establecer frescura (CA-2, CA-3,
+//     CA-10). Nunca un fallback silencioso a "fresco".
+//   - Fail-closed ACOTADO, no permanente: máximo `MAX_SEAL_REQUEUES`
+//     re-encolados automáticos y recién entonces `needs-human` (CA-9).
+//   - Caducar INVALIDA: ni el dropfile queda `aprobado` ni el issue queda con
+//     `qa:passed` vivo (CA-11 + CA-12). Si caducar re-firmara, provocar un
+//     desfasaje sería EL bypass del gate de QA (SEC-3, riesgo #1 del issue
+//     madre #6475).
+//   - Delivery NO muta el lifecycle del dropfile (CA-13). Encola una orden que
+//     el Pulpo drena; el Pulpo es el único dueño de `procesado/`.
+// =============================================================================
+
+// CA-9 — máximo de re-encolados AUTOMÁTICOS por issue. El tercer veredicto
+// caduco no re-encola: escala. `intentos >= MAX_SEAL_REQUEUES` ⇒ escalada.
+const MAX_SEAL_REQUEUES = 2;
+
+const VERIFICACION_PIPELINE = 'desarrollo';
+const VERIFICACION_FASE = 'verificacion';
+const VERDICT_SKILL = 'qa';
+
+// CA-4 — la marca de exención que escribe la rutina de migración one-shot.
+// NO es declarable por el agente: `stripDeclaredSeal` la borra de todo dropfile
+// de qa/verificación que pase por el on-exit del Pulpo (misma doctrina que el
+// `sello`), así que la única forma de que sobreviva es que la haya escrito la
+// migración sobre un dropfile ya archivado en `procesado/`.
+const MIGRACION_MOTIVO = 'migracion-pre-sellado';
+const MIGRACION_DERIVADO_POR = 'pipeline';
+const MIGRACION_AUDIT_FILE = 'audit-seal-migracion.jsonl';
+const CADUCIDAD_AUDIT_FILE = 'audit-seal-caducidad.jsonl';
+const MIGRACION_ANUNCIO_FLAG = '.seal-migracion-anunciada';
+
+// Cola que drena el Pulpo (CA-13). Mismo patrón que `servicios/github` y que
+// `product-control/pendiente` → `product-control-drainer.js`.
+const REQUEUE_QUEUE_DIR = ['verificacion-requeue', 'pendiente'];
+const REQUEUE_INFLIGHT_DIR = ['verificacion-requeue', 'trabajando'];
+const REQUEUE_DONE_DIR = ['verificacion-requeue', 'procesado'];
+const REQUEUE_TYPE = 'requeue_verificacion';
+
+// Motivos categóricos de caducidad. Igual que `KNOWN_REASONS` del sellado: el
+// motivo viaja a logs, a la cola de GitHub y al `motivo_rechazo` que lee el
+// agente QA, así que NUNCA es texto libre (SEC-I). Todo lo que no esté acá se
+// colapsa a `sellado-invalido`.
+const FRESHNESS_REASONS = new Set([
+  'issue-invalido',
+  'sin-veredicto',
+  'veredicto-ilegible',
+  'veredicto-no-aprobado',
+  'sin-sello',
+  'head-no-resoluble',
+  'head-desincronizado',
+  'sellado-invalido',
+]);
+
+const FRESHNESS_MESSAGES = {
+  'issue-invalido': 'El número de issue no es válido para resolver el veredicto de QA',
+  'sin-veredicto': 'No hay veredicto de QA archivado para este issue',
+  'veredicto-ilegible': 'El veredicto de QA archivado no se puede leer',
+  'veredicto-no-aprobado': 'El veredicto de QA archivado no está aprobado',
+  'sin-sello': 'El veredicto aprobado de QA no tiene sello: no hay contra qué verificar el commit',
+  'head-no-resoluble': 'No se pudo determinar el commit actual de la rama',
+  'head-desincronizado': 'La rama avanzó después de que QA aprobó: el commit verificado ya no es el que se iba a integrar',
+  'sellado-invalido': 'No se pudo establecer la frescura del veredicto de QA',
+};
+
+const HEX40 = /^[0-9a-f]{40}$/;
+const ISSUE_NUMBER = /^[1-9][0-9]{0,6}$/;
+// Slugs cortos que el Pulpo pasa como `modo` del sello head-only. Se valida por
+// forma (no por lista) porque `qa-mode-<modo>` crece con los modos de QA, pero
+// nunca se interpola texto libre.
+const SAFE_SLUG = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * SEC-B — normaliza el issue a entero ANTES de que se use para construir
+ * cualquier path (`.<issue>.seal-retries`, dropfiles, nombres de orden). Mismo
+ * criterio exacto que `buildPrGatePropagation` (`delivery.js`): no se inventa
+ * otro. Devuelve `null` (nunca lanza) para que cada llamador decida su
+ * fail-closed.
+ *
+ * @param {*} issue
+ * @returns {number|null}
+ */
+function normalizeIssueNumber(issue) {
+  if (typeof issue === 'number') {
+    return Number.isInteger(issue) && ISSUE_NUMBER.test(String(issue)) ? issue : null;
+  }
+  if (typeof issue !== 'string') return null;
+  const raw = issue.trim();
+  return ISSUE_NUMBER.test(raw) ? Number(raw) : null;
+}
+
+/** SEC-I — el motivo NUNCA es texto libre: es uno de los slugs categóricos. */
+function sanitizeFreshnessReason(reason) {
+  return FRESHNESS_REASONS.has(reason) ? reason : 'sellado-invalido';
+}
+
+/**
+ * @param {string} reason slug categórico
+ * @returns {string} frase en español + slug entre paréntesis, sin rutas
+ */
+function describeFreshnessFailure(reason) {
+  const slug = sanitizeFreshnessReason(reason);
+  return `${FRESHNESS_MESSAGES[slug] || FRESHNESS_MESSAGES['sellado-invalido']} (${slug}).`;
+}
+
+function safeSlug(value) {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return SAFE_SLUG.test(raw) ? raw : 'desconocido';
+}
+
+/**
+ * Raíz del ESTADO del pipeline. No es `__dirname` del llamador: `entrega` corre
+ * en el worktree del issue (`phase-workspace.js` → `EXISTING_WORKTREE_PHASES`),
+ * y el estado —dropfiles, colas de servicio, contadores— vive en el
+ * `.pipeline/` del REPO PRINCIPAL. Resolver contra el worktree escribiría
+ * órdenes en una cola que nadie drena.
+ */
+function resolvePipelineDir(root, pipelineDir) {
+  if (typeof pipelineDir === 'string' && pipelineDir.trim() !== '') return path.resolve(pipelineDir);
+  if (typeof root === 'string' && root.trim() !== '') return path.resolve(root, '.pipeline');
+  throw new SealError('sellado-invalido');
+}
+
+function verificacionFasePath(pipelineDir) {
+  return path.join(pipelineDir, VERIFICACION_PIPELINE, VERIFICACION_FASE);
+}
+
+/**
+ * Dónde puede estar archivado el veredicto de QA, en orden de autoridad.
+ * `procesado/` es el vigente; `archivado/` e `historico/` son los destinos a los
+ * que el propio pipeline muda los dropfiles viejos (`lib/historico.js`), así que
+ * ignorarlos convertiría un archivado rutinario en una caducidad falsa.
+ */
+function verdictDropfilePaths(pipelineDir, issueNum) {
+  const fase = verificacionFasePath(pipelineDir);
+  const fname = `${issueNum}.${VERDICT_SKILL}`;
+  return [
+    path.join(fase, 'procesado', fname),
+    path.join(fase, 'archivado', fname),
+    path.join(pipelineDir, 'historico', VERIFICACION_PIPELINE, VERIFICACION_FASE, fname),
+  ];
+}
+
+/** `.pipeline/desarrollo/verificacion/.<issue>.seal-retries` (CA-6). */
+function sealRetriesPath(pipelineDir, issueNum) {
+  return path.join(verificacionFasePath(pipelineDir), `.${issueNum}.seal-retries`);
+}
+
+function loadYamlFile(filePath) {
+  return require('js-yaml').load(fs.readFileSync(filePath, 'utf8'));
+}
+
+function dumpYamlFile(filePath, data) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, require('js-yaml').dump(data, { lineWidth: -1 }));
+}
+
+/**
+ * El HEAD sellado, o `null`. Lee EXCLUSIVAMENTE `data.sello.head` — el sello lo
+ * deriva el pipeline (#6495) y `stripDeclaredSeal` borra el que declare el
+ * agente. CA-5: está prohibido mirar `data.modo`, `data.labels` o cualquier otro
+ * campo escrito por el agente.
+ */
+function sealedHeadOf(data) {
+  const sello = data && typeof data === 'object' ? data.sello : null;
+  if (!sello || typeof sello !== 'object' || Array.isArray(sello)) return null;
+  const head = typeof sello.head === 'string' ? sello.head.trim().toLowerCase() : '';
+  return HEX40.test(head) ? head : null;
+}
+
+/**
+ * CA-4 — ¿el dropfile trae la exención materializada por la migración one-shot?
+ *
+ * Se exige la marca COMPLETA (`motivo` + `derivado_por`), no su mera presencia:
+ * la exención es una laxitud acotada y enumerable, así que tiene que ser
+ * reconocible sin ambigüedad. CA-5 sigue valiendo: esta marca la escribe la
+ * rutina del pipeline, y `stripDeclaredSeal` la borra si la declara el agente.
+ */
+function hasMigrationExemption(data) {
+  const ex = data && typeof data === 'object' ? data.sello_exencion : null;
+  if (!ex || typeof ex !== 'object' || Array.isArray(ex)) return false;
+  return ex.motivo === MIGRACION_MOTIVO && ex.derivado_por === MIGRACION_DERIVADO_POR;
+}
+
+/**
+ * CA-1 — Sello HEAD-ONLY para el carril con bypass de evidencia.
+ *
+ * Lo invoca el Pulpo cuando `sealQaVerdict` devolvió `sealed:false` y
+ * `qaEnforcement.bypassed === true`: ahí `evidencia` es prosa por contrato del
+ * rol (`roles/qa.md`) y no hay artefactos que hashear, pero el veredicto SÍ se
+ * emitió contra un commit concreto y eso es todo lo que la caducidad necesita.
+ *
+ * Sin esto había que elegir entre dos patologías, las dos presentes en #6475:
+ * "sin sello ⇒ caduco" re-encolaba el 55% de las aprobaciones en un bucle que
+ * nunca converge (QA re-aprueba sin sello ⇒ caduca otra vez), y "sin sello ⇒ no
+ * caduco" dejaba el gate opcional y auto-salteable.
+ *
+ * Único fail-closed: si el HEAD no se puede derivar, el dropfile queda SIN
+ * `sello`, y entonces `checkVerdictFreshness` lo trata como caduco (CA-3).
+ *
+ * @param {{data: object, cwd: string, motivo?: string, modo?: string}} params
+ * @returns {{sealed: boolean, manifest: object|null, reason: string|null}}
+ */
+function sealHeadOnly({ data, cwd, motivo, modo } = {}) {
+  if (!data || typeof data !== 'object') return { sealed: false, manifest: null, reason: 'no-aplica' };
+  if (data.resultado !== 'aprobado') return { sealed: false, manifest: null, reason: 'no-aplica' };
+  let head;
+  try {
+    head = deriveHead(cwd);
+  } catch (error) {
+    const safeError = error instanceof SealError ? error : new SealError('head-invalido');
+    logFailure(safeError);
+    return { sealed: false, manifest: null, reason: 'head-invalido' };
+  }
+  const manifest = {
+    version: 1,
+    derivado_por: 'qa-evidence-seal',
+    head,
+    artefactos: [],
+    sin_artefactos: { motivo: sanitizeReason(motivo), modo: safeSlug(modo) },
+  };
+  data.sello = manifest;
+  return { sealed: true, manifest, reason: null };
+}
+
+/**
+ * CA-2 / CA-3 / CA-5 — ¿el veredicto de QA todavía habla del código que se va a
+ * integrar?
+ *
+ * Deriva el HEAD ELLA MISMA con `deriveHead(cwd)` (`execFileSync` sin shell +
+ * validación `/^[0-9a-f]{40}$/`). SEC-A: está prohibido recibirlo del snapshot
+ * de git-context — `snap.head` NO EXISTE en `lib/delivery/git-context.js`, así
+ * que copiarlo tal cual nacía fail-open (`undefined === undefined`) o
+ * fail-siempre-caduco.
+ *
+ * Fail-closed en TODAS las ramas que no puedan afirmar frescura: sin veredicto,
+ * veredicto ilegible, veredicto no aprobado, sin sello, HEAD no resoluble. La
+ * única salida "fresco" es la igualdad literal de los dos HEAD, más la exención
+ * enumerada de CA-4.
+ *
+ * @param {{root?: string, pipelineDir?: string, issue: string|number, cwd: string}} params
+ * @returns {{caduco: boolean, motivo: string|null, head_sellado: string|null, head_actual: string|null, fuente: string|null}}
+ */
+function checkVerdictFreshness({ root, pipelineDir, issue, cwd } = {}) {
+  const vacio = { caduco: true, motivo: 'sellado-invalido', head_sellado: null, head_actual: null, fuente: null };
+  const issueNum = normalizeIssueNumber(issue);
+  if (issueNum === null) return { ...vacio, motivo: 'issue-invalido' };
+
+  let dir;
+  try { dir = resolvePipelineDir(root, pipelineDir); } catch { return vacio; }
+
+  let data = null;
+  let fuente = null;
+  for (const candidato of verdictDropfilePaths(dir, issueNum)) {
+    let crudo;
+    try { crudo = fs.readFileSync(candidato, 'utf8'); } catch { continue; }
+    let parsed;
+    try {
+      parsed = require('js-yaml').load(crudo);
+    } catch {
+      // Ilegible NO es ausente: un YAML roto es fail-closed, no "seguí buscando".
+      return { ...vacio, motivo: 'veredicto-ilegible' };
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ...vacio, motivo: 'veredicto-ilegible' };
+    }
+    data = parsed;
+    fuente = candidato;
+    break;
+  }
+  if (!data) return { ...vacio, motivo: 'sin-veredicto' };
+  if (data.resultado !== 'aprobado') return { ...vacio, motivo: 'veredicto-no-aprobado', fuente };
+
+  const sellado = sealedHeadOf(data);
+  // El sello manda sobre la exención: si el dropfile tuviera los dos (no
+  // debería: la migración saltea los sellados), el sello es la afirmación
+  // fuerte y la exención no lo puede ablandar.
+  if (!sellado) {
+    if (hasMigrationExemption(data)) {
+      return { caduco: false, motivo: null, head_sellado: null, head_actual: null, fuente };
+    }
+    // CA-3 — con CA-1 puesto, "sin sello" ya no significa "modo sin evidencia":
+    // significa que el sellado debía correr y no corrió.
+    return { ...vacio, motivo: 'sin-sello', fuente };
+  }
+
+  let actual;
+  try {
+    actual = deriveHead(cwd);
+  } catch {
+    return { ...vacio, motivo: 'head-no-resoluble', head_sellado: sellado, fuente };
+  }
+  if (actual !== sellado) {
+    return { caduco: true, motivo: 'head-desincronizado', head_sellado: sellado, head_actual: actual, fuente };
+  }
+  return { caduco: false, motivo: null, head_sellado: sellado, head_actual: actual, fuente };
+}
+
+/**
+ * CA-6 / CA-10 — lee el contador de re-encolados por caducidad.
+ *
+ * Ausente ⇒ `{intentos: 0}`. Corrupto, ilegible, no-JSON, o con un `intentos`
+ * que no es entero ≥ 0 ⇒ `{intentos: MAX_SEAL_REQUEUES, corrupto: true}`, o sea
+ * AGOTADO, nunca `0`: un contador que se puede resetear corrompiéndolo es un
+ * contador que no acota nada.
+ */
+function readSealRetries({ root, pipelineDir, issue } = {}) {
+  const agotado = { intentos: MAX_SEAL_REQUEUES, ultimo_motivo: null, ts: null, corrupto: true };
+  const issueNum = normalizeIssueNumber(issue);
+  if (issueNum === null) return agotado;
+  let dir;
+  try { dir = resolvePipelineDir(root, pipelineDir); } catch { return agotado; }
+  let crudo;
+  try {
+    crudo = fs.readFileSync(sealRetriesPath(dir, issueNum), 'utf8');
+  } catch (e) {
+    // Sólo la AUSENCIA es cero. Un EACCES/EISDIR es ilegible ⇒ agotado.
+    if (e && e.code === 'ENOENT') return { intentos: 0, ultimo_motivo: null, ts: null, corrupto: false };
+    return agotado;
+  }
+  let parsed;
+  try { parsed = JSON.parse(crudo); } catch { return agotado; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return agotado;
+  if (!Number.isInteger(parsed.intentos) || parsed.intentos < 0) return agotado;
+  return {
+    intentos: parsed.intentos,
+    ultimo_motivo: parsed.ultimo_motivo === null || parsed.ultimo_motivo === undefined
+      ? null
+      : sanitizeFreshnessReason(parsed.ultimo_motivo),
+    ts: typeof parsed.ts === 'string' ? parsed.ts : null,
+    corrupto: false,
+  };
+}
+
+/**
+ * CA-8 — regla de reset ÚNICA: el contador se borra sólo cuando delivery pasa el
+ * chequeo de frescura y efectivamente pushea el SHA verificado. NO lo resetean
+ * un re-encolado exitoso, una aprobación nueva de QA por sí sola, un rebote de
+ * otra fase, ni el paso del tiempo.
+ *
+ * Idempotente y best-effort: no poder borrarlo no puede tumbar una entrega ya
+ * consumada (a lo sumo el próximo caduco escala una vuelta antes).
+ */
+function clearSealRetries({ root, pipelineDir, issue } = {}) {
+  const issueNum = normalizeIssueNumber(issue);
+  if (issueNum === null) return false;
+  let dir;
+  try { dir = resolvePipelineDir(root, pipelineDir); } catch { return false; }
+  try {
+    fs.rmSync(sealRetriesPath(dir, issueNum), { force: true });
+    return true;
+  } catch { return false; }
+}
+
+function writeSealRetries(pipelineDir, issueNum, payload) {
+  const file = sealRetriesPath(pipelineDir, issueNum);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(payload));
+}
+
+function enqueueJsonOrder(dir, filename, payload) {
+  fs.mkdirSync(dir, { recursive: true });
+  return require('./dropfile-writer').writeUniqueFileSync({
+    dir, filename, data: JSON.stringify(payload),
+  }).filePath;
+}
+
+function appendAudit(pipelineDir, file, entry) {
+  try {
+    const logDir = path.join(pipelineDir, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.appendFileSync(path.join(logDir, file), `${JSON.stringify(entry)}\n`);
+  } catch { /* la auditoría es best-effort: nunca frena la reparación */ }
+}
+
+/**
+ * CA-12 — ¿hay un re-encolado por caducidad ABIERTO para el issue?
+ *
+ * Abierto = la orden está en `pendiente/` (el Pulpo todavía no la drenó) o en
+ * `trabajando/` (la está drenando). Mientras lo esté, el issue declara
+ * `qa:pending` y NO se le propaga gate al PR: durante esa ventana nadie
+ * verificó el HEAD actual.
+ *
+ * Fail-closed: si el directorio no se puede leer por algo que NO sea "no
+ * existe", se contesta `true` (hay re-encolado abierto) — no propagar un label
+ * de gate deja el PR cerrado, que es el lado seguro.
+ */
+function hasOpenRequeue({ root, pipelineDir, issue } = {}) {
+  const issueNum = normalizeIssueNumber(issue);
+  if (issueNum === null) return true;
+  let dir;
+  try { dir = resolvePipelineDir(root, pipelineDir); } catch { return true; }
+  const prefijo = `${issueNum}-`;
+  for (const segmentos of [REQUEUE_QUEUE_DIR, REQUEUE_INFLIGHT_DIR]) {
+    let entries;
+    try {
+      entries = fs.readdirSync(path.join(dir, ...segmentos));
+    } catch (e) {
+      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) continue;
+      return true;
+    }
+    if (entries.some(f => f.startsWith(prefijo) && f.endsWith('.json'))) return true;
+  }
+  return false;
+}
+
+/**
+ * Ficha de decisión de la escalada (CA-9): qué HEAD se selló, cuál es el actual
+ * y cuántas vueltas hubo. Va a un comentario del ISSUE, nunca del PR (SEC-I: el
+ * repo es público). Sólo interpola slugs categóricos y SHAs — jamás rutas ni
+ * contenido de artefactos.
+ */
+function buildEscalationBody({ motivo, headSellado, headActual, intentos }) {
+  const sellado = HEX40.test(String(headSellado || '')) ? String(headSellado) : 'desconocido';
+  const actual = HEX40.test(String(headActual || '')) ? String(headActual) : 'desconocido';
+  return [
+    '## ⛔ Veredicto de QA caduco — se agotaron los re-encolados automáticos',
+    '',
+    `El pipeline detectó que el veredicto de QA de este issue ya no habla del código que se iba a integrar, y volvió a pedir la verificación ${intentos} vez/veces. Sigue pasando, así que deja de intentarlo solo.`,
+    '',
+    '| Dato | Valor |',
+    '|---|---|',
+    `| Commit que QA verificó | \`${sellado}\` |`,
+    `| Commit actual de la rama | \`${actual}\` |`,
+    `| Re-encolados automáticos | ${intentos} / ${MAX_SEAL_REQUEUES} |`,
+    `| Motivo | ${describeFreshnessFailure(motivo)} |`,
+    '',
+    'El código **no se integró**: la entrega frenó antes de tocar el remoto. El gate del issue quedó en `qa:pending`.',
+    '',
+    '_Escalado por el gate de caducidad del sello de evidencia de QA (#6496)._',
+  ].join('\n');
+}
+
+/**
+ * CA-11 / CA-12 / CA-13 — reparación acotada de un veredicto caduco.
+ *
+ * INVALIDA, no re-firma (CA-11 / SEC-3, el riesgo #1 de #6475): esta función no
+ * recalcula ningún hash ni preserva `resultado: aprobado`. Lo único que hace es
+ * (a) contar, (b) degradar el gate del issue y (c) encolar la orden que el Pulpo
+ * drena para volver a correr verificación contra el HEAD actual.
+ *
+ * NO toca `procesado/` (CA-13 / SEC-G): el Pulpo es el único dueño del lifecycle
+ * del work-file y escanea ese directorio en el loop de routing; un move desde
+ * delivery produce una carrera que pierde el veredicto. Precedentes reusados:
+ * `encolarOrdenGithub` (cola de `servicios/github`) y `product-control-drainer`.
+ *
+ * NO toca el presupuesto de routing (CA-6): no escribe `rebote_tipo: 'routing'`
+ * ni `rebote_routing_numero`, que son los ÚNICOS campos que el Pulpo cuenta para
+ * `MAX_ROUTING_BOUNCES` / `blocked:routing-manual` (`pulpo.js:4985`).
+ *
+ * @param {{root?: string, pipelineDir?: string, issue: string|number, motivo: string, headSellado?: string|null, headActual?: string|null, ahora?: string}} params
+ * @returns {{ok: boolean, escalado: boolean, intentos: number, motivo: string, ordenes: string[]}}
+ */
+function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, headActual, ahora } = {}) {
+  const issueNum = normalizeIssueNumber(issue);
+  if (issueNum === null) {
+    return { ok: false, escalado: false, intentos: 0, motivo: 'issue-invalido', ordenes: [] };
+  }
+  const dir = resolvePipelineDir(root, pipelineDir);
+  const motivoSeguro = sanitizeFreshnessReason(motivo);
+  const ts = typeof ahora === 'string' && ahora ? ahora : new Date().toISOString();
+  const stamp = ts.replace(/[^0-9]/g, '');
+  const ghQueue = path.join(dir, 'servicios', 'github', 'pendiente');
+  const ordenes = [];
+
+  // CA-9 — el contador se lee ANTES de re-encolar.
+  const previo = readSealRetries({ pipelineDir: dir, issue: issueNum });
+
+  if (previo.intentos >= MAX_SEAL_REQUEUES) {
+    ordenes.push(enqueueJsonOrder(ghQueue, `${issueNum}-seal-caduco-needs-human-${stamp}.json`, {
+      action: 'label', issue: issueNum, label: 'needs-human', origen: 'gate-caducidad-sello',
+    }));
+    ordenes.push(enqueueJsonOrder(ghQueue, `${issueNum}-seal-caduco-ficha-${stamp}.json`, {
+      action: 'comment', issue: issueNum,
+      body: buildEscalationBody({ motivo: motivoSeguro, headSellado, headActual, intentos: previo.intentos }),
+    }));
+    appendAudit(dir, CADUCIDAD_AUDIT_FILE, {
+      ts, issue: issueNum, evento: 'escalado', motivo: motivoSeguro,
+      intentos: previo.intentos, contador_corrupto: previo.corrupto === true,
+    });
+    // CA-8 — la escalada NO resetea el contador.
+    return { ok: true, escalado: true, intentos: previo.intentos, motivo: motivoSeguro, ordenes };
+  }
+
+  // CA-7 — `intentos` sube una vez por RE-ENCOLADO POR CADUCIDAD. Contar fallos
+  // de re-sellado dejaba el bucle sin cota: el camino que esta historia habilita
+  // es una caducidad EXITOSA que re-encola, no un fallo, así que el contador
+  // nunca subía y la escalada nunca disparaba (SEC-E).
+  const intentos = previo.intentos + 1;
+  writeSealRetries(dir, issueNum, { intentos, ultimo_motivo: motivoSeguro, ts });
+
+  // CA-12 / SEC-C — el label del issue se degrada EN EL MISMO ACTO. El label es
+  // la autoridad que leen el pre-check de `/delivery` (CLAUDE.md) y la
+  // propagación al PR: invalidar el dropfile y dejar `qa:passed` vivo invalidaba
+  // la mitad. La exclusión mutua remove-then-add la resuelve
+  // `gate-label-reconciler` dentro del worker de `servicio-github`.
+  ordenes.push(enqueueJsonOrder(ghQueue, `${issueNum}-seal-caduco-gate-${stamp}.json`, {
+    action: 'label', issue: issueNum, label: 'qa:pending', origen: 'gate-caducidad-sello',
+  }));
+
+  // CA-13 — la orden que drena el Pulpo. Delivery no renombra ni mueve nada.
+  ordenes.push(enqueueJsonOrder(path.join(dir, ...REQUEUE_QUEUE_DIR), `${issueNum}-seal-caduco-${stamp}.json`, {
+    tipo: REQUEUE_TYPE,
+    issue: issueNum,
+    motivo: motivoSeguro,
+    motivo_legible: describeFreshnessFailure(motivoSeguro),
+    head_sellado: HEX40.test(String(headSellado || '')) ? String(headSellado) : null,
+    head_actual: HEX40.test(String(headActual || '')) ? String(headActual) : null,
+    intentos,
+    ts,
+  }));
+
+  appendAudit(dir, CADUCIDAD_AUDIT_FILE, {
+    ts, issue: issueNum, evento: 're-encolado', motivo: motivoSeguro, intentos,
+  });
+  return { ok: true, escalado: false, intentos, motivo: motivoSeguro, ordenes };
+}
+
+/**
+ * CA-4 — Migración one-shot IDEMPOTENTE del backlog pre-sellado.
+ *
+ * Al activarse el gate hay ~10 dropfiles `aprobado` en
+ * `desarrollo/verificacion/procesado/` SIN `sello`, porque se escribieron antes
+ * de que existiera el sellado (#6495). Sin exención, el primer barrido los
+ * declararía caducos a todos y dispararía 10 corridas E2E completas sobre
+ * issues sanos ya revisados por review/PO/UX/seguridad: exactamente el daño que
+ * esta historia viene a eliminar. Por eso se materializa una exención acotada,
+ * ENUMERABLE y auditada issue por issue — desacuerdo explícito y argumentado con
+ * SEC-H, que pedía re-encolar el backlog.
+ *
+ * La exención NO relaja ningún otro gate: `qa:passed`/`qa:skipped` y el GATE 2
+ * de firma siguen intactos.
+ *
+ * La corre el PIPELINE (Pulpo), nunca un agente. Sólo sobre `procesado/*.qa` con
+ * `resultado: aprobado` y sin `sello`. Idempotente: correrla N veces produce el
+ * mismo estado y anuncia UNA sola vez (flag en disco).
+ *
+ * @param {{root?: string, pipelineDir?: string, ahora?: string}} params
+ * @returns {{exentos: number[], yaExentos: number[], saltados: number, anunciar: boolean}}
+ */
+function migratePreSealBacklog({ root, pipelineDir, ahora } = {}) {
+  const dir = resolvePipelineDir(root, pipelineDir);
+  const procesado = path.join(verificacionFasePath(dir), 'procesado');
+  const ts = typeof ahora === 'string' && ahora ? ahora : new Date().toISOString();
+  const resultado = { exentos: [], yaExentos: [], saltados: 0, anunciar: false };
+
+  // #3638 — `procesado/` no tiene sólo work-files: también viven ahí artifacts
+  // auxiliares (`<issue>.<skill>.guidance.txt`, flags `.` de notificación). El
+  // filtro canónico es `isMarkerArtifact`, igual que en `listWorkFiles` del
+  // Pulpo; el `.qa` de abajo acota además al veredicto que este módulo entiende.
+  const { isMarkerArtifact } = require('./marker-artifact');
+  let entries;
+  try { entries = fs.readdirSync(procesado).filter(f => !isMarkerArtifact(f)); } catch { entries = []; }
+
+  for (const fname of entries) {
+    if (fname.startsWith('.') || !fname.endsWith(`.${VERDICT_SKILL}`)) continue;
+    const issueNum = normalizeIssueNumber(fname.slice(0, -(VERDICT_SKILL.length + 1)));
+    if (issueNum === null) { resultado.saltados += 1; continue; }
+    const file = path.join(procesado, fname);
+    let data;
+    try { data = loadYamlFile(file); } catch { resultado.saltados += 1; continue; }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) { resultado.saltados += 1; continue; }
+    if (data.resultado !== 'aprobado') { resultado.saltados += 1; continue; }
+    // Un dropfile YA SELLADO no recibe exención: tiene contra qué chequearse.
+    if (sealedHeadOf(data)) { resultado.saltados += 1; continue; }
+    if (hasMigrationExemption(data)) { resultado.yaExentos.push(issueNum); continue; }
+
+    data.sello_exencion = { motivo: MIGRACION_MOTIVO, ts, derivado_por: MIGRACION_DERIVADO_POR };
+    try { dumpYamlFile(file, data); } catch { resultado.saltados += 1; continue; }
+    resultado.exentos.push(issueNum);
+    appendAudit(dir, MIGRACION_AUDIT_FILE, {
+      ts, issue: issueNum, evento: 'exencion-materializada', motivo: MIGRACION_MOTIVO,
+    });
+  }
+
+  // Anuncio ÚNICO: lo decide el flag en disco, no la cantidad de exentos de esta
+  // corrida — si dependiera de la cantidad, cualquier dropfile viejo que
+  // apareciera después volvería a "anunciar" la migración.
+  const flag = path.join(verificacionFasePath(dir), MIGRACION_ANUNCIO_FLAG);
+  if (!fs.existsSync(flag)) {
+    resultado.anunciar = true;
+    try {
+      fs.mkdirSync(path.dirname(flag), { recursive: true });
+      fs.writeFileSync(flag, JSON.stringify({ ts, exentos: resultado.exentos, ya_exentos: resultado.yaExentos }));
+    } catch { resultado.anunciar = false; }
+  }
+  return resultado;
+}
+
 module.exports = {
   sealQaVerdict, stripDeclaredSeal, mergeDeclaredSnapshots, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
   normalizeWorkspaces, MAX_WORKSPACES,
@@ -936,4 +1551,12 @@ module.exports = {
   resolvesToExistingFile,
   SEAL_REJECTED_BY,
   MAX_EVIDENCE_FIELDS, MAX_GLOB_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_LOG_FIELD_CHARS,
+  // #6496 — caducidad del veredicto sellado (consumidor del sello de #6495).
+  sealHeadOnly, checkVerdictFreshness, requeueVerification, migratePreSealBacklog,
+  readSealRetries, clearSealRetries, hasOpenRequeue,
+  normalizeIssueNumber, describeFreshnessFailure, sanitizeFreshnessReason,
+  sealedHeadOf, hasMigrationExemption, verdictDropfilePaths, sealRetriesPath,
+  resolvePipelineDir, verificacionFasePath,
+  MAX_SEAL_REQUEUES, REQUEUE_TYPE, REQUEUE_QUEUE_DIR, REQUEUE_INFLIGHT_DIR, REQUEUE_DONE_DIR,
+  MIGRACION_MOTIVO, MIGRACION_DERIVADO_POR, MIGRACION_AUDIT_FILE, MIGRACION_ANUNCIO_FLAG,
 };

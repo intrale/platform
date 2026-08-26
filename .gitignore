@@ -306,6 +306,13 @@ scripts/planner-plan.json
 .pipeline/servicios/*/trabajando/*
 .pipeline/servicios/*/listo/*
 .pipeline/servicios/*/procesado/*
+# #6496 — cola de re-encolados por caducidad del sello de QA. Estado runtime:
+# la escribe delivery.js y la drena el Pulpo. Mismo tratamiento que servicios/.
+.pipeline/verificacion-requeue/*/*
+!.pipeline/verificacion-requeue/*/.gitkeep
+# #6496 — contador de re-encolados por caducidad, por issue.
+.pipeline/desarrollo/verificacion/.*.seal-retries
+.pipeline/desarrollo/verificacion/.seal-migracion-anunciada
 # #2335 — estado operativo del connectivity-state (no comitear)
 .pipeline/connectivity-state.json
 .pipeline/blocked-by-infra.json

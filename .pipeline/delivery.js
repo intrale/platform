@@ -34,6 +34,27 @@ const operatorSignature = require('./lib/operator-signature');
 const gateLabelReconciler = require('./lib/gate-label-reconciler');
 // #5864 SEC-2 — procedencia del PR destino (defensa contra PRs de fork).
 const prProvenance = require('./lib/pr-provenance');
+// #6496 — consumidor del sello de evidencia de QA (#6495): caducidad + reparación.
+const qaEvidenceSeal = require('./lib/qa-evidence-seal');
+
+// #6496 — Raíz del ESTADO del pipeline.
+//
+// `entrega` corre en el WORKTREE del issue (`lib/phase-workspace.js` →
+// `EXISTING_WORKTREE_PHASES`), así que `__dirname` es el `.pipeline/` del
+// worktree: un árbol que tiene la estructura de directorios versionada pero
+// NINGÚN estado vivo y NINGÚN servicio drenándolo. Los dropfiles de
+// `desarrollo/verificacion/procesado/`, el contador de caducidad y la cola de
+// `servicios/github` viven en el `.pipeline/` del REPO PRINCIPAL, que el Pulpo
+// le pasa a todo agente en `PIPELINE_REPO_ROOT` (`pulpo.js`).
+//
+// Misma convención de env que los servicios (`servicio-github.js:46-52`), con
+// fallback a `__dirname` para el uso manual desde el repo principal.
+function resolveStatePipelineDir() {
+  if (process.env.PIPELINE_STATE_DIR) return path.resolve(process.env.PIPELINE_STATE_DIR);
+  if (process.env.PIPELINE_MAIN_ROOT) return path.join(path.resolve(process.env.PIPELINE_MAIN_ROOT), '.pipeline');
+  if (process.env.PIPELINE_REPO_ROOT) return path.join(path.resolve(process.env.PIPELINE_REPO_ROOT), '.pipeline');
+  return __dirname;
+}
 
 // ---- #4575 · GATE 2 defense-in-depth (revalidación firma↔HEAD) --------------
 //
@@ -173,9 +194,22 @@ function gh(ghArgs, opts = {}) {
 //   - Se emite UNA sola orden (sin `gate_reconciler`) para que el worker de
 //     `servicio-github` relea los labels frescos DEL PR y haga remove-then-add
 //     sincrónico (exclusión mutua garantizada, sin race de orden en la cola).
-function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prHead, repo } = {}) {
+function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prHead, repo, pipelineDir, hasOpenRequeue } = {}) {
   const issueNum = parseInt(issue, 10);
   if (!Number.isInteger(issueNum) || issueNum <= 0) return { ok: false, reason: 'sin_issue' };
+  // #6496 CA-12 / SEC-C — mientras haya un re-encolado de verificación ABIERTO,
+  // el gate del issue NO viaja al PR. El label del issue es la autoridad que lee
+  // esta propagación; si un veredicto caducó, `requeueVerification` ya lo degradó
+  // a `qa:pending` y hay una orden en vuelo para volver a verificar. Propagar
+  // igual —aunque sea `qa:pending`— convierte una ventana de re-verificación en
+  // una afirmación sobre el PR que nadie hizo. Fail-closed: `hasOpenRequeue`
+  // contesta `true` ante cualquier error que no sea "la cola no existe".
+  const requeueAbierto = typeof hasOpenRequeue === 'function'
+    ? hasOpenRequeue
+    : qaEvidenceSeal.hasOpenRequeue;
+  if (requeueAbierto({ pipelineDir: pipelineDir || resolveStatePipelineDir(), issue: issueNum })) {
+    return { ok: false, reason: 're_encolado_de_verificacion_abierto' };
+  }
   const pr = parseInt(prNumber, 10);
   if (!Number.isInteger(pr) || pr <= 0) return { ok: false, reason: 'pr_no_resuelto' };
   if (typeof branch !== 'string' || !branch.startsWith(`agent/${issueNum}-`)) {
@@ -228,12 +262,22 @@ function propagateGateLabelToPr({ issue, prNumber, branch, repo, pipelineDir }) 
         try { prHead = JSON.parse(prView.stdout || 'null'); } catch { prHead = null; }
       }
     }
-    const res = buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prHead, repo });
+    const res = buildPrGatePropagation({
+      issue, prNumber, branch, issueLabels, prHead, repo,
+      // #6496 — el estado (y la cola de re-encolados) vive en el repo principal,
+      // no en el worktree donde corre `entrega`.
+      pipelineDir: resolveStatePipelineDir(),
+    });
     if (!res.ok) {
       console.log(`→ gate QA: no se propaga al PR (${res.reason}${res.detail ? `: ${res.detail}` : ''})`);
       return null;
     }
-    const queueDir = path.join(pipelineDir || __dirname, 'servicios', 'github', 'pendiente');
+    // #6496 — la cola tiene que ser la del REPO PRINCIPAL. `entrega` corre en el
+    // worktree del issue, así que el `__dirname` de este archivo apunta al
+    // `.pipeline/` del worktree: un árbol con la estructura de directorios
+    // versionada pero sin ningún `servicio-github` drenándolo. La orden quedaba
+    // escrita en una cola muerta y el label nunca llegaba al PR.
+    const queueDir = path.join(pipelineDir || resolveStatePipelineDir(), 'servicios', 'github', 'pendiente');
     fs.mkdirSync(queueDir, { recursive: true });
     // #6226 - escritura fail-closed. Se conserva el nombre; solo ante colision
     // real se desambigua con `-<n>`.
@@ -380,14 +424,112 @@ function main() {
     console.log(`🔏 GATE 2 OK: ${gate.reason}`);
   }
 
+  // 5.6 #6496 — GATE 3: CADUCIDAD DEL VEREDICTO DE QA.
+  //
+  // Va acá y no en otro lado: DESPUÉS del GATE 2 y ANTES del push. Un chequeo
+  // posterior al push no sirve de nada —el remoto ya se movió— y uno anterior al
+  // GATE 2 gastaría trabajo en issues que la firma va a frenar igual.
+  //
+  // Qué resuelve: hoy un desfasaje entre el HEAD que QA verificó y el HEAD que se
+  // va a integrar no lo detecta nadie de forma determinista (lo detectó un agente
+  // PO leyendo un YAML a mano en #6258), y cuando se detecta el issue muere con
+  // `needs-human` + `blocked:routing-manual`. Acá se convierte en una reparación
+  // automática acotada: re-encolar verificación, máximo dos veces, y recién
+  // entonces escalar.
+  //
+  // SEC-B — el issue se normaliza a entero ANTES de construir cualquier path.
+  const issueNumGate = qaEvidenceSeal.normalizeIssueNumber(args.issue);
+  const statePipelineDir = resolveStatePipelineDir();
+  let shaVerificado = null;
+  if (args.issue && issueNumGate === null) {
+    // Fail-closed: con un `--issue` que no es un número de issue no se puede ni
+    // resolver el veredicto ni nombrar el contador. No se toca el remoto.
+    console.error('❌ --issue inválido: no se puede verificar la frescura del veredicto de QA');
+    process.exit(1);
+  }
+  if (issueNumGate !== null) {
+    // SEC-A — el módulo deriva el HEAD él mismo (`execFileSync` sin shell +
+    // `/^[0-9a-f]{40}$/`). NUNCA se le pasa `snap.head`: ese campo NO EXISTE en
+    // `lib/delivery/git-context.js`, así que el snippet original de la historia
+    // nacía fail-open (`undefined === undefined`) o fail-siempre-caduco.
+    const stale = qaEvidenceSeal.checkVerdictFreshness({
+      pipelineDir: statePipelineDir, issue: issueNumGate, cwd,
+    });
+    if (stale.caduco) {
+      // CA-13 — encola la orden, NO mueve el dropfile: el Pulpo es el único
+      // dueño del lifecycle del work-file y escanea `procesado/` en su loop.
+      let repar;
+      try {
+        repar = qaEvidenceSeal.requeueVerification({
+          pipelineDir: statePipelineDir,
+          issue: issueNumGate,
+          motivo: stale.motivo,
+          headSellado: stale.head_sellado,
+          headActual: stale.head_actual,
+        });
+      } catch (e) {
+        // Ni siquiera se pudo encolar la reparación. Se frena igual: lo que no
+        // se puede hacer es pushear un HEAD que nadie verificó.
+        console.error(`⛔ veredicto caduco y no se pudo encolar la reparación: ${e.message}`);
+        console.log(JSON.stringify({ estado: 'veredicto_caduco', issue: issueNumGate, motivo: stale.motivo }));
+        process.exit(0);
+      }
+      console.error(`⛔ Entrega frenada — ${qaEvidenceSeal.describeFreshnessFailure(stale.motivo)}`);
+      console.error(`⛔ veredicto caduco — ${repar.escalado
+        ? `escalado a needs-human tras ${repar.intentos} re-encolado(s) automático(s)`
+        : `re-encolado a verificación (${repar.intentos}/${qaEvidenceSeal.MAX_SEAL_REQUEUES})`}`);
+      console.error('⛔ NO se pushó nada y NO se creó/mergeó ningún PR.');
+      // CA-14 — contrato machine-readable como ÚLTIMA línea de stdout. Quien
+      // ejecuta este script es un agente LLM: `exit 0` a secas es
+      // indistinguible de "entrega exitosa" y produce el falso positivo de R3
+      // en `delivery-status.js` (#5220/#5244, markers `aprobado` cuyo motivo
+      // confiesa "merge bloqueado"). Sale con 0 —no 1— para que el Pulpo pueda
+      // drenar la orden y re-encolar; un `exit 1` dejaría el issue muerto igual
+      // que hoy.
+      console.log(JSON.stringify({
+        estado: 'veredicto_caduco',
+        issue: issueNumGate,
+        motivo: stale.motivo,
+        escalado: repar.escalado === true,
+        intentos: repar.intentos,
+      }));
+      process.exit(0);
+    }
+    // CA-15 — se pushea el SHA VERIFICADO, no una referencia simbólica.
+    shaVerificado = stale.head_actual;
+    console.log(`🔎 GATE 3 OK: el veredicto de QA está sellado contra el HEAD actual${
+      shaVerificado ? ` (${shaVerificado.slice(0, 8)}…)` : ' (exención de migración pre-sellado)'}`);
+  }
+
   // 6. Push (asume commits ya hechos por el agente)
+  //
+  // #6496 CA-15 / SEC-F — con un SHA verificado se pushea ESE SHA explícito, no
+  // el nombre de la rama. Antes se verificaba un SHA y se pusheaba un nombre que
+  // pudo haber avanzado entre el chequeo y el push (TOCTOU): si un commit entra
+  // en esa ventana, `git push -u origin <branch>` lo sube igual y el gate queda
+  // hablando de un commit que no es el que se integró. El GATE 2 recomputa el
+  // HEAD por esta misma razón (#4575). Si el HEAD se movió, `git push <sha>:<ref>`
+  // sube exactamente lo verificado y nada más.
   console.log('\n→ git push...');
-  const push = spawnSync('git', ['-C', cwd, 'push', '-u', 'origin', snap.branch], {
-    stdio: 'inherit',
-  });
+  const pushArgs = shaVerificado
+    ? ['-C', cwd, 'push', 'origin', `${shaVerificado}:refs/heads/${snap.branch}`]
+    : ['-C', cwd, 'push', '-u', 'origin', snap.branch];
+  const push = spawnSync('git', pushArgs, { stdio: 'inherit' });
   if (push.status !== 0) {
     console.error('❌ git push falló');
     process.exit(1);
+  }
+  if (shaVerificado) {
+    // `push <sha>:refs/heads/<branch>` no setea upstream (no acepta `-u`).
+    // Best-effort: sin upstream el PR se crea igual (`--head` es explícito), así
+    // que un fallo acá no puede frenar una entrega ya pusheada.
+    spawnSync('git', ['-C', cwd, 'branch', `--set-upstream-to=origin/${snap.branch}`, snap.branch], { stdio: 'ignore' });
+  }
+  // CA-8 — regla de reset ÚNICA del contador de caducidad: recién acá, cuando un
+  // veredicto FRESCO efectivamente se integró. No lo resetean un re-encolado
+  // exitoso, una aprobación nueva de QA por sí sola, ni el paso del tiempo.
+  if (issueNumGate !== null) {
+    qaEvidenceSeal.clearSealRetries({ pipelineDir: statePipelineDir, issue: issueNumGate });
   }
 
   // 7. Crear PR (si no existe)
@@ -446,7 +588,7 @@ function main() {
     prNumber,
     branch: snap.branch,
     repo: args.repo,
-    pipelineDir: __dirname,
+    pipelineDir: resolveStatePipelineDir(),
   });
 
   console.log(`\n✅ Delivery completo`);
@@ -477,4 +619,6 @@ module.exports = {
   // #5172 — renombrado desde `loadConfigBestEffort`: ya no es best-effort, es
   // fail-closed. El nombre viejo describía justo la degradación que se eliminó.
   loadConfigFailClosed,
+  // #6496 — raíz del estado del pipeline (repo principal, no worktree).
+  resolveStatePipelineDir,
 };
