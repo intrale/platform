@@ -495,3 +495,119 @@ test('#6458 CA-9: buildAuditReqRef no puede filtrar un path ni un chat id por tr
   const ref = mod.buildAuditReqRef('../../etc/passwd-1718000010000');
   assert.ok(ref === null || (!ref.includes('/') && !ref.includes('..')));
 });
+
+// =============================================================================
+// #6460 — updateRequestMeta: actualización MERGE-AWARE del sidecar.
+//
+// El riesgo que estos tests anclan: usar `writeRequestMeta` para estampar un
+// campo suelto SOBREESCRIBE el sidecar entero y borra `resultado`/`provider`,
+// con lo cual DESAPARECE el badge que entregó #6459. Es una regresión invisible
+// en tests de la capa de aviso y visible sólo en el dashboard del operador.
+// =============================================================================
+
+test('#6460: updateRequestMeta preserva resultado y provider al estampar aviso_entregado', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000000';
+  mod.writeRequestMeta(dir, reqId, {
+    resultado: 'fallback', provider: 'openai', sameProviderVerification: true,
+  });
+
+  mod.updateRequestMeta(dir, reqId, { aviso_entregado: false });
+
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8'));
+  assert.equal(meta.resultado, 'fallback');
+  assert.equal(meta.provider, 'openai');
+  assert.equal(meta.sameProviderVerification, true);
+  assert.equal(meta.aviso_entregado, false);
+});
+
+test('#6460: updateRequestMeta NO pisa un resultado ya asentado (error gana sobre huerfano)', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000001';
+  mod.writeRequestMeta(dir, reqId, { resultado: 'error', provider: 'anthropic' });
+
+  mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: false });
+
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8'));
+  assert.equal(meta.resultado, 'error', 'la precedencia de #6459 CA-1 no se invierte');
+});
+
+test('#6460: sin sidecar previo se crea con el resultado del patch', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000002';
+  const p = mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: false });
+  assert.ok(p, 'devuelve el path escrito');
+
+  const meta = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.equal(meta.resultado, 'huerfano');
+  assert.equal(meta.aviso_entregado, false);
+  assert.equal(meta.provider, '');
+});
+
+test('#6460: aviso_entregado es TRI-ESTADO — no-boolean se OMITE del sidecar', () => {
+  const dir = tmpDir();
+  for (const [i, valor] of ['false', 0, null, 'si', undefined, {}].entries()) {
+    const reqId = `123-171800000010${i}`;
+    mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: valor });
+    const meta = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8'));
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(meta, 'aviso_entregado'),
+      `${JSON.stringify(valor)} no es boolean ⇒ el campo se omite`,
+    );
+  }
+  // Y `true` sí se persiste (el render decide no pintarlo, pero el dato existe).
+  const reqOk = '123-1718000000200';
+  mod.updateRequestMeta(dir, reqOk, { aviso_entregado: true });
+  const metaOk = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqOk)), 'utf8'));
+  assert.equal(metaOk.aviso_entregado, true);
+});
+
+test('#6460: un aviso_entregado ya asentado sobrevive a un patch que no lo trae', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000300';
+  mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: false });
+  mod.updateRequestMeta(dir, reqId, { provider: 'anthropic' });
+
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8'));
+  assert.equal(meta.aviso_entregado, false);
+  assert.equal(meta.provider, 'anthropic');
+});
+
+test('#6460: un sidecar corrupto no rompe — se reescribe desde el patch', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000400';
+  fs.writeFileSync(path.join(dir, mod.metaFileName(reqId)), '{no json', 'utf8');
+
+  const p = mod.updateRequestMeta(dir, reqId, { resultado: 'huerfano', aviso_entregado: false });
+  assert.ok(p);
+  const meta = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.equal(meta.resultado, 'huerfano');
+});
+
+test('#6460: el shape es CERRADO — ni el sidecar leído ni el patch inyectan claves nuevas', () => {
+  const dir = tmpDir();
+  const reqId = '123-1718000000500';
+  fs.writeFileSync(
+    path.join(dir, mod.metaFileName(reqId)),
+    JSON.stringify({ resultado: 'ok', secreto: 'AKIA-no-deberia-estar', __proto__: { pwn: 1 } }),
+    'utf8',
+  );
+
+  mod.updateRequestMeta(dir, reqId, { aviso_entregado: false, otroCampo: 'x' });
+
+  const raw = fs.readFileSync(path.join(dir, mod.metaFileName(reqId)), 'utf8');
+  assert.ok(!raw.includes('secreto'), 'un campo ajeno del archivo no se propaga');
+  assert.ok(!raw.includes('otroCampo'), 'un campo ajeno del patch no se propaga');
+  assert.equal({}.pwn, undefined, 'sin prototype pollution');
+  assert.deepEqual(
+    Object.keys(JSON.parse(raw)).sort(),
+    ['aviso_entregado', 'crossProviderDispatch', 'provider', 'resultado'],
+  );
+});
+
+test('#6460: updateRequestMeta es best-effort — un logDir inexistente devuelve null y no tira', () => {
+  const p = mod.updateRequestMeta(
+    path.join(tmpDir(), 'no', 'existe'), '123-1718000000600', { aviso_entregado: false },
+  );
+  assert.equal(p, null);
+});
