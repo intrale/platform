@@ -281,6 +281,11 @@ const sttConfidence = require('./lib/commander/stt-confidence');
 const commanderRequestLog = require('./lib/commander/request-log'); // #3949 EP7-H2
 const sherlockRequestLog = require('./lib/sherlock/request-log'); // #4335 — log por corrida de Sherlock
 const commanderRequestClassify = require('./lib/commander/request-classify'); // #3951 EP7-H4
+// #6459 — barrido de rescate de turnos huérfanos (núcleo puro + capa de I/O).
+// El módulo NO requiere `pulpo.js`: `commanderOutboundStatus` y
+// `noteFallbackDeliveryResolved` entran por inyección (`deps`), para no crear un
+// ciclo de requires ni arrancar el proceso entero dentro de un unit test.
+const commanderOrphanSweep = require('./lib/commander/orphan-sweep');
 // #3935 (EP4-H2) — Resumen incremental de la conversación: compacta turnos
 // viejos a un bloque "resumen no autoritativo" + últimos K verbatim, acotando el
 // prompt sin perder coherencia. Módulo puro; la recompactación corre en
@@ -16339,6 +16344,19 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     let commanderDisclaimerType = null;       // disclaimer F-5/F-6 si aplicó
     let commanderTurnHadError = false;        // hubo excepción en el bloque
     let commanderResultPersisted = false;     // idempotencia: no clasificar 2 veces
+    // #6459 — camino RÁPIDO in-process del huérfano (CA-1). Son dos señales
+    // distintas y las dos hacen falta:
+    //   `commanderRespuestaProducida` — el turno generó una respuesta no vacía,
+    //     o sea que HABÍA algo concreto para entregarle al operador.
+    //   `commanderSalienteRegistrado` — el saliente quedó efectivamente asentado
+    //     (se alcanzó la etapa `envío` del canal no falsificable).
+    // `huerfano` = hubo respuesta ∧ el saliente nunca se registró. Sin la primera
+    // señal, CUALQUIER early-return (path gated, comando determinista, sin
+    // mensaje) se marcaría huérfano — justo el falso positivo que CA-10 prohíbe.
+    // Este camino COMPLEMENTA al barrido, no lo duplica: el barrido nunca toca
+    // un turno que ya asentó `resultado` (CA-6 / R-3).
+    let commanderRespuestaProducida = false;
+    let commanderSalienteRegistrado = false;
 
     // Clasifica + persiste el sidecar + agrega la etapa `resultado` al log. Es
     // un closure (cierra sobre las vars de arriba + requestLog) para poder
@@ -16352,6 +16370,10 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
           sherlockVerdict: { verdict: commanderSherlockVerdict, sameProvider: commanderSameProviderVerif },
           sherlockDisclaimerType: commanderDisclaimerType,
           hadError: hadError === true || commanderTurnHadError === true,
+          // #6459 — CA-1. Dentro del clasificador `error` tiene precedencia sobre
+          // `huerfano`, así que un turno que además falló sigue leyéndose `error`.
+          deliveryUnconfirmed: commanderRespuestaProducida === true
+            && commanderSalienteRegistrado !== true,
         });
         // Etapa visible en el log consolidado (SEC-3: SOLO strings/booleans).
         requestLog.stage('resultado', {
@@ -17407,6 +17429,9 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       try { if (commanderPresence) commanderPresence.updatePhase('enviando'); } catch { /* no bloqueante */ }
       if (respuesta) {
         let enviado = false;
+        // #6459 — hubo algo concreto para entregarle al operador. Si el turno
+        // cierra sin registrar el saliente, esa respuesta se perdió ⇒ huérfano.
+        commanderRespuestaProducida = !!String(respuesta).trim();
 
         // #4139 — TEXTO de salida FROZEN: snapshot atómico de la `respuesta` ya
         // verificada (con su disclaimer F-5/F-6/same-provider aplicado arriba). Se
@@ -17526,6 +17551,10 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           chars: outboundText.length,
           disclaimer: sherlockDisclaimerType || 'ninguno',
         });
+        // #6459 — el saliente quedó asentado en el canal no falsificable. Va
+        // DESPUÉS de stage('envío'): si algo tira en el medio, la marca no se
+        // pone y el turno cierra como huérfano, que es la lectura honesta.
+        commanderSalienteRegistrado = true;
         requestLog.line(`respuesta: ${outboundText}`);
 
         // #5835 (CA-3) — ANEXO de estado de ola. El operador hizo una pregunta
@@ -18654,6 +18683,43 @@ let desyncBlockedNotifiedTick = 0;
 // corresponde. A poll_interval 30s, 10 ticks ≈ 5min.
 let desyncEvalTick = 0;
 const DESYNC_EVAL_EVERY_TICKS = 10;
+
+// #6459 CA-12 — Gateo del barrido de huérfanos. El punto de wiring del loop
+// corre en CADA iteración (~30s) y el barrido se declaró a ~5 min: sin gateo
+// correría ~10x más seguido de lo previsto y releería el historial entero cada
+// vez. Mismo patrón y misma cadencia que `desyncEvalTick`.
+let orphanSweepTick = 0;
+const ORPHAN_SWEEP_EVERY_TICKS = 10;   // ~5 min con poll_interval 30s
+
+// Contador PURO del gateo, extraído a función para que el test pueda probar que
+// M iteraciones del loop disparan exactamente floor(M/N) barridos sin levantar
+// el loop. El loop usa ESTA función, así que el test ejercita el código real.
+function orphanSweepGate(prevTick, everyTicks = ORPHAN_SWEEP_EVERY_TICKS) {
+  const n = (Number.isFinite(everyTicks) && everyTicks > 0) ? Math.floor(everyTicks) : 1;
+  const tick = ((Number.isFinite(prevTick) ? prevTick : 0) + 1) % n;
+  return { tick, due: tick === 0 };
+}
+
+// #6459 — Ejecuta el barrido con las dependencias del proceso INYECTADAS. El
+// módulo `lib/commander/orphan-sweep.js` no requiere `pulpo.js` (sería un ciclo y
+// arrancaría el mundo dentro de un test), así que el cableado vive acá:
+//   · `commanderOutboundStatus` — ÚNICA fuente de verdad de entrega (CA-7).
+//   · `noteFallbackDeliveryResolved` — evento TERMINAL, jamás reescritura (A3).
+//   · `currentBootId` — guarda de vida por boot, no por PID ni por reloj (B1).
+// `runOrphanSweep` ya es best-effort adentro y el caller lo envuelve igual en
+// try/catch (SEC-3). Un fallo deja rastro con la causa (CA-14).
+function ejecutarBarridoHuerfanos(origen) {
+  return commanderOrphanSweep.runOrphanSweep({
+    logDir: LOG_DIR,
+    pipelineDir: PIPELINE,
+    currentBootId: PULPO_BOOT_ID,
+    deps: {
+      outboundStatus: commanderOutboundStatus,
+      noteFallbackDeliveryResolved: inflightFallback.noteFallbackDeliveryResolved,
+      log: (msg) => log('commander', msg + ' [' + origen + ']'),
+    },
+  });
+}
 
 // Archivo de control para pausar/reanudar desde fuera
 const PAUSE_FILE = path.join(PIPELINE, '.paused');
@@ -22926,6 +22992,21 @@ async function mainLoop() {
     log('audit', `[partial-pause-audit] no pude iniciar cron de verifyChain: ${e.message}`);
   }
 
+  // #6459 — Boot hook del barrido de rescate de turnos huérfanos. Corre UNA vez
+  // al arranque para que el huérfano que dejó el proceso anterior se marque sin
+  // esperar los ~5 min del tick. Best-effort (SEC-3): jamás tumba el boot, y un
+  // fallo deja rastro con la causa (CA-14) en vez de degradar en silencio al
+  // mismo estado que "no hay huérfanos".
+  try {
+    const rBarrido = ejecutarBarridoHuerfanos('boot');
+    if (rBarrido && rBarrido.ok) {
+      log('commander', '[orphan-sweep] boot: ' + rBarrido.resumen.evaluados + ' turno(s) en ventana, '
+        + rBarrido.resumen.huerfanos + ' huérfano(s), ' + rBarrido.emitidos.length + ' evento(s) nuevo(s)');
+    }
+  } catch (e) {
+    log('commander', '[orphan-sweep] boot error (best-effort): ' + e.message);
+  }
+
   // #5821 CA-1 — Marca de arranque de la iteración anterior, para poder publicar
   // su duración REAL en el heartbeat. Es la magnitud contra la que el watchdog
   // dimensiona su umbral; sin ella sólo tendría la edad muestreada del
@@ -22973,6 +23054,19 @@ async function mainLoop() {
       // fallido). Append-only sobre commander-history.jsonl, ligado por
       // correlation_id. Best-effort: nunca rompe el loop principal.
       try { reconcileTelegramReceipts(); } catch (e) { log('telegram', `[reconcile] tick error: ${e.message}`); }
+
+      // #6459 CA-12 — Barrido de rescate de turnos huérfanos, GATEADO POR TICKS.
+      // Este punto del loop corre en CADA iteración (~30s) y el barrido se
+      // declaró a ~5 min, así que se gatea con el mismo patrón y la misma
+      // cadencia que `desyncEvalTick` (10 ticks). Sin el gateo correría ~10x más
+      // seguido de lo previsto y releería el historial entero cada vez.
+      // Best-effort: nunca rompe el loop, pero deja rastro si falla (CA-14).
+      const orphanGate = orphanSweepGate(orphanSweepTick);
+      orphanSweepTick = orphanGate.tick;
+      if (orphanGate.due) {
+        try { ejecutarBarridoHuerfanos('tick'); }
+        catch (e) { log('commander', `[orphan-sweep] tick error: ${e.message}`); }
+      }
 
       // Drain outbox de Telegram (context-relay, notificaciones, etc.)
       try {
@@ -23364,6 +23458,11 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _resetAutoRepairFailureDedupe,
     checkDesyncFlag,
     _getDesyncBlocked: () => desyncBlocked,
+    // #6459 — barrido de huérfanos: gateo puro + runner cableado, expuestos
+    // para los tests de cadencia (CA-12) y de inyección de dependencias.
+    orphanSweepGate,
+    ORPHAN_SWEEP_EVERY_TICKS,
+    ejecutarBarridoHuerfanos,
   };
   return; // No arrancar singleton ni mainLoop
 }

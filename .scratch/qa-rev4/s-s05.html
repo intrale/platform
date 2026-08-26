@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><body style="margin:0;width:1280px;height:720px;background:#0d1117;color:#e6edf3;font:15px/1.55 system-ui;padding:44px 56px;box-sizing:border-box;overflow:hidden"><div style="font:700 30px/1.3 system-ui;margin-bottom:6px">CA-14 · CA-15 y cierre</div><div style="color:#8b949e;font-size:16px;margin-bottom:26px"></div>
+<table style="width:100%;border-collapse:collapse;font-size:15px;margin-bottom:26px">
+<tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-10</td>
+<td style="padding:5px 18px 5px 0">Turnos sanos ⇒ cero marcas</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">integración con 4 turnos mezclados ⇒ 1 sola detección</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-11</td>
+<td style="padding:5px 18px 5px 0">Un huérfano ⇒ exactamente 1 evento terminal</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">N ≥ 3 barridos ⇒ 1 entrada por <code>commander_req_id</code></td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-12</td>
+<td style="padding:5px 18px 5px 0">Barrido gateado por ticks</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px"><code>ORPHAN_SWEEP_EVERY_TICKS = 10</code> — no corre en cada iteración</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-14</td>
+<td style="padding:5px 18px 5px 0">Un barrido que falla deja rastro</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">nunca degrada al mismo estado que "todo sano"; el tick sigue vivo</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-15</td>
+<td style="padding:5px 18px 5px 0">Ramas de decisión enumeradas</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px"><code>B-01</code>…<code>B-14</code>, cada una con su test homónimo</td></tr>
+</table>
+<div style="border:1px solid #238636;background:rgba(63,185,80,0.10);border-radius:10px;padding:20px 24px">
+<div style="font:700 24px/1.3 system-ui;color:#3FB950">Veredicto: APROBADO — 15 / 15 criterios cumplen, 0 defectos</div>
+<div style="margin-top:10px;color:#8b949e;font-size:15px">Contrato visual: 6 secciones declaradas · 6 verificadas · 0 no verificadas · <code>diffs: []</code>.<br>
+Consumidor real ejecutado: <code>visual-coverage-recorder.recordApprovedCoverage</code> ⇒ <code>written: true</code> → <code>visual-coverage-rev0.json</code>.</div>
+</div>
