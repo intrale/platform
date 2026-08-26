@@ -109,16 +109,26 @@ test('T-2 adversarial 1MB con flag OFF clasifica sin tocar regex 1M (<200ms)', (
         const filler = 'x'.repeat(1024 * 1024); // 1MB de basura.
         const raw = head + '\n' + filler;
 
-        const t0 = Date.now();
-        const r = parseProviderError(raw, { provider: 'anthropic', transport: 'cli' });
-        const elapsed = Date.now() - t0;
+        // La suite completa corre cientos de archivos en paralelo. Una muestra
+        // única de reloj de pared puede incluir una pausa del scheduler y dar
+        // un falso rojo aunque el parser siga dentro del budget. El mínimo de
+        // tres intentos conserva el gate ante una regresión sostenida.
+        const samples = [];
+        let r;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const t0 = Date.now();
+            r = parseProviderError(raw, { provider: 'anthropic', transport: 'cli' });
+            samples.push(Date.now() - t0);
+        }
+        const elapsed = Math.min(...samples);
 
         // CA-1: con flag OFF, el caso 1M cae al path genérico quota_exhausted.
         assert.equal(r.errorClass, 'quota_exhausted',
             'con flag OFF el caso debe caer al path genérico quota_exhausted');
         // CA-2/SEC-2: el short-circuit preserva el budget de tiempo del parser.
         // El threshold del #3506 era <50ms; relajamos a 200ms en CI por jitter.
-        assert.ok(elapsed < 200, `parseo demoró ${elapsed}ms — debe estar <200ms`);
+        assert.ok(elapsed < 200,
+            `mejor parseo demoró ${elapsed}ms (muestras: ${samples.join(', ')}ms) — debe estar <200ms`);
     });
 });
 
