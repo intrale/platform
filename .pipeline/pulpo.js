@@ -3509,8 +3509,41 @@ function logTopConsumers() {
  * y matan builds/agentes legitimos, causando loops infinitos de rebotes.
  * La limpieza de daemons ahora es SOLO bajo demanda via comando /limpiar.
  */
+// El disco se llenaba cada 2-3 semanas porque nadie rotaba los caches de
+// maquina (~/.gradle/.tmp, puppeteer, npm-cache, artefactos de worktrees
+// inactivos). `tryFreeResources` limpiaba solo el mapa en memoria: ni un byte de
+// disco. Se delega a rotate-caches.js, que se auto-limita por umbral de espacio
+// libre, corre desacoplado (nunca bloquea el ciclo del Pulpo) y respeta
+// heartbeats. Throttle propio para no relanzarlo en cada ciclo proactivo.
+const DISK_ROTATION_THROTTLE_MS = 60 * 60 * 1000;
+let lastDiskRotationAt = 0;
+
+function rotateDiskCaches(mode) {
+  const now = Date.now();
+  if (now - lastDiskRotationAt < DISK_ROTATION_THROTTLE_MS) return false;
+  lastDiskRotationAt = now;
+  try {
+    const script = path.join(ROOT, '.claude', 'hooks', 'rotate-caches.js');
+    if (!fs.existsSync(script)) return false;
+    // En ventana nocturna se ignora el umbral: es el momento barato para rotar.
+    const args = [script];
+    if (mode === 'aggressive') args.push('--force');
+    const child = spawn(process.execPath, args, {
+      cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true,
+    });
+    child.unref();
+    log('free-resources', `[${mode}] Rotacion de caches de disco lanzada en background`);
+    return true;
+  } catch (e) {
+    log('free-resources', `Rotacion de caches no lanzada: ${e.message}`);
+    return false;
+  }
+}
+
 function tryFreeResources(mode = 'soft') {
   const killed = [];
+
+  if (rotateDiskCaches(mode)) killed.push('rotacion de caches de disco');
 
   try {
     // Limpieza de agentes stale del mapa interno (no mata procesos)
