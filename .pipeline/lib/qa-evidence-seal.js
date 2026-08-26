@@ -224,6 +224,21 @@ function expandGlob(root, issue, declaredPath) {
   return names.map(name => path.join(directory, name).replace(/\\/g, '/'));
 }
 
+/**
+ * #6495 — Presupuesto agregado del sellado (CA-10), inyectable SÓLO HACIA ABAJO.
+ *
+ * El `Math.min` con la constante hace estructuralmente imposible que un
+ * llamador —o un YAML que se cuele hasta acá— suba el techo: cualquier valor
+ * ausente, no finito, cero o negativo cae al tope del módulo. Existe porque la
+ * rama del tope agregado es la única de CA-10 que, sin este parámetro, sólo se
+ * podría ejercitar escribiendo 256MB a disco en cada corrida de la suite.
+ */
+function resolveTotalBudget(limits) {
+  const raw = limits ? Number(limits.totalBytes) : NaN;
+  if (!Number.isFinite(raw) || raw <= 0) return MAX_TOTAL_BYTES;
+  return Math.min(MAX_TOTAL_BYTES, Math.floor(raw));
+}
+
 function readAndHash(confined, declaredPath, remainingBytes) {
   let fd = null;
   try {
@@ -579,10 +594,10 @@ function mergeDeclaredSnapshots(previo, propio) {
  * antes de los gates, así que sin este parámetro el sellado no tendría contra
  * qué contrastar y persistiría `descartes: []` — ver `mergeDeclaredSnapshots`.
  *
- * @param {{root: string, issue: string|number, data: object, cwd: string, declared?: object}} params
+ * @param {{root: string, issue: string|number, data: object, cwd: string, declared?: object, limits?: {totalBytes?: number}}} params
  * @returns {{sealed: boolean, manifest: object|null, descartes: object[], reason: string|null}}
  */
-function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio } = {}) {
+function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio, limits } = {}) {
   if (!data || typeof data !== 'object') return { sealed: false, manifest: null, descartes: [], reason: 'no-aplica' };
   // #6495 (rebote 5, seguridad) — El borrado va ANTES del early return por
   // veredicto no aprobado: si viviera adentro del `try`, un dropfile
@@ -600,6 +615,7 @@ function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio } = {}
     const artifacts = [];
     const discards = [];
     let totalBytes = 0;
+    const totalBudget = resolveTotalBudget(limits);
 
     for (const field of fields) {
       // #6495 (rebote 2 de seguridad) — La ÚNICA omisión permitida es el
@@ -669,7 +685,7 @@ function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio } = {}
       }
       for (const route of expanded) {
         const confined = resolveConfined(root, issue, route);
-        const hashed = readAndHash(confined, route, MAX_TOTAL_BYTES - totalBytes);
+        const hashed = readAndHash(confined, route, totalBudget - totalBytes);
         totalBytes += hashed.bytes;
         const artifact = { campo: field, ruta: confined.ruta, ...hashed, tipo: spec.tipo };
         if (spec.tipo === 'derivado') {

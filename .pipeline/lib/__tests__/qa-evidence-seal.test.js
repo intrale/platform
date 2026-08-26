@@ -943,3 +943,70 @@ test('S-3: stripDeclaredSeal snapshotea, es idempotente y no toca campos ajenos 
   assert.deepEqual(otra.hashes, {});
   assert.deepEqual(stripDeclaredSeal(null), { sello: undefined, hashes: {} });
 });
+
+// --- CA-10 · tope de bytes AGREGADOS (no sólo el tope por archivo) ---------
+//
+// `limits.totalBytes` sólo puede BAJAR el presupuesto (`resolveTotalBudget`
+// hace `Math.min` con `MAX_TOTAL_BYTES`), así que el test ejercita la rama real
+// del tope agregado sin escribir 256MB a disco en cada corrida de la suite.
+
+test('superar el tope de bytes agregados falla cerrado, sin manifiesto parcial', t => {
+  const f = fixture(t);
+  const data = {
+    resultado: 'aprobado',
+    evidencia: f.write('primero.md', 'x'.repeat(800)),
+    evidencia_frames: f.write('segundo.md', 'y'.repeat(800)),
+  };
+  const result = sealQaVerdict({
+    root: f.root, issue: f.issue, data, cwd: gitHeadCwd(), limits: { totalBytes: 1000 },
+  });
+  // Cada archivo entra solo (800 < 1000) pero la suma no: el segundo se pasa.
+  assert.equal(result.sealed, false);
+  assert.equal(result.reason, 'oversize');
+  // CA-9: el artefacto 1 pasó y aun así no queda rastro de manifiesto parcial.
+  assert.equal(data.sello, undefined);
+  assert.equal(result.manifest, null);
+});
+
+test('un limits inválido no puede subir ni apagar el tope agregado', t => {
+  const f = fixture(t);
+  const route = f.write('unico.md', 'z'.repeat(800));
+  for (const limits of [undefined, {}, { totalBytes: 0 }, { totalBytes: -1 }, { totalBytes: 'mucho' }, { totalBytes: Number.MAX_SAFE_INTEGER }]) {
+    const data = { resultado: 'aprobado', evidencia: route };
+    const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: gitHeadCwd(), limits });
+    // Todos caen al tope del módulo, que es holgado para 800 bytes.
+    assert.equal(result.sealed, true, `limits=${JSON.stringify(limits)}`);
+    assert.equal(data.sello.artefactos.length, 1);
+  }
+});
+
+// --- Regresión del caso vivo #6258 ----------------------------------------
+//
+// El dropfile original no vive en el repo (`procesado/` no se versiona), así que
+// el fixture reproduce su FORMA —mismo campo, misma ruta, mismo hash declarado
+// con el prefijo `2529061c` que documenta el issue— y fija la invariante: el
+// sello sale de los bytes del archivo y el declarado viaja entero a `descartes`.
+// Fijar el hex `c35bd31e…` ataría el test a bytes que ya no existen.
+
+test('regresión del caso vivo #6258: el hash declarado queda descartado y el real se persiste', t => {
+  const f = fixture(t, 6258);
+  const contenido = 'informe estructural de QA para el issue 6258';
+  const route = f.write('qa-6258-structural.md', contenido);
+  const real = `sha256:${crypto.createHash('sha256').update(contenido).digest('hex')}`;
+  const declarado = `2529061c${'0'.repeat(56)}`;
+  const data = { resultado: 'aprobado', evidencia: route, evidencia_sha256: declarado };
+
+  const result = sealQaVerdict({ root: f.root, issue: 6258, data, cwd: gitHeadCwd() });
+
+  assert.equal(result.sealed, true);
+  assert.equal(data.evidencia_sha256, real);
+  assert.notEqual(data.evidencia_sha256, normalizeHash(declarado));
+  assert.deepEqual(result.descartes, [
+    { campo: 'evidencia_sha256', declarado: normalizeHash(declarado), real },
+  ]);
+  assert.equal(data.sello.artefactos.length, 1);
+  assert.equal(data.sello.artefactos[0].ruta, 'qa/evidence/6258/qa-6258-structural.md');
+  assert.equal(data.sello.artefactos[0].sha256, real);
+  assert.equal(data.sello.artefactos[0].bytes, Buffer.byteLength(contenido));
+  assert.match(data.sello.head, /^[0-9a-f]{40}$/);
+});
