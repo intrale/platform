@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><body style="margin:0;width:1280px;height:720px;background:#0d1117;color:#e6edf3;font:15px/1.55 system-ui;padding:44px 56px;box-sizing:border-box;overflow:hidden"><div style="font:700 30px/1.3 system-ui;margin-bottom:6px">CA-10 a CA-15 y cierre</div><div style="color:#8b949e;font-size:16px;margin-bottom:24px"></div><table style="width:100%;border-collapse:collapse;font-size:15px"><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-10</td>
+<td style="padding:5px 18px 5px 0">Turnos sanos ⇒ cero marcas de huérfano</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">sustrato mezclado: los sanos quedaron sanos, 0 marcas</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-11</td>
+<td style="padding:5px 18px 5px 0">Un huérfano ⇒ exactamente 1 evento terminal</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">3 barridos seguidos ⇒ 3 / 0 / 0 eventos; 1 entrada por <code>commander_req_id</code></td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-12</td>
+<td style="padding:5px 18px 5px 0">Barrido gateado por ticks (~5 min)</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px"><code>orphanSweepGate</code> real: 9→0, 10→1, 25→2, 100→10, 137→13 disparos</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-13</td>
+<td style="padding:5px 18px 5px 0">Badge comparado contra el mockup acordado</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">muestreo de píxeles: texto <code>#FF6B8A</code> y borde <code>#B8254A</code> idénticos</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-14</td>
+<td style="padding:5px 18px 5px 0">Un barrido que falla deja rastro</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px"><code>readdirSync</code> que tira ⇒ <code>ok:false</code> + causa logueada, tick vivo</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-15</td>
+<td style="padding:5px 18px 5px 0">Ramas de decisión enumeradas</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px"><code>B-01</code>…<code>B-14</code> documentadas, cada una con su test homónimo</td></tr></table>
+<div style="margin-top:22px;border:1px solid #238636;background:rgba(63,185,80,0.10);border-radius:10px;padding:18px 22px">
+<div style="font:700 24px/1.3 system-ui;color:#3FB950">Veredicto: APROBADO — 15 / 15 criterios cumplen, 0 defectos</div>
+<div style="margin-top:8px;color:#8b949e;font-size:15px">El bloqueante de <code>aprobacion</code> rev-1 (CA-3) está <b>corregido y verificado</b> en esta pasada.<br>
+Contrato visual: 6 secciones declaradas · 6 verificadas · 0 no verificadas · <code>diffs: []</code>.</div>
+</div>

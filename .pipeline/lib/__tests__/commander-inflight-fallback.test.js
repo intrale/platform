@@ -1081,3 +1081,96 @@ test('#6458: la cadena hash del audit verifica con los campos nuevos presentes',
         assert.equal(res.ok, true, JSON.stringify(res));
     } finally { cleanup(dir); }
 });
+
+// =============================================================================
+// #6459 — `fallback_delivery_resolved` con desenlace EXPLÍCITO (R-1).
+//
+// El entry de `noteFallbackDeliveryResolved` no tenía `success` ni `error_code`,
+// y los literales `'delivered'`/`'not_delivered'` que proponía el body de #6459 no
+// existen en `DELIVERY_STATES`: `_normalizeDeliveryState` los colapsa a `null` en
+// silencio. Sin los dos campos nuevos, CA-2 y CA-3 son inverificables.
+// =============================================================================
+
+test('#6459 CA-3: entrega CONFIRMADA cierra a éxito, sin regresión de #4309', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        inflight.noteFallbackDeliveryResolved({
+            pipelineDir: dir, deliveryState: 'delivery_observed', resolvedBy: 'orphan_sweep',
+            success: true, commanderReqId: 'h-ok', chatId: 'c', requestId: 'r-ok',
+        });
+        const ev = readAuditLines(dir).find(e => e.event === 'inflight_fallback_delivery_resolved');
+        assert.equal(ev.delivery_state, 'delivery_observed');
+        assert.equal(ev.success, true);
+        assert.equal(ev.error_code, null);
+        assert.equal(ev.commander_req_id, 'h-ok');
+    } finally { cleanup(dir); }
+});
+
+test('#6459 CA-2: entrega NO confirmada cierra con delivered=false, distinguible de empty_output', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        inflight.noteFallbackDeliveryResolved({
+            pipelineDir: dir, deliveryState: 'delivery_failed', resolvedBy: 'orphan_sweep',
+            success: false, errorCode: 'delivered=false',
+            commanderReqId: 'h-no', chatId: 'c', requestId: 'r-no',
+        });
+        const ev = readAuditLines(dir).find(e => e.event === 'inflight_fallback_delivery_resolved');
+        assert.equal(ev.delivery_state, 'delivery_failed');
+        assert.equal(ev.success, false);
+        assert.equal(ev.error_code, 'delivered=false');
+        assert.notEqual(ev.error_code, 'empty_output');
+    } finally { cleanup(dir); }
+});
+
+test('#6459: sin los campos nuevos el desenlace queda NO OBSERVADO (null), no false', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        inflight.noteFallbackDeliveryResolved({
+            pipelineDir: dir, deliveryState: 'delivery_pending', resolvedBy: 'reconciler',
+            commanderReqId: 'h-null', chatId: 'c', requestId: 'r-null',
+        });
+        const ev = readAuditLines(dir).find(e => e.event === 'inflight_fallback_delivery_resolved');
+        assert.equal(ev.success, null, '"no observado" y "observado como fallo" son cosas distintas');
+        assert.equal(ev.error_code, null);
+    } finally { cleanup(dir); }
+});
+
+test('#6459: error_code es texto ACOTADO (anti log-forging)', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        inflight.noteFallbackDeliveryResolved({
+            pipelineDir: dir, deliveryState: 'delivery_failed', resolvedBy: 'orphan_sweep',
+            success: false, errorCode: 'x'.repeat(500),
+            commanderReqId: 'h-long', chatId: 'c', requestId: 'r-long',
+        });
+        const ev = readAuditLines(dir).find(e => e.event === 'inflight_fallback_delivery_resolved');
+        assert.equal(ev.error_code.length, 64);
+        // Un errorCode no-string no se persiste crudo.
+        assert.equal(ev.success, false);
+    } finally { cleanup(dir); }
+});
+
+test('#6459 CA-4: una entrada VIEJA sin los campos nuevos sigue verificando la hash-chain', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        // Entradas "viejas" (sin success/error_code en el resolved) y nuevas,
+        // encadenadas en el mismo archivo: los campos aditivos AL FINAL no
+        // rompen el hash de las que no los traen.
+        inflight.noteInflightCompleted({
+            pipelineDir: dir, primaryProvider: 'anthropic', secondaryProvider: 'openai-codex',
+            success: true, chatId: 'c', requestId: 'r-1',
+        });
+        inflight.noteFallbackDeliveryResolved({
+            pipelineDir: dir, deliveryState: 'delivery_failed', resolvedBy: 'reconciler',
+            commanderReqId: 'h-viejo', chatId: 'c', requestId: 'r-1',
+        });
+        inflight.noteFallbackDeliveryResolved({
+            pipelineDir: dir, deliveryState: 'delivery_failed', resolvedBy: 'orphan_sweep',
+            success: false, errorCode: 'delivered=false',
+            commanderReqId: 'h-nuevo', chatId: 'c', requestId: 'r-2',
+        });
+        const res = auditLog.verifyChain(inflight._auditFile(dir));
+        assert.equal(res.ok, true, JSON.stringify(res));
+        assert.equal(res.entriesChecked, 3);
+    } finally { cleanup(dir); }
+});
