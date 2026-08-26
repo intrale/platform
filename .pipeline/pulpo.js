@@ -319,6 +319,9 @@ const workfileName = require('./lib/workfile-name');
 const brazoBarridoCore = require('./lib/brazo-barrido-core');
 const brazoLanzamientoCore = require('./lib/brazo-lanzamiento-core');
 const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
+// #6611 — auto-destrabe de bloqueos con predicado verificable.
+const verifiablePredicateStore = require('./lib/verifiable-predicate-store');
+const autoRecheckCounter = require('./lib/auto-recheck-counter');
 // #4368 — transición automática de ola (detector fail-closed + orquestador
 // notify/auto). Gated por config.wave_auto_transition (default OFF + notify).
 const waveAutoTransition = require('./lib/wave-auto-transition');
@@ -4434,7 +4437,41 @@ function brazoBarrido(config) {
                 for (const n of (det.dependsOn || [])) hintDeps.push(n);
               }
             }
-            const precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps);
+            let precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps);
+
+            // #6611 — Predicado verificable: SEGUNDO canal, consultado sólo si
+            // el primero dijo "juicio humano".
+            //
+            // `dependency` tiene PRIORIDAD: si el motivo declaró deps
+            // estructuradas, ese freeze ya es auto-re-evaluable por el camino de
+            // #4748 y el sidecar no puede degradarlo.
+            //
+            // El sidecar se consulta SÓLO cuando bloquea `delivery`, que es el
+            // único skill con un emisor autorizado. `classifyPrecondition`
+            // NUNCA ve este canal: los motivos YAML los escribe un agente LLM y
+            // un predicado que entrara por ahí sería un agente auto-destrabándose
+            // un gate humano.
+            if (precondition && precondition.type === 'human_judgment' && skillBloq === 'delivery') {
+              try {
+                const pred = verifiablePredicateStore.consume({
+                  pipelineDir: PIPELINE,
+                  issue: parseInt(issue),
+                });
+                if (pred) {
+                  // Re-validar por la MISMA puerta que persiste el marker: el
+                  // sidecar no es autoridad, sólo transporte.
+                  const cand = humanBlock.normalizePrecondition({ type: 'verifiable', predicate: pred });
+                  if (cand && cand.type === 'verifiable') {
+                    precondition = cand;
+                    log('barrido', `#${issue} freeze con predicado verificable (PR #${cand.predicate.pr}) — re-chequeo automático habilitado`);
+                  }
+                }
+              } catch (e) {
+                // Fail-closed benigno: sin predicado el freeze queda como juicio
+                // humano, que es el comportamiento de siempre.
+                log('barrido', `#${issue} no se pudo consumir el predicado verificable: ${e.message}`);
+              }
+            }
 
             // Dedup: si ya hay marker activo en bloqueado-humano/ no spamear.
             const yaBloqueado = humanBlock.findBlockedMarker(issue);
@@ -21072,6 +21109,220 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
   }
 }
 
+/**
+ * #6611 — Reaper de `needs-human` con PREDICADO VERIFICABLE resuelto.
+ *
+ * TERCERA fuente de markers para el MISMO motor de destrabe (las otras dos:
+ * `blocked:dependencies` y los `needs-human` de precondición de dependencia).
+ * Copia la FORMA de `reapStaleHumanBlocks`, no duplica su motor: la decisión la
+ * toma el selector puro y el efecto lo aplica `humanBlock.unblockIssue` — la
+ * única ruta de movimiento de markers que existe.
+ *
+ * El caso que cierra: #6145 quedó 14 h congelado en `needs-human` con el PR ya
+ * `MERGEABLE`/`CLEAN`, ocupando slot de ola, porque los freezes de `delivery` se
+ * congelan como juicio humano y nadie los vuelve a mirar.
+ *
+ * QUÉ **NO** HACE: no mergea, no presume el merge, no escribe labels `qa:*` ni
+ * da por satisfecho gate alguno. Sólo re-encola la fase — `delivery` vuelve a
+ * correr TODOS sus gates desde cero, incluido el de QA. `MERGEABLE`+`CLEAN` es
+ * el veredicto de GitHub sobre la protección de rama, no el gate de QA del
+ * proyecto.
+ *
+ * Fail-closed en cada borde: lectura fallida, valor fuera del enum, rollup
+ * `null` o techo de reintentos alcanzado ⇒ NO libera.
+ */
+async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
+  // Kill switch en caliente, sin editar código.
+  const cfg = (config && config.human_block_auto_recheck) || {};
+  if (cfg.enabled !== true || cfg.kill_switch === true) return;
+
+  const maxAutoReleases = Number.isFinite(Number(cfg.max_auto_releases)) && Number(cfg.max_auto_releases) > 0
+    ? Number(cfg.max_auto_releases)
+    : brazoDesbloqueoCore.DEFAULT_MAX_AUTO_RELEASES;
+  const maxPrsPerTick = Number.isFinite(Number(cfg.max_prs_per_tick)) && Number(cfg.max_prs_per_tick) > 0
+    ? Number(cfg.max_prs_per_tick)
+    : 10;
+
+  let markers;
+  try {
+    markers = humanBlock.listBlockedIssues().filter(b =>
+      b.precondition
+      && b.precondition.type === 'verifiable'
+      && b.precondition.predicate
+      && b.precondition.predicate.kind === 'pr_merge_blocked'
+    );
+  } catch (e) {
+    log('desbloqueo', `[auto-recheck] error listando bloqueados: ${e.message}`);
+    return;
+  }
+
+  // Respetar pausa parcial: los que no van a poder ejecutarse igual, no se
+  // re-evalúan (y no gastan cuota de `gh`).
+  if (allowlistSet) markers = markers.filter(m => allowlistSet.has(String(m.issue)));
+  if (markers.length === 0) return;
+
+  // Set de PRs únicos, coaccionados a entero positivo ANTES de armar args de
+  // `gh` (SEC: nada de interpolación de string en el comando).
+  const prSet = new Set();
+  for (const m of markers) {
+    const pr = m.precondition.predicate.pr;
+    if (Number.isInteger(pr) && pr > 0) prSet.add(pr);
+  }
+
+  // Tope por tick. Si hay más, se atienden en el siguiente — el barrido corre
+  // cada ciclo, así que nada queda sin mirar, sólo se difiere.
+  let prs = Array.from(prSet);
+  if (prs.length > maxPrsPerTick) {
+    log('desbloqueo', `[auto-recheck] ${prs.length} PRs candidatos, tope ${maxPrsPerTick} por tick — ${prs.length - maxPrsPerTick} se difieren al próximo ciclo`);
+    prs = prs.slice(0, maxPrsPerTick);
+  }
+
+  // Estado observado por PR. Cualquier fallo deja el PR FUERA del mapa → el
+  // selector lo lee como `undefined` → no libera.
+  const observations = {};
+  for (const pr of prs) {
+    ghThrottle();
+    try {
+      const { stdout } = await ghDesbloqueoCall(
+        ['pr', 'view', String(pr), '--json', 'state,mergeable,mergeStateStatus,statusCheckRollup,headRefName', '--repo', 'intrale/platform'],
+        15000
+      );
+      const parsed = JSON.parse(stdout || 'null');
+      if (parsed && typeof parsed === 'object') observations[String(pr)] = parsed;
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] no se pudo leer PR #${pr}: ${e.message} — fail-closed`);
+    }
+  }
+
+  // Contadores del techo (CA-8). `count()` es fail-closed: `Infinity` si no
+  // pudo leer, lo que rio abajo significa "no liberar".
+  const counters = {};
+  for (const m of markers) {
+    const p = m.precondition.predicate;
+    counters[`${m.issue}::${p.kind}::${p.pr}`] = autoRecheckCounter.count({
+      pipelineDir: PIPELINE, issue: m.issue, kind: p.kind, pr: p.pr,
+    });
+  }
+
+  const { toRelease } = brazoDesbloqueoCore.selectVerifiableHumanBlocksToRelease({
+    markers, observations, counters, maxAutoReleases,
+  });
+
+  for (const m of toRelease) {
+    const p = m.predicate;
+    const obs = m.observed_now || {};
+    // Sanitizado + truncado: `head_ref` y `gate` terminan en el comentario del
+    // issue y en Telegram, y otro agente puede leer ese texto después.
+    const safeHeadRef = sanitizePipelineText(String(p.head_ref || '')).slice(0, 120);
+    const before = p.observed || {};
+    const safeGate = sanitizePipelineText(String(before.gate || 'desconocido')).slice(0, 60);
+    const safeHttp = Number.isFinite(Number(before.httpStatus)) ? Number(before.httpStatus) : '?';
+
+    const guidance = `Auto-destrabe (#6611): la causa registrada del bloqueo dejó de cumplirse. El PR #${p.pr} está MERGEABLE/CLEAN sin checks en rojo. El pipeline re-encola este issue para que \`delivery\` vuelva a correr TODOS sus gates.`;
+
+    let res;
+    try {
+      res = humanBlock.unblockIssue({
+        issue: m.issue,
+        marker: m,
+        unlocker: 'auto-recheck',
+        guidance,
+      });
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] error unblock #${m.issue}: ${e.message}`);
+      continue;
+    }
+    if (!res || !res.ok) {
+      // Idempotente: si el `/unblock` manual ganó la carrera, no-op benigno.
+      log('desbloqueo', `[auto-recheck] unblock #${m.issue} no-op: ${res && res.error}`);
+      continue;
+    }
+
+    // Incrementar el techo AL DESTRABAR (no al re-bloquearse): el destrabe es
+    // el evento que existe y es observable.
+    autoRecheckCounter.increment({
+      pipelineDir: PIPELINE, issue: m.issue, kind: p.kind, pr: p.pr,
+    });
+    const releaseNumber = (counters[`${m.issue}::${p.kind}::${p.pr}`] || 0) + 1;
+
+    try {
+      humanBlock.emitAutoReleased({
+        issue: m.issue, kind: p.kind, pr: p.pr,
+        from: res.from_phase, to: res.to_phase,
+        observed: { before, now: {
+          state: obs.state, mergeable: obs.mergeable,
+          mergeStateStatus: obs.mergeStateStatus, headRefName: obs.headRefName,
+        } },
+        release_number: releaseNumber,
+      });
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] error emitiendo auditoría #${m.issue}: ${e.message}`);
+    }
+
+    // Quitar el label + comentar, por la MISMA cola que el destrabe manual.
+    try {
+      const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+      fs.mkdirSync(ghQueueDir, { recursive: true });
+      encolarOrdenGithub(
+        path.join(ghQueueDir, `${m.issue}-auto-recheck-remove-needs-human-${Date.now()}.json`),
+        {
+          action: 'remove-label',
+          issue: Number(m.issue),
+          label: humanBlock.NEEDS_HUMAN_LABEL,
+          // #5690 SEC-B — procedencia declarada: llega acá sólo tras verificar
+          // el estado real del PR en GitHub y que `unblockIssue` resolvió el
+          // marker (`res.ok`), no por un JSON anónimo.
+          guardrail_authorized: true,
+          authorized_by: 'brazo-desbloqueo:auto-recheck',
+        },
+      );
+      // #6226 — por el writer fail-closed, NO `fs.writeFileSync` pelado: esta
+      // orden y la de `remove-label` de arriba se encolan en el mismo tick y un
+      // write crudo puede pisar otra orden del mismo issue en el mismo
+      // milisegundo, perdiéndola sin error.
+      encolarOrdenGithub(
+        path.join(ghQueueDir, `${m.issue}-auto-recheck-comment-${Date.now()}.json`),
+        {
+          action: 'comment',
+          issue: Number(m.issue),
+          body: [
+            '## 🔓 Auto-destrabado por el pipeline',
+            '',
+            `Este issue estaba en \`needs-human\` con una causa **verificable** registrada, y esa causa ya no se cumple.`,
+            '',
+            '| | Cuando se congeló | Ahora |',
+            '|---|---|---|',
+            `| PR | #${p.pr} | #${p.pr} |`,
+            `| Rama | \`${safeHeadRef}\` | \`${sanitizePipelineText(String(obs.headRefName || '?')).slice(0, 120)}\` |`,
+            `| Gate | \`${safeGate}\` (HTTP ${safeHttp}) | — |`,
+            // La columna "cuando se congeló" sale de `observed`, que es NARRATIVA
+            // del productor del freeze y nunca entró a la decisión. Si un campo no
+            // se registró va `—`: no se infiere ni se hardcodea un valor plausible,
+            // porque este comentario es la traza de auditoría que lee el operador.
+            `| \`mergeable\` | — (no registrado) | ${sanitizePipelineText(String(obs.mergeable || '?')).slice(0, 40)} |`,
+            `| \`mergeStateStatus\` | ${sanitizePipelineText(String(before.mergeStateStatus || '—')).slice(0, 40)} | ${sanitizePipelineText(String(obs.mergeStateStatus || '?')).slice(0, 40)} |`,
+            '',
+            `El pipeline sacó el label \`needs-human\` y re-encoló el issue en \`${res.pipeline}/${res.to_phase}\` (auto-destrabe ${releaseNumber}/${maxAutoReleases}).`,
+            '',
+            '**Esto no presume ningún merge.** `delivery` vuelve a correr **todos** sus gates desde cero —  incluido el gate de QA. Lo único que cambió es que el issue dejó de estar congelado esperando a un humano que no tenía nada que decidir.',
+            '',
+            '_Auto-destrabe de bloqueo verificable (#6611). El fail-closed sigue intacto para los bloqueos de juicio humano: sin predicado registrado, no hay re-evaluación._',
+          ].join('\n'),
+        },
+      );
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] error encolando acciones GitHub #${m.issue}: ${e.message}`);
+    }
+
+    log('desbloqueo', `🔓 #${m.issue} auto-destrabado (predicado verificable) — PR #${p.pr} MERGEABLE/CLEAN → re-encolado a ${res.pipeline}/${res.to_phase} (${releaseNumber}/${maxAutoReleases})`);
+    try {
+      // Aviso SIN pedir acción: el operador tiene que enterarse de que algo se
+      // movió solo, no hacer nada al respecto.
+      sendTelegram(`🔓 Issue #${m.issue} se destrabó solo — el PR #${p.pr} pasó a MERGEABLE/CLEAN y la causa del freeze dejó de existir. Vuelve a la cola (${releaseNumber}/${maxAutoReleases}). No hace falta que hagas nada.`);
+    } catch {}
+  }
+}
+
 async function brazoDesbloqueoImpl(config) {
   // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
   // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
@@ -21087,6 +21338,13 @@ async function brazoDesbloqueoImpl(config) {
   // ningún blocked:dependencies el barrido retorna, pero los needs-human de
   // precondición igual deben re-evaluarse cada ciclo).
   await reapStaleHumanBlocks({ allowlistSet });
+
+  // #6611 — Re-chequeo de los `needs-human` con predicado verificable, en el
+  // MISMO tick y bajo el MISMO guard `_unblockRunning`: sin proceso nuevo, sin
+  // timer nuevo. Va después del hermano de #4748 por la misma razón que aquél
+  // va antes del barrido de `blocked:dependencies` — no depender de su
+  // early-return.
+  await reapVerifiableHumanBlocks({ allowlistSet, config });
 
   try {
     // 1. Buscar issues abiertos con label blocked:dependencies

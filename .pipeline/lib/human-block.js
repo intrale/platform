@@ -26,6 +26,10 @@ const trace = require('./traceability');
 const { redactAll } = require('./sherlock-audit-jsonl');
 // #5337 CA-6 — discriminador compartido "recomendación de agente" vs "bloqueo real".
 const { isRecommendationIssue, normalizeLabelNames } = require('./recommendation-labels');
+// #6611 — MISMO validador de refs que usa el lector de reglas de rama. Reusado,
+// no re-implementado: dos validadores de branch name que divergen es cómo entra
+// un `..` a un path de la API.
+const { validateBranchName } = require('./required-checks');
 // #6190 — fuente única del copy del aviso de bloqueo. Este módulo NO redacta
 // texto para el operador: le pide la ficha a `decision-card` y la dibuja.
 const decisionCard = require('./decision-card');
@@ -75,7 +79,56 @@ function emitBlocked(opts) {
     });
 }
 
+// =============================================================================
+// #6611 — `unlocker` deja de ser string libre.
+//
+// El campo distingue QUIÉN destrabó, y con el auto-destrabe pasa a ser la
+// diferencia auditable entre "un humano lo decidió" y "el pipeline lo decidió
+// solo". Un string libre ahí hace que la auditoría dependa de que cada call site
+// escriba bien un literal.
+//
+// Patrón de `kernel-actions-audit.js:validateAuthorizedBy`: un valor fuera del
+// enum NO se descarta ni se propaga — se persiste en campos forenses y el campo
+// principal queda `unknown`. Perder la traza sería peor que registrarla rara.
+// =============================================================================
+const UNLOCKER_ENUM = Object.freeze([
+    'commander',                      // default histórico
+    'commander:telegram',             // /unblock desde Telegram (pulpo.js:15452)
+    'commander:dashboard',            // destrabe/descarte desde el dashboard V3
+    'github:label-removed',           // reconciliación por label quitado a mano
+    'human-block-action',             // acción rápida genérica (human-block.js:1190)
+    'human-block-action:unblock',     // botón "desbloquear" de la alerta
+    'human-block-action:devolver',    // botón "devolver a definición"
+    'human-block-action:priorizar',   // botón "priorizar"
+    'brazo-desbloqueo:precondicion',  // #4748 — deps cerradas
+    'auto-recheck',                   // #6611 — predicado verificable resuelto
+]);
+
+/**
+ * Normaliza `unlocker` contra el enum cerrado.
+ * @returns {{unlocker:string, unlocker_rejected_value?:string, unlocker_rejected_reason?:string}}
+ */
+function normalizeUnlocker(value) {
+    // Ausente ⇒ default histórico, no es un rechazo.
+    if (value == null || value === '') return { unlocker: 'commander' };
+    if (typeof value !== 'string') {
+        return {
+            unlocker: 'unknown',
+            unlocker_rejected_value: String(value).slice(0, 80),
+            unlocker_rejected_reason: 'unlocker_not_string',
+        };
+    }
+    const trimmed = value.trim();
+    if (UNLOCKER_ENUM.includes(trimmed)) return { unlocker: trimmed };
+    return {
+        unlocker: 'unknown',
+        unlocker_rejected_value: trimmed.slice(0, 80),
+        unlocker_rejected_reason: 'unlocker_not_in_enum',
+    };
+}
+
 function emitUnblocked(opts) {
+    const u = normalizeUnlocker(opts.unlocker);
     trace.appendEvent({
         event: 'human:unblocked',
         skill: opts.skill || null,
@@ -84,7 +137,7 @@ function emitUnblocked(opts) {
         pipeline: opts.pipeline || null,
         target_phase: opts.target_phase || opts.phase || null,
         guidance: opts.guidance || '',
-        unlocker: opts.unlocker || 'commander',
+        ...u,
         ts: new Date().toISOString(),
         pid: process.pid,
     });
@@ -98,7 +151,9 @@ function emitDismissed(opts) {
         phase: opts.phase || null,
         pipeline: opts.pipeline || null,
         reason: opts.reason || '',
-        unlocker: opts.unlocker || 'commander',
+        // #6611 — mismo enum cerrado que `emitUnblocked`: el descarte también es
+        // una salida del gate humano y su autoría se audita igual.
+        ...normalizeUnlocker(opts.unlocker),
         ts: new Date().toISOString(),
         pid: process.pid,
     });
@@ -234,15 +289,61 @@ function guidanceAgentFilePath(targetDir, marker) {
 //     ciclo y lo suelta cuando `depends_on` está todo cerrado.
 const HUMAN_JUDGMENT = { type: 'human_judgment' };
 
+// #6611 — TERCER tipo cerrado: 'verifiable'. El freeze registra un PREDICADO
+// re-evaluable y el brazo de desbloqueo lo re-chequea cada tick, liberando sólo
+// con evidencia positiva. Es UNA puerta más, tipada — el default fail-closed de
+// #4748 (SEC-4) no se relaja: todo lo que no encaje exacto sigue colapsando a
+// `human_judgment`.
+//
+// Enum CERRADO de kinds. Un solo kind a propósito: la generalización a otros
+// predicados es #6616, fuera de scope.
+const PREDICATE_KINDS = Object.freeze(['pr_merge_blocked']);
+
+/**
+ * #6611 — Valida un predicado `verifiable`. Coacción POR TIPO, sin conversiones
+ * indulgentes: `pr` tiene que ser entero positivo YA (un `"00042"` string, un
+ * decimal o un negativo no se "arreglan", se rechazan). `head_ref` se valida con
+ * `required-checks.validateBranchName` — el MISMO validador que usa el lector de
+ * reglas de rama, no una re-implementación que pueda divergir.
+ *
+ * Cualquier desvío en cualquier campo ⇒ `human_judgment`.
+ */
+function normalizeVerifiablePrecondition(pc) {
+    const p = pc.predicate;
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return { ...HUMAN_JUDGMENT };
+    if (typeof p.kind !== 'string' || !PREDICATE_KINDS.includes(p.kind)) return { ...HUMAN_JUDGMENT };
+    // Entero positivo estricto: rechaza "00042", 12.5, -3, NaN, Infinity.
+    if (!Number.isInteger(p.pr) || p.pr <= 0) return { ...HUMAN_JUDGMENT };
+    if (typeof p.head_ref !== 'string' || !validateBranchName(p.head_ref)) return { ...HUMAN_JUDGMENT };
+
+    const predicate = { kind: p.kind, pr: p.pr, head_ref: p.head_ref.trim() };
+
+    // `observed` se persiste SÓLO como narrativa (comentario del issue +
+    // auditoría). NUNCA entra a la decisión de liberar: si el "antes vs ahora"
+    // decidiera, el veredicto se lo estaría dando el productor del freeze y un
+    // `observed` mentiroso alcanzaría para forzar el destrabe.
+    if (p.observed && typeof p.observed === 'object' && !Array.isArray(p.observed)) {
+        predicate.observed = {
+            httpStatus: Number.isFinite(Number(p.observed.httpStatus)) ? Number(p.observed.httpStatus) : null,
+            mergeStateStatus: typeof p.observed.mergeStateStatus === 'string'
+                ? p.observed.mergeStateStatus.slice(0, 40) : null,
+            gate: typeof p.observed.gate === 'string' ? p.observed.gate.slice(0, 60) : null,
+        };
+    }
+    return { type: 'verifiable', predicate };
+}
+
 /**
  * Normaliza/valida un objeto precondition antes de persistirlo o exponerlo.
  * Cualquier forma inválida colapsa a `human_judgment` (fail-closed, SEC-4).
  * Para `dependency`, coacciona `depends_on` a enteros positivos únicos; si no
  * queda ninguno, degrada a `human_judgment` (una precondición de dependencia
  * sin dependencias no es auto-re-evaluable).
+ * Para `verifiable` (#6611), valida el predicado campo por campo.
  */
 function normalizePrecondition(pc) {
     if (!pc || typeof pc !== 'object') return { ...HUMAN_JUDGMENT };
+    if (pc.type === 'verifiable') return normalizeVerifiablePrecondition(pc);
     if (pc.type !== 'dependency') return { ...HUMAN_JUDGMENT };
     const raw = Array.isArray(pc.depends_on) ? pc.depends_on : [];
     const seen = new Set();
@@ -1284,6 +1385,84 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
 }
 
 /**
+ * #6611 — Asienta el AUTO-destrabe en el audit-log, con la misma cadena hash que
+ * `auditQuickAction`. Es lo que vuelve distinguible, para siempre, un destrabe
+ * que decidió el pipeline de uno que decidió un humano.
+ *
+ * `unblockIssue` ya emite además `human:unblocked` (vía `emitUnblocked`) con el
+ * `unlocker` normalizado, así que la traza queda en los DOS canales sin abrir
+ * una segunda máquina de destrabe.
+ *
+ * Nunca lanza: el audit no puede romper la operación.
+ *
+ * @param {object} entry
+ * @param {number} entry.issue
+ * @param {string} entry.kind      kind del predicado (`pr_merge_blocked`)
+ * @param {number} entry.pr
+ * @param {string} [entry.from]    fase de origen
+ * @param {string} [entry.to]      fase de destino
+ * @param {object} [entry.observed] estado observado en el tick que liberó
+ * @param {number} [entry.release_number] cuál auto-destrabe es (1..max)
+ */
+function emitAutoReleased(entry = {}) {
+    const issue = Number(entry.issue) || null;
+    const kind = typeof entry.kind === 'string' ? entry.kind.slice(0, 60) : null;
+    const pr = Number.isInteger(Number(entry.pr)) ? Number(entry.pr) : null;
+
+    // Canal 1 — traza del pipeline (mismo stream que `human:unblocked`).
+    try {
+        trace.appendEvent({
+            event: 'human_block_auto_released',
+            issue,
+            kind,
+            pr,
+            from_phase: entry.from || null,
+            to_phase: entry.to || null,
+            unlocker: 'auto-recheck',
+            release_number: Number.isFinite(Number(entry.release_number)) ? Number(entry.release_number) : null,
+            observed: entry.observed && typeof entry.observed === 'object' ? entry.observed : null,
+            ts: new Date().toISOString(),
+            pid: process.pid,
+        });
+    } catch (e) {
+        try { process.stderr.write('[human-block] emitAutoReleased trace falló: ' + e.message + '\n'); } catch (_) {}
+    }
+
+    // Canal 2 — audit-log con cadena hash (forense).
+    try {
+        const deps = entry.deps || {};
+        const dir = deps.auditDir || path.join(PIPELINE_DIR, 'audit');
+        const createAuditLog = deps.createAuditLog || require('./commander/audit-log').createAuditLog;
+        let redact = deps.redact;
+        if (typeof redact !== 'function') {
+            try { redact = require('./redact').redactSensitive; } catch { redact = (s) => s; }
+        }
+        const audit = createAuditLog({
+            dir,
+            filenamePrefix: 'human-block-actions',
+            redact,
+            extraFields: ['issue', 'action', 'unlocker', 'kind', 'pr', 'release_number'],
+        });
+        return audit.record({
+            from: null,
+            raw_command: '',
+            intent_class: 'human-block-auto-recheck',
+            handler: 'auto-recheck',
+            result_status: 'ok',
+            issue,
+            action: 'human_block_auto_released',
+            unlocker: 'auto-recheck',
+            kind,
+            pr,
+            release_number: Number.isFinite(Number(entry.release_number)) ? Number(entry.release_number) : null,
+        });
+    } catch (e) {
+        try { process.stderr.write('[human-block] emitAutoReleased audit falló: ' + e.message + '\n'); } catch (_) {}
+        return null;
+    }
+}
+
+/**
  * #4068 / CA-SEC-2 — Asienta la acción rápida (autorizada o rechazada) en un
  * audit-log dedicado `audit/human-block-actions-YYYY-MM-DD.jsonl`. Nunca lanza:
  * el audit no debe romper la operación.
@@ -1553,6 +1732,11 @@ module.exports = {
     inferHumanBlockQuestion,
     classifyPrecondition,
     normalizePrecondition,
+    // #6611 — auto-destrabe de bloqueos verificables.
+    emitAutoReleased,
+    normalizeUnlocker,
+    UNLOCKER_ENUM,
+    PREDICATE_KINDS,
     buildBlockedSummaryMarkdown,
     buildBlockedSummaryPlain,
     buildNeedHumanAudioText,
