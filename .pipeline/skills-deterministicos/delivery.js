@@ -22,6 +22,10 @@ const prProvenance = require('../lib/pr-provenance');
 // contra la allowlist de committers, no necesita worktree y no se duplica acá.
 const { verifyRemoteBranchOrigin } = require('../lib/worktree-resolver');
 const { classifyChecks } = require('../lib/human-block-triggers');
+// #6612 SEC-A/G-2 — Allowlist de checks de seguridad que el pipeline no mergea
+// en rojo aunque el ruleset no los exija. Ver el módulo para por qué es una
+// constante de código y no config.
+const { classifySecurityBlockingChecks, isSecurityBlockingContext } = require('../lib/security-blocking-checks');
 // #6431 - lector/clasificador de los checks REQUERIDOS del ruleset de la rama
 // base. Se importa el modulo entero (no funciones sueltas) para que el wiring
 // de produccion arme el reader con `EXPECTED_PR_REPO` y la rama base del merge.
@@ -591,6 +595,101 @@ function applyNeedsHumanLabel(issue, prNumber, owners, repoRoot) {
     return { labelExitCode: lbl.exit_code, commentExitCode: cmt.exit_code };
 }
 
+// -----------------------------------------------------------------------------
+// #6612 punto 3 / UX-3 — Constancia de checks NO requeridos en rojo.
+//
+// El acotamiento por requeridos hace que un check que main no exige deje de
+// frenar el merge. Correcto — pero un escáner en rojo que nadie ve nunca es
+// deuda que se acumula en silencio. Este comentario es la contrapartida: el
+// merge sale, y queda dicho por qué salió igual.
+//
+// IDEMPOTENTE POR MARKER. El pulpo reevalúa en loop; un comentario por barrido
+// convierte el PR en spam y entrena al operador a ignorar la notificación —
+// que es peor que no publicarla.
+// -----------------------------------------------------------------------------
+function buildNonRequiredRedMarker(prNumber, context) {
+    return `<!-- delivery-nonrequired-red pr=${prNumber} context=${sanitizeGateText(String(context), 80)} -->`;
+}
+
+function buildNonRequiredRedBody(prNumber, context) {
+    // SEC-E, y acá con más razón que en Telegram: esto es un comentario PÚBLICO.
+    // Sólo el nombre del contexto y el hecho observado. Nunca el JSON del
+    // ruleset (`allowed_actors`, `required_reviewers`, `dismissal_restriction`).
+    const ctx = sanitizeGateText(String(context), 80);
+    return [
+        buildNonRequiredRedMarker(prNumber, context),
+        `⚠️ El check **${ctx}** terminó en rojo.`,
+        '',
+        '**Esto NO frenó el merge**, y es intencional: la protección de rama de `main` no exige'
+        + ` ese check, y tampoco está en la lista de escáneres de seguridad que el pipeline`
+        + ' trata como bloqueantes. El merge salió por los gates que sí corresponden.',
+        '',
+        'Queda esta constancia para que un check en rojo no pase inadvertido por venir de un job'
+        + ' no bloqueante. Si tendría que frenar el merge, el arreglo es promoverlo a check'
+        + ' requerido del ruleset o sumarlo a la allowlist de seguridad del pipeline —'
+        + ' no hace falta hacer nada en este PR.',
+    ].join('\n');
+}
+
+function postNonRequiredRedNotice({ prNumber, contexts, repoRoot = WORK_DIR, gh = git.runGh } = {}) {
+    const lista = Array.isArray(contexts) ? contexts : [];
+    if (!lista.length) return { posted: [], skipped: [] };
+
+    // Una sola lectura de comentarios para todos los contextos.
+    const res = gh(
+        ['pr', 'view', String(prNumber), '--json', 'comments'],
+        { cwd: repoRoot, timeoutMs: 30 * 1000 }
+    );
+    let existentes = '';
+    if (res && res.exit_code === 0) {
+        try {
+            const parsed = JSON.parse(res.stdout);
+            existentes = (parsed && Array.isArray(parsed.comments) ? parsed.comments : [])
+                .map((c) => (c && typeof c.body === 'string' ? c.body : '')).join('\n');
+        } catch { existentes = ''; }
+    } else {
+        // No poder leer los comentarios NO habilita a postear a ciegas: sería
+        // spam garantizado en cada barrido. Se saltea y se reintenta después.
+        return { posted: [], skipped: lista, reason: 'comentarios-no-legibles' };
+    }
+
+    const posted = [];
+    const skipped = [];
+    for (const ctx of lista) {
+        if (existentes.includes(buildNonRequiredRedMarker(prNumber, ctx))) { skipped.push(ctx); continue; }
+        const out = gh(
+            ['pr', 'comment', String(prNumber), '--body', buildNonRequiredRedBody(prNumber, ctx)],
+            { cwd: repoRoot, timeoutMs: 30 * 1000 }
+        );
+        if (out && out.exit_code === 0) posted.push(ctx); else skipped.push(ctx);
+    }
+    return { posted, skipped };
+}
+
+// #6612 UX-4 — Describe QUÉ está pendiente y CON QUÉ RÓTULO.
+//
+// El defecto que cierra: el log y el mensaje al operador decían "checks
+// requeridos en curso" sin nombrar ninguno, incluso cuando el pendiente no era
+// requerido. Con el ruleset de `main` exigiendo un solo contexto, eso mandó al
+// operador a investigar el escáner OWASP — que no frenaba nada.
+//
+// Los pendientes salen SIEMPRE del veredicto cotejado (`requiredChecks`) cuando
+// existe. Sólo si no existe se cae al rollup crudo, y ahí el texto NO usa el
+// adjetivo "requerido": no se afirma lo que no se cotejó.
+function describirPendientes(classification) {
+    const rc = classification && classification.requiredChecks;
+    if (rc && Array.isArray(rc.pending) && rc.pending.length) {
+        return `requeridos por la protección de rama en curso: ${rc.pending.slice(0, 5).join(', ')}`
+            + (rc.pending.length > 5 ? ` y ${rc.pending.length - 5} más` : '');
+    }
+    const legacy = (classification && classification.checks && classification.checks.pending) || [];
+    if (legacy.length) {
+        return `en curso (sin cotejar contra el ruleset): ${legacy.slice(0, 5).join(', ')}`
+            + (legacy.length > 5 ? ` y ${legacy.length - 5} más` : '');
+    }
+    return 'en curso (no pude nombrar cuáles: el rollup no vino legible)';
+}
+
 function tmpFile(prefix, content) {
     const file = path.join(LOG_DIR, `${prefix}-${process.pid}-${Date.now()}.tmp`);
     try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
@@ -946,6 +1045,11 @@ function attemptMergeWithGates({
     // El wiring de produccion SIEMPRE lo inyecta y hay un test que lo verifica.
     // Cuando falta, se loguea: la desactivacion nunca es silenciosa (CA-20).
     requiredChecksReader = null,
+    // #6612 UX-3 — Publicador de la constancia de checks informativos en rojo.
+    // Default `null` por la MISMA razón que `requiredChecksReader` (A-2): un
+    // default real haría que toda suite que no inyecte nada salga a la red
+    // contra `gh`. Producción lo inyecta y hay un test que lo verifica.
+    postNonRequiredRed = null,
     maxChecksWaits = MAX_CHECKS_WAITS,
     // Resultado del pre-check local `git merge-tree`. SÓLO se usa para loguear
     // la contradicción con el servidor — nunca para decidir (CA-7).
@@ -1090,6 +1194,70 @@ function attemptMergeWithGates({
             continue;
         }
 
+        // (5c) #6612 SEC-A/G-2 — Allowlist de seguridad, ANTES del PUT.
+        //
+        // ÉSTE ES EL CORAZÓN DEL ISSUE. #6612 acota la espera de `delivery` a los
+        // checks que el ruleset REALMENTE exige — y el ruleset de `main` exige
+        // UN solo contexto (`pr-status`), así que TODOS los escáneres de
+        // seguridad del repo son "no requeridos". Sin este gate, acotar por
+        // requeridos convierte a los escáneres en decorativos.
+        //
+        // No es hipotético y no alcanza con meterlo en `classifyChecks`: el PR
+        // #6602 se mergeó con `runtime-state-guard` (el secret scan del diff) en
+        // FAILURE, y salió por el camino `UNSTABLE` — un PR UNSTABLE no da 405 ni
+        // BLOCKED, así que `classifyMergeFailure` NI SIQUIERA SE LLAMA. La
+        // allowlist tiene que estar acá, sobre el camino del PUT, o deja abierta
+        // justo la puerta por la que se escapó el merge real.
+        //
+        // NO REINTENTA Y NO ESPERA: es un control activo, mismo tratamiento que
+        // `branch-protection`. Esperar a que un escáner en rojo se ponga verde
+        // solo no tiene sentido — lo que hay es un hallazgo que alguien tiene
+        // que mirar.
+        const sec = classifySecurityBlockingChecks({ rollup: snapshot.statusCheckRollup });
+        if (sec.verdict === 'block') {
+            const reason = `checks de seguridad en rojo: ${sec.failing.slice(0, 5).join(', ')}`;
+            log(`[delivery] gate merge: ${reason} — merge bloqueado (el ruleset no los exige, pero el pipeline no mergea con un escáner en rojo)`);
+            return { status: 'blocked', gate: 'security-checks-red', reason, snapshot, attempt };
+        }
+        if (sec.verdict === 'unusable') {
+            // G-3 — `null` ("no leí el rollup") NUNCA se lee como "ningún escáner
+            // en rojo": eso sería el fail-open silencioso exacto. Gate propio y
+            // no `security-checks-red`, porque rotular "en rojo" algo que no se
+            // pudo leer es el mismo defecto de mensaje que UX-1 vino a cerrar.
+            const reason = `no se pudo leer el estado de los checks del PR (${sec.cause}) — fail-closed`;
+            log(`[delivery] gate merge: ${reason} — merge bloqueado`);
+            return { status: 'blocked', gate: 'security-checks-unreadable', reason, snapshot, attempt };
+        }
+
+        // (5d) #6612 punto 3 / UX-3 — Constancia de un check NO requerido y
+        // FUERA de la allowlist que terminó en rojo. No frena el merge (la
+        // protección de rama no lo exige y no es un control de seguridad), pero
+        // tampoco se ignora en silencio: queda un comentario en el PR.
+        //
+        // Sólo se paga la lectura de requeridos si HAY algún rojo en el rollup —
+        // en un PR sano el rollup no tiene rojos y esto no cuesta nada.
+        const rojosRollup = classifyChecks(snapshot.statusCheckRollup).failing;
+        if (rojosRollup.length && leerRequeridos && typeof postNonRequiredRed === 'function') {
+            const rcConst = leerRequeridos(snapshot);
+            if (rcConst.verdict !== 'unusable') {
+                const requeridos = new Set([
+                    ...(rcConst.pending || []), ...(rcConst.failing || []), ...(rcConst.green || []),
+                ]);
+                const informativos = rojosRollup.filter(
+                    (c) => !requeridos.has(c) && !isSecurityBlockingContext(c)
+                );
+                if (informativos.length) {
+                    try {
+                        postNonRequiredRed({ prNumber, contexts: informativos });
+                    } catch (e) {
+                        // La constancia es best-effort: que falle un comentario
+                        // NUNCA puede frenar ni habilitar un merge.
+                        log(`[delivery] constancia de checks informativos en rojo no publicada (${e && e.message}) — no bloqueante`);
+                    }
+                }
+            }
+        }
+
         // (6) Merge con el SHA observado al evaluar los gates. Si el head se
         //     movió, GitHub responde 409 y NO mergea nada.
         //     El `sha` sale del snapshot del intento VIGENTE — el `continue` de
@@ -1196,14 +1364,21 @@ function attemptMergeWithGates({
                 const delay = Math.min(backoff, checksTimeoutMs - checksWaitedMs);
                 checksWaits++;
                 checksWaitedMs += delay;
-                log(`[delivery] gate merge: checks requeridos en curso — espera ${delay}ms (${checksWaits}/${checksWaitsMax}, ${checksWaitedMs}/${checksTimeoutMs}ms) y reevaluación completa de gates`);
+                // #6612 UX-4/UX-5 — nombrar CUÁLES, con su rótulo. "checks
+                // requeridos en curso" sin lista mandó al operador a mirar el
+                // escáner OWASP, que no era requerido y no frenaba nada.
+                log(`[delivery] gate merge: checks ${describirPendientes(classification)} — espera ${delay}ms (${checksWaits}/${checksWaitsMax}, ${checksWaitedMs}/${checksTimeoutMs}ms) y reevaluación completa de gates`);
                 sleep(delay);
                 attempt--;
                 continue;
             }
             // (2) Techo de wall-clock. Camino de #6384, sin cambios.
             const minutes = Math.round((checksWaitedMs / 60000) * 10) / 10;
-            const reason = `la CI no terminó en ${minutes} minutos; los checks requeridos siguen corriendo`;
+            // UX-5 — El mensaje que ve el operador nombra los pendientes con su
+            // rótulo E incluye el presupuesto consumido: sin eso no puede saber
+            // si esperar un rato más o intervenir.
+            const reason = `la CI no terminó en ${minutes} minutos: ${describirPendientes(classification)} `
+                + `(presupuesto agotado: ${checksWaits}/${checksWaitsMax} esperas, ${checksWaitedMs}/${checksTimeoutMs}ms)`;
             log(`[delivery] gate merge: ${reason} — escala como timeout de CI`);
             return {
                 status: 'blocked', gate: 'checks-timeout', reason, classification,
@@ -1548,6 +1723,11 @@ const GATE_BLOCK_LABELS = {
     'branch-protection-other': 'los checks requeridos están en verde pero la protección de rama sigue frenando el merge (hilo de review sin resolver, revisión de Copilot o commit sin atribuir)',
     'branch-protection-unreadable': 'no se pudo leer la lista de checks requeridos de la protección de rama',
     'checks-failing': 'hay checks requeridos en rojo',
+    // #6612 SEC-A — "No requerido por el ruleset" != "no bloqueante". El
+    // ruleset de main exige UN solo contexto, asi que TODOS los escaneres de
+    // seguridad del repo caen fuera; el pipeline igual no mergea con uno en rojo.
+    'security-checks-red': 'un check de seguridad terminó en rojo (el ruleset no lo exige, pero el pipeline no mergea con un escáner en rojo)',
+    'security-checks-unreadable': 'no se pudo leer el estado de los checks del PR, así que no se puede afirmar que los escáneres de seguridad estén en verde',
     'checks-timeout': 'la CI no terminó dentro del techo de espera (los checks requeridos siguen corriendo)',
     'pr-draft': 'el PR está en borrador (draft) y GitHub no permite mergearlo',
     'pr-closed': 'el PR ya no está abierto',
@@ -2056,6 +2236,8 @@ async function main() {
                 // suites viejas no salgan a la red; que produccion lo inyecte es
                 // lo que hace que el fix exista, y hay un test que lo verifica.
                 requiredChecksReader: buildRequiredChecksReader(),
+                // #6612 UX-3 — constancia de checks informativos en rojo.
+                postNonRequiredRed: postNonRequiredRedNotice,
                 // #6012 CA-7 — El pre-check ya calculado se reusa SÓLO para
                 // loguear la contradicción con el servidor. No reclasifica nada.
                 mergeTreeClean: mergeCheck.supported === true && mergeCheck.mergeable === true,
@@ -2392,6 +2574,9 @@ module.exports = {
     REVIEW_DECISION_VALUES,
     MERGE_BASE_BRANCH,
     buildRequiredChecksReader,
+    postNonRequiredRedNotice,
+    buildNonRequiredRedMarker,
+    buildNonRequiredRedBody,
     // #4658 — detección de conflicto real + escalado fail-closed.
     classifyMergeFailure,
     shouldEscalateLocalMerge,

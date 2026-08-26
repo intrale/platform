@@ -6035,7 +6035,32 @@ function brazoBarrido(config) {
                     log('barrido', `#${issue} code-scanning falló (no bloqueante): ${e.message}`);
                   }
 
-                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, { securityAlerts });
+                  // #6612 UX-1 — Qué checks exige REALMENTE el ruleset de `main`.
+                  // Sin este dato el mensaje al operador rotulaba "requerido"
+                  // cualquier check en rojo del rollup: con el rollup real de
+                  // #6602 le decía "1 check requerido en rojo: runtime-state-guard"
+                  // y ese check NO es requerido por el ruleset (el ruleset exige
+                  // un solo contexto: `pr-status`). Un mensaje que afirma un
+                  // hecho falso manda al operador a investigar el lugar equivocado.
+                  //
+                  // Best-effort, igual que las alertas de code-scanning: si no se
+                  // puede leer, se OMITE el campo y el mensaje cae al texto "no
+                  // pude leer qué checks exige main" — nunca al adjetivo inventado.
+                  let requiredChecks;
+                  try {
+                    const { createRequiredChecksReader } = require('./lib/required-checks');
+                    const leer = createRequiredChecksReader({
+                      cwd: ROOT,
+                      repo: repoTarget.getPrimaryRepo(),
+                      baseBranch: 'main',
+                    });
+                    const rc = leer({ prNumber: prInfo.number, headRefOid: prInfo.headRefOid });
+                    if (rc && typeof rc === 'object' && typeof rc.verdict === 'string') requiredChecks = rc;
+                  } catch (e) {
+                    log('barrido', `#${issue} lista de checks requeridos no consultable (se sigue sin ella): ${e.message}`);
+                  }
+
+                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, { securityAlerts, requiredChecks });
 
                   if (veredicto && veredicto.inconclusive) {
                     // R2 — GitHub todavía calcula `mergeable`. Ni bloqueo ni vía

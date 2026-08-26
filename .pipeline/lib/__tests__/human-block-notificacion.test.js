@@ -910,3 +910,235 @@ test('CA-5 fail-closed: el pulpo NO destraba por vencimiento de plazo', () => {
         );
     }
 });
+
+// =============================================================================
+// #6612 UX-6 — RÓTULOS DE CHECKS EN EL MENSAJE AL OPERADOR
+//
+// El defecto: `detectMergeStateBlock` llamaba a `classifyChecks(rollup)` con el
+// rollup CRUDO y el template le agregaba el adjetivo "requerido(s)" por su
+// cuenta. Con el rollup real del PR #6602 (`runtime-state-guard`=FAILURE,
+// `pr-status`=SUCCESS) el operador leía:
+//
+//     "1 check requerido en rojo: runtime-state-guard"
+//
+// y ese check NO es requerido por el ruleset de `main`, que exige un solo
+// contexto (`pr-status`). Un mensaje que afirma un hecho falso manda al operador
+// a investigar el lugar equivocado: es un defecto, no una cuestión de redacción.
+// =============================================================================
+
+// Veredicto del reader (`lib/required-checks.js`) tal como llega ya cotejado.
+function rcFake(over = {}) {
+    return {
+        verdict: 'green', cause: 'todos-verdes',
+        pending: [], failing: [], green: ['pr-status'], detalle: [], ...over,
+    };
+}
+const ROT = triggers.CHECK_ROTULOS;
+const textoDe = (v) => `${v.reason} ${v.question} ${v.recommendation}`;
+
+test('#6612 UX-6 — un check NO requerido en rojo nunca se rotula "requerido"', () => {
+    // Rollup real de #6602.
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6602,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+        reviewDecision: '',
+        statusCheckRollup: [
+            { name: 'runtime-state-guard', status: 'COMPLETED', conclusion: 'FAILURE' },
+            { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        ],
+        requiredChecks: rcFake(),   // el ruleset sólo exige pr-status, y está verde
+    });
+    assert.equal(v.trigger, triggers.TRIGGERS.CHECKS_FAILING, 'el escáner en rojo igual frena');
+    assert.match(v.reason, /runtime-state-guard/, 'nombra el check');
+    assert.ok(v.reason.includes(ROT.SEGURIDAD), 'lo rotula por lo que ES');
+    assert.ok(
+        !v.reason.includes(ROT.REQUERIDO),
+        'ESTE es el defecto: rotular "requerido" un check que el ruleset no exige'
+    );
+    assert.deepEqual(v.checks.requeridos, [], 'ningún requerido en rojo');
+    assert.deepEqual(v.checks.seguridad, ['runtime-state-guard']);
+});
+
+test('#6612 UX-2 — la recomendación de un hallazgo de seguridad NO es la de un test requerido en rojo', () => {
+    const seguridad = triggers.detectMergeStateBlock({
+        prNumber: 6602, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: '',
+        statusCheckRollup: [{ name: 'detect-secrets Scan', status: 'COMPLETED', conclusion: 'FAILURE' }],
+        requiredChecks: rcFake(),
+    });
+    const requerido = triggers.detectMergeStateBlock({
+        prNumber: 6603, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: '',
+        statusCheckRollup: [{ name: 'pr-status', status: 'COMPLETED', conclusion: 'FAILURE' }],
+        requiredChecks: rcFake({ verdict: 'blocking', cause: 'check-en-rojo', failing: ['pr-status'], green: [] }),
+    });
+    assert.notEqual(seguridad.recommendation, requerido.recommendation);
+    // "Devolver el issue a desarrollo" es correcto para un test en rojo y
+    // EQUIVOCADO para un hallazgo del escáner: ahí hay que mirar QUÉ encontró.
+    assert.match(requerido.recommendation, /devolver el issue a desarrollo/i);
+    assert.match(seguridad.recommendation, /Mirá QUÉ encontró el escáner/);
+});
+
+test('#6612 UX-4 — caso mixto: los grupos se listan por rótulo, nunca en bolsa única', () => {
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6604, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: '',
+        statusCheckRollup: [
+            { name: 'pr-status', status: 'COMPLETED', conclusion: 'FAILURE' },
+            { name: 'Semgrep Static Analysis', status: 'COMPLETED', conclusion: 'FAILURE' },
+            { name: 'docs-lint', status: 'COMPLETED', conclusion: 'FAILURE' },
+        ],
+        requiredChecks: rcFake({ verdict: 'blocking', cause: 'check-en-rojo', failing: ['pr-status'], green: [] }),
+    });
+    assert.deepEqual(v.checks.requeridos, ['pr-status']);
+    assert.deepEqual(v.checks.seguridad, ['Semgrep Static Analysis']);
+    assert.deepEqual(v.checks.informativos, ['docs-lint'], 'ni requerido ni de la allowlist');
+    // Cada nombre aparece bajo SU rótulo.
+    for (const rotulo of [ROT.REQUERIDO, ROT.SEGURIDAD, ROT.INFORMATIVO]) {
+        assert.ok(v.reason.includes(rotulo), `falta el grupo ${rotulo}`);
+    }
+    assert.ok(
+        v.reason.indexOf('pr-status') < v.reason.indexOf('Semgrep Static Analysis'),
+        'los grupos van en orden de gravedad, no mezclados'
+    );
+});
+
+test('#6612 UX-1 — lista de requeridos ILEGIBLE: lo dice, y no usa ninguno de los tres rótulos', () => {
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6605, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED',
+        statusCheckRollup: [{ name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+        requiredChecks: rcFake({ verdict: 'unusable', cause: 'ruleset-forma-inesperada', green: [] }),
+    });
+    const texto = textoDe(v);
+    assert.match(texto, /no pude leer la lista de checks que exige main/i);
+    for (const rotulo of [ROT.REQUERIDO, ROT.SEGURIDAD, ROT.INFORMATIVO]) {
+        assert.ok(!texto.includes(rotulo), `no puede rotular "${rotulo}" sin haber cotejado`);
+    }
+});
+
+test('#6612 — un requerido EN CURSO sigue siendo no concluyente; uno no requerido en curso NO', () => {
+    // (a) requerido pendiente ⇒ inconclusive, igual que antes.
+    const req = triggers.detectMergeStateBlock({
+        prNumber: 6606, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: '',
+        statusCheckRollup: [{ name: 'pr-status', status: 'IN_PROGRESS', conclusion: null }],
+        requiredChecks: rcFake({ verdict: 'pending', cause: 'checks-sin-reportar', pending: ['pr-status'], green: [] }),
+    });
+    assert.equal(req.inconclusive, true);
+    assert.deepEqual(req.checks.pending, ['pr-status']);
+
+    // (b) EL CASO DEL ISSUE: el único pendiente es el escáner de 3 h, que el
+    // ruleset no exige. Ya no deja el veredicto colgado.
+    const noReq = triggers.detectMergeStateBlock({
+        prNumber: 6607, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED',
+        statusCheckRollup: [
+            { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'OWASP Dependency Check', status: 'IN_PROGRESS', conclusion: null },
+        ],
+        requiredChecks: rcFake(),
+    });
+    assert.notEqual(noReq.inconclusive, true, 'un check que main no exige no deja el veredicto en el aire');
+    assert.equal(noReq.trigger, triggers.TRIGGERS.CODEOWNERS_REVIEW, 'lo que falta es la firma');
+});
+
+test('#6612 punto 3 — un informativo en rojo no bloquea pero queda como CONSTANCIA', () => {
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6608, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED',
+        statusCheckRollup: [
+            { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'docs-lint', status: 'COMPLETED', conclusion: 'FAILURE' },
+        ],
+        requiredChecks: rcFake(),
+    });
+    assert.equal(v.trigger, triggers.TRIGGERS.CODEOWNERS_REVIEW, 'no frena: main no lo exige');
+    assert.match(v.recommendation, /Constancia/, 'pero no se ignora en silencio');
+    assert.match(v.recommendation, /docs-lint/);
+    assert.match(v.recommendation, /NO frenan el merge/);
+});
+
+test('#6612 SEC-D/SEC-G — un homónimo publicado por otra app no cuenta como verde', () => {
+    // El cotejo por `checkSuite.app.databaseId` vive en `required-checks.js` y
+    // NO se reimplementa acá: llega ya resuelto como `verdict:'unusable'`. Lo
+    // que esta suite verifica es que ese veredicto no se lea como vía libre.
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6609, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED',
+        statusCheckRollup: [{ name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+        requiredChecks: rcFake({ verdict: 'unusable', cause: 'homonimo-sin-app-coincidente', green: [] }),
+    });
+    assert.doesNotMatch(
+        textoDe(v), /están en verde|sólo falta la review/i,
+        'un homónimo de otra app no acredita el requerido: no se puede afirmar verde'
+    );
+    assert.match(textoDe(v), /no pude leer la lista de checks que exige main/i);
+});
+
+test('#6612 SEC-E — el mensaje nunca filtra política de rama del ruleset', () => {
+    const v = triggers.detectMergeStateBlock({
+        prNumber: 6610, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: '',
+        statusCheckRollup: [{ name: 'runtime-state-guard', status: 'COMPLETED', conclusion: 'FAILURE' }],
+        requiredChecks: rcFake(),
+    });
+    for (const secreto of ['allowed_actors', 'required_reviewers', 'dismissal_restriction']) {
+        assert.ok(!textoDe(v).includes(secreto), `el mensaje no puede traer ${secreto}`);
+    }
+});
+
+test('#6612 — SIN requiredChecks el comportamiento es el legacy, byte por byte', () => {
+    // Mitigación del riesgo "romper suites existentes": el parámetro es
+    // OPCIONAL y sin él nada cambia. Mismo fixture que el test de #5277.
+    const args = {
+        prNumber: 5277, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: '',
+        statusCheckRollup: [
+            { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'Semgrep OSS', status: 'COMPLETED', conclusion: 'FAILURE' },
+        ],
+    };
+    const legacy = triggers.detectMergeStateBlock(args);
+    assert.equal(legacy.trigger, triggers.TRIGGERS.CHECKS_FAILING);
+    assert.match(legacy.reason, /check\(s\) requerido\(s\) en rojo/, 'el texto legacy queda intacto');
+    // Y una forma inesperada del veredicto se trata como AUSENTE, nunca como vía libre.
+    for (const raro of [{}, { verdict: 42 }, 'x', 0]) {
+        assert.equal(
+            triggers.detectMergeStateBlock({ ...args, requiredChecks: raro }).reason,
+            legacy.reason,
+            'un veredicto con forma rara cae al legacy, no habilita el merge'
+        );
+    }
+});
+
+test('#6612 acotamiento — classifyChecks con el Set de requeridos', () => {
+    const rollup = [
+        { name: 'pr-status', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { name: 'OWASP Dependency Check', status: 'IN_PROGRESS', conclusion: null },
+    ];
+    // Sin Set: `pending` por el escáner que no bloquea nada (el defecto).
+    assert.equal(triggers.classifyChecks(rollup).state, 'pending');
+    // Con Set: el escáner no aporta a `pending`, pero queda segregado.
+    const acotado = triggers.classifyChecks(rollup, new Set(['pr-status']));
+    assert.equal(acotado.state, 'green');
+    assert.deepEqual(acotado.pending, []);
+    assert.deepEqual(acotado.pendingNonRequired, ['OWASP Dependency Check']);
+
+    // SEC-B — el acotamiento aplica SÓLO a `pending`. Un rojo entra siempre.
+    const conRojo = triggers.classifyChecks(
+        [{ name: 'runtime-state-guard', status: 'COMPLETED', conclusion: 'FAILURE' }],
+        new Set(['pr-status'])
+    );
+    assert.equal(conRojo.state, 'failing', 'un check en rojo no se ignora nunca');
+    assert.deepEqual(conRojo.failing, ['runtime-state-guard']);
+    assert.deepEqual(conRojo.failingNonRequired, ['runtime-state-guard']);
+
+    // SEC-C — un Set VACÍO no habilita el acotamiento: fail-closed.
+    assert.equal(triggers.classifyChecks(rollup, new Set()).state, 'pending');
+    // Y una forma que no es Set tampoco.
+    assert.equal(triggers.classifyChecks(rollup, ['pr-status']).state, 'pending');
+});
+
+test('#6612 anti-código-muerto — pulpo.js le pasa el veredicto de requeridos al detector', () => {
+    // Sin este cableado el fix no sirve: `detectMergeStateBlock` cae al legacy
+    // y el mensaje vuelve a inventar el adjetivo "requerido".
+    assert.match(PULPO_SRC, /require\(['"]\.\/lib\/required-checks['"]\)/);
+    assert.match(PULPO_SRC, /createRequiredChecksReader/);
+    assert.match(
+        PULPO_SRC,
+        /detectPrHumanBlock\(prInfo,\s*\{\s*securityAlerts,\s*requiredChecks\s*\}\)/,
+        'el veredicto tiene que viajar en el mismo call site'
+    );
+});
