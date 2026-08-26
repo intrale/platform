@@ -11587,12 +11587,26 @@ ${g}
       }
 
       // #6495: el gate valida primero; recién entonces el Pulpo deriva el sello
-      // desde los bytes en ROOT y el HEAD del worktree vivo en spawnCwd. Si el
+      // desde los bytes reales y el HEAD del worktree vivo en spawnCwd. Si el
       // sellado degrada el veredicto, el recorder de #5708 se autoexcluye.
+      //
+      // #6495 (rebote 7, R-5) — Los artefactos NO están (sólo) en ROOT. La fase
+      // `verificacion` está en `EXISTING_WORKTREE_PHASES`
+      // (`lib/phase-workspace.js:32`), así que `spawnCwd === worktreePath` y el
+      // rol `qa.md` le manda al agente declarar rutas RELATIVAS: el video, los
+      // frames y el markdown structural caen en el WORKTREE. En ROOT sólo vive
+      // lo que graba el propio Pulpo (el crudo del emulador, unas líneas más
+      // arriba). Por eso van los DOS recintos, en ese orden: primero donde
+      // escribió el agente, después el repo. Resolver sólo contra ROOT degradaba
+      // a `rechazado` el QA android canónico y dejaba sin sello al carril
+      // structural entero (42 de 76 aprobados reales).
+      //
+      // El `cwd` de `deriveHead` no cambia y sigue siendo `spawnCwd` (CA-12a
+      // intacto): ni el cwd ni los workspaces salen nunca del YAML del agente.
       if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
         try {
           const sealResult = qaEvidenceSeal.sealQaVerdict({
-            root: ROOT, issue, data, cwd: spawnCwd, declared: sealDeclarado,
+            root: ROOT, workspaces: [spawnCwd], issue, data, cwd: spawnCwd, declared: sealDeclarado,
           });
           if (!sealResult.sealed) {
             const reason = sealResult.reason || 'sellado-invalido';

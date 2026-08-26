@@ -29,6 +29,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const { spawnSync } = require('node:child_process');
 
 const qaEvidenceSeal = require('../qa-evidence-seal');
 const { sealQaVerdict, mergeDeclaredSnapshots } = qaEvidenceSeal;
@@ -69,7 +70,7 @@ const sha = content => `sha256:${crypto.createHash('sha256').update(content).dig
  * Corre el BLOQUE REAL del on-exit del Pulpo sobre `data` y devuelve el sello
  * que quedaría persistido en el dropfile.
  */
-function correrOnExitReal({ root, issue, data }) {
+function correrOnExitReal({ root, issue, data, spawnCwd = REPO }) {
   const telegramas = [];
   const contexto = {
     skill: 'qa',
@@ -77,7 +78,9 @@ function correrOnExitReal({ root, issue, data }) {
     issue,
     data,
     extraEnv: { QA_MODE: 'android' },
-    spawnCwd: REPO,
+    // En produccion `spawnCwd` es el WORKTREE del agente, no ROOT: `verificacion`
+    // esta en EXISTING_WORKTREE_PHASES (`lib/phase-workspace.js:32`).
+    spawnCwd,
     workingPath: path.join(root, 'trabajando.yaml'),
     ROOT: root,
     qaEvidenceSeal,
@@ -228,4 +231,144 @@ test('#6495 · sealQaVerdict sin snapshot previo se comporta igual que antes', t
   const result = sealQaVerdict({ root: f.root, issue: f.issue, data, cwd: REPO });
   assert.equal(result.sealed, true);
   assert.deepEqual(result.descartes, [{ campo: 'evidencia_sha256', declarado: `sha256:${'e'.repeat(64)}`, real: sha('x') }]);
+});
+
+
+// =============================================================================
+// #6495 (rebote 7) · R-5 — `root` (ROOT del Pulpo) != `spawnCwd` (worktree)
+//
+// El review encontro que el bloque real invocaba `sealQaVerdict({ root: ROOT })`
+// mientras el agente QA escribia sus artefactos en el worktree, porque
+// `verificacion` corre con `cwd = worktreePath` y el rol `qa.md:336-338` le
+// manda declarar rutas RELATIVAS. Consecuencia: en android (carril exigible) un
+// QA aprobado correcto se degradaba a `rechazado`, y en structural (100% del
+// corpus real) el sello simplemente no se producia.
+//
+// Ninguno de los tests anteriores lo veia porque todos pasaban `root` = el temp
+// donde estaban los artefactos. Estos SI separan las dos raices y ademas corren
+// el bloque REAL del Pulpo, que es donde vivia el defecto.
+// =============================================================================
+
+/** Worktree de verdad: `deriveHead` corre `git rev-parse HEAD` sobre el spawnCwd. */
+function worktreeGit(t, prefijo = 'qa-seal-wt-') {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefijo));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', windowsHide: true });
+  git('init', '-q');
+  git('config', 'user.email', 'pipeline@intrale.test');
+  git('config', 'user.name', 'pipeline');
+  git('commit', '-q', '--allow-empty', '-m', 'base');
+  const head = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true });
+  assert.match((head.stdout || '').trim(), /^[a-f0-9]{40}$/, 'no se pudo preparar el worktree git de la fixture');
+  return { dir, head: head.stdout.trim() };
+}
+
+function escribirEvidencia(base, issue, name, content) {
+  const dir = path.join(base, 'qa', 'evidence', String(issue));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), content);
+  return `qa/evidence/${issue}/${name}`;
+}
+
+test('#6495 R-5 · el bloque real sella la forma canonica de qa.md con los artefactos del worktree', t => {
+  const issue = 8888;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-seal-root-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // El Pulpo crea el evidence dir en ROOT para bajar el crudo del emulador: existe
+  // y esta VACIO. Era la trampa del caso B del review (glob-vacio).
+  fs.mkdirSync(path.join(root, 'qa', 'evidence', String(issue)), { recursive: true });
+
+  const worktree = worktreeGit(t);
+  const evidencia = escribirEvidencia(worktree.dir, issue, `qa-${issue}.mp4`, 'video real del emulador');
+  escribirEvidencia(worktree.dir, issue, `qa-${issue}-frame-01.png`, 'frame 1');
+  escribirEvidencia(worktree.dir, issue, `qa-${issue}-frame-final.png`, 'frame final');
+
+  const data = {
+    resultado: 'aprobado',
+    modo: 'android',
+    evidencia,
+    evidencia_frames: `qa/evidence/${issue}/qa-${issue}-frame-*.png`,
+    screenshot: `qa/evidence/${issue}/qa-${issue}-frame-final.png`,
+    evidencia_sha256: 'a'.repeat(64),
+  };
+  const salida = correrOnExitReal({ root, issue, data, spawnCwd: worktree.dir });
+
+  assert.equal(data.resultado, 'aprobado',
+    `un QA android correcto se degrado a rechazado: ${data.motivo || ''}`);
+  assert.equal(data.rechazado_por, undefined);
+  assert.deepEqual(salida.telegramas, []);
+  assert.ok(salida.sello, 'el entregable nucleo del split quedo en no-op: no se persistio sello');
+  assert.equal(salida.sello.head, worktree.head, 'el head sale del worktree vivo, no de ROOT');
+  assert.equal(salida.sello.artefactos.length, 4);
+  for (const artefacto of salida.sello.artefactos) {
+    assert.match(artefacto.ruta, new RegExp(`^qa/evidence/${issue}/`));
+  }
+  // CA-1/CA-2 siguen firmes cruzando el strip del Pulpo.
+  assert.equal(data.evidencia_sha256,
+    sha('video real del emulador'));
+  assert.deepEqual(salida.sello.descartes,
+    [{ campo: 'evidencia_sha256', declarado: `sha256:${'a'.repeat(64)}`, real: sha('video real del emulador') }]);
+});
+
+test('#6495 R-5 · el crudo que el Pulpo graba en ROOT sigue sellando junto a lo del worktree', t => {
+  const issue = 8889;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-seal-root-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const crudo = escribirEvidencia(root, issue, `qa-${issue}-raw.mp4`, 'crudo del emulador');
+
+  const worktree = worktreeGit(t);
+  escribirEvidencia(worktree.dir, issue, `qa-${issue}-frame-01.png`, 'frame 1');
+
+  const data = {
+    resultado: 'aprobado',
+    modo: 'android',
+    // Lo pisa el propio Pulpo unas lineas antes del sellado, relativo a ROOT.
+    evidencia: crudo,
+    evidencia_frames: `qa/evidence/${issue}/qa-${issue}-frame-*.png`,
+  };
+  const salida = correrOnExitReal({ root, issue, data, spawnCwd: worktree.dir });
+
+  assert.equal(data.resultado, 'aprobado', `se degrado a rechazado: ${data.motivo || ''}`);
+  assert.ok(salida.sello);
+  assert.equal(salida.sello.artefactos.length, 2);
+  assert.equal(data.evidencia_sha256, sha('crudo del emulador'));
+});
+
+test('#6495 R-5 · el caso vivo 6272: el harness que solo existe en el worktree se sella', t => {
+  const issue = 6272;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-seal-root-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  escribirEvidencia(root, issue, 'qa-6272-structural.md', 'markdown structural');
+
+  const worktree = worktreeGit(t);
+  escribirEvidencia(worktree.dir, issue, 'qa-ca-verify.js', 'harness de verificacion');
+
+  const data = {
+    resultado: 'aprobado',
+    modo: 'structural',
+    evidencia: 'qa/evidence/6272/qa-6272-structural.md',
+    evidencia_harness: 'qa/evidence/6272/qa-ca-verify.js',
+  };
+  const salida = correrOnExitReal({ root, issue, data, spawnCwd: worktree.dir });
+
+  assert.equal(data.resultado, 'aprobado');
+  assert.ok(salida.sello, 'sin sello, las partes 2-5 del split no tienen que consumir');
+  assert.deepEqual(salida.sello.artefactos.map(a => a.campo), ['evidencia', 'evidencia_harness']);
+});
+
+test('#6495 R-5 · el bloque real no relaja el recinto: fuera de qa/evidence sigue degradando el veredicto', t => {
+  const issue = 8890;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-seal-root-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const worktree = worktreeGit(t);
+  fs.writeFileSync(path.join(worktree.dir, 'secreto.txt'), 'no es evidencia');
+
+  const data = { resultado: 'aprobado', modo: 'android', evidencia: 'secreto.txt' };
+  const salida = correrOnExitReal({ root, issue, data, spawnCwd: worktree.dir });
+
+  assert.equal(data.resultado, 'rechazado');
+  assert.equal(data.rechazado_por, 'gate-sellado-evidencia');
+  assert.match(data.motivo, /\(fuera-de-recinto\)\.$/);
+  assert.equal(data.sello, undefined);
+  assert.equal(salida.telegramas.length, 1);
 });

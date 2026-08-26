@@ -11,7 +11,7 @@ const {
   sealQaVerdict, normalizeHash, resolveConfined, deriveHead,
   MAX_EVIDENCE_FIELDS, MAX_FILE_BYTES, MAX_LOG_FIELD_CHARS, sanitizeLogField,
   describeSealFailure, degradeVerdictForSeal, resolvesToExistingFile,
-  stripDeclaredSeal,
+  stripDeclaredSeal, normalizeWorkspaces, MAX_WORKSPACES,
 } = require('../qa-evidence-seal');
 
 function fixture(t, issue = 6258) {
@@ -1009,4 +1009,182 @@ test('regresión del caso vivo #6258: el hash declarado queda descartado y el re
   assert.equal(data.sello.artefactos[0].sha256, real);
   assert.equal(data.sello.artefactos[0].bytes, Buffer.byteLength(contenido));
   assert.match(data.sello.head, /^[0-9a-f]{40}$/);
+});
+
+// ─── R-5 · el agente escribe en SU worktree, `root` es el repo principal ─────
+//
+// El hueco que dejaron los 72 tests anteriores: todos pasaban `root` = el temp
+// que contiene los artefactos, así que la divergencia real de producción
+// —`root = ROOT` del Pulpo, artefactos del lado del worktree, porque
+// `verificacion` corre con `cwd = worktreePath` y el rol manda rutas
+// relativas— no existía en ninguna fixture.
+
+function fixtureWorktree(t, issue = 8888) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-seal-root-'));
+  const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-seal-wt-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(worktree, { recursive: true, force: true }));
+  const rootDir = path.join(root, 'qa', 'evidence', String(issue));
+  const wtDir = path.join(worktree, 'qa', 'evidence', String(issue));
+  // El Pulpo CREA el directorio en ROOT para bajar el crudo del emulador, así
+  // que existe y está vacío mientras el agente escribe en el worktree: es
+  // exactamente el estado que convertía el glob de frames en `glob-vacio`.
+  fs.mkdirSync(rootDir, { recursive: true });
+  fs.mkdirSync(wtDir, { recursive: true });
+  const escribir = (dir, name, content) => {
+    fs.writeFileSync(path.join(dir, name), content);
+    return `qa/evidence/${issue}/${name}`;
+  };
+  return {
+    root, worktree, issue, rootDir, wtDir,
+    enWorktree: (name, content = 'artefacto del agente') => escribir(wtDir, name, content),
+    enRoot: (name, content = 'crudo del pulpo') => escribir(rootDir, name, content),
+  };
+}
+
+// La forma canónica que el rol `qa.md:336-338` le manda escribir al agente.
+function dropfileCanonico(issue) {
+  return {
+    resultado: 'aprobado',
+    modo: 'android',
+    evidencia: `qa/evidence/${issue}/qa-${issue}.mp4`,
+    evidencia_frames: `qa/evidence/${issue}/qa-${issue}-frame-*.png`,
+    screenshot: `qa/evidence/${issue}/qa-${issue}-frame-final.png`,
+  };
+}
+
+test('R-5: la forma canónica de qa.md sella con root ≠ workspace y los artefactos del worktree', t => {
+  const f = fixtureWorktree(t);
+  f.enWorktree(`qa-${f.issue}.mp4`, 'video real');
+  f.enWorktree(`qa-${f.issue}-frame-01.png`, 'frame 1');
+  f.enWorktree(`qa-${f.issue}-frame-02.png`, 'frame 2');
+  f.enWorktree(`qa-${f.issue}-frame-final.png`, 'frame final');
+
+  // Control del defecto: sin el workspace del agente, el QA android correcto se
+  // degradaba a `rechazado` (R-5 caso A/B).
+  const sinWorkspace = sealQaVerdict({
+    root: f.root, issue: f.issue, data: dropfileCanonico(f.issue), cwd: gitHeadCwd(),
+  });
+  assert.equal(sinWorkspace.sealed, false);
+
+  const data = dropfileCanonico(f.issue);
+  const result = sealQaVerdict({
+    root: f.root, workspaces: [f.worktree], issue: f.issue, data, cwd: gitHeadCwd(),
+  });
+  assert.equal(result.sealed, true, `el sellado falló con ${result.reason}`);
+  assert.equal(result.manifest.artefactos.length, 5);
+  assert.deepEqual(result.manifest.artefactos.map(a => a.campo).sort(),
+    ['evidencia', 'evidencia_frames', 'evidencia_frames', 'evidencia_frames', 'screenshot']);
+  // El manifiesto persiste rutas relativas al repo, nunca del host (SEC-8).
+  for (const artefacto of result.manifest.artefactos) {
+    assert.match(artefacto.ruta, new RegExp(`^qa/evidence/${f.issue}/`));
+  }
+  assert.doesNotMatch(JSON.stringify(result.manifest), /[A-Z]:\\|\/tmp\/|AppData/i);
+  assert.equal(data.evidencia_sha256,
+    `sha256:${crypto.createHash('sha256').update('video real').digest('hex')}`);
+});
+
+test('R-5: el crudo que el Pulpo graba en ROOT y los artefactos del worktree conviven en un sello', t => {
+  const f = fixtureWorktree(t);
+  const crudo = f.enRoot(`qa-${f.issue}-raw.mp4`, 'crudo del emulador');
+  f.enWorktree(`qa-${f.issue}-frame-01.png`, 'frame 1');
+  const data = {
+    resultado: 'aprobado',
+    // Lo pisa el propio Pulpo unas líneas antes del sellado: sólo existe en ROOT.
+    evidencia: crudo,
+    evidencia_frames: `qa/evidence/${f.issue}/qa-${f.issue}-frame-*.png`,
+  };
+  const result = sealQaVerdict({
+    root: f.root, workspaces: [f.worktree], issue: f.issue, data, cwd: gitHeadCwd(),
+  });
+  assert.equal(result.sealed, true, `el sellado falló con ${result.reason}`);
+  assert.equal(result.manifest.artefactos.length, 2);
+  assert.equal(data.evidencia_sha256,
+    `sha256:${crypto.createHash('sha256').update('crudo del emulador').digest('hex')}`);
+});
+
+test('R-5: ante el mismo path en los dos workspaces gana el del agente, que es el que su veredicto afirma', t => {
+  const f = fixtureWorktree(t);
+  f.enRoot(`qa-${f.issue}-structural.md`, 'corrida vieja del repo');
+  f.enWorktree(`qa-${f.issue}-structural.md`, 'lo que el agente acaba de verificar');
+  const data = { resultado: 'aprobado', evidencia: `qa/evidence/${f.issue}/qa-${f.issue}-structural.md` };
+  const result = sealQaVerdict({
+    root: f.root, workspaces: [f.worktree], issue: f.issue, data, cwd: gitHeadCwd(),
+  });
+  assert.equal(result.sealed, true, `el sellado falló con ${result.reason}`);
+  assert.equal(result.manifest.artefactos[0].sha256,
+    `sha256:${crypto.createHash('sha256').update('lo que el agente acaba de verificar').digest('hex')}`);
+});
+
+test('R-5: el caso vivo 6272 — el harness que sólo existe en el worktree deja de morir en fuera-de-recinto', t => {
+  const f = fixtureWorktree(t, 6272);
+  f.enRoot('qa-6272-structural.md', 'markdown structural');
+  f.enWorktree('qa-ca-verify.js', 'harness de verificación');
+  const data = {
+    resultado: 'aprobado',
+    modo: 'structural',
+    evidencia: 'qa/evidence/6272/qa-6272-structural.md',
+    evidencia_harness: 'qa/evidence/6272/qa-ca-verify.js',
+  };
+  assert.equal(sealQaVerdict({ root: f.root, issue: f.issue, data: { ...data }, cwd: gitHeadCwd() }).reason,
+    'fuera-de-recinto', 'el control tiene que reproducir el defecto original');
+  const result = sealQaVerdict({
+    root: f.root, workspaces: [f.worktree], issue: f.issue, data, cwd: gitHeadCwd(),
+  });
+  assert.equal(result.sealed, true, `el sellado falló con ${result.reason}`);
+  assert.deepEqual(result.manifest.artefactos.map(a => a.campo), ['evidencia', 'evidencia_harness']);
+});
+
+test('R-5: el segundo workspace no relaja el recinto — fuera de qa/evidence sigue siendo fail-closed', t => {
+  const f = fixtureWorktree(t);
+  const afuera = path.join(f.worktree, 'secreto.txt');
+  fs.writeFileSync(afuera, 'no es evidencia');
+  for (const declarada of [afuera, 'secreto.txt', `qa/evidence/${f.issue + 1}/otro.png`]) {
+    const data = { resultado: 'aprobado', evidencia: declarada };
+    const result = sealQaVerdict({
+      root: f.root, workspaces: [f.worktree], issue: f.issue, data, cwd: gitHeadCwd(),
+    });
+    assert.equal(result.sealed, false);
+    assert.equal(result.reason, 'fuera-de-recinto');
+    assert.equal(data.sello, undefined);
+  }
+});
+
+test('R-5: pasarse del tope de workspaces falla cerrado, no recorta la lista en silencio', t => {
+  const f = fixtureWorktree(t);
+  f.enWorktree(`qa-${f.issue}.mp4`, 'video real');
+  const extras = Array.from({ length: MAX_WORKSPACES }, () => fs.mkdtempSync(path.join(os.tmpdir(), 'qa-seal-extra-')));
+  t.after(() => extras.forEach(dir => fs.rmSync(dir, { recursive: true, force: true })));
+  const data = { resultado: 'aprobado', evidencia: `qa/evidence/${f.issue}/qa-${f.issue}.mp4` };
+  const result = sealQaVerdict({
+    root: f.root, workspaces: [f.worktree, ...extras], issue: f.issue, data, cwd: gitHeadCwd(),
+  });
+  assert.equal(result.sealed, false);
+  assert.equal(result.reason, 'workspaces-oversize');
+  assert.equal(data.sello, undefined);
+  assert.match(describeSealFailure('workspaces-oversize'), /workspaces.*\(workspaces-oversize\)\.$/);
+});
+
+test('R-5: normalizeWorkspaces deduplica por realpath y deja root último', t => {
+  const f = fixtureWorktree(t);
+  const bases = normalizeWorkspaces(f.root, [f.worktree, f.worktree, `${f.worktree}${path.sep}`, f.root]);
+  assert.equal(bases.length, 2);
+  assert.equal(fs.realpathSync(bases[0]), fs.realpathSync(f.worktree));
+  assert.equal(fs.realpathSync(bases[1]), fs.realpathSync(f.root));
+  assert.deepEqual(normalizeWorkspaces(f.root, undefined), [path.resolve(f.root)]);
+  // Nada que no sea una ruta textual entra a la lista: el YAML no tiene canal acá.
+  assert.deepEqual(normalizeWorkspaces(f.root, [null, 42, '', {}, []]), [path.resolve(f.root)]);
+});
+
+test('R-5: un artefacto real del worktree con espacio en el nombre no se saltea como prosa (S-1 sigue cerrado)', t => {
+  const f = fixtureWorktree(t);
+  f.enWorktree('video de qa.mp4', 'video real');
+  const data = { resultado: 'aprobado', evidencia: `qa/evidence/${f.issue}/video de qa.mp4` };
+  const result = sealQaVerdict({
+    root: f.root, workspaces: [f.worktree], issue: f.issue, data, cwd: gitHeadCwd(),
+  });
+  assert.equal(result.sealed, true, `el sellado falló con ${result.reason}`);
+  assert.equal(result.manifest.artefactos.length, 1);
+  assert.equal(resolvesToExistingFile([f.root, f.worktree], `qa/evidence/${f.issue}/video de qa.mp4`), true);
+  assert.equal(resolvesToExistingFile(f.root, `qa/evidence/${f.issue}/video de qa.mp4`), false);
 });

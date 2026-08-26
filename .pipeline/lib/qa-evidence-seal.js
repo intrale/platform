@@ -60,6 +60,30 @@ const MEDIA_SUBDIR = 'media';
 const MEDIA_EXTENSION = /\.(?:mp4|webm|mkv|mov|m4v|gif|png|jpe?g|pdf)$/i;
 const REJECTION_BASENAME = /^rejection-[A-Za-z0-9._-]+\.pdf$/i;
 
+// #6495 (rebote 7, R-5) - Los artefactos NO viven necesariamente en `ROOT`.
+//
+// La fase `verificacion` esta en `EXISTING_WORKTREE_PHASES`
+// (`lib/phase-workspace.js:32`), asi que el agente QA corre con
+// `cwd = worktreePath` y el rol le manda declarar rutas RELATIVAS
+// (`roles/qa.md:336-338`): esas rutas caen en el WORKTREE, no en el repo
+// principal. El Pulpo, en cambio, baja el video crudo del emulador a
+// `ROOT/qa/evidence/<issue>/`. Los dos lados son legitimos y ninguno alcanza
+// solo: resolver unicamente contra `ROOT` degradaba a `rechazado` el QA android
+// canonico del rol (y dejaba sin sello 42 de los 76 aprobados structural reales
+// del corpus), y resolver unicamente contra el worktree dejaba sin sellar el
+// crudo que graba el propio Pulpo.
+//
+// Por eso el sellado acepta VARIOS workspaces, en orden de preferencia
+// (worktree primero, repo despues), y de cada uno abre los MISMOS dos recintos
+// acotados de siempre. No se agrega permisividad: el containment sigue siendo
+// por `realpath` contra un recinto fijo derivado del issue, la allowlist de
+// forma del recinto de logs no cambia, y los topes por archivo / campos / bytes
+// agregados son globales al sellado, no por workspace.
+//
+// Los workspaces los pasa el PULPO desde su `spawnCwd`; nunca salen de `data`,
+// igual que el `cwd` de `deriveHead` (CA-12a).
+const MAX_WORKSPACES = 4;
+
 class SealError extends Error {
   constructor(reason, declaredPath = '') {
     super(reason);
@@ -83,14 +107,51 @@ function isInside(parent, candidate) {
 }
 
 /**
- * Recintos permitidos, en orden de preferencia. Son rutas FIJAS derivadas de
- * `root` y del issue: ninguna sale del YAML del agente.
+ * Workspaces donde puede vivir un artefacto, en orden de preferencia y sin
+ * duplicados (dedupe por `realpath`, con fallback al absoluto cuando el
+ * directorio todavia no existe). `root` SIEMPRE entra, y entra ULTIMO: los
+ * workspaces explicitos son el lugar donde el agente acaba de escribir, asi que
+ * ante el mismo path relativo presente de los dos lados gana el del agente, que
+ * es el que su veredicto esta afirmando.
+ *
+ * Fail-closed, sin truncado silencioso (mismo criterio que CA-10): pasarse de
+ * `MAX_WORKSPACES` frena el sellado en vez de recortar la lista.
+ *
+ * @param {string} root raiz del repo principal (fija, nunca del YAML)
+ * @param {string[]|undefined} workspaces recintos adicionales que pasa el Pulpo
+ * @returns {string[]} bases absolutas, en orden de preferencia
  */
-function confinementRoots(root, issue) {
-  return [
-    { dir: path.join(root, 'qa', 'evidence', String(issue)), permite: () => true },
-    { dir: path.join(root, ...LOG_RECINTO), permite: allowedLogShape },
-  ];
+function normalizeWorkspaces(root, workspaces) {
+  const bases = [];
+  const vistos = new Set();
+  const agregar = value => {
+    if (typeof value !== 'string' || value.trim() === '') return;
+    let absolute;
+    try { absolute = path.resolve(value); } catch { return; }
+    let clave;
+    try { clave = fs.realpathSync(absolute); } catch { clave = absolute; }
+    clave = clave.replace(/[\\/]+$/, '').toLowerCase();
+    if (vistos.has(clave)) return;
+    vistos.add(clave);
+    bases.push(absolute);
+  };
+  if (Array.isArray(workspaces)) workspaces.forEach(agregar);
+  agregar(root);
+  if (bases.length > MAX_WORKSPACES) throw new SealError('workspaces-oversize');
+  return bases;
+}
+
+/**
+ * Recintos permitidos, en orden de preferencia. Son rutas FIJAS derivadas de
+ * cada workspace y del issue: ninguna sale del YAML del agente.
+ */
+function confinementRoots(root, issue, workspaces) {
+  const recintos = [];
+  for (const base of normalizeWorkspaces(root, workspaces)) {
+    recintos.push({ base, dir: path.join(base, 'qa', 'evidence', String(issue)), permite: () => true });
+    recintos.push({ base, dir: path.join(base, ...LOG_RECINTO), permite: allowedLogShape });
+  }
+  return recintos;
 }
 
 /**
@@ -150,16 +211,32 @@ function resolveConfined(root, issue, declaredPath, options = {}) {
   if (TRAVERSAL_SEGMENT.test(raw)) throw new SealError('traversal', declaredPath);
   if (isSensitivePath(raw)) throw new SealError('fuera-de-recinto', declaredPath);
 
-  const absolute = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(root, raw);
-  const recinto = confinementRoots(root, issue)
-    .find(candidate => isInside(candidate.dir, absolute));
+  for (const recinto of confinementRoots(root, issue, options.workspaces)) {
+    const resuelto = resolveEnRecinto(recinto, issue, raw, esDirectorio);
+    if (resuelto) return resuelto;
+  }
   // No distingue ausencia de rechazo: evita usar el motivo como oráculo (CA-11).
-  if (!recinto) throw new SealError('fuera-de-recinto', declaredPath);
+  throw new SealError('fuera-de-recinto', declaredPath);
+}
+
+/**
+ * Resuelve contra UN recinto. Devuelve `null` -no lanza- cuando la ruta no le
+ * corresponde, para que `resolveConfined` pueda seguir con el proximo workspace
+ * sin convertir un "aca no esta" en el rechazo definitivo. El rechazo lo emite
+ * el llamador recien cuando NINGUN recinto la acepto, con el mismo motivo
+ * categorico de siempre (CA-11: no distingue ausencia de rechazo).
+ *
+ * La ruta devuelta (`ruta`) SIEMPRE es relativa a la base de SU recinto y con
+ * `/`, asi que un artefacto del worktree se persiste con la misma forma que uno
+ * del repo (`qa/evidence/<issue>/...`) y el manifiesto nunca guarda rutas
+ * absolutas del host (SEC-8).
+ */
+function resolveEnRecinto(recinto, issue, raw, esDirectorio) {
+  const absolute = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(recinto.base, raw);
+  if (!isInside(recinto.dir, absolute)) return null;
   const relativoAlRecinto = path.relative(recinto.dir, absolute);
   const relParts = relativoAlRecinto === '' ? [] : relativoAlRecinto.split(/[\\/]/);
-  if (!recinto.permite(relParts, issue, esDirectorio)) {
-    throw new SealError('fuera-de-recinto', declaredPath);
-  }
+  if (!recinto.permite(relParts, issue, esDirectorio)) return null;
 
   let realRecinto;
   let real;
@@ -167,12 +244,12 @@ function resolveConfined(root, issue, declaredPath, options = {}) {
     realRecinto = fs.realpathSync(recinto.dir);
     real = fs.realpathSync(absolute);
   } catch {
-    throw new SealError('fuera-de-recinto', declaredPath);
+    return null;
   }
-  if (!isInside(realRecinto, real)) throw new SealError('fuera-de-recinto', declaredPath);
-  const ruta = path.relative(root, absolute).replace(/\\/g, '/');
-  if (ruta === '' || ruta.startsWith('..')) throw new SealError('fuera-de-recinto', declaredPath);
-  return { absolute, real, ruta, evidenceDir: realRecinto };
+  if (!isInside(realRecinto, real)) return null;
+  const ruta = path.relative(recinto.base, absolute).replace(/\\/g, '/');
+  if (ruta === '' || ruta.startsWith('..')) return null;
+  return { absolute, real, ruta, evidenceDir: realRecinto, base: recinto.base };
 }
 
 function deriveHead(cwd) {
@@ -207,21 +284,45 @@ function globMatcher(basename) {
   return new RegExp(`^${escaped}$`);
 }
 
-function expandGlob(root, issue, declaredPath) {
-  if (!/[?*]/.test(declaredPath)) return [declaredPath];
+/**
+ * Expande el campo declarado a la lista de rutas a sellar.
+ *
+ * #6495 (rebote 7, R-5) - El glob se prueba workspace por workspace y gana el
+ * PRIMERO que expande a por lo menos un archivo. Elegir el workspace por
+ * existencia del DIRECTORIO no alcanzaba: el Pulpo crea
+ * `ROOT/qa/evidence/<issue>/` para bajar el video crudo (`pulpo.js`), asi que
+ * ese directorio existe y esta vacio mientras los frames viven en el worktree
+ * del agente; el glob habria muerto en `glob-vacio` con los frames a la vista.
+ *
+ * Los archivos expandidos se devuelven atados a ESE workspace: si el glob
+ * resolvio en el worktree, los frames salen del worktree y no se mezclan con
+ * los de `ROOT`, que pueden ser de otra corrida.
+ *
+ * @returns {{rutas: string[], workspaces: string[]|undefined}}
+ */
+function expandGlob(root, issue, declaredPath, workspaces) {
+  if (!/[?*]/.test(declaredPath)) return { rutas: [declaredPath], workspaces };
   if (declaredPath.includes('?') || (declaredPath.match(/\*/g) || []).length !== 1) {
     throw new SealError('glob-invalido', declaredPath);
   }
   const directory = path.dirname(declaredPath);
   const basename = path.basename(declaredPath);
-  const confinedDir = resolveConfined(root, issue, path.join(directory, '.'), { directorio: true });
   const matcher = globMatcher(basename);
-  let names;
-  try { names = fs.readdirSync(confinedDir.real).filter(name => matcher.test(name)).sort(); }
-  catch { throw new SealError('glob-vacio', declaredPath); }
-  if (names.length === 0) throw new SealError('glob-vacio', declaredPath);
-  if (names.length > MAX_GLOB_FILES) throw new SealError('glob-oversize', declaredPath);
-  return names.map(name => path.join(directory, name).replace(/\\/g, '/'));
+  for (const base of normalizeWorkspaces(root, workspaces)) {
+    let confinedDir;
+    try { confinedDir = resolveConfined(base, issue, path.join(directory, '.'), { directorio: true }); }
+    catch { continue; }
+    let names;
+    try { names = fs.readdirSync(confinedDir.real).filter(name => matcher.test(name)).sort(); }
+    catch { continue; }
+    if (names.length === 0) continue;
+    if (names.length > MAX_GLOB_FILES) throw new SealError('glob-oversize', declaredPath);
+    return {
+      rutas: names.map(name => path.join(directory, name).replace(/\\/g, '/')),
+      workspaces: [confinedDir.base],
+    };
+  }
+  throw new SealError('glob-vacio', declaredPath);
 }
 
 /**
@@ -370,11 +471,21 @@ function looksLikeArtifactRef(value) {
  * con traza" y "resolver"; el motivo que sale al operador sigue siendo
  * categórico y no distingue inexistente de rechazado.
  *
- * @param {string} root raíz del repo (fija, nunca del YAML)
+ * #6495 (rebote 7, R-5): la sonda mira TODOS los workspaces del sellado, no
+ * solo `ROOT`. Si mirara solo `ROOT`, el artefacto real que el agente escribio
+ * en su worktree con un espacio en el nombre volveria a saltearse como prosa y
+ * el fail-open de S-1 quedaria reabierto justo en el carril de produccion.
+ *
+ * @param {string|string[]} bases raiz(es) del sellado (fijas, nunca del YAML)
  * @param {*} value valor declarado por el agente (no confiable)
  * @returns {boolean} true si el valor corresponde a al menos un archivo regular
  */
-function resolvesToExistingFile(root, value) {
+function resolvesToExistingFile(bases, value) {
+  const lista = Array.isArray(bases) ? bases : [bases];
+  return lista.some(base => resolvesToExistingFileUnder(base, value));
+}
+
+function resolvesToExistingFileUnder(root, value) {
   if (typeof value !== 'string') return false;
   const raw = value.trim();
   if (raw === '') return false;
@@ -435,7 +546,7 @@ const MAX_LOG_FIELD_CHARS = 120;
 const KNOWN_REASONS = new Set([
   'sin-evidencia', 'campos-oversize', 'tipo-invalido', 'traversal', 'fuera-de-recinto',
   'no-regular', 'vacio', 'oversize', 'head-invalido', 'glob-invalido', 'glob-vacio',
-  'glob-oversize', 'hash-divergente', 'sellado-invalido',
+  'glob-oversize', 'hash-divergente', 'workspaces-oversize', 'sellado-invalido',
 ]);
 
 /**
@@ -585,19 +696,29 @@ function mergeDeclaredSnapshots(previo, propio) {
  *     que un `sealed:false` sólo se loguea: el veredicto NO se toca. El sello se
  *     escribe igual cuando el dropfile sí declara artefactos reales.
  *
- * Artefactos contra `root` (recintos fijos), `head` contra `cwd` (CA-12a): el
- * `cwd` viene exclusivamente del `spawnCwd` que el Pulpo tiene en scope, y el
- * módulo ignora cualquier ruta presente en `data` (incluido `data.entorno`).
+ * DÓNDE SE RESUELVE CADA COSA (#6495, rebote 7 · R-5). Artefactos contra los
+ * recintos fijos de `workspaces` + `root`; `head` contra `cwd`.
+ *
+ * CA-12a exige una sola cosa —y sólo esa—: que el `cwd` de `deriveHead` **no
+ * salga del YAML**. Eso sigue intacto: el `cwd` viene exclusivamente del
+ * `spawnCwd` que el Pulpo tiene en scope y el módulo ignora cualquier ruta
+ * presente en `data` (incluido `data.entorno`, que #6258 ya declara). Lo que
+ * CA-12a **no** dice es contra qué raíz se resuelven los artefactos: la versión
+ * anterior de este JSDoc canonizaba "artefactos contra `root`" citándola, y esa
+ * lectura de más dejaba fuera del sello todo lo que el agente escribe en su
+ * worktree —que en `verificacion` es TODO lo que declara el rol, porque corre
+ * con `cwd = worktreePath`—. Los `workspaces` son igual de no negociables que
+ * el `cwd`: los pasa el Pulpo, nunca el YAML.
  *
  * `declared` (CA-2): snapshot OPCIONAL de un `stripDeclaredSeal` previo del
  * llamador. El Pulpo ya corre el strip sobre todo dropfile de qa/verificación
  * antes de los gates, así que sin este parámetro el sellado no tendría contra
  * qué contrastar y persistiría `descartes: []` — ver `mergeDeclaredSnapshots`.
  *
- * @param {{root: string, issue: string|number, data: object, cwd: string, declared?: object, limits?: {totalBytes?: number}}} params
+ * @param {{root: string, issue: string|number, data: object, cwd: string, workspaces?: string[], declared?: object, limits?: {totalBytes?: number}}} params
  * @returns {{sealed: boolean, manifest: object|null, descartes: object[], reason: string|null}}
  */
-function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio, limits } = {}) {
+function sealQaVerdict({ root, issue, data, cwd, workspaces, declared: declaredPrevio, limits } = {}) {
   if (!data || typeof data !== 'object') return { sealed: false, manifest: null, descartes: [], reason: 'no-aplica' };
   // #6495 (rebote 5, seguridad) — El borrado va ANTES del early return por
   // veredicto no aprobado: si viviera adentro del `try`, un dropfile
@@ -608,6 +729,9 @@ function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio, limit
   const declared = mergeDeclaredSnapshots(declaredPrevio, stripDeclaredSeal(data));
   if (data.resultado !== 'aprobado') return { sealed: false, manifest: null, descartes: [], reason: 'no-aplica' };
   try {
+    // Se normaliza UNA vez y adentro del try: pasarse del tope de workspaces es
+    // fail-closed como cualquier otro tope, no una lista recortada en silencio.
+    const bases = normalizeWorkspaces(root, workspaces);
     const fields = evidenceFields(data);
     if (fields.length === 0) throw new SealError('sin-evidencia');
     if (fields.length > MAX_EVIDENCE_FIELDS) throw new SealError('campos-oversize');
@@ -634,7 +758,7 @@ function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio, limit
       // salía del sello en silencio: la misma clase de fail-open que el PoC.
       // `undefined`/`null` no son strings y la sonda contesta `false`, así que
       // el campo YAML vacío sigue siendo centinela como hasta ahora.
-      if (isSkipSentinel(data[field]) && !resolvesToExistingFile(root, data[field])) {
+      if (isSkipSentinel(data[field]) && !resolvesToExistingFile(bases, data[field])) {
         discards.push({ campo: field, declarado: null, real: null, motivo: 'centinela' });
         continue;
       }
@@ -651,14 +775,15 @@ function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio, limit
       // este issue existe para cerrar (CA-4 + CA-7).
       if (typeof data[field] === 'string'
         && !looksLikeArtifactRef(data[field])
-        && !resolvesToExistingFile(root, data[field])) {
+        && !resolvesToExistingFile(bases, data[field])) {
         discards.push({ campo: field, declarado: null, real: null, motivo: 'no-es-artefacto' });
         continue;
       }
       const spec = artifactSpec(data[field]);
       if (!spec) throw new SealError('tipo-invalido');
       if (!['original', 'copia', 'derivado'].includes(spec.tipo)) throw new SealError('tipo-invalido');
-      const expanded = expandGlob(root, issue, spec.ruta);
+      const expanded = expandGlob(root, issue, spec.ruta, workspaces);
+      const rutas = expanded.rutas;
       // #6495 (rebote 6, QA) — El hash declarado es UNO POR CAMPO, así que sólo
       // tiene contra qué compararse cuando el campo produce UN artefacto. Con
       // un glob que expande a varios, compararlo adentro del bucle emitía una
@@ -674,8 +799,8 @@ function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio, limit
       // Sale del SNAPSHOT, no de `data`: el campo ya no está en `data` porque
       // se borró al entrar —y el Pulpo lo había borrado antes—, así que leerlo
       // de ahí daría siempre undefined y rompería la traza de CA-1/CA-2.
-      const declaredHash = expanded.length === 1 ? normalizeHash(rawDeclaredHash) : null;
-      if (expanded.length !== 1 && rawDeclaredHash !== undefined
+      const declaredHash = rutas.length === 1 ? normalizeHash(rawDeclaredHash) : null;
+      if (rutas.length !== 1 && rawDeclaredHash !== undefined
         && !discards.some(item => item.campo === `${field}_sha256`)) {
         discards.push({
           campo: `${field}_sha256`,
@@ -683,8 +808,8 @@ function sealQaVerdict({ root, issue, data, cwd, declared: declaredPrevio, limit
           real: null,
         });
       }
-      for (const route of expanded) {
-        const confined = resolveConfined(root, issue, route);
+      for (const route of rutas) {
+        const confined = resolveConfined(root, issue, route, { workspaces: expanded.workspaces });
         const hashed = readAndHash(confined, route, totalBudget - totalBytes);
         totalBytes += hashed.bytes;
         const artifact = { campo: field, ruta: confined.ruta, ...hashed, tipo: spec.tipo };
@@ -773,6 +898,7 @@ const FAILURE_MESSAGES = {
   'glob-oversize': 'El patrón de evidencia produjo más archivos que el límite permitido',
   'tipo-invalido': 'QA declaró un campo de evidencia con un valor que no es una ruta de artefacto',
   'sin-evidencia': 'El veredicto aprobado de QA no declara ningún artefacto de evidencia',
+  'workspaces-oversize': 'El sellado recibió más workspaces de evidencia que el límite permitido',
 };
 
 const SEAL_REJECTED_BY = 'gate-sellado-evidencia';
@@ -805,6 +931,7 @@ function degradeVerdictForSeal(data, reason) {
 
 module.exports = {
   sealQaVerdict, stripDeclaredSeal, mergeDeclaredSnapshots, normalizeHash, resolveConfined, deriveHead, sanitizeLogField,
+  normalizeWorkspaces, MAX_WORKSPACES,
   describeSealFailure, degradeVerdictForSeal, isSkipSentinel, looksLikeArtifactRef,
   resolvesToExistingFile,
   SEAL_REJECTED_BY,
