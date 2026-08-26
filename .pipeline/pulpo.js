@@ -21298,8 +21298,17 @@ async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
     let res;
     try {
       res = humanBlock.unblockIssue({
+        // #6611 rev-1 — `m` viene de `listBlockedIssues()` (vía el selector), que
+        // expone la ruta como `marker_path`; `unblockIssue` la lee como `file`.
+        // Sin esta adaptación el marker NO se movía: quedaba duplicado
+        // (`bloqueado-humano/` + un archivo vacío en `pendiente/`), el issue
+        // seguía contándose como bloqueado y el reaper lo re-destrababa en cada
+        // tick — un aviso de Telegram, un comentario y un `remove-label` por
+        // tick, quemando el techo sin que hubiera existido re-bloqueo real.
+        // `unblockIssue` ya acepta los dos nombres, pero el mapeo va explícito:
+        // el contrato de este call site no depende de esa tolerancia.
         issue: m.issue,
-        marker: m,
+        marker: { ...m, file: m.marker_path },
         unlocker: 'auto-recheck',
         guidance,
       });

@@ -260,6 +260,34 @@ function reasonFilePath(blockedFile) {
     return blockedFile + '.reason.json';
 }
 
+/**
+ * #6611 rev-1 — RUTA DEL MARKER, RESUELTA EN UN SOLO LUGAR.
+ *
+ * EL DEFECTO QUE ESTO CIERRA. Este módulo tiene DOS productores de entradas de
+ * marker con nombres de campo distintos: `findBlockedMarker()` /
+ * `listBlockedMarkers()` devuelven `file`, y `listBlockedIssues()` devuelve
+ * `marker_path`. `unblockIssue`/`dismissBlockedIssue` leían sólo `file`, así que
+ * pasarles una entrada del segundo productor hacía `renameSync(undefined, …)`,
+ * el `catch` FABRICABA un marker vacío en `pendiente/` y los `unlinkSync`
+ * fallaban en silencio — el marker quedaba DUPLICADO y el issue se contaba como
+ * bloqueado para siempre, mientras la función igual devolvía `{ok:true}`.
+ *
+ * Dos defensas, no una:
+ *   1. Los dos nombres se aceptan: ninguna entrada legítima de este módulo puede
+ *      volver a caerse por el nombre del campo.
+ *   2. Lo que no resuelva a un string usable devuelve `null` y el llamador corta
+ *      con `{ok:false}` — nunca "éxito" sobre un marker que no se movió.
+ *
+ * @returns {string|null} `null` = NO HAY RUTA USABLE. Fail-closed.
+ */
+function resolveMarkerFile(blocked) {
+    if (!blocked || typeof blocked !== 'object') return null;
+    for (const candidato of [blocked.file, blocked.marker_path]) {
+        if (typeof candidato === 'string' && candidato.trim()) return candidato;
+    }
+    return null;
+}
+
 function guidanceFilePath(targetDir, marker) {
     return path.join(targetDir, marker + '.guidance.txt');
 }
@@ -637,19 +665,50 @@ function unblockIssue(opts) {
         return { ok: false, error: `Issue ${issue} no está en bloqueado-humano/` };
     }
 
+    // #6611 rev-1 — Sin ruta usable NO hay destrabe. Antes se seguía adelante y
+    // el `catch` del rename fabricaba un marker vacío: el llamador recibía
+    // `{ok:true}`, sacaba el label y comentaba el issue, mientras el marker
+    // original seguía intacto en `bloqueado-humano/`.
+    const sourceFile = resolveMarkerFile(blocked);
+    if (!sourceFile) {
+        return { ok: false, error: `Marker de bloqueo del issue ${issue} sin ruta utilizable` };
+    }
+    // Idempotencia real: si el `/unblock` manual (o un tick anterior) ganó la
+    // carrera, el marker ya no está y esto es un no-op benigno — NO un destrabe
+    // fantasma que río abajo se cobra como si hubiera pasado algo.
+    if (!fs.existsSync(sourceFile)) {
+        return { ok: false, error: `Marker ${sourceFile} ya no existe (destrabado en paralelo)` };
+    }
+
     const targetPhase = opts.target_phase || blocked.phase;
     const targetDir = path.join(PIPELINE_DIR, blocked.pipeline, targetPhase, 'pendiente');
     fs.mkdirSync(targetDir, { recursive: true });
     const marker = `${issue}.${blocked.skill}`;
     const targetFile = path.join(targetDir, marker);
 
-    try { fs.renameSync(blocked.file, targetFile); }
-    catch { fs.writeFileSync(targetFile, ''); try { fs.unlinkSync(blocked.file); } catch {} }
+    // El marker NO es un archivo vacío: lleva el YAML de trabajo que el agente
+    // re-encolado va a leer. Fabricarlo vacío perdía ese contenido. Fallback a
+    // copy+unlink sólo para el caso legítimo (rename cross-device, EXDEV);
+    // cualquier otro fallo corta fail-closed sin dejar basura en `pendiente/`.
+    try {
+        fs.renameSync(sourceFile, targetFile);
+    } catch (errRename) {
+        try {
+            fs.copyFileSync(sourceFile, targetFile);
+            fs.unlinkSync(sourceFile);
+        } catch (errCopy) {
+            try { fs.unlinkSync(targetFile); } catch { /* no llegó a crearse */ }
+            return {
+                ok: false,
+                error: `No se pudo mover el marker ${sourceFile} → ${targetFile}: ${errRename.message} / ${errCopy.message}`,
+            };
+        }
+    }
 
     if (guidance) {
         try { fs.writeFileSync(guidanceFilePath(targetDir, marker), guidance); } catch {}
     }
-    try { fs.unlinkSync(reasonFilePath(blocked.file)); } catch {}
+    try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
 
     emitUnblocked({
         issue, skill: blocked.skill, phase: blocked.phase, pipeline: blocked.pipeline,
@@ -674,8 +733,16 @@ function dismissBlockedIssue(opts) {
         return { ok: false, error: `Issue ${issue} no está en bloqueado-humano/` };
     }
 
-    try { fs.unlinkSync(blocked.file); } catch {}
-    try { fs.unlinkSync(reasonFilePath(blocked.file)); } catch {}
+    // #6611 rev-1 — mismo fail-closed que `unblockIssue`: sin ruta usable el
+    // `unlinkSync` tiraba, el `catch` se lo comía y devolvíamos `{ok:true}` sobre
+    // un marker que seguía vivo.
+    const sourceFile = resolveMarkerFile(blocked);
+    if (!sourceFile) {
+        return { ok: false, error: `Marker de bloqueo del issue ${issue} sin ruta utilizable` };
+    }
+
+    try { fs.unlinkSync(sourceFile); } catch {}
+    try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
 
     emitDismissed({
         issue, skill: blocked.skill, phase: blocked.phase, pipeline: blocked.pipeline,
