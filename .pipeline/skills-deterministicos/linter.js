@@ -142,9 +142,39 @@ function runAllChecks({ issue, cwd, base }) {
     const branch = git.getCurrentBranch(cwd);
     findings.push(...checks.checkBranchName(branch, { issue }));
 
-    // Fetch origin/main — best-effort, no bloqueamos si falla
+    // (#6495) Fetch origin/main — best-effort de verdad.
+    //
+    // ANTES: `hasBase = fetchRes.exit_code === 0`. El comentario decía "no
+    // bloqueamos si falla", pero el código hacía exactamente lo contrario: con
+    // el fetch en error se saltaban log/diff/stats, `commitMsgs` quedaba en []
+    // y `checkClosesIssue` emitía `pr:no-commits` — un RECHAZO que rebotaba a
+    // dev una rama con 15 commits pusheados. Un timeout de red se le facturaba
+    // al entregable.
+    //
+    // AHORA: la base la decide si el ref RESUELVE localmente, no si el fetch
+    // anduvo. El remote-tracking ref sobrevive al fetch fallido; a lo sumo está
+    // desactualizado, y comparar contra una base algo vieja sólo puede incluir
+    // de más commits ya mergeados — nunca fabrica una rama vacía.
     const fetchRes = git.fetchOrigin(cwd);
-    const hasBase = fetchRes.exit_code === 0;
+    const fetchOk = fetchRes.exit_code === 0;
+    const baseResolves = git.refExists(cwd, base);
+
+    if (!baseResolves) {
+        // No hay con qué comparar: es falla de INFRA, no un defecto del
+        // entregable. Se propaga para que main() salga con exit 2 (excepción)
+        // en vez de inventar un finding de contenido que rebota a dev por algo
+        // que dev no puede arreglar.
+        const err = new Error(
+            `No se pudo resolver la base '${base}' en ${cwd} `
+            + `(fetch exit=${fetchRes.exit_code}: ${(fetchRes.stderr || '').trim().slice(0, 200)}). `
+            + 'Sin base no hay comparación posible: falla de infraestructura, no del entregable.'
+        );
+        err.code = 'LINTER_BASE_UNAVAILABLE';
+        throw err;
+    }
+
+    const hasBase = true;
+    const baseStale = !fetchOk;
 
     const commitMsgs = hasBase ? getCommitMessages(cwd, base) : [];
     const diffText = hasBase ? getDiffText(cwd, base) : '';
@@ -176,7 +206,15 @@ function runAllChecks({ issue, cwd, base }) {
     findings.push(...checks.checkForbiddenStringsInDiff(diffText));
     findings.push(...checks.checkDiffSize(stats));
 
-    return { findings, branch, stats, commitCount: commitMsgs.length, fileCount: changedFiles.length };
+    return {
+        findings, branch, stats,
+        commitCount: commitMsgs.length,
+        fileCount: changedFiles.length,
+        // (#6495) Visibles para el log: distinguir "base fresca" de "base
+        // local desactualizada porque el fetch falló" al diagnosticar.
+        baseStale,
+        fetchExitCode: fetchRes.exit_code,
+    };
 }
 
 async function main() {
@@ -212,6 +250,11 @@ async function main() {
     try {
         result = runAllChecks({ issue, cwd: WORK_DIR, base: args.base });
         logAppend(`[linter] cwd=${WORK_DIR} branch=${result.branch} commits=${result.commitCount} files=${result.fileCount}`);
+        // (#6495) Dejar rastro del fetch: el falso `pr:no-commits` fue invisible
+        // en el log justamente porque el resultado del fetch no se registraba.
+        if (result.baseStale) {
+            logAppend(`[linter] AVISO: fetch de '${args.base}' falló (exit=${result.fetchExitCode}) — se compara contra el ref local, posiblemente desactualizado.`);
+        }
         logAppend(`[linter] diff=${result.stats.files_changed}f +${result.stats.additions} -${result.stats.deletions}`);
 
         const agg = checks.aggregate(result.findings);

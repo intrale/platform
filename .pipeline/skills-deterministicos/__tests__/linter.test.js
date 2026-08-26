@@ -91,15 +91,18 @@ test('updateMarker — sin trabajandoPath no tira excepción', () => {
     assert.doesNotThrow(() => linter.updateMarker(undefined, { foo: 'bar' }));
 });
 
-test('runAllChecks — integra static-checks sin romper con repo vacío', () => {
-    // Con git no disponible / sin commits, igual debe devolver findings (branch warn + no-commits)
-    // NOTA: runAllChecks llama a git real; si git falla, los helpers devuelven vacío.
-    // Probamos que el shape del retorno sea correcto.
-    const r = linter.runAllChecks({ issue: 1, cwd: TMP, base: 'origin/main' });
-    assert.ok(Array.isArray(r.findings));
-    assert.equal(typeof r.stats, 'object');
-    assert.equal(typeof r.commitCount, 'number');
-    assert.equal(typeof r.fileCount, 'number');
+test('runAllChecks — sin base resoluble lanza LINTER_BASE_UNAVAILABLE (no pr:no-commits)', () => {
+    // (#6495) Cambio de contrato deliberado. ANTES este caso (dir que no es
+    // repo git) devolvía un shape "normal" con commitCount=0, lo que aguas
+    // abajo se traducía en un `pr:no-commits` — un RECHAZO a dev por una falla
+    // de infraestructura. Ahora se propaga como excepción para que main() salga
+    // con exit 2 (infra) en vez de facturarle el problema al entregable.
+    let err = null;
+    try { linter.runAllChecks({ issue: 1, cwd: TMP, base: 'origin/main' }); }
+    catch (e) { err = e; }
+    assert.ok(err, 'debe lanzar cuando la base no resuelve');
+    assert.equal(err.code, 'LINTER_BASE_UNAVAILABLE');
+    assert.match(err.message, /No se pudo resolver la base/);
 });
 
 // Regresión #2523 rev-1: el linter debe operar sobre el worktree del agente,
@@ -162,4 +165,91 @@ test('módulo — sin PIPELINE_WORKTREE WORK_DIR cae a process.cwd()', () => {
         delete require.cache[require.resolve('../linter')];
         require('../linter');
     }
+});
+
+// ---------------------------------------------------------------------------
+// Regresión #6495: el fetch fallido NO puede disfrazarse de "rama vacía".
+//
+// Incidente: el linter rebotó a dev la rama agent/6495-pipeline-dev con
+// `pr:no-commits` cuando la rama tenía 15 commits pusheados. Causa: `hasBase`
+// se derivaba del exit code de `git fetch`; al fallar el fetch (timeout de 60s
+// en una corrida de 133s) se salteaban log/diff/stats y `commitMsgs` quedaba
+// vacío, que `checkClosesIssue` interpreta como rama sin commits.
+// ---------------------------------------------------------------------------
+
+const gitOps = require('../lib/git-ops');
+
+/** Ejecuta fn con git-ops parcheado y restaura siempre. */
+function withGitStub(stub, fn) {
+    const saved = {};
+    for (const k of Object.keys(stub)) { saved[k] = gitOps[k]; gitOps[k] = stub[k]; }
+    try { return fn(); } finally { for (const k of Object.keys(saved)) gitOps[k] = saved[k]; }
+}
+
+/** runGit falso: responde al log/diff según el subcomando pedido. */
+function fakeRunGit({ commits = [], files = [] } = {}) {
+    return (args) => {
+        const sub = args[0];
+        if (sub === 'log') {
+            return { exit_code: 0, stdout: commits.map((c) => `${c}\n---COMMIT---`).join('\n'), stderr: '' };
+        }
+        if (sub === 'diff') {
+            if (args.includes('--name-only')) return { exit_code: 0, stdout: files.join('\n'), stderr: '' };
+            if (args.includes('--shortstat')) {
+                return { exit_code: 0, stdout: ` ${files.length} files changed, 10 insertions(+), 2 deletions(-)`, stderr: '' };
+            }
+            return { exit_code: 0, stdout: 'diff --git a/x b/x', stderr: '' };
+        }
+        return { exit_code: 0, stdout: '', stderr: '' };
+    };
+}
+
+test('#6495 — fetch fallido con ref local resoluble NO emite pr:no-commits', () => {
+    const r = withGitStub({
+        fetchOrigin: () => ({ exit_code: 128, stdout: '', stderr: 'fatal: unable to access: Could not resolve host' }),
+        refExists: () => true,
+        getCurrentBranch: () => 'agent/6495-pipeline-dev',
+        getPriorDeliveryRefs: () => [],
+        getSiblingDeliveryRefs: () => [],
+        loadSiblingRepos: () => [],
+        runGit: fakeRunGit({ commits: ['fix(pipeline): algo (#6495)\n\nCloses #6495'], files: ['.pipeline/linter.js'] }),
+    }, () => linter.runAllChecks({ issue: 6495, cwd: TMP, base: 'origin/main' }));
+
+    const rules = r.findings.map((f) => f.rule);
+    assert.ok(!rules.includes('pr:no-commits'), `no debe rebotar por fetch caído; findings=${JSON.stringify(rules)}`);
+    assert.equal(r.commitCount, 1, 'debe leer los commits contra el ref local');
+    assert.equal(r.fileCount, 1);
+    assert.equal(r.baseStale, true, 'debe marcar la base como desactualizada');
+});
+
+test('#6495 — rama genuinamente vacía con base fresca SIGUE emitiendo pr:no-commits', () => {
+    // El fix no debe abrir un agujero: si de verdad no hay commits, el gate bloquea.
+    const r = withGitStub({
+        fetchOrigin: () => ({ exit_code: 0, stdout: '', stderr: '' }),
+        refExists: () => true,
+        getCurrentBranch: () => 'agent/6495-pipeline-dev',
+        getPriorDeliveryRefs: () => [],
+        getSiblingDeliveryRefs: () => [],
+        loadSiblingRepos: () => [],
+        runGit: fakeRunGit({ commits: [], files: [] }),
+    }, () => linter.runAllChecks({ issue: 6495, cwd: TMP, base: 'origin/main' }));
+
+    const rules = r.findings.map((f) => f.rule);
+    assert.ok(rules.includes('pr:no-commits'), 'la rama vacía real debe seguir bloqueando');
+    assert.equal(r.baseStale, false);
+});
+
+// Estos dos corren contra el repo git REAL a proposito: el bug que cierran es
+// de interaccion con cmd.exe (runCmd usa shell:true en Windows), y un stub de
+// runGit no lo reproduce — de hecho lo esconderia.
+const REAL_REPO = path.resolve(__dirname, '..', '..', '..');
+
+test('#6495 — refExists resuelve refs reales (si vuelve ^{commit}, cmd.exe se come el ^ y esto falla)', () => {
+    assert.equal(gitOps.refExists(REAL_REPO, 'HEAD'), true, 'HEAD debe resolver en el worktree real');
+    assert.equal(gitOps.refExists(REAL_REPO, 'no/such/ref-6495'), false, 'un ref inexistente es false');
+    assert.equal(gitOps.refExists(REAL_REPO, ''), false, 'ref vacio es false');
+});
+
+test('#6495 — refExists es false fuera de un repo git (dispara el camino de infra)', () => {
+    assert.equal(gitOps.refExists(TMP, 'origin/main'), false, 'sin repo no hay base resoluble');
 });
