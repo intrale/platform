@@ -285,6 +285,7 @@ const commanderRequestClassify = require('./lib/commander/request-classify'); //
 // `noteFallbackDeliveryResolved` entran por inyección (`deps`), para no crear un
 // ciclo de requires ni arrancar el proceso entero dentro de un unit test.
 const commanderOrphanSweep = require('./lib/commander/orphan-sweep');
+const commanderOrphanNotify = require('./lib/commander/orphan-notify'); // #6460
 // #3935 (EP4-H2) — Resumen incremental de la conversación: compacta turnos
 // viejos a un bloque "resumen no autoritativo" + últimos K verbatim, acotando el
 // prompt sin perder coherencia. Módulo puro; la recompactación corre en
@@ -17686,6 +17687,62 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
   }
 }
 
+// #6460 — Encola el AVISO DE RESPUESTA PERDIDA en la misma cola de filesystem
+// que cualquier respuesta del Commander.
+//
+// Por qué no se reusa `sendTelegram`: esa función arma el payload ella misma
+// (`{text, parse_mode}` o `{text, plain}`) y NUNCA estampa `chat_id`, así que
+// siempre saldría al chat por default. El aviso tiene que poder ir a la
+// conversación del pedido, y esa decisión ya la tomó `orphan-notify` con las dos
+// ramas del ancla — acá el payload llega HECHO y no se toca.
+//
+// Por qué tampoco `notifyTelegram`: antepone `componente: ` y agrega una línea
+// `emisor: pid=… host=… ts=…`. Eso es jerga prohibida por CA-12 y encuadra el
+// aviso como una falla interna del sistema, justo lo contrario de lo que el
+// mensaje dice ("tu pedido se hizo").
+//
+// La entry `out` en el historial es OBLIGATORIA y no decorativa: sin ella
+// `commanderOutboundStatus` devuelve `'unknown'`, el `reconcileTelegramReceipts`
+// del loop no tiene qué cerrar y el aviso no se puede distinguir de uno
+// entregado. Es lo que hace verificable el CA de dead-letter.
+//
+// @param {object} payload  dropfile YA armado por `render.buildDropfile`.
+// @param {object} opts     `{ correlationId, chatId }` — el `chatId` va al
+//                          historial (para el filtro per-chat del contexto), NO
+//                          al payload: si el payload no lo trae es porque la
+//                          rama elegida es la del chat por default.
+// @returns {string|null} el correlationId encolado, o `null` si no se encoló.
+function enqueueOrphanNotice(payload, opts = {}) {
+  const correlationId = String(opts.correlationId || '');
+  if (!payload || typeof payload !== 'object' || !correlationId) return null;
+
+  const svcDir = telegramPendienteDir();
+  const data = { ...payload, _correlationId: correlationId };
+  const { filename } = dropfileWriter.writeDropfileSync({
+    dir: svcDir,
+    suffix: 'cmd.json',
+    data: JSON.stringify(data),
+    onCollision: (name, attempt) => log(
+      'telegram',
+      `⚠️ Colisión de nombre de dropfile del aviso (${name}, intento ${attempt + 1}) — se reintenta con otro nombre`
+    ),
+  });
+
+  // El `text` del historial NO es el texto del aviso: el historial se inyecta
+  // verbatim al contexto del Commander y el modelo lo leería como parte de la
+  // conversación.
+  appendCommanderHistory(path.join(PIPELINE, 'commander-history.jsonl'), {
+    direction: 'out',
+    status: 'encolado',
+    correlation_id: correlationId,
+    text: commanderOrphanNotify.NOTICE_HISTORY_TEXT,
+    chat_id: opts.chatId == null ? undefined : String(opts.chatId),
+  });
+
+  log('commander', `Aviso de respuesta perdida encolado (${data.chat_id ? 'dirigido' : 'chat por default'}) → ${filename}`);
+  return correlationId;
+}
+
 // #4750 — Encola un CHUNK de audio en la cola de `svc-telegram` (rama multipart
 // `voice`) para que herede `assertDelivered` (fail-closed: `ok:true` +
 // `message_id`) + `writeSentReceiptIfAny` con la dimensión de chunk. Cada chunk
@@ -18615,6 +18672,17 @@ function orphanSweepGate(prevTick, everyTicks = ORPHAN_SWEEP_EVERY_TICKS) {
 //   · `currentBootId` — guarda de vida por boot, no por PID ni por reloj (B1).
 // `runOrphanSweep` ya es best-effort adentro y el caller lo envuelve igual en
 // try/catch (SEC-3). Un fallo deja rastro con la causa (CA-14).
+// #6460 — el wiring del AVISO al operador. Todo lo que toca el proceso vive acá
+// y nada de esto entra al módulo puro:
+//   · `resolveChatIdForCorrelation` — sólo se exporta bajo `PULPO_NO_AUTOSTART=1`,
+//     así que requerirla desde `lib/` no sólo sería un ciclo: no existiría.
+//   · `defaultChatId` — el chat id EFECTIVO del canal de salida
+//     (`_loadTgSecrets()?.chat_id`), que es contra el que hay que comparar para
+//     elegir la rama sin `chat_id`. NO la env var del ancla: son cosas distintas.
+//   · `anchorAccepts` — el predicado REAL que va a aplicar `servicio-telegram.js`.
+//     Se reusa la función en vez de reimplementar la regla, porque una segunda
+//     verdad sobre "qué destino se acepta" es un aviso archivado en silencio.
+//     Lee `process.env` en cada llamada (el ancla puede cambiar en caliente).
 function ejecutarBarridoHuerfanos(origen) {
   return commanderOrphanSweep.runOrphanSweep({
     logDir: LOG_DIR,
@@ -18624,6 +18692,13 @@ function ejecutarBarridoHuerfanos(origen) {
       outboundStatus: commanderOutboundStatus,
       noteFallbackDeliveryResolved: inflightFallback.noteFallbackDeliveryResolved,
       log: (msg) => log('commander', msg + ' [' + origen + ']'),
+      // #6460
+      resolveChatIdForCorrelation,
+      defaultChatId: getTelegramChatId(),
+      anchorAccepts: (x) => require('./lib/notify-telegram')._internal.resolvePrivateChatId(x).ok,
+      enqueueOrphanNotice,
+      newCorrelationId: (prefijo) => telegramReceipt.generateCorrelationId(prefijo),
+      updateRequestMeta: commanderRequestLog.updateRequestMeta,
     },
   });
 }
