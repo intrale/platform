@@ -9,9 +9,10 @@
 // huérfano tanto en el audit encadenado como —vía la etapa `resultado`— en el
 // dashboard.
 //
-// ESTE MÓDULO NO NOTIFICA A NADIE. El aviso al operador por Telegram es #6460,
-// que llenará el parámetro `notified`. Acá `notified` ya existe y se respeta,
-// aunque llegue vacío.
+// EL AVISO AL OPERADOR NO SE DECIDE ACÁ. #6460 agregó la capa de aviso en
+// `orphan-notify.js`, y este módulo la invoca SÓLO si el wiring inyectó
+// `deps.enqueueOrphanNotice`. Sin esa inyección el barrido se comporta
+// EXACTAMENTE como en #6459: mismo `notified`, mismos eventos, mismo return.
 //
 // -----------------------------------------------------------------------------
 // Decisiones cerradas en la definición del padre (#6440) — NO se reabren:
@@ -101,6 +102,12 @@ const {
   hasStage,
   buildAuditReqRef,
 } = require('./request-log');
+
+// #6460 — capa de aviso. Import directo (no `deps`): es un módulo hermano de
+// `lib/commander/`, puro salvo su propia capa de I/O, y no crea ciclo. Lo que sí
+// entra por `deps` es todo lo que pertenece al PROCESO (el ancla, el chat por
+// default, el encolador, el generador de correlación).
+const orphanNotify = require('./orphan-notify');
 
 // -----------------------------------------------------------------------------
 // Enum CERRADO de veredicto por turno. Congelado: no se muta en runtime.
@@ -572,7 +579,7 @@ function runOrphanSweep(opts) {
 
   if (!logDir) {
     _log('[orphan-sweep] sin logDir — barrido no ejecutado');
-    return { ok: false, error: 'sin logDir', resumen: resumenVacio, emitidos: [], emitidosOk: [], emitidosFallidos: [] };
+    return { ok: false, error: 'sin logDir', resumen: resumenVacio, emitidos: [], emitidosOk: [], emitidosFallidos: [], avisos: 0 };
   }
 
   // 1 · Enumerar. SEC-2: un solo syscall con `withFileTypes`.
@@ -582,7 +589,7 @@ function runOrphanSweep(opts) {
   } catch (e) {
     // CA-14 — rastro observable con la causa. NO degrada a "todo sano".
     _log(`[orphan-sweep] no pude enumerar ${logDir}: ${e.message}`);
-    return { ok: false, error: e.message, resumen: resumenVacio, emitidos: [], emitidosOk: [], emitidosFallidos: [] };
+    return { ok: false, error: e.message, resumen: resumenVacio, emitidos: [], emitidosOk: [], emitidosFallidos: [], avisos: 0 };
   }
 
   // 2 · Filtrar por ventana con el `epochms` del NOMBRE, antes de abrir nada.
@@ -609,9 +616,19 @@ function runOrphanSweep(opts) {
     catch (e) { _log(`[orphan-sweep] historial ilegible (degrado a no-verificable): ${e.message}`); }
   }
 
-  // CA-11 — set de idempotencia: lo ya resuelto en el audit + lo que aporte el
-  // caller (`notified`, que llena #6460).
+  // CA-11 — set de idempotencia: lo ya resuelto en el audit + lo ya AVISADO
+  // (#6460, el ledger) + lo que aporte el caller.
+  //
+  // El ledger de avisos entra acá y no en un set aparte porque es literalmente
+  // el `notified` que la firma de `detectOrphans` dejó reservado desde #6459: un
+  // huérfano que ya recibió su aviso está resuelto para todos los efectos del
+  // barrido. Efecto lateral asumido y documentado: si en la pasada 1 el evento
+  // terminal falló y el aviso sí salió, ese turno no se reintenta. Es la punta
+  // angosta del trade-off — la alternativa (dos sets) hace que un ledger escrito
+  // y un audit vacío convivan sin que nadie los concilie.
   const yaResueltos = readResolvedRefs({ pipelineDir, nowMs, windowMs, fsImpl: _fs });
+  orphanNotify.readNotifiedRefs({ pipelineDir, fsImpl: _fs })
+    .forEach((ref) => { if (ref) yaResueltos.add(String(ref)); });
   if (notified && typeof notified.forEach === 'function') {
     notified.forEach((ref) => { if (ref) yaResueltos.add(String(ref)); });
   }
@@ -692,19 +709,95 @@ function runOrphanSweep(opts) {
     }
   }
 
+  // 7 · #6460 — AVISO AL OPERADOR. Sólo si el wiring lo inyectó: sin
+  //     `enqueueOrphanNotice` este bloque es un no-op y el barrido es idéntico
+  //     al de #6459 (contrato con los tests de ese issue).
+  //
+  //     Va DESPUÉS de los eventos terminales a propósito: el audit es el registro
+  //     de lo observado y tiene que quedar asentado aunque el aviso no salga.
+  let avisos = 0;
+  let avisosDescartados = 0;
+  let avisosMarcadosNoEntregados = 0;
+  if (typeof deps.enqueueOrphanNotice === 'function') {
+    try {
+      // `correlationIdFromStages` acá y no adentro de `orphan-notify`: el cid
+      // vive en las etapas, que son de este módulo, y pasarlo explícito evita
+      // que la capa de aviso tenga que releer nada.
+      const cidPorReq = new Map();
+      for (const c of candidatos) cidPorReq.set(c.reqId, correlationIdFromStages(c.stages));
+
+      const rAviso = orphanNotify.emitOrphanNotices({
+        pipelineDir,
+        huerfanos,
+        cidPorReq,
+        historyRaw,
+        nowMs,
+        deps: {
+          resolveChatIdForCorrelation: deps.resolveChatIdForCorrelation,
+          anchorAccepts: deps.anchorAccepts,
+          enqueueOrphanNotice: deps.enqueueOrphanNotice,
+          newCorrelationId: deps.newCorrelationId,
+          defaultChatId: deps.defaultChatId,
+          tope: deps.noticeMaxPerSweep,
+          fsImpl: _fs,
+          log: _log,
+        },
+      });
+      avisos = rAviso.emitidos;
+      avisosDescartados = rAviso.descartados.length;
+
+      // Dead-letter de la pasada ANTERIOR: el `reconcileTelegramReceipts` del
+      // loop ya cerró aquellos avisos a enviado/fallido; acá los fallidos se
+      // hacen visibles en la fila del pedido.
+      const rDead = orphanNotify.reconcileNoticeDelivery({
+        pipelineDir,
+        logDir,
+        historyRaw,
+        nowMs,
+        windowMs,
+        reqIdsEnVentana: candidatos.map((c) => c.reqId),
+        deps: {
+          outboundStatus: deps.outboundStatus,
+          updateRequestMeta: deps.updateRequestMeta,
+          fsImpl: _fs,
+          log: _log,
+        },
+      });
+      avisosMarcadosNoEntregados = rDead.marcados;
+    } catch (e) {
+      // SEC-3 — la capa de aviso jamás puede tumbar el barrido ni el tick del
+      // pulpo. Pero deja rastro (CA-14): un aviso que no salió no puede leerse
+      // igual que "no había a quién avisarle".
+      _log(`[orphan-sweep] la capa de aviso falló y se saltea (el barrido sigue): ${e.message}`);
+    }
+  }
+
   // CA-14 — el barrido deja rastro cuando hay algo que contar. Un barrido que
   // emitió eventos SIEMPRE lo loguea, incluso si no hubo ningún huérfano: si no,
   // el cierre exitoso sería invisible y se leería igual que "no pasó nada".
-  if (resumen.huerfanos > 0 || resumen.no_verificables > 0 || emitidos.length > 0) {
+  if (resumen.huerfanos > 0 || resumen.no_verificables > 0 || emitidos.length > 0 || avisos > 0) {
     _log(`[orphan-sweep] ventana ${Math.round(windowMs / 3600000)}h: `
       + `${resumen.evaluados} evaluados, ${resumen.huerfanos} huérfano(s) `
       + `(${emitidos.length} evento(s) nuevo(s): ${emitidosFallidos.length} sin entrega, `
       + `${emitidosOk.length} con entrega confirmada), `
+      + `${avisos} aviso(s) al operador (${avisosDescartados} descartado(s)), `
       + `${resumen.no_verificables} no verificable(s), `
       + `${resumen.sanos} sano(s), ${descartados} fuera de alcance`);
   }
 
-  return { ok: true, resumen, emitidos, emitidosOk, emitidosFallidos, resultados, descartados };
+  return {
+    ok: true,
+    resumen,
+    emitidos,
+    emitidosOk,
+    emitidosFallidos,
+    resultados,
+    descartados,
+    // #6460
+    avisos,
+    avisosDescartados,
+    avisosMarcadosNoEntregados,
+  };
 }
 
 module.exports = {

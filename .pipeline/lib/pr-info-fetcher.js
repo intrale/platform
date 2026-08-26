@@ -46,12 +46,6 @@ const FIELDS = [
   // nunca como veredicto (ver human-block-triggers.js, R2).
   'mergeable',
   'mergeStateStatus',
-  // #6612 — SHA del head, para que quien coteje los checks REQUERIDOS del
-  // ruleset pueda pinnear la lectura al mismo arbol (regla 4 de
-  // `required-checks.js`: `oid !== headRefOid` => `unusable`). Sin este campo
-  // el cotejo TOCTOU se saltea en silencio. Va en la MISMA llamada: cero
-  // requests extra.
-  'headRefOid',
 ].join(',');
 
 /**

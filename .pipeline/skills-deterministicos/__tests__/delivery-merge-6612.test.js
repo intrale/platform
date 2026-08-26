@@ -131,7 +131,7 @@ test('#6612 CA-4a — el gate es un control ACTIVO: no reintenta ni espera', () 
     const sleeps = [];
     let snapshots = 0;
     const out = delivery.attemptMergeWithGates(baseDeps({
-        getSnapshot: () => { snapshots++; return snapshotOk({ statusCheckRollup: [rojo('detect-secrets Scan')] }); },
+        getSnapshot: () => { snapshots++; return snapshotOk({ statusCheckRollup: [rojo('runtime-state-guard')] }); },
         sleepImpl: (ms) => sleeps.push(ms),
     }));
     assert.equal(out.status, 'blocked');
@@ -259,13 +259,41 @@ test('#6612 CA-4b — check no requerido fuera de la allowlist en rojo: mergea y
 test('#6612 CA-4b — el check de la allowlist NO genera constancia: genera bloqueo', () => {
     const constancias = [];
     const out = delivery.attemptMergeWithGates(baseDeps({
-        getSnapshot: () => snapshotOk({ statusCheckRollup: [verde('pr-status'), rojo('Semgrep Static Analysis')] }),
+        getSnapshot: () => snapshotOk({ statusCheckRollup: [verde('pr-status'), rojo('runtime-state-guard')] }),
         requiredChecksReader: readerFake({ verdict: 'green', green: ['pr-status'] }),
         postNonRequiredRed: (args) => { constancias.push(args); },
     }));
     assert.equal(out.status, 'blocked');
     assert.equal(out.gate, 'security-checks-red');
     assert.deepEqual(constancias, [], 'un escáner en rojo se BLOQUEA, no se comenta y se mergea');
+});
+
+test('#6612 #6615 — un escáner en MODO WARNING en rojo mergea, pero el log dice por qué', () => {
+    // Los 3 jobs de `security-sast.yml` corren con `continue-on-error: true`:
+    // no pueden vetar por diseño del repo, y #6599 CA-3 —ya mergeado— fija que
+    // un no requerido en rojo mergea. Bloquear acá sería contradecir un criterio
+    // vigente. Lo que NO puede pasar es que el rojo desaparezca de la vista:
+    // queda el log con la causa y la constancia en el PR.
+    const logs = [];
+    const constancias = [];
+    const out = delivery.attemptMergeWithGates(baseDeps({
+        getSnapshot: () => snapshotOk({
+            statusCheckRollup: [verde('pr-status'), rojo('Semgrep Static Analysis')],
+        }),
+        requiredChecksReader: readerFake({ verdict: 'green', green: ['pr-status'] }),
+        postNonRequiredRed: (args) => { constancias.push(args); },
+        logAppend: (l) => logs.push(String(l)),
+    }));
+    assert.equal(out.status, 'merged', 'un job en modo warning no puede frenar el merge');
+    assert.ok(
+        logs.some((l) => /modo warning \(no frenan, ver #6615\)/.test(l)
+            && /Semgrep Static Analysis/.test(l)),
+        'pero el rojo NO se calla: el log nombra el escáner y la causa'
+    );
+    assert.deepEqual(
+        constancias.map((c) => c.contexts).flat(), ['Semgrep Static Analysis'],
+        'y queda la constancia en el PR (UX-3)'
+    );
 });
 
 test('#6612 CA-4b — un PR sano no paga la lectura de requeridos ni comenta nada', () => {

@@ -90,6 +90,7 @@ const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
 const visualCoverageRecorder = require('./lib/visual-coverage-recorder');
+const qaEvidenceSeal = require('./lib/qa-evidence-seal');
 // #3383 — Gate visual pre-promoción build→verificacion. Default OFF
 // (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
 const visualGate = require('./lib/visual-gate');
@@ -285,6 +286,7 @@ const commanderRequestClassify = require('./lib/commander/request-classify'); //
 // `noteFallbackDeliveryResolved` entran por inyección (`deps`), para no crear un
 // ciclo de requires ni arrancar el proceso entero dentro de un unit test.
 const commanderOrphanSweep = require('./lib/commander/orphan-sweep');
+const commanderOrphanNotify = require('./lib/commander/orphan-notify'); // #6460
 // #3935 (EP4-H2) — Resumen incremental de la conversación: compacta turnos
 // viejos a un bloque "resumen no autoritativo" + últimos K verbatim, acotando el
 // prompt sin perder coherencia. Módulo puro; la recompactación corre en
@@ -784,6 +786,32 @@ function detectClaudeLauncher() {
 
 const CLAUDE_LAUNCHER = detectClaudeLauncher();
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
+
+// #6599 - Lista de checks REQUERIDOS por la proteccion de `main`, con cache de
+// 10 minutos. La usa el barrido para separar los checks que pueden vetar el
+// merge de los meramente informativos.
+//
+// Se lee UNA vez y se reusa: el barrido corre cada 2 minutos sobre N PRs y la
+// respuesta cambia una vez cada varios meses. Solo la lectura OK se cachea; un
+// 403 puntual se reintenta a la vuelta siguiente en vez de apagar el filtro.
+//
+// La creacion es PEREZOSA y va en try/catch: este helper no puede tumbar el
+// boot del pulpo. Si no se puede construir, devuelve `ok:false` y rio abajo
+// eso significa "pesa todo el rollup", que es el comportamiento previo.
+let _requiredContextsCache = null;
+function leerContextosRequeridos() {
+    try {
+        if (!_requiredContextsCache) {
+            const requiredChecksLib = require('./lib/required-checks');
+            _requiredContextsCache = requiredChecksLib.createRequiredContextsCache({
+                cwd: ROOT, baseBranch: 'main',
+            });
+        }
+        return _requiredContextsCache();
+    } catch (e) {
+        return { ok: false, contexts: null, cause: `excepcion:${(e && e.message) || 'sin mensaje'}`.slice(0, 120) };
+    }
+}
 
 // #3072 / #3077 — Singleton runtime de agent-models. La VALIDACIÓN del JSON
 // se hace más abajo en el boot (validateOrExit del módulo agent-models-validate
@@ -2884,6 +2912,53 @@ const QA_MIN_FRAME_PNGS = 3;             // Mínimo de frames PNG del agente QA 
  * El campo `video_size_kb` del YAML es solo informativo; si el archivo en disco
  * cumple el umbral, se acepta.
  */
+/**
+ * #6495 (rebote 3, R-2) — Decide si la evidencia audiovisual es EXIGIBLE para
+ * este veredicto, sin mirar el filesystem.
+ *
+ * Se extrajo de `validateQaEvidence` porque el gate de evidencia y el gate de
+ * sellado tienen que compartir exactamente el mismo bypass: el hook de sellado
+ * corría para todos los aprobados y, en `structural`/`api`, el campo `evidencia`
+ * es prosa por contrato del rol (`.pipeline/roles/qa.md`). Barrido de dropfiles
+ * reales: 16 de 73 aprobaciones (22%) se degradaban a `rechazado`.
+ *
+ * Devuelve `logLine` en vez de loguear para que se pueda computar una sola vez y
+ * emitir una sola línea de auditoría (R3/CA-3 de #2351), aunque la consulten dos
+ * gates. La fuente de los labels sigue siendo EXCLUSIVAMENTE GitHub.
+ *
+ * @returns {{bypassed: boolean, motivo: string|null, mode: string|null, logLine: string|null}}
+ */
+function resolveQaEvidenceEnforcement(issue, qaData, authoritativeQaMode = null, deps = {}) {
+  const getLabels = deps.getLabels || getIssueLabels;
+  if (qaEvidenceGate.hasQaSkippedLabel(getLabels(issue))) {
+    return {
+      bypassed: true,
+      motivo: 'qa-skipped',
+      mode: null,
+      logLine: `🟢 gate-bypass #${issue} reason=qa-skipped — label explícito qa:skipped, no requiere evidencia audiovisual ${JSON.stringify({ event: 'gate-bypass', issue: String(issue), source: 'label', decision: 'skip-video', reason: 'qa-skipped' })}`,
+    };
+  }
+  const resolution = qaEvidenceGate.resolveQaMode({
+    authoritative: authoritativeQaMode,
+    yamlMode: qaData && qaData.modo,
+  });
+  if (qaEvidenceGate.shouldSkipVisualEvidence(resolution.mode)) {
+    const evt = qaEvidenceGate.buildBypassEvent({
+      issue,
+      qaMode: resolution.mode,
+      source: resolution.source,
+      labels: Array.isArray(qaData && qaData.labels) ? qaData.labels : [],
+    });
+    return {
+      bypassed: true,
+      motivo: `qa-mode-${resolution.mode}`,
+      mode: resolution.mode,
+      logLine: qaEvidenceGate.formatBypassLogLine(evt),
+    };
+  }
+  return { bypassed: false, motivo: null, mode: resolution.mode, logLine: null };
+}
+
 function validateQaEvidence(issue, qaData, authoritativeQaMode = null, deps = {}) {
   // `getLabels` es inyectable para tests (default: la fuente autoritativa de
   // GitHub). NUNCA se cae al YAML del agente para resolver labels (R1 #2351).
@@ -2917,23 +2992,13 @@ function validateQaEvidence(issue, qaData, authoritativeQaMode = null, deps = {}
   // el gate sin que el label exista realmente en GitHub. El label vive en GitHub
   // y requiere permisos de escritura para asignarse: es una whitelist explícita y
   // confiable, no manipulable por el agente.
-  if (qaEvidenceGate.hasQaSkippedLabel(getLabels(issue))) {
-    log('gate-bypass', `🟢 gate-bypass #${issue} reason=qa-skipped — label explícito qa:skipped, no requiere evidencia audiovisual ${JSON.stringify({ event: 'gate-bypass', issue: String(issue), source: 'label', decision: 'skip-video', reason: 'qa-skipped' })}`);
-    return [];
-  }
-
-  const resolution = qaEvidenceGate.resolveQaMode({
-    authoritative: authoritativeQaMode,
-    yamlMode: qaData && qaData.modo,
-  });
-  if (qaEvidenceGate.shouldSkipVisualEvidence(resolution.mode)) {
-    const evt = qaEvidenceGate.buildBypassEvent({
-      issue,
-      qaMode: resolution.mode,
-      source: resolution.source,
-      labels: Array.isArray(qaData && qaData.labels) ? qaData.labels : [],
-    });
-    log('gate-bypass', qaEvidenceGate.formatBypassLogLine(evt));
+  // `deps.enforcement` permite que el llamador reuse la decisión (y su consulta
+  // de labels a GitHub) con el gate de sellado de #6495, sin duplicar la línea
+  // de auditoría ni la llamada de red.
+  const enforcement = deps.enforcement
+    || resolveQaEvidenceEnforcement(issue, qaData, authoritativeQaMode, { getLabels });
+  if (enforcement.bypassed) {
+    log('gate-bypass', enforcement.logLine);
     return [];
   }
 
@@ -6035,32 +6100,33 @@ function brazoBarrido(config) {
                     log('barrido', `#${issue} code-scanning falló (no bloqueante): ${e.message}`);
                   }
 
-                  // #6612 UX-1 — Qué checks exige REALMENTE el ruleset de `main`.
-                  // Sin este dato el mensaje al operador rotulaba "requerido"
-                  // cualquier check en rojo del rollup: con el rollup real de
-                  // #6602 le decía "1 check requerido en rojo: runtime-state-guard"
-                  // y ese check NO es requerido por el ruleset (el ruleset exige
-                  // un solo contexto: `pr-status`). Un mensaje que afirma un
-                  // hecho falso manda al operador a investigar el lugar equivocado.
+                  // #6599 - Lista de checks REQUERIDOS de la rama base. Sin ella,
+                  // `classifyChecks` pesa el rollup COMPLETO y un check informativo
+                  // colgado (OWASP: `continue-on-error: true`, `failBuildOnCVSS =
+                  // 11.0`) devuelve `pending` -> el veredicto sale `inconclusive` y
+                  // el barrido reintenta en silencio durante horas. Medido el
+                  // 2026-08-25: 3 h 10 m por un control que no puede vetar nada.
                   //
-                  // Best-effort, igual que las alertas de code-scanning: si no se
-                  // puede leer, se OMITE el campo y el mensaje cae al texto "no
-                  // pude leer qué checks exige main" — nunca al adjetivo inventado.
-                  let requiredChecks;
+                  // Fail-closed: si el ruleset no se puede leer, `requiredContextsRead`
+                  // queda en `false`, pesa todo el rollup igual que antes, y el motivo
+                  // queda escrito en el log (CA-5). Nunca se asume "no se exige nada".
+                  let requiredContexts = null;
+                  let requiredContextsRead = false;
                   try {
-                    const { createRequiredChecksReader } = require('./lib/required-checks');
-                    const leer = createRequiredChecksReader({
-                      cwd: ROOT,
-                      repo: repoTarget.getPrimaryRepo(),
-                      baseBranch: 'main',
-                    });
-                    const rc = leer({ prNumber: prInfo.number, headRefOid: prInfo.headRefOid });
-                    if (rc && typeof rc === 'object' && typeof rc.verdict === 'string') requiredChecks = rc;
+                    const rc = leerContextosRequeridos();
+                    if (rc && rc.ok === true) {
+                      requiredContexts = rc.contexts;
+                      requiredContextsRead = true;
+                    } else {
+                      log('barrido', `#${issue} lista de checks requeridos no legible (${(rc && rc.cause) || 'sin causa'}) \u2014 el PR se evalua con TODOS sus checks, como antes de #6599`);
+                    }
                   } catch (e) {
-                    log('barrido', `#${issue} lista de checks requeridos no consultable (se sigue sin ella): ${e.message}`);
+                    log('barrido', `#${issue} lista de checks requeridos fallo (${e.message}) \u2014 el PR se evalua con TODOS sus checks`);
                   }
 
-                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, { securityAlerts, requiredChecks });
+                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, {
+                    securityAlerts, requiredContexts, requiredContextsRead,
+                  });
 
                   if (veredicto && veredicto.inconclusive) {
                     // R2 — GitHub todavía calcula `mergeable`. Ni bloqueo ni vía
@@ -11495,7 +11561,13 @@ ${g}
           log('lanzamiento', `🎬 Recording parado para qa:#${issue} — video: ${videoSizeKb}KB → ${localVideo}`);
           // Inyectar metadata de evidencia en el YAML (50KB es suficiente con swiftshader).
           if (videoSizeKb >= 50) {
-            data.evidencia = localVideo;
+            // #6495 (rebote 3, R-1): se declara RELATIVA al repo. Antes se
+            // asignaba `localVideo` crudo —absoluto, porque `evidenceDir` sale
+            // de `path.join(ROOT, …)`— y 58 líneas más abajo el sellado la
+            // rechazaba por estar fuera del recinto, degradando a `rechazado`
+            // todo QA android con video ≥50KB. Además, una ruta absoluta del
+            // host no tiene por qué viajar en el dropfile (SEC-8).
+            data.evidencia = path.relative(ROOT, localVideo).replace(/\\/g, '/');
             data.video_size_kb = videoSizeKb;
             // Audio narrado no se genera acá (el agente QA lo hace), pero el video crudo sí
             writeYaml(workingPath, data);
@@ -11509,15 +11581,54 @@ ${g}
         }
       }
 
+      // #6495 (rebote 5, seguridad) — El sello lo DERIVA el pipeline; el agente
+      // nunca lo declara. Se descarta lo declarado en TODO dropfile de
+      // qa/verificación —aprobado o no— y ANTES de los dos gates.
+      //
+      // Que sea incondicional no es celo: `sealQaVerdict` sólo corre sobre
+      // `aprobado`, así que limpiar únicamente ese carril dejaba dos huecos por
+      // los que un sello forjado llegaba igual a `listo/` y `procesado/`, donde
+      // las partes 2-5 del split lo leen como autoridad — un dropfile que el
+      // agente escribe `rechazado`, y un `aprobado` que el gate hermano degrada
+      // a `rechazado` unas líneas más abajo antes de que el sellado lo mire.
+      //
+      // Va antes de los gates y no después porque ninguno de los dos lee
+      // `sello` ni `*_sha256` (los lee sólo el módulo de sellado), así que
+      // limpiar acá no le cambia el veredicto a nadie.
+      //
+      // #6495 (rebote 6, QA) — El snapshot se guarda en `sealDeclarado` y viaja
+      // al sellado unas lineas mas abajo. `stripDeclaredSeal` es destructivo:
+      // si el Pulpo se queda con lo declarado y no se lo pasa a
+      // `sealQaVerdict`, el modulo no tiene contra que contrastar el hash real
+      // y el sello se persiste con `descartes: []` — CA-2 (la auditoria que las
+      // partes 2-5 del split leen como autoridad) se pierde justo en el unico
+      // camino de produccion.
+      let sealDeclarado = null;
+      if (skill === 'qa' && fase === 'verificacion' && data && typeof data === 'object') {
+        sealDeclarado = qaEvidenceSeal.stripDeclaredSeal(data);
+        const camposDescartados = Object.keys(sealDeclarado.hashes).length
+          + (sealDeclarado.sello !== undefined ? 1 : 0);
+        if (camposDescartados > 0) {
+          // Sólo la cantidad: el valor declarado es del agente y no se loguea.
+          log('lanzamiento', `QA:#${issue} descartó ${camposDescartados} campo(s) de sellado declarados en el YAML — el sello lo deriva el Pulpo`);
+        }
+      }
+
       // --- VALIDACIÓN ON-EXIT QA ---
       // Si el agente QA terminó diciendo "aprobado" pero sin evidencia, forzar rechazo.
       // R1 (issue #2351): pasamos `extraEnv.QA_MODE` como fuente de verdad autoritativa
       // (lo inyectó el preflight del Pulpo antes de lanzar al agente). El agente no
       // puede bypassear el gate inventando un `modo: api` falso en el YAML si el
       // preflight había determinado 'android'.
+      // #6495 (rebote 3, R-2): la decisión de exigibilidad se computa UNA vez y
+      // la comparten el gate de evidencia y el gate de sellado. Los dos tienen
+      // que honrar el mismo bypass por `qaMode`/`qa:skipped`, o el sellado se
+      // come aprobaciones que el gate hermano deja pasar.
+      let qaEnforcement = null;
       if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
         const authoritativeQaMode = extraEnv && extraEnv.QA_MODE ? extraEnv.QA_MODE : null;
-        const evidenceIssues = validateQaEvidence(issue, data, authoritativeQaMode);
+        qaEnforcement = resolveQaEvidenceEnforcement(issue, data, authoritativeQaMode);
+        const evidenceIssues = validateQaEvidence(issue, data, authoritativeQaMode, { enforcement: qaEnforcement });
         if (evidenceIssues.length > 0) {
           log('lanzamiento', `⛔ QA:#${issue} aprobó sin evidencia válida on-exit: ${evidenceIssues.join(', ')}`);
           data.resultado = 'rechazado';
@@ -11525,6 +11636,55 @@ ${g}
           data.rechazado_por = 'gate-evidencia-on-exit';
           writeYaml(workingPath, data);
           sendTelegram(`⛔ QA:#${issue} — evidencia incompleta al terminar. Rechazo automático: ${evidenceIssues.join('; ')}`);
+        }
+      }
+
+      // #6495: el gate valida primero; recién entonces el Pulpo deriva el sello
+      // desde los bytes reales y el HEAD del worktree vivo en spawnCwd. Si el
+      // sellado degrada el veredicto, el recorder de #5708 se autoexcluye.
+      //
+      // #6495 (rebote 7, R-5) — Los artefactos NO están (sólo) en ROOT. La fase
+      // `verificacion` está en `EXISTING_WORKTREE_PHASES`
+      // (`lib/phase-workspace.js:32`), así que `spawnCwd === worktreePath` y el
+      // rol `qa.md` le manda al agente declarar rutas RELATIVAS: el video, los
+      // frames y el markdown structural caen en el WORKTREE. En ROOT sólo vive
+      // lo que graba el propio Pulpo (el crudo del emulador, unas líneas más
+      // arriba). Por eso van los DOS recintos, en ese orden: primero donde
+      // escribió el agente, después el repo. Resolver sólo contra ROOT degradaba
+      // a `rechazado` el QA android canónico y dejaba sin sello al carril
+      // structural entero (42 de 76 aprobados reales).
+      //
+      // El `cwd` de `deriveHead` no cambia y sigue siendo `spawnCwd` (CA-12a
+      // intacto): ni el cwd ni los workspaces salen nunca del YAML del agente.
+      if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
+        try {
+          const sealResult = qaEvidenceSeal.sealQaVerdict({
+            root: ROOT, workspaces: [spawnCwd], issue, data, cwd: spawnCwd, declared: sealDeclarado,
+          });
+          if (!sealResult.sealed) {
+            const reason = sealResult.reason || 'sellado-invalido';
+            // #6495 (rebote 3, R-2): el fail-closed sólo alcanza a los modos
+            // donde el gate hermano TAMBIÉN exige evidencia. En `structural`,
+            // `api` y bajo `qa:skipped` el sellado es best-effort: se loguea y
+            // el veredicto queda intacto, porque ahí `evidencia` es prosa por
+            // contrato del rol y no una ruta rota.
+            if (qaEnforcement && qaEnforcement.bypassed) {
+              log('lanzamiento', `QA:#${issue} sin sello (${reason}) — modo sin evidencia exigible (${qaEnforcement.motivo}), el veredicto no se toca`);
+            } else {
+              const degraded = qaEvidenceSeal.degradeVerdictForSeal(data, reason);
+              sendTelegram(`⛔ QA:#${issue} — ${degraded.motivo}`);
+            }
+          } else {
+            log('lanzamiento', `QA:#${issue} selló ${sealResult.manifest.artefactos.length} artefacto(s) contra HEAD ${sealResult.manifest.head.slice(0, 8)}…`);
+          }
+        } catch (sealErr) {
+          log('lanzamiento', `QA:#${issue} falló sellado de evidencia: ${redactSecretValue(sealErr.message)}`);
+          // Mismo alcance que arriba: fail-closed sólo donde la evidencia es
+          // exigible; nunca una excepción sin capturar hacia el loop (CA-7).
+          if (!(qaEnforcement && qaEnforcement.bypassed)) {
+            const degraded = qaEvidenceSeal.degradeVerdictForSeal(data, 'sellado-invalido');
+            sendTelegram(`⛔ QA:#${issue} — ${degraded.motivo}`);
+          }
         }
       }
 
@@ -11545,6 +11705,18 @@ ${g}
         } catch (coverageErr) {
           log('lanzamiento', `⚠️ QA:#${issue} falló persistencia de cobertura visual aprobada: ${coverageErr.message}`);
         }
+      }
+
+      // El sello y el baseline se persisten juntos antes del rename atómico a listo/.
+      //
+      // #6495 (rebote 4) — La guarda de `data` no es cosmética: con un dropfile
+      // que no parsea, `readYamlSafe` devuelve `{}` por contrato de #3941/SEC-3,
+      // y persistir ese `{}` PISA el archivo corrupto que hoy sobrevive para
+      // diagnóstico. No abre bypass de gate —un `{}` no tiene `resultado:
+      // aprobado`— pero destruye la única evidencia de por qué el agente escribió
+      // un YAML inválido. Se escribe sólo si hay algo que escribir.
+      if (skill === 'qa' && fase === 'verificacion' && data && Object.keys(data).length > 0) {
+        writeYaml(workingPath, data);
       }
 
       // Solo movemos si el archivo sigue en trabajando/. Si ya estaba en listo/
@@ -17674,6 +17846,62 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
   }
 }
 
+// #6460 — Encola el AVISO DE RESPUESTA PERDIDA en la misma cola de filesystem
+// que cualquier respuesta del Commander.
+//
+// Por qué no se reusa `sendTelegram`: esa función arma el payload ella misma
+// (`{text, parse_mode}` o `{text, plain}`) y NUNCA estampa `chat_id`, así que
+// siempre saldría al chat por default. El aviso tiene que poder ir a la
+// conversación del pedido, y esa decisión ya la tomó `orphan-notify` con las dos
+// ramas del ancla — acá el payload llega HECHO y no se toca.
+//
+// Por qué tampoco `notifyTelegram`: antepone `componente: ` y agrega una línea
+// `emisor: pid=… host=… ts=…`. Eso es jerga prohibida por CA-12 y encuadra el
+// aviso como una falla interna del sistema, justo lo contrario de lo que el
+// mensaje dice ("tu pedido se hizo").
+//
+// La entry `out` en el historial es OBLIGATORIA y no decorativa: sin ella
+// `commanderOutboundStatus` devuelve `'unknown'`, el `reconcileTelegramReceipts`
+// del loop no tiene qué cerrar y el aviso no se puede distinguir de uno
+// entregado. Es lo que hace verificable el CA de dead-letter.
+//
+// @param {object} payload  dropfile YA armado por `render.buildDropfile`.
+// @param {object} opts     `{ correlationId, chatId }` — el `chatId` va al
+//                          historial (para el filtro per-chat del contexto), NO
+//                          al payload: si el payload no lo trae es porque la
+//                          rama elegida es la del chat por default.
+// @returns {string|null} el correlationId encolado, o `null` si no se encoló.
+function enqueueOrphanNotice(payload, opts = {}) {
+  const correlationId = String(opts.correlationId || '');
+  if (!payload || typeof payload !== 'object' || !correlationId) return null;
+
+  const svcDir = telegramPendienteDir();
+  const data = { ...payload, _correlationId: correlationId };
+  const { filename } = dropfileWriter.writeDropfileSync({
+    dir: svcDir,
+    suffix: 'cmd.json',
+    data: JSON.stringify(data),
+    onCollision: (name, attempt) => log(
+      'telegram',
+      `⚠️ Colisión de nombre de dropfile del aviso (${name}, intento ${attempt + 1}) — se reintenta con otro nombre`
+    ),
+  });
+
+  // El `text` del historial NO es el texto del aviso: el historial se inyecta
+  // verbatim al contexto del Commander y el modelo lo leería como parte de la
+  // conversación.
+  appendCommanderHistory(path.join(PIPELINE, 'commander-history.jsonl'), {
+    direction: 'out',
+    status: 'encolado',
+    correlation_id: correlationId,
+    text: commanderOrphanNotify.NOTICE_HISTORY_TEXT,
+    chat_id: opts.chatId == null ? undefined : String(opts.chatId),
+  });
+
+  log('commander', `Aviso de respuesta perdida encolado (${data.chat_id ? 'dirigido' : 'chat por default'}) → ${filename}`);
+  return correlationId;
+}
+
 // #4750 — Encola un CHUNK de audio en la cola de `svc-telegram` (rama multipart
 // `voice`) para que herede `assertDelivered` (fail-closed: `ok:true` +
 // `message_id`) + `writeSentReceiptIfAny` con la dimensión de chunk. Cada chunk
@@ -18603,6 +18831,17 @@ function orphanSweepGate(prevTick, everyTicks = ORPHAN_SWEEP_EVERY_TICKS) {
 //   · `currentBootId` — guarda de vida por boot, no por PID ni por reloj (B1).
 // `runOrphanSweep` ya es best-effort adentro y el caller lo envuelve igual en
 // try/catch (SEC-3). Un fallo deja rastro con la causa (CA-14).
+// #6460 — el wiring del AVISO al operador. Todo lo que toca el proceso vive acá
+// y nada de esto entra al módulo puro:
+//   · `resolveChatIdForCorrelation` — sólo se exporta bajo `PULPO_NO_AUTOSTART=1`,
+//     así que requerirla desde `lib/` no sólo sería un ciclo: no existiría.
+//   · `defaultChatId` — el chat id EFECTIVO del canal de salida
+//     (`_loadTgSecrets()?.chat_id`), que es contra el que hay que comparar para
+//     elegir la rama sin `chat_id`. NO la env var del ancla: son cosas distintas.
+//   · `anchorAccepts` — el predicado REAL que va a aplicar `servicio-telegram.js`.
+//     Se reusa la función en vez de reimplementar la regla, porque una segunda
+//     verdad sobre "qué destino se acepta" es un aviso archivado en silencio.
+//     Lee `process.env` en cada llamada (el ancla puede cambiar en caliente).
 function ejecutarBarridoHuerfanos(origen) {
   return commanderOrphanSweep.runOrphanSweep({
     logDir: LOG_DIR,
@@ -18612,6 +18851,13 @@ function ejecutarBarridoHuerfanos(origen) {
       outboundStatus: commanderOutboundStatus,
       noteFallbackDeliveryResolved: inflightFallback.noteFallbackDeliveryResolved,
       log: (msg) => log('commander', msg + ' [' + origen + ']'),
+      // #6460
+      resolveChatIdForCorrelation,
+      defaultChatId: getTelegramChatId(),
+      anchorAccepts: (x) => require('./lib/notify-telegram')._internal.resolvePrivateChatId(x).ok,
+      enqueueOrphanNotice,
+      newCorrelationId: (prefijo) => telegramReceipt.generateCorrelationId(prefijo),
+      updateRequestMeta: commanderRequestLog.updateRequestMeta,
     },
   });
 }
@@ -23210,6 +23456,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #3956 — gate de evidencia QA: expuesto para test de integración del bypass
     // `qa:skipped` (la fuente de labels debe ser GitHub, nunca el YAML del agente).
     validateQaEvidence,
+    resolveQaEvidenceEnforcement,
     determinarDevSkill,
     getDevSkillPartitions,
     isDeclaredStackDevSkill,

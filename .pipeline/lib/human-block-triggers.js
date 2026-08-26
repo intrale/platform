@@ -90,93 +90,193 @@ const CHECK_FAIL_STATES = Object.freeze(['FAILURE', 'ERROR']);
 const CHECK_PENDING_STATUSES = Object.freeze(['QUEUED', 'IN_PROGRESS', 'WAITING', 'PENDING', 'REQUESTED']);
 const CHECK_PENDING_STATES = Object.freeze(['PENDING', 'EXPECTED']);
 
+// -----------------------------------------------------------------------------
+// #6599 - No todo check del rollup tiene poder de veto
+//
+// EL DEFECTO QUE ARREGLA: `classifyChecks` recorria el rollup COMPLETO del PR.
+// Un check que la proteccion de rama no exige - `OWASP Dependency Check`, que
+// vive en `security-sast.yml` con `continue-on-error: true` y
+// `failBuildOnCVSS = 11.0`, o sea no vetante POR DISENO - devolvia
+// `state: 'pending'`, y ese veredicto alimentaba `detectMergeStateBlock()` y el
+// camino BLOCKED de `delivery.js`. Medido el 2026-08-25: 3 h 10 m (17:18 ->
+// 20:29) de espera por un control informativo. El unico requerido del ruleset
+// de `main` es `pr-status`.
+//
+// La correccion NO es una lista hardcodeada ni un bypass: la autoridad sigue
+// siendo GitHub, que rechaza el merge si un requerido esta en rojo. Se cotejan
+// los checks contra la lista de contextos requeridos LEIDA de la proteccion de
+// la rama base (`lib/required-checks.js`), y solo esos aportan al `state` que
+// puede frenar el merge. El resto se devuelve aparte en `informational` para no
+// perder visibilidad.
+//
+// FAIL-CLOSED (CA-5): el filtro se aplica SOLO con `requiredContextsRead ===
+// true` y una lista NO vacia. Si el ruleset no se pudo leer (403, rate limit,
+// forma inesperada), pesa todo el rollup - exactamente el comportamiento
+// anterior a este cambio. "No pude leer que se exige" jamas significa "no se
+// exige nada": ese fail-open convertiria el filtro en un bypass.
+// -----------------------------------------------------------------------------
+
+/**
+ * Nombre normalizado de un nodo del rollup. GitHub usa `name` para `CheckRun` y
+ * `context` para `StatusContext`; aca se leen las dos formas.
+ */
+function checkNodeName(chk) {
+    if (!chk || typeof chk !== 'object') return '';
+    const name = typeof chk.name === 'string' ? chk.name.trim() : '';
+    if (name) return name;
+    const context = typeof chk.context === 'string' ? chk.context.trim() : '';
+    return context;
+}
+
+/**
+ * Este nodo del rollup corresponde al contexto requerido `context`?
+ *
+ * FUENTE UNICA del cotejo por nombre: `required-checks.js` importa esta funcion
+ * en vez de reescribir el `n.name === ctx || n.context === ctx`. Dos copias del
+ * mismo matcher divergen en cuanto una de las dos aprende a normalizar algo
+ * (espacios al borde, por ejemplo) y la otra no - y la que quede vieja lee un
+ * requerido como "ausente", que rio abajo es fail-open.
+ */
+function checkMatchesContext(chk, context) {
+    const ctx = typeof context === 'string' ? context.trim() : '';
+    if (!ctx || !chk || typeof chk !== 'object') return false;
+    const name = typeof chk.name === 'string' ? chk.name.trim() : '';
+    if (name && name === ctx) return true;
+    const own = typeof chk.context === 'string' ? chk.context.trim() : '';
+    return Boolean(own) && own === ctx;
+}
+
+/**
+ * Normaliza la lista de contextos requeridos a `string[]` sin duplicados.
+ *
+ * Acepta las dos formas con las que viaja: los `{context, integration_id}` de
+ * `fetchRequiredContexts` y el array de strings pelado. Devuelve `null` si el
+ * argumento no es una lista - `null` ("no hay lista") y `[]` ("lista leida y
+ * vacia") NO son lo mismo, y esa distincion es la que decide el fail-closed.
+ */
+function normalizeRequiredContexts(requiredContexts) {
+    if (!Array.isArray(requiredContexts)) return null;
+    const out = [];
+    const vistos = new Set();
+    for (const item of requiredContexts) {
+        let ctx = '';
+        if (typeof item === 'string') ctx = item.trim();
+        else if (item && typeof item === 'object' && typeof item.context === 'string') ctx = item.context.trim();
+        if (!ctx || vistos.has(ctx)) continue;
+        vistos.add(ctx);
+        out.push(ctx);
+    }
+    return out;
+}
+
 /**
  * Normaliza `statusCheckRollup` a un veredicto sobre los checks.
  *
- * @param {Array} [rollup] — `prInfo.statusCheckRollup`.
- * @param {Set<string>|null} [requiredContexts] — #6612. Contextos que la
- *        protección de rama REALMENTE exige, YA COTEJADOS POR APP por
- *        `required-checks.js` (SEC-D: nunca nombres crudos del rollup).
- * @returns {{state:'failing'|'pending'|'green'|'unknown', failing:string[],
- *            pending:string[], failingNonRequired:string[],
- *            pendingNonRequired:string[], total:number}}
+ * @param {Array} [rollup] - `prInfo.statusCheckRollup`.
+ * @param {object} [opts]
+ * @param {Array<string|{context:string}>} [opts.requiredContexts] - contextos
+ *   exigidos por la proteccion de la rama BASE (`lib/required-checks.js`).
+ * @param {boolean} [opts.requiredContextsRead] - `true` SOLO si la lista se
+ *   pudo leer de verdad. Cualquier otro valor desactiva el filtro (fail-closed).
+ * @returns {{
+ *   state:'failing'|'pending'|'green'|'unknown',
+ *   failing:string[], pending:string[], total:number,
+ *   informational:{failing:string[], pending:string[]},
+ *   requiredFilterApplied:boolean, requiredFilterCause:string|null
+ * }}
  *
- * `unknown` es un estado de primera clase a propósito: si no se puede leer el
- * rollup, el mensaje NO debe afirmar que los checks están en verde. Ése fue
- * exactamente el defecto — afirmar un hecho no verificado.
+ * `unknown` es un estado de primera clase a proposito: si no se puede leer el
+ * rollup, el mensaje NO debe afirmar que los checks estan en verde. Ese fue
+ * exactamente el defecto - afirmar un hecho no verificado.
  *
- * -------------------------------------------------------------------------
- * #6612 — ACOTAMIENTO POR REQUERIDOS
- * -------------------------------------------------------------------------
- * El ruleset de `main` exige UN solo contexto (`pr-status`). Sin el Set, un
- * escáner que tarda 3 h y no bloquea nada hace que este clasificador devuelva
- * `pending`, y `delivery` agota su presupuesto (7 esperas / 6 min) contra un
- * check que la protección de rama nunca va a exigir.
- *
- * Con el Set presente:
- *   - `pending`  → SÓLO los requeridos. Es el acotamiento: un check no
- *                  requerido en curso no aporta al veredicto `pending`.
- *   - `failing`  → TODO el rollup, con Set o sin él (SEC-B). Un check en ROJO
- *                  no se ignora nunca; lo que cambia es cómo se ROTULA, y para
- *                  eso está `failingNonRequired`. El acotamiento aplica sólo a
- *                  `pending`.
- *
- * Con `requiredContexts === null` (default) el comportamiento es el ANTERIOR,
- * byte por byte: rollup entero, fail-closed. Ausencia de dato nunca se traduce
- * a "no se exige nada" — un ruleset ilegible tiene que frenar más, no menos.
- * (SEC-C: `fetchRequiredContexts` ya devuelve `ok:false` para el ruleset sin
- * requeridos; esa rama no se debilita.)
- *
- * Las listas se devuelven SEGREGADAS y nunca fusionadas en una bolsa única
- * (UX-4): el mensaje al operador tiene que poder decir cuál es cuál, que es
- * justo lo que hoy no puede y por eso inventa el adjetivo "requerido".
+ * Con el filtro activo, `state` lo determinan SOLO los requeridos y `total`
+ * cuenta solo esos. Los no requeridos salen por `informational` y no aportan al
+ * veredicto: no frenan el merge ni extienden la espera.
  */
-function classifyChecks(rollup, requiredContexts = null) {
-    // Un Set VACÍO no habilita el acotamiento: "leí el ruleset y no exige nada"
-    // por este camino sería indistinguible de "no lo leí", y la lectura segura
-    // de las dos es la misma — fail-closed sobre el rollup entero.
-    const acotar = requiredContexts instanceof Set && requiredContexts.size > 0;
+function classifyChecks(rollup, opts = {}) {
+    const o = opts && typeof opts === 'object' ? opts : {};
+    const leida = o.requiredContextsRead === true;
+    const lista = leida ? normalizeRequiredContexts(o.requiredContexts) : null;
+    // Lista vacia con lectura OK: no se filtra. Filtrar contra `[]` dejaria CERO
+    // checks pesando y todo PR saldria `green` - el fail-open exacto que
+    // `required-checks.js` evita con `ruleset-sin-requeridos`.
+    const filtrar = Array.isArray(lista) && lista.length > 0;
+    const cause = filtrar
+        ? null
+        : (leida ? 'lista-de-requeridos-vacia' : 'requeridos-no-leidos');
+    const meta = {
+        informational: { failing: [], pending: [] },
+        requiredFilterApplied: filtrar,
+        requiredFilterCause: cause,
+    };
+
     if (!Array.isArray(rollup) || rollup.length === 0) {
-        return {
-            state: 'unknown', failing: [], pending: [],
-            failingNonRequired: [], pendingNonRequired: [], total: 0,
-        };
+        return { state: 'unknown', failing: [], pending: [], total: 0, ...meta };
     }
     const failing = [];
     const pending = [];
-    const failingNonRequired = [];
-    const pendingNonRequired = [];
+    const infoFailing = [];
+    const infoPending = [];
     let indeterminados = 0;
+    let considerados = 0;
     for (const chk of rollup) {
+        // Un nodo ilegible no se puede atribuir ni a requerido ni a informativo:
+        // pesa SIEMPRE, con filtro o sin el. Descartarlo por "no matchea ningun
+        // requerido" seria tratar la ignorancia como via libre.
         if (!chk || typeof chk !== 'object') { indeterminados++; continue; }
-        const nombre = String(chk.name || chk.context || 'check sin nombre');
-        // Sin acotamiento TODO cuenta como requerido: así el resto del cuerpo
-        // queda idéntico al legacy sin duplicar ramas.
-        const esRequerido = !acotar || requiredContexts.has(nombre);
+        const nombre = String(checkNodeName(chk) || 'check sin nombre');
         const conclusion = String(chk.conclusion || '').toUpperCase();
         const status = String(chk.status || '').toUpperCase();
         const state = String(chk.state || '').toUpperCase();
+        const requerido = !filtrar || lista.some((ctx) => checkMatchesContext(chk, ctx));
+        if (requerido) considerados++;
 
         if (CHECK_FAIL_CONCLUSIONS.includes(conclusion) || CHECK_FAIL_STATES.includes(state)) {
-            // SEC-B — el rojo entra SIEMPRE en `failing`, requerido o no.
-            failing.push(nombre);
-            if (!esRequerido) failingNonRequired.push(nombre);
+            (requerido ? failing : infoFailing).push(nombre);
         } else if (CHECK_PENDING_STATUSES.includes(status) || CHECK_PENDING_STATES.includes(state)) {
-            if (esRequerido) pending.push(nombre);
-            else pendingNonRequired.push(nombre);
+            (requerido ? pending : infoPending).push(nombre);
         } else if (!conclusion && !state) {
-            // Ni conclusión ni estado: el check existe pero todavía no dijo nada.
-            // Con acotamiento, que un check NO requerido no haya dicho nada no
-            // vuelve indeterminado al conjunto: no lo estamos esperando.
-            if (esRequerido) indeterminados++;
+            // Ni conclusion ni estado: el check existe pero todavia no dijo nada.
+            // Solo cuenta si puede vetar; si es informativo, no dice nada que
+            // importe para el merge.
+            if (requerido) indeterminados++;
         }
         // El resto (SUCCESS / NEUTRAL / SKIPPED) cuenta como no-bloqueante.
     }
-    const base = { failing, pending, failingNonRequired, pendingNonRequired, total: rollup.length };
-    if (failing.length) return { state: 'failing', ...base };
-    if (pending.length) return { state: 'pending', ...base };
-    if (indeterminados) return { state: 'unknown', ...base };
-    return { state: 'green', ...base };
+    // Filtro activo y NINGUN requerido presente en el rollup: no hay evidencia
+    // sobre lo unico que puede vetar. `unknown`, jamas `green` por descarte.
+    if (filtrar && considerados === 0) indeterminados++;
+
+    const total = filtrar ? considerados : rollup.length;
+    meta.informational = { failing: infoFailing, pending: infoPending };
+    if (failing.length) return { state: 'failing', failing, pending, total, ...meta };
+    if (pending.length) return { state: 'pending', failing, pending, total, ...meta };
+    if (indeterminados) return { state: 'unknown', failing, pending, total, ...meta };
+    return { state: 'green', failing, pending, total, ...meta };
+}
+
+/**
+ * Frase con los checks SIN poder de veto que fallaron o quedaron colgados.
+ * Cadena vacia si no hay ninguno.
+ *
+ * Va en su PROPIA linea a proposito (guideline de UX de #6599): mezclar
+ * requeridos e informativos en la misma oracion es lo que hacia que el operador
+ * leyera un OWASP colgado como si frenara el merge. Y dice explicitamente que
+ * no frenan, en vez de dejarlo implicito en un listado pelado.
+ */
+function describeInformationalChecks(checks) {
+    const info = (checks && checks.informational) || null;
+    if (!info) return '';
+    const recorte = (arr) => {
+        const l = Array.isArray(arr) ? arr : [];
+        const head = l.slice(0, 5).join(', ');
+        return l.length > 5 ? `${head} y ${l.length - 5} más` : head;
+    };
+    const partes = [];
+    if (Array.isArray(info.failing) && info.failing.length) partes.push(`en rojo: ${recorte(info.failing)}`);
+    if (Array.isArray(info.pending) && info.pending.length) partes.push(`todavía corriendo: ${recorte(info.pending)}`);
+    if (!partes.length) return '';
+    return `\nChecks informativos — la protección de rama no los exige, así que no frenan el merge — ${partes.join('; ')}.`;
 }
 
 // -----------------------------------------------------------------------------
@@ -265,173 +365,12 @@ function detectSecurityFindingBlock({ prNumber, headRefName, alerts } = {}) {
  *   permite afirmar nada sobre el estado de los checks (ver `classifyChecks`).
  * @returns {object|null} veredicto, `{inconclusive:true}`, o `null` si está limpio.
  */
-// -----------------------------------------------------------------------------
-// #6612 UX-1 — LOS TRES RÓTULOS. Nunca se fusionan en una bolsa única.
-//
-// El defecto que cierran: el template de la rama BLOCKED le agregaba el
-// adjetivo "requerido(s)" a un `classifyChecks` que jamás cotejó contra el
-// ruleset. Con el rollup real de #6602 (`runtime-state-guard`=FAILURE,
-// `pr-status`=SUCCESS) el operador leía "1 check requerido en rojo:
-// runtime-state-guard" — y ese check NO es requerido por el ruleset de `main`.
-// Un mensaje que afirma un hecho falso manda al operador a investigar el lugar
-// equivocado; eso es un defecto, no un detalle de redacción.
-//
-// Un cuarto caso NO tiene rótulo a propósito: cuando la lista de requeridos no
-// se pudo leer, el mensaje lo DICE y no usa ninguno de los tres. El precedente
-// ya está escrito en la rama (c) de esta misma función.
-// -----------------------------------------------------------------------------
-const CHECK_ROTULOS = Object.freeze({
-    REQUERIDO: 'requerido(s) por la protección de rama',
-    SEGURIDAD: 'bloqueante(s) por seguridad',
-    INFORMATIVO: 'informativo(s)',
-});
-
-// UX-4 — Listas acotadas, mismo criterio (`slice(0,5)` + "y N más") que ya usaba
-// la rama BLOCKED: un mensaje de Telegram con 40 nombres no se lee.
-function listarChecks(items, max = 5) {
-    const lista = items.slice(0, max).join(', ');
-    const extra = items.length > max ? ` y ${items.length - max} más` : '';
-    return `${lista}${extra}`;
-}
-
-/**
- * Rama BLOCKED con el veredicto de `required-checks.js` disponible (#6612).
- *
- * `rc` decide EN EXCLUSIVA la dimensión "requerido": qué exige el ruleset sale
- * de ahí y de ningún otro lado. El rollup se usa SÓLO para rotular lo que el
- * ruleset no exige (seguridad / informativo), nunca para recalcular la
- * requeridez — eso reabriría la ventana TOCTOU (SEC-F).
- *
- * SEC-E — Sólo viajan `context` y estado observado. Nunca el JSON del ruleset:
- * trae `allowed_actors`, `required_reviewers` y `dismissal_restriction`, que son
- * política de rama y no tienen por qué salir a Telegram.
- */
-function blockedConRequeridos({ prNumber, review, rc, statusCheckRollup, estado }) {
-    // Lazy require a propósito: `security-blocking-checks.js` importa los enums
-    // de ESTE módulo (CA-23, para que no existan dos copias de la tabla). Con un
-    // require de tope de archivo el ciclo devolvería un `module.exports` a medio
-    // poblar y los enums llegarían `undefined`.
-    const { classifySecurityBlockingChecks } = require('./security-blocking-checks');
-
-    const requeridosRojo = Array.isArray(rc.failing) ? rc.failing.slice() : [];
-    const requeridosPend = Array.isArray(rc.pending) ? rc.pending.slice() : [];
-    const requeridosVerde = Array.isArray(rc.green) ? rc.green : [];
-
-    const sec = classifySecurityBlockingChecks({ rollup: statusCheckRollup });
-    const rollupLegible = sec.verdict !== 'unusable';
-    // El rollup sólo se mira para ROTULAR: todos los rojos observados, menos los
-    // que `rc` ya acreditó como requeridos.
-    const rojosRollup = rollupLegible ? classifyChecks(statusCheckRollup).failing : [];
-    const segRojo = (sec.failing || []).filter((c) => !requeridosRojo.includes(c));
-    const infoRojo = rojosRollup.filter(
-        (c) => !requeridosRojo.includes(c) && !segRojo.includes(c)
-    );
-
-    const grupos = [];
-    if (requeridosRojo.length) {
-        grupos.push(`${requeridosRojo.length} ${CHECK_ROTULOS.REQUERIDO}: ${listarChecks(requeridosRojo)}`);
-    }
-    if (segRojo.length) {
-        grupos.push(
-            `${segRojo.length} ${CHECK_ROTULOS.SEGURIDAD} (el ruleset de main no los exige, `
-            + `pero el pipeline no mergea con un escáner en rojo): ${listarChecks(segRojo)}`
-        );
-    }
-    if (infoRojo.length) {
-        grupos.push(`${infoRojo.length} ${CHECK_ROTULOS.INFORMATIVO}, que no frenan el merge: ${listarChecks(infoRojo)}`);
-    }
-
-    // (a) Algo en rojo que SÍ frena: requerido por el ruleset, o de la allowlist
-    //     de seguridad. Los informativos solos no llegan acá — son constancia.
-    if (requeridosRojo.length || segRojo.length) {
-        const primarioEsRequerido = requeridosRojo.length > 0;
-        // UX-2 — La recomendación cambia con el rótulo. "Devolver el issue a
-        // desarrollo" es correcta para un test requerido en rojo y EQUIVOCADA
-        // para un hallazgo del escáner: ahí lo que corresponde es mirar QUÉ
-        // encontró, no rehacer la feature.
-        const recomendacionRequerido = 'NO aprobar el PR para destrabarlo: la firma no arregla un check en rojo y el ruleset lo va a seguir frenando. Lo que corresponde es devolver el issue a desarrollo.';
-        const recomendacionSeguridad = `Mirá QUÉ encontró el escáner antes de decidir (${listarChecks(segRojo)}): el ruleset de main no exige ese check, así que aprobar el PR no destraba nada — el pipeline lo frena igual. Y rehacer la feature tampoco lo arregla si el hallazgo es real.`;
-        const recommendation = primarioEsRequerido
-            ? (segRojo.length ? `${recomendacionRequerido} Además, ${recomendacionSeguridad}` : recomendacionRequerido)
-            : recomendacionSeguridad;
-        const question = primarioEsRequerido
-            ? `El PR #${prNumber} tiene checks en rojo que el ruleset de main exige. ¿Lo devolvemos a desarrollo para que los arregle, o los mirás vos?`
-            : `El PR #${prNumber} tiene un escáner de seguridad en rojo (${listarChecks(segRojo)}). ¿Mirás qué encontró, o lo devolvemos a desarrollo?`;
-        return {
-            trigger: TRIGGERS.CHECKS_FAILING,
-            reason: `PR #${prNumber} está BLOCKED con checks en rojo — ${grupos.join(' · ')}. No es una review pendiente.`,
-            question,
-            recommendation,
-            checks: {
-                state: 'failing',
-                failing: requeridosRojo.concat(segRojo),
-                requeridos: requeridosRojo,
-                seguridad: segRojo,
-                informativos: infoRojo,
-            },
-        };
-    }
-
-    // (b) No se pudo leer qué exige main. NO se usa ninguno de los tres rótulos:
-    //     rotular sin haber cotejado es exactamente el defecto de G-4/UX-1.
-    if (rc.verdict === 'unusable') {
-        return {
-            trigger: TRIGGERS.CODEOWNERS_REVIEW,
-            reason: `PR #${prNumber} está BLOCKED y no pude leer la lista de checks que exige main [causa técnica: ${rc.cause || 's/d'}]: no puedo afirmar si lo que falta es tu firma o un check.`,
-            question: `¿Podés mirar el PR #${prNumber} en GitHub y decidir? No pude leer qué checks exige main, así que no sé si falta tu firma o falta un check.`,
-            recommendation: 'No pude leer la lista de checks que exige main: miralos en GitHub antes de aprobar.',
-            checks: { state: 'unknown' },
-        };
-    }
-
-    // (c) Requeridos todavía en curso → NO concluyente (mismo criterio que R2).
-    //     Acá vive el acotamiento: un check que main no exige y sigue corriendo
-    //     NO llega hasta este punto, porque `rc.pending` sólo trae requeridos.
-    if (requeridosPend.length) {
-        return {
-            inconclusive: true,
-            trigger: null,
-            prNumber,
-            mergeStateStatus: estado,
-            checks: { state: 'pending', pending: requeridosPend },
-        };
-    }
-
-    // (d) Todo lo que main exige está en verde → recién acá es review humana.
-    //     Si hay rojos que main no exige, quedan como CONSTANCIA explícita: ni
-    //     se ignoran en silencio (punto 3 del issue) ni frenan el merge.
-    const porReview = review === 'REVIEW_REQUIRED' || review === '' || review === 'CHANGES_REQUESTED';
-    let recommendation = `Los ${requeridosVerde.length} check(s) que exige main están en verde: sólo falta la review. Si el diff te cierra, aprobarlo destraba el issue.`;
-    if (infoRojo.length) {
-        recommendation += ` Constancia: ${infoRojo.length} ${CHECK_ROTULOS.INFORMATIVO} terminaron en rojo (${listarChecks(infoRojo)}) y NO frenan el merge porque main no los exige.`;
-    }
-    if (!rollupLegible) {
-        recommendation += ' No pude leer el rollup de checks del PR, así que no puedo afirmar nada sobre los checks que main no exige.';
-    }
-    return {
-        trigger: TRIGGERS.CODEOWNERS_REVIEW,
-        reason: `PR #${prNumber} está mergeable pero BLOCKED: el ruleset de main exige una aprobación humana${porReview ? ` (reviewDecision=${review || 'sin review'})` : ''}. CODEOWNERS cubre las rutas tocadas.`,
-        question: `¿Podés revisar y aprobar el PR #${prNumber}? Sin tu firma el merge no avanza y el pipeline queda esperando.`,
-        recommendation,
-        checks: { state: 'green', informativos: infoRojo },
-    };
-}
-
 function detectMergeStateBlock({
     prNumber, mergeable, mergeStateStatus, reviewDecision, statusCheckRollup,
-    // #6612 G-4/UX-1 — Veredicto YA calculado por `createRequiredChecksReader()`
-    // (`lib/required-checks.js`). OPCIONAL, y el patrón es exactamente el de
-    // `delivery.js` (rama BLOCKED de `classifyMergeFailure`), copiado y no
-    // reinventado, con sus tres invariantes:
-    //   1. sin él ⇒ comportamiento legacy byte por byte;
-    //   2. presente ⇒ decide EN EXCLUSIVA la dimensión "requerido" (nunca dos
-    //      clasificadores para la misma rama);
-    //   3. forma inesperada ⇒ tratada como AUSENTE, nunca como vía libre.
-    // Se recibe ya calculado —y no se calcula acá— por dos razones: este módulo
-    // es PURO (sin red), y el reader coteja rollup + `oid` JUNTOS contra
-    // `headRefOid`. Filtrar acá el rollup viejo del snapshot con una lista de
-    // requeridos leída fresca reabriría la ventana TOCTOU que cerró #5420 (SEC-F).
-    requiredChecks,
+    // #6599 - lista de contextos exigidos por la proteccion de la rama BASE.
+    // Ausente o con `requiredContextsRead !== true` => pesa todo el rollup,
+    // igual que antes de #6599 (fail-closed, CA-5).
+    requiredContexts = null, requiredContextsRead = null,
 } = {}) {
     const estado = String(mergeStateStatus || '').toUpperCase();
     const merg = String(mergeable || '').toUpperCase();
@@ -453,18 +392,19 @@ function detectMergeStateBlock({
     }
 
     if (estado === 'BLOCKED') {
-        // #6612 G-4 — Con el veredicto del reader presente, la rama BLOCKED se
-        // resuelve con datos COTEJADOS contra el ruleset. Sin él, cae al camino
-        // legacy de más abajo, idéntico al anterior.
-        const rc = requiredChecks;
-        if (rc && typeof rc === 'object' && typeof rc.verdict === 'string') {
-            return blockedConRequeridos({ prNumber, review, rc, statusCheckRollup, estado });
-        }
-
         // BLOCKED es ambiguo: puede ser "falta la firma humana" o "hay un check
         // requerido en rojo/pendiente". Antes de hablarle al operador de review,
         // hay que LEER los checks — no suponerlos.
-        const checks = classifyChecks(statusCheckRollup);
+        const checks = classifyChecks(statusCheckRollup, { requiredContexts, requiredContextsRead });
+        // Los no requeridos NUNCA son la causa del bloqueo, pero se nombran:
+        // sin esto, un OWASP en rojo desaparece del reporte al operador.
+        const infoLinea = describeInformationalChecks(checks);
+        const infoDetalle = { ...checks.informational };
+        // CA-5 - la desactivacion del filtro nunca es muda.
+        const filtroRequeridos = {
+            applied: checks.requiredFilterApplied === true,
+            cause: checks.requiredFilterCause || null,
+        };
 
         // (a) Checks en rojo → esto NO es una firma que el operador deba dar.
         // Invitarlo a aprobar sería empujar un merge roto a `main`. Se notifica
@@ -475,10 +415,12 @@ function detectMergeStateBlock({
             const extra = checks.failing.length > 5 ? ` y ${checks.failing.length - 5} más` : '';
             return {
                 trigger: TRIGGERS.CHECKS_FAILING,
-                reason: `PR #${prNumber} está BLOCKED con ${checks.failing.length} check(s) requerido(s) en rojo: ${lista}${extra}. El ruleset de main no lo deja mergear hasta que pasen — no es una review pendiente.`,
+                reason: `PR #${prNumber} está BLOCKED con ${checks.failing.length} check(s) requerido(s) en rojo: ${lista}${extra}. El ruleset de main no lo deja mergear hasta que pasen — no es una review pendiente.${infoLinea}`,
                 question: `El PR #${prNumber} tiene checks en rojo. ¿Lo devolvemos a desarrollo para que los arregle, o los mirás vos?`,
                 recommendation: 'NO aprobar el PR para destrabarlo: la firma no arregla un check en rojo y el ruleset lo va a seguir frenando. Lo que corresponde es devolver el issue a desarrollo.',
                 checks: { state: checks.state, failing: checks.failing },
+                informational: infoDetalle,
+                requiredFilter: filtroRequeridos,
             };
         }
 
@@ -491,6 +433,8 @@ function detectMergeStateBlock({
                 prNumber,
                 mergeStateStatus: estado,
                 checks: { state: checks.state, pending: checks.pending },
+                informational: infoDetalle,
+                requiredFilter: filtroRequeridos,
             };
         }
 
@@ -499,15 +443,24 @@ function detectMergeStateBlock({
         // si no, lo dice explícitamente en vez de inventarlo.
         const porReview = review === 'REVIEW_REQUIRED' || review === '' || review === 'CHANGES_REQUESTED';
         const checksVerdes = checks.state === 'green';
+        // Concordancia: con el filtro activo `total` suele ser 1 (el ruleset de
+        // `main` exige un solo contexto), y "sus 1 checks" se lee como un bug.
+        const unico = checks.total === 1;
+        const sufijoReq = checks.requiredFilterApplied !== true ? '' : (unico ? ' requerido' : ' requeridos');
+        const sujeto = unico
+            ? `su único check${sufijoReq} está en verde`
+            : `sus ${checks.total} checks${sufijoReq} están en verde`;
         const recommendation = checksVerdes
-            ? `El PR no tiene conflictos y sus ${checks.total} checks están en verde: sólo falta la review. Si el diff te cierra, aprobarlo destraba el issue.`
+            ? `El PR no tiene conflictos y ${sujeto}: sólo falta la review. Si el diff te cierra, aprobarlo destraba el issue.`
             : 'El PR no tiene conflictos de merge, pero no pude leer el estado de sus checks: miralos en GitHub antes de aprobar.';
         return {
             trigger: TRIGGERS.CODEOWNERS_REVIEW,
-            reason: `PR #${prNumber} está mergeable pero BLOCKED: el ruleset de main exige una aprobación humana${porReview ? ` (reviewDecision=${review || 'sin review'})` : ''}. CODEOWNERS cubre las rutas tocadas.`,
+            reason: `PR #${prNumber} está mergeable pero BLOCKED: el ruleset de main exige una aprobación humana${porReview ? ` (reviewDecision=${review || 'sin review'})` : ''}. CODEOWNERS cubre las rutas tocadas.${infoLinea}`,
             question: `¿Podés revisar y aprobar el PR #${prNumber}? Sin tu firma el merge no avanza y el pipeline queda esperando.`,
             recommendation,
             checks: { state: checks.state },
+            informational: infoDetalle,
+            requiredFilter: filtroRequeridos,
         };
     }
 
@@ -654,6 +607,8 @@ function detectRepeatedRejectionBlock({ issue, motivos, threshold = 3 } = {}) {
  * @param {object} prState  — `{number, headRefName, mergeable, mergeStateStatus, reviewDecision}`
  * @param {object} [opts]
  * @param {Array}  [opts.securityAlerts]
+ * @param {Array}  [opts.requiredContexts]      — #6599, contextos del ruleset base.
+ * @param {boolean}[opts.requiredContextsRead]  — #6599, `true` sólo si se leyeron.
  * @returns {object|null}
  */
 function detectPrHumanBlock(prState = {}, opts = {}) {
@@ -676,10 +631,10 @@ function detectPrHumanBlock(prState = {}, opts = {}) {
         // sin esto, BLOCKED no se puede desambiguar y el mensaje afirmaría el
         // estado de los checks sin haberlo leído.
         statusCheckRollup: prState.statusCheckRollup,
-        // #6612 UX-1 — Veredicto de `createRequiredChecksReader()`, si el call
-        // site pudo leerlo. Ausente ⇒ el mensaje dice que no pudo leer qué
-        // exige main, NUNCA inventa el adjetivo "requerido".
-        requiredChecks: opts.requiredChecks,
+        // #6599 — sin esta lista el filtro queda desactivado y pesa todo el
+        // rollup: el default es el comportamiento previo, nunca un relajo.
+        requiredContexts: opts.requiredContexts,
+        requiredContextsRead: opts.requiredContextsRead,
     });
 }
 
@@ -696,9 +651,14 @@ module.exports = {
     // que quede vieja lee ese valor como "no bloqueante" (fail-open).
     CHECK_FAIL_STATES,
     CHECK_PENDING_STATES,
-    CHECK_ROTULOS,
     alertBelongsToPr,
     classifyChecks,
+    // #6599 — cotejo de nombres y normalización de la lista de requeridos.
+    // `required-checks.js` los IMPORTA en vez de reescribirlos.
+    checkNodeName,
+    checkMatchesContext,
+    normalizeRequiredContexts,
+    describeInformationalChecks,
     normalizeCause,
     detectSecurityFindingBlock,
     detectMergeStateBlock,

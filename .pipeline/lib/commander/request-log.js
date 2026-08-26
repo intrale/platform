@@ -272,6 +272,88 @@ function writeRequestMeta(logDir, reqId, meta) {
   }
 }
 
+/**
+ * #6460 — Actualización MERGE-AWARE del sidecar de metadata.
+ *
+ * `writeRequestMeta` SOBREESCRIBE el sidecar entero: usarla para estampar un
+ * campo suelto borra `resultado`/`provider` y con ellos el badge que el
+ * dashboard ya renderiza (el de #6459, entre otros). Esta función lee lo que
+ * hay, mergea DENTRO DEL MISMO SHAPE CERRADO y reescribe.
+ *
+ * Precedencia de `resultado` (CA-1 de #6459): un `resultado` ya asentado NUNCA
+ * se pisa. El del patch sólo se usa cuando el sidecar no existe o lo tiene
+ * vacío — el caso típico del huérfano, que murió antes de cerrar el turno y por
+ * eso no llegó a escribir sidecar. Así `error` le gana a `huerfano` y el orden
+ * de las pasadas no cambia lo que ve el operador.
+ *
+ * `aviso_entregado` es TRI-ESTADO, igual que `sameProviderVerification`:
+ *   · `false`   ⇒ el aviso de respuesta perdida NO se pudo entregar (dead-letter
+ *                 visible: `result-badge.js` pinta el chip).
+ *   · `true`    ⇒ se entregó. Sin chip: el camino feliz no es una novedad.
+ *   · ausente / no-boolean ⇒ el campo se OMITE. No hubo aviso o no se sabe, y
+ *                 inventar `true` o `false` sería afirmar un hecho no observado.
+ *
+ * Best-effort: NUNCA tira.
+ *
+ * SEC: mismo criterio que `writeRequestMeta` — el objeto se RECONSTRUYE campo a
+ * campo con coerción explícita. Ni el sidecar leído (que es un archivo del
+ * filesystem, o sea input) ni el patch pueden inyectar claves nuevas, y
+ * `__proto__` nunca se asigna porque no está en la lista.
+ *
+ * @param {string} logDir
+ * @param {string} reqId
+ * @param {object} patch  `{ resultado?, provider?, sameProviderVerification?,
+ *                           crossProviderDispatch?, aviso_entregado? }`
+ * @returns {string|null} path del sidecar escrito, o `null` si falló.
+ */
+function updateRequestMeta(logDir, reqId, patch) {
+  try {
+    const p = (patch && typeof patch === 'object') ? patch : {};
+    const filePath = path.join(logDir, metaFileName(reqId));
+
+    // Lectura defensiva: sidecar ausente/ilegible/corrupto ⇒ se parte de vacío,
+    // nunca se aborta (el aviso al operador no puede depender de esto).
+    let actual = {};
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) actual = parsed;
+    } catch { actual = {}; }
+
+    const leer = (obj, k) => (Object.prototype.hasOwnProperty.call(obj, k) ? obj[k] : undefined);
+
+    const resultadoActual = leer(actual, 'resultado');
+    const resultadoPatch = leer(p, 'resultado');
+    const providerActual = leer(actual, 'provider');
+    const providerPatch = leer(p, 'provider');
+
+    const safe = {
+      // El valor ya asentado gana. El patch sólo rellena el hueco.
+      resultado: (typeof resultadoActual === 'string' && resultadoActual !== '')
+        ? resultadoActual
+        : (typeof resultadoPatch === 'string' ? resultadoPatch : ''),
+      provider: (typeof providerActual === 'string' && providerActual !== '')
+        ? providerActual
+        : (typeof providerPatch === 'string' ? providerPatch : ''),
+      crossProviderDispatch: (leer(p, 'crossProviderDispatch') === true)
+        || (leer(actual, 'crossProviderDispatch') === true),
+    };
+
+    // Tri-estados: el patch pisa al actual SÓLO si trae un boolean real.
+    for (const campo of ['sameProviderVerification', 'aviso_entregado']) {
+      const desdePatch = leer(p, campo);
+      const desdeActual = leer(actual, campo);
+      if (typeof desdePatch === 'boolean') safe[campo] = desdePatch;
+      else if (typeof desdeActual === 'boolean') safe[campo] = desdeActual;
+    }
+
+    fs.writeFileSync(filePath, JSON.stringify(safe), 'utf8');
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
 // =============================================================================
 // #6458 — Lectores del canal estructurado + puente hacia el audit.
 // =============================================================================
@@ -364,6 +446,9 @@ module.exports = {
   openRequestLog,
   metaFileName,
   writeRequestMeta,
+  // #6460 — merge-aware; NO reemplaza a `writeRequestMeta` (que sigue siendo el
+  // camino de cierre de turno, donde sobreescribir es lo correcto).
+  updateRequestMeta,
   ID_SAFE_RE,
   // #6458 — canal estructurado de etapas (aditivo, al final).
   stagesFileName,
