@@ -102,7 +102,7 @@ test('runAllChecks — sin base resoluble lanza LINTER_BASE_UNAVAILABLE (no pr:n
     catch (e) { err = e; }
     assert.ok(err, 'debe lanzar cuando la base no resuelve');
     assert.equal(err.code, 'LINTER_BASE_UNAVAILABLE');
-    assert.match(err.message, /No se pudo resolver la base/);
+    assert.match(err.message, /no hay base confiable contra la cual comparar/);
 });
 
 // Regresión #2523 rev-1: el linter debe operar sobre el worktree del agente,
@@ -204,22 +204,77 @@ function fakeRunGit({ commits = [], files = [] } = {}) {
     };
 }
 
-test('#6495 — fetch fallido con ref local resoluble NO emite pr:no-commits', () => {
-    const r = withGitStub({
+// --- rev-2: la corrección de la regresión de seguridad -----------------------
+//
+// El primer intento de arreglar #6495 pasó el gate de fail-closed a fail-OPEN:
+// aceptaba la base con sólo que el ref resolviera LOCALMENTE. Pero
+// `refs/remotes/origin/main` es un ref local y ESCRIBIBLE dentro del worktree
+// que el linter audita, y con el fetch caído nada lo re-sincroniza. Un
+// `git update-ref refs/remotes/origin/main HEAD~1` deja commits fuera del diff
+// linteado y el linter aprueba un secreto que vive en un commit invisible.
+//
+// El contrato correcto tiene DOS mitades, y los tests de abajo cubren las dos:
+//   1. fetch caído  => NO se aprueba (excepción → exit 2), y tampoco se emite
+//      `pr:no-commits` (que rebotaría a dev por una falla de red).
+//   2. ese exit 2 se clasifica INFRA, así que se reencola en la misma fase en
+//      vez de volver a dev — sin esto, el fail-closed reintroduce #6495.
+// ---------------------------------------------------------------------------
+
+/** Stub estándar del escenario "fetch caído pero el ref local resuelve". */
+function stubFetchCaido({ commits = [], files = [] } = {}) {
+    return {
         fetchOrigin: () => ({ exit_code: 128, stdout: '', stderr: 'fatal: unable to access: Could not resolve host' }),
-        refExists: () => true,
+        refExists: () => true, // resuelve localmente… y es justamente el problema
         getCurrentBranch: () => 'agent/6495-pipeline-dev',
         getPriorDeliveryRefs: () => [],
         getSiblingDeliveryRefs: () => [],
         loadSiblingRepos: () => [],
-        runGit: fakeRunGit({ commits: ['fix(pipeline): algo (#6495)\n\nCloses #6495'], files: ['.pipeline/linter.js'] }),
-    }, () => linter.runAllChecks({ issue: 6495, cwd: TMP, base: 'origin/main' }));
+        runGit: fakeRunGit({ commits, files }),
+    };
+}
 
-    const rules = r.findings.map((f) => f.rule);
-    assert.ok(!rules.includes('pr:no-commits'), `no debe rebotar por fetch caído; findings=${JSON.stringify(rules)}`);
-    assert.equal(r.commitCount, 1, 'debe leer los commits contra el ref local');
-    assert.equal(r.fileCount, 1);
-    assert.equal(r.baseStale, true, 'debe marcar la base como desactualizada');
+test('#6495 rev-2 — fetch fallido NO aprueba aunque el ref local resuelva (fail-closed)', () => {
+    assert.throws(
+        () => withGitStub(
+            stubFetchCaido({ commits: ['fix(pipeline): algo (#6495)'], files: ['.pipeline/linter.js'] }),
+            () => linter.runAllChecks({ issue: 6495, cwd: TMP, base: 'origin/main' }),
+        ),
+        (e) => e.code === 'LINTER_BASE_UNAVAILABLE',
+        'con el fetch caído la base no es confiable: tiene que fallar cerrado, no lintear contra el ref local',
+    );
+});
+
+test('#6495 rev-2 — el fail-closed por fetch caído NO emite pr:no-commits (no culpa al entregable)', () => {
+    let err = null;
+    try {
+        withGitStub(stubFetchCaido(), () => linter.runAllChecks({ issue: 6495, cwd: TMP, base: 'origin/main' }));
+    } catch (e) { err = e; }
+
+    assert.ok(err, 'debe propagar excepción');
+    assert.equal(err.code, 'LINTER_BASE_UNAVAILABLE');
+    assert.ok(!/pr:no-commits/.test(err.message), 'no debe degradar a un finding de contenido');
+});
+
+test('#6495 rev-2 — el motivo del fail-closed clasifica INFRA, no rebota a dev', () => {
+    // Sin esto el fix de seguridad reintroduce el bug original: se midió que el
+    // texto del stderr no alcanza ("Could not resolve host" clasificaba código).
+    const precheck = require('../../connectivity-precheck');
+    const reboteClassifier = require('../../lib/rebote-classifier');
+
+    let err = null;
+    try {
+        withGitStub(stubFetchCaido(), () => linter.runAllChecks({ issue: 6495, cwd: TMP, base: 'origin/main' }));
+    } catch (e) { err = e; }
+
+    // Exactamente el motivo que linter.js escribe en el marker (`main()`, catch).
+    const motivo = `Excepción en linter.js: ${err.message}`;
+    const clasificacion = precheck.classifyError(motivo);
+    assert.equal(clasificacion, 'infra', 'un fetch caído es infra: se reencola, no vuelve a dev');
+
+    const veredicto = reboteClassifier.classifyRebote({ motivo, classifyErrorResult: clasificacion });
+    assert.equal(veredicto.category, 'infra');
+    assert.equal(veredicto.counts_against_circuit_breaker, false,
+        'una caída de red no puede consumir rebotes del circuit breaker de código');
 });
 
 test('#6495 — rama genuinamente vacía con base fresca SIGUE emitiendo pr:no-commits', () => {
@@ -252,4 +307,66 @@ test('#6495 — refExists resuelve refs reales (si vuelve ^{commit}, cmd.exe se 
 
 test('#6495 — refExists es false fuera de un repo git (dispara el camino de infra)', () => {
     assert.equal(gitOps.refExists(TMP, 'origin/main'), false, 'sin repo no hay base resoluble');
+});
+
+// --- PoC del security, contra git REAL --------------------------------------
+//
+// Los stubs de arriba prueban el contrato; éste prueba el ATAQUE. Monta un repo
+// git de verdad, rompe el fetch (`url.<invalida>.insteadOf`) y mueve el
+// remote-tracking ref con `git update-ref` — exactamente lo que puede hacer
+// cualquier proceso dentro del worktree auditado. Con el código vulnerable el
+// linter veía 1 de 2 commits y APROBABA, dejando el `AKIA…` fuera del diff.
+// Un stub de `runGit` no reproduce esto porque el punto es que el ref local
+// es escribible de verdad.
+const { execFileSync } = require('child_process');
+
+function gitEn(cwd, args) {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+test('#6495 rev-2 — PoC: ref local manipulado con el fetch caído NO puede aprobar un secreto', () => {
+    const raiz = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-linter-poc-'));
+    const upstream = path.join(raiz, 'upstream');
+    const work = path.join(raiz, 'work');
+
+    fs.mkdirSync(upstream, { recursive: true });
+    gitEn(upstream, ['init', '-q', '--initial-branch=main']);
+    gitEn(upstream, ['config', 'user.email', 'poc@intrale.test']);
+    gitEn(upstream, ['config', 'user.name', 'poc']);
+    fs.writeFileSync(path.join(upstream, 'base.txt'), 'base\n');
+    gitEn(upstream, ['add', '-A']);
+    gitEn(upstream, ['commit', '-qm', 'base']);
+
+    gitEn(raiz, ['clone', '-q', upstream, work]);
+    gitEn(work, ['config', 'user.email', 'poc@intrale.test']);
+    gitEn(work, ['config', 'user.name', 'poc']);
+    gitEn(work, ['checkout', '-qb', 'agent/6495-poc']);
+
+    // Commit 1: el que lleva el secreto. Commit 2: inocuo.
+    fs.writeFileSync(path.join(work, 'leak.js'), 'const k = "AKIAABCDEFGHIJKLMNOP";\n');
+    gitEn(work, ['add', '-A']);
+    gitEn(work, ['commit', '-qm', 'feat: filtra credencial (#6495)']);
+    fs.writeFileSync(path.join(work, 'ok.txt'), 'inocuo\n');
+    gitEn(work, ['add', '-A']);
+    gitEn(work, ['commit', '-qm', 'chore: inocuo (#6495)']);
+
+    // El ataque: fetch roto + base movida un commit hacia adelante, con lo que
+    // el commit del secreto queda fuera del rango `origin/main..HEAD`.
+    const remoto = gitEn(work, ['remote', 'get-url', 'origin']).trim();
+    gitEn(work, ['config', `url.https://invalid.invalid/.insteadOf`, remoto]);
+    gitEn(work, ['update-ref', 'refs/remotes/origin/main', 'HEAD~1']);
+
+    assert.throws(
+        () => linter.runAllChecks({ issue: 6495, cwd: work, base: 'origin/main' }),
+        (e) => e.code === 'LINTER_BASE_UNAVAILABLE',
+        'con el fetch caído y el ref movido, el linter NO puede emitir veredicto',
+    );
+
+    // Contraprueba: con el fetch sano el ref se re-sincroniza a la fuerza y el
+    // secreto SÍ aparece. Confirma que el gate no quedó inútilmente cerrado.
+    gitEn(work, ['config', '--unset', `url.https://invalid.invalid/.insteadOf`]);
+    const r = linter.runAllChecks({ issue: 6495, cwd: work, base: 'origin/main' });
+    assert.equal(r.commitCount, 2, 'con fetch sano se ven los dos commits');
+    assert.ok(r.findings.some((f) => f.rule === 'secret:aws-access-key'),
+        `el secreto tiene que caer en el diff; findings=${JSON.stringify(r.findings.map((f) => f.rule))}`);
 });
