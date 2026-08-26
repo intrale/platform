@@ -89,6 +89,13 @@ try { etaMarkersLib = require('./lib/eta-markers'); } catch { /* opcional */ }
 let commanderResultBadge = null;
 try { commanderResultBadge = require('./lib/commander/result-badge'); } catch { /* opcional */ }
 
+// #6459 — Fuente ÚNICA del listado de peticiones del Commander (enumeración de
+// logs + sidecar de metadata). Compartida con el panel del home V3
+// (`views/dashboard/commander-activity.js`) para que las dos superficies
+// muestren exactamente las mismas filas.
+let commanderRecentRequests = null;
+try { commanderRecentRequests = require('./lib/commander/recent-requests'); } catch { /* opcional */ }
+
 // #2892 PR-C — Estado del banner de alerta de consumo anómalo + cap de snooze.
 let restModeState = null;
 try { restModeState = require('./lib/rest-mode-state'); } catch { /* opcional */ }
@@ -2673,6 +2680,14 @@ function renderCommanderResultBadges(meta) {
   catch { return ''; }
 }
 
+// #6459 — CSS de los badges desde su fuente única. Si el require opcional del
+// módulo falló, el legacy queda sin las reglas (igual que ya quedaba sin los
+// badges): degradar, nunca romper el render de toda la página.
+function badgeCss() {
+  if (!commanderResultBadge || typeof commanderResultBadge.RESULT_BADGE_CSS !== 'string') return '';
+  return commanderResultBadge.RESULT_BADGE_CSS;
+}
+
 // #3949 EP7-H2 — Render de los logs recientes del Commander (un log por
 // petición atendida) dentro de la card de Commander Routing. Reutiliza el
 // patrón `<a class="log-link">` (G1) y un label legible HH:MM:SS + chat (G3),
@@ -2680,22 +2695,18 @@ function renderCommanderResultBadges(meta) {
 // epochms es el último segmento `-` del id.
 // #3951 EP7-H4 — enriquece cada item con el badge de resultado leyendo su
 // sidecar `commander-<id>.meta.json` (lectura defensiva: sin sidecar → sin badge).
+// #6459 — La enumeración de logs + lectura del sidecar se movió a
+// `lib/commander/recent-requests.js`, que es la MISMA fuente que consume el
+// panel del home V3. Antes esta función era el único lugar del repo que sabía
+// leer las peticiones del Commander, y como sólo se sirve en `/legacy`, el dato
+// no llegaba nunca al dashboard que abre el operador.
 function renderCommanderRequestLogs(logDir, limit) {
   const MAX = limit || 8;
   let files = [];
   try {
-    files = fs.readdirSync(logDir)
-      .filter(f => /^commander-.+\.log$/.test(f))
-      .map(f => {
-        // id = nombre sin prefijo `commander-` ni sufijo `.log`.
-        const id = f.replace(/^commander-/, '').replace(/\.log$/, '');
-        const parts = id.split('-');
-        const epochms = Number(parts[parts.length - 1]);
-        const chat = parts.slice(0, -1).join('-') || '?';
-        return { f, id, epochms: Number.isFinite(epochms) ? epochms : 0, chat };
-      })
-      .sort((a, b) => b.epochms - a.epochms)
-      .slice(0, MAX);
+    files = commanderRecentRequests
+      ? commanderRecentRequests.listRecentRequests(logDir, MAX)
+      : [];
   } catch { /* dir inexistente → estado vacío */ }
 
   if (files.length === 0) {
@@ -2709,17 +2720,10 @@ function renderCommanderRequestLogs(logDir, limit) {
   const items = files.map(it => {
     const hora = it.epochms ? new Date(it.epochms).toTimeString().slice(0, 8) : '??:??:??';
     const label = `${hora} · chat ${escapeHtml(it.chat)}`;
-    // #3951 EP7-H4 — lectura defensiva del sidecar de metadata. Si no existe
-    // (peticiones previas al cambio) o está corrupto → sin badge, sin error.
-    let badges = '';
-    try {
-      const metaPath = path.join(logDir, `commander-${it.id}.meta.json`);
-      if (fs.existsSync(metaPath)) {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        badges = renderCommanderResultBadges(meta);
-      }
-    } catch { /* sidecar ausente/corrupto → render sin badge */ }
-    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.f)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}${badges}</a>`;
+    // #3951 EP7-H4 — el sidecar ya viene leído (defensivamente) por
+    // `listRecentRequests`: sin sidecar / corrupto ⇒ `meta === null` ⇒ sin badge.
+    const badges = renderCommanderResultBadges(it.meta);
+    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.file)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}${badges}</a>`;
   }).join('');
 
   return `
@@ -5468,19 +5472,18 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
 
 /* ── #3951 EP7-H4 — Badge de resultado de la petición del Commander.
- *    Mapea el enum cerrado (ok/ajustada/fallback/error) a los 4 tokens
+ *    Mapea el enum cerrado (ok/ajustada/fallback/error/huerfano) a los 5 tokens
  *    semánticos del design system. Glyph + label SIEMPRE (CA-4: no depender
- *    sólo del color). Tokens con fallback legacy por si design-tokens.css no
- *    está cargado. */
-.cmd-result{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:5px;font-size:0.72em;font-weight:600;line-height:1.5;border:1px solid transparent;margin-left:6px}
-.cmd-result-ok       {color:var(--success,var(--gn));background:var(--success-bg,rgba(63,185,80,0.14));border-color:var(--success-dim,var(--gn2))}
-.cmd-result-ajustada {color:var(--warning,var(--yl));background:var(--warning-bg,rgba(210,153,34,0.14));border-color:var(--warning-dim,var(--yl2))}
-.cmd-result-fallback {color:var(--info,var(--ac));   background:var(--info-bg,rgba(88,166,255,0.14));   border-color:var(--info-dim,var(--ac2))}
-.cmd-result-error    {color:var(--danger,var(--rd)); background:var(--danger-bg,rgba(248,81,73,0.14));  border-color:var(--danger-dim,var(--rd2))}
-.cmd-provider{font-size:0.72em;color:var(--dim);font-family:inherit;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
-.cmd-verif{font-size:0.72em;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
-.cmd-verif-cross{color:var(--info,var(--ac));border-color:var(--info-dim,var(--ac2));background:var(--info-bg,rgba(88,166,255,0.14))}
-.cmd-verif-same {color:var(--dim);border-color:var(--bd)}
+ *    sólo del color).
+ *
+ *    #6459 — las reglas ya NO viven acá: se interpolan desde
+ *    lib/commander/result-badge.js (RESULT_BADGE_CSS), que es la MISMA
+ *    constante que consume el home V3 (views/dashboard/commander-activity.js).
+ *    Antes esta copia era la única del repo y generateHTML() sólo se sirve
+ *    en /legacy: el badge existía y no se veía en el dashboard que abre el
+ *    operador. Con una sola fuente, agregar un resultado no puede dejar una
+ *    de las dos superficies muda otra vez. */
+${badgeCss()}
 
 /* ── Log Viewer Panel ──────────────────────────────────────────────────── */
 .log-overlay{
@@ -7215,7 +7218,24 @@ body.standalone .section-collapsed .section-body{display:block !important}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
-  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
+  ${/* #6459 — El listado "Logs recientes" (una fila por petición atendida, con
+        su badge de resultado) lo construye `renderCommanderRequestLogs` desde
+        #3949/#3951, pero su ÚNICO caller estaba dentro de `doraMinHTML`, que el
+        rediseño kiosk V3 (#2801/#2804) dejó de emitir: la variable se arma y no
+        se usa en ningún lado. Verificado sobre el dashboard vivo — `curl :3200`
+        y `:3299/`, `/v3`, `/multi-provider` ⇒ cero ocurrencias de "Logs
+        recientes" y cero de `cmd-result`.
+
+        Consecuencia: el badge de resultado NO se renderiza en ninguna parte, y
+        el estado `huerfano` nacería mudo — exactamente el escape #4531 que
+        CA-13 viene a cerrar.
+
+        La reparación es de RENDER PATH, no de layout: el listado se cuelga de la
+        sección de Commander que la página YA emite, sin card nueva, sin mover
+        nada y sin resucitar la card de DORA (que sigue muerta, fuera del alcance
+        de este issue). La anatomía de la fila es la del mockup acordado
+        `assets/mockups/6440/02-dashboard-badge-huerfano.svg`. */''}
+  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${renderCommanderRequestLogs(LOG_DIR)}${actHTML}</div></details>
 
   <div class="footer" id="dash-footer">🟢 Live · Refresh on-demand &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
