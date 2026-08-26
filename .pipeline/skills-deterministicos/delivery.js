@@ -21,7 +21,7 @@ const prProvenance = require('../lib/pr-provenance');
 // Se CONSUME la implementación canónica (#5419): es `git fetch` + `git log`
 // contra la allowlist de committers, no necesita worktree y no se duplica acá.
 const { verifyRemoteBranchOrigin } = require('../lib/worktree-resolver');
-const { classifyChecks } = require('../lib/human-block-triggers');
+const { classifyChecks, describeInformationalChecks } = require('../lib/human-block-triggers');
 // #6431 - lector/clasificador de los checks REQUERIDOS del ruleset de la rama
 // base. Se importa el modulo entero (no funciones sueltas) para que el wiring
 // de produccion arme el reader con `EXPECTED_PR_REPO` y la rama base del merge.
@@ -703,7 +703,13 @@ function classifyMergeFailure(res = {}, ctx = {}) {
             // la suite sin red (el reader tiene default `null`, A-2).
             const rc = ctx.requiredChecks;
             if (!rc || typeof rc !== 'object' || typeof rc.verdict !== 'string') {
-                const checks = classifyChecks(ctx.statusCheckRollup);
+                // #6599 - si el ctx trae la lista de requeridos, el camino legacy
+                // tampoco pesa checks sin poder de veto. Sin lista, `classifyChecks`
+                // se comporta EXACTAMENTE como antes (fail-closed, CA-5).
+                const checks = classifyChecks(ctx.statusCheckRollup, {
+                    requiredContexts: ctx.requiredContexts,
+                    requiredContextsRead: ctx.requiredContextsRead,
+                });
                 if (checks.state === 'pending') {
                     return {
                         conflict: false, retryable: true, kind: 'checks-in-flight',
@@ -979,6 +985,25 @@ function attemptMergeWithGates({
                 rc = { verdict: 'unusable', cause: 'lector-forma-inesperada', pending: [], failing: [], green: [] };
             }
             if (Array.isArray(rc.logLines)) rc.logLines.forEach((l) => log(String(l)));
+            // #6599 - visibilidad de los checks SIN poder de veto (CA-3). No
+            // deciden nada: solo se reportan. Un OWASP en rojo que desaparece
+            // del resumen es un defecto que nadie ve.
+            try {
+                const info = classifyChecks(snapshot.statusCheckRollup, {
+                    requiredContexts: rc.requiredContexts,
+                    requiredContextsRead: rc.requiredContextsRead,
+                });
+                rc.informationalChecks = info.informational;
+                const frase = describeInformationalChecks(info);
+                if (frase) log(`[delivery] gate merge:${frase.replace(/\n/g, ' ')}`);
+                if (info.requiredFilterApplied !== true) {
+                    // CA-5 - la desactivacion del filtro NUNCA es muda.
+                    log(`[delivery] gate merge: filtro de checks no requeridos DESACTIVADO (${info.requiredFilterCause}) \u2014 se espera por todos los checks del PR, como antes de #6599`);
+                }
+            } catch (e) {
+                // El resumen es telemetria: si falla, no puede tumbar el merge.
+                log(`[delivery] gate merge: no se pudo resumir los checks informativos (${((e && e.message) || '').slice(0, 120)})`);
+            }
             return rc;
         }
         : null;
@@ -1131,6 +1156,11 @@ function attemptMergeWithGates({
                 reviewDecision: snapshot.reviewDecision,
                 reviewDecisionRead: snapshot.reviewDecisionRead,
                 requiredChecks: rc,
+                // #6599 - la MISMA lista que ya leyo el reader (no hay segunda
+                // llamada a la API): si `rc` viniera deforme, el camino legacy
+                // tampoco cuenta los checks sin poder de veto.
+                requiredContexts: rc.requiredContexts,
+                requiredContextsRead: rc.requiredContextsRead,
             });
         }
 

@@ -780,6 +780,32 @@ function detectClaudeLauncher() {
 const CLAUDE_LAUNCHER = detectClaudeLauncher();
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
 
+// #6599 - Lista de checks REQUERIDOS por la proteccion de `main`, con cache de
+// 10 minutos. La usa el barrido para separar los checks que pueden vetar el
+// merge de los meramente informativos.
+//
+// Se lee UNA vez y se reusa: el barrido corre cada 2 minutos sobre N PRs y la
+// respuesta cambia una vez cada varios meses. Solo la lectura OK se cachea; un
+// 403 puntual se reintenta a la vuelta siguiente en vez de apagar el filtro.
+//
+// La creacion es PEREZOSA y va en try/catch: este helper no puede tumbar el
+// boot del pulpo. Si no se puede construir, devuelve `ok:false` y rio abajo
+// eso significa "pesa todo el rollup", que es el comportamiento previo.
+let _requiredContextsCache = null;
+function leerContextosRequeridos() {
+    try {
+        if (!_requiredContextsCache) {
+            const requiredChecksLib = require('./lib/required-checks');
+            _requiredContextsCache = requiredChecksLib.createRequiredContextsCache({
+                cwd: ROOT, baseBranch: 'main',
+            });
+        }
+        return _requiredContextsCache();
+    } catch (e) {
+        return { ok: false, contexts: null, cause: `excepcion:${(e && e.message) || 'sin mensaje'}`.slice(0, 120) };
+    }
+}
+
 // #3072 / #3077 — Singleton runtime de agent-models. La VALIDACIÓN del JSON
 // se hace más abajo en el boot (validateOrExit del módulo agent-models-validate
 // — #3081 S3). Acá hacemos un parseo defensivo post-validación: si falla, se
@@ -6030,7 +6056,33 @@ function brazoBarrido(config) {
                     log('barrido', `#${issue} code-scanning falló (no bloqueante): ${e.message}`);
                   }
 
-                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, { securityAlerts });
+                  // #6599 - Lista de checks REQUERIDOS de la rama base. Sin ella,
+                  // `classifyChecks` pesa el rollup COMPLETO y un check informativo
+                  // colgado (OWASP: `continue-on-error: true`, `failBuildOnCVSS =
+                  // 11.0`) devuelve `pending` -> el veredicto sale `inconclusive` y
+                  // el barrido reintenta en silencio durante horas. Medido el
+                  // 2026-08-25: 3 h 10 m por un control que no puede vetar nada.
+                  //
+                  // Fail-closed: si el ruleset no se puede leer, `requiredContextsRead`
+                  // queda en `false`, pesa todo el rollup igual que antes, y el motivo
+                  // queda escrito en el log (CA-5). Nunca se asume "no se exige nada".
+                  let requiredContexts = null;
+                  let requiredContextsRead = false;
+                  try {
+                    const rc = leerContextosRequeridos();
+                    if (rc && rc.ok === true) {
+                      requiredContexts = rc.contexts;
+                      requiredContextsRead = true;
+                    } else {
+                      log('barrido', `#${issue} lista de checks requeridos no legible (${(rc && rc.cause) || 'sin causa'}) \u2014 el PR se evalua con TODOS sus checks, como antes de #6599`);
+                    }
+                  } catch (e) {
+                    log('barrido', `#${issue} lista de checks requeridos fallo (${e.message}) \u2014 el PR se evalua con TODOS sus checks`);
+                  }
+
+                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, {
+                    securityAlerts, requiredContexts, requiredContextsRead,
+                  });
 
                   if (veredicto && veredicto.inconclusive) {
                     // R2 — GitHub todavía calcula `mergeable`. Ni bloqueo ni vía
