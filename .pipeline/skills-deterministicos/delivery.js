@@ -577,6 +577,19 @@ function buildRequiredChecksReader({ cwd = WORK_DIR, repo = EXPECTED_PR_REPO, ba
     return requiredChecks.createRequiredChecksReader({ cwd, repo, baseBranch });
 }
 
+// #6599 CA-3 — Fabrica del lector LIVIANO de contextos requeridos. Aislada por
+// el mismo motivo que la de arriba: el test de wiring verifica que produccion la
+// use, porque si no se inyecta, el resumen de checks informativos del camino
+// feliz queda fail-closed y mudo — que es exactamente el defecto del rebote.
+//
+// Lee SOLO el ruleset (nunca el rollup) y cachea la lectura OK por TTL, asi el
+// camino que mergea limpio no paga una llamada de red por vuelta del polling.
+// `baseBranch` sale de la constante del merge (SEC-11), nunca de un campo
+// devuelto por GitHub.
+function buildRequiredContextsReader({ cwd = WORK_DIR, baseBranch = MERGE_BASE_BRANCH } = {}) {
+    return requiredChecks.createRequiredContextsCache({ cwd, baseBranch });
+}
+
 function applyNeedsHumanLabel(issue, prNumber, owners, repoRoot) {
     const lbl = git.runGh(
         ['issue', 'edit', String(issue), '--add-label', 'needs-human'],
@@ -930,7 +943,26 @@ function sleepSync(ms) {
 // Devuelve `{ status, ... }` con status ∈
 //   'merged' | 'no-qa-gate' | 'needs-human' | 'blocked' | 'conflict'
 //   | 'transient' | 'error'
-function attemptMergeWithGates({
+// #6599 CA-3 (rebote rev-1) — Envoltorio que expone el resumen de checks
+// informativos en el RETORNO, para todo desenlace y sin tocar los ~15 `return`
+// de la maquinaria de gates.
+//
+// Antes de este rebote el resumen se escribia en `rc.informationalChecks` y no
+// lo leia nadie (`grep -rn informationalChecks` devolvia UNA linea: la que
+// escribe). Un dato que solo se escribe no es visibilidad — es codigo muerto que
+// aparenta cumplir el criterio. Ahora el llamador puede consumirlo ademas del
+// log: `out.informationalChecks` es `{failing, pending}` del ultimo snapshot
+// evaluado, o `null` si no hubo nada que reportar.
+function attemptMergeWithGates(opts = {}) {
+    const captura = {};
+    const out = attemptMergeWithGatesInner(opts, captura);
+    if (out && typeof out === 'object' && !Array.isArray(out)) {
+        out.informationalChecks = captura.ultimo || null;
+    }
+    return out;
+}
+
+function attemptMergeWithGatesInner({
     prNumber,
     getSnapshot,
     loadOwners,
@@ -952,11 +984,20 @@ function attemptMergeWithGates({
     // El wiring de produccion SIEMPRE lo inyecta y hay un test que lo verifica.
     // Cuando falta, se loguea: la desactivacion nunca es silenciosa (CA-20).
     requiredChecksReader = null,
+    // #6599 CA-3 — Lector LIVIANO de la lista de contextos requeridos: solo lee
+    // el ruleset de la rama base (nunca el rollup) y cachea por TTL. Existe
+    // aparte de `requiredChecksReader` porque el resumen de checks informativos
+    // se calcula en TODA evaluacion de snapshot —incluido el camino feliz que
+    // mergea— y pagar el rollup por red en cada vuelta para una linea de
+    // telemetria seria gastar cuota de API en algo que no decide nada.
+    // Default `null` por la misma razon que el otro: sin inyeccion, ninguna
+    // suite sale a la red. El wiring de produccion SIEMPRE lo inyecta.
+    requiredContextsReader = null,
     maxChecksWaits = MAX_CHECKS_WAITS,
     // Resultado del pre-check local `git merge-tree`. SÓLO se usa para loguear
     // la contradicción con el servidor — nunca para decidir (CA-7).
     mergeTreeClean = false,
-} = {}) {
+} = {}, captura = {}) {
     const log = typeof logAppend === 'function' ? logAppend : () => {};
     const attemptsMax = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : MAX_MERGE_ATTEMPTS;
     const waitsMax = Number.isInteger(maxMergeabilityWaits) && maxMergeabilityWaits >= 0
@@ -971,6 +1012,99 @@ function attemptMergeWithGates({
     const checksWaitsMax = Number.isInteger(maxChecksWaits) && maxChecksWaits >= 0
         ? maxChecksWaits
         : MAX_CHECKS_WAITS;
+    // #6599 CA-3 (rebote rev-1) \u2014 Resumen de los checks SIN poder de veto.
+    //
+    // EL DEFECTO QUE ARREGLA ESTE REBOTE: el resumen se calculaba DENTRO de
+    // `leerRequeridos()`, y `leerRequeridos()` solo corre en dos ramas raras \u2014
+    // el pre-check (que dispara SOLO con `statusCheckRollup === []`) y la
+    // reclasificacion post-405 (guardada por `blockedByRuleset === true`). El
+    // camino feliz \u2014`mergeStateStatus: CLEAN`, `pr-status` en SUCCESS, OWASP en
+    // FAILURE\u2014 no pasa por ninguno de los dos: mergeaba emitiendo CERO lineas y
+    // el check en rojo desaparecia del resumen. Justo el escenario que motiva el
+    // issue, porque el OWASP corre con `continue-on-error: true` y deja el
+    // `mergeStateStatus` en CLEAN.
+    //
+    // La correccion es calcularlo UNA VEZ POR EVALUACION DE SNAPSHOT, atado al
+    // snapshot y no al desenlace: se reporta igual si el PR mergea, si se
+    // bloquea o si se escala. Un resumen que solo aparece cuando el merge falla
+    // no es visibilidad, es un mensaje de error.
+    //
+    // El estado vive en el closure para poder (a) deduplicar la linea entre las
+    // vueltas del polling \u2014el bucle reevalua hasta 7 veces y no queremos 7
+    // copias identicas\u2014, (b) reusar la lista ya leida sin pagar otra llamada a
+    // la API, y (c) exponer el ultimo resumen en el retorno de la funcion.
+    // Se monta sobre `captura` —el objeto que pasa el envoltorio— para que el
+    // resumen del ultimo snapshot sobreviva al `return` y viaje en el resultado.
+    const informativo = Object.assign(captura, {
+        ultimo: null,          // `{failing, pending}` del ultimo snapshot evaluado
+        contextos: null,       // lista de requeridos ya conocida (memo)
+        contextosLeidos: false,
+        lectorConsultado: false,
+        ultimaFrase: null,     // dedup de la linea entre vueltas del polling
+        causaLogueada: false,  // la causa del fail-closed se dice una vez, no siete
+    });
+
+    // Resuelve la lista de contextos requeridos SIN pagar de mas:
+    //   1) la que ya trajo `leerRequeridos()` en esta invocacion (costo cero), o
+    //   2) el lector liviano de contextos \u2014 solo lee el ruleset, no el rollup, y
+    //      cachea por TTL (`createRequiredContextsCache`), o
+    //   3) nada: filtro DESACTIVADO y pesa todo el rollup (fail-closed, CA-5).
+    // Nunca se usa `requiredChecksReader` para esto: ese lector ademas trae el
+    // rollup por red, y pagarlo una vez por vuelta para una linea de telemetria
+    // seria gastar cuota de API en algo que no decide nada.
+    const resolverContextos = () => {
+        if (informativo.contextosLeidos) return;
+        if (informativo.lectorConsultado || typeof requiredContextsReader !== 'function') return;
+        informativo.lectorConsultado = true;
+        let res;
+        try {
+            res = requiredContextsReader();
+        } catch (e) {
+            res = { ok: false, contexts: null, cause: `excepcion:${((e && e.message) || 'sin mensaje')}`.slice(0, 120) };
+        }
+        if (res && res.ok === true && Array.isArray(res.contexts) && res.contexts.length) {
+            informativo.contextos = res.contexts;
+            informativo.contextosLeidos = true;
+        } else {
+            informativo.causaLector = (res && res.cause) || 'lector-forma-inesperada';
+        }
+    };
+
+    // Calcula y reporta el resumen del snapshot vigente. Es TELEMETRIA: no
+    // decide nada y no puede tumbar el merge, por eso todo va en try/catch.
+    const resumirInformativos = (snapshot) => {
+        try {
+            resolverContextos();
+            const info = classifyChecks(snapshot && snapshot.statusCheckRollup, {
+                requiredContexts: informativo.contextos,
+                requiredContextsRead: informativo.contextosLeidos,
+            });
+            informativo.ultimo = info.informational;
+            const frase = describeInformationalChecks(info);
+            if (frase) {
+                const linea = `[delivery] gate merge:${frase.replace(/\n/g, ' ')}`;
+                // Se re-emite si el rollup cambio entre vueltas; no si es igual.
+                if (linea !== informativo.ultimaFrase) {
+                    informativo.ultimaFrase = linea;
+                    log(linea);
+                }
+            }
+            if (info.requiredFilterApplied !== true && !informativo.causaLogueada) {
+                // CA-5 - la desactivacion del filtro NUNCA es muda.
+                informativo.causaLogueada = true;
+                const causa = informativo.causaLector
+                    ? `${info.requiredFilterCause}:${informativo.causaLector}`
+                    : info.requiredFilterCause;
+                log(`[delivery] gate merge: filtro de checks no requeridos DESACTIVADO (${causa}) \u2014 se espera por todos los checks del PR, como antes de #6599`);
+            }
+            return info.informational;
+        } catch (e) {
+            // El resumen es telemetria: si falla, no puede tumbar el merge.
+            log(`[delivery] gate merge: no se pudo resumir los checks informativos (${((e && e.message) || '').slice(0, 120)})`);
+            return null;
+        }
+    };
+
     const leerRequeridos = typeof requiredChecksReader === 'function'
         ? (snapshot) => {
             // Toda excepcion o forma inesperada del lector es `unusable`, nunca
@@ -985,25 +1119,17 @@ function attemptMergeWithGates({
                 rc = { verdict: 'unusable', cause: 'lector-forma-inesperada', pending: [], failing: [], green: [] };
             }
             if (Array.isArray(rc.logLines)) rc.logLines.forEach((l) => log(String(l)));
-            // #6599 - visibilidad de los checks SIN poder de veto (CA-3). No
-            // deciden nada: solo se reportan. Un OWASP en rojo que desaparece
-            // del resumen es un defecto que nadie ve.
-            try {
-                const info = classifyChecks(snapshot.statusCheckRollup, {
-                    requiredContexts: rc.requiredContexts,
-                    requiredContextsRead: rc.requiredContextsRead,
-                });
-                rc.informationalChecks = info.informational;
-                const frase = describeInformationalChecks(info);
-                if (frase) log(`[delivery] gate merge:${frase.replace(/\n/g, ' ')}`);
-                if (info.requiredFilterApplied !== true) {
-                    // CA-5 - la desactivacion del filtro NUNCA es muda.
-                    log(`[delivery] gate merge: filtro de checks no requeridos DESACTIVADO (${info.requiredFilterCause}) \u2014 se espera por todos los checks del PR, como antes de #6599`);
-                }
-            } catch (e) {
-                // El resumen es telemetria: si falla, no puede tumbar el merge.
-                log(`[delivery] gate merge: no se pudo resumir los checks informativos (${((e && e.message) || '').slice(0, 120)})`);
+            // Este lector YA trajo la lista del ruleset: se memoiza para que el
+            // resumen de las vueltas siguientes no vuelva a salir a la red.
+            if (rc.requiredContextsRead === true
+                && Array.isArray(rc.requiredContexts) && rc.requiredContexts.length) {
+                informativo.contextos = rc.requiredContexts;
+                informativo.contextosLeidos = true;
             }
+            // Se recalcula con la lista recien leida: en la vuelta post-405 esta
+            // puede ser la PRIMERA vez que hay lista, y sin esto el resumen del
+            // snapshot vigente se quedaria con el veredicto fail-closed.
+            rc.informationalChecks = resumirInformativos(snapshot);
             return rc;
         }
         : null;
@@ -1028,6 +1154,14 @@ function attemptMergeWithGates({
             log(`[delivery] gate merge: snapshot del PR no disponible (${reason}) — merge bloqueado`);
             return { status: 'blocked', gate: 'snapshot', reason, attempt };
         }
+
+        // (1a) #6599 CA-3 — Resumen de los checks sin poder de veto, atado al
+        //      SNAPSHOT y no al desenlace. Va acá arriba, antes de todo gate y
+        //      de todo `return`, justamente para que se emita SIEMPRE: el
+        //      camino que mergea limpio (`CLEAN` + requerido en verde + OWASP en
+        //      rojo) es el que motiva el issue, y hasta este rebote era el único
+        //      que no dejaba rastro del check en rojo.
+        resumirInformativos(snapshot);
 
         // (1b) #6012 CA-3 — Un PR ya cerrado también reporta UNKNOWN en
         //      `mergeable`/`mergeStateStatus` (verificado sobre los PRs #6010 y
@@ -2086,6 +2220,11 @@ async function main() {
                 // suites viejas no salgan a la red; que produccion lo inyecte es
                 // lo que hace que el fix exista, y hay un test que lo verifica.
                 requiredChecksReader: buildRequiredChecksReader(),
+                // #6599 CA-3 — Sin esto, el camino que mergea limpio no tiene
+                // con que separar requeridos de informativos y el OWASP en rojo
+                // vuelve a desaparecer del resumen. Lector liviano y cacheado:
+                // no agrega una llamada de red por vuelta del polling.
+                requiredContextsReader: buildRequiredContextsReader(),
                 // #6012 CA-7 — El pre-check ya calculado se reusa SÓLO para
                 // loguear la contradicción con el servidor. No reclasifica nada.
                 mergeTreeClean: mergeCheck.supported === true && mergeCheck.mergeable === true,
@@ -2422,6 +2561,8 @@ module.exports = {
     REVIEW_DECISION_VALUES,
     MERGE_BASE_BRANCH,
     buildRequiredChecksReader,
+    // #6599 CA-3 - lector liviano de contextos requeridos (solo ruleset, cacheado).
+    buildRequiredContextsReader,
     // #4658 — detección de conflicto real + escalado fail-closed.
     classifyMergeFailure,
     shouldEscalateLocalMerge,
