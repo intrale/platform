@@ -1,0 +1,7 @@
+{
+  "action": "upload",
+  "file": "qa/evidence/6459/qa-6459-structural.md",
+  "issue": 6459,
+  "mode": "structural",
+  "source": "qa-structural"
+}
