@@ -29,7 +29,19 @@ const path = require('path');
 const staleness = require('./build-log-staleness');
 // #6259 (P2) — `PIPELINE_STALENESS_HOURS` es variable COMUN
 // (`isSecurityControlVar` -> false), asi que va con `withEnv` sincronico.
-const { withEnv } = require('./lib/test-helpers/with-env');
+const { withEnv, snapshotEnv, restoreEnv } = require('./lib/test-helpers/with-env');
+
+function enableWorktreeDependencies() {
+  try { require.resolve('js-yaml'); return; } catch (_) { /* worktree sin node_modules */ }
+  const gitFile = fs.readFileSync(path.join(__dirname, '..', '.git'), 'utf8').trim();
+  const gitDir = path.resolve(path.join(__dirname, '..'), gitFile.replace(/^gitdir:\s*/, ''));
+  process.env.NODE_PATH = path.join(gitDir, '..', '..', '..', 'node_modules');
+  require('node:module').Module._initPaths();
+}
+
+const __nodePathSnap = snapshotEnv(['NODE_PATH']);
+enableWorktreeDependencies();
+process.on('exit', () => restoreEnv(__nodePathSnap));
 
 let pass = 0;
 let fail = 0;

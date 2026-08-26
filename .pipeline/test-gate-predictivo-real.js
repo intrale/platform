@@ -20,7 +20,18 @@
 // termina con `process.exit(N)`, camino donde `after()` no correria.
 const { snapshotEnv, restoreEnv } = require('./lib/test-helpers/with-env');
 
-const __envSnap = snapshotEnv(['PULPO_NO_AUTOSTART', 'PIPELINE_DIR_OVERRIDE']);
+function enableWorktreeDependencies() {
+  try { require.resolve('js-yaml'); return; } catch (_) { /* worktree sin node_modules */ }
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const gitFile = fs.readFileSync(path.join(__dirname, '..', '.git'), 'utf8').trim();
+  const gitDir = path.resolve(path.join(__dirname, '..'), gitFile.replace(/^gitdir:\s*/, ''));
+  process.env.NODE_PATH = path.join(gitDir, '..', '..', '..', 'node_modules');
+  require('node:module').Module._initPaths();
+}
+
+const __envSnap = snapshotEnv(['PULPO_NO_AUTOSTART', 'PIPELINE_DIR_OVERRIDE', 'NODE_PATH']);
+enableWorktreeDependencies();
 process.on('exit', () => restoreEnv(__envSnap));
 
 process.env.PULPO_NO_AUTOSTART = '1';

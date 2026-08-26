@@ -18,7 +18,18 @@
 // Patron P1: `snapshotEnv` con nombres EXPLICITOS (SEC-1) + restauracion.
 const { snapshotEnv, restoreEnv } = require('./lib/test-helpers/with-env');
 
-const __envSnap = snapshotEnv(['PULPO_NO_AUTOSTART']);
+function enableWorktreeDependencies() {
+  try { require.resolve('js-yaml'); return; } catch (_) { /* worktree sin node_modules */ }
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const gitFile = fs.readFileSync(path.join(__dirname, '..', '.git'), 'utf8').trim();
+  const gitDir = path.resolve(path.join(__dirname, '..'), gitFile.replace(/^gitdir:\s*/, ''));
+  process.env.NODE_PATH = path.join(gitDir, '..', '..', '..', 'node_modules');
+  require('node:module').Module._initPaths();
+}
+
+const __envSnap = snapshotEnv(['PULPO_NO_AUTOSTART', 'NODE_PATH']);
+enableWorktreeDependencies();
 
 // SEC-2 — piso de restauracion: `process.on('exit')` corre tambien ante
 // `process.exit(N)` y excepcion no capturada; `after()` de node:test no.

@@ -16,6 +16,21 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+function enableWorktreeDependencies() {
+    try { require.resolve('js-yaml'); return; } catch (_) { /* worktree sin node_modules */ }
+    const gitFile = fs.readFileSync(path.join(__dirname, '..', '.git'), 'utf8').trim();
+    const gitDir = path.resolve(path.join(__dirname, '..'), gitFile.replace(/^gitdir:\s*/, ''));
+    process.env.NODE_PATH = path.join(gitDir, '..', '..', '..', 'node_modules');
+    require('node:module').Module._initPaths();
+}
+
+const __originalNodePath = process.env.NODE_PATH;
+enableWorktreeDependencies();
+process.on('exit', () => {
+    if (__originalNodePath === undefined) delete process.env.NODE_PATH;
+    else process.env.NODE_PATH = __originalNodePath;
+});
+
 const slices = require('./lib/dashboard-slices');
 // #6259 (P2 / D-6259-3) — `PIPELINE_DIR_OVERRIDE` es variable COMUN
 // (`isSecurityControlVar` -> false). Este archivo ya restauraba a mano con un

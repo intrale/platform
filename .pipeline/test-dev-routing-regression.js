@@ -7,11 +7,23 @@
 // `{ ...process.env }`, que arrastraria secretos) + restauracion.
 const { snapshotEnv, restoreEnv } = require('./lib/test-helpers/with-env');
 
+function enableWorktreeDependencies() {
+  try { require.resolve('js-yaml'); return; } catch (_) { /* worktree sin node_modules */ }
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const gitFile = fs.readFileSync(path.join(__dirname, '..', '.git'), 'utf8').trim();
+  const gitDir = path.resolve(path.join(__dirname, '..'), gitFile.replace(/^gitdir:\s*/, ''));
+  process.env.NODE_PATH = path.join(gitDir, '..', '..', '..', 'node_modules');
+  require('node:module').Module._initPaths();
+}
+
 const __envSnap = snapshotEnv([
   'PULPO_NO_AUTOSTART',
   'PULPO_SKIP_AGENT_MODELS_VALIDATE',
   'PULPO_SKIP_DATA_RESIDENCY_VALIDATE',
+  'NODE_PATH',
 ]);
+enableWorktreeDependencies();
 
 // SEC-2 — piso de restauracion: `process.on('exit')` corre en salida natural, en
 // `process.exit(N)` y tras excepcion no capturada. `after()` de node:test no

@@ -32,6 +32,18 @@ const precheck = require('./connectivity-precheck');
 // La ausencia de `withEnv` aca es lo CORRECTO, no un dialecto local (CA-6259-10).
 const { snapshotEnv, restoreEnv } = require('./lib/test-helpers/with-env');
 
+function enableWorktreeDependencies() {
+  try { require.resolve('js-yaml'); return; } catch (_) { /* worktree sin node_modules */ }
+  const gitFile = fs.readFileSync(path.join(__dirname, '..', '.git'), 'utf8').trim();
+  const gitDir = path.resolve(path.join(__dirname, '..'), gitFile.replace(/^gitdir:\s*/, ''));
+  process.env.NODE_PATH = path.join(gitDir, '..', '..', '..', 'node_modules');
+  require('node:module').Module._initPaths();
+}
+
+const __nodePathSnap = snapshotEnv(['NODE_PATH']);
+enableWorktreeDependencies();
+process.on('exit', () => restoreEnv(__nodePathSnap));
+
 let pass = 0;
 let fail = 0;
 
