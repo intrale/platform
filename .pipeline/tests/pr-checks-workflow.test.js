@@ -80,6 +80,23 @@ test('e2e-qa se dispara solo por los cambios detectados, sin bypass por label', 
   assert.match(condition, /needs\.detect-changes\.outputs\.shared == 'true'/);
 });
 
+test('e2e-qa conserva el disparo ampliado de #6579 tras la resolucion del conflicto', () => {
+  // El merge de main sobre esta rama choco justo en este `if:` (#6362). El
+  // criterio de resolucion fue: gana la version de main, que es la mas amplia.
+  // Sin `!cancelled()` el job se saltea cuando detect-changes queda skipped
+  // (schedule / workflow_dispatch), que es el caso que #6579 vino a cubrir, y
+  // un `skipped` se leeria como aprobado. Este test impide que un futuro
+  // re-merge lo vuelva a angostar en silencio.
+  const workflowOn = workflow.on || workflow[true];
+  assert.ok(workflowOn.schedule, 'pr-checks.yml perdio el trigger schedule de #6579');
+  assert.ok('workflow_dispatch' in workflowOn, 'pr-checks.yml perdio el trigger workflow_dispatch de #6579');
+
+  const condition = workflow.jobs['e2e-qa'].if;
+  assert.match(condition, /!cancelled\(\)/);
+  assert.match(condition, /github\.event_name == 'schedule'/);
+  assert.match(condition, /github\.event_name == 'workflow_dispatch'/);
+});
+
 test('e2e-qa publica evidencia como artefacto sin escribir en la rama del PR', () => {
   const job = workflow.jobs['e2e-qa'];
   const collect = job.steps.find((step) => step.name === 'Collect QA evidence');
