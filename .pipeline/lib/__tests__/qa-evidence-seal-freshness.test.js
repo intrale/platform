@@ -318,6 +318,59 @@ test('la migracion es idempotente', () => {
   assert.deepStrictEqual(audit.map(e => e.issue).sort(), [6258, 6362]);
 });
 
+test('un aprobado sin sello posterior al corte NO recibe exencion en un boot posterior', () => {
+  // GUARDIÁN de CA-3 vs CA-4 (rev-1 de #6496).
+  //
+  // `migrarBacklogPreSellado` corre en CADA arranque del Pulpo. Si el barrido
+  // materializara exenciones en cada corrida, un veredicto `aprobado` sin
+  // `sello` que llegue a `procesado/` DESPUÉS del corte quedaría exento de
+  // caducidad para siempre y contra cualquier HEAD: el bypass exacto que CA-3
+  // prohíbe, y que anula el único fail-closed del carril con bypass de
+  // evidencia (`sealHeadOnly` → `head-invalido` ⇒ dropfile sin sello).
+  //
+  // Nótese que el test de CA-3 (`aprobado sin sello despues del corte caduca
+  // fail-closed`) NO cubre esto: pasa porque la migración no corre en ese
+  // estado aislado. El defecto sólo aparece con la migración en el medio.
+  const repo = crearRepo();
+  const estado = crearEstado();
+  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' });
+
+  // BOOT 1 — la ventana de migración se abre una única vez y cierra el corte.
+  const boot1 = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
+  assert.deepStrictEqual(boot1.exentos, [6258], 'el backlog pre-sellado sí se exime (CA-4)');
+  assert.strictEqual(boot1.ventana, 'abierta');
+
+  // Llega un veredicto NUEVO, posterior al corte, aprobado y sin sello.
+  escribirVeredicto(estado, 7777, { resultado: 'aprobado', evidencia: 'prosa' });
+  const antes = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 7777, cwd: repo.dir });
+  assert.strictEqual(antes.caduco, true, 'antes del boot el gate ya lo declara caduco');
+  assert.strictEqual(antes.motivo, 'sin-sello');
+
+  // BOOT 2 — el Pulpo arranca de nuevo y vuelve a correr la migración.
+  const boot2 = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-27T00:00:00Z' });
+  assert.deepStrictEqual(boot2.exentos, [], 'la ventana cerrada no exime a NADIE');
+  assert.strictEqual(boot2.ventana, 'cerrada');
+  assert.strictEqual(boot2.fueraDeVentana, 1, 'el aprobado post-corte queda contado, no exento');
+  assert.strictEqual(boot2.anunciar, false, 'el anuncio sigue siendo único');
+
+  assert.strictEqual(leerVeredicto(estado, 7777).sello_exencion, undefined,
+    'un aprobado posterior al corte NUNCA puede recibir sello_exencion');
+
+  const despues = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 7777, cwd: repo.dir });
+  assert.strictEqual(despues.caduco, true, 'CA-3 sigue en pie después de un boot posterior');
+  assert.strictEqual(despues.motivo, 'sin-sello');
+
+  // Y el exento legítimo del corte no se rompió: CA-4 sigue valiendo.
+  assert.strictEqual(
+    seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6258, cwd: repo.dir }).caduco, false,
+    'el backlog pre-sellado sigue exento');
+
+  // La auditoría no crece con exenciones fantasma.
+  const audit = fs.readFileSync(path.join(estado, 'logs', seal.MIGRACION_AUDIT_FILE), 'utf8')
+    .trim().split(/\r?\n/).map(JSON.parse);
+  assert.deepStrictEqual(audit.map(e => e.issue), [6258]);
+});
+
 test('un dropfile ya sellado no recibe exencion', () => {
   const estado = crearEstado();
   escribirVeredicto(estado, 6496, {

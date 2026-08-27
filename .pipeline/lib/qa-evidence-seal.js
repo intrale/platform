@@ -1488,18 +1488,40 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
  * La exención NO relaja ningún otro gate: `qa:passed`/`qa:skipped` y el GATE 2
  * de firma siguen intactos.
  *
+ * ONE-SHOT DE VERDAD — el corte es el flag en disco (rev-1 de #6496).
+ * -----------------------------------------------------------------------
+ * El Pulpo llama a esta rutina en CADA arranque (`mainLoop()`). Si el barrido
+ * materializara exenciones en cada corrida, cualquier veredicto `aprobado` sin
+ * `sello` que llegara a `procesado/` DESPUÉS del corte quedaría exento de
+ * caducidad para siempre y contra cualquier HEAD — o sea, el bypass exacto que
+ * CA-3 prohíbe y que desactiva el único fail-closed del diseño (el carril con
+ * bypass de evidencia cuando `sealHeadOnly` no puede derivar el HEAD).
+ *
+ * Por eso `MIGRACION_ANUNCIO_FLAG` no gobierna sólo el anuncio: gobierna la
+ * VENTANA DE MIGRACIÓN completa. Si el flag ya existe, la ventana está cerrada
+ * y esta función no materializa NADA — sólo enumera (lectura pura) lo ya exento
+ * para que el Pulpo siga pudiendo reportar. Y el flag se escribe ANTES de
+ * materializar: si no se puede persistir, no se exime a nadie (fail-closed —
+ * preferimos re-intentar la migración el próximo boot antes que dejar la
+ * ventana abierta en silencio).
+ *
  * La corre el PIPELINE (Pulpo), nunca un agente. Sólo sobre `procesado/*.qa` con
  * `resultado: aprobado` y sin `sello`. Idempotente: correrla N veces produce el
- * mismo estado y anuncia UNA sola vez (flag en disco).
+ * mismo estado y anuncia UNA sola vez.
  *
  * @param {{root?: string, pipelineDir?: string, ahora?: string}} params
- * @returns {{exentos: number[], yaExentos: number[], saltados: number, anunciar: boolean}}
+ * @returns {{exentos: number[], yaExentos: number[], saltados: number, anunciar: boolean, ventana: 'abierta'|'cerrada', fueraDeVentana: number}}
  */
 function migratePreSealBacklog({ root, pipelineDir, ahora } = {}) {
   const dir = resolvePipelineDir(root, pipelineDir);
-  const procesado = path.join(verificacionFasePath(dir), 'procesado');
+  const fase = verificacionFasePath(dir);
+  const procesado = path.join(fase, 'procesado');
   const ts = typeof ahora === 'string' && ahora ? ahora : new Date().toISOString();
-  const resultado = { exentos: [], yaExentos: [], saltados: 0, anunciar: false };
+  const flag = path.join(fase, MIGRACION_ANUNCIO_FLAG);
+  // `fueraDeVentana` = aprobados sin sello que llegaron DESPUÉS del corte. No
+  // se eximen (caducan por `sin-sello`); se cuentan aparte de `saltados` para
+  // que el Pulpo pueda dejar rastro en el log en vez de descartarlos en silencio.
+  const resultado = { exentos: [], yaExentos: [], saltados: 0, anunciar: false, ventana: 'cerrada', fueraDeVentana: 0 };
 
   // #3638 — `procesado/` no tiene sólo work-files: también viven ahí artifacts
   // auxiliares (`<issue>.<skill>.guidance.txt`, flags `.` de notificación). El
@@ -1509,6 +1531,8 @@ function migratePreSealBacklog({ root, pipelineDir, ahora } = {}) {
   let entries;
   try { entries = fs.readdirSync(procesado).filter(f => !isMarkerArtifact(f)); } catch { entries = []; }
 
+  /** Candidatos a exención: `<issue>.qa`, aprobado, sin sello. Lectura pura. */
+  const candidatos = [];
   for (const fname of entries) {
     if (fname.startsWith('.') || !fname.endsWith(`.${VERDICT_SKILL}`)) continue;
     const issueNum = normalizeIssueNumber(fname.slice(0, -(VERDICT_SKILL.length + 1)));
@@ -1521,7 +1545,31 @@ function migratePreSealBacklog({ root, pipelineDir, ahora } = {}) {
     // Un dropfile YA SELLADO no recibe exención: tiene contra qué chequearse.
     if (sealedHeadOf(data)) { resultado.saltados += 1; continue; }
     if (hasMigrationExemption(data)) { resultado.yaExentos.push(issueNum); continue; }
+    candidatos.push({ file, data, issueNum });
+  }
 
+  // VENTANA CERRADA — el corte ya pasó. Los candidatos que aparecieron después
+  // NO se eximen: caducan por `sin-sello` como manda CA-3. Se devuelven contados
+  // en `saltados` para que queden visibles en el log del Pulpo.
+  if (fs.existsSync(flag)) {
+    resultado.fueraDeVentana = candidatos.length;
+    resultado.saltados += candidatos.length;
+    return resultado;
+  }
+
+  // VENTANA ABIERTA — primera y única corrida. El flag se persiste ANTES de
+  // materializar: si el write falla, no se exime a nadie (fail-closed).
+  try {
+    fs.mkdirSync(path.dirname(flag), { recursive: true });
+    fs.writeFileSync(flag, JSON.stringify({ ts, estado: 'en-curso' }));
+  } catch {
+    resultado.saltados += candidatos.length;
+    return resultado;
+  }
+  resultado.ventana = 'abierta';
+  resultado.anunciar = true;
+
+  for (const { file, data, issueNum } of candidatos) {
     data.sello_exencion = { motivo: MIGRACION_MOTIVO, ts, derivado_por: MIGRACION_DERIVADO_POR };
     try { dumpYamlFile(file, data); } catch { resultado.saltados += 1; continue; }
     resultado.exentos.push(issueNum);
@@ -1530,17 +1578,11 @@ function migratePreSealBacklog({ root, pipelineDir, ahora } = {}) {
     });
   }
 
-  // Anuncio ÚNICO: lo decide el flag en disco, no la cantidad de exentos de esta
-  // corrida — si dependiera de la cantidad, cualquier dropfile viejo que
-  // apareciera después volvería a "anunciar" la migración.
-  const flag = path.join(verificacionFasePath(dir), MIGRACION_ANUNCIO_FLAG);
-  if (!fs.existsSync(flag)) {
-    resultado.anunciar = true;
-    try {
-      fs.mkdirSync(path.dirname(flag), { recursive: true });
-      fs.writeFileSync(flag, JSON.stringify({ ts, exentos: resultado.exentos, ya_exentos: resultado.yaExentos }));
-    } catch { resultado.anunciar = false; }
-  }
+  // Cierre del flag con la lista exacta. Best-effort: si falla, el flag de
+  // `en-curso` ya está en disco y la ventana queda igual de cerrada.
+  try {
+    fs.writeFileSync(flag, JSON.stringify({ ts, exentos: resultado.exentos, ya_exentos: resultado.yaExentos }));
+  } catch { /* la ventana ya está cerrada; sólo se pierde el detalle del flag */ }
   return resultado;
 }
 

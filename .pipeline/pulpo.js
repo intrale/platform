@@ -7969,6 +7969,12 @@ function drenarRequeueVerificacion(config) {
 function migrarBacklogPreSellado() {
   try {
     const res = qaEvidenceSeal.migratePreSealBacklog({ pipelineDir: PIPELINE });
+    // #6496 (rev-1) — la ventana de migración es ONE-SHOT: cerrada la primera
+    // corrida, un `aprobado` sin sello posterior al corte NO se exime (CA-3) y
+    // caduca. Se loguea para que ese descarte no ocurra en silencio.
+    if (res.fueraDeVentana > 0) {
+      log('caducidad', `🔒 Migración pre-sellado cerrada: ${res.fueraDeVentana} veredicto(s) aprobado(s) sin sello posteriores al corte NO reciben exención y caducan (CA-3, fail-closed).`);
+    }
     if (!res.anunciar) return res;
     const total = res.exentos.length;
     log('caducidad', `🔖 Migración pre-sellado: ${total} veredicto(s) aprobado(s) sin sello quedaron exentos de caducidad (${res.exentos.map(n => '#' + n).join(', ') || 'ninguno'}). Auditoría: logs/audit-seal-migracion.jsonl`);
