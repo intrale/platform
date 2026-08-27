@@ -372,7 +372,12 @@ test('R-4 · el allowlist ampliado acepta los productores reales de la cola', ()
         ['.pipeline/logs/media/qa-1881.mp4', true],
         ['docs/qa/reporte-1121-carrito-pedidos.pdf', true],
         ['.pipeline/desarrollo/verificacion/procesado/5244.qa', false],
-        ['.claude/secrets/credentials.json', false],
+        // Directorio oculto de estado del agente, fuera de todo dir de
+        // evidencia. El guard es puramente posicional -- no mira el nombre del
+        // archivo -- así que el fixture es un centinela neutro a propósito: no
+        // hace falta (ni conviene) incrustar la ruta de un store real de
+        // credenciales en la suite para cubrir exactamente la misma rama.
+        ['.claude/state/fixture-fuera-de-alcance.json', false],
     ];
     for (const [rel, esperado] of casos) {
         writeEvidence(rel, 'x');

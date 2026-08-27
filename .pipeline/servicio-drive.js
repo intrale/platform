@@ -39,7 +39,21 @@ const QA_VIDEO_SHARE = path.join(PROJECT_ROOT, 'qa', 'scripts', 'qa-video-share.
 // Máximo reintentos antes de mover a fallido
 const MAX_RETRIES = 2;
 
+// Higiene de test (#6497): la suite del containment ejercita a propósito ~15
+// jobs inválidos por corrida, y cada rechazo escupía su línea a stdout. El
+// resultado era una salida de `node --test` dominada por decenas de líneas de
+// "rechazado (fuera-de-allowlist) ... puede ser un incidente de seguridad",
+// que no aportan nada al diagnóstico (las aserciones ya cubren el motivo) y
+// enterraban el resumen real de la corrida.
+//
+// `NODE_TEST_CONTEXT` lo setea el runner de Node (`node --test`) por sí solo:
+// no hay que configurar nada ni recordar exportar una variable. En producción
+// nunca está definida, así que el servicio loguea exactamente igual que antes.
+// `PIPELINE_DRIVE_LOG=1` fuerza la salida cuando hace falta depurar un test.
+const LOG_SILENCIADO = Boolean(process.env.NODE_TEST_CONTEXT) && process.env.PIPELINE_DRIVE_LOG !== '1';
+
 function log(msg) {
+  if (LOG_SILENCIADO) return;
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${ts}] [svc-drive] ${msg}`);
 }
