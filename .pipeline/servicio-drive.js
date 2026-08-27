@@ -205,12 +205,19 @@ function extractTitle(data) {
 // la lista única — como hizo la primera versión de R-4 — habilitaba que un job
 // de upload apuntara a un reporte de seguridad y lo publicara en un link
 // abierto, contradiciendo SEC-1 ("un entregable sensible NUNCA se encola a Drive
-// público"). Medido: los 8 entregables `sensible: true` del índice son reportes
-// de security y los 8 viven bajo ese directorio.
+// público"). Medido sobre el índice REAL de producción
+// (`.pipeline/deliverables/*.json`): 475 entradas `sensible: true`, el 100% bajo
+// este directorio (329 del agente de security, 145 de qa, 1 de pipeline-dev).
 //
-// R-4 NO se rompe: los jobs REALES de la cola bajo `.pipeline/assets/docs` son
-// TODOS `mode: structural` + `source: qa-structural` (6/6 medidos), o sea la
-// ampliación sólo hacía falta para la vía que NO publica.
+// R-4 se preserva de verdad, y por eso el gate de `sensible` corre SÓLO en la
+// vía que publica (`resolveConfinedEvidence`, opción `publishes` — ver el bloque
+// SEC-1/R-4 ahí). Medición que lo obliga (#6497, rebote 2): los jobs
+// estructurales reales de la cola bajo `.pipeline/assets/docs` apuntan todos a
+// `qa-verificacion-<issue>.md`, y las 145 entradas `qa-verificacion` del índice
+// están marcadas `sensible: true` — NINGUNA en `false`. Correr el gate de
+// publicación en la vía que sólo sella mandaba el 100% de esos jobs a `fallido/`
+// (4 de 4 medidos), o sea vetaba exactamente los casos que motivaron R-4 y
+// convertía a `.pipeline/assets/docs` en configuración muerta.
 
 // Vía ESTRUCTURAL: sella (sha256 + bytes) y mueve a `listo/`. No sube nada.
 const SEAL_ALLOWED_DIRS = [
@@ -403,7 +410,10 @@ function rejectReasonText(reason, dirs) {
   return String(reason);
 }
 
-// SEC-1 (#4514) — DEFENSA EN PROFUNDIDAD (capa 2).
+// SEC-1 (#4514) — DEFENSA EN PROFUNDIDAD (capa 2) DE LA VÍA QUE PUBLICA.
+//
+// ⚠️ Este gate NO corre en la vía estructural (ver `publishes` en
+// `resolveConfinedEvidence`): sellar no es publicar, y ahí no protege nada.
 //
 // La capa 1 es el allowlist partido (`.pipeline/assets/docs` fuera del de
 // upload). Esta capa cubre el modelo de amenaza de RS-2 (#3927): el agente de QA
@@ -482,11 +492,31 @@ function describeArtifact(data) {
 // PROJECT_ROOT canonizado, con separador POSIX. Todos los derivados (la copia
 // `.sanitized/`, el registro de Drive) apuntan a ella.
 // SEC-1: `opts.dirs` selecciona el allowlist de la vía (seal vs upload) y
-// `opts.issue` habilita el chequeo de entregable sensible. El default es el
-// allowlist de UPLOAD — el restrictivo — para que una llamada sin opciones nunca
-// termine siendo más permisiva de lo que corresponde.
+// `opts.publishes` dice si esta vía termina en un link público. Ambos defaults
+// son los de UPLOAD — los restrictivos — para que una llamada sin opciones nunca
+// termine siendo más permisiva de lo que corresponde (fail-closed).
+//
+// SEC-1/R-4 (#6497, rebote 2) — POR QUÉ EL GATE DE `sensible` ES POR VÍA.
+//
+// `isSensitiveDeliverable` es el gate de PUBLICACIÓN: veta que un entregable
+// marcado `sensible: true` en el índice termine en un link
+// `{"type":"anyone","role":"reader"}`. En la vía estructural no hay link: se
+// calcula sha256 + bytes sobre los bytes locales y el descriptor se mueve a
+// `listo/`, que es un estado TERMINAL del filesystem (nadie consume `listo/`
+// para subir; el upload ocurre dentro de `processJob`, antes). Correrlo ahí no
+// impide ninguna publicación, y sí rompe el sellado: medido contra la cola y el
+// índice de producción, mandaba 4 de 4 jobs estructurales de
+// `.pipeline/assets/docs` a `fallido/` + `notifyDriveFailure` con el texto
+// "fallo al subir", para una vía que nunca iba a subir nada (contradiciendo el
+// propio CA-UX-1). Las 145 entradas `qa-verificacion-<issue>.md` del índice son
+// `sensible: true` y ninguna es `false`: el veto era del 100%, no un borde.
+//
+// Lo que sigue protegiendo a esos artefactos es la capa 1: `.pipeline/assets/docs`
+// NO está en `UPLOAD_ALLOWED_DIRS`, así que un job de upload que los apunte
+// muere en el containment de directorio, antes y con independencia del índice.
 function resolveConfinedEvidence(filePath, opts = {}) {
   const dirs = Array.isArray(opts.dirs) ? opts.dirs : UPLOAD_ALLOWED_DIRS;
+  const publishes = opts.publishes !== false;
   let resolved;
   try {
     resolved = resolveVideoPath(filePath);
@@ -506,10 +536,10 @@ function resolveConfinedEvidence(filePath, opts = {}) {
     return { ok: false, reason: REJECT_NO_PROMOVIDO };
   }
   const canonical = path.relative(realProjectRoot(), absolute).split(path.sep).join('/');
-  // SEC-1 capa 2 — ANTES de cualquier hasheo. CA-5 / R-7: un artefacto que no
-  // pasó el guard NUNCA obtiene sha256, así que el rechazo no puede convertirse
-  // en un oráculo de contenido.
-  if (isSensitiveDeliverable(canonical, opts.issue)) {
+  // SEC-1 capa 2 — SÓLO en la vía que publica, y ANTES de cualquier hasheo.
+  // CA-5 / R-7: un artefacto que no pasó el guard NUNCA obtiene sha256, así que
+  // el rechazo no puede convertirse en un oráculo de contenido.
+  if (publishes && isSensitiveDeliverable(canonical, opts.issue)) {
     return { ok: false, reason: REJECT_SENSIBLE_NO_PUBLICABLE };
   }
   return { ok: true, absolute, canonical };
@@ -895,9 +925,15 @@ async function processJob(file) {
     // SEC-1 (#4514) — el allowlist se elige POR VÍA, con el mismo discriminador
     // que rutea después. La estructural sólo sella y mueve a `listo/`, así que
     // acepta `.pipeline/assets/docs` (R-4); la de upload termina en un link
-    // público de Drive y NO lo acepta. El chequeo de entregable `sensible: true`
-    // corre en AMBAS: la cola de Drive es la cola de publicación, y SEC-1 dice
-    // que un entregable sensible nunca se encola.
+    // público de Drive y NO lo acepta.
+    //
+    // SEC-1/R-4 (#6497, rebote 2): `publishes` viaja junto con `dirs`. El gate de
+    // entregable `sensible: true` es el gate de PUBLICACIÓN y corre SÓLO en la
+    // vía de upload — la única que produce un link abierto. En la estructural
+    // vetaba el 100% de los jobs reales de `.pipeline/assets/docs` (4/4 medidos
+    // contra la cola de producción) sin impedir ninguna publicación: dejaba a
+    // R-4 escrito en el allowlist y muerto en los hechos, y encima avisaba
+    // "fallo al subir" por una vía que nunca sube nada.
     const structural = isStructuralEvidenceJob(data);
 
     // SEC-2 (#6497, rebote 1) — la vía de UPLOAD ya no alcanza el spool del bot
@@ -916,6 +952,7 @@ async function processJob(file) {
 
     const confined = resolveConfinedEvidence(evidenceRef, {
       dirs: structural ? SEAL_ALLOWED_DIRS : UPLOAD_ALLOWED_DIRS,
+      publishes: !structural,
       issue,
     });
     if (!confined.ok) {
@@ -924,6 +961,10 @@ async function processJob(file) {
       // estaba confinada desde #3927 y sigue yendo a FALLIDO.
       // SEC-1: el rechazo por entregable sensible NUNCA se relaja por rollout.
       // Un modo de observación no puede abrir el agujero que este commit cierra.
+      // Desde el rebote 2 esa cláusula es un cinturón: la vía estructural ya no
+      // evalúa `sensible` (`publishes: false`), así que este motivo sólo puede
+      // venir de la de upload — que no entra acá igual. Se deja escrita para que
+      // un cambio futuro del ruteo no la reabra por omisión (fail-closed).
       if (CONTAINMENT_MODE === 'log-only'
         && structural
         && confined.reason !== REJECT_SENSIBLE_NO_PUBLICABLE) {

@@ -519,29 +519,112 @@ test('SEC-1 · el rechazo por sensible NO emite el sha256 (CA-5 / R-7)', async (
     assert.ok(!/[0-9a-f]{64}/.test(msgs), 'el aviso no puede contener un digest hex');
 });
 
-test('SEC-1 · un job ESTRUCTURAL sobre un entregable sensible tampoco se encola', async () => {
-    seedSensibleDeliverable();
-    clearTelegramQueue();
-    // La cola de Drive ES la cola de publicación: SEC-1 dice que un entregable
-    // sensible nunca se encola, ni siquiera por la vía que "sólo sella".
-    const r = await runJob('qa-4513-structural.json', structuralJob(4513, SENSIBLE_REL));
-    assert.ok(r.fallido, 'el job estructural sobre un sensible debe ir a fallido/');
-    assert.equal(r.listo, null);
-    assert.equal(r.fallido.sha256, undefined, 'no se sella un artefacto sensible');
-});
+// =============================================================================
+// SEC-1 / R-4 (#6497, rebote 2) — EL GATE DE `sensible` ES DE LA VÍA QUE PUBLICA
+//
+// La primera versión corría `isSensitiveDeliverable()` en AMBAS vías. Medido
+// contra la cola y el índice de PRODUCCIÓN, eso mandaba a `fallido/` el 100% de
+// los jobs estructurales bajo `.pipeline/assets/docs` (4 de 4 que existen en
+// disco), que es exactamente el conjunto que R-4 obligaba a preservar:
+//
+//   qa-4899-structural.json / qa-4899-structural-rev2.json / qa-5461 / qa-5924
+//     → todos `.pipeline/assets/docs/<issue>/qa-verificacion-<issue>.md`
+//
+// y no era un borde: de las 145 entradas `qa-verificacion-<issue>.md` del índice,
+// las 145 están en `sensible: true` y NINGUNA en `false` (475 `sensible: true`
+// en total, el 100% bajo ese store). O sea `.pipeline/assets/docs` en
+// `SEAL_ALLOWED_DIRS` era configuración muerta, y encima el aviso decía "fallo
+// al subir" sobre una vía que no sube nada.
+//
+// Estos tests fijan la decisión (a) de la remediación: el gate queda SÓLO en la
+// vía de upload — la que produce el link `{"type":"anyone","role":"reader"}` —
+// y la estructural sella. Los fixtures usan el flag REAL del índice
+// (`sensible: true`), no uno fabricado que no existe en producción.
+// =============================================================================
 
-test('SEC-1 · un entregable NO sensible del mismo store sigue pasando (R-4 intacto)', async () => {
-    // Mismo directorio, misma forma de job: lo único que cambia es el flag del
-    // índice. Si este test se cae, el gate está bloqueando de más.
-    const rel = '.pipeline/assets/docs/4899/qa-verificacion-4899.md';
-    writeEvidence(rel, '# verificacion de QA\n');
+// Ruta y flag exactamente como aparecen en el índice de producción.
+const QA_VERIF_REL = '.pipeline/assets/docs/4899/qa-verificacion-4899.md';
+
+function seedQaVerificacionDeliverable() {
+    writeEvidence(QA_VERIF_REL, '# verificacion de QA\n');
     writeDeliverableIndex(4899, [
-        { issue: 4899, agente: 'qa', tipo: 'document', path: rel, sensible: false },
+        {
+            issue: 4899,
+            fase: 'verificacion',
+            agente: 'qa',
+            tipo: 'document',
+            path: QA_VERIF_REL,
+            sensible: true,
+        },
     ]);
-    const r = await runJob('qa-4899-structural.json', structuralJob(4899, rel));
-    assert.ok(r.listo, 'un entregable no sensible debe seguir sellándose y llegando a listo/');
+}
+
+test('SEC-1/R-4 · el caso REAL de producción (qa-verificacion sensible:true) SE SELLA', async () => {
+    // Este es el job que hoy vive en la cola: `mode: structural` +
+    // `source: qa-structural`, `file` bajo `.pipeline/assets/docs`, entrada de
+    // índice `sensible: true`. Si este test se cae, R-4 volvió a estar roto.
+    seedQaVerificacionDeliverable();
+    assert.equal(drive.isSensitiveDeliverable(QA_VERIF_REL, 4899), true,
+        'el fixture debe reflejar el índice real: qa-verificacion está en sensible: true');
+
+    const r = await runJob('qa-4899-structural.json', structuralJob(4899, QA_VERIF_REL));
+
+    assert.ok(r.listo, 'la vía estructural debe sellar y llegar a listo/ (R-4)');
+    assert.equal(r.fallido, null, 'sellar no es publicar: no puede ir a fallido/');
     assert.match(r.listo.sha256, drive.SHA256_RE);
     assert.ok(r.listo.bytes > 0);
+});
+
+test('SEC-1/R-4 · el MISMO artefacto sensible por la vía de UPLOAD sigue vetado', async () => {
+    // La contracara: lo que protege a este artefacto es el allowlist partido
+    // (capa 1) más el gate de índice (capa 2), ambos en la vía que publica.
+    seedQaVerificacionDeliverable();
+    clearTelegramQueue();
+    const job = {
+        action: 'upload',
+        file: QA_VERIF_REL,
+        issue: 4899,
+        mode: 'android',
+        source: 'qa-android',
+    };
+    assert.equal(drive.isStructuralEvidenceJob(job), false,
+        'el fixture debe ir por la vía de upload, si no el test no prueba nada');
+
+    const r = await runJob('qa-4899-upload.json', job);
+
+    assert.ok(r.fallido, 'un job de upload sobre el store de entregables va a fallido/');
+    assert.equal(r.listo, null, 'NUNCA puede llegar a listo/ (de ahí sale el upload)');
+    assert.equal(r.fallido.sha256, undefined, 'el descriptor rechazado no lleva sha256');
+});
+
+test('SEC-1/R-4 · el reporte de security sensible también se sella por la vía estructural', async () => {
+    // Mismo criterio para el otro poblador del store (329 entradas del agente de
+    // security): sellar no publica. `listo/` es estado TERMINAL — nadie lo
+    // consume para subir; el upload ocurre dentro de `processJob`, antes.
+    seedSensibleDeliverable();
+    const r = await runJob('qa-4513-structural.json', structuralJob(4513, SENSIBLE_REL));
+    assert.ok(r.listo, 'la vía que sólo sella no aplica el gate de publicación');
+    assert.match(r.listo.sha256, drive.SHA256_RE);
+    assert.equal(r.fallido, null);
+});
+
+test('SEC-1 · resolveConfinedEvidence sin `publishes` explícito SÍ chequea sensible (fail-closed)', () => {
+    // El default no puede ser el permisivo: un llamador nuevo que se olvide de
+    // declarar la vía tiene que heredar el guard fuerte, no saltearlo.
+    seedSensibleDeliverable();
+    const strict = drive.resolveConfinedEvidence(SENSIBLE_REL, {
+        dirs: drive.SEAL_ALLOWED_DIRS,
+        issue: 4513,
+    });
+    assert.equal(strict.ok, false, 'sin `publishes` el gate de publicación debe correr');
+    assert.equal(strict.reason, drive.REJECT_SENSIBLE_NO_PUBLICABLE);
+
+    const seal = drive.resolveConfinedEvidence(SENSIBLE_REL, {
+        dirs: drive.SEAL_ALLOWED_DIRS,
+        publishes: false,
+        issue: 4513,
+    });
+    assert.equal(seal.ok, true, 'con `publishes: false` (vía que sella) debe pasar');
 });
 
 test('SEC-1 · el gate detecta el sensible aunque el job declare OTRO issue', async () => {
@@ -560,6 +643,10 @@ test('SEC-1 · el modo log-only NO relaja el rechazo por entregable sensible', a
     // El rollout observable de R-6 existe para medir el impacto del containment
     // NUEVO sobre la cola real. Un modo de observación jamás puede reabrir el
     // agujero que este commit cierra.
+    //
+    // Rebote 2: el job del fixture va por la vía de UPLOAD (`mode: android`), que
+    // es donde vive el gate de publicación. La rama log-only sólo exime a la vía
+    // estructural, así que este job tiene que ir a FALLIDO igual.
     const previo = process.env.DRIVE_CONTAINMENT_MODE;
     process.env.DRIVE_CONTAINMENT_MODE = 'log-only';
     t.after(() => {
@@ -571,7 +658,16 @@ test('SEC-1 · el modo log-only NO relaja el rechazo por entregable sensible', a
     const fresh = require('../../servicio-drive');
 
     const name = 'qa-4513-logonly.json';
-    fs.writeFileSync(path.join(PENDIENTE, name), JSON.stringify(structuralJob(4513, SENSIBLE_REL)));
+    const uploadJob = {
+        action: 'upload',
+        file: SENSIBLE_REL,
+        issue: 4513,
+        mode: 'android',
+        source: 'qa-android',
+    };
+    assert.equal(fresh.isStructuralEvidenceJob(uploadJob), false,
+        'el fixture debe ir por la vía que publica, si no el test no prueba nada');
+    fs.writeFileSync(path.join(PENDIENTE, name), JSON.stringify(uploadJob));
     await fresh.processJob({ name, path: path.join(PENDIENTE, name) });
 
     assert.ok(fs.existsSync(path.join(FALLIDO, name)),
