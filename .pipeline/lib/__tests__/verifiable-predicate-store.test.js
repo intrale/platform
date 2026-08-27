@@ -17,12 +17,21 @@ const path = require('path');
 
 const store = require('../verifiable-predicate-store');
 
-let seq = 0;
+// Mismo motivo que en auto-recheck-counter.test.js: un path derivado de
+// `process.pid` + contador es determinista, y con PIDs reciclados dos corridas
+// distintas comparten estado. `mkdtempSync` + limpieza en `after`.
+const tmpDirs = [];
 function tmpPipelineDir() {
-  const d = path.join(os.tmpdir(), 'vps-6611-' + process.pid + '-' + (seq++));
-  fs.mkdirSync(d, { recursive: true });
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'vps-6611-'));
+  tmpDirs.push(d);
   return d;
 }
+
+test.after(() => {
+  for (const d of tmpDirs) {
+    try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+});
 
 const PREDICADO = {
   kind: 'pr_merge_blocked',
