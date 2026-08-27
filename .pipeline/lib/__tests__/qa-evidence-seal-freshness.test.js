@@ -24,6 +24,13 @@ const seal = require('../qa-evidence-seal');
 
 const HEAD_FALSO = 'a'.repeat(40);
 
+// #6496 (rebote security) — Los fixtures NO pueden usar numeros de issue reales
+// del repo. Un brazo del Pulpo que se escape del sandbox escribe contra el issue
+// que diga el fixture; con `6496` eso significaba spamear un issue publico vivo.
+// `999496` esta fuera del rango existente y sigue siendo valido para
+// `normalizeIssueNumber` (regex /^[1-9][0-9]{0,6}$/).
+const ISSUE_FIXTURE = 999496;
+
 function tmpDir(prefijo) {
   return fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), prefijo));
 }
@@ -95,7 +102,7 @@ test('un aprobado en modo structural queda con sello.head y artefactos vacios', 
   // tiene artefactos que hashear, pero SÍ tiene un commit contra el que se
   // aprobó. Eso es todo lo que la caducidad necesita.
   const data = {
-    issue: 6496, resultado: 'aprobado', modo: 'structural',
+    issue: ISSUE_FIXTURE, resultado: 'aprobado', modo: 'structural',
     evidencia: 'no aplica: QA_MODE=structural sin UI visible',
   };
   const res = seal.sealHeadOnly({ data, cwd: repo.dir, motivo: 'sin-evidencia', modo: 'qa-mode-structural' });
@@ -131,16 +138,16 @@ test('el sello head-only no toca un veredicto que no esta aprobado', () => {
 test('un veredicto sellado sobre otro HEAD caduca y re-encola', () => {
   const repo = crearRepo();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
+  escribirVeredicto(estado, ISSUE_FIXTURE, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
 
-  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6496, cwd: repo.dir });
+  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: ISSUE_FIXTURE, cwd: repo.dir });
   assert.strictEqual(chequeo.caduco, true);
   assert.strictEqual(chequeo.motivo, 'head-desincronizado');
   assert.strictEqual(chequeo.head_sellado, HEAD_FALSO);
   assert.strictEqual(chequeo.head_actual, repo.head);
 
   const repar = seal.requeueVerification({
-    pipelineDir: estado, issue: 6496, motivo: chequeo.motivo,
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: chequeo.motivo,
     headSellado: chequeo.head_sellado, headActual: chequeo.head_actual,
   });
   assert.strictEqual(repar.ok, true);
@@ -150,7 +157,7 @@ test('un veredicto sellado sobre otro HEAD caduca y re-encola', () => {
   const ordenes = ordenesRequeue(estado);
   assert.strictEqual(ordenes.length, 1, 'se encola exactamente una orden de re-encolado');
   assert.strictEqual(ordenes[0].tipo, seal.REQUEUE_TYPE);
-  assert.strictEqual(ordenes[0].issue, 6496);
+  assert.strictEqual(ordenes[0].issue, ISSUE_FIXTURE);
   assert.strictEqual(ordenes[0].head_sellado, HEAD_FALSO);
   assert.strictEqual(ordenes[0].head_actual, repo.head);
 });
@@ -158,8 +165,8 @@ test('un veredicto sellado sobre otro HEAD caduca y re-encola', () => {
 test('un veredicto sellado sobre el HEAD actual NO caduca', () => {
   const repo = crearRepo();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, { resultado: 'aprobado', sello: { version: 1, head: repo.head, artefactos: [] } });
-  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6496, cwd: repo.dir });
+  escribirVeredicto(estado, ISSUE_FIXTURE, { resultado: 'aprobado', sello: { version: 1, head: repo.head, artefactos: [] } });
+  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: ISSUE_FIXTURE, cwd: repo.dir });
   assert.strictEqual(chequeo.caduco, false);
   assert.strictEqual(chequeo.motivo, null);
   assert.strictEqual(chequeo.head_actual, repo.head);
@@ -171,8 +178,8 @@ test('HEAD no resoluble caduca fail-closed', () => {
   // señalaba en el snippet original (que además leía un `snap.head` inexistente).
   const noRepo = tmpDir('seal-norepo-');
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
-  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6496, cwd: noRepo });
+  escribirVeredicto(estado, ISSUE_FIXTURE, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
+  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: ISSUE_FIXTURE, cwd: noRepo });
   assert.strictEqual(chequeo.caduco, true);
   assert.strictEqual(chequeo.motivo, 'head-no-resoluble');
 });
@@ -180,10 +187,10 @@ test('HEAD no resoluble caduca fail-closed', () => {
 test('un veredicto caduco no aplica needs-human ni blocked:routing-manual', () => {
   const repo = crearRepo();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
+  escribirVeredicto(estado, ISSUE_FIXTURE, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
 
   seal.requeueVerification({
-    pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado',
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
     headSellado: HEAD_FALSO, headActual: repo.head,
   });
 
@@ -197,8 +204,8 @@ test('aprobado sin sello despues del corte caduca fail-closed', () => {
   // CA-3 — con CA-1 puesto, "sin sello" ya no significa "modo sin evidencia".
   const repo = crearRepo();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, { resultado: 'aprobado', evidencia: 'prosa sin artefactos' });
-  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6496, cwd: repo.dir });
+  escribirVeredicto(estado, ISSUE_FIXTURE, { resultado: 'aprobado', evidencia: 'prosa sin artefactos' });
+  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: ISSUE_FIXTURE, cwd: repo.dir });
   assert.strictEqual(chequeo.caduco, true);
   assert.strictEqual(chequeo.motivo, 'sin-sello');
 });
@@ -206,7 +213,7 @@ test('aprobado sin sello despues del corte caduca fail-closed', () => {
 test('sin veredicto archivado el chequeo caduca, no se cae a fresco', () => {
   const repo = crearRepo();
   const estado = crearEstado();
-  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6496, cwd: repo.dir });
+  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: ISSUE_FIXTURE, cwd: repo.dir });
   assert.strictEqual(chequeo.caduco, true);
   assert.strictEqual(chequeo.motivo, 'sin-veredicto');
 });
@@ -218,17 +225,17 @@ test('un veredicto archivado en historico se lee igual que uno en procesado', ()
   const estado = crearEstado();
   const dest = path.join(estado, 'historico', 'desarrollo', 'verificacion');
   fs.mkdirSync(dest, { recursive: true });
-  fs.writeFileSync(path.join(dest, '6496.qa'),
+  fs.writeFileSync(path.join(dest, '999496.qa'),
     yaml.dump({ resultado: 'aprobado', sello: { version: 1, head: repo.head, artefactos: [] } }));
-  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6496, cwd: repo.dir });
+  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: ISSUE_FIXTURE, cwd: repo.dir });
   assert.strictEqual(chequeo.caduco, false);
 });
 
 test('un veredicto ilegible caduca en vez de saltearse', () => {
   const repo = crearRepo();
   const estado = crearEstado();
-  fs.writeFileSync(path.join(estado, 'desarrollo', 'verificacion', 'procesado', '6496.qa'), '{[: yaml roto');
-  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6496, cwd: repo.dir });
+  fs.writeFileSync(path.join(estado, 'desarrollo', 'verificacion', 'procesado', '999496.qa'), '{[: yaml roto');
+  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: ISSUE_FIXTURE, cwd: repo.dir });
   assert.strictEqual(chequeo.caduco, true);
   assert.strictEqual(chequeo.motivo, 'veredicto-ilegible');
 });
@@ -236,13 +243,13 @@ test('un veredicto ilegible caduca en vez de saltearse', () => {
 test('un issue invalido caduca antes de construir ningun path (SEC-B)', () => {
   const repo = crearRepo();
   const estado = crearEstado();
-  for (const malo of ['../../etc/passwd', '0', '', '12345678', 'abc', null, undefined, '6496; rm -rf /']) {
+  for (const malo of ['../../etc/passwd', '0', '', '12345678', 'abc', null, undefined, '999496; rm -rf /']) {
     const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: malo, cwd: repo.dir });
     assert.strictEqual(chequeo.caduco, true, `issue ${JSON.stringify(malo)} debe caducar`);
     assert.strictEqual(chequeo.motivo, 'issue-invalido');
   }
-  assert.strictEqual(seal.normalizeIssueNumber('6496'), 6496);
-  assert.strictEqual(seal.normalizeIssueNumber(6496), 6496);
+  assert.strictEqual(seal.normalizeIssueNumber('999496'), ISSUE_FIXTURE);
+  assert.strictEqual(seal.normalizeIssueNumber(ISSUE_FIXTURE), ISSUE_FIXTURE);
 });
 
 // --- GUARDIÁN CA-5 ---------------------------------------------------------
@@ -255,24 +262,24 @@ test('el modo declarado por el agente no exime de caducidad', () => {
   // contra los labels de GitHub (`resolveQaEvidenceEnforcement`).
   const repo = crearRepo();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, {
+  escribirVeredicto(estado, ISSUE_FIXTURE, {
     resultado: 'aprobado',
     modo: 'structural',
     labels: ['qa:skipped'],
     qa_mode: 'structural',
     sello_exencion: 'me eximo solo',
   });
-  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6496, cwd: repo.dir });
+  const chequeo = seal.checkVerdictFreshness({ pipelineDir: estado, issue: ISSUE_FIXTURE, cwd: repo.dir });
   assert.strictEqual(chequeo.caduco, true);
   assert.strictEqual(chequeo.motivo, 'sin-sello');
 
   // Y una marca de exención con forma de objeto pero mal firmada tampoco exime.
-  escribirVeredicto(estado, 6496, {
+  escribirVeredicto(estado, ISSUE_FIXTURE, {
     resultado: 'aprobado', modo: 'structural',
     sello_exencion: { motivo: 'migracion-pre-sellado', derivado_por: 'qa' },
   });
   assert.strictEqual(
-    seal.checkVerdictFreshness({ pipelineDir: estado, issue: 6496, cwd: repo.dir }).motivo,
+    seal.checkVerdictFreshness({ pipelineDir: estado, issue: ISSUE_FIXTURE, cwd: repo.dir }).motivo,
     'sin-sello');
 });
 
@@ -373,12 +380,12 @@ test('un aprobado sin sello posterior al corte NO recibe exencion en un boot pos
 
 test('un dropfile ya sellado no recibe exencion', () => {
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, {
+  escribirVeredicto(estado, ISSUE_FIXTURE, {
     resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] },
   });
   const res = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
   assert.deepStrictEqual(res.exentos, []);
-  assert.strictEqual(leerVeredicto(estado, 6496).sello_exencion, undefined,
+  assert.strictEqual(leerVeredicto(estado, ISSUE_FIXTURE).sello_exencion, undefined,
     'un veredicto que YA tiene contra qué chequearse no se exime');
 });
 
@@ -410,11 +417,11 @@ test('el contador de caducidad no toca el budget de routing', () => {
   const repo = crearRepo();
   const estado = crearEstado();
   seal.requeueVerification({
-    pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado',
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
     headSellado: HEAD_FALSO, headActual: repo.head,
   });
 
-  const contador = JSON.parse(fs.readFileSync(seal.sealRetriesPath(estado, 6496), 'utf8'));
+  const contador = JSON.parse(fs.readFileSync(seal.sealRetriesPath(estado, ISSUE_FIXTURE), 'utf8'));
   assert.deepStrictEqual(Object.keys(contador).sort(), ['intentos', 'ts', 'ultimo_motivo']);
   assert.strictEqual(contador.intentos, 1);
 
@@ -434,7 +441,7 @@ test('dos caducidades consecutivas dejan intentos = 2', () => {
   const repo = crearRepo();
   const estado = crearEstado();
   const args = {
-    pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado',
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
     headSellado: HEAD_FALSO, headActual: repo.head,
   };
   const uno = seal.requeueVerification(args);
@@ -443,7 +450,7 @@ test('dos caducidades consecutivas dejan intentos = 2', () => {
   assert.strictEqual(uno.escalado, false);
   assert.strictEqual(dos.intentos, 2);
   assert.strictEqual(dos.escalado, false);
-  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: 6496 }).intentos, 2);
+  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 2);
 });
 
 test('un re-encolado exitoso no resetea el contador', () => {
@@ -451,28 +458,28 @@ test('un re-encolado exitoso no resetea el contador', () => {
   const repo = crearRepo();
   const estado = crearEstado();
   const args = {
-    pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado',
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
     headSellado: HEAD_FALSO, headActual: repo.head,
   };
   seal.requeueVerification(args);
-  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: 6496 }).intentos, 1);
+  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 1);
 
   // Una aprobación NUEVA de QA por sí sola tampoco lo resetea.
-  escribirVeredicto(estado, 6496, { resultado: 'aprobado', sello: { version: 1, head: repo.head, artefactos: [] } });
-  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: 6496 }).intentos, 1);
+  escribirVeredicto(estado, ISSUE_FIXTURE, { resultado: 'aprobado', sello: { version: 1, head: repo.head, artefactos: [] } });
+  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 1);
 
   seal.requeueVerification(args);
-  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: 6496 }).intentos, 2);
+  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 2);
 });
 
 test('el contador se borra recien cuando se integra un veredicto fresco', () => {
   const estado = crearEstado();
-  sembrarContador(estado, 6496, 1);
-  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: 6496 }).intentos, 1);
-  seal.clearSealRetries({ pipelineDir: estado, issue: 6496 });
-  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: 6496 }).intentos, 0);
+  sembrarContador(estado, ISSUE_FIXTURE, 1);
+  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 1);
+  seal.clearSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE });
+  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 0);
   // Idempotente: borrarlo dos veces no rompe.
-  assert.strictEqual(seal.clearSealRetries({ pipelineDir: estado, issue: 6496 }), true);
+  assert.strictEqual(seal.clearSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }), true);
 });
 
 test('escala a humano recien en la tercera caducidad', () => {
@@ -482,7 +489,7 @@ test('escala a humano recien en la tercera caducidad', () => {
   const repo = crearRepo();
   const estado = crearEstado();
   const args = {
-    pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado',
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
     headSellado: HEAD_FALSO, headActual: repo.head,
   };
   assert.strictEqual(seal.requeueVerification(args).escalado, false);
@@ -510,13 +517,13 @@ test('el contador corrupto se lee como agotado, no como cero', () => {
   const repo = crearRepo();
   for (const basura of ['{no json', '[]', 'null', '{"intentos":-1}', '{"intentos":"2"}', '{"intentos":1.5}', '{}']) {
     const estado = crearEstado();
-    fs.writeFileSync(seal.sealRetriesPath(estado, 6496), basura);
-    const leido = seal.readSealRetries({ pipelineDir: estado, issue: 6496 });
+    fs.writeFileSync(seal.sealRetriesPath(estado, ISSUE_FIXTURE), basura);
+    const leido = seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE });
     assert.strictEqual(leido.intentos, seal.MAX_SEAL_REQUEUES, `basura ${basura} debe leerse como agotado`);
     assert.strictEqual(leido.corrupto, true);
     // Y por lo tanto la reparación escala en vez de re-encolar.
     const repar = seal.requeueVerification({
-      pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado',
+      pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
       headSellado: HEAD_FALSO, headActual: repo.head,
     });
     assert.strictEqual(repar.escalado, true, `basura ${basura} debe escalar`);
@@ -538,14 +545,14 @@ test('un veredicto caduco no deja qa:passed vivo en el issue', () => {
   const repo = crearRepo();
   const estado = crearEstado();
   const repar = seal.requeueVerification({
-    pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado',
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
     headSellado: HEAD_FALSO, headActual: repo.head,
   });
   assert.strictEqual(repar.escalado, false);
 
   const gate = ordenesGithub(estado).filter(o => o.action === 'label' && o.label === 'qa:pending');
   assert.strictEqual(gate.length, 1, 'el gate se degrada a qa:pending EN EL MISMO ACTO del re-encolado');
-  assert.strictEqual(gate[0].issue, 6496);
+  assert.strictEqual(gate[0].issue, ISSUE_FIXTURE);
   assert.strictEqual(gate[0].target, undefined, 'la degradación es sobre el ISSUE, no sobre el PR');
   // `qa:pending` es gate label ⇒ el worker de servicio-github hace
   // remove-then-add con `gate-label-reconciler`, así que `qa:passed` no
@@ -562,7 +569,7 @@ test('un veredicto caduco no deja qa:passed vivo en el issue', () => {
     currentLabels: ['qa:passed'],
     verdict: reconciler.verdictForGateLabel(gate[0].label),
   });
-  const acciones = reconciler.buildLabelActions({ issue: 6496, reconciliation, target: 'issue' });
+  const acciones = reconciler.buildLabelActions({ issue: ISSUE_FIXTURE, reconciliation, target: 'issue' });
   assert.deepStrictEqual(
     acciones.map(a => `${a.action}:${a.label}`),
     ['remove-label:qa:passed', 'label:qa:pending'],
@@ -571,12 +578,12 @@ test('un veredicto caduco no deja qa:passed vivo en el issue', () => {
   assert.ok(!ordenesGithub(estado).some(o => o.label === 'qa:passed'));
 
   // Y mientras el re-encolado está ABIERTO, el gate no viaja al PR.
-  assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: 6496 }), true);
+  assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: ISSUE_FIXTURE }), true);
   const delivery = require('../../delivery.js');
   const prop = delivery.buildPrGatePropagation({
-    issue: 6496, prNumber: 99, branch: 'agent/6496-pipeline-dev',
+    issue: ISSUE_FIXTURE, prNumber: 99, branch: 'agent/999496-pipeline-dev',
     issueLabels: [{ name: 'qa:passed' }],
-    prHead: { number: 99, headRepositoryOwner: { login: 'intrale' }, headRefName: 'agent/6496-pipeline-dev' },
+    prHead: { number: 99, headRepositoryOwner: { login: 'intrale' }, headRefName: 'agent/999496-pipeline-dev' },
     repo: 'intrale/platform',
     pipelineDir: estado,
   });
@@ -587,12 +594,12 @@ test('un veredicto caduco no deja qa:passed vivo en el issue', () => {
 test('hasOpenRequeue es fail-closed y se cierra cuando el pulpo drena la orden', () => {
   const estado = crearEstado();
   // Sin cola todavía: no hay re-encolado abierto.
-  assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: 6496 }), false);
+  assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: ISSUE_FIXTURE }), false);
   // Issue inválido ⇒ fail-closed.
   assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: '../x' }), true);
 
-  seal.requeueVerification({ pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado' });
-  assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: 6496 }), true);
+  seal.requeueVerification({ pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado' });
+  assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: ISSUE_FIXTURE }), true);
   // Otro issue no queda bloqueado por el re-encolado ajeno.
   assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: 6497 }), false);
 
@@ -601,7 +608,7 @@ test('hasOpenRequeue es fail-closed y se cierra cuando el pulpo drena la orden',
   const done = path.join(estado, ...seal.REQUEUE_DONE_DIR);
   fs.mkdirSync(done, { recursive: true });
   for (const f of fs.readdirSync(pend)) fs.renameSync(path.join(pend, f), path.join(done, f));
-  assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: 6496 }), false);
+  assert.strictEqual(seal.hasOpenRequeue({ pipelineDir: estado, issue: ISSUE_FIXTURE }), false);
 });
 
 // --- GUARDIÁN CA-11 --------------------------------------------------------
@@ -613,14 +620,14 @@ test('un veredicto caduco NO sale de la reparacion en estado aprobado', () => {
   // + el drenado del Pulpo.
   const repo = crearRepo();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, {
+  escribirVeredicto(estado, ISSUE_FIXTURE, {
     resultado: 'aprobado',
     sello: { version: 1, head: HEAD_FALSO, artefactos: [] },
     evidencia_sha256: `sha256:${'b'.repeat(64)}`,
   });
 
   seal.requeueVerification({
-    pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado',
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
     headSellado: HEAD_FALSO, headActual: repo.head,
   });
 
@@ -635,9 +642,17 @@ test('un veredicto caduco NO sale de la reparacion en estado aprobado', () => {
   // 2) El drenado del Pulpo reemplaza el dropfile por un work-file de rebote
   //    SIN `resultado` y SIN `sello`.
   const pulpo = requirePulpo(estado);
-  pulpo.drenarRequeueVerificacion({ pipelines: { desarrollo: { skills_por_fase: { verificacion: ['qa'] } } } });
+  // El notificador se INYECTA: sin el stub, el drenador publicaría un comentario
+  // REAL en un issue publico de GitHub en cada corrida de la suite (#6496 rev-1).
+  const comentarios = [];
+  pulpo.drenarRequeueVerificacion(
+    { pipelines: { desarrollo: { skills_por_fase: { verificacion: ['qa'] } } } },
+    { comentar: (issue, body) => comentarios.push({ issue, body }) },
+  );
+  assert.strictEqual(comentarios.length, 1, 'el drenador avisa por el canal INYECTADO, no por el real');
+  assert.strictEqual(Number(comentarios[0].issue), ISSUE_FIXTURE);
 
-  const enPendiente = path.join(estado, 'desarrollo', 'verificacion', 'pendiente', '6496.qa');
+  const enPendiente = path.join(estado, 'desarrollo', 'verificacion', 'pendiente', '999496.qa');
   assert.ok(fs.existsSync(enPendiente), 'la verificación quedó re-encolada');
   const reencolado = yaml.load(fs.readFileSync(enPendiente, 'utf8'));
   assert.strictEqual(reencolado.resultado, undefined, 'NADA sale de la reparación en estado aprobado');
@@ -661,14 +676,14 @@ test('requeueVerification no escribe en procesado/ desde delivery', () => {
   // CA-13 / SEC-G — el Pulpo es el único dueño del lifecycle del work-file.
   const repo = crearRepo();
   const estado = crearEstado();
-  const file = escribirVeredicto(estado, 6496, {
+  const file = escribirVeredicto(estado, ISSUE_FIXTURE, {
     resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] },
   });
   const antes = fs.readFileSync(file, 'utf8');
   const listadoAntes = fs.readdirSync(path.join(estado, 'desarrollo', 'verificacion', 'procesado')).sort();
 
   seal.requeueVerification({
-    pipelineDir: estado, issue: 6496, motivo: 'head-desincronizado',
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
     headSellado: HEAD_FALSO, headActual: repo.head,
   });
 
@@ -697,7 +712,7 @@ function crearRepoConRemoto() {
   execFileSync('git', ['init', '--bare', '-q', '-b', 'main', remoto], { windowsHide: true });
   repo.git('remote', 'add', 'origin', remoto);
   repo.git('push', '-q', 'origin', 'main');
-  repo.git('checkout', '-q', '-b', 'agent/6496-pipeline-dev');
+  repo.git('checkout', '-q', '-b', 'agent/999496-pipeline-dev');
   fs.writeFileSync(path.join(repo.dir, 'b.txt'), 'dos');
   repo.git('add', '.');
   repo.git('commit', '-q', '-m', 'feat: cambio por delante de main');
@@ -712,11 +727,11 @@ function crearRepoConRemoto() {
 // `agent/6496-*` que sí existe en el remoto. Con un repo inexistente cada
 // llamada a `gh` falla de forma inocua y el flujo cae a sus fallbacks, que es
 // justamente el camino que este test quiere ejercitar (git, no GitHub).
-const REPO_INEXISTENTE = 'intrale/no-existe-test-6496';
+const REPO_INEXISTENTE = 'intrale/no-existe-test-999496';
 
 function correrDelivery(repo, estado, extraArgs = []) {
   return spawnSync(process.execPath, [
-    DELIVERY_JS, '--issue', '6496', '--description', 'gate de caducidad',
+    DELIVERY_JS, '--issue', '999496', '--description', 'gate de caducidad',
     '--repo', REPO_INEXISTENTE, ...extraArgs,
   ], {
     cwd: repo.dir, encoding: 'utf8', windowsHide: true, timeout: 60000,
@@ -735,7 +750,7 @@ test('el camino caduco emite el contrato veredicto_caduco en stdout', () => {
   // R3 en `delivery-status.js` (#5220/#5244).
   const repo = crearRepoConRemoto();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
+  escribirVeredicto(estado, ISSUE_FIXTURE, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
 
   const res = correrDelivery(repo, estado);
   assert.strictEqual(res.status, 0, `delivery debe salir con 0 (stderr: ${res.stderr})`);
@@ -743,7 +758,7 @@ test('el camino caduco emite el contrato veredicto_caduco en stdout', () => {
   const ultima = res.stdout.trim().split('\n').pop();
   const contrato = JSON.parse(ultima);
   assert.strictEqual(contrato.estado, 'veredicto_caduco');
-  assert.strictEqual(contrato.issue, 6496);
+  assert.strictEqual(contrato.issue, ISSUE_FIXTURE);
   assert.strictEqual(contrato.motivo, 'head-desincronizado');
   assert.strictEqual(contrato.escalado, false);
   assert.ok(/caduco/i.test(res.stderr), 'stderr trae un mensaje inequívoco para el humano');
@@ -753,13 +768,13 @@ test('delivery no pushea cuando el veredicto esta caduco', () => {
   // CA-15 — el chequeo corre ANTES del push, nunca después.
   const repo = crearRepoConRemoto();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6496, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
+  escribirVeredicto(estado, ISSUE_FIXTURE, { resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] } });
 
   const antes = refsDelRemoto(repo);
   const res = correrDelivery(repo, estado);
   assert.strictEqual(res.status, 0);
   assert.strictEqual(refsDelRemoto(repo), antes, 'el remoto no se movió');
-  assert.ok(!/refs\/heads\/agent\/6496/.test(refsDelRemoto(repo)), 'la rama del agente no llegó al remoto');
+  assert.ok(!/refs\/heads\/agent\/999496/.test(refsDelRemoto(repo)), 'la rama del agente no llegó al remoto');
 
   // Y dejó la reparación encolada, no un bloqueo permanente.
   assert.strictEqual(ordenesRequeue(estado).length, 1);
@@ -778,10 +793,10 @@ test('se pushea el sha verificado, no la rama simbolica', () => {
   const repo = crearRepoConRemoto();
   const estado = crearEstado();
   // Veredicto FRESCO: sellado contra el HEAD real.
-  escribirVeredicto(estado, 6496, { resultado: 'aprobado', sello: { version: 1, head: repo.head, artefactos: [] } });
+  escribirVeredicto(estado, ISSUE_FIXTURE, { resultado: 'aprobado', sello: { version: 1, head: repo.head, artefactos: [] } });
   const shaVerificado = repo.head;
 
-  sembrarContador(estado, 6496, 1); // había una caducidad previa en el historial
+  sembrarContador(estado, ISSUE_FIXTURE, 1); // había una caducidad previa en el historial
 
   const res = correrDelivery(repo, estado);
   // `gh pr create` falla contra el repo inexistente y delivery sale 1 DESPUÉS
@@ -791,15 +806,15 @@ test('se pushea el sha verificado, no la rama simbolica', () => {
     'un veredicto fresco no puede producir un re-encolado por caducidad');
 
   const refs = refsDelRemoto(repo);
-  const rama = refs.split('\n').find(l => l.includes('refs/heads/agent/6496'));
+  const rama = refs.split('\n').find(l => l.includes('refs/heads/agent/999496'));
   assert.ok(rama, `la rama tiene que haber llegado al remoto. refs:\n${refs}\nstderr:\n${res.stderr}`);
   assert.strictEqual(rama.split(' ')[1], shaVerificado, 'al remoto llegó exactamente el SHA verificado');
   // Y el push fue por SHA explícito, no por nombre de rama.
-  assert.ok(res.stderr.includes(`${shaVerificado} -> agent/6496-pipeline-dev`),
+  assert.ok(res.stderr.includes(`${shaVerificado} -> agent/999496-pipeline-dev`),
     `git reportó el push por SHA explícito. stderr:\n${res.stderr}`);
 
   // CA-8 — el contador se borra RECIÉN acá, cuando un veredicto fresco se integró.
-  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: 6496 }).intentos, 0);
+  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 0);
 });
 
 test('un --issue invalido frena la entrega antes de tocar el remoto (SEC-B)', () => {
@@ -815,6 +830,75 @@ test('un --issue invalido frena la entrega antes de tocar el remoto (SEC-B)', ()
   assert.strictEqual(res.status, 1);
   assert.ok(/--issue inválido/.test(res.stderr));
   assert.strictEqual(refsDelRemoto(repo), antes);
+});
+
+// --- GUARDIÁN SEC · la suite NO escribe en GitHub --------------------------
+//
+// #6496 rev-1 (security / OWASP A05+A08). `requirePulpo()` aísla el FILESYSTEM
+// vía `PIPELINE_DIR_OVERRIDE`, pero NO aislaba el canal de GitHub: el drenador
+// llamaba a `ghCommentOnIssue`, que hace `execSync` contra el `gh.exe` real con
+// la credencial del operador. Cada `npm run test:pipeline` publicaba un
+// comentario en un issue público (27 de ruido acumulados). Estos dos tests son
+// el guardián de la regresión y se verifican INTERCEPTANDO `child_process`
+// antes de cargar `pulpo.js`, que es la única forma de probar que no sale nada.
+
+test('ghCommentOnIssue corta en seco en entorno de prueba (defensa en profundidad)', () => {
+  const estado = crearEstado();
+  const pulpo = requirePulpo(estado);
+
+  // `requirePulpo` deja seteados PULPO_NO_AUTOSTART=1 y PIPELINE_DIR_OVERRIDE,
+  // así que el guard debe reportar bloqueo y `ghCommentOnIssue` no debe escribir.
+  assert.ok(pulpo.ghWritesBloqueadas(), 'con el entorno de prueba las escrituras están bloqueadas');
+  assert.doesNotThrow(() => pulpo.ghCommentOnIssue(ISSUE_FIXTURE, 'este texto NO puede llegar a GitHub'));
+});
+
+test('drenar la cola de caducidad no ejecuta NINGUNA escritura contra gh', () => {
+  // Prueba end-to-end en un proceso hijo: se parchea `child_process.execSync`
+  // ANTES del require de `pulpo.js` (que lo destructura en su línea 10) y se
+  // cuenta cuántas invocaciones a `gh` se intentaron. Debe ser CERO.
+  const repo = crearRepo();
+  const estado = crearEstado();
+  escribirVeredicto(estado, ISSUE_FIXTURE, {
+    resultado: 'aprobado',
+    sello: { version: 1, head: HEAD_FALSO, artefactos: [] },
+  });
+  seal.requeueVerification({
+    pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
+    headSellado: HEAD_FALSO, headActual: repo.head,
+  });
+
+  const helpers = require('./_test-helpers');
+  helpers.seedPipelineConfig(estado);
+  helpers.seedRealProductManifest(estado);
+
+  const script = String.raw`
+    const cp = require('child_process');
+    const llamadas = [];
+    const esGh = (linea) => /(^|[\/"'\s])gh(\.exe)?("|'|\s|$)/i.test(linea);
+    for (const fn of ['execSync', 'execFileSync', 'spawnSync']) {
+      const orig = cp[fn];
+      cp[fn] = function (cmd, ...rest) {
+        const linea = Array.isArray(rest[0]) ? [cmd, ...rest[0]].join(' ') : String(cmd);
+        if (esGh(linea)) { llamadas.push(linea); return ''; }
+        return orig.call(cp, cmd, ...rest);
+      };
+    }
+    const pulpo = require(${JSON.stringify(path.resolve(__dirname, '..', '..', 'pulpo.js'))});
+    pulpo.drenarRequeueVerificacion({ pipelines: { desarrollo: { skills_por_fase: { verificacion: ['qa'] } } } });
+    process.stdout.write('[[GH_CALLS=' + llamadas.length + ']]' + llamadas.join(' | '));
+  `;
+
+  const res = spawnSync(process.execPath, ['-e', script], {
+    encoding: 'utf8', windowsHide: true, timeout: 60000,
+    cwd: repo.dir,
+    env: { ...process.env, PIPELINE_DIR_OVERRIDE: estado, PULPO_NO_AUTOSTART: '1' },
+  });
+
+  assert.strictEqual(res.status, 0, `el hijo falló: ${res.stderr}`);
+  const m = /\[\[GH_CALLS=(\d+)\]\]/.exec(res.stdout || '');
+  assert.ok(m, `no se pudo leer el contador de llamadas. stdout: ${res.stdout}`);
+  assert.strictEqual(m[1], '0',
+    `la suite intentó ${m[1]} escritura(s) contra gh — el guard de #6496 no está cortando`);
 });
 
 // ---------------------------------------------------------------------------

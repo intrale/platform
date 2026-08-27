@@ -961,9 +961,43 @@ function ghThrottle() {
 }
 
 /**
+ * #6496 (rebote security · OWASP A05/A08) — GUARD DE ESCRITURA A GITHUB.
+ *
+ * Un `require('pulpo.js')` desde la suite de tests deja TODOS los brazos del
+ * Pulpo cargados y llamables. `PIPELINE_DIR_OVERRIDE` aísla el FILESYSTEM, pero
+ * el canal de GitHub seguía siendo el real: `gh.exe` con la credencial del
+ * operador. Cualquier test que tocara un brazo publicaba en el repo público
+ * (27 comentarios de ruido en #6496 lo demuestran empíricamente).
+ *
+ * Este guard es DEFENSA EN PROFUNDIDAD: corta las escrituras cuando el proceso
+ * está claramente en modo prueba. Devuelve el motivo (string) si hay que
+ * bloquear, o `null` si la escritura puede salir.
+ *
+ * Fail-closed: ante la duda NO se escribe. El escape hatch explícito
+ * `PIPELINE_ALLOW_GH_WRITES=1` existe para un operador que sepa lo que hace.
+ *
+ * En producción ninguna de estas variables está seteada: `PULPO_NO_AUTOSTART`
+ * y `NODE_TEST_CONTEXT` sólo viven en tests, y `PIPELINE_DIR_OVERRIDE` es no-op
+ * en producción (ver `commander-deterministic.js:withOperationalStateRoot`).
+ */
+function ghWritesBloqueadas() {
+  if (process.env.PIPELINE_ALLOW_GH_WRITES === '1') return null;
+  if (process.env.PULPO_NO_AUTOSTART === '1') return 'PULPO_NO_AUTOSTART=1';
+  if (process.env.PIPELINE_DIR_OVERRIDE) return 'PIPELINE_DIR_OVERRIDE seteado';
+  if (process.env.NODE_TEST_CONTEXT) return 'node --test';
+  return null;
+}
+
+/**
  * Agregar un comentario a un issue de GitHub (fire-and-forget).
  */
 function ghCommentOnIssue(issueNumber, body) {
+  // #6496 — no escribir NUNCA en GitHub desde un entorno de prueba.
+  const bloqueo = ghWritesBloqueadas();
+  if (bloqueo) {
+    log('github', `⛔ comentario a #${issueNumber} SUPRIMIDO (${bloqueo}) — entorno de prueba, no se escribe en GitHub`);
+    return;
+  }
   try {
     // #2333: sanitizar write-time — NUNCA publicar un comentario público
     // con secretos crudos (tokens, JWT, PEM, headers con Authorization).
@@ -7847,7 +7881,11 @@ function reboteVerificacionABuild(issue, pipelineName, preflightResult) {
 // Idempotente y best-effort: si la fase ya está en vuelo para ese issue, la
 // orden se consume sin duplicar trabajo. Una falla acá jamás tumba el loop.
 // ---------------------------------------------------------------------------
-function drenarRequeueVerificacion(config) {
+// El notificador se INYECTA (#6496, rebote security): la firma expone
+// `comentar` para que los tests pasen un stub que sólo acumule llamadas en vez
+// de publicar en el issue público real. El default sigue siendo el canal real,
+// así que producción no cambia de comportamiento.
+function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {}) {
   const pendDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_QUEUE_DIR);
   const doneDir = path.join(PIPELINE, ...qaEvidenceSeal.REQUEUE_DONE_DIR);
   let ordenes;
@@ -7931,7 +7969,7 @@ function drenarRequeueVerificacion(config) {
 
       if (encoladas > 0) {
         log('caducidad', `♻️ #${issue}: veredicto de QA caduco (${qaEvidenceSeal.sanitizeFreshnessReason(orden.motivo)}) → verificación re-encolada (${encoladas} skill(s), intento ${intentoDeclarado}/${qaEvidenceSeal.MAX_SEAL_REQUEUES}). Sello ${headSellado.slice(0, 8)} ≠ HEAD ${headActual.slice(0, 8)}.`);
-        ghCommentOnIssue(issue, `♻️ La entrega se frenó sola: el veredicto de QA se había emitido contra el commit \`${headSellado.slice(0, 8)}\` y la rama ya está en \`${headActual.slice(0, 8)}\`. El pipeline volvió a pedir la verificación del código actual en vez de integrar algo que nadie revisó. No hace falta que hagas nada.`);
+        comentar(issue, `♻️ La entrega se frenó sola: el veredicto de QA se había emitido contra el commit \`${headSellado.slice(0, 8)}\` y la rama ya está en \`${headActual.slice(0, 8)}\`. El pipeline volvió a pedir la verificación del código actual en vez de integrar algo que nadie revisó. No hace falta que hagas nada.`);
       } else {
         log('caducidad', `♻️ #${issue}: veredicto de QA caduco, pero verificación ya en vuelo — orden consumida sin duplicar`);
       }
@@ -9012,6 +9050,12 @@ function autoClassifyIssue(issueNum) {
 
     // Asignar label en GitHub
     try {
+      // #6496 — guard de escritura: nunca etiquetar issues reales desde tests.
+      const bloqueoLabel = ghWritesBloqueadas();
+      if (bloqueoLabel) {
+        log('auto-classify', `⛔ label "${winner.label}" en #${issueNum} SUPRIMIDO (${bloqueoLabel}) — entorno de prueba`);
+        return winner.label;
+      }
       ghThrottle();
       execSync(
         `"${GH_BIN}" issue edit ${issueNum} --add-label "${winner.label}"`,
@@ -18374,6 +18418,12 @@ function dedupDependencyIssue(issue, allIssuesInBatch) {
 }
 
 function closeDuplicateIssue(dupNum, existingNum, dupTitle) {
+  // #6496 — guard de escritura: nunca cerrar issues reales desde tests.
+  const bloqueoCierre = ghWritesBloqueadas();
+  if (bloqueoCierre) {
+    log('intake', `⛔ cierre de #${dupNum} SUPRIMIDO (${bloqueoCierre}) — entorno de prueba`);
+    return;
+  }
   try {
     const body = `Duplicado de #${existingNum}. Cerrado automáticamente por el pipeline de definición (dedup por contenido).`;
     ghThrottle();
@@ -23676,6 +23726,10 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #6496 — reparación por caducidad del sello de QA (drenador + migración).
     drenarRequeueVerificacion,
     migrarBacklogPreSellado,
+    // #6496 (rebote security) — guard de escritura a GitHub, expuesto para que
+    // la suite pueda verificar el corte en seco sin postear nada real.
+    ghWritesBloqueadas,
+    ghCommentOnIssue,
     determinarDevSkill,
     getDevSkillPartitions,
     isDeclaredStackDevSkill,
