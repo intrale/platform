@@ -55,6 +55,12 @@ const TRIGGERS = Object.freeze({
     // Agregado por el rebote del review de #5337: `BLOCKED` con un check
     // requerido en rojo NO es una review pendiente. Ver `classifyChecks`.
     CHECKS_FAILING: 'checks-failing',
+    // #6612 UX-1/UX-2 — check de la allowlist de `security-blocking-checks.js`
+    // en rojo. Trigger PROPIO y no `CHECKS_FAILING` porque la accion que se le
+    // pide al operador es otra (mirar el hallazgo del escáner, no devolver la
+    // feature a desarrollo) y porque el ruleset NO lo exige: fusionarlo con
+    // `checks-failing` es la bolsa unica que UX-1 prohibe.
+    SECURITY_CHECK_RED: 'security-check-red',
 });
 
 // -----------------------------------------------------------------------------
@@ -280,6 +286,152 @@ function describeInformationalChecks(checks) {
 }
 
 // -----------------------------------------------------------------------------
+// Rotulado de checks para el mensaje al operador (UX-1 / UX-2 de #6612)
+//
+// EL DEFECTO QUE ARREGLA. `classifyChecks` parte el rollup en dos: los que
+// pesan para el veredicto (`failing`/`pending`) y el resto (`informational`).
+// Esa particion es correcta PARA DECIDIR, pero es mentira PARA ROTULAR: hay una
+// tercera clase de check que el ruleset de `main` no exige y que el pipeline
+// igual NO deja mergear — la allowlist de `security-blocking-checks.js`. Hoy
+// `runtime-state-guard` (el secret scan del diff del PR, unico contexto de esa
+// allowlist) cae en `informational`, y el mensaje al operador le dice que "no
+// frena el merge" y que "aprobarlo destraba el issue", mientras el gate (5c) de
+// `delivery.js` lo bloquea sin reintento. Es el fail-open de #6602 corrido de
+// la maquina al humano: el operador aprueba, el merge no avanza, y nada en el
+// texto explica por que.
+//
+// TRES ROTULOS, NUNCA FUSIONADOS (UX-1):
+//   - `requerido`                -> lo exige la proteccion de la rama base.
+//   - `bloqueante por seguridad` -> no lo exige el ruleset, pero el pipeline no
+//                                   mergea con el en rojo (allowlist de codigo).
+//   - `informativo`              -> ni lo uno ni lo otro: constancia, no decision.
+//
+// Y si la lista de requeridos NO se pudo leer, el mensaje lo dice y no usa el
+// adjetivo "requerido" para nada (UX-2): con el filtro apagado `checks.failing`
+// trae TODO el rollup, asi que llamar "requeridos" a esos nombres es afirmar un
+// hecho no verificado. La rama (c) ya lo resolvia; la (a) se lo pegaba
+// incondicionalmente.
+// -----------------------------------------------------------------------------
+
+/**
+ * ¿Este contexto esta en la allowlist de seguridad del pipeline?
+ *
+ * REQUIRE DIFERIDO A PROPOSITO. `security-blocking-checks.js` importa los enums
+ * de ESTE modulo en su top-level (CA-23 de #6431: los enums se importan, nunca
+ * se re-declaran, porque dos copias divergen). Un `require` top-level en esta
+ * direccion cerraria el ciclo y dejaria a uno de los dos leyendo un `exports` a
+ * medio poblar. Diferido dentro de la funcion no hay ciclo: para cuando alguien
+ * clasifica un check, los dos modulos ya estan cargados y cacheados.
+ *
+ * FAIL-SAFE, NO FAIL-OPEN: si el require fallara, `false` degrada el ROTULO (el
+ * check se lee como informativo), nunca el GATE — quien bloquea el merge es
+ * `delivery.js` con `classifySecurityBlockingChecks`, no este texto.
+ */
+function defaultIsSecurityBlockingContext(context) {
+    try {
+        // eslint-disable-next-line global-require
+        return require('./security-blocking-checks').isSecurityBlockingContext(context);
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * Reparte los nombres que devolvio `classifyChecks` en los tres rotulos de UX-1.
+ *
+ * @param {object} checks — salida de `classifyChecks`.
+ * @param {function} [esSeguridad] — predicado de allowlist (inyectable en tests).
+ * @returns {{required:{failing:string[],pending:string[]},
+ *            securityBlocking:{failing:string[],pending:string[]},
+ *            informational:{failing:string[],pending:string[]}}}
+ *
+ * PRECEDENCIA: la allowlist gana sobre "requerido". Un contexto que fuera las
+ * dos cosas bloquea igual por los dos lados, asi que el rotulo se elige por cual
+ * RECOMENDACION le sirve al operador: mirar el hallazgo del escaner es una
+ * accion concreta; "devolver a desarrollo" no lo es para un secreto filtrado.
+ *
+ * Con el filtro de requeridos APAGADO, `checks.failing`/`pending` traen todo el
+ * rollup. El reparto sigue siendo valido: la allowlist es una constante de
+ * codigo y no depende de haber podido leer el ruleset. Lo que cambia es el
+ * adjetivo del grupo `required`, que en ese caso no se escribe.
+ */
+function groupChecksByLabel(checks, esSeguridad) {
+    const pred = typeof esSeguridad === 'function' ? esSeguridad : defaultIsSecurityBlockingContext;
+    const c = checks && typeof checks === 'object' ? checks : {};
+    const info = (c.informational && typeof c.informational === 'object') ? c.informational : {};
+    const out = {
+        required: { failing: [], pending: [] },
+        securityBlocking: { failing: [], pending: [] },
+        informational: { failing: [], pending: [] },
+    };
+    const lista = (v) => (Array.isArray(v) ? v : []);
+    for (const clase of ['failing', 'pending']) {
+        for (const nombre of lista(c[clase])) {
+            (pred(nombre) ? out.securityBlocking : out.required)[clase].push(nombre);
+        }
+        for (const nombre of lista(info[clase])) {
+            (pred(nombre) ? out.securityBlocking : out.informational)[clase].push(nombre);
+        }
+    }
+    return out;
+}
+
+/** Recorte compartido de listas largas: 5 nombres + "y N más" (UX-4). */
+function recortarLista(arr) {
+    const l = Array.isArray(arr) ? arr : [];
+    const head = l.slice(0, 5).join(', ');
+    return l.length > 5 ? `${head} y ${l.length - 5} más` : head;
+}
+
+/**
+ * Adjetivo "requerido"/"requeridos" — SOLO si la lista de requeridos se leyo.
+ *
+ * UX-2. Sin filtro aplicado, `checks.failing` es el rollup entero y ninguno de
+ * esos nombres esta cotejado contra la proteccion de rama. Pegarle el adjetivo
+ * igual manda al operador a investigar el lugar equivocado: es exactamente lo
+ * que paso con #6602, donde el texto decia "1 check requerido en rojo:
+ * runtime-state-guard" y ese check no es requerido por el ruleset.
+ */
+function adjetivoRequerido(cantidad, filtroAplicado) {
+    if (filtroAplicado !== true) return '';
+    return cantidad === 1 ? ' requerido' : ' requeridos';
+}
+
+/**
+ * Aclaracion explicita para cuando NO se pudo leer que exige la rama base.
+ * Cadena vacia si el filtro se aplico.
+ *
+ * UX-1 exige que en ese caso el mensaje lo DIGA y no use ninguno de los tres
+ * rotulos por su cuenta. Mismo encuadre que la rama (c) ya usaba para el mismo
+ * hecho, en vez de inventar un texto nuevo.
+ */
+function describeUnreadableRequiredList(checks) {
+    if (!checks || typeof checks !== 'object') return '';
+    if (checks.requiredFilterApplied === true) return '';
+    const causa = checks.requiredFilterCause ? ` (${checks.requiredFilterCause})` : '';
+    return `\nNo pude leer qué checks exige la protección de main${causa}, así que peso todos los del PR: no puedo afirmar cuáles son requeridos.`;
+}
+
+/**
+ * Frase para los checks de la allowlist de seguridad. Cadena vacia si no hay.
+ *
+ * Linea propia, igual que `describeInformationalChecks` y por el mismo motivo:
+ * mezclarlos en la misma oracion es lo que hace que el operador lea un escaner
+ * con poder de veto como si fuera decorativo. Y dice explicitamente que aprobar
+ * el PR no lo destraba, porque esa es justo la accion equivocada que el texto
+ * viejo sugeria.
+ */
+function describeSecurityBlockingChecks(grupos) {
+    const sec = (grupos && grupos.securityBlocking) || null;
+    if (!sec) return '';
+    const partes = [];
+    if (Array.isArray(sec.failing) && sec.failing.length) partes.push(`en rojo: ${recortarLista(sec.failing)}`);
+    if (Array.isArray(sec.pending) && sec.pending.length) partes.push(`todavía corriendo: ${recortarLista(sec.pending)}`);
+    if (!partes.length) return '';
+    return `\nChecks bloqueantes por seguridad — la protección de rama no los exige, pero el pipeline NO mergea con uno en rojo, así que aprobar el PR no lo destraba — ${partes.join('; ')}.`;
+}
+
+// -----------------------------------------------------------------------------
 // 1. Hallazgos de seguridad sin resolver (CA-3)
 // -----------------------------------------------------------------------------
 
@@ -371,6 +523,11 @@ function detectMergeStateBlock({
     // Ausente o con `requiredContextsRead !== true` => pesa todo el rollup,
     // igual que antes de #6599 (fail-closed, CA-5).
     requiredContexts = null, requiredContextsRead = null,
+    // #6612 UX-1 — predicado de la allowlist de seguridad, INYECTABLE.
+    // Se pasa por el objeto de entrada (y no con un `require` top-level) porque
+    // `security-blocking-checks.js` ya importa este modulo: el require en la
+    // otra direccion cerraria el ciclo. Ausente => se usa el default diferido.
+    isSecurityBlockingContext = null,
 } = {}) {
     const estado = String(mergeStateStatus || '').toUpperCase();
     const merg = String(mergeable || '').toUpperCase();
@@ -396,10 +553,25 @@ function detectMergeStateBlock({
         // requerido en rojo/pendiente". Antes de hablarle al operador de review,
         // hay que LEER los checks — no suponerlos.
         const checks = classifyChecks(statusCheckRollup, { requiredContexts, requiredContextsRead });
+        // #6612 UX-1 — tres rotulos, nunca fusionados. `classifyChecks` decide
+        // bien pero rotula mal: mete la allowlist de seguridad en la misma bolsa
+        // que un check decorativo. El reparto se hace aca, sobre su salida, para
+        // no tocar el clasificador (sus suites y el camino de `delivery.js`
+        // dependen de que devuelva byte por byte lo mismo).
+        const grupos = groupChecksByLabel(checks, isSecurityBlockingContext);
+        const filtroOk = checks.requiredFilterApplied === true;
         // Los no requeridos NUNCA son la causa del bloqueo, pero se nombran:
         // sin esto, un OWASP en rojo desaparece del reporte al operador.
-        const infoLinea = describeInformationalChecks(checks);
-        const infoDetalle = { ...checks.informational };
+        const infoLinea = describeInformationalChecks({ informational: grupos.informational });
+        // Linea propia para la allowlist: NO frena por ruleset, SI frena por
+        // pipeline. Decirlo junto con los informativos es la contradiccion que
+        // el rebote de la review marco.
+        const secLinea = describeSecurityBlockingChecks(grupos);
+        // UX-1 — sin lista de requeridos legible no se usa ninguno de los tres
+        // rotulos por cuenta propia: se dice que no se pudo leer.
+        const sinLista = describeUnreadableRequiredList(checks);
+        const infoDetalle = { ...grupos.informational };
+        const secDetalle = { ...grupos.securityBlocking };
         // CA-5 - la desactivacion del filtro nunca es muda.
         const filtroRequeridos = {
             applied: checks.requiredFilterApplied === true,
@@ -410,16 +582,43 @@ function detectMergeStateBlock({
         // Invitarlo a aprobar sería empujar un merge roto a `main`. Se notifica
         // igual (el silencio es el bug que #5337 arregla) pero con el encuadre
         // correcto: lo que corresponde es volver a desarrollo, no firmar.
-        if (checks.state === 'failing') {
-            const lista = checks.failing.slice(0, 5).join(', ');
-            const extra = checks.failing.length > 5 ? ` y ${checks.failing.length - 5} más` : '';
+        if (grupos.required.failing.length) {
+            const n = grupos.required.failing.length;
+            // UX-2 — el adjetivo "requerido(s)" SOLO con el filtro aplicado.
+            const adj = adjetivoRequerido(n, filtroOk);
             return {
                 trigger: TRIGGERS.CHECKS_FAILING,
-                reason: `PR #${prNumber} está BLOCKED con ${checks.failing.length} check(s) requerido(s) en rojo: ${lista}${extra}. El ruleset de main no lo deja mergear hasta que pasen — no es una review pendiente.${infoLinea}`,
+                reason: `PR #${prNumber} está BLOCKED con ${n} check(s)${adj} en rojo: ${recortarLista(grupos.required.failing)}. El ruleset de main no lo deja mergear hasta que pasen — no es una review pendiente.${sinLista}${secLinea}${infoLinea}`,
                 question: `El PR #${prNumber} tiene checks en rojo. ¿Lo devolvemos a desarrollo para que los arregle, o los mirás vos?`,
                 recommendation: 'NO aprobar el PR para destrabarlo: la firma no arregla un check en rojo y el ruleset lo va a seguir frenando. Lo que corresponde es devolver el issue a desarrollo.',
                 checks: { state: checks.state, failing: checks.failing },
                 informational: infoDetalle,
+                securityBlocking: secDetalle,
+                requiredFilter: filtroRequeridos,
+            };
+        }
+
+        // (a2) #6612 UX-1/UX-2 — Ningun requerido en rojo, pero SI un check de la
+        // allowlist de seguridad. Antes caia en la rama (c) y el operador leia
+        // "sus checks están en verde: si el diff te cierra, aprobarlo destraba el
+        // issue" — mientras el gate (5c) de `delivery.js` bloquea el merge sin
+        // reintento. Dos afirmaciones opuestas sobre el mismo check.
+        //
+        // Rotulo, `question` y `recommendation` PROPIOS (UX-2): la recomendacion
+        // de la rama (a) —devolver el issue a desarrollo— es correcta para un
+        // test requerido en rojo y equivocada para un hallazgo de escaner, donde
+        // lo que corresponde es mirar el hallazgo, no rehacer la feature.
+        if (grupos.securityBlocking.failing.length) {
+            const n = grupos.securityBlocking.failing.length;
+            const lista = recortarLista(grupos.securityBlocking.failing);
+            return {
+                trigger: TRIGGERS.SECURITY_CHECK_RED,
+                reason: `PR #${prNumber} está BLOCKED con ${n} check(s) bloqueante(s) por seguridad en rojo: ${lista}. La protección de rama no los exige, pero el pipeline no mergea con un escáner de seguridad en rojo, así que aprobar el PR NO destraba el merge.${sinLista}${infoLinea}`,
+                question: `El PR #${prNumber} tiene un escáner de seguridad en rojo (${lista}). ¿Miramos el hallazgo, o confirmás que es un falso positivo?`,
+                recommendation: 'Mirar primero el hallazgo del escáner, no el código de la feature: casi siempre es un secreto o un archivo de estado que se coló en el diff. Aprobar el PR no lo destraba — el pipeline bloquea el merge igual hasta que el check pase.',
+                checks: { state: checks.state, failing: checks.failing },
+                informational: infoDetalle,
+                securityBlocking: secDetalle,
                 requiredFilter: filtroRequeridos,
             };
         }
@@ -434,6 +633,7 @@ function detectMergeStateBlock({
                 mergeStateStatus: estado,
                 checks: { state: checks.state, pending: checks.pending },
                 informational: infoDetalle,
+                securityBlocking: secDetalle,
                 requiredFilter: filtroRequeridos,
             };
         }
@@ -455,11 +655,12 @@ function detectMergeStateBlock({
             : 'El PR no tiene conflictos de merge, pero no pude leer el estado de sus checks: miralos en GitHub antes de aprobar.';
         return {
             trigger: TRIGGERS.CODEOWNERS_REVIEW,
-            reason: `PR #${prNumber} está mergeable pero BLOCKED: el ruleset de main exige una aprobación humana${porReview ? ` (reviewDecision=${review || 'sin review'})` : ''}. CODEOWNERS cubre las rutas tocadas.${infoLinea}`,
+            reason: `PR #${prNumber} está mergeable pero BLOCKED: el ruleset de main exige una aprobación humana${porReview ? ` (reviewDecision=${review || 'sin review'})` : ''}. CODEOWNERS cubre las rutas tocadas.${secLinea}${infoLinea}`,
             question: `¿Podés revisar y aprobar el PR #${prNumber}? Sin tu firma el merge no avanza y el pipeline queda esperando.`,
             recommendation,
             checks: { state: checks.state },
             informational: infoDetalle,
+            securityBlocking: secDetalle,
             requiredFilter: filtroRequeridos,
         };
     }
@@ -635,6 +836,11 @@ function detectPrHumanBlock(prState = {}, opts = {}) {
         // rollup: el default es el comportamiento previo, nunca un relajo.
         requiredContexts: opts.requiredContexts,
         requiredContextsRead: opts.requiredContextsRead,
+        // #6612 UX-1 — override del predicado de allowlist. Opcional: ausente,
+        // se usa el default diferido de `security-blocking-checks.js`. Existe
+        // para que las suites puedan inyectar una allowlist de prueba sin
+        // acoplarse a la lista real (que es una constante congelada a proposito).
+        isSecurityBlockingContext: opts.isSecurityBlockingContext,
     });
 }
 
@@ -659,6 +865,11 @@ module.exports = {
     checkMatchesContext,
     normalizeRequiredContexts,
     describeInformationalChecks,
+    // #6612 UX-1/UX-2 — rotulado de checks para el mensaje al operador.
+    groupChecksByLabel,
+    describeSecurityBlockingChecks,
+    describeUnreadableRequiredList,
+    adjetivoRequerido,
     normalizeCause,
     detectSecurityFindingBlock,
     detectMergeStateBlock,
