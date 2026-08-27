@@ -18,12 +18,23 @@ const path = require('path');
 
 const counter = require('../auto-recheck-counter');
 
-let seq = 0;
+// El path NO puede derivarse de `process.pid`: el SO recicla PIDs, estos dirs
+// nunca se borraban (408 sobrevivientes en %TEMP% al detectar el bug) y una
+// corrida que caia en un PID reciclado heredaba los contadores de la anterior
+// -> `count()` devolvia 4 donde el test esperaba 1. `mkdtempSync` delega la
+// unicidad en el SO y el `after` no deja residuo que pueda colisionar manana.
+const tmpDirs = [];
 function tmpPipelineDir() {
-  const d = path.join(os.tmpdir(), 'arc-6611-' + process.pid + '-' + (seq++));
-  fs.mkdirSync(d, { recursive: true });
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-6611-'));
+  tmpDirs.push(d);
   return d;
 }
+
+test.after(() => {
+  for (const d of tmpDirs) {
+    try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+});
 
 const KIND = 'pr_merge_blocked';
 
