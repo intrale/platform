@@ -363,36 +363,231 @@ test('R-1 · un job con basename suelto sigue resolviendo por qa/recordings', as
     assert.equal(confined.canonical, 'qa/recordings/qa-6008.mp4');
 });
 
-test('R-4 · el allowlist ampliado acepta los productores reales de la cola', () => {
+// SEC-1 (#4514): el allowlist está PARTIDO. `seal` (vía estructural, sólo sella
+// y mueve a `listo/`) acepta `.pipeline/assets/docs`; `upload` (termina en un
+// link público de Drive) NO. Las columnas del caso son [ruta, seal?, upload?].
+test('R-4 · el allowlist acepta los productores reales de la cola, por vía', () => {
     const casos = [
-        ['qa/evidence/4899/qa-4899.mp4', true],
-        ['qa/evidence/qa-2017.mp4', true],                       // plano, sin subdir de issue
-        ['qa/recordings/qa-1920.mp4', true],
-        ['.pipeline/assets/docs/4899/qa-verificacion-4899.md', true],
-        ['.pipeline/logs/media/qa-1881.mp4', true],
-        ['docs/qa/reporte-1121-carrito-pedidos.pdf', true],
-        ['.pipeline/desarrollo/verificacion/procesado/5244.qa', false],
+        ['qa/evidence/4899/qa-4899.mp4', true, true],
+        ['qa/evidence/qa-2017.mp4', true, true],                  // plano, sin subdir de issue
+        ['qa/recordings/qa-1920.mp4', true, true],
+        ['.pipeline/logs/media/qa-1881.mp4', true, true],
+        ['docs/qa/reporte-1121-carrito-pedidos.pdf', true, true],
+        // SEC-1: store de entregables `sensible: true`. Sella sí, publica NO.
+        ['.pipeline/assets/docs/4899/qa-verificacion-4899.md', true, false],
+        ['.pipeline/desarrollo/verificacion/procesado/5244.qa', false, false],
         // Directorio oculto de estado del agente, fuera de todo dir de
         // evidencia. El guard es puramente posicional -- no mira el nombre del
         // archivo -- así que el fixture es un centinela neutro a propósito: no
         // hace falta (ni conviene) incrustar la ruta de un store real de
         // credenciales en la suite para cubrir exactamente la misma rama.
-        ['.claude/state/fixture-fuera-de-alcance.json', false],
+        ['.claude/state/fixture-fuera-de-alcance.json', false, false],
     ];
-    for (const [rel, esperado] of casos) {
+    for (const [rel, enSeal, enUpload] of casos) {
         writeEvidence(rel, 'x');
+        const abs = path.join(SVC_PROJECT, rel);
         assert.equal(
-            drive.isWithinAllowedEvidenceDir(path.join(SVC_PROJECT, rel)),
-            esperado,
-            `${rel} debería ${esperado ? 'entrar' : 'quedar fuera'} del allowlist`,
+            drive.isWithinAllowedEvidenceDir(abs, drive.SEAL_ALLOWED_DIRS), enSeal,
+            `${rel} debería ${enSeal ? 'entrar' : 'quedar fuera'} del allowlist de SELLADO`,
+        );
+        assert.equal(
+            drive.isWithinAllowedEvidenceDir(abs, drive.UPLOAD_ALLOWED_DIRS), enUpload,
+            `${rel} debería ${enUpload ? 'entrar' : 'quedar fuera'} del allowlist de UPLOAD`,
         );
     }
 });
 
-test('R-4 · el rename de la constante mantiene el alias exportado', () => {
+test('SEC-1 · el allowlist de upload NO incluye el store de entregables', () => {
+    const store = path.resolve(drive.PROJECT_ROOT, '.pipeline', 'assets', 'docs');
+    assert.ok(
+        drive.SEAL_ALLOWED_DIRS.includes(store),
+        'la vía estructural sí debe aceptarlo (R-4: 6/6 jobs reales son structural)',
+    );
+    assert.ok(
+        !drive.UPLOAD_ALLOWED_DIRS.includes(store),
+        'la vía de upload publica un link ABIERTO de Drive: el store de '
+        + 'entregables sensibles NUNCA puede estar en su allowlist (SEC-1)',
+    );
+});
+
+test('SEC-1 · los alias exportados apuntan al allowlist restrictivo (fail-closed)', () => {
     assert.equal(drive.ALLOWED_VIDEO_DIRS, drive.ALLOWED_EVIDENCE_DIRS,
         'el nombre viejo debe apuntar a la MISMA lista, no a una copia divergente');
-    assert.equal(drive.ALLOWED_EVIDENCE_DIRS.length, 5);
+    // Un consumidor viejo que importe cualquiera de los dos nombres hereda el
+    // guard FUERTE, nunca el permisivo.
+    assert.equal(drive.ALLOWED_EVIDENCE_DIRS, drive.UPLOAD_ALLOWED_DIRS);
+    assert.equal(drive.UPLOAD_ALLOWED_DIRS.length, 4);
+    assert.equal(drive.SEAL_ALLOWED_DIRS.length, 5);
+});
+
+test('SEC-1 · isWithinAllowedEvidenceDir sin allowlist explícito usa el de upload', () => {
+    const rel = '.pipeline/assets/docs/7001/qa-verificacion-7001.md';
+    writeEvidence(rel, 'x');
+    assert.equal(
+        drive.isWithinAllowedEvidenceDir(path.join(SVC_PROJECT, rel)), false,
+        'el default debe ser el allowlist restrictivo: una llamada sin opciones '
+        + 'no puede terminar siendo más permisiva de lo que corresponde',
+    );
+});
+
+// =============================================================================
+// SEC-1 (#4514) — un entregable `sensible: true` NUNCA se encola a Drive público
+//
+// Regresión cazada en la verificación de #6497: la ampliación de R-4 metió
+// `.pipeline/assets/docs` — el store de `writeDeliverable`, donde viven los
+// reportes del agente de security — en un allowlist ÚNICO que gobernaba tanto
+// la vía estructural (sella, no publica) como la de upload
+// (`qa-video-share.js` → `{"type":"anyone","role":"reader"}`, link ABIERTO).
+// Un job de upload apuntando a un reporte de seguridad pasaba el containment.
+//
+// El gate `r.sensible !== true` vivía SÓLO en `deliverable-notify.js`, o sea en
+// UN productor — y los descriptores que el agente de QA escribe a mano
+// (`roles/qa.md`: `cat > servicios/drive/pendiente/qa-<issue>-video.json`) no
+// pasan por ahí. Un gate que sólo existe en un productor no protege al
+// consumidor que publica.
+// =============================================================================
+
+function writeDeliverableIndex(issue, entries) {
+    const abs = path.join(SVC_PROJECT, '.pipeline', 'deliverables', `${issue}.json`);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, JSON.stringify({ issue, entries }, null, 2));
+    return abs;
+}
+
+// Reporte de security real del store, declarado `sensible: true` en el índice.
+const SENSIBLE_REL = '.pipeline/assets/docs/4513/security-verificacion-4513.md';
+
+function seedSensibleDeliverable() {
+    writeEvidence(SENSIBLE_REL, '# hallazgos de seguridad\ncredencial expuesta en X\n');
+    writeDeliverableIndex(4513, [
+        {
+            issue: 4513,
+            fase: 'verificacion',
+            agente: 'security',
+            tipo: 'document',
+            path: SENSIBLE_REL,
+            sensible: true,
+        },
+    ]);
+}
+
+test('SEC-1 · un job de UPLOAD que apunta a un entregable sensible va a FALLIDO', async () => {
+    seedSensibleDeliverable();
+    clearTelegramQueue();
+    // `mode: android` + `source: qa-android` NO matchea el discriminador
+    // estructural, o sea que este job sigue por la vía que PUBLICA.
+    const job = {
+        action: 'upload',
+        file: SENSIBLE_REL,
+        issue: 4513,
+        mode: 'android',
+        source: 'qa-android',
+    };
+    assert.equal(drive.isStructuralEvidenceJob(job), false,
+        'el fixture debe ir por la vía de upload, si no el test no prueba nada');
+
+    const r = await runJob('qa-4513-video.json', job);
+
+    assert.ok(r.fallido, 'el job debe terminar en fallido/');
+    assert.equal(r.listo, null, 'NUNCA puede llegar a listo/ (de ahí sale el upload)');
+    assert.equal(r.pendiente, null, 'no puede volver a pendiente/ y reintentar en loop');
+});
+
+test('SEC-1 · el rechazo por sensible NO emite el sha256 (CA-5 / R-7)', async () => {
+    seedSensibleDeliverable();
+    clearTelegramQueue();
+    await runJob('qa-4513-video.json', {
+        action: 'upload',
+        file: SENSIBLE_REL,
+        issue: 4513,
+        mode: 'android',
+        source: 'qa-android',
+    });
+
+    const r = await runJob('qa-4513-bis.json', {
+        action: 'upload', file: SENSIBLE_REL, issue: 4513, mode: 'android', source: 'qa-android',
+    });
+    // El descriptor que quedó en fallido/ no puede llevar el sello: hashear algo
+    // que no pasó el guard convierte el rechazo en un oráculo de contenido.
+    assert.equal(r.fallido.sha256, undefined, 'el descriptor rechazado no lleva sha256');
+    assert.equal(r.fallido.bytes, undefined, 'el descriptor rechazado no lleva bytes');
+
+    const msgs = telegramMessages().join('\n');
+    assert.ok(!/sha256/i.test(msgs), 'el aviso no puede contener el hash');
+    assert.ok(!/[0-9a-f]{64}/.test(msgs), 'el aviso no puede contener un digest hex');
+});
+
+test('SEC-1 · un job ESTRUCTURAL sobre un entregable sensible tampoco se encola', async () => {
+    seedSensibleDeliverable();
+    clearTelegramQueue();
+    // La cola de Drive ES la cola de publicación: SEC-1 dice que un entregable
+    // sensible nunca se encola, ni siquiera por la vía que "sólo sella".
+    const r = await runJob('qa-4513-structural.json', structuralJob(4513, SENSIBLE_REL));
+    assert.ok(r.fallido, 'el job estructural sobre un sensible debe ir a fallido/');
+    assert.equal(r.listo, null);
+    assert.equal(r.fallido.sha256, undefined, 'no se sella un artefacto sensible');
+});
+
+test('SEC-1 · un entregable NO sensible del mismo store sigue pasando (R-4 intacto)', async () => {
+    // Mismo directorio, misma forma de job: lo único que cambia es el flag del
+    // índice. Si este test se cae, el gate está bloqueando de más.
+    const rel = '.pipeline/assets/docs/4899/qa-verificacion-4899.md';
+    writeEvidence(rel, '# verificacion de QA\n');
+    writeDeliverableIndex(4899, [
+        { issue: 4899, agente: 'qa', tipo: 'document', path: rel, sensible: false },
+    ]);
+    const r = await runJob('qa-4899-structural.json', structuralJob(4899, rel));
+    assert.ok(r.listo, 'un entregable no sensible debe seguir sellándose y llegando a listo/');
+    assert.match(r.listo.sha256, drive.SHA256_RE);
+    assert.ok(r.listo.bytes > 0);
+});
+
+test('SEC-1 · el gate detecta el sensible aunque el job declare OTRO issue', async () => {
+    // El campo `issue` lo controla el agente que escribe el descriptor a mano:
+    // declarar un issue distinto no puede servir para esquivar el índice. El
+    // gate también deriva el issue de la propia ruta canónica.
+    seedSensibleDeliverable();
+    assert.equal(drive.isSensitiveDeliverable(SENSIBLE_REL, 9999), true,
+        'debe encontrar el índice por el issue de la ruta, no sólo por el declarado');
+    assert.equal(drive.isSensitiveDeliverable(SENSIBLE_REL, undefined), true);
+});
+
+test('SEC-1 · el modo log-only NO relaja el rechazo por entregable sensible', async (t) => {
+    seedSensibleDeliverable();
+    clearTelegramQueue();
+    // El rollout observable de R-6 existe para medir el impacto del containment
+    // NUEVO sobre la cola real. Un modo de observación jamás puede reabrir el
+    // agujero que este commit cierra.
+    const previo = process.env.DRIVE_CONTAINMENT_MODE;
+    process.env.DRIVE_CONTAINMENT_MODE = 'log-only';
+    t.after(() => {
+        if (previo === undefined) delete process.env.DRIVE_CONTAINMENT_MODE;
+        else process.env.DRIVE_CONTAINMENT_MODE = previo;
+    });
+    // CONTAINMENT_MODE se lee al requerirse el módulo, así que se recarga.
+    delete require.cache[require.resolve('../../servicio-drive')];
+    const fresh = require('../../servicio-drive');
+
+    const name = 'qa-4513-logonly.json';
+    fs.writeFileSync(path.join(PENDIENTE, name), JSON.stringify(structuralJob(4513, SENSIBLE_REL)));
+    await fresh.processJob({ name, path: path.join(PENDIENTE, name) });
+
+    assert.ok(fs.existsSync(path.join(FALLIDO, name)),
+        'ni en log-only puede pasar un entregable sensible');
+    assert.equal(fs.existsSync(path.join(LISTO, name)), false);
+
+    delete require.cache[require.resolve('../../servicio-drive')];
+    require('../../servicio-drive');
+});
+
+test('SEC-1 · sin índice de entregables el gate no bloquea (fail-open deliberado)', () => {
+    // La inmensa mayoría de los artefactos legítimos (`qa/evidence/**`) no tiene
+    // entrada en el índice. "Sin índice ⇒ bloqueado" mandaría la cola entera a
+    // FALLIDO. Quien decide qué directorio puede publicarse es el allowlist
+    // partido (capa 1); esta capa sólo agrega un veto explícito.
+    assert.equal(drive.isSensitiveDeliverable('qa/evidence/6497/qa-6497.mp4', 6497), false);
+    assert.equal(drive.isSensitiveDeliverable('', 4513), false);
+    assert.equal(drive.isSensitiveDeliverable(null, null), false);
 });
 
 test('isUnderBase no confunde un hermano con prefijo común', () => {

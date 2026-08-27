@@ -193,16 +193,51 @@ function extractTitle(data) {
 // Los dropfiles `.pipeline/desarrollo/*/procesado/*.qa` NO son evidencia
 // publicable y quedan deliberadamente afuera: deben ir a FALLIDO y corregirse en
 // el productor (el propio agente de QA al declarar el campo `file`).
-const ALLOWED_EVIDENCE_DIRS = [
+// ⚠️ SEC-1 (#4514) — EL ALLOWLIST ESTÁ PARTIDO EN DOS A PROPÓSITO.
+//
+// Un allowlist ÚNICO gobernaba DOS vías con consecuencias OPUESTAS:
+//   - la estructural  → sella y mueve a `listo/`; NO publica.
+//   - la de upload    → `qa-video-share.js` le pone
+//                       `{"type":"anyone","role":"reader"}` = link PÚBLICO.
+//
+// `.pipeline/assets/docs` es el store de `writeDeliverable`, donde viven los
+// entregables `sensible: true` (los reportes del agente de security). Meterlo en
+// la lista única — como hizo la primera versión de R-4 — habilitaba que un job
+// de upload apuntara a un reporte de seguridad y lo publicara en un link
+// abierto, contradiciendo SEC-1 ("un entregable sensible NUNCA se encola a Drive
+// público"). Medido: los 8 entregables `sensible: true` del índice son reportes
+// de security y los 8 viven bajo ese directorio.
+//
+// R-4 NO se rompe: los jobs REALES de la cola bajo `.pipeline/assets/docs` son
+// TODOS `mode: structural` + `source: qa-structural` (6/6 medidos), o sea la
+// ampliación sólo hacía falta para la vía que NO publica.
+
+// Vía ESTRUCTURAL: sella (sha256 + bytes) y mueve a `listo/`. No sube nada.
+const SEAL_ALLOWED_DIRS = [
   path.resolve(PROJECT_ROOT, 'qa', 'evidence'),
   path.resolve(PROJECT_ROOT, 'qa', 'recordings'),
   path.resolve(PROJECT_ROOT, '.pipeline', 'assets', 'docs'),
   path.resolve(PROJECT_ROOT, '.pipeline', 'logs', 'media'),
   path.resolve(PROJECT_ROOT, 'docs', 'qa'),
 ];
-// Compat: el nombre viejo sigue exportado y apunta a la MISMA lista, para no
-// romper consumidores/tests que lo importen mientras dure la transición.
-const ALLOWED_VIDEO_DIRS = ALLOWED_EVIDENCE_DIRS;
+
+// Vía de UPLOAD: termina en un link público de Drive. SIN
+// `.pipeline/assets/docs`. Los jobs reales que necesitan la ampliación de R-4
+// por esta vía son `docs/qa/**` (reporte android PDF) y `.pipeline/logs/media/**`
+// (4 jobs medidos, incl. uno `mode: structural` SIN `source` → no matchea el
+// discriminador y cae acá).
+const UPLOAD_ALLOWED_DIRS = [
+  path.resolve(PROJECT_ROOT, 'qa', 'evidence'),
+  path.resolve(PROJECT_ROOT, 'qa', 'recordings'),
+  path.resolve(PROJECT_ROOT, '.pipeline', 'logs', 'media'),
+  path.resolve(PROJECT_ROOT, 'docs', 'qa'),
+];
+
+// Compat: los nombres previos apuntan al allowlist de UPLOAD — el restrictivo.
+// Un consumidor viejo que importe cualquiera de los dos hereda el guard más
+// fuerte, nunca el más débil (fail-closed).
+const ALLOWED_EVIDENCE_DIRS = UPLOAD_ALLOWED_DIRS;
+const ALLOWED_VIDEO_DIRS = UPLOAD_ALLOWED_DIRS;
 
 // #4796 — precedente vivo en `servicio-telegram.js:1044-1047`. `startsWith` sobre
 // strings es frágil (`/qa/evidence-malicioso` matchea `/qa/evidence`); `relative`
@@ -221,7 +256,10 @@ function isUnderBase(base, target) {
 // sobre resultados de `resolveVideoPath` (sus 4 ramas ya validaron `existsSync`),
 // y el `realpathSync` del directorio BASE va en `try/catch` porque puede no
 // existir en un checkout limpio: degrada a "no permitido", nunca a excepción.
-function isWithinAllowedEvidenceDir(resolved) {
+//
+// SEC-1: `dirs` es el allowlist QUE APLICA A ESTA VÍA. Default = el de upload
+// (el restrictivo): si alguien llama sin especificar, hereda el guard fuerte.
+function isWithinAllowedEvidenceDir(resolved, dirs = UPLOAD_ALLOWED_DIRS) {
   if (!resolved) return false;
   let real;
   try {
@@ -229,7 +267,7 @@ function isWithinAllowedEvidenceDir(resolved) {
   } catch {
     return false;
   }
-  return ALLOWED_EVIDENCE_DIRS.some((dir) => {
+  return dirs.some((dir) => {
     let base;
     try { base = fs.realpathSync(dir); } catch { return false; }
     return real === base || isUnderBase(base, real);
@@ -312,27 +350,80 @@ function isStructuralEvidenceJob(data) {
 const REJECT_NO_PROMOVIDO = 'no-promovido';
 const REJECT_FUERA_ALLOWLIST = 'fuera-de-allowlist';
 const REJECT_ERROR = 'error';
+// SEC-1 (#4514): el entregable figura como `sensible: true` en el índice. No es
+// un error del productor ni un path fuera de lugar — es contenido que NO puede
+// terminar en un link público de Drive.
+const REJECT_SENSIBLE_NO_PUBLICABLE = 'sensible-no-publicable';
 
 // CA-UX-2: la lista de directorios del mensaje se DERIVA de
 // `ALLOWED_EVIDENCE_DIRS`. Escribirla a mano la desincroniza del allowlist real
 // en el mismo commit que lo amplía — que es exactamente lo que pasó con el
 // string hardcodeado "qa/evidence|qa/recordings".
-function allowlistHint() {
-  return ALLOWED_EVIDENCE_DIRS
+function allowlistHint(dirs = UPLOAD_ALLOWED_DIRS) {
+  return dirs
     .map((dir) => path.relative(realProjectRoot(), dir).split(path.sep).join('/') || '.')
     .join(', ');
 }
 
-function rejectReasonText(reason) {
+function rejectReasonText(reason, dirs) {
   if (reason === REJECT_NO_PROMOVIDO) {
     return 'no promovido a la ruta canónica: el artefacto no existe en el repo '
       + 'principal. Re-promovelo desde el worktree del agente y re-encolá el job.';
   }
   if (reason === REJECT_FUERA_ALLOWLIST) {
-    return `fuera de los directorios de evidencia permitidos (${allowlistHint()}). `
+    return `fuera de los directorios de evidencia permitidos (${allowlistHint(dirs)}). `
       + 'Revisá el productor del job: puede ser un incidente de seguridad.';
   }
+  if (reason === REJECT_SENSIBLE_NO_PUBLICABLE) {
+    // CA-5 / R-7: ni el hash ni la ruta completa acá. El operador ya sabe de qué
+    // issue se trata por el encabezado del aviso.
+    return 'el entregable está marcado como sensible en el índice y no puede '
+      + 'publicarse en un link de Drive. Compartilo por el canal directo o '
+      + 'revisá el issue.';
+  }
   return String(reason);
+}
+
+// SEC-1 (#4514) — DEFENSA EN PROFUNDIDAD (capa 2).
+//
+// La capa 1 es el allowlist partido (`.pipeline/assets/docs` fuera del de
+// upload). Esta capa cubre el modelo de amenaza de RS-2 (#3927): el agente de QA
+// escribe descriptores A MANO (`.pipeline/roles/qa.md:450,465` instruye
+// `cat > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json`), con el
+// campo `file` bajo su control total. El gate `r.sensible !== true` vive
+// ÚNICAMENTE en `deliverable-notify.js:1141`, o sea en UN productor; el
+// consumidor que publica no lo miraba. Un gate que sólo existe en un productor
+// no protege al consumidor.
+//
+// Fail-open DELIBERADO ante índice ausente/ilegible: la gran mayoría de los
+// artefactos legítimos (`qa/evidence/**`) no tienen entrada en el índice, así
+// que "sin índice ⇒ bloqueado" mandaría a FALLIDO toda la cola real. El
+// containment de la capa 1 es el que decide qué directorio puede publicarse;
+// esta capa sólo agrega un veto explícito sobre lo que el índice marca.
+function isSensitiveDeliverable(canonical, issue) {
+  if (!canonical) return false;
+  const norm = (p) => String(p || '').split('\\').join('/').replace(/^\.\//, '').toLowerCase();
+  const target = norm(canonical);
+  // Candidatos de índice: el issue del job y el que aparece en la propia ruta
+  // (`.pipeline/assets/docs/<issue>/...`). Un job puede declarar un `issue`
+  // distinto del dueño del entregable — justamente el caso que queremos cazar.
+  const candidates = new Set();
+  if (/^\d+$/.test(String(issue || ''))) candidates.add(String(issue));
+  const m = target.match(/(?:^|\/)(\d+)\//);
+  if (m) candidates.add(m[1]);
+  for (const id of candidates) {
+    const idx = path.join(PROJECT_ROOT, '.pipeline', 'deliverables', `${id}.json`);
+    let parsed;
+    try {
+      if (!fs.existsSync(idx)) continue;
+      parsed = JSON.parse(fs.readFileSync(idx, 'utf8'));
+    } catch { continue; }
+    const entries = Array.isArray(parsed && parsed.entries) ? parsed.entries : [];
+    for (const e of entries) {
+      if (e && e.sensible === true && norm(e.path) === target) return true;
+    }
+  }
+  return false;
 }
 
 // CA-UX-1: descriptor legible del artefacto, derivado del job (`mode` +
@@ -371,7 +462,12 @@ function describeArtifact(data) {
 // `canonical` (CA-3) es LA ruta autoritativa del artefacto: relativa al
 // PROJECT_ROOT canonizado, con separador POSIX. Todos los derivados (la copia
 // `.sanitized/`, el registro de Drive) apuntan a ella.
-function resolveConfinedEvidence(filePath) {
+// SEC-1: `opts.dirs` selecciona el allowlist de la vía (seal vs upload) y
+// `opts.issue` habilita el chequeo de entregable sensible. El default es el
+// allowlist de UPLOAD — el restrictivo — para que una llamada sin opciones nunca
+// termine siendo más permisiva de lo que corresponde.
+function resolveConfinedEvidence(filePath, opts = {}) {
+  const dirs = Array.isArray(opts.dirs) ? opts.dirs : UPLOAD_ALLOWED_DIRS;
   let resolved;
   try {
     resolved = resolveVideoPath(filePath);
@@ -379,8 +475,8 @@ function resolveConfinedEvidence(filePath) {
     return { ok: false, reason: REJECT_ERROR, detail: e.message };
   }
   if (!resolved) return { ok: false, reason: REJECT_NO_PROMOVIDO };
-  if (!isWithinAllowedEvidenceDir(resolved)) {
-    return { ok: false, reason: REJECT_FUERA_ALLOWLIST };
+  if (!isWithinAllowedEvidenceDir(resolved, dirs)) {
+    return { ok: false, reason: REJECT_FUERA_ALLOWLIST, dirs };
   }
   let absolute;
   try {
@@ -391,6 +487,12 @@ function resolveConfinedEvidence(filePath) {
     return { ok: false, reason: REJECT_NO_PROMOVIDO };
   }
   const canonical = path.relative(realProjectRoot(), absolute).split(path.sep).join('/');
+  // SEC-1 capa 2 — ANTES de cualquier hasheo. CA-5 / R-7: un artefacto que no
+  // pasó el guard NUNCA obtiene sha256, así que el rechazo no puede convertirse
+  // en un oráculo de contenido.
+  if (isSensitiveDeliverable(canonical, opts.issue)) {
+    return { ok: false, reason: REJECT_SENSIBLE_NO_PUBLICABLE };
+  }
   return { ok: true, absolute, canonical };
 }
 
@@ -455,9 +557,9 @@ const CONTAINMENT_MODE = String(process.env.DRIVE_CONTAINMENT_MODE || 'enforce')
 let cycleRejections = null;   // null ⇒ fuera de ciclo (processJob suelto)
 
 function reportRejectedJob(entry) {
-  log(`Job ${entry.job} rechazado (${entry.reason}): ${entry.detail || rejectReasonText(entry.reason)}`);
+  log(`Job ${entry.job} rechazado (${entry.reason}): ${entry.detail || rejectReasonText(entry.reason, entry.dirs)}`);
   if (cycleRejections) { cycleRejections.push(entry); return; }
-  notifyDriveFailure(entry.issue, entry.detail || rejectReasonText(entry.reason), entry.artifact);
+  notifyDriveFailure(entry.issue, entry.detail || rejectReasonText(entry.reason, entry.dirs), entry.artifact);
 }
 
 function flushCycleRejections() {
@@ -466,7 +568,7 @@ function flushCycleRejections() {
   if (items.length === 0) return;
   if (items.length === 1) {
     const e = items[0];
-    notifyDriveFailure(e.issue, e.detail || rejectReasonText(e.reason), e.artifact);
+    notifyDriveFailure(e.issue, e.detail || rejectReasonText(e.reason, e.dirs), e.artifact);
     return;
   }
   try {
@@ -681,12 +783,27 @@ async function processJob(file) {
     // exfiltración (OWASP A01:2021 + A08:2021).
     //
     // Ahora el guard corre acá arriba y aplica a TODOS los modos.
-    const confined = resolveConfinedEvidence(videoFile);
+    //
+    // SEC-1 (#4514) — el allowlist se elige POR VÍA, con el mismo discriminador
+    // que rutea después. La estructural sólo sella y mueve a `listo/`, así que
+    // acepta `.pipeline/assets/docs` (R-4); la de upload termina en un link
+    // público de Drive y NO lo acepta. El chequeo de entregable `sensible: true`
+    // corre en AMBAS: la cola de Drive es la cola de publicación, y SEC-1 dice
+    // que un entregable sensible nunca se encola.
+    const structural = isStructuralEvidenceJob(data);
+    const confined = resolveConfinedEvidence(videoFile, {
+      dirs: structural ? SEAL_ALLOWED_DIRS : UPLOAD_ALLOWED_DIRS,
+      issue,
+    });
     if (!confined.ok) {
       // R-6 — en rollout log-only sólo se deja pasar la superficie NUEVA (la vía
       // estructural, que antes no pasaba por ningún guard). La vía de video ya
       // estaba confinada desde #3927 y sigue yendo a FALLIDO.
-      if (CONTAINMENT_MODE === 'log-only' && isStructuralEvidenceJob(data)) {
+      // SEC-1: el rechazo por entregable sensible NUNCA se relaja por rollout.
+      // Un modo de observación no puede abrir el agujero que este commit cierra.
+      if (CONTAINMENT_MODE === 'log-only'
+        && structural
+        && confined.reason !== REJECT_SENSIBLE_NO_PUBLICABLE) {
         log(`R-6 log-only: job ${file.name} habría ido a FALLIDO (${confined.reason}: ${videoFile})`
           + ' — se deja pasar SIN sellar');
         ensureDir(LISTO);
@@ -702,13 +819,14 @@ async function processJob(file) {
         job: file.name,
         issue,
         reason: confined.reason,
+        dirs: confined.dirs,
         detail: confined.detail,
         artifact,
       });
       return;
     }
 
-    if (isStructuralEvidenceJob(data)) {
+    if (structural) {
       // CA-1 / CA-2 / CA-5: el sello se deriva DESPUÉS del guard, sobre los
       // bytes locales del artefacto confinado, y se persiste en el descriptor
       // antes de moverlo a `listo/` — `qa/evidence/**` es efímero, así que la
@@ -915,6 +1033,11 @@ module.exports = {
   ALLOWED_VIDEO_DIRS,
   // #6497 — ruta canónica, sello y confinamiento único.
   ALLOWED_EVIDENCE_DIRS,
+  // SEC-1 (#4514) — allowlist partido por vía + gate de entregable sensible.
+  SEAL_ALLOWED_DIRS,
+  UPLOAD_ALLOWED_DIRS,
+  isSensitiveDeliverable,
+  REJECT_SENSIBLE_NO_PUBLICABLE,
   isWithinAllowedEvidenceDir,
   isUnderBase,
   resolveConfinedEvidence,

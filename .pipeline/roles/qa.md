@@ -441,6 +441,22 @@ defectos:
 
 ### Subir evidencia a Drive (OBLIGATORIO antes de aprobar)
 
+> ⚠️ **SEC-1 — el `file` sólo puede apuntar a evidencia publicable.** La subida
+> termina en un link **público** de Drive (`{"type":"anyone","role":"reader"}`),
+> así que `servicio-drive.js` confina el path con **dos** allowlists distintas:
+>
+> | Vía | Qué hace | Directorios aceptados |
+> |---|---|---|
+> | estructural (`mode: structural` + `source: qa-structural`) | sella y mueve a `listo/`; **no publica** | `qa/evidence`, `qa/recordings`, `.pipeline/assets/docs`, `.pipeline/logs/media`, `docs/qa` |
+> | upload (todo el resto) | **publica** en Drive | `qa/evidence`, `qa/recordings`, `.pipeline/logs/media`, `docs/qa` |
+>
+> `.pipeline/assets/docs` — el store de entregables de `writeDeliverable` — está
+> **fuera** de la vía de upload a propósito: ahí viven los reportes marcados
+> `sensible: true`. Además, un `file` que figure con `sensible: true` en
+> `.pipeline/deliverables/<issue>.json` va a `fallido/` en **cualquiera** de las
+> dos vías, aunque el descriptor lo hayas escrito a mano y declares otro
+> `issue`. Un entregable sensible **nunca** se encola a Drive público (#4514).
+
 Encolar el video (con audio narrado) para subida a Google Drive. El payload
 del job **DEBE** incluir los campos de veredicto para que el mensaje de Telegram
 que envía `qa-video-share.js` refleje el estado real (ver issue #2519):
