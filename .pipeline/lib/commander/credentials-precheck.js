@@ -114,11 +114,12 @@ function resolveRankingForSkill(models, skill) {
  *   - El provider debe tener `credentials_env: [...]` declarado.
  *   - Cada var del array debe estar en processEnv con valor no-vacío y
  *     no-placeholder.
- *   - Excepción: provider con `auth_mode: 'oauth'` (o `launcher: 'claude'`,
- *     que es OAuth Max) autentica vía login del CLI (`claude`, `codex`,
- *     `gemini-google`), no por env var. Skipeamos su validación de env —
- *     la key declarada en `credentials_env` es informativa, no se usa
- *     (igual que agent-models-validate.js). #4306.
+ *   - Excepción: provider con `auth_mode: 'oauth'` autentica vía login del CLI
+ *     (`claude`, `codex`, `gemini-google`), no por env var. Skipeamos su
+ *     validación de env — la key declarada en `credentials_env` es informativa,
+ *     no se usa (igual que agent-models-validate.js). #4306.
+ *   - #6612: la exención la decide `auth_mode`, NO el launcher. Ver la nota
+ *     extensa en el cuerpo.
  *
  * Devuelve `{ ok: bool, reason: string }`. `reason` viene poblado sólo si
  * `ok: false`.
@@ -132,7 +133,34 @@ function validateProviderCredentials(providerName, providerDef, processEnv) {
     // (~/.codex, cuenta Google, OAuth Max en ~/.claude). No validamos env.
     // #4306 — generalizado desde el hardcode `launcher === 'claude'` para que
     // codex/gemini (auth_mode: 'oauth') dejen de exigir una key que no usan.
-    if (providerDef.auth_mode === 'oauth' || providerDef.launcher === 'claude') {
+    //
+    // #6612 — LA EXENCIÓN LA DECIDE `auth_mode`, NUNCA EL LAUNCHER.
+    // El `|| providerDef.launcher === 'claude'` era el hardcode PREVIO a #4306
+    // y quedó vivo como cláusula suelta al lado de su propio reemplazo. Un
+    // provider drop-in de Claude Code que se autentica por API key entraba por
+    // esa cláusula y quedaba exento de TODA validación, contradiciendo su
+    // propio `auth_mode` declarado. Caso real: `kimi-moonshot`
+    // (`launcher: 'claude'` + `auth_mode: 'api_key'` +
+    // `credentials_env: ['ANTHROPIC_AUTH_TOKEN']`). Sin token cargado se lo
+    // seguía reportando como fallback SANO, el dispatcher lo elegía como
+    // último eslabón de la cadena, el `claude` spawneado contra el endpoint de
+    // Moonshot moría sin emitir un solo byte, y el archivo de trabajo quedaba
+    // huérfano. A los 3 barridos el Pulpo sintetizaba un rechazo de CONTENIDO
+    // ("Huérfano tras 3 reintentos") y rebotaba el issue a dev como si el
+    // código estuviera roto — misma familia que #6190.
+    //
+    // PRECEDENCIA (fail-closed): un `auth_mode` EXPLÍCITO manda siempre. El
+    // heurístico por launcher sólo sobrevive para defs que NO declaran
+    // `auth_mode` (compat hacia atrás; ver el test de #4306 sobre `anthropic`
+    // con `launcher: 'claude'` y sin `auth_mode`). Así, declarar un auth_mode
+    // no-oauth nunca puede terminar en una exención silenciosa.
+    const declaredAuthMode = (typeof providerDef.auth_mode === 'string' && providerDef.auth_mode.trim())
+        ? providerDef.auth_mode.trim().toLowerCase()
+        : null;
+    if (declaredAuthMode === 'oauth') {
+        return { ok: true };
+    }
+    if (declaredAuthMode === null && providerDef.launcher === 'claude') {
         return { ok: true };
     }
 

@@ -128,6 +128,22 @@ qa/evidence/**/*.png
 qa/evidence/**/*.zip
 qa/evidence/**/*.html
 qa/evidence/**/*.mp3
+# #6497 — el hueco que dejaba trackeable la mitad de lo que promueve
+# `promoteSpoolEvidence()`. Su allowlist de forma (`SPOOL_PROMOTABLE_EXT` en
+# `.pipeline/servicio-drive.js`) acepta mp4|webm|mkv|mov|m4v|avi|gif|png|jpe?g|pdf|xml,
+# y de esas sólo mp4/png/pdf estaban cubiertas: un `.webm`, un `.jpg`, un `.gif`
+# o un `test-results.xml` promovidos automáticamente entraban a git. `qa/evidence`
+# ya es causa raíz documentada del disco lleno (950+ archivos trackeados) y este
+# PR le agrega un productor automático de copias: se cierra la lista entera.
+qa/evidence/**/*.webm
+qa/evidence/**/*.mkv
+qa/evidence/**/*.mov
+qa/evidence/**/*.m4v
+qa/evidence/**/*.avi
+qa/evidence/**/*.gif
+qa/evidence/**/*.jpg
+qa/evidence/**/*.jpeg
+qa/evidence/**/*.xml
 # Re-incluir SOLO los metadatos tracked (orden importa: el ! va DESPUES del ignore — #4173)
 !qa/evidence/**/*.json
 !qa/evidence/**/.gitkeep
