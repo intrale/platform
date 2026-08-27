@@ -11847,32 +11847,49 @@ function brazoHuerfanos(config) {
         if (info && isProcessAlive(info.pid)) continue;
 
         // #4052 CA-3 — Atribución provider-aware ANTES de tocar orphanRetries.
-        // Si la muerte del proceso fue un spawn-failure de Codex (marker dejado
-        // por la instrumentación CA-1 en agent-launcher.js), NO es un fallo del
-        // issue: es infra del provider. En ese caso NO incrementamos el retry
-        // del issue ni lo rebotamos; apagamos el provider con TTL (la cadena de
-        // fallback elegirá otro eslabón en el próximo despacho) y devolvemos el
-        // archivo a pendiente/. Fail-closed: si no hay marker o algo falla,
-        // seguimos el camino de huérfano normal (consume retry como hoy).
+        // Si la muerte del proceso fue un spawn-failure del provider (marker
+        // dejado por la instrumentación CA-1 en agent-launcher.js), NO es un
+        // fallo del issue: es infra del provider. En ese caso NO incrementamos
+        // el retry del issue ni lo rebotamos; apagamos el provider con TTL (la
+        // cadena de fallback elegirá otro eslabón en el próximo despacho) y
+        // devolvemos el archivo a pendiente/. Fail-closed: si no hay marker o
+        // algo falla, seguimos el camino de huérfano normal (consume retry).
+        //
+        // #6612 — EL PROVIDER LO DICE EL MARKER, NO ESTABA HARDCODEADO ACÁ.
+        // Antes se consumía con `provider: 'openai-codex'` fijo. Pero el
+        // barrido de huérfanos NO sabe con qué provider salió el agente: esa
+        // decisión la tomó el dispatcher minutos antes, en otro proceso, y no
+        // viaja hasta acá. Con el nombre fijo, la muerte al spawnear de
+        // cualquier OTRO eslabón de la cadena no encontraba su marker, caía al
+        // camino normal y se le cobraba al ISSUE: 3 barridos después el Pulpo
+        // sintetizaba `Huérfano tras 3 reintentos` y rebotaba código sano.
+        // Es lo que le pasó a #6612 en fase `aprobacion` cuando la cadena de
+        // `po` cayó en `kimi-moonshot`. Ahora buscamos por (skill, issue) y
+        // apagamos el provider que el marker dice que falló — nunca otro.
         try {
           const sfState = require('./lib/agent-launcher/spawn-failure-state');
-          const marker = sfState.consumeSpawnFailure({
+          const marker = sfState.consumeSpawnFailureAnyProvider({
             pipelineDir: PIPELINE,
-            provider: 'openai-codex',
             skill,
             issue,
           });
-          if (marker) {
+          const failedProvider = marker && typeof marker.provider === 'string' && marker.provider
+            ? marker.provider
+            : null;
+          // Un marker sin provider legible no habilita apagar nada (apagar el
+          // eslabón equivocado es peor que no apagar): se trata como si no
+          // hubiera marker y sigue el camino de huérfano normal.
+          if (marker && failedProvider) {
             try {
               const providerDisabled = require('./lib/provider-disabled');
-              providerDisabled.setProviderDisabled('openai-codex', { source: 'orphan-spawn-failure' });
+              providerDisabled.setProviderDisabled(failedProvider, { source: 'orphan-spawn-failure' });
             } catch (e) {
-              log('huerfanos', `No se pudo apagar openai-codex tras spawn-failure de ${archivo.name}: ${e.message}`);
+              log('huerfanos', `No se pudo apagar ${failedProvider} tras spawn-failure de ${archivo.name}: ${e.message}`);
             }
-            log('huerfanos', `${archivo.name}: muerte = spawn-failure de Codex (sig=${marker.signature}, kind=${marker.launcher_kind}) → NO consume retry del issue; provider apagado con TTL, devuelvo a pendiente/.`);
+            log('huerfanos', `${archivo.name}: muerte = spawn-failure de ${failedProvider} (sig=${marker.signature}, kind=${marker.launcher_kind}) → NO consume retry del issue; provider apagado con TTL, devuelvo a pendiente/.`);
             try {
               moveFile(archivo.path, pendienteDir);
-              sendTelegram(`🔌 ${skill}:#${issue} NO rebotado: Codex murió al spawnear (infra del provider, no fallo del issue). Provider apagado con TTL; reintento con otro provider de la cadena.`);
+              sendTelegram(`🔌 ${skill}:#${issue} NO rebotado: ${failedProvider} murió al spawnear (infra del provider, no fallo del issue). Provider apagado con TTL; reintento con otro provider de la cadena.`);
             } catch (e) {
               log('huerfanos', `Error devolviendo ${archivo.name} a pendiente tras spawn-failure: ${e.message}`);
             }
