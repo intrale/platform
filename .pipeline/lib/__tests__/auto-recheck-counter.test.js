@@ -173,3 +173,14 @@ test('#6611 - el techo es configurable (max), default 3', () => {
   assert.equal(counter.ceilingReached({ ...args, max: 5 }), false, 'techo 5 todavía no');
   assert.equal(counter.DEFAULT_MAX_AUTO_RELEASES, 3);
 });
+
+test('#6611 UX-6 - la escalada por techo se registra una sola vez y no infla el contador', () => {
+  const dir = tmpPipelineDir();
+  const args = { pipelineDir: dir, issue: 6145, kind: KIND, pr: 6593 };
+  counter.increment(args);
+  counter.increment(args);
+  counter.increment(args);
+  assert.equal(counter.markCeilingNotified(args), true, 'primer tick emite');
+  assert.equal(counter.markCeilingNotified(args), false, 'ticks siguientes quedan deduplicados');
+  assert.equal(counter.count(args), 3, 'la marca de escalada no cuenta como destrabe');
+});

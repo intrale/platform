@@ -109,6 +109,7 @@ function count(opts = {}) {
             // evidencia válida y descartarlo entero sería MÁS permisivo.
             try { entry = JSON.parse(t); } catch { continue; }
             if (!entry || typeof entry !== 'object' || entry.key !== key) continue;
+            if (entry.event === 'ceiling_notified') continue;
             const ts = entry.ts ? Date.parse(entry.ts) : NaN;
             if (!Number.isFinite(ts)) continue;   // sin timestamp válido ⇒ no cuenta
             if (now - ts > ttlMs) continue;        // vencida
@@ -161,10 +162,48 @@ function ceilingReached(opts = {}) {
     return count(opts) >= max;
 }
 
+/**
+ * Registra una sola vez la escalada visible al alcanzar el techo. Comparte el
+ * JSONL con los destrabes, pero `count()` ignora estas líneas de auditoría.
+ * Devuelve true únicamente al primer registro activo de la causa.
+ */
+function markCeilingNotified(opts = {}) {
+    const { pipelineDir, issue, kind, pr } = opts;
+    if (!pipelineDir || issue == null || !kind || pr == null) return false;
+    const _fs = opts.fsImpl || fs;
+    const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+    const ttlMs = Number.isFinite(opts.ttlMs) && opts.ttlMs > 0 ? opts.ttlMs : DEFAULT_TTL_MS;
+    const key = makeKey(issue, kind, pr);
+    try {
+        const file = stateFile(pipelineDir);
+        if (_fs.existsSync(file)) {
+            const lines = _fs.readFileSync(file, 'utf8').split('\n');
+            if (lines.length > MAX_LINES) return false;
+            for (const line of lines) {
+                let entry;
+                try { entry = JSON.parse(line); } catch { continue; }
+                if (!entry || entry.key !== key || entry.event !== 'ceiling_notified') continue;
+                const ts = Date.parse(entry.ts || '');
+                if (Number.isFinite(ts) && now - ts <= ttlMs) return false;
+            }
+        }
+        _fs.mkdirSync(path.dirname(file), { recursive: true });
+        _fs.appendFileSync(file, JSON.stringify({
+            key, event: 'ceiling_notified', issue: Number(issue) || String(issue),
+            kind: String(kind), pr: Number(pr) || String(pr), ts: new Date(now).toISOString(),
+        }) + '\n', { mode: 0o600 });
+        return true;
+    } catch {
+        // Si no se puede comprobar/persistir el dedupe, no spamear cada tick.
+        return false;
+    }
+}
+
 module.exports = {
     count,
     increment,
     ceilingReached,
+    markCeilingNotified,
     stateFile,
     makeKey,
     DEFAULT_MAX_AUTO_RELEASES,

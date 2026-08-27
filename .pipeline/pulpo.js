@@ -324,6 +324,7 @@ const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
 // #6611 — auto-destrabe de bloqueos con predicado verificable.
 const verifiablePredicateStore = require('./lib/verifiable-predicate-store');
 const autoRecheckCounter = require('./lib/auto-recheck-counter');
+const autoRecheckNotice = require('./lib/auto-recheck-notice');
 // #4368 — transición automática de ola (detector fail-closed + orquestador
 // notify/auto). Gated por config.wave_auto_transition (default OFF + notify).
 const waveAutoTransition = require('./lib/wave-auto-transition');
@@ -21475,16 +21476,41 @@ async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
     });
   }
 
-  const { toRelease } = brazoDesbloqueoCore.selectVerifiableHumanBlocksToRelease({
+  const { toRelease, blocked } = brazoDesbloqueoCore.selectVerifiableHumanBlocksToRelease({
     markers, observations, counters, maxAutoReleases,
   });
+
+  // UX-6: alcanzar el techo es una escalada, no un tick silencioso. El registro
+  // persistente garantiza un único Telegram/comentario por issue+kind+PR.
+  for (const m of blocked.filter(b => b.reason === 'techo-de-auto-destrabes-alcanzado')) {
+    const p = m.predicate;
+    if (!autoRecheckCounter.markCeilingNotified({
+      pipelineDir: PIPELINE, issue: m.issue, kind: p.kind, pr: p.pr,
+    })) continue;
+    const attempts = counters[`${m.issue}::${p.kind}::${p.pr}`];
+    const notice = autoRecheckNotice.buildCeilingNotice({
+      issue: m.issue, kind: p.kind, pr: p.pr, attempts,
+    });
+    try {
+      const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+      fs.mkdirSync(ghQueueDir, { recursive: true });
+      encolarOrdenGithub(
+        path.join(ghQueueDir, `${m.issue}-auto-recheck-ceiling-${Date.now()}.json`),
+        { action: 'comment', issue: Number(m.issue), body: notice.comment },
+      );
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] error encolando escalada por techo #${m.issue}: ${e.message}`);
+    }
+    log('desbloqueo', `[auto-recheck] 🚨 #${m.issue} agotó ${attempts} auto-destrabes para ${p.kind}/PR #${p.pr}; queda en needs-human`);
+    try { sendTelegram(notice.telegram); } catch {}
+  }
 
   for (const m of toRelease) {
     const p = m.predicate;
     const obs = m.observed_now || {};
     // Sanitizado + truncado: `head_ref` y `gate` terminan en el comentario del
     // issue y en Telegram, y otro agente puede leer ese texto después.
-    const safeHeadRef = sanitizePipelineText(String(p.head_ref || '')).slice(0, 120);
+    const safeHeadRef = autoRecheckNotice.middleEllipsis(sanitizePipelineText(String(p.head_ref || '')), 120);
     const before = p.observed || {};
     const safeGate = sanitizePipelineText(String(before.gate || 'desconocido')).slice(0, 60);
     const safeHttp = Number.isFinite(Number(before.httpStatus)) ? Number(before.httpStatus) : '?';
@@ -21566,14 +21592,14 @@ async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
           action: 'comment',
           issue: Number(m.issue),
           body: [
-            '## 🔓 Auto-destrabado por el pipeline',
+            '## 🔓 Auto-destrabado — la causa verificable dejó de cumplirse',
             '',
             `Este issue estaba en \`needs-human\` con una causa **verificable** registrada, y esa causa ya no se cumple.`,
             '',
             '| | Cuando se congeló | Ahora |',
             '|---|---|---|',
             `| PR | #${p.pr} | #${p.pr} |`,
-            `| Rama | \`${safeHeadRef}\` | \`${sanitizePipelineText(String(obs.headRefName || '?')).slice(0, 120)}\` |`,
+            `| Rama | \`${safeHeadRef}\` | \`${autoRecheckNotice.middleEllipsis(sanitizePipelineText(String(obs.headRefName || '?')), 120)}\` |`,
             `| Gate | \`${safeGate}\` (HTTP ${safeHttp}) | — |`,
             // La columna "cuando se congeló" sale de `observed`, que es NARRATIVA
             // del productor del freeze y nunca entró a la decisión. Si un campo no
