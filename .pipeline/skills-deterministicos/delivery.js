@@ -2824,6 +2824,14 @@ async function main() {
     } finally {
         const totalMs = Date.now() - startedAt;
 
+        // #6496 CA-14 — INVARIANTE: un veredicto caduco jamás lleva SHA de merge.
+        // Hoy es redundante (el gate corta antes de que `mergeSha` se asigne, y
+        // sólo se asigna en la rama de merge confirmado), y así tiene que
+        // quedarse: es la afirmación explícita de que "entrega frenada" y
+        // "entrega mergeada" son estados excluyentes. `lib/delivery-status.js`
+        // deriva "entregado" EXCLUSIVAMENTE de este campo.
+        if (veredictoCaduco) mergeSha = null;
+
         const reportLines = [
             // #6496 — el veredicto caduco sale con exit 0 (la reparación ya está
             // encolada) pero NO es una entrega: el encabezado se deriva del flag
@@ -2888,7 +2896,7 @@ async function main() {
             } : {}),
             delivery_pr_number: prNumber,
             delivery_pr_url: prUrl,
-            delivery_merge_sha: veredictoCaduco ? null : mergeSha,
+            delivery_merge_sha: mergeSha,
             delivery_labels: labelsApplied.join(','),
             delivery_duration_ms: totalMs,
             delivery_phases: JSON.stringify(phases),
