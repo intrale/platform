@@ -244,3 +244,247 @@ test('#4745: dep OPEN → permanece; dep pasa a CLOSED → se libera (CA-4)', ()
   assert.equal(out.toRelease.length, 1);
   assert.equal(out.toRelease[0].issue, 4745);
 });
+
+// =============================================================================
+// #6611 — selectVerifiableHumanBlocksToRelease
+//
+// Los 3 escenarios Gherkin del issue + las ramas de rechazo del fail-closed.
+// TODA la suite es sin red: las observaciones se inyectan.
+// =============================================================================
+
+const { selectVerifiableHumanBlocksToRelease } = require('../brazo-desbloqueo-core');
+
+const PR_6611 = 6593;
+const ISSUE_6611 = 6145;
+const HEAD_6611 = 'agent/6145-turno-huerfano';
+
+function markerVerificable(over = {}) {
+  return {
+    issue: ISSUE_6611,
+    precondition: {
+      type: 'verifiable',
+      predicate: {
+        kind: 'pr_merge_blocked',
+        pr: PR_6611,
+        head_ref: HEAD_6611,
+        observed: { httpStatus: 405, mergeStateStatus: 'BLOCKED', gate: 'branch-protection-other' },
+        ...(over.predicate || {}),
+      },
+    },
+  };
+}
+
+// Observación "todo verde": las 5 condiciones con valor dentro de su enum.
+function obsVerde(over = {}) {
+  return {
+    [String(PR_6611)]: {
+      state: 'OPEN',
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+      statusCheckRollup: [{ conclusion: 'SUCCESS' }, { conclusion: 'SKIPPED' }],
+      headRefName: HEAD_6611,
+      ...over,
+    },
+  };
+}
+
+test('#6611 Gherkin 1 - la causa desaparecio: el marker entra a toRelease', () => {
+  const out = selectVerifiableHumanBlocksToRelease({
+    markers: [markerVerificable()], observations: obsVerde(),
+  });
+  assert.equal(out.toRelease.length, 1);
+  assert.equal(out.blocked.length, 0);
+  assert.equal(out.toRelease[0].issue, ISSUE_6611);
+  assert.equal(out.toRelease[0].predicate.pr, PR_6611);
+});
+
+test('#6611 Gherkin 2 - lectura fallida del PR: sigue bloqueado, no libera', () => {
+  // Observación ausente por completo (gh falló, el PR no entró al mapa).
+  let out = selectVerifiableHumanBlocksToRelease({
+    markers: [markerVerificable()], observations: {},
+  });
+  assert.equal(out.toRelease.length, 0);
+  assert.equal(out.blocked[0].reason, 'observacion-ilegible');
+
+  // Observación presente pero no-objeto.
+  out = selectVerifiableHumanBlocksToRelease({
+    markers: [markerVerificable()], observations: { [String(PR_6611)]: 'boom' },
+  });
+  assert.equal(out.toRelease.length, 0);
+  assert.equal(out.blocked[0].reason, 'observacion-ilegible');
+});
+
+test('#6611 Gherkin 3 - juicio humano genuino: ni toRelease ni blocked (intocable)', () => {
+  const humano = { issue: 999, precondition: { type: 'human_judgment' } };
+  const sinPrecondicion = { issue: 998 };
+  const dependencia = { issue: 997, precondition: { type: 'dependency', depends_on: [1] } };
+  const out = selectVerifiableHumanBlocksToRelease({
+    markers: [humano, sinPrecondicion, dependencia], observations: obsVerde(),
+  });
+  assert.equal(out.toRelease.length, 0, 'no se libera');
+  assert.equal(out.blocked.length, 0, 'ni siquiera se lista como candidato retenido');
+});
+
+test('#6611 - rollup vacio con mergeable y mergeStateStatus en enum libera; rollup null no libera', () => {
+  // `[]` = PR sin checks. Las 4 condiciones previas ya llegaron con valor del
+  // enum y CLEAN es el veredicto de GitHub sobre la protección de rama.
+  let out = selectVerifiableHumanBlocksToRelease({
+    markers: [markerVerificable()], observations: obsVerde({ statusCheckRollup: [] }),
+  });
+  assert.equal(out.toRelease.length, 1, 'rollup [] libera');
+
+  // `null` = no se pudo leer. null != [].
+  out = selectVerifiableHumanBlocksToRelease({
+    markers: [markerVerificable()], observations: obsVerde({ statusCheckRollup: null }),
+  });
+  assert.equal(out.toRelease.length, 0, 'rollup null NO libera');
+  assert.equal(out.blocked[0].reason, 'rollup-ilegible');
+
+  // Ausente y no-array tampoco.
+  for (const bad of [undefined, 'x', 42, {}]) {
+    out = selectVerifiableHumanBlocksToRelease({
+      markers: [markerVerificable()], observations: obsVerde({ statusCheckRollup: bad }),
+    });
+    assert.equal(out.toRelease.length, 0, 'rollup ' + JSON.stringify(bad) + ' NO libera');
+  }
+});
+
+test('#6611 - estados fuera del enum no liberan (nada es verde por descarte)', () => {
+  const casos = [
+    [{ state: 'CLOSED' }, 'pr-no-abierto'],
+    [{ state: 'MERGED' }, 'pr-no-abierto'],
+    [{ state: null }, 'pr-no-abierto'],
+    [{ mergeable: 'UNKNOWN' }, 'pr-no-mergeable'],
+    [{ mergeable: 'CONFLICTING' }, 'pr-no-mergeable'],
+    [{ mergeable: null }, 'pr-no-mergeable'],
+    [{ mergeStateStatus: 'BLOCKED' }, 'merge-state-no-clean'],
+    [{ mergeStateStatus: 'UNSTABLE' }, 'merge-state-no-clean'],
+    [{ mergeStateStatus: null }, 'merge-state-no-clean'],
+  ];
+  for (const [over, esperado] of casos) {
+    const out = selectVerifiableHumanBlocksToRelease({
+      markers: [markerVerificable()], observations: obsVerde(over),
+    });
+    assert.equal(out.toRelease.length, 0, JSON.stringify(over) + ' no debe liberar');
+    assert.equal(out.blocked[0].reason, esperado);
+  }
+});
+
+test('#6611 - un check no-verde (failing/pending/unusable) no libera', () => {
+  const nodos = [
+    { conclusion: 'FAILURE' },
+    { status: 'IN_PROGRESS' },
+    // COMPLETED sin decir cómo: no es verde por descarte.
+    { status: 'COMPLETED', conclusion: null },
+    { conclusion: 'INVENTADO' },
+    null,
+  ];
+  for (const nodo of nodos) {
+    const out = selectVerifiableHumanBlocksToRelease({
+      markers: [markerVerificable()],
+      observations: obsVerde({ statusCheckRollup: [{ conclusion: 'SUCCESS' }, nodo] }),
+    });
+    assert.equal(out.toRelease.length, 0, JSON.stringify(nodo) + ' no debe liberar');
+    assert.equal(out.blocked[0].reason, 'checks-no-verdes');
+  }
+});
+
+test('#6611 - binding head_ref: manda el observado, no el declarado', () => {
+  // El PR existe y está verde, pero su rama NO es la del predicado.
+  let out = selectVerifiableHumanBlocksToRelease({
+    markers: [markerVerificable()],
+    observations: obsVerde({ headRefName: 'agent/9999-otro-issue' }),
+  });
+  assert.equal(out.toRelease.length, 0);
+  assert.equal(out.blocked[0].reason, 'head-ref-no-coincide-con-el-declarado');
+
+  // Un predicado que declara una rama que SI coincide con la observada, pero
+  // que no pertenece al issue: apuntar a cualquier PR verde del repo no alcanza.
+  out = selectVerifiableHumanBlocksToRelease({
+    markers: [markerVerificable({ predicate: { head_ref: 'main' } })],
+    observations: obsVerde({ headRefName: 'main' }),
+  });
+  assert.equal(out.toRelease.length, 0);
+  assert.equal(out.blocked[0].reason, 'head-ref-no-pertenece-al-issue');
+});
+
+test('#6611 CA-8 - techo de auto-destrabes alcanzado: deja de liberar', () => {
+  const key = ISSUE_6611 + '::pr_merge_blocked::' + PR_6611;
+  // Por debajo del techo: libera.
+  for (const n of [0, 1, 2]) {
+    const out = selectVerifiableHumanBlocksToRelease({
+      markers: [markerVerificable()], observations: obsVerde(), counters: { [key]: n },
+    });
+    assert.equal(out.toRelease.length, 1, 'con ' + n + ' destrabes previos todavia libera');
+  }
+  // En el techo (3) y por encima: no libera.
+  for (const n of [3, 4, Infinity]) {
+    const out = selectVerifiableHumanBlocksToRelease({
+      markers: [markerVerificable()], observations: obsVerde(), counters: { [key]: n },
+    });
+    assert.equal(out.toRelease.length, 0, 'con ' + n + ' destrabes previos NO libera');
+    assert.equal(out.blocked[0].reason, 'techo-de-auto-destrabes-alcanzado');
+  }
+});
+
+test('#6611 - contador ilegible (Infinity, fail-closed de count()) no libera', () => {
+  const key = ISSUE_6611 + '::pr_merge_blocked::' + PR_6611;
+  const out = selectVerifiableHumanBlocksToRelease({
+    markers: [markerVerificable()], observations: obsVerde(), counters: { [key]: Infinity },
+  });
+  assert.equal(out.toRelease.length, 0);
+});
+
+test('#6611 - predicado deforme degrada a intocable (no entra a ninguna lista)', () => {
+  const deformes = [
+    { kind: 'otro_kind', pr: PR_6611, head_ref: HEAD_6611 },
+    { kind: 'pr_merge_blocked', pr: '6593', head_ref: HEAD_6611 },   // string, no entero
+    { kind: 'pr_merge_blocked', pr: 12.5, head_ref: HEAD_6611 },
+    { kind: 'pr_merge_blocked', pr: -1, head_ref: HEAD_6611 },
+    { kind: 'pr_merge_blocked', pr: 0, head_ref: HEAD_6611 },
+    { kind: 'pr_merge_blocked', pr: PR_6611, head_ref: '' },
+    { kind: 'pr_merge_blocked', pr: PR_6611 },                        // sin head_ref
+  ];
+  for (const predicate of deformes) {
+    const out = selectVerifiableHumanBlocksToRelease({
+      markers: [{ issue: ISSUE_6611, precondition: { type: 'verifiable', predicate } }],
+      observations: obsVerde(),
+    });
+    assert.equal(out.toRelease.length, 0, JSON.stringify(predicate) + ' no libera');
+    assert.equal(out.blocked.length, 0, JSON.stringify(predicate) + ' tampoco se lista');
+  }
+  // `predicate` ausente / no-objeto.
+  for (const predicate of [null, undefined, 'x', 42, []]) {
+    const out = selectVerifiableHumanBlocksToRelease({
+      markers: [{ issue: ISSUE_6611, precondition: { type: 'verifiable', predicate } }],
+      observations: obsVerde(),
+    });
+    assert.equal(out.toRelease.length + out.blocked.length, 0);
+  }
+});
+
+test('#6611 - un observed mentiroso no cambia la decision (solo narra)', () => {
+  // El productor del freeze declara que YA estaba CLEAN al congelar. Si el
+  // selector comparara "antes vs ahora", esto forzaria la liberacion.
+  const mentiroso = markerVerificable({
+    predicate: { observed: { httpStatus: 200, mergeStateStatus: 'CLEAN', gate: 'ninguno' } },
+  });
+  // Estado real ahora: sigue bloqueado.
+  const out = selectVerifiableHumanBlocksToRelease({
+    markers: [mentiroso], observations: obsVerde({ mergeStateStatus: 'BLOCKED' }),
+  });
+  assert.equal(out.toRelease.length, 0, 'el observed declarado no puede forzar el destrabe');
+  assert.equal(out.blocked[0].reason, 'merge-state-no-clean');
+});
+
+test('#6611 - entradas basura no rompen el selector', () => {
+  const out = selectVerifiableHumanBlocksToRelease({
+    markers: [null, undefined, {}, { issue: null }, 'x', 42],
+    observations: obsVerde(),
+  });
+  assert.equal(out.toRelease.length, 0);
+  assert.equal(out.blocked.length, 0);
+  // Sin argumentos tampoco lanza.
+  const vacio = selectVerifiableHumanBlocksToRelease();
+  assert.deepEqual(vacio, { toRelease: [], blocked: [] });
+});

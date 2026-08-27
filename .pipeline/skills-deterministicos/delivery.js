@@ -1775,10 +1775,75 @@ function buildGateBlockEscalation({ issue, prNumber, branch, gate, reason } = {}
     return lines.join('\n');
 }
 
+// #6611 — Gates cuya causa es RE-EVALUABLE por máquina. Enum de UNO a
+// propósito: `branch-protection-other` es el 405 con TODOS los requeridos en
+// verde, o sea "hay un control ejerciéndose que no deja rastro en el rollup"
+// (hilo de review sin resolver, revisión de Copilot, commit sin atribuir).
+// Esos controles se resuelven solos o los resuelve alguien, y cuando eso pasa
+// GitHub lo dice con `MERGEABLE`+`CLEAN`. Es verificable.
+//
+// El RESTO de los gates NO entra: `branch-protection-review` (falta una
+// aprobación humana), `codeowners-human`, `qa-gate` (gate de QA del proyecto),
+// `branch-protection-checks-red`, `branch-protection-unreadable` y
+// `checks-timeout` son juicio humano o lecturas fallidas. Quedan intocables.
+const VERIFIABLE_GATES = Object.freeze(['branch-protection-other']);
+
+/**
+ * #6611 — ÚNICO emisor autorizado del predicado verificable.
+ *
+ * Se registra en un sidecar propio (`verifiable-predicate-store`), NO en el
+ * motivo YAML del rechazo: los motivos los escribe un agente LLM y
+ * `classifyPrecondition` los lee, así que un predicado que entrara por ahí
+ * dejaría a un agente auto-destrabarse un freeze humano.
+ *
+ * Fail-open puro: si el registro falla, el freeze ocurre igual y queda como
+ * juicio humano — que es el comportamiento de hoy.
+ */
+function recordVerifiablePredicate({ issue, prNumber, branch, gate, observed, log: logArg } = {}) {
+    // El logger es opcional: este helper jamás puede ser la causa de que falle
+    // el escalado del gate, y la rama de PR inválido loguea antes del try.
+    const log = typeof logArg === 'function' ? logArg : () => {};
+    if (!VERIFIABLE_GATES.includes(gate)) return false;
+    // La COERCIÓN vive en el borde; el validador del store es estricto a
+    // propósito (mismo criterio que `human-block.normalizePrecondition`).
+    const pr = Number.parseInt(prNumber, 10);
+    if (!Number.isInteger(pr) || pr <= 0) {
+        log('[delivery] predicado verificable (#6611) omitido: PR inválido (' + String(prNumber) + ')');
+        return false;
+    }
+    try {
+        const store = require('../lib/verifiable-predicate-store');
+        const ok = store.record({
+            pipelineDir: path.join(REPO_ROOT, '.pipeline'),
+            issue,
+            predicate: {
+                kind: 'pr_merge_blocked',
+                pr,
+                head_ref: branch,
+                // Narrativa para el comentario y la auditoría. NUNCA decide.
+                observed: {
+                    httpStatus: observed && observed.httpStatus != null ? observed.httpStatus : null,
+                    mergeStateStatus: (observed && observed.mergeStateStatus) || 'BLOCKED',
+                    gate,
+                },
+            },
+        });
+        log('[delivery] predicado verificable (#6611) ' + (ok ? 'registrado' : 'NO registrado') + ' para PR #' + pr + ' (gate ' + gate + ')');
+        return ok;
+    } catch (e) {
+        log('[delivery] aviso: no se pudo registrar el predicado verificable: ' + ((e && e.message) || '').slice(0, 120));
+        return false;
+    }
+}
+
 // Devuelve { motivo } (human-block) para que el caller lo escriba en el marker.
-function escalateMergeGateBlock({ issue, prNumber, branch, gate, reason, timestamp, logAppend } = {}) {
+function escalateMergeGateBlock({ issue, prNumber, branch, gate, reason, timestamp, logAppend, observed } = {}) {
     const log = typeof logAppend === 'function' ? logAppend : () => {};
     const motivo = buildGateBlockMotivo({ prNumber, branch, gate, reason });
+
+    // #6611 — antes de escalar, dejar registrada la causa de forma re-evaluable
+    // (sólo para los gates verificables). El pulpo lo consume al congelar.
+    recordVerifiablePredicate({ issue, prNumber, branch, gate, observed, log });
 
     auditFailClosedDecision({
         issue,
@@ -2314,6 +2379,14 @@ async function main() {
                 const esc = escalateMergeGateBlock({
                     issue, prNumber, branch,
                     gate: outcome.gate, reason: outcome.reason, logAppend,
+                    // #6611 — narrativa del estado que motivó el gate-block.
+                    // Sólo se persiste para el gate verificable; nunca decide.
+                    observed: outcome.classification
+                        ? {
+                            httpStatus: outcome.classification.httpStatus,
+                            mergeStateStatus: 'BLOCKED',
+                        }
+                        : null,
                 });
                 motivo = esc.motivo;
                 gateBlocked = true;
@@ -2539,6 +2612,8 @@ module.exports = {
     buildGateBlockMotivo,
     buildGateBlockEscalation,
     escalateMergeGateBlock,
+    recordVerifiablePredicate,
+    VERIFIABLE_GATES,
     // #5629 — expuesto para que los tests verifiquen que los gates que frenan
     // el merge (incluidos `qa-gate` y `codeowners-human`) escalan fail-closed
     // en vez de degradar el marker a `resultado: aprobado`.
