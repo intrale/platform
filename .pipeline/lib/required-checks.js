@@ -46,6 +46,11 @@ const {
     CHECK_PENDING_STATUSES,
     CHECK_FAIL_STATES,
     CHECK_PENDING_STATES,
+    // #6599 - el cotejo nombre-contexto vive en un solo lado. Reescribirlo aca
+    // (el viejo `n.name === ctx || n.context === ctx`) daba dos matchers que
+    // divergen al primer cambio de normalizacion, y el que quede viejo lee un
+    // requerido como AUSENTE - fail-open.
+    checkMatchesContext,
 } = require('./human-block-triggers');
 
 const REQUIRED_CHECKS_VERDICTS = Object.freeze(['pending', 'blocking', 'green', 'unusable']);
@@ -162,6 +167,33 @@ function fetchRequiredContexts({ branch, ghImpl = gitOps.runGh, cwd } = {}) {
         return { ok: false, required: [], cause: 'ruleset-sin-requeridos' };
     }
     return { ok: true, required, cause: null };
+}
+
+// ---------------------------------------------------------------------------
+// toContextList - #6599
+// ---------------------------------------------------------------------------
+//
+// Proyecta los `{context, integration_id}` del ruleset a la lista de nombres
+// que consume `classifyChecks` de `human-block-triggers.js`. Existe para que
+// el clasificador de bloqueo humano NO tenga que volver a pegarle a la API:
+// la lectura ya la hizo el reader y su cache; aca solo se reexpone.
+//
+// Devuelve `null` si la entrada no es una lista. `null` ("no lei") y `[]`
+// ("lei y esta vacio") siguen siendo cosas distintas rio abajo: solo una
+// lista NO vacia con `requiredContextsRead === true` habilita el filtrado.
+function toContextList(required) {
+    if (!Array.isArray(required)) return null;
+    const out = [];
+    const vistos = new Set();
+    for (const item of required) {
+        let ctx = '';
+        if (typeof item === 'string') ctx = item.trim();
+        else if (item && typeof item === 'object' && typeof item.context === 'string') ctx = item.context.trim();
+        if (!ctx || vistos.has(ctx)) continue;
+        vistos.add(ctx);
+        out.push(ctx);
+    }
+    return out;
 }
 
 const ROLLUP_QUERY = [
@@ -360,8 +392,7 @@ function classifyRequiredChecks({
         const context = req.context.trim();
         const integrationId = Number.isInteger(req.integration_id) ? req.integration_id : null;
 
-        const candidatos = rollup.filter((n) => n && typeof n === 'object'
-            && (n.name === context || n.context === context));
+        const candidatos = rollup.filter((n) => checkMatchesContext(n, context));
 
         // 0 candidatos => PENDIENTE. Este es el delta entero de #6431: la
         // ausencia se afirma contra la lista del ruleset, no contra el vacio del
@@ -451,14 +482,27 @@ function createRequiredChecksReader({ ghImpl = gitOps.runGh, cwd, repo, baseBran
             rulesetCache = null;  // no cachear el fallo: se reintenta la proxima vuelta
             return {
                 verdict: 'unusable', cause: ruleset.cause, pending: [], failing: [], green: [], detalle: [], logLines,
+                // #6599 CA-5 - `null` + `false` = fail-closed rio abajo: el filtro de
+                // checks informativos queda DESACTIVADO y pesa todo el rollup, con el
+                // motivo ya escrito en `logLines`.
+                requiredContexts: null, requiredContextsRead: false,
             };
         }
+
+        // #6599 - la lista YA leida (y cacheada) del ruleset. Viaja en cada
+        // retorno para que `classifyChecks` la use sin una segunda llamada a la
+        // API por vuelta.
+        const requiredContexts = toContextList(ruleset.required) || [];
+        const requiredContextsRead = requiredContexts.length > 0;
 
         const rollup = fetchRollupWithApps({ prNumber, ghImpl, cwd, repo });
         if (rollup.ok !== true) {
             logLines.push(`[delivery] gate merge: no se pudo leer el estado de los checks del PR (${rollup.cause}) — se mantiene el bloqueo fail-closed`);
             return {
                 verdict: 'unusable', cause: rollup.cause, pending: [], failing: [], green: [], detalle: [], logLines,
+                // El ruleset SI se leyo: el rollup es lo que fallo. La lista sigue
+                // siendo utilizable para separar requeridos de informativos.
+                requiredContexts, requiredContextsRead,
             };
         }
 
@@ -484,12 +528,57 @@ function createRequiredChecksReader({ ghImpl = gitOps.runGh, cwd, repo, baseBran
             green: veredicto.green,
             detalle: veredicto.detalle,
             logLines,
+            requiredContexts, requiredContextsRead,
         };
+    };
+}
+
+// ---------------------------------------------------------------------------
+// createRequiredContextsCache - #6599
+// ---------------------------------------------------------------------------
+//
+// El barrido del pulpo corre cada 2 minutos sobre N PRs abiertos y necesita la
+// MISMA lista de requeridos para todos. Pagar una lectura de ruleset por PR y
+// por vuelta seria gastar cuota de API para releer un dato que cambia una vez
+// cada varios meses. Este cache lo lee una vez y lo reusa por `ttlMs`.
+//
+// Solo se cachea la lectura OK (misma disciplina que `createRequiredChecksReader`):
+// un 403 o un rate limit puntual no puede dejar el filtro apagado 10 minutos.
+// Y `ok:false` rio abajo significa "pesa todo el rollup", nunca "no se exige nada".
+function createRequiredContextsCache({
+    ghImpl = gitOps.runGh, cwd, baseBranch = 'main',
+    ttlMs = 10 * 60 * 1000, now = () => Date.now(),
+} = {}) {
+    let cached = null;   // { contexts, at }
+    return function read() {
+        let t;
+        try { t = now(); } catch { t = Date.now(); }
+        if (cached && Number.isFinite(t) && (t - cached.at) < ttlMs) {
+            return { ok: true, contexts: cached.contexts, cause: null, cached: true };
+        }
+        let res;
+        try {
+            res = fetchRequiredContexts({ branch: baseBranch, ghImpl, cwd });
+        } catch (e) {
+            // Excepcion = NO lei. Nunca "no hay requeridos".
+            return { ok: false, contexts: null, cause: 'excepcion', cached: false };
+        }
+        if (!res || res.ok !== true) {
+            return { ok: false, contexts: null, cause: (res && res.cause) || 'ruleset-ilegible', cached: false };
+        }
+        const contexts = toContextList(res.required) || [];
+        if (!contexts.length) {
+            return { ok: false, contexts: null, cause: 'ruleset-sin-requeridos', cached: false };
+        }
+        cached = { contexts, at: t };
+        return { ok: true, contexts, cause: null, cached: false };
     };
 }
 
 module.exports = {
     fetchRequiredContexts,
+    toContextList,
+    createRequiredContextsCache,
     fetchRollupWithApps,
     classifyRequiredChecks,
     validateBranchName,

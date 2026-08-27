@@ -142,9 +142,73 @@ function runAllChecks({ issue, cwd, base }) {
     const branch = git.getCurrentBranch(cwd);
     findings.push(...checks.checkBranchName(branch, { issue }));
 
-    // Fetch origin/main — best-effort, no bloqueamos si falla
+    // (#6495) Fetch origin/main — best-effort de verdad.
+    //
+    // ANTES: `hasBase = fetchRes.exit_code === 0`. El comentario decía "no
+    // bloqueamos si falla", pero el código hacía exactamente lo contrario: con
+    // el fetch en error se saltaban log/diff/stats, `commitMsgs` quedaba en []
+    // y `checkClosesIssue` emitía `pr:no-commits` — un RECHAZO que rebotaba a
+    // dev una rama con 15 commits pusheados. Un timeout de red se le facturaba
+    // al entregable.
+    //
+    // AHORA: no se emite un finding de CONTENIDO por una falla de INFRA. Pero
+    // el gate sigue siendo FAIL-CLOSED: sin base confiable el linter no corre,
+    // no aprueba.
+    //
+    // (#6495 rev-2 — regresión de seguridad que corrige este bloque)
+    // El intento anterior derivaba `hasBase` de que el ref resolviera LOCALMENTE
+    // y seguía linteando aunque el fetch hubiera fallado. Eso es fail-OPEN:
+    // `refs/remotes/origin/main` es un ref local y ESCRIBIBLE dentro del mismo
+    // worktree que el linter audita, y con el fetch caído nada lo re-sincroniza.
+    // Un `git update-ref refs/remotes/origin/main HEAD~1` mueve la base hacia
+    // adelante y deja los commits anteriores FUERA del diff linteado.
+    //
+    // PoC ejecutado sobre repo git real (fetch saboteado + ref movido a HEAD~1):
+    //   commits vistos = 1 de 2, findings = [] → APROBADO,
+    //   con el commit que contenía `AKIA…` fuera del diff. El secreto pasaba.
+    //
+    // Se verificó además que un fetch EXITOSO re-sincroniza el ref a la fuerza
+    // (`+ a2b6eb3...08de27e main -> origin/main (forced update)`), o sea que
+    // `fetchOk` es exactamente la frontera de confianza: con fetch OK la base es
+    // la del remoto; sin fetch OK la base es lo que diga el auditado.
+    //
+    // Por eso la condición es `!baseResolves || !fetchOk`: cualquiera de las dos
+    // significa "no puedo garantizar que estoy viendo el diff completo", y eso
+    // se resuelve NO opinando (exit 2 = infra), nunca aprobando.
     const fetchRes = git.fetchOrigin(cwd);
-    const hasBase = fetchRes.exit_code === 0;
+    const fetchOk = fetchRes.exit_code === 0;
+    const baseResolves = git.refExists(cwd, base);
+
+    if (!baseResolves || !fetchOk) {
+        // No hay base CONFIABLE con qué comparar: es falla de INFRA, no un
+        // defecto del entregable. Se propaga para que main() salga con exit 2
+        // (excepción) en vez de inventar un finding de contenido que rebota a
+        // dev por algo que dev no puede arreglar — y en vez de aprobar a ciegas.
+        //
+        // El código LINTER_BASE_UNAVAILABLE viaja dentro del `motivo` a
+        // propósito: `connectivity-precheck.classifyError` lo matchea como
+        // `infra`, y de ahí el pulpo reencola en la MISMA fase en lugar de
+        // devolver el issue a dev (`pulpo.js:5200`, `esReboteDeInfra`). Sin ese
+        // token el motivo cae al fallback `codigo` y reintroduce justamente el
+        // rebote-a-dev-por-red que motivó este issue: se verificó que sólo el
+        // stderr con la palabra "Timed out" clasificaba infra, mientras que
+        // "Could not resolve host" y un lock de `.git` caían en `codigo`.
+        const err = new Error(
+            'LINTER_BASE_UNAVAILABLE: '
+            + `no hay base confiable contra la cual comparar ('${base}' en ${cwd}; `
+            + `resuelve=${baseResolves}, fetch exit=${fetchRes.exit_code}: `
+            + `${(fetchRes.stderr || '').trim().slice(0, 200)}). `
+            + 'Sin fetch exitoso el remote-tracking ref es escribible por el worktree '
+            + 'auditado y no se puede garantizar que el diff esté completo: '
+            + 'falla de infraestructura, no del entregable.'
+        );
+        err.code = 'LINTER_BASE_UNAVAILABLE';
+        throw err;
+    }
+
+    const hasBase = true;
+    // La base siempre está fresca acá: sin fetch OK ya salimos por excepción.
+    const baseStale = false;
 
     const commitMsgs = hasBase ? getCommitMessages(cwd, base) : [];
     const diffText = hasBase ? getDiffText(cwd, base) : '';
@@ -176,7 +240,17 @@ function runAllChecks({ issue, cwd, base }) {
     findings.push(...checks.checkForbiddenStringsInDiff(diffText));
     findings.push(...checks.checkDiffSize(stats));
 
-    return { findings, branch, stats, commitCount: commitMsgs.length, fileCount: changedFiles.length };
+    return {
+        findings, branch, stats,
+        commitCount: commitMsgs.length,
+        fileCount: changedFiles.length,
+        // (#6495 rev-2) `baseStale` siempre es false: un fetch fallido ya salió
+        // por excepción más arriba. Se conserva el campo (y el exit code del
+        // fetch) porque los consumidores y el log lo leen, y porque deja
+        // explícito en el resultado que la base linteada fue una base fresca.
+        baseStale,
+        fetchExitCode: fetchRes.exit_code,
+    };
 }
 
 async function main() {
@@ -212,6 +286,9 @@ async function main() {
     try {
         result = runAllChecks({ issue, cwd: WORK_DIR, base: args.base });
         logAppend(`[linter] cwd=${WORK_DIR} branch=${result.branch} commits=${result.commitCount} files=${result.fileCount}`);
+        // (#6495) Dejar rastro del fetch: el falso `pr:no-commits` fue invisible
+        // en el log justamente porque el resultado del fetch no se registraba.
+        logAppend(`[linter] base='${args.base}' fetch_exit=${result.fetchExitCode} base_stale=${result.baseStale}`);
         logAppend(`[linter] diff=${result.stats.files_changed}f +${result.stats.additions} -${result.stats.deletions}`);
 
         const agg = checks.aggregate(result.findings);
