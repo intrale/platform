@@ -432,7 +432,8 @@ defectos:
 > (`evidencia`, `screenshot`), el pipeline calcula la identidad.
 >
 > La ruta debe ser **canónica y del repo principal** (`qa/evidence/**`,
-> `qa/recordings/**`, `docs/qa/**`, `.pipeline/logs/media/**`): promové el
+> `qa/recordings/**`, `docs/qa/**`; ver SEC-2 abajo para `.pipeline/logs/media/**`):
+> promové el
 > artefacto antes de que se encole el job. Un video que sólo existe en el
 > worktree del agente va a `fallido/` con motivo *"no promovido a la ruta
 > canónica"*, distinto del motivo de seguridad *"fuera de los directorios de
@@ -448,7 +449,21 @@ defectos:
 > | Vía | Qué hace | Directorios aceptados |
 > |---|---|---|
 > | estructural (`mode: structural` + `source: qa-structural`) | sella y mueve a `listo/`; **no publica** | `qa/evidence`, `qa/recordings`, `.pipeline/assets/docs`, `.pipeline/logs/media`, `docs/qa` |
-> | upload (todo el resto) | **publica** en Drive | `qa/evidence`, `qa/recordings`, `.pipeline/logs/media`, `docs/qa` |
+> | upload (todo el resto) | **publica** en Drive | `qa/evidence`, `qa/recordings`, `docs/qa` |
+>
+> ⚠️ **SEC-2 (#6497) — `.pipeline/logs/media` tampoco está en la vía de upload.**
+> Ese directorio NO es un directorio de evidencia: es el **spool de media del bot
+> de Telegram** (medido: 287 de 307 archivos son `.ogg` de narración de voz al
+> operador). Publicarlo en un link abierto exponía conversación privada.
+>
+> Tu video igual llega: si declarás `.pipeline/logs/media/qa-<issue>.mp4`, el
+> servicio lo **promueve** a `qa/evidence/<issue>/` antes de confinar y sella
+> sobre esa copia canónica (el registro queda con `file` canónico y
+> `file_declarado` con lo que declaraste). La promoción sólo aplica a archivos
+> que estén **directamente** en el spool, cuyo basename empiece con
+> `qa-<issue>` y cuya extensión sea de evidencia (`.mp4`, `.png`, `.pdf`,
+> `.xml`, …) — **nunca** audio. Cualquier otra cosa del spool va a `fallido/`.
+> Lo más seguro sigue siendo grabar directo en `qa/evidence/<issue>/`.
 >
 > `.pipeline/assets/docs` — el store de entregables de `writeDeliverable` — está
 > **fuera** de la vía de upload a propósito: ahí viven los reportes marcados

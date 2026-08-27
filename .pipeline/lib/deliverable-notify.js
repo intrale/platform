@@ -1155,10 +1155,17 @@ function buildPreview(args) {
     // desincronización entre sello y artefacto que el épico #6475 busca cerrar.
     //
     // Lo que SÍ tiene que cumplir este productor es emitir `file` dentro de
-    // `ALLOWED_EVIDENCE_DIRS` (`servicio-drive.js`): sus rutas
-    // (`.pipeline/assets/docs/**`, `.pipeline/logs/media/**`) están en el
-    // allowlist ampliado por R-4; si se agrega un destino nuevo hay que
-    // agregarlo también allá o el job va a `fallido/`.
+    // `UPLOAD_ALLOWED_DIRS` (`servicio-drive.js`): estos jobs no llevan `mode`
+    // ni `source: qa-structural`, así que caen en la vía de UPLOAD, la que
+    // termina en un link público de Drive.
+    //
+    // SEC-2 (#6497, rebote 1) — ese allowlist YA NO incluye `.pipeline/logs/
+    // media` (spool del bot de Telegram, ~95% narración de voz privada del
+    // operador). Un derivado de QA que todavía viva ahí sigue funcionando: el
+    // consumidor lo promueve a `qa/evidence/<issue>/` antes de confinar, pero
+    // sólo si el basename es `qa-<issue>…` con extensión de evidencia. Si se
+    // agrega un destino nuevo hay que agregarlo también allá o el job va a
+    // `fallido/`.
     const driveJobs = driveQueued.map((r) => {
         const relativeVideoPath = typeof r.relative === 'string' ? r.relative : '';
         const rawBasename = relativeVideoPath ? path.basename(relativeVideoPath) : '';

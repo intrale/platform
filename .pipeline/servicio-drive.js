@@ -221,15 +221,34 @@ const SEAL_ALLOWED_DIRS = [
   path.resolve(PROJECT_ROOT, 'docs', 'qa'),
 ];
 
-// Vía de UPLOAD: termina en un link público de Drive. SIN
-// `.pipeline/assets/docs`. Los jobs reales que necesitan la ampliación de R-4
-// por esta vía son `docs/qa/**` (reporte android PDF) y `.pipeline/logs/media/**`
-// (4 jobs medidos, incl. uno `mode: structural` SIN `source` → no matchea el
-// discriminador y cae acá).
+// Vía de UPLOAD: termina en un link público de Drive.
+//
+// ⚠️ SEC-2 (#6497, rebote 1) — `.pipeline/logs/media` NO ESTÁ ACÁ, A PROPÓSITO.
+//
+// La primera versión de R-4 lo agregó a ESTA lista para que los derivados de QA
+// (`qa-<issue>.mp4` re-muxeado, capturas) alcanzaran el uploader. Pero ese
+// directorio NO es un directorio de evidencia: es el SPOOL DE MEDIA DEL BOT DE
+// TELEGRAM. Medido sobre el spool real: 307 archivos, de los cuales 287 son
+// `.ogg` de narración de voz AL OPERADOR y 3 son imágenes ENTRANTES del
+// operador; sólo 14 archivos (`qa-*`) son evidencia de QA. O sea ~95% del
+// contenido es conversación privada, y el campo `file` del job lo escribe el
+// agente de QA a mano (modelo de amenaza de RS-2, #3927): meter el spool acá
+// convertía un descriptor mal formado —o malicioso— en un link
+// `{"type":"anyone","role":"reader"}` sobre audio privado del operador.
+//
+// La capa 2 (`isSensitiveDeliverable`) NO cubre esto: esos archivos no tienen
+// entrada en `.pipeline/deliverables/<issue>.json` y ese gate es fail-open ante
+// índice ausente. El containment de directorio es la única capa que decide.
+//
+// Es el MISMO razonamiento SEC-1 que ya se aplicó a `.pipeline/assets/docs`:
+// sellar != publicar. El spool queda ÚNICAMENTE en `SEAL_ALLOWED_DIRS`.
+//
+// R-4 no se rompe: los derivados legítimos de QA se PROMUEVEN a
+// `qa/evidence/<issue>/` antes del containment (`promoteSpoolEvidence`), y el
+// sello se deriva sobre esa copia canónica — que es justo lo que pide CA-3.
 const UPLOAD_ALLOWED_DIRS = [
   path.resolve(PROJECT_ROOT, 'qa', 'evidence'),
   path.resolve(PROJECT_ROOT, 'qa', 'recordings'),
-  path.resolve(PROJECT_ROOT, '.pipeline', 'logs', 'media'),
   path.resolve(PROJECT_ROOT, 'docs', 'qa'),
 ];
 
@@ -494,6 +513,95 @@ function resolveConfinedEvidence(filePath, opts = {}) {
     return { ok: false, reason: REJECT_SENSIBLE_NO_PUBLICABLE };
   }
   return { ok: true, absolute, canonical };
+}
+
+// =============================================================================
+// SEC-2 (#6497, rebote 1) — PROMOCIÓN DEL DERIVADO DE QA FUERA DEL SPOOL
+// =============================================================================
+//
+// `.pipeline/logs/media` salió del allowlist de UPLOAD (ver SEC-2 arriba). Sin
+// nada más, los 14 artefactos legítimos de QA que hoy nacen ahí — el `.mp4`
+// re-muxeado y las capturas — irían a FALLIDO y R-4 quedaría roto.
+//
+// La salida es la que pide la remediación: promover el derivado a
+// `qa/evidence/<issue>/` y sellar sobre ESA copia canónica (CA-3). La promoción
+// la hace el CONSUMIDOR, no el productor, porque el productor es justamente el
+// actor no confiable del modelo de amenaza de RS-2: si dependiera de que el
+// agente de QA copie bien, un agente que no lo hace vuelve a empujar el
+// containment hacia el spool.
+//
+// La promoción NO reabre el agujero, porque no copia cualquier cosa del spool:
+// exige una ALLOWLIST DE FORMA, el mismo mecanismo que ya vive en
+// `lib/qa-evidence-seal.js` (#6495, S-2) para este mismo directorio.
+//
+//   1. Hijo DIRECTO del spool, canonizado con `realpath`: sin subdirectorios,
+//      sin traversal, y un symlink que apunte afuera —o a otro archivo del
+//      propio spool— no pasa (se compara también el basename real).
+//   2. Basename `qa-<issue>` con borde no numérico, atado al issue DEL JOB.
+//      Descarta `1787139634397-qO_M9j0E.ogg` (narración al operador) y
+//      `img-1787320124021.jpg` (media entrante). Medido sobre el spool real:
+//      0 de 287 `.ogg` empiezan con `qa-`.
+//   3. Extensión en una allowlist de evidencia PUBLICABLE. El audio queda
+//      deliberadamente afuera: en este spool el audio ES la conversación
+//      privada del operador, nunca evidencia de QA.
+//
+// Si algo de eso no da, no hay promoción y el path queda fuera del allowlist de
+// upload → FALLIDO con `fuera-de-allowlist`. Fail-closed.
+const SPOOL_DIR = path.resolve(PROJECT_ROOT, '.pipeline', 'logs', 'media');
+
+// Espejo de `MEDIA_EXTENSION` de `lib/qa-evidence-seal.js` + `.xml` (los
+// `qa-<issue>-test-results.xml` de la cola real). SIN audio.
+const SPOOL_PROMOTABLE_EXT = /\.(?:mp4|webm|mkv|mov|m4v|avi|gif|png|jpe?g|pdf|xml)$/i;
+
+// Devuelve `{ absolute, basename }` si el path declarado es un derivado de QA
+// promovible desde el spool, o `null`. No copia nada ni lanza.
+function spoolPromotionCandidate(filePath, issue) {
+  if (typeof filePath !== 'string' || !filePath.trim()) return null;
+  const id = String(issue == null ? '' : issue);
+  // Un issue real es un entero corto. El tope de dígitos evita que un timestamp
+  // de 13 dígitos (el nombre de los `.ogg`) pueda hacerse pasar por issue.
+  if (!/^[1-9]\d{0,7}$/.test(id)) return null;
+
+  // El shape se valida sobre el basename REAL (post-realpath), no sobre el
+  // string declarado: un symlink `qa-6497.mp4` que apunta a
+  // `1787139634397-qO_M9j0E.ogg` no puede colarse por su nombre declarado.
+  let spool;
+  try { spool = fs.realpathSync(SPOOL_DIR); } catch { return null; }
+  let absolute;
+  try { absolute = fs.realpathSync(path.resolve(PROJECT_ROOT, filePath)); } catch { return null; }
+  // Hijo DIRECTO del spool, ya canonizado: cubre traversal y symlink saliente.
+  if (path.dirname(absolute) !== spool) return null;
+  try { if (!fs.statSync(absolute).isFile()) return null; } catch { return null; }
+
+  const basename = path.basename(absolute);
+  if (!new RegExp(`^qa-${id}(?:[^0-9].*)?$`).test(basename)) return null;
+  if (!SPOOL_PROMOTABLE_EXT.test(basename)) return null;
+  return { absolute, basename };
+}
+
+// Promueve el derivado a `qa/evidence/<issue>/<basename>` y devuelve la ruta
+// RELATIVA al repo (la que se le pasa después al containment), o `null` si no
+// hay nada que promover. Idempotente: si la copia canónica ya existe con el
+// mismo tamaño, no recopia (los `.mp4` de QA pesan decenas de MB).
+function promoteSpoolEvidence(filePath, issue) {
+  const cand = spoolPromotionCandidate(filePath, issue);
+  if (!cand) return null;
+  const destDir = path.join(PROJECT_ROOT, 'qa', 'evidence', String(issue));
+  const dest = path.join(destDir, cand.basename);
+  try {
+    ensureDir(destDir);
+    const origen = fs.statSync(cand.absolute);
+    let yaEsta = false;
+    try { yaEsta = fs.statSync(dest).size === origen.size; } catch { yaEsta = false; }
+    if (!yaEsta) fs.copyFileSync(cand.absolute, dest);
+    return path.relative(realProjectRoot(), fs.realpathSync(dest))
+      .split(path.sep).join('/');
+  } catch (e) {
+    // Un fallo de copia NO es un pase libre: se devuelve `null` y el path
+    // original queda fuera del allowlist de upload → FALLIDO.
+    log(`SEC-2: no se pudo promover ${cand.basename} a qa/evidence/${issue}: ${e.message}`);
+    return null;
+  }
 }
 
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
@@ -791,7 +899,22 @@ async function processJob(file) {
     // corre en AMBAS: la cola de Drive es la cola de publicación, y SEC-1 dice
     // que un entregable sensible nunca se encola.
     const structural = isStructuralEvidenceJob(data);
-    const confined = resolveConfinedEvidence(videoFile, {
+
+    // SEC-2 (#6497, rebote 1) — la vía de UPLOAD ya no alcanza el spool del bot
+    // de Telegram. Si el job declara un derivado de QA que todavía vive ahí, se
+    // promueve primero a `qa/evidence/<issue>/` y TODO lo que sigue
+    // (containment, sello, subida) opera sobre esa copia canónica — CA-3. La
+    // vía estructural no promueve: sella en el lugar, que es lo que ya hacía.
+    let evidenceRef = videoFile;
+    if (!structural) {
+      const promovido = promoteSpoolEvidence(videoFile, issue);
+      if (promovido) {
+        log(`Job ${file.name}: derivado de QA promovido del spool a ${promovido} (SEC-2)`);
+        evidenceRef = promovido;
+      }
+    }
+
+    const confined = resolveConfinedEvidence(evidenceRef, {
       dirs: structural ? SEAL_ALLOWED_DIRS : UPLOAD_ALLOWED_DIRS,
       issue,
     });
@@ -1037,6 +1160,11 @@ module.exports = {
   SEAL_ALLOWED_DIRS,
   UPLOAD_ALLOWED_DIRS,
   isSensitiveDeliverable,
+  // SEC-2 (#6497, rebote 1) - promocion del derivado de QA fuera del spool.
+  SPOOL_DIR,
+  SPOOL_PROMOTABLE_EXT,
+  spoolPromotionCandidate,
+  promoteSpoolEvidence,
   REJECT_SENSIBLE_NO_PUBLICABLE,
   isWithinAllowedEvidenceDir,
   isUnderBase,

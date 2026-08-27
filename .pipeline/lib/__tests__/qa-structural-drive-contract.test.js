@@ -371,7 +371,9 @@ test('R-4 · el allowlist acepta los productores reales de la cola, por vía', (
         ['qa/evidence/4899/qa-4899.mp4', true, true],
         ['qa/evidence/qa-2017.mp4', true, true],                  // plano, sin subdir de issue
         ['qa/recordings/qa-1920.mp4', true, true],
-        ['.pipeline/logs/media/qa-1881.mp4', true, true],
+        // SEC-2 (#6497, rebote 1): el spool del bot de Telegram sella SI (la
+        // via estructural no publica) y publica NO.
+        ['.pipeline/logs/media/qa-1881.mp4', true, false],
         ['docs/qa/reporte-1121-carrito-pedidos.pdf', true, true],
         // SEC-1: store de entregables `sensible: true`. Sella sí, publica NO.
         ['.pipeline/assets/docs/4899/qa-verificacion-4899.md', true, false],
@@ -416,7 +418,7 @@ test('SEC-1 · los alias exportados apuntan al allowlist restrictivo (fail-close
     // Un consumidor viejo que importe cualquiera de los dos nombres hereda el
     // guard FUERTE, nunca el permisivo.
     assert.equal(drive.ALLOWED_EVIDENCE_DIRS, drive.UPLOAD_ALLOWED_DIRS);
-    assert.equal(drive.UPLOAD_ALLOWED_DIRS.length, 4);
+    assert.equal(drive.UPLOAD_ALLOWED_DIRS.length, 3);
     assert.equal(drive.SEAL_ALLOWED_DIRS.length, 5);
 });
 
@@ -756,6 +758,172 @@ test('el containment no explota si un directorio del allowlist no existe', () =>
     try { fs.rmSync(inexistente, { recursive: true, force: true }); } catch { /* noop */ }
     assert.doesNotThrow(() => drive.isWithinAllowedEvidenceDir(path.join(inexistente, 'x.pdf')));
     assert.equal(drive.isWithinAllowedEvidenceDir(path.join(inexistente, 'x.pdf')), false);
+});
+
+// =============================================================================
+// SEC-2 (#6497, rebote 1) — el spool del bot de Telegram NO es publicable
+//
+// Regresión que introdujo el primer intento de R-4: `.pipeline/logs/media`
+// entró al allowlist de UPLOAD, la vía que termina en un link
+// `{"type":"anyone","role":"reader"}`. Ese directorio es el spool del bot:
+// medido, 287 de 307 archivos son `.ogg` de narración de voz al operador.
+// =============================================================================
+
+const SPOOL_REL = '.pipeline/logs/media';
+
+test('SEC-2 · el allowlist de upload NO incluye el spool de media del bot', () => {
+    const spool = path.resolve(drive.PROJECT_ROOT, '.pipeline', 'logs', 'media');
+    assert.ok(
+        drive.SEAL_ALLOWED_DIRS.includes(spool),
+        'la vía estructural sí lo acepta: sella y mueve a listo/, no publica',
+    );
+    assert.ok(
+        !drive.UPLOAD_ALLOWED_DIRS.includes(spool),
+        'la vía de upload publica un link ABIERTO de Drive: el spool del bot de '
+        + 'Telegram (~95% narración de voz privada del operador) NUNCA puede '
+        + 'estar en su allowlist (SEC-2)',
+    );
+});
+
+test('SEC-2 · PoC del rechazo: ningún artefacto del spool pasa la vía de upload tal cual', () => {
+    const casos = [
+        '1787139634397-qO_M9j0E.ogg',   // narración de voz AL operador
+        '1787142555894-knO-JT0E.ogg',
+        'img-1787320124021.jpg',        // media ENTRANTE del operador
+        'qa-4806-screenshot-final.png', // hasta el propio derivado de QA
+        'qa-1881.mp4',
+    ];
+    for (const base of casos) {
+        const rel = `${SPOOL_REL}/${base}`;
+        writeEvidence(rel, 'x');
+        assert.equal(
+            drive.isWithinAllowedEvidenceDir(path.join(SVC_PROJECT, rel), drive.UPLOAD_ALLOWED_DIRS),
+            false,
+            `${rel} no puede entrar por el allowlist de upload`,
+        );
+        assert.equal(
+            drive.resolveConfinedEvidence(rel, { dirs: drive.UPLOAD_ALLOWED_DIRS }).ok,
+            false,
+            `${rel} no puede pasar el containment de la vía que publica`,
+        );
+    }
+});
+
+test('SEC-2 · el gate de promoción sólo deja pasar el derivado de QA del issue', () => {
+    const permitidos = [
+        ['qa-7101.mp4', 7101],
+        ['qa-7101-rebote.mp4', 7101],
+        ['qa-7101-screenshot-final.png', 7101],
+        ['qa-7101-test-results.xml', 7101],
+    ];
+    for (const [base, issue] of permitidos) {
+        writeEvidence(`${SPOOL_REL}/${base}`, 'x');
+        assert.ok(
+            drive.spoolPromotionCandidate(`${SPOOL_REL}/${base}`, issue),
+            `${base} es un derivado legítimo de QA del #${issue} y debe promoverse`,
+        );
+    }
+
+    const vetados = [
+        // El corazón del hallazgo: audio del operador, con CUALQUIER issue.
+        ['1787139634397-qO_M9j0E.ogg', 7101],
+        // …y con el timestamp declarado como issue, que es el bypass obvio del
+        // binding por número.
+        ['1787139634397-qO_M9j0E.ogg', 1787139634397],
+        ['qa-7101.ogg', 7101],          // se llama qa- pero es audio
+        ['qa-7101.mp3', 7101],
+        ['img-1787320124021.jpg', 7101],
+        ['qa-71011.mp4', 7101],         // borde numérico: es de OTRO issue
+        ['qa-7102.mp4', 7101],          // issue ajeno
+        ['inventado.mp4', 7101],
+    ];
+    for (const [base, issue] of vetados) {
+        writeEvidence(`${SPOOL_REL}/${base}`, 'x');
+        assert.equal(
+            drive.spoolPromotionCandidate(`${SPOOL_REL}/${base}`, issue),
+            null,
+            `${base} (issue ${issue}) NO puede promoverse desde el spool`,
+        );
+    }
+
+    // Nada del spool alcanza la vía de upload por sí solo, ni siquiera lo
+    // promovible: la promoción es la ÚNICA puerta y siempre copia antes.
+    assert.equal(drive.spoolPromotionCandidate(`${SPOOL_REL}/subdir/qa-7101.mp4`, 7101), null,
+        'sin profundidad libre: un nivel dentro del spool y nada más');
+    assert.equal(drive.spoolPromotionCandidate('qa/evidence/7101/qa-7101.mp4', 7101), null,
+        'lo que ya está en el recinto canónico no se promueve');
+});
+
+test('SEC-2 · R-4 sigue vivo: el derivado de QA se promueve, se sella y conserva la ruta declarada', () => {
+    const bytes = Buffer.from('video-derivado-de-qa');
+    writeEvidence(`${SPOOL_REL}/qa-7202.mp4`, bytes);
+
+    // Forma REAL del job de la cola: `mode: structural` SIN `source` -> no
+    // matchea el discriminador y cae en la via de UPLOAD. Es exactamente el
+    // caso que motivo la ampliacion de R-4.
+    const data = {
+        action: 'upload',
+        file: `${SPOOL_REL}/qa-7202.mp4`,
+        issue: 7202,
+        folder: 'QA/evidence/7202',
+        description: 'QA video con relato narrado #7202',
+        mode: 'structural',
+    };
+    assert.equal(drive.isStructuralEvidenceJob(data), false,
+        'sin `source: qa-structural` el job va por la via que publica');
+
+    // 1. sin promocion, el spool ya no alcanza la via de upload.
+    assert.equal(
+        drive.resolveConfinedEvidence(data.file, { dirs: drive.UPLOAD_ALLOWED_DIRS, issue: 7202 }).ok,
+        false,
+        'el spool salio del allowlist de upload (SEC-2)',
+    );
+
+    // 2. con la promocion que corre en processJob, el derivado llega igual.
+    const promovido = drive.promoteSpoolEvidence(data.file, 7202);
+    assert.equal(promovido, 'qa/evidence/7202/qa-7202.mp4',
+        'CA-3: el derivado se promueve al recinto canonico');
+    assert.ok(
+        fs.existsSync(path.join(SVC_PROJECT, 'qa', 'evidence', '7202', 'qa-7202.mp4')),
+        'la copia canonica tiene que existir en el repo',
+    );
+
+    const confined = drive.resolveConfinedEvidence(promovido, {
+        dirs: drive.UPLOAD_ALLOWED_DIRS,
+        issue: 7202,
+    });
+    assert.equal(confined.ok, true, 'R-4 no se rompe: el derivado legitimo sigue publicandose');
+
+    // 3. el sello se deriva sobre la copia canonica, no sobre el spool.
+    drive.sealJob(data, confined);
+    assert.equal(data.file, 'qa/evidence/7202/qa-7202.mp4');
+    assert.equal(data.file_declarado, `${SPOOL_REL}/qa-7202.mp4`,
+        'la ruta declarada queda para trazabilidad');
+    assert.equal(data.sha256, sha256Of(bytes));
+    assert.equal(data.bytes, bytes.length);
+
+    // 4. idempotente: re-promover no rompe ni cambia la ruta canonica.
+    assert.equal(drive.promoteSpoolEvidence(`${SPOOL_REL}/qa-7202.mp4`, 7202), promovido);
+});
+
+test('SEC-2 · un job que apunta al audio del operador va a FALLIDO sin sello', async () => {
+    writeEvidence(`${SPOOL_REL}/1787139634397-qO_M9j0E.ogg`, 'audio-privado-del-operador');
+    const { listo, fallido } = await runJob('qa-7303-video.json', {
+        action: 'upload',
+        file: `${SPOOL_REL}/1787139634397-qO_M9j0E.ogg`,
+        issue: 7303,
+        folder: 'QA/evidence/7303',
+        description: 'payload malicioso #7303',
+    });
+
+    assert.equal(listo, null, 'la narración de voz del operador NO puede publicarse');
+    assert.ok(fallido, 'tiene que ir a fallido/');
+    assert.equal(fallido.sha256, undefined,
+        'CA-5 / R-7: lo que no pasa el guard NUNCA obtiene hash');
+    assert.ok(
+        !fs.existsSync(path.join(SVC_PROJECT, 'qa', 'evidence', '7303', '1787139634397-qO_M9j0E.ogg')),
+        'y tampoco puede quedar promovido al recinto de evidencia',
+    );
 });
 
 test.after(() => {
