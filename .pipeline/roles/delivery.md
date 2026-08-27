@@ -33,6 +33,15 @@ Sos el agente de entrega de Intrale. Hacés el merge final a main.
 
 ### Contrato `veredicto_caduco` (#6496) — LEER SIEMPRE la última línea de stdout
 
+> **Dónde corre el gate (rev-2).** La fase `entrega` del pipeline NO te usa a vos
+> por default: corre el skill determinístico
+> `.pipeline/skills-deterministicos/delivery.js` (Node puro, sin LLM), que aplica
+> el mismo GATE 3 por su cuenta y escribe el marker solo. Vos entrás por el CLI
+> `node .pipeline/delivery.js` — el fallback LLM y el uso manual del operador.
+> **Los dos caminos consumen la misma política**
+> (`.pipeline/lib/delivery/freshness-gate.js`) y emiten el mismo contrato, así
+> que lo que sigue vale igual para vos.
+
 `node .pipeline/delivery.js` **sale con código 0 en dos situaciones distintas**, y
 sólo una es una entrega. Antes de escribir tu resultado, mirá la **última línea
 de stdout**: si es un JSON con `"estado": "veredicto_caduco"`, la entrega **no

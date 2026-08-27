@@ -26,6 +26,10 @@ const { classifyChecks, describeInformationalChecks } = require('../lib/human-bl
 // base. Se importa el modulo entero (no funciones sueltas) para que el wiring
 // de produccion arme el reader con `EXPECTED_PR_REPO` y la rama base del merge.
 const requiredChecks = require('../lib/required-checks');
+// #6496 — GATE 3: caducidad del veredicto sellado de QA. La POLÍTICA vive en un
+// módulo compartido; este skill (el camino REAL de la fase `entrega`) y el CLI
+// `.pipeline/delivery.js` la consumen, no la duplican.
+const freshnessGate = require('../lib/delivery/freshness-gate');
 
 // #5420 — Ref desde la que se carga CODEOWNERS para el gate de merge. Fija a
 // `origin/main` a propósito: el head del PR podría estar modificando el propio
@@ -62,6 +66,20 @@ const WORK_DIR = process.env.PIPELINE_WORKTREE || process.cwd() || REPO_ROOT;
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 
 const QA_LABELS_OK = new Set(['qa:passed', 'qa:skipped']);
+
+// #6496 — Raíz del ESTADO del pipeline para el GATE 3.
+//
+// NO es `path.join(WORK_DIR, '.pipeline')`: `entrega` corre en el worktree del
+// issue, cuyo `.pipeline/` tiene la estructura versionada pero ningún estado
+// vivo y ningún servicio drenándolo. Los dropfiles de
+// `desarrollo/verificacion/procesado/`, el contador de caducidad y la cola de
+// `servicios/github` viven en el `.pipeline/` del REPO PRINCIPAL.
+//
+// Función (no constante) a propósito: la env se lee en el momento de la llamada,
+// así los tests pueden apuntar el estado a un tmpdir con `PIPELINE_STATE_DIR`.
+function statePipelineDir() {
+    return freshnessGate.resolveStatePipelineDir({ fallbackDir: path.join(REPO_ROOT, '.pipeline') });
+}
 
 function parseArgs(argv) {
     const args = { issue: null, trabajando: null, autoMerge: true, dryRun: false };
@@ -267,9 +285,22 @@ const QA_GATE_BLOCKING = new Set(['qa:failed', 'qa:pending']);
  * @returns {{ok:false, reason:string, labels?:string[], branch?:string}
  *          |{ok:true, target:string, toAdd:string[], toRemove:string[]}}
  */
-function buildPrGatePropagation({ issue, prNumber, branch, issueLabels, prLabels, prHead } = {}) {
+function buildPrGatePropagation({
+    issue, prNumber, branch, issueLabels, prLabels, prHead, pipelineDir, requeueOpen,
+} = {}) {
     const issueNum = parseInt(issue, 10);
     if (!Number.isInteger(issueNum) || issueNum <= 0) return { ok: false, reason: 'sin_issue' };
+    // #6496 CA-12 / SEC-C — mientras haya un re-encolado de verificación ABIERTO,
+    // el gate del issue NO viaja al PR. El label del issue es la autoridad que lee
+    // esta propagación; si un veredicto caducó, `requeueVerification` ya lo degradó
+    // a `qa:pending` y hay una orden en vuelo para volver a verificar. Propagar
+    // igual —aunque sea `qa:pending`— convierte una ventana de re-verificación en
+    // una afirmación sobre el PR que nadie hizo. Fail-closed: `isRequeueOpen`
+    // contesta `true` ante cualquier error que no sea "la cola no existe".
+    const requeueAbierto = typeof requeueOpen === 'function' ? requeueOpen : freshnessGate.isRequeueOpen;
+    if (requeueAbierto({ pipelineDir: pipelineDir || statePipelineDir(), issue: issueNum })) {
+        return { ok: false, reason: 're_encolado_de_verificacion_abierto' };
+    }
     const pr = parseInt(prNumber, 10);
     if (!Number.isInteger(pr) || pr <= 0) return { ok: false, reason: 'pr_no_resuelto' };
 
@@ -997,6 +1028,9 @@ function attemptMergeWithGatesInner({
     // Resultado del pre-check local `git merge-tree`. SÓLO se usa para loguear
     // la contradicción con el servidor — nunca para decidir (CA-7).
     mergeTreeClean = false,
+    // #6496 CA-15 / SEC-F — SHA que pasó GATE 3 (caducidad del veredicto de QA).
+    // Cuando viene, el merge sólo procede si el head del PR es ese mismo commit.
+    expectedHeadSha = null,
 } = {}, captura = {}) {
     const log = typeof logAppend === 'function' ? logAppend : () => {};
     const attemptsMax = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : MAX_MERGE_ATTEMPTS;
@@ -1176,6 +1210,31 @@ function attemptMergeWithGatesInner({
             const reason = `el PR está en estado ${snapshot.state}`;
             log(`[delivery] gate merge: ${reason} — merge bloqueado`);
             return { status: 'blocked', gate: 'pr-closed', reason, snapshot, attempt };
+        }
+
+        // (1c) #6496 CA-15 / SEC-F — el SHA que GitHub va a mergear tiene que ser
+        //      EXACTAMENTE el que pasó GATE 3. El gate de caducidad corre sobre el
+        //      HEAD LOCAL antes del push; si entre ese chequeo y el merge el head
+        //      del PR quedó en otro commit (push concurrente, PR reusado que ya
+        //      apuntaba a otro lado, fork), mergear igual integraría un árbol que
+        //      nadie verificó. Fail-closed y sin re-encolar: esto no es caducidad
+        //      del veredicto, es una discrepancia que necesita ojo humano.
+        //
+        //      `expectedHeadSha` es opcional para no romper a las suites que
+        //      ejercitan la maquinaria de gates sin GATE 3; producción SIEMPRE lo
+        //      inyecta y hay un test que lo verifica.
+        if (expectedHeadSha) {
+            const esperado = String(expectedHeadSha).toLowerCase();
+            const actual = String(snapshot.headRefOid || '').toLowerCase();
+            // El snapshot puede traer el oid abreviado (`/^[0-9a-f]{7,40}$/`), así
+            // que se compara por prefijo en la dirección que corresponda.
+            const coincide = actual.length > 0
+                && (esperado.startsWith(actual) || actual.startsWith(esperado));
+            if (!coincide) {
+                const reason = `el head del PR (${actual.slice(0, 8) || 'desconocido'}) no es el SHA verificado por GATE 3 (${esperado.slice(0, 8)})`;
+                log(`[delivery] gate merge: ${reason} — merge bloqueado`);
+                return { status: 'blocked', gate: 'sha-verificado', reason, snapshot, attempt };
+            }
         }
 
         // (2) Gate de QA sobre los labels del MISMO snapshot que se va a mergear.
@@ -1848,6 +1907,12 @@ async function main() {
     // tener que adivinarlo parseando `motivo` (misma regla que aplica el
     // dashboard: el estado se lee de campos, nunca de prosa).
     let gateBlocked = false;
+    // #6496 — GATE 3. `veredictoCaduco` es el flag ESTRUCTURADO que distingue
+    // "la entrega se frenó sola y ya encoló su propia reparación" de cualquier
+    // otro final. El reporte y el marker se derivan de él, nunca de parsear
+    // `motivo` (misma regla que el dashboard: el estado se lee de campos).
+    let veredictoCaduco = false;
+    let shaVerificado = null;
 
     const phaseStart = () => Date.now();
     const phaseEnd = (key, t0) => { phases[key] = Date.now() - t0; };
@@ -2108,13 +2173,75 @@ async function main() {
         }
         phaseEnd('integracion', t);
 
+        // ── #6496 · GATE 3: CADUCIDAD DEL VEREDICTO DE QA ─────────────
+        //
+        // Va ACÁ: después de que Fase 1 cerró todo commit pendiente (así el HEAD
+        // que se chequea es exactamente el que se va a integrar) y ANTES del
+        // primer byte que toca el remoto. Un chequeo posterior al push no sirve
+        // de nada —el remoto ya se movió— y uno anterior al commit chequearía un
+        // árbol que no es el que se entrega.
+        //
+        // Qué resuelve: un desfasaje entre el HEAD que QA verificó y el HEAD que
+        // se va a integrar hoy no lo detecta nadie de forma determinista (lo
+        // detectó un agente PO leyendo un YAML a mano en #6258), y cuando se
+        // detecta el issue muere con `needs-human` + `blocked:routing-manual`.
+        // Acá se convierte en una reparación automática acotada: re-encolar
+        // verificación, máximo dos veces, y recién entonces escalar.
+        //
+        // rev-2 — ESTE es el camino que corre la fase `entrega`
+        // (`DETERMINISTIC_SKILLS` en `lib/agent-launcher/providers/deterministic.js`).
+        // La primera implementación puso el gate sólo en `.pipeline/delivery.js`
+        // (el CLI de `/delivery`), así que en producción un veredicto caduco se
+        // integraba igual y la cola de re-encolado quedaba inerte.
+        t = phaseStart();
+        const gate3 = freshnessGate.evaluateFreshnessGate({
+            pipelineDir: statePipelineDir(), issue, cwd: WORK_DIR,
+        });
+        if (gate3.caduco) {
+            for (const linea of gate3.stderr) logAppend(`[delivery] ${linea}`);
+            // CA-14 — contrato machine-readable en stdout. El marker que escribe
+            // el `finally` NO puede decir `aprobado` (eso es el falso positivo de
+            // R3 en `delivery-status.js`, #5220/#5244), y `gateBlocked` deja el
+            // estado en un campo, nunca en prosa.
+            process.stdout.write(JSON.stringify(gate3.contrato) + '\n');
+            motivo = gate3.escalado
+                ? `Veredicto de QA caduco (${gate3.motivoLegible}). Escalado a needs-human tras `
+                  + `${gate3.intentos} re-encolado(s) automático(s). No se pushó nada y no se mergeó ningún PR.`
+                : `Veredicto de QA caduco (${gate3.motivoLegible}). Verificación re-encolada `
+                  + `(${gate3.intentos}/2). No se pushó nada y no se mergeó ningún PR.`;
+            // Se marca como frenado por gate para que el reporte no lo lea como
+            // "entrega esperando": la entrega NO se completó.
+            gateBlocked = true;
+            // exitCode 0 —no 1— a propósito: la reparación ya está encolada y el
+            // Pulpo la drena. Un `exit 1` rebotaría a dev por un problema que no
+            // es de dev, o escalaría a needs-human, que es exactamente el
+            // bloqueo permanente que esta historia viene a eliminar.
+            exitCode = 0;
+            veredictoCaduco = true;
+            phaseEnd('gate_caducidad', t);
+            return; // finally: marker sin merge sha, con motivo de caducidad
+        }
+        // CA-15 — a partir de acá se integra ESTE SHA, no una referencia
+        // simbólica que pueda avanzar entre el chequeo y el push (TOCTOU).
+        shaVerificado = gate3.shaVerificado;
+        logAppend(`[delivery] GATE 3 OK: veredicto de QA sellado contra el HEAD actual${
+            shaVerificado ? ` (${shaVerificado.slice(0, 8)})` : ' (exención de migración pre-sellado)'}`);
+        phaseEnd('gate_caducidad', t);
+
         // ── Fase 3: push ──────────────────────────────────────────────
         // #2523 (rev-3): pushAndVerify trata el caso "spawnSync devuelve error
         // pero el remote ya tiene el SHA" como éxito. Sin esto, pushes lentos
         // (~90-120s) en redes pesadas hacían rebotar al agente al circuit
         // breaker aunque el push hubiese completado en el remote.
+        //
+        // #6496 CA-15 / SEC-F — con un SHA verificado se pushea ESE SHA
+        // explícito (`<sha>:refs/heads/<branch>`), no el nombre de la rama. Antes
+        // se verificaba un SHA y se pusheaba un nombre que pudo haber avanzado
+        // entre el chequeo y el push: si un commit entra en esa ventana, el push
+        // por nombre lo sube igual y el gate queda hablando de un commit que no
+        // es el que se integró.
         t = phaseStart();
-        const pushRes = git.pushAndVerify(WORK_DIR, branch);
+        const pushRes = git.pushAndVerify(WORK_DIR, branch, { sha: shaVerificado });
         if (pushRes.exit_code !== 0) {
             // Fallo real: remote no tiene nuestro SHA. Diagnóstico rico para
             // que el rebote sea accionable (signal, error, wall_ms, stderr).
@@ -2133,6 +2260,13 @@ async function main() {
         } else {
             logAppend(`[delivery] push OK`);
         }
+        // #6496 CA-8 — regla de reset ÚNICA del contador de caducidad: recién
+        // acá, cuando un veredicto FRESCO efectivamente se integró. No lo
+        // resetean un re-encolado exitoso, una aprobación nueva de QA por sí
+        // sola, un rebote de otra fase, ni el paso del tiempo.
+        freshnessGate.clearRetriesAfterIntegration({
+            pipelineDir: statePipelineDir(), issue,
+        });
         phaseEnd('push', t);
 
         // ── Fase 4: PR (crear o reutilizar) ───────────────────────────
@@ -2212,9 +2346,35 @@ async function main() {
             // owners humanos, procedencia) se evalúan sobre un snapshot ÚNICO
             // del PR y el PUT viaja con el SHA de ese mismo snapshot. Ninguna
             // lectura fallida se degrada a "vacío": todo borde es fail-closed.
+            // #6496 CA-15 — RE-CHEQUEO de frescura ANTES del merge, no sólo antes
+            // del push. Entre el push y el merge hay una ventana real (creación
+            // del PR, propagación de labels, polling de mergeabilidad) en la que
+            // el HEAD local puede moverse. `checkVerdictFreshness` es local y
+            // barato: no cuesta una llamada de red y cierra la ventana.
+            const gate3Merge = freshnessGate.evaluateFreshnessGate({
+                pipelineDir: statePipelineDir(), issue, cwd: WORK_DIR,
+            });
+            if (gate3Merge.caduco) {
+                for (const linea of gate3Merge.stderr) logAppend(`[delivery] ${linea}`);
+                process.stdout.write(JSON.stringify(gate3Merge.contrato) + '\n');
+                motivo = gate3Merge.escalado
+                    ? `Veredicto de QA caduco antes del merge (${gate3Merge.motivoLegible}). Escalado a needs-human `
+                      + `tras ${gate3Merge.intentos} re-encolado(s) automático(s). El PR #${prNumber} quedó abierto sin mergear.`
+                    : `Veredicto de QA caduco antes del merge (${gate3Merge.motivoLegible}). Verificación re-encolada `
+                      + `(${gate3Merge.intentos}/2). El PR #${prNumber} quedó abierto sin mergear.`;
+                gateBlocked = true;
+                exitCode = 0;
+                veredictoCaduco = true;
+                phaseEnd('pr_merge', t);
+                return; // finally: marker sin merge sha, con veredicto_caduco
+            }
+
             const outcome = attemptMergeWithGates({
                 prNumber,
                 logAppend,
+                // #6496 CA-15 / SEC-F — se mergea el SHA VERIFICADO, no lo que el
+                // head del PR diga en ese momento.
+                expectedHeadSha: shaVerificado,
                 // #6431 A-2 — El wiring de produccion SIEMPRE inyecta el lector.
                 // El default `null` de la funcion existe solo para que las
                 // suites viejas no salgan a la red; que produccion lo inyecte es
@@ -2403,7 +2563,10 @@ async function main() {
         const totalMs = Date.now() - startedAt;
 
         const reportLines = [
-            `## Delivery: ${exitCode === 0 ? 'APROBADO ✅' : 'RECHAZADO ❌'}`,
+            // #6496 — el veredicto caduco sale con exit 0 (la reparación ya está
+            // encolada) pero NO es una entrega: el encabezado se deriva del flag
+            // estructurado, no del código de salida.
+            `## Delivery: ${veredictoCaduco ? 'FRENADO ♻️ (veredicto de QA caduco)' : (exitCode === 0 ? 'APROBADO ✅' : 'RECHAZADO ❌')}`,
             '',
             `- Issue: #${issue}  ·  PR: ${prNumber ? `#${prNumber}` : 'no creado'}  ·  Duración: ${(totalMs / 1000).toFixed(1)}s`,
             `- Modo: determinístico  ·  Auto-merge: ${args.autoMerge ? 'sí' : 'no'}`,
@@ -2426,11 +2589,17 @@ async function main() {
         // antes un PR frenado por gate QA se reportaba como si sólo estuviera
         // esperando, y el marker salía `aprobado`.
         reportLines.push(exitCode === 0
-            ? (mergeSha
-                ? 'Entrega completada y mergeada a main.'
-                : (prNumber
-                    ? 'PR creado; merge no intentado (auto-merge desactivado). Entrega NO completada.'
-                    : 'Entrega cerrada sin PR — entregable ya estaba en main (ver motivo).'))
+            // #6496 — El veredicto caduco sale con exit 0 (la reparación ya está
+            // encolada), así que el texto tiene que decirlo explícitamente: si
+            // cayera en la rama de abajo se leería como "entrega cerrada sin PR".
+            ? (veredictoCaduco
+                ? 'Entrega NO completada — el veredicto de QA caducó contra el HEAD a integrar. '
+                  + 'Verificación re-encolada; main y el remoto quedaron intactos.'
+                : (mergeSha
+                    ? 'Entrega completada y mergeada a main.'
+                    : (prNumber
+                        ? 'PR creado; merge no intentado (auto-merge desactivado). Entrega NO completada.'
+                        : 'Entrega cerrada sin PR — entregable ya estaba en main (ver motivo).')))
             : (gateBlocked
                 ? 'Entrega NO completada — merge frenado fail-closed y escalado al operador. main quedó intacto.'
                 : 'Delivery rechazado — ver motivo y rebote.'));
@@ -2441,12 +2610,23 @@ async function main() {
             fs.writeFileSync(path.join(LOG_DIR, `delivery-${issue}-report.md`), report);
         } catch {}
 
+        // #6496 CA-14 — el veredicto caduco NUNCA sale como `aprobado` y NUNCA
+        // lleva `delivery_merge_sha`: no hubo merge. Mismo contrato que
+        // `.pipeline/roles/delivery.md` le exige al agente LLM del camino CLI, así
+        // que los dos caminos escriben el mismo marker y el Pulpo no tiene que
+        // distinguirlos. El exit code sigue siendo 0 (ver el `return` del gate).
         updateMarker(args.trabajando, {
-            resultado: exitCode === 0 ? 'aprobado' : 'rechazado',
+            resultado: veredictoCaduco ? 'rechazado' : (exitCode === 0 ? 'aprobado' : 'rechazado'),
             motivo: motivo || (exitCode === 0 ? 'Entrega completada' : 'Delivery fallido'),
+            ...(veredictoCaduco ? {
+                // Flag ESTRUCTURADO que lee el barrido del Pulpo para no rebotar
+                // a dev ni escalar: la reparación ya está encolada.
+                veredicto_caduco: true,
+                gravedad: 'grave',
+            } : {}),
             delivery_pr_number: prNumber,
             delivery_pr_url: prUrl,
-            delivery_merge_sha: mergeSha,
+            delivery_merge_sha: veredictoCaduco ? null : mergeSha,
             delivery_labels: labelsApplied.join(','),
             delivery_duration_ms: totalMs,
             delivery_phases: JSON.stringify(phases),

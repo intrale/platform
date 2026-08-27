@@ -91,6 +91,10 @@ const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
 const visualCoverageRecorder = require('./lib/visual-coverage-recorder');
 const qaEvidenceSeal = require('./lib/qa-evidence-seal');
+// #6496 — política del GATE 3 (caducidad del veredicto sellado de QA). El barrido
+// la consulta para no rebotar ni escalar una entrega que ya encoló su propia
+// reparación. Mismo módulo que consumen los dos caminos de entrega.
+const deliveryFreshnessGate = require('./lib/delivery/freshness-gate');
 // #3383 — Gate visual pre-promoción build→verificacion. Default OFF
 // (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
 const visualGate = require('./lib/visual-gate');
@@ -4125,6 +4129,48 @@ function brazoBarrido(config) {
         }
 
         const rechazados = resultados.filter(r => r.resultado === 'rechazado');
+
+        // #6496 — VEREDICTO CADUCO: ni rebote ni escalada, la reparación ya está
+        // encolada.
+        //
+        // `delivery` frenó la entrega porque el veredicto de QA se había sellado
+        // contra un commit y la rama está en otro. En el mismo acto encoló la
+        // orden de re-verificación (`servicios/verificacion-requeue/pendiente/`),
+        // que `drenarRequeueVerificacion` drena al inicio del loop y convierte en
+        // un work-file de `verificacion`. Si además dejáramos correr el flujo de
+        // rechazo, el issue rebotaría a `dev` (rev++, circuit breaker) por un
+        // problema que no es de dev, o escalaría a `needs-human`: exactamente el
+        // bloqueo permanente que #6496 viene a eliminar.
+        //
+        // El flag es ESTRUCTURADO (`veredicto_caduco: true`), nunca una heurística
+        // sobre el texto del `motivo`: ese campo lo escribe el agente y sería un
+        // vector para auto-cancelarse un rechazo real. Y sólo vale en `entrega`,
+        // que es la única fase que corre el gate.
+        if (deliveryFreshnessGate.isStaleVerdictRejection({ fase, rechazados })) {
+          const procesadoCaduco = path.join(fasePath(pipelineName, fase), 'procesado');
+          try { fs.mkdirSync(procesadoCaduco, { recursive: true }); } catch {}
+          for (const estado of ['pendiente', 'trabajando', 'listo']) {
+            const dir = path.join(fasePath(pipelineName, fase), estado);
+            try {
+              for (const f of fs.readdirSync(dir)) {
+                if (f.startsWith('.')) continue;
+                if (!f.startsWith(String(issue) + '.')) continue;
+                const src = path.join(dir, f);
+                try {
+                  const prev = readYamlSafe(src) || {};
+                  writeYaml(path.join(procesadoCaduco, f), {
+                    ...prev,
+                    cancelado_por: 'veredicto-caduco',
+                    cancelado_ts: new Date().toISOString(),
+                  });
+                  fs.unlinkSync(src);
+                } catch {}
+              }
+            } catch {}
+          }
+          log('barrido', `♻️ #${issue} entrega frenada por veredicto de QA caduco — sin rebote ni rev++: la re-verificación ya está encolada.`);
+          continue;
+        }
 
         // CROSS-PHASE REBOTE: si algún archivo rechazado declara `rebote_destino`
         // válido, rutear el issue a esa fase/skill upstream en lugar del default.

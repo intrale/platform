@@ -861,14 +861,30 @@ function isMergeable(cwd, base = 'origin/main') {
     return { mergeable: null, supported: false, conflicts: [], raw: r };
 }
 
-function pushBranch(cwd, branch) {
+// #6496 CA-15 / SEC-F — SHA de 40 hex. El refspec `<sha>:refs/heads/<branch>`
+// se arma sólo con un valor que matchea esto: nada que venga de afuera termina
+// interpolado en una línea de comando de git sin validar.
+const SHA40 = /^[0-9a-f]{40}$/i;
+
+function pushBranch(cwd, branch, { sha = null } = {}) {
     // --force-with-lease es seguro tras rebase (no pisa cambios ajenos al upstream conocido)
     // #2523 (rev-3): timeout subido de 2min a 5min. La red de Leo tarda ~90-120s
     // en pushes con muchos objects (p.ej. assets/mockups/narrativa-lili.mp3) y
     // 2min era exactamente el borde — spawnSync mataba el proceso justo cuando
     // git terminaba de transferir, devolviendo exit_code != 0 con stderr vacío
     // aunque el push había completado en el remote.
-    return runGit(['push', '--force-with-lease', '-u', 'origin', branch], { cwd, timeoutMs: 5 * 60 * 1000 });
+    //
+    // #6496 CA-15 / SEC-F — con un SHA verificado se pushea ESE commit explícito
+    // en vez del nombre de la rama. Antes se verificaba un SHA y se pusheaba un
+    // nombre que pudo avanzar entre el chequeo y el push (TOCTOU): si un commit
+    // entra en esa ventana, el push por nombre lo sube igual y el gate queda
+    // hablando de un commit que no es el que se integró. `-u` no aplica a un
+    // refspec con origen SHA (no hay rama local que trackear); el upstream se
+    // setea best-effort después, en `pushAndVerify`.
+    const args = SHA40.test(String(sha || ''))
+        ? ['push', '--force-with-lease', 'origin', `${sha}:refs/heads/${branch}`]
+        : ['push', '--force-with-lease', '-u', 'origin', branch];
+    return runGit(args, { cwd, timeoutMs: 5 * 60 * 1000 });
 }
 
 // #2523 (rev-3): helper para verificar el SHA actual de un ref en origin.
@@ -929,12 +945,22 @@ function decidePushOutcome({ pushRes, localSha, remoteSha, branch }) {
 // 2523-dashboard-visual-redesign` post-fetch == HEAD local. Esto rebotaba al
 // agente y lo llevaba al circuit breaker (rebote_numero=3) por un fallo
 // puramente cosmético del orquestador.
-function pushAndVerify(cwd, branch) {
-    const pushRes = pushBranch(cwd, branch);
+function pushAndVerify(cwd, branch, { sha = null } = {}) {
+    const pinned = SHA40.test(String(sha || '')) ? String(sha) : null;
+    const pushRes = pushBranch(cwd, branch, { sha: pinned });
     if (pushRes.exit_code === 0) {
+        if (pinned) {
+            // `push <sha>:refs/heads/<branch>` no acepta `-u`. Best-effort: sin
+            // upstream el flujo sigue igual (`gh pr create --head` es explícito),
+            // así que un fallo acá no puede frenar una entrega ya pusheada.
+            runGit(['branch', `--set-upstream-to=origin/${branch}`, branch], { cwd, timeoutMs: 30 * 1000 });
+        }
         return decidePushOutcome({ pushRes, localSha: null, remoteSha: null, branch });
     }
-    const localSha = getCurrentSha(cwd);
+    // #6496 — con SHA pinneado, la recuperación se verifica contra ESE commit,
+    // no contra el HEAD local: si el HEAD avanzó durante el push, comparar
+    // `getCurrentSha` daría "no coincide" para un push que sí subió lo verificado.
+    const localSha = pinned || getCurrentSha(cwd);
     const remoteSha = getRemoteSha(cwd, `refs/heads/${branch}`);
     return decidePushOutcome({ pushRes, localSha, remoteSha, branch });
 }

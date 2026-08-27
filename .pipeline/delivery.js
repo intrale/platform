@@ -11,6 +11,24 @@
 //
 // Cero LLM. Determinismo total.
 //
+// QUÉ ES ESTE ARCHIVO Y QUÉ NO (#6496 rev-2)
+// -----------------------------------------------------------------------------
+// NO es el camino que corre la fase `entrega` del pipeline. Esa fase ejecuta el
+// skill determinístico `.pipeline/skills-deterministicos/delivery.js`
+// (`DETERMINISTIC_SKILLS` en `lib/agent-launcher/providers/deterministic.js`).
+//
+// Este archivo TAMPOCO es código muerto: es el CLI de `/delivery`, o sea
+//   · el fallback LLM (`.claude/skills/delivery/SKILL.md` lo invoca), que se
+//     activa por diseño si el script determinístico desaparece (rollout
+//     reversible de #2476/#2482/#2484), y
+//   · el uso manual del operador desde el repo principal.
+// Los dos tocan el remoto, así que los dos necesitan los mismos gates.
+//
+// Regla que sale de esto: toda decisión que gobierne una entrega vive en
+// `lib/` y la consumen AMBOS. Duplicarla es lo que produjo el defecto de rev-1
+// —el GATE 3 implementado sólo acá, con 100 tests en verde mientras producción
+// integraba veredictos caducos—. Ver `lib/delivery/freshness-gate.js`.
+//
 // Uso:
 //   node .pipeline/delivery.js --issue <N> --description "<desc>" [--type <tipo>] [--draft]
 //   node .pipeline/delivery.js --description "<desc>" [--type <tipo>]   (sin issue)
@@ -36,6 +54,11 @@ const gateLabelReconciler = require('./lib/gate-label-reconciler');
 const prProvenance = require('./lib/pr-provenance');
 // #6496 — consumidor del sello de evidencia de QA (#6495): caducidad + reparación.
 const qaEvidenceSeal = require('./lib/qa-evidence-seal');
+// #6496 rev-2 — GATE 3 compartido. La POLÍTICA de caducidad vive en un único
+// módulo que consumen los DOS caminos de entrega (este CLI y el skill
+// determinístico `skills-deterministicos/delivery.js`, que es el que corre la
+// fase `entrega`). No se duplica la decisión en dos archivos.
+const freshnessGate = require('./lib/delivery/freshness-gate');
 
 // #6496 — Raíz del ESTADO del pipeline.
 //
@@ -47,13 +70,12 @@ const qaEvidenceSeal = require('./lib/qa-evidence-seal');
 // `servicios/github` viven en el `.pipeline/` del REPO PRINCIPAL, que el Pulpo
 // le pasa a todo agente en `PIPELINE_REPO_ROOT` (`pulpo.js`).
 //
-// Misma convención de env que los servicios (`servicio-github.js:46-52`), con
-// fallback a `__dirname` para el uso manual desde el repo principal.
+// #6496 rev-2 — la resolución vive en `lib/delivery/freshness-gate.js` para que
+// este CLI y el skill determinístico (el camino REAL de la fase `entrega`) usen
+// EXACTAMENTE la misma raíz de estado. Acá sólo se fija el fallback a
+// `__dirname`, que es el correcto para el uso manual desde el repo principal.
 function resolveStatePipelineDir() {
-  if (process.env.PIPELINE_STATE_DIR) return path.resolve(process.env.PIPELINE_STATE_DIR);
-  if (process.env.PIPELINE_MAIN_ROOT) return path.join(path.resolve(process.env.PIPELINE_MAIN_ROOT), '.pipeline');
-  if (process.env.PIPELINE_REPO_ROOT) return path.join(path.resolve(process.env.PIPELINE_REPO_ROOT), '.pipeline');
-  return __dirname;
+  return freshnessGate.resolveStatePipelineDir({ fallbackDir: __dirname });
 }
 
 // ---- #4575 · GATE 2 defense-in-depth (revalidación firma↔HEAD) --------------
@@ -437,48 +459,25 @@ function main() {
   // automática acotada: re-encolar verificación, máximo dos veces, y recién
   // entonces escalar.
   //
-  // SEC-B — el issue se normaliza a entero ANTES de construir cualquier path.
-  const issueNumGate = qaEvidenceSeal.normalizeIssueNumber(args.issue);
+  // La POLÍTICA (qué es caduco, qué se encola, cuándo escala) vive en
+  // `lib/delivery/freshness-gate.js`, compartida con el skill determinístico.
+  // Acá sólo se traduce el resultado al contrato de salida de ESTE CLI.
   const statePipelineDir = resolveStatePipelineDir();
   let shaVerificado = null;
-  if (args.issue && issueNumGate === null) {
-    // Fail-closed: con un `--issue` que no es un número de issue no se puede ni
-    // resolver el veredicto ni nombrar el contador. No se toca el remoto.
-    console.error('❌ --issue inválido: no se puede verificar la frescura del veredicto de QA');
-    process.exit(1);
-  }
-  if (issueNumGate !== null) {
-    // SEC-A — el módulo deriva el HEAD él mismo (`execFileSync` sin shell +
-    // `/^[0-9a-f]{40}$/`). NUNCA se le pasa `snap.head`: ese campo NO EXISTE en
-    // `lib/delivery/git-context.js`, así que el snippet original de la historia
-    // nacía fail-open (`undefined === undefined`) o fail-siempre-caduco.
-    const stale = qaEvidenceSeal.checkVerdictFreshness({
-      pipelineDir: statePipelineDir, issue: issueNumGate, cwd,
+  let issueNumGate = null;
+  if (args.issue) {
+    const gate3 = freshnessGate.evaluateFreshnessGate({
+      pipelineDir: statePipelineDir, issue: args.issue, cwd,
     });
-    if (stale.caduco) {
-      // CA-13 — encola la orden, NO mueve el dropfile: el Pulpo es el único
-      // dueño del lifecycle del work-file y escanea `procesado/` en su loop.
-      let repar;
-      try {
-        repar = qaEvidenceSeal.requeueVerification({
-          pipelineDir: statePipelineDir,
-          issue: issueNumGate,
-          motivo: stale.motivo,
-          headSellado: stale.head_sellado,
-          headActual: stale.head_actual,
-        });
-      } catch (e) {
-        // Ni siquiera se pudo encolar la reparación. Se frena igual: lo que no
-        // se puede hacer es pushear un HEAD que nadie verificó.
-        console.error(`⛔ veredicto caduco y no se pudo encolar la reparación: ${e.message}`);
-        console.log(JSON.stringify({ estado: 'veredicto_caduco', issue: issueNumGate, motivo: stale.motivo }));
-        process.exit(0);
-      }
-      console.error(`⛔ Entrega frenada — ${qaEvidenceSeal.describeFreshnessFailure(stale.motivo)}`);
-      console.error(`⛔ veredicto caduco — ${repar.escalado
-        ? `escalado a needs-human tras ${repar.intentos} re-encolado(s) automático(s)`
-        : `re-encolado a verificación (${repar.intentos}/${qaEvidenceSeal.MAX_SEAL_REQUEUES})`}`);
-      console.error('⛔ NO se pushó nada y NO se creó/mergeó ningún PR.');
+    if (gate3.issueInvalido) {
+      // Fail-closed: con un `--issue` que no es un número de issue no se puede ni
+      // resolver el veredicto ni nombrar el contador. No se toca el remoto.
+      console.error('❌ --issue inválido: no se puede verificar la frescura del veredicto de QA');
+      process.exit(1);
+    }
+    issueNumGate = gate3.issue;
+    if (gate3.caduco) {
+      for (const linea of gate3.stderr) console.error(linea);
       // CA-14 — contrato machine-readable como ÚLTIMA línea de stdout. Quien
       // ejecuta este script es un agente LLM: `exit 0` a secas es
       // indistinguible de "entrega exitosa" y produce el falso positivo de R3
@@ -486,17 +485,11 @@ function main() {
       // confiesa "merge bloqueado"). Sale con 0 —no 1— para que el Pulpo pueda
       // drenar la orden y re-encolar; un `exit 1` dejaría el issue muerto igual
       // que hoy.
-      console.log(JSON.stringify({
-        estado: 'veredicto_caduco',
-        issue: issueNumGate,
-        motivo: stale.motivo,
-        escalado: repar.escalado === true,
-        intentos: repar.intentos,
-      }));
+      console.log(JSON.stringify(gate3.contrato));
       process.exit(0);
     }
     // CA-15 — se pushea el SHA VERIFICADO, no una referencia simbólica.
-    shaVerificado = stale.head_actual;
+    shaVerificado = gate3.shaVerificado;
     console.log(`🔎 GATE 3 OK: el veredicto de QA está sellado contra el HEAD actual${
       shaVerificado ? ` (${shaVerificado.slice(0, 8)}…)` : ' (exención de migración pre-sellado)'}`);
   }
