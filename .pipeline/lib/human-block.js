@@ -26,6 +26,13 @@ const trace = require('./traceability');
 const { redactAll } = require('./sherlock-audit-jsonl');
 // #5337 CA-6 — discriminador compartido "recomendación de agente" vs "bloqueo real".
 const { isRecommendationIssue, normalizeLabelNames } = require('./recommendation-labels');
+// #6611 — MISMO validador de refs que usa el lector de reglas de rama. Reusado,
+// no re-implementado: dos validadores de branch name que divergen es cómo entra
+// un `..` a un path de la API.
+const { validateBranchName } = require('./required-checks');
+// #6190 — fuente única del copy del aviso de bloqueo. Este módulo NO redacta
+// texto para el operador: le pide la ficha a `decision-card` y la dibuja.
+const decisionCard = require('./decision-card');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const PIPELINES = ['desarrollo', 'definicion'];
@@ -72,7 +79,56 @@ function emitBlocked(opts) {
     });
 }
 
+// =============================================================================
+// #6611 — `unlocker` deja de ser string libre.
+//
+// El campo distingue QUIÉN destrabó, y con el auto-destrabe pasa a ser la
+// diferencia auditable entre "un humano lo decidió" y "el pipeline lo decidió
+// solo". Un string libre ahí hace que la auditoría dependa de que cada call site
+// escriba bien un literal.
+//
+// Patrón de `kernel-actions-audit.js:validateAuthorizedBy`: un valor fuera del
+// enum NO se descarta ni se propaga — se persiste en campos forenses y el campo
+// principal queda `unknown`. Perder la traza sería peor que registrarla rara.
+// =============================================================================
+const UNLOCKER_ENUM = Object.freeze([
+    'commander',                      // default histórico
+    'commander:telegram',             // /unblock desde Telegram (pulpo.js:15452)
+    'commander:dashboard',            // destrabe/descarte desde el dashboard V3
+    'github:label-removed',           // reconciliación por label quitado a mano
+    'human-block-action',             // acción rápida genérica (human-block.js:1190)
+    'human-block-action:unblock',     // botón "desbloquear" de la alerta
+    'human-block-action:devolver',    // botón "devolver a definición"
+    'human-block-action:priorizar',   // botón "priorizar"
+    'brazo-desbloqueo:precondicion',  // #4748 — deps cerradas
+    'auto-recheck',                   // #6611 — predicado verificable resuelto
+]);
+
+/**
+ * Normaliza `unlocker` contra el enum cerrado.
+ * @returns {{unlocker:string, unlocker_rejected_value?:string, unlocker_rejected_reason?:string}}
+ */
+function normalizeUnlocker(value) {
+    // Ausente ⇒ default histórico, no es un rechazo.
+    if (value == null || value === '') return { unlocker: 'commander' };
+    if (typeof value !== 'string') {
+        return {
+            unlocker: 'unknown',
+            unlocker_rejected_value: String(value).slice(0, 80),
+            unlocker_rejected_reason: 'unlocker_not_string',
+        };
+    }
+    const trimmed = value.trim();
+    if (UNLOCKER_ENUM.includes(trimmed)) return { unlocker: trimmed };
+    return {
+        unlocker: 'unknown',
+        unlocker_rejected_value: trimmed.slice(0, 80),
+        unlocker_rejected_reason: 'unlocker_not_in_enum',
+    };
+}
+
 function emitUnblocked(opts) {
+    const u = normalizeUnlocker(opts.unlocker);
     trace.appendEvent({
         event: 'human:unblocked',
         skill: opts.skill || null,
@@ -81,7 +137,7 @@ function emitUnblocked(opts) {
         pipeline: opts.pipeline || null,
         target_phase: opts.target_phase || opts.phase || null,
         guidance: opts.guidance || '',
-        unlocker: opts.unlocker || 'commander',
+        ...u,
         ts: new Date().toISOString(),
         pid: process.pid,
     });
@@ -95,7 +151,9 @@ function emitDismissed(opts) {
         phase: opts.phase || null,
         pipeline: opts.pipeline || null,
         reason: opts.reason || '',
-        unlocker: opts.unlocker || 'commander',
+        // #6611 — mismo enum cerrado que `emitUnblocked`: el descarte también es
+        // una salida del gate humano y su autoría se audita igual.
+        ...normalizeUnlocker(opts.unlocker),
         ts: new Date().toISOString(),
         pid: process.pid,
     });
@@ -159,12 +217,96 @@ function findBlockedMarker(issue) {
     return null;
 }
 
+/**
+ * #6448 CA-25 — TODOS los markers de bloqueo humano de un issue, no el primero.
+ *
+ * `findBlockedMarker()` queda intacto (lo usan otros call sites y devolver el
+ * primero es lo correcto para ellos). El problema que esto cierra es distinto:
+ * el 2026-08-24 un issue quedó con DOS markers vivos sobre la misma causa —el
+ * gate de decisión de arquitectura en `definicion`, y la fase siguiente por el
+ * label `needs-human` que había puesto el primero—. Al destrabar, la
+ * reconciliación tomaba uno solo y el otro quedaba huérfano: el issue seguía
+ * apareciendo frenado y no volvía al despacho.
+ *
+ * @returns {Array<{pipeline: string, phase: string, skill: string, file: string}>}
+ */
+function listBlockedMarkers(issue) {
+    const prefix = String(issue) + '.';
+    const out = [];
+    for (const pipeline of PIPELINES) {
+        const pipeRoot = path.join(PIPELINE_DIR, pipeline);
+        let phases = [];
+        try { phases = fs.readdirSync(pipeRoot).filter(f => fs.statSync(path.join(pipeRoot, f)).isDirectory()); }
+        catch { continue; }
+        for (const phase of phases) {
+            const dir = path.join(pipeRoot, phase, BLOCK_SUBDIR);
+            let entries = [];
+            try { entries = fs.readdirSync(dir); } catch { continue; }
+            for (const f of entries) {
+                if (f.startsWith(prefix) && f !== '.gitkeep' && !isMarkerArtifact(f)) {
+                    out.push({
+                        pipeline, phase,
+                        skill: f.slice(prefix.length),
+                        file: path.join(dir, f),
+                    });
+                }
+            }
+        }
+    }
+    return out;
+}
+
 function reasonFilePath(blockedFile) {
     return blockedFile + '.reason.json';
 }
 
+/**
+ * #6611 rev-1 — RUTA DEL MARKER, RESUELTA EN UN SOLO LUGAR.
+ *
+ * EL DEFECTO QUE ESTO CIERRA. Este módulo tiene DOS productores de entradas de
+ * marker con nombres de campo distintos: `findBlockedMarker()` /
+ * `listBlockedMarkers()` devuelven `file`, y `listBlockedIssues()` devuelve
+ * `marker_path`. `unblockIssue`/`dismissBlockedIssue` leían sólo `file`, así que
+ * pasarles una entrada del segundo productor hacía `renameSync(undefined, …)`,
+ * el `catch` FABRICABA un marker vacío en `pendiente/` y los `unlinkSync`
+ * fallaban en silencio — el marker quedaba DUPLICADO y el issue se contaba como
+ * bloqueado para siempre, mientras la función igual devolvía `{ok:true}`.
+ *
+ * Dos defensas, no una:
+ *   1. Los dos nombres se aceptan: ninguna entrada legítima de este módulo puede
+ *      volver a caerse por el nombre del campo.
+ *   2. Lo que no resuelva a un string usable devuelve `null` y el llamador corta
+ *      con `{ok:false}` — nunca "éxito" sobre un marker que no se movió.
+ *
+ * @returns {string|null} `null` = NO HAY RUTA USABLE. Fail-closed.
+ */
+function resolveMarkerFile(blocked) {
+    if (!blocked || typeof blocked !== 'object') return null;
+    for (const candidato of [blocked.file, blocked.marker_path]) {
+        if (typeof candidato === 'string' && candidato.trim()) return candidato;
+    }
+    return null;
+}
+
 function guidanceFilePath(targetDir, marker) {
     return path.join(targetDir, marker + '.guidance.txt');
+}
+
+/**
+ * #6296 SEC-A — canal de guidance de origen AGENTE, separado del humano.
+ *
+ * El `.guidance.txt` lo escribe un OPERADOR autenticado y `pulpo.js` lo inyecta
+ * al prompt bajo el header "INDICACIONES HUMANAS … NO la ignores". Con el carril
+ * de rebote automático de #6296 el productor deja de ser un humano y pasa a ser
+ * un agente que CITA texto de issues/PRs de terceros. Reusar el mismo archivo le
+ * daría a ese texto autoridad de operador: escalada de privilegio por artefacto.
+ *
+ * Por eso la extensión es distinta y NO hay forma de confundirlos ni por
+ * accidente: son dos lecturas separadas, con dos headers separados, y el header
+ * de este declara explícitamente que NO es autoritativo.
+ */
+function guidanceAgentFilePath(targetDir, marker) {
+    return path.join(targetDir, marker + '.guidance.agent.txt');
 }
 
 // #4748 — Precondición del freeze. Dos tipos:
@@ -175,15 +317,61 @@ function guidanceFilePath(targetDir, marker) {
 //     ciclo y lo suelta cuando `depends_on` está todo cerrado.
 const HUMAN_JUDGMENT = { type: 'human_judgment' };
 
+// #6611 — TERCER tipo cerrado: 'verifiable'. El freeze registra un PREDICADO
+// re-evaluable y el brazo de desbloqueo lo re-chequea cada tick, liberando sólo
+// con evidencia positiva. Es UNA puerta más, tipada — el default fail-closed de
+// #4748 (SEC-4) no se relaja: todo lo que no encaje exacto sigue colapsando a
+// `human_judgment`.
+//
+// Enum CERRADO de kinds. Un solo kind a propósito: la generalización a otros
+// predicados es #6616, fuera de scope.
+const PREDICATE_KINDS = Object.freeze(['pr_merge_blocked']);
+
+/**
+ * #6611 — Valida un predicado `verifiable`. Coacción POR TIPO, sin conversiones
+ * indulgentes: `pr` tiene que ser entero positivo YA (un `"00042"` string, un
+ * decimal o un negativo no se "arreglan", se rechazan). `head_ref` se valida con
+ * `required-checks.validateBranchName` — el MISMO validador que usa el lector de
+ * reglas de rama, no una re-implementación que pueda divergir.
+ *
+ * Cualquier desvío en cualquier campo ⇒ `human_judgment`.
+ */
+function normalizeVerifiablePrecondition(pc) {
+    const p = pc.predicate;
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return { ...HUMAN_JUDGMENT };
+    if (typeof p.kind !== 'string' || !PREDICATE_KINDS.includes(p.kind)) return { ...HUMAN_JUDGMENT };
+    // Entero positivo estricto: rechaza "00042", 12.5, -3, NaN, Infinity.
+    if (!Number.isInteger(p.pr) || p.pr <= 0) return { ...HUMAN_JUDGMENT };
+    if (typeof p.head_ref !== 'string' || !validateBranchName(p.head_ref)) return { ...HUMAN_JUDGMENT };
+
+    const predicate = { kind: p.kind, pr: p.pr, head_ref: p.head_ref.trim() };
+
+    // `observed` se persiste SÓLO como narrativa (comentario del issue +
+    // auditoría). NUNCA entra a la decisión de liberar: si el "antes vs ahora"
+    // decidiera, el veredicto se lo estaría dando el productor del freeze y un
+    // `observed` mentiroso alcanzaría para forzar el destrabe.
+    if (p.observed && typeof p.observed === 'object' && !Array.isArray(p.observed)) {
+        predicate.observed = {
+            httpStatus: Number.isFinite(Number(p.observed.httpStatus)) ? Number(p.observed.httpStatus) : null,
+            mergeStateStatus: typeof p.observed.mergeStateStatus === 'string'
+                ? p.observed.mergeStateStatus.slice(0, 40) : null,
+            gate: typeof p.observed.gate === 'string' ? p.observed.gate.slice(0, 60) : null,
+        };
+    }
+    return { type: 'verifiable', predicate };
+}
+
 /**
  * Normaliza/valida un objeto precondition antes de persistirlo o exponerlo.
  * Cualquier forma inválida colapsa a `human_judgment` (fail-closed, SEC-4).
  * Para `dependency`, coacciona `depends_on` a enteros positivos únicos; si no
  * queda ninguno, degrada a `human_judgment` (una precondición de dependencia
  * sin dependencias no es auto-re-evaluable).
+ * Para `verifiable` (#6611), valida el predicado campo por campo.
  */
 function normalizePrecondition(pc) {
     if (!pc || typeof pc !== 'object') return { ...HUMAN_JUDGMENT };
+    if (pc.type === 'verifiable') return normalizeVerifiablePrecondition(pc);
     if (pc.type !== 'dependency') return { ...HUMAN_JUDGMENT };
     const raw = Array.isArray(pc.depends_on) ? pc.depends_on : [];
     const seen = new Set();
@@ -242,8 +430,8 @@ function reportHumanBlock(opts) {
 
     let pipeline = opts.pipeline;
     let srcFile = null;
+    const active = findActiveMarker(issue);
     if (!pipeline || opts.moveFromActive !== false) {
-        const active = findActiveMarker(issue);
         if (active) {
             pipeline = pipeline || active.pipeline;
             srcFile = active.file;
@@ -269,9 +457,27 @@ function reportHumanBlock(opts) {
     // precondición estructurada → juicio humano → nunca auto-re-evaluable (SEC-4).
     const precondition = normalizePrecondition(opts.precondition);
 
+    // #6448 A-7 — MARKER SINTÉTICO. Cuando el llamador pide explícitamente NO
+    // mover un work-file activo (`moveFromActive: false`) y no había ninguno,
+    // el archivo que queda en `bloqueado-humano/` es un marker VACÍO fabricado
+    // por el gate: no representa trabajo de ningún skill.
+    //
+    // Declararlo acá es lo que permite que la reconciliación lo DESCARTE en vez
+    // de "destrabarlo" — destrabarlo fabricaría un work-file en `pendiente/`
+    // para un skill que no existe en `skills_por_fase`, y ese archivo se queda
+    // dando vueltas para siempre. Clasificar por origen declarado es
+    // determinístico; inferirlo por tamaño de archivo es frágil (queda sólo
+    // como fallback para markers anteriores a este cambio).
+    const synthetic = opts.moveFromActive === false && !active;
+
     fs.writeFileSync(reasonFilePath(targetFile), JSON.stringify({
         issue, skill, phase, pipeline, reason, question,
         precondition,
+        // #6448 UX-1 / CA-17 — la cita del issue que disparó el freno viaja en
+        // CAMPO PROPIO, nunca concatenada dentro de `reason`. Se persiste para
+        // que el recordatorio muestre la misma evidencia que el aviso inicial.
+        ...(String(opts.evidence || '').trim() ? { evidence: String(opts.evidence).trim() } : {}),
+        ...(synthetic ? { synthetic: true } : {}),
         blocked_at: new Date().toISOString(),
     }, null, 2));
 
@@ -306,13 +512,15 @@ function listBlockedIssues() {
                 const skill = f.slice(dot + 1);
                 if (!Number.isFinite(issue)) continue;
                 const file = path.join(dir, f);
-                let reason = '', question = '', blockedAt = null, precondition = null;
+                let reason = '', question = '', blockedAt = null, precondition = null, evidence = '';
                 try {
                     const meta = JSON.parse(fs.readFileSync(reasonFilePath(file), 'utf8'));
                     reason = meta.reason || '';
                     question = meta.question || '';
                     blockedAt = meta.blocked_at || null;
                     precondition = meta.precondition || null;
+                    // #6448 UX-1 — la cita del issue, si el gate la dejó.
+                    evidence = meta.evidence || '';
                 } catch {}
                 // #4748 — Markers legacy sin `precondition` (backward-compat,
                 // SEC-4) o con forma inválida → default juicio humano → jamás
@@ -323,7 +531,7 @@ function listBlockedIssues() {
                 const ageHours = (Date.now() - mtime) / 3600000;
                 result.push({
                     issue, skill, phase, pipeline,
-                    reason, question, precondition,
+                    reason, question, precondition, evidence,
                     blocked_at: blockedAt || new Date(mtime).toISOString(),
                     age_hours: Math.round(ageHours * 10) / 10,
                     marker_path: file,
@@ -448,9 +656,28 @@ function unblockIssue(opts) {
     const guidance = String(opts.guidance || '').trim();
     const unlocker = opts.unlocker || 'commander';
 
-    const blocked = findBlockedMarker(issue);
+    // #6448 — `opts.marker` permite operar sobre UN marker concreto cuando el
+    // issue tiene varios (reconciliación). Sin él, el comportamiento es
+    // exactamente el de siempre: el primero que aparezca. Los call sites
+    // históricos (`/unblock`, tests) no cambian una coma.
+    const blocked = opts.marker || findBlockedMarker(issue);
     if (!blocked) {
         return { ok: false, error: `Issue ${issue} no está en bloqueado-humano/` };
+    }
+
+    // #6611 rev-1 — Sin ruta usable NO hay destrabe. Antes se seguía adelante y
+    // el `catch` del rename fabricaba un marker vacío: el llamador recibía
+    // `{ok:true}`, sacaba el label y comentaba el issue, mientras el marker
+    // original seguía intacto en `bloqueado-humano/`.
+    const sourceFile = resolveMarkerFile(blocked);
+    if (!sourceFile) {
+        return { ok: false, error: `Marker de bloqueo del issue ${issue} sin ruta utilizable` };
+    }
+    // Idempotencia real: si el `/unblock` manual (o un tick anterior) ganó la
+    // carrera, el marker ya no está y esto es un no-op benigno — NO un destrabe
+    // fantasma que río abajo se cobra como si hubiera pasado algo.
+    if (!fs.existsSync(sourceFile)) {
+        return { ok: false, error: `Marker ${sourceFile} ya no existe (destrabado en paralelo)` };
     }
 
     const targetPhase = opts.target_phase || blocked.phase;
@@ -459,13 +686,29 @@ function unblockIssue(opts) {
     const marker = `${issue}.${blocked.skill}`;
     const targetFile = path.join(targetDir, marker);
 
-    try { fs.renameSync(blocked.file, targetFile); }
-    catch { fs.writeFileSync(targetFile, ''); try { fs.unlinkSync(blocked.file); } catch {} }
+    // El marker NO es un archivo vacío: lleva el YAML de trabajo que el agente
+    // re-encolado va a leer. Fabricarlo vacío perdía ese contenido. Fallback a
+    // copy+unlink sólo para el caso legítimo (rename cross-device, EXDEV);
+    // cualquier otro fallo corta fail-closed sin dejar basura en `pendiente/`.
+    try {
+        fs.renameSync(sourceFile, targetFile);
+    } catch (errRename) {
+        try {
+            fs.copyFileSync(sourceFile, targetFile);
+            fs.unlinkSync(sourceFile);
+        } catch (errCopy) {
+            try { fs.unlinkSync(targetFile); } catch { /* no llegó a crearse */ }
+            return {
+                ok: false,
+                error: `No se pudo mover el marker ${sourceFile} → ${targetFile}: ${errRename.message} / ${errCopy.message}`,
+            };
+        }
+    }
 
     if (guidance) {
         try { fs.writeFileSync(guidanceFilePath(targetDir, marker), guidance); } catch {}
     }
-    try { fs.unlinkSync(reasonFilePath(blocked.file)); } catch {}
+    try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
 
     emitUnblocked({
         issue, skill: blocked.skill, phase: blocked.phase, pipeline: blocked.pipeline,
@@ -484,13 +727,22 @@ function dismissBlockedIssue(opts) {
     const reason = String(opts.reason || '').trim();
     const unlocker = opts.unlocker || 'commander';
 
-    const blocked = findBlockedMarker(issue);
+    // #6448 — ver `unblockIssue`: `opts.marker` opcional, mismo contrato.
+    const blocked = opts.marker || findBlockedMarker(issue);
     if (!blocked) {
         return { ok: false, error: `Issue ${issue} no está en bloqueado-humano/` };
     }
 
-    try { fs.unlinkSync(blocked.file); } catch {}
-    try { fs.unlinkSync(reasonFilePath(blocked.file)); } catch {}
+    // #6611 rev-1 — mismo fail-closed que `unblockIssue`: sin ruta usable el
+    // `unlinkSync` tiraba, el `catch` se lo comía y devolvíamos `{ok:true}` sobre
+    // un marker que seguía vivo.
+    const sourceFile = resolveMarkerFile(blocked);
+    if (!sourceFile) {
+        return { ok: false, error: `Marker de bloqueo del issue ${issue} sin ruta utilizable` };
+    }
+
+    try { fs.unlinkSync(sourceFile); } catch {}
+    try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
 
     emitDismissed({
         issue, skill: blocked.skill, phase: blocked.phase, pipeline: blocked.pipeline,
@@ -501,6 +753,149 @@ function dismissBlockedIssue(opts) {
         ok: true, issue, skill: blocked.skill, pipeline: blocked.pipeline,
         phase: blocked.phase, reason,
     };
+}
+
+// =============================================================================
+// #6448 — RECONCILIACIÓN DE **TODOS** LOS MARKERS DE UN ISSUE (punto 4)
+//
+// EL DEFECTO QUE ESTO CIERRA (incidente del 2026-08-24). #6431 quedó con dos
+// bloqueos vivos sobre la MISMA causa: el gate de decisión de arquitectura lo
+// frenó en `definicion` a las 13:29, y a las 13:43 la fase `sizing` lo volvió a
+// frenar por el label `needs-human` — el label que había puesto el primer
+// bloqueo. Al destrabar, la ruta de reconciliación tomaba el primer marker que
+// encontraba y el segundo quedaba huérfano: el tablero seguía mostrando frenado
+// un issue ya despachado, y esa contradicción es la que hacía dudar al operador
+// de si el destrabe había tomado efecto.
+//
+// DIRECCIÓN DEL FAIL (RS-4.1 / CA-26). Esta función QUITA FRENOS, así que un
+// bug de clasificación acá no ensucia el tablero: libera issues que un humano
+// frenó a propósito. Por eso DESCARTAR es la excepción y CONSERVAR es el
+// default: ante cualquier duda, `unblockIssue()`, que preserva el trabajo.
+// =============================================================================
+
+/**
+ * Skills declarados para una fase, tolerando las dos formas de config que
+ * conviven en el pipeline:
+ *   · `{ <pipeline>: { skills_por_fase: { <fase>: [...] } } }`  (config.pipelines)
+ *   · `{ <fase>: [...] }`                                        (mapa plano)
+ *
+ * @returns {string[]|null} `null` = NO SE PUDO RESOLVER. El llamador lo trata
+ *   como duda y conserva el trabajo (CA-26).
+ */
+function resolverSkillsDeFase(skillsPorFase, pipeline, phase) {
+    if (!skillsPorFase || typeof skillsPorFase !== 'object') return null;
+    const porPipeline = skillsPorFase[pipeline];
+    if (porPipeline && typeof porPipeline === 'object') {
+        const mapa = porPipeline.skills_por_fase || porPipeline;
+        const v = mapa && mapa[phase];
+        if (Array.isArray(v)) return v;
+    }
+    const plano = skillsPorFase[phase];
+    if (Array.isArray(plano)) return plano;
+    return null;
+}
+
+/** Lee el `.reason.json` de un marker. `null` si no existe o no parsea. */
+function leerReason(markerFile) {
+    try { return JSON.parse(fs.readFileSync(reasonFilePath(markerFile), 'utf8')); }
+    catch { return null; }
+}
+
+/**
+ * ¿Este marker es un artefacto sintético del gate y no trabajo real?
+ *
+ * Fuente primaria: el campo DECLARADO `synthetic: true` que escribe
+ * `reportHumanBlock()` (A-7). Determinístico, no adivina nada.
+ *
+ * Fallback SÓLO para markers anteriores a este cambio: archivo vacío **y**
+ * skill ausente de `skills_por_fase`. Las DOS condiciones, y si la config no se
+ * pudo resolver la respuesta es `false` — fail-closed (CA-26 / RS-4.1).
+ */
+function esMarkerSintetico(marker, skillsPorFase) {
+    const meta = leerReason(marker.file);
+    if (meta && meta.synthetic === true) return true;
+    let vacio;
+    try { vacio = fs.statSync(marker.file).size === 0; } catch { return false; }
+    if (!vacio) return false;
+    const skills = resolverSkillsDeFase(skillsPorFase, marker.pipeline, marker.phase);
+    if (!Array.isArray(skills)) return false;   // sin config resoluble ⇒ duda ⇒ conservar
+    return !skills.includes(marker.skill);
+}
+
+/**
+ * Barre TODOS los markers de bloqueo humano de un issue y los resuelve uno por
+ * uno (CA-23 / CA-25). No lanza: un marker que falla se registra y el barrido
+ * sigue con el resto — dejar el resto sin reconciliar por un fallo aislado
+ * reproduce el defecto que esto viene a cerrar.
+ *
+ * @param {object} args
+ * @param {number} args.issue
+ * @param {string} [args.unlocker]
+ * @param {object} [args.skillsPorFase] — `config.pipelines` o mapa plano.
+ * @param {object} [args.io] — inyectable: `appendUnblockAudit` (tests).
+ * @returns {{reconciled: Array<{pipeline,phase,skill,action,error?}>}}
+ */
+function reconcileBlockedMarkers({ issue, unlocker = 'github:label-removed', skillsPorFase = null, io = null } = {}) {
+    const n = Number(issue);
+    const reconciled = [];
+    if (!Number.isFinite(n) || n <= 0) return { reconciled };
+
+    let auditor = io;
+    if (!auditor) {
+        // Lazy y tolerante: la traza no puede tumbar el destrabe.
+        try { auditor = require('./design-decision-gate-io'); } catch { auditor = null; }
+    }
+    const auditar = (rec) => {
+        try { if (auditor && auditor.appendUnblockAudit) auditor.appendUnblockAudit(rec); } catch { /* la traza nunca frena el destrabe */ }
+    };
+
+    let markers = [];
+    try { markers = listBlockedMarkers(n); } catch { markers = []; }
+
+    for (const m of markers) {
+        let action = 'none';
+        try {
+            // (1) RESIDUO PURO — ya hay un work-file vivo en el destino. Mover
+            //     el marker encima lo pisaría con un archivo vacío y destruiría
+            //     trabajo real (#5863). Se aplica POR CADA MARKER, no sólo al
+            //     primero: ese "sólo al primero" es justo el bug de CA-25.
+            const destino = path.join(
+                PIPELINE_DIR, m.pipeline, m.phase, 'pendiente', path.basename(m.file));
+            if (fs.existsSync(destino)) {
+                try { fs.unlinkSync(m.file); } catch { /* best-effort */ }
+                try { fs.unlinkSync(reasonFilePath(m.file)); } catch { /* puede no existir */ }
+                action = 'residuo-eliminado';
+            } else if (esMarkerSintetico(m, skillsPorFase)) {
+                // (2) MARKER SINTÉTICO — destrabarlo fabricaría un work-file
+                //     para un skill que no existe en la fase. Se descarta.
+                dismissBlockedIssue({
+                    issue: n, marker: m, unlocker,
+                    reason: 'marker sintético del gate: se descarta en vez de fabricar un work-file (#6448)',
+                });
+                action = 'descartado';
+            } else {
+                // (3) CUALQUIER OTRO CASO — conservar el trabajo. Es el default
+                //     y es fail-closed a propósito (CA-26).
+                const rec = unblockIssue({ issue: n, marker: m, guidance: '', unlocker });
+                action = rec && rec.ok ? 'destrabado' : 'sin-efecto';
+            }
+            reconciled.push({ pipeline: m.pipeline, phase: m.phase, skill: m.skill, action });
+        } catch (e) {
+            reconciled.push({
+                pipeline: m.pipeline, phase: m.phase, skill: m.skill,
+                action: 'error', error: String((e && e.message) || e).slice(0, 120),
+            });
+            action = 'error';
+        }
+        // CA-29 / RS-4.4 — cada destrabe queda registrado con issue, fase,
+        // marker y qué lo originó.
+        auditar({
+            issue: n, pipeline: m.pipeline, phase: m.phase, skill: m.skill,
+            action, origin: unlocker,
+        });
+    }
+
+    return { reconciled };
 }
 
 // #2549 — Heurística para detectar motivos de rechazo que en realidad son
@@ -646,15 +1041,38 @@ function buildBlockedSummaryPlain(opts = {}) {
 }
 
 /**
- * Implementación compartida de los dos renderers. `plain:true` omite todo
- * markup; `plain:false` conserva byte por byte el formato histórico (los tests
- * de no-regresión de #4068/#5337 siguen apuntando a ese dialecto).
+ * Implementación compartida. Desde #6190 los dos dialectos YA NO producen el
+ * mismo contenido, y es a propósito:
  *
- * Se resuelve con un helper por decoración en vez de dos funciones paralelas
- * para que el CONTENIDO no pueda divergir entre dialectos: un dato nuevo se
- * agrega una sola vez y aparece en los dos.
+ *  - `plain:true`  → ficha de decisión (`lib/decision-card.js`). Es el camino de
+ *    producción: los 6 emisores de `pulpo.js` y el recordatorio mandan plano.
+ *  - `plain:false` → formato histórico, CONGELADO byte por byte.
+ *
+ * Por qué se separan en vez de migrar los dos. El dialecto Markdown quedó sin
+ * emisores productivos (verificado: los 6 de `pulpo.js` usan `Plain`, y
+ * `buildBlockedSummaryMarkdown` sólo aparece en su definición, su export y los
+ * tests), pero `human-block.test.js` tiene el test de no-regresión anti-#5421
+ * que fija ese dialecto. Retirarlo es #6193, fuera de alcance acá — así que se
+ * congela tal cual y la ficha vive del lado plano.
+ *
+ * La consecuencia es que "plano == Markdown sin metacaracteres" deja de valer.
+ * Ese test se actualizó explícitamente en este issue: la divergencia es la
+ * migración, no un descuido.
  */
 function renderBlockedSummary(opts, { plain }) {
+    if (plain) return renderBlockedSummaryFicha(opts);
+    return renderBlockedSummaryLegacy(opts, { plain: false });
+}
+
+/**
+ * Formato histórico (#4068/#5337). CONGELADO: no agregar datos acá.
+ *
+ * Sigue vivo por dos motivos: es el dialecto que fijan los tests de
+ * no-regresión, y es el FALLBACK fail-closed de la ficha (ver
+ * `renderBlockedSummaryFicha`). En ese segundo rol se emite siempre pasado por
+ * `redactAll` — nunca crudo.
+ */
+function renderBlockedSummaryLegacy(opts, { plain }) {
     const blocked = Array.isArray(opts.blocked) ? opts.blocked : listBlockedIssues();
     const highlight = opts.highlight || null;
     // Decoradores: en plano son la identidad, así que el texto sale sin `*`, `_`
@@ -698,6 +1116,117 @@ function renderBlockedSummary(opts, { plain }) {
     lines.push('');
     lines.push(`${i('Usá')} ${code('/unblock <issue> <orientación>')} ${i('para desbloquear.')}`);
     return lines.join('\n');
+}
+
+// =============================================================================
+// #6190 — Render de la FICHA DE DECISIÓN en texto plano.
+//
+// El copy no se decide acá: sale entero de `lib/decision-card.js`, que es la
+// fuente única. Este bloque sólo dibuja (§6 del contrato de copy del `ux`) y
+// resuelve el presupuesto de longitud.
+// =============================================================================
+
+// #6190 — El dibujo de la ficha vive en `decision-card-render.js`, no acá.
+//
+// No es prolijidad: el recordatorio (`human-block-reminder.js`) necesita el
+// MISMO renderer, y tiene una garantía estructural de que no puede auto-aprobar
+// un bloqueo por vencimiento de plazo — garantía que se sostiene en que no
+// importa este módulo, que sí sabe destrabar. Compartir el renderer desde acá
+// habría roto esa garantía en silencio.
+const cardRender = require('./decision-card-render');
+// #6190 — enriquecimiento de título/labels, compartido con el recordatorio.
+const issueTitleCache = require('./issue-title-cache');
+
+const FICHA_BUDGET = cardRender.FICHA_BUDGET;
+const fitFichas = cardRender.fitFichas;
+const renderDecisionCardsPlain = cardRender.renderDecisionCardsPlain;
+const renderFallbackAviso = cardRender.renderFallbackAviso;
+const edadMinutosRaw = cardRender.edadMinutosRaw;
+
+/**
+ * #6190 — El título del issue se cita literal en la ficha, y es el
+ * identificador que el operador reconoce: sin él el aviso dice "#6150 (sin
+ * título)" y el operador tiene que ir a buscar de qué se trata, que es
+ * exactamente el trabajo que este issue le vino a sacar de encima.
+ *
+ * `listBlockedIssues()` no trae título (el marker es un archivo vacío con el
+ * número en el nombre), así que se enriquece desde el cache que el pipeline ya
+ * mantiene. La implementación vive en `issue-title-cache.js` porque el
+ * RECORDATORIO también la necesita y no puede requerir este módulo (garantía
+ * estructural: no puede alcanzar `unblockIssue`). Ver el header de ese módulo.
+ */
+const enriquecerConTitulo = (raws) => issueTitleCache.enriquecerConTitulo(raws, { pipelineDir: PIPELINE_DIR });
+
+/**
+ * Render de producción del aviso de bloqueo: fichas de decisión en texto plano.
+ *
+ * ORDEN (UX §1.2/§1.3): el destacado —el trabajo que disparó el aviso— va
+ * primero y es el único que lleva ficha completa; es el que el operador está
+ * esperando ver. Sin destacado (barrido, recordatorio) lleva la ficha completa
+ * el MÁS ANTIGUO: es el que más caro sale seguir ignorando. El resto va por
+ * antigüedad descendente.
+ *
+ * FAIL-CLOSED (R-2 / SEC-1). Si armar las fichas lanza, el aviso SALE IGUAL con
+ * el formato degradado del §3 —un bloqueo nunca puede quedar invisible porque
+ * falló el formateador— redactado y sin volcar el motivo crudo. El issue sigue
+ * bloqueado en cualquier caso: este render no destraba nada.
+ *
+ * Nunca `catch {}` vacío: el fallo se escribe en stderr para que quede rastro.
+ */
+function renderBlockedSummaryFicha(opts) {
+    const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+    let raws = [];
+    try {
+        const blocked = Array.isArray(opts.blocked) ? opts.blocked : listBlockedIssues();
+        const highlight = opts.highlight || null;
+
+        const vistos = new Set();
+        if (highlight) {
+            raws.push(highlight);
+            const n = Number(highlight.issue);
+            if (Number.isFinite(n)) vistos.add(n);
+        }
+        const resto = [];
+        for (const bl of blocked) {
+            const n = Number(bl && bl.issue);
+            if (Number.isFinite(n)) {
+                if (vistos.has(n)) continue;
+                vistos.add(n);
+            }
+            resto.push(bl);
+        }
+        resto.sort((a, b) => edadMinutosRaw(b, nowMs) - edadMinutosRaw(a, nowMs));
+        raws = raws.concat(resto);
+
+        if (!raws.length) {
+            // Placeholder histórico: hay call-sites que lo esperan y no aporta
+            // nada reescribirlo — no hay ninguna decisión que tomar.
+            return '(sin otros incidentes bloqueados actualmente)';
+        }
+
+        const cards = decisionCard.buildDecisionCards(enriquecerConTitulo(raws), nowMs);
+        return fitFichas(cards).text;
+    } catch (e) {
+        try {
+            process.stderr.write(
+                `[human-block] ficha de decisión falló, se emite el aviso degradado: ${e && e.message}\n`,
+            );
+        } catch (_) { /* stderr cerrado: no puede tumbar el aviso */ }
+        try {
+            const lista = raws.length
+                ? raws
+                : (Array.isArray(opts.blocked) ? opts.blocked : []).concat(opts.highlight ? [opts.highlight] : []);
+            if (!lista.length) return '(sin otros incidentes bloqueados actualmente)';
+            return renderFallbackAviso(lista, nowMs);
+        } catch (e2) {
+            // Doble red: si hasta el degradado falla, el operador se entera
+            // igual. Un aviso mínimo es infinitamente mejor que el silencio.
+            try {
+                process.stderr.write(`[human-block] aviso degradado también falló: ${e2 && e2.message}\n`);
+            } catch (_) { /* stderr cerrado */ }
+            return '⚠️ Hay trabajos esperando tu decisión y no pude armar el aviso. Siguen frenados: mirá el tablero.';
+        }
+    }
 }
 
 // =============================================================================
@@ -923,6 +1452,84 @@ function executeQuickAction({ issue, action, deps = {} } = {}) {
 }
 
 /**
+ * #6611 — Asienta el AUTO-destrabe en el audit-log, con la misma cadena hash que
+ * `auditQuickAction`. Es lo que vuelve distinguible, para siempre, un destrabe
+ * que decidió el pipeline de uno que decidió un humano.
+ *
+ * `unblockIssue` ya emite además `human:unblocked` (vía `emitUnblocked`) con el
+ * `unlocker` normalizado, así que la traza queda en los DOS canales sin abrir
+ * una segunda máquina de destrabe.
+ *
+ * Nunca lanza: el audit no puede romper la operación.
+ *
+ * @param {object} entry
+ * @param {number} entry.issue
+ * @param {string} entry.kind      kind del predicado (`pr_merge_blocked`)
+ * @param {number} entry.pr
+ * @param {string} [entry.from]    fase de origen
+ * @param {string} [entry.to]      fase de destino
+ * @param {object} [entry.observed] estado observado en el tick que liberó
+ * @param {number} [entry.release_number] cuál auto-destrabe es (1..max)
+ */
+function emitAutoReleased(entry = {}) {
+    const issue = Number(entry.issue) || null;
+    const kind = typeof entry.kind === 'string' ? entry.kind.slice(0, 60) : null;
+    const pr = Number.isInteger(Number(entry.pr)) ? Number(entry.pr) : null;
+
+    // Canal 1 — traza del pipeline (mismo stream que `human:unblocked`).
+    try {
+        trace.appendEvent({
+            event: 'human_block_auto_released',
+            issue,
+            kind,
+            pr,
+            from_phase: entry.from || null,
+            to_phase: entry.to || null,
+            unlocker: 'auto-recheck',
+            release_number: Number.isFinite(Number(entry.release_number)) ? Number(entry.release_number) : null,
+            observed: entry.observed && typeof entry.observed === 'object' ? entry.observed : null,
+            ts: new Date().toISOString(),
+            pid: process.pid,
+        });
+    } catch (e) {
+        try { process.stderr.write('[human-block] emitAutoReleased trace falló: ' + e.message + '\n'); } catch (_) {}
+    }
+
+    // Canal 2 — audit-log con cadena hash (forense).
+    try {
+        const deps = entry.deps || {};
+        const dir = deps.auditDir || path.join(PIPELINE_DIR, 'audit');
+        const createAuditLog = deps.createAuditLog || require('./commander/audit-log').createAuditLog;
+        let redact = deps.redact;
+        if (typeof redact !== 'function') {
+            try { redact = require('./redact').redactSensitive; } catch { redact = (s) => s; }
+        }
+        const audit = createAuditLog({
+            dir,
+            filenamePrefix: 'human-block-actions',
+            redact,
+            extraFields: ['issue', 'action', 'unlocker', 'kind', 'pr', 'release_number'],
+        });
+        return audit.record({
+            from: null,
+            raw_command: '',
+            intent_class: 'human-block-auto-recheck',
+            handler: 'auto-recheck',
+            result_status: 'ok',
+            issue,
+            action: 'human_block_auto_released',
+            unlocker: 'auto-recheck',
+            kind,
+            pr,
+            release_number: Number.isFinite(Number(entry.release_number)) ? Number(entry.release_number) : null,
+        });
+    } catch (e) {
+        try { process.stderr.write('[human-block] emitAutoReleased audit falló: ' + e.message + '\n'); } catch (_) {}
+        return null;
+    }
+}
+
+/**
  * #4068 / CA-SEC-2 — Asienta la acción rápida (autorizada o rechazada) en un
  * audit-log dedicado `audit/human-block-actions-YYYY-MM-DD.jsonl`. Nunca lanza:
  * el audit no debe romper la operación.
@@ -974,41 +1581,151 @@ function auditQuickAction(entry = {}) {
 }
 
 /**
- * Construye el guion narrable corto (español) para el audio TTS de la alerta
- * `needs-human` (issue #4067, split de #4050). Único lugar donde vive la
- * redacción explícita del texto fuente y el armado del guion.
- *
- * SEC-3: `reason` y `question` crudos pasan por `redactAll` ANTES de armar el
- * texto y ANTES de cualquier síntesis de voz aguas abajo. Un secreto sintetizado
- * en audio no se puede redactar después; `sanitizeForTts` del adapter es defensa
- * en profundidad, NO sustituto de esta llamada.
- *
- * G-2 (UX): el guion arranca SIEMPRE con el encabezado fijo de alerta, que
- * funciona como "earcon verbal" reconocible. No se parametriza por issue.
- * G-3 (UX): orden narrativo fijo (alerta → motivo → decisión) y cap de longitud
- * para que el audio se escuche de corrido sin fatiga. Degrada a alerta mínima si
- * el input viene vacío/parcial (mejor un alerta genérico que un audio roto).
- *
- * @param {object} opts
- * @param {string} [opts.reason]   — Motivo crudo del bloqueo.
- * @param {string} [opts.question] — Decisión/pregunta cruda que requiere humano.
- * @returns {string} Guion narrable, redactado y acotado (≤ 600 chars).
+ * Pasa a minúscula la inicial para poder encajar el campo dentro de una oración
+ * ("Está frenado porque no puede avanzar…"). Respeta siglas y nombres propios:
+ * si el segundo carácter ya es mayúscula, el texto se deja como está.
  */
-function buildNeedHumanAudioText({ reason, question, recommendation } = {}) {
-    const motivo = redactAll(String(reason || '').trim());
-    const decision = redactAll(String(question || '').trim());
-    // #5337 CA-2 — la recomendación también se narra. El audio es el canal que
-    // funciona cuando el operador no está mirando la pantalla; si el texto le
-    // dice qué le conviene hacer y el audio no, el audio queda a medias.
-    // Va ÚLTIMA y es lo primero que se recorta si el guion excede el cap: el
-    // orden narrativo fijo (alerta → motivo → decisión) no se altera (G-3).
-    const sugerencia = redactAll(String(recommendation || '').trim());
-    const partes = [];
-    if (motivo) partes.push(`El motivo del bloqueo es: ${motivo}.`);
-    if (decision) partes.push(`La decisión que necesitamos es: ${decision}.`);
-    if (sugerencia) partes.push(`Sugerencia del pipeline: ${sugerencia}.`);
-    const cuerpo = partes.length ? ` ${partes.join(' ')}` : '';
-    return `Atención: un issue requiere intervención humana.${cuerpo}`.slice(0, 600);
+function inicialMinuscula(s) {
+    const t = String(s || '');
+    if (t.length < 2) return t;
+    if (t[1] === t[1].toUpperCase() && t[1] !== t[1].toLowerCase()) return t;
+    return t[0].toLowerCase() + t.slice(1);
+}
+
+/** Quita el punto final: las cláusulas se unen agregando el suyo. */
+function sinPuntoFinal(s) {
+    return String(s || '').replace(/\s*\.+\s*$/, '');
+}
+
+/**
+ * Adaptación a lo que se ESCUCHA (UX §4). El audio se oye sin pantalla:
+ *   · el `#` se lee "numeral" y no aporta nada — se va, el número queda;
+ *   · un comando narrado (`/unblock 6173 esperar`) es ruido puro: el audio
+ *     orienta, el texto ejecuta.
+ */
+function narrable(s) {
+    return String(s || '')
+        .replace(/\/unblock\b[^.]*/gi, '')
+        .replace(/#(?=\d)/g, '')
+        .replace(/\s+([,;.:?!])/g, '$1')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
+const AUDIO_CABECERA = 'Atención: un issue requiere intervención humana.';
+const AUDIO_MAX = 600;
+
+/**
+ * Guion narrable del aviso de needs-human, armado desde la FICHA (#6190).
+ *
+ * Antes leía `reason`/`question`/`recommendation` crudos, así que narraba el
+ * vocabulario interno del pipeline: el operador escuchaba "dependency_block:
+ * espera #6110". Ahora narra los mismos campos que el texto — que es lo que
+ * hace que los dos canales digan lo mismo (CA-1).
+ *
+ * ORDEN NARRATIVO FIJO (UX §4): qué se decide → por qué está frenado → qué se
+ * recomienda → qué pasa si no decidís. El recorte a `AUDIO_MAX` es por CLÁUSULA
+ * ENTERA, nunca a mitad de frase, y en orden inverso de prioridad:
+ * recomendación → costo → por qué. **`que_se_decide` NUNCA se recorta**: un
+ * audio que no dice qué se decide no cumple ninguna función.
+ *
+ * El cap de 600 es política del RENDERER de audio, no de la ficha: los campos
+ * ya vienen acotados por campo y acá se decide cuántas cláusulas entran.
+ *
+ * @param {object} opts — mismo `raw` que `buildDecisionCard` (issue, skill,
+ *   phase, reason, question, recommendation…), más `nowMs` opcional y
+ *   `otros_bloqueados` para el cierre con el resto.
+ * @returns {string} guion redactado y acotado (≤ 600 chars).
+ */
+function buildNeedHumanAudioText(opts = {}) {
+    const raw = opts && typeof opts === 'object' ? opts : {};
+    // `prio`: 0 = no se recorta nunca. Mayor número, primero en caerse.
+    const clausulas = [];
+    try {
+        const nowMs = Number.isFinite(raw.nowMs) ? raw.nowMs : Date.now();
+        const card = decisionCard.buildDecisionCard(raw, nowMs);
+
+        if (card.indeterminado) {
+            // UX §4: en indeterminado se dice eso y nada más. Narrar opciones
+            // que la ficha no tiene sería inventarlas en el único canal donde
+            // el operador no puede verificar nada.
+            clausulas.push({ prio: 0, t: 'No pude inferir qué hay que decidir' });
+            if (card.falta) clausulas.push({ prio: 0, t: `Me falta lo siguiente: ${sinPuntoFinal(card.falta)}` });
+            if (card.sugerencia_del_pipeline) {
+                clausulas.push({ prio: 1, t: `Sugerencia del pipeline: ${sinPuntoFinal(card.sugerencia_del_pipeline)}` });
+            }
+        } else {
+            clausulas.push({ prio: 0, t: `La decisión que necesitamos es: ${sinPuntoFinal(card.que_se_decide)}` });
+            if (card.por_que_esta_frenado) {
+                clausulas.push({ prio: 3, t: `Está frenado porque ${inicialMinuscula(sinPuntoFinal(card.por_que_esta_frenado))}` });
+            }
+            // #5337 CA-2 — el audio es el canal que funciona cuando el operador
+            // no está mirando la pantalla; si el texto le dice qué le conviene
+            // hacer y el audio no, el audio queda a medias.
+            const reco = card.opciones.find((o) => o.es_recomendada);
+            if (card.sugerencia_del_pipeline) {
+                clausulas.push({ prio: 1, t: `Sugerencia del pipeline: ${sinPuntoFinal(card.sugerencia_del_pipeline)}` });
+            }
+            if (reco) {
+                clausulas.push({
+                    prio: 1,
+                    t: `Te recomiendo ${inicialMinuscula(sinPuntoFinal(reco.etiqueta))}, porque ${inicialMinuscula(sinPuntoFinal(reco.razon_recomendacion))}`,
+                });
+            } else if (!card.sugerencia_del_pipeline) {
+                // No se omite en silencio: el silencio se oye como que el audio
+                // se cortó (UX §4).
+                clausulas.push({ prio: 1, t: 'No te propongo ninguna opción: la decisión es tuya' });
+            }
+            if (card.costo_de_no_decidir) {
+                clausulas.push({ prio: 2, t: `Si no decidís, ${inicialMinuscula(sinPuntoFinal(card.costo_de_no_decidir))}` });
+            }
+        }
+
+        // Se narra SÓLO el destacado: un audio con 12 trabajos es inescuchable.
+        const otros = Number(raw.otros_bloqueados);
+        if (Number.isInteger(otros) && otros > 0) {
+            clausulas.push({
+                prio: 4,
+                t: otros === 1
+                    ? 'Hay 1 trabajo más esperando; está en el tablero'
+                    : `Hay ${otros} trabajos más esperando; están en el tablero`,
+            });
+        }
+    } catch (e) {
+        // Fail-closed hacia la visibilidad, igual que el texto: si la ficha
+        // falla, el audio SALE con el motivo crudo REDACTADO en vez de callarse.
+        // Un audio que no suena es un bloqueo que nadie escucha.
+        try {
+            process.stderr.write(`[human-block] ficha de audio falló, se narra el motivo crudo: ${e && e.message}\n`);
+        } catch (_) { /* stderr cerrado */ }
+        const motivo = redactAll(String(raw.reason || '').trim());
+        const decision = redactAll(String(raw.question || '').trim());
+        if (motivo) clausulas.push({ prio: 0, t: `El motivo del bloqueo es: ${sinPuntoFinal(motivo)}` });
+        if (decision) clausulas.push({ prio: 0, t: `La decisión que necesitamos es: ${sinPuntoFinal(decision)}` });
+    }
+
+    // Los campos que ya terminan en signo de interrogación no llevan punto
+    // encima: "…sin eso?." se narra con una pausa de más que suena a error.
+    const cerrar = (t) => (/[.?!…]$/.test(t) ? t : `${t}.`);
+    const armar = (list) => [AUDIO_CABECERA]
+        .concat(list.map((c) => cerrar(narrable(c.t))))
+        .filter((x) => x && x !== '.')
+        .join(' ');
+
+    // Recorte por cláusula entera, de menor prioridad a mayor. Las de `prio 0`
+    // no se caen nunca; si el guion sigue sin entrar sólo con ellas, se corta
+    // duro como última red (sólo alcanzable con campos fuera de contrato).
+    let vivas = clausulas.slice();
+    let texto = armar(vivas);
+    while (texto.length > AUDIO_MAX) {
+        let peor = -1;
+        let peorPrio = 0;
+        vivas.forEach((c, i) => { if (c.prio > peorPrio) { peorPrio = c.prio; peor = i; } });
+        if (peor < 0) break;
+        vivas = vivas.filter((_, i) => i !== peor);
+        texto = armar(vivas);
+    }
+    return texto.length > AUDIO_MAX ? texto.slice(0, AUDIO_MAX) : texto;
 }
 
 /**
@@ -1038,13 +1755,23 @@ async function sendNeedHumanAudio(deps = {}) {
     const {
         reason, question, recommendation, profile = 'need-human',
         botToken, chatId, textToSpeechWithMeta, sendVoiceTelegram,
+        // #6190 — contexto de la ficha. Sin `issue` el guion no puede nombrar el
+        // trabajo y sale un "este trabajo" genérico; sin `skill`/`phase` se
+        // pierde la evidencia de quién lo frenó. Son opcionales a propósito:
+        // ningún call-site queda roto por no pasarlos.
+        issue, skill, phase, pipeline, blocked_at: blockedAt, age_hours: ageHours,
+        labels, precondition, nowMs, otros_bloqueados: otrosBloqueados,
     } = deps;
     try {
         if (!botToken || !chatId) return { sent: false, skipped: 'no-credentials' };
         if (typeof textToSpeechWithMeta !== 'function' || typeof sendVoiceTelegram !== 'function') {
             return { sent: false, skipped: 'no-tts' };
         }
-        const audioText = buildNeedHumanAudioText({ reason, question, recommendation });
+        const audioText = buildNeedHumanAudioText({
+            reason, question, recommendation,
+            issue, skill, phase, pipeline, blocked_at: blockedAt, age_hours: ageHours,
+            labels, precondition, nowMs, otros_bloqueados: otrosBloqueados,
+        });
         const meta = await textToSpeechWithMeta(audioText, { profile });
         if (!meta || !meta.buffer) return { sent: false, skipped: 'no-buffer' };
         const ok = await sendVoiceTelegram(meta.buffer, botToken, chatId);
@@ -1065,13 +1792,30 @@ module.exports = {
     PHASE_QUEUE_STATES,
     findActiveMarker,
     findBlockedMarker,
+    // #6448 — barrido de TODOS los markers + reconciliación por marker.
+    listBlockedMarkers,
+    reconcileBlockedMarkers,
     isHumanBlockReason,
     inferHumanBlockQuestion,
     classifyPrecondition,
     normalizePrecondition,
+    // #6611 — auto-destrabe de bloqueos verificables.
+    emitAutoReleased,
+    normalizeUnlocker,
+    UNLOCKER_ENUM,
+    PREDICATE_KINDS,
     buildBlockedSummaryMarkdown,
     buildBlockedSummaryPlain,
     buildNeedHumanAudioText,
+    // #6190 — re-export del renderer compartido (`decision-card-render.js`),
+    // para no romper a los consumidores que ya lo pedían por acá. El
+    // recordatorio NO lo toma de este módulo: importa el renderer directo, para
+    // no poder alcanzar `unblockIssue` ni por vía indirecta.
+    renderDecisionCardsPlain,
+    FICHA_BUDGET,
+    // #6190 — exportado para que el aviso inicial y el recordatorio compartan
+    // exactamente el mismo enriquecimiento (CA-1: mismo cuerpo, mismo dato).
+    enriquecerConTitulo,
     sendNeedHumanAudio,
     enqueueNeedsHumanLabel,
     HUMAN_BLOCK_PATTERNS,
@@ -1096,4 +1840,7 @@ module.exports = {
     // conocer un segundo módulo sólo para filtrar ruido.
     isRecommendationIssue,
     normalizeLabelNames,
+    // #6296 SEC-A — canales de guidance: humano (autoritativo) vs agente (dato).
+    guidanceFilePath,
+    guidanceAgentFilePath,
 };

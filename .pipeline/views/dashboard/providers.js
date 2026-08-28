@@ -175,6 +175,148 @@ function collectHealthState() {
     return out;
 }
 
+// ───────────────── #6180 · Estado del motor (episodio de respaldo) ─────────────────
+//
+// Indicador PERMANENTE de con qué motor está corriendo el pipeline, desde
+// cuándo y por qué no está el principal. La parte 1 del split (#6179) dejó la
+// política de emisión y el estado del episodio; acá sólo se lee y se muestra.
+//
+// Tres decisiones que no se negocian:
+//
+//   1. `readEpisode()` es el ÚNICO lector. Esta vista NO parsea
+//      `.pipeline/state/fallback-episode.json` a mano (CA-2). Un segundo lector
+//      es un segundo validador de shape, y el día que difieran el dashboard va
+//      a afirmar algo que el aviso de Telegram niega.
+//
+//   2. El vocabulario sale de `assets/copy/fallback-episode/copy.json`, que es
+//      el MISMO asset que redacta el aviso de chat (`formatEpisodeNotice`). No
+//      se define una tabla de copy acá: `provider-pause-cause.js:REASON_TABLE`
+//      y `REASON_LABEL` (arriba en este archivo) ya son dos vocabularios del
+//      dominio; un tercero garantiza que dashboard y Telegram terminen diciendo
+//      cosas distintas del mismo hecho al primer retoque de copy.
+//
+//   3. Son TRES estados de salida, nunca dos: `primary` · `fallback` ·
+//      `unavailable`. `unavailable` es el default de cualquier duda —
+//      "no sé con qué motor corro" jamás puede leerse como "corro con el
+//      principal". Todo lo que no se pueda afirmar cae ahí.
+
+/** Escalones de capacidad. MISMO enum que `lib/fallback-episode-state.js:TIERS`. */
+const ENGINE_TIERS = Object.freeze([
+    'respaldo_pago',
+    'gratuito_con_herramientas',
+    'gratuito_sin_herramientas',
+]);
+
+/**
+ * Causas alcanzables. Son CUATRO: `CAUSES` del módulo de episodio excluye
+ * `disponible` (esa es la causa de "el proveedor está sano", no describe
+ * ninguna degradación) e `isValidEpisode` rechaza cualquier valor fuera del
+ * enum. `cause: null` sí es legítimo — es el caso "no se pudo determinar" de
+ * CA-12 de #6179 — y su copy es la quinta clave de `copy.json:motivos`.
+ */
+const ENGINE_CAUSES = Object.freeze(['reposo', 'cuota', 'transitoria', 'auth']);
+const ENGINE_CAUSE_UNKNOWN = 'desconocida';
+
+/**
+ * Tolerancia de skew de reloj para `since`.
+ *
+ * Por qué se valida y no se delega en el formateador: `components.js:relativeTime`
+ * clampea las diferencias negativas (`if (diff < 0) diff = 0`) y devuelve
+ * `'ahora'`, y para un valor no finito devuelve `''`. O sea un `since` futuro se
+ * ve como episodio recién iniciado y uno corrupto deja el renglón en blanco:
+ * los dos modos de falla PARECEN NORMALES. Un episodio viejo leído como recién
+ * iniciado es peor que no mostrar nada, así que si `since` no valida, el panel
+ * entero cae al estado `unavailable`.
+ */
+const ENGINE_SINCE_SKEW_MS = 60000;
+
+/**
+ * Copy canónico del episodio — el mismo asset que consume el aviso de Telegram.
+ * Carga fail-soft: si el asset faltara, `/providers` tiene que seguir
+ * renderizando (el panel cae a `unavailable`), no tumbar la ventana entera.
+ * `require` cachea, así que no hace falta cache propio.
+ */
+function engineCopy() {
+    try {
+        return require('../../assets/copy/fallback-episode/copy.json');
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Lookup fail-closed sobre el copy. `hasOwnProperty` y NO indexación directa:
+ * con `cause = '__proto__'` la indexación devuelve algo del prototipo, el render
+ * lo interpola y la vista se rompe (o peor, imprime `function Object()`).
+ */
+function pickCopy(obj, key, fallback) {
+    if (!obj || typeof obj !== 'object') return fallback;
+    const k = String(key == null ? '' : key);
+    return Object.prototype.hasOwnProperty.call(obj, k) ? obj[k] : fallback;
+}
+
+/**
+ * Estado del episodio de respaldo, normalizado a enums cerrados.
+ *
+ * El `require` va ADENTRO del `try` — igual que `collectDispatch()` con
+ * `health-screen.js` — y no en el tope del archivo: si el módulo de la parte 1
+ * no estuviera en el árbol, un `require` de tope tumba TODO `providers.js` al
+ * cargarse, no sólo este panel (CA-3).
+ *
+ * Salida (sin un solo valor crudo del archivo de estado, SEC-3):
+ *   { mode: 'primary'|'fallback'|'unavailable',
+ *     tier: <enum>|null, cause: <enum>, since: <epoch ms>|null,
+ *     unknownReason: 'ausente'|'ilegible'|'shape_invalido'|null }
+ */
+function collectFallbackEpisode() {
+    const out = {
+        mode: 'unavailable',
+        tier: null,
+        cause: ENGINE_CAUSE_UNKNOWN,
+        since: null,
+        unknownReason: 'ilegible',
+    };
+    try {
+        const { readEpisode } = require('../../lib/fallback-episode-state.js');
+        const res = readEpisode();
+        const ep = res && res.episode;
+        // `reason` viene del propio lector (`ausente` · `ilegible` ·
+        // `shape_invalido`): distingue "todavía no hubo episodio" de "el estado
+        // está corrupto" sin re-parsear nada (CA-2). NO se renderiza crudo —
+        // es jerga— pero queda en el modelo para los tests y el diagnóstico.
+        if (!ep || typeof ep !== 'object') {
+            if (res && (res.reason === 'ausente' || res.reason === 'shape_invalido')) {
+                out.unknownReason = res.reason;
+            }
+            return out;
+        }
+        // Modo en castellano: es el vocabulario de la parte 1 y no se renombra
+        // allá; se traduce acá a las tres salidas visuales del panel.
+        if (ep.mode !== 'primario' && ep.mode !== 'respaldo') {
+            out.unknownReason = 'shape_invalido';
+            return out;
+        }
+        // `since` es epoch ms NUMÉRICO, no ISO: `Date.parse` sobre un número da
+        // NaN y dejaría el panel en `unavailable` el 100 % de las veces.
+        if (!Number.isFinite(ep.since) || ep.since <= 0
+            || ep.since > Date.now() + ENGINE_SINCE_SKEW_MS) {
+            out.unknownReason = 'shape_invalido';
+            return out;
+        }
+        out.mode = ep.mode === 'respaldo' ? 'fallback' : 'primary';
+        // Un tier fuera del enum se trata como el escalón MÁS degradado: describir
+        // de menos una degradación es peor que describirla de más (mismo criterio
+        // que `formatEpisodeNotice`). En `primario` no hay escalón.
+        out.tier = out.mode === 'fallback'
+            ? (ENGINE_TIERS.includes(ep.tier) ? ep.tier : 'gratuito_sin_herramientas')
+            : null;
+        out.cause = ENGINE_CAUSES.includes(ep.cause) ? ep.cause : ENGINE_CAUSE_UNKNOWN;
+        out.since = ep.since;
+        out.unknownReason = null;
+    } catch { /* sin módulo, sin archivo o estado ilegible → 'unavailable' */ }
+    return out;
+}
+
 function collectDispatch() {
     // Carga 24h por provider (dispatches con fallback). Sirve para la barra de
     // carga/cuota y para identificar quién absorbe el fallback.
@@ -257,6 +399,8 @@ function buildProvidersModel() {
     const catalog = collectCatalog();
     const agents = collectAgentConfig();
     const disabled = collectDisabled();
+    // #6180 - estado del episodio de respaldo (parte 2 del split de #6151).
+    const episode = collectFallbackEpisode();
 
     const providers = PROVIDER_ORDER.map((key) => {
         const meta = PROVIDER_META[key];
@@ -375,6 +519,9 @@ function buildProvidersModel() {
             agents: agentChain,
             healthTs: health.ts,
             dispatchTotal: dispatch.total,
+            // #6180 - con que motor corre el pipeline, desde cuando y por que.
+            // Enums + timestamp, sin un solo valor crudo del archivo de estado.
+            episode,
         },
     };
 }
@@ -675,6 +822,150 @@ function renderMissionBanner(meta) {
 </div>`;
 }
 
+
+/**
+ * #6180 — Indicador PERMANENTE del motor con el que corre el pipeline.
+ *
+ * Responde tres cosas de un vistazo: con qué motor corre, desde cuándo y por
+ * qué no está el principal. Es la contraparte en pantalla del aviso de chat de
+ * #6179: el operador tiene que poder contestar "¿cómo estoy funcionando ahora
+ * mismo?" mirando el dashboard, sin depender de que le haya llegado un mensaje.
+ *
+ * Contrato de copy (UX, fase validación, v2):
+ *   - Estado B (respaldo) se redacta ENTERO con `copy.json`: el título sale de
+ *     `titulares.sostenido[tier]` —la variante de estado sostenido, que es
+ *     justo lo que es un indicador permanente, a diferencia de `entra_respaldo`
+ *     que es de transición—, la descripción de `consecuencias[tier]` y el
+ *     motivo de `motivos[cause]`, verbatim y con su punto final.
+ *   - El escalón importa: un panel que dice sólo "corriendo con un motor de
+ *     respaldo" mientras el escalón es `gratuito_sin_herramientas` —donde los
+ *     agentes no editan archivos ni corren tests— informa tranquilidad donde
+ *     hay bloqueo.
+ *   - Estados A y C son copy exclusivo del dashboard: `copy.json` sólo tiene
+ *     `vuelve_principal`, que es fraseo de transición y no sirve para un
+ *     indicador permanente. No hay contraparte canónica que contradecir.
+ *   - El motivo es un CAMPO CON ETIQUETA, no una oración interpolada: así
+ *     cualquier valor de la tabla —incluido el default— se lee natural.
+ *
+ * El color nunca es el único portador del estado (WCAG 1.4.1): cada estado
+ * cambia glifo, texto de placa, chip y —en `unavailable`— el trazo del borde.
+ *
+ * @param {object} episode  salida de `collectFallbackEpisode()`.
+ * @param {number} now      reloj de referencia (epoch ms). Explícito, nunca por
+ *                          `.map()`: el índice del array es finito y
+ *                          `relativeTime` lo tomaría como timestamp.
+ */
+function renderEngineIndicator(episode, now) {
+    const ref = Number.isFinite(now) ? now : Date.now();
+    const ep = (episode && typeof episode === 'object') ? episode : {};
+    const COPY = engineCopy();
+
+    let mode = (ep.mode === 'primary' || ep.mode === 'fallback') ? ep.mode : 'unavailable';
+
+    // Segunda barrera sobre `since` (la primera está en el colector). Acá se
+    // valida contra el `ref` que se va a usar para formatear, así que cubre
+    // también a quien llame al render con un modelo armado a mano.
+    if (mode !== 'unavailable'
+        && (!Number.isFinite(ep.since) || ep.since <= 0 || ep.since > ref + ENGINE_SINCE_SKEW_MS)) {
+        mode = 'unavailable';
+    }
+
+    // El estado B no tiene copy propio: si el asset no cargó, no se inventa un
+    // texto genérico — se dice que no se sabe. Fail-closed.
+    let bTtl = null, bDesc = null, bMotivo = null;
+    if (mode === 'fallback') {
+        const tier = ENGINE_TIERS.includes(ep.tier) ? ep.tier : 'gratuito_sin_herramientas';
+        const cause = ENGINE_CAUSES.includes(ep.cause) ? ep.cause : ENGINE_CAUSE_UNKNOWN;
+        const sostenido = pickCopy(COPY && COPY.titulares, 'sostenido', null);
+        bTtl = pickCopy(sostenido, tier, null);
+        bDesc = pickCopy(COPY && COPY.consecuencias, tier, null);
+        bMotivo = pickCopy(COPY && COPY.motivos, cause,
+            pickCopy(COPY && COPY.motivos, ENGINE_CAUSE_UNKNOWN, null));
+        if (typeof bTtl !== 'string' || typeof bDesc !== 'string' || typeof bMotivo !== 'string') {
+            mode = 'unavailable';
+        }
+    }
+
+    let cls, glyph, plateK, plateS, ttl, chip, desc;
+    let motorV, motorS, sinceV, sinceS, sinceTitle, campo3L, campo3V, campo3S;
+
+    if (mode === 'primary') {
+        cls = 'is-primary';
+        glyph = '✓'; plateK = 'PRINCIPAL'; plateS = 'SIN RESPALDO ACTIVO';
+        ttl = 'El pipeline está corriendo con el motor principal';
+        chip = 'TODO NORMAL';
+        desc = 'No hay ningún respaldo activo. El motor principal está tomando todo el trabajo.';
+        motorV = 'el motor principal';
+        motorS = 'motor principal de la cadena';
+        campo3L = 'SITUACIÓN'; campo3V = 'normal'; campo3S = 'sin degradación en curso';
+    } else if (mode === 'fallback') {
+        cls = 'is-fallback';
+        glyph = '⚠'; plateK = 'RESPALDO'; plateS = 'PRINCIPAL FUERA';
+        ttl = bTtl;
+        chip = 'FUNCIONANDO CON RESPALDO';
+        desc = bDesc;
+        // El episodio NO transporta el id del proveedor efectivo —a propósito:
+        // se llavea por escalón, no por proveedor— así que el panel nombra al
+        // motor de forma genérica. Preferimos ser vagos antes que filtrar un id
+        // (SEC-3): un nombre propio sólo podría salir de la allowlist pública.
+        motorV = 'un motor de respaldo';
+        motorS = 'motor de respaldo';
+        campo3L = 'MOTIVO'; campo3V = bMotivo; campo3S = 'motivo registrado por el pipeline';
+    } else {
+        cls = 'is-unknown';
+        glyph = '?'; plateK = 'SIN DATOS'; plateS = 'ESTADO NO LEÍDO';
+        ttl = 'No se pudo determinar con qué motor está corriendo el pipeline';
+        chip = 'ESTADO NO DISPONIBLE';
+        // La segunda oración no es relleno: es lo que evita que el operador
+        // descarte los paneles vecinos, que sí son válidos.
+        desc = 'El dato del motor no está disponible en este momento. '
+            + 'El resto de esta pantalla sigue siendo válido.';
+        motorV = 'sin dato'; motorS = 'no se pudo leer el estado';
+        campo3L = 'MOTIVO'; campo3V = 'sin dato'; campo3S = 'no se pudo leer el estado';
+    }
+
+    if (mode === 'unavailable') {
+        sinceV = 'sin dato'; sinceS = 'no se pudo leer el estado'; sinceTitle = '';
+    } else {
+        sinceV = relativeTime(ep.since, ref);
+        sinceS = absTime(ep.since);
+        sinceTitle = sinceS;
+    }
+
+    const sinceTitleAttr = sinceTitle ? ` title="${escapeHtmlAttr(sinceTitle)}"` : '';
+
+    return `
+<div class="prov-mission prov-engine ${cls}" id="prov-engine" role="region"
+     aria-label="Motor con el que está corriendo el pipeline">
+  <div class="prov-btag">
+    <div class="prov-btag-n" aria-hidden="true">${escapeHtmlText(glyph)}</div>
+    <div class="prov-btag-k">${escapeHtmlText(plateK)}</div>
+    <div class="prov-btag-s">${escapeHtmlText(plateS)}</div>
+  </div>
+  <div class="prov-mtext">
+    <div class="prov-m-ttl">${escapeHtmlText(ttl)}<span class="prov-m-chip">${escapeHtmlText(chip)}</span></div>
+    <div class="prov-m-desc">${escapeHtmlText(desc)}</div>
+    <div class="prov-wmetrics">
+      <div class="prov-wm">
+        <div class="prov-wm-l">MOTOR EN USO</div>
+        <div class="prov-wm-v">${escapeHtmlText(motorV)}</div>
+        <div class="prov-wm-s">${escapeHtmlText(motorS)}</div>
+      </div>
+      <div class="prov-wm">
+        <div class="prov-wm-l">DESDE CUÁNDO</div>
+        <div class="prov-wm-v"${sinceTitleAttr}>${escapeHtmlText(sinceV)}</div>
+        <div class="prov-wm-s">${escapeHtmlText(sinceS)}</div>
+      </div>
+      <div class="prov-wm">
+        <div class="prov-wm-l">${escapeHtmlText(campo3L)}</div>
+        <div class="prov-wm-v">${escapeHtmlText(campo3V)}</div>
+        <div class="prov-wm-s">${escapeHtmlText(campo3S)}</div>
+      </div>
+    </div>
+  </div>
+</div>`;
+}
+
 /**
  * Franja «Por agente» al pie: cadena DEFAULT + agentes que la pisan.
  */
@@ -706,6 +997,7 @@ function bodyHtml(model, now) {
     const rows = model.providers.map((p) => renderProviderRow(p, ref)).join('');
     return `
 ${renderMissionBanner(model.meta)}
+${renderEngineIndicator(model.meta.episode, ref)}
 <section class="in-section" aria-labelledby="providers-title">
   <h2 id="providers-title" class="in-section-title">
     <span class="in-section-title-icon" aria-hidden="true">🔌</span>Proveedores
@@ -848,6 +1140,30 @@ const PANEL_CSS = `
 /* #5888 UX-3 — severidad PROPIA del eje de modelo: advertencia (--in-warn), no
    caído (--in-bad). La cadena efectivamente sigue operativa (CA-5). */
 .prov-mission.is-model-warn { border-color: var(--in-warn); box-shadow: inset 3px 0 0 var(--in-warn); }
+
+/* #6180 — Indicador permanente de motor. Reusa el grid del banner de misión
+   (.prov-mission / .prov-btag / .prov-wm): cero color nuevo y cero ícono nuevo,
+   sólo las tres variantes de estado. Contrastes medidos por UX sobre #161b22:
+   --in-ok 6.81 · --in-warn 6.85 · --in-fg-dim 5.62 — los tres llegan a AA. */
+.prov-engine.is-primary { border-color: var(--in-ok); box-shadow: inset 3px 0 0 var(--in-ok); }
+.prov-engine.is-primary .prov-btag { background: var(--in-ok-soft); border-color: var(--in-ok); }
+.prov-engine.is-primary .prov-m-chip { background: var(--in-ok-soft); border-color: var(--in-ok); color: var(--in-ok); }
+/* Ámbar, NO rojo: el pipeline sigue funcionando. Pintarlo de rojo igualaría
+   "trabajo con menos margen" con "estoy caído" y erosionaría la confianza en el
+   rojo cuando haga falta de verdad. */
+.prov-engine.is-fallback { border-color: var(--in-warn); box-shadow: inset 3px 0 0 var(--in-warn); }
+.prov-engine.is-fallback .prov-btag { background: var(--in-warn-soft); border-color: var(--in-warn); }
+.prov-engine.is-fallback .prov-m-chip { background: var(--in-warn-soft); border-color: var(--in-warn); color: var(--in-warn); }
+/* El estado "sin datos" se ve DISTINTO, no apagado: un punteado que grita "acá falta un
+   dato", no un panel neutro que se confunde con silencio normal. El trazo es
+   además la señal no cromática que distingue este estado en escala de grises. */
+.prov-engine.is-unknown { border-style: dashed; border-color: var(--in-fg-dim); box-shadow: inset 3px 0 0 var(--in-fg-dim); }
+.prov-engine.is-unknown .prov-btag { border-style: dashed; border-color: var(--in-fg-dim); }
+.prov-engine.is-unknown .prov-m-chip { border-color: var(--in-fg-dim); color: var(--in-fg-dim); }
+.prov-engine .prov-btag-n { font-size: 34px; }
+/* Los valores de este panel son frases, no números: el 19px/800 del banner de
+   misión los desbordaría. */
+.prov-engine .prov-wm-v { font-size: 13px; font-weight: 700; line-height: 1.4; }
 .prov-btag { display: flex; flex-direction: column; align-items: center; justify-content: center;
   min-width: 120px; padding: 12px 16px; border-radius: 12px; background: var(--in-bg-2); border: 1px solid var(--in-border); }
 .prov-mission.is-degraded .prov-btag { background: var(--in-bad-soft); border-color: var(--in-bad); }
@@ -1138,6 +1454,9 @@ module.exports = {
     renderProviderRow,
     renderMissionBanner,
     renderAgentStrip,
+    // #6180 - indicador permanente de motor (episodio de respaldo).
+    collectFallbackEpisode,
+    renderEngineIndicator,
     renderInert,
     // #5888 — expuestos para los tests del eje de modelo (CA-9/CA-15/CA-16/CA-18).
     renderCatalogCell,

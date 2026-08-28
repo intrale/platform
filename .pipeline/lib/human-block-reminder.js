@@ -42,6 +42,23 @@
 
 const fs = require('fs');
 const path = require('path');
+// #6190 — el recordatorio NO redacta copy propio: le pide la ficha al módulo
+// compartido y la dibuja con el mismo renderer que el aviso inicial. Si armara
+// su propia versión volveríamos al problema que #6190 cierra: dos textos que
+// describen lo mismo y divergen sin que nadie se entere.
+const decisionCard = require('./decision-card');
+// Se importa el RENDERER, no `human-block`: este módulo no puede alcanzar
+// `unblockIssue` ni `dismissBlockedIssue` ni por vía indirecta (ver la garantía
+// estructural arriba, y su test en `human-block-notificacion.test.js`).
+const cardRender = require('./decision-card-render');
+// #6190 — `listBlockedIssues()` NO trae `titulo` ni `labels` (el marker es un
+// archivo vacío con el número en el nombre): el `due` que llega acá viene con
+// esa forma cruda. Sin enriquecer, TODAS las fichas del recordatorio salían con
+// "(sin título)" mientras el aviso inicial —con el mismo dato y en el mismo
+// instante— salía con el título real. Es un módulo de SÓLO LECTURA de cache:
+// no le da a este módulo ninguna capacidad de destrabe, así que no viola la
+// garantía estructural de arriba.
+const issueTitleCache = require('./issue-title-cache');
 
 // Escalones de recordatorio, en horas desde el bloqueo. Después del último se
 // repite cada `RECURRING_EVERY_HOURS`.
@@ -196,36 +213,99 @@ function formatAge(ageHours) {
  * CA-4/CA-5 — UN SOLO mensaje con todos los bloqueos vencidos (agrupado, para
  * no spamear un mensaje por issue).
  *
- * Guideline UX: el recordatorio tiene que distinguirse a simple vista del aviso
- * inicial. Si son idénticos, el operador no sabe si está viendo un bloqueo
- * nuevo o el mismo de hace 6 horas. Por eso el encabezado es `🔁 Recordatorio`
- * (el aviso inicial usa `🚧`) y cada ítem lleva su antigüedad y el número de
- * recordatorio.
+ * #6190 — Migrado a la ficha de decisión. Antes emitía **Markdown vivo** (`*`,
+ * `_`, backticks) y `pulpo.js` lo enviaba SIN `plain:true`: era el séptimo
+ * camino, el único que seguía expuesto a #5421 (markup desbalanceado → HTTP 400
+ * de Telegram → recordatorio perdido sin rastro, porque el saliente es
+ * fire-and-forget vía dropfile y nadie ve el 400). Ahora sale en texto plano y
+ * el copy lo produce `lib/decision-card.js`, igual que el aviso inicial: el
+ * recordatorio NO tiene copy propio, que es exactamente CA-1. Lo único suyo son
+ * el encabezado y el cierre.
  *
- * @param {Array} due — salida de `evaluateReminders().due`.
- * @returns {string} texto Markdown, o '' si no hay nada que recordar.
+ * El encabezado dice el NÚMERO DE AVISO, no "recordatorio" (H-UX-8): el
+ * operador que ya vio dos de estos lee "recordatorio" y archiva sin abrir. La
+ * información que cambia el comportamiento es cuántas veces ya se avisó, y
+ * hasta ahora vivía escondida en un paréntesis en cursiva de cada línea.
+ *
+ * El destacado —la única ficha completa— es el MÁS ANTIGUO: el recordatorio es
+ * un barrido sin disparador, así que no hay "el que motivó el mensaje", y el
+ * más viejo es el que más caro sale seguir ignorando.
+ *
+ * FAIL-CLOSED: si armar las fichas lanza, el recordatorio SALE IGUAL en texto
+ * plano, redactado y sin volcar el motivo crudo. Un bloqueo no puede dejar de
+ * recordarse porque falló el formateador. Nunca `catch {}` vacío.
+ *
+ * TÍTULO (CA-1/CA-2): el `due` llega con la forma cruda de
+ * `listBlockedIssues()`, que no trae `titulo` ni `labels`. Se enriquece con el
+ * MISMO módulo que usa el aviso inicial antes de armar las fichas — si no, el
+ * recordatorio emite "(sin título)" para todos los issues y deja de ser "el
+ * mismo cuerpo que el mensaje agrupado", que es literalmente lo que el mockup
+ * 6190-01 panel B declara.
+ *
+ * @param {Array}  due     — salida de `evaluateReminders().due`.
+ * @param {number} [nowMs] — "ahora" inyectable (CA-A6).
+ * @param {object} [opts]
+ * @param {string} [opts.pipelineDir] — dir de `.pipeline` para el cache de
+ *   títulos (inyectable en tests; en producción lo pasa `runReminderTick`).
+ * @returns {string} texto PLANO, o '' si no hay nada que recordar.
  */
-function buildReminderMessage(due) {
+function buildReminderMessage(due, nowMs, opts) {
     const list = Array.isArray(due) ? due : [];
     if (!list.length) return '';
 
+    // Antigüedad descendente: el más viejo primero, y por lo tanto destacado.
     const ordenados = list.slice().sort((a, b) => (b.age_hours || 0) - (a.age_hours || 0));
-    const plural = ordenados.length === 1 ? '' : 's';
-    const lines = [];
-    lines.push(`🔁 *Recordatorio: ${ordenados.length} bloqueo${plural} esperando tu respuesta*`);
-    lines.push('');
 
+    // El número de aviso del encabezado es el más alto del grupo: es el que
+    // mide hace cuánto que el operador viene sin responder.
+    const avisos = ordenados
+        .map((d) => Number(d.reminder_number))
+        .filter((n) => Number.isInteger(n) && n > 0);
+    const avisoMax = avisos.length ? Math.max(...avisos) : 1;
+    const encabezado = `🔁 ${decisionCard.encabezadoRecordatorio(avisoMax, ordenados.length)}`;
+    const cierre = decisionCard.CIERRE_RECORDATORIO;
+
+    // Mapa issue → número de aviso, para que cada línea compacta lleve el suyo.
+    // Es contexto de urgencia, no un contador crudo de máquina: por eso se dice
+    // "2º aviso" y no `reminder_number=2`.
+    const porIssue = {};
     for (const d of ordenados) {
-        const nro = d.reminder_number > 1 ? ` · aviso #${d.reminder_number}` : '';
-        lines.push(`• *#${d.issue}* — ${d.skill} en ${d.phase} _(hace ${formatAge(d.age_hours)}${nro})_`);
-        const detalle = String(d.question || d.reason || '').trim();
-        if (detalle) lines.push(`   ↳ ${detalle.slice(0, 160)}`);
+        const n = Number(d.reminder_number);
+        if (Number.isInteger(n) && n > 1) porIssue[Number(d.issue)] = n;
     }
 
-    lines.push('');
-    lines.push('_Siguen bloqueados: nada se aprueba solo por dejar pasar el tiempo._');
-    lines.push('_Usá_ `/unblock <issue> <orientación>` _para destrabar._');
-    return lines.join('\n');
+    let cuerpo;
+    try {
+        const enriquecidos = issueTitleCache.enriquecerConTitulo(
+            ordenados,
+            { pipelineDir: opts && opts.pipelineDir },
+        );
+        const cards = decisionCard.buildDecisionCards(enriquecidos, nowMs);
+        // El presupuesto del bloque de fichas descuenta lo que ocupan el
+        // encabezado y el cierre: si no, el recordatorio entra justo y el
+        // transporte lo trunca en silencio — la falla que este issue cierra.
+        const reservado = encabezado.length + cierre.length + 8;
+        cuerpo = cardRender.renderDecisionCardsPlain(
+            cards,
+            cardRender.FICHA_BUDGET - reservado,
+            { encabezado: false, avisos: porIssue },
+        );
+    } catch (e) {
+        try {
+            process.stderr.write(`[hb-reminder] ficha falló, se recuerda en forma degradada: ${e && e.message}\n`);
+        } catch (_) { /* stderr cerrado */ }
+        // Degradado: título y antigüedad, nada más. Volcar el motivo crudo
+        // "porque total es el fallback" es la forma exacta en que este camino
+        // filtra un stack o un volcado de config (SEC-1).
+        cuerpo = ordenados.map((d) => {
+            const issue = Number(d.issue);
+            const num = Number.isInteger(issue) && issue > 0 ? `#${issue}` : 'Un trabajo sin número';
+            const aviso = decisionCard.sufijoAviso(d.reminder_number);
+            return `${num} — frenado hace ${formatAge(d.age_hours)}${aviso ? `, ${aviso}` : ''}.`;
+        }).join('\n');
+    }
+
+    return [encabezado, '', cuerpo, '', cierre].join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
 /**
@@ -266,7 +346,7 @@ function runReminderTick(opts = {}) {
             return { sent: false, due: 0 };
         }
 
-        const texto = buildReminderMessage(due);
+        const texto = buildReminderMessage(due, now.getTime(), { pipelineDir });
 
         // Botonera: sólo tiene sentido cuando el recordatorio es de UN bloqueo
         // (los botones actúan sobre un issue puntual). Con varios, el texto

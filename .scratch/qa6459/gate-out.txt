@@ -1,0 +1,32 @@
+--- orphanSweepGate REAL (pulpo.js) ---
+function orphanSweepGate(prevTick, everyTicks = ORPHAN_SWEEP_EVERY_TICKS) {
+  const n = (Number.isFinite(everyTicks) && everyTicks > 0) ? Math.floor(everyTicks) : 1;
+  const tick = ((Number.isFinite(prevTick) ? prevTick : 0) + 1) % n;
+  return { tick, due: tick === 0 };
+}
+ORPHAN_SWEEP_EVERY_TICKS declarado = 10
+M=9 ticks => disparos=0 | floor(M/10)=0 | OK
+M=10 ticks => disparos=1 | floor(M/10)=1 | OK
+M=25 ticks => disparos=2 | floor(M/10)=2 | OK
+M=100 ticks => disparos=10 | floor(M/10)=10 | OK
+M=137 ticks => disparos=13 | floor(M/10)=13 | OK
+
+--- puntos de wiring en pulpo.js ---
+18567: function orphanSweepGate(prevTick, everyTicks = ORPHAN_SWEEP_EVERY_TICKS) {
+18581: function ejecutarBarridoHuerfanos(origen) {
+22871: const rBarrido = ejecutarBarridoHuerfanos('boot');
+22926: try { reconcileTelegramReceipts(); } catch (e) { log('telegram', `[reconcile] tick error: ${e.message}`); }
+22934: const orphanGate = orphanSweepGate(orphanSweepTick);
+22937: try { ejecutarBarridoHuerfanos('tick'); }
+23332: orphanSweepGate,
+23334: ejecutarBarridoHuerfanos,
+
+--- CA-1: clasificador REAL con deliveryUnconfirmed ---
+RESULTADOS = ["ok","ajustada","fallback","error","huerfano"]
+ respuesta producida + saliente NO registrado => resultado="huerfano"
+ ademas fallo el turno (error gana) => resultado="error"
+ turno normal sin el flag (back-compat) => resultado="ok"
+ turno ok con entrega => resultado="ok"
+
+--- badge REAL ---
+["RESULT_BADGES","buildResultBadges","defaultEscapeHtml"]

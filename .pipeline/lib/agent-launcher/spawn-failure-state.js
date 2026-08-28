@@ -5,14 +5,20 @@
 // PROBLEMA QUE RESUELVE
 // ---------------------
 // La instrumentación del spawn (CA-1, en agent-launcher.js) detecta la muerte
-// temprana de Codex en el mismo tick del spawn. Pero el `brazoHuerfanos` del
-// pulpo (CA-3) corre en un TIMER independiente, minutos después, y necesita
-// saber que la última muerte de ese (skill, issue) fue un spawn-failure del
-// provider para NO penalizar el retry del issue.
+// temprana del proceso del provider en el mismo tick del spawn. Pero el
+// `brazoHuerfanos` del pulpo (CA-3) corre en un TIMER independiente, minutos
+// después, y necesita saber que la última muerte de ese (skill, issue) fue un
+// spawn-failure del provider para NO penalizar el retry del issue.
 //
 // Este módulo es el canal de estado entre ambos: la instrumentación **registra**
 // un marker cuando clasifica un spawn-failure; el brazoHuerfanos lo **consume**
 // (one-shot) para decidir no rebotar.
+//
+// #6612 — El canal nació cableado a Codex de punta a punta. Hoy la
+// instrumentación cubre TODOS los providers LLM, y el consumidor busca por
+// (skill, issue) vía `consumeSpawnFailureAnyProvider` porque el barrido de
+// huérfanos no sabe con qué eslabón de la cadena de fallback salió el agente.
+// El provider a apagar sale del marker, nunca de una constante.
 //
 // PERSISTENCIA: `.pipeline/state/spawn-failures.json`
 //   {
@@ -196,8 +202,73 @@ function consumeSpawnFailure(opts = {}) {
     }
 }
 
+/**
+ * consumeSpawnFailureAnyProvider — igual que `consumeSpawnFailure` pero SIN
+ * exigir el nombre del provider (#6612).
+ *
+ * POR QUÉ EXISTE
+ * --------------
+ * El consumidor real (el `brazoHuerfanos` del Pulpo) NO sabe con qué provider
+ * se lanzó el agente que murió: la cadena de fallback la resolvió el
+ * dispatcher minutos antes, en otro proceso, y esa decisión no viaja al
+ * barrido de huérfanos. Cuando el consumo se hacía con un provider hardcodeado
+ * (`'openai-codex'`), la muerte al spawnear de CUALQUIER otro provider de la
+ * cadena (kimi-moonshot, gemini, cerebras, nvidia) no encontraba su marker y
+ * se le cobraba al ISSUE: consumía sus 3 reintentos y terminaba en un rechazo
+ * de contenido sintetizado. Este lector cierra ese hueco: busca por
+ * (skill, issue) y devuelve el marker con el provider que efectivamente falló,
+ * para que el caller apague ESE provider y no otro.
+ *
+ * Si hay más de un marker activo para el mismo (skill, issue) — puede pasar si
+ * la cadena reintentó con dos providers dentro de la misma ventana de TTL —
+ * devuelve el MÁS RECIENTE (`recorded_at` mayor) y consume sólo ese: es el que
+ * explica la muerte que el barrido está mirando ahora.
+ *
+ * Fail-open igual que el resto del módulo: cualquier error → null.
+ *
+ * @param {object} opts
+ * @param {string} opts.pipelineDir
+ * @param {string} opts.skill
+ * @param {number|string} opts.issue
+ * @returns {object|null} la entrada consumida (incluye `.provider`), o null.
+ */
+function consumeSpawnFailureAnyProvider(opts = {}) {
+    const { pipelineDir, skill, issue } = opts;
+    if (!pipelineDir || !skill || issue == null) return null;
+    const _fs = opts.fsImpl || fs;
+    const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+    try {
+        const { failures } = readRaw(pipelineDir, _fs);
+        const active = activeEntries(failures, now);
+        // El sufijo `::skill::issue` de la key es el mismo que arma makeKey; lo
+        // comparamos por campos (no por substring de la key) para que un
+        // provider con `::` en el nombre no pueda colisionar.
+        const matches = active.filter(
+            (e) => String(e.skill) === String(skill) && String(e.issue) === String(issue)
+        );
+        // Más reciente primero. `recorded_at` inválido ⇒ se ordena al final.
+        const ts = (e) => {
+            const t = e && e.recorded_at ? Date.parse(e.recorded_at) : NaN;
+            return Number.isFinite(t) ? t : -Infinity;
+        };
+        const found = matches.length
+            ? matches.slice().sort((a, b) => ts(b) - ts(a))[0]
+            : null;
+        const remaining = found ? active.filter((e) => e !== found) : active;
+        // Misma disciplina de IO que `consumeSpawnFailure`: escribimos si hubo
+        // consumo O si la lectura drenó vencidos. Sin cambios, cero IO — este
+        // lector corre en CADA barrido de huérfanos.
+        const changed = found != null || remaining.length !== failures.length;
+        if (changed) writeAtomic(pipelineDir, { failures: remaining }, _fs);
+        return found;
+    } catch {
+        return null;
+    }
+}
+
 module.exports = {
     recordSpawnFailure,
+    consumeSpawnFailureAnyProvider,
     peekSpawnFailure,
     consumeSpawnFailure,
     stateFile,

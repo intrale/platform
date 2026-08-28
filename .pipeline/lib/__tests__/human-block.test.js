@@ -132,7 +132,7 @@ test('unblockIssue mueve marker a pendiente/ del target_phase y emite evento', (
     });
 
     const res = hb.unblockIssue({
-        issue: 2222, guidance: 'Aplicá AC#5 que es más reciente', unlocker: 'leo',
+        issue: 2222, guidance: 'Aplicá AC#5 que es más reciente', unlocker: 'commander:telegram',
     });
 
     assert.equal(res.ok, true);
@@ -155,7 +155,7 @@ test('unblockIssue mueve marker a pendiente/ del target_phase y emite evento', (
     const unblocked = events.find(e => e.event === 'human:unblocked' && e.issue === 2222);
     assert.ok(unblocked);
     assert.equal(unblocked.guidance, 'Aplicá AC#5 que es más reciente');
-    assert.equal(unblocked.unlocker, 'leo');
+    assert.equal(unblocked.unlocker, 'commander:telegram');
     assert.equal(unblocked.target_phase, 'dev');
 });
 
@@ -401,6 +401,11 @@ test('buildBlockedSummaryMarkdown sin bloqueados devuelve mensaje placeholder', 
 // propósito: el renderer los usa como puntuación normal (`(po)`, `(2h)`) y en
 // Markdown sólo son sintaxis DESPUÉS de un `]`, caso que se chequea aparte.
 const MARKUP_CHARS = /[*_`]/;
+// #6190 (H-UX-6) — el criterio dice "ni Markdown ni HTML", y `MARKUP_CHARS` no
+// cubre HTML. Sin este predicado aparte, el test es más flojo que el criterio
+// que dice verificar: un copy que sólo es seguro porque el test no mira es un
+// riesgo latente, no un cumplimiento.
+const HTML_CHARS = /[<>]/;
 /** Construcción de link Markdown, el vector de phishing clickeable. */
 const MARKDOWN_LINK = /\]\(/;
 
@@ -425,14 +430,23 @@ test('#5421 buildBlockedSummaryPlain no emite ningún metacarácter de markup', 
     });
 
     assert.doesNotMatch(txt, MARKUP_CHARS, `salió markup en: ${txt}`);
+    assert.doesNotMatch(txt, HTML_CHARS, `salió markup HTML en: ${txt}`);
     assert.doesNotMatch(txt, MARKDOWN_LINK, `salió un link Markdown en: ${txt}`);
-    // El contenido sigue completo: plano no significa mutilado.
+    // El contenido sigue completo: plano no significa mutilado. Desde #6190 el
+    // dialecto plano es la FICHA DE DECISIÓN, así que lo que tiene que estar es
+    // qué se decide, qué opciones hay y cómo se destraba — no el vocabulario
+    // interno que la ficha justamente vino a sacar.
     assert.match(txt, /#7101/);
-    assert.match(txt, /needs-human/);
-    assert.match(txt, /Recomendación:/);
-    assert.match(txt, /aprobar y seguir/);
-    assert.match(txt, /Incidentes bloqueados esperando humano/);
-    assert.match(txt, /unblock/);
+    assert.match(txt, /Qué está frenado:/);
+    assert.match(txt, /Por qué:/);
+    assert.match(txt, /Opciones:/);
+    assert.match(txt, /Si no decidís:/);
+    assert.match(txt, /aprobar y seguir/, 'la sugerencia que ya calculó el pipeline no se pierde');
+    assert.match(txt, /\/unblock 7101 /, 'el pie lleva el número REAL, no un molde');
+    assert.doesNotMatch(txt, /<issue>|<orientación>|<qué hacer>/,
+        'H-UX-3/CA-17: ningún molde literal en la salida');
+    assert.doesNotMatch(txt, /needs-human|dependency_block|blocked:/,
+        'CA-12: el mensaje no lleva labels internos ni claves de máquina');
 });
 
 test('#5421 buildBlockedSummaryPlain sin bloqueados: placeholder sin markup', () => {
@@ -462,10 +476,14 @@ test('#5421 el renderer no agrega markup propio ni siquiera con un vector hostil
             highlight: { issue: 5421, skill: 'pipeline-dev', reason: 'branch-origin-unverified', question },
             blocked: [{ issue: 5421, skill: 'pipeline-dev', phase: 'dev', age_hours: 2, question }],
         });
-        // El listado repite la `question` truncada a 160, así que el aporte
-        // propio se mide contra las dos apariciones posibles del vector.
-        const propios = contarMarkup(txt) - contarMarkup(question) - contarMarkup(question.slice(0, 160));
-        assert.equal(propios, 0, `el renderer plano agregó markup propio: ${txt}`);
+        // #6190 endurece la garantía. Antes era "el renderer no APORTA markup"
+        // (el vector viajaba literal y Telegram no tenía nada que parsear).
+        // Ahora la ficha neutraliza los metacaracteres en el ORIGEN, así que la
+        // propiedad pasa a ser la más fuerte posible: CERO markup en la salida,
+        // vengan de donde vengan. Un vector hostil no puede aportar ni uno.
+        assert.equal(contarMarkup(txt), 0, `el renderer plano dejó pasar markup: ${txt}`);
+        assert.doesNotMatch(txt, HTML_CHARS, `el renderer plano dejó pasar HTML: ${txt}`);
+        assert.doesNotMatch(txt, MARKDOWN_LINK, `quedó un link Markdown armable: ${txt}`);
     }
 });
 
@@ -504,16 +522,29 @@ test('#5421 el renderer Markdown sigue intacto (compat, no-regresión)', () => {
     assert.match(md, /_Usá_ `\/unblock <issue> <orientación>` _para desbloquear\._/);
 });
 
-test('#5421 plano y Markdown dicen lo MISMO: el contenido no puede divergir', () => {
+// #6190 — los dos dialectos YA NO producen el mismo contenido, y es a propósito:
+// el plano es la ficha de decisión (camino de producción, los 7 emisores) y el
+// Markdown quedó CONGELADO en el formato histórico porque retirarlo es #6193.
+// Lo que este test protege ahora es lo que sigue sin poder divergir: ningún
+// trabajo bloqueado puede desaparecer de uno de los dos dialectos.
+test('#6190 los dialectos divergen en forma, NUNCA en cobertura de issues', () => {
     resetFs();
     const opts = {
         highlight: { issue: 7103, skill: 'ux', reason: 'motivo x', question: 'pregunta y', recommendation: 'reco z' },
-        blocked: [{ issue: 7103, skill: 'ux', phase: 'dev', age_hours: 1.5, question: 'pregunta y' }],
+        blocked: [
+            { issue: 7103, skill: 'ux', phase: 'dev', age_hours: 1.5, question: 'pregunta y' },
+            { issue: 7104, skill: 'po', phase: 'dev', age_hours: 9, question: 'otra cosa' },
+        ],
     };
-    // Quitar el markup del dialecto Markdown debe dar exactamente el plano.
-    const md = hb.buildBlockedSummaryMarkdown(opts).replace(/[*_`]/g, '');
+    const md = hb.buildBlockedSummaryMarkdown(opts);
     const plano = hb.buildBlockedSummaryPlain(opts);
-    assert.equal(plano, md);
+    for (const n of [7103, 7104]) {
+        assert.match(md, new RegExp(`#${n}\\b`), `#${n} falta en el dialecto Markdown`);
+        assert.match(plano, new RegExp(`#${n}\\b`), `#${n} falta en el dialecto plano`);
+    }
+    // Y la divergencia es la esperada: sólo uno de los dos lleva markup.
+    assert.match(md, MARKUP_CHARS, 'el dialecto Markdown sigue siendo Markdown');
+    assert.doesNotMatch(plano, MARKUP_CHARS, 'el dialecto plano sigue sin markup');
 });
 
 test('reportHumanBlock no duplica notificación: findBlockedMarker permite dedup', () => {
@@ -850,58 +881,89 @@ test('#5458 el teclado de needs-human no ofrece ninguna acción operacional', ()
 // de la alerta needs-human. Cubre formato (CA-2), redacción SEC-3 y degradación.
 // =============================================================================
 
-test('buildNeedHumanAudioText narra motivo + decisión en español con encabezado fijo', () => {
+test('buildNeedHumanAudioText narra la ficha en el orden fijo con encabezado de alerta', () => {
     const txt = hb.buildNeedHumanAudioText({
-        reason: 'el PR quedó bloqueado por CODEOWNERS',
-        question: 'mergealo a mano o reasigná el review',
+        issue: 7300,
+        reason: 'pendiente de firma de definición',
     });
     // G-2: encabezado fijo de alerta (earcon verbal) siempre presente.
     assert.ok(txt.startsWith('Atención: un issue requiere intervención humana.'),
         'arranca con el encabezado de alerta fijo');
-    assert.ok(txt.includes('El motivo del bloqueo es: el PR quedó bloqueado por CODEOWNERS.'),
-        'incluye el motivo narrado');
-    assert.ok(txt.includes('La decisión que necesitamos es: mergealo a mano o reasigná el review.'),
-        'incluye la decisión narrada');
+    // #6190 — el orden narrativo es el del contrato de copy: qué se decide →
+    // por qué está frenado → recomendación → costo de no decidir.
+    const iDecision = txt.indexOf('La decisión que necesitamos es:');
+    const iPorQue = txt.indexOf('Está frenado porque');
+    const iCosto = txt.indexOf('Si no decidís,');
+    assert.ok(iDecision > 0, 'narra qué se decide');
+    assert.ok(iPorQue > iDecision, 'el por qué va después de la decisión');
+    assert.ok(iCosto > iPorQue, 'el costo de no decidir va al final');
+    // `firma` no lleva recomendada, y el audio lo DICE en vez de callarse: el
+    // silencio se oye como que el audio se cortó.
+    assert.ok(txt.includes('No te propongo ninguna opción: la decisión es tuya.'),
+        'declara que no hay recomendación en vez de omitirla');
+    // El audio se escucha sin pantalla: ni `#` ni comandos.
+    assert.ok(!txt.includes('#'), 'el numeral no se narra');
+    assert.ok(!txt.includes('/unblock'), 'el comando no se narra: el audio orienta, el texto ejecuta');
 });
 
-test('buildNeedHumanAudioText SEC-3: redacta un AWS key del motivo antes de narrar', () => {
+test('buildNeedHumanAudioText no narra el vocabulario interno del pipeline (CA-12)', () => {
     const txt = hb.buildNeedHumanAudioText({
+        issue: 7301, skill: 'ux', phase: 'criterios',
+        reason: 'dependency_block: espera #6110',
+    });
+    assert.ok(!txt.includes('dependency_block'), 'la clave interna no se narra');
+    assert.ok(txt.includes('6110'), 'el número del trabajo que espera SÍ se narra');
+});
+
+// SEC-3 — la garantía que importa es que el secreto NO SALE. Con la ficha hay
+// dos caminos distintos y los dos se cubren:
+//  · el texto crudo que la ficha NO transporta (un motivo cualquiera) → el
+//    secreto desaparece entero, porque el copy sale de la tabla congelada;
+//  · el texto que SÍ se cita literal (la pregunta de un agente, UX §1.8) → pasa
+//    por `redactAll` en la frontera y sale con el marcador.
+test('buildNeedHumanAudioText SEC-3: un AWS key del motivo no llega al audio', () => {
+    const txt = hb.buildNeedHumanAudioText({
+        issue: 7310,
         reason: 'falló con la clave AKIAIOSFODNN7EXAMPLE en el deploy',
         question: 'rotá la credencial',
     });
     assert.ok(!txt.includes('AKIAIOSFODNN7EXAMPLE'),
         'el AWS key NO aparece literal en el texto narrable');
-    assert.ok(txt.includes('[REDACTED]'), 'el secreto fue reemplazado por el marcador');
 });
 
-test('buildNeedHumanAudioText SEC-3: redacta un github_pat_* de la decisión', () => {
+test('buildNeedHumanAudioText SEC-3: un github_pat_* citado sale con el marcador', () => {
     const pat = 'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
     const txt = hb.buildNeedHumanAudioText({
+        issue: 7311,
         reason: 'el token expiró',
-        question: `usá ${pat} para reautenticar`,
+        // Termina en '?' y entra en 160: es una pregunta CITABLE, así que este
+        // es el camino donde el texto externo sí viaja a la ficha.
+        question: `usá ${pat} para reautenticar?`,
     });
     assert.ok(!txt.includes(pat), 'el PAT NO aparece literal en el texto narrable');
     assert.ok(txt.includes('[REDACTED]'), 'el PAT fue reemplazado por el marcador');
 });
 
-test('buildNeedHumanAudioText SEC-3: redacta un JWT embebido en el motivo', () => {
+test('buildNeedHumanAudioText SEC-3: un JWT del motivo no llega al audio', () => {
     const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
-    const txt = hb.buildNeedHumanAudioText({ reason: `bearer ${jwt}`, question: 'revocá' });
+    const txt = hb.buildNeedHumanAudioText({ issue: 7312, reason: `bearer ${jwt}`, question: 'revocá' });
     assert.ok(!txt.includes(jwt), 'el JWT NO aparece literal');
-    assert.ok(txt.includes('[REDACTED]'), 'el JWT fue reemplazado por el marcador');
 });
 
-test('buildNeedHumanAudioText degrada a alerta mínima con input vacío (no rompe)', () => {
-    const vacio = hb.buildNeedHumanAudioText({});
-    assert.equal(vacio, 'Atención: un issue requiere intervención humana.',
-        'sin motivo/decisión devuelve solo el encabezado de alerta');
-    const sinArgs = hb.buildNeedHumanAudioText();
-    assert.equal(sinArgs, 'Atención: un issue requiere intervención humana.',
-        'sin argumentos no lanza y devuelve el encabezado');
-    // input parcial: solo motivo.
-    const parcial = hb.buildNeedHumanAudioText({ reason: 'solo motivo' });
-    assert.ok(parcial.includes('El motivo del bloqueo es: solo motivo.'));
-    assert.ok(!parcial.includes('La decisión'), 'sin question no agrega la cláusula de decisión');
+test('buildNeedHumanAudioText con input vacío dice que no sabe, y no rompe', () => {
+    // #6190 — antes devolvía sólo el encabezado, que le dejaba al operador un
+    // audio sin ninguna información. Ahora es el caso `indeterminado` del
+    // contrato: se dice que no se pudo inferir y QUÉ falta — y nada más, porque
+    // inventar opciones en el único canal que no se puede verificar es peor.
+    for (const entrada of [{}, undefined]) {
+        const txt = hb.buildNeedHumanAudioText(entrada);
+        assert.ok(txt.startsWith('Atención: un issue requiere intervención humana.'),
+            'el encabezado de alerta se mantiene');
+        assert.ok(txt.includes('No pude inferir qué hay que decidir.'),
+            'declara que no sabe en vez de callarse');
+        assert.ok(txt.includes('Me falta'), 'y dice qué dato le falta');
+        assert.ok(!/Opciones|Te recomiendo/.test(txt), 'cero opciones inventadas');
+    }
 });
 
 test('buildNeedHumanAudioText acota la longitud a 600 chars (CA-NF / G-3)', () => {
@@ -1111,4 +1173,158 @@ test('e2e #4748: precondición resuelta → selector core lo mueve a toRelease; 
     // #4744 cerrado → sólo #4745 (dependency) se libera; #4746 (juicio) intacto.
     out = core.selectHumanBlocksToRelease({ markers, issueStates: { 4744: 'CLOSED' } });
     assert.deepEqual(out.toRelease.map(m => m.issue), [4745]);
+});
+
+// =============================================================================
+// #6611 — precondition 'verifiable', unlocker cerrado y emitAutoReleased.
+//
+// Es el punto donde se abre el fail-closed de #4748 (SEC-4), así que la
+// cobertura acá es UN NEGATIVO POR CAMPO: cada desvío tiene que degradar a
+// `human_judgment`.
+// =============================================================================
+
+const PREDICADO_OK = {
+    kind: 'pr_merge_blocked',
+    pr: 6593,
+    head_ref: 'agent/6145-turno-huerfano',
+    observed: { httpStatus: 405, mergeStateStatus: 'BLOCKED', gate: 'branch-protection-other' },
+};
+
+test('#6611 - normalizePrecondition acepta un verifiable bien formado', () => {
+    const out = hb.normalizePrecondition({ type: 'verifiable', predicate: PREDICADO_OK });
+    assert.equal(out.type, 'verifiable');
+    assert.equal(out.predicate.kind, 'pr_merge_blocked');
+    assert.equal(out.predicate.pr, 6593);
+    assert.equal(out.predicate.head_ref, 'agent/6145-turno-huerfano');
+    // `observed` se persiste como narrativa.
+    assert.equal(out.predicate.observed.httpStatus, 405);
+    assert.equal(out.predicate.observed.gate, 'branch-protection-other');
+});
+
+test('#6611 - un negativo por campo: todo desvio degrada a human_judgment', () => {
+    const casos = [
+        ['predicate ausente', { type: 'verifiable' }],
+        ['predicate null', { type: 'verifiable', predicate: null }],
+        ['predicate no-objeto', { type: 'verifiable', predicate: 'x' }],
+        ['predicate array', { type: 'verifiable', predicate: [] }],
+        ['kind ausente', { type: 'verifiable', predicate: { pr: 1, head_ref: 'agent/1-x' } }],
+        ['kind fuera del enum', { type: 'verifiable', predicate: { kind: 'lo_que_sea', pr: 1, head_ref: 'agent/1-x' } }],
+        ['kind no-string', { type: 'verifiable', predicate: { kind: 42, pr: 1, head_ref: 'agent/1-x' } }],
+        ['pr string', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: '00042', head_ref: 'agent/1-x' } }],
+        ['pr decimal', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 12.5, head_ref: 'agent/1-x' } }],
+        ['pr negativo', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: -3, head_ref: 'agent/1-x' } }],
+        ['pr cero', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 0, head_ref: 'agent/1-x' } }],
+        ['pr NaN', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: NaN, head_ref: 'agent/1-x' } }],
+        ['pr Infinity', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: Infinity, head_ref: 'agent/1-x' } }],
+        ['pr ausente', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', head_ref: 'agent/1-x' } }],
+        ['head_ref ausente', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1 } }],
+        ['head_ref vacio', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: '' } }],
+        ['head_ref no-string', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: 7 } }],
+        ['head_ref con ..', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: 'agent/../../main' } }],
+        ['head_ref con espacios', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: 'agent/1 x' } }],
+        ['head_ref absoluto', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: '/agent/1-x' } }],
+        ['type raro', { type: 'verifiableee', predicate: PREDICADO_OK }],
+    ];
+    for (const [nombre, pc] of casos) {
+        const out = hb.normalizePrecondition(pc);
+        assert.equal(out.type, 'human_judgment', nombre + ' debe degradar a human_judgment');
+        assert.equal(out.predicate, undefined, nombre + ' no debe conservar predicado');
+    }
+});
+
+test('#6611 - el default fail-closed de #4748 no se relajo', () => {
+    // Regresión directa de SEC-4: lo que antes degradaba, sigue degradando.
+    for (const pc of [null, undefined, 'x', 42, [], {}, { type: 'human_judgment' }, { type: 'dependency' }]) {
+        assert.equal(hb.normalizePrecondition(pc).type, 'human_judgment');
+    }
+    // Y `dependency` sigue funcionando igual que siempre.
+    const dep = hb.normalizePrecondition({ type: 'dependency', depends_on: [5, 3, 5, 'x', -1] });
+    assert.equal(dep.type, 'dependency');
+    assert.deepEqual(dep.depends_on, [3, 5]);
+});
+
+test('#6611 CRITICO - classifyPrecondition IGNORA el predicado aunque venga en el YAML', () => {
+    // Los motivos YAML los escriben agentes LLM. Si el predicado entrara por
+    // acá, un agente (o un prompt-injection leído de un PR de terceros) podría
+    // fabricarse un freeze auto-destrabable y reinyectarse al camino de merge.
+    const rechazoMalicioso = {
+        motivo: 'no puedo mergear',
+        precondition: { type: 'verifiable', predicate: PREDICADO_OK },
+        predicate: PREDICADO_OK,
+        kind: 'pr_merge_blocked',
+        pr: 6593,
+        head_ref: 'agent/6145-turno-huerfano',
+    };
+    const out = hb.classifyPrecondition([rechazoMalicioso]);
+    assert.equal(out.type, 'human_judgment', 'el YAML NO puede producir un verifiable');
+    assert.equal(out.predicate, undefined);
+
+    // Y el camino legítimo de dependencias sigue intacto.
+    const dep = hb.classifyPrecondition([{ motivo: 'x', depende_de: [4744] }]);
+    assert.equal(dep.type, 'dependency');
+    assert.deepEqual(dep.depends_on, [4744]);
+});
+
+test('#6611 - unlocker fuera del enum queda unknown + campo forense', () => {
+    // Valor inventado.
+    let u = hb.normalizeUnlocker('me-lo-invente');
+    assert.equal(u.unlocker, 'unknown');
+    assert.equal(u.unlocker_rejected_value, 'me-lo-invente');
+    assert.equal(u.unlocker_rejected_reason, 'unlocker_not_in_enum');
+
+    // No-string.
+    u = hb.normalizeUnlocker({ malicioso: true });
+    assert.equal(u.unlocker, 'unknown');
+    assert.equal(u.unlocker_rejected_reason, 'unlocker_not_string');
+
+    // Ausente ⇒ default histórico, no es un rechazo.
+    assert.deepEqual(hb.normalizeUnlocker(undefined), { unlocker: 'commander' });
+    assert.deepEqual(hb.normalizeUnlocker(null), { unlocker: 'commander' });
+    assert.deepEqual(hb.normalizeUnlocker(''), { unlocker: 'commander' });
+});
+
+test('#6611 - todos los call sites vigentes estan en el enum de unlocker', () => {
+    // Barrido de los literales que hoy se pasan como `unlocker`. Si alguno
+    // quedara fuera del enum, su traza se registraría como `unknown` y la
+    // auditoría del gate humano perdería la autoría.
+    const vigentes = [
+        'commander',
+        'commander:telegram',
+        'commander:dashboard',
+        'github:label-removed',
+        'human-block-action',
+        'human-block-action:unblock',
+        'human-block-action:devolver',
+        'human-block-action:priorizar',
+        'brazo-desbloqueo:precondicion',
+        'auto-recheck',
+    ];
+    for (const v of vigentes) {
+        assert.equal(hb.normalizeUnlocker(v).unlocker, v, v + ' debe estar en el enum');
+    }
+    assert.deepEqual([...hb.UNLOCKER_ENUM].sort(), [...vigentes].sort());
+});
+
+test('#6611 - emitAutoReleased deja evento con unlocker auto-recheck', () => {
+    const antes = readEvents().length;
+    hb.emitAutoReleased({
+        issue: 6145, kind: 'pr_merge_blocked', pr: 6593,
+        from: 'entrega', to: 'entrega', release_number: 1,
+        observed: { before: { mergeStateStatus: 'BLOCKED' }, now: { mergeStateStatus: 'CLEAN' } },
+    });
+    const eventos = readEvents();
+    assert.ok(eventos.length > antes, 'se emitió al menos un evento');
+    const ev = eventos.reverse().find(e => e.event === 'human_block_auto_released');
+    assert.ok(ev, 'existe el evento human_block_auto_released');
+    assert.equal(ev.issue, 6145);
+    assert.equal(ev.pr, 6593);
+    assert.equal(ev.kind, 'pr_merge_blocked');
+    assert.equal(ev.unlocker, 'auto-recheck', 'distinguible del destrabe manual');
+    assert.equal(ev.release_number, 1);
+});
+
+test('#6611 - emitAutoReleased nunca lanza aunque la entrada sea basura', () => {
+    assert.doesNotThrow(() => hb.emitAutoReleased());
+    assert.doesNotThrow(() => hb.emitAutoReleased({}));
+    assert.doesNotThrow(() => hb.emitAutoReleased({ issue: 'x', pr: null, kind: 42 }));
 });

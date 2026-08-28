@@ -240,6 +240,47 @@ anterior), con `code`, `stage`, `field` y `errors`.
 
 Hay un test que verifica que estos tres primeros son `undefined`.
 
+### El camino de la excepción (y por qué casi nunca es el correcto)
+
+Si tu caso no entra por la superficie pública, el orden es: **pedir que se
+extienda la fachada** > excepción puntual > exención de archivo entero. La
+excepción no arregla el invariante, lo documenta.
+
+Cuando la excepción es genuinamente legítima, se declara en
+`.pipeline/lib/operational-state-lint.allowlist.json` bajo `rules`, con este
+shape (**#6106**):
+
+```json
+{
+  "file": "lib/desync-detector.js",
+  "anchor": "const wavesPath = path.join(pipelineDir(), 'waves.json');",
+  "line": 122,
+  "reason": "por qué este acceso directo es legítimo, qué alternativa del envoltorio se descartó, y cuál es la versión estructural (issue)"
+}
+```
+
+- **`anchor` es la línea de código exenta, en claro** — no un hash. Es el ancla
+  real: el guardrail la compara contra el archivo, normalizando CRLF/CR → LF y
+  colapsando whitespace horizontal, así que la firma es idéntica en un checkout
+  Windows (`core.autocrlf=true`) y en el runner Linux de Actions. Va en claro
+  porque quien revisa tiene que poder responder *«¿qué acceso estoy
+  autorizando?»* leyendo sólo el JSON, sin salir del diff.
+- **`line` es opcional e indicativa.** No participa del match y puede quedar
+  desactualizada sin romper nada. Antes era el ancla, y ese era el bug: un
+  cambio inocente que insertaba líneas arriba rompía el build, y —peor— la
+  coordenada podía pasar a apuntar a **otro** acceso, que heredaba la exención
+  sin pasar por review.
+- **No la escribas a mano.** `node .pipeline/lib/operational-state-lint.js
+  --anchor=<archivo>:<linea>` emite la entry lista para pegar (con `occurrence`
+  ya calculado si el ancla no es única); sólo hay que completar la `reason`.
+- **Un ancla que matchea varias líneas no exenta a nadie**: se desambigua con
+  `occurrence` explícito o se usa un acceso más específico. Y un ancla que no
+  matchea nada se reporta como **excepción obsoleta** — nunca queda muda.
+
+El archivo está en `.github/CODEOWNERS`: toda entry requiere review humano de
+@leitolarreta. Lo que se autoriza es **ese acceso**, no esa coordenada; re-anclar
+a un acceso distinto es una autorización nueva y vuelve a pasar por el review.
+
 ---
 
 ## 8. Nivel de garantía por sub-superficie

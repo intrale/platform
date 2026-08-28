@@ -1155,7 +1155,11 @@ test('#3220 + #3353 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye gemini-google
     assert.ok(Object.isFrozen(meta.cerebras));
     // Valores esperados
     assert.deepEqual([...meta['gemini-google']].sort(), ['quota_exceeded', 'resource_exhausted']);
-    assert.deepEqual([...meta.cerebras].sort(), ['quota_exceeded', 'rate_limit_exceeded']);
+    // #5978 — se suma 'insufficient_quota': verificado empíricamente que Cerebras
+    // devuelve ese `code` en el 402 de billing (ver
+    // quota-exhausted-bare-error-5978.test.js). Sin él, el 402 no seteaba flag de
+    // cuota y el provider muerto seguía en la cadena rebotando issues sanos.
+    assert.deepEqual([...meta.cerebras].sort(), ['insufficient_quota', 'quota_exceeded', 'rate_limit_exceeded']);
     // Rename: bare 'gemini' ya no existe
     assert.ok(!meta.gemini, "key 'gemini' debe haber sido renombrado a 'gemini-google'");
 });

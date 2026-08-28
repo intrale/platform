@@ -160,6 +160,40 @@ const defaultGhClient = {
     });
   },
 
+  /**
+   * #6296 — PR ABIERTO del issue, resuelto por la convención de rama de agente
+   * (`agent/<issue>-<slug>`, CLAUDE.md). Devuelve `null` si no hay ninguno.
+   *
+   * Se matchea por `headRefName` y no por texto del título/cuerpo a propósito:
+   * el nombre de rama es un dato estructurado que produce el propio pipeline,
+   * mientras que un `--search` sobre título haría match con cualquier PR que
+   * MENCIONE el número (un PR de otro issue que escriba "#6296" en el body
+   * recibiría el comentario).
+   */
+  prForIssue(issueNumber) {
+    const n = Number(issueNumber);
+    if (!Number.isInteger(n) || n <= 0) return null;
+    let out;
+    try {
+      out = cp.execFileSync(GH_BIN, ['pr', 'list', '--state', 'open', '--limit', '100', '--json', 'number,headRefName'], {
+        cwd: ROOT, encoding: 'utf8', timeout: 20000, windowsHide: true,
+      });
+    } catch { return null; }
+    let list;
+    try { list = JSON.parse(out); } catch { return null; }
+    if (!Array.isArray(list)) return null;
+    const prefix = `agent/${n}-`;
+    const hit = list.find((p) => p && typeof p.headRefName === 'string' && p.headRefName.startsWith(prefix));
+    return hit && Number.isInteger(hit.number) ? hit.number : null;
+  },
+
+  commentPullRequest(prNumber, body) {
+    cp.execFileSync(GH_BIN, ['pr', 'comment', String(prNumber), '--body-file', '-'], {
+      cwd: ROOT, encoding: 'utf8', input: body == null ? '' : String(body),
+      timeout: 15000, windowsHide: true,
+    });
+  },
+
   createIssue({ title, body, labels, repo } = {}) {
     const targetRepo = repo || DEFAULT_REPO;
     const args = ['issue', 'create', '--title', String(title || ''), '--body-file', '-', '--repo', targetRepo];
@@ -721,6 +755,27 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           ghClient.commentIssue(data.issue, data.body);
           log(`Comentario en #${data.issue}`);
           break;
+
+        // #6296 — observación de severidad LEVE al PR del issue. Mismo `body` ya
+        // sanitizado por `sanitizeGithubPayload` que el resto de la cola.
+        //
+        // Si el issue no tiene PR abierto NO se cae al comentario del issue: son
+        // audiencias distintas y el carril leve está definido sobre el PR. Se
+        // descarta con causa visible (`discarded`), que es lo que deja el
+        // silencio auditable en `listo/`.
+        case 'pr-comment': {
+          const pr = ghClient.prForIssue ? ghClient.prForIssue(data.issue) : null;
+          if (!pr) {
+            data.discarded = 'pr-not-found';
+            data.discarded_at = new Date().toISOString();
+            log(`pr-comment descartado: #${data.issue} sin PR abierto (rama agent/${data.issue}-*)`);
+            break;
+          }
+          ghClient.commentPullRequest(pr, data.body);
+          data.result = { pr };
+          log(`Comentario en PR #${pr} (issue #${data.issue})`);
+          break;
+        }
 
         case 'label': {
           // #2994 — guardia idempotente: si la orden trae `marker_path`/

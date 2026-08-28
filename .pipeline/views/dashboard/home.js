@@ -76,6 +76,16 @@ try { _alertTrayAudit = require('../../lib/alert-tray-audit'); } catch { /* opci
 // al markup inline equivalente y el home sigue rindiendo — el pipeline no muere.
 let _pipelineRedesign = null;
 try { _pipelineRedesign = require('./pipeline-redesign'); } catch { /* opcional */ }
+// #6459 — Panel «Actividad del Commander» (últimas peticiones + badge de
+// resultado, incluido el nuevo `huerfano`). Hasta este issue el listado sólo lo
+// emitía `generateHTML()` de dashboard.js, que el dispatch sirve ÚNICAMENTE
+// para `/legacy`: en `/`, `/v3` y `/dashboard` — el dashboard que el operador
+// realmente abre — no había ni una ocurrencia de `cmd-result`, así que el badge
+// era código muerto en pantalla (escape #4531, motivo del rebote de QA).
+// Require defensivo como el resto de las vistas: si el módulo no carga, el home
+// degrada a un panel inerte VISIBLE, nunca a página en blanco (CA-A3).
+let _commanderActivity = null;
+try { _commanderActivity = require('./commander-activity'); } catch { /* opcional */ }
 let _quotaExhaustedState = null;
 try { _quotaExhaustedState = require('../../lib/quota-exhausted-state'); } catch { /* opcional */ }
 let _restModeState = null;
@@ -1066,6 +1076,13 @@ function homeStyles() {
  * banner se monta también en la ventana Pipeline: duplicar el CSS acá es como
  * terminó divergiendo el copy del semáforo entre superficies. */
 ${DESYNC_BLOCK_BANNER_CSS}
+
+/* #6459 — Badges de resultado del Commander (.cmd-result-*) + panel de
+ * actividad. El CSS de los badges sale de lib/commander/result-badge.js
+ * (misma constante que interpola el dashboard legacy), así que las dos
+ * superficies no pueden divergir. Si el módulo no cargó, no emitimos nada:
+ * el panel tampoco se monta. */
+${(() => { try { return _commanderActivity ? _commanderActivity.commanderActivityStyles() : ''; } catch { return ''; } })()}
 
 /* #4731 — Health strip: evidencia visible de "no global" (CA-2). */
 .quota-health-strip {
@@ -5738,6 +5755,25 @@ function renderWaveBoard(state) {
     </section>`;
 }
 
+// #6459 — Panel «Actividad del Commander» del home V3. VISIBLE: es la única
+// superficie donde el operador ve el resultado de cada petición, y por lo tanto
+// la única donde el badge `huerfano` cumple CA-9 («se ve renderizando el
+// dashboard, no leyendo el código»). Va en el flujo principal, NO en el sink
+// oculto de diagnóstico — un badge dentro de `hidden` es exactamente el mismo
+// no-render que el issue viene a cerrar.
+//
+// Degradación (CA-A3 / CA-14): si el módulo no cargó o el render tira, el panel
+// cae a un fallback inerte VISIBLE con la causa. Un panel que desaparece en
+// silencio se lee como «no hubo peticiones», que es la lectura falsa.
+function renderCommanderActivityPanel() {
+    if (!_commanderActivity) return '';
+    try { return _commanderActivity.renderCommanderActivity({}); }
+    catch (e) {
+        try { return _commanderActivity.renderInert((e && e.message) || 'error de render'); }
+        catch { return ''; }
+    }
+}
+
 // #4227 (CA-2) — La sección colapsable «🔎 Diagnóstico y métricas detalladas»
 // NO existe en el mockup v6 y se removió de la vista. Pero varios de sus
 // sub-componentes son el único lugar del SSR donde viven IDs que los tickers
@@ -5899,6 +5935,7 @@ ${renderStaleBanner()}
         ${renderNowColumn(state)}
         ${renderWaveBoard(state)}
       </div>
+      ${renderCommanderActivityPanel()}
       ${renderDiagnostics(state)}
     </div>
 
@@ -5969,6 +6006,9 @@ module.exports = {
     // #5724 CA-4 — banner del bloqueo de dispatch (exportado para test unitario)
     renderDesyncBlockBannerSsr,
     renderWaveBoard,
+    // #6459 — panel de actividad del Commander (badge de resultado en la
+    // superficie que el operador realmente abre). Exportado para test aislado.
+    renderCommanderActivityPanel,
     renderDiagnostics,
     // #4249/#4533 — matriz de cuota por proveedor × ventana (Bloque A): fuente
     // única + helpers puros expuestos para test aislado del render por proveedor.

@@ -79,8 +79,54 @@
 //      string pelado. El template acepta strings y documenta la razón aparte,
 //      en un `_files_doc` que puede desincronizarse. CA-5 pide `reason`
 //      obligatoria y sin excepciones amplias: una exención MÁS amplia que
-//      `{file, line, reason}` no puede tener MENOS justificación. La allowlist
-//      nace con `files: []`, así que hoy no afecta a nadie.
+//      `{file, anchor, reason}` no puede tener MENOS justificación. La
+//      allowlist nace con `files: []`, así que hoy no afecta a nadie.
+//
+// Anclaje de las excepciones POR CONTENIDO (#6106)
+// ------------------------------------------------
+// Una entry de `rules` es `{ file, anchor, reason }`, donde `anchor` es la
+// LÍNEA DE CÓDIGO exenta, en claro. NO es `{ file, line, reason }`: el shape
+// viejo, anclado por número de línea, se rechaza con exit 2.
+//
+// El matcher posicional fallaba de dos formas y ninguna era buena:
+//
+//   - falso POSITIVO — insertar líneas arriba del acceso excusado corría la
+//     coordenada y el guardrail rompía el build de un cambio inocente. No es
+//     teórico: la entry de `pulpo.js` tuvo que re-apuntarse A MANO en #6238,
+//     #6144, #6226, #5110, #6179, #6296 y en el merge de main de #6118 —
+//     commits sin ninguna relación con el guardrail, obligados a tocar una
+//     excepción de seguridad revisada por CODEOWNERS.
+//
+//   - falso NEGATIVO (peor) — la línea excusada pasaba a apuntar a OTRO acceso
+//     directo, que quedaba exento sin que nadie lo revisara. La autorización de
+//     CODEOWNERS es sobre ESE acceso, no sobre ESA coordenada, y con anclaje
+//     posicional se transfería en silencio.
+//
+// Reglas del ancla:
+//   - se normaliza con `normalizeAnchor`: CRLF/CR → LF y whitespace horizontal
+//     colapsado, para que la firma sea IDÉNTICA en el checkout Windows
+//     (`core.autocrlf=true`) y en el runner Linux de Actions.
+//   - 0 matches   ⇒ excepción OBSOLETA. Nunca queda muda, que es el estado que
+//     hoy no se distinguía de "excepción viva".
+//   - >1 matches  ⇒ ancla AMBIGUA y NADIE queda exento: una autorización para
+//     un call site no se extiende sola a N. Se desambigua con `occurrence`
+//     EXPLÍCITO, nunca implícito.
+//   - `line` sobrevive como campo OPCIONAL e INDICATIVO (para el mensaje y para
+//     el review humano). NO participa del match: puede quedar desactualizado
+//     sin ninguna consecuencia, que es justamente el punto.
+//
+// Comportamiento por modo ante un diagnóstico de ancla (CA-5 pide que esté
+// documentado): `--check` ⇒ **exit 2** — es un error de CONFIGURACIÓN del
+// control (una autorización que ya no autoriza lo que dice), no una violation
+// del código auditado, que sería exit 1. `--report-only` ⇒ `AVISO:` y exit 0,
+// igual que con las violations. `--report` ⇒ exit 0 y el detalle viaja en la
+// tabla "Estado de las excepciones": ese modo es la salida de diagnóstico que
+// el workflow publica con `if: always()` y su contrato es exit 0 SIEMPRE.
+//
+// Con `--only` (el hook pasa los staged) los diagnósticos se filtran por
+// archivo igual que las violations: nadie queda bloqueado por una entry rota en
+// un archivo que no tocó (UX-5). CI corre SIN `--only`, así que la foto
+// completa no se pierde nunca.
 //
 // Modos (CA-9a / UX-3)
 // --------------------
@@ -98,18 +144,34 @@
 //   node .pipeline/lib/operational-state-lint.js --check [--only=a,b]
 //       Prefijo `ERROR:`. exit 1 si hay violations. RESERVADO PARA LA PARTE 3.
 //
-// Exit codes (contrato del template, igual en los tres modos)
+//   node .pipeline/lib/operational-state-lint.js --anchor=<archivo>:<linea>
+//       Imprime la entry de `rules` LISTA PARA PEGAR, con el ancla ya
+//       normalizada (#6106 / UX-2). Nadie produce un ancla a mano y bien; si
+//       generarla tiene fricción el dev cae en la exención de ARCHIVO ENTERO,
+//       que es justo lo que el `_shape_doc` pide evitar. exit 0 / exit 2.
+//
+//       Es la ÚNICA salida que imprime una línea del código auditado, y por eso
+//       es un modo aparte, local y bajo demanda: el desvío 1 (violation sin
+//       `snippet`) sigue intacto en los tres modos que corren en CI y en el
+//       hook. `--anchor` no evalúa ni exenta nada, sólo formatea.
+//
+// Exit codes (contrato del template)
 //   0 → clean (o modo report/report-only, que nunca fallan por violations)
 //   1 → violations encontradas (sólo `--check`)
-//   2 → error interno / de configuración / uso inválido
+//   2 → error interno / de configuración / uso inválido — incluye una entry de
+//       la allowlist cuya ancla no resuelve contra el archivo real (#6106)
 //
-// El exit 2 NO está subordinado al modo: un allowlist corrupta o un argumento
-// inválido son errores del control, no violations del código auditado.
+// El exit 2 NO está subordinado al modo: una allowlist corrupta o un argumento
+// inválido son errores del control, no violations del código auditado. La única
+// excepción es `--report`, cuyo contrato es exit 0 SIEMPRE una vez que la
+// allowlist CARGÓ: los diagnósticos de ancla viajan ahí en la tabla, porque ese
+// modo es la salida con la que se diagnostica el fallo.
 //
 // API
 // ---
 //   const { lint } = require('./operational-state-lint');
-//   const { violations, scanned } = lint({ pipelineRoot, allowlist });
+//   const { violations, scanned, anchorIssues, anchorResolutions } =
+//       lint({ pipelineRoot, allowlist });
 // =============================================================================
 
 const fs = require('fs');
@@ -125,6 +187,22 @@ const CONTRACT_DOC = 'docs/pipeline/contrato-estado-operativo.md';
 
 // Carpetas excluidas del scan por convención (mismo set que el template: no
 // son código que acceda a estado operativo en runtime del pulpo).
+// #6190 — Copia LOCAL del predicado canonico de `lib/scratch-dirs.js`.
+//
+// Por que inline y no `require('./scratch-dirs')`: este binario se copia SOLO
+// (sin sus vecinos) a un tmpdir en los tests del CLI (`installBin`), y ademas
+// corre en el hook de pre-commit. Una dependencia local nueva le agrega un
+// modo de falla —"falta el vecino, el pre-commit no corre"— a un guardrail que
+// tiene que ser el ultimo en romperse. Se mantiene self-contained a proposito.
+//
+// La copia NO puede desincronizarse en silencio: `lib/__tests__/scratch-dirs.test.js`
+// compara este predicado contra el canonico nombre por nombre.
+function isScratchDirName(name) {
+    if (typeof name !== 'string' || name === '') return false;
+    if (name === '_tmp') return true;
+    return name.startsWith('tmp');
+}
+
 const SKIP_DIRS = new Set([
     'node_modules', '__tests__', '_test-helpers', 'tests', 'archived',
     'archivado', 'audit', 'audio', 'logs', 'events', 'tmp', 'sessions',
@@ -378,7 +456,13 @@ function walkJs(root) {
         for (const e of entries) {
             if (e.isSymbolicLink()) continue;
             if (e.isDirectory()) {
-                if (SKIP_DIRS.has(e.name)) continue;
+                // #6190 — `SKIP_DIRS` traia `tmp` pero no `_tmp` ni las formas
+                // `tmp-review-<issue>`/`tmp<issue>`. Como esos scratchpads
+                // contienen COPIAS ENTERAS del repo, el lint reportaba
+                // violations sobre archivos que no son codigo de este arbol y
+                // bloqueaba el pre-commit de issues ajenos. Fuente unica del
+                // criterio: `lib/scratch-dirs.js`.
+                if (SKIP_DIRS.has(e.name) || isScratchDirName(e.name)) continue;
                 if (e.name.startsWith('.')) continue;
                 recurse(path.join(dir, e.name));
             } else if (e.isFile()) {
@@ -451,6 +535,101 @@ function normalizeRel(p) {
     return String(p).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\.pipeline\//, '');
 }
 
+// ─── Anclas por contenido (#6106) ───────────────────────────────────────────
+
+/**
+ * Claves válidas de una entry de `rules`. Cualquier otra ⇒ exit 2: un `ancla`
+ * o un `linea` mal tipeado se comería la excepción en silencio — exactamente la
+ * clase de falla muda que este anclaje viene a cerrar.
+ */
+const RULE_KEYS = new Set(['file', 'anchor', 'line', 'occurrence', 'reason']);
+
+/** Estados de la resolución de un ancla contra el contenido real del archivo. */
+const ANCHOR_OK = 'resuelta';
+const ANCHOR_STALE = 'obsoleta';
+const ANCHOR_AMBIGUOUS = 'ambigua';
+const ANCHOR_ORDINAL = 'ordinal-fuera-de-rango';
+const ANCHOR_UNSCANNED = 'archivo-no-escaneado';
+
+/**
+ * `reason` que emite `--anchor` para que el dev la complete.
+ *
+ * NO puede ser uno de los placeholders que `sanitizeReason` rechaza (UX-2): si
+ * el copy-paste de la remediación sale por exit 2, el dev aprende a no usarla.
+ * Que se pueda pegar sin completar es deliberado — lo que atrapa una `reason`
+ * sin contenido real es el review humano de CODEOWNERS, no un regex.
+ */
+const ANCHOR_REASON_PLACEHOLDER = 'COMPLETAR: por que este acceso directo es legitimo, que alternativa del envoltorio se descarto, y cual es la version estructural (issue).';
+
+/**
+ * Normaliza UNA línea de código a su forma canónica para comparar anclas.
+ *
+ * CA-4 — la normalización DEBE incluir los line endings. El repo está en
+ * `core.autocrlf=true` y los fuentes viven en CRLF en el checkout Windows pero
+ * en LF en el runner Linux de Actions. `lintFile` lee con
+ * `readFileSync(..., 'utf8')` sin normalizar y `src.split('\n')` deja el `\r`
+ * colgando al final de cada línea: comparar crudo daría distinto entre las dos
+ * plataformas y el guardrail pasaría local y rompería en CI (o al revés).
+ *
+ * Además colapsa whitespace HORIZONTAL (espacios, tabs, NBSP) y recorta los
+ * bordes: mover el acceso dentro de un `if` lo reindenta sin cambiarlo, y eso
+ * no debería invalidar una autorización que ya pasó por CODEOWNERS.
+ *
+ * Lo que NO normaliza, a propósito: comillas, nombres de variables y el
+ * contenido de los strings. Cambiar cualquiera de esos SÍ cambia el acceso y
+ * tiene que forzar re-anclaje + re-aprobación.
+ */
+function normalizeAnchor(raw) {
+    return String(raw)
+        .replace(/\r\n?/g, '\n')        // CRLF y CR sueltos → LF (CA-4)
+        .replace(/[^\S\n]+/g, ' ')      // whitespace horizontal colapsado
+        .replace(/ ?\n ?/g, '\n')
+        .trim();
+}
+
+/**
+ * Resuelve, contra el contenido REAL de `rel`, qué líneas quedan exentas.
+ *
+ * Devuelve `{ exemptLines, issues, resolutions }`:
+ *   - `exemptLines` — líneas exentas (1-indexadas).
+ *   - `issues`      — diagnósticos que el CLI reporta (obsoleta / ambigua /
+ *                     ordinal fuera de rango). Una entry con diagnóstico NO
+ *                     exenta nada: ante la duda el guardrail aprieta, no afloja.
+ *   - `resolutions` — una fila por entry para la tabla del inventario.
+ */
+function resolveAnchors(rel, srcLines, rules) {
+    const exemptLines = new Set();
+    const issues = [];
+    const resolutions = [];
+
+    for (const r of rules) {
+        if (r.file !== rel) continue;
+
+        const matches = [];
+        for (let i = 0; i < srcLines.length; i++) {
+            if (normalizeAnchor(srcLines[i]) === r.anchorNormalized) matches.push(i + 1);
+        }
+
+        const fail = (status) => {
+            issues.push({ status, entry: r, matches });
+            resolutions.push({ entry: r, status, line: null, matches, covered: false });
+        };
+
+        if (matches.length === 0) { fail(ANCHOR_STALE); continue; }
+        // CA-3 — la ambigüedad NUNCA se desempata sola. Una exención aprobada
+        // para UN call site extendida en silencio a N es el mismo pecado que
+        // #6106 viene a cerrar, entrando por otra puerta.
+        if (matches.length > 1 && r.occurrence === undefined) { fail(ANCHOR_AMBIGUOUS); continue; }
+        if (r.occurrence !== undefined && r.occurrence > matches.length) { fail(ANCHOR_ORDINAL); continue; }
+
+        const line = matches[(r.occurrence || 1) - 1];
+        exemptLines.add(line);
+        resolutions.push({ entry: r, status: ANCHOR_OK, line, matches, covered: false });
+    }
+
+    return { exemptLines, issues, resolutions };
+}
+
 /**
  * Fail-loud (desvío 2 / CA-5b / SEC-4).
  *   - archivo ausente  → allowlist vacía (la ausencia NO es ambigua)
@@ -494,7 +673,7 @@ function loadAllowlist(pipelineRoot) {
         const where = `${ALLOWLIST_REL} files[${i}]`;
         // Desvío 5 — exención de archivo entero exige `{file, reason}`.
         if (typeof entry === 'string') {
-            throw new LintConfigError(`${where}: se esperaba { file, reason }, no un string. Una exención de archivo entero es MÁS amplia que { file, line, reason } y no puede tener MENOS justificación (CA-5).`);
+            throw new LintConfigError(`${where}: se esperaba { file, reason }, no un string. Una exención de archivo entero es MÁS amplia que { file, anchor, reason } y no puede tener MENOS justificación (CA-5).`);
         }
         if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
             throw new LintConfigError(`${where}: se esperaba un objeto { file, reason }`);
@@ -513,16 +692,50 @@ function loadAllowlist(pipelineRoot) {
     const rules = rawRules.map((entry, i) => {
         const where = `${ALLOWLIST_REL} rules[${i}]`;
         if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-            throw new LintConfigError(`${where}: se esperaba un objeto { file, line, reason }`);
+            throw new LintConfigError(`${where}: se esperaba un objeto { file, anchor, reason }`);
+        }
+        for (const key of Object.keys(entry)) {
+            if (RULE_KEYS.has(key) || key.startsWith('_')) continue;
+            throw new LintConfigError(`${where}: clave desconocida "${sanitizeForLog(key).slice(0, 80)}". Claves válidas: ${[...RULE_KEYS].map(k => `"${k}"`).join(', ')} y documentación con prefijo "_".`);
         }
         if (typeof entry.file !== 'string' || !entry.file.trim()) {
             throw new LintConfigError(`${where}: "file" es obligatorio y debe ser un path relativo a .pipeline/`);
         }
-        if (!Number.isInteger(entry.line) || entry.line < 1) {
-            throw new LintConfigError(`${where}: "line" es obligatorio y debe ser un entero >= 1 (recibido: ${JSON.stringify(entry.line)})`);
+        // #6106 — el ancla es el CONTENIDO de la línea exenta, no su coordenada.
+        // El shape viejo se rechaza DE UNA, no se acepta en transición: aceptarlo
+        // mantendría vivo el falso negativo (la exención migrando sola a otro call
+        // site) que es la razón de ser del cambio, y son 2 entries migradas en el
+        // MISMO commit — no hay ventana que cubrir.
+        if (typeof entry.anchor !== 'string' || !entry.anchor.trim()) {
+            throw new LintConfigError(`${where}: "anchor" es obligatorio y debe ser la LÍNEA DE CÓDIGO exenta, en claro. El shape viejo { file, line, reason } (anclaje por número de línea) ya NO se acepta: #6106. Generá la entry lista para pegar con \`node .pipeline/lib/operational-state-lint.js --anchor=<archivo>:<linea>\`.`);
+        }
+        const anchorNormalized = normalizeAnchor(entry.anchor);
+        if (!anchorNormalized) {
+            throw new LintConfigError(`${where}: "anchor" queda vacía al normalizar — no identifica ningún acceso.`);
+        }
+        if (anchorNormalized.includes('\n')) {
+            throw new LintConfigError(`${where}: "anchor" debe ser UNA sola línea de código. Toda violation se reporta en una línea única, así que un ancla multilínea no puede identificar ninguna.`);
+        }
+        // `line` sobrevive INDICATIVA (UX-3: el reviewer tiene que poder ubicar
+        // el acceso sin salir del diff). No participa del match: que quede
+        // desactualizada no rompe nada, y eso es exactamente el punto de #6106.
+        if (entry.line !== undefined && (!Number.isInteger(entry.line) || entry.line < 1)) {
+            throw new LintConfigError(`${where}: "line" es OPCIONAL e INDICATIVA desde #6106 (sólo para el mensaje y el review), pero si está debe ser un entero >= 1 (recibido: ${JSON.stringify(entry.line)})`);
+        }
+        if (entry.occurrence !== undefined && (!Number.isInteger(entry.occurrence) || entry.occurrence < 1)) {
+            throw new LintConfigError(`${where}: "occurrence" es opcional (desambigua un ancla que matchea varias líneas) pero si está debe ser un entero >= 1 (recibido: ${JSON.stringify(entry.occurrence)})`);
         }
         const reason = sanitizeReason(entry.reason, where);
-        return { file: normalizeRel(entry.file), line: entry.line, reason };
+        return {
+            where,
+            index: i,
+            file: normalizeRel(entry.file),
+            anchor: entry.anchor,
+            anchorNormalized,
+            line: entry.line,
+            occurrence: entry.occurrence,
+            reason,
+        };
     });
 
     return { files, rules };
@@ -592,11 +805,17 @@ function lintSource(rel, src, allowlist) {
     let confirmedHits = 0;
     const srcLines = src.split('\n');
 
+    // #6106 — la exención se resuelve por CONTENIDO antes de escanear. Un
+    // ancla obsoleta o ambigua NO aporta líneas exentas: el acceso vuelve a
+    // reportarse como violation y además sale un diagnóstico explícito.
+    const anchors = resolveAnchors(rel, srcLines, allowlist.rules || []);
+    const coveredLines = new Set();
+
     const seen = new Set();
     const push = (line, rule) => {
         const key = `${line}:${rule}`;
         if (seen.has(key)) return;            // determinismo: 1 violation por (file,line,rule)
-        if (allowlist.rules.some(r => r.file === rel && r.line === line)) return;
+        if (anchors.exemptLines.has(line)) { coveredLines.add(line); return; }
         seen.add(key);
         // Shape EXACTO — sin `snippet` (CA-3b / SEC-2).
         out.push({ file: rel, line, rule });
@@ -635,18 +854,50 @@ function lintSource(rel, src, allowlist) {
         }
     }
 
-    return { violations: out, rawLiteralHits, commentHits, noCtxHits, confirmedHits };
+    // Una entry resuelta que NO suprimió ninguna violation es una exención que
+    // no protege nada. Es informativo (viaja en la tabla de `--report`) y NO
+    // rompe el build a propósito: si el matcher deja de marcar un acceso por un
+    // refactor inocente, reventar CI reintroduce exactamente la fricción que
+    // #6106 elimina. Es el gancho que habilita el vencimiento de #5167.
+    for (const r of anchors.resolutions) {
+        if (r.status === ANCHOR_OK) r.covered = coveredLines.has(r.line);
+    }
+
+    return {
+        violations: out,
+        rawLiteralHits,
+        commentHits,
+        noCtxHits,
+        confirmedHits,
+        anchorIssues: anchors.issues,
+        anchorResolutions: anchors.resolutions,
+    };
 }
 
-const EMPTY_SCAN = { violations: [], rawLiteralHits: 0, commentHits: 0, noCtxHits: 0, confirmedHits: 0 };
+/**
+ * Factory, no constante compartida: `anchorIssues` / `anchorResolutions` son
+ * arrays y un `{ ...EMPTY_SCAN }` los copiaría POR REFERENCIA — un push desde
+ * un archivo contaminaría a todos los demás.
+ */
+function emptyScan() {
+    return {
+        violations: [],
+        rawLiteralHits: 0,
+        commentHits: 0,
+        noCtxHits: 0,
+        confirmedHits: 0,
+        anchorIssues: [],
+        anchorResolutions: [],
+    };
+}
 
 function lintFile(absolute, pipelineRoot, allowlist) {
     const rel = pathPosixRel(pipelineRoot, absolute);
-    if (allowlist.files.has(rel)) return { ...EMPTY_SCAN };
-    if (SELF_EXEMPT.has(rel)) return { ...EMPTY_SCAN };
+    if (allowlist.files.has(rel)) return emptyScan();
+    if (SELF_EXEMPT.has(rel)) return emptyScan();
     let src;
     try { src = fs.readFileSync(absolute, 'utf8'); }
-    catch { return { ...EMPTY_SCAN }; }
+    catch { return emptyScan(); }
     return lintSource(rel, src, allowlist);
 }
 
@@ -669,18 +920,48 @@ function lint(opts = {}) {
     let violations = [];
     const rawByFile = new Map();
     const tally = { rawLiteralHits: 0, commentHits: 0, noCtxHits: 0, confirmedHits: 0 };
+    let anchorIssues = [];
+    let anchorResolutions = [];
+    const anchoredFiles = new Set();
     for (const f of files) {
         const rel = pathPosixRel(pipelineRoot, f);
         const r = lintFile(f, pipelineRoot, allowlist);
         if (r.rawLiteralHits > 0) rawByFile.set(rel, r.rawLiteralHits);
         for (const k of Object.keys(tally)) tally[k] += r[k];
         for (const v of r.violations) violations.push(v);
+        for (const it of r.anchorIssues) anchorIssues.push(it);
+        for (const res of r.anchorResolutions) {
+            anchorResolutions.push(res);
+            anchoredFiles.add(res.entry.file);
+        }
+    }
+
+    // CA-5 — una entry cuyo archivo nunca llegó a escanearse tampoco puede
+    // quedar muda: hoy simplemente no exenta a nadie y nadie se entera.
+    for (const r of (allowlist.rules || [])) {
+        if (anchoredFiles.has(r.file)) continue;
+        const cause = allowlist.files.has(r.file)
+            ? 'el archivo ya esta exento entero por `files[]`, la entry puntual sobra'
+            : SELF_EXEMPT.has(r.file)
+                ? 'el archivo ya esta exento por SELF_EXEMPT (scope del control), la entry puntual sobra'
+                : 'el archivo no existe o quedo fuera del scope de walkJs';
+        anchorIssues.push({ status: ANCHOR_UNSCANNED, entry: r, matches: [], cause });
+        anchorResolutions.push({ entry: r, status: ANCHOR_UNSCANNED, line: null, matches: [], covered: false, cause });
     }
 
     if (Array.isArray(opts.only)) {
         const wanted = new Set(opts.only.map(normalizeRel));
         violations = violations.filter(v => wanted.has(v.file));
+        // UX-5 — el hook pasa los staged. Una entry rota en un archivo que el
+        // dev no tocó no puede frenarle el commit; CI corre SIN `--only`, así
+        // que la foto completa nunca se pierde.
+        anchorIssues = anchorIssues.filter(it => wanted.has(it.entry.file));
+        anchorResolutions = anchorResolutions.filter(res => wanted.has(res.entry.file));
     }
+
+    // Orden por índice de la entry: es como el humano la encuentra en el JSON.
+    anchorIssues.sort((a, b) => a.entry.index - b.entry.index);
+    anchorResolutions.sort((a, b) => a.entry.index - b.entry.index);
 
     // UX-D / CA-1a — sort explícito: `readdirSync` no garantiza orden entre
     // máquinas ni filesystems. No confiar en el orden de recolección.
@@ -694,6 +975,8 @@ function lint(opts = {}) {
         scanned: files.length,
         violations,
         rawLiteralFiles: rawByFile.size,
+        anchorIssues,
+        anchorResolutions,
         ...tally,
     };
 }
@@ -713,6 +996,58 @@ function formatViolation(v, prefix) {
         ? 'literal de estado en construccion de path'
         : 'uso de `_internal` (superficie de tests, no API)';
     return `${prefix} ${sanitizeForLog(v.file)}:${sanitizeForLog(v.line)} - regla ${sanitizeForLog(v.rule)} (${what})`;
+}
+
+/**
+ * Diagnóstico de ancla, UNA línea (UX-4).
+ *
+ * Cita la entry por su ÍNDICE en el archivo, que es como el humano la encuentra
+ * —igual que `loadAllowlist` con su `where`—, nunca por su contenido.
+ *
+ * NO imprime el ancla: el violation es estructural y sin `snippet` a propósito
+ * (desvío 1 / CA-3b / SEC-2) y este camino tampoco puede volcar código del repo
+ * al log de Actions. Para ver o regenerar el ancla está `--anchor`, que corre
+ * local y bajo demanda.
+ *
+ * Para el stale se distinguen las DOS causas plausibles porque la acción del dev
+ * es distinta: si el acceso se borró la entry sobra; si el acceso cambió hay que
+ * re-anclarla Y volver a pasar por CODEOWNERS.
+ */
+function formatAnchorIssue(it) {
+    // `where` lo pone `loadAllowlist`; el fallback cubre a un caller de la API
+    // que arme las rules a mano, para que el mensaje siga ubicando la entry.
+    const where = sanitizeForLog(it.entry.where || `${ALLOWLIST_REL} rules[${it.entry.index}]`);
+    const file = sanitizeForLog(it.entry.file);
+    const hint = it.entry.line === undefined ? '' : ` (linea indicativa de la entry: ${sanitizeForLog(it.entry.line)})`;
+    if (it.status === ANCHOR_STALE) {
+        return `${where}: excepcion obsoleta - el ancla no matchea ninguna linea de \`${file}\`${hint}. Dos causas, dos acciones: si el acceso SE BORRO (migrado al envoltorio), borra la entry; si el acceso CAMBIO, re-anclala con \`--anchor=${file}:<linea>\` y volve a pasar por el review de @leitolarreta - un ancla nueva es una autorizacion nueva.`;
+    }
+    if (it.status === ANCHOR_AMBIGUOUS) {
+        return `${where}: ancla ambigua - matchea ${it.matches.length} lineas de \`${file}\` (${it.matches.join(', ')}) y NINGUNA queda exenta. Una exencion aprobada para un call site no se extiende sola a ${it.matches.length}: desambigua con \`"occurrence": <1..${it.matches.length}>\` explicito, o usa un ancla mas especifica.`;
+    }
+    if (it.status === ANCHOR_ORDINAL) {
+        return `${where}: \`"occurrence": ${sanitizeForLog(it.entry.occurrence)}\` fuera de rango - el ancla matchea ${it.matches.length} linea(s) de \`${file}\`${it.matches.length ? ` (${it.matches.join(', ')})` : ''} y ninguna queda exenta.`;
+    }
+    return `${where}: excepcion obsoleta - \`${file}\` no se escaneo: ${sanitizeForLog(it.cause || 'causa desconocida')}. La entry no exenta nada.`;
+}
+
+/**
+ * Remediación de los diagnósticos de ancla. Se emite UNA vez al final, mismo
+ * criterio que `remediationLines` (UX-4).
+ */
+function anchorRemediationLines() {
+    return [
+        '',
+        'Remediacion - excepciones de la allowlist (ancladas por CONTENIDO desde #6106):',
+        '  Una entry de `rules` se ancla al TEXTO de la linea exenta, no a su numero.',
+        '  Insertar o borrar lineas arriba ya NO invalida la excepcion, y la excepcion',
+        '  tampoco se transfiere sola al acceso que caiga en esa coordenada. Un',
+        '  diagnostico aca significa que el ancla dejo de identificar UN acceso concreto.',
+        '  Para regenerar la entry con el ancla ya normalizada:',
+        '    node .pipeline/lib/operational-state-lint.js --anchor=<archivo>:<linea>',
+        '  El review humano de @leitolarreta (CODEOWNERS) es sobre el ACCESO, no sobre la',
+        `  coordenada: re-anclar a un acceso distinto es una autorizacion nueva. Ver ${CONTRACT_DOC} §7.`,
+    ];
 }
 
 /**
@@ -748,8 +1083,12 @@ function remediationLines(rules) {
     }
     if (out.length) {
         out.push('');
-        out.push('  Si la excepcion es legitima: entry { file, line, reason } en');
+        out.push('  Si la excepcion es legitima: entry { file, anchor, reason } en');
         out.push(`  \`.pipeline/${ALLOWLIST_REL}\` — requiere review humano de @leitolarreta (CODEOWNERS).`);
+        out.push('  El `anchor` es la LINEA DE CODIGO exenta, en claro: desde #6106 la exencion');
+        out.push('  viaja con el acceso y no se transfiere a otro call site si el archivo deriva.');
+        out.push('  NO la escribas a mano — genera la entry lista para pegar con:');
+        out.push('    node .pipeline/lib/operational-state-lint.js --anchor=<archivo>:<linea>');
     }
     return out;
 }
@@ -838,6 +1177,38 @@ function formatReport(result) {
         for (const v of result.violations) L.push(`- \`${sanitizeForLog(v.file)}:${sanitizeForLog(v.line)}\` — ${sanitizeForLog(v.rule)}`);
     }
     L.push('');
+    L.push('## Estado de las excepciones de la allowlist');
+    L.push('');
+    L.push('Las entries de `rules` se anclan por CONTENIDO desde #6106: `line` es INDICATIVA,');
+    L.push('no autoritativa. `linea resuelta` es donde vive HOY el acceso autorizado, y que no');
+    L.push('coincida con la indicativa es normal (el archivo derivo) y no rompe nada.');
+    L.push('');
+    const anchorRows = Array.isArray(result.anchorResolutions) ? result.anchorResolutions : [];
+    if (anchorRows.length === 0) {
+        L.push('- (la allowlist no declara entries de `rules`)');
+    } else {
+        L.push('| entry | archivo | estado | linea resuelta | linea indicativa | suprime violation |');
+        L.push('|---|---|---|---:|---:|---|');
+        for (const r of anchorRows) {
+            L.push([
+                `| \`rules[${sanitizeForLog(r.entry.index)}]\``,
+                `\`${sanitizeForLog(r.entry.file)}\``,
+                sanitizeForLog(r.status),
+                r.line === null ? '-' : sanitizeForLog(r.line),
+                r.entry.line === undefined ? '-' : sanitizeForLog(r.entry.line),
+                `${r.covered ? 'si' : 'NO'} |`,
+            ].join(' | '));
+        }
+        L.push('');
+        L.push('Una entry `resuelta` con `suprime violation` en **NO** no esta protegiendo nada:');
+        L.push('el acceso dejo de ser directo (o el matcher dejo de marcarlo) y la entry sobra.');
+        L.push('Es informativo a proposito y NO rompe el build — reventar CI por eso reintroduce');
+        L.push('la friccion que #6106 elimina. Es el gancho que habilita el vencimiento de #5167.');
+        L.push('');
+        L.push('Un estado distinto de `resuelta` SI es error de configuracion: `--check` sale con');
+        L.push('exit 2 (no exit 1: es el control el que esta mal, no el codigo auditado).');
+    }
+    L.push('');
     L.push('## Limites conocidos del matcher');
     L.push('');
     L.push('Este inventario es un **piso auditable**, no un censo. Formas de acceso que el');
@@ -856,8 +1227,56 @@ function formatReport(result) {
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
+/**
+ * Modo `--anchor` (#6106 / UX-2) — arma la entry de `rules` lista para pegar.
+ *
+ * Existe porque con anclaje por contenido la entry deja de ser autoescribible:
+ * el dev ya no puede leer `pulpo.js:17860` del error y tipearla. Si producir el
+ * ancla tiene fricción, la salida fácil pasa a ser la exención de ARCHIVO
+ * ENTERO — la más ancha, la que el `_shape_doc` pide evitar. La UX del ancla
+ * decide si el guardrail se usa fino o grueso.
+ *
+ * NO evalúa, NO exenta, NO consulta la allowlist: sólo formatea.
+ */
+function anchorEntryFor(pipelineRoot, spec) {
+    const m = /^(.+):(\d+)$/.exec(String(spec));
+    if (!m) {
+        throw new LintUsageError(`--anchor espera <archivo>:<linea> (recibido: "${sanitizeForLog(spec).slice(0, 120)}")`);
+    }
+    const rel = normalizeRel(m[1]);
+    const line = Number(m[2]);
+    if (!Number.isInteger(line) || line < 1) {
+        throw new LintUsageError('--anchor: la linea debe ser un entero >= 1');
+    }
+    let src;
+    try { src = fs.readFileSync(path.join(pipelineRoot, rel), 'utf8'); }
+    catch { throw new LintConfigError(`--anchor: no se pudo leer \`${sanitizeForLog(rel)}\` (el path es relativo a .pipeline/)`); }
+
+    const srcLines = src.split('\n');
+    if (line > srcLines.length) {
+        throw new LintConfigError(`--anchor: \`${sanitizeForLog(rel)}\` tiene ${srcLines.length} lineas, se pidio la ${line}`);
+    }
+    const anchor = normalizeAnchor(srcLines[line - 1]);
+    if (!anchor) {
+        throw new LintConfigError(`--anchor: \`${sanitizeForLog(rel)}:${line}\` esta vacia o es solo whitespace — no sirve como ancla`);
+    }
+
+    const matches = [];
+    for (let i = 0; i < srcLines.length; i++) {
+        if (normalizeAnchor(srcLines[i]) === anchor) matches.push(i + 1);
+    }
+    // Orden de claves deliberado: lo primero que lee el reviewer es QUÉ acceso
+    // se autoriza (`anchor`), no dónde estaba (`line`, indicativa).
+    const entry = { file: rel, anchor, line };
+    // El ordinal se emite EXPLÍCITO, ya calculado: implícito sería el pecado que
+    // CA-3 prohíbe, y a mano el dev lo cuenta mal.
+    if (matches.length > 1) entry.occurrence = matches.indexOf(line) + 1;
+    entry.reason = ANCHOR_REASON_PLACEHOLDER;
+    return { entry, matches };
+}
+
 function parseArgv(argv) {
-    const opts = { mode: null, json: false, only: null };
+    const opts = { mode: null, json: false, only: null, anchor: null };
     const MODES = { '--report': 'report', '--report-only': 'report-only', '--check': 'check' };
     for (const a of argv) {
         if (MODES[a]) {
@@ -869,6 +1288,13 @@ function parseArgv(argv) {
             opts.json = true;
         } else if (a.startsWith('--only=')) {
             opts.only = a.slice('--only='.length).split(',').map(s => s.trim()).filter(Boolean);
+        } else if (a.startsWith('--anchor=')) {
+            if (opts.mode && opts.mode !== 'anchor') {
+                throw new LintUsageError(`modos mutuamente excluyentes: --${opts.mode} y --anchor`);
+            }
+            opts.mode = 'anchor';
+            opts.anchor = a.slice('--anchor='.length).trim();
+            if (!opts.anchor) throw new LintUsageError('--anchor espera <archivo>:<linea>');
         } else {
             throw new LintUsageError(`argumento desconocido: ${a}`);
         }
@@ -876,6 +1302,9 @@ function parseArgv(argv) {
     if (!opts.mode) throw new LintUsageError('falta el modo');
     if (opts.json && opts.mode !== 'report') {
         throw new LintUsageError('--json solo es valido con --report');
+    }
+    if (opts.only && opts.mode === 'anchor') {
+        throw new LintUsageError('--only no aplica a --anchor (ese modo no escanea el repo, solo formatea una entry)');
     }
     return opts;
 }
@@ -887,6 +1316,9 @@ const USAGE = [
     '  --report         inventario markdown reproducible, exit 0 siempre',
     '  --report-only    avisos con prefijo AVISO:, exit 0 siempre (auditar sin bloquear)',
     '  --check          prefijo ERROR:, exit 1 si hay violations (modo del wiring)',
+    '  --anchor=<archivo>:<linea>',
+    '                   imprime la entry de `rules` lista para pegar, con el ancla ya',
+    '                   normalizada (#6106). No escanea, no exenta: solo formatea.',
     '',
     'opciones:',
     '  --json           solo con --report: emite el inventario como JSON',
@@ -905,6 +1337,35 @@ function main(argv = process.argv.slice(2)) {
             process.exit(2);
         }
         throw e;
+    }
+
+    // `--anchor` no escanea nada: se resuelve antes de cargar la allowlist, para
+    // que el dev pueda generar la entry AUNQUE la allowlist este rota — que es
+    // justo cuando la necesita.
+    if (opts.mode === 'anchor') {
+        let built;
+        try {
+            built = anchorEntryFor(DEFAULT_PIPELINE_ROOT, opts.anchor);
+        } catch (e) {
+            if (e instanceof LintUsageError) {
+                logger.error(e.message);
+                console.error(USAGE);
+                process.exit(2);
+            }
+            logger.error(e instanceof LintConfigError ? `configuracion: ${e.message}` : `fatal: ${e.message}`);
+            process.exit(2);
+        }
+        // Mismo sink que el resto: una llamada = una linea. `JSON.stringify` ya
+        // escapa los control chars del codigo fuente, y toda linea del objeto
+        // arranca con `{`, `}` o indentacion — nunca con `::`.
+        const emit = oneLineSink(console.log);
+        for (const l of JSON.stringify(built.entry, null, 2).split('\n')) emit(l);
+        logger.info(`pegala en \`.pipeline/${ALLOWLIST_REL}\` > "rules" y COMPLETA la "reason" (el review es sobre ESE texto).`);
+        logger.info('requiere review humano de @leitolarreta (CODEOWNERS): lo que se autoriza es el ACCESO, no la coordenada.');
+        if (built.matches.length > 1) {
+            logger.warn(`ojo: el ancla matchea ${built.matches.length} lineas (${built.matches.join(', ')}), por eso la entry lleva "occurrence". Si podes, usa un acceso mas especifico.`);
+        }
+        process.exit(0);
     }
 
     let result;
@@ -933,6 +1394,18 @@ function main(argv = process.argv.slice(2)) {
                 },
                 byFile: aggregateByFile(result.violations),
                 violations: result.violations,
+                // #6106 — estado de cada excepcion. Sin `anchor`: el JSON del
+                // inventario se publica y el desvio 1 (no volcar codigo) sigue
+                // valiendo. La entry se identifica por indice, como en el resto.
+                anchors: (result.anchorResolutions || []).map(r => ({
+                    entry: `rules[${r.entry.index}]`,
+                    file: r.entry.file,
+                    status: r.status,
+                    line: r.line,
+                    indicativeLine: r.entry.line === undefined ? null : r.entry.line,
+                    matches: r.matches.length,
+                    covered: r.covered,
+                })),
             }, null, 2));
         } else {
             console.log(formatReport(result));
@@ -943,14 +1416,35 @@ function main(argv = process.argv.slice(2)) {
     const enforce = opts.mode === 'check';
     const prefix = enforce ? 'ERROR:' : 'AVISO:';
 
-    if (result.violations.length === 0) {
-        logger.info(`OK — ${result.scanned} archivos JS escaneados, 0 violations`);
-        process.exit(0);
-    }
-
     // Segunda puerta: las lineas de violation NO pasan por `defaultLogger`
     // (rebote rev-1, ruta C). El sink garantiza una llamada = una linea.
     const out = oneLineSink(enforce ? console.error : console.warn);
+
+    // #6106 · CA-3 / CA-5 — diagnosticos de ancla ANTES de las violations.
+    //
+    // Con un ancla sin resolver la exencion no se aplica, asi que el acceso
+    // autorizado reaparece como violation: listar las dos cosas juntas mezcla la
+    // causa con su consecuencia. En `--check` se corta aca con exit 2 (error de
+    // CONFIGURACION del control, no violation del codigo auditado). En
+    // `--report-only` se avisa y se sigue, fiel al contrato del modo.
+    const anchorIssues = result.anchorIssues || [];
+    if (anchorIssues.length) {
+        for (const it of anchorIssues) out(`${prefix} ${formatAnchorIssue(it)}`);
+        out(`${prefix} total: ${anchorIssues.length} excepcion(es) de la allowlist sin resolver contra el contenido del archivo`);
+        for (const line of anchorRemediationLines()) out(line);
+        if (enforce) process.exit(2);
+    }
+
+    if (result.violations.length === 0) {
+        // Si hubo diagnosticos de ancla, decirlo: un "OK" pelado despues de
+        // avisar que una excepcion quedo sin resolver entrena a ignorar el aviso.
+        const nota = anchorIssues.length
+            ? ` (pero ${anchorIssues.length} excepcion(es) de la allowlist sin resolver — ver arriba)`
+            : '';
+        logger.info(`OK — ${result.scanned} archivos JS escaneados, 0 violations${nota}`);
+        process.exit(0);
+    }
+
     const HOOK_CAP = 10;
     const shown = enforce ? result.violations : result.violations.slice(0, HOOK_CAP);
     for (const v of shown) out(formatViolation(v, prefix));
@@ -980,9 +1474,14 @@ module.exports = {
         sanitizeForLog, oneLineSink, defaultLogger,
         resolveWrapperBindings, classifyScope, aggregateByFile,
         formatViolation, formatReport, remediationLines, parseArgv, main,
+        // #6106 — anclaje por contenido
+        normalizeAnchor, resolveAnchors, formatAnchorIssue, anchorRemediationLines,
+        anchorEntryFor, emptyScan,
+        RULE_KEYS, ANCHOR_REASON_PLACEHOLDER,
+        ANCHOR_OK, ANCHOR_STALE, ANCHOR_AMBIGUOUS, ANCHOR_ORDINAL, ANCHOR_UNSCANNED,
         LintConfigError, LintUsageError,
         STATE_LITERAL_RE, PATH_CTX_RE, COMMENT_LINE_RE, isCommentOnlyLine, isInsideBlockComment,
-        ID_RE, SELF_EXEMPT, SKIP_DIRS, RULES,
+        ID_RE, SELF_EXEMPT, SKIP_DIRS, RULES, isScratchDirName,
         ALLOWLIST_REL, USAGE,
     },
 };
