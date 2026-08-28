@@ -106,7 +106,15 @@ test('e2e-qa publica evidencia como artefacto sin escribir en la rama del PR', (
   assert.ok(collect, 'falta recolectar la evidencia');
   assert.equal(collect.run, 'bash qa/scripts/collect-evidence.sh');
   assert.ok(upload, 'falta publicar la evidencia como artefacto');
-  assert.equal(upload.uses, 'actions/upload-artifact@v4');
+  // #6362: la accion se pinnea por SHA de 40 chars, no por tag mutable. Un tag
+  // (@v4) puede ser re-apuntado en silencio por el owner de la accion, que es el
+  // vector de los compromisos de trivy-action y kics-github-action. Semgrep
+  // (github-actions-mutable-action-tag) bloquea el merge si esto se afloja.
+  assert.match(
+    upload.uses,
+    /^actions\/upload-artifact@[0-9a-f]{40}$/,
+    `el step de evidencia debe pinnear upload-artifact por SHA completo, no por tag mutable; encontrado: ${upload.uses}`
+  );
   assert.equal(upload.with.path, 'qa/evidence/');
   assert.doesNotMatch(commands, /git\s+(?:add|commit|push)\b/);
   // e2e-qa no debe declarar escritura propia. Que herede del bloque raiz esta
