@@ -63,6 +63,20 @@ const INFRA_MESSAGE_PATTERNS = [
   /\bexit\s+(?:code\s+)?78\b/i,
   /\bEX_CONFIG\b/,
   /FATAL:\s*JAVA_HOME/i,
+  // #6495 — El linter sale con exit 2 y este token cuando no puede conseguir
+  // una base CONFIABLE contra la cual comparar (fetch de `origin/main` caído).
+  // Es una falla de red, no un defecto del entregable: sin esta línea el motivo
+  // cae al fallback `codigo` y el pulpo devuelve el issue a `dev` (`pulpo.js`
+  // ~5200, `esReboteDeInfra`) — exactamente el rebote-a-dev-por-timeout que
+  // motivó #6495. Se midió que el texto del stderr NO alcanza: sólo el caso
+  // "Timed out" matcheaba `/timeout/i`, mientras que "Could not resolve host"
+  // y un lock de `.git/FETCH_HEAD.lock` clasificaban `codigo`.
+  //
+  // Es un token de máquina, no lenguaje natural: a diferencia del falso
+  // positivo de #3774 (un motivo que decía "timeout 15min" hablando de
+  // idempotencia), este literal no aparece en prosa de un agente. Literal puro,
+  // sin quantifiers — cero superficie ReDoS.
+  /LINTER_BASE_UNAVAILABLE/,
 ];
 
 // #2404 — Patrones de toolchain (JDK/JAVA_HOME/gradle) que también son `infra`.

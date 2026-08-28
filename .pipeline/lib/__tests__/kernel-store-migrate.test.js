@@ -50,13 +50,21 @@ const FIXED_NOW = 1_752_768_000_000; // epoch ms fijo (determinístico)
 // Helpers
 // -----------------------------------------------------------------------------
 
-let tmpCounter = 0;
+// `process.pid` + contador da un path determinista que sobrevive a la corrida
+// y colisiona cuando el SO recicla el PID. `mkdtempSync` garantiza unicidad y
+// el `after` evita que el residuo se acumule.
+const tmpDirs = [];
 function freshTmp(label) {
-  tmpCounter += 1;
-  const dir = path.join(os.tmpdir(), `ksm-${label}-${process.pid}-${tmpCounter}`);
-  fs.mkdirSync(dir, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ksm-${label}-`));
+  tmpDirs.push(dir);
   return dir;
 }
+
+test.after(() => {
+  for (const d of tmpDirs) {
+    try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+});
 
 // Contenido de las 4 fuentes (forma heterogénea: objeto/grafo/lista/objeto).
 function writeSources(dir) {

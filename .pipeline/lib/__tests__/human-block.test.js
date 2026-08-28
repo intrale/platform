@@ -132,7 +132,7 @@ test('unblockIssue mueve marker a pendiente/ del target_phase y emite evento', (
     });
 
     const res = hb.unblockIssue({
-        issue: 2222, guidance: 'Aplicá AC#5 que es más reciente', unlocker: 'leo',
+        issue: 2222, guidance: 'Aplicá AC#5 que es más reciente', unlocker: 'commander:telegram',
     });
 
     assert.equal(res.ok, true);
@@ -155,7 +155,7 @@ test('unblockIssue mueve marker a pendiente/ del target_phase y emite evento', (
     const unblocked = events.find(e => e.event === 'human:unblocked' && e.issue === 2222);
     assert.ok(unblocked);
     assert.equal(unblocked.guidance, 'Aplicá AC#5 que es más reciente');
-    assert.equal(unblocked.unlocker, 'leo');
+    assert.equal(unblocked.unlocker, 'commander:telegram');
     assert.equal(unblocked.target_phase, 'dev');
 });
 
@@ -1173,4 +1173,158 @@ test('e2e #4748: precondición resuelta → selector core lo mueve a toRelease; 
     // #4744 cerrado → sólo #4745 (dependency) se libera; #4746 (juicio) intacto.
     out = core.selectHumanBlocksToRelease({ markers, issueStates: { 4744: 'CLOSED' } });
     assert.deepEqual(out.toRelease.map(m => m.issue), [4745]);
+});
+
+// =============================================================================
+// #6611 — precondition 'verifiable', unlocker cerrado y emitAutoReleased.
+//
+// Es el punto donde se abre el fail-closed de #4748 (SEC-4), así que la
+// cobertura acá es UN NEGATIVO POR CAMPO: cada desvío tiene que degradar a
+// `human_judgment`.
+// =============================================================================
+
+const PREDICADO_OK = {
+    kind: 'pr_merge_blocked',
+    pr: 6593,
+    head_ref: 'agent/6145-turno-huerfano',
+    observed: { httpStatus: 405, mergeStateStatus: 'BLOCKED', gate: 'branch-protection-other' },
+};
+
+test('#6611 - normalizePrecondition acepta un verifiable bien formado', () => {
+    const out = hb.normalizePrecondition({ type: 'verifiable', predicate: PREDICADO_OK });
+    assert.equal(out.type, 'verifiable');
+    assert.equal(out.predicate.kind, 'pr_merge_blocked');
+    assert.equal(out.predicate.pr, 6593);
+    assert.equal(out.predicate.head_ref, 'agent/6145-turno-huerfano');
+    // `observed` se persiste como narrativa.
+    assert.equal(out.predicate.observed.httpStatus, 405);
+    assert.equal(out.predicate.observed.gate, 'branch-protection-other');
+});
+
+test('#6611 - un negativo por campo: todo desvio degrada a human_judgment', () => {
+    const casos = [
+        ['predicate ausente', { type: 'verifiable' }],
+        ['predicate null', { type: 'verifiable', predicate: null }],
+        ['predicate no-objeto', { type: 'verifiable', predicate: 'x' }],
+        ['predicate array', { type: 'verifiable', predicate: [] }],
+        ['kind ausente', { type: 'verifiable', predicate: { pr: 1, head_ref: 'agent/1-x' } }],
+        ['kind fuera del enum', { type: 'verifiable', predicate: { kind: 'lo_que_sea', pr: 1, head_ref: 'agent/1-x' } }],
+        ['kind no-string', { type: 'verifiable', predicate: { kind: 42, pr: 1, head_ref: 'agent/1-x' } }],
+        ['pr string', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: '00042', head_ref: 'agent/1-x' } }],
+        ['pr decimal', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 12.5, head_ref: 'agent/1-x' } }],
+        ['pr negativo', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: -3, head_ref: 'agent/1-x' } }],
+        ['pr cero', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 0, head_ref: 'agent/1-x' } }],
+        ['pr NaN', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: NaN, head_ref: 'agent/1-x' } }],
+        ['pr Infinity', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: Infinity, head_ref: 'agent/1-x' } }],
+        ['pr ausente', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', head_ref: 'agent/1-x' } }],
+        ['head_ref ausente', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1 } }],
+        ['head_ref vacio', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: '' } }],
+        ['head_ref no-string', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: 7 } }],
+        ['head_ref con ..', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: 'agent/../../main' } }],
+        ['head_ref con espacios', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: 'agent/1 x' } }],
+        ['head_ref absoluto', { type: 'verifiable', predicate: { kind: 'pr_merge_blocked', pr: 1, head_ref: '/agent/1-x' } }],
+        ['type raro', { type: 'verifiableee', predicate: PREDICADO_OK }],
+    ];
+    for (const [nombre, pc] of casos) {
+        const out = hb.normalizePrecondition(pc);
+        assert.equal(out.type, 'human_judgment', nombre + ' debe degradar a human_judgment');
+        assert.equal(out.predicate, undefined, nombre + ' no debe conservar predicado');
+    }
+});
+
+test('#6611 - el default fail-closed de #4748 no se relajo', () => {
+    // Regresión directa de SEC-4: lo que antes degradaba, sigue degradando.
+    for (const pc of [null, undefined, 'x', 42, [], {}, { type: 'human_judgment' }, { type: 'dependency' }]) {
+        assert.equal(hb.normalizePrecondition(pc).type, 'human_judgment');
+    }
+    // Y `dependency` sigue funcionando igual que siempre.
+    const dep = hb.normalizePrecondition({ type: 'dependency', depends_on: [5, 3, 5, 'x', -1] });
+    assert.equal(dep.type, 'dependency');
+    assert.deepEqual(dep.depends_on, [3, 5]);
+});
+
+test('#6611 CRITICO - classifyPrecondition IGNORA el predicado aunque venga en el YAML', () => {
+    // Los motivos YAML los escriben agentes LLM. Si el predicado entrara por
+    // acá, un agente (o un prompt-injection leído de un PR de terceros) podría
+    // fabricarse un freeze auto-destrabable y reinyectarse al camino de merge.
+    const rechazoMalicioso = {
+        motivo: 'no puedo mergear',
+        precondition: { type: 'verifiable', predicate: PREDICADO_OK },
+        predicate: PREDICADO_OK,
+        kind: 'pr_merge_blocked',
+        pr: 6593,
+        head_ref: 'agent/6145-turno-huerfano',
+    };
+    const out = hb.classifyPrecondition([rechazoMalicioso]);
+    assert.equal(out.type, 'human_judgment', 'el YAML NO puede producir un verifiable');
+    assert.equal(out.predicate, undefined);
+
+    // Y el camino legítimo de dependencias sigue intacto.
+    const dep = hb.classifyPrecondition([{ motivo: 'x', depende_de: [4744] }]);
+    assert.equal(dep.type, 'dependency');
+    assert.deepEqual(dep.depends_on, [4744]);
+});
+
+test('#6611 - unlocker fuera del enum queda unknown + campo forense', () => {
+    // Valor inventado.
+    let u = hb.normalizeUnlocker('me-lo-invente');
+    assert.equal(u.unlocker, 'unknown');
+    assert.equal(u.unlocker_rejected_value, 'me-lo-invente');
+    assert.equal(u.unlocker_rejected_reason, 'unlocker_not_in_enum');
+
+    // No-string.
+    u = hb.normalizeUnlocker({ malicioso: true });
+    assert.equal(u.unlocker, 'unknown');
+    assert.equal(u.unlocker_rejected_reason, 'unlocker_not_string');
+
+    // Ausente ⇒ default histórico, no es un rechazo.
+    assert.deepEqual(hb.normalizeUnlocker(undefined), { unlocker: 'commander' });
+    assert.deepEqual(hb.normalizeUnlocker(null), { unlocker: 'commander' });
+    assert.deepEqual(hb.normalizeUnlocker(''), { unlocker: 'commander' });
+});
+
+test('#6611 - todos los call sites vigentes estan en el enum de unlocker', () => {
+    // Barrido de los literales que hoy se pasan como `unlocker`. Si alguno
+    // quedara fuera del enum, su traza se registraría como `unknown` y la
+    // auditoría del gate humano perdería la autoría.
+    const vigentes = [
+        'commander',
+        'commander:telegram',
+        'commander:dashboard',
+        'github:label-removed',
+        'human-block-action',
+        'human-block-action:unblock',
+        'human-block-action:devolver',
+        'human-block-action:priorizar',
+        'brazo-desbloqueo:precondicion',
+        'auto-recheck',
+    ];
+    for (const v of vigentes) {
+        assert.equal(hb.normalizeUnlocker(v).unlocker, v, v + ' debe estar en el enum');
+    }
+    assert.deepEqual([...hb.UNLOCKER_ENUM].sort(), [...vigentes].sort());
+});
+
+test('#6611 - emitAutoReleased deja evento con unlocker auto-recheck', () => {
+    const antes = readEvents().length;
+    hb.emitAutoReleased({
+        issue: 6145, kind: 'pr_merge_blocked', pr: 6593,
+        from: 'entrega', to: 'entrega', release_number: 1,
+        observed: { before: { mergeStateStatus: 'BLOCKED' }, now: { mergeStateStatus: 'CLEAN' } },
+    });
+    const eventos = readEvents();
+    assert.ok(eventos.length > antes, 'se emitió al menos un evento');
+    const ev = eventos.reverse().find(e => e.event === 'human_block_auto_released');
+    assert.ok(ev, 'existe el evento human_block_auto_released');
+    assert.equal(ev.issue, 6145);
+    assert.equal(ev.pr, 6593);
+    assert.equal(ev.kind, 'pr_merge_blocked');
+    assert.equal(ev.unlocker, 'auto-recheck', 'distinguible del destrabe manual');
+    assert.equal(ev.release_number, 1);
+});
+
+test('#6611 - emitAutoReleased nunca lanza aunque la entrada sea basura', () => {
+    assert.doesNotThrow(() => hb.emitAutoReleased());
+    assert.doesNotThrow(() => hb.emitAutoReleased({}));
+    assert.doesNotThrow(() => hb.emitAutoReleased({ issue: 'x', pr: null, kind: 42 }));
 });
