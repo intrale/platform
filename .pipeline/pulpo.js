@@ -322,6 +322,9 @@ const brazoBarridoCore = require('./lib/brazo-barrido-core');
 const brazoLanzamientoCore = require('./lib/brazo-lanzamiento-core');
 const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
 const mergeRaceLedger = require('./lib/merge-race-reclaim-ledger');
+// #6432 CA-23/CA-24 — copy de los DOS desenlaces del rescate (merge confirmado
+// / degradación). Fuente única: el barrido no redacta texto para el operador.
+const mergeRaceNotice = require('./lib/merge-race-reclaim-notice');
 // #6611 — auto-destrabe de bloqueos con predicado verificable.
 const verifiablePredicateStore = require('./lib/verifiable-predicate-store');
 const autoRecheckCounter = require('./lib/auto-recheck-counter');
@@ -21415,25 +21418,65 @@ function runReclaimChild({ issue, pr, headSha, timeoutMs, spawnImpl = spawn }) {
     const child = spawnImpl(process.execPath, [
       path.join(PIPELINE, 'skills-deterministicos', 'delivery.js'), '--reclaim',
       `--pr=${pr}`, `--issue=${issue}`, `--head-sha=${headSha}`,
-    ], { cwd: REPO_ROOT, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    // #6432 — `ROOT` es el checkout principal (el que tiene `origin/main` y el
+    // remoto), NO el worktree del agente. Antes decía `REPO_ROOT`, que no existe
+    // en este módulo: el `spawn` tiraba ReferenceError y el rescate no corría
+    // nunca. Lo destapó el test de integración de los avisos (CA-23/CA-24).
+    ], { cwd: ROOT, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', (d) => { out += d; });
     const timer = setTimeout(() => { try { child.kill(); } catch {} finish({ ok: false, status: 'timeout' }); }, timeoutMs);
     timer.unref?.();
     child.on('exit', (code) => {
       clearTimeout(timer); let parsed = null;
       try { parsed = JSON.parse(out.trim().split(/\r?\n/).pop()); } catch {}
-      finish({ ok: code === 0 && parsed && parsed.status === 'merged', status: parsed && parsed.status, sha: parsed && parsed.sha });
+      finish({
+        ok: code === 0 && parsed && parsed.status === 'merged',
+        status: parsed && parsed.status,
+        sha: parsed && parsed.sha,
+        // #6432 CA-23 — `gate` y `reason` del hijo son dos de los seis
+        // campos del aviso de degradación. Se propagaban hasta acá y se
+        // tiraban: por eso el aviso no podía existir.
+        gate: parsed && parsed.gate,
+        reason: parsed && parsed.reason,
+      });
     });
     child.on('error', () => { clearTimeout(timer); finish({ ok: false, status: 'spawn_error' }); });
   });
 }
 
-async function reapMergeChecksRaceBlocks({ allowlistSet, config, ghCall = ghDesbloqueoCall, spawnImpl = spawn } = {}) {
+/**
+ * #6432 — Barrido de rescate de merges varados por la carrera con los checks.
+ *
+ * DOS DESENLACES, DOS AVISOS (CA-23 / CA-24). El rebote de `ux` del 2026-08-25
+ * encontró que la degradación a `human_judgment` ocurría EN SILENCIO: el marker
+ * se reescribía, el ledger se marcaba `degraded` y el operador quedaba con un
+ * `needs-human` sin saber qué pasó ni cómo salir. Ahora:
+ *   - merge confirmado  ⇒ 1 aviso (comentario en el issue + Telegram).
+ *   - intentos agotados ⇒ 1 aviso ACCIONABLE (issue, PR, N/N, gate, reason y el
+ *                          comando `/unblock` listo para copiar).
+ *   - intento intermedio fallido ⇒ CERO Telegram. Su traza va a log + `.jsonl`.
+ *
+ * Las inyecciones (`notify`, `listMarkers`, `ledgerStore`, `unblock`,
+ * `enqueueOrder`) existen para que el test de los dos desenlaces corra sin tocar
+ * el `.pipeline/` real ni mandar un solo mensaje. En producción son los reales.
+ */
+async function reapMergeChecksRaceBlocks({
+  allowlistSet, config,
+  ghCall = ghDesbloqueoCall,
+  spawnImpl = spawn,
+  notify = sendTelegram,
+  listMarkers = () => humanBlock.listBlockedIssues(),
+  ledgerStore = mergeRaceLedger,
+  unblock = (opts) => humanBlock.unblockIssue(opts),
+  enqueueOrder = (file, payload) => encolarOrdenGithub(file, payload),
+} = {}) {
   const cfg = config && config.brazo && config.brazo.reclaim_merge_race;
   if (!cfg || cfg.enabled !== true || cfg.kill_switch === true) return;
-  let markers = humanBlock.listBlockedIssues().filter((m) => m.precondition && m.precondition.type === 'merge_checks_race');
+  let markers = listMarkers().filter((m) => m.precondition && m.precondition.type === 'merge_checks_race');
   if (allowlistSet) markers = markers.filter((m) => allowlistSet.has(String(m.issue)));
   if (markers.length === 0) return;
+  const maxAttempts = Number.isInteger(cfg.max_attempts) && cfg.max_attempts > 0 ? cfg.max_attempts : 3;
+  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
   const prStates = {};
   for (const marker of markers) {
     ghThrottle();
@@ -21443,34 +21486,84 @@ async function reapMergeChecksRaceBlocks({ allowlistSet, config, ghCall = ghDesb
       prStates[marker.precondition.pr] = JSON.parse(stdout);
     } catch (e) { log('desbloqueo', `[merge-race] #${marker.issue} PR ilegible: ${e.message}`); }
   }
-  const ledger = mergeRaceLedger.readLedger();
-  const decision = brazoDesbloqueoCore.selectMergeRaceBlocksToReclaim({ markers, prStates, ledger, maxAttempts: cfg.max_attempts });
+  const ledger = ledgerStore.readLedger();
+  const decision = brazoDesbloqueoCore.selectMergeRaceBlocksToReclaim({ markers, prStates, ledger, maxAttempts });
+
+  // --- DESENLACE 1: intentos agotados ⇒ degradar A JUICIO HUMANO, CON AVISO ---
   for (const marker of decision.toDegrade) {
-    mergeRaceLedger.markDegraded({ issue: marker.issue, pr: marker.precondition.pr, head_sha: marker.precondition.head_sha });
+    const pc = marker.precondition;
+    const entry = ledger[String(Number(marker.issue))] || {};
+    const usados = Number(entry.attempts || 0) || maxAttempts;
+    // Marcamos `degraded` ANTES de avisar: si el aviso falla, el tope igual
+    // quedó cerrado (fail-closed hacia el humano, nunca hacia el automático).
+    ledgerStore.markDegraded({ issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha });
     try {
       const reasonFile = `${marker.marker_path}.reason.json`;
       const meta = JSON.parse(fs.readFileSync(reasonFile, 'utf8'));
       meta.precondition = { type: 'human_judgment' };
       fs.writeFileSync(reasonFile, JSON.stringify(meta, null, 2));
     } catch (e) { log('desbloqueo', `[merge-race] no se pudo degradar #${marker.issue}: ${e.message}`); }
+
+    // CA-23 — el aviso accionable con los seis campos. Fuente única de copy.
+    const notice = mergeRaceNotice.buildDegradationNotice({
+      issue: marker.issue, pr: pc.pr,
+      attempts: usados, maxAttempts,
+      gate: entry.last_gate, reason: entry.last_reason,
+    });
+    log('desbloqueo', notice.log);
+    ledgerStore.appendAudit({
+      event: 'degraded', issue: marker.issue, pr: pc.pr, head_sha: String(pc.head_sha || '').slice(0, 7),
+      attempts: `${usados}/${maxAttempts}`, gate: entry.last_gate, reason: entry.last_reason,
+    });
+    try {
+      fs.mkdirSync(ghQueueDir, { recursive: true });
+      enqueueOrder(path.join(ghQueueDir, `${marker.issue}-merge-race-degraded-${Date.now()}.json`), {
+        action: 'comment', issue: Number(marker.issue), body: notice.comment,
+      });
+    } catch (e) { log('desbloqueo', `[merge-race] no se pudo encolar el aviso de degradación de #${marker.issue}: ${e.message}`); }
+    // CA-24 — uno de los DOS únicos Telegram del barrido.
+    try { notify(notice.telegram); } catch {}
   }
+
+  // --- DESENLACE 2 (y los intentos que todavía no son desenlace) ---
   for (const marker of decision.toReclaim) {
     const pc = marker.precondition;
-    const counted = mergeRaceLedger.recordAttempt({ issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha });
+    const counted = ledgerStore.recordAttempt({ issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha });
     if (!counted) { log('desbloqueo', `[merge-race] #${marker.issue} ledger no persistido; no se intenta`); continue; }
     const result = await runReclaimChild({ issue: marker.issue, pr: pc.pr, headSha: pc.head_sha, timeoutMs: cfg.child_timeout_ms, spawnImpl });
-    if (!result.ok) continue;
-    const unblocked = humanBlock.unblockIssue({ issue: marker.issue, unlocker: 'brazo-desbloqueo:merge-race', guidance: 'Reclaim de merge confirmado por los gates de delivery.' });
+    // El desenlace del intento se persiste SIEMPRE: es el insumo del aviso de
+    // degradación, que puede dispararse varios ticks después (CA-23).
+    ledgerStore.recordOutcome({
+      issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha,
+      status: result.status, gate: result.gate, reason: result.reason,
+    });
+    ledgerStore.appendAudit({
+      event: result.ok ? 'merged' : 'attempt_failed', issue: marker.issue, pr: pc.pr,
+      head_sha: String(pc.head_sha || '').slice(0, 7),
+      attempts: `${Number(counted.attempts || 0)}/${maxAttempts}`,
+      status: result.status, gate: result.gate, reason: result.reason,
+      authorized_by: 'brazo-desbloqueo:merge-race',
+    });
+    if (!result.ok) {
+      // CA-24 — intento intermedio fallido: log + `.jsonl`, CERO Telegram. El
+      // operador se entera del desenlace, no de cada vuelta del reintento.
+      log('desbloqueo', `[merge-race] #${marker.issue} intento ${Number(counted.attempts || 0)}/${maxAttempts} no mergeó (status=${result.status || 'desconocido'}, gate=${result.gate || 'desconocido'}); sin notificar, se reintenta en el próximo tick`);
+      continue;
+    }
+    const unblocked = unblock({ issue: marker.issue, unlocker: 'brazo-desbloqueo:merge-race', guidance: 'Reclaim de merge confirmado por los gates de delivery.' });
     if (!unblocked || !unblocked.ok) continue;
-    const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente'); fs.mkdirSync(ghQueueDir, { recursive: true });
-    encolarOrdenGithub(path.join(ghQueueDir, `${marker.issue}-remove-needs-human-${Date.now()}.json`), {
+    const notice = mergeRaceNotice.buildConfirmationNotice({ issue: marker.issue, pr: pc.pr, sha: result.sha });
+    fs.mkdirSync(ghQueueDir, { recursive: true });
+    enqueueOrder(path.join(ghQueueDir, `${marker.issue}-remove-needs-human-${Date.now()}.json`), {
       action: 'remove-label', issue: Number(marker.issue), label: humanBlock.NEEDS_HUMAN_LABEL,
       guardrail_authorized: true, authorized_by: 'brazo-desbloqueo:merge-race-confirmed',
     });
-    fs.writeFileSync(path.join(ghQueueDir, `${marker.issue}-merge-race-comment-${Date.now()}.json`), JSON.stringify({
-      action: 'comment', issue: Number(marker.issue), body: `## Reclaim automático confirmado\n\nEl PR #${pc.pr} fue reevaluado por los gates completos de delivery y el merge quedó confirmado (${String(result.sha || '').slice(0, 7)}). El pipeline retiró needs-human.`,
-    }));
-    try { sendTelegram(`Issue #${marker.issue}: reclaim automático del PR #${pc.pr} confirmado.`); } catch {}
+    enqueueOrder(path.join(ghQueueDir, `${marker.issue}-merge-race-comment-${Date.now()}.json`), {
+      action: 'comment', issue: Number(marker.issue), body: notice.comment,
+    });
+    log('desbloqueo', `[merge-race] ✅ #${marker.issue} reclaim confirmado del PR #${pc.pr} (${String(result.sha || '').slice(0, 7)}) — needs-human retirado`);
+    // CA-24 — el otro de los DOS únicos Telegram del barrido.
+    try { notify(notice.telegram); } catch {}
   }
 }
 
