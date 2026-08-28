@@ -1,0 +1,108 @@
+{
+  "_comment": "UX #6440 — copy canónico del aviso que recibe el operador cuando un pedido suyo se ejecutó pero la respuesta nunca le llegó. Fuente única del texto visible: ningún string de este aviso se escribe en otro lado. Renderer de referencia: render.js. Validador: validate-copy.js. Criterios vinculantes: .pipeline/assets/mockups/6440/ux-criterios-6440.md. NO editar sin pasar por UX.",
+
+  "reglas": {
+    "canal": "Cola de filesystem de Telegram (.pipeline/servicios/telegram/pendiente) con dropfile plain:true — el MISMO camino de salida que usa cualquier respuesta del Commander (sendTelegram), no el de las alertas de operación. Ver ux-criterios-6440.md § UX-2.",
+    "voz": "Es una respuesta dentro de una conversación, no una alerta de sistema. El Commander le habla al operador de vos, en segunda persona, sobre EL PEDIDO QUE EL OPERADOR MANDÓ. Nunca arranca con un nombre de componente ni cierra con una línea de emisor.",
+    "sin_markdown": "El dropfile va con plain:true: sin parse_mode. El copy no usa asterisco, guión bajo, backtick ni corchetes. Si alguien reactivara Markdown, el texto se sigue leyendo igual.",
+    "texto_max_chars": 500,
+    "linea_max_chars": 170,
+    "vocabulario_prohibido": "eof_premature, empty_output, delivery_pending, delivered, stack, Error:, huérfano, huerfano, orphan, turno, etapa, transcripción, dispatch, barrido, sweep, sidecar, jsonl, dead-letter, reqId, correlationId, correlación, reconcile, fallback, proveedor, provider, motor, spawn, proceso, pid, exit code, timeout, cuota, quota, clearFlag, inflight, in-flight, allowlist, chat_id, epoch, meta.json, y cualquier nombre de archivo o de función.",
+    "huerfano_es_palabra_interna": "huerfano es el valor del enum de resultado y el vocabulario del dashboard. Al operador NUNCA se le dice que su pedido quedó huérfano: se le dice que la respuesta se perdió. La palabra interna no describe nada que el operador pueda entender ni accionar.",
+    "sin_contenido_del_pedido": "El aviso lleva el puntero a la conversación, jamás un extracto de lo que se pidió ni de lo que se respondió. Reconstruir la respuesta perdida a partir de un texto que no se pudo confirmar como entregado es exactamente la inferencia que #3951 prohíbe.",
+    "la_pregunta_que_contesta": "Todo aviso responde, en este orden: qué pasó · qué significa para vos ahora · dónde mirar · de qué pedido hablamos. Si un bloque no aporta a una de esas cuatro, no va.",
+    "no_repetir_a_ciegas": "El bloque de consecuencia es OBLIGATORIO en los avisos de pérdida. El daño del episodio no fue el silencio: fue que el operador estuvo 70 minutos por reenviar un pedido que YA se había ejecutado. Un aviso que no advierte eso resuelve la mitad del problema.",
+    "un_aviso_por_pasada_y_por_conversacion": "Si una misma pasada detecta más de una respuesta perdida para la misma conversación, sale UN solo mensaje consolidado (H3), nunca N mensajes. Ver ux-criterios-6440.md § UX-6.",
+    "pureza": "renderAviso(aviso, datos) es puro: el reloj entra por parámetro (now), no se llama Date.now() adentro."
+  },
+
+  "marcadores": {
+    "_comment": "Convención ya vigente en el canal (fallback-episode). El triángulo = pasó algo que el operador tiene que mirar, con una acción acotada y clara. La sirena queda reservada para lo que exige decidir en el momento; una respuesta que ya se perdió no lo es: el trabajo ya está hecho y lo único urgente es no duplicarlo.",
+    "perdida": "⚠️",
+    "duda": "⚠️"
+  },
+
+  "avisos": {
+    "H1_respuesta_perdida": {
+      "cuando": "El registro estructurado del pedido dice que se ejecutó y que la entrega NO está confirmada. Es el caso del episodio del 2026-08-24.",
+      "plantilla": "perdida",
+      "marcador": "perdida",
+      "titular": "Tu pedido de las {HORA} se ejecutó, pero la respuesta se perdió antes de llegarte.",
+      "consecuencia": "Lo que pediste ya está hecho. Antes de volver a mandarlo, fijate cómo quedó: si lo repetís, se hace de nuevo.",
+      "donde_mirar": "La conversación quedó guardada en el registro y la podés abrir desde el panel de conversaciones del dashboard.",
+      "identificador": "Sesión: {SESION} — {FECHA_HORA} ({ANTIGUEDAD})."
+    },
+
+    "H2_entrega_no_verificable": {
+      "cuando": "El pedido es anterior al registro estructurado (logs previos al cambio) y no se puede afirmar ni descartar la entrega. Fuente de baja confianza: escala a revisar, nunca suprime el aviso.",
+      "plantilla": "duda",
+      "marcador": "duda",
+      "titular": "No puedo confirmar si te llegó la respuesta a tu pedido de las {HORA}.",
+      "consecuencia": "El pedido se ejecutó igual. Puede que la respuesta te haya llegado: revisá la conversación antes de volver a mandarlo, porque si lo repetís se hace de nuevo.",
+      "identificador": "Sesión: {SESION} — {FECHA_HORA} ({ANTIGUEDAD})."
+    },
+
+    "H3_varias_respuestas_perdidas": {
+      "cuando": "Una misma pasada detecta 2 o más respuestas perdidas para la misma conversación. Reemplaza a los N avisos individuales.",
+      "plantilla": "perdida_multiple",
+      "marcador": "perdida",
+      "titular": "Hay {CANTIDAD} pedidos tuyos que se ejecutaron y cuya respuesta se perdió antes de llegarte.",
+      "consecuencia": "Todo eso ya está hecho. Antes de volver a mandar cualquiera de ellos, fijate cómo quedó: si los repetís, se hacen de nuevo.",
+      "donde_mirar": "Las conversaciones quedaron guardadas en el registro y las podés abrir desde el panel de conversaciones del dashboard.",
+      "identificador": "Sesiones: {LISTA_SESIONES}"
+    }
+  },
+
+  "plantillas": {
+    "_comment": "Orden fijo, un bloque por línea, sin línea en blanco: el mensaje entra entero en la vista previa de Telegram y el operador aprende la forma.",
+    "perdida": "{MARCADOR} {TITULAR}\n{CONSECUENCIA}\n{DONDE_MIRAR}\n{IDENTIFICADOR}",
+    "duda": "{MARCADOR} {TITULAR}\n{CONSECUENCIA}\n{IDENTIFICADOR}",
+    "perdida_multiple": "{MARCADOR} {TITULAR}\n{CONSECUENCIA}\n{DONDE_MIRAR}\n{IDENTIFICADOR}"
+  },
+
+  "identificador": {
+    "_comment": "El identificador de la sesión se muestra CRUDO y completo: es lo único que le permite al operador (y a quien lo ayude) encontrar el registro. No se abrevia ni se embellece. Lo que sí se traduce es la marca de tiempo: el operador no lee epochs.",
+    "etiqueta_singular": "Sesión:",
+    "etiqueta_plural": "Sesiones:",
+    "item": "{SESION} ({FECHA_HORA})",
+    "separador": ", ",
+    "max_items_listados": 3,
+    "resto": " y {N} más",
+    "formato_fecha_hora": "DD/MM HH:MM en hora local del operador"
+  },
+
+  "antiguedad": {
+    "_comment": "Mismo contrato de lapso que fallback-episode: un lapso redondo NO se dice 6 h 0 min. Los minutos del tramo h+m van con cero a la izquierda para que la columna alinee.",
+    "menos_de_un_minuto": "hace menos de un minuto",
+    "minutos": "hace {N} min",
+    "horas": "hace {H} h {M} min",
+    "horas_exactas": "hace {H} h",
+    "dias": "hace {D} d {H} h"
+  },
+
+  "silencios": {
+    "_comment": "Los casos en los que NO se emite absolutamente nada. Están acá para que sean tan explícitos como los mensajes: son la enorme mayoría del tiempo de vida del chequeo (6 de cada 7 pedidos en la ventana medida).",
+    "camino_feliz": "El pedido cerró con entrega confirmada. Silencio total: ni mensaje, ni evento extra, ni cambio en el dashboard más allá del badge normal (CA-15).",
+    "cierre_propio_sin_respuesta": "El pedido se cerró solo con un resultado propio y sin responder porque no correspondía responder (early-return, handler de comando). No es una respuesta perdida: es un pedido que no tenía respuesta. Silencio.",
+    "todavia_puede_responder": "El pedido todavía puede contestar: su proceso sigue vivo, o no pasó la antigüedad mínima. Silencio hasta que la duda se resuelva sola. Ver ux-criterios-6440.md § UX-5: la mitad de los pedidos tarda más de 6 minutos y uno de cada ocho pasa los 15.",
+    "fuera_de_ventana": "El pedido es anterior a la ventana de 48 h (D-1). Avisar hoy de algo de julio no le sirve a nadie y entierra el aviso que sí importa. Silencio.",
+    "ya_avisado": "Ya se emitió el aviso para esa sesión. El marcador de idempotencia es por sesión y se persiste antes de encolar (CA-9). Silencio.",
+    "destino_no_resuelto": "No se pudo resolver a qué conversación pertenece el pedido, o el destino no pasa la validación. Silencio hacia afuera y registro hacia adentro: un aviso mandado por las dudas le cuenta a un operador el pedido de otro (CA-13)."
+  },
+
+  "dashboard": {
+    "_comment": "Segunda superficie. El dashboard es pasivo: muestra SIEMPRE el estado, en todos sus valores. Telegram interrumpe sólo en el caso excepcional. El badge no es decoración: sin él, un pedido con respuesta perdida es visualmente idéntico a un log viejo sin metadata, que es el síntoma exacto que el issue viene a eliminar (CA-10).",
+    "badge": {
+      "enum": "huerfano",
+      "glyph": "∅",
+      "label": "huérfano",
+      "title": "Se ejecutó, pero su respuesta nunca se confirmó como entregada",
+      "clase_css": "cmd-result-huerfano",
+      "token_color": "--result-huerfano",
+      "token_fondo": "--result-huerfano-bg",
+      "token_borde": "--result-huerfano-dim",
+      "por_que_ese_glifo": "El símbolo de conjunto vacío dice exactamente lo que pasó: lo que debía llegar no llegó. No se puede confundir con los glifos de ok, ajustada, fallback ni error a 0,72 em, que es el tamaño real del badge.",
+      "por_que_ese_color": "--alert-anomaly (#FF6B8A), el rosa-rojo ya declarado en la paleta como distinguible del danger puro. Un pedido con respuesta perdida NO es un error del pedido: el pedido salió bien. Pintarlo del mismo rojo que error haría que el operador lea falló donde dice se hizo y no te enteraste, que es el malentendido opuesto al que el issue quiere cerrar."
+    }
+  }
+}

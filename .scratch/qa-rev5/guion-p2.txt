@@ -1,0 +1,18 @@
+El criterio ocho pide que la ventana de cuarenta y ocho horas se decida por el nombre del archivo antes de abrir nada. Espié el lector inyectado: de los siete turnos, el barrido abrió seis. El de setenta y dos horas nunca se abrió. Cumple.
+
+El criterio nueve pide que el badge se vea renderizando el dashboard, no leyendo el código. Levanté el proceso real del dashboard, del HEAD que verifico, en un puerto aislado y con directorio de estado de sandbox, y le pedí la página por HTTP. El servidor devolvió doscientos y sirvió el badge con el glifo de conjunto vacío, la etiqueta huérfano con tilde, la clase sin tilde, y el tooltip que dice: se ejecutó, pero su respuesta nunca se confirmó como entregada. La sexta fila, que no tiene metadata, queda sin badge, como pide el mockup.
+
+El criterio diez pide que los turnos sanos produzcan cero marcas de huérfano. En el sustrato mezclado, los sanos quedaron sanos y ninguno se marcó como huérfano.
+
+El criterio once pide que un mismo huérfano produzca exactamente un evento terminal. Corrí el barrido tres veces seguidas sobre el mismo sustrato: el primero emitió tres eventos, el segundo cero y el tercero cero. Una sola entrada por identificador de petición. Cumple.
+
+El criterio doce pide que el barrido corra a la cadencia declarada y no en cada iteración del loop. Extraje la función de gateo real de pulpo punto js y la corrí con nueve, diez, veinticinco, cien y ciento treinta y siete ticks: los disparos dieron exactamente el piso de eme dividido diez en todos los casos. Cumple.
+
+El criterio trece es el bloqueante visual. Comparé el render real contra el mockup acordado con muestreo de píxeles, no a ojo. El texto del badge mide efe efe seis be ocho a y el borde be ocho dos cinco a en los dos, render y mockup. El fondo compuesto difiere solo porque la transparencia compone contra superficies distintas, y el propio mockup declara ese valor como fondo compuesto real. El badge de error de la fila de al lado mide otro rojo, así que no hay confusión posible: no es gris y no es el color de error. Además rendericé el dashboard con el archivo de tokens de diseño inaccesible, y el recorte del badge quedó pixel por pixel idéntico al render normal: los literales de respaldo sostienen glifo, color, fondo y borde. Cumple.
+
+El criterio catorce pide que un barrido que falla deje rastro y no se lea como no hay huérfanos. Forcé una excepción al enumerar el directorio: el barrido devolvió no ok con la causa, dejó el rastro logueado con el mensaje del error, y no rompió nada. Cumple.
+
+El criterio quince pide que las ramas de decisión estén enumeradas con su test. El módulo documenta las catorce ramas, de be uno a be catorce, y cada una tiene su test homónimo en la suite del barrido.
+
+Cierro. Quince de quince criterios cumplen, cero defectos, y el bloqueante que había levantado la fase de aprobación está corregido y verificado empíricamente en esta pasada. Mi veredicto es aprobado.
+

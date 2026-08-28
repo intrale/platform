@@ -183,6 +183,7 @@ Reparto: **39 kernel · 12 autoridad · 9 producto**.
 | 18 | `precheck` (353) | obj | kernel | Chequeos previos al dispatch; mecanismo. |
 | 19 | `anomaly_detector` (372) | obj | kernel | Detección de anomalías del motor; mecanismo. |
 | 19b | `human_block_reminder` (291) | obj | kernel | Cadencia con que el motor insiste ante un bloqueo humano sin responder (#5337); mecanismo, no política de producto. |
+| 19b2 | `human_block_auto_recheck` (292) | obj | kernel | Re-chequeo automatico de los bloqueos `needs-human` con predicado verificable y techo de reintentos (#6611); mecanismo del motor, no politica de producto. |
 | 19c | `partial_pause_deps` (321) | obj | kernel | Cada cuánto el motor rastrea dependencias faltantes y cuánto dura el silencio que pide el operador (#2893, #6118); mecanismo, no política de producto. |
 | 20 | `cost_anomaly_alert` (395) | obj | kernel | Alerta de anomalía de costo del motor; mecanismo. |
 | 21 | `ghostbusters_cron` (411) | obj | kernel | Higiene programada del motor; mecanismo. |

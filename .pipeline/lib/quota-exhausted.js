@@ -339,6 +339,23 @@ function ensureDir(dir) {
 // concurrentes sobre el mismo destino con la máquina cargada (la suite completa
 // corre miles de tests en paralelo). Síntoma: `setFlag` lanzaba EPERM y el test
 // de concurrencia caía de forma intermitente, sólo bajo carga.
+//
+// #6612 — El techo de 400ms es de ESPERA ACUMULADA, no de reloj de pared.
+// Antes se medía `Date.now()` contra un deadline absoluto, y eso tenía el
+// defecto exactamente invertido: bajo carga —el único escenario donde el retry
+// importa— cada intento tarda más, el deadline de pared se consume con el
+// tiempo que la máquina pasa haciendo otra cosa, y el retry se rinde ANTES de
+// gastar sus 6 intentos. O sea: el budget se achicaba solo justo cuando hacía
+// falta entero, reintroduciendo el flaky que #5400 vino a cerrar.
+// Reproducido con `fs.renameSync` instrumentado (lag por syscall simulado):
+//
+//     lag= 0ms  wall= 215ms  OK (llego a los 6 intentos)
+//     lag=40ms  wall= 447ms  OK (llego a los 6 intentos)
+//     lag=60ms  wall= 415ms  THROW EBUSY tras 5/6 intentos   <-- se rinde antes
+//
+// El anti-DoS se mantiene y encima es más fuerte, porque ahora es determinístico
+// y no depende de la carga: como mucho 6 syscalls y como mucho 400ms dormidos
+// (el backoff con jitter suma a lo sumo 1.5*(5+10+20+40+80) = 232.5ms).
 const RENAME_RETRY_MAX_ATTEMPTS = 6;
 const RENAME_RETRY_MAX_TOTAL_MS = 400;
 const RENAME_RETRY_INITIAL_MS = 5;
@@ -369,7 +386,10 @@ function sleepSyncMs(ms) {
 function renameWithRetry(tmp, filepath) {
     let lastErr = null;
     let delayMs = RENAME_RETRY_INITIAL_MS;
-    const totalDeadline = Date.now() + RENAME_RETRY_MAX_TOTAL_MS;
+    // #6612 — presupuesto de ESPERA (ver la nota del constante). Se descuenta
+    // sólo lo que efectivamente se duerme; el tiempo que la máquina tarda en
+    // ejecutar el `renameSync` NO come intentos.
+    let sleptMs = 0;
     for (let attempt = 1; attempt <= RENAME_RETRY_MAX_ATTEMPTS; attempt++) {
         try {
             fs.renameSync(tmp, filepath);
@@ -378,12 +398,14 @@ function renameWithRetry(tmp, filepath) {
             lastErr = err;
             if (!RENAME_RETRYABLE_ERRORS.has(err && err.code)) throw err;
             if (attempt === RENAME_RETRY_MAX_ATTEMPTS) throw err;
-            const remaining = totalDeadline - Date.now();
+            const remaining = RENAME_RETRY_MAX_TOTAL_MS - sleptMs;
             if (remaining <= 0) throw err;
             // Jitter [0.5x, 1.5x): N escritores que chocan a la vez esperan lo
             // mismo y vuelven a chocar a la vez. El jitter rompe ese lockstep.
             const jittered = Math.max(1, Math.round(delayMs * (0.5 + Math.random())));
-            sleepSyncMs(Math.min(jittered, remaining));
+            const dormir = Math.min(jittered, remaining);
+            sleptMs += dormir;
+            sleepSyncMs(dormir);
             delayMs = Math.min(delayMs * 2, RENAME_RETRY_MAX_TOTAL_MS);
         }
     }

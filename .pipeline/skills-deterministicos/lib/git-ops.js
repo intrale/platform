@@ -577,6 +577,31 @@ function fetchOrigin(cwd) {
 }
 
 /**
+ * (#6495) ¿El ref de base resuelve LOCALMENTE a un commit?
+ *
+ * Existe porque `fetchOrigin` es best-effort: un timeout de red, un lock de
+ * `.git` o un DNS caído hacen fallar el fetch aunque el remote-tracking ref
+ * local siga siendo perfectamente usable (a lo sumo, desactualizado). Sin este
+ * chequeo el linter no distinguía "no puedo comparar" de "la rama está vacía"
+ * y emitía un falso `pr:no-commits` que rebotaba a dev un entregable sano.
+ *
+ * OJO: nada de `${ref}^{commit}` acá. `runCmd` usa `shell: true` en Windows y
+ * cmd.exe trata `^` como su carácter de escape, así que el peeling se comía el
+ * `^` y el rev-parse fallaba SIEMPRE — lo que habría convertido este fix en el
+ * mismo bug con otro cartel. Se valida el SHA de salida en su lugar.
+ *
+ * @param {string} cwd  worktree donde resolver
+ * @param {string} ref  ref a verificar (ej. 'origin/main')
+ * @returns {boolean} true si el ref resuelve a un objeto commit
+ */
+function refExists(cwd, ref) {
+    if (!ref) return false;
+    const r = runGit(['rev-parse', '--verify', '--quiet', ref], { cwd });
+    if (r.exit_code !== 0) return false;
+    return /^[0-9a-f]{40}$/i.test((r.stdout || '').trim());
+}
+
+/**
  * (#3819) Busca commits YA mergeados en la base que referencien al issue.
  *
  * Caso real que motiva esto: el entregable de #3819 llegó a main arrastrado
@@ -1003,6 +1028,7 @@ module.exports = {
     parseGitStatusOutput,
     getDiffStats,
     fetchOrigin,
+    refExists,
     getPriorDeliveryRefs,
     parseDeliveryRefs,
     loadSiblingRepos,

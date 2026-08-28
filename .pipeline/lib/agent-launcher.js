@@ -379,24 +379,41 @@ function launchAgent({
         }
     }
 
-    // #4052 CA-1 — Instrumentación de la muerte temprana de Codex. SOLO para
-    // openai-codex (no toca el path determinístico ni anthropic). Observacional:
-    // captura exit/error + firstByte + stderr acotado, clasifica vía onSpawnExit
-    // y registra un marker de spawn-failure para que el brazoHuerfanos (CA-3) no
-    // penalice el retry del issue. NUNCA rompe el lifecycle (pulpo sigue siendo
-    // dueño de su propio on-exit handler — invariante I5).
-    if (effective.provider === 'openai-codex') {
+    // #4052 CA-1 — Instrumentación de la muerte temprana al spawnear.
+    // Observacional: captura exit/error + firstByte + stderr acotado, clasifica
+    // vía onSpawnExit y registra un marker de spawn-failure para que el
+    // brazoHuerfanos (CA-3) no penalice el retry del issue. NUNCA rompe el
+    // lifecycle (pulpo sigue siendo dueño de su propio on-exit handler — I5).
+    //
+    // #6612 — APLICA A TODOS LOS PROVIDERS LLM, ya no sólo a openai-codex.
+    // El gate `=== 'openai-codex'` era el alcance del incidente que originó
+    // #4052, pero la muerte al spawnear no tiene nada de específico de Codex:
+    // cualquier eslabón de la cadena de fallback puede morir sin arrancar (CLI
+    // ausente, shim que no resuelve, token faltante que hace salir al proceso
+    // antes del primer byte). Sin instrumentación no se registra marker, el
+    // brazoHuerfanos no encuentra a quién atribuir la muerte y se la cobra al
+    // ISSUE: 3 barridos después el Pulpo sintetiza un rechazo de contenido y
+    // rebota código sano. Eso es exactamente lo que le pasó a #6612 cuando la
+    // cadena cayó en `kimi-moonshot` sin token.
+    //
+    // Seguro de generalizar porque el clasificador (`spawn-failure-classifier`)
+    // ya es fail-closed y provider-agnóstico: sólo firma ENOENT/EACCES/EPERM,
+    // exit 127, o exit no-cero sin un solo byte en ≤5s. Un agente que produjo
+    // output, o que vivió, NUNCA entra. `deterministic` queda fuera: no es un
+    // provider LLM y su muerte sí es atribuible al issue.
+    if (effective.provider && effective.provider !== 'deterministic') {
         try {
-            instrumentCodexSpawn({
+            instrumentProviderSpawn({
                 child,
                 skill,
                 issue,
+                provider: effective.provider,
                 pipelineDir: PIPELINE,
                 launcherKind: spawnDef.kind || null,
                 onLog: log,
             });
         } catch (e) {
-            log('agent-launcher', `⚠️ ${skill}:#${issue} no se pudo instrumentar el spawn de codex (best-effort): ${e && e.message}`);
+            log('agent-launcher', `⚠️ ${skill}:#${issue} no se pudo instrumentar el spawn de ${effective.provider} (best-effort): ${e && e.message}`);
         }
     }
 
@@ -415,7 +432,8 @@ function launchAgent({
 }
 
 // -----------------------------------------------------------------------------
-// instrumentCodexSpawn — #4052 CA-1. Adjunta listeners observacionales al child
+// instrumentProviderSpawn — #4052 CA-1 (generalizado a todo provider en #6612).
+// Adjunta listeners observacionales al child
 // de Codex para detectar y registrar la "muerte al spawnear".
 //
 // Diseño:
@@ -431,7 +449,10 @@ function launchAgent({
 //  - child.on('error'): evita además que un 'error' sin listener tumbe el
 //    proceso (ENOENT de tiers shell:false).
 // -----------------------------------------------------------------------------
-function instrumentCodexSpawn({ child, skill, issue, pipelineDir, launcherKind, onLog }) {
+function instrumentProviderSpawn({ child, skill, issue, provider, pipelineDir, launcherKind, onLog }) {
+    // #6612 — fail-closed: sin provider explícito no instrumentamos. Un marker
+    // con provider inventado apagaría el eslabón equivocado de la cadena.
+    if (!provider || typeof provider !== 'string') return;
     if (!child) return;
     const log = (typeof onLog === 'function') ? onLog : () => {};
     const startedAt = Date.now();
@@ -463,7 +484,7 @@ function instrumentCodexSpawn({ child, skill, issue, pipelineDir, launcherKind, 
             const verdict = dispatcher.onSpawnExit({
                 skill,
                 issue,
-                provider: 'openai-codex',
+                provider,
                 transport: 'cli',
                 rawOutput: stderrBuf,
                 exitCode: (exitCode === undefined) ? null : exitCode,
@@ -482,17 +503,17 @@ function instrumentCodexSpawn({ child, skill, issue, pipelineDir, launcherKind, 
                     const sfState = require('./agent-launcher/spawn-failure-state');
                     sfState.recordSpawnFailure({
                         pipelineDir,
-                        provider: 'openai-codex',
+                        provider,
                         skill,
                         issue,
                         signature: verdict.signature || null,
                         launcherKind,
                     });
                 } catch { /* fail-open */ }
-                log('agent-launcher', `💥 ${skill}:#${issue} codex spawn-failure detectado (kind=${launcherKind}, sig=${verdict.signature}) — marker registrado, no penaliza retry del issue.`);
+                log('agent-launcher', `💥 ${skill}:#${issue} spawn-failure de ${provider} detectado (kind=${launcherKind}, sig=${verdict.signature}) — marker registrado, no penaliza retry del issue.`);
             }
         } catch (e) {
-            try { log('agent-launcher', `⚠️ ${skill}:#${issue} onSpawnExit (codex) tiró (best-effort): ${e && e.message}`); } catch {}
+            try { log('agent-launcher', `⚠️ ${skill}:#${issue} onSpawnExit (${provider}) tiró (best-effort): ${e && e.message}`); } catch {}
         }
     };
 

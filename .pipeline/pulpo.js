@@ -90,6 +90,7 @@ const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
 const staleness = require('./build-log-staleness');
 const qaEvidenceGate = require('./lib/qa-evidence-gate');
 const visualCoverageRecorder = require('./lib/visual-coverage-recorder');
+const qaEvidenceSeal = require('./lib/qa-evidence-seal');
 // #3383 — Gate visual pre-promoción build→verificacion. Default OFF
 // (PIPELINE_VISUAL_GATE_ENABLED=0). Activación gradual cuando #3381 esté en main.
 const visualGate = require('./lib/visual-gate');
@@ -280,6 +281,12 @@ const sttConfidence = require('./lib/commander/stt-confidence');
 const commanderRequestLog = require('./lib/commander/request-log'); // #3949 EP7-H2
 const sherlockRequestLog = require('./lib/sherlock/request-log'); // #4335 — log por corrida de Sherlock
 const commanderRequestClassify = require('./lib/commander/request-classify'); // #3951 EP7-H4
+// #6459 — barrido de rescate de turnos huérfanos (núcleo puro + capa de I/O).
+// El módulo NO requiere `pulpo.js`: `commanderOutboundStatus` y
+// `noteFallbackDeliveryResolved` entran por inyección (`deps`), para no crear un
+// ciclo de requires ni arrancar el proceso entero dentro de un unit test.
+const commanderOrphanSweep = require('./lib/commander/orphan-sweep');
+const commanderOrphanNotify = require('./lib/commander/orphan-notify'); // #6460
 // #3935 (EP4-H2) — Resumen incremental de la conversación: compacta turnos
 // viejos a un bloque "resumen no autoritativo" + últimos K verbatim, acotando el
 // prompt sin perder coherencia. Módulo puro; la recompactación corre en
@@ -315,6 +322,10 @@ const brazoBarridoCore = require('./lib/brazo-barrido-core');
 const brazoLanzamientoCore = require('./lib/brazo-lanzamiento-core');
 const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
 const mergeRaceLedger = require('./lib/merge-race-reclaim-ledger');
+// #6611 — auto-destrabe de bloqueos con predicado verificable.
+const verifiablePredicateStore = require('./lib/verifiable-predicate-store');
+const autoRecheckCounter = require('./lib/auto-recheck-counter');
+const autoRecheckNotice = require('./lib/auto-recheck-notice');
 // #4368 — transición automática de ola (detector fail-closed + orquestador
 // notify/auto). Gated por config.wave_auto_transition (default OFF + notify).
 const waveAutoTransition = require('./lib/wave-auto-transition');
@@ -780,6 +791,32 @@ function detectClaudeLauncher() {
 
 const CLAUDE_LAUNCHER = detectClaudeLauncher();
 const GH_BIN = 'C:\\Workspaces\\gh-cli\\bin\\gh.exe';
+
+// #6599 - Lista de checks REQUERIDOS por la proteccion de `main`, con cache de
+// 10 minutos. La usa el barrido para separar los checks que pueden vetar el
+// merge de los meramente informativos.
+//
+// Se lee UNA vez y se reusa: el barrido corre cada 2 minutos sobre N PRs y la
+// respuesta cambia una vez cada varios meses. Solo la lectura OK se cachea; un
+// 403 puntual se reintenta a la vuelta siguiente en vez de apagar el filtro.
+//
+// La creacion es PEREZOSA y va en try/catch: este helper no puede tumbar el
+// boot del pulpo. Si no se puede construir, devuelve `ok:false` y rio abajo
+// eso significa "pesa todo el rollup", que es el comportamiento previo.
+let _requiredContextsCache = null;
+function leerContextosRequeridos() {
+    try {
+        if (!_requiredContextsCache) {
+            const requiredChecksLib = require('./lib/required-checks');
+            _requiredContextsCache = requiredChecksLib.createRequiredContextsCache({
+                cwd: ROOT, baseBranch: 'main',
+            });
+        }
+        return _requiredContextsCache();
+    } catch (e) {
+        return { ok: false, contexts: null, cause: `excepcion:${(e && e.message) || 'sin mensaje'}`.slice(0, 120) };
+    }
+}
 
 // #3072 / #3077 — Singleton runtime de agent-models. La VALIDACIÓN del JSON
 // se hace más abajo en el boot (validateOrExit del módulo agent-models-validate
@@ -2880,6 +2917,53 @@ const QA_MIN_FRAME_PNGS = 3;             // Mínimo de frames PNG del agente QA 
  * El campo `video_size_kb` del YAML es solo informativo; si el archivo en disco
  * cumple el umbral, se acepta.
  */
+/**
+ * #6495 (rebote 3, R-2) — Decide si la evidencia audiovisual es EXIGIBLE para
+ * este veredicto, sin mirar el filesystem.
+ *
+ * Se extrajo de `validateQaEvidence` porque el gate de evidencia y el gate de
+ * sellado tienen que compartir exactamente el mismo bypass: el hook de sellado
+ * corría para todos los aprobados y, en `structural`/`api`, el campo `evidencia`
+ * es prosa por contrato del rol (`.pipeline/roles/qa.md`). Barrido de dropfiles
+ * reales: 16 de 73 aprobaciones (22%) se degradaban a `rechazado`.
+ *
+ * Devuelve `logLine` en vez de loguear para que se pueda computar una sola vez y
+ * emitir una sola línea de auditoría (R3/CA-3 de #2351), aunque la consulten dos
+ * gates. La fuente de los labels sigue siendo EXCLUSIVAMENTE GitHub.
+ *
+ * @returns {{bypassed: boolean, motivo: string|null, mode: string|null, logLine: string|null}}
+ */
+function resolveQaEvidenceEnforcement(issue, qaData, authoritativeQaMode = null, deps = {}) {
+  const getLabels = deps.getLabels || getIssueLabels;
+  if (qaEvidenceGate.hasQaSkippedLabel(getLabels(issue))) {
+    return {
+      bypassed: true,
+      motivo: 'qa-skipped',
+      mode: null,
+      logLine: `🟢 gate-bypass #${issue} reason=qa-skipped — label explícito qa:skipped, no requiere evidencia audiovisual ${JSON.stringify({ event: 'gate-bypass', issue: String(issue), source: 'label', decision: 'skip-video', reason: 'qa-skipped' })}`,
+    };
+  }
+  const resolution = qaEvidenceGate.resolveQaMode({
+    authoritative: authoritativeQaMode,
+    yamlMode: qaData && qaData.modo,
+  });
+  if (qaEvidenceGate.shouldSkipVisualEvidence(resolution.mode)) {
+    const evt = qaEvidenceGate.buildBypassEvent({
+      issue,
+      qaMode: resolution.mode,
+      source: resolution.source,
+      labels: Array.isArray(qaData && qaData.labels) ? qaData.labels : [],
+    });
+    return {
+      bypassed: true,
+      motivo: `qa-mode-${resolution.mode}`,
+      mode: resolution.mode,
+      logLine: qaEvidenceGate.formatBypassLogLine(evt),
+    };
+  }
+  return { bypassed: false, motivo: null, mode: resolution.mode, logLine: null };
+}
+
 function validateQaEvidence(issue, qaData, authoritativeQaMode = null, deps = {}) {
   // `getLabels` es inyectable para tests (default: la fuente autoritativa de
   // GitHub). NUNCA se cae al YAML del agente para resolver labels (R1 #2351).
@@ -2913,23 +2997,13 @@ function validateQaEvidence(issue, qaData, authoritativeQaMode = null, deps = {}
   // el gate sin que el label exista realmente en GitHub. El label vive en GitHub
   // y requiere permisos de escritura para asignarse: es una whitelist explícita y
   // confiable, no manipulable por el agente.
-  if (qaEvidenceGate.hasQaSkippedLabel(getLabels(issue))) {
-    log('gate-bypass', `🟢 gate-bypass #${issue} reason=qa-skipped — label explícito qa:skipped, no requiere evidencia audiovisual ${JSON.stringify({ event: 'gate-bypass', issue: String(issue), source: 'label', decision: 'skip-video', reason: 'qa-skipped' })}`);
-    return [];
-  }
-
-  const resolution = qaEvidenceGate.resolveQaMode({
-    authoritative: authoritativeQaMode,
-    yamlMode: qaData && qaData.modo,
-  });
-  if (qaEvidenceGate.shouldSkipVisualEvidence(resolution.mode)) {
-    const evt = qaEvidenceGate.buildBypassEvent({
-      issue,
-      qaMode: resolution.mode,
-      source: resolution.source,
-      labels: Array.isArray(qaData && qaData.labels) ? qaData.labels : [],
-    });
-    log('gate-bypass', qaEvidenceGate.formatBypassLogLine(evt));
+  // `deps.enforcement` permite que el llamador reuse la decisión (y su consulta
+  // de labels a GitHub) con el gate de sellado de #6495, sin duplicar la línea
+  // de auditoría ni la llamada de red.
+  const enforcement = deps.enforcement
+    || resolveQaEvidenceEnforcement(issue, qaData, authoritativeQaMode, { getLabels });
+  if (enforcement.bypassed) {
+    log('gate-bypass', enforcement.logLine);
     return [];
   }
 
@@ -4436,7 +4510,41 @@ function brazoBarrido(config) {
                 for (const n of (det.dependsOn || [])) hintDeps.push(n);
               }
             }
-            const precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps, { issue });
+            let precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps, { issue });
+
+            // #6611 — Predicado verificable: SEGUNDO canal, consultado sólo si
+            // el primero dijo "juicio humano".
+            //
+            // `dependency` tiene PRIORIDAD: si el motivo declaró deps
+            // estructuradas, ese freeze ya es auto-re-evaluable por el camino de
+            // #4748 y el sidecar no puede degradarlo.
+            //
+            // El sidecar se consulta SÓLO cuando bloquea `delivery`, que es el
+            // único skill con un emisor autorizado. `classifyPrecondition`
+            // NUNCA ve este canal: los motivos YAML los escribe un agente LLM y
+            // un predicado que entrara por ahí sería un agente auto-destrabándose
+            // un gate humano.
+            if (precondition && precondition.type === 'human_judgment' && skillBloq === 'delivery') {
+              try {
+                const pred = verifiablePredicateStore.consume({
+                  pipelineDir: PIPELINE,
+                  issue: parseInt(issue),
+                });
+                if (pred) {
+                  // Re-validar por la MISMA puerta que persiste el marker: el
+                  // sidecar no es autoridad, sólo transporte.
+                  const cand = humanBlock.normalizePrecondition({ type: 'verifiable', predicate: pred });
+                  if (cand && cand.type === 'verifiable') {
+                    precondition = cand;
+                    log('barrido', `#${issue} freeze con predicado verificable (PR #${cand.predicate.pr}) — re-chequeo automático habilitado`);
+                  }
+                }
+              } catch (e) {
+                // Fail-closed benigno: sin predicado el freeze queda como juicio
+                // humano, que es el comportamiento de siempre.
+                log('barrido', `#${issue} no se pudo consumir el predicado verificable: ${e.message}`);
+              }
+            }
 
             // Dedup: si ya hay marker activo en bloqueado-humano/ no spamear.
             const yaBloqueado = humanBlock.findBlockedMarker(issue);
@@ -6039,7 +6147,33 @@ function brazoBarrido(config) {
                     log('barrido', `#${issue} code-scanning falló (no bloqueante): ${e.message}`);
                   }
 
-                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, { securityAlerts });
+                  // #6599 - Lista de checks REQUERIDOS de la rama base. Sin ella,
+                  // `classifyChecks` pesa el rollup COMPLETO y un check informativo
+                  // colgado (OWASP: `continue-on-error: true`, `failBuildOnCVSS =
+                  // 11.0`) devuelve `pending` -> el veredicto sale `inconclusive` y
+                  // el barrido reintenta en silencio durante horas. Medido el
+                  // 2026-08-25: 3 h 10 m por un control que no puede vetar nada.
+                  //
+                  // Fail-closed: si el ruleset no se puede leer, `requiredContextsRead`
+                  // queda en `false`, pesa todo el rollup igual que antes, y el motivo
+                  // queda escrito en el log (CA-5). Nunca se asume "no se exige nada".
+                  let requiredContexts = null;
+                  let requiredContextsRead = false;
+                  try {
+                    const rc = leerContextosRequeridos();
+                    if (rc && rc.ok === true) {
+                      requiredContexts = rc.contexts;
+                      requiredContextsRead = true;
+                    } else {
+                      log('barrido', `#${issue} lista de checks requeridos no legible (${(rc && rc.cause) || 'sin causa'}) \u2014 el PR se evalua con TODOS sus checks, como antes de #6599`);
+                    }
+                  } catch (e) {
+                    log('barrido', `#${issue} lista de checks requeridos fallo (${e.message}) \u2014 el PR se evalua con TODOS sus checks`);
+                  }
+
+                  const veredicto = hbTriggers.detectPrHumanBlock(prInfo, {
+                    securityAlerts, requiredContexts, requiredContextsRead,
+                  });
 
                   if (veredicto && veredicto.inconclusive) {
                     // R2 — GitHub todavía calcula `mergeable`. Ni bloqueo ni vía
@@ -11475,7 +11609,13 @@ ${g}
           log('lanzamiento', `🎬 Recording parado para qa:#${issue} — video: ${videoSizeKb}KB → ${localVideo}`);
           // Inyectar metadata de evidencia en el YAML (50KB es suficiente con swiftshader).
           if (videoSizeKb >= 50) {
-            data.evidencia = localVideo;
+            // #6495 (rebote 3, R-1): se declara RELATIVA al repo. Antes se
+            // asignaba `localVideo` crudo —absoluto, porque `evidenceDir` sale
+            // de `path.join(ROOT, …)`— y 58 líneas más abajo el sellado la
+            // rechazaba por estar fuera del recinto, degradando a `rechazado`
+            // todo QA android con video ≥50KB. Además, una ruta absoluta del
+            // host no tiene por qué viajar en el dropfile (SEC-8).
+            data.evidencia = path.relative(ROOT, localVideo).replace(/\\/g, '/');
             data.video_size_kb = videoSizeKb;
             // Audio narrado no se genera acá (el agente QA lo hace), pero el video crudo sí
             writeYaml(workingPath, data);
@@ -11489,15 +11629,54 @@ ${g}
         }
       }
 
+      // #6495 (rebote 5, seguridad) — El sello lo DERIVA el pipeline; el agente
+      // nunca lo declara. Se descarta lo declarado en TODO dropfile de
+      // qa/verificación —aprobado o no— y ANTES de los dos gates.
+      //
+      // Que sea incondicional no es celo: `sealQaVerdict` sólo corre sobre
+      // `aprobado`, así que limpiar únicamente ese carril dejaba dos huecos por
+      // los que un sello forjado llegaba igual a `listo/` y `procesado/`, donde
+      // las partes 2-5 del split lo leen como autoridad — un dropfile que el
+      // agente escribe `rechazado`, y un `aprobado` que el gate hermano degrada
+      // a `rechazado` unas líneas más abajo antes de que el sellado lo mire.
+      //
+      // Va antes de los gates y no después porque ninguno de los dos lee
+      // `sello` ni `*_sha256` (los lee sólo el módulo de sellado), así que
+      // limpiar acá no le cambia el veredicto a nadie.
+      //
+      // #6495 (rebote 6, QA) — El snapshot se guarda en `sealDeclarado` y viaja
+      // al sellado unas lineas mas abajo. `stripDeclaredSeal` es destructivo:
+      // si el Pulpo se queda con lo declarado y no se lo pasa a
+      // `sealQaVerdict`, el modulo no tiene contra que contrastar el hash real
+      // y el sello se persiste con `descartes: []` — CA-2 (la auditoria que las
+      // partes 2-5 del split leen como autoridad) se pierde justo en el unico
+      // camino de produccion.
+      let sealDeclarado = null;
+      if (skill === 'qa' && fase === 'verificacion' && data && typeof data === 'object') {
+        sealDeclarado = qaEvidenceSeal.stripDeclaredSeal(data);
+        const camposDescartados = Object.keys(sealDeclarado.hashes).length
+          + (sealDeclarado.sello !== undefined ? 1 : 0);
+        if (camposDescartados > 0) {
+          // Sólo la cantidad: el valor declarado es del agente y no se loguea.
+          log('lanzamiento', `QA:#${issue} descartó ${camposDescartados} campo(s) de sellado declarados en el YAML — el sello lo deriva el Pulpo`);
+        }
+      }
+
       // --- VALIDACIÓN ON-EXIT QA ---
       // Si el agente QA terminó diciendo "aprobado" pero sin evidencia, forzar rechazo.
       // R1 (issue #2351): pasamos `extraEnv.QA_MODE` como fuente de verdad autoritativa
       // (lo inyectó el preflight del Pulpo antes de lanzar al agente). El agente no
       // puede bypassear el gate inventando un `modo: api` falso en el YAML si el
       // preflight había determinado 'android'.
+      // #6495 (rebote 3, R-2): la decisión de exigibilidad se computa UNA vez y
+      // la comparten el gate de evidencia y el gate de sellado. Los dos tienen
+      // que honrar el mismo bypass por `qaMode`/`qa:skipped`, o el sellado se
+      // come aprobaciones que el gate hermano deja pasar.
+      let qaEnforcement = null;
       if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
         const authoritativeQaMode = extraEnv && extraEnv.QA_MODE ? extraEnv.QA_MODE : null;
-        const evidenceIssues = validateQaEvidence(issue, data, authoritativeQaMode);
+        qaEnforcement = resolveQaEvidenceEnforcement(issue, data, authoritativeQaMode);
+        const evidenceIssues = validateQaEvidence(issue, data, authoritativeQaMode, { enforcement: qaEnforcement });
         if (evidenceIssues.length > 0) {
           log('lanzamiento', `⛔ QA:#${issue} aprobó sin evidencia válida on-exit: ${evidenceIssues.join(', ')}`);
           data.resultado = 'rechazado';
@@ -11505,6 +11684,55 @@ ${g}
           data.rechazado_por = 'gate-evidencia-on-exit';
           writeYaml(workingPath, data);
           sendTelegram(`⛔ QA:#${issue} — evidencia incompleta al terminar. Rechazo automático: ${evidenceIssues.join('; ')}`);
+        }
+      }
+
+      // #6495: el gate valida primero; recién entonces el Pulpo deriva el sello
+      // desde los bytes reales y el HEAD del worktree vivo en spawnCwd. Si el
+      // sellado degrada el veredicto, el recorder de #5708 se autoexcluye.
+      //
+      // #6495 (rebote 7, R-5) — Los artefactos NO están (sólo) en ROOT. La fase
+      // `verificacion` está en `EXISTING_WORKTREE_PHASES`
+      // (`lib/phase-workspace.js:32`), así que `spawnCwd === worktreePath` y el
+      // rol `qa.md` le manda al agente declarar rutas RELATIVAS: el video, los
+      // frames y el markdown structural caen en el WORKTREE. En ROOT sólo vive
+      // lo que graba el propio Pulpo (el crudo del emulador, unas líneas más
+      // arriba). Por eso van los DOS recintos, en ese orden: primero donde
+      // escribió el agente, después el repo. Resolver sólo contra ROOT degradaba
+      // a `rechazado` el QA android canónico y dejaba sin sello al carril
+      // structural entero (42 de 76 aprobados reales).
+      //
+      // El `cwd` de `deriveHead` no cambia y sigue siendo `spawnCwd` (CA-12a
+      // intacto): ni el cwd ni los workspaces salen nunca del YAML del agente.
+      if (skill === 'qa' && fase === 'verificacion' && data.resultado === 'aprobado') {
+        try {
+          const sealResult = qaEvidenceSeal.sealQaVerdict({
+            root: ROOT, workspaces: [spawnCwd], issue, data, cwd: spawnCwd, declared: sealDeclarado,
+          });
+          if (!sealResult.sealed) {
+            const reason = sealResult.reason || 'sellado-invalido';
+            // #6495 (rebote 3, R-2): el fail-closed sólo alcanza a los modos
+            // donde el gate hermano TAMBIÉN exige evidencia. En `structural`,
+            // `api` y bajo `qa:skipped` el sellado es best-effort: se loguea y
+            // el veredicto queda intacto, porque ahí `evidencia` es prosa por
+            // contrato del rol y no una ruta rota.
+            if (qaEnforcement && qaEnforcement.bypassed) {
+              log('lanzamiento', `QA:#${issue} sin sello (${reason}) — modo sin evidencia exigible (${qaEnforcement.motivo}), el veredicto no se toca`);
+            } else {
+              const degraded = qaEvidenceSeal.degradeVerdictForSeal(data, reason);
+              sendTelegram(`⛔ QA:#${issue} — ${degraded.motivo}`);
+            }
+          } else {
+            log('lanzamiento', `QA:#${issue} selló ${sealResult.manifest.artefactos.length} artefacto(s) contra HEAD ${sealResult.manifest.head.slice(0, 8)}…`);
+          }
+        } catch (sealErr) {
+          log('lanzamiento', `QA:#${issue} falló sellado de evidencia: ${redactSecretValue(sealErr.message)}`);
+          // Mismo alcance que arriba: fail-closed sólo donde la evidencia es
+          // exigible; nunca una excepción sin capturar hacia el loop (CA-7).
+          if (!(qaEnforcement && qaEnforcement.bypassed)) {
+            const degraded = qaEvidenceSeal.degradeVerdictForSeal(data, 'sellado-invalido');
+            sendTelegram(`⛔ QA:#${issue} — ${degraded.motivo}`);
+          }
         }
       }
 
@@ -11525,6 +11753,18 @@ ${g}
         } catch (coverageErr) {
           log('lanzamiento', `⚠️ QA:#${issue} falló persistencia de cobertura visual aprobada: ${coverageErr.message}`);
         }
+      }
+
+      // El sello y el baseline se persisten juntos antes del rename atómico a listo/.
+      //
+      // #6495 (rebote 4) — La guarda de `data` no es cosmética: con un dropfile
+      // que no parsea, `readYamlSafe` devuelve `{}` por contrato de #3941/SEC-3,
+      // y persistir ese `{}` PISA el archivo corrupto que hoy sobrevive para
+      // diagnóstico. No abre bypass de gate —un `{}` no tiene `resultado:
+      // aprobado`— pero destruye la única evidencia de por qué el agente escribió
+      // un YAML inválido. Se escribe sólo si hay algo que escribir.
+      if (skill === 'qa' && fase === 'verificacion' && data && Object.keys(data).length > 0) {
+        writeYaml(workingPath, data);
       }
 
       // Solo movemos si el archivo sigue en trabajando/. Si ya estaba en listo/
@@ -11655,32 +11895,49 @@ function brazoHuerfanos(config) {
         if (info && isProcessAlive(info.pid)) continue;
 
         // #4052 CA-3 — Atribución provider-aware ANTES de tocar orphanRetries.
-        // Si la muerte del proceso fue un spawn-failure de Codex (marker dejado
-        // por la instrumentación CA-1 en agent-launcher.js), NO es un fallo del
-        // issue: es infra del provider. En ese caso NO incrementamos el retry
-        // del issue ni lo rebotamos; apagamos el provider con TTL (la cadena de
-        // fallback elegirá otro eslabón en el próximo despacho) y devolvemos el
-        // archivo a pendiente/. Fail-closed: si no hay marker o algo falla,
-        // seguimos el camino de huérfano normal (consume retry como hoy).
+        // Si la muerte del proceso fue un spawn-failure del provider (marker
+        // dejado por la instrumentación CA-1 en agent-launcher.js), NO es un
+        // fallo del issue: es infra del provider. En ese caso NO incrementamos
+        // el retry del issue ni lo rebotamos; apagamos el provider con TTL (la
+        // cadena de fallback elegirá otro eslabón en el próximo despacho) y
+        // devolvemos el archivo a pendiente/. Fail-closed: si no hay marker o
+        // algo falla, seguimos el camino de huérfano normal (consume retry).
+        //
+        // #6612 — EL PROVIDER LO DICE EL MARKER, NO ESTABA HARDCODEADO ACÁ.
+        // Antes se consumía con `provider: 'openai-codex'` fijo. Pero el
+        // barrido de huérfanos NO sabe con qué provider salió el agente: esa
+        // decisión la tomó el dispatcher minutos antes, en otro proceso, y no
+        // viaja hasta acá. Con el nombre fijo, la muerte al spawnear de
+        // cualquier OTRO eslabón de la cadena no encontraba su marker, caía al
+        // camino normal y se le cobraba al ISSUE: 3 barridos después el Pulpo
+        // sintetizaba `Huérfano tras 3 reintentos` y rebotaba código sano.
+        // Es lo que le pasó a #6612 en fase `aprobacion` cuando la cadena de
+        // `po` cayó en `kimi-moonshot`. Ahora buscamos por (skill, issue) y
+        // apagamos el provider que el marker dice que falló — nunca otro.
         try {
           const sfState = require('./lib/agent-launcher/spawn-failure-state');
-          const marker = sfState.consumeSpawnFailure({
+          const marker = sfState.consumeSpawnFailureAnyProvider({
             pipelineDir: PIPELINE,
-            provider: 'openai-codex',
             skill,
             issue,
           });
-          if (marker) {
+          const failedProvider = marker && typeof marker.provider === 'string' && marker.provider
+            ? marker.provider
+            : null;
+          // Un marker sin provider legible no habilita apagar nada (apagar el
+          // eslabón equivocado es peor que no apagar): se trata como si no
+          // hubiera marker y sigue el camino de huérfano normal.
+          if (marker && failedProvider) {
             try {
               const providerDisabled = require('./lib/provider-disabled');
-              providerDisabled.setProviderDisabled('openai-codex', { source: 'orphan-spawn-failure' });
+              providerDisabled.setProviderDisabled(failedProvider, { source: 'orphan-spawn-failure' });
             } catch (e) {
-              log('huerfanos', `No se pudo apagar openai-codex tras spawn-failure de ${archivo.name}: ${e.message}`);
+              log('huerfanos', `No se pudo apagar ${failedProvider} tras spawn-failure de ${archivo.name}: ${e.message}`);
             }
-            log('huerfanos', `${archivo.name}: muerte = spawn-failure de Codex (sig=${marker.signature}, kind=${marker.launcher_kind}) → NO consume retry del issue; provider apagado con TTL, devuelvo a pendiente/.`);
+            log('huerfanos', `${archivo.name}: muerte = spawn-failure de ${failedProvider} (sig=${marker.signature}, kind=${marker.launcher_kind}) → NO consume retry del issue; provider apagado con TTL, devuelvo a pendiente/.`);
             try {
               moveFile(archivo.path, pendienteDir);
-              sendTelegram(`🔌 ${skill}:#${issue} NO rebotado: Codex murió al spawnear (infra del provider, no fallo del issue). Provider apagado con TTL; reintento con otro provider de la cadena.`);
+              sendTelegram(`🔌 ${skill}:#${issue} NO rebotado: ${failedProvider} murió al spawnear (infra del provider, no fallo del issue). Provider apagado con TTL; reintento con otro provider de la cadena.`);
             } catch (e) {
               log('huerfanos', `Error devolviendo ${archivo.name} a pendiente tras spawn-failure: ${e.message}`);
             }
@@ -16219,6 +16476,19 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
     let commanderDisclaimerType = null;       // disclaimer F-5/F-6 si aplicó
     let commanderTurnHadError = false;        // hubo excepción en el bloque
     let commanderResultPersisted = false;     // idempotencia: no clasificar 2 veces
+    // #6459 — camino RÁPIDO in-process del huérfano (CA-1). Son dos señales
+    // distintas y las dos hacen falta:
+    //   `commanderRespuestaProducida` — el turno generó una respuesta no vacía,
+    //     o sea que HABÍA algo concreto para entregarle al operador.
+    //   `commanderSalienteRegistrado` — el saliente quedó efectivamente asentado
+    //     (se alcanzó la etapa `envío` del canal no falsificable).
+    // `huerfano` = hubo respuesta ∧ el saliente nunca se registró. Sin la primera
+    // señal, CUALQUIER early-return (path gated, comando determinista, sin
+    // mensaje) se marcaría huérfano — justo el falso positivo que CA-10 prohíbe.
+    // Este camino COMPLEMENTA al barrido, no lo duplica: el barrido nunca toca
+    // un turno que ya asentó `resultado` (CA-6 / R-3).
+    let commanderRespuestaProducida = false;
+    let commanderSalienteRegistrado = false;
 
     // Clasifica + persiste el sidecar + agrega la etapa `resultado` al log. Es
     // un closure (cierra sobre las vars de arriba + requestLog) para poder
@@ -16232,6 +16502,10 @@ async function _brazoCommanderInner(config, archivosIniciales, commanderPendient
           sherlockVerdict: { verdict: commanderSherlockVerdict, sameProvider: commanderSameProviderVerif },
           sherlockDisclaimerType: commanderDisclaimerType,
           hadError: hadError === true || commanderTurnHadError === true,
+          // #6459 — CA-1. Dentro del clasificador `error` tiene precedencia sobre
+          // `huerfano`, así que un turno que además falló sigue leyéndose `error`.
+          deliveryUnconfirmed: commanderRespuestaProducida === true
+            && commanderSalienteRegistrado !== true,
         });
         // Etapa visible en el log consolidado (SEC-3: SOLO strings/booleans).
         requestLog.stage('resultado', {
@@ -17287,6 +17561,9 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
       try { if (commanderPresence) commanderPresence.updatePhase('enviando'); } catch { /* no bloqueante */ }
       if (respuesta) {
         let enviado = false;
+        // #6459 — hubo algo concreto para entregarle al operador. Si el turno
+        // cierra sin registrar el saliente, esa respuesta se perdió ⇒ huérfano.
+        commanderRespuestaProducida = !!String(respuesta).trim();
 
         // #4139 — TEXTO de salida FROZEN: snapshot atómico de la `respuesta` ya
         // verificada (con su disclaimer F-5/F-6/same-provider aplicado arriba). Se
@@ -17406,6 +17683,10 @@ INSTRUCCIÓN: Reelaborá tu respuesta tomando en cuenta las contradicciones dete
           chars: outboundText.length,
           disclaimer: sherlockDisclaimerType || 'ninguno',
         });
+        // #6459 — el saliente quedó asentado en el canal no falsificable. Va
+        // DESPUÉS de stage('envío'): si algo tira en el medio, la marca no se
+        // pone y el turno cierra como huérfano, que es la lectura honesta.
+        commanderSalienteRegistrado = true;
         requestLog.line(`respuesta: ${outboundText}`);
 
         // #5835 (CA-3) — ANEXO de estado de ola. El operador hizo una pregunta
@@ -17628,6 +17909,62 @@ function sendTelegramWithMarkup(text, replyMarkup, opts) {
     log('telegram', `Enviado directo (${msg.length} chars)`);
     return null;
   }
+}
+
+// #6460 — Encola el AVISO DE RESPUESTA PERDIDA en la misma cola de filesystem
+// que cualquier respuesta del Commander.
+//
+// Por qué no se reusa `sendTelegram`: esa función arma el payload ella misma
+// (`{text, parse_mode}` o `{text, plain}`) y NUNCA estampa `chat_id`, así que
+// siempre saldría al chat por default. El aviso tiene que poder ir a la
+// conversación del pedido, y esa decisión ya la tomó `orphan-notify` con las dos
+// ramas del ancla — acá el payload llega HECHO y no se toca.
+//
+// Por qué tampoco `notifyTelegram`: antepone `componente: ` y agrega una línea
+// `emisor: pid=… host=… ts=…`. Eso es jerga prohibida por CA-12 y encuadra el
+// aviso como una falla interna del sistema, justo lo contrario de lo que el
+// mensaje dice ("tu pedido se hizo").
+//
+// La entry `out` en el historial es OBLIGATORIA y no decorativa: sin ella
+// `commanderOutboundStatus` devuelve `'unknown'`, el `reconcileTelegramReceipts`
+// del loop no tiene qué cerrar y el aviso no se puede distinguir de uno
+// entregado. Es lo que hace verificable el CA de dead-letter.
+//
+// @param {object} payload  dropfile YA armado por `render.buildDropfile`.
+// @param {object} opts     `{ correlationId, chatId }` — el `chatId` va al
+//                          historial (para el filtro per-chat del contexto), NO
+//                          al payload: si el payload no lo trae es porque la
+//                          rama elegida es la del chat por default.
+// @returns {string|null} el correlationId encolado, o `null` si no se encoló.
+function enqueueOrphanNotice(payload, opts = {}) {
+  const correlationId = String(opts.correlationId || '');
+  if (!payload || typeof payload !== 'object' || !correlationId) return null;
+
+  const svcDir = telegramPendienteDir();
+  const data = { ...payload, _correlationId: correlationId };
+  const { filename } = dropfileWriter.writeDropfileSync({
+    dir: svcDir,
+    suffix: 'cmd.json',
+    data: JSON.stringify(data),
+    onCollision: (name, attempt) => log(
+      'telegram',
+      `⚠️ Colisión de nombre de dropfile del aviso (${name}, intento ${attempt + 1}) — se reintenta con otro nombre`
+    ),
+  });
+
+  // El `text` del historial NO es el texto del aviso: el historial se inyecta
+  // verbatim al contexto del Commander y el modelo lo leería como parte de la
+  // conversación.
+  appendCommanderHistory(path.join(PIPELINE, 'commander-history.jsonl'), {
+    direction: 'out',
+    status: 'encolado',
+    correlation_id: correlationId,
+    text: commanderOrphanNotify.NOTICE_HISTORY_TEXT,
+    chat_id: opts.chatId == null ? undefined : String(opts.chatId),
+  });
+
+  log('commander', `Aviso de respuesta perdida encolado (${data.chat_id ? 'dirigido' : 'chat por default'}) → ${filename}`);
+  return correlationId;
 }
 
 // #4750 — Encola un CHUNK de audio en la cola de `svc-telegram` (rama multipart
@@ -18534,6 +18871,61 @@ let desyncBlockedNotifiedTick = 0;
 // corresponde. A poll_interval 30s, 10 ticks ≈ 5min.
 let desyncEvalTick = 0;
 const DESYNC_EVAL_EVERY_TICKS = 10;
+
+// #6459 CA-12 — Gateo del barrido de huérfanos. El punto de wiring del loop
+// corre en CADA iteración (~30s) y el barrido se declaró a ~5 min: sin gateo
+// correría ~10x más seguido de lo previsto y releería el historial entero cada
+// vez. Mismo patrón y misma cadencia que `desyncEvalTick`.
+let orphanSweepTick = 0;
+const ORPHAN_SWEEP_EVERY_TICKS = 10;   // ~5 min con poll_interval 30s
+
+// Contador PURO del gateo, extraído a función para que el test pueda probar que
+// M iteraciones del loop disparan exactamente floor(M/N) barridos sin levantar
+// el loop. El loop usa ESTA función, así que el test ejercita el código real.
+function orphanSweepGate(prevTick, everyTicks = ORPHAN_SWEEP_EVERY_TICKS) {
+  const n = (Number.isFinite(everyTicks) && everyTicks > 0) ? Math.floor(everyTicks) : 1;
+  const tick = ((Number.isFinite(prevTick) ? prevTick : 0) + 1) % n;
+  return { tick, due: tick === 0 };
+}
+
+// #6459 — Ejecuta el barrido con las dependencias del proceso INYECTADAS. El
+// módulo `lib/commander/orphan-sweep.js` no requiere `pulpo.js` (sería un ciclo y
+// arrancaría el mundo dentro de un test), así que el cableado vive acá:
+//   · `commanderOutboundStatus` — ÚNICA fuente de verdad de entrega (CA-7).
+//   · `noteFallbackDeliveryResolved` — evento TERMINAL, jamás reescritura (A3).
+//   · `currentBootId` — guarda de vida por boot, no por PID ni por reloj (B1).
+// `runOrphanSweep` ya es best-effort adentro y el caller lo envuelve igual en
+// try/catch (SEC-3). Un fallo deja rastro con la causa (CA-14).
+// #6460 — el wiring del AVISO al operador. Todo lo que toca el proceso vive acá
+// y nada de esto entra al módulo puro:
+//   · `resolveChatIdForCorrelation` — sólo se exporta bajo `PULPO_NO_AUTOSTART=1`,
+//     así que requerirla desde `lib/` no sólo sería un ciclo: no existiría.
+//   · `defaultChatId` — el chat id EFECTIVO del canal de salida
+//     (`_loadTgSecrets()?.chat_id`), que es contra el que hay que comparar para
+//     elegir la rama sin `chat_id`. NO la env var del ancla: son cosas distintas.
+//   · `anchorAccepts` — el predicado REAL que va a aplicar `servicio-telegram.js`.
+//     Se reusa la función en vez de reimplementar la regla, porque una segunda
+//     verdad sobre "qué destino se acepta" es un aviso archivado en silencio.
+//     Lee `process.env` en cada llamada (el ancla puede cambiar en caliente).
+function ejecutarBarridoHuerfanos(origen) {
+  return commanderOrphanSweep.runOrphanSweep({
+    logDir: LOG_DIR,
+    pipelineDir: PIPELINE,
+    currentBootId: PULPO_BOOT_ID,
+    deps: {
+      outboundStatus: commanderOutboundStatus,
+      noteFallbackDeliveryResolved: inflightFallback.noteFallbackDeliveryResolved,
+      log: (msg) => log('commander', msg + ' [' + origen + ']'),
+      // #6460
+      resolveChatIdForCorrelation,
+      defaultChatId: getTelegramChatId(),
+      anchorAccepts: (x) => require('./lib/notify-telegram')._internal.resolvePrivateChatId(x).ok,
+      enqueueOrphanNotice,
+      newCorrelationId: (prefijo) => telegramReceipt.generateCorrelationId(prefijo),
+      updateRequestMeta: commanderRequestLog.updateRequestMeta,
+    },
+  });
+}
 
 // Archivo de control para pausar/reanudar desde fuera
 const PAUSE_FILE = path.join(PIPELINE, '.paused');
@@ -21082,6 +21474,254 @@ async function reapMergeChecksRaceBlocks({ allowlistSet, config, ghCall = ghDesb
   }
 }
 
+/**
+ * #6611 — Reaper de `needs-human` con PREDICADO VERIFICABLE resuelto.
+ *
+ * TERCERA fuente de markers para el MISMO motor de destrabe (las otras dos:
+ * `blocked:dependencies` y los `needs-human` de precondición de dependencia).
+ * Copia la FORMA de `reapStaleHumanBlocks`, no duplica su motor: la decisión la
+ * toma el selector puro y el efecto lo aplica `humanBlock.unblockIssue` — la
+ * única ruta de movimiento de markers que existe.
+ *
+ * El caso que cierra: #6145 quedó 14 h congelado en `needs-human` con el PR ya
+ * `MERGEABLE`/`CLEAN`, ocupando slot de ola, porque los freezes de `delivery` se
+ * congelan como juicio humano y nadie los vuelve a mirar.
+ *
+ * QUÉ **NO** HACE: no mergea, no presume el merge, no escribe labels `qa:*` ni
+ * da por satisfecho gate alguno. Sólo re-encola la fase — `delivery` vuelve a
+ * correr TODOS sus gates desde cero, incluido el de QA. `MERGEABLE`+`CLEAN` es
+ * el veredicto de GitHub sobre la protección de rama, no el gate de QA del
+ * proyecto.
+ *
+ * Fail-closed en cada borde: lectura fallida, valor fuera del enum, rollup
+ * `null` o techo de reintentos alcanzado ⇒ NO libera.
+ */
+async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
+  // Kill switch en caliente, sin editar código.
+  const cfg = (config && config.human_block_auto_recheck) || {};
+  if (cfg.enabled !== true || cfg.kill_switch === true) return;
+
+  const maxAutoReleases = Number.isFinite(Number(cfg.max_auto_releases)) && Number(cfg.max_auto_releases) > 0
+    ? Number(cfg.max_auto_releases)
+    : brazoDesbloqueoCore.DEFAULT_MAX_AUTO_RELEASES;
+  const maxPrsPerTick = Number.isFinite(Number(cfg.max_prs_per_tick)) && Number(cfg.max_prs_per_tick) > 0
+    ? Number(cfg.max_prs_per_tick)
+    : 10;
+
+  let markers;
+  try {
+    markers = humanBlock.listBlockedIssues().filter(b =>
+      b.precondition
+      && b.precondition.type === 'verifiable'
+      && b.precondition.predicate
+      && b.precondition.predicate.kind === 'pr_merge_blocked'
+    );
+  } catch (e) {
+    log('desbloqueo', `[auto-recheck] error listando bloqueados: ${e.message}`);
+    return;
+  }
+
+  // Respetar pausa parcial: los que no van a poder ejecutarse igual, no se
+  // re-evalúan (y no gastan cuota de `gh`).
+  if (allowlistSet) markers = markers.filter(m => allowlistSet.has(String(m.issue)));
+  if (markers.length === 0) return;
+
+  // Set de PRs únicos, coaccionados a entero positivo ANTES de armar args de
+  // `gh` (SEC: nada de interpolación de string en el comando).
+  const prSet = new Set();
+  for (const m of markers) {
+    const pr = m.precondition.predicate.pr;
+    if (Number.isInteger(pr) && pr > 0) prSet.add(pr);
+  }
+
+  // Tope por tick. Si hay más, se atienden en el siguiente — el barrido corre
+  // cada ciclo, así que nada queda sin mirar, sólo se difiere.
+  let prs = Array.from(prSet);
+  if (prs.length > maxPrsPerTick) {
+    log('desbloqueo', `[auto-recheck] ${prs.length} PRs candidatos, tope ${maxPrsPerTick} por tick — ${prs.length - maxPrsPerTick} se difieren al próximo ciclo`);
+    prs = prs.slice(0, maxPrsPerTick);
+  }
+
+  // Estado observado por PR. Cualquier fallo deja el PR FUERA del mapa → el
+  // selector lo lee como `undefined` → no libera.
+  const observations = {};
+  for (const pr of prs) {
+    ghThrottle();
+    try {
+      const { stdout } = await ghDesbloqueoCall(
+        ['pr', 'view', String(pr), '--json', 'state,mergeable,mergeStateStatus,statusCheckRollup,headRefName', '--repo', 'intrale/platform'],
+        15000
+      );
+      const parsed = JSON.parse(stdout || 'null');
+      if (parsed && typeof parsed === 'object') observations[String(pr)] = parsed;
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] no se pudo leer PR #${pr}: ${e.message} — fail-closed`);
+    }
+  }
+
+  // Contadores del techo (CA-8). `count()` es fail-closed: `Infinity` si no
+  // pudo leer, lo que rio abajo significa "no liberar".
+  const counters = {};
+  for (const m of markers) {
+    const p = m.precondition.predicate;
+    counters[`${m.issue}::${p.kind}::${p.pr}`] = autoRecheckCounter.count({
+      pipelineDir: PIPELINE, issue: m.issue, kind: p.kind, pr: p.pr,
+    });
+  }
+
+  const { toRelease, blocked } = brazoDesbloqueoCore.selectVerifiableHumanBlocksToRelease({
+    markers, observations, counters, maxAutoReleases,
+  });
+
+  // UX-6: alcanzar el techo es una escalada, no un tick silencioso. El registro
+  // persistente garantiza un único Telegram/comentario por issue+kind+PR.
+  for (const m of blocked.filter(b => b.reason === 'techo-de-auto-destrabes-alcanzado')) {
+    const p = m.predicate;
+    if (!autoRecheckCounter.markCeilingNotified({
+      pipelineDir: PIPELINE, issue: m.issue, kind: p.kind, pr: p.pr,
+    })) continue;
+    const attempts = counters[`${m.issue}::${p.kind}::${p.pr}`];
+    const notice = autoRecheckNotice.buildCeilingNotice({
+      issue: m.issue, kind: p.kind, pr: p.pr, attempts,
+    });
+    try {
+      const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+      fs.mkdirSync(ghQueueDir, { recursive: true });
+      encolarOrdenGithub(
+        path.join(ghQueueDir, `${m.issue}-auto-recheck-ceiling-${Date.now()}.json`),
+        { action: 'comment', issue: Number(m.issue), body: notice.comment },
+      );
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] error encolando escalada por techo #${m.issue}: ${e.message}`);
+    }
+    log('desbloqueo', `[auto-recheck] 🚨 #${m.issue} agotó ${attempts} auto-destrabes para ${p.kind}/PR #${p.pr}; queda en needs-human`);
+    try { sendTelegram(notice.telegram); } catch {}
+  }
+
+  for (const m of toRelease) {
+    const p = m.predicate;
+    const obs = m.observed_now || {};
+    // Sanitizado + truncado: `head_ref` y `gate` terminan en el comentario del
+    // issue y en Telegram, y otro agente puede leer ese texto después.
+    const safeHeadRef = autoRecheckNotice.middleEllipsis(sanitizePipelineText(String(p.head_ref || '')), 120);
+    const before = p.observed || {};
+    const safeGate = sanitizePipelineText(String(before.gate || 'desconocido')).slice(0, 60);
+    const safeHttp = Number.isFinite(Number(before.httpStatus)) ? Number(before.httpStatus) : '?';
+
+    const guidance = `Auto-destrabe (#6611): la causa registrada del bloqueo dejó de cumplirse. El PR #${p.pr} está MERGEABLE/CLEAN sin checks en rojo. El pipeline re-encola este issue para que \`delivery\` vuelva a correr TODOS sus gates.`;
+
+    let res;
+    try {
+      res = humanBlock.unblockIssue({
+        // #6611 rev-1 — `m` viene de `listBlockedIssues()` (vía el selector), que
+        // expone la ruta como `marker_path`; `unblockIssue` la lee como `file`.
+        // Sin esta adaptación el marker NO se movía: quedaba duplicado
+        // (`bloqueado-humano/` + un archivo vacío en `pendiente/`), el issue
+        // seguía contándose como bloqueado y el reaper lo re-destrababa en cada
+        // tick — un aviso de Telegram, un comentario y un `remove-label` por
+        // tick, quemando el techo sin que hubiera existido re-bloqueo real.
+        // `unblockIssue` ya acepta los dos nombres, pero el mapeo va explícito:
+        // el contrato de este call site no depende de esa tolerancia.
+        issue: m.issue,
+        marker: { ...m, file: m.marker_path },
+        unlocker: 'auto-recheck',
+        guidance,
+      });
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] error unblock #${m.issue}: ${e.message}`);
+      continue;
+    }
+    if (!res || !res.ok) {
+      // Idempotente: si el `/unblock` manual ganó la carrera, no-op benigno.
+      log('desbloqueo', `[auto-recheck] unblock #${m.issue} no-op: ${res && res.error}`);
+      continue;
+    }
+
+    // Incrementar el techo AL DESTRABAR (no al re-bloquearse): el destrabe es
+    // el evento que existe y es observable.
+    autoRecheckCounter.increment({
+      pipelineDir: PIPELINE, issue: m.issue, kind: p.kind, pr: p.pr,
+    });
+    const releaseNumber = (counters[`${m.issue}::${p.kind}::${p.pr}`] || 0) + 1;
+
+    try {
+      humanBlock.emitAutoReleased({
+        issue: m.issue, kind: p.kind, pr: p.pr,
+        from: res.from_phase, to: res.to_phase,
+        observed: { before, now: {
+          state: obs.state, mergeable: obs.mergeable,
+          mergeStateStatus: obs.mergeStateStatus, headRefName: obs.headRefName,
+        } },
+        release_number: releaseNumber,
+      });
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] error emitiendo auditoría #${m.issue}: ${e.message}`);
+    }
+
+    // Quitar el label + comentar, por la MISMA cola que el destrabe manual.
+    try {
+      const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+      fs.mkdirSync(ghQueueDir, { recursive: true });
+      encolarOrdenGithub(
+        path.join(ghQueueDir, `${m.issue}-auto-recheck-remove-needs-human-${Date.now()}.json`),
+        {
+          action: 'remove-label',
+          issue: Number(m.issue),
+          label: humanBlock.NEEDS_HUMAN_LABEL,
+          // #5690 SEC-B — procedencia declarada: llega acá sólo tras verificar
+          // el estado real del PR en GitHub y que `unblockIssue` resolvió el
+          // marker (`res.ok`), no por un JSON anónimo.
+          guardrail_authorized: true,
+          authorized_by: 'brazo-desbloqueo:auto-recheck',
+        },
+      );
+      // #6226 — por el writer fail-closed, NO `fs.writeFileSync` pelado: esta
+      // orden y la de `remove-label` de arriba se encolan en el mismo tick y un
+      // write crudo puede pisar otra orden del mismo issue en el mismo
+      // milisegundo, perdiéndola sin error.
+      encolarOrdenGithub(
+        path.join(ghQueueDir, `${m.issue}-auto-recheck-comment-${Date.now()}.json`),
+        {
+          action: 'comment',
+          issue: Number(m.issue),
+          body: [
+            '## 🔓 Auto-destrabado — la causa verificable dejó de cumplirse',
+            '',
+            `Este issue estaba en \`needs-human\` con una causa **verificable** registrada, y esa causa ya no se cumple.`,
+            '',
+            '| | Cuando se congeló | Ahora |',
+            '|---|---|---|',
+            `| PR | #${p.pr} | #${p.pr} |`,
+            `| Rama | \`${safeHeadRef}\` | \`${autoRecheckNotice.middleEllipsis(sanitizePipelineText(String(obs.headRefName || '?')), 120)}\` |`,
+            `| Gate | \`${safeGate}\` (HTTP ${safeHttp}) | — |`,
+            // La columna "cuando se congeló" sale de `observed`, que es NARRATIVA
+            // del productor del freeze y nunca entró a la decisión. Si un campo no
+            // se registró va `—`: no se infiere ni se hardcodea un valor plausible,
+            // porque este comentario es la traza de auditoría que lee el operador.
+            `| \`mergeable\` | — (no registrado) | ${sanitizePipelineText(String(obs.mergeable || '?')).slice(0, 40)} |`,
+            `| \`mergeStateStatus\` | ${sanitizePipelineText(String(before.mergeStateStatus || '—')).slice(0, 40)} | ${sanitizePipelineText(String(obs.mergeStateStatus || '?')).slice(0, 40)} |`,
+            '',
+            `El pipeline sacó el label \`needs-human\` y re-encoló el issue en \`${res.pipeline}/${res.to_phase}\` (auto-destrabe ${releaseNumber}/${maxAutoReleases}).`,
+            '',
+            '**Esto no presume ningún merge.** `delivery` vuelve a correr **todos** sus gates desde cero —  incluido el gate de QA. Lo único que cambió es que el issue dejó de estar congelado esperando a un humano que no tenía nada que decidir.',
+            '',
+            '_Auto-destrabe de bloqueo verificable (#6611). El fail-closed sigue intacto para los bloqueos de juicio humano: sin predicado registrado, no hay re-evaluación._',
+          ].join('\n'),
+        },
+      );
+    } catch (e) {
+      log('desbloqueo', `[auto-recheck] error encolando acciones GitHub #${m.issue}: ${e.message}`);
+    }
+
+    log('desbloqueo', `🔓 #${m.issue} auto-destrabado (predicado verificable) — PR #${p.pr} MERGEABLE/CLEAN → re-encolado a ${res.pipeline}/${res.to_phase} (${releaseNumber}/${maxAutoReleases})`);
+    try {
+      // Aviso SIN pedir acción: el operador tiene que enterarse de que algo se
+      // movió solo, no hacer nada al respecto.
+      sendTelegram(`🔓 Issue #${m.issue} se destrabó solo — el PR #${p.pr} pasó a MERGEABLE/CLEAN y la causa del freeze dejó de existir. Vuelve a la cola (${releaseNumber}/${maxAutoReleases}). No hace falta que hagas nada.`);
+    } catch {}
+  }
+}
+
 async function brazoDesbloqueoImpl(config) {
   // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
   // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
@@ -21098,6 +21738,13 @@ async function brazoDesbloqueoImpl(config) {
   // precondición igual deben re-evaluarse cada ciclo).
   await reapStaleHumanBlocks({ allowlistSet });
   await reapMergeChecksRaceBlocks({ allowlistSet, config });
+
+  // #6611 — Re-chequeo de los `needs-human` con predicado verificable, en el
+  // MISMO tick y bajo el MISMO guard `_unblockRunning`: sin proceso nuevo, sin
+  // timer nuevo. Va después del hermano de #4748 por la misma razón que aquél
+  // va antes del barrido de `blocked:dependencies` — no depender de su
+  // early-return.
+  await reapVerifiableHumanBlocks({ allowlistSet, config });
 
   try {
     // 1. Buscar issues abiertos con label blocked:dependencies
@@ -22873,6 +23520,21 @@ async function mainLoop() {
     log('audit', `[partial-pause-audit] no pude iniciar cron de verifyChain: ${e.message}`);
   }
 
+  // #6459 — Boot hook del barrido de rescate de turnos huérfanos. Corre UNA vez
+  // al arranque para que el huérfano que dejó el proceso anterior se marque sin
+  // esperar los ~5 min del tick. Best-effort (SEC-3): jamás tumba el boot, y un
+  // fallo deja rastro con la causa (CA-14) en vez de degradar en silencio al
+  // mismo estado que "no hay huérfanos".
+  try {
+    const rBarrido = ejecutarBarridoHuerfanos('boot');
+    if (rBarrido && rBarrido.ok) {
+      log('commander', '[orphan-sweep] boot: ' + rBarrido.resumen.evaluados + ' turno(s) en ventana, '
+        + rBarrido.resumen.huerfanos + ' huérfano(s), ' + rBarrido.emitidos.length + ' evento(s) nuevo(s)');
+    }
+  } catch (e) {
+    log('commander', '[orphan-sweep] boot error (best-effort): ' + e.message);
+  }
+
   // #5821 CA-1 — Marca de arranque de la iteración anterior, para poder publicar
   // su duración REAL en el heartbeat. Es la magnitud contra la que el watchdog
   // dimensiona su umbral; sin ella sólo tendría la edad muestreada del
@@ -22920,6 +23582,19 @@ async function mainLoop() {
       // fallido). Append-only sobre commander-history.jsonl, ligado por
       // correlation_id. Best-effort: nunca rompe el loop principal.
       try { reconcileTelegramReceipts(); } catch (e) { log('telegram', `[reconcile] tick error: ${e.message}`); }
+
+      // #6459 CA-12 — Barrido de rescate de turnos huérfanos, GATEADO POR TICKS.
+      // Este punto del loop corre en CADA iteración (~30s) y el barrido se
+      // declaró a ~5 min, así que se gatea con el mismo patrón y la misma
+      // cadencia que `desyncEvalTick` (10 ticks). Sin el gateo correría ~10x más
+      // seguido de lo previsto y releería el historial entero cada vez.
+      // Best-effort: nunca rompe el loop, pero deja rastro si falla (CA-14).
+      const orphanGate = orphanSweepGate(orphanSweepTick);
+      orphanSweepTick = orphanGate.tick;
+      if (orphanGate.due) {
+        try { ejecutarBarridoHuerfanos('tick'); }
+        catch (e) { log('commander', `[orphan-sweep] tick error: ${e.message}`); }
+      }
 
       // Drain outbox de Telegram (context-relay, notificaciones, etc.)
       try {
@@ -23168,6 +23843,7 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #3956 — gate de evidencia QA: expuesto para test de integración del bypass
     // `qa:skipped` (la fuente de labels debe ser GitHub, nunca el YAML del agente).
     validateQaEvidence,
+    resolveQaEvidenceEnforcement,
     determinarDevSkill,
     getDevSkillPartitions,
     isDeclaredStackDevSkill,
@@ -23312,6 +23988,11 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     _resetAutoRepairFailureDedupe,
     checkDesyncFlag,
     _getDesyncBlocked: () => desyncBlocked,
+    // #6459 — barrido de huérfanos: gateo puro + runner cableado, expuestos
+    // para los tests de cadencia (CA-12) y de inyección de dependencias.
+    orphanSweepGate,
+    ORPHAN_SWEEP_EVERY_TICKS,
+    ejecutarBarridoHuerfanos,
   };
   return; // No arrancar singleton ni mainLoop
 }
