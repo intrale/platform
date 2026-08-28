@@ -1060,5 +1060,13 @@ nonce, chat/operator ID, ARN, hostname ni paths.
 El ejecutor del corte —revalidación de cobertura, escritura atómica de
 `vault.bootstrap_fallback: false`, relectura e idempotencia— es #5459 y se
 inyecta como `executor` / `operationalExecutor`. Sin él, el corte no ocurre y la
-respuesta es `executor-unavailable`. La propuesta del botón, la política de
-ausencia del operador y el break-glass son #5460.
+respuesta es `executor-unavailable`.
+
+La **propuesta del botón**, la **política de ausencia del operador** y el
+**break-glass** son #5460 y viven en `lib/vault-cut-proposal.js`,
+`lib/operator-absence-policy.js` (superficie operacional) y
+`lib/vault-cut-breakglass.js`. Su runbook operativo —cuándo se propone, las
+cuatro causas de ausencia, la señal local, el procedimiento sin Telegram, el
+último punto de retorno y la invalidación de los action-tokens en vuelo al
+reprovisionar el bot token— está en
+[`docs/operacion-pipeline.md#corte-fallback-vault`](../operacion-pipeline.md#corte-fallback-vault).
