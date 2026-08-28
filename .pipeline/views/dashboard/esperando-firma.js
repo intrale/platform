@@ -429,6 +429,29 @@ function renderEmptyStateSsr(vacio) {
 
 // UX §5, tercer caso — banda ARRIBA de la lista. NO reemplaza a las filas: es el
 // único de los tres vacíos que convive con ellas.
+/**
+ * #6208 rev2 — copy de la banda de "índice incompleto". Se LEE del read model
+ * (`lib/gate-signature-inbox.bandaDegradada`), no se redacta acá: dos
+ * redacciones del mismo estado divergen. Require perezoso con fallback, mismo
+ * patrón que `efEstadoCopy`, para que la vista siga cargando standalone.
+ */
+function efBandaDegradada(visibles, alerta) {
+    try {
+        const inbox = require('../../lib/gate-signature-inbox.js');
+        if (typeof inbox.bandaDegradada === 'function') return inbox.bandaDegradada(visibles, alerta);
+    } catch { /* checkout transitorio: se degrada, no se rompe */ }
+    return {
+        tono: 'warn',
+        icono: '⚠',
+        titulo: 'No pude leer entera la lista de firmas pendientes',
+        lineas: [
+            `Te muestro ${visibles} que sí puedo leer; puede faltar alguno.`,
+            'Que no aparezca acá no quiere decir que esté firmado.',
+        ],
+        chip: 'LISTA INCOMPLETA · REVISAR EL DEPÓSITO',
+    };
+}
+
 function renderBandaSsr(banda) {
     if (!banda || typeof banda !== 'object') return '';
     const lineas = Array.isArray(banda.lineas) ? banda.lineas : [];
@@ -583,7 +606,18 @@ function renderEsperandoFirmaSsr(state, opts = {}) {
     // UX §5 — el vacío que corresponde. Con metadatos manda el read model; sin
     // ellos (o filtrando por producto) cae al limpio.
     const vacio = meta && meta.vacio ? meta.vacio : null;
-    const banda = meta && meta.banda ? renderBandaSsr(meta.banda) : '';
+
+    // #6208 rev2 — el invariante "un depósito ilegible JAMÁS se pinta como todo
+    // firmado" también vale CON filas. `meta.vacio` es null cuando hay filas y
+    // `meta.banda` es null cuando no hubo pedidos corruptos concretos: con esas
+    // dos solas, un depósito degradado + una fila (p. ej. un marker de GATE 3)
+    // se veía como una bandeja normal, sin ninguna señal. El read model ya arma
+    // esta banda; acá se REPONE por si el `meta` lo construyó otro camino (el
+    // fallback de `dashboard.js` manda `banda: null`). El copy no se redacta de
+    // nuevo: sale de `gate-signature-inbox.bandaDegradada` (CA-2).
+    const bandaMeta = (meta && meta.banda)
+        || ((meta && meta.degraded === true && rowsHtml) ? efBandaDegradada(list.length, meta.alert) : null);
+    const banda = bandaMeta ? renderBandaSsr(bandaMeta) : '';
 
     const body = (!rowsHtml)
         ? (banda + renderEmptyStateSsr(vacio))

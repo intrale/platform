@@ -560,3 +560,106 @@ test('si el move a procesado falla, el efecto no se duplica en el próximo ciclo
     assert.equal(carrier.calls.length, 1, 'el carrier se invocó UNA sola vez en total');
     assert.equal(out2.superseded.length, 1);
 });
+
+// -----------------------------------------------------------------------------
+// #6208 rev2 — `listPending` puede devolver `ok:true` CON `degraded:true`: el
+// kernel abrió el depósito pero SABE que el índice quedó incompleto. Tratar la
+// ausencia de un `(issue,gate)` como terminal en ese caso pierde en silencio una
+// decisión REAL del operador. Regla: con el índice incompleto se RETIENE.
+//
+// `degraded` no se puede provocar por config hoy (ambos gates en `dry-run`, R7),
+// así que se inyecta el retorno de `listPending` — que es exactamente la costura
+// que el drenador consume.
+// -----------------------------------------------------------------------------
+
+/** `approvalImpl` real salvo `listPending`, que responde lo que pida el test. */
+function channelConListPending(respuesta) {
+    return {
+        listPending: () => respuesta,
+        isValidIssueId: channel.isValidIssueId,
+        resolveGate: channel.resolveGate,
+        DEFAULT_DEPOSIT_DIR: channel.DEFAULT_DEPOSIT_DIR,
+        submitSignature: () => { throw new Error('el drenador NO debe firmar'); },
+    };
+}
+
+test('#6208 rev2 · con el índice DEGRADADO un pedido sin match se retiene en pendiente/, no se cierra como no-pending', () => {
+    const env = mkEnv();
+    enqueue(env, { issue: 6208, gate: 'definicion', decision: 'signed' });
+
+    const carrier = fakeCarrier();
+    const out = drain(env, {
+        // Índice incompleto y el kernel lo sabe: `ok:true` PERO `degraded:true`.
+        approvalImpl: channelConListPending({
+            ok: true, pending: [], corrupt: [{ file: 'roto.json' }], degraded: true,
+            alert: 'No pude leer 1 pendiente del depósito.',
+        }),
+        dispatchToCarrier: carrier,
+    });
+
+    assert.equal(out.rejected.length, 0, 'con el índice incompleto NO se cierra como no-pending');
+    assert.equal(out.retained.length, 1, 'se retiene explícitamente');
+    assert.equal(out.retained[0].reason, 'deposito-degradado');
+    assert.equal(out.retained[0].issue, 6208);
+    assert.equal(out.retained[0].gate, 'definicion');
+    assert.equal(carrier.calls.length, 0, 'sin certeza NO se despacha');
+
+    // Lo único que importa de verdad: el pedido sigue vivo para el próximo ciclo.
+    assert.equal(
+        fs.readdirSync(env.queueDir).filter(f => f.endsWith('.json')).length, 1,
+        'el pedido sigue en pendiente/',
+    );
+    assert.ok(
+        !fs.existsSync(env.processedDir) || fs.readdirSync(env.processedDir).filter(f => f.endsWith('.json')).length === 0,
+        'la decisión del operador NO se cierra en silencio',
+    );
+
+    // Y queda traza de por qué se retuvo.
+    const retenciones = readAudit(env).filter(e => e.outcome === 'retained');
+    assert.equal(retenciones.length, 1);
+    assert.match(retenciones[0].reason, /degradado/);
+});
+
+test('#6208 rev2 · el índice degradado NO frena lo que SÍ está en el índice', () => {
+    const env = mkEnv();
+    const sembrado = seedPending(env, 6208);
+    enqueue(env, { issue: 6208, gate: 'definicion', decision: 'signed' });
+
+    // El depósito conoce ESTE pendiente, pero avisa que no pudo leer otro.
+    const listado = channel.listPending({}, env.channelDeps);
+    assert.equal(listado.ok, true);
+    assert.ok(listado.pending.length >= 1, 'el sembrado tiene que estar en el índice');
+    assert.equal(sembrado.ok, true);
+
+    const carrier = fakeCarrier();
+    const out = drain(env, {
+        approvalImpl: channelConListPending({
+            ok: true, pending: listado.pending, corrupt: [{ file: 'otro-roto.json' }], degraded: true,
+        }),
+        dispatchToCarrier: carrier,
+    });
+
+    // Fail-closed no es fail-stop: con match en el índice hay certeza y se despacha.
+    assert.equal(out.retained.length, 0);
+    assert.equal(out.dispatched.length, 1);
+    assert.equal(carrier.calls.length, 1);
+    assert.equal(carrier.calls[0].issue, 6208);
+});
+
+test('#6208 rev2 · sin degraded, el pedido sin pendiente sigue siendo TERMINAL (CA-11 no regresiona)', () => {
+    const env = mkEnv();
+    enqueue(env, { issue: 6208, gate: 'definicion', decision: 'signed' });
+
+    const carrier = fakeCarrier();
+    const out = drain(env, {
+        // Índice COMPLETO y vacío: acá sí sabemos que ya no hace falta.
+        approvalImpl: channelConListPending({ ok: true, pending: [], corrupt: [], degraded: false }),
+        dispatchToCarrier: carrier,
+    });
+
+    assert.equal(out.retained.length, 0, 'un índice completo no retiene nada');
+    assert.equal(out.rejected.filter(r => r.reason === 'no-pending').length, 1);
+    assert.equal(carrier.calls.length, 0);
+    assert.equal(fs.readdirSync(env.queueDir).filter(f => f.endsWith('.json')).length, 0);
+    assert.equal(fs.readdirSync(env.processedDir).filter(f => f.endsWith('.json')).length, 1);
+});

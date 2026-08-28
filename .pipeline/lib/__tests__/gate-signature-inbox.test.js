@@ -390,3 +390,71 @@ test('UX §2.8: las opciones (y sus labels) salen del depósito, no se derivan d
     assert.deepEqual(r.items[0].options.map(o => o.value), ['signed', 're-definition', 'rejected']);
     assert.equal(r.items[0].options[1].label, 'Devolver a definición');
 });
+
+// -----------------------------------------------------------------------------
+// #6208 rev2 — el cuarto caso que faltaba: DEGRADADO **con filas**.
+//
+// Los tres vacíos ya cubrían "degradado y sin nada que mostrar" (el empty-state
+// ámbar). Pero `vacio` es null en cuanto hay una fila, así que un depósito con
+// el índice incompleto + un marker de GATE 3 se pintaba como una bandeja normal:
+// el operador leía la lista como completa. Es el mismo invariante de UX §5 ("un
+// depósito ilegible JAMÁS se pinta como todo firmado") aplicado al caso con filas.
+// -----------------------------------------------------------------------------
+
+const MARKER_G3 = {
+    issue: 4321, origen: 'gate3', gate: 'GATE 3', phase: 'dev', pipeline: 'desarrollo',
+    skill: 'x', evidencia: [], sugerencia: null, age_hours: 2,
+};
+
+test('#6208 rev2 · degraded CON filas ⇒ banda de aviso arriba de la lista (no se lee como completa)', () => {
+    const r = run(
+        { ok: true, pending: [], corrupt: [], degraded: true, alert: 'No pude leer 2 pendientes.' },
+        [MARKER_G3],
+    );
+
+    assert.equal(r.degraded, true);
+    assert.equal(r.items.length, 1, 'hay una fila, así que el empty-state no aplica');
+    assert.equal(r.vacio, null, 'con filas no hay vacío que pintar…');
+    assert.ok(r.banda, '…y por eso el aviso TIENE que ir en la banda');
+    assert.equal(r.banda.tono, 'warn');
+    assert.match(r.banda.titulo, /no pude leer/i);
+    // El alert del kernel deja de morir en el objeto: se pinta.
+    assert.ok(r.banda.lineas.some(l => l.includes('No pude leer 2 pendientes.')));
+    assert.match(r.banda.chip, /INCOMPLETA/);
+});
+
+test('#6208 rev2 · degraded SIN filas sigue usando el vacío ámbar y NO duplica la banda', () => {
+    const r = run({ ok: true, pending: [], corrupt: [], degraded: true, alert: 'x' }, []);
+
+    assert.equal(r.items.length, 0);
+    assert.equal(r.vacio, inbox.VACIOS.degradado, 'el empty-state ya lleva el mensaje');
+    assert.equal(r.banda, null, 'no se dice dos veces lo mismo en la misma pantalla');
+});
+
+test('#6208 rev2 · lista completa CON filas ⇒ sin banda (el aviso no es ruido permanente)', () => {
+    const r = run({ ...OK_VACIO, pending: [pendingFixture()] }, [MARKER_G3]);
+
+    assert.equal(r.degraded, false);
+    assert.ok(r.items.length >= 1);
+    assert.equal(r.banda, null);
+});
+
+test('#6208 rev2 · con ilegibles concretos manda la banda de corruptos (dice cuántos son)', () => {
+    const r = run(
+        { ok: true, pending: [], corrupt: [{ file: 'a.json', reason: 'x' }], degraded: true, alert: 'y' },
+        [MARKER_G3],
+    );
+
+    assert.ok(r.banda);
+    assert.match(r.banda.chip, /ILEGIBLES/, 'el dato concreto gana sobre el genérico');
+});
+
+test('#6208 rev2 · un alert enorme del kernel se corta y no empuja las filas fuera de pantalla', () => {
+    const alertLargo = 'M'.repeat(5000);
+    const r = run({ ok: true, pending: [], corrupt: [], degraded: true, alert: alertLargo }, [MARKER_G3]);
+
+    const linea = r.banda.lineas.find(l => l.startsWith('MMM'));
+    assert.ok(linea, 'el alert se incluye');
+    assert.ok(linea.length < 250, `el alert se trunca (largo real: ${linea.length})`);
+    assert.ok(linea.endsWith('…'));
+});

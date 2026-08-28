@@ -530,3 +530,83 @@ test('#6208 · el enum de la vista espeja el del kernel', () => {
 test('#6208 · D-3: la tabla ORIGENES de la vista NO se toca (waiting-operator-def ya decía GATE 1)', () => {
     assert.equal(ORIGENES['waiting-operator-def'].label, 'GATE 1 · Definición');
 });
+
+// ---------------------------------------------------------------------------
+// #6208 rev2 — el aviso de "índice incompleto" también cuando HAY filas.
+//
+// `meta.vacio` es null en cuanto hay una fila y `meta.banda` es null cuando no
+// hubo corruptos concretos: con esas dos solas, `degraded:true` + una fila se
+// renderizaba como una bandeja normal, sin ninguna señal, y `alert` no se
+// pintaba en ningún camino. La vista repone la banda desde el copy del read
+// model (no lo redacta) para cubrir también a los callers que arman el `meta` a
+// mano — el fallback de `dashboard.js` manda `banda: null`.
+// ---------------------------------------------------------------------------
+const BANDA_DIV = '<div class="ef-banda"';
+
+function markerRowG3(over = {}) {
+    return {
+        kind: 'marker', issue: 4321, origen: 'gate3', gateLabel: 'GATE 3', firmable: false,
+        titulo: 'Esperando decisión del operador', edad: 'hace 2 h', severidad: 'info',
+        ...over,
+    };
+}
+
+test('#6208 rev2 · degraded CON filas y banda:null ⇒ la vista igual pinta el aviso arriba de la lista', () => {
+    const html = renderEsperandoFirmaSsr({
+        esperandoFirma: [markerRowG3()],
+        // Exactamente la forma que arma `dashboard.js` en su camino de fallback.
+        esperandoFirmaInbox: {
+            degraded: true,
+            alert: 'No pude leer el depósito entero: índice incompleto.',
+            corruptCount: 0, visibleCount: 1, firmables: 0,
+            vacio: null, banda: null,
+        },
+    });
+
+    // OJO: `ef-banda` a secas tambien aparece en el <style> del panel, asi que
+    // la asercion tiene que ir contra el DIV, no contra la clase.
+    assert.ok(html.includes(BANDA_DIV), 'con el índice incompleto SIEMPRE hay señal');
+    assert.ok(html.includes('esperando-firma-list'), 'las filas siguen ahí');
+    assert.ok(html.indexOf(BANDA_DIV) < html.indexOf('esperando-firma-list'), 'la banda va arriba de la lista');
+    assert.ok(html.includes('índice incompleto'), 'el alert del kernel se pinta');
+    assert.ok(!html.includes('Nada esperando tu firma'), 'jamás el verde de "está todo firmado"');
+});
+
+test('#6208 rev2 · lista completa CON filas ⇒ sin banda (el aviso no se vuelve ruido de fondo)', () => {
+    const html = renderEsperandoFirmaSsr({
+        esperandoFirma: [firmaRow()],
+        esperandoFirmaInbox: { degraded: false, alert: null, corruptCount: 0, vacio: null, banda: null },
+    });
+    assert.ok(!html.includes(BANDA_DIV));
+});
+
+test('#6208 rev2 · degraded SIN filas sigue mostrando el vacío ámbar, sin banda duplicada', () => {
+    const inboxLib2 = require('../../../lib/gate-signature-inbox.js');
+    const html = renderEsperandoFirmaSsr({
+        esperandoFirma: [],
+        esperandoFirmaInbox: { degraded: true, alert: 'x', corruptCount: 0, vacio: inboxLib2.VACIOS.degradado, banda: null },
+    });
+    assert.ok(html.includes('No pude leer la lista de firmas pendientes'));
+    assert.ok(!html.includes(BANDA_DIV), 'el empty-state ya lo dice: no se repite');
+});
+
+test('#6208 rev2 · REQ-SEC-6208-1: un alert hostil del depósito se pinta como texto inerte', () => {
+    const html = renderEsperandoFirmaSsr({
+        esperandoFirma: [markerRowG3()],
+        esperandoFirmaInbox: {
+            degraded: true,
+            alert: '<img src=x onerror=alert(1)>"><script>fetch("/api/gate-signature/decide")</script>',
+            corruptCount: 0, visibleCount: 1, firmables: 0, vacio: null, banda: null,
+        },
+    });
+
+    const banda = html.slice(html.indexOf(BANDA_DIV), html.indexOf('<div class="ef-list"'));
+    assert.ok(banda, 'la banda se renderizo');
+    // Ningun TAG se materializa dentro de la banda: el payload queda como texto.
+    assert.ok(!banda.includes('<script'), 'ningún script se materializa');
+    assert.ok(!banda.includes('<img'), 'ningún tag se materializa');
+    assert.ok(!/<[a-z]+[^>]*\son[a-z]+=/i.test(banda), 'ningún handler inline se materializa');
+    // Y se ve escapado (las palabras siguen ahi a proposito: es texto inerte).
+    assert.ok(banda.includes('&lt;img'), 'se ve como texto escapado');
+    assert.ok(banda.includes('&lt;script&gt;'), 'el script se ve como texto escapado');
+});

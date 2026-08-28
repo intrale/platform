@@ -162,7 +162,12 @@ function drainGateSignatureQueue(opts = {}, deps = {}) {
         ? deps.dispatchToCarrier
         : null;
 
-    const summary = { dispatched: [], superseded: [], rejected: [], waiting: [], errors: [] };
+    // `retained` (#6208 rev2) — pedidos que NO se cerraron y siguen en
+    // `pendiente/` esperando el próximo ciclo porque el índice del kernel vino
+    // conocidamente incompleto (`listPending().degraded`). No son errores ni
+    // rechazos: es la regla fail-closed aplicada a la parte del índice que no
+    // sabemos leer.
+    const summary = { dispatched: [], superseded: [], rejected: [], waiting: [], retained: [], errors: [] };
 
     // CA-9 — la guarda va PRIMERO, antes de cualquier lectura.
     const depositDir = (deps.approvalDeps && deps.approvalDeps.depositDir)
@@ -194,9 +199,15 @@ function drainGateSignatureQueue(opts = {}, deps = {}) {
     // read-only: este módulo no borra ni escribe nada dentro del depósito.
     let pendingIndex = new Map();
     let depositReadable = true;
+    // #6208 rev2 — `listPending` puede devolver `ok:true` CON `degraded:true`:
+    // el kernel pudo abrir el depósito pero SABE que el índice quedó incompleto
+    // (entradas ilegibles). `ok` solo no alcanza para tratar la ausencia de un
+    // `(issue,gate)` como "ya no hace falta". Ver `approval-channel.listPending`.
+    let depositDegraded = false;
     try {
         const listed = approval.listPending({}, deps.approvalDeps || { fsImpl: _fs, depositDir });
         depositReadable = !!(listed && listed.ok);
+        depositDegraded = !!(listed && listed.degraded);
         for (const p of (listed && listed.pending) || []) {
             pendingIndex.set(dispatchKey(p.issue, p.gate), p);
         }
@@ -270,6 +281,23 @@ function drainGateSignatureQueue(opts = {}, deps = {}) {
         // revertir nada. La firma vive en el audit chain del gate, no acá.
         const pending = pendingIndex.get(key);
         if (!pending) {
+            // #6208 rev2 — fail-closed cuando el índice vino INCOMPLETO. Con
+            // `degraded:true` el kernel nos dijo que no pudo listar todo, así
+            // que "no está en el índice" NO significa "ya no hace falta":
+            // significa que no sabemos. Cerrarlo como terminal acá perdería en
+            // silencio una decisión REAL del operador. Se retiene en
+            // `pendiente/` para el próximo ciclo, exactamente igual que cuando
+            // el depósito entero es ilegible.
+            if (depositDegraded) {
+                summary.retained.push({ file: fileName, reason: 'deposito-degradado', issue, gate: spec.gate, verdict });
+                audit({
+                    type: 'gate_signature_drain_result',
+                    outcome: 'retained',
+                    reason: 'deposito-degradado: sin match en un indice incompleto, se retiene',
+                    issue, gate: spec.gate, verdict, file: fileName, at: now(),
+                });
+                continue;
+            }
             terminal(fileName, 'rejected', 'no-pending', { issue, gate: spec.gate, verdict });
             continue;
         }

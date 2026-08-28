@@ -101,6 +101,35 @@ function bandaCorrupta(ilegibles, visibles) {
     };
 }
 
+/** Largo máximo del texto que el kernel manda en `alert`. Se corta antes de
+ *  pintarlo para que un alert enorme no empuje las filas fuera de la pantalla. */
+const ALERT_MAX = 180;
+
+/**
+ * #6208 rev2 · UX §5 — el mismo invariante ("un depósito ilegible JAMÁS se pinta
+ * como todo firmado") para el caso `degradado CON filas`.
+ *
+ * Con la lista vacía el aviso ya lo lleva `VACIOS.degradado`. Pero si el índice
+ * vino incompleto y ADEMÁS hay al menos una fila (p. ej. un marker de GATE 3),
+ * el operador veía una bandeja de aspecto normal, sin ninguna señal de que la
+ * lista podía estar corta. Esta banda va ARRIBA de la lista, igual que
+ * `bandaCorrupta`, y es el único lugar donde se pinta el `alert` del kernel.
+ */
+function bandaDegradada(visibles, alerta) {
+    const extra = (alerta == null ? '' : String(alerta)).trim();
+    return {
+        tono: 'warn',
+        icono: '⚠',
+        titulo: 'No pude leer entera la lista de firmas pendientes',
+        lineas: [
+            `Te muestro ${visibles} que sí puedo leer; puede faltar alguno.`,
+            'Que no aparezca acá no quiere decir que esté firmado.',
+            ...(extra ? [extra.length > ALERT_MAX ? extra.slice(0, ALERT_MAX) + '…' : extra] : []),
+        ],
+        chip: 'LISTA INCOMPLETA · REVISAR EL DEPÓSITO',
+    };
+}
+
 /**
  * UX §6 + D-4 (#6208) — los momentos del ciclo. Mientras `dispatchToCarrier` sea
  * `null` (#6207 abierta) el copy nombra EL ESTADO REAL, no el medio: prometer
@@ -442,7 +471,14 @@ function listInbox(opts = {}, deps = {}) {
         // pudo leer nunca se pinta como "está todo firmado".
         vacio: items.length === 0 ? (degraded ? VACIOS.degradado : VACIOS.limpio) : null,
         // El tercer caso convive con filas: es una banda ARRIBA de la lista.
-        banda: corruptCount > 0 ? bandaCorrupta(corruptCount, items.length) : null,
+        // #6208 rev2 — `degraded` CON filas también pide banda: sin ella la
+        // bandeja se lee como completa. Los pedidos ilegibles concretos mandan
+        // (dicen cuántos son); si no los hay, la banda genérica de índice corto.
+        banda: corruptCount > 0
+            ? bandaCorrupta(corruptCount, items.length)
+            : (degraded && items.length > 0
+                ? bandaDegradada(items.length, listed && listed.alert)
+                : null),
     };
 }
 
@@ -457,6 +493,7 @@ module.exports = {
     edadDesde,
     fichaDe,
     bandaCorrupta,
+    bandaDegradada,
     key,
     VACIOS,
     ESTADOS,
