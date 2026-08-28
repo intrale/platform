@@ -210,8 +210,12 @@ test('el barrido del pulpo consulta la politica de veredicto caduco', () => {
     // por un problema que no es de dev.
     const src = fs.readFileSync(PULPO_JS, 'utf8');
     assert.match(src, /require\(['"]\.\/lib\/delivery\/freshness-gate['"]\)/);
-    assert.match(src, /isStaleVerdictRejection\(\{\s*fase,\s*rechazados\s*\}\)/,
-        'el barrido tiene que preguntarle a la política, no reimplementar el predicado');
+    // SEC (#6496, rebote security — A04): el barrido tiene que pasarle además el
+    // `issue` y el `pipelineDir` del ESTADO. Sin esos dos la política no puede
+    // corroborar el flag contra nada que haya escrito el pipeline, y vuelve a
+    // creerle al agente.
+    assert.match(src, /isStaleVerdictRejection\(\{\s*fase,\s*rechazados,\s*issue,\s*pipelineDir: PIPELINE,?\s*\}\)/,
+        'el barrido tiene que preguntarle a la política pasándole issue + pipelineDir');
 });
 
 // ---------------------------------------------------------------------------
@@ -220,16 +224,26 @@ test('el barrido del pulpo consulta la politica de veredicto caduco', () => {
 
 test('un veredicto caduco no rebota a dev ni escala a needs-human', () => {
     const caduco = { skill: 'delivery', resultado: 'rechazado', veredicto_caduco: true };
+    // La reparación REAL existe: `requeueVerification` dejó su contador en disco.
+    // Sin eso el flag del agente no alcanza (ver el guardián de acá abajo).
+    const estado = crearEstado();
+    seal.requeueVerification({
+        pipelineDir: estado, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
+        headSellado: HEAD_FALSO, headActual: 'b'.repeat(40),
+    });
+    const ctx = { issue: ISSUE_FIXTURE, pipelineDir: estado };
+
     assert.strictEqual(
-        freshnessGate.isStaleVerdictRejection({ fase: 'entrega', rechazados: [caduco] }), true);
+        freshnessGate.isStaleVerdictRejection({ ...ctx, fase: 'entrega', rechazados: [caduco] }), true);
 
     // Sólo en `entrega`: el gate no corre en ninguna otra fase, así que el flag
     // ahí es ruido y NO puede cancelar un rechazo real.
     assert.strictEqual(
-        freshnessGate.isStaleVerdictRejection({ fase: 'verificacion', rechazados: [caduco] }), false);
+        freshnessGate.isStaleVerdictRejection({ ...ctx, fase: 'verificacion', rechazados: [caduco] }), false);
 
     // Un rechazo de contenido en la misma tanda MANDA sobre la caducidad.
     assert.strictEqual(freshnessGate.isStaleVerdictRejection({
+        ...ctx,
         fase: 'entrega',
         rechazados: [caduco, { skill: 'review', resultado: 'rechazado', motivo: 'bug real' }],
     }), false);
@@ -237,12 +251,53 @@ test('un veredicto caduco no rebota a dev ni escala a needs-human', () => {
     // El flag es el booleano estructurado, nunca prosa ni un string "true".
     for (const falso of ['true', 1, 'veredicto caduco', null, undefined]) {
         assert.strictEqual(freshnessGate.isStaleVerdictRejection({
-            fase: 'entrega', rechazados: [{ veredicto_caduco: falso }],
+            ...ctx, fase: 'entrega', rechazados: [{ veredicto_caduco: falso }],
         }), false, `veredicto_caduco=${JSON.stringify(falso)} no puede cancelar un rechazo`);
     }
 
     // Lote vacío ⇒ no hay nada que cancelar.
-    assert.strictEqual(freshnessGate.isStaleVerdictRejection({ fase: 'entrega', rechazados: [] }), false);
+    assert.strictEqual(
+        freshnessGate.isStaleVerdictRejection({ ...ctx, fase: 'entrega', rechazados: [] }), false);
+});
+
+test('el flag veredicto_caduco declarado por el agente NO se cree sin corroboracion', () => {
+    // GUARDIÁN SEC (#6496, rebote security — A04: Insecure Design).
+    //
+    // `veredicto_caduco` sale del YAML del work-file, y `roles/delivery.md` le
+    // pide explícitamente al agente de `entrega` que lo escriba. Que el campo sea
+    // ESTRUCTURADO no lo hace confiable: es exactamente la clase de input contra
+    // la que existe `stripDeclaredSeal` (CA-5).
+    //
+    // Sin corroboración, un agente cuya entrega falló DE VERDAD (conflictos, CI en
+    // rojo) escribía `rechazado` + `veredicto_caduco: true` y se auto-cancelaba el
+    // rechazo: sin rebote a dev, sin rev++, sin circuit breaker y sin
+    // `needs-human`. Y como no había orden real en la cola, nadie re-encolaba nada
+    // y el issue desaparecía del pipeline en silencio.
+    const caduco = { skill: 'delivery', resultado: 'rechazado', veredicto_caduco: true };
+
+    // Estado LIMPIO: nadie encoló ninguna reparación. El flag es puro dicho del agente.
+    const sinReparacion = crearEstado();
+    assert.strictEqual(freshnessGate.isStaleVerdictRejection({
+        fase: 'entrega', rechazados: [caduco], issue: ISSUE_FIXTURE, pipelineDir: sinReparacion,
+    }), false, 'sin contador ni orden en la cola, el flag del agente no cancela nada');
+
+    // Y sin `issue` no hay contra qué corroborar ⇒ fail-closed.
+    assert.strictEqual(freshnessGate.isStaleVerdictRejection({
+        fase: 'entrega', rechazados: [caduco], pipelineDir: sinReparacion,
+    }), false, 'sin issue no se puede corroborar: es un rechazo normal');
+    assert.strictEqual(freshnessGate.isStaleVerdictRejection({
+        fase: 'entrega', rechazados: [caduco], issue: '../../etc', pipelineDir: sinReparacion,
+    }), false, 'un issue no normalizable tampoco corrobora');
+
+    // Con la reparación REAL encolada por el pipeline, el mismo flag SÍ vale.
+    const conReparacion = crearEstado();
+    seal.requeueVerification({
+        pipelineDir: conReparacion, issue: ISSUE_FIXTURE, motivo: 'head-desincronizado',
+        headSellado: HEAD_FALSO, headActual: 'b'.repeat(40),
+    });
+    assert.strictEqual(freshnessGate.isStaleVerdictRejection({
+        fase: 'entrega', rechazados: [caduco], issue: ISSUE_FIXTURE, pipelineDir: conReparacion,
+    }), true, 'con el contador que sólo escribe requeueVerification, el flag se honra');
 });
 
 test('el gate compartido es fail-closed con un issue invalido', () => {
@@ -311,9 +366,12 @@ test('el marker de la entrega real NUNCA sale aprobado con veredicto caduco', ()
     assert.strictEqual(m.delivery_merge_sha, undefined, 'no hubo merge: no puede haber sha de merge');
     assert.match(m.motivo, /caduco/i);
 
-    // Y el predicado del barrido lee ese marker como "no rebotar".
+    // Y el predicado del barrido lee ese marker como "no rebotar" — corroborado
+    // contra el contador que la propia entrega acaba de dejar en `estado`.
     assert.strictEqual(freshnessGate.isStaleVerdictRejection({
         fase: 'entrega',
+        issue: ISSUE_FIXTURE,
+        pipelineDir: estado,
         rechazados: [{ ...m, veredicto_caduco: m.veredicto_caduco === 'true' }],
     }), true);
 });

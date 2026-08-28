@@ -884,7 +884,17 @@ function pushBranch(cwd, branch, { sha = null } = {}) {
     const args = SHA40.test(String(sha || ''))
         ? ['push', '--force-with-lease', 'origin', `${sha}:refs/heads/${branch}`]
         : ['push', '--force-with-lease', '-u', 'origin', branch];
-    return runGit(args, { cwd, timeoutMs: 5 * 60 * 1000 });
+    // SEC (#6496, rebote security — A03). `shell: false` EXPLÍCITO. El default de
+    // `runCmd` es `shell: process.platform === 'win32'`, así que en Windows esta
+    // línea viajaba por `cmd.exe`: el SHA está validado con `SHA40`, pero
+    // `branch` se interpola sin sanitizar en el refspec, y `git check-ref-format`
+    // acepta metacaracteres de shell (ampersand, pipe, punto y coma, signo peso)
+    // en un refname. Hoy no es explotable —`branch` sale de
+    // `git branch --show-current` y los nombres los fabrica el pipeline— pero es
+    // un amplificador latente en una línea nueva, y git no necesita shell para
+    // nada. Mismo criterio que el camino CLI (`.pipeline/delivery.js`, que ya usa
+    // `spawnSync` sin shell).
+    return runGit(args, { cwd, timeoutMs: 5 * 60 * 1000, shell: false });
 }
 
 // #2523 (rev-3): helper para verificar el SHA actual de un ref en origin.

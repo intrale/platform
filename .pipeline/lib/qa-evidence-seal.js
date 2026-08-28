@@ -987,6 +987,24 @@ const MIGRACION_AUDIT_FILE = 'audit-seal-migracion.jsonl';
 const CADUCIDAD_AUDIT_FILE = 'audit-seal-caducidad.jsonl';
 const MIGRACION_ANUNCIO_FLAG = '.seal-migracion-anunciada';
 
+// SEC (#6496, rebote security — A08). CORTE TEMPORAL DURO de la ventana de
+// exención pre-sellado.
+//
+// La ventana one-shot se decidía SÓLO por `fs.existsSync(MIGRACION_ANUNCIO_FLAG)`,
+// y ese flag es un archivo untracked (el propio diff lo agrega al `.gitignore`,
+// sin backup). Borrarlo y esperar el próximo `restart.js` —que es rutina—
+// reabría la ventana, y todo dropfile `aprobado` sin `sello` que estuviera en
+// `procesado/` en ese momento recibía `sello_exencion` PERMANENTE: quedaba
+// fresco contra cualquier HEAD para siempre, que es el bypass que CA-3 prohíbe.
+//
+// Con el corte en código el flag pasa a ser una OPTIMIZACIÓN (evita reescribir
+// en cada boot) y deja de ser la única autoridad: un veredicto escrito después
+// de esta fecha no se exime nunca, se reabra la ventana las veces que se reabra.
+// La fecha cubre el merge de #6496 más unos días de margen — el backlog real que
+// la migración viene a rescatar es todo anterior.
+const MIGRACION_CORTE_ISO = '2026-09-05T00:00:00.000Z';
+const MIGRACION_CORTE_MS = Date.parse(MIGRACION_CORTE_ISO);
+
 // Cola que drena el Pulpo (CA-13). Mismo patrón que `servicios/github` y que
 // `product-control/pendiente` → `product-control-drainer.js`.
 const REQUEUE_QUEUE_DIR = ['verificacion-requeue', 'pendiente'];
@@ -1423,6 +1441,26 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
   // CA-9 — el contador se lee ANTES de re-encolar.
   const previo = readSealRetries({ pipelineDir: dir, issue: issueNum });
 
+  // CA-12 / SEC-C — el label del issue se degrada EN EL MISMO ACTO, y la orden
+  // va ANTES del `if` a propósito: vale para los DOS caminos, re-encolado y
+  // escalada.
+  //
+  // Rebote rev-2 desde `aprobacion`: estaba sólo en la rama de re-encolado. En
+  // el camino normal no se notaba porque un re-encolado previo ya había bajado
+  // el label, pero con el contador CORRUPTO no hay re-encolado previo:
+  // `readSealRetries` lo lee como agotado (CA-10) y la PRIMERA caducidad escala
+  // derecho. Ahí el issue quedaba con `qa:passed` VIVO sobre un HEAD que nadie
+  // verificó —el escenario exacto que CA-12 viene a cerrar— y la ficha de
+  // escalada afirmaba textualmente que el gate había quedado en `qa:pending`
+  // cuando en ese camino era falso.
+  //
+  // El label es la autoridad que leen el pre-check de `/delivery` (CLAUDE.md) y
+  // la propagación al PR. La exclusión mutua remove-then-add la resuelve
+  // `gate-label-reconciler` dentro del worker de `servicio-github`.
+  ordenes.push(enqueueJsonOrder(ghQueue, `${issueNum}-seal-caduco-gate-${stamp}.json`, {
+    action: 'label', issue: issueNum, label: 'qa:pending', origen: 'gate-caducidad-sello',
+  }));
+
   if (previo.intentos >= MAX_SEAL_REQUEUES) {
     ordenes.push(enqueueJsonOrder(ghQueue, `${issueNum}-seal-caduco-needs-human-${stamp}.json`, {
       action: 'label', issue: issueNum, label: 'needs-human', origen: 'gate-caducidad-sello',
@@ -1446,14 +1484,7 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
   const intentos = previo.intentos + 1;
   writeSealRetries(dir, issueNum, { intentos, ultimo_motivo: motivoSeguro, ts });
 
-  // CA-12 / SEC-C — el label del issue se degrada EN EL MISMO ACTO. El label es
-  // la autoridad que leen el pre-check de `/delivery` (CLAUDE.md) y la
-  // propagación al PR: invalidar el dropfile y dejar `qa:passed` vivo invalidaba
-  // la mitad. La exclusión mutua remove-then-add la resuelve
-  // `gate-label-reconciler` dentro del worker de `servicio-github`.
-  ordenes.push(enqueueJsonOrder(ghQueue, `${issueNum}-seal-caduco-gate-${stamp}.json`, {
-    action: 'label', issue: issueNum, label: 'qa:pending', origen: 'gate-caducidad-sello',
-  }));
+  // (CA-12: la degradación del gate ya se encoló arriba, para los dos caminos.)
 
   // CA-13 — la orden que drena el Pulpo. Delivery no renombra ni mueve nada.
   ordenes.push(enqueueJsonOrder(path.join(dir, ...REQUEUE_QUEUE_DIR), `${issueNum}-seal-caduco-${stamp}.json`, {
@@ -1545,6 +1576,16 @@ function migratePreSealBacklog({ root, pipelineDir, ahora } = {}) {
     // Un dropfile YA SELLADO no recibe exención: tiene contra qué chequearse.
     if (sealedHeadOf(data)) { resultado.saltados += 1; continue; }
     if (hasMigrationExemption(data)) { resultado.yaExentos.push(issueNum); continue; }
+    // CORTE TEMPORAL DURO (SEC A08): sólo se exime lo que es ANTERIOR al corte.
+    // Un mtime no legible se trata como posterior (fail-closed): sin poder datar
+    // el dropfile no se le puede regalar una exención permanente.
+    let mtimeMs = null;
+    try { mtimeMs = fs.statSync(file).mtimeMs; } catch { mtimeMs = null; }
+    if (mtimeMs === null || !(mtimeMs < MIGRACION_CORTE_MS)) {
+      resultado.fueraDeVentana += 1;
+      resultado.saltados += 1;
+      continue;
+    }
     candidatos.push({ file, data, issueNum });
   }
 
@@ -1600,5 +1641,6 @@ module.exports = {
   sealedHeadOf, hasMigrationExemption, verdictDropfilePaths, sealRetriesPath,
   resolvePipelineDir, verificacionFasePath,
   MAX_SEAL_REQUEUES, REQUEUE_TYPE, REQUEUE_QUEUE_DIR, REQUEUE_INFLIGHT_DIR, REQUEUE_DONE_DIR,
+  MIGRACION_CORTE_ISO, MIGRACION_CORTE_MS,
   MIGRACION_MOTIVO, MIGRACION_DERIVADO_POR, MIGRACION_AUDIT_FILE, MIGRACION_ANUNCIO_FLAG,
 };

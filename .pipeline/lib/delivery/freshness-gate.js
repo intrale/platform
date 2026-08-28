@@ -245,14 +245,65 @@ const GATE_PHASE = 'entrega';
  *   · TODOS los rechazos del lote tienen que serlo. Si `delivery` caducó pero
  *     otro skill de la fase rechazó por contenido, el rechazo real manda.
  *   · Lote vacío ⇒ false (no hay nada que cancelar).
+ *   · CORROBORACIÓN CONTRA ESTADO DEL PIPELINE (SEC #6496, rebote security —
+ *     A04). El flag no se cree por sí solo: ver abajo.
  *
- * @param {{fase: string, rechazados: Array<object>}} params
+ * SEC (#6496, rebote security — A04: Insecure Design)
+ * -----------------------------------------------------------------------------
+ * El comentario original justificaba la seguridad diciendo que `veredicto_caduco`
+ * es un campo ESTRUCTURADO y que sólo el texto libre lo escribe el agente. Esa
+ * justificación se refutaba sola: `rechazados` sale del YAML del work-file, y
+ * `roles/delivery.md` le ordena literalmente al agente LLM de `entrega` escribir
+ * `veredicto_caduco: true` en su archivo de trabajo. Estructurado no es lo mismo
+ * que confiable — es exactamente la clase de input contra la que existe
+ * `stripDeclaredSeal` (CA-5).
+ *
+ * Consecuencia del agujero: un agente de `entrega` cuya entrega falló DE VERDAD
+ * (conflictos, CI en rojo) escribía `resultado: rechazado` + `veredicto_caduco:
+ * true` y el Pulpo no rebotaba a dev, no incrementaba rev, no tocaba el circuit
+ * breaker y no escalaba a `needs-human`: archivaba todo con
+ * `cancelado_por: 'veredicto-caduco'` y seguía de largo. Como no había orden real
+ * en la cola, nadie re-encolaba nada y el issue desaparecía del pipeline en
+ * silencio. No es bypass de merge (el veredicto sigue en `rechazado` y `main`
+ * queda intacto), pero sí supresión de la escalada y del control de rebotes.
+ *
+ * Por eso el flag se cruza contra estado que SÓLO escribe el pipeline: el
+ * contador `.<issue>.seal-retries`. Si el pipeline no puede confirmar que la
+ * reparación existe, esto NO es un caduco: es un rechazo normal y sigue el camino
+ * de rechazo normal (fail-closed).
+ *
+ * El contador —y no la cola— es el testigo, porque `requeueVerification` lo
+ * escribe ANTES de encolar la orden, así que cubre las dos ramas (re-encolado y
+ * escalada) y toda la ventana hasta que el Pulpo drena. Deliberadamente NO se usa
+ * `hasOpenRequeue` como segunda vía: ese helper es fail-closed para el gate de
+ * entrega (devuelve `true` ante cualquier error de lectura que no sea ENOENT), y
+ * acá `true` significa "cancelá el rechazo" — o sea que un directorio ilegible
+ * corroboraría el dicho del agente. Mismo valor, sentido opuesto.
+ *
+ * @param {{fase: string, rechazados: Array<object>, issue?: string|number, pipelineDir?: string, seal?: object, env?: object, fallbackDir?: string}} params
  * @returns {boolean}
  */
-function isStaleVerdictRejection({ fase, rechazados } = {}) {
+function isStaleVerdictRejection({
+    fase, rechazados, issue, pipelineDir, seal = qaEvidenceSeal, env = process.env, fallbackDir,
+} = {}) {
     if (fase !== GATE_PHASE) return false;
     if (!Array.isArray(rechazados) || rechazados.length === 0) return false;
-    return rechazados.every((r) => r && r.veredicto_caduco === true);
+    if (!rechazados.every((r) => r && r.veredicto_caduco === true)) return false;
+
+    // Desde acá abajo: lo declarado por el agente ya no alcanza.
+    const issueNum = seal.normalizeIssueNumber(issue);
+    if (issueNum === null) return false;
+    const dir = pipelineDir || resolveStatePipelineDir({ env, fallbackDir });
+    try {
+        // `intentos > 0` cubre las dos ramas de `requeueVerification`: el
+        // re-encolado (contador recién incrementado) y la escalada (contador ya en
+        // el tope, o corrupto — que `readSealRetries` lee como agotado, CA-10).
+        // Ausente ⇒ `0` ⇒ nadie encoló ninguna reparación ⇒ el flag no vale.
+        return seal.readSealRetries({ pipelineDir: dir, issue: issueNum }).intentos > 0;
+    } catch {
+        // Sin poder consultar el estado no se puede afirmar la reparación.
+        return false;
+    }
 }
 
 module.exports = {

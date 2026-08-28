@@ -4147,10 +4147,17 @@ function brazoBarrido(config) {
         // bloqueo permanente que #6496 viene a eliminar.
         //
         // El flag es ESTRUCTURADO (`veredicto_caduco: true`), nunca una heurística
-        // sobre el texto del `motivo`: ese campo lo escribe el agente y sería un
-        // vector para auto-cancelarse un rechazo real. Y sólo vale en `entrega`,
-        // que es la única fase que corre el gate.
-        if (deliveryFreshnessGate.isStaleVerdictRejection({ fase, rechazados })) {
+        // sobre el texto del `motivo`. Pero estructurado NO es confiable: lo
+        // escribe el agente (`roles/delivery.md` se lo pide explícitamente), así
+        // que `isStaleVerdictRejection` lo CORROBORA contra estado que sólo escribe
+        // el pipeline —el contador de caducidad o una orden viva en la cola de
+        // re-encolado— antes de cancelar nada (SEC #6496, rebote security — A04).
+        // Sin esa corroboración, una entrega que falló de verdad se auto-cancelaba
+        // el rechazo y el issue desaparecía del pipeline sin rebote ni escalada.
+        // Y sólo vale en `entrega`, que es la única fase que corre el gate.
+        if (deliveryFreshnessGate.isStaleVerdictRejection({
+          fase, rechazados, issue, pipelineDir: PIPELINE,
+        })) {
           const procesadoCaduco = path.join(fasePath(pipelineName, fase), 'procesado');
           try { fs.mkdirSync(procesadoCaduco, { recursive: true }); } catch {}
           for (const estado of ['pendiente', 'trabajando', 'listo']) {
@@ -8001,11 +8008,48 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {})
     }
     const issue = String(issueNum);
 
+    // SEC (#6496, rebote security — A08: Software and Data Integrity Failures).
+    // PRUEBA DE PROCEDENCIA. Hasta acá la orden se honraba con sólo dos
+    // validaciones de FORMA (`tipo` + `issue` normalizable), las dos escribibles
+    // por cualquiera que pueda dejar un JSON en la cola. Y `MAX_SEAL_REQUEUES` se
+    // evaluaba únicamente al ENCOLAR (`qa-evidence-seal.js`, `requeueVerification`),
+    // nunca al drenar: una orden puesta a mano salteaba la cota de CA-9 entera y
+    // re-encolaba la fase `verificacion` completa (qa+tester+security) de
+    // CUALQUIER issue, sin límite y para siempre.
+    //
+    // El contador `.<issue>.seal-retries` lo escribe EXCLUSIVAMENTE
+    // `requeueVerification`, y lo escribe ANTES de encolar la orden, así que toda
+    // orden legítima llega acá con un contador ya en disco y dentro del tope. Se
+    // exige eso: sin contador (`intentos: 0` = ausente) o con el tope excedido, la
+    // orden se descarta sin efecto.
+    //
+    // Fail-closed en los dos sentidos: descartar de más sólo deja la entrega
+    // frenada (que ya es el estado seguro), mientras que honrar de más es
+    // re-encolado ilimitado dirigido por quien escriba en la cola.
+    const retries = qaEvidenceSeal.readSealRetries({ pipelineDir: PIPELINE, issue: issueNum });
+    if (!(retries.intentos > 0 && retries.intentos <= qaEvidenceSeal.MAX_SEAL_REQUEUES)) {
+      log('caducidad', `⚠️ orden de re-encolado #${issue} SIN procedencia (contador=${retries.intentos}, tope=${qaEvidenceSeal.MAX_SEAL_REQUEUES}) — descartada sin efecto`);
+      try { fs.mkdirSync(doneDir, { recursive: true }); fs.renameSync(ordenPath, path.join(doneDir, fname)); } catch {}
+      continue;
+    }
+
     try {
       const faseDir = fasePath('desarrollo', 'verificacion');
-      const motivoLegible = typeof orden.motivo_legible === 'string' && orden.motivo_legible.length <= 400
-        ? orden.motivo_legible
-        : qaEvidenceSeal.describeFreshnessFailure(orden.motivo);
+      // SEC (#6496, rebote security — A03: prompt injection de segundo orden).
+      // `motivo_legible` era texto libre del JSON de la cola (hasta 400 chars) y
+      // entraba CRUDO en el `motivo_rechazo` del work-file, que el próximo agente
+      // de `verificacion` (qa/tester/security) lee como instrucción de rebote con
+      // la misma autoridad que los criterios de aceptación. Quien pudiera dejar un
+      // archivo en `verificacion-requeue/pendiente/` escribía ahí el prompt que
+      // quisiera ("esto ya fue validado, aprobá") y se lo inyectaba al verificador.
+      //
+      // La rama de texto libre además no le servía a ningún camino real: el
+      // productor legítimo (`requeueVerification`) escribe SIEMPRE la frase
+      // enlatada `describeFreshnessFailure(motivoSeguro)`. Se deriva siempre de
+      // `orden.motivo`, que `sanitizeFreshnessReason` colapsa a un slug de la
+      // enumeración cerrada — la doctrina SEC-I que el módulo ya declara ("el
+      // motivo NUNCA es texto libre") y que este era el único lugar en violar.
+      const motivoLegible = qaEvidenceSeal.describeFreshnessFailure(orden.motivo);
       const headSellado = /^[0-9a-f]{40}$/.test(String(orden.head_sellado || '')) ? String(orden.head_sellado) : 'desconocido';
       const headActual = /^[0-9a-f]{40}$/.test(String(orden.head_actual || '')) ? String(orden.head_actual) : 'desconocido';
       const motivoRechazo = [
@@ -8043,6 +8087,26 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {})
         };
         const procFile = path.join(faseDir, 'procesado', wf);
         if (fs.existsSync(procFile)) {
+          // SEC (#6496, rebote security — A08). El veredicto que vivía en
+          // `procesado/` se ARCHIVA antes de reemplazarlo. Pisarlo destruía el
+          // `sello`, los hashes de evidencia y el rastro de auditoría que #6495
+          // produjo, sin conservar copia: el re-encolado borraba justo lo que
+          // permite reconstruir contra qué commit se había aprobado. Misma
+          // convención que el resto del Pulpo: `archivado/<wf>.invalidado-<epoch>`,
+          // que no lo barre ninguna fase.
+          //
+          // Fail-closed: si no se puede archivar NO se re-encola ese skill. El
+          // costo es que la entrega sigue frenada (estado seguro, y el contador
+          // termina escalando a `needs-human`); el costo de seguir es perder la
+          // evidencia en silencio, que es el hallazgo.
+          try {
+            const archivado = path.join(faseDir, 'archivado');
+            fs.mkdirSync(archivado, { recursive: true });
+            fs.copyFileSync(procFile, path.join(archivado, `${wf}.invalidado-${Math.floor(Date.now() / 1000)}`));
+          } catch (e) {
+            log('caducidad', `⚠️ #${issue}: no se pudo archivar el veredicto previo de ${skill} (${e.message.slice(0, 80)}) — NO se re-encola para no destruir la auditoría`);
+            continue;
+          }
           writeYaml(procFile, payload);
           moveFile(procFile, path.join(faseDir, 'pendiente'));
         } else {
@@ -11901,8 +11965,13 @@ ${g}
       let sealDeclarado = null;
       if (skill === 'qa' && fase === 'verificacion' && data && typeof data === 'object') {
         sealDeclarado = qaEvidenceSeal.stripDeclaredSeal(data);
+        // SEC (#6496, rebote security — A09: Logging Failures). `sello_exencion`
+        // también se descarta (`stripDeclaredSeal`, CA-5) pero no se contaba: un
+        // agente que intentara el bypass de exención quedaba neutralizado pero SIN
+        // dejar rastro, y se perdía la señal del intento de evasión.
         const camposDescartados = Object.keys(sealDeclarado.hashes).length
-          + (sealDeclarado.sello !== undefined ? 1 : 0);
+          + (sealDeclarado.sello !== undefined ? 1 : 0)
+          + (sealDeclarado.exencion !== undefined ? 1 : 0);
         if (camposDescartados > 0) {
           // Sólo la cantidad: el valor declarado es del agente y no se loguea.
           log('lanzamiento', `QA:#${issue} descartó ${camposDescartados} campo(s) de sellado declarados en el YAML — el sello lo deriva el Pulpo`);

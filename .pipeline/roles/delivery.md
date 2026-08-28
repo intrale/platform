@@ -74,6 +74,20 @@ Qué tenés que hacer:
 - **NO** intentes "arreglarlo" pusheando a mano ni re-etiquetando el issue: el
   desfasaje se repara volviendo a verificar, no volviendo a firmar.
 
+> **`veredicto_caduco` NO es un botón para cancelar un rechazo (#6496, rebote de
+> `security`).** El flag no se cree por sí solo: el Pulpo lo CORROBORA contra
+> estado que sólo escribe el pipeline —el contador de caducidad del issue y la
+> cola `verificacion-requeue/`— antes de tratar tu rechazo como "la entrega se
+> frenó sola". Si escribís `veredicto_caduco: true` sin que el gate haya encolado
+> de verdad la reparación, el pipeline lo procesa como un **rechazo normal**: el
+> issue rebota a `dev`, sube la rev y corre el circuit breaker.
+>
+> O sea: escribilo **sólo** cuando la última línea de stdout de `delivery.js` sea
+> el JSON con `"estado": "veredicto_caduco"`. Si tu entrega falló por otra cosa
+> (conflictos de merge, CI en rojo, PR bloqueado), ese es un rechazo común y va
+> sin el flag, con el motivo real. Declararlo igual no te salta el rebote: sólo
+> ensucia el diagnóstico.
+
 Si el JSON trae `"escalado": true`, ya se agotaron los re-encolados automáticos y
 el issue quedó con `needs-human` + una ficha de decisión comentada en el issue.
 Tu resultado sigue siendo `rechazado` / `gravedad: grave`, citando esa escalada.
