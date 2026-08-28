@@ -358,6 +358,148 @@ function isGradleInput(file) {
     return GRADLE_INPUT_PATTERNS.some((re) => re.test(file));
 }
 
+// -- Relevancia del gate de cobertura (rebote #6362) ------------------
+// Problema: el gate de cobertura compara la cobertura ABSOLUTA del repo
+// contra `--threshold` (default 80%). Pero la baseline real del producto es
+// ~36% (Compose/Android sin tests). Consecuencia: CUALQUIER diff que no sea
+// `pipeline_only` y produzca reporte Kover se rechaza siempre, sin importar
+// su calidad -- el gate no puede pasar nunca y no mide nada del cambio.
+//
+// Verificacion empirica del rebote #6362 rev-1 (deliverable del tester en
+// `.pipeline/assets/docs/6362/tester-verificacion-6362.md`):
+//   - Tests: 6761 total - 0 failures - 0 errors - 2 skipped (OK)
+//   - Cobertura: 36.05% (16622/46110 lineas) vs umbral 80%
+//   - Paquetes bajo umbral: `ui`, `AndroidPlatform`,
+//     `ComposableSingletons$MainKt$lambda$-1618970650$1` -> todos Compose/
+//     Android, baseline preexistente del producto.
+//   - `git diff --numstat origin/main...HEAD` -> CERO archivos `.kt`/`.java`
+//     bajo `src/`. El unico archivo Gradle tocado es `build.gradle.kts` con
+//     +5 lineas dentro de `dependencyCheck { nvd { ... } }` (config del plugin
+//     OWASP, no del compilador ni de Kover).
+//   - El propio reporte imprime "Delta vs baseline: baseline: no disponible":
+//     el umbral absoluto se esta usando como si fuera un gate de regresion.
+//
+// Es la misma clase de falso rebote ya documentada ~10 veces arriba (#2895,
+// #3072, #3081, #3092, #2398, #3409, #3576, #3929, #3943, #5065), pero esas
+// se resolvieron ensanchando PIPELINE_ONLY_PATTERNS. Aca NO se puede: la
+// exclusion de `build.gradle.kts` de esa lista es correcta y deliberada (un
+// build script SI puede alterar que se compila y que mide Kover), y esta
+// protegida por el test `PIPELINE_ONLY_PATTERNS sigue rechazando
+// build.gradle.kts`. Por eso el fix va en la otra punta: no en "es
+// pipeline-only?" sino en "puede este diff MOVER el numero de cobertura?".
+//
+// Principio (el mismo de GRADLE_INPUT_PATTERNS / #3943): la cobertura mide
+// fuentes Kotlin/Java. Si el diff no toca ninguna fuente ni recurso medido, y
+// tampoco toca construcciones del build script que cambien que se compila o
+// que se instrumenta, entonces numerador y denominador de Kover son --por
+// construccion-- identicos a los de `origin/main`. Comparar ese numero contra
+// un umbral absoluto evalua la historia del repo, no el cambio.
+//
+// Alcance deliberadamente conservador (FAIL-CLOSED en cada rama dudosa):
+//   - Un diff que toca cualquier `.kt`/`.java` bajo `src/` sigue gateado al
+//     80% exactamente como hoy (agregar codigo sin tests sigue rebotando).
+//   - Un diff que toca un build script se considera relevante salvo que
+//     NINGUNA de sus lineas agregadas/borradas mencione un token que afecte
+//     compilacion o instrumentacion (COVERAGE_AFFECTING_TOKENS).
+//   - Si el diff no se pudo calcular, o no se pudieron leer las lineas del
+//     build script -> se gatea igual (comportamiento legacy).
+//   - Sobre-matchear un token es INOFENSIVO: preserva el gate actual. El
+//     unico riesgo seria sub-matchear, por eso la lista es generosa.
+// El gate NO se elimina cuando no aplica: la cobertura se sigue midiendo y
+// reportando, solo que de forma informativa (ver renderReport / logs).
+const COVERAGE_SOURCE_PATTERNS = [
+    /(^|\/)src\/.*\.(kt|java)$/i,          // fuentes de produccion y de test
+    /(^|\/)src\/.*\/(res|resources)\//,    // recursos Android/JVM empaquetados
+];
+
+const BUILD_SCRIPT_PATTERNS = [
+    /(^|\/)[^/]*\.gradle(\.kts)?$/i,       // build.gradle(.kts), settings.gradle(.kts)
+    /(^|\/)gradle\.properties$/i,          // flags de build/JVM
+    /(^|\/)[^/]*\.versions\.toml$/i,       // version catalogs (libs.versions.toml)
+];
+
+// Tokens cuya aparicion en el diff de un build script implica que la
+// compilacion o la instrumentacion de Kover PODRIAN cambiar. Ante la duda se
+// gatea: la lista es intencionalmente amplia.
+const COVERAGE_AFFECTING_TOKENS = new RegExp('\\b(?:' + [
+    'sourceSets', 'srcDir', 'srcDirs', 'kover', 'jacoco', 'instrumentation',
+    'dependencies', 'implementation', 'api', 'compileOnly', 'runtimeOnly',
+    'testImplementation', 'testRuntimeOnly', 'kapt', 'ksp', 'annotationProcessor',
+    'plugins', 'kotlinOptions', 'compilerOptions', 'freeCompilerArgs',
+    'jvmToolchain', 'kotlin', 'android', 'targets', 'sourceCompatibility',
+    'targetCompatibility', 'excludes?', 'includes?', 'reports?', 'testLogging',
+    'useJUnit\\w*', 'maxParallelForks', 'classDirectories', 'sourceDirectories',
+].join('|') + ')\\b', 'i');
+
+function isCoverageSource(file) {
+    return COVERAGE_SOURCE_PATTERNS.some((re) => re.test(file));
+}
+
+function isBuildScript(file) {
+    return BUILD_SCRIPT_PATTERNS.some((re) => re.test(file));
+}
+
+/**
+ * Decide si el umbral ABSOLUTO de cobertura debe gatear este diff.
+ *
+ * @param {string[]|null} files  archivos del diff vs origin/main.
+ * @param {string[]|null} buildScriptLines  lineas `+`/`-` de los build scripts
+ *        del diff (ver getBuildScriptChangedLines). Solo se consulta si hay
+ *        build scripts en `files`.
+ * @returns {boolean} `true` -> aplicar el umbral (comportamiento clasico).
+ *          `false` -> el diff no puede mover la cobertura; reportar sin gatear.
+ */
+function coverageGateApplies(files, buildScriptLines) {
+    // Diff desconocido (git fallo / sin base) -> fail-closed.
+    if (!Array.isArray(files)) return true;
+    // Sin cambios: no hay nada que gatear, pero conservamos el gate por si
+    // alguna ruta llega aca con reporte Kover valido.
+    if (files.length === 0) return true;
+
+    // Cualquier fuente o recurso medido por Kover -> gate clasico.
+    if (files.some(isCoverageSource)) return true;
+
+    const buildScripts = files.filter(isBuildScript);
+    if (buildScripts.length > 0) {
+        // No se pudieron leer las lineas -> fail-closed.
+        if (!Array.isArray(buildScriptLines)) return true;
+        if (buildScriptLines.some((line) => COVERAGE_AFFECTING_TOKENS.test(line))) return true;
+    }
+
+    return false;
+}
+
+/**
+ * Devuelve las lineas agregadas/borradas (`+`/`-`, sin los headers `+++`/`---`)
+ * de los build scripts presentes en el diff vs `origin/main`, o `null` si git
+ * falla. Usa `-U0` para no traer contexto: solo el cambio real.
+ *
+ * Probamos las mismas bases que getChangedFilesVsMain para cubrir worktrees
+ * sin `origin/main` local.
+ */
+function getBuildScriptChangedLines(repoRoot, files) {
+    const buildScripts = Array.isArray(files) ? files.filter(isBuildScript) : [];
+    if (buildScripts.length === 0) return Promise.resolve([]);
+
+    return new Promise((resolve) => {
+        const bases = ['origin/main', 'main', 'origin/HEAD'];
+        const tryNext = (idx) => {
+            if (idx >= bases.length) return resolve(null);
+            execFile('git', ['diff', '-U0', `${bases[idx]}...HEAD`, '--', ...buildScripts], {
+                cwd: repoRoot, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+            }, (err, stdout) => {
+                if (err) return tryNext(idx + 1);
+                const lines = String(stdout).split(/\r?\n/).filter((l) => (
+                    (l.startsWith('+') || l.startsWith('-'))
+                    && !l.startsWith('+++') && !l.startsWith('---')
+                )).map((l) => l.slice(1));
+                resolve(lines);
+            });
+        };
+        tryNext(0);
+    });
+}
+
 /**
  * Resuelve el directorio que contiene `git.exe`/`git` para asegurarse de que
  * los procesos hijos puedan ejecutar git aunque el PATH heredado del pulpo
@@ -1283,7 +1425,7 @@ function updateMarker(trabajandoPath, payload) {
 // explícitamente el motivo de excepción en vez de silencio (CA-4). El bloque
 // "Baseline y gaps" cubre el CA-1 (delta vs baseline + gaps) aunque hoy no
 // exista baseline estructurado en HEAD.
-function renderReport({ issue, module, coverage, threshold, gradle, tests, coverageAgg, exitCode, motivo, pipelineOnly, exception }) {
+function renderReport({ issue, module, coverage, threshold, gradle, tests, coverageAgg, exitCode, motivo, pipelineOnly, exception, coverageGate }) {
     const verdict = exitCode === 0 ? 'APROBADO ✅' : 'RECHAZADO ❌';
     const durMs = gradle ? gradle.wall_ms : 0;
     const mins = Math.floor(durMs / 60000);
@@ -1300,6 +1442,17 @@ function renderReport({ issue, module, coverage, threshold, gradle, tests, cover
     lines.push('');
     if (coverage) {
         lines.push(kover.renderCoverageSection(coverageAgg, threshold));
+        // #6362: si la cobertura se midio pero no gateo, decirlo explicitamente.
+        // Degradarse en silencio es lo que hizo que este defecto viviera ~10
+        // rebotes sin diagnostico.
+        if (coverageGate === false) {
+            lines.push('');
+            lines.push('> ℹ️ **Umbral informativo, no bloqueante en esta corrida.** El diff no toca'
+                + ' fuentes Kotlin/Java (`src/**/*.kt|java`) ni recursos medidos, y los build'
+                + ' scripts modificados no alteran compilación ni instrumentación. La cobertura'
+                + ' medida es —por construcción— la misma que la de `origin/main`, así que el'
+                + ' umbral absoluto evaluaría la historia del repo, no este cambio (#6362).');
+        }
         lines.push('');
     }
 
@@ -1402,6 +1555,20 @@ async function main() {
         }
     } else {
         logAppend('[tester] no se pudo determinar diff vs main; usando ruta gradle por defecto');
+    }
+
+    // Rebote #6362: decidir si el umbral ABSOLUTO de cobertura puede gatear
+    // este diff. Solo interesa en la ruta gradle (la ruta node no mide Kover).
+    // Ver coverageGateApplies() para el principio y las ramas fail-closed.
+    let coverageGate = true;
+    if (!pipelineOnly && args.coverage) {
+        const buildScriptLines = await getBuildScriptChangedLines(diffCwd, changedFiles);
+        coverageGate = coverageGateApplies(changedFiles, buildScriptLines);
+        if (!coverageGate) {
+            logAppend('[tester] gate de cobertura NO aplica: el diff no toca fuentes '
+                + 'Kotlin/Java ni recursos medidos, y los build scripts no alteran '
+                + 'compilacion/instrumentacion. La cobertura se reporta sin gatear.');
+        }
     }
 
     const cmd = buildGradleCommand(args.module, args.coverage);
@@ -1548,7 +1715,7 @@ async function main() {
             } else if (tests.valid && (tests.failures > 0 || tests.errors > 0)) {
                 exitCode = 1;
                 motivo = `Tests fallidos: ${tests.failures} failures + ${tests.errors} errors sobre ${tests.tests} totales`;
-            } else if (args.coverage && koverData.aggregate.valid && koverData.aggregate.total.line.percent < args.threshold) {
+            } else if (args.coverage && coverageGate && koverData.aggregate.valid && koverData.aggregate.total.line.percent < args.threshold) {
                 exitCode = 1;
                 motivo = `Cobertura de líneas ${koverData.aggregate.total.line.percent}% por debajo del umbral ${args.threshold}%`;
             } else if (gradleResult.exit_code !== 0 && parsedGradle.errors[0]) {
@@ -1593,6 +1760,7 @@ async function main() {
             gradle: gradleResult, tests: tests || { valid: false },
             coverageAgg: koverData.aggregate, exitCode, motivo,
             pipelineOnly, exception: exceptionNote,
+            coverageGate: pipelineOnly ? null : coverageGate,
         });
         logAppend('[tester] --- REPORTE ---');
         logAppend(report);
@@ -1654,6 +1822,10 @@ async function main() {
             tester_tests_failed: tests && tests.valid ? (tests.failures + tests.errors) : 0,
             tester_coverage_line_percent: koverData.aggregate.valid ? koverData.aggregate.total.line.percent : null,
             tester_coverage_threshold: args.threshold,
+            // #6362: `false` => la cobertura se midio pero no gateo, porque el
+            // diff no puede moverla (sin fuentes Kotlin/Java ni build scripts
+            // que alteren compilacion/instrumentacion).
+            tester_coverage_gated: pipelineOnly ? null : coverageGate,
             tester_escalate_to: escalateTo,
             tester_mode: 'deterministic',
         });
@@ -1811,6 +1983,14 @@ module.exports = {
     getChangedFilesVsMain,
     getDeletedFilesVsMain,
     isGradleInput,
+    // Relevancia del gate de cobertura (rebote #6362)
+    coverageGateApplies,
+    getBuildScriptChangedLines,
+    isCoverageSource,
+    isBuildScript,
+    COVERAGE_SOURCE_PATTERNS,
+    BUILD_SCRIPT_PATTERNS,
+    COVERAGE_AFFECTING_TOKENS,
     resolveGitDir,
     PIPELINE_ONLY_PATTERNS,
     GRADLE_INPUT_PATTERNS,
