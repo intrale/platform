@@ -72,7 +72,8 @@ git diff --unified=0 origin/main..HEAD -- .pipeline/dashboard.js .pipeline/lib/m
 ```
 
 Si el issue tiene `area:dashboard`, toca `dashboard.js`, `mission-ola-eta.js`,
-`views/dashboard/`, o cambia un banner/card/copy visible del dashboard, **NO podés
+`views/dashboard/`, cambia un banner/card/copy visible del dashboard, o modifica
+mensajes, botones, comandos o audio que recibe el operador por Telegram, **NO podés
 cerrar como structural**, aunque el cambio viva bajo `.pipeline/`. En ese caso
 tenés que producir evidencia visual con audio narrado:
 
@@ -82,6 +83,11 @@ tenés que producir evidencia visual con audio narrado:
 
 Si no podés generar esa evidencia, rechazá con motivo accionable; no apruebes
 como `structural`.
+
+Para Telegram, la evidencia debe ejecutar el renderer y el camino de encolado reales,
+mostrar el mensaje final tal como lo recibe el operador y narrar la cobertura de todos
+los criterios aplicables. Un dump de strings o un harness structural no reemplaza el
+video E2E.
 
 La misma prohibición aplica si el issue o el diff referencia un mockup versionado
 bajo `.pipeline/assets/mockups/`, o si los criterios exigen inspeccionar el PDF de
@@ -159,6 +165,13 @@ modo: qa-api
 test_cases_source: "definition" | "qa-fallback"
 ```
 
+> **Contrato del sello de evidencia (#6497) — modo `api`.** El `sha256` y los
+> `bytes` de todo artefacto que se registre en Drive **los deriva el pipeline**
+> (`servicio-drive.js`), leyendo los bytes locales del archivo después de pasar
+> el confinamiento. **Lo que declare el agente en esos campos se descarta y se
+> recomputa.** Vos declarás la **ruta**; la identidad la calcula el pipeline. Lo
+> mismo vale para el HEAD contra el que se validó la evidencia.
+
 Si hay defecto:
 ```yaml
 resultado: rechazado
@@ -212,6 +225,44 @@ JSON
 Los campos `mode: structural` y `source: qa-structural` son obligatorios. El
 servicio Drive reconoce ese schema canónico, registra el artefacto sin intentar
 tratar el Markdown como video y mueve el descriptor a `listo/`.
+
+#### Contrato del sello de evidencia (#6497) — modo `structural`
+
+`qa/evidence/**` es **efímero**: el artefacto se evapora y el registro de Drive
+queda como **la identidad autoritativa** de lo que se aprobó. Por eso el
+descriptor que llega a `listo/` no es el que escribiste vos — el servicio Drive
+le agrega el sello y lo persiste:
+
+```json
+{
+  "action": "upload",
+  "file": "qa/evidence/<issue>/qa-<issue>-structural.md",
+  "issue": <issue>,
+  "mode": "structural",
+  "source": "qa-structural",
+  "sha256": "sha256:<64 hex>",
+  "bytes": 4821
+}
+```
+
+Reglas del contrato:
+
+- **`sha256` y `bytes` los deriva el pipeline, no vos.** Se computan sobre los
+  bytes locales del artefacto, *después* del confinamiento. Si los declarás en
+  el JSON, **se descartan y se recomputan**: la ruta la declara el agente, la
+  identidad la calcula el pipeline. Idem el HEAD contra el que se validó.
+- **`file` debe ser una ruta canónica del repo principal**, relativa a la raíz.
+  Declarables: `qa/evidence/**`, `qa/recordings/**`, `.pipeline/assets/docs/**`,
+  `.pipeline/logs/media/**`, `docs/qa/**`. **NO** son declarables los dropfiles
+  del pipeline (`.pipeline/desarrollo/*/procesado/*.qa`): no son evidencia
+  publicable y el job va a `fallido/`.
+- **Promové el artefacto al repo principal antes de encolar el job.** Si el
+  archivo sólo existe en tu worktree, el descriptor va a `fallido/` con motivo
+  *"no promovido a la ruta canónica"* — distinto del motivo de seguridad
+  *"fuera de los directorios de evidencia permitidos"*.
+- Un descriptor que **no se puede sellar** (artefacto vacío, ilegible o fuera
+  del recinto) **no llega a `listo/`**: fail-closed, va a `fallido/` y se avisa
+  al operador. No hay evidencia estructural sin sello.
 
 ---
 
@@ -373,7 +424,53 @@ defectos:
 > referencias a la evidencia) y lo persiste + notifica automáticamente al cerrar
 > la fase. No tenés que generar el `.md` a mano.
 
+> **Contrato del sello de evidencia (#6497) — modo `android`.** El video y sus
+> derivados se registran en Drive con `sha256` (`sha256:<64 hex>`) y `bytes` que
+> **deriva el pipeline** sobre los bytes locales del archivo, después del
+> confinamiento. **Lo que declares vos en esos campos se descarta y se
+> recomputa** — igual que el HEAD contra el que se validó. Vos declarás la ruta
+> (`evidencia`, `screenshot`), el pipeline calcula la identidad.
+>
+> La ruta debe ser **canónica y del repo principal** (`qa/evidence/**`,
+> `qa/recordings/**`, `docs/qa/**`; ver SEC-2 abajo para `.pipeline/logs/media/**`):
+> promové el
+> artefacto antes de que se encole el job. Un video que sólo existe en el
+> worktree del agente va a `fallido/` con motivo *"no promovido a la ruta
+> canónica"*, distinto del motivo de seguridad *"fuera de los directorios de
+> evidencia permitidos"*. La copia saneada (`.sanitized/`) es byte-idéntica:
+> arrastra el **mismo** `sha256` y apunta a la ruta canónica vía `derivado_de`.
+
 ### Subir evidencia a Drive (OBLIGATORIO antes de aprobar)
+
+> ⚠️ **SEC-1 — el `file` sólo puede apuntar a evidencia publicable.** La subida
+> termina en un link **público** de Drive (`{"type":"anyone","role":"reader"}`),
+> así que `servicio-drive.js` confina el path con **dos** allowlists distintas:
+>
+> | Vía | Qué hace | Directorios aceptados |
+> |---|---|---|
+> | estructural (`mode: structural` + `source: qa-structural`) | sella y mueve a `listo/`; **no publica** | `qa/evidence`, `qa/recordings`, `.pipeline/assets/docs`, `.pipeline/logs/media`, `docs/qa` |
+> | upload (todo el resto) | **publica** en Drive | `qa/evidence`, `qa/recordings`, `docs/qa` |
+>
+> ⚠️ **SEC-2 (#6497) — `.pipeline/logs/media` tampoco está en la vía de upload.**
+> Ese directorio NO es un directorio de evidencia: es el **spool de media del bot
+> de Telegram** (medido: 287 de 307 archivos son `.ogg` de narración de voz al
+> operador). Publicarlo en un link abierto exponía conversación privada.
+>
+> Tu video igual llega: si declarás `.pipeline/logs/media/qa-<issue>.mp4`, el
+> servicio lo **promueve** a `qa/evidence/<issue>/` antes de confinar y sella
+> sobre esa copia canónica (el registro queda con `file` canónico y
+> `file_declarado` con lo que declaraste). La promoción sólo aplica a archivos
+> que estén **directamente** en el spool, cuyo basename empiece con
+> `qa-<issue>` y cuya extensión sea de evidencia (`.mp4`, `.png`, `.pdf`,
+> `.xml`, …) — **nunca** audio. Cualquier otra cosa del spool va a `fallido/`.
+> Lo más seguro sigue siendo grabar directo en `qa/evidence/<issue>/`.
+>
+> `.pipeline/assets/docs` — el store de entregables de `writeDeliverable` — está
+> **fuera** de la vía de upload a propósito: ahí viven los reportes marcados
+> `sensible: true`. Además, un `file` que figure con `sensible: true` en
+> `.pipeline/deliverables/<issue>.json` va a `fallido/` en **cualquiera** de las
+> dos vías, aunque el descriptor lo hayas escrito a mano y declares otro
+> `issue`. Un entregable sensible **nunca** se encola a Drive público (#4514).
 
 Encolar el video (con audio narrado) para subida a Google Drive. El payload
 del job **DEBE** incluir los campos de veredicto para que el mensaje de Telegram

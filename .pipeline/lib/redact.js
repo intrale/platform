@@ -287,6 +287,7 @@ const SECRET_VALUE_PATTERNS = Object.freeze([
     { name: 'anthropic', re: /sk-ant-[A-Za-z0-9_-]+/g },
     { name: 'openai', re: /sk-[A-Za-z0-9]{20,}/g },
     { name: 'groq', re: /gsk_[A-Za-z0-9]+/g },
+    { name: 'github', re: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g },
     { name: 'aws_access_key', re: /AKIA[0-9A-Z]{16}/g },
     { name: 'jwt', re: /eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
     // #5135 CA-7 — Defensa en profundidad contra la fuga de topología AWS en los

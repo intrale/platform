@@ -2,6 +2,7 @@ package ar.com.intrale.e2e.api
 
 import ar.com.intrale.e2e.QATestBase
 import com.microsoft.playwright.options.RequestOptions
+import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.MethodOrderer
 import org.junit.jupiter.api.Order
@@ -17,7 +18,28 @@ import kotlin.test.assertTrue
  * - Cobertura de flujos: carga exitosa, empty state, error y retry
  *
  * Verifica el endpoint GET /{business}/business/{businessId}/dashboard/summary (SecuredFunction).
+ *
+ * ─── CUARENTENA DECLARADA (issue #6579) ──────────────────────────────────
+ *
+ * Toda la clase esta deshabilitada porque el endpoint que valida NO EXISTE:
+ * no hay ninguna `Function` registrada en Kodein para `dashboard`, por lo que
+ * el backend responde 500 {"message":"No function with name business/intrale found"}.
+ *
+ * Se cuarentena la clase completa y no solo los 3 metodos en rojo: el cuarto
+ * (`dashboard summary con businessId inexistente responde error`) acepta 4xx
+ * y 5xx, asi que hoy pasa en verde por el mismo 500 de "funcion inexistente".
+ * Pasa por el motivo equivocado y no valida nada real.
+ *
+ * REACTIVAR CON: issue #6580 — Implementar el endpoint de resumen del
+ * dashboard de negocio. Al cerrarse #6580 hay que borrar este @Disabled y
+ * verificar que las 4 pruebas pasen contra la implementacion real.
+ *
+ * NO borrar estas pruebas ni relajar sus asserts.
  */
+@Disabled(
+    "Cuarentena #6579: el endpoint /{business}/business/{id}/dashboard/summary no esta " +
+    "registrado en Kodein y el backend responde 500. Se reactiva con #6580."
+)
 @DisplayName("E2E Validate #1633 — Business dashboard summary endpoint")
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class ApiBusinessDashboardE2ETest : QATestBase() {

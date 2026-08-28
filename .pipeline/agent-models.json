@@ -119,7 +119,8 @@
       "output_parser": "openai-sse",
       "quota_error_types": [
         "rate_limit_exceeded",
-        "quota_exceeded"
+        "quota_exceeded",
+        "insufficient_quota"
       ],
       "resets_at_cap_max_days": 31,
       "supports_tool_use": false,

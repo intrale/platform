@@ -544,6 +544,82 @@ function detectFromCliStderr(input, provider, quotaModule) {
         }
     }
 
+    // 4. Red de salvataje sobre FRAMES ESTRUCTURADOS (#6190).
+    //
+    // AGUJERO QUE CIERRA: un CLI puede emitir un error HTTP genérico como frame
+    // JSON —p.ej. `{"error":{"status":402,"code":"insufficient_quota",...}}`—
+    // que NO tiene el shape propietario que esperan `_detectAnthropic` (paso 1)
+    // ni `_detectOpenAI` (paso 2), y que además queda EXCLUIDO del scan de
+    // texto libre (paso 3) porque `plainTextLines` filtra a propósito todo lo
+    // que parsea como JSON/SSE (defensa #4541/#4865 contra substring sobre el
+    // content del modelo). Resultado pre-fix: `detectFromCliStderr` devolvía
+    // `null` y `classifyByContext` lo degradaba a `transient_5xx` por
+    // `exitCode!=0 + stderr_present`. Un 402 `insufficient_quota` —evidencia
+    // DURA de cuota agotada— terminaba clasificado como error transitorio:
+    // nunca se seteaba el flag de cuota, nunca se apagaba el provider, y el
+    // pipeline seguía martillando un provider exhausto hasta agotar los
+    // reintentos del ISSUE y rebotarlo como si el código estuviera roto
+    // (incidente #6190: architect/ux murieron con 402 y el issue fue rechazado
+    // con "Huérfano tras 3 reintentos — proceso muere repetidamente").
+    //
+    // El path de API directa YA tenía esta red (#3486). Acá la replicamos para
+    // el path CLI, que era el único desprotegido.
+    //
+    // POR QUÉ NO REABRE #4541 NI #4865: operamos EXCLUSIVAMENTE sobre frames
+    // que parsean como JSON/SSE y SÓLO leemos el objeto `error` top-level
+    // (campos `status`/`code`/`type`). Cero substring sobre `content`,
+    // `result` o `tool_result`. Una línea truncada por el cap NO parsea como
+    // JSON, así que jamás entra acá.
+    //
+    // ORDEN: va al final, justo antes del `return null`. Todas las
+    // clasificaciones previas (pasos 1-3) mantienen exactamente la precedencia
+    // que tenían — este paso sólo rescata lo que ANTES caía a `null`.
+    for (const line of lines) {
+        const parsed = parseJsonOrSSE(line);
+        if (!parsed || typeof parsed !== 'object') continue;
+
+        const errObj = parsed.error || (parsed.data && parsed.data.error);
+        if (!errObj || typeof errObj !== 'object') continue;
+
+        const type = typeof errObj.type === 'string' ? errObj.type : '';
+        const code = typeof errObj.code === 'string' ? errObj.code : '';
+        const message = typeof errObj.message === 'string' ? errObj.message : '';
+        const status = Number(errObj.status) || Number(parsed.status) || 0;
+
+        // #3506/#3508: el glitch del CLI con 1M context puede venir con shape de
+        // error y NO debe contaminar el flag de cuota. Se chequea primero, igual
+        // que en el path de API directa.
+        if (workaroundEnabled && message && CLI_1M_CONTEXT_GLITCH_PATTERN.test(message)) {
+            return {
+                errorClass: 'cli_1m_context_glitch',
+                evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),
+            };
+        }
+
+        // Cuota por marcador estructurado del PROPIO provider (CA-5 #3077: el
+        // allowlist es scope-por-provider, nunca cross-provider).
+        if (allowlist.includes(type) || allowlist.includes(code)) {
+            return {
+                errorClass: 'quota_exhausted',
+                evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),
+            };
+        }
+
+        // Salvataje por status HTTP numérico vía el clasificador universal
+        // (402 → billing/quota, 429 → rate_limit o billing según body,
+        //  401/403 → auth, 5xx → transient).
+        if (status >= 100 && status <= 599) {
+            const c = httpClassifier.classifyHttpError(status, line, provider);
+            const mapped = mapClassifierToErrorClass(c);
+            if (mapped) {
+                return {
+                    errorClass: mapped,
+                    evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),
+                };
+            }
+        }
+    }
+
     return null;
 }
 

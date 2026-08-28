@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "source": "claude -p /usage",
+  "capturedAt": "2026-08-26T12:40:13.328Z",
+  "capturedAtMs": 1787748013328,
+  "sessionPct": 41,
+  "weeklyPct": 56,
+  "sessionResetsRaw": "Aug 26, 12pm (America/Argentina/Buenos_Aires)",
+  "weeklyResetsRaw": "Aug 30, 9pm (America/Argentina/Buenos_Aires)",
+  "sessionResetsAt": "2026-08-26T15:00:00.000Z",
+  "weeklyResetsAt": "2026-08-31T00:00:00.000Z"
+}

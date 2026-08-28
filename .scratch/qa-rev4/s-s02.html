@@ -1,0 +1,28 @@
+<!doctype html><meta charset="utf-8"><body style="margin:0;width:1280px;height:720px;background:#0d1117;color:#e6edf3;font:15px/1.55 system-ui;padding:44px 56px;box-sizing:border-box;overflow:hidden"><div style="font:700 30px/1.3 system-ui;margin-bottom:6px">CA-1 a CA-8 — verificados sobre el código y los tests de esta pasada</div><div style="color:#8b949e;font-size:16px;margin-bottom:26px"></div>
+<table style="width:100%;border-collapse:collapse;font-size:15px">
+<tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-1</td>
+<td style="padding:5px 18px 5px 0">Turno sin entrega confirmada ⇒ <code>huerfano</code></td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px"><code>deliveryUnconfirmed ⇒ huerfano</code> + enum <code>RESULTADOS</code> con 5º valor</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-2</td>
+<td style="padding:5px 18px 5px 0">Sin entrega ⇒ <code>error_code: delivered=false</code></td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">distinguible de <code>empty_output</code> — test homónimo sobre el audit real</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-3</td>
+<td style="padding:5px 18px 5px 0">Con entrega ⇒ cierre exitoso</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">sin regresión respecto de #4309</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-4</td>
+<td style="padding:5px 18px 5px 0">Nada se reescribe: hash-chain verifica</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px"><code>success</code>/<code>error_code</code> aditivos al final; entradas viejas siguen verificando</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-5</td>
+<td style="padding:5px 18px 5px 0">Boot actual nunca se evalúa</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">guarda de vida por <code>boot_id</code> ⇒ <code>NO_EVALUABLE</code> sin abrir el archivo</td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-6</td>
+<td style="padding:5px 18px 5px 0">Early-return con <code>resultado</code> no es huérfano</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">el barrido nunca toca un turno que ya asentó <code>resultado</code></td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-7</td>
+<td style="padding:5px 18px 5px 0">El veredicto sale de <code>commanderOutboundStatus</code></td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px">la etapa <code>envío</code> sólo aporta el <code>correlation_id</code></td></tr><tr>
+<td style="padding:5px 14px 5px 0;color:#3FB950;font-weight:700;white-space:nowrap">✓ CA-8</td>
+<td style="padding:5px 18px 5px 0">Ventana 48 h decidida por el nombre</td>
+<td style="padding:5px 0;color:#8b949e;font-size:13.5px"><code>epochms</code> del filename ANTES de abrir nada</td></tr>
+</table>

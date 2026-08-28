@@ -145,6 +145,17 @@ function hashFor(s) {
 }
 
 // -----------------------------------------------------------------------------
+// #6458 — Estados de ENTREGA al operador (jamás de generación). Enum CERRADO:
+// un valor fuera del set se persiste como `null` (fail-closed), nunca crudo.
+//
+// Se declara acá en vez de importarlo de `inflight-fallback.js` para NO crear
+// un require circular (ese módulo ya requiere este de forma perezosa). El
+// test de coherencia cross-source (`commander-delivery-state.test.js`) verifica
+// que los dos sets sean idénticos: si se toca uno sin el otro, el test rompe.
+// -----------------------------------------------------------------------------
+const DELIVERY_STATES = new Set(['delivery_pending', 'delivery_observed', 'delivery_failed']);
+
+// -----------------------------------------------------------------------------
 // resolveCommanderProvider — consulta el runtime `dispatch-with-fallback`
 // con `skill: 'telegram-commander'` y devuelve la resolución.
 //
@@ -1391,6 +1402,18 @@ function auditCommanderRequest(opts = {}) {
         weight,
         quotaPct,
         selectionReason,
+        // #6458 — puente audit ↔ canal de etapas del turno del Commander.
+        // `commanderReqId` DEBE venir SEUDONIMIZADO (`<chat_id_hash>-<ms>`, vía
+        // `request-log.buildAuditReqRef`): emitir el reqId crudo revertiría la
+        // seudonimización de esta cadena, que además el dashboard sirve por
+        // `/logs/` y `redactLogText` NO cubre (REQ-SEC-1).
+        //
+        // `deliveryState` describe la ENTREGA al operador, nunca la GENERACIÓN.
+        // Enum cerrado; cualquier otro valor se persiste como `null`
+        // (fail-closed). `null` significa NO OBSERVADO: ni éxito ni fallo, así
+        // que ningún consumidor puede leerlo como "entregado" ni como "falló".
+        commanderReqId,
+        deliveryState,
         // inyectables tests
         fsImpl,
         auditLog,
@@ -1445,6 +1468,12 @@ function auditCommanderRequest(opts = {}) {
         chain_evaluated: Array.isArray(chainEvaluated) && chainEvaluated.length
             ? redactSkipReasons(chainEvaluated)
             : null,
+        // #6458 — ESTRICTAMENTE AL FINAL del entry (mismo patrón aditivo que
+        // `weight`/`quota_pct`/`chain_evaluated` de #4413/#4438): las entradas
+        // que no los proveen quedan en `null` y conservan el shape canónico, así
+        // que la hash-chain de `audit-log` sigue verificando.
+        commander_req_id: commanderReqId || null,
+        delivery_state: DELIVERY_STATES.has(deliveryState) ? deliveryState : null,
     };
 
     try {
@@ -2212,6 +2241,8 @@ module.exports = {
     INJECTION_PATTERNS,
     // #5456 — enum estable del audit para el turno perdido por cuota semanal.
     QUOTA_MIDTURN_ERROR_CODE,
+    // #6458 - enum cerrado de estados de ENTREGA (no de generacion).
+    DELIVERY_STATES,
 
     sanitizeUserPrompt,
     resolveCommanderProvider,

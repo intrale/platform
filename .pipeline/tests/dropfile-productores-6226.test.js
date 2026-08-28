@@ -61,6 +61,7 @@ const PIPELINE_DIR = path.resolve(__dirname, '..');
 const healthCron = require(path.join(PIPELINE_DIR, 'lib', 'multi-provider', 'health-cron.js'));
 const modelsAlert = require(path.join(PIPELINE_DIR, 'lib', 'agent-models-change-alert.js'));
 const costAlert = require(path.join(PIPELINE_DIR, 'lib', 'cost-anomaly-alert.js'));
+const { isScratchDirName } = require(path.join(PIPELINE_DIR, 'lib', 'scratch-dirs.js'));
 const notifier = require(path.join(PIPELINE_DIR, 'notifier-infra-recovered.js'));
 
 // -----------------------------------------------------------------------------
@@ -344,12 +345,17 @@ test('cost-anomaly-alert · dos alertas en el mismo milisegundo no se pisan', ()
 // -----------------------------------------------------------------------------
 
 test('guard · ningún productor de .pipeline arma el nombre de un dropfile con timestamp solo', () => {
+    // #6190 — `SKIP_DIRS` no cubría los scratchpads de agentes (`_tmp/`,
+    // `tmp-review-<issue>/`, ...). Como ahí adentro viven COPIAS ENTERAS del
+    // repo, el guard reportaba como ofensores archivos que no son código de
+    // este árbol y ponía en rojo issues ajenos. El predicado compartido
+    // (`lib/scratch-dirs`) es la fuente única de qué es un scratchpad.
     const SKIP_DIRS = new Set(['node_modules', '__tests__', 'tests', '.git', 'logs', 'servicios']);
 
     function walk(dir, acc) {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
             if (entry.isDirectory()) {
-                if (SKIP_DIRS.has(entry.name)) continue;
+                if (SKIP_DIRS.has(entry.name) || isScratchDirName(entry.name)) continue;
                 walk(path.join(dir, entry.name), acc);
             } else if (entry.isFile() && entry.name.endsWith('.js')
                        && !entry.name.endsWith('.test.js')
