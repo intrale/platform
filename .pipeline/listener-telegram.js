@@ -108,6 +108,7 @@ function telegramRequest(method, params) {
 const deps = {
   telegramRequest,
   operatorGate: null, // override para tests; null → getDefault() lazy.
+  operationalExecutorOptions: null, // seam de dependencias; el executor sigue siendo el real.
   // #4780 — commander product-aware; override para tests, null → lazy build.
   productCommander: null,
   // #4780 — ejecutor de la acción product-aware ya autorizada+confirmada.
@@ -333,6 +334,43 @@ async function downloadTelegramFile(fileId, ext) {
 // =============================================================================
 
 let _operatorGate = null;
+let _operationalExecutor = null;
+function getOperationalExecutor() {
+  if (_operationalExecutor && !deps.operationalExecutorOptions) return _operationalExecutor;
+  const { createOperationalExecutor } = require('./lib/vault-cut-fallback');
+  const credentials = require('./lib/credentials');
+  const { getVaultShadowMetrics, ESTADO } = require('./lib/vault-shadow-metrics');
+  const configResolver = require('./lib/config-resolver');
+  const configPath = path.join(PIPELINE, 'config.yaml');
+  const defaults = {
+    configPath,
+    resolveOptions: ({ operatorId, issuedAt }) => ({
+      validateAllowlist: async () => String(credentials.resolveVaultOnly('telegram.leo_operator_chat_id')) === String(operatorId),
+      evaluateCoverage: async () => {
+        // La precondición se revalida contra la autoridad efectiva completa
+        // inmediatamente antes del corte; `reload` evita usar un snapshot stale.
+        const cfg = configResolver.resolve({ configPath, reload: true });
+        const shadow = (cfg && cfg.vault && cfg.vault.shadow_window) || {};
+        const result = getVaultShadowMetrics().evaluate({
+          descriptors: credentials.HYDRATED_DESCRIPTORS,
+          hostsActivos: shadow.hosts_activos,
+          durationHours: shadow.duration_hours,
+          retentionDays: shadow.retention_days,
+        });
+        return result && result.estado === ESTADO.CUMPLE;
+      },
+      // El nonce ya fue consumido atómicamente por signer.verify().
+      authorization: { issuedAt: new Date(issuedAt).toISOString(), consumed: true },
+    }),
+  };
+  const executor = createOperationalExecutor({
+    ...defaults,
+    ...(deps.operationalExecutorOptions || {}),
+  });
+  if (!deps.operationalExecutorOptions) _operationalExecutor = executor;
+  return executor;
+}
+
 function getOperatorGate() {
   if (deps.operatorGate) return deps.operatorGate; // override de tests
   if (_operatorGate === undefined) return null;
@@ -902,9 +940,10 @@ async function handleCallbackQuery(cbq) {
   if (callbackKind === 'operational') {
     let opResult;
     try {
-      opResult = gate.handleOperationalCallback({
+      opResult = await gate.handleOperationalCallback({
         operatorId: cbq.from?.id,
         callbackData: cbq.data,
+        executor: getOperationalExecutor(),
       });
     } catch (e) {
       log(`Error procesando callback operacional: ${e.message}`);
@@ -1192,6 +1231,7 @@ module.exports = {
   answerCallbackQuery,
   removeInlineKeyboard,
   getOperatorGate,
+  getOperationalExecutor,
   getProductCommander, // #4780 — seam product-aware para el handler NL
   // #4780 — wiring runtime del commander product-aware (inbound + confirmación).
   maybeHandleProductCommand,

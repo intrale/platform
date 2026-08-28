@@ -623,6 +623,34 @@ function createOperatorGate(opts = {}) {
 
         // 7. Efecto operacional. NUNCA `applyTransition()`.
         const run = typeof executor === 'function' ? executor : opts.operationalExecutor;
+        const finish = (outcome) => {
+            const allowed = new Set(['cut', 'already-cut', 'precondition-failed', 'executor-unavailable', 'audit-failed']);
+            const requested = outcome && typeof outcome.status === 'string' ? outcome.status : null;
+            const status = allowed.has(requested)
+                ? requested
+                : (outcome && outcome.ok ? 'cut' : 'precondition-failed');
+
+            // 8. Audit del resultado (A09) — siempre, éxito o fallo.
+            try {
+                auditSignature({
+                    actor: operatorId, action: res.action, issue: res.issue,
+                    tenant: entry.tenant, gate: null, nonce: res.nonce,
+                    result: status,
+                });
+            } catch (_) { /* el efecto ya ocurrió: no se puede deshacer acá */ }
+
+            consume(callbackData);
+            return {
+                ok: !!(outcome && outcome.ok),
+                toast: operationalToast(status, action),
+                editMessage: true,
+                action: res.action,
+                issue: res.issue,
+                status,
+                reason: outcome && outcome.ok ? null : status,
+            };
+        };
+
         let outcome;
         if (typeof run !== 'function') {
             outcome = { ok: false, status: 'executor-unavailable' };
@@ -630,41 +658,21 @@ function createOperatorGate(opts = {}) {
             try {
                 outcome = run({
                     issue: res.issue, action: res.action,
-                    operatorId, nonce: res.nonce, tenant: entry.tenant || null,
+                    operatorId, nonce: res.nonce, issuedAt: res.issuedAt,
+                    tenant: entry.tenant || null,
                 }) || { ok: false, status: 'unavailable' };
             } catch (_) {
                 // El detalle del error NO se propaga al toast (A09): puede traer
                 // paths, ARNs o hostnames.
-                outcome = { ok: false, status: 'unavailable' };
+                outcome = { ok: false, status: 'precondition-failed' };
             }
         }
-
-        const status = (typeof outcome.status === 'string' && outcome.status)
-            ? outcome.status
-            : (outcome.ok ? 'cut' : 'unavailable');
-
-        // 8. Audit del resultado (A09) — siempre, éxito o fallo.
-        try {
-            auditSignature({
-                actor: operatorId, action: res.action, issue: res.issue,
-                tenant: entry.tenant, gate: null, nonce: res.nonce,
-                result: status,
-            });
-        } catch (_) { /* el efecto ya ocurrió: no se puede deshacer acá */ }
-
-        // 9. Consumir el binding: la respuesta es TERMINAL (el nonce ya se gastó,
-        //    un segundo toque nunca puede repetir el efecto).
-        consume(callbackData);
-
-        return {
-            ok: !!outcome.ok,
-            toast: operationalToast(status, action),
-            editMessage: true,
-            action: res.action,
-            issue: res.issue,
-            status,
-            reason: outcome.ok ? null : status,
-        };
+        // Conserva compatibilidad con ejecutores síncronos, pero espera de verdad
+        // a los asíncronos antes de elegir el toast y consumir el binding.
+        if (outcome && typeof outcome.then === 'function') {
+            return outcome.then(finish, () => finish({ ok: false, status: 'precondition-failed' }));
+        }
+        return finish(outcome);
     }
 
     // ---- Inline keyboard (CA-3: emoji + texto, orden estable) ---------------
