@@ -80,9 +80,23 @@ function safeProductId(raw) {
 }
 
 // Producto efectivo de un ítem de la bandeja: su productId si es seguro, si no el
-// producto único (Intrale). NUNCA cruza productos: un id inseguro NO se propaga.
-function productIdOf(p) {
-    return safeProductId(p && p.productId) || DEFAULT_PRODUCT_ID;
+// producto de los ítems SIN tipar. NUNCA cruza productos: un id inseguro NO se
+// propaga (cae al no tipado, jamás al id crudo).
+//
+// #6208 rev3 — `untypedProductId` existía implícito y hardcodeado como
+// `'intrale'`, un projectId que NO está en el catálogo real
+// (`.pipeline/descriptors/intrale-platform.json` ⇒ `intrale-platform`). Las
+// filas FIRMABLES que salen del depósito del kernel vienen con `productId: null`
+// (el kernel todavía no las tipa por producto), así que el filtro por producto
+// de la bandeja embebida en `estado-productos` las descartaba TODAS, siempre:
+// bandeja vacía con cartel verde aunque hubiera firmas reales esperando — el
+// falso éxito silencioso que este issue mata. El producto de los no tipados lo
+// resuelve ahora el llamador desde el catálogo vivo (producto primario real);
+// sin ese dato se conserva el default legacy.
+function productIdOf(p, untypedProductId) {
+    return safeProductId(p && p.productId)
+        || safeProductId(untypedProductId)
+        || DEFAULT_PRODUCT_ID;
 }
 
 // CA-5 / defensa en profundidad — coerción numérica estricta de `p.issue` antes
@@ -584,8 +598,15 @@ function esperandoFirmaStyle() {
  * @param {object} [opts]
  * @param {string} [opts.productId] — #4778 · CA-2.1: si se pasa un productId seguro,
  *   la bandeja se filtra a los ítems de ESE producto (un firmante de A no ve ítems
- *   de B). Un ítem sin productId cuenta como del producto único (Intrale). Sin
- *   productId (default) ⇒ se muestran todos (retro-compat CA-5.1).
+ *   de B). Un ítem sin productId cuenta como del producto de `untypedProductId`
+ *   (o el default legacy). Sin productId (default) ⇒ se muestran todos
+ *   (retro-compat CA-5.1).
+ * @param {string} [opts.untypedProductId] — #6208 rev3 · producto efectivo de los
+ *   ítems que NO vienen tipados por producto (todas las filas firmables del
+ *   depósito del kernel, hoy con `productId: null`). El llamador lo resuelve
+ *   contra el catálogo vivo (producto primario real, p. ej. `intrale-platform`).
+ *   Sin él, esas filas caen al default legacy `intrale`, que puede no existir en
+ *   el catálogo y las volvería invisibles bajo filtro.
  * @returns {string} HTML del panel (con estilos inline).
  */
 function renderEsperandoFirmaSsr(state, opts = {}) {
@@ -597,7 +618,11 @@ function renderEsperandoFirmaSsr(state, opts = {}) {
     // CA-2.1 — aislamiento por producto. El filtro compara contra el producto
     // efectivo del ítem (productIdOf), nunca contra el productId en banda sin validar.
     const filterPid = safeProductId(opts && opts.productId);
-    const list = filterPid ? all.filter(p => productIdOf(p) === filterPid) : all;
+    // #6208 rev3 — producto efectivo de las filas que el kernel NO tipa (todas
+    // las firmables del depósito hoy). Lo resuelve el llamador contra el
+    // catálogo real; sin él, default legacy.
+    const untypedPid = safeProductId(opts && opts.untypedProductId);
+    const list = filterPid ? all.filter(p => productIdOf(p, untypedPid) === filterPid) : all;
 
     const rowsHtml = list.map(renderRowSsr).filter(Boolean).join('');
     const count = list.filter(p => safeIssueNumber(p && p.issue) !== null).length;

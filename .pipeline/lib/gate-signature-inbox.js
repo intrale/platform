@@ -363,8 +363,13 @@ function rowFromPending(pending, estado, nowMs) {
         estado_verdict: estado ? estado.verdict : null,
         estado_carrier: estado ? estado.carrier : null,
         estado_copy: estadoCopy,
-        // Retro-compat con el filtro por producto de #4778: los pendientes del
-        // depósito son del producto único mientras el kernel no los tipe.
+        // El kernel todavía NO tipa los pedidos de firma por producto, así que el
+        // read model no inventa uno: expone `null` y el adaptador de presentación
+        // resuelve el producto efectivo contra el catálogo vivo
+        // (`views/dashboard/estado-productos.untypedProductId` → producto
+        // primario real). #6208 rev3: hardcodear acá un id que no está en
+        // `.pipeline/descriptors/` hacía que el filtro por producto descartara
+        // TODAS las filas firmables y la bandeja se viera vacía en verde.
         productId: null,
     };
 }
