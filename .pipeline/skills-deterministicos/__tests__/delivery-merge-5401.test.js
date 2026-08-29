@@ -41,6 +41,13 @@ function snapshotOk(over = {}) {
         files: ['.pipeline/skills-deterministicos/delivery.js'],
         headRefOid: HEAD_SHA,
         headRefName: 'agent/5401-pipeline-dev',
+        // #6612 — `getPRSnapshot` SIEMPRE setea este campo (array = leido,
+        // `null` = no se pudo leer). Un snapshot sin la clave es una forma que
+        // produccion no puede producir, y el gate de allowlist de seguridad la
+        // trata como "no pude leer el rollup" => fail-closed. `[]` es lo que
+        // devuelve un PR cuyos checks todavia no se instanciaron: exactamente el
+        // estado que estas suites modelan.
+        statusCheckRollup: [],
         ...over,
     };
 }

@@ -345,6 +345,27 @@ test('#5458 cobertura caída: el ejecutor devuelve precondition-failed y no hay 
     assert.match(r.toast, /condiciones del corte ya no se cumplen/);
 });
 
+test('#5459 espera al ejecutor async antes de resolver el toast operacional', async () => {
+    const { gate } = makeGate();
+    const { callbackData } = gate.register({ issue: 5459, action: ACTION });
+    let applied = false;
+    const pending = gate.handleOperationalCallback({
+        operatorId: OPERATOR,
+        callbackData,
+        executor: async () => {
+            await new Promise((resolve) => setImmediate(resolve));
+            applied = true;
+            return { ok: true, status: 'cut' };
+        },
+    });
+    assert.equal(typeof pending.then, 'function');
+    assert.equal(applied, false);
+    const result = await pending;
+    assert.equal(applied, true);
+    assert.equal(result.status, 'cut');
+    assert.match(result.toast, /aplicado/);
+});
+
 // --- Auditoría y sanitización ------------------------------------------------
 
 test('#5458 la auditoría registra el corte y NO contiene token ni firma', () => {

@@ -67,6 +67,7 @@ function installFakeCommanderRouter(onRoute, routeResult = true) {
 
 function resetDeps() {
     listener.deps.operatorGate = null;
+    listener.deps.operationalExecutorOptions = null;
     listener.deps.commanderRouter = null;
     listener.deps.telegramRequest = async () => ({ ok: true });
     delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
@@ -499,7 +500,7 @@ test('#5458 classifyCallback que explota degrada al canal de firma sin romper', 
     resetDeps();
 });
 
-test('#5458 integración con el operator-gate REAL: cero movimientos de work-files', async () => {
+test('#5459 integración productiva usa gate y executor REALES y modifica bootstrap_fallback', async () => {
     const { createOperatorGate } = require('../operator-gate');
     const { createTokenSigner } = require('../action-token');
 
@@ -515,20 +516,37 @@ test('#5458 integración con el operator-gate REAL: cero movimientos de work-fil
     fs.mkdirSync(dirs.waitingDir, { recursive: true });
     fs.writeFileSync(path.join(dirs.waitingDir, '5458.json'), '{"issue":5458}');
 
-    let ejecutado = 0;
+    const configPath = path.join(root, 'config.yaml');
+    fs.writeFileSync(configPath, [
+      'vault:',
+      '  bootstrap_fallback: true',
+      '  cut_fallback:',
+      '    authorization_ttl_seconds: 300',
+      '    operation_timeout_ms: 10000',
+      '    runbook: docs/pipeline/vault-secretos-aws.md',
+      '',
+    ].join('\n'));
     const gate = createOperatorGate({
         ...dirs,
         signer: createTokenSigner({ secret: 'listener-5458', nonceFile: dirs.nonceFile, ttlMs: 60_000 }),
         operatorAllowlist: ['111222333'],
-        operationalExecutor: () => { ejecutado += 1; return { ok: true, status: 'cut' }; },
     });
     listener.deps.operatorGate = gate;
+    listener.deps.operationalExecutorOptions = {
+      configPath,
+      resolveOptions: ({ issuedAt }) => ({
+        validateAllowlist: async () => true,
+        evaluateCoverage: async () => true,
+        authorization: { issuedAt: new Date(issuedAt).toISOString(), consumed: true },
+      }),
+    };
     const calls = installFakeTransport();
 
     const { callbackData } = gate.register({ issue: 5458, action: 'vault-cut-fallback' });
     await listener.handleCallbackQuery({ ...CBQ, data: callbackData });
 
-    assert.equal(ejecutado, 1, 'el ejecutor operacional corrió una vez');
+    assert.equal(require('js-yaml').load(fs.readFileSync(configPath, 'utf8')).vault.bootstrap_fallback, false,
+      'el executor real modifica bootstrap_fallback en el camino productivo');
     // El work-file de waiting-operator NO se movió a ningún lado.
     assert.ok(fs.existsSync(path.join(dirs.waitingDir, '5458.json')));
     assert.equal(fs.existsSync(path.join(dirs.approvedDir, '5458.json')), false);
@@ -538,7 +556,8 @@ test('#5458 integración con el operator-gate REAL: cero movimientos de work-fil
 
     // Segundo toque: terminal e idempotente, sin volver a ejecutar.
     await listener.handleCallbackQuery({ ...CBQ, id: 'cbq-2', data: callbackData });
-    assert.equal(ejecutado, 1, 'no se repite el efecto');
+    assert.equal(require('js-yaml').load(fs.readFileSync(configPath, 'utf8')).vault.bootstrap_fallback, false,
+      'no se repite ni revierte el efecto');
     resetDeps();
 });
 

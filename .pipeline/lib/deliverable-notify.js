@@ -1147,6 +1147,25 @@ function buildPreview(args) {
     const sensibleBlocked = rejected.filter(
         (r) => r.sensible === true && DRIVE_QUEUEABLE_REJECT_REASONS.has(r.reject_reason),
     );
+    // R-5 (#6497) — DECISIÓN: este es el SEGUNDO productor de jobs de Drive, y
+    // NO sella. El `sha256`/`bytes` del registro los deriva EXCLUSIVAMENTE
+    // `servicio-drive.js`, al procesar el job y después de confinar el path
+    // (CA-6: "lo deriva el pipeline"). Dos derivaciones del hash sobre el mismo
+    // artefacto — una acá y otra allá — reproducirían exactamente la
+    // desincronización entre sello y artefacto que el épico #6475 busca cerrar.
+    //
+    // Lo que SÍ tiene que cumplir este productor es emitir `file` dentro de
+    // `UPLOAD_ALLOWED_DIRS` (`servicio-drive.js`): estos jobs no llevan `mode`
+    // ni `source: qa-structural`, así que caen en la vía de UPLOAD, la que
+    // termina en un link público de Drive.
+    //
+    // SEC-2 (#6497, rebote 1) — ese allowlist YA NO incluye `.pipeline/logs/
+    // media` (spool del bot de Telegram, ~95% narración de voz privada del
+    // operador). Un derivado de QA que todavía viva ahí sigue funcionando: el
+    // consumidor lo promueve a `qa/evidence/<issue>/` antes de confinar, pero
+    // sólo si el basename es `qa-<issue>…` con extensión de evidencia. Si se
+    // agrega un destino nuevo hay que agregarlo también allá o el job va a
+    // `fallido/`.
     const driveJobs = driveQueued.map((r) => {
         const relativeVideoPath = typeof r.relative === 'string' ? r.relative : '';
         const rawBasename = relativeVideoPath ? path.basename(relativeVideoPath) : '';

@@ -79,6 +79,22 @@ function buildResultBadges(meta, escapeHtml) {
     }
   }
 
+  // #6460 — DEAD-LETTER VISIBLE. TRI-ESTADO, y la comparación es contra `false`
+  // ESTRICTO a propósito:
+  //   · `false`   ⇒ se intentó avisarle al operador que su respuesta se había
+  //                 perdido, y ese aviso TAMPOCO se pudo entregar. Es el único
+  //                 caso que merece tinta: el operador no se enteró por ningún
+  //                 canal y el panel es lo último que queda.
+  //   · `true`    ⇒ el aviso llegó. Sin chip: el camino feliz no es una novedad.
+  //   · ausente   ⇒ no hubo aviso (turno sano) o todavía no se sabe. Sin chip.
+  // Con `!meta.aviso_entregado` los tres sidecars sanos del mundo pintarían el
+  // chip, que es exactamente el ruido que CA-10 prohíbe.
+  if (meta.aviso_entregado === false) {
+    html += '<span class="cmd-aviso cmd-aviso-fallido"'
+      + ' title="No se pudo avisarle al operador que esta respuesta se perdió">'
+      + 'sin aviso</span>';
+  }
+
   return html;
 }
 
@@ -114,6 +130,14 @@ const RESULT_BADGE_CSS = [
   '.cmd-verif{font-size:0.72em;padding:1px 6px;border:1px solid var(--bd,var(--in-border,#30363D));border-radius:5px;margin-left:4px}',
   '.cmd-verif-cross{color:var(--info,var(--ac,#58A6FF));border-color:var(--info-dim,var(--ac2,#1F6FEB));background:var(--info-bg,rgba(88,166,255,0.14))}',
   '.cmd-verif-same {color:var(--dim,var(--in-fg-dim,#7D8590));border-color:var(--bd,var(--in-border,#30363D))}',
+  // #6460 — chip de aviso no entregado. Comparte la familia de tokens del badge
+  // huérfano (`--result-huerfano*`) porque es el MISMO hecho contado más
+  // adentro: la respuesta se perdió y encima el aviso tampoco llegó. Un color
+  // propio lo leería como un tercer estado independiente. Mismo fallback hex
+  // literal que el badge, por el motivo de UX-2 documentado arriba: sin él, con
+  // `design-tokens.css` ilegible el chip renderiza mudo.
+  '.cmd-aviso{font-size:0.72em;padding:1px 6px;border:1px solid transparent;border-radius:5px;margin-left:4px}',
+  '.cmd-aviso-fallido{color:var(--result-huerfano,#FF6B8A);background:var(--result-huerfano-bg,rgba(255,107,138,0.16));border-color:var(--result-huerfano-dim,#B8254A)}',
 ].join('\n');
 
 module.exports = { RESULT_BADGES, RESULT_BADGE_CSS, buildResultBadges, defaultEscapeHtml };

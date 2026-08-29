@@ -734,3 +734,247 @@ test('T-CA3e · un barrido con huérfano y entrega confirmada emite los DOS dese
     assert.deepEqual(r.emitidosFallidos, [buildAuditReqRef(huerfano)]);
   });
 });
+
+// =============================================================================
+// #6460 — EL AVISO AL OPERADOR, POR EL CAMINO REAL (`runOrphanSweep`).
+//
+// Estos tests NO usan `detectOrphans` con un fixture armado a mano: ejercitan la
+// capa que corre en producción, con el ledger de verdad sobre un directorio
+// efímero. Es la única forma de que la idempotencia se pruebe de punta a punta —
+// el riesgo documentado es un ledger keyed por el reqId CRUDO, que hace pasar el
+// test del núcleo puro y rompe en producción recién en la 2ª pasada.
+//
+//   T-AV1  huérfano ⇒ 1 aviso encolado, con texto sin jerga
+//   T-AV2  2ª pasada sobre el MISMO huérfano ⇒ 0 avisos (idempotencia real)
+//   T-AV3  varios huérfanos de la misma conversación ⇒ 1 aviso consolidado
+//   T-AV4  turnos sanos ⇒ 0 avisos (cero ruido en el camino feliz)
+//   T-AV5  sin `deps.enqueueOrphanNotice` el barrido es idéntico al de #6459
+//   T-AV6  ancla vacía ⇒ 0 encolados, descarte registrado, ledger sin escribir
+//   T-AV7  el destino nunca sale del nombre del archivo
+//   T-AV8  con correlación, el destino sale del historial
+// =============================================================================
+
+const notify = require('../orphan-notify');
+
+function correrConAviso(ctx, extra = {}) {
+  const encolados = [];
+  const logs = [];
+  const r = runOrphanSweep({
+    logDir: ctx.logDir,
+    pipelineDir: ctx.pipelineDir,
+    nowMs: NOW,
+    currentBootId: BOOT_ACTUAL,
+    windowMs: ORPHAN_WINDOW_MS,
+    deps: {
+      outboundStatus: extra.outboundStatus || (() => 'unknown'),
+      noteFallbackDeliveryResolved: () => true,
+      log: (m) => logs.push(m),
+      // wiring de #6460
+      anchorAccepts: extra.anchorAccepts || ((x) => x === null || String(x) === CHAT),
+      defaultChatId: extra.defaultChatId === undefined ? CHAT : extra.defaultChatId,
+      enqueueOrphanNotice: extra.sinWiring
+        ? undefined
+        : (payload, opts) => { encolados.push({ payload, opts }); },
+      newCorrelationId: (p) => `${p}-${NOW}-${encolados.length}`,
+      resolveChatIdForCorrelation: extra.resolveChatIdForCorrelation,
+    },
+  });
+  return { r, encolados, logs };
+}
+
+test('T-AV1 · un huérfano real produce UN aviso encolado, en lenguaje llano (#6460)', () => {
+  conDirTemporal((ctx) => {
+    const req = reqIdEn(4 * HORA);
+    escribirEtapas(ctx.logDir, req, [etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH]);
+
+    const { r, encolados } = correrConAviso(ctx);
+    assert.equal(r.resumen.huerfanos, 1);
+    assert.equal(r.avisos, 1);
+    assert.equal(encolados.length, 1);
+
+    const { payload, opts } = encolados[0];
+    assert.equal(payload.plain, true, 'plain EXPLÍCITO o el servicio reinyecta Markdown');
+    assert.ok(!('chat_id' in payload), 'destino === chat por default ⇒ rama sin chat_id');
+    assert.match(opts.correlationId, /^orph-/, 'sin correlación no hay dead-letter posible');
+
+    // CA: el mensaje dice que se ejecutó, que la respuesta se perdió, y trae el
+    // puntero a la sesión. Y no contiene jerga.
+    assert.match(payload.text, /se ejecut/i);
+    assert.match(payload.text, /se perdi/i);
+    assert.ok(payload.text.includes(req), 'el identificador de la sesión, crudo y completo');
+    assert.equal(
+      /eof_premature|empty_output|delivery_pending|delivered=false|stack|Error:/.test(payload.text),
+      false,
+    );
+  });
+});
+
+test('T-AV2 · la SEGUNDA pasada sobre el mismo huérfano emite 0 avisos (camino real)', () => {
+  conDirTemporal((ctx) => {
+    const req = reqIdEn(4 * HORA);
+    escribirEtapas(ctx.logDir, req, [etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH]);
+
+    const a = correrConAviso(ctx);
+    assert.equal(a.r.avisos, 1);
+
+    const b = correrConAviso(ctx);
+    assert.equal(b.r.avisos, 0, 'idempotencia por ledger');
+    assert.equal(b.encolados.length, 0);
+    assert.equal(b.r.resumen.huerfanos, 0, 'ya avisado ⇒ ya resuelto (B-03)');
+
+    // Tercera, por las dudas: la idempotencia no puede depender de un contador.
+    const c = correrConAviso(ctx);
+    assert.equal(c.r.avisos, 0);
+
+    // Y el ledger tiene UNA sola línea para ese turno.
+    const raw = fs.readFileSync(notify.ledgerPath(ctx.pipelineDir), 'utf8').trim().split('\n');
+    assert.equal(raw.length, 1);
+    assert.equal(JSON.parse(raw[0]).ref, buildAuditReqRef(req));
+  });
+});
+
+test('T-AV3 · varios huérfanos de la MISMA conversación ⇒ UN aviso consolidado (UX-6)', () => {
+  conDirTemporal((ctx) => {
+    const reqs = [reqIdEn(6 * HORA), reqIdEn(5 * HORA), reqIdEn(4 * HORA)];
+    for (const req of reqs) {
+      escribirEtapas(ctx.logDir, req, [etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH]);
+    }
+
+    const { r, encolados } = correrConAviso(ctx);
+    assert.equal(r.resumen.huerfanos, 3);
+    assert.equal(r.avisos, 1, 'UN mensaje, no tres');
+    assert.equal(encolados.length, 1);
+    assert.match(encolados[0].payload.text, /Hay 3 pedidos tuyos/);
+
+    // Las tres refs quedaron marcadas: la pasada siguiente no repite ninguna.
+    const b = correrConAviso(ctx);
+    assert.equal(b.r.avisos, 0);
+    const lineas = fs.readFileSync(notify.ledgerPath(ctx.pipelineDir), 'utf8').trim().split('\n');
+    assert.equal(lineas.length, 3, 'una línea por ref, antes del único dropfile');
+    const cids = new Set(lineas.map((l) => JSON.parse(l).correlation_id));
+    assert.equal(cids.size, 1, 'las tres comparten el correlation_id del aviso consolidado');
+  });
+});
+
+test('T-AV4 · turnos SANOS no generan ningún aviso — cero ruido en el camino feliz', () => {
+  conDirTemporal((ctx) => {
+    // Sano por entrega confirmada (B-12).
+    const confirmado = reqIdEn(4 * HORA, 'aa');
+    escribirEtapas(ctx.logDir, confirmado, [
+      etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH, etapaEnvio('cmd-ok'),
+    ]);
+    // Sano por cierre propio (B-09).
+    const cerroSolo = reqIdEn(3 * HORA, 'bb');
+    escribirEtapas(ctx.logDir, cerroSolo, [
+      etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH, ETAPA_RESULTADO,
+    ]);
+
+    const { r, encolados } = correrConAviso(ctx, { outboundStatus: () => 'enviado' });
+    assert.equal(r.resumen.huerfanos, 0);
+    assert.equal(r.avisos, 0);
+    assert.equal(encolados.length, 0);
+    assert.equal(fs.existsSync(notify.ledgerPath(ctx.pipelineDir)), false, 'ni se toca el ledger');
+  });
+});
+
+test('T-AV5 · sin `enqueueOrphanNotice` el barrido se comporta EXACTAMENTE como en #6459', () => {
+  conDirTemporal((ctx) => {
+    const req = reqIdEn(4 * HORA);
+    escribirEtapas(ctx.logDir, req, [etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH]);
+
+    const { r, encolados } = correrConAviso(ctx, { sinWiring: true });
+    assert.equal(r.resumen.huerfanos, 1, 'la detección no cambia');
+    assert.deepEqual(r.emitidos, [buildAuditReqRef(req)], 'el evento terminal sigue saliendo');
+    assert.equal(r.avisos, 0);
+    assert.equal(encolados.length, 0);
+    assert.equal(fs.existsSync(notify.ledgerPath(ctx.pipelineDir)), false);
+  });
+});
+
+test('T-AV6 · ancla VACÍA, por el camino real y con el predicado REAL de notify-telegram', () => {
+  // El predicado que inyecta el wiring de `pulpo.js`, no un fake. Con el ancla
+  // vacía `resolvePrivateChatId(null)` sigue devolviendo ok:true (su early-return
+  // va antes del chequeo del env), así que hay DOS desenlaces distintos y los dos
+  // cumplen el CA "no se archiva como enviado sin haberse enviado".
+  const { resolvePrivateChatId } = require('../../notify-telegram')._internal;
+  const anchorAcceptsReal = (x) => resolvePrivateChatId(x).ok;
+  const previo = process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+  process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = '';
+  try {
+    // (a) El pedido es de OTRA conversación que la del canal de salida ⇒ el
+    //     dropfile llevaría `chat_id`, el servicio lo archivaría en `listo/` sin
+    //     enviar y sin recibo. Se descarta y se registra.
+    conDirTemporal((ctx) => {
+      const req = reqIdEn(4 * HORA);
+      escribirEtapas(ctx.logDir, req, [etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH]);
+      const { r, encolados, logs } = correrConAviso(ctx, {
+        anchorAccepts: anchorAcceptsReal,
+        defaultChatId: '6529617704',            // el canal de salida es OTRO chat
+      });
+      assert.equal(r.resumen.huerfanos, 1, 'el huérfano se detecta igual');
+      assert.equal(r.avisos, 0, 'nada se archiva como enviado sin haberse enviado');
+      assert.equal(encolados.length, 0);
+      assert.equal(r.avisosDescartados, 1);
+      assert.ok(logs.some((m) => /descartado/.test(m)), 'se descarta Y se registra');
+      assert.equal(
+        fs.existsSync(notify.ledgerPath(ctx.pipelineDir)), false,
+        'no se marca como avisado: la pasada siguiente puede reintentar',
+      );
+    });
+
+    // (b) El pedido es del chat por default ⇒ el aviso sale igual, por la rama
+    //     sin `chat_id`, que es la única que el ancla no puede rechazar.
+    conDirTemporal((ctx) => {
+      const req = reqIdEn(4 * HORA);
+      escribirEtapas(ctx.logDir, req, [etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH]);
+      const { r, encolados } = correrConAviso(ctx, {
+        anchorAccepts: anchorAcceptsReal,
+        defaultChatId: CHAT,
+      });
+      assert.equal(r.avisos, 1, 'con el ancla vacía el operador se entera igual');
+      assert.ok(!('chat_id' in encolados[0].payload));
+    });
+  } finally {
+    if (previo === undefined) delete process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID;
+    else process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID = previo;
+  }
+});
+
+test('T-AV7 · el destino del aviso NO se deriva del nombre del archivo de log', () => {
+  conDirTemporal((ctx) => {
+    // El nombre del archivo lleva `-1001234567890` adentro, pero la etapa
+    // `transcripción` NO trae `chat_id` y no hay correlación.
+    const req = reqIdEn(4 * HORA);
+    const sinChat = { etapa: 'transcripción', audios: '0', mensajes: '1', boot_id: BOOT_VIEJO };
+    escribirEtapas(ctx.logDir, req, [sinChat, ETAPA_DISPATCH]);
+
+    const { r, encolados, logs } = correrConAviso(ctx);
+    assert.equal(r.resumen.huerfanos, 1);
+    assert.equal(encolados.length, 0, 'el chatSeg del filename está a mano y NO se usa');
+    assert.ok(logs.some((m) => /destino_no_resoluble/.test(m)));
+  });
+});
+
+test('T-AV8 · un huérfano CON correlación resuelve el destino por el historial', () => {
+  conDirTemporal((ctx) => {
+    const req = reqIdEn(4 * HORA);
+    escribirEtapas(ctx.logDir, req, [
+      etapaTranscripcion(BOOT_VIEJO), ETAPA_DISPATCH, etapaEnvio('cmd-perdido'),
+    ]);
+    fs.writeFileSync(
+      path.join(ctx.pipelineDir, 'commander-history.jsonl'),
+      JSON.stringify({ direction: 'out', correlation_id: 'cmd-perdido', chat_id: CHAT }) + '\n',
+      'utf8',
+    );
+
+    let consultado = null;
+    const { r, encolados } = correrConAviso(ctx, {
+      outboundStatus: () => 'fallido',   // B-13: entrega NO confirmada ⇒ huérfano
+      resolveChatIdForCorrelation: (raw, cid) => { consultado = cid; return CHAT; },
+    });
+    assert.equal(r.resumen.huerfanos, 1);
+    assert.equal(consultado, 'cmd-perdido', 'la correlación es el paso 1');
+    assert.equal(r.avisos, 1);
+    assert.equal(encolados[0].opts.chatId, CHAT);
+  });
+});
