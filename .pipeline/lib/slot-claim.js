@@ -57,6 +57,20 @@ const CLAIM_RE = /^(.+)\.claimed-(\d+)$/;
  * (`linkSync` atómico, exactamente-uno en 8/8 trials), y el rename se ejecuta
  * DENTRO de la sección crítica.
  *
+ * ⚠ NUNCA PROPAGA FALLAS DE LA CAPA DE LOCK (#6145).
+ * ----------------------------------------------------------------------------
+ * Si el lock no se pudo adquirir dentro del timeout (`ELOCK_TIMEOUT`) o la
+ * propiedad no quedó probada al salir de la sección crítica (`ELOCK_STOLEN`),
+ * el resultado correcto es "no lo reclamé" — no una excepción. Dos razones:
+ *
+ *   1. Semántica del caller: `pulpo.js:1327` itera candidatos y trata
+ *      `claimed: false` como "otro lo tomó, salteo". Una excepción aborta el
+ *      reencolado de TODOS los candidatos restantes por una contención
+ *      transitoria sobre un solo archivo.
+ *   2. Fail-closed real: ante la duda NO reclamamos. Si ya habíamos renombrado
+ *      cuando falló la verificación, deshacemos el rename (best-effort) para no
+ *      dejar un `*.claimed-<pid>` sin dueño; el próximo tick reintenta.
+ *
  * @param {string} filePath — path del work file (ya validado/confinado).
  * @param {number} pid — pid del proceso que reclama (process.pid).
  * @param {object} [opts]
@@ -66,6 +80,8 @@ const CLAIM_RE = /^(.+)\.claimed-(\d+)$/;
  * @returns {{claimed: boolean, claimPath?: string, reason?: string}}
  *   - `{ claimed: true, claimPath }` si ganó la sección crítica.
  *   - `{ claimed: false, reason: 'ENOENT'|'EEXIST' }` si otro proceso lo tomó.
+ *   - `{ claimed: false, reason: 'ELOCK_TIMEOUT'|'ELOCK_STOLEN' }` si la sección
+ *     crítica no pudo garantizarse (contención o propiedad no probada).
  */
 function claimByRename(filePath, pid, opts = {}) {
   const fsImpl = opts.fsImpl || fs;
@@ -75,23 +91,37 @@ function claimByRename(filePath, pid, opts = {}) {
   // contenido del work file. Confinado al mismo directorio.
   const claimPath = `${filePath}.claimed-${pid}`;
   let result = { claimed: false, reason: 'ENOENT' };
-  fl.withLockSync(filePath, () => {
-    if (!fsImpl.existsSync(filePath)) {
-      // Otro proceso ya lo reclamó (lo renombró) antes de que ganáramos el lock.
-      result = { claimed: false, reason: 'ENOENT' };
-      return;
-    }
-    try {
-      fsImpl.renameSync(filePath, claimPath);
-      result = { claimed: true, claimPath };
-    } catch (e) {
-      if (e && (e.code === 'ENOENT' || e.code === 'EEXIST')) {
-        result = { claimed: false, reason: e.code };
+  let renombrado = false;
+  try {
+    fl.withLockSync(filePath, () => {
+      if (!fsImpl.existsSync(filePath)) {
+        // Otro proceso ya lo reclamó (lo renombró) antes de que ganáramos el lock.
+        result = { claimed: false, reason: 'ENOENT' };
         return;
       }
-      throw e;
+      try {
+        fsImpl.renameSync(filePath, claimPath);
+        renombrado = true;
+        result = { claimed: true, claimPath };
+      } catch (e) {
+        if (e && (e.code === 'ENOENT' || e.code === 'EEXIST')) {
+          result = { claimed: false, reason: e.code };
+          return;
+        }
+        throw e;
+      }
+    }, { timeoutMs, component: 'slot-claim' });
+  } catch (e) {
+    const code = e && e.code;
+    if (code !== 'ELOCK_TIMEOUT' && code !== 'ELOCK_STOLEN') throw e;
+    if (renombrado) {
+      // La exclusión mutua no quedó probada: devolvemos el archivo a su nombre
+      // canónico para que siga visible al scan y nadie opere sobre un claim que
+      // no podemos respaldar.
+      restoreClaim(claimPath, filePath, fsImpl);
     }
-  }, { timeoutMs, component: 'slot-claim' });
+    result = { claimed: false, reason: code };
+  }
   return result;
 }
 

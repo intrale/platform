@@ -683,6 +683,48 @@ multi_provider:
     # (Gemini RPM 15, Cerebras RPM 30). Jitter ±60s se conserva en código.
     # Un typo/valor inválido cae al default 5 min sin romper el arranque.
     interval_minutes: 5
+  # ---------------------------------------------------------------------------
+  # Criterio de permanencia de proveedores (#6145, CA-6)
+  # ---------------------------------------------------------------------------
+  # Umbrales numéricos con los que `lib/multi-provider/provider-contribution.js`
+  # decide si un proveedor de la cadena aporta lo suficiente para seguir en ella.
+  # Se recalcula con un comando, sin análisis manual:
+  #
+  #   node .pipeline/scripts/provider-contribution-report.js --dias=30
+  #
+  # INVARIANTES (no configurables — viven en código y tienen test dedicado):
+  #   1. El criterio MARCA candidatos; NUNCA da de baja a nadie. La baja efectiva
+  #      es un PR de configuración trazable.
+  #   2. NUNCA vacía la cadena: si marcar dejaría menos de `min_survivors`
+  #      proveedores sanos, no marca a ninguno.
+  #   3. NUNCA marca a un proveedor `billing: paid` (agent-models.json).
+  #   4. "Sin dato" ⇒ `no_evaluable`, JAMÁS "no aporta". Muestra chica, silencio
+  #      del log o hash-chain rota ⇒ no se decide.
+  #   5. Un bloqueo cuya causa es un problema NUESTRO de observabilidad
+  #      (`cli_license_unavailable` y familia) tiene techo `rol_acotado`: no
+  #      habilita la baja sin corregir antes el chequeo.
+  #
+  # `enabled: false` por default (rollout gradual). Con `false` el reporte se
+  # sigue pudiendo correr a mano; lo que no se habilita es su uso automático.
+  permanence:
+    enabled: false
+    # Ventana de medición en días. CA-1 exige un mínimo de 30.
+    window_days: 30
+    # Intentos evaluables mínimos para que un proveedor sea evaluable.
+    # Por debajo ⇒ `no_evaluable` (nunca "no aporta").
+    min_sample: 200
+    # Tasa de aporte (aportes / intentos evaluables) por debajo de la cual el
+    # proveedor queda marcado como candidato. 0.05 = 5%.
+    min_contribution_rate: 0.05
+    # Días sin un solo aporte real tras los cuales queda marcado como candidato.
+    max_days_without_win: 14
+    # Proveedores NO PAGOS sanos que deben sobrevivir SIEMPRE. Si marcar
+    # candidatos dejaría menos que esto, no se marca a ninguno (invariante 2).
+    # Los pagos NO cuentan: son `mantener` por construcción (invariante 3) y
+    # satisfarían este umbral de forma vacua, dejando que el criterio vacíe la
+    # cadena de gratuitos entera de un saque.
+    min_survivors: 1
+
   quota_alert:
     # Umbrales por defecto si un proveedor no declara los suyos.
     defaults:

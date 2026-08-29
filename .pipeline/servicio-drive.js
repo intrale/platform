@@ -1142,6 +1142,38 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// #6145 — Rescate de descriptores varados en worktrees.
+//
+// El rol `qa` escribía el descriptor de evidencia estructural con un path
+// RELATIVO. El agente de `verificacion` corre con CWD = worktree del issue, así
+// que el descriptor caía en `<worktree>/.pipeline/servicios/drive/pendiente/`:
+// una cola que este servicio nunca mira (lee `PIPELINE_STATE_DIR`, o sea el
+// repo principal) y que además está en `.gitignore`. Resultado: la evidencia
+// aprobada nunca se encolaba y `listo/` conservaba la pasada vieja, que es
+// exactamente lo que detectó la fase de aprobación de #6145.
+//
+// El contrato del rol ya apunta a la cola canónica, pero este barrido cierra el
+// agujero para descriptores ya varados y para cualquier agente que siga el
+// contrato viejo. Es best-effort puro: `rescueStrandedDescriptors` no lanza, y
+// acá igual va envuelto en try/catch — el servicio no puede morir por esto.
+function rescueWorktreeDescriptors() {
+  try {
+    const { rescueStrandedDescriptors } = require('./lib/qa-evidence-enqueue');
+    const r = rescueStrandedDescriptors({
+      repoRoot: PROJECT_ROOT,
+      queueDir: PENDIENTE,
+      log,
+    });
+    if (r.errors.length > 0) {
+      log(`Rescate de descriptores varados con ${r.errors.length} error(es): ${r.errors.join('; ')}`);
+    }
+    return r;
+  } catch (e) {
+    log(`Rescate de descriptores varados falló (se ignora): ${e.message}`);
+    return { rescued: 0, skipped: 0, errors: [e.message], names: [] };
+  }
+}
+
 // Cola global para serializar uploads (evitar saturar OAuth)
 let processing = false;
 
@@ -1152,6 +1184,10 @@ async function processQueue() {
   // este barrido se acumulan y salen como UN aviso si son más de uno.
   cycleRejections = [];
   try {
+    // Antes de listar: traer a la cola canónica lo que quedó varado en algún
+    // worktree, para que entre en ESTA misma pasada y no en la siguiente.
+    rescueWorktreeDescriptors();
+
     const files = listWorkFiles(PENDIENTE);
     if (files.length === 0) return;
 
@@ -1194,6 +1230,7 @@ module.exports = {
   extractTitle,
   isStructuralEvidenceJob,
   processJob,
+  rescueWorktreeDescriptors,
   ALLOWED_VIDEO_DIRS,
   // #6497 — ruta canónica, sello y confinamiento único.
   ALLOWED_EVIDENCE_DIRS,

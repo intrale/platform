@@ -4,7 +4,7 @@
 //
 // Estructura:
 //   T-1  isWorkaroundEnabled() con whitelist + fail-safe.
-//   T-2  Adversarial 1MB del parser con flag OFF (<50ms, no se evalúa el regex).
+//   T-2  Adversarial 1MB del parser con flag OFF (presupuesto, no se evalúa el regex).
 //   T-3  Clasificador: con flag OFF cae a quota_exhausted; con ON, glitch.
 //   T-4  Persistencia: hit → JSON actualizado; corrupto → reset + log, no crash.
 //   T-5  Cooldown: dos disparos consecutivos dentro de 7 días → 1 alerta.
@@ -43,6 +43,40 @@ function withEnv(value, fn) {
         if (prev === undefined) delete process.env[FEATURE_FLAG_ENV];
         else process.env[FEATURE_FLAG_ENV] = prev;
     }
+}
+
+// Presupuesto algorítmico del parser sobre un payload adversarial de 1MB.
+//
+// #6145 — Este guard medía UNA sola muestra de wall-clock contra un techo
+// absoluto (50ms en #3506, relajado a 200ms) y volvía a romperse cuando la
+// suite completa corre bajo el fork-storm del tester (~830 archivos de test):
+// se observó `parseo demoró 211ms` en una máquina saturada, con el parser
+// comportándose perfectamente bien. Una sola muestra en una caja cargada mide
+// al scheduler del sistema operativo, no al algoritmo.
+//
+// Lo que este test tiene que atrapar es el backtracking catastrófico del regex
+// sobre 1MB, que no es "un poco más lento": es de segundos. Tomamos entonces el
+// MÍNIMO de varias corridas — estimador estable del costo real, inmune al
+// jitter de scheduling, porque basta con que UNA corrida agarre la CPU limpia.
+//
+// La primera corrida NO es representativa: incluye compilación del regex y
+// warm-up del JIT. Medido en esta caja: 55.4ms la primera, 0.2ms de ahí en más.
+// Por eso el techo NO se relaja — se mantiene el mismo 200ms de antes, que
+// ahora tiene ~1000x de margen sobre el costo real en vez de menos de 2x. Un
+// presupuesto más alto haría pasar una regresión de decenas de ms.
+const PARSE_BUDGET_MS = 200;
+const PARSE_MUESTRAS = 5;
+
+function medirParseoMs(raw, ctx) {
+    let mejor = Infinity;
+    let ultimo = null;
+    for (let i = 0; i < PARSE_MUESTRAS; i++) {
+        const t0 = process.hrtime.bigint();
+        ultimo = parseProviderError(raw, ctx);
+        const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+        if (ms < mejor) mejor = ms;
+    }
+    return { result: ultimo, ms: mejor };
 }
 
 // -----------------------------------------------------------------------------
@@ -95,7 +129,7 @@ test('T-1 isWorkaroundEnabled: envOverride no muta process.env', () => {
 // T-2 — Adversarial 1MB con flag OFF (<50ms, no evalúa el regex 1M) [CA-2/SEC-2].
 // -----------------------------------------------------------------------------
 
-test('T-2 adversarial 1MB con flag OFF clasifica sin tocar regex 1M (<200ms)', () => {
+test('T-2 adversarial 1MB con flag OFF clasifica sin tocar regex 1M (dentro del presupuesto)', () => {
     withEnv('0', () => {
         // Payload de 1MB. Empieza con un JSON estructural Anthropic que clasifica
         // como quota_exhausted (path genérico) — el regex 1M está cortocircuitado
@@ -109,30 +143,20 @@ test('T-2 adversarial 1MB con flag OFF clasifica sin tocar regex 1M (<200ms)', (
         const filler = 'x'.repeat(1024 * 1024); // 1MB de basura.
         const raw = head + '\n' + filler;
 
-        // La suite completa corre cientos de archivos en paralelo. Una muestra
-        // única de reloj de pared puede incluir una pausa del scheduler y dar
-        // un falso rojo aunque el parser siga dentro del budget. El mínimo de
-        // tres intentos conserva el gate ante una regresión sostenida.
-        const samples = [];
-        let r;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-            const t0 = Date.now();
-            r = parseProviderError(raw, { provider: 'anthropic', transport: 'cli' });
-            samples.push(Date.now() - t0);
-        }
-        const elapsed = Math.min(...samples);
+        const { result: r, ms: elapsed } = medirParseoMs(raw, { provider: 'anthropic', transport: 'cli' });
 
         // CA-1: con flag OFF, el caso 1M cae al path genérico quota_exhausted.
         assert.equal(r.errorClass, 'quota_exhausted',
             'con flag OFF el caso debe caer al path genérico quota_exhausted');
         // CA-2/SEC-2: el short-circuit preserva el budget de tiempo del parser.
-        // El threshold del #3506 era <50ms; relajamos a 200ms en CI por jitter.
-        assert.ok(elapsed < 200,
-            `mejor parseo demoró ${elapsed}ms (muestras: ${samples.join(', ')}ms) — debe estar <200ms`);
+        assert.ok(
+            elapsed < PARSE_BUDGET_MS,
+            `parseo demoró ${elapsed.toFixed(1)}ms (mejor de ${PARSE_MUESTRAS}) — debe estar <${PARSE_BUDGET_MS}ms`,
+        );
     });
 });
 
-test('T-2 adversarial 1MB con flag ON sigue clasificando glitch (<200ms)', () => {
+test('T-2 adversarial 1MB con flag ON sigue clasificando glitch (dentro del presupuesto)', () => {
     withEnv('1', () => {
         const head = JSON.stringify({
             type: 'result',
@@ -143,12 +167,13 @@ test('T-2 adversarial 1MB con flag ON sigue clasificando glitch (<200ms)', () =>
         const filler = 'x'.repeat(1024 * 1024);
         const raw = head + '\n' + filler;
 
-        const t0 = Date.now();
-        const r = parseProviderError(raw, { provider: 'anthropic', transport: 'cli' });
-        const elapsed = Date.now() - t0;
+        const { result: r, ms: elapsed } = medirParseoMs(raw, { provider: 'anthropic', transport: 'cli' });
 
         assert.equal(r.errorClass, 'cli_1m_context_glitch');
-        assert.ok(elapsed < 200, `parseo demoró ${elapsed}ms — debe estar <200ms`);
+        assert.ok(
+            elapsed < PARSE_BUDGET_MS,
+            `parseo demoró ${elapsed.toFixed(1)}ms (mejor de ${PARSE_MUESTRAS}) — debe estar <${PARSE_BUDGET_MS}ms`,
+        );
     });
 });
 
