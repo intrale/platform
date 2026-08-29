@@ -26,33 +26,10 @@ const path = require('path');
 let passed = 0;
 let failed = 0;
 
-// #6259 (P2) — `PIPELINE_ROOT_OVERRIDE` es variable COMUN
-// (`isSecurityControlVar` -> false), asi que va con `withEnv`.
-const { withEnv } = require('./lib/test-helpers/with-env');
-
 // Los tests se registran y corren SECUENCIALMENTE: comparten el global
 // PIPELINE_ROOT_OVERRIDE, así que no pueden solaparse.
 const _tests = [];
-
-// #6259 (R-1) — cada test corre con `PIPELINE_ROOT_OVERRIDE` apuntando a un root
-// temporal PROPIO, y `withEnv` lo restaura al terminar pase lo que pase (antes
-// quedaba seteado en el proceso al salir: fuga medida por el probe). El root se
-// inyecta como argumento del cuerpo.
-//
-// El CUERPO COMPLETO va adentro de `withEnv`, asserts incluidos: `eta-wave.js`
-// resuelve el override en CADA llamada (`pipelineRoot()`), asi que restaurarlo
-// antes de los asserts mandaria las lecturas/escrituras al `.pipeline/` REAL
-// del repo. El callback es async y el helper restaura DESPUES del settle, que
-// es exactamente lo que hace falta aca.
-function test(name, fn) {
-    _tests.push({
-        name,
-        fn: () => {
-            const root = freshRoot();
-            return withEnv({ PIPELINE_ROOT_OVERRIDE: root }, () => fn(root));
-        },
-    });
-}
+function test(name, fn) { _tests.push({ name, fn }); }
 
 async function runAll() {
     for (const { name, fn } of _tests) {
@@ -65,12 +42,12 @@ function assert(cond, msg) {
     if (!cond) throw new Error(msg || 'Assertion failed');
 }
 
-// Root temporal aislado; el store vive en `<root>/.pipeline/wave-progress.jsonl`.
-// #6259 — ya NO setea `PIPELINE_ROOT_OVERRIDE`: de eso se ocupa el `withEnv` del
-// registrador de tests, que ademas lo restaura al salir.
+// Root temporal aislado. Apunta PIPELINE_ROOT_OVERRIDE acá; el store vive en
+// `<root>/.pipeline/wave-progress.jsonl`.
 function freshRoot() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wv-eta-'));
     fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });
+    process.env.PIPELINE_ROOT_OVERRIDE = root;
     return root;
 }
 
@@ -90,7 +67,8 @@ function seed(root, waveKey, points) {
 
 async function run() {
     // ── CA-2 — velocidad = (28−21)/23min, restante ≈ 240min ──────────────────
-    test('CA-2: velocidad (28−21)/23min y restante ≈ 240min con 28% hecho', async (root) => {
+    test('CA-2: velocidad (28−21)/23min y restante ≈ 240min con 28% hecho', async () => {
+        const root = freshRoot();
         const t0 = BASE;
         const t1 = BASE + 23 * MIN;
         seed(root, 4, [[t0, 21], [t1, 28]]);
@@ -105,7 +83,8 @@ async function run() {
     });
 
     // ── CA-1 — el restante DECRECE entre dos lecturas ────────────────────────
-    test('CA-1: el restante decrece entre dos lecturas con avancePct creciente', async (root) => {
+    test('CA-1: el restante decrece entre dos lecturas con avancePct creciente', async () => {
+        const root = freshRoot();
         // #4886 (rev-1) — spans llevados a ≥ WAVE_VELOCITY_MIN_SPAN_MS (15 min).
         // Los 9 min originales quedaban por debajo de la ventana de agregación
         // mínima que ahora exige la métrica (medir %/min sobre una señal
@@ -126,7 +105,8 @@ async function run() {
     });
 
     // ── CA-5 — convergencia: hora meta no retrocede con velocidad estable ────
-    test('CA-5: convergencia — con velocidad estable la hora meta no retrocede', async (root) => {
+    test('CA-5: convergencia — con velocidad estable la hora meta no retrocede', async () => {
+        const root = freshRoot();
         // Velocidad constante de 1%/min: (0,10),(20,30),(40,50). #4886 (rev-1):
         // pasos de 20 min (≥ ventana de agregación mínima), misma velocidad.
         const tA = BASE + 20 * MIN;
@@ -144,14 +124,16 @@ async function run() {
     });
 
     // ── CA-4 — fallback por snapshots insuficientes / Δt chico ───────────────
-    test('CA-4: < 2 snapshots → fallback', async (root) => {
+    test('CA-4: < 2 snapshots → fallback', async () => {
+        const root = freshRoot();
         seed(root, 4, [[BASE, 21]]);
         const r = await etaWave.calculateWaveVelocityETA(4, 21, BASE + MIN);
         assert(r.source === 'fallback', `esperaba fallback, fue ${r.source}`);
         assert(r.reason === 'insufficient-snapshots', `reason=${r.reason}`);
     });
 
-    test('CA-4: Δt < 60s → fallback', async (root) => {
+    test('CA-4: Δt < 60s → fallback', async () => {
+        const root = freshRoot();
         seed(root, 4, [[BASE, 21], [BASE + 30 * 1000, 28]]);  // 30s < 60s
         const r = await etaWave.calculateWaveVelocityETA(4, 28, BASE + 30 * 1000);
         assert(r.source === 'fallback', `esperaba fallback, fue ${r.source}`);
@@ -159,7 +141,8 @@ async function run() {
     });
 
     // ── CA-6 — reset al resembrar: otra ola no consume snapshots ─────────────
-    test('CA-6: waveKey distinto (resembrado) no consume snapshots de la ola anterior', async (root) => {
+    test('CA-6: waveKey distinto (resembrado) no consume snapshots de la ola anterior', async () => {
+        const root = freshRoot();
         // Ola 4 con serie completa.
         seed(root, 4, [[BASE, 18], [BASE + 23 * MIN, 28]]);
         // La ola 5 (resembrada) no tiene snapshots propios → fallback.
@@ -172,7 +155,8 @@ async function run() {
     });
 
     // ── CA-14 — velocidad ≤ 0 por rebote → clamp/fallback, sin NaN/Inf/neg ───
-    test('CA-14: velocidad ≤ 0 por rebote → fallback, sin NaN/Infinity/negativo', async (root) => {
+    test('CA-14: velocidad ≤ 0 por rebote → fallback, sin NaN/Infinity/negativo', async () => {
+        const root = freshRoot();
         // avancePct baja (rebote / /wave add): 30% → 20%. #4886 (rev-1): span de
         // 20 min para que el caso evaluado sea la pendiente NEGATIVA y no el
         // recorte previo por ventana de agregación insuficiente.
@@ -184,13 +168,15 @@ async function run() {
         assert(r.remainingMs === undefined && r.absoluteMs === undefined, 'fallback no expone proyección');
     });
 
-    test('CA-14: avancePct no finito → fallback', async (root) => {
+    test('CA-14: avancePct no finito → fallback', async () => {
+        const root = freshRoot();
         seed(root, 4, [[BASE, 18], [BASE + 23 * MIN, 28]]);
         const r = await etaWave.calculateWaveVelocityETA(4, NaN, BASE + 23 * MIN);
         assert(r.source === 'fallback', `esperaba fallback, fue ${r.source}`);
     });
 
     test('CA-14: waveKey inválido → fallback', async () => {
+        freshRoot();
         const r1 = await etaWave.calculateWaveVelocityETA(4.5, 28, BASE);
         const r2 = await etaWave.calculateWaveVelocityETA(0, 28, BASE);
         const r3 = await etaWave.calculateWaveVelocityETA(-1, 28, BASE);
@@ -199,7 +185,8 @@ async function run() {
     });
 
     // ── Ola completada (100%) — restante 0, meta = ahora ─────────────────────
-    test('avancePct ≥ 100 → restante 0, meta = ahora', async (root) => {
+    test('avancePct ≥ 100 → restante 0, meta = ahora', async () => {
+        const root = freshRoot();
         seed(root, 4, [[BASE, 90], [BASE + 20 * MIN, 100]]);
         const r = await etaWave.calculateWaveVelocityETA(4, 100, BASE + 20 * MIN);
         assert(r.source === 'velocity', `esperaba velocity, fue ${r.source}`);
