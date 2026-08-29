@@ -472,3 +472,8 @@ security-report-*.md
 # PID del operador adentro). Ahora el script también lo pasa por `assertIgnored()`,
 # así que sin esta entrada la migración aborta antes de escribir un solo byte.
 .pipeline/.opstate-migration.lock
+
+# Artefactos de corridas de test de agentes (JUnit XML + listados temporales)
+# quedaron commiteados por error en #6145; nunca son entregables.
+/[0-9]*-junit*.xml
+/[0-9]*-testfiles.tmp
