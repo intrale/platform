@@ -257,6 +257,15 @@ function renderEstadoProductosView(ctx, opts) {
             // Bandeja GATE 2 (pieza 3): ítems esperando firma; la vista los filtra
             // por el producto activo (CA-2.1) vía el módulo de firma.
             esperandoFirma: Array.isArray(state.esperandoFirma) ? state.esperandoFirma : [],
+            // #6208 rev3 — metadatos del read model (`vacio`/`banda`/`degraded`).
+            // Sin esto la bandeja EMBEBIDA se quedaba sin los tres vacíos: con el
+            // depósito ilegible caía al vacío verde "leí la lista entera y estaba
+            // vacía" — el falso éxito silencioso. El home ya lo pasaba; esta
+            // costura lo perdía, así que el segundo consumidor del componente
+            // quedaba con el agujero.
+            esperandoFirmaInbox: (state.esperandoFirmaInbox && typeof state.esperandoFirmaInbox === 'object')
+                ? state.esperandoFirmaInbox
+                : null,
             // El router transporta el producto activo como `productId` (nombre del
             // query param); la vista lo consume como `activeProductId` (semántico).
             activeProductId: (opts && opts.productId) || undefined,
@@ -2798,6 +2807,11 @@ module.exports = {
         handleWaveResumeMutation,
         handleWaveDispatchMutation,
         renderRoadmapView,
+        // #6208 rev3 — la costura entre el state vivo y la bandeja GATE 2
+        // embebida en `?view=estado-productos`. Se exporta para testear el
+        // camino REAL (state → route → vista → componente de firma), no sólo el
+        // componente con los metadatos pasados a mano.
+        renderEstadoProductosView,
         // #4192 — banner de misión de la ventana Issues (rediseño MIZPÁ).
         deriveIssuesMission,
         // #4287 — map de rutas API expuesto para tests del passthrough de
