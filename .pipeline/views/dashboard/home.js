@@ -4970,6 +4970,12 @@ function collectHomeState(opts) {
     const pipelineDir = path.join(__dirname, '..', '..'); // .pipeline/
     const nowIso = new Date().toISOString();
     const quotaState = _opts.quotaState || getInitialQuotaState();
+    // Seam acotado para verificar el HTML servido sin depender del estado
+    // operativo de la máquina que corre el test. Sólo se admite `disk`: el
+    // resto de `system` continúa bajo la whitelist fija de esta vista.
+    const injectedDisk = _opts.system && Object.prototype.hasOwnProperty.call(_opts.system, 'disk')
+        ? _opts.system.disk
+        : undefined;
     return {
         quotaState,
         // #5724 CA-4 — dispatch suspendido por divergencia allowlist↔ola.
@@ -4995,7 +5001,7 @@ function collectHomeState(opts) {
             // la página costaría un syscall bloqueante por request). Se resuelve
             // en SSR para que el dato esté a la vista aunque el polling del
             // header todavía no haya corrido — el tick posterior lo refresca.
-            disk: _collectDiskStatus(pipelineDir),
+            disk: injectedDisk !== undefined ? injectedDisk : _collectDiskStatus(pipelineDir),
             uptimeS: Math.floor(os.uptime()),
         },
     };
