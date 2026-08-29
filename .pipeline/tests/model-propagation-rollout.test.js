@@ -8,13 +8,35 @@ const { resolveProviderForSkill } = require('../lib/agent-launcher/resolve-provi
 function fixture() { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rollout-')); fs.mkdirSync(path.join(root, 'logs'), { recursive: true }); return root; }
 function seed(root, rows) { fs.writeFileSync(path.join(root, 'logs', 'spawn-exit-2026-08-20.jsonl'), rows.map(x => JSON.stringify(x)).join('\n')); }
 const cfg = { baseline_min_runs: 2, evaluation_min_runs: 2, thresholds: { rebound_absolute: .1, early_death_absolute: .1 }, waves: [{ actors: ['po'] }, { actors: ['pipeline-dev'] }] };
-test('configura los escalones en el orden obligatorio de CA-4', () => {
+test('los escalones sólo nombran actores que el pulpo despacha', () => {
   const config = yaml.load(fs.readFileSync(path.join(__dirname, '..', 'config.yaml'), 'utf8'));
-  assert.deepStrictEqual(config.model_propagation_rollout.waves.map(wave => wave.actors), [
-    ['telegram-sherlock'],
-    ['doc', 'refinar', 'po'],
-    ['backend-dev', 'pipeline-dev', 'android-dev'],
-  ]);
+  const full = require('../lib/config-resolver').resolve({ pipelineDir: path.join(__dirname, '..') });
+  const actores = r.dispatchableActors(full);
+  assert.ok(actores.size > 0, 'la config real debe exponer skills_por_fase');
+  // Regresión de la review de #6274: telegram-sherlock/doc/refinar no se
+  // despachan, nunca escriben spawn-exit y trababan el rollout para siempre.
+  for (const nombre of ['telegram-sherlock', 'doc', 'refinar']) assert.equal(actores.has(nombre), false);
+  assert.doesNotThrow(() => r.validateWaves(config.model_propagation_rollout, actores));
+  const escalones = config.model_propagation_rollout.waves.map(w => w.actors);
+  assert.ok(escalones.length >= 3, 'el encendido debe ser escalonado');
+  assert.deepStrictEqual(escalones[0], ['guru', 'security']);
+  // El último escalón es el objetivo real del épico: los devs pesados.
+  for (const dev of ['backend-dev', 'pipeline-dev', 'android-dev']) assert.ok(escalones.at(-1).includes(dev));
+});
+test('validateWaves rechaza actores no despachables, duplicados y listas vacías', () => {
+  const actores = new Set(['guru', 'po', 'pipeline-dev']);
+  assert.throws(() => r.validateWaves({ waves: [{ actors: ['telegram-sherlock'] }] }, actores), /no es un skill despachado/);
+  assert.throws(() => r.validateWaves({ waves: [{ actors: ['po'] }, { actors: ['po'] }] }, actores), /repetido/);
+  assert.throws(() => r.validateWaves({ waves: [] }, actores), /vacio/);
+  // Fail-closed: sin lista de actores no valida a ciegas.
+  assert.throws(() => r.validateWaves({ waves: [{ actors: ['po'] }] }, new Set()), /a ciegas/);
+});
+test('enablePair rechaza escalones inválidos antes de tocar estado', () => {
+  const root = fixture(); seed(root, [1, 2].map(i => ({ ts: `2026-08-20T0${i}:00:00Z`, skill: 'po', provider: 'anthropic', exit_code: 0, duration_ms: 1 })));
+  r.captureBaseline(root);
+  const malo = { ...cfg, waves: [{ actors: ['telegram-sherlock'] }, { actors: ['po'] }] };
+  assert.throws(() => r.enablePair(root, 'po', 'anthropic', malo, { dispatchableActors: new Set(['po']) }), /no es un skill despachado/);
+  assert.equal(r.shouldPropagate(root, 'po', 'anthropic'), false);
 });
 test('congela baseline por actor y proveedor y excluye provider-death', () => { const root = fixture(); seed(root, [
   { ts:'2026-08-20T01:00:00Z', skill:'po', provider:'anthropic', exit_code:0, duration_ms:100 },
@@ -48,29 +70,42 @@ test('sin baseline suficiente no enciende', () => { const root=fixture(); seed(r
 test('encendido es independiente por par y respeta escalones', () => { const root=fixture(); seed(root,[1,2].flatMap(i=>[
   {ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1},
   {ts:`2026-08-20T0${i}:10:00Z`,skill:'pipeline-dev',provider:'anthropic',exit_code:0,duration_ms:1}])); r.captureBaseline(root);
-  r.enablePair(root,'po','anthropic',cfg,{actor:'leo'}); assert.equal(r.shouldPropagate(root,'po','anthropic'),true); assert.equal(r.shouldPropagate(root,'pipeline-dev','anthropic'),false); assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',cfg),/escalón/); });
-test('CA-4: po saludable no habilita devs si doc y refinar no acumularon muestra', () => {
-  const root=fixture(); const config={...cfg,waves:[{actors:['doc','refinar','po']},{actors:['pipeline-dev']}]};
-  seed(root,[1,2].flatMap(i=>[
-    {ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1},
-    {ts:`2026-08-20T0${i}:10:00Z`,skill:'pipeline-dev',provider:'anthropic',exit_code:0,duration_ms:1},
-  ]));
-  r.captureBaseline(root); r.enablePair(root,'po','anthropic',config);
-  const result=r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
-  assert.equal(result['po::anthropic'].action,'healthy');
+  r.enablePair(root,'po','anthropic',cfg,{actor:'leo'}); assert.equal(r.shouldPropagate(root,'po','anthropic'),true); assert.equal(r.shouldPropagate(root,'pipeline-dev','anthropic'),false); assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',cfg),/escalon/); });
+test('CA-4: un escalón sin ningún actor encendido no habilita el siguiente', () => {
+  const root=fixture(); const config={...cfg,waves:[{actors:['guru','security']},{actors:['pipeline-dev']}]};
+  seed(root,[1,2].flatMap(i=>['guru','security','pipeline-dev'].map(skill=>
+    ({ts:`2026-08-20T0${i}:00:00Z`,skill,provider:'anthropic',exit_code:0,duration_ms:1}))));
+  r.captureBaseline(root);
+  // Nadie del escalón 1 encendido → sin evidencia → el escalón 2 sigue cerrado.
+  r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
   assert.equal(r.readState(root).waveEvidence['0::anthropic'],undefined);
-  assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',config),/todos los actores/);
+  assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',config),/evidencia sana del escalon 1/);
 });
-test('CA-4: un escalón completo y saludable habilita el siguiente sólo en el mismo proveedor', () => {
-  const root=fixture(); const config={...cfg,waves:[{actors:['doc','refinar','po']},{actors:['pipeline-dev']}]};
-  seed(root,[1,2].flatMap(i=>['doc','refinar','po','pipeline-dev'].flatMap(skill=>[
+test('CA-4: un actor del escalón en rollback bloquea el escalón siguiente', () => {
+  const root=fixture(); const config={...cfg,waves:[{actors:['guru','security']},{actors:['pipeline-dev']}]};
+  seed(root,[1,2].flatMap(i=>['guru','security','pipeline-dev'].map(skill=>
+    ({ts:`2026-08-20T0${i}:00:00Z`,skill,provider:'anthropic',exit_code:0,duration_ms:1}))));
+  r.captureBaseline(root);
+  r.enablePair(root,'guru','anthropic',config); r.enablePair(root,'security','anthropic',config);
+  r.evaluatePair(root,'security','anthropic',{n:2,earlyDeathRate:1,reboundRate:0},config); // rollback de security
+  r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
+  assert.equal(r.readState(root).waveEvidence['0::anthropic'],undefined);
+  assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',config),/ninguno en rollback/);
+});
+test('CA-4: evidencia sana de los actores encendidos habilita el siguiente sólo en el mismo proveedor', () => {
+  const root=fixture(); const config={...cfg,waves:[{actors:['guru','security']},{actors:['pipeline-dev']}]};
+  seed(root,[1,2].flatMap(i=>['guru','security','pipeline-dev'].flatMap(skill=>[
     {ts:`2026-08-20T0${i}:00:00Z`,skill,provider:'anthropic',exit_code:0,duration_ms:1},
     {ts:`2026-08-20T0${i}:10:00Z`,skill,provider:'openai-codex',exit_code:0,duration_ms:1},
   ])));
   r.captureBaseline(root);
-  for (const actor of ['doc','refinar','po']) r.enablePair(root,actor,'anthropic',config);
+  // Sólo `guru` encendido en anthropic: `security` nunca corrió con propagación,
+  // no puede haber degradado y no traba el escalón para siempre.
+  r.enablePair(root,'guru','anthropic',config);
   r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
-  assert.ok(r.readState(root).waveEvidence['0::anthropic']);
+  const evidencia=r.readState(root).waveEvidence['0::anthropic'];
+  assert.ok(evidencia); assert.deepStrictEqual(evidencia.pairs,['guru::anthropic']);
+  assert.deepStrictEqual(evidencia.sin_evidencia,['security::anthropic']);
   assert.doesNotThrow(()=>r.enablePair(root,'pipeline-dev','anthropic',config));
   assert.throws(()=>r.enablePair(root,'pipeline-dev','openai-codex',config),/openai-codex/);
 });
@@ -95,13 +130,61 @@ test('el comando de spawn queda idéntico apagado, propaga encendido y omite tra
   r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:1,reboundRate:0},cfg);
   assert.deepStrictEqual(r.applyToSpawn(root,'po',resolution,original,{}).args,original);
 });
-test('produce rebote asociado al provider real y la evaluación automática lo consume', () => {
-  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,issue:77,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
-  r.captureBaseline(root); r.enablePair(root,'po','anthropic',cfg);
-  assert.equal(r.recordRebound(root,{issue:77,skill:'po',ts:'2026-08-20T03:00:00Z'}).recorded,true);
-  assert.equal(r.recordRebound(root,{issue:77,skill:'po',ts:'2026-08-20T04:00:00Z'}).recorded,true);
-  const result=r.evaluateEnabled(root,cfg,{from:'2026-08-20T00:00:00Z'});
-  assert.equal(result['po::anthropic'].action,'rollback'); assert.equal(r.shouldPropagate(root,'po','anthropic'),false);
+test('el rebote se atribuye al actor rebotado y la evaluación automática lo consume', () => {
+  const root=fixture();
+  seed(root,[1,2].flatMap(i=>[
+    {ts:`2026-08-20T0${i}:00:00Z`,issue:77,skill:'pipeline-dev',provider:'anthropic',exit_code:0,duration_ms:1},
+    {ts:`2026-08-20T0${i}:05:00Z`,issue:77,skill:'review',provider:'openai-codex',exit_code:0,duration_ms:1},
+  ]));
+  r.markReboundProducerLive(root,{now:'2026-08-20T00:00:00Z'});
+  const config={...cfg,waves:[{actors:['pipeline-dev']}]};
+  r.captureBaseline(root,{from:'2026-08-20T00:00:00Z',until:'2026-08-20T02:30:00Z'});
+  r.enablePair(root,'pipeline-dev','anthropic',config);
+  // El actor rebotado es el dev que vuelve a correr, NO el evaluador `review`.
+  const out=r.recordRebound(root,{issue:77,skill:'pipeline-dev',ts:'2026-08-20T03:00:00Z',
+    rechazado_en_fase:'aprobacion',evaluadores:['review']});
+  assert.equal(out.recorded,true);
+  assert.equal(out.row.skill,'pipeline-dev');
+  assert.equal(out.row.provider,'anthropic'); // provider del dev, no el del review
+  assert.deepStrictEqual(out.row.evaluadores,['review']);
+  r.recordRebound(root,{issue:77,skill:'pipeline-dev',ts:'2026-08-20T04:00:00Z'});
+  const result=r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
+  assert.equal(result['pipeline-dev::anthropic'].action,'rollback');
+  assert.equal(r.shouldPropagate(root,'pipeline-dev','anthropic'),false);
+  assert.equal(r.recordRebound(root,{issue:77,skill:undefined}).recorded,false);
+});
+test('la tasa de rebotes es null antes del productor y no dispara rollback falso', () => {
+  const root=fixture();
+  seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
+  // Baseline histórico: el productor de rebotes todavía no existía.
+  const base=r.captureBaseline(root,{from:'2026-08-20T00:00:00Z',until:'2026-08-20T02:30:00Z'});
+  assert.equal(base['po::anthropic'].reboundRate,null,'null != 0: la métrica no era medible');
+  r.enablePair(root,'po','anthropic',{...cfg,waves:[{actors:['po']}]});
+  // Observado con rebotes al 100%: no puede rollbackear contra un baseline no medido.
+  const sano=r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:0,reboundRate:1},cfg);
+  assert.equal(sano.action,'healthy'); assert.equal(sano.reboundArmed,false);
+  // Las muertes tempranas sí siguen armadas mientras tanto.
+  assert.equal(r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:1,reboundRate:null},cfg).action,'rollback');
+});
+test('baseline-rebotes completa la métrica faltante sin re-medir lo congelado', () => {
+  const root=fixture();
+  seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
+  r.captureBaseline(root,{from:'2026-08-20T00:00:00Z',until:'2026-08-20T02:30:00Z'});
+  assert.throws(()=>r.captureReboundBaseline(root,cfg,{from:'2026-08-21T00:00:00Z'}),/todavia no arranco/);
+  r.markReboundProducerLive(root,{now:'2026-08-21T00:00:00Z'});
+  assert.throws(()=>r.captureReboundBaseline(root,cfg,{from:'2026-08-20T00:00:00Z'}),/en o despues de/);
+  fs.writeFileSync(path.join(root,'logs','spawn-exit-2026-08-21.jsonl'),[1,2].map(i=>
+    JSON.stringify({ts:`2026-08-21T0${i}:00:00Z`,issue:9,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})).join('\n'));
+  r.recordRebound(root,{issue:9,skill:'po',ts:'2026-08-21T02:30:00Z'});
+  const out=r.captureReboundBaseline(root,cfg,{from:'2026-08-21T00:00:00Z',until:'2026-08-21T23:00:00Z'});
+  assert.equal(out.medidos['po::anthropic'],0.5);
+  const base=r.readState(root).baselines['po::anthropic'];
+  assert.equal(base.reboundRate,0.5); assert.equal(base.n,2,'la muestra original no se re-mide');
+  assert.equal(base.reboundWindow.from,'2026-08-21T00:00:00Z');
+  // Idempotente: un segundo llamado no pisa lo ya medido.
+  assert.throws(()=>r.captureReboundBaseline(root,cfg,{from:'2026-08-21T00:00:00Z'}),/ningun par quedo medible/);
+  // Con ambos lados medidos, la comparación de rebotes queda armada.
+  assert.equal(r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:0,reboundRate:0},cfg).action,'off');
 });
 test('el resolver real propaga el model_override de los actores primarios', () => {
   const pipelineDir=path.join(__dirname,'..');

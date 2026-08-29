@@ -3934,6 +3934,11 @@ function gate2RetieneAntesDeEntrega({ issue, pipelineName, fase, siguienteFase, 
 // =============================================================================
 
 function brazoBarrido(config) {
+  // #6274 — marca durable de "el productor de rebotes está vivo". Sin ella una
+  // ventana histórica devolvería reboundRate=0 (falso cero) en vez de `null`, y
+  // el baseline de rebotes quedaría congelado en 0 e inmutable. Idempotente y
+  // memoizada en el módulo: cuesta una lectura por proceso.
+  try { modelPropagationRollout.markReboundProducerLive(PIPELINE); } catch { /* best-effort */ }
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     const fases = pipelineConfig.fases;
     const faseRechazo = pipelineConfig.fase_rechazo;
@@ -5379,14 +5384,25 @@ function brazoBarrido(config) {
             const destinoFile = path.join(destinoPendiente, `${issue}.${skill}`);
             writeYaml(destinoFile, yamlOut);
           }
-          // #6274 — productor canónico de rebotes: asocia el rechazo al último
-          // spawn efectivo del mismo issue+actor, que contiene el provider real.
-          for (const rechazado of rechazados) {
-            try {
-              modelPropagationRollout.recordRebound(PIPELINE, {
-                issue, skill: skillFromFile(rechazado.file.name), ts: new Date().toISOString(),
-              });
-            } catch (e) { log('barrido', `rollout: no se pudo registrar rebote #${issue}: ${e.message}`); }
+          // #6274 — productor canónico de rebotes. El rebote se atribuye al
+          // ACTOR REBOTADO (`skillsDestino`: el que vuelve a correr para
+          // corregir), NO al evaluador que emitió el veredicto `rechazado`.
+          // `rechazados` son los archivos del evaluador; usar su skill dejaba la
+          // métrica inerte para los devs, que son el objetivo del rollout, y
+          // podía rollbackear al par equivocado.
+          //
+          // Los rebotes de infra (timeout/crash/watchdog) NO cuentan: no son un
+          // defecto del trabajo del actor y contaminarían la señal del modelo.
+          if (!esReboteDeInfra) {
+            const evaluadores = rechazados.map(x => skillFromFile(x.file.name)).filter(Boolean);
+            for (const skillRebotado of skillsDestino) {
+              try {
+                modelPropagationRollout.recordRebound(PIPELINE, {
+                  issue, skill: skillRebotado, ts: new Date().toISOString(),
+                  rechazado_en_fase: fase, evaluadores,
+                });
+              } catch (e) { log('barrido', `rollout: no se pudo registrar rebote #${issue}: ${e.message}`); }
+            }
           }
 
           if (esReboteDeInfra) {

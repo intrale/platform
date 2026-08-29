@@ -840,10 +840,30 @@ model_propagation_rollout:
   thresholds:
     rebound_absolute: 0.10
     early_death_absolute: 0.10
+  # Escalones del encendido, del menor al mayor riesgo. REGLA DURA: un escalón
+  # sólo puede nombrar skills que el pulpo despacha como agente
+  # (productConfig.pipelines.*.skills_por_fase). Un actor que no se despacha
+  # nunca escribe `spawn-exit-*.jsonl`: su baseline queda en n=0 para siempre y
+  # traba el escalón —y todos los siguientes— de forma permanente.
+  # `model-rollout.js` valida esta regla contra la config real antes de encender.
+  #
+  # Mapeo respecto del issue #6274, que nombraba actores no despachables:
+  #   - `sherlock`/`telegram-sherlock` es una chain de proveedores del bot de
+  #     Telegram, corre fuera del dispatch y no tiene telemetría de corridas. Su
+  #     lugar (alto volumen, corridas cortas, no producen código ni bloquean
+  #     merge) lo ocupan `guru` y `security` en la fase `analisis`.
+  #   - `doc` y `refinar` son skills interactivos del Commander, tampoco
+  #     despachados. Los actores livianos reales son `po`, `ux`, `architect` y
+  #     `planner`.
   waves:
-    - actors: [telegram-sherlock]
-    - actors: [doc, refinar, po]
-    - actors: [backend-dev, pipeline-dev, android-dev]
+    # 1 — lectura y análisis: alto volumen, corridas cortas, no tocan código.
+    - actors: [guru, security]
+    # 2 — definición: livianos, escriben criterios pero no código.
+    - actors: [po, ux, architect, planner]
+    # 3 — evaluadores: su veredicto gatea el merge.
+    - actors: [review, tester, qa]
+    # 4 — devs pesados: objetivo final del épico.
+    - actors: [backend-dev, pipeline-dev, android-dev, web-dev, dev]
 
 # #4870 — Modo reducido: aviso advisory cuando no hay proveedor PAGO disponible.
 #
