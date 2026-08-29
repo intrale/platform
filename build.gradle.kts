@@ -111,6 +111,13 @@ tasks.register("verifyNoLegacyStrings") {
             "app/composeApp/src/commonMain/kotlin/ui/rs/",
         )
 
+        // Copias de trabajo y snapshots temporales no son fuentes del checkout actual.
+        val excludedDirectoryPrefixes = listOf(
+            ".claude/worktrees/",
+            ".pipeline/tmp/",
+            ".pipeline/_tmp/",
+        )
+
         val excludedFiles = setOf(
             "build.gradle.kts",
         )
@@ -122,6 +129,10 @@ tasks.register("verifyNoLegacyStrings") {
             if (!dir.isDirectory || dir == rootDir) return false
             val relative = dir.relativePath()
             if (relative.isEmpty()) return false
+            val directoryPrefix = "$relative/"
+            if (excludedDirectoryPrefixes.any { prefix -> directoryPrefix.startsWith(prefix) }) {
+                return true
+            }
             val segments = relative.split('/')
             return segments.any { segment ->
                 segment in excludedSegments ||
