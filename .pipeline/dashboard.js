@@ -4348,44 +4348,13 @@ function generateHTML(state) {
   const healthColor = healthScore > 60 ? '#3fb950' : healthScore > 30 ? '#d29922' : '#f85149';
   const blocked = res.cpuPercent >= res.maxCpu || res.memPercent >= res.maxMem;
 
-  // ── #6708 — Disco: tercera celda del gauge-row, misma plantilla que CPU/RAM ──
-  // El disco se llenaba cada 2-3 semanas y el operador se enteraba recién
-  // cuando el pipeline empezaba a rebotar issues sanos. Acá está a la vista,
-  // con el color del umbral vigente del presupuesto (`disk_budget`).
-  //
-  // El gauge muestra % OCUPADO (para que la aguja apunte a la derecha cuando
-  // hay problema, igual que CPU/RAM); el dato que manda para las decisiones son
-  // los GB LIBRES, que van en grande en el subtítulo. La marca roja del gauge
-  // es el punto donde el presupuesto declara `red`.
-  let diskHTML = '';
-  const dsk = state.disk;
-  if (dsk && Number.isFinite(dsk.freeGB) && Number.isFinite(dsk.totalGB) && dsk.totalGB > 0) {
-    const b = dsk.budget || {};
-    const usedPct = Math.round(((dsk.totalGB - dsk.freeGB) / dsk.totalGB) * 100);
-    const redPct = Number.isFinite(b.orange_gb)
-      ? Math.round(((dsk.totalGB - b.orange_gb) / dsk.totalGB) * 100)
-      : 95;
-    const diskStatus = dsk.level === 'red' ? 'danger'
-      : (dsk.level === 'orange' || dsk.level === 'yellow') ? 'warn' : 'ok';
-    const escala = Number.isFinite(b.green_gb)
-      ? `verde >${b.green_gb} · amarillo >${b.yellow_gb} · naranja >${b.orange_gb} GB`
-      : 'presupuesto sin configurar';
-    diskHTML = `
-      <div class="rgauge-cell rgauge-${diskStatus}">
-        <div class="rgauge-top">
-          ${radialGauge(usedPct, 100, redPct, dsk.color)}
-          <div class="rgauge-info">
-            <div class="rgauge-title">Disco</div>
-            <div class="rgauge-sub"><b style="color:${dsk.color}">${dsk.freeGB.toFixed(1)} GB libres</b> de ${dsk.totalGB} GB</div>
-            <div class="rgauge-kpis">
-              <span title="Umbrales de disk_budget en config.yaml">nivel <b style="color:${dsk.color}">${dsk.level}</b></span>
-              <span title="${escala}">escala <b>${escala}</b></span>
-            </div>
-          </div>
-        </div>
-        ${dsk.frozen ? '<div class="resource-alert">⚠️ Despacho de <b>build</b> y <b>verificacion</b> frenado por falta de disco</div>' : ''}
-      </div>`;
-  }
+  // #6708 — El indicador de disco NO se pinta acá. `resourcesHTML` (abajo) es
+  // código muerto: se asigna y nunca se interpola en el HTML de salida, así
+  // que un gauge colgado de ese bloque no llega a ninguna pantalla servida.
+  // El espacio libre con el color de su umbral se renderiza en la system card
+  // del home V3 (`views/dashboard/home.js` → renderSystemCard), que es la
+  // pantalla que abre el operador. `state.disk` se sigue calculando arriba
+  // porque lo consume `headerSlice()` → /api/dash/header, la fuente del dato.
 
   const resourcesHTML = `
     <div class="sys-health">
@@ -4429,7 +4398,6 @@ function generateHTML(state) {
         </div>
         <div class="rgauge-spark" title="Tendencia RAM últimos minutos">${sparklineSVG(memHist, memColor, { w: 220, h: 32, max: 100 })}</div>
       </div>
-      ${diskHTML}
     </div>
     ${stale > 0 ? `<div class="resource-alert">\u26A0\uFE0F ${stale} issue${stale > 1 ? 's' : ''} con más de 30 min trabajando — posible huérfano: ${staleDetail}</div>` : ''}`;
 

@@ -2367,6 +2367,34 @@ async function tickHeader(){
         const scMem = res.memPercent != null ? Math.round(res.memPercent)+'%' : '—';
         setText('sys-cpu-value', scCpu);
         setText('sys-mem-value', scMem);
+        // #6708 — Disco: espacio LIBRE en GB con el color del umbral vigente.
+        // El SSR ya lo pinta; esto lo mantiene fresco con el polling del header
+        // (mismo slice, un solo endpoint — R-G3). textContent siempre, y el
+        // color sólo si es hex (el estado sale de un JSON en disco).
+        const dEl = document.getElementById('sys-disk-value');
+        const dsk = res.disk;
+        if(dEl){
+            if(dsk && typeof dsk.freeGB === 'number' && isFinite(dsk.freeGB)){
+                const emo = {green:'🟢',yellow:'🟡',orange:'🟠',red:'🔴'}[dsk.level] || '⚪';
+                setText('sys-disk-value', emo+' '+dsk.freeGB.toFixed(1)+' GB');
+                dEl.style.color = (typeof dsk.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(dsk.color))
+                    ? dsk.color : '';
+                const cell = dEl.parentElement;
+                if(cell){
+                    const b = dsk.budget || {};
+                    const escala = (typeof b.green_gb === 'number')
+                        ? 'verde >'+b.green_gb+' · amarillo >'+b.yellow_gb+' · naranja >'+b.orange_gb+' GB libres'
+                        : 'presupuesto sin configurar';
+                    const total = (typeof dsk.totalGB === 'number') ? ' de '+dsk.totalGB+' GB' : '';
+                    const frozen = dsk.frozen ? ' Despacho de build y qa FRENADO por falta de disco.' : '';
+                    cell.title = 'Espacio libre en disco: '+dsk.freeGB.toFixed(1)+' GB'+total
+                        +'. Nivel '+dsk.level+' (disk_budget: '+escala+').'+frozen;
+                }
+            } else {
+                setText('sys-disk-value', '—');
+                dEl.style.color = '';
+            }
+        }
     }
     // #3725 — Salud de infra: pulpo UP/DOWN + last_ping desde el header slice.
     // textContent siempre (anti-XSS). Sin exponer secretos (CA-3725.3).
@@ -4962,9 +4990,38 @@ function collectHomeState(opts) {
         // process.env (CA-3725.6).
         system: {
             cpuPct: null, memPct: null, diskPct: null,
+            // #6708 — Disco: el guardián lo mide en cada tick del Pulpo y lo
+            // persiste; acá sólo se LEE (medir con `fsutil` en cada render de
+            // la página costaría un syscall bloqueante por request). Se resuelve
+            // en SSR para que el dato esté a la vista aunque el polling del
+            // header todavía no haya corrido — el tick posterior lo refresca.
+            disk: _collectDiskStatus(pipelineDir),
             uptimeS: Math.floor(os.uptime()),
         },
     };
+}
+
+// --- #6708 — Estado de disco para la system card ---------------------------
+// Lee `disk-guard-state.json` por el módulo dueño del formato (nunca parseando
+// el archivo a mano acá). Devuelve `null` cuando todavía no hay medición
+// (Pulpo recién arrancado o `disk_budget.enabled: false`): el render muestra
+// '—' en vez de ceros, que se leerían como "disco lleno".
+function _collectDiskStatus(pipelineDir) {
+    try {
+        const dg = require('../../lib/disk-guard');
+        const st = dg.readState({ pipelineDir });
+        if (!st || !st.measured_at || !Number.isFinite(st.free_gb)) return null;
+        const level = st.level || 'unknown';
+        return {
+            level,
+            color: dg.LEVEL_COLORS[level] || dg.LEVEL_COLORS.unknown,
+            freeGB: st.free_gb,
+            totalGB: Number.isFinite(st.total_gb) ? st.total_gb : null,
+            frozen: !!st.frozen,
+            budget: st.budget || null,
+            measuredAt: st.measured_at,
+        };
+    } catch { return null; }
 }
 
 // --- Sub-función pura: brand bar V3 (logo + ambiente + build status) --------
@@ -5296,22 +5353,69 @@ function renderQueueDetailed(state) {
 function renderSystemCard(state) {
     const sys = (state && state.system) || {};
     const pct = (v) => (v == null || isNaN(v)) ? '—' : (Math.round(v) + '%');
+    const disk = _diskCellModel(sys);
     const cells = [
         { id: 'sys-cpu-value', label: 'CPU', val: pct(sys.cpuPct), tip: 'Uso de CPU del host (%). Fuente: /api/dash/header.' },
         { id: 'sys-mem-value', label: 'RAM', val: pct(sys.memPct), tip: 'Uso de memoria del host (%). Fuente: /api/dash/header.' },
-        { id: 'sys-disk-value', label: 'Disco', val: pct(sys.diskPct), tip: 'Uso de disco del host (%).' },
+        // #6708 — El CA pide el ESPACIO LIBRE, no el % usado: el operador decide
+        // sobre GB disponibles, y el color es el del umbral vigente de
+        // `disk_budget`. El emoji va delante para que la severidad no dependa
+        // sólo del color (WCAG: severidad por forma + texto, no sólo color).
+        { id: 'sys-disk-value', label: 'Disco libre', val: disk.val, tip: disk.tip, color: disk.color },
         { id: 'sys-uptime-value', label: 'Uptime', val: _fmtUptimeSsr(sys.uptimeS), tip: 'Tiempo encendido del host.' },
     ];
-    const cellHtml = cells.map(c => `
+    const cellHtml = cells.map(c => {
+        const style = _safeCssColor(c.color) ? ` style="color:${escapeHtmlAttr(c.color)}"` : '';
+        return `
         <div class="sys-cell" title="${escapeHtmlAttr(c.tip)}">
           <span class="sys-cell-label">${escapeHtmlText(c.label)}</span>
-          <span class="sys-cell-value" id="${c.id}">${escapeHtmlText(c.val)}</span>
-        </div>`).join('');
+          <span class="sys-cell-value" id="${c.id}"${style}>${escapeHtmlText(c.val)}</span>
+        </div>`;
+    }).join('');
     return `
     <section class="system-card" aria-label="Recursos del sistema">
       <h2 class="in-section-title"><span class="in-section-title-icon">🖥</span> Recursos del host</h2>
       <div class="sys-grid">${cellHtml}</div>
     </section>`;
+}
+
+// --- #6708 — Celda de disco de la system card ------------------------------
+// El indicador se pinta acá, en el home V3 que es la pantalla que abre el
+// operador. Un intento previo lo colgó del bloque `resourcesHTML` de
+// dashboard.js, que está asignado pero nunca se interpola en la salida: el
+// gauge existía en el código y no llegaba a ninguna pantalla servida.
+const _DISK_EMOJI = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴', unknown: '⚪' };
+
+// Sólo hex se interpola como color inline. El mapa de disk-guard está
+// congelado, pero el estado se lee de un JSON en disco: si alguien lo edita a
+// mano, un `color` arbitrario no debe poder inyectar CSS en el atributo style.
+function _safeCssColor(c) {
+    return typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c);
+}
+
+// Modelo de la celda: valor visible, tooltip explicativo y color del umbral.
+// Sin medición devuelve '—' y SIN color — no inventa un verde que se
+// leería como "hay lugar de sobra" cuando en realidad no se sabe.
+function _diskCellModel(sys) {
+    const d = (sys && sys.disk) || null;
+    if (!d || !Number.isFinite(d.freeGB)) {
+        return { val: '—', color: null, level: 'unknown',
+                 tip: 'Espacio libre en disco. Sin medición todavía · el guardián lo mide en cada tick del Pulpo.' };
+    }
+    const level = typeof d.level === 'string' ? d.level : 'unknown';
+    const emoji = _DISK_EMOJI[level] || _DISK_EMOJI.unknown;
+    const b = d.budget || {};
+    const escala = Number.isFinite(b.green_gb)
+        ? `verde >${b.green_gb} · amarillo >${b.yellow_gb} · naranja >${b.orange_gb} GB libres`
+        : 'presupuesto sin configurar';
+    const total = Number.isFinite(d.totalGB) ? ` de ${d.totalGB} GB` : '';
+    const frozen = d.frozen ? ' Despacho de build y qa FRENADO por falta de disco.' : '';
+    return {
+        val: emoji + ' ' + d.freeGB.toFixed(1) + ' GB',
+        color: d.color,
+        level,
+        tip: `Espacio libre en disco: ${d.freeGB.toFixed(1)} GB${total}. Nivel ${level} (disk_budget: ${escala}).${frozen}`,
+    };
 }
 
 // =============================================================================

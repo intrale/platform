@@ -108,7 +108,32 @@ Pulpo corría en `dry_run: true` desde que se creó — nunca borró un byte.
 
 El Pulpo ahora mide el espacio libre **en cada tick** y aplica una escalera de
 acciones. El estado vive en `.pipeline/disk-guard-state.json` (no versionado) y
-el dashboard lo muestra como un gauge más, con el color del umbral vigente.
+el dashboard lo muestra en la **system card del home** (`/`), junto a CPU, RAM
+y uptime, con el color del umbral vigente.
+
+### Dónde se pinta, y por qué ahí
+
+La celda vive en `renderSystemCard()` de `.pipeline/views/dashboard/home.js`
+(id `sys-disk-value`) y muestra **GB libres**, no % usado: el operador decide
+sobre espacio disponible, no sobre una fracción. El color sale del nivel vigente
+de `disk_budget`, y adelante va el emoji del nivel para que la severidad no
+dependa sólo del color. El tooltip explica la escala completa y, si el freno de
+fases pesadas está activo, lo dice.
+
+El dato llega por el slice `resources.disk` de `/api/dash/header` — el mismo
+endpoint que ya hidrata CPU y RAM, sin fetch extra. Se renderiza en SSR (para
+que esté a la vista apenas carga la página) y el polling del header lo refresca
+cada 5 segundos.
+
+> **No pintarlo en `generateHTML()` de `dashboard.js`.** El bloque
+> `resourcesHTML` de esa función es código muerto: se asigna a una constante que
+> nunca se interpola en el HTML de salida. Un gauge colgado ahí compila, pasa
+> los tests del módulo y **no llega a ninguna pantalla servida** — fue
+> exactamente el rebote de QA de este issue. Por eso el test
+> «#6708 CA: el home SERVIDO muestra el espacio libre…» de
+> `views/dashboard/__tests__/home.test.js` verifica el markup de
+> `renderHomeHTML()` y no el de una sub-función aislada: así la regresión no
+> puede repetirse en silencio.
 
 ### El presupuesto
 
