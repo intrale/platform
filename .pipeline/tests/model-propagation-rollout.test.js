@@ -77,6 +77,15 @@ test('CA-4: un escalón completo y saludable habilita el siguiente sólo en el m
 test('rollback apaga sólo el flag y notifica una vez', () => { const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1}))); r.captureBaseline(root); r.enablePair(root,'po','anthropic',cfg); const notices=[];
   const out=r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:.5,reboundRate:0},cfg,{notify:x=>notices.push(x)}); assert.equal(out.action,'rollback'); assert.equal(r.shouldPropagate(root,'po','anthropic'),false); assert.equal(notices.length,1);
   assert.equal(r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:.5,reboundRate:0},cfg,{notify:x=>notices.push(x)}).action,'off'); assert.equal(notices.length,1); });
+test('CA-3: los defaults disparan rollback y umbrales invalidos no concluyen healthy', () => {
+  const prepare=()=>{ const root=fixture(); seed(root,Array.from({length:30},(_,i)=>({ts:`2026-08-20T${String(i%24).padStart(2,'0')}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
+    r.captureBaseline(root); r.enablePair(root,'po','anthropic',{waves:[{actors:['po']}]}); return root; };
+  const degraded={n:20,earlyDeathRate:1,reboundRate:1};
+  const defaultRoot=prepare(); assert.equal(r.evaluatePair(defaultRoot,'po','anthropic',degraded,{}).action,'rollback');
+  const invalidRoot=prepare(); assert.deepStrictEqual(r.evaluatePair(invalidRoot,'po','anthropic',degraded,{thresholds:{early_death_absolute:.1}}),
+    {action:'deferred',reason:'umbrales ausentes o no numericos'});
+  assert.equal(r.shouldPropagate(invalidRoot,'po','anthropic'),true);
+});
 test('muestra insuficiente no dispara rollback y reencendido exige humano', () => { const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1}))); r.captureBaseline(root); r.enablePair(root,'po','anthropic',cfg); assert.equal(r.evaluatePair(root,'po','anthropic',{n:1,earlyDeathRate:1,reboundRate:1},cfg).action,'deferred'); assert.throws(()=>r.reenablePair(root,'po','anthropic',''),/--by/); });
 test('el comando de spawn queda idéntico apagado, propaga encendido y omite tras rollback', () => {
   const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));

@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DEFAULTS = Object.freeze({ baselineMinRuns: 30, evaluationMinRuns: 20, earlyDeathMs: 15000,
-  thresholds: { reboundAbsolute: 0.10, earlyDeathAbsolute: 0.10 } });
+  thresholds: { rebound_absolute: 0.10, early_death_absolute: 0.10 } });
 
 function paths(pipelineDir) {
   const state = path.join(pipelineDir, 'state', 'model-propagation-rollout.json');
@@ -122,6 +122,9 @@ function evaluatePair(pipelineDir, actor, provider, observed, config, opts = {})
   if (!observed || observed.n < min) return { action: 'deferred', reason: `muestra ${observed?.n || 0}/${min}` };
   const base = state.baselines[key]; if (!base) return { action: 'deferred', reason: 'sin baseline' };
   const th = config.thresholds || DEFAULTS.thresholds;
+  if (!Number.isFinite(th.early_death_absolute) || !Number.isFinite(th.rebound_absolute)) {
+    return { action: 'deferred', reason: 'umbrales ausentes o no numericos' };
+  }
   const metric = observed.earlyDeathRate - base.earlyDeathRate > th.early_death_absolute ? 'muertes tempranas'
     : observed.reboundRate - base.reboundRate > th.rebound_absolute ? 'rebotes' : null;
   if (!metric) return { action: 'healthy' };
