@@ -41,7 +41,8 @@
 // `.pipeline/roles/*.md`, `.pipeline/*.js` y `.pipeline/config.yaml` son el
 // código fuente del pipeline — es exactamente lo que edita un agente
 // `pipeline-dev`, y filtrarlo entero borraría su trabajo. Sólo son ruido los
-// subdirectorios de ESTADO (colas de fases, logs, sesiones, markers, audit).
+// subdirectorios de ESTADO (colas de fases, sesiones y markers). Logs y audit
+// quedan protegidos: pueden contener evidencia operativa que no es regenerable.
 // =============================================================================
 
 'use strict';
@@ -53,7 +54,7 @@
 // que quede protegido por default es el fallo seguro.
 // -----------------------------------------------------------------------------
 const PIPELINE_STATE_DIRS = Object.freeze([
-  'audit', 'archived', 'historico', 'logs', 'sessions', 'state', 'ready',
+  'archived', 'historico', 'sessions', 'state', 'ready',
   'rejections', 'metrics', 'handoff', 'locks', 'claims', 'quota', 'tmp',
 ]);
 
@@ -101,8 +102,8 @@ function isInfraNoisePath(filepath) {
   // Artefactos de build de cualquier módulo (`build/`, `app/build/`, ...).
   if (/(^|\/)(build|\.gradle|\.kotlin|kotlin-js-store|node_modules)(\/|$)/.test(p)) return true;
 
-  // Logs y basura del sistema de archivos.
-  if (/\.log$/.test(p)) return true;
+  // Basura del sistema de archivos. Los logs quedan protegidos por default:
+  // pueden ser evidencia operativa o de seguridad y requieren OK explícito.
   if (/(^|\/)(\.DS_Store|Thumbs\.db)$/.test(p)) return true;
 
   if (p === '.pipeline' || p.startsWith('.pipeline/')) {

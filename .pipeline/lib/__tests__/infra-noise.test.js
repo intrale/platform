@@ -39,9 +39,13 @@ test('la evidencia de QA es ruido de infra (regenerable corriendo QA)', () => {
 test('los directorios de estado del pipeline son ruido de infra', () => {
   assert.strictEqual(noise.isInfraNoisePath('.pipeline/state/label-mutations.jsonl'), true);
   assert.strictEqual(noise.isInfraNoisePath('.pipeline/ready/dashboard.ready'), true);
-  assert.strictEqual(noise.isInfraNoisePath('.pipeline/logs/pulpo.log'), true);
   assert.strictEqual(noise.isInfraNoisePath('.pipeline/sessions/6708.json'), true);
-  assert.strictEqual(noise.isInfraNoisePath('.pipeline/audit/disk-guard.jsonl'), true);
+});
+
+test('los logs y auditorías NO son ruido sin aprobación explícita', () => {
+  assert.strictEqual(noise.isInfraNoisePath('logs/security-incident.log'), false);
+  assert.strictEqual(noise.isInfraNoisePath('.pipeline/logs/pulpo.log'), false);
+  assert.strictEqual(noise.isInfraNoisePath('.pipeline/audit/ghostbusters-worktrees.jsonl'), false);
 });
 
 test('los archivos de las colas de fases son ruido de infra', () => {
