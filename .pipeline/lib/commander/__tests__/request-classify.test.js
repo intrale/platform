@@ -11,6 +11,7 @@
 //   T-6  provider validado contra agent-models.json; inválido → 'desconocido'.
 //   T-7  sameProviderVerification refleja verdict.sameProvider.
 //   T-8  robustez: input vacío / parcial no tira.
+//   T-9  #6459 — `huerfano`: valor del enum, precedencia y back-compat.
 // =============================================================================
 'use strict';
 
@@ -102,8 +103,10 @@ test('ok ← caso base (Anthropic primario, verdict ok, sin fallback)', () => {
   assert.equal(r.crossProviderDispatch, false);
 });
 
-test('el enum cerrado sólo contiene los 4 valores esperados', () => {
-  assert.deepEqual([...RESULTADOS].sort(), ['ajustada', 'error', 'fallback', 'ok']);
+test('el enum cerrado sólo contiene los 5 valores esperados', () => {
+  // #6459 — se sumó `huerfano` (5º valor). Sigue siendo un enum CERRADO: este
+  // test es el que impide que alguien agregue un estado sin pasar por acá.
+  assert.deepEqual([...RESULTADOS].sort(), ['ajustada', 'error', 'fallback', 'huerfano', 'ok']);
 });
 
 // --- T-6 provider validado ----------------------------------------------------
@@ -193,4 +196,47 @@ test('el resultado siempre pertenece al enum cerrado', () => {
     const r = classifyCommanderResult(c);
     assert.ok(RESULTADOS.includes(r.resultado), `resultado ${r.resultado} fuera del enum`);
   }
+});
+
+// --- T-9 #6459 · resultado `huerfano` -----------------------------------------
+// El turno se ejecutó ENTERO y su respuesta nunca se confirmó como entregada.
+
+test('#6459: huerfano es un valor válido del enum cerrado RESULTADOS', () => {
+  assert.ok(RESULTADOS.includes('huerfano'), 'falta huerfano en el enum');
+  assert.equal(RESULTADOS.length, 5);
+  // R-7: el valor va SIN tilde — de acá sale la clase CSS `cmd-result-${v}`.
+  assert.ok(!RESULTADOS.some((v) => /[áéíóúÁÉÍÓÚ]/.test(v)), 'ningún valor del enum lleva tilde');
+});
+
+test('#6459: deliveryUnconfirmed true y sin error ⇒ huerfano', () => {
+  assert.equal(classifyCommanderResult({ deliveryUnconfirmed: true }).resultado, 'huerfano');
+});
+
+test('#6459: error GANA a huerfano — el operador necesita saber que falló', () => {
+  // La guarda del arquitecto es `hadError !== true`; acá se extiende a TODAS las
+  // condiciones de error, que es lo que dice su propia justificación.
+  assert.equal(classifyCommanderResult({ deliveryUnconfirmed: true, hadError: true }).resultado, 'error');
+  assert.equal(classifyCommanderResult({ deliveryUnconfirmed: true, emptyResponse: true }).resultado, 'error');
+  assert.equal(
+    classifyCommanderResult({ deliveryUnconfirmed: true, sherlockDisclaimerType: 'timeout' }).resultado,
+    'error');
+});
+
+test('#6459: huerfano GANA a ajustada y a fallback', () => {
+  assert.equal(classifyCommanderResult({
+    deliveryUnconfirmed: true,
+    sherlockVerdict: { verdict: 'rechazado' },
+    dispatchResolution: { provider: 'anthropic', crossProvider: true, fallbackUsed: 'cerebras' },
+  }).resultado, 'huerfano');
+});
+
+test('#6459: sin el flag la clasificación es IDÉNTICA a la de antes (back-compat)', () => {
+  assert.equal(classifyCommanderResult({}).resultado, 'ok');
+  assert.equal(classifyCommanderResult({ deliveryUnconfirmed: false }).resultado, 'ok');
+  assert.equal(classifyCommanderResult({ sherlockVerdict: { verdict: 'rechazado' } }).resultado, 'ajustada');
+  assert.equal(classifyCommanderResult({ dispatchResolution: { crossProvider: true } }).resultado, 'fallback');
+  assert.equal(classifyCommanderResult({ hadError: true }).resultado, 'error');
+  // Un valor no-boolean tampoco activa el estado nuevo (comparación estricta).
+  assert.equal(classifyCommanderResult({ deliveryUnconfirmed: 'sí' }).resultado, 'ok');
+  assert.equal(classifyCommanderResult({ deliveryUnconfirmed: 1 }).resultado, 'ok');
 });

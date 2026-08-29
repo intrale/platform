@@ -338,6 +338,26 @@ human_block_reminder:
   tick_ms: 1800000           # 30 min. Es la resolución del recordatorio, no su frecuencia:
                              # el escalado real lo fija REMINDER_STEPS_HOURS del módulo.
 
+# (#6611) Re-chequeo automático de bloqueos needs-human VERIFICABLES.
+#
+# Qué destraba: sólo los freezes que registraron un predicado re-evaluable por
+# máquina — hoy, un `pr_merge_blocked` de `delivery` (HTTP 405 con todos los
+# requeridos en verde). Cuando el PR pasa a MERGEABLE + CLEAN sin checks en rojo,
+# el issue vuelve a la cola solo.
+#
+# Qué NO destraba: cualquier bloqueo sin predicado registrado — o sea, todo
+# juicio humano genuino. Sin predicado no hay re-evaluación (fail-closed).
+#
+# El auto-destrabe SÓLO re-encola la fase: `delivery` vuelve a correr todos sus
+# gates, incluido el de QA. No presume ni ejecuta ningún merge.
+human_block_auto_recheck:
+  enabled: true              # false → el reaper no corre
+  kill_switch: false         # true  → idem, para cortar en caliente sin editar enabled
+  max_auto_releases: 3       # techo por causa (<issue>::<kind>::<pr>). Al 3er
+                             # ciclo destrabe → re-bloqueo, escala como duro.
+  max_prs_per_tick: 10       # tope de PRs consultados en `gh` por tick. El resto
+                             # se difiere al ciclo siguiente, no se descarta.
+
 # (#2893 / #6118) Aviso de dependencias faltantes: un issue habilitado que no
 # puede avanzar porque depende de otro que quedó fuera de la selección de la ola.
 #
@@ -1740,6 +1760,12 @@ vault:
   # `true`. Sin esto, "bootstrap temporal" se vuelve permanente por olvido, que
   # es exactamente el modo de falla que la ventana existe para evitar.
   bootstrap_fallback_until: ""
+  # Corte operacional del fallback (#5459). Los defaults son deliberadamente
+  # acotados y fail-closed; el ejecutor vuelve a validar estas cotas al usarlo.
+  cut_fallback:
+    authorization_ttl_seconds: 300
+    operation_timeout_ms: 10000
+    runbook: "docs/pipeline/vault-secretos-aws.md"
   # ---------------------------------------------------------------------------
   # #5427 · #5448 — ventana SOMBRA: criterio de salida del fallback
   # ---------------------------------------------------------------------------

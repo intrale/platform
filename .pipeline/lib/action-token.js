@@ -533,7 +533,10 @@ function createTokenSigner(opts = {}) {
         if (!claim.claimed) return { ok: false, reason: claim.reason };
 
         markNonceUsed(String(nonce), { issue, action, k, gate: g });
-        const res = { ok: true, issue, action, nonce: String(nonce) };
+        // `issuedAt` (#5459) — el corte de vault necesita la edad real de la
+        // autorizacion para decidir el fallback; se expone junto al veredicto
+        // para no releer el payload aguas arriba.
+        const res = { ok: true, issue, action, nonce: String(nonce), issuedAt: Number(payload.t) };
         if (bound) { res.g = g; res.h = h; res.k = k; }
         return res;
     }

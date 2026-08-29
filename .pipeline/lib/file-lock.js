@@ -183,6 +183,9 @@ let lockTmpSeq = 0;
 function buildLockMeta() {
     return {
         pid: process.pid,
+        // #6459 — identidad única del lock; habilita la remoción VERIFICADA de
+        // locks stale (ver removeStaleLock).
+        nonce: crypto.randomBytes(8).toString('hex'),
         startTime: PROCESS_START_ISO,
         hostname: os.hostname(),
         version: LOCK_SCHEMA_VERSION,
@@ -303,30 +306,27 @@ function isPidAlive(pid) {
         process.kill(pid, 0);
         return true;
     } catch (err) {
-        // #6145 (regresión CA-8 #3518, tercera vuelta) — FAIL-CLOSED.
+        // #6459 — FAIL-CLOSED: sólo ESRCH — la única respuesta que afirma
+        // positivamente "ese PID no existe" — cuenta como muerto. CUALQUIER otro
+        // error (EPERM, EINVAL, UNKNOWN, EACCES…) significa "no pude
+        // determinarlo": ante la duda asumimos VIVO.
         //
-        // Causa raíz del rebote: el `return false` catch-all de antes hacía que
-        // CUALQUIER código distinto de ESRCH/EPERM se leyera como "el holder
-        // está muerto". `isStale()` reclamaba entonces el lock SIN chequeo de
-        // antigüedad, y el contendiente unlinkeaba el lock de un holder VIVO
-        // que acababa de crearlo → dual-hold → los dos procesos hacen su
-        // read-modify-write sobre la misma base y el segundo pisa al primero.
-        // Los dos salen con código 0 y el write perdido no deja rastro
-        // (síntoma observado: `issues=5, exitosos=10` — 10 workers exit 0 y 5
-        // writes clobbereados).
+        // El catch-all anterior era `return false` (fail-OPEN). En Windows
+        // `process.kill(pid,0)` se resuelve con OpenProcess(), que bajo
+        // fork-storm puede fallar con un código distinto de ESRCH/EPERM aunque
+        // el proceso esté vivo → falso "muerto" → robo del lock de un holder
+        // vivo → dual-hold → lost-update silencioso.
         //
-        // Por qué pega en Windows y no en el test aislado: `process.kill(pid, 0)`
-        // baja a `OpenProcess()`. Bajo fork-storm de la suite completa (~375
-        // archivos de test en paralelo, batches de `node --test`) esa llamada
-        // falla de formas variadas y transitorias que NO son ESRCH —
-        // EACCES/ENOMEM/EMFILE/EINVAL/UNKNOWN según presión de handles,
-        // antivirus o indexador. Todas caían en el catch-all.
+        // Costo: un PID que murió y devuelve un error raro tarda hasta
+        // STALE_AGE_MS en recuperarse por antigüedad en vez de al instante. Es
+        // el lado correcto para equivocarse: demorar la recuperación de un
+        // huérfano es recuperable; corromper el archivo en silencio no.
         //
-        // Regla nueva: sólo ESRCH PRUEBA que el proceso no existe. Todo lo
-        // demás es "la sonda no pudo responder" y se trata como VIVO. El costo
-        // del fail-closed es un lock huérfano que tarda un poco más en
-        // recuperarse (lo cubre el umbral de antigüedad); el costo del
-        // fail-open era corromper el estado en silencio.
+        // #6145 confirmó la misma causa raíz de forma independiente: bajo
+        // fork-storm de la suite completa (~375 archivos en paralelo) el
+        // OpenProcess() de Windows falla con EACCES/ENOMEM/EMFILE/EINVAL
+        // según presión de handles, antivirus o indexador — ninguno es
+        // ESRCH, y todos caían en el catch-all fail-open.
         if (err && err.code === 'ESRCH') return false;
         return true;
     }
@@ -341,6 +341,65 @@ function readLockAgeMs(lockPath) {
         return Date.now() - fs.statSync(lockPath).mtimeMs;
     } catch {
         return null;
+    }
+}
+
+/**
+ * Identidad única del lock (#6459). Dos locks distintos NUNCA comparten
+ * `nonce`, así que sirve para verificar —antes de borrar— que el archivo que
+ * estamos por remover sigue siendo EXACTAMENTE el que juzgamos stale, y no un
+ * lock nuevo que otro proceso creó legítimamente mientras deliberábamos.
+ *
+ * Los locks viejos (pre-#6459) no tienen `nonce`; para ellos caemos a
+ * pid+startTime, que es la mejor identidad disponible.
+ */
+function lockIdentity(meta) {
+    if (!meta || typeof meta !== 'object') return null;
+    if (meta._corrupt) return '_corrupt';
+    if (typeof meta.nonce === 'string' && meta.nonce) return 'n:' + meta.nonce;
+    return 'p:' + meta.pid + ':' + meta.startTime;
+}
+
+/**
+ * Remoción VERIFICADA de un lock que juzgamos stale (#6459).
+ *
+ * Causa raíz que esto elimina — TOCTOU sobre el archivo de lock
+ * ---------------------------------------------------------------
+ * El patrón previo era `if (isStale(holder)) { fs.unlinkSync(lockPath); }`: se
+ * juzgaba con la meta leída en el instante T y se borraba en T+Δ, SIN
+ * revalidar. Bajo contención, en ese Δ el holder libera y otro proceso toma el
+ * lock legítimamente — y el unlink se lleva puesto ese lock NUEVO. Los dos
+ * quedan "adentro" → lost-update silencioso (ambos salen 0, uno pisa al otro).
+ *
+ * Traza real capturada (#6459, 16 workers sobre el mismo waves.json):
+ *     184954 pid=8208  REL-true              <- 8208 libera
+ *     184955 pid=4832  (lock desaparecido)   <- 4832 lo juzga stale
+ *     184956 pid=20328 ACQ-excl              <- 20328 toma el lock legítimamente
+ *     184972 pid=4832  ACQ-excl              <- 4832 borra el lock FRESCO de 20328
+ *     ...resto escribe 2..14...
+ *     188737 pid=20328 WRITE issues=2        <- 20328 escribe su snapshot viejo
+ *                                               y pisa los writes 2..14
+ * Resultado: `issues=3, exitosos=16` (13 writes perdidos, 0 errores).
+ *
+ * Fix: releer la meta inmediatamente antes del unlink y borrar SÓLO si la
+ * identidad sigue siendo la misma que juzgamos. Si cambió (otro proceso ya tomó
+ * el lock) o el archivo ya no está, NO borramos nada y dejamos que el loop
+ * reevalúe desde cero contra el estado real.
+ *
+ * @returns {boolean} true si removimos el lock que juzgamos; false si no.
+ */
+function removeStaleLock(lockPath, judgedMeta) {
+    const judged = lockIdentity(judgedMeta);
+    if (!judged) return false;
+    const current = lockIdentity(readLockMeta(lockPath));
+    // Desapareció (el holder liberó) o cambió de dueño → no hay nada NUESTRO
+    // que borrar. Borrar acá sería robarle el lock a un holder legítimo.
+    if (current === null || current !== judged) return false;
+    try {
+        fs.unlinkSync(lockPath);
+        return true;
+    } catch {
+        return false; // otro lo removió primero; el loop reevalúa
     }
 }
 
@@ -395,22 +454,34 @@ function isStale(meta, lockPath) {
         // exitoso) en vez de clobberear en silencio, y el próximo intento lo
         // recupera por antigüedad > 60s. Nunca más lost-update silencioso.
         let lockMtimeMs;
-        try { lockMtimeMs = fs.statSync(lockPath).mtimeMs; } catch { return true; }
+        // #6459 — desapareció => NO stale (ver la rama de PID vivo): el loop
+        // reintenta el create atómico en vez de unlinkear el lock de otro.
+        try { lockMtimeMs = fs.statSync(lockPath).mtimeMs; } catch { return false; }
         const lockAgeMs = Date.now() - lockMtimeMs;
         if (lockAgeMs < STALE_AGE_MS) return false; // creación en curso, NO stale
         return true;
     }
+    // #6145 + #6459 — El reclamo por PID muerto es el camino legítimo de
+    // recuperación tras un crash del holder, pero era el ÚNICO de los tres
+    // que reclamaba SIN mirar la antigüedad del lock: una sola lectura
+    // dudosa sobre un lock de milisegundos alcanzaba para robárselo a un
+    // holder vivo → dual-hold → lost-update silencioso.
+    //
+    // Se combinan las dos defensas que cada rama desarrolló por separado:
+    // la guarda de antigüedad (#6459) y la segunda sonda (#6145). El umbral
+    // es DEAD_PID_GRACE_MS (2s) y no STALE_AGE_MS (60s) porque un crash real
+    // tiene que recuperarse DENTRO del presupuesto de timeout del acquirer
+    // (5s default, 15s en waves); con 60s todo contendiente de un holder
+    // muerto terminaría en ELOCK_TIMEOUT. Lo que 60s compraba —que un único
+    // falso "muerto" no alcance— lo compra acá la segunda sonda, que exige
+    // DOS lecturas ESRCH independientes separadas por >2s sobre el mismo PID.
     if (!isPidAlive(meta.pid)) {
-        // #6145 — El reclamo por PID muerto es el camino legítimo de
-        // recuperación tras un crash del holder, pero era el ÚNICO de los tres
-        // que reclamaba SIN mirar la antigüedad del lock: una sola lectura
-        // dudosa sobre un lock de milisegundos alcanzaba para robárselo a un
-        // holder vivo. Con `isPidAlive` fail-closed eso ya es mucho más raro;
-        // estas dos guardas lo vuelven inalcanzable en la práctica.
         const ageMs = readLockAgeMs(lockPath);
-        // El lock ya no está (lo liberó o lo reclamó otro): no hay nada que
-        // proteger y el acquirer reintenta el create igual.
-        if (ageMs === null) return true;
+        // #6459 — "el lock desapareció" NO es "el lock está stale": no hay
+        // nada que robar y el unlink a ciegas del caller se llevaba puesto el
+        // lock que otro proceso acababa de crear. El acquirer reintenta el
+        // create atómico igual, que es el camino correcto.
+        if (ageMs === null) return false;
         // Guarda 1 — antigüedad: un lock más joven que la gracia NO se reclama.
         // Un holder que crashea deja el lock quieto y se recupera a los 2s; un
         // holder vivo que acaba de crearlo nunca lo pierde.
@@ -428,7 +499,20 @@ function isStale(meta, lockPath) {
     try {
         lockMtimeMs = fs.statSync(lockPath).mtimeMs;
     } catch {
-        return true; // si el lock desapareció, no es ours problem
+        // #6459 — "el lock desapareció" NO es "el lock está stale".
+        //
+        // Antes esto devolvía `true`, y el caller respondía con un
+        // `fs.unlinkSync(lockPath)` a ciegas. Pero si el archivo ya no está es
+        // porque el holder LIBERÓ — y para cuando ejecutamos el unlink, otro
+        // proceso pudo haber tomado el lock legítimamente. Ese unlink le borraba
+        // el lock recién creado y habilitaba el dual-hold: es el trigger que
+        // aparece en el 100% de las trazas de lost-update de #6459 (lock
+        // desaparecido inmediatamente antes de dos ACQ-excl solapados).
+        //
+        // Lo correcto es NO declararlo stale: el loop reintenta
+        // `atomicCreateLock`, que es atómico y resuelve la carrera sin destruir
+        // el lock de nadie.
+        return false;
     }
     const lockAgeMs = Date.now() - lockMtimeMs;
     if (lockAgeMs < STALE_AGE_MS) return false;
@@ -490,7 +574,9 @@ function acquireLockSync(filePath, opts) {
                 return { acquired: true, reentrant: true, lockPath };
             }
             if (isStale(holder, lockPath)) {
-                try { fs.unlinkSync(lockPath); } catch {}
+                // #6459 — remoción VERIFICADA: sólo borramos si el lock sigue
+                // siendo el mismo que juzgamos stale (ver removeStaleLock).
+                removeStaleLock(lockPath, holder);
                 continue;
             }
             attempts++;
@@ -594,7 +680,8 @@ async function acquireLock(filePath, opts) {
             }
             if (isStale(holder, lockPath)) {
                 logWarn(`Lock stale detectado en ${lockPath} (holder pid=${holder && holder.pid}). Removiendo.`);
-                try { fs.unlinkSync(lockPath); } catch {}
+                // #6459 — remoción VERIFICADA (ver removeStaleLock).
+                removeStaleLock(lockPath, holder);
                 continue; // retry inmediato
             }
             // Holder vivo — esperar con jitter y reintentar.
@@ -829,6 +916,8 @@ module.exports = {
     _internal: {
         readLockMeta,
         isPidAlive,
+        lockIdentity,
+        removeStaleLock,
         isStale,
         readLockAgeMs,
         checkStillOwned,
