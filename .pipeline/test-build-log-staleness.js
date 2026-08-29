@@ -48,7 +48,19 @@ let fail = 0;
 
 async function test(name, fn) {
   try {
-    await fn();
+    // #6259 (CA-9) — `PIPELINE_STALENESS_HOURS` es la UNICA env que este modulo
+    // lee (`build-log-staleness.js:79`) y la PRIORIZA sobre el `config` que recibe.
+    // Si el proceso que corre la suite la hereda, cualquier test que asserte un
+    // threshold derivado del config (S11) se pone en rojo por entorno sucio y no
+    // por un bug del codigo. Antes esto se tapaba de rebote: S2 hacia
+    // `delete process.env.PIPELINE_STALENESS_HOURS` a pelo y se comia la variable
+    // para todo el proceso, asi que los tests posteriores nunca la veian.
+    // Al aislar S2 con `withEnv` (que restaura), esa proteccion accidental
+    // desaparecio y S11 quedo expuesto. Se fuerza la ausencia para TODO test del
+    // archivo — no solo S11 — para que el que se agregue manana nazca cubierto.
+    // Los tests que necesitan un valor lo setean con su propio `withEnv` anidado
+    // (S2), que al salir restaura a esta ausencia, no al valor heredado.
+    await withEnv({ PIPELINE_STALENESS_HOURS: undefined }, () => fn());
     console.log(`✓ ${name}`);
     pass++;
   } catch (err) {
