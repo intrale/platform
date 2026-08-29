@@ -587,7 +587,15 @@ test('la entrega real no propaga el gate al PR con un re-encolado abierto', () =
 // CA-8 — la regla de reset sigue siendo única, también por el camino real
 // ---------------------------------------------------------------------------
 
-test('el contador se borra recien cuando la entrega real integra un veredicto fresco', () => {
+test('el contador NO se borra con el push: hace falta el merge confirmado', () => {
+    // CA-8 (rebote security rev-3 — F6). El reset estaba atado al PUSH, así que
+    // un run que pusheaba fresco y después se frenaba en el merge (conflicto,
+    // checks en rojo, mergeabilidad desconocida) igual reseteaba el contador: el
+    // tope de 2 re-encolados de CA-9 se reiniciaba de forma INDEFINIDA en ciclos
+    // push-sin-merge y la escalada a `needs-human` no llegaba nunca.
+    //
+    // Este harness apunta a un repo inexistente (`GH_REPO`), así que reproduce
+    // exactamente ese escenario: el push local sí ocurre, el merge no.
     const wt = crearWorktree();
     const estado = crearEstado();
     const marker = crearMarker(estado);
@@ -598,12 +606,34 @@ test('el contador se borra recien cuando la entrega real integra un veredicto fr
     assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 1,
         'un re-encolado exitoso NO resetea: incrementa');
 
-    // 2ª vuelta con veredicto fresco: pasa el gate, pushea y RECIÉN AHÍ resetea.
+    // 2ª vuelta con veredicto fresco: pasa el gate y PUSHEA, pero no llega a
+    // mergear. El contador tiene que sobrevivir intacto.
     escribirVeredicto(estado, { resultado: 'aprobado', sello: { version: 1, head: wt.head, artefactos: [] } });
     correrEntrega(wt, estado, marker);
+    assert.match(refsDelRemoto(wt), new RegExp(`refs/heads/${BRANCH_FIXTURE}\\s+${wt.head}`),
+        'el push fresco sí ocurrió');
+    assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 1,
+        'el push sin merge NO puede resetear el contador: si no, el tope de CA-9 se reinicia para siempre');
+
+    // Y la integración real (merge confirmado) sí lo borra.
+    seal.clearSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE });
     assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 0,
-        'el contador se borra al integrar un veredicto fresco');
-    assert.match(refsDelRemoto(wt), new RegExp(`refs/heads/${BRANCH_FIXTURE}\\s+${wt.head}`));
+        'el contador se borra al integrar de verdad');
+});
+
+test('el reset del contador cuelga del merge confirmado, no del push', () => {
+    // GUARDIÁN estructural de F6. El test de arriba sólo puede observar que el
+    // push no resetea; que el reset esté colgado del `mergeSha` confirmado hay
+    // que afirmarlo sobre el código, porque el harness no llega al merge.
+    const src = fs.readFileSync(SKILL_DELIVERY, 'utf8');
+    const posPush = src.indexOf('git.pushAndVerify(');
+    const posMergeSha = src.indexOf('mergeSha = outcome.sha');
+    const posClear = src.indexOf('freshnessGate.clearRetriesAfterIntegration(');
+    assert.ok(posPush > 0 && posMergeSha > 0 && posClear > 0, 'los tres puntos tienen que existir');
+    assert.ok(posClear > posMergeSha,
+        'el reset del contador va DESPUÉS de confirmar el merge (`mergeSha = outcome.sha`), nunca junto al push');
+    assert.strictEqual(src.split('freshnessGate.clearRetriesAfterIntegration(').length - 1, 1,
+        'un solo punto de reset: dos lugares vuelven a abrir el ciclo push-sin-merge');
 });
 
 test('escala a humano recien en la tercera caducidad tambien por el camino real', () => {

@@ -813,8 +813,16 @@ test('se pushea el sha verificado, no la rama simbolica', () => {
   assert.ok(res.stderr.includes(`${shaVerificado} -> agent/999496-pipeline-dev`),
     `git reportó el push por SHA explícito. stderr:\n${res.stderr}`);
 
-  // CA-8 — el contador se borra RECIÉN acá, cuando un veredicto fresco se integró.
-  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 0);
+  // CA-8 (rebote security rev-3 — F6) — el push NO borra el contador.
+  //
+  // Antes esta línea afirmaba lo contrario, y era justamente el defecto: este CLI
+  // pushea y crea el PR, pero NUNCA mergea, así que resetear acá reseteaba en el
+  // 100% de las corridas. Con eso el tope de 2 re-encolados automáticos (CA-9) se
+  // reiniciaba indefinidamente corriendo `/delivery` y la escalada a
+  // `needs-human` no llegaba nunca. "Integrar" es el merge, no el push: el único
+  // punto de reset vive donde se confirma `mergeSha`, en el skill determinístico.
+  assert.strictEqual(seal.readSealRetries({ pipelineDir: estado, issue: ISSUE_FIXTURE }).intentos, 1,
+    'el contador sobrevive a un push sin merge: si no, el tope de CA-9 se reinicia para siempre');
 });
 
 test('un --issue invalido frena la entrega antes de tocar el remoto (SEC-B)', () => {

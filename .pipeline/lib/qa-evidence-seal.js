@@ -1121,6 +1121,70 @@ function sealRetriesPath(pipelineDir, issueNum) {
   return path.join(verificacionFasePath(pipelineDir), `.${issueNum}.seal-retries`);
 }
 
+/**
+ * #6496 rebote security rev-3 (F3) — testigo DE UN SOLO USO de que el gate de
+ * caducidad disparó en ESTE run.
+ *
+ * Por qué no alcanzaba el contador: `.<issue>.seal-retries` no se consume ni
+ * expira. Queda en `intentos > 0` desde la primera caducidad legítima hasta que
+ * un push exitoso lo limpia (CA-8), así que durante TODA esa ventana la
+ * corroboración de `isStaleVerdictRejection` estaba satisfecha de antemano. Un
+ * issue que ya caducó una vez y cuya entrega después falla DE VERDAD (conflicto,
+ * CI en rojo) podía escribir `veredicto_caduco: true` y cancelarse el rechazo:
+ * sin rebote, sin rev++, sin circuit breaker y sin re-verificación encolada.
+ *
+ * El stamp cierra eso porque lo escribe SÓLO `requeueVerification` (o sea, sólo
+ * una caducidad real) y lo BORRA quien lo lee. Un flag declarado sin gate detrás
+ * no encuentra stamp y sigue el camino de rechazo normal.
+ */
+function staleStampPath(pipelineDir, issueNum) {
+  return path.join(verificacionFasePath(pipelineDir), `.${issueNum}.seal-caduco-stamp`);
+}
+
+function writeStaleStamp(pipelineDir, issueNum, payload) {
+  try {
+    const file = staleStampPath(pipelineDir, issueNum);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(payload));
+    return true;
+  } catch {
+    // Best-effort: no poder dejar el testigo no puede impedir que la reparación
+    // se encole. El costo es que ese rechazo se procese como rechazo normal
+    // (rebote a dev), que es la dirección conservadora.
+    return false;
+  }
+}
+
+/**
+ * Lee y CONSUME el testigo. `true` sólo si existía y se pudo borrar.
+ *
+ * Fail-closed en el sentido que corresponde acá: en este punto `true` significa
+ * "cancelá el rechazo", así que cualquier duda (ausente, ilegible, no borrable)
+ * tiene que dar `false` — o sea, rechazo normal con rebote y escalada. Es el
+ * sentido OPUESTO al de `hasOpenRequeue`, que es fail-closed para el gate de
+ * entrega y por eso no sirve como testigo acá.
+ */
+function consumeStaleStamp({ root, pipelineDir, issue } = {}) {
+  const issueNum = normalizeIssueNumber(issue);
+  if (issueNum === null) return false;
+  let dir;
+  try { dir = resolvePipelineDir(root, pipelineDir); } catch { return false; }
+  const file = staleStampPath(dir, issueNum);
+  try {
+    fs.readFileSync(file, 'utf8');
+  } catch {
+    return false;
+  }
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // Si no se puede consumir, no se puede garantizar el "un solo uso": mejor
+    // tratarlo como no corroborado que dejar un testigo reutilizable.
+    return false;
+  }
+  return true;
+}
+
 function loadYamlFile(filePath) {
   return require('js-yaml').load(fs.readFileSync(filePath, 'utf8'));
 }
@@ -1252,7 +1316,29 @@ function checkVerdictFreshness({ root, pipelineDir, issue, cwd } = {}) {
   // fuerte y la exención no lo puede ablandar.
   if (!sellado) {
     if (hasMigrationExemption(data)) {
-      return { caduco: false, motivo: null, head_sellado: null, head_actual: null, fuente };
+      // #6496 rebote security rev-3 (F4) — el carril de exención tenía la
+      // verificación MÁS DÉBIL y era además el ÚNICO sin anti-TOCTOU: devolvía
+      // `head_actual: null`, y con eso `evaluateFreshnessGate` dejaba
+      // `shaVerificado = null`, que hace que el push vuelva al nombre simbólico
+      // de la rama y que `attemptMergeWithGates` NO pinnee el head del merge
+      // (`if (expectedHeadSha)`). Un push concurrente en la ventana
+      // chequeo→push→merge integraba un commit distinto del evaluado; no hace
+      // falta un agente hostil, alcanza con concurrencia.
+      //
+      // La exención dispensa de tener un sello CONTRA QUÉ comparar, no de
+      // integrar exactamente lo que se miró. El HEAD local es derivable acá
+      // igual que en el carril sellado, así que se pinnea igual. Fail-closed:
+      // si el HEAD no se puede derivar no hay nada que pinnear ⇒ caduco.
+      let actualExento;
+      try {
+        actualExento = deriveHead(cwd);
+      } catch {
+        return { ...vacio, motivo: 'head-no-resoluble', fuente };
+      }
+      return {
+        caduco: false, motivo: null, head_sellado: null, head_actual: actualExento,
+        fuente, exento: true,
+      };
     }
     // CA-3 — con CA-1 puesto, "sin sello" ya no significa "modo sin evidencia":
     // significa que el sellado debía correr y no corrió.
@@ -1323,6 +1409,9 @@ function clearSealRetries({ root, pipelineDir, issue } = {}) {
   try { dir = resolvePipelineDir(root, pipelineDir); } catch { return false; }
   try {
     fs.rmSync(sealRetriesPath(dir, issueNum), { force: true });
+    // #6496 rev-3 (F3) — un veredicto fresco integrado cierra el episodio de
+    // caducidad entero: el testigo pendiente tampoco debe sobrevivirlo.
+    try { fs.rmSync(staleStampPath(dir, issueNum), { force: true }); } catch {}
     return true;
   } catch { return false; }
 }
@@ -1331,6 +1420,67 @@ function writeSealRetries(pipelineDir, issueNum, payload) {
   const file = sealRetriesPath(pipelineDir, issueNum);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(payload));
+}
+
+/**
+ * #6496 rebote security rev-3 (F2) — CA-12 sobre el PR, no sólo sobre el issue.
+ *
+ * EL AGUJERO: `propagateGateLabelToPr` estampa el gate del issue en el PR en la
+ * Fase 4, y el re-chequeo de frescura previo al merge corre en la Fase 5. Si el
+ * HEAD se movía en esa ventana, el gate frenaba bien el merge pero dejaba el PR
+ * abierto —sobre un commit que nadie verificó— con `qa:passed` encima.
+ * `requeueVerification` degradaba únicamente el label del ISSUE, así que el issue
+ * decía `qa:pending` y el PR decía `qa:passed`: la mitad que ve el humano (y que
+ * lee `hasQaGate` como autoridad de merge, CLAUDE.md) afirmaba que QA aprobó algo
+ * que QA no miró. `isRequeueOpen` evita propagaciones FUTURAS; nada retractaba la
+ * ya hecha, que es justo lo que CA-12 declara cerrar.
+ *
+ * OJO con `qa:skipped`: `hasQaGate` lo acepta igual que a `qa:passed`
+ * (`QA_LABELS_OK`), o sea que es la MISMA autoridad de merge. Pero el
+ * `gate-label-reconciler` no lo conoce (`GATE_LABELS` = passed/failed/pending;
+ * ampliarlo es #5869), así que la orden reconciliada no lo baja sola y hace falta
+ * un `remove-label` explícito. Retractar un label que sólo puede ABRIR el gate es
+ * monótono hacia lo cerrado: nunca puede relajar nada.
+ *
+ * @returns {{ok: boolean, ordenes: string[]}}
+ */
+function retractPrGateLabels({ root, pipelineDir, prNumber, prLabels, ahora } = {}) {
+  const pr = normalizeIssueNumber(prNumber);
+  if (pr === null) return { ok: false, ordenes: [] };
+  let dir;
+  try { dir = resolvePipelineDir(root, pipelineDir); } catch { return { ok: false, ordenes: [] }; }
+  const ts = typeof ahora === 'string' && ahora ? ahora : new Date().toISOString();
+  const stamp = ts.replace(/[^0-9]/g, '');
+  const ghQueue = path.join(dir, 'servicios', 'github', 'pendiente');
+  const ordenes = [];
+
+  const norm = (list) => (Array.isArray(list) ? list : []).map((l) => (
+    (l && typeof l === 'object' && l.name) ? String(l.name) : String(l)
+  ));
+  const labels = norm(prLabels);
+  // Sin datos de labels no se asume "no hace falta": se intenta la retractación
+  // igual. Sobra una orden no-op; falta una deja `qa:skipped` vivo en el PR.
+  const labelsDesconocidos = !Array.isArray(prLabels) || prLabels.length === 0;
+
+  try {
+    // 1) Camino reconciliado: lee los labels VIVOS del PR y hace remove-then-add
+    //    (baja `qa:passed`/`qa:failed`, sube `qa:pending`). Se prefiere sobre un
+    //    remove explícito porque no depende del snapshot que tengamos acá.
+    ordenes.push(enqueueJsonOrder(ghQueue, `${pr}-seal-caduco-pr-1-gate-${stamp}.json`, {
+      action: 'label', issue: pr, target: 'pr', label: 'qa:pending',
+      origen: 'gate-caducidad-sello',
+    }));
+    // 2) `qa:skipped` a mano: el reconciliador no lo conoce y `hasQaGate` sí.
+    if (labelsDesconocidos || labels.includes('qa:skipped')) {
+      ordenes.push(enqueueJsonOrder(ghQueue, `${pr}-seal-caduco-pr-2-skipped-${stamp}.json`, {
+        action: 'remove-label', issue: pr, target: 'pr', label: 'qa:skipped',
+        gate_retraction: true, origen: 'gate-caducidad-sello',
+      }));
+    }
+  } catch {
+    return { ok: false, ordenes };
+  }
+  return { ok: true, ordenes };
 }
 
 function enqueueJsonOrder(dir, filename, payload) {
@@ -1440,6 +1590,14 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
 
   // CA-9 — el contador se lee ANTES de re-encolar.
   const previo = readSealRetries({ pipelineDir: dir, issue: issueNum });
+
+  // #6496 rebote security rev-3 (F3) — testigo de un solo uso de que ESTE run
+  // caducó de verdad. Va ANTES del `if` a propósito: vale para los dos caminos
+  // (re-encolado y escalada), igual que la degradación del label. Es lo único
+  // que `isStaleVerdictRejection` acepta como prueba de que el gate disparó,
+  // porque el contador —que no se consume ni expira— corrobora de antemano toda
+  // la ventana entre la primera caducidad y el próximo push exitoso.
+  writeStaleStamp(dir, issueNum, { ts, motivo: motivoSeguro, intentos_previos: previo.intentos });
 
   // CA-12 / SEC-C — el label del issue se degrada EN EL MISMO ACTO, y la orden
   // va ANTES del `if` a propósito: vale para los DOS caminos, re-encolado y
@@ -1637,6 +1795,9 @@ module.exports = {
   // #6496 — caducidad del veredicto sellado (consumidor del sello de #6495).
   sealHeadOnly, checkVerdictFreshness, requeueVerification, migratePreSealBacklog,
   readSealRetries, clearSealRetries, hasOpenRequeue,
+  // rebote security rev-3: testigo de un solo uso (F3) + retractación del gate
+  // ya estampado en el PR (F2).
+  consumeStaleStamp, staleStampPath, retractPrGateLabels,
   normalizeIssueNumber, describeFreshnessFailure, sanitizeFreshnessReason,
   sealedHeadOf, hasMigrationExemption, verdictDropfilePaths, sealRetriesPath,
   resolvePipelineDir, verificacionFasePath,

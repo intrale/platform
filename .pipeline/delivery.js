@@ -464,10 +464,49 @@ function main() {
   // Acá sólo se traduce el resultado al contrato de salida de ESTE CLI.
   const statePipelineDir = resolveStatePipelineDir();
   let shaVerificado = null;
-  let issueNumGate = null;
-  if (args.issue) {
+
+  // rebote security rev-3 (F1) — EL GATE NO PUEDE SER OPCIONAL.
+  //
+  // Antes todo este bloque colgaba de `if (args.issue)`, o sea que el gate se
+  // desactivaba OMITIENDO UN FLAG: sin `--issue`, con `--issue ""`, o con
+  // `--issue` como último argumento (`argv[++i]` ⇒ `undefined`), `shaVerificado`
+  // quedaba `null` y el flujo seguía derecho al `git push` y al `gh pr create`.
+  // Este archivo es el que corren el fallback LLM de `/delivery` y el operador a
+  // mano: un agente que ve el JSON `veredicto_caduco` y reintenta "sin el flag
+  // que lo frenó" empujaba al remoto un HEAD que nadie verificó. El gate entero
+  // que agrega #6496 se apagaba por omisión — lo contrario de fail-closed. El
+  // gemelo determinístico ya fallaba cerrado ante lo mismo (`if (!issue) exit 2`).
+  //
+  // Resolución, distinguiendo flag AUSENTE de flag VACÍO:
+  //   · `args.issue === null` ⇒ el flag no se pasó (valor inicial de `parseArgs`).
+  //     Se deriva de la rama `agent/<issue>-…`, que es la misma autoridad
+  //     issue↔rama que usa `buildPrGatePropagation` (SEC-1).
+  //   · rama `agent/*` sin issue derivable ⇒ exit 1. Es una rama del pipeline:
+  //     que no se pueda nombrar el issue no la exime, la vuelve no verificable.
+  //   · flag presente pero vacío/roto ⇒ NO se saltea: cae en `issueInvalido` y
+  //     sale 1. "Vacío" nunca significa "seguí sin gate".
+  //   · rama que no es del pipeline (`feature/*`, `bugfix/*`, main…) ⇒ no hay
+  //     veredicto de QA indexado por issue contra el cual chequear frescura, así
+  //     que el gate no aplica. Se deja constancia explícita en stdout.
+  const AGENT_BRANCH_ISSUE = /^agent\/(\d+)-/;
+  let issueGate = args.issue;
+  if (args.issue === null) {
+    const m = AGENT_BRANCH_ISSUE.exec(snap.branch || '');
+    if (m) {
+      issueGate = m[1];
+      console.log(`ℹ️  GATE 3: --issue ausente, issue #${issueGate} derivado de la rama ${snap.branch}`);
+    } else if (/^agent\//.test(snap.branch || '')) {
+      console.error(`❌ Rama del pipeline ${snap.branch} sin número de issue derivable: no se puede verificar la frescura del veredicto de QA`);
+      process.exit(1);
+    } else {
+      issueGate = null;
+      console.log(`ℹ️  GATE 3 no aplica: ${snap.branch} no es una rama del pipeline (agent/<issue>-…), no hay veredicto de QA indexado por issue`);
+    }
+  }
+
+  if (issueGate !== null) {
     const gate3 = freshnessGate.evaluateFreshnessGate({
-      pipelineDir: statePipelineDir, issue: args.issue, cwd,
+      pipelineDir: statePipelineDir, issue: issueGate, cwd,
     });
     if (gate3.issueInvalido) {
       // Fail-closed: con un `--issue` que no es un número de issue no se puede ni
@@ -475,7 +514,6 @@ function main() {
       console.error('❌ --issue inválido: no se puede verificar la frescura del veredicto de QA');
       process.exit(1);
     }
-    issueNumGate = gate3.issue;
     if (gate3.caduco) {
       for (const linea of gate3.stderr) console.error(linea);
       // CA-14 — contrato machine-readable como ÚLTIMA línea de stdout. Quien
@@ -490,8 +528,10 @@ function main() {
     }
     // CA-15 — se pushea el SHA VERIFICADO, no una referencia simbólica.
     shaVerificado = gate3.shaVerificado;
-    console.log(`🔎 GATE 3 OK: el veredicto de QA está sellado contra el HEAD actual${
-      shaVerificado ? ` (${shaVerificado.slice(0, 8)}…)` : ' (exención de migración pre-sellado)'}`);
+    console.log(`🔎 GATE 3 OK: ${gate3.exento
+      ? 'exención de migración pre-sellado'
+      : 'el veredicto de QA está sellado contra el HEAD actual'}${
+      shaVerificado ? ` (${shaVerificado.slice(0, 8)}…)` : ''}`);
   }
 
   // 6. Push (asume commits ya hechos por el agente)
@@ -518,12 +558,19 @@ function main() {
     // que un fallo acá no puede frenar una entrega ya pusheada.
     spawnSync('git', ['-C', cwd, 'branch', `--set-upstream-to=origin/${snap.branch}`, snap.branch], { stdio: 'ignore' });
   }
-  // CA-8 — regla de reset ÚNICA del contador de caducidad: recién acá, cuando un
-  // veredicto FRESCO efectivamente se integró. No lo resetean un re-encolado
-  // exitoso, una aprobación nueva de QA por sí sola, ni el paso del tiempo.
-  if (issueNumGate !== null) {
-    qaEvidenceSeal.clearSealRetries({ pipelineDir: statePipelineDir, issue: issueNumGate });
-  }
+  // CA-8 (rebote security rev-3, F6) — ACÁ NO SE RESETEA EL CONTADOR.
+  //
+  // El reset estaba en este punto, atado al push. Pero CA-8 dice "cuando un
+  // veredicto fresco SE INTEGRA", y lo que integra es el merge — y este CLI
+  // NUNCA mergea: pushea y, como mucho, crea el PR. O sea que el reset acá era
+  // incondicional en el 100% de las corridas, y con eso el tope de 2
+  // re-encolados automáticos de CA-9 se podía reiniciar indefinidamente
+  // corriendo `/delivery` — la escalada a `needs-human` no llegaba nunca.
+  //
+  // El único punto de reset vive donde se confirma el merge
+  // (`skills-deterministicos/delivery.js`, tras `mergeSha = outcome.sha`). Que el
+  // contador sobreviva a una entrega por CLI es la dirección conservadora: a lo
+  // sumo el próximo caduco escala una vuelta antes, que es fail-closed.
 
   // 7. Crear PR (si no existe)
   const existing = gh([

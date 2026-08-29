@@ -93,7 +93,7 @@ function evaluateFreshnessGate({
         shaVerificado: null, motivo: null, motivoLegible: null,
         headSellado: null, headActual: null,
         escalado: false, intentos: null, reparacionOk: false, reparacionError: null,
-        contrato: null, stderr: [],
+        contrato: null, stderr: [], exento: false,
     };
 
     // SEC-B — el issue se normaliza a entero ANTES de construir cualquier path
@@ -120,9 +120,16 @@ function evaluateFreshnessGate({
     const stale = seal.checkVerdictFreshness({ pipelineDir: dir, issue: issueNum, cwd });
 
     if (!stale.caduco) {
-        // CA-15 — el SHA verificado es lo que se integra. `head_actual` viene
-        // null sólo en el carril de exención de migración pre-sellado (CA-4),
-        // donde no hay nada sellado contra qué pinnear.
+        // CA-15 — el SHA verificado es lo que se integra.
+        //
+        // rebote security rev-3 (F4): el carril de exención de migración
+        // pre-sellado (CA-4) también pinnea. Antes devolvía `head_actual: null`
+        // y con eso el push volvía al nombre simbólico de la rama y el merge
+        // perdía el pinneo de head (`if (expectedHeadSha)`): el carril con la
+        // verificación más débil era el único además sin anti-TOCTOU. La
+        // exención dispensa de tener sello contra qué comparar, no de integrar
+        // exactamente lo que se miró. `exento` queda expuesto para que el
+        // llamador siga pudiendo distinguir los dos carriles en el log.
         return {
             ...base,
             aplica: true, caduco: false,
@@ -130,6 +137,7 @@ function evaluateFreshnessGate({
             shaVerificado: stale.head_actual || null,
             headSellado: stale.head_sellado || null,
             headActual: stale.head_actual || null,
+            exento: stale.exento === true,
         };
     }
 
@@ -224,6 +232,26 @@ function isRequeueOpen({ pipelineDir, issue, seal = qaEvidenceSeal, env = proces
 }
 
 /**
+ * CA-12 sobre el PR (rebote security rev-3 — F2). Retracta el gate de QA ya
+ * estampado en un PR cuando el veredicto caducó DESPUÉS de la propagación.
+ *
+ * `requeueVerification` degrada el label del ISSUE; esto degrada el del PR, que
+ * es el que `hasQaGate` lee como autoridad de merge. Sin esto el issue quedaba en
+ * `qa:pending` y el PR en `qa:passed` sobre un commit que nadie verificó.
+ *
+ * Best-effort: no poder retractar no puede convertirse en "entonces mergeá". El
+ * merge ya está frenado por el gate; esto sólo evita dejar la afirmación colgada.
+ */
+function retractPrGate({ pipelineDir, prNumber, prLabels, seal = qaEvidenceSeal, env = process.env, fallbackDir } = {}) {
+    const dir = pipelineDir || resolveStatePipelineDir({ env, fallbackDir });
+    try {
+        return seal.retractPrGateLabels({ pipelineDir: dir, prNumber, prLabels });
+    } catch (e) {
+        return { ok: false, ordenes: [], error: (e && e.message ? String(e.message) : String(e)).slice(0, 200) };
+    }
+}
+
+/**
  * Fase donde vive el gate. El veredicto caduco sólo puede nacer en `entrega`,
  * que es la única que corre el chequeo antes de tocar el remoto.
  */
@@ -272,13 +300,32 @@ const GATE_PHASE = 'entrega';
  * reparación existe, esto NO es un caduco: es un rechazo normal y sigue el camino
  * de rechazo normal (fail-closed).
  *
- * El contador —y no la cola— es el testigo, porque `requeueVerification` lo
- * escribe ANTES de encolar la orden, así que cubre las dos ramas (re-encolado y
- * escalada) y toda la ventana hasta que el Pulpo drena. Deliberadamente NO se usa
- * `hasOpenRequeue` como segunda vía: ese helper es fail-closed para el gate de
- * entrega (devuelve `true` ante cualquier error de lectura que no sea ENOENT), y
- * acá `true` significa "cancelá el rechazo" — o sea que un directorio ilegible
- * corroboraría el dicho del agente. Mismo valor, sentido opuesto.
+ * Deliberadamente NO se usa `hasOpenRequeue`: ese helper es fail-closed para el
+ * gate de entrega (devuelve `true` ante cualquier error de lectura que no sea
+ * ENOENT), y acá `true` significa "cancelá el rechazo" — o sea que un directorio
+ * ilegible corroboraría el dicho del agente. Mismo valor, sentido opuesto.
+ *
+ * POR QUÉ EL CONTADOR SOLO NO ALCANZA (rebote security rev-3 — F3)
+ * -----------------------------------------------------------------------------
+ * La versión anterior corroboraba con `readSealRetries().intentos > 0` y nada
+ * más. Pero el contador NO SE CONSUME NI EXPIRA: queda en >0 desde la primera
+ * caducidad legítima hasta que un push exitoso lo limpia (CA-8). En toda esa
+ * ventana la corroboración estaba satisfecha DE ANTEMANO, así que el agujero
+ * quedaba reducido a una precondición ("que el issue haya caducado una vez"), no
+ * eliminado: un issue que ya caducó y cuya entrega después falla DE VERDAD
+ * (conflicto, CI en rojo) podía escribir `veredicto_caduco: true` y cancelarse el
+ * rechazo igual — sin rebote, sin rev++, sin circuit breaker, sin escalada y sin
+ * re-verificación viva encolada.
+ *
+ * Por eso el testigo autoritativo es el STAMP DE UN SOLO USO
+ * (`.<issue>.seal-caduco-stamp`), que escribe únicamente `requeueVerification` —
+ * o sea, sólo una caducidad REAL — y que se BORRA al leerse. Un flag declarado
+ * sin gate detrás no encuentra stamp y sigue el camino de rechazo normal. El
+ * contador se sigue exigiendo como segunda condición (barata y consistente con
+ * CA-6/CA-9), pero ya no es la única.
+ *
+ * Orden de evaluación: el stamp se consume ÚLTIMO, recién cuando todo lo demás
+ * ya dio positivo, para no quemarlo en un lote que igual iba a rechazarse.
  *
  * @param {{fase: string, rechazados: Array<object>, issue?: string|number, pipelineDir?: string, seal?: object, env?: object, fallbackDir?: string}} params
  * @returns {boolean}
@@ -299,7 +346,10 @@ function isStaleVerdictRejection({
         // re-encolado (contador recién incrementado) y la escalada (contador ya en
         // el tope, o corrupto — que `readSealRetries` lee como agotado, CA-10).
         // Ausente ⇒ `0` ⇒ nadie encoló ninguna reparación ⇒ el flag no vale.
-        return seal.readSealRetries({ pipelineDir: dir, issue: issueNum }).intentos > 0;
+        if (!(seal.readSealRetries({ pipelineDir: dir, issue: issueNum }).intentos > 0)) return false;
+        // Testigo de UN SOLO USO de que el gate disparó en este episodio. Se
+        // consume acá, último, y sólo si todo lo anterior ya dio positivo.
+        return seal.consumeStaleStamp({ pipelineDir: dir, issue: issueNum }) === true;
     } catch {
         // Sin poder consultar el estado no se puede afirmar la reparación.
         return false;
@@ -311,6 +361,7 @@ module.exports = {
     evaluateFreshnessGate,
     clearRetriesAfterIntegration,
     isRequeueOpen,
+    retractPrGate,
     isStaleVerdictRejection,
     GATE_PHASE,
 };

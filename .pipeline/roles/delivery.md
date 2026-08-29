@@ -76,11 +76,19 @@ Qué tenés que hacer:
 
 > **`veredicto_caduco` NO es un botón para cancelar un rechazo (#6496, rebote de
 > `security`).** El flag no se cree por sí solo: el Pulpo lo CORROBORA contra
-> estado que sólo escribe el pipeline —el contador de caducidad del issue y la
-> cola `verificacion-requeue/`— antes de tratar tu rechazo como "la entrega se
-> frenó sola". Si escribís `veredicto_caduco: true` sin que el gate haya encolado
-> de verdad la reparación, el pipeline lo procesa como un **rechazo normal**: el
-> issue rebota a `dev`, sube la rev y corre el circuit breaker.
+> estado que sólo escribe el pipeline antes de tratar tu rechazo como "la entrega
+> se frenó sola". Son dos condiciones, y hacen falta las dos:
+>
+> 1. el contador de caducidad del issue (`.<issue>.seal-retries`) en `intentos > 0`, y
+> 2. un **testigo de un solo uso** (`.<issue>.seal-caduco-stamp`) que escribe
+>    únicamente el gate al encolar la reparación y que **se consume al leerse**.
+>
+> El testigo es lo que hace que la corroboración valga: el contador no se consume
+> ni expira —queda en `> 0` desde la primera caducidad hasta el próximo push
+> exitoso—, así que por sí solo dejaba satisfecha de antemano toda esa ventana. Si
+> escribís `veredicto_caduco: true` sin que el gate haya encolado de verdad la
+> reparación **en esta corrida**, el pipeline lo procesa como un **rechazo
+> normal**: el issue rebota a `dev`, sube la rev y corre el circuit breaker.
 >
 > O sea: escribilo **sólo** cuando la última línea de stdout de `delivery.js` sea
 > el JSON con `"estado": "veredicto_caduco"`. Si tu entrega falló por otra cosa
