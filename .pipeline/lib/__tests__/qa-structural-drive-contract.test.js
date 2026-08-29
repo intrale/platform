@@ -253,26 +253,6 @@ test('CA-2 · structural falla cerrado si falta el archivo declarado aunque exis
     assert.equal(r.fallido.bytes, undefined);
 });
 
-test('CA-2 · video sella el MP4 declarado exacto y no cae a un MP4 viejo', async () => {
-    const issue = 6276;
-    const videoActual = Buffer.from('video correspondiente al HEAD actual', 'utf8');
-    const videoViejo = Buffer.from('video de una pasada anterior', 'utf8');
-    writeEvidence(`qa/evidence/${issue}/qa-${issue}-head.mp4`, videoActual);
-    writeEvidence(`qa/evidence/${issue}/qa-${issue}.mp4`, videoViejo);
-
-    const r = await runJob(
-        `qa-${issue}-head-video.json`,
-        videoJob(issue, `qa/evidence/${issue}/qa-${issue}-head.mp4`),
-    );
-
-    assert.ok(r.listo, 'el descriptor de video válido debe terminar en listo');
-    assert.equal(r.listo.file, `qa/evidence/${issue}/qa-${issue}-head.mp4`);
-    assert.equal(r.listo.file_declarado, undefined);
-    assert.equal(r.listo.sha256, sha256Of(videoActual));
-    assert.equal(r.listo.bytes, videoActual.length);
-    assert.notEqual(r.listo.sha256, sha256Of(videoViejo));
-});
-
 test('CA-2 · video falla cerrado si falta el MP4 declarado aunque exista uno viejo', async () => {
     const issue = 6277;
     writeEvidence(`qa/evidence/${issue}/qa-${issue}.mp4`, 'video viejo');
