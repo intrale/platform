@@ -1819,15 +1819,52 @@ function* _genPipelineState() {
     state.bloqueadosStats = computeBloqueadosStats({});
   } catch {}
 
-  // #4580 — Bandeja "Esperando tu firma": los tres orígenes de firma del
-  // operador (waiting-operator/ · esperando-firma/ · GATE 3) unificados por
-  // lib/waiting-operator. Read-only: el lector valida el id (^\d+$, REQ-SEC-
-  // 4580-3) y redacta la evidencia (REQ-SEC-4580-5) antes de exponerla.
+  // #4580 / #6208 — Bandeja "Esperando tu firma". La fuente pasa a ser el read
+  // model `lib/gate-signature-inbox`, que UNE los pendientes REALES del depósito
+  // del kernel (firmables, con ficha + ancla server-derived + opciones) con los
+  // markers de `waiting-operator` (GATE 3 y compañía, no firmables desde acá).
+  // Antes leía SÓLO los markers, así que la bandeja estaba siempre vacía de
+  // firmas reales (CA-1). Read-only: no muta ningún archivo del pipeline.
+  //
+  // `esperandoFirmaInbox` lleva los metadatos del read model (`vacio`, `banda`,
+  // `degraded`) que la vista necesita para pintar los TRES vacíos: sin ellos un
+  // depósito ilegible se vería con el mismo cartel verde de "está todo firmado"
+  // (H-UX-6208-1).
   state.esperandoFirma = [];
+  state.esperandoFirmaInbox = null;
   try {
-    const waitingOperator = require('./lib/waiting-operator');
-    state.esperandoFirma = waitingOperator.listWaitingOperator();
-  } catch {}
+    const gateSignatureInbox = require('./lib/gate-signature-inbox');
+    const inbox = gateSignatureInbox.listInbox({ nowMs: Date.now() });
+    state.esperandoFirma = inbox.items;
+    state.esperandoFirmaInbox = {
+      degraded: inbox.degraded,
+      alert: inbox.alert,
+      corruptCount: inbox.corruptCount,
+      visibleCount: inbox.visibleCount,
+      firmables: inbox.firmables,
+      vacio: inbox.vacio,
+      banda: inbox.banda,
+    };
+  } catch (e) {
+    // Fail-closed hacia la visibilidad: si el read model no cargó NO se pinta el
+    // vacío verde. La bandeja dice que no pudo leer la lista (UX §5).
+    log(`gate-signature-inbox unavailable: ${e.message}`);
+    state.esperandoFirmaInbox = {
+      degraded: true,
+      alert: 'No pude leer la lista de firmas pendientes. Retengo y aviso.',
+      corruptCount: 0,
+      visibleCount: 0,
+      firmables: 0,
+      vacio: {
+        tono: 'warn',
+        icono: '\u26A0',
+        titulo: 'No pude leer la lista de firmas pendientes',
+        lineas: ['Esto no quiere decir que esté todo firmado.', 'Freno lo que dependa de una firma y te aviso.'],
+        chip: 'RETENIDO · REVISAR EL DEPÓSITO',
+      },
+      banda: null,
+    };
+  }
 
   // #3957 (CA-3) — username PÚBLICO del bot de Telegram para el deep-link de
   // cada fila. Validado contra el charset de Telegram antes de exponerlo; si
@@ -3970,8 +4007,17 @@ function generateHTML(state) {
     ? esperandoFirmaView.renderEsperandoFirmaSsr(state)
     : '';
 
+  // #6208 · R1 — client script de la bandeja, del MISMO módulo que inyecta
+  // `estado-productos.js:541-542`. Antes la home legacy tenía su propia copia
+  // inline de los handlers y las dos divergían. Sin él la bandeja se ve pero sus
+  // botones no operan; con él hay UNA sola definición de `gateSignatureDecide`.
+  const esperandoFirmaJS = (esperandoFirmaView && typeof esperandoFirmaView.renderEsperandoFirmaClientScript === 'function')
+    ? '<script>' + esperandoFirmaView.renderEsperandoFirmaClientScript() + '</script>'
+    : '';
+
   const matrixHTML = `
     ${esperandoFirmaHTML}
+    ${esperandoFirmaJS}
     ${bloqueadosHTML}
     <a id="board-kanban" class="board-kanban-anchor" aria-hidden="true"></a>
     <div class="matrix-section section-collapsible board-kanban-centerpiece" id="issue-tracker" data-section="issue-tracker">
@@ -10033,48 +10079,18 @@ function toggleInfraHealth() {
   } catch (e) {}
 })();
 
-// #4580 — Bandeja "Esperando tu firma". Handlers del panel de firma del operador.
-// REQ-SEC-4580-1: la acción es POST-only + X-CSRF-Token same-origin (GET token →
-// POST decide). El dashboard NO muta estado: reenvía la decisión al backend de
-// firma (#4579) que delega la transición al kernel.
-function toggleEsperandoFirmaPanel() {
-  var p = document.getElementById('esperando-firma-panel');
-  if (!p) return;
-  var collapse = !p.classList.contains('ef-collapsed');
-  p.classList.toggle('ef-collapsed');
-  try { localStorage.setItem('ef-panel-collapsed', collapse ? '1' : '0'); } catch (e) {}
-}
-(function restoreEsperandoFirmaPanel() {
-  try {
-    if (localStorage.getItem('ef-panel-collapsed') === '1') {
-      var p = document.getElementById('esperando-firma-panel');
-      if (p) p.classList.add('ef-collapsed');
-    }
-  } catch (e) {}
-})();
-function efDisableRow(issueNum) {
-  var row = document.getElementById('esperando-firma-row-' + issueNum);
-  if (row) { row.querySelectorAll('button').forEach(function (b) { b.disabled = true; }); }
-}
-async function gateSignatureDecide(issueNum, decision) {
-  var verbo = decision === 'aprobar' ? 'Aprobar' : 'Rechazar';
-  if (!window.confirm(verbo + ' la firma del issue #' + issueNum + '?')) return;
-  efDisableRow(issueNum);
-  try {
-    var t = await fetch('/api/gate-signature/csrf-token', { cache: 'no-store' });
-    var tj = await t.json();
-    var token = tj && tj.csrf_token;
-    if (!token) { alert('No pude obtener el token CSRF; recargá y reintentá.'); location.reload(); return; }
-    var r = await fetch('/api/gate-signature/decide', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
-      body: JSON.stringify({ issue: issueNum, decision: decision })
-    });
-    var j = await r.json();
-    if (j && j.ok) { location.reload(); }
-    else { alert('Error firmando #' + issueNum + ': ' + ((j && j.msg) || 'desconocido')); location.reload(); }
-  } catch (e) { alert('Error firmando #' + issueNum + ': ' + e.message); location.reload(); }
-}
+// #6208 · R1 — Aca vivia una SEGUNDA copia de los handlers de la bandeja
+// "Esperando tu firma", con un handler de decision de 2 argumentos que ya habia
+// perdido el productId de #4778 y que nunca supo del gate multi-gate. Las filas
+// las pinta el mismo renderEsperandoFirmaSsr en las dos superficies, pero el
+// script cliente salia de fuentes distintas: arreglar una sola dejaba la otra
+// mandando pedidos que el backend rechaza.
+//
+// Ahora la UNICA definicion vive en views/dashboard/esperando-firma.js
+// (renderEsperandoFirmaClientScript) y la home legacy la inyecta igual que hace
+// estado-productos.js:541-542. Hay un test que grepea que el handler este
+// definido una sola vez en todo .pipeline/.
+// (Este bloque esta DENTRO de un template literal: sin backticks a proposito.)
 
 // Toggle del panel "Necesitan intervención humana" — colapsable + persistente
 function toggleNeedsHumanPanel(scrollOnExpand) {
@@ -12564,13 +12580,19 @@ function handleRequest(req, res) {
         const parsed = body ? JSON.parse(body) : {};
         const out = gateSignatureRequest.enqueueDecision({
           issue: parsed.issue,
+          // #6208 · CA-13 / CA-14 — `gate` viaja en el MISMO contrato (no hay
+          // ruta nueva). Lo valida `approval-channel.resolveGate` fail-closed,
+          // ANTES de tocar el filesystem: acá se reenvía crudo a propósito.
+          gate: parsed.gate,
           decision: parsed.decision,
           origen: parsed.origen,
           productId: parsed.productId, // #4778 · CA-2.2 — firma atada al producto (no repudio).
+          // REQ-SEC-6208-2 — `actor` es una identidad DECLARADA por el cliente:
+          // va al audit y a ningún otro lado. Nunca alimenta `authorizedSigners`.
           actor: parsed.actor,
           remoteAddress: (req.socket && req.socket.remoteAddress) || '',
         });
-        log(`Action: gate-signature decide #${parsed.issue} → ${out.decision || parsed.decision} (${out.status}) ${out.msg}`);
+        log(`Action: gate-signature decide #${parsed.issue} gate=${out.gate || parsed.gate} -> ${out.verdict || parsed.decision} (${out.status}) ${out.msg}`);
         res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(out));
       } catch (e) {
