@@ -3713,16 +3713,21 @@ function diskGuardSpawn(accion, args, budget, onDone) {
   const child = spawn(process.execPath, args, {
     cwd: ROOT, stdio: 'ignore', windowsHide: true,
   });
-  child.on('exit', (code) => {
+  // NB: el parametro se llama `exitCode` a proposito, NO `code`.
+  // tests/effective-model-post-exit-wiring.test.js ancla por grep en la PRIMERA
+  // aparicion literal de child.on(exit, (code) => { para aislar el post-exit de
+  // agentes. Este handler vive antes en el archivo: si usara `(code)` secuestraria
+  // ese ancla y el test leeria el bloque equivocado.
+  child.on('exit', (exitCode) => {
     const afterGb = diskGuard.measureFreeGb();
     const freedGb = (Number.isFinite(beforeGb) && Number.isFinite(afterGb))
       ? Math.max(0, afterGb - beforeGb)
       : 0;
-    log('disco', `${accion} terminó (exit ${code}) — liberó ${freedGb.toFixed(2)} GB (libre: ${Number.isFinite(afterGb) ? afterGb.toFixed(1) : '?'} GB)`);
+    log('disco', `${accion} terminó (exit ${exitCode}) — liberó ${freedGb.toFixed(2)} GB (libre: ${Number.isFinite(afterGb) ? afterGb.toFixed(1) : '?'} GB)`);
     diskGuard.appendAudit({
       timestamp: new Date().toISOString(),
       accion,
-      exit_code: code,
+      exit_code: exitCode,
       free_gb_antes: Number.isFinite(beforeGb) ? Number(beforeGb.toFixed(2)) : null,
       free_gb_despues: Number.isFinite(afterGb) ? Number(afterGb.toFixed(2)) : null,
       liberado_gb: Number(freedGb.toFixed(2)),
