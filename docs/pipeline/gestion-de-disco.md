@@ -99,6 +99,106 @@ mapa en memoria de `activeProcesses` — ni un byte de disco. Corre desacoplado
 (`spawn` + `unref`, nunca bloquea el ciclo), con throttle de 1 hora, y en ventana
 nocturna va con `--force`.
 
+## El guardián automático (#6708)
+
+Todo lo anterior describe **cómo** se limpia. Hasta #6708 faltaba **cuándo se
+limpia solo y quién lo decide**: el único control por espacio libre era `/ops`
+avisando por debajo de 5 GB, y sólo si un humano lo corría. El cron interno del
+Pulpo corría en `dry_run: true` desde que se creó — nunca borró un byte.
+
+El Pulpo ahora mide el espacio libre **en cada tick** y aplica una escalera de
+acciones. El estado vive en `.pipeline/disk-guard-state.json` (no versionado) y
+el dashboard lo muestra como un gauge más, con el color del umbral vigente.
+
+### El presupuesto
+
+Los umbrales viven en `.pipeline/config.yaml`, bloque `disk_budget`, y se
+cambian sin tocar código:
+
+| Campo | Default | Qué hace |
+|-------|---------|----------|
+| `enabled` | `true` | Kill-switch del guardián entero |
+| `green_gb` | 40 | Por encima: no se hace nada |
+| `yellow_gb` | 25 | Piso del amarillo |
+| `orange_gb` | 12 | Piso del naranja; debajo es rojo |
+| `hysteresis_gb` | 2 | Margen extra para **salir** del freno (anti-flapping) |
+| `rotate_throttle_min` | 60 | Mínimo entre rotaciones de caché |
+| `reclaim_throttle_min` | 60 | Mínimo entre reclamaciones de worktrees |
+| `alert_cooldown_min` | 120 | Re-aviso de Telegram mientras el umbral persiste |
+| `freeze_heavy_phases` | `true` | Kill-switch sólo del freno de fases |
+| `alert_freed_gb` | 5 | Avisar si una corrida liberó más que esto |
+
+Son **GB libres, no porcentaje**: lo que importa es si entra un build de Gradle o
+un video de QA, no qué fracción del disco se usó.
+
+Los umbrales deben ser estrictamente descendientes. Si no lo son, se descarta la
+terna entera y se vuelve a los defaults — corregir sólo el campo ofensor daría un
+presupuesto que el operador no escribió y en el que no puede confiar.
+
+### La escalera de acciones
+
+Es **acumulativa**: el nivel no elige *una* acción, elige *hasta dónde llega*.
+
+| Nivel | Libres | Qué corre |
+|-------|--------|-----------|
+| 🟢 verde | `> green_gb` | nada |
+| 🟡 amarillo | `yellow_gb`–`green_gb` | rotar cachés (`rotate-caches.js`) |
+| 🟠 naranja | `orange_gb`–`yellow_gb` | + reclamar worktrees integrados **sin el cap de 5** + alerta a Telegram |
+| 🔴 rojo | `< orange_gb` | + frenar el despacho de `build` y `verificacion` + alerta a Telegram |
+
+El freno de rojo existe para no rebotar issues sanos: sin disco, un build falla
+y el pipeline lo reporta como defecto del código. Se levanta recién en
+`orange_gb + hysteresis_gb`, para que un tick que rasguña el umbral no prenda y
+apague el freno alternadamente.
+
+Cada acción tiene su throttle propio y un flag en memoria que impide dos
+corridas en vuelo. Si la medición falla, el nivel es `unknown` y **no corre
+ninguna acción destructiva**: un guardián ciego no borra.
+
+El módulo es **accesorio**: toda función pública devuelve un valor utilizable
+ante cualquier error, y el gate de despacho es fail-open por partida doble. Si
+`disk-guard.js` se rompe, el Pulpo sigue despachando — a lo sumo sin guardián.
+
+### Salida del dry-run, auditada
+
+`ghostbusters_cron.dry_run` pasó a `false`. Cada borrado queda en
+`.pipeline/audit/ghostbusters-worktrees.jsonl` (path, peso, motivo, timestamp) y
+cada acción del guardián en `.pipeline/audit/disk-guard.jsonl` (acción, libre
+antes/después, liberado, presupuesto vigente). Ambos son append-only y no se
+versionan.
+
+Salir del dry-run sólo tiene sentido junto con el guard refinado del punto
+siguiente: sin él, el sweep seguiría cerrando con "liberación potencial 0.00 GB".
+
+### Ruido de infra ya no protege worktrees muertos
+
+El guard de "archivos sin commitear" protegía a decenas de worktrees de issues
+**ya cerrados** por un único archivo de heartbeat o una copia de `.claude/`. Eso
+es ruido de infra regenerable, no trabajo humano, y volvía decorativo al
+automatismo entero.
+
+`.pipeline/lib/infra-noise.js` clasifica ese ruido y lo excluye del conteo:
+heartbeats, `.claude/` copiado, evidencia de QA, colas y estado del pipeline,
+artefactos de build. Es **fail-closed**: una línea que no se puede parsear, un
+conflicto de merge o un path desconocido cuentan como cambio real. El código
+fuente del pipeline **no** es ruido, aunque viva bajo `.pipeline/`.
+
+Un worktree con un `.kt` modificado sin pushear se sigue conservando.
+
+### Cómo revertir
+
+Todo se revierte por config, sin tocar código ni desplegar:
+
+- **Apagar el guardián entero** — `disk_budget.enabled: false`.
+- **Volver al modo reporte** — `ghostbusters_cron.dry_run: true`. El sweep
+  vuelve a listar sin borrar; el audit sigue registrando ambos modos.
+- **Sólo desactivar el freno de fases** — `disk_budget.freeze_heavy_phases:
+  false`. La limpieza sigue corriendo, el despacho no se frena nunca.
+- **Aflojar los umbrales** — bajar `green_gb`/`yellow_gb`/`orange_gb` retrasa
+  cada escalón.
+
+Cualquiera de los cuatro requiere reiniciar el Pulpo para tomar efecto.
+
 ## Lo que NO se toca, y por qué
 
 - **`~/.android/avd`** (13 GB) — el emulador QA con su snapshot `qa-ready`.

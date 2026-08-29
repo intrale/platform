@@ -438,6 +438,12 @@ const costAnomalyAlert = require('./lib/cost-anomaly-alert');
 const restModeState = require('./lib/rest-mode-state');
 // #2890 PR-A — Gating horario del modo descanso (ventana + bypass labels).
 const restModeWindow = require('./lib/rest-mode-window');
+// #6708 — Guardián de espacio en disco: medición continua + escalera de
+// acciones (rotar cachés → reclamar worktrees → frenar fases pesadas).
+// Import defensivo: si el módulo no carga, el Pulpo sigue despachando sin
+// guardián. Es accesorio, no puede matar el pipeline.
+let diskGuard = null;
+try { diskGuard = require('./lib/disk-guard'); } catch (e) { /* accesorio */ }
 // #4051 — Ventana nocturna de presión (umbrales relajados + piso de
 // concurrencia). Mecanismo NUEVO e INDEPENDIENTE de rest_mode.
 const { isNightWindow } = require('./lib/night-window');
@@ -3642,6 +3648,228 @@ function tryFreeResources(mode = 'soft') {
   }
 
   return { freed: killed.length > 0, killed };
+}
+
+// =============================================================================
+// #6708 — BRAZO: GUARDIÁN DE DISCO
+//
+// Mide el espacio libre en cada tick y aplica una escalera ACUMULATIVA:
+//   yellow → rotar cachés
+//   orange → + reclamar worktrees integrados SIN cap + alerta Telegram
+//   red    → + frenar el despacho de `build` y `verificacion`
+//
+// Todo lo pesado (rotate-caches, ghostbusters --worktrees) corre como CHILD
+// PROCESS: medir tamaños de directorio con 100+ worktrees tarda minutos y
+// bloquearía el event loop del Pulpo. Cada acción tiene su propio guard de
+// re-entrada además del throttle, así que nunca hay dos corridas en vuelo.
+//
+// El nivel y el flag de freno se persisten en `.pipeline/disk-guard-state.json`
+// para que el dashboard los muestre y para que el gate de despacho no dependa
+// de tener el snapshot a mano.
+//
+// ACCESORIO: si algo de esto falla, el Pulpo sigue despachando. Se loguea y se
+// sigue — un bug del guardián no puede dejar el pipeline sin servicio.
+// =============================================================================
+
+// Guards de re-entrada, uno por acción: el throttle solo dice "ya pasó una
+// hora", no dice "la corrida anterior terminó". Con 100+ worktrees el sweep
+// puede pasarse de la hora y solaparse consigo mismo.
+let diskGuardRotateRunning = false;
+let diskGuardReclaimRunning = false;
+// Snapshot del último tick, para el gate de despacho de `brazoLanzamiento` sin
+// re-leer el archivo por cada candidato.
+let lastDiskSnapshot = null;
+
+function diskGuardBudget(config) {
+  if (!diskGuard) return null;
+  const budget = diskGuard.normalizeBudget((config && config.disk_budget) || {});
+  if (budget.invalid && budget.invalid.length > 0) {
+    log('disco', `Config disk_budget con problemas: ${budget.invalid.join('; ')}`);
+  }
+  return budget;
+}
+
+/**
+ * Lanza una acción de limpieza en background y, al terminar, mide cuánto se
+ * liberó y lo deja en el audit JSONL.
+ *
+ * `onDone(freedGb)` corre en el 'exit' del hijo. La medición del "antes" se
+ * toma acá y no dentro del hijo: así el delta cubre TODO lo que hizo, incluida
+ * la parte que no reporta.
+ */
+function diskGuardSpawn(accion, args, budget, onDone) {
+  const beforeGb = diskGuard.measureFreeGb();
+  const child = spawn(process.execPath, args, {
+    cwd: ROOT, stdio: 'ignore', windowsHide: true,
+  });
+  child.on('exit', (code) => {
+    const afterGb = diskGuard.measureFreeGb();
+    const freedGb = (Number.isFinite(beforeGb) && Number.isFinite(afterGb))
+      ? Math.max(0, afterGb - beforeGb)
+      : 0;
+    log('disco', `${accion} terminó (exit ${code}) — liberó ${freedGb.toFixed(2)} GB (libre: ${Number.isFinite(afterGb) ? afterGb.toFixed(1) : '?'} GB)`);
+    diskGuard.appendAudit({
+      timestamp: new Date().toISOString(),
+      accion,
+      exit_code: code,
+      free_gb_antes: Number.isFinite(beforeGb) ? Number(beforeGb.toFixed(2)) : null,
+      free_gb_despues: Number.isFinite(afterGb) ? Number(afterGb.toFixed(2)) : null,
+      liberado_gb: Number(freedGb.toFixed(2)),
+      presupuesto: { green_gb: budget.green_gb, yellow_gb: budget.yellow_gb, orange_gb: budget.orange_gb },
+    }, { pipelineDir: PIPELINE });
+    try { onDone(freedGb, afterGb); } catch (e) { log('disco', `post-${accion}: ${e.message}`); }
+  });
+  child.on('error', (e) => {
+    log('disco', `${accion} no se pudo lanzar: ${e.message}`);
+    try { onDone(0, NaN); } catch { /* best-effort */ }
+  });
+  child.unref();
+  return true;
+}
+
+function brazoDiskGuard(config) {
+  if (!diskGuard) return null;
+  let budget;
+  try {
+    budget = diskGuardBudget(config);
+  } catch (e) {
+    log('disco', `No pude normalizar el presupuesto: ${e.message}`);
+    return null;
+  }
+  if (!budget || budget.enabled === false) return null;
+
+  try {
+    const freeGb = diskGuard.measureFreeGb();
+    const prev = diskGuard.readState({ pipelineDir: PIPELINE });
+    const d = diskGuard.decide({ freeGb, budget, state: prev, now: Date.now() });
+
+    // Tamaño total del volumen: sólo lo usa el dashboard para el porcentaje
+    // ocupado. Se persiste con el resto del snapshot para que el render no
+    // tenga que ejecutar `fsutil` en cada refresh de la página.
+    const totalGb = diskGuard.measureTotalGb();
+    d.nextState.total_gb = Number.isFinite(totalGb) ? Number(totalGb.toFixed(1)) : prev.total_gb;
+    d.nextState.budget = {
+      green_gb: budget.green_gb, yellow_gb: budget.yellow_gb, orange_gb: budget.orange_gb,
+    };
+
+    // Persistir SIEMPRE, aun en verde: el dashboard necesita el número y el
+    // color en cada refresh, no sólo cuando hay problema.
+    diskGuard.writeState(d.nextState, { pipelineDir: PIPELINE });
+    lastDiskSnapshot = d;
+
+    if (d.level !== prev.level) {
+      const antes = Number.isFinite(prev.free_gb) ? `${prev.free_gb} GB` : 'sin medición';
+      log('disco', `${d.emoji} Nivel de disco: ${prev.level} → ${d.level} (${d.freeGb != null ? d.freeGb.toFixed(1) : '?'} GB libres, antes ${antes})`);
+    }
+    if (d.level === diskGuard.LEVELS.UNKNOWN) {
+      log('disco', 'No se pudo medir el espacio libre — guardián en pausa este tick (no se ejecuta ninguna acción destructiva)');
+      return d;
+    }
+    if (d.frozen !== prev.frozen) {
+      log('disco', d.frozen
+        ? '🔴 Despacho de fases pesadas (build, verificacion) FRENADO por falta de disco'
+        : `🟢 Despacho de fases pesadas REANUDADO (${d.freeGb.toFixed(1)} GB libres >= ${budget.orange_gb + budget.hysteresis_gb} GB)`);
+    }
+
+    // --- yellow: rotar cachés ---
+    if (d.run.rotateCaches && !diskGuardRotateRunning) {
+      const script = path.join(ROOT, '.claude', 'hooks', 'rotate-caches.js');
+      if (fs.existsSync(script)) {
+        diskGuardRotateRunning = true;
+        log('disco', `${d.emoji} Rotación de cachés lanzada (${d.freeGb.toFixed(1)} GB libres, umbral amarillo ${budget.yellow_gb} GB)`);
+        // `--min-free-gb` alinea el auto-límite propio de rotate-caches con el
+        // presupuesto: sin esto usaría su default de 30 GB y no haría nada en
+        // un amarillo configurado más arriba.
+        diskGuardSpawn('rotate-caches', [script, `--min-free-gb=${budget.green_gb}`], budget, (freedGb) => {
+          diskGuardRotateRunning = false;
+          diskGuardMaybeAlert(config, budget, freedGb);
+        });
+      } else {
+        log('disco', `rotate-caches.js no existe en ${script} — sin rotación`);
+      }
+    }
+
+    // --- orange: reclamar worktrees integrados SIN cap ---
+    if (d.run.reclaimWorktrees && !diskGuardReclaimRunning) {
+      const cronCfg = (config && config.ghostbusters_cron) || {};
+      const ageDays = Math.max(parseInt(cronCfg.age_threshold_days, 10) || 30, 1);
+      diskGuardReclaimRunning = true;
+      log('disco', `${d.emoji} Reclamación de worktrees SIN cap lanzada (${d.freeGb.toFixed(1)} GB libres, umbral naranja ${budget.orange_gb} GB)`);
+      // `--run` fuerza el borrado real aunque `ghostbusters_cron.dry_run` esté
+      // en true: bajo presión de disco, reportar sin borrar no sirve de nada.
+      // Los fail-safes (trabajo en vuelo, guard anti-suicidio, audit JSONL)
+      // siguen todos vigentes — sólo se levanta el techo de 5 por corrida.
+      diskGuardSpawn('reclaim-worktrees', [
+        path.join(PIPELINE, 'ghostbusters.js'),
+        '--worktrees', '--run', '--no-cap', `--age-days=${ageDays}`,
+      ], budget, (freedGb) => {
+        diskGuardReclaimRunning = false;
+        diskGuardMaybeAlert(config, budget, freedGb);
+      });
+    }
+
+    // --- orange/red: alerta a Telegram ---
+    if (d.alert.should) {
+      diskGuardAlert(d, budget, 0);
+    }
+
+    return d;
+  } catch (e) {
+    log('disco', `Tick del guardián falló (accesorio, el pipeline sigue): ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Alerta post-acción: se dispara cuando una corrida liberó por encima de
+ * `alert_freed_gb`. "Sin borrado silencioso de cosas grandes": si el guardián
+ * se llevó varios GB, el operador se entera aunque el umbral ya no esté cruzado.
+ */
+function diskGuardMaybeAlert(config, budget, freedGb) {
+  if (!diskGuard || !(Number(freedGb) >= budget.alert_freed_gb)) return;
+  try {
+    const freeGb = diskGuard.measureFreeGb();
+    const prev = diskGuard.readState({ pipelineDir: PIPELINE });
+    const d = diskGuard.decide({ freeGb, budget, state: prev, now: Date.now(), freedGbThisRun: freedGb });
+    diskGuard.writeState(d.nextState, { pipelineDir: PIPELINE });
+    lastDiskSnapshot = d;
+    if (d.alert.should) diskGuardAlert(d, budget, freedGb);
+  } catch (e) {
+    log('disco', `Alerta post-acción falló: ${e.message}`);
+  }
+}
+
+function diskGuardAlert(decision, budget, freedGb) {
+  try {
+    sendTelegram(diskGuard.alertText({
+      level: decision.level,
+      freeGb: decision.freeGb,
+      budget,
+      freedGb,
+      frozen: decision.frozen,
+      reason: decision.alert.reason,
+    }));
+    log('disco', `Alerta enviada a Telegram (${decision.level}, motivo: ${decision.alert.reason})`);
+  } catch (e) {
+    log('disco', `No pude alertar por Telegram: ${e.message}`);
+  }
+}
+
+/**
+ * Gate de despacho (#6708): ¿esta fase/skill está frenada por falta de disco?
+ *
+ * Fail-open por partida doble: sin snapshot en memoria cae al estado en disco,
+ * y cualquier error devuelve `false`. Un bug acá no puede frenar el pipeline
+ * entero.
+ */
+function diskGuardBlocksPhase(fase, skill) {
+  if (!diskGuard) return false;
+  try {
+    const state = lastDiskSnapshot ? lastDiskSnapshot.nextState : null;
+    return diskGuard.isHeavyPhaseFrozen(fase, skill, { pipelineDir: PIPELINE, state });
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -8348,6 +8576,23 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
       // Fail-open: si el gate falla, no bloqueamos el pipeline. El pipeline
       // no puede morir por un bug en este módulo.
       log('lanzamiento', `rest-mode gate error (fail-open): ${e.message}`);
+    }
+
+    // 0a-ter. GUARDIÁN DE DISCO (#6708): en umbral rojo se frena el despacho de
+    // las fases pesadas — `build` (Gradle: artefactos + daemons) y
+    // `verificacion` (QA: emulador + grabación de video). Es lo contrario de
+    // una restricción arbitraria: sin disco esas fases fallan igual, pero
+    // fallan reportando "el test falló" o "el build rompió", y el pipeline
+    // rebota issues SANOS como si tuvieran defectos. Frenarlas es lo que
+    // convierte un problema de infraestructura en un problema visible.
+    //
+    // El archivo se queda en `pendiente/` sin penalizar: cuando el guardián
+    // recupere margen (con histéresis, para no oscilar), el siguiente tick lo
+    // lanza. Fail-open — ver `diskGuardBlocksPhase`.
+    if (diskGuardBlocksPhase(fase, skill)) {
+      log('lanzamiento', `#${issue} skipped por falta de disco (fase=${fase}, skill=${skill})`);
+      _dcMark(dispatchCause.CAUSAS.DISCO_LLENO, `Disco en umbral rojo — despacho de fases pesadas frenado (fase=${fase})`);
+      continue;
     }
 
     // 0b. BLOCKED: no lanzar issues con blocked:dependencies
@@ -23612,6 +23857,13 @@ async function mainLoop() {
       } catch (e) {
         // require puede fallar si el módulo no existe (build viejo); no es fatal.
       }
+
+      // #6708 — Guardián de disco. Corre ANTES del gate de pausa a propósito:
+      // el disco se sigue llenando aunque el pipeline esté pausado (cachés,
+      // logs, worktrees que quedaron), y el operador quiere el indicador vivo
+      // en el dashboard mientras diagnostica. Es sincrónico y barato (~20ms de
+      // `fsutil`); todo lo pesado lo delega a hijos.
+      brazoDiskGuard(config);
 
       if (!paused && !desyncBlocked) {
         rotateHistory();          // Housekeeping: rotar historial > 24hs
