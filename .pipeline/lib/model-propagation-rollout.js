@@ -203,7 +203,7 @@ function enablePair(pipelineDir, actor, provider, config, opts = {}) {
   const wave = waveIndex(actor, config); if (wave < 0) throw new Error(`actor '${actor}' no esta declarado en los escalones`);
   if (wave > 0 && !state.waveEvidence[waveEvidenceKey(wave - 1, provider)]) {
     const previos = (config.waves[wave - 1].actors || []).join(', ');
-    throw new Error(`el escalon ${wave + 1} en ${provider} requiere evidencia sana del escalon ${wave} (${previos}): al menos un actor encendido y evaluado como sano en ${provider}, y ninguno en rollback`);
+    throw new Error(`el escalon ${wave + 1} en ${provider} requiere evidencia sana del escalon ${wave} (${previos}): todos los actores deben estar encendidos y evaluados como sanos en ${provider}`);
   }
   const now = opts.now || new Date(); state.flags[key] = { enabled: true, enabledAt: now.toISOString(), enabledBy: opts.actor || 'operador', rollback: null };
   atomicJson(paths(pipelineDir).state, state, fsImpl); audit(pipelineDir, { ts: now.toISOString(), event: 'enabled', pair: key, origin: 'humano', by: opts.actor || 'operador' }, fsImpl);
@@ -289,17 +289,14 @@ function evaluateEnabled(pipelineDir, config, opts = {}) {
     for (const provider of providers) {
       const keys = actors.map(actor => pairKey(actor, provider));
       const evidenceKey = waveEvidenceKey(i, provider);
-      // Evidencia = los pares del escalon que EFECTIVAMENTE estan encendidos en
-      // ese proveedor corrieron sanos, y ninguno del escalon esta en rollback.
-      // Un actor que nunca corrio en ese proveedor no puede haber degradado y
-      // tampoco puede trabar el escalon para siempre (review de #6274).
-      const encendidos = keys.filter(key => refreshed.flags[key]?.enabled === true);
-      const enRollback = keys.filter(key => refreshed.flags[key] && refreshed.flags[key].enabled !== true && refreshed.flags[key].rollback);
-      const sano = encendidos.length > 0 && enRollback.length === 0
-        && encendidos.every(key => results[key]?.action === 'healthy');
+      // La wave siguiente solo se abre cuando TODOS los pares aplicables de la
+      // anterior estuvieron encendidos y acumularon una evaluacion sana. Un par
+      // ausente no es evidencia y debe mantener el rollout cerrado (CA-4).
+      const sano = keys.length > 0 && keys.every(key =>
+        refreshed.flags[key]?.enabled === true && results[key]?.action === 'healthy');
       if (sano) refreshed.waveEvidence[evidenceKey] = {
-        at: (opts.now || new Date()).toISOString(), provider, pairs: encendidos,
-        sin_evidencia: keys.filter(key => !encendidos.includes(key)),
+        at: (opts.now || new Date()).toISOString(), provider, pairs: keys,
+        sin_evidencia: [],
         minRuns: config.evaluation_min_runs || DEFAULTS.evaluationMinRuns };
       else delete refreshed.waveEvidence[evidenceKey];
     }
@@ -311,6 +308,9 @@ function reenablePair(pipelineDir, actor, provider, by, opts = {}) {
   if (!by) throw new Error('el reencendido requiere --by explicito');
   const fsImpl = opts.fsImpl || fs; const state = readState(pipelineDir, fsImpl); const key = pairKey(actor, provider);
   if (!state.baselines[key]) throw new Error(`no existe baseline para ${key}`);
+  if (!state.flags[key]?.rollback || state.flags[key].enabled !== false) {
+    throw new Error(`no se puede reencender ${key}: el par no fue apagado por auto_rollback`);
+  }
   const now = opts.now || new Date(); state.flags[key] = { enabled: true, enabledAt: now.toISOString(), enabledBy: by, rollback: null };
   atomicJson(paths(pipelineDir).state, state, fsImpl); audit(pipelineDir, { ts: now.toISOString(), event: 'reenabled', pair: key, origin: 'humano', by }, fsImpl);
   return state.flags[key];

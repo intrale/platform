@@ -90,22 +90,25 @@ test('CA-4: un actor del escalón en rollback bloquea el escalón siguiente', ()
   r.evaluatePair(root,'security','anthropic',{n:2,earlyDeathRate:1,reboundRate:0},config); // rollback de security
   r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
   assert.equal(r.readState(root).waveEvidence['0::anthropic'],undefined);
-  assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',config),/ninguno en rollback/);
+  assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',config),/todos los actores/);
 });
-test('CA-4: evidencia sana de los actores encendidos habilita el siguiente sólo en el mismo proveedor', () => {
+test('CA-4: un solo actor sano no abre la wave si otro par sigue sin evidencia', () => {
   const root=fixture(); const config={...cfg,waves:[{actors:['guru','security']},{actors:['pipeline-dev']}]};
   seed(root,[1,2].flatMap(i=>['guru','security','pipeline-dev'].flatMap(skill=>[
     {ts:`2026-08-20T0${i}:00:00Z`,skill,provider:'anthropic',exit_code:0,duration_ms:1},
     {ts:`2026-08-20T0${i}:10:00Z`,skill,provider:'openai-codex',exit_code:0,duration_ms:1},
   ])));
   r.captureBaseline(root);
-  // Sólo `guru` encendido en anthropic: `security` nunca corrió con propagación,
-  // no puede haber degradado y no traba el escalón para siempre.
+  // Sólo `guru` encendido en anthropic: `security` no aporta evidencia sana.
   r.enablePair(root,'guru','anthropic',config);
   r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
+  assert.equal(r.readState(root).waveEvidence['0::anthropic'],undefined);
+  assert.throws(()=>r.enablePair(root,'pipeline-dev','anthropic',config),/todos los actores/);
+  r.enablePair(root,'security','anthropic',config);
+  r.evaluateEnabled(root,config,{from:'2026-08-20T00:00:00Z'});
   const evidencia=r.readState(root).waveEvidence['0::anthropic'];
-  assert.ok(evidencia); assert.deepStrictEqual(evidencia.pairs,['guru::anthropic']);
-  assert.deepStrictEqual(evidencia.sin_evidencia,['security::anthropic']);
+  assert.deepStrictEqual(evidencia.pairs,['guru::anthropic','security::anthropic']);
+  assert.deepStrictEqual(evidencia.sin_evidencia,[]);
   assert.doesNotThrow(()=>r.enablePair(root,'pipeline-dev','anthropic',config));
   assert.throws(()=>r.enablePair(root,'pipeline-dev','openai-codex',config),/openai-codex/);
 });
@@ -122,6 +125,15 @@ test('CA-3: los defaults disparan rollback y umbrales invalidos no concluyen hea
   assert.equal(r.shouldPropagate(invalidRoot,'po','anthropic'),true);
 });
 test('muestra insuficiente no dispara rollback y reencendido exige humano', () => { const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1}))); r.captureBaseline(root); r.enablePair(root,'po','anthropic',cfg); assert.equal(r.evaluatePair(root,'po','anthropic',{n:1,earlyDeathRate:1,reboundRate:1},cfg).action,'deferred'); assert.throws(()=>r.reenablePair(root,'po','anthropic',''),/--by/); });
+test('reenable rechaza pares nunca encendidos o sin auto rollback', () => {
+  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
+  r.captureBaseline(root);
+  assert.throws(()=>r.reenablePair(root,'po','anthropic','leo'),/no fue apagado por auto_rollback/);
+  r.enablePair(root,'po','anthropic',cfg,{actor:'leo'});
+  assert.throws(()=>r.reenablePair(root,'po','anthropic','leo'),/no fue apagado por auto_rollback/);
+  r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:1,reboundRate:0},cfg);
+  assert.doesNotThrow(()=>r.reenablePair(root,'po','anthropic','leo'));
+});
 test('el comando de spawn queda idéntico apagado, propaga encendido y omite tras rollback', () => {
   const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
   r.captureBaseline(root); const resolution={provider:'anthropic',model:'claude-sonnet-4-6'}; const original=['-p','hola'];
