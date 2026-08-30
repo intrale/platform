@@ -1,6 +1,6 @@
 {
   "_doc": "#5174 · CA-2 — snapshot REDACTADO (path -> tipo, NUNCA el valor) de la configuracion resuelta ANTES de partir config.yaml en kernel + producto. Generado desde .pipeline/config.yaml en el commit 14a454441 (entrega B, pre-particion). Sirve para demostrar que la particion no perdio ni cambio ninguna clave. Si un cambio LEGITIMO agrega o quita una clave top-level, regenerar con: node .pipeline/lib/__tests__/fixtures/regen-config-snapshot.js",
-  "_generadoDesde": "1de88f8d6",
+  "_generadoDesde": "adcf4c808",
   "_claves": 532,
   "snapshot": [
     "admission_gate: object(3)",
@@ -287,7 +287,7 @@
     "model_propagation_rollout.thresholds: object(2)",
     "model_propagation_rollout.thresholds.early_death_absolute: number",
     "model_propagation_rollout.thresholds.rebound_absolute: number",
-    "model_propagation_rollout.waves: array[3]",
+    "model_propagation_rollout.waves: array[4]",
     "multi_provider: object(4)",
     "multi_provider.effective_model_audit: object(5)",
     "multi_provider.effective_model_audit.alert_enabled: boolean",
