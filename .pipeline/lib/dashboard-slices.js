@@ -672,6 +672,13 @@ function headerSlice(state, ctx) {
         cpuCores: r.cpuCores ?? null,
         maxCpu: r.maxCpu ?? 70,
         maxMem: r.maxMem ?? 70,
+        // #6708 — Espacio libre en disco con el color de su umbral. Va dentro
+        // de `resources` y no como slice aparte: para el operador es una
+        // tercera dimensión de la misma pregunta ("¿el sistema da abasto?"),
+        // y separarla obligaría al cliente a un fetch más para pintar la fila.
+        // `null` cuando el guardián todavía no midió (Pulpo recién arrancado) —
+        // el cliente omite la celda en vez de mostrar ceros.
+        disk: state.disk || null,
     };
 
     // #2890 PR-A — Modo descanso: pill indigo en header (CA-3.1) cuando la
