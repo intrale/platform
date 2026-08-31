@@ -38,7 +38,7 @@
 //
 // Idempotencia (el requisito que no se puede aflojar)
 // ---------------------------------------------------
-// `vault-migration.js` arma una clave `<host>:<op>:<intento>` y la persiste en
+// `vault-migration.js` arma una clave `<host>:<op>:1:<nonce>` y la persiste en
 // un checkpoint ANTES de invocar la operación; un crash entre etapas reanuda
 // con LA MISMA clave. Acá se cierra el otro extremo: cada acreditación se
 // registra en un ledger append-only indexado por esa clave. Si la misma clave
@@ -48,7 +48,7 @@
 // Contención de secretos
 // ----------------------
 // El ledger guarda nombres lógicos, la clave de idempotencia (que por
-// construcción es `<host>:<op>:<intento>`, sin material) y una etiqueta de
+// construcción es `<host>:<op>:1:<nonce>`, sin material) y una etiqueta de
 // versión validada contra `SLUG_RE`. Nunca un valor, un path ni un PID. La
 // auditoría se escribe con la evidencia YA sanitizada por el módulo (modelo
 // cerrado de campos), en JSONL append-only con permisos 0600, igual que
@@ -190,7 +190,7 @@ function crearLedger({ fs, ruta, logger }) {
     return out;
   }
 
-  /** Busca por (op, clave). La clave es `<host>:<op>:<intento>`: no lleva material. */
+  /** Busca por (op, clave). La clave es `<host>:<op>:1:<nonce>`: no lleva material. */
   function buscar(op, clave) {
     if (typeof clave !== 'string' || !clave) return null;
     const todos = leerTodo();

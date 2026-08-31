@@ -73,10 +73,19 @@ function configFake(over = {}) {
 }
 
 /** El evaluador de cobertura REAL, apuntado a un `audit/` descartable. */
-function metricsFactoryEn(dir) {
+function metricsFactoryEn(dir, now) {
   let inst = null;
   return () => {
-    if (!inst) inst = createVaultShadowMetrics({ auditDir: path.join(dir, 'audit'), logger: () => {} });
+    if (!inst) {
+      inst = createVaultShadowMetrics(Object.assign(
+        { auditDir: path.join(dir, 'audit'), logger: () => {} },
+        // El reloj se comparte con el coordinador cuando el test necesita
+        // cruzar la ventana de convivencia: dos relojes distintos hacen que el
+        // evaluador siga diciendo `ventana_en_curso` mientras el coordinador ya
+        // la dio por cumplida, y el test mediria esa contradiccion, no el flujo.
+        now ? { now: () => now.actual() } : {},
+      ));
+    }
     return inst;
   };
 }
@@ -118,8 +127,14 @@ function conOperador(fn) {
  * granularidad de reloj del verificador es un bug latente propio, reportado
  * aparte (afecta filesystems con mtime de 1-2 s, tipo FAT/SMB).
  */
-function acreditarPidsVivos(dir) {
-  const futuro = new Date(Date.now() + 1000);
+function acreditarPidsVivos(dir, cuandoMs) {
+  // `cuandoMs` existe para los tests que corren con reloj inyectado: el ancla de
+  // `vault-respawn-readiness` compara el mtime del `.pid` contra `rotacion.at`,
+  // que sale del reloj del coordinador. Con un reloj falso adelantado, un mtime
+  // tomado de `Date.now()` queda ANTES de la rotacion y el respawn falla por
+  // `respawn_incompleto` — un falso rojo que no tiene que ver con lo que se prueba.
+  const base = (typeof cuandoMs === 'number' && Number.isFinite(cuandoMs)) ? cuandoMs : Date.now();
+  const futuro = new Date(base + 1000);
   for (const nombre of CONSUMIDORES) {
     const ruta = path.join(dir, `${nombre}.pid`);
     fs.writeFileSync(ruta, String(process.pid), 'utf8');
@@ -815,3 +830,176 @@ test('la reevaluacion del gate en caliente exige AMBOS booleanos exactos', () =>
   assert.ok(/v\.enabled === true && m\.enabled === true/.test(cuerpo),
     'fail-closed: `"true"`, `1` o `undefined` no pueden abrir el gate en caliente');
 });
+
+// -----------------------------------------------------------------------------
+// El recorrido productivo POSITIVO, hasta `cutover-ready`
+// -----------------------------------------------------------------------------
+//
+// #5453 rev-5. El review de rev-4 dejó este pedido abierto: hasta acá el único
+// recorrido que llegaba a `cutover-ready` era el de
+// `vault-migration-integration.test.js`, que arma el coordinador a mano con
+// `createVaultMigration` y sus propias dependencias. Por el cableado PRODUCTIVO
+// sólo se ejercitaba el camino NEGATIVO (`host_silencioso` ⇒ `coexisting`).
+//
+// Un `notEqual(stage, CUTOVER_READY)` no prueba que el estado sea alcanzable:
+// pasa igual si el flujo está roto y NINGÚN host puede llegar nunca. Ese es
+// exactamente el fallo de la rev-0 —cableado muerto, suite en verde— y por eso
+// la prueba que faltaba es la afirmativa. Además es el único test que ejercita
+// el `readCoverage` productivo con cobertura real y la ventana ya cumplida.
+
+/** Reloj que arranca en el instante REAL y puede saltar hacia adelante. */
+function relojSaltarin() {
+  let ms = Date.now();
+  const fn = () => { ms += 1000; return ms; };
+  fn.actual = () => ms;
+  fn.saltar = (segundos) => { ms += segundos * 1000; return ms; };
+  return fn;
+}
+
+const NOMBRES_DESCRIPTORES = Object.keys(ENV_DESCRIPTORS);
+
+/** Cobertura positiva real: todos los descriptores resueltos `via: vault`. */
+function cubrirTodo(instancia, host) {
+  const sources = {};
+  for (const nombre of NOMBRES_DESCRIPTORES) sources[ENV_DESCRIPTORS[nombre].env] = 'vault';
+  instancia.record(sources, { descriptors: ENV_DESCRIPTORS, hostId: host });
+  instancia.flush();
+}
+
+/**
+ * Lleva un host a `cutover-ready` por el cableado productivo, con el
+ * `config.yaml` REAL en disco (sin `loadConfig` inyectado) y el ambiente
+ * apuntando a otro árbol, que es como corre en producción.
+ */
+function parqueListo() {
+  const now = relojSaltarin();
+  const propio = repoFalso(configFake().vault);
+  const ajeno = repoFalso({ enabled: false, migration: { enabled: false } });
+  const factory = metricsFactoryEn(propio.pipelineDir, now);
+
+  const armado = conRepoRootAjeno(ajeno.root, () => wiring.createProductionVaultMigration({
+    pipelineDir: propio.pipelineDir,
+    logger: () => {},
+    metricsFactory: factory,
+    now,
+    acreditacion: {
+      rotate: { confirmado: true, version: VERSION_OK },
+      provision: { confirmado: true },
+    },
+  }));
+  assert.equal(armado.gateAbierto, true, 'el gate del arbol propio tiene que estar abierto');
+
+  // El evaluador de #5427 persiste su t0 en la PRIMERA evaluación y esa pasada
+  // nunca aprueba. Se ceba acá para que la ventana arranque en el instante
+  // inicial del reloj y toda la evidencia posterior caiga adentro.
+  factory().evaluate({
+    descriptors: ENV_DESCRIPTORS,
+    hostsActivos: [HOST],
+    durationHours: 24,
+  });
+
+  const co = armado.coordinador;
+  assert.equal(co.preflight({ host: HOST }).ok, true, 'preflight');
+  assert.equal(co.rotate({ host: HOST }).ok, true, 'rotate');
+  assert.equal(co.provision({ host: HOST }).ok, true, 'provision');
+  acreditarPidsVivos(propio.pipelineDir, now.actual());
+  assert.equal(co.respawn({ host: HOST }).ok, true, 'respawn');
+
+  // Convivencia real: resoluciones `via: vault` POSTERIORES al respawn...
+  now.saltar(60);
+  cubrirTodo(factory(), HOST);
+  // ...y la ventana de 24 h efectivamente cumplida (CA-26).
+  now.saltar(25 * 3600);
+
+  return { armado, coordinador: co, propio, now, factory };
+}
+
+test('recorrido productivo COMPLETO con el config real en disco: el host llega a `cutover-ready`', () => conOperador(() => {
+  const { coordinador } = parqueListo();
+
+  const res = coordinador.observeCoverage({ host: HOST });
+  assert.equal(res.ok, true, `la cobertura tenia que cerrar, dio: ${res.causa}`);
+  assert.equal(coordinador.readState(HOST).stage, STAGE.CUTOVER_READY,
+    'con N/N `via: vault` y la ventana cumplida el host tiene que quedar listo para cortar');
+
+  // Y el veredicto GLOBAL coincide: el parque declarado en `hosts_activos` es
+  // este host y está listo. Si el snapshot no cerrara, `cutover-ready` sería un
+  // estado por host que no significa nada para el corte, que es global.
+  const snap = coordinador.coverageSnapshot({});
+  assert.equal(snap.ok, true, `el snapshot global tenia que cerrar, dio: ${snap.causa}`);
+  assert.equal(snap.hosts_total, 1);
+  assert.equal(snap.hosts_listos, 1);
+}));
+
+// -----------------------------------------------------------------------------
+// Los defaults del cableado productivo — `canPublishEvidence` y `requestCutover`
+// -----------------------------------------------------------------------------
+//
+// #5453 rev-5. Los dos defaults de `vault-migration-wiring.js` no tenían NINGÚN
+// test: todas las suites inyectaban su propia versión, así que lo que corre en
+// producción era justo lo único sin cubrir. Son los dos frenos que hacen que el
+// corte NO se dispare solo, y hasta acá nadie verificaba que frenaran.
+//
+// Se ejercitan sobre un parque REALMENTE listo: con cualquier host no listo el
+// corte se rechaza antes por cobertura y estos defaults no se alcanzarían — el
+// test pasaría sin probarlos, que es la clase de test que este review viene
+// rechazando.
+
+test('default `canPublishEvidence`: sin canal para publicar la evidencia el corte NO se delega', () => conOperador(async () => {
+  const { coordinador } = parqueListo();
+  assert.equal(coordinador.observeCoverage({ host: HOST }).ok, true, 'precondicion: parque listo');
+
+  // El cableado productivo NO inyecta `canPublishEvidence`: el default es
+  // `() => false`. Con el parque entero listo, el corte igual tiene que frenar.
+  const res = await coordinador.cutover({});
+  assert.equal(res.ok, false, 'un corte irreversible sin canal de evidencia no puede salir');
+  assert.equal(res.causa, CAUSA.EVIDENCIA_NO_PUBLICABLE,
+    'la causa tiene que nombrar el canal caido, no un generico');
+  assert.notEqual(coordinador.readState(HOST).stage, STAGE.VERIFIED,
+    'un corte que no se delego no puede dejar el host como verificado');
+}));
+
+test('default `requestCutover`: el corte no se automatiza y NO es sobreescribible por el llamador', () => conOperador(async () => {
+  const now = relojSaltarin();
+  const propio = repoFalso(configFake().vault);
+  const factory = metricsFactoryEn(propio.pipelineDir, now);
+
+  // `canPublishEvidence` SI es inyectable (su default es fail-closed), asi que
+  // se abre para pasar ese freno y llegar al que se quiere probar. Ademas se
+  // intenta inyectar un `requestCutover` que aprueba: el cableado tiene que
+  // IGNORARLO. Mientras el ejecutor de #5452 se invoque por su propia CLI con
+  // confirmacion del operador, ningun llamador puede conseguir un corte
+  // automatico pasando una dependencia complaciente.
+  let delegaciones = 0;
+  const armado = wiring.createProductionVaultMigration({
+    pipelineDir: propio.pipelineDir,
+    logger: () => {},
+    metricsFactory: factory,
+    now,
+    canPublishEvidence: () => true,
+    requestCutover: () => { delegaciones += 1; return { ok: true, status: 'cut' }; },
+    acreditacion: {
+      rotate: { confirmado: true, version: VERSION_OK },
+      provision: { confirmado: true },
+    },
+  });
+
+  factory().evaluate({ descriptors: ENV_DESCRIPTORS, hostsActivos: [HOST], durationHours: 24 });
+  const co = armado.coordinador;
+  assert.equal(co.preflight({ host: HOST }).ok, true);
+  assert.equal(co.rotate({ host: HOST }).ok, true);
+  assert.equal(co.provision({ host: HOST }).ok, true);
+  acreditarPidsVivos(propio.pipelineDir, now.actual());
+  assert.equal(co.respawn({ host: HOST }).ok, true);
+  now.saltar(60);
+  cubrirTodo(factory(), HOST);
+  now.saltar(25 * 3600);
+  assert.equal(co.observeCoverage({ host: HOST }).ok, true, 'precondicion: parque listo');
+
+  const res = await co.cutover({});
+  assert.equal(res.ok, false, 'el corte no se automatiza desde el coordinador');
+  assert.equal(res.causa, CAUSA.CORTE_RECHAZADO);
+  assert.equal(delegaciones, 0,
+    'el `requestCutover` del llamador NO puede reemplazar al default: seria un corte automatico por inyeccion');
+  assert.notEqual(co.readState(HOST).stage, STAGE.VERIFIED);
+}));
