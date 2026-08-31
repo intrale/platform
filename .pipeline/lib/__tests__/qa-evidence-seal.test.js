@@ -941,7 +941,9 @@ test('S-3: stripDeclaredSeal snapshotea, es idempotente y no toca campos ajenos 
   const otra = stripDeclaredSeal(data);
   assert.equal(otra.sello, undefined);
   assert.deepEqual(otra.hashes, {});
-  assert.deepEqual(stripDeclaredSeal(null), { sello: undefined, hashes: {} });
+  // #6496 — el snapshot suma `exencion`: `sello_exencion` también es una
+  // afirmación del pipeline y también se borra de `data` al entrar (CA-5).
+  assert.deepEqual(stripDeclaredSeal(null), { sello: undefined, exencion: undefined, hashes: {} });
 });
 
 // --- CA-10 · tope de bytes AGREGADOS (no sólo el tope por archivo) ---------
