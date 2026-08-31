@@ -38,6 +38,13 @@ const labelGuardrail = require('./lib/label-guardrail');
 // #4693 CA-0 — fuente de verdad única del repo destino. Reemplaza el literal
 // DEFAULT_REPO por el `primary` del bloque `repos` de pipeline.config.json.
 const repoTarget = require('./lib/repo-target');
+
+// #6496 (F2) — labels de gate QA que se pueden RETRACTAR de un PR con una orden
+// `remove-label` + `gate_retraction: true`. Son exactamente los que `hasQaGate`
+// (`skills-deterministicos/delivery.js`) acepta como autoridad de merge: quitar
+// cualquiera de los dos sólo puede CERRAR el gate, nunca abrirlo. Enumerado a
+// propósito — nada fuera de esta lista atraviesa el bloqueo de labels a PRs.
+const PR_GATE_RETRACTABLE = new Set(['qa:passed', 'qa:skipped']);
 // #5863 CA-R3 — canal de vuelta hacia el Pulpo. Este proceso es el único que
 // aplica labels de verdad; el Pulpo cachea labels 10 min y, sin este registro,
 // no tiene forma de enterarse de una mutación aplicada acá.
@@ -844,6 +851,30 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           // cualquier issue bloqueado por un humano sin dejar rastro.
           if (applyLabelGuardrail(data, ghClient, file.name)) break;
           if (applyGateLabelAction(data, ghClient)) break;
+          // #6496 rebote security rev-3 (F2) — RETRACTACIÓN del gate QA de un PR.
+          //
+          // `hasQaGate` acepta `qa:passed` Y `qa:skipped` como autoridad de
+          // merge, pero el `gate-label-reconciler` sólo conoce
+          // passed/failed/pending (ampliarle `GATE_LABELS` es #5869), así que
+          // `applyGateLabelAction` no toca `qa:skipped` y la orden caía en el
+          // bloqueo genérico de abajo. Eso dejaba un PR con `qa:skipped` vivo
+          // sobre un HEAD que nadie verificó cuando el gate de caducidad frenaba
+          // el merge.
+          //
+          // Por qué es seguro abrir esta puerta: QUITAR un label que sólo puede
+          // ABRIR el gate es monótono hacia lo cerrado — no existe entrada que
+          // convierta esto en un permiso de merge. El bloqueo genérico existe
+          // para impedir escrituras arbitrarias de labels a PRs; esto es su
+          // opuesto exacto. Enumerado (no un patrón), y sólo con la marca
+          // explícita de retractación.
+          if (data.target === 'pr'
+              && data.gate_retraction === true
+              && PR_GATE_RETRACTABLE.has(data.label)) {
+            ghClient.editPullRequest(data.issue, { removeLabel: data.label });
+            log(`Gate QA retractado: "${data.label}" removido del PR #${data.issue}`);
+            recordLabelMutation(data.issue, data.label, 'remove-label', 'pr');
+            break;
+          }
           if (data.target === 'pr') {
             data.discarded = 'non-gate-pr-label-blocked';
             log(`Orden no-gate a PR bloqueada: #${data.issue} remove-label=${data.label}`);
