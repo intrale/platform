@@ -102,6 +102,7 @@ const UNLOCKER_ENUM = Object.freeze([
     'human-block-action:devolver',    // botón "devolver a definición"
     'human-block-action:priorizar',   // botón "priorizar"
     'brazo-desbloqueo:precondicion',  // #4748 — deps cerradas
+    'brazo-desbloqueo:merge-race',    // #6432 — reclaim de merge confirmado por gates
     'auto-recheck',                   // #6611 — predicado verificable resuelto
 ]);
 
@@ -405,32 +406,75 @@ function normalizePrecondition(pc) {
  *     `source === 'structured_hint'` de `detectDependencyBlock`.
  * Ante cualquier duda → juicio humano (fail-closed).
  *
+ * #6432 rev-2 (SEC/A01) — `opts.only` ACOTA que tipos de precondicion puede
+ * producir esta llamada. Existe porque no todo llamador puede tolerar CUALQUIER
+ * precondicion: el circuit breaker escala a needs-human como FRENO HUMANO, y
+ * una precondicion `dependency` ahi lo vuelve auto-liberable por
+ * `reapStaleHumanBlocks` — el freno se retiraria solo apenas la dep cierre.
+ * Con `only` el llamador declara el conjunto que SI sabe manejar y todo lo
+ * demas degrada al piso fail-closed (`human_judgment`), que siempre esta
+ * permitido porque nunca es auto-re-evaluable.
+ *
+ * Fail-closed por construccion: un `only` presente pero ilegible (tipo raro,
+ * vacio, solo valores desconocidos) no "abre" nada — deja unicamente el piso.
+ * Ausente ⇒ sin restriccion (comportamiento historico intacto).
+ *
  * @param {Array<Object>} rechazados  YAMLs de rechazo (con posibles
  *   `depende_de` / `precondicion_issues`).
  * @param {Array<string|number>} [extraDeps]  deps ya validadas por hint estructural.
- * @returns {{type:'dependency',depends_on:number[]}|{type:'human_judgment'}}
+ * @param {{issue?:number|string, only?:string|string[]}} [opts]
+ * @returns {{type:'dependency',depends_on:number[]}|{type:'merge_checks_race'}|{type:'human_judgment'}}
  */
 function classifyPrecondition(rechazados, extraDeps = [], opts = {}) {
     const list = Array.isArray(rechazados) ? rechazados : [];
-    const deps = [];
-    for (const r of list) {
-        if (!r || typeof r !== 'object') continue;
-        const raw = r.depende_de != null ? r.depende_de : r.precondicion_issues;
-        const arr = Array.isArray(raw) ? raw : (raw != null ? [raw] : []);
-        for (const v of arr) deps.push(v);
+    // `only` ausente ⇒ null ⇒ sin restriccion. Presente ⇒ Set de tipos
+    // permitidos; lo que no este adentro NO se evalua siquiera.
+    const only = normalizePreconditionOnly(opts && opts.only);
+    const allows = (type) => only === null || only.has(type);
+
+    if (allows('dependency')) {
+        const deps = [];
+        for (const r of list) {
+            if (!r || typeof r !== 'object') continue;
+            const raw = r.depende_de != null ? r.depende_de : r.precondicion_issues;
+            const arr = Array.isArray(raw) ? raw : (raw != null ? [raw] : []);
+            for (const v of arr) deps.push(v);
+        }
+        if (Array.isArray(extraDeps)) for (const v of extraDeps) deps.push(v);
+        // normalizePrecondition dedup + ordena + degrada a human_judgment si vacio.
+        const dependency = normalizePrecondition({ type: 'dependency', depends_on: deps });
+        if (dependency.type === 'dependency') return dependency;
     }
-    if (Array.isArray(extraDeps)) for (const v of extraDeps) deps.push(v);
-    // normalizePrecondition dedup + ordena + degrada a human_judgment si vacío.
-    const dependency = normalizePrecondition({ type: 'dependency', depends_on: deps });
-    if (dependency.type === 'dependency') return dependency;
-    for (const r of list) {
-        const candidate = normalizePrecondition({ type: 'merge_checks_race', ...(r && r.precondicion_merge_checks) });
-        if (candidate.type !== 'merge_checks_race') continue;
-        const entry = mergeRaceLedger.getEntry(opts.issue);
-        if (entry && entry.degraded === true) return { ...HUMAN_JUDGMENT };
-        return candidate;
+    if (allows('merge_checks_race')) {
+        for (const r of list) {
+            const candidate = normalizePrecondition({ type: 'merge_checks_race', ...(r && r.precondicion_merge_checks) });
+            if (candidate.type !== 'merge_checks_race') continue;
+            const entry = mergeRaceLedger.getEntry(opts.issue);
+            if (entry && entry.degraded === true) return { ...HUMAN_JUDGMENT };
+            return candidate;
+        }
     }
     return { ...HUMAN_JUDGMENT };
+}
+
+/**
+ * #6432 rev-2 — Normaliza `opts.only` de `classifyPrecondition`.
+ * `human_judgment` es el piso fail-closed: se permite SIEMPRE, no hace falta
+ * declararlo (y declararlo solo a el equivale a "nada auto-re-evaluable").
+ * @returns {Set<string>|null}  null = sin restriccion.
+ */
+function normalizePreconditionOnly(value) {
+    if (value == null) return null;                      // ausente ⇒ historico
+    const raw = Array.isArray(value) ? value : [value];
+    const allowed = new Set(['human_judgment']);
+    for (const v of raw) {
+        if (typeof v !== 'string') continue;             // ilegible ⇒ se ignora
+        const t = v.trim();
+        // Solo tipos CONOCIDOS y auto-re-evaluables entran; un string
+        // desconocido no abre nada (no se propaga como comodin).
+        if (t === 'dependency' || t === 'merge_checks_race') allowed.add(t);
+    }
+    return allowed;
 }
 
 function reportHumanBlock(opts) {

@@ -4603,7 +4603,18 @@ function brazoBarrido(config) {
                 && r.precondicion_merge_checks && typeof r.precondicion_merge_checks === 'object')
                 ? r.precondicion_merge_checks : null,
           }));
-          const circuitPrecondition = humanBlock.classifyPrecondition(motivosClasificados, [], { issue });
+          // #6432 rev-2 (SEC/A01) — La precondicion del CIRCUIT BREAKER se acota
+          // a `merge_checks_race`. El circuit breaker escala a needs-human como
+          // FRENO HUMANO: si naciera con precondicion `dependency` (que
+          // `motivosClasificados` arrastra desde el `depende_de` del agente),
+          // `reapStaleHumanBlocks` estaria autorizado a auto-liberarlo apenas
+          // esa dep figure CLOSED — y el freno se retiraria solo, en un ciclo,
+          // sin que ningun humano mire el issue que agoto sus 3 rebotes.
+          // `merge_checks_race` SI es auto-re-evaluable acá porque su destrabe
+          // pasa por los gates de delivery. Todo lo demas cae al piso
+          // fail-closed `human_judgment`, que nunca es auto-re-evaluable.
+          const circuitPrecondition = humanBlock.classifyPrecondition(
+            motivosClasificados, [], { issue, only: 'merge_checks_race' });
           const esReboteDeInfra = motivosClasificados.length > 0
             && motivosClasificados.every(m => m.clasificacion === 'infra');
 

@@ -1354,6 +1354,7 @@ test('#6611 - todos los call sites vigentes estan en el enum de unlocker', () =>
         'human-block-action:priorizar',
         'brazo-desbloqueo:precondicion',
         'auto-recheck',
+        'brazo-desbloqueo:merge-race',
     ];
     for (const v of vigentes) {
         assert.equal(hb.normalizeUnlocker(v).unlocker, v, v + ' debe estar en el enum');
