@@ -48,6 +48,17 @@ const COMPARTIDOS_ESPERADOS = [...new Set(
 
 const HOSTS = ['NOTEBOOK-01', 'NOTEBOOK-02'];
 
+// #5453 rev-4 — la ventana de convivencia de CA-26 ahora se CONSULTA de verdad.
+//
+// El banco pasaba `durationHours: DURACION_HORAS`, que `normalizarShadowWindow()` corrige al
+// default de 24h: el evaluador global venia diciendo `no_cumple/ventana_en_curso`
+// desde siempre y el coordinador lo ignoraba. Con el fix, ignorarlo dejo de ser
+// posible, asi que el banco declara la ventana que realmente quiere probar y el
+// reloj la atraviesa explicitamente. Un test que no puede esperar la ventana no
+// estaba probando la ventana.
+const DURACION_HORAS = 24;
+const SEGUNDOS_VENTANA = (DURACION_HORAS + 1) * 3600;
+
 function tmpDir(prefijo) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefijo));
 }
@@ -94,7 +105,7 @@ function banco(opciones = {}) {
   // nunca aprueba (por contrato: `t0_reiniciado` ⇒ `no_verificado`). Se ceba acá
   // para que la ventana del banco arranque en el instante inicial del reloj y
   // toda la evidencia posterior caiga adentro.
-  metrics.evaluate({ descriptors: ENV_DESCRIPTORS, hostsActivos: HOSTS, durationHours: 0 });
+  metrics.evaluate({ descriptors: ENV_DESCRIPTORS, hostsActivos: HOSTS, durationHours: DURACION_HORAS });
 
   const llamadas = { rotate: [], provision: [], respawn: [], cutover: [], needsHuman: [], audit: [] };
   const politicas = new Map(HOSTS.map((h) => [h, {
@@ -108,6 +119,11 @@ function banco(opciones = {}) {
     stateDir,
     now,
     listDescriptors: () => ENV_DESCRIPTORS,
+    // Parque DECLARADO: los dos hosts existen en la politica aunque todavia no
+    // tengan archivo de estado. Es lo que hace `shadow_window.hosts_activos` en
+    // produccion, y es lo que hace que un host que NUNCA migro siga contando
+    // para el corte global en vez de ser invisible.
+    listDeclaredHosts: () => [...HOSTS],
     resolveHostPolicy: (host) => politicas.get(host) || null,
     rotate: (args) => { llamadas.rotate.push(args); return { ok: true, version: `r-${args.host}` }; },
     provision: (args) => { llamadas.provision.push(args); return { ok: true }; },
@@ -124,7 +140,7 @@ function banco(opciones = {}) {
       const evaluacion = metrics.evaluate({
         descriptors: ENV_DESCRIPTORS,
         hostsActivos: HOSTS,
-        durationHours: 0,
+        durationHours: DURACION_HORAS,
       });
       return { ...evaluacion, rows: metrics.readRows() };
     },
@@ -196,7 +212,9 @@ function migrarTodos(b) {
   for (const host of HOSTS) migrar(b, host);
   b.now.saltar(60);
   for (const host of HOSTS) b.cubrir(host);
-  b.now.saltar(60);
+  // La convivencia es una VENTANA: recien despues de `duration_hours` desde el
+  // respawn de cada host se puede hablar de "convivio sin errores".
+  b.now.saltar(SEGUNDOS_VENTANA);
   for (const host of HOSTS) {
     const r = b.coordinador.observeCoverage({ host });
     assert.equal(r.ok, true, `cobertura de ${host}: ${r.causa}`);
@@ -248,9 +266,11 @@ test('un host cubierto no habilita al otro: la matriz es por host', () => {
   for (const host of HOSTS) migrar(b, host);
   b.now.saltar(60);
   b.cubrir(HOSTS[0]);
-  b.now.saltar(60);
+  b.now.saltar(SEGUNDOS_VENTANA);
 
   assert.equal(b.coordinador.observeCoverage({ host: HOSTS[0] }).ok, true);
+  // El segundo host tampoco cierra por dejar correr el reloj: no es la ventana
+  // lo que le falta, es evidencia. La causa que reporta tiene que decir eso.
   const segundo = b.coordinador.observeCoverage({ host: HOSTS[1] });
   assert.equal(segundo.ok, false);
   assert.equal(segundo.causa, CAUSA.HOST_SILENCIOSO);
@@ -277,7 +297,7 @@ test('un respawn nuevo REINICIA la ventana: la cobertura anterior deja de contar
   migrar(b, HOSTS[0]);
   b.now.saltar(60);
   b.cubrir(HOSTS[0]);
-  b.now.saltar(60);
+  b.now.saltar(SEGUNDOS_VENTANA);
   assert.equal(b.coordinador.observeCoverage({ host: HOSTS[0] }).ok, true);
 
   // Rotación de emergencia ⇒ hay que volver a provisionar y respawnear.
@@ -418,11 +438,59 @@ test('un host que nunca migro bloquea el corte de todo el parque', async () => {
 });
 
 test('sin hosts declarados el corte es fail-closed, no vacuamente cierto', async () => {
-  const b = banco();
-  const r = await b.coordinador.cutover({ hosts: [], authorization: b.autorizacionValida() });
+  // Nada declarado en la politica Y nada con estado en disco: el parque esta
+  // realmente vacio. "No hay a quien verificar" nunca puede leerse como
+  // "todos verificados".
+  const b = banco({ overrides: { listDeclaredHosts: () => [] } });
+  const r = await b.coordinador.cutover({ authorization: b.autorizacionValida() });
   assert.equal(r.ok, false);
   assert.equal(r.causa, CAUSA.HOSTS_AUSENTES);
   assert.equal(b.llamadas.cutover.length, 0);
+});
+
+test('un host DECLARADO que nunca arranco la migracion bloquea el corte aunque no tenga estado', async () => {
+  // #5453 rev-4. El parque de un corte global es la UNION de los hosts con
+  // estado en disco y los declarados en `shadow_window.hosts_activos`.
+  //
+  // Mirando solo el disco, un host declarado que nunca hizo ni el `preflight`
+  // no tiene archivo y seria INVISIBLE para el corte: se le retiraria el
+  // `bootstrap_fallback` del que todavia vive, sin que nada lo registre. Es el
+  // host mas peligroso del parque y el que mas tiene que bloquear.
+  const b = banco();
+  migrar(b, HOSTS[0]);
+  b.now.saltar(60);
+  b.cubrir(HOSTS[0]);
+  b.now.saltar(SEGUNDOS_VENTANA);
+  assert.equal(b.coordinador.observeCoverage({ host: HOSTS[0] }).ok, true);
+
+  // HOSTS[1] jamas se toco: no hay `host-NOTEBOOK-02.json` en el stateDir.
+  assert.equal(fs.existsSync(path.join(b.stateDir, `host-${HOSTS[1]}.json`)), false);
+  assert.equal(b.coordinador.listHosts().length, 1, 'el disco solo conoce al host migrado');
+
+  const snap = b.coordinador.coverageSnapshot({});
+  assert.equal(snap.hosts_total, HOSTS.length, 'el parque tiene que incluir al host declarado sin estado');
+  assert.equal(snap.ok, false);
+  const ausente = snap.hosts.find((h) => h.host === HOSTS[1]);
+  assert.equal(ausente.listo, false);
+  assert.equal(ausente.causa, CAUSA.ETAPA_FUERA_DE_ORDEN);
+  assert.equal(ausente.stage, null);
+
+  const r = await b.coordinador.cutover({ authorization: b.autorizacionValida() });
+  assert.equal(r.ok, false);
+  assert.equal(r.causa, CAUSA.HOST_NO_LISTO);
+  assert.equal(b.llamadas.cutover.length, 0);
+  assert.equal(b.leerConfig().vault.bootstrap_fallback, true);
+});
+
+test('una politica ilegible NO vacia el parque: se cae a los hosts con estado', async () => {
+  // Fail-closed en la direccion correcta: si `listDeclaredHosts` explota, el
+  // corte sigue teniendo que acreditar lo que SI sabe que existe, en vez de
+  // quedarse con un parque vacio que cerraria vacuamente.
+  const b = banco({ overrides: { listDeclaredHosts: () => { throw new Error('config roto'); } } });
+  migrar(b, HOSTS[0]);
+  const snap = b.coordinador.coverageSnapshot({});
+  assert.equal(snap.hosts_total, 1, 'el host con estado sigue contando');
+  assert.equal(snap.ok, false);
 });
 
 // -----------------------------------------------------------------------------
@@ -582,4 +650,121 @@ test('el config conserva UNA sola ventana `bootstrap_fallback`', () => {
   const ocurrencias = texto.match(/^ {2}bootstrap_fallback:/gm) || [];
   assert.equal(ocurrencias.length, 1,
     'con mas de una ventana, `renderCutDocument()` de #5452 no sabe cual cortar y falla');
+});
+
+// -----------------------------------------------------------------------------
+// 8 · Regresiones de rev-4 — los defectos que pasaban la suite EN VERDE
+// -----------------------------------------------------------------------------
+//
+// Los cinco de abajo salieron del code review de `aprobacion` sobre rev-3. Los
+// cinco tenían en común que ninguna suite los tocaba: la máquina de estados se
+// probaba con dependencias inyectadas benignas y el corte se pedía siempre con
+// la lista completa de hosts, que es justo el caso que NO falla. Un test que
+// sólo ejercita el camino feliz no prueba un gate, prueba una ruta.
+
+test('el corte NO deja que el llamador acote la verificacion: `hosts` no es un filtro del veredicto', async () => {
+  const b = banco();
+  // HOSTS[0] llega a cutover-ready; HOSTS[1] se queda en la ventana.
+  for (const host of HOSTS) migrar(b, host);
+  b.now.saltar(60);
+  b.cubrir(HOSTS[0]);
+  b.now.saltar(SEGUNDOS_VENTANA);
+  assert.equal(b.coordinador.observeCoverage({ host: HOSTS[0] }).ok, true);
+  assert.equal(b.coordinador.observeCoverage({ host: HOSTS[1] }).ok, false);
+
+  // El bug de rev-3: nombrar sólo al host listo hacía que `ok = listos.length
+  // === lista.length` se evaluara sobre esa sublista y diera `true`. Como
+  // `bootstrap_fallback` es un switch GLOBAL y el ejecutor de #5452 no
+  // revalida cobertura, el gate N/N quedaba opt-in: alcanzaba con no nombrar
+  // a los hosts que todavía usan el fallback para cortárselo igual.
+  const r = await b.coordinador.cutover({
+    hosts: [HOSTS[0]],
+    authorization: b.autorizacionValida(),
+  });
+  assert.equal(r.ok, false, 'un corte global no se verifica sobre una sublista elegida por el llamador');
+  assert.equal(r.causa, CAUSA.HOST_NO_LISTO);
+  assert.equal(b.llamadas.cutover.length, 0, 'el ejecutor de #5452 no puede ni enterarse');
+  assert.equal(b.leerConfig().vault.bootstrap_fallback, true, 'el fallback sigue en pie');
+  assert.notEqual(b.coordinador.readState(HOSTS[0]).stage, STAGE.VERIFIED,
+    'ningun host puede quedar marcado como verificado por un corte que no ocurrio');
+});
+
+test('`coverageSnapshot({hosts})` sigue acotando el REPORTE: el parametro no se elimino, se saco del veredicto', () => {
+  const b = banco();
+  for (const host of HOSTS) migrar(b, host);
+  b.now.saltar(60);
+  b.cubrir(HOSTS[0]);
+  b.now.saltar(SEGUNDOS_VENTANA);
+  b.coordinador.observeCoverage({ host: HOSTS[0] });
+
+  // El operador tiene que poder mirar un host puntual sin arrastrar al parque.
+  const uno = b.coordinador.coverageSnapshot({ hosts: [HOSTS[0]] });
+  assert.equal(uno.hosts_total, 1);
+  assert.equal(uno.hosts[0].host, HOSTS[0]);
+
+  const todos = b.coordinador.coverageSnapshot({});
+  assert.equal(todos.hosts_total, HOSTS.length);
+  assert.equal(todos.ok, false, 'el veredicto global sigue mirando a todos');
+});
+
+test('`cutover-ready` es inalcanzable con la ventana de convivencia EN CURSO (CA-26)', () => {
+  const b = banco();
+  migrar(b, HOSTS[0]);
+  b.now.saltar(60);
+  b.cubrir(HOSTS[0]);            // N/N positiva, cero negativos: todo verde…
+  b.now.saltar(60);              // …pero un minuto después del respawn.
+
+  const r = b.coordinador.observeCoverage({ host: HOSTS[0] });
+  assert.equal(r.ok, false, 'una fila `vault` recien nacida no acredita una ventana de 24h');
+  assert.equal(r.causa, CAUSA.VENTANA_EN_CURSO);
+  assert.equal(b.coordinador.readState(HOSTS[0]).stage, STAGE.COEXISTING,
+    'el host queda conviviendo, que es exactamente donde tiene que estar');
+
+  // Y cierra sola cuando la ventana efectivamente transcurre: el gate frena,
+  // no traba.
+  b.now.saltar(SEGUNDOS_VENTANA);
+  const luego = b.coordinador.observeCoverage({ host: HOSTS[0] });
+  assert.equal(luego.ok, true, luego.causa);
+  assert.equal(b.coordinador.readState(HOSTS[0]).stage, STAGE.CUTOVER_READY);
+});
+
+test('la ventana se evalua ULTIMA: una falla real reporta SU causa, no `ventana_en_curso`', () => {
+  const b = banco();
+  migrar(b, HOSTS[0]);
+  b.now.saltar(60);
+  b.cubrir(HOSTS[0], NOMBRES.slice(0, N - 1));
+  b.now.saltar(60);
+  const r = b.coordinador.observeCoverage({ host: HOSTS[0] });
+  assert.equal(r.causa, CAUSA.COBERTURA_INCOMPLETA,
+    'decirle "espera la ventana" a quien tiene un secreto sin migrar es una causa no accionable');
+});
+
+test('un corte a medias tras un crash NO se reintenta solo: el candado vive en disco, no en memoria', async () => {
+  const b = banco();
+  migrarTodos(b);
+
+  // Estado exacto que deja un crash entre el checkpoint `requested` y la
+  // respuesta del ejecutor. `corteEnVuelo` es memoria de proceso: un
+  // coordinador nuevo lo ve en `false` y, hasta rev-3, delegaba de nuevo.
+  fs.writeFileSync(
+    path.join(b.stateDir, 'cutover.json'),
+    JSON.stringify({ status: 'requested', at: new Date(b.now.actual()).toISOString(), hosts: HOSTS.length }),
+  );
+
+  const r = await b.coordinador.cutover({ authorization: b.autorizacionValida() });
+  assert.equal(r.ok, false, 'un corte irreversible en estado dudoso no se reintenta por las dudas');
+  assert.equal(r.causa, CAUSA.CORTE_YA_DELEGADO);
+  assert.equal(b.llamadas.cutover.length, 0, 'no puede haber un segundo corte');
+});
+
+test('un corte RECHAZADO si se puede reintentar: `rejected` no es `requested`', async () => {
+  const b = banco();
+  migrarTodos(b);
+  fs.writeFileSync(
+    path.join(b.stateDir, 'cutover.json'),
+    JSON.stringify({ status: 'rejected', at: new Date(b.now.actual()).toISOString() }),
+  );
+  const r = await b.coordinador.cutover({ authorization: b.autorizacionValida() });
+  assert.equal(r.ok, true, 'un rechazo del ejecutor no puede trabar el corte para siempre');
+  assert.equal(b.llamadas.cutover.length, 1);
 });

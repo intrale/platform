@@ -116,13 +116,25 @@ function normalizarHost(host) {
 // Config
 // ---------------------------------------------------------------------------
 
-/** Lee el config vivo. Nunca tira: un config ilegible es gate CERRADO. */
-function cargarConfig(loadConfig) {
+/**
+ * Lee el config vivo. Nunca tira: un config ilegible es gate CERRADO.
+ *
+ * `pipelineDir` NO es opcional en la practica (#5453 rev-4): sin el,
+ * `config-resolver.resolve()` cae a `REPO_ROOT`/`PIPELINE_REPO_ROOT` del
+ * ambiente, que el pipeline setea al repo principal. La CLI del operador
+ * corriendo dentro de un worktree escribia estado y auditoria en el worktree
+ * pero leia el gate, `hosts_activos`, `required_scopes` y el ancla `vaultOnly`
+ * de OTRO repo. Decidir un corte con la politica de un arbol y el estado de
+ * otro es exactamente el fail-open que este modulo existe para evitar.
+ */
+function cargarConfig(loadConfig, pipelineDir) {
   try {
-    const cfg = typeof loadConfig === 'function'
-      ? loadConfig()
-      // eslint-disable-next-line global-require
-      : require('./config-resolver').resolve();
+    if (typeof loadConfig === 'function') {
+      const cfg = loadConfig();
+      return (cfg && typeof cfg === 'object') ? cfg : null;
+    }
+    // eslint-disable-next-line global-require
+    const cfg = require('./config-resolver').resolve(pipelineDir ? { pipelineDir } : {});
     return (cfg && typeof cfg === 'object') ? cfg : null;
   } catch { return null; }
 }
@@ -239,7 +251,7 @@ function createProductionVaultMigration(opts = {}) {
   const auditPath = path.join(pipelineDir, 'audit', AUDIT_FILE);
   const acreditacionesPath = path.join(stateDir, ACREDITACIONES_FILE);
 
-  const cfg = cargarConfig(opts.loadConfig);
+  const cfg = cargarConfig(opts.loadConfig, pipelineDir);
   const gate = evaluarGate(cfg);
   const hosts = hostsDeConfig(cfg);
 
@@ -411,7 +423,7 @@ function createProductionVaultMigration(opts = {}) {
     // y el inventario pueden cambiar durante la ventana, y el corte no puede
     // apoyarse en el veredicto viejo.
     resolveHostPolicy: () => {
-      const fresh = cargarConfig(opts.loadConfig);
+      const fresh = cargarConfig(opts.loadConfig, pipelineDir);
       const v = seccionVault(fresh);
       return {
         // El ancla de autorización es vault-only cuando el gate del vault está
@@ -432,11 +444,17 @@ function createProductionVaultMigration(opts = {}) {
     // 2026-07. Ver `lib/vault-respawn-readiness.js`.
     respawnConsumers: (p) => readiness.verify({ since: (p || {}).rotatedAt }),
 
+    // Parque DECLARADO, releído del config vivo (#5453 rev-4). Un host que
+    // figura en `shadow_window.hosts_activos` pero nunca arrancó la migración
+    // no tiene archivo de estado; sin esta lista el corte global no lo vería y
+    // le retiraría el `bootstrap_fallback` del que todavía vive.
+    listDeclaredHosts: () => hostsDeConfig(cargarConfig(opts.loadConfig, pipelineDir)),
+
     // Mismo evaluador que `/vault-shadow-status` y que el productor de
     // propuesta: una segunda implementación se desincronizaría del criterio que
     // el operador ve en pantalla.
     readCoverage: () => {
-      const fresh = cargarConfig(opts.loadConfig);
+      const fresh = cargarConfig(opts.loadConfig, pipelineDir);
       const v = seccionVault(fresh);
       const win = (v.shadow_window && typeof v.shadow_window === 'object') ? v.shadow_window : {};
       const instancia = metricsFactory();

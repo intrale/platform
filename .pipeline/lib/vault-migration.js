@@ -139,6 +139,7 @@ const CAUSA = Object.freeze({
   HOST_SILENCIOSO: 'host_silencioso',
   COBERTURA_INCOMPLETA: 'cobertura_incompleta',
   COBERTURA_PREVIA_AL_RESPAWN: 'cobertura_previa_al_respawn',
+  VENTANA_EN_CURSO: 'ventana_en_curso',
   EVIDENCIA_NO_PUBLICABLE: 'evidencia_no_publicable',
   HOSTS_AUSENTES: 'hosts_ausentes',
   HOST_NO_LISTO: 'host_no_listo',
@@ -390,6 +391,34 @@ function createVaultMigration(deps = {}) {
       .map((f) => f.slice('host-'.length, -'.json'.length))
       .filter((h) => h.length > 0 && HOST_RE.test(h))
       .sort();
+  }
+
+  /**
+   * Parque COMPLETO que un corte global tiene que acreditar: los hosts con
+   * estado en disco UNIDOS a los declarados en la política.
+   *
+   * La unión no es cosmética (#5453 rev-4). `listHosts()` sólo ve hosts que ya
+   * hicieron al menos el `preflight`: un host declarado en
+   * `shadow_window.hosts_activos` que nunca arrancó la migración no tiene
+   * archivo de estado y, mirando sólo el disco, sería INVISIBLE para el corte.
+   * Ese es precisamente el host más peligroso —el que sigue viviendo del
+   * `bootstrap_fallback` que se está por retirar— y el que más tiene que
+   * bloquear. Sin estado, `evaluateCoverage` lo reporta
+   * `etapa_fuera_de_orden`: no listo, y el parque no cierra.
+   *
+   * Ausencia de declaración NO se lee como parque vacío: si la política no se
+   * puede leer se cae a los hosts con estado, nunca a "no hay a quién verificar".
+   */
+  function listParque() {
+    const conEstado = listHosts();
+    let declarados = [];
+    if (typeof deps.listDeclaredHosts === 'function') {
+      try {
+        const d = deps.listDeclaredHosts();
+        if (Array.isArray(d)) declarados = d.filter((h) => esTexto(h) && HOST_RE.test(h));
+      } catch { declarados = []; }
+    }
+    return [...new Set([...conEstado, ...declarados])].sort();
   }
 
   // ---------------------------------------------------------------------------
@@ -868,6 +897,36 @@ function createVaultMigration(deps = {}) {
     if (negativos.length > 0) return { ...detalle, ok: false, causa: CAUSA.FUENTE_LEGACY };
     if (pendientes.length > 0) return { ...detalle, ok: false, causa: CAUSA.COBERTURA_INCOMPLETA };
     if (resoluciones === 0) return { ...detalle, ok: false, causa: CAUSA.COBERTURA_INCOMPLETA };
+
+    // CA-26 — la convivencia es una VENTANA, no un instante (#5453 rev-4).
+    //
+    // Hasta rev-3 `duration_hours` no se consultaba en NINGUN lado: una sola
+    // fila `via: vault` un segundo despues del respawn alcanzaba para saltar de
+    // `respawned` a `cutover-ready` sin pasar nunca por `coexisting`. "Nada
+    // fallo en el ultimo segundo" no es "convivio sin errores durante la
+    // ventana": es el mismo "cero errores = exito" que el resto del modulo
+    // rechaza, con otro disfraz.
+    //
+    // Va ULTIMO a proposito. Toda falla sustantiva —fuente legacy, host
+    // silencioso, cobertura incompleta, evidencia corrupta— tiene que reportar
+    // SU causa, que es la accionable; `ventana_en_curso` no es un defecto sino
+    // "todavia no se puede concluir", y sólo eso queda cuando lo demas cerro.
+    //
+    // Se exige lo LOCAL (horas desde el respawn de ESTE host) y ademas se
+    // respeta el veredicto global cuando dice que la ventana sigue corriendo. Lo
+    // local no es redundante: el t0 global puede ser viejo y el respawn de este
+    // host reciente, y lo que hay que acreditar es la convivencia POSTERIOR al
+    // material nuevo.
+    const ventanaHoras = Number(cov.ventana_horas);
+    if (Number.isFinite(ventanaHoras) && ventanaHoras > 0) {
+      const transcurridoMs = now() - respawnMs;
+      if (!Number.isFinite(transcurridoMs) || transcurridoMs < ventanaHoras * 3600000) {
+        return { ...detalle, ok: false, causa: CAUSA.VENTANA_EN_CURSO };
+      }
+    }
+    if (cov.estado === 'no_cumple' && cov.motivo === 'ventana_en_curso') {
+      return { ...detalle, ok: false, causa: CAUSA.VENTANA_EN_CURSO };
+    }
     return { ...detalle, ok: true };
   }
 
@@ -973,7 +1032,11 @@ function createVaultMigration(deps = {}) {
    * que va a rechazar.
    */
   function coverageSnapshot({ hosts } = {}) {
-    const lista = Array.isArray(hosts) && hosts.length ? hosts.filter((h) => esTexto(h) && HOST_RE.test(h)) : listHosts();
+    // `hosts` filtra el REPORTE, nunca el veredicto de un corte (#5453 rev-4).
+    // Ver `cutover()`: ahí el alcance es siempre global y este parámetro no se
+    // propaga. Acá se conserva porque `status`/`snapshot` del operador sí
+    // necesitan mirar un host puntual.
+    const lista = Array.isArray(hosts) && hosts.length ? hosts.filter((h) => esTexto(h) && HOST_RE.test(h)) : listParque();
     if (!lista.length) {
       return {
         ok: false, causa: CAUSA.HOSTS_AUSENTES, ts: iso(now()),
@@ -1015,15 +1078,34 @@ function createVaultMigration(deps = {}) {
    * `bootstrap_fallback`, no arma HMAC, no valida nonce y no persiste el estado
    * del corte en el config: todo eso es de `vault-cut-fallback.js`.
    *
+   * El alcance es SIEMPRE global: no acepta una lista de hosts. Ver el
+   * comentario de `coverageSnapshot`.
+   *
    * @param {object} params
-   * @param {string[]} [params.hosts]
    * @param {object}   [params.authorization]  capability ya emitida (#5452).
    */
   async function cutover(params = {}) {
     if (corteEnVuelo) return fallo(CAUSA.CORTE_YA_DELEGADO, {});
-    if (corteState().status === 'done') return fallo(CAUSA.CORTE_YA_DELEGADO, {});
+    // El candado de disco manda sobre la memoria de proceso (#5453 rev-4).
+    // `corteEnVuelo` muere con el proceso: un coordinador nuevo levantado tras
+    // un crash entre el `escribirJson('requested')` y la respuesta del ejecutor
+    // lo veía en `false` y delegaba un SEGUNDO corte. `requested` es tan
+    // terminal como `done` para este módulo: si quedó a medias no lo destraba
+    // un reintento automático, lo destraba un humano mirando el ledger de #5452.
+    const estadoCorte = corteState().status;
+    if (estadoCorte === 'done' || estadoCorte === 'requested') {
+      return fallo(CAUSA.CORTE_YA_DELEGADO, {});
+    }
 
-    const snapshot = coverageSnapshot({ hosts: params.hosts });
+    // ALCANCE GLOBAL, no negociable por el llamador (#5453 rev-4).
+    //
+    // `bootstrap_fallback` es un switch ÚNICO para todo el pipeline y
+    // `vault-cut-fallback` no revalida cobertura por su cuenta. Si el llamador
+    // podía pasar `hosts: ['h1']`, el gate N/N se evaluaba sólo sobre esa
+    // sublista y quedaba opt-in: alcanzaba con nombrar los hosts que ya estaban
+    // listos para cortarle el fallback también a los que no lo estaban.
+    // Un corte global se verifica sobre TODOS los hosts o no se verifica.
+    const snapshot = coverageSnapshot({});
     if (!snapshot.ok) {
       return fallo(snapshot.causa || CAUSA.HOST_NO_LISTO, {
         hosts: snapshot.hosts_total, hosts_listos: snapshot.hosts_listos,

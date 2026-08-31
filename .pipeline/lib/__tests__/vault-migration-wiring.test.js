@@ -601,8 +601,43 @@ test('el tick del Pulpo, con el mismo cableado y sin acreditacion, puede observa
   assert.equal(st.stage, STAGE.RESPAWNED);
   assert.ok(['respawned', 'coexisting', 'cutover-ready'].includes(st.stage),
     'el filtro del tick de pulpo.js tiene que dar verdadero sobre este estado');
+  // #5453 rev-4 — acá había un `assert.equal(typeof res.ok, 'boolean')` con el
+  // mensaje "el tick evalúa de verdad, ya no es un no-op". `observeCoverage()`
+  // devuelve SIEMPRE un `ok` booleano, así que esa aserción no podía fallar
+  // por ninguna vía: era el único ejercicio del `readCoverage` productivo y
+  // dejó pasar en verde los cinco defectos que encontró el review de rev-3.
+  // Un test que no puede fallar no cubre nada; mide que el código existe.
+  //
+  // Ahora se afirma el VEREDICTO concreto: sin una sola fila `via: vault`
+  // posterior al respawn, el tick del Pulpo tiene que rechazar con una causa
+  // nombrada y dejar al host conviviendo — nunca listo para cortar.
+  // Primer tick: el evaluador de #5427 todavia no tiene ventana persistida, la
+  // arranca ahora y por contrato NO aprueba. El coordinador lo traduce a
+  // `estado_indeterminado`, que es el fail-closed correcto: "no se pudo
+  // determinar" nunca puede leerse como "esta cubierto".
+  const primero = pulpo.coordinador.observeCoverage({ host: HOST });
+  assert.equal(primero.ok, false, 'la primera evaluacion arranca la ventana, no la aprueba');
+  assert.equal(primero.causa, CAUSA.ESTADO_INDETERMINADO);
+
+  // Segundo tick, ya con el t0 persistido: ahora la ventana es evaluable y el
+  // veredicto es sustantivo. Sin una sola fila `via: vault` posterior al
+  // respawn, el host esta SILENCIOSO — cero errores no es exito.
   const res = pulpo.coordinador.observeCoverage({ host: HOST });
-  assert.equal(typeof res.ok, 'boolean', 'el tick evalua de verdad, ya no es un no-op');
+  assert.equal(res.ok, false, 'sin evidencia positiva el tick no puede aprobar nada');
+  assert.equal(res.causa, CAUSA.HOST_SILENCIOSO,
+    'un host que no resolvio nada esta silencioso, no cubierto');
+  assert.equal(pulpo.coordinador.readState(HOST).stage, STAGE.COEXISTING,
+    'observar sin cobertura deja al host en convivencia, no en cutover-ready');
+  assert.notEqual(pulpo.coordinador.readState(HOST).stage, STAGE.CUTOVER_READY);
+
+  // Y la evidencia de esa evaluación llegó a la auditoría: un `writeAudit`
+  // mudo fue exactamente el fallo de la rev-0.
+  const auditoria = leerAuditoria(dir);
+  assert.ok(auditoria.length > 0, 'el tick tiene que dejar evidencia sanitizada');
+  assert.ok(
+    auditoria.some((e) => e.causa === CAUSA.HOST_SILENCIOSO),
+    'la causa del rechazo tiene que quedar registrada, no solo el rechazo',
+  );
 }));
 
 // -----------------------------------------------------------------------------
@@ -652,4 +687,131 @@ test('el runbook documenta un comando concreto para cada etapa que acredita el o
   }
   assert.ok(runbook.includes(cli.CONFIRM.rotate), 'la frase de confirmacion tiene que estar en el runbook');
   assert.ok(runbook.includes(cli.CONFIRM.provision), 'la frase de confirmacion tiene que estar en el runbook');
+});
+
+// -----------------------------------------------------------------------------
+// Procedencia del config — el estado y la política tienen que salir del MISMO árbol
+// -----------------------------------------------------------------------------
+//
+// #5453 rev-4. Hasta rev-3, `cargarConfig()` caía a
+// `config-resolver.resolve()` SIN argumentos aunque el llamador hubiera pasado
+// `pipelineDir`. El resolver entonces se guiaba por `REPO_ROOT` /
+// `PIPELINE_REPO_ROOT` del ambiente —que el pipeline setea al repo principal—
+// así que la CLI del operador corriendo dentro de un worktree escribía estado y
+// auditoría en el worktree, pero leía el gate, `hosts_activos`,
+// `required_scopes` y el ancla `vaultOnly` de OTRO repo.
+//
+// Decidir un corte irreversible con la política de un árbol y el estado de otro
+// es el fail-open más caro que este módulo puede tener, y no lo cubría ninguna
+// suite porque TODAS inyectaban `loadConfig`. Estos tests corren justamente el
+// camino sin inyección.
+
+/** Repo descartable con la forma que exige `config-resolver`. */
+function repoFalso(overVault) {
+  const yaml = require('js-yaml');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-repo-'));
+  const pipelineDir = path.join(root, '.pipeline');
+  fs.mkdirSync(pipelineDir);
+  const real = yaml.load(fs.readFileSync(
+    path.join(__dirname, '..', '..', 'config.yaml'), 'utf8',
+  ));
+  real.vault = Object.assign({}, real.vault, overVault);
+  fs.writeFileSync(path.join(pipelineDir, 'config.yaml'), yaml.dump(real));
+  fs.copyFileSync(
+    path.join(__dirname, '..', '..', '..', 'pipeline.config.json'),
+    path.join(root, 'pipeline.config.json'),
+  );
+  return { root, pipelineDir };
+}
+
+/** Apunta el ambiente a un repo DISTINTO del `pipelineDir` que se va a pasar. */
+function conRepoRootAjeno(ajeno, fn) {
+  const previos = {};
+  for (const k of ['REPO_ROOT', 'PIPELINE_REPO_ROOT']) {
+    previos[k] = process.env[k];
+    process.env[k] = ajeno;
+  }
+  try { return fn(); } finally {
+    for (const k of Object.keys(previos)) {
+      if (previos[k] === undefined) delete process.env[k];
+      else process.env[k] = previos[k];
+    }
+  }
+}
+
+test('sin `loadConfig` inyectado, el cableado lee el config del `pipelineDir` que se le paso', () => {
+  // Árbol A: el que el operador está usando. Gate ABIERTO.
+  const propio = repoFalso({
+    enabled: true,
+    migration: { enabled: true, tick_minutes: 15, auto_stages: ['observe'] },
+  });
+  // Árbol B: el que el ambiente anuncia por `REPO_ROOT`. Gate CERRADO.
+  const ajeno = repoFalso({ enabled: false, migration: { enabled: false } });
+
+  const armado = conRepoRootAjeno(ajeno.root, () => wiring.createProductionVaultMigration({
+    pipelineDir: propio.pipelineDir,
+    logger: () => {},
+    metricsFactory: metricsFactoryEn(propio.pipelineDir),
+  }));
+
+  assert.equal(armado.gateAbierto, true,
+    'el gate tiene que salir del arbol cuyo estado se va a mutar, no del que anuncia el ambiente');
+  assert.equal(armado.gate, wiring.GATE.ABIERTO);
+  assert.ok(armado.stateDir.startsWith(path.resolve(propio.pipelineDir)),
+    'el estado ya vivia en el arbol propio: es la politica la que tenia que acompañarlo');
+});
+
+test('el `pipelineDir` manda tambien para CERRAR: un ambiente permisivo no abre un arbol cerrado', () => {
+  const propio = repoFalso({ enabled: false, migration: { enabled: false } });
+  const ajeno = repoFalso({
+    enabled: true,
+    migration: { enabled: true, tick_minutes: 15, auto_stages: ['observe'] },
+  });
+
+  const armado = conRepoRootAjeno(ajeno.root, () => wiring.createProductionVaultMigration({
+    pipelineDir: propio.pipelineDir,
+    logger: () => {},
+    metricsFactory: metricsFactoryEn(propio.pipelineDir),
+  }));
+
+  assert.equal(armado.gateAbierto, false);
+  assert.equal(armado.coordinador, null);
+  assert.equal(fs.existsSync(armado.stateDir), false,
+    'con el gate cerrado no se crea un solo archivo de estado');
+});
+
+// -----------------------------------------------------------------------------
+// El gate del tick del Pulpo se reevalúa EN CALIENTE
+// -----------------------------------------------------------------------------
+//
+// #5453 rev-4. El tick congelaba `etapasAuto` y el doble gate al arranque y sólo
+// releía `hosts_activos`: poner `vault.enabled: false` o
+// `vault.migration.enabled: false` en el config NO detenía nada hasta el
+// próximo respawn del Pulpo, en contra de lo que promete `config.yaml`. Un gate
+// que sólo se puede cerrar reiniciando el proceso no es un gate — y este apaga
+// un flujo que toca material irreversible.
+
+test('el tick de pulpo.js relee el doble gate y `auto_stages` en cada corrida, no al arrancar', () => {
+  const fuente = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+  const inicio = fuente.indexOf('const runMigrationTick = () =>');
+  assert.ok(inicio > 0, 'no se encontro el tick de migracion en pulpo.js');
+  const cuerpo = fuente.slice(inicio, inicio + 2600);
+
+  assert.ok(/gateAbiertoEnCaliente\(fresh\)/.test(cuerpo),
+    'el tick tiene que reevaluar el doble gate contra el config fresco de esta corrida');
+  assert.ok(/auto_stages/.test(cuerpo),
+    '`auto_stages` es politica, no configuracion de arranque: se relee con el resto');
+  assert.equal(
+    /const etapasAuto[\s\S]{0,400}const runMigrationTick/.test(fuente), false,
+    'si `etapasAuto` se calcula ANTES del tick vuelve a quedar congelado al arranque',
+  );
+});
+
+test('la reevaluacion del gate en caliente exige AMBOS booleanos exactos', () => {
+  const fuente = fs.readFileSync(path.join(__dirname, '..', '..', 'pulpo.js'), 'utf8');
+  const i = fuente.indexOf('const gateAbiertoEnCaliente');
+  assert.ok(i > 0);
+  const cuerpo = fuente.slice(i, i + 500);
+  assert.ok(/v\.enabled === true && m\.enabled === true/.test(cuerpo),
+    'fail-closed: `"true"`, `1` o `undefined` no pueden abrir el gate en caliente');
 });

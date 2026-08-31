@@ -1924,6 +1924,14 @@ vault:
   # cerrado el Pulpo no evalúa nada, no consulta cobertura y no crea un solo
   # archivo bajo `.pipeline/state/vault-migration/`. Fail-closed: sólo el
   # booleano `true` exacto lo abre.
+  #
+  # Se reevalúa EN CALIENTE, en cada tick (#5453 rev-4): poner cualquiera de los
+  # dos en `false` acá detiene la observación en el tick siguiente, sin reiniciar
+  # el Pulpo. Hasta rev-3 ambos se leían una sola vez al arranque y el apagado no
+  # surtía efecto hasta el próximo respawn — un gate que sólo se cierra
+  # reiniciando el proceso no es un gate, y éste apaga un flujo que toca material
+  # irreversible. `auto_stages` se relee con el mismo criterio: es política, no
+  # configuración de arranque.
   migration:
     enabled: false
     # Cada cuánto el Pulpo reanuda la máquina de estados. La ventana de

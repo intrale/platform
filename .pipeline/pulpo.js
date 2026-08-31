@@ -24001,13 +24001,38 @@ async function mainLoop() {
       const coordinador = armado.coordinador;
       if (!coordinador) throw new Error(`gate cerrado (${armado.gate})`);
 
-      const etapasAuto = Array.isArray(migCfg.auto_stages) ? migCfg.auto_stages : [];
       const tickMs = Math.max(1, Number(migCfg.tick_minutes) || 15) * 60 * 1000;
+
+      // El gate se reevalúa EN CADA TICK, no sólo al arranque (#5453 rev-4).
+      //
+      // Hasta rev-3 `etapasAuto` y el doble gate se congelaban acá y el tick
+      // sólo releía `hosts_activos`: apagar `vault.enabled` o
+      // `vault.migration.enabled` en caliente no detenía nada hasta el próximo
+      // respawn del Pulpo, en contra de lo que promete `config.yaml`. Un gate
+      // que sólo se puede cerrar reiniciando el proceso no es un gate.
+      let gateCerradoAvisado = false;
+      const gateAbiertoEnCaliente = (fresh) => {
+        const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+        const m = (v.migration && typeof v.migration === 'object') ? v.migration : {};
+        return v.enabled === true && m.enabled === true;
+      };
 
       const runMigrationTick = () => {
         try {
           const fresh = loadConfig() || {};
+          if (!gateAbiertoEnCaliente(fresh)) {
+            if (!gateCerradoAvisado) {
+              log('vault-migration', 'Gate cerrado en caliente: el tick no observa nada '
+                + '(se reabre solo si vuelve a `true` en el config, sin reiniciar).');
+              gateCerradoAvisado = true;
+            }
+            return;
+          }
+          gateCerradoAvisado = false;
           const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+          // `auto_stages` también se relee: es parte de la política, no del arranque.
+          const mFresh = (v.migration && typeof v.migration === 'object') ? v.migration : {};
+          const etapasAuto = Array.isArray(mFresh.auto_stages) ? mFresh.auto_stages : [];
           const win = (v.shadow_window && typeof v.shadow_window === 'object') ? v.shadow_window : {};
           const hosts = Array.isArray(win.hosts_activos) ? win.hosts_activos : [];
           if (!hosts.length || !etapasAuto.includes('observe')) return;

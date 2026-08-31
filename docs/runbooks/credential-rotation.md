@@ -700,9 +700,21 @@ Causas de `not-ready` y qué hacer con cada una:
 | `allowlist_vacia` | la allowlist del operador quedó vacía | reponer el ancla; **nunca** relajar el gate |
 | `estado_indeterminado` | sidecar de integridad, t0 reiniciado o hosts inválidos | revisar `.pipeline/audit/`; **nunca** interpretarlo como verde |
 | `evidencia_corrupta` | una fila de evidencia traía un derivado del valor | investigar como incidente, no como bug de conteo |
+| `ventana_en_curso` | la matriz está **completa y limpia**, pero todavía no pasaron las `duration_hours` desde el respawn de ese host | **esperar**. No es un defecto ni hay nada que reparar: es la única causa de esta tabla que se resuelve sola |
 
 Una caída de cobertura **retrocede** el host de `cutover-ready` a `coexisting`.
 No baja de ahí: nunca se des-rota ni se des-provisiona.
+
+`ventana_en_curso` se evalúa **último**, a propósito. Si el host tiene un
+problema real —un secreto sin migrar, una resolución por `file-bootstrap`, un
+host mudo— la causa que se reporta es **esa**, porque es la accionable. Decirle
+"esperá la ventana" a quien tiene un secreto sin provisionar sería mandarlo a
+esperar 24 h para volver a fallar por lo mismo.
+
+La ventana se cuenta **desde el respawn de cada host**, no desde el t0 global de
+la ventana sombra: lo que hay que acreditar es la convivencia posterior al
+material nuevo. Un host respawneado tarde tiene su propia espera aunque la
+ventana global ya haya cerrado para los demás.
 
 ### Corte final
 
