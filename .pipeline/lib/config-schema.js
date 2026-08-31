@@ -583,6 +583,31 @@ const SCHEMA = {
                         authorization_ttl_seconds: { type: 'number', minimum: 1, maximum: 900 },
                         operation_timeout_ms: { type: 'number', minimum: 100, maximum: 60000 },
                         runbook: { type: 'string', minLength: 1, maxLength: 512 },
+                        // #5460 — PRODUCTOR de la propuesta. Se tipan por el
+                        // mismo motivo que `enabled`: son fail-closed. Los tres
+                        // son OPCIONALES (no van en `required`) para que un
+                        // config.yaml anterior a #5460 siga validando: sin
+                        // `proposal_enabled: true` el productor no corre y el
+                        // boot queda idéntico al de antes.
+                        //
+                        // `proposal_enabled` es el gate de rollout: sólo el
+                        // booleano `true` exacto lo abre. Un `"true"` string
+                        // sería truthy para el YAML y encendería el productor
+                        // sin que nadie lo haya decidido.
+                        proposal_enabled: { type: 'boolean' },
+                        // Cuánto se espera al operador antes de declarar
+                        // ausencia. Cotas: 1 min .. 72 h. Fuera de rango el
+                        // módulo degrada al default (6 h), pero acá el operador
+                        // se entera al arrancar y no el día del cutover.
+                        proposal_timeout_ms: { type: 'number', minimum: 60000, maximum: 259200000 },
+                        // Issue del cutover: destino del label `needs-human` y
+                        // binding del token de la capability. `0` significa SIN
+                        // CONFIGURAR y se commitea así a propósito (mismo
+                        // criterio que `hostId: ""`): un placeholder que apunte
+                        // a un issue equivocado etiquetaría trabajo ajeno el
+                        // día del corte. El productor trata `0` como
+                        // `estado_indeterminado`, no como "propongo igual".
+                        proposal_issue: { type: 'number', minimum: 0, maximum: 999999 },
                     },
                 },
                 // #5448 · CA-21 — misma razón que las dos de arriba. El núcleo

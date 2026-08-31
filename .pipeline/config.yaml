@@ -1821,6 +1821,33 @@ vault:
     authorization_ttl_seconds: 300
     operation_timeout_ms: 10000
     runbook: "docs/pipeline/vault-secretos-aws.md"
+    # -------------------------------------------------------------------------
+    # #5460 — PRODUCTOR de la propuesta, ausencia del operador y break-glass
+    # -------------------------------------------------------------------------
+    # Gate de rollout del productor. Con el gate CERRADO el pulpo no evalúa el
+    # criterio de salida, no publica ningún botón y no escribe un solo archivo
+    # bajo `.pipeline/state/`: el boot queda idéntico al de antes de #5460.
+    # Fail-closed: sólo el booleano `true` exacto lo abre.
+    #
+    # Se enciende recién cuando `vault.enabled: true` y la ventana sombra está
+    # corriendo de verdad. Encenderlo antes no rompe nada (sin cobertura el
+    # productor no propone), pero convierte `no_verificado` —que con el vault
+    # apagado es el estado normal— en un escalado a `needs-human` por
+    # `estado_indeterminado`, que es ruido puro.
+    proposal_enabled: false
+    # Cuánto se espera al operador antes de declarar ausencia y escalar a
+    # `needs-human`. NO es el TTL de la capability: ese vive en
+    # `action-token.js` (`OPERATIONAL_TTL_MS`, 10 min) y acota la ventana de
+    # replay de una autorización ya emitida. Este acota la paciencia con un
+    # humano. Igualarlos rompe una de las dos cosas: o el token vive 6 h, o se
+    # escala cada 10 minutos y el operador aprende a ignorar la alerta.
+    # Cotas duras: 60000 (1 min) .. 259200000 (72 h). Default del módulo: 6 h.
+    proposal_timeout_ms: 21600000
+    # Issue del cutover al que se le aplica `needs-human` cuando el operador
+    # está ausente, y al que se bindea el token de la capability. Se commitea
+    # en 0 (ausente): con el gate cerrado nunca se lee, y un placeholder que
+    # apunte a un issue equivocado etiquetaría trabajo ajeno el día del corte.
+    proposal_issue: 0
   # ---------------------------------------------------------------------------
   # #5427 · #5448 — ventana SOMBRA: criterio de salida del fallback
   # ---------------------------------------------------------------------------

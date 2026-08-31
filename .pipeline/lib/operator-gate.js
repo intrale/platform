@@ -374,7 +374,7 @@ function createOperatorGate(opts = {}) {
         switch (reason) {
             case 'unknown-id': return 'Acción inválida o expirada';
             case 'unauthorized': return '🔒 No autorizado para firmar este issue';
-            case 'expired': return '⏱️ Acción expirada, pedí el gate de nuevo';
+            case 'expired': return '⏱️ Acción expirada; no se aplicó ningún cambio';
             case 'replayed': return 'Ya firmaste esta acción';
             default: return 'Acción inválida';
         }
@@ -512,7 +512,7 @@ function createOperatorGate(opts = {}) {
             case 'already-cut':  return `✅ Ya estaba aplicado — ${nombre} sin cambios`;
             case 'unknown-id':   return 'Acción inválida o expirada';
             case 'unauthorized': return '🔒 No autorizado para confirmar esta acción';
-            case 'expired':      return '⏱️ Acción expirada, pedí la confirmación de nuevo';
+            case 'expired':      return '⏱️ Acción expirada; el fallback se conserva';
             case 'replayed':     return 'Ya confirmaste esta acción';
             case 'unavailable':  return '🔒 No se pudo confirmar de forma segura; el fallback se conserva';
             case 'executor-unavailable':
