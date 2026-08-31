@@ -28,6 +28,7 @@ test('cada causa de despacho conocida se traduce a un kind del watchdog', () => 
         [dc.CAUSAS.DEADLOCK]: 'deadlock',
         [dc.CAUSAS.CB_INFRA]: 'cb-infra',
         [dc.CAUSAS.PRESION_RECURSOS]: 'resource-pressure',
+        [dc.CAUSAS.DISCO_LLENO]: 'disk-pressure',
     };
     assert.deepEqual({ ...dck.DISPATCH_CAUSE_TO_WATCHDOG_KIND }, esperado);
 });
