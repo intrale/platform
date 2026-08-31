@@ -208,3 +208,101 @@ test('el resolver real propaga el model_override de los actores primarios', () =
     assert.deepStrictEqual(r.applyToSpawn(root,actor,resolution,['-p','hola'],{}).args,['-p','hola','--model',expectedModel]);
   }
 });
+
+// --- Campos ausentes: no medibles (regresion de la review de #6274) --------
+// `Number(null)` es 0, asi que antes una fila sin codigo de salida se contaba
+// como EXITO y una sin duracion entraba como 0 ms. Ambos campos faltan
+// exactamente cuando el proceso murio mal, o sea que el sesgo era optimista
+// justo donde importa. La regla es descartar, nunca interpretar.
+test('exit_code null no cuenta como exito y queda fuera de N', () => {
+  const filas = [
+    { ts:'2026-08-20T01:00:00Z', skill:'po', provider:'anthropic', exit_code:0, duration_ms:100000 },
+    { ts:'2026-08-20T02:00:00Z', skill:'po', provider:'anthropic', exit_code:null, duration_ms:1811016 },
+  ];
+  const m = r.rates(filas);
+  assert.equal(m.nRaw, 2, 'se vieron dos filas');
+  assert.equal(m.n, 1, 'solo una es medible: la de exit_code null sale de N');
+  assert.equal(m.nUnmeasurable, 1, 'el descarte queda consultable');
+  // Con la coercion vieja esto daba 1 (100%): la fila null se sumaba como exito.
+  assert.equal(m.successRate, 1, 'la unica fila medible fue exitosa');
+  assert.equal(r.isMeasurable(filas[1]), false);
+  // Una ventana entera de filas sin codigo de salida no es 100% de exito: no es
+  // medible en absoluto.
+  const soloNulas = r.rates([filas[1], { ...filas[1] }]);
+  assert.equal(soloNulas.n, 0);
+  assert.equal(soloNulas.successRate, 0, 'sin muestra medible no se inventa exito');
+  assert.equal(soloNulas.earlyDeathRate, 0);
+});
+test('duration_ms null no entra como 0 ms ni marca muerte temprana falsa', () => {
+  const filas = [
+    { ts:'2026-08-20T01:00:00Z', skill:'po', provider:'anthropic', exit_code:0, duration_ms:100000 },
+    { ts:'2026-08-20T02:00:00Z', skill:'po', provider:'anthropic', exit_code:1, duration_ms:null },
+  ];
+  const m = r.rates(filas);
+  assert.equal(m.n, 1);
+  assert.equal(m.nUnmeasurable, 1);
+  // Con la coercion vieja: Number(null)=0 pasaba Number.isFinite, entraba como
+  // 0 ms al percentil y como 0 < 15000 marcaba muerte temprana. Esa es la
+  // metrica que dispara el rollback, asi que el falso positivo era caro.
+  assert.equal(m.earlyDeathRate, 0, 'una duracion ausente no es una muerte temprana');
+  assert.equal(m.durationP50Ms, 100000, 'el percentil no se hunde con un 0 fantasma');
+  assert.equal(m.durationP95Ms, 100000);
+  assert.equal(r.isMeasurable(filas[1]), false);
+});
+test('campos ausentes, negativos o no numericos nunca son medibles', () => {
+  const base = { ts:'2026-08-20T01:00:00Z', skill:'po', provider:'anthropic', exit_code:0, duration_ms:10 };
+  assert.equal(r.isMeasurable(base), true);
+  for (const roto of [
+    { ...base, exit_code: null }, { ...base, exit_code: undefined },
+    { ...base, exit_code: '0' }, { ...base, exit_code: NaN },
+    { ...base, duration_ms: null }, { ...base, duration_ms: undefined },
+    { ...base, duration_ms: '10' }, { ...base, duration_ms: NaN },
+    { ...base, duration_ms: -1 },
+  ]) assert.equal(r.isMeasurable(roto), false, `deberia ser no medible: ${JSON.stringify(roto)}`);
+  // Sin exit_code ni duration_ms la fila tampoco entra por descarte.
+  const { exit_code, duration_ms, ...sinCampos } = base;
+  assert.equal(r.isMeasurable(sinCampos), false);
+});
+test('filas no medibles no completan el minimo de baseline (fail-closed)', () => {
+  const root = fixture();
+  seed(root, [
+    { ts:'2026-08-20T01:00:00Z', skill:'po', provider:'anthropic', exit_code:0, duration_ms:100 },
+    { ts:'2026-08-20T02:00:00Z', skill:'po', provider:'anthropic', exit_code:null, duration_ms:100 },
+  ]);
+  const base = r.captureBaseline(root, { until:'2026-08-21T00:00:00Z' })['po::anthropic'];
+  assert.equal(base.n, 1, 'la fila no medible no engrosa la muestra congelada');
+  assert.equal(base.nUnmeasurable, 1);
+  // cfg exige 2 corridas: con una sola medible el encendido sigue trabado.
+  assert.throws(() => r.enablePair(root, 'po', 'anthropic', cfg), /baseline con 1 corridas/);
+  assert.equal(r.shouldPropagate(root, 'po', 'anthropic'), false);
+});
+test('filas no medibles no completan el minimo de evaluacion', () => {
+  const root = fixture();
+  seed(root, [1,2].map(i => ({ ts:`2026-08-20T0${i}:00:00Z`, skill:'po', provider:'anthropic', exit_code:0, duration_ms:100 })));
+  r.captureBaseline(root, { until:'2026-08-20T03:00:00Z' });
+  r.enablePair(root, 'po', 'anthropic', cfg);
+  // Ventana de evaluacion: una corrida medible sana + una basura. cfg pide 2.
+  const observado = r.rates([
+    { exit_code:1, duration_ms:10 },
+    { exit_code:null, duration_ms:null },
+  ]);
+  assert.equal(observado.n, 1);
+  const out = r.evaluatePair(root, 'po', 'anthropic', observado, cfg);
+  assert.equal(out.action, 'deferred', 'ruido no habilita un veredicto');
+  assert.match(out.reason, /muestra 1\/2/);
+  assert.equal(r.shouldPropagate(root, 'po', 'anthropic'), true, 'no se apaga por ruido');
+});
+test('regresion: la fila real de produccion con exit_code null no infla el baseline', () => {
+  // Forma textual de una fila real de `spawn-exit-*.jsonl` (2357 filas, 33 asi).
+  const real = { ts:'2026-08-19T13:18:06.918Z', skill:'po', provider:'anthropic',
+    error_class:'transient_5xx', should_fallback:true, retriable:true,
+    exit_code:null, timed_out:false, duration_ms:1811016 };
+  const exitosa = { ts:'2026-08-19T14:00:00.000Z', skill:'po', provider:'anthropic', exit_code:0, duration_ms:5000 };
+  const fallida = { ts:'2026-08-19T15:00:00.000Z', skill:'po', provider:'anthropic', exit_code:1, duration_ms:5000 };
+  const m = r.rates([real, exitosa, fallida]);
+  assert.equal(m.nRaw, 3);
+  assert.equal(m.n, 2, 'la fila de fallo sin codigo de salida no es muestra');
+  // Antes: 2/3 = 0.666 (el fallo contaba como exito). Ahora: 1/2 = 0.5.
+  assert.equal(m.successRate, 0.5);
+  assert.notEqual(m.successRate, 2/3);
+});

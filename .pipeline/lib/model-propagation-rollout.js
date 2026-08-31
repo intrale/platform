@@ -66,11 +66,41 @@ function percentile(values, q) {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.ceil(q * sorted.length) - 1];
 }
+// --- Medibilidad de una fila de spawn-exit ---------------------------------
+// `Number(null)` es 0. Con la coercion anterior una fila con `exit_code: null`
+// se contaba como EXITO y una con `duration_ms: null` entraba como 0 ms, o sea
+// como muerte temprana y ademas hundiendo p50/p95. Los dos campos faltan justo
+// cuando el proceso murio sin devolver codigo de salida, asi que el sesgo era
+// sistematicamente optimista: 33 de 2357 filas reales de produccion traen
+// `exit_code: null` y las 33 son fallos (`should_fallback: true`), inflando el
+// successRate de `pipeline-dev::anthropic` y `security::anthropic`, ambos
+// destinos de escalon. Como `captureBaseline` congela el baseline de forma
+// inmutable, esa contaminacion seria permanente (review de #6274).
+//
+// Regla: un campo ausente NO se interpreta, se descarta. Una fila es medible
+// solo si trae `exit_code` y `duration_ms` como numeros finitos reales; `null`,
+// `undefined`, NaN o un string numerico no califican.
+function isFiniteNumber(v) { return typeof v === 'number' && Number.isFinite(v); }
+function isMeasurable(row) {
+  return Boolean(row) && isFiniteNumber(row.exit_code) && isFiniteNumber(row.duration_ms) && row.duration_ms >= 0;
+}
+// Efecto sobre N (explicito, porque de eso depende el gate): las filas no
+// medibles quedan FUERA de `n`. `n` es la muestra medible y es la que se compara
+// contra `baseline_min_runs` y `evaluation_min_runs`, de modo que el ruido nunca
+// completa el minimo ni mueve una tasa; a lo sumo demora el encendido, que es la
+// direccion fail-closed. El descarte queda consultable en `nRaw`/`nUnmeasurable`
+// para que el baseline sea auditable (CA-1).
 function rates(rows, rebounds = 0, earlyDeathMs = DEFAULTS.earlyDeathMs, reboundMeasurable = true) {
-  const n = rows.length;
-  const agentDeaths = rows.filter(r => Number(r.exit_code) !== 0 && Number(r.duration_ms) < earlyDeathMs && r.death_kind !== 'provider-death').length;
-  const durations = rows.map(r => Number(r.duration_ms)).filter(Number.isFinite);
-  return { n, successRate: n ? rows.filter(r => Number(r.exit_code) === 0).length / n : 0,
+  // Un umbral no numerico haria falsa toda comparacion de muerte temprana y
+  // dejaria el rollback fail-open: se cae al default en vez de comparar contra NaN.
+  const limite = isFiniteNumber(earlyDeathMs) ? earlyDeathMs : DEFAULTS.earlyDeathMs;
+  const nRaw = rows.length;
+  const medibles = rows.filter(isMeasurable);
+  const n = medibles.length;
+  const agentDeaths = medibles.filter(r => r.exit_code !== 0 && r.duration_ms < limite && r.death_kind !== 'provider-death').length;
+  const durations = medibles.map(r => r.duration_ms);
+  return { n, nRaw, nUnmeasurable: nRaw - n,
+    successRate: n ? medibles.filter(r => r.exit_code === 0).length / n : 0,
     // `null` != 0: distingue "no hubo rebotes" de "la ventana es anterior al
     // productor de rebotes, asi que la metrica no es medible" (review #6274).
     reboundRate: reboundMeasurable ? (n ? rebounds / n : 0) : null,
@@ -318,4 +348,4 @@ function reenablePair(pipelineDir, actor, provider, by, opts = {}) {
 
 module.exports = { DEFAULTS, pairKey, rates, collect, captureBaseline, captureReboundBaseline, enablePair,
   evaluatePair, evaluateEnabled, reenablePair, shouldPropagate, applyToSpawn, recordRebound, readState,
-  dispatchableActors, validateWaves, markReboundProducerLive, reboundSince };
+  dispatchableActors, validateWaves, markReboundProducerLive, reboundSince, isMeasurable };
