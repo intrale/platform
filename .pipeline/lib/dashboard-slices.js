@@ -4046,6 +4046,64 @@ function architectBadgeHTML(info, deps) {
     return `<span class="lc-state-badge lc-state-architect-${info.state}" title="${esc(a11y)}" aria-label="${esc(a11y)}">${svg} ${esc(text)}</span>`;
 }
 
+// #6498 CA-2/CA-3/CA-5/CA-9 — Renderer del badge del sello de evidencia de QA.
+//
+// Mismo contrato que `architectBadgeHTML`: recibe `info` (resultado de
+// `lib/sello-evidencia-state.resolveSelloEvidenciaState`) y `{ esc, ic }`
+// inyectados, para que el test pueda espiar el nombre de icono sin levantar
+// dashboard.js (que tiene side effects HTTP).
+//
+// ALLOWLIST POR CONSTRUCCION (SEC-2 / CA-9 / R-3): el nombre del simbolo sale
+// de un `switch` con literales y `default: return ''`. `ic()` interpola su
+// argumento CRUDO en `href="#ic-${name}"` (dashboard.js), asi que un
+// `ic('estado-' + estadoLeidoDelYaml)` seria un sink de inyeccion directo. La
+// clase CSS tambien sale del switch, no de `info`, por la misma razon.
+//
+// UX-G3: el pill pinta el registro CORTO (la fila esta normalizada en <= 11
+// chars visibles); el copy COMPLETO del PO va entero a `aria-label` y a
+// `title`, que es lo que oye un lector de pantalla y lo que lee el operador al
+// pasar el mouse. Un test de CA-2 busca el copy completo ahi, no en el nodo de
+// texto del pill.
+//
+// UX-G2: ninguna de las 4 clases lleva `animation` — dos pulsos desfasados en
+// la misma fila (con `.lc-state-needshuman`) anulan la jerarquia visual.
+function selloEvidenciaBadgeHTML(info, deps) {
+    if (!info || !info.estado) return '';
+    if (!deps || typeof deps.esc !== 'function' || typeof deps.ic !== 'function') return '';
+    const { esc, ic } = deps;
+    const label = typeof info.copy === 'string' ? info.copy : '';
+    const corto = typeof info.copyCorto === 'string' && info.copyCorto.trim() ? info.copyCorto : label;
+    // CA-5: sin texto no hay badge. Un pill que solo tiene glifo es
+    // indistinguible para quien no percibe el matiz ambar/rojo (1.44:1 en
+    // deuteranopia): la etiqueta no es refuerzo, es la unica senal.
+    if (!label || !corto) return '';
+    // El glifo va DECORATIVO (`aria-hidden`), no etiquetado, por dos razones:
+    //  1) a11y: el <span> ya lleva `aria-label` con el copy completo y eso
+    //     reemplaza a todo su subarbol para el lector de pantalla; un
+    //     aria-label en el <svg> de adentro es ruido que nadie llega a oir.
+    //  2) SEC-2: `ic()` solo escapa comillas en su `ariaLabel` (deja pasar
+    //     `<` crudo dentro del atributo). Pasandole el copy le estariamos
+    //     metiendo texto por un camino que NO pasa por esc(). No hace falta:
+    //     el unico dato que `ic()` recibe de aca es el nombre literal del
+    //     simbolo, que ademas es lo unico que SEC-2/CA-9 admiten.
+    let svg = '';
+    let cssKey = '';
+    switch (info.estado) {
+        case 'sellado':     svg = ic('info');               cssKey = 'sellado';    break;
+        case 'caduco':      svg = ic('estado-stale');       cssKey = 'caduco';     break;
+        case 're-sellando': svg = ic('estado-retrying');    cssKey = 'resellando'; break;
+        case 'escalado':    svg = ic('estado-needs-human'); cssKey = 'escalado';   break;
+        default: return '';
+    }
+    // SEC-1 — la variante anti-falsificacion se expone tambien en el DOM para
+    // que la verificacion no dependa de parsear texto. Valor literal, jamas
+    // interpolado desde `info`.
+    const variante = info.variante === 'descarte' ? ' data-variant="descarte"' : '';
+    const detalle = typeof info.detalle === 'string' && info.detalle.trim() ? info.detalle : '';
+    const title = detalle ? `${label} · ${detalle}` : label;
+    return `<span class="lc-state-badge lc-state-sello-${cssKey}"${variante} title="${esc(title)}" aria-label="${esc(label)}">${svg} ${esc(corto)}</span>`;
+}
+
 // #3962 EP8-H9 — Slice de la pantalla Costos rediseñada. Arma el payload desde
 // el snapshot del aggregator + presupuesto persistido + estado de la anomalía:
 //   - dailyByProvider : serie diaria por proveedor (área apilada, CA-1)
@@ -4337,6 +4395,8 @@ module.exports = {
     // #3642 — widget architect 4 estados
     architectStateSlice,
     architectBadgeHTML,
+    // #6498 — badge del sello de evidencia de QA (4 estados)
+    selloEvidenciaBadgeHTML,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,
