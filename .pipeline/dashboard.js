@@ -2052,6 +2052,10 @@ function* _genPipelineState() {
     if (st && st.measured_at) {
       state.disk = {
         level: st.level,
+        // #6708 (rebote rev-1) — Rótulo textual del escalón, resuelto en el
+        // servidor por el módulo dueño del mapa. Viaja en el slice para que la
+        // pill no dependa sólo de su espejo client-side.
+        label: dg.levelLabel(st.level),
         color: dg.LEVEL_COLORS[st.level] || dg.LEVEL_COLORS.unknown,
         freeGB: st.free_gb,
         totalGB: st.total_gb,

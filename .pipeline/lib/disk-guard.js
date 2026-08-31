@@ -88,6 +88,32 @@ const LEVEL_EMOJI = Object.freeze({
   [LEVELS.UNKNOWN]: '⚪',
 });
 
+// #6708 (rebote rev-1) — Etiqueta TEXTUAL del escalón. El color y el emoji
+// solos no dicen qué escalón del presupuesto está vigente: el operador ve un
+// punto naranja y no sabe si eso significa "rotar cachés" o "despacho frenado".
+// La etiqueta se muestra como TEXTO junto al valor (no sólo en el tooltip,
+// que no existe en táctil ni lo lee un lector de pantalla al vuelo).
+//
+// Esta constante es la ÚNICA fuente del rótulo: el header pill, la system card
+// y las alertas de Telegram la espejan. Si se agrega un escalón a LEVELS hay
+// que agregarlo acá también — `levelLabel()` degrada a 'SIN DATO', nunca
+// devuelve undefined ni imprime el nombre interno en inglés en la UI.
+const LEVEL_LABELS = Object.freeze({
+  [LEVELS.GREEN]: 'NORMAL',
+  [LEVELS.YELLOW]: 'ATENCIÓN',
+  [LEVELS.ORANGE]: 'ALERTA',
+  [LEVELS.RED]: 'CRÍTICO',
+  [LEVELS.UNKNOWN]: 'SIN DATO',
+});
+
+// levelLabel(level) — rótulo textual del escalón, fail-safe.
+// Nunca devuelve undefined: un nivel desconocido (JSON de estado editado a
+// mano, escalón futuro) cae a 'SIN DATO' en vez de romper el render o filtrar
+// el identificador interno a la pantalla.
+function levelLabel(level) {
+  return LEVEL_LABELS[level] || LEVEL_LABELS[LEVELS.UNKNOWN];
+}
+
 // Propuesta inicial del issue #6708. Editables en `config.yaml` → `disk_budget`.
 const DEFAULT_BUDGET = Object.freeze({
   enabled: true,
@@ -522,6 +548,8 @@ module.exports = {
   SEVERITY,
   LEVEL_COLORS,
   LEVEL_EMOJI,
+  LEVEL_LABELS,
+  levelLabel,
   DEFAULT_BUDGET,
   CLAMPS,
   HEAVY_PHASES,

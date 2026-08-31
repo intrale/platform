@@ -116,6 +116,11 @@ if (typeof window !== 'undefined' && !window.__dispatchWindowLabel) {
 // #6708 — Emoji por nivel de disco. Espejo client-side de LEVEL_EMOJI de
 // lib/disk-guard.js: la severidad se comunica por forma además de por color.
 var __DISK_EMOJI = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴', unknown: '⚪' };
+// #6708 (rebote rev-1) — Espejo client-side de LEVEL_LABELS de lib/disk-guard.js.
+// El escalón se muestra como TEXTO, no sólo como color/emoji: el operador tiene
+// que poder leer "ALERTA" sin pasar el mouse por encima (el tooltip no existe
+// en táctil y no lo anuncia un lector de pantalla).
+var __DISK_LABEL = { green: 'NORMAL', yellow: 'ATENCIÓN', orange: 'ALERTA', red: 'CRÍTICO', unknown: 'SIN DATO' };
 if (typeof window !== 'undefined' && !window.__hydrateHeaderPills) {
     // Formateo de uptime autocontenido (idéntico a fmtDur de home/satélites) para
     // que el helper sea portable a vistas que no definen fmtDur (providers, roadmap).
@@ -223,7 +228,17 @@ if (typeof window !== 'undefined' && !window.__hydrateHeaderPills) {
             if (diskEl) {
                 if (dsk && typeof dsk.freeGB === 'number' && isFinite(dsk.freeGB)) {
                     var emo = __DISK_EMOJI[dsk.level] || '⚪';
-                    diskEl.textContent = emo + ' ' + dsk.freeGB.toFixed(1) + ' GB';
+                    // #6708 (rebote rev-1) — RÓTULO + VALOR + ESCALÓN, los tres
+                    // como texto visible: "🔴 Disco 8.0 GB · CRÍTICO".
+                    // Antes decía sólo "🟢 24.0 GB": sin la palabra "Disco"
+                    // el número quedaba sin rotular al lado de CPU/RAM (que sí
+                    // lo están), y el escalón vivía únicamente en el tooltip.
+                    // El servidor manda dsk.label; el mapa local es el fallback
+                    // para estados viejos persistidos sin ese campo.
+                    var lbl = (typeof dsk.label === 'string' && dsk.label)
+                        ? dsk.label
+                        : (__DISK_LABEL[dsk.level] || __DISK_LABEL.unknown);
+                    diskEl.textContent = emo + ' Disco ' + dsk.freeGB.toFixed(1) + ' GB · ' + lbl;
                     diskEl.style.color = /^#[0-9a-fA-F]{3,8}$/.test(String(dsk.color)) ? dsk.color : '';
                     var b = dsk.budget || {};
                     var escala = (typeof b.green_gb === 'number')
@@ -247,7 +262,9 @@ if (typeof window !== 'undefined' && !window.__hydrateHeaderPills) {
                         }
                     }
                 } else {
-                    diskEl.textContent = 'Disco —';
+                    // Sin medición: rótulo + escalón igual, para que el hueco
+                    // se lea como "todavía no se midió" y no como "0 GB".
+                    diskEl.textContent = '⚪ Disco — · ' + __DISK_LABEL.unknown;
                     diskEl.style.color = '';
                     diskEl.classList.remove('in-resource-alert');
                 }

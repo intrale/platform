@@ -5020,6 +5020,8 @@ function _collectDiskStatus(pipelineDir) {
         const level = st.level || 'unknown';
         return {
             level,
+            // #6708 (rebote rev-1) — rótulo textual del escalón (ver disk-guard).
+            label: dg.levelLabel(level),
             color: dg.LEVEL_COLORS[level] || dg.LEVEL_COLORS.unknown,
             freeGB: st.free_gb,
             totalGB: Number.isFinite(st.total_gb) ? st.total_gb : null,
@@ -5391,6 +5393,9 @@ function renderSystemCard(state) {
 // dashboard.js, que está asignado pero nunca se interpola en la salida: el
 // gauge existía en el código y no llegaba a ninguna pantalla servida.
 const _DISK_EMOJI = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴', unknown: '⚪' };
+// #6708 (rebote rev-1) — Espejo de LEVEL_LABELS de lib/disk-guard.js. Fallback
+// para estados persistidos antes de que el modelo incluyera `label`.
+const _DISK_LABEL = { green: 'NORMAL', yellow: 'ATENCIÓN', orange: 'ALERTA', red: 'CRÍTICO', unknown: 'SIN DATO' };
 
 // Sólo hex se interpola como color inline. El mapa de disk-guard está
 // congelado, pero el estado se lee de un JSON en disco: si alguien lo edita a
@@ -5405,6 +5410,9 @@ function _safeCssColor(c) {
 function _diskCellModel(sys) {
     const d = (sys && sys.disk) || null;
     if (!d || !Number.isFinite(d.freeGB)) {
+        // Sin medición se mantiene el guión pelado (contrato ya fijado por los
+        // tests de la celda): un "SIN DATO" acá sería redundante con el tooltip
+        // y la fila ya está rotulada "Disco libre".
         return { val: '—', color: null, level: 'unknown',
                  tip: 'Espacio libre en disco. Sin medición todavía · el guardián lo mide en cada tick del Pulpo.' };
     }
@@ -5416,8 +5424,12 @@ function _diskCellModel(sys) {
         : 'presupuesto sin configurar';
     const total = Number.isFinite(d.totalGB) ? ` de ${d.totalGB} GB` : '';
     const frozen = d.frozen ? ' Despacho de build y qa FRENADO por falta de disco.' : '';
+    // #6708 (rebote rev-1) — el valor lleva el escalón como TEXTO, no sólo el
+    // color. La fila ya está rotulada "Disco libre", así que acá alcanza con
+    // valor + escalón (el rótulo no se repite).
+    const label = (typeof d.label === 'string' && d.label) ? d.label : (_DISK_LABEL[level] || _DISK_LABEL.unknown);
     return {
-        val: emoji + ' ' + d.freeGB.toFixed(1) + ' GB',
+        val: emoji + ' ' + d.freeGB.toFixed(1) + ' GB · ' + label,
         color: d.color,
         level,
         tip: `Espacio libre en disco: ${d.freeGB.toFixed(1)} GB${total}. Nivel ${level} (disk_budget: ${escala}).${frozen}`,
