@@ -21,6 +21,7 @@ delete require.cache[require.resolve('../traceability')];
 delete require.cache[require.resolve('../human-block')];
 const trace = require('../traceability');
 const hb = require('../human-block');
+const mergeRaceLedger = require('../merge-race-reclaim-ledger');
 
 function readEvents() {
     if (!fs.existsSync(trace.LOG_FILE)) return [];
@@ -157,6 +158,61 @@ test('unblockIssue mueve marker a pendiente/ del target_phase y emite evento', (
     assert.equal(unblocked.guidance, 'Aplicá AC#5 que es más reciente');
     assert.equal(unblocked.unlocker, 'commander:telegram');
     assert.equal(unblocked.target_phase, 'dev');
+});
+
+test('#6432 D11: degraded -> unblock manual -> hint válido vuelve a aceptarse', () => {
+    resetFs();
+    const issue = 6432;
+    const sha = 'a'.repeat(40);
+    const src = path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'trabajando', `${issue}.delivery`);
+    fs.writeFileSync(src, `issue: ${issue}\n`);
+    const blocked = hb.reportHumanBlock({
+        issue, skill: 'delivery', phase: 'dev',
+        reason: 'Intentos de reclaim agotados', question: '¿Cómo continuar?',
+    });
+    mergeRaceLedger.markDegraded({ issue, pr: 6500, head_sha: sha });
+
+    assert.deepEqual(
+        hb.classifyPrecondition([{ precondicion_merge_checks: { pr: 6500, head_sha: sha } }], [], { issue }),
+        { type: 'human_judgment' },
+        'la degradación debe ser pegajosa antes de la intervención humana',
+    );
+
+    const result = hb.unblockIssue({
+        issue, marker: blocked, guidance: 'Reintentar con el nuevo criterio', unlocker: 'commander:telegram',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(mergeRaceLedger.getEntry(issue), null, 'el /unblock manual exitoso limpia el ledger');
+    assert.deepEqual(
+        hb.classifyPrecondition([{ precondicion_merge_checks: { pr: 6500, head_sha: sha } }], [], { issue }),
+        { type: 'merge_checks_race', pr: 6500, head_sha: sha },
+    );
+});
+
+test('#6432 D11: un destrabe automático no limpia la degradación pegajosa', () => {
+    resetFs();
+    const issue = 6433;
+    const sha = 'b'.repeat(40);
+    const src = path.join(TMP_DIR, '.pipeline', 'desarrollo', 'dev', 'trabajando', `${issue}.delivery`);
+    fs.writeFileSync(src, `issue: ${issue}\n`);
+    const blocked = hb.reportHumanBlock({
+        issue, skill: 'delivery', phase: 'dev',
+        reason: 'Intentos de reclaim agotados', question: '¿Cómo continuar?',
+    });
+    mergeRaceLedger.markDegraded({ issue, pr: 6501, head_sha: sha });
+
+    const result = hb.unblockIssue({
+        issue, marker: blocked, guidance: 'Recheck automático', unlocker: 'auto-recheck',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(mergeRaceLedger.getEntry(issue).degraded, true);
+    assert.deepEqual(
+        hb.classifyPrecondition([{ precondicion_merge_checks: { pr: 6501, head_sha: sha } }], [], { issue }),
+        { type: 'human_judgment' },
+    );
+    mergeRaceLedger.clearEntry(issue);
 });
 
 test('unblockIssue puede redirigir a otra fase con target_phase', () => {

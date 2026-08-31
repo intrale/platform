@@ -728,6 +728,14 @@ function unblockIssue(opts) {
     }
     try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
 
+    // #6432 D11 — la degradación del reclaim es pegajosa para todas las vías
+    // automáticas. Sólo una intervención manual del Commander, y únicamente
+    // después de mover efectivamente el marker, habilita un ciclo nuevo.
+    // Los reapers usan otros `unlocker` explícitos y nunca limpian el ledger.
+    if (unlocker === 'commander' || String(unlocker).startsWith('commander:')) {
+        mergeRaceLedger.clearEntry(issue);
+    }
+
     emitUnblocked({
         issue, skill: blocked.skill, phase: blocked.phase, pipeline: blocked.pipeline,
         target_phase: targetPhase, guidance, unlocker,
