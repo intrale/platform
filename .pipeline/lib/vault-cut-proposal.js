@@ -67,6 +67,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const absencePolicy = require('./operator-absence-policy');
+const { maxTtlFor } = require('./action-token');
 
 // -----------------------------------------------------------------------------
 // Constantes.
@@ -170,13 +171,16 @@ function buildProposalKeyboard(callbackId) {
  */
 function buildProposalMessage({ runbook, timeoutMs } = {}) {
     const horas = Math.max(1, Math.round(normalizeProposalTimeoutMs(timeoutMs) / 3600000));
+    const buttonTtlMs = maxTtlFor(CUT_ACTION);
+    const minutosBoton = Math.max(1, Math.floor(buttonTtlMs / 60000));
     return [
         'VAULT · La ventana sombra cerró: se puede cortar el fallback',
         'Todos los secretos se resolvieron por el vault en todos los hosts activos,',
         'sin una sola caida al bootstrap. El criterio de salida esta cumplido.',
         '',
         'Confirmar corta la via vieja de resolucion. Es la ultima accion del cutover.',
-        `Si no confirmas en ~${horas}h el fallback se CONSERVA y el issue queda en needs-human.`,
+        `El boton es valido por ~${minutosBoton} min; si expira, el fallback se CONSERVA.`,
+        `Sin confirmacion, en ~${horas}h el issue queda en needs-human.`,
         `Runbook (incluye el ultimo punto de retorno): ${absencePolicy.sanitizeRunbookRef(runbook)}`,
     ].join('\n');
 }

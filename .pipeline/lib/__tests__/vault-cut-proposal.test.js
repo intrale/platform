@@ -448,9 +448,20 @@ test('el teclado tiene UN solo botón: el silencio ya conserva el fallback', () 
 test('el copy de la propuesta no nombra hosts, secretos ni paths absolutos', () => {
     const msg = buildProposalMessage({ runbook: 'docs/operacion-pipeline.md' });
     assert.match(msg, /needs-human/);
+    assert.match(msg, /El boton es valido por ~10 min; si expira, el fallback se CONSERVA\./);
+    assert.match(msg, /Sin confirmacion, en ~6h el issue queda en needs-human\./);
     assert.match(msg, /Runbook \(incluye el ultimo punto de retorno\): docs\/operacion-pipeline\.md/);
     assert.equal(/[A-Z]:\\/.test(msg), false);
     assert.equal(msg.includes('token'), false);
+});
+
+test('el copy deriva la ventana del boton del mismo TTL que gobierna la capability', () => {
+    const actionToken = require('../action-token');
+    const ttlMinutos = Math.floor(actionToken.maxTtlFor(CUT_ACTION) / 60000);
+    const msg = buildProposalMessage({ timeoutMs: 2 * 60 * 60 * 1000 });
+
+    assert.match(msg, new RegExp(`boton es valido por ~${ttlMinutos} min`));
+    assert.match(msg, /Sin confirmacion, en ~2h el issue queda en needs-human/);
 });
 
 test('el timeout de propuesta rechaza valores fail-open y degrada al default', () => {

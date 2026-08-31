@@ -569,7 +569,7 @@ test('#5459 integración productiva usa gate y executor REALES y modifica bootst
 const OP_FALLIDOS_TERMINALES = [
   { status: 'executor-unavailable', toast: '🔒 Ejecutor no disponible; el fallback se conserva' },
   { status: 'precondition-failed', toast: '🔒 Las condiciones del corte ya no se cumplen; el fallback se conserva' },
-  { status: 'expired', toast: '⏱️ Acción expirada, pedí la confirmación de nuevo' },
+  { status: 'expired', toast: '⏱️ Acción expirada; el fallback se conserva' },
   { status: 'unavailable', toast: '🔒 No se pudo confirmar de forma segura; el fallback se conserva' },
 ];
 
