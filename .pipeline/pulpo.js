@@ -23945,8 +23945,11 @@ async function mainLoop() {
   }
 
   // #5453 — COORDINADOR de la migración por host (rotación → convivencia →
-  // corte). La máquina de estados entera vive en `lib/vault-migration.js` (con
-  // tests propios); acá sólo se cablean las dependencias reales y el timer.
+  // corte). La máquina de estados vive en `lib/vault-migration.js` y su cableado
+  // productivo en `lib/vault-migration-wiring.js` (ambos con tests propios); acá
+  // sólo queda el timer. Ese cableado es el MISMO que usa la CLI del operador,
+  // `vault-migration-run.js`: dos cableados distintos harían que el Pulpo y el
+  // operador evalúen el mismo host con criterios que se desincronizan.
   //
   // Doble gate cerrado (`vault.enabled` + `vault.migration.enabled`): sin los
   // dos en `true` no se evalúa nada, no se consulta cobertura y no se crea un
@@ -23959,9 +23962,11 @@ async function mainLoop() {
   //     y publica el avance en el log.
   //   - NO: no rota (emite material irreversible), no provisiona y no se
   //     respawnea a sí mismo — un proceso que se reinicia dentro de su propio
-  //     tick es el bucle de muerte de 2026-07. Esas etapas las dispara el
-  //     operador con `docs/runbooks/credential-rotation.md`; el coordinador las
-  //     ACREDITA. Por eso `auto_stages` sólo admite `observe`.
+  //     tick es el bucle de muerte de 2026-07. Esas etapas las ejecuta el
+  //     operador fuera de banda siguiendo
+  //     `docs/runbooks/credential-rotation.md`, y las ACREDITA con
+  //     `node .pipeline/vault-migration-run.js <etapa> --host <host>`. Por eso
+  //     `auto_stages` sólo admite `observe`.
   //   - NO: no corta el fallback. El único escritor es `vault-cut-fallback.js`
   //     (#5452), que exige una capability firmada por el operador.
   //   - NO: no mueve work-files. El lifecycle es del Pulpo, no de este flujo.
@@ -23972,77 +23977,29 @@ async function mainLoop() {
       ? vaultCfg.migration : {};
     // Fail-closed: sólo el booleano `true` exacto de AMBOS gates lo abre.
     if (vaultCfg.enabled === true && migCfg.enabled === true) {
-      const vaultMigration = require('./lib/vault-migration');
-      const respawnReadiness = require('./lib/vault-respawn-readiness');
-      const { ENV_DESCRIPTORS } = require('./lib/credentials');
-      const operatorGate = require('./lib/operator-gate');
-
-      const readiness = respawnReadiness.createRespawnReadiness({
+      // #5453 rev-1 — el cableado REAL vive en `lib/vault-migration-wiring.js`,
+      // compartido con la CLI del operador (`vault-migration-run.js`).
+      //
+      // Antes estaba inline acá, con `rotate`/`provision` devolviendo `{ok:false}`
+      // y `writeAudit` descartando la evidencia. Resultado: ningún host podía
+      // salir de `preflight`, este tick (que sólo procesa `respawned+`) era un
+      // no-op permanente y la auditoría se perdía. Un cableado único evita que el
+      // Pulpo y el operador evalúen con criterios distintos.
+      //
+      // El Pulpo lo arma SIN `acreditacion`: con eso `rotate` y `provision`
+      // siguen fallando cerrado acá — rotar emite material irreversible y no lo
+      // dispara un timer — pero el operador sí puede acreditarlos por CLI, y
+      // entonces este tick tiene hosts reales que observar.
+      const armado = require('./lib/vault-migration-wiring').createProductionVaultMigration({
         pipelineDir: PIPELINE,
-        logger: (msg) => log('vault-migration', msg.replace(/^\[vault-respawn\] /, '')),
-      });
-
-      const coordinador = vaultMigration.createVaultMigration({
-        stateDir: path.join(PIPELINE, 'state', 'vault-migration'),
-        logger: (msg) => log('vault-migration', msg.replace(/^\[vault-migration\] /, '')),
-
-        // Denominador DERIVADO del código. No hay lista paralela que mantener.
-        listDescriptors: () => ENV_DESCRIPTORS,
-
-        // Política por host, releída del config vivo en cada tick: la allowlist
-        // y el inventario pueden cambiar durante la ventana y el corte no puede
-        // apoyarse en el verdicto viejo.
-        resolveHostPolicy: () => {
-          const fresh = loadConfig() || {};
-          const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
-          return {
-            // El ancla de autorización es vault-only cuando el gate del vault
-            // está abierto y la ventana de bootstrap está cerrada (#5451).
-            vaultOnly: v.enabled === true && v.bootstrap_fallback === false,
-            allowlistSize: operatorGate.resolveOperatorAllowlist(process.env).size,
-            requiredScopes: Array.isArray(v.required_scopes) ? v.required_scopes : null,
-            sharedSecrets: Array.isArray(v.shared_secrets) ? v.shared_secrets : null,
-          };
-        },
-
-        // Rotar y provisionar emiten material: son del operador, fuera de banda.
-        // Se declaran como NO disponibles para que el coordinador devuelva
-        // `rotacion_fallida`/`provision_fallida` en vez de fingir que avanzó.
-        rotate: () => ({ ok: false }),
-        provision: () => ({ ok: false }),
-
-        // El respawn se ACREDITA, no se ejecuta: cada consumidor de larga vida
-        // debe tener su `.pid` reescrito después de la rotación y su proceso
-        // vivo. Ver `lib/vault-respawn-readiness.js`.
-        respawnConsumers: ({ rotatedAt }) => readiness.verify({ since: rotatedAt }),
-
-        // Mismo evaluador que `/vault-shadow-status` y que el productor de
-        // propuesta: una segunda implementación se desincronizaría del criterio
-        // que el operador ve.
-        readCoverage: () => {
-          const metrics = require('./lib/vault-shadow-metrics');
-          const fresh = loadConfig() || {};
-          const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
-          const win = (v.shadow_window && typeof v.shadow_window === 'object') ? v.shadow_window : {};
-          const instancia = metrics.getVaultShadowMetrics();
-          const evaluacion = instancia.evaluate({
-            descriptors: ENV_DESCRIPTORS,
-            hostsActivos: win.hosts_activos,
-            durationHours: win.duration_hours,
-            retentionDays: win.retention_days,
-          });
-          return { ...evaluacion, rows: instancia.readRows() };
-        },
-
-        // El corte NO se automatiza: sin capability firmada no hay ejecutor.
-        // Se deja declarado para que el coordinador reporte `corte_rechazado` en
-        // vez de quedar en un estado ambiguo si alguien lo invoca a mano.
-        requestCutover: () => ({ ok: false, status: 'precondition-failed' }),
+        loadConfig,
+        logger: (msg) => log('vault-migration', String(msg).replace(/^\[vault-(migration|respawn)\] /, '')),
         canPublishEvidence: () => !!(getTelegramToken() && getTelegramChatId()),
         signalNeedsHuman: (evidencia) => log('vault-migration',
-          `FAIL-CLOSED (${evidencia.causa}): el fallback se conserva, hace falta un humano`),
-        writeAudit: () => {},
+          `FAIL-CLOSED (${evidencia && evidencia.causa}): el fallback se conserva, hace falta un humano`),
       });
+      const coordinador = armado.coordinador;
+      if (!coordinador) throw new Error(`gate cerrado (${armado.gate})`);
 
       const etapasAuto = Array.isArray(migCfg.auto_stages) ? migCfg.auto_stages : [];
       const tickMs = Math.max(1, Number(migCfg.tick_minutes) || 15) * 60 * 1000;

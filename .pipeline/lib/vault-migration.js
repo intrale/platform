@@ -1078,5 +1078,9 @@ module.exports = {
   STAGE,
   CAUSA,
   HOST_RE,
+  // #5453 rev-1 — la usa `vault-migration-wiring.js` para validar la etiqueta
+  // de version ANTES de acreditar: un typo del operador tiene que ser un error
+  // explicito, no un `version: null` silencioso dentro del estado del host.
+  SLUG_RE,
   EVIDENCIA_CAMPOS,
 };

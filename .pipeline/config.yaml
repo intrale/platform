@@ -1940,6 +1940,13 @@ vault:
     # muerte que tumbó al Commander 12 h en 2026-07. Esas etapas las dispara el
     # operador con el runbook (`docs/runbooks/credential-rotation.md`) y el
     # coordinador las ACREDITA, no las ejecuta.
+    #
+    # El comando con el que se acreditan es
+    # `node .pipeline/vault-migration-run.js <etapa> --host <host>` (#5453
+    # rev-1). Sin ese punto de entrada la secuencia de arriba no se podía
+    # ejecutar: el cableado devolvía `rotacion_fallida` incondicionalmente y
+    # ningún host llegaba a `respawned`, que es el único estado que este tick
+    # procesa.
     auto_stages:
       - observe
     # El corte final NUNCA se automatiza: necesita una capability firmada por el

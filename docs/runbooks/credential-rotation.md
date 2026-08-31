@@ -515,15 +515,15 @@ mueren con el padre.
 El coordinador ([`.pipeline/lib/vault-migration.js`](../../.pipeline/lib/vault-migration.js))
 **no ejecuta** las etapas peligrosas: las **acredita**.
 
-| Etapa | La ejecuta | El coordinador |
-|---|---|---|
-| `preflight` | coordinador | valida anclas, allowlist e inventario |
-| `rotated` | **vos**, fuera de banda | registra la rotación con clave de idempotencia |
-| `provisioned` | **vos** (`vault-provisioner`) | registra scopes provisionados |
-| `respawned` | **vos** (`node .pipeline/restart.js`) | verifica `.pid` + proceso vivo |
-| `coexisting` | coordinador (tick del Pulpo) | cuenta la matriz de cobertura |
-| `cutover-ready` | coordinador | declara elegibilidad |
-| `verified` | `vault-cut-fallback.js` (#5452) | delega **una sola vez** |
+| Etapa | La ejecuta | El coordinador | Cómo se lo decís |
+|---|---|---|---|
+| `preflight` | coordinador | valida anclas, allowlist e inventario | `vault-migration-run.js preflight --host H` |
+| `rotated` | **vos**, fuera de banda | registra la rotación con clave de idempotencia | `vault-migration-run.js rotate --host H --version <etiqueta>` (frase por STDIN) |
+| `provisioned` | **vos** (`vault-provisioner`) | registra scopes provisionados | `vault-migration-run.js provision --host H` (frase por STDIN) |
+| `respawned` | **vos** (`node .pipeline/restart.js`) | verifica `.pid` + proceso vivo | `vault-migration-run.js respawn --host H` |
+| `coexisting` | coordinador (tick del Pulpo) | cuenta la matriz de cobertura | automático; a mano: `vault-migration-run.js observe --host H` |
+| `cutover-ready` | coordinador | declara elegibilidad | automático |
+| `verified` | `vault-cut-fallback.js` (#5452) | delega **una sola vez** | `vault-cut-breakglass.js` |
 
 Rotar y respawnear **no se automatizan a propósito**: rotar emite material
 irreversible, y un Pulpo que se reinicia a sí mismo dentro de su propio tick es
@@ -544,6 +544,37 @@ Si el preflight rechaza, **no sigas**: el mensaje nombra la causa exacta
 (`ancla_no_vault_only`, `allowlist_vacia`, `inventario_incompleto`,
 `inventario_divergente`) y todas son de config, no de la máquina.
 
+### La herramienta: `vault-migration-run.js`
+
+Todo lo que sigue se habla con el coordinador a través de **un solo comando**,
+[`.pipeline/vault-migration-run.js`](../../.pipeline/vault-migration-run.js). Usa
+el **mismo cableado** que el Pulpo
+([`lib/vault-migration-wiring.js`](../../.pipeline/lib/vault-migration-wiring.js)):
+lo que ves en pantalla es exactamente lo que evalúa el pipeline, no una segunda
+implementación que se desincroniza.
+
+```bash
+node .pipeline/vault-migration-run.js --help
+node .pipeline/vault-migration-run.js status          # dónde está cada host
+```
+
+El comando **no rota, no sube material y no corta el fallback**: *acredita* lo
+que vos hiciste fuera de banda. Las dos etapas que acreditan material
+irreversible (`rotate`, `provision`) exigen una **frase de confirmación por
+STDIN**, nunca por argv — argv lo lee cualquier proceso del host y queda en el
+historial del shell.
+
+Códigos de salida (estables, para scriptear encima):
+
+| Código | Significado |
+|---|---|
+| `0` | la etapa avanzó (o ya estaba en ese estado) |
+| `10` | gate cerrado (`vault.enabled` o `vault.migration.enabled` en `false`) |
+| `11` | falta la frase de confirmación por STDIN |
+| `12` | uso inválido (falta `--host`, falta `--version`, comando desconocido) |
+| `13` | la etapa **no** avanzó: el mensaje trae la causa |
+| `14` | indeterminado |
+
 ### Secuencia por host
 
 Para cada host, **en este orden**. El orden no es negociable: provisionar antes
@@ -551,18 +582,81 @@ de rotar deja material **ya revocado** en el vault, el host resolvería con
 `source: vault`, la cobertura cerraría en verde y el secreto **no funcionaría** —
 la cobertura mide *procedencia*, no *validez*, así que no puede atrapar ese caso.
 
-1. **Preflight** — el coordinador valida anclas, allowlist e inventario.
-2. **Rotar** — seguí las secciones por provider de este mismo runbook
-   (Anthropic, Gemini, Drive, Telegram…). Al terminar, actualizá `last_rotated`
-   en el inventario y **commiteá**.
-3. **Provisionar** — subir el material nuevo al vault, scope por scope.
-4. **Respawnear** — `node .pipeline/restart.js` **desde una terminal**, nunca
-   desde Git Bash. Esto es lo que abre la ventana de cobertura: `loadIntoEnv()`
-   hidrata una sola vez por proceso, así que un pulpo/listener/`svc-*` que sigue
-   vivo conserva el material **anterior** en memoria por más que el vault ya
-   tenga el nuevo.
-5. **Convivencia** — dejar correr. El coordinador cuenta, por descriptor y por
-   host, las resoluciones con `via: vault` **posteriores al respawn**.
+En los ejemplos, `HOST` es el `hostId` tal como figura en
+`vault.shadow_window.hosts_activos`.
+
+**1. Preflight** — el coordinador valida ancla vault-only, allowlist e
+inventario derivado (CA-22 / CA-25). No toca material.
+
+```bash
+node .pipeline/vault-migration-run.js preflight --host HOST
+```
+
+Si sale `13`, leé la causa y arreglá **config**, no la máquina de estados.
+
+**2. Rotar** — la rotación en sí la hacés vos, fuera de banda, siguiendo las
+secciones por provider de **este mismo runbook** (Anthropic, Gemini, Drive,
+Telegram…). Al terminar, actualizá `last_rotated` en
+[`docs/secrets-inventory.md`](../secrets-inventory.md) y **commiteá**. Recién
+entonces acreditás la rotación:
+
+```bash
+echo "ROTACION ACREDITADA" | node .pipeline/vault-migration-run.js rotate --host HOST --version 2026-08-31-r1
+```
+
+`--version` es una **etiqueta no sensible** de esa rotación (una fecha y un
+contador alcanzan). Nunca el secreto ni nada derivado de él: se persiste en el
+estado del host y en el ledger de acreditaciones.
+
+La acreditación queda registrada en
+`.pipeline/state/vault-migration/acreditaciones.jsonl`, indexada por la clave de
+idempotencia `<host>:rotate:<intento>`. **Si el proceso se cae entre etapas y
+reanudás, se reusa esa misma clave y la misma etiqueta: no se te va a pedir que
+rotes de nuevo, y el coordinador no va a interpretar la reanudación como una
+rotación nueva.**
+
+**3. Provisionar** — subí el material nuevo al vault, scope por scope, con
+[`.pipeline/lib/vault-provisioner.js`](../../.pipeline/lib/vault-provisioner.js).
+Cuando los tres scopes (`telegram`, `providers`, `google_drive`) estén arriba:
+
+```bash
+echo "PROVISION ACREDITADA" | node .pipeline/vault-migration-run.js provision --host HOST
+```
+
+Provisionar sin haber acreditado la rotación devuelve `etapa_fuera_de_orden` y
+sale `13`. Es a propósito: es el caso que la cobertura **no puede** atrapar.
+
+**4. Respawnear** — `node .pipeline/restart.js` **desde una terminal**, nunca
+desde Git Bash. Esto es lo que abre la ventana de cobertura: `loadIntoEnv()`
+hidrata una sola vez por proceso, así que un pulpo/listener/`svc-*` que sigue
+vivo conserva el material **anterior** en memoria por más que el vault ya tenga
+el nuevo. Después acreditás que volvieron:
+
+```bash
+node .pipeline/restart.js          # desde PowerShell/cmd, NO desde Git Bash
+node .pipeline/vault-migration-run.js respawn --host HOST
+```
+
+El coordinador exige, por **cada** consumidor de larga vida (`pulpo`, `listener`,
+`svc-telegram`, `svc-github`, `svc-drive`, `svc-emulador`, `svc-reconciler`,
+`dashboard`): que exista su `.pid`, que se haya reescrito **después** de la
+rotación, y que el PID de adentro esté vivo. Si falta uno solo sale `13` con
+`respawn_incompleto` y la lista de pendientes.
+
+**5. Convivencia** — dejar correr. A partir de acá el tick del Pulpo (cada
+`vault.migration.tick_minutes`) observa solo, porque `auto_stages: [observe]`.
+Para mirar el avance a mano en cualquier momento:
+
+```bash
+node .pipeline/vault-migration-run.js status
+node .pipeline/vault-migration-run.js observe --host HOST   # fuerza una evaluación
+```
+
+El coordinador cuenta, por descriptor y por host, las resoluciones con
+`via: vault` **posteriores al respawn**. La evidencia sanitizada de cada
+transición se acumula en `.pipeline/audit/vault-migration.jsonl` (append-only,
+`0600`), con el mismo modelo cerrado de campos que el resto del operativo:
+nombres lógicos, conteos, timestamps y enums. Nunca valores, paths ni PIDs.
 
 ### Último punto de retorno
 
