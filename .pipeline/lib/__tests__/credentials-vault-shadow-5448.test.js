@@ -44,6 +44,25 @@ const { getVaultShadowMetrics, _resetVaultShadowMetrics, VIA } = require('../vau
 // Helpers
 // -----------------------------------------------------------------------------
 
+/**
+ * Huella de un artefacto real de auditoría: `null` si no existe, su contenido
+ * exacto si existe, y un marcador estable si ni se puede leer.
+ *
+ * Es lo que permite afirmar "este boot no escribió" sin exigir "el archivo no
+ * existe": el JSONL es append-only (escribir lo agranda) y el t0 se reescribe
+ * siempre con un timestamp nuevo (reiniciar la ventana cambia el contenido),
+ * así que comparar antes/después detecta cualquier escritura. Un `catch` que
+ * devolviera `null` haría que "ilegible" se confundiera con "ausente", así que
+ * el error se codifica y una lectura que empieza a fallar también rompe.
+ */
+function huella(p) {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch (e) {
+    return e && e.code === 'ENOENT' ? null : `ilegible:${(e && e.code) || (e && e.name) || 'Error'}`;
+  }
+}
+
 const PREFIX = '/intrale';
 const PROJECT = 'intrale';
 const HOST = 'hostTest';
@@ -366,10 +385,25 @@ test('un boot de prueba sin inyeccion NO escribe en el .pipeline/audit/ del repo
   // `otroHost`) al JSONL real y le reiniciaban el t0 real por evidencia negativa
   // sintética. Es decir: correr la suite volvía IMPOSIBLE que la ventana
   // cerrara, y ensuciaba justo la evidencia sobre la que #5427 decide.
+  //
+  // Lo que se afirma es "este boot no escribió", y por eso se compara una
+  // HUELLA de antes contra una de después (#5453 rev-3). La versión anterior
+  // afirmaba "los artefactos no existen", que es una condición distinta y más
+  // fuerte: cualquier escritura LEGÍTIMA previa en ese checkout —un boot de
+  // producción, `node .pipeline/vault-shadow-status.js`, o el
+  // `vault-migration-run.js` que el operador y el QA corren por diseño— dejaba
+  // el t0/JSONL creados y este test fallaba culpando a la suite de algo que la
+  // suite no hizo. Con la huella la guarda conserva TODOS sus dientes: cualquier
+  // append al JSONL lo agranda y cualquier reinicio de ventana reescribe el t0
+  // con otro timestamp, así que un boot que escriba sigue rompiendo el test.
   _resetVaultShadowMetrics();
   const real = getVaultShadowMetrics();
   const auditReal = real.paths.auditDir;
   const antes = fs.existsSync(auditReal) ? fs.readdirSync(auditReal).length : null;
+  const jsonlReal = path.join(auditReal, 'vault-resolution.jsonl');
+  const t0Real = path.join(auditReal, 'vault-resolution.t0.json');
+  const jsonlAntes = huella(jsonlReal);
+  const t0Antes = huella(t0Real);
 
   // Gate ABIERTO, driver que falla ⇒ evidencia negativa ⇒ el peor caso: es la
   // vía que appendea inmediato y reinicia t0.
@@ -384,20 +418,26 @@ test('un boot de prueba sin inyeccion NO escribe en el .pipeline/audit/ del repo
   assert.ok(process.env.NODE_TEST_CONTEXT, 'este test solo tiene sentido bajo `node --test`');
   const despues = fs.existsSync(auditReal) ? fs.readdirSync(auditReal).length : null;
   assert.equal(despues, antes, `la suite modifico ${auditReal}`);
-  assert.equal(fs.existsSync(path.join(auditReal, 'vault-resolution.jsonl')), false,
+  assert.equal(huella(jsonlReal), jsonlAntes,
     'un boot de prueba no puede dejar evidencia en el JSONL real');
-  assert.equal(fs.existsSync(path.join(auditReal, 'vault-resolution.t0.json')), false,
+  assert.equal(huella(t0Real), t0Antes,
     'un boot de prueba no puede reiniciar el t0 real');
   _resetVaultShadowMetrics();
 });
 
 test('el singleton por defecto apunta al .pipeline/audit/ del repo (cableado de produccion)', () => {
   _resetVaultShadowMetrics();
+  const jsonlReal = path.join(path.resolve(__dirname, '..', '..', 'audit'), 'vault-resolution.jsonl');
+  // Misma huella que el test de arriba y por la misma razón (#5453 rev-3): lo
+  // que se afirma es que PEDIR el singleton no escribe, no que el archivo esté
+  // ausente. En un checkout donde ya corrió un boot real el JSONL existe, y eso
+  // no dice nada sobre la laziness.
+  const jsonlAntes = huella(jsonlReal);
   const real = getVaultShadowMetrics();
   assert.equal(real.paths.auditDir, path.resolve(__dirname, '..', '..', 'audit'));
-  assert.equal(real.paths.jsonl, path.join(real.paths.auditDir, 'vault-resolution.jsonl'));
+  assert.equal(real.paths.jsonl, jsonlReal);
   // Pedirlo no crea nada: la laziness es lo que sostiene CA-25.
-  assert.equal(fs.existsSync(real.paths.jsonl), false);
+  assert.equal(huella(jsonlReal), jsonlAntes);
   _resetVaultShadowMetrics();
 });
 

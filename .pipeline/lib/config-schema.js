@@ -577,6 +577,28 @@ const SCHEMA = {
                 // ventana se abriera sola.
                 bootstrap_fallback: { type: 'boolean' },
                 bootstrap_fallback_until: { type: 'string' },
+                // #5453 — coordinador de la migración por host. Se tipa por el
+                // mismo motivo que `enabled`: `migration.enabled` es el gate de
+                // rollout y sólo el booleano `true` exacto lo abre; un `"true"`
+                // string sería truthy para el YAML y arrancaría el coordinador
+                // sin que nadie lo haya decidido. `auto_stages` es un enum
+                // CERRADO: una etapa desconocida ahí no se ignora en silencio,
+                // se descubre al arrancar. `rotate`/`provision`/`respawn` NO
+                // son valores válidos a propósito — son irreversibles o bajan al
+                // propio Pulpo, y las dispara el operador con el runbook.
+                migration: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        tick_minutes: { type: 'number', minimum: 1, maximum: 1440 },
+                        auto_stages: {
+                            type: 'array',
+                            items: { type: 'string', enum: ['observe'] },
+                        },
+                        auto_cutover: { type: 'boolean' },
+                    },
+                },
                 cut_fallback: {
                     type: 'object',
                     additionalProperties: false,

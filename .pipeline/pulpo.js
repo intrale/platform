@@ -24157,6 +24157,125 @@ async function mainLoop() {
     log('vault-cut', `No se pudo iniciar el productor de propuesta: ${e.message}`);
   }
 
+  // #5453 — COORDINADOR de la migración por host (rotación → convivencia →
+  // corte). La máquina de estados vive en `lib/vault-migration.js` y su cableado
+  // productivo en `lib/vault-migration-wiring.js` (ambos con tests propios); acá
+  // sólo queda el timer. Ese cableado es el MISMO que usa la CLI del operador,
+  // `vault-migration-run.js`: dos cableados distintos harían que el Pulpo y el
+  // operador evalúen el mismo host con criterios que se desincronizan.
+  //
+  // Doble gate cerrado (`vault.enabled` + `vault.migration.enabled`): sin los
+  // dos en `true` no se evalúa nada, no se consulta cobertura y no se crea un
+  // solo archivo bajo `.pipeline/state/vault-migration/`.
+  //
+  // Qué hace el tick y qué NO hace, deliberadamente:
+  //
+  //   - SÍ: reanuda la ventana leyendo el checkpoint por host, acredita el
+  //     respawn contra los `.pid` de `restart.js`, evalúa la matriz de cobertura
+  //     y publica el avance en el log.
+  //   - NO: no rota (emite material irreversible), no provisiona y no se
+  //     respawnea a sí mismo — un proceso que se reinicia dentro de su propio
+  //     tick es el bucle de muerte de 2026-07. Esas etapas las ejecuta el
+  //     operador fuera de banda siguiendo
+  //     `docs/runbooks/credential-rotation.md`, y las ACREDITA con
+  //     `node .pipeline/vault-migration-run.js <etapa> --host <host>`. Por eso
+  //     `auto_stages` sólo admite `observe`.
+  //   - NO: no corta el fallback. El único escritor es `vault-cut-fallback.js`
+  //     (#5452), que exige una capability firmada por el operador.
+  //   - NO: no mueve work-files. El lifecycle es del Pulpo, no de este flujo.
+  try {
+    const cfgRoot = loadConfig() || {};
+    const vaultCfg = (cfgRoot.vault && typeof cfgRoot.vault === 'object') ? cfgRoot.vault : {};
+    const migCfg = (vaultCfg.migration && typeof vaultCfg.migration === 'object')
+      ? vaultCfg.migration : {};
+    // Fail-closed: sólo el booleano `true` exacto de AMBOS gates lo abre.
+    if (vaultCfg.enabled === true && migCfg.enabled === true) {
+      // #5453 rev-1 — el cableado REAL vive en `lib/vault-migration-wiring.js`,
+      // compartido con la CLI del operador (`vault-migration-run.js`).
+      //
+      // Antes estaba inline acá, con `rotate`/`provision` devolviendo `{ok:false}`
+      // y `writeAudit` descartando la evidencia. Resultado: ningún host podía
+      // salir de `preflight`, este tick (que sólo procesa `respawned+`) era un
+      // no-op permanente y la auditoría se perdía. Un cableado único evita que el
+      // Pulpo y el operador evalúen con criterios distintos.
+      //
+      // El Pulpo lo arma SIN `acreditacion`: con eso `rotate` y `provision`
+      // siguen fallando cerrado acá — rotar emite material irreversible y no lo
+      // dispara un timer — pero el operador sí puede acreditarlos por CLI, y
+      // entonces este tick tiene hosts reales que observar.
+      const armado = require('./lib/vault-migration-wiring').createProductionVaultMigration({
+        pipelineDir: PIPELINE,
+        loadConfig,
+        logger: (msg) => log('vault-migration', String(msg).replace(/^\[vault-(migration|respawn)\] /, '')),
+        canPublishEvidence: () => !!(getTelegramToken() && getTelegramChatId()),
+        signalNeedsHuman: (evidencia) => log('vault-migration',
+          `FAIL-CLOSED (${evidencia && evidencia.causa}): el fallback se conserva, hace falta un humano`),
+      });
+      const coordinador = armado.coordinador;
+      if (!coordinador) throw new Error(`gate cerrado (${armado.gate})`);
+
+      const tickMs = Math.max(1, Number(migCfg.tick_minutes) || 15) * 60 * 1000;
+
+      // El gate se reevalúa EN CADA TICK, no sólo al arranque (#5453 rev-4).
+      //
+      // Hasta rev-3 `etapasAuto` y el doble gate se congelaban acá y el tick
+      // sólo releía `hosts_activos`: apagar `vault.enabled` o
+      // `vault.migration.enabled` en caliente no detenía nada hasta el próximo
+      // respawn del Pulpo, en contra de lo que promete `config.yaml`. Un gate
+      // que sólo se puede cerrar reiniciando el proceso no es un gate.
+      let gateCerradoAvisado = false;
+      const gateAbiertoEnCaliente = (fresh) => {
+        const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+        const m = (v.migration && typeof v.migration === 'object') ? v.migration : {};
+        return v.enabled === true && m.enabled === true;
+      };
+
+      const runMigrationTick = () => {
+        try {
+          const fresh = loadConfig() || {};
+          if (!gateAbiertoEnCaliente(fresh)) {
+            if (!gateCerradoAvisado) {
+              log('vault-migration', 'Gate cerrado en caliente: el tick no observa nada '
+                + '(se reabre solo si vuelve a `true` en el config, sin reiniciar).');
+              gateCerradoAvisado = true;
+            }
+            return;
+          }
+          gateCerradoAvisado = false;
+          const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+          // `auto_stages` también se relee: es parte de la política, no del arranque.
+          const mFresh = (v.migration && typeof v.migration === 'object') ? v.migration : {};
+          const etapasAuto = Array.isArray(mFresh.auto_stages) ? mFresh.auto_stages : [];
+          const win = (v.shadow_window && typeof v.shadow_window === 'object') ? v.shadow_window : {};
+          const hosts = Array.isArray(win.hosts_activos) ? win.hosts_activos : [];
+          if (!hosts.length || !etapasAuto.includes('observe')) return;
+
+          for (const host of hosts) {
+            const st = coordinador.readState(host);
+            // Sólo se automatiza lo idempotente: observar la ventana de un host
+            // que YA fue rotado, provisionado y respawneado por el operador.
+            if (!st || !['respawned', 'coexisting', 'cutover-ready'].includes(st.stage)) continue;
+            const res = coordinador.observeCoverage({ host });
+            if (res.ok && st.stage !== 'cutover-ready') {
+              log('vault-migration', `${host}: cobertura completa `
+                + `(${res.evidencia.cubiertos}/${res.evidencia.descriptores}), listo para el corte`);
+            } else if (!res.ok && st.stage === 'cutover-ready') {
+              log('vault-migration', `${host}: la cobertura CAYO (${res.causa}); el fallback se conserva`);
+            }
+          }
+        } catch (err) {
+          log('vault-migration', `Tick excepción no capturada: ${err.message}`);
+        }
+      };
+      runMigrationTick();
+      const migrationTimer = setInterval(runMigrationTick, tickMs);
+      if (typeof migrationTimer.unref === 'function') migrationTimer.unref();
+      log('vault-migration', `Coordinador iniciado: tick cada ${Math.round(tickMs / 60000)}min`);
+    }
+  } catch (e) {
+    log('vault-migration', `No se pudo iniciar el coordinador de migración: ${e.message}`);
+  }
+
   // #5243 CA-5 — Paso INVERSO del halt por secreto faltante.
   //
   // Vive acá y no en `loadConfig()` a propósito: el config se relee entero en
