@@ -502,6 +502,153 @@ el pulpo entero** con `taskkill /F /IM node.exe` o `pkill node`, esperar 30s,
 relanzar `node .pipeline/pulpo.js`. Los childs spawneados con la key vieja
 mueren con el padre.
 
+## Migración al vault: secuencia por host, convivencia y corte (#5453)
+
+> Esto **no** es la rotación de emergencia de arriba. Es el operativo planificado
+> que lleva un host desde "resuelve credenciales por archivo" hasta "resuelve por
+> vault, con evidencia", y recién al final corta la ventana de bootstrap.
+>
+> Se corre **un host por vez**. Nadie corta hasta que **todos** los hosts pasaron.
+
+### Quién hace qué
+
+El coordinador ([`.pipeline/lib/vault-migration.js`](../../.pipeline/lib/vault-migration.js))
+**no ejecuta** las etapas peligrosas: las **acredita**.
+
+| Etapa | La ejecuta | El coordinador |
+|---|---|---|
+| `preflight` | coordinador | valida anclas, allowlist e inventario |
+| `rotated` | **vos**, fuera de banda | registra la rotación con clave de idempotencia |
+| `provisioned` | **vos** (`vault-provisioner`) | registra scopes provisionados |
+| `respawned` | **vos** (`node .pipeline/restart.js`) | verifica `.pid` + proceso vivo |
+| `coexisting` | coordinador (tick del Pulpo) | cuenta la matriz de cobertura |
+| `cutover-ready` | coordinador | declara elegibilidad |
+| `verified` | `vault-cut-fallback.js` (#5452) | delega **una sola vez** |
+
+Rotar y respawnear **no se automatizan a propósito**: rotar emite material
+irreversible, y un Pulpo que se reinicia a sí mismo dentro de su propio tick es
+el bucle de muerte que tumbó al Commander 12 h en 2026-07. Por eso
+`vault.migration.auto_stages` sólo admite `observe`.
+
+### Antes de empezar (una vez, para todo el parque)
+
+1. `vault.enabled: true` y `vault.hostId`/`vault.awsProfile` resueltos en cada host.
+2. `vault.shadow_window.hosts_activos` enumera **todos** los hosts que bootean el
+   pipeline. Vacía ⇒ el evaluador devuelve `no_verificado` y nada cierra.
+3. `vault.required_scopes` y `vault.shared_secrets` coinciden con lo derivado del
+   código (ver *Inventario cerrado contra el vault* en
+   [`docs/secrets-inventory.md`](../secrets-inventory.md)).
+4. `vault.migration.enabled: true` (gate de rollout del coordinador).
+
+Si el preflight rechaza, **no sigas**: el mensaje nombra la causa exacta
+(`ancla_no_vault_only`, `allowlist_vacia`, `inventario_incompleto`,
+`inventario_divergente`) y todas son de config, no de la máquina.
+
+### Secuencia por host
+
+Para cada host, **en este orden**. El orden no es negociable: provisionar antes
+de rotar deja material **ya revocado** en el vault, el host resolvería con
+`source: vault`, la cobertura cerraría en verde y el secreto **no funcionaría** —
+la cobertura mide *procedencia*, no *validez*, así que no puede atrapar ese caso.
+
+1. **Preflight** — el coordinador valida anclas, allowlist e inventario.
+2. **Rotar** — seguí las secciones por provider de este mismo runbook
+   (Anthropic, Gemini, Drive, Telegram…). Al terminar, actualizá `last_rotated`
+   en el inventario y **commiteá**.
+3. **Provisionar** — subir el material nuevo al vault, scope por scope.
+4. **Respawnear** — `node .pipeline/restart.js` **desde una terminal**, nunca
+   desde Git Bash. Esto es lo que abre la ventana de cobertura: `loadIntoEnv()`
+   hidrata una sola vez por proceso, así que un pulpo/listener/`svc-*` que sigue
+   vivo conserva el material **anterior** en memoria por más que el vault ya
+   tenga el nuevo.
+5. **Convivencia** — dejar correr. El coordinador cuenta, por descriptor y por
+   host, las resoluciones con `via: vault` **posteriores al respawn**.
+
+### Último punto de retorno
+
+**El respawn del paso 4 es el último punto de retorno barato.** Hasta ahí,
+volver atrás es restaurar el archivo de credenciales y respawnear otra vez.
+
+Después del **corte** (`bootstrap_fallback: false`) ya no hay vuelta atrás por
+config: la ventana al archivo está cerrada y volver a abrirla es un commit + un
+respawn del parque entero. Por eso el corte exige capability firmada y evidencia
+completa, y por eso nunca se hace "para ver si anda".
+
+### Criterio de convivencia (qué esperar y qué NO)
+
+**"Cero errores" no es éxito.** Un host apagado, o un secreto que nadie pidió,
+producen cero errores y cero cobertura. El criterio es **cobertura positiva**:
+cada descriptor × cada host activo, con al menos una resolución `via: vault`
+posterior al último respawn, y **cero** evidencia negativa.
+
+Causas de `not-ready` y qué hacer con cada una:
+
+| Causa | Qué pasó | Qué hacer |
+|---|---|---|
+| `host_silencioso` | el host no resolvió nada en la ventana | usarlo de verdad (lanzar un agente, mandar un mensaje) |
+| `cobertura_previa_al_respawn` | hay cobertura, pero de **antes** del respawn | volver a respawnear y esperar |
+| `cobertura_incompleta` | faltan celdas de la matriz | ver qué descriptor falta y ejercitarlo |
+| `fuente_legacy` | alguien resolvió por `file-bootstrap`/`missing`/`env` | **no cortar**: falta provisionar ese secreto |
+| `allowlist_vacia` | la allowlist del operador quedó vacía | reponer el ancla; **nunca** relajar el gate |
+| `estado_indeterminado` | sidecar de integridad, t0 reiniciado o hosts inválidos | revisar `.pipeline/audit/`; **nunca** interpretarlo como verde |
+| `evidencia_corrupta` | una fila de evidencia traía un derivado del valor | investigar como incidente, no como bug de conteo |
+
+Una caída de cobertura **retrocede** el host de `cutover-ready` a `coexisting`.
+No baja de ahí: nunca se des-rota ni se des-provisiona.
+
+### Corte final
+
+El corte lo ejecuta **únicamente**
+[`.pipeline/lib/vault-cut-fallback.js`](../../.pipeline/lib/vault-cut-fallback.js).
+El coordinador arma un snapshot **informativo**, revalida identidad, política y
+cobertura *inmediatamente antes* de delegar, y el ejecutor **vuelve a validar
+todo** dentro de su lock antes de persistir. Esa doble validación es la que cierra
+el TOCTOU: entre "estaba listo" y "escribo" no puede colarse una caída.
+
+Precondiciones, todas juntas:
+
+- **todos** los hosts en `cutover-ready` (uno solo que no lo esté bloquea);
+- allowlist no vacía en todos;
+- capability firmada por el operador y **no vencida** (TTL de
+  `vault.cut_fallback.authorization_ttl_seconds`);
+- canal para publicar la evidencia (Telegram/Drive) **vivo**.
+
+Si el fallback ya está en `false`, el corte resuelve `already-cut`: es **éxito
+idempotente**, no error. No hay que "arreglar" nada.
+
+### Break-glass, fuera de banda
+
+Si el vault no resuelve y el parque no bootea:
+
+1. **Nunca** se abre `bootstrap_fallback` "un ratito" sin fecha:
+   `bootstrap_fallback_until` es obligatoria cuando el flag está en `true`, y
+   pasada esa fecha la ventana no aplica aunque el flag siga encendido.
+2. El material de emergencia se repone **por el canal fuera de banda del
+   operador**, nunca por Telegram, nunca por el issue, nunca por un comentario de
+   PR. (Ver la regla de API keys por terminal.)
+3. Reabrir la ventana **reinicia la ventana de cobertura**: toda la evidencia
+   anterior deja de contar. Es correcto y es el punto.
+4. Con Drive o Telegram caídos, el operativo **no cierra por silencio**: queda
+   señal local sanitizada + `needs-human`, y el fallback **se conserva**.
+
+### Evidencia: qué se publica y qué no
+
+La evidencia usa un modelo **cerrado** (lista blanca de campos): nombres
+lógicos, conteos, timestamps ISO, etapa y causa. Lo que queda afuera **por
+construcción**: valores, prefijos, hashes, nombres de env var, paths, PIDs,
+namespaces del vault y account ids.
+
+Al cerrar el operativo, adjuntar por host:
+
+- etapa final y `N/N` de cobertura (el `N` sale de `ENV_DESCRIPTORS`, no de un
+  número escrito a mano);
+- cantidad de consumidores acreditados en el respawn;
+- tamaño de la allowlist;
+- fecha de rotación (ISO) y versión no sensible.
+
+Si algo de eso no se puede publicar sin exponer material, **no se publica**: se
+deja la señal local y se escala. Un operativo sin evidencia no está cerrado.
+
 ## Referencias
 
 - Inventario: [`docs/secrets-inventory.md`](../secrets-inventory.md)
