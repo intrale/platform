@@ -62,11 +62,20 @@ const yaml = require('js-yaml');
 const trace = require('./traceability');
 const humanBlock = require('./human-block');
 const { isMarkerArtifact } = require('./marker-artifact');
+// #6745 — el decisor unico de infra vive aca; consume la evidencia tipada del
+// pre-check y el piso de severidad como fuentes UNICAS (no se duplican listas).
+const precheck = require('../connectivity-precheck');
+const { SKILLS_PISO_GRAVE } = require('./rejection-severity');
+const workfileName = require('./workfile-name');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const GH_QUEUE_DIR = path.join(PIPELINE_DIR, 'servicios', 'github', 'pendiente');
 const DEPS_LABEL = 'blocked:dependencies';
-const MAX_MOTIVO_LEN = 5000;
+// #6745 SEC-D — VENTANA UNICA de escaneo para todo el camino de decision.
+// Antes convivian `MAX_MOTIVO_LEN = 5000` aca y NINGUNA cota en
+// `connectivity-precheck.classifyError`: un token entre el char 5001 y el 8192
+// lo veia un modulo y el otro no => evasion por split-brain de clasificacion.
+const MAX_MOTIVO_LEN = precheck.MAX_MOTIVO_SCAN_LEN;
 const MAX_DEPS_PER_BLOCK = 20;
 
 // #3229 — Segregación filesystem entre los dos estados conceptualmente distintos:
@@ -219,6 +228,20 @@ function isMissingTestsReason(motivo) {
  *                                              cuando la cadena literal no
  *                                              aparecía en `motivo`.
  * @param {string} [opts.faseDestino]        — fase destino para cross_phase
+ * @param {string} [opts.skill]               — #6745 CA-7: skill que emitió el
+ *                                              rechazo. Se valida contra el
+ *                                              allowlist (`opts.skillAllowlist`
+ *                                              u `opts.config`) antes de usarse:
+ *                                              ausente o fuera de allowlist ⇒
+ *                                              NO puede clasificar infra.
+ * @param {Set|string[]} [opts.skillAllowlist] — #6745 SEC-B: allowlist de skills
+ *                                              conocidos (`buildSkillAllowlist`).
+ * @param {object} [opts.classifyErrorDetail]  — #6745: veredicto TIPADO de
+ *                                              `precheck.classifyErrorDetailed`
+ *                                              (`{ clasificacion, evidencia,
+ *                                              accionRequerida }`). Es el
+ *                                              contrato nuevo; habilita el piso
+ *                                              de security fail-closed.
  * @param {string} [opts.classifyErrorResult] — resultado de precheck.classifyError
  *                                              ('infra' | 'codigo'). Si no se
  *                                              pasa, este módulo no infiere
@@ -408,8 +431,19 @@ function classifyRebote(opts = {}) {
         };
     }
 
-    // 4. infra — si el caller pre-clasificó como infra
-    if (opts.classifyErrorResult === 'infra') {
+    // 4. infra — DECISOR ÚNICO del ruteo infra vs código (#6745 CA-4)
+    //
+    // Antes de #6745 había DOS caminos de decisión divergentes sobre el mismo
+    // `motivo_rechazo` y el bueno se descartaba: `pulpo.js` calculaba
+    // `esReboteDeInfra` con `precheck.classifyError` crudo y, por separado,
+    // llamaba a `classifyRebote` pero sólo consumía `dependency_block`.
+    // Ahora esta rama es el único lugar donde se decide si un rebote es infra:
+    // aplica la precedencia de CA-8, el piso de `security` (CA-7) y el
+    // degradado por señal de código (CA-2), y emite `infra_downgraded_by`
+    // (CA-10) para que el operador pueda entender el ruteo.
+    const infraV = resolveInfraVeredicto(opts, motivo);
+
+    if (infraV.esInfra) {
         return {
             category: 'infra',
             label: null,
@@ -417,6 +451,26 @@ function classifyRebote(opts = {}) {
             counts_against_circuit_breaker: false,
             autounlock: null,
             reason_summary: 'Error de infra (red/timeout) — reintenta solo',
+            infra_downgraded_by: null,
+            accion_requerida: infraV.accionRequerida,
+        };
+    }
+
+    if (infraV.infra_downgraded_by) {
+        // El caller (o el clasificador) creyó que era infra, pero la evidencia
+        // no alcanza. `codigo` es el fallback seguro: SÍ cuenta contra el
+        // circuit breaker, así que el rebote queda acotado (CA-10 / SEC-A).
+        return {
+            category: 'code',
+            label: null,
+            dependsOn: [],
+            counts_against_circuit_breaker: true,
+            autounlock: null,
+            reason_summary: infraV.infra_downgraded_by === 'security_floor'
+                ? 'Rechazo con piso de security — no puede clasificar infra, rebota a la fase de rechazo'
+                : 'Rechazo de código con evidencia de entrega — infra descartado, rebota a la fase de rechazo',
+            infra_downgraded_by: infraV.infra_downgraded_by,
+            accion_requerida: infraV.accionRequerida,
         };
     }
 
@@ -428,7 +482,132 @@ function classifyRebote(opts = {}) {
         counts_against_circuit_breaker: true,
         autounlock: null,
         reason_summary: 'Rechazo técnico — rebota a fase de rechazo',
+        infra_downgraded_by: null,
+        accion_requerida: infraV.accionRequerida,
     };
+}
+
+// -----------------------------------------------------------------------------
+// #6745 — DECISOR ÚNICO infra vs código
+//
+// PRECEDENCIA OBLIGATORIA (CA-8), en este orden literal y sin excepciones:
+//
+//     security floor  >  errno / machine_token  >  code_signal  >  infra prose  >  codigo
+//
+// INVARIANTE DE ASIMETRÍA (CA-10 / SEC-A): `infra` es la única clase de rebote
+// sin cota superior — `rebote-counter.js` la excluye del circuit breaker
+// genérico. Por eso `infra` exige EVIDENCIA POSITIVA y `codigo` es el fallback
+// seguro. Ante ambigüedad, motivo vacío, nulo o no clasificable ⇒ `codigo`.
+// NUNCA agregar un `return { esInfra: true }` como default.
+//
+// SEC-E — `infra_downgraded_by` es un ENUM CERRADO:
+// 'security_floor' | 'code_signal' | 'phase_capability' | null.
+// Está PROHIBIDO adjuntarle el substring que matcheó, el span de evidencia o
+// cualquier fragmento del motivo: `security` está en `SKILLS_SIN_MOTIVO_PUBLICO`
+// justamente para que el texto de un hallazgo no llegue a una superficie
+// pública. La evidencia tipada es un TIPO, nunca una cita.
+// ('phase_capability' lo emite `rebote-destino.resolveReboteDestino`, que es
+// quien conoce la fase destino — acá no puede resolverse.)
+// -----------------------------------------------------------------------------
+
+/**
+ * Valida el skill emisor del rechazo contra el allowlist de la config.
+ *
+ * `skillFromFile` es LENIENTE por contrato (workfile-name.js:20-23):
+ * `skillFromFile('6745.secur1ty')` devuelve `'secur1ty'`, NO `null`. Por eso un
+ * `if (!skill)` NO implementa el fail-closed que pide CA-7 — hay que comparar
+ * contra el allowlist derivado de `skills_por_fase` (SEC-B).
+ *
+ * @returns {string|null} el skill validado, o null si es indeterminable.
+ */
+function validarSkillEmisor(opts) {
+    const raw = typeof opts.skill === 'string' ? opts.skill.trim().toLowerCase() : '';
+    if (!raw) return null;
+
+    let allowlist = opts.skillAllowlist || null;
+    if (!allowlist && opts.config) {
+        try { allowlist = workfileName.buildSkillAllowlist(opts.config); } catch { allowlist = null; }
+    }
+    // Sin allowlist no podemos validar ⇒ indeterminable (fail-closed).
+    if (!allowlist) return null;
+
+    const tiene = typeof allowlist.has === 'function'
+        ? allowlist.has(raw)
+        : (Array.isArray(allowlist) && allowlist.includes(raw));
+    return tiene ? raw : null;
+}
+
+/**
+ * Resuelve si un rebote es realmente de infra, aplicando la precedencia CA-8.
+ *
+ * @param {object} opts — los mismos opts de `classifyRebote`
+ * @param {string} motivo — motivo ya truncado a la ventana de escaneo
+ * @returns {{ esInfra: boolean, accionRequerida: ('codigo'|null),
+ *             infra_downgraded_by: ('security_floor'|'code_signal'|null) }}
+ */
+function resolveInfraVeredicto(opts, motivo) {
+    // El veredicto tipado del clasificador. Si el caller no lo pasa (contrato
+    // legacy: sólo `classifyErrorResult`), lo derivamos del motivo — no para
+    // decidir si es infra, sino para conocer el TIER de evidencia, que es lo
+    // que gobierna si el degradado por señal de código aplica (CA-8).
+    const detalleExplicito = opts.classifyErrorDetail && typeof opts.classifyErrorDetail === 'object'
+        ? opts.classifyErrorDetail
+        : null;
+    let detalle = detalleExplicito;
+    if (!detalle) {
+        try { detalle = precheck.classifyErrorDetailed(motivo); } catch { detalle = null; }
+    }
+    detalle = detalle || { clasificacion: null, evidencia: null, accionRequerida: null };
+
+    const accionRequerida = detalle.accionRequerida === 'codigo' ? 'codigo' : null;
+
+    // ¿El caller cree que esto es infra?
+    const preInfra = detalleExplicito
+        ? detalleExplicito.clasificacion === 'infra'
+        : opts.classifyErrorResult === 'infra';
+
+    if (!preInfra) {
+        // #6745 CA-10 — si el degradado ya lo hizo `classifyErrorDetailed` (la
+        // señal de código le ganó a la prosa infra), hay que PROPAGAR el motivo
+        // tipado: si no, la telemetría nace muda justo en el caso que este
+        // issue vino a arreglar.
+        const yaDegradado = detalle.infra_downgraded_by === 'code_signal'
+            || detalle.infra_downgraded_by === 'security_floor'
+            ? detalle.infra_downgraded_by
+            : null;
+        return { esInfra: false, accionRequerida, infra_downgraded_by: yaDegradado };
+    }
+
+    // --- PISO DE SECURITY (CA-7 / SEC-B / SEC-1) ------------------------------
+    // Un rechazo emitido por `security` NUNCA clasifica infra: el piso está en
+    // `lib/rejection-severity.SKILLS_PISO_GRAVE` como fuente única (no se
+    // duplica acá). Fail-closed: skill ausente o fuera del allowlist ⇒ NO infra.
+    //
+    // El piso sólo se puede aplicar cuando el caller entró por el contrato nuevo
+    // (`classifyErrorDetail`): en el contrato legacy no hay forma de saber quién
+    // emitió el rechazo, y hacerlo fail-closed ahí volvería `infra` inalcanzable
+    // para todos los call-sites viejos. El único caller de producción —
+    // `pulpo.js`, el path de rebote — usa el contrato nuevo y sí es fail-closed.
+    if (detalleExplicito) {
+        const skillValidado = validarSkillEmisor(opts);
+        if (!skillValidado || SKILLS_PISO_GRAVE.includes(skillValidado)) {
+            return { esInfra: false, accionRequerida, infra_downgraded_by: 'security_floor' };
+        }
+    }
+
+    // --- errno / machine_token: tier MÁQUINA, no degradable (CA-8) ------------
+    if (detalle.evidencia === 'errno' || detalle.evidencia === 'machine_token') {
+        return { esInfra: true, accionRequerida, infra_downgraded_by: null };
+    }
+
+    // --- code_signal gana sobre la prosa infra (CA-2) -------------------------
+    // Las señales de código son DESEMPATE: sólo degradan `infra` → `codigo`.
+    // Nunca eligen fase ni saltean un gate.
+    if (accionRequerida === 'codigo' || precheck.hasCodeSignal(motivo)) {
+        return { esInfra: false, accionRequerida: 'codigo', infra_downgraded_by: 'code_signal' };
+    }
+
+    return { esInfra: true, accionRequerida, infra_downgraded_by: null };
 }
 
 /**
@@ -993,6 +1172,10 @@ function emitBlocked(opts) {
 
 module.exports = {
     classifyRebote,
+    // #6745 — decisor único infra vs código (CA-4/CA-7/CA-8)
+    resolveInfraVeredicto,
+    validarSkillEmisor,
+    MAX_MOTIVO_LEN,
     detectDependencyBlock,
     isMissingTestsReason, // #4223
     buildDependencyComment,
