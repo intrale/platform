@@ -105,6 +105,19 @@ Tu resultado sigue siendo `rechazado` / `gravedad: grave`, citando esa escalada.
 > re-encolar la verificación. Por eso el código de salida **no alcanza** para
 > decidir tu resultado — la autoridad es el JSON.
 
+**Caso borde (rev-4): caduco SIN reparación encolada.** Si el veredicto caducó
+pero el pipeline **no pudo encolar** la reparación (disco lleno, permisos, cola
+ilegible), `delivery.js` sale con **código 1**, imprime en stderr
+`la reparación NO quedó encolada` y **NO emite** el JSON del contrato. Eso es a
+propósito: sin orden en la cola nadie va a re-verificar nada, así que tratarlo
+como "se repara solo" haría desaparecer el issue del pipeline en silencio.
+
+En ese caso: `resultado: rechazado`, `gravedad: grave`, **sin**
+`veredicto_caduco`, y el motivo tiene que decir que la re-verificación **no está
+encolada** y que hace falta revisar el estado del pipeline (típicamente disco o
+permisos sobre `.pipeline/servicios/github/pendiente/`). La regla general no
+cambia: el flag se escribe **sólo** si viste el JSON.
+
 ### Resultado
 - `resultado: aprobado` con PR number y commit hash del merge
 - `resultado: rechazado` si hay conflictos irresolubles o CI falla

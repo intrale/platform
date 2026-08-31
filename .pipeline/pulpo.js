@@ -4456,7 +4456,18 @@ function brazoBarrido(config) {
               }
             } catch {}
           }
-          log('barrido', `♻️ #${issue} entrega frenada por veredicto de QA caduco — sin rebote ni rev++: la re-verificación ya está encolada.`);
+          // rev-4 — el log distingue las DOS ramas de `requeueVerification`. Antes
+          // afirmaba "la re-verificación ya está encolada" también en la rama de
+          // ESCALADA, donde no hay ninguna orden encolada (sólo `needs-human` +
+          // la ficha de decisión). El comportamiento era correcto; el log decía
+          // algo falso justo en el caso que un humano tiene que leer.
+          let reencoladoAbierto = true;
+          try {
+            reencoladoAbierto = qaEvidenceSeal.hasOpenRequeue({ pipelineDir: PIPELINE, issue }) === true;
+          } catch { reencoladoAbierto = true; }
+          log('barrido', reencoladoAbierto
+            ? `♻️ #${issue} entrega frenada por veredicto de QA caduco — sin rebote ni rev++: la re-verificación ya está encolada.`
+            : `⛔ #${issue} entrega frenada por veredicto de QA caduco AGOTADO — sin rebote ni rev++: escalado a needs-human con ficha de decisión (no hay re-verificación encolada).`);
           continue;
         }
 
@@ -8303,9 +8314,18 @@ function drenarRequeueVerificacion(config, { comentar = ghCommentOnIssue } = {})
     // Fail-closed en los dos sentidos: descartar de más sólo deja la entrega
     // frenada (que ya es el estado seguro), mientras que honrar de más es
     // re-encolado ilimitado dirigido por quien escriba en la cola.
+    // rev-4 (D4) — el contador CORRUPTO no es procedencia válida.
+    // `readSealRetries` devuelve `{intentos: MAX_SEAL_REQUEUES, corrupto: true}`
+    // para todo contador ilegible (CA-10: "se lee como agotado"), y ese valor
+    // —`2`— satisface `>0 && <=2`. O sea que el estado que CA-10 define como
+    // AGOTADO pasaba como procedencia válida, contradiciendo a
+    // `requeueVerification`, que ante un contador corrupto ESCALA en vez de
+    // encolar: el drenador honraba órdenes que el productor jamás habría
+    // emitido. `writeSealRetries` es un `writeFileSync` pelado, así que un
+    // crash a mitad de escritura basta para llegar a ese estado.
     const retries = qaEvidenceSeal.readSealRetries({ pipelineDir: PIPELINE, issue: issueNum });
-    if (!(retries.intentos > 0 && retries.intentos <= qaEvidenceSeal.MAX_SEAL_REQUEUES)) {
-      log('caducidad', `⚠️ orden de re-encolado #${issue} SIN procedencia (contador=${retries.intentos}, tope=${qaEvidenceSeal.MAX_SEAL_REQUEUES}) — descartada sin efecto`);
+    if (!(retries.intentos > 0 && retries.intentos <= qaEvidenceSeal.MAX_SEAL_REQUEUES) || retries.corrupto === true) {
+      log('caducidad', `⚠️ orden de re-encolado #${issue} SIN procedencia (contador=${retries.intentos}${retries.corrupto === true ? ', CORRUPTO' : ''}, tope=${qaEvidenceSeal.MAX_SEAL_REQUEUES}) — descartada sin efecto`);
       try { fs.mkdirSync(doneDir, { recursive: true }); fs.renameSync(ordenPath, path.join(doneDir, fname)); } catch {}
       continue;
     }

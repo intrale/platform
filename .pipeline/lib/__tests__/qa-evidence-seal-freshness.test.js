@@ -194,10 +194,18 @@ test('un veredicto caduco no aplica needs-human ni blocked:routing-manual', () =
     headSellado: HEAD_FALSO, headActual: repo.head,
   });
 
-  const labels = ordenesGithub(estado).map(o => o.label);
+  const ordenes = ordenesGithub(estado);
+  const labels = ordenes.map(o => o.label);
   assert.ok(!labels.includes('needs-human'), 'el primer caduco NO escala a humano');
   assert.ok(!labels.includes('blocked:routing-manual'), 'la caducidad nunca aplica blocked:routing-manual');
-  assert.deepStrictEqual(labels, ['qa:pending'], 'la única mutación de label es la degradación del gate');
+  // rev-4 (D2) — las únicas mutaciones son las DOS mitades de la degradación del
+  // gate: subir `qa:pending` y bajar `qa:skipped`, que es la misma autoridad de
+  // merge que `qa:passed` y que el reconciliador no conoce.
+  assert.deepStrictEqual(
+    ordenes.map(o => `${o.action} ${o.label}`),
+    ['label qa:pending', 'remove-label qa:skipped'],
+    'la única mutación de label es la degradación del gate, en sus dos mitades',
+  );
 });
 
 test('aprobado sin sello despues del corte caduca fail-closed', () => {
@@ -778,7 +786,10 @@ test('delivery no pushea cuando el veredicto esta caduco', () => {
 
   // Y dejó la reparación encolada, no un bloqueo permanente.
   assert.strictEqual(ordenesRequeue(estado).length, 1);
-  assert.deepStrictEqual(ordenesGithub(estado).map(o => o.label), ['qa:pending']);
+  assert.deepStrictEqual(
+    ordenesGithub(estado).map(o => `${o.action} ${o.label}`),
+    ['label qa:pending', 'remove-label qa:skipped'],
+  );
 });
 
 test('se pushea el sha verificado, no la rama simbolica', () => {

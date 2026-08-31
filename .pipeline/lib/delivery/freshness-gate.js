@@ -357,6 +357,10 @@ function isStaleVerdictRejection({
 }
 
 module.exports = {
+    // rev-4 — re-exportado para que los orquestadores no hardcodeen "/2" en el
+    // motivo que lee el operador (observación no bloqueante de rev-4). El tope
+    // lo define CA-9 en un solo lugar: `qa-evidence-seal.js`.
+    MAX_SEAL_REQUEUES: qaEvidenceSeal.MAX_SEAL_REQUEUES,
     resolveStatePipelineDir,
     evaluateFreshnessGate,
     clearRetriesAfterIntegration,

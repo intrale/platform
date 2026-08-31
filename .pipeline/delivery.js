@@ -516,6 +516,20 @@ function main() {
     }
     if (gate3.caduco) {
       for (const linea of gate3.stderr) console.error(linea);
+      // rev-4 (D3) — sin reparación encolada no se puede afirmar "esto se repara
+      // solo". `evaluateFreshnessGate` traga la excepción de
+      // `requeueVerification` en `reparacionError` y devuelve `caduco:true` con
+      // `reparacionOk:false`; emitir igual el contrato `veredicto_caduco` hacía
+      // que el agente LLM (y el Pulpo detrás) leyeran "ya está encolada la
+      // reparación" cuando la cola había quedado vacía. El gate frena lo mismo
+      // —no se pushea ni se mergea nada—, pero sale 1: esto es un fallo que
+      // necesita el camino de rechazo normal, no una auto-reparación.
+      if (!gate3.reparacionOk) {
+        console.error(`❌ veredicto caduco y la reparación NO quedó encolada`
+          + `${gate3.reparacionError ? `: ${gate3.reparacionError}` : ''}`);
+        console.error('❌ La re-verificación NO está encolada: requiere atención.');
+        process.exit(1);
+      }
       // CA-14 — contrato machine-readable como ÚLTIMA línea de stdout. Quien
       // ejecuta este script es un agente LLM: `exit 0` a secas es
       // indistinguible de "entrega exitosa" y produce el falso positivo de R3

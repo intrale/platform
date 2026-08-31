@@ -2349,11 +2349,87 @@ async function main() {
             // R3 en `delivery-status.js`, #5220/#5244), y `gateBlocked` deja el
             // estado en un campo, nunca en prosa.
             process.stdout.write(JSON.stringify(gate3.contrato) + '\n');
+
+            // ── rev-4 (D1) · CA-12 sobre el PR, TAMBIÉN en el primer gate ──
+            //
+            // El fix de rev-3 (F2) agregó `retractPrGate` sólo en el segundo gate
+            // (el de antes del merge), donde `prNumber` ya está resuelto. Acá, en
+            // la Fase 1, `prNumber` todavía es `null` —recién se resuelve en la
+            // Fase 4— así que este camino no retractaba NADA. El agujero se abre
+            // sin ningún agente hostil:
+            //
+            //   1. Corrida N: se propaga `qa:passed` al PR #X y el merge no se
+            //      consuma (checks en rojo, `gateBlocked`). El PR queda ABIERTO
+            //      con el gate estampado.
+            //   2. El HEAD se mueve (rebote a dev, o el commit de la Fase 1 de la
+            //      corrida siguiente).
+            //   3. Corrida N+1: ESTE gate caduca y retorna. `requeueVerification`
+            //      degrada el ISSUE a `qa:pending`… y el PR #X se queda con
+            //      `qa:passed` sobre un commit que nadie verificó.
+            //
+            // `hasQaGate` lee los labels del PR como autoridad de merge y el
+            // pre-check de CLAUDE.md (`gh pr view --json labels`) pasa: es la
+            // misma patología que el gate del merge declara cerrada, entrando por
+            // la otra puerta.
+            //
+            // `findExistingPR` es una LECTURA (`gh pr list`) y la retractación
+            // sólo ENCOLA órdenes para `servicio-github`: no se escribe al remoto
+            // desde acá, así que la precondición de CA-15 ("antes de todo contacto
+            // de ESCRITURA con el remoto") se mantiene. Y viene filtrado por
+            // `checkPrProvenance`, así que un PR de un fork nunca se adopta.
+            try {
+                const prAbierto = findExistingPR(branch, { log: logAppend });
+                if (prAbierto && prAbierto.number) {
+                    const retr = freshnessGate.retractPrGate({
+                        pipelineDir: statePipelineDir(), prNumber: prAbierto.number, prLabels: prAbierto.labels,
+                    });
+                    logAppend(retr.ok
+                        ? `[delivery] gate QA del PR #${prAbierto.number} retractado a qa:pending (${retr.ordenes.length} orden/es encoladas)`
+                        : `[delivery] aviso: no se pudo encolar la retractación del gate QA del PR #${prAbierto.number}`);
+                } else {
+                    logAppend('[delivery] gate caduco: la rama no tiene PR abierto propio — nada que retractar');
+                }
+            } catch (e) {
+                // Best-effort: no poder retractar no puede convertirse en
+                // "entonces seguí". El merge ya está frenado por el gate.
+                logAppend(`[delivery] aviso: retractación del gate QA del PR falló (${String(e.message || e).slice(0, 200)})`);
+            }
+
+            // ── rev-4 (D3) · la reparación tiene que EXISTIR para poder decir
+            // "esto se repara solo" ──
+            //
+            // `evaluateFreshnessGate` traga en `reparacionError` cualquier
+            // excepción de `requeueVerification` y devuelve `caduco:true` con
+            // `reparacionOk:false`. Nadie leía ese campo: el marker salía con
+            // `veredicto_caduco: true` igual, `isStaleVerdictRejection` lo
+            // corroboraba y el Pulpo archivaba los work-files con
+            // `cancelado_por: 'veredicto-caduco'` — sin rebote, sin rev++, sin
+            // breaker, sin `needs-human`… y sin ninguna orden en la cola. El
+            // issue se caía del pipeline en silencio.
+            //
+            // Con `reparacionOk:false` el gate SIGUE frenando (no se pushea ni se
+            // mergea nada), pero el rechazo se declara NORMAL: exit 1 y sin flag,
+            // así el Pulpo aplica su camino de rechazo de siempre (rebote, rev++,
+            // circuit breaker) en vez de cancelarlo. La escalada devuelve
+            // `ok:true`, así que el camino de CA-9 no se ve afectado.
+            if (!gate3.reparacionOk) {
+                logAppend(`[delivery] ⛔ veredicto caduco y la reparación NO quedó encolada`
+                    + `${gate3.reparacionError ? ` (${gate3.reparacionError})` : ''} — se rechaza por el camino normal`);
+                motivo = `Veredicto de QA caduco (${gate3.motivoLegible}) y la reparación automática NO se pudo encolar`
+                    + `${gate3.reparacionError ? `: ${gate3.reparacionError}` : ''}. `
+                    + `No se pushó nada y no se mergeó ningún PR. Requiere atención: la re-verificación no está encolada.`;
+                gateBlocked = true;
+                exitCode = 1;
+                veredictoCaduco = false;
+                phaseEnd('gate_caducidad', t);
+                return;
+            }
+
             motivo = gate3.escalado
                 ? `Veredicto de QA caduco (${gate3.motivoLegible}). Escalado a needs-human tras `
                   + `${gate3.intentos} re-encolado(s) automático(s). No se pushó nada y no se mergeó ningún PR.`
                 : `Veredicto de QA caduco (${gate3.motivoLegible}). Verificación re-encolada `
-                  + `(${gate3.intentos}/2). No se pushó nada y no se mergeó ningún PR.`;
+                  + `(${gate3.intentos}/${freshnessGate.MAX_SEAL_REQUEUES}). No se pushó nada y no se mergeó ningún PR.`;
             // Se marca como frenado por gate para que el reporte no lo lea como
             // "entrega esperando": la entrega NO se completó.
             gateBlocked = true;
@@ -2637,11 +2713,27 @@ async function main() {
                     ? `[delivery] gate QA del PR #${prNumber} retractado a qa:pending (${retr.ordenes.length} orden/es encoladas)`
                     : `[delivery] aviso: no se pudo encolar la retractación del gate QA del PR #${prNumber}`);
             }
+            // rev-4 (D3) — misma regla que en el primer gate: sin reparación
+            // encolada, esto NO es "se repara solo". Se rechaza por el camino
+            // normal para que el Pulpo no cancele el rechazo dejando el issue sin
+            // rebote, sin escalada y sin nada en la cola.
+            if (!gate3Merge.reparacionOk) {
+                logAppend(`[delivery] ⛔ veredicto caduco antes del merge y la reparación NO quedó encolada`
+                    + `${gate3Merge.reparacionError ? ` (${gate3Merge.reparacionError})` : ''} — se rechaza por el camino normal`);
+                motivo = `Veredicto de QA caduco antes del merge (${gate3Merge.motivoLegible}) y la reparación automática `
+                    + `NO se pudo encolar${gate3Merge.reparacionError ? `: ${gate3Merge.reparacionError}` : ''}. `
+                    + `El PR #${prNumber} quedó abierto sin mergear. Requiere atención: la re-verificación no está encolada.`;
+                gateBlocked = true;
+                exitCode = 1;
+                veredictoCaduco = false;
+                phaseEnd('pr_create', t);
+                return;
+            }
             motivo = gate3Merge.escalado
                 ? `Veredicto de QA caduco antes del merge (${gate3Merge.motivoLegible}). Escalado a needs-human `
                   + `tras ${gate3Merge.intentos} re-encolado(s) automático(s). El PR #${prNumber} quedó abierto sin mergear, con el gate QA retractado.`
                 : `Veredicto de QA caduco antes del merge (${gate3Merge.motivoLegible}). Verificación re-encolada `
-                  + `(${gate3Merge.intentos}/2). El PR #${prNumber} quedó abierto sin mergear, con el gate QA retractado.`;
+                  + `(${gate3Merge.intentos}/${freshnessGate.MAX_SEAL_REQUEUES}). El PR #${prNumber} quedó abierto sin mergear, con el gate QA retractado.`;
             gateBlocked = true;
             exitCode = 0;
             veredictoCaduco = true;

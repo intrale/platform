@@ -1591,13 +1591,24 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
   // CA-9 — el contador se lee ANTES de re-encolar.
   const previo = readSealRetries({ pipelineDir: dir, issue: issueNum });
 
-  // #6496 rebote security rev-3 (F3) — testigo de un solo uso de que ESTE run
-  // caducó de verdad. Va ANTES del `if` a propósito: vale para los dos caminos
-  // (re-encolado y escalada), igual que la degradación del label. Es lo único
-  // que `isStaleVerdictRejection` acepta como prueba de que el gate disparó,
-  // porque el contador —que no se consume ni expira— corrobora de antemano toda
-  // la ventana entre la primera caducidad y el próximo push exitoso.
-  writeStaleStamp(dir, issueNum, { ts, motivo: motivoSeguro, intentos_previos: previo.intentos });
+  // rev-4 (D3) — el testigo de un solo uso (`writeStaleStamp`) ya NO se escribe
+  // acá arriba: se escribe AL FINAL de cada rama, recién cuando todas las
+  // órdenes de la reparación quedaron encoladas.
+  //
+  // Por qué se movió: `enqueueJsonOrder` puede lanzar (ENOSPC, EACCES, ENOENT —
+  // `dropfile-writer.js` los re-lanza a propósito, no son colisiones), y con el
+  // stamp escrito primero un fallo del ÚLTIMO enqueue dejaba stamp + contador en
+  // disco y CERO órdenes en la cola. Con eso `isStaleVerdictRejection`
+  // corroboraba el flag del agente, el Pulpo archivaba los work-files con
+  // `cancelado_por: 'veredicto-caduco'` y seguía de largo: sin rebote, sin
+  // rev++, sin breaker, sin `needs-human` y sin nadie que re-encolara nada. El
+  // issue desaparecía del pipeline en silencio — el bloqueo permanente que esta
+  // historia viene a eliminar, entrando por la puerta del modo de fallo A04. En
+  // un host con historial de disco lleno no es hipotético.
+  //
+  // Escribiéndolo último, un enqueue que lanza propaga la excepción sin dejar
+  // stamp: `evaluateFreshnessGate` la captura, devuelve `reparacionOk:false` y
+  // el rechazo sigue el camino de rechazo NORMAL (fail-closed).
 
   // CA-12 / SEC-C — el label del issue se degrada EN EL MISMO ACTO, y la orden
   // va ANTES del `if` a propósito: vale para los DOS caminos, re-encolado y
@@ -1619,6 +1630,35 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
     action: 'label', issue: issueNum, label: 'qa:pending', origen: 'gate-caducidad-sello',
   }));
 
+  // rev-4 (D2) — `qa:skipped` también se retracta DEL ISSUE, simétrico a lo que
+  // `retractPrGateLabels` ya hacía para el PR.
+  //
+  // `qa:skipped` es la MISMA autoridad de merge que `qa:passed`: el pre-check de
+  // `/delivery` (CLAUDE.md) hace `grep -E "qa:passed|qa:skipped"` y
+  // `QA_LABELS_OK` los trata igual. Pero el `gate-label-reconciler` no lo conoce
+  // (`GATE_LABELS` = passed/failed/pending; ampliarlo es #5869), así que la
+  // orden reconciliada de arriba NO lo baja sola: hace falta un `remove-label`
+  // explícito, igual que en el PR.
+  //
+  // Sin esto, un issue del carril con bypass de evidencia que caduca quedaba con
+  // `qa:pending` Y `qa:skipped` vivos a la vez. Dos daños, los dos contra la
+  // letra de CA-12:
+  //   1. El pre-check sobre el issue seguía dando verde sobre un HEAD que nadie
+  //      verificó.
+  //   2. Deadlock PERMANENTE de propagación: `qa:pending` es blocking y
+  //      `qa:skipped` es passing, así que `buildPrGatePropagation` caía en
+  //      `labels_de_gate_en_conflicto` y dejaba de propagar cualquier gate al PR
+  //      hasta que un humano limpiara a mano. Falla cerrado, pero el pipeline no
+  //      salía solo de ese estado.
+  //
+  // Va antes del `if`, como la degradación a `qa:pending`: vale para los DOS
+  // caminos. Retractar un label que sólo puede ABRIR el gate es monótono hacia
+  // lo cerrado — nunca puede relajar nada, así que una orden de más es no-op.
+  ordenes.push(enqueueJsonOrder(ghQueue, `${issueNum}-seal-caduco-gate-skipped-${stamp}.json`, {
+    action: 'remove-label', issue: issueNum, label: 'qa:skipped',
+    gate_retraction: true, origen: 'gate-caducidad-sello',
+  }));
+
   if (previo.intentos >= MAX_SEAL_REQUEUES) {
     ordenes.push(enqueueJsonOrder(ghQueue, `${issueNum}-seal-caduco-needs-human-${stamp}.json`, {
       action: 'label', issue: issueNum, label: 'needs-human', origen: 'gate-caducidad-sello',
@@ -1627,6 +1667,9 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
       action: 'comment', issue: issueNum,
       body: buildEscalationBody({ motivo: motivoSeguro, headSellado, headActual, intentos: previo.intentos }),
     }));
+    // rev-4 (D3) — stamp ÚLTIMO: recién con las órdenes de la escalada ya en
+    // disco se afirma que el gate disparó de verdad en este episodio.
+    writeStaleStamp(dir, issueNum, { ts, motivo: motivoSeguro, intentos_previos: previo.intentos });
     appendAudit(dir, CADUCIDAD_AUDIT_FILE, {
       ts, issue: issueNum, evento: 'escalado', motivo: motivoSeguro,
       intentos: previo.intentos, contador_corrupto: previo.corrupto === true,
@@ -1655,6 +1698,14 @@ function requeueVerification({ root, pipelineDir, issue, motivo, headSellado, he
     intentos,
     ts,
   }));
+
+  // rev-4 (D3) — stamp ÚLTIMO, después de que la orden que drena el Pulpo ya
+  // está en la cola. El contador SÍ se escribe antes del enqueue a propósito: el
+  // drenador exige contador en disco como prueba de procedencia (`pulpo.js`), así
+  // que invertirlos haría que el drenador descarte su propia orden legítima. Si
+  // el enqueue lanza, queda el contador incrementado (fail-closed: escala una
+  // vuelta antes) pero NO el stamp, que es lo único que corrobora el flag.
+  writeStaleStamp(dir, issueNum, { ts, motivo: motivoSeguro, intentos_previos: previo.intentos });
 
   appendAudit(dir, CADUCIDAD_AUDIT_FILE, {
     ts, issue: issueNum, evento: 're-encolado', motivo: motivoSeguro, intentos,
@@ -1751,7 +1802,10 @@ function migratePreSealBacklog({ root, pipelineDir, ahora } = {}) {
   // NO se eximen: caducan por `sin-sello` como manda CA-3. Se devuelven contados
   // en `saltados` para que queden visibles en el log del Pulpo.
   if (fs.existsSync(flag)) {
-    resultado.fueraDeVentana = candidatos.length;
+    // rev-4 — `+=`, no `=`: arriba ya se contaron los aprobados sin sello
+    // POSTERIORES al corte, y pisar el acumulado podía reportar 0 y silenciar
+    // justo el descarte que este bloque existe para dejar visible.
+    resultado.fueraDeVentana += candidatos.length;
     resultado.saltados += candidatos.length;
     return resultado;
   }
