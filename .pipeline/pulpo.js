@@ -23495,6 +23495,110 @@ async function mainLoop() {
     log('vault-access-audit', `No se pudo iniciar la auditoría: ${e.message}`);
   }
 
+  // #5460 — PRODUCTOR de la propuesta de corte del fallback del vault.
+  //
+  // Publica el botón `Confirmar corte del fallback` SÓLO cuando la ventana
+  // sombra cumple el criterio de salida por cobertura positiva (#5427), y
+  // aplica la política de ausencia del operador (timeout / Telegram ausente /
+  // allowlist vacía / estado indeterminado) conservando el fallback.
+  //
+  // La lógica entera vive en `lib/vault-cut-proposal.js` (con tests propios):
+  // acá sólo se cablean las dependencias reales y el timer. Doble gate cerrado
+  // (`vault.enabled` + `cut_fallback.proposal_enabled`): sin los dos en `true`
+  // no se evalúa nada, no se publica nada y no se crea un solo archivo.
+  //
+  // El productor NO mueve work-files: no toca `waiting-operator/`, `pendiente/`
+  // ni `procesado/`, y para el escalado usa `enqueueNeedsHumanLabel` (encolar
+  // el label) en vez de `reportHumanBlock` (que renombra el work-file activo).
+  try {
+    const cfgRoot = loadConfig() || {};
+    const vaultCfg = (cfgRoot.vault && typeof cfgRoot.vault === 'object') ? cfgRoot.vault : {};
+    const cutCfg = (vaultCfg.cut_fallback && typeof vaultCfg.cut_fallback === 'object')
+      ? vaultCfg.cut_fallback : {};
+    // Fail-closed: sólo el booleano `true` exacto de AMBOS gates lo abre.
+    if (vaultCfg.enabled === true && cutCfg.proposal_enabled === true) {
+      const proposalIssue = Number(cutCfg.proposal_issue);
+      const vaultCutProposal = require('./lib/vault-cut-proposal');
+      const operatorGate = require('./lib/operator-gate');
+      const humanBlock = require('./lib/human-block');
+
+      const producer = vaultCutProposal.createVaultCutProposal({
+        pipelineDir: PIPELINE,
+        gate: operatorGate.getDefault(),
+        runbook: cutCfg.runbook,
+        proposalTimeoutMs: Number.isInteger(cutCfg.proposal_timeout_ms)
+          ? cutCfg.proposal_timeout_ms : undefined,
+
+        // Estado REAL del fallback, releído en cada tick desde el config vivo.
+        // Un valor que no es booleano exacto es indeterminado por contrato del
+        // productor: no se asume ni `true` ni `false`.
+        readFallbackState: () => {
+          const fresh = loadConfig() || {};
+          const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+          return v.bootstrap_fallback;
+        },
+
+        // Criterio de salida por cobertura positiva. Mismo evaluador que el
+        // reporte de `/vault-shadow-status`: una segunda implementación acá
+        // se desincronizaría del criterio que el operador ve.
+        evaluateCoverage: () => {
+          const metrics = require('./lib/vault-shadow-metrics');
+          const { ENV_DESCRIPTORS } = require('./lib/credentials');
+          const fresh = loadConfig() || {};
+          const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+          const win = (v.shadow_window && typeof v.shadow_window === 'object') ? v.shadow_window : {};
+          return metrics.getVaultShadowMetrics().evaluate({
+            descriptors: ENV_DESCRIPTORS,
+            hostsActivos: win.hosts_activos,
+            durationHours: win.duration_hours,
+            retentionDays: win.retention_days,
+          });
+        },
+
+        // Firmantes autorizados resueltos SERVER-SIDE desde el entorno, nunca
+        // desde el issue ni desde el agente (mismo criterio que #5525).
+        resolveAllowlist: () => operatorGate.resolveOperatorAllowlist(process.env),
+
+        canSendTelegram: () => !!(getTelegramToken() && getTelegramChatId()),
+
+        // `plain: true`: el copy de la propuesta es texto fijo, y sin
+        // `parse_mode` no hay superficie de render para nada externo.
+        sendProposal: ({ text, replyMarkup }) => ({
+          ok: !!sendTelegramWithMarkup(text, replyMarkup, { plain: true }),
+        }),
+
+        // SÓLO el label. `reportHumanBlock` mueve el work-file activo del issue
+        // a `bloqueado-humano/`, que es exactamente la transición de carpeta que
+        // el criterio de aceptación de #5460 prohíbe para esta acción.
+        applyNeedsHuman: (issue) => humanBlock.enqueueNeedsHumanLabel(issue) === true,
+
+        logger: (msg) => log('vault-cut', msg.replace(/^\[vault-cut\] /, '')),
+      });
+
+      const proposalTickMs = 15 * 60 * 1000;
+      const runProposalTick = () => {
+        try {
+          const res = producer.runProposalTick({ issue: proposalIssue });
+          if (res.status === vaultCutProposal.OUTCOME.FAIL_CLOSED) {
+            log('vault-cut', `FAIL-CLOSED (${res.causa}): el fallback se conserva, issue en needs-human`);
+          } else if (res.status === vaultCutProposal.OUTCOME.PROPUESTA_PUBLICADA) {
+            log('vault-cut', `Propuesta de corte publicada para #${res.issue}`);
+          }
+          // `esperando_cobertura`, `esperando_confirmacion` y `ya_cortado` son
+          // silenciosos a propósito: son el estado normal en cada tick.
+        } catch (err) {
+          log('vault-cut', `Tick excepción no capturada: ${err.message}`);
+        }
+      };
+      runProposalTick();
+      const proposalTimer = setInterval(runProposalTick, proposalTickMs);
+      if (typeof proposalTimer.unref === 'function') proposalTimer.unref();
+      log('vault-cut', `Productor de propuesta iniciado: tick cada ${Math.round(proposalTickMs / 60000)}min`);
+    }
+  } catch (e) {
+    log('vault-cut', `No se pudo iniciar el productor de propuesta: ${e.message}`);
+  }
+
   // #5243 CA-5 — Paso INVERSO del halt por secreto faltante.
   //
   // Vive acá y no en `loadConfig()` a propósito: el config se relee entero en
