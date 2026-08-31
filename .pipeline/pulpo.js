@@ -320,6 +320,9 @@ const reboteClassifier = require('./lib/rebote-classifier');
 // #4160 — detección de convergencia + clasificación accionable/ruido para
 // auto-promover rebotes "en falso" de `verificacion` en lugar de loopear.
 const convergence = require('./lib/convergence-detector');
+// #6746 — breaker de no-progreso para rebotes infra. El módulo SÓLO lee y
+// serializa: el append al JSONL vive acá, en el proceso del Pulpo (SEC-C.1).
+const infraNoprogress = require('./lib/infra-noprogress');
 const observationClassifier = require('./lib/observation-classifier');
 // EP5-H1 (#3938) — frontera FS: derivación de issue+skill desde nombre de
 // work-file. `issueFromFile`/`skillFromFile` (lenientes) delegan acá; la
@@ -623,6 +626,33 @@ const PIPELINE = process.env.PIPELINE_DIR_OVERRIDE
   : path.resolve(__dirname);
 const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
 const LOG_DIR = path.join(PIPELINE, 'logs');
+
+/**
+ * #6746 CA-3 / SEC-C.1 — ÚNICO escritor del audit trail de no-progreso.
+ *
+ * Vive en el proceso del Pulpo a propósito: `lib/infra-noprogress.js` sólo
+ * serializa, así no hay función exportada ni entrypoint CLI que un agente pueda
+ * invocar para envenenar el contador. SEC-C.3: UNA sola llamada a
+ * `appendFileSync`, con el `\n` ya incluido en la línea que devuelve
+ * `buildRecord`. NUNCA `writeFileSync` — el archivo es append-only.
+ *
+ * Best-effort: un fallo de escritura NO frena el barrido; sólo deja el breaker
+ * degradado para ese ciclo, y se avisa por log (CA-UX-6).
+ *
+ * @param {object} rec Argumentos de `infraNoprogress.buildRecord`.
+ * @returns {boolean} `true` si se registró.
+ */
+function appendInfraNoprogressRecord(rec) {
+  try {
+    const file = infraNoprogress.auditFile(PIPELINE);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, infraNoprogress.buildRecord(rec), { encoding: 'utf8', mode: 0o600 });
+    return true;
+  } catch (e) {
+    log('barrido', `⚠️ infra-noprogress: no pude registrar el ciclo de #${rec && rec.issue} — el breaker de no-progreso queda DEGRADADO para este ciclo (${e.message})`);
+    return false;
+  }
+}
 
 // #6458 - Identidad del ARRANQUE de este proceso del pulpo. Se congela al
 // cargar el modulo, igual que `PIPELINE`: dos turnos con el mismo `boot_id`
@@ -5083,22 +5113,75 @@ function brazoBarrido(config) {
             (config.circuit_breaker && config.circuit_breaker.infra_escalate_threshold) || 5,
           );
 
+          // #6746 CA-1/CA-6 — veredicto del breaker de NO-PROGRESO. Red de
+          // seguridad independiente de la causa: aunque el clasificador de
+          // rebotes se equivoque, si el diff no cambió entre ciclos reintentar no
+          // mueve nada y el issue escala en vez de quemar agentes.
+          //
+          // SEC-E: sólo puede APRETAR. No toca `INFRA_ESCALATE_THRESHOLD` (5) ni
+          // `MAX_REBOTES_INFRA` (20), y cualquier fallo deja `escalar: false`
+          // (fail-open: un falso positivo parkea un issue sano — ver RIESGO-3).
+          let noProgreso = { escalar: false };
+          if (esReboteDeInfra) {
+            try {
+              // RIESGO-2 — `computeDiffHash` sólo se paga cuando el rebote es de
+              // infra; un issue sin rebote infra no ejecuta git acá (CA-PO-5).
+              let dhGate = { hash: null, known: false };
+              try { dhGate = convergence.computeDiffHash(issue, { root: ROOT }) || dhGate; } catch { /* fail-open */ }
+              noProgreso = infraNoprogress.shouldEscalate({
+                pipelineDir: PIPELINE,
+                issue,
+                fase,
+                diffHash: dhGate.known ? dhGate.hash : null, // SEC-A: desconocido ⇒ no escala
+                config,
+              });
+              if (noProgreso.degraded) {
+                log('barrido', `⚠️ infra-noprogress DEGRADADO para #${issue} — JSONL ilegible. El breaker de no-progreso NO está activo (los gates de ${INFRA_ESCALATE_THRESHOLD} y ${MAX_REBOTES_INFRA} siguen).`);
+              }
+            } catch (e) {
+              noProgreso = { escalar: false }; // SEC-E: un fallo del módulo NO escala
+              log('barrido', `⚠️ infra-noprogress DEGRADADO para #${issue} — el módulo tiró: ${e.message}. El breaker de no-progreso NO está activo.`);
+            }
+          }
+
           // #2405 CA-4 — escalado a humano cuando se acumulan N rebotes infra
           // consecutivos sin recuperación. Aplica label `needs-human`, comenta
           // en GitHub con estructura UX, y mueve los archivos a procesado/ para
           // sacarlo de la cola hasta que un humano quite el label.
-          if (esReboteDeInfra
-              && reboteInfraCount + 1 >= INFRA_ESCALATE_THRESHOLD
-              && reboteInfraCount < MAX_REBOTES_INFRA) {
+          //
+          // #6746 — el mismo bloque atiende DOS causas. `noprogreso` se evalúa
+          // PRIMERO: con N=2 dispara antes que el threshold de 5 y el operador ve
+          // la causa correcta. La rama `infra_threshold` queda textualmente igual
+          // (no-regresión). El cap duro de `MAX_REBOTES_INFRA` conserva su camino
+          // propio más abajo.
+          const escaladoPorThreshold = esReboteDeInfra
+            && reboteInfraCount + 1 >= INFRA_ESCALATE_THRESHOLD
+            && reboteInfraCount < MAX_REBOTES_INFRA;
+          const escaladoPorNoProgreso = noProgreso.escalar === true
+            && reboteInfraCount < MAX_REBOTES_INFRA;
+          const causaEscalado = escaladoPorNoProgreso ? 'noprogreso'
+            : (escaladoPorThreshold ? 'infra_threshold' : null);
+
+          if (causaEscalado) {
+            const skillActual = rechazados[0] ? skillFromFile(rechazados[0].file.name) : 'desconocido';
             // Deduplicar: sólo escalamos una vez por issue (archivo flag).
+            // #6746 CA-PO-3 / RIESGO-5 — el breaker de no-progreso usa un flag
+            // PROPIO: reusar `.needs-human-notified` heredaría el bug de #6755
+            // (se escribe y nunca se borra ⇒ el 2º escalado quedaría mudo).
             const needsHumanFlag = path.join(
               fasePath(pipelineName, fase),
               'procesado',
-              `.${issue}.needs-human-notified`,
+              causaEscalado === 'noprogreso'
+                ? `.${issue}.noprogreso-notified`
+                : `.${issue}.needs-human-notified`,
             );
             const yaEscalado = fs.existsSync(needsHumanFlag);
             if (!yaEscalado) {
-              log('barrido', `⚠️ #${issue} ESCALANDO a needs-human — ${reboteInfraCount + 1} rebotes infra (threshold ${INFRA_ESCALATE_THRESHOLD})`);
+              // CA-UX-6 — el log distingue la causa: "no-progreso" no es lo mismo
+              // que "infra persistente" y el operador actúa distinto en cada una.
+              log('barrido', causaEscalado === 'noprogreso'
+                ? `⚠️ #${issue} ESCALANDO a needs-human — SIN PROGRESO: mismo diff en ${noProgreso.ciclos} ciclos (hash ${noProgreso.hashCorto}, umbral ${noProgreso.max})`
+                : `⚠️ #${issue} ESCALANDO a needs-human — ${reboteInfraCount + 1} rebotes infra (threshold ${INFRA_ESCALATE_THRESHOLD})`);
               // Motivo sanitizado (redact → sin paths internos, sin tokens).
               const motivoRedactado = sanitizePipelineText(
                 rechazados.map(r => `[${skillFromFile(r.file.name)}] ${r.motivo || ''}`).join('\n'),
@@ -5114,14 +5197,10 @@ function brazoBarrido(config) {
                   { action: 'label', issue: parseInt(issue), label: 'needs-human' },
                 );
                 // 3) comentario estructurado (plantilla UX — una frase + <details> + 3 acciones)
-                const body = [
-                  `## Pipeline escaló este issue a intervención humana`,
-                  '',
-                  `El pipeline intentó procesar este issue ${reboteInfraCount + 1} veces y falló por un problema de infraestructura que no puede resolver automáticamente.`,
-                  '',
-                  `### Qué pasó`,
-                  `El agente \`${rechazados[0] ? skillFromFile(rechazados[0].file.name) : 'desconocido'}\` falló en la fase \`${fase}\` por una causa clasificada como infra persistente (threshold: ${INFRA_ESCALATE_THRESHOLD} rebotes).`,
-                  '',
+                // #6746 CA-UX-1..5 — misma estructura, causa distinta: cuando el
+                // reintento no mueve nada, las 3 acciones útiles NO son las de
+                // "revisá el host" (el reintento ni siquiera toca el entorno).
+                const bloqueCausaRaiz = [
                   `### Causa raíz`,
                   `<details><summary>Motivo del último rechazo (redactado)</summary>`,
                   '',
@@ -5130,6 +5209,35 @@ function brazoBarrido(config) {
                   '```',
                   '',
                   `</details>`,
+                ];
+                const body = (causaEscalado === 'noprogreso' ? [
+                  `## Pipeline escaló este issue a intervención humana`,
+                  '',
+                  `El pipeline reintentó este issue ${noProgreso.ciclos} veces en la fase \`${fase}\` y el resultado no cambió: el diff es idéntico en todos los ciclos. Reintentar de nuevo no lo va a mover.`,
+                  '',
+                  `### Qué pasó`,
+                  `El agente \`${skillActual}\` rebotó por una causa clasificada como infra, pero el estado observable del issue quedó igual. \`Mismo diff en ${noProgreso.ciclos} ciclos — hash ${noProgreso.hashCorto}\` (umbral \`circuit_breaker.noprogreso_max\` = ${noProgreso.max}).`,
+                  '',
+                  ...bloqueCausaRaiz,
+                  '',
+                  `### Qué podés hacer`,
+                  `1. **Si la acción pedida vive en otra fase** — revisá el motivo de arriba y decidí si el rebote tiene que rutearse a otro destino en vez de repetirse acá.`,
+                  `2. **Si el arreglo no depende del agente que corre** — cambiá el issue (dividilo, completá la definición) antes de reintentar; el mismo agente con el mismo input va a producir el mismo diff.`,
+                  `3. **Si igual sospechás del host** — recién ahí revisá \`.pipeline/logs/${issue}-*.log\`; el reintento no toca el entorno, así que este breaker no lo diagnostica.`,
+                  '',
+                  `Al quitar el label \`needs-human\`, el issue reentra a la cola en el próximo ciclo de intake (~5 min): se resetean el contador de rebotes **y el historial de no-progreso**.`,
+                  '',
+                  `📎 Log del agente: \`.pipeline/logs/${issue}-${rechazados[0] ? skillActual : 'skill'}.log\``,
+                  `📎 Audit trail: \`.pipeline/audit/infra-noprogress.jsonl\``,
+                ] : [
+                  `## Pipeline escaló este issue a intervención humana`,
+                  '',
+                  `El pipeline intentó procesar este issue ${reboteInfraCount + 1} veces y falló por un problema de infraestructura que no puede resolver automáticamente.`,
+                  '',
+                  `### Qué pasó`,
+                  `El agente \`${skillActual}\` falló en la fase \`${fase}\` por una causa clasificada como infra persistente (threshold: ${INFRA_ESCALATE_THRESHOLD} rebotes).`,
+                  '',
+                  ...bloqueCausaRaiz,
                   '',
                   `### Qué podés hacer`,
                   `1. **Si es un problema del entorno** — revisá \`.pipeline/logs/${issue}-*.log\` y confirmá que el JDK/dependencia/variable esté presente en el host.`,
@@ -5138,9 +5246,9 @@ function brazoBarrido(config) {
                   '',
                   `Al quitar el label \`needs-human\`, el issue reentra a la cola automáticamente en el próximo ciclo de intake (~5 min) y el contador de rebotes se resetea.`,
                   '',
-                  `📎 Log del agente: \`.pipeline/logs/${issue}-${rechazados[0] ? skillFromFile(rechazados[0].file.name) : 'skill'}.log\``,
+                  `📎 Log del agente: \`.pipeline/logs/${issue}-${rechazados[0] ? skillActual : 'skill'}.log\``,
                   `📎 Audit trail: \`.pipeline/logs/audit-${issue}.log\``,
-                ].join('\n');
+                ]).join('\n');
                 fs.writeFileSync(
                   path.join(ghQueueDir, `${issue}-needs-human-comment-${Date.now()}.json`),
                   JSON.stringify({ action: 'comment', issue: parseInt(issue), body }),
@@ -5148,13 +5256,34 @@ function brazoBarrido(config) {
               } catch (e) {
                 log('barrido', `Error encolando needs-human para #${issue}: ${e.message}`);
               }
-              sendTelegram(`🚨 Issue #${issue} escalado a needs-human — ${reboteInfraCount + 1} rebotes por infra. Requiere intervención humana (quitá el label para reintentar).`);
+              // CA-UX-5 — sin jerga de módulo: el operador lee qué pasó, no cómo
+              // se llama el detector.
+              sendTelegram(causaEscalado === 'noprogreso'
+                ? `🚨 Issue #${issue} escalado a needs-human — reintentó ${noProgreso.ciclos} veces sin progreso (mismo diff, hash ${noProgreso.hashCorto}). Requiere intervención humana (quitá el label para reintentar).`
+                : `🚨 Issue #${issue} escalado a needs-human — ${reboteInfraCount + 1} rebotes por infra. Requiere intervención humana (quitá el label para reintentar).`);
               // Flag de dedup
               try {
                 fs.mkdirSync(path.dirname(needsHumanFlag), { recursive: true });
                 fs.writeFileSync(needsHumanFlag, new Date().toISOString());
               } catch {}
             }
+            // #6746 SEC-D — el JSONL es APPEND-ONLY: el corte de episodio se
+            // marca con un registro `{kind:"reset"}`, nunca borrando el archivo.
+            // Se escribe en LAS DOS ramas (`noprogreso` e `infra_threshold`): el
+            // archivado por needs-human corta el episodio venga de donde venga,
+            // igual que el contador de rebotes se resetea al quitar el label.
+            //
+            // CA-PO-3 — el reset borra TAMBIÉN el flag de dedup propio, para que
+            // el ciclo escalar → destrabar → reentrar vuelva a estado limpio y el
+            // 2º escalado sí notifique (esto es lo que #6755 no hace con el flag
+            // viejo; ese bug se arregla en su propio issue, no acá).
+            appendInfraNoprogressRecord({ issue, fase, diffHash: null, kind: 'reset' });
+            try {
+              fs.unlinkSync(path.join(
+                fasePath(pipelineName, fase), 'procesado', `.${issue}.noprogreso-notified`,
+              ));
+            } catch { /* no existía: nada que limpiar */ }
+
             // #2405 CA-4 — Mover archivos actuales a `archivado/` (no procesado/).
             // Al quitar el label `needs-human`, el intake crea un archivo fresco
             // en pendiente/ y el contador de rebotes infra se resetea naturalmente
@@ -5699,11 +5828,37 @@ function brazoBarrido(config) {
           // pueda detectar convergencia (diff idéntico entre rebotes). Sólo para
           // rebotes de código (los de infra no tocan el diff del dev). Fail-closed:
           // si no se resuelve el worktree, queda null y el gate no convergerá.
-          if (!esReboteDeInfra) {
-            try {
-              const dh = convergence.computeDiffHash(issue, { root: ROOT });
-              if (dh && dh.hash) yamlOut.diff_hash_previo = dh.hash;
-            } catch { /* best-effort, fail-closed */ }
+          //
+          // #6746 CA-5 — el hash se persiste ahora en AMBOS carriles: el breaker
+          // de no-progreso necesita el insumo justamente en el carril infra, que
+          // era el único que no lo escribía.
+          // CA-PO-5 — el carril de código NO cambia: `contarRebotes`
+          // (`rebote-counter.js:70-76`) hace `continue` sobre las entradas
+          // `rebote_tipo: 'infra'` ANTES de leer `diff_hash_previo`, así que el
+          // valor que consume el detector de convergencia de #4160 sigue siendo
+          // el mismo.
+          let dh = { hash: null, known: false };
+          try {
+            dh = convergence.computeDiffHash(issue, { root: ROOT }) || dh;
+          } catch { /* best-effort, fail-closed */ }
+          if (dh && dh.hash) yamlOut.diff_hash_previo = dh.hash;
+
+          if (esReboteDeInfra) {
+            // CA-3 / SEC-C.1 — el append vive en el proceso del Pulpo, no en el
+            // módulo. SEC-A: `known: false` ⇒ `null` ⇒ el lector NO lo cuenta, así
+            // un hash desconocido nunca se acumula como "mismo diff".
+            const hashDetector = (dh.known && infraNoprogress.HASH_RE.test(String(dh.hash)))
+              ? dh.hash
+              : null;
+            // `fase` (no `faseDestino`): en el carril infra son la misma, pero
+            // `fase` es la clave que lee el gate de escalado. Misma variable en
+            // los dos lados o el conteo no cruza.
+            appendInfraNoprogressRecord({
+              issue,
+              fase,
+              diffHash: hashDetector,
+              reboteInfraN: nuevoReboteInfraNumero,
+            });
           }
           for (const skill of skillsDestino) {
             const destinoFile = path.join(destinoPendiente, `${issue}.${skill}`);

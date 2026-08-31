@@ -283,6 +283,12 @@ circuit_breaker:
   # auto-promueven por convergencia — siguen el circuit breaker hacia humano.
   # `security` queda además excluido por código (defensa-en-profundidad).
   convergence_excludes_skills: [security]
+  # #6746 — breaker de no-progreso. Cuando un rebote infra se repite en la misma
+  # fase con el MISMO diff (nada cambió), el issue escala a needs-human en vez de
+  # seguir reintentando. Distinto de `infra_escalate_threshold` (causa distinta:
+  # allá "infra persistente", acá "el reintento no mueve nada"). Entero en [2,10];
+  # 0, negativo, no numérico, Infinity o ausente ⇒ default 2 con clamp.
+  noprogreso_max: 2
 
 # GitHub
 # DEPRECADO (#4693 · CA-0): la fuente de verdad del repo destino se consolidó en
