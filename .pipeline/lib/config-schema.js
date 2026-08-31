@@ -202,6 +202,9 @@ const SIDE_MAP = Object.freeze({
     partial_pause_deps: 'kernel',
     cost_anomaly_alert: 'kernel',
     ghostbusters_cron: 'kernel',
+    // #6708 — presupuesto de disco del guardián. Es mecanismo del pipeline
+    // (cuánto margen necesita la máquina para operar), no política de producto.
+    disk_budget: 'kernel',
     rest_mode: 'kernel',
     staleness: 'kernel',
     watchdog: 'kernel',
@@ -431,6 +434,11 @@ const SCHEMA = {
         partial_pause_deps: OBJ(),
         cost_anomaly_alert: OBJ(),
         ghostbusters_cron: OBJ(),
+        // #6708 — umbrales del guardián de disco. Los valores se validan y
+        // clampean en `lib/disk-guard.js` (CLAMPS + monotonicidad), así que acá
+        // alcanza con declarar la sección: duplicar los rangos sería una segunda
+        // fuente de verdad que se desincroniza.
+        disk_budget: OBJ(),
         rest_mode: OBJ(),
         staleness: OBJ(),
         watchdog: OBJ(),

@@ -2038,6 +2038,34 @@ function* _genPipelineState() {
     memHistory: resourceHistory.mem.slice()
   };
 
+  // #6708 — Espacio libre en disco con el color del umbral vigente. El Pulpo lo
+  // mide en cada tick y lo persiste en `disk-guard-state.json`; acá sólo se lee
+  // (leer es barato, medir con `fsutil` en cada refresh de la página no).
+  //
+  // `null` cuando el archivo todavía no existe (Pulpo recién arrancado, o
+  // `disk_budget.enabled: false`): el render omite la celda en vez de mostrar
+  // ceros, que se leerían como "disco lleno".
+  state.disk = null;
+  try {
+    const dg = require('./lib/disk-guard');
+    const st = dg.readState({ pipelineDir: PIPELINE });
+    if (st && st.measured_at) {
+      state.disk = {
+        level: st.level,
+        // #6708 (rebote rev-1) — Rótulo textual del escalón, resuelto en el
+        // servidor por el módulo dueño del mapa. Viaja en el slice para que la
+        // pill no dependa sólo de su espejo client-side.
+        label: dg.levelLabel(st.level),
+        color: dg.LEVEL_COLORS[st.level] || dg.LEVEL_COLORS.unknown,
+        freeGB: st.free_gb,
+        totalGB: st.total_gb,
+        frozen: !!st.frozen,
+        budget: st.budget || null,
+        measuredAt: st.measured_at,
+      };
+    }
+  } catch { state.disk = null; }
+
   // #3492 — ETA agregada por ola (probabilística, p50/p75/p90). Refresh async
   // fire-and-forget contra cache TTL 30s para no bloquear el render sync.
   // Cuando el cache aún no está listo (primer tick), `state.olaETA = null`
@@ -4323,6 +4351,15 @@ function generateHTML(state) {
   const healthLabel = healthScore > 60 ? 'Óptimo' : healthScore > 30 ? 'Presionado' : healthScore > 10 ? 'Crítico' : 'Saturado';
   const healthColor = healthScore > 60 ? '#3fb950' : healthScore > 30 ? '#d29922' : '#f85149';
   const blocked = res.cpuPercent >= res.maxCpu || res.memPercent >= res.maxMem;
+
+  // #6708 — El indicador de disco NO se pinta acá. `resourcesHTML` (abajo) es
+  // código muerto: se asigna y nunca se interpola en el HTML de salida, así
+  // que un gauge colgado de ese bloque no llega a ninguna pantalla servida.
+  // El espacio libre con el color de su umbral se renderiza en la system card
+  // del home V3 (`views/dashboard/home.js` → renderSystemCard), que es la
+  // pantalla que abre el operador. `state.disk` se sigue calculando arriba
+  // porque lo consume `headerSlice()` → /api/dash/header, la fuente del dato.
+
   const resourcesHTML = `
     <div class="sys-health">
       <div class="sys-health-score" style="--hcolor:${healthColor}">

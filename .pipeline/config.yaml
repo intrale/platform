@@ -411,8 +411,63 @@ ghostbusters_cron:
   enabled: true
   intervalMin: 60            # Cadencia del cron interno (clamp 5-1440)
   cap: 5                     # Máximo de worktrees borrados por corrida (RS-4)
-  dry_run: true              # Default seguro: reportar sin borrar
+  # #6708 — Salida AUDITADA del dry-run. Estuvo en `true` desde que se creó el
+  # cron (#3943): el default seguro exigía que un humano revisara el output
+  # antes de habilitar el borrado real. Esa revisión se hizo — todas las
+  # corridas de `logs/ghostbusters-cron.log` cerraban con "Liberación potencial:
+  # 0.00 GB", porque el guard de "archivos sin commitear" protegía por un
+  # heartbeat a decenas de worktrees de issues ya cerrados. Con ese guard
+  # refinado (`lib/infra-noise.js`) el sweep vuelve a tener algo que borrar, y
+  # dejarlo en dry-run lo mantendría decorativo.
+  #
+  # REVERSIBILIDAD: poner `true` acá y reiniciar el Pulpo vuelve al modo
+  # reporte, sin tocar código. Cada borrado queda en
+  # `.pipeline/audit/ghostbusters-worktrees.jsonl` con path, peso y motivo.
+  # Ver `docs/pipeline/gestion-de-disco.md` § "Cómo revertir".
+  dry_run: false             # Borrado real, con audit JSONL por cada borrado
   age_threshold_days: 30     # Umbral de antigüedad para criterio de abandono
+
+# =============================================================================
+# #6708 — Guardián automático de espacio en disco.
+#
+# El disco se llenaba cada 2-3 semanas y nadie lo medía de forma continua: el
+# único control era `/ops` avisando por debajo de 5 GB, y sólo si un humano lo
+# corría. Peor, cuando el disco reventaba el pipeline no decía "me quedé sin
+# disco": decía "el test falló", "el build rompió", "el agente murió", y
+# rebotaba issues sanos.
+#
+# Ahora el Pulpo mide el espacio libre en cada tick y aplica una escalera
+# ACUMULATIVA de acciones. Cada escalón agrega al anterior, no lo reemplaza:
+#
+#   verde   (> green_gb)               nada
+#   amarillo(yellow_gb .. green_gb)    rotar cachés (rotate-caches.js)
+#   naranja (orange_gb .. yellow_gb)   + reclamar worktrees SIN cap + Telegram
+#   rojo    (< orange_gb)              + frenar despacho de build/verificacion
+#
+# Los umbrales son GB LIBRES, no porcentaje: lo que importa es cuánto margen
+# queda para un build de Gradle o un video de QA, no qué fracción del disco se
+# usó. Se clampean en `lib/disk-guard.js` (CLAMPS) y se exige que sean
+# estrictamente descendientes; una terna inválida cae entera a los defaults en
+# vez de quedar a medio aplicar.
+#
+# Fail-safes que NO son configurables desde acá, a propósito:
+#   - Un worktree con trabajo en vuelo (fase `trabajando`) nunca se borra.
+#   - `~/.android/avd` (snapshot `qa-ready`) nunca se toca.
+#   - Logs y audios de operación no se podan sin OK del operador.
+#   - Si la medición falla, el nivel es `unknown` y no corre ninguna acción
+#     destructiva. Un guardián ciego no borra.
+# =============================================================================
+disk_budget:
+  enabled: true
+  green_gb: 40               # Por encima de esto no se hace nada
+  yellow_gb: 25              # Piso del amarillo: debajo se rotan cachés
+  orange_gb: 12              # Piso del naranja: debajo es rojo (freno de fases)
+  hysteresis_gb: 2           # Margen extra para SALIR del freno (anti-flapping)
+  rotate_throttle_min: 60    # Mínimo entre rotaciones de caché
+  reclaim_throttle_min: 60   # Mínimo entre reclamaciones de worktrees
+  alert_cooldown_min: 120    # Re-aviso de Telegram mientras el umbral persiste
+  freeze_heavy_phases: true  # Kill-switch del freno de build/verificacion en rojo
+  alert_freed_gb: 5          # Avisar si una corrida libera más que esto
 
 # Modo descanso (#2890 PR-A, parte del épico #2882) — gating horario.
 # Durante la ventana configurada, sólo corren los skills determinísticos

@@ -187,6 +187,7 @@ Reparto: **39 kernel · 12 autoridad · 9 producto**.
 | 19c | `partial_pause_deps` (321) | obj | kernel | Cada cuánto el motor rastrea dependencias faltantes y cuánto dura el silencio que pide el operador (#2893, #6118); mecanismo, no política de producto. |
 | 20 | `cost_anomaly_alert` (395) | obj | kernel | Alerta de anomalía de costo del motor; mecanismo. |
 | 21 | `ghostbusters_cron` (411) | obj | kernel | Higiene programada del motor; mecanismo. |
+| 21b | `disk_budget` (429) | obj | kernel | Presupuesto de espacio libre y escalera de acciones del guardián de disco (#6708); cuánto margen necesita la máquina para operar es mecanismo del motor, no política de producto. |
 | 22 | `rest_mode` (434) | obj | kernel | Modo descanso del motor; mecanismo. |
 | 23 | `staleness` (447) | obj | kernel | Detección de trabajo stale; mecanismo. |
 | 24 | `watchdog` (461) | obj | kernel | Vigilancia de agentes; mecanismo. |
