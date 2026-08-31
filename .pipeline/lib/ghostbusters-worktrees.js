@@ -23,6 +23,11 @@ const { spawnSync } = require('child_process');
 const { remoteBranchExists } = require('./worktree-resolver');
 // CA-B2/CA-SEC-5 — prefijo de confinamiento sibling derivado del helper compartido.
 const { deriveSiblingPrefix } = require('./worktree-prefix');
+// #6708 — clasificador de ruido de infra en el árbol sucio. Import defensivo:
+// si el módulo no carga, el filtro cae al legacy (sólo `.claude/`), que es
+// ESTRICTAMENTE más conservador — protege de más, nunca de menos.
+let infraNoise = null;
+try { infraNoise = require('./infra-noise'); } catch { /* fallback legacy */ }
 
 const MAIN_REPO = 'C:/Workspaces/Intrale/platform';
 const DEFAULT_AGE_THRESHOLD_DAYS = 30;
@@ -108,13 +113,27 @@ function isWorktreeSafeToDelete(wtPath, branch, { spawnImpl = spawnSync } = {}) 
     if (!st.ok) return { safe: false, reason: 'no pude inspeccionar git status' };
     // OJO: no hacer .trim() del output completo — comería el espacio inicial
     // del status code `XY ` de la primera línea y rompería el substring(3).
-    const relevantChanges = st.stdout.split('\n').filter(l => {
-      if (!l.trim()) return false;
-      const filepath = l.substring(3).trim();
-      return !filepath.startsWith('.claude/') && !filepath.startsWith('.claude\\');
-    });
+    //
+    // #6708 — el filtro legacy sólo descartaba `.claude/`, así que un worktree
+    // de issue CERRADO quedaba protegido para siempre por `?? qa/evidence/6146/`
+    // o `?? .claude/hooks/agent-6150.heartbeat`. Ese "1 archivo sin commitear"
+    // es ruido que la infra reescribe sola, no trabajo humano — y era la razón
+    // por la que el cron reportaba "liberación potencial 0.00 GB" con el disco
+    // lleno. `infra-noise` distingue ruido de código real (incluye fail-closed
+    // por conflicto de merge). Ver `docs/pipeline/gestion-de-disco.md`.
+    const relevantChanges = infraNoise
+      ? infraNoise.relevantChanges(st.stdout)
+      : st.stdout.split('\n').filter(l => {
+        if (!l.trim()) return false;
+        const filepath = l.substring(3).trim();
+        return !filepath.startsWith('.claude/') && !filepath.startsWith('.claude\\');
+      });
     if (relevantChanges.length > 0) {
-      return { safe: false, reason: `${relevantChanges.length} archivo(s) sin commitear` };
+      // El detalle cita hasta 3 paths: sin ellos el operador no puede juzgar si
+      // la protección fue correcta, que es justo el bug que este issue arregla.
+      const muestra = relevantChanges.slice(0, 3).join(', ');
+      const resto = relevantChanges.length > 3 ? `, +${relevantChanges.length - 3} más` : '';
+      return { safe: false, reason: `${relevantChanges.length} archivo(s) sin commitear (${muestra}${resto})` };
     }
 
     if (branch) {
@@ -239,8 +258,20 @@ function appendAudit(entry, { auditFile = AUDIT_FILE, fsImpl = fs } = {}) {
 
 // -----------------------------------------------------------------------------
 // Cap por corrida (RS-4). Devuelve { selected, capped } sin mutar la entrada.
+//
+// #6708 — `NO_CAP` levanta el techo de 5 por corrida. Lo usa el guardián de
+// disco al cruzar el umbral naranja: con 100+ worktrees reclamables, 5 por hora
+// no le gana a la tasa de creación y el disco sigue bajando. El cap sigue
+// vigente en la corrida normal del cron — sólo la presión de disco lo levanta,
+// y cada borrado queda igual en el audit JSONL.
+//
+// Un `cap` inválido (NaN, negativo, 0) NO significa "sin cap": vuelve al
+// default. Levantar el techo tiene que ser una decisión explícita.
 // -----------------------------------------------------------------------------
+const NO_CAP = Infinity;
+
 function applyCap(candidates, cap = DEFAULT_CAP) {
+  if (cap === NO_CAP) return { selected: candidates.slice(), capped: [] };
   const n = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : DEFAULT_CAP;
   return { selected: candidates.slice(0, n), capped: candidates.slice(n) };
 }
@@ -293,6 +324,7 @@ module.exports = {
   MAIN_REPO,
   DEFAULT_AGE_THRESHOLD_DAYS,
   DEFAULT_CAP,
+  NO_CAP,
   AUDIT_FILE,
   isForbiddenTarget,
   isWorktreeSafeToDelete,
