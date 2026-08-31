@@ -5,6 +5,7 @@ const yaml = require('js-yaml');
 const r = require('../lib/model-propagation-rollout');
 const dispatcher = require('../lib/agent-launcher/dispatch-with-fallback');
 const { resolveProviderForSkill } = require('../lib/agent-launcher/resolve-provider');
+const modelPropagation = require('../lib/model-propagation');
 function fixture() { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rollout-')); fs.mkdirSync(path.join(root, 'logs'), { recursive: true }); return root; }
 function seed(root, rows) { fs.writeFileSync(path.join(root, 'logs', 'spawn-exit-2026-08-20.jsonl'), rows.map(x => JSON.stringify(x)).join('\n')); }
 const cfg = { baseline_min_runs: 2, evaluation_min_runs: 2, thresholds: { rebound_absolute: .1, early_death_absolute: .1 }, waves: [{ actors: ['po'] }, { actors: ['pipeline-dev'] }] };
@@ -137,7 +138,7 @@ test('reenable rechaza pares nunca encendidos o sin auto rollback', () => {
 test('el comando de spawn queda idéntico apagado, propaga encendido y omite tras rollback', () => {
   const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
   r.captureBaseline(root); const resolution={provider:'anthropic',model:'claude-sonnet-4-6'}; const original=['-p','hola'];
-  assert.deepStrictEqual(r.applyToSpawn(root,'po',resolution,original,{PIPELINE_ISSUE:'1'}),{args:original,env:{PIPELINE_ISSUE:'1'},propagated:false});
+  assert.deepStrictEqual(r.applyToSpawn(root,'po',resolution,original,{PIPELINE_ISSUE:'1'}),{args:original,env:{PIPELINE_ISSUE:'1'},propagated:false,plan:null});
   r.enablePair(root,'po','anthropic',cfg); assert.deepStrictEqual(r.applyToSpawn(root,'po',resolution,original,{}).args,[...original,'--model','claude-sonnet-4-6']);
   r.evaluatePair(root,'po','anthropic',{n:2,earlyDeathRate:1,reboundRate:0},cfg);
   assert.deepStrictEqual(r.applyToSpawn(root,'po',resolution,original,{}).args,original);
@@ -305,4 +306,88 @@ test('regresion: la fila real de produccion con exit_code null no infla el basel
   // Antes: 2/3 = 0.666 (el fallo contaba como exito). Ahora: 1/2 = 0.5.
   assert.equal(m.successRate, 0.5);
   assert.notEqual(m.successRate, 2/3);
+});
+// Metacaracteres de cmd.exe que jamas deben viajar crudos ni al argv ni al log.
+const RE_METACARACTERES=new RegExp('["&|<>^$' + String.fromCharCode(96) + ']');
+
+// --- Bloqueante 1 de la review de #6274 -----------------------------------
+// El rollout empujaba `--model` con `String(model)` sin pasar por la whitelist
+// de `sanitizeModelId`, o sea que anulaba el control SR-A.1 justo en el argv
+// que ese control existe para proteger (`detectLauncher` puede devolver
+// shell:true en los tiers cmd-shim / path-fallback, y ahi un metacaracter
+// escala a cmd.exe). Ahora la decision la toma `modelPropagation.plan()`.
+test('un id de modelo con metacaracteres NO llega al argv: lo corta la whitelist', () => {
+  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'po',provider:'anthropic',exit_code:0,duration_ms:1})));
+  r.captureBaseline(root); r.enablePair(root,'po','anthropic',cfg);
+  const original=['-p','x'];
+  const out=r.applyToSpawn(root,'po',{provider:'anthropic',model:'claude-3 " && echo PWNED'},original,{});
+  assert.deepStrictEqual(out.args,original,'el argv queda byte-identico: no se propaga nada');
+  assert.equal(out.propagated,false);
+  assert.equal(out.plan.rejectedReason,'failed_whitelist','la razon es TIPADA, no un silencio');
+  assert.match(out.plan.trace,/RECHAZADO por whitelist/);
+  // El id rechazado se imprime NEUTRALIZADO (safeForLog): ningun metacaracter
+  // de cmd.exe sobrevive a la traza que va al log / Telegram / PDF.
+  assert.match(out.plan.trace,/claude-3/,'el operador igual reconoce el id');
+  assert.equal(RE_METACARACTERES.test(out.plan.trace),false,'la traza no reproduce metacaracteres crudos');
+  // Misma respuesta que la frontera designada: una sola fuente de verdad.
+  assert.equal(modelPropagation.sanitizeModelId('claude-3 " && echo PWNED').model,null);
+});
+
+// --- Bloqueante 2 de la review de #6274 -----------------------------------
+// `kimi-moonshot` corre sobre el launcher `claude` y recibe el modelo por
+// `--model` (esta en ARG_MODEL_PROVIDERS), pero el rollout solo contemplaba
+// `provider === 'anthropic'` y lo devolvia como `propagated:false` mudo con el
+// par en `enabled:true`. Al delegar en `resolveTarget`, el canal sale del mismo
+// catalogo que usa el launcher.
+test('kimi-moonshot propaga por --model igual que anthropic (no es un no-op mudo)', () => {
+  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'guru',provider:'kimi-moonshot',exit_code:0,duration_ms:1})));
+  r.captureBaseline(root);
+  const config={...cfg,waves:[{actors:['guru']}]};
+  r.enablePair(root,'guru','kimi-moonshot',config);
+  assert.equal(r.shouldPropagate(root,'guru','kimi-moonshot'),true);
+  const out=r.applyToSpawn(root,'guru',{provider:'kimi-moonshot',model:'kimi-k2-6'},['-p','hola'],{});
+  assert.deepStrictEqual(out.args,['-p','hola','--model','kimi-k2-6']);
+  assert.equal(out.propagated,true);
+});
+
+// Los providers que reciben el modelo por env salen de PROVIDER_MODEL_ENV
+// (lib/build-child-env.js), no de una copia local: la tabla duplicada que
+// tenia el rollout ya no existe.
+test('el canal env sale de PROVIDER_MODEL_ENV, sin tabla duplicada en el rollout', () => {
+  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'guru',provider:'openai-codex',exit_code:0,duration_ms:1})));
+  r.captureBaseline(root);
+  r.enablePair(root,'guru','openai-codex',{...cfg,waves:[{actors:['guru']}]});
+  const out=r.applyToSpawn(root,'guru',{provider:'openai-codex',model:'gpt-5-codex'},['-p','hola'],{});
+  assert.deepStrictEqual(out.args,['-p','hola'],'el canal env no toca argv');
+  assert.equal(out.env[modelPropagation.PROVIDER_MODEL_ENV['openai-codex']],'gpt-5-codex');
+  assert.equal(out.propagated,true);
+  assert.equal(Object.keys(r).includes('MODEL_ENV_BY_PROVIDER'),false,'la tabla duplicada no vuelve');
+});
+
+// Un provider sin canal de modelo declarado no puede quedar `enabled:true`:
+// seria un par activo que nunca propaga, consume evidencia de escalon y puede
+// comerse un auto_rollback con notificacion por una degradacion que su modelo
+// jamas causo.
+test('encender un provider sin canal de modelo es error explicito, no un no-op', () => {
+  const root=fixture(); seed(root,[1,2].map(i=>({ts:`2026-08-20T0${i}:00:00Z`,skill:'guru',provider:'deterministic',exit_code:0,duration_ms:1})));
+  r.captureBaseline(root);
+  assert.throws(()=>r.enablePair(root,'guru','deterministic',{...cfg,waves:[{actors:['guru']}]}),
+    /no declara canal de modelo/);
+  assert.equal(r.shouldPropagate(root,'guru','deterministic'),false,'no queda estado a medias');
+});
+
+// El flag por par es PRECONDICION de `plan()`, no un canal paralelo: encendido
+// en los dos lugares a la vez, `--model` aparece UNA sola vez.
+test('el par encendido y model_propagation encendido aplican una sola vez', () => {
+  const config={pipeline:{model_propagation:{enabled:true,default_mode:'on'}}};
+  const conRollout=modelPropagation.plan({provider:'anthropic',skill:'po',model:'claude-sonnet-4-6',config,rolloutEnabled:true});
+  const sinRollout=modelPropagation.plan({provider:'anthropic',skill:'po',model:'claude-sonnet-4-6',config,rolloutEnabled:false});
+  assert.equal(conRollout.apply,true); assert.equal(sinRollout.apply,true);
+  assert.equal(conRollout.modeSource,'rollout-pair');
+  assert.equal(conRollout.model,sinRollout.model,'una sola decision, un solo --model');
+  // Y con el interruptor grueso apagado (default vigente) el par igual enciende.
+  const soloRollout=modelPropagation.plan({provider:'anthropic',skill:'po',model:'claude-sonnet-4-6',config:{},rolloutEnabled:true});
+  assert.equal(soloRollout.apply,true); assert.equal(soloRollout.target,'arg');
+  // `rolloutEnabled` truthy-pero-no-booleano NO enciende (fail-closed).
+  assert.equal(modelPropagation.plan({provider:'anthropic',skill:'po',model:'claude-sonnet-4-6',config:{},rolloutEnabled:'si'}).apply,false);
 });

@@ -2,6 +2,15 @@
 
 const fs = require('fs');
 const path = require('path');
+// #6274 (rev-1) — FRONTERA UNICA de propagacion. El rollout NO reimplementa el
+// canal (`--model` vs env), ni el saneo del id, ni la validacion de catalogo:
+// todo eso vive en `lib/model-propagation.js` y aca solo se aporta la
+// PRECONDICION por par `(actor, provider)`. La review de #6274 rechazo la
+// version anterior justamente por duplicar esa frontera: empujaba `--model`
+// con `String(model)` sin pasar por `sanitizeModelId`, dejaba fuera a
+// `kimi-moonshot` (un `propagated:false` mudo con el flag en `enabled:true`) y
+// mantenia una copia byte por byte de `PROVIDER_MODEL_ENV`.
+const modelPropagation = require('./model-propagation');
 
 const DEFAULTS = Object.freeze({ baselineMinRuns: 30, evaluationMinRuns: 20, earlyDeathMs: 15000,
   thresholds: { rebound_absolute: 0.10, early_death_absolute: 0.10 } });
@@ -231,6 +240,21 @@ function enablePair(pipelineDir, actor, provider, config, opts = {}) {
   const baseline = state.baselines[key]; const min = config.baseline_min_runs || DEFAULTS.baselineMinRuns;
   if (!baseline || baseline.n < min) throw new Error(`no se puede encender ${actor} en ${provider}: baseline con ${baseline ? baseline.n : 0} corridas, se necesitan ${min}`);
   const wave = waveIndex(actor, config); if (wave < 0) throw new Error(`actor '${actor}' no esta declarado en los escalones`);
+  // Fail-loud, no fail-silent: un provider sin canal de modelo declarado
+  // (`resolveTarget` -> 'none') jamas propagaria nada, pero el par quedaria en
+  // `enabled:true`, el `status` lo mostraria encendido, `evaluateEnabled` lo
+  // evaluaria en cada exit y podria dispararle un auto_rollback con
+  // notificacion de Telegram por un escalon que nunca movio un solo modelo.
+  // Ese no-op silencioso es el Bloqueante 2 de la review de #6274: se cierra
+  // rechazando el encendido en el momento en que el operador lo pide.
+  const canal = modelPropagation.resolveTarget(provider);
+  if (canal.kind === 'none') {
+    throw new Error(`no se puede encender ${actor} en ${provider}: el provider no declara canal de modelo `
+      + '(ni --model via ARG_MODEL_PROVIDERS ni entrada en PROVIDER_MODEL_ENV de lib/build-child-env.js). '
+      + 'Encenderlo seria un no-op silencioso: el par figuraria activo, consumiria evidencia de escalon y '
+      + 'podria disparar un auto_rollback sin haber propagado un solo modelo. '
+      + 'Declarar el canal del provider antes de encenderlo.');
+  }
   if (wave > 0 && !state.waveEvidence[waveEvidenceKey(wave - 1, provider)]) {
     const previos = (config.waves[wave - 1].actors || []).join(', ');
     throw new Error(`el escalon ${wave + 1} en ${provider} requiere evidencia sana del escalon ${wave} (${previos}): todos los actores deben estar encendidos y evaluados como sanos en ${provider}`);
@@ -240,20 +264,49 @@ function enablePair(pipelineDir, actor, provider, config, opts = {}) {
   return state.flags[key];
 }
 function shouldPropagate(pipelineDir, actor, provider, fsImpl = fs) { return readState(pipelineDir, fsImpl).flags[pairKey(actor, provider)]?.enabled === true; }
-const MODEL_ENV_BY_PROVIDER = Object.freeze({
-  'openai-codex': 'CODEX_MODEL', 'gemini-google': 'GEMINI_MODEL',
-  cerebras: 'CEREBRAS_MODEL', 'nvidia-nim': 'NVIDIA_NIM_MODEL',
-});
-function applyToSpawn(pipelineDir, actor, resolution, args, env, fsImpl = fs) {
+// --- applyToSpawn: aplicacion DELEGADA -------------------------------------
+// Devuelve como quedaria el spawn de `actor` con la resolucion `resolution`.
+//
+// NO reimplementa nada: el flag por par es la precondicion (`rolloutEnabled`) y
+// la decision completa la toma `modelPropagation.plan()` — el mismo `plan()`
+// que corre el launcher en el camino real de spawn. De ahi salen el canal
+// ('arg' | 'env' | 'none'), el id ya saneado por `sanitizeModelId` (whitelist
+// SR-A.1 + cap de longitud) y la validacion contra el catalogo de modelos.
+//
+// Con el par APAGADO corta antes de calcular: devuelve copias byte-identicas de
+// `args`/`env` y ni siquiera lee `agent-models.json` (CA — spawn identico con
+// flag off).
+//
+// Alcance: esta funcion es la API consultable del rollout (CLI `preview`, tests
+// y cualquier auditoria "que comando quedaria"). El camino de spawn productivo
+// NO la llama: alli el pulpo inyecta `modelRolloutGate` en `launchAgent`, que
+// resuelve `rolloutEnabled` contra el provider EFECTIVO (post-fallback) y
+// aplica una sola vez dentro del launcher. Un solo punto de aplicacion = no hay
+// `--model` duplicado ni propagaciones invisibles en `launchResult`.
+function applyToSpawn(pipelineDir, actor, resolution, args, env, opts = {}) {
+  // Compat de firma: hasta rev-1 el 6o parametro era un `fsImpl` posicional.
+  const o = (opts && typeof opts.readFileSync === 'function') ? { fsImpl: opts } : (opts || {});
+  const fsImpl = o.fsImpl || fs;
   const nextArgs = Array.isArray(args) ? [...args] : [];
   const nextEnv = { ...(env || {}) };
-  if (!resolution?.provider || !resolution.model || !shouldPropagate(pipelineDir, actor, resolution.provider, fsImpl)) {
-    return { args: nextArgs, env: nextEnv, propagated: false };
+  const provider = resolution && resolution.provider;
+  if (!provider || !shouldPropagate(pipelineDir, actor, provider, fsImpl)) {
+    return { args: nextArgs, env: nextEnv, propagated: false, plan: null };
   }
-  if (resolution.provider === 'anthropic') nextArgs.push('--model', String(resolution.model));
-  else if (MODEL_ENV_BY_PROVIDER[resolution.provider]) nextEnv[MODEL_ENV_BY_PROVIDER[resolution.provider]] = String(resolution.model);
-  else return { args: nextArgs, env: nextEnv, propagated: false };
-  return { args: nextArgs, env: nextEnv, propagated: true };
+  const plan = modelPropagation.plan({
+    provider,
+    skill: actor,
+    model: resolution.model,
+    // El rollout no consulta `pipeline.model_propagation`: su precondicion es el
+    // flag por par. Se pasa el config por si el caller lo tiene (no cambia la
+    // decision cuando `rolloutEnabled` es true, pero mantiene la firma honesta).
+    config: o.config || null,
+    agentModels: o.agentModels || undefined,
+    rolloutEnabled: true,
+  });
+  if (plan.apply && plan.target === 'arg') nextArgs.push('--model', plan.model);
+  else if (plan.apply && plan.target === 'env' && plan.envVar) nextEnv[plan.envVar] = plan.model;
+  return { args: nextArgs, env: nextEnv, propagated: plan.apply === true, plan };
 }
 // `event.skill` DEBE ser el actor REBOTADO (el que vuelve a correr en la fase
 // destino), no el evaluador que emitio el veredicto `rechazado`: la metrica mide

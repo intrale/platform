@@ -177,14 +177,40 @@ function normalizeMode(value) {
 }
 
 // -----------------------------------------------------------------------------
-// resolveMode({ config, provider, skill }) → { mode, source }
+// resolveMode({ config, provider, skill, rolloutEnabled }) → { mode, source }
 //
 // `config` es el objeto completo de `config.yaml` (el que el pulpo ya tiene en
 // mano). Lectura 100% defensiva: cualquier forma inesperada cae a 'off'.
-// `source` ∈ { 'kill-switch' | 'skill' | 'provider' | 'default' | 'implicit-off' }.
+// `source` ∈ { 'rollout-pair' | 'kill-switch' | 'skill' | 'provider' | 'default'
+//              | 'implicit-off' }.
+//
+// #6274 — `rolloutEnabled` es la PRECONDICIÓN del encendido escalonado por par
+// `(actor, provider)`. Es un booleano estricto que el caller deriva de
+// `lib/model-propagation-rollout.shouldPropagate()`; acá NO se lee estado ni
+// filesystem (esta función sigue siendo pura).
+//
+// Precedencia deliberada: el flag por par GANA sobre `pipeline.model_propagation`.
+// Motivo: el rollout de #6274 es una decisión humana explícita, auditada
+// (`model-propagation-rollout-audit.jsonl`), con baseline congelado y con su
+// PROPIO apagado automático por degradación. La sección `model_propagation` es
+// el interruptor grueso de #6272 y está apagada por default; si no ganara el
+// par, el rollout no podría encender NADA sin abrir el interruptor grueso para
+// todos — exactamente lo que el issue prohíbe ("nunca encender todos los
+// actores ni todos los proveedores de golpe").
+//
+// Y — crítico — al resolverse acá dentro, la propagación del rollout pasa por
+// EL MISMO `plan()`: mismo saneo (SR-A.1), mismo canal (`resolveTarget`), misma
+// validación de catálogo y misma traza. No hay un segundo canal que mantener.
+// Corolario: si el par está encendido Y además `model_propagation` lo habilita,
+// se aplica UNA sola vez (antes eran dos `--model` en el mismo argv).
 // -----------------------------------------------------------------------------
 function resolveMode(opts) {
     const o = opts || {};
+
+    // `=== true` estricto: un `rolloutEnabled` truthy-pero-no-booleano (string,
+    // objeto, 1) es un caller confundido, y ante la duda NO se enciende.
+    if (o.rolloutEnabled === true) return { mode: 'on', source: 'rollout-pair' };
+
     const cfg = (o.config && o.config.pipeline && o.config.pipeline.model_propagation) || null;
 
     // Kill-switch global: sin sección, o `enabled` que no sea exactamente true,
@@ -275,11 +301,18 @@ function validateDeclaredModel(opts) {
 }
 
 // -----------------------------------------------------------------------------
-// plan({ provider, skill, model, config, agentModels }) → decision
+// plan({ provider, skill, model, config, agentModels, rolloutEnabled }) → decision
+//
+// `rolloutEnabled` (#6274): precondición booleana del encendido escalonado por
+// par `(actor, provider)`. Cuando es `true` el modo resuelve a 'on' con
+// `modeSource: 'rollout-pair'` y el resto del pipeline de decisión (saneo,
+// canal, catálogo, traza) corre IGUAL que para el camino de #6272. Es el único
+// punto donde el rollout entra: no existe un segundo canal de aplicación.
 //
 // Decisión completa y auditable. Campos:
 //   mode         'off' | 'dry-run' | 'on'
-//   modeSource   de dónde salió el modo (kill-switch / skill / provider / default)
+//   modeSource   de dónde salió el modo (rollout-pair / kill-switch / skill /
+//                provider / default / implicit-off)
 //   target       'arg' | 'env' | 'none'
 //   envVar       nombre de la var cuando target === 'env', si no null
 //   model        id ya saneado, o null si fue rechazado
@@ -296,7 +329,14 @@ function plan(opts) {
     const provider = o.provider;
     const skill = o.skill;
 
-    const { mode, source: modeSource } = resolveMode({ config: o.config, provider, skill });
+    const { mode, source: modeSource } = resolveMode({
+        config: o.config,
+        provider,
+        skill,
+        // #6274 — precondición del rollout por par. Ausente ⇒ false ⇒ el camino
+        // de #6272 queda exactamente como estaba (regresión cero).
+        rolloutEnabled: o.rolloutEnabled === true,
+    });
 
     const base = {
         mode,

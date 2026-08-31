@@ -10994,18 +10994,32 @@ ${g}
       })
     : undefined;
 
-  // #6274 — el flag por (actor, provider) controla el comando/env real. Con el
-  // flag apagado devuelve copias byte-idénticas del input previo.
-  const rolloutSpawn = modelPropagationRollout.applyToSpawn(
-    PIPELINE, skill, dispatchResolution, args, childEnv,
+  // #6274 (rev-1) — el flag por (actor, provider) NO se aplica acá.
+  //
+  // Antes este bloque llamaba `applyToSpawn` y empujaba `--model` a `args` por
+  // su cuenta: era un segundo canal de propagación que salteaba la whitelist de
+  // `sanitizeModelId`, no cubría a los providers que reciben el modelo por argv
+  // fuera de `anthropic` (kimi-moonshot quedaba en un no-op mudo), duplicaba
+  // `PROVIDER_MODEL_ENV`, podía duplicar `--model` si #6272 también estaba
+  // encendido para el par, y dejaba `launchResult.modelPropagation` reportando
+  // `apply:false` para propagaciones que sí ocurrieron (review de #6274).
+  //
+  // Ahora el rollout viaja como PRECONDICIÓN al launcher, que la resuelve
+  // contra el provider EFECTIVO (post-fallback) y aplica una sola vez dentro de
+  // `modelPropagation.plan()`. Con el par apagado el gate devuelve false y el
+  // comando queda byte-idéntico. El gate es best-effort por diseño: si el
+  // estado del rollout es ilegible, `shouldPropagate` devuelve false.
+  const modelRolloutGate = (gateSkill, gateProvider) => (
+    !!gateProvider && modelPropagationRollout.shouldPropagate(PIPELINE, gateSkill, gateProvider)
   );
   const launchResult = launchAgent({
     skill, issue, trabajandoPath, fase, pipeline,
-    args: rolloutSpawn.args,
+    args,
     cwd: spawnCwd,
-    env: rolloutSpawn.env,
+    env: childEnv,
     PIPELINE,
     ROOT,
+    modelRolloutGate,
     onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
     onLog: log,
     resolveImpl: launchResolveImpl,

@@ -29,3 +29,33 @@ La recuperación de métricas no reenciende nada. Después de diagnosticar la ca
 `node .pipeline/model-rollout.js reenable --actor <actor> --provider <provider> --by <operador>`
 
 La identidad, hora y par quedan registrados de forma append-only.
+
+## Cómo se aplica el modelo (una sola frontera)
+
+El rollout **no** aplica el modelo por su cuenta: aporta la **precondición** y delega toda la decisión en `lib/model-propagation.js`, que es la misma frontera que usa el camino de #6272. Concretamente:
+
+- El pulpo inyecta un gate `(actor, provider) → boolean` en `launchAgent` (`modelRolloutGate`), respaldado por `shouldPropagate()`.
+- El launcher lo evalúa contra el proveedor **efectivo** (ya resuelto el fallback de la cadena) y lo pasa a `modelPropagation.plan({ …, rolloutEnabled })`.
+- `plan()` resuelve el canal (`--model` en argv para los proveedores del launcher `claude`; la env var de `PROVIDER_MODEL_ENV` para el resto), sanea el id con la whitelist estricta (`sanitizeModelId`, SR-A.1) y lo cruza contra el catálogo de modelos permitidos.
+
+Consecuencias operativas:
+
+- Un id de modelo con metacaracteres **nunca** llega al argv, ni siquiera por la vía del rollout. `detectLauncher` puede devolver `shell:true` (tiers cmd-shim y path-fallback), y ahí un metacaracter escalaría a `cmd.exe`; la whitelist existe exactamente para ese argv y ahora también la atraviesa el rollout.
+- Los proveedores del canal argv salen de `ARG_MODEL_PROVIDERS` y los del canal env de `PROVIDER_MODEL_ENV`; el rollout ya no mantiene una tabla propia que pudiera driftear.
+- Encender el mismo par en el rollout y en `pipeline.model_propagation` agrega `--model` **una sola vez**: es una decisión única, no dos canales.
+- `launchResult.modelPropagation` refleja también las propagaciones originadas en el rollout (`modeSource: 'rollout-pair'`), así que el log del spawn no queda mudo.
+- Precedencia: el flag por par **gana** sobre `pipeline.model_propagation`. Es deliberado — esa sección es el interruptor grueso y está apagada por default; si no ganara el par, encender un escalón obligaría a abrir la propagación para todos, que es justo lo que el rollout escalonado viene a evitar. El apagado del rollout es su propio flag por par más el rollback automático.
+
+### Providers sin canal de modelo
+
+`enable` **rechaza** un par cuyo proveedor no declara canal de modelo, con error explícito. Encenderlo sería un no-op silencioso: el par figuraría activo en `status`, consumiría evidencia de escalón y podría comerse un `auto_rollback` con notificación de Telegram sin haber propagado un solo modelo. Si aparece un proveedor nuevo, primero se le declara el canal (`ARG_MODEL_PROVIDERS` o `PROVIDER_MODEL_ENV`) y recién después se lo enciende.
+
+### Verificar antes de encender
+
+`preview` responde, sin spawnear nada, qué comando y qué env le tocarían a un actor hoy — usando la misma decisión que el launcher:
+
+```
+node .pipeline/model-rollout.js preview --actor guru --provider anthropic
+```
+
+Devuelve `args_entrada` / `args_salida` (con el par apagado son idénticos), `env_agregado`, el `canal` resuelto, el `motivo_rechazo_modelo` si la whitelist lo cortó y la `traza` que va a quedar en el log del spawn.
