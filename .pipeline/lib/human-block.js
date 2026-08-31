@@ -106,6 +106,49 @@ const UNLOCKER_ENUM = Object.freeze([
     'auto-recheck',                   // #6611 — predicado verificable resuelto
 ]);
 
+// =============================================================================
+// #6432 D11 / A-6 — QUIÉNES PUEDEN ROMPER LA DEGRADACIÓN PEGAJOSA
+//
+// `degraded: true` en el ledger de merge-race es IRREVERSIBLE POR VÍA
+// AUTOMÁTICA (D11): mientras esté puesto, `classifyPrecondition` devuelve
+// `human_judgment` aunque el hint sea válido. Sin eso, el tope de intentos se
+// derrota con un loop de rebotes que re-acuña la precondición.
+//
+// El corolario es simétrico y es el que se rompía: si NINGUNA vía la limpia, la
+// degradación queda pegajosa CONTRA EL HUMANO. El operador destraba, el
+// `needs-human` se retira, el marker se reactiva — y el reclaim sigue muerto
+// para siempre, sin señal de por qué.
+//
+// Esta whitelist es la lista COMPLETA de unlockers que representan una decisión
+// humana explícita de reanudar el ciclo. Es un `Set` cerrado y NO un match por
+// prefijo a propósito:
+//   1. COBERTURA — `human-block-action:*` (los botones de la alerta de Telegram,
+//      el camino de destrabe más usado) no comparte prefijo con `commander:`.
+//      Con `startsWith('commander:')` quedaban afuera: ése era el defecto A-6.
+//   2. FAIL-CLOSED A FUTURO — con un prefijo, cualquier unlocker nuevo que
+//      empiece con `commander:` gana poder de limpieza en silencio. Con el
+//      `Set`, sumar uno es un acto explícito y revisable en el diff.
+//
+// Bordes cerrados por el arquitecto (no re-abrir):
+//   · `github:label-removed` AFUERA — es reconciliación, no destrabe
+//     deliberado: el label lo puede quitar un script, un bot o un click
+//     accidental. D11 se rompe sólo con una decisión humana explícita.
+//   · `human-block-action:devolver` AFUERA — ese camino va a
+//     `dismissBlockedIssue`: descarta el desarrollo y manda el issue a
+//     `needs-definition`. No reanuda el ciclo de reclaim, así que no
+//     corresponde resetear el contador.
+//   · `brazo-desbloqueo:*` y `auto-recheck` AFUERA — por definición de D11:
+//     ninguna vía automática limpia.
+// =============================================================================
+const MANUAL_UNLOCKERS = Object.freeze(new Set([
+    'commander',
+    'commander:telegram',
+    'commander:dashboard',
+    'human-block-action',
+    'human-block-action:unblock',
+    'human-block-action:priorizar',
+]));
+
 /**
  * Normaliza `unlocker` contra el enum cerrado.
  * @returns {{unlocker:string, unlocker_rejected_value?:string, unlocker_rejected_reason?:string}}
@@ -772,11 +815,13 @@ function unblockIssue(opts) {
     }
     try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
 
-    // #6432 D11 — la degradación del reclaim es pegajosa para todas las vías
-    // automáticas. Sólo una intervención manual del Commander, y únicamente
-    // después de mover efectivamente el marker, habilita un ciclo nuevo.
-    // Los reapers usan otros `unlocker` explícitos y nunca limpian el ledger.
-    if (unlocker === 'commander' || String(unlocker).startsWith('commander:')) {
+    // #6432 D11 / A-6 — la degradación del reclaim es pegajosa para todas las
+    // vías automáticas. Sólo una intervención humana explícita (ver
+    // `MANUAL_UNLOCKERS`), y únicamente DESPUÉS de haber movido efectivamente el
+    // marker, habilita un ciclo nuevo. Un `unblockIssue` que retornó `ok:false`
+    // sale por un `return` anterior y nunca llega acá: sin destrabe real no hay
+    // limpieza.
+    if (MANUAL_UNLOCKERS.has(unlocker)) {
         mergeRaceLedger.clearEntry(issue);
     }
 
@@ -1873,6 +1918,7 @@ module.exports = {
     emitAutoReleased,
     normalizeUnlocker,
     UNLOCKER_ENUM,
+    MANUAL_UNLOCKERS,
     PREDICATE_KINDS,
     buildBlockedSummaryMarkdown,
     buildBlockedSummaryPlain,

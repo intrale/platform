@@ -4597,8 +4597,19 @@ function brazoBarrido(config) {
             // decisión). Opcionales: undefined/null si el agente no los emite.
             paths: Array.isArray(r.paths) ? r.paths : null,
             source: (typeof r.source === 'string' && r.source) || null,
+            // #6432 rev-3 (RS-1) — La procedencia SEC-9 exige que el hint venga
+            // del YAML de `delivery` corrido en la fase `entrega` del pipeline
+            // `desarrollo`, para el MISMO issue. La variable correcta es `fase`
+            // (la fase que se está barriendo, `:4216`), NO `faseRechazo`
+            // (`pipelineConfig.fase_rechazo`, que es el DESTINO del rebote y
+            // sólo vale `null` o `dev`). Con `faseRechazo` la condición era
+            // insatisfacible: el hint se anulaba siempre y el marker nunca
+            // nacía `merge_checks_race` — toda la cadena quedaba muerta.
+            // Las CUATRO condiciones son conjuntivas a propósito (#4748 SEC-1):
+            // relajar cualquiera reabre la aceptación de hints desde el YAML de
+            // cualquier skill. El `else` sigue siendo `null`, silencioso.
             precondicion_merge_checks:
-              (pipelineName === 'desarrollo' && faseRechazo === 'entrega'
+              (pipelineName === 'desarrollo' && fase === 'entrega'
                 && skillFromFile(r.file.name) === 'delivery' && Number(r.issue) === Number(issue)
                 && r.precondicion_merge_checks && typeof r.precondicion_merge_checks === 'object')
                 ? r.precondicion_merge_checks : null,
@@ -24839,6 +24850,12 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #4707 — circuit breaker escalante (fail-closed): cap configurable + helper único.
     resolveRebotesMax,
     escalarACircuitBreaker,
+    // #6432 rev-3 (T14) — el barrido REAL, expuesto para el test de integración
+    // de la cadena `delivery` → precondición → marker → selector. Un test que
+    // arme `motivosClasificados` a mano NO recorre el guard de procedencia
+    // SEC-9 (`:4601`), que es justo donde la cadena se rompía entera. Sólo se
+    // exporta: en producción lo sigue invocando el loop del pulpo.
+    brazoBarrido,
     reapMergeChecksRaceBlocks,
     runReclaimChild,
     // #2957 — counter de fase build expuesto para tests del filtro por allowlist.
