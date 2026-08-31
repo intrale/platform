@@ -462,6 +462,28 @@ const SCHEMA = {
                         interval_minutes: { type: 'number', minimum: 0 },
                     },
                 },
+                // --- #6145 CA-6 — criterio de permanencia de proveedores.
+                //     Declarado acá porque la raíz es CERRADA: agregar la
+                //     subsección a config.yaml sin declararla en el schema deja
+                //     al dashboard fail-closed (precedente ya sufrido).
+                //     LENIENT en `additionalProperties` como el resto de
+                //     multi_provider, pero con TIPOS y RANGOS chequeados: un
+                //     umbral con tipo/rango inválido no debe llegar al criterio
+                //     que marca candidatos a baja. Los invariantes de seguridad
+                //     (nunca vacía la cadena, nunca marca un pago, "sin dato" ⇒
+                //     no evaluable) viven en código, NO acá.
+                permanence: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        window_days: { type: 'number', minimum: 1 },
+                        min_sample: { type: 'number', minimum: 0 },
+                        min_contribution_rate: { type: 'number', minimum: 0, maximum: 1 },
+                        max_days_without_win: { type: 'number', minimum: 0 },
+                        min_survivors: { type: 'number', minimum: 1 },
+                    },
+                },
             },
         },
 
@@ -547,6 +569,16 @@ const SCHEMA = {
                 // ventana se abriera sola.
                 bootstrap_fallback: { type: 'boolean' },
                 bootstrap_fallback_until: { type: 'string' },
+                cut_fallback: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['authorization_ttl_seconds', 'operation_timeout_ms', 'runbook'],
+                    properties: {
+                        authorization_ttl_seconds: { type: 'number', minimum: 1, maximum: 900 },
+                        operation_timeout_ms: { type: 'number', minimum: 100, maximum: 60000 },
+                        runbook: { type: 'string', minLength: 1, maxLength: 512 },
+                    },
+                },
                 // #5448 · CA-21 — misma razón que las dos de arriba. El núcleo
                 // igual valida y falla cerrado, pero un `hosts_activos` que es
                 // string en vez de lista se descubre acá, al arrancar, y no el
