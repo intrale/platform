@@ -2266,6 +2266,13 @@ operational_state:
 # ambigüedad de `gh` (exit≠0, timeout, issue ausente) NO promueve.
 #
 # Corte en caliente: `kill_switch: true` desactiva sin reiniciar el pulpo.
+brazo:
+  reclaim_merge_race:
+    enabled: false
+    kill_switch: false
+    max_attempts: 3
+    child_timeout_ms: 300000
+
 wave_auto_transition:
   enabled: false        # kill switch maestro: false ⇒ el brazo no hace nada
   kill_switch: false    # override de emergencia adicional
