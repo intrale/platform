@@ -7282,7 +7282,15 @@ function requerirClaveDeProducto(config, clave) {
   return v;
 }
 
-function determinarDevSkill(issue, config) {
+// #6747 — mismo camino de resolución de siempre, pero devolviendo también CÓMO
+// se eligió el skill. El `source` lo consume el rewind manual (`resolveDeferredSkill`)
+// para dos cosas: no dejar que un default degrade a `pipeline-dev` (SR-4) y
+// avisarle al operador cuando el skill lo eligió el override por contenido (CA-UX-2).
+//
+// Es UN solo camino de resolución a propósito: re-evaluar
+// `labels.includes('area:infra') && issueMentionsPipelineScope(...)` desde
+// afuera sería un camino nuevo y violaría CA-6.
+function resolverDevSkillConOrigen(issue, config) {
   const mapping = requerirClaveDeProducto(config, 'dev_skill_mapping');
   const labels = getIssueLabels(issue);
   const priority = requerirClaveDeProducto(config, 'dev_routing_priority');
@@ -7291,28 +7299,34 @@ function determinarDevSkill(issue, config) {
   if (labels.includes('area:infra') && !labels.includes('area:pipeline') && mapping['area:pipeline']) {
     if (issueMentionsPipelineScope(issue, config)) {
       log('routing', `#${issue}: area:infra + contenido del pipeline → pipeline-dev (override)`);
-      return mapping['area:pipeline'];
+      return { skill: mapping['area:pipeline'], source: 'content-override' };
     }
   }
 
   // 1) Prioridad explícita de dominio: `area:pipeline`/`area:*` gana sobre `app:*` cuando coexisten.
   for (const priorityLabel of priority) {
     if (labels.includes(priorityLabel) && mapping[priorityLabel]) {
-      return mapping[priorityLabel];
+      return { skill: mapping[priorityLabel], source: 'priority-label' };
     }
   }
 
   // 2) Fallback: primer match directo (orden de labels de GitHub)
   for (const label of labels) {
-    if (mapping[label]) return mapping[label];
+    if (mapping[label]) return { skill: mapping[label], source: 'direct-label' };
   }
 
   const defaultSkill = mapping.default || 'backend-dev';
   if (isDeclaredStackDevSkill(defaultSkill, config)) {
-    return defaultSkill;
+    return { skill: defaultSkill, source: 'declared-default' };
   }
 
-  return getGenericDevFallbackSkill(config, mapping);
+  return { skill: getGenericDevFallbackSkill(config, mapping), source: 'generic-fallback' };
+}
+
+// Wrapper preservado: firma y retorno idénticos a los de siempre, para que los
+// 6 call sites del ruteo de rebotes queden intactos (#6747).
+function determinarDevSkill(issue, config) {
+  return resolverDevSkillConOrigen(issue, config).skill;
 }
 
 function getDevSkillPartitions(config) {
@@ -12834,6 +12848,10 @@ async function brazoRewind(config) {
         pipelineRoot: PIPELINE,
         yaml,
         activeProcesses,
+        // #6747 — el alias `dev` llega con `skill: null` y se resuelve por
+        // labels. Mismo patrón con que se inyecta `determinarDevSkill` en
+        // `resolveReboteDestino`: un solo camino de resolución, sin duplicar.
+        resolverDevSkillConOrigen,
         options: {
           killGraceMs: (config.rewind && config.rewind.kill_grace_seconds)
             ? config.rewind.kill_grace_seconds * 1000
@@ -12901,6 +12919,9 @@ async function brazoRewind(config) {
             target: result.target,
             fromPipeline: result.fromPipeline,
             fromFase: result.fromFase,
+            // #6747 — los códigos DEV_SKILL_* nombran el skill que se resolvió
+            // antes de abortar; sin esto el operador lee un `?`.
+            skill: result.skill,
             error: result.message,
             killGraceMs: rewindMod.DEFAULT_KILL_GRACE_MS,
           });
@@ -24594,6 +24615,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     ghWritesBloqueadas,
     ghCommentOnIssue,
     determinarDevSkill,
+    // #6747 — expuesto para que la suite pueda verificar el `source` de cada
+    // rama sin duplicar el camino de resolución.
+    resolverDevSkillConOrigen,
     getDevSkillPartitions,
     isDeclaredStackDevSkill,
     getGenericDevFallbackSkill,
