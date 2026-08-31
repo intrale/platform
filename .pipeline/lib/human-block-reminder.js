@@ -65,6 +65,18 @@ const issueTitleCache = require('./issue-title-cache');
 const REMINDER_STEPS_HOURS = Object.freeze([2, 6, 24]);
 const RECURRING_EVERY_HOURS = 72;
 
+// #6432 CA-26 — Tope de intentos por default del rescate de merges
+// (`brazo.reclaim_merge_race.max_attempts`). Sólo se usa si el caller no lo
+// pasa: acá no se lee config, este módulo es puro.
+const MERGE_RACE_DEFAULT_MAX_ATTEMPTS = 3;
+// Techo del silencio. Un rescate real se resuelve en pocos ticks del brazo
+// (3 intentos, hijo con timeout de 300s). Pasado este plazo el rescate no está
+// "en vuelo": está trabado —el selector puede estar mandándolo a `skipped` para
+// siempre (head movido, `qa:passed` perdido) sin llegar nunca a `toDegrade`— y
+// el bloqueo vuelve a ser del humano. Sin este techo, un marker en ese estado
+// se pudre en `needs-human` sin un solo aviso posterior al inicial.
+const MERGE_RACE_MAX_SILENCE_HOURS = 6;
+
 const STATE_FILENAME = 'human-block-reminder-state.json';
 
 function defaultStateFilePath(pipelineDir) {
@@ -132,7 +144,67 @@ function dueCount(ageHours) {
  * @param {object} [args.state]
  * @returns {{due: Array, nextState: object, pruned: number[]}}
  */
-function evaluateReminders({ now, blocked, state } = {}) {
+/**
+ * #6432 CA-26 — ¿el rescate automático de la carrera con los checks está EN
+ * VUELO para este bloqueo?
+ *
+ * Sólo si lo está corresponde callar el recordatorio: el operador no tiene nada
+ * que decidir mientras el pipeline reintenta solo. En cualquier otro caso el
+ * bloqueo es suyo y se recuerda con la escalera normal.
+ *
+ * FAIL-OPEN HACIA EL HUMANO, sin excepción: ante cualquier duda —sin ledger
+ * inyectado, barrido apagado, precondición mal formada, entrada ilegible,
+ * intentos agotados, `degraded`, o silencio ya demasiado largo— devuelve
+ * `false` y el bloqueo SE RECUERDA. El único camino a `true` es la evidencia
+ * positiva de que quedan intentos disponibles sobre este mismo par
+ * (`pr`, `head_sha`) y de que el barrido está encendido para usarlos.
+ *
+ * @param {object} block — un elemento de `listBlockedIssues()`.
+ * @param {object} [reclaim] — { enabled, ledger, maxAttempts, maxSilenceHours }.
+ * @param {number} [ageHours] — antigüedad del bloqueo, ya calculada por el caller.
+ * @returns {boolean}
+ */
+function reclaimEnVuelo(block, reclaim, ageHours) {
+    const pc = block && block.precondition;
+    // Otros tipos (`human_judgment`, `dependency`) no los toca esta rama: son
+    // del humano por definición y siguen recordando igual que siempre.
+    if (!pc || pc.type !== 'merge_checks_race') return false;
+    // Barrido apagado (kill-switch de D12) ⇒ nadie va a reclamar nada: el
+    // marker nace igual, así que sin esto quedaría mudo para siempre.
+    if (!reclaim || reclaim.enabled !== true) return false;
+    // Precondición degenerada ⇒ el selector tampoco la va a elegir.
+    if (!Number.isInteger(pc.pr) || pc.pr <= 0) return false;
+    const sha = String(pc.head_sha || '').toLowerCase();
+    if (!/^[0-9a-f]{40}$/.test(sha)) return false;
+    // Sin ledger no se puede AFIRMAR que quedan intentos. No se asume.
+    const ledger = reclaim.ledger;
+    if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) return false;
+
+    const techo = Number.isFinite(Number(reclaim.maxSilenceHours))
+        ? Number(reclaim.maxSilenceHours)
+        : MERGE_RACE_MAX_SILENCE_HOURS;
+    if (Number.isFinite(ageHours) && ageHours >= techo) return false;
+
+    const max = Number.isInteger(reclaim.maxAttempts) && reclaim.maxAttempts > 0
+        ? reclaim.maxAttempts
+        : MERGE_RACE_DEFAULT_MAX_ATTEMPTS;
+
+    const entry = ledger[String(Number(block.issue))];
+    // Sin entrada: nunca se intentó ⇒ los `max` intentos están disponibles.
+    if (!entry || typeof entry !== 'object') return true;
+    // Entrada de OTRO par (pr, head_sha): el contador arranca de cero sobre el
+    // par nuevo, mismo criterio que el selector.
+    const mismoPar = Number(entry.pr) === pc.pr
+        && String(entry.head_sha || '').toLowerCase() === sha;
+    if (!mismoPar) return true;
+    // Degradación pegajosa (D11): ya es del humano, recuerda normal.
+    if (entry.degraded === true) return false;
+    const attempts = Number(entry.attempts);
+    if (!Number.isFinite(attempts) || attempts < 0) return false; // ledger ilegible ⇒ recuerda
+    return attempts < max;
+}
+
+function evaluateReminders({ now, blocked, state, reclaim } = {}) {
     const nowMs = now instanceof Date ? now.getTime() : Number(now);
     const prev = (state && state.issues && typeof state.issues === 'object') ? state.issues : {};
     const list = Array.isArray(blocked) ? blocked : [];
@@ -154,6 +226,13 @@ function evaluateReminders({ now, blocked, state } = {}) {
             ageHours = (nowMs - blockedAtMs) / 3600000;
         }
         if (!Number.isFinite(ageHours)) ageHours = 0;
+
+        // #6432 CA-26 — El único bloqueo que NO se recuerda es el que el
+        // pipeline está reclamando solo AHORA: pedirle al operador que responda
+        // `/unblock` por algo que no depende de él es ruido en el mismo canal
+        // donde llegan los bloqueos que sí exigen intervención. Apenas el
+        // rescate se agota, se degrada o se traba, vuelve a la escalera normal.
+        if (reclaimEnVuelo(b, reclaim, ageHours)) continue;
 
         const target = dueCount(ageHours);
         const previo = prev[key] && Number.isFinite(Number(prev[key].sent)) ? Number(prev[key].sent) : 0;
@@ -338,7 +417,20 @@ function runReminderTick(opts = {}) {
         }
 
         const state = readState(stateFile);
-        const { due, nextState, pruned } = evaluateReminders({ now, blocked, state });
+
+        // #6432 CA-26 — Contexto del rescate automático. Se INYECTA (función u
+        // objeto): este módulo no lee config ni disco por su cuenta. Si el
+        // caller no lo pasa, o si armarlo falla, queda `null` ⇒ no se calla
+        // ningún bloqueo (fail-open hacia el humano).
+        let reclaim = null;
+        try {
+            reclaim = typeof opts.reclaim === 'function' ? opts.reclaim() : (opts.reclaim || null);
+        } catch (e) {
+            log(`No se pudo leer el estado del rescate de merges, se recuerda todo: ${e.message}`);
+            reclaim = null;
+        }
+
+        const { due, nextState, pruned } = evaluateReminders({ now, blocked, state, reclaim });
 
         if (due.length === 0) {
             // Igual persistimos: la poda de issues destrabados tiene que quedar.
@@ -377,6 +469,9 @@ function runReminderTick(opts = {}) {
 module.exports = {
     REMINDER_STEPS_HOURS,
     RECURRING_EVERY_HOURS,
+    MERGE_RACE_DEFAULT_MAX_ATTEMPTS,
+    MERGE_RACE_MAX_SILENCE_HOURS,
+    reclaimEnVuelo,
     STATE_FILENAME,
     defaultStateFilePath,
     readState,

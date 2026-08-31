@@ -222,7 +222,8 @@ Reparto: **39 kernel · 12 autoridad · 9 producto**.
 | 53 | `deliverable_gate` (1667) | obj | **autoridad** | Gate de entregables; decide qué se considera entregado. |
 | 54 | `gates` (1697) | obj | **autoridad** | Política de gate3 y de ausencia del operador; decide quién aprueba. |
 | 55 | `waves` (1759) | obj | kernel | Modelo de olas del motor; mecanismo. |
-| 56 | `wave_auto_transition` (1782) | obj | **autoridad** | Transición automática de ola sin humano; decide autonomía. |
+| 56 | `brazo` | obj | **autoridad** | Kill-switches y topes de automatismos del brazo, incluido `reclaim_merge_race`. |
+| 57 | `wave_auto_transition` (1782) | obj | **autoridad** | Transición automática de ola sin humano; decide autonomía. |
 | 57 | `telegram` (1800) | obj | producto | Verificado: en HEAD sólo `bot_username`, sin escalación. |
 | 58 | `commander_products` (1823) | obj | **autoridad** | D-2: incluye `default_product` y el alta de productos con sus operadores. |
 | 59 | `vault` (1318) | obj | kernel | #5352: direcciona secretos de infraestructura por host (`prefix`/`projectId`/`hostId`); es mecanismo, se muda al kernel sin conocer el producto. Reutiliza `kernel.region`. |
