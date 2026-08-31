@@ -87,6 +87,31 @@ const GATE = Object.freeze({
  */
 const VERSION_RE = vaultMigration.SLUG_RE || /^[A-Za-z0-9._:@-]{1,64}$/;
 
+/**
+ * Frases de confirmación de las dos etapas irreversibles.
+ *
+ * Viven ACÁ, en la capa que comparten la CLI y el Pulpo, y no en el dispatch de
+ * la CLI: en la rev-1 estaban sólo allá, y el mensaje que el wiring le imprime
+ * al operador las repetía como literal. Dos copias de la frase que abre la etapa
+ * irreversible es exactamente el tipo de duplicación que se desincroniza en
+ * silencio — y la copia que se desincroniza es la que le dice al operador qué
+ * escribir.
+ */
+const CONFIRM = Object.freeze({
+  rotate: 'ROTACION ACREDITADA',
+  provision: 'PROVISION ACREDITADA',
+});
+
+/**
+ * El host viaja a mensajes del operador. Se normaliza contra `HOST_RE` antes de
+ * concatenarlo: un host inválido se reporta como `<host-invalido>` en vez de
+ * inyectar texto arbitrario en el log.
+ */
+function normalizarHost(host) {
+  return (typeof host === 'string' && host.length <= 64 && vaultMigration.HOST_RE.test(host))
+    ? host : '<host-invalido>';
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -254,25 +279,76 @@ function createProductionVaultMigration(opts = {}) {
   }
 
   /**
+   * ¿Esta invocación es una REANUDACIÓN legítima de un crash?
+   *
+   * El replay del ledger salta la confirmación del operador, así que es la
+   * superficie que hay que cerrar (#5453 rev-2, hallazgo de `security`:
+   * OWASP A04 + A01). Se exigen las TRES condiciones, y ninguna alcanza sola:
+   *
+   *   1. `reanudada === true` — lo computa `conCheckpoint()` mirando si el
+   *      checkpoint YA existía antes de este intento. Es el único dato que
+   *      distingue crash de intento fresco.
+   *   2. el estado persistido del host trae un `pendiente` VIVO con la misma
+   *      `op` y la misma `clave`. Chequeo independiente contra el filesystem:
+   *      no se le cree al parámetro, se verifica. Sin `pendiente` no hubo
+   *      checkpoint, y sin checkpoint no hay nada que reanudar.
+   *   3. la clave está en el ledger (lo evalúa el llamador).
+   *
+   * Por qué (1) y (2) juntas: `conCheckpoint()` persiste el `pendiente` ANTES
+   * de invocar la operación, así que en el momento en que corre esta función
+   * hay un `pendiente` vivo también en el primer intento. (2) sola devolvería
+   * `true` siempre. Y (1) sola confiaría en un booleano del llamador.
+   */
+  function esReanudacionReal(p, op) {
+    if (!p || p.reanudada !== true) return false;
+    if (typeof p.idempotencyKey !== 'string' || !p.idempotencyKey) return false;
+    // El coordinador se asigna abajo; estas funciones sólo corren a través de
+    // él, así que para cuando se invocan ya está cableado.
+    if (!coordinador || typeof coordinador.readState !== 'function') return false;
+    let st;
+    try { st = coordinador.readState(p.host); } catch { return false; }
+    const pend = st && st.pendiente;
+    if (!pend || typeof pend !== 'object') return false;
+    return pend.op === op && pend.clave === p.idempotencyKey;
+  }
+
+  /** Mensaje único del rechazo fail-closed. Explica QUÉ falta y CÓMO se acredita. */
+  function explicarFaltaAck(host, op) {
+    const frase = CONFIRM[op];
+    const extra = op === 'rotate' ? ' --version <etiqueta>' : '';
+    logger('[vault-migration] ' + host + ': la etapa "' + op + '" NO se acredito: falta la '
+      + 'confirmacion explicita del operador para esta invocacion. '
+      + 'Impacto: el host no avanza y el fallback se conserva. '
+      + 'Proximo paso: rotar fuera de banda segun docs/runbooks/credential-rotation.md y acreditar con '
+      + 'echo "' + frase + '" | node .pipeline/vault-migration-run.js ' + op + ' --host ' + host + extra);
+  }
+
+  /**
    * Acredita una rotación hecha fuera de banda.
    *
    * Tres caminos, en este orden:
-   *   1. la clave de idempotencia ya está en el ledger ⇒ se devuelve el MISMO
-   *      resultado (reanudación de un crash: no hubo material nuevo);
+   *   1. REANUDACIÓN real (ver `esReanudacionReal`) cuya clave ya está en el
+   *      ledger ⇒ se devuelve el MISMO resultado: no hubo material nuevo;
    *   2. hay confirmación del operador para esta invocación ⇒ se registra y se
    *      acredita;
-   *   3. ninguna de las dos ⇒ `{ok:false}` (el modo del Pulpo).
+   *   3. ninguna de las dos ⇒ `{ok:false}` (el modo del Pulpo, y el modo de
+   *      `advance`: ningún comando automático puede acreditar una rotación).
    */
   function rotate(params) {
     const p = params || {};
-    const previa = ledger.buscar('rotate', p.idempotencyKey);
-    if (previa) {
-      logger('[vault-migration] ' + p.host + ': rotacion ya acreditada con la misma clave; '
-        + 'no se emite material nuevo');
-      return { ok: true, version: previa.version || undefined, reanudada: true };
+    if (esReanudacionReal(p, 'rotate')) {
+      const previa = ledger.buscar('rotate', p.idempotencyKey);
+      if (previa) {
+        logger('[vault-migration] ' + normalizarHost(p.host) + ': rotacion ya acreditada con la '
+          + 'misma clave; no se emite material nuevo');
+        return { ok: true, version: previa.version || undefined, reanudada: true };
+      }
     }
     const ack = acreditacion.rotate;
-    if (!ack || ack.confirmado !== true) return { ok: false };
+    if (!ack || ack.confirmado !== true) {
+      explicarFaltaAck(normalizarHost(p.host), 'rotate');
+      return { ok: false };
+    }
     const version = typeof ack.version === 'string' ? ack.version.trim() : '';
     if (!VERSION_RE.test(version)) {
       logger('[vault-migration] ERROR: la etiqueta de version de la rotacion es invalida. '
@@ -294,13 +370,18 @@ function createProductionVaultMigration(opts = {}) {
   /** Acredita el provisionamiento en el vault. Mismos tres caminos que `rotate`. */
   function provision(params) {
     const p = params || {};
-    const previa = ledger.buscar('provision', p.idempotencyKey);
-    if (previa) {
-      logger('[vault-migration] ' + p.host + ': provision ya acreditada con la misma clave');
-      return { ok: true, reanudada: true };
+    if (esReanudacionReal(p, 'provision')) {
+      const previa = ledger.buscar('provision', p.idempotencyKey);
+      if (previa) {
+        logger('[vault-migration] ' + normalizarHost(p.host) + ': provision ya acreditada con la misma clave');
+        return { ok: true, reanudada: true };
+      }
     }
     const ack = acreditacion.provision;
-    if (!ack || ack.confirmado !== true) return { ok: false };
+    if (!ack || ack.confirmado !== true) {
+      explicarFaltaAck(normalizarHost(p.host), 'provision');
+      return { ok: false };
+    }
     const registrado = ledger.registrar({
       ts: new Date(now()).toISOString(),
       op: 'provision',
@@ -400,6 +481,7 @@ function createProductionVaultMigration(opts = {}) {
 }
 
 module.exports = {
+  CONFIRM,
   createProductionVaultMigration,
   GATE,
   VERSION_RE,

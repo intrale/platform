@@ -49,7 +49,14 @@ async function main() {
   const argv = process.argv.slice(2);
   // Sólo se consume stdin cuando el comando lo necesita: `status` desde una
   // terminal no puede quedarse esperando un EOF que nadie va a mandar.
-  const necesitaConfirmacion = argv.includes('rotate') || argv.includes('provision');
+  //
+  // Se resuelve con el MISMO parser que decide el comando (#5453 rev-2). El
+  // `argv.includes('rotate')` de la rev-1 miraba el argv entero, así que
+  // `--host rotate` pedía stdin para un `status`, y un comando escrito después
+  // de un flag suelto podía no pedirlo. El comando es una posición, no una
+  // subcadena del argv.
+  const comando = cli.parseArgs(argv).comando;
+  const necesitaConfirmacion = comando === 'rotate' || comando === 'provision';
   const confirmation = necesitaConfirmacion ? await readStdin() : '';
 
   const { exitCode, lines } = cli.runCli({

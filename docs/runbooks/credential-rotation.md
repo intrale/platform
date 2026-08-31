@@ -518,8 +518,8 @@ El coordinador ([`.pipeline/lib/vault-migration.js`](../../.pipeline/lib/vault-m
 | Etapa | La ejecuta | El coordinador | Cómo se lo decís |
 |---|---|---|---|
 | `preflight` | coordinador | valida anclas, allowlist e inventario | `vault-migration-run.js preflight --host H` |
-| `rotated` | **vos**, fuera de banda | registra la rotación con clave de idempotencia | `vault-migration-run.js rotate --host H --version <etiqueta>` (frase por STDIN) |
-| `provisioned` | **vos** (`vault-provisioner`) | registra scopes provisionados | `vault-migration-run.js provision --host H` (frase por STDIN) |
+| `rotated` | **vos**, fuera de banda | registra la rotación con clave de idempotencia por ventana | `vault-migration-run.js rotate --host H --version <etiqueta>` (frase por STDIN; **nunca** por `advance`) |
+| `provisioned` | **vos** (`vault-provisioner`) | registra scopes provisionados | `vault-migration-run.js provision --host H` (frase por STDIN; **nunca** por `advance`) |
 | `respawned` | **vos** (`node .pipeline/restart.js`) | verifica `.pid` + proceso vivo | `vault-migration-run.js respawn --host H` |
 | `coexisting` | coordinador (tick del Pulpo) | cuenta la matriz de cobertura | automático; a mano: `vault-migration-run.js observe --host H` |
 | `cutover-ready` | coordinador | declara elegibilidad | automático |
@@ -610,10 +610,24 @@ estado del host y en el ledger de acreditaciones.
 
 La acreditación queda registrada en
 `.pipeline/state/vault-migration/acreditaciones.jsonl`, indexada por la clave de
-idempotencia `<host>:rotate:<intento>`. **Si el proceso se cae entre etapas y
-reanudás, se reusa esa misma clave y la misma etiqueta: no se te va a pedir que
-rotes de nuevo, y el coordinador no va a interpretar la reanudación como una
-rotación nueva.**
+idempotencia `<host>:rotate:<intento>:<nonce>`. **Si el proceso se cae entre
+etapas y reanudás, se reusa esa misma clave y la misma etiqueta: no se te va a
+pedir que rotes de nuevo, y el coordinador no va a interpretar la reanudación
+como una rotación nueva.**
+
+El `<nonce>` es aleatorio y se fija **una vez por ventana de rotación**, en el
+checkpoint. Es lo que separa "reanudar un crash" de "empezar una ventana nueva":
+el ledger es append-only y sobrevive a un `reset.js`, así que con una clave
+constante por host la acreditación de la ventana anterior volvía a matchear y el
+host cruzaba `rotated` **sin que nadie rotara nada**. Con el nonce, una ventana
+nueva nunca puede reusar la acreditación de la anterior: te vuelve a pedir la
+frase, que es el comportamiento correcto.
+
+> **`advance` nunca acredita `rotate` ni `provision`.** Son las dos etapas
+> irreversibles y las dos que exigen un humano, así que sólo avanzan por su
+> comando explícito con la frase por STDIN. Si `advance` se traba con
+> `rotacion_fallida` o `provision_fallida`, no es una falla del coordinador: es
+> el gate pidiéndote la confirmación. La salida te imprime el comando exacto.
 
 **3. Provisionar** — subí el material nuevo al vault, scope por scope, con
 [`.pipeline/lib/vault-provisioner.js`](../../.pipeline/lib/vault-provisioner.js).

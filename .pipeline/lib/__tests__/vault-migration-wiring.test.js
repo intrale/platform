@@ -100,10 +100,30 @@ function conOperador(fn) {
   }
 }
 
-/** Escribe los `.pid` de todos los consumidores como si `restart.js` acabara de correr. */
+/**
+ * Escribe los `.pid` de todos los consumidores como si `restart.js` acabara de
+ * correr.
+ *
+ * El `mtime` se estampa a mano a propósito. `vault-respawn-readiness.js` acredita
+ * un consumidor sólo si su `.pid` es POSTERIOR a `rotacion.at`, y compara un
+ * `Date.now()` (microsegundos) contra un `mtimeMs` del filesystem, que en Windows
+ * viene cuantizado al tick del timer (~15,6 ms). Como este helper corre a pocos
+ * milisegundos de `rotate()`, el `.pid` heredaba el mtime del tick ANTERIOR y el
+ * respawn fallaba con `respawn_incompleto` de forma intermitente — a veces con
+ * acreditación parcial, cuando el tick avanzaba en medio del `for`.
+ *
+ * Fijar el mtime un segundo adelante saca a la suite de esa lotería sin tocar el
+ * ancla de seguridad. En producción no aplica: entre acreditar la rotación y
+ * correr `restart.js` pasan segundos o minutos, nunca microsegundos. La
+ * granularidad de reloj del verificador es un bug latente propio, reportado
+ * aparte (afecta filesystems con mtime de 1-2 s, tipo FAT/SMB).
+ */
 function acreditarPidsVivos(dir) {
+  const futuro = new Date(Date.now() + 1000);
   for (const nombre of CONSUMIDORES) {
-    fs.writeFileSync(path.join(dir, `${nombre}.pid`), String(process.pid), 'utf8');
+    const ruta = path.join(dir, `${nombre}.pid`);
+    fs.writeFileSync(ruta, String(process.pid), 'utf8');
+    fs.utimesSync(ruta, futuro, futuro);
   }
 }
 
@@ -236,17 +256,24 @@ test('reanudar con la MISMA clave de idempotencia reusa la acreditacion y no emi
   const registro = JSON.parse(ledger[0]);
   assert.equal(registro.op, 'rotate');
   assert.equal(registro.version, VERSION_OK);
-  assert.equal(registro.clave, `${HOST}:rotate:1`, 'la clave es <host>:<op>:<intento>, sin material');
+  // La clave es `<host>:<op>:<intento>:<nonce-de-ventana>`. Se afirma la FORMA y
+  // la ausencia de material, no un literal: el nonce es aleatorio por ventana a
+  // propósito (#5453 rev-2). Fijar el literal `<host>:rotate:1` era justamente
+  // lo que hacía colisionable la clave entre ventanas.
+  assert.match(registro.clave, new RegExp(`^${HOST}:rotate:1:[0-9a-f]{12}$`),
+    'la clave es <host>:<op>:<intento>:<nonce>, sin material');
+  assert.ok(!registro.clave.includes(VERSION_OK), 'la clave no lleva la etiqueta de version');
 
   // Simulamos el crash: el operador YA rotó (el ledger lo prueba) pero el
   // avance de etapa no llegó a persistirse; queda el checkpoint pendiente que
-  // deja `conCheckpoint()`.
+  // deja `conCheckpoint()`. El `pendiente` reusa la clave REAL de la ventana:
+  // es lo que hace que la reanudación sea distinguible de una ventana nueva.
   const rutaEstado = path.join(armado.stateDir, `host-${HOST}.json`);
   const estado = JSON.parse(fs.readFileSync(rutaEstado, 'utf8'));
   estado.stage = STAGE.PREFLIGHT;
   estado.rotacion = null;
   estado.pendiente = {
-    op: 'rotate', clave: `${HOST}:rotate:1`, intento: 1, at: new Date().toISOString(),
+    op: 'rotate', clave: registro.clave, intento: 1, at: new Date().toISOString(),
   };
   fs.writeFileSync(rutaEstado, JSON.stringify(estado), 'utf8');
 
@@ -259,6 +286,135 @@ test('reanudar con la MISMA clave de idempotencia reusa la acreditacion y no emi
 
   const ledger2 = fs.readFileSync(armado.acreditacionesPath, 'utf8').split(/\r?\n/).filter(Boolean);
   assert.equal(ledger2.length, 1, 'reanudar no registra una acreditacion nueva');
+}));
+
+// -----------------------------------------------------------------------------
+// #5453 rev-2 · el replay del ledger NO puede sustituir al operador
+// -----------------------------------------------------------------------------
+//
+// Hallazgo de `security` sobre la rev-1 (OWASP A04 Insecure Design + A01 Broken
+// Access Control): la frase de confirmación es el único gate fail-closed de las
+// dos etapas irreversibles y vivía SÓLO en el dispatch de la CLI. `advance`
+// llegaba a las mismas funciones sin pasar por ahí. Y como la clave de
+// idempotencia era CONSTANTE por host (`<host>:<op>:1`) contra un ledger
+// append-only que nunca se acota a una ventana, el replay del ledger matcheaba
+// una acreditación de una ventana ANTERIOR y devolvía `{ok:true}` antes de
+// mirar la confirmación: el host cruzaba `rotated` sin que nadie rotara nada.
+//
+// La cobertura vieja no lo atrapaba porque mide procedencia (`source: vault`),
+// no validez, y la auditoría registraba `{"stage":"rotated","ok":true}` como un
+// evento legítimo — la atestación falsa era invisible justo en el artefacto que
+// se usa para probar CA-23. Estos tests son el candado.
+
+/** Deja el host en ventana NUEVA, con el ledger de la ventana anterior acreditado. */
+function conVentanaAnteriorAcreditada(dir) {
+  const operador = wiring.createProductionVaultMigration(deps(dir, {
+    acreditacion: {
+      rotate: { confirmado: true, version: VERSION_OK },
+      provision: { confirmado: true },
+    },
+  }));
+  operador.coordinador.preflight({ host: HOST });
+  assert.equal(operador.coordinador.rotate({ host: HOST }).ok, true);
+  assert.equal(operador.coordinador.provision({ host: HOST }).ok, true);
+  // Ventana NUEVA: el estado del host se reinicia (el ciclo de rotación
+  // siguiente, o el `reset.js` que limpia `.pipeline/state/`). El ledger, que es
+  // append-only, sobrevive — y ésa es exactamente la asimetría explotable.
+  fs.unlinkSync(path.join(operador.stateDir, `host-${HOST}.json`));
+  return operador;
+}
+
+test('CA-23 · en una ventana nueva, `advance` sin acreditacion NO puede cruzar `rotated`', () => conOperador(() => {
+  const dir = tmpPipeline();
+  const armado = conVentanaAnteriorAcreditada(dir);
+
+  // El modo del Pulpo y el de `advance`: cero acreditación, cero frase, cero humano.
+  const auto = wiring.createProductionVaultMigration(deps(dir));
+  assert.equal(auto.coordinador.advance({ host: HOST }).ok, true, 'el preflight si puede correr solo');
+
+  const intento = auto.coordinador.advance({ host: HOST });
+  assert.equal(intento.ok, false, 'acreditar una rotacion que nunca ocurrio tiene que fallar cerrado');
+  assert.equal(intento.causa, CAUSA.ROTACION_FALLIDA);
+  assert.equal(auto.coordinador.readState(HOST).stage, STAGE.PREFLIGHT,
+    'el host NO puede quedar en `rotated` sin una rotacion real');
+  assert.equal(auto.coordinador.readState(HOST).rotacion, null);
+
+  // Y la auditoría no puede contener una atestación falsa: es el artefacto con
+  // el que se prueba CA-23.
+  const falsa = leerAuditoria(dir).filter((e) => e.stage === STAGE.ROTATED && e.ok === true);
+  assert.equal(falsa.length, 1,
+    'solo la rotacion REAL de la ventana anterior puede figurar como rotated/ok');
+  assert.ok(armado.acreditacionesPath.endsWith(wiring.ACREDITACIONES_FILE));
+}));
+
+test('CA-23 · un `pendiente` huerfano de un intento fallido no convierte el tick siguiente en reanudacion', () => conOperador(() => {
+  const dir = tmpPipeline();
+  conVentanaAnteriorAcreditada(dir);
+  const auto = wiring.createProductionVaultMigration(deps(dir));
+  auto.coordinador.advance({ host: HOST });
+
+  // Primer intento sin acreditación: falla, pero DEJA el checkpoint escrito
+  // (`conCheckpoint()` lo persiste ANTES de invocar). Ese `pendiente` vivo es
+  // lo que hacía que el tick siguiente se leyera como "reanudacion de un crash".
+  assert.equal(auto.coordinador.advance({ host: HOST }).ok, false);
+  const pend = auto.coordinador.readState(HOST).pendiente;
+  assert.ok(pend && pend.op === 'rotate', 'el checkpoint queda escrito, como siempre');
+
+  // Segundo tick: sigue sin acreditación ⇒ sigue fallando.
+  assert.equal(auto.coordinador.advance({ host: HOST }).ok, false,
+    'un checkpoint huerfano no es evidencia de que el operador haya rotado');
+  assert.equal(auto.coordinador.readState(HOST).stage, STAGE.PREFLIGHT);
+}));
+
+test('CA-23 · `provision` tiene el MISMO gate: no se acredita por replay de otra ventana', () => conOperador(() => {
+  const dir = tmpPipeline();
+  conVentanaAnteriorAcreditada(dir);
+
+  // Se rota de verdad en la ventana nueva, pero NO se acredita la provisión.
+  const soloRotate = wiring.createProductionVaultMigration(deps(dir, {
+    acreditacion: { rotate: { confirmado: true, version: '2026-09-01-r2' } },
+  }));
+  soloRotate.coordinador.preflight({ host: HOST });
+  assert.equal(soloRotate.coordinador.rotate({ host: HOST }).ok, true);
+
+  const auto = wiring.createProductionVaultMigration(deps(dir));
+  const intento = auto.coordinador.advance({ host: HOST });
+  assert.equal(intento.ok, false, 'la provision de la ventana anterior no acredita esta');
+  assert.equal(intento.causa, CAUSA.PROVISION_FALLIDA);
+  assert.equal(auto.coordinador.readState(HOST).stage, STAGE.ROTATED);
+}));
+
+test('CA-23 · dos ventanas nunca comparten clave de idempotencia', () => conOperador(() => {
+  const dir = tmpPipeline();
+  conVentanaAnteriorAcreditada(dir);
+  const segunda = wiring.createProductionVaultMigration(deps(dir, {
+    acreditacion: { rotate: { confirmado: true, version: '2026-09-01-r2' } },
+  }));
+  segunda.coordinador.preflight({ host: HOST });
+  assert.equal(segunda.coordinador.rotate({ host: HOST }).ok, true);
+
+  const claves = fs.readFileSync(segunda.acreditacionesPath, 'utf8')
+    .split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l))
+    .filter((r) => r.op === 'rotate')
+    .map((r) => r.clave);
+  assert.equal(claves.length, 2, 'la segunda ventana registra una acreditacion PROPIA');
+  assert.notEqual(claves[0], claves[1],
+    'una clave constante por host es lo que permitia el replay entre ventanas');
+  // Y la versión de la ventana nueva es la nueva, no la reciclada del ledger.
+  assert.equal(segunda.coordinador.readState(HOST).rotacion.version, '2026-09-01-r2');
+}));
+
+test('CA-23 · la CLI le dice al operador que `advance` no acredita etapas irreversibles', () => conOperador(() => {
+  const dir = tmpPipeline();
+  conVentanaAnteriorAcreditada(dir);
+  const base = deps(dir);
+  cli.runCli({ argv: ['advance', '--host', HOST], deps: base });
+  const r = cli.runCli({ argv: ['advance', '--host', HOST], deps: base });
+  assert.equal(r.exitCode, cli.EXIT.ETAPA_FALLIDA);
+  const texto = r.lines.join('\n');
+  assert.match(texto, /no acredita etapas irreversibles/);
+  assert.match(texto, new RegExp(cli.CONFIRM.rotate),
+    'el mensaje tiene que traer el comando concreto que SI acredita');
 }));
 
 // -----------------------------------------------------------------------------

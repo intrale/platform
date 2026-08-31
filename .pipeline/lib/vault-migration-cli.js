@@ -39,10 +39,10 @@ const wiring = require('./vault-migration-wiring');
 const vaultMigration = require('./vault-migration');
 
 /** Frases de confirmación. Cortas, en mayúsculas, imposibles de tipear sin querer. */
-const CONFIRM = Object.freeze({
-  rotate: 'ROTACION ACREDITADA',
-  provision: 'PROVISION ACREDITADA',
-});
+// Fuente única: las define `vault-migration-wiring.js`, que es la capa que
+// comparten la CLI y el Pulpo. Acá sólo se reexportan para el contrato público
+// del módulo y para los tests que arman la invocación del operador.
+const { CONFIRM } = wiring;
 
 /**
  * Códigos de salida ESTABLES: el runbook los documenta y un script de operación
@@ -256,6 +256,19 @@ function runCli(params) {
   emit('VAULT · ' + args.host + ' · ' + args.comando + ': NO AVANZO · causa "'
     + ((res && res.causa) || 'indeterminada') + '"');
   if (res && res.evidencia) emit('  evidencia: ' + JSON.stringify(res.evidencia));
+  // `advance` NUNCA acredita una etapa irreversible: no tiene frase de
+  // confirmación y no la puede tener, porque también es el modo en que corre el
+  // Pulpo. Cuando se traba justo ahí, el mensaje tiene que decir qué comando
+  // explícito destraba — si no, se lee como una falla del coordinador.
+  const trabadaEnAcreditacion = res
+    && (res.causa === 'rotacion_fallida' || res.causa === 'provision_fallida');
+  if (args.comando === 'advance' && trabadaEnAcreditacion) {
+    const etapa = res.causa === 'rotacion_fallida' ? 'rotate' : 'provision';
+    emit('  "advance" no acredita etapas irreversibles: son las dos que exigen un humano.');
+    emit('  echo "' + CONFIRM[etapa] + '" | node .pipeline/vault-migration-run.js '
+      + etapa + ' --host ' + args.host
+      + (etapa === 'rotate' ? ' --version <etiqueta>' : ''));
+  }
   emit('  El fallback se conserva. Ver la tabla de causas en docs/runbooks/credential-rotation.md.');
   return { exitCode: EXIT.ETAPA_FALLIDA, lines };
 }

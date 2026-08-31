@@ -95,6 +95,7 @@
 
 const nodeFs = require('fs');
 const path = require('path');
+const nodeCrypto = require('crypto');
 
 const { redactSecretValue, REDACTION_MARKER } = require('./redact');
 
@@ -293,6 +294,13 @@ function createVaultMigration(deps = {}) {
   const stateDir = deps.stateDir ? path.resolve(deps.stateDir) : DEFAULT_STATE_DIR;
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   const logger = typeof deps.logger === 'function' ? deps.logger : () => {};
+
+  // Nonce de VENTANA para la clave de idempotencia (#5453 rev-2). Se inyecta
+  // sólo en tests; en produccion es aleatorio, nunca derivado del reloj: un
+  // reloj congelado o de baja resolucion volveria a colisionar dos ventanas.
+  const nonce = typeof deps.nonce === 'function'
+    ? deps.nonce
+    : () => nodeCrypto.randomBytes(6).toString('hex');
 
   const listDescriptors = typeof deps.listDescriptors === 'function'
     ? deps.listDescriptors
@@ -581,9 +589,21 @@ function createVaultMigration(deps = {}) {
   // ---------------------------------------------------------------------------
 
   /**
-   * Clave de idempotencia NO sensible: `<host>:<op>:<intento>`. El intento sólo
-   * crece cuando la operación anterior CERRÓ; un crash entre etapas reusa el
-   * checkpoint y por lo tanto la misma clave.
+   * Clave de idempotencia NO sensible: `<host>:<op>:<intento>:<nonce>`.
+   *
+   * El nonce de VENTANA es la corrección de #5453 rev-2 (hallazgo de
+   * `security`). La rev-1 devolvía `<host>:<op>:1` — CONSTANTE por host — para
+   * todo intento fresco. Como el ledger de acreditaciones es append-only y no
+   * se acota a una ventana, una rotación acreditada en la ventana N producía un
+   * match en la ventana N+1: el replay del ledger devolvía `{ok:true}` y el
+   * host cruzaba `rotated` sin que nadie rotara nada y sin frase de
+   * confirmación. Reanudación-tras-crash y ventana-nueva eran indistinguibles.
+   *
+   * Con el nonce, una clave fresca no puede colisionar con NINGUNA acreditación
+   * previa, así que el replay sólo puede acertar sobre la clave que el
+   * checkpoint de ESTA ventana persistió. La propiedad de reanudación se
+   * conserva intacta: el crash reusa `st.pendiente.clave`, que ya trae el nonce
+   * de la ventana en curso, y por lo tanto NO emite material nuevo.
    */
   function clavePendiente(st, op) {
     if (st.pendiente && st.pendiente.op === op && esTexto(st.pendiente.clave)) {
@@ -593,7 +613,13 @@ function createVaultMigration(deps = {}) {
         reanudada: true,
       };
     }
-    return { clave: `${st.host}:${op}:1`, intento: 1, reanudada: false };
+    // El nonce es material NO sensible (hex aleatorio); nunca deriva del
+    // secreto, del host ni del reloj. Si el generador falla, se falla cerrado:
+    // sin nonce no se arma una clave constante, porque esa clave es el bug.
+    let n;
+    try { n = String(nonce()); } catch { n = ''; }
+    if (!SLUG_RE.test(n)) return { clave: null, intento: 1, reanudada: false };
+    return { clave: `${st.host}:${op}:1:${n}`, intento: 1, reanudada: false };
   }
 
   /**
@@ -603,6 +629,14 @@ function createVaultMigration(deps = {}) {
    */
   function conCheckpoint(st, op, ejecutar) {
     const { clave, intento, reanudada } = clavePendiente(st, op);
+    // Sin clave de idempotencia no se invoca una operación irreversible: no
+    // habría forma de reanudar sin emitir material nuevo.
+    if (!esTexto(clave)) {
+      logger(`[vault-migration] ERROR: no se pudo generar la clave de idempotencia de "${op}". `
+        + 'Impacto: la etapa NO avanza y no se invoca ninguna operacion irreversible. '
+        + 'Proximo paso: reintentar; si persiste, revisar la fuente de entropia del proceso');
+      return { ok: false, causa: CAUSA.PERSISTENCIA_FALLIDA };
+    }
     let actual = st;
     if (!reanudada) {
       actual = guardarEstado(st, null, { pendiente: { op, clave, intento, at: iso(now()) } });
@@ -638,8 +672,12 @@ function createVaultMigration(deps = {}) {
     if (typeof deps.rotate !== 'function') return fallo(CAUSA.ROTACION_FALLIDA, { host });
 
     const inventario = inventarioDerivado();
-    const r = conCheckpoint(st, 'rotate', ({ idempotencyKey }) => deps.rotate({
-      host, idempotencyKey, descriptors: inventario.nombres, scopes: inventario.scopes,
+    // `reanudada` viaja al dependiente a propósito (#5453 rev-2): es el ÚNICO
+    // dato que distingue "reanudar un crash" de "primer intento de esta
+    // ventana", y lo sabe sólo este checkpoint — el estado persistido ya trae
+    // un `pendiente` vivo en los DOS casos, porque se escribe ANTES de invocar.
+    const r = conCheckpoint(st, 'rotate', ({ idempotencyKey, intento, reanudada }) => deps.rotate({
+      host, idempotencyKey, intento, reanudada, descriptors: inventario.nombres, scopes: inventario.scopes,
     }));
     if (r.causa === CAUSA.PERSISTENCIA_FALLIDA) return fallo(CAUSA.PERSISTENCIA_FALLIDA, { host });
     if (!r.ok) return fallo(CAUSA.ROTACION_FALLIDA, { host, intento: r.intento });
@@ -665,8 +703,8 @@ function createVaultMigration(deps = {}) {
     if (typeof deps.provision !== 'function') return fallo(CAUSA.PROVISION_FALLIDA, { host });
 
     const inventario = inventarioDerivado();
-    const r = conCheckpoint(st, 'provision', ({ idempotencyKey }) => deps.provision({
-      host, idempotencyKey, scopes: inventario.scopes, descriptors: inventario.nombres,
+    const r = conCheckpoint(st, 'provision', ({ idempotencyKey, intento, reanudada }) => deps.provision({
+      host, idempotencyKey, intento, reanudada, scopes: inventario.scopes, descriptors: inventario.nombres,
     }));
     if (r.causa === CAUSA.PERSISTENCIA_FALLIDA) return fallo(CAUSA.PERSISTENCIA_FALLIDA, { host });
     if (!r.ok) return fallo(CAUSA.PROVISION_FALLIDA, { host, intento: r.intento });
