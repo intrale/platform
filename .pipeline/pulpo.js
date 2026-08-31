@@ -23686,6 +23686,27 @@ async function mainLoop() {
             },
             now: new Date(),
             log: (msg) => log('hb-reminder', msg),
+            // #6432 CA-26 — Estado del rescate automático de la carrera con los
+            // checks. El recordatorio calla SÓLO al bloqueo que el pipeline
+            // está reclamando solo en este momento (barrido encendido +
+            // intentos disponibles en el ledger). Todo lo demás —barrido
+            // apagado, intentos agotados, `degraded`, ledger ilegible— se
+            // recuerda con la escalera normal: es del humano.
+            //
+            // Se arma en CADA tick a propósito: el kill-switch y el ledger
+            // cambian en caliente, y un snapshot viejo callaría un bloqueo que
+            // ya volvió a ser del operador.
+            reclaim: () => {
+              const cfgRoot = loadConfig() || {};
+              const cfg = (cfgRoot.brazo && cfgRoot.brazo.reclaim_merge_race) || {};
+              // Con el barrido apagado no se calla nada: no hay quién reclame.
+              if (cfg.enabled !== true || cfg.kill_switch === true) return null;
+              return {
+                enabled: true,
+                maxAttempts: Number.isInteger(cfg.max_attempts) && cfg.max_attempts > 0 ? cfg.max_attempts : 3,
+                ledger: mergeRaceLedger.readLedger(),
+              };
+            },
           });
           if (r && r.error) log('hb-reminder', `Tick con error (no bloqueante): ${r.error}`);
         } catch (err) {
