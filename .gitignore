@@ -284,6 +284,12 @@ scripts/planner-plan.json
 .pipeline/package-lock.json
 .pipeline/circuit-breaker-infra.json
 .pipeline/circuit-breaker-infra.json.tmp
+
+# #6708 — Estado del guardián de disco. Lo reescribe el Pulpo en cada tick;
+# versionarlo generaría un diff sucio en cada worktree y lo bloquearía el guard
+# de estado runtime del CI. El audit JSONL ya está cubierto por `.pipeline/audit/`.
+.pipeline/disk-guard-state.json
+.pipeline/disk-guard-state.json.tmp
 # #5723 — contador de rollbacks consecutivos. Va fuera del arbol versionado a
 # proposito: el rollback hace `git checkout <target> -- .pipeline/` y se
 # llevaria puesto el estado si estuviera trackeado.
@@ -473,3 +479,8 @@ security-report-*.md
 # PID del operador adentro). Ahora el script también lo pasa por `assertIgnored()`,
 # así que sin esta entrada la migración aborta antes de escribir un solo byte.
 .pipeline/.opstate-migration.lock
+
+# Artefactos de corridas de test de agentes (JUnit XML + listados temporales)
+# quedaron commiteados por error en #6145; nunca son entregables.
+/[0-9]*-junit*.xml
+/[0-9]*-testfiles.tmp

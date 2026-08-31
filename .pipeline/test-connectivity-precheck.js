@@ -25,6 +25,24 @@ const path = require('path');
 const os = require('os');
 
 const precheck = require('./connectivity-precheck');
+// #6259 (P3) — `PULPO_NO_AUTOSTART` es variable de CONTROL DE SEGURIDAD y aca hay
+// que HABILITARLA (pulpo.js gatea su `module.exports` con `=== '1'` al importar).
+// `withEnv` la RECHAZA por diseno (tira Error antes de mutar), asi que el patron
+// correcto es P3: `snapshotEnv` + `restoreEnv` en `finally` dentro del mismo test.
+// La ausencia de `withEnv` aca es lo CORRECTO, no un dialecto local (CA-6259-10).
+const { snapshotEnv, restoreEnv } = require('./lib/test-helpers/with-env');
+
+function enableWorktreeDependencies() {
+  try { require.resolve('js-yaml'); return; } catch (_) { /* worktree sin node_modules */ }
+  const gitFile = fs.readFileSync(path.join(__dirname, '..', '.git'), 'utf8').trim();
+  const gitDir = path.resolve(path.join(__dirname, '..'), gitFile.replace(/^gitdir:\s*/, ''));
+  process.env.NODE_PATH = path.join(gitDir, '..', '..', '..', 'node_modules');
+  require('node:module').Module._initPaths();
+}
+
+const __nodePathSnap = snapshotEnv(['NODE_PATH']);
+enableWorktreeDependencies();
+process.on('exit', () => restoreEnv(__nodePathSnap));
 
 let pass = 0;
 let fail = 0;
@@ -248,31 +266,39 @@ async function test(name, fn) {
 
   // T12 — pulpo export: circuit breaker salta rebote_tipo infra
   await test('T12: pulpo módulo expone precheck state + helpers (PULPO_NO_AUTOSTART)', () => {
+    // #6259 (P3) — snapshot + set + restore en `finally`: la variable no
+    // sobrevive al test aunque un assert reviente (SEC-2). `withEnv` no aplica:
+    // es variable de control y aca hay que HABILITARLA.
+    const __snap = snapshotEnv(['PULPO_NO_AUTOSTART']);
     process.env.PULPO_NO_AUTOSTART = '1';
-    // Limpiar cache para re-importar
-    delete require.cache[require.resolve('./pulpo.js')];
-    const pulpo = require('./pulpo.js');
-    assert.ok(pulpo.NETWORK_REQUIRED_PHASES, 'NETWORK_REQUIRED_PHASES exportado');
-    assert.ok(pulpo.NETWORK_REQUIRED_PHASES.has('build'), 'build debe ser network-required');
-    assert.ok(pulpo.NETWORK_REQUIRED_PHASES.has('verificacion'));
-    assert.ok(pulpo.NETWORK_REQUIRED_PHASES.has('entrega'));
-    assert.strictEqual(typeof pulpo.precheckOk, 'function');
-    assert.strictEqual(typeof pulpo.ejecutarPrecheck, 'function');
-    assert.strictEqual(typeof pulpo.marcarBloqueoInfra, 'function');
-    assert.strictEqual(typeof pulpo.reencolarInfraBloqueados, 'function');
+    try {
+      // Limpiar cache para re-importar
+      delete require.cache[require.resolve('./pulpo.js')];
+      const pulpo = require('./pulpo.js');
+      assert.ok(pulpo.NETWORK_REQUIRED_PHASES, 'NETWORK_REQUIRED_PHASES exportado');
+      assert.ok(pulpo.NETWORK_REQUIRED_PHASES.has('build'), 'build debe ser network-required');
+      assert.ok(pulpo.NETWORK_REQUIRED_PHASES.has('verificacion'));
+      assert.ok(pulpo.NETWORK_REQUIRED_PHASES.has('entrega'));
+      assert.strictEqual(typeof pulpo.precheckOk, 'function');
+      assert.strictEqual(typeof pulpo.ejecutarPrecheck, 'function');
+      assert.strictEqual(typeof pulpo.marcarBloqueoInfra, 'function');
+      assert.strictEqual(typeof pulpo.reencolarInfraBloqueados, 'function');
 
-    // Estado inicial: precheckOk=true (no corrió todavía → no bloquea)
-    pulpo._resetPrecheckState();
-    assert.strictEqual(pulpo.precheckOk(), true);
+      // Estado inicial: precheckOk=true (no corrió todavía → no bloquea)
+      pulpo._resetPrecheckState();
+      assert.strictEqual(pulpo.precheckOk(), true);
 
-    // Simular fallo del precheck
-    pulpo._setPrecheckState({
-      ok: false,
-      results: [{ category: 'g', host: 'api.github.com', tlsPort: 443, dns: { ok: false, error: { code: 'ENOTFOUND' }, attempts: 3 }, tls: null }],
-      timestamp: '2026-04-17T00:00:00Z',
-      durationMs: 50,
-    });
-    assert.strictEqual(pulpo.precheckOk(), false);
+      // Simular fallo del precheck
+      pulpo._setPrecheckState({
+        ok: false,
+        results: [{ category: 'g', host: 'api.github.com', tlsPort: 443, dns: { ok: false, error: { code: 'ENOTFOUND' }, attempts: 3 }, tls: null }],
+        timestamp: '2026-04-17T00:00:00Z',
+        durationMs: 50,
+      });
+      assert.strictEqual(pulpo.precheckOk(), false);
+    } finally {
+      restoreEnv(__snap);
+    }
   });
 
   // #2404 — T14: classifyError reconoce errores de toolchain (JAVA_HOME/JDK/uname/tools.jar) como infra
@@ -356,37 +382,45 @@ async function test(name, fn) {
 
   // T13 — test e2e: simula bloqueo + restauración + reencolado
   await test('T13: e2e — marcarBloqueoInfra + reencolarInfraBloqueados restauran el archivo', () => {
+    // #6259 (P3) — snapshot + set + restore en `finally`: la variable no
+    // sobrevive al test aunque un assert reviente (SEC-2). `withEnv` no aplica:
+    // es variable de control y aca hay que HABILITARLA.
+    const __snap = snapshotEnv(['PULPO_NO_AUTOSTART']);
     process.env.PULPO_NO_AUTOSTART = '1';
-    delete require.cache[require.resolve('./pulpo.js')];
-    const pulpo = require('./pulpo.js');
-    pulpo._resetPrecheckState();
+    try {
+      delete require.cache[require.resolve('./pulpo.js')];
+      const pulpo = require('./pulpo.js');
+      pulpo._resetPrecheckState();
 
-    // Crear archivo de trabajo temporal en carpeta tmp estructurada
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pulpo-test-'));
-    const pendienteDir = path.join(tmpRoot, '.pipeline', 'desarrollo', 'build', 'pendiente');
-    fs.mkdirSync(pendienteDir, { recursive: true });
+      // Crear archivo de trabajo temporal en carpeta tmp estructurada
+      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pulpo-test-'));
+      const pendienteDir = path.join(tmpRoot, '.pipeline', 'desarrollo', 'build', 'pendiente');
+      fs.mkdirSync(pendienteDir, { recursive: true });
 
-    // No podemos usar el pulpo real (paths del filesystem), pero sí podemos
-    // invocar directamente la clasificación y el marcado.
-    const yaml = require('js-yaml');
-    const filePath = path.join(pendienteDir, '9999.build');
-    fs.writeFileSync(filePath, yaml.dump({ issue: 9999, fase: 'build', pipeline: 'desarrollo' }));
+      // No podemos usar el pulpo real (paths del filesystem), pero sí podemos
+      // invocar directamente la clasificación y el marcado.
+      const yaml = require('js-yaml');
+      const filePath = path.join(pendienteDir, '9999.build');
+      fs.writeFileSync(filePath, yaml.dump({ issue: 9999, fase: 'build', pipeline: 'desarrollo' }));
 
-    // El archivo no está en la estructura real del proyecto, así que solo
-    // validamos que classifyError produce el resultado esperado (el resto ya
-    // se probó arriba).
-    const precheckResult = {
-      ok: false,
-      results: [{ category: 'github', host: 'api.github.com', tlsPort: 443, dns: { ok: false, error: { code: 'ENOTFOUND', message: 'x', classification: 'infra' }, attempts: 3 }, tls: null }],
-      timestamp: '2026-04-17T00:00:00Z',
-      durationMs: 10,
-    };
-    const motivo = precheck.buildInfraReboteMotivo(precheckResult);
-    assert.ok(motivo.includes('api.github.com'));
-    assert.ok(motivo.includes('ENOTFOUND'));
+      // El archivo no está en la estructura real del proyecto, así que solo
+      // validamos que classifyError produce el resultado esperado (el resto ya
+      // se probó arriba).
+      const precheckResult = {
+        ok: false,
+        results: [{ category: 'github', host: 'api.github.com', tlsPort: 443, dns: { ok: false, error: { code: 'ENOTFOUND', message: 'x', classification: 'infra' }, attempts: 3 }, tls: null }],
+        timestamp: '2026-04-17T00:00:00Z',
+        durationMs: 10,
+      };
+      const motivo = precheck.buildInfraReboteMotivo(precheckResult);
+      assert.ok(motivo.includes('api.github.com'));
+      assert.ok(motivo.includes('ENOTFOUND'));
 
-    // Cleanup
-    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+      // Cleanup
+      try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    } finally {
+      restoreEnv(__snap);
+    }
   });
 
   console.log(`\n${pass} pasaron, ${fail} fallaron`);

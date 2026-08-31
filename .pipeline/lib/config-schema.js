@@ -201,6 +201,9 @@ const SIDE_MAP = Object.freeze({
     partial_pause_deps: 'kernel',
     cost_anomaly_alert: 'kernel',
     ghostbusters_cron: 'kernel',
+    // #6708 — presupuesto de disco del guardián. Es mecanismo del pipeline
+    // (cuánto margen necesita la máquina para operar), no política de producto.
+    disk_budget: 'kernel',
     rest_mode: 'kernel',
     staleness: 'kernel',
     watchdog: 'kernel',
@@ -429,6 +432,11 @@ const SCHEMA = {
         partial_pause_deps: OBJ(),
         cost_anomaly_alert: OBJ(),
         ghostbusters_cron: OBJ(),
+        // #6708 — umbrales del guardián de disco. Los valores se validan y
+        // clampean en `lib/disk-guard.js` (CLAMPS + monotonicidad), así que acá
+        // alcanza con declarar la sección: duplicar los rangos sería una segunda
+        // fuente de verdad que se desincroniza.
+        disk_budget: OBJ(),
         rest_mode: OBJ(),
         staleness: OBJ(),
         watchdog: OBJ(),
@@ -458,6 +466,28 @@ const SCHEMA = {
                     additionalProperties: true,
                     properties: {
                         interval_minutes: { type: 'number', minimum: 0 },
+                    },
+                },
+                // --- #6145 CA-6 — criterio de permanencia de proveedores.
+                //     Declarado acá porque la raíz es CERRADA: agregar la
+                //     subsección a config.yaml sin declararla en el schema deja
+                //     al dashboard fail-closed (precedente ya sufrido).
+                //     LENIENT en `additionalProperties` como el resto de
+                //     multi_provider, pero con TIPOS y RANGOS chequeados: un
+                //     umbral con tipo/rango inválido no debe llegar al criterio
+                //     que marca candidatos a baja. Los invariantes de seguridad
+                //     (nunca vacía la cadena, nunca marca un pago, "sin dato" ⇒
+                //     no evaluable) viven en código, NO acá.
+                permanence: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        window_days: { type: 'number', minimum: 1 },
+                        min_sample: { type: 'number', minimum: 0 },
+                        min_contribution_rate: { type: 'number', minimum: 0, maximum: 1 },
+                        max_days_without_win: { type: 'number', minimum: 0 },
+                        min_survivors: { type: 'number', minimum: 1 },
                     },
                 },
             },
