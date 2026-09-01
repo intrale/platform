@@ -973,3 +973,353 @@ test('config.yaml trae las dos claves de la ventana de bootstrap, apagadas', () 
   assert.equal(cfg.vault.bootstrap_fallback, false, 'la ventana se commitea CERRADA');
   assert.equal(cfg.vault.bootstrap_fallback_until, '');
 });
+
+
+// =============================================================================
+// #5797 — invalidación pública acotada, caché versionada y single-flight
+// =============================================================================
+//
+// Las cuatro propiedades que se ejercen acá no son independientes: el reset sin
+// generación tiene una carrera de publicación, la generación sin single-flight
+// no tiene con quién correr, y el single-flight sin limpieza en `finally`
+// convierte un rechazo transitorio en permanente. Por eso los tests los cruzan
+// en vez de verificarlos de a uno.
+
+const {
+  resolveInstanceVault,
+  resolveInstanceVaultAsync,
+  resetVaultCache,
+  resetVaultCacheAll,
+  scopesInvalidables,
+  VAULT_RESET_ERROR_CODES,
+  INSTANCE_VAULT_ERROR_CODES,
+} = credentials;
+
+// Dos instancias con el MISMO namespace y ámbitos distintos: comparten prefix,
+// projectId y hostId, así que si el reset o el vuelo se indexaran por namespace
+// (y no por clave de memo) estos dos se pisarían. Esa es justamente la
+// confusión que los dos tests de abajo tienen que poder distinguir.
+const INSTANCIA_A = { projectId: PROJECT, scopes: ['telegram'], sharedScopes: ['telegram'] };
+const INSTANCIA_B = { projectId: PROJECT, scopes: ['providers'], sharedScopes: ['providers'] };
+
+/** Cede el event loop unas cuantas veces, para que un vuelo llegue a la puerta. */
+async function tick(n = 10) {
+  for (let i = 0; i < n; i += 1) await new Promise((res) => setImmediate(res));
+}
+
+/** Semilla mínima con UN valor identificable por generación. */
+function seedTelegram(botToken) {
+  return {
+    parameters: { [rutaScope('telegram')]: { bot_token: botToken, chat_id: '42' } },
+    secrets: {},
+  };
+}
+
+/**
+ * Driver de test con tres controles que el in-memory no da:
+ *
+ *  - contador PROPIO de lecturas físicas, que sobrevive al reseed;
+ *  - una PUERTA async que el test abre cuando quiere, para dejar una lectura en
+ *    vuelo y meterle un reset en el medio (los métodos sync la ignoran: el
+ *    camino sync no puede intercalar y no tiene nada que esperar);
+ *  - SEMILLA reemplazable, para distinguir la generación vieja de la nueva por
+ *    el VALOR devuelto y no por un contador, que se puede leer de dos maneras.
+ */
+function driverControlado(seed = seedCompleto(), { abierta = true } = {}) {
+  let base = createInMemoryVaultDriver(seed);
+  const calls = [];
+  let liberar;
+  let puerta = new Promise((res) => { liberar = res; });
+  if (abierta) liberar();
+
+  return {
+    kind: 'controlado',
+    calls,
+    reseed(nuevo) { base = createInMemoryVaultDriver(nuevo); },
+    abrir() { liberar(); },
+    getParametersByPathSync(root) {
+      calls.push({ op: 'getParametersByPath', root });
+      return base.getParametersByPathSync(root);
+    },
+    getSecretValueSync(name) {
+      calls.push({ op: 'getSecretValue', name });
+      return base.getSecretValueSync(name);
+    },
+    async getParametersByPath(root) {
+      await puerta;
+      calls.push({ op: 'getParametersByPath', root });
+      return base.getParametersByPathSync(root);
+    },
+    async getSecretValue(name) {
+      await puerta;
+      calls.push({ op: 'getSecretValue', name });
+      return base.getSecretValueSync(name);
+    },
+  };
+}
+
+function pedirInstancia(driver, args, opts = {}) {
+  return resolveInstanceVault(args, {
+    vaultConfig: configVault(), vaultDriver: driver, logger: () => {}, ...opts,
+  });
+}
+
+function pedirInstanciaAsync(driver, args, opts = {}) {
+  return resolveInstanceVaultAsync(args, {
+    vaultConfig: configVault(), vaultDriver: driver, logger: () => {}, ...opts,
+  });
+}
+
+test('#5797 CA-1 · resetVaultCache(scope) invalida SOLO ese ambito y es idempotente', () => {
+  resetVaultCacheAll();
+  const d = driverControlado();
+
+  assert.equal(pedirInstancia(d, INSTANCIA_A).ok, true);
+  assert.equal(pedirInstancia(d, INSTANCIA_B).ok, true);
+  assert.equal(d.calls.length, 2, 'dos ambitos distintos, dos lecturas fisicas');
+
+  // Los dos vuelven a pegar en la memo: nada se releyo.
+  pedirInstancia(d, INSTANCIA_A);
+  pedirInstancia(d, INSTANCIA_B);
+  assert.equal(d.calls.length, 2);
+
+  assert.deepEqual(resetVaultCache('telegram'), { scope: 'telegram', invalidadas: 1 });
+  // Idempotente: la segunda seguida no encuentra nada y NO es un error.
+  assert.deepEqual(resetVaultCache('telegram'), { scope: 'telegram', invalidadas: 0 });
+
+  pedirInstancia(d, INSTANCIA_B);
+  assert.equal(d.calls.length, 2, 'providers no fue tocado: sigue vivo en la memo');
+  pedirInstancia(d, INSTANCIA_A);
+  assert.equal(d.calls.length, 3, 'telegram si fue invalidado: relee');
+});
+
+test('#5797 CA-2 · scope vacio, desconocido, comodin, path u objeto heredado falla ANTES del driver', () => {
+  resetVaultCacheAll();
+  const d = driverControlado();
+  assert.equal(pedirInstancia(d, INSTANCIA_A).ok, true);
+  const lecturas = d.calls.length;
+
+  const invalidos = [
+    ['vacio', ''],
+    ['solo espacios', '   '],
+    ['espacios en los bordes', ' telegram '],
+    ['comodin', '*'],
+    ['glob', 'tele*'],
+    ['clase de caracteres', 'telegram[1]'],
+    ['interrogacion', 'telegra?'],
+    ['path posix', 'shared/telegram'],
+    ['path windows', 'shared\\telegram'],
+    ['dot-path', 'telegram.bot_token'],
+    ['travesia', '../telegram'],
+    ['desconocido', 'no-existe'],
+    ['null', null],
+    ['undefined explicito', undefined],
+    ['numero', 42],
+    ['array', ['telegram']],
+    ['String boxeado', new String('telegram')],
+    // El caso que motiva exigir un string PRIMITIVO: un objeto que sólo tiene
+    // la propiedad en el prototipo pasaría cualquier chequeo hecho con `in` o
+    // con coerción implícita a string.
+    ['objeto heredado', Object.create({ toString: () => 'telegram' })],
+    ['objeto con scope heredado', Object.create({ scope: 'telegram' })],
+  ];
+
+  for (const [nombre, valor] of invalidos) {
+    assert.throws(
+      () => resetVaultCache(valor),
+      (e) => {
+        assert.equal(e.code, VAULT_RESET_ERROR_CODES.INVALID_SCOPE, nombre);
+        assert.equal(e.name, 'VaultResetScopeError', nombre);
+        return true;
+      },
+      `deberia rechazar: ${nombre}`,
+    );
+  }
+
+  assert.equal(d.calls.length, lecturas, 'ningun rechazo llego al driver');
+  assert.equal(pedirInstancia(d, INSTANCIA_A).ok, true);
+  assert.equal(d.calls.length, lecturas,
+    'y ninguno invalido nada: la memo sobrevivio intacta a los rechazos');
+});
+
+test('#5797 CA-3 · pedidos equivalentes concurrentes hacen UNA sola lectura fisica', async () => {
+  resetVaultCacheAll();
+  const d = driverControlado(seedCompleto(), { abierta: false });
+
+  const vuelos = [
+    pedirInstanciaAsync(d, INSTANCIA_A),
+    pedirInstanciaAsync(d, INSTANCIA_A),
+    pedirInstanciaAsync(d, INSTANCIA_A),
+  ];
+  await tick();
+  assert.equal(d.calls.length, 0, 'la puerta sigue cerrada: todavia no leyo nadie');
+
+  d.abrir();
+  const res = await Promise.all(vuelos);
+  assert.ok(res.every((r) => r.ok), 'los tres resuelven');
+  assert.equal(d.calls.length, 1, 'los tres se colgaron del MISMO vuelo');
+
+  // Y despues del vuelo el resultado quedo en la memo, no en el registro de
+  // vuelos: un cuarto pedido tampoco lee.
+  assert.equal((await pedirInstanciaAsync(d, INSTANCIA_A)).ok, true);
+  assert.equal(d.calls.length, 1);
+});
+
+test('#5797 CA-3 · ambitos distintos NO comparten vuelo', async () => {
+  resetVaultCacheAll();
+  const d = driverControlado(seedCompleto(), { abierta: false });
+
+  const vuelos = [pedirInstanciaAsync(d, INSTANCIA_A), pedirInstanciaAsync(d, INSTANCIA_B)];
+  await tick();
+  d.abrir();
+  const [a, b] = await Promise.all(vuelos);
+
+  assert.ok(a.ok && b.ok);
+  assert.equal(d.calls.length, 2,
+    'el vuelo se indexa por clave de memo: mismo namespace, ambitos distintos, dos lecturas');
+  assert.ok(a.scopes.telegram, 'A resolvio telegram');
+  assert.ok(b.scopes.providers, 'B resolvio providers');
+  assert.equal(a.scopes.providers, undefined, 'y no se filtro material entre vuelos');
+});
+
+test('#5797 CA-4 · una lectura vieja que termina despues del reset NO repuebla ni se publica', async () => {
+  resetVaultCacheAll();
+  const d = driverControlado(seedTelegram('BOT-GEN-1'), { abierta: false });
+
+  const vuelo = pedirInstanciaAsync(d, INSTANCIA_A);
+  await tick();
+
+  // Rotacion: el material cambia en el vault y el ambito se invalida MIENTRAS
+  // la lectura de la generacion 1 sigue en vuelo.
+  d.reseed(seedTelegram('BOT-GEN-2'));
+  assert.equal(resetVaultCache('telegram').scope, 'telegram');
+
+  d.abrir();
+  const res = await vuelo;
+
+  assert.equal(res.ok, true);
+  assert.equal(res.scopes.telegram.bot_token, 'BOT-GEN-2',
+    'al caller le llega la generacion NUEVA: la vieja se descarta, no se devuelve');
+  assert.equal(d.calls.length, 2, 'la publicacion vetada obliga a releer');
+
+  // Lo que quedo en la memo tambien es la generacion nueva: el reset no fue
+  // deshecho por la lectura en vuelo.
+  const despues = pedirInstancia(d, INSTANCIA_A);
+  assert.equal(d.calls.length, 2, 'hit de memo');
+  assert.equal(despues.scopes.telegram.bot_token, 'BOT-GEN-2');
+});
+
+test('#5797 CA-5 · un vuelo rechazado se borra en finally: el pedido siguiente reintenta', async () => {
+  resetVaultCacheAll();
+  const base = createInMemoryVaultDriver(seedCompleto());
+  const calls = [];
+  let fallar = true;
+  const leer = (root) => {
+    calls.push({ op: 'getParametersByPath', root });
+    if (fallar) {
+      const e = new Error('AccessDenied: no identity-based policy allows ssm:GetParametersByPath');
+      e.name = 'VaultCliError';
+      e.code = 'VAULT_CLI';
+      throw e;
+    }
+    return base.getParametersByPathSync(root);
+  };
+  const d = {
+    kind: 'intermitente',
+    calls,
+    getParametersByPathSync: leer,
+    getSecretValueSync: (n) => base.getSecretValueSync(n),
+    async getParametersByPath(root) { return leer(root); },
+    async getSecretValue(name) { return base.getSecretValueSync(name); },
+  };
+
+  const malo = await pedirInstanciaAsync(d, INSTANCIA_A);
+  assert.equal(malo.ok, false);
+  assert.equal(malo.code, INSTANCE_VAULT_ERROR_CODES.VAULT_FAILURE);
+  assert.equal(calls.length, 1);
+
+  fallar = false;
+  const bueno = await pedirInstanciaAsync(d, INSTANCIA_A);
+  assert.equal(bueno.ok, true, 'el rechazo NO quedo memoizado en el registro de vuelos');
+  assert.equal(calls.length, 2, 'la segunda vez se leyo de verdad');
+});
+
+test('#5797 CA-6 · ni el error del reset ni el log del fallo contienen material secreto', async () => {
+  resetVaultCacheAll();
+
+  // (a) El reset nombra el TIPO de lo recibido, jamas su valor: un caller que
+  //     confunde el argumento y pasa el secreto no lo termina publicando.
+  const SECRETO = 'sk-ant-ESTO-NO-PUEDE-APARECER-EN-NINGUN-LADO';
+  assert.throws(() => resetVaultCache(SECRETO), (e) => {
+    assert.equal(e.code, VAULT_RESET_ERROR_CODES.INVALID_SCOPE);
+    assert.equal(e.recibidoTipo, 'string');
+    assert.ok(!String(e.message).includes(SECRETO), 'el mensaje no puede llevar el valor');
+    assert.ok(!String(e.stack).includes(SECRETO), 'el stack tampoco');
+    return true;
+  });
+
+  // (b) El fallo del vault por el camino async loguea NOMBRES y codigos.
+  const logger = capturarLogs();
+  const res = await pedirInstanciaAsync(driverQueDeniega(), INSTANCIA_A, { logger });
+  assert.equal(res.ok, false);
+  const todo = `${logger.texto()}\n${JSON.stringify(res)}`;
+  for (const valor of ['VAULT-BOT', 'VAULT-OPENAI', 'VAULT-ANTHROPIC', CHAT_ID_DEL_VAULT]) {
+    assert.ok(!todo.includes(valor), `no puede aparecer material del vault: ${valor}`);
+  }
+});
+
+test('#5797 · TTL y reset son ortogonales: vencer y invalidar no se pisan', () => {
+  resetVaultCacheAll();
+  const d = driverControlado();
+  let reloj = 1_000_000;
+  const now = () => reloj;
+
+  assert.equal(pedirInstancia(d, INSTANCIA_A, { now }).ok, true);
+  assert.equal(d.calls.length, 1);
+
+  // Dentro del TTL: hit. La lectura NO extiende la vigencia (CA-14).
+  reloj += 299_000;
+  pedirInstancia(d, INSTANCIA_A, { now });
+  assert.equal(d.calls.length, 1);
+
+  // Pasado el TTL: la entrada vence sola, sin reset de por medio.
+  reloj += 2_000;
+  pedirInstancia(d, INSTANCIA_A, { now });
+  assert.equal(d.calls.length, 2, 'el TTL sigue venciendo por su cuenta');
+
+  // Y el reset invalida ANTES del TTL, que es su razon de ser.
+  assert.equal(resetVaultCache('telegram').invalidadas, 1);
+  pedirInstancia(d, INSTANCIA_A, { now });
+  assert.equal(d.calls.length, 3);
+});
+
+test('#5797 · _resetVaultCache queda SOLO como alias deprecado del contrato validado', () => {
+  resetVaultCacheAll();
+  const d = driverControlado();
+  pedirInstancia(d, INSTANCIA_A);
+  pedirInstancia(d, INSTANCIA_B);
+  assert.equal(d.calls.length, 2);
+
+  // Con scope: delega en el contrato ACOTADO y valida igual que el publico.
+  assert.deepEqual(_resetVaultCache('telegram'), { scope: 'telegram', invalidadas: 1 });
+  assert.throws(
+    () => _resetVaultCache('no-existe'),
+    (e) => e.code === VAULT_RESET_ERROR_CODES.INVALID_SCOPE,
+  );
+
+  // Sin argumento: delega en la operacion TOTAL, que es lo que esperan los
+  // call-sites que ya existian.
+  assert.deepEqual(_resetVaultCache(), { scope: null, invalidadas: 1 });
+  pedirInstancia(d, INSTANCIA_B);
+  assert.equal(d.calls.length, 3, 'el barrido total tambien se llevo providers');
+});
+
+test('#5797 · el conjunto invalidable se DERIVA del inventario, no de una lista literal', () => {
+  const plan = vaultScopePlan(ENV_DESCRIPTORS);
+  const esperado = [...new Set([...plan.ssm, ...plan.secretsmanager])].sort();
+  assert.deepEqual(scopesInvalidables(), esperado);
+  assert.ok(Object.isFrozen(scopesInvalidables()),
+    'se exporta congelado: un consumidor no puede ampliarlo desde afuera');
+  // El comodin NO es miembro: la operacion total tiene nombre propio.
+  assert.ok(!scopesInvalidables().includes('*'));
+});
