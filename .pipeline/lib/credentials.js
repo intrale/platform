@@ -399,11 +399,217 @@ function borrarDelMemo(clave) {
   _vaultMemo.delete(clave);
 }
 
-/** Invalidación explícita. Exportada SÓLO para los tests. */
-function _resetVaultCache() {
+// =============================================================================
+// #5797 — invalidación pública acotada, caché versionada y single-flight
+// =============================================================================
+//
+// Tres piezas que sólo tienen sentido JUNTAS. Cada una tapa un agujero que las
+// otras dos dejan abierto:
+//
+//  1. `resetVaultCache(scope)` — invalidación PÚBLICA y ACOTADA. Hasta acá la
+//     única forma de invalidar era `_resetVaultCache()`, que barría el mapa
+//     entero: rotar `telegram` obligaba a tirar también `providers` y a pagar
+//     un proceso de la AWS CLI por cada namespace sano en el próximo
+//     lanzamiento de agente. Y al ser `_`-privada no protegía nada: todo
+//     consumidor que necesitaba invalidar la importaba igual, sólo que sin
+//     contrato ni validación de por medio.
+//
+//  2. GENERACIÓN por scope. Sin ella el reset tiene una carrera de publicación:
+//     una lectura que arrancó ANTES del reset puede terminar DESPUÉS y escribir
+//     en la memo material de la generación vieja — o sea, la revocación que
+//     motivó el reset queda deshecha por una lectura en vuelo, en silencio y
+//     por el TTL entero. Es el mismo compare-and-swap que `expiraEn` ya hace
+//     contra el reloj, pero contra un evento explícito.
+//
+//  3. VUELOS (single-flight) por clave de memo. `resolverVaultConPlan` corre
+//     POR LANZAMIENTO DE AGENTE: N arranques concurrentes contra el mismo
+//     namespace disparaban N lecturas físicas idénticas. El vuelo se borra en
+//     `finally`, nunca sólo en el camino feliz: un vuelo rechazado que
+//     sobrevive convierte un `AccessDenied` transitorio en un fallo permanente
+//     compartido por todos los que se cuelguen de él, que es exactamente el
+//     negative caching que REQ-SEC-7 prohíbe.
+
+/** Códigos del contrato de invalidación. Estables: los consumidores rutean por acá. */
+const VAULT_RESET_ERROR_CODES = Object.freeze({
+  INVALID_SCOPE: 'VAULT_RESET_SCOPE_INVALID',
+  RESET_RACE:    'VAULT_RESET_RACE',
+});
+
+let _scopesInvalidables = null;
+
+/**
+ * Conjunto CERRADO de scopes invalidables. Se DERIVA del inventario
+ * (`ENV_DESCRIPTORS`), nunca se escribe a mano: una lista literal se
+ * desincroniza del descriptor en el primer secreto nuevo y deja un scope
+ * imposible de invalidar.
+ *
+ * Es cerrado a propósito. Derivarlo del CONTENIDO de la memo haría que "scope
+ * desconocido" dependiera del estado del caché: la misma llamada se aceptaría o
+ * se rechazaría según qué se hubiera leído antes, que es justo lo que un
+ * contrato fail-closed no puede permitirse. Los scopes por instancia (#5899),
+ * que son abiertos por diseño, se invalidan con `resetVaultCacheAll()`.
+ *
+ * Lazy para no depender del orden de inicialización de los `const` del módulo.
+ */
+function scopesInvalidables() {
+  if (_scopesInvalidables === null) {
+    const plan = vaultScopePlan(ENV_DESCRIPTORS);
+    _scopesInvalidables = Object.freeze(
+      [...new Set([...plan.ssm, ...plan.secretsmanager])].sort()
+    );
+  }
+  return _scopesInvalidables;
+}
+
+/** Tipo de lo recibido, NUNCA su valor (REQ-SEC-9 — ver `VaultResetScopeError`). */
+function describeTipoDeScope(v) {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'array';
+  return typeof v;
+}
+
+/**
+ * REQ-SEC-9 — el error nombra el TIPO de lo recibido, jamás su valor. Un
+ * `scope` legítimo es un nombre y no sería secreto, pero un caller que se
+ * equivoca de argumento puede haber pasado el secreto mismo, y ese string no
+ * puede terminar en `pulpo.log` por un error de programación.
+ */
+class VaultResetScopeError extends Error {
+  constructor(motivo, recibido) {
+    super(`[credentials] resetVaultCache: scope invalido (${motivo}). `
+      + 'Impacto: NO se invalido nada — la llamada se rechaza ANTES de tocar la memo, '
+      + 'las generaciones y el driver del vault (fail-closed). '
+      + `Proximo paso: pasar uno de los scopes declarados (${scopesInvalidables().join(', ')}) `
+      + 'o usar resetVaultCacheAll() si la intencion es barrer todo');
+    this.name = 'VaultResetScopeError';
+    this.code = VAULT_RESET_ERROR_CODES.INVALID_SCOPE;
+    this.recibidoTipo = describeTipoDeScope(recibido);
+  }
+}
+
+/**
+ * Validación fail-closed del argumento. El orden de los rechazos va de lo más
+ * general a lo más específico para que el diagnóstico nombre la causa REAL y no
+ * la última que quedó.
+ *
+ * No hay copia de `SEGMENT_RE` acá: la pertenencia al conjunto cerrado ES la
+ * validación sintáctica, y los chequeos previos existen sólo para dar un
+ * mensaje preciso. Copiar el regex de `secret-vault.js` sería la regresión de
+ * SEC-3 que el resto del módulo evita a mano.
+ */
+function validarScopeDeReset(scope) {
+  if (typeof scope !== 'string') {
+    // Cubre `null`, `undefined`, números, arrays, `new String('telegram')` y el
+    // objeto con la propiedad HEREDADA del prototipo: nada que no sea un string
+    // primitivo entra, así que no hay coerción implícita que sortear.
+    throw new VaultResetScopeError('tiene que ser un string primitivo', scope);
+  }
+  if (scope.trim() === '') {
+    throw new VaultResetScopeError('esta vacio', scope);
+  }
+  if (scope !== scope.trim()) {
+    throw new VaultResetScopeError('tiene espacios en los bordes', scope);
+  }
+  if (/[*?[\]]/.test(scope)) {
+    throw new VaultResetScopeError(
+      'el comodin no es un scope: la invalidacion es ACOTADA por diseno', scope);
+  }
+  if (/[/\\.]/.test(scope)) {
+    throw new VaultResetScopeError(
+      'el scope es un NOMBRE, no un path ni un dot-path', scope);
+  }
+  if (!scopesInvalidables().includes(scope)) {
+    throw new VaultResetScopeError('scope desconocido', scope);
+  }
+  return scope;
+}
+
+// Generación por scope + generación global. Monótonas y sólo escritas por el
+// reset: `snapshotGeneraciones` LEE, así que un scope por instancia nunca hace
+// crecer el mapa. La cota real es el inventario.
+const _vaultGen = new Map();   // scope -> entero monótono
+let _genGlobal = 0;
+
+function generacionDe(scope) {
+  return _vaultGen.get(scope) || 0;
+}
+
+/** Foto de las generaciones ANTES de la lectura física. */
+function snapshotGeneraciones(scopes) {
+  const porScope = new Map();
+  for (const s of scopes) porScope.set(s, generacionDe(s));
+  return { global: _genGlobal, porScope };
+}
+
+/** ¿La foto sigue valiendo? `false` ⇒ hubo un reset mientras se leía. */
+function generacionSigueVigente(snap) {
+  if (!snap || snap.global !== _genGlobal) return false;
+  for (const [s, g] of snap.porScope) {
+    if (generacionDe(s) !== g) return false;
+  }
+  return true;
+}
+
+// Vuelos en curso: clave de memo -> Promise del resultado. Sólo el camino
+// async los usa; el sync no puede intercalar dentro de un mismo tick.
+const _vuelos = new Map();
+
+/**
+ * Invalidación PÚBLICA y ACOTADA a un scope. Idempotente: la segunda llamada
+ * seguida devuelve `invalidadas: 0` y no es un error.
+ *
+ * Bumpea la generación ANTES de borrar. El orden importa: si borrara primero,
+ * una lectura en vuelo que termina entre el borrado y el bump publicaría
+ * material viejo en la memo ya limpia — la carrera que este contrato viene a
+ * cerrar, reintroducida por el orden de dos líneas.
+ *
+ * @param {string} scope  uno de `scopesInvalidables()`
+ * @returns {{scope: string, invalidadas: number}}
+ * @throws {VaultResetScopeError} fail-closed, ANTES de tocar cualquier estado.
+ */
+function resetVaultCache(scope) {
+  const s = validarScopeDeReset(scope);
+  _vaultGen.set(s, generacionDe(s) + 1);
+  let invalidadas = 0;
+  for (const [clave, entrada] of [..._vaultMemo]) {
+    if (entrada && entrada.scopes instanceof Set && entrada.scopes.has(s)) {
+      borrarDelMemo(clave);   // G-5: arrastra `clearCache()` de la caché de abajo
+      invalidadas += 1;
+    }
+  }
+  return { scope: s, invalidadas };
+}
+
+/**
+ * Invalidación TOTAL. Es una operación distinta, con nombre propio, y NO un
+ * comodín aceptado por `resetVaultCache`: un `'*'` que a veces significa "todo"
+ * y a veces es un typo de scope es exactamente el argumento ambiguo que el
+ * fail-closed del contrato rechaza.
+ *
+ * @returns {{scope: null, invalidadas: number}}
+ */
+function resetVaultCacheAll() {
+  _genGlobal += 1;
+  for (const s of [..._vaultGen.keys()]) _vaultGen.set(s, generacionDe(s) + 1);
+  const invalidadas = _vaultMemo.size;
   for (const clave of [..._vaultMemo.keys()]) borrarDelMemo(clave);
   _vaultMemo.clear();
   _evictionWarn.clear();
+  // Los vuelos en curso NO se cancelan (no se puede): se los suelta del
+  // registro para que un pedido nuevo arranque una lectura nueva. Su
+  // publicación ya quedó vetada por el bump de `_genGlobal`.
+  _vuelos.clear();
+  return { scope: null, invalidadas };
+}
+
+/**
+ * @deprecated #5797 — alias de compatibilidad. Delega SIEMPRE en el contrato
+ * validado: sin argumento, en `resetVaultCacheAll()`; con scope, en
+ * `resetVaultCache(scope)`. No tiene lógica propia a propósito — una segunda
+ * implementación de la invalidación es una segunda semántica de la revocación.
+ */
+function _resetVaultCache(scope) {
+  return scope === undefined ? resetVaultCacheAll() : resetVaultCache(scope);
 }
 
 /** `providers.openai.api_key` → `{ scope: 'providers', subPath: 'openai.api_key' }`. */
@@ -670,23 +876,35 @@ function escribirEnMemo(clave, entrada, cota, ahora, logger) {
  * los 13 secretos) y `resolveInstanceVault` (camino por instancia) son dos
  * callers finos de esto: un solo broker de secretos, nunca dos en paralelo.
  *
+ * #5797 — el cuerpo se parte en TRES pasos (`prepararResolucion` → lectura
+ * física → `publicar`) porque el camino async tiene que compartir el primero y
+ * el tercero ENTEROS. Si la validación o la clave de la memo se duplicaran, el
+ * async podría aceptar un namespace que el sync rechaza, y el fail-closed
+ * dejaría de ser una propiedad del MÓDULO para pasar a ser una propiedad del
+ * camino que tocó usar. Es el mismo criterio de `secret-vault.js` con
+ * `nucleoResolveScope`: dos conductores, un solo cuerpo.
+ *
  * LANZA: `VaultConfigError` si el namespace no valida (fail-closed, antes de la
  * clave de la memo y antes de tocar el driver) y cualquier error del vault. El
  * caller decide si lo propaga o lo convierte en resultado.
- *
- * @param {object} args
- * @param {object}   args.cfg             sección `vault:` + `region`
- * @param {string}   args.projectId       identidad EFECTIVA (kernel o instancia)
- * @param {{ssm:string[], secretsmanager:string[]}} args.plan  scopes a pedir
- * @param {string[]} args.requiredScopes  allowlist efectiva (CA-7)
- * @param {string[]} args.sharedScopes    membresía `shared` ENUMERADA (G-3)
- * @param {object}   args.opts            opts del caller (driver, now, …)
  */
-function resolverVaultConPlan({ cfg, projectId, plan, requiredScopes, sharedScopes, opts }, logger) {
+
+/** Plan normalizado + el conjunto de scopes TOCADOS (los que versiona el reset). */
+function normalizarPedidos(plan) {
+  const ssm = Array.isArray(plan && plan.ssm) ? plan.ssm : [];
+  const rot = Array.isArray(plan && plan.secretsmanager) ? plan.secretsmanager : [];
+  return { ssm, rot, tocados: [...new Set([...ssm, ...rot])] };
+}
+
+/**
+ * Paso 1 · validación CANÓNICA + clave de la memo. Sin efectos: no escribe en
+ * la memo, no crea vuelos y no toca el driver. Lo único que puede hacer es
+ * LANZAR `VaultConfigError`, que es el fail-closed de CA-6/CA-8.
+ */
+function prepararResolucion({ cfg, projectId, plan, requiredScopes, sharedScopes, opts }, logger) {
   const sv = require('./secret-vault');
 
-  const pedidosSsm = Array.isArray(plan && plan.ssm) ? plan.ssm : [];
-  const pedidosRot = Array.isArray(plan && plan.secretsmanager) ? plan.secretsmanager : [];
+  const { ssm: pedidosSsm, rot: pedidosRot, tocados } = normalizarPedidos(plan);
   const declarados = Array.isArray(requiredScopes) ? requiredScopes : [];
   const compartidos = new Set(Array.isArray(sharedScopes) ? sharedScopes : []);
   // G-3 — `host` es el default; `shared` SÓLO si está enumerado. Nunca se
@@ -711,7 +929,7 @@ function resolverVaultConPlan({ cfg, projectId, plan, requiredScopes, sharedScop
     sv.validateVaultNamespace({ prefix: cfg.prefix, projectId, scope, tier: 'rotating' });
   }
 
-  // 2 · memo. El namespace REPORTADO sigue siendo el de siempre
+  // 2 · clave. El namespace REPORTADO sigue siendo el de siempre
   //     (`<prefix>/<projectId>#<hostId>`); la clave de la memo es más fina.
   const ahora = typeof opts.now === 'function' ? opts.now() : Date.now();
   const namespace = `${cfg.prefix}/${projectId}#${cfg.hostId}`;
@@ -721,73 +939,243 @@ function resolverVaultConPlan({ cfg, projectId, plan, requiredScopes, sharedScop
     sharedScopes: [...compartidos],
   });
 
+  return { sv, pedidosSsm, pedidosRot, tocados, declarados, compartidos, ahora, namespace, clave };
+}
+
+/** Paso 2a · hit de memo con TTL. `null` = MISS. */
+function mirarMemo(clave, ahora) {
   const entrada = _vaultMemo.get(clave);
-  if (entrada) {
-    if (entrada.expiraEn > ahora) {
-      // CA-14 / REQ-SEC-5 — la lectura NO refresca `expiraEn`. El TTL es la
-      // ventana de revocación: el tráfico de un tenant no puede prolongar la
-      // vigencia del material de otro (ni del propio).
-      return { enabled: true, namespace, payload: entrada.payload, error: null, cfg };
-    }
-    borrarDelMemo(clave);   // CA-16: vencida se BORRA, no se marca
+  if (!entrada) return null;
+  if (entrada.expiraEn > ahora) {
+    // CA-14 / REQ-SEC-5 — la lectura NO refresca `expiraEn`. El TTL es la
+    // ventana de revocación: el tráfico de un tenant no puede prolongar la
+    // vigencia del material de otro (ni del propio).
+    return entrada;
+  }
+  borrarDelMemo(clave);   // CA-16: vencida se BORRA, no se marca
+  return null;
+}
+
+/** Paso 2b · instancia del vault para esta resolución. */
+function construirVaultDeResolucion({ cfg, projectId, prep, opts }, logger) {
+  const sv = prep.sv;
+  const driver = opts.vaultDriver || (() => {
+    // SEC-2 — el ambiente de origen del runner es EXPLÍCITO y es el del
+    // proceso padre. `opts.env` es el ambiente DESTINO (los scripts de QA
+    // pasan un scratch descartable); la identidad AWS no sale de ahí.
+    // #5426 · SEC-2/G-1 — el 2º argumento dejó de ser la región: es la config
+    // del vault. `buildVaultAwsEnv` necesita `authMode`/`awsProfile` para
+    // descartar de `process.env` todo lo que pueda ELEGIR principal
+    // (`AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`).
+    // Pasarle un string acá falla ruidoso a propósito: un modo de identidad
+    // implícito es exactamente lo que T2-2 prohíbe.
+    const runner = sv.createAwsCliVaultRunner(process.env, cfg);
+    return sv.createAwsCliVaultDriver({ run: runner.run });
+  })();
+
+  // B3-A.1/B3-A.3 — el namespace se construye desde config y
+  // `validateVaultConfig` rechaza un `hostId` vacío o inválido NOMBRANDO
+  // `vault.hostId`. CA-5/CA-7: `projectId` y la allowlist son los EFECTIVOS,
+  // que sin override son exactamente los de config.
+  return sv.createSecretVault({
+    config: {
+      ...cfg,
+      projectId,
+      required_scopes: prep.declarados,
+      shared_secrets: [...prep.compartidos],
+    },
+    driver,
+    // CA-23 — al logger del vault sólo llegan NOMBRES de scope.
+    logger: {
+      info: (msg, meta) => logger(`[credentials] ${msg} ${JSON.stringify(meta || {})}`),
+      warn: (msg, meta) => logger(`[credentials] WARN: ${msg} ${JSON.stringify(meta || {})}`),
+    },
+  });
+}
+
+// D1.6 — dos llamadas batch como máximo para `ssm` (SEC-3) y una por scope para
+// `rotating`. Los dos gemelos comparten forma para que no puedan divergir.
+function leerPayloadSync(vault, prep) {
+  const payload = { ssm: {}, secretsmanager: {} };
+  if (prep.pedidosSsm.length) {
+    payload.ssm = vault.resolveScopeSync({ scopes: prep.pedidosSsm });
+  }
+  if (prep.pedidosRot.length) {
+    payload.secretsmanager = vault.resolveScopeSync({ scopes: prep.pedidosRot, tier: 'rotating' });
+  }
+  return payload;
+}
+
+async function leerPayloadAsync(vault, prep) {
+  const payload = { ssm: {}, secretsmanager: {} };
+  if (prep.pedidosSsm.length) {
+    payload.ssm = await vault.resolveScope({ scopes: prep.pedidosSsm });
+  }
+  if (prep.pedidosRot.length) {
+    payload.secretsmanager = await vault.resolveScope({ scopes: prep.pedidosRot, tier: 'rotating' });
+  }
+  return payload;
+}
+
+/**
+ * Paso 3 · publicación con COMPARE-AND-SWAP contra la generación (#5797).
+ *
+ * `false` significa "hubo un reset mientras se leía": el payload pertenece a
+ * una generación que ya no existe. No se publica en la memo Y TAMPOCO se
+ * devuelve al caller — devolverlo sería entregar material recién revocado, que
+ * es la mitad del daño que el reset viene a evitar. El caller reintenta.
+ */
+function publicar({ prep, cfg, payload, vault, snap }, logger) {
+  if (!generacionSigueVigente(snap)) {
+    // G-5 — soltar también la caché de abajo: la entrada de arriba nunca se
+    // escribió, pero la instancia del vault ya tiene el plaintext adentro.
+    soltarVaultMemoizado({ vault });
+    return false;
+  }
+  const ttlMs = (typeof cfg.cache_ttl_seconds === 'number' ? cfg.cache_ttl_seconds : 300) * 1000;
+  // G-5 — la instancia del vault se memoiza JUNTO al payload para poder
+  // propagarle `clearCache()` al evictar o resetear.
+  // #5797 — y `scopes` viaja en la entrada para que `resetVaultCache(scope)`
+  // pueda invalidar POR ÁMBITO sin parsear la clave: una clave parseada es un
+  // formato con dos dueños, y el día que `claveMemo` cambie el reset dejaría de
+  // encontrar entradas en silencio.
+  escribirEnMemo(
+    prep.clave,
+    { expiraEn: prep.ahora + ttlMs, payload, vault, namespace: prep.namespace, scopes: new Set(prep.tocados) },
+    cotaDeNamespaces(cfg, logger), prep.ahora, logger,
+  );
+  return true;
+}
+
+/** REQ-SEC-7 — el namespace ya validado viaja en el error para el reporte. */
+function etiquetarNamespace(err, namespace) {
+  if (err && typeof err === 'object' && err.vaultNamespace === undefined) {
+    err.vaultNamespace = namespace;
+  }
+  return err;
+}
+
+/**
+ * Se agotaron los reintentos contra un reset concurrente. Fail-closed explícito
+ * y con código propio: es preferible que el caller vea "no pude resolver" a que
+ * reciba material de una generación revocada, y un bucle sin cota convertiría
+ * una tormenta de resets en un cuelgue.
+ */
+function errorDeCarreraDeReset(namespace, intentos) {
+  const err = new Error(
+    `[credentials] la resolucion del vault perdio ${intentos} veces seguidas contra un reset `
+    + 'concurrente del cache. Impacto: NO se devuelven credenciales (fail-closed); el material '
+    + 'leido pertenecia a una generacion ya invalidada. '
+    + 'Proximo paso: reintentar — si se repite, hay un lazo que llama a resetVaultCache() '
+    + 'en cada resolucion');
+  err.name = 'VaultResetRaceError';
+  err.code = VAULT_RESET_ERROR_CODES.RESET_RACE;
+  err.vaultNamespace = namespace;
+  return err;
+}
+
+// Cota de reintentos del compare-and-swap. Dos alcanza: para perder las dos
+// veces harían falta dos resets separados por la duración de una lectura
+// física, lo que ya no es una carrera sino un lazo de invalidación.
+const MAX_INTENTOS_POR_GENERACION = 2;
+
+/**
+ * @param {object} args
+ * @param {object}   args.cfg             sección `vault:` + `region`
+ * @param {string}   args.projectId       identidad EFECTIVA (kernel o instancia)
+ * @param {{ssm:string[], secretsmanager:string[]}} args.plan  scopes a pedir
+ * @param {string[]} args.requiredScopes  allowlist efectiva (CA-7)
+ * @param {string[]} args.sharedScopes    membresía `shared` ENUMERADA (G-3)
+ * @param {object}   args.opts            opts del caller (driver, now, …)
+ */
+function resolverVaultConPlan(args, logger) {
+  const { cfg, projectId, opts } = args;
+  const prep = prepararResolucion(args, logger);
+
+  const hit = mirarMemo(prep.clave, prep.ahora);
+  if (hit) {
+    return { enabled: true, namespace: prep.namespace, payload: hit.payload, error: null, cfg };
   }
 
+  // El camino sync no puede intercalar dentro de un tick, así que el bucle
+  // corre una sola vez en la práctica. Está igual porque `publicar` es el MISMO
+  // que usa el async: una segunda política de reintento acá sería una segunda
+  // semántica de la revocación.
+  for (let intento = 0; intento < MAX_INTENTOS_POR_GENERACION; intento += 1) {
+    const snap = snapshotGeneraciones(prep.tocados);
+    let vault;
+    let payload;
+    try {
+      vault = construirVaultDeResolucion({ cfg, projectId, prep, opts }, logger);
+      payload = leerPayloadSync(vault, prep);
+    } catch (err) {
+      // REQ-SEC-7 — el fallo NO memoiza negativo, NO evicta y NO toca la
+      // entrada de otro namespace: se propaga fail-closed SÓLO para el tenant
+      // que falló.
+      throw etiquetarNamespace(err, prep.namespace);
+    }
+    if (publicar({ prep, cfg, payload, vault, snap }, logger)) {
+      return { enabled: true, namespace: prep.namespace, payload, error: null, cfg };
+    }
+  }
+  throw errorDeCarreraDeReset(prep.namespace, MAX_INTENTOS_POR_GENERACION);
+}
+
+/**
+ * #5797 — gemelo ASYNC con SINGLE-FLIGHT. Mismo cuerpo lógico que el sync
+ * (misma validación, misma clave, misma publicación); lo único que agrega es la
+ * coalescencia de pedidos equivalentes.
+ *
+ * El vuelo se indexa por CLAVE DE MEMO, no por namespace: la clave ya incluye
+ * prefix, projectId, hostId, el plan por backend y la membresía `shared`, así
+ * que dos pedidos con scopes distintos NO comparten vuelo. Compartirlo daría un
+ * HIT falso —el mismo defecto que G-2/REQ-SEC-3 le corrigió a la memo— sólo que
+ * en la ventana de la lectura, donde ni siquiera se ve en el log.
+ *
+ * El registro se limpia en `finally`, así que un rechazo no queda memoizado:
+ * el pedido siguiente arranca una lectura nueva (REQ-SEC-7).
+ */
+async function resolverVaultConPlanAsync(args, logger) {
+  const { cfg, projectId, opts } = args;
+  // Fuera del vuelo a propósito: una config o un namespace inválidos tienen que
+  // fallar para EL caller que los trajo, no colgarse del vuelo de otro ni
+  // envenenarlo.
+  const prep = prepararResolucion(args, logger);
+
+  const hit = mirarMemo(prep.clave, prep.ahora);
+  if (hit) {
+    return { enabled: true, namespace: prep.namespace, payload: hit.payload, error: null, cfg };
+  }
+
+  const enVuelo = _vuelos.get(prep.clave);
+  if (enVuelo) return enVuelo;
+
+  const vuelo = (async () => {
+    for (let intento = 0; intento < MAX_INTENTOS_POR_GENERACION; intento += 1) {
+      const snap = snapshotGeneraciones(prep.tocados);
+      let vault;
+      let payload;
+      try {
+        vault = construirVaultDeResolucion({ cfg, projectId, prep, opts }, logger);
+        payload = await leerPayloadAsync(vault, prep);
+      } catch (err) {
+        throw etiquetarNamespace(err, prep.namespace);
+      }
+      if (publicar({ prep, cfg, payload, vault, snap }, logger)) {
+        return { enabled: true, namespace: prep.namespace, payload, error: null, cfg };
+      }
+    }
+    throw errorDeCarreraDeReset(prep.namespace, MAX_INTENTOS_POR_GENERACION);
+  })();
+
+  _vuelos.set(prep.clave, vuelo);
   try {
-    const driver = opts.vaultDriver || (() => {
-      // SEC-2 — el ambiente de origen del runner es EXPLÍCITO y es el del
-      // proceso padre. `opts.env` es el ambiente DESTINO (los scripts de QA
-      // pasan un scratch descartable); la identidad AWS no sale de ahí.
-      // #5426 · SEC-2/G-1 — el 2º argumento dejó de ser la región: es la config
-      // del vault. `buildVaultAwsEnv` necesita `authMode`/`awsProfile` para
-      // descartar de `process.env` todo lo que pueda ELEGIR principal
-      // (`AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`).
-      // Pasarle un string acá falla ruidoso a propósito: un modo de identidad
-      // implícito es exactamente lo que T2-2 prohíbe.
-      const runner = sv.createAwsCliVaultRunner(process.env, cfg);
-      return sv.createAwsCliVaultDriver({ run: runner.run });
-    })();
-
-    // B3-A.1/B3-A.3 — el namespace se construye desde config y
-    // `validateVaultConfig` rechaza un `hostId` vacío o inválido NOMBRANDO
-    // `vault.hostId`. CA-5/CA-7: `projectId` y la allowlist son los EFECTIVOS,
-    // que sin override son exactamente los de config.
-    const vault = sv.createSecretVault({
-      config: { ...cfg, projectId, required_scopes: declarados, shared_secrets: [...compartidos] },
-      driver,
-      // CA-23 — al logger del vault sólo llegan NOMBRES de scope.
-      logger: {
-        info: (msg, meta) => logger(`[credentials] ${msg} ${JSON.stringify(meta || {})}`),
-        warn: (msg, meta) => logger(`[credentials] WARN: ${msg} ${JSON.stringify(meta || {})}`),
-      },
-    });
-
-    const payload = { ssm: {}, secretsmanager: {} };
-    // D1.6 — sólo el camino SYNC. Dos llamadas batch como máximo para `ssm`
-    // (SEC-3) y una por scope para `rotating`.
-    if (pedidosSsm.length) {
-      payload.ssm = vault.resolveScopeSync({ scopes: pedidosSsm });
-    }
-    if (pedidosRot.length) {
-      payload.secretsmanager = vault.resolveScopeSync({
-        scopes: pedidosRot, tier: 'rotating',
-      });
-    }
-
-    const ttlMs = (typeof cfg.cache_ttl_seconds === 'number' ? cfg.cache_ttl_seconds : 300) * 1000;
-    // G-5 — la instancia del vault se memoiza JUNTO al payload para poder
-    // propagarle `clearCache()` al evictar o resetear.
-    escribirEnMemo(clave, { expiraEn: ahora + ttlMs, payload, vault, namespace },
-      cotaDeNamespaces(cfg, logger), ahora, logger);
-    return { enabled: true, namespace, payload, error: null, cfg };
-  } catch (err) {
-    // REQ-SEC-7 — el fallo NO memoiza negativo, NO evicta y NO toca la entrada
-    // de otro namespace: se propaga fail-closed SÓLO para el tenant que falló.
-    // El namespace ya está validado, así que viaja en el error para que el
-    // caller lo reporte igual que antes de #5899.
-    if (err && typeof err === 'object' && err.vaultNamespace === undefined) {
-      err.vaultNamespace = namespace;
-    }
-    throw err;
+    return await vuelo;
+  } finally {
+    // Sólo el DUEÑO del vuelo lo saca, y sólo si sigue siendo el suyo: un
+    // `resetVaultCacheAll()` concurrente ya vació el registro y pudo haber otro
+    // vuelo adentro. Borrar a ciegas mataría un vuelo ajeno vivo.
+    if (_vuelos.get(prep.clave) === vuelo) _vuelos.delete(prep.clave);
   }
 }
 
@@ -977,12 +1365,58 @@ const INSTANCE_VAULT_ERROR_CODES = Object.freeze({
  * @throws {VaultConfigError} si el namespace no valida — fail-closed ruidoso,
  *         antes de la clave de la memo y con CERO llamadas al driver (CA-6).
  */
-function resolveInstanceVault({ projectId, scopes, sharedScopes } = {}, opts = {}) {
+function resolveInstanceVault(args = {}, opts = {}) {
   const logger = typeof opts.logger === 'function' ? opts.logger : console.error;
-  const fail = (code, error, missing = []) => ({
-    ok: false, code, namespace: null, scopes: {}, missing, error,
-  });
+  const previo = prepararInstancia(args, opts, logger);
+  if (previo.fail) return previo.fail;
 
+  let estado;
+  try {
+    estado = resolverVaultConPlan(planDeInstancia(previo, opts), logger);
+  } catch (err) {
+    return mapearErrorInstancia(err, previo, logger);
+  }
+  return finalizarInstancia(estado, previo);
+}
+
+/**
+ * #5797 — gemelo ASYNC. Existe para que el camino por instancia pueda
+ * beneficiarse del single-flight: `resolveInstanceVault` corre por lanzamiento
+ * de agente y su lectura física arranca un proceso de la AWS CLI, así que N
+ * arranques concurrentes del mismo producto pagaban N procesos. El sync no
+ * puede coalescer nada —dentro de un tick no hay con quién coalescer— y por eso
+ * el single-flight sólo se observa por acá.
+ *
+ * Misma firma, mismos códigos y mismos errores que el sync: el único cambio
+ * observable es que devuelve una `Promise`. Comparte `prepararInstancia`,
+ * `mapearErrorInstancia` y `finalizarInstancia` con él ENTEROS, para que el
+ * fail-closed no dependa de qué camino eligió el caller.
+ */
+async function resolveInstanceVaultAsync(args = {}, opts = {}) {
+  const logger = typeof opts.logger === 'function' ? opts.logger : console.error;
+  const previo = prepararInstancia(args, opts, logger);
+  if (previo.fail) return previo.fail;
+
+  let estado;
+  try {
+    estado = await resolverVaultConPlanAsync(planDeInstancia(previo, opts), logger);
+  } catch (err) {
+    return mapearErrorInstancia(err, previo, logger);
+  }
+  return finalizarInstancia(estado, previo);
+}
+
+/** Forma de fallo COMPARTIDA por los dos caminos por instancia. */
+function failInstancia(code, error, missing = []) {
+  return { ok: false, code, namespace: null, scopes: {}, missing, error };
+}
+
+/**
+ * Pre-condiciones del camino por instancia: gate del vault y scopes
+ * declarados. Sin efectos y sin tocar el driver — lo que devuelve es o un
+ * `fail` listo, o el contexto para pedirle al broker.
+ */
+function prepararInstancia({ projectId, scopes, sharedScopes } = {}, opts = {}, logger = console.error) {
   const { cfg, indeterminado } = readVaultConfig(opts, logger);
 
   // CA-17 / G-4 — con el gate cerrado se falla CERRADO. Jamás se cae al archivo
@@ -994,26 +1428,26 @@ function resolveInstanceVault({ projectId, scopes, sharedScopes } = {}, opts = {
   // operador sepa QUÉ instancia quedó sin credenciales sin abrir el código.
   const producto = String(projectId);
   if (indeterminado) {
-    return fail(INSTANCE_VAULT_ERROR_CODES.VAULT_CONFIG_INDETERMINATE,
+    return { fail: failInstancia(INSTANCE_VAULT_ERROR_CODES.VAULT_CONFIG_INDETERMINATE,
       `no se pudo leer la seccion \`vault:\` de .pipeline/config.yaml, asi que el producto "${producto}" `
       + 'no puede resolver credenciales y tampoco se puede probar que el vault este apagado a proposito. '
       + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
-      + 'Proximo paso: reparar .pipeline/config.yaml');
+      + 'Proximo paso: reparar .pipeline/config.yaml') };
   }
   if (!cfg || cfg.enabled !== true) {
-    return fail(INSTANCE_VAULT_ERROR_CODES.VAULT_DISABLED,
+    return { fail: failInstancia(INSTANCE_VAULT_ERROR_CODES.VAULT_DISABLED,
       `el vault esta APAGADO a proposito (\`vault.enabled: false\` en .pipeline/config.yaml), asi que el `
       + `producto "${producto}" no resuelve credenciales. `
       + 'Esto NO es un problema de credenciales: no falta ningun secreto. '
       + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
-      + 'Proximo paso: encender y poblar el vault (#5339 / #5393)');
+      + 'Proximo paso: encender y poblar el vault (#5339 / #5393)') };
   }
 
   const pedidos = Array.isArray(scopes) ? scopes.filter((s) => typeof s === 'string' && s !== '') : [];
   if (!pedidos.length) {
-    return fail(INSTANCE_VAULT_ERROR_CODES.VAULT_SCOPES_REQUIRED,
+    return { fail: failInstancia(INSTANCE_VAULT_ERROR_CODES.VAULT_SCOPES_REQUIRED,
       `el producto "${producto}" no declara que credenciales necesita. `
-      + 'Proximo paso: agregar "secrets.scopes" (array no vacio) al descriptor del producto');
+      + 'Proximo paso: agregar "secrets.scopes" (array no vacio) al descriptor del producto') };
   }
 
   // G-3 — `shared` es membresía ENUMERADA y acotada a lo pedido; todo lo demás
@@ -1021,46 +1455,54 @@ function resolveInstanceVault({ projectId, scopes, sharedScopes } = {}, opts = {
   const compartidos = (Array.isArray(sharedScopes) ? sharedScopes : [])
     .filter((s) => pedidos.includes(s));
 
-  let estado;
-  try {
-    estado = resolverVaultConPlan({
-      cfg,
-      projectId,
-      plan: { ssm: pedidos, secretsmanager: [] },
-      // CA-7 — allowlist POR INSTANCIA. `cfg.required_scopes` NO se usa: la
-      // unión global autorizaría a cada tenant a los scopes de todos los demás
-      // y erosionaría el least-privilege en la capa que menos se ve.
-      requiredScopes: pedidos,
-      sharedScopes: compartidos,
-      opts,
-    }, logger);
-  } catch (err) {
-    // CA-6 — la config inválida se propaga como `VaultConfigError`: fail-closed
-    // ruidoso, nunca sanitizado en silencio. El error nombra la CLAVE de config.
-    if (err && err.name === 'VaultConfigError') throw err;
+  return { fail: null, cfg, projectId, pedidos, compartidos };
+}
 
-    // UX-OPS-3 — "falta el secreto" se remedia cargándolo; el resto, mirando el
-    // log del vault. REQ-SEC-9: viajan NOMBRES y códigos, nunca `err.message`
-    // crudo del vault ni el stdout de la CLI.
-    if (err && err.code === 'VAULT_SECRET_MISSING') {
-      const faltante = (err && err.scope) ? [err.scope] : [...pedidos];
-      return fail(INSTANCE_VAULT_ERROR_CODES.VAULT_SCOPE_MISSING,
-        `al producto "${projectId}" le falta en el vault el scope declarado: ${faltante.join(', ')}. `
-        + 'Impacto: la instancia queda SIN credenciales (fail-closed). '
-        + `Proximo paso: subir ese scope al vault bajo el namespace del producto "${projectId}"`,
-        faltante);
-    }
-    logger(`[credentials] ERROR: el vault no pudo resolver los scopes de la instancia `
-      + `"${projectId}" (${(err && err.code) || (err && err.name) || 'error'}). `
-      + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
-      + 'Proximo paso: revisar el log del vault, que nombra la causa y su remediacion');
-    return fail(INSTANCE_VAULT_ERROR_CODES.VAULT_FAILURE,
-      `no se pudieron resolver contra el vault las credenciales del producto "${projectId}" `
-      + `(scopes: ${pedidos.join(', ')} · error: ${(err && err.code) || (err && err.name) || 'desconocido'}). `
-      + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
-      + 'Proximo paso: revisar el log del vault, que nombra la causa y su remediacion');
+/** Args del broker para el camino por instancia. Uno solo para los dos gemelos. */
+function planDeInstancia(previo, opts) {
+  return {
+    cfg: previo.cfg,
+    projectId: previo.projectId,
+    plan: { ssm: previo.pedidos, secretsmanager: [] },
+    // CA-7 — allowlist POR INSTANCIA. `cfg.required_scopes` NO se usa: la
+    // unión global autorizaría a cada tenant a los scopes de todos los demás
+    // y erosionaría el least-privilege en la capa que menos se ve.
+    requiredScopes: previo.pedidos,
+    sharedScopes: previo.compartidos,
+    opts,
+  };
+}
+
+/** Traducción de errores del broker a la forma pública. Compartida (#5797). */
+function mapearErrorInstancia(err, { projectId, pedidos }, logger = console.error) {
+  // CA-6 — la config inválida se propaga como `VaultConfigError`: fail-closed
+  // ruidoso, nunca sanitizado en silencio. El error nombra la CLAVE de config.
+  if (err && err.name === 'VaultConfigError') throw err;
+
+  // UX-OPS-3 — "falta el secreto" se remedia cargándolo; el resto, mirando el
+  // log del vault. REQ-SEC-9: viajan NOMBRES y códigos, nunca `err.message`
+  // crudo del vault ni el stdout de la CLI.
+  if (err && err.code === 'VAULT_SECRET_MISSING') {
+    const faltante = (err && err.scope) ? [err.scope] : [...pedidos];
+    return failInstancia(INSTANCE_VAULT_ERROR_CODES.VAULT_SCOPE_MISSING,
+      `al producto "${projectId}" le falta en el vault el scope declarado: ${faltante.join(', ')}. `
+      + 'Impacto: la instancia queda SIN credenciales (fail-closed). '
+      + `Proximo paso: subir ese scope al vault bajo el namespace del producto "${projectId}"`,
+      faltante);
   }
+  logger(`[credentials] ERROR: el vault no pudo resolver los scopes de la instancia `
+    + `"${projectId}" (${(err && err.code) || (err && err.name) || 'error'}). `
+    + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
+    + 'Proximo paso: revisar el log del vault, que nombra la causa y su remediacion');
+  return failInstancia(INSTANCE_VAULT_ERROR_CODES.VAULT_FAILURE,
+    `no se pudieron resolver contra el vault las credenciales del producto "${projectId}" `
+    + `(scopes: ${pedidos.join(', ')} · error: ${(err && err.code) || (err && err.name) || 'desconocido'}). `
+    + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
+    + 'Proximo paso: revisar el log del vault, que nombra la causa y su remediacion');
+}
 
+/** Proyección del payload a la forma pública. Compartida (#5797). */
+function finalizarInstancia(estado, { projectId, pedidos }) {
   const resueltos = (estado && estado.payload && estado.payload.ssm) || {};
   // Copia sin prototipo: un scope llamado `toString` o `constructor` no puede
   // resolver contra `Object.prototype` y entregar una función como si fuera un
@@ -1074,7 +1516,7 @@ function resolveInstanceVault({ projectId, scopes, sharedScopes } = {}, opts = {
     else out[s] = v;
   }
   if (missing.length) {
-    return fail(INSTANCE_VAULT_ERROR_CODES.VAULT_SCOPE_MISSING,
+    return failInstancia(INSTANCE_VAULT_ERROR_CODES.VAULT_SCOPE_MISSING,
       `al producto "${projectId}" le faltan credenciales en el vault: ${missing.join(', ')}. `
       + 'Impacto: la instancia queda SIN credenciales (fail-closed). '
       + `Proximo paso: subir esos scopes al vault bajo el namespace del producto "${projectId}"`,
@@ -1702,12 +2144,25 @@ module.exports = {
   VAULT_BACKENDS,
   SOURCE,
   vaultScopePlan,
+  // #5797 — contrato PÚBLICO de invalidación. `resetVaultCache(scope)` acota la
+  // invalidación a un ámbito y valida fail-closed; `resetVaultCacheAll()` es la
+  // operación total, con nombre propio en vez de un comodín ambiguo.
+  resetVaultCache,
+  resetVaultCacheAll,
+  VAULT_RESET_ERROR_CODES,
+  // #5797 — lista DERIVADA del inventario. Se exporta para que un consumidor
+  // pueda preguntar qué es invalidable en vez de adivinar y comerse el rechazo.
+  scopesInvalidables,
+  /** @deprecated #5797 — usar `resetVaultCache(scope)` / `resetVaultCacheAll()`. */
   _resetVaultCache,
   resolveVaultOnly,
   VAULT_ONLY_ERROR_CODES,
   // #5899 — familia SIN efectos sobre el ambiente, para el camino por
   // instancia. Hermana de `resolveVaultOnly`: nunca pasa por `loadIntoEnv`.
   resolveInstanceVault,
+  // #5797 — gemelo async del camino por instancia: mismo contrato, con
+  // single-flight. Es el único camino donde la coalescencia es observable.
+  resolveInstanceVaultAsync,
   INSTANCE_VAULT_ERROR_CODES,
   DEFAULT_MAX_CACHED_TENANTS,
   // B2.7 — expuesto SÓLO para el test que verifica que la raíz de la config la
