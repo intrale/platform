@@ -332,6 +332,10 @@ const workfileName = require('./lib/workfile-name');
 const brazoBarridoCore = require('./lib/brazo-barrido-core');
 const brazoLanzamientoCore = require('./lib/brazo-lanzamiento-core');
 const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
+const mergeRaceLedger = require('./lib/merge-race-reclaim-ledger');
+// #6432 CA-23/CA-24 — copy de los DOS desenlaces del rescate (merge confirmado
+// / degradación). Fuente única: el barrido no redacta texto para el operador.
+const mergeRaceNotice = require('./lib/merge-race-reclaim-notice');
 // #6611 — auto-destrabe de bloqueos con predicado verificable.
 const verifiablePredicateStore = require('./lib/verifiable-predicate-store');
 const autoRecheckCounter = require('./lib/auto-recheck-counter');
@@ -4623,7 +4627,35 @@ function brazoBarrido(config) {
             // decisión). Opcionales: undefined/null si el agente no los emite.
             paths: Array.isArray(r.paths) ? r.paths : null,
             source: (typeof r.source === 'string' && r.source) || null,
+            // #6432 rev-3 (RS-1) — La procedencia SEC-9 exige que el hint venga
+            // del YAML de `delivery` corrido en la fase `entrega` del pipeline
+            // `desarrollo`, para el MISMO issue. La variable correcta es `fase`
+            // (la fase que se está barriendo, `:4216`), NO `faseRechazo`
+            // (`pipelineConfig.fase_rechazo`, que es el DESTINO del rebote y
+            // sólo vale `null` o `dev`). Con `faseRechazo` la condición era
+            // insatisfacible: el hint se anulaba siempre y el marker nunca
+            // nacía `merge_checks_race` — toda la cadena quedaba muerta.
+            // Las CUATRO condiciones son conjuntivas a propósito (#4748 SEC-1):
+            // relajar cualquiera reabre la aceptación de hints desde el YAML de
+            // cualquier skill. El `else` sigue siendo `null`, silencioso.
+            precondicion_merge_checks:
+              (pipelineName === 'desarrollo' && fase === 'entrega'
+                && skillFromFile(r.file.name) === 'delivery' && Number(r.issue) === Number(issue)
+                && r.precondicion_merge_checks && typeof r.precondicion_merge_checks === 'object')
+                ? r.precondicion_merge_checks : null,
           }));
+          // #6432 rev-2 (SEC/A01) — La precondicion del CIRCUIT BREAKER se acota
+          // a `merge_checks_race`. El circuit breaker escala a needs-human como
+          // FRENO HUMANO: si naciera con precondicion `dependency` (que
+          // `motivosClasificados` arrastra desde el `depende_de` del agente),
+          // `reapStaleHumanBlocks` estaria autorizado a auto-liberarlo apenas
+          // esa dep figure CLOSED — y el freno se retiraria solo, en un ciclo,
+          // sin que ningun humano mire el issue que agoto sus 3 rebotes.
+          // `merge_checks_race` SI es auto-re-evaluable acá porque su destrabe
+          // pasa por los gates de delivery. Todo lo demas cae al piso
+          // fail-closed `human_judgment`, que nunca es auto-re-evaluable.
+          const circuitPrecondition = humanBlock.classifyPrecondition(
+            motivosClasificados, [], { issue, only: 'merge_checks_race' });
           const esReboteDeInfra = motivosClasificados.length > 0
             && motivosClasificados.every(m => m.clasificacion === 'infra');
 
@@ -4908,7 +4940,7 @@ function brazoBarrido(config) {
                 for (const n of (det.dependsOn || [])) hintDeps.push(n);
               }
             }
-            let precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps);
+            let precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps, { issue });
 
             // #6611 — Predicado verificable: SEGUNDO canal, consultado sólo si
             // el primero dijo "juicio humano".
@@ -5323,6 +5355,7 @@ function brazoBarrido(config) {
             escalarACircuitBreaker({
               issue, skill: skillInfra, phase: fase, pipeline: pipelineName,
               reason: motivoInfra, archivos, faseRechazo, kind: 'infra',
+              precondition: circuitPrecondition,
             });
             continue;
           }
@@ -5339,6 +5372,7 @@ function brazoBarrido(config) {
             escalarACircuitBreaker({
               issue, skill: skillCorte, phase: fase, pipeline: pipelineName,
               reason: motivoCorte, archivos, faseRechazo, kind: 'generico',
+              precondition: circuitPrecondition,
             });
             continue;
           }
@@ -7437,7 +7471,15 @@ function requerirClaveDeProducto(config, clave) {
   return v;
 }
 
-function determinarDevSkill(issue, config) {
+// #6747 — mismo camino de resolución de siempre, pero devolviendo también CÓMO
+// se eligió el skill. El `source` lo consume el rewind manual (`resolveDeferredSkill`)
+// para dos cosas: no dejar que un default degrade a `pipeline-dev` (SR-4) y
+// avisarle al operador cuando el skill lo eligió el override por contenido (CA-UX-2).
+//
+// Es UN solo camino de resolución a propósito: re-evaluar
+// `labels.includes('area:infra') && issueMentionsPipelineScope(...)` desde
+// afuera sería un camino nuevo y violaría CA-6.
+function resolverDevSkillConOrigen(issue, config) {
   const mapping = requerirClaveDeProducto(config, 'dev_skill_mapping');
   const labels = getIssueLabels(issue);
   const priority = requerirClaveDeProducto(config, 'dev_routing_priority');
@@ -7446,28 +7488,34 @@ function determinarDevSkill(issue, config) {
   if (labels.includes('area:infra') && !labels.includes('area:pipeline') && mapping['area:pipeline']) {
     if (issueMentionsPipelineScope(issue, config)) {
       log('routing', `#${issue}: area:infra + contenido del pipeline → pipeline-dev (override)`);
-      return mapping['area:pipeline'];
+      return { skill: mapping['area:pipeline'], source: 'content-override' };
     }
   }
 
   // 1) Prioridad explícita de dominio: `area:pipeline`/`area:*` gana sobre `app:*` cuando coexisten.
   for (const priorityLabel of priority) {
     if (labels.includes(priorityLabel) && mapping[priorityLabel]) {
-      return mapping[priorityLabel];
+      return { skill: mapping[priorityLabel], source: 'priority-label' };
     }
   }
 
   // 2) Fallback: primer match directo (orden de labels de GitHub)
   for (const label of labels) {
-    if (mapping[label]) return mapping[label];
+    if (mapping[label]) return { skill: mapping[label], source: 'direct-label' };
   }
 
   const defaultSkill = mapping.default || 'backend-dev';
   if (isDeclaredStackDevSkill(defaultSkill, config)) {
-    return defaultSkill;
+    return { skill: defaultSkill, source: 'declared-default' };
   }
 
-  return getGenericDevFallbackSkill(config, mapping);
+  return { skill: getGenericDevFallbackSkill(config, mapping), source: 'generic-fallback' };
+}
+
+// Wrapper preservado: firma y retorno idénticos a los de siempre, para que los
+// 6 call sites del ruteo de rebotes queden intactos (#6747).
+function determinarDevSkill(issue, config) {
+  return resolverDevSkillConOrigen(issue, config).skill;
 }
 
 function getDevSkillPartitions(config) {
@@ -8143,6 +8191,7 @@ function escalarACircuitBreaker(opts, deps) {
     hb.reportHumanBlock({
       issue: issueNum, skill: skillBloq, phase, pipeline,
       reason: motivoTxt, question: preguntaTxt, moveFromActive: false,
+      precondition: opts.precondition,
     });
     markerOk = true;
   } catch (e) {
@@ -12989,6 +13038,10 @@ async function brazoRewind(config) {
         pipelineRoot: PIPELINE,
         yaml,
         activeProcesses,
+        // #6747 — el alias `dev` llega con `skill: null` y se resuelve por
+        // labels. Mismo patrón con que se inyecta `determinarDevSkill` en
+        // `resolveReboteDestino`: un solo camino de resolución, sin duplicar.
+        resolverDevSkillConOrigen,
         options: {
           killGraceMs: (config.rewind && config.rewind.kill_grace_seconds)
             ? config.rewind.kill_grace_seconds * 1000
@@ -13056,6 +13109,9 @@ async function brazoRewind(config) {
             target: result.target,
             fromPipeline: result.fromPipeline,
             fromFase: result.fromFase,
+            // #6747 — los códigos DEV_SKILL_* nombran el skill que se resolvió
+            // antes de abortar; sin esto el operador lee un `?`.
+            skill: result.skill,
             error: result.message,
             killGraceMs: rewindMod.DEFAULT_KILL_GRACE_MS,
           });
@@ -22232,6 +22288,162 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
   }
 }
 
+function runReclaimChild({ issue, pr, headSha, timeoutMs, spawnImpl = spawn }) {
+  return new Promise((resolve) => {
+    let settled = false, out = '';
+    const finish = (value) => { if (settled) return; settled = true; resolve(value); };
+    const child = spawnImpl(process.execPath, [
+      path.join(PIPELINE, 'skills-deterministicos', 'delivery.js'), '--reclaim',
+      `--pr=${pr}`, `--issue=${issue}`, `--head-sha=${headSha}`,
+    // #6432 — `ROOT` es el checkout principal (el que tiene `origin/main` y el
+    // remoto), NO el worktree del agente. Antes decía `REPO_ROOT`, que no existe
+    // en este módulo: el `spawn` tiraba ReferenceError y el rescate no corría
+    // nunca. Lo destapó el test de integración de los avisos (CA-23/CA-24).
+    ], { cwd: ROOT, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', (d) => { out += d; });
+    const timer = setTimeout(() => { try { child.kill(); } catch {} finish({ ok: false, status: 'timeout' }); }, timeoutMs);
+    timer.unref?.();
+    child.on('exit', (code) => {
+      clearTimeout(timer); let parsed = null;
+      try { parsed = JSON.parse(out.trim().split(/\r?\n/).pop()); } catch {}
+      finish({
+        ok: code === 0 && parsed && parsed.status === 'merged',
+        status: parsed && parsed.status,
+        sha: parsed && parsed.sha,
+        // #6432 CA-23 — `gate` y `reason` del hijo son dos de los seis
+        // campos del aviso de degradación. Se propagaban hasta acá y se
+        // tiraban: por eso el aviso no podía existir.
+        gate: parsed && parsed.gate,
+        reason: parsed && parsed.reason,
+      });
+    });
+    child.on('error', () => { clearTimeout(timer); finish({ ok: false, status: 'spawn_error' }); });
+  });
+}
+
+/**
+ * #6432 — Barrido de rescate de merges varados por la carrera con los checks.
+ *
+ * DOS DESENLACES, DOS AVISOS (CA-23 / CA-24). El rebote de `ux` del 2026-08-25
+ * encontró que la degradación a `human_judgment` ocurría EN SILENCIO: el marker
+ * se reescribía, el ledger se marcaba `degraded` y el operador quedaba con un
+ * `needs-human` sin saber qué pasó ni cómo salir. Ahora:
+ *   - merge confirmado  ⇒ 1 aviso (comentario en el issue + Telegram).
+ *   - intentos agotados ⇒ 1 aviso ACCIONABLE (issue, PR, N/N, gate, reason y el
+ *                          comando `/unblock` listo para copiar).
+ *   - intento intermedio fallido ⇒ CERO Telegram. Su traza va a log + `.jsonl`.
+ *
+ * Las inyecciones (`notify`, `listMarkers`, `ledgerStore`, `unblock`,
+ * `enqueueOrder`) existen para que el test de los dos desenlaces corra sin tocar
+ * el `.pipeline/` real ni mandar un solo mensaje. En producción son los reales.
+ */
+async function reapMergeChecksRaceBlocks({
+  allowlistSet, config,
+  ghCall = ghDesbloqueoCall,
+  spawnImpl = spawn,
+  notify = sendTelegram,
+  listMarkers = () => humanBlock.listBlockedIssues(),
+  ledgerStore = mergeRaceLedger,
+  unblock = (opts) => humanBlock.unblockIssue(opts),
+  enqueueOrder = (file, payload) => encolarOrdenGithub(file, payload),
+} = {}) {
+  const cfg = config && config.brazo && config.brazo.reclaim_merge_race;
+  if (!cfg || cfg.enabled !== true || cfg.kill_switch === true) return;
+  let markers = listMarkers().filter((m) => m.precondition && m.precondition.type === 'merge_checks_race');
+  if (allowlistSet) markers = markers.filter((m) => allowlistSet.has(String(m.issue)));
+  if (markers.length === 0) return;
+  const maxAttempts = Number.isInteger(cfg.max_attempts) && cfg.max_attempts > 0 ? cfg.max_attempts : 3;
+  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+  const prStates = {};
+  for (const marker of markers) {
+    ghThrottle();
+    try {
+      const fields = 'number,url,labels,headRefName,isCrossRepository,headRepositoryOwner,state,mergeStateStatus,headRefOid';
+      const { stdout } = await ghCall(['pr', 'view', String(marker.precondition.pr), '--json', fields, '--repo', 'intrale/platform'], 30000);
+      prStates[marker.precondition.pr] = JSON.parse(stdout);
+    } catch (e) { log('desbloqueo', `[merge-race] #${marker.issue} PR ilegible: ${e.message}`); }
+  }
+  const ledger = ledgerStore.readLedger();
+  const decision = brazoDesbloqueoCore.selectMergeRaceBlocksToReclaim({ markers, prStates, ledger, maxAttempts });
+
+  // --- DESENLACE 1: intentos agotados ⇒ degradar A JUICIO HUMANO, CON AVISO ---
+  for (const marker of decision.toDegrade) {
+    const pc = marker.precondition;
+    const entry = ledger[String(Number(marker.issue))] || {};
+    const usados = Number(entry.attempts || 0) || maxAttempts;
+    // Marcamos `degraded` ANTES de avisar: si el aviso falla, el tope igual
+    // quedó cerrado (fail-closed hacia el humano, nunca hacia el automático).
+    ledgerStore.markDegraded({ issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha });
+    try {
+      const reasonFile = `${marker.marker_path}.reason.json`;
+      const meta = JSON.parse(fs.readFileSync(reasonFile, 'utf8'));
+      meta.precondition = { type: 'human_judgment' };
+      fs.writeFileSync(reasonFile, JSON.stringify(meta, null, 2));
+    } catch (e) { log('desbloqueo', `[merge-race] no se pudo degradar #${marker.issue}: ${e.message}`); }
+
+    // CA-23 — el aviso accionable con los seis campos. Fuente única de copy.
+    const notice = mergeRaceNotice.buildDegradationNotice({
+      issue: marker.issue, pr: pc.pr,
+      attempts: usados, maxAttempts,
+      gate: entry.last_gate, reason: entry.last_reason,
+    });
+    log('desbloqueo', notice.log);
+    ledgerStore.appendAudit({
+      event: 'degraded', issue: marker.issue, pr: pc.pr, head_sha: String(pc.head_sha || '').slice(0, 7),
+      attempts: `${usados}/${maxAttempts}`, gate: entry.last_gate, reason: entry.last_reason,
+    });
+    try {
+      fs.mkdirSync(ghQueueDir, { recursive: true });
+      enqueueOrder(path.join(ghQueueDir, `${marker.issue}-merge-race-degraded-${Date.now()}.json`), {
+        action: 'comment', issue: Number(marker.issue), body: notice.comment,
+      });
+    } catch (e) { log('desbloqueo', `[merge-race] no se pudo encolar el aviso de degradación de #${marker.issue}: ${e.message}`); }
+    // CA-24 — uno de los DOS únicos Telegram del barrido.
+    try { notify(notice.telegram); } catch {}
+  }
+
+  // --- DESENLACE 2 (y los intentos que todavía no son desenlace) ---
+  for (const marker of decision.toReclaim) {
+    const pc = marker.precondition;
+    const counted = ledgerStore.recordAttempt({ issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha });
+    if (!counted) { log('desbloqueo', `[merge-race] #${marker.issue} ledger no persistido; no se intenta`); continue; }
+    const result = await runReclaimChild({ issue: marker.issue, pr: pc.pr, headSha: pc.head_sha, timeoutMs: cfg.child_timeout_ms, spawnImpl });
+    // El desenlace del intento se persiste SIEMPRE: es el insumo del aviso de
+    // degradación, que puede dispararse varios ticks después (CA-23).
+    ledgerStore.recordOutcome({
+      issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha,
+      status: result.status, gate: result.gate, reason: result.reason,
+    });
+    ledgerStore.appendAudit({
+      event: result.ok ? 'merged' : 'attempt_failed', issue: marker.issue, pr: pc.pr,
+      head_sha: String(pc.head_sha || '').slice(0, 7),
+      attempts: `${Number(counted.attempts || 0)}/${maxAttempts}`,
+      status: result.status, gate: result.gate, reason: result.reason,
+      authorized_by: 'brazo-desbloqueo:merge-race',
+    });
+    if (!result.ok) {
+      // CA-24 — intento intermedio fallido: log + `.jsonl`, CERO Telegram. El
+      // operador se entera del desenlace, no de cada vuelta del reintento.
+      log('desbloqueo', `[merge-race] #${marker.issue} intento ${Number(counted.attempts || 0)}/${maxAttempts} no mergeó (status=${result.status || 'desconocido'}, gate=${result.gate || 'desconocido'}); sin notificar, se reintenta en el próximo tick`);
+      continue;
+    }
+    const unblocked = unblock({ issue: marker.issue, unlocker: 'brazo-desbloqueo:merge-race', guidance: 'Reclaim de merge confirmado por los gates de delivery.' });
+    if (!unblocked || !unblocked.ok) continue;
+    const notice = mergeRaceNotice.buildConfirmationNotice({ issue: marker.issue, pr: pc.pr, sha: result.sha });
+    fs.mkdirSync(ghQueueDir, { recursive: true });
+    enqueueOrder(path.join(ghQueueDir, `${marker.issue}-remove-needs-human-${Date.now()}.json`), {
+      action: 'remove-label', issue: Number(marker.issue), label: humanBlock.NEEDS_HUMAN_LABEL,
+      guardrail_authorized: true, authorized_by: 'brazo-desbloqueo:merge-race-confirmed',
+    });
+    enqueueOrder(path.join(ghQueueDir, `${marker.issue}-merge-race-comment-${Date.now()}.json`), {
+      action: 'comment', issue: Number(marker.issue), body: notice.comment,
+    });
+    log('desbloqueo', `[merge-race] ✅ #${marker.issue} reclaim confirmado del PR #${pc.pr} (${String(result.sha || '').slice(0, 7)}) — needs-human retirado`);
+    // CA-24 — el otro de los DOS únicos Telegram del barrido.
+    try { notify(notice.telegram); } catch {}
+  }
+}
+
 /**
  * #6611 — Reaper de `needs-human` con PREDICADO VERIFICABLE resuelto.
  *
@@ -22495,6 +22707,7 @@ async function brazoDesbloqueoImpl(config) {
   // ningún blocked:dependencies el barrido retorna, pero los needs-human de
   // precondición igual deben re-evaluarse cada ciclo).
   await reapStaleHumanBlocks({ allowlistSet });
+  await reapMergeChecksRaceBlocks({ allowlistSet, config });
 
   // #6611 — Re-chequeo de los `needs-human` con predicado verificable, en el
   // MISMO tick y bajo el MISMO guard `_unblockRunning`: sin proceso nuevo, sin
@@ -24099,6 +24312,125 @@ async function mainLoop() {
     log('vault-cut', `No se pudo iniciar el productor de propuesta: ${e.message}`);
   }
 
+  // #5453 — COORDINADOR de la migración por host (rotación → convivencia →
+  // corte). La máquina de estados vive en `lib/vault-migration.js` y su cableado
+  // productivo en `lib/vault-migration-wiring.js` (ambos con tests propios); acá
+  // sólo queda el timer. Ese cableado es el MISMO que usa la CLI del operador,
+  // `vault-migration-run.js`: dos cableados distintos harían que el Pulpo y el
+  // operador evalúen el mismo host con criterios que se desincronizan.
+  //
+  // Doble gate cerrado (`vault.enabled` + `vault.migration.enabled`): sin los
+  // dos en `true` no se evalúa nada, no se consulta cobertura y no se crea un
+  // solo archivo bajo `.pipeline/state/vault-migration/`.
+  //
+  // Qué hace el tick y qué NO hace, deliberadamente:
+  //
+  //   - SÍ: reanuda la ventana leyendo el checkpoint por host, acredita el
+  //     respawn contra los `.pid` de `restart.js`, evalúa la matriz de cobertura
+  //     y publica el avance en el log.
+  //   - NO: no rota (emite material irreversible), no provisiona y no se
+  //     respawnea a sí mismo — un proceso que se reinicia dentro de su propio
+  //     tick es el bucle de muerte de 2026-07. Esas etapas las ejecuta el
+  //     operador fuera de banda siguiendo
+  //     `docs/runbooks/credential-rotation.md`, y las ACREDITA con
+  //     `node .pipeline/vault-migration-run.js <etapa> --host <host>`. Por eso
+  //     `auto_stages` sólo admite `observe`.
+  //   - NO: no corta el fallback. El único escritor es `vault-cut-fallback.js`
+  //     (#5452), que exige una capability firmada por el operador.
+  //   - NO: no mueve work-files. El lifecycle es del Pulpo, no de este flujo.
+  try {
+    const cfgRoot = loadConfig() || {};
+    const vaultCfg = (cfgRoot.vault && typeof cfgRoot.vault === 'object') ? cfgRoot.vault : {};
+    const migCfg = (vaultCfg.migration && typeof vaultCfg.migration === 'object')
+      ? vaultCfg.migration : {};
+    // Fail-closed: sólo el booleano `true` exacto de AMBOS gates lo abre.
+    if (vaultCfg.enabled === true && migCfg.enabled === true) {
+      // #5453 rev-1 — el cableado REAL vive en `lib/vault-migration-wiring.js`,
+      // compartido con la CLI del operador (`vault-migration-run.js`).
+      //
+      // Antes estaba inline acá, con `rotate`/`provision` devolviendo `{ok:false}`
+      // y `writeAudit` descartando la evidencia. Resultado: ningún host podía
+      // salir de `preflight`, este tick (que sólo procesa `respawned+`) era un
+      // no-op permanente y la auditoría se perdía. Un cableado único evita que el
+      // Pulpo y el operador evalúen con criterios distintos.
+      //
+      // El Pulpo lo arma SIN `acreditacion`: con eso `rotate` y `provision`
+      // siguen fallando cerrado acá — rotar emite material irreversible y no lo
+      // dispara un timer — pero el operador sí puede acreditarlos por CLI, y
+      // entonces este tick tiene hosts reales que observar.
+      const armado = require('./lib/vault-migration-wiring').createProductionVaultMigration({
+        pipelineDir: PIPELINE,
+        loadConfig,
+        logger: (msg) => log('vault-migration', String(msg).replace(/^\[vault-(migration|respawn)\] /, '')),
+        canPublishEvidence: () => !!(getTelegramToken() && getTelegramChatId()),
+        signalNeedsHuman: (evidencia) => log('vault-migration',
+          `FAIL-CLOSED (${evidencia && evidencia.causa}): el fallback se conserva, hace falta un humano`),
+      });
+      const coordinador = armado.coordinador;
+      if (!coordinador) throw new Error(`gate cerrado (${armado.gate})`);
+
+      const tickMs = Math.max(1, Number(migCfg.tick_minutes) || 15) * 60 * 1000;
+
+      // El gate se reevalúa EN CADA TICK, no sólo al arranque (#5453 rev-4).
+      //
+      // Hasta rev-3 `etapasAuto` y el doble gate se congelaban acá y el tick
+      // sólo releía `hosts_activos`: apagar `vault.enabled` o
+      // `vault.migration.enabled` en caliente no detenía nada hasta el próximo
+      // respawn del Pulpo, en contra de lo que promete `config.yaml`. Un gate
+      // que sólo se puede cerrar reiniciando el proceso no es un gate.
+      let gateCerradoAvisado = false;
+      const gateAbiertoEnCaliente = (fresh) => {
+        const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+        const m = (v.migration && typeof v.migration === 'object') ? v.migration : {};
+        return v.enabled === true && m.enabled === true;
+      };
+
+      const runMigrationTick = () => {
+        try {
+          const fresh = loadConfig() || {};
+          if (!gateAbiertoEnCaliente(fresh)) {
+            if (!gateCerradoAvisado) {
+              log('vault-migration', 'Gate cerrado en caliente: el tick no observa nada '
+                + '(se reabre solo si vuelve a `true` en el config, sin reiniciar).');
+              gateCerradoAvisado = true;
+            }
+            return;
+          }
+          gateCerradoAvisado = false;
+          const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+          // `auto_stages` también se relee: es parte de la política, no del arranque.
+          const mFresh = (v.migration && typeof v.migration === 'object') ? v.migration : {};
+          const etapasAuto = Array.isArray(mFresh.auto_stages) ? mFresh.auto_stages : [];
+          const win = (v.shadow_window && typeof v.shadow_window === 'object') ? v.shadow_window : {};
+          const hosts = Array.isArray(win.hosts_activos) ? win.hosts_activos : [];
+          if (!hosts.length || !etapasAuto.includes('observe')) return;
+
+          for (const host of hosts) {
+            const st = coordinador.readState(host);
+            // Sólo se automatiza lo idempotente: observar la ventana de un host
+            // que YA fue rotado, provisionado y respawneado por el operador.
+            if (!st || !['respawned', 'coexisting', 'cutover-ready'].includes(st.stage)) continue;
+            const res = coordinador.observeCoverage({ host });
+            if (res.ok && st.stage !== 'cutover-ready') {
+              log('vault-migration', `${host}: cobertura completa `
+                + `(${res.evidencia.cubiertos}/${res.evidencia.descriptores}), listo para el corte`);
+            } else if (!res.ok && st.stage === 'cutover-ready') {
+              log('vault-migration', `${host}: la cobertura CAYO (${res.causa}); el fallback se conserva`);
+            }
+          }
+        } catch (err) {
+          log('vault-migration', `Tick excepción no capturada: ${err.message}`);
+        }
+      };
+      runMigrationTick();
+      const migrationTimer = setInterval(runMigrationTick, tickMs);
+      if (typeof migrationTimer.unref === 'function') migrationTimer.unref();
+      log('vault-migration', `Coordinador iniciado: tick cada ${Math.round(tickMs / 60000)}min`);
+    }
+  } catch (e) {
+    log('vault-migration', `No se pudo iniciar el coordinador de migración: ${e.message}`);
+  }
+
   // #5243 CA-5 — Paso INVERSO del halt por secreto faltante.
   //
   // Vive acá y no en `loadConfig()` a propósito: el config se relee entero en
@@ -24168,6 +24500,27 @@ async function mainLoop() {
             },
             now: new Date(),
             log: (msg) => log('hb-reminder', msg),
+            // #6432 CA-26 — Estado del rescate automático de la carrera con los
+            // checks. El recordatorio calla SÓLO al bloqueo que el pipeline
+            // está reclamando solo en este momento (barrido encendido +
+            // intentos disponibles en el ledger). Todo lo demás —barrido
+            // apagado, intentos agotados, `degraded`, ledger ilegible— se
+            // recuerda con la escalera normal: es del humano.
+            //
+            // Se arma en CADA tick a propósito: el kill-switch y el ledger
+            // cambian en caliente, y un snapshot viejo callaría un bloqueo que
+            // ya volvió a ser del operador.
+            reclaim: () => {
+              const cfgRoot = loadConfig() || {};
+              const cfg = (cfgRoot.brazo && cfgRoot.brazo.reclaim_merge_race) || {};
+              // Con el barrido apagado no se calla nada: no hay quién reclame.
+              if (cfg.enabled !== true || cfg.kill_switch === true) return null;
+              return {
+                enabled: true,
+                maxAttempts: Number.isInteger(cfg.max_attempts) && cfg.max_attempts > 0 ? cfg.max_attempts : 3,
+                ledger: mergeRaceLedger.readLedger(),
+              };
+            },
           });
           if (r && r.error) log('hb-reminder', `Tick con error (no bloqueante): ${r.error}`);
         } catch (err) {
@@ -24749,6 +25102,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     ghWritesBloqueadas,
     ghCommentOnIssue,
     determinarDevSkill,
+    // #6747 — expuesto para que la suite pueda verificar el `source` de cada
+    // rama sin duplicar el camino de resolución.
+    resolverDevSkillConOrigen,
     getDevSkillPartitions,
     isDeclaredStackDevSkill,
     getGenericDevFallbackSkill,
@@ -24792,6 +25148,14 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #4707 — circuit breaker escalante (fail-closed): cap configurable + helper único.
     resolveRebotesMax,
     escalarACircuitBreaker,
+    // #6432 rev-3 (T14) — el barrido REAL, expuesto para el test de integración
+    // de la cadena `delivery` → precondición → marker → selector. Un test que
+    // arme `motivosClasificados` a mano NO recorre el guard de procedencia
+    // SEC-9 (`:4601`), que es justo donde la cadena se rompía entera. Sólo se
+    // exporta: en producción lo sigue invocando el loop del pulpo.
+    brazoBarrido,
+    reapMergeChecksRaceBlocks,
+    runReclaimChild,
     // #2957 — counter de fase build expuesto para tests del filtro por allowlist.
     countPendingBuild,
     // #3059 — wrapper robusto + watchdog del brazo de desbloqueo (testing).

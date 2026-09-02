@@ -1771,12 +1771,50 @@ vault:
   # que hidrate de una las 13 vars de `ENV_MAPPING`.
   # Vocabulario (G-1): las claves top-level del namespace de credenciales
   # (`resolveScopedRefs`, credentials.js:209) — telegram · providers ·
-  # multimedia · aws · google_drive. Vacío hasta el rollout de #5353.
-  required_scopes: []
+  # multimedia · aws · google_drive.
+  #
+  # #5453 · CA-25 — DECISIÓN EXPLÍCITA, no una lista libre. Los tres scopes de
+  # acá abajo son exactamente los que `vaultScopePlan(ENV_DESCRIPTORS)` deriva
+  # hoy del código, y el preflight de `lib/vault-migration.js` compara los DOS
+  # conjuntos en las dos direcciones antes de dejar arrancar una ventana:
+  #
+  #   - falta un scope  ⇒ `inventario_incompleto`: el vault no lo resolvería y
+  #     ese secreto caería al archivo sin que nadie lo note.
+  #   - sobra un scope  ⇒ `inventario_divergente`: la allowlist autorizaría más
+  #     de lo que el código pide.
+  #
+  # Y la LISTA VACÍA ya no es un estado neutro: mientras estuvo en `[]` la
+  # comparación "todo lo declarado existe" se cumplía VACUAMENTE, así que un
+  # preflight derivado la habría dado por completa. Es `inventario_incompleto`
+  # explícito. Por eso también hay que actualizar esta lista en el MISMO commit
+  # en que se agrega un descriptor nuevo a `ENV_DESCRIPTORS`.
+  #
+  # `multimedia` y `aws` pertenecen al vocabulario pero NO tienen descriptor:
+  # declararlos acá sería divergencia, no previsión.
+  required_scopes:
+    - telegram
+    - providers
+    - google_drive
   # Membresía ENUMERADA de los scopes que viven en `<prefix>/<projectId>/shared/`.
   # `shared/` NO es el default: lo que no esté acá se busca en el namespace del
   # host (`hosts/<hostId>/`), que es lo que mantiene el aislamiento entre hosts.
-  shared_secrets: []
+  #
+  # #5453 · CA-25 — los tres scopes son compartidos porque los 13 descriptores
+  # declaran `shared: true` (credentials.js): son credenciales del PIPELINE
+  # (bot de Telegram, API keys de providers, OAuth de Drive), no de un host.
+  # Duplicarlas por host multiplicaría el trabajo de rotación por la cantidad de
+  # máquinas sin agregar aislamiento real — el blast radius de una key de
+  # provider filtrada es el mismo esté donde esté.
+  #
+  # El aislamiento por host (`hosts/<hostId>/`) queda reservado para material
+  # que SÍ es del host: hoy, la raíz de confianza de #5426, que no pasa por acá.
+  # Un scope declarado compartido sin descriptor `shared: true` que lo respalde
+  # es `inventario_divergente` en el preflight: saca material del namespace del
+  # host sin que el código lo haya pedido.
+  shared_secrets:
+    - telegram
+    - providers
+    - google_drive
   # #5899 — Cuántos namespaces del vault (`<prefix>/<projectId>#<hostId>`) puede
   # tener cacheados el proceso a la vez.
   #
@@ -1880,6 +1918,55 @@ vault:
     # Purga de filas viejas del JSONL. El límite efectivo nunca supera t0: la
     # retención no puede borrar evidencia de la ventana vigente ni moverlo.
     retention_days: 30
+  # ---------------------------------------------------------------------------
+  # #5453 — coordinador de la migración por host (lib/vault-migration.js)
+  # ---------------------------------------------------------------------------
+  # Lleva cada host por `preflight → rotated → provisioned → respawned →
+  # coexisting → cutover-ready → verified` y, recién al final, le PROPONE el
+  # corte al ejecutor de #5452. Nunca escribe `bootstrap_fallback` ni mueve
+  # work-files.
+  #
+  # Gate de rollout propio, además de `vault.enabled`: con cualquiera de los dos
+  # cerrado el Pulpo no evalúa nada, no consulta cobertura y no crea un solo
+  # archivo bajo `.pipeline/state/vault-migration/`. Fail-closed: sólo el
+  # booleano `true` exacto lo abre.
+  #
+  # Se reevalúa EN CALIENTE, en cada tick (#5453 rev-4): poner cualquiera de los
+  # dos en `false` acá detiene la observación en el tick siguiente, sin reiniciar
+  # el Pulpo. Hasta rev-3 ambos se leían una sola vez al arranque y el apagado no
+  # surtía efecto hasta el próximo respawn — un gate que sólo se cierra
+  # reiniciando el proceso no es un gate, y éste apaga un flujo que toca material
+  # irreversible. `auto_stages` se relee con el mismo criterio: es política, no
+  # configuración de arranque.
+  migration:
+    enabled: false
+    # Cada cuánto el Pulpo reanuda la máquina de estados. La ventana de
+    # convivencia se mide en horas, así que un tick corto sólo agregaría ruido.
+    tick_minutes: 15
+    # Etapas que el Pulpo puede ejecutar SOLO, sin operador.
+    #
+    # `observe` (leer la evidencia y avanzar `respawned → coexisting →
+    # cutover-ready`) es idempotente y no toca material: se puede automatizar.
+    #
+    # `rotate`, `provision` y `respawn` NO están acá y no es un olvido: rotar
+    # emite material nuevo (irreversible) y respawnear implica bajar el propio
+    # Pulpo. Un proceso que se reinicia dentro de su propio tick es el bucle de
+    # muerte que tumbó al Commander 12 h en 2026-07. Esas etapas las dispara el
+    # operador con el runbook (`docs/runbooks/credential-rotation.md`) y el
+    # coordinador las ACREDITA, no las ejecuta.
+    #
+    # El comando con el que se acreditan es
+    # `node .pipeline/vault-migration-run.js <etapa> --host <host>` (#5453
+    # rev-1). Sin ese punto de entrada la secuencia de arriba no se podía
+    # ejecutar: el cableado devolvía `rotacion_fallida` incondicionalmente y
+    # ningún host llegaba a `respawned`, que es el único estado que este tick
+    # procesa.
+    auto_stages:
+      - observe
+    # El corte final NUNCA se automatiza: necesita una capability firmada por el
+    # operador (#5452). Este flag existe para que quede escrito que la decisión
+    # es explícita y no un default olvidado.
+    auto_cutover: false
 
 # =============================================================================
 # #5067 — Entrega cross-repo: el entregable puede vivir en un repo hermano
@@ -2272,6 +2359,13 @@ operational_state:
 # ambigüedad de `gh` (exit≠0, timeout, issue ausente) NO promueve.
 #
 # Corte en caliente: `kill_switch: true` desactiva sin reiniciar el pulpo.
+brazo:
+  reclaim_merge_race:
+    enabled: false
+    kill_switch: false
+    max_attempts: 3
+    child_timeout_ms: 300000
+
 wave_auto_transition:
   enabled: false        # kill switch maestro: false ⇒ el brazo no hace nada
   kill_switch: false    # override de emergencia adicional
