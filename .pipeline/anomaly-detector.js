@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // .pipeline/anomaly-detector.js — Detector reactivo de consumo anómalo (#2891 PR-B)
 //
 // Lee `.pipeline/metrics/snapshot.json` (producido por aggregator.js), compara

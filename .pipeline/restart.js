@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // restart.js — Reinicio drástico y seguro del pipeline V2
 //
 // Estrategia: sincronizar con main, matar TODOS los node.exe del pipeline,
