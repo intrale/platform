@@ -245,6 +245,12 @@ scripts/planner-plan.json
 # justamente la falla que el silencio persistente vino a evitar.
 .pipeline/partial-pause-deps-mute.json
 .pipeline/partial-pause-deps-mute.json.*.tmp
+# #6801 — dedupe de avisos de paraguas que el brazo de desbloqueo decide NO
+# auto-cerrar (fail-closed). Estado runtime puro y por checkout: se crea en el
+# `.pipeline/` de cada worktree donde corre el brazo, y como `reset --hard` no
+# toca untracked quedaria como `??` permanente en el repo principal.
+.pipeline/desbloqueo-umbrella-avisos.json
+.pipeline/desbloqueo-umbrella-avisos.json.*.tmp
 .pipeline/last-restart.json
 # #5646 — registro de servicios que quedaron con codigo viejo tras un
 # `reset --hard` y guard de ronda del restart selectivo. Estado runtime puro:

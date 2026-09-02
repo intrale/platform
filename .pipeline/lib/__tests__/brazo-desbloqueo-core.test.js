@@ -488,3 +488,263 @@ test('#6611 - entradas basura no rompen el selector', () => {
   const vacio = selectVerifiableHumanBlocksToRelease();
   assert.deepEqual(vacio, { toRelease: [], blocked: [] });
 });
+
+// =============================================================================
+// #6801 — decideSplitUmbrellaClose: el auto-cierre de paraguas nunca puede
+// tocar una hija de split, ni usar las dependencias como si fueran hijas.
+// =============================================================================
+
+const { decideSplitUmbrellaClose } = require('../brazo-desbloqueo-core');
+
+const lbl = (...names) => names.map((name) => ({ name }));
+
+test('#6801 CA-3 - hija de split con deps cerradas: destraba pero NO cierra', () => {
+  // El caso exacto del bug: #5797 es `[Split de #5791]`, lleva el label `split`
+  // (como toda hija) y su unica dependencia #5339 esta CLOSED.
+  const d = decideSplitUmbrellaClose({
+    issue: { number: 5797, title: '[Split de #5791] Cache versionada y single-flight', labels: lbl('split', 'blocked:dependencies') },
+    deps: ['5339'],
+  });
+  assert.equal(d.action, 'unblock', 'una hija JAMAS se auto-cierra por este camino');
+  assert.equal(d.reason, 'hija-de-split');
+  assert.equal(d.parent, 5791);
+  assert.equal(d.comment, null, 'no se emite comentario de cierre');
+  assert.match(d.telegram, /no se auto-cerró/);
+  assert.match(d.telegram, /reingresa al pipeline/);
+});
+
+test('#6801 CA-3 - el label `split` solo NUNCA alcanza para cerrar una hija', () => {
+  // Variante sin `blocked:dependencies`: sigue siendo hija por el titulo.
+  const d = decideSplitUmbrellaClose({
+    issue: { number: 5799, title: '[Split de #5791] Integrar snapshots en buildChildEnv', labels: lbl('split') },
+    deps: ['5339', '5798'],
+  });
+  assert.equal(d.action, 'unblock');
+  assert.equal(d.reason, 'hija-de-split');
+});
+
+test('#6801 CA-1 - paraguas real con sub-historias cerradas: cierra', () => {
+  const d = decideSplitUmbrellaClose({
+    issue: { number: 5440, title: 'Cadena de credenciales del pipeline', labels: lbl('split') },
+    deps: ['5339'],
+    children: [5791, 5798],
+    childrenSource: 'registro',
+    childStates: { 5791: 'CLOSED', 5798: 'CLOSED' },
+    hasLinkedPr: true,
+  });
+  assert.equal(d.action, 'close');
+  assert.equal(d.reason, 'paraguas-verificado');
+  assert.deepEqual(d.children, [5791, 5798]);
+});
+
+test('#6801 CA-2 - lista de hijas indeterminable: NO cierra (fail-closed) y lo dice', () => {
+  const d = decideSplitUmbrellaClose({
+    issue: { number: 4000, title: 'Paraguas viejo sin registro', labels: lbl('split') },
+    deps: ['3999'],
+    children: null,
+  });
+  assert.equal(d.action, 'skip', 'no sé qué hijas tiene ⇒ no cierro');
+  assert.equal(d.reason, 'hijas-indeterminables');
+  assert.equal(d.comment, null);
+  assert.ok(d.telegram && d.telegram.length > 0, 'el fail-closed no puede ser silencioso');
+  assert.ok(d.log.includes('fail-closed'));
+});
+
+test('#6801 CA-2 - hijas presentes pero alguna abierta o de estado ilegible: NO cierra', () => {
+  const abierta = decideSplitUmbrellaClose({
+    issue: { number: 4000, title: 'Paraguas', labels: lbl('split') },
+    deps: ['3999'], children: [4001, 4002], childrenSource: 'titulos',
+    childStates: { 4001: 'CLOSED', 4002: 'OPEN' },
+  });
+  assert.equal(abierta.action, 'skip');
+  assert.equal(abierta.reason, 'hijas-abiertas');
+
+  const ilegible = decideSplitUmbrellaClose({
+    issue: { number: 4000, title: 'Paraguas', labels: lbl('split') },
+    deps: ['3999'], children: [4001, 4002], childrenSource: 'titulos',
+    childStates: { 4001: 'CLOSED' }, // 4002 sin estado
+  });
+  assert.equal(ilegible.action, 'skip', 'estado desconocido cuenta como abierta');
+});
+
+test('#6801 CA-2/CA-4 - las dependencias nunca se usan como hijas', () => {
+  // Las deps estan todas cerradas, pero NO son la lista de hijas: sin hijas
+  // determinables no se cierra, y ningun mensaje llama "hijas" a las deps.
+  const d = decideSplitUmbrellaClose({
+    issue: { number: 5798, title: 'Paraguas sin registro', labels: lbl('split') },
+    deps: ['5339', '5797'],
+  });
+  assert.equal(d.action, 'skip');
+  assert.deepEqual(d.children, [], 'las deps no se filtran a la lista de hijas');
+  assert.ok(!/hijas fueron cerradas/.test(d.telegram || ''));
+  assert.match(d.telegram, /dependencias declaradas/i);
+});
+
+test('#6801 CA-4 - el comentario nombra la lista evaluada y separa deps de hijas', () => {
+  const d = decideSplitUmbrellaClose({
+    issue: { number: 5440, title: 'Paraguas', labels: lbl('split') },
+    deps: ['5339'],
+    children: [5791, 5798],
+    childrenSource: 'registro',
+    childStates: { 5791: 'CLOSED', 5798: 'CLOSED' },
+    hasLinkedPr: true,
+  });
+  assert.match(d.comment, /Sub-historias evaluadas.*#5791, #5798/);
+  assert.match(d.comment, /Dependencias declaradas de este issue.*#5339/);
+  assert.match(d.comment, /registro del split/, 'dice de dónde salió la lista');
+  // Regresion directa del texto que mentia: "todas sus historias hijas fueron
+  // cerradas (#5339)" donde #5339 era una DEPENDENCIA.
+  assert.ok(!/historias hijas fueron cerradas/.test(d.comment));
+  const lineaDeps = d.comment.split('\n').find((l) => l.includes('#5339'));
+  assert.match(lineaDeps, /no son sus hijas/, 'la línea de deps aclara que no son hijas');
+});
+
+test('#6801 CA-5 - paraguas sin PR asociado: cierra pero avisa para revisión', () => {
+  const d = decideSplitUmbrellaClose({
+    issue: { number: 5440, title: 'Paraguas', labels: lbl('split') },
+    deps: ['5339'], children: [5791], childrenSource: 'registro',
+    childStates: { 5791: 'CLOSED' }, hasLinkedPr: false,
+  });
+  assert.equal(d.action, 'close');
+  assert.equal(d.warnNoPr, true);
+  assert.match(d.telegram, /no tiene ningún PR propio asociado/);
+});
+
+test('#6801 - issue sin label `split`: destrabe normal', () => {
+  const d = decideSplitUmbrellaClose({
+    issue: { number: 1234, title: 'Feature cualquiera', labels: lbl('Ready', 'blocked:dependencies') },
+    deps: ['1200'],
+  });
+  assert.equal(d.action, 'unblock');
+  assert.equal(d.reason, 'sin-label-split');
+  assert.equal(d.telegram, null, 'el destrabe normal no genera aviso extra');
+});
+
+test('#6801 - entrada malformada: fail-closed, no toca nada', () => {
+  for (const issue of [null, undefined, 42, {}, { number: 1 }]) {
+    const d = decideSplitUmbrellaClose({ issue, deps: ['1'] });
+    assert.equal(d.action, 'skip', `entrada ${JSON.stringify(issue)} debe ser skip`);
+    assert.equal(d.reason, 'entrada-invalida');
+  }
+  assert.equal(decideSplitUmbrellaClose().action, 'skip');
+});
+
+test('#6801 - un titulo `[Split de #N]` que apunta a si mismo no lo hace hija', () => {
+  const d = decideSplitUmbrellaClose({
+    issue: { number: 777, title: '[Split de #777] basura', labels: lbl('split') },
+    deps: ['1'], children: [778], childrenSource: 'titulos', childStates: { 778: 'CLOSED' },
+    hasLinkedPr: true,
+  });
+  assert.equal(d.action, 'close', 'auto-referencia no puede bloquear el cierre de un paraguas real');
+});
+
+// =============================================================================
+// #6801 CA-7 — classifySpuriousUmbrellaClose: auditoría del radio de impacto.
+// =============================================================================
+
+const { classifySpuriousUmbrellaClose } = require('../brazo-desbloqueo-core');
+
+const comentarioDelBrazo = {
+  body: '## ✅ Paraguas resuelto\n\nEste issue era un paraguas...\n\n_Cerrado automáticamente por el brazo de desbloqueo del pipeline._',
+};
+
+test('#6801 CA-7 - hija de split cerrada por el brazo y sin PR: se reabre', () => {
+  const v = classifySpuriousUmbrellaClose({
+    number: 5798, title: '[Split de #5791] API de snapshot aislado', state: 'CLOSED',
+    closedByPullRequestsReferences: [], comments: [comentarioDelBrazo],
+  });
+  assert.equal(v.reopen, true);
+  assert.equal(v.reason, 'hija-cerrada-por-el-brazo-sin-pr');
+  assert.equal(v.parent, 5791);
+});
+
+test('#6801 CA-7 - hija con PR asociado: NO se reabre aunque tenga el comentario espurio', () => {
+  // Caso real #5797: volvió a cerrar con PR #6806. Reabrirla destruiría trabajo.
+  const v = classifySpuriousUmbrellaClose({
+    number: 5797, title: '[Split de #5791] Caché versionada', state: 'CLOSED',
+    closedByPullRequestsReferences: [{ number: 6806 }], comments: [comentarioDelBrazo],
+  });
+  assert.equal(v.reopen, false);
+  assert.equal(v.reason, 'tiene-pr-asociado');
+});
+
+test('#6801 CA-7 - paraguas real: NO se reabre (no es hija)', () => {
+  const v = classifySpuriousUmbrellaClose({
+    number: 5440, title: 'Cadena de credenciales del pipeline', state: 'CLOSED',
+    closedByPullRequestsReferences: [], comments: [comentarioDelBrazo],
+  });
+  assert.equal(v.reopen, false);
+  assert.equal(v.reason, 'no-es-hija-de-split');
+});
+
+test('#6801 CA-7 - cerrada por otra vía (sin comentario del brazo): NO se reabre', () => {
+  const v = classifySpuriousUmbrellaClose({
+    number: 5798, title: '[Split de #5791] API de snapshot', state: 'CLOSED',
+    closedByPullRequestsReferences: [], comments: [{ body: 'Cerrado a mano, ya no aplica.' }],
+  });
+  assert.equal(v.reopen, false);
+  assert.equal(v.reason, 'no-la-cerro-el-brazo');
+});
+
+test('#6801 CA-7 - idempotencia: una ya reabierta no se vuelve a tocar', () => {
+  const v = classifySpuriousUmbrellaClose({
+    number: 5798, title: '[Split de #5791] API de snapshot', state: 'OPEN',
+    closedByPullRequestsReferences: [], comments: [comentarioDelBrazo],
+  });
+  assert.equal(v.reopen, false);
+  assert.equal(v.reason, 'no-esta-cerrado');
+});
+
+test('#6801 CA-7 - entradas malformadas no rompen la auditoría', () => {
+  for (const issue of [null, undefined, 42, {}, { title: 5 }]) {
+    const v = classifySpuriousUmbrellaClose(issue);
+    assert.equal(v.reopen, false);
+  }
+});
+
+// =============================================================================
+// #6801 (rebote rev-1) — el archivo de dedupe de avisos es estado runtime y
+// NUNCA se versiona.
+//
+// `UMBRELLA_SKIP_NOTICE_FILE` se crea en el `.pipeline/` del checkout donde
+// corre el brazo. Si no está gitignoreado queda como `??` permanente en el repo
+// principal y en cada worktree, y el `reset --hard` del respawn no lo limpia
+// (no toca untracked). Este test fija la convención para que no se pierda en un
+// futuro refactor del bloque de estado runtime del `.gitignore`.
+// =============================================================================
+
+const { execFileSync } = require('child_process');
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+
+function estaIgnorado(relPath) {
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--', relPath], { cwd: REPO_ROOT, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false; // exit 1 = no ignorado
+  }
+}
+
+test('#6801 el estado de dedupe de avisos de paraguas esta gitignoreado', () => {
+  assert.equal(
+    estaIgnorado('.pipeline/desbloqueo-umbrella-avisos.json'),
+    true,
+    '.pipeline/desbloqueo-umbrella-avisos.json debe estar en el bloque de estado runtime del .gitignore'
+  );
+});
+
+test('#6801 el temporal de la escritura atomica tambien esta gitignoreado', () => {
+  assert.equal(
+    estaIgnorado('.pipeline/desbloqueo-umbrella-avisos.json.12345.tmp'),
+    true,
+    'el patron .pipeline/desbloqueo-umbrella-avisos.json.*.tmp debe estar ignorado'
+  );
+});
+
+test('#6801 el archivo de dedupe nunca esta trackeado en el indice de git', () => {
+  const tracked = execFileSync(
+    'git', ['ls-files', '--', '.pipeline/desbloqueo-umbrella-avisos.json'],
+    { cwd: REPO_ROOT, encoding: 'utf8' }
+  ).trim();
+  assert.equal(tracked, '', `.gitignore no desindexa lo ya trackeado; encontrado: ${tracked}`);
+});
