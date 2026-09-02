@@ -22672,8 +22672,15 @@ function _notifyUmbrellaSkipOnce(issueNumber, reason, text) {
   for (const k of Object.keys(state)) {
     if (!Number.isFinite(Number(state[k])) || now - Number(state[k]) > 7 * UMBRELLA_SKIP_NOTICE_TTL_MS) delete state[k];
   }
+  // Escritura atomica (tmp + rename), mismo patron que
+  // `human-block-reminder.js:writeState`. Un corte a mitad de `writeFileSync`
+  // deja el JSON truncado; el catch del read lo resetea a {} y se repite el
+  // aviso ya emitido. El archivo esta gitignoreado (.gitignore, bloque de
+  // estado runtime): es estado por checkout, no versionable.
   try {
-    fs.writeFileSync(UMBRELLA_SKIP_NOTICE_FILE, JSON.stringify(state, null, 2));
+    const tmp = `${UMBRELLA_SKIP_NOTICE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, UMBRELLA_SKIP_NOTICE_FILE);
   } catch (e) {
     log('desbloqueo', `No se pudo persistir el dedupe de avisos de paraguas: ${e.message}`);
   }
@@ -22941,7 +22948,9 @@ async function brazoDesbloqueoImpl(config) {
           } else {
             // Destrabe normal. Incluye a las hijas de split (CA-3): se les quita
             // el label y reingresan al pipeline, nunca se cierran por acá.
-            if (decision.telegram) sendTelegram(decision.telegram);
+            // El aviso de Telegram NO se emite acá: se manda recién después de
+            // que el `gh issue edit --remove-label` haya salido bien, para no
+            // anunciar "se le quitó blocked:dependencies" si el gh falló.
 
             // Quitar label blocked:dependencies
             ghThrottle();
@@ -22981,7 +22990,13 @@ async function brazoDesbloqueoImpl(config) {
               10000
             );
 
-            sendTelegram(`🪢→🟢 #${issue.number} destrabado automáticamente (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`);
+            // Un solo mensaje por destrabe. Si el core armó un aviso específico
+            // (hija de split, CA-3) ese explica el caso mejor que el genérico y
+            // lo reemplaza: mandar los dos era ruido duplicado en el canal.
+            sendTelegram(
+              decision.telegram
+              || `🪢→🟢 #${issue.number} destrabado automáticamente (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`
+            );
             log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
           }
         } else {

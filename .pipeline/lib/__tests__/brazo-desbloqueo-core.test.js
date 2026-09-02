@@ -701,3 +701,50 @@ test('#6801 CA-7 - entradas malformadas no rompen la auditoría', () => {
     assert.equal(v.reopen, false);
   }
 });
+
+// =============================================================================
+// #6801 (rebote rev-1) — el archivo de dedupe de avisos es estado runtime y
+// NUNCA se versiona.
+//
+// `UMBRELLA_SKIP_NOTICE_FILE` se crea en el `.pipeline/` del checkout donde
+// corre el brazo. Si no está gitignoreado queda como `??` permanente en el repo
+// principal y en cada worktree, y el `reset --hard` del respawn no lo limpia
+// (no toca untracked). Este test fija la convención para que no se pierda en un
+// futuro refactor del bloque de estado runtime del `.gitignore`.
+// =============================================================================
+
+const { execFileSync } = require('child_process');
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+
+function estaIgnorado(relPath) {
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--', relPath], { cwd: REPO_ROOT, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false; // exit 1 = no ignorado
+  }
+}
+
+test('#6801 el estado de dedupe de avisos de paraguas esta gitignoreado', () => {
+  assert.equal(
+    estaIgnorado('.pipeline/desbloqueo-umbrella-avisos.json'),
+    true,
+    '.pipeline/desbloqueo-umbrella-avisos.json debe estar en el bloque de estado runtime del .gitignore'
+  );
+});
+
+test('#6801 el temporal de la escritura atomica tambien esta gitignoreado', () => {
+  assert.equal(
+    estaIgnorado('.pipeline/desbloqueo-umbrella-avisos.json.12345.tmp'),
+    true,
+    'el patron .pipeline/desbloqueo-umbrella-avisos.json.*.tmp debe estar ignorado'
+  );
+});
+
+test('#6801 el archivo de dedupe nunca esta trackeado en el indice de git', () => {
+  const tracked = execFileSync(
+    'git', ['ls-files', '--', '.pipeline/desbloqueo-umbrella-avisos.json'],
+    { cwd: REPO_ROOT, encoding: 'utf8' }
+  ).trim();
+  assert.equal(tracked, '', `.gitignore no desindexa lo ya trackeado; encontrado: ${tracked}`);
+});

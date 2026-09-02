@@ -195,6 +195,18 @@ issue+causa con TTL de 24h (`desbloqueo-umbrella-avisos.json`) para no repetir
 el aviso en cada ciclo. Si un paraguas se cierra sin ningún PR propio asociado,
 el aviso lo señala explícitamente para revisión.
 
+El destrabe emite **un solo** mensaje: si el core armó un aviso específico (el
+caso de la hija de split) ese reemplaza al genérico de "destrabado
+automáticamente" en vez de sumarse. Y se manda **después** de que el
+`gh issue edit --remove-label` haya salido bien, para no anunciar un cambio de
+label que no llegó a aplicarse.
+
+`desbloqueo-umbrella-avisos.json` es **estado runtime, gitignoreado**, igual que
+`human-block-reminder-state.json` y `partial-pause-deps-mute.json`: vive en el
+`.pipeline/` del checkout donde corre el brazo y se escribe de forma atómica
+(tmp + `rename`). Versionarlo dejaría un `??` permanente en el repo principal y
+en cada worktree — el `reset --hard` del respawn no toca untracked.
+
 ### Auditoría del radio de impacto
 
 `node .pipeline/bin/audit-paraguas-resuelto.js` (dry-run por default, `--apply`
