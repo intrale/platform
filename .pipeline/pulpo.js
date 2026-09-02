@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Pulpo V2 — Proceso central del pipeline
 // Brazos: barrido, lanzamiento, huérfanos, desbloqueo (+ intake en F5)
@@ -211,6 +214,10 @@ const desyncBlockNotifier = require('./lib/desync-block-notifier');
 // #5516 — Clasificador puro de hijos de split huérfanos descubiertos DESDE GitHub
 // (cubre los splits que no pasan por el hook del Commander).
 const splitOrphanReconciler = require('./lib/split-orphan-reconciler');
+// #6801 — `parseSplitParent` (título `[Split de #N]`) y `parseSplitRegistroHijas`
+// (línea `- **Sub-historias**:` del registro del padre): las dos únicas fuentes
+// de la relación explícita padre→hijas que usa el brazo de desbloqueo.
+const splitGuard = require('./lib/split-guard');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
@@ -22537,6 +22544,152 @@ async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
   }
 }
 
+// =============================================================================
+// #6801 — Frontera del auto-cierre de paraguas: descubrir la relación REAL
+// padre→hijas, chequear PR asociado y avisar sin spamear.
+//
+// La decisión es pura y vive en `brazo-desbloqueo-core.decideSplitUmbrellaClose`.
+// Acá sólo se leen datos de GitHub y se aplican efectos.
+// =============================================================================
+
+/**
+ * Descubre las sub-historias de un candidato a paraguas, en orden de confianza:
+ *
+ *   1. `## Registro del split` → línea `- **Sub-historias**: #a, #b` del body.
+ *      Es la relación que el propio split escribió al cortarse: fuente de verdad.
+ *   2. Fallback para splits viejos sin registro: issues cuyo título es
+ *      `[Split de #<padre>]`.
+ *
+ * Devuelve `children: null` cuando no puede determinarla — el consumidor es
+ * fail-closed y NO cierra en ese caso (CA-2).
+ *
+ * @param {{number: number|string, title?: string}} issue
+ * @param {string} issueBody body ya leído por el brazo (cero requests extra)
+ * @returns {Promise<{children: number[]|null, source: 'registro'|'titulos'|null, states: Record<string,string>}>}
+ */
+async function _discoverSplitChildren(issue, issueBody) {
+  const out = { children: null, source: null, states: {} };
+  const repo = repoTarget.getRepoForIssue(issue);
+
+  // (1) Registro explícito en el body del padre.
+  let ids = null;
+  try {
+    ids = splitGuard.parseSplitRegistroHijas(issueBody || '');
+  } catch (e) {
+    log('desbloqueo', `#${issue.number}: no se pudo leer el registro del split (${e.message})`);
+    ids = null;
+  }
+  if (Array.isArray(ids) && ids.length) {
+    out.children = ids;
+    out.source = 'registro';
+    for (const child of ids) {
+      ghThrottle();
+      try {
+        const { stdout } = await ghDesbloqueoCall(
+          ['issue', 'view', String(child), '--json', 'state', '--jq', '.state', '--repo', repo],
+          10000
+        );
+        out.states[String(child)] = String(stdout || '').trim().toUpperCase();
+      } catch (e) {
+        // Estado ilegible → la decisión pura lo cuenta como abierta (fail-closed).
+        out.states[String(child)] = 'UNKNOWN';
+      }
+    }
+    return out;
+  }
+
+  // (2) Fallback: títulos `[Split de #N]`.
+  try {
+    ghThrottle();
+    const { stdout } = await ghDesbloqueoCall(
+      ['issue', 'list', '--search', `"[Split de #${issue.number}]" in:title`, '--state', 'all',
+        '--json', 'number,title,state', '--limit', '100', '--repo', repo],
+      15000
+    );
+    let found = [];
+    try {
+      found = JSON.parse(stdout || '[]');
+    } catch {
+      found = [];
+    }
+    const hijas = (Array.isArray(found) ? found : []).filter(
+      c => c && splitGuard.parseSplitParent(c.title || '') === Number(issue.number)
+    );
+    if (hijas.length) {
+      out.children = hijas.map(c => Number(c.number)).filter(n => Number.isInteger(n) && n > 0);
+      out.source = 'titulos';
+      for (const c of hijas) out.states[String(c.number)] = String(c.state || '').trim().toUpperCase();
+    }
+  } catch (e) {
+    log('desbloqueo', `#${issue.number}: búsqueda de hijas por título falló (${e.message}) — lista indeterminable`);
+  }
+  return out;
+}
+
+/**
+ * CA-5 — ¿El issue tiene algún PR que lo cierre? `null` si no se pudo saber.
+ * @returns {Promise<boolean|null>}
+ */
+async function _issueHasLinkedPr(issue) {
+  ghThrottle();
+  try {
+    const { stdout } = await ghDesbloqueoCall(
+      ['issue', 'view', String(issue.number), '--json', 'closedByPullRequestsReferences',
+        '--jq', '.closedByPullRequestsReferences | length', '--repo', repoTarget.getRepoForIssue(issue)],
+      10000
+    );
+    const n = Number.parseInt(String(stdout || '').trim(), 10);
+    return Number.isInteger(n) ? n > 0 : null;
+  } catch (e) {
+    log('desbloqueo', `#${issue.number}: no se pudo verificar PR asociado (${e.message})`);
+    return null;
+  }
+}
+
+// Un issue que el brazo decide NO cerrar sigue apareciendo en la lista de
+// bloqueados en CADA ciclo. Sin dedupe, el aviso —que tiene que existir, porque
+// un paraguas que deja de auto-cerrarse en silencio se lee como cuelgue del
+// pipeline— se convertiría en spam cada 30 minutos. Se re-avisa pasado el TTL.
+const UMBRELLA_SKIP_NOTICE_TTL_MS = 24 * 60 * 60 * 1000;
+const UMBRELLA_SKIP_NOTICE_FILE = path.join(PIPELINE, 'desbloqueo-umbrella-avisos.json');
+
+function _notifyUmbrellaSkipOnce(issueNumber, reason, text) {
+  const key = `${issueNumber}::${reason}`;
+  const now = Date.now();
+  let state = {};
+  try {
+    if (fs.existsSync(UMBRELLA_SKIP_NOTICE_FILE)) {
+      state = JSON.parse(fs.readFileSync(UMBRELLA_SKIP_NOTICE_FILE, 'utf8') || '{}');
+    }
+  } catch {
+    state = {};
+  }
+  if (typeof state !== 'object' || state === null) state = {};
+
+  const last = Number(state[key]);
+  if (Number.isFinite(last) && now - last < UMBRELLA_SKIP_NOTICE_TTL_MS) return false;
+
+  sendTelegram(text);
+  state[key] = now;
+  // Poda: no acumular claves de issues ya resueltos.
+  for (const k of Object.keys(state)) {
+    if (!Number.isFinite(Number(state[k])) || now - Number(state[k]) > 7 * UMBRELLA_SKIP_NOTICE_TTL_MS) delete state[k];
+  }
+  // Escritura atomica (tmp + rename), mismo patron que
+  // `human-block-reminder.js:writeState`. Un corte a mitad de `writeFileSync`
+  // deja el JSON truncado; el catch del read lo resetea a {} y se repite el
+  // aviso ya emitido. El archivo esta gitignoreado (.gitignore, bloque de
+  // estado runtime): es estado por checkout, no versionable.
+  try {
+    const tmp = `${UMBRELLA_SKIP_NOTICE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, UMBRELLA_SKIP_NOTICE_FILE);
+  } catch (e) {
+    log('desbloqueo', `No se pudo persistir el dedupe de avisos de paraguas: ${e.message}`);
+  }
+  return true;
+}
+
 async function brazoDesbloqueoImpl(config) {
   // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
   // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
@@ -22726,34 +22879,81 @@ async function brazoDesbloqueoImpl(config) {
         }
 
         if (allClosed) {
-          // 4. Todas cerradas → desbloquear (o auto-cerrar si es paraguas `split`)
+          // 4. Todas las dependencias cerradas. QUÉ hacer con el issue ya NO se
+          //    decide con `labels.includes('split')` (#6801): ese label lo lleva
+          //    tanto el paraguas COMO cada hija `[Split de #N]`, y la lista de
+          //    dependencias NO es la lista de hijas. Confundir ambas cosas cerró
+          //    como `completed` cuatro hijas sin implementar (#5791, #5797,
+          //    #5798, #5799). La decisión vive pura en brazo-desbloqueo-core.
           const issueLabelNames = (issue.labels || []).map(l => l.name);
-          const isSplitParent = issueLabelNames.includes('split');
+          const esCandidatoParaguas = issueLabelNames.includes('split')
+            && splitGuard.parseSplitParent(issue.title || '') === null;
 
-          // Quitar de los mapeos (ya no está bloqueado)
+          // Descubrimiento de la relación EXPLÍCITA padre→hijas (CA-1). Sólo se
+          // paga el costo de las llamadas extra a `gh` para los candidatos a
+          // paraguas, que son un puñado por ciclo.
+          let splitChildren = null;
+          let splitChildrenSource = null;
+          let splitChildStates = {};
+          let paraguasTienePr = null;
+          if (esCandidatoParaguas) {
+            const found = await _discoverSplitChildren(issue, issueBody);
+            splitChildren = found.children;
+            splitChildrenSource = found.source;
+            splitChildStates = found.states;
+            // CA-5 — Guarda de sanidad: si se va a cerrar como `completed`,
+            // saber si tiene PR propio para poder avisarlo.
+            if (splitChildren && splitChildren.length) {
+              paraguasTienePr = await _issueHasLinkedPr(issue);
+            }
+          }
+
+          const decision = brazoDesbloqueoCore.decideSplitUmbrellaClose({
+            issue,
+            deps: depIssueNumbers,
+            children: splitChildren,
+            childrenSource: splitChildrenSource,
+            childStates: splitChildStates,
+            hasLinkedPr: paraguasTienePr,
+          });
+          log('desbloqueo', decision.log);
+
+          if (decision.action === 'skip') {
+            // Fail-closed (CA-2): ni cierra ni destraba. Se MANTIENEN los mapeos
+            // para que el dashboard lo siga mostrando bloqueado y el próximo
+            // ciclo reevalúe con datos frescos. El aviso no es silencioso, pero
+            // se emite una vez por causa (el issue sigue en la lista cada ciclo).
+            if (decision.telegram) _notifyUmbrellaSkipOnce(issue.number, decision.reason, decision.telegram);
+            continue;
+          }
+
+          // A partir de acá el issue deja de estar bloqueado.
           delete blockedBy[issue.number];
           for (const dep of depIssueNumbers) {
             if (blocks[dep]) blocks[dep] = blocks[dep].filter(n => n !== String(issue.number));
             if (blocks[dep] && blocks[dep].length === 0) delete blocks[dep];
           }
 
-          if (isSplitParent) {
-            // Paraguas: las hijas cubren el scope, se cierra el padre sin reingresar al pipeline
-            log('desbloqueo', `#${issue.number}: paraguas split con todas las hijas cerradas (${depIssueNumbers.join(', ')}) → auto-cerrando`);
-            const closeComment = `## ✅ Paraguas resuelto\n\nEste issue era un paraguas (label \`split\`) y todas sus historias hijas fueron cerradas (${depIssueNumbers.map(n => '#' + n).join(', ')}). El scope queda cubierto por las hijas, no requiere desarrollo adicional.\n\n_Cerrado automáticamente por el brazo de desbloqueo del pipeline._`;
+          if (decision.action === 'close') {
+            // Paraguas VERIFICADO contra sus sub-historias reales: las hijas
+            // cubren el scope, se cierra el padre sin reingresar al pipeline.
             ghThrottle();
             try {
               await ghDesbloqueoCall(
-                ['issue', 'close', String(issue.number), '--reason', 'completed', '--comment', closeComment, '--repo', repoTarget.getRepoForIssue(issue)],
+                ['issue', 'close', String(issue.number), '--reason', 'completed', '--comment', decision.comment, '--repo', repoTarget.getRepoForIssue(issue)],
                 10000
               );
-              sendTelegram(`🟢 Paraguas #${issue.number} cerrado automáticamente — todas las hijas del split (${depIssueNumbers.map(n => '#' + n).join(', ')}) resueltas.`);
+              if (decision.telegram) sendTelegram(decision.telegram);
               log('desbloqueo', `#${issue.number} paraguas cerrado exitosamente`);
             } catch (e) {
               log('desbloqueo', `Error cerrando paraguas #${issue.number}: ${e.message}`);
             }
           } else {
-            log('desbloqueo', `🪢→🟢 #${issue.number} destrabado (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`);
+            // Destrabe normal. Incluye a las hijas de split (CA-3): se les quita
+            // el label y reingresan al pipeline, nunca se cierran por acá.
+            // El aviso de Telegram NO se emite acá: se manda recién después de
+            // que el `gh issue edit --remove-label` haya salido bien, para no
+            // anunciar "se le quitó blocked:dependencies" si el gh falló.
 
             // Quitar label blocked:dependencies
             ghThrottle();
@@ -22793,7 +22993,13 @@ async function brazoDesbloqueoImpl(config) {
               10000
             );
 
-            sendTelegram(`🪢→🟢 #${issue.number} destrabado automáticamente (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`);
+            // Un solo mensaje por destrabe. Si el core armó un aviso específico
+            // (hija de split, CA-3) ese explica el caso mejor que el genérico y
+            // lo reemplaza: mandar los dos era ruido duplicado en el canal.
+            sendTelegram(
+              decision.telegram
+              || `🪢→🟢 #${issue.number} destrabado automáticamente (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`
+            );
             log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
           }
         } else {

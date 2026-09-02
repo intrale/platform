@@ -310,12 +310,265 @@ function selectVerifiableHumanBlocksToRelease({ markers, observations, counters,
   return { toRelease, blocked };
 }
 
+// =============================================================================
+// #6801 — Decisión pura: con TODAS las dependencias cerradas, ¿este issue se
+// auto-cierra como paraguas de split, se destraba, o no se toca?
+//
+// EL BUG QUE ESTO REEMPLAZA
+// -------------------------
+// El brazo decidía "esto es un paraguas" con `labels.includes('split')`. Ese
+// label lo llevan TANTO el issue paraguas COMO cada `[Split de #N]` hija. Y la
+// lista que mostraba como "sus historias hijas" salía de `blockedBy[issue]` —
+// que son DEPENDENCIAS, no hijas. Resultado verificado: cuatro hijas de split
+// sin una sola línea implementada cerradas como `completed` (#5791, #5797,
+// #5798, #5799), con un comentario de auditoría falso por construcción.
+//
+// ORDEN DE DECISIÓN (cubre CA-1/CA-2/CA-3)
+// ----------------------------------------
+//   1. El título matchea `[Split de #P]` → es HIJA → jamás se cierra por este
+//      camino. Se destraba y reingresa al pipeline.
+//   2. No lleva el label `split` → camino normal de desbloqueo.
+//   3. Lleva `split` y NO es hija → candidato a paraguas. Se cierra SOLO si la
+//      lista de sub-historias vino de una relación explícita padre→hijas
+//      (registro del split en el body, o títulos `[Split de #N]`) y TODAS están
+//      CLOSED. Lista indeterminable → NO cierra (fail-closed) y lo dice.
+//
+// La señal `source: 'labels'` de `split-guard.isSplitChild()` NO se usa a
+// propósito: `split` + `blocked:dependencies` es exactamente el estado de un
+// paraguas legítimo bloqueado por sus hijas, así que confiar en ella clasifica
+// a todo padre real como hija y produce la regresión inversa.
+//
+// Las dependencias NUNCA se usan como hijas. Se arrastran sólo para nombrarlas
+// por lo que son en los mensajes al operador (CA-4).
+// =============================================================================
+
+const { parseSplitParent } = require('./split-guard');
+
+const UMBRELLA_LABEL = 'split';
+
+// De dónde salió la lista de hijas, en castellano para el operador (CA-4: el
+// mensaje nombra la lista que realmente se evaluó y de dónde la sacó).
+const CHILDREN_SOURCE_LABEL = {
+  registro: 'del registro del split en el body de este issue',
+  titulos: 'de los títulos `[Split de #N]` de las hijas',
+};
+
+function labelNamesOf(issue) {
+  const raw = issue && Array.isArray(issue.labels) ? issue.labels : [];
+  return raw
+    .map(l => String((l && typeof l === 'object' ? l.name : l) ?? '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function normalizeIssueIds(ids) {
+  const out = [];
+  for (const raw of Array.isArray(ids) ? ids : []) {
+    const n = Number.parseInt(String(raw ?? '').replace(/^#/, '').trim(), 10);
+    if (Number.isInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+function fmtRefs(list) {
+  const arr = (Array.isArray(list) ? list : []).map(n => '#' + depKey(n).replace(/^#/, ''));
+  return arr.length ? arr.join(', ') : '(ninguna)';
+}
+
+/**
+ * @param {object} p
+ * @param {{number: number|string, title: string, labels?: Array}} p.issue
+ * @param {Array<string|number>} [p.deps] dependencias declaradas ya verificadas CLOSED
+ * @param {Array<number|string>|null} [p.children] hijas descubiertas (null = indeterminable)
+ * @param {'registro'|'titulos'|null} [p.childrenSource] de dónde salió `children`
+ * @param {Record<string,string>} [p.childStates] hija → 'OPEN'|'CLOSED'|...
+ * @param {boolean|null} [p.hasLinkedPr] ¿el issue tiene PR asociado? null = desconocido
+ * @returns {{action:'close'|'unblock'|'skip', reason:string, parent:number|null,
+ *            deps:string[], children:number[], childrenSource:string|null,
+ *            warnNoPr:boolean, log:string, comment:string|null, telegram:string|null}}
+ */
+function decideSplitUmbrellaClose({
+  issue,
+  deps = [],
+  children = null,
+  childrenSource = null,
+  childStates = null,
+  hasLinkedPr = null,
+} = {}) {
+  const depRefs = (Array.isArray(deps) ? deps : []).map(depKey).filter(Boolean);
+  const base = {
+    parent: null,
+    deps: depRefs,
+    children: [],
+    childrenSource: null,
+    warnNoPr: false,
+    comment: null,
+    telegram: null,
+  };
+
+  // Fail-closed de entrada: sin título legible no se puede distinguir un
+  // paraguas de una hija, y confundirlos fue exactamente el defecto de #6801.
+  if (!issue || typeof issue !== 'object' || typeof issue.title !== 'string') {
+    return {
+      ...base,
+      action: 'skip',
+      reason: 'entrada-invalida',
+      log: 'issue sin título legible: no se puede distinguir paraguas de hija — no se toca (fail-closed)',
+    };
+  }
+
+  const number = depKey(issue.number);
+  const labels = labelNamesOf(issue);
+  const parent = parseSplitParent(issue.title);
+
+  // 1. CA-3 — Hija de split. Nunca se auto-cierra, aunque lleve el label
+  //    `split` y todas sus dependencias estén cerradas. Se destraba.
+  if (parent !== null && depKey(parent) !== number) {
+    return {
+      ...base,
+      action: 'unblock',
+      reason: 'hija-de-split',
+      parent,
+      log: `#${number}: es hija del split de #${parent} — se destraba, NUNCA se auto-cierra (CA-3 #6801). Dependencias cerradas: ${fmtRefs(depRefs)}`,
+      telegram: `⚠️ #${number} no se auto-cerró: es hija de split (\`[Split de #${parent}]\`) y el trabajo sigue pendiente. Se le quitó \`blocked:dependencies\` y reingresa al pipeline.`,
+    };
+  }
+
+  // 2. Sin label `split` → desbloqueo normal.
+  if (!labels.includes(UMBRELLA_LABEL)) {
+    return {
+      ...base,
+      action: 'unblock',
+      reason: 'sin-label-split',
+      log: `#${number}: destrabado (dependencias cerradas: ${fmtRefs(depRefs)})`,
+    };
+  }
+
+  // 3. Candidato a paraguas: hace falta la lista REAL de sub-historias.
+  const childIds = normalizeIssueIds(children).filter(n => depKey(n) !== number);
+  if (!childIds.length) {
+    return {
+      ...base,
+      action: 'skip',
+      reason: 'hijas-indeterminables',
+      log: `#${number}: lleva label \`split\` pero no se pudo determinar su lista de sub-historias — NO se cierra (fail-closed CA-2 #6801). Dependencias cerradas: ${fmtRefs(depRefs)}`,
+      telegram: `⚠️ #${number} no se auto-cerró: lleva el label \`split\` pero no se pudo determinar qué sub-historias lo componen, así que el pipeline prefiere no cerrarlo. Sus dependencias declaradas (${fmtRefs(depRefs)}) sí están cerradas. Revisalo a mano: si es un paraguas real, agregale al body la línea **Sub-historias** con los números de las hijas.`,
+    };
+  }
+
+  // 4. Todas las sub-historias tienen que estar CLOSED. Fail-closed: estado
+  //    ausente o ilegible cuenta como abierta.
+  const states = childStates && typeof childStates === 'object' ? childStates : {};
+  const openChildren = childIds.filter(n => states[depKey(n)] !== CLOSED);
+  if (openChildren.length) {
+    return {
+      ...base,
+      action: 'skip',
+      reason: 'hijas-abiertas',
+      children: childIds,
+      childrenSource,
+      log: `#${number}: paraguas con sub-historias todavía abiertas (${fmtRefs(openChildren)}) — NO se cierra. Sus dependencias declaradas sí cerraron: ${fmtRefs(depRefs)}`,
+      telegram: `⚠️ #${number} no se auto-cerró: sus dependencias cerraron, pero todavía tiene sub-historias abiertas (${fmtRefs(openChildren)}). Sigue esperando a que se completen.`,
+    };
+  }
+
+  // 5. Paraguas verificado contra su relación explícita padre→hijas → cerrar.
+  const fuente = CHILDREN_SOURCE_LABEL[childrenSource] || 'de la relación padre→hijas verificada';
+  const warnNoPr = hasLinkedPr === false;
+  const comment = [
+    '## ✅ Paraguas resuelto',
+    '',
+    `Este issue es el **padre** de un split y todas sus sub-historias están cerradas: ${fmtRefs(childIds)}.`,
+    '',
+    `- **Sub-historias evaluadas** (relación padre→hijas, leída ${fuente}): ${fmtRefs(childIds)}`,
+    `- **Dependencias declaradas de este issue** (no son sus hijas, se listan aparte): ${fmtRefs(depRefs)}`,
+    '',
+    'El scope queda cubierto por las sub-historias, no requiere desarrollo adicional.',
+    '',
+    '_Cerrado automáticamente por el brazo de desbloqueo del pipeline._',
+  ].join('\n');
+
+  const telegram = [
+    `🟢 Paraguas #${number} cerrado automáticamente — sus sub-historias (${fmtRefs(childIds)}), tomadas ${fuente}, están todas cerradas.`,
+    warnNoPr
+      ? `⚠️ Ojo: el paraguas no tiene ningún PR propio asociado. Se cerró por cobertura de sus sub-historias — si esperabas un entregable propio, revisalo.`
+      : null,
+  ].filter(Boolean).join('\n');
+
+  return {
+    ...base,
+    action: 'close',
+    reason: 'paraguas-verificado',
+    children: childIds,
+    childrenSource,
+    warnNoPr,
+    log: `#${number}: paraguas real con sub-historias cerradas (${fmtRefs(childIds)}, fuente=${childrenSource || 'desconocida'}) → auto-cerrando. Dependencias declaradas: ${fmtRefs(depRefs)}`,
+    comment,
+    telegram,
+  };
+}
+
+// =============================================================================
+// #6801 CA-7 — Auditoría del radio de impacto: ¿este issue CERRADO fue víctima
+// del bug del auto-cierre?
+//
+// No alcanza con matchear el texto "Paraguas resuelto": varias de esas issues
+// volvieron a cerrar después, esta vez con PR real (#5797 ← PR #6806), y
+// reabrirlas sería destruir trabajo legítimo. Se reabre sólo si se cumplen LAS
+// TRES condiciones: (a) el título es `[Split de #N]` (es una hija, no un
+// paraguas), (b) la cerró el brazo con el comentario espurio, (c) no tiene
+// ningún PR asociado que la cierre.
+// =============================================================================
+
+// Frase que sólo escribe el brazo de desbloqueo al auto-cerrar.
+const UMBRELLA_CLOSE_MARKER = /paraguas resuelto/i;
+const UMBRELLA_CLOSE_SIGNATURE = /brazo de desbloqueo/i;
+
+/**
+ * @param {object} issue — `gh issue view --json number,title,state,comments,closedByPullRequestsReferences`
+ * @returns {{reopen: boolean, reason: string, parent: number|null, marker: boolean, prs: number}}
+ */
+function classifySpuriousUmbrellaClose(issue) {
+  const none = { reopen: false, reason: 'entrada-invalida', parent: null, marker: false, prs: 0 };
+  if (!issue || typeof issue !== 'object' || typeof issue.title !== 'string') return none;
+
+  const prs = Array.isArray(issue.closedByPullRequestsReferences)
+    ? issue.closedByPullRequestsReferences.length
+    : 0;
+  const comments = Array.isArray(issue.comments) ? issue.comments : [];
+  const marker = comments.some(c => {
+    const body = c && typeof c.body === 'string' ? c.body : '';
+    return UMBRELLA_CLOSE_MARKER.test(body) && UMBRELLA_CLOSE_SIGNATURE.test(body);
+  });
+  const parent = parseSplitParent(issue.title);
+  const out = { reopen: false, reason: '', parent, marker, prs };
+
+  if (String(issue.state || '').toUpperCase() !== 'CLOSED') {
+    return { ...out, reason: 'no-esta-cerrado' };
+  }
+  if (parent === null || depKey(parent) === depKey(issue.number)) {
+    return { ...out, reason: 'no-es-hija-de-split' };
+  }
+  if (!marker) {
+    return { ...out, reason: 'no-la-cerro-el-brazo' };
+  }
+  if (prs > 0) {
+    // Cierre legítimo posterior: el comentario espurio sigue en el historial,
+    // pero el entregable existe.
+    return { ...out, reason: 'tiene-pr-asociado' };
+  }
+  return { ...out, reopen: true, reason: 'hija-cerrada-por-el-brazo-sin-pr' };
+}
+
 module.exports = {
   selectMarkersToRelease,
   selectHumanBlocksToRelease,
   selectMergeRaceBlocksToReclaim,
   selectVerifiableHumanBlocksToRelease,
   allDepsClosed,
+  // #6801 — paraguas de split: cerrar sólo con relación padre→hijas verificada
+  decideSplitUmbrellaClose,
+  // #6801 CA-7 — auditoría del radio de impacto del auto-cierre espurio
+  classifySpuriousUmbrellaClose,
   depKey,
   CLOSED,
   DEFAULT_MAX_AUTO_RELEASES,
