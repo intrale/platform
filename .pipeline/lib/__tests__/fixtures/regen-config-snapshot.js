@@ -47,10 +47,20 @@ if (!valid) {
     console.warn(JSON.stringify(errors, null, 2));
 }
 
+// `_generadoDesde` es el HEAD SOBRE EL QUE se regenero, no el commit que
+// contiene el snapshot: se regenera con los cambios en el arbol de trabajo y se
+// commitea despues, asi que el marcador apunta naturalmente al padre (#5453
+// rev-4, observacion del code review). Para que eso no se lea como una
+// inconsistencia, se anota explicitamente si el arbol estaba sucio: "HEAD X +
+// cambios sin commitear" describe la situacion real, "X" a secas sugeria —
+// falsamente— que el golden salio de ese commit tal cual esta publicado.
 let head = '(desconocido)';
 try {
     head = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: REPO_ROOT })
         .toString().trim();
+    const sucio = execFileSync('git', ['status', '--porcelain', '--', '.pipeline/config.yaml'], { cwd: REPO_ROOT })
+        .toString().trim();
+    if (sucio) head += ' + cambios sin commitear en .pipeline/config.yaml';
 } catch { /* fuera de un checkout git: el golden sigue siendo válido */ }
 
 const previo = fs.existsSync(DESTINO)
