@@ -67,9 +67,9 @@ const INFRA_MACHINE_TOKENS = [
   // #2405 CA-1 — JAVA_HOME drift es un problema de entorno (host), no de código.
   // El helper `validate-java-home.js` falla con exit 78. `sysexits(3)` define
   // 78 como EX_CONFIG → clasifica infra. Son códigos de salida, no prosa.
-  /exits+(?:codes+)?78/i,
-  /EX_CONFIG/,
-  /FATAL:s*JAVA_HOME/i,
+  /\bexit\s+(?:code\s+)?78\b/i,
+  /\bEX_CONFIG\b/,
+  /FATAL:\s*JAVA_HOME/i,
   // #6495 — El linter sale con exit 2 y este token cuando no puede conseguir
   // una base CONFIABLE contra la cual comparar (fetch de `origin/main` caído).
   // Es una falla de red, no un defecto del entregable: sin esta línea el motivo
@@ -92,7 +92,7 @@ const INFRA_PROSE_PATTERNS = [
   // un substring suelto), por eso convive con el enmascarado: `JAVA_HOME` está
   // exento de `IDENT_RE` (ver `IDENT_MASK_EXEMPT`) pero el pattern exige además
   // "invalido" / "no esta en la allowlist" a continuación.
-  /JAVA_HOMEs+(?:invalido|nos+estas+ens+las+allowlist)/i,
+  /JAVA_HOME\s+(?:invalido|no\s+esta\s+en\s+la\s+allowlist)/i,
 ];
 
 // Compat (CA-11): unión de los dos tiers — mismo contenido que antes de #6745.

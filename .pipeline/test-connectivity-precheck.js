@@ -14,6 +14,7 @@
  *   T9  — buildInfraReboteMotivo incluye host, código, timestamp
  *   T10 — writeInfraHealth persiste JSON compatible con dashboard
  *   T11 — circuit breaker NO cuenta rebotes tipo 'infra' (via módulo pulpo con mock)
+ *   T14b — #2405: los 6 motivos de drift de toolchain siguen siendo infra (guard #6745)
  *   T18 — #6745 CA-1: patrón infra dentro de un identificador de código → codigo
  *   T19 — #6745 CA-1: bloques de código y refs archivo.ext:linea se enmascaran
  *   T20 — #6745 CA-2/CA-8: code_signal degrada prosa pero no el tier máquina
@@ -319,6 +320,46 @@ async function test(name, fn) {
     // También sobre objetos Error
     const jvmErr = new Error('JAVA_HOME is set to an invalid directory');
     assert.strictEqual(precheck.classifyError(jvmErr), 'infra');
+  });
+
+  // #2405 — T14b: los 6 motivos de drift de entorno del host (exit 78 / EX_CONFIG /
+  // FATAL: JAVA_HOME / prosa de JAVA_HOME) siguen clasificando como problema de
+  // ENTORNO. Guard de regresión pedido por QA en #6745: los 4 literales que
+  // implementan estos casos son los únicos del módulo con escapes (`\b`, `\s`), o
+  // sea los únicos que una edición vía heredoc/`echo -e` puede destruir sin que se
+  // note ni en `git diff` ni en la vista de GitHub. T14 sólo cubre los mensajes en
+  // inglés de TOOLCHAIN_INFRA_PATTERNS, que no llevan escapes: la corrupción de
+  // #6745 pasó por delante de las 3 suites en verde.
+  await test('T14b: los 6 motivos de drift de toolchain siguen siendo infra (#2405, guard #6745)', () => {
+    const CASOS_2405 = [
+      ['M1 exit 78',       'El helper de validacion de toolchain fallo con exit 78 antes de compilar'],
+      ['M2 exit code 78',  'proceso terminado con exit code 78'],
+      ['M3 EX_CONFIG',     'El wrapper devolvio EX_CONFIG y aborto la corrida'],
+      ['M4 FATAL prefijo', 'FATAL: JAVA_HOME apunta a un directorio que no existe en el host'],
+      ['M5 prosa invalido','JAVA_HOME invalido en el host, no se pudo arrancar el build'],
+      ['M6 prosa allowlist','JAVA_HOME no esta en la allowlist de rutas permitidas del runner'],
+    ];
+    for (const [id, motivo] of CASOS_2405) {
+      assert.strictEqual(precheck.classifyError(motivo), 'infra', `${id}: "${motivo}" deberia clasificar infra`);
+    }
+
+    // Guard estructural directo: cero caracteres de control en el fuente del módulo.
+    // Es el síntoma exacto de la corrupción (el `\b` de un borde de palabra se
+    // materializa como U+0008 crudo cuando el escape lo interpreta la shell).
+    const fuente = fs.readFileSync(path.join(__dirname, 'connectivity-precheck.js'), 'utf8');
+    // Se construye con `new RegExp` y escapes ASCII a propósito: escribir la clase
+    // con los caracteres crudos en el fuente reintroduciría el mismo defecto que
+    // este test existe para detectar.
+    const CTRL_RE = new RegExp('[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]', 'g');
+    const ctrl = fuente.match(CTRL_RE) || [];
+    assert.strictEqual(ctrl.length, 0,
+      `connectivity-precheck.js tiene ${ctrl.length} caracteres de control crudos (escapes destruidos)`);
+
+    // Y los 4 literales con escape siguen presentes tal cual, sin la barra perdida.
+    for (const literal of ['\\bexit\\s+(?:code\\s+)?78\\b', '\\bEX_CONFIG\\b',
+                           'FATAL:\\s*JAVA_HOME', 'JAVA_HOME\\s+(?:invalido|no\\s+esta\\s+en\\s+la\\s+allowlist)']) {
+      assert.ok(fuente.includes(literal), `falta el literal intacto: ${literal}`);
+    }
   });
 
   // #2404 — T15: stacktrace JVM con substring toolchain se clasifica como codigo (Security §5, PO A4)
