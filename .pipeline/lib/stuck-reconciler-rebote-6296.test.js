@@ -101,10 +101,20 @@ const meta = (over = {}) => ({
 });
 
 // ─── resolveRebote: destino vía rebote-destino.js ───────────────────────────
+// #6745 (CA-3) - `resolveReboteDestino` sumo la salida `degradadoACodigo`.
+// Este carril lo invoca SIEMPRE con `esReboteDeInfra: false`, asi que el
+// degradado por capacidad de fase no puede aplicar y el campo vale `false`
+// por construccion. Se assertean las claves que el carril realmente consume
+// (`rebote()` solo desestructura faseDestino/skillsDestino) mas el invariante
+// del campo nuevo, en vez de un shape exacto que volveria a romperse con cada
+// campo aditivo del modulo reusado -- que es justo lo que este test quiere
+// habilitar al verificar que se REUSA el mapeo en lugar de reimplementarlo.
 test('resolveRebote reusa rebote-destino: fase_rechazo + determinarDevSkill', () => {
     const { deps } = build();
     const dest = deps.resolveRebote({ issue: 6146, pipeline: 'desarrollo', fase: 'verificacion' });
-    assert.deepEqual(dest, { faseDestino: 'dev', skillsDestino: ['backend-dev'] });
+    assert.equal(dest.faseDestino, 'dev');
+    assert.deepEqual(dest.skillsDestino, ['backend-dev']);
+    assert.equal(dest.degradadoACodigo, false, 'carril #6296: nunca degrada (esReboteDeInfra:false)');
 });
 test('resolveRebote → null en `definicion` (fase_rechazo: null) — SEC-D', () => {
     const { deps } = build();

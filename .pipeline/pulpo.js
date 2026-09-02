@@ -4592,35 +4592,93 @@ function brazoBarrido(config) {
           // se construía solo con `motivo` y el classifier no veía la
           // categoría declarativa cuando el agente la emitía como YAML
           // top-level (resultaba en `human_block` por fallback).
-          const motivosClasificados = rechazados.map(r => ({
-            skill: skillFromFile(r.file.name),
-            motivo: r.motivo || '',
-            clasificacion: precheck.classifyError(r.motivo || '') || 'codigo',
-            // Hints estructurados del YAML del agente (pueden ser undefined)
-            rebote_categoria: r.rebote_categoria || null,
-            depende_de: Array.isArray(r.depende_de) ? r.depende_de : null,
-            // #4767 — hints para el carril paralelo (block-classifier): paths del
-            // conflicto (allowlist) y origen del rechazo (`security` fuerza
-            // decisión). Opcionales: undefined/null si el agente no los emite.
-            paths: Array.isArray(r.paths) ? r.paths : null,
-            source: (typeof r.source === 'string' && r.source) || null,
-            // #6432 rev-3 (RS-1) — La procedencia SEC-9 exige que el hint venga
-            // del YAML de `delivery` corrido en la fase `entrega` del pipeline
-            // `desarrollo`, para el MISMO issue. La variable correcta es `fase`
-            // (la fase que se está barriendo, `:4216`), NO `faseRechazo`
-            // (`pipelineConfig.fase_rechazo`, que es el DESTINO del rebote y
-            // sólo vale `null` o `dev`). Con `faseRechazo` la condición era
-            // insatisfacible: el hint se anulaba siempre y el marker nunca
-            // nacía `merge_checks_race` — toda la cadena quedaba muerta.
-            // Las CUATRO condiciones son conjuntivas a propósito (#4748 SEC-1):
-            // relajar cualquiera reabre la aceptación de hints desde el YAML de
-            // cualquier skill. El `else` sigue siendo `null`, silencioso.
-            precondicion_merge_checks:
-              (pipelineName === 'desarrollo' && fase === 'entrega'
-                && skillFromFile(r.file.name) === 'delivery' && Number(r.issue) === Number(issue)
-                && r.precondicion_merge_checks && typeof r.precondicion_merge_checks === 'object')
-                ? r.precondicion_merge_checks : null,
-          }));
+          // #6745 SEC-B — allowlist de skills conocidos, para VALIDAR el skill
+          // emisor del rechazo antes de aplicarle el piso de `security`.
+          // `skillFromFile` es leniente por contrato (`6745.secur1ty` → 'secur1ty',
+          // no null), así que un `if (!skill)` no implementaría fail-closed.
+          let skillAllowlistRebote = null;
+          try { skillAllowlistRebote = workfileName.buildSkillAllowlist(config); } catch { skillAllowlistRebote = null; }
+
+          const motivosClasificados = rechazados.map(r => {
+            const motivoRaw = r.motivo || '';
+            // #6745 CA-1/CA-4 — evidencia TIPADA en vez del string crudo de
+            // `precheck.classifyError`. Acá ya no se decide ruteo: sólo se
+            // recolecta evidencia. Quien decide es `classifyRebote` (abajo).
+            const detalle = precheck.classifyErrorDetailed(motivoRaw);
+            return {
+              skill: skillFromFile(r.file.name),
+              motivo: motivoRaw,
+              detalle,
+              clasificacion: detalle.clasificacion || 'codigo',
+              // Hints estructurados del YAML del agente (pueden ser undefined)
+              rebote_categoria: r.rebote_categoria || null,
+              // #6745 rev-2 — procedencia del veredicto. NO es un hint del
+              // agente: el handler de salida strippea este campo de todo YAML
+              // escrito por un agente, así que 'pulpo' sólo puede haberlo puesto
+              // el Pulpo (exit code ≠ 0 o agotamiento de huérfano).
+              veredicto_sintetizado_por: r.veredicto_sintetizado_por || null,
+              depende_de: Array.isArray(r.depende_de) ? r.depende_de : null,
+              // #4767 — hints para el carril paralelo (block-classifier): paths del
+              // conflicto (allowlist) y origen del rechazo (`security` fuerza
+              // decisión). Opcionales: undefined/null si el agente no los emite.
+              paths: Array.isArray(r.paths) ? r.paths : null,
+              source: (typeof r.source === 'string' && r.source) || null,
+              // #6432 rev-3 (RS-1) — La procedencia SEC-9 exige que el hint venga
+              // del YAML de `delivery` corrido en la fase `entrega` del pipeline
+              // `desarrollo`, para el MISMO issue. La variable correcta es `fase`
+              // (la fase que se está barriendo, `:4216`), NO `faseRechazo`
+              // (`pipelineConfig.fase_rechazo`, que es el DESTINO del rebote y
+              // sólo vale `null` o `dev`). Con `faseRechazo` la condición era
+              // insatisfacible: el hint se anulaba siempre y el marker nunca
+              // nacía `merge_checks_race` — toda la cadena quedaba muerta.
+              // Las CUATRO condiciones son conjuntivas a propósito (#4748 SEC-1):
+              // relajar cualquiera reabre la aceptación de hints desde el YAML de
+              // cualquier skill. El `else` sigue siendo `null`, silencioso.
+              precondicion_merge_checks:
+                (pipelineName === 'desarrollo' && fase === 'entrega'
+                  && skillFromFile(r.file.name) === 'delivery' && Number(r.issue) === Number(issue)
+                  && r.precondicion_merge_checks && typeof r.precondicion_merge_checks === 'object')
+                  ? r.precondicion_merge_checks : null,
+            };
+          });
+
+          // #6745 CA-4 — DECISOR ÚNICO. Antes convivían dos caminos divergentes
+          // sobre el mismo `motivo_rechazo` y el bueno se descartaba:
+          // `esReboteDeInfra` salía de `precheck.classifyError` crudo mientras
+          // que `classifyRebote` sí se invocaba, pero sólo se consumía su
+          // `dependency_block`. Ahora el veredicto se calcula UNA vez por motivo
+          // y lo consumen tanto el ruteo infra/código como el handler dep-block.
+          //
+          // La semántica AND (`every`) se preserva: alcanza con que UN motivo no
+          // sea infra para que TODO el rebote sea de código. Eso es lo que hace
+          // que el piso de `security` sea del rebote completo y no del motivo
+          // suelto (SEC-C): si un motivo viene de `security`, `esReboteDeInfra`
+          // es false aunque los demás clasifiquen infra.
+          for (const m of motivosClasificados) {
+            m.veredicto = reboteClassifier.classifyRebote({
+              motivo: m.motivo,
+              // #6745 — contrato nuevo: evidencia tipada + skill validado.
+              classifyErrorDetail: m.detalle,
+              skill: m.skill,
+              skillAllowlist: skillAllowlistRebote,
+              classifyErrorResult: m.clasificacion, // compat
+              isRoutingMismatch: false, // routing se evalúa más abajo, mantener orden
+              // #3229 — hints estructurados del YAML del agente. Cierra el
+              // puente roto entre guru (clasifica) y barrido (consumer).
+              rebote_categoria: m.rebote_categoria,
+              dependsOn: m.depende_de,
+              // #6745 rev-2 — SEÑAL CONFIABLE de procedencia, que hasta ahora
+              // nunca se cableaba (`grep -n veredictoSintetizadoPorPulpo
+              // .pipeline/pulpo.js` daba 0 hits): el anti-spoof borraba el campo
+              // bueno y el classifier terminaba confiando crudo en
+              // `rebote_categoria`, que lo escribe el agente rechazado.
+              // `veredicto_sintetizado_por` sólo puede valer 'pulpo' si lo
+              // escribió el Pulpo — el handler de salida del agente lo strippea
+              // del YAML antes de que llegue a `listo/`.
+              veredictoSintetizadoPorPulpo: m.veredicto_sintetizado_por === 'pulpo',
+            });
+          }
+
           // #6432 rev-2 (SEC/A01) — La precondicion del CIRCUIT BREAKER se acota
           // a `merge_checks_race`. El circuit breaker escala a needs-human como
           // FRENO HUMANO: si naciera con precondicion `dependency` (que
@@ -4634,7 +4692,20 @@ function brazoBarrido(config) {
           const circuitPrecondition = humanBlock.classifyPrecondition(
             motivosClasificados, [], { issue, only: 'merge_checks_race' });
           const esReboteDeInfra = motivosClasificados.length > 0
-            && motivosClasificados.every(m => m.clasificacion === 'infra');
+            && motivosClasificados.every(m => m.veredicto.category === 'infra');
+
+          // #6745 CA-3 — qué ACCIÓN pide el rebote, tipada. Si algún motivo trae
+          // señal fuerte de rechazo de código/entrega, la acción pedida es de
+          // código y `resolveReboteDestino` puede degradar el destino por
+          // capacidad de fase. Es sólo desempate: nunca elige fase por su cuenta
+          // ni saltea un gate.
+          const accionRequeridaRebote = motivosClasificados
+            .some(m => m.veredicto.accion_requerida === 'codigo') ? 'codigo' : null;
+
+          // #6745 CA-10 / SEC-E — enum CERRADO, sin ningún fragmento del motivo.
+          const infraDowngradedByRebote = (motivosClasificados
+            .map(m => m.veredicto.infra_downgraded_by)
+            .find(v => v === 'security_floor' || v === 'code_signal')) || null;
 
           // #3167 — DEPENDENCY_BLOCK: ANTES de evaluar bloqueo humano, le damos al
           // clasificador unificado la chance de capturar rebotes donde el agente
@@ -4662,15 +4733,10 @@ function brazoBarrido(config) {
           // `depBlockHandled` queda en false y el flow infra/humano normal sigue.
           let depBlockHandled = false;
           for (const m of motivosClasificados) {
-              const result = reboteClassifier.classifyRebote({
-                motivo: m.motivo,
-                classifyErrorResult: m.clasificacion,
-                isRoutingMismatch: false, // routing se evalúa más abajo, mantener orden
-                // #3229 — hints estructurados del YAML del agente. Cierra el
-                // puente roto entre guru (clasifica) y barrido (consumer).
-                rebote_categoria: m.rebote_categoria,
-                dependsOn: m.depende_de,
-              });
+              // #6745 CA-4 — el veredicto ya lo calculó el decisor único arriba
+              // (misma llamada, mismos args). Reusarlo evita que dos lecturas
+              // del mismo motivo puedan divergir.
+              const result = m.veredicto;
               if (result.category !== 'dependency_block') continue;
 
               const skillDep = m.skill || skillFromFile(rechazados[0].file.name);
@@ -5674,13 +5740,21 @@ function brazoBarrido(config) {
           // marcarlo como `rebote_tipo: infra` y NO incrementar el contador
           // efectivo del circuit breaker (se preserva el reboteCount anterior).
           //
-          // #2335 CA5-CA6 — la clasificacion se hace aca (sobre `motivosClasificados`
-          // derivados del pre-check y/o motivo del agente via `precheck.classifyError`),
-          // NO se lee `rebote_tipo` escrito por el agente. El contador separado
+          // #2335 CA5-CA6 — la clasificacion NO se lee de `rebote_tipo` escrito
+          // por el agente: se deriva de `motivosClasificados`. El contador separado
           // `rebote_numero_infra` se incrementa solo cuando la clasificacion fue infra.
-          const reboteTipo = esReboteDeInfra ? 'infra' : 'codigo';
-          const nuevoReboteNumero = esReboteDeInfra ? reboteCount : (reboteCount + 1);
-          const nuevoReboteInfraNumero = esReboteDeInfra ? (reboteInfraCount + 1) : reboteInfraCount;
+          // #6745 CA-4 — el decisor es `reboteClassifier.classifyRebote` (arriba,
+          // `m.veredicto`), no `precheck.classifyError`: ese wrapper ya no decide
+          // ruteo en ningun lugar de este archivo.
+          //
+          // #6745 CA-5 — el TIPO se deriva DESPUÉS del destino (ver más abajo),
+          // nunca antes. Hasta #6745 `reboteTipo` se calculaba acá, ~25 líneas
+          // ANTES de que `resolveReboteDestino` decidiera la fase: el tipo no
+          // podía depender del destino y por eso era posible emitir
+          // `faseDestino === faseRechazo` con `rebote_tipo: 'infra'`. Ese rebote
+          // volvía a `dev` SIN consumir budget del circuit breaker genérico
+          // (`rebote-counter.js` ~:70-74 hace `continue` cuando el tipo previo es
+          // infra) — el bucle sin salida de #6179 / #3741 (~$80–100/h).
 
           // #2374 — diferenciar destino del rebote según tipo:
           //   - codigo:  faseRechazo (dev) — el dev tiene que corregir el código.
@@ -5703,7 +5777,7 @@ function brazoBarrido(config) {
           //     del barrido (línea 3547). Si re-encoláramos solo el skill que
           //     falló por infra, la próxima evaluación quedaría incompleta para
           //     siempre (faltarían los listo/ de los demás skills_requeridos).
-          const { faseDestino, skillsDestino } = resolveReboteDestino({
+          const { faseDestino, skillsDestino, degradadoACodigo } = resolveReboteDestino({
             esReboteDeInfra,
             fase,
             faseRechazo,
@@ -5713,7 +5787,32 @@ function brazoBarrido(config) {
             issue,
             config,
             skillFromFile,
+            // #6745 CA-3 — acción pedida por el motivo, TIPADA. El módulo sigue
+            // siendo puro: tiene prohibido releer o parsear el motivo (SEC-F).
+            accionRequerida: accionRequeridaRebote,
           });
+
+          // #6745 CA-5 — derivación del tipo y de los contadores, DESPUÉS de
+          // conocer el destino.
+          //
+          // INVARIANTE: si el rebote CAMBIA de fase para ir a `faseRechazo`,
+          // entonces `rebote_tipo === 'codigo'` y consume budget del circuit
+          // breaker genérico. (Un rebote infra que ocurre EN `faseRechazo` se
+          // reencola en su misma fase y sigue siendo 'infra' — eso es el
+          // comportamiento de #2374 y no es el agujero que cierra #6745.)
+          const esInfraFinal = esReboteDeInfra && !degradadoACodigo;
+          const reboteTipo = esInfraFinal ? 'infra' : 'codigo';
+          const nuevoReboteNumero = esInfraFinal ? reboteCount : (reboteCount + 1);
+          const nuevoReboteInfraNumero = esInfraFinal ? (reboteInfraCount + 1) : reboteInfraCount;
+
+          // #6745 CA-10 / SEC-E — enum CERRADO
+          // ('security_floor' | 'code_signal' | 'phase_capability' | null).
+          // Se persiste junto a `rebote_tipo` para que el operador pueda
+          // entender POR QUÉ el issue se movió, sin exponer ni un fragmento del
+          // motivo (`security` está en `SKILLS_SIN_MOTIVO_PUBLICO`).
+          const infraDowngradedByFinal = degradadoACodigo
+            ? 'phase_capability'
+            : (infraDowngradedByRebote || null);
 
           const destinoPendiente = path.join(fasePath(pipelineName, faseDestino), 'pendiente');
 
@@ -5736,11 +5835,18 @@ function brazoBarrido(config) {
           if (nuevoReboteInfraNumero > 0) {
             yamlOut.rebote_numero_infra = nuevoReboteInfraNumero;
           }
+          if (infraDowngradedByFinal) {
+            yamlOut.infra_downgraded_by = infraDowngradedByFinal;
+          }
           // #4160 — persistir el hash del diff actual para que el próximo ciclo
           // pueda detectar convergencia (diff idéntico entre rebotes). Sólo para
           // rebotes de código (los de infra no tocan el diff del dev). Fail-closed:
           // si no se resuelve el worktree, queda null y el gate no convergerá.
-          if (!esReboteDeInfra) {
+          //
+          // #6745 — mira `esInfraFinal`, NO `esReboteDeInfra`: un rebote degradado
+          // a código vuelve a `dev` y necesita su `diff_hash_previo`, o el gate
+          // de convergencia de #4160 no converge nunca.
+          if (!esInfraFinal) {
             try {
               const dh = convergence.computeDiffHash(issue, { root: ROOT });
               if (dh && dh.hash) yamlOut.diff_hash_previo = dh.hash;
@@ -5751,7 +5857,7 @@ function brazoBarrido(config) {
             writeYaml(destinoFile, yamlOut);
           }
 
-          if (esReboteDeInfra) {
+          if (esInfraFinal) {
             const skillsStr = skillsDestino.join(',') || '(ninguno)';
             log('barrido', `#${issue} RECHAZADO en ${fase} por INFRA → REENCOLADO en MISMA fase '${faseDestino}' [${skillsStr}] (rebote_numero_infra=${nuevoReboteInfraNumero}/${MAX_REBOTES_INFRA} — NO cuenta contra circuit breaker generico, NO devuelto a dev)`);
             ghCommentOnIssue(
@@ -5759,7 +5865,10 @@ function brazoBarrido(config) {
               `🚫 Rebote clasificado como infra (#2374) — reintentando en \`${faseDestino}\` sin devolver a \`dev\` (el código no falló, sólo timeout/crash/watchdog). No cuenta contra el circuit breaker de código.`,
             );
           } else {
-            log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseDestino} (rebote ${nuevoReboteNumero}/${MAX_REBOTES})`);
+            const porDegradado = degradadoACodigo
+              ? ' [degradado infra→codigo: la accion pedida no la puede ejecutar ningun skill de esta fase]'
+              : (infraDowngradedByFinal ? ` [infra descartado: ${infraDowngradedByFinal}]` : '');
+            log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseDestino} (rebote ${nuevoReboteNumero}/${MAX_REBOTES})${porDegradado}`);
           }
 
           // CLEANUP DOWNSTREAM: limpiar archivos residuales del issue en fases posteriores.
@@ -12184,12 +12293,23 @@ ${g}
       // dejó su propio `resultado`, la rama no entra y los campos falsificados
       // sobrevivirían hasta `procesado/`. Mismo patrón que
       // `delete cleaned.bloqueado_por_infra` (L1031 y L9157).
-      const procedenciaFalsificada =
-        data.veredicto_sintetizado_por !== undefined || data.agente_exit_code !== undefined;
-      delete data.veredicto_sintetizado_por;
-      delete data.agente_exit_code;
+      //
+      // #6745 rev-2 — `rebote_categoria: 'infra_agent_crash'` (y `infra_no_apk`)
+      // se strippean por el MISMO motivo. Son hints que hacen que el rebote NO
+      // cuente contra el circuit breaker (`rebote-classifier.js`, ramas 1.4/1.5),
+      // y los emite EXCLUSIVAMENTE el Pulpo: `synthesizeOrphanExhaustion` es el
+      // único productor de `infra_agent_crash` en todo el repo, y siempre lo
+      // escribe junto a `veredicto_sintetizado_por: 'pulpo'` — por un camino
+      // (`brazoHuerfanos`) que no pasa por acá. Si el agente los escribe en su
+      // propio YAML está falsificando procedencia igual que con los otros dos
+      // campos: un `qa`/`po`/`review` podía auto-eximirse del breaker de código
+      // agregando una línea a su veredicto de rechazo.
+      // `dependency_block` NO se strippea: ése SÍ es un hint de contrato que el
+      // agente emite legítimamente (#3229).
+      const strip = reboteClassifier.stripProcedenciaAgente(data);
+      const procedenciaFalsificada = strip.falsificada;
       if (procedenciaFalsificada) {
-        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite)`);
+        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite): ${strip.campos.join(', ')}`);
       }
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
