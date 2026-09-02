@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Pulpo V2 — Proceso central del pipeline
 // Brazos: barrido, lanzamiento, huérfanos, desbloqueo (+ intake en F5)
