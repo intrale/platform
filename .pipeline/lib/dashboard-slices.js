@@ -34,6 +34,13 @@ function _redact(s) {
 // #2976 — Estado del flag de cuota Anthropic agotada (lectura defensiva).
 // Tolerante a la ausencia del módulo: si #2974 todavía no aterrizó, el slice
 // degrada a `{ active: false }` y nada del dashboard se rompe.
+// #6498 — Resolver puro del estado del sello de evidencia de QA (los 4 estados
+// que el operador tiene que poder distinguir). Require defensivo: si el modulo
+// no esta, `pipelineSlice` emite `selloEvidencia: null` y la vista V3 queda
+// exactamente como hoy — cero badge, cero regresion.
+let _selloEvidenciaState = null;
+try { _selloEvidenciaState = require('./sello-evidencia-state'); } catch { /* opcional */ }
+
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
 
@@ -1624,6 +1631,15 @@ function buildAgentsForActiveFase(issueId, data, state) {
     return { agents, expectedSkills };
 }
 
+// #6498 — Envoltorio defensivo del resolver del sello. El badge es opcional; el
+// board NO. Cualquier fallo del modulo o dato deforme degrada a `null` (= cero
+// badge) en vez de tumbar el slice que alimenta todo el backlog del operador.
+function _selloEvidenciaSlice(fasesByKey, selloState) {
+    if (!_selloEvidenciaState || typeof _selloEvidenciaState.resolveSelloEvidenciaState !== 'function') return null;
+    try { return _selloEvidenciaState.resolveSelloEvidenciaState(fasesByKey, selloState) || null; }
+    catch { return null; }
+}
+
 function pipelineSlice(state, ctx) {
     const matrix = {};
     // matrixCounts[faseKey][skill] = N — cuántos issues activos hay en cada
@@ -1730,6 +1746,18 @@ function pipelineSlice(state, ctx) {
             // MISMO map que consume el handler `wave`). El frontend pinta el
             // badge 🛑 exclusivamente desde acá, sin re-derivar de labels.
             blockedBy: (state.blockedIssues && state.blockedIssues.blockedBy && state.blockedIssues.blockedBy[String(issueId)]) || null,
+            // #6498 — Estado del sello de evidencia de QA, RESUELTO server-side.
+            // Mismo criterio que `blockedBy`: el servidor decide, el cliente pinta.
+            //
+            // Sin esto el badge vivia SOLO en generateHTML() de dashboard.js, que
+            // se sirve unicamente en /legacy: la pantalla que abre el operador (V3)
+            // quedaba muda. Es el mismo defecto que #6459 ya habia corregido para el
+            // badge del Commander, y la misma solucion: una fuente, dos superficies.
+            //
+            // Lo que sale de aca es 100% derivado de constantes congeladas del
+            // resolver (estado/cssKey/icono/copy/copyCorto/detalle/variante). No
+            // viaja el hash, ni la ruta, ni el bloque `sello:` crudo (CA-10 / SEC-3).
+            selloEvidencia: _selloEvidenciaSlice(data.fases, (state.selloEvidencia || {})[String(issueId)]),
         };
         for (const [faseKey, entries] of Object.entries(data.fases || {})) {
             for (const e of entries) {
