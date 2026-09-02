@@ -131,6 +131,78 @@ un issue que la use queda cubierto por el flujo canónico. **Recomendación
 operativa:** declarar dependencias siempre con una sintaxis reconocida (sección
 canónica, `Depends on #N` o `depends_on: [N]`), nunca sólo en prosa.
 
+## Auto-cierre de paraguas de split (#6801)
+
+Un issue "paraguas" es el **padre** de un split: su scope queda cubierto por las
+sub-historias en las que se cortó, así que cuando todas cierran no requiere
+desarrollo propio y el brazo lo cierra como `completed` en vez de reingresarlo
+al pipeline.
+
+### El defecto que corrigió #6801
+
+La condición original era literalmente `labels.includes('split')`, y la lista
+que el brazo mostraba como "sus historias hijas" salía de `blockedBy[issue]`.
+Dos errores encadenados:
+
+1. **El label `split` lo llevan tanto el padre como cada hija `[Split de #N]`.**
+   Cualquier hija con `blocked:dependencies` se auto-cerraba en cuanto cerraba
+   su dependencia.
+2. **`blockedBy[issue]` son DEPENDENCIAS, no hijas.** El comentario de auditoría
+   las presentaba como "historias hijas": un mensaje falso por construcción.
+   Caso real: #2406 se cerró diciendo que su "hija" #2401 había cerrado — #2401
+   es su **padre**.
+
+Radio de impacto verificado: 49 issues cerrados con ese comentario; uno solo
+(#2406) resultó ser una pérdida real de trabajo y fue reabierto. Los demás eran
+paraguas legítimos, hijas re-partidas cuyas propias sub-historias sí cerraron, o
+cierres posteriores con PR real (#5797 ← PR #6806).
+
+### Regla vigente
+
+El orden de decisión vive puro en
+`brazo-desbloqueo-core.decideSplitUmbrellaClose`:
+
+| Condición | Acción | Motivo |
+|-----------|--------|--------|
+| Título matchea `[Split de #P]` | `unblock` | Es una **hija**: jamás se auto-cierra. Se le quita `blocked:dependencies` y reingresa al pipeline. |
+| Sin label `split` | `unblock` | Destrabe normal. |
+| Label `split` + hijas determinables + todas CLOSED | `close` | Paraguas verificado contra su relación real padre→hijas. |
+| Label `split` + hijas indeterminables | `skip` | **Fail-closed**: no cierra, avisa por Telegram y deja el issue como está. |
+| Label `split` + alguna hija abierta o de estado ilegible | `skip` | Sigue esperando. |
+
+La lista de hijas se descubre en la frontera (`_discoverSplitChildren` en
+`pulpo.js`) en dos pasos, por orden de confianza:
+
+1. **Registro del split** en el body del padre — la línea
+   `- **Sub-historias**: #a, #b` que ya escribía `renderSplitRegistro`, ahora
+   leída por `split-guard.parseSplitRegistroHijas`.
+2. **Fallback por títulos** — issues cuyo título es `[Split de #<padre>]`, para
+   los splits viejos que no tienen registro.
+
+> **Trampa conocida:** NO usar `split-guard.isSplitChild()` para esta decisión.
+> Su rama secundaria clasifica como hija a todo issue con `split` +
+> `blocked:dependencies`, que es exactamente el estado de un paraguas legítimo
+> bloqueado por sus hijas — produce la regresión inversa (ningún paraguas cierra
+> nunca). El discriminador correcto es `parseSplitParent(title)`.
+
+### Mensajes al operador
+
+Ninguna superficie llama "hijas" a las dependencias. El comentario de cierre
+lista las dos cosas por separado y dice **de dónde salió** la lista de
+sub-historias; el mensaje de Telegram replica esa distinción. El fail-closed no
+es silencioso: avisa por Telegram con el motivo y qué hacer, deduplicado por
+issue+causa con TTL de 24h (`desbloqueo-umbrella-avisos.json`) para no repetir
+el aviso en cada ciclo. Si un paraguas se cierra sin ningún PR propio asociado,
+el aviso lo señala explícitamente para revisión.
+
+### Auditoría del radio de impacto
+
+`node .pipeline/bin/audit-paraguas-resuelto.js` (dry-run por default, `--apply`
+para reabrir). Reabre un issue sólo si cumple **las cuatro** condiciones: es una
+hija `[Split de #N]`, la cerró el brazo con el comentario espurio, no tiene
+ningún PR asociado, y no tiene sub-historias propias todas cerradas. Es
+idempotente: un issue ya reabierto queda descartado con `no-esta-cerrado`.
+
 ## Tests
 
 - `.pipeline/lib/__tests__/dep-resolver.test.js` — patrones B1–B4, fail-closed,
@@ -141,3 +213,6 @@ canónica, `Depends on #N` o `depends_on: [N]`), nunca sólo en prosa.
 - `.pipeline/tests/brazo-desbloqueo-wedge.test.js` — end-to-end de la sintaxis
   `depends_on: [N]` (detección → decisión → reingreso a `pendiente/`) y
   regresión del wedge del watchdog.
+- `.pipeline/lib/__tests__/split-guard.test.js` — `parseSplitRegistroHijas`:
+  lectura de la relación padre→hijas del registro, fail-closed e inmunidad a
+  bloques de código.
