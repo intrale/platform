@@ -307,14 +307,36 @@ test('T6b · el reset de otro issue/fase no corta el episodio propio', () => {
     );
 });
 
-test('T6c · CA-PO-3 — el Pulpo borra el flag de dedup PROPIO en el reset', () => {
+test('T6c · CA-PO-3 — el flag de dedup PROPIO existe y el corte del JSONL es append-only', () => {
     const src = fs.readFileSync(path.join(PIPELINE_REAL, 'pulpo.js'), 'utf8');
     assert.ok(/\.\$\{issue\}\.noprogreso-notified/.test(src),
         'el breaker usa un flag propio, no `.needs-human-notified` (RIESGO-5 / #6755)');
-    assert.ok(/unlinkSync\([\s\S]{0,240}noprogreso-notified/.test(src),
-        'el reset debe borrar el flag propio para que el 2º escalado notifique');
     assert.ok(/appendInfraNoprogressRecord\(\{\s*issue,\s*fase,\s*diffHash:\s*null,\s*kind:\s*'reset'/.test(src),
         'el corte de episodio se marca con un registro reset, no borrando el JSONL');
+
+    // REGRESIÓN del rebote de `review` (#6746, fase aprobacion): antes el bloque
+    // de escalado hacía `writeFileSync(flag)` y, quince líneas más abajo, un
+    // `unlinkSync` del MISMO path en el mismo tick síncrono. El dedup no existía.
+    // El flag ya no puede borrarse en el bloque de escalado: se limpia recién
+    // cuando el issue reentra (`limpiarNoprogresoNotices` desde el intake).
+    const bloqueEscalado = src.slice(
+        src.indexOf('if (causaEscalado) {'),
+        src.indexOf('// #2405 CA-4 — Mover archivos actuales a `archivado/`'),
+    )
+        // Se analiza el CÓDIGO, no los comentarios: éstos nombran justamente el
+        // `unlinkSync` que ya NO está (mismo criterio que T3b).
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    assert.ok(bloqueEscalado.length > 500, 'se localizó el bloque de escalado');
+    assert.ok(!/unlinkSync/.test(bloqueEscalado),
+        'el bloque de escalado NO puede borrar el flag que acaba de reclamar');
+    assert.ok(!/writeFileSync\([^)]*(needsHumanFlag|noprogreso-notified)/.test(bloqueEscalado),
+        'el flag se escribe en el claim atómico, no al final del bloque');
+    // El único borrado vive en la limpieza de reentrada.
+    assert.ok(/function limpiarNoprogresoNotices\([\s\S]{0,900}?unlinkSync\(noprogresoNoticeFlag/.test(src),
+        'la limpieza del flag vive en `limpiarNoprogresoNotices`');
+    assert.ok(/if \(reentro\) \{[\s\S]{0,200}?limpiarNoprogresoNotices\(/.test(src),
+        'el intake limpia el flag cuando el issue reentra al pipeline');
 });
 
 // -----------------------------------------------------------------------------

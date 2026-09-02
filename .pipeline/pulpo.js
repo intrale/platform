@@ -658,6 +658,121 @@ function appendInfraNoprogressRecord(rec) {
   }
 }
 
+/**
+ * #6746 — nombre del flag de dedup PROPIO del breaker de no-progreso.
+ *
+ * Vive en `procesado/` de la fase, empieza con `.` (los barridos ignoran los
+ * dotfiles) y es distinto de `.needs-human-notified` a propósito: reusar aquél
+ * heredaría el bug de #6755 (se escribe y nunca se borra ⇒ el 2º escalado queda
+ * mudo). Ver RIESGO-5 / CA-PO-3.
+ *
+ * @param {string} procesadoDir Directorio `procesado/` de la fase.
+ * @param {number|string} issue Número de issue.
+ * @returns {string} Path absoluto del flag.
+ */
+function noprogresoNoticeFlag(procesadoDir, issue) {
+  return path.join(procesadoDir, `.${issue}.noprogreso-notified`);
+}
+
+/**
+ * #6746 (fix del rebote de `review`) — claim ATÓMICO del derecho a notificar un
+ * escalado. Devuelve `true` una sola vez por episodio.
+ *
+ * ### Por qué existe
+ *
+ * La versión anterior hacía `existsSync(flag)` al entrar al bloque y
+ * `writeFileSync(flag)` al salir, y el reset de SEC-D borraba ESE MISMO flag
+ * quince líneas más abajo, **dentro del mismo tick síncrono**. Resultado:
+ * `yaEscalado` era siempre `false` y el escalado por no-progreso re-notificaba
+ * (label + comentario en GitHub + Telegram) en cada barrido que volviera a ver
+ * los mismos work-files — justamente el ruido que el flag existía para cortar.
+ *
+ * Ahora el flag se **reclama antes de notificar** (`wx` = crear-o-fallar, sin
+ * ventana entre el chequeo y la escritura) y **sobrevive al tick**: sólo se
+ * limpia cuando el issue reentra al pipeline (ver `limpiarNoprogresoNotices`),
+ * que es el momento que CA-PO-3 describe como "escalar → destrabar → reentrar".
+ *
+ * ### Fail-open deliberado
+ *
+ * Si el flag no se puede crear por un motivo distinto de `EEXIST` (disco lleno,
+ * permisos), devolvemos `true`: ante la duda preferimos una notificación
+ * repetida a un escalado mudo. Un `needs-human` que nadie ve es peor que uno
+ * que se avisa dos veces. Es además el comportamiento que ya tenía el código
+ * viejo, donde el `writeFileSync` final estaba envuelto en un `catch {}`.
+ *
+ * @param {string} flagPath Path del flag (ver `noprogresoNoticeFlag`).
+ * @returns {boolean} `true` si este tick es el que debe notificar.
+ */
+function claimEscaladoNotice(flagPath) {
+  try {
+    fs.mkdirSync(path.dirname(flagPath), { recursive: true });
+    // 'wx' → EEXIST si ya existe. Atómico: no hay ventana entre chequeo y write.
+    fs.writeFileSync(flagPath, new Date().toISOString(), { flag: 'wx' });
+    return true;
+  } catch (e) {
+    if (e && e.code === 'EEXIST') return false;   // ya notificado en este episodio
+    return true;                                   // fail-open: mejor repetir que callar
+  }
+}
+
+/**
+ * #6746 — punto ÚNICO donde el barrido decide si este tick notifica un escalado
+ * a `needs-human`. Resuelve el flag que corresponde a la causa y lo reclama.
+ *
+ * Que sea una sola función (y no tres líneas inline en el barrido) es lo que
+ * hace verificable el fix del rebote: el test de dos ticks llama exactamente a
+ * la misma función que corre en producción, en vez de re-implementar el orden.
+ *
+ * @param {object} a
+ * @param {string} a.pipelineName Pipeline (ej. `desarrollo`).
+ * @param {string} a.fase Fase donde se escala.
+ * @param {number|string} a.issue Número de issue.
+ * @param {'noprogreso'|'infra_threshold'} a.causa Causa del escalado.
+ * @returns {{flagPath: string, notificar: boolean}}
+ */
+function claimEscaladoHumano({ pipelineName, fase, issue, causa }) {
+  const procesadoDir = path.join(fasePath(pipelineName, fase), 'procesado');
+  // RIESGO-5 — cada causa tiene su flag. `infra_threshold` conserva
+  // `.needs-human-notified` (con el bug de #6755, que se arregla en su issue);
+  // `noprogreso` usa el propio, con ciclo de vida completo (claim acá, limpieza
+  // en el intake cuando el issue reentra).
+  const flagPath = causa === 'noprogreso'
+    ? noprogresoNoticeFlag(procesadoDir, issue)
+    : path.join(procesadoDir, `.${issue}.needs-human-notified`);
+  return { flagPath, notificar: claimEscaladoNotice(flagPath) };
+}
+
+/**
+ * #6746 CA-PO-3 — limpia el flag de dedup de no-progreso en TODAS las fases de
+ * un pipeline para un issue.
+ *
+ * Se llama cuando el issue **reentra** al pipeline (el humano quitó
+ * `needs-human` y el intake generó un work-file fresco). Ése es el momento en
+ * que el episodio termina de verdad: el corte en el audit trail ya lo marcó el
+ * registro `{kind:"reset"}` (append-only, SEC-D), y acá se completa borrando el
+ * flag para que el PRÓXIMO escalado del issue vuelva a notificar.
+ *
+ * Barre todas las fases porque el intake no sabe en cuál se escaló el episodio
+ * anterior (el flag vive en la fase que escaló, el intake escribe en la fase de
+ * entrada). Es idempotente y best-effort: un flag que no está no es un error.
+ *
+ * @param {string} pipelineName Pipeline (ej. `desarrollo`).
+ * @param {number|string} issue Número de issue.
+ * @param {object} config Config resuelta (para enumerar `pipelines[x].fases`).
+ * @returns {number} Cantidad de flags efectivamente borrados.
+ */
+function limpiarNoprogresoNotices(pipelineName, issue, config) {
+  let borrados = 0;
+  const fases = ((config || {}).pipelines || {})[pipelineName];
+  for (const fase of ((fases || {}).fases || [])) {
+    try {
+      fs.unlinkSync(noprogresoNoticeFlag(path.join(fasePath(pipelineName, fase), 'procesado'), issue));
+      borrados++;
+    } catch { /* no existía: nada que limpiar */ }
+  }
+  return borrados;
+}
+
 // #6458 - Identidad del ARRANQUE de este proceso del pulpo. Se congela al
 // cargar el modulo, igual que `PIPELINE`: dos turnos con el mismo `boot_id`
 // corrieron bajo el mismo proceso, y un `boot_id` distinto al de la ultima
@@ -5200,15 +5315,15 @@ function brazoBarrido(config) {
             // #6746 CA-PO-3 / RIESGO-5 — el breaker de no-progreso usa un flag
             // PROPIO: reusar `.needs-human-notified` heredaría el bug de #6755
             // (se escribe y nunca se borra ⇒ el 2º escalado quedaría mudo).
-            const needsHumanFlag = path.join(
-              fasePath(pipelineName, fase),
-              'procesado',
-              causaEscalado === 'noprogreso'
-                ? `.${issue}.noprogreso-notified`
-                : `.${issue}.needs-human-notified`,
-            );
-            const yaEscalado = fs.existsSync(needsHumanFlag);
-            if (!yaEscalado) {
+            // #6746 (fix del rebote de `review`) — claim ATÓMICO al ENTRAR, no
+            // `existsSync` acá + `writeFileSync` al salir. El bug anterior: el
+            // reset de SEC-D borraba, en el mismo tick síncrono, el flag que
+            // esta rama acababa de escribir ⇒ `yaEscalado` era siempre false y
+            // el escalado se re-notificaba en cada barrido.
+            const { notificar: debeNotificar } = claimEscaladoHumano({
+              pipelineName, fase, issue, causa: causaEscalado,
+            });
+            if (debeNotificar) {
               // CA-UX-6 — el log distingue la causa: "no-progreso" no es lo mismo
               // que "infra persistente" y el operador actúa distinto en cada una.
               log('barrido', causaEscalado === 'noprogreso'
@@ -5293,11 +5408,9 @@ function brazoBarrido(config) {
               sendTelegram(causaEscalado === 'noprogreso'
                 ? `🚨 Issue #${issue} escalado a needs-human — reintentó ${noProgreso.ciclos} veces sin progreso (mismo diff, hash ${noProgreso.hashCorto}). Requiere intervención humana (quitá el label para reintentar).`
                 : `🚨 Issue #${issue} escalado a needs-human — ${reboteInfraCount + 1} rebotes por infra. Requiere intervención humana (quitá el label para reintentar).`);
-              // Flag de dedup
-              try {
-                fs.mkdirSync(path.dirname(needsHumanFlag), { recursive: true });
-                fs.writeFileSync(needsHumanFlag, new Date().toISOString());
-              } catch {}
+              // El flag de dedup YA quedó escrito por `claimEscaladoNotice` más
+              // arriba (claim-antes-de-notificar). No se re-escribe acá: hacerlo
+              // volvería a abrir la ventana entre chequeo y escritura.
             }
             // #6746 SEC-D — el JSONL es APPEND-ONLY: el corte de episodio se
             // marca con un registro `{kind:"reset"}`, nunca borrando el archivo.
@@ -5305,16 +5418,27 @@ function brazoBarrido(config) {
             // archivado por needs-human corta el episodio venga de donde venga,
             // igual que el contador de rebotes se resetea al quitar el label.
             //
-            // CA-PO-3 — el reset borra TAMBIÉN el flag de dedup propio, para que
-            // el ciclo escalar → destrabar → reentrar vuelva a estado limpio y el
-            // 2º escalado sí notifique (esto es lo que #6755 no hace con el flag
-            // viejo; ese bug se arregla en su propio issue, no acá).
             appendInfraNoprogressRecord({ issue, fase, diffHash: null, kind: 'reset' });
-            try {
-              fs.unlinkSync(path.join(
-                fasePath(pipelineName, fase), 'procesado', `.${issue}.noprogreso-notified`,
-              ));
-            } catch { /* no existía: nada que limpiar */ }
+
+            // CA-PO-3 — el flag de dedup propio NO se borra acá.
+            //
+            // Ésta era la falla que encontró `review` (#6746, rebote de
+            // `aprobacion`): el `unlinkSync` vivía quince líneas debajo del
+            // `writeFileSync` de la rama `noprogreso`, en el MISMO tick síncrono,
+            // así que el flag nunca sobrevivía y la deduplicación no existía.
+            //
+            // El corte de episodio son DOS marcas con vidas distintas:
+            //   1. `{kind:"reset"}` en el JSONL — se escribe YA (arriba), porque
+            //      es lo que hace que `countSameHash` arranque de cero. Es
+            //      append-only: nunca se borra nada (SEC-D).
+            //   2. el flag de notificación — sobrevive hasta que el issue
+            //      REENTRA al pipeline, que es cuando el humano quitó el label y
+            //      el intake generó un work-file fresco. Lo limpia
+            //      `limpiarNoprogresoNotices()` desde `brazoIntake`, que es el
+            //      momento real del "destrabar → reentrar" de CA-PO-3.
+            // Mientras el issue está parkeado en `needs-human`, el flag sigue en
+            // pie y ningún barrido posterior vuelve a comentar ni a mandar
+            // Telegram por el mismo episodio.
 
             // #2405 CA-4 — Mover archivos actuales a `archivado/` (no procesado/).
             // Al quitar el label `needs-human`, el intake crea un archivo fresco
@@ -19701,12 +19825,22 @@ function brazoIntake(config) {
           baseYaml.rechazado_at = previousRejection.at;
         }
 
+        // #6746 CA-PO-3 — el issue REENTRA al pipeline: acá termina de verdad el
+        // episodio de no-progreso. El intake sólo ve issues SIN `needs-human`
+        // (`INTAKE_SEARCH_EXCLUDED_LABELS`), así que llegar hasta este punto
+        // significa que el humano ya destrabó. Limpiamos el flag de dedup para
+        // que un futuro escalado vuelva a notificar. El contador propiamente
+        // dicho ya lo cortó el registro `{kind:"reset"}` del JSONL.
+        // Se hace una sola vez por issue creado (no por skill) y es idempotente.
+        let reentro = false;
+
         if (faseEntrada === 'dev') {
           // Fase dev: un solo skill según labels
           const devSkill = determinarDevSkill(issueNum, config);
           const filePath = path.join(pendienteDir, `${issueNum}.${devSkill}`);
           if (!fs.existsSync(filePath)) {
             writeYaml(filePath, baseYaml);
+            reentro = true;
             const tag = previousRejection ? ` ↩ con contexto de rechazo previo (${previousRejection.fase}/${previousRejection.skill})` : '';
             log('intake', `#${issueNum} "${issue.title}" → ${pipelineName}/${faseEntrada} (${devSkill})${tag}`);
           }
@@ -19721,8 +19855,16 @@ function brazoIntake(config) {
             }
           }
           if (created) {
+            reentro = true;
             const tag = previousRejection ? ` ↩ con contexto de rechazo previo (${previousRejection.fase}/${previousRejection.skill})` : '';
             log('intake', `#${issueNum} "${issue.title}" → ${pipelineName}/${faseEntrada} (${skills.join(', ')})${tag}`);
+          }
+        }
+
+        if (reentro) {
+          const limpiados = limpiarNoprogresoNotices(pipelineName, issueNum, config);
+          if (limpiados > 0) {
+            log('intake', `#${issueNum} reentró — limpiado el flag de escalado por no-progreso (${limpiados}); el próximo escalado vuelve a notificar`);
           }
         }
       }
@@ -25061,6 +25203,13 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #2335 — connectivity-state + clasificacion de reason
     mapPrecheckFailureToReason,
     connectivityState,
+    // #6746 — ciclo de vida del flag de dedup del escalado por no-progreso.
+    // Expuesto para el test de dos ticks: el 2º tick NO debe volver a notificar.
+    noprogresoNoticeFlag,
+    claimEscaladoNotice,
+    claimEscaladoHumano,
+    limpiarNoprogresoNotices,
+    appendInfraNoprogressRecord,
     // #6347 — un huérfano agotado es caída de infra, no veredicto de código.
     synthesizeOrphanExhaustion,
     // #2404 — exponer utilidades de staleness al test de integración.
