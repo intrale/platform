@@ -4605,6 +4605,11 @@ function brazoBarrido(config) {
               clasificacion: detalle.clasificacion || 'codigo',
               // Hints estructurados del YAML del agente (pueden ser undefined)
               rebote_categoria: r.rebote_categoria || null,
+              // #6745 rev-2 — procedencia del veredicto. NO es un hint del
+              // agente: el handler de salida strippea este campo de todo YAML
+              // escrito por un agente, así que 'pulpo' sólo puede haberlo puesto
+              // el Pulpo (exit code ≠ 0 o agotamiento de huérfano).
+              veredicto_sintetizado_por: r.veredicto_sintetizado_por || null,
               depende_de: Array.isArray(r.depende_de) ? r.depende_de : null,
               // #4767 — hints para el carril paralelo (block-classifier): paths del
               // conflicto (allowlist) y origen del rechazo (`security` fuerza
@@ -4655,6 +4660,15 @@ function brazoBarrido(config) {
               // puente roto entre guru (clasifica) y barrido (consumer).
               rebote_categoria: m.rebote_categoria,
               dependsOn: m.depende_de,
+              // #6745 rev-2 — SEÑAL CONFIABLE de procedencia, que hasta ahora
+              // nunca se cableaba (`grep -n veredictoSintetizadoPorPulpo
+              // .pipeline/pulpo.js` daba 0 hits): el anti-spoof borraba el campo
+              // bueno y el classifier terminaba confiando crudo en
+              // `rebote_categoria`, que lo escribe el agente rechazado.
+              // `veredicto_sintetizado_por` sólo puede valer 'pulpo' si lo
+              // escribió el Pulpo — el handler de salida del agente lo strippea
+              // del YAML antes de que llegue a `listo/`.
+              veredictoSintetizadoPorPulpo: m.veredicto_sintetizado_por === 'pulpo',
             });
           }
 
@@ -12272,12 +12286,23 @@ ${g}
       // dejó su propio `resultado`, la rama no entra y los campos falsificados
       // sobrevivirían hasta `procesado/`. Mismo patrón que
       // `delete cleaned.bloqueado_por_infra` (L1031 y L9157).
-      const procedenciaFalsificada =
-        data.veredicto_sintetizado_por !== undefined || data.agente_exit_code !== undefined;
-      delete data.veredicto_sintetizado_por;
-      delete data.agente_exit_code;
+      //
+      // #6745 rev-2 — `rebote_categoria: 'infra_agent_crash'` (y `infra_no_apk`)
+      // se strippean por el MISMO motivo. Son hints que hacen que el rebote NO
+      // cuente contra el circuit breaker (`rebote-classifier.js`, ramas 1.4/1.5),
+      // y los emite EXCLUSIVAMENTE el Pulpo: `synthesizeOrphanExhaustion` es el
+      // único productor de `infra_agent_crash` en todo el repo, y siempre lo
+      // escribe junto a `veredicto_sintetizado_por: 'pulpo'` — por un camino
+      // (`brazoHuerfanos`) que no pasa por acá. Si el agente los escribe en su
+      // propio YAML está falsificando procedencia igual que con los otros dos
+      // campos: un `qa`/`po`/`review` podía auto-eximirse del breaker de código
+      // agregando una línea a su veredicto de rechazo.
+      // `dependency_block` NO se strippea: ése SÍ es un hint de contrato que el
+      // agente emite legítimamente (#3229).
+      const strip = reboteClassifier.stripProcedenciaAgente(data);
+      const procedenciaFalsificada = strip.falsificada;
       if (procedenciaFalsificada) {
-        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite)`);
+        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite): ${strip.campos.join(', ')}`);
       }
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';

@@ -294,6 +294,50 @@ function classifyRebote(opts = {}) {
         ? opts.rebote_categoria.trim().toLowerCase()
         : null;
 
+    // #6745 rev-2 (CA-7) — PISO DE SECURITY, EVALUADO ACÁ: *ANTES* de cualquier
+    // rama que pueda retornar `category: 'infra'`.
+    //
+    // El bug que cierra este bloque: el piso vivía sólo dentro de
+    // `resolveInfraVeredicto` (rama 4), pero las ramas 1.4 (`infra_agent_crash`)
+    // y 1.5 (`infra_no_apk`) retornan `infra` ANTES de llegar ahí. Como el hint
+    // que las dispara (`rebote_categoria`) lo escribe el propio agente
+    // rechazado, un rechazo de `security` se auto-eximía del circuit breaker y
+    // se ruteaba como infra. Medido sobre HEAD 36a291065 con la allowlist real
+    // de 17 skills:
+    //
+    //   security, sin hint                        -> code  (cb=true)   correcto
+    //   security + rebote_categoria=infra_agent_crash -> infra (cb=false)  BYPASS
+    //   security + rebote_categoria=infra_no_apk      -> infra (cb=false)  BYPASS
+    //   security + el literal `infra-no-apk` en prosa -> infra (cb=false)  BYPASS
+    //
+    // La invariante que fija esta línea es simple y no admite excepciones:
+    // NINGÚN camino de `classifyRebote` puede devolver `infra` cuando el piso
+    // aplica. Si mañana se agrega otra rama de infra, tiene que consultarlo
+    // igual (por eso es una sola función pura y no un `if` copiado).
+    const pisoBloqueaInfra = pisoSecurityBloqueaInfra(opts);
+
+    // #6745 rev-2 (CA-7, defensa en profundidad) — PROCEDENCIA de los hints de
+    // infra bajo el CONTRATO NUEVO.
+    //
+    // `rebote_categoria` lo escribe el agente rechazado en su propio YAML, y las
+    // ramas 1.4/1.5 lo convierten en `counts_against_circuit_breaker: false`.
+    // Con el piso de arriba, un `security` ya no puede usarlo; pero CUALQUIER
+    // otro skill del allowlist sí podía auto-eximirse del breaker de código
+    // agregando una línea (`qa + rebote_categoria: infra_agent_crash` -> infra).
+    //
+    // El único productor legítimo de estas categorías en todo el repo es el
+    // Pulpo (`synthesizeOrphanExhaustion`), que siempre las emite junto a
+    // `veredicto_sintetizado_por: 'pulpo'`. Ese campo NO es falsificable: el
+    // handler de salida del agente lo strippea antes de que el YAML llegue a
+    // `listo/`. Así que bajo el contrato nuevo exigimos esa procedencia.
+    //
+    // Bajo el contrato LEGACY (sin `classifyErrorDetail`) el hint sigue valiendo
+    // solo: ahí no hay señal de procedencia que exigir, y romperlo cambiaría el
+    // contrato de #5641 para los call-sites viejos que no rutean.
+    const contratoNuevo = !!(opts.classifyErrorDetail && typeof opts.classifyErrorDetail === 'object');
+    const procedenciaPulpo = opts.veredictoSintetizadoPorPulpo === true;
+    const hintInfraConfiable = !contratoNuevo || procedenciaPulpo;
+
     // 1.5 infra_no_apk — Issue #4046
     //
     // Issues de dashboard/pipeline (sin flavor real de app) que cayeron en el
@@ -317,7 +361,8 @@ function classifyRebote(opts = {}) {
     // superficie ReDoS desaparece por construcción en vez de mitigarse.
     //
     // Va ANTES de `human_block` y del fallback `code` a propósito.
-    if (explicitCategory === 'infra_agent_crash' || opts.veredictoSintetizadoPorPulpo === true) {
+    if (!pisoBloqueaInfra
+        && ((explicitCategory === 'infra_agent_crash' && hintInfraConfiable) || procedenciaPulpo)) {
         return {
             category: 'infra',
             label: null,
@@ -328,7 +373,12 @@ function classifyRebote(opts = {}) {
         };
     }
 
-    if (explicitCategory === 'infra_no_apk' || /infra[-_]no[-_]apk/i.test(motivo)) {
+    // #6745 rev-2 (CA-7 / SEC-1) — SE ELIMINÓ el `|| /infra[-_]no[-_]apk/i.test(motivo)`.
+    // Matchear por TEXTO del `motivo` es exactamente el vector que el comentario
+    // de #5641 (arriba, rama 1.4) declara prohibido: ese campo lo escribe el
+    // agente rechazado, así que citar el literal en prosa alcanzaba para salir
+    // del circuit breaker. Queda SÓLO el hint estructurado, y sujeto al piso.
+    if (!pisoBloqueaInfra && hintInfraConfiable && explicitCategory === 'infra_no_apk') {
         return {
             category: 'infra',
             label: null,
@@ -538,6 +588,33 @@ function validarSkillEmisor(opts) {
 }
 
 /**
+ * #6745 rev-2 — ¿El piso de `security` prohíbe clasificar este rebote como
+ * `infra`? ÚNICA implementación del piso; la consultan TODAS las ramas de
+ * `classifyRebote` que pueden retornar `category: 'infra'`.
+ *
+ * Fail-closed (CA-7 / SEC-B): skill ausente O fuera del allowlist ⇒ bloquea.
+ * `skillFromFile` es leniente por contrato (`6745.secur1ty` → `'secur1ty'`, no
+ * `null`), así que un `if (!skill)` NO implementaría el fail-closed: hay que
+ * comparar contra el allowlist derivado de `skills_por_fase`.
+ *
+ * El piso sólo se puede aplicar cuando el caller entró por el CONTRATO NUEVO
+ * (`classifyErrorDetail`): en el contrato legacy no hay forma de saber quién
+ * emitió el rechazo, y hacerlo fail-closed ahí volvería `infra` inalcanzable
+ * para todos los call-sites viejos (incluido el brazo de barrido). El único
+ * caller de producción que rutea — `pulpo.js` — usa el contrato nuevo y por lo
+ * tanto SÍ es fail-closed.
+ *
+ * @param {object} opts — los mismos opts de `classifyRebote`
+ * @returns {boolean}
+ */
+function pisoSecurityBloqueaInfra(opts) {
+    const contratoNuevo = !!(opts && opts.classifyErrorDetail && typeof opts.classifyErrorDetail === 'object');
+    if (!contratoNuevo) return false;
+    const skillValidado = validarSkillEmisor(opts);
+    return !skillValidado || SKILLS_PISO_GRAVE.includes(skillValidado);
+}
+
+/**
  * Resuelve si un rebote es realmente de infra, aplicando la precedencia CA-8.
  *
  * @param {object} opts — los mismos opts de `classifyRebote`
@@ -588,11 +665,12 @@ function resolveInfraVeredicto(opts, motivo) {
     // emitió el rechazo, y hacerlo fail-closed ahí volvería `infra` inalcanzable
     // para todos los call-sites viejos. El único caller de producción —
     // `pulpo.js`, el path de rebote — usa el contrato nuevo y sí es fail-closed.
-    if (detalleExplicito) {
-        const skillValidado = validarSkillEmisor(opts);
-        if (!skillValidado || SKILLS_PISO_GRAVE.includes(skillValidado)) {
-            return { esInfra: false, accionRequerida, infra_downgraded_by: 'security_floor' };
-        }
+    // #6745 rev-2 — MISMA función que consultan las ramas tempranas
+    // (`infra_agent_crash` / `infra_no_apk`) en `classifyRebote`. Una sola
+    // implementación: si el piso se duplicara, volvería a haber caminos que lo
+    // saltean, que es literalmente el defecto que cierra la rev-2.
+    if (pisoSecurityBloqueaInfra(opts)) {
+        return { esInfra: false, accionRequerida, infra_downgraded_by: 'security_floor' };
     }
 
     // --- errno / machine_token: tier MÁQUINA, no degradable (CA-8) ------------
@@ -1170,8 +1248,59 @@ function emitBlocked(opts) {
     }
 }
 
+
+// -----------------------------------------------------------------------------
+// #6745 rev-2 — ANTI-SPOOF DE PROCEDENCIA
+// -----------------------------------------------------------------------------
+
+/**
+ * Categorías de rebote que SÓLO puede emitir el Pulpo.
+ *
+ * Ambas producen `counts_against_circuit_breaker: false` en `classifyRebote`,
+ * o sea: eximen al issue del circuit breaker de código. El único productor
+ * legítimo en todo el repo es `pulpo.synthesizeOrphanExhaustion`, que siempre
+ * las escribe junto a `veredicto_sintetizado_por: 'pulpo'`.
+ *
+ * `dependency_block` NO está acá a propósito: ése SÍ es un hint de contrato que
+ * el agente emite legítimamente (#3229).
+ */
+const CATEGORIAS_SOLO_PULPO = Object.freeze(['infra_agent_crash', 'infra_no_apk']);
+
+/**
+ * Borra del YAML de un agente los campos de PROCEDENCIA que sólo el Pulpo puede
+ * emitir, y reporta si el agente intentó falsificarlos.
+ *
+ * Muta `data` in-place (el caller lo persiste con `writeYaml`) y es idempotente:
+ * llamarla dos veces sobre el mismo objeto da el mismo resultado y `falsificada`
+ * pasa a `false` en la segunda.
+ *
+ * @param {object} data — YAML del work-file, ya parseado
+ * @returns {{ falsificada: boolean, campos: string[] }}
+ */
+function stripProcedenciaAgente(data) {
+    if (!data || typeof data !== 'object') return { falsificada: false, campos: [] };
+
+    const campos = [];
+    if (data.veredicto_sintetizado_por !== undefined) campos.push('veredicto_sintetizado_por');
+    if (data.agente_exit_code !== undefined) campos.push('agente_exit_code');
+
+    const categoria = typeof data.rebote_categoria === 'string'
+        ? data.rebote_categoria.trim().toLowerCase()
+        : null;
+    const categoriaFalsificada = categoria !== null && CATEGORIAS_SOLO_PULPO.includes(categoria);
+    if (categoriaFalsificada) campos.push('rebote_categoria');
+
+    delete data.veredicto_sintetizado_por;
+    delete data.agente_exit_code;
+    if (categoriaFalsificada) delete data.rebote_categoria;
+
+    return { falsificada: campos.length > 0, campos };
+}
+
 module.exports = {
     classifyRebote,
+    stripProcedenciaAgente,
+    CATEGORIAS_SOLO_PULPO,
     // #6745 — decisor único infra vs código (CA-4/CA-7/CA-8)
     resolveInfraVeredicto,
     validarSkillEmisor,

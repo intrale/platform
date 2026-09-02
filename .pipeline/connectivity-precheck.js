@@ -160,10 +160,37 @@ const MAX_MOTIVO_SCAN_LEN = 8192;
 // para que cada mayúscula sea un separador NO ambiguo (SEC-4 / CA-9).
 const FENCED_BLOCK_RE = /```[^]*?(?:```|$)/g; // bloque de código, tolera no-cierre
 const BACKTICK_SPAN_RE = /`[^`\n]*`?/g; // incluye backtick sin cerrar
+// #6745 rev-2 (CA-6) — Extensiones RECONOCIDAS en una referencia
+// `archivo.ext:linea`. La lista es CERRADA a propósito.
+//
+// Antes acá vivía `[a-z]{1,5}` genérico, que también matchea un `host:puerto`
+// (`registry.npmjs.org:443`, `api.github.com:443`) — la forma NORMAL de citar
+// un endpoint en un error de red. Consecuencia medida sobre HEAD 36a291065:
+//
+//   "fallo por timeout de red a los 30s"                      -> infra (prose)
+//   "timeout de red a los 30s contra registry.npmjs.org:443"  -> codigo (code_signal)
+//
+// Es decir: la prosa de red que CA-6 enumera como caso a PRESERVAR se degradaba
+// a `codigo` apenas el agente citaba el endpoint, y un fallo de infra real
+// terminaba ruteado a `dev` consumiendo el circuit breaker de código.
+//
+// PROHIBIDO agregar `com`, `org`, `net`, `io`, `co`, `dev`, `app`, `ar`, `es`:
+// son TLDs y reabren exactamente ese falso positivo.
+const CODE_FILE_EXT_ALT = [
+  'js', 'cjs', 'mjs', 'ts', 'tsx', 'jsx',
+  'kt', 'kts', 'java', 'gradle', 'properties',
+  'json', 'yaml', 'yml', 'toml', 'xml',
+  'md', 'txt', 'log', 'conf',
+  'sh', 'bash', 'py', 'sql', 'css', 'html',
+].join('|');
+
 // Detector de referencia `archivo.ext:linea`. Arranca por un literal (`.`) para
 // que el motor pueda saltar con búsqueda de primer carácter: lineal de verdad.
 // El "head" (el nombre del archivo) se extiende hacia atrás con un walk manual.
-const PATH_REF_TAIL_RE = /\.[a-z]{1,5}:\d+/g;
+// Cero cuantificadores anidados: la alternancia es de literales planos y el
+// `\b` posterior impide que `js` matchee dentro de `json` (CA-9 intacto).
+const CODE_REF_SOURCE = String.raw`\.(?:${CODE_FILE_EXT_ALT})\b:\d+`;
+const PATH_REF_TAIL_RE = new RegExp(CODE_REF_SOURCE, 'gi');
 const PATH_REF_HEAD_CHARS = /[A-Za-z0-9_./\\-]/;
 const IDENT_RE = /\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b|\b[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+\b/g;
 
@@ -241,7 +268,10 @@ const CODE_SIGNAL_PATTERNS = [
   /\bcloses\s+#\d+/i,
   /\bCA-\d+\s+incumplid[oa]\b/i,
   // Referencia a archivo:línea — `resolveDnsCache.js:12`, `pulpo.js:5309`.
-  /\.[a-z]{1,5}:\d+/,
+  // #6745 rev-2 (CA-6): extensión ANCLADA a la lista cerrada `CODE_FILE_EXT_ALT`.
+  // Con `[a-z]{1,5}` genérico esto matcheaba `registry.npmjs.org:443` y degradaba
+  // a `codigo` cualquier prosa de red que citara el endpoint.
+  new RegExp(CODE_REF_SOURCE, 'i'),
 ];
 
 /** Trunca a la ventana de escaneo (CA-9). Nunca devuelve null/undefined. */
