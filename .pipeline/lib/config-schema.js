@@ -163,6 +163,7 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'deliverable_gate',
     'gates',
     'wave_auto_transition',
+    'brazo',
     'commander_products',
     'cross_repo_delivery',
     'architect.enabled',
@@ -268,6 +269,7 @@ const SIDE_MAP = Object.freeze({
     deliverable_gate: 'autoridad',
     gates: 'autoridad',
     wave_auto_transition: 'autoridad',
+    brazo: 'autoridad',
     commander_products: 'autoridad',
     'commander_products.products.*.operators': 'autoridad',
     cross_repo_delivery: 'autoridad',            // declara a qué repos externos puede pushear el pipeline
@@ -575,6 +577,28 @@ const SCHEMA = {
                 // ventana se abriera sola.
                 bootstrap_fallback: { type: 'boolean' },
                 bootstrap_fallback_until: { type: 'string' },
+                // #5453 — coordinador de la migración por host. Se tipa por el
+                // mismo motivo que `enabled`: `migration.enabled` es el gate de
+                // rollout y sólo el booleano `true` exacto lo abre; un `"true"`
+                // string sería truthy para el YAML y arrancaría el coordinador
+                // sin que nadie lo haya decidido. `auto_stages` es un enum
+                // CERRADO: una etapa desconocida ahí no se ignora en silencio,
+                // se descubre al arrancar. `rotate`/`provision`/`respawn` NO
+                // son valores válidos a propósito — son irreversibles o bajan al
+                // propio Pulpo, y las dispara el operador con el runbook.
+                migration: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        tick_minutes: { type: 'number', minimum: 1, maximum: 1440 },
+                        auto_stages: {
+                            type: 'array',
+                            items: { type: 'string', enum: ['observe'] },
+                        },
+                        auto_cutover: { type: 'boolean' },
+                    },
+                },
                 cut_fallback: {
                     type: 'object',
                     additionalProperties: false,
@@ -833,6 +857,16 @@ const SCHEMA = {
         },
 
         // --- wave_auto_transition: transición automática de olas --------------
+        brazo: {
+            type: 'object', additionalProperties: false, required: ['reclaim_merge_race'],
+            properties: { reclaim_merge_race: {
+                type: 'object', additionalProperties: false, required: ['enabled', 'kill_switch', 'max_attempts', 'child_timeout_ms'],
+                properties: {
+                    enabled: { type: 'boolean' }, kill_switch: { type: 'boolean' },
+                    max_attempts: { type: 'integer', minimum: 1 }, child_timeout_ms: { type: 'integer', minimum: 1000 },
+                },
+            } },
+        },
         wave_auto_transition: {
             type: 'object',
             additionalProperties: false,

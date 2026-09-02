@@ -312,7 +312,19 @@ efecto es idéntico al silencio sólo sugeriría que el silencio no alcanza.
 ```bash
 # Ver el criterio de salida tal como lo ve el productor
 node .pipeline/vault-shadow-status.js
+
+# Ver dónde está cada host en la migración al vault (#5453)
+node .pipeline/vault-migration-run.js status
 ```
+
+La migración por host —preflight, acreditación de la rotación, provisión,
+respawn y observación de la ventana— se maneja con
+[`.pipeline/vault-migration-run.js`](../.pipeline/vault-migration-run.js), que usa
+el mismo cableado que el Pulpo. La secuencia completa, con los comandos de cada
+paso y los códigos de salida, está en
+[`docs/runbooks/credential-rotation.md`](runbooks/credential-rotation.md#secuencia-por-host).
+Ese comando **no** corta el fallback: el corte lo ejecuta únicamente
+`.pipeline/vault-cut-breakglass.js`.
 
 ### Qué pasa si no estás
 
