@@ -552,3 +552,371 @@ test('wrapMotivoForAgent envuelve el motivo en XML con instrucción de no-autori
     assert.match(out, /No respeta la paleta/);
     assert.match(out, /---/);
 });
+
+// =============================================================================
+// #6747 — alias `dev` con resolución de skill diferida por labels
+// =============================================================================
+//
+// Estos tests cubren SR-1..SR-4, que NO viven en el mapping: el mapping sólo
+// dice "este skill lo resuelve el caller". Que la resolución pase ANTES del
+// kill, que no escriba `.null` en el árbol y que sea fail-closed se decide acá.
+
+const DEV_CONFIG = FAKE_CONFIG; // dev = ['backend-dev', 'android-dev']
+
+// Config donde `pipeline-dev` SÍ está declarado en dev: necesario para poder
+// distinguir NOT_DECLARED (no está en la lista) de DEFAULT_FORBIDDEN (está,
+// pero llegó por un default).
+const DEV_CONFIG_CON_PIPELINE_DEV = Object.freeze({
+    pipelines: Object.freeze({
+        ...FAKE_CONFIG.pipelines,
+        desarrollo: Object.freeze({
+            ...FAKE_CONFIG.pipelines.desarrollo,
+            skills_por_fase: Object.freeze({
+                ...FAKE_CONFIG.pipelines.desarrollo.skills_por_fase,
+                dev: ['backend-dev', 'android-dev', 'pipeline-dev'],
+            }),
+        }),
+    }),
+});
+
+// Resolver fake: mismo contrato que `resolverDevSkillConOrigen` de pulpo.js.
+function fakeResolver(skill, source) {
+    return () => ({ skill, source: source || 'direct-label' });
+}
+
+// Lista recursiva de todos los archivos del sandbox (para afirmar "cero escrituras").
+function listAllFiles(dir) {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...listAllFiles(full));
+        else out.push(full);
+    }
+    return out;
+}
+
+// Params base para un rewind a `dev` desde desarrollo/verificacion.
+function makeDevParams(root, overrides = {}) {
+    return makeBaseParams(root, {
+        alias: 'dev',
+        motivo: 'El fix no cubre el caso del rebote en bucle',
+        resolverDevSkillConOrigen: fakeResolver('backend-dev', 'direct-label'),
+        ...overrides,
+    });
+}
+
+test('#6747 SR-1: el kill usa el skill RESUELTO, nunca la clave `null:<issue>`', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+    const ctrl = { kill: () => {}, isAlive: () => false, sleep: () => Promise.resolve() };
+    // El agente vivo está registrado bajo el skill REAL de dev.
+    const activeProcesses = new Map([['backend-dev:3416', { pid: 12345 }]]);
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        processCtrl: ctrl,
+        activeProcesses,
+        options: { killGraceMs: 500 },
+    }));
+
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.ok(r.killResult, 'el agente de dev tiene que haber sido matado');
+    assert.equal(r.killResult.killed || r.killResult.alreadyDead, true);
+    // Si la resolución pasara DESPUÉS del kill, la clave hubiera sido `null:3416`
+    // y este agente habría sobrevivido al rewind.
+    assert.equal(activeProcesses.has('backend-dev:3416'), false);
+});
+
+test('#6747 SR-1: ningún path del árbol contiene `.null` tras un rewind a dev', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        resolverDevSkillConOrigen: fakeResolver('android-dev', 'priority-label'),
+    }));
+
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.target.skill, 'android-dev');
+    assert.equal(r.target.fase, 'dev');
+    assert.equal(r.target.skillSource, 'priority-label');
+    // El archivo escrito lleva el skill real.
+    assert.equal(path.basename(r.movedFile), '3416.android-dev');
+    assert.ok(fs.existsSync(path.join(root, 'desarrollo', 'dev', 'pendiente', '3416.android-dev')));
+    for (const f of listAllFiles(root)) {
+        assert.ok(!f.includes('.null'), `path con .null filtrado: ${f}`);
+    }
+});
+
+test('#6747: rewind a dev con archivo origen del MISMO skill lo mueve, no lo duplica', async () => {
+    const root = setupSandbox();
+    // Origen posicionado con el mismo skill que va a resolver el resolver:
+    // así el move es posible (desde verificacion no existiría y sería `recreated`).
+    dropIssueFile(root, 'desarrollo', 'build', 'pendiente', 3416, 'backend-dev', { issue: 3416 });
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root));
+
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.moveAction, 'moved_from_origin');
+    // El issue no puede quedar vivo en dos fases a la vez.
+    assert.equal(fs.existsSync(path.join(root, 'desarrollo', 'build', 'pendiente', '3416.backend-dev')), false);
+    assert.equal(fs.existsSync(path.join(root, 'desarrollo', 'dev', 'pendiente', '3416.backend-dev')), true);
+});
+
+test('#6747 G-1: resolver NO inyectado ⇒ DEV_SKILL_UNRESOLVED sin tocar el filesystem', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+    const antes = listAllFiles(root).filter(f => !f.includes('audit'));
+
+    const r = await rewind.rewindIssueToPhase(makeBaseParams(root, {
+        alias: 'dev',
+        resolverDevSkillConOrigen: undefined, // la dependencia no se degrada en silencio
+    }));
+
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'DEV_SKILL_UNRESOLVED');
+    const despues = listAllFiles(root).filter(f => !f.includes('audit'));
+    assert.deepEqual(despues, antes, 'el rewind abortado no puede haber escrito nada');
+});
+
+test('#6747 G-2: resolver que TIRA ⇒ DEV_SKILL_UNRESOLVED (no UNEXPECTED_ERROR)', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        resolverDevSkillConOrigen: () => {
+            // Mismo shape que `requerirClaveDeProducto` cuando falta la clave (#5174).
+            throw new Error("[config partida #5174] falta 'dev_skill_mapping'");
+        },
+    }));
+
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'DEV_SKILL_UNRESOLVED');
+    assert.match(r.message, /config partida/);
+    assert.equal(fs.existsSync(path.join(root, 'desarrollo', 'dev', 'pendiente', '3416.backend-dev')), false);
+});
+
+test('#6747 SR-2: skill fuera de skills_por_fase.dev ⇒ DEV_SKILL_NOT_DECLARED sin tocar filesystem', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+    const antes = listAllFiles(root).filter(f => !f.includes('audit'));
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        // `web-dev` no está declarado en el `dev` de FAKE_CONFIG.
+        resolverDevSkillConOrigen: fakeResolver('web-dev', 'direct-label'),
+    }));
+
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'DEV_SKILL_NOT_DECLARED');
+    assert.match(r.message, /web-dev/);
+    const despues = listAllFiles(root).filter(f => !f.includes('audit'));
+    assert.deepEqual(despues, antes);
+});
+
+test('#6747 SR-2: la whitelist de skills sale del config RESUELTO por params, no de disco', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+    // `pipeline-dev` sólo está declarado en este config; si el helper releyera
+    // config.yaml de disco (donde `skills_por_fase` ya no vive — #5174), esto
+    // abortaría con NOT_DECLARED.
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        config: DEV_CONFIG_CON_PIPELINE_DEV,
+        resolverDevSkillConOrigen: fakeResolver('pipeline-dev', 'direct-label'),
+    }));
+
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.target.skill, 'pipeline-dev');
+});
+
+test('#6747 SR-4: default que degrada a pipeline-dev ⇒ DEV_SKILL_DEFAULT_FORBIDDEN', async () => {
+    for (const source of ['declared-default', 'generic-fallback']) {
+        const root = setupSandbox();
+        dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+        const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+            config: DEV_CONFIG_CON_PIPELINE_DEV,
+            resolverDevSkillConOrigen: fakeResolver('pipeline-dev', source),
+        }));
+
+        assert.equal(r.ok, false, `source=${source} no puede pasar`);
+        assert.equal(r.code, 'DEV_SKILL_DEFAULT_FORBIDDEN');
+        assert.equal(fs.existsSync(path.join(root, 'desarrollo', 'dev', 'pendiente', '3416.pipeline-dev')), false);
+    }
+});
+
+test('#6747 SR-4: pipeline-dev SÍ pasa cuando lo eligió un label explícito', async () => {
+    for (const source of ['direct-label', 'priority-label', 'content-override']) {
+        const root = setupSandbox();
+        dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+        const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+            config: DEV_CONFIG_CON_PIPELINE_DEV,
+            resolverDevSkillConOrigen: fakeResolver('pipeline-dev', source),
+        }));
+
+        assert.equal(r.ok, true, `source=${source} debería pasar: ${JSON.stringify(r)}`);
+        assert.equal(r.target.skillSource, source);
+    }
+});
+
+test('#6747 SR-3/SR-5.2: el audit de un rewind a dev trae skill resuelto + deferred_skill + skill_source', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        resolverDevSkillConOrigen: fakeResolver('backend-dev', 'content-override'),
+    }));
+    assert.equal(r.ok, true, JSON.stringify(r));
+
+    const lines = fs.readFileSync(rewind.rewindAuditFile(root), 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[lines.length - 1]);
+    assert.equal(entry.event, 'rewind_done');
+    assert.equal(entry.to_phase, 'dev');
+    assert.equal(entry.skill, 'backend-dev', 'el audit registra el skill REAL, nunca null');
+    assert.equal(entry.deferred_skill, 'labels');
+    assert.equal(entry.skill_source, 'content-override');
+});
+
+test('#6747: el audit de un rewind bloqueado por skill registra el code y el deferred_skill', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        resolverDevSkillConOrigen: fakeResolver('web-dev', 'direct-label'),
+    }));
+    assert.equal(r.ok, false);
+
+    const lines = fs.readFileSync(rewind.rewindBlockedAuditFile(root), 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[lines.length - 1]);
+    assert.equal(entry.event, 'rewind_blocked');
+    assert.equal(entry.code, 'DEV_SKILL_NOT_DECLARED');
+    assert.equal(entry.target_fase, 'dev');
+    assert.equal(entry.deferred_skill, 'labels');
+});
+
+test('#6747 CA-3: el alias dev NO saltea el control de origen (SEC-6a)', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+    let resolverLlamado = false;
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        source: 'random-bot',
+        resolverDevSkillConOrigen: () => { resolverLlamado = true; return { skill: 'backend-dev', source: 'direct-label' }; },
+    }));
+
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'SOURCE_NOT_AUTHORIZED');
+    // El resolver hace I/O de red (gh): no puede exponerse a orígenes no autorizados.
+    assert.equal(resolverLlamado, false);
+});
+
+test('#6747 CA-4: rebobinar a dev desde una fase anterior a dev sigue siendo FUTURE_PHASE', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'validacion', 'pendiente', 3416, 'po');
+    let resolverLlamado = false;
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        resolverDevSkillConOrigen: () => { resolverLlamado = true; return { skill: 'backend-dev', source: 'direct-label' }; },
+    }));
+
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'FUTURE_PHASE');
+    assert.equal(resolverLlamado, false, 'no se resuelve skill para un destino que va a ser rechazado');
+});
+
+// -----------------------------------------------------------------------------
+// resolveDeferredSkill — helper puro (100% de ramas, es el punto fail-closed)
+// -----------------------------------------------------------------------------
+
+test('#6747 resolveDeferredSkill: sin deferredSkill devuelve el skill del alias', () => {
+    const r = rewind.resolveDeferredSkill({
+        target: { pipeline: 'desarrollo', fase: 'validacion', skill: 'ux', deferredSkill: null },
+        issue: 3416, config: DEV_CONFIG,
+    });
+    assert.deepEqual(r, { ok: true, skill: 'ux', skillSource: 'alias-explicit' });
+});
+
+test('#6747 resolveDeferredSkill: target ausente no explota', () => {
+    const r = rewind.resolveDeferredSkill({ target: null, issue: 3416, config: DEV_CONFIG });
+    assert.equal(r.ok, true);
+    assert.equal(r.skill, null);
+});
+
+test('#6747 resolveDeferredSkill: modo de resolución desconocido ⇒ DEV_SKILL_UNRESOLVED', () => {
+    const r = rewind.resolveDeferredSkill({
+        target: { pipeline: 'desarrollo', fase: 'dev', skill: null, deferredSkill: 'telepatia' },
+        issue: 3416, config: DEV_CONFIG,
+        resolverDevSkillConOrigen: fakeResolver('backend-dev'),
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'DEV_SKILL_UNRESOLVED');
+    assert.match(r.message, /telepatia/);
+});
+
+test('#6747 resolveDeferredSkill: resolver que devuelve basura ⇒ DEV_SKILL_UNRESOLVED', () => {
+    const basura = [null, undefined, {}, { skill: null }, { skill: '' }, { skill: '   ' }, { skill: 42 }];
+    for (const ret of basura) {
+        const r = rewind.resolveDeferredSkill({
+            target: { pipeline: 'desarrollo', fase: 'dev', skill: null, deferredSkill: 'labels' },
+            issue: 3416, config: DEV_CONFIG,
+            resolverDevSkillConOrigen: () => ret,
+        });
+        assert.equal(r.ok, false, `retorno ${JSON.stringify(ret)} no puede pasar`);
+        assert.equal(r.code, 'DEV_SKILL_UNRESOLVED');
+    }
+});
+
+test('#6747 resolveDeferredSkill: config sin la fase declarada ⇒ NOT_DECLARED (nunca "todo vale")', () => {
+    for (const cfg of [{}, { pipelines: {} }, { pipelines: { desarrollo: {} } }]) {
+        const r = rewind.resolveDeferredSkill({
+            target: { pipeline: 'desarrollo', fase: 'dev', skill: null, deferredSkill: 'labels' },
+            issue: 3416, config: cfg,
+            resolverDevSkillConOrigen: fakeResolver('backend-dev'),
+        });
+        assert.equal(r.ok, false, `config ${JSON.stringify(cfg)} debe abortar`);
+        assert.equal(r.code, 'DEV_SKILL_NOT_DECLARED');
+    }
+});
+
+test('#6747 resolveDeferredSkill: resolver sin `source` no puede colarse como default permitido', () => {
+    const r = rewind.resolveDeferredSkill({
+        target: { pipeline: 'desarrollo', fase: 'dev', skill: null, deferredSkill: 'labels' },
+        issue: 3416, config: DEV_CONFIG,
+        resolverDevSkillConOrigen: () => ({ skill: 'backend-dev' }),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.skillSource, null);
+});
+
+test('#6747 D-5: el resultado fallido propaga el skill para que el copy lo nombre', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+    // `pulpo.js` arma el mensaje al operador desde el `result`, no desde el
+    // `message`. Si el skill no viaja acá, el operador lee "El agente que salió
+    // (`?`)" y no sabe qué pasó.
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        resolverDevSkillConOrigen: fakeResolver('web-dev', 'direct-label'),
+    }));
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'DEV_SKILL_NOT_DECLARED');
+    assert.equal(r.skill, 'web-dev');
+
+    const msgs = require('../rewind-messages');
+    assert.match(msgs.buildErrorMessage(r.code, { issue: 3416, skill: r.skill }), /web-dev/);
+
+    // Y el audit deja rastro del intento.
+    const lines = fs.readFileSync(rewind.rewindBlockedAuditFile(root), 'utf8').trim().split('\n');
+    assert.equal(JSON.parse(lines[lines.length - 1]).resolved_skill, 'web-dev');
+});
+
+test('#6747 D-5: cuando no se resolvió ningún skill, el result trae skill null', async () => {
+    const root = setupSandbox();
+    dropIssueFile(root, 'desarrollo', 'verificacion', 'pendiente', 3416, 'tester');
+
+    const r = await rewind.rewindIssueToPhase(makeDevParams(root, {
+        resolverDevSkillConOrigen: undefined,
+    }));
+    assert.equal(r.code, 'DEV_SKILL_UNRESOLVED');
+    assert.equal(r.skill, null);
+});

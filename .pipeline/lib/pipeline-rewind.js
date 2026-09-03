@@ -398,6 +398,113 @@ function readInFlightMarker(issue, pipelineRoot, opts) {
 }
 
 // -----------------------------------------------------------------------------
+// #6747 — Resolución del skill diferido (alias `dev`)
+// -----------------------------------------------------------------------------
+//
+// El alias `dev` apunta a una fase mono-skill cuyo agente sale de los labels
+// del issue, así que `pipeline-phase-mapping` lo entrega con `skill: null` y
+// `deferredSkill: 'labels'`. Este helper cierra ese hueco ANTES de que el
+// rewind toque el filesystem o mate un proceso.
+//
+// Es puro a propósito (sin FS ni red propios): la única I/O la hace el resolver
+// inyectado, y todo camino que no termine en un skill string válido y declarado
+// devuelve `{ok:false}`. Nunca sigue con `null`.
+
+// SR-4 — el skill que edita al orquestador mismo no puede salir de un default:
+// si nadie lo pidió explícito por labels, no se elige solo.
+const DEFERRED_SKILL_DENY_AS_DEFAULT = Object.freeze(['pipeline-dev']);
+// Orígenes de resolución que NO representan una elección explícita del operador
+// ni un label del issue, sino el relleno de último recurso.
+const DEFERRED_SKILL_UNINTENTIONAL_SOURCES = Object.freeze(['declared-default', 'generic-fallback']);
+
+/**
+ * Resuelve el skill de un target que viene con resolución diferida.
+ *
+ * @param {object} target — target de `resolveAlias` (puede traer `deferredSkill`).
+ * @param {number} issue — número de issue (entrada del resolver).
+ * @param {object} config — config YA RESUELTO que llega por params. NO se
+ *   relee `config.yaml` acá: `skills_por_fase` migró al lado producto (#5174)
+ *   y leerlo a mano daría `undefined`, abortando todo rewind a `dev`.
+ * @param {function} resolverDevSkillConOrigen — `(issue, config) => {skill, source}`.
+ *   Inyectado por `pulpo.js` (no es importable desde `lib/` sin arrancar el
+ *   orquestador). Si falta, se aborta: la dependencia NO se degrada en silencio.
+ *
+ * @returns {{ok: true, skill: string, skillSource: string}
+ *          |{ok: false, code: string, message: string}}
+ */
+function resolveDeferredSkill({ target, issue, config, resolverDevSkillConOrigen }) {
+    // Sin resolución diferida: el alias ya trae el skill cerrado (los 23 previos).
+    if (!target || !target.deferredSkill) {
+        return { ok: true, skill: target ? target.skill : null, skillSource: 'alias-explicit' };
+    }
+
+    if (target.deferredSkill !== 'labels') {
+        return {
+            ok: false,
+            code: 'DEV_SKILL_UNRESOLVED',
+            message: `Modo de resolución diferida desconocido: ${target.deferredSkill}.`,
+        };
+    }
+
+    // G-1/G-2 — nunca copiar el `typeof fn === 'function' ? fn() : null` de
+    // `rebote-destino.js`: si el resolver no está inyectado, esto aborta.
+    if (typeof resolverDevSkillConOrigen !== 'function') {
+        return {
+            ok: false,
+            code: 'DEV_SKILL_UNRESOLVED',
+            message: 'El resolver de skill de `dev` no está inyectado.',
+        };
+    }
+
+    let resolved;
+    try {
+        // Hace I/O (gh issue view) y puede tirar por `requerirClaveDeProducto` (#5174).
+        resolved = resolverDevSkillConOrigen(issue, config);
+    } catch (e) {
+        return {
+            ok: false,
+            code: 'DEV_SKILL_UNRESOLVED',
+            message: `No pude resolver el skill de dev: ${e.message}`,
+        };
+    }
+
+    const skill = resolved && resolved.skill;
+    const skillSource = (resolved && resolved.source) || null;
+    if (typeof skill !== 'string' || !skill.trim()) {
+        return {
+            ok: false,
+            code: 'DEV_SKILL_UNRESOLVED',
+            message: 'El resolver no devolvió un skill válido.',
+        };
+    }
+
+    // SR-2 — deny-by-default contra el config resuelto que ya llega por params.
+    const declared = (((config && config.pipelines || {})[target.pipeline] || {}).skills_por_fase || {})[target.fase] || [];
+    if (!declared.includes(skill)) {
+        return {
+            ok: false,
+            code: 'DEV_SKILL_NOT_DECLARED',
+            message: `El skill ${skill} no está declarado en ${target.pipeline}/${target.fase}.`,
+            // Se propaga para que el mensaje al operador pueda nombrarlo (D-5).
+            skill,
+        };
+    }
+
+    // SR-4 — un default no puede degradar al agente que escribe el pipeline.
+    if (DEFERRED_SKILL_UNINTENTIONAL_SOURCES.includes(skillSource)
+        && DEFERRED_SKILL_DENY_AS_DEFAULT.includes(skill)) {
+        return {
+            ok: false,
+            code: 'DEV_SKILL_DEFAULT_FORBIDDEN',
+            message: `El default no puede resolver a ${skill}.`,
+            skill,
+        };
+    }
+
+    return { ok: true, skill, skillSource };
+}
+
+// -----------------------------------------------------------------------------
 // Move files (CA-1: mover .skill del issue a pendiente/ destino)
 // -----------------------------------------------------------------------------
 
@@ -685,6 +792,10 @@ async function rewindIssueToPhase(params = {}) {
         issue, alias, motivo, operatorId, source,
         config, pipelineRoot, fsImpl, yaml: yamlImpl,
         processCtrl, activeProcesses,
+        // #6747 — resolver del skill de `dev` por labels. Vive en `pulpo.js` y
+        // se inyecta (mismo patrón con que se inyecta `determinarDevSkill` en
+        // `resolveReboteDestino`). Sin él, un rewind al alias `dev` aborta.
+        resolverDevSkillConOrigen,
         options = {},
     } = params;
 
@@ -848,6 +959,45 @@ async function rewindIssueToPhase(params = {}) {
     }
 
     // -------------------------------------------------------------------------
+    // #6747 — resolución del skill diferido (alias `dev`)
+    //
+    // Va acá a propósito: DESPUÉS de todos los controles de autorización y de
+    // "no rebobinar al futuro", y ANTES del kill del agente activo. Resolverlo
+    // más abajo apagaría el control CA-6 justo en la única fase alcanzable
+    // donde corre un agente que escribe código (SR-1): la clave del kill sería
+    // `null:<issue>` y no mataría a nadie.
+    //
+    // Si falla, se retorna sin haber tocado el filesystem.
+    // -------------------------------------------------------------------------
+    const deferred = resolveDeferredSkill({
+        target, issue: issueNum, config, resolverDevSkillConOrigen,
+    });
+    if (!deferred.ok) {
+        try {
+            appendBlockedAudit({
+                event: 'rewind_blocked',
+                issue: issueNum, alias: String(alias || ''), operatorId, source,
+                code: deferred.code,
+                target_pipeline: target.pipeline, target_fase: target.fase,
+                deferred_skill: target.deferredSkill || null,
+                // Qué skill se llegó a resolver antes de abortar (null si ni
+                // eso). Sin esto, el audit no deja rastro del intento.
+                resolved_skill: deferred.skill || null,
+                created_at: opts.now(),
+            }, pipelineRoot, { fsImpl });
+        } catch {}
+        return { ok: false, code: deferred.code, message: deferred.message, skill: deferred.skill || null };
+    }
+
+    // De acá para abajo `target` NO se usa más: todo consume `effectiveTarget`,
+    // que es el único que garantiza `skill` string.
+    const effectiveTarget = {
+        ...target,
+        skill: deferred.skill,
+        skillSource: deferred.skillSource,
+    };
+
+    // -------------------------------------------------------------------------
     // CA-8 — rate limit suave (no bloqueo, solo alerta)
     // -------------------------------------------------------------------------
     const recentCount = getRecentRewindCount(issueNum, pipelineRoot, opts.rateLimitWindowMs, { fsImpl });
@@ -858,7 +1008,7 @@ async function rewindIssueToPhase(params = {}) {
     // -------------------------------------------------------------------------
     let killResult = null;
     if (activeProcesses && typeof activeProcesses.get === 'function') {
-        const key = `${target.skill}:${issueNum}`;
+        const key = `${effectiveTarget.skill}:${issueNum}`;
         const info = activeProcesses.get(key);
         if (info && info.pid) {
             writeInFlightMarker(issueNum, 'killing', pipelineRoot, { fsImpl });
@@ -869,12 +1019,12 @@ async function rewindIssueToPhase(params = {}) {
             killResult = await killWithGrace(info.pid, opts.killGraceMs, { processCtrl });
             if (!killResult.killed && !killResult.alreadyDead) {
                 const code = 'AGENT_KILL_FAILED';
-                const message = `El agente \`${target.skill}\` de #${issueNum} no respondió al kill en ${Math.round(opts.killGraceMs/1000)}s. Aborté el rewind para no corromper estado. Probá de nuevo en un minuto.`;
+                const message = `El agente \`${effectiveTarget.skill}\` de #${issueNum} no respondió al kill en ${Math.round(opts.killGraceMs/1000)}s. Aborté el rewind para no corromper estado. Probá de nuevo en un minuto.`;
                 try {
                     appendBlockedAudit({
                         event: 'rewind_blocked',
                         issue: issueNum, alias: String(alias || ''), operatorId, source,
-                        code, target_pipeline: target.pipeline, target_fase: target.fase,
+                        code, target_pipeline: effectiveTarget.pipeline, target_fase: effectiveTarget.fase,
                         kill_pid: info.pid, kill_signal: killResult.signal,
                         created_at: opts.now(),
                     }, pipelineRoot, { fsImpl });
@@ -895,7 +1045,7 @@ async function rewindIssueToPhase(params = {}) {
         moveResult = moveOrRecreateSkillFile({
             issue: issueNum,
             currentPosition,
-            target,
+            target: effectiveTarget,
             motivo: san.reason,
             operatorId,
             pipelineRoot,
@@ -909,7 +1059,7 @@ async function rewindIssueToPhase(params = {}) {
             appendBlockedAudit({
                 event: 'rewind_blocked',
                 issue: issueNum, alias: String(alias || ''), operatorId, source,
-                code, target_pipeline: target.pipeline, target_fase: target.fase,
+                code, target_pipeline: effectiveTarget.pipeline, target_fase: effectiveTarget.fase,
                 error: e.message, created_at: opts.now(),
             }, pipelineRoot, { fsImpl });
         } catch {}
@@ -946,9 +1096,13 @@ async function rewindIssueToPhase(params = {}) {
         source,
         from_pipeline: currentPosition.pipeline,
         from_phase: currentPosition.fase,
-        to_pipeline: target.pipeline,
-        to_phase: target.fase,
-        skill: target.skill,
+        to_pipeline: effectiveTarget.pipeline,
+        to_phase: effectiveTarget.fase,
+        // SR-3 / SR-5.2 — el audit registra el skill REAL con el que se ejecutó
+        // el rewind, más cómo se lo eligió (nunca `null`).
+        skill: effectiveTarget.skill,
+        deferred_skill: effectiveTarget.deferredSkill || null,
+        skill_source: effectiveTarget.skillSource || null,
         reason_hash: rHash,
         reason_bytes: san.originalBytes,
         reason_truncated_bytes: san.truncated ? san.truncatedBytes : 0,
@@ -978,7 +1132,7 @@ async function rewindIssueToPhase(params = {}) {
     // -------------------------------------------------------------------------
     const commentBody = buildGithubComment({
         issue: issueNum,
-        target,
+        target: effectiveTarget,
         fromPipeline: currentPosition.pipeline,
         fromFase: currentPosition.fase,
         motivo: san.reason,
@@ -993,7 +1147,7 @@ async function rewindIssueToPhase(params = {}) {
 
     return {
         ok: true,
-        target,
+        target: effectiveTarget,
         fromPipeline: currentPosition.pipeline,
         fromFase: currentPosition.fase,
         movedFile: moveResult.file,
@@ -1070,6 +1224,11 @@ module.exports = {
     clearInFlightMarker,
     readInFlightMarker,
     sweepStaleInFlight,
+
+    // #6747 — resolución de skill diferido (alias `dev`)
+    DEFERRED_SKILL_DENY_AS_DEFAULT,
+    DEFERRED_SKILL_UNINTENTIONAL_SOURCES,
+    resolveDeferredSkill,
 
     // Move
     moveOrRecreateSkillFile,

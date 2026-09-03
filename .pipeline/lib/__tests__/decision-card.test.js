@@ -684,8 +684,16 @@ test('el módulo es PURO: sin filesystem, sin red, sin estado del pipeline', () 
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/^\s*\/\/.*$/gm, '');
     const requires = [...src.matchAll(/require\((['"])(.+?)\1\)/g)].map((m) => m[2]);
-    assert.deepEqual(requires, ['./sherlock-audit-jsonl'],
-        'la ÚNICA excepción al contrato de pureza es la frontera de redacción');
+    // Allowlist de requires. Cada entrada es una excepcion JUSTIFICADA al
+    // contrato de pureza, y cada modulo admitido tiene que ser puro el mismo
+    // (verificado en el test de abajo): si no, la pureza se evade por
+    // transitividad.
+    //   - './sherlock-audit-jsonl'  : frontera de redaccion.
+    //   - './sello-evidencia-state' : #6498 CA-11. Fuente UNICA del copy del
+    //     sello de evidencia, compartida con el badge del dashboard. Copiar el
+    //     literal aca reintroduciria el copy divergente que cerro #6190.
+    assert.deepEqual(requires, ['./sherlock-audit-jsonl', './sello-evidencia-state'],
+        'toda excepcion al contrato de pureza va justificada en la allowlist de arriba');
     assert.ok(!/\bDate\.now\(\)/.test(src), 'el "ahora" se inyecta, no se lee');
 });
 
@@ -1558,4 +1566,17 @@ test('SEC-E · abrir la clase a Unicode no volvió costoso el saneamiento', () =
         assert.ok(ms < 250, `bomba ${nombre}: el saneamiento tardó ${ms.toFixed(0)}ms`);
         assert.ok(salida.length <= 512, `bomba ${nombre}: no se aplicó el tope: ${salida.length}`);
     }
+});
+
+test('#6498 — el módulo del copy del sello que importa la ficha también es PURO', () => {
+    // Sin esto la pureza de `decision-card.js` se evadiría por transitividad:
+    // alcanzaría con que el módulo importado hiciera el I/O que la ficha no hace.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'sello-evidencia-state.js'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+    const requires = [...src.matchAll(/require\((['"])(.+?)\1\)/g)].map((m) => m[2]);
+    assert.deepEqual(requires, [], 'el resolver del sello no requiere nada');
+    assert.ok(!/\bDate\.now\(\)/.test(src), 'el resolver no lee el reloj');
+    assert.ok(!/\bprocess\.env\b/.test(src), 'el resolver no lee el entorno');
+    assert.ok(!/\brequire\(['"](fs|path|node:fs|node:path)['"]\)/.test(src), 'el resolver no toca el filesystem');
 });

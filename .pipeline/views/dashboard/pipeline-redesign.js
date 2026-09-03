@@ -41,6 +41,13 @@ const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 // en todas las ventanas y no sólo en ésta. Duplicarlo repetiría los ids del
 // DOM y volvería a abrir la puerta a que las superficies divijan.
 
+// #6498 — Chip del sello de evidencia de QA. MISMO modulo que consume la
+// pestana /issues: la funcion se serializa tal cual dentro del script de
+// hidratacion, asi que las dos pestanas del operador pintan literalmente el
+// mismo codigo. Require defensivo: sin el modulo la ficha se pinta como hoy.
+let _selloChip = null;
+try { _selloChip = require('../../lib/sello-evidencia-chip.js'); } catch (_) { /* opcional */ }
+
 let escapeHtmlText;
 let escapeHtmlAttr;
 try {
@@ -629,6 +636,11 @@ const PIPELINE_REDESIGN_CSS = `
   .mz-mission-prog { min-width: 0; }
   .pl-col { max-width: none; }
 }
+
+/* #6498 — Chip del sello de evidencia, hoja compartida con /issues. Se
+   concatena en vez de re-escribirse para que las dos pestanas no puedan
+   divergir de color ni de tamano. */
+${(_selloChip && _selloChip.SELLO_CHIP_CSS) || ''}
 `;
 
 // --- Client script de hidratación -------------------------------------------
@@ -641,6 +653,12 @@ function pipelineRedesignClientScript() {
 const PL_PHASE_FLOW = ${PHASE_FLOW_JSON};
 const PL_PHASE_LOOKUP = ${PHASE_LOOKUP_JSON};
 function plMacroOf(faseKey){ return PL_PHASE_LOOKUP[String(faseKey||'')] || null; }
+/* #6498 — La MISMA funcion que pinta el chip en /issues, serializada aca
+   desde lib/sello-evidencia-chip.js. Una definicion, tres superficies: si
+   alguien agrega un estado, ninguna queda muda (leccion de #6459). */
+${(_selloChip && typeof _selloChip.selloChipHTML === 'function')
+    ? String(_selloChip.selloChipHTML)
+    : 'function selloChipHTML() { return String(); }'}
 function plProgressPct(key){
     const i = PL_PHASE_FLOW.findIndex(p => p.key === key);
     if(i < 0) return 0;
@@ -789,6 +807,10 @@ function plRenderCard(i, macroKey){
     }
     if(plAllowlistOk(i.issue)) flags += '<span class="plc-flag f-allow" title="Habilitado por la pausa parcial activa">✅ ola</span>';
     if((i.labels||[]).includes('needs-human')) flags += '<span class="plc-flag f-human" title="Necesita intervención humana">👤 humano</span>';
+    // #6498 — Chip del sello de evidencia de QA. Va al final de las flags: es
+    // contexto sobre la verificacion, no una accion pendiente. El objeto llega
+    // YA RESUELTO del servidor (pipelineSlice); aca solo se pinta.
+    flags += selloChipHTML(i.selloEvidencia, escapeHtml);
     const flagsHtml = flags ? '<div class="plc-flags">' + flags + '</div>' : '';
     // Logs del agente que ejecutó (atenuado si todavía no corrió).
     const log = plPickLog(i);
@@ -834,6 +856,7 @@ function plItemFromMatrix(issue, data, macro){
         rechazado_en_fase: data.rechazado_en_fase, rechazado_skill_previo: data.rechazado_skill_previo,
         agents: data.agents || [], macro: macro,
         progressState: data.progressState || null,   // #4362
+        selloEvidencia: data.selloEvidencia || null, // #6498 fuente unica server-side
     };
 }
 function plItemTerminal(issue, title, macro, estado){

@@ -33,6 +33,7 @@ const { validateBranchName } = require('./required-checks');
 // #6190 — fuente única del copy del aviso de bloqueo. Este módulo NO redacta
 // texto para el operador: le pide la ficha a `decision-card` y la dibuja.
 const decisionCard = require('./decision-card');
+const mergeRaceLedger = require('./merge-race-reclaim-ledger');
 
 const PIPELINE_DIR = path.join(trace.REPO_ROOT, '.pipeline');
 const PIPELINES = ['desarrollo', 'definicion'];
@@ -101,8 +102,52 @@ const UNLOCKER_ENUM = Object.freeze([
     'human-block-action:devolver',    // botón "devolver a definición"
     'human-block-action:priorizar',   // botón "priorizar"
     'brazo-desbloqueo:precondicion',  // #4748 — deps cerradas
+    'brazo-desbloqueo:merge-race',    // #6432 — reclaim de merge confirmado por gates
     'auto-recheck',                   // #6611 — predicado verificable resuelto
 ]);
+
+// =============================================================================
+// #6432 D11 / A-6 — QUIÉNES PUEDEN ROMPER LA DEGRADACIÓN PEGAJOSA
+//
+// `degraded: true` en el ledger de merge-race es IRREVERSIBLE POR VÍA
+// AUTOMÁTICA (D11): mientras esté puesto, `classifyPrecondition` devuelve
+// `human_judgment` aunque el hint sea válido. Sin eso, el tope de intentos se
+// derrota con un loop de rebotes que re-acuña la precondición.
+//
+// El corolario es simétrico y es el que se rompía: si NINGUNA vía la limpia, la
+// degradación queda pegajosa CONTRA EL HUMANO. El operador destraba, el
+// `needs-human` se retira, el marker se reactiva — y el reclaim sigue muerto
+// para siempre, sin señal de por qué.
+//
+// Esta whitelist es la lista COMPLETA de unlockers que representan una decisión
+// humana explícita de reanudar el ciclo. Es un `Set` cerrado y NO un match por
+// prefijo a propósito:
+//   1. COBERTURA — `human-block-action:*` (los botones de la alerta de Telegram,
+//      el camino de destrabe más usado) no comparte prefijo con `commander:`.
+//      Con `startsWith('commander:')` quedaban afuera: ése era el defecto A-6.
+//   2. FAIL-CLOSED A FUTURO — con un prefijo, cualquier unlocker nuevo que
+//      empiece con `commander:` gana poder de limpieza en silencio. Con el
+//      `Set`, sumar uno es un acto explícito y revisable en el diff.
+//
+// Bordes cerrados por el arquitecto (no re-abrir):
+//   · `github:label-removed` AFUERA — es reconciliación, no destrabe
+//     deliberado: el label lo puede quitar un script, un bot o un click
+//     accidental. D11 se rompe sólo con una decisión humana explícita.
+//   · `human-block-action:devolver` AFUERA — ese camino va a
+//     `dismissBlockedIssue`: descarta el desarrollo y manda el issue a
+//     `needs-definition`. No reanuda el ciclo de reclaim, así que no
+//     corresponde resetear el contador.
+//   · `brazo-desbloqueo:*` y `auto-recheck` AFUERA — por definición de D11:
+//     ninguna vía automática limpia.
+// =============================================================================
+const MANUAL_UNLOCKERS = Object.freeze(new Set([
+    'commander',
+    'commander:telegram',
+    'commander:dashboard',
+    'human-block-action',
+    'human-block-action:unblock',
+    'human-block-action:priorizar',
+]));
 
 /**
  * Normaliza `unlocker` contra el enum cerrado.
@@ -371,6 +416,14 @@ function normalizeVerifiablePrecondition(pc) {
  */
 function normalizePrecondition(pc) {
     if (!pc || typeof pc !== 'object') return { ...HUMAN_JUDGMENT };
+    if (pc.type === 'merge_checks_race') {
+        const pr = Number(pc.pr);
+        const head_sha = typeof pc.head_sha === 'string' ? pc.head_sha.trim().toLowerCase() : '';
+        if (typeof pc.pr !== 'number' || !Number.isInteger(pr) || pr <= 0 || !/^[0-9a-f]{40}$/.test(head_sha)) {
+            return { ...HUMAN_JUDGMENT };
+        }
+        return { type: 'merge_checks_race', pr, head_sha };
+    }
     if (pc.type === 'verifiable') return normalizeVerifiablePrecondition(pc);
     if (pc.type !== 'dependency') return { ...HUMAN_JUDGMENT };
     const raw = Array.isArray(pc.depends_on) ? pc.depends_on : [];
@@ -396,23 +449,75 @@ function normalizePrecondition(pc) {
  *     `source === 'structured_hint'` de `detectDependencyBlock`.
  * Ante cualquier duda → juicio humano (fail-closed).
  *
+ * #6432 rev-2 (SEC/A01) — `opts.only` ACOTA que tipos de precondicion puede
+ * producir esta llamada. Existe porque no todo llamador puede tolerar CUALQUIER
+ * precondicion: el circuit breaker escala a needs-human como FRENO HUMANO, y
+ * una precondicion `dependency` ahi lo vuelve auto-liberable por
+ * `reapStaleHumanBlocks` — el freno se retiraria solo apenas la dep cierre.
+ * Con `only` el llamador declara el conjunto que SI sabe manejar y todo lo
+ * demas degrada al piso fail-closed (`human_judgment`), que siempre esta
+ * permitido porque nunca es auto-re-evaluable.
+ *
+ * Fail-closed por construccion: un `only` presente pero ilegible (tipo raro,
+ * vacio, solo valores desconocidos) no "abre" nada — deja unicamente el piso.
+ * Ausente ⇒ sin restriccion (comportamiento historico intacto).
+ *
  * @param {Array<Object>} rechazados  YAMLs de rechazo (con posibles
  *   `depende_de` / `precondicion_issues`).
  * @param {Array<string|number>} [extraDeps]  deps ya validadas por hint estructural.
- * @returns {{type:'dependency',depends_on:number[]}|{type:'human_judgment'}}
+ * @param {{issue?:number|string, only?:string|string[]}} [opts]
+ * @returns {{type:'dependency',depends_on:number[]}|{type:'merge_checks_race'}|{type:'human_judgment'}}
  */
-function classifyPrecondition(rechazados, extraDeps = []) {
+function classifyPrecondition(rechazados, extraDeps = [], opts = {}) {
     const list = Array.isArray(rechazados) ? rechazados : [];
-    const deps = [];
-    for (const r of list) {
-        if (!r || typeof r !== 'object') continue;
-        const raw = r.depende_de != null ? r.depende_de : r.precondicion_issues;
-        const arr = Array.isArray(raw) ? raw : (raw != null ? [raw] : []);
-        for (const v of arr) deps.push(v);
+    // `only` ausente ⇒ null ⇒ sin restriccion. Presente ⇒ Set de tipos
+    // permitidos; lo que no este adentro NO se evalua siquiera.
+    const only = normalizePreconditionOnly(opts && opts.only);
+    const allows = (type) => only === null || only.has(type);
+
+    if (allows('dependency')) {
+        const deps = [];
+        for (const r of list) {
+            if (!r || typeof r !== 'object') continue;
+            const raw = r.depende_de != null ? r.depende_de : r.precondicion_issues;
+            const arr = Array.isArray(raw) ? raw : (raw != null ? [raw] : []);
+            for (const v of arr) deps.push(v);
+        }
+        if (Array.isArray(extraDeps)) for (const v of extraDeps) deps.push(v);
+        // normalizePrecondition dedup + ordena + degrada a human_judgment si vacio.
+        const dependency = normalizePrecondition({ type: 'dependency', depends_on: deps });
+        if (dependency.type === 'dependency') return dependency;
     }
-    if (Array.isArray(extraDeps)) for (const v of extraDeps) deps.push(v);
-    // normalizePrecondition dedup + ordena + degrada a human_judgment si vacío.
-    return normalizePrecondition({ type: 'dependency', depends_on: deps });
+    if (allows('merge_checks_race')) {
+        for (const r of list) {
+            const candidate = normalizePrecondition({ type: 'merge_checks_race', ...(r && r.precondicion_merge_checks) });
+            if (candidate.type !== 'merge_checks_race') continue;
+            const entry = mergeRaceLedger.getEntry(opts.issue);
+            if (entry && entry.degraded === true) return { ...HUMAN_JUDGMENT };
+            return candidate;
+        }
+    }
+    return { ...HUMAN_JUDGMENT };
+}
+
+/**
+ * #6432 rev-2 — Normaliza `opts.only` de `classifyPrecondition`.
+ * `human_judgment` es el piso fail-closed: se permite SIEMPRE, no hace falta
+ * declararlo (y declararlo solo a el equivale a "nada auto-re-evaluable").
+ * @returns {Set<string>|null}  null = sin restriccion.
+ */
+function normalizePreconditionOnly(value) {
+    if (value == null) return null;                      // ausente ⇒ historico
+    const raw = Array.isArray(value) ? value : [value];
+    const allowed = new Set(['human_judgment']);
+    for (const v of raw) {
+        if (typeof v !== 'string') continue;             // ilegible ⇒ se ignora
+        const t = v.trim();
+        // Solo tipos CONOCIDOS y auto-re-evaluables entran; un string
+        // desconocido no abre nada (no se propaga como comodin).
+        if (t === 'dependency' || t === 'merge_checks_race') allowed.add(t);
+    }
+    return allowed;
 }
 
 function reportHumanBlock(opts) {
@@ -709,6 +814,16 @@ function unblockIssue(opts) {
         try { fs.writeFileSync(guidanceFilePath(targetDir, marker), guidance); } catch {}
     }
     try { fs.unlinkSync(reasonFilePath(sourceFile)); } catch {}
+
+    // #6432 D11 / A-6 — la degradación del reclaim es pegajosa para todas las
+    // vías automáticas. Sólo una intervención humana explícita (ver
+    // `MANUAL_UNLOCKERS`), y únicamente DESPUÉS de haber movido efectivamente el
+    // marker, habilita un ciclo nuevo. Un `unblockIssue` que retornó `ok:false`
+    // sale por un `return` anterior y nunca llega acá: sin destrabe real no hay
+    // limpieza.
+    if (MANUAL_UNLOCKERS.has(unlocker)) {
+        mergeRaceLedger.clearEntry(issue);
+    }
 
     emitUnblocked({
         issue, skill: blocked.skill, phase: blocked.phase, pipeline: blocked.pipeline,
@@ -1803,6 +1918,7 @@ module.exports = {
     emitAutoReleased,
     normalizeUnlocker,
     UNLOCKER_ENUM,
+    MANUAL_UNLOCKERS,
     PREDICATE_KINDS,
     buildBlockedSummaryMarkdown,
     buildBlockedSummaryPlain,

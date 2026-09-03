@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Pulpo V2 — Proceso central del pipeline
 // Brazos: barrido, lanzamiento, huérfanos, desbloqueo (+ intake en F5)
@@ -211,6 +214,10 @@ const desyncBlockNotifier = require('./lib/desync-block-notifier');
 // #5516 — Clasificador puro de hijos de split huérfanos descubiertos DESDE GitHub
 // (cubre los splits que no pasan por el hook del Commander).
 const splitOrphanReconciler = require('./lib/split-orphan-reconciler');
+// #6801 — `parseSplitParent` (título `[Split de #N]`) y `parseSplitRegistroHijas`
+// (línea `- **Sub-historias**:` del registro del padre): las dos únicas fuentes
+// de la relación explícita padre→hijas que usa el brazo de desbloqueo.
+const splitGuard = require('./lib/split-guard');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
 const modelPropagationRollout = require('./lib/model-propagation-rollout'); // #6274
@@ -330,6 +337,10 @@ const workfileName = require('./lib/workfile-name');
 const brazoBarridoCore = require('./lib/brazo-barrido-core');
 const brazoLanzamientoCore = require('./lib/brazo-lanzamiento-core');
 const brazoDesbloqueoCore = require('./lib/brazo-desbloqueo-core');
+const mergeRaceLedger = require('./lib/merge-race-reclaim-ledger');
+// #6432 CA-23/CA-24 — copy de los DOS desenlaces del rescate (merge confirmado
+// / degradación). Fuente única: el barrido no redacta texto para el operador.
+const mergeRaceNotice = require('./lib/merge-race-reclaim-notice');
 // #6611 — auto-destrabe de bloqueos con predicado verificable.
 const verifiablePredicateStore = require('./lib/verifiable-predicate-store');
 const autoRecheckCounter = require('./lib/auto-recheck-counter');
@@ -4587,21 +4598,120 @@ function brazoBarrido(config) {
           // se construía solo con `motivo` y el classifier no veía la
           // categoría declarativa cuando el agente la emitía como YAML
           // top-level (resultaba en `human_block` por fallback).
-          const motivosClasificados = rechazados.map(r => ({
-            skill: skillFromFile(r.file.name),
-            motivo: r.motivo || '',
-            clasificacion: precheck.classifyError(r.motivo || '') || 'codigo',
-            // Hints estructurados del YAML del agente (pueden ser undefined)
-            rebote_categoria: r.rebote_categoria || null,
-            depende_de: Array.isArray(r.depende_de) ? r.depende_de : null,
-            // #4767 — hints para el carril paralelo (block-classifier): paths del
-            // conflicto (allowlist) y origen del rechazo (`security` fuerza
-            // decisión). Opcionales: undefined/null si el agente no los emite.
-            paths: Array.isArray(r.paths) ? r.paths : null,
-            source: (typeof r.source === 'string' && r.source) || null,
-          }));
+          // #6745 SEC-B — allowlist de skills conocidos, para VALIDAR el skill
+          // emisor del rechazo antes de aplicarle el piso de `security`.
+          // `skillFromFile` es leniente por contrato (`6745.secur1ty` → 'secur1ty',
+          // no null), así que un `if (!skill)` no implementaría fail-closed.
+          let skillAllowlistRebote = null;
+          try { skillAllowlistRebote = workfileName.buildSkillAllowlist(config); } catch { skillAllowlistRebote = null; }
+
+          const motivosClasificados = rechazados.map(r => {
+            const motivoRaw = r.motivo || '';
+            // #6745 CA-1/CA-4 — evidencia TIPADA en vez del string crudo de
+            // `precheck.classifyError`. Acá ya no se decide ruteo: sólo se
+            // recolecta evidencia. Quien decide es `classifyRebote` (abajo).
+            const detalle = precheck.classifyErrorDetailed(motivoRaw);
+            return {
+              skill: skillFromFile(r.file.name),
+              motivo: motivoRaw,
+              detalle,
+              clasificacion: detalle.clasificacion || 'codigo',
+              // Hints estructurados del YAML del agente (pueden ser undefined)
+              rebote_categoria: r.rebote_categoria || null,
+              // #6745 rev-2 — procedencia del veredicto. NO es un hint del
+              // agente: el handler de salida strippea este campo de todo YAML
+              // escrito por un agente, así que 'pulpo' sólo puede haberlo puesto
+              // el Pulpo (exit code ≠ 0 o agotamiento de huérfano).
+              veredicto_sintetizado_por: r.veredicto_sintetizado_por || null,
+              depende_de: Array.isArray(r.depende_de) ? r.depende_de : null,
+              // #4767 — hints para el carril paralelo (block-classifier): paths del
+              // conflicto (allowlist) y origen del rechazo (`security` fuerza
+              // decisión). Opcionales: undefined/null si el agente no los emite.
+              paths: Array.isArray(r.paths) ? r.paths : null,
+              source: (typeof r.source === 'string' && r.source) || null,
+              // #6432 rev-3 (RS-1) — La procedencia SEC-9 exige que el hint venga
+              // del YAML de `delivery` corrido en la fase `entrega` del pipeline
+              // `desarrollo`, para el MISMO issue. La variable correcta es `fase`
+              // (la fase que se está barriendo, `:4216`), NO `faseRechazo`
+              // (`pipelineConfig.fase_rechazo`, que es el DESTINO del rebote y
+              // sólo vale `null` o `dev`). Con `faseRechazo` la condición era
+              // insatisfacible: el hint se anulaba siempre y el marker nunca
+              // nacía `merge_checks_race` — toda la cadena quedaba muerta.
+              // Las CUATRO condiciones son conjuntivas a propósito (#4748 SEC-1):
+              // relajar cualquiera reabre la aceptación de hints desde el YAML de
+              // cualquier skill. El `else` sigue siendo `null`, silencioso.
+              precondicion_merge_checks:
+                (pipelineName === 'desarrollo' && fase === 'entrega'
+                  && skillFromFile(r.file.name) === 'delivery' && Number(r.issue) === Number(issue)
+                  && r.precondicion_merge_checks && typeof r.precondicion_merge_checks === 'object')
+                  ? r.precondicion_merge_checks : null,
+            };
+          });
+
+          // #6745 CA-4 — DECISOR ÚNICO. Antes convivían dos caminos divergentes
+          // sobre el mismo `motivo_rechazo` y el bueno se descartaba:
+          // `esReboteDeInfra` salía de `precheck.classifyError` crudo mientras
+          // que `classifyRebote` sí se invocaba, pero sólo se consumía su
+          // `dependency_block`. Ahora el veredicto se calcula UNA vez por motivo
+          // y lo consumen tanto el ruteo infra/código como el handler dep-block.
+          //
+          // La semántica AND (`every`) se preserva: alcanza con que UN motivo no
+          // sea infra para que TODO el rebote sea de código. Eso es lo que hace
+          // que el piso de `security` sea del rebote completo y no del motivo
+          // suelto (SEC-C): si un motivo viene de `security`, `esReboteDeInfra`
+          // es false aunque los demás clasifiquen infra.
+          for (const m of motivosClasificados) {
+            m.veredicto = reboteClassifier.classifyRebote({
+              motivo: m.motivo,
+              // #6745 — contrato nuevo: evidencia tipada + skill validado.
+              classifyErrorDetail: m.detalle,
+              skill: m.skill,
+              skillAllowlist: skillAllowlistRebote,
+              classifyErrorResult: m.clasificacion, // compat
+              isRoutingMismatch: false, // routing se evalúa más abajo, mantener orden
+              // #3229 — hints estructurados del YAML del agente. Cierra el
+              // puente roto entre guru (clasifica) y barrido (consumer).
+              rebote_categoria: m.rebote_categoria,
+              dependsOn: m.depende_de,
+              // #6745 rev-2 — SEÑAL CONFIABLE de procedencia, que hasta ahora
+              // nunca se cableaba (`grep -n veredictoSintetizadoPorPulpo
+              // .pipeline/pulpo.js` daba 0 hits): el anti-spoof borraba el campo
+              // bueno y el classifier terminaba confiando crudo en
+              // `rebote_categoria`, que lo escribe el agente rechazado.
+              // `veredicto_sintetizado_por` sólo puede valer 'pulpo' si lo
+              // escribió el Pulpo — el handler de salida del agente lo strippea
+              // del YAML antes de que llegue a `listo/`.
+              veredictoSintetizadoPorPulpo: m.veredicto_sintetizado_por === 'pulpo',
+            });
+          }
+
+          // #6432 rev-2 (SEC/A01) — La precondicion del CIRCUIT BREAKER se acota
+          // a `merge_checks_race`. El circuit breaker escala a needs-human como
+          // FRENO HUMANO: si naciera con precondicion `dependency` (que
+          // `motivosClasificados` arrastra desde el `depende_de` del agente),
+          // `reapStaleHumanBlocks` estaria autorizado a auto-liberarlo apenas
+          // esa dep figure CLOSED — y el freno se retiraria solo, en un ciclo,
+          // sin que ningun humano mire el issue que agoto sus 3 rebotes.
+          // `merge_checks_race` SI es auto-re-evaluable acá porque su destrabe
+          // pasa por los gates de delivery. Todo lo demas cae al piso
+          // fail-closed `human_judgment`, que nunca es auto-re-evaluable.
+          const circuitPrecondition = humanBlock.classifyPrecondition(
+            motivosClasificados, [], { issue, only: 'merge_checks_race' });
           const esReboteDeInfra = motivosClasificados.length > 0
-            && motivosClasificados.every(m => m.clasificacion === 'infra');
+            && motivosClasificados.every(m => m.veredicto.category === 'infra');
+
+          // #6745 CA-3 — qué ACCIÓN pide el rebote, tipada. Si algún motivo trae
+          // señal fuerte de rechazo de código/entrega, la acción pedida es de
+          // código y `resolveReboteDestino` puede degradar el destino por
+          // capacidad de fase. Es sólo desempate: nunca elige fase por su cuenta
+          // ni saltea un gate.
+          const accionRequeridaRebote = motivosClasificados
+            .some(m => m.veredicto.accion_requerida === 'codigo') ? 'codigo' : null;
+
+          // #6745 CA-10 / SEC-E — enum CERRADO, sin ningún fragmento del motivo.
+          const infraDowngradedByRebote = (motivosClasificados
+            .map(m => m.veredicto.infra_downgraded_by)
+            .find(v => v === 'security_floor' || v === 'code_signal')) || null;
 
           // #3167 — DEPENDENCY_BLOCK: ANTES de evaluar bloqueo humano, le damos al
           // clasificador unificado la chance de capturar rebotes donde el agente
@@ -4629,15 +4739,10 @@ function brazoBarrido(config) {
           // `depBlockHandled` queda en false y el flow infra/humano normal sigue.
           let depBlockHandled = false;
           for (const m of motivosClasificados) {
-              const result = reboteClassifier.classifyRebote({
-                motivo: m.motivo,
-                classifyErrorResult: m.clasificacion,
-                isRoutingMismatch: false, // routing se evalúa más abajo, mantener orden
-                // #3229 — hints estructurados del YAML del agente. Cierra el
-                // puente roto entre guru (clasifica) y barrido (consumer).
-                rebote_categoria: m.rebote_categoria,
-                dependsOn: m.depende_de,
-              });
+              // #6745 CA-4 — el veredicto ya lo calculó el decisor único arriba
+              // (misma llamada, mismos args). Reusarlo evita que dos lecturas
+              // del mismo motivo puedan divergir.
+              const result = m.veredicto;
               if (result.category !== 'dependency_block') continue;
 
               const skillDep = m.skill || skillFromFile(rechazados[0].file.name);
@@ -4884,7 +4989,7 @@ function brazoBarrido(config) {
                 for (const n of (det.dependsOn || [])) hintDeps.push(n);
               }
             }
-            let precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps);
+            let precondition = humanBlock.classifyPrecondition(motivosHumanos, hintDeps, { issue });
 
             // #6611 — Predicado verificable: SEGUNDO canal, consultado sólo si
             // el primero dijo "juicio humano".
@@ -5200,6 +5305,7 @@ function brazoBarrido(config) {
             escalarACircuitBreaker({
               issue, skill: skillInfra, phase: fase, pipeline: pipelineName,
               reason: motivoInfra, archivos, faseRechazo, kind: 'infra',
+              precondition: circuitPrecondition,
             });
             continue;
           }
@@ -5216,6 +5322,7 @@ function brazoBarrido(config) {
             escalarACircuitBreaker({
               issue, skill: skillCorte, phase: fase, pipeline: pipelineName,
               reason: motivoCorte, archivos, faseRechazo, kind: 'generico',
+              precondition: circuitPrecondition,
             });
             continue;
           }
@@ -5639,13 +5746,21 @@ function brazoBarrido(config) {
           // marcarlo como `rebote_tipo: infra` y NO incrementar el contador
           // efectivo del circuit breaker (se preserva el reboteCount anterior).
           //
-          // #2335 CA5-CA6 — la clasificacion se hace aca (sobre `motivosClasificados`
-          // derivados del pre-check y/o motivo del agente via `precheck.classifyError`),
-          // NO se lee `rebote_tipo` escrito por el agente. El contador separado
+          // #2335 CA5-CA6 — la clasificacion NO se lee de `rebote_tipo` escrito
+          // por el agente: se deriva de `motivosClasificados`. El contador separado
           // `rebote_numero_infra` se incrementa solo cuando la clasificacion fue infra.
-          const reboteTipo = esReboteDeInfra ? 'infra' : 'codigo';
-          const nuevoReboteNumero = esReboteDeInfra ? reboteCount : (reboteCount + 1);
-          const nuevoReboteInfraNumero = esReboteDeInfra ? (reboteInfraCount + 1) : reboteInfraCount;
+          // #6745 CA-4 — el decisor es `reboteClassifier.classifyRebote` (arriba,
+          // `m.veredicto`), no `precheck.classifyError`: ese wrapper ya no decide
+          // ruteo en ningun lugar de este archivo.
+          //
+          // #6745 CA-5 — el TIPO se deriva DESPUÉS del destino (ver más abajo),
+          // nunca antes. Hasta #6745 `reboteTipo` se calculaba acá, ~25 líneas
+          // ANTES de que `resolveReboteDestino` decidiera la fase: el tipo no
+          // podía depender del destino y por eso era posible emitir
+          // `faseDestino === faseRechazo` con `rebote_tipo: 'infra'`. Ese rebote
+          // volvía a `dev` SIN consumir budget del circuit breaker genérico
+          // (`rebote-counter.js` ~:70-74 hace `continue` cuando el tipo previo es
+          // infra) — el bucle sin salida de #6179 / #3741 (~$80–100/h).
 
           // #2374 — diferenciar destino del rebote según tipo:
           //   - codigo:  faseRechazo (dev) — el dev tiene que corregir el código.
@@ -5668,7 +5783,7 @@ function brazoBarrido(config) {
           //     del barrido (línea 3547). Si re-encoláramos solo el skill que
           //     falló por infra, la próxima evaluación quedaría incompleta para
           //     siempre (faltarían los listo/ de los demás skills_requeridos).
-          const { faseDestino, skillsDestino } = resolveReboteDestino({
+          const { faseDestino, skillsDestino, degradadoACodigo } = resolveReboteDestino({
             esReboteDeInfra,
             fase,
             faseRechazo,
@@ -5678,7 +5793,32 @@ function brazoBarrido(config) {
             issue,
             config,
             skillFromFile,
+            // #6745 CA-3 — acción pedida por el motivo, TIPADA. El módulo sigue
+            // siendo puro: tiene prohibido releer o parsear el motivo (SEC-F).
+            accionRequerida: accionRequeridaRebote,
           });
+
+          // #6745 CA-5 — derivación del tipo y de los contadores, DESPUÉS de
+          // conocer el destino.
+          //
+          // INVARIANTE: si el rebote CAMBIA de fase para ir a `faseRechazo`,
+          // entonces `rebote_tipo === 'codigo'` y consume budget del circuit
+          // breaker genérico. (Un rebote infra que ocurre EN `faseRechazo` se
+          // reencola en su misma fase y sigue siendo 'infra' — eso es el
+          // comportamiento de #2374 y no es el agujero que cierra #6745.)
+          const esInfraFinal = esReboteDeInfra && !degradadoACodigo;
+          const reboteTipo = esInfraFinal ? 'infra' : 'codigo';
+          const nuevoReboteNumero = esInfraFinal ? reboteCount : (reboteCount + 1);
+          const nuevoReboteInfraNumero = esInfraFinal ? (reboteInfraCount + 1) : reboteInfraCount;
+
+          // #6745 CA-10 / SEC-E — enum CERRADO
+          // ('security_floor' | 'code_signal' | 'phase_capability' | null).
+          // Se persiste junto a `rebote_tipo` para que el operador pueda
+          // entender POR QUÉ el issue se movió, sin exponer ni un fragmento del
+          // motivo (`security` está en `SKILLS_SIN_MOTIVO_PUBLICO`).
+          const infraDowngradedByFinal = degradadoACodigo
+            ? 'phase_capability'
+            : (infraDowngradedByRebote || null);
 
           const destinoPendiente = path.join(fasePath(pipelineName, faseDestino), 'pendiente');
 
@@ -5701,11 +5841,18 @@ function brazoBarrido(config) {
           if (nuevoReboteInfraNumero > 0) {
             yamlOut.rebote_numero_infra = nuevoReboteInfraNumero;
           }
+          if (infraDowngradedByFinal) {
+            yamlOut.infra_downgraded_by = infraDowngradedByFinal;
+          }
           // #4160 — persistir el hash del diff actual para que el próximo ciclo
           // pueda detectar convergencia (diff idéntico entre rebotes). Sólo para
           // rebotes de código (los de infra no tocan el diff del dev). Fail-closed:
           // si no se resuelve el worktree, queda null y el gate no convergerá.
-          if (!esReboteDeInfra) {
+          //
+          // #6745 — mira `esInfraFinal`, NO `esReboteDeInfra`: un rebote degradado
+          // a código vuelve a `dev` y necesita su `diff_hash_previo`, o el gate
+          // de convergencia de #4160 no converge nunca.
+          if (!esInfraFinal) {
             try {
               const dh = convergence.computeDiffHash(issue, { root: ROOT });
               if (dh && dh.hash) yamlOut.diff_hash_previo = dh.hash;
@@ -5736,7 +5883,7 @@ function brazoBarrido(config) {
             }
           }
 
-          if (esReboteDeInfra) {
+          if (esInfraFinal) {
             const skillsStr = skillsDestino.join(',') || '(ninguno)';
             log('barrido', `#${issue} RECHAZADO en ${fase} por INFRA → REENCOLADO en MISMA fase '${faseDestino}' [${skillsStr}] (rebote_numero_infra=${nuevoReboteInfraNumero}/${MAX_REBOTES_INFRA} — NO cuenta contra circuit breaker generico, NO devuelto a dev)`);
             ghCommentOnIssue(
@@ -5744,7 +5891,10 @@ function brazoBarrido(config) {
               `🚫 Rebote clasificado como infra (#2374) — reintentando en \`${faseDestino}\` sin devolver a \`dev\` (el código no falló, sólo timeout/crash/watchdog). No cuenta contra el circuit breaker de código.`,
             );
           } else {
-            log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseDestino} (rebote ${nuevoReboteNumero}/${MAX_REBOTES})`);
+            const porDegradado = degradadoACodigo
+              ? ' [degradado infra→codigo: la accion pedida no la puede ejecutar ningun skill de esta fase]'
+              : (infraDowngradedByFinal ? ` [infra descartado: ${infraDowngradedByFinal}]` : '');
+            log('barrido', `#${issue} RECHAZADO en ${fase} → devuelto a ${faseDestino} (rebote ${nuevoReboteNumero}/${MAX_REBOTES})${porDegradado}`);
           }
 
           // CLEANUP DOWNSTREAM: limpiar archivos residuales del issue en fases posteriores.
@@ -7308,7 +7458,15 @@ function requerirClaveDeProducto(config, clave) {
   return v;
 }
 
-function determinarDevSkill(issue, config) {
+// #6747 — mismo camino de resolución de siempre, pero devolviendo también CÓMO
+// se eligió el skill. El `source` lo consume el rewind manual (`resolveDeferredSkill`)
+// para dos cosas: no dejar que un default degrade a `pipeline-dev` (SR-4) y
+// avisarle al operador cuando el skill lo eligió el override por contenido (CA-UX-2).
+//
+// Es UN solo camino de resolución a propósito: re-evaluar
+// `labels.includes('area:infra') && issueMentionsPipelineScope(...)` desde
+// afuera sería un camino nuevo y violaría CA-6.
+function resolverDevSkillConOrigen(issue, config) {
   const mapping = requerirClaveDeProducto(config, 'dev_skill_mapping');
   const labels = getIssueLabels(issue);
   const priority = requerirClaveDeProducto(config, 'dev_routing_priority');
@@ -7317,28 +7475,34 @@ function determinarDevSkill(issue, config) {
   if (labels.includes('area:infra') && !labels.includes('area:pipeline') && mapping['area:pipeline']) {
     if (issueMentionsPipelineScope(issue, config)) {
       log('routing', `#${issue}: area:infra + contenido del pipeline → pipeline-dev (override)`);
-      return mapping['area:pipeline'];
+      return { skill: mapping['area:pipeline'], source: 'content-override' };
     }
   }
 
   // 1) Prioridad explícita de dominio: `area:pipeline`/`area:*` gana sobre `app:*` cuando coexisten.
   for (const priorityLabel of priority) {
     if (labels.includes(priorityLabel) && mapping[priorityLabel]) {
-      return mapping[priorityLabel];
+      return { skill: mapping[priorityLabel], source: 'priority-label' };
     }
   }
 
   // 2) Fallback: primer match directo (orden de labels de GitHub)
   for (const label of labels) {
-    if (mapping[label]) return mapping[label];
+    if (mapping[label]) return { skill: mapping[label], source: 'direct-label' };
   }
 
   const defaultSkill = mapping.default || 'backend-dev';
   if (isDeclaredStackDevSkill(defaultSkill, config)) {
-    return defaultSkill;
+    return { skill: defaultSkill, source: 'declared-default' };
   }
 
-  return getGenericDevFallbackSkill(config, mapping);
+  return { skill: getGenericDevFallbackSkill(config, mapping), source: 'generic-fallback' };
+}
+
+// Wrapper preservado: firma y retorno idénticos a los de siempre, para que los
+// 6 call sites del ruteo de rebotes queden intactos (#6747).
+function determinarDevSkill(issue, config) {
+  return resolverDevSkillConOrigen(issue, config).skill;
 }
 
 function getDevSkillPartitions(config) {
@@ -8014,6 +8178,7 @@ function escalarACircuitBreaker(opts, deps) {
     hb.reportHumanBlock({
       issue: issueNum, skill: skillBloq, phase, pipeline,
       reason: motivoTxt, question: preguntaTxt, moveFromActive: false,
+      precondition: opts.precondition,
     });
     markerOk = true;
   } catch (e) {
@@ -12190,12 +12355,23 @@ ${g}
       // dejó su propio `resultado`, la rama no entra y los campos falsificados
       // sobrevivirían hasta `procesado/`. Mismo patrón que
       // `delete cleaned.bloqueado_por_infra` (L1031 y L9157).
-      const procedenciaFalsificada =
-        data.veredicto_sintetizado_por !== undefined || data.agente_exit_code !== undefined;
-      delete data.veredicto_sintetizado_por;
-      delete data.agente_exit_code;
+      //
+      // #6745 rev-2 — `rebote_categoria: 'infra_agent_crash'` (y `infra_no_apk`)
+      // se strippean por el MISMO motivo. Son hints que hacen que el rebote NO
+      // cuente contra el circuit breaker (`rebote-classifier.js`, ramas 1.4/1.5),
+      // y los emite EXCLUSIVAMENTE el Pulpo: `synthesizeOrphanExhaustion` es el
+      // único productor de `infra_agent_crash` en todo el repo, y siempre lo
+      // escribe junto a `veredicto_sintetizado_por: 'pulpo'` — por un camino
+      // (`brazoHuerfanos`) que no pasa por acá. Si el agente los escribe en su
+      // propio YAML está falsificando procedencia igual que con los otros dos
+      // campos: un `qa`/`po`/`review` podía auto-eximirse del breaker de código
+      // agregando una línea a su veredicto de rechazo.
+      // `dependency_block` NO se strippea: ése SÍ es un hint de contrato que el
+      // agente emite legítimamente (#3229).
+      const strip = reboteClassifier.stripProcedenciaAgente(data);
+      const procedenciaFalsificada = strip.falsificada;
       if (procedenciaFalsificada) {
-        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite)`);
+        log('lanzamiento', `🛡️ ${skill}:#${issue} escribió campos de procedencia en su YAML — descartados (sólo el Pulpo los emite): ${strip.campos.join(', ')}`);
       }
       if (!data.resultado) {
         data.resultado = code === 0 ? 'aprobado' : 'rechazado';
@@ -12896,6 +13072,10 @@ async function brazoRewind(config) {
         pipelineRoot: PIPELINE,
         yaml,
         activeProcesses,
+        // #6747 — el alias `dev` llega con `skill: null` y se resuelve por
+        // labels. Mismo patrón con que se inyecta `determinarDevSkill` en
+        // `resolveReboteDestino`: un solo camino de resolución, sin duplicar.
+        resolverDevSkillConOrigen,
         options: {
           killGraceMs: (config.rewind && config.rewind.kill_grace_seconds)
             ? config.rewind.kill_grace_seconds * 1000
@@ -12963,6 +13143,9 @@ async function brazoRewind(config) {
             target: result.target,
             fromPipeline: result.fromPipeline,
             fromFase: result.fromFase,
+            // #6747 — los códigos DEV_SKILL_* nombran el skill que se resolvió
+            // antes de abortar; sin esto el operador lee un `?`.
+            skill: result.skill,
             error: result.message,
             killGraceMs: rewindMod.DEFAULT_KILL_GRACE_MS,
           });
@@ -22139,6 +22322,162 @@ async function reapStaleHumanBlocks({ allowlistSet } = {}) {
   }
 }
 
+function runReclaimChild({ issue, pr, headSha, timeoutMs, spawnImpl = spawn }) {
+  return new Promise((resolve) => {
+    let settled = false, out = '';
+    const finish = (value) => { if (settled) return; settled = true; resolve(value); };
+    const child = spawnImpl(process.execPath, [
+      path.join(PIPELINE, 'skills-deterministicos', 'delivery.js'), '--reclaim',
+      `--pr=${pr}`, `--issue=${issue}`, `--head-sha=${headSha}`,
+    // #6432 — `ROOT` es el checkout principal (el que tiene `origin/main` y el
+    // remoto), NO el worktree del agente. Antes decía `REPO_ROOT`, que no existe
+    // en este módulo: el `spawn` tiraba ReferenceError y el rescate no corría
+    // nunca. Lo destapó el test de integración de los avisos (CA-23/CA-24).
+    ], { cwd: ROOT, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', (d) => { out += d; });
+    const timer = setTimeout(() => { try { child.kill(); } catch {} finish({ ok: false, status: 'timeout' }); }, timeoutMs);
+    timer.unref?.();
+    child.on('exit', (code) => {
+      clearTimeout(timer); let parsed = null;
+      try { parsed = JSON.parse(out.trim().split(/\r?\n/).pop()); } catch {}
+      finish({
+        ok: code === 0 && parsed && parsed.status === 'merged',
+        status: parsed && parsed.status,
+        sha: parsed && parsed.sha,
+        // #6432 CA-23 — `gate` y `reason` del hijo son dos de los seis
+        // campos del aviso de degradación. Se propagaban hasta acá y se
+        // tiraban: por eso el aviso no podía existir.
+        gate: parsed && parsed.gate,
+        reason: parsed && parsed.reason,
+      });
+    });
+    child.on('error', () => { clearTimeout(timer); finish({ ok: false, status: 'spawn_error' }); });
+  });
+}
+
+/**
+ * #6432 — Barrido de rescate de merges varados por la carrera con los checks.
+ *
+ * DOS DESENLACES, DOS AVISOS (CA-23 / CA-24). El rebote de `ux` del 2026-08-25
+ * encontró que la degradación a `human_judgment` ocurría EN SILENCIO: el marker
+ * se reescribía, el ledger se marcaba `degraded` y el operador quedaba con un
+ * `needs-human` sin saber qué pasó ni cómo salir. Ahora:
+ *   - merge confirmado  ⇒ 1 aviso (comentario en el issue + Telegram).
+ *   - intentos agotados ⇒ 1 aviso ACCIONABLE (issue, PR, N/N, gate, reason y el
+ *                          comando `/unblock` listo para copiar).
+ *   - intento intermedio fallido ⇒ CERO Telegram. Su traza va a log + `.jsonl`.
+ *
+ * Las inyecciones (`notify`, `listMarkers`, `ledgerStore`, `unblock`,
+ * `enqueueOrder`) existen para que el test de los dos desenlaces corra sin tocar
+ * el `.pipeline/` real ni mandar un solo mensaje. En producción son los reales.
+ */
+async function reapMergeChecksRaceBlocks({
+  allowlistSet, config,
+  ghCall = ghDesbloqueoCall,
+  spawnImpl = spawn,
+  notify = sendTelegram,
+  listMarkers = () => humanBlock.listBlockedIssues(),
+  ledgerStore = mergeRaceLedger,
+  unblock = (opts) => humanBlock.unblockIssue(opts),
+  enqueueOrder = (file, payload) => encolarOrdenGithub(file, payload),
+} = {}) {
+  const cfg = config && config.brazo && config.brazo.reclaim_merge_race;
+  if (!cfg || cfg.enabled !== true || cfg.kill_switch === true) return;
+  let markers = listMarkers().filter((m) => m.precondition && m.precondition.type === 'merge_checks_race');
+  if (allowlistSet) markers = markers.filter((m) => allowlistSet.has(String(m.issue)));
+  if (markers.length === 0) return;
+  const maxAttempts = Number.isInteger(cfg.max_attempts) && cfg.max_attempts > 0 ? cfg.max_attempts : 3;
+  const ghQueueDir = path.join(PIPELINE, 'servicios', 'github', 'pendiente');
+  const prStates = {};
+  for (const marker of markers) {
+    ghThrottle();
+    try {
+      const fields = 'number,url,labels,headRefName,isCrossRepository,headRepositoryOwner,state,mergeStateStatus,headRefOid';
+      const { stdout } = await ghCall(['pr', 'view', String(marker.precondition.pr), '--json', fields, '--repo', 'intrale/platform'], 30000);
+      prStates[marker.precondition.pr] = JSON.parse(stdout);
+    } catch (e) { log('desbloqueo', `[merge-race] #${marker.issue} PR ilegible: ${e.message}`); }
+  }
+  const ledger = ledgerStore.readLedger();
+  const decision = brazoDesbloqueoCore.selectMergeRaceBlocksToReclaim({ markers, prStates, ledger, maxAttempts });
+
+  // --- DESENLACE 1: intentos agotados ⇒ degradar A JUICIO HUMANO, CON AVISO ---
+  for (const marker of decision.toDegrade) {
+    const pc = marker.precondition;
+    const entry = ledger[String(Number(marker.issue))] || {};
+    const usados = Number(entry.attempts || 0) || maxAttempts;
+    // Marcamos `degraded` ANTES de avisar: si el aviso falla, el tope igual
+    // quedó cerrado (fail-closed hacia el humano, nunca hacia el automático).
+    ledgerStore.markDegraded({ issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha });
+    try {
+      const reasonFile = `${marker.marker_path}.reason.json`;
+      const meta = JSON.parse(fs.readFileSync(reasonFile, 'utf8'));
+      meta.precondition = { type: 'human_judgment' };
+      fs.writeFileSync(reasonFile, JSON.stringify(meta, null, 2));
+    } catch (e) { log('desbloqueo', `[merge-race] no se pudo degradar #${marker.issue}: ${e.message}`); }
+
+    // CA-23 — el aviso accionable con los seis campos. Fuente única de copy.
+    const notice = mergeRaceNotice.buildDegradationNotice({
+      issue: marker.issue, pr: pc.pr,
+      attempts: usados, maxAttempts,
+      gate: entry.last_gate, reason: entry.last_reason,
+    });
+    log('desbloqueo', notice.log);
+    ledgerStore.appendAudit({
+      event: 'degraded', issue: marker.issue, pr: pc.pr, head_sha: String(pc.head_sha || '').slice(0, 7),
+      attempts: `${usados}/${maxAttempts}`, gate: entry.last_gate, reason: entry.last_reason,
+    });
+    try {
+      fs.mkdirSync(ghQueueDir, { recursive: true });
+      enqueueOrder(path.join(ghQueueDir, `${marker.issue}-merge-race-degraded-${Date.now()}.json`), {
+        action: 'comment', issue: Number(marker.issue), body: notice.comment,
+      });
+    } catch (e) { log('desbloqueo', `[merge-race] no se pudo encolar el aviso de degradación de #${marker.issue}: ${e.message}`); }
+    // CA-24 — uno de los DOS únicos Telegram del barrido.
+    try { notify(notice.telegram); } catch {}
+  }
+
+  // --- DESENLACE 2 (y los intentos que todavía no son desenlace) ---
+  for (const marker of decision.toReclaim) {
+    const pc = marker.precondition;
+    const counted = ledgerStore.recordAttempt({ issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha });
+    if (!counted) { log('desbloqueo', `[merge-race] #${marker.issue} ledger no persistido; no se intenta`); continue; }
+    const result = await runReclaimChild({ issue: marker.issue, pr: pc.pr, headSha: pc.head_sha, timeoutMs: cfg.child_timeout_ms, spawnImpl });
+    // El desenlace del intento se persiste SIEMPRE: es el insumo del aviso de
+    // degradación, que puede dispararse varios ticks después (CA-23).
+    ledgerStore.recordOutcome({
+      issue: marker.issue, pr: pc.pr, head_sha: pc.head_sha,
+      status: result.status, gate: result.gate, reason: result.reason,
+    });
+    ledgerStore.appendAudit({
+      event: result.ok ? 'merged' : 'attempt_failed', issue: marker.issue, pr: pc.pr,
+      head_sha: String(pc.head_sha || '').slice(0, 7),
+      attempts: `${Number(counted.attempts || 0)}/${maxAttempts}`,
+      status: result.status, gate: result.gate, reason: result.reason,
+      authorized_by: 'brazo-desbloqueo:merge-race',
+    });
+    if (!result.ok) {
+      // CA-24 — intento intermedio fallido: log + `.jsonl`, CERO Telegram. El
+      // operador se entera del desenlace, no de cada vuelta del reintento.
+      log('desbloqueo', `[merge-race] #${marker.issue} intento ${Number(counted.attempts || 0)}/${maxAttempts} no mergeó (status=${result.status || 'desconocido'}, gate=${result.gate || 'desconocido'}); sin notificar, se reintenta en el próximo tick`);
+      continue;
+    }
+    const unblocked = unblock({ issue: marker.issue, unlocker: 'brazo-desbloqueo:merge-race', guidance: 'Reclaim de merge confirmado por los gates de delivery.' });
+    if (!unblocked || !unblocked.ok) continue;
+    const notice = mergeRaceNotice.buildConfirmationNotice({ issue: marker.issue, pr: pc.pr, sha: result.sha });
+    fs.mkdirSync(ghQueueDir, { recursive: true });
+    enqueueOrder(path.join(ghQueueDir, `${marker.issue}-remove-needs-human-${Date.now()}.json`), {
+      action: 'remove-label', issue: Number(marker.issue), label: humanBlock.NEEDS_HUMAN_LABEL,
+      guardrail_authorized: true, authorized_by: 'brazo-desbloqueo:merge-race-confirmed',
+    });
+    enqueueOrder(path.join(ghQueueDir, `${marker.issue}-merge-race-comment-${Date.now()}.json`), {
+      action: 'comment', issue: Number(marker.issue), body: notice.comment,
+    });
+    log('desbloqueo', `[merge-race] ✅ #${marker.issue} reclaim confirmado del PR #${pc.pr} (${String(result.sha || '').slice(0, 7)}) — needs-human retirado`);
+    // CA-24 — el otro de los DOS únicos Telegram del barrido.
+    try { notify(notice.telegram); } catch {}
+  }
+}
+
 /**
  * #6611 — Reaper de `needs-human` con PREDICADO VERIFICABLE resuelto.
  *
@@ -22387,6 +22726,152 @@ async function reapVerifiableHumanBlocks({ allowlistSet, config } = {}) {
   }
 }
 
+// =============================================================================
+// #6801 — Frontera del auto-cierre de paraguas: descubrir la relación REAL
+// padre→hijas, chequear PR asociado y avisar sin spamear.
+//
+// La decisión es pura y vive en `brazo-desbloqueo-core.decideSplitUmbrellaClose`.
+// Acá sólo se leen datos de GitHub y se aplican efectos.
+// =============================================================================
+
+/**
+ * Descubre las sub-historias de un candidato a paraguas, en orden de confianza:
+ *
+ *   1. `## Registro del split` → línea `- **Sub-historias**: #a, #b` del body.
+ *      Es la relación que el propio split escribió al cortarse: fuente de verdad.
+ *   2. Fallback para splits viejos sin registro: issues cuyo título es
+ *      `[Split de #<padre>]`.
+ *
+ * Devuelve `children: null` cuando no puede determinarla — el consumidor es
+ * fail-closed y NO cierra en ese caso (CA-2).
+ *
+ * @param {{number: number|string, title?: string}} issue
+ * @param {string} issueBody body ya leído por el brazo (cero requests extra)
+ * @returns {Promise<{children: number[]|null, source: 'registro'|'titulos'|null, states: Record<string,string>}>}
+ */
+async function _discoverSplitChildren(issue, issueBody) {
+  const out = { children: null, source: null, states: {} };
+  const repo = repoTarget.getRepoForIssue(issue);
+
+  // (1) Registro explícito en el body del padre.
+  let ids = null;
+  try {
+    ids = splitGuard.parseSplitRegistroHijas(issueBody || '');
+  } catch (e) {
+    log('desbloqueo', `#${issue.number}: no se pudo leer el registro del split (${e.message})`);
+    ids = null;
+  }
+  if (Array.isArray(ids) && ids.length) {
+    out.children = ids;
+    out.source = 'registro';
+    for (const child of ids) {
+      ghThrottle();
+      try {
+        const { stdout } = await ghDesbloqueoCall(
+          ['issue', 'view', String(child), '--json', 'state', '--jq', '.state', '--repo', repo],
+          10000
+        );
+        out.states[String(child)] = String(stdout || '').trim().toUpperCase();
+      } catch (e) {
+        // Estado ilegible → la decisión pura lo cuenta como abierta (fail-closed).
+        out.states[String(child)] = 'UNKNOWN';
+      }
+    }
+    return out;
+  }
+
+  // (2) Fallback: títulos `[Split de #N]`.
+  try {
+    ghThrottle();
+    const { stdout } = await ghDesbloqueoCall(
+      ['issue', 'list', '--search', `"[Split de #${issue.number}]" in:title`, '--state', 'all',
+        '--json', 'number,title,state', '--limit', '100', '--repo', repo],
+      15000
+    );
+    let found = [];
+    try {
+      found = JSON.parse(stdout || '[]');
+    } catch {
+      found = [];
+    }
+    const hijas = (Array.isArray(found) ? found : []).filter(
+      c => c && splitGuard.parseSplitParent(c.title || '') === Number(issue.number)
+    );
+    if (hijas.length) {
+      out.children = hijas.map(c => Number(c.number)).filter(n => Number.isInteger(n) && n > 0);
+      out.source = 'titulos';
+      for (const c of hijas) out.states[String(c.number)] = String(c.state || '').trim().toUpperCase();
+    }
+  } catch (e) {
+    log('desbloqueo', `#${issue.number}: búsqueda de hijas por título falló (${e.message}) — lista indeterminable`);
+  }
+  return out;
+}
+
+/**
+ * CA-5 — ¿El issue tiene algún PR que lo cierre? `null` si no se pudo saber.
+ * @returns {Promise<boolean|null>}
+ */
+async function _issueHasLinkedPr(issue) {
+  ghThrottle();
+  try {
+    const { stdout } = await ghDesbloqueoCall(
+      ['issue', 'view', String(issue.number), '--json', 'closedByPullRequestsReferences',
+        '--jq', '.closedByPullRequestsReferences | length', '--repo', repoTarget.getRepoForIssue(issue)],
+      10000
+    );
+    const n = Number.parseInt(String(stdout || '').trim(), 10);
+    return Number.isInteger(n) ? n > 0 : null;
+  } catch (e) {
+    log('desbloqueo', `#${issue.number}: no se pudo verificar PR asociado (${e.message})`);
+    return null;
+  }
+}
+
+// Un issue que el brazo decide NO cerrar sigue apareciendo en la lista de
+// bloqueados en CADA ciclo. Sin dedupe, el aviso —que tiene que existir, porque
+// un paraguas que deja de auto-cerrarse en silencio se lee como cuelgue del
+// pipeline— se convertiría en spam cada 30 minutos. Se re-avisa pasado el TTL.
+const UMBRELLA_SKIP_NOTICE_TTL_MS = 24 * 60 * 60 * 1000;
+const UMBRELLA_SKIP_NOTICE_FILE = path.join(PIPELINE, 'desbloqueo-umbrella-avisos.json');
+
+function _notifyUmbrellaSkipOnce(issueNumber, reason, text) {
+  const key = `${issueNumber}::${reason}`;
+  const now = Date.now();
+  let state = {};
+  try {
+    if (fs.existsSync(UMBRELLA_SKIP_NOTICE_FILE)) {
+      state = JSON.parse(fs.readFileSync(UMBRELLA_SKIP_NOTICE_FILE, 'utf8') || '{}');
+    }
+  } catch {
+    state = {};
+  }
+  if (typeof state !== 'object' || state === null) state = {};
+
+  const last = Number(state[key]);
+  if (Number.isFinite(last) && now - last < UMBRELLA_SKIP_NOTICE_TTL_MS) return false;
+
+  sendTelegram(text);
+  state[key] = now;
+  // Poda: no acumular claves de issues ya resueltos.
+  for (const k of Object.keys(state)) {
+    if (!Number.isFinite(Number(state[k])) || now - Number(state[k]) > 7 * UMBRELLA_SKIP_NOTICE_TTL_MS) delete state[k];
+  }
+  // Escritura atomica (tmp + rename), mismo patron que
+  // `human-block-reminder.js:writeState`. Un corte a mitad de `writeFileSync`
+  // deja el JSON truncado; el catch del read lo resetea a {} y se repite el
+  // aviso ya emitido. El archivo esta gitignoreado (.gitignore, bloque de
+  // estado runtime): es estado por checkout, no versionable.
+  try {
+    const tmp = `${UMBRELLA_SKIP_NOTICE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, UMBRELLA_SKIP_NOTICE_FILE);
+  } catch (e) {
+    log('desbloqueo', `No se pudo persistir el dedupe de avisos de paraguas: ${e.message}`);
+  }
+  return true;
+}
+
 async function brazoDesbloqueoImpl(config) {
   // #2506: respetar pausa parcial — los bloqueados fuera del allowlist no se van
   // a ejecutar aunque se desbloqueen ahora, así que no tiene sentido gastar el
@@ -22402,6 +22887,7 @@ async function brazoDesbloqueoImpl(config) {
   // ningún blocked:dependencies el barrido retorna, pero los needs-human de
   // precondición igual deben re-evaluarse cada ciclo).
   await reapStaleHumanBlocks({ allowlistSet });
+  await reapMergeChecksRaceBlocks({ allowlistSet, config });
 
   // #6611 — Re-chequeo de los `needs-human` con predicado verificable, en el
   // MISMO tick y bajo el MISMO guard `_unblockRunning`: sin proceso nuevo, sin
@@ -22575,34 +23061,81 @@ async function brazoDesbloqueoImpl(config) {
         }
 
         if (allClosed) {
-          // 4. Todas cerradas → desbloquear (o auto-cerrar si es paraguas `split`)
+          // 4. Todas las dependencias cerradas. QUÉ hacer con el issue ya NO se
+          //    decide con `labels.includes('split')` (#6801): ese label lo lleva
+          //    tanto el paraguas COMO cada hija `[Split de #N]`, y la lista de
+          //    dependencias NO es la lista de hijas. Confundir ambas cosas cerró
+          //    como `completed` cuatro hijas sin implementar (#5791, #5797,
+          //    #5798, #5799). La decisión vive pura en brazo-desbloqueo-core.
           const issueLabelNames = (issue.labels || []).map(l => l.name);
-          const isSplitParent = issueLabelNames.includes('split');
+          const esCandidatoParaguas = issueLabelNames.includes('split')
+            && splitGuard.parseSplitParent(issue.title || '') === null;
 
-          // Quitar de los mapeos (ya no está bloqueado)
+          // Descubrimiento de la relación EXPLÍCITA padre→hijas (CA-1). Sólo se
+          // paga el costo de las llamadas extra a `gh` para los candidatos a
+          // paraguas, que son un puñado por ciclo.
+          let splitChildren = null;
+          let splitChildrenSource = null;
+          let splitChildStates = {};
+          let paraguasTienePr = null;
+          if (esCandidatoParaguas) {
+            const found = await _discoverSplitChildren(issue, issueBody);
+            splitChildren = found.children;
+            splitChildrenSource = found.source;
+            splitChildStates = found.states;
+            // CA-5 — Guarda de sanidad: si se va a cerrar como `completed`,
+            // saber si tiene PR propio para poder avisarlo.
+            if (splitChildren && splitChildren.length) {
+              paraguasTienePr = await _issueHasLinkedPr(issue);
+            }
+          }
+
+          const decision = brazoDesbloqueoCore.decideSplitUmbrellaClose({
+            issue,
+            deps: depIssueNumbers,
+            children: splitChildren,
+            childrenSource: splitChildrenSource,
+            childStates: splitChildStates,
+            hasLinkedPr: paraguasTienePr,
+          });
+          log('desbloqueo', decision.log);
+
+          if (decision.action === 'skip') {
+            // Fail-closed (CA-2): ni cierra ni destraba. Se MANTIENEN los mapeos
+            // para que el dashboard lo siga mostrando bloqueado y el próximo
+            // ciclo reevalúe con datos frescos. El aviso no es silencioso, pero
+            // se emite una vez por causa (el issue sigue en la lista cada ciclo).
+            if (decision.telegram) _notifyUmbrellaSkipOnce(issue.number, decision.reason, decision.telegram);
+            continue;
+          }
+
+          // A partir de acá el issue deja de estar bloqueado.
           delete blockedBy[issue.number];
           for (const dep of depIssueNumbers) {
             if (blocks[dep]) blocks[dep] = blocks[dep].filter(n => n !== String(issue.number));
             if (blocks[dep] && blocks[dep].length === 0) delete blocks[dep];
           }
 
-          if (isSplitParent) {
-            // Paraguas: las hijas cubren el scope, se cierra el padre sin reingresar al pipeline
-            log('desbloqueo', `#${issue.number}: paraguas split con todas las hijas cerradas (${depIssueNumbers.join(', ')}) → auto-cerrando`);
-            const closeComment = `## ✅ Paraguas resuelto\n\nEste issue era un paraguas (label \`split\`) y todas sus historias hijas fueron cerradas (${depIssueNumbers.map(n => '#' + n).join(', ')}). El scope queda cubierto por las hijas, no requiere desarrollo adicional.\n\n_Cerrado automáticamente por el brazo de desbloqueo del pipeline._`;
+          if (decision.action === 'close') {
+            // Paraguas VERIFICADO contra sus sub-historias reales: las hijas
+            // cubren el scope, se cierra el padre sin reingresar al pipeline.
             ghThrottle();
             try {
               await ghDesbloqueoCall(
-                ['issue', 'close', String(issue.number), '--reason', 'completed', '--comment', closeComment, '--repo', repoTarget.getRepoForIssue(issue)],
+                ['issue', 'close', String(issue.number), '--reason', 'completed', '--comment', decision.comment, '--repo', repoTarget.getRepoForIssue(issue)],
                 10000
               );
-              sendTelegram(`🟢 Paraguas #${issue.number} cerrado automáticamente — todas las hijas del split (${depIssueNumbers.map(n => '#' + n).join(', ')}) resueltas.`);
+              if (decision.telegram) sendTelegram(decision.telegram);
               log('desbloqueo', `#${issue.number} paraguas cerrado exitosamente`);
             } catch (e) {
               log('desbloqueo', `Error cerrando paraguas #${issue.number}: ${e.message}`);
             }
           } else {
-            log('desbloqueo', `🪢→🟢 #${issue.number} destrabado (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`);
+            // Destrabe normal. Incluye a las hijas de split (CA-3): se les quita
+            // el label y reingresan al pipeline, nunca se cierran por acá.
+            // El aviso de Telegram NO se emite acá: se manda recién después de
+            // que el `gh issue edit --remove-label` haya salido bien, para no
+            // anunciar "se le quitó blocked:dependencies" si el gh falló.
 
             // Quitar label blocked:dependencies
             ghThrottle();
@@ -22642,7 +23175,13 @@ async function brazoDesbloqueoImpl(config) {
               10000
             );
 
-            sendTelegram(`🪢→🟢 #${issue.number} destrabado automáticamente (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`);
+            // Un solo mensaje por destrabe. Si el core armó un aviso específico
+            // (hija de split, CA-3) ese explica el caso mejor que el genérico y
+            // lo reemplaza: mandar los dos era ruido duplicado en el canal.
+            sendTelegram(
+              decision.telegram
+              || `🪢→🟢 #${issue.number} destrabado automáticamente (deps cerradas: ${depIssueNumbers.map(n => '#' + n).join(',')})`
+            );
             log('desbloqueo', `#${issue.number} desbloqueado exitosamente`);
           }
         } else {
@@ -24006,6 +24545,125 @@ async function mainLoop() {
     log('vault-cut', `No se pudo iniciar el productor de propuesta: ${e.message}`);
   }
 
+  // #5453 — COORDINADOR de la migración por host (rotación → convivencia →
+  // corte). La máquina de estados vive en `lib/vault-migration.js` y su cableado
+  // productivo en `lib/vault-migration-wiring.js` (ambos con tests propios); acá
+  // sólo queda el timer. Ese cableado es el MISMO que usa la CLI del operador,
+  // `vault-migration-run.js`: dos cableados distintos harían que el Pulpo y el
+  // operador evalúen el mismo host con criterios que se desincronizan.
+  //
+  // Doble gate cerrado (`vault.enabled` + `vault.migration.enabled`): sin los
+  // dos en `true` no se evalúa nada, no se consulta cobertura y no se crea un
+  // solo archivo bajo `.pipeline/state/vault-migration/`.
+  //
+  // Qué hace el tick y qué NO hace, deliberadamente:
+  //
+  //   - SÍ: reanuda la ventana leyendo el checkpoint por host, acredita el
+  //     respawn contra los `.pid` de `restart.js`, evalúa la matriz de cobertura
+  //     y publica el avance en el log.
+  //   - NO: no rota (emite material irreversible), no provisiona y no se
+  //     respawnea a sí mismo — un proceso que se reinicia dentro de su propio
+  //     tick es el bucle de muerte de 2026-07. Esas etapas las ejecuta el
+  //     operador fuera de banda siguiendo
+  //     `docs/runbooks/credential-rotation.md`, y las ACREDITA con
+  //     `node .pipeline/vault-migration-run.js <etapa> --host <host>`. Por eso
+  //     `auto_stages` sólo admite `observe`.
+  //   - NO: no corta el fallback. El único escritor es `vault-cut-fallback.js`
+  //     (#5452), que exige una capability firmada por el operador.
+  //   - NO: no mueve work-files. El lifecycle es del Pulpo, no de este flujo.
+  try {
+    const cfgRoot = loadConfig() || {};
+    const vaultCfg = (cfgRoot.vault && typeof cfgRoot.vault === 'object') ? cfgRoot.vault : {};
+    const migCfg = (vaultCfg.migration && typeof vaultCfg.migration === 'object')
+      ? vaultCfg.migration : {};
+    // Fail-closed: sólo el booleano `true` exacto de AMBOS gates lo abre.
+    if (vaultCfg.enabled === true && migCfg.enabled === true) {
+      // #5453 rev-1 — el cableado REAL vive en `lib/vault-migration-wiring.js`,
+      // compartido con la CLI del operador (`vault-migration-run.js`).
+      //
+      // Antes estaba inline acá, con `rotate`/`provision` devolviendo `{ok:false}`
+      // y `writeAudit` descartando la evidencia. Resultado: ningún host podía
+      // salir de `preflight`, este tick (que sólo procesa `respawned+`) era un
+      // no-op permanente y la auditoría se perdía. Un cableado único evita que el
+      // Pulpo y el operador evalúen con criterios distintos.
+      //
+      // El Pulpo lo arma SIN `acreditacion`: con eso `rotate` y `provision`
+      // siguen fallando cerrado acá — rotar emite material irreversible y no lo
+      // dispara un timer — pero el operador sí puede acreditarlos por CLI, y
+      // entonces este tick tiene hosts reales que observar.
+      const armado = require('./lib/vault-migration-wiring').createProductionVaultMigration({
+        pipelineDir: PIPELINE,
+        loadConfig,
+        logger: (msg) => log('vault-migration', String(msg).replace(/^\[vault-(migration|respawn)\] /, '')),
+        canPublishEvidence: () => !!(getTelegramToken() && getTelegramChatId()),
+        signalNeedsHuman: (evidencia) => log('vault-migration',
+          `FAIL-CLOSED (${evidencia && evidencia.causa}): el fallback se conserva, hace falta un humano`),
+      });
+      const coordinador = armado.coordinador;
+      if (!coordinador) throw new Error(`gate cerrado (${armado.gate})`);
+
+      const tickMs = Math.max(1, Number(migCfg.tick_minutes) || 15) * 60 * 1000;
+
+      // El gate se reevalúa EN CADA TICK, no sólo al arranque (#5453 rev-4).
+      //
+      // Hasta rev-3 `etapasAuto` y el doble gate se congelaban acá y el tick
+      // sólo releía `hosts_activos`: apagar `vault.enabled` o
+      // `vault.migration.enabled` en caliente no detenía nada hasta el próximo
+      // respawn del Pulpo, en contra de lo que promete `config.yaml`. Un gate
+      // que sólo se puede cerrar reiniciando el proceso no es un gate.
+      let gateCerradoAvisado = false;
+      const gateAbiertoEnCaliente = (fresh) => {
+        const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+        const m = (v.migration && typeof v.migration === 'object') ? v.migration : {};
+        return v.enabled === true && m.enabled === true;
+      };
+
+      const runMigrationTick = () => {
+        try {
+          const fresh = loadConfig() || {};
+          if (!gateAbiertoEnCaliente(fresh)) {
+            if (!gateCerradoAvisado) {
+              log('vault-migration', 'Gate cerrado en caliente: el tick no observa nada '
+                + '(se reabre solo si vuelve a `true` en el config, sin reiniciar).');
+              gateCerradoAvisado = true;
+            }
+            return;
+          }
+          gateCerradoAvisado = false;
+          const v = (fresh.vault && typeof fresh.vault === 'object') ? fresh.vault : {};
+          // `auto_stages` también se relee: es parte de la política, no del arranque.
+          const mFresh = (v.migration && typeof v.migration === 'object') ? v.migration : {};
+          const etapasAuto = Array.isArray(mFresh.auto_stages) ? mFresh.auto_stages : [];
+          const win = (v.shadow_window && typeof v.shadow_window === 'object') ? v.shadow_window : {};
+          const hosts = Array.isArray(win.hosts_activos) ? win.hosts_activos : [];
+          if (!hosts.length || !etapasAuto.includes('observe')) return;
+
+          for (const host of hosts) {
+            const st = coordinador.readState(host);
+            // Sólo se automatiza lo idempotente: observar la ventana de un host
+            // que YA fue rotado, provisionado y respawneado por el operador.
+            if (!st || !['respawned', 'coexisting', 'cutover-ready'].includes(st.stage)) continue;
+            const res = coordinador.observeCoverage({ host });
+            if (res.ok && st.stage !== 'cutover-ready') {
+              log('vault-migration', `${host}: cobertura completa `
+                + `(${res.evidencia.cubiertos}/${res.evidencia.descriptores}), listo para el corte`);
+            } else if (!res.ok && st.stage === 'cutover-ready') {
+              log('vault-migration', `${host}: la cobertura CAYO (${res.causa}); el fallback se conserva`);
+            }
+          }
+        } catch (err) {
+          log('vault-migration', `Tick excepción no capturada: ${err.message}`);
+        }
+      };
+      runMigrationTick();
+      const migrationTimer = setInterval(runMigrationTick, tickMs);
+      if (typeof migrationTimer.unref === 'function') migrationTimer.unref();
+      log('vault-migration', `Coordinador iniciado: tick cada ${Math.round(tickMs / 60000)}min`);
+    }
+  } catch (e) {
+    log('vault-migration', `No se pudo iniciar el coordinador de migración: ${e.message}`);
+  }
+
   // #5243 CA-5 — Paso INVERSO del halt por secreto faltante.
   //
   // Vive acá y no en `loadConfig()` a propósito: el config se relee entero en
@@ -24075,6 +24733,27 @@ async function mainLoop() {
             },
             now: new Date(),
             log: (msg) => log('hb-reminder', msg),
+            // #6432 CA-26 — Estado del rescate automático de la carrera con los
+            // checks. El recordatorio calla SÓLO al bloqueo que el pipeline
+            // está reclamando solo en este momento (barrido encendido +
+            // intentos disponibles en el ledger). Todo lo demás —barrido
+            // apagado, intentos agotados, `degraded`, ledger ilegible— se
+            // recuerda con la escalera normal: es del humano.
+            //
+            // Se arma en CADA tick a propósito: el kill-switch y el ledger
+            // cambian en caliente, y un snapshot viejo callaría un bloqueo que
+            // ya volvió a ser del operador.
+            reclaim: () => {
+              const cfgRoot = loadConfig() || {};
+              const cfg = (cfgRoot.brazo && cfgRoot.brazo.reclaim_merge_race) || {};
+              // Con el barrido apagado no se calla nada: no hay quién reclame.
+              if (cfg.enabled !== true || cfg.kill_switch === true) return null;
+              return {
+                enabled: true,
+                maxAttempts: Number.isInteger(cfg.max_attempts) && cfg.max_attempts > 0 ? cfg.max_attempts : 3,
+                ledger: mergeRaceLedger.readLedger(),
+              };
+            },
           });
           if (r && r.error) log('hb-reminder', `Tick con error (no bloqueante): ${r.error}`);
         } catch (err) {
@@ -24656,6 +25335,9 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     ghWritesBloqueadas,
     ghCommentOnIssue,
     determinarDevSkill,
+    // #6747 — expuesto para que la suite pueda verificar el `source` de cada
+    // rama sin duplicar el camino de resolución.
+    resolverDevSkillConOrigen,
     getDevSkillPartitions,
     isDeclaredStackDevSkill,
     getGenericDevFallbackSkill,
@@ -24699,6 +25381,14 @@ if (process.env.PULPO_NO_AUTOSTART === '1') {
     // #4707 — circuit breaker escalante (fail-closed): cap configurable + helper único.
     resolveRebotesMax,
     escalarACircuitBreaker,
+    // #6432 rev-3 (T14) — el barrido REAL, expuesto para el test de integración
+    // de la cadena `delivery` → precondición → marker → selector. Un test que
+    // arme `motivosClasificados` a mano NO recorre el guard de procedencia
+    // SEC-9 (`:4601`), que es justo donde la cadena se rompía entera. Sólo se
+    // exporta: en producción lo sigue invocando el loop del pulpo.
+    brazoBarrido,
+    reapMergeChecksRaceBlocks,
+    runReclaimChild,
     // #2957 — counter de fase build expuesto para tests del filtro por allowlist.
     countPendingBuild,
     // #3059 — wrapper robusto + watchdog del brazo de desbloqueo (testing).

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // quota-snapshot-scheduler.js — Loop que orquesta capture + parse + persist.
 // Issue #3012 (split de #3008, hija 1).

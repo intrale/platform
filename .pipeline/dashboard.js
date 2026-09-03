@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Dashboard — Visualización completa del pipeline.
 //
@@ -235,6 +238,15 @@ let _architectStateResolver = null;
 try { _architectStateResolver = require('./lib/architect-state-resolver'); } catch { /* opcional */ }
 let _architectSlices = null;
 try { _architectSlices = require('./lib/dashboard-slices'); } catch { /* opcional */ }
+
+// #6498 — Resolver puro del estado del sello de evidencia de QA (4 estados) +
+// el modulo emisor de #6495/#6496, del que salen el contador de re-encolados y
+// la cola de re-verificacion. Requires defensivos: si cualquiera falta, el
+// badge simplemente no se pinta y el dashboard queda identico a hoy.
+let _selloEvidenciaState = null;
+try { _selloEvidenciaState = require('./lib/sello-evidencia-state'); } catch { /* opcional */ }
+let _qaEvidenceSeal = null;
+try { _qaEvidenceSeal = require('./lib/qa-evidence-seal'); } catch { /* opcional */ }
 
 // #3625 CA-5 — Renderer del widget de Audit trail · Allowlist mutations.
 // Wrapper alrededor de lib/audit-trail-renderer.js para mantener el dashboard
@@ -1559,6 +1571,21 @@ function* _genPipelineState() {
           // rama de merge confirmado. Lo exponemos crudo: la validación de
           // formato y la regla de "entregado" viven en `lib/delivery-status.js`.
           entry.delivery_merge_sha = yamlData.delivery_merge_sha || null;
+          // #6498 CA-1/CA-10/SEC-3 — Bloque `sello:` de #6495 expuesto como
+          // campos DERIVADOS, nunca el objeto crudo. El bloque real trae
+          // `head`, rutas y hashes: jerga que el tooltip no puede mostrar
+          // (UX-3) e informacion que la capa secundaria no puede filtrar. Aca
+          // solo salen dos booleanos/contadores, asi CA-10 se cumple por
+          // construccion: no hay dato sensible que se pueda escapar.
+          const _sello = yamlData && yamlData.sello;
+          if (_sello && typeof _sello === 'object' && !Array.isArray(_sello)) {
+            entry.sello = {
+              presente: true,
+              // SEC-1: el hash declarado por el agente no coincidia con los
+              // bytes reales y se descarto. Es la senal anti-falsificacion.
+              descartes: Array.isArray(_sello.descartes) ? _sello.descartes.length : 0,
+            };
+          }
         }
 
         // #2801 — Si el archivo en pendiente/trabajando tiene contexto de
@@ -1658,6 +1685,64 @@ function* _genPipelineState() {
     catch { return {}; }
   })();
   state.retrying = retryingMap;
+
+  // #6498 — Estado TRANSITORIO del sello de evidencia (caduco / re-sellando /
+  // escalado). No hay dropfile que lo represente mientras ocurre: la fuente
+  // real que dejo #6496 es un contador FS-first con API publica
+  // (`readSealRetries`) mas la cola `verificacion-requeue/`.
+  //
+  // Costo: DOS readdir por refresco de estado (no un readFileSync por tarjeta).
+  // El readFile del contador solo se paga para los issues que efectivamente
+  // tienen uno, que en el camino feliz son cero.
+  //
+  // Mismo patron defensivo que `retryingState`: si el modulo emisor no esta o
+  // el FS falla, el mapa queda vacio, el resolver devuelve null y el dashboard
+  // queda identico a hoy. Cero regresion.
+  state.selloEvidencia = (() => {
+    const mapa = {};
+    if (!_qaEvidenceSeal || typeof _qaEvidenceSeal.readSealRetries !== 'function') return mapa;
+    const max = Number.isInteger(_qaEvidenceSeal.MAX_SEAL_REQUEUES) && _qaEvidenceSeal.MAX_SEAL_REQUEUES > 0
+      ? _qaEvidenceSeal.MAX_SEAL_REQUEUES
+      : 2;
+    try {
+      // 1) Ordenes de re-verificacion abiertas: pendiente/ + trabajando/.
+      const abiertos = new Set();
+      for (const sub of ['pendiente', 'trabajando']) {
+        let files;
+        try { files = fs.readdirSync(path.join(PIPELINE, 'verificacion-requeue', sub)); }
+        catch { continue; }
+        for (const nombre of files) {
+          const m = /^(\d+)-.*\.json$/.exec(nombre);
+          if (m) abiertos.add(m[1]);
+        }
+      }
+      // 2) Contadores `.<issue>.seal-retries` de la fase de verificacion.
+      const faseDir = typeof _qaEvidenceSeal.verificacionFasePath === 'function'
+        ? _qaEvidenceSeal.verificacionFasePath(PIPELINE)
+        : path.join(PIPELINE, 'desarrollo', 'verificacion');
+      let contadores = [];
+      try { contadores = fs.readdirSync(faseDir); } catch { contadores = []; }
+      for (const nombre of contadores) {
+        const m = /^\.(\d+)\.seal-retries$/.exec(nombre);
+        if (!m) continue;
+        const issue = m[1];
+        let r;
+        try { r = _qaEvidenceSeal.readSealRetries({ pipelineDir: PIPELINE, issue }); }
+        catch { continue; }
+        mapa[issue] = {
+          intentos: Number.isInteger(r && r.intentos) ? r.intentos : 0,
+          requeueAbierto: abiertos.has(issue),
+          maxIntentos: max,
+        };
+      }
+      // 3) Orden abierta sin contador legible: igual es una reparacion en curso.
+      for (const issue of abiertos) {
+        if (mapa[issue]) continue;
+        mapa[issue] = { intentos: 1, requeueAbierto: true, maxIntentos: max };
+      }
+    } catch { /* defensa: el badge es opcional, el board no */ }
+    return mapa;
+  })();
 
   for (const [id, data] of Object.entries(state.issueMatrix)) {
     data.pipelines = [...data.pipelines];
@@ -3640,6 +3725,26 @@ function generateHTML(state) {
         }
       } catch { /* defensa: no romper la tarjeta si el resolver/renderer falla */ }
     }
+    // #6498 CA-2/CA-3 — Badge del sello de evidencia de QA. Insertar
+    // SEMANTICAMENTE entre architect y stale; el orden final de la fila es:
+    // crossphase -> rebote -> needshuman -> architect -> sello -> stale.
+    //
+    // El estado sale de dos fuentes con ciclos de vida distintos: el bloque
+    // `sello:` del dropfile (lo PERSISTIDO) y el contador FS-first de #6496
+    // (lo TRANSITORIO). El resolver las mergea con prioridad
+    // escalado > re-sellando > caduco > sellado > null.
+    //
+    // Sin dato => null => CERO badge: un issue sin sello queda como hoy.
+    if (_selloEvidenciaState && _architectSlices && typeof _architectSlices.selloEvidenciaBadgeHTML === 'function') {
+      try {
+        const selloState = (state.selloEvidencia || {})[String(issueNum)];
+        const selloInfo = _selloEvidenciaState.resolveSelloEvidenciaState(data.fases, selloState);
+        if (selloInfo) {
+          const badgeHTML = _architectSlices.selloEvidenciaBadgeHTML(selloInfo, { esc, ic });
+          if (badgeHTML) stateBadges.push(badgeHTML);
+        }
+      } catch { /* defensa: no romper la tarjeta si el resolver/renderer falla */ }
+    }
     if (isStale && !isRetrying) {
       stateBadges.push(`<span class="lc-state-badge lc-state-stale" title="Sin actividad reciente: ${data.staleMin}m" aria-label="stale ${data.staleMin} minutos">${ic('estado-stale')} ${data.staleMin}m</span>`);
     }
@@ -4877,6 +4982,20 @@ ${loadDesignTokens()}
 .lc-state-architect-running{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.4)}
 .lc-state-architect-approved{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gr));border-color:rgba(63,185,80,0.4)}
 .lc-state-architect-rejected{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd));border-color:rgba(248,81,73,0.5)}
+/* #6498 CA-7 — Badge del sello de evidencia. Tokens PELADOS, sin fallback
+   literal: CA-7 prohibe colores literales en el codigo nuevo. Si
+   loadDesignTokens() degrada a vacio el badge pierde el fondo pero NO la
+   legibilidad — icono + etiqueta siguen ahi, que es la garantia de CA-5.
+   UX-G1 (vinculante): el borde de 'escalado' usa var(--danger), NO
+   var(--danger-dim): #8B1A14 sobre la tarjeta da 1.86:1 y no llega al 3:1 de
+   WCAG 1.4.11 para no-texto.
+   UX-G2 (vinculante): ninguna lleva animation — dos pulsos desfasados en la
+   misma fila que .lc-state-needshuman anulan la jerarquia visual.
+   R-1: clases NUEVAS. .lc-state-stale (gris, badge de inactividad) no se toca. */
+.lc-state-sello-sellado{background:var(--info-bg);color:var(--info);border-color:var(--info-dim)}
+.lc-state-sello-caduco{background:var(--retry-bg);color:var(--retry);border-color:var(--retry-dim)}
+.lc-state-sello-resellando{background:var(--retry-bg);color:var(--retry);border-color:var(--retry-dim)}
+.lc-state-sello-escalado{background:var(--danger-bg);color:var(--danger);border-color:var(--danger)}
 .lc-state-row{display:flex;flex-wrap:wrap;gap:5px;padding:0 var(--space-3,10px) var(--space-2,6px);margin-top:-2px}
 /* ── Cola detallada (#3356) — 5ta sub-seccion del large board principal ─── */
 /* Las 5 sub-secciones del header son: (1) brand bar / hdr-bar-v3,            */
