@@ -144,6 +144,14 @@ qa/evidence/**/*.gif
 qa/evidence/**/*.jpg
 qa/evidence/**/*.jpeg
 qa/evidence/**/*.xml
+# #5244 rev-9 — los logs de probe que los agentes dejan al verificar un rechazo
+# (`.txt`) y los scripts de reproducción de una pasada (`.sh`) son artefactos de
+# corrida, no metadatos: mismo criterio que el resto del bloque. `qa/evidence`
+# ya es causa raíz documentada del disco lleno y no hay motivo para versionar
+# la transcripción de un comando que se puede volver a correr.
+qa/evidence/**/*.txt
+qa/evidence/**/*.sh
+qa/evidence/**/*.log
 # Re-incluir SOLO los metadatos tracked (orden importa: el ! va DESPUES del ignore — #4173)
 !qa/evidence/**/*.json
 !qa/evidence/**/.gitkeep

@@ -326,3 +326,60 @@ test('en push el rango sigue siendo before..sha', () => {
   assert.equal(primerPush.status, 0, primerPush.salida);
   assert.equal(primerPush.outputs.diff_base, git(workspace, ['rev-parse', 'merge-ref~1']));
 });
+
+// #5244 rev-9 — `decider_trusted` es lo que habilita (o no) el alta del control
+// en el step de scan. Tiene que valer 1 sólo cuando BASE_TIP salió de una fuente
+// que el autor del PR no controla, y 0 cuando degradó a la merge-base declarada.
+test('decider_trusted=1 por la vía del merge commit efímero', () => {
+  const { workspace, A, B, M } = repoConMainAdelantado();
+  const paso = resolverRango({ workspace, ...envPr({ A, B, M }) });
+  assert.equal(paso.status, 0, paso.salida);
+  assert.equal(paso.outputs.decider_trusted, '1', 'parent1 del merge efímero es el tip real de la base');
+});
+
+test('decider_trusted=1 por la vía de origin/<base ref>', () => {
+  const { workspace, A, B, C } = repoConMainAdelantado();
+  // Sin merge efímero: BASE_TIP sale del ref remoto, que tampoco mueve el autor.
+  const paso = resolverRango({ workspace, ...envPr({ A, B, M: B }) });
+  assert.equal(paso.status, 0, paso.salida);
+  assert.equal(paso.outputs.decider, C);
+  assert.equal(paso.outputs.decider_trusted, '1');
+});
+
+test('decider_trusted=0 cuando BASE_TIP degrada a la merge-base declarada del PR', () => {
+  const { workspace, A, B } = repoConMainAdelantado();
+  // Sin merge efímero y sin ref remoto resoluble: única vía que queda es
+  // PR_BASE_SHA, que el autor elige al ramificar. No es una base confiable.
+  git(workspace, ['update-ref', '-d', 'refs/remotes/origin/main']);
+  const paso = resolverRango({ workspace, ...envPr({ A, B, M: B }) });
+  assert.equal(paso.status, 0, paso.salida);
+  assert.equal(paso.outputs.decider, A, 'degrada a la base declarada');
+  assert.equal(
+    paso.outputs.decider_trusted,
+    '0',
+    'la base declarada la controla el autor: no puede habilitar el alta del control',
+  );
+});
+
+test('decider_trusted=1 en push: `before` sale del historial de la rama protegida', () => {
+  const { workspace, C, M } = repoConMainAdelantado();
+  const paso = resolverRango({
+    workspace,
+    EVENT_NAME: 'push',
+    GITHUB_SHA: M,
+    PUSH_BEFORE: C,
+    PR_BASE_SHA: '',
+    PR_BASE_REF: '',
+    PR_HEAD_SHA: '',
+  });
+  assert.equal(paso.status, 0, paso.salida);
+  assert.equal(paso.outputs.decider_trusted, '1');
+});
+
+test('el step de scan consume decider_trusted por env, no por expresión inline', () => {
+  assert.match(
+    WORKFLOW_TEXT,
+    /DECIDER_TRUSTED: \$\{\{ steps\.base\.outputs\.decider_trusted \}\}/,
+    'sin este cableado el alta del control queda fail-closed para siempre',
+  );
+});

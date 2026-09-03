@@ -285,16 +285,28 @@ jobs:
           # ambos lados del rango y sale del diff.
           if [ "$EVENT_NAME" = "pull_request" ]; then
             BASE_TIP=""
+            # #5244 rev-9 — `decider_trusted` distingue si BASE_TIP es de verdad
+            # el tip de la rama base (resuelto contra el merge efímero o contra
+            # el ref remoto: ninguno lo mueve el autor del PR) o si degradó a la
+            # merge-base declarada, que SÍ está bajo su control. Sólo con
+            # `decider_trusted=1` se admite el alta del control (ver el step
+            # "Secret scan del diff"); con 0 se mantiene el fail-closed.
+            DECIDER_TRUSTED=0
             # parent1 sólo se usa si GITHUB_SHA es de verdad el merge efímero:
             # si el checkout fuera el head del PR, `^1` sería el commit anterior
             # de la propia rama y el rango se achicaría (fail-open).
             if [ -n "$PR_HEAD_SHA" ] && [ "$GITHUB_SHA" != "$PR_HEAD_SHA" ] \
                && git rev-parse -q --verify "$GITHUB_SHA^2" >/dev/null 2>&1; then
               BASE_TIP="$(git rev-parse "$GITHUB_SHA^1")"
+              DECIDER_TRUSTED=1
             elif [ -n "$PR_BASE_REF" ]; then
               BASE_TIP="$(git rev-parse -q --verify "origin/$PR_BASE_REF" 2>/dev/null || true)"
+              if [ -n "$BASE_TIP" ]; then DECIDER_TRUSTED=1; fi
             fi
-            [ -n "$BASE_TIP" ] || BASE_TIP="$PR_BASE_SHA"
+            if [ -z "$BASE_TIP" ]; then
+              BASE_TIP="$PR_BASE_SHA"
+              DECIDER_TRUSTED=0
+            fi
 
             DIFF_BASE="$(git merge-base "$BASE_TIP" "$GITHUB_SHA" 2>/dev/null || true)"
             if [ -z "$DIFF_BASE" ]; then
@@ -308,13 +320,18 @@ jobs:
             echo "sha=$PR_BASE_SHA" >> "$GITHUB_OUTPUT"
             echo "diff_base=$DIFF_BASE" >> "$GITHUB_OUTPUT"
             echo "decider=$BASE_TIP" >> "$GITHUB_OUTPUT"
-            echo "secret-scan: rango $DIFF_BASE..$GITHUB_SHA (árbol que decide: $BASE_TIP; base declarada del PR: $PR_BASE_SHA)"
+            echo "decider_trusted=$DECIDER_TRUSTED" >> "$GITHUB_OUTPUT"
+            echo "secret-scan: rango $DIFF_BASE..$GITHUB_SHA (árbol que decide: $BASE_TIP, confiable=$DECIDER_TRUSTED; base declarada del PR: $PR_BASE_SHA)"
           else
+            # En `push` el rango sale del propio historial de la rama protegida:
+            # `before` no lo elige el autor de un PR, así que el árbol que decide
+            # es confiable por construcción.
             B="$PUSH_BEFORE"
             case "$B" in ''|0000000*) B="$(git rev-parse HEAD~1)" ;; esac
             echo "sha=$B" >> "$GITHUB_OUTPUT"
             echo "diff_base=$B" >> "$GITHUB_OUTPUT"
             echo "decider=$B" >> "$GITHUB_OUTPUT"
+            echo "decider_trusted=1" >> "$GITHUB_OUTPUT"
             echo "secret-scan: rango $B..$GITHUB_SHA"
           fi
 
@@ -339,6 +356,9 @@ jobs:
           # Rango acotado por merge-base (#5244 rev-5), NO la base declarada:
           # ésta última sólo gobierna de qué árbol sale el scanner.
           BASE_SHA: ${{ steps.base.outputs.diff_base }}
+          # 1 sólo si el árbol que decide es el tip REAL de la rama base
+          # (#5244 rev-9). Vacío o distinto de 1 ⇒ fail-closed.
+          DECIDER_TRUSTED: ${{ steps.base.outputs.decider_trusted }}
         run: |
           BASE_TREE="$GITHUB_WORKSPACE/.base"
           BASE_SCANNER="$BASE_TREE/.pipeline/lib/precommit-secret-scan.js"
@@ -368,13 +388,88 @@ jobs:
               # bloquea sin ejecutar nada suyo. Cubre la vía de fallback de
               # BASE_TIP (PR sin merge commit efímero), donde el árbol que decide
               # puede seguir siendo anterior a este control.
+              #
+              # #5244 rev-9 — ese fail-closed, aplicado sin distinción, se cerraba
+              # sobre el ÚNICO PR que necesita la ventana: instalar el control ES
+              # tocar paths de control, así que el gate se bloqueaba a sí mismo y
+              # no existía ningún camino por el que pudiera llegar a la base
+              # (deadlock de bootstrap). Hay dos situaciones distintas:
+              #
+              #   (a) ALTA — la rama base no tiene el gate server-side EN ABSOLUTO.
+              #       En ese estado el control no está vigente y no hay nada que
+              #       bypassear: un PR hostil ni siquiera necesita neutralizar el
+              #       scanner, le alcanza con no agregar el job y no corre ningún
+              #       check. El fail-closed no protegía nada ahí, sólo impedía el
+              #       alta. Se admite correr el scanner del head bajo las cuatro
+              #       condiciones de abajo, declarándolo con ::warning.
+              #   (b) DEGRADACIÓN — la base YA tiene el gate y este diff baja el
+              #       protocolo. Eso es desactivar un control vigente: fail-closed
+              #       de rev-8, sin excepción.
+              #
+              # El discriminante NO puede ser `! -f "$BASE_SCANNER"`:
+              # .pipeline/lib/precommit-secret-scan.js existe en main desde antes
+              # de este issue (verificado: `git ls-tree origin/main .pipeline/lib/`),
+              # así que esa condición nunca distinguiría (a) de (b). El
+              # discriminante correcto es la presencia del JOB en el workflow base,
+              # que es lo que hace al control vigente server-side.
               CONTROL_HITS="$(git -C "$GITHUB_WORKSPACE" diff --name-only "$BASE_SHA" "$GITHUB_SHA" 2>/dev/null \
                 | grep -E '^(\.pipeline/lib/[^/]*secret[^/]*|\.pipeline/lib/sensitive-paths\.js|\.pipeline/sanitizer\.js|\.pipeline/secret-scan-allowlist\.json|\.claude/hooks/telegram-sanitizer\.js|\.husky/pre-commit|\.github/workflows/security-sast\.yml)$' \
                 || true)"
               if [ -n "$CONTROL_HITS" ]; then
-                echo "::error::secret-scan BLOQUEADO (bootstrap sobre paths de control): el ref base no expone secret-scan-protocol=range-v1 y este diff modifica el propio control de secretos, así que no existe scanner confiable para juzgarlo. Paths: $(echo "$CONTROL_HITS" | tr '\n' ' ')"
-                echo "::error::Remediación: el control tiene que estar en la rama base ANTES de tocarlo desde un PR. Una vez que main expone secret-scan-protocol=range-v1, el árbol base decide y este camino deja de tomarse."
-                exit 1
+                # (1) El árbol base no declara el job ⇒ el control no está vigente.
+                #     Fail-closed sobre la lectura: si `.base` no está, se asume
+                #     que SÍ hay gate y se bloquea.
+                BASE_WORKFLOW="$BASE_TREE/.github/workflows/security-sast.yml"
+                BASE_HAS_GATE=1
+                if [ -d "$BASE_TREE" ]; then
+                  if [ ! -f "$BASE_WORKFLOW" ]; then
+                    BASE_HAS_GATE=0
+                  elif ! grep -qE '^  secret-scan:[[:space:]]*$' "$BASE_WORKFLOW"; then
+                    BASE_HAS_GATE=0
+                  fi
+                fi
+
+                # (2) El head declara el job: sin esto no es un alta, es otra cosa.
+                HEAD_HAS_GATE=0
+                if git -C "$GITHUB_WORKSPACE" show "$GITHUB_SHA:.github/workflows/security-sast.yml" 2>/dev/null \
+                   | grep -qE '^  secret-scan:[[:space:]]*$'; then
+                  HEAD_HAS_GATE=1
+                fi
+
+                # (3) El head instala el protocolo DE VERDAD. Un scanner
+                #     neutralizado (el escenario que levantó QA en rev-8) no
+                #     expone capacidades y no alcanza el alta.
+                SCANNER_HEAD="$GITHUB_WORKSPACE/.pipeline/lib/precommit-secret-scan.js"
+                HEAD_CAPS=""
+                if [ -f "$SCANNER_HEAD" ]; then
+                  HEAD_CAPS="$(node "$SCANNER_HEAD" --capabilities 2>/dev/null || true)"
+                fi
+
+                # (4) DECIDER_TRUSTED=1: el árbol que decide es el tip real de la
+                #     rama base. Si degradó a la merge-base declarada (que el autor
+                #     controla), el estado "la base no tiene el gate" no es
+                #     verificable y se mantiene el bloqueo.
+                ALTA=0
+                if [ "$DECIDER_TRUSTED" = "1" ] && [ "$BASE_HAS_GATE" = "0" ] && [ "$HEAD_HAS_GATE" = "1" ]; then
+                  case "$HEAD_CAPS" in *secret-scan-protocol=range-v1*) ALTA=1 ;; esac
+                fi
+
+                if [ "$ALTA" != "1" ]; then
+                  echo "::error::secret-scan BLOQUEADO (bootstrap sobre paths de control): el ref base no expone secret-scan-protocol=range-v1 y este diff modifica el propio control de secretos, así que no existe scanner confiable para juzgarlo. Paths: $(echo "$CONTROL_HITS" | tr '\n' ' ')"
+                  echo "::error::Diagnóstico: decider_trusted=$DECIDER_TRUSTED base_gate=$BASE_HAS_GATE head_gate=$HEAD_HAS_GATE head_caps='$HEAD_CAPS'"
+                  echo "::error::Remediación: si la base YA tiene el job secret-scan (base_gate=1), este PR está bajando un control vigente y el bloqueo es correcto: restituí secret-scan-protocol=range-v1. Si la base NO lo tiene (base_gate=0), el alta requiere además head_gate=1, un scanner del head que exponga el protocolo y decider_trusted=1 (mergeá origin/main en la rama para que el PR tenga merge commit efímero)."
+                  exit 1
+                fi
+
+                # Alta declarada y auditable. No se silencia: queda en el log del
+                # run con los paths exactos. Además es de un solo uso por
+                # construcción — en cuanto el job entra a la rama base,
+                # BASE_HAS_GATE pasa a 1 y este camino no se vuelve a tomar — y no
+                # es alcanzable sin review humana: para que HEAD_HAS_GATE sea 1 el
+                # PR tiene que tocar .github/workflows/, cubierto por
+                # `/.github/ @leitolarreta` en CODEOWNERS con
+                # require_code_owner_review activo (R-7).
+                echo "::warning::secret-scan ALTA DEL CONTROL: la rama base todavía no declara el job secret-scan, así que no hay control vigente que este diff pueda estar desactivando. Se admite el bootstrap por única vez y corre el scanner del head, que sí expone secret-scan-protocol=range-v1. Paths de control en el diff: $(echo "$CONTROL_HITS" | tr '\n' ' ')"
               fi
               SCANNER="$GITHUB_WORKSPACE/.pipeline/lib/precommit-secret-scan.js"
               echo "::warning::secret-scan bootstrap: el ref base no expone secret-scan-protocol=range-v1; corre el scanner de HEAD" ;;

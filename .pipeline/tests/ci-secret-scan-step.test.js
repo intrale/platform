@@ -93,8 +93,17 @@ function initRepo() {
   return directory;
 }
 
+// Fragmento mínimo de workflow que declara el job: es el discriminante que usa
+// el step para saber si el gate server-side ya está vigente en un árbol dado.
+// Se escribe reducido a propósito — copiar el yml real metería SHAs de 40 chars
+// en el diff del fixture y el escenario probaría otra cosa.
+const WORKFLOW_CON_GATE = 'name: Security SAST\njobs:\n  secret-scan:\n    name: Secret scan (blocking)\n';
+const WORKFLOW_SIN_GATE = 'name: Security SAST\njobs:\n  semgrep:\n    name: Semgrep\n';
+
 // Ejecuta el step real del workflow con el entorno que provee GitHub Actions.
-function runWorkflowStep({ workspace, baseSha, headSha }) {
+// `deciderTrusted` default '1' = la vía normal (merge commit efímero); los casos
+// degradados lo pasan explícito para que el bloqueo se atribuya a esa causa.
+function runWorkflowStep({ workspace, baseSha, headSha, deciderTrusted = '1' }) {
   const script = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ci-step-')), 'step.sh');
   fs.writeFileSync(script, `${extractRunBlock('Secret scan del diff')}\n`);
   const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-temp-'));
@@ -107,6 +116,7 @@ function runWorkflowStep({ workspace, baseSha, headSha }) {
       GITHUB_SHA: headSha,
       RUNNER_TEMP: toPosix(runnerTemp),
       BASE_SHA: baseSha,
+      DECIDER_TRUSTED: deciderTrusted,
     },
   });
   return { ...result, salida: `${result.stdout || ''}${result.stderr || ''}` };
@@ -147,6 +157,28 @@ test('CA-9: el scanner por defecto sale del árbol base y el head es sólo boots
     assert.match(block, new RegExp(control), `falta el path de control ${control} en el fail-closed`);
   }
   assert.match(block, /exit 1/, 'el fail-closed tiene que cortar el step');
+
+  // #5244 rev-9 — el fail-closed no puede ser incondicional: sin camino de alta
+  // se bloquea a sí mismo (el PR que instala el gate toca paths de control por
+  // definición). El discriminante es el JOB en el workflow base, no la mera
+  // existencia del archivo scanner: .pipeline/lib/precommit-secret-scan.js ya
+  // existe en main desde antes de este issue, así que `! -f "$BASE_SCANNER"`
+  // nunca distinguiría el alta de la degradación.
+  assert.match(block, /BASE_HAS_GATE/, 'sin discriminante de alta el gate queda en deadlock de bootstrap');
+  assert.match(
+    block,
+    /grep -qE '\^ {2}secret-scan:\[\[:space:\]\]\*\$' "\$BASE_WORKFLOW"/,
+    'el discriminante tiene que mirar el job en el workflow del árbol base',
+  );
+  assert.match(block, /BASE_HAS_GATE=1/, 'fail-closed sobre la lectura: sin `.base` legible se asume gate vigente');
+  assert.match(block, /"\$DECIDER_TRUSTED" = "1"/, 'el alta exige un árbol base que el autor del PR no controle');
+  assert.match(block, /"\$HEAD_HAS_GATE" = "1"/, 'el alta exige que el head instale el job de verdad');
+  assert.match(
+    block,
+    /case "\$HEAD_CAPS" in \*secret-scan-protocol=range-v1\*\) ALTA=1/,
+    'el alta exige que el scanner del head exponga el protocolo: un stub no la consigue',
+  );
+  assert.match(block, /::warning::secret-scan ALTA DEL CONTROL/, 'el alta tiene que quedar auditable en el log');
 
   // #5244 rev-8 — el árbol que decide sale del tip REAL de la base, no de la
   // merge-base declarada del PR (que el autor controla y deja en bootstrap).
@@ -207,33 +239,150 @@ test('CA-9: un PR que neutraliza el scanner en su propio diff queda BLOQUEADO', 
 
 // El árbol que el workflow checkoutea en `.base` cuando la base es anterior a
 // este control: el scanner existe pero ignora los flags y sale 0 (sin protocolo).
-function baseTreeLegacy(workspace) {
+// `conGate` decide si esa base ya declara el job `secret-scan`, que es lo que
+// distingue "control vigente que se está degradando" de "control todavía sin dar
+// de alta" (#5244 rev-9).
+function baseTreeLegacy(workspace, { conGate = false } = {}) {
   const baseTree = path.join(workspace, '.base');
   writeFile(baseTree, '.pipeline/lib/precommit-secret-scan.js', LEGACY_SCANNER);
   copyFromRepo(baseTree, '.pipeline/sanitizer.js');
   copyFromRepo(baseTree, '.claude/hooks/telegram-sanitizer.js');
+  writeFile(
+    baseTree,
+    '.github/workflows/security-sast.yml',
+    conGate ? WORKFLOW_CON_GATE : WORKFLOW_SIN_GATE,
+  );
   return baseTree;
 }
 
-test('bootstrap + diff que toca un path de control: FAIL-CLOSED sin correr el head', () => {
+// El PR que da de alta el control: instala scanner + módulos + allowlist y
+// agrega el job al workflow. Es, por definición, un diff sobre paths de control.
+function commitDeAlta(workspace, extras = {}) {
+  for (const relative of BASE_TREE_FILES) copyFromRepo(workspace, relative);
+  copyFromRepo(workspace, '.pipeline/secret-scan-allowlist.json');
+  writeFile(workspace, '.github/workflows/security-sast.yml', WORKFLOW_CON_GATE);
+  for (const [relative, content] of Object.entries(extras)) writeFile(workspace, relative, content);
+  git(workspace, ['add', '.']);
+  git(workspace, ['commit', '-m', 'da de alta el control de secretos']);
+  return git(workspace, ['rev-parse', 'HEAD']);
+}
+
+// ── #5244 rev-9 · el ALTA del control ───────────────────────────────────────
+// rev-8 bloqueaba TODO bootstrap sobre paths de control y con eso se cerraba
+// sobre el único PR que necesita la ventana: instalar el gate ES tocar paths de
+// control, así que el PR se bloqueaba a sí mismo y el control no podía llegar
+// nunca a la base. La suite quedaba verde porque codificaba ese bloqueo como
+// invariante y ningún caso cubría el alta. Estos tests cubren el alta.
+
+test('ALTA: base sin el job secret-scan y diff limpio ⇒ VERDE, declarado en el log', () => {
+  const workspace = initRepo();
+  writeFile(workspace, 'README.md', 'base\n');
+  git(workspace, ['add', '.']);
+  git(workspace, ['commit', '-m', 'base previa al control']);
+  const baseSha = git(workspace, ['rev-parse', 'HEAD']);
+  baseTreeLegacy(workspace, { conGate: false });
+
+  const headSha = commitDeAlta(workspace);
+
+  const step = runWorkflowStep({ workspace, baseSha, headSha });
+  assert.equal(step.status, 0, `el PR que da de alta el control debía poder mergear:\n${step.salida}`);
+  assert.match(step.salida, /::warning::secret-scan ALTA DEL CONTROL/, 'el alta no puede ser silenciosa');
+  assert.match(step.salida, /\.pipeline\/lib\/precommit-secret-scan\.js/, 'los paths de control quedan enumerados');
+  assert.doesNotMatch(step.salida, /BLOQUEADO/);
+});
+
+test('ALTA: la ventana no afloja el gate — el secreto del propio diff sigue bloqueando', () => {
+  const workspace = initRepo();
+  writeFile(workspace, 'README.md', 'base\n');
+  git(workspace, ['add', '.']);
+  git(workspace, ['commit', '-m', 'base previa al control']);
+  const baseSha = git(workspace, ['rev-parse', 'HEAD']);
+  baseTreeLegacy(workspace, { conGate: false });
+
+  const headSha = commitDeAlta(workspace, { '.claude/hooks/bootstrap-5244.json': fixtureConSecreto() });
+
+  const step = runWorkflowStep({ workspace, baseSha, headSha });
+  assert.match(step.salida, /::warning::secret-scan ALTA DEL CONTROL/);
+  assert.equal(step.status, 1, `el alta corre el scanner real y tiene que cazar el secreto:\n${step.salida}`);
+  assert.match(step.salida, /bootstrap-5244\.json/);
+  assert.doesNotMatch(step.salida, new RegExp(SYNTHETIC_TOKEN));
+});
+
+test('DEGRADACIÓN: la base YA declara el job ⇒ FAIL-CLOSED, sin alta', () => {
+  const workspace = initRepo();
+  writeFile(workspace, '.github/workflows/security-sast.yml', WORKFLOW_CON_GATE);
+  git(workspace, ['add', '.']);
+  git(workspace, ['commit', '-m', 'base con el gate ya vigente']);
+  const baseSha = git(workspace, ['rev-parse', 'HEAD']);
+  // El gate está vigente en la base pero su scanner no expone el protocolo:
+  // este PR estaría bajando un control que ya existe.
+  baseTreeLegacy(workspace, { conGate: true });
+
+  const headSha = commitDeAlta(workspace, { '.claude/hooks/bootstrap-5244.json': fixtureConSecreto() });
+
+  const step = runWorkflowStep({ workspace, baseSha, headSha });
+  assert.equal(step.status, 1, `bajar un control vigente debía bloquear:\n${step.salida}`);
+  assert.match(step.salida, /::error::secret-scan BLOQUEADO \(bootstrap sobre paths de control\)/);
+  assert.match(step.salida, /base_gate=1/, 'el diagnóstico tiene que decir por qué no hubo alta');
+  assert.doesNotMatch(step.salida, /ALTA DEL CONTROL/);
+  assert.doesNotMatch(step.salida, /::warning::secret-scan bootstrap/);
+  assert.doesNotMatch(step.salida, new RegExp(SYNTHETIC_TOKEN));
+});
+
+test('DEGRADACIÓN: decider_trusted=0 ⇒ FAIL-CLOSED aunque la base no tenga el job', () => {
+  const workspace = initRepo();
+  writeFile(workspace, 'README.md', 'base\n');
+  git(workspace, ['add', '.']);
+  git(workspace, ['commit', '-m', 'base previa al control']);
+  const baseSha = git(workspace, ['rev-parse', 'HEAD']);
+  baseTreeLegacy(workspace, { conGate: false });
+
+  const headSha = commitDeAlta(workspace, { '.claude/hooks/bootstrap-5244.json': fixtureConSecreto() });
+
+  // El árbol que decide degradó a la merge-base declarada del PR: "la base no
+  // tiene el gate" ya no es un hecho verificable, lo elige el autor al ramificar.
+  const step = runWorkflowStep({ workspace, baseSha, headSha, deciderTrusted: '0' });
+  assert.equal(step.status, 1, `con decider degradado no puede haber alta:\n${step.salida}`);
+  assert.match(step.salida, /decider_trusted=0/);
+  assert.doesNotMatch(step.salida, /ALTA DEL CONTROL/);
+  assert.doesNotMatch(step.salida, new RegExp(SYNTHETIC_TOKEN));
+});
+
+test('DEGRADACIÓN: DECIDER_TRUSTED ausente ⇒ FAIL-CLOSED (nunca fail-open por env vacía)', () => {
+  const workspace = initRepo();
+  writeFile(workspace, 'README.md', 'base\n');
+  git(workspace, ['add', '.']);
+  git(workspace, ['commit', '-m', 'base previa al control']);
+  const baseSha = git(workspace, ['rev-parse', 'HEAD']);
+  baseTreeLegacy(workspace, { conGate: false });
+  const headSha = commitDeAlta(workspace);
+
+  const step = runWorkflowStep({ workspace, baseSha, headSha, deciderTrusted: '' });
+  assert.equal(step.status, 1, `sin la señal el step no puede conceder el alta:\n${step.salida}`);
+  assert.match(step.salida, /decider_trusted= /, 'el diagnóstico muestra la señal vacía');
+});
+
+test('bootstrap + diff que toca el control SIN declarar el job en el head: FAIL-CLOSED', () => {
   const workspace = initRepo();
   writeFile(workspace, 'README.md', 'base\n');
   git(workspace, ['add', '.']);
   git(workspace, ['commit', '-m', 'base previo al gate']);
   const baseSha = git(workspace, ['rev-parse', 'HEAD']);
-  baseTreeLegacy(workspace);
+  baseTreeLegacy(workspace, { conGate: false });
 
-  // El PR instala el control Y mete un secreto en el mismo diff.
+  // Toca los módulos de control pero NO da de alta el job: no es un alta, es un
+  // diff sobre el control sin árbol confiable que lo juzgue.
   for (const relative of BASE_TREE_FILES) copyFromRepo(workspace, relative);
   copyFromRepo(workspace, '.pipeline/secret-scan-allowlist.json');
   writeFile(workspace, '.claude/hooks/bootstrap-5244.json', fixtureConSecreto());
   git(workspace, ['add', '.']);
-  git(workspace, ['commit', '-m', 'instala el gate y agrega un secreto']);
+  git(workspace, ['commit', '-m', 'toca el control sin instalar el job']);
   const headSha = git(workspace, ['rev-parse', 'HEAD']);
 
   const step = runWorkflowStep({ workspace, baseSha, headSha });
   assert.equal(step.status, 1, `el bootstrap sobre paths de control debía bloquear:\n${step.salida}`);
   assert.match(step.salida, /::error::secret-scan BLOQUEADO \(bootstrap sobre paths de control\)/);
+  assert.match(step.salida, /head_gate=0/);
   assert.match(step.salida, /\.pipeline\/lib\/precommit-secret-scan\.js/, 'el path de control debe quedar nombrado');
   assert.doesNotMatch(
     step.salida,
@@ -255,10 +404,13 @@ test('CA-9: bootstrap alcanzable + scanner del head HOSTIL queda BLOQUEADO', () 
   const baseSha = git(workspace, ['rev-parse', 'HEAD']);
 
   // El árbol que decide es anterior a este control => rama de bootstrap.
-  baseTreeLegacy(workspace);
+  baseTreeLegacy(workspace, { conGate: false });
 
-  // El PR hostil: apaga el scanner y mete el secreto en el mismo commit.
+  // El PR hostil: apaga el scanner y mete el secreto en el mismo commit. Declara
+  // el job para disfrazarse de alta (#5244 rev-9): lo único que lo delata es que
+  // su scanner no expone secret-scan-protocol=range-v1.
   writeFile(workspace, '.pipeline/lib/precommit-secret-scan.js', NEUTRALIZED_SCANNER);
+  writeFile(workspace, '.github/workflows/security-sast.yml', WORKFLOW_CON_GATE);
   writeFile(workspace, '.claude/hooks/hostil-bootstrap-5244.json', fixtureConSecreto());
   git(workspace, ['add', '.']);
   git(workspace, ['commit', '-m', 'PR hostil sobre base sin protocolo']);
@@ -275,6 +427,10 @@ test('CA-9: bootstrap alcanzable + scanner del head HOSTIL queda BLOQUEADO', () 
   assert.equal(step.status, 1, `el cruce bootstrap + head hostil debía bloquear:\n${step.salida}`);
   assert.match(step.salida, /::error::secret-scan BLOQUEADO \(bootstrap sobre paths de control\)/);
   assert.match(step.salida, /\.pipeline\/lib\/precommit-secret-scan\.js/);
+  // El escenario está armado como un alta (base sin job, head con job): lo único
+  // que lo delata es que el scanner neutralizado no expone el protocolo.
+  assert.match(step.salida, /base_gate=0 head_gate=1 head_caps=''/, 'el bloqueo tiene que atribuirse a las capacidades');
+  assert.doesNotMatch(step.salida, /ALTA DEL CONTROL/, 'un scanner neutralizado no puede disfrazarse de alta');
   assert.doesNotMatch(
     step.salida,
     /::warning::secret-scan bootstrap/,

@@ -34,6 +34,18 @@ function isControlPath(filePath) {
   return CONTROL_PATHS.includes(normalized);
 }
 
+// #5244 rev-9 — el strict de `loadAllowlist` comparaba sólo contra la lista
+// literal `CONTROL_PATHS`, mientras `isControlPath` trata como control a
+// CUALQUIER `*/.gitattributes`. Con las dos definiciones desalineadas,
+// `paths: ["app/.gitattributes"]` pasaba la validación aunque el scanner
+// después lo considerara archivo de control. Hoy no era explotable (el scanner
+// consulta `isControlPath`, que es la definición más amplia, así que el path
+// igual quedaba fuera de la allowlist en runtime), pero dos definiciones de
+// "path de control" que no coinciden es una divergencia esperando a que alguien
+// se apoye en la equivocada. Ahora la única definición es `isControlPath`, y
+// los globs se prueban además contra sondas de `.gitattributes` anidados.
+const CONTROL_PROBES = [...CONTROL_PATHS, 'sub/.gitattributes', 'a/b/c/.gitattributes'];
+
 function globToRe(glob) {
   const escaped = String(glob).replace(/[.+^${}()|[\]\\?]/g, '\\$&');
   const source = escaped.replace(/\*\*/g, SENTINEL)
@@ -49,15 +61,15 @@ function loadAllowlist(file, opts = {}) {
       throw new Error(`allowlist: glob sobre-amplio "${glob}"; usá uno específico`);
     }
     const re = globToRe(glob);
-    if (opts.strict && CONTROL_PATHS.some((control) => re.test(control))) {
+    if (opts.strict && CONTROL_PROBES.some((control) => re.test(control))) {
       throw new Error(`allowlist: glob "${glob}" alcanza un path de control`);
     }
     return { src: glob, re };
   });
   const paths = new Set(parsed.paths || []);
   if (opts.strict) {
-    for (const control of CONTROL_PATHS) {
-      if (paths.has(control)) throw new Error(`allowlist: path de control "${control}" no permitido`);
+    for (const candidate of paths) {
+      if (isControlPath(candidate)) throw new Error(`allowlist: path de control "${candidate}" no permitido`);
     }
   }
   return { paths, globs: entries.map(({ re }) => re), entries };
@@ -76,5 +88,5 @@ function isAllowlisted(filePath, allowlist) {
 }
 
 module.exports = {
-  CONTROL_PATHS, globToRe, isAllowlisted, isControlPath, loadAllowlist, whichAllowlistEntry,
+  CONTROL_PATHS, CONTROL_PROBES, globToRe, isAllowlisted, isControlPath, loadAllowlist, whichAllowlistEntry,
 };

@@ -99,7 +99,12 @@ function parseNameStatusZ(output) {
   const changes = [];
   for (let index = 0; index < fields.length;) {
     const status = fields[index++];
-    if (!/^[ACMR][0-9]*$/.test(status)) {
+    // #5244 rev-9 — `T` (typechange) se acepta por la misma razón por la que la
+    // capa 2 pasó a `--diff-filter=d`: pisar un gitlink/symlink tracked con un
+    // archivo regular no es un alta, es un `T`, y la lista blanca `ACMR` lo
+    // dejaba fuera del inventario de paths sensibles. Todo lo demás (`U`, `X`,
+    // `B`) sigue tirando: "no entiendo el estado" bloquea, no se saltea.
+    if (!/^[ACMRT][0-9]*$/.test(status)) {
       throw new GitOperationError('interpretar git diff --name-status -z', null, `estado inesperado ${JSON.stringify(status)}`);
     }
     const count = /^[CR]/.test(status) ? 2 : 1;
@@ -112,10 +117,17 @@ function parseNameStatusZ(output) {
   return changes;
 }
 
+// #5244 rev-9 — mismo criterio que `gitDiff` de la capa 2: se excluye SÓLO `D`
+// (por lista negra, no por lista blanca). La asimetría previa —capa 1 con
+// `ACMR`, capa 2 con `d`— dejaba el agujero de typechange abierto en el
+// inventario de paths sensibles: un `.env` que entra pisando un gitlink tracked
+// sale con estado `T` y desaparecía de la capa 1 sin que nada lo declarara.
+// Un borrado no agrega contenido y su path deja de estar trackeado, así que
+// excluirlo es correcto en las dos capas.
 function listChanges(options = {}) {
   const args = options.mode === 'range'
-    ? ['diff', '--name-status', '-z', '--diff-filter=ACMR', '-M', '-C', '--find-copies-harder', options.base, options.head, '--']
-    : ['diff', '--cached', '--name-status', '-z', '--diff-filter=ACMR', '-M', '-C', '--'];
+    ? ['diff', '--name-status', '-z', '--diff-filter=d', '-M', '-C', '--find-copies-harder', options.base, options.head, '--']
+    : ['diff', '--cached', '--name-status', '-z', '--diff-filter=d', '-M', '-C', '--'];
   if (options.mode === 'range' && (!options.base || !options.head)) throw new Error('El modo --range requiere BASE y HEAD');
   const runner = options.git || runGit;
   return parseNameStatusZ(runner(args, { cwd: options.cwd, operation: 'enumerar paths del diff' }));
@@ -292,12 +304,23 @@ const GIT_BUFFER = 256 * 1024 * 1024;
 // `parseHunks` sola; la mitad de alta sale con su `@@` y se escanea.
 function gitDiff({ mode, base, head = 'HEAD', cwd = process.cwd() }, extraArgs) {
   const range = mode === 'range' ? [`${base}..${head}`] : ['--cached'];
-  return execFileSync('git', [
-    '-c', 'core.quotePath=false', 'diff', ...range, ...extraArgs, '--diff-filter=d',
-    '--no-color', '--no-ext-diff', '--no-textconv',
-  ], {
-    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GIT_BUFFER,
-  });
+  // #5244 rev-9 — el fallo de git se tipa como GitOperationError igual que en la
+  // capa 1. Antes salía como Error pelado de child_process, el catch de `main()`
+  // lo trataba como hallazgo y devolvía 1: "no pude correr git" quedaba
+  // indistinguible de "encontré un secreto", contra el contrato documentado de
+  // exit codes (0/1/2). Sigue bloqueando; lo que cambia es que ahora se puede
+  // saber por qué.
+  try {
+    return execFileSync('git', [
+      '-c', 'core.quotePath=false', 'diff', ...range, ...extraArgs, '--diff-filter=d',
+      '--no-color', '--no-ext-diff', '--no-textconv',
+    ], {
+      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GIT_BUFFER,
+    });
+  } catch (error) {
+    const detail = String(error?.stderr || error?.message || error).trim();
+    throw new GitOperationError(`obtener el diff (${extraArgs.join(' ') || '-U0'})`, error?.status ?? null, detail);
+  }
 }
 
 // `added\tdeleted\tpath`; en binarios los conteos son `-`.
@@ -569,8 +592,12 @@ function run(options, dependencies = {}) {
 //   0 → limpio.
 //   1 → hallazgo de cualquiera de las dos capas, o entrada no escaneable
 //       (fail-closed: preferimos frenar antes que dar verde sin haber mirado).
-//   2 → fallo TÉCNICO de git (no se pudo enumerar el diff). Se distingue de 1 a
-//       propósito: "no pude correr" no es lo mismo que "encontré algo".
+//   2 → fallo TÉCNICO de git, en CUALQUIERA de las dos capas (#5244 rev-9: la
+//       capa 2 lo devolvía como 1 por su catch genérico, y el contrato quedaba
+//       escrito pero no cumplido). Se distingue de 1 a propósito: "no pude
+//       correr" no es lo mismo que "encontré algo". Los dos bloquean —
+//       `.husky/pre-commit` y el job de CI cortan con cualquier exit != 0 —;
+//       lo que cambia es qué tiene que ir a mirar el operador.
 function main(argv = process.argv.slice(2), options = {}) {
   if (argv.includes('--capabilities')) {
     process.stdout.write(`${CAPABILITIES_LINE}\n`);
@@ -602,6 +629,13 @@ function main(argv = process.argv.slice(2), options = {}) {
   try {
     result = run(parsed, options);
   } catch (error) {
+    // #5244 rev-9 — un fallo TÉCNICO de git en la capa 2 sale 2, igual que en la
+    // capa 1. Las dos bloquean; el código es lo que le dice al operador si tiene
+    // que buscar un secreto o arreglar su checkout.
+    if (error instanceof GitOperationError) {
+      process.stderr.write(`Guardrail bloqueado por fallo técnico de Git: operación=${error.operation} detalle=${error.message}\n`);
+      return 2;
+    }
     process.stderr.write(`secret-scan BLOQUEADO: ${error?.message || error}\n`);
     return 1;
   }

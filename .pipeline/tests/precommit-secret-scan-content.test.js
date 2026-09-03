@@ -477,3 +477,88 @@ test('borrar un binario no rompe el gate (el filtro sigue excluyendo D)', () => 
   assert.equal(resultado.status, 0, 'borrar un binario no puede trabar el PR');
   assert.equal(resultado.stderr, '', 'ni siquiera debería anunciarlo');
 });
+
+// ── #5244 rev-9 · asimetría entre capas y contrato de exit codes ─────────────
+// La capa 1 (inventario de paths sensibles) enumeraba con `--diff-filter=ACMR`
+// mientras la capa 2 ya usaba `--diff-filter=d`. El razonamiento del typechange
+// de rev-7 aplica igual a la capa 1: un path que entra pisando un gitlink
+// tracked sale con estado `T` y quedaba fuera del inventario sin que nada lo
+// declarara. Las dos capas usan ahora el mismo criterio por lista negra.
+test('la capa 1 enumera typechanges: el criterio es el mismo que el de la capa 2', () => {
+  const { listChanges } = require('../lib/precommit-secret-scan').__forTestsOnly__;
+  const { directory, base: seed } = repoConBase('secret-scan-capa1-typechange-');
+  execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${seed},vendor`], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'gitlink'], { cwd: directory });
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
+
+  execFileSync('git', ['rm', '-q', '--cached', 'vendor'], { cwd: directory });
+  fs.writeFileSync(path.join(directory, 'vendor'), 'contenido regular\n');
+  execFileSync('git', ['add', '-f', 'vendor'], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'typechange'], { cwd: directory });
+
+  const estado = execFileSync('git', ['diff', '--name-status', `${base}..HEAD`], { cwd: directory, encoding: 'utf8' });
+  assert.match(estado, /^T\t/m, 'el fixture tiene que producir un typechange real');
+
+  const cambios = listChanges({ mode: 'range', base, head: 'HEAD', cwd: directory });
+  assert.ok(
+    cambios.some((cambio) => cambio.paths.includes('vendor')),
+    `el typechange tiene que aparecer en la capa 1: ${JSON.stringify(cambios)}`,
+  );
+});
+
+test('la capa 1 sigue excluyendo los borrados', () => {
+  const { listChanges } = require('../lib/precommit-secret-scan').__forTestsOnly__;
+  const { directory } = repoConBase('secret-scan-capa1-borrado-');
+  stageFile(directory, 'descartable.txt', 'contenido\n');
+  execFileSync('git', ['commit', '-m', 'agrega'], { cwd: directory });
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
+  execFileSync('git', ['rm', '-q', 'descartable.txt'], { cwd: directory });
+  execFileSync('git', ['commit', '-m', 'borra'], { cwd: directory });
+
+  const cambios = listChanges({ mode: 'range', base, head: 'HEAD', cwd: directory });
+  assert.deepEqual(cambios, [], 'un borrado no agrega contenido: fuera de las dos capas');
+});
+
+// El header de `main()` documenta 0/1/2 y distingue a propósito "no pude correr
+// git" de "encontré un secreto". La capa 2 no respetaba ese contrato: cualquier
+// fallo de git salía por el catch genérico como 1.
+test('un fallo técnico de git en la capa 2 sale 2, no 1', () => {
+  const scanner = require('../lib/precommit-secret-scan');
+  const { directory } = repoConBase('secret-scan-exit2-capa2-');
+  const stderr = [];
+  const original = process.stderr.write;
+  process.stderr.write = (chunk) => { stderr.push(String(chunk)); return true; };
+  let code;
+  try {
+    code = scanner.main(['--mode=staged', `--cwd=${directory}`, `--allowlist=${EMPTY_ALLOWLIST}`], {
+      collectAddedHunks: () => {
+        throw new scanner.GitOperationError('obtener el diff (-U0)', 128, 'fatal: bad revision');
+      },
+    });
+  } finally {
+    process.stderr.write = original;
+  }
+  assert.equal(code, 2, 'no poder correr git no es lo mismo que encontrar un secreto');
+  assert.match(stderr.join(''), /fallo técnico de Git/);
+  assert.match(stderr.join(''), /operación=obtener el diff/, 'el mensaje tiene que decir qué operación falló');
+});
+
+test('el diff de la capa 2 tipa el fallo de git como GitOperationError', () => {
+  const scanner = require('../lib/precommit-secret-scan');
+  const { directory } = repoConBase('secret-scan-gitdiff-tipado-');
+  assert.throws(
+    () => scanner.collectAddedHunks({
+      mode: 'range', base: 'no-existe-este-ref', head: 'HEAD', cwd: directory,
+    }),
+    (error) => error instanceof scanner.GitOperationError && /obtener el diff/.test(error.operation),
+    'sin tipar, el catch de main() lo confunde con un hallazgo y devuelve 1',
+  );
+});
+
+test('un hallazgo real sigue saliendo 1, no 2', () => {
+  const { directory, base } = repoConBase('secret-scan-exit1-');
+  stageFile(directory, '.claude/hooks/prod.json', `${fixtureConSecreto()}\n`);
+  execFileSync('git', ['commit', '-m', 'agrega secreto'], { cwd: directory });
+  const resultado = scanRange(directory, base, 'text');
+  assert.equal(resultado.status, 1, 'el contrato de exit codes distingue hallazgo (1) de fallo de git (2)');
+});
