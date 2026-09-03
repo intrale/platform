@@ -1193,6 +1193,44 @@ async function resolverVaultConPlanAsync(args, logger) {
  *            payload:object|null, error:object|null}}
  */
 function resolverVault(opts, logger) {
+  const previo = prepararGlobal(opts, logger);
+  if (previo.corto) return previo.corto;
+  try {
+    return resolverVaultConPlan(previo.args, logger);
+  } catch (err) {
+    return fallaGlobal(err, previo, logger);
+  }
+}
+
+/**
+ * #5798 — gemelo ASYNC del camino global. Existe por la misma razón que
+ * `resolveInstanceVaultAsync` (#5797): el single-flight sólo se observa desde
+ * un caller async, y `createCredentialSnapshot()` corre por LANZAMIENTO, o sea
+ * exactamente donde N arranques concurrentes pagarían N procesos de la AWS CLI.
+ *
+ * Comparte `prepararGlobal` y `fallaGlobal` ENTEROS con el sync: si la lectura
+ * de config, los overrides o la traducción del fallo se duplicaran, el async
+ * podría aceptar una config que el sync rechaza y el fail-closed dejaría de ser
+ * una propiedad del MÓDULO para pasar a ser una del camino que tocó usar. Mismo
+ * criterio que los gemelos por instancia.
+ */
+async function resolverVaultAsync(opts, logger) {
+  const previo = prepararGlobal(opts, logger);
+  if (previo.corto) return previo.corto;
+  try {
+    return await resolverVaultConPlanAsync(previo.args, logger);
+  } catch (err) {
+    return fallaGlobal(err, previo, logger);
+  }
+}
+
+/**
+ * Pre-condiciones del camino global: gate del vault, `hostId` de runtime y
+ * overrides de instancia. Sin efectos: no toca la memo ni el driver. Devuelve
+ * o un estado CORTO ya listo (gate cerrado / indeterminado), o los args del
+ * broker. Compartido por los dos gemelos.
+ */
+function prepararGlobal(opts, logger) {
   const { cfg, indeterminado, causa } = readVaultConfig(opts, logger);
 
   // D-SYNC-8 — con el gate cerrado no se construye el vault, no se carga
@@ -1204,13 +1242,15 @@ function resolverVault(opts, logger) {
   // que cambia es SÓLO la precedencia del ancla, que falla cerrada.
   if (!cfg || cfg.enabled !== true) {
     return {
-      enabled: false,
-      indeterminado: !!indeterminado,
-      causaIndeterminado: causa || null,
-      namespace: null,
-      payload: null,
-      error: null,
-      cfg,
+      corto: {
+        enabled: false,
+        indeterminado: !!indeterminado,
+        causaIndeterminado: causa || null,
+        namespace: null,
+        payload: null,
+        error: null,
+        cfg,
+      },
     };
   }
 
@@ -1238,36 +1278,39 @@ function resolverVault(opts, logger) {
     : (Array.isArray(cfgHost.shared_secrets) ? cfgHost.shared_secrets : []);
   const plan = opts.vaultPlan || vaultScopePlan(ENV_DESCRIPTORS);
 
-  try {
-    // MERGE #5426 x #5804 — la memo por clave fina, la cota de namespaces y los
-    // overrides de instancia vienen de `main`. Lo que aporta #5426 es el
-    // `cfgHost` (hostId resuelto en RUNTIME) propagado como config EFECTIVA:
-    // `resolverVaultConPlan` valida el namespace y arma el runner con él.
-    return resolverVaultConPlan(
-      { cfg: cfgHost, projectId, plan, requiredScopes, sharedScopes, opts }, logger,
-    );
-  } catch (err) {
-    // CA-22 — un fallo del vault se PROPAGA como fallo, jamás se degrada a
-    // vacío ni habilita el fallback al archivo (B1.2). El mensaje ya viene
-    // redactado por `secret-vault.js` (SEC-1/SEC-5: nombra el path lógico y la
-    // remediación, nunca el ARN, el account id ni el stdout de la CLI).
-    //
-    // UX-5 — se narra causa + impacto + próximo paso, no un stack trace.
-    logger(`[credentials] ERROR: el vault no pudo resolverse (${(err && err.code) || (err && err.name) || 'error'}). `
-      + `Causa: ${(err && err.message) || 'desconocida'}. `
-      + 'Impacto: las credenciales respaldadas por el vault quedan SIN SETEAR (fail-closed); '
-      + 'NO se cae al archivo. Proximo paso: revisar la remediacion que nombra la causa y reintentar');
-    return {
-      enabled: true,
-      // El namespace sólo se reporta si LLEGÓ a validar: con config inválida no
-      // hay namespace que nombrar, y devolver el string mal formado sugeriría
-      // que el path se construyó (no se construyó — se falló antes, CA-6).
-      namespace: (err && err.vaultNamespace) || null,
-      payload: null,
-      error: { name: (err && err.name) || 'Error', code: (err && err.code) || null, message: (err && err.message) || '' },
-      cfg: cfgHost,
-    };
-  }
+  // MERGE #5426 x #5804 — la memo por clave fina, la cota de namespaces y los
+  // overrides de instancia vienen de `main`. Lo que aporta #5426 es el
+  // `cfgHost` (hostId resuelto en RUNTIME) propagado como config EFECTIVA:
+  // `resolverVaultConPlan` valida el namespace y arma el runner con él.
+  return {
+    corto: null,
+    cfgHost,
+    args: { cfg: cfgHost, projectId, plan, requiredScopes, sharedScopes, opts },
+  };
+}
+
+/** Traducción del fallo del broker a estado del camino global. Compartida. */
+function fallaGlobal(err, { cfgHost }, logger) {
+  // CA-22 — un fallo del vault se PROPAGA como fallo, jamás se degrada a
+  // vacío ni habilita el fallback al archivo (B1.2). El mensaje ya viene
+  // redactado por `secret-vault.js` (SEC-1/SEC-5: nombra el path lógico y la
+  // remediación, nunca el ARN, el account id ni el stdout de la CLI).
+  //
+  // UX-5 — se narra causa + impacto + próximo paso, no un stack trace.
+  logger(`[credentials] ERROR: el vault no pudo resolverse (${(err && err.code) || (err && err.name) || 'error'}). `
+    + `Causa: ${(err && err.message) || 'desconocida'}. `
+    + 'Impacto: las credenciales respaldadas por el vault quedan SIN SETEAR (fail-closed); '
+    + 'NO se cae al archivo. Proximo paso: revisar la remediacion que nombra la causa y reintentar');
+  return {
+    enabled: true,
+    // El namespace sólo se reporta si LLEGÓ a validar: con config inválida no
+    // hay namespace que nombrar, y devolver el string mal formado sugeriría
+    // que el path se construyó (no se construyó — se falló antes, CA-6).
+    namespace: (err && err.vaultNamespace) || null,
+    payload: null,
+    error: { name: (err && err.name) || 'Error', code: (err && err.code) || null, message: (err && err.message) || '' },
+    cfg: cfgHost,
+  };
 }
 
 /** Extrae el valor de una variable del payload ya resuelto del vault. */
@@ -2118,6 +2161,412 @@ function redactScoped(resolved) {
   return red;
 }
 
+// =============================================================================
+// #5798 · SNAPSHOT AISLADO DE CREDENCIALES POR LANZAMIENTO
+// =============================================================================
+//
+// `createCredentialSnapshot()` es la tercera integrante de la familia SIN
+// efectos sobre el ambiente (hermana de `resolveVaultOnly` y de
+// `resolveInstanceVault`): no lee ni escribe `process.env`, no lee el archivo de
+// credenciales y no habilita la ventana de bootstrap.
+//
+// Qué agrega sobre las otras dos: el DESTINO. Las hermanas responden "¿cuál es
+// el valor de esta clave?"; ésta responde "¿qué ambiente le corresponde a ESTE
+// consumidor?". Esa diferencia es la que permite el mínimo privilegio real —
+// hoy `pulpo.js` arma el env del hijo filtrando un `process.env` ya hidratado
+// con las 13 credenciales (`build-child-env.js`), o sea que el material existe
+// en el proceso padre aunque el hijo no lo reciba. Un snapshot por lanzamiento
+// invierte la polaridad: el material se resuelve YA acotado al destino, y lo que
+// no está autorizado nunca se materializa en un objeto que alguien pueda pasar.
+//
+// El cableado de los call-sites es de #5799; acá vive SÓLO la API y su
+// contrato. La caché, el reset público y el single-flight son de #5797 y esta
+// API los consume por la costura existente (`resolverVaultAsync`), sin conocer
+// la forma interna de `_vaultMemo`.
+//
+// D-ASYNC — la API es `async` A PROPÓSITO aunque hoy el vault pueda leerse
+// sincrónico: es el único camino donde el single-flight de #5797 es observable
+// (N lanzamientos concurrentes del mismo destino coalescen en UNA lectura
+// física), y fijar el contrato como `Promise` desde el día cero evita que #5799
+// tenga que migrar call-sites cuando la lectura se vuelva remota. El contrato
+// síncrono existente (`loadIntoEnv`, `resolveVaultOnly`, `resolveInstanceVault`)
+// queda intacto: esta API NO los usa y ellos NO la usan (CA-7).
+
+/**
+ * Catálogo de DESTINOS y sus scopes autorizados (CA-1 · CA-3).
+ *
+ * Es una allowlist CURADA y congelada, con el mismo criterio que
+ * `SYSTEM_ALLOWLIST`/`SCOPES` de `build-child-env.js`: cada entrada es una
+ * decisión de seguridad y agregar una amplía el blast radius. Un destino
+ * "abierto" (que autorice todo) anularía CA-3, así que no existe comodín.
+ *
+ * Justificación entrada por entrada:
+ *
+ *   agent-child      Proceso hijo de un agente del pipeline. Recibe la API key
+ *                    de UN provider (el que despacha) y nada más — invariante
+ *                    S-2 de #3198: el hijo del fallback jamás ve la key del
+ *                    primary. NO recibe `telegram`: el bot token es material
+ *                    reservado que no cruza a un hijo
+ *                    (`RESERVED_CHILD_SECRET_NAMES`, build-child-env.js).
+ *   commander        El Commander es un hijo más, con el mismo régimen. Se
+ *                    lista aparte de `agent-child` porque #5799 lo despacha por
+ *                    otra rama y un destino propio deja la auditoría legible.
+ *   pulpo-telegram   Frontera local PRIVILEGIADA de Telegram, in-process del
+ *                    Pulpo (nunca un spawn). Es el único destino que recibe el
+ *                    ancla de autorización `telegram.leo_operator_chat_id`.
+ *   qa-evidence      Subida de evidencia de QA a Drive (`qa-video-share.js`).
+ *                    Sus credenciales tienen `hydrate: false` (#5217): NO van
+ *                    al `process.env` global justamente porque su consumidor
+ *                    las pide bajo demanda. Un snapshot POR DESTINO es esa
+ *                    demanda, y por eso el catálogo se arma sobre el inventario
+ *                    completo (`ENV_DESCRIPTORS`) y no sobre `ENV_MAPPING`:
+ *                    `seHidrata()` gobierna el ambiente GLOBAL, que es
+ *                    exactamente lo que esta API viene a dejar de usar.
+ */
+const SNAPSHOT_DESTINATIONS = Object.freeze({
+  'agent-child': Object.freeze({ scopes: Object.freeze(['providers']) }),
+  'commander': Object.freeze({ scopes: Object.freeze(['providers']) }),
+  'pulpo-telegram': Object.freeze({ scopes: Object.freeze(['telegram']) }),
+  'qa-evidence': Object.freeze({ scopes: Object.freeze(['google_drive']) }),
+});
+
+/**
+ * Códigos ESTABLES del snapshot (CA-4 · CA-6). Son el único vocabulario que
+ * sale del fail-closed: nombran QUÉ pasó y se remedian distinto, nunca llevan
+ * un valor. Familia hermana de `VAULT_ONLY_ERROR_CODES` /
+ * `INSTANCE_VAULT_ERROR_CODES`; el prefijo `SNAPSHOT_` los hace distinguibles
+ * en un log donde conviven los tres caminos.
+ */
+const SNAPSHOT_ERROR_CODES = Object.freeze({
+  // Validación del pedido — TODOS fallan con CERO llamadas al driver (CA-1).
+  SNAPSHOT_DESTINATION_REQUIRED: 'SNAPSHOT_DESTINATION_REQUIRED',
+  SNAPSHOT_DESTINATION_UNKNOWN: 'SNAPSHOT_DESTINATION_UNKNOWN',
+  SNAPSHOT_SCOPES_REQUIRED: 'SNAPSHOT_SCOPES_REQUIRED',
+  SNAPSHOT_SCOPE_UNAUTHORIZED: 'SNAPSHOT_SCOPE_UNAUTHORIZED',
+  SNAPSHOT_PROVIDER_REQUIRED: 'SNAPSHOT_PROVIDER_REQUIRED',
+  SNAPSHOT_PROVIDER_UNAUTHORIZED: 'SNAPSHOT_PROVIDER_UNAUTHORIZED',
+  SNAPSHOT_NAMESPACE_INVALID: 'SNAPSHOT_NAMESPACE_INVALID',
+  // Resolución contra el vault — fail-closed atómico (CA-4).
+  SNAPSHOT_VAULT_CONFIG_INDETERMINATE: 'SNAPSHOT_VAULT_CONFIG_INDETERMINATE',
+  SNAPSHOT_VAULT_CONFIG_INVALID: 'SNAPSHOT_VAULT_CONFIG_INVALID',
+  SNAPSHOT_VAULT_DISABLED: 'SNAPSHOT_VAULT_DISABLED',
+  SNAPSHOT_VAULT_FAILURE: 'SNAPSHOT_VAULT_FAILURE',
+  SNAPSHOT_SECRET_INVALID: 'SNAPSHOT_SECRET_INVALID',
+  // CA-5 — el ancla de autorización tiene código PROPIO: que falte el chat del
+  // operador no se remedia igual que que falte una API key, y colapsarlo en
+  // `SECRET_INVALID` escondería el único fallo que abre el gate de firmantes.
+  SNAPSHOT_ANCHOR_UNRESOLVED: 'SNAPSHOT_ANCHOR_UNRESOLVED',
+});
+
+// Etiquetas de reemplazo para identificadores NO declarados. Mismo criterio que
+// `resolveVaultOnly` con `clave-no-declarada`: un identificador que vino de
+// afuera y no está en el inventario NO se refleja de vuelta, ni en el error ni
+// en la señal local (CA-6). Reflejarlo convierte el diagnóstico en un eco de
+// input arbitrario.
+const SNAPSHOT_DESTINO_NO_DECLARADO = 'destino-no-declarado';
+const SNAPSHOT_SCOPE_NO_DECLARADO = 'scope-no-declarado';
+
+/**
+ * Providers declarados en el inventario, DERIVADOS de `ENV_DESCRIPTORS`
+ * (`providers.<nombre>.api_key`). No es una lista escrita a mano: una segunda
+ * copia se desincroniza el día que se agregue o se saque un provider — que es
+ * exactamente lo que pasó con `providers.groq` en #3353.
+ *
+ * @type {Object<string,string>} nombre de provider -> clave lógica
+ */
+const SNAPSHOT_PROVIDER_KEYS = Object.freeze(Object.fromEntries(
+  Object.keys(ENV_DESCRIPTORS)
+    .map((dotPath) => /^providers\.([^.]+)\.api_key$/.exec(dotPath))
+    .filter(Boolean)
+    .map((m) => [m[1], m[0]]),
+));
+
+/** Error tipado del snapshot. Estilo `vaultOnlyError()`: nombres y códigos. */
+function snapshotError(code, detalle = {}) {
+  const destination = detalle.destination || SNAPSHOT_DESTINO_NO_DECLARADO;
+  const partes = [`credentials: ${code} para el destino "${destination}"`];
+  if (detalle.scope) partes.push(`scope "${detalle.scope}"`);
+  if (detalle.logicalKey) partes.push(`clave "${detalle.logicalKey}"`);
+  const err = new Error(partes.join(' · '));
+  err.name = 'CredentialSnapshotError';
+  err.code = code;
+  err.destination = destination;
+  if (detalle.scope) err.scope = detalle.scope;
+  if (detalle.logicalKey) err.logicalKey = detalle.logicalKey;
+  return err;
+}
+
+/**
+ * CA-6 — forma REDACTADA de un snapshot o de su fallo, para log y telemetría.
+ *
+ * Se arma con `redactScoped()`, la MISMA función que ya redacta
+ * `resolveScopedRefs` y `resolveInstanceVault`: dos criterios de redacción en
+ * el módulo es un criterio, más el que se olvidaron de actualizar. Lo único que
+ * agrega es renombrar el eje de identidad (`namespace` -> `destination`), que
+ * acá es el destino.
+ *
+ * @param {object|Error} valor snapshot devuelto o `CredentialSnapshotError`
+ * @returns {{ok:boolean, destination:string, envVars:string[], missing:string[],
+ *            code?:string, error?:string}}
+ */
+function redactSnapshot(valor) {
+  const esFallo = valor instanceof Error;
+  const base = esFallo
+    ? {
+      ok: false,
+      namespace: valor.destination || SNAPSHOT_DESTINO_NO_DECLARADO,
+      scopes: {},
+      missing: valor.logicalKey ? [valor.logicalKey] : (valor.scope ? [valor.scope] : []),
+      code: valor.code || null,
+      error: valor.message || null,
+    }
+    : {
+      ok: true,
+      namespace: (valor && valor.destination) || SNAPSHOT_DESTINO_NO_DECLARADO,
+      scopes: (valor && valor.env) || {},
+      missing: [],
+    };
+  const red = redactScoped(base);
+  const out = {
+    ok: red.ok,
+    destination: red.namespace,
+    envVars: red.scopes,
+    missing: red.missing,
+  };
+  if (red.code) out.code = red.code;
+  if (red.error) out.error = red.error;
+  return out;
+}
+
+/** Claves lógicas del inventario que corresponden a un scope + provider. */
+function clavesDelScope(scope, provider) {
+  if (scope === 'providers') return [SNAPSHOT_PROVIDER_KEYS[provider]];
+  return Object.keys(ENV_DESCRIPTORS).filter((dotPath) => splitDotPath(dotPath).scope === scope);
+}
+
+/**
+ * Validación COMPLETA del pedido (CA-1). Corre ANTES de leer config y ANTES de
+ * construir el vault: un pedido mal formado no puede costar ni una llamada al
+ * driver, ni siquiera una fallida (mismo criterio fail-closed-ruidoso que
+ * `resolveInstanceVault`, CA-6 de #5899).
+ *
+ * LANZA `CredentialSnapshotError`. Nunca devuelve un pedido a medias.
+ */
+function validarPedidoDeSnapshot({ destination, scopes, provider, namespace }) {
+  // 1 · destino. Es OBLIGATORIO y EXACTO: no se normaliza case ni se trimea, y
+  //     no hay default. Un destino "casi" valido (`" agent-child "`,
+  //     `"Agent-Child"`) es ambiguo, y resolver la ambiguedad adivinando es la
+  //     puerta por la que entra un consumidor no previsto con scopes de otro.
+  if (typeof destination !== 'string' || destination === '') {
+    throw snapshotError(SNAPSHOT_ERROR_CODES.SNAPSHOT_DESTINATION_REQUIRED);
+  }
+  if (!Object.prototype.hasOwnProperty.call(SNAPSHOT_DESTINATIONS, destination)) {
+    // `hasOwnProperty` y no `in`: `"constructor"` o `"toString"` resolverían
+    // contra `Object.prototype` y entregarían una función como si fuera un
+    // destino (mismo criterio que `finalizarInstancia`, CA-5 de #5898).
+    throw snapshotError(SNAPSHOT_ERROR_CODES.SNAPSHOT_DESTINATION_UNKNOWN);
+  }
+  const autorizados = SNAPSHOT_DESTINATIONS[destination].scopes;
+
+  // 2 · scopes. Explícitos y no vacíos: NO se defaultean a "todo lo que el
+  //     destino podría", porque el mínimo privilegio se declara en el pedido,
+  //     no se hereda del techo.
+  const pedidos = Array.isArray(scopes)
+    ? [...new Set(scopes.filter((s) => typeof s === 'string' && s !== ''))]
+    : [];
+  if (!Array.isArray(scopes) || pedidos.length !== scopes.length || pedidos.length === 0) {
+    throw snapshotError(SNAPSHOT_ERROR_CODES.SNAPSHOT_SCOPES_REQUIRED, { destination });
+  }
+  for (const scope of pedidos) {
+    if (!autorizados.includes(scope)) {
+      // El scope se NOMBRA sólo si pertenece al inventario; si no, se redacta.
+      const declarado = Object.keys(ENV_DESCRIPTORS)
+        .some((dotPath) => splitDotPath(dotPath).scope === scope);
+      throw snapshotError(SNAPSHOT_ERROR_CODES.SNAPSHOT_SCOPE_UNAUTHORIZED, {
+        destination, scope: declarado ? scope : SNAPSHOT_SCOPE_NO_DECLARADO,
+      });
+    }
+  }
+
+  // 3 · provider. El scope `providers` es el único multi-inquilino del
+  //     inventario: sin elegir UNO, el snapshot llevaría las 6 API keys y CA-3
+  //     quedaría en letra muerta. Y al revés: un `provider` sin el scope es un
+  //     pedido incoherente, y un pedido incoherente se rechaza — no se ignora
+  //     en silencio.
+  const pideProviders = pedidos.includes('providers');
+  if (pideProviders && (typeof provider !== 'string' || provider === '')) {
+    throw snapshotError(SNAPSHOT_ERROR_CODES.SNAPSHOT_PROVIDER_REQUIRED, {
+      destination, scope: 'providers',
+    });
+  }
+  if (!pideProviders && provider !== undefined && provider !== null) {
+    // Sin `scope`: no hay ningún scope que nombrar — el defecto del pedido es
+    // justamente que el provider no pertenece a ninguno de los pedidos.
+    throw snapshotError(SNAPSHOT_ERROR_CODES.SNAPSHOT_PROVIDER_UNAUTHORIZED, { destination });
+  }
+  if (pideProviders
+      && !Object.prototype.hasOwnProperty.call(SNAPSHOT_PROVIDER_KEYS, provider)) {
+    throw snapshotError(SNAPSHOT_ERROR_CODES.SNAPSHOT_PROVIDER_UNAUTHORIZED, {
+      destination, scope: 'providers',
+    });
+  }
+
+  // 4 · namespace (tenant). Opcional: sin él se resuelve la identidad del
+  //     kernel, que es el comportamiento de siempre (CA-5 de #5899).
+  //
+  //     Acá se chequea SÓLO el TIPO. La FORMA del segmento la valida
+  //     `validateVaultNamespace` —la autoridad canónica— dentro de la costura,
+  //     antes de la clave de la memo y con cero llamadas al driver: replicar
+  //     su regex sería exactamente la copia que CA-8 de #5219 prohíbe (y que
+  //     su guardrail sobre el fuente de este archivo caza). Un namespace mal
+  //     formado sale como `SNAPSHOT_VAULT_CONFIG_INVALID`, igual de fail-closed
+  //     y con el mismo costo cero.
+  if (namespace !== undefined && namespace !== null
+      && (typeof namespace !== 'string' || namespace === '')) {
+    throw snapshotError(SNAPSHOT_ERROR_CODES.SNAPSHOT_NAMESPACE_INVALID, { destination });
+  }
+
+  // Claves lógicas EXACTAS del pedido. Es la superficie máxima del snapshot: lo
+  // que no esté acá no puede terminar adentro ni por error de proyección.
+  const claves = [];
+  for (const scope of pedidos) claves.push(...clavesDelScope(scope, provider));
+
+  return { destination, pedidos, claves, provider: pideProviders ? provider : null };
+}
+
+/** Traducción del estado del vault a código estable del snapshot (CA-4). */
+function codigoDeEstado(estado) {
+  if (estado.indeterminado) return SNAPSHOT_ERROR_CODES.SNAPSHOT_VAULT_CONFIG_INDETERMINATE;
+  if (!estado.enabled) return SNAPSHOT_ERROR_CODES.SNAPSHOT_VAULT_DISABLED;
+  // El validador canónico rechazó el namespace efectivo —la identidad del
+  // tenant que trajo el caller, o `prefix`/`hostId` de config— ANTES de emitir
+  // una sola llamada al driver. Código propio: "tu pedido no valida" y "el
+  // vault no contesta" se remedian distinto (mismo criterio que
+  // `INSTANCE_VAULT_ERROR_CODES.VAULT_CONFIG_INVALID`).
+  if (estado.error && estado.error.name === 'VaultConfigError') {
+    return SNAPSHOT_ERROR_CODES.SNAPSHOT_VAULT_CONFIG_INVALID;
+  }
+  if (estado.error || !estado.payload) return SNAPSHOT_ERROR_CODES.SNAPSHOT_VAULT_FAILURE;
+  return null;
+}
+
+/**
+ * Crea un snapshot de credenciales AISLADO para un destino explícito (#5798).
+ *
+ * Familia SIN efectos sobre el ambiente: no lee ni escribe `process.env`, no
+ * lee el archivo de credenciales y no habilita la ventana de bootstrap. Todo el
+ * material sale del vault, por la costura de resolución existente
+ * (`resolverVaultAsync`), así que la caché, el TTL, el single-flight y el reset
+ * de #5797 aplican sin que esta API conozca su forma interna (CA-8).
+ *
+ * ATÓMICA: o devuelve el ambiente COMPLETO del destino, o lanza. No existe el
+ * snapshot parcial, no se completa nada desde otra fuente y no se devuelve un
+ * objeto que aparente éxito (CA-4).
+ *
+ * @param {object}   args
+ * @param {string}   args.destination  destino OBLIGATORIO (`SNAPSHOT_DESTINATIONS`)
+ * @param {string[]} args.scopes       scopes pedidos; deben estar autorizados para el destino
+ * @param {string}   [args.provider]   obligatorio si se pide el scope `providers`
+ * @param {string}   [args.namespace]  tenant; sin él, la identidad del kernel
+ * @param {function} [args.logger]     señal local; sólo recibe nombres y códigos
+ * @param {object}   [args.vaultConfig] sección `vault:` inyectada (tests)
+ * @param {object}   [args.vaultDriver] driver del vault inyectado (tests)
+ * @param {string}   [args.pipelineDir] raíz de `.pipeline` (argumento, no entorno)
+ * @param {function} [args.now]         reloj inyectable en ms (tests)
+ * @returns {Promise<{destination:string, namespace:string|null, scopes:string[],
+ *                    keys:string[], env:Object<string,string>}>}
+ * @throws {CredentialSnapshotError} con `code` de `SNAPSHOT_ERROR_CODES`
+ */
+async function createCredentialSnapshot(args = {}) {
+  const {
+    destination, scopes, provider, namespace,
+    logger, vaultConfig, vaultDriver, pipelineDir, now,
+  } = args;
+  const senal = typeof logger === 'function' ? logger : console.error;
+
+  const fallar = (code, detalle = {}) => {
+    const err = snapshotError(code, detalle);
+    // Señal local armada SÓLO con constantes y nombres allowlisted (CA-6).
+    senal(`[credentials] ${code}: snapshot no emitido para el destino `
+      + `"${err.destination}"${err.scope ? ` (scope ${err.scope})` : ''}`
+      + `${err.logicalKey ? ` (clave ${err.logicalKey})` : ''}`);
+    throw err;
+  };
+
+  // 1 · Validación del pedido. CERO llamadas al driver si algo no cierra.
+  let pedido;
+  try {
+    pedido = validarPedidoDeSnapshot({ destination, scopes, provider, namespace });
+  } catch (err) {
+    if (err && err.name === 'CredentialSnapshotError') {
+      return fallar(err.code, { destination: err.destination, scope: err.scope });
+    }
+    throw err;
+  }
+
+  // 2 · Resolución contra el vault. Se pasan SÓLO las dependencias inyectables
+  //     declaradas: nada de `env`, `canonicalPath` ni `legacyPath`, que son las
+  //     puertas del camino con efectos. El plan y la allowlist se acotan a los
+  //     scopes del pedido, así que el driver tampoco se entera de los demás.
+  //     El logger del vault es SILENCIOSO a propósito (mismo criterio que
+  //     `resolveVaultOnly`): la única línea que sale de acá es la nuestra, ya
+  //     redactada. Un mensaje del driver reenviado tal cual es la vía por la
+  //     que se filtra material en un log (CA-6).
+  const descriptores = Object.fromEntries(pedido.claves.map((k) => [k, ENV_DESCRIPTORS[k]]));
+  const estado = await resolverVaultAsync({
+    vaultConfig, vaultDriver, pipelineDir, now,
+    projectId: (typeof namespace === 'string' && namespace !== '') ? namespace : undefined,
+    requiredScopes: pedido.pedidos,
+    vaultPlan: vaultScopePlan(descriptores),
+  }, () => {});
+
+  const codigo = codigoDeEstado(estado);
+  if (codigo) return fallar(codigo, { destination: pedido.destination });
+
+  // 3 · Acumulación ATÓMICA. El objeto de trabajo es sin prototipo (mismo
+  //     criterio que `finalizarInstancia`) y NO se publica hasta que las claves
+  //     del pedido estén TODAS resueltas y válidas: un faltante descarta el
+  //     snapshot entero, nunca lo completa desde otro lado (CA-4).
+  const acumulado = Object.create(null);
+  for (const clave of pedido.claves) {
+    const desc = ENV_DESCRIPTORS[clave];
+    const valor = valorDelVault(estado, clave, desc);
+    // Sólo escalares: un objeto acá significa payload PARCIAL o mal formado
+    // (un scope entregado donde se esperaba una hoja). `String(obj)` daría
+    // `[object Object]`, o sea un secreto sintético que aparenta éxito.
+    const escalar = (typeof valor === 'string' || typeof valor === 'number');
+    if (!escalar || isPlaceholderOrEmpty(valor)) {
+      // CA-5 — el ancla de autorización tiene su propio código. No hay fallback
+      // de ningún tipo: acá ya estamos en el camino vault-only, y su ausencia
+      // aborta igual que cualquier otra clave, sólo que NOMBRADA.
+      return fallar(desc.auth_anchor
+        ? SNAPSHOT_ERROR_CODES.SNAPSHOT_ANCHOR_UNRESOLVED
+        : SNAPSHOT_ERROR_CODES.SNAPSHOT_SECRET_INVALID,
+      { destination: pedido.destination, logicalKey: clave });
+    }
+    acumulado[desc.env] = String(valor);
+  }
+
+  // 4 · Publicación. Todo lo que sale es material NUEVO de esta invocación:
+  //     los valores son strings (inmutables) copiados fuera del payload
+  //     memoizado, y los contenedores son literales frescos. Mutar el snapshot
+  //     no puede alcanzar a la caché, a las dependencias inyectadas, a otro
+  //     snapshot ni a `process.env` (CA-2).
+  //
+  //     La superficie es literal y mínima (CA-3): NO viajan el driver, el
+  //     cliente AWS, la config del vault, el prefix, el hostId, el namespace
+  //     físico, el backend, el tier, la entrada de caché ni una sola función
+  //     capaz de resolver otro secreto. `namespace` es el eco del argumento del
+  //     caller —identidad lógica que él mismo trajo—, no el path del vault.
+  return {
+    destination: pedido.destination,
+    namespace: (typeof namespace === 'string' && namespace !== '') ? namespace : null,
+    scopes: [...pedido.pedidos],
+    keys: [...pedido.claves],
+    env: { ...acumulado },
+  };
+}
+
 module.exports = {
   // Los 10 símbolos históricos — ninguno se quita ni cambia de forma.
   loadIntoEnv,
@@ -2164,6 +2613,17 @@ module.exports = {
   // single-flight. Es el único camino donde la coalescencia es observable.
   resolveInstanceVaultAsync,
   INSTANCE_VAULT_ERROR_CODES,
+  // #5798 — snapshot AISLADO por lanzamiento, con destino explicito. Tercera
+  // integrante de la familia sin efectos sobre el ambiente: nunca toca
+  // `process.env` ni el archivo, y su superficie es la del destino y nada mas.
+  // `SNAPSHOT_DESTINATIONS` se exporta para que el cableado de #5799 declare el
+  // destino contra el catalogo en vez de escribir un literal que se
+  // desincroniza; `redactSnapshot` es la unica forma en que un snapshot (o su
+  // fallo) puede entrar a un log.
+  createCredentialSnapshot,
+  SNAPSHOT_DESTINATIONS,
+  SNAPSHOT_ERROR_CODES,
+  redactSnapshot,
   DEFAULT_MAX_CACHED_TENANTS,
   // B2.7 — expuesto SÓLO para el test que verifica que la raíz de la config la
   // fija el código y no el entorno. No tiene call-site productivo fuera de

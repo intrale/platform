@@ -108,6 +108,16 @@
 
 const { redactAll } = require('./sherlock-audit-jsonl');
 
+// #6498 CA-11 — El copy del sello de evidencia se define UNA sola vez, en
+// `lib/sello-evidencia-state.js`, y lo consumen dos superficies: el badge del
+// dashboard y esta ficha. Copiar el literal aca reintroduciria justo el defecto
+// que cerro #6190 (copy divergente entre canales).
+//
+// DIRECCION OBLIGATORIA del require: decision-card.js -> sello-evidencia-state.js.
+// NUNCA al reves: el resolver es puro y no puede arrastrarse la superficie de
+// Telegram (saneo, presupuesto de caracteres), y al reves seria un ciclo.
+const { SELLO_COPY } = require('./sello-evidencia-state');
+
 // -----------------------------------------------------------------------------
 // Caps de longitud (CA-A2 / UX §1.6).
 //
@@ -763,7 +773,16 @@ const RE_DEP = /dependency[_\s]block|dependencia|depende de|bloqueado por #|espe
 
 const INFRA_CATEGORIAS = Object.freeze([
     'network_unreachable', 'backend_timeout', 'backend_5xx', 'rate_limit', 'auth_failure',
+    // #6498 CA-11 — escalada del sellado de evidencia de QA tras agotar los
+    // re-encolados automaticos (#6496). Mapea al TIPO existente `infra`: no se
+    // amplia la lista congelada de 7 tipos.
+    'sello_evidencia',
 ]);
+
+// #6498 — Solo la ESCALADA genera ficha. `sellado`, `caduco` y `re-sellando`
+// son dashboard-only a proposito (CA-11): un pipeline que se cura solo pero
+// avisa cada vez que se cura no resuelve el problema, lo renombra.
+const RE_SELLO = /no se pudo sellar|sellar la evidencia|sello de la evidencia|evidencia sin sellar|veredicto caduco|caducidad del sello/i;
 
 function clasificar(n) {
     if (n.tipo) return n.tipo;
@@ -780,6 +799,10 @@ function clasificar(n) {
         return n.deps.length > 0 ? 'dependencia' : 'indeterminado';
     }
     if (RE_CIRCUIT.test(txt)) return 'circuit';
+    // #6498 CA-11 — antes de RE_INFRA/RE_REBOTE: "no se pudo sellar la
+    // evidencia" es una causa propia con copy propio, no un timeout de
+    // proveedor ni un rebote de fase.
+    if (RE_SELLO.test(txt)) return 'infra';
     // `unknown` NO usa la plantilla de infra: cae en indeterminado (UX §4.4).
     if (INFRA_CATEGORIAS.includes(n.reasonCategory)) return 'infra';
     if (n.reasonCategory === 'unknown') return 'indeterminado';
@@ -897,6 +920,9 @@ const COPY = deepFreeze({
     },
     infra: {
         que_se_decide: '¿Reintentamos {ref} ahora, o lo pasamos a otro proveedor?',
+        // #6498 CA-11 — la escalada del sellado no se decide entre proveedores.
+        que_se_decide_sello: '¿Pedimos la verificación de {ref} de nuevo, o lo mandamos a corregir?',
+        ejemplo_sello: 'verificar',
         que_se_decide_credencial: '¿Renovás la credencial, o pasamos {ref} a otro proveedor?',
         costo_solo: 'Mientras tanto no avanza y nadie lo va a mover solo.',
         costo_varios: 'Los {n} trabajos frenados por lo mismo tampoco avanzan.',
@@ -1006,6 +1032,13 @@ const OPCION = deepFreeze({
     renovar_credencial: {
         etiqueta: 'Renovar la credencial',
         consecuencia: 'Cargás la credencial nueva y el trabajo reintenta solo.',
+    },
+    // #6498 CA-11 — escalada del sellado de evidencia. Las opciones de infra
+    // hablan de proveedores de IA y aca no aplica ninguna: cambiar de proveedor
+    // no arregla una verificación que no queda firme.
+    repetir_verificacion: {
+        etiqueta: 'Pedir la verificación de nuevo',
+        consecuencia: 'Se vuelve a verificar el código como está hoy. Si sale bien, la evidencia queda firme sola.',
     },
     mandar_corregir: {
         etiqueta: 'Mandarlo a corregir',
@@ -1220,11 +1253,14 @@ const INFRA_POR_QUE = deepFreeze({
     backend_5xx: 'El proveedor de IA está devolviendo errores.',
     rate_limit: 'El proveedor de IA está limitando el ritmo de pedidos.',
     auth_failure: 'El proveedor de IA no está aceptando las credenciales.',
+    // #6498 CA-11 — copy IMPORTADO de la fuente unica, jamas reescrito aca.
+    sello_evidencia: SELLO_COPY.escalado,
 });
 
 function inferirCategoriaInfra(n) {
     if (INFRA_CATEGORIAS.includes(n.reasonCategory)) return n.reasonCategory;
     const t = `${n.reason} ${n.question}`;
+    if (RE_SELLO.test(t)) return 'sello_evidencia';
     if (/credencial|auth[_\s-]?failure|unauthorized|401|403/i.test(t)) return 'auth_failure';
     if (/rate[_\s-]?limit|cuota|quota|429/i.test(t)) return 'rate_limit';
     if (/sin salida a internet|network|unreachable|dns|sin conectividad/i.test(t)) return 'network_unreachable';
@@ -1235,12 +1271,24 @@ function inferirCategoriaInfra(n) {
 function fichaInfra(n) {
     const cat = inferirCategoriaInfra(n);
     const credencial = cat === 'auth_failure';
+    const sello = cat === 'sello_evidencia';
     const cuantos = n.frenadosPorLoMismo;
     const vars = { issue: n.issue, ref: refIssue(n.issue), n: cuantos, edad: n.ultimoIntentoEdad };
 
     let opciones;
     let sinReco = '';
-    if (credencial) {
+    if (sello) {
+        // #6498 CA-11 — la escalada llega DESPUES de agotar los re-encolados
+        // automaticos: el pipeline ya intento curarse solo y no pudo. La
+        // recomendacion no depende de ningun dato externo, asi que se afirma
+        // sin condicionales.
+        opciones = [
+            opcion(OPCION.repetir_verificacion, vars,
+                'Los intentos automáticos se agotaron, pero un pedido nuevo arranca el contador de cero.'),
+            opcion(OPCION.mandar_corregir, vars, null),
+            opcion(OPCION.sacar_de_ola, vars, null),
+        ];
+    } else if (credencial) {
         // ★ En credencial rechazada la recomendación es siempre la misma y no
         // depende de ningún dato externo: ningún proveedor alternativo arregla
         // una credencial rechazada.
@@ -1282,7 +1330,10 @@ function fichaInfra(n) {
     return {
         por_que: INFRA_POR_QUE[cat],
         que_se_decide: interp(
-            credencial ? COPY.infra.que_se_decide_credencial : COPY.infra.que_se_decide, vars,
+            sello ? COPY.infra.que_se_decide_sello
+                : credencial ? COPY.infra.que_se_decide_credencial
+                    : COPY.infra.que_se_decide,
+            vars,
         ),
         opciones,
         evidencia,
@@ -1290,7 +1341,7 @@ function fichaInfra(n) {
             ? interp(COPY.infra.costo_varios, vars)
             : COPY.infra.costo_solo,
         sin_reco: sinReco,
-        ejemplo: credencial ? 'renovar' : COPY.infra.ejemplo,
+        ejemplo: sello ? COPY.infra.ejemplo_sello : credencial ? 'renovar' : COPY.infra.ejemplo,
     };
 }
 
