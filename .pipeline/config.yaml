@@ -1179,6 +1179,31 @@ pipeline:
   # vault.
   credential_snapshot_enabled: false
 
+  # (#5796) RETRY DE CREDENCIAL — rollout gradual.
+  #
+  # Abre el coordinador de #5794 en los caminos reales del Pulpo: agente
+  # normal, Commander, intento primario y cada eslabón de fallback. Cuando un
+  # provider RECHAZA la credencial (señal tipada de #5795 — nunca una heurística
+  # sobre el texto del log), la operación raíz invalida el scope acotado,
+  # re-resuelve el snapshot y reintenta EXACTAMENTE UNA vez. Un segundo rechazo
+  # falla cerrado: no hay tercer intento y no hay bucle de invalidación.
+  #
+  # GATE PROPIO, A PROPÓSITO — no reusa `credential_snapshot_enabled`. Si
+  # colgaran del mismo booleano, abrir el snapshot encendería también el
+  # re-spawn del agente: dos features de credenciales entrando juntas a
+  # producción es exactamente el cambio que nadie puede diagnosticar cuando algo
+  # sale mal.
+  #
+  # DEPENDENCIA PRÁCTICA: sin `credential_snapshot_enabled: true` la
+  # re-resolución no tiene material nuevo que traer (el snapshot degrada al env
+  # del padre), así que este gate sólo aporta con el de snapshot ya abierto.
+  #
+  # Fail-closed: sólo el booleano `true` exacto lo abre.
+  #
+  # Con el gate CERRADO (default) el camino es no-op bit a bit: mismo número de
+  # spawns, mismo env, mismo audit y ni un evento de retry emitido.
+  credential_retry_enabled: false
+
   # (#3083 / CA-7 / SEC-6) Retención forense del audit trail (activity-log.jsonl).
   #
   # Define cuántos días de logs append-only conservamos antes de rotar /

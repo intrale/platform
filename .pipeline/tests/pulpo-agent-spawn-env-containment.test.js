@@ -335,11 +335,22 @@ test('los sitios de clase agente pasan por build-child-env (buildChildEnv o stri
         /const envDelIntento = buildChildEnvLib\.stripReservedChildSecrets\(e, attemptProcessEnv\);/.test(FUENTE),
         'H-1/H-2 (#5799): la frontera por intento del commander ya no filtra en el punto de salida.',
     );
-    // #5799 — `buildEnvFor` es ahora un alias de la frontera por intento, y el
-    // primer intento ya no reusa un env precomputado de otro provider.
+    // #5799 — `buildEnvFor` no arma el env por su cuenta: delega en la frontera
+    // por intento, y el primer intento ya no reusa un env precomputado de otro
+    // provider.
+    //
+    // #5796 — esa delegación sigue siendo única, pero ahora pasa por el
+    // coordinador de retry, para que el eslabón de fallback comparta la
+    // operación raíz del turno (y por lo tanto el presupuesto) con el primario.
+    // Lo que este canario protege es la DELEGACIÓN —una sola vía de armado—, no
+    // la forma sintáctica que tenía el alias.
     assert.ok(
-        /const buildEnvFor = \(prov\) => construirEnvCommander\(prov\);/.test(FUENTE),
+        /const buildEnvFor = async \(prov\) => \{[\s\S]{0,1500}?createSnapshot: \(ctx\) => construirEnvCommander\(\{/.test(FUENTE),
         'H-1: buildEnvFor dejó de delegar en la frontera por intento del commander.',
+    );
+    assert.ok(
+        !/const buildEnvFor = async \(prov\) => \{[\s\S]{0,1500}?buildChildEnvLib\.buildChildEnv\(/.test(FUENTE),
+        'H-1 (#5796): buildEnvFor volvió a armar el env por su cuenta en vez de delegar en construirEnvCommander.',
     );
     assert.ok(
         /attemptEnv = preEnvUsable \|\| await buildEnvFor\(/.test(FUENTE),
@@ -381,7 +392,7 @@ test('los sitios de clase agente pasan por build-child-env (buildChildEnv o stri
 async function evaluarConstruirEnvCommander({
     aislamiento, provider, snapshotEnabled = false, snapshotEnv = null,
 }) {
-    const src = bloqueHastaCierre('const construirEnvCommander = async (prov) => {');
+    const src = bloqueHastaCierre('const construirEnvCommander = async (arg) => {');
     const factory = new Function(
         'process', 'ROOT', 'buildChildEnvLib', 'attemptSnapshot', 'commanderEnvIsolation',
         'commanderCfgRoot', 'commanderMP', 'PIPELINE', 'log',
@@ -421,9 +432,9 @@ async function evaluarConstruirEnvCommander({
 async function evaluarEnvDeIntentoAgente({
     skill = 'guru', provider = 'cerebras', snapshotEnabled = false, snapshotEnv = null,
 } = {}) {
-    const src = bloqueHastaCierre('const construirEnvDeIntentoAgente = async () => {');
+    const src = bloqueHastaCierre('const construirEnvDeIntentoAgente = async ({ attempt, provider, operationId } = {}) => {');
     const factory = new Function(
-        'process', 'buildChildEnvLib', 'attemptSnapshot', 'skill', 'dispatchResolution',
+        'process', 'buildChildEnvLib', 'attemptSnapshot', 'skill', 'issue', 'dispatchResolution',
         'cfgRootParaEnv', 'PIPELINE', 'log',
         `${src}\nreturn construirEnvDeIntentoAgente;`,
     );
@@ -443,6 +454,7 @@ async function evaluarEnvDeIntentoAgente({
         buildChildEnvLib,
         attemptSnapshotInyectado,
         skill,
+        '5796',
         { provider, source: 'fallback' },
         { pipeline: { credential_snapshot_enabled: snapshotEnabled } },
         PIPELINE_DIR,
