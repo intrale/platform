@@ -48,6 +48,21 @@ const { missionOlaEtaClientScript } = require('../../lib/mission-ola-eta.js');
 // Función pura compartida con dashboard.js (sin dependencia circular).
 const { computeInfraHealthLevel } = require('../../lib/infra-health-level');
 
+// #5724 CA-4 — Banner "Dispatch suspendido por desync" + copy compartido. El
+// pill del panel Pipeline (views/dashboard/pipeline.js) sólo se dibuja en el
+// catch-all legacy de dashboard.js, al que no apunta ninguna ruta del menú:
+// durante el incidente el dispatch estuvo ~10 h suspendido y esta vista —la que
+// el operador mira— no lo nombraba. El banner es un componente compartido con
+// la ventana Pipeline y su copy sale de lib/desync-copy.js, así ninguna de las
+// superficies puede divergir del resto.
+const desyncCopy = require('../../lib/desync-copy.js');
+const {
+    resolveDesyncStatus,
+    renderDesyncBlockBannerSsr,
+    DESYNC_BLOCK_BANNER_CSS,
+    desyncBlockBannerClientScript,
+} = require('./desync-block-banner.js');
+
 // #3954 EP8-H1 — Store del audit de la bandeja de alertas (ack/snooze). Require
 // defensivo: en tests aislados o checkouts viejos el módulo puede faltar; el
 // renderer degrada a "sin acciones registradas" sin romper.
@@ -61,6 +76,16 @@ try { _alertTrayAudit = require('../../lib/alert-tray-audit'); } catch { /* opci
 // al markup inline equivalente y el home sigue rindiendo — el pipeline no muere.
 let _pipelineRedesign = null;
 try { _pipelineRedesign = require('./pipeline-redesign'); } catch { /* opcional */ }
+// #6459 — Panel «Actividad del Commander» (últimas peticiones + badge de
+// resultado, incluido el nuevo `huerfano`). Hasta este issue el listado sólo lo
+// emitía `generateHTML()` de dashboard.js, que el dispatch sirve ÚNICAMENTE
+// para `/legacy`: en `/`, `/v3` y `/dashboard` — el dashboard que el operador
+// realmente abre — no había ni una ocurrencia de `cmd-result`, así que el badge
+// era código muerto en pantalla (escape #4531, motivo del rebote de QA).
+// Require defensivo como el resto de las vistas: si el módulo no carga, el home
+// degrada a un panel inerte VISIBLE, nunca a página en blanco (CA-A3).
+let _commanderActivity = null;
+try { _commanderActivity = require('./commander-activity'); } catch { /* opcional */ }
 let _quotaExhaustedState = null;
 try { _quotaExhaustedState = require('../../lib/quota-exhausted-state'); } catch { /* opcional */ }
 let _restModeState = null;
@@ -1045,6 +1070,19 @@ function homeStyles() {
 }
 .quota-provider-chip .quota-provider-reason { font-weight: 500; opacity: 0.9; }
 .quota-provider-chip .quota-provider-reset { font-weight: 500; opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+/* #5724 CA-4 — Banner del bloqueo de dispatch por desync allowlist↔ola. Los
+ * estilos viven en views/dashboard/desync-block-banner.js porque el mismo
+ * banner se monta también en la ventana Pipeline: duplicar el CSS acá es como
+ * terminó divergiendo el copy del semáforo entre superficies. */
+${DESYNC_BLOCK_BANNER_CSS}
+
+/* #6459 — Badges de resultado del Commander (.cmd-result-*) + panel de
+ * actividad. El CSS de los badges sale de lib/commander/result-badge.js
+ * (misma constante que interpola el dashboard legacy), así que las dos
+ * superficies no pueden divergir. Si el módulo no cargó, no emitimos nada:
+ * el panel tampoco se monta. */
+${(() => { try { return _commanderActivity ? _commanderActivity.commanderActivityStyles() : ''; } catch { return ''; } })()}
 
 /* #4731 — Health strip: evidencia visible de "no global" (CA-2). */
 .quota-health-strip {
@@ -2145,6 +2183,22 @@ async function killAgent(issue, skill, pipeline, fase, durationMs){
     } catch(e){ showToast('Error: '+e.message, false); }
 }
 
+// #5176 CA-UX-3 — proxy al rótulo canónico (window.__dispatchWindowLabel, que
+// define headerPillsClientScript()). El fallback inline mantiene la pill viva
+// si esta vista se sirviera sin ese bundle: degrada al conteo por issues, nunca
+// tira una excepción dentro del tick del header.
+function plDispatchWindowLabel(allowedIssues, allowedSkills){
+    if(typeof window !== 'undefined' && typeof window.__dispatchWindowLabel === 'function'){
+        return window.__dispatchWindowLabel(allowedIssues, allowedSkills);
+    }
+    const nIssues = Array.isArray(allowedIssues) ? allowedIssues.length : 0;
+    const nSkills = Array.isArray(allowedSkills) ? allowedSkills.length : 0;
+    const parts = [];
+    if(nIssues > 0) parts.push(nIssues + ' issues');
+    if(nSkills > 0) parts.push(nSkills + ' skills');
+    return parts.length ? parts.join(' · ') : '0 issues';
+}
+
 async function tickHeader(){
     const d = await fetchJson('/api/dash/header');
     if(!d) return;
@@ -2157,7 +2211,12 @@ async function tickHeader(){
         const menu = document.getElementById('hdr-mode-menu');
         let label = '🟢 Running';
         if(d.mode==='paused'){ modePill.classList.add('in-mode-paused'); label = '⏸ Pausado'; }
-        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); label = '⏸ Parcial · '+d.allowedIssues.length+' issues'; }
+        // #5176 CA-UX-3 — el rótulo nombra lo que la ventana restringe. Con una
+        // ventana por skill (allowed_skills no vacío, allowed_issues vacío) esta
+        // pill decía '⏸ Parcial · 0 issues', que el operador lee como "pausa
+        // parcial sin nada autorizado → equivale a running normal". Es lo
+        // opuesto: la ventana por skill SÍ acota el dispatch (#3680 CA-A15).
+        else if(d.mode==='partial_pause'){ modePill.classList.add('in-mode-partial'); label = '⏸ Parcial · '+plDispatchWindowLabel(d.allowedIssues, d.allowedSkills); }
         else { modePill.classList.add('in-mode-running'); }
         // Buscar/crear el span de label que NO afecte el menú children.
         let labelSpan = modePill.querySelector('.in-mode-label');
@@ -2308,6 +2367,34 @@ async function tickHeader(){
         const scMem = res.memPercent != null ? Math.round(res.memPercent)+'%' : '—';
         setText('sys-cpu-value', scCpu);
         setText('sys-mem-value', scMem);
+        // #6708 — Disco: espacio LIBRE en GB con el color del umbral vigente.
+        // El SSR ya lo pinta; esto lo mantiene fresco con el polling del header
+        // (mismo slice, un solo endpoint — R-G3). textContent siempre, y el
+        // color sólo si es hex (el estado sale de un JSON en disco).
+        const dEl = document.getElementById('sys-disk-value');
+        const dsk = res.disk;
+        if(dEl){
+            if(dsk && typeof dsk.freeGB === 'number' && isFinite(dsk.freeGB)){
+                const emo = {green:'🟢',yellow:'🟡',orange:'🟠',red:'🔴'}[dsk.level] || '⚪';
+                setText('sys-disk-value', emo+' '+dsk.freeGB.toFixed(1)+' GB');
+                dEl.style.color = (typeof dsk.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(dsk.color))
+                    ? dsk.color : '';
+                const cell = dEl.parentElement;
+                if(cell){
+                    const b = dsk.budget || {};
+                    const escala = (typeof b.green_gb === 'number')
+                        ? 'verde >'+b.green_gb+' · amarillo >'+b.yellow_gb+' · naranja >'+b.orange_gb+' GB libres'
+                        : 'presupuesto sin configurar';
+                    const total = (typeof dsk.totalGB === 'number') ? ' de '+dsk.totalGB+' GB' : '';
+                    const frozen = dsk.frozen ? ' Despacho de build y qa FRENADO por falta de disco.' : '';
+                    cell.title = 'Espacio libre en disco: '+dsk.freeGB.toFixed(1)+' GB'+total
+                        +'. Nivel '+dsk.level+' (disk_budget: '+escala+').'+frozen;
+                }
+            } else {
+                setText('sys-disk-value', '—');
+                dEl.style.color = '';
+            }
+        }
     }
     // #3725 — Salud de infra: pulpo UP/DOWN + last_ping desde el header slice.
     // textContent siempre (anti-XSS). Sin exponer secretos (CA-3725.3).
@@ -3019,6 +3106,11 @@ async function tickQuotaExhausted(){
     _quotaExhaustedLastData = d;
     renderQuotaExhaustedBanner(d);
 }
+
+// ====== #5724 CA-4 — Banner del bloqueo de dispatch por desync =============
+// La hidratación (renderDesyncBlockBanner + tickDesyncBlock) es la MISMA que
+// usa la ventana Pipeline; vive en views/dashboard/desync-block-banner.js.
+${desyncBlockBannerClientScript()}
 
 // ====== #3013 — Banner real-snapshot (4 estados) ============================
 //
@@ -4194,6 +4286,12 @@ const POLLS = [
     // (CA-15).
     { fn: tickQuotaSnapshot, ms: 60000 },
     { fn: tickActive, ms: 2000 },
+    // #5724 CA-4 — banner de dispatch suspendido por desync allowlist↔ola.
+    // 15s: el estado no cambia rápido (lo escribe el Pulpo al evaluar la
+    // divergencia) pero es un bloqueo total del pipeline — no puede quedar
+    // detrás de un poll de 60s, y la antigüedad ("hace 10 h 33 min") se
+    // recalcula server-side en cada respuesta.
+    { fn: tickDesyncBlock, ms: 15000 },
     { fn: tickRecent, ms: 10000 },
     { fn: tickQueue, ms: 5000 },
     // #3492 — ETA de la ola actual (p50/p75/p90). TTL del cache server-side
@@ -4857,13 +4955,31 @@ function _validateSelected(opts) {
 
 // Composer: resuelve TODO el I/O (markers, os.uptime) y arma el `state` plano
 // que consumen las sub-funciones puras. Es el único lugar con efectos.
+// #5724 CA-4 — Estado de sync allowlist↔ola para el SSR. El caller (las rutas)
+// lo pasa precomputado; si no viene, lo leemos acá para que NINGUNA superficie
+// que renderice la home quede sin el banner por olvido del call-site — el
+// criterio ya falló una vez por depender de una superficie que nadie visita.
+// El require es perezoso y envuelto: el slice es read-only pero si el módulo no
+// carga, la home renderiza igual (sin banner) en vez de romper.
+function _collectDesyncStatus(opts) {
+    return resolveDesyncStatus(opts && opts.desyncStatus);
+}
+
 function collectHomeState(opts) {
     const _opts = opts || {};
     const pipelineDir = path.join(__dirname, '..', '..'); // .pipeline/
     const nowIso = new Date().toISOString();
     const quotaState = _opts.quotaState || getInitialQuotaState();
+    // Seam acotado para verificar el HTML servido sin depender del estado
+    // operativo de la máquina que corre el test. Sólo se admite `disk`: el
+    // resto de `system` continúa bajo la whitelist fija de esta vista.
+    const injectedDisk = _opts.system && Object.prototype.hasOwnProperty.call(_opts.system, 'disk')
+        ? _opts.system.disk
+        : undefined;
     return {
         quotaState,
+        // #5724 CA-4 — dispatch suspendido por divergencia allowlist↔ola.
+        desyncStatus: _collectDesyncStatus(_opts),
         currentView: typeof _opts.currentView === 'string' ? _opts.currentView : 'home',
         unknownViewRequested: _opts.unknownViewRequested === true,
         // #3954 — semáforo global + supresiones de alertas + selección deep-link.
@@ -4880,9 +4996,40 @@ function collectHomeState(opts) {
         // process.env (CA-3725.6).
         system: {
             cpuPct: null, memPct: null, diskPct: null,
+            // #6708 — Disco: el guardián lo mide en cada tick del Pulpo y lo
+            // persiste; acá sólo se LEE (medir con `fsutil` en cada render de
+            // la página costaría un syscall bloqueante por request). Se resuelve
+            // en SSR para que el dato esté a la vista aunque el polling del
+            // header todavía no haya corrido — el tick posterior lo refresca.
+            disk: injectedDisk !== undefined ? injectedDisk : _collectDiskStatus(pipelineDir),
             uptimeS: Math.floor(os.uptime()),
         },
     };
+}
+
+// --- #6708 — Estado de disco para la system card ---------------------------
+// Lee `disk-guard-state.json` por el módulo dueño del formato (nunca parseando
+// el archivo a mano acá). Devuelve `null` cuando todavía no hay medición
+// (Pulpo recién arrancado o `disk_budget.enabled: false`): el render muestra
+// '—' en vez de ceros, que se leerían como "disco lleno".
+function _collectDiskStatus(pipelineDir) {
+    try {
+        const dg = require('../../lib/disk-guard');
+        const st = dg.readState({ pipelineDir });
+        if (!st || !st.measured_at || !Number.isFinite(st.free_gb)) return null;
+        const level = st.level || 'unknown';
+        return {
+            level,
+            // #6708 (rebote rev-1) — rótulo textual del escalón (ver disk-guard).
+            label: dg.levelLabel(level),
+            color: dg.LEVEL_COLORS[level] || dg.LEVEL_COLORS.unknown,
+            freeGB: st.free_gb,
+            totalGB: Number.isFinite(st.total_gb) ? st.total_gb : null,
+            frozen: !!st.frozen,
+            budget: st.budget || null,
+            measuredAt: st.measured_at,
+        };
+    } catch { return null; }
 }
 
 // --- Sub-función pura: brand bar V3 (logo + ambiente + build status) --------
@@ -5214,22 +5361,79 @@ function renderQueueDetailed(state) {
 function renderSystemCard(state) {
     const sys = (state && state.system) || {};
     const pct = (v) => (v == null || isNaN(v)) ? '—' : (Math.round(v) + '%');
+    const disk = _diskCellModel(sys);
     const cells = [
         { id: 'sys-cpu-value', label: 'CPU', val: pct(sys.cpuPct), tip: 'Uso de CPU del host (%). Fuente: /api/dash/header.' },
         { id: 'sys-mem-value', label: 'RAM', val: pct(sys.memPct), tip: 'Uso de memoria del host (%). Fuente: /api/dash/header.' },
-        { id: 'sys-disk-value', label: 'Disco', val: pct(sys.diskPct), tip: 'Uso de disco del host (%).' },
+        // #6708 — El CA pide el ESPACIO LIBRE, no el % usado: el operador decide
+        // sobre GB disponibles, y el color es el del umbral vigente de
+        // `disk_budget`. El emoji va delante para que la severidad no dependa
+        // sólo del color (WCAG: severidad por forma + texto, no sólo color).
+        { id: 'sys-disk-value', label: 'Disco libre', val: disk.val, tip: disk.tip, color: disk.color },
         { id: 'sys-uptime-value', label: 'Uptime', val: _fmtUptimeSsr(sys.uptimeS), tip: 'Tiempo encendido del host.' },
     ];
-    const cellHtml = cells.map(c => `
+    const cellHtml = cells.map(c => {
+        const style = _safeCssColor(c.color) ? ` style="color:${escapeHtmlAttr(c.color)}"` : '';
+        return `
         <div class="sys-cell" title="${escapeHtmlAttr(c.tip)}">
           <span class="sys-cell-label">${escapeHtmlText(c.label)}</span>
-          <span class="sys-cell-value" id="${c.id}">${escapeHtmlText(c.val)}</span>
-        </div>`).join('');
+          <span class="sys-cell-value" id="${c.id}"${style}>${escapeHtmlText(c.val)}</span>
+        </div>`;
+    }).join('');
     return `
     <section class="system-card" aria-label="Recursos del sistema">
       <h2 class="in-section-title"><span class="in-section-title-icon">🖥</span> Recursos del host</h2>
       <div class="sys-grid">${cellHtml}</div>
     </section>`;
+}
+
+// --- #6708 — Celda de disco de la system card ------------------------------
+// El indicador se pinta acá, en el home V3 que es la pantalla que abre el
+// operador. Un intento previo lo colgó del bloque `resourcesHTML` de
+// dashboard.js, que está asignado pero nunca se interpola en la salida: el
+// gauge existía en el código y no llegaba a ninguna pantalla servida.
+const _DISK_EMOJI = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴', unknown: '⚪' };
+// #6708 (rebote rev-1) — Espejo de LEVEL_LABELS de lib/disk-guard.js. Fallback
+// para estados persistidos antes de que el modelo incluyera `label`.
+const _DISK_LABEL = { green: 'NORMAL', yellow: 'ATENCIÓN', orange: 'ALERTA', red: 'CRÍTICO', unknown: 'SIN DATO' };
+
+// Sólo hex se interpola como color inline. El mapa de disk-guard está
+// congelado, pero el estado se lee de un JSON en disco: si alguien lo edita a
+// mano, un `color` arbitrario no debe poder inyectar CSS en el atributo style.
+function _safeCssColor(c) {
+    return typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c);
+}
+
+// Modelo de la celda: valor visible, tooltip explicativo y color del umbral.
+// Sin medición devuelve '—' y SIN color — no inventa un verde que se
+// leería como "hay lugar de sobra" cuando en realidad no se sabe.
+function _diskCellModel(sys) {
+    const d = (sys && sys.disk) || null;
+    if (!d || !Number.isFinite(d.freeGB)) {
+        // Sin medición se mantiene el guión pelado (contrato ya fijado por los
+        // tests de la celda): un "SIN DATO" acá sería redundante con el tooltip
+        // y la fila ya está rotulada "Disco libre".
+        return { val: '—', color: null, level: 'unknown',
+                 tip: 'Espacio libre en disco. Sin medición todavía · el guardián lo mide en cada tick del Pulpo.' };
+    }
+    const level = typeof d.level === 'string' ? d.level : 'unknown';
+    const emoji = _DISK_EMOJI[level] || _DISK_EMOJI.unknown;
+    const b = d.budget || {};
+    const escala = Number.isFinite(b.green_gb)
+        ? `verde >${b.green_gb} · amarillo >${b.yellow_gb} · naranja >${b.orange_gb} GB libres`
+        : 'presupuesto sin configurar';
+    const total = Number.isFinite(d.totalGB) ? ` de ${d.totalGB} GB` : '';
+    const frozen = d.frozen ? ' Despacho de build y qa FRENADO por falta de disco.' : '';
+    // #6708 (rebote rev-1) — el valor lleva el escalón como TEXTO, no sólo el
+    // color. La fila ya está rotulada "Disco libre", así que acá alcanza con
+    // valor + escalón (el rótulo no se repite).
+    const label = (typeof d.label === 'string' && d.label) ? d.label : (_DISK_LABEL[level] || _DISK_LABEL.unknown);
+    return {
+        val: emoji + ' ' + d.freeGB.toFixed(1) + ' GB · ' + label,
+        color: d.color,
+        level,
+        tip: `Espacio libre en disco: ${d.freeGB.toFixed(1)} GB${total}. Nivel ${level} (disk_budget: ${escala}).${frozen}`,
+    };
 }
 
 // =============================================================================
@@ -5632,7 +5836,11 @@ function renderNowColumn(state) {
       <div class="active-list mz-now-list" id="active-list"></div>
       <div class="active-empty mz-now-empty" id="active-empty" style="display:none">
         <div class="active-empty-icon">⏸</div>
-        <div class="active-empty-msg">No hay agentes corriendo. Verificar pausa parcial, cola y blocked:dependencies.</div>
+        <!-- #5724 CA-4 — el texto del vacío depende de POR QUÉ está vacío.
+             Con el dispatch suspendido por desync, mandar a revisar pausa
+             parcial / cola / blocked:dependencies manda al operador a mirar
+             donde no está el problema. -->
+        <div class="active-empty-msg">${escapeHtmlText(desyncCopy.buildDesyncPresentation(state && state.desyncStatus).emptyState)}</div>
       </div>
     </section>`;
 }
@@ -5667,6 +5875,25 @@ function renderWaveBoard(state) {
         ℹ️ El # de cada issue enlaza a GitHub. Se listan todos los issues de la ola, sin truncar (límite 3 agentes concurrentes).
       </div>
     </section>`;
+}
+
+// #6459 — Panel «Actividad del Commander» del home V3. VISIBLE: es la única
+// superficie donde el operador ve el resultado de cada petición, y por lo tanto
+// la única donde el badge `huerfano` cumple CA-9 («se ve renderizando el
+// dashboard, no leyendo el código»). Va en el flujo principal, NO en el sink
+// oculto de diagnóstico — un badge dentro de `hidden` es exactamente el mismo
+// no-render que el issue viene a cerrar.
+//
+// Degradación (CA-A3 / CA-14): si el módulo no cargó o el render tira, el panel
+// cae a un fallback inerte VISIBLE con la causa. Un panel que desaparece en
+// silencio se lee como «no hubo peticiones», que es la lectura falsa.
+function renderCommanderActivityPanel() {
+    if (!_commanderActivity) return '';
+    try { return _commanderActivity.renderCommanderActivity({}); }
+    catch (e) {
+        try { return _commanderActivity.renderInert((e && e.message) || 'error de render'); }
+        catch { return ''; }
+    }
 }
 
 // #4227 (CA-2) — La sección colapsable «🔎 Diagnóstico y métricas detalladas»
@@ -5716,6 +5943,8 @@ function renderHomeHTML(opts) {
     const state = collectHomeState(_opts);
     const quotaState = state.quotaState;
     const quotaBannerHtml = renderQuotaBannerSsr(quotaState);
+    // #5724 CA-4 — banner del bloqueo de dispatch por desync (SSR real).
+    const desyncBlockBannerHtml = renderDesyncBlockBannerSsr(state.desyncStatus);
     const currentView = state.currentView;
     const unknownViewRequested = state.unknownViewRequested;
 
@@ -5777,6 +6006,12 @@ ${renderStaleBanner()}
     ${renderControlBar(state)}
   </header>
 
+  ${/* #5724 CA-4 — Dispatch suspendido por desync allowlist↔ola. Va PRIMERO,
+       arriba del banner de cuota: un dispatch suspendido explica el 0 en vuelo
+       aunque haya cuota de sobra en todos los proveedores, que es exactamente
+       el escenario del incidente (Anthropic al 0% de consumo, cero agentes). */ ''}
+  ${desyncBlockBannerHtml}
+
   ${quotaBannerHtml}
 
   <!--
@@ -5822,6 +6057,7 @@ ${renderStaleBanner()}
         ${renderNowColumn(state)}
         ${renderWaveBoard(state)}
       </div>
+      ${renderCommanderActivityPanel()}
       ${renderDiagnostics(state)}
     </div>
 
@@ -5889,7 +6125,12 @@ module.exports = {
     renderMissionBanner,
     renderSystemQuotaPanel,
     renderNowColumn,
+    // #5724 CA-4 — banner del bloqueo de dispatch (exportado para test unitario)
+    renderDesyncBlockBannerSsr,
     renderWaveBoard,
+    // #6459 — panel de actividad del Commander (badge de resultado en la
+    // superficie que el operador realmente abre). Exportado para test aislado.
+    renderCommanderActivityPanel,
     renderDiagnostics,
     // #4249/#4533 — matriz de cuota por proveedor × ventana (Bloque A): fuente
     // única + helpers puros expuestos para test aislado del render por proveedor.

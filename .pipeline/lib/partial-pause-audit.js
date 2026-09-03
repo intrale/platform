@@ -71,6 +71,23 @@ const AUTHORIZED_BY_STATIC = Object.freeze([
     'resume:dashboard',      // /dashboard/wave/resume → resumeAll
     'dispatch:dashboard',    // /dashboard/wave/dispatch → realign de la ola activa
     'dashboard:roadmap:allowlist', // #4437: editor de allowlist en la ventana Roadmap
+    // #5399 — restart.js preservando la pausa total (`.paused`) a través de un
+    // reinicio. NO habilita removals de allowlist: `preserveFullPause` audita con
+    // `previous === current`, así que su diff nunca tiene `removed`. Sin este
+    // valor en el enum, `validateAuthorizedBy` devolvía `authorized_by_not_in_enum`
+    // y la entry de preservación quedaba como `action: 'reject'` — el CA-13
+    // fallaba en silencio. Prohibido usarlo en un call-site que mute la allowlist.
+    'restart:preserve-pause',
+    // #5923 — botones degradados a `callback_data` en la alerta de "pausa
+    // parcial trabada". El operador humano ya fue autorizado fail-closed por
+    // `from.id` contra la allowlist del listener (listener-telegram.js:831-843)
+    // ANTES de que el handler invoque nada; este valor traza que la mutación
+    // entró por ese camino. Es un origen de CLASE, no de identidad: el `from.id`
+    // concreto viaja por `justification`/`extra` (trazabilidad fina) para no
+    // ensanchar el enum con un valor por operador. Habilita removals porque
+    // `cancel-partial-pause` ES un removal masivo deliberado del operador,
+    // equivalente al `resume:operator` que ya está autorizado.
+    'telegram:operator',
 ]);
 
 // `recursive-deps:from-<N>` donde N es el número del issue padre (>0).
@@ -234,8 +251,19 @@ function pipelineDir() {
     return path.resolve(__dirname, '..');
 }
 
+// #5110 (D3) — el audit trail de la allowlist es estado operativo y se
+// namespacea con ella: cada proyecto tiene su propia cadena de hashes. Mezclar
+// mutaciones de dos proyectos en un JSONL encadenado haría que el chain de uno
+// dependiera de escrituras del otro (y que un rollback de proyecto rompiera la
+// verificación del vecino).
+function stateDir() {
+    return require('./project-context').stateDir();
+}
+
+// El directorio lo crea `audit-log.appendChained` (`audit-log.js:267`), así que
+// acá sólo se resuelve la ruta — igual que antes de #5110.
 function auditFile() {
-    return path.join(pipelineDir(), 'audit', 'partial-pause-mutations.jsonl');
+    return path.join(stateDir(), 'audit', 'partial-pause-mutations.jsonl');
 }
 
 // -----------------------------------------------------------------------------
@@ -276,10 +304,23 @@ function emitBackfillIfNeeded() {
         if (err.code !== 'ENOENT') throw err;
     }
     if (existed) return { emitted: false };
+
+    // #5110 — el backfill registra un INCIDENTE REAL del proyecto host (Ola
+    // N+11, 2026-05-29). Con el estado namespaceado, un proyecto nuevo abre su
+    // propio JSONL vacío: emitir el backfill ahí le inventaría un incidente que
+    // nunca ocurrió y arrancaría su cadena de hashes con historia ajena.
+    // Se emite SOLO en el namespace del host.
+    const projectContext = require('./project-context');
+    const projectId = projectContext.currentProjectIdOrNull();
+    if (projectContext.namespaceEnabled() && projectId !== null && projectId !== projectContext.HOST_PROJECT_ID) {
+        return { emitted: false, reason: 'backfill es historia del host' };
+    }
+
     // Escribir backfill directamente vía appendChained — la entry se hashea
     // como cualquier otra. El campo `_backfill: true` viaja dentro del
     // payload encadenado, así que es inmutable al igual que el resto.
-    auditLog.appendChained({ file, entry: { ...INCIDENT_BACKFILL } });
+    // `projectId` se estampa como en cualquier otra entry (SEC-5).
+    auditLog.appendChained({ file, entry: { ...INCIDENT_BACKFILL, projectId } });
     return { emitted: true };
 }
 
@@ -316,9 +357,22 @@ function appendMutation({ source, action, previous, current, authorizedBy, justi
     const diff = computeDiff(previous, current);
     const validAction = ['write', 'reject', 'clear'].includes(action) ? action : 'write';
 
+    // #5110 · SEC-5 — `projectId` en cada entry, tomado SIEMPRE del contexto y
+    // NUNCA de un argumento (ni de `extra`: el merge de abajo no pisa claves ya
+    // presentes en `entry`). Si viniera por parámetro, un caller podría firmar
+    // una mutación como si fuera de otro proyecto.
+    //
+    // Se usa la variante no-throw a propósito: el gate de escritura que debe
+    // fallar cerrado ante contexto ambiguo es `requireAuthorization()` en la
+    // fachada, aguas arriba. Que el audit tire acá sólo lograría perder el
+    // registro de una mutación que igual va a ocurrir — lo contrario de lo que
+    // quiere un audit trail.
+    const projectId = require('./project-context').currentProjectIdOrNull();
+
     const entry = {
         timestamp: new Date().toISOString(),
         pid: process.pid,
+        projectId,
         source: normalizeSource(source),
         action: validAction,
         previous: Array.isArray(previous) ? [...previous] : [],

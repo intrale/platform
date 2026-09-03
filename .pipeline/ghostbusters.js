@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // ghostbusters.js — Caza fantasmas del sistema. Unifica /cleanup y /checkup.
 //
@@ -34,6 +37,9 @@
 //   node ghostbusters.js --agents        → solo consistencia agentes
 //   node ghostbusters.js --env           → solo entorno
 //   node ghostbusters.js --branches      → solo branches agent/* stale
+//   node ghostbusters.js --cap=N         → máximo N worktrees borrados por corrida
+//   node ghostbusters.js --no-cap        → sin techo de borrado (#6708, presión de disco)
+//   node ghostbusters.js --age-days=N    → umbral de antigüedad para abandono
 //
 // API programática:
 //   const gb = require('./ghostbusters');
@@ -182,6 +188,11 @@ function parseCliArgs(argv) {
     m = a.match(/^--age-days=(\d+)$/);
     if (m) opts.ageThresholdDays = parseInt(m[1], 10);
   }
+  // #6708 — `--no-cap` levanta el techo de 5 worktrees por corrida. Lo usa el
+  // guardián de disco al cruzar el umbral naranja: con 100+ worktrees
+  // reclamables, 5 por hora no le gana a la tasa de creación. Gana sobre
+  // `--cap=N` si vienen los dos: es la orden más explícita.
+  if (flags.has('--no-cap')) opts.worktreeCap = gbWorktrees.NO_CAP;
   return opts;
 }
 
@@ -360,7 +371,12 @@ function findGradleZombies(procs) {
 
 function pipelineHasActiveWork(issueNum) {
   const activeStates = ['trabajando', 'pendiente', 'listo'];
-  const fases = ['validacion', 'dev', 'build', 'verificacion', 'aprobacion', 'entrega'];
+  // #6708 — `linteo` faltaba en esta lista desde que se agregó la fase a
+  // `config.yaml` (pipelines.desarrollo.fases). Un worktree cuyo issue estaba
+  // en `linteo/trabajando` no quedaba protegido por trabajo en vuelo: pasaba a
+  // depender del guard de "archivos sin commitear", que este mismo issue
+  // afloja. Sin este arreglo, aflojar el guard abriría un agujero real.
+  const fases = ['validacion', 'dev', 'build', 'verificacion', 'linteo', 'aprobacion', 'entrega'];
   for (const fase of fases) {
     for (const estado of activeStates) {
       const dir = path.join(PIPELINE, 'desarrollo', fase, estado);
@@ -924,7 +940,12 @@ function run(opts = {}) {
       diskBytes: dirSizeBytes(w.path),
     }));
     const entries = gbWorktrees.sweepWorktrees(candidates, {
-      cap: opts.worktreeCap || gbWorktrees.DEFAULT_CAP,
+      // #6708 — `|| DEFAULT_CAP` convertía `NO_CAP` en 5 sólo si fuera falsy;
+      // Infinity es truthy, así que pasa derecho. Se deja explícito para que
+      // nadie "simplifique" a `Number(...)` y rompa el modo sin cap.
+      cap: opts.worktreeCap === gbWorktrees.NO_CAP
+        ? gbWorktrees.NO_CAP
+        : (opts.worktreeCap || gbWorktrees.DEFAULT_CAP),
       dryRun,
       removeImpl: (p) => removeWorktree(p),
       logger: log,

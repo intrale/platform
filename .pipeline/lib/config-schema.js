@@ -157,12 +157,14 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'circuit_breaker',
     'e2e_evidence',
     'handoff',
+    'model_propagation_rollout',
     'firma_operador',
     'operator_signoff',
     'operator_signature',
     'deliverable_gate',
     'gates',
     'wave_auto_transition',
+    'brazo',
     'commander_products',
     'cross_repo_delivery',
     'architect.enabled',
@@ -170,7 +172,7 @@ const AUTHORITY_PREFIXES = Object.freeze([
     'architect.go_live_date',
 ]);
 
-// Clasificación completa de las 58 secciones top-level de `config.yaml`
+// Clasificación completa de las secciones top-level de `config.yaml`
 // (#5173 CA-6). Clave = path punteado (admite `*` como comodín de un segmento);
 // valor = 'kernel' | 'producto' | 'autoridad'. El match MÁS ESPECÍFICO gana, así
 // una sub-clave puede partirse del lado opuesto a su sección.
@@ -183,11 +185,27 @@ const SIDE_MAP = Object.freeze({
     intake: 'kernel',
     resource_limits: 'kernel',
     timeouts: 'kernel',
+    delivery: 'kernel',
+    worktree_provenance: 'kernel',
     desync: 'kernel',
     precheck: 'kernel',
     anomaly_detector: 'kernel',
+    // #5337 — cadencia del recordatorio de bloqueos humanos. Es mecanismo del
+    // pipeline (cuándo insiste), no política de producto.
+    human_block_reminder: 'kernel',
+    // #6611 — re-chequeo automatico de bloqueos needs-human verificables. Es
+    // mecanismo del pipeline (cada cuanto re-evalua y cuantos reintentos
+    // tolera), no politica de producto.
+    human_block_auto_recheck: 'kernel',
+    // #6118 — cuándo se chequean las dependencias faltantes y cuánto dura el
+    // silencio del aviso. Es mecanismo del pipeline (cada cuánto insiste), no
+    // política de producto.
+    partial_pause_deps: 'kernel',
     cost_anomaly_alert: 'kernel',
     ghostbusters_cron: 'kernel',
+    // #6708 — presupuesto de disco del guardián. Es mecanismo del pipeline
+    // (cuánto margen necesita la máquina para operar), no política de producto.
+    disk_budget: 'kernel',
     rest_mode: 'kernel',
     staleness: 'kernel',
     watchdog: 'kernel',
@@ -210,12 +228,21 @@ const SIDE_MAP = Object.freeze({
     sherlock_wait_budget_ms: 'kernel',
     telegram_burst_window_ms: 'kernel',
     telegram_outbound: 'kernel',
+    // #5573 — política de reenvío de las PARTES DE AUDIO, separada de la de texto.
+    // Es mecanismo de entrega del canal, no producto → kernel.
+    telegram_voice_outbound: 'kernel',
     deliverable_notifications: 'kernel',
     'deliverable_notifications.skills': 'producto',       // whitelist de skills del producto
     'deliverable_notifications.attachments_per_skill': 'producto',
     cua: 'kernel',
     kernel: 'kernel',
+    // #5352 — el vault direcciona secretos de INFRAESTRUCTURA por host: es
+    // mecanismo de orquestación, se muda al kernel sin conocer el producto.
+    vault: 'kernel',
     waves: 'kernel',
+    // #5110 — el namespaceo del estado operativo por projectId es mecanismo de
+    // orquestación puro (aislamiento multi-proyecto), no política de producto.
+    operational_state: 'kernel',
     architect: 'kernel',
     'architect.poll_cap_min': 'producto',        // calibración, no gate
     'architect.poll_interval_seconds': 'producto',
@@ -237,12 +264,14 @@ const SIDE_MAP = Object.freeze({
     e2e_evidence: 'autoridad',
     circuit_breaker: 'autoridad',
     handoff: 'autoridad',
+    model_propagation_rollout: 'autoridad',
     firma_operador: 'autoridad',
     operator_signoff: 'autoridad',
     operator_signature: 'autoridad',
     deliverable_gate: 'autoridad',
     gates: 'autoridad',
     wave_auto_transition: 'autoridad',
+    brazo: 'autoridad',
     commander_products: 'autoridad',
     'commander_products.products.*.operators': 'autoridad',
     cross_repo_delivery: 'autoridad',            // declara a qué repos externos puede pushear el pipeline
@@ -347,6 +376,26 @@ const SCHEMA = {
         routing: OBJ(),
         intake: OBJ(),
 
+        delivery: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                merge_checks_timeout_ms: { type: 'integer', minimum: 1 },
+            },
+        },
+
+        worktree_provenance: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['committers'],
+            properties: {
+                committers: {
+                    type: 'array',
+                    items: { type: 'string', minLength: 1, pattern: '\\S' },
+                },
+            },
+        },
+
         // --- resource_limits: umbrales de presión + priority windows ---------
         resource_limits: {
             type: 'object',
@@ -374,8 +423,24 @@ const SCHEMA = {
         desync: OBJ(),
         precheck: OBJ(),
         anomaly_detector: OBJ(),
+        human_block_reminder: OBJ(),   // #5337 CA-5
+        // #6611 — auto-destrabe de bloqueos con predicado verificable. Sin esta
+        // linea, escribir la seccion en `config.yaml` tira ConfigSchemaViolation
+        // con la raiz cerrada (#5173) y deja al pipeline sin arrancar.
+        human_block_auto_recheck: OBJ(),
+        // #6118 CA-13 — cadencia y ventana de silencio del aviso de
+        // dependencias faltantes. El Pulpo ya leía `config.partial_pause_deps`
+        // desde #2893, pero la sección nunca se había declarado: con la raíz
+        // cerrada (#5173), escribirla en `config.yaml` sin esta línea tiraba
+        // ConfigSchemaViolation y dejaba al pipeline sin arrancar.
+        partial_pause_deps: OBJ(),
         cost_anomaly_alert: OBJ(),
         ghostbusters_cron: OBJ(),
+        // #6708 — umbrales del guardián de disco. Los valores se validan y
+        // clampean en `lib/disk-guard.js` (CLAMPS + monotonicidad), así que acá
+        // alcanza con declarar la sección: duplicar los rangos sería una segunda
+        // fuente de verdad que se desincroniza.
+        disk_budget: OBJ(),
         rest_mode: OBJ(),
         staleness: OBJ(),
         watchdog: OBJ(),
@@ -405,6 +470,28 @@ const SCHEMA = {
                     additionalProperties: true,
                     properties: {
                         interval_minutes: { type: 'number', minimum: 0 },
+                    },
+                },
+                // --- #6145 CA-6 — criterio de permanencia de proveedores.
+                //     Declarado acá porque la raíz es CERRADA: agregar la
+                //     subsección a config.yaml sin declararla en el schema deja
+                //     al dashboard fail-closed (precedente ya sufrido).
+                //     LENIENT en `additionalProperties` como el resto de
+                //     multi_provider, pero con TIPOS y RANGOS chequeados: un
+                //     umbral con tipo/rango inválido no debe llegar al criterio
+                //     que marca candidatos a baja. Los invariantes de seguridad
+                //     (nunca vacía la cadena, nunca marca un pago, "sin dato" ⇒
+                //     no evaluable) viven en código, NO acá.
+                permanence: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        window_days: { type: 'number', minimum: 1 },
+                        min_sample: { type: 'number', minimum: 0 },
+                        min_contribution_rate: { type: 'number', minimum: 0, maximum: 1 },
+                        max_days_without_win: { type: 'number', minimum: 0 },
+                        min_survivors: { type: 'number', minimum: 1 },
                     },
                 },
             },
@@ -439,10 +526,168 @@ const SCHEMA = {
         telegram_burst_window_ms: { type: 'number', minimum: 0 },
 
         telegram_outbound: OBJ(),
+        // #5573 — la raíz está CERRADA: `telegram_voice_outbound` en config.yaml
+        // SIN esta declaración deja el pipeline arrancando pausado por
+        // ConfigSchemaViolation. Va en el MISMO commit que la sección nueva.
+        telegram_voice_outbound: OBJ(),
         deliverable_notifications: OBJ(),
         cua: OBJ(),
         kernel: OBJ(),
+
+        // --- #5352 · vault de secretos (lectura) ------------------------------
+        // La raíz está CERRADA desde #5173: agregar `vault:` a config.yaml SIN
+        // declararlo acá deja el pipeline arrancando pausado. Por eso esta
+        // declaración va en el MISMO commit que la sección nueva.
+        // Se tipa (en vez de `OBJ()`) porque el gate y el tope de TTL son
+        // fail-closed: un `enabled: "false"` string o un TTL de 3600 pasarían
+        // como `additionalProperties: true` y sólo se descubrirían en runtime.
+        vault: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                enabled: { type: 'boolean' },
+                prefix: { type: 'string' },
+                projectId: { type: 'string' },
+                hostId: { type: 'string' },
+                // #5426 · CA-11/CA-12 — mecanismo de identidad del host. Se
+                // tipan por el mismo motivo que `enabled`: son fail-closed. Un
+                // `hostIdFromHostname: "false"` string sería truthy para el
+                // YAML, y un `authMode` fuera del enum sólo se descubriría al
+                // encender el gate. El enum se declara acá ADEMÁS de en
+                // `VAULT_AUTH_MODES` porque los dos controles fallan en momentos
+                // distintos: el schema al arrancar, el módulo al leer el vault.
+                hostIdFromHostname: { type: 'boolean' },
+                authMode: {
+                    type: 'string',
+                    enum: ['assume-role-chain', 'session-token', 'static-key', 'instance-profile'],
+                },
+                awsProfile: { type: 'string' },
+                // Tope DURO de SEC-6: el módulo también lo rechaza, pero acá el
+                // operador se entera al arrancar y no al encender el gate.
+                cache_ttl_seconds: { type: 'number', minimum: 1, maximum: 300 },
+                required_scopes: { type: 'array', items: { type: 'string' } },
+                shared_secrets: { type: 'array', items: { type: 'string' } },
+                // #5899 — cota de namespaces cacheados a la vez. Se tipa por el
+                // mismo motivo que `cache_ttl_seconds`: es un control de
+                // seguridad (acota el plaintext en memoria), no una preferencia.
+                // Un `0` o un string dejarían el memo sin cota efectiva y sólo
+                // se descubriría el día que corran varias instancias juntas.
+                max_cached_tenants: { type: 'number', minimum: 1 },
+                // #5353 · B1 — se tipan por el mismo motivo que `enabled`: son
+                // fail-closed. Un `bootstrap_fallback: "false"` string sería
+                // truthy para el YAML y sólo se descubriría el día que la
+                // ventana se abriera sola.
+                bootstrap_fallback: { type: 'boolean' },
+                bootstrap_fallback_until: { type: 'string' },
+                // #5453 — coordinador de la migración por host. Se tipa por el
+                // mismo motivo que `enabled`: `migration.enabled` es el gate de
+                // rollout y sólo el booleano `true` exacto lo abre; un `"true"`
+                // string sería truthy para el YAML y arrancaría el coordinador
+                // sin que nadie lo haya decidido. `auto_stages` es un enum
+                // CERRADO: una etapa desconocida ahí no se ignora en silencio,
+                // se descubre al arrancar. `rotate`/`provision`/`respawn` NO
+                // son valores válidos a propósito — son irreversibles o bajan al
+                // propio Pulpo, y las dispara el operador con el runbook.
+                migration: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        tick_minutes: { type: 'number', minimum: 1, maximum: 1440 },
+                        auto_stages: {
+                            type: 'array',
+                            items: { type: 'string', enum: ['observe'] },
+                        },
+                        auto_cutover: { type: 'boolean' },
+                    },
+                },
+                cut_fallback: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['authorization_ttl_seconds', 'operation_timeout_ms', 'runbook'],
+                    properties: {
+                        authorization_ttl_seconds: { type: 'number', minimum: 1, maximum: 900 },
+                        operation_timeout_ms: { type: 'number', minimum: 100, maximum: 60000 },
+                        runbook: { type: 'string', minLength: 1, maxLength: 512 },
+                        // #5460 — PRODUCTOR de la propuesta. Se tipan por el
+                        // mismo motivo que `enabled`: son fail-closed. Los tres
+                        // son OPCIONALES (no van en `required`) para que un
+                        // config.yaml anterior a #5460 siga validando: sin
+                        // `proposal_enabled: true` el productor no corre y el
+                        // boot queda idéntico al de antes.
+                        //
+                        // `proposal_enabled` es el gate de rollout: sólo el
+                        // booleano `true` exacto lo abre. Un `"true"` string
+                        // sería truthy para el YAML y encendería el productor
+                        // sin que nadie lo haya decidido.
+                        proposal_enabled: { type: 'boolean' },
+                        // Cuánto se espera al operador antes de declarar
+                        // ausencia. Cotas: 1 min .. 72 h. Fuera de rango el
+                        // módulo degrada al default (6 h), pero acá el operador
+                        // se entera al arrancar y no el día del cutover.
+                        proposal_timeout_ms: { type: 'number', minimum: 60000, maximum: 259200000 },
+                        // Issue del cutover: destino del label `needs-human` y
+                        // binding del token de la capability. `0` significa SIN
+                        // CONFIGURAR y se commitea así a propósito (mismo
+                        // criterio que `hostId: ""`): un placeholder que apunte
+                        // a un issue equivocado etiquetaría trabajo ajeno el
+                        // día del corte. El productor trata `0` como
+                        // `estado_indeterminado`, no como "propongo igual".
+                        proposal_issue: { type: 'number', minimum: 0, maximum: 999999 },
+                    },
+                },
+                // #5448 · CA-21 — misma razón que las dos de arriba. El núcleo
+                // igual valida y falla cerrado, pero un `hosts_activos` que es
+                // string en vez de lista se descubre acá, al arrancar, y no el
+                // día que alguien pregunte por qué la ventana no cierra.
+                shadow_window: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        duration_hours: { type: 'number', minimum: 1 },
+                        hosts_activos: { type: 'array', items: { type: 'string' } },
+                        retention_days: { type: 'number', minimum: 1 },
+                    },
+                },
+            },
+        },
+
         waves: OBJ(),
+
+        // --- operational_state: aislamiento del estado operativo (#5110) -----
+        //
+        // `namespaced.enabled` es el interruptor del layout:
+        //   false (DEFAULT) → layout PLANO `.pipeline/waves.json` — exactamente
+        //                     el comportamiento pre-#5110, sin regresión.
+        //   true            → `.pipeline/projects/<projectId>/waves.json`.
+        //
+        // Poner el interruptor en config (y no en código) es lo que hace que R8
+        // — "rollback al modelo plano en minutos" — sea real: se baja el flag y
+        // se corre el migrador con `--rollback`.
+        operational_state: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+                namespaced: {
+                    type: 'object',
+                    additionalProperties: true,
+                    properties: {
+                        enabled: { type: 'boolean' },
+                        // `true` → el contexto de proyecto debe venir DECLARADO
+                        // (projectId explícito o binding de spawn del pulpo): se
+                        // apagan los caminos de compat `single-project` y
+                        // `host-fallback`, que resuelven por convención. Lo lee
+                        // `project-context.js` (`strictContextEnabled()`).
+                        //
+                        // NO hay `host_project_id`: la identidad del host sale de
+                        // `pipeline.config.json`, fuente única compartida con el
+                        // kernel-store. Declararla también acá sería una segunda
+                        // verdad que nadie lee.
+                        strict_context: { type: 'boolean' },
+                    },
+                },
+            },
+        },
 
         // --- architect: el GATE es autoridad, la cadencia es calibración -----
         architect: {
@@ -508,6 +753,10 @@ const SCHEMA = {
                 auto_promote_on_convergence: { type: 'boolean' },
                 convergence_requires_build_green: { type: 'boolean' },
                 convergence_excludes_skills: { type: 'array', items: { type: 'string' } },
+                // #6746 — breaker de no-progreso. RIESGO-1: este objeto es
+                // `additionalProperties: false` y `pulpo.js` valida al arrancar,
+                // así que la clave DEBE viajar en el mismo commit que config.yaml.
+                noprogreso_max: { type: 'integer', minimum: 2, maximum: 10 },
             },
         },
 
@@ -522,6 +771,28 @@ const SCHEMA = {
                 max_section_kb: { type: 'integer', minimum: 1 },
                 retention_days: { type: 'integer', minimum: 1 },
                 inject_in_phases: { type: 'array', items: { type: 'string' } },
+            },
+        },
+
+        model_propagation_rollout: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['baseline_min_runs', 'evaluation_min_runs', 'thresholds', 'waves'],
+            properties: {
+                baseline_min_runs: { type: 'integer', minimum: 1 },
+                evaluation_min_runs: { type: 'integer', minimum: 1 },
+                thresholds: {
+                    type: 'object', additionalProperties: false,
+                    required: ['rebound_absolute', 'early_death_absolute'],
+                    properties: {
+                        rebound_absolute: { type: 'number', minimum: 0, maximum: 1 },
+                        early_death_absolute: { type: 'number', minimum: 0, maximum: 1 },
+                    },
+                },
+                waves: { type: 'array', minItems: 1, items: {
+                    type: 'object', additionalProperties: false, required: ['actors'],
+                    properties: { actors: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } } },
+                } },
             },
         },
 
@@ -614,6 +885,16 @@ const SCHEMA = {
         },
 
         // --- wave_auto_transition: transición automática de olas --------------
+        brazo: {
+            type: 'object', additionalProperties: false, required: ['reclaim_merge_race'],
+            properties: { reclaim_merge_race: {
+                type: 'object', additionalProperties: false, required: ['enabled', 'kill_switch', 'max_attempts', 'child_timeout_ms'],
+                properties: {
+                    enabled: { type: 'boolean' }, kill_switch: { type: 'boolean' },
+                    max_attempts: { type: 'integer', minimum: 1 }, child_timeout_ms: { type: 'integer', minimum: 1000 },
+                },
+            } },
+        },
         wave_auto_transition: {
             type: 'object',
             additionalProperties: false,

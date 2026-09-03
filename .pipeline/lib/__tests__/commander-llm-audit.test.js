@@ -194,11 +194,16 @@ test('integration: allowlist handler responde aunque .partial-pause.json no exis
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('integration: allowlist handler lee .partial-pause.json válido', async () => {
+// #5176 · A-1 — El render de `/allowlist` leía `parsed.issues` / `parsed.allowlist`
+// / array pelado: TRES formatos que ningún escritor produce. El schema canónico
+// que escriben `setAllowlist`/`addToAllowlist` es `allowed_issues`, así que con
+// issues realmente autorizados el comando respondía "allowlist vacía". Este test
+// fijaba el formato fantasma; ahora fija el canónico.
+test('integration: allowlist handler lee el schema canónico allowed_issues (#5176 A-1)', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'commander-allowlist-with-'));
     fs.writeFileSync(
         path.join(tmpDir, '.partial-pause.json'),
-        JSON.stringify({ issues: [{ issue: 1234, title: 'Test issue' }] })
+        JSON.stringify({ allowed_issues: [1234], created_at: '2026-08-14T10:00:00.000Z' })
     );
     const dispatcher = commanderDet.createDispatcher({
         pipelineRoot: tmpDir,
@@ -207,7 +212,8 @@ test('integration: allowlist handler lee .partial-pause.json válido', async () 
     });
     const r = await dispatcher.dispatch({ text: '/allowlist', chat_id: '1' });
     assert.equal(r.status, 'ok');
-    assert.ok(r.reply.includes('1234'), `reply incluye número de issue: ${r.reply.slice(0,300)}`);
+    assert.ok(r.reply.includes('1234'), `reply incluye número de issue: ${r.reply.slice(0, 300)}`);
+    assert.ok(!/Allowlist vacía/.test(r.reply), 'un allowed_issues no vacío NO puede rendir "allowlist vacía"');
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

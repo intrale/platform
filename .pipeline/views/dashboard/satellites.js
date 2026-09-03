@@ -24,6 +24,18 @@ const { renderHeaderMetaSsr, headerPillsClientScript } = require('./header-meta'
 // confirmación con preview (CA-3). Reemplazan la copia local con .catch(()=>null)
 // y los confirm() nativos. nhCsrfHeaders() (de FETCH_CLIENT_JS) cubre R2.
 const { FETCH_CLIENT_JS } = require('./fetch-client.js');
+
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist↔ola.
+// Va en el SHELL, no en cada vista: cuando el Pulpo suspende el dispatch no
+// avanza NADA, así que la pregunta "¿por qué no se mueve?" se hace desde
+// cualquier ventana del dashboard. La entrega anterior lo dejó en un módulo al
+// que no apunta ninguna ruta del menú y el operador se comió 10 h de silencio.
+const {
+    resolveDesyncStatus,
+    renderDesyncBlockBannerSsr,
+    DESYNC_BLOCK_BANNER_CSS,
+    desyncBlockBannerBundleJs,
+} = require('./desync-block-banner.js');
 // #4296 — Accessor compartido del banner de ola (avance %, velocidad %/h, ETA)
 // desde la fuente determinística viva /api/dash/ola-eta (no conteos done/total).
 // Se inyecta una sola vez en el shell satélite → cubre TODAS las subventanas.
@@ -85,13 +97,24 @@ const SKILL_COLORS = {
 // segundo round-trip y mantener fuera de localStorage un estado que vive 5s.
 // Se sanea acá para que cualquier consumidor reciba ya integers > 0
 // (defensa en profundidad sobre lo que enforza headerSlice server-side).
-let pipelineModeState = { mode: 'running', allowedIssues: [] };
+let pipelineModeState = { mode: 'running', allowedIssues: [], allowedSkills: [] };
 function _saneAllowedIssues(arr){
     if(!Array.isArray(arr)) return [];
     const out = [];
     for(const v of arr){
         const n = Number(v);
         if(Number.isInteger(n) && n > 0) out.push(n);
+    }
+    return out;
+}
+
+// #5176 CA-UX-3/CA-UX-4 — la ventana por skill viaja al cliente. Sin este campo
+// el tablero no puede distinguir 'pausa parcial vacia' de 'ventana por skill'.
+function _saneAllowedSkills(arr){
+    if(!Array.isArray(arr)) return [];
+    const out = [];
+    for(const v of arr){
+        if(typeof v === 'string' && v.trim()) out.push(v.trim());
     }
     return out;
 }
@@ -104,6 +127,7 @@ async function tickHeader(){
     pipelineModeState = {
         mode: d.mode || 'running',
         allowedIssues: _saneAllowedIssues(d.allowedIssues),
+        allowedSkills: _saneAllowedSkills(d.allowedSkills),
     };
     // #4531 / #4463 — Toda la bandeja (reloj + mode + build + recursos + pulpo)
     // se hidrata con la MISMA lógica compartida (header-meta.js), sin tickers
@@ -267,6 +291,7 @@ function pageShell(title, subtitle, bodyHtml, scripts, extraCss = '', activeSlug
 /* #4240 — El banner de ola común (② del marco) vive fuera del .satellite-body
    (entre header y nav), así que se alinea con el padding horizontal del cuerpo. */
 .satellite-frame > .mz-mission { margin: 18px 28px 0; }
+${DESYNC_BLOCK_BANNER_CSS}
 .in-mode-running { color: var(--in-ok); border-color: var(--in-ok); background: var(--in-ok-soft); }
 .in-mode-paused { color: var(--in-bad); border-color: var(--in-bad); background: var(--in-bad-soft); }
 .in-mode-partial { color: var(--in-warn); border-color: var(--in-warn); background: var(--in-warn-soft); }
@@ -283,6 +308,7 @@ ${extraCss}
     ${brandHtml}
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
+  ${renderDesyncBlockBannerSsr(resolveDesyncStatus(opts && opts.desyncStatus))}
   ${missionHtml}
   ${navHtml}
   ${breadcrumbHtml}
@@ -292,7 +318,7 @@ ${extraCss}
     <span>Intrale V3</span>
   </footer>
 </div>
-<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${commonHelpers()}\n${scripts}\n${headerPillsClientScript()}\n${missionOlaEtaClientScript()}\n${navMoreAutoCloseClientScript()}</script>
+<script>${FETCH_CLIENT_JS}\n${CONFIRM_MODAL_JS}\n${commonHelpers()}\n${scripts}\n${headerPillsClientScript()}\n${missionOlaEtaClientScript()}\n${navMoreAutoCloseClientScript()}\n${desyncBlockBannerBundleJs()}</script>
 </body>
 </html>`;
 }

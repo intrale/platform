@@ -1,0 +1,49 @@
+{
+  "_doc": "Fixture de #5888 (CA-1/CA-12). Copia LOCAL — esta parte del split NO edita el agent-models.json real (R-K). Cada modelo entra por UNA sola de las 4 fuentes, para que el test pueda demostrar que ninguna se saltea.",
+  "default_provider": "anthropic",
+  "providers": {
+    "anthropic": {
+      "model": "claude-opus-4-7"
+    },
+    "openai-codex": {
+      "model": "gpt-5.5"
+    },
+    "gemini-google": {
+      "_fuente": "1 (providers[].model) y 2 (alternative_models[])",
+      "model": "gemini-3-flash-preview",
+      "alternative_models": ["gemini-2.5-flash"]
+    },
+    "cerebras": {
+      "_fuente": "1 + 2. `zai-glm-4.7` NO está en el catálogo del fixture: es el caso 'alternative_model muerto'.",
+      "model": "gpt-oss-120b",
+      "alternative_models": ["zai-glm-4.7"]
+    },
+    "nvidia-nim": {
+      "_fuente": "el default del provider está VIVO; el modelo muerto entra sólo por el fallback de un skill (fuente 4).",
+      "model": "deepseek-ai/deepseek-r1"
+    },
+    "kimi-moonshot": {
+      "_fuente": "fuera de alcance por D-1 (#5892). No debe aparecer nunca en el cruce.",
+      "model": "kimi-k2-6"
+    },
+    "deterministic": {
+      "model": "deterministic"
+    }
+  },
+  "skills": {
+    "guru": {
+      "_fuente": "3 (skills[].model_override) — sobre gemini-google.",
+      "provider": "gemini-google",
+      "model_override": "gemini-2.5-pro",
+      "fallbacks": []
+    },
+    "security": {
+      "_fuente": "4 (fallbacks[].model_override) — ACÁ vive el modelo muerto, y en ningún otro lado. Es el caso que motivó la historia: deepseek-v4-pro mató agentes estando configurado como fallback.",
+      "provider": "anthropic",
+      "model_override": "claude-opus-4-7",
+      "fallbacks": [
+        { "provider": "nvidia-nim", "model_override": "deepseek-ai/deepseek-v4-pro" }
+      ]
+    }
+  }
+}

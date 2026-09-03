@@ -103,18 +103,157 @@ function parseUsageOutput(text) {
 // parseResetToIso — best-effort de "Jul 12, 9pm (America/Buenos_Aires)" → ISO.
 //
 // El texto de /usage no trae año y la TZ va entre paréntesis; el parse es
-// imperfecto por diseño. Devolvemos ISO cuando Date lo entiende, sino null (el
-// raw se conserva aparte). NO es dato crítico — los resets son informativos.
+// imperfecto por diseño. Devolvemos ISO cuando el texto es interpretable, sino
+// null (el raw se conserva aparte).
+//
+// #5455 — ESTE ES EL ÚNICO PARSER DE RESET del pipeline. El detector del canal
+// de contenido de Anthropic (`quota-exhausted.js`) delega acá en vez de crear un
+// segundo parser: el aviso semanal trae el reset en los mismos formatos que
+// `/usage`. Antes de #5455 el helper devolvía `null` para los dos formatos
+// reales observados —hora sola ("9pm") y mes/día sin minutos ("Aug 9, 9pm")—
+// porque `Date.parse` no los entiende; por eso se agregan dos paths
+// estructurados ANTES del fallback legacy:
+//
+//   1. MES/DÍA (+ hora opcional): "Aug 9, 9pm", "Jul 12, 8:59pm". El texto no
+//      trae año → se asume el del reloj de referencia y, si la fecha ya pasó,
+//      se elige la próxima ocurrencia (año siguiente). Cubre el wrap Dic→Ene.
+//   2. HORA SOLA: "9pm", "21:00". Se resuelve sobre el día del reloj de
+//      referencia y, si esa hora YA PASÓ, rollover al día siguiente (CA: "elige
+//      la próxima ocurrencia").
+//
+// El reloj es inyectable vía `refMs` (tests determinísticos). Toda entrada no
+// interpretable devuelve `null` — NUNCA se inventa una fecha. Aguas abajo,
+// `setFlag`/`capResetsAt` clampean igual el TTL efectivo, así que un reset
+// textual jamás prolonga un gate por sí solo.
+//
+// La TZ entre paréntesis se descarta y el cálculo queda en hora local, igual
+// que antes de #5455 (parse imperfecto por diseño, sin libs de timezone).
 // -----------------------------------------------------------------------------
+const _MONTH_INDEX = Object.freeze({
+    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+    jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+});
+
+// Cuantificadores acotados en ambos regex (defensa ReDoS): el input puede venir
+// del canal de contenido del modelo vía #5455.
+const _TIME_ONLY_RE = /^(\d{1,2})(?::(\d{2}))?\s{0,2}(am|pm)?$/i;
+const _MONTH_DAY_RE = /^([a-z]{3,9})\.?\s{1,2}(\d{1,2})\s{0,2},?\s{0,2}(.{0,20})$/i;
+
+const _DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Normaliza hora + meridiano a hora 24h. Devuelve null si es inválida.
+ */
+function _toHour24(hourRaw, meridiem) {
+    const h = Number(hourRaw);
+    if (!Number.isInteger(h)) return null;
+    if (meridiem) {
+        if (h < 1 || h > 12) return null;
+        return (h % 12) + (meridiem.toLowerCase() === 'pm' ? 12 : 0);
+    }
+    return h >= 0 && h <= 23 ? h : null;
+}
+
+/**
+ * Parsea "9pm" / "8:59 pm" / "21:00" → { hour, minute } o null.
+ * `requireQualifier` exige minutos o meridiano, para que un número suelto
+ * ("9") NO se interprete como hora (fail-closed).
+ */
+function _parseTimeOfDay(text, requireQualifier) {
+    const m = _TIME_ONLY_RE.exec(String(text).trim());
+    if (!m) return null;
+    if (requireQualifier && !m[2] && !m[3]) return null;
+    const hour = _toHour24(m[1], m[3]);
+    if (hour === null) return null;
+    const minute = m[2] ? Number(m[2]) : 0;
+    if (!Number.isInteger(minute) || minute > 59) return null;
+    return { hour, minute };
+}
+
+/**
+ * #5455 — ¿El texto contiene un token de mes conocido ("jul", "august", …)?
+ *
+ * Guarda de entrada del fallback legacy `Date.parse` (ver más abajo). Recorre
+ * sólo secuencias alfabéticas de 3+ letras y compara su prefijo de 3 contra
+ * `_MONTH_INDEX`. Cuantificador acotado: el input puede venir del canal de
+ * contenido del modelo.
+ */
+function _hasKnownMonthToken(text) {
+    const tokens = String(text).match(/[a-z]{3,9}/gi);
+    if (!tokens) return false;
+    return tokens.some((t) => _MONTH_INDEX[t.slice(0, 3).toLowerCase()] !== undefined);
+}
+
 function parseResetToIso(raw, refMs) {
     if (typeof raw !== 'string' || raw.length === 0) return null;
     // Descartar el paréntesis de TZ (no interpretable por Date sin libs).
     const noTz = raw.replace(/\s*\([^)]*\)\s*$/, '').trim();
     if (!noTz) return null;
+    // Tolerar el prefijo "resets " del texto crudo (CLI y /usage lo anteponen).
+    const body = noTz.replace(/^resets?\s+/i, '').trim();
+    if (!body) return null;
     const ref = Number.isFinite(refMs) ? new Date(refMs) : new Date();
+    const refTs = ref.getTime();
+    if (!Number.isFinite(refTs)) return null;
+
+    // 1. Mes/día explícito (+ hora opcional).
+    const md = _MONTH_DAY_RE.exec(body);
+    if (md) {
+        const month = _MONTH_INDEX[md[1].slice(0, 3).toLowerCase()];
+        const day = Number(md[2]);
+        const tail = md[3] ? md[3].trim() : '';
+        if (month !== undefined && Number.isInteger(day) && day >= 1 && day <= 31) {
+            // Sin hora → medianoche; con hora → debe parsear o el input es inválido.
+            const time = tail ? _parseTimeOfDay(tail, false) : { hour: 0, minute: 0 };
+            if (time) {
+                const build = (y) => new Date(y, month, day, time.hour, time.minute, 0, 0);
+                let d = build(ref.getFullYear());
+                // Rechazar días que no existen en el mes ("Feb 31" → marzo).
+                if (d.getMonth() === month && d.getDate() === day) {
+                    if (d.getTime() < refTs) {
+                        const next = build(ref.getFullYear() + 1);
+                        if (next.getMonth() === month && next.getDate() === day) d = next;
+                    }
+                    return new Date(d.getTime()).toISOString();
+                }
+                return null;
+            }
+            return null;
+        }
+    }
+
+    // 2. Hora sola → próxima ocurrencia (rollover al día siguiente si ya pasó).
+    const timeOnly = _parseTimeOfDay(body, true);
+    if (timeOnly) {
+        let d = new Date(
+            ref.getFullYear(), ref.getMonth(), ref.getDate(),
+            timeOnly.hour, timeOnly.minute, 0, 0,
+        );
+        if (d.getTime() <= refTs) d = new Date(d.getTime() + _DAY_MS);
+        return d.toISOString();
+    }
+
+    // 3. Fallback legacy: delegar en Date.parse para shapes no contemplados.
+    //
+    // #5455 — GUARDA DE ENTRADA. `Date.parse` es extremadamente permisivo con
+    // tokens numéricos sueltos y los resuelve a fechas PASADAS e inventadas:
+    //   "9" → 2001-09-01 · "2020" → 2020-01-01 · "9 9" → 2001-09-09
+    // Antes de #5455 esto sólo veía texto de `/usage` (siempre con mes), pero
+    // ahora el helper también recibe el reset capturado del canal de CONTENIDO,
+    // que es controlable por el modelo: un aviso truncado como
+    // "...· resets 9" produciría un `resetsAt` en el pasado y, tras el clamp de
+    // `capResetsAt`, un gate de 5 minutos en vez del gate corto esperado.
+    // El CA exige `null` ante un reset inválido, sin inventar fecha.
+    //
+    // Los dos formatos REALES ya los resuelven los paths estructurados de
+    // arriba, así que este fallback queda sólo para variantes con nombre de mes
+    // que `Date.parse` sepa interpretar. Exigimos entonces un token de mes
+    // conocido y fallamos cerrado ante cualquier otra cosa; un input sin mes no
+    // es un formato de reset de Anthropic, es ruido.
+    if (!_hasKnownMonthToken(body)) return null;
     const year = ref.getUTCFullYear();
     // Date.parse necesita un espacio antes de am/pm: "8:59pm" → "8:59 pm".
-    const spaced = noTz.replace(/(\d)\s*(am|pm)\b/i, '$1 $2');
+    const spaced = body.replace(/(\d)\s*(am|pm)\b/i, '$1 $2');
     // "Jul 12, 8:59 pm" → "Jul 12, 2026 8:59 pm"
     const withYear = spaced.replace(/,/, `, ${year}`);
     let ts = Date.parse(withYear);

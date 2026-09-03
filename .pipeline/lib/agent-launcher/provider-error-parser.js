@@ -58,7 +58,21 @@
 //   | auth                    | true           | NO       |
 //   | permanent_failure       | true           | NO       |  ← cubre context_length, model_not_found
 //   | cli_1m_context_glitch   | false          | NO       |  ← #3506: bug del CLI Anthropic con Opus 4.7 1M, NO contaminar el flag de quota ni saltar provider
+//   | authentication_rejected | false          | NO       |  ← #5795: credencial inválida/expirada. Esta capa SOLO clasifica y transporta; el presupuesto de re-resolución es del coordinador (#5794)
 //   | unknown                 | false          | NO       |
+//
+// #5795 — authentication_rejected vs auth
+// ---------------------------------------
+// Son DOS clases distintas y conviven:
+//   * `auth` nace de regex sobre texto libre (`CLI_AUTH_PATTERNS`) o de un
+//     401/403 pelado. Es ruidosa a propósito: sirve para decidir fallback
+//     grueso. Queda EXACTAMENTE como estaba.
+//   * `authentication_rejected` nace SÓLO de combinaciones estructuradas
+//     documentadas por provider (tabla cerrada por adapter, despacho por
+//     `ctx.provider`). Es la única que puede sostener una política de
+//     invalidación de credencial.
+// Un 403 de permisos, un timeout, un 5xx, un 429 o una credencial ausente NO
+// producen `authentication_rejected` — siguen cayendo donde siempre.
 //
 // #3506 — cli_1m_context_glitch
 // -----------------------------
@@ -168,6 +182,38 @@ const KNOWN_PROVIDERS = Object.freeze(new Set([
 // Transports válidos.
 const KNOWN_TRANSPORTS = Object.freeze(new Set(['api', 'cli']));
 
+// #5795 — contrato compartido de la clase cerrada `authentication_rejected`.
+// El módulo es puro (sin I/O, sin requires pesados), así que se carga arriba.
+const authRejection = require('./auth-rejection');
+
+// #5795 — mapa provider → adapter que expone `detectAuthenticationRejected`.
+//
+// Se resuelve PEREZOSAMENTE y se cachea: `resolve-provider.js` requiere los
+// siete adapters, y el de Anthropic requiere de vuelta a este parser (dentro de
+// su `detectQuotaExhausted`). Cargarlo arriba ataría el orden de inicialización
+// de ese ciclo a la suerte. Lazy + try/catch = fail-closed sin ciclo.
+let _authDetectorCache = null;
+function getAuthDetector(provider) {
+    const canonical = authRejection.canonicalProvider(provider);
+    if (!canonical) return null;
+    if (_authDetectorCache === null) {
+        try {
+            const { PROVIDER_HANDLERS } = require('./resolve-provider');
+            _authDetectorCache = PROVIDER_HANDLERS || {};
+        } catch {
+            _authDetectorCache = {};
+        }
+    }
+    const handler = Object.prototype.hasOwnProperty.call(_authDetectorCache, canonical)
+        ? _authDetectorCache[canonical]
+        : null;
+    const detector = handler && handler.detectAuthenticationRejected;
+    return typeof detector === 'function' ? detector : null;
+}
+
+// Sólo para tests: limpia el caché del mapa de adapters.
+function _resetAuthDetectorCache() { _authDetectorCache = null; }
+
 // -----------------------------------------------------------------------------
 // SR-4: Regex ReDoS-safe.
 //
@@ -199,6 +245,13 @@ const CLI_QUOTA_PATTERNS = Object.freeze([
     // "You've hit your session limit" — Anthropic CLI cuando la sesión OAuth
     // del usuario tocó el techo semanal.
     /\bhit\s+your\s+session\s+limit\b/i,
+    // #5454 — "You've hit your weekly limit · resets 9pm (America/Buenos_Aires)"
+    // Aviso semanal real del CLI Anthropic (OAuth Max). El sufijo con horario y
+    // zona NO forma parte del patrón a propósito: el match por substring ya lo
+    // tolera y evita `.*`, cuantificadores anidados o grupos opcionales
+    // glotones (SR-4 ReDoS budget). Sólo matcheamos las palabras estables, que
+    // no dependen del separador `·` ni del locale del reset.
+    /\bhit\s+your\s+weekly\s+limit\b/i,
     // "You've hit your usage limit" — Codex CLI con cuenta ChatGPT (OAuth)
     // cuando el cap rolling de uso se agota. Viene por el canal de control del
     // CLI (turn.failed/error), no por el contenido del modelo.
@@ -491,6 +544,82 @@ function detectFromCliStderr(input, provider, quotaModule) {
         }
     }
 
+    // 4. Red de salvataje sobre FRAMES ESTRUCTURADOS (#6190).
+    //
+    // AGUJERO QUE CIERRA: un CLI puede emitir un error HTTP genérico como frame
+    // JSON —p.ej. `{"error":{"status":402,"code":"insufficient_quota",...}}`—
+    // que NO tiene el shape propietario que esperan `_detectAnthropic` (paso 1)
+    // ni `_detectOpenAI` (paso 2), y que además queda EXCLUIDO del scan de
+    // texto libre (paso 3) porque `plainTextLines` filtra a propósito todo lo
+    // que parsea como JSON/SSE (defensa #4541/#4865 contra substring sobre el
+    // content del modelo). Resultado pre-fix: `detectFromCliStderr` devolvía
+    // `null` y `classifyByContext` lo degradaba a `transient_5xx` por
+    // `exitCode!=0 + stderr_present`. Un 402 `insufficient_quota` —evidencia
+    // DURA de cuota agotada— terminaba clasificado como error transitorio:
+    // nunca se seteaba el flag de cuota, nunca se apagaba el provider, y el
+    // pipeline seguía martillando un provider exhausto hasta agotar los
+    // reintentos del ISSUE y rebotarlo como si el código estuviera roto
+    // (incidente #6190: architect/ux murieron con 402 y el issue fue rechazado
+    // con "Huérfano tras 3 reintentos — proceso muere repetidamente").
+    //
+    // El path de API directa YA tenía esta red (#3486). Acá la replicamos para
+    // el path CLI, que era el único desprotegido.
+    //
+    // POR QUÉ NO REABRE #4541 NI #4865: operamos EXCLUSIVAMENTE sobre frames
+    // que parsean como JSON/SSE y SÓLO leemos el objeto `error` top-level
+    // (campos `status`/`code`/`type`). Cero substring sobre `content`,
+    // `result` o `tool_result`. Una línea truncada por el cap NO parsea como
+    // JSON, así que jamás entra acá.
+    //
+    // ORDEN: va al final, justo antes del `return null`. Todas las
+    // clasificaciones previas (pasos 1-3) mantienen exactamente la precedencia
+    // que tenían — este paso sólo rescata lo que ANTES caía a `null`.
+    for (const line of lines) {
+        const parsed = parseJsonOrSSE(line);
+        if (!parsed || typeof parsed !== 'object') continue;
+
+        const errObj = parsed.error || (parsed.data && parsed.data.error);
+        if (!errObj || typeof errObj !== 'object') continue;
+
+        const type = typeof errObj.type === 'string' ? errObj.type : '';
+        const code = typeof errObj.code === 'string' ? errObj.code : '';
+        const message = typeof errObj.message === 'string' ? errObj.message : '';
+        const status = Number(errObj.status) || Number(parsed.status) || 0;
+
+        // #3506/#3508: el glitch del CLI con 1M context puede venir con shape de
+        // error y NO debe contaminar el flag de cuota. Se chequea primero, igual
+        // que en el path de API directa.
+        if (workaroundEnabled && message && CLI_1M_CONTEXT_GLITCH_PATTERN.test(message)) {
+            return {
+                errorClass: 'cli_1m_context_glitch',
+                evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),
+            };
+        }
+
+        // Cuota por marcador estructurado del PROPIO provider (CA-5 #3077: el
+        // allowlist es scope-por-provider, nunca cross-provider).
+        if (allowlist.includes(type) || allowlist.includes(code)) {
+            return {
+                errorClass: 'quota_exhausted',
+                evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),
+            };
+        }
+
+        // Salvataje por status HTTP numérico vía el clasificador universal
+        // (402 → billing/quota, 429 → rate_limit o billing según body,
+        //  401/403 → auth, 5xx → transient).
+        if (status >= 100 && status <= 599) {
+            const c = httpClassifier.classifyHttpError(status, line, provider);
+            const mapped = mapClassifierToErrorClass(c);
+            if (mapped) {
+                return {
+                    errorClass: mapped,
+                    evidence: JSON.stringify(errObj).slice(0, MAX_LINE_BYTES),
+                };
+            }
+        }
+    }
+
     return null;
 }
 
@@ -717,6 +846,11 @@ function classifyShouldFallback(errorClass) {
         // primer intento. El caller hace retry en mismo provider; si los retries
         // fallan, escala explícitamente.
         case 'cli_1m_context_glitch':
+        // #5795: un rechazo de credencial NO dispara fallback desde esta capa.
+        // Se declara explícito (en vez de caer al default) para que quede
+        // asentado que es una decisión, no un olvido: quien resuelve qué hacer
+        // con la credencial es el coordinador de #5794.
+        case 'authentication_rejected':
         case 'unknown':
         default:
             return false;
@@ -727,10 +861,90 @@ function classifyShouldFallback(errorClass) {
 // quota_exhausted/auth/permanent_failure son NO retriable; rate_limit,
 // transient_5xx y cli_1m_context_glitch sí (este último con degradación
 // opcional 1M→200K en el último intento).
+// #5795: `authentication_rejected` tampoco es retriable — reintentar con la
+// misma credencial rechazada sólo quema intentos. La re-resolución (rotar la
+// credencial y recién ahí reintentar) es del coordinador de #5794.
 function classifyRetriable(errorClass) {
     return errorClass === 'rate_limit'
         || errorClass === 'transient_5xx'
         || errorClass === 'cli_1m_context_glitch';
+}
+
+// -----------------------------------------------------------------------------
+// detectAuthenticationRejected (#5795) — clase cerrada, previa a todo lo demás.
+//
+// QUÉ HACE
+//   Recorre SÓLO frames estructurados (JSON por línea, `data: {...}` de SSE, o
+//   el body JSON entero) y se los pasa al detector del adapter que corresponde
+//   a `ctx.provider`. Si el adapter clasifica, devolvemos su rechazo tipado.
+//
+// QUÉ NO HACE
+//   * No mira texto libre. Una línea que no parsea como JSON/SSE se saltea; no
+//     hay regex, ni substring, ni `message`. Las ramas de `auth` por regex
+//     (`CLI_AUTH_PATTERNS`) quedan intactas y separadas: siguen produciendo
+//     `errorClass: 'auth'` como siempre.
+//   * No infiere el provider del contenido. El adapter sale exclusivamente de
+//     `ctx.provider` (SR-5), y el propio detector revalida el aislamiento.
+//   * No decide retry, fallback ni presupuesto. Sólo clasifica.
+//
+// PRECEDENCIA
+//   Corre ANTES de la detección de cuota/rate-limit/auth-regex. Es seguro
+//   porque las tablas positivas de autenticación son disjuntas de las
+//   allowlists de cuota, y la guardia de ambigüedad de cada adapter se abstiene
+//   ante evidencia contradictoria. Un frame de cuota nunca cae acá.
+//
+// EVIDENCIA SIN PAYLOAD
+//   El `evidence` que devolvemos se construye con NUESTROS tokens (los que
+//   matchearon contra la tabla cerrada) más el status HTTP. Nunca es la línea
+//   del provider. Es la razón por la que esta clase no puede filtrar un secreto
+//   por el canal de evidencia, ni siquiera si el `message` viniera con la API
+//   key adentro.
+// -----------------------------------------------------------------------------
+function detectAuthenticationRejected(input, provider, transport) {
+    const detect = getAuthDetector(provider);
+    if (!detect) return null;
+
+    // Un frame por línea; el body JSON entero se prueba aparte más abajo.
+    const evaluate = (frame, source) => {
+        if (!frame) return null;
+        const rejection = detect(frame, { provider, transport, source });
+        if (!rejection) return null;
+        return { errorClass: authRejection.AUTH_REJECTED_CLASS, rejection };
+    };
+
+    // 1. Body JSON completo (típico de los runners REST: cerebras, nvidia,
+    //    gemini con `-o json`). `transport: 'api'` lo trata como api-json.
+    const whole = tryParseJson(input);
+    if (whole) {
+        const hit = evaluate(whole, transport === 'api' ? 'api-json' : 'cli-stream-json');
+        if (hit) return hit;
+    }
+
+    // 2. Frames línea por línea: JSONL del stream (`{...}`) o SSE (`data: {...}`).
+    for (const line of splitBoundedLines(input)) {
+        const direct = tryParseJson(line);
+        if (direct) {
+            const hit = evaluate(direct, transport === 'api' ? 'api-json' : 'cli-stream-json');
+            if (hit) return hit;
+            continue;
+        }
+        const sse = /^data:\s*(\{[^]*\})\s*$/.exec(line);
+        if (!sse) continue;
+        const parsed = tryParseJson(sse[1]);
+        if (!parsed) continue;
+        const hit = evaluate(parsed, 'api-sse');
+        if (hit) return hit;
+    }
+
+    return null;
+}
+
+// Arma el `evidence` de un rechazo de autenticación SIN tocar el payload.
+function authRejectionEvidence(rejection) {
+    const s = (rejection && rejection.signal) || {};
+    const token = s.type || s.code || 'sin-token';
+    const status = s.status === null || s.status === undefined ? 'n/a' : String(s.status);
+    return `${authRejection.AUTH_REJECTED_CLASS} source=${s.source || 'n/a'} token=${token} status=${status}`;
 }
 
 // -----------------------------------------------------------------------------
@@ -767,6 +981,37 @@ function parseProviderError(rawOutput, ctx = {}) {
         : truncated;
     const sanitizedRaw = sanitize(rawPreview);
     const hasContent = truncated.length > 0;
+
+    // 0. #5795 — clase cerrada `authentication_rejected`, ANTES que todo.
+    //
+    // Esta capa SÓLO transporta la señal: `retriable: false` y
+    // `shouldFallback: false` para que ni el parser ni el hook conviertan un
+    // rechazo de credencial en retry de cuota, retry de issue o reinicio de
+    // fallback. El dueño del presupuesto de re-resolución es el coordinador de
+    // #5794; acá no se decide nada.
+    //
+    // `raw: ''` es deliberado. Para el resto de las clases devolvemos un
+    // extracto saneado del output, pero un rechazo de credencial es justo el
+    // error que más chance tiene de traer la clave en el `message`. No hay
+    // sanitizador perfecto: la garantía fuerte es no copiar NADA del payload.
+    if (hasContent) {
+        let authHit = null;
+        try {
+            authHit = detectAuthenticationRejected(truncated, provider, transport);
+        } catch {
+            authHit = null; // fail-closed: nunca rompe la clasificación normal.
+        }
+        if (authHit) {
+            return {
+                errorClass: authHit.errorClass,
+                retriable: false,
+                shouldFallback: false,
+                raw: '',
+                evidence: authRejectionEvidence(authHit.rejection),
+                authRejection: authHit.rejection,
+            };
+        }
+    }
 
     // 1. Match estructural / regex sobre el rawOutput.
     let detection = null;
@@ -817,6 +1062,9 @@ module.exports = {
     classifyShouldFallback,
     classifyRetriable,
 
+    // #5795 — clase cerrada de rechazo de credencial.
+    AUTH_REJECTED_CLASS: authRejection.AUTH_REJECTED_CLASS,
+
     // Constantes públicas (útiles para callers y tests).
     MAX_RAW_INPUT_BYTES,
     MAX_LINE_BYTES,
@@ -830,6 +1078,10 @@ module.exports = {
     _splitBoundedLinesMeta: splitBoundedLinesMeta,
     _startsWithStructuredFramePrefix: startsWithStructuredFramePrefix,
     _tryParseJson: tryParseJson,
+    _detectAuthenticationRejected: detectAuthenticationRejected,
+    _authRejectionEvidence: authRejectionEvidence,
+    _getAuthDetector: getAuthDetector,
+    _resetAuthDetectorCache,
     _detectFromCliStderr: detectFromCliStderr,
     _detectFromApiResponse: detectFromApiResponse,
     _classifyByContext: classifyByContext,

@@ -29,6 +29,9 @@ const {
 } = require('../kernel-supervisor');
 const { isSafeId } = require('../project-descriptor');
 const { isSafeProjectId, segmentProductState } = require('../product-state-segment');
+// #5899 — la resolución de secretos por instancia va contra el vault.
+const { buildParameterPath, createInMemoryVaultDriver } = require('../secret-vault');
+const { _resetVaultCache } = require('../credentials');
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -746,21 +749,71 @@ test('A01 · segmentProductState hace whitelist de campos (no passthrough del ob
 // A02 · Aislamiento de secretos (CA-6 · CRÍTICO)
 // -----------------------------------------------------------------------------
 
-const CREDS_MULTI = {
-  namespaces: {
-    acme: { githubToken: 'ghp_acme_SECRET', anthropicKey: 'sk-acme-SECRET' },
-    globex: { githubToken: 'ghp_globex_SECRET', anthropicKey: 'sk-globex-SECRET' },
-  },
+// #5899 · CA-20 — la resolución de secretos por instancia pasó del ARCHIVO de
+// credenciales al VAULT. Lo que cambia acá es la PLOMERÍA del fixture (config
+// de vault del test + driver in-memory, en vez de `data:`), no la fuerza de una
+// sola aserción: mismos scopes, mismos valores marcados `SECRET`, mismos
+// invariantes de aislamiento y de redacción.
+//
+// El valor pasa de `'ghp_acme_SECRET'` a `{ token: 'ghp_acme_SECRET' }` porque
+// un scope del vault es un OBJETO JSON por contrato (`parsearScope`,
+// secret-vault.js, rechaza un string suelto). Es el mismo secreto en la forma
+// del store nuevo, no una aserción más débil: el `deepEqual` sigue siendo exacto.
+const VAULT_PREFIX = '/test5899';
+const VAULT_HOST = 'hostDePrueba';
+
+const SECRETOS_POR_PRODUCTO = {
+  acme: { githubToken: { token: 'ghp_acme_SECRET' }, anthropicKey: { api_key: 'sk-acme-SECRET' } },
+  globex: { githubToken: { token: 'ghp_globex_SECRET' }, anthropicKey: { api_key: 'sk-globex-SECRET' } },
 };
 
-test('A02 · cada instancia resuelve SÓLO sus refs scoped (resolveScopedRefs, no el namespace de otro)', async () => {
+function vaultCfg(over = {}) {
+  return {
+    enabled: true,
+    prefix: VAULT_PREFIX,
+    // Identidad del KERNEL. CA-1: la instancia la PISA con la clave del
+    // registry, así que ningún path resuelto puede caer bajo `kernel`.
+    projectId: 'kernel',
+    hostId: VAULT_HOST,
+    cache_ttl_seconds: 300,
+    // CA-7 — la allowlist global queda VACÍA a propósito: si el camino de
+    // instancia se apoyara en `vault.required_scopes` en vez de en su propia
+    // allowlist, todos estos tests fallarían con `VaultConfigError`.
+    required_scopes: [],
+    shared_secrets: [],
+    max_cached_tenants: 8,
+    ...over,
+  };
+}
+
+function driverDeVault(porProducto = SECRETOS_POR_PRODUCTO) {
+  const parameters = {};
+  for (const [projectId, scopes] of Object.entries(porProducto)) {
+    for (const [scope, valor] of Object.entries(scopes)) {
+      parameters[buildParameterPath({
+        prefix: VAULT_PREFIX, projectId, hostId: VAULT_HOST, scope, tier: 'host',
+      })] = valor;
+    }
+  }
+  return createInMemoryVaultDriver({ parameters });
+}
+
+/** Plomería del vault para los tests de secretos: config + driver + logger mudo. */
+function vaultOpts(extra = {}) {
+  return {
+    vaultConfig: vaultCfg(), vaultDriver: driverDeVault(), logger: () => {}, ...extra,
+  };
+}
+
+test('A02 · cada instancia resuelve SÓLO sus scopes contra el vault (nunca el namespace de otro)', async () => {
+  _resetVaultCache();
   const supervisor = bootedSupervisor();
   await supervisor.bootProducts();
 
-  const rA = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken'], data: CREDS_MULTI });
+  const rA = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken'], ...vaultOpts() });
   assert.equal(rA.ok, true);
   const a = supervisor.getInstance('acme');
-  assert.deepEqual(a.secrets, { githubToken: 'ghp_acme_SECRET' }, 'A resuelve su propio scope');
+  assert.deepEqual({ ...a.secrets }, { githubToken: { token: 'ghp_acme_SECRET' } }, 'A resuelve su propio scope');
   // El scope no pedido no se materializa; el secreto de B jamás aparece en A.
   assert.equal(a.secrets.anthropicKey, undefined, 'sólo el scope declarado');
   assert.ok(!JSON.stringify(a.secrets).includes('globex'), 'ningún secreto de B en A');
@@ -770,10 +823,11 @@ test('A02 · cada instancia resuelve SÓLO sus refs scoped (resolveScopedRefs, n
 });
 
 test('A02/CA-6.2 · el supervisor NO carga credenciales en process.env global', async () => {
+  _resetVaultCache();
   const before = { ...process.env };
   const supervisor = bootedSupervisor();
   await supervisor.bootProducts();
-  supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'anthropicKey'], data: CREDS_MULTI });
+  supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'anthropicKey'], ...vaultOpts() });
 
   // Ninguna key secreta terminó en process.env (no se llamó loadIntoEnv).
   const envDump = JSON.stringify(process.env);
@@ -784,9 +838,13 @@ test('A02/CA-6.2 · el supervisor NO carga credenciales en process.env global', 
 });
 
 test('A02/CA-6.3 · redacción: meta expone sólo nombres de scope, nunca valores', async () => {
+  _resetVaultCache();
   const supervisor = bootedSupervisor();
   await supervisor.bootProducts();
-  const r = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'anthropicKey'], data: CREDS_MULTI });
+  // #5899 CA-11 — este caso pide DOS scopes después de que el anterior pidió
+  // UNO para el mismo tenant: con la clave de memo vieja (sólo el namespace)
+  // habría dado HIT falso y `anthropicKey` habría salido como `missing`.
+  const r = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'anthropicKey'], ...vaultOpts() });
   assert.equal(r.ok, true);
   const metaDump = JSON.stringify(r.meta);
   assert.ok(!metaDump.includes('ghp_acme_SECRET') && !metaDump.includes('sk-acme-SECRET'), 'meta sin valores');
@@ -797,6 +855,7 @@ test('A02/CA-6.3 · redacción: meta expone sólo nombres de scope, nunca valore
 });
 
 test('A02 · fail-closed: scope faltante → no deja secretos parciales en el ctx + alerta', async () => {
+  _resetVaultCache();
   const alerts = [];
   const supervisor = createKernelSupervisor({
     catalogStore: fakeCatalogStore(CATALOG_MIXTO),
@@ -805,10 +864,147 @@ test('A02 · fail-closed: scope faltante → no deja secretos parciales en el ct
     hydrate: false,
   });
   await supervisor.bootProducts();
-  const r = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'noExiste'], data: CREDS_MULTI });
+  const r = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'noExiste'], ...vaultOpts() });
   assert.equal(r.ok, false, 'missing scope → fail-closed');
   assert.equal(supervisor.getInstance('acme').secrets, null, 'sin secretos parciales');
   assert.ok(alerts.some((a) => a.stage === 'secrets'), 'A09: fallo de resolución alertado');
+});
+
+// -----------------------------------------------------------------------------
+// #5899 · resolución por instancia CONTRA EL VAULT (CA-1 … CA-4 · CA-17 · CA-20)
+// -----------------------------------------------------------------------------
+
+test('#5899 CA-1 · resolveInstanceSecrets resuelve por el VAULT con el projectId de la instancia', async () => {
+  _resetVaultCache();
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+  const driver = driverDeVault();
+
+  const rA = supervisor.resolveInstanceSecrets('acme',
+    { scopes: ['githubToken'], vaultConfig: vaultCfg(), vaultDriver: driver, logger: () => {} });
+  const rB = supervisor.resolveInstanceSecrets('globex',
+    { scopes: ['githubToken'], vaultConfig: vaultCfg(), vaultDriver: driver, logger: () => {} });
+
+  assert.equal(rA.ok, true);
+  assert.equal(rB.ok, true);
+  // Cada uno trae SU material: la resolución salió del vault, no del archivo.
+  assert.deepEqual({ ...supervisor.getInstance('acme').secrets }, { githubToken: { token: 'ghp_acme_SECRET' } });
+  assert.deepEqual({ ...supervisor.getInstance('globex').secrets }, { githubToken: { token: 'ghp_globex_SECRET' } });
+
+  // El `projectId` del path es la CLAVE DEL REGISTRY, nunca `vault.projectId`
+  // ni un dato en banda: las raíces barridas lo demuestran.
+  const raices = driver.calls.map((c) => c.root);
+  assert.ok(raices.includes(`${VAULT_PREFIX}/acme/hosts/${VAULT_HOST}/`), `raíz de acme: ${raices}`);
+  assert.ok(raices.includes(`${VAULT_PREFIX}/globex/hosts/${VAULT_HOST}/`), `raíz de globex: ${raices}`);
+  assert.ok(!raices.some((r) => r.includes('/kernel/')), 'ningún path cae bajo la identidad del kernel');
+});
+
+test('#5899 CA-2/REQ-SEC-1 · un `credentials[].ref` hostil no influye el path del vault', async () => {
+  _resetVaultCache();
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_MIXTO),
+    storeFactory: recordingStoreFactory([]),
+    hydrate: false,
+  });
+  await supervisor.bootProducts();
+
+  // Descriptor hostil: path con traversal apuntando a OTRO proyecto.
+  const ctx = supervisor.getInstance('acme');
+  ctx.descriptor = {
+    projectId: 'acme',
+    credentials: [{ ref: '../../globex/hosts/otro', scopes: ['githubToken'] }],
+  };
+
+  const driver = driverDeVault();
+  const r = supervisor.resolveInstanceSecrets('acme',
+    { vaultConfig: vaultCfg(), vaultDriver: driver, logger: () => {} });
+
+  assert.equal(r.ok, true, 'los scopes declarados por el descriptor sí se usan');
+  assert.deepEqual({ ...ctx.secrets }, { githubToken: { token: 'ghp_acme_SECRET' } });
+  for (const c of driver.calls) {
+    const objetivo = c.root || c.name || '';
+    assert.ok(!objetivo.includes('..'), `el path del vault no contiene traversal: ${objetivo}`);
+    assert.ok(!objetivo.includes('globex'), `el path del vault no contiene el destino hostil: ${objetivo}`);
+    assert.ok(objetivo.startsWith(`${VAULT_PREFIX}/acme/`),
+      `prefix + projectId salen de config + registry: ${objetivo}`);
+  }
+});
+
+test('#5899 CA-3/REQ-SEC-10 · process.env queda BYTE A BYTE igual después de resolver', async () => {
+  _resetVaultCache();
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+  const antes = JSON.stringify(process.env);
+
+  supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'anthropicKey'], ...vaultOpts() });
+
+  // Mismas claves Y mismos valores: `resolveInstanceVault` es de la familia sin
+  // efectos sobre el ambiente, jamás pasa por `loadIntoEnv` (que hidrataría
+  // `opts.env || process.env`).
+  assert.equal(JSON.stringify(process.env), antes, 'process.env sin cambios');
+});
+
+test('#5899 CA-4/REQ-SEC-9 · onAlert viaja con nombres y remediación, nunca con el mensaje crudo del vault', async () => {
+  _resetVaultCache();
+  const alerts = [];
+  const supervisor = createKernelSupervisor({
+    catalogStore: fakeCatalogStore(CATALOG_MIXTO),
+    storeFactory: recordingStoreFactory([]),
+    onAlert: (a) => alerts.push(a),
+    hydrate: false,
+  });
+  await supervisor.bootProducts();
+  supervisor.resolveInstanceSecrets('acme', { scopes: ['noExiste'], ...vaultOpts() });
+
+  const alerta = alerts.find((a) => a.stage === 'secrets');
+  assert.ok(alerta, 'el fallo se alerta');
+  const detalle = String(alerta.errors[0].detail);
+  assert.match(detalle, /noExiste/, 'nombra el scope que falta');
+  assert.ok(!detalle.includes('Remediación: subir el parámetro al vault (tier'),
+    'no reenvía el mensaje crudo de VaultSecretMissingError');
+  assert.ok(!detalle.includes('SECRET'), 'ningún valor de secreto en la alerta');
+});
+
+test('#5899 CA-17/G-4 · con `vault.enabled: false` la instancia falla CERRADA y jamás cae al archivo', async () => {
+  _resetVaultCache();
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+
+  const r = supervisor.resolveInstanceSecrets('acme', {
+    scopes: ['githubToken'],
+    vaultConfig: vaultCfg({ enabled: false }),
+    vaultDriver: driverDeVault(),
+    logger: () => {},
+  });
+
+  assert.equal(r.ok, false, 'fail-closed: nunca fallback al archivo de credenciales');
+  assert.equal(supervisor.getInstance('acme').secrets, null, 'sin secretos en el ctx');
+  // UX-OPS-3 — el operador tiene que distinguir "el gate está apagado" de
+  // "falta un secreto": se remedian distinto.
+  assert.equal(r.meta.code, 'VAULT_DISABLED');
+  assert.match(r.error, /vault\.enabled/, 'nombra la clave de config que hay que tocar');
+  assert.match(r.error, /NO es un problema de credenciales/,
+    'dice explícitamente que no falta ningún secreto: se remedia encendiendo el gate');
+  assert.notEqual(r.meta.code, 'VAULT_SCOPE_MISSING', 'no se confunde con un scope faltante');
+  // meta redactada igual que en el camino feliz.
+  assert.ok(!JSON.stringify(r.meta).includes('SECRET'));
+});
+
+test('#5899 CA-20 · el mismo tenant con conjuntos de scopes distintos no produce HIT falso', async () => {
+  _resetVaultCache();
+  const supervisor = bootedSupervisor();
+  await supervisor.bootProducts();
+  const driver = driverDeVault();
+  const plomeria = { vaultConfig: vaultCfg(), vaultDriver: driver, logger: () => {} };
+
+  const uno = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken'], ...plomeria });
+  assert.equal(uno.ok, true);
+  assert.deepEqual(uno.meta.scopes, ['githubToken']);
+
+  const dos = supervisor.resolveInstanceSecrets('acme', { scopes: ['githubToken', 'anthropicKey'], ...plomeria });
+  assert.equal(dos.ok, true, 'el segundo pedido NO sale de la memo del primero');
+  assert.deepEqual(dos.meta.scopes.sort(), ['anthropicKey', 'githubToken']);
+  assert.deepEqual(dos.meta.missing, [], 'sin `missing` espurio por HIT falso');
 });
 
 // -----------------------------------------------------------------------------
@@ -830,7 +1026,7 @@ test('A03 · resolveInstanceSecrets lanza fail-closed ante projectId inseguro (a
   const supervisor = bootedSupervisor();
   for (const bad of ['../otro', 'a/b', 'x\\y', '..']) {
     assert.throws(
-      () => supervisor.resolveInstanceSecrets(bad, { scopes: ['x'], data: CREDS_MULTI }),
+      () => supervisor.resolveInstanceSecrets(bad, { scopes: ['x'], ...vaultOpts() }),
       (err) => err instanceof KernelStoreIsolationError,
       `id inseguro rechazado en secretos: ${bad}`,
     );

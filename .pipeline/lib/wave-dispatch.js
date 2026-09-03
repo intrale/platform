@@ -16,10 +16,11 @@
 // cerrados corren acá, con el predicado `isClosed` inyectado (title-cache, sin
 // GitHub en el hot path); `waves.js` jamás ve la red. La mutación pasa SIEMPRE
 // por el gate auditado de `partial-pause` (authorizedBy válido → habilita los
-// removals de cerrados/ajenos).
+// removals de cerrados/ajenos), alcanzado vía el envoltorio único de estado
+// operativo (`operational-state.js`, #5179 grupo 3).
 // =============================================================================
 
-const partialPause = require('./partial-pause');
+const operationalState = require('./operational-state');
 
 /**
  * Realinea reductivamente la allowlist a la ola activa (relanzar despacho).
@@ -72,7 +73,7 @@ function realignActiveWaveDispatch(opts = {}) {
 
     // 3. Mutación SOLO por el gate auditado (SEC-2). El authorizedBy válido
     //    habilita los removals de los cerrados/ajenos.
-    const res = partialPause.setPartialPause(expanded, {
+    const res = operationalState.setAllowlist(expanded, {
         source,
         authorizedBy,
         justification: opts.justification || (

@@ -106,7 +106,7 @@ test('#4404 · negativo: path excluido (application.conf) → data_residency_blo
     const { impl, state } = fakeHttp({ status: 200 });
     const r = await completion.complete({
         provider: 'nvidia-nim',
-        model: 'deepseek-ai/deepseek-v4-pro',
+        model: 'deepseek-ai/deepseek-v4-flash-0731',
         prompt: 'analizá esto',
         // Excluido para non_anthropic por el sidecar real (**/application.conf).
         paths: ['users/src/main/resources/application.conf'],

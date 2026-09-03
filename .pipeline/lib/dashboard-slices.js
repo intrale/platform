@@ -34,6 +34,13 @@ function _redact(s) {
 // #2976 — Estado del flag de cuota Anthropic agotada (lectura defensiva).
 // Tolerante a la ausencia del módulo: si #2974 todavía no aterrizó, el slice
 // degrada a `{ active: false }` y nada del dashboard se rompe.
+// #6498 — Resolver puro del estado del sello de evidencia de QA (los 4 estados
+// que el operador tiene que poder distinguir). Require defensivo: si el modulo
+// no esta, `pipelineSlice` emite `selloEvidencia: null` y la vista V3 queda
+// exactamente como hoy — cero badge, cero regresion.
+let _selloEvidenciaState = null;
+try { _selloEvidenciaState = require('./sello-evidencia-state'); } catch { /* opcional */ }
+
 let quotaExhaustedState = null;
 try { quotaExhaustedState = require('./quota-exhausted-state'); } catch { /* opcional */ }
 
@@ -48,6 +55,10 @@ try { providerHealthLib = require('./provider-health'); } catch { /* opcional */
 // `{ active: false }` sin romper el dashboard.
 let dispatchCause = null;
 try { dispatchCause = require('./dispatch-cause'); } catch { /* opcional */ }
+
+// #5400 — estampa del último despacho efectivo (para "hace cuánto no sale trabajo").
+let lastDispatchMod = null;
+try { lastDispatchMod = require('./last-dispatch'); } catch { /* opcional */ }
 
 // #4460 — Trust anchor del SHA vivo + detección de drift del modelo operativo.
 // Requires defensivos: si no cargan (checkout viejo), el slice degrada a
@@ -98,6 +109,12 @@ const DETERMINISTIC_SKILLS = new Set(['build', 'tester', 'delivery', 'linter']);
 // pre-#2490), `nextInQueue` degrada a comportamiento running (sin filtro).
 let partialPause = null;
 try { partialPause = require('./partial-pause'); } catch { /* opcional */ }
+
+// #5176 — Envoltorio único de acceso al estado operativo. Mismo criterio de
+// require defensivo que el resto del módulo: si no carga, `headerSlice` degrada
+// a `running` sin romper el header del dashboard.
+let operationalState = null;
+try { operationalState = require('./operational-state'); } catch { /* opcional */ }
 
 // Detector de artifacts auxiliares (.guidance.txt, .reason.json, .comment.md,
 // y cualquier filename con > 2 segmentos). Compartido con human-block para
@@ -542,19 +559,47 @@ function nextInQueue(state, ctx, limit = 3, opts = {}) {
 
 function headerSlice(state, ctx) {
     const PIPELINE = ctx.PIPELINE;
-    const partialFile = path.join(PIPELINE, '.partial-pause.json');
-    const pauseFile = path.join(PIPELINE, '.paused');
+    // #5176 — El modo de dispatch del header sale del envoltorio único, no de
+    // dos `fs.existsSync` sobre paths construidos acá. Dos consecuencias
+    // DELIBERADAS y declaradas (no efectos colaterales):
+    //
+    //   R7 · el halt total sigue ganando. `getDispatchState()` aplica la
+    //   precedencia `paused > partial_pause > running` del contrato §4: con
+    //   `.paused` presente devuelve `mode: 'paused'` sin siquiera leer el
+    //   marker de allowlist. El header NO puede confundir halt total con
+    //   "allowlist vacía" porque son ramas distintas del mismo retorno, no dos
+    //   lecturas independientes que alguien pueda reordenar.
+    //
+    //   SEC-4 · ventana por skill. El header activaba `partial_pause` SÓLO con
+    //   `allowed_issues.length > 0`; `getPipelineMode()` lo activa con issues
+    //   O skills (#3680 CA-A15). Con una ventana por skill (sin issues), el
+    //   header mostraba `running` mientras el Pulpo estaba en `partial_pause`
+    //   — el operador leía "sin pausa" con el dispatch acotado. La semántica
+    //   del envoltorio es la correcta y se adopta: es un cambio observable
+    //   DECLARADO, no una regresión.
+    //
+    // El envoltorio resuelve la ruta física por su cuenta (contrato §2:
+    // `PIPELINE_DIR_OVERRIDE` o `.pipeline/`), así que este slice deja de
+    // derivar el estado operativo de `ctx.PIPELINE`. En producción son el
+    // mismo directorio; el resto del slice sigue usando `PIPELINE` para lo
+    // suyo (build status, rest-mode, métricas).
+    //
+    // CA-UX-3 / CA-UX-4 · el slice publica también `allowedSkills`. Sin ese
+    // campo el cliente no puede distinguir una ventana por skill de una pausa
+    // parcial vacía: rotulaba `⏸ Parcial · 0 issues` y escondía el toggle de
+    // inspección de la allowlist justo cuando había una restricción vigente.
+    // `views/dashboard/multi-provider-coverage.js` ya lo leía del header y
+    // recibía `undefined` — este es el productor que faltaba.
     let mode = 'running';
     let allowedIssues = [];
-    if (fs.existsSync(pauseFile)) {
-        mode = 'paused';
-    } else if (fs.existsSync(partialFile)) {
-        const data = safeReadJson(partialFile, {});
-        const arr = Array.isArray(data.allowed_issues) ? data.allowed_issues : [];
-        if (arr.length > 0) {
-            mode = 'partial_pause';
-            allowedIssues = arr;
-        }
+    let allowedSkills = [];
+    if (operationalState && typeof operationalState.getDispatchState === 'function') {
+        try {
+            const dispatch = operationalState.getDispatchState();
+            mode = dispatch.mode;
+            allowedIssues = Array.isArray(dispatch.allowedIssues) ? dispatch.allowedIssues : [];
+            allowedSkills = Array.isArray(dispatch.allowedSkills) ? dispatch.allowedSkills : [];
+        } catch { /* envoltorio degradado → header en running, nunca rompe */ }
     }
     const procesos = state.procesos || {};
     const pulpoAlive = !!(procesos.pulpo && procesos.pulpo.alive);
@@ -634,6 +679,13 @@ function headerSlice(state, ctx) {
         cpuCores: r.cpuCores ?? null,
         maxCpu: r.maxCpu ?? 70,
         maxMem: r.maxMem ?? 70,
+        // #6708 — Espacio libre en disco con el color de su umbral. Va dentro
+        // de `resources` y no como slice aparte: para el operador es una
+        // tercera dimensión de la misma pregunta ("¿el sistema da abasto?"),
+        // y separarla obligaría al cliente a un fetch más para pintar la fila.
+        // `null` cuando el guardián todavía no midió (Pulpo recién arrancado) —
+        // el cliente omite la celda en vez de mostrar ceros.
+        disk: state.disk || null,
     };
 
     // #2890 PR-A — Modo descanso: pill indigo en header (CA-3.1) cuando la
@@ -681,6 +733,7 @@ function headerSlice(state, ctx) {
     return {
         mode,
         allowedIssues,
+        allowedSkills,
         pulpoAlive,
         pulpoUptimeMs: procesos.pulpo?.uptime || 0,
         counts: {
@@ -1578,6 +1631,15 @@ function buildAgentsForActiveFase(issueId, data, state) {
     return { agents, expectedSkills };
 }
 
+// #6498 — Envoltorio defensivo del resolver del sello. El badge es opcional; el
+// board NO. Cualquier fallo del modulo o dato deforme degrada a `null` (= cero
+// badge) en vez de tumbar el slice que alimenta todo el backlog del operador.
+function _selloEvidenciaSlice(fasesByKey, selloState) {
+    if (!_selloEvidenciaState || typeof _selloEvidenciaState.resolveSelloEvidenciaState !== 'function') return null;
+    try { return _selloEvidenciaState.resolveSelloEvidenciaState(fasesByKey, selloState) || null; }
+    catch { return null; }
+}
+
 function pipelineSlice(state, ctx) {
     const matrix = {};
     // matrixCounts[faseKey][skill] = N — cuántos issues activos hay en cada
@@ -1684,6 +1746,18 @@ function pipelineSlice(state, ctx) {
             // MISMO map que consume el handler `wave`). El frontend pinta el
             // badge 🛑 exclusivamente desde acá, sin re-derivar de labels.
             blockedBy: (state.blockedIssues && state.blockedIssues.blockedBy && state.blockedIssues.blockedBy[String(issueId)]) || null,
+            // #6498 — Estado del sello de evidencia de QA, RESUELTO server-side.
+            // Mismo criterio que `blockedBy`: el servidor decide, el cliente pinta.
+            //
+            // Sin esto el badge vivia SOLO en generateHTML() de dashboard.js, que
+            // se sirve unicamente en /legacy: la pantalla que abre el operador (V3)
+            // quedaba muda. Es el mismo defecto que #6459 ya habia corregido para el
+            // badge del Commander, y la misma solucion: una fuente, dos superficies.
+            //
+            // Lo que sale de aca es 100% derivado de constantes congeladas del
+            // resolver (estado/cssKey/icono/copy/copyCorto/detalle/variante). No
+            // viaja el hash, ni la ruta, ni el bloque `sello:` crudo (CA-10 / SEC-3).
+            selloEvidencia: _selloEvidenciaSlice(data.fases, (state.selloEvidencia || {})[String(issueId)]),
         };
         for (const [faseKey, entries] of Object.entries(data.fases || {})) {
             for (const e of entries) {
@@ -2775,21 +2849,75 @@ function dispatchCauseSlice(state, ctx) {
     const inactivo = { active: false };
     if (!dispatchCause) return inactivo;
     const PIPELINE = (ctx && ctx.PIPELINE) || path.join(__dirname, '..');
+    const nowMs = (ctx && Number.isFinite(ctx.nowMs)) ? ctx.nowMs : Date.now();
+
+    // #5400 — Estado del propio watchdog (SEC-5 / C-1). El meta-bug de #5400 fue
+    // que el control estuvo apagado desde su merge y nada lo avisaba: la ausencia
+    // de banner se leía como "todo OK". Ahora un watchdog OFF o degradado se
+    // muestra explícitamente, aunque no haya ninguna causa declarada.
+    const wd = readWatchdogStatus(PIPELINE, nowMs);
+
+    // #5400 — Hace cuánto no sale trabajo (CA-6). Independiente de la causa:
+    // el artifact de causa se borra cuando hay despacho, la estampa no.
+    const disp = readLastDispatchInfo(PIPELINE, nowMs);
+
     let artifact;
     try {
         artifact = dispatchCause.readArtifact(PIPELINE);
     } catch {
-        return inactivo;
+        artifact = null;
     }
-    if (!artifact || typeof artifact !== 'object' || !artifact.causa) return inactivo;
 
     // Validación defensiva del enum: si el artifact trae una causa fuera del
-    // catálogo cerrado (corrupción / versión vieja), no lo renderizamos como
-    // causa válida — degradamos a inactivo (fail-safe, no confiar en el disco).
+    // catálogo cerrado (corrupción / versión vieja), no lo tratamos como causa
+    // válida — fail-safe, no confiar en el disco.
     const causasValidas = dispatchCause.CAUSAS_VALIDAS;
-    if (causasValidas && !causasValidas.has(artifact.causa)) return inactivo;
+    const causaOk = artifact && typeof artifact === 'object' && artifact.causa
+        && !(causasValidas && !causasValidas.has(artifact.causa));
 
-    const nowMs = (ctx && Number.isFinite(ctx.nowMs)) ? ctx.nowMs : Date.now();
+    // Sin causa declarada: el banner sólo aparece si el watchdog está caído o
+    // apagado (SEC-5). Con el watchdog sano y la cola despachando, no hay banner
+    // — se conserva la conducta de #4709.
+    if (!causaOk) {
+        if (wd.watchdogEnabled !== null || wd.watchdogDegraded !== null) {
+            return {
+                active: true,
+                // rev-6 (S1/B3) — "silencio SANO" exige watchdog no degradado Y
+                // última decisión `skip`. Con sólo lo primero, un watchdog vivo
+                // que estaba ALERTANDO se pintaba como silencio saludable.
+                //
+                // rev-11 (BLOQUEANTE 1) — pero `skip` TAMPOCO alcanza: es la
+                // acción de cuatro situaciones distintas y sólo una es sana.
+                // `cooldown` (ya alertó, sigue parado), `within-threshold`
+                // (parado, todavía por debajo del umbral) y `declared-cause:*`
+                // (parado por una pausa declarada) son `skip` con la cola llena.
+                // Afirmar salud ahí es el defecto exacto que este issue cierra.
+                //
+                // Silencio sano ⇔ NO HAY TRABAJO ELEGIBLE. Se acepta por la
+                // razón explícita del watchdog o por un conteo de elegibles en
+                // cero observado. `null` (no consta) nunca cuenta como sano:
+                // ausencia de dato no es evidencia de salud.
+                healthySilence: esSilencioSano(wd),
+                causa: null,
+                label: null,
+                detalle: '',
+                anomalia: false,
+                ts: null,
+                ageMs: null,
+                relTime: null,
+                ...disp,
+                ...wd,
+                // #5400 (rev-10) — Cuántos elegibles está esperando la cola según
+                // el ÚLTIMO tick del watchdog. Sin causa declarada no hay artifact
+                // de donde sacarlo, y sin este dato el banner de una detención sin
+                // causa no podía nombrar el mismo número que el aviso de Telegram
+                // ("9 issue(s) habilitado(s) esperando").
+                elegiblesEsperando: wd.watchdogElegibles,
+            };
+        }
+        return inactivo;
+    }
+
     const ts = Number.isFinite(artifact.ts) ? artifact.ts : null;
     const ageMs = ts != null ? Math.max(0, nowMs - ts) : null;
 
@@ -2805,20 +2933,244 @@ function dispatchCauseSlice(state, ctx) {
         ageMs,
         // Tiempo relativo legible (UX-3): "hace 2 min", "hace 45 s".
         relTime: ageMs != null ? formatRelativeAge(ageMs) : null,
+        // #5400 — la causa sostenida demasiado tiempo ya escaló a alertable.
+        escaladoPorDuracion: artifact.escaladoPorDuracion === true,
+        // rev-10 — si el artifact no lo trae, cae al conteo del último tick del
+        // watchdog (mismo número que Telegram). Sólo rellena huecos: el artifact
+        // sigue teniendo prioridad.
+        elegiblesEsperando: Number.isInteger(artifact.elegiblesEsperando)
+            ? artifact.elegiblesEsperando
+            : wd.watchdogElegibles,
+        ...disp,
+        ...wd,
     };
 }
 
-// #4709 — Formateo relativo compacto en español (UX-3). Determinístico y sin
-// dependencias: segundos / minutos / horas / días.
+// #5400 — Lee la estampa del último despacho efectivo. Read-only y fail-safe:
+// cualquier problema degrada a "no consta" en vez de tumbar el dashboard.
+function readLastDispatchInfo(PIPELINE, nowMs) {
+    const vacio = {
+        lastDispatchTs: null, lastDispatchAgeMs: null, lastDispatchRelTime: null,
+        lastDispatchIssue: null, lastDispatchSkill: null, lastDispatchFase: null,
+        lastDispatchClock: null,
+    };
+    if (!lastDispatchMod) return vacio;
+    try {
+        const stamp = lastDispatchMod.readLastDispatch(path.join(PIPELINE, 'state'));
+        if (!stamp) return vacio;
+        const ageMs = Math.max(0, nowMs - stamp.ts);
+        return {
+            lastDispatchTs: stamp.ts,
+            lastDispatchAgeMs: ageMs,
+            lastDispatchRelTime: formatRelativeAge(ageMs),
+            // #5400 (rev-8) — IDENTIDAD del último despacho. La estampa ya
+            // persiste issue/skill/fase (allowlist saneada en `last-dispatch.js`)
+            // y el banner los tiraba a la basura: "hace 1 h" no le dice al
+            // operador si lo último que salió fue lo que él esperaba o algo de
+            // otra ola. Mockup 47 A3: "último despacho 13:09 · #5388 pipeline-dev".
+            lastDispatchIssue: stamp.issue != null ? String(stamp.issue) : null,
+            lastDispatchSkill: stamp.skill != null ? String(stamp.skill) : null,
+            lastDispatchFase: stamp.fase != null ? String(stamp.fase) : null,
+            lastDispatchClock: formatClock(stamp.ts),
+        };
+    } catch {
+        return vacio;
+    }
+}
+
+// #5400 (rev-8) — Hora local HH:MM de un timestamp, para el copy del mockup
+// ("último despacho 13:09", "desde 13:12"). Fail-soft: un ts inválido devuelve
+// null y el render omite el dato en vez de mostrar "Invalid Date".
+function formatClock(ts) {
+    if (!Number.isFinite(ts) || ts <= 0) return null;
+    try {
+        const d = new Date(ts);
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${hh}:${mm}`;
+    } catch {
+        return null;
+    }
+}
+
+// #5400 (rev-11) — ¿El silencio del despacho es SANO?
+//
+// Sano significa UNA sola cosa: no hay trabajo elegible esperando, así que no
+// despachar es la conducta correcta. Cualquier otro `skip` es un pipeline
+// parado con cola, y pintarlo en verde es el defecto que este issue cierra.
+//
+// Fail-closed por diseño: se exige evidencia POSITIVA de que la cola está sin
+// trabajo elegible. Con `null` (no consta) devuelve `false` y el banner cae a
+// "estado sin confirmar", que es honesto; el error caro es el falso verde.
+function esSilencioSano(wd) {
+    if (!wd) return false;
+    // El control tiene que estar sano: un watchdog degradado no puede afirmar
+    // nada sobre el pipeline.
+    if (wd.watchdogDegraded !== false) return false;
+    // Y su última decisión tiene que haber sido no-actuar.
+    if (wd.watchdogAction !== 'skip') return false;
+    // Razón explícita del propio watchdog: la cola no tiene trabajo habilitado.
+    if (wd.watchdogDecisionReason === 'no-enabled-work') return true;
+    // O bien un conteo de elegibles observado en CERO (estrictamente 0, no
+    // falsy: `null` es "no consta" y no habilita el verde). Cubre el caso
+    // legítimo de `within-threshold` con la cola realmente vacía.
+    if (wd.watchdogElegibles === 0) return true;
+    return false;
+}
+
+// #5400 — Lee el estado del watchdog de inactividad de despacho.
+//
+// `degraded` es TRI-ESTADO a propósito:
+//   true   → apagado, kill-switch o brazo sin latir (hay que avisarlo).
+//   false  → corriendo y al día.
+//   null   → no consta (archivo ausente). NO se asume nada: reportar "degradado"
+//            sin evidencia sería una alarma falsa, y reportar "sano" sería el
+//            mismo error que este issue vino a arreglar.
+function readWatchdogStatus(PIPELINE, nowMs) {
+    const desconocido = {
+        watchdogEnabled: null, watchdogDegraded: null,
+        watchdogStaleTick: null, watchdogReason: null,
+        watchdogAction: null,
+        // #5400 (rev-11) — RAZÓN de la última decisión y causa clasificada.
+        watchdogDecisionReason: null, watchdogCauseKind: null,
+        // #5400 (rev-8) — autoría + backoff: sin status file no consta NADA.
+        // Ausencia de dato jamás se rellena con un default optimista.
+        autoriaDeclarada: null, autoriaDesdeTs: null, autoriaDesdeClock: null,
+        episodioId: null, avisosEmitidos: null,
+        avisoUltimoClock: null, avisoProximoClock: null,
+        avisoEtaMin: null, avisoUmbralMin: null,
+        watchdogElegibles: null,
+    };
+    let raw;
+    try {
+        raw = JSON.parse(fs.readFileSync(
+            path.join(PIPELINE, 'state', 'dispatch-watchdog-status.json'), 'utf8'
+        ));
+    } catch {
+        return desconocido;
+    }
+    if (!raw || typeof raw !== 'object') return desconocido;
+
+    const enabled = raw.enabled === true && raw.killSwitch !== true;
+    // Brazo mudo: el tick corre cada minuto, así que 10 min sin latir es un
+    // watchdog que se murió sin avisar — exactamente lo que no puede pasar.
+    const lastTickTs = Number.isFinite(raw.lastTickTs) ? raw.lastTickTs : null;
+    const stale = lastTickTs == null || (nowMs - lastTickTs) > 10 * 60 * 1000;
+    // #5400 (rev-1, SEC-5) — el brazo también declara degradación cuando el
+    // RELOJ está degradado: estampa de despacho ausente, corrida hacia el futuro
+    // o imposible de escribir. En esos casos el watchdog sigue vigilando, pero
+    // con una medición peor que la honesta y el operador tiene que saberlo.
+    const relojDegradado = raw.degraded === true && enabled && !stale;
+    const degraded = !enabled || stale || relojDegradado;
+
+    return {
+        watchdogEnabled: enabled,
+        watchdogDegraded: degraded,
+        watchdogStaleTick: stale,
+        // rev-6 (S1/B3) — la ÚLTIMA decisión del brazo. `degraded: false` sólo
+        // dice que el watchdog está sano; no dice que el pipeline lo esté.
+        watchdogAction: typeof raw.action === 'string' ? raw.action : null,
+
+        // #5400 (rev-11, BLOQUEANTE 1) — RAZÓN de la última decisión, cruda.
+        //
+        // `action` sola es ambigua: `decide()` emite CUATRO `skip` distintos
+        // (`no-enabled-work`, `within-threshold`, `declared-cause:<kind>` y
+        // `cooldown`) y sólo el primero significa "no hay nada para despachar".
+        // Sin este campo el render no podía distinguirlos y pintaba en verde
+        // "nada que despachar no es una falla" con la cola llena: en `cooldown`
+        // —donde el watchdog pasa la mayor parte de un episodio largo, por el
+        // backoff 30→60→120 con tick de 1 min— el banner volvía al verde DESPUÉS
+        // de haber alertado, con el pipeline todavía parado.
+        //
+        // OJO: `watchdogReason` (abajo) es otra cosa — describe la salud del
+        // CONTROL ('apagado' / 'sin latido' / 'con reloj degradado'). No se
+        // fusionan: una habla del watchdog, la otra del pipeline.
+        watchdogDecisionReason: typeof raw.reason === 'string' && raw.reason.length > 0
+            ? raw.reason
+            : null,
+        // #5400 (rev-11) — CAUSA clasificada del último tick. El Pulpo ya la
+        // escribía y el slice la tiraba, así que el banner de fallback decía
+        // "sin causa declarada" mientras Telegram nombraba la pausa (rompía CA-6
+        // y la regla de copy 7: banner y Telegram cuentan el mismo episodio).
+        watchdogCauseKind: typeof raw.causeKind === 'string' && raw.causeKind.length > 0
+            ? raw.causeKind
+            : null,
+
+        watchdogReason: !enabled
+            ? (raw.killSwitch === true ? 'kill-switch' : 'apagado')
+            : (stale ? 'sin latido' : (relojDegradado ? 'con reloj degradado' : null)),
+
+        // #5400 (rev-8) — AUTORÍA declarada de la causa (SEC-2). Se expone cruda
+        // y SIEMPRE junto a su instante de inicio: el render es el que agrega el
+        // rótulo "(sin verificar, desde HH:MM)". Sin dato queda en null y el
+        // banner dice "autoría no registrada" — prohibido defaultear a alguien.
+        autoriaDeclarada: typeof raw.authorDeclared === 'string' && raw.authorDeclared.trim().length > 0
+            ? raw.authorDeclared.trim()
+            : null,
+        autoriaDesdeTs: Number.isFinite(raw.causeSinceTs) && raw.causeSinceTs > 0 ? raw.causeSinceTs : null,
+        autoriaDesdeClock: formatClock(raw.causeSinceTs),
+
+        // #5400 (rev-8) — BACKOFF observable (CA-4 en el dashboard).
+        episodioId: typeof raw.episodeId === 'string' && raw.episodeId.length > 0 ? raw.episodeId : null,
+        avisosEmitidos: Number.isInteger(raw.alertCount) && raw.alertCount >= 0 ? raw.alertCount : null,
+        avisoUltimoClock: formatClock(raw.lastAlertTs),
+        avisoProximoClock: formatClock(raw.nextAlertTs),
+        // Minutos que faltan para el primer aviso del episodio, si todavía no se
+        // emitió ninguno. Negativo/0 ⇒ ya está en tiempo de avisar: se omite en
+        // vez de mostrar "en -3 min".
+        avisoEtaMin: Number.isFinite(raw.alertEtaTs) && raw.alertEtaTs > nowMs
+            ? Math.max(1, Math.round((raw.alertEtaTs - nowMs) / 60000))
+            : null,
+        avisoUmbralMin: Number.isInteger(raw.alertThresholdMinutes) && raw.alertThresholdMinutes > 0
+            ? raw.alertThresholdMinutes
+            : null,
+
+        // #5400 (rev-10) — Elegibles esperando según el último tick (`pendientes`
+        // es el conteo ELEGIBLE, el mismo que gobierna la decisión y el mismo que
+        // viaja en el aviso de Telegram). Nombre propio para no pisar el
+        // `elegiblesEsperando` que viene del artifact cuando SÍ hay causa.
+        watchdogElegibles: Number.isInteger(raw.pendientes) && raw.pendientes >= 0
+            ? raw.pendientes
+            : null,
+    };
+}
+
+// #4709 / #5400 (rev-8) — Formateo relativo compacto en español (UX-3).
+//
+// BLOQUEANTE que arregla (rev-8): esta función era de UNA SOLA UNIDAD
+// (`hace ${h} h`), y #5400 la reusó tal cual para el tiempo desde el último
+// despacho. Resultado: el episodio de 1h33 que ORIGINÓ este issue se mostraba
+// en el banner como "hace 1 h" — 33 minutos de detención evaporados justo en el
+// panel que mira el operador — mientras el aviso de Telegram del MISMO episodio
+// decía "1 h 33 min". Dos duraciones para un solo hecho, que es exactamente lo
+// que prohíbe la regla de copy 7 del mockup 47 ("un episodio, una conversación")
+// y lo que la regla 5 nombra por su nombre ("1 h 33 min", no "hace 1 h").
+//
+// El fix es tener UN SOLO formateador por episodio: se delega en
+// `wave-stall-watchdog.formatDurationEs()`, el mismo que produce el string
+// correcto en Telegram. Acá sólo se le antepone el "hace ".
+//
+// Fail-soft: si el módulo del watchdog no carga (dashboard corriendo sobre un
+// checkout parcial), cae a un formateador local equivalente de dos unidades —
+// nunca vuelve a la granularidad de una sola unidad.
 function formatRelativeAge(ms) {
-    const s = Math.floor(ms / 1000);
-    if (s < 60) return `hace ${s} s`;
-    const m = Math.floor(s / 60);
-    if (m < 60) return `hace ${m} min`;
-    const h = Math.floor(m / 60);
-    if (h < 24) return `hace ${h} h`;
-    const d = Math.floor(h / 24);
-    return `hace ${d} d`;
+    const total = Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : 0;
+    if (total < 60) return `hace ${total} s`;
+    try {
+        return `hace ${require('./wave-stall-watchdog').formatDurationEs(ms)}`;
+    } catch {
+        return `hace ${formatDurationDosUnidades(total)}`;
+    }
+}
+
+// Espejo local de `formatDurationEs` (dos unidades) para el caso degradado.
+// Se mantiene idéntico a propósito: divergir acá reintroduce el bug de rev-7.
+function formatDurationDosUnidades(totalSegundos) {
+    const mins = Math.floor(totalSegundos / 60);
+    if (mins < 60) return `${mins} min`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m > 0 ? `${h} h ${m} min` : `${h} h`;
 }
 
 // =============================================================================
@@ -3205,6 +3557,27 @@ let desyncDetector = null;
 try { desyncDetector = require('./desync-detector'); } catch { /* opcional */ }
 let _desyncDetectorOverride = null;
 
+// #5724 CA-4 — Copy compartido del semáforo. El slice expone la presentación ya
+// resuelta (`presentacion`) además del dato crudo: el banner de la vista Inicio
+// se hidrata client-side y sin esto tendría que reimplementar en el browser el
+// mapeo estado→label/detalle/antigüedad, que es exactamente cómo el pill del
+// panel Pipeline terminó divergiendo del renderer del monolito. Campo ADITIVO:
+// los consumidores viejos leen los mismos campos de antes.
+let desyncCopy = null;
+try { desyncCopy = require('./desync-copy'); } catch { /* opcional: degradamos sin presentacion */ }
+function _desyncPresentacion(payload) {
+    if (!desyncCopy || typeof desyncCopy.buildDesyncPresentation !== 'function') return null;
+    try { return desyncCopy.buildDesyncPresentation(payload); } catch { return null; }
+}
+
+// #6117 CA-UX-5 — presentación de la línea de última auto-reparación (P1–P6),
+// resuelta con el mismo módulo de copy. Degrada a `null` si el módulo no cargó:
+// la vista tiene su propio empty-state y no se rompe por esto.
+function _autoRepairPresentacion(ultima, repeticion) {
+    if (!desyncCopy || typeof desyncCopy.autoRepairLineaDashboard !== 'function') return null;
+    try { return desyncCopy.autoRepairLineaDashboard(ultima, { repeticion }); } catch { return null; }
+}
+
 function desyncStatusSlice(state, ctx) {
     const detector = _desyncDetectorOverride || desyncDetector;
     // Base defensiva del contrato JSON (CA-6): siempre devolvemos el shape
@@ -3218,15 +3591,34 @@ function desyncStatusSlice(state, ctx) {
         removed: [],
         bloqueado: false,
         count: 0,
+        // #5724 CA-4 — antigüedad del bloqueo. Sin esto un dispatch suspendido
+        // hace 10 horas se ve idéntico a uno de 10 minutos, y la duración es
+        // justamente lo que convierte una divergencia en incidente.
+        detected_at: null,
+        // #6117 CA-7 — parte del contrato: presente (en `null`) también en los
+        // caminos degradados, para que la UI no tenga que distinguir "no hubo
+        // reparación" de "el slice falló".
+        ultima_auto_reparacion: null,
+        auto_reparacion_repeticion: null,
     };
     if (!detector || typeof detector.detectDesync !== 'function') {
-        return { ...base, error: 'desync_detector_unavailable' };
+        return { ...base, presentacion: _desyncPresentacion(base), error: 'desync_detector_unavailable' };
     }
     try {
         const probe = detector.detectDesync({ skipFlag: true, skipAlert: true }) || {};
         const bloqueado = typeof detector.isDesyncFlagSet === 'function'
             ? detector.isDesyncFlagSet() === true
             : false;
+        // El `detected_at` vive en el flag de bloqueo. Sin flag (o con flag
+        // ilegible) queda `null` y la UI simplemente no muestra antigüedad.
+        let detectedAt = null;
+        if (bloqueado && typeof detector.readDesyncFlag === 'function') {
+            try {
+                const flag = detector.readDesyncFlag();
+                const v = flag && flag.detected_at;
+                if (typeof v === 'string' && Number.isFinite(Date.parse(v))) detectedAt = v;
+            } catch { /* degradar a null */ }
+        }
         // CA-8: issue numbers sólo enteros validados antes de exponerlos.
         const added = (Array.isArray(probe.added) ? probe.added : []).filter(Number.isInteger);
         const removed = (Array.isArray(probe.removed) ? probe.removed : []).filter(Number.isInteger);
@@ -3251,7 +3643,45 @@ function desyncStatusSlice(state, ctx) {
             estado = 'desconocido';
         }
 
-        return {
+        // #6117 CA-7 — última auto-reparación del despacho. Desde que las
+        // reparaciones exitosas dejaron de avisarse por Telegram, ésta es la
+        // superficie donde el operador las consulta cuando quiere, en vez de
+        // recibirlas empujadas al chat.
+        // SEC-6: shape acotado a `{tipo, issues, timestamp}` y SÓLO lectura. El
+        // dashboard (3200) no tiene autenticación, así que acá no se expone
+        // nada más ni se ofrece ninguna acción que dispare una reparación.
+        // `readLastAutoRepair` nunca lanza: degrada a `null`.
+        let ultimaAutoReparacion = null;
+        // CA-UX-5 · P6 — el único caso que sube de jerarquía visual es el umbral
+        // superado. Viaja en un campo HERMANO y no dentro de
+        // `ultima_auto_reparacion`, para que ese shape siga siendo exactamente
+        // `{tipo, issues, timestamp}` (SEC-6). Derivado del mismo JSONL, sólo
+        // lectura: no expone nada que no estuviera ya.
+        let repeticion = null;
+        try {
+            const autoRepair = require('./metrics/auto-repair');
+            ultimaAutoReparacion = autoRepair.readLastAutoRepair();
+            if (ultimaAutoReparacion) {
+                let cfg = {};
+                // Si la config no resuelve, el módulo de métrica clampea a sus
+                // defaults (3 / 1 h): el umbral nunca queda indefinido.
+                try { cfg = (configResolver.resolve({}).config || {}).desync || {}; } catch { cfg = {}; }
+                const rep = autoRepair.shouldAlertRepetition({
+                    tipo: ultimaAutoReparacion.tipo,
+                    threshold: cfg.repair_alert_threshold,
+                    windowMs: cfg.repair_alert_window_ms,
+                });
+                // `estado_ilegible` no es "se repitió": es "no pude contar". No
+                // se pinta warning por no saber — para eso está el Telegram.
+                repeticion = {
+                    count: rep.count,
+                    ventana_ms: rep.windowMs,
+                    superado: rep.alert === true && rep.motivo === 'umbral',
+                };
+            }
+        } catch { /* degradar a null — el slice nunca falla por esto */ }
+
+        const payload = {
             estado,
             classification,
             desync: typeof probe.desync === 'boolean' ? probe.desync : null,
@@ -3260,9 +3690,21 @@ function desyncStatusSlice(state, ctx) {
             removed,
             bloqueado,
             count,
+            detected_at: detectedAt,
+            ultima_auto_reparacion: ultimaAutoReparacion,
+            auto_reparacion_repeticion: repeticion,
+            // CA-UX-5 — el copy de la línea se resuelve SERVER-SIDE con
+            // `desync-copy`, igual que `presentacion`. El cliente sólo hace
+            // `setText`: si armara el texto en el browser sería una segunda
+            // redacción del mismo dato, que es el problema que ese módulo
+            // existe para evitar.
+            auto_reparacion_presentacion: _autoRepairPresentacion(ultimaAutoReparacion, repeticion),
         };
+        // Presentación resuelta server-side (label/detalle/antigüedad/chips) para
+        // que toda superficie diga lo mismo sin reimplementar el copy.
+        return { ...payload, presentacion: _desyncPresentacion(payload) };
     } catch (err) {
-        return { ...base, error: String((err && err.message) || err) };
+        return { ...base, presentacion: _desyncPresentacion(base), error: String((err && err.message) || err) };
     }
 }
 
@@ -3632,6 +4074,64 @@ function architectBadgeHTML(info, deps) {
     return `<span class="lc-state-badge lc-state-architect-${info.state}" title="${esc(a11y)}" aria-label="${esc(a11y)}">${svg} ${esc(text)}</span>`;
 }
 
+// #6498 CA-2/CA-3/CA-5/CA-9 — Renderer del badge del sello de evidencia de QA.
+//
+// Mismo contrato que `architectBadgeHTML`: recibe `info` (resultado de
+// `lib/sello-evidencia-state.resolveSelloEvidenciaState`) y `{ esc, ic }`
+// inyectados, para que el test pueda espiar el nombre de icono sin levantar
+// dashboard.js (que tiene side effects HTTP).
+//
+// ALLOWLIST POR CONSTRUCCION (SEC-2 / CA-9 / R-3): el nombre del simbolo sale
+// de un `switch` con literales y `default: return ''`. `ic()` interpola su
+// argumento CRUDO en `href="#ic-${name}"` (dashboard.js), asi que un
+// `ic('estado-' + estadoLeidoDelYaml)` seria un sink de inyeccion directo. La
+// clase CSS tambien sale del switch, no de `info`, por la misma razon.
+//
+// UX-G3: el pill pinta el registro CORTO (la fila esta normalizada en <= 11
+// chars visibles); el copy COMPLETO del PO va entero a `aria-label` y a
+// `title`, que es lo que oye un lector de pantalla y lo que lee el operador al
+// pasar el mouse. Un test de CA-2 busca el copy completo ahi, no en el nodo de
+// texto del pill.
+//
+// UX-G2: ninguna de las 4 clases lleva `animation` — dos pulsos desfasados en
+// la misma fila (con `.lc-state-needshuman`) anulan la jerarquia visual.
+function selloEvidenciaBadgeHTML(info, deps) {
+    if (!info || !info.estado) return '';
+    if (!deps || typeof deps.esc !== 'function' || typeof deps.ic !== 'function') return '';
+    const { esc, ic } = deps;
+    const label = typeof info.copy === 'string' ? info.copy : '';
+    const corto = typeof info.copyCorto === 'string' && info.copyCorto.trim() ? info.copyCorto : label;
+    // CA-5: sin texto no hay badge. Un pill que solo tiene glifo es
+    // indistinguible para quien no percibe el matiz ambar/rojo (1.44:1 en
+    // deuteranopia): la etiqueta no es refuerzo, es la unica senal.
+    if (!label || !corto) return '';
+    // El glifo va DECORATIVO (`aria-hidden`), no etiquetado, por dos razones:
+    //  1) a11y: el <span> ya lleva `aria-label` con el copy completo y eso
+    //     reemplaza a todo su subarbol para el lector de pantalla; un
+    //     aria-label en el <svg> de adentro es ruido que nadie llega a oir.
+    //  2) SEC-2: `ic()` solo escapa comillas en su `ariaLabel` (deja pasar
+    //     `<` crudo dentro del atributo). Pasandole el copy le estariamos
+    //     metiendo texto por un camino que NO pasa por esc(). No hace falta:
+    //     el unico dato que `ic()` recibe de aca es el nombre literal del
+    //     simbolo, que ademas es lo unico que SEC-2/CA-9 admiten.
+    let svg = '';
+    let cssKey = '';
+    switch (info.estado) {
+        case 'sellado':     svg = ic('info');               cssKey = 'sellado';    break;
+        case 'caduco':      svg = ic('estado-stale');       cssKey = 'caduco';     break;
+        case 're-sellando': svg = ic('estado-retrying');    cssKey = 'resellando'; break;
+        case 'escalado':    svg = ic('estado-needs-human'); cssKey = 'escalado';   break;
+        default: return '';
+    }
+    // SEC-1 — la variante anti-falsificacion se expone tambien en el DOM para
+    // que la verificacion no dependa de parsear texto. Valor literal, jamas
+    // interpolado desde `info`.
+    const variante = info.variante === 'descarte' ? ' data-variant="descarte"' : '';
+    const detalle = typeof info.detalle === 'string' && info.detalle.trim() ? info.detalle : '';
+    const title = detalle ? `${label} · ${detalle}` : label;
+    return `<span class="lc-state-badge lc-state-sello-${cssKey}"${variante} title="${esc(title)}" aria-label="${esc(label)}">${svg} ${esc(corto)}</span>`;
+}
+
 // #3962 EP8-H9 — Slice de la pantalla Costos rediseñada. Arma el payload desde
 // el snapshot del aggregator + presupuesto persistido + estado de la anomalía:
 //   - dailyByProvider : serie diaria por proveedor (área apilada, CA-1)
@@ -3882,6 +4382,10 @@ module.exports = {
     quotaExhaustedSlice,
     // #4709 — causa declarada del no-despacho (cola ociosa con pendientes).
     dispatchCauseSlice,
+    // #5400 (rev-8) — expuesto SÓLO para el test de granularidad: el contrato de
+    // dos unidades ("1 h 33 min", nunca "1 h") es lo que rompió el QA visual y
+    // tiene que estar cubierto directamente, no por inferencia desde el HTML.
+    __test__formatRelativeAge: formatRelativeAge,
     providerQuotaBannerSlice,
     // #4289 — slice del presupuesto de ritmo (pacing budget) por proveedor
     pacingSlice,
@@ -3919,6 +4423,8 @@ module.exports = {
     // #3642 — widget architect 4 estados
     architectStateSlice,
     architectBadgeHTML,
+    // #6498 — badge del sello de evidencia de QA (4 estados)
+    selloEvidenciaBadgeHTML,
     // #2894 — exports internos para testing
     _resolveDevSkillFromLabels: resolveDevSkillFromLabels,
     _buildAgentsForActiveFase: buildAgentsForActiveFase,

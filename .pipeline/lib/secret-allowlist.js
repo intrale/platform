@@ -12,6 +12,9 @@ const CONTROL_PATHS = [
   '.pipeline/lib/precommit-secret-scan.js',
   '.pipeline/lib/secret-allowlist.js',
   '.pipeline/lib/secret-scan-lint.js',
+  // Desde la integracion con #6111 el scanner deriva de aca su inventario de
+  // paths sensibles: vaciarlo apaga la capa 1 igual que neutralizar el scanner.
+  '.pipeline/lib/sensitive-paths.js',
   '.pipeline/secret-scan-allowlist.json',
   '.pipeline/sanitizer.js',
   '.claude/hooks/telegram-sanitizer.js',

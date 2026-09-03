@@ -332,3 +332,56 @@ test('admission sweep: alerta Telegram NO contiene body/user/diff (CA-S4)', () =
     assert.equal(text.includes('attacker'), false);
     assert.equal(text.includes('body'), false);
 });
+
+// -----------------------------------------------------------------------------
+// T7 (#5680) — el sweep hereda la exclusión de recomendaciones
+//
+// `servicio-reconciler.js` no se toca: consume `admissionGate.filterOrphans()`
+// (:1168-1169) y ya trae `labels` en su `--json` (:1095). Este test verifica
+// end-to-end que la exclusión llega hasta la cola de operaciones `gh` — es la
+// segunda capa del gate (la event-driven es el workflow).
+// -----------------------------------------------------------------------------
+
+test('#5680 admission sweep: no etiqueta recomendaciones y sí los huérfanos reales', () => {
+    clearGhQueue(); clearTgQueue();
+    const result = reconciler.reconcileAdmissionOrphans({
+        listIssues: () => [
+            { number: 200, labels: [{ name: 'bug' }], title: 'huerfano real', url: 'http://x/200' },
+            { number: 201, labels: [{ name: 'tipo:recomendacion' }], title: 'reco vigente', url: 'http://x/201' },
+            { number: 202, labels: [{ name: 'source:recommendation' }], title: 'reco historica', url: 'http://x/202' },
+            { number: 203, labels: [{ name: 'tipo:recomendacion' }, { name: 'needs-human' }], title: 'reco pendiente', url: 'http://x/203' },
+            { number: 204, labels: [], title: 'huerfano sin labels', url: 'http://x/204' },
+        ],
+        listPrs: () => [],
+    });
+
+    assert.equal(result.appliedCount, 2, 'sólo los 2 huérfanos reales; las 3 recomendaciones quedan afuera');
+
+    const ghOps = listGhQueue();
+    const touched = ghOps.map(o => o.issue).sort((a, b) => a - b);
+    assert.deepEqual(touched, [200, 204]);
+    for (const reco of [201, 202, 203]) {
+        assert.ok(!touched.includes(reco), `#${reco} es recomendación: el sweep no debe etiquetarla`);
+    }
+
+    // La alerta Telegram tampoco las menciona (ruido para el operador).
+    const tgMsgs = listTgQueue();
+    assert.equal(tgMsgs.length, 1);
+    assert.ok(!tgMsgs[0].text.includes('[#201]'));
+    assert.ok(!tgMsgs[0].text.includes('[#203]'));
+    assert.ok(tgMsgs[0].text.includes('[#200]'));
+});
+
+// Contracara: una recomendación YA aprobada por un humano es trabajo real. Si
+// perdió el label de admisión, el sweep debe rescatarla como a cualquier otro.
+test('#5680 admission sweep: recomendación aprobada sí se etiqueta', () => {
+    clearGhQueue(); clearTgQueue();
+    const result = reconciler.reconcileAdmissionOrphans({
+        listIssues: () => [
+            { number: 300, labels: [{ name: 'tipo:recomendacion' }, { name: 'recommendation:approved' }], title: 'reco aprobada', url: 'http://x/300' },
+        ],
+        listPrs: () => [],
+    });
+    assert.equal(result.appliedCount, 1);
+    assert.deepEqual(listGhQueue().map(o => o.issue), [300]);
+});

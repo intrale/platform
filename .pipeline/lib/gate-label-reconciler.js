@@ -118,15 +118,18 @@ function reconcileGateLabels({ currentLabels = [], verdict } = {}) {
  * @param {{toAdd:string[], toRemove:string[]}} args.reconciliation
  * @returns {Array<{action:'label'|'remove-label', issue:number, label:string}>}
  */
-function buildLabelActions({ issue, reconciliation } = {}) {
+function buildLabelActions({ issue, reconciliation, target = 'issue' } = {}) {
+  if (target !== 'issue' && target !== 'pr') {
+    throw new Error(`[gate-label-reconciler] target inválido: ${target}`);
+  }
   const rec = reconciliation || {};
   const issueNum = parseInt(issue, 10);
   const actions = [];
   for (const label of (rec.toRemove || [])) {
-    actions.push({ action: 'remove-label', issue: issueNum, label, gate_reconciler: true });
+    actions.push({ action: 'remove-label', issue: issueNum, target, label, gate_reconciler: true });
   }
   for (const label of (rec.toAdd || [])) {
-    actions.push({ action: 'label', issue: issueNum, label, gate_reconciler: true });
+    actions.push({ action: 'label', issue: issueNum, target, label, gate_reconciler: true });
   }
   return actions;
 }

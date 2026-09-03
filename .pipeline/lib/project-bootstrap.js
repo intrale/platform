@@ -22,6 +22,9 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const descriptorLib = require('./project-descriptor');
+// #5204 — partición del control-plane (catálogo global que enumera el boot). Se
+// toma de la MISMA autoridad que decide los ids reservados: nunca un literal local.
+const { CONTROL_PLANE_PROJECT_ID } = descriptorLib;
 
 // -----------------------------------------------------------------------------
 // SSRF (CA-D3 · requisito de seguridad #4). `repositories[].url` y `board.ref`
@@ -343,6 +346,24 @@ function sanitizeOperatorError(err) {
 // CA-9 (anti tenant-hopping): `contextProjectId` DEBE derivar de la credencial de
 // la instancia (inyectado por el caller), NUNCA del descriptor/request del wizard.
 // El store valida `item.projectId === contextProjectId` como defensa en profundidad.
+//
+// #5204 — DOS PARTICIONES, NO UNA. El alta escribe TRES entidades y NO todas viven
+// en el mismo namespace:
+//
+//   `product#<id>` + `catalog#index` → partición del CONTROL-PLANE. Es el índice
+//       GLOBAL que enumera `kernel-supervisor.bootProducts()` vía su `catalogStore`
+//       (construido con `CONTROL_PLANE_PROJECT_ID`). Escribirlos en la partición
+//       del tenant los volvía INVISIBLES para el boot: `listProducts()` devolvía
+//       `[]` y no se instanciaba ningún pipeline (defecto (b) del issue).
+//   `descriptor#self` → partición del TENANT. Es el estado propio del producto y
+//       el boot lo lee por instancia (`ctx.store.getDescriptor`), ligado al
+//       `contextProjectId` de ESE tenant. Ahí se queda.
+//
+// El aislamiento por tenant NO se relaja: el descriptor se sigue escribiendo con un
+// store ligado al `contextProjectId` de la credencial, y `putDescriptor` reejecuta
+// `assertSameProject`. Además este write path exige explícitamente que el contexto
+// coincida con la identidad del descriptor ANTES de tocar el control-plane, de modo
+// que un contexto ajeno no puede inyectar entradas en el catálogo global.
 // -----------------------------------------------------------------------------
 async function durableRegisterProduct(entry, descriptor, deps = {}) {
   // CA-9: el contexto de tenant proviene de la credencial de la instancia, no del
@@ -351,16 +372,46 @@ async function durableRegisterProduct(entry, descriptor, deps = {}) {
   if (!contextProjectId) {
     throw new KernelStoreContextError('contextProjectId ausente: debe derivar de la credencial de la instancia (CA-9), nunca del descriptor');
   }
+  // #5204 · A01 — el control-plane NO es un tenant: nadie da de alta un producto
+  // "dentro" de la partición del kernel. Se corta antes de construir ningún store.
+  if (descriptorLib.isReservedProjectId(contextProjectId)) {
+    throw new KernelStoreContextError('contextProjectId reservado: la partición del control-plane no puede darse de alta como producto');
+  }
+  // #5204 · CA-9 explícito en el write path. El store ya rechaza escribir la
+  // partición de otro (`assertSameProject`), pero esa defensa recién actúa en
+  // `putDescriptor` — y el catálogo GLOBAL se escribe antes. Sin este corte, un
+  // contexto que no es el del producto podía dejar una entrada en el catálogo del
+  // control-plane y recién después fallar. Se valida ANTES de cualquier escritura.
+  const descriptorProjectId = descriptor && descriptor.identity && descriptor.identity.projectId;
+  if (descriptorProjectId !== contextProjectId) {
+    throw new KernelStoreContextError('contextProjectId no coincide con la identidad del descriptor (anti tenant-hopping · CA-9)');
+  }
+  if (entry && entry.projectId !== contextProjectId) {
+    throw new KernelStoreContextError('el producto a registrar no pertenece al contexto de la instancia (anti tenant-hopping · CA-9)');
+  }
+  // #5204 — sin cableado de persistencia real un alta "durable" escribiría a un
+  // store en memoria que muere con el proceso: alta OK para el operador, producto
+  // inexistente para el boot. Fail-closed antes que fail-silent.
+  if (typeof deps.createStore !== 'function' && !deps.storeDriver) {
+    throw new KernelStoreContextError('alta durable sin store inyectado: el caller debe proveer createStore o storeDriver');
+  }
   const kernelCfg = deps.kernelConfig || readKernelConfig(deps);
   const factory = typeof deps.createStore === 'function'
     ? deps.createStore
     : require('./kernel-store').createKernelStore;
-  const store = factory({
-    contextProjectId,
-    config: { kernel: { tableName: kernelCfg.tableName, region: kernelCfg.region } },
+  const storeConfig = { kernel: { tableName: kernelCfg.tableName, region: kernelCfg.region } };
+  const buildStore = (ctx, allowedNamespaces) => factory({
+    contextProjectId: ctx,
+    allowedNamespaces,
+    config: storeConfig,
     driver: deps.storeDriver,
     onAlert: deps.onAlert,
   });
+
+  // Partición del tenant: SÓLO el descriptor#self del producto.
+  const tenantStore = buildStore(contextProjectId);
+  // Partición del control-plane: producto + catálogo global (lo que lee el boot).
+  const controlStore = buildStore(CONTROL_PLANE_PROJECT_ID, [CONTROL_PLANE_PROJECT_ID]);
 
   // CA-10: validación explícita antes de persistir (además de la que reejecuta el
   // store). Fail-closed: si el descriptor no valida, no se escribe nada.
@@ -369,11 +420,25 @@ async function durableRegisterProduct(entry, descriptor, deps = {}) {
     throw new KernelStoreContextError(`descriptor inválido antes de persistir (CA-10): ${dres.stage}`);
   }
 
+  // Unicidad autoritativa (paridad con el camino FS, que rechaza `duplicate`): un
+  // alta NUNCA pisa el descriptor de un producto ya registrado.
+  const already = await tenantStore.getDescriptor(contextProjectId);
+  if (already) {
+    throw new KernelStoreContextError('el producto ya está registrado: el alta no sobreescribe su descriptor');
+  }
+
   // CA-3: producto + catálogo primero (atómico interno, orden fail-safe); el
   // descriptor#self se escribe al final para no dejar huérfanos indexados.
-  const put = await store.putProduct({ productId: entry.projectId, name: entry.name, status: 'onboarding' });
-  await store.putDescriptor(descriptor);
-  return { status: 'onboarding', durable: true, sk: put.sk, contextProjectId };
+  const put = await controlStore.putProduct({ productId: entry.projectId, name: entry.name, status: 'onboarding' });
+  await tenantStore.putDescriptor(descriptor);
+  return {
+    status: 'onboarding',
+    durable: true,
+    sk: put.sk,
+    contextProjectId,
+    // Partición donde quedó indexado el producto: la MISMA que enumera el boot.
+    catalogProjectId: CONTROL_PLANE_PROJECT_ID,
+  };
 }
 
 // Error interno del write path durable (no expone detalle al operador).
@@ -416,6 +481,13 @@ function prepareBootstrap(args = {}) {
 
   // Paso 3 — dry-run side-effect-free.
   const dry = dryRun(descriptor, deps);
+  // #6032 · CA-5 — el descarte de scopes legacy en la migración NO es silencioso:
+  // viaja hasta el render que ve el operador. Un descarte enumerado y reportado
+  // sólo deja de ser un fallo silencioso si el texto explica además por qué no se
+  // perdió capacidad (eso lo pone `renderHuman`).
+  if (dry && dry.ok && Array.isArray(validation.droppedScopes) && validation.droppedScopes.length > 0) {
+    dry.droppedScopes = [...validation.droppedScopes];
+  }
   if (!dry.ok) {
     return { error: { ok: false, stage: 'dry-run', mode, errors: [{ path: 'dry-run', detail: dry.reason }], human: renderHuman({ ok: false, stage: 'dry-run', errors: [{ detail: dry.reason }] }) } };
   }
@@ -567,6 +639,15 @@ function renderHuman(res) {
     }
   }
   if (res.dryRun) {
+    // #6032 · CA-5 — primero lo que CAMBIÓ respecto del archivo que el operador
+    // escribió. La segunda línea es la mitad que evita el malentendido: sin ella
+    // "descartado" se lee como "perdí una credencial".
+    if ((res.dryRun.droppedScopes || []).length > 0) {
+      lines.push(`   descriptor migrado 1.0 -> 1.1`);
+      lines.push(`   scopes descartados en la migracion: ${res.dryRun.droppedScopes.join(', ')}`);
+      lines.push(`     (contexto de destino, no credencial: sigue llegando por su canal;`);
+      lines.push(`      no se traduce a un scope de credencial para no concederle el token al proceso hijo)`);
+    }
     lines.push(`   labels de admisión: ${(res.dryRun.admissionLabels || []).join(', ') || '(ninguno)'}`);
     lines.push(`   providers: ${(res.dryRun.providerOrder || []).join(', ') || '(ninguno)'}`);
     lines.push(`   política de PR: ${res.dryRun.pullRequestPolicy || '(no declarada)'}`);

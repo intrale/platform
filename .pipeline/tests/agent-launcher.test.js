@@ -545,7 +545,7 @@ test('launchAgent con provider nvidia-nim spawnea el runner Node con args traduc
     const fsi = fakeFs([modelsPath], {
         [modelsPath]: JSON.stringify({
             skills: {
-                guru: { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-pro' },
+                guru: { provider: 'nvidia-nim', model: 'deepseek-ai/deepseek-v4-flash-0731' },
             },
         }),
     });
@@ -563,7 +563,7 @@ test('launchAgent con provider nvidia-nim spawnea el runner Node con args traduc
             issue: 1,
             args: ['-p', 'probe', '--system-prompt-file', '/tmp/sys.md', '--output-format', 'stream-json'],
             cwd: ROOT,
-            env: { NVIDIA_NIM_MODEL: 'deepseek-ai/deepseek-v4-pro' },
+            env: { NVIDIA_NIM_MODEL: 'deepseek-ai/deepseek-v4-flash-0731' },
             PIPELINE,
             ROOT,
             fsImpl: fsi,
@@ -577,7 +577,7 @@ test('launchAgent con provider nvidia-nim spawnea el runner Node con args traduc
     assert.equal(call.cmd, '/fake/node');
     assert.equal(call.args[0], '/fake/nvidia-nim-runner.js');
     assert.ok(call.args.includes('--model'));
-    assert.ok(call.args.includes('deepseek-ai/deepseek-v4-pro'));
+    assert.ok(call.args.includes('deepseek-ai/deepseek-v4-flash-0731'));
     assert.ok(call.args.includes('--system-file'));
     assert.ok(call.args.includes('/tmp/sys.md'));
     assert.ok(call.args.includes('--prompt'));
@@ -598,7 +598,7 @@ test('nvidia-nim parseTokensFromLog mapea usage OpenAI (prompt/completion/cached
     const logPath = '/tmp/nvidia.json';
     const payload = JSON.stringify({
         id: 'cmpl-1',
-        model: 'deepseek-ai/deepseek-v4-pro',
+        model: 'deepseek-ai/deepseek-v4-flash-0731',
         choices: [{ message: { role: 'assistant', content: 'OK' } }],
         usage: {
             prompt_tokens: 100,
@@ -761,4 +761,83 @@ test('cerebras detectQuotaExhausted matchea rate_limit/quota_exceeded por shape'
     const okPayload = JSON.stringify({ choices: [{ message: { content: 'OK' } }], usage: { prompt_tokens: 1 } });
     const fsiOk = { readFileSync: () => okPayload };
     assert.equal(cerebras.detectQuotaExhausted(logPath, null, QE, fsiOk).matched, false);
+});
+
+// -----------------------------------------------------------------------------
+// #6274 (rev-1) — `modelRolloutGate`: la precondicion del encendido escalonado.
+//
+// El camino de spawn productivo aplica el modelo del rollout ACA, no en el
+// pulpo. Es la correccion del Bloqueante 1 de la review: antes el pulpo empujaba
+// `--model` a `args` por su cuenta, salteando `sanitizeModelId`; ahora el flag
+// por par entra como `rolloutEnabled` en `modelPropagation.plan()`, que es la
+// unica frontera que resuelve canal, saneo y catalogo.
+// -----------------------------------------------------------------------------
+test('modelRolloutGate propaga el modelo con la config gruesa APAGADA', () => {
+    const fsi = fakeFs([]);
+    const spi = fakeSpawn();
+    PROVIDERS.anthropic._setLauncherForTesting({
+        kind: 'test', cmd: '/test/claude', prefixArgs: [], shell: false,
+    });
+    const vistos = [];
+    const result = launchAgent({
+        skill: 'guru', issue: 6274, args: ['-p'], cwd: ROOT, env: {}, PIPELINE, ROOT,
+        // Sin seccion `model_propagation`: el camino de #6272 esta en kill-switch.
+        config: {},
+        modelRolloutGate: (skill, provider) => { vistos.push([skill, provider]); return true; },
+        fsImpl: fsi, spawnImpl: spi,
+    });
+    // El gate se consulta con el provider EFECTIVO, no con el declarado a priori.
+    assert.deepEqual(vistos, [['guru', 'anthropic']]);
+    assert.deepEqual(spi.calls[0].args, ['--model', 'claude-opus-4-7', '-p']);
+    assert.equal(result.modelPropagation.apply, true);
+    assert.equal(result.modelPropagation.modeSource, 'rollout-pair');
+    PROVIDERS.anthropic._resetLauncherCacheForTesting();
+});
+
+test('modelRolloutGate y model_propagation encendidos agregan --model UNA sola vez', () => {
+    const fsi = fakeFs([]);
+    const spi = fakeSpawn();
+    PROVIDERS.anthropic._setLauncherForTesting({
+        kind: 'test', cmd: '/test/claude', prefixArgs: [], shell: false,
+    });
+    launchAgent({
+        skill: 'guru', issue: 6274, args: ['-p'], cwd: ROOT, env: {}, PIPELINE, ROOT,
+        config: { pipeline: { model_propagation: { enabled: true, default_mode: 'on' } } },
+        modelRolloutGate: () => true,
+        fsImpl: fsi, spawnImpl: spi,
+    });
+    assert.equal(spi.calls[0].args.filter(a => a === '--model').length, 1);
+    PROVIDERS.anthropic._resetLauncherCacheForTesting();
+});
+
+test('un gate que explota NO aborta el spawn y deja el comando intacto (fail-closed)', () => {
+    const fsi = fakeFs([]);
+    const spi = fakeSpawn();
+    PROVIDERS.anthropic._setLauncherForTesting({
+        kind: 'test', cmd: '/test/claude', prefixArgs: [], shell: false,
+    });
+    const result = launchAgent({
+        skill: 'guru', issue: 6274, args: ['-p'], cwd: ROOT, env: {}, PIPELINE, ROOT,
+        config: {},
+        modelRolloutGate: () => { throw new Error('estado ilegible'); },
+        fsImpl: fsi, spawnImpl: spi,
+    });
+    assert.deepEqual(spi.calls[0].args, ['-p'], 'argv byte-identico al legacy');
+    assert.equal(result.modelPropagation.apply, false);
+    assert.ok(result.child, 'el agente arranca igual');
+    PROVIDERS.anthropic._resetLauncherCacheForTesting();
+});
+
+test('sin modelRolloutGate el argv queda byte-identico (regresion cero)', () => {
+    const fsi = fakeFs([]);
+    const spi = fakeSpawn();
+    PROVIDERS.anthropic._setLauncherForTesting({
+        kind: 'test', cmd: '/test/claude', prefixArgs: [], shell: false,
+    });
+    launchAgent({
+        skill: 'guru', issue: 6274, args: ['-p'], cwd: ROOT, env: {}, PIPELINE, ROOT,
+        config: {}, fsImpl: fsi, spawnImpl: spi,
+    });
+    assert.deepEqual(spi.calls[0].args, ['-p']);
+    PROVIDERS.anthropic._resetLauncherCacheForTesting();
 });

@@ -36,6 +36,10 @@
 
 const path = require('path');
 const slices = require('./dashboard-slices');
+// #5629 — Fuente ÚNICA del estado "Entregado" (CLOSED en GitHub o
+// `delivery_merge_sha` estructurado). Compartida con `wave-snapshot.js` y con
+// el payload que consume la ventana de Pipeline. No re-derivar la regla acá.
+const deliveryStatus = require('./delivery-status');
 // #3961 EP8-H8 — loader de umbrales configurables del dashboard (CA-6/CA-9).
 let dashboardThresholds = null;
 try { dashboardThresholds = require('./dashboard-thresholds'); } catch { /* opcional */ }
@@ -253,6 +257,15 @@ function renderEstadoProductosView(ctx, opts) {
             // Bandeja GATE 2 (pieza 3): ítems esperando firma; la vista los filtra
             // por el producto activo (CA-2.1) vía el módulo de firma.
             esperandoFirma: Array.isArray(state.esperandoFirma) ? state.esperandoFirma : [],
+            // #6208 rev3 — metadatos del read model (`vacio`/`banda`/`degraded`).
+            // Sin esto la bandeja EMBEBIDA se quedaba sin los tres vacíos: con el
+            // depósito ilegible caía al vacío verde "leí la lista entera y estaba
+            // vacía" — el falso éxito silencioso. El home ya lo pasaba; esta
+            // costura lo perdía, así que el segundo consumidor del componente
+            // quedaba con el agujero.
+            esperandoFirmaInbox: (state.esperandoFirmaInbox && typeof state.esperandoFirmaInbox === 'object')
+                ? state.esperandoFirmaInbox
+                : null,
             // El router transporta el producto activo como `productId` (nombre del
             // query param); la vista lo consume como `activeProductId` (semántico).
             activeProductId: (opts && opts.productId) || undefined,
@@ -470,11 +483,19 @@ function deriveIssuesMission(state) {
         const wave = s.activeWave || {};
         const issuesArr = Array.isArray(wave.issues) ? wave.issues : [];
         const titles = s.issueTitles || {};
+        const matrix = s.issueMatrix || {};
         let entregados = 0;
         for (const it of issuesArr) {
             const n = (it && typeof it === 'object') ? it.number : it;
             const meta = titles[String(n)];
-            if (meta && String(meta.state).toUpperCase() === 'CLOSED') entregados++;
+            // #5629 — Mismo helper que `enrichWaveIssue` y `wave-snapshot`: el
+            // conteo de ENTREGADOS del banner no puede discrepar del board
+            // (CA-7). Suma el caso `delivery_merge_sha` para no esperar el TTL
+            // de 1h del title-cache (CA-5).
+            if (deliveryStatus.isDelivered({
+                closedInGitHub: !!meta && String(meta.state).toUpperCase() === 'CLOSED',
+                mergeSha: deliveryStatus.extractMergeSha(matrix[String(n)]),
+            })) entregados++;
         }
         const eta = s.olaETA || null;
         const vel = (eta && eta.velocityETA) || null;
@@ -877,7 +898,16 @@ function enrichWaveIssue(base, state) {
         title = meta.title.slice(0, WAVES_TITLE_MAX_CHARS);
     }
 
-    const isClosed = String(meta.state || '').toUpperCase() === 'CLOSED';
+    // #5629 — "Entregado" por el helper único: CLOSED en GitHub (fuente de
+    // verdad, #4099/#4732) o `delivery_merge_sha` estructurado. El SHA cierra la
+    // ventana del TTL de 1h del title-cache: un PR mergeado hace un minuto ya
+    // cuenta como entregado aunque el cache todavía lo reporte OPEN (CA-5).
+    // NO mirar `resultado`/`motivo` del marker: los de #5220/#5244 decían
+    // `aprobado` con el merge frenado.
+    const isClosed = deliveryStatus.isDelivered({
+        closedInGitHub: String(meta.state || '').toUpperCase() === 'CLOSED',
+        mergeSha: deliveryStatus.extractMergeSha(m),
+    });
     const labels = Array.isArray(meta.labels) ? meta.labels : [];
     const isBlocked = labels.some((l) => String(l).toLowerCase().includes('blocked'));
 
@@ -930,6 +960,12 @@ function enrichWaveIssue(base, state) {
         logFile,
         progress,
         merged,
+        // #5629 — Veredicto de entrega YA RESUELTO por el helper único, para que
+        // la ventana de Pipeline (`pipeline-redesign.js`, browser) lo consuma
+        // tal cual en vez de re-derivarlo con su propia regla
+        // (`status === 'completed' || merged === true`). Un solo cálculo para
+        // las tres vistas (CA-7).
+        delivered: isClosed,
     };
 }
 
@@ -1078,26 +1114,44 @@ function buildWavesPayload(state, pipelineDir) {
                     logFile: it.logFile,
                     progress: completed ? 100 : it.progress,
                     merged: completed ? true : it.merged,
+                    // #5629 — `delivered` viaja en la copia campo por campo (sin
+                    // spread) o se perdería y el cliente lo leería `undefined`.
+                    // El snapshot vivo deriva 'completed' del MISMO helper que
+                    // `enrichWaveIssue`, así que ambos coinciden por
+                    // construcción: si el snapshot dice completed, hubo CLOSED o
+                    // merge SHA real — nunca un marker `aprobado` sin merge.
+                    delivered: completed ? true : it.delivered,
                 };
             });
         }
     }
-    // #4451 — ENTREGADOS autoritativo: mismo origen que el panel de avance del
-    // roadmap (_roadmapAvance → computeClosedSet, fix #4399). El cliente NO
-    // recomputa contando status==='completed' sobre la foto enriquecida.
-    // computeClosedSet espera `wave.issues: number[]`; el payload los tiene como
-    // objetos enriquecidos → mapear a ids. Derivar `total` y `delivered` de la
-    // MISMA lista garantiza el invariante 0 ≤ delivered ≤ total (#3487: coerción
-    // explícita a entero, sin propagar campos crudos de waves.json).
+    // #4451 — ENTREGADOS autoritativo: el cliente NO recomputa contando
+    // status==='completed' sobre la foto enriquecida; lee este entero.
+    //
+    // #5629 — Este contador era la CUARTA derivación de "Entregado" y la última
+    // sin migrar: derivaba de `computeClosedSet`, que ignora
+    // `delivery_merge_sha`. Como `home.js` pinta ENTREGADOS con este entero
+    // (`wave.delivered`) mientras el board pinta cada issue con `it.delivered`,
+    // el MISMO payload llevaba dos nociones distintas de entregado y el banner
+    // podía discrepar del board (CA-7) y esperar el TTL de 1h del title-cache
+    // para reflejar un merge (CA-5).
+    //
+    // Ahora se cuenta sobre los veredictos per-issue YA resueltos por
+    // `deliveryStatus` en `enrichWaveIssue` (más el overlay del snapshot vivo).
+    // Contar la misma lista que define `total` mantiene el invariante
+    // 0 ≤ delivered ≤ total (#3487) por construcción, y banner == board deja de
+    // ser una coincidencia para ser una identidad.
+    //
+    // Se abandona a propósito el fallback por labels `closed`/`done` que traía
+    // `computeClosedSet`: son exactamente los "labels residuales" que #4099 y
+    // #4732 declararon perdedores frente al CLOSED de GitHub, y contarlos
+    // violaba CA-1 (un issue abierto y sin merge no puede sumar a ENTREGADOS).
+    // El caso que ese fallback protegía —épicos cerrados por merge de hijos, sin
+    // matriz— lo cubre igual el camino primario (CLOSED en el title-cache), que
+    // el helper también consulta.
     if (normActive && Array.isArray(normActive.issues)) {
-        let delivered = 0;
-        try {
-            const { computeClosedSet } = require('./commander-deterministic');
-            const ids = normActive.issues.map((it) => it && it.id).filter(Number.isInteger);
-            delivered = computeClosedSet({ wave: { issues: ids }, state }).size;
-        } catch (_) {
-            delivered = 0; // degradación grácil: sin set no inventamos cerrados
-        }
+        const delivered = normActive.issues
+            .filter((it) => it && it.delivered === true).length;
         normActive.delivered = Number.isInteger(delivered) ? delivered : 0;
     }
     const normPlanned = rawPlanned.map((w) => enrichWave(normalizeWave(w), state)).filter(Boolean);
@@ -2331,8 +2385,9 @@ function handleWavePauseMutation(req, res) {
     if (pathnameOnly !== '/dashboard/wave/pause') return false;
     if (_waveLifecycleGates(req, res, 'wave_pause')) return true;
 
+    // #5179 grupo 3 — mutación vía el envoltorio único de estado operativo.
     let pp;
-    try { pp = require('./partial-pause'); } catch { pp = null; }
+    try { pp = require('./operational-state'); } catch { pp = null; }
     if (!pp || typeof pp.setFullPause !== 'function') {
         sendMutationJson(res, { error: 'module_unavailable' }, 503);
         return true;
@@ -2367,8 +2422,9 @@ function handleWaveResumeMutation(req, res) {
     if (pathnameOnly !== '/dashboard/wave/resume') return false;
     if (_waveLifecycleGates(req, res, 'wave_resume')) return true;
 
+    // #5179 grupo 3 — mutación vía el envoltorio único de estado operativo.
     let pp;
-    try { pp = require('./partial-pause'); } catch { pp = null; }
+    try { pp = require('./operational-state'); } catch { pp = null; }
     if (!pp || typeof pp.resumeAll !== 'function') {
         sendMutationJson(res, { error: 'module_unavailable' }, 503);
         return true;
@@ -2751,6 +2807,11 @@ module.exports = {
         handleWaveResumeMutation,
         handleWaveDispatchMutation,
         renderRoadmapView,
+        // #6208 rev3 — la costura entre el state vivo y la bandeja GATE 2
+        // embebida en `?view=estado-productos`. Se exporta para testear el
+        // camino REAL (state → route → vista → componente de firma), no sólo el
+        // componente con los metadatos pasados a mano.
+        renderEstadoProductosView,
         // #4192 — banner de misión de la ventana Issues (rediseño MIZPÁ).
         deriveIssuesMission,
         // #4287 — map de rutas API expuesto para tests del passthrough de

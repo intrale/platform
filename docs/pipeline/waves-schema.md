@@ -283,12 +283,126 @@ la API de `lib/waves.js` y `lib/partial-pause.js`.
 
 ## Recuperación ante desync
 
-Si el pulpo encuentra `waves.json` y `.partial-pause.json` apuntando a
-allowlists distintos al boot:
+### Escalera de convergencia automática
+
+Antes de bloquear, el pulpo intenta converger solo. El orden importa: cada
+escalón es más permisivo que el anterior y sólo corre si el previo no aplicó.
+
+| # | Caso | Dirección | Qué hace |
+|---|------|-----------|----------|
+| 1 | Toda la divergencia son issues **cerrados** (#4753) | allowlist ← ola | Marca `completed` en `waves.json` y realinea la allowlist |
+| 2 | `added = []` y los faltantes son issues **abiertos de la ola activa** (#5724) | allowlist ← ola | Suma los faltantes a la allowlist (la ola ya los autorizó) |
+| 3 | Extra en la allowlist con **traza legítima reciente** del Commander (#4439) | ola ← allowlist | Agrega el issue a la ola activa |
+| 4 | Extra que es **hijo de un split** del propio pipeline (#4525) | ola ← allowlist | Agrega el hijo + declara la dependencia padre→hijo |
+| — | Cualquier otro caso | — | `human-block` (ver más abajo) |
+
+**De dónde sale el estado de cierre (SEC-4)**: del title-cache local, sin
+GitHub en el hot path.
+
+El predicado de producción es **binario, no tri-estado**:
+`makeIsClosedFromTitleCache()` devuelve `Boolean(entry && entry.state === 'CLOSED')`,
+así que **un cache miss se lee como ABIERTO**, nunca como indeterminado. Es
+deliberado y no hay que "arreglarlo": los hijos de un split recién creados
+(#5689-#5691, el incidente que originó #5724) todavía no están en el
+title-cache, y leerlos como indeterminados los mandaría de vuelta al
+`human-block` — exactamente el bloqueo que este cambio vino a eliminar. Leerlos
+como abiertos es lo correcto: un issue abierto de la ola activa se converge
+sumándolo a la allowlist (escalón 2), que es la dirección segura.
+
+Consecuencia a tener presente: el guard `estadoConfirmado` del escalón 2 **no
+rechaza nada en producción** — es un seguro para el seam de test `opts.isClosed`
+(por donde sí puede entrar un predicado tri-estado) y para un futuro predicado
+que consulte GitHub y pueda no saber. No confundirlo con una garantía vigente
+de que "el estado indeterminado nunca habilita una mutación": hoy no existe
+estado indeterminado en el camino real.
+
+Lo que sí sigue aplicando: si el title-cache **no se puede leer**,
+`makeIsClosedFromTitleCache()` devuelve `null` y el escalón 1 (que necesita
+confirmar cierre) no puede aplicar.
+
+**Qué sigue bloqueando a propósito**: si hay un issue ABIERTO en la allowlist
+que NO está en la ola (`added` no vacío sin traza), converger revocaría en
+silencio una autorización deliberada. Eso es `ambiguo` y lo decide un humano.
+
+### Qué se comunica de cada convergencia (#6117)
+
+Los escalones 2 y 3 avisaban por Telegram cada vez que reparaban con éxito. Se
+sacó: **una reparación exitosa no pide ninguna decisión del operador** — ya se
+ejecutó, salió bien y el pipeline siguió andando. El aviso sólo competía en el
+mismo canal con las alertas que sí requieren intervención, y las diluía.
+
+Criterio vigente:
+
+| Situación | Telegram | Dónde queda |
+|---|---|---|
+| Reparación **exitosa** (escalones 2 y 3) | **No** | `pulpo.log`, audit de olas, métrica y dashboard |
+| Reparación **no aplicada** o que lanzó | **Sí**, con causa y cómo destrabar | + `WARN` en `pulpo.log` |
+| Reparación OK pero el **audit no se pudo escribir** | **Sí** | Se mutó la autorización de despacho sin dejar rastro |
+| La **misma** reparación se repite N veces en la ventana | **Sí**, como anomalía recurrente | Ver config abajo |
+| El caso cae a `human-block` | **Sí**, escalonado por `desync-block-notifier` | Sin cambios |
+
+El cierre de ciclo (`desyncBlockNotifier.onResolved`) **no se tocó**: sigue
+avisando que el trabajo volvió, pero sólo si el operador había recibido antes el
+aviso de bloqueo. Nunca un cierre huérfano.
+
+**Métrica** — cada reparación exitosa se registra en
+`.pipeline/state/auto-repair.jsonl` (append-only) con `{tipo, issues, count,
+timestamp}` y nada más. `tipo` es un enum cerrado
+(`convergencia_aditiva` | `reparacion_aditiva_wave_add`).
+
+**Detector de repetición** — que la misma reparación se repita no es sanidad: es
+el síntoma de una causa raíz que sigue desarmando la lista. Se configura en
+`config.yaml` bajo `desync:`:
+
+```yaml
+desync:
+  repair_alert_threshold: 3        # reparaciones del mismo tipo…
+  repair_alert_window_ms: 3600000  # …dentro de esta ventana ⇒ aviso
+```
+
+Dos decisiones de diseño que conviene no "arreglar":
+
+- **La firma es sólo el tipo**, no el set de issues. Si el set agrupara, una
+  causa raíz que rompe issues distintos en cada vuelta nunca alcanzaría el
+  umbral — justo el caso que la alerta busca detectar.
+- **El conteo se deriva del JSONL, no de memoria.** El Pulpo se reinicia seguido
+  (watchdog, `restart.js`, respawn) y un contador in-memory se resetearía
+  precisamente cuando la causa raíz agita el sistema.
+
+Si el JSONL no se puede leer o parsear, el detector **avisa igual**
+(`motivo: 'estado_ilegible'`): no poder contar no puede traducirse en silencio.
+
+El aviso de **fallo** se dedupea por firma (`tipo` + causa) durante la misma
+ventana. Sin eso, una divergencia irreparable dispararía un mensaje en cada tick
+periódico (~5 min) — un flood peor que los avisos que #6117 vino a sacar.
+
+### Protección del trabajo vivo frente al TTL (#5724)
+
+Las autorizaciones heredadas de un split (`recursive-deps:from-N`) caducan a las
+48 h (#3625) para que no se acumulen permisos obsoletos. Ese TTL aplica a
+**residuos**, no a trabajo pendiente: un issue vencido se poda de la allowlist
+sólo si NO pertenece a la ola activa, o si pertenece pero está **confirmado
+cerrado**.
+
+Sin ese guard, un issue abierto y `Ready` de la ola activa caducaba por no
+haber sido despachado a tiempo — que es justo lo que pasa cuando el pipeline ya
+está frenado. El bucle de realimentación (freno → caducidad → más freno) dejó el
+dispatch suspendido 10 h el 2026-08-09. Si `waves.json` no se puede leer, la
+poda no corre (conservador: podar de más es lo que produjo el incidente).
+
+### Cuando igual hay que destrabar a mano
 
 1. `desync-detector.detectDesync()` crea `.pipeline/.desync-detected.flag`.
-2. Telegram alerta con paths + diff added/removed.
-3. El pipeline entra en `human-block` (no procesa intake).
+2. Telegram alerta con paths + diff added/removed **y sigue recordando** con
+   backoff (15 min, 1 h, 3 h, 6 h y después cada 6 h) mientras el dispatch siga
+   suspendido, informando cuánto lleva frenado. El estado del ciclo de avisos
+   vive en `.pipeline/.desync-block-notify.json` y se cierra solo al converger.
+3. El pipeline entra en `human-block` (no procesa intake). El dashboard lo
+   muestra como **"Dispatch suspendido"** con la divergencia concreta y la
+   antigüedad del bloqueo. En la vista **Pipeline** figura además la línea
+   *"Última auto-reparación"* (tipo, issues repuestos y hace cuánto), que sirve
+   para distinguir un bloqueo nuevo de uno que viene reparándose en loop —
+   consultable sin depender de Telegram (#6117).
 4. **Acción manual**:
    - `cat .pipeline/.desync-detected.flag | jq .` para ver el diff exacto.
    - Decidir cuál archivo refleja la realidad operativa.
@@ -321,6 +435,10 @@ confirmación humana).
 - `lib/waves.js` — implementación de la canónica.
 - `lib/partial-pause.js` — implementación del espejo operacional.
 - `lib/desync-detector.js` — detector de inconsistencia.
+- `lib/desync-block-notifier.js` — recordatorios del dispatch suspendido (#5724).
+- `lib/allowlist-recursive-promote.js` — TTL de autorizaciones heredadas + guard
+  de ola activa (#3625, #5724).
+- `lib/wave-dispatch.js` — algoritmo de realineación allowlist ← ola.
 - `.pipeline/scripts/init-waves-from-partial.js` — seed inicial (#3616).
 - `.pipeline/WAVES_CHEATSHEET.md` — cheat sheet operativa de los comandos.
 - Issues: #3487 (widget dashboard), #3488 (planner), #3489 (lib/waves),

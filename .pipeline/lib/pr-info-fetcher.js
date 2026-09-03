@@ -35,6 +35,17 @@ const FIELDS = [
   'updatedAt',
   'headRefName',
   'title',
+  'labels',
+  'isCrossRepository',
+  'headRepositoryOwner',
+  // #5337 CA-3 — estado de merge, para distinguir conflicto real (DIRTY) de
+  // review humana exigida por CODEOWNERS/ruleset (BLOCKED). Van en la MISMA
+  // llamada que ya se hacía: cero requests extra a GitHub.
+  // Ojo: `mergeable` lo calcula GitHub de forma asíncrona y devuelve UNKNOWN
+  // mientras tanto — quien lo consuma debe tratar UNKNOWN como "no concluyente",
+  // nunca como veredicto (ver human-block-triggers.js, R2).
+  'mergeable',
+  'mergeStateStatus',
 ].join(',');
 
 /**
@@ -126,6 +137,53 @@ function fetchPrInfoForIssue(issue, options) {
   return _parseResult(result, n);
 }
 
+function resolvePrForGateWrite(issue, options) {
+  const opts = options || {};
+  const n = Number(issue);
+  if (!Number.isInteger(n) || n <= 0) return { ok: false, reason: 'no_strict_match' };
+  const runner = typeof opts.runner === 'function' ? opts.runner : spawnSync;
+  let result;
+  try {
+    result = runner(opts.ghBin || process.env.GH_BIN || 'gh', _buildArgs(n), {
+      encoding: 'utf8',
+      timeout: Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : DEFAULT_TIMEOUT_MS,
+      windowsHide: true,
+      cwd: opts.cwd || process.cwd(),
+    });
+  } catch (e) {
+    return { ok: false, reason: 'fetch_failed', detail: e && e.message };
+  }
+  if (!result || result.error || result.status !== 0) {
+    return { ok: false, reason: 'fetch_failed', detail: result && (result.stderr || (result.error && result.error.message)) };
+  }
+  let parsed;
+  try { parsed = JSON.parse(result.stdout || '[]'); }
+  catch (e) { return { ok: false, reason: 'fetch_failed', detail: e.message }; }
+  if (!Array.isArray(parsed)) return { ok: false, reason: 'fetch_failed', detail: 'respuesta no-array' };
+  const prefix = `agent/${n}-`;
+  let candidates = parsed.filter((pr) => pr && typeof pr.headRefName === 'string' && pr.headRefName.startsWith(prefix));
+  if (candidates.length === 0) return { ok: false, reason: 'no_strict_match' };
+  if (candidates.length > 1) {
+    const open = candidates.filter((pr) => pr.state === 'OPEN');
+    if (open.length !== 1) {
+      return { ok: false, reason: 'ambiguous_match', candidates: candidates.map((pr) => pr.number) };
+    }
+    candidates = open;
+  }
+  const pr = candidates[0];
+  const expectedOwner = String(opts.repo || 'intrale/platform').split('/')[0].toLowerCase();
+  const actualOwner = pr.headRepositoryOwner && String(pr.headRepositoryOwner.login || '').toLowerCase();
+  if (pr.isCrossRepository === true || !actualOwner || actualOwner !== expectedOwner) {
+    return { ok: false, reason: 'cross_repository', candidates: [pr.number] };
+  }
+  return { ok: true, pr: {
+    number: pr.number,
+    headRefName: pr.headRefName,
+    state: pr.state,
+    labels: Array.isArray(pr.labels) ? pr.labels.map((l) => (l && l.name) ? l.name : String(l)).filter(Boolean) : [],
+  } };
+}
+
 // #4133 — versión ASÍNCRONA de fetchPrInfoForIssue. Idéntica lógica, pero usa
 // `execFile` (no bloqueante) en vez de `spawnSync`. El consumidor en el
 // dashboard (_schedulePrInfoRefresh) la llamaba envuelta en un Promise.then(),
@@ -182,6 +240,7 @@ function fetchPrInfoForIssueAsync(issue, options) {
 module.exports = {
   fetchPrInfoForIssue,
   fetchPrInfoForIssueAsync,
+  resolvePrForGateWrite,
   DEFAULT_TIMEOUT_MS,
   __FIELDS: FIELDS,
 };

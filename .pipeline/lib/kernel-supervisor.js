@@ -51,7 +51,11 @@ const {
 } = require('./project-descriptor');
 const { createCoordinationStore } = require('./kernel-coordination-store');
 const repoTarget = require('./repo-target');
-const { resolveScopedRefs, redactScoped } = require('./credentials');
+// #5899 — el camino de secretos por instancia resuelve contra el VAULT, no
+// contra el archivo. `resolveScopedRefs` sigue vivo para sus otros consumidores
+// (`product-seed.js`), pero el kernel ya no lo usa.
+const { resolveInstanceVault, redactScoped } = require('./credentials');
+const { scopeVaultSegment } = require('./secret-scopes');
 const { segmentProductState } = require('./product-state-segment');
 
 const ACTIVE_STATUS = 'active';
@@ -419,9 +423,10 @@ function createKernelSupervisor(deps = {}) {
       phase: null,                      // estado de fase actual del producto
       audit: [],                        // audit# namespaceado (ring in-process)
       // --- #4764 · secretos resueltos SCOPED de la instancia (CA-6 · A02) -----
-      // Se resuelven SÓLO los scopes declarados del projectId vía resolveScopedRefs
-      // y se guardan acá (target de inyección por proceso hijo). NUNCA en el
-      // process.env global del supervisor; NUNCA vía loadIntoEnv().
+      // #5899 — se resuelven SÓLO los scopes declarados del projectId contra el
+      // VAULT (`resolveInstanceVault`) y se guardan acá (target de inyección por
+      // proceso hijo). NUNCA en el process.env global del supervisor; NUNCA vía
+      // loadIntoEnv(); NUNCA desde el archivo de credenciales.
       secrets: null,                    // { <scope>: <valor> } — no loguear crudo
       secretsMeta: null,                // redactScoped(resolved) — sólo nombres de scope
       // --- lifecycle ----------------------------------------------------------
@@ -778,25 +783,38 @@ function createKernelSupervisor(deps = {}) {
   /**
    * Resuelve los secretos de UNA instancia entregando SÓLO los scopes declarados
    * de su `projectId`. Fail-closed y sin fuga cross-tenant:
-   *   - `isSafeId(projectId)` (A03) ANTES de construir la ref namespaceada.
-   *   - Ref namespaceada por `projectId` (`<path>#<projectId>`); NUNCA el archivo
-   *     completo. Se usa `resolveScopedRefs` (credentials.js), JAMÁS `loadIntoEnv()`.
+   *   - `isSafeId(projectId)` (A03) ANTES de derivar nada.
+   *   - #5899 — la resolución ocurre contra el **vault**, con el `projectId` de
+   *     ESTA instancia (`resolveInstanceVault`, credentials.js). JAMÁS
+   *     `loadIntoEnv()` y jamás el archivo de credenciales: con el gate cerrado
+   *     se falla CERRADO (CA-17/G-4), nunca se cae al archivo.
    *   - Los secretos resueltos se guardan en el ctx de la instancia (target de
    *     inyección por proceso hijo), NUNCA en `process.env` del supervisor.
    *   - Logging/alertas SIEMPRE redactadas (`redactScoped`): sólo nombres de scope.
    *
+   * REQ-SEC-1 — `projectId` sale de la CLAVE DEL REGISTRY, nunca de datos en
+   * banda, y `credentials[].ref` NO COMPONE NADA: el path del vault
+   * es `vault.prefix` + `projectId` + `vault.hostId` + tier explícito, los tres
+   * out-of-band. Un `credentials[].ref` hostil no puede influirlo (regresión de SEC-3
+   * de #5352 que este cableado cierra). El descriptor aporta a lo sumo `scopes`,
+   * que pasan por el validador canónico del vault.
+   *
    * @param {string} projectId  id de la instancia (validado fail-closed).
    * @param {object} [opts]
-   * @param {string[]} [opts.scopes]      scopes declarados; default: los del descriptor
-   *                                       (`descriptor.secrets.scopes`).
-   * @param {string}   [opts.ref]         ref namespeada explícita; default: derivada
-   *                                       del descriptor o `<credentialsPath>#<projectId>`.
-   * @param {object}   [opts.data]        credentials ya parseadas (override para tests).
-   * @param {string}   [opts.credentialsPath] path del archivo (override para tests).
+   * @param {string[]} [opts.scopes]        scopes declarados; default: unión de
+   *                                         `descriptor.credentials[].scopes`.
+   * @param {string[]} [opts.sharedScopes]  subconjunto que vive en `shared/` (G-3);
+   *                                         default: unión de `descriptor.credentials[].shared`.
+   *                                         `host` es el default: `shared` se ENUMERA.
+   * @param {object}   [opts.vaultConfig]   sección `vault:` inyectada (tests).
+   * @param {object}   [opts.vaultDriver]   driver del vault inyectado (tests).
+   * @param {string}   [opts.pipelineDir]   raíz de `.pipeline` para resolver config.yaml.
+   * @param {function} [opts.now]           reloj inyectable en ms (tests de TTL).
+   * @param {function} [opts.logger]        logger del resolver (tests).
    * @returns {{ok:boolean, meta:object, error?:string}}  `meta` = redactScoped (sin valores).
    */
   function resolveInstanceSecrets(projectId, opts = {}) {
-    if (!isSafeId(projectId)) {                   // A03: nunca construir ref con id sin validar
+    if (!isSafeId(projectId)) {                   // A03: nunca derivar path con id sin validar
       throw new KernelStoreIsolationError(
         `resolveInstanceSecrets: projectId inseguro "${String(projectId)}" — fail-closed antes de derivar ref`,
         { requested: projectId == null ? null : String(projectId) },
@@ -806,30 +824,88 @@ function createKernelSupervisor(deps = {}) {
     if (!ctx) return { ok: false, meta: { namespace: projectId, scopes: [] }, error: 'instancia inexistente' };
 
     const desc = ctx.descriptor && typeof ctx.descriptor === 'object' ? ctx.descriptor : null;
-    const declared = desc && desc.secrets && typeof desc.secrets === 'object' ? desc.secrets : null;
-    const scopes = Array.isArray(opts.scopes) ? opts.scopes
-      : (declared && Array.isArray(declared.scopes) ? declared.scopes : []);
-    // Ref SIEMPRE namespaceada por el projectId de ESTA instancia (no in-band).
-    const basePath = opts.ref
-      ? String(opts.ref).split('#')[0]
-      : (declared && typeof declared.path === 'string' && declared.path
-          ? declared.path
-          : '~/.claude/secrets/credentials.json');
-    const ref = `${basePath}#${projectId}`;
+    const credentials = desc && Array.isArray(desc.credentials) ? desc.credentials : [];
+    const unir = (campo) => [...new Set(credentials.flatMap((credential) => (
+      credential && Array.isArray(credential[campo]) ? credential[campo] : []
+    )))];
+    const delDescriptor = !Array.isArray(opts.scopes);
+    const scopesContrato = delDescriptor ? unir('scopes') : opts.scopes;
+    const sharedContrato = Array.isArray(opts.sharedScopes) ? opts.sharedScopes
+      : (delDescriptor ? unir('shared') : []);
+    const inheritIgnorado = delDescriptor ? unir('inherit') : [];
+    if (inheritIgnorado.length > 0 && typeof opts.logger === 'function') {
+      opts.logger('[kernel-supervisor] INFO: credentials[].inherit se ignora en este borde; '
+        + `no altera los scopes efectivos (${inheritIgnorado.join(', ')})`);
+    }
 
-    const resolveOpts = {};
-    if (opts.data) resolveOpts.data = opts.data;
-    if (opts.credentialsPath) resolveOpts.canonicalPath = opts.credentialsPath;
+    // Unico borde contrato -> vault. Quien pueble el vault (#5339/#5393) debe
+    // cargar `providers__<vendor>`; descriptor, logs y consumidores usan `providers:<vendor>`.
+    const aSegmento = (scope) => (delDescriptor ? scopeVaultSegment(scope) : scope);
+    const pares = scopesContrato.map((scope) => ({ scope, segmento: aSegmento(scope) }));
+    const scopes = pares.map(({ segmento }) => segmento);
+    const sharedScopes = sharedContrato.map(aSegmento);
 
-    const resolved = resolveScopedRefs(ref, scopes, resolveOpts);
+    // Sólo plomería del resolver: nada de esto compone el path del vault.
+    const vaultOpts = {};
+    if (opts.vaultConfig !== undefined) vaultOpts.vaultConfig = opts.vaultConfig;
+    if (opts.vaultDriver !== undefined) vaultOpts.vaultDriver = opts.vaultDriver;
+    if (opts.pipelineDir !== undefined) vaultOpts.pipelineDir = opts.pipelineDir;
+    if (typeof opts.now === 'function') vaultOpts.now = opts.now;
+    if (typeof opts.logger === 'function') vaultOpts.logger = opts.logger;
+
+    let resolved;
+    try {
+      resolved = resolveInstanceVault({ projectId, scopes, sharedScopes }, vaultOpts);
+    } catch (err) {
+      // CA-6 — `VaultConfigError` (namespace del vault mal configurado) llega
+      // acá como fail-closed. REQ-SEC-9: al operador viaja la CLAVE de config
+      // que hay que tocar, nunca `err.message` crudo del vault.
+      resolved = {
+        ok: false,
+        code: (err && err.code) || 'VAULT_CONFIG_INVALID',
+        namespace: projectId,
+        scopes: {},
+        missing: [],
+        error: 'la configuracion del vault no valida, asi que el producto '
+          + `"${projectId}" no puede resolver credenciales (clave: ${(err && err.clave) || 'vault'}). `
+          + 'Impacto: la instancia queda SIN credenciales (fail-closed); NO se cae al archivo. '
+          + 'Proximo paso: corregir esa clave en .pipeline/config.yaml',
+      };
+    }
+    const aContrato = new Map(pares.map(({ scope, segmento }) => [segmento, scope]));
+    const porContrato = Object.create(null);
+    for (const { scope, segmento } of pares) {
+      if (Object.prototype.hasOwnProperty.call(resolved.scopes || {}, segmento)) {
+        porContrato[scope] = resolved.scopes[segmento];
+      }
+    }
+    const reContextualizarScopes = (texto) => {
+      if (typeof texto !== 'string') return texto;
+      let salida = texto;
+      for (const [segmento, scope] of aContrato) salida = salida.split(segmento).join(scope);
+      return salida.replace(/secrets\.scopes/g, 'credentials[].scopes');
+    };
+    resolved = {
+      ...resolved,
+      scopes: porContrato,
+      missing: (resolved.missing || []).map((scope) => aContrato.get(scope) || scope),
+      error: reContextualizarScopes(resolved.error),
+    };
     const meta = redactScoped(resolved);          // A02: sólo nombres de scope, nunca valores
 
     if (!resolved.ok) {
       // Fail-closed: no dejar secretos parciales/ajenos en el ctx.
       ctx.secrets = null;
       ctx.secretsMeta = meta;
-      onAlert({ projectId, stage: 'secrets', errors: [{ detail: `resolución scoped fallida (missing: ${meta.missing.join(',') || '—'})` }] });
-      return { ok: false, meta, error: resolved.error || 'scopes faltantes' };
+      // #5898 CA-6.b — el `detail` ES el error del resolver, no una
+      // reconstrucción a partir de `missing`. Los rechazos por namespace
+      // reservado y por path fuera del store traen `missing: []` POR DISEÑO
+      // (no falta un scope: se denegó el namespace o el path), así que
+      // reconstruir desde `missing` le mostraba al operador "missing: —" como
+      // texto terminal — justo lo que CA-6 prohíbe. `resolved.error` viene
+      // siempre poblado y nombra namespace + scopes + remediación.
+      onAlert({ projectId, stage: 'secrets', errors: [{ detail: resolved.error }] });
+      return { ok: false, meta, error: resolved.error };
     }
 
     // Secretos SÓLO en el ctx de la instancia (nunca process.env global · CA-6.2).

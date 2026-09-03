@@ -1,17 +1,29 @@
 #!/usr/bin/env node
 'use strict';
 
-// Escanea líneas agregadas, agrupadas por hunk para conservar secretos
-// multilínea. El mismo entrypoint sirve al pre-commit y a CI.
+// Guardrail de secretos, compartido por el pre-commit local y CI. Tiene DOS
+// capas independientes; el merge de #5244 con #6111 las junta acá y ninguna
+// reemplaza a la otra:
 //
-// #5244 rev-2 — el criterio de bloqueo NO es `sanitize()` completo. `sanitize()`
-// es modo REDACCIÓN (sobre-redactar cuesta cero); acá es modo LINT (sobre-redactar
-// frena al dev). `secret-scan-lint.js` separa los dos conjuntos de patrones y
-// agrega el escape por línea `secret-scan:ignore`. Ver su cabecera.
+//   Capa 1 (#5551 / #6111) — PATHS. Un archivo del inventario
+//     (`sensitive-paths.js`) que debe permanecer ignorado no puede aparecer en
+//     el índice ni en el rango de un PR, aunque esté vacío. Para los que sí
+//     están legítimamente trackeados, pasa el contenido por `sanitize()`
+//     completo (modo REDACCIÓN).
+//
+//   Capa 2 (#5244) — CONTENIDO. Escanea las líneas AGREGADAS de TODO path del
+//     cambio, agrupadas por hunk para conservar secretos multilínea.
+//
+// #5244 rev-2 — el criterio de bloqueo de la capa 2 NO es `sanitize()` completo.
+// `sanitize()` es modo REDACCIÓN (sobre-redactar cuesta cero); la capa 2 es modo
+// LINT (sobre-redactar frena al dev). `secret-scan-lint.js` separa los dos
+// conjuntos de patrones y agrega el escape por línea `secret-scan:ignore`.
+// Ver su cabecera.
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const { isControlPath, loadAllowlist, whichAllowlistEntry } = require('./secret-allowlist');
 const { IGNORE_MARKER, createLintSanitizer, markedLines, stripIgnoredLines } = require('./secret-scan-lint');
+const { SENSITIVE_PATHS, clasificarPath } = require('./sensitive-paths');
 
 const DEFAULT_ALLOWLIST = path.join(__dirname, '..', 'secret-scan-allowlist.json');
 const DEFAULT_SANITIZER = path.join(__dirname, '..', 'sanitizer.js');
@@ -21,15 +33,168 @@ const DEFAULT_SANITIZER = path.join(__dirname, '..', 'sanitizer.js');
 // Bumpear sólo si cambia el contrato de flags de forma incompatible.
 const SCAN_PROTOCOL = 'range-v1';
 const CAPABILITIES_LINE = `secret-scan-protocol=${SCAN_PROTOCOL}`;
-const SENSITIVE_PATTERNS = [
-  { name: 'commander-session', test: (p) => p === '.pipeline/commander-session.json' },
-  { name: 'commander-history', test: (p) => p === '.pipeline/commander-history.jsonl' },
-  { name: 'servicios-state', test: (p) => p.startsWith('.pipeline/servicios/') && p.endsWith('.json') },
-];
 
+// El inventario NO se duplica acá: sale del módulo compartido (#5551). Una
+// lista paralela en este archivo se desincroniza en silencio y deja paths
+// sensibles sin mirar — `credential-path-guards.test.js` lo verifica.
+const SENSITIVE_PATTERNS = SENSITIVE_PATHS
+  .filter((entry) => entry.escaneaContenido)
+  .map((entry) => ({ name: entry.id, test: entry.test }));
+
+// Devuelve el id de la entrada del inventario que cubre el path, o `null`.
+// El `null` es parte del contrato: distingue "path del inventario" de
+// "cualquier otro archivo", que la capa 2 escanea igual pero sin atribuirle
+// una regla del inventario.
 function isSensitive(filePath) {
-  return SENSITIVE_PATTERNS.find(({ test }) => test(filePath))?.name || 'contenido staged';
+  for (const pattern of SENSITIVE_PATTERNS) if (pattern.test(filePath)) return pattern.name;
+  return null;
 }
+
+// ===========================================================================
+// CAPA 1 — Paths sensibles del inventario (#5551 / #6111)
+//
+// Bloquea por PATH, sin mirar el contenido: si un archivo del inventario que
+// debe permanecer ignorado aparece en el índice (o en el rango de un PR), el
+// cambio se frena aunque hoy esté vacío. Es un control DISTINTO del de la capa
+// 2 y no lo reemplaza: un `.pipeline/state/*.json` sin credenciales adentro
+// igual no puede entrar al repo.
+//
+// Las dos capas corren SIEMPRE y de forma independiente: la capa 1 no corta la
+// 2. Un `.env` staged con una AWS key adentro tiene que salir reportado por
+// las dos vías — la del path y la del contenido — porque son dos defectos
+// distintos y arreglar uno no arregla el otro.
+// ===========================================================================
+
+class GitOperationError extends Error {
+  constructor(operation, status, detail) {
+    super(`Git falló durante ${operation} (código ${status == null ? 'sin estado' : status})${detail ? `: ${detail}` : ''}`);
+    this.name = 'GitOperationError';
+    this.operation = operation;
+    this.status = status;
+  }
+}
+
+function runGit(args, options = {}) {
+  const result = spawnSync('git', args, {
+    cwd: options.cwd,
+    encoding: options.encoding === undefined ? null : options.encoding,
+    maxBuffer: 50 * 1024 * 1024,
+    shell: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.error || result.status !== 0) {
+    const detail = result.error ? result.error.message : String(result.stderr || '').trim();
+    throw new GitOperationError(options.operation || args.join(' '), result.status, detail);
+  }
+  return result.stdout;
+}
+
+function normalizePath(value) {
+  return String(value || '').replace(/\\/g, '/');
+}
+
+function parseNameStatusZ(output) {
+  const fields = (Buffer.isBuffer(output) ? output.toString('utf8') : String(output)).split('\0');
+  if (fields[fields.length - 1] === '') fields.pop();
+  const changes = [];
+  for (let index = 0; index < fields.length;) {
+    const status = fields[index++];
+    if (!/^[ACMR][0-9]*$/.test(status)) {
+      throw new GitOperationError('interpretar git diff --name-status -z', null, `estado inesperado ${JSON.stringify(status)}`);
+    }
+    const count = /^[CR]/.test(status) ? 2 : 1;
+    if (index + count > fields.length) {
+      throw new GitOperationError('interpretar git diff --name-status -z', null, 'salida truncada');
+    }
+    changes.push({ status, paths: fields.slice(index, index + count).map(normalizePath) });
+    index += count;
+  }
+  return changes;
+}
+
+function listChanges(options = {}) {
+  const args = options.mode === 'range'
+    ? ['diff', '--name-status', '-z', '--diff-filter=ACMR', '-M', '-C', '--find-copies-harder', options.base, options.head, '--']
+    : ['diff', '--cached', '--name-status', '-z', '--diff-filter=ACMR', '-M', '-C', '--'];
+  if (options.mode === 'range' && (!options.base || !options.head)) throw new Error('El modo --range requiere BASE y HEAD');
+  const runner = options.git || runGit;
+  return parseNameStatusZ(runner(args, { cwd: options.cwd, operation: 'enumerar paths del diff' }));
+}
+
+function readStagedContent(stagedPath, options = {}) {
+  const runner = options.git || runGit;
+  return runner(['show', `:0:${stagedPath}`], {
+    cwd: options.cwd,
+    encoding: 'utf8',
+    operation: `leer contenido staged de ${JSON.stringify(stagedPath)}`,
+  });
+}
+
+// El sanitizer de la capa 1 es el modo REDACCIÓN completo, no el lint. Se
+// resuelve perezosamente: en modo range no hace falta, y el árbol reducido con
+// el que corren los tests de CI no siempre lo tiene a mano.
+function fullSanitizer(options = {}) {
+  if (options.sanitize) return options.sanitize;
+  // eslint-disable-next-line global-require, import/no-dynamic-require
+  return require(options.sanitizer || DEFAULT_SANITIZER).sanitize;
+}
+
+function collectFindings(options = {}) {
+  const paths = [...new Set(listChanges(options).flatMap((change) => change.paths))];
+  const findings = [];
+  for (const rel of paths) {
+    const classification = clasificarPath(rel);
+    if (classification && classification.requiereIgnore) {
+      findings.push({ path: rel, ...classification, stagedSensitive: true });
+      continue;
+    }
+    if (options.mode === 'range') continue;
+    const kind = isSensitive(rel);
+    if (!kind) continue;
+    const content = readStagedContent(rel, options);
+    const normalized = content.replace(/\r\n/g, '\n');
+    let sanitized;
+    try {
+      sanitized = fullSanitizer(options)(normalized);
+    } catch (error) {
+      findings.push({ path: rel, id: kind, error: error.message || 'desconocido' });
+      continue;
+    }
+    if (sanitized !== normalized) findings.push({ path: rel, id: kind, redactions: countRedactions(sanitized) });
+  }
+  return findings;
+}
+
+// El bloqueo nombra el path y la regla, nunca el valor: volcar el contenido del
+// archivo sensible en el log sería filtrarlo por otra vía (CA-5 de #5551).
+function formatInventoryFindings(findings, format = 'text') {
+  const causa = (finding) => {
+    if (finding.stagedSensitive) return 'causa=path del inventario que debe permanecer ignorado';
+    if (finding.error) return `causa=falló el sanitizer (${finding.error})`;
+    return `patrones=${Object.keys(finding.redactions || {}).join(',')}`;
+  };
+  const REMEDIO = 'Remediación: quite cada path del índice y verifique la regla en '
+    + '.pipeline/lib/sensitive-paths.js y .gitignore.';
+  if (format === 'github') {
+    return `${findings.map((finding) => `::error file=${finding.path},line=1::Guardrail bloqueado: `
+      + `path=${JSON.stringify(finding.path)} regla=${finding.id} `
+      + `clase=${finding.clase || 'credencial'} ${causa(finding)} — ${REMEDIO}`).join('\n')}\n`;
+  }
+  const lines = ['Guardrail bloqueado: paths sensibles en el cambio.'];
+  for (const finding of findings) {
+    lines.push(`- path=${JSON.stringify(finding.path)} regla=${finding.id} clase=${finding.clase || 'credencial'}`);
+    lines.push(`  ${causa(finding)}`);
+  }
+  lines.push(REMEDIO);
+  return `${lines.join('\n')}\n`;
+}
+
+// ===========================================================================
+// CAPA 2 — Secretos en el CONTENIDO agregado (#5244)
+//
+// Escanea líneas agregadas, agrupadas por hunk para conservar secretos
+// multilínea, sobre TODO path del cambio (no sólo los del inventario).
+// ===========================================================================
 
 function countRedactions(text) {
   const tally = {};
@@ -304,15 +469,32 @@ function formatSkippedBinaries(skipped, format) {
   return `${skipped.map((s) => `${s.path} — ${detail(s)}`).join('\n')}\n`;
 }
 
+// Dos formas de invocación conviven a propósito, porque las escribieron dos
+// controles distintos y las dos siguen cableadas en producción:
+//   · posicional  `--staged` | `--range BASE HEAD`   → `.husky/pre-commit` y
+//     `.github/workflows/runtime-state-guard.yml` (#6111).
+//   · con flags   `--mode=range --base=… --head=…`   → el job bloqueante de
+//     `security-sast.yml` (#5244), que además pasa `--cwd/--allowlist/
+//     --sanitizer/--format`.
+// Un argumento desconocido sigue siendo un error: el gate no puede quedarse
+// callado porque alguien tipeó mal un flag.
 function parseArgs(argv = process.argv.slice(2)) {
   const options = {
     mode: 'staged', cwd: process.cwd(), allowlist: DEFAULT_ALLOWLIST,
     sanitizer: DEFAULT_SANITIZER, format: 'text', head: 'HEAD',
   };
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
     const [flag, ...rest] = arg.split('=');
     const value = rest.join('=');
-    if (flag === '--mode') options.mode = value;
+    if (flag === '--staged' && rest.length === 0) options.mode = 'staged';
+    else if (flag === '--range' && rest.length === 0) {
+      options.mode = 'range';
+      options.base = argv[index + 1];
+      options.head = argv[index + 2];
+      if (!options.base || !options.head) throw new Error('secret-scan: --range requiere BASE y HEAD');
+      index += 2;
+    } else if (flag === '--mode') options.mode = value;
     else if (flag === '--base') options.base = value;
     else if (flag === '--head') options.head = value;
     else if (flag === '--cwd') options.cwd = path.resolve(value);
@@ -337,7 +519,7 @@ function formatFindings(findings, format) {
   const lines = findings.map((finding) => {
     const detail = finding.error || Object.entries(finding.redactions)
       .map(([placeholder, count]) => `${placeholder} x${count}`).join(', ');
-    return `${finding.path}:${finding.line || 1} — BLOQUEADO: ${detail} (${isSensitive(finding.path)})`;
+    return `${finding.path}:${finding.line || 1} — BLOQUEADO: ${detail} (${isSensitive(finding.path) || 'contenido staged'})`;
   });
   lines.push('',
     `Revisá el contenido agregado. Si esa línea es un falso positivo, marcala`,
@@ -378,27 +560,64 @@ function run(options, dependencies = {}) {
     : { ...common, exitCode: 0, output: '' };
 }
 
-function main(argv = process.argv.slice(2)) {
+// Las dos capas corren siempre y cada una escribe su propio reporte. Ninguna
+// puede saltear a la otra: si la capa 1 cortara ante un path del inventario, un
+// `.env` con una AWS key adentro se reportaría sólo como "path que no puede
+// estar trackeado" y el secreto quedaría sin nombrar.
+//
+// Exit codes:
+//   0 → limpio.
+//   1 → hallazgo de cualquiera de las dos capas, o entrada no escaneable
+//       (fail-closed: preferimos frenar antes que dar verde sin haber mirado).
+//   2 → fallo TÉCNICO de git (no se pudo enumerar el diff). Se distingue de 1 a
+//       propósito: "no pude correr" no es lo mismo que "encontré algo".
+function main(argv = process.argv.slice(2), options = {}) {
+  if (argv.includes('--capabilities')) {
+    process.stdout.write(`${CAPABILITIES_LINE}\n`);
+    return 0;
+  }
+  let parsed;
   try {
-    if (argv.includes('--capabilities')) {
-      process.stdout.write(`${CAPABILITIES_LINE}\n`);
-      return 0;
-    }
-    const result = run(parseArgs(argv));
-    if (result.warnings) process.stderr.write(result.warnings);
-    if (result.output) process.stderr.write(result.output);
-    return result.exitCode;
+    parsed = parseArgs(argv);
   } catch (error) {
     process.stderr.write(`secret-scan BLOQUEADO: ${error?.message || error}\n`);
     return 1;
   }
+
+  // Capa 1 — paths sensibles del inventario.
+  let inventoryFindings;
+  try {
+    inventoryFindings = collectFindings({ ...parsed, ...options });
+  } catch (error) {
+    const operation = error instanceof GitOperationError ? ` operación=${error.operation}` : '';
+    process.stderr.write(`Guardrail bloqueado por fallo técnico de Git:${operation} detalle=${error.message}\n`);
+    return 2;
+  }
+  if (inventoryFindings.length) {
+    process.stderr.write(formatInventoryFindings(inventoryFindings, parsed.format));
+  }
+
+  // Capa 2 — secretos en el contenido agregado.
+  let result;
+  try {
+    result = run(parsed, options);
+  } catch (error) {
+    process.stderr.write(`secret-scan BLOQUEADO: ${error?.message || error}\n`);
+    return 1;
+  }
+  if (result.warnings) process.stderr.write(result.warnings);
+  if (result.output) process.stderr.write(result.output);
+  return inventoryFindings.length ? 1 : result.exitCode;
 }
 
 if (require.main === module) process.exit(main());
 module.exports = {
-  CAPABILITIES_LINE, DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, IGNORE_MARKER, SCAN_PROTOCOL,
-  SENSITIVE_PATTERNS, collectAddedHunks, countRedactions, defaultLintSanitizer, findingFor,
-  formatFindings, formatSkippedBinaries, formatSuppressions, isSensitive, main, parseArgs,
-  parseHunks, parseNumstat, readBlob, resolveBinaryEntries, run, suppressionsFor,
-  unquoteDiffPath,
+  CAPABILITIES_LINE, DEFAULT_ALLOWLIST, DEFAULT_SANITIZER, GitOperationError, IGNORE_MARKER,
+  SCAN_PROTOCOL, SENSITIVE_PATTERNS, collectAddedHunks, collectFindings, countRedactions,
+  defaultLintSanitizer, findingFor, formatFindings, formatInventoryFindings,
+  formatSkippedBinaries, formatSuppressions, isSensitive, main, parseArgs, parseHunks,
+  parseNumstat, readBlob, resolveBinaryEntries, run, suppressionsFor, unquoteDiffPath,
+  __forTestsOnly__: {
+    runGit, parseNameStatusZ, listChanges, readStagedContent, parseArgs,
+  },
 };

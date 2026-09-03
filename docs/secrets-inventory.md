@@ -42,9 +42,19 @@ prefijos) aplica igual al otro documento.
 
 | provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |
 |----------|---------|-------|--------------|------------|------------|----------------------|---------------------|
+| telegram-bot | `TELEGRAM_BOT_TOKEN` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://t.me/BotFather |
+| telegram-chat | `TELEGRAM_CHAT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| telegram-operator | `TELEGRAM_LEO_OPERATOR_CHAT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| openai-codex | `OPENAI_API_KEY` | leitolarreta | _pendiente alta_ | _pendiente alta_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#openai) | https://platform.openai.com/api-keys |
 | anthropic | `ANTHROPIC_API_KEY` | leitolarreta | N/A (OAuth Max) | N/A (OAuth Max) | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#anthropic) | https://console.anthropic.com/settings/keys |
-| openai-codex | `OPENAI_API_KEY` | leitolarreta | _no aplica todavía_ | _no aplica todavía_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#openai) | https://platform.openai.com/api-keys |
-| nvidia-nim | `NVIDIA_NIM_API_KEY` | leitolarreta | _no aplica todavía_ | _no aplica todavía_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#nvidia-nim) | https://build.nvidia.com (panel "API keys") |
+| google-ai | `GEMINI_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://aistudio.google.com/app/apikey |
+| cerebras | `CEREBRAS_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://cloud.cerebras.ai/ |
+| nvidia-nim | `NVIDIA_NIM_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#nvidia-nim) | https://build.nvidia.com/settings/api-keys |
+| moonshot | `ANTHROPIC_AUTH_TOKEN` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://platform.moonshot.ai/console/api-keys |
+| google-drive-client | `GOOGLE_OAUTH_CLIENT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| google-drive-client-secret | `GOOGLE_OAUTH_CLIENT_SECRET` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://console.cloud.google.com/apis/credentials |
+| google-drive-refresh | `GOOGLE_OAUTH_REFRESH_TOKEN` | leitolarreta | N/A (OAuth administrado por tercero) | N/A (OAuth administrado por tercero) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | https://myaccount.google.com/permissions |
+| google-drive-folder | `GOOGLE_DRIVE_FOLDER_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
 
 **Notas**:
 
@@ -84,6 +94,79 @@ prefijos) aplica igual al otro documento.
 - **Si una credencial se revocó** (ya no se usa): borrar la fila completa **en
   el mismo PR** que remueve el provider de `agent-models.json`. No dejar
   filas huérfanas.
+
+## Inventario cerrado contra el vault (#5453 · CA-25)
+
+La tabla de arriba responde *"¿cuándo hay que rotar esto?"*. Esta sección
+responde la otra pregunta del cutover: *"¿está TODO el inventario declarado en
+el vault, o quedó algo que va a caer al archivo el día que cortemos?"*.
+
+**El inventario no se mantiene a mano.** Los tres conjuntos que tienen que
+coincidir se derivan de código y config, y el preflight de
+[`.pipeline/lib/vault-migration.js`](../.pipeline/lib/vault-migration.js) los
+compara en **las dos direcciones** antes de dejar arrancar una ventana de
+migración:
+
+| Conjunto | De dónde sale | Quién lo verifica |
+|---|---|---|
+| Descriptores lógicos | `Object.keys(ENV_DESCRIPTORS)` (`.pipeline/lib/credentials.js`) | denominador de la matriz de cobertura |
+| Scopes del vault | `vaultScopePlan(ENV_DESCRIPTORS)` → primer segmento del dot-path | contra `vault.required_scopes` |
+| Scopes compartidos | descriptores con `shared: true` | contra `vault.shared_secrets` |
+
+Reglas del contraste, y por qué cada una es fail-closed:
+
+- **Falta un scope en `required_scopes`** ⇒ `inventario_incompleto`. El vault no
+  lo resolvería y ese secreto caería al archivo *sin que nadie lo note*: la
+  ventana cerraría en verde con un agujero adentro.
+- **Sobra un scope en `required_scopes`** ⇒ `inventario_divergente`. La allowlist
+  estaría autorizando más de lo que el código pide.
+- **`required_scopes: []`** ⇒ `inventario_incompleto`, **no** "todo declarado".
+  Con la lista vacía la comparación se cumple *vacuamente*. Este fue el estado
+  real del repo hasta #5453 y es exactamente el fail-open que la regla cierra.
+- **Un scope en `shared_secrets` sin descriptor `shared: true`** ⇒
+  `inventario_divergente`: saca material del namespace del host
+  (`hosts/<hostId>/`) al namespace común sin que el código lo haya pedido.
+
+### Estado declarado hoy
+
+| Scope lógico | Backend | Compartido | Descriptores que lo componen |
+|---|---|---|---|
+| `telegram` | ssm | sí | `telegram.bot_token`, `telegram.chat_id`, `telegram.leo_operator_chat_id` |
+| `providers` | ssm | sí | `providers.openai.api_key`, `providers.anthropic.api_key`, `providers.google.api_key`, `providers.cerebras.api_key`, `providers.nvidia.api_key`, `providers.moonshot.api_key` |
+| `google_drive` | ssm + secretsmanager | sí | `google_drive.oauth_client_id`, `google_drive.oauth_client_secret`, `google_drive.oauth_refresh_token`, `google_drive.drive_folder_id` |
+
+- **Owner de los tres scopes**: `leitolarreta` (mismo owner que las filas de la
+  tabla de rotación de arriba; el vault no introduce un owner nuevo).
+- **`multimedia` y `aws`** pertenecen al vocabulario de scopes pero **no tienen
+  descriptor**: declararlos en `required_scopes` sería divergencia, no previsión.
+- **Por qué los tres son compartidos**: son credenciales del *pipeline* (bot de
+  Telegram, API keys de providers, OAuth de Drive), no de una máquina.
+  Duplicarlas por host multiplicaría el trabajo de rotación por la cantidad de
+  hosts sin agregar aislamiento real — el blast radius de una API key filtrada es
+  el mismo esté donde esté. El namespace por host queda reservado para material
+  que sí es del host (la raíz de confianza de #5426).
+
+### Al dar de alta un descriptor nuevo
+
+En el **mismo commit**:
+
+1. agregar el descriptor a `ENV_DESCRIPTORS`;
+2. agregar su fila a la tabla de rotación de arriba (con `owner` y fechas ISO);
+3. si estrena un scope, agregarlo a `vault.required_scopes` — y a
+   `vault.shared_secrets` sólo si el descriptor declara `shared: true`.
+
+Saltarse (3) no rompe el boot: rompe la **siguiente** ventana de migración, con
+`inventario_incompleto` y sin decir cuál falta hasta que alguien mire el diff.
+
+### Qué NUNCA va en la evidencia de la migración
+
+La evidencia que produce el coordinador usa un **modelo cerrado** (lista blanca
+de campos, `sanitizeEvidence()`): nombres lógicos, conteos, timestamps ISO,
+enums de etapa y de causa. Quedan afuera **por construcción**, no por
+convención: valores, prefijos, hashes, nombres de env var, paths, PIDs,
+namespaces del vault, account ids y cualquier otra metadata de infraestructura.
+Un `rotacion_version` que llegue con pinta de material se reemplaza por el
+marcador de redacción antes de salir del proceso.
 
 ## ¿Qué NO está en este archivo?
 

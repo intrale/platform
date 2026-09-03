@@ -47,7 +47,16 @@ test('reconcileStateLabelsStep encola remove-label needs-human y audita por cola
 
   assert.equal(result.removed, 1);
   assert.equal(result.removedIssues.has(4661), true);
-  assert.deepEqual(listGhQueue(), [{ action: 'remove-label', issue: 4661, label: 'needs-human' }]);
+  // #5690 SEC-B — la orden viaja con procedencia declarada. El guardrail de
+  // `servicio-github.js` rechaza toda remoción anónima de `needs-human`; este
+  // productor es identificado y state-checked (oráculo epic-children-all-done).
+  assert.deepEqual(listGhQueue(), [{
+    action: 'remove-label',
+    issue: 4661,
+    label: 'needs-human',
+    guardrail_authorized: true,
+    authorized_by: 'servicio-reconciler:label-reconciler-core',
+  }]);
   assert.equal(audits.length, 1);
   assert.equal(audits[0].oracle, 'epic-children-all-done');
 });

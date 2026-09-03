@@ -12,7 +12,7 @@ El Pulpo te pasa la variable `QA_MODE` que determina qué tipo de QA ejecutar:
 |---------|-----------|-------------------|
 | `android` | QA E2E con emulador, APK, video narrado | Sí |
 | `api` | QA-API con requests HTTP contra backend | **No** |
-| `structural` | Validación mínima (lint, estructura, docs) | **No** |
+| `structural` | Validación sin APK/backend; puede incluir render visual del propio pipeline | **No** |
 
 **Variables de entorno que recibís del Pulpo:**
 - `QA_MODE` — `android`, `api`, o `structural`
@@ -72,7 +72,8 @@ git diff --unified=0 origin/main..HEAD -- .pipeline/dashboard.js .pipeline/lib/m
 ```
 
 Si el issue tiene `area:dashboard`, toca `dashboard.js`, `mission-ola-eta.js`,
-`views/dashboard/`, o cambia un banner/card/copy visible del dashboard, **NO podés
+`views/dashboard/`, cambia un banner/card/copy visible del dashboard, o modifica
+mensajes, botones, comandos o audio que recibe el operador por Telegram, **NO podés
 cerrar como structural**, aunque el cambio viva bajo `.pipeline/`. En ese caso
 tenés que producir evidencia visual con audio narrado:
 
@@ -82,6 +83,29 @@ tenés que producir evidencia visual con audio narrado:
 
 Si no podés generar esa evidencia, rechazá con motivo accionable; no apruebes
 como `structural`.
+
+Para Telegram, la evidencia debe ejecutar el renderer y el camino de encolado reales,
+mostrar el mensaje final tal como lo recibe el operador y narrar la cobertura de todos
+los criterios aplicables. Un dump de strings o un harness structural no reemplaza el
+video E2E.
+
+La misma prohibición aplica si el issue o el diff referencia un mockup versionado
+bajo `.pipeline/assets/mockups/`, o si los criterios exigen inspeccionar el PDF de
+`rejection-report.js`. `structural` significa **sin emulador**, no "sin render".
+En esos casos ejecutá QA visual de infraestructura en el worktree:
+
+1. Generá `qa/evidence/<issue>/visual-comparison.json` con el render real y el
+   mockup, cobertura completa y todos los desvíos, siguiendo el contrato de
+   `docs/pipeline/visual-validation.md §4.7`.
+2. Ejecutá el flujo real que genera el rejection report con `--visual-json`; no
+   alcanza con invocar `renderHtml()` o afirmar que los tests unitarios pasan.
+3. Conservá el PDF real en `.pipeline/logs/rejection-<issue>-qa.pdf` y una captura
+   lado a lado en `qa/evidence/<issue>/screenshot-pdf-vs-mockup.png`.
+4. Inspeccioná ambos artefactos y registrá sus paths y hashes SHA-256 en el YAML.
+
+Si falta cualquiera de esos artefactos, el veredicto es rechazado por evidencia
+incompleta. No se debe pedir otro `QA_MODE`: este camino visual sigue sin requerir
+APK, backend ni emulador.
 
 ---
 
@@ -141,9 +165,17 @@ modo: qa-api
 test_cases_source: "definition" | "qa-fallback"
 ```
 
+> **Contrato del sello de evidencia (#6497) — modo `api`.** El `sha256` y los
+> `bytes` de todo artefacto que se registre en Drive **los deriva el pipeline**
+> (`servicio-drive.js`), leyendo los bytes locales del archivo después de pasar
+> el confinamiento. **Lo que declare el agente en esos campos se descarta y se
+> recomputa.** Vos declarás la **ruta**; la identidad la calcula el pipeline. Lo
+> mismo vale para el HEAD contra el que se validó la evidencia.
+
 Si hay defecto:
 ```yaml
 resultado: rechazado
+gravedad: grave         # grave | leve — ver "Gravedad del rechazo" abajo
 motivo: "Descripcion clara del defecto encontrado"
 criterios_fallidos: ["TC-01: ...", "TC-03: ..."]
 ```
@@ -170,6 +202,89 @@ resultado: aprobado
 evidencia: "Validación estructural — archivos modificados verificados"
 modo: structural
 ```
+
+Antes de cerrar, QA debe conservar la evidencia estructural en un Markdown
+auditable y encolar su descriptor en Drive. Aunque este modo no sube video, el
+job es obligatorio para que aprobación pueda verificar la trazabilidad.
+
+**CRÍTICO (#6145): NO escribas el descriptor a mano con un path relativo.**
+Vos corrés con CWD = worktree del issue, así que
+`.pipeline/servicios/drive/pendiente/qa-<issue>-structural.json` resuelve dentro
+del worktree — una cola que el servicio Drive **nunca** mira (lee la del repo
+principal) y que además está en `.gitignore`. El descriptor se pierde en
+silencio al podar el worktree, aprobación ve la pasada vieja en `listo/` y te
+rebota. Usá **siempre** el encolador, que ancla el destino en
+`PIPELINE_REPO_ROOT`:
+
+```bash
+# 1. La evidencia va al repo CANÓNICO, no sólo al worktree: el servicio la
+#    resuelve contra $PIPELINE_REPO_ROOT.
+mkdir -p "$PIPELINE_REPO_ROOT/qa/evidence/<issue>"
+# Escribir en $PIPELINE_REPO_ROOT/qa/evidence/<issue>/qa-<issue>-structural.md
+# los comandos, outputs y criterios verificados durante ESTA misma pasada.
+
+# 2. Encolar el descriptor en la cola canónica del servicio Drive.
+node "$PIPELINE_REPO_ROOT/.pipeline/scripts/qa-evidence-enqueue.js" \
+  --issue <issue> \
+  --verdict aprobado \
+  --passed <N> --total <M> \
+  --head "$(git rev-parse HEAD)"
+```
+
+Si el veredicto es `rechazado`, agregá `--motivo "<causa>"` y
+`--criterios-fallidos CA-7`. El CLI sale 0 si encoló e imprime el JSON del
+resultado: **pegá ese output en las `notas` de tu YAML** junto con el nombre del
+descriptor que reporta. Si imprime `evidenciaEnRepoCanonico: false`, el Markdown
+no llegó al repo principal — copialo antes de salir.
+
+El encolador emite el schema canónico
+`servicios/drive/pendiente/qa-<issue>-structural-<ts>-NN.json` con los campos
+`"mode": "structural"` y `"source": "qa-structural"`, que son los que el
+servicio Drive exige para registrar el artefacto sin tratar el Markdown como
+video antes de moverlo a `listo/`. El nombre lleva marca de tiempo a propósito:
+**un nombre fijo por issue haría que cada re-pasada pise a la anterior** y
+destruiría la trazabilidad entre la pasada rechazada y la aprobada.
+
+El descriptor debe llevar **siempre** `verdict`, `passed`, `total` y `head`: sin
+eso, aprobación no puede distinguir qué pasada aprobó ni sobre qué commit.
+
+#### Contrato del sello de evidencia (#6497) — modo `structural`
+
+`qa/evidence/**` es **efímero**: el artefacto se evapora y el registro de Drive
+queda como **la identidad autoritativa** de lo que se aprobó. Por eso el
+descriptor que llega a `listo/` no es el que escribiste vos — el servicio Drive
+le agrega el sello y lo persiste:
+
+```json
+{
+  "action": "upload",
+  "file": "qa/evidence/<issue>/qa-<issue>-structural.md",
+  "issue": <issue>,
+  "mode": "structural",
+  "source": "qa-structural",
+  "sha256": "sha256:<64 hex>",
+  "bytes": 4821
+}
+```
+
+Reglas del contrato:
+
+- **`sha256` y `bytes` los deriva el pipeline, no vos.** Se computan sobre los
+  bytes locales del artefacto, *después* del confinamiento. Si los declarás en
+  el JSON, **se descartan y se recomputan**: la ruta la declara el agente, la
+  identidad la calcula el pipeline. Idem el HEAD contra el que se validó.
+- **`file` debe ser una ruta canónica del repo principal**, relativa a la raíz.
+  Declarables: `qa/evidence/**`, `qa/recordings/**`, `.pipeline/assets/docs/**`,
+  `.pipeline/logs/media/**`, `docs/qa/**`. **NO** son declarables los dropfiles
+  del pipeline (`.pipeline/desarrollo/*/procesado/*.qa`): no son evidencia
+  publicable y el job va a `fallido/`.
+- **Promové el artefacto al repo principal antes de encolar el job.** Si el
+  archivo sólo existe en tu worktree, el descriptor va a `fallido/` con motivo
+  *"no promovido a la ruta canónica"* — distinto del motivo de seguridad
+  *"fuera de los directorios de evidencia permitidos"*.
+- Un descriptor que **no se puede sellar** (artefacto vacío, ilegible o fuera
+  del recinto) **no llega a `listo/`**: fail-closed, va a `fallido/` y se avisa
+  al operador. No hay evidencia estructural sin sello.
 
 ---
 
@@ -309,6 +424,7 @@ Si hay defecto:
 ```yaml
 resultado: rechazado
 veredicto: failed
+gravedad: grave         # grave | leve — ver "Gravedad del rechazo" abajo
 motivo: "Descripcion clara del defecto encontrado"
 evidencia: "qa/evidence/<issue>/qa-<issue>.mp4"
 screenshot: "qa/evidence/<issue>/qa-<issue>-defecto.png"
@@ -330,48 +446,96 @@ defectos:
 > referencias a la evidencia) y lo persiste + notifica automáticamente al cerrar
 > la fase. No tenés que generar el `.md` a mano.
 
+> **Contrato del sello de evidencia (#6497) — modo `android`.** El video y sus
+> derivados se registran en Drive con `sha256` (`sha256:<64 hex>`) y `bytes` que
+> **deriva el pipeline** sobre los bytes locales del archivo, después del
+> confinamiento. **Lo que declares vos en esos campos se descarta y se
+> recomputa** — igual que el HEAD contra el que se validó. Vos declarás la ruta
+> (`evidencia`, `screenshot`), el pipeline calcula la identidad.
+>
+> La ruta debe ser **canónica y del repo principal** (`qa/evidence/**`,
+> `qa/recordings/**`, `docs/qa/**`; ver SEC-2 abajo para `.pipeline/logs/media/**`):
+> promové el
+> artefacto antes de que se encole el job. Un video que sólo existe en el
+> worktree del agente va a `fallido/` con motivo *"no promovido a la ruta
+> canónica"*, distinto del motivo de seguridad *"fuera de los directorios de
+> evidencia permitidos"*. La copia saneada (`.sanitized/`) es byte-idéntica:
+> arrastra el **mismo** `sha256` y apunta a la ruta canónica vía `derivado_de`.
+
 ### Subir evidencia a Drive (OBLIGATORIO antes de aprobar)
+
+> ⚠️ **SEC-1 — el `file` sólo puede apuntar a evidencia publicable.** La subida
+> termina en un link **público** de Drive (`{"type":"anyone","role":"reader"}`),
+> así que `servicio-drive.js` confina el path con **dos** allowlists distintas:
+>
+> | Vía | Qué hace | Directorios aceptados |
+> |---|---|---|
+> | estructural (`mode: structural` + `source: qa-structural`) | sella y mueve a `listo/`; **no publica** | `qa/evidence`, `qa/recordings`, `.pipeline/assets/docs`, `.pipeline/logs/media`, `docs/qa` |
+> | upload (todo el resto) | **publica** en Drive | `qa/evidence`, `qa/recordings`, `docs/qa` |
+>
+> ⚠️ **SEC-2 (#6497) — `.pipeline/logs/media` tampoco está en la vía de upload.**
+> Ese directorio NO es un directorio de evidencia: es el **spool de media del bot
+> de Telegram** (medido: 287 de 307 archivos son `.ogg` de narración de voz al
+> operador). Publicarlo en un link abierto exponía conversación privada.
+>
+> Tu video igual llega: si declarás `.pipeline/logs/media/qa-<issue>.mp4`, el
+> servicio lo **promueve** a `qa/evidence/<issue>/` antes de confinar y sella
+> sobre esa copia canónica (el registro queda con `file` canónico y
+> `file_declarado` con lo que declaraste). La promoción sólo aplica a archivos
+> que estén **directamente** en el spool, cuyo basename empiece con
+> `qa-<issue>` y cuya extensión sea de evidencia (`.mp4`, `.png`, `.pdf`,
+> `.xml`, …) — **nunca** audio. Cualquier otra cosa del spool va a `fallido/`.
+> Lo más seguro sigue siendo grabar directo en `qa/evidence/<issue>/`.
+>
+> `.pipeline/assets/docs` — el store de entregables de `writeDeliverable` — está
+> **fuera** de la vía de upload a propósito: ahí viven los reportes marcados
+> `sensible: true`. Además, un `file` que figure con `sensible: true` en
+> `.pipeline/deliverables/<issue>.json` va a `fallido/` en **cualquiera** de las
+> dos vías, aunque el descriptor lo hayas escrito a mano y declares otro
+> `issue`. Un entregable sensible **nunca** se encola a Drive público (#4514).
 
 Encolar el video (con audio narrado) para subida a Google Drive. El payload
 del job **DEBE** incluir los campos de veredicto para que el mensaje de Telegram
 que envía `qa-video-share.js` refleje el estado real (ver issue #2519):
 
+**CRÍTICO (#6145): NO escribas el descriptor a mano con un path relativo.**
+Si corrés en un worktree, `.pipeline/servicios/drive/pendiente/…` resuelve dentro
+del worktree — una cola que el servicio Drive **nunca** lee y que está en
+`.gitignore`: el descriptor se pierde en silencio. Usá el encolador, que ancla el
+destino en `PIPELINE_REPO_ROOT` y genera un nombre único por pasada (un nombre
+fijo por issue hace que cada re-pasada pise a la anterior):
+
 ```bash
 # Aprobado — modo android
-cat > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json << 'JSON'
-{
-  "action": "upload",
-  "file": "qa/evidence/<issue>/qa-<issue>.mp4",
-  "folder": "QA/evidence/<issue>",
-  "description": "QA video con relato narrado #<issue>",
-  "title": "<titulo del issue (se copia tal cual al mensaje)>",
-  "verdict": "aprobado",
-  "passed": 5,
-  "total": 5,
-  "mode": "android"
-}
-JSON
+node "$PIPELINE_REPO_ROOT/.pipeline/scripts/qa-evidence-enqueue.js" \
+  --issue <issue> --mode android \
+  --verdict aprobado --passed 5 --total 5 \
+  --head "$(git rev-parse HEAD)" \
+  --file "qa/evidence/<issue>/qa-<issue>.mp4" \
+  --title "<titulo del issue (se copia tal cual al mensaje)>" \
+  --description "QA video con relato narrado #<issue>"
 
 # Rechazado — modo android con motivo + criterios fallidos
-cat > .pipeline/servicios/drive/pendiente/qa-<issue>-video.json << 'JSON'
-{
-  "action": "upload",
-  "file": "qa/evidence/<issue>/qa-<issue>.mp4",
-  "folder": "QA/evidence/<issue>",
-  "description": "QA video con relato narrado #<issue>",
-  "title": "<titulo del issue>",
-  "verdict": "rechazado",
-  "passed": 2,
-  "total": 5,
-  "mode": "android",
-  "motivo": "Primera frase: causa concreta y accionable. El detalle va al rejection-report PDF.",
-  "criteriosFallidos": ["CA-1", "CA-4", "CA-5"],
-  "rejectionPdf": "logs/rejection-<issue>-qa.pdf"
-}
-JSON
+node "$PIPELINE_REPO_ROOT/.pipeline/scripts/qa-evidence-enqueue.js" \
+  --issue <issue> --mode android \
+  --verdict rechazado --passed 2 --total 5 \
+  --head "$(git rev-parse HEAD)" \
+  --file "qa/evidence/<issue>/qa-<issue>.mp4" \
+  --title "<titulo del issue>" \
+  --description "QA video con relato narrado #<issue>" \
+  --motivo "Primera frase: causa concreta y accionable. El detalle va al rejection-report PDF." \
+  --criterios-fallidos CA-1,CA-4,CA-5 \
+  --rejection-pdf "logs/rejection-<issue>-qa.pdf"
 ```
 
-**Campos del payload (#2519):**
+El CLI escribe el descriptor canónico
+`servicios/drive/pendiente/qa-<issue>-video-<ts>-NN.json`, sale 0 si encoló e
+imprime el JSON del resultado: **pegá ese output en las `notas` de tu YAML**. Si
+imprime `evidenciaEnRepoCanonico: false`, el video no llegó al repo principal —
+copialo antes de salir, porque el servicio lo resuelve contra ese árbol.
+
+**Campos del payload que emite el CLI (#2519)** — documentados para que puedas
+**verificar** el JSON escrito, no para que lo escribas vos:
 
 | Campo | Tipo | Obligatorio | Semántica |
 |-------|------|-------------|-----------|
@@ -384,6 +548,8 @@ JSON
 | `passed` | int | Sí | Criterios verificados OK. Si no hay tests cuantificados, `0` |
 | `total` | int | Sí | Criterios totales. Si es `0`, el mensaje usa UX especial |
 | `mode` | string | Sí | `"android"`, `"api"` o `"structural"` |
+| `source` | string | Sí | `"qa-<mode>"`. `"qa-structural"` es el único que exime el uploader de video |
+| `head` | string | **Sí** (#6145) | SHA del commit sobre el que se corrió el QA — ancla la evidencia a un código concreto |
 | `motivo` | string | Sólo si rechazado | Primera frase = causa concreta, ≤500 chars |
 | `criteriosFallidos` | string[] | Sólo si rechazado | IDs de CAs fallidos, ej. `["CA-1", "CA-4"]` |
 | `rejectionPdf` | string | Opcional | Path relativo al PDF de rejection-report |
@@ -435,3 +601,24 @@ El Pulpo clasifica cada rechazo como **accionable** o **ruido** (`lib/observatio
 - Sugerencia de mejora futura sin defecto verificable → issue separado, no rechazo.
 
 Regla práctica: si no podés señalar el frame/request/CA exacto que falla, probablemente sea ruido. Adjuntá siempre la evidencia concreta del defecto.
+
+## Gravedad del rechazo (#6296) — campo obligatorio
+
+Cuando rechazás, el pipeline **no espera a un humano**: tu campo `gravedad`
+decide el destino. Ver `_base.md` → "Campo `gravedad` en los rechazos".
+
+El campo es `gravedad`, **no `severidad`**: el gate ignora `severidad` y un
+rechazo que la use sale `grave` por fail-closed.
+
+| Gravedad | Cuándo |
+|---|---|
+| `grave` | Un criterio de aceptación **no se cumple** en la app o la API, la app crashea, un flujo queda bloqueado, o la evidencia muestra un defecto funcional. |
+| `leve` | Observación cosmética que **no rompe ningún CA**: un espaciado, un texto que podría decirse mejor, un detalle visual menor sin impacto de uso. |
+
+Reglas:
+
+- **Cualquier `criterios_fallidos` no vacío ⇒ `grave`.** Un CA que falla nunca
+  es leve, por chico que parezca el síntoma.
+- `veredicto: failed` con gravedad `leve` es una contradicción: si fallaste el
+  QA, es `grave`.
+- Ausente o ilegible ⇒ se trata como `grave` (fail-closed). Ante duda, `grave`.

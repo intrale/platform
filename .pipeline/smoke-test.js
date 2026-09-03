@@ -19,6 +19,10 @@
 //   1 → componente no llegó a "ready" en el timeout, o su PID murió (stale)
 //   2 → dashboard no responde en :3200 (/api/health caído)
 //   3 → last-restart.json ausente
+//   4 → self-check de un skill determinístico falló
+//   5 → el smoke NO COMPLETÓ sus chequeos (se autolimitó o lo interrumpieron).
+//       Distinto de 1..4: no hay veredicto sobre el pipeline, así que el caller
+//       NO debe tratarlo como evidencia de que el código esté roto (#5725).
 //
 // Uso:
 //   node .pipeline/smoke-test.js                       → chequeo estándar
@@ -32,6 +36,16 @@ const http = require('http');
 const { spawnSync } = require('child_process');
 const { componentState, waitForMarkers } = require('./lib/ready-marker');
 const { isMarkerArtifact } = require('./lib/marker-artifact');
+const budget = require('./lib/smoke-budget');
+// SEC-10 (#5725) — el volcado de CA-4 NO es una frontera de confianza: su salida
+// la copia `restart.js` a `restart.log`, que SÍ está en `TAIL_ALLOWED_FILES` y
+// por lo tanto sale por Telegram vía `/tail`. Redactamos en el punto de ESCRITURA,
+// igual que `pulpo.js` con `pulpo.log`, en vez de confiar sólo en el redactor de
+// egreso. Requires defensivos: este módulo corre en el camino de emergencia y una
+// falla de carga no puede dejar el smoke sin diagnóstico (ver `redactLogLine`).
+const { redactSecretValue } = require('./lib/redact');
+let _redactReadOutput = null;
+try { _redactReadOutput = require('./lib/commander/redact-read').redactReadOutput; } catch { /* opcional */ }
 
 const PIPELINE_DIR = __dirname;
 const LOG_FILE = path.join(PIPELINE_DIR, 'logs', 'smoke-test.log');
@@ -97,7 +111,14 @@ const SELF_CHECK_SKILLS = [
 ];
 
 function parseArgs(argv) {
-  const args = { timeoutMs: 60000, components: null, http: true, selfCheck: true };
+  // El default sale de lib/smoke-budget (#5725): es el mismo valor del que
+  // `restart.js` deriva su ventana, así que no pueden desincronizarse.
+  const args = {
+    timeoutMs: budget.MARKER_LIGHT_TIMEOUT_MS,
+    components: null,
+    http: true,
+    selfCheck: true,
+  };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--timeout' && argv[i + 1]) { args.timeoutMs = parseInt(argv[++i], 10) * 1000; }
@@ -120,7 +141,7 @@ function runSelfChecks() {
     }
     const r = spawnSync(process.execPath, [scriptPath, '--self-check'], {
       cwd: PIPELINE_DIR,
-      timeout: 30000,
+      timeout: budget.SELF_CHECK_TIMEOUT_MS,
       encoding: 'utf8',
     });
     if (r.status === 0) {
@@ -147,6 +168,242 @@ function fail(msg, code = 1) {
   process.exit(code);
 }
 
+// --- CA-4: cola del log del componente que no llegó a ready ---
+//
+// En el incidente del 2026-08-09 el `EADDRINUSE` del dashboard estaba escrito
+// en `dashboard.log` desde el primer segundo, pero el smoke —que es el gate que
+// decide el rollback— no lo mencionaba, y el operador tardó horas en cruzar los
+// dos archivos. Adjuntamos las últimas líneas del log del componente caído
+// dentro del propio diagnóstico del smoke.
+//
+// `pulpo.log` pesa ~6,4 MB: leemos SÓLO el último bloque con un read posicional.
+// Un `readFileSync().split('\n')` acá cargaría el archivo entero en memoria
+// dentro del camino de emergencia, que es justo cuando el sistema está peor.
+const TAIL_MAX_LINES = 12;
+const TAIL_MAX_BYTES = 16 * 1024;
+const TAIL_MAX_LINE_CHARS = 200;
+
+// Neutraliza control chars: una línea de log con CR/LF o ANSI embebido no puede
+// falsificar la estructura del diagnóstico del smoke (el operador lee ese log
+// para decidir, así que su formato tiene que ser confiable). Filtramos por
+// código de carácter y no por regex con escapes, que es más difícil de auditar.
+function stripControlChars(s) {
+  let out = '';
+  for (const ch of String(s)) {
+    const c = ch.codePointAt(0);
+    const esTab = c === 9;
+    const esControl = c < 32 || c === 127;
+    if (!esControl || esTab) out += ch;
+  }
+  return out;
+}
+
+// SEC-10 (#5725) — redacta UNA línea de log de componente antes de volcarla al
+// diagnóstico. El tail se dispara justo cuando un componente NO llegó a ready, y
+// los que manejan credenciales (svc-drive/OAuth, svc-github/token gh,
+// svc-telegram/bot token) fallan al arrancar típicamente por errores de auth:
+// exactamente cuando el log escupe el payload o el header con la credencial.
+//
+// Cadena en 3 pasos, la misma que ya usa el repo para texto leído de FS que va a
+// salir por Telegram (`renderCanonicalCitation` en commander-deterministic.js):
+//   1. `redactReadOutput` — construido para tails de log: cubre ghp_/gho_, AKIA,
+//      JWT, bot tokens de Telegram, `password=`/`secret=`/`token=`, emails.
+//   2. `redactSecretValue` — patrones de valor por proveedor (sk-ant-, sk-, gsk_,
+//      AKIA, JWT, ARNs). Es el control que cita SEC-10 y el que aplica el caso
+//      análogo de `kernel-degradation-alert.js`, de forma categórica.
+//   3. `redactSecretValue` token-a-token — la heurística de entropía de Shannon
+//      exige un token >40 chars SIN espacios, así que sobre la línea entera NUNCA
+//      dispara. Token-a-token sí atrapa el secreto OPACO sin formato conocido
+//      (mismo motivo por el que `pulpo.js:10753` hace este split).
+//
+// Cobertura parcial y conocida: `GOCSPX-` (client secret de Google) no está en
+// ninguna de las dos tablas de patrones. Ese hueco es preexistente e
+// independiente de este volcado, y quedó registrado en #5758.
+//
+// Defensivo a propósito: si un redactor tira, devolvemos la línea NEUTRALIZADA
+// pero marcada, nunca la cruda — el camino de emergencia no puede convertirse en
+// la fuga que intenta prevenir, y tampoco puede tumbar el smoke.
+function redactLogLine(line) {
+  try {
+    // `stripControlChars` va DENTRO del try: hace `String(s)`, que ejecuta un
+    // `toString` ajeno y por lo tanto puede tirar. Afuera, esa excepción subía
+    // por el `.map()` de `tailComponentLog` y tumbaba el diagnóstico entero —
+    // justo en el camino de emergencia, que es cuando más se lo necesita.
+    let out = stripControlChars(line);
+    if (typeof _redactReadOutput === 'function') {
+      const r = _redactReadOutput(out);
+      if (r && typeof r.text === 'string') out = r.text;
+    }
+    out = redactSecretValue(out);
+    // Paso 3: preservamos los separadores para no destruir el formato del log.
+    out = out.split(/(\s+)/).map(tok => (tok.trim() ? redactSecretValue(tok) : tok)).join('');
+    return out;
+  } catch {
+    return '[REDACTED: falló el redactor, línea omitida]';
+  }
+}
+
+function readTailBytes(file, maxBytes = TAIL_MAX_BYTES) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, maxBytes);
+    if (len === 0) return { text: '', truncated: false };
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    return { text: buf.toString('utf8'), truncated: size > len };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
+}
+
+// Devuelve { file, lines, reason }. `reason` explica por qué no hay líneas.
+function tailComponentLog(name, {
+  maxLines = TAIL_MAX_LINES,
+  logsDir = path.join(RUNTIME_DIR, 'logs'),
+} = {}) {
+  const file = path.join(logsDir, `${name}.log`);
+  const read = readTailBytes(file);
+  if (read === null) return { file, lines: [], reason: 'no se pudo leer el log' };
+  // Si cortamos por bytes, la primera línea del bloque viene partida al medio.
+  const raw = read.text.split(/\r?\n/);
+  const usable = read.truncated ? raw.slice(1) : raw;
+  const lines = usable
+    .filter(l => l.trim().length > 0)
+    .slice(-maxLines)
+    // Neutralizamos control chars (una línea de log con CR/LF o ANSI embebido no
+    // puede falsificar la estructura del diagnóstico) y REDACTAMOS secretos
+    // (SEC-10 #5725) antes de que esto llegue a `restart.log` → Telegram.
+    // El orden importa: redactar ANTES de recortar. Al revés, el corte podría
+    // partir un secreto por la mitad, romper el match del patrón y dejar el
+    // prefijo de la credencial en claro.
+    .map(l => redactLogLine(l).slice(0, TAIL_MAX_LINE_CHARS));
+  return { file, lines, reason: lines.length ? null : 'log vacío' };
+}
+
+// Emite la cola indentada BAJO la línea del componente y acotada (guideline UX):
+// un volcado de 200 líneas por componente entierra el resto del diagnóstico.
+function logComponentTail(name) {
+  const t = tailComponentLog(name);
+  if (!t.lines.length) {
+    log(`    └ sin pistas en logs/${name}.log (${t.reason})`);
+    return;
+  }
+  log(`    └ últimas ${t.lines.length} líneas de logs/${name}.log:`);
+  for (const line of t.lines) log(`      ${line}`);
+}
+
+// Reporte de un componente, compartido por el camino normal y el volcado
+// parcial, para que el operador no tenga que aprender un segundo formato
+// justo cuando está leyendo el log a las 2 AM (guideline UX).
+//
+// `pendingLabel` distingue dos situaciones que NO son la misma:
+//   MISSING   → se agotó su ventana sin marker: hay veredicto, no completó init.
+//   PENDIENTE → seguíamos esperándolo cuando nos interrumpieron: sin veredicto.
+function reportComponent(name, st, waitedSec, { pendingLabel = 'MISSING', withTail = true } = {}) {
+  if (st.state === 'ready') {
+    log(`  OK ${name} (PID ${st.marker.pid}, ready en ${new Date(st.marker.readyAt).toTimeString().slice(0, 8)})`);
+    return;
+  }
+  if (st.state === 'stale') {
+    log(`  STALE ${name} (PID ${st.marker?.pid || '?'} muerto — crash post-ready o no-arrancó)`);
+  } else if (pendingLabel === 'PENDIENTE') {
+    log(`  PENDIENTE ${name} (seguía sin marker ready tras ${waitedSec}s)`);
+  } else {
+    log(`  MISSING ${name} (sin marker ready tras ${waitedSec}s — no completó init)`);
+  }
+  if (withTail) logComponentTail(name);
+}
+
+// --- CA-2: el log nunca puede quedar en "Esperando marker ready…" ---
+//
+// OJO: `process.on('SIGTERM')` NO sirve como único mecanismo en este entorno.
+// Verificado empíricamente: Node en Windows no tiene señales POSIX, y el
+// `timeout` de spawnSync mata al hijo con TerminateProcess (incondicional,
+// equivalente a SIGKILL). El handler del hijo nunca corre — el `signal=SIGTERM`
+// que ve `restart.js` es lo que observa el PADRE, no algo interceptable.
+//
+// Por eso el mecanismo principal es COOPERATIVO: el smoke se autolimita a una
+// ventana propia, estrictamente menor que la del runner, y vuelca él mismo el
+// estado parcial antes de salir. Los handlers de señal quedan como red de
+// seguridad para POSIX y para el Ctrl-C manual del operador.
+const progress = {
+  phase: 'arranque',
+  startedAt: Date.now(),
+  components: [],
+  dumped: false,
+};
+
+function safeComponentState(name) {
+  try { return componentState(name, RUNTIME_READY_DIR); } catch { return { state: 'missing', marker: null }; }
+}
+
+function dumpPartialState(motivo, { exitCode = budget.EXIT_INCOMPLETE, exit = true } = {}) {
+  if (progress.dumped) return;
+  progress.dumped = true;
+  const waitedSec = Math.round((Date.now() - progress.startedAt) / 1000);
+
+  // Veredicto propio y distinguible: NUNCA reutilizamos "=== SMOKE TEST OK ==="
+  // ni el "FAIL:" de un fallo real, que significan otra cosa.
+  log(`=== SMOKE TEST INTERRUMPIDO (${motivo} tras ${waitedSec}s) ===`);
+  log(`  fase alcanzada: ${progress.phase}`);
+
+  const sinResolver = [];
+  for (const name of progress.components) {
+    const st = safeComponentState(name);
+    reportComponent(name, st, waitedSec, { pendingLabel: 'PENDIENTE' });
+    if (st.state !== 'ready') sinResolver.push(name);
+  }
+
+  const detalle = sinResolver.length
+    ? ` Sin resolver: ${sinResolver.join(', ')}.`
+    : ' Todos los componentes tenían marker ready.';
+  log(`INCOMPLETO: el smoke test no llegó a terminar sus chequeos (fase ${progress.phase}, ${waitedSec}s).`
+    + detalle
+    + ' No hay evidencia de que el código sea la causa — no corresponde rollback automático.');
+
+  if (exit) process.exit(exitCode);
+}
+
+let watchdogTimer = null;
+function armWatchdog(budgetMs) {
+  watchdogTimer = setTimeout(() => {
+    dumpPartialState(`agotó su ventana propia de ${Math.round(budgetMs / 1000)}s`);
+  }, budgetMs);
+  return watchdogTimer;
+}
+function disarmWatchdog() {
+  if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+}
+
+// Red de seguridad para POSIX / Ctrl-C. No-op cuando el SO mata sin avisar.
+function armSignalHandlers() {
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGBREAK']) {
+    try { process.on(sig, () => dumpPartialState(`señal ${sig}`)); } catch { /* señal no soportada */ }
+  }
+}
+
+// Heartbeat: `log()` hace appendFileSync línea por línea, así que TODO lo que se
+// loguea sobrevive incluso a una muerte abrupta. El log se cortaba porque entre
+// "Esperando marker ready…" y el reporte final no se escribía nada durante hasta
+// 120s. Con esto, aun en el peor caso el operador ve el último estado conocido.
+function armHeartbeat(components, everyMs = 15000) {
+  const timer = setInterval(() => {
+    const pendientes = components.filter(n => safeComponentState(n).state !== 'ready');
+    const waited = Math.round((Date.now() - progress.startedAt) / 1000);
+    if (pendientes.length) {
+      log(`  ... ${waited}s — faltan ${pendientes.length}/${components.length}: ${pendientes.join(', ')}`);
+    } else {
+      log(`  ... ${waited}s — todos los markers presentes`);
+    }
+  }, everyMs);
+  if (timer.unref) timer.unref();
+  return timer;
+}
+
 async function checkDashboardHttp(port, timeoutMs = 5000, urlPath = '/api/health') {
   return new Promise(resolve => {
     const req = http.get({
@@ -171,7 +428,14 @@ async function checkDashboardHttp(port, timeoutMs = 5000, urlPath = '/api/health
 // responda 200 cuando sólo está lento por contención, pero un dashboard
 // realmente caído (ECONNREFUSED inmediato) sigue fallando todas las pasadas y
 // el gate lo detecta igual. No relaja la condición de salud, sólo la espera.
-async function checkDashboardHttpWithRetry(port, urlPath, { attempts = 5, perAttemptMs = 5000, delayMs = 1500 } = {}) {
+// Los defaults salen de lib/smoke-budget (#5725): son los MISMOS valores con
+// los que se dimensiona el presupuesto, así que el gasto real de la sonda no
+// puede superar lo presupuestado sin que ambos se muevan juntos.
+async function checkDashboardHttpWithRetry(port, urlPath, {
+  attempts = budget.HTTP_RETRY.attempts,
+  perAttemptMs = budget.HTTP_RETRY.perAttemptMs,
+  delayMs = budget.HTTP_RETRY.delayMs,
+} = {}) {
   let last = { ok: false, status: 'unknown' };
   for (let i = 1; i <= attempts; i++) {
     last = await checkDashboardHttp(port, perAttemptMs, urlPath);
@@ -238,29 +502,53 @@ async function main() {
   const args = parseArgs(process.argv);
   const components = args.components || DEFAULT_COMPONENTS;
 
+  const { dashTimeoutMs } = budget.resolveMarkerTimeouts();
+  const selfBudgetMs = budget.smokeBudgetMs({
+    http: args.http,
+    selfCheck: args.selfCheck,
+    // Conteo REAL de esta corrida, no la constante: si mañana se suma un skill
+    // a SELF_CHECK_SKILLS, el presupuesto crece solo y el watchdog no corta en
+    // medio de self-checks legítimos (#5725).
+    selfCheckCount: SELF_CHECK_SKILLS.length,
+    lightTimeoutMs: args.timeoutMs,
+    dashTimeoutMs,
+  });
+
+  progress.startedAt = Date.now();
+  progress.components = components;
+  progress.phase = 'espera de markers';
+  armSignalHandlers();
+  armWatchdog(selfBudgetMs);
+
   log('=== SMOKE TEST ===');
-  log(`Esperando marker ready de: ${components.join(', ')} (timeout ${args.timeoutMs / 1000}s)`);
+  // El operador tiene que saber de entrada cuánto puede llegar a esperar y por
+  // qué; si no, un smoke lento es indistinguible de uno colgado.
+  log(`Ventana propia del smoke: ${Math.round(selfBudgetMs / 1000)}s `
+    + `(markers ${Math.round(budget.markerWaitBudgetMs({ lightTimeoutMs: args.timeoutMs, dashTimeoutMs }) / 1000)}s `
+    + `+ chequeos posteriores ${Math.round(budget.postWaitBudgetMs({
+      http: args.http,
+      selfCheck: args.selfCheck,
+      selfCheckCount: SELF_CHECK_SKILLS.length,
+    }) / 1000)}s)`);
+  log(`Esperando marker ready de: ${components.join(', ')} `
+    + `(livianos ${args.timeoutMs / 1000}s, dashboard ${dashTimeoutMs / 1000}s)`);
 
   // 1) Componentes listos — polling sobre los markers, con ventana propia y más
   // holgada para el dashboard (ver waitForComponentMarkers / #4520).
-  const start = Date.now();
-  const dashTimeoutMs = parseInt(process.env.DASHBOARD_MARKER_TIMEOUT_MS || '120000', 10);
+  const start = progress.startedAt;
+  const heartbeat = armHeartbeat(components);
   const res = await waitForComponentMarkers(components, {
     lightTimeoutMs: args.timeoutMs,
     dashTimeoutMs,
   });
+  clearInterval(heartbeat);
   const waitedSec = Math.round((Date.now() - start) / 1000);
 
-  // Log del estado final componente por componente.
+  // Log del estado final componente por componente. Los que no llegaron a ready
+  // se acompañan de la cola de su log (CA-4).
   for (const name of components) {
     const st = res.results[name] || { state: 'missing' };
-    if (st.state === 'ready') {
-      log(`  OK ${name} (PID ${st.marker.pid}, ready en ${new Date(st.marker.readyAt).toTimeString().slice(0, 8)})`);
-    } else if (st.state === 'stale') {
-      log(`  STALE ${name} (PID ${st.marker?.pid || '?'} muerto — crash post-ready o no-arrancó)`);
-    } else {
-      log(`  MISSING ${name} (sin marker ready tras ${waitedSec}s — no completó init)`);
-    }
+    reportComponent(name, st, waitedSec);
   }
 
   if (!res.ok) {
@@ -280,6 +568,7 @@ async function main() {
   // devolver { ready:false } en cold start o el snapshot ya armado; nunca
   // dispara rollback.
   if (args.http) {
+    progress.phase = 'sonda HTTP del dashboard';
     log('Verificando dashboard HTTP :3200 (/api/health)...');
     const dashPort = parseInt(process.env.DASHBOARD_PORT || '3200', 10);
     const healthRes = await checkDashboardHttpWithRetry(dashPort, '/api/health');
@@ -291,7 +580,7 @@ async function main() {
     // Chequeo secundario no-bloqueante: /api/state sirve desde el snapshot en
     // memoria (O(1)). No gatea rollback; sólo informa. Cold start legítimo
     // devuelve { ready:false } con 200.
-    const stateRes = await checkDashboardHttp(dashPort, 5000, '/api/state');
+    const stateRes = await checkDashboardHttp(dashPort, budget.HTTP_SECONDARY_TIMEOUT_MS, '/api/state');
     if (stateRes.ok) {
       log(`  OK dashboard /api/state HTTP 200 (snapshot)`);
     } else {
@@ -300,6 +589,7 @@ async function main() {
   }
 
   // 3) last-restart.json — resuelto contra el runtime canónico (#4686).
+  progress.phase = 'chequeo de last-restart.json';
   const lastRestart = path.join(RUNTIME_DIR, 'last-restart.json');
   if (!fs.existsSync(lastRestart)) {
     fail(`last-restart.json ausente (runtime_dir=${RUNTIME_DIR})`, 3);
@@ -326,6 +616,7 @@ async function main() {
   // 5) Self-checks de skills determinísticos. Cobertura post-merge para
   // cambios en .pipeline/ que el rollback de componentes residentes no toca.
   if (args.selfCheck) {
+    progress.phase = 'self-checks de skills determinísticos';
     log('Ejecutando self-checks de skills determinísticos...');
     const failed = runSelfChecks();
     if (failed.length > 0) {
@@ -333,6 +624,7 @@ async function main() {
     }
   }
 
+  disarmWatchdog();
   log('=== SMOKE TEST OK ===');
   process.exit(0);
 }
@@ -344,4 +636,19 @@ if (require.main === module) {
   });
 }
 
-module.exports = { checkDashboardHttp, checkDashboardHttpWithRetry, waitForComponentMarkers, resolveRuntimeDir };
+module.exports = {
+  checkDashboardHttp,
+  checkDashboardHttpWithRetry,
+  waitForComponentMarkers,
+  resolveRuntimeDir,
+  // Expuestos para test (#5725).
+  stripControlChars,
+  redactLogLine,
+  readTailBytes,
+  tailComponentLog,
+  dumpPartialState,
+  progress,
+  // Lista real de self-checks: la expone para que smoke-budget.test.js pueda
+  // assertear SELF_CHECK_SKILLS.length === budget.SELF_CHECK_COUNT (#5725).
+  SELF_CHECK_SKILLS,
+};

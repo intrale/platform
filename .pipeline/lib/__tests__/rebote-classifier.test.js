@@ -428,12 +428,25 @@ test('#4046 · rebote_categoria=infra_no_apk → infra, counts_against_circuit_b
     assert.equal(r.label, null);
 });
 
-test('#4046 · motivo con "infra-no-apk" en texto → infra, no penaliza', () => {
+// #6745 rev-2 — CONTRATO INVERTIDO A PROPÓSITO.
+//
+// Este test asertaba que citar el literal `infra-no-apk` en el TEXTO del motivo
+// alcanzaba para clasificar `infra` y salir del circuit breaker. Eso es
+// exactamente el vector que el comentario de #5641 (rama 1.4 del classifier)
+// declara prohibido: el `motivo` lo escribe el agente rechazado, así que
+// cualquier skill podía auto-eximirse del breaker agregando el literal a su
+// prosa — incluido un rechazo de `security`, saltándose el piso de CA-7.
+//
+// La rama por texto se eliminó. Queda SÓLO el hint estructurado
+// (`rebote_categoria`), que además el Pulpo strippea de todo YAML escrito por un
+// agente (`stripProcedenciaAgente`). El caso legítimo de #4046 lo sigue
+// cubriendo el test de arriba, que es el que usa el hint.
+test('#6745 · el TEXTO "infra-no-apk" en el motivo YA NO clasifica infra (era un bypass)', () => {
     const r = rc.classifyRebote({
         motivo: 'preflight resolvió reason=infra-no-apk (área pipeline sin app/composeApp)',
     });
-    assert.equal(r.category, 'infra');
-    assert.equal(r.counts_against_circuit_breaker, false);
+    assert.equal(r.category, 'code');
+    assert.equal(r.counts_against_circuit_breaker, true);
 });
 
 test('#4046 · rechazo técnico normal sigue contando contra circuit breaker', () => {

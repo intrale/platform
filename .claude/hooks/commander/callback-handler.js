@@ -571,6 +571,8 @@ const COMMANDER_NAMESPACES = [
     'ps_approve:', 'ps_ignore:', 'ps_never:',
     'pq_',
     'tts_listen', 'show_detail',
+    // #5923 — botones degradados de `url` a `callback_data`.
+    'hb:', 'pp:',
 ];
 const PRIVILEGED_NAMESPACES = [
     'launch_sprint',
@@ -579,6 +581,12 @@ const PRIVILEGED_NAMESPACES = [
     'allow:', 'always:', 'deny:',
     'persist:', 'dismiss:',
     'pq_',
+    // #5923 — `hb:` destraba el pipeline (unblock / devolver a definición) y
+    // `pp:` muta el allowlist de la pausa parcial ⇒ ambos son privilegiados.
+    // Con esto el listener aplica authz fail-closed por `from.id` ANTES de
+    // invocar el handler; NO se duplica esa verificación acá adentro (fuente
+    // única: listener-telegram.js).
+    'hb:', 'pp:',
 ];
 
 // Membresía por prefijo: los tokens que terminan en `:` o `_` matchean por
@@ -598,6 +606,518 @@ function isPrivilegedNamespace(data) {
     return _matchesNamespace(data, PRIVILEGED_NAMESPACES);
 }
 
+// ─── #5923 · Botones degradados (`hb:` / `pp:`) ──────────────────────────────
+//
+// Cuando el dashboard no es público (el caso normal: `localhost:3200`), los
+// botones de acción se emiten como `callback_data` en vez de `url`. Sin una
+// rama acá, esa degradación entregaría BOTONES MUERTOS, que es peor que el
+// estado actual. Este bloque es el otro extremo del cable.
+//
+// Formas de `callback_data` (todas ≤ 64 bytes, ver telegram-button-url.js):
+//   <ns>:<action>[:<issue>]        → tap directo (o 1er tap si es destructiva)
+//   <ns>:c:<action>[:<issue>]      → confirmación del 2do tap
+//   <ns>:x:<action>[:<issue>]      → cancelar la confirmación
+//
+// AUTHZ: no se verifica acá. El listener ya rechazó fail-closed por `from.id`
+// contra la allowlist de operadores ANTES de invocar `routeCallback` (fuente
+// única, `listener-telegram.js`). Duplicarlo sería una segunda fuente de verdad.
+//
+// TOAST: lo emite ESTE handler en TODOS sus caminos, incluido el fail-closed.
+// El listener sólo emite toast cuando `routeCallback` devuelve `false` o tira;
+// como acá siempre devolvemos `true`, si no respondiéramos nosotros el operador
+// se quedaría con el spinner girando y sin saber si su decisión se aplicó.
+
+// Mapa CONGELADO acción → path. El `action` viene del cliente, así que jamás se
+// interpola en la URL: se busca en el mapa y sin match no sale ningún request
+// (`pp:../kill-agent:1` muere en el lookup).
+// #6118 — `cancel-partial-pause` YA NO ESTÁ. No alcanzaba con sacarlo del
+// teclado del Pulpo: el `callback_data` no tiene nonce ni TTL y los mensajes
+// viven para siempre en el chat, así que un tap sobre un aviso viejo (o un
+// callback forjado) seguía liberando TODO el backlog. Sacándolo del mapa, el
+// lookup no matchea y no sale ningún request (CA-6 / REQ-SEC-5). La acción
+// sigue existiendo en el dashboard, que es donde el alcance global se ve y se
+// entiende.
+//
+// `include-deps-for-issue` apunta al endpoint ACOTADO: suma sólo las
+// dependencias del issue que titula la alerta. El viejo `/include-deps`
+// recalcula sobre todo lo habilitado y queda sirviendo al banner del dashboard,
+// donde el alcance global sí es el correcto.
+const PP_ROUTES = Object.freeze({
+    'include-deps-for-issue': '/api/partial-pause/include-deps-for-issue',
+    'keep-original':          '/api/partial-pause/keep-original',
+    'mute-alert':             '/api/partial-pause/mute-alert',
+});
+
+// Alias de compatibilidad: los mensajes emitidos ANTES de #6118 siguen en el
+// chat con `pp:include-deps:<issue>`. Se normalizan a la acción nueva para que
+// esos botones no queden muertos — y de paso quedan acotados al issue, que es
+// el comportamiento correcto. `cancel-partial-pause` NO tiene alias: se retira
+// a propósito.
+const PP_ALIASES = Object.freeze({
+    'include-deps': 'include-deps-for-issue',
+});
+
+// #6118 — Los `consequence` son TEXTO VISIBLE en Telegram (van al toast modal y
+// quedan escritos en el mensaje editado), así que les aplica la misma
+// prohibición de jerga que al resto. Los tres de antes concentraban los tres
+// términos prohibidos.
+//
+// `PP_META` es estático y congelado: no tiene `issue` ni `deps` a mano. Por eso
+// se usa el FALLBACK GENÉRICO del módulo de copy, que habla del issue en
+// abstracto pero sigue libre de vocabulario interno. Está prohibido caer al
+// consequence viejo como fallback.
+const PP_META = Object.freeze({
+    'include-deps-for-issue': {
+        text: '✅ Habilitar las dependencias y continuar',
+        highImpact: false,
+        consequence: 'Vas a habilitar las dependencias que faltan para que el issue pueda avanzar.',
+    },
+    'keep-original': {
+        text: '🎯 Seguir sin las dependencias',
+        highImpact: false,
+        consequence: 'Vas a dejar que el issue avance sin esperar a sus dependencias, asumiendo el riesgo.',
+    },
+    'mute-alert': {
+        // Silenciar no muta nada, así que no exige doble tap. Su texto declara
+        // la ventana, que se deriva de la configuración en `_ppCopy()`.
+        text: '🔕 No avisarme por un rato',
+        highImpact: false,
+        consequence: 'Vas a dejar de recibir este aviso por un rato. El issue sigue frenado igual.',
+    },
+});
+
+/**
+ * Copy vivo de la superficie `pp:`. Se resuelve en runtime (no en require-time)
+ * porque la ventana del silencio sale de la configuración: hardcodearla acá
+ * haría que cambiar el valor en `config.yaml` deje el texto mintiendo.
+ *
+ * Nunca tira: si el módulo no se puede cargar, el caller usa `PP_META` tal cual,
+ * que ya está libre de jerga. Un hook que explota deja al operador sin botones.
+ */
+function _ppCopy() {
+    try {
+        const copy = require(path.join(_repoRoot, ".pipeline", "lib", "partial-pause-deps-copy.js"));
+        const muteStore = require(path.join(_repoRoot, ".pipeline", "lib", "partial-pause-deps-mute.js"));
+        return { copy, muteTtlMs: muteStore.resolveTtlMsFromDisk() };
+    } catch (e) {
+        _log("#6118 no se pudo cargar el copy de la alerta: " + e.message);
+        return null;
+    }
+}
+
+// Separador determinístico entre el texto original del mensaje y el bloque de
+// confirmación. Lo escribimos y lo leemos nosotros, así que cancelar puede
+// restaurar el texto original con un `split` exacto (CA-UX-3).
+const DEGRADED_CONFIRM_MARKER = "\n\n⚠️ ";
+
+/** Toast al operador. Nunca tira: un toast fallido no puede romper la acción. */
+async function _degradedToast(callbackQueryId, text, showAlert) {
+    try {
+        await _tgApi.telegramPost("answerCallbackQuery", {
+            callback_query_id: callbackQueryId,
+            text: String(text || "").slice(0, 190),
+            show_alert: !!showAlert,
+        }, 5000);
+    } catch (e) { _log("#5923 toast falló: " + e.message); }
+}
+
+/**
+ * Edita el mensaje original. Deliberadamente SIN `parse_mode`: el `text` que
+ * nos devuelve Telegram ya viene renderizado (sin entities), así que
+ * re-mandarlo como Markdown puede fallar por asteriscos/guiones bajos
+ * desbalanceados y hacer que el edit se pierda justo cuando dejamos constancia.
+ */
+async function _degradedEdit(messageId, text, keyboard) {
+    if (!messageId) return;
+    try {
+        const params = {
+            chat_id: _tgApi.getChatId(),
+            message_id: messageId,
+            text: String(text || "").slice(0, 4000),
+        };
+        params.reply_markup = { inline_keyboard: Array.isArray(keyboard) ? keyboard : [] };
+        await _tgApi.telegramPost("editMessageText", params, 8000);
+    } catch (e) { _log("#5923 edit falló: " + e.message); }
+}
+
+/** Saca el emoji del label y arranca en minúscula, para meterlo en "Sí, <x>". */
+function _degradedActionPhrase(text) {
+    const sinEmoji = String(text || "").replace(/^\S+\s+/, "").trim();
+    return sinEmoji.charAt(0).toLowerCase() + sinEmoji.slice(1);
+}
+
+/** Acceso al helper de botones. Fuente ÚNICA del formato de `callback_data`. */
+function _btnUrl() {
+    return require(path.join(_repoRoot, ".pipeline", "lib", "telegram-button-url.js"));
+}
+
+/**
+ * Teclado de confirmación. Positivo a la izquierda (igual que `pc:`/`pcx:`).
+ *
+ * El `callback_data` se arma con `buildCallbackData` y pasa por el assert
+ * `fitsCallbackData` del helper, en vez de concatenarse a mano: ese assert es
+ * precisamente el guard que CA-6 pidió centralizar, y saltearlo dejaba un
+ * segundo formato de `callback_data` fuera de control. Si un botón no entra en
+ * los 64 bytes de la Bot API se cae ese botón, no el envío entero.
+ */
+function _degradedConfirmKeyboard(ns, action, issue, label) {
+    const btnUrl = _btnUrl();
+    const row = [
+        { text: "⚠️ Sí, " + label, data: btnUrl.buildCallbackData(ns + ":c", action, issue) },
+        { text: "✖️ Cancelar",     data: btnUrl.buildCallbackData(ns + ":x", action, issue) },
+    ].filter(b => btnUrl.fitsCallbackData(b.data));
+    if (row.length < 2) {
+        // Sin confirmación completa no se ofrece media confirmación.
+        _log("#5923 callback_data de confirmación excede el límite: " + ns + "/" + action);
+        return [];
+    }
+    return [row.map(b => ({ text: b.text, callback_data: b.data }))];
+}
+
+/**
+ * Rearma el teclado ORIGINAL (siempre en modo degradado) para el cancel.
+ * Devuelve `null` si el rearmado FALLÓ, para distinguirlo de "no hay botones"
+ * (`[]`): el caller decide si deja constancia del fallo.
+ */
+function _degradedOriginalKeyboard(ns, issue) {
+    try {
+        const btnUrl = _btnUrl();
+        if (ns === "pp") {
+            // #6118 — Tres filas de un botón (UX-D-3): dos labels de ~30 chars
+            // en la misma fila se truncan con "…" en Telegram móvil. Sin el
+            // botón de alcance global (CA-6). Los labels salen del copy vivo
+            // para que la ventana del silencio sea la configurada; si el módulo
+            // no carga, `PP_META` ya trae textos limpios de jerga.
+            const live = _ppCopy();
+            const labels = live
+                ? live.copy.buildButtonLabels({ issue, deps: [], muteTtlMs: live.muteTtlMs })
+                : null;
+            const textOf = (a) => (labels && labels[a]) || PP_META[a].text;
+            return _rowsOf(btnUrl.buildActionKeyboard([
+                [{ action: "include-deps-for-issue", text: textOf("include-deps-for-issue"), issue }],
+                [{ action: "keep-original",          text: textOf("keep-original"),          issue }],
+                [{ action: "mute-alert",             text: textOf("mute-alert"),             issue }],
+            ], { callbackPrefix: "pp" }));
+        }
+        const hb = require(path.join(_repoRoot, ".pipeline", "lib", "human-block.js"));
+        const rows = hb.ACTION_KEYBOARD_ROWS.map(row => row.map(a => ({
+            action: a, text: hb.ACTION_META[a].emoji + " " + hb.ACTION_META[a].label, issue,
+        })));
+        return _rowsOf(btnUrl.buildActionKeyboard(rows, { callbackPrefix: "hb" }));
+    } catch (e) {
+        _log("#5923 no se pudo rearmar el teclado original: " + e.message);
+        return null;   // FALLÓ ≠ "sin botones"
+    }
+}
+
+/**
+ * Filas de un resultado de `buildActionKeyboard`. `markup` es `undefined`
+ * cuando no quedó ningún botón emitible (contrato CA-UX-7), así que acceder
+ * directo a `.markup.inline_keyboard` tiraba y el `try/catch` lo enmascaraba
+ * como "falló el rearmado".
+ */
+function _rowsOf(built) {
+    return (built && built.markup && Array.isArray(built.markup.inline_keyboard))
+        ? built.markup.inline_keyboard
+        : [];
+}
+
+/** Metadata de la acción (label + consequence + highImpact) por namespace. */
+function _degradedMeta(ns, action, issue) {
+    if (ns === "pp") {
+        const base = PP_META[action];
+        if (!base) return null;
+        // #6118 — Se enriquece con el copy vivo: el `issue` sí está a mano acá
+        // (viene del `callback_data`), así que la consecuencia puede nombrarlo.
+        // Las `deps` NO viajan en el tap —no entran en los 64 bytes del
+        // `callback_data`— así que el texto cae al fallback genérico del módulo,
+        // que igual está libre de jerga. La ventana del silencio sale de config.
+        const live = _ppCopy();
+        if (!live) return base;
+        try {
+            const labels = live.copy.buildButtonLabels({ issue, deps: [], muteTtlMs: live.muteTtlMs });
+            return {
+                text: labels[action] || base.text,
+                highImpact: base.highImpact,
+                consequence: live.copy.buildConsequence({ action, issue, muteTtlMs: live.muteTtlMs }),
+            };
+        } catch { return base; }
+    }
+    try {
+        const hb = require(path.join(_repoRoot, ".pipeline", "lib", "human-block.js"));
+        const m = hb.ACTION_META[action];
+        if (!m || !hb.isQuickAction(action)) return null;
+        return { text: m.emoji + " " + m.label, highImpact: !!m.highImpact, consequence: m.consequence };
+    } catch { return null; }
+}
+
+/**
+ * Ejecuta `hb:<action>:<issue>`. Devuelve el texto concreto para el toast.
+ *
+ * R-SEC-9.b — este es el TERCER canal que llega a `executeQuickAction`, y los
+ * otros dos ya dejan rastro de autor (`human-block-action-handler.js:154` para
+ * el camino HTTP, `commander-deterministic.js:1535-1544` para el comando de
+ * texto). Sin `operator` en el audit, apretar `hb:devolver-definicion` —la
+ * acción que DESCARTA el trabajo de desarrollo en curso— quedaba sin ninguna
+ * anotación de quién fue: con varios operadores en la allowlist, reconstruir un
+ * incidente se volvía imposible. El `operator` NO es opcional: lo garantiza el
+ * guard fail-closed de `handleDegradedActionCallback`.
+ */
+function _execHumanBlock(action, issue, operator, chatId, messageId) {
+    const hb = require(path.join(_repoRoot, ".pipeline", "lib", "human-block.js"));
+    const i = Number(issue);
+    // La entry se emite en TODOS los caminos —OK y fail-closed—, igual que
+    // `commander-deterministic.js`: un rechazo sin registrar es justamente el
+    // intento que más interesa reconstruir después. `auditQuickAction` nunca
+    // lanza, pero el try/catch deja explícito que el audit no puede tumbar la
+    // operación (regla "el pipeline no puede morir").
+    const audit = (result_status) => {
+        try {
+            hb.auditQuickAction({
+                issue: i, action, from: operator, chat_id: chatId,
+                message_id: messageId, result_status,
+            });
+        } catch (e) { _log("#5923 audit de hb: falló: " + e.message); }
+    };
+    if (!hb.isQuickAction(action)) {
+        audit("rejected");
+        return { ok: false, msg: "Acción no reconocida." };
+    }
+    // Mismo guard que buildBlockedActionMarkup: entero 1..999999.
+    if (!Number.isInteger(i) || i <= 0 || i > 999999) {
+        audit("rejected");
+        return { ok: false, msg: "Issue inválido." };
+    }
+    // Entry point EXPORTADO. NO se pasa por `human-block-action-handler.handle`:
+    // ese valida token HMAC + ALLOWED_ORIGINS porque su input viene de HTTP; acá
+    // el input ya lo autorizó el listener y no hay token que validar.
+    // Es idempotente ⇒ cubre el anti-replay que el `callback_data` no tiene.
+    let r;
+    try {
+        r = hb.executeQuickAction({ issue: i, action });
+    } catch (e) {
+        audit("error");
+        throw e;   // lo reporta el caller; el audit ya quedó asentado
+    }
+    if (!r || r.ok !== true) {
+        audit("error");
+        return { ok: false, msg: (r && r.error) || "No se pudo aplicar la acción." };
+    }
+    audit("authorized");
+    return { ok: true, msg: r.msg || ("Acción aplicada sobre #" + i + ".") };
+}
+
+/**
+ * Ejecuta `pp:<action>` posteando al dashboard en el host propio.
+ * `operator` es el `from.id` REAL, ya validado como no vacío por el guard
+ * fail-closed del caller: acá no hay ningún fallback a literal (R-SEC-9.a).
+ */
+async function _execPartialPause(action, operator, issue) {
+    const route = PP_ROUTES[action];
+    if (!route) return { ok: false, msg: "Acción no reconocida." };
+    // Loopback explícito: el dashboard corre en esta misma máquina. No se usa
+    // DASHBOARD_URL para no volver client/env-controlable el destino del POST.
+    const port = Number(process.env.DASHBOARD_PORT) || 3200;
+    const url = "http://127.0.0.1:" + port + route;
+    try {
+        const resp = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            // `authorizedBy` es la CLASE de origen registrada en el enum cerrado
+            // de #3625 (`telegram:operator`); el `from.id` concreto viaja en
+            // `operatorRef` para la trazabilidad fina. Mandar `telegram:<from.id>`
+            // dejaba el valor fuera del enum: funcionaba sólo por el grace period
+            // y con el gate estricto activo el botón habría dado 403 para siempre.
+            //
+            // R-SEC-9.a — sin fallback a literal: un `operatorRef: "desconocido"`
+            // sobre una acción que muta la selección de la ola es peor que no
+            // registrar nada, porque el log AFIRMA algo falso. Si la identidad no
+            // llega, no se llega hasta acá.
+            //
+            // #6118 — El `issue` viaja en el body. Antes se parseaba del
+            // `callback_data` y se DESCARTABA, así que el servidor no tenía cómo
+            // saber sobre cuál de los issues alertados se apretó el botón y las
+            // acciones sólo podían ser de alcance global. Es el mismo dato que
+            // habilita acotar el include a este issue y derivar la firma del
+            // silencio server-side.
+            body: JSON.stringify({
+                authorizedBy: "telegram:operator",
+                operatorRef: operator,
+                issue: issue ? String(issue) : undefined,
+            }),
+            signal: AbortSignal.timeout(10000),
+        });
+        let data = null;
+        try { data = await resp.json(); } catch { /* body no-JSON */ }
+        // #6118 — `operatorMsg` es el texto redactado para el operador de
+        // Telegram; `msg` es el interno del dashboard, donde "allowlist" es
+        // vocabulario legítimo (CA-14). Se prefiere el primero y se cae al
+        // segundo sólo si el endpoint no lo emitió.
+        const forOperator = (data && (data.operatorMsg || data.msg)) || null;
+        if (resp.status === 409) {
+            return { ok: false, msg: forOperator || "Esa decisión perdió sentido: la selección de la ola cambió." };
+        }
+        if (!resp.ok || !data || data.ok !== true) {
+            return { ok: false, msg: forOperator || ("El dashboard respondió " + resp.status + ".") };
+        }
+        return { ok: true, msg: forOperator || "Listo." };
+    } catch (e) {
+        return { ok: false, msg: "No se pudo contactar al dashboard: " + e.message };
+    }
+}
+
+/**
+ * Normaliza el `from.id` de Telegram a la referencia de operador que se asienta
+ * en el audit. Devuelve `null` cuando no hay identidad utilizable — el caller
+ * traduce ese `null` en fail-closed.
+ */
+function _operatorRef(fromId) {
+    // Falsy (undefined, null, "", 0, false) ⇒ no hay identidad. El `0` importa:
+    // no existe usuario de Telegram con id 0, así que aceptarlo sería tomar un
+    // centinela por un operador.
+    if (!fromId) return null;
+    const s = String(fromId).trim();
+    // Estos literales aparecen cuando alguien interpola un valor ausente antes
+    // de llegar acá: son tan poco identidad como el vacío.
+    if (!s || s === "undefined" || s === "null" || s === "0") return null;
+    return s;
+}
+
+/**
+ * Punto de entrada de los callbacks degradados. SIEMPRE devuelve `true` (el
+ * namespace es nuestro) y SIEMPRE emite toast, incluso en los fail-closed.
+ */
+async function handleDegradedActionCallback(cbData, callbackQueryId, message, fromId) {
+    const messageId = message && message.message_id;
+    const chatId = message && message.chat && message.chat.id;
+    const baseText = String((message && message.text) || "").split(DEGRADED_CONFIRM_MARKER)[0];
+
+    // R-SEC-9.a — FAIL-CLOSED por identidad, antes de cualquier otra cosa.
+    //
+    // Todo lo que se ejecuta por acá es privilegiado (destraba el pipeline, muta
+    // el allowlist, descarta trabajo en curso), así que sin `from.id` no se
+    // ejecuta: ni request saliente, ni entry de audit, ni mutación. Hoy el
+    // listener ya rechaza antes (`listener-telegram.js:833`), pero ese gate vive
+    // en otro archivo: si mañana cambia, este guard es lo que evita que la
+    // acción corra igual y el audit quede afirmando un autor inventado.
+    //
+    // El toast es el MISMO texto que el fail-safe del listener, a propósito: no
+    // le confirma a quien lo aprieta si el callback existía o no.
+    const operator = _operatorRef(fromId);
+    if (!operator) {
+        _log("#5923 callback degradado SIN from.id — fail-closed: " + cbData);
+        await _degradedToast(callbackQueryId, "Acción inválida o expirada");
+        return true;
+    }
+
+    // `_repoRoot` es lo único que nos deja cruzar a `.pipeline/`. Sin él,
+    // fail-closed con toast — nunca throw (el pipeline no puede morir).
+    if (!_repoRoot) {
+        await _degradedToast(callbackQueryId, "⚠️ No se pudo resolver el repo; probá desde el dashboard.");
+        return true;
+    }
+
+    // Parseo por el MISMO helper que emitió el dato (`telegram-button-url`), no
+    // por slices a mano: dos fuentes de verdad para un formato es como se
+    // desincronizan emisor y router.
+    const ns = cbData.startsWith("pp:") ? "pp" : "hb";
+    let parsed;
+    try { parsed = _btnUrl().parseCallbackData(cbData, ns); }
+    catch (e) {
+        _log("#5923 no se pudo parsear el callback: " + e.message);
+        await _degradedToast(callbackQueryId, "⚠️ No se pudo interpretar la acción.");
+        return true;
+    }
+    if (!parsed) {
+        await _degradedToast(callbackQueryId, "⚠️ Acción no reconocida o ya no disponible.");
+        return true;
+    }
+    // `c` / `x` son etapas de confirmación, no acciones: se pelan re-parseando
+    // con el prefijo extendido, siempre por el helper.
+    let stage = "run";
+    let action = parsed.action;
+    let issue = parsed.issue || "";
+    if (action === "c" || action === "x") {
+        stage = action;
+        const inner = _btnUrl().parseCallbackData(cbData, ns + ":" + stage);
+        if (!inner) {
+            await _degradedToast(callbackQueryId, "⚠️ Acción no reconocida o ya no disponible.");
+            return true;
+        }
+        action = inner.action;
+        issue = inner.issue || "";
+    }
+
+    // El issue, si viene, tiene que ser un entero pelado. Cualquier otra cosa
+    // (path traversal, encoding raro) muere acá sin tocar nada.
+    if (issue && !/^\d{1,6}$/.test(issue)) {
+        await _degradedToast(callbackQueryId, "⚠️ Referencia de issue inválida.");
+        return true;
+    }
+
+    // #6118 — Normalización de acciones históricas. Los mensajes emitidos antes
+    // de este cambio siguen en el chat con la acción vieja; se remapean a la
+    // nueva para que no queden muertos. `cancel-partial-pause` NO tiene alias:
+    // se retiró a propósito y su tap tiene que morir acá (CA-6).
+    if (ns === "pp" && PP_ALIASES[action]) action = PP_ALIASES[action];
+
+    const meta = _degradedMeta(ns, action, issue);
+    if (!meta) {
+        _log("#5923 callback con acción desconocida: " + cbData);
+        await _degradedToast(callbackQueryId, "⚠️ Acción no reconocida o ya no disponible.");
+        return true;
+    }
+
+    // --- Cancelar la confirmación: restaurar texto Y teclado originales. ---
+    if (stage === "x") {
+        const restored = _degradedOriginalKeyboard(ns, issue);
+        await _degradedToast(callbackQueryId, restored === null
+            ? "Cancelado. No se aplicó nada (no se pudo restaurar el teclado; usá el dashboard)."
+            : "Cancelado. No se aplicó nada.");
+        await _degradedEdit(messageId, baseText, restored || []);
+        return true;
+    }
+
+    // --- 1er tap de una acción destructiva: pedir confirmación explícita. ---
+    if (stage === "run" && meta.highImpact) {
+        await _degradedToast(callbackQueryId, meta.consequence, true);
+        await _degradedEdit(
+            messageId,
+            baseText + DEGRADED_CONFIRM_MARKER + meta.consequence,
+            _degradedConfirmKeyboard(ns, action, issue, _degradedActionPhrase(meta.text)),
+        );
+        return true;
+    }
+
+    // --- Ejecutar. ---
+    let result;
+    try {
+        result = ns === "pp"
+            ? await _execPartialPause(action, operator, issue)
+            : _execHumanBlock(action, issue, operator, chatId, messageId);
+    } catch (e) {
+        _log("#5923 error ejecutando " + cbData + ": " + e.message);
+        result = { ok: false, msg: "Error ejecutando la acción: " + e.message };
+    }
+
+    // Toast con el resultado CONCRETO (no un ack vacío).
+    await _degradedToast(callbackQueryId, (result.ok ? "✅ " : "⚠️ ") + result.msg, !result.ok);
+
+    if (!result.ok) {
+        // Falló: se deja el teclado puesto para que pueda reintentar.
+        await _degradedEdit(messageId, baseText, _degradedOriginalKeyboard(ns, issue) || []);
+        return true;
+    }
+
+    // Constancia + retiro del teclado (best-effort anti doble ejecución; el
+    // anti-replay real es server-side: idempotencia en `hb:`, 409 en `pp:`).
+    const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+    const constancia = meta.text + (issue ? " · #" + issue : "")
+        + " — operador " + operator + " · " + stamp + "\n" + result.msg;
+    await _degradedEdit(messageId, baseText + "\n\n✅ " + constancia, []);
+    return true;
+}
+
 // ─── Router principal de callbacks ───────────────────────────────────────────
 
 // #4802 — `fromId` (id de Telegram del que tocó el botón) se agrega como 4to
@@ -613,6 +1133,14 @@ async function routeCallback(cbData, callbackQueryId, message, fromId) {
     if (String(chatId) !== String(_tgApi.getChatId())) return false;
 
     try {
+        // #5923 — botones degradados de `url` a `callback_data` (human-block y
+        // pausa parcial trabada). Va primero: es la rama más barata de descartar
+        // y la única cuyo namespace no existía antes de esta issue.
+        if (cbData.startsWith("hb:") || cbData.startsWith("pp:")) {
+            _log("Callback degradado recibido: " + cbData);
+            return await handleDegradedActionCallback(cbData, callbackQueryId, message, fromId);
+        }
+
         // Propuestas
         if (cbData.startsWith("create_proposal:") || cbData.startsWith("discard_proposal:") || cbData === "create_all_proposals") {
             _log("Callback de propuesta recibido: " + cbData);
@@ -979,4 +1507,8 @@ module.exports = {
     PRIVILEGED_NAMESPACES,
     isCommanderNamespace,
     isPrivilegedNamespace,
+    // #5923 — ruteo de los botones degradados a `callback_data`.
+    handleDegradedActionCallback,
+    PP_ROUTES,
+    PP_META,
 };

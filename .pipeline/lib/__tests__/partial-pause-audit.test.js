@@ -494,3 +494,106 @@ test('partialPauseAuditSlice mapea entries a estados visuales correctos', () => 
     assert.ok(visuals.includes('subsystem'));
     assert.ok(visuals.includes('rejected'));
 });
+
+// -----------------------------------------------------------------------------
+// #5399 — `restart:preserve-pause`: sin este valor en el enum cerrado, la entry
+// de preservación de pausa quedaba como `action: 'reject'` y el CA de auditoría
+// fallaba en silencio.
+// -----------------------------------------------------------------------------
+
+test('restart:preserve-pause es un authorizedBy valido del enum cerrado', () => {
+    const r = audit.validateAuthorizedBy('restart:preserve-pause');
+    assert.equal(r.valid, true);
+    assert.equal(r.normalized, 'restart:preserve-pause');
+    assert.equal(audit.AUTHORIZED_BY_STATIC.includes('restart:preserve-pause'), true);
+});
+
+test('una mutacion con restart:preserve-pause se aplica y no se rechaza', () => {
+    const r = audit.appendMutation({
+        source: 'restart',
+        action: 'write',
+        previous: [5399],
+        current: [5399],
+        authorizedBy: 'restart:preserve-pause',
+        justification: 'restart preservo pausa heredada (source=config-corruption-halt)',
+        extra: { full_pause: true, preserved: true, inherited_source: 'config-corruption-halt' },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.validation.valid, true);
+    const last = audit.tail(1)[0];
+    assert.equal(last.action, 'write');
+    assert.equal(last.authorized_by, 'restart:preserve-pause');
+    assert.equal(last.authorized_by_rejected_reason, undefined);
+    // Preservar la pausa NO toca la allowlist: sin removals, el gate no se ensancha.
+    assert.deepEqual(last.diff, { added: [], removed: [] });
+});
+
+// -----------------------------------------------------------------------------
+// #5110 · SEC-5 — projectId en cada entry del audit trail
+// -----------------------------------------------------------------------------
+//
+// El audit de la allowlist es estado operativo y se namespacea con ella. Cada
+// entry declara a qué proyecto pertenece, y ese dato sale SIEMPRE del contexto
+// resuelto — nunca de un argumento del caller. Si viniera por parámetro,
+// cualquiera podría firmar una mutación como si fuera de otro proyecto.
+
+test('#5110 SEC-5: cada entry nueva del audit lleva projectId', () => {
+    resetFs();
+    const r = audit.appendMutation({
+        source: 'test',
+        action: 'write',
+        previous: [],
+        current: [5110],
+        authorizedBy: 'test',
+        justification: 'verificar que la entry declara su proyecto',
+    });
+    assert.equal(r.ok, true);
+    const last = audit.tail(1)[0];
+    assert.ok('projectId' in last, 'la entry debe declarar projectId');
+});
+
+test('#5110 SEC-5: el projectId sale del contexto, no de `extra`', () => {
+    resetFs();
+    const projectContext = require('../project-context');
+    const esperado = projectContext.currentProjectIdOrNull();
+
+    audit.appendMutation({
+        source: 'test',
+        action: 'write',
+        previous: [],
+        current: [5110],
+        authorizedBy: 'test',
+        justification: 'intento de firmar la mutacion como otro proyecto',
+        // El ataque: colar el projectId del vecino por la puerta de atrás.
+        extra: { projectId: 'proyecto-ajeno' },
+    });
+
+    const last = audit.tail(1)[0];
+    assert.equal(last.projectId, esperado, 'el contexto manda sobre el argumento');
+    assert.notEqual(last.projectId, 'proyecto-ajeno');
+});
+
+test('#5110 SEC-5: el projectId viaja DENTRO del payload encadenado', () => {
+    // Si `projectId` quedara fuera del hash, se lo podría reescribir a mano sin
+    // romper la cadena — y el audit dejaría de probar de qué proyecto fue la
+    // mutación, que es justamente lo que #5110 le agrega.
+    resetFs();
+    audit.appendMutation({
+        source: 'test',
+        action: 'write',
+        previous: [],
+        current: [5110],
+        authorizedBy: 'test',
+        justification: 'verificar que projectId esta cubierto por el hash chain',
+    });
+    assert.equal(audit.verifyChain().ok, true, 'la cadena debe verificar antes de tocar nada');
+
+    const { AUDIT_FILE } = audit._paths();
+    const lines = fs.readFileSync(AUDIT_FILE, 'utf8').trim().split('\n').filter(Boolean);
+    const entry = JSON.parse(lines[lines.length - 1]);
+    entry.projectId = 'proyecto-ajeno';           // tampering del campo
+    lines[lines.length - 1] = JSON.stringify(entry);
+    fs.writeFileSync(AUDIT_FILE, lines.join('\n') + '\n');
+
+    assert.equal(audit.verifyChain().ok, false, 'reescribir projectId debe romper la cadena');
+});

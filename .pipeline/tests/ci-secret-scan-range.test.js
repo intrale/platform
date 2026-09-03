@@ -25,6 +25,9 @@ const BASE_TREE_FILES = [
   '.pipeline/lib/precommit-secret-scan.js',
   '.pipeline/lib/secret-allowlist.js',
   '.pipeline/lib/secret-scan-lint.js',
+  // El scanner deriva su inventario de paths sensibles de este modulo (#5551):
+  // sin el, el arbol base no puede ejecutarlo y el escenario probaria otra cosa.
+  '.pipeline/lib/sensitive-paths.js',
   '.pipeline/sanitizer.js',
   '.claude/hooks/telegram-sanitizer.js',
 ];

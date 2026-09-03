@@ -88,10 +88,10 @@ test('sign rechaza action fuera de allowlist e issue inválido', () => {
     assert.throws(() => t.sign({ issue: 'x', action: 'unblock' }), /issue inválido/);
 });
 
-test('ACTION_ALLOWLIST contiene las acciones needs-human + las de firma #4579', () => {
+test('ACTION_ALLOWLIST contiene needs-human + firma #4579 + operacional #5458', () => {
     assert.deepEqual([...ACTION_ALLOWLIST].sort(),
         ['adjust-definicion', 'approve', 'devolver-definicion', 'mas-contexto',
-         'priorizar', 'reject', 'unblock']);
+         'priorizar', 'reject', 'unblock', 'vault-cut-fallback']);
     assert.equal(isValidIssue(999999), true);
     assert.equal(isValidIssue(1000000), false);
 });
@@ -124,31 +124,48 @@ test('#4579: doble-tap de una firma approve → replayed; token vencido → expi
     assert.equal(t.verify(token2).reason, 'expired');
 });
 
-test('sin secreto inyectado, resuelve el secreto desde TELEGRAM_BOT_TOKEN (path producción)', () => {
+test('sin secreto inyectado, usa vault aunque TELEGRAM_BOT_TOKEN sea hostil', { concurrency: false }, () => {
+    const credentials = require('../credentials');
+    const original = credentials.resolveVaultOnly;
     const prev = process.env.TELEGRAM_BOT_TOKEN;
-    process.env.TELEGRAM_BOT_TOKEN = 'bot-token-de-prueba';
+    process.env.TELEGRAM_BOT_TOKEN = 'HOSTILE-ENV-NOT-A-SECRET';
+    credentials.resolveVaultOnly = (key) => {
+        assert.equal(key, 'telegram.bot_token');
+        return 'VAULT-ONLY-TEST-VALUE';
+    };
     try {
-        const t = createTokenSigner({ nonceFile: tmpNonceFile() }); // sin secret → resolveRawSecret
+        const t = createTokenSigner({ nonceFile: tmpNonceFile() });
         const token = t.sign({ issue: 1, action: 'unblock' });
         assert.equal(t.verify(token).ok, true);
+        const hostile = createTokenSigner({ secret: process.env.TELEGRAM_BOT_TOKEN, nonceFile: tmpNonceFile() });
+        assert.equal(hostile.verify(token).reason, 'invalid');
     } finally {
+        credentials.resolveVaultOnly = original;
         if (prev === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
         else process.env.TELEGRAM_BOT_TOKEN = prev;
     }
 });
 
-test('createTokenSigner lanza claro si no hay secreto disponible', () => {
+test('vault ausente falla cerrado aunque ambiente tenga valor', { concurrency: false }, () => {
+    const credentials = require('../credentials');
+    const original = credentials.resolveVaultOnly;
     const prev = process.env.TELEGRAM_BOT_TOKEN;
-    delete process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = 'HOSTILE-FALLBACK-NOT-A-SECRET';
+    credentials.resolveVaultOnly = () => {
+        const error = new Error('credentials: VAULT_DISABLED para telegram.bot_token');
+        error.code = 'VAULT_DISABLED';
+        throw error;
+    };
     try {
-        // El secreto se resuelve eager en createTokenSigner; sin credentials.json
-        // ni env, debe lanzar el error explicativo. (Tolerante: si el entorno SÍ
-        // tiene credentials, el secreto se resuelve y no lanza — ambos válidos.)
-        let threw = false;
-        try { createTokenSigner({ nonceFile: tmpNonceFile() }); }
-        catch (e) { threw = true; assert.match(e.message, /sin secreto disponible/); }
-        assert.ok(threw === true || threw === false);
+        assert.throws(() => createTokenSigner({ nonceFile: tmpNonceFile() }), (error) => {
+            assert.equal(error.code, 'VAULT_DISABLED');
+            assert.match(error.message, /telegram\.bot_token/);
+            assert.doesNotMatch(error.message, /HOSTILE-FALLBACK/);
+            return true;
+        });
     } finally {
-        if (prev !== undefined) process.env.TELEGRAM_BOT_TOKEN = prev;
+        credentials.resolveVaultOnly = original;
+        if (prev === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+        else process.env.TELEGRAM_BOT_TOKEN = prev;
     }
 });

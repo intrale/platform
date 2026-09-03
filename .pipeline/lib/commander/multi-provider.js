@@ -145,6 +145,17 @@ function hashFor(s) {
 }
 
 // -----------------------------------------------------------------------------
+// #6458 — Estados de ENTREGA al operador (jamás de generación). Enum CERRADO:
+// un valor fuera del set se persiste como `null` (fail-closed), nunca crudo.
+//
+// Se declara acá en vez de importarlo de `inflight-fallback.js` para NO crear
+// un require circular (ese módulo ya requiere este de forma perezosa). El
+// test de coherencia cross-source (`commander-delivery-state.test.js`) verifica
+// que los dos sets sean idénticos: si se toca uno sin el otro, el test rompe.
+// -----------------------------------------------------------------------------
+const DELIVERY_STATES = new Set(['delivery_pending', 'delivery_observed', 'delivery_failed']);
+
+// -----------------------------------------------------------------------------
 // resolveCommanderProvider — consulta el runtime `dispatch-with-fallback`
 // con `skill: 'telegram-commander'` y devuelve la resolución.
 //
@@ -268,6 +279,7 @@ function isCommanderChainGated(opts = {}) {
             onLog: () => {},                          // sin logs
             notify: () => {},                         // sin notice a Telegram
             auditLog: { appendChained: () => {} },    // sin escritura de audit
+            recordEpisode: false,                     // #6179 — sin tocar el episodio
         });
         return !!(res && res.gated);
     } catch {
@@ -313,6 +325,7 @@ function isReducedMode(opts = {}) {
             onLog: () => {},                          // sin logs
             notify: () => {},                         // sin notice a Telegram
             auditLog: { appendChained: () => {} },    // sin escritura de audit
+            recordEpisode: false,                     // #6179 — sin tocar el episodio
         });
         return !!(res && !res.gated && res.providerBilling === 'free');
     } catch {
@@ -380,7 +393,7 @@ const DANGEROUS_KEYS = Object.freeze(['__proto__', 'constructor', 'prototype']);
 /**
  * Lee `commander-balancer-state.json` (best-effort). Devuelve
  * `{ counters: {} }` ante ausencia, JSON inválido o shape inesperado (default
- * seguro, contadores en 0 — mismo patrón que `loadDedupState`). Los contadores
+ * seguro, contadores en 0 — mismo patrón fail-soft del resto del módulo). Los contadores
  * se filtran por `allowSet`: SOLO providers presentes en la chain sobreviven;
  * cualquier clave espuria del archivo (incl. `__proto__`) se ignora.
  */
@@ -684,6 +697,18 @@ function _buildBalancedResolution(args = {}) {
         providerBilling: (_pickedBillingDef && _pickedBillingDef.billing === 'paid') ? 'paid' : 'free',
     };
 
+    // #6271 — el camino estricto expone `models_by_provider` (mapa
+    // {provider: model} de toda la cadena declarada) porque delega en
+    // `resolveProviderForSkill`. El camino balanceado arma su objeto a mano, asi
+    // que la clave hay que espejarla explicitamente o el shape OFF/ON diverge
+    // (#4412 CA-1 exige claves IDENTICAS). El mapa NO depende del eslabon que
+    // eligio el balancer: describe la cadena declarada completa, igual que en OFF.
+    // Defensivo: si el modulo inyectado no expone el helper (fake parcial en
+    // tests), degradamos a {} — la clave existe igual y el shape no se rompe.
+    const modelsByProvider = typeof _rp.resolveModelsByProvider === 'function'
+        ? _rp.resolveModelsByProvider(models, COMMANDER_SKILL)
+        : {};
+
     if (isPrimary) {
         // Espejo EXACTO del shape estricto-primario (…resolveProviderForSkill +
         // metadatos de dispatch). Mismas claves que el retorno OFF (CA-1).
@@ -691,6 +716,7 @@ function _buildBalancedResolution(args = {}) {
         return {
             provider,
             model,
+            models_by_provider: modelsByProvider,
             mode,
             handler,
             source: 'balanced',
@@ -717,6 +743,7 @@ function _buildBalancedResolution(args = {}) {
     return {
         provider,
         model,
+        models_by_provider: modelsByProvider,
         handler,
         mode,
         source: 'balanced',
@@ -751,7 +778,16 @@ function _buildBalancedResolution(args = {}) {
 //   - excludedProvider: string del provider del Commander a excluir. Si no
 //     coincide con ningún provider del chain, no excluye nada.
 //   - skill: nombre del skill alternativo (default 'telegram-sherlock').
+//     OJO: el default NO es neutro — resuelve sobre la cadena de Sherlock, que
+//     tiene sus propios `model_override`. Todo caller que necesite la cadena del
+//     Commander DEBE pasar `skill: COMMANDER_SKILL` explícitamente.
 //   - issue: para audit log (default 'sherlock-verify').
+//   - notify / auditLog: passthrough a `resolveSpawnWithFallback`. El resolver
+//     es puro respecto del ESTADO de cuota, pero NO respecto de sus EFECTOS de
+//     reporte: en el camino `fallback_selected` encola un aviso de Telegram con
+//     ids internos (`skill=`, `provider=`, `model=`) y escribe el audit del
+//     dispatch. Un caller que sólo CONSULTA la cadena (sin spawnear) debe
+//     neutralizar ambos — ver #5456.
 //
 // Devuelve el mismo shape que `resolveCommanderProvider`. Si la chain entera
 // queda gateada por la exclusión + cuotas reales, `source: 'all-gated'`,
@@ -769,6 +805,8 @@ function resolveCommanderProviderExcluding(excludedProvider, opts = {}) {
         fsImpl,
         now,
         issue,
+        notify,
+        auditLog,
     } = opts;
 
     const _dispatch = dispatchModule || require('../agent-launcher/dispatch-with-fallback');
@@ -804,6 +842,43 @@ function resolveCommanderProviderExcluding(excludedProvider, opts = {}) {
         quotaModule: wrappedQuota,
         onLog: typeof log === 'function' ? log : () => {},
         now,
+        notify,
+        auditLog,
+    });
+}
+
+// -----------------------------------------------------------------------------
+// #5456 — resolveCommanderProviderQuiet
+//
+// Consulta SÓLO-LECTURA de la cadena del Commander excluyendo un provider.
+// Pensada para los call sites que necesitan saber "quién atiende el próximo
+// intento" para armar copy visible, SIN que la consulta se confunda con un
+// dispatch real.
+//
+// Neutraliza los dos efectos de reporte de `resolveSpawnWithFallback`:
+//   - `notify`: evitaría una TERCERA salida al operador en el mismo turno, con
+//     ids internos de provider/model/skill (CA-1 y CA-3 de #5456).
+//   - `auditLog`: no hubo spawn, así que un `fallback_selected` en el audit del
+//     dispatch sería una entrada falsa.
+//
+// Y fija `skill`/`issue` en la cadena del COMMANDER: el default del resolver es
+// la de Sherlock, que tiene otros `model_override` y sólo coincide en orden por
+// casualidad.
+// -----------------------------------------------------------------------------
+const _AUDIT_NOOP = { appendChained: () => {} };
+const _NOTIFY_NOOP = () => false;
+
+function resolveCommanderProviderQuiet(excludedProvider, opts = {}) {
+    return resolveCommanderProviderExcluding(excludedProvider, {
+        ...opts,
+        skill: COMMANDER_SKILL,
+        issue: opts.issue || 'commander-chat',
+        notify: _NOTIFY_NOOP,
+        auditLog: _AUDIT_NOOP,
+        // #6179 — tercer efecto a neutralizar: una consulta que persiste el
+        // episodio haría que el despacho REAL siguiente lea "no cambió nada" y
+        // se calle. No hubo spawn, así que no hay episodio que registrar.
+        recordEpisode: false,
     });
 }
 
@@ -828,14 +903,26 @@ function resolveCommanderProviderExcluding(excludedProvider, opts = {}) {
 function formatFallbackNotice({ primaryProvider, fallbackProvider, errorCode, supportsToolUse }) {
     const lines = [];
     const code = String(errorCode || 'quota_exhausted');
-    const motive =
-        code === 'rate_limit' ? 'rate_limit' :
-        code === 'quota_exhausted' ? 'cuota agotada' :
-        code === 'timeout' ? 'sin respuesta a tiempo' :
-        code === '5xx' ? 'error del servidor' :
-        code;
+    // #6179 D9 — el enum de motivos es CERRADO y cae a un literal genérico,
+    // nunca al `code` crudo. Mientras el único call site lo hardcodeaba el `else`
+    // era inofensivo; ahora que la causa se deriva de verdad, ese `else` sería un
+    // punto de interpolación de texto de origen externo (CA-9).
+    const MOTIVES = Object.freeze({
+        rate_limit: 'límite de pedidos por minuto',
+        quota_exhausted: 'cuota agotada',
+        timeout: 'sin respuesta a tiempo',
+        '5xx': 'error del servidor',
+    });
+    const motive = Object.prototype.hasOwnProperty.call(MOTIVES, code)
+        ? MOTIVES[code]
+        : 'motivo no confirmado';
+    // #6179 — `fallbackProvider` se interpolaba CRUDO acá: un id interno
+    // (`cerebras`, `nvidia-nim`) viajaba tal cual al chat. Todo copy visible que
+    // nombre un proveedor pasa por `publicProviderLabel` (SEC-5), que es
+    // fail-closed: lo que no está en la allowlist pública cae al genérico.
+    const motorLabel = publicProviderLabel(fallbackProvider, 'un motor de respaldo');
     lines.push(
-        `⚠️ Claude no responde (${motive}) — el commander está usando ${fallbackProvider} para esta respuesta.`
+        `⚠️ Claude no responde (${motive}) — el commander está usando ${motorLabel} para esta respuesta.`
     );
     if (supportsToolUse === false) {
         lines.push(
@@ -846,69 +933,277 @@ function formatFallbackNotice({ primaryProvider, fallbackProvider, errorCode, su
 }
 
 // -----------------------------------------------------------------------------
-// SR-6 — Dedup window 5 min para notificaciones de fallback.
+// #4870 + #5456 — Mapping CERRADO de proveedores pagos → etiqueta pública.
 //
-// Caída prolongada de Anthropic genera N requests/min en Telegram con el
-// mismo aviso. Dedupeamos por `(chat_id_hash, fallback_provider)` con una
-// ventana deslizante. La primera notificación va completa; las siguientes
-// dentro de la ventana NO se emiten (silenciosas). Cuando vence la ventana,
-// la próxima emisión vuelve al texto completo (no implementamos el
-// "resumen contador" de UX-G3 — eso queda para una iteración futura).
+// ÚNICA fuente de las etiquetas que ve el operador. Todo copy visible que
+// nombre un proveedor DEBE pasar por acá: un id interno (`openai-codex`,
+// `anthropic`) nunca se interpola crudo y un proveedor desconocido cae a un
+// término genérico en vez de filtrar su nombre interno (CA-1 de #5456).
 //
-// Estado persistido en `.pipeline/commander-fallback-dedup.json` (best-effort).
+// Vivía dentro del bloque de #4870; se subió acá para que #5456 lo reutilice
+// sin duplicar el vocabulario (dos allowlists divergentes = una filtra).
 // -----------------------------------------------------------------------------
-const DEDUP_WINDOW_MS = 5 * 60 * 1000;
-const DEDUP_STATE_FILE = 'commander-fallback-dedup.json';
-
-function dedupStatePath(pipelineDir) {
-    return path.join(pipelineDir || '.', DEDUP_STATE_FILE);
-}
-
-function loadDedupState(pipelineDir, fsImpl) {
-    const _fs = fsImpl || fs;
-    const file = dedupStatePath(pipelineDir);
-    if (!_fs.existsSync(file)) return { entries: {} };
-    try {
-        return JSON.parse(_fs.readFileSync(file, 'utf8'));
-    } catch {
-        return { entries: {} };
-    }
-}
-
-function saveDedupState(state, pipelineDir, fsImpl) {
-    const _fs = fsImpl || fs;
-    const file = dedupStatePath(pipelineDir);
-    try {
-        _fs.writeFileSync(file, JSON.stringify(state, null, 2), 'utf8');
-        return true;
-    } catch {
-        return false;
-    }
-}
+const _PAID_PROVIDER_LABELS = Object.freeze({
+    'anthropic': 'Anthropic',
+    'openai-codex': 'Codex',
+});
 
 /**
- * Devuelve true si esta combinación (chat_id, fallback_provider) NO fue
- * notificada en los últimos `DEDUP_WINDOW_MS`. Si devuelve true, también
- * actualiza el state para marcarla como recién notificada (lock).
+ * Traduce un id interno de proveedor a su etiqueta pública. Fail-closed: lo
+ * que no está en la allowlist NO se interpola, se devuelve `fallbackLabel`.
+ *
+ * @param {string} provider       id interno del proveedor.
+ * @param {string|null} fallbackLabel  valor para proveedores fuera de la allowlist.
+ * @returns {string|null}
  */
-function shouldEmitFallbackNotice({ pipelineDir, chatId, fallbackProvider, now, fsImpl }) {
-    if (!fallbackProvider) return false;
-    const _now = Number.isFinite(now) ? now : Date.now();
-    const cidHash = hashFor(chatId || 'unknown');
-    const key = `${cidHash}|${fallbackProvider}`;
-    const state = loadDedupState(pipelineDir, fsImpl);
-    state.entries = state.entries || {};
-    const last = Number(state.entries[key] || 0);
-    if (last && _now - last < DEDUP_WINDOW_MS) return false;
-    state.entries[key] = _now;
-    // GC: borramos entries más viejas que 24h para no crecer indefinido.
-    for (const k of Object.keys(state.entries)) {
-        if (_now - Number(state.entries[k] || 0) > 24 * 60 * 60 * 1000) {
-            delete state.entries[k];
-        }
+function publicProviderLabel(provider, fallbackLabel = null) {
+    const key = String(provider == null ? '' : provider).trim().toLowerCase();
+    // #6179 D8 / #5667 — `_PAID_PROVIDER_LABELS` es un objeto literal congelado,
+    // así que hereda `Object.prototype`: con el lookup `[key] || fallback`,
+    // `publicProviderLabel('constructor')` devolvía la Function `Object`, que
+    // interpolada en un template manda `function Object() { [native code] }` al
+    // chat. `hasOwnProperty` cierra la herencia. Este issue le agrega un call
+    // site nuevo a esta función: no se cierra una fuga abriendo otra.
+    return Object.prototype.hasOwnProperty.call(_PAID_PROVIDER_LABELS, key)
+        ? _PAID_PROVIDER_LABELS[key]
+        : fallbackLabel;
+}
+
+// -----------------------------------------------------------------------------
+// #5456 — formatMidTurnQuotaResponse — RESPUESTA REACTIVA del turno perdido.
+//
+// Contexto (#5424 / #5455): el CLI de Anthropic, al cortar por límite SEMANAL,
+// emite el aviso como TEXTO del frame final `type:result`. Sin este formatter
+// ese texto crudo — con hora de reset, jerga de la cuenta y wording de
+// Anthropic — viajaba tal cual a Telegram como si fuera la respuesta del
+// Commander. El operador quedaba sin saber que su turno se había perdido.
+//
+// Esta salida es DISTINTA del aviso proactivo (`formatEpisodeNotice` +
+// `fallback-episode-state.recordDispatch`) y las dos deben convivir sin pisarse:
+//
+//   - REACTIVA (esta): contesta EL turno que se perdió. Se emite SIEMPRE, una
+//     vez por cada turno afectado. NUNCA se deduplica — dedupear una respuesta
+//     deja al operador sin contestación (mismo criterio que #4870).
+//   - PROACTIVA (`formatEpisodeNotice`): avisa que el canal pasó a otro motor.
+//     Esa SÍ se deduplica, ahora por EPISODIO (#6179) en vez de por la ventana
+//     de 5 min de `shouldEmitFallbackNotice`, que se borró con este issue.
+//
+// Contrato del copy:
+//   - CA-2: admite explícitamente que el turno no se completó y pide reenviar.
+//   - CA-1: vocabulario de allowlist cerrada (`Anthropic` / `Codex`). Sin ids
+//     internos, sin `errorType`, sin TTL, sin `resets_at`, sin metadata de la
+//     cuenta y sin una sola palabra del payload crudo.
+//   - CA-5: pasa por `redactSecretValue` (defensa en profundidad, igual #4870).
+//
+// Función PURA: no lee filesystem, no consulta el dedup, no escribe estado.
+// Por eso es segura de llamar una vez por turno sin efectos acumulativos.
+// -----------------------------------------------------------------------------
+function formatMidTurnQuotaResponse({ primaryProvider, fallbackProvider } = {}) {
+    const primary = publicProviderLabel(primaryProvider, null);
+    const fallback = publicProviderLabel(fallbackProvider, null);
+
+    // Fuera de la allowlist el copy degrada a una frase genérica: preferimos
+    // ser vagos antes que interpolar un id interno desconocido.
+    const causa = primary ? `la cuota semanal de ${primary}` : 'la cuota semanal del proveedor principal';
+    const proximo = fallback
+        ? `Ya quedo apuntando a ${fallback} para el próximo intento`
+        : 'Voy a intentar con otro proveedor en el próximo intento';
+
+    const text =
+        `⚠️ Se agotó ${causa} y este turno se perdió — no llegué a completarlo.\n` +
+        `${proximo}: reenviame el mensaje y lo retomo desde ahí.`;
+
+    const r = redactModule();
+    if (r && typeof r.redactSecretValue === 'function') {
+        try { return r.redactSecretValue(text); } catch { /* fall-through */ }
     }
-    saveDedupState(state, pipelineDir, fsImpl);
-    return true;
+    return text;
+}
+
+// #5456 — Enum ESTABLE del audit log para el turno perdido por cuota semanal.
+// Es el único identificador que el cierre del intento puede escribir: el
+// `errorType` real (`weekly_limit_content_channel`) queda server-side en el
+// audit de `quota-exhausted.js`, no en el dispatch del Commander.
+const QUOTA_MIDTURN_ERROR_CODE = 'quota_exhausted_midturn';
+
+// =============================================================================
+// #6179 — formatEpisodeNotice: el copy del aviso por EPISODIO.
+//
+// Reemplaza a `shouldEmitFallbackNotice` (ventana de 5 min por
+// `chat_id + fallback_provider`), que se BORRÓ en este issue. Aquella ventana
+// era una de las TRES políticas que competían por avisar lo mismo, y dejar dos
+// vivas garantiza que el ruido vuelva por la que quedó (CA-3). La decisión de
+// emitir es ahora responsabilidad exclusiva de
+// `lib/fallback-episode-state.js:recordDispatch`; esta función sólo redacta.
+//
+// Función PURA: sin I/O, sin `Date.now()` adentro (el reloj entra por `opts`),
+// sin ids de proveedor ni de modelo, sin `errorCode` crudo y sin una sola letra
+// del `raw_excerpt` o del mensaje de error del proveedor (CA-9 / SEC-4).
+//
+// El vocabulario visible NO vive acá: sale entero de
+// `.pipeline/assets/copy/fallback-episode/copy.json`, que es el entregable de
+// UX y la fuente única. Se `require`-ea en vez de inlinearse justamente para
+// que no pueda desincronizarse en el primer retoque.
+// =============================================================================
+
+const EPISODE_TIERS = Object.freeze([
+    'respaldo_pago', 'gratuito_con_herramientas', 'gratuito_sin_herramientas',
+]);
+const EPISODE_CAUSES = Object.freeze([
+    'reposo', 'cuota', 'transitoria', 'auth', 'desconocida',
+]);
+const EPISODE_EVENTOS = Object.freeze([
+    'entra_respaldo', 'baja_escalon', 'vuelve_principal', 'sostenido',
+]);
+
+/** Texto de última instancia si el asset de copy no está disponible. */
+const EPISODE_COPY_UNAVAILABLE =
+    '⚠️ El pipeline pasó a trabajar con un motor de respaldo.\n' +
+    'No pude cargar el detalle del aviso. Conviene que mires el estado de los motores.';
+
+let _episodeCopyCache;
+/**
+ * Carga fail-soft del copy. Si el asset faltara, `multi-provider.js` TIENE que
+ * seguir cargando: es el módulo del Commander y un throw acá dejaría al pipeline
+ * mudo (regla #1 del rol — el pipeline no puede morir).
+ */
+function episodeCopy() {
+    if (_episodeCopyCache !== undefined) return _episodeCopyCache;
+    try {
+        _episodeCopyCache = require('../../assets/copy/fallback-episode/copy.json');
+    } catch {
+        _episodeCopyCache = null;
+    }
+    return _episodeCopyCache;
+}
+
+/** Lookup fail-closed: nunca hereda de `Object.prototype` (D8 / #5667). */
+function episodePick(obj, key, fallback) {
+    if (!obj || typeof obj !== 'object') return fallback;
+    const k = String(key == null ? '' : key);
+    return Object.prototype.hasOwnProperty.call(obj, k) ? obj[k] : fallback;
+}
+
+function episodeLapso(COPY, ms, claves) {
+    const min = Math.floor(ms / 60000);
+    if (min < 1) return COPY.antiguedad[claves.cero];
+    if (min < 60) return COPY.antiguedad[claves.min].replace('{N}', String(min));
+    const horas = Math.floor(min / 60);
+    if (horas >= 24) {
+        return COPY.antiguedad[claves.dia]
+            .replace('{D}', String(Math.floor(horas / 24)))
+            .replace('{H}', String(horas % 24));
+    }
+    // Un lapso redondo se dice "6 h", nunca "6 h 0 min": el aviso tiene que
+    // sonar a alguien avisando, no a un reloj volcando campos (UX, decisión 7).
+    if (min % 60 === 0) return COPY.antiguedad[claves.horaExacta].replace('{H}', String(horas));
+    return COPY.antiguedad[claves.hora]
+        .replace('{H}', String(horas))
+        .replace('{M}', String(min % 60));
+}
+
+const _ANTIG_KEYS = {
+    cero: 'menos_de_un_minuto', min: 'minutos',
+    hora: 'horas', horaExacta: 'horas_exactas', dia: 'dias',
+};
+const _DURAC_KEYS = {
+    cero: 'duracion_menos_de_un_minuto', min: 'duracion_minutos',
+    hora: 'duracion_horas', horaExacta: 'duracion_horas_exactas', dia: 'duracion_dias',
+};
+
+/**
+ * Redacta el aviso de un episodio.
+ *
+ * Responde las cuatro preguntas de CA-4 en orden fijo — qué cambió · por qué ·
+ * desde cuándo · qué consecuencia práctica tiene — y sólo pide acción cuando
+ * existe una (CA-7).
+ *
+ * Describe el ESCALÓN de capacidad, nunca el id del proveedor (CA-5): al
+ * operador no le sirve saber que corre con `cerebras`, le sirve saber que el
+ * pipeline no puede ejecutar comandos. Un nombre propio sólo aparecería si
+ * `publicProviderLabel` lo devolviera desde la allowlist pública, y esa
+ * allowlist tiene dos entradas, ambas de proveedores pagos, por diseño.
+ *
+ * @param {object} episode  `{ evento, tier, cause, since, heartbeatMs }`
+ * @param {object} [opts]   `{ now }` — epoch ms. El reloj NO se lee adentro.
+ * @returns {string} texto plano listo para Telegram (`plain: true`).
+ */
+function formatEpisodeNotice(episode, opts) {
+    const COPY = episodeCopy();
+    if (!COPY) return EPISODE_COPY_UNAVAILABLE;
+
+    const ep = (episode && typeof episode === 'object') ? episode : {};
+    const now = (opts && Number.isFinite(opts.now)) ? opts.now : 0;
+    const since = Number.isFinite(ep.since) ? ep.since : now;
+    const transcurrido = Math.max(0, now - since);
+
+    const evento = EPISODE_EVENTOS.includes(ep.evento) ? ep.evento : 'entra_respaldo';
+    // Un tier fuera del enum se trata como el escalón MÁS degradado: describir
+    // de menos una degradación es peor que describirla de más (UX, decisión 8).
+    const tier = EPISODE_TIERS.includes(ep.tier) ? ep.tier : 'gratuito_sin_herramientas';
+    // `null` es el caso legítimo "no se pudo determinar" de CA-12.
+    const cause = EPISODE_CAUSES.includes(ep.cause) ? ep.cause : 'desconocida';
+
+    const d = new Date(since);
+    const hora = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+    // Vuelta a la normalidad: 3 líneas. No lleva motivo ni consecuencia porque
+    // no hay ninguna que comunicar.
+    if (evento === 'vuelve_principal') {
+        return COPY.plantillas.normalidad
+            .replace('{MARCADOR}', COPY.marcadores.normalidad)
+            .replace('{TITULAR}', COPY.titulares.vuelve_principal)
+            .replace('{DURACION}', episodeLapso(COPY, transcurrido, _DURAC_KEYS))
+            .replace('{CIERRE}', COPY.cierres.normalidad);
+    }
+
+    // Destacado cuando el operador tiene algo que decidir (CA-12) o cuando el
+    // escalón no puede ejecutar comandos.
+    const requiereMirada = cause === 'auth' || cause === 'desconocida';
+    const destacado = requiereMirada || tier === 'gratuito_sin_herramientas';
+    // Directriz de UX en `validacion`: `auth`/`desconocida` NUNCA degradan a la
+    // lectura de heartbeat. Si el cruce `sostenido` + `auth` fuera alcanzable, el
+    // marcador tiene que seguir siendo el destacado y el cierre tiene que
+    // CONSERVAR el pedido de acción, no reemplazarlo por "te vuelvo a avisar".
+    // `recordDispatch` además garantiza que no lo emite (esas causas notifican
+    // por despacho y no llegan al heartbeat); esto es la segunda barrera.
+    const marcador = (evento === 'sostenido' && !requiereMirada)
+        ? COPY.marcadores.sostenido
+        : (destacado ? COPY.marcadores.destacado : COPY.marcadores.degradacion);
+
+    let cierre;
+    if (cause === 'auth') {
+        // El aviso de credenciales explica su propia repetición: CA-12 obliga a
+        // notificar en cada despacho, y sin decirlo el operador ve volver la
+        // ráfaga y concluye que la historia no funcionó (UX, decisión 5).
+        cierre = COPY.cierres.auth;
+    } else if (cause === 'desconocida') {
+        cierre = COPY.cierres.desconocida;
+    } else if (evento === 'sostenido') {
+        const ventana = episodeLapso(
+            COPY,
+            Number.isFinite(ep.heartbeatMs) ? ep.heartbeatMs : 6 * 3600 * 1000,
+            _DURAC_KEYS,
+        );
+        cierre = COPY.cierres.sostenido.replace('{VENTANA}', ventana);
+    } else {
+        cierre = COPY.cierres.sin_accion;
+    }
+
+    const titular = episodePick(
+        episodePick(COPY.titulares, evento, COPY.titulares.entra_respaldo),
+        tier,
+        COPY.titulares.entra_respaldo.gratuito_sin_herramientas,
+    );
+
+    return COPY.plantillas.degradacion
+        .replace('{MARCADOR}', marcador)
+        .replace('{TITULAR}', titular)
+        .replace('{MOTIVO}', episodePick(COPY.motivos, cause, COPY.motivos.desconocida))
+        .replace('{HORA}', hora)
+        .replace('{ANTIGUEDAD}', episodeLapso(COPY, transcurrido, _ANTIG_KEYS))
+        .replace('{CONSECUENCIA}', episodePick(COPY.consecuencias, tier, COPY.consecuencias.gratuito_sin_herramientas))
+        .replace('{CIERRE}', cierre);
 }
 
 // -----------------------------------------------------------------------------
@@ -1107,6 +1402,18 @@ function auditCommanderRequest(opts = {}) {
         weight,
         quotaPct,
         selectionReason,
+        // #6458 — puente audit ↔ canal de etapas del turno del Commander.
+        // `commanderReqId` DEBE venir SEUDONIMIZADO (`<chat_id_hash>-<ms>`, vía
+        // `request-log.buildAuditReqRef`): emitir el reqId crudo revertiría la
+        // seudonimización de esta cadena, que además el dashboard sirve por
+        // `/logs/` y `redactLogText` NO cubre (REQ-SEC-1).
+        //
+        // `deliveryState` describe la ENTREGA al operador, nunca la GENERACIÓN.
+        // Enum cerrado; cualquier otro valor se persiste como `null`
+        // (fail-closed). `null` significa NO OBSERVADO: ni éxito ni fallo, así
+        // que ningún consumidor puede leerlo como "entregado" ni como "falló".
+        commanderReqId,
+        deliveryState,
         // inyectables tests
         fsImpl,
         auditLog,
@@ -1161,6 +1468,12 @@ function auditCommanderRequest(opts = {}) {
         chain_evaluated: Array.isArray(chainEvaluated) && chainEvaluated.length
             ? redactSkipReasons(chainEvaluated)
             : null,
+        // #6458 — ESTRICTAMENTE AL FINAL del entry (mismo patrón aditivo que
+        // `weight`/`quota_pct`/`chain_evaluated` de #4413/#4438): las entradas
+        // que no los proveen quedan en `null` y conservan el shape canónico, así
+        // que la hash-chain de `audit-log` sigue verificando.
+        commander_req_id: commanderReqId || null,
+        delivery_state: DELIVERY_STATES.has(deliveryState) ? deliveryState : null,
     };
 
     try {
@@ -1826,29 +2139,45 @@ function cannedAllGatedResponse(resolution = null) {
 // Variación anti-robot (feedback_telegram-messages-natural.md): rota entre
 // variantes con `requestId` como semilla determinística. `requestId` es opcional.
 // -----------------------------------------------------------------------------
-const _ALL_FAILED_UNVERIFIED_VARIANTS = Object.freeze([
-    '⚠️ Tuve un problema para responderte en este momento. ' +
-        'Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando — probá de nuevo en un momento.',
-    '⚠️ No pude generar la respuesta ahora mismo. ' +
-        'Mientras tanto, los comandos determinísticos (/status, /listado, /lanzar) siguen andando — reintentá en un rato.',
-]);
-const _ALL_FAILED_VERIFIED_VARIANTS = Object.freeze([
-    '⚠️ Ahora mismo no tengo forma de responderte con IA. ' +
-        'Los comandos determinísticos (/status, /listado, /lanzar) siguen funcionando — probá de nuevo más tarde.',
-    '⚠️ Por el momento no puedo responderte con IA. ' +
-        'Igual podés seguir con los comandos determinísticos (/status, /listado, /lanzar); volvé a intentar en un rato.',
-]);
-function cannedAllProvidersFailedResponse({ chainTried, verifiedAllFailed = false, requestId } = {}) {
-    // chainTried se acepta por backward-compat de firma pero NO se interpola al
-    // operador (CA-2). El detalle técnico ya viaja a los logs server-side.
-    void chainTried;
-    const variants = verifiedAllFailed
-        ? _ALL_FAILED_VERIFIED_VARIANTS
-        : _ALL_FAILED_UNVERIFIED_VARIANTS;
-    const idx = requestId
-        ? parseInt(hashFor(requestId).slice(0, 4), 16) % variants.length
-        : 0;
-    return variants[idx];
+// #6144 — el copy fijo de arriba se reemplazó por un mensaje construido a partir
+// de la CAUSA DOMINANTE de la caída (cupo agotado / fuera de horario / caída
+// temporal / problema de acceso), con las cuatro partes que pide CA-1: qué pasó,
+// qué sigue funcionando, qué pasó con el pedido, y cuándo vuelve si es estimable.
+// Toda la redacción vive en `provider-down-notice.js` (fuente de verdad de UX en
+// `assets/audio/provider-down/copy.json`); acá sólo queda el cableado.
+//
+// CLASIFICACIÓN INYECTADA, NO AMBIENTE — decisión deliberada:
+//
+// La receta del architect proponía que esta función llamara a `classifyPauseCause`
+// por default. Verificado empíricamente que eso rompe CA-25: `classifyPauseCause`
+// hace `readFileSync` del snapshot de salud, así que el copy pasaría a depender
+// del estado de la máquina donde corren los tests. Y el copy de la causa `auth`
+// ("Hay un problema de acceso que necesita tu intervención") NO satisface la
+// aserción vigente `/no.*(tengo|puedo).*IA|IA/i` de
+// `commander-inflight-fallback.test.js` — que CA-25 prohíbe modificar. Con
+// clasificación ambiente, esos tests quedan verdes o rojos según qué diga el
+// snapshot en ese momento: exactamente el tipo de test flaky que la red de
+// seguridad de la anonimización no puede permitirse.
+//
+// Con `classify` inyectado la función vuelve a ser PURA por default: sin
+// `classify` no hay lectura de disco y el copy es el genérico, determinístico.
+// Los 3 callers de `pulpo.js` inyectan el clasificador, así que CA-2 se cumple
+// en producción; y el fail-closed a genérico de CA-19 sale gratis para cualquier
+// caller que no lo haga (incluido `pulpo.js:16899`, que no tiene `chainTried`).
+function cannedAllProvidersFailedResponse({ chainTried, verifiedAllFailed = false, requestId, classify } = {}) {
+    // `chainTried` ahora SÍ se usa — pero SÓLO como entrada de clasificación
+    // server-side. NUNCA se interpola al operador (CA-2 de #4440, CA-6 de #6144):
+    // el módulo de copy sólo lee `dominantCause`, `stale`, `degraded` y
+    // `providers[].rest` del resultado, nunca la cadena ni etiquetas de provider.
+    let classification = null;
+    if (typeof classify === 'function') {
+        try {
+            classification = classify(Array.isArray(chainTried) ? chainTried : []);
+        } catch {
+            classification = null; // fail-closed → copy genérico (CA-19)
+        }
+    }
+    return providerDownNotice.buildDownNoticeText(classification, { verifiedAllFailed, requestId });
 }
 
 // -----------------------------------------------------------------------------
@@ -1870,16 +2199,13 @@ function cannedAllProvidersFailedResponse({ chainTried, verifiedAllFailed = fals
 // SEC-REQ-4: el copy NO interpola secrets ni valores de `credentials_env`; aun
 // así pasa por `redactSecretValue` (defensa en profundidad, belt-and-suspenders).
 // -----------------------------------------------------------------------------
-const _PAID_PROVIDER_LABELS = Object.freeze({
-    'anthropic': 'Anthropic',
-    'openai-codex': 'Codex',
-});
-
+// #5456 — `_PAID_PROVIDER_LABELS` se movió arriba (junto a `publicProviderLabel`)
+// para que la respuesta reactiva de cuota comparta la MISMA allowlist cerrada.
 function cannedReducedModeResponse({ downProviders } = {}) {
     // Mapear nombres internos de los pagos caídos a etiquetas de operador. Se
     // ignora cualquier nombre desconocido (nunca se filtra un nombre crudo).
     const labels = (Array.isArray(downProviders) ? downProviders : [])
-        .map((p) => _PAID_PROVIDER_LABELS[String(p || '').toLowerCase()] || null)
+        .map((p) => publicProviderLabel(p, null))
         .filter(Boolean);
     const uniq = [...new Set(labels)]; // dedup preservando orden
     const causa = uniq.length === 0
@@ -1906,23 +2232,36 @@ function cannedReducedModeResponse({ downProviders } = {}) {
 // -----------------------------------------------------------------------------
 const inflight = require('./inflight-fallback');
 const credPrecheck = require('./credentials-precheck');
+// #6144 — copy + guion de voz + cooldown del aviso de cadena caída.
+const providerDownNotice = require('./provider-down-notice');
 
 module.exports = {
     COMMANDER_SKILL,
     SHERLOCK_SKILL,
     INJECTION_PATTERNS,
-    DEDUP_WINDOW_MS,
+    // #5456 — enum estable del audit para el turno perdido por cuota semanal.
+    QUOTA_MIDTURN_ERROR_CODE,
+    // #6458 - enum cerrado de estados de ENTREGA (no de generacion).
+    DELIVERY_STATES,
 
     sanitizeUserPrompt,
     resolveCommanderProvider,
     resolveCommanderProviderExcluding,
+    resolveCommanderProviderQuiet,
     // #4565 (rebote rev-1) — gate de cuota read-only: ¿toda la cadena gateada?
     isCommanderChainGated,
     // #4870 — modo reducido read-only: pagos gateados pero free sano.
     isReducedMode,
     shouldRespondReducedMode,
     formatFallbackNotice,
-    shouldEmitFallbackNotice,
+    // #6179 — copy del aviso por EPISODIO. Reemplaza a `shouldEmitFallbackNotice`,
+    // borrado en este issue: la decisión de emitir vive en
+    // `lib/fallback-episode-state.js:recordDispatch` (política única, CA-3).
+    formatEpisodeNotice,
+    // #5456 — respuesta REACTIVA del turno perdido por cuota semanal. Pura e
+    // INDEPENDIENTE de la política de episodio: no se deduplica nunca.
+    formatMidTurnQuotaResponse,
+    publicProviderLabel,
     auditCommanderRequest,
     readCommanderStats,
     safeBuildSpawn,
@@ -1933,6 +2272,14 @@ module.exports = {
     cannedFallbackUnavailableResponse,
     cannedAllGatedResponse,
     cannedAllProvidersFailedResponse,
+    // #6144 — re-export del aviso de cadena caída: el guion hablado, la
+    // resolución del clip pregrabado, el cooldown y la orquestación del envío
+    // de voz. `pulpo.js` los consume desde acá para no requerir dos módulos.
+    buildDownNoticeText: providerDownNotice.buildDownNoticeText,
+    buildDownNoticeAudioText: providerDownNotice.buildDownNoticeAudioText,
+    resolveFallbackClip: providerDownNotice.resolveFallbackClip,
+    shouldEmitDownAudio: providerDownNotice.shouldEmitDownAudio,
+    sendDownNoticeAudio: providerDownNotice.sendDownNoticeAudio,
     cannedDataResidencyResponse,
     // #4870 — aviso advisory del modo reducido (canned determinístico D1).
     cannedReducedModeResponse,
@@ -1979,8 +2326,6 @@ module.exports = {
     // exports internos para tests
     _hashFor: hashFor,
     _auditFile: auditFile,
-    _dedupStatePath: dedupStatePath,
-    _loadDedupState: loadDedupState,
     _selectErrorTypeForFlag,
     _parseSingleJsonObject,
     _extractReplyFromObject,

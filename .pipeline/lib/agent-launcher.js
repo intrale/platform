@@ -16,10 +16,12 @@
 //     ROOT,            // ruta al repo (para resolveDeterministicScript)
 //     onWorktreeHit,   // callback opcional: invocado si el script determ. viene del worktree
 //     onLog,           // callback opcional para warnings (firma compatible con `log`)
+//     config,          // #6272: config.yaml completa (sólo se lee pipeline.model_propagation)
 //     // inyectables (tests):
 //     fsImpl, spawnImpl, execSyncImpl, resolveImpl,
 //   });
-//   // result = { child, provider, model, source, scriptPath?, handler, warning? }
+//   // result = { child, provider, model, source, scriptPath?, handler, warning?,
+//   //            modelPropagation? }
 //
 // **Invariantes preservados** (regresión cero corriendo solo Anthropic — CA-4):
 //   I1: skills determinísticos siempre con shell:false.
@@ -31,6 +33,10 @@
 //       on-exit handler, emit traceability, fast-fail/cooldown, mover archivo.
 //   I6: detector de quota agotada y parseo de tokens delega al `handler`
 //       devuelto, así que cada provider trae su propia implementación.
+//   I7 (#6272): la propagación del modelo al hijo está detrás de
+//       `pipeline.model_propagation`, APAGADA por default. Con el flag apagado
+//       ni `args` ni `env` se tocan y el objeto que recibe `child_process.spawn`
+//       es byte-idéntico al previo. El modo `dry-run` sólo loguea.
 //
 // **Rollout reversible**: si un skill determinístico no tiene script en disco
 // (caso "borré builder.js para volver al LLM" #2476), launchAgent cae al
@@ -45,6 +51,8 @@ const { spawn } = require('node:child_process');
 
 const { resolveProviderForSkill, resolvePermissionMode, readAgentModels } = require('./agent-launcher/resolve-provider');
 const permissionValidator = require('./permission-validator');
+// #6272 — política pura de propagación del modelo resuelto al proceso hijo.
+const modelPropagation = require('./model-propagation');
 const skillsMetadata = require('./skills-metadata');
 const PROVIDERS = {
     anthropic: require('./agent-launcher/providers/anthropic'),
@@ -109,6 +117,17 @@ function launchAgent({
     env,
     PIPELINE,
     ROOT,
+    // #6272 — config completa de `config.yaml` (el pulpo ya la tiene en mano).
+    // Sólo se lee `pipeline.model_propagation`; ausente ⇒ propagación 'off'
+    // (kill-switch), que es el default de rollout y preserva regresión cero.
+    config,
+    // #6274 — precondición del rollout escalonado: `(skill, provider) => boolean`.
+    // El pulpo la inyecta con `model-propagation-rollout.shouldPropagate`. Se
+    // evalúa acá, y no en el pulpo, porque acá está el provider EFECTIVO (ya
+    // resuelto el fallback de la cadena): el flag por par tiene que decidirse
+    // contra el proveedor con el que el agente realmente va a arrancar.
+    // Ausente ⇒ el rollout no influye y el camino de #6272 queda intacto.
+    modelRolloutGate,
     onWorktreeHit,
     onLog,
     // inyectables para tests
@@ -277,11 +296,101 @@ function launchAgent({
         }
     }
 
+    // #6272 — Propagación del modelo resuelto al proceso hijo.
+    //
+    // Este es el ÚNICO punto del pipeline donde conviven las tres cosas que hacen
+    // falta: el provider EFECTIVO (ya resuelto el fallback de la cadena), el
+    // modelo de ESE provider (`effective.model`) y el env final del hijo (`env`,
+    // que el pulpo ya construyó por cualquiera de sus dos caminos —
+    // `buildChildEnv` con env-isolation prendido, o `stripReservedChildSecrets`
+    // con el flag apagado, que es el default vigente). Inyectar acá, y no dentro
+    // de `buildChildEnv`, evita que CA-2 quede como código muerto: hoy ningún
+    // agente pasa por esa rama (`pipeline.env_isolation_enabled: false`).
+    //
+    // Que el provider sea el EFECTIVO también cierra el 2º Gherkin: en una caída
+    // a un proveedor de respaldo, `effective` viene del `resolveImpl` que inyecta
+    // el pulpo con `dispatchResolution.{provider,model}`, así que se propaga el
+    // modelo del respaldo y NUNCA el del primario.
+    //
+    // La decisión es pura (`lib/model-propagation.js`); acá sólo se aplica y se
+    // emite la traza. Con el flag apagado (default) `apply` es false y `trace`
+    // null: ni `args` ni `env` se tocan, y el objeto que recibe
+    // `child_process.spawn` es byte-idéntico al previo (CA-4).
+    //
+    // El try/catch NO es decorativo: este bloque corre en el camino crítico de
+    // TODO spawn. Un bug acá no puede dejar al pipeline sin lanzar agentes, así
+    // que el fail-safe es "no propagar" (= comportamiento previo al issue),
+    // nunca "no spawnear".
+    //
+    // #6274 — el encendido escalonado por par `(actor, provider)` entra por
+    // `rolloutEnabled`, como PRECONDICIÓN de esta misma decisión. No hay un
+    // segundo canal que aplique `--model` por su cuenta: el rollout dice "este
+    // par está habilitado" y `plan()` sigue siendo quien resuelve canal, saneo
+    // (whitelist SR-A.1) y catálogo. Por eso `launchResult.modelPropagation`
+    // refleja también las propagaciones originadas en el rollout, y por eso un
+    // par encendido en los DOS lugares agrega `--model` una sola vez.
+    let rolloutEnabled = false;
+    if (typeof modelRolloutGate === 'function') {
+        try {
+            rolloutEnabled = modelRolloutGate(skill, effective.provider) === true;
+        } catch (e) {
+            // Fail-closed: si la política de rollout no se puede leer, NO se
+            // propaga (= comportamiento previo). Nunca se aborta el spawn.
+            rolloutEnabled = false;
+            log('agent-launcher', `⚠️ ${skill}:#${issue} no se pudo consultar el rollout de propagación `
+                + `(${e && e.message}); sigo SIN propagar por esa vía. El spawn NO se aborta.`);
+        }
+    }
+    let propagation;
+    try {
+        propagation = modelPropagation.plan({
+            provider: effective.provider,
+            skill,
+            model: effective.model,
+            config,
+            rolloutEnabled,
+            // Thunk, no valor: con el flag apagado (default de rollout) la
+            // política corta antes y NO se paga la lectura de agent-models.json
+            // en cada spawn.
+            agentModels: () => readAgentModels(PIPELINE, _fs),
+        });
+    } catch (e) {
+        log('agent-launcher', `⚠️ ${skill}:#${issue} la política de propagación de modelo falló `
+            + `(${e && e.message}); sigo SIN propagar (comportamiento previo). El spawn NO se aborta.`);
+        propagation = { mode: 'off', modeSource: 'error', target: 'none', envVar: null,
+            model: null, rejectedReason: null, configError: null, apply: false, trace: null };
+    }
+    if (propagation.trace) {
+        // Mismo canal y mismo formato `skill:#issue` que ya usa este archivo — el
+        // operador scanea por ese patrón; no introducimos prefijo nuevo. El emoji
+        // es señal secundaria: el texto se entiende sin él (tail sin color / Telegram).
+        const icono = propagation.configError ? '🛑' : (propagation.apply ? '🎛️' : '⚠️');
+        log('agent-launcher', `${icono} ${skill}:#${issue} ${propagation.trace}`);
+    }
+
+    // Canal `env`: copia superficial del env del hijo con la var del provider
+    // activo. Se hace una COPIA (no mutación) para no contaminar el objeto que el
+    // caller pueda reusar, y sólo cuando efectivamente se aplica.
+    const spawnEnv = (propagation.apply && propagation.target === 'env' && propagation.envVar)
+        ? { ...env, [propagation.envVar]: propagation.model }
+        : env;
+
     const spawnDef = handler.buildSpawn({
-        args, cwd, env,
+        args, cwd, env: spawnEnv,
         // #3605 — Opt-in por skill+provider. Default false preserva I3.
         interactive_supported: effective.interactive_supported === true,
+        // Canal `arg`: el handler agrega `['--model', id]` como elementos
+        // separados. La clave se omite salvo que se aplique, para que el input de
+        // `buildSpawn` sea idéntico al legacy con el flag apagado.
+        ...((propagation.apply && propagation.target === 'arg') ? { model: propagation.model } : {}),
     });
+    // #6272 — el handler es la última frontera antes de argv y revalida el id por
+    // su cuenta (defensa en profundidad). Si ahí lo rechazó, dejamos traza: sin
+    // esto un desacuerdo entre las dos validaciones sería invisible.
+    if (spawnDef.modelTrace && spawnDef.modelTrace.applied === false) {
+        log('agent-launcher', `⚠️ ${skill}:#${issue} el handler ${effective.provider} descartó el flag --model `
+            + `(razón: ${spawnDef.modelTrace.reason}); el agente arranca con el default del CLI. El spawn NO se aborta.`);
+    }
     const child = _spawn(spawnDef.cmd, spawnDef.args, spawnDef.spawnOpts);
 
     // #4529 — payload grande (system foldeado + prompt) por STDIN, no por argv:
@@ -298,24 +407,41 @@ function launchAgent({
         }
     }
 
-    // #4052 CA-1 — Instrumentación de la muerte temprana de Codex. SOLO para
-    // openai-codex (no toca el path determinístico ni anthropic). Observacional:
-    // captura exit/error + firstByte + stderr acotado, clasifica vía onSpawnExit
-    // y registra un marker de spawn-failure para que el brazoHuerfanos (CA-3) no
-    // penalice el retry del issue. NUNCA rompe el lifecycle (pulpo sigue siendo
-    // dueño de su propio on-exit handler — invariante I5).
-    if (effective.provider === 'openai-codex') {
+    // #4052 CA-1 — Instrumentación de la muerte temprana al spawnear.
+    // Observacional: captura exit/error + firstByte + stderr acotado, clasifica
+    // vía onSpawnExit y registra un marker de spawn-failure para que el
+    // brazoHuerfanos (CA-3) no penalice el retry del issue. NUNCA rompe el
+    // lifecycle (pulpo sigue siendo dueño de su propio on-exit handler — I5).
+    //
+    // #6612 — APLICA A TODOS LOS PROVIDERS LLM, ya no sólo a openai-codex.
+    // El gate `=== 'openai-codex'` era el alcance del incidente que originó
+    // #4052, pero la muerte al spawnear no tiene nada de específico de Codex:
+    // cualquier eslabón de la cadena de fallback puede morir sin arrancar (CLI
+    // ausente, shim que no resuelve, token faltante que hace salir al proceso
+    // antes del primer byte). Sin instrumentación no se registra marker, el
+    // brazoHuerfanos no encuentra a quién atribuir la muerte y se la cobra al
+    // ISSUE: 3 barridos después el Pulpo sintetiza un rechazo de contenido y
+    // rebota código sano. Eso es exactamente lo que le pasó a #6612 cuando la
+    // cadena cayó en `kimi-moonshot` sin token.
+    //
+    // Seguro de generalizar porque el clasificador (`spawn-failure-classifier`)
+    // ya es fail-closed y provider-agnóstico: sólo firma ENOENT/EACCES/EPERM,
+    // exit 127, o exit no-cero sin un solo byte en ≤5s. Un agente que produjo
+    // output, o que vivió, NUNCA entra. `deterministic` queda fuera: no es un
+    // provider LLM y su muerte sí es atribuible al issue.
+    if (effective.provider && effective.provider !== 'deterministic') {
         try {
-            instrumentCodexSpawn({
+            instrumentProviderSpawn({
                 child,
                 skill,
                 issue,
+                provider: effective.provider,
                 pipelineDir: PIPELINE,
                 launcherKind: spawnDef.kind || null,
                 onLog: log,
             });
         } catch (e) {
-            log('agent-launcher', `⚠️ ${skill}:#${issue} no se pudo instrumentar el spawn de codex (best-effort): ${e && e.message}`);
+            log('agent-launcher', `⚠️ ${skill}:#${issue} no se pudo instrumentar el spawn de ${effective.provider} (best-effort): ${e && e.message}`);
         }
     }
 
@@ -327,11 +453,15 @@ function launchAgent({
         scriptPath: null,
         handler,
         interactive_supported: effective.interactive_supported === true,
+        // #6272 — decisión de propagación, para que el caller pueda auditar
+        // "modelo declarado vs efectivamente propagado" sin re-derivarla (#6273).
+        modelPropagation: propagation,
     };
 }
 
 // -----------------------------------------------------------------------------
-// instrumentCodexSpawn — #4052 CA-1. Adjunta listeners observacionales al child
+// instrumentProviderSpawn — #4052 CA-1 (generalizado a todo provider en #6612).
+// Adjunta listeners observacionales al child
 // de Codex para detectar y registrar la "muerte al spawnear".
 //
 // Diseño:
@@ -347,7 +477,10 @@ function launchAgent({
 //  - child.on('error'): evita además que un 'error' sin listener tumbe el
 //    proceso (ENOENT de tiers shell:false).
 // -----------------------------------------------------------------------------
-function instrumentCodexSpawn({ child, skill, issue, pipelineDir, launcherKind, onLog }) {
+function instrumentProviderSpawn({ child, skill, issue, provider, pipelineDir, launcherKind, onLog }) {
+    // #6612 — fail-closed: sin provider explícito no instrumentamos. Un marker
+    // con provider inventado apagaría el eslabón equivocado de la cadena.
+    if (!provider || typeof provider !== 'string') return;
     if (!child) return;
     const log = (typeof onLog === 'function') ? onLog : () => {};
     const startedAt = Date.now();
@@ -379,7 +512,7 @@ function instrumentCodexSpawn({ child, skill, issue, pipelineDir, launcherKind, 
             const verdict = dispatcher.onSpawnExit({
                 skill,
                 issue,
-                provider: 'openai-codex',
+                provider,
                 transport: 'cli',
                 rawOutput: stderrBuf,
                 exitCode: (exitCode === undefined) ? null : exitCode,
@@ -398,17 +531,17 @@ function instrumentCodexSpawn({ child, skill, issue, pipelineDir, launcherKind, 
                     const sfState = require('./agent-launcher/spawn-failure-state');
                     sfState.recordSpawnFailure({
                         pipelineDir,
-                        provider: 'openai-codex',
+                        provider,
                         skill,
                         issue,
                         signature: verdict.signature || null,
                         launcherKind,
                     });
                 } catch { /* fail-open */ }
-                log('agent-launcher', `💥 ${skill}:#${issue} codex spawn-failure detectado (kind=${launcherKind}, sig=${verdict.signature}) — marker registrado, no penaliza retry del issue.`);
+                log('agent-launcher', `💥 ${skill}:#${issue} spawn-failure de ${provider} detectado (kind=${launcherKind}, sig=${verdict.signature}) — marker registrado, no penaliza retry del issue.`);
             }
         } catch (e) {
-            try { log('agent-launcher', `⚠️ ${skill}:#${issue} onSpawnExit (codex) tiró (best-effort): ${e && e.message}`); } catch {}
+            try { log('agent-launcher', `⚠️ ${skill}:#${issue} onSpawnExit (${provider}) tiró (best-effort): ${e && e.message}`); } catch {}
         }
     };
 
