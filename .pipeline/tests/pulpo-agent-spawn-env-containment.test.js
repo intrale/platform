@@ -241,7 +241,12 @@ const UTILITARIOS = [
 
 // Expresiones `env:` esperadas en los sitios de CLASE AGENTE. Cardinalidad = 4.
 const AGENTE_ESPERADOS = [
-    'childEnv',                                                                  // lanzarAgenteClaude
+    // #6274 (rev-1) — vuelve a ser `childEnv` a proposito: el rollout de
+    // propagacion de modelos ya NO muta el env antes del spawn. El flag por par
+    // viaja como precondicion (`modelRolloutGate`) al launcher, que aplica el
+    // modelo una sola vez dentro de `modelPropagation.plan()`. Menos mutaciones
+    // del env en el camino critico, no mas.
+    'childEnv',                                                                  // lanzarAgenteClaude (copia filtrada por build-child-env)
     'buildChildEnvLib.stripReservedChildSecrets(summaryBaseEnv, process.env)',   // H-3 summarize
     'attemptEnv',                                                                // H-1 fallback no-Anthropic
     'cleanEnv',                                                                  // H-2 commander legacy

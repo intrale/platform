@@ -901,7 +901,8 @@ test('#6238 CA-6: el JSONL se crea 0o600 y la hash-chain no se rompe', () => {
     });
     const { full, entries } = readSpawnExitLines(tmp);
     assert.equal(entries.length, 2, 'doble linea aceptada y documentada (CA-6)');
-    assert.equal(entries[0].death_kind, undefined, 'la primera linea es la de onSpawnExit');
+    assert.equal(entries[0].death_kind, 'agent-death',
+        'onSpawnExit persiste la clasificacion autoritativa de la salida temprana');
     assert.equal(entries[1].death_kind, 'credential-death', 'death_kind es el campo autoritativo');
     // La cadena se mantiene: hash_prev de la 2da == hash_self de la 1ra.
     assert.equal(entries[1].hash_prev, entries[0].hash_self);

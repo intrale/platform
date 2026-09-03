@@ -522,7 +522,18 @@ function resolveConfinedEvidence(filePath, opts = {}) {
   const publishes = opts.publishes !== false;
   let resolved;
   try {
-    resolved = resolveVideoPath(filePath);
+    // El descriptor identifica un artefacto exacto. Aplicarle los fallbacks
+    // históricos de video permite que un Markdown o MP4 ausente termine
+    // sellando cualquier MP4 viejo del mismo issue, dejando `file_declarado`
+    // apuntando a un contenido que nunca se verificó.
+    if (opts.exact === true) {
+      const candidate = path.isAbsolute(filePath)
+        ? filePath
+        : path.resolve(PROJECT_ROOT, filePath);
+      resolved = fs.existsSync(candidate) ? candidate : null;
+    } else {
+      resolved = resolveVideoPath(filePath);
+    }
   } catch (e) {
     return { ok: false, reason: REJECT_ERROR, detail: e.message };
   }
@@ -956,6 +967,7 @@ async function processJob(file) {
     const confined = resolveConfinedEvidence(evidenceRef, {
       dirs: structural ? SEAL_ALLOWED_DIRS : UPLOAD_ALLOWED_DIRS,
       publishes: !structural,
+      exact: true,
       issue,
     });
     if (!confined.ok) {
