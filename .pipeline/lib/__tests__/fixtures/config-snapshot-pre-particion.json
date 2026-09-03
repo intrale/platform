@@ -1,7 +1,7 @@
 {
   "_doc": "#5174 · CA-2 — snapshot REDACTADO (path -> tipo, NUNCA el valor) de la configuracion resuelta ANTES de partir config.yaml en kernel + producto. Generado desde .pipeline/config.yaml en el commit 14a454441 (entrega B, pre-particion). Sirve para demostrar que la particion no perdio ni cambio ninguna clave. Si un cambio LEGITIMO agrega o quita una clave top-level, regenerar con: node .pipeline/lib/__tests__/fixtures/regen-config-snapshot.js",
   "_generadoDesde": "364bdcc34 + cambios sin commitear en .pipeline/config.yaml",
-  "_claves": 550,
+  "_claves": 551,
   "snapshot": [
     "admission_gate: object(3)",
     "admission_gate.bootstrap_cap: number",
@@ -39,12 +39,13 @@
     "brazo.reclaim_merge_race.max_attempts: number",
     "build: object(1)",
     "build.java_home_allowlist: array[2]",
-    "circuit_breaker: object(6)",
+    "circuit_breaker: object(7)",
     "circuit_breaker.auto_promote_on_convergence: boolean",
     "circuit_breaker.auto_resume_ok_threshold: number",
     "circuit_breaker.convergence_excludes_skills: array[1]",
     "circuit_breaker.convergence_requires_build_green: boolean",
     "circuit_breaker.infra_escalate_threshold: number",
+    "circuit_breaker.noprogreso_max: number",
     "circuit_breaker.rebotes_max: number",
     "commander_products: object(2)",
     "commander_products.default_product: string",
