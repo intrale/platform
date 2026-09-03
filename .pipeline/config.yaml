@@ -1154,6 +1154,31 @@ rewind:
 pipeline:
   env_isolation_enabled: false
 
+  # #5799 — Snapshot de credenciales POR INTENTO de lanzamiento.
+  #
+  # Con el gate ABIERTO, cada intento (Pulpo, Commander, reintento del glitch 1M
+  # y cada eslabón de la cascada de fallback) pide su propio snapshot aislado a
+  # `createCredentialSnapshot()` (#5798) para el provider EFECTIVO ya resuelto, y
+  # ese objeto —nuevo, no cacheado, no compartido— es la ÚNICA fuente del
+  # material de credenciales que entra a `buildChildEnv({ processEnv })`. Efectos:
+  #   - una credencial rotada llega al lanzamiento siguiente SIN reiniciar el
+  #     Pulpo (hoy el padre conserva lo que hidrató en el boot);
+  #   - el hijo de un fallback no puede heredar la key del primario, porque el
+  #     env base se compone purgado de TODAS las credenciales de providers;
+  #   - un snapshot inválido aborta el intento ANTES del spawn (fail-closed).
+  #
+  # Fail-closed: sólo el booleano `true` exacto lo abre.
+  #
+  # DEPENDENCIA DURA: requiere `vault.enabled: true`. Con el vault cerrado,
+  # `createCredentialSnapshot()` falla con `SNAPSHOT_VAULT_DISABLED`, y como acá
+  # el fallo aborta el lanzamiento, abrir este gate antes que el del vault deja
+  # al pipeline sin lanzar un solo agente. Encender en ese orden.
+  #
+  # Con el gate CERRADO (default) el camino es el legacy bit a bit: el env base
+  # sigue siendo `process.env` por referencia y no se emite ninguna llamada al
+  # vault.
+  credential_snapshot_enabled: false
+
   # (#3083 / CA-7 / SEC-6) Retención forense del audit trail (activity-log.jsonl).
   #
   # Define cuántos días de logs append-only conservamos antes de rotar /

@@ -312,10 +312,18 @@ test('ningun spawn de clase agente construye su env con spread crudo de process.
     );
 });
 
-test('los 4 sitios de clase agente pasan por build-child-env (buildChildEnv o stripReservedChildSecrets)', () => {
+test('los sitios de clase agente pasan por build-child-env (buildChildEnv o stripReservedChildSecrets)', () => {
+    // #5799 — la cardinalidad bajó de 4 a 3 CONSCIENTEMENTE: H-2 (commander
+    // singleton) y H-1 (ejecutor de fallback no-Anthropic) dejaron de armar el
+    // env por separado y ahora comparten una única frontera por intento,
+    // `construirEnvCommander`, que hace el filtro una sola vez. Menos sitios es
+    // menos superficie: eran dos copias del mismo armado, y una de las dos podía
+    // quedarse atrás. El canario funcional de más abajo sigue cubriendo AMBOS
+    // caminos, ahora a través de ese punto único.
     const strips = LINEAS.filter((l) => l.includes('stripReservedChildSecrets')).length;
-    assert.strictEqual(strips, 4,
-        `Se esperaban 4 llamadas a stripReservedChildSecrets en pulpo.js (1 preexistente + 3 de #5462), ` +
+    assert.strictEqual(strips, 3,
+        `Se esperaban 3 llamadas a stripReservedChildSecrets en pulpo.js ` +
+        `(lanzarAgenteClaude + resumen del commander + frontera por intento del commander), ` +
         `hay ${strips}.`);
 
     // Cada identificador de env de clase agente termina filtrado antes del spawn.
@@ -324,18 +332,34 @@ test('los 4 sitios de clase agente pasan por build-child-env (buildChildEnv o st
         'lanzarAgenteClaude ya no filtra childEnv con stripReservedChildSecrets.',
     );
     assert.ok(
-        /cleanEnv = buildChildEnvLib\.stripReservedChildSecrets\(cleanEnv, process\.env\);/.test(FUENTE),
-        'H-2: el env del commander legacy ya no se filtra en el punto de salida.',
+        /const envDelIntento = buildChildEnvLib\.stripReservedChildSecrets\(e, attemptProcessEnv\);/.test(FUENTE),
+        'H-1/H-2 (#5799): la frontera por intento del commander ya no filtra en el punto de salida.',
+    );
+    // #5799 — `buildEnvFor` es ahora un alias de la frontera por intento, y el
+    // primer intento ya no reusa un env precomputado de otro provider.
+    assert.ok(
+        /const buildEnvFor = \(prov\) => construirEnvCommander\(prov\);/.test(FUENTE),
+        'H-1: buildEnvFor dejó de delegar en la frontera por intento del commander.',
     );
     assert.ok(
-        /return buildChildEnvLib\.stripReservedChildSecrets\(e, process\.env\);/.test(FUENTE),
-        'H-1: buildEnvFor ya no filtra el env del fallback no-Anthropic.',
-    );
-    // attemptEnv es `preEnv || buildEnvFor(...)`; ambas fuentes quedan cubiertas
-    // por los dos asserts anteriores (preEnv === cleanEnv en el único caller).
-    assert.ok(
-        /attemptEnv = preEnv \|\| buildEnvFor\(/.test(FUENTE),
+        /attemptEnv = preEnvUsable \|\| await buildEnvFor\(/.test(FUENTE),
         'Cambió el origen de attemptEnv: revisar que ambas ramas sigan filtradas.',
+    );
+    assert.ok(
+        /preEnv && preEnv\.__attemptProvider === res\.provider/.test(FUENTE),
+        '#5799: se perdió la guarda que impide reusar el env de un intento con OTRO provider.',
+    );
+    // #5799 — el degradado del camino del Pulpo es CONDICIONAL: un fallo del
+    // snapshot (o cualquier fallo con el gate abierto) aborta el lanzamiento;
+    // un fallo ajeno con el gate cerrado degrada al env del padre en vez de
+    // dejar al pipeline sin lanzar agentes. Si la condición desaparece, una de
+    // las dos garantías se pierde en silencio: o el fail-closed, o la
+    // disponibilidad.
+    assert.ok(
+        /const esFalloDeSnapshot = e instanceof attemptSnapshot\.AttemptSnapshotError;/.test(FUENTE)
+        && /if \(esFalloDeSnapshot \|\| attemptSnapshot\.isSnapshotEnabled\(cfgRootParaEnv\)\) \{/.test(FUENTE),
+        '#5799: cambió la condición de aborto pre-spawn en lanzarAgenteClaude. '
+        + 'Revisar que un fallo del snapshot siga abortando y que el gate cerrado siga sin tumbar el despacho.',
     );
 });
 
@@ -343,46 +367,124 @@ test('los 4 sitios de clase agente pasan por build-child-env (buildChildEnv o st
 // 2. Canarios funcionales sobre el FUENTE REAL de cada sitio
 // -----------------------------------------------------------------------------
 
-/** Evalúa el fuente real de `buildEnvFor` (H-1) con el flag de rollout dado. */
-function evaluarBuildEnvFor({ aislamiento, provider }) {
-    const src = bloqueHastaCierre('const buildEnvFor = (prov) => {');
+/**
+ * #5799 — Evalúa el fuente real de `construirEnvCommander`, la frontera POR
+ * INTENTO que hoy alimenta tanto al commander singleton (H-2) como al ejecutor
+ * de fallback no-Anthropic (H-1). Antes eran dos bloques distintos con dos
+ * evaluadores distintos; ahora hay uno solo, y los tests de H-1 y H-2 lo llaman
+ * con el provider que corresponde a cada camino.
+ *
+ * `snapshotFn` permite ejercitar los dos regímenes del gate de rollout:
+ *   - `snapshotEnabled: false` (default, = producción hoy) → camino legacy;
+ *   - `snapshotEnabled: true` → el material del provider sale del snapshot.
+ */
+async function evaluarConstruirEnvCommander({
+    aislamiento, provider, snapshotEnabled = false, snapshotEnv = null,
+}) {
+    const src = bloqueHastaCierre('const construirEnvCommander = async (prov) => {');
     const factory = new Function(
-        'process', 'ROOT', 'buildChildEnvLib', 'commanderEnvIsolation', 'commanderMP', 'PIPELINE',
-        `${src}\nreturn buildEnvFor;`,
+        'process', 'ROOT', 'buildChildEnvLib', 'attemptSnapshot', 'commanderEnvIsolation',
+        'commanderCfgRoot', 'commanderMP', 'PIPELINE', 'log',
+        `${src}\nreturn construirEnvCommander;`,
     );
+    const attemptSnapshotReal = require('../lib/attempt-credential-snapshot');
+    const attemptSnapshotInyectado = {
+        ...attemptSnapshotReal,
+        createAttemptSnapshot: (args) => attemptSnapshotReal.createAttemptSnapshot({
+            ...args,
+            createSnapshotFn: async ({ destination, scopes }) => ({
+                destination, namespace: null, scopes: [...scopes], keys: [],
+                env: snapshotEnv || {},
+            }),
+        }),
+    };
     const fn = factory(
         { env: fakeOperatorEnv() },
         ROOT_FAKE,
         buildChildEnvLib,
+        attemptSnapshotInyectado,
         aislamiento,
+        { pipeline: { credential_snapshot_enabled: snapshotEnabled } },
         { COMMANDER_SKILL: 'commander' },
         PIPELINE_DIR,
+        () => {},
     );
     return fn(provider);
 }
 
-/** Evalúa el fuente real del armado de env del commander legacy (H-2). */
-function evaluarCleanEnv({ aislamiento, provider }) {
-    const src = bloqueFuente(
-        'let cleanEnv;',
-        'cleanEnv = buildChildEnvLib.stripReservedChildSecrets(cleanEnv, process.env);',
-    );
+/**
+ * #5799 — Evalúa el fuente real de `construirEnvDeIntentoAgente`, la frontera
+ * por intento del camino del Pulpo (`lanzarAgenteClaude`). Es el sitio de env de
+ * clase agente que antes NO tenía canario funcional sobre el fuente: el barrido
+ * sólo comprobaba, por regex, que `childEnv` pasara por el filtro.
+ */
+async function evaluarEnvDeIntentoAgente({
+    skill = 'guru', provider = 'cerebras', snapshotEnabled = false, snapshotEnv = null,
+} = {}) {
+    const src = bloqueHastaCierre('const construirEnvDeIntentoAgente = async () => {');
     const factory = new Function(
-        'process', 'ROOT', 'buildChildEnvLib', 'commanderMP', 'PIPELINE', 'resolution',
-        'loadConfig', 'log', 'reject',
-        `${src}\nreturn cleanEnv;`,
+        'process', 'buildChildEnvLib', 'attemptSnapshot', 'skill', 'dispatchResolution',
+        'cfgRootParaEnv', 'PIPELINE', 'log',
+        `${src}\nreturn construirEnvDeIntentoAgente;`,
     );
-    return factory(
+    const attemptSnapshotReal = require('../lib/attempt-credential-snapshot');
+    const attemptSnapshotInyectado = {
+        ...attemptSnapshotReal,
+        createAttemptSnapshot: (args) => attemptSnapshotReal.createAttemptSnapshot({
+            ...args,
+            createSnapshotFn: async ({ destination, scopes }) => ({
+                destination, namespace: null, scopes: [...scopes], keys: [],
+                env: snapshotEnv || {},
+            }),
+        }),
+    };
+    const fn = factory(
         { env: fakeOperatorEnv() },
-        ROOT_FAKE,
         buildChildEnvLib,
-        { COMMANDER_SKILL: 'commander' },
+        attemptSnapshotInyectado,
+        skill,
+        { provider, source: 'fallback' },
+        { pipeline: { credential_snapshot_enabled: snapshotEnabled } },
         PIPELINE_DIR,
-        { provider },
-        () => ({ pipeline: { env_isolation_enabled: aislamiento } }),
         () => {},
-        (e) => { throw e; },
     );
+    return fn();
+}
+
+test('#5799 la frontera por intento del Pulpo devuelve el env base tal cual con el gate cerrado', async () => {
+    const env = await evaluarEnvDeIntentoAgente({ snapshotEnabled: false });
+    // Camino legacy: misma referencia que `process.env`, para no degradar el
+    // lookup case-insensitive de Windows.
+    assert.strictEqual(env.PATH, 'C:\\fake\\bin');
+    assert.strictEqual(env.ANTHROPIC_API_KEY, 'fake-anthropic-key');
+    assert.strictEqual(env.CEREBRAS_API_KEY, 'fake-cerebras-key');
+});
+
+test('#5799 la frontera por intento del Pulpo purga las credenciales del padre con el gate abierto', async () => {
+    const env = await evaluarEnvDeIntentoAgente({
+        provider: 'cerebras',
+        snapshotEnabled: true,
+        snapshotEnv: { CEREBRAS_API_KEY: 'sk-cerebras-DEL-SNAPSHOT' },
+    });
+    assert.strictEqual(env.CEREBRAS_API_KEY, 'sk-cerebras-DEL-SNAPSHOT');
+    assert.strictEqual(env.ANTHROPIC_API_KEY, undefined, 'la key del primario no sobrevive');
+    assert.strictEqual(env.OPENAI_API_KEY, undefined);
+    assert.strictEqual(env.NVIDIA_NIM_API_KEY, undefined);
+    assert.strictEqual(env.ANTHROPIC_AUTH_TOKEN, undefined);
+    // Lo que no es credencial de provider sigue viniendo del env base.
+    assert.strictEqual(env.PATH, 'C:\\fake\\bin');
+    assert.strictEqual(env.PIPELINE_ISSUE, '5462');
+    assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999');
+});
+
+/** H-1: ejecutor de fallback no-Anthropic (mismo punto, provider de fallback). */
+function evaluarBuildEnvFor({ aislamiento, provider, snapshotEnabled, snapshotEnv }) {
+    return evaluarConstruirEnvCommander({ aislamiento, provider, snapshotEnabled, snapshotEnv });
+}
+
+/** H-2: commander singleton (mismo punto, provider primario). */
+function evaluarCleanEnv({ aislamiento, provider, snapshotEnabled, snapshotEnv }) {
+    return evaluarConstruirEnvCommander({ aislamiento, provider, snapshotEnabled, snapshotEnv });
 }
 
 /** Evalúa el fuente real del env del child de resumen del commander (H-3). */
@@ -421,8 +523,8 @@ for (const aislamiento of [false, true]) {
 // --- H-2: commander singleton ---------------------------------------------------
 
 for (const aislamiento of [false, true]) {
-    test(`H-2 el env del commander singleton no contiene el material de firma (aislamiento=${aislamiento})`, () => {
-        const env = evaluarCleanEnv({ aislamiento, provider: 'anthropic' });
+    test(`H-2 el env del commander singleton no contiene el material de firma (aislamiento=${aislamiento})`, async () => {
+        const env = await evaluarCleanEnv({ aislamiento, provider: 'anthropic' });
         assert.deepStrictEqual(
             detectarFugas(env), [],
             `El commander singleton recibe material reservado (aislamiento=${aislamiento}).`,
@@ -439,8 +541,8 @@ for (const aislamiento of [false, true]) {
 
 for (const aislamiento of [false, true]) {
     for (const provider of ['cerebras', 'openai-codex']) {
-        test(`H-1 el env del fallback ${provider} no contiene el material de firma (aislamiento=${aislamiento})`, () => {
-            const env = evaluarBuildEnvFor({ aislamiento, provider });
+        test(`H-1 el env del fallback ${provider} no contiene el material de firma (aislamiento=${aislamiento})`, async () => {
+            const env = await evaluarBuildEnvFor({ aislamiento, provider });
             assert.deepStrictEqual(
                 detectarFugas(env), [],
                 `El fallback ${provider} recibe material reservado (aislamiento=${aislamiento}).`,
@@ -451,15 +553,59 @@ for (const aislamiento of [false, true]) {
     }
 }
 
+// --- #5799: la contención se mantiene con el snapshot por intento ACTIVO --------
+
+for (const aislamiento of [false, true]) {
+    test(`#5799 la frontera por intento no filtra material reservado con el snapshot activo (aislamiento=${aislamiento})`, async () => {
+        // `cerebras` a propósito: es un provider del `agent-models.json` REAL que
+        // declara `credentials_env` y NO es `auth_mode: oauth`, así que consume
+        // credencial del entorno del hijo — o sea, es de los que sí requieren
+        // snapshot. Con un provider OAuth (anthropic, openai-codex, gemini) no hay
+        // key que pedir y el snapshot correctamente no se emite.
+        const env = await evaluarConstruirEnvCommander({
+            aislamiento,
+            provider: 'cerebras',
+            snapshotEnabled: true,
+            snapshotEnv: { CEREBRAS_API_KEY: 'sk-cerebras-DEL-SNAPSHOT' },
+        });
+        assert.deepStrictEqual(
+            detectarFugas(env), [],
+            `Con el snapshot activo el commander recibe material reservado (aislamiento=${aislamiento}).`,
+        );
+        assert.ok(!('CLAUDECODE' in env), 'El delete de CLAUDECODE se perdió con el snapshot activo.');
+        assert.strictEqual(env.CLAUDE_PROJECT_DIR, ROOT_FAKE);
+        assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999');
+        // El material del provider sale del SNAPSHOT, no del env del padre.
+        assert.strictEqual(env.CEREBRAS_API_KEY, 'sk-cerebras-DEL-SNAPSHOT');
+        // Y las credenciales de OTROS providers no cruzan por ninguna rama del
+        // rollout: con el snapshot activo se purgan del env base.
+        assert.strictEqual(env.ANTHROPIC_API_KEY, undefined);
+        assert.strictEqual(env.OPENAI_API_KEY, undefined);
+        assert.strictEqual(env.NVIDIA_NIM_API_KEY, undefined);
+    });
+}
+
+test('#5799 el env del intento se marca con su provider y la marca NO viaja al hijo', async () => {
+    const env = await evaluarConstruirEnvCommander({
+        aislamiento: true, provider: 'anthropic', snapshotEnabled: false,
+    });
+    // La marca existe para la guarda de reuso...
+    assert.strictEqual(env.__attemptProvider, 'anthropic');
+    // ...pero es NO ENUMERABLE: `spawn` copia las enumerables, así que no se
+    // convierte en una variable de entorno del hijo.
+    assert.ok(!Object.keys(env).includes('__attemptProvider'));
+    assert.ok(!JSON.stringify(env).includes('__attemptProvider'));
+});
+
 // --- Anti-regresión de observabilidad -------------------------------------------
 
-test('el filtro preserva CHAT_ID, PIPELINE_ISSUE y CLAUDE_PROJECT_DIR en los 3 sitios', () => {
+test('el filtro preserva CHAT_ID, PIPELINE_ISSUE y CLAUDE_PROJECT_DIR en los 3 sitios', async () => {
     const envs = {
         'H-3 summarize': evaluarSummarizeEnv(),
-        'H-2 commander legacy': evaluarCleanEnv({ aislamiento: false, provider: 'anthropic' }),
-        'H-2 commander aislado': evaluarCleanEnv({ aislamiento: true, provider: 'anthropic' }),
-        'H-1 fallback legacy': evaluarBuildEnvFor({ aislamiento: false, provider: 'cerebras' }),
-        'H-1 fallback aislado': evaluarBuildEnvFor({ aislamiento: true, provider: 'cerebras' }),
+        'H-2 commander legacy': await evaluarCleanEnv({ aislamiento: false, provider: 'anthropic' }),
+        'H-2 commander aislado': await evaluarCleanEnv({ aislamiento: true, provider: 'anthropic' }),
+        'H-1 fallback legacy': await evaluarBuildEnvFor({ aislamiento: false, provider: 'cerebras' }),
+        'H-1 fallback aislado': await evaluarBuildEnvFor({ aislamiento: true, provider: 'cerebras' }),
     };
     for (const [sitio, env] of Object.entries(envs)) {
         assert.strictEqual(env.TELEGRAM_CHAT_ID, '-1009999999', `${sitio}: perdió TELEGRAM_CHAT_ID`);

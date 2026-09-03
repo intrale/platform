@@ -376,6 +376,20 @@ function buildChildEnv(opts = {}) {
         throw new Error('[build-child-env] buildChildEnv: parámetro "skill" requerido (string).');
     }
 
+    // #5799 — cuando el caller ENTREGA un env (el snapshot por intento de
+    // `attempt-credential-snapshot.js`), ése es el ÚNICO origen del material:
+    // no hay fallback implícito a `process.env`. Un `processEnv` presente pero
+    // no-objeto sería exactamente ese fallback silencioso disfrazado de default
+    // de parámetro (`null` no dispara el default de desestructuración, y el
+    // resultado sería un env vacío que aparenta éxito). Fail-closed y ruidoso.
+    if (opts.processEnv !== undefined
+        && (opts.processEnv === null || typeof opts.processEnv !== 'object')) {
+        throw new Error(
+            '[build-child-env] buildChildEnv: "processEnv" entregado por el caller debe ser un objeto. '
+            + 'No se degrada a process.env: el env del intento es su única fuente (#5799).'
+        );
+    }
+
     const { skillCfg, providersCfg } = resolveSkillConfig(skill, {
         pipelineDir, fsImpl, skillConfigOverride,
     });

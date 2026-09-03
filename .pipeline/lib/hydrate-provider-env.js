@@ -22,6 +22,25 @@
 //
 // Esta función es idempotente: ejecutarla varias veces no cambia el resultado
 // salvo que el JSON cambie y reiniciemos el pulpo.
+//
+// #5799 — YA NO ES LA FUENTE DE CREDENCIALES DE LOS HIJOS
+// -----------------------------------------------------------------------------
+// Esa última frase ("salvo que reiniciemos el pulpo") es justamente el defecto
+// que cierra #5799: hidratar UNA vez en el boot ata la credencial que reciben
+// los hijos a la vida del proceso padre, así que una rotación no llega hasta el
+// próximo restart.
+//
+// Con `pipeline.credential_snapshot_enabled: true`, cada lanzamiento hidrata su
+// PROPIO snapshot (`lib/attempt-credential-snapshot.js` sobre la API de #5798) y
+// el env base del hijo se compone PURGADO de todas las credenciales de
+// providers. O sea: lo que esta función deja en `process.env` deja de cruzar al
+// hijo, y el material sale del snapshot del intento.
+//
+// Esta hidratación se conserva por dos razones, ninguna de ellas "credenciales
+// para los hijos":
+//   1. Con el gate cerrado (default del rollout) sigue siendo el camino legacy.
+//   2. El propio Pulpo consume `OPENAI_API_KEY` in-process (TTS, Whisper), y ese
+//      consumo es del PADRE, no de un hijo.
 // =============================================================================
 
 'use strict';
