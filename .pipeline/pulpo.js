@@ -559,6 +559,11 @@ const { phaseNeedsWorktree, phaseUsesExistingWorktree } = require('./lib/phase-w
 // Activación por flag `pipeline.env_isolation_enabled` en config.yaml (default
 // false durante el rollout — ver CA-11 del issue #3085).
 const buildChildEnvLib = require('./lib/build-child-env');
+// #5799 — frontera de credenciales POR INTENTO. Hidrata el snapshot aislado de
+// #5798 para el provider EFECTIVO de cada lanzamiento (Pulpo, Commander,
+// reintentos y cada eslabón de fallback) y compone el `processEnv` que entra a
+// `buildChildEnv`. Gate propio: `pipeline.credential_snapshot_enabled`.
+const attemptSnapshot = require('./lib/attempt-credential-snapshot');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #4444: persistencia de logs de agente por intento (rebotes) + retención.
@@ -9790,7 +9795,15 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
               }
             }
           }
-          lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv);
+          // #5799 — `lanzarAgenteClaude` es async (snapshot por intento). El
+          // `onAcquired` del slot-lock es SÍNCRONO a propósito, así que no se
+          // awaita acá: se captura la rejection para que un fallo del snapshot
+          // (o cualquier throw pre-spawn) quede logueado igual que antes y NO
+          // se convierta en `unhandledRejection`, que tumbaría al Pulpo.
+          // El archivo ya está en `trabajando/`: si no hubo spawn, lo recupera
+          // `brazoHuerfanos` — mismo desenlace que el throw síncrono previo.
+          lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config, extraEnv)
+            .catch((e) => log('lanzamiento', `Error lanzando ${skill}:#${issue}: ${e && e.message}`));
         },
       });
     } catch (e) {
@@ -9873,7 +9886,10 @@ function brazoLanzamientoImpl(config, _dcMark, _dcState) {
           log('deadlock', `rest-mode gate error en deadlock breaker (fail-open): ${e.message}`);
         }
         const trabajandoPath = moveFile(archivo.path, trabajandoDir);
-        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config);
+        // #5799 — misma razón que el call-site del slot-lock: `.catch()` para
+        // que la rejection del snapshot no escape como `unhandledRejection`.
+        lanzarAgenteClaude(skill, issue, trabajandoPath, pipelineName, fase, config)
+          .catch((e) => log('deadlock', `Error en lanzamiento forzado de #${issue}: ${e && e.message}`));
         // #4709 — el breaker forzó un lanzamiento: hubo despacho este ciclo.
         _dcState.anyLaunched = true;
         // #5400 (rev-5, B1) — el lanzamiento forzado por el breaker también es
@@ -10739,7 +10755,15 @@ function requestEmulator(action, requester, issue, reason) {
   }
 }
 
-function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config, extraEnv = {}) {
+// #5799 — `async` porque el snapshot de credenciales por intento
+// (`createCredentialSnapshot`, #5798) es asíncrono por contrato: es el único
+// camino donde el single-flight de #5797 es observable. El cuerpo NO cambia de
+// forma: los 8 `return` tempranos y el orden de los efectos siguen igual, y el
+// único `await` está inmediatamente antes de construir el env del hijo, o sea
+// ANTES del spawn (fail-closed pre-spawn). Los dos call-sites capturan la
+// rejection con `.catch()` — sin eso, un fallo del snapshot sería un
+// `unhandledRejection` y mataría al Pulpo.
+async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, config, extraEnv = {}) {
   // ==========================================================================
   // #4719 — WIRING DEL CONTRATO DE TAREA: la fase deriva al ejecutor según el
   // contrato en vez de asumir "el entregable es código".
@@ -11697,10 +11721,72 @@ ${g}
   //     reservados, que nunca se heredan por nombre ni alias de valor.
   let childEnv;
   let envIsolationEnabled = false;
+  let cfgRootParaEnv = null;
   try {
-    const cfgRoot = loadConfig() || {};
-    envIsolationEnabled = !!(cfgRoot.pipeline && cfgRoot.pipeline.env_isolation_enabled);
+    cfgRootParaEnv = loadConfig() || {};
+    envIsolationEnabled = !!(cfgRootParaEnv.pipeline && cfgRootParaEnv.pipeline.env_isolation_enabled);
   } catch { /* sin config legible: default false (preserva legacy) */ }
+
+  // #5799 — SNAPSHOT DE CREDENCIALES POR INTENTO.
+  //
+  // El provider EFECTIVO de este intento ya está resuelto (`dispatchResolution`,
+  // arriba): si el dispatcher cascadeó a un fallback, el snapshot se pide para
+  // el fallback y NUNCA para el primario — ésa es la invariante S-2 llevada al
+  // origen del material, no sólo al filtro de salida. El objeto pertenece a
+  // este intento: no se cachea, no se muta y no se comparte con otro
+  // lanzamiento (dos spawns concurrentes obtienen objetos distintos).
+  //
+  // Con el gate `pipeline.credential_snapshot_enabled` cerrado (default), esto
+  // es un no-op: `attemptProcessEnv` queda siendo `process.env` por referencia
+  // y el comportamiento es el legacy bit a bit.
+  // La frontera es una función nombrada, no un bloque suelto: así el barrido de
+  // fuente de `pulpo-agent-spawn-env-containment.test.js` puede extraerla y
+  // EVALUARLA con un `process.env` falso, igual que hace con los sitios del
+  // Commander. Un bloque inline sería el único sitio de env de clase agente sin
+  // canario funcional sobre el fuente real.
+  const construirEnvDeIntentoAgente = async () => {
+    const { skillCfg, providersCfg } = buildChildEnvLib._resolveSkillConfig(skill, {
+      pipelineDir: PIPELINE,
+    });
+    const providerEfectivo = (dispatchResolution && dispatchResolution.provider)
+      || skillCfg.provider || 'anthropic';
+    const { snapshot } = await attemptSnapshot.createAttemptSnapshot({
+      destination: attemptSnapshot.SNAPSHOT_DESTINATION.AGENT_CHILD,
+      provider: providerEfectivo,
+      providersCfg,
+      config: cfgRootParaEnv,
+      pipelineDir: PIPELINE,
+      logger: (m) => log('lanzamiento', m),
+    });
+    return attemptSnapshot.composeAttemptProcessEnv({
+      baseEnv: process.env,
+      snapshot,
+      providersCfg,
+    });
+  };
+
+  let attemptProcessEnv = process.env;
+  try {
+    attemptProcessEnv = await construirEnvDeIntentoAgente();
+  } catch (e) {
+    // Fail-closed sobre la superficie de CREDENCIALES: si el snapshot era
+    // requerido y no se pudo emitir, no arranca el child. El mensaje trae
+    // destino, provider y código estable — nunca valores.
+    const esFalloDeSnapshot = e instanceof attemptSnapshot.AttemptSnapshotError;
+    if (esFalloDeSnapshot || attemptSnapshot.isSnapshotEnabled(cfgRootParaEnv)) {
+      log('lanzamiento', `❌ credential-snapshot abortó el spawn de ${skill}:#${issue}: ${e.message}`);
+      throw e;
+    }
+    // Con el gate CERRADO, un error ajeno al snapshot (leer `agent-models.json`,
+    // resolver la config del skill) no puede dejar al pipeline sin lanzar
+    // agentes: no hay ninguna credencial en juego que proteger, así que se
+    // degrada al env del padre —exactamente el comportamiento pre-#5799— y se
+    // deja la señal para que el fallo no pase inadvertido.
+    log('lanzamiento', `⚠️ preparación del env de ${skill}:#${issue} falló con el snapshot apagado `
+      + `(${e && e.message}) — se usa el env del pulpo (comportamiento previo a #5799)`);
+    attemptProcessEnv = process.env;
+  }
+
   if (envIsolationEnabled) {
     try {
       // #3198 / S-2: cuando el dispatcher eligió un fallback, construimos el
@@ -11718,7 +11804,10 @@ ${g}
       childEnv = buildChildEnvLib.buildChildEnv({
         skill,
         pipelineDir: PIPELINE,
-        processEnv: process.env,
+        // #5799 — el env del INTENTO (snapshot del provider efectivo compuesto
+        // sobre el env base) es la única fuente; `buildChildEnv` no cae a
+        // `process.env` por detrás.
+        processEnv: attemptProcessEnv,
         pipelineExtras,
         skillConfigOverride,
       });
@@ -11732,9 +11821,13 @@ ${g}
   } else {
     // Aun durante el rollout legado, el material de firma de Telegram nunca
     // cruza al child por nombre ni por alias con el mismo valor.
+    // #5799 — el env base del camino legacy también sale del intento: con el
+    // gate cerrado es `process.env` por referencia (idéntico al comportamiento
+    // previo); con el snapshot activo, el material del provider viene del
+    // snapshot y no del padre.
     childEnv = buildChildEnvLib.stripReservedChildSecrets(
-      { ...process.env, ...pipelineExtras },
-      process.env,
+      { ...attemptProcessEnv, ...pipelineExtras },
+      attemptProcessEnv,
     );
   }
 
@@ -15262,44 +15355,82 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // el commander singleton. SR-2 #3258: el env del child filtra por el
     // PROVIDER EFECTIVO, no por anthropic hardcoded. Cuando fallbackeamos a
     // openai-codex, el child recibe `OPENAI_API_KEY` y NO `ANTHROPIC_API_KEY`.
-    let cleanEnv;
     let commanderEnvIsolation = false;
+    let commanderCfgRoot = null;
     try {
-      const cfgRoot = loadConfig() || {};
-      commanderEnvIsolation = !!(cfgRoot.pipeline && cfgRoot.pipeline.env_isolation_enabled);
+      commanderCfgRoot = loadConfig() || {};
+      commanderEnvIsolation = !!(commanderCfgRoot.pipeline && commanderCfgRoot.pipeline.env_isolation_enabled);
     } catch { /* default false */ }
-    if (commanderEnvIsolation) {
-      try {
+
+    // #5799 — FRONTERA POR INTENTO del Commander.
+    //
+    // Antes había un `cleanEnv` construido UNA vez para `resolution.provider` y
+    // reutilizado como `preEnv` del primer intento; el fallback lo reconstruía
+    // por su cuenta en `buildEnvFor`. Ahora hay una sola función y se invoca por
+    // INTENTO: primario, reintento del glitch 1M y cada eslabón de la cascada
+    // piden su propio snapshot para SU provider efectivo y componen un env
+    // nuevo. Ningún objeto de env cruza de un intento a otro, así que un
+    // fallback no puede heredar la credencial del provider que falló.
+    //
+    // Es `async` porque el snapshot lo es (#5798). Lanza si el snapshot es
+    // requerido y no se pudo emitir: el caller degrada (cascada) o rechaza
+    // (primario), pero en ninguno de los dos casos hay spawn.
+    const construirEnvCommander = async (prov) => {
+      const { providersCfg } = buildChildEnvLib._resolveSkillConfig(
+        commanderMP.COMMANDER_SKILL, { pipelineDir: PIPELINE },
+      );
+      const { snapshot } = await attemptSnapshot.createAttemptSnapshot({
+        destination: attemptSnapshot.SNAPSHOT_DESTINATION.COMMANDER,
+        provider: prov,
+        providersCfg,
+        config: commanderCfgRoot,
+        pipelineDir: PIPELINE,
+        logger: (m) => log('commander', m),
+      });
+      const attemptProcessEnv = attemptSnapshot.composeAttemptProcessEnv({
+        baseEnv: process.env,
+        snapshot,
+        providersCfg,
+      });
+
+      let e;
+      if (commanderEnvIsolation) {
         // SR-2 — provider efectivo dinámico. `skillConfigOverride.provider`
         // shape (partial, #3198): el merge interno hace lookup correcto del
         // `credentials_env` del fallback en `agent-models.json::providers`.
-        // Si el primary respondió OK, `resolution.provider === 'anthropic'`
-        // y el comportamiento es idéntico al previo.
-        cleanEnv = buildChildEnvLib.buildChildEnv({
+        // Si el primary respondió OK, `prov === 'anthropic'` y el
+        // comportamiento es idéntico al previo.
+        e = buildChildEnvLib.buildChildEnv({
           skill: commanderMP.COMMANDER_SKILL,
           pipelineDir: PIPELINE,
-          processEnv: process.env,
+          processEnv: attemptProcessEnv,
           pipelineExtras: { CLAUDE_PROJECT_DIR: ROOT },
-          skillConfigOverride: { provider: resolution.provider },
+          skillConfigOverride: { provider: prov },
         });
-      } catch (e) {
-        log('commander', `❌ env-isolation rechazó spawn del commander (provider=${resolution.provider}): ${e.message}`);
-        return reject(e);
+      } else {
+        // #5462 H-2 — sin spread inline: el objeto crudo nunca es el valor
+        // final, el filtro del punto de salida (abajo) es la última operación.
+        e = { ...attemptProcessEnv };
+        e.CLAUDE_PROJECT_DIR = ROOT;
       }
-    } else {
-      // #5462 H-2 — sin spread inline: el objeto crudo nunca es el valor final,
-      // el filtro del punto de salida (abajo) es la última operación.
-      cleanEnv = { ...process.env };
-      cleanEnv.CLAUDE_PROJECT_DIR = ROOT;
-    }
-    // CLAUDECODE se borra siempre — Claude Code lo setea internamente y heredarlo
-    // confunde al child sobre si ya está en una sesión activa.
-    delete cleanEnv.CLAUDECODE;
-    // #5462 H-2 — Frontera única en el punto de salida del env, FUERA del
-    // if/else de rollout: el material de firma de Telegram no cruza al child por
-    // ninguna rama. Idempotente (buildChildEnv ya filtra internamente) y es la
-    // ÚLTIMA operación sobre el env, después del merge de extras y del delete.
-    cleanEnv = buildChildEnvLib.stripReservedChildSecrets(cleanEnv, process.env);
+      // CLAUDECODE se borra siempre — Claude Code lo setea internamente y
+      // heredarlo confunde al child sobre si ya está en una sesión activa.
+      delete e.CLAUDECODE;
+      // #5462 H-2 — Frontera única en el punto de salida del env, FUERA del
+      // if/else de rollout: el material de firma de Telegram no cruza al child
+      // por ninguna rama. Idempotente (buildChildEnv ya filtra internamente) y
+      // es la ÚLTIMA operación sobre el env, después del merge de extras y del
+      // delete.
+      const envDelIntento = buildChildEnvLib.stripReservedChildSecrets(e, attemptProcessEnv);
+      // Marca de IDENTIDAD del intento: permite que un env precomputado se
+      // reutilice sólo dentro del mismo provider. Es NO ENUMERABLE a propósito
+      // — `spawn` copia las propiedades enumerables del env, así que una marca
+      // enumerable viajaría al hijo como una variable de entorno más.
+      Object.defineProperty(envDelIntento, '__attemptProvider', {
+        value: prov, enumerable: false, writable: false, configurable: false,
+      });
+      return envDelIntento;
+    };
 
     // #3258 — SR-1: data-residency-filter gate antes del spawn. Sólo aplica
     // a providers no-Anthropic; para Anthropic es passthrough explícito.
@@ -15365,30 +15496,12 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // ---------------------------------------------------------------------
       const triedNonAnthropic = new Set();
 
-      const buildEnvFor = (prov) => {
-        let e;
-        if (commanderEnvIsolation) {
-          e = buildChildEnvLib.buildChildEnv({
-            skill: commanderMP.COMMANDER_SKILL,
-            pipelineDir: PIPELINE,
-            processEnv: process.env,
-            pipelineExtras: { CLAUDE_PROJECT_DIR: ROOT },
-            skillConfigOverride: { provider: prov },
-          });
-        } else {
-          // #5462 H-1 — sin spread inline: el objeto crudo nunca es el valor
-          // devuelto; el filtro del `return` es la última operación.
-          e = { ...process.env };
-          e.CLAUDE_PROJECT_DIR = ROOT;
-        }
-        delete e.CLAUDECODE;
-        // #5462 H-1 — Ejecutor de fallback no-Anthropic: es el camino literal de
-        // "providers, fallbacks" del objetivo del issue. Filtro en el punto de
-        // salida (fuera del if/else de rollout) y DESPUÉS del delete, para que el
-        // borrado de CLAUDECODE no se pierda sobre el objeto nuevo que devuelve
-        // el helper.
-        return buildChildEnvLib.stripReservedChildSecrets(e, process.env);
-      };
+      // #5799 — `buildEnvFor` deja de ser una construcción PARALELA del env y
+      // pasa a ser el mismo punto que usa el primario (`construirEnvCommander`).
+      // Dos copias del armado del env eran dos lugares donde olvidarse de pedir
+      // el snapshot del provider correcto. Es `async` por la misma razón que la
+      // frontera: el snapshot lo es.
+      const buildEnvFor = (prov) => construirEnvCommander(prov);
 
       const buildFallbackArgs = (provider) => {
         if (fallbackParts && typeof fallbackParts.systemPrompt === 'string'
@@ -15463,7 +15576,15 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         }
         if (plan.action === 'retry') {
           log('commander', `↪️ fallback "${failedProvider}" ${reason} — reintento con "${plan.next.provider}"`);
-          return runNonAnthropic(plan.next, null);
+          // #5799 — `runNonAnthropic` es async (snapshot por intento) y su
+          // valor de retorno ya se ignoraba (el turno se cierra por closure).
+          // El `.catch()` evita que un fallo del snapshot del siguiente eslabón
+          // escape como `unhandledRejection`: degrada por el mismo camino que
+          // cualquier otro fallo pre-spawn de ese eslabón.
+          return runNonAnthropic(plan.next, null).catch((e) => {
+            log('commander', `❌ intento "${plan.next.provider}" falló antes del spawn: ${e && e.message}`);
+            return advanceOrGiveUp(plan.next.provider, 'env_isolation_error');
+          });
         }
         // Cadena agotada. `chainEvaluated` (skipReasons[] de #3823) lleva TODOS
         // los eslabones evaluados + su motivo; se redacta aguas abajo (audit y
@@ -15503,7 +15624,7 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         }));
       };
 
-      const runNonAnthropic = (res, preEnv) => {
+      const runNonAnthropic = async (res, preEnv) => {
         triedNonAnthropic.add(res.provider);
 
         // #4318 (CA-3 / SR-D) — Reflejar el provider EFECTIVO del reemplazo en el
@@ -15520,9 +15641,15 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           _trace.resolution.fallbackUsed = String(res.provider);
         }
 
+        // #5799 — el env es del INTENTO, no del turno. `preEnv` sólo se acepta
+        // si fue construido para ESTE MISMO provider: era exactamente la vía por
+        // la que un env precomputado (y con él, la credencial del provider
+        // anterior) se reutilizaba en el eslabón siguiente de la cascada. En
+        // cualquier otro caso se construye uno nuevo, con su propio snapshot.
         let attemptEnv;
         try {
-          attemptEnv = preEnv || buildEnvFor(res.provider);
+          const preEnvUsable = (preEnv && preEnv.__attemptProvider === res.provider) ? preEnv : null;
+          attemptEnv = preEnvUsable || await buildEnvFor(res.provider);
         } catch (e) {
           log('commander', `❌ env-isolation rechazó spawn (provider=${res.provider}): ${e.message}`);
           return advanceOrGiveUp(res.provider, 'env_isolation_error');
@@ -15758,7 +15885,13 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // degradado (advanceOrGiveUp → resolve canned, nunca reject).
       if (resolution.provider !== 'anthropic') {
         try {
-          return runNonAnthropic(resolution, cleanEnv);
+          // #5799 — sin `preEnv`: el primer intento hidrata su propio snapshot
+          // adentro, igual que cualquier otro eslabón. Ya no hay un env del
+          // turno construido antes de saber qué provider va a correr.
+          return runNonAnthropic(resolution, null).catch((e) => {
+            log('commander', `❌ runNonAnthropic falló async (provider=${resolution.provider}): ${e && e.message} — degradando (spawn_throw).`);
+            return advanceOrGiveUp(resolution.provider, 'spawn_throw');
+          });
         } catch (e) {
           log('commander', `❌ runNonAnthropic lanzó fuera del guard (provider=${resolution.provider}): ${e && e.message} — degradando (spawn_throw).`);
           return advanceOrGiveUp(resolution.provider, 'spawn_throw');
@@ -15776,10 +15909,16 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // externo consulta la política pura `glitchRetry` y decide retry/give_up.
     // El pulpo solo orquesta (CA-7).
     // =========================================================================
-    function attemptAnthropicSpawn(attemptOpts) {
+    // #5799 — `async` porque cada intento hidrata SU snapshot antes de spawnear.
+    // El reintento del glitch 1M es un intento nuevo: vuelve a pedir el
+    // snapshot, así que una credencial rotada entre el primer intento y el
+    // reintento entra sin reiniciar el Pulpo. El `await` está antes de
+    // `spawn()`; el cuerpo del Promise no cambia de forma.
+    async function attemptAnthropicSpawn(attemptOpts) {
       const attempt = (attemptOpts && Number.isInteger(attemptOpts.attempt) && attemptOpts.attempt >= 1)
         ? attemptOpts.attempt : 1;
       const forceStandardContext = !!(attemptOpts && attemptOpts.forceStandardContext);
+      const cleanEnv = await construirEnvCommander('anthropic');
 
       return new Promise((resolveAttempt) => {
     // CA-2 / SR-A — en el intento estándar inyectamos `--model` SIN el sufijo
@@ -16003,11 +16142,16 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
           // Reclamamos el turno: el secundario lo resuelve (no el primario muerto).
           inflightFallbackClaimed = true;
           log('commander', `↪️ inflight-exec: spawn secundario "${decision.secondaryProvider}" (reuso maquinaria pre-spawn).`);
-          runNonAnthropicShared({
+          // #5799 — el secundario in-flight hidrata SU propio snapshot: es un
+          // intento nuevo, con su provider efectivo. `.catch()` porque
+          // `runNonAnthropic` es async y su rejection no tiene otro dueño acá.
+          Promise.resolve(runNonAnthropicShared({
             provider: decision.secondaryProvider,
             handler: decision.secondaryHandler,
             model: decision.secondaryModel,
-          }, null);
+          }, null)).catch((e) => {
+            log('commander', `❌ inflight-exec: el secundario "${decision.secondaryProvider}" falló antes del spawn: ${e && e.message}`);
+          });
         },
       });
 
