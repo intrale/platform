@@ -753,6 +753,10 @@ const SCHEMA = {
                 auto_promote_on_convergence: { type: 'boolean' },
                 convergence_requires_build_green: { type: 'boolean' },
                 convergence_excludes_skills: { type: 'array', items: { type: 'string' } },
+                // #6746 — breaker de no-progreso. RIESGO-1: este objeto es
+                // `additionalProperties: false` y `pulpo.js` valida al arrancar,
+                // así que la clave DEBE viajar en el mismo commit que config.yaml.
+                noprogreso_max: { type: 'integer', minimum: 2, maximum: 10 },
             },
         },
 
