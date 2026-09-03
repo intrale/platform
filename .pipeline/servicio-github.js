@@ -89,6 +89,23 @@ function listWorkFiles(dir) {
   } catch { return []; }
 }
 
+// #6274 — Lectura de un job de la cola tolerante al BOM.
+//
+// Incidente (2026-08-28 → 2026-08-31): cuatro jobs `qa-<issue>-passed.json`
+// quedaron atascados en `pendiente/` durante días. Los cuatro habían sido
+// escritos con BOM UTF-8 (`EF BB BF`), y `JSON.parse` rechaza el BOM como
+// `Unexpected token`. Consecuencia: el label `qa:passed` nunca se aplicó y el
+// `qa:failed` viejo quedó vigente, bloqueando el merge de esos issues.
+//
+// El BOM es basura de encoding, no un dato: quien escribe el job (PowerShell
+// `Out-File`/`Set-Content` en Windows lo agrega por default) no está emitiendo
+// un payload distinto. Por eso se descarta en la lectura en vez de rechazar el
+// job — `JSON.parse` es el único que se ofende.
+function readJobFile(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return JSON.parse(raw.replace(/^﻿/, ''));
+}
+
 // =============================================================================
 // #3303 — `esc()` quedó deprecated y se removió. Era el helper de escapeo
 // para interpolación shell de `execSync(`...${esc(body)}...`)`. Convertía
@@ -752,7 +769,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
 
     let data;
     try {
-      const rawData = JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+      const rawData = readJobFile(trabajandoPath);
       // #2334: sanitizar body/title/label ANTES de invocar al ghClient.
       // El body viaja a la API pública de GitHub, visible por cualquiera.
       // (CA-4 #3025: la sanitización se queda en el call site del worker —
@@ -923,7 +940,7 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
     } catch (e) {
       log(`Error procesando ${file.name}: ${e.message}`);
       try {
-        const itemData = data || JSON.parse(fs.readFileSync(trabajandoPath, 'utf8'));
+        const itemData = data || readJobFile(trabajandoPath);
         itemData.retries = (itemData.retries || 0) + 1;
         itemData.lastError = e.message;
 
@@ -937,9 +954,33 @@ function processQueue({ ghClient = defaultGhClient } = {}) {
           try { fs.unlinkSync(trabajandoPath); } catch {}
           log(`${file.name} → pendiente/ (reintento ${itemData.retries}/${MAX_RETRIES})`);
         }
-      } catch {
-        // Fallback: mover de vuelta como estaba
-        try { fs.renameSync(trabajandoPath, file.path); } catch {}
+      } catch (inner) {
+        // #6274 — Poison message: el payload no se pudo parsear NI para
+        // contarle un reintento. El fallback histórico lo devolvía a
+        // `pendiente/` tal cual, pero sin poder incrementar `retries` el job
+        // volvía a fallar idéntico 10s después: `MAX_RETRIES` era inalcanzable
+        // por construcción y el archivo rebotaba trabajando/→pendiente/ para
+        // siempre, ensuciando el log y sin llegar nunca a `fallido/`.
+        //
+        // Un job ilegible no se vuelve legible por reintentarlo. Se corta el
+        // bucle mandándolo a `fallido/` con el contenido crudo preservado,
+        // que es donde un humano puede verlo.
+        try {
+          let rawContent = null;
+          try { rawContent = fs.readFileSync(trabajandoPath, 'utf8'); } catch {}
+          fs.writeFileSync(path.join(FALLIDO, file.name), JSON.stringify({
+            unparseable: true,
+            error: inner.message,
+            originalError: e.message,
+            failed_at: new Date().toISOString(),
+            raw: rawContent,
+          }, null, 2));
+          try { fs.unlinkSync(trabajandoPath); } catch {}
+          log(`${file.name} → fallido/ (payload ilegible: ${inner.message})`);
+        } catch {
+          // Último recurso: dejarlo como estaba para no perder el job.
+          try { fs.renameSync(trabajandoPath, file.path); } catch {}
+        }
       }
     }
   }

@@ -121,6 +121,13 @@ function launchAgent({
     // Sólo se lee `pipeline.model_propagation`; ausente ⇒ propagación 'off'
     // (kill-switch), que es el default de rollout y preserva regresión cero.
     config,
+    // #6274 — precondición del rollout escalonado: `(skill, provider) => boolean`.
+    // El pulpo la inyecta con `model-propagation-rollout.shouldPropagate`. Se
+    // evalúa acá, y no en el pulpo, porque acá está el provider EFECTIVO (ya
+    // resuelto el fallback de la cadena): el flag por par tiene que decidirse
+    // contra el proveedor con el que el agente realmente va a arrancar.
+    // Ausente ⇒ el rollout no influye y el camino de #6272 queda intacto.
+    modelRolloutGate,
     onWorktreeHit,
     onLog,
     // inyectables para tests
@@ -314,6 +321,26 @@ function launchAgent({
     // TODO spawn. Un bug acá no puede dejar al pipeline sin lanzar agentes, así
     // que el fail-safe es "no propagar" (= comportamiento previo al issue),
     // nunca "no spawnear".
+    //
+    // #6274 — el encendido escalonado por par `(actor, provider)` entra por
+    // `rolloutEnabled`, como PRECONDICIÓN de esta misma decisión. No hay un
+    // segundo canal que aplique `--model` por su cuenta: el rollout dice "este
+    // par está habilitado" y `plan()` sigue siendo quien resuelve canal, saneo
+    // (whitelist SR-A.1) y catálogo. Por eso `launchResult.modelPropagation`
+    // refleja también las propagaciones originadas en el rollout, y por eso un
+    // par encendido en los DOS lugares agrega `--model` una sola vez.
+    let rolloutEnabled = false;
+    if (typeof modelRolloutGate === 'function') {
+        try {
+            rolloutEnabled = modelRolloutGate(skill, effective.provider) === true;
+        } catch (e) {
+            // Fail-closed: si la política de rollout no se puede leer, NO se
+            // propaga (= comportamiento previo). Nunca se aborta el spawn.
+            rolloutEnabled = false;
+            log('agent-launcher', `⚠️ ${skill}:#${issue} no se pudo consultar el rollout de propagación `
+                + `(${e && e.message}); sigo SIN propagar por esa vía. El spawn NO se aborta.`);
+        }
+    }
     let propagation;
     try {
         propagation = modelPropagation.plan({
@@ -321,6 +348,7 @@ function launchAgent({
             skill,
             model: effective.model,
             config,
+            rolloutEnabled,
             // Thunk, no valor: con el flag apagado (default de rollout) la
             // política corta antes y NO se paga la lectura de agent-models.json
             // en cada spawn.

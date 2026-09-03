@@ -142,7 +142,7 @@ function loadConfigFailClosed(pipelineDir) {
 
 // Firmantes autorizados (CA-4): allowlist única `cua.operator_chat_ids` +
 // credential dedicada del operador (env). NO se crea lista paralela.
-function resolveAuthorizedSigners(config) {
+function resolveAuthorizedSigners(config, env = process.env) {
   const ids = new Set();
   const cua = (config && config.cua) || {};
   if (Array.isArray(cua.operator_chat_ids)) {
@@ -151,7 +151,7 @@ function resolveAuthorizedSigners(config) {
       if (s) ids.add(s);
     }
   }
-  const envOperator = String(process.env.TELEGRAM_LEO_OPERATOR_CHAT_ID || '').trim();
+  const envOperator = String(env.TELEGRAM_LEO_OPERATOR_CHAT_ID || '').trim();
   if (envOperator) ids.add(envOperator);
   return Array.from(ids);
 }

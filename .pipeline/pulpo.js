@@ -220,6 +220,7 @@ const splitOrphanReconciler = require('./lib/split-orphan-reconciler');
 const splitGuard = require('./lib/split-guard');
 
 const quotaExhausted = require('./lib/quota-exhausted'); // #2974
+const modelPropagationRollout = require('./lib/model-propagation-rollout'); // #6274
 // #3508 — feature flag + ciclo de vida del workaround Anthropic CLI 1M (#3506).
 // Expone isWorkaroundEnabled, recordHit, checkTtlAlert, formatStartupLogLine,
 // formatHitExtension, formatTtlAlertMessage, sanitizeHitLog.
@@ -4360,6 +4361,11 @@ function gate2RetieneAntesDeEntrega({ issue, pipelineName, fase, siguienteFase, 
 // =============================================================================
 
 function brazoBarrido(config) {
+  // #6274 — marca durable de "el productor de rebotes está vivo". Sin ella una
+  // ventana histórica devolvería reboundRate=0 (falso cero) en vez de `null`, y
+  // el baseline de rebotes quedaría congelado en 0 e inmutable. Idempotente y
+  // memoizada en el módulo: cuesta una lectura por proceso.
+  try { modelPropagationRollout.markReboundProducerLive(PIPELINE); } catch { /* best-effort */ }
   for (const [pipelineName, pipelineConfig] of Object.entries(config.pipelines)) {
     const fases = pipelineConfig.fases;
     const faseRechazo = pipelineConfig.fase_rechazo;
@@ -6142,6 +6148,26 @@ function brazoBarrido(config) {
           for (const skill of skillsDestino) {
             const destinoFile = path.join(destinoPendiente, `${issue}.${skill}`);
             writeYaml(destinoFile, yamlOut);
+          }
+          // #6274 — productor canónico de rebotes. El rebote se atribuye al
+          // ACTOR REBOTADO (`skillsDestino`: el que vuelve a correr para
+          // corregir), NO al evaluador que emitió el veredicto `rechazado`.
+          // `rechazados` son los archivos del evaluador; usar su skill dejaba la
+          // métrica inerte para los devs, que son el objetivo del rollout, y
+          // podía rollbackear al par equivocado.
+          //
+          // Los rebotes de infra (timeout/crash/watchdog) NO cuentan: no son un
+          // defecto del trabajo del actor y contaminarían la señal del modelo.
+          if (!esReboteDeInfra) {
+            const evaluadores = rechazados.map(x => skillFromFile(x.file.name)).filter(Boolean);
+            for (const skillRebotado of skillsDestino) {
+              try {
+                modelPropagationRollout.recordRebound(PIPELINE, {
+                  issue, skill: skillRebotado, ts: new Date().toISOString(),
+                  rechazado_en_fase: fase, evaluadores,
+                });
+              } catch (e) { log('barrido', `rollout: no se pudo registrar rebote #${issue}: ${e.message}`); }
+            }
           }
 
           if (esInfraFinal) {
@@ -11761,6 +11787,24 @@ ${g}
       })
     : undefined;
 
+  // #6274 (rev-1) — el flag por (actor, provider) NO se aplica acá.
+  //
+  // Antes este bloque llamaba `applyToSpawn` y empujaba `--model` a `args` por
+  // su cuenta: era un segundo canal de propagación que salteaba la whitelist de
+  // `sanitizeModelId`, no cubría a los providers que reciben el modelo por argv
+  // fuera de `anthropic` (kimi-moonshot quedaba en un no-op mudo), duplicaba
+  // `PROVIDER_MODEL_ENV`, podía duplicar `--model` si #6272 también estaba
+  // encendido para el par, y dejaba `launchResult.modelPropagation` reportando
+  // `apply:false` para propagaciones que sí ocurrieron (review de #6274).
+  //
+  // Ahora el rollout viaja como PRECONDICIÓN al launcher, que la resuelve
+  // contra el provider EFECTIVO (post-fallback) y aplica una sola vez dentro de
+  // `modelPropagation.plan()`. Con el par apagado el gate devuelve false y el
+  // comando queda byte-idéntico. El gate es best-effort por diseño: si el
+  // estado del rollout es ilegible, `shouldPropagate` devuelve false.
+  const modelRolloutGate = (gateSkill, gateProvider) => (
+    !!gateProvider && modelPropagationRollout.shouldPropagate(PIPELINE, gateSkill, gateProvider)
+  );
   const launchResult = launchAgent({
     skill, issue, trabajandoPath, fase, pipeline,
     args,
@@ -11768,6 +11812,7 @@ ${g}
     env: childEnv,
     PIPELINE,
     ROOT,
+    modelRolloutGate,
     onWorktreeHit: (wt) => log('lanzamiento', `⚡ ${skill}:#${issue} usa script del worktree (${wt})`),
     onLog: log,
     resolveImpl: launchResolveImpl,
@@ -12141,6 +12186,7 @@ ${g}
             exitCode: code,
             timedOut: false,
             durationMs: Math.round(elapsedSec * 1000),
+            source: (dispatchResolution && dispatchResolution.source) || 'primary',
             pipelineDir: PIPELINE,
             onLog: log,
           });
@@ -12219,6 +12265,22 @@ ${g}
               });
             } catch {}
           }
+          // El parser legacy no escribía telemetría de corridas. Reusamos el
+          // writer canónico sin repetir sus efectos de cuota.
+          dispatcher.onSpawnExit({
+            skill, issue, provider: skillProvider, transport: 'cli', rawOutput: raw,
+            exitCode: code, timedOut: false, durationMs: Math.round(elapsedSec * 1000),
+            source: (dispatchResolution && dispatchResolution.source) || 'primary',
+            pipelineDir: PIPELINE, onLog: log, telemetryOnly: true,
+          });
+        }
+        // #6274 — evaluación automática en cada exit, después de persistir la
+        // corrida tanto en el camino generalized como en el legacy.
+        try {
+          const rolloutCfg = (loadConfig() || {}).model_propagation_rollout || {};
+          modelPropagationRollout.evaluateEnabled(PIPELINE, rolloutCfg, { notify: notifyTelegramFn });
+        } catch (rolloutErr) {
+          log('lanzamiento', `rollout: evaluación automática falló para ${skill}:#${issue}: ${rolloutErr.message}`);
         }
       } catch (qErr) {
         log('lanzamiento', `quota_detector (agent log) falló (best-effort) para ${skill}:#${issue}: ${qErr.message}`);

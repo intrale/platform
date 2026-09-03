@@ -71,6 +71,16 @@ function structuralJob(issue, file, extra) {
     }, extra || {});
 }
 
+function videoJob(issue, file, extra) {
+    return Object.assign({
+        action: 'upload',
+        file,
+        issue,
+        mode: 'video',
+        source: 'qa-video',
+    }, extra || {});
+}
+
 // Encola un job y lo procesa. Devuelve dónde terminó y con qué contenido.
 async function runJob(name, payload) {
     for (const d of [PENDIENTE, TRABAJANDO, LISTO, FALLIDO]) fs.mkdirSync(d, { recursive: true });
@@ -206,6 +216,76 @@ test('CA-2 · el sha256 del descriptor es el de los bytes locales del artefacto'
 
     assert.equal(listo.sha256, sha256Of(contenido),
         'el hash debe derivarse de los bytes en disco (SEC-10: nunca releerlo desde Drive)');
+});
+
+test('CA-2 · structural sella el archivo declarado exacto y no cae a un MP4 viejo', async () => {
+    const issue = 6274;
+    const markdown = Buffer.from('evidencia estructural de esta pasada\n', 'utf8');
+    const videoViejo = Buffer.from('video de una pasada anterior', 'utf8');
+    writeEvidence(`qa/evidence/${issue}/qa-${issue}-head-structural.md`, markdown);
+    writeEvidence(`qa/evidence/${issue}/qa-${issue}.mp4`, videoViejo);
+
+    const r = await runJob(
+        `qa-${issue}-head-structural.json`,
+        structuralJob(issue, `qa/evidence/${issue}/qa-${issue}-head-structural.md`),
+    );
+
+    assert.ok(r.listo, 'el descriptor estructural válido debe terminar en listo');
+    assert.equal(r.listo.file, `qa/evidence/${issue}/qa-${issue}-head-structural.md`);
+    assert.equal(r.listo.file_declarado, undefined);
+    assert.equal(r.listo.sha256, sha256Of(markdown));
+    assert.equal(r.listo.bytes, markdown.length);
+    assert.notEqual(r.listo.sha256, sha256Of(videoViejo));
+});
+
+test('CA-2 · structural falla cerrado si falta el archivo declarado aunque exista un MP4 viejo', async () => {
+    const issue = 6275;
+    writeEvidence(`qa/evidence/${issue}/qa-${issue}.mp4`, 'video viejo');
+
+    const r = await runJob(
+        `qa-${issue}-head-structural.json`,
+        structuralJob(issue, `qa/evidence/${issue}/qa-${issue}-head-structural.md`),
+    );
+
+    assert.ok(r.fallido, 'no debe sellar un fallback de otra pasada');
+    assert.equal(r.listo, null);
+    assert.equal(r.fallido.sha256, undefined);
+    assert.equal(r.fallido.bytes, undefined);
+});
+
+test('CA-2 · video resuelve el MP4 declarado exacto y no cae a un MP4 viejo', () => {
+    const issue = 6276;
+    const videoActual = Buffer.from('video correspondiente al HEAD actual', 'utf8');
+    const videoViejo = Buffer.from('video de una pasada anterior', 'utf8');
+    writeEvidence(`qa/evidence/${issue}/qa-${issue}-head.mp4`, videoActual);
+    writeEvidence(`qa/evidence/${issue}/qa-${issue}.mp4`, videoViejo);
+
+    const declarado = `qa/evidence/${issue}/qa-${issue}-head.mp4`;
+    const r = drive.resolveConfinedEvidence(declarado, {
+        dirs: drive.UPLOAD_ALLOWED_DIRS,
+        exact: true,
+        issue,
+    });
+
+    assert.equal(r.ok, true);
+    assert.equal(r.canonical, declarado);
+    assert.equal(sha256Of(fs.readFileSync(r.absolute)), sha256Of(videoActual));
+    assert.notEqual(sha256Of(fs.readFileSync(r.absolute)), sha256Of(videoViejo));
+});
+
+test('CA-2 · video falla cerrado si falta el MP4 declarado aunque exista uno viejo', async () => {
+    const issue = 6277;
+    writeEvidence(`qa/evidence/${issue}/qa-${issue}.mp4`, 'video viejo');
+
+    const r = await runJob(
+        `qa-${issue}-head-video.json`,
+        videoJob(issue, `qa/evidence/${issue}/qa-${issue}-head.mp4`),
+    );
+
+    assert.ok(r.fallido, 'no debe sellar un fallback de otra pasada');
+    assert.equal(r.listo, null);
+    assert.equal(r.fallido.sha256, undefined);
+    assert.equal(r.fallido.bytes, undefined);
 });
 
 // =============================================================================
