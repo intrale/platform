@@ -558,12 +558,23 @@ test('T11b · issue numérico con espacios alrededor se normaliza', () => {
 test('T12 · el Pulpo sólo appendea en el carril infra y no toca los umbrales existentes', () => {
     const src = fs.readFileSync(path.join(PIPELINE_REAL, 'pulpo.js'), 'utf8');
 
-    // Los dos appends del ciclo viven bajo `if (esReboteDeInfra)` / dentro del
+    // Los dos appends del ciclo viven bajo el gate del carril infra / dentro del
     // bloque de escalado: un issue sin rebote infra no escribe una sola línea.
     const llamadas = src.match(/appendInfraNoprogressRecord\(/g) || [];
     assert.strictEqual(llamadas.length, 3, 'definición + append del ciclo + append del reset');
-    assert.ok(/if \(esReboteDeInfra\) \{[\s\S]{0,1400}?appendInfraNoprogressRecord\(\{[\s\S]{0,200}?reboteInfraN/.test(src),
-        'el append del ciclo está gateado por esReboteDeInfra');
+
+    // #6745 — el append del ciclo se gatea por `esInfraFinal`, NO por
+    // `esReboteDeInfra`: un rebote degradado infra→código sale de esta fase
+    // hacia `dev`, así que no es "reintento sin progreso en la misma fase" y no
+    // debe acumular. Además `nuevoReboteInfraNumero` sólo incrementa cuando
+    // `esInfraFinal`, con lo que registrar el caso degradado guardaría un
+    // contador que no avanzó. Fail-open hacia NO escalar (RIESGO-3).
+    assert.ok(/const esInfraFinal = esReboteDeInfra && !degradadoACodigo;/.test(src),
+        'esInfraFinal sigue siendo el carril infra que NO se degradó a código');
+    assert.ok(/if \(esInfraFinal\) \{[\s\S]{0,1400}?appendInfraNoprogressRecord\(\{[\s\S]{0,200}?reboteInfraN/.test(src),
+        'el append del ciclo está gateado por esInfraFinal');
+    assert.ok(!/if \(esReboteDeInfra\) \{[\s\S]{0,1400}?appendInfraNoprogressRecord\(\{[\s\S]{0,200}?reboteInfraN/.test(src),
+        'el append del ciclo NO puede quedar gateado por esReboteDeInfra: registraría el rebote degradado');
     assert.ok(/if \(esReboteDeInfra\) \{[\s\S]{0,1600}?infraNoprogress\.shouldEscalate\(/.test(src),
         'el veredicto sólo se calcula (y se paga computeDiffHash) en el carril infra');
 
@@ -575,9 +586,13 @@ test('T12 · el Pulpo sólo appendea en el carril infra y no toca los umbrales e
     assert.ok(/appendFileSync\([\s\S]{0,160}buildRecord/.test(src), 'se usa appendFileSync');
     assert.ok(!/writeFileSync\([^)]*infra-noprogress/.test(src), 'nunca writeFileSync sobre el audit');
 
-    // CA-5: el hash se persiste en AMBOS carriles (el gate viejo ya no existe).
+    // CA-5: el hash se persiste en AMBOS carriles — ningún gate lo condiciona.
+    // Ni el `if (!esReboteDeInfra)` original ni el `if (!esInfraFinal)` que trajo
+    // #6745, del que CA-5 es superconjunto.
     assert.ok(!/if \(!esReboteDeInfra\) \{\s*\n\s*try \{\s*\n\s*const dh = convergence\.computeDiffHash/.test(src),
         'el gate `if (!esReboteDeInfra)` sobre diff_hash_previo debe estar abierto');
+    assert.ok(!/if \(!esInfraFinal\) \{\s*\n\s*try \{\s*\n\s*const dh = convergence\.computeDiffHash/.test(src),
+        'el gate `if (!esInfraFinal)` sobre diff_hash_previo debe estar abierto (CA-5)');
     assert.ok(/if \(dh && dh\.hash\) yamlOut\.diff_hash_previo = dh\.hash;/.test(src));
 });
 
