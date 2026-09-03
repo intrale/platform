@@ -490,3 +490,12 @@ security-report-*.md
 # quedaron commiteados por error en #6145; nunca son entregables.
 /[0-9]*-junit*.xml
 /[0-9]*-testfiles.tmp
+
+# Scratch de agentes del pipeline: destinos de prueba, sondas y fixtures que los
+# skills escriben durante una corrida. Nunca son entregables.
+# Se agrego tras el rechazo de QA en #5220: una corrida de verificacion habia
+# dejado versionada una copia entera de `.claude/` (232 archivos con estado
+# runtime del operador y 4 JSON con marcadores de conflicto sin resolver) bajo
+# `.pipeline/_tmp/po5220/dst-ca2b/`, justo la clase de replica que este issue
+# existe para erradicar. Un `git add -A` alcanzaba para colarla al PR.
+.pipeline/_tmp/
