@@ -85,16 +85,55 @@ HELP
     # Pre-registrar confianza del worktree en Claude Code
     _pre_trust_worktree "$current_dir"
 
-    # Copiar .claude/ completo (NO junction — seguro contra rm -rf)
+    # Actualizar .claude/ con allowlist deny-by-default (NO junction)
+    #
+    # #5220 CA-2.c — Espeja el criterio de `.pipeline/lib/claude-copy-allowlist.js`
+    # (fuente única de verdad de las listas). A diferencia del `cpSync` de
+    # `cli-branch.js`, ESTE camino SÍ se ejecuta: produce los `platform.agent-*`.
+    #
+    # Se preserva el árbol que `git worktree add` acaba de materializar. Borrarlo
+    # deja como ` D` todos los trackeados que no están en la allowlist. La copia
+    # se hace archivo por archivo para evitar también `.claude/.claude`.
     if [ -d "$_INTRALE_MAIN/.claude" ]; then
         # Si hay junction legacy, desvincular primero
         if [ -L "$current_dir/.claude" ]; then
             local win_path=$(cygpath -w "$current_dir/.claude" 2>/dev/null)
             cmd /c rmdir "$win_path" 2>/dev/null
+            git -C "$current_dir" checkout -- .claude
         fi
-        rm -rf "$current_dir/.claude" 2>/dev/null
-        cp -r "$_INTRALE_MAIN/.claude" "$current_dir/.claude"
-        echo ">> .claude/ copiado completo (sin junction)"
+        mkdir -p "$current_dir/.claude"
+
+        # Se enumera qué SE COPIA. Los archivos denegados nunca tocan el destino.
+        local _allow=(settings.json permissions-baseline.json dashboard-server.js skills icons hooks)
+        local _entry _source _file _rel
+        for _entry in "${_allow[@]}"; do
+            _source="$_INTRALE_MAIN/.claude/$_entry"
+            [ -e "$_source" ] || continue
+            if [ -f "$_source" ]; then
+                cp "$_source" "$current_dir/.claude/$_entry"
+                continue
+            fi
+            while IFS= read -r -d '' _file; do
+                _rel="${_file#"$_INTRALE_MAIN/.claude/"}"
+                case "$_rel" in
+                    # El secreto se deniega por FORMA, no por ruta exacta: `hooks/`
+                    # está allowlisteado en bloque, así que un `.bak` o un
+                    # `hooks/tests/telegram-config.json` se colaba. Espeja la
+                    # DENY_RE de claude-copy-allowlist.js.
+                    telegram-config*|*/telegram-config*|\
+                    worktrees/*|sessions/*|sessions-archive/*|tmp/*|settings.local.json|\
+                    *.jsonl|*.pid|*.heartbeat|*.heartbeat.stale|*.lock) continue ;;
+                esac
+                mkdir -p "$current_dir/.claude/$(dirname "$_rel")"
+                cp "$_file" "$current_dir/.claude/$_rel"
+            done < <(find "$_source" -type f -print0)
+        done
+
+        # "sin secretos NUEVOS" y no "sin secretos": al preservarse el árbol que
+        # `git worktree add` materializó (en vez de borrarlo), un `.claude/`
+        # destino preexistente que ya tuviera un secreto NO se limpia acá. Lo
+        # que esta copia garantiza es que no se agrega ninguno.
+        echo ">> .claude/ actualizado con allowlist (sin junction, sin secretos nuevos)"
     fi
 
     echo ""

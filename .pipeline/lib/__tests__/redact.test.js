@@ -17,6 +17,9 @@ const {
     isSensitiveHeader,
     REDACTION_MARKER,
     redactRagContent,
+    // #5220 — patrones de valor que faltaban (GOCSPX-, 1//, bot token).
+    redactSecretValue,
+    SECRET_VALUE_PATTERNS,
 } = require('../redact');
 
 test('CA-6 · headers: Authorization, Cookie, Set-Cookie, X-Api-Key, X-Amz-*, Proxy-Authorization', () => {
@@ -250,4 +253,61 @@ test('#3837 · redactRagContent tolera input no-string', () => {
     assert.equal(redactRagContent(null), null);
     assert.equal(redactRagContent(undefined), undefined);
     assert.equal(redactRagContent(42), 42);
+});
+
+// =============================================================================
+// #5220 (R3) — Patrones que faltaban en SECRET_VALUE_PATTERNS.
+//
+// Segunda capa, NO control primario: el barrido de secretos filtrados protege
+// por construcción (su `Finding` no tiene campo `value`). Estos patrones se
+// agregan porque benefician a los 100+ callers de `redactSecretValue`.
+// =============================================================================
+
+test('#5220 · redactSecretValue redacta un client_secret de Google de 35 caracteres', () => {
+    // Mide 35 chars: por debajo de HIGH_ENTROPY_MIN_LEN=40, así que la red de
+    // entropía NO lo agarraba y salía en claro.
+    const secreto = 'GOCSPX-FakeSyntheticClientSecret012';
+    assert.equal(secreto.length < 40, true, 'el caso interesante es justamente que mide menos de 40');
+    const out = redactSecretValue(secreto);
+    assert.ok(!out.includes(secreto), `debe redactar el client_secret: ${out}`);
+    assert.ok(!out.includes('FakeSyntheticClientSecret'), 'ni una subcadena suya');
+});
+
+test('#5220 · redactSecretValue redacta un refresh_token con prefijo 1//', () => {
+    const token = '1//FakeSyntheticRefreshTokenForTestsOnly0123456789';
+    const out = redactSecretValue(token);
+    assert.ok(!out.includes(token), `debe redactar el refresh_token: ${out}`);
+    assert.ok(!out.includes('FakeSyntheticRefreshToken'), 'ni una subcadena suya');
+});
+
+test('#5220 · redactSecretValue redacta un bot token de Telegram', () => {
+    const token = '123456789:AAFakeSyntheticTokenForTestsOnly0123456789';
+    const out = redactSecretValue(token);
+    assert.ok(!out.includes(token), `debe redactar el bot token: ${out}`);
+    assert.ok(!out.includes('AAFakeSyntheticToken'), 'ni una subcadena suya');
+});
+
+test('#5220 · los patrones nuevos no llevan topology (siguen apagando la red de entropia)', () => {
+    // `redactSecretValue` marca `secretMatched` sólo si `!topology`. Con
+    // `topology: true` matchearían pero cambiarían la semántica del gate.
+    const nuevos = ['google_client_secret', 'google_refresh_token', 'telegram_bot_token'];
+    for (const name of nuevos) {
+        const p = SECRET_VALUE_PATTERNS.find((x) => x.name === name);
+        assert.ok(p, `falta el patrón ${name}`);
+        assert.ok(!p.topology, `${name} es un secreto, no topología: no debe llevar topology`);
+    }
+});
+
+test('#5220 · los patrones nuevos no redactan texto legitimo del pipeline', () => {
+    // Guarda anti-regresión para los 100+ callers: nada de lo de abajo debe
+    // tocarse (ids, timestamps, rutas, SHAs).
+    for (const inocuo of [
+        'issue 5220 procesado en 12345 ms',
+        'commit 3b09ae4c0797c5a412628aac3469d36232ed8c8',
+        'C:/Workspaces/Intrale/platform/.pipeline/ghostbusters.js',
+        'duration_ms: 265063',
+        'agent/5220-pipeline-dev',
+    ]) {
+        assert.equal(redactSecretValue(inocuo), inocuo, `no debe tocar: ${inocuo}`);
+    }
 });
