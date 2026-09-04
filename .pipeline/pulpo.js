@@ -11269,7 +11269,31 @@ ${g}
     const rechazadoPorSkill = workData.rechazado_por_skill || '';
     const rechazadoPor = workData.rechazado_por || '';
     const isOperatorRejection = (workData.source === 'operator-rejection') || (rechazadoPorSkill === 'operator');
-    if (isOperatorRejection) {
+    // #4967 G-UX-2 — el rebote por conflicto de merge NO es un fallo de build.
+    // Sin esta rama caía al `else` genérico y recibía las INSTRUCCIONES
+    // OBLIGATORIAS de abajo ("diagnosticá la causa raíz del fallo", "verificá
+    // que compila"), que mandan a diagnosticar un fallo inexistente y no
+    // mencionan la salida (b): cerrar el PR por superado.
+    const isMergeConflictRebote = (workData.source === 'merge-conflict')
+      || (rechazadoPorSkill === 'mergeability-watcher');
+    if (isMergeConflictRebote) {
+      userPrompt += `MOTIVO DEL RECHAZO:\n${motivo}\n\n`;
+      try {
+        const rewind = require('./lib/pipeline-rewind');
+        userPrompt += rewind.buildMergeConflictInstructions({
+          issue,
+          skill,
+          // Campos ESTRUCTURADOS del YAML del rebote (G-UX-3), no parseados
+          // del motivo.
+          pr: workData.pr,
+          repo: workData.repo,
+        });
+      } catch (mcErr) {
+        // Defensa en profundidad: si el módulo no carga, mejor sin
+        // instrucciones que con las de build, que son incorrectas acá.
+        userPrompt += `INSTRUCCIONES: resolvé el conflicto del PR contra main, o cerralo si el cambio ya está en main por otra vía.\n`;
+      }
+    } else if (isOperatorRejection) {
       try {
         const rewind = require('./lib/pipeline-rewind');
         userPrompt += rewind.wrapMotivoForAgent({
@@ -11285,23 +11309,28 @@ ${g}
     } else {
       userPrompt += `MOTIVO DEL RECHAZO:\n${motivo}\n\n`;
     }
-    userPrompt += `INSTRUCCIONES OBLIGATORIAS:\n`;
-    // #2405 CA-2: backup tag automático antes del merge destructivo sobre agent/*.
-    // Si hay commits locales no pusheados, el helper crea un tag local
-    // `backup/agent-<issue>-<skill>-<timestamp>-<rand4>` antes del merge.
-    // Los tags tienen TTL 30 días (cleanBackupTags del mismo helper).
-    userPrompt += `0. Crear backup tag por si hay commits no pusheados: node .pipeline/backup-agent-branch.js --issue ${issue} --skill ${skill}\n`;
-    userPrompt += `1. Actualizá tu rama con main: git fetch origin main && git merge origin/main --no-edit\n`;
-    userPrompt += `2. Leé el motivo de rechazo arriba con atención\n`;
-    if (buildLogExists) {
-      userPrompt += `3. Leé el log completo del build: cat "${buildLog}" | tail -100\n`;
-      userPrompt += `   El log tiene el output de gradlew con los errores exactos de compilación o tests\n`;
+    // #4967 G-UX-2 — las instrucciones de abajo son las de un fallo de build.
+    // El rebote por conflicto de merge ya emitió las suyas arriba; agregarle
+    // éstas lo mandaría a diagnosticar un fallo que no existe.
+    if (!isMergeConflictRebote) {
+      userPrompt += `INSTRUCCIONES OBLIGATORIAS:\n`;
+      // #2405 CA-2: backup tag automático antes del merge destructivo sobre agent/*.
+      // Si hay commits locales no pusheados, el helper crea un tag local
+      // `backup/agent-<issue>-<skill>-<timestamp>-<rand4>` antes del merge.
+      // Los tags tienen TTL 30 días (cleanBackupTags del mismo helper).
+      userPrompt += `0. Crear backup tag por si hay commits no pusheados: node .pipeline/backup-agent-branch.js --issue ${issue} --skill ${skill}\n`;
+      userPrompt += `1. Actualizá tu rama con main: git fetch origin main && git merge origin/main --no-edit\n`;
+      userPrompt += `2. Leé el motivo de rechazo arriba con atención\n`;
+      if (buildLogExists) {
+        userPrompt += `3. Leé el log completo del build: cat "${buildLog}" | tail -100\n`;
+        userPrompt += `   El log tiene el output de gradlew con los errores exactos de compilación o tests\n`;
+      }
+      userPrompt += `4. Diagnosticá la causa raíz del fallo\n`;
+      userPrompt += `5. Corregí el código en tu worktree\n`;
+      userPrompt += `6. Verificá que compila: ./gradlew check --no-daemon\n`;
+      userPrompt += `7. Commiteá y pusheá los fixes\n`;
+      userPrompt += `\nNO reimplementes desde cero. Focalizá solo en corregir los errores del rechazo.\n`;
     }
-    userPrompt += `4. Diagnosticá la causa raíz del fallo\n`;
-    userPrompt += `5. Corregí el código en tu worktree\n`;
-    userPrompt += `6. Verificá que compila: ./gradlew check --no-daemon\n`;
-    userPrompt += `7. Commiteá y pusheá los fixes\n`;
-    userPrompt += `\nNO reimplementes desde cero. Focalizá solo en corregir los errores del rechazo.\n`;
   }
 
   // Determinar si necesita worktree (solo fases que modifican código)

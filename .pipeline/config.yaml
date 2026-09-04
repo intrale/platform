@@ -1129,6 +1129,26 @@ rewind:
   # TTL de markers in-flight (CA-9 recovery). Si el pulpo crasha durante un
   # rewind, los markers > ttl se limpian al boot y el operador puede reintentar.
   in_flight_stale_minutes: 5
+  #
+  # #4967 — SEGUNDO FRENTE: rewind automático por conflicto de merge.
+  #
+  # Cuando el watcher de mergeabilidad (#4966) confirma que un PR quedó
+  # CONFLICTING contra `main`, `pipeline-rewind.js#rewindFromMergeConflict`
+  # reencola el issue a su propietario en vez de dejarlo congelado.
+  #
+  # NO tiene claves acá a propósito. Sus dos parámetros —timeout de la
+  # revalidación del PR y TTL del store de idempotencia— viajan inyectados en
+  # `deps.options` desde el llamador, con defaults en el módulo
+  # (`DEFAULT_REVALIDATE_TIMEOUT_MS`, `DEFAULT_CLAIM_TTL_MS`). Duplicarlos acá
+  # sin cablear la lectura sería configuración muerta.
+  #
+  # Lo importante para operar: ese frente NO es alcanzable desde Telegram, CLI
+  # ni desde el bus `.pipeline/rejections/`. El gate de `source` de arriba sigue
+  # siendo exactamente ['telegram-commander', 'cli-local'] y la capacidad
+  # interna viaja como Symbol módulo-privado, nunca como string del payload.
+  # Tampoco cierra, mergea ni modifica el PR.
+  #
+  # Ver: docs/pipeline/rewind-operador.md → "Segundo frente".
 
 # #3085 / S7 multi-provider — aislamiento de credenciales por proceso.
 #
