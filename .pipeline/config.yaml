@@ -1669,6 +1669,21 @@ cua:
 # La tabla + policy IAM (least-privilege, append-only sobre signature#*/audit#*)
 # se aprovisiona con un PASO ADMIN separado (lib/kernel-provision.js +
 # docs/pipeline/kernel-iam-policy.json), NUNCA en el boot normal del pulpo.
+# #5126 CA-B3 (2026-07-29) — Tablas y región CARGADAS, con `durable` todavía en
+# `false`. Este estado intermedio es deliberado y es el que pide el criterio: la
+# config queda completa y verificada ANTES de encender el flag, así el encendido
+# es un cambio de una línea y no un cambio de configuración a ciegas.
+#
+# Con `durable: false` estos tres valores no se leen: no se instancia el driver
+# real ni se hace una sola llamada AWS. El pipeline sigue operando 100% desde
+# filesystem.
+#
+# Qué SÍ va en este archivo público: nombre de tabla y región. No son secretos —
+# no otorgan acceso sin credenciales, y `us-east-2` ya figura en este mismo
+# archivo (sección de connectivity-precheck) y en `docs/qa/`.
+# Qué NUNCA va: account-id, ARNs completos y credenciales. Las credenciales
+# llegan exclusivamente por el scope `aws` del ambiente hijo (build-child-env.js),
+# alimentado desde `~/.claude/secrets/credentials.json` (fuera del repo).
 kernel:
   # #5210 CA-1 — Tabla de NO-REPUDIO ya aprovisionada en AWS (ACTIVE, SSE KMS,
   # deletion protection ON). Poblarla NO enciende nada: todo el camino durable
