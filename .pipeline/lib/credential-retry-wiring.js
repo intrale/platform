@@ -215,9 +215,18 @@ function getOrCreateOperation({
 
     const vigente = _registry.get(clave);
     if (vigente && credentialRetry.isOperation(vigente.operation)) {
-        // Se refresca la ventana: el issue sigue vivo, y lo que interesa medir
-        // es el tiempo desde el ÚLTIMO intento, no desde el primero.
-        vigente.expiresAt = _now + _ttl;
+        // #5796 (fix rev-2, defecto 1) — LA VENTANA *NO* SE REFRESCA EN CADA
+        // ACCESO. Antes se corría `expiresAt` en cada lectura con el argumento
+        // de que "interesa el tiempo desde el último intento". El problema es
+        // que ese refresco convierte el TTL en inalcanzable justo en el caso
+        // que tiene que cubrir: un issue que rebota (fast-fail, provider-death,
+        // relanzamiento por la cola) toca esta clave en cada vuelta, así que la
+        // ventana se corre para siempre y un `retryConsumed: true` queda pegado
+        // hasta el próximo restart del Pulpo. La liberación explícita
+        // (`forgetOperation` en cada cierre que devuelve el dropfile a la cola)
+        // es el mecanismo principal; el TTL anclado a la CREACIÓN es la red de
+        // contención que hace que aun un camino de cierre no cubierto tenga un
+        // techo real de 30 minutos en vez de ser eterno.
         return vigente.operation;
     }
 
@@ -225,6 +234,21 @@ function getOrCreateOperation({
     if (!operation) return null;
     _registry.set(clave, { operation, expiresAt: _now + _ttl });
     return operation;
+}
+
+/**
+ * Clave del registro para un lanzamiento LÓGICO.
+ *
+ * #5796 (fix rev-2, defecto 1) — vive acá y no inline en `pulpo.js` porque la
+ * clave la construyen DOS sitios muy separados: el lanzamiento (que crea la
+ * operación) y el barrido de huérfanos (que la libera cuando el proceso murió
+ * sin que corriera su handler de `exit`). Dos strings escritos a mano en
+ * archivos distintos se desincronizan en el primer refactor, y el síntoma sería
+ * silencioso: la liberación no encuentra nada que borrar y el presupuesto queda
+ * pegado hasta el TTL.
+ */
+function operationKeyFor({ pipeline, fase, skill, issue } = {}) {
+    return `${pipeline}/${fase}/${skill}:${issue}`;
 }
 
 /**
@@ -301,6 +325,49 @@ function isAuthRejection(candidate) {
     } catch {
         return false;
     }
+}
+
+/**
+ * Clasificador que se DESACTIVA cuando el turno ya fue reclamado por otro dueño.
+ *
+ * #5796 (fix rev-2, defecto 2) — POR QUÉ EXISTE
+ * --------------------------------------------
+ * El Commander tiene un segundo mecanismo de resiliencia que corre en paralelo
+ * al retry de credencial: el fallback in-flight (#4309). Cuando el primario se
+ * cae mid-stream, ese ejecutor RECLAMA el turno (spawnea el secundario y
+ * resuelve la promesa del turno con su respuesta). A partir de ese momento el
+ * turno tiene dueño y nadie más puede volver a ejecutarlo.
+ *
+ * El problema es que ambos mecanismos leen el MISMO frame de resultado: el
+ * handler puede llenar la proyección del rechazo de credencial y, en la misma
+ * pasada, disparar el fallback in-flight. Si el coordinador clasificara ese
+ * desenlace como un rechazo, consumiría el presupuesto e invocaría el intento 2
+ * — o sea, un SEGUNDO proceso `claude` concurrente con el fallback que ya está
+ * respondiendo: dos turnos ejecutando tool calls reales y mandando mensajes a
+ * Telegram por el mismo pedido del operador.
+ *
+ * La solución no es clasificar distinto (eso reabriría la puerta a decidir por
+ * texto libre, que es justo lo que #5795 cerró) sino DEJAR DE CLASIFICAR: si el
+ * turno ya tiene dueño, no hay ningún retry legítimo que este coordinador pueda
+ * disparar. Devolver `null` es exactamente el camino que `runWithCredentialRetry`
+ * ya tiene para "esto no es un rechazo de credencial": devuelve el resultado tal
+ * cual, sin invalidar, sin consumir presupuesto y sin un segundo intento.
+ *
+ * @param {function} estaReclamado predicado síncrono; `true` ⇒ turno con dueño.
+ * @returns {function} un `classify` apto para `runAttempt`.
+ */
+function makeClaimAwareClassify(estaReclamado) {
+    return function classify(candidate) {
+        try {
+            if (typeof estaReclamado === 'function' && estaReclamado()) return null;
+        } catch {
+            // Fail-closed: si no se puede afirmar que el turno está libre, no se
+            // reintenta. Un retry de más spawnea un proceso; un retry de menos
+            // sólo degrada al comportamiento previo a este issue.
+            return null;
+        }
+        return credentialRetry.defaultClassify(candidate);
+    };
 }
 
 /**
@@ -425,6 +492,7 @@ module.exports = {
 
     isRetryEnabled,
     getOrCreateOperation,
+    operationKeyFor,
     forgetOperation,
     runReplayAttempt,
     buildOperationId,
@@ -432,6 +500,7 @@ module.exports = {
     pathForResolution,
     makeAuditEmitter,
     isAuthRejection,
+    makeClaimAwareClassify,
     canRetry,
     runAttempt,
 

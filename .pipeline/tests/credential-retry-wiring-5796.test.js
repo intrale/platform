@@ -673,14 +673,185 @@ test('el brazo de credential-death consulta el presupuesto ANTES de ejecutar los
         'El peek va antes de invocar al coordinador.');
     assert.match(brazo, /credentialRetryWiring\.isAuthRejection\(veredictoDeAutenticacion\)/,
         'La decisión se toma con la señal TIPADA de #5795, nunca con el texto del log.');
-    // El camino sin retry disponible cierra como siempre: la llamada al cierre
-    // aparece tanto en el `catch` del coordinador como en la rama de "sin
-    // presupuesto", que son los dos desenlaces posibles.
+    // Todo desenlace del brazo termina en el MISMO cierre idempotente: la rama
+    // sin presupuesto y cada salida del replay (timeout, error tipado, resolución
+    // sin reintento y red de última instancia). La cuenta exacta no es el punto
+    // —agregar un desenlace nuevo es legítimo— pero ninguno puede quedar sin
+    // cierre, que es lo que dejaría el dropfile huérfano en `trabajando/`.
     const invocacionesDelCierre = (brazo.match(/cerrarPorCredencialVencida\(/g) || []).length;
-    assert.strictEqual(invocacionesDelCierre, 2,
-        'Se esperaban exactamente 2 invocaciones de `cerrarPorCredencialVencida` —el catch del ' +
-        'coordinador y la rama sin presupuesto—, que son los dos desenlaces posibles. ' +
-        `Hay ${invocacionesDelCierre}.`);
+    assert.ok(invocacionesDelCierre >= 2,
+        'La rama sin presupuesto y los desenlaces del replay tienen que cerrar la corrida ' +
+        `(hay ${invocacionesDelCierre} invocaciones).`);
+});
+
+// -----------------------------------------------------------------------------
+// 6-bis. Regresiones del rechazo rev-2 (los tres defectos del review).
+// -----------------------------------------------------------------------------
+
+test('DEFECTO 1 — el presupuesto se libera en TODOS los cierres que devuelven el dropfile a la cola', () => {
+    // `provider-death` y `fast-fail` mueven el dropfile a `pendiente/`, o sea
+    // relanzan el issue. Si no olvidaran la operación, un issue que gastó su
+    // retry y después rebota por cualquiera de esas dos causas arrastraría
+    // `retryConsumed: true` y, cuando cayera una credencial de verdad, se
+    // cerraría con "presupuesto ya consumido" sin haber reintentado nunca.
+    assert.match(PULPO_SRC, /const olvidarOperacionDeCredencial = \(\) => \{/,
+        'La liberación del presupuesto vive en un helper único del lanzamiento.');
+
+    const brazoDe = (inicio, fin) => {
+        const i = PULPO_SRC.indexOf(inicio);
+        assert.ok(i > 0, `No se encontró el brazo: ${inicio}`);
+        const j = PULPO_SRC.indexOf(fin, i);
+        assert.ok(j > i, `No se encontró el fin del brazo: ${fin}`);
+        return PULPO_SRC.slice(i, j);
+    };
+
+    const providerDeath = brazoDe(
+        "if (!hasVerdict && deathKind === 'provider-death') {",
+        'if (!hasVerdict) {',
+    );
+    assert.match(providerDeath, /olvidarOperacionDeCredencial\(\);/,
+        'El cierre por provider-death relanza el issue: tiene que liberar el presupuesto.');
+    assert.ok(providerDeath.indexOf('olvidarOperacionDeCredencial();') < providerDeath.indexOf('return;'),
+        'La liberación va ANTES del return, no después (el bug del rechazo rev-2).');
+
+    const fastFail = brazoDe('if (!hasVerdict) {', 'Hay veredicto: tratamos como terminación normal');
+    assert.match(fastFail, /olvidarOperacionDeCredencial\(\);/,
+        'El fast-fail es el cierre más frecuente que devuelve el dropfile a la cola.');
+    assert.ok(fastFail.indexOf('olvidarOperacionDeCredencial();') < fastFail.indexOf('return;'),
+        'La liberación va ANTES del return del fast-fail.');
+});
+
+test('DEFECTO 1 — el barrido de huérfanos también libera el presupuesto, con la MISMA clave', () => {
+    // Si el proceso murió sin que corriera su handler de `exit`, ningún cierre
+    // del lanzamiento pudo olvidar la operación. El barrido de huérfanos devuelve
+    // el dropfile a `pendiente/` (relanza el issue), así que es el último camino
+    // que tiene que liberar el presupuesto.
+    const i = PULPO_SRC.indexOf("log('huerfanos', `${archivo.name} lleva ");
+    assert.ok(i > 0, 'El barrido de huérfanos tiene que seguir devolviendo el dropfile a pendiente/.');
+    const brazo = PULPO_SRC.slice(i, i + 1400);
+    assert.match(brazo, /credentialRetryWiring\.forgetOperation\(\{/,
+        'El huérfano relanza el issue: tiene que liberar la operación raíz.');
+    assert.match(brazo, /credentialRetryWiring\.operationKeyFor\(\{ pipeline: pipelineName, fase, skill, issue \}\)/,
+        'La clave se construye con el helper compartido, no con un template literal a mano.');
+
+    // Y el lanzamiento usa EXACTAMENTE el mismo helper: dos strings escritos a
+    // mano en sitios distintos se desincronizan y la liberación no borra nada.
+    assert.match(PULPO_SRC, /const credentialOperationKey = credentialRetryWiring\.operationKeyFor\(\{ pipeline, fase, skill, issue \}\);/,
+        'El lanzamiento no puede construir la clave por su cuenta.');
+
+    // Contrato del helper: forma estable y consistente entre ambos call-sites.
+    assert.strictEqual(
+        wiring.operationKeyFor({ pipeline: 'desarrollo', fase: 'dev', skill: 'pipeline-dev', issue: 5796 }),
+        'desarrollo/dev/pipeline-dev:5796',
+    );
+});
+
+test('DEFECTO 1 — el TTL de la operación NO se refresca en cada acceso', async () => {
+    // El refresco por acceso volvía el TTL inalcanzable justo en el caso que
+    // tiene que cubrir: un issue que rebota toca la clave en cada vuelta, así
+    // que la ventana se corría para siempre y un presupuesto consumido quedaba
+    // pegado hasta el próximo restart del Pulpo.
+    const registry = new Map();
+    let ahora = 1_000_000;
+    const args = {
+        key: 'k', config: GATE_ABIERTO, kind: 'agent', skill: 'guru', issue: 1,
+        registry, now: () => ahora, ttlMs: 1000,
+    };
+
+    const a = wiring.getOrCreateOperation(args);
+    a.retryConsumed = true;
+
+    // Accesos repetidos DENTRO de la ventana (los relanzamientos del issue).
+    for (let i = 0; i < 5; i += 1) {
+        ahora += 150;
+        assert.strictEqual(wiring.getOrCreateOperation(args), a,
+            'Dentro de la ventana original se reusa la misma operación.');
+    }
+
+    // Total transcurrido: 1000ms desde la CREACIÓN. Con el refresco por acceso
+    // la ventana habría quedado en `ahora + 1000` y esta operación seguiría viva.
+    ahora += 250;
+    const b = wiring.getOrCreateOperation(args);
+    assert.notStrictEqual(b, a,
+        'El TTL se ancla a la creación: los accesos no pueden extender la ventana indefinidamente.');
+    assert.strictEqual(b.retryConsumed, false, 'La operación nueva estrena presupuesto.');
+});
+
+test('DEFECTO 2 — con el turno ya reclamado no se clasifica rechazo, así que no hay segundo spawn', async () => {
+    // El fallback in-flight del Commander (#4309) reclama el turno leyendo el
+    // MISMO frame que llena la proyección del rechazo. Sin este guard, el
+    // coordinador spawnearía un segundo `claude` concurrente con el secundario
+    // que ya está respondiendo: dos turnos ejecutando tool calls reales.
+    let turnoReclamado = false;
+    const classify = wiring.makeClaimAwareClassify(() => turnoReclamado);
+    const rechazo = { authenticationRejection: rechazoTipado() };
+
+    assert.ok(classify(rechazo), 'Con el turno libre, la clasificación tipada sigue intacta.');
+    turnoReclamado = true;
+    assert.strictEqual(classify(rechazo), null,
+        'Con el turno reclamado no hay retry legítimo que disparar.');
+
+    // Y el efecto de punta a punta: cero segundos intentos, cero invalidaciones,
+    // presupuesto INTACTO para el turno siguiente.
+    const eventos = [];
+    const operation = credentialRetry.createOperation({ operationId: 'commander:req:abc' });
+    const spawns = [];
+    const salida = await wiring.runAttempt({
+        operation, provider: 'anthropic', path: 'primary', destination: 'commander',
+        invalidableScopes: SCOPES_INVALIDABLES,
+        destinationsCatalog: CATALOGO,
+        classify,
+        invalidate: async () => { throw new Error('no debería invalidar un turno reclamado'); },
+        emit: (e) => eventos.push(e),
+        createSnapshot: async (ctx) => ({ keys: [], env: {}, attempt: ctx.attempt }),
+        execute: async (ctx) => { spawns.push(ctx.attempt); return rechazo; },
+    });
+
+    assert.strictEqual(spawns.length, 1, `Un solo spawn (hubo ${spawns.length}).`);
+    assert.strictEqual(salida.retryUsed, false);
+    assert.strictEqual(operation.retryConsumed, false,
+        'El presupuesto queda intacto: el turno no se cerró por credencial.');
+    assert.strictEqual(operation.invalidations, 0);
+    assert.strictEqual(eventos.length, 0, 'Sin retry no hay eventos de credencial.');
+});
+
+test('DEFECTO 2 — el execute del Commander tiene guard de entrada antes de spawnear', () => {
+    const i = PULPO_SRC.indexOf('const corrida = await credentialRetryWiring.runAttempt({');
+    assert.ok(i > 0, 'El intento primario del Commander tiene que correr bajo el coordinador.');
+    const bloque = PULPO_SRC.slice(i, PULPO_SRC.indexOf('emit: emitirEventoDeRetryCommander', i));
+
+    assert.match(bloque, /classify: credentialRetryWiring\.makeClaimAwareClassify\(\(\) => inflightFallbackClaimed\)/,
+        'El clasificador tiene que desactivarse cuando el turno ya tiene dueño.');
+
+    const iGuard = bloque.indexOf('if (inflightFallbackClaimed) {');
+    const iSpawn = bloque.indexOf('await attemptAnthropicSpawn({');
+    assert.ok(iGuard > 0, 'Falta el guard de entrada del execute.');
+    assert.ok(iGuard < iSpawn,
+        'El guard va ANTES del spawn: lo que protege es un proceso, no un log (bug del rechazo rev-2).');
+});
+
+test('DEFECTO 3 — el replay del agente tiene settlement garantizado (timeout + cierre incondicional)', () => {
+    const brazo = brazoCredentialDeath();
+
+    assert.match(brazo, /Promise\.race\(\[/,
+        'Sin race contra un temporizador, un vault colgado deja el dropfile huérfano en trabajando/.');
+    assert.match(brazo, /REPLAY_TIMEOUT_MS/,
+        'El replay tiene que estar acotado por un timeout explícito.');
+    assert.match(brazo, /temporizadorDelReplay\.unref\(\)/,
+        'El temporizador no puede sostener vivo el event loop del Pulpo.');
+    assert.match(brazo, /\.finally\(\(\) => \{[\s\S]{0,200}clearTimeout\(temporizadorDelReplay\)/,
+        'El temporizador se limpia siempre, settlee por donde settlee.');
+
+    // Los cuatro desenlaces del race cierran la corrida.
+    const cierreDelRace = brazo.slice(brazo.indexOf('Promise.race(['));
+    assert.match(cierreDelRace, /desenlace\.timeout[\s\S]{0,600}cerrarPorCredencialVencida\(/,
+        'El timeout degrada al cierre de siempre.');
+    assert.match(cierreDelRace, /desenlace\.error[\s\S]{0,600}cerrarPorCredencialVencida\(/,
+        'El fallo cerrado del coordinador cierra con el motivo tipado.');
+    assert.match(cierreDelRace, /cerrarPorCredencialVencida\('el coordinador resolvió sin reintentar'\)/,
+        'Un OK sin reintento también tiene que cerrar: si no, el dropfile queda en trabajando/.');
+    assert.match(cierreDelRace, /\.catch\(\(e\) => \{[\s\S]{0,600}cerrarPorCredencialVencida\(/,
+        'Red de última instancia: ni el cierre puede dejar el dropfile huérfano.');
 });
 
 test('el gate del retry no puede quedar cableado al booleano del snapshot', () => {

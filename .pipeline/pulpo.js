@@ -10915,7 +10915,7 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   //
   // Con el gate `pipeline.credential_retry_enabled` cerrado (default del
   // rollout) esto devuelve `null` y todo el cableado de abajo es no-op.
-  const credentialOperationKey = `${pipeline}/${fase}/${skill}:${issue}`;
+  const credentialOperationKey = credentialRetryWiring.operationKeyFor({ pipeline, fase, skill, issue });
   let credentialOperation = null;
   try {
     credentialOperation = credentialRetryWiring.getOrCreateOperation({
@@ -10937,6 +10937,32 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
     pipelineDir: PIPELINE,
     logger: (m) => log('lanzamiento', m),
   });
+
+  // #5796 (fix rev-2, defecto 1) — LIBERACIÓN DEL PRESUPUESTO EN *TODOS* LOS
+  // CIERRES QUE DEVUELVEN EL DROPFILE A LA COLA.
+  //
+  // La operación raíz sobrevive entre lanzamientos a propósito (la cascada de
+  // fallbacks del agente se materializa como lanzamientos sucesivos del mismo
+  // dropfile), así que el único que puede declarar "esta operación terminó" es
+  // el camino de cierre. Hay TRES cierres que devuelven el issue a `pendiente/`
+  // y por lo tanto lo relanzan: terminación normal, `provider-death` y
+  // `fast-fail`. Si sólo el primero olvidara la operación, un issue que gastó
+  // su retry y después rebota por cualquiera de los otros dos arrastraría
+  // `retryConsumed: true` de forma indefinida — el TTL no lo salva porque
+  // `getOrCreateOperation` sólo lo poda si nadie vuelve a tocar la clave, y
+  // cada relanzamiento la toca. Resultado: cuando cayera una credencial de
+  // verdad, se cerraría con "presupuesto ya consumido" sin haber reintentado
+  // NUNCA, que es exactamente lo contrario de lo que entrega este issue.
+  //
+  // Es idempotente (un `Map.delete` de una clave ausente), best-effort y no-op
+  // con el gate cerrado. La única salida que NO debe llamarlo es el reintento
+  // de credencial (`retryExecute`): ahí el presupuesto consumido es el estado
+  // que tiene que sobrevivir hasta el relanzamiento.
+  const olvidarOperacionDeCredencial = () => {
+    try {
+      credentialRetryWiring.forgetOperation({ key: credentialOperationKey });
+    } catch { /* best-effort: el TTL del registro es la red de contención */ }
+  };
 
   let dispatchResolution = null;
   // #3823 — trazabilidad observable de la resolución de provider. Se computa una
@@ -12748,7 +12774,7 @@ ${g}
           && credentialRetryWiring.isAuthRejection(veredictoDeAutenticacion);
 
         if (puedeReintentarCredencial) {
-          credentialRetryWiring.runReplayAttempt({
+          const replay = credentialRetryWiring.runReplayAttempt({
             operation: credentialOperation,
             provider: effProvider,
             path: caminoDelIntento,
@@ -12801,13 +12827,77 @@ ${g}
               return { credentialRetryQueued: true };
             },
             emit: emitirEventoDeRetry,
+          });
+
+          // #5796 (fix rev-2, defecto 3) — EL REPLAY TIENE SETTLEMENT GARANTIZADO.
+          //
+          // Este handler de `exit` retorna sincrónicamente con la promesa del
+          // replay en vuelo, así que la promesa es la ÚNICA dueña del cierre de
+          // la corrida: mover el dropfile fuera de `trabajando/`, soltar el slot
+          // de `activeProcesses`, matar los daemons Gradle y salir del canal de
+          // contexto. Con sólo un `.catch()` esos efectos dependían de que la
+          // promesa settleara alguna vez, y el coordinador no tiene timeout
+          // propio: si `invalidate()` (vault) o la re-resolución del snapshot
+          // quedaran colgados —justo el escenario de un vault remoto que no
+          // responde, que es CUANDO se cae una credencial— el dropfile quedaba
+          // huérfano en `trabajando/`, el slot ocupado y los daemons vivos hasta
+          // el próximo restart. Con el límite de 3 agentes concurrentes, eso es
+          // un tercio de la capacidad del pipeline perdido en silencio.
+          //
+          // El contrato queda cerrado por dos vías complementarias:
+          //   1. Un `race` contra un temporizador acotado que degrada al cierre
+          //      de siempre — el reintento se pierde, pero el issue vuelve a la
+          //      cola y el slot se libera.
+          //   2. Un cierre INCONDICIONAL en cada desenlace. `cerrarPorCredencial
+          //      Vencida` es idempotente (`efectosDeCierreEjecutados`) y
+          //      `retryExecute` ya marca esa bandera al encolar el reintento, así
+          //      que en el camino feliz esto es un no-op. Cubre además el caso en
+          //      que el coordinador resuelve OK sin haber reintentado (su
+          //      `classify` no reconoció la señal): antes ese camino también
+          //      dejaba el dropfile huérfano.
+          //
+          // El temporizador va `unref`: no puede sostener vivo el event loop del
+          // Pulpo ni un milisegundo de más.
+          const REPLAY_TIMEOUT_MS = 60 * 1000;
+          let temporizadorDelReplay = null;
+          const vencimiento = new Promise((resolverVencimiento) => {
+            temporizadorDelReplay = setTimeout(() => resolverVencimiento({ timeout: true }), REPLAY_TIMEOUT_MS);
+            if (temporizadorDelReplay && typeof temporizadorDelReplay.unref === 'function') {
+              temporizadorDelReplay.unref();
+            }
+          });
+
+          Promise.race([
+            replay.then(() => ({ ok: true }), (e) => ({ error: e })),
+            vencimiento,
+          ]).then((desenlace) => {
+            if (desenlace && desenlace.timeout) {
+              // El coordinador nunca settleó. No sabemos si invalidó o no, así
+              // que el issue vuelve a la cola por el camino conservador.
+              cerrarPorCredencialVencida(
+                `el reintento no resolvió en ${Math.round(REPLAY_TIMEOUT_MS / 1000)}s (vault sin respuesta) — cierre por timeout`,
+              );
+              return;
+            }
+            if (desenlace && desenlace.error) {
+              // Fallo CERRADO del coordinador (presupuesto agotado, invalidación
+              // o re-resolución fallida, segundo rechazo): el cierre de siempre,
+              // con el motivo TIPADO del catálogo `CLOSE_REASONS` — nunca texto
+              // libre — para que el operador rutee sin leer el stack.
+              const e = desenlace.error;
+              const motivo = (e && e.reason) || (e && e.code) || 'error_no_tipado';
+              cerrarPorCredencialVencida(`no se reintentó (${motivo})`);
+              return;
+            }
+            // Camino feliz: no-op si `retryExecute` ya cerró la corrida.
+            cerrarPorCredencialVencida('el coordinador resolvió sin reintentar');
           }).catch((e) => {
-            // Fallo CERRADO del coordinador (presupuesto agotado, invalidación
-            // o re-resolución fallida, segundo rechazo): el cierre de siempre,
-            // con el motivo TIPADO del catálogo `CLOSE_REASONS` — nunca texto
-            // libre — para que el operador rutee sin leer el stack.
-            const motivo = (e && e.reason) || (e && e.code) || 'error_no_tipado';
-            cerrarPorCredencialVencida(`no se reintentó (${motivo})`);
+            // Red de última instancia: ni el `race` ni el cierre pueden dejar
+            // el dropfile en `trabajando/`.
+            log('lanzamiento', `⚠️ credential-retry: el cierre del replay de ${skill}:#${issue} falló (${e && e.message})`);
+            cerrarPorCredencialVencida('error inesperado cerrando el reintento');
+          }).finally(() => {
+            try { clearTimeout(temporizadorDelReplay); } catch { /* best-effort */ }
           });
           return;
         }
@@ -12840,6 +12930,11 @@ ${g}
           }
         }
         log('lanzamiento', `🔌 ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) con provider fallback="${effProvider}" — muerte por provider no disponible: NO penaliza al issue${disabled ? `; provider "${effProvider}" apagado con TTL (backoff a nivel provider)` : ''}. Devuelvo a pendiente/ para reintentar al próximo tick.`);
+        // #5796 (fix rev-2, defecto 1) — este cierre relanza el issue: la
+        // operación raíz muere acá para que el próximo lanzamiento estrene su
+        // propio presupuesto. El provider murió al spawn; la credencial nunca
+        // llegó a ser rechazada, así que no hay nada que "conservar consumido".
+        olvidarOperacionDeCredencial();
         const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
         try { moveFile(trabajandoPath, pendienteDir); } catch {}
         activeProcesses.delete(processKey(skill, issue));
@@ -12857,6 +12952,11 @@ ${g}
       if (!hasVerdict) {
         const { failures, delayMin } = registerFastFail(skill, issue);
         log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo #${failures}, cooldown ${delayMin}min`);
+        // #5796 (fix rev-2, defecto 1) — el fast-fail es el cierre MÁS FRECUENTE
+        // que devuelve el dropfile a `pendiente/`. Sin este olvido, un issue que
+        // gastó su retry de credencial y después rebota acá quedaría con el
+        // presupuesto consumido hasta el próximo restart del Pulpo.
+        olvidarOperacionDeCredencial();
         const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
         try { moveFile(trabajandoPath, pendienteDir); } catch {}
         activeProcesses.delete(processKey(skill, issue));
@@ -12916,9 +13016,7 @@ ${g}
     // su retry arrastraría el presupuesto consumido hasta el TTL y no podría
     // volver a re-resolver aunque la credencial del vault ya estuviera
     // arreglada. Idempotente y no-op con el gate cerrado.
-    try {
-      credentialRetryWiring.forgetOperation({ key: credentialOperationKey });
-    } catch { /* best-effort: el TTL del registro es la red de contención */ }
+    olvidarOperacionDeCredencial();
 
     // #4648 — Reset del health de spawn del provider efectivo: si el agente
     // corrió bien (exit 0) o vivió lo suficiente (≥15s, no es muerte prematura),
@@ -13497,6 +13595,17 @@ function brazoHuerfanos(config) {
           // Devolver a pendiente con cooldown para evitar loop inmediato
           const { failures, delayMin } = registerFastFail(skill, issue);
           log('huerfanos', `${archivo.name} lleva ${Math.round(age)}min sin proceso → pendiente/ (intento ${retries}/${MAX_ORPHAN_RETRIES}, cooldown ${delayMin}min)`);
+          // #5796 (fix rev-2, defecto 1) — último camino de liberación: acá el
+          // proceso murió SIN que corriera su handler de `exit`, así que ninguno
+          // de los cierres del lanzamiento tuvo la chance de olvidar la
+          // operación raíz. El dropfile vuelve a `pendiente/`, o sea el issue se
+          // relanza: sin esta liberación arrastraría un presupuesto consumido.
+          // La clave se construye con el MISMO helper que la usa al crearla.
+          try {
+            credentialRetryWiring.forgetOperation({
+              key: credentialRetryWiring.operationKeyFor({ pipeline: pipelineName, fase, skill, issue }),
+            });
+          } catch { /* best-effort: el TTL del registro es la red de contención */ }
           try {
             moveFile(archivo.path, pendienteDir);
           } catch (e) {
@@ -17230,12 +17339,35 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
               operationId: (ctx && ctx.operationId) || null,
             }),
             execute: async ({ snapshot }) => {
+              // #5796 (fix rev-2, defecto 2) — GUARD DE ENTRADA: el turno no
+              // puede spawnearse si ya tiene dueño.
+              //
+              // El fallback in-flight (#4309) puede haber reclamado el turno
+              // MIENTRAS corría el intento anterior — se resuelve en el mismo
+              // handler del frame que llena la proyección del rechazo. Sin este
+              // guard, el intento 2 del coordinador arrancaría un segundo
+              // proceso `claude` concurrente con el secundario que ya está
+              // respondiendo: dos turnos ejecutando tool calls reales sobre el
+              // mismo pedido. El `classify` de abajo evita que se llegue acá,
+              // pero el guard es la barrera dura — lo que protege es un spawn,
+              // no un log, así que va defendido en profundidad.
+              if (inflightFallbackClaimed) {
+                const reclamado = { kind: 'final', text: '', turnoReclamado: true };
+                ultimoOutcomeDelIntento = ultimoOutcomeDelIntento || reclamado;
+                return reclamado;
+              }
               const r = await attemptAnthropicSpawn({
                 attempt, forceStandardContext, envDelIntento: snapshot,
               });
               ultimoOutcomeDelIntento = r;
               return r;
             },
+            // #5796 (fix rev-2, defecto 2) — no se clasifica un rechazo cuando
+            // el turno ya fue reclamado: no hay retry legítimo que disparar,
+            // porque el dueño de la resolución es el fallback in-flight. Envuelve
+            // (no reemplaza) `defaultClassify`, así que la política tipada de
+            // #5795 sigue intacta para el caso normal.
+            classify: credentialRetryWiring.makeClaimAwareClassify(() => inflightFallbackClaimed),
             emit: emitirEventoDeRetryCommander,
           });
           outcome = corrida.result;
