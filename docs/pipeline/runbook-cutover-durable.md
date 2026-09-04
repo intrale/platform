@@ -751,6 +751,41 @@ switch durable es lo primero que se apaga, siempre. Si el error menciona
 `coordinationTableName`, te falta CA-0 (§4): la segunda tabla no está aprovisionada
 y el store de coordinación falla fail-closed al primer claim.
 
+Si en cambio el arranque aborta con este mensaje, te falta `kernel.tableName`:
+
+```
+Arranque abortado: falta 'kernel.tableName' en .pipeline/config.yaml. El modo
+durable (kernel.durable: true) no arranca sin nombre de tabla y no cae a
+filesystem. Completá la clave con el nombre de la tabla y reintentá.
+Detalle: docs/pipeline/runbook-cutover-durable.md
+```
+
+Es el guard de #5214 (`.pipeline/lib/kernel-durable-config-guard.js`), y aborta con
+exit code **78** (`EX_CONFIG`). No es un fallo del store: corre **antes** de construir
+el cliente AWS, así que no hubo ni una llamada a DynamoDB ni consumo de credenciales.
+
+El mensaje es **constante**: sale idéntico si `kernel.tableName` está ausente, vacío
+o compuesto sólo por whitespace. Eso es deliberado — no volcamos la configuración ni
+el entorno para diagnosticar, así que no esperes que el texto te diga cuál de los tres
+casos es. Miralo vos:
+
+```bash
+grep -nE '^\s*(durable|tableName):' .pipeline/config.yaml
+```
+
+Salida sana — la tabla de no-repudio nombrada y el switch durable apagado:
+
+```
+1689:  tableName: "intrale-kernel-state"      # requerido para el driver real (normalizeConfig lo exige)
+1722:  durable: false     # default OFF -- todo sigue en FS, cero llamadas AWS
+```
+
+Completá `kernel.tableName` con el nombre de la tabla de no-repudio aprovisionada en
+CA-0 (§4) — la del `descriptor#self` y los `audit#`, no la de coordinación — y
+reintentá. Si todavía no la aprovisionaste, no inventes un nombre: andá a §4 primero.
+El guard existe justamente para que un `tableName` de fantasía no te haga arrancar
+contra una tabla que no existe, ni caer a filesystem creyendo que estás en durable.
+
 ### Cómo verificar que el pipeline volvió a un estado sano
 
 ```bash
