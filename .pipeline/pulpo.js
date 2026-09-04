@@ -87,6 +87,10 @@ const { redactSecretValue } = require('./lib/redact');
 // #5135 — Sink fail-loud de la degradación del store durable a filesystem.
 // Borde de salida: enum cerrado + template fijo + rate-limit por causa (CA-3/D-2).
 const kernelDegradationAlert = require('./lib/kernel-degradation-alert');
+// #5214 — Guard fail-closed de config durable. Se requiere EAGER (a diferencia
+// del store, que es lazy) justamente porque no arrastra nada: sin dependencias,
+// cargarlo con `durable:false` no cuesta ni una línea de Ajv.
+const durableConfigGuard = require('./lib/kernel-durable-config-guard');
 // #2404 — Detección de logs stale + reset seguro del circuit breaker.
 // Evita rebotar al developer con contexto obsoleto (log del build de hace >24h)
 // y en su lugar re-encola el issue a `build` con YAML limpio.
@@ -24189,6 +24193,42 @@ async function mainLoop() {
   try {
     const cfg = loadConfig();
     if (cfg && cfg.kernel && cfg.kernel.durable === true) {
+      // #5214 · CA-1/CA-2 — PRIMERA sentencia del camino durable: guard
+      // fail-closed de `kernel.tableName`.
+      //
+      // Está ANTES del `require('./lib/kernel-store')` a propósito. De acá para
+      // abajo el bloque carga Ajv, el schema del store, el runner del AWS CLI y
+      // el driver DynamoDB; validar después sería validar con la maquinaria del
+      // driver ya en pie. El módulo del guard no tiene dependencias, así que
+      // este chequeo no toca AWS ni resuelve una sola credencial.
+      //
+      // El desenlace es TERMINACIÓN con código no-cero, no una pausa. Un
+      // `.paused` deja el proceso vivo y "arrancado", que es justo la
+      // degradación silenciosa que la historia elimina: con `durable: true` y sin
+      // tabla, no hay operación válida que sostener.
+      //
+      // Esto NO viola "el pipeline no puede morir": el guard sólo puede
+      // dispararse con el flag durable ENCENDIDO — hoy `config.yaml` lo tiene en
+      // `false` y encenderlo es un paso supervisado del operador dentro de la
+      // ventana de cutover (runbook §2). En régimen normal esta rama es
+      // inalcanzable. `process.exit` corta el flujo sin lanzar, así que el
+      // `catch (e)` que cierra este bloque no puede tragarse el aborto.
+      const durableCfg = durableConfigGuard.inspectDurableKernelConfig(cfg);
+      if (!durableCfg.ok) {
+        durableConfigGuard.abortOnInvalidDurableConfig({
+          reason: durableCfg.reason,
+          log: (m) => log('pulpo', `FATAL [kernel-durable] ${m}`),
+          // Sólo el texto CONSTANTE + la variante estructurada. Nada de config
+          // serializada, región, ARNs ni entorno (CA-3 / A02).
+          alert: (a) => sendTelegram(
+            `🛑 *Arranque abortado — configuración durable incompleta*\n\n`
+            + `${configSchema.escapeMarkdownLegacy(a.message)}\n\n`
+            + `_(variante: ${configSchema.escapeMarkdownLegacy(a.reason)})_`
+          ),
+        });
+        return; // inalcanzable: el helper de arriba ya terminó el proceso.
+      }
+
       // Require LAZY (igual que el resto del bloque): con `durable:false` no se
       // carga Ajv ni el schema del store. Se sube acá porque la constante de
       // partición del control-plane la necesitan el catálogo Y el log.
@@ -24297,6 +24337,23 @@ async function mainLoop() {
 
       if (result.ran) {
         log('pulpo', `[kernel-durable] boot: ${(result.spawned || []).length} activos instanciados, ${(result.skipped || []).length} salteados (cap ${result.cap}).`);
+      } else if (result.fatal === true) {
+        // #5214 — Defensa en profundidad. El guard de arriba ya cubre ESTE
+        // entrypoint, así que llegar acá significa que `bootKernelDurable`
+        // rechazó por config sobre un `cfg` distinto del que se validó (una
+        // recarga en caliente, un futuro caller intermedio). La respuesta es la
+        // misma: abortar, nunca degradar. Sin esta rama, un `fatal` se leería
+        // como un `reason:'error'` best-effort y el pipeline seguiría arrancando.
+        durableConfigGuard.abortOnInvalidDurableConfig({
+          reason: result.configReason,
+          log: (m) => log('pulpo', `FATAL [kernel-durable] ${m}`),
+          alert: (a) => sendTelegram(
+            `🛑 *Arranque abortado — configuración durable incompleta*\n\n`
+            + `${configSchema.escapeMarkdownLegacy(a.message)}\n\n`
+            + `_(variante: ${configSchema.escapeMarkdownLegacy(a.reason)})_`
+          ),
+        });
+        return; // inalcanzable: el helper de arriba ya terminó el proceso.
       } else if (result.reason === 'error') {
         // CA-2 — el veredicto se decide sobre `result.reason === 'error'`, nunca
         // sobre "hubo algún onAlert". `degradationSink.aborted` refleja si la

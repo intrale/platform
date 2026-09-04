@@ -743,7 +743,9 @@ test('CA-9/D-6: un boot EXITOSO con stages sanos (cap / isSafeId) NO alerta ni a
   ];
   const stages = [];
   const res = await supervisor.bootKernelDurable({
-    config: { kernel: { durable: true, max_concurrent_instances: 2 } },
+    // #5214 — `tableName` cargado: sin él, el guard fail-closed de config durable
+    // aborta el boot antes de que este escenario pueda producir un solo stage.
+    config: { kernel: { durable: true, tableName: 'durable-cutover-test-table', max_concurrent_instances: 2 } },
     buildCatalogStore: () => ({ listProducts: async () => productos }),
     buildStoreFactory: () => () => ({}),
     spawn: () => null,
@@ -912,12 +914,42 @@ test('CA-2/CA-3: el cableado de pulpo.js filtra por stage, redacta el log y NO a
     'el sink debe estar gateado por stage === boot-durable');
   // CA-6/D-5 — el log local va redactado (pulpo.log sale por /tail y /salud).
   assert.match(codigo, /redactSecretValue\(det\)/, 'el detalle del log local debe pasar por redactSecretValue');
-  // R1 — el abort es una llamada explícita, nunca throw ni exit: el `catch (e)` que
-  // cierra el bloque se tragaría un throw y matar el proceso violaría la invariante
-  // "el pipeline no puede morir".
-  assert.doesNotMatch(codigo, /process\.exit/, 'R1: abortar el encendido NO es matar el proceso');
+  // R1 — el abort POR DEGRADACIÓN es una llamada explícita, nunca throw ni exit:
+  // el `catch (e)` que cierra el bloque se tragaría un throw y matar el proceso
+  // violaría la invariante "el pipeline no puede morir".
+  //
+  // #5214 introdujo la ÚNICA terminación admitida en este bloque, y es de otra
+  // clase de fallo: configuración durable inválida (`kernel.tableName`
+  // ausente/vacío/whitespace con el flag encendido). Ahí no hay operación válida
+  // que sostener — no es un servicio degradado, es una config que el operador
+  // todavía no terminó de escribir — y el CA-1 de #5214 exige código no-cero.
+  //
+  // La distinción se custodia acá: el bloque no puede tener un `process.exit`
+  // suelto (que sería el abort por degradación matando el proceso), y la única
+  // terminación permitida entra por el helper del guard, que sólo se alcanza
+  // cuando `inspectDurableKernelConfig` rechaza.
+  assert.doesNotMatch(codigo, /process\.exit/,
+    'R1: la degradación del catálogo NO puede matar el proceso');
+  const terminaciones = codigo.match(/abortOnInvalidDurableConfig\(/g) || [];
+  assert.equal(terminaciones.length, 2,
+    '#5214: la única terminación del bloque es el guard de config inválida ' +
+    '(entrypoint + defensa en profundidad sobre result.fatal)');
+  assert.match(codigo, /durableConfigGuard\.inspectDurableKernelConfig\(cfg\)/,
+    '#5214: el guard corre sobre la config, y antes que el require del store');
   assert.doesNotMatch(codigo, /throw new KernelDegraded|throw new Error/,
     'R1: el abort no se propaga como excepción dentro del bloque');
+
+  // #5214 CA-4 — ORDEN: el guard tiene que estar ANTES del require lazy del
+  // store. De ahí para abajo el bloque carga Ajv, el driver DynamoDB y el runner
+  // del AWS CLI; validar después sería validar con la maquinaria ya en pie.
+  // Sobre `codigo`, no sobre `bloque`: los comentarios del guard nombran el
+  // require del store justamente para explicar por qué van antes, y esa mención
+  // adelantaría la posición medida.
+  const posGuard = codigo.indexOf('inspectDurableKernelConfig');
+  const posStore = codigo.indexOf("require('./lib/kernel-store')");
+  assert.ok(posGuard > 0 && posStore > 0, 'deben existir ambas sentencias en el bloque');
+  assert.ok(posGuard < posStore,
+    '#5214 CA-4: el guard de config debe correr ANTES de cargar el store durable');
   assert.match(codigo, /source: 'kernel-cutover-degraded-halt'/, 'el marker nace con su source propio');
   // CA-20 — el halt informa si escribió el marker o encontró una pausa previa.
   assert.match(codigo, /markerWritten/);

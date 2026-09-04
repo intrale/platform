@@ -56,6 +56,10 @@ const { detectInjection } = require('./handoff');
 // `RESERVED_STORE_NAMESPACES` se IMPORTA, no se copia (#5898 · CA-3): una
 // segunda lista literal en este archivo se desincronizaría del store.
 const { parseSecretRef, RESERVED_STORE_NAMESPACES } = require('./credentials');
+// #5214 — Única fuente de verdad de "qué es un tableName inválido" y del texto
+// del diagnóstico. Se IMPORTA, no se copia: el guard del boot y esta validación
+// lazy deben rechazar exactamente el mismo conjunto de valores.
+const { classifyTableName, DURABLE_CONFIG_ABORT_MESSAGE } = require('./kernel-durable-config-guard');
 
 // -----------------------------------------------------------------------------
 // Constantes
@@ -165,14 +169,22 @@ function normalizeConfig(cfg, driver) {
   const c = cfg && typeof cfg === 'object' ? cfg : {};
   const kernel = c.kernel && typeof c.kernel === 'object' ? c.kernel : c;
   const isInMemory = driver && driver.kind === 'in-memory';
-  const tableName = typeof kernel.tableName === 'string' && kernel.tableName
-    ? kernel.tableName
+  // #5214 · CA-1 — La clasificación se DELEGA en el guard, no se re-implementa:
+  // dos criterios distintos de "tableName inválido" (uno acá, otro en el boot)
+  // se desincronizan, y el que se desincronice de menos es el que deja pasar el
+  // valor al driver real. Antes esta línea era `typeof x === 'string' && x`, que
+  // acepta `"   "` por truthy: whitespace llegaba a DynamoDB como nombre de tabla.
+  const verdict = classifyTableName(kernel.tableName);
+  const tableName = verdict.status === 'ok'
+    ? verdict.value
     : (isInMemory ? DEFAULT_INMEMORY_TABLE : null);
   if (!tableName) {
-    throw new KernelStoreError(
-      'config.tableName requerido para el driver real: la tabla/naming/región del kernel se define por config, nunca hardcode (A05/CA-9)',
-      {},
-    );
+    // El driver real NO tiene default: sin nombre de tabla válido, fail-closed.
+    // El texto es la CONSTANTE del guard (CA-3): nombra `.pipeline/config.yaml`,
+    // `kernel.tableName` y el runbook, y no interpola el valor recibido (A02).
+    // La variante (missing/empty/whitespace) va en el campo estructurado, no en
+    // el mensaje — las tres comparten remedio.
+    throw new KernelStoreError(DURABLE_CONFIG_ABORT_MESSAGE, { configReason: verdict.reason });
   }
   return {
     tableName,
