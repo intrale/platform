@@ -150,6 +150,73 @@ Rewinds bloqueados se loggean en `.pipeline/audit/rewinds-blocked.jsonl` con el 
 
 Markers en vuelo en `.pipeline/audit/rewinds-in-flight/<issue>.json` con `{step, ts}`. Al boot, los > 5min se limpian automáticamente.
 
+## Segundo frente: rewind automático por conflicto de merge (#4967)
+
+> Tracking: issue [#4967](https://github.com/intrale/platform/issues/4967) (hijo de [#4637](https://github.com/intrale/platform/issues/4637)).
+> Emisor del evento: [#4966](https://github.com/intrale/platform/issues/4966) (watcher de mergeabilidad).
+
+El rewind tiene **dos frentes de autorización sobre una sola transacción**. El de arriba es el tuyo (Telegram / CLI). Éste es interno del pipeline y **vos no lo disparás**: lo dispara el watcher cuando confirma que un PR quedó `CONFLICTING` contra `main`, para que el issue vuelva a su propietario en vez de congelarse en silencio (el escape de #4569 estuvo 2 días trabado).
+
+```
+watcher de mergeabilidad (#4966)
+  ↓ evento tipado {source:'mergeability-watcher', repo, pr, issue, headRefOid}
+pipeline-rewind.js#rewindFromMergeConflict
+  ↓ 1. valida el evento (shape CERRADO: campo extra ⇒ rechazo)
+  ↓ 2. sanitiza el motivo fijo (constante del código)
+  ↓ 3. toma el lock canónico del issue (file-lock.js#withLock)
+  ↓ 4. dedupe {repo, pr, headRefOid} — si ya se procesó: NO-OP auditado
+  ↓ 5. resuelve el propietario desde el filesystem + skills_por_fase
+  ↓ 6. relee el PR por API (TOCTOU) — cualquier cambio ⇒ NO-OP auditado
+  ↓ 7. reclama la tupla (antes de mutar)
+  ↓ 8. audita la INTENCIÓN — si falla, aborta sin mutar
+  ↓ 9. misma transacción que el frente humano (kill + move + audit + comentario)
+  ↓ postea comentario con marker <!-- merge-conflict-rewind-event -->
+```
+
+**Lo que este frente NO hace, por diseño:** no cierra, no mergea, no pushea y **no modifica el PR**. Tampoco escribe una identidad humana en ningún artefacto: el YAML del rebote dice `rechazado_por_skill: mergeability-watcher` / `rechazado_por: pipeline` / `source: merge-conflict`, y el `.reason.json` **omite** `operatorId` (no lo pone en `null` ni en `"desconocido"`).
+
+### Por qué no es "un string más en la whitelist"
+
+El array de sources autorizados del frente humano sigue siendo exactamente `['telegram-commander', 'cli-local']`, y **no se le agregó nada**. Si el origen interno se hubiera agregado ahí, cualquiera capaz de depositar un archivo en `.pipeline/rejections/` podría nombrarlo y llegar autorizado al núcleo eligiendo destino y motivo (escalada de privilegios por file-drop, OWASP A01).
+
+En su lugar:
+
+- La capacidad interna viaja como **`Symbol` módulo-privado**. Un `Symbol` no sobrevive `JSON.parse`, así que ningún archivo del bus puede forjarlo, y la comparación es por identidad (un `Symbol('mergeability-watcher')` creado afuera **no** sirve).
+- `rewind-event-adapter.js` es **fail-closed**: un `source` desconocido se colapsa a `''` en vez de propagarse. El bus de rejections ya no puede nombrar ningún origen interno. El valor original queda en `_envelope.transcribe_source` para forensics, donde ningún gate lo lee.
+
+### Destino: se deriva, no viaja en el evento
+
+El propietario sale de `getCurrentIssuePosition` (filesystem) y se valida contra `skills_por_fase` del **config resuelto**. No se usa `resolveAlias`: `PHASE_MAPPING` es un enum cerrado sin alias para `*-dev`, `tester`, `qa`, `build` ni `delivery` — justamente los owners más frecuentes de un PR conflictivo — y tiene una política `deny-by-default` que prohíbe agregarlos.
+
+| Código | Cuándo |
+|---|---|
+| `ISSUE_NOT_IN_PIPELINE` | el issue no está en ninguna fase |
+| `OWNER_NOT_FOUND` | ningún archivo del issue corresponde a un skill declarado de esa fase |
+| `OWNER_AMBIGUOUS` | más de un candidato (`aprobacion` tiene 4 skills, `verificacion` 3) |
+| `PHASE_SKILLS_UNDECLARED` | el config llegó sin `skills_por_fase` (#5174: vive en `pipeline.config.json`, lo fusiona el `config-resolver`) |
+
+### Revalidación TOCTOU
+
+Dentro del lock, justo antes de mutar, se relee el PR por API y se verifica **en conjunto**: repo esperado, número, `state: OPEN`, `baseRefName: main`, `headRefOid` idéntico al del evento, rama `agent/<issue>-…` y conflicto vigente. Cualquier fallo es un **no-op auditado** con su propio código:
+
+`PR_CLOSED` · `PR_BASE_CHANGED` · `PR_REPO_MISMATCH` · `PR_ASSOCIATION_MISMATCH` · `PR_SHA_CHANGED` · `PR_NOT_CONFLICTING` · `PR_STATE_UNKNOWN` · `PR_REVALIDATION_FAILED`
+
+El `revalidatePr` entra **inyectado** por `deps`: `pr-info-fetcher.js` todavía no expone `headRefOid` ni `baseRefName` (scope de #4966) y asocia PR↔issue por convención de nombre de rama.
+
+### Idempotencia dura
+
+Store propio en `.pipeline/audit/rewinds-merge-dedupe/`, clave `sha256(repo#pr@headRefOid)` como nombre de archivo (hexadecimal puro: `repo` es metadata externa y nunca participa de un path). Se evalúa **dentro del lock** y el `claim` va **antes** de mutar: si el move falla, la tupla queda reclamada y el watcher no reintenta solo — un rewind perdido lo disparás vos a mano; uno duplicado movería archivos dos veces y mataría dos agentes.
+
+Polls repetidos, reintentos concurrentes y reinicios del Pulpo producen **como máximo una transición**. Un `headRefOid` nuevo sí es un evento nuevo.
+
+### Lock
+
+Este flujo cablea `lib/file-lock.js#withLock` sobre el marcador in-flight del issue. Hasta #4967, `REWIND_LOCK_TTL_MS` estaba declarado y exportado **sin ningún uso**: lo único que había era `writeInFlightMarker`, que es un breadcrumb para el sweep post-crash, no un mutex.
+
+### Sobre el punto de no retorno
+
+`isNoReturnState()` sigue devolviendo **siempre `false`** (stub, ver #4986). **Este camino no está protegido por él** — no lo asumas ni al leer los tests ni al operar.
+
 ## Decisiones que NO entran en scope
 
 - **`/rechazar`** como comando del Commander → #3415.
