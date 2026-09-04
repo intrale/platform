@@ -448,7 +448,11 @@ test('los eventos persistidos no transportan secretos ni texto del provider', as
         const op = wiring.getOrCreateOperation({
             key: 'k', config: GATE_ABIERTO, kind: 'agent', skill: 'guru', issue: 1, registry: new Map(),
         });
-        const CANARIO = 'sk-ant-CANARIO-COMPLETO-0123456789';
+        // Canario SINTETICO, no es una credencial: el test verifica justamente
+        // que este valor NO aparezca en el audit. Se declara como falso positivo
+        // por linea (el escape que define el propio scanner) en vez de exceptuar
+        // el path entero en el allowlist.
+        const CANARIO = 'sk-ant-CANARIO-COMPLETO-0123456789'; // secret-scan:ignore
         await wiring.runAttempt({
             operation: op, provider: 'anthropic', path: 'primary', destination: 'agent-child',
             invalidableScopes: SCOPES_INVALIDABLES, destinationsCatalog: CATALOGO,
