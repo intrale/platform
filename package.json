@@ -4,10 +4,13 @@
   "scripts": {
     "prepare": "husky || true",
     "validate:agent-models": "node .pipeline/lib/agent-models-validate.js",
-    "test:pipeline": "node --test \".pipeline/lib/__tests__/**/*.test.js\" \".pipeline/tests/**/*.test.js\" \"qa/scripts/__tests__/**/*.test.js\"",
+    "test:pipeline": "node --test \".pipeline/**/*.test.js\" \"qa/scripts/__tests__/**/*.test.js\" \"scripts/**/*.test.js\" \".claude/hooks/tests/test-p09-telegram-client.js\"",
+    "test:hooks": "node --test --test-timeout=30000 \".claude/hooks/tests/test-*.js\"",
     "smoke:commander": "node .pipeline/tests/smoke/commander-degraded.smoke.js"
   },
   "dependencies": {
+    "@aws-sdk/client-ssm": "3.1101.0",
+    "@aws-sdk/credential-provider-ini": "3.973.11",
     "ajv": "^8.20.0",
     "canvas": "^3.2.1",
     "js-yaml": "^4.1.1",

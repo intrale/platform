@@ -46,6 +46,11 @@ const CAUSAS = Object.freeze({
     HALT_HUMANO: 'halt_humano',
     CB_INFRA: 'cb_infra',
     PRESION_RECURSOS: 'presion_recursos',
+    // #6708 — Guardián de disco en umbral rojo: el despacho de las fases
+    // pesadas (`build`, `verificacion`) queda frenado hasta recuperar margen.
+    // Es ALERTABLE: un disco en rojo hace fallar builds y tests por razones
+    // que el pipeline reporta como defectos del issue, no como falta de disco.
+    DISCO_LLENO: 'disco_lleno',
     VENTANA_HORARIA: 'ventana_horaria',
     REST_MODE: 'rest_mode',
     COOLDOWN: 'cooldown',
@@ -69,6 +74,10 @@ const PRECEDENCIA = Object.freeze([
     CAUSAS.HALT_HUMANO,
     CAUSAS.CB_INFRA,
     CAUSAS.PRESION_RECURSOS,
+    // #6708 — Justo debajo de la presión de CPU/RAM y por encima de las
+    // causas esperadas: si el disco está en rojo, eso explica el no-despacho
+    // mejor que una ventana horaria, y hay que decirlo.
+    CAUSAS.DISCO_LLENO,
     CAUSAS.VENTANA_HORARIA,
     CAUSAS.REST_MODE,
     CAUSAS.COOLDOWN,
@@ -88,6 +97,7 @@ const LABELS = Object.freeze({
     [CAUSAS.HALT_HUMANO]: 'Detenido por humano',
     [CAUSAS.CB_INFRA]: 'Circuit breaker de infraestructura',
     [CAUSAS.PRESION_RECURSOS]: 'Presión de recursos',
+    [CAUSAS.DISCO_LLENO]: 'Sin espacio en disco',
     [CAUSAS.VENTANA_HORARIA]: 'Fuera de ventana horaria',
     [CAUSAS.REST_MODE]: 'Modo descanso',
     [CAUSAS.COOLDOWN]: 'En cooldown',
@@ -110,6 +120,7 @@ const CAUSAS_ALERTABLES = Object.freeze(new Set([
     CAUSAS.HALT_HUMANO,        // pausa/desync/needs-human real → requiere intervención
     CAUSAS.CB_INFRA,           // circuit breaker de infra abierto
     CAUSAS.PRESION_RECURSOS,   // saturación → "hace rato sin ejecución por recursos"
+    CAUSAS.DISCO_LLENO,        // #6708 — disco en rojo: build/QA frenados
     CAUSAS.BLOQUEO_DEPENDENCIA,
     CAUSAS.DEADLOCK,
 ]));
@@ -125,6 +136,19 @@ const ARTIFACT_FILENAME = 'dispatch-cause.json';
 // alerta, si la MISMA anomalía sigue vigente, se re-alerta recién pasado este
 // intervalo (no silencio permanente, pero tampoco spam por tick).
 const ANOMALY_REALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min
+
+// #5400 — Dimensión DURACIÓN, DISPLAY-ONLY. Una causa SILENCIOSA (modo ola,
+// ventana horaria, cooldown, sin agentes) explica un rato de no-despacho; no lo
+// explica para siempre. Pasado este umbral, con trabajo elegible esperando, el
+// banner del dashboard la pinta como grave en vez de como estado esperado.
+//
+// rev-1 (B5): este flag NO envía Telegram. El aviso de "hace N sin despachar" lo
+// emite EXCLUSIVAMENTE `wave-stall-watchdog` — una sola cadena por hecho. Acá se
+// conserva únicamente la señal visual, que no tiene cooldown ni cola y por lo
+// tanto no puede duplicar nada. El valor default coincide a propósito con
+// `wave_watchdog.declared_cause_escalate_minutes` y el Pulpo se lo pasa desde esa
+// MISMA clave de config: la perilla gobierna aviso y banner a la vez.
+const DEFAULT_SILENT_ESCALATE_MS = 45 * 60 * 1000; // 45 min
 
 // ── Helpers ──
 
@@ -283,9 +307,20 @@ function clearArtifact(pipelineDir) {
  */
 function publish(opts) {
     const { pipelineDir, snapshot, now, alert, log } = opts || {};
+    const o = opts || {};
     const nowMs = Number.isFinite(now) ? now : 0;
     const logFn = typeof log === 'function' ? log : () => {};
     const alertFn = typeof alert === 'function' ? alert : null;
+
+    // #5400 — parámetros del REALCE POR DURACIÓN del banner (display-only, B5).
+    // Ausentes ⇒ desactivado (`elegiblesEsperando` 0), o sea: un caller que no
+    // los pasa conserva el comportamiento exacto de #4751.
+    const silentEscalateMs = Number.isFinite(o.silentEscalateMs) && o.silentEscalateMs > 0
+        ? o.silentEscalateMs
+        : DEFAULT_SILENT_ESCALATE_MS;
+    const elegiblesEsperando = Number.isInteger(o.elegiblesEsperando) && o.elegiblesEsperando > 0
+        ? o.elegiblesEsperando
+        : 0;
 
     const resolved = resolveCause(snapshot, nowMs);
 
@@ -305,6 +340,16 @@ function publish(opts) {
     const ts = mismaCausa && Number.isFinite(prev.ts) ? prev.ts : nowMs;
     const prevAlertTs = mismaCausa && Number.isFinite(prev.lastAlertTs) ? prev.lastAlertTs : 0;
 
+    // #5400 — ¿esta causa silenciosa se sostuvo demasiado? `ts` es el instante en
+    // que la causa EMPEZÓ (se preserva mientras no cambie). Sirve para PINTAR el
+    // banner, no para alertar: la antigüedad de la causa se reinicia en cada
+    // transición y por eso no es un reloj válido para decidir un aviso (B1).
+    const causaEdadMs = Math.max(0, nowMs - ts);
+    const esSilenciosa = !resolved.anomalia && !CAUSAS_ALERTABLES.has(resolved.causa);
+    const escalaPorDuracion = esSilenciosa
+        && causaEdadMs >= silentEscalateMs
+        && elegiblesEsperando > 0;
+
     // ¿Alertar? En transición de causa siempre. Si la causa persiste y es
     // anomalía, re-alertar pasado el cooldown (no silencio permanente, AC-6).
     let debeAlertar = !mismaCausa;
@@ -320,6 +365,9 @@ function publish(opts) {
         lastSeenTs: nowMs,
         anomalia: resolved.anomalia,
         lastAlertTs: debeAlertar ? nowMs : prevAlertTs,
+        // #5400 — visible para el dashboard: "esto ya lleva demasiado".
+        escaladoPorDuracion: escalaPorDuracion,
+        elegiblesEsperando,
     };
 
     try {
@@ -342,6 +390,18 @@ function publish(opts) {
     // fail-closed). El banner/artifact se publica SIEMPRE (writeArtifact arriba);
     // acá se filtra únicamente el envío al canal externo. Un estado esperado como
     // MODO_OLA se ve en el dashboard pero no genera ruido de notificación.
+    //
+    // #5400 (rev-1, B5) — `escalaPorDuracion` NO es una vía de alertabilidad.
+    // Lo fue en rev-0 y eso creó una SEGUNDA cadena de avisos para el MISMO
+    // hecho: las 5 causas silenciosas están todas mapeadas al vocabulario del
+    // watchdog, comparten el mismo instante de inicio y ambos emisores escalaban
+    // a los 45 min con cooldown de 30, sin dedup entre colas. El operador recibía
+    // el par, repetido cada media hora, contra "avisar UNA vez" (CA-4).
+    //
+    // La dimensión duración vive ahora en UN solo lugar: `wave-stall-watchdog`,
+    // que además mide contra la inactividad real de despacho en vez de contra la
+    // antigüedad de la causa (inmune al flapeo). Acá el flag queda como dato
+    // DISPLAY-ONLY del banner del dashboard: pinta la causa como grave, no envía.
     const esAlertable = resolved.anomalia || CAUSAS_ALERTABLES.has(resolved.causa);
     if (debeAlertar && esAlertable && alertFn) {
         try {
@@ -364,6 +424,7 @@ module.exports = {
     CAUSAS_VALIDAS,
     ARTIFACT_FILENAME,
     ANOMALY_REALERT_COOLDOWN_MS,
+    DEFAULT_SILENT_ESCALATE_MS,
     resolveCause,
     validateCause,
     readArtifact,

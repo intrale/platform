@@ -51,6 +51,38 @@ try {
     renderProductSwitcherSsr = () => '';
 }
 
+// #5724 CA-4 — Banner "Dispatch suspendido por desync". Esta vista arma su
+// propio shell (no pasa por `pageShell`), así que el banner se monta a mano.
+// Require defensivo como el resto del módulo: si no carga, la vista renderiza
+// igual sin banner en vez de romper.
+//
+// Nota: este shell no incluye FETCH_CLIENT_JS, así que el poll de refresco no
+// tiene `fetchJson` y falla en silencio (el bundle lo contempla). Lo que queda
+// es el SSR, que ya es correcto al cargar la página — es justo lo que hace
+// falta acá, porque el bloqueo dura horas y esta ventana no es de kiosko.
+let _dsbResolve = () => null;
+let _dsbRender = () => '';
+let _DSB_CSS = '';
+let _dsbBundle = () => '';
+try {
+    ({
+        resolveDesyncStatus: _dsbResolve,
+        renderDesyncBlockBannerSsr: _dsbRender,
+        DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+        desyncBlockBannerBundleJs: _dsbBundle,
+    } = require('./desync-block-banner.js'));
+} catch { /* opcional */ }
+
+// El ícono del banner es un `<use href="#ic-pause-lock">`: sin el sprite
+// inlineado en el documento no resuelve y el banner queda sin su símbolo de
+// alarma (#5724 rev-3). Esta vista no cargaba ningún sprite.
+let _loadIconSprite = () => '';
+try {
+    // eslint-disable-next-line global-require
+    const nav = require('./nav-tabs');
+    if (typeof nav.loadIconSprite === 'function') _loadIconSprite = nav.loadIconSprite;
+} catch { /* opcional */ }
+
 // #4778 · pieza 3 del mockup 36 — bandeja GATE 2 filtrada por producto. Require
 // defensivo (fail-open): si el módulo no carga, la vista igual renderiza el grid
 // (pieza 2) sin la bandeja. El filtrado por productId es responsabilidad del
@@ -323,6 +355,38 @@ function estadoProductosStyle() {
 }
 
 /**
+ * #6208 rev3 — Producto efectivo de las filas de la bandeja GATE 2 que el kernel
+ * NO tipa por producto (hoy: TODAS las firmables del depósito, que salen con
+ * `productId: null`).
+ *
+ * Sin esto, `esperando-firma.js` las atribuía al literal legacy `'intrale'`, un
+ * projectId que NO está en el catálogo (`.pipeline/descriptors/` sólo tiene
+ * `intrale-platform`): el filtro por producto activo las descartaba TODAS y la
+ * bandeja embebida jamás mostraba una firma real, con cartel verde de "nada
+ * esperando tu firma". Falso éxito silencioso — justo lo que el issue mata.
+ *
+ * Resolución, en orden y sin adivinar:
+ *   1. el producto con `role === 'primary'` del catálogo vivo;
+ *   2. si el catálogo tiene un único producto, ese;
+ *   3. si no se puede resolver (multi-producto sin primario), el producto ACTIVO
+ *      ⇒ las filas sin tipar quedan VISIBLES en la bandeja que el operador está
+ *      mirando. Fail-open hacia la visibilidad a propósito: una firma sin
+ *      producto no puede "filtrarse" a otro producto (no pertenece a ninguno),
+ *      pero esconderla en silencio sí sería el bug que estamos matando.
+ *
+ * @param {Array}  list catálogo efectivo ya filtrado por id seguro.
+ * @param {?string} activeProductId producto activo (ya validado).
+ * @returns {?string} projectId al que pertenecen las filas sin tipar, o null.
+ */
+function untypedProductId(list, activeProductId) {
+    const rows = Array.isArray(list) ? list.filter(p => p && isSafeProductId(p.projectId)) : [];
+    const primary = rows.find(p => p.role === 'primary');
+    if (primary) return primary.projectId;
+    if (rows.length === 1) return rows[0].projectId;
+    return isSafeProductId(activeProductId) ? activeProductId : null;
+}
+
+/**
  * Fragmento SSR del grid "estado por producto". Escapa todo dato reflejado.
  *
  * @param {object} [opts]
@@ -330,6 +394,10 @@ function estadoProductosStyle() {
  * @param {object} [opts.productState] mapa `projectId → estado namespaceado`.
  * @param {string} [opts.activeProductId] producto activo (del switcher/URL).
  * @param {string} [opts.basePath]     base para los enlaces del switcher.
+ * @param {Array}  [opts.esperandoFirma] filas de la bandeja GATE 2 (read model).
+ * @param {object} [opts.esperandoFirmaInbox] #6208 rev3 · metadatos del read model
+ *   (`vacio`/`banda`/`degraded`). Sin ellos el componente de firma cae al vacío
+ *   VERDE aunque el depósito esté ilegible.
  * @returns {string} HTML del grid.
  */
 function renderEstadoProductosSsr(opts = {}) {
@@ -369,8 +437,27 @@ function renderEstadoProductosSsr(opts = {}) {
     let gateTray = '';
     if (activeProductId && esperandoFirmaView && typeof esperandoFirmaView.renderEsperandoFirmaSsr === 'function') {
         try {
-            const trayState = { esperandoFirma: Array.isArray(opts.esperandoFirma) ? opts.esperandoFirma : [] };
-            const trayHtml = esperandoFirmaView.renderEsperandoFirmaSsr(trayState, { productId: activeProductId });
+            const trayState = {
+                esperandoFirma: Array.isArray(opts.esperandoFirma) ? opts.esperandoFirma : [],
+                // #6208 rev3 — los metadatos del read model viajan también acá.
+                // Sin ellos el componente cae a `renderEmptyStateSsr(null)` ⇒
+                // vacío VERDE "leí la lista entera y estaba vacía" incluso con el
+                // depósito del kernel ilegible, y la banda de índice incompleto
+                // tampoco se repone. Es el falso éxito silencioso que mata #6208.
+                esperandoFirmaInbox: (opts.esperandoFirmaInbox && typeof opts.esperandoFirmaInbox === 'object')
+                    ? opts.esperandoFirmaInbox
+                    : null,
+            };
+            const trayHtml = esperandoFirmaView.renderEsperandoFirmaSsr(trayState, {
+                productId: activeProductId,
+                // #6208 rev3 — las filas FIRMABLES del depósito vienen con
+                // `productId: null` (el kernel todavía no las tipa por producto).
+                // El producto efectivo de esas filas es el producto PRIMARIO REAL
+                // del catálogo, no el literal legacy 'intrale' (que no existe en
+                // `.pipeline/descriptors/`): con el literal, el filtro las
+                // descartaba todas y la bandeja embebida nunca mostraba una firma.
+                untypedProductId: untypedProductId(list, activeProductId),
+            });
             gateTray = '<div class="ep-gate-tray">'
                 + '<h3 class="ep-subhead"><span aria-hidden="true">✍️</span> Firmas pendientes de este producto (GATE 2)</h3>'
                 + trayHtml + '</div>';
@@ -491,12 +578,19 @@ function renderEstadoProductos(opts = {}) {
         + '<meta name="viewport" content="width=device-width, initial-scale=1">'
         + '<title>Intrale · Estado por producto</title>'
         + '<style>' + loadThemeCss() + '</style>'
+        + '<style>' + _DSB_CSS + '</style>'
         + '</head><body style="background:var(--in-bg,#0D1117);color:var(--in-fg,#e6edf3);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:24px">'
+        + '<div aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">' + _loadIconSprite() + '</div>'
         + '<div style="max-width:1040px;margin:0 auto">'
         + '<a href="/dashboard" style="color:var(--brand-cyan,#00D6FF);text-decoration:none;font-size:12px">← Volver al dashboard</a>'
+        // #5724 CA-4 — dispatch suspendido por desync, arriba del estado por
+        // producto: si el dispatch está frenado, TODOS los productos están
+        // frenados y el grid de abajo muestra un avance que no va a moverse.
+        + _dsbRender(_dsbResolve(opts && opts.desyncStatus))
         + renderEstadoProductosSsr(opts)
         + '</div>'
         + '<script>' + renderEstadoProductosClientScript() + '</script>'
+        + '<script>' + _dsbBundle() + '</script>'
         // Client script de la bandeja GATE 2 (firma/rechazo con CSRF) — sólo si el
         // módulo cargó. Sin él, la bandeja embebida se ve pero sus botones no operan.
         + ((esperandoFirmaView && typeof esperandoFirmaView.renderEsperandoFirmaClientScript === 'function')
@@ -516,6 +610,7 @@ module.exports = {
     stateMeta,
     waveMeta,
     isSafeProductId,
+    untypedProductId,
     ACCENT_PALETTE,
     STATE_META,
 };

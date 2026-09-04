@@ -15,6 +15,10 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #5795 — contrato compartido de la clase cerrada 'authentication_rejected'.
+const authRejection = require('../auth-rejection');
+// #6272 — whitelist estricta del id de modelo antes de tocar argv (SR-A.1).
+const { sanitizeModelId } = require('../../model-propagation');
 
 // -----------------------------------------------------------------------------
 // detectLauncher — multi-tier detection (preservar orden de precedencia I6)
@@ -76,21 +80,56 @@ function _resetLauncherCacheForTesting() {
 // buildSpawn — devuelve el objeto que el wrapper pasa a child_process.spawn.
 //
 // Contrato:
-//   input:  { args, cwd, env }
-//   output: { cmd, args, spawnOpts }
+//   input:  { args, cwd, env, interactive_supported, model? }
+//   output: { cmd, args, spawnOpts, modelTrace? }
 //
 // `args` ya viene completo con --system-prompt-file, --output-format, etc.
 // Acá solo prependemos `prefixArgs` del launcher (ej. la ruta a cli.js cuando
 // usamos node directo) y armamos `spawnOpts` con shell del launcher.
+//
+// #6272 — `model` (OPCIONAL). Cuando el launcher lo pasa, se agrega como
+// `['--model', id]`: DOS ELEMENTOS SEPARADOS del array de args, nunca por
+// interpolación de string. `detectLauncher` puede devolver `shell:true` (tiers 4
+// y 5: cmd-shim / path-fallback), así que un id con metacaracteres se
+// interpretaría en `cmd.exe` — por eso el valor pasa ANTES por la whitelist
+// estricta (SR-A.1, `lib/model-propagation.js`). Si no valida, el flag se OMITE,
+// el agente hereda el default del CLI y queda `modelTrace` para la traza del
+// caller: nunca se aborta el spawn (CA-3).
+//
+// Defensa en profundidad a propósito: el launcher ya validó el id antes de
+// llegar acá, pero `buildSpawn` es la ÚLTIMA frontera antes de argv y no confía
+// en su caller. Un handler nuevo que reuse esta función (ej. kimi-moonshot)
+// hereda la validación sin tener que acordarse de pedirla.
+//
+// Regresión cero (CA-4): con `model` undefined el objeto devuelto es idéntico al
+// previo — mismos args, mismo `spawnOpts`, y sin la clave `modelTrace`.
+//
+// Posición del flag: inmediatamente después de `prefixArgs` y ANTES de `args`,
+// para no quedar detrás de un eventual argumento posicional del CLI.
 // -----------------------------------------------------------------------------
-function buildSpawn({ args, cwd, env, interactive_supported }) {
+function buildSpawn({ args, cwd, env, interactive_supported, model }) {
     const launcher = getLauncher();
     // #3605 — Opt-in por skill+provider. Default 'ignore' preserva I3
     // (regresión cero CA-4); 'pipe' habilita stdin para chat operador→agente.
     const stdin = interactive_supported === true ? 'pipe' : 'ignore';
-    return {
+
+    // #6272 — el flag sólo entra en juego si el caller pidió propagar. `undefined`
+    // = camino legacy intacto (no se evalúa la whitelist ni se agrega `modelTrace`).
+    let modelArgs = [];
+    let modelTrace = null;
+    if (model !== undefined && model !== null) {
+        const sane = sanitizeModelId(model);
+        if (sane.model) {
+            modelArgs = ['--model', sane.model];
+            modelTrace = { applied: true, model: sane.model, reason: 'ok' };
+        } else {
+            modelTrace = { applied: false, model: null, reason: sane.reason };
+        }
+    }
+
+    const out = {
         cmd: launcher.cmd,
-        args: [...launcher.prefixArgs, ...args],
+        args: [...launcher.prefixArgs, ...modelArgs, ...args],
         spawnOpts: {
             cwd,
             stdio: [stdin, 'pipe', 'pipe'],
@@ -100,6 +139,8 @@ function buildSpawn({ args, cwd, env, interactive_supported }) {
             env,
         },
     };
+    if (modelTrace) out.modelTrace = modelTrace;
+    return out;
 }
 
 // -----------------------------------------------------------------------------
@@ -198,12 +239,23 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl, parser
         const allowlist = (quotaExhaustedModule.KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER || {})['anthropic']
             || (cfg && cfg.error_types)
             || [];
-        const r = quotaExhaustedModule._detectAnthropic(evt, allowlist);
+        const r = quotaExhaustedModule._detectAnthropic(evt, allowlist, {
+            providerId: 'anthropic',
+        });
         if (r && r.matched) {
+            // #5455 — El canal de contenido devuelve un resultado DISCRIMINADO
+            // con `resetsAt` ya parseado desde el texto del aviso (el frame no
+            // trae `evt.resets_at`), más `source`/`rawExcerpt` redactado. Los
+            // propagamos para que el caller pueda persistir vía `setFlag` sin
+            // volver a parsear nada. Para los matches estructurales de siempre,
+            // `r.resetsAt` es `undefined` y cae a `evt.resets_at` (contrato
+            // previo intacto).
             return {
                 matched: true,
                 errorType: r.errorType,
-                resetsAt: evt.resets_at,
+                resetsAt: r.resetsAt != null ? r.resetsAt : evt.resets_at,
+                ...(r.source ? { source: r.source } : {}),
+                ...(r.rawExcerpt ? { rawExcerpt: r.rawExcerpt } : {}),
                 rawLine: line,
                 evt,
             };
@@ -213,12 +265,44 @@ function detectQuotaExhausted(logPath, cfg, quotaExhaustedModule, fsImpl, parser
     return { matched: false };
 }
 
+// -----------------------------------------------------------------------------
+// detectAuthenticationRejected (#5795) — clase cerrada `authentication_rejected`.
+//
+// Anthropic documenta una taxonomía de `error.type` acotada y explícita. El
+// único tipo que significa "la credencial presentada no sirve" es
+// `authentication_error` (HTTP 401, "There's an issue with your API key").
+//
+// POSITIVOS: authentication_error
+//
+// NEGATIVOS — el resto de la taxonomía documentada. `permission_error` es el
+// que más se confunde: es HTTP 403 y significa que la clave ES VÁLIDA pero no
+// tiene permiso sobre el recurso. Clasificarlo como credencial rechazada haría
+// que el coordinador de #5794 re-resuelva una credencial sana y consuma su
+// presupuesto al pedo.
+//
+// NO hay entrada para `invalid_api_key`: ese es el código de OpenAI y Anthropic
+// no lo documenta. Si aparece en un log de un spawn Anthropic (frame ajeno
+// embebido, tool_result, inyección), este detector devuelve "sin clasificación"
+// — que es justo el aislamiento cross-provider que pide el issue.
+// -----------------------------------------------------------------------------
+const detectAuthenticationRejected = authRejection.makeDetector({
+    adapter: 'anthropic',
+    positives: ['authentication_error'],
+    negatives: [
+        'permission_error', 'billing_error',
+        'rate_limit_error', 'usage_limit_error', 'weekly_quota_exhausted',
+        'invalid_request_error', 'not_found_error', 'request_too_large',
+        'api_error', 'overloaded_error', 'timeout_error',
+    ],
+});
+
 module.exports = {
     name: 'anthropic',
     detectLauncher: getLauncher,
     buildSpawn,
     parseTokensFromLog,
     detectQuotaExhausted,
+    detectAuthenticationRejected,
     // exports internos para tests
     _detectLauncherFresh: detectLauncher,
     _setLauncherForTesting,

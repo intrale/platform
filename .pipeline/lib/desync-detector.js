@@ -67,6 +67,7 @@
 const fs = require('fs');
 const path = require('path');
 const { notifyTelegram } = require('./notify-telegram');
+const operationalState = require('./operational-state');
 
 const DESYNC_FLAG_BASENAME = '.desync-detected.flag';
 
@@ -89,6 +90,33 @@ function normalizeIssue(issue) {
  * excepciones de schema (si waves.json está roto, devolvemos null y dejamos
  * que el caller decida cómo tratarlo). Sin fallback a partial-pause —
  * acá queremos la canónica del waves.
+ *
+ * #5176 · A-2 — EXCLUSIÓN JUSTIFICADA de la migración al envoltorio.
+ * -----------------------------------------------------------------
+ * Este call site NO puede traducirse a `operationalState.getWaveScopeIssues()`
+ * ni a `getActiveWave()`. Las tres divergencias (verificadas, no teóricas):
+ *
+ *   1. `null` vs `[]`. Acá, "sin `active_wave`" devuelve `null` y significa
+ *      AUSENCIA DE CANÓNICA — explícitamente "no es desync" (ver el comentario
+ *      de abajo). `getWaveScopeIssues()` delega en `waves.getAllowlist()`, que
+ *      devuelve `[]`. Colapsar ausencia en "canónica vacía" convierte cada
+ *      ventana entre olas en un desync FALSO permanente, con flag y
+ *      human-block: el detector frenaría el pipeline justo cuando no hay nada
+ *      que detectar.
+ *
+ *   2. Tolerante → estricto. `getActiveWave()` usa `readWaveStateStrict()`,
+ *      que es fail-closed y LANZA ante `waves.json` corrupto. Este detector
+ *      corre en el tick del Pulpo con contrato "nunca lanza": un archivo
+ *      corrupto tumbaría el detector justo cuando más falta hace.
+ *
+ *   3. Efecto colateral. `waves.getAllowlist()` dispara alerta de Telegram
+ *      dedupada por boot (#3616). El detector corre en loop → migrarlo
+ *      cambiaría el comportamiento observable, contra CA-8.
+ *
+ * Por eso el acceso queda registrado en
+ * `lib/operational-state-lint.allowlist.json` con su razón, en vez de
+ * "migrarse" rompiendo la semántica. La versión estructural (exponer una
+ * lectura tolerante de alcance de ola en el envoltorio) es #5191.
  */
 function readWavesAllowlist(opts = {}) {
     const wavesPath = path.join(pipelineDir(), 'waves.json');
@@ -113,21 +141,28 @@ function readWavesAllowlist(opts = {}) {
 }
 
 /**
- * Lee la allowlist del .partial-pause.json. null si el archivo no existe o
- * es ilegible. Devuelve array vacío si existe pero está vacío.
+ * Lee la allowlist efectiva. `null` si el marker no existe o es ilegible.
+ * Devuelve array vacío si existe pero está vacío.
+ *
+ * #5176 · SEC-3 — se migra a `operationalState.readDispatchAllowlist()`, NO a
+ * `getDispatchState()`. Los tres estados que este detector necesita distinguir
+ * son justo los que el estado de dispatch colapsa:
+ *
+ *   - marker ausente/ilegible → `null` ("no hay nada que comparar").
+ *   - marker presente y vacío → `[]` (afirmación explícita, comparable).
+ *   - halt total (`.paused`) presente → el contenido del marker se conserva.
+ *     `getDispatchState()` retornaría `allowedIssues: []` sin siquiera leer el
+ *     marker (la precedencia `paused > partial_pause` corta antes), así que
+ *     durante un halt total el detector vería la allowlist vacía y reportaría
+ *     un desync falso contra la ola activa. El halt total es un marker aparte
+ *     y NO es "una allowlist más" (R7).
+ *
+ * El gate de dispatch NO se toca acá: este detector sólo COMPARA estado, no
+ * decide si un issue puede correr.
  */
 function readPartialAllowlist() {
-    const partialPath = path.join(pipelineDir(), '.partial-pause.json');
-    if (!fs.existsSync(partialPath)) return null;
-    let parsed;
-    try {
-        parsed = JSON.parse(fs.readFileSync(partialPath, 'utf8'));
-    } catch {
-        return null;
-    }
-    if (!parsed || typeof parsed !== 'object') return null;
-    const arr = Array.isArray(parsed.allowed_issues) ? parsed.allowed_issues : [];
-    return arr.map(normalizeIssue).filter(Boolean);
+    const snapshot = operationalState.readDispatchAllowlist();
+    return snapshot ? snapshot.issues : null;
 }
 
 /**
@@ -265,12 +300,22 @@ function detectDesync(opts = {}) {
         }
     }
 
+    // #5724 CA-3 / UX-5 — El copy describe el HECHO CONSUMADO, no una promesa.
+    //
+    // Antes, la rama `resoluble_reductivo` decía "El Pulpo realinea
+    // automáticamente... No requiere acción manual". Pero esta alerta se emite
+    // SOLO desde los caminos de human-block del pulpo: cuando llega acá, la
+    // auto-resolución YA se intentó y NO se aplicó. En el incidente del
+    // 2026-08-09 la clasificación fue justamente `resoluble_reductivo`, así que
+    // el mensaje le prometió al operador que no había nada que hacer mientras
+    // el pipeline quedaba frenado 10 horas. Nunca anunciar una auto-reparación
+    // que todavía no pasó.
     if (!opts.skipAlert) {
         try {
             notifyTelegram({
-                level: 'warn',
-                component: 'waves-desync',
-                message: 'waves.json y .partial-pause.json desincronizados',
+                level: 'error',
+                component: 'dispatch-suspendido',
+                message: 'Dispatch suspendido: la allowlist y la ola activa divergen y no se lanza ningún agente',
                 context: {
                     classification,
                     waves_allowlist: wavesAllow,
@@ -279,8 +324,13 @@ function detectDesync(opts = {}) {
                     missing_from_allowlist: removed,
                 },
                 action: classification === 'resoluble_reductivo'
-                    ? 'Divergencia REDUCTIVA (la allowlist tiene issues cerrados/ajenos respecto de la ola activa). El Pulpo realinea automáticamente a la ola activa dejando traza (carve-out #4350). No requiere acción manual salvo auditar la traza.'
-                    : 'Divergencia AMBIGUA (hay issues abiertos en la allowlist fuera de la ola, o estado indeterminado). Pipeline en human-block. NO se autoreparó (SEC-1). Decidí vos cuál archivo refleja la verdad y arreglalo a mano.',
+                    ? 'La divergencia es REDUCTIVA (la allowlist es subconjunto de la ola), pero el Pulpo NO pudo converger solo: ' +
+                      'el estado de algún issue quedó indeterminado o no pertenece a la ola activa. ' +
+                      'Mientras la divergencia siga, el dispatch no toma trabajo aunque haya cuota. ' +
+                      'Revisá los issues listados y sumalos a la allowlist si corresponde.'
+                    : 'La divergencia es AMBIGUA (hay issues abiertos en la allowlist fuera de la ola, o estado indeterminado). ' +
+                      'NO se autoreparó a propósito (SEC-1): realinear revocaría en silencio una autorización deliberada. ' +
+                      'El dispatch queda suspendido hasta que decidas cuál de los dos archivos refleja la verdad.',
                 diag: 'diff <(jq \'.active_wave.issues\' .pipeline/waves.json) <(jq \'.allowed_issues\' .pipeline/.partial-pause.json)',
             });
             result.alerted = true;
@@ -295,6 +345,26 @@ function detectDesync(opts = {}) {
 
 function isDesyncFlagSet() {
     return fs.existsSync(desyncFlagPath());
+}
+
+/**
+ * Lee el contenido del flag de bloqueo (`detected_at`, clasificación y la
+ * divergencia del momento en que se detectó). #5724 CA-3/CA-4: sin el
+ * `detected_at` un bloqueo de 10 horas se ve idéntico a uno de 10 minutos,
+ * tanto en el recordatorio de Telegram como en el dashboard.
+ *
+ * @returns {object|null} contenido parseado, o `null` si no hay flag o es
+ *   ilegible (nunca lanza: el caller degrada a "sin datos de antigüedad").
+ */
+function readDesyncFlag() {
+    try {
+        const p = desyncFlagPath();
+        if (!fs.existsSync(p)) return null;
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+        return (parsed && typeof parsed === 'object') ? parsed : null;
+    } catch {
+        return null;
+    }
 }
 
 function clearDesyncFlag() {
@@ -312,7 +382,15 @@ function clearDesyncFlag() {
                 impact: 'medio',
                 reason: 'clearDesyncFlag: destrabe de desync (aditivo/humano)',
             });
-        } catch {}
+        } catch (e) {
+            // #5172 — dejó de ser mudo. `desync-autoresolve` es notify-and-proceed
+            // y acá el veredicto ni se lee, así que no hay gate que bypassear: el
+            // borrado del flag sigue adelante igual que antes. Lo que cambia es
+            // que la pérdida del aviso al operador deja traza en vez de
+            // desaparecer.
+            require('./kernel-action-policy').logPolicyEnforcementFailure(
+                'desync-detector', 'desync-autoresolve', e);
+        }
         try { fs.unlinkSync(p); } catch {}
     }
 }
@@ -321,6 +399,7 @@ module.exports = {
     detectDesync,
     classifyDesync,
     isDesyncFlagSet,
+    readDesyncFlag,
     clearDesyncFlag,
     DESYNC_FLAG_BASENAME,
     _internal: {

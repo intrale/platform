@@ -48,6 +48,8 @@ const TABLA_GATES = [
     [CAUSAS.HALT_HUMANO, 'Detenido por humano'],
     [CAUSAS.CB_INFRA, 'Circuit breaker de infraestructura'],
     [CAUSAS.PRESION_RECURSOS, 'Presión de recursos'],
+    // #6708 — guardián de disco en rojo: frena build/verificacion.
+    [CAUSAS.DISCO_LLENO, 'Sin espacio en disco'],
     [CAUSAS.VENTANA_HORARIA, 'Fuera de ventana horaria'],
     [CAUSAS.REST_MODE, 'Modo descanso'],
     [CAUSAS.COOLDOWN, 'En cooldown'],
@@ -68,8 +70,8 @@ for (const [causa, labelEsperado] of TABLA_GATES) {
     });
 }
 
-test('los 10 gates conocidos están cubiertos por la precedencia', () => {
-    assert.strictEqual(dc.PRECEDENCIA.length, 10);
+test('los 11 gates conocidos están cubiertos por la precedencia', () => {
+    assert.strictEqual(dc.PRECEDENCIA.length, 11);
     for (const [causa] of TABLA_GATES) {
         assert.ok(dc.PRECEDENCIA.includes(causa), `PRECEDENCIA debe incluir ${causa}`);
     }
@@ -350,4 +352,132 @@ test('CA-6: causa ausente/ilegible → anomalía SÍ alerta (fail-closed) aunque
     const { alerts } = publishAndProbe(/* sin gate → anomalía */);
     assert.strictEqual(alerts.length, 1, 'la anomalía nunca se silencia');
     assert.match(alerts[0], /ANOMAL/i);
+});
+
+// =============================================================================
+// #5400 — Dimensión DURACIÓN: una causa silenciosa sostenida se REALZA en el
+// banner del dashboard. DISPLAY-ONLY: no manda Telegram.
+//
+// El agujero que cierra el issue (1h33 sin despachar y ningún aviso) lo cierra
+// `wave-stall-watchdog`, que mide contra la inactividad real de despacho. En
+// rev-0 este módulo TAMBIÉN alertaba por duración: dos cadenas para el mismo
+// hecho, ambas a 45 min con cooldown de 30 y sin dedup entre sí, o sea el
+// operador recibiendo el par cada media hora (B5 de la review). Acá queda la
+// señal visual, que no tiene cola ni cooldown y por lo tanto no puede duplicar.
+// =============================================================================
+
+const ESCALATE_MS = dc.DEFAULT_SILENT_ESCALATE_MS;
+
+/** Publica la MISMA causa silenciosa dos veces, separadas por `deltaMs`. */
+function publicarSostenida(gate, deltaMs, extra = {}) {
+    const dir = tmpDir();
+    const alerts = [];
+    const comun = {
+        pipelineDir: dir,
+        snapshot: snap({ gatesActivos: new Set([gate]) }),
+        alert: (m) => alerts.push(m),
+        ...extra,
+    };
+    // t0: la causa aparece. Silenciosa → no alerta.
+    dc.publish({ ...comun, now: NOW });
+    // t0 + delta: la causa sigue vigente.
+    const out = dc.publish({ ...comun, now: NOW + deltaMs });
+    return { dir, alerts, out };
+}
+
+test('#5400: una causa silenciosa sostenida con elegibles esperando se realza en el banner', () => {
+    const { alerts, out } = publicarSostenida(CAUSAS.MODO_OLA, ESCALATE_MS + 1, {
+        elegiblesEsperando: 7,
+    });
+    assert.strictEqual(out.escaladoPorDuracion, true, 'el banner la pinta como grave');
+    assert.strictEqual(out.elegiblesEsperando, 7, 'el dato que lo justifica queda en el artifact');
+    assert.strictEqual(alerts.length, 0, 'el aviso lo emite el watchdog, no este módulo (B5)');
+});
+
+test('#5400 (B5): una causa silenciosa sostenida NO abre una segunda cadena de Telegram', () => {
+    // Todas las causas silenciosas están mapeadas al vocabulario del watchdog
+    // (`DISPATCH_CAUSE_TO_WATCHDOG_KIND`) y comparten el mismo instante de
+    // inicio: si este módulo también alertara, el operador recibiría DOS avisos
+    // del mismo hecho en el mismo tick, repetidos cada 30 min.
+    for (const gate of [CAUSAS.MODO_OLA, CAUSAS.VENTANA_HORARIA, CAUSAS.COOLDOWN, CAUSAS.SIN_AGENTES, CAUSAS.REST_MODE]) {
+        const { alerts, out } = publicarSostenida(gate, ESCALATE_MS * 10, { elegiblesEsperando: 5 });
+        assert.strictEqual(alerts.length, 0, `${gate} sostenida no debe emitir Telegram desde acá`);
+        assert.strictEqual(out.escaladoPorDuracion, true, `${gate} sí debe realzarse en el banner`);
+    }
+});
+
+test('#5400 (B5): el umbral del realce es inyectable — lo gobierna la config del watchdog', () => {
+    // La perilla `wave_watchdog.declared_cause_escalate_minutes` alimenta tanto
+    // el aviso como el banner. En rev-0 el banner tenía su propio valor fijo, así
+    // que mover la config movía la mitad del comportamiento que decía gobernar.
+    const { out } = publicarSostenida(CAUSAS.MODO_OLA, 11 * 60_000, {
+        elegiblesEsperando: 2,
+        silentEscalateMs: 10 * 60_000,
+    });
+    assert.strictEqual(out.escaladoPorDuracion, true, 'con umbral de 10 min, 11 min ya realza');
+});
+
+test('#5400: por debajo del umbral la causa silenciosa sigue muda (no-regresión #4751)', () => {
+    const { alerts, out } = publicarSostenida(CAUSAS.MODO_OLA, ESCALATE_MS - 60_000, {
+        elegiblesEsperando: 7,
+    });
+    assert.strictEqual(alerts.length, 0, 'modo ola reciente no debe hacer ruido');
+    assert.strictEqual(out.escaladoPorDuracion, false);
+});
+
+test('#5400: sin elegibles esperando una causa silenciosa NO escala por más vieja que sea', () => {
+    // Cola legítimamente vacía de trabajo habilitado → nada que reclamar (CA-3).
+    const { alerts, out } = publicarSostenida(CAUSAS.MODO_OLA, ESCALATE_MS * 10, {
+        elegiblesEsperando: 0,
+    });
+    assert.strictEqual(alerts.length, 0);
+    assert.strictEqual(out.escaladoPorDuracion, false);
+});
+
+test('#5400: un caller que no pasa los parámetros nuevos conserva la conducta de #4751', () => {
+    // Aditividad estricta: sin `elegiblesEsperando` no hay escalada posible.
+    const { alerts, out } = publicarSostenida(CAUSAS.MODO_OLA, ESCALATE_MS * 10);
+    assert.strictEqual(alerts.length, 0);
+    assert.strictEqual(out.escaladoPorDuracion, false);
+});
+
+test('#5400 (B5): una causa silenciosa sostenida no emite NADA por más ticks que pasen', () => {
+    // El equivalente del backoff acá es más fuerte: cero avisos, siempre. El
+    // backoff verificable (CA-4) vive en el watchdog, que es el único emisor.
+    const dir = tmpDir();
+    const alerts = [];
+    const comun = {
+        pipelineDir: dir,
+        snapshot: snap({ gatesActivos: new Set([CAUSAS.MODO_OLA]) }),
+        alert: (m) => alerts.push(m),
+        elegiblesEsperando: 4,
+    };
+    dc.publish({ ...comun, now: NOW });
+    for (const delta of [ESCALATE_MS + 1, ESCALATE_MS * 2, ESCALATE_MS * 5, ESCALATE_MS * 20]) {
+        dc.publish({ ...comun, now: NOW + delta });
+    }
+    assert.strictEqual(alerts.length, 0, 'ni una sola emisión por duración desde este módulo');
+});
+
+test('#5400: una causa YA alertable no cambia de conducta por la dimensión duración', () => {
+    // PRESION_RECURSOS ya alertaba en la transición; no debe duplicar avisos.
+    const { alerts, out } = publicarSostenida(CAUSAS.PRESION_RECURSOS, ESCALATE_MS + 1, {
+        elegiblesEsperando: 9,
+    });
+    assert.strictEqual(out.escaladoPorDuracion, false, 'no es una causa silenciosa');
+    assert.strictEqual(alerts.length, 1, 'sólo el aviso de transición de siempre');
+});
+
+test('#5400: la causa recién declarada nunca escala en la misma pasada', () => {
+    const dir = tmpDir();
+    const alerts = [];
+    const out = dc.publish({
+        pipelineDir: dir,
+        snapshot: snap({ gatesActivos: new Set([CAUSAS.MODO_OLA]) }),
+        now: NOW,
+        alert: (m) => alerts.push(m),
+        elegiblesEsperando: 50,
+    });
+    assert.strictEqual(out.escaladoPorDuracion, false, 'edad 0 no puede superar el umbral');
+    assert.strictEqual(alerts.length, 0);
 });

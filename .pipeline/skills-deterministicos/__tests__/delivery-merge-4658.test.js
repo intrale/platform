@@ -22,21 +22,67 @@ const delivery = require('../delivery');
 const humanBlock = require('../../lib/human-block');
 
 // ── classifyMergeFailure (señal server-side, CA-2 / R7) ────────────────────
-test('#4658 CA-2 — classifyMergeFailure: HTTP 405 (not mergeable) = conflicto real', () => {
+// #6012 re-baseline — el 405 dejó de ser incondicionalmente "conflicto real":
+// GitHub también lo devuelve mientras calcula la mergeabilidad. Lo que este test
+// fija ahora es el DEFAULT FAIL-CLOSED de CA-4: invocado SIN `ctx` (o con un ctx
+// que no trae estado), el comportamiento es idéntico al previo a #6012 — frena
+// como conflicto terminal. La lectura transitoria exige señal explícita del
+// servidor; la ausencia de datos nunca la habilita.
+test('#4658/#6012 CA-2 — classifyMergeFailure: 405 SIN contexto de mergeabilidad = conflicto terminal', () => {
     const c = delivery.classifyMergeFailure({ exit_code: 1, stderr: 'gh: Pull Request is not mergeable (HTTP 405)' });
     assert.equal(c.conflict, true);
     assert.equal(c.httpStatus, 405);
+    assert.equal(c.retryable, false);
+    // Frena igual, pero no AFIRMA un conflicto que nadie verificó (CA-9).
+    assert.equal(c.confirmed, false);
 });
 
-test('#4658 CA-2 — classifyMergeFailure: HTTP 409 (head changed) = conflicto real', () => {
+// #5420 — reclasificado: con el `sha` pinneado en el PUT, un 409 "head branch
+// was modified" ya no es un conflicto terminal sino la protección funcionando.
+// Sigue frenando el merge (conflict=true → nunca se mergea a ciegas), pero ahora
+// es REINTENTABLE: el gate vuelve a tomar snapshot y reevalúa todo. El escalado
+// llega recién si el head sigue moviéndose tras el retry.
+test('#4658/#5420 CA-2 — classifyMergeFailure: HTTP 409 (head changed) frena el merge y es REINTENTABLE', () => {
     const c = delivery.classifyMergeFailure({ exit_code: 1, stderr: 'HTTP 409: Head branch was modified. Review and try the merge again.' });
     assert.equal(c.conflict, true);
     assert.equal(c.httpStatus, 409);
+    assert.equal(c.retryable, true);
+    assert.equal(c.kind, 'head-changed');
+});
+
+test('#5420 — classifyMergeFailure: HTTP 409 de conflicto REAL sigue siendo terminal (no reintentable)', () => {
+    const c = delivery.classifyMergeFailure({ exit_code: 1, stderr: 'HTTP 409: Merge conflict' });
+    assert.equal(c.conflict, true);
+    assert.equal(c.retryable, false);
+    assert.equal(c.kind, 'not-mergeable');
+});
+
+// #6012 re-baseline — el invariante de #5420 se conserva acotado al caso sin
+// señal: con `ctx` ausente o incompleto el 405 NUNCA es reintentable. Se prueban
+// las tres formas de "no tengo señal" que podrían colarse como transitorias.
+test('#5420/#6012 — classifyMergeFailure: 405 sin señal de estado NUNCA es reintentable', () => {
+    const res = { exit_code: 1, stderr: 'gh: Pull Request is not mergeable (HTTP 405)' };
+    const ctxs = [
+        ['ctx ausente', undefined],
+        ['ctx vacío', {}],
+        ['estado nulo', { mergeStateStatus: null }],
+        ['estado fuera del enum', { mergeStateStatus: 'CALCULANDO' }],
+        ['estado no-string', { mergeStateStatus: 42 }],
+    ];
+    for (const [nombre, ctx] of ctxs) {
+        const c = ctx === undefined
+            ? delivery.classifyMergeFailure(res)
+            : delivery.classifyMergeFailure(res, ctx);
+        assert.equal(c.retryable, false, `${nombre}: no puede habilitar reintento`);
+        assert.equal(c.kind, 'not-mergeable', `${nombre}: cae en el default terminal`);
+        assert.equal(c.conflict, true, `${nombre}: sigue frenando el merge`);
+    }
 });
 
 test('#4658 — classifyMergeFailure: deteccion textual sin codigo HTTP explicito', () => {
     const c = delivery.classifyMergeFailure({ exit_code: 1, stdout: '{"message":"Merge conflict"}' });
     assert.equal(c.conflict, true);
+    assert.equal(c.retryable, false);
 });
 
 test('#4658 — classifyMergeFailure: fallo generico (5xx/red) NO es conflicto -> rebote tecnico normal', () => {

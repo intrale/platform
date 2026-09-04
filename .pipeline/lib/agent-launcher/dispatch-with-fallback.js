@@ -75,19 +75,25 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+// #6226 - nombres unicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('../dropfile-writer');
 
 // #4052 — clasificador puro de "muerte al spawnear del provider". Distingue una
 // muerte de spawn-failure (infra del provider) de un fallo legítimo del issue,
 // para que onSpawnExit emita `decision: 'provider-spawn-failure'` y el caller no
 // penalice el retry del issue (CA-3 / SEC-3).
 const { classifySpawnFailure } = require('./spawn-failure-classifier');
+// #5795 — nombre canónico de la clase cerrada de rechazo de credencial. Se
+// importa la constante (en vez de escribir el string) para que un typo no
+// desconecte silenciosamente la proyección del veredicto del parser.
+const { AUTH_REJECTED_CLASS } = require('./auth-rejection');
 
 // #4274 — `resolvePermissionMode` se suma al destructuring existente para
 // resolver el modo canónico del provider de FALLBACK en su return (codex →
 // 'full-auto', free providers → 'bypassPermissions'). Sin esto el fallback
 // perdía el `mode` y el launcher caía a un default fail-open peligroso.
 // `resolve-provider` ya se importa acá sin ciclo de require — solo sumamos un símbolo.
-const { resolveProviderForSkill, getProviderHandler, resolvePermissionMode } = require('./resolve-provider');
+const { resolveProviderForSkill, getProviderHandler, resolvePermissionMode, resolveModelForSkillProvider } = require('./resolve-provider');
 // MP-05 (#3803) — reutilizamos la validación de credenciales del precheck del
 // Commander para hacer pre-check de credenciales también en los skills antes de
 // elegir un fallback (no solo el Commander la tenía).
@@ -280,6 +286,70 @@ function _selectErrorTypeForFlag(provider, verdict, quotaModule) {
 }
 
 // -----------------------------------------------------------------------------
+// #5795 — proyección del rechazo de credencial con el contexto de la operación.
+//
+// QUÉ AGREGA ESTA CAPA
+//   El adapter sabe de frames y devuelve `{kind, signal}`. El dispatcher es el
+//   único que conoce el contexto de la operación: qué provider la emitió, cuál
+//   es la operación RAÍZ (`operationId`), por qué camino de fallback se llegó
+//   (`path`) y qué número de intento es (`attempt`). Eso es lo que se agrega.
+//
+// QUÉ NO HACE
+//   No decide retry, no elige fallback, no persiste presupuesto, no llama
+//   `setFlag`. No guarda estado entre invocaciones: cada rechazo se proyecta y
+//   se audita solo. Por eso un fallback NO puede reiniciar el presupuesto de
+//   credencial (no hay presupuesto acá que reiniciar) ni ocultar el segundo
+//   rechazo (cada llamada emite su propia proyección y su propia línea de
+//   audit, con su `attempt` y su `path`). El dueño del presupuesto de
+//   re-resolución es el coordinador de #5794.
+//
+// INMUTABILIDAD
+//   Se devuelve un objeto NUEVO y congelado, con la `signal` (ya congelada por
+//   el adapter) adentro. El caller no puede mutarlo ni colgarle campos con
+//   datos del provider.
+//
+// ALLOWLIST ESTRICTA
+//   Sólo entran campos de tipo y longitud acotados. `operationId` y `path` son
+//   tokens del pipeline (no del provider), pero igual se validan: si el caller
+//   pasa un objeto, un string gigante o algo raro, se descarta a `null` en vez
+//   de viajar. Nunca se copia `error`, `message`, headers, payload ni stderr.
+// -----------------------------------------------------------------------------
+const AUTH_CONTEXT_MAX_CHARS = 128;
+
+function normalizeContextToken(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > AUTH_CONTEXT_MAX_CHARS) return null;
+    // Tokens del pipeline: identificadores, rutas de cadena de fallback y
+    // separadores. Cualquier cosa con espacios, saltos de línea o comillas se
+    // descarta entera (no se recorta: recortar disfraza un valor inesperado).
+    if (!/^[A-Za-z0-9_.:@/#-]{1,128}$/.test(trimmed)) return null;
+    return trimmed;
+}
+
+function projectAuthRejection(rejection, { provider, operationId, path: opPath, attempt } = {}) {
+    if (!rejection || typeof rejection !== 'object') return null;
+    const signal = rejection.signal;
+    if (!signal || typeof signal !== 'object') return null;
+
+    const attemptNum = Number.isInteger(attempt) && attempt >= 0 && attempt <= 1000
+        ? attempt
+        : null;
+
+    return Object.freeze({
+        kind: rejection.kind,
+        provider: normalizeContextToken(provider),
+        operationId: normalizeContextToken(operationId),
+        path: normalizeContextToken(opPath),
+        attempt: attemptNum,
+        // Ya viene congelada del adapter; la re-congelamos por si un caller
+        // inyectó un módulo fake que devolvió un objeto mutable.
+        signal: Object.isFrozen(signal) ? signal : Object.freeze({ ...signal }),
+    });
+}
+
+// -----------------------------------------------------------------------------
 // onSpawnExit — hook centralizado post-spawn (#3576 CA-2).
 //
 // **Never throws**: cualquier error interno se atrapa y devuelve un veredicto
@@ -298,6 +368,8 @@ function onSpawnExit(opts = {}) {
         auditLogged: false,
         decision: 'ignore',
         codepath: 'generalized',
+        // #5795 — shape estable: el campo existe siempre, null salvo rechazo.
+        authenticationRejection: null,
     };
 
     let verdict = null;
@@ -321,6 +393,14 @@ function onSpawnExit(opts = {}) {
             // rastrea de verdad el primer byte). Habilita la firma 3 del
             // clasificador sin afectar a los callers post-exit legacy.
             spawnInstrumented,
+            // #5795 — contexto de la operación RAÍZ. Lo aporta el caller (es el
+            // único que sabe si este spawn es el primario o un fallback, y a qué
+            // operación pertenece). Opcionales: si faltan, la proyección los
+            // deja en `null` y la señal viaja igual.
+            operationId,
+            path: operationPath,
+            attempt,
+            source,
             issue,
             pipelineDir,
             parserModule,
@@ -385,6 +465,9 @@ function onSpawnExit(opts = {}) {
                             error_code: errorCode || null,
                             timed_out: timedOut === true,
                             duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+                            // #6274: sólo una firma inequívoca del clasificador
+                            // permite atribuir esta muerte al provider.
+                            death_kind: 'provider-death',
                             first_byte_at: Number.isFinite(firstByteAt) ? Math.round(firstByteAt) : null,
                             codepath: 'generalized',
                         },
@@ -405,6 +488,7 @@ function onSpawnExit(opts = {}) {
                 decision: 'provider-spawn-failure',
                 signature: spawnFailure.signature,
                 codepath: 'generalized',
+                authenticationRejection: null,
             };
         }
 
@@ -433,18 +517,62 @@ function onSpawnExit(opts = {}) {
         const safeEvidence = sanitize(verdict.evidence || '');
         const safeRaw = sanitize(verdict.raw || '');
 
+        // #5795 — proyección del rechazo de credencial con el contexto raíz.
+        // Se calcula acá (antes del bloque de setFlag) para dejar explícito que
+        // la señal NO pasa por `_selectErrorTypeForFlag` ni por `setFlag`.
+        const authProjection = verdict.errorClass === AUTH_REJECTED_CLASS
+            ? projectAuthRejection(verdict.authRejection, {
+                provider,
+                operationId,
+                path: operationPath,
+                attempt,
+            })
+            : null;
+
         // 2. setFlag SOLO para quota_exhausted/rate_limit y SOLO si hay errorType
         // válido contra la allowlist. NEW-2 (atomic setFlag) ya está garantizado
         // por #3575 → este hook puede ser invocado desde múltiples skills sin
         // race conditions.
-        if (verdict.errorClass === 'quota_exhausted' || verdict.errorClass === 'rate_limit') {
+        if (!opts.telemetryOnly && (verdict.errorClass === 'quota_exhausted' || verdict.errorClass === 'rate_limit')) {
             try {
-                const errorType = _selectErrorTypeForFlag(provider, verdict, _quota);
+                // #5455 — El canal de contenido de Anthropic se resuelve ANTES
+                // del selector genérico. Sin esto, `_selectErrorTypeForFlag` no
+                // encuentra `error_type` en el frame (no lo tiene) y degrada al
+                // "default safe" = `allowlist[0]` (`usage_limit_error`), que el
+                // reconcile de #4865 VETA con el adapter sano — exactamente el
+                // caso del incidente. El barrido usa el log CRUDO porque
+                // `verdict.evidence` viene truncado/redactado y no es JSON
+                // re-parseable de forma confiable.
+                //
+                // SCOPE ANTHROPIC (fix del rechazo de #5455): se pasa el
+                // provider REAL del spawn. El detector lo EXIGE y devuelve null
+                // si no canonicaliza a `anthropic`, así que el tipo dedicado no
+                // puede aterrizar sobre un provider ajeno a su allowlist por una
+                // línea con forma de frame inyectada en un log de texto plano.
+                // El gate se declara acá además de en el detector (defensa en
+                // profundidad): este es el punto donde el errorType se PERSISTE
+                // con `provider`, y `setFlag` no valida membresía de allowlist.
+                const contentChannel = (typeof _quota.detectWeeklyLimitContentChannelFromLog === 'function')
+                    ? _quota.detectWeeklyLimitContentChannelFromLog(rawOutput, { now: _now, providerId: provider })
+                    : null;
+                const errorType = contentChannel
+                    ? contentChannel.errorType
+                    : _selectErrorTypeForFlag(provider, verdict, _quota);
                 if (errorType && typeof _quota.setFlag === 'function') {
                     _quota.setFlag({
                         provider,
                         errorType,
-                        rawExcerpt: safeEvidence,
+                        // El reset viaja YA parseado desde el detector; nunca se
+                        // escribe el JSON a mano. `setFlag` clampea igual el TTL
+                        // efectivo de este tipo a 60 minutos (`maxDays` es
+                        // redundante-por-contrato, la garantía vive en setFlag).
+                        ...(contentChannel
+                            ? {
+                                ...(contentChannel.resetsAt ? { resetsAt: contentChannel.resetsAt } : {}),
+                                maxDays: _quota.WEEKLY_LIMIT_CONTENT_MAX_DAYS,
+                            }
+                            : {}),
+                        rawExcerpt: contentChannel ? contentChannel.rawExcerpt : safeEvidence,
                         agent: skill || null,
                     });
                     flagSet = true;
@@ -476,10 +604,34 @@ function onSpawnExit(opts = {}) {
                     exit_code: (exitCode === null || exitCode === undefined) ? null : Number(exitCode),
                     timed_out: timedOut === true,
                     duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+                    // #6274: señal durable; las caídas confirmadas del provider
+                    // retornaron antes, así que este fallo temprano es del agente.
+                    death_kind: (Number(exitCode) !== 0 && Number.isFinite(durationMs) && durationMs < 15000)
+                        ? 'agent-death'
+                        : 'normal',
                     // Signal C — first-byte ts (opcional, puede ser undefined si
                     // el transport no lo expone).
                     first_byte_at: Number.isFinite(firstByteAt) ? Math.round(firstByteAt) : null,
                     codepath: 'generalized',
+                    // #5795 — el contexto raíz del rechazo de credencial viaja
+                    // al audit para que dos rechazos de la MISMA operación raíz
+                    // queden ordenados y distinguibles (uno por provider/intento).
+                    // Sin esto, el segundo rechazo tras un fallback sería
+                    // indistinguible del primero. Sólo campos allowlisted: acá
+                    // no entra nada del payload del provider.
+                    ...(authProjection ? {
+                        auth_rejection: {
+                            kind: authProjection.kind,
+                            provider: authProjection.provider,
+                            operation_id: authProjection.operationId,
+                            path: authProjection.path,
+                            attempt: authProjection.attempt,
+                            signal_source: authProjection.signal.source,
+                            signal_code: authProjection.signal.code,
+                            signal_status: authProjection.signal.status,
+                            signal_type: authProjection.signal.type,
+                        },
+                    } : {}),
                 };
                 _audit.appendChained({ file, entry: auditEntry, fsImpl });
                 auditLogged = true;
@@ -489,6 +641,11 @@ function onSpawnExit(opts = {}) {
         }
 
         const decision =
+            // #5795 — decisión propia y terminal PARA ESTA CAPA. No es 'fallback'
+            // (no rotamos provider acá) ni 'ignore' (la señal no se descarta):
+            // es "clasifiqué un rechazo de credencial y lo entrego tipado". Quien
+            // resuelve qué hacer es el coordinador de #5794.
+            authProjection ? 'authentication-rejected' :
             verdict.errorClass === 'unknown' ? 'ignore' :
             flagSet ? 'flag_set' :
             verdict.shouldFallback ? 'fallback' :
@@ -504,6 +661,9 @@ function onSpawnExit(opts = {}) {
             auditLogged,
             decision,
             codepath: 'generalized',
+            // #5795 — señal tipada + contexto raíz, congelada. Ausente (null)
+            // para cualquier otra clase de error.
+            authenticationRejection: authProjection,
         };
     } catch (e) {
         // Catch-all defense in depth — NUNCA debemos romper child.on('exit').
@@ -683,22 +843,42 @@ function evaluateHealthGate(providerKey, healthSnapshot, now) {
 // Best-effort: errores de IO se silencian para no romper el pipeline (el
 // dispatcher NUNCA debe ser causa de crash).
 // -----------------------------------------------------------------------------
-function enqueueTelegramNotice({ pipelineDir, fsImpl, text, meta }) {
+function enqueueTelegramNotice({ pipelineDir, fsImpl, text, meta, plain }) {
     const _fs = fsImpl || fs;
     if (!pipelineDir || !text) return false;
     try {
         const queueDir = path.join(pipelineDir, TELEGRAM_QUEUE_SUBDIR);
         _fs.mkdirSync(queueDir, { recursive: true });
-        // Nombre con timestamp + pid para evitar colisiones entre procesos
-        // concurrentes (caller puede ser pulpo + un script de mantenimiento).
-        const fname = `cross-provider-${Date.now()}-${process.pid}.json`;
         const payload = JSON.stringify({
             type: 'cross-provider-fallback',
             text,
+            // #6179 — sin este flag `resolveOutboundParseMode`
+            // (`servicio-telegram.js:916-921`) cae al default `'Markdown'` y manda
+            // el texto SIN escapar: cualquier `_`, `*` o `` ` `` del copy rompe el
+            // render o directamente el envío. `sendTelegramPlain` vive en
+            // `pulpo.js` y NO es alcanzable desde acá (procesos distintos), así
+            // que el flag en el dropfile es la única vía (SEC-4 / CA-9).
+            plain: plain === true,
             meta: meta || {},
             queued_at: new Date().toISOString(),
         }, null, 2);
-        _fs.writeFileSync(path.join(queueDir, fname), payload, { mode: 0o600 });
+        // #6226 - escritura fail-closed. El nombre lleva timestamp + pid, pero
+        // el pid es CONSTANTE dentro de un proceso: dos avisos del mismo proceso
+        // en el mismo milisegundo resolvian al mismo path y el segundo pisaba al
+        // primero. Se conserva el nombre tal cual (su prefijo define la posicion
+        // del archivo en el drenado por orden de nombre) y solo ante colision
+        // real se desambigua con `-<n>`.
+        const fname = `cross-provider-${Date.now()}-${process.pid}.json`;
+        dropfileWriter.writeUniqueFileSync({
+            dir: queueDir,
+            filename: fname,
+            data: payload,
+            fsImpl: _fs,
+            mode: 0o600,
+            onCollision: (name, attempt) => console.warn(
+                `[dispatch-with-fallback] colision de nombre de dropfile (${name}, intento ${attempt + 1}) - se reintenta, no se sobreescribe`
+            ),
+        });
         return true;
     } catch {
         return false;
@@ -923,6 +1103,72 @@ function resolveSpawnWithFallback(opts = {}) {
     const _resolveHandler = providerHandlerResolver || getProviderHandler;
     const _notify = notify || enqueueTelegramNotice;
     const _now = Number.isFinite(now) ? now : Date.now();
+
+    // -------------------------------------------------------------------------
+    // #6179 — política de emisión por EPISODIO.
+    //
+    // Antes de este issue, CADA despacho que caía a un proveedor de respaldo
+    // encolaba un mensaje de Telegram: 8.984 en 85 días (~106/día), ninguno con
+    // una acción para el operador. El aviso ahora sale sólo cuando CAMBIA la
+    // situación (entra en respaldo / vuelve al principal / baja de escalón), y
+    // quien lo decide es `fallback-episode-state.recordDispatch` — la ÚNICA
+    // política viva (CA-3). Acá no se decide nada, sólo se emite.
+    //
+    // Se llama en los DOS sentidos: en el path de fallback (para abrir o cambiar
+    // el episodio) y en el happy path del primario (para cerrarlo). Sin la
+    // segunda llamada la vuelta a la normalidad nunca se detecta y el operador
+    // se queda esperando un mensaje que no llega.
+    // -------------------------------------------------------------------------
+    // `recordEpisode: false` lo pasan las consultas READ-ONLY que re-resuelven la
+    // cadena sin despachar nada (`isReducedMode`, `isCommanderChainGated`,
+    // `resolveCommanderProviderQuiet`, el failover-probe). Esas sondas ya
+    // neutralizan `notify`, `onLog` y `auditLog`; el episodio es un CUARTO canal
+    // de efecto y necesita el mismo trato.
+    //
+    // No alcanzaba con silenciar `notify`: una sonda que persiste el episodio
+    // hace que el despacho REAL siguiente lea "no cambió nada" y se calle. O
+    // sea, una consulta read-only terminaría suprimiendo el aviso verdadero —
+    // exactamente el modo de falla que CA-10 existe para evitar.
+    const _episodeEnabled = opts.recordEpisode !== false;
+
+    const _recordEpisode = ({ provider, crossProvider, chainTried, models }) => {
+        if (!_episodeEnabled) return null;
+        try {
+            const episodeState = opts.episodeStateModule || require('../fallback-episode-state');
+            const res = episodeState.recordDispatch({
+                pipelineDir,
+                provider,
+                crossProvider,
+                chain: chainTried,
+                models,
+                now: _now,
+            });
+            if (!res || !res.notify) return res;
+
+            const commanderMP = opts.copyModule || require('../commander/multi-provider');
+            _notify({
+                pipelineDir,
+                fsImpl,
+                text: commanderMP.formatEpisodeNotice(res.episode, { now: _now }),
+                plain: true,
+                // El `meta` es para el audit/diagnóstico del dropfile, NO para el
+                // texto: nada de esto se interpola en lo que ve el operador.
+                meta: {
+                    event: 'fallback_episode',
+                    episode_mode: res.episode && res.episode.mode,
+                    episode_tier: res.episode && res.episode.tier,
+                    episode_reason: res.reason,
+                    changed: res.changed,
+                },
+            });
+            return res;
+        } catch (e) {
+            // Best-effort absoluto: el avisador NUNCA puede ser causa de que un
+            // agente no se lance (regla #1 — el pipeline no puede morir).
+            log('lanzamiento', `⚠️ #6179 registro de episodio falló (best-effort): ${e && e.message}`);
+            return null;
+        }
+    };
     // #3811 — módulo del kill-switch. Inyectable para tests (opts.disabledModule).
     const _disabled = opts.disabledModule || providerDisabledModule;
     const _isProviderDisabled = (p) => {
@@ -1315,6 +1561,17 @@ function resolveSpawnWithFallback(opts = {}) {
 
     if (!primaryGated && !primarySoftGated) {
         // Happy path: primary disponible.
+        // #6179 — cierra el episodio si veníamos degradados. Es la única forma
+        // de que salga el aviso de "vuelta al motor principal" (CA-2): si sólo
+        // registráramos los despachos con fallback, el episodio quedaría abierto
+        // para siempre y el operador nunca sabría cuándo dejar de preocuparse.
+        // Cuando ya estábamos en el primario, `recordDispatch` no emite nada.
+        _recordEpisode({
+            provider: primaryProvider,
+            crossProvider: false,
+            chainTried: [primaryProvider],
+            models: _billingModels,
+        });
         return {
             ...primary,
             source: primary.source || 'primary',
@@ -1718,11 +1975,13 @@ function resolveSpawnWithFallback(opts = {}) {
         // distinto). Si todavía hay configs legacy con `fallbacks: [string]`,
         // `fbModelOverride` queda null y el fallback usa el `model` default
         // del provider (comportamiento previo preservado).
-        const fbProviderDef = (models && models.providers && models.providers[fbName]) || null;
+        // #6271 — la precedencia vive en resolveModelForSkillProvider (fuente
+        // única). `fbModelOverride` se sigue respetando explícitamente porque
+        // el shape ya fue normalizado arriba; si es null, el helper resuelve
+        // por (skill, fbName) con la MISMA cadena de antes:
+        //   fallbacks[i].model_override → providers.<fbName>.model → models.defaults.model → null.
         const fbModel = fbModelOverride
-            || (fbProviderDef && fbProviderDef.model)
-            || (models && models.defaults && models.defaults.model)
-            || null;
+            || resolveModelForSkillProvider(models, skill, fbName, { fallbackModel: null });
 
         // Audit + notify (S-6 / S-9).
         auditAppend({
@@ -1742,27 +2001,20 @@ function resolveSpawnWithFallback(opts = {}) {
             },
         });
 
-        const notice =
-            `⚠️ Cross-provider fallback activo\n` +
-            `skill=${skill} issue=${issue || '?'}\n` +
-            `primary=${primaryProvider} (gated)\n` +
-            `fallback=${fbName} (índice ${i})\n` +
-            `model=${fbModel || 'n/a'}`;
-        try {
-            _notify({
-                pipelineDir,
-                fsImpl,
-                text: notice,
-                meta: {
-                    skill,
-                    issue: issue || null,
-                    primary_provider: primaryProvider,
-                    fallback_provider: fbName,
-                    fallback_index: i,
-                    fallback_model: fbModel,
-                },
-            });
-        } catch { /* best-effort */ }
+        // #6179 — acá vivía un `_notify` por CADA despacho, con el texto
+        // `skill=… primary=… (gated) fallback=… (índice N) model=…`. Era la
+        // fuente principal de los ~106 mensajes diarios y de toda la jerga que
+        // CA-8 prohíbe. La emisión pasa a decidirla `recordDispatch`.
+        //
+        // El `auditAppend({event:'fallback_selected'})` de arriba NO se toca
+        // (CA-16 / SEC-8): sólo cambia el canal de SALIDA, no la auditoría.
+        // Cambiar ruido por ceguera no sería una mejora.
+        _recordEpisode({
+            provider: fbName,
+            crossProvider: true,
+            chainTried,
+            models,
+        });
 
         log('lanzamiento', `↪️ ${skill}:#${issue} primary=${primaryProvider} gated, usando fallback="${fbName}" (índice ${i})`);
 
@@ -1870,6 +2122,59 @@ function resolveSpawnWithFallback(opts = {}) {
     };
 }
 
+// -----------------------------------------------------------------------------
+// appendSpawnExitDeathKind — #6238 (CA-6). Writer fino que deja constancia de la
+// clasificación de muerte prematura en el MISMO audit log de spawn-exit
+// (`spawn-exit-YYYY-MM-DD.jsonl`, 0o600, hash-chain de `appendChained`).
+//
+// POR QUÉ UNA LÍNEA APARTE Y NO UN CAMPO EN LA DE `onSpawnExit`
+// ------------------------------------------------------------
+// `onSpawnExit` (arriba) ya escribió su línea ANTES de que el Pulpo corra la
+// clasificación de muerte prematura: para esa capa el error se ve como un 5xx
+// transitorio (`error_class: 'transient_5xx'`). Se acepta la DOBLE LÍNEA:
+// `death_kind` es el campo autoritativo para la muerte prematura y desambigua
+// contra el `error_class` de la línea previa. Queda documentado acá para que
+// nadie lo lea como duplicado espurio.
+//
+// SEGURIDAD (SEC-CA-5): `raw_excerpt` está AUSENTE, no vacío. El excerpt es
+// justo donde vive el material sensible; acá no hay ningún campo que
+// transporte texto del provider. `token` viene de la tabla cerrada
+// `CREDENTIAL_DEATH_TOKENS` del detector, así que el JSONL no puede filtrar.
+//
+// Best-effort: cualquier error de IO se silencia (nunca rompe el lifecycle).
+// -----------------------------------------------------------------------------
+function appendSpawnExitDeathKind(opts = {}) {
+    const {
+        pipelineDir, skill, issue, provider, deathKind,
+        token, signature, exitCode, durationMs, fsImpl, auditLog,
+    } = opts;
+    if (!pipelineDir || !deathKind) return false;
+    try {
+        const _now = Number.isFinite(opts.now) ? opts.now : Date.now();
+        const _audit = auditLog || require('../audit-log');
+        const file = spawnExitAuditFile(pipelineDir, new Date(_now));
+        ensureSecureAuditFile(file, fsImpl);
+        const entry = {
+            ts: new Date(_now).toISOString(),
+            skill: skill || null,
+            issue: (issue == null) ? null : (Number(issue) || String(issue)),
+            provider: provider || null,
+            death_kind: String(deathKind),
+            // Identificador de NUESTRA tabla cerrada, nunca texto del provider.
+            credential_token: (typeof token === 'string' && token) ? token : null,
+            signature: (typeof signature === 'string' && signature) ? signature : null,
+            exit_code: (exitCode === null || exitCode === undefined) ? null : Number(exitCode),
+            duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+            codepath: 'premature-death',
+            // raw_excerpt: AUSENTE a propósito (SEC-CA-5). No agregar.
+        };
+        _audit.appendChained({ file, entry, fsImpl });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 module.exports = {
     resolveSpawnWithFallback,
     enqueueTelegramNotice,
@@ -1889,8 +2194,19 @@ module.exports = {
 
     // #3576 — Hook generalizado post-spawn cross-skill.
     onSpawnExit,
+
+    // #5795 — proyección congelada del rechazo de credencial. Exportada para
+    // que el coordinador de #5794 y los tests la construyan/inspeccionen sin
+    // duplicar la allowlist.
+    projectAuthRejection,
+    AUTH_REJECTED_CLASS,
+    AUTH_CONTEXT_MAX_CHARS,
+    _normalizeContextToken: normalizeContextToken,
+
     isGeneralizedParserEnabled,
     spawnExitAuditFile,
+    // #6238 CA-6 — writer de la línea `death_kind` en el spawn-exit JSONL.
+    appendSpawnExitDeathKind,
     FEATURE_FLAG_NAME,
     CODEPATH_EMOJI,
 

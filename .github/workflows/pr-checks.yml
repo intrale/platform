@@ -3,10 +3,38 @@ name: PR Checks
 on:
   pull_request:
     branches: [ main, develop ]
+  # Corrida programada diaria sobre main (issue #6579): el suite e2e-qa esta
+  # condicionado por paths que casi nunca cambian, asi que se salteaba en
+  # silencio y la deuda recien explotaba contra el primer PR desprevenido.
+  # Esta corrida lo ejecuta completo todos los dias y expone el estado real.
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC / 03:00 ART — fuera de hora pico
+  # Permite validar a mano el mismo camino que usa el cron sin esperar 24h.
+  workflow_dispatch:
+
+# Privilegio minimo para TODO el workflow (#6362).
+# El default del repositorio esta en write sobre todos los scopes y con
+# aprobacion de PRs habilitada; sin este bloque, los jobs que compilan y
+# ejecutan codigo del PR (e2e-qa corre ./gradlew, plugins y dependencias
+# transitivas) heredarian ese privilegio -> Poisoned Pipeline Execution
+# (CICD-SEC-4). El unico consumidor de GITHUB_TOKEN es dorny/paths-filter@v3;
+# checkout/setup-java/setup-gradle/cache/upload-artifact no usan scopes del token.
+# 'contents: read' alcanza para los actions/checkout@v4 y 'pull-requests: read'
+# es el minimo documentado que exige dorny/paths-filter@v3 en eventos
+# pull_request (usa la REST API para listar archivos modificados y aborta con
+# setFailed ante un 403). Ambos son scopes de LECTURA: ninguno habilita
+# escritura. Cubierto por .pipeline/tests/pr-checks-workflow.test.js
+permissions:
+  contents: read
+  pull-requests: read
 
 jobs:
   # ── Detectar qué módulos cambiaron ──────────────────────────────
   detect-changes:
+    # dorny/paths-filter necesita un base ref de PR para comparar. En schedule
+    # o workflow_dispatch no lo hay, asi que el job no corre y los que dependen
+    # de el resuelven sus outputs a cadena vacia.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
@@ -285,12 +313,23 @@ jobs:
   # ── E2E QA Tests ──────────────────────────────────────────────
   e2e-qa:
     needs: detect-changes
+    # !cancelled() es obligatorio: sin el, este job se saltea automaticamente
+    # cuando detect-changes queda skipped (schedule / workflow_dispatch),
+    # que es justo el caso que el issue #6579 quiere cubrir.
     if: |
-      needs.detect-changes.outputs.backend == 'true' ||
-      needs.detect-changes.outputs.users == 'true' ||
-      needs.detect-changes.outputs.shared == 'true'
-    permissions:
-      contents: write
+      !cancelled() && (
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.detect-changes.outputs.backend == 'true' ||
+        needs.detect-changes.outputs.users == 'true' ||
+        needs.detect-changes.outputs.shared == 'true'
+      )
+    # Sin bloque `permissions:` de job: hereda el `permissions` de workflow
+    # (contents: read + pull-requests: read, #6362). El `contents: write` que
+    # traia main existia solo para el `git push` de evidencias que este PR
+    # elimina en favor de actions/upload-artifact; reintroducirlo devolveria el
+    # vector de Poisoned Pipeline Execution (CICD-SEC-4) sobre el unico job que
+    # compila y ejecuta codigo del PR.
     runs-on: ubuntu-latest
     services:
       dynamodb-local:
@@ -403,6 +442,7 @@ jobs:
 
       - name: Start backend
         env:
+          PORT: "8080"
           LOCAL_MODE: "true"
           REGION_VALUE: us-east-1
           ACCESS_KEY_ID: local
@@ -410,13 +450,18 @@ jobs:
           DYNAMODB_ENDPOINT: http://localhost:8000
           COGNITO_ENDPOINT: http://localhost:5050
         run: |
+          # Warm-up: compilar ANTES de abrir la ventana del healthcheck. Si no, la
+          # compilacion de :users se come los 90s de espera y el check falla por
+          # timeout aunque el backend levante bien (#6362).
+          ./gradlew :users:classes
+
           ./gradlew :users:run &
           BACKEND_PID=$!
           echo "Backend PID: $BACKEND_PID"
 
           # Esperar healthcheck
           for i in $(seq 1 30); do
-            STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:80/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null || true)
+            STATUS=$(curl -so /dev/null -w '%{http_code}' -X POST http://localhost:8080/intrale/signin -H 'Content-Type: application/json' -d '{}' 2>/dev/null || true)
             echo "Intento $i/30 — STATUS: $STATUS"
             if [ "$STATUS" = "400" ]; then
               echo "Backend listo"
@@ -436,8 +481,43 @@ jobs:
 
       - name: Run E2E QA tests
         env:
-          QA_BASE_URL: http://localhost:80
+          QA_BASE_URL: http://localhost:8080
         run: ./gradlew :qa:test --info
+
+      # Issue #6579 (CA-2 / CA-3): el suite no puede quedar en verde escondiendo
+      # que parte de el no corre. Este paso enumera la cuarentena declarada y el
+      # conteo real de la corrida, para que la corrida programada reporte el
+      # estado honesto del suite y no solo "0 failures".
+      - name: Reporte de cuarentena y estado real del suite E2E
+        if: always()
+        shell: bash
+        run: |
+          echo "===== Tests E2E en cuarentena declarada (issue #6579) ====="
+          if grep -rq '@Disabled' qa/src/test/kotlin; then
+            grep -rn -A3 '@Disabled(' qa/src/test/kotlin
+          else
+            echo "(ninguna anotacion @Disabled en qa/src/test/kotlin)"
+          fi
+          echo
+          echo "Issues de deuda que reactivan la cuarentena:"
+          echo "  #6580 — Implementar el endpoint de resumen del dashboard de negocio"
+          echo "  #6581 — Productos y categorias rechazan con 401 un token valido en el CI"
+          echo "Al cerrarse cada uno hay que quitar su @Disabled y dejar las pruebas en verde."
+          echo
+          echo "===== Estado real de la corrida ====="
+          RESULTS_DIR="qa/build/test-results/test"
+          if ls "$RESULTS_DIR"/*.xml >/dev/null 2>&1; then
+            sum() { grep -ho "$1=\"[0-9]*\"" "$RESULTS_DIR"/*.xml | grep -o '[0-9][0-9]*' | awk '{s+=$1} END {print s+0}'; }
+            TOTAL=$(sum tests); SKIPPED=$(sum skipped); FAILURES=$(sum failures); ERRORS=$(sum errors)
+            RUN=$(( TOTAL - SKIPPED ))
+            echo "  ejecutados : $RUN"
+            echo "  en verde   : $(( RUN - FAILURES - ERRORS ))"
+            echo "  en rojo    : $(( FAILURES + ERRORS ))"
+            echo "  cuarentena : $SKIPPED  (pendientes conocidos, NO cuentan como aprobados)"
+            echo "  declarados : $TOTAL"
+          else
+            echo "  (sin resultados XML: el suite no llego a ejecutarse)"
+          fi
 
       - name: Upload test reports
         if: always()
@@ -458,15 +538,23 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      - name: Collect and commit QA evidence
+      # La evidencia se publica como artefacto con retencion, NO se commitea a la
+      # rama del PR (#6362): versionar `qa/evidence/` es una de las causas raiz
+      # del disco lleno y ademas obligaba a `contents: write` en el job que
+      # ejecuta codigo del PR. Al no haber push, esto corre igual en
+      # pull_request, schedule y workflow_dispatch.
+      - name: Collect QA evidence
         if: always()
-        run: |
-          bash qa/scripts/collect-evidence.sh
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add qa/evidence/
-          git diff --cached --quiet || git commit -m "chore(qa): evidencias E2E $(date +%Y-%m-%d)"
-          git push origin HEAD:${{ github.head_ref }}
+        run: bash qa/scripts/collect-evidence.sh
+
+      - name: Upload collected QA evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qa-e2e-evidence
+          path: qa/evidence/
+          retention-days: 14
+          if-no-files-found: ignore
 
   # ── Gate final — todos los checks deben pasar ───────────────────
   pr-status:
@@ -475,27 +563,58 @@ jobs:
     if: always()
     steps:
       - name: Verify all checks passed
+        shell: bash
         run: |
-          echo "== PR Check Results =="
-          echo "verify-strings: ${{ needs.verify-strings.result }}"
-          echo "check-backend:  ${{ needs.check-backend.result }}"
-          echo "check-users:    ${{ needs.check-users.result }}"
-          echo "check-app:      ${{ needs.check-app.result }}"
-          echo "check-tools:    ${{ needs.check-tools.result }}"
-          echo "e2e-qa:         ${{ needs.e2e-qa.result }}"
+          # Issue #6579 (CA-4): un job "skipped" nunca corrio, asi que no puede
+          # contabilizarse como check aprobado. No lo tratamos como fallo — un PR
+          # de documentacion pura debe poder mergear, tal como pide el escenario
+          # Gherkin — pero se reporta aparte para que nadie lea "OK" y asuma que
+          # el suite se ejecuto.
+          declare -a PASSED=() SKIPPED=() BROKEN=()
 
-          # Un job skipped es OK (no hubo cambios en ese módulo)
-          # Un job con failure o cancelled es un error
-          for result in \
-            "${{ needs.verify-strings.result }}" \
-            "${{ needs.check-backend.result }}" \
-            "${{ needs.check-users.result }}" \
-            "${{ needs.check-app.result }}" \
-            "${{ needs.check-tools.result }}" \
-            "${{ needs.e2e-qa.result }}"; do
-            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
-              echo "FAILED: al menos un check falló o fue cancelado"
-              exit 1
-            fi
-          done
-          echo "OK: todos los checks pasaron o fueron skipped correctamente"
+          classify() {
+            local name="$1" result="${2:-skipped}"
+            echo "  $(printf '%-16s' "$name") $result"
+            case "$result" in
+              success) PASSED+=("$name") ;;
+              skipped) SKIPPED+=("$name") ;;
+              *)       BROKEN+=("$name ($result)") ;;
+            esac
+          }
+
+          echo "== PR Check Results =="
+          classify "verify-strings" "${{ needs.verify-strings.result }}"
+          classify "check-backend"  "${{ needs.check-backend.result }}"
+          classify "check-users"    "${{ needs.check-users.result }}"
+          classify "check-app"      "${{ needs.check-app.result }}"
+          classify "check-tools"    "${{ needs.check-tools.result }}"
+          classify "e2e-qa"         "${{ needs.e2e-qa.result }}"
+          echo
+
+          if [ ${#BROKEN[@]} -gt 0 ]; then
+            echo "FAILED: al menos un check fallo o fue cancelado:"
+            for b in "${BROKEN[@]}"; do echo "  - $b"; done
+            exit 1
+          fi
+
+          echo "APROBADOS     (${#PASSED[@]}): ${PASSED[*]:-ninguno}"
+          if [ ${#SKIPPED[@]} -gt 0 ]; then
+            echo "NO EJECUTADOS (${#SKIPPED[@]}): ${SKIPPED[*]}"
+            echo "  ^ quedaron en 'skipped': NO se contabilizan como checks aprobados."
+          fi
+
+          if [ "${{ needs.e2e-qa.result }}" != "success" ]; then
+            echo
+            echo "AVISO: e2e-qa NO aporto un resultado aprobado (estado: ${{ needs.e2e-qa.result }})."
+            echo "       El estado real del suite E2E se valida en la corrida programada"
+            echo "       diaria sobre main (este mismo workflow, evento schedule)."
+          fi
+
+          if [ ${#PASSED[@]} -eq 0 ]; then
+            echo
+            echo "ATENCION: ningun check se ejecuto. El gate no bloquea, pero tampoco hay"
+            echo "          evidencia de verificacion automatica en este PR."
+          fi
+
+          echo
+          echo "GATE OK: ${#PASSED[@]} aprobado(s), ${#SKIPPED[@]} no ejecutado(s), 0 en rojo."

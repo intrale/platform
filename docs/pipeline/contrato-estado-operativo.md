@@ -240,6 +240,47 @@ anterior), con `code`, `stage`, `field` y `errors`.
 
 Hay un test que verifica que estos tres primeros son `undefined`.
 
+### El camino de la excepción (y por qué casi nunca es el correcto)
+
+Si tu caso no entra por la superficie pública, el orden es: **pedir que se
+extienda la fachada** > excepción puntual > exención de archivo entero. La
+excepción no arregla el invariante, lo documenta.
+
+Cuando la excepción es genuinamente legítima, se declara en
+`.pipeline/lib/operational-state-lint.allowlist.json` bajo `rules`, con este
+shape (**#6106**):
+
+```json
+{
+  "file": "lib/desync-detector.js",
+  "anchor": "const wavesPath = path.join(pipelineDir(), 'waves.json');",
+  "line": 122,
+  "reason": "por qué este acceso directo es legítimo, qué alternativa del envoltorio se descartó, y cuál es la versión estructural (issue)"
+}
+```
+
+- **`anchor` es la línea de código exenta, en claro** — no un hash. Es el ancla
+  real: el guardrail la compara contra el archivo, normalizando CRLF/CR → LF y
+  colapsando whitespace horizontal, así que la firma es idéntica en un checkout
+  Windows (`core.autocrlf=true`) y en el runner Linux de Actions. Va en claro
+  porque quien revisa tiene que poder responder *«¿qué acceso estoy
+  autorizando?»* leyendo sólo el JSON, sin salir del diff.
+- **`line` es opcional e indicativa.** No participa del match y puede quedar
+  desactualizada sin romper nada. Antes era el ancla, y ese era el bug: un
+  cambio inocente que insertaba líneas arriba rompía el build, y —peor— la
+  coordenada podía pasar a apuntar a **otro** acceso, que heredaba la exención
+  sin pasar por review.
+- **No la escribas a mano.** `node .pipeline/lib/operational-state-lint.js
+  --anchor=<archivo>:<linea>` emite la entry lista para pegar (con `occurrence`
+  ya calculado si el ancla no es única); sólo hay que completar la `reason`.
+- **Un ancla que matchea varias líneas no exenta a nadie**: se desambigua con
+  `occurrence` explícito o se usa un acceso más específico. Y un ancla que no
+  matchea nada se reporta como **excepción obsoleta** — nunca queda muda.
+
+El archivo está en `.github/CODEOWNERS`: toda entry requiere review humano de
+@leitolarreta. Lo que se autoriza es **ese acceso**, no esa coordenada; re-anclar
+a un acceso distinto es una autorización nueva y vuelve a pasar por el review.
+
 ---
 
 ## 8. Nivel de garantía por sub-superficie
@@ -325,3 +366,164 @@ node --test .pipeline/lib/__tests__/operational-state-concurrency.test.js
 - **No** se cambió el formato ni la ubicación de los archivos.
 - **R8 (revertible en minutos):** borrar `operational-state.js`, sus dos tests, el
   fixture del worker y este documento. Nada más depende de ellos.
+
+---
+
+## 12. Dimensión de aislamiento: `projectId` (#5110, Ola 9.4 · E2)
+
+Hasta #5110 el estado operativo era **plano y global**: un único `waves.json` y
+un único `.partial-pause.json` para todo el sistema. Con dos proyectos activos
+ambos escriben la misma estructura y se pisan. Eso bloqueaba el multi-proyecto
+real, la app operadora móvil (E9) y el encendido del consumo del kernel.
+
+La dimensión de aislamiento es **`projectId`** — la misma que ya usa
+`lib/kernel-store.js` para descriptores, catálogo y claims, para que el
+movimiento al store externo no requiera traducción.
+
+### 12.1 Layout
+
+```
+enabled: false (DEFAULT)          enabled: true
+─────────────────────────         ────────────────────────────────────────
+.pipeline/waves.json              .pipeline/projects/<projectId>/waves.json
+.pipeline/.partial-pause.json     .pipeline/projects/<projectId>/.partial-pause.json
+.pipeline/archived/               .pipeline/projects/<projectId>/archived/
+.pipeline/audit/…jsonl            .pipeline/projects/<projectId>/audit/…jsonl
+.pipeline/wave-promote.*.json     .pipeline/projects/<projectId>/wave-promote.*.json
+.pipeline/wave-archive.*.json     .pipeline/projects/<projectId>/wave-archive.*.json
+
+.pipeline/.paused                 .pipeline/.paused        ← GLOBAL en ambos
+```
+
+El interruptor es `config.yaml → operational_state.namespaced.enabled`, **default
+OFF**. Prenderlo antes de correr el migrador deja al pipeline mirando un
+namespace vacío (cero olas, dispatch detenido), así que la secuencia es:
+pausar → migrar → prender → `/restart`.
+
+### 12.2 Qué queda global, y por qué
+
+`.pipeline/.paused` es el **halt total** y es un control de seguridad.
+Namespacearlo lo haría fallar **abierto**: un proyecto sin marker seguiría
+despachando con el sistema "pausado" y el operador creería que frenó todo. Queda
+en la raíz física, con precedencia máxima. Una eventual pausa por proyecto es
+**aditiva**: `pausaEfectiva = globalPaused || projectPaused`.
+
+Tampoco entran los ~30 JSON de `.pipeline/state/` (quedan para **#5113**) ni
+`waves.json.template`, que es un artefacto versionado del repo.
+
+### 12.3 Precedencia de resolución del contexto
+
+`lib/project-context.js` es el **dueño único** de la resolución. Fail-closed:
+
+| # | Fuente | `source` | Cuándo |
+|---|--------|----------|--------|
+| 1 | `opts.projectId` explícito | `explicit` | Pulpo o CLI que ya decidió. No cachea. |
+| 2 | `PIPELINE_PROJECT_ID` + `PIPELINE_PROJECT_BINDING` | `spawn-binding` | Sólo si el par coincide con el binding en disco. |
+| 3 | Un único descriptor en `.pipeline/descriptors/` | `single-project` | Compat de proyecto único (CA-5). |
+| 4 | Cero descriptores | `host-fallback` | Checkout sin `descriptors/`, fixture, bootstrap. No hay otro proyecto en el que caer. |
+| 5 | **≥2 descriptores sin contexto** | — | **throw `EOPSTATE_NO_PROJECT_CONTEXT`.** |
+
+El caso 5 es el que importa: elegir "el primero" o "el host" sería el default
+silencioso que un punto de entrada mal cableado convierte en corrupción cruzada.
+
+**La identidad del host NO se configura.** Sale de `pipeline.config.json`
+(`projectId`), la misma fuente que usa `kernel-store`. `config.yaml` no declara
+`host_project_id`: sería una segunda verdad que el código no lee, y editarla daría
+un no-op silencioso.
+
+#### `strict_context` — apagar la resolución por convención
+
+Los casos 3 y 4 resuelven por **convención** (hay un solo descriptor / no hay
+ninguno), no porque alguien haya **declarado** el proyecto. Eso es compat, no CA-3.
+
+`config.yaml → operational_state.namespaced.strict_context: true` (default
+**false**) los apaga a los dos: con el knob prendido, el contexto tiene que venir
+declarado —`opts.projectId` in-process o el par env+binding del pulpo— y cualquier
+otra cosa tira `EOPSTATE_NO_PROJECT_CONTEXT`. `PIPELINE_OPSTATE_STRICT_CONTEXT=1|0`
+fuerza el valor sin tocar config.
+
+Por qué default OFF: hoy **sólo el pulpo emite binding**; el dashboard, los hooks y
+los skills caen a `single-project`. Prenderlo antes de #5164 deja al tablero sin
+estado operativo. Es el interruptor que hace **exigible** el CA-3 cuando el
+cableado exista, no antes.
+
+### 12.4 El entorno NO es autoridad
+
+`build-child-env.js` propaga **toda** `PIPELINE_*` heredada, y los roles instruyen
+a los agentes a correr `node -e "require('.../lib/…')"`. Un agente podría exportar
+`PIPELINE_PROJECT_ID` y hablarle al namespace de otro proyecto.
+
+Por eso el pulpo —y sólo el pulpo— escribe un binding en
+`.pipeline/state/project-bindings/<nonce>.json` antes del spawn, y el contexto
+sólo acepta la var del entorno si **coincide con el binding**. El directorio de
+bindings se resuelve contra `PIPELINE_REPO_ROOT` (repo principal), no contra el
+`.pipeline/` local: los agentes de dev corren en un worktree con su propia copia.
+
+**Ciclo de vida del binding:** es de un solo uso. El pulpo lo escribe antes del
+spawn y lo **borra en el `exit` del hijo** (`clearSpawnBinding`). El TTL de 48h de
+`pruneStaleBindings()` queda como red de contención para el hijo que muere por
+watchdog — no como único mecanismo de limpieza, porque esa poda sólo corre dentro
+del **próximo** `writeSpawnBinding()`: sin despachos, los bindings se acumulaban.
+
+**Residual honesto:** el binding vive en el FS local, bajo el mismo usuario del
+SO. Sube la barra (hay que forjar un registro del pulpo) pero **no es
+criptográfico**. La autoridad plena llega con #5113/#5129.
+
+### 12.5 Dos ejes de autoridad que no se unifican
+
+- `isReservedProjectId()` (`project-descriptor.js`) gobierna la **identidad de
+  tenant**. Que `intrale-platform` esté reservado es lo que **protege** el
+  namespace del host de ser reclamado por un tenant — no se levanta (#6045).
+- `assertOperationalNamespace()` gobierna la **validez de namespace operativo**:
+  acepta `HOST_PROJECT_ID` y, para cualquier otro id, exige
+  `isSafeId(id) && !isReservedProjectId(id)`.
+
+El `intrale` de `config.yaml` es raíz del **vault de secretos** (`SECRET_SCOPES`),
+un tercer eje: no se unifica ni se toca.
+
+### 12.6 Rollback (R8)
+
+```bash
+# 1. PAUSAR — obligatorio, no hay bypass (ver abajo)
+#    creá .pipeline/.paused
+# 2. Bajar el flag
+#    config.yaml → operational_state.namespaced.enabled: false
+# 3. Devolver el layout plano (bit a bit, verificado por test)
+node .pipeline/scripts/migrate-operational-state-namespace.js --rollback
+# 4. Restart (que también levanta el halt)
+node .pipeline/restart.js
+```
+
+El migrador hace backup verificado en `.pipeline/backup/opstate-<ts>/` y aborta si
+alguna ruta que va a producir quedara **trackeable** en git — backup, destino **y su
+propio lock** (el layout namespaceado no está cubierto por las entradas literales
+viejas del `.gitignore` — R2/SEC-7).
+
+#### Las dos guardas de concurrencia, y por qué no se sustituyen
+
+| Guarda | Qué frena | Obligatoria |
+|--------|-----------|-------------|
+| **Halt total** — `.pipeline/.paused` en disco | Al **pulpo**. Es la única que cierra el TOCTOU. | **Sí**, en migrar y en `--rollback`. |
+| **Lock de migrador** — `.pipeline/.opstate-migration.lock` | Sólo a **otras corridas de este script**. Ningún proceso del pipeline lo observa. | Se toma **siempre**, automático. |
+
+El `--lock` de la primera versión se presentaba como equivalente al halt y **no lo
+era**: daba exclusión entre migradores y nada más. Un operador que corriera
+`--rollback --lock` con el pulpo vivo perdía en silencio cualquier `waves.json` que
+el pulpo escribiera entre la copia y el borrado — exactamente el modo de fallo que
+la guarda decía cubrir, en el único camino que mueve el registro de olas de lugar.
+**El flag se eliminó**: pasarlo hoy falla explícito, no es un no-op.
+
+`--dry-run` no exige halt ni toma el lock — no escribe un solo byte, así que sirve
+para inspeccionar el plan **antes** de pausar el pipeline.
+
+### 12.7 Lo que #5110 **no** hace
+
+- No migra consumidores: los 26 archivos de producción con `require` directo al
+  sustrato quedan correctos **sin tocarlos**, porque el namespaceo entra por la
+  raíz de path de `waves.js`/`partial-pause.js` y no por la fachada.
+- No permite **elegir** un proyecto distinto del ambiente desde un consumidor:
+  hoy los `require` directos toman el contexto ambiente. Eso es **#5164**.
+- No cablea contexto explícito en **cada** punto de entrada (CA-3): sólo el pulpo
+  emite binding; dashboard, hooks y skills caen a `single-project`/`host-fallback`.
+  Lo que #5110 sí deja listo es el **interruptor** que vuelve eso un error
+  (`strict_context`, §12.3) — default OFF hasta que #5164 complete el cableado.

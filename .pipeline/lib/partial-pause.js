@@ -82,7 +82,22 @@ function pipelineDir() {
     return path.join(__dirname, '..');
 }
 
-function partialFile() { return path.join(pipelineDir(), '.partial-pause.json'); }
+// #5110 (D3) — la allowlist de ejecución se namespacea por proyecto. Se le
+// pregunta directamente a `project-context.js` (dueño del namespace) y NO a
+// `waves.js`: los tests del dashboard reemplazan el módulo `waves` por un fake
+// parcial en `require.cache`, y hacer pasar la resolución de paths de la
+// allowlist por ahí la rompería en cuanto el fake no exponga `_paths()`.
+function stateDir() { return require('./project-context').stateDir(); }
+
+function partialFile() { return path.join(stateDir(), '.partial-pause.json'); }
+
+// #5110 (D4 · SEC-6) — `.paused` NO se namespacea: es el halt TOTAL del
+// pipeline y es un control de seguridad. Degradarlo a per-proyecto lo haría
+// fallar ABIERTO (un proyecto sin marker despacharía con el sistema pausado).
+// Queda en la raíz física, con precedencia máxima. Si algún día se agrega pausa
+// por proyecto, es ADITIVA: `pausaEfectiva = globalPaused || projectPaused`.
+// `lib/full-pause-state.js` (`isFullPauseActive()`, fail-closed) no cambia de
+// semántica.
 function pauseFile() { return path.join(pipelineDir(), '.paused'); }
 
 function normalizeIssue(issue) {
@@ -151,6 +166,39 @@ function readPartialFile() {
         };
     } catch {
         return null;
+    }
+}
+
+/**
+ * #6118 — Snapshot de metadata de ola guardado EN EL MARKER, en el shape que
+ * espera `setPartialPause` por `opts`.
+ *
+ * Existe porque `setPartialPause` reescribe el marker desde sus argumentos: lo
+ * que no se le pasa, se pierde. `getPipelineMode()` no expone estos campos, así
+ * que cualquier caller que sume un issue al allowlist borraba la identidad de la
+ * ola como daño colateral (#4030). Con esto, re-inyectarla es un round-trip.
+ *
+ * Es deliberadamente la metadata DEL MARKER y no la de `waves.json`: el marker
+ * es el snapshot vigente, y leer del registro podría cambiar la ola registrada
+ * como efecto secundario de habilitar una dependencia.
+ *
+ * La lectura vive acá —y no en el caller— porque este módulo es el dueño de
+ * `.partial-pause.json`: construir ese path afuera duplica el conocimiento del
+ * layout de estado que #5109 está centralizando.
+ *
+ * @returns {{waveNumber?:number, waveName?:string, waveGoal?:string}} vacío si
+ *          el marker no existe, es ilegible o no tiene metadata de ola.
+ */
+function readWaveMetaFromMarker() {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(partialFile(), 'utf8'));
+        const out = {};
+        if (Number.isInteger(parsed.wave_number)) out.waveNumber = parsed.wave_number;
+        if (typeof parsed.wave_name === 'string') out.waveName = parsed.wave_name;
+        if (typeof parsed.wave_goal === 'string') out.waveGoal = parsed.wave_goal;
+        return out;
+    } catch {
+        return {};
     }
 }
 
@@ -553,6 +601,107 @@ function setPartialPause(issues, opts = {}) {
 }
 
 /**
+ * #5923 — Marca `accepted_dep_risk: true` sobre el marker VIGENTE, sin
+ * reconstruirlo.
+ *
+ * Por qué existe (y por qué NO alcanza `setPartialPause`): `setPartialPause`
+ * REESCRIBE el marker entero desde sus argumentos, así que todo campo que el
+ * caller no le pase desaparece. Un caller que sólo quiere aceptar el riesgo de
+ * deps abiertas no tiene manera de enumerar los campos co-existentes sin
+ * conocerlos a todos — y `getPipelineMode()` ni siquiera expone
+ * `wave_number`/`wave_name` (#4030), así que la proyección es estructuralmente
+ * incompleta. El resultado era pérdida silenciosa de `allowed_skills` (#3680) y
+ * de la metadata de ola, con respuesta `ok:true`.
+ *
+ * Peor todavía: con la pausa parcial activa SÓLO por skills (`allowed_issues`
+ * vacío, modo soportado desde #3680), `setPartialPause([], …)` cae en la rama
+ * legacy de lista vacía y DELEGA en `clearPartialPause` — o sea que una acción
+ * vendida como "no cambies nada" levantaba la pausa parcial entera.
+ *
+ * Contrato de esta primitiva:
+ *   - Es un MERGE: lee el JSON crudo y sólo agrega/pisa las claves del flag.
+ *     Todo lo demás (allowed_issues, allowed_skills, wave_*, dep_sources,
+ *     authorization_ttls, created_at, source) viaja verbatim.
+ *   - NO puede borrar el marker ni vaciar el allowlist: no hay camino de código
+ *     que llame a `clearPartialPause` ni que escriba `allowed_issues: []`.
+ *   - Fail-closed: si no hay marker, o no habilita nada (ni issues ni skills),
+ *     devuelve `{ok:false, reason:'no_partial_pause'}` sin escribir.
+ *   - `source` NO se pisa: el origen del allowlist no cambió por aceptar el
+ *     riesgo. Quién lo aceptó queda en campos aditivos propios + audit entry.
+ *
+ * @param {{ source?: string, authorizedBy?: string, justification?: string, extra?: Object }} [opts]
+ * @returns {{ok: boolean, rejected?: boolean, reason?: string, allowedIssues: number[], allowedSkills?: string[], msg?: string}}
+ */
+function markDepRiskAccepted(opts = {}) {
+    const snapshot = readPartialFile();
+    if (!snapshot) {
+        return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
+    }
+    const allowedIssues = snapshot.allowed_issues || [];
+    const allowedSkills = snapshot.allowed_skills || [];
+    // Misma disyunción que `getPipelineMode` (#3680 CA-A15): un marker que no
+    // habilita ni issues ni skills no es una pausa parcial activa.
+    if (allowedIssues.length === 0 && allowedSkills.length === 0) {
+        return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
+    }
+
+    // Audit con `previous === current`: la operación es aditiva por
+    // construcción y su diff nunca tiene `removed`, así que el gate no puede
+    // rechazarla por removals. La entry se emite igual, para que la aceptación
+    // del riesgo quede trazada con el operador que la firmó.
+    const gateResult = evaluateAndAudit({
+        previous: allowedIssues,
+        current: allowedIssues,
+        source: opts.source,
+        authorizedBy: opts.authorizedBy,
+        justification: opts.justification || 'markDepRiskAccepted (#5923)',
+        intendedAction: 'write',
+        extra: opts.extra,
+    });
+    if (gateResult.rejected) {
+        return { ok: false, rejected: true, reason: 'gate_rejected', allowedIssues };
+    }
+
+    return withLockSync(partialFile(), () => {
+        // Re-lectura BAJO lock: entre el snapshot de arriba y el write pudo
+        // entrar otro writer. El merge se hace sobre lo más fresco.
+        let fresh;
+        try {
+            fresh = JSON.parse(fs.readFileSync(partialFile(), 'utf8'));
+        } catch {
+            return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
+        }
+        if (!fresh || typeof fresh !== 'object' || Array.isArray(fresh)) {
+            return { ok: false, reason: 'no_partial_pause', allowedIssues: [] };
+        }
+        // Merge aditivo. `source` intacto a propósito (ver doc de arriba).
+        const merged = {
+            ...fresh,
+            accepted_dep_risk: true,
+            accepted_dep_risk_at: new Date().toISOString(),
+        };
+        if (opts.authorizedBy) merged.accepted_dep_risk_by = String(opts.authorizedBy);
+        atomicWriteFile(partialFile(), JSON.stringify(merged, null, 2));
+
+        const finalIssues = (Array.isArray(fresh.allowed_issues) ? fresh.allowed_issues : [])
+            .map(normalizeIssue).filter(Boolean);
+        const finalSkills = (Array.isArray(fresh.allowed_skills) ? fresh.allowed_skills : [])
+            .filter(s => typeof s === 'string' && s.trim()).map(s => s.trim());
+        return {
+            ok: true,
+            allowedIssues: finalIssues,
+            allowedSkills: finalSkills,
+            msg: 'Riesgo de deps abiertas aceptado; allowlist intacto',
+        };
+    }, {
+        component: 'partial-pause-lock',
+        timeoutMs: LOCK_TIMEOUT_MS,
+        maxRetries: LOCK_MAX_RETRIES,
+        notify: notifyTelegram,
+    });
+}
+
+/**
  * Variante atómica que además devuelve un snapshot del estado previo para
  * habilitar rollback transaccional (#3520).
  *
@@ -783,51 +932,139 @@ function resumeAll(opts = {}) {
 }
 
 // -----------------------------------------------------------------------------
-// #4832 — Lectura del ORIGEN de la pausa total (`.paused`), fail-closed.
+// #4832 / #5399 — Lectura del ORIGEN de la pausa total (`.paused`), fail-closed.
 //
 // Distingue una pausa AUTO-GENERADA por corrupción de config.yaml
 // (`haltOnConfigCorruption` escribe el marker como JSON
 // `{ source: 'config-corruption-halt', ... }`) de una pausa MANUAL del operador
 // (marker legacy = ISO plano, o cualquier otro contenido).
 //
-// Regla fail-closed (SEC / A08 fail-closed): sólo devuelve
-// `source: 'config-corruption-halt'` cuando el marker parsea como JSON válido
-// **y** `parsed.source === 'config-corruption-halt'`. CUALQUIER otro caso
-// (ISO plano legacy, JSON malformado, `source` distinto, string vacío,
-// archivo ilegible, o inexistente) → `manual`/`unknown`, es decir NUNCA
-// auto-recuperable. Esto garantiza que un auto-recovery ingenuo jamás pise una
-// pausa que el operador puso a propósito (CA-3).
+// Regla fail-closed (SEC / A08 fail-closed): sólo devuelve un `source`
+// AUTO-LEVANTABLE cuando el marker parsea como JSON válido **y** `parsed.source`
+// pertenece por igualdad exacta a `AUTO_LIFTABLE_SOURCES`. CUALQUIER otro caso
+// (ISO plano legacy, JSON malformado, array/null/primitivo, marker gigante,
+// `source` distinto, string vacío, archivo ilegible, o inexistente) →
+// `manual`/`unknown`, es decir NUNCA auto-recuperable. Esto garantiza que un
+// auto-recovery ingenuo jamás pise una pausa que el operador puso a propósito
+// (CA-3 de #4832, CA-8/CA-10 de #5399).
 //
-// @returns {{ source: 'config-corruption-halt'|'manual'|'unknown', raw: string|null }}
+// #5399 — El retorno se enriquece de forma ADITIVA (`source` y `raw` siguen
+// exactamente con la semántica anterior, así que `pulpo.js` y
+// `lib/operational-state.js` no rompen):
+//   - `rawSource`: el string de autoría LITERAL del marker (o null si no se pudo
+//     determinar). Es lo que `preserveFullPause` copia verbatim; devolverlo
+//     nunca puede promover autoría porque sale del disco tal cual.
+//   - `ts` / `detail` / `preservedFrom`: metadata original del marker.
+//   - `undetermined`: motivo por el que la autoría no pudo determinarse
+//     (null cuando sí se determinó). CA-6: deja registro.
+//
+// @returns {{
+//   source: 'config-corruption-halt'|'manual'|'unknown',
+//   rawSource: string|null, ts: string|null, detail: string|null,
+//   preservedFrom: object|null, undetermined: string|null, raw: string|null
+// }}
 // -----------------------------------------------------------------------------
+
+// #5399 CA-8 (SEC-1) — Allowlist POSITIVA de autorías auto-levantables. La
+// pertenencia se evalúa por igualdad exacta contra este conjunto cerrado.
+// **Prohibido** decidir el auto-levantado por negación (`source !== 'human'`):
+// eso invierte el default y reanuda dispatch que el operador frenó a propósito.
+//
+// `kernel-cutover-degraded-halt` (`pulpo.js`, #5135) NO entra acá a propósito:
+// es una pausa automática cuya NO-recuperación es deliberada (exige rollback
+// manual). Ver el test de regresión nombrado en
+// `__tests__/restart-preserve-pause-5399.test.js`.
+// #5243 — `secrets-health-halt` se suma al set: el halt por secreto faltante es
+// auto-generado y su causa es objetivamente verificable en cada ciclo (el
+// secreto está o no está), así que reponerlo debe reanudar el dispatch solo.
+// Sin esta entrada el auto-recovery de #5243 sería código muerto: el marker que
+// escribe `secrets-health.js` se leería como `manual` y la pausa quedaría hasta
+// intervención humana aunque el operador ya hubiera repuesto el secreto.
+// La ampliación es por PERTENENCIA EXACTA a esta lista cerrada — sigue estando
+// prohibido decidir por negación.
+const AUTO_LIFTABLE_SOURCES = Object.freeze(['config-corruption-halt', 'secrets-health-halt']);
+
+// #5399 CA-10 (SEC-3) — cap de tamaño ANTES de `JSON.parse`. Un marker de 64KB
+// ya es tres órdenes de magnitud más grande que cualquier marker legítimo.
+const MAX_PAUSE_MARKER_BYTES = 64 * 1024;
+
+// Caps defensivos de los campos que copiamos verbatim: el marker es un archivo
+// que cualquier proceso del host puede escribir, no una fuente confiable.
+const MAX_PAUSE_TS_LEN = 64;
+const MAX_PAUSE_SOURCE_LEN = 100;
+
+/**
+ * ¿Esta autoría habilita el auto-levantado de la pausa total?
+ *
+ * Pertenencia exacta a `AUTO_LIFTABLE_SOURCES` (CA-8 / SEC-1). Cualquier valor
+ * no-string, desconocido o ambiguo → `false` (fail-closed).
+ *
+ * @param {unknown} source
+ * @returns {boolean}
+ */
+function isAutoLiftableSource(source) {
+    return typeof source === 'string' && AUTO_LIFTABLE_SOURCES.includes(source);
+}
+
 function readFullPauseOrigin() {
+    const empty = {
+        source: 'unknown', rawSource: null, ts: null, detail: null,
+        preservedFrom: null, undetermined: null, raw: null,
+    };
     let raw = null;
     try {
         if (!fs.existsSync(pauseFile())) {
-            return { source: 'unknown', raw: null };
+            return { ...empty, undetermined: 'marker_ausente' };
+        }
+        const st = fs.statSync(pauseFile());
+        if (st.size > MAX_PAUSE_MARKER_BYTES) {
+            // Marker desproporcionado → fail-closed sin parsear (SEC-3).
+            return { ...empty, source: 'manual', undetermined: 'marker_demasiado_grande' };
         }
         raw = fs.readFileSync(pauseFile(), 'utf8');
     } catch {
         // Ilegible → fail-closed (no auto-recuperable).
-        return { source: 'manual', raw: null };
+        return { ...empty, source: 'manual', undetermined: 'marker_ilegible' };
     }
     const trimmed = typeof raw === 'string' ? raw.trim() : '';
     if (!trimmed) {
         // Vacío → manual (fail-closed).
-        return { source: 'manual', raw };
+        return { ...empty, source: 'manual', undetermined: 'marker_vacio', raw };
     }
     let parsed;
     try {
         parsed = JSON.parse(trimmed);
     } catch {
         // No es JSON (ej. ISO plano legacy) → manual (fail-closed).
-        return { source: 'manual', raw };
+        return { ...empty, source: 'manual', undetermined: 'marker_legacy_no_json', raw };
     }
-    if (parsed && typeof parsed === 'object' && parsed.source === 'config-corruption-halt') {
-        return { source: 'config-corruption-halt', raw };
+    // SEC-3: sólo objeto plano. Array / null / primitivo → fail-closed.
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { ...empty, source: 'manual', undetermined: 'marker_no_es_objeto', raw };
+    }
+    // SEC-3: lectura CAMPO POR CAMPO. Prohibido `{ ...defaults, ...parsed }` /
+    // `Object.assign` / deep-merge: son el vector de prototype pollution vía
+    // `__proto__` / `constructor.prototype`.
+    const rawSource = (typeof parsed.source === 'string' && parsed.source.length <= MAX_PAUSE_SOURCE_LEN)
+        ? parsed.source : null;
+    const ts = (typeof parsed.ts === 'string' && parsed.ts.length <= MAX_PAUSE_TS_LEN)
+        ? parsed.ts : null;
+    const detail = typeof parsed.detail === 'string' ? parsed.detail : null;
+    const preservedFrom = (parsed.preservedFrom && typeof parsed.preservedFrom === 'object'
+        && !Array.isArray(parsed.preservedFrom)) ? parsed.preservedFrom : null;
+    if (isAutoLiftableSource(rawSource)) {
+        return { source: rawSource, rawSource, ts, detail, preservedFrom, undetermined: null, raw };
     }
     // JSON válido pero con otro source (o sin source) → manual (fail-closed).
-    return { source: 'manual', raw };
+    return {
+        source: 'manual',
+        rawSource,
+        ts,
+        detail,
+        preservedFrom,
+        undetermined: rawSource ? null : 'marker_sin_source',
+        raw,
+    };
 }
 
 /**
@@ -842,11 +1079,26 @@ function readFullPauseOrigin() {
  * `previous == current` con `extra.full_pause: true` para trazabilidad. Write
  * atómico bajo lock del marker `.paused`.
  *
+ * #5399 CA-1 — el marker deja de ser un timestamp ISO pelado y pasa a ser el
+ * mismo objeto estructurado que escribe `haltOnConfigCorruption`
+ * (`{ source, ts, detail }`). Antes de este cambio `opts.source` se recibía y
+ * se DESCARTABA: por eso toda pausa del wizard/dashboard quedaba indistinguible
+ * de una legacy y se degradaba a autoría desconocida. El campo que decide el
+ * auto-levantado sigue siendo `source` (contrato de `readFullPauseOrigin`), y
+ * como los sources humanos no están en `AUTO_LIFTABLE_SOURCES`, persistirlos
+ * gana trazabilidad sin habilitar ningún auto-levantado nuevo.
+ *
  * @param {{ source?: string, authorizedBy?: string, justification?: string, extra?: Object }} [opts]
- * @returns {{ ok: boolean, existedBefore: boolean }}
+ * @returns {{ ok: boolean, existedBefore: boolean, source: string, autoLiftable: boolean }}
  */
 function setFullPause(opts = {}) {
     const previous = readPreviousAllowlist();
+    const source = typeof opts.source === 'string' && opts.source.trim()
+        ? opts.source.trim().slice(0, MAX_PAUSE_SOURCE_LEN)
+        : 'unknown';
+    // CA-12 (SEC-5/SEC-6): el detalle se sanitiza ANTES de persistirlo, no sólo
+    // al auditarlo — el marker lo leen el dashboard y `/status`.
+    const detail = audit.sanitizeJustification(opts.justification || '').sanitized;
     audit.appendMutation({
         source: opts.source || 'unknown',
         action: 'write',
@@ -858,14 +1110,142 @@ function setFullPause(opts = {}) {
     });
     return withLockSync(pauseFile(), () => {
         const existedBefore = fs.existsSync(pauseFile());
-        atomicWriteFile(pauseFile(), new Date().toISOString());
-        return { ok: true, existedBefore };
+        atomicWriteFile(pauseFile(), JSON.stringify({
+            source,
+            ts: new Date().toISOString(),
+            detail,
+        }));
+        return { ok: true, existedBefore, source, autoLiftable: isAutoLiftableSource(source) };
     }, {
         component: 'full-pause-lock',
         timeoutMs: LOCK_TIMEOUT_MS,
         maxRetries: LOCK_MAX_RETRIES,
         notify: notifyTelegram,
     });
+}
+
+/**
+ * Rescata el timestamp de un marker legacy (ISO plano, sin metadatos). Devuelve
+ * null si el contenido no es una fecha parseable — nunca inventa un valor.
+ *
+ * @param {string|null} raw
+ * @returns {string|null}
+ */
+function legacyIsoFromRaw(raw) {
+    if (typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.length > MAX_PAUSE_TS_LEN) return null;
+    const t = Date.parse(trimmed);
+    if (!Number.isFinite(t)) return null;
+    return new Date(t).toISOString();
+}
+
+/**
+ * #5399 — Preserva la pausa total vigente A TRAVÉS de un `/restart`.
+ *
+ * El bug que arregla: `restart.js` conservaba la pausa (correcto: un restart no
+ * es un destrabe implícito) pero la reescribía con `new Date().toISOString()`,
+ * destruyendo el metadato de origen. Sin autoría, `readFullPauseOrigin` la lee
+ * como `manual` y el auto-recovery de #4832 nunca la levanta — el pipeline
+ * quedaba pausado para siempre (evidencia real: 1h33 sin despachar el
+ * 2026-08-02).
+ *
+ * Copia VERBATIM `source` + `ts` + `detail` del marker vigente y sólo agrega
+ * `preservedFrom`. NUNCA sintetiza ni promueve autoría (CA-9 / SEC-4): los
+ * valores salen del disco tal cual, así que humana/desconocida jamás pueden
+ * salir auto-levantables.
+ *
+ * Idempotente frente al re-exec de `restart.js` (#2880): el marker se lee del
+ * disco DENTRO del lock, en el momento del write. N re-ejecuciones pisan
+ * `preservedFrom` pero dejan `source`/`ts` intactos.
+ *
+ * Degradación segura: si el lock no se puede adquirir (Pulpo viejo agonizando),
+ * NO se escribe ni se borra nada — el marker original queda intacto, que ya es
+ * la preservación correcta. Sólo se pierde la anotación de `preservedFrom`.
+ *
+ * @param {{ authorizedBy?: string }} [opts]
+ * @returns {{ ok: boolean, existed: boolean, source?: string, autoLiftable?: boolean,
+ *             undetermined?: string|null, lockFailed?: boolean, reason?: string }}
+ */
+function preserveFullPause(opts = {}) {
+    const previous = readPreviousAllowlist();
+    const authorizedBy = opts.authorizedBy || 'restart:preserve-pause';
+    try {
+        return withLockSync(pauseFile(), () => {
+            // Dentro del lock: sin TOCTOU entre el read y el write.
+            if (!fs.existsSync(pauseFile())) {
+                return { ok: false, existed: false, reason: 'sin_pausa_previa' };
+            }
+            const origin = readFullPauseOrigin();
+            // `origin.rawSource` viene LITERAL del disco; `origin.source` viene
+            // fail-closed del lector. Copiar el literal cuando existe conserva la
+            // autoría exacta (CA-2) y no puede promover nada: si el literal fuera
+            // auto-levantable, `origin.source` ya lo sería. Sin literal
+            // (marker legacy/ilegible) cae al veredicto fail-closed → 'manual'.
+            const inheritedSource = origin.rawSource || origin.source || 'manual';
+            const marker = {
+                source: inheritedSource,
+                // Un marker legacy no tiene `ts`, pero SÍ es (casi siempre) un ISO
+                // plano: rescatarlo conserva desde cuándo está pausado el pipeline,
+                // que es el dato que el operador mira. Sólo si tampoco parsea como
+                // fecha caemos a `now`.
+                ts: origin.ts || legacyIsoFromRaw(origin.raw) || new Date().toISOString(),
+                // CA-12: sanitizado antes de persistir y de auditar; nunca crudo.
+                detail: audit.sanitizeJustification(origin.detail || '').sanitized,
+                preservedFrom: { by: 'restart', at: new Date().toISOString() },
+            };
+            if (origin.undetermined) marker.undetermined = origin.undetermined;
+            const autoLiftable = isAutoLiftableSource(marker.source);
+            // Invariante del módulo: auditar ANTES de escribir. Preservar la
+            // pausa NO toca la allowlist → `previous === current`, sin removals,
+            // así que este `authorizedBy` no ensancha el gate de removals.
+            audit.appendMutation({
+                source: 'restart',
+                action: 'write',
+                previous,
+                current: previous,
+                authorizedBy,
+                justification: `restart preservo pausa heredada (source=${marker.source}`
+                    + `${origin.undetermined ? `, autoria_indeterminada=${origin.undetermined}` : ''})`,
+                extra: {
+                    full_pause: true,
+                    preserved: true,
+                    inherited_source: marker.source,
+                    inherited_ts: marker.ts,
+                    auto_liftable: autoLiftable,
+                    authorship_undetermined: origin.undetermined || null,
+                },
+            });
+            atomicWriteFile(pauseFile(), JSON.stringify(marker));
+            return {
+                ok: true,
+                existed: true,
+                source: marker.source,
+                autoLiftable,
+                undetermined: origin.undetermined || null,
+            };
+        }, {
+            component: 'full-pause-lock',
+            timeoutMs: LOCK_TIMEOUT_MS,
+            maxRetries: LOCK_MAX_RETRIES,
+            notify: notifyTelegram,
+        });
+    } catch (err) {
+        // Lock no adquirido: dejamos el marker ORIGINAL intacto (no escribir, no
+        // borrar). Sigue siendo preservación correcta — nunca borrado.
+        const origin = readFullPauseOrigin();
+        let existed = false;
+        try { existed = fs.existsSync(pauseFile()); } catch { /* best-effort */ }
+        return {
+            ok: false,
+            existed,
+            source: origin.rawSource || origin.source,
+            autoLiftable: isAutoLiftableSource(origin.rawSource || origin.source),
+            undetermined: origin.undetermined || null,
+            lockFailed: true,
+            reason: `lock_no_adquirido: ${(err && err.message) || 'desconocido'}`,
+        };
+    }
 }
 
 /**
@@ -910,15 +1290,27 @@ module.exports = {
     isSkillAllowedInState,
     setPartialPause,
     setPartialPauseAtomic, // #3520
+    // #5923 — merge no destructivo del flag de riesgo de deps. NO reconstruye
+    // el marker: preserva allowed_skills (#3680) y wave metadata (#4030).
+    markDepRiskAccepted,
     clearPartialPause,
     resumeAll,
     // #3741 — pausa total gateada (wizard de pausa, scope full).
     setFullPause,
     clearFullPause,
+    // #5399 — preservación de la pausa total a través de un /restart (verbatim).
+    preserveFullPause,
     // #4832 — lectura fail-closed del origen de la pausa total (auto vs manual).
     readFullPauseOrigin,
+    // #5399 CA-8 — allowlist positiva de autorías auto-levantables.
+    isAutoLiftableSource,
+    AUTO_LIFTABLE_SOURCES,
+    MAX_PAUSE_MARKER_BYTES,
     // #3625 — exportados para callers que quieran leer estado raw y para tests.
     readPreviousAllowlist,
+    // #6118 — metadata de ola del marker, para re-inyectarla en setPartialPause
+    // y no perderla al sumar un issue al allowlist.
+    readWaveMetaFromMarker,
     evaluateAndAudit,
     // #4030 — saneado de metadata de ola (expuesto para tests).
     sanitizeWaveMetaForWrite,
@@ -926,5 +1318,10 @@ module.exports = {
     // para declarar la causa del wave-stall watchdog (#4708/#4709) cuando el
     // dispatch está detenido por falta de ola y no por halt humano.
     unscopedDispatchEnabled,
-    _paths: () => ({ PARTIAL_FILE: partialFile(), PAUSE_FILE: pauseFile() }),
+    _paths: () => ({
+        PARTIAL_FILE: partialFile(),
+        PAUSE_FILE: pauseFile(),
+        // #5110 — `PARTIAL_FILE` está namespaceado; `PAUSE_FILE` NO (D4/SEC-6).
+        PROJECT_ID: require('./project-context').currentProjectIdOrNull(),
+    }),
 };

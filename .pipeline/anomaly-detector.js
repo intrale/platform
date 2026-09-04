@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // .pipeline/anomaly-detector.js — Detector reactivo de consumo anómalo (#2891 PR-B)
 //
 // Lee `.pipeline/metrics/snapshot.json` (producido por aggregator.js), compara
@@ -32,7 +35,8 @@ const REPO_ROOT = process.env.PIPELINE_REPO_ROOT || process.cwd();
 const PIPELINE_DIR = path.join(REPO_ROOT, '.pipeline');
 const SNAPSHOT_FILE = path.join(PIPELINE_DIR, 'metrics', 'snapshot.json');
 const HISTORY_FILE = path.join(PIPELINE_DIR, 'metrics-history.jsonl');
-const CONFIG_FILE = path.join(PIPELINE_DIR, 'config.yaml');
+// #5172 — la ruta de `config.yaml` la arma el punto único a partir de
+// `PIPELINE_DIR` (CA-12: el entorno aporta DIRECTORIO, nunca el nombre del archivo).
 
 // Defaults — ver issue #2882 (épico) para rationale.
 //   pctThreshold: actual > baseline * (1 + 0.5) → +50% sobre baseline
@@ -197,17 +201,28 @@ function persistEvaluation(record, file) {
 }
 
 // loadConfigFromYaml: lee `anomaly_detector` de `.pipeline/config.yaml`.
-// Si yaml no está o el archivo no existe, devuelve {} (defaults).
+//
+// #5172 — La lectura pasa por el punto único (`lib/config-resolver`) y ya NO hay
+// `catch { return {} }`: un archivo ausente, ilegible, con YAML roto o que viola
+// el schema LANZA el error tipado (ya redactado). Antes ese catch convertía
+// "no pude leer la config" en "usá los thresholds por defecto", que es
+// exactamente la degradación muda que la historia elimina.
+//
+// Lo que SÍ se conserva es el default de sección ausente (D-4): un config válido
+// sin bloque `anomaly_detector:` devuelve `{}` y el consumidor aplica DEFAULTS.
+//
+// El parámetro `file` (punto de inyección por firma) se mantiene: es una ruta de
+// ARCHIVO explícita ⇒ `resolve({configPath})`. Sin él se resuelve por el mismo
+// DIRECTORIO que este módulo ya usaba (`PIPELINE_REPO_ROOT` + `.pipeline`),
+// pasado explícito para no quedar a merced del orden de la cadena de env vars.
+//
+// @throws {ConfigParseViolation|ConfigSchemaViolation}
 function loadConfigFromYaml(file) {
-    const target = file || CONFIG_FILE;
-    try {
-        if (!fs.existsSync(target)) return {};
-        const yaml = require('js-yaml');
-        const parsed = yaml.load(fs.readFileSync(target, 'utf8')) || {};
-        return parsed.anomaly_detector || {};
-    } catch (e) {
-        return {};
-    }
+    const configResolver = require('./lib/config-resolver');
+    const parsed = file
+        ? configResolver.resolve({ configPath: file })
+        : configResolver.resolve({ pipelineDir: PIPELINE_DIR });
+    return parsed.anomaly_detector || {};
 }
 
 class AnomalyDetector extends EventEmitter {
@@ -283,7 +298,29 @@ function parseCliArgs(argv) {
 
 function main() {
     const args = parseCliArgs(process.argv);
-    const yamlConfig = loadConfigFromYaml();
+    // #5172 — El fallo de config se RECLAMA a los gritos en stderr (detalle +
+    // acción ya redactados por `config-schema`), no se traga. No hay `exit`: el
+    // detector es un daemon y matarlo dejaría al pipeline sin detección de
+    // consumo anómalo, que es peor que detectar con los thresholds por defecto
+    // — y la línea de log deja constancia de con qué config está corriendo.
+    let yamlConfig = {};
+    try {
+        yamlConfig = loadConfigFromYaml();
+    } catch (e) {
+        let linea;
+        try {
+            const configSchema = require('./lib/config-schema');
+            linea = configSchema.formatConfigFailureLog(
+                configSchema.describeConfigFailure(e, { archivo: e && e.archivo }),
+                { titulo: 'CONFIG INVÁLIDA — corriendo con los thresholds por defecto' },
+            );
+        } catch {
+            // Sin `config-schema` a mano (worktree sin node_modules): al menos el
+            // nombre del error, NUNCA el mensaje crudo de js-yaml (SEC-1).
+            linea = `CONFIG INVÁLIDA (${(e && e.name) || 'Error'}) — corriendo con los thresholds por defecto`;
+        }
+        process.stderr.write(`[anomaly-detector] ${linea}\n`);
+    }
     const merged = Object.assign({}, yamlConfig, args.configOverride);
     const detector = new AnomalyDetector({ config: merged });
     for (const w of detector.warnings) process.stderr.write(`[anomaly-detector] WARN: ${w}\n`);

@@ -12,10 +12,14 @@
 // errores redactados, detección de prompt-injection sobre campos no confiables.
 //
 // Orden de validación fail-closed (CA-B3, abortando al PRIMER fallo):
-//   1. Compat de schemaVersion  → migración / rechazo (project-descriptor-migrations)
-//   2. Integridad / checksum     → sha256 del descriptor vs registrado (supply-chain)
+//   1. Integridad / checksum     → sha256 sobre los bytes AUTORADOS (supply-chain)
+//   2. Compat de schemaVersion  → migración / rechazo (project-descriptor-migrations)
 //   3. JSON Schema (Ajv)         → additionalProperties:false, requeridos, patrones
 //   4. Sanitización de paths     → anti path-traversal ANTES de usar como workspace
+//
+// El checksum va PRIMERO desde #6032 (CA-9 · D-7): ancla el archivo tal como fue
+// autorado, no su derivado post-migración. El schema (paso 3) valida el descriptor
+// YA migrado, así que declarar una versión vieja no saltea campos nuevos.
 //
 // Resolución `capability → skill` (CA-B1, CRÍTICO): SIEMPRE contra la allowlist
 // fija `KERNEL_SKILLS`. JAMÁS `require()`/import dinámico de un path del descriptor.
@@ -29,6 +33,16 @@ const Ajv = require('ajv');
 const { detectInjection } = require('./handoff');
 const migrations = require('./project-descriptor-migrations');
 const { validateBaseRef } = require('./worktree-prefix');
+// #6031 — el ancla de `credentials[].ref` se IMPORTA de su dueño, no se
+// reimplementa acá. `credentials.js` sólo requiere builtins (`fs`, `os`,
+// `path`) y no hace I/O en carga de módulo, así que este require no cierra
+// ciclo ni arrastra lecturas de disco al camino de validación.
+const { refPathAnclado, parseSecretRef, STORE_DIR_LOGICO } = require('./credentials');
+// #6032 — la heredabilidad se LEE del vocabulario, no se copia (CA-11 · SEC-4).
+// `NON_INHERITABLE_SCOPES`/`INHERITABLE_SCOPES` son una partición explícita de
+// `SECRET_SCOPES`: un scope nuevo no puede nacer heredable por omisión. Una
+// deny-list literal acá sería exactamente esa escalada por silencio.
+const { SECRET_SCOPES, NON_INHERITABLE_SCOPES, rootScope } = require('./secret-scopes');
 
 const SCHEMA_PATH = path.resolve(__dirname, '..', 'contracts', 'project.schema.json');
 const schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
@@ -112,7 +126,39 @@ function redactAjvErrors(ajvErrors) {
 // de workspace/estado (requisito #2 · A01).
 // -----------------------------------------------------------------------------
 const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
-const RESERVED_PROJECT_IDS = Object.freeze(new Set(['intrale-platform']));
+
+// #5204 — Partición del CONTROL-PLANE del kernel. No es un tenant: es el
+// namespace propio del kernel donde viven el catálogo (`catalog#index`) y los
+// ítems `product#<id>` que el boot (`bootProducts`) enumera. El descriptor de
+// cada producto sigue viviendo en la partición de SU tenant.
+//
+// Vive acá (y no en `kernel-store.js`) porque es la misma autoridad que decide
+// qué ids están reservados: si el control-plane no fuera reservado, un alta con
+// `identity.projectId = 'kernel-control-plane'` obtendría un store ligado a la
+// partición del kernel y podría reescribir el catálogo entero desde el camino
+// de tenant. Reservarlo cierra esa puerta en el único lugar donde ya se decide
+// la política de ids.
+const CONTROL_PLANE_PROJECT_ID = 'kernel-control-plane';
+
+// Ids que jamás pueden ser el `identity.projectId` de un tenant. Se construye por
+// UNIÓN en tiempo de carga (CA-15 · SEC-8) — nunca copiando literales:
+//
+//   - `SECRET_SCOPES`: el projectId namespacea el path del vault. Un tenant
+//     llamado `aws` o `telegram` produciría un segmento que colisiona con el del
+//     scope y podría servir/pisar credenciales de otro namespace. Derivarlo del
+//     vocabulario (y no de una copia) hace que un scope NUEVO quede reservado
+//     automáticamente: si el vocabulario crece y la reserva no, el test de
+//     no-divergencia rompe.
+//   - claves de contaminación de prototipo (`__proto__`, `constructor`, ...) y
+//     `namespaces`: se usan como clave de objetos de estado indexados por
+//     projectId.
+const PROTOTYPE_POLLUTION_IDS = Object.freeze(['namespaces', 'constructor', 'prototype', 'toString', '__proto__']);
+const RESERVED_PROJECT_IDS = Object.freeze(new Set([
+  'intrale-platform',
+  CONTROL_PLANE_PROJECT_ID,
+  ...SECRET_SCOPES,
+  ...PROTOTYPE_POLLUTION_IDS,
+]));
 
 function isSafeId(id) {
   if (typeof id !== 'string') return false;
@@ -157,6 +203,19 @@ function isSafeWorktreePath(p) {
   return true;
 }
 
+// Mensajes de rechazo de `credentials[].ref` (#6031). Son ESTÁTICOS a propósito:
+// se calculan una vez desde `STORE_DIR_LOGICO` (el literal `~/.claude/secrets/`),
+// nunca desde el path resuelto ni desde el valor que mandó el descriptor. El
+// `detail` viaja a logs, al dashboard y a issues, y el wizard de onboarding lo
+// renderiza literal como texto de interfaz: interpolar el path resuelto filtraría
+// el usuario del host y el valor crudo daría eco a un dato no confiable.
+// Le dicen al operador dónde va el archivo y qué corregir, no sólo qué falló.
+const CRED_REF_DETALLE = `la referencia de la credencial tiene que apuntar a un archivo dentro de ${STORE_DIR_LOGICO} `
+  + 'y venir con el namespace al final, en la forma "archivo#namespace". '
+  + 'Mové el archivo ahí o corregí la referencia en el descriptor.';
+const CRED_LISTA_DETALLE = 'la sección de credenciales tiene que ser una lista de entradas '
+  + '{ ref, scopes }. Revisá el bloque "credentials" del descriptor.';
+
 function collectPathTraversalHits(descriptor) {
   const hits = [];
   const pid = descriptor && descriptor.identity && descriptor.identity.projectId;
@@ -171,6 +230,36 @@ function collectPathTraversalHits(descriptor) {
   const wtRoot = descriptor && descriptor.thresholds && descriptor.thresholds.worktreeRoot;
   if (wtRoot !== undefined && !isSafeWorktreePath(wtRoot)) {
     hits.push({ path: 'thresholds.worktreeRoot', detail: 'ruta de worktree insegura (traversal / absoluta / ~ / NUL)' });
+  }
+  // Referencias a credenciales (#6031). El `pattern` del schema no ancla nada:
+  // es una regex sobre el string crudo, no normaliza `..`, no expande `~` y no
+  // sabe dónde vive el store. El ancla es semántica sobre el path resuelto y su
+  // dueño es `credentials.js` → se importa `refPathAnclado`, jamás se copia.
+  //
+  // Cálculo puro de paths (`path.resolve` / `path.relative`, cero `fs`): el
+  // rechazo ocurre SIN abrir el archivo del store, así que no hay ventana TOCTOU
+  // ni el validador se convierte en un oráculo de existencia de archivos.
+  //
+  // `credentials` es OPCIONAL en el schema: ausente ⇒ 0 hits. Pero presente con
+  // forma inesperada ⇒ hit — un `|| []` se tragaría un objeto en silencio.
+  //
+  // Fuera de alcance: exigir que el namespace de la ref coincida con
+  // `identity.projectId` (#6077). Acá se entrega sólo el ancla al store.
+  const creds = descriptor && descriptor.credentials;
+  if (creds !== undefined) {
+    if (!Array.isArray(creds)) {
+      hits.push({ path: 'credentials', detail: CRED_LISTA_DETALLE });
+    } else {
+      creds.forEach((c, i) => {
+        const parsed = parseSecretRef(c && c.ref);
+        // Fail-closed: una ref que no se puede interpretar CUENTA como hit.
+        // El `parsed && ...` sería el agujero clásico — una ref malformada se
+        // saltearía el control entero.
+        if (!parsed || !refPathAnclado(parsed.path)) {
+          hits.push({ path: `credentials[${i}].ref`, detail: CRED_REF_DETALLE });
+        }
+      });
+    }
   }
   return hits;
 }
@@ -251,6 +340,99 @@ function collectRepositoryProvenanceHits(descriptor) {
   return hits;
 }
 
+// -----------------------------------------------------------------------------
+// Política de `credentials[]` (#6032 · CA-10..CA-13). Cuatro reglas que el JSON
+// Schema NO puede expresar, cada una con su `keyword` propio para que el
+// consumidor de la alerta pueda ramificar sin parsear castellano.
+//
+// SEC-9 (CA-13): ningún `detail` interpola `ref` ni fragmentos del path del
+// vault. Se nombra el SCOPE, el ÍNDICE de `credentials[]` y la ruta lógica —
+// nunca el valor de la credencial ni dónde vive. Cada mensaje cierra con la
+// corrección expresada en términos de la DECLARACIÓN, que es lo único que el
+// operador puede editar.
+// -----------------------------------------------------------------------------
+function collectCredentialPolicyViolations(descriptor) {
+  const hits = [];
+  const creds = descriptor && descriptor.credentials;
+  if (!Array.isArray(creds)) return hits; // ausente u otra forma ⇒ lo cubre el schema.
+
+  // Lista de scopes de una entrada, defensiva. CA-12: una forma inesperada
+  // colapsa a `[]` — jamás se sintetiza contenido.
+  const lista = (v) => (Array.isArray(v) ? v.filter((s) => typeof s === 'string' && s !== '') : []);
+
+  // 10.2 — scope duplicado ENTRE entradas. `uniqueItems` no lo detecta: mira
+  // dentro de cada array, no entre arrays. No es higiene: "un scope, una entrada"
+  // es la precondición de correctitud de la agregación por unión, que sin esto
+  // resolvería el mismo scope desde dos refs distintas sin forma de decidir cuál
+  // gana.
+  const dueño = new Map(); // scope → primer índice que lo declara
+  creds.forEach((entry, i) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+    for (const scope of lista(entry.scopes)) {
+      if (dueño.has(scope)) {
+        const j = dueño.get(scope);
+        hits.push({
+          path: `credentials[${i}].scopes`,
+          keyword: 'duplicateScope',
+          // SEC-6: se nombran AMBOS índices. Con uno solo el operador no sabe
+          // cuál de las dos entradas revisar.
+          detail: `credentials[${j}].scopes y credentials[${i}].scopes declaran ambos '${scope}': `
+            + 'un scope pertenece a una sola entrada de credentials[]; dejalo en una y quitalo de la otra.',
+        });
+      } else {
+        dueño.set(scope, i);
+      }
+    }
+  });
+
+  creds.forEach((entry, i) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+    const scopes = lista(entry.scopes);
+    const inherit = lista(entry.inherit);
+    const shared = lista(entry.shared);
+
+    // 10.1 — `inherit` con raíz no heredable. La partición se LEE de
+    // `secret-scopes.js` (CA-11): nada de deny-list literal acá.
+    for (const scope of inherit) {
+      if (NON_INHERITABLE_SCOPES.includes(rootScope(scope))) {
+        hits.push({
+          path: `credentials[${i}].inherit`,
+          keyword: 'inheritNotInheritable',
+          detail: `credentials[${i}].inherit declara '${scope}', que es un scope no heredable: `
+            + 'quitalo de inherit o declaralo en scopes de la instancia que lo necesita.',
+        });
+      }
+    }
+
+    for (const scope of shared) {
+      // 10.3 — `shared` ⊄ `scopes` de la MISMA entrada. Hoy `resolveInstanceVault`
+      // filtra el excedente en silencio: el operador cree que compartió algo y no
+      // pasó nada. Declararlo inefectivo en silencio es peor que rechazarlo.
+      if (!scopes.includes(scope)) {
+        hits.push({
+          path: `credentials[${i}].shared`,
+          keyword: 'sharedNotSubset',
+          detail: `credentials[${i}].shared declara '${scope}', que no esta en scopes de esa misma entrada: `
+            + 'agregalo a scopes o quitalo de shared.',
+        });
+      }
+      // 10.4 — `inherit × shared` (D-4): un scope heredado no puede compartirse.
+      // Heredar ya es recibir una credencial de otro dueño; volver a compartirla
+      // la propagaría un nivel más allá de lo que ese dueño autorizó.
+      if (inherit.includes(scope)) {
+        hits.push({
+          path: `credentials[${i}].shared`,
+          keyword: 'inheritedNotShareable',
+          detail: `credentials[${i}].shared declara '${scope}', que ya viene por inherit: `
+            + 'un scope heredado no se comparte; quitalo de shared o dejalo de heredar.',
+        });
+      }
+    }
+  });
+
+  return hits;
+}
+
 function collectDescriptorPolicyViolations(descriptor) {
   const hits = [];
 
@@ -259,6 +441,8 @@ function collectDescriptorPolicyViolations(descriptor) {
   } catch (e) {
     hits.push({ path: 'providers.order', detail: e.message });
   }
+
+  hits.push(...collectCredentialPolicyViolations(descriptor));
 
   const repos = (descriptor && descriptor.repositories) || [];
   if (Array.isArray(repos)) {
@@ -324,16 +508,17 @@ function validateDescriptor(obj, opts = {}) {
     return { valid: false, stage: 'parse', errors: [{ path: '(root)', detail: 'descriptor no es un objeto' }], descriptor: null };
   }
 
-  // 1) Compat de schemaVersion (+ migración).
-  const mig = migrations.migrateDescriptor(obj);
-  if (!mig.ok) {
-    return { valid: false, stage: 'version', errors: [{ path: 'schemaVersion', keyword: mig.code, detail: mig.error }], descriptor: null };
-  }
-  const descriptor = mig.descriptor;
-
-  // 2) Integridad / checksum (supply-chain). Sólo si el caller exige un checksum.
+  // 1) Integridad / checksum (supply-chain). Sólo si el caller exige un checksum.
+  //
+  // CA-9 · D-7 (#6032): se computa sobre `obj` — el descriptor TAL COMO FUE
+  // AUTORADO — y ANTES de migrar. El checksum es un ancla de supply-chain sobre
+  // los bytes que existen en disco y que el operador firmó; hacerlo sobre el
+  // descriptor MIGRADO lo volvería imposible de satisfacer, porque desde el
+  // momento en que la migración reescribe `schemaVersion` (y traduce
+  // `credentials[].scopes`) los bytes canónicos ya no son los del archivo. Se le
+  // estaría pidiendo al operador que firme bytes que nunca escribió.
   if (opts.expectedChecksum) {
-    const actual = computeChecksum(descriptor);
+    const actual = computeChecksum(obj);
     if (actual !== String(opts.expectedChecksum).toLowerCase()) {
       return {
         valid: false,
@@ -343,6 +528,16 @@ function validateDescriptor(obj, opts = {}) {
       };
     }
   }
+
+  // 2) Compat de schemaVersion (+ migración).
+  const mig = migrations.migrateDescriptor(obj);
+  if (!mig.ok) {
+    return { valid: false, stage: 'version', errors: [{ path: 'schemaVersion', keyword: mig.code, detail: mig.error }], descriptor: null };
+  }
+  const descriptor = mig.descriptor;
+  // CA-5: el descarte de scopes legacy NO es silencioso — viaja en el resultado
+  // para que el arranque lo pueda mostrar al operador.
+  const droppedScopes = mig.droppedScopes || [];
 
   // 3) JSON Schema (Ajv).
   const schemaValid = validateSchema(descriptor);
@@ -403,12 +598,16 @@ function validateDescriptor(obj, opts = {}) {
     return {
       valid: false,
       stage: 'policy',
-      errors: policyHits.map((h) => ({ path: h.path, keyword: 'descriptorPolicy', detail: h.detail })),
+      // El `keyword` propio del hit se PRESERVA (aditivo, sin regresión): con un
+      // `descriptorPolicy` uniforme el consumidor de la alerta no puede ramificar
+      // sin parsear castellano. Los hits que no declaran uno siguen cayendo al
+      // valor histórico.
+      errors: policyHits.map((h) => ({ path: h.path, keyword: h.keyword || 'descriptorPolicy', detail: h.detail })),
       descriptor: null,
     };
   }
 
-  return { valid: true, stage: null, errors: [], descriptor };
+  return { valid: true, stage: null, errors: [], descriptor, droppedScopes };
 }
 
 /**
@@ -440,7 +639,14 @@ function loadDescriptor(descriptorPath, opts = {}) {
   if (!effectiveOpts.expectedChecksum && parsed && parsed.integrity && parsed.integrity.checksum) {
     effectiveOpts.expectedChecksum = parsed.integrity.checksum;
   }
-  return validateDescriptor(parsed, effectiveOpts);
+  const res = validateDescriptor(parsed, effectiveOpts);
+  // #6032 · CA-18 — `onDisk` es el parse EXACTO de los bytes de disco, sin migrar.
+  // Existe para que el único writer del descriptor (`transitionStatus`) pueda
+  // escribir sobre los bytes AUTORADOS en vez de sobre el derivado en memoria.
+  // Sin esto, la primera transición persistiría la migración (y el descarte de
+  // scopes legacy) en silencio y re-anclaría el checksum sobre bytes migrados,
+  // destruyendo el ancla de supply-chain que CA-9 · D-7 establece.
+  return { ...res, onDisk: parsed };
 }
 
 /**
@@ -786,9 +992,34 @@ function transitionStatus(args = {}, deps = {}) {
     return { ok: false, status: 409, stage: 'transition', from, to, projectId, errors: [{ path: 'status', detail: `estado actual "${current}" ≠ origen esperado "${from}" — transición rechazada` }], msg: `el producto no está en estado ${from} (actual: ${current})` };
   }
 
-  // 4) Flip sobre el snapshot ya validado (misma operación guardada) + recompute
-  //    del checksum de integridad sobre el descriptor con el nuevo status.
-  const next = { ...descriptor, status: to };
+  // 4) Flip sobre los BYTES DE DISCO, no sobre el descriptor migrado (CA-18).
+  //
+  //    `loaded.descriptor` es el resultado de la MIGRACIÓN en memoria: post-#6032
+  //    ya no es igual al archivo (llega como `1.1`, con los scopes legacy
+  //    traducidos y `telegram-hooks` descartado). Escribir ESO acá persistiría la
+  //    migración y el descarte por la puerta de atrás — en silencio, contra CA-5,
+  //    reescribiendo el archivo que CA-1 declara intocable y re-anclando el
+  //    checksum sobre bytes que el operador nunca autoró (CA-9 · D-7).
+  //
+  //    `transitionStatus` es el ÚNICO writer del descriptor y su mandato es
+  //    angosto: mutar `status`, nada más. La validación de arriba sigue corriendo
+  //    sobre el descriptor migrado (es el gate), pero lo que se ESCRIBE es el
+  //    parse crudo de disco con un solo campo cambiado.
+  const onDisk = loaded.onDisk;
+  if (!onDisk || typeof onDisk !== 'object' || Array.isArray(onDisk)) {
+    // Fail-closed: sin los bytes de disco no se puede garantizar que la escritura
+    // preserve `schemaVersion` y `credentials[].scopes`. Antes que persistir el
+    // derivado, no se escribe.
+    return {
+      ok: false,
+      status: 500,
+      stage: 'write',
+      projectId,
+      errors: [{ path: '(root)', detail: 'el loader no expuso el descriptor de disco (onDisk): escritura abortada para no persistir el descriptor migrado' }],
+      msg: 'no se pudo determinar el estado en disco del descriptor — transición abortada',
+    };
+  }
+  const next = { ...onDisk, status: to };
   const checksum = computeChecksum(next);
   next.integrity = { algorithm: 'sha256', checksum };
 
@@ -828,12 +1059,14 @@ module.exports = {
   canonicalize,
   isSafeId,
   RESERVED_PROJECT_IDS,
+  CONTROL_PLANE_PROJECT_ID,
   isReservedProjectId,
   isSafeWorktreePath,
   collectPathTraversalHits,
   collectThresholdViolations,
   collectRepositoryProvenanceHits,
   collectDescriptorPolicyViolations,
+  collectCredentialPolicyViolations,
   CREATE_REPO_NAME_RE,
   redactAjvErrors,
   deriveRouting,

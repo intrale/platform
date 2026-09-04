@@ -25,10 +25,40 @@ const os = require('node:os');
 // (#4801 rebote). Ver isolate-provider-disabled.helper.js.
 require('./isolate-provider-disabled.helper');
 const cmp = require('../commander/multi-provider');
+// #6179 — la política de emisión ya no vive en este módulo: la decide
+// `fallback-episode-state`. Los tests del aviso proactivo apuntan ahí.
+const episodeState = require('../fallback-episode-state');
+const { assertCopyLimpio } = require('./helpers/forbidden-copy-patterns');
 
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
+
+/**
+ * #6179 — siembra el snapshot de salud del que `recordDispatch` DERIVA la causa.
+ * Sin snapshot la causa es `null` ("no se pudo determinar") y CA-12 obliga a
+ * notificar en cada despacho, que es el fail-closed y no la deduplicación.
+ */
+function seedHealthSnapshot(dir, { anthropicReason = 'quota_exhausted_real' } = {}) {
+    const stateDir = path.join(dir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(stateDir, 'multi-provider-health.json'),
+        JSON.stringify({
+            ts: new Date().toISOString(),
+            providers: [
+                {
+                    provider: 'anthropic', label: 'Anthropic', state: 'red',
+                    reason_code: anthropicReason, quota: { pct: 100 },
+                },
+                {
+                    provider: 'openai', label: 'OpenAI / Codex', state: 'green',
+                    reason_code: 'cli_oauth_ok', quota: { pct: 10 },
+                },
+            ],
+        }),
+    );
+}
 
 function mkTmpPipelineDir() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmp-test-'));
@@ -299,8 +329,41 @@ test('CA-5 — formatFallbackNotice produce línea natural sin jerga', () => {
         supportsToolUse: true,
     });
     assert.match(text, /Claude no responde/);
-    assert.match(text, /openai-codex/);
+    // #6179 — `fallbackProvider` se interpolaba CRUDO: el id interno viajaba al
+    // chat. Ahora pasa por `publicProviderLabel` (SEC-5). La función y este test
+    // se cambian JUNTOS: tocar sólo uno rompe la suite o propaga la fuga.
+    assert.match(text, /Codex/, 'usa la etiqueta pública');
+    assert.doesNotMatch(text, /openai-codex/, 'el id interno no llega al chat');
     assert.doesNotMatch(text, /skill=|index=|gated/);
+});
+
+test('#6179 D9 — un errorCode desconocido NO se interpola: cae a un literal genérico', () => {
+    const text = cmp.formatFallbackNotice({
+        primaryProvider: 'anthropic',
+        fallbackProvider: 'cerebras',
+        errorCode: 'algo_raro_del_proveedor_5xx',
+        supportsToolUse: true,
+    });
+    assert.doesNotMatch(text, /algo_raro_del_proveedor/,
+        'el errorCode crudo es texto de origen externo y no se interpola (CA-9)');
+    assert.match(text, /motivo no confirmado/);
+    // Y el proveedor free tampoco se nombra: la allowlist pública es cerrada.
+    assert.doesNotMatch(text, /cerebras/i);
+    assert.match(text, /un motor de respaldo/);
+});
+
+test('#6179 D8 / #5667 — publicProviderLabel no hereda de Object.prototype', () => {
+    for (const hostil of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
+        const label = cmp.publicProviderLabel(hostil, 'un motor de respaldo');
+        assert.equal(label, 'un motor de respaldo',
+            `"${hostil}" debe caer al genérico, no al miembro heredado`);
+        assert.equal(typeof label, 'string', 'jamás una Function ni un objeto');
+    }
+    // Sanity: la allowlist real sigue funcionando.
+    assert.equal(cmp.publicProviderLabel('anthropic', 'generico'), 'Anthropic');
+    assert.equal(cmp.publicProviderLabel('openai-codex', 'generico'), 'Codex');
+    // Y un pago fuera de la allowlist sigue cayendo al genérico (fail-closed).
+    assert.equal(cmp.publicProviderLabel('cerebras', 'generico'), 'generico');
 });
 
 test('CA-5 / SR-8 — formatFallbackNotice agrega línea de degradación si no tool use', () => {
@@ -318,62 +381,76 @@ test('CA-5 / SR-8 — formatFallbackNotice agrega línea de degradación si no t
 });
 
 // -----------------------------------------------------------------------------
-// SR-6 — dedup notificaciones 5 min
+// SR-6 → #6179 · dedup del aviso proactivo.
+//
+// La ventana de 5 min por `(chat_id, fallback_provider)` de
+// `shouldEmitFallbackNotice` SE BORRÓ: era una de las TRES políticas que
+// competían por avisar lo mismo, y con dos vivas el ruido vuelve por la que
+// queda (CA-3). Su propósito —que el aviso proactivo nunca quede sin
+// deduplicar— sigue plenamente vigente, así que estos tests se REAPUNTAN a la
+// política nueva en vez de borrarse (CA-18).
+//
+// Diferencia de fondo: la ventana vieja dedupeaba por TIEMPO (y por chat), así
+// que una caída de 4 h producía ~48 mensajes. La nueva dedupea por EPISODIO: un
+// aviso mientras la situación no cambie, sin importar cuántos despachos ni
+// cuántas horas pasen.
 // -----------------------------------------------------------------------------
 
-test('SR-6 — primer notice dentro de la ventana emite; segundo NO', () => {
+test('#6179 CA-3 — shouldEmitFallbackNotice ya no existe: una sola política viva', () => {
+    assert.equal(typeof cmp.shouldEmitFallbackNotice, 'undefined',
+        'la ventana de 5 min quedó subsumida por recordDispatch');
+    assert.equal(typeof cmp.DEDUP_WINDOW_MS, 'undefined',
+        'su constante tampoco puede quedar suelta invitando a reusarla');
+    assert.equal(typeof cmp.formatEpisodeNotice, 'function',
+        'el copy del aviso por episodio vive acá');
+});
+
+test('#6179 CA-2 — el aviso proactivo sigue dedupeado: repetir el despacho NO emite', () => {
     const dir = mkTmpPipelineDir();
     try {
+        seedHealthSnapshot(dir);
         const t0 = 1_700_000_000_000;
-        const first = cmp.shouldEmitFallbackNotice({
+        const comun = {
             pipelineDir: dir,
-            chatId: 'chat-abc',
-            fallbackProvider: 'openai-codex',
-            now: t0,
-        });
-        assert.equal(first, true);
-        const secondImmediate = cmp.shouldEmitFallbackNotice({
-            pipelineDir: dir,
-            chatId: 'chat-abc',
-            fallbackProvider: 'openai-codex',
-            now: t0 + 60 * 1000, // 1 min después
-        });
-        assert.equal(secondImmediate, false);
+            provider: 'openai-codex',
+            crossProvider: true,
+            chain: ['anthropic', 'openai-codex'],
+            models: { providers: { 'openai-codex': { billing: 'paid', supports_tool_use: true } } },
+        };
+
+        const first = episodeState.recordDispatch({ ...comun, now: t0 });
+        assert.equal(first.notify, true, 'el primer cambio de estado sí avisa');
+
+        // Un minuto después (lo que la ventana vieja tapaba)…
+        const alMinuto = episodeState.recordDispatch({ ...comun, now: t0 + 60 * 1000 });
+        assert.equal(alMinuto.notify, false);
+
+        // …y también seis minutos después, que es donde la ventana vieja se
+        // rendía y volvía a mandar el mismo mensaje.
+        const aLosSeis = episodeState.recordDispatch({ ...comun, now: t0 + 6 * 60 * 1000 });
+        assert.equal(aLosSeis.notify, false,
+            'la política por episodio no se rinde a los 5 min: la situación no cambió');
     } finally {
         cleanup(dir);
     }
 });
 
-test('SR-6 — después de 5 min la próxima emisión vuelve a salir', () => {
+test('#6179 CA-2 — el dedup NO es por chat: el episodio es del pipeline, no de la conversación', () => {
     const dir = mkTmpPipelineDir();
     try {
+        seedHealthSnapshot(dir);
         const t0 = 1_700_000_000_000;
-        cmp.shouldEmitFallbackNotice({
-            pipelineDir: dir, chatId: 'chat-abc', fallbackProvider: 'cerebras', now: t0,
-        });
-        const later = cmp.shouldEmitFallbackNotice({
+        const comun = {
             pipelineDir: dir,
-            chatId: 'chat-abc',
-            fallbackProvider: 'cerebras',
-            now: t0 + 6 * 60 * 1000,
-        });
-        assert.equal(later, true);
-    } finally {
-        cleanup(dir);
-    }
-});
-
-test('SR-6 — dedup es por (chat_id, fallback_provider): chat distinto SÍ emite', () => {
-    const dir = mkTmpPipelineDir();
-    try {
-        const t0 = 1_700_000_000_000;
-        cmp.shouldEmitFallbackNotice({
-            pipelineDir: dir, chatId: 'chat-A', fallbackProvider: 'openai-codex', now: t0,
-        });
-        const other = cmp.shouldEmitFallbackNotice({
-            pipelineDir: dir, chatId: 'chat-B', fallbackProvider: 'openai-codex', now: t0 + 1000,
-        });
-        assert.equal(other, true);
+            provider: 'openai-codex',
+            crossProvider: true,
+            chain: ['anthropic', 'openai-codex'],
+            models: { providers: { 'openai-codex': { billing: 'paid', supports_tool_use: true } } },
+        };
+        assert.equal(episodeState.recordDispatch({ ...comun, now: t0 }).notify, true);
+        // La clave vieja incluía el chat_id, así que el mismo estado degradado
+        // avisaba una vez POR CHAT. El estado del pipeline es uno solo.
+        assert.equal(episodeState.recordDispatch({ ...comun, now: t0 + 1000 }).notify, false);
     } finally {
         cleanup(dir);
     }
@@ -1434,4 +1511,233 @@ test('#4413 CA-1 — shape estricto (OFF) también expone weight/quotaPct/select
     } finally {
         cleanup(dir);
     }
+});
+
+// =============================================================================
+// #5456 — formatMidTurnQuotaResponse: respuesta REACTIVA del turno perdido por
+// cuota semanal (canal de contenido detectado por #5455).
+//
+// Cubre:
+//   CA-1 — el operador nunca ve payload crudo, `errorType`, TTL, reset ni ids
+//          internos de provider.
+//   CA-2 — la copy admite que el turno se perdió y pide reenviar el mensaje.
+//   CA-3 — dos turnos en `t` y `t+60s` reciben respuesta AMBOS; el dedup de 5
+//          min es exclusivo del aviso PROACTIVO.
+//   CA-5 — todo texto visible pasa por redacción.
+//   Controles negativos — nada fuera de la allowlist cerrada se interpola.
+// =============================================================================
+
+// Texto real del incidente (#5455). Es EXACTAMENTE lo que el operador recibía
+// crudo antes de #5456: sirve de control de fuga en las aserciones negativas.
+const AVISO_CRUDO_5456 = "You've hit your weekly limit · resets 9pm (America/Buenos_Aires)";
+
+// Metadata que la respuesta visible tiene PROHIBIDO contener en cualquier
+// capitalización (CA-1).
+const FUGAS_PROHIBIDAS_5456 = [
+    'weekly_limit_content_channel',   // errorType tipado
+    'usage_limit_error',              // cualquier otro errorType
+    'anthropic-result-content',       // `source` interno del detector
+    'openai-codex',                   // id interno del provider
+    'resets_at',
+    'resets',
+    'pattern_matched',
+    'errorType',
+    'error_type',
+    'ttl',
+    'America/Buenos_Aires',
+    'quota_exhausted_midturn',        // enum de audit: server-side, no visible
+    'hit your weekly limit',          // fragmento literal del crudo
+    '9pm',
+];
+
+// Ids INTERNOS de provider. Se chequean case-SENSITIVE a propósito: la etiqueta
+// pública `Anthropic` (capitalizada) es legítima y sale del mapping cerrado; el
+// que no puede aparecer es el id interno `anthropic` en minúscula, que es como
+// lo escriben `agent-models.json`, el flag de cuota y los logs.
+const IDS_INTERNOS_5456 = ['anthropic', 'openai-codex'];
+
+function assertSinFugas5456(text) {
+    assert.equal(typeof text, 'string');
+    assert.ok(text.length > 0, 'la respuesta reactiva nunca puede ser vacía');
+    const lower = text.toLowerCase();
+    for (const needle of FUGAS_PROHIBIDAS_5456) {
+        assert.ok(
+            !lower.includes(needle.toLowerCase()),
+            `la respuesta visible NO puede contener "${needle}" — salida: ${text}`,
+        );
+    }
+    for (const id of IDS_INTERNOS_5456) {
+        assert.ok(
+            !text.includes(id),
+            `la respuesta visible NO puede contener el id interno "${id}" — salida: ${text}`,
+        );
+    }
+    // Y lo que SÍ puede aparecer sale exclusivamente del mapping cerrado.
+    for (const token of text.match(/\b(?:Anthropic|Codex)\b/g) || []) {
+        assert.ok(['Anthropic', 'Codex'].includes(token),
+            `etiqueta fuera de la allowlist: ${token}`);
+    }
+}
+
+test('#5456 CA-1/CA-2 — la respuesta reactiva admite el turno perdido, anuncia Codex y pide reenviar', () => {
+    const text = cmp.formatMidTurnQuotaResponse({
+        primaryProvider: 'anthropic',
+        fallbackProvider: 'openai-codex',
+    });
+
+    // CA-1: sólo etiquetas públicas de la allowlist cerrada.
+    assert.match(text, /Anthropic/, 'debe nombrar al primario con su etiqueta pública');
+    assert.match(text, /Codex/, 'debe anunciar Codex para el próximo intento');
+    assertSinFugas5456(text);
+
+    // CA-2: admite la pérdida del turno y pide la acción concreta.
+    assert.match(text, /este turno se perdió/i, 'debe admitir que el turno no se completó');
+    assert.match(text, /no llegué a completarlo/i, 'debe ser explícito sobre el turno incompleto');
+    assert.match(text, /reenviame el mensaje/i, 'debe pedir reenviar el mensaje');
+});
+
+test('#5456 CA-1 — control negativo: un provider fuera de la allowlist NO filtra su id interno', () => {
+    // Providers reales del pipeline que NO están en el mapping público de pagos.
+    for (const desconocido of ['cerebras', 'google-gemini', 'nvidia-nim', 'proveedor-inventado']) {
+        const text = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: desconocido,
+            fallbackProvider: desconocido,
+        });
+        assert.ok(
+            !text.toLowerCase().includes(desconocido.toLowerCase()),
+            `"${desconocido}" no puede aparecer en la respuesta visible — salida: ${text}`,
+        );
+        // Degrada a copy genérico, pero SIGUE siendo una respuesta útil (CA-2).
+        assert.match(text, /reenviame el mensaje/i);
+        assert.match(text, /este turno se perdió/i);
+    }
+});
+
+test('#5456 CA-1 — control negativo: sin argumentos degrada a genérico, nunca a undefined/null', () => {
+    for (const args of [undefined, {}, { primaryProvider: null, fallbackProvider: null }]) {
+        const text = cmp.formatMidTurnQuotaResponse(args);
+        assert.doesNotMatch(text, /undefined|null|\[object/i,
+            'el copy no puede filtrar valores JS crudos');
+        assertSinFugas5456(text);
+        assert.match(text, /reenviame el mensaje/i);
+    }
+});
+
+test('#5456 CA-1 — publicProviderLabel es fail-closed: sólo Anthropic y Codex salen del mapping', () => {
+    assert.equal(cmp.publicProviderLabel('anthropic'), 'Anthropic');
+    assert.equal(cmp.publicProviderLabel('ANTHROPIC'), 'Anthropic', 'case-insensitive');
+    assert.equal(cmp.publicProviderLabel('  openai-codex  '), 'Codex', 'trim del id');
+    // Fuera de la allowlist → el fallback declarado, jamás el id recibido.
+    assert.equal(cmp.publicProviderLabel('cerebras'), null);
+    assert.equal(cmp.publicProviderLabel('cerebras', 'otro proveedor'), 'otro proveedor');
+    assert.equal(cmp.publicProviderLabel(undefined), null);
+    assert.equal(cmp.publicProviderLabel(null), null);
+});
+
+test('#5456 CA-5 — el texto visible pasa por redacción (no filtra un secreto interpolado)', () => {
+    // El copy no interpola secretos por construcción; esto verifica el paso por
+    // `redactSecretValue` con un valor que el redactor central debe tapar.
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-secreto-de-prueba-5456';
+    try {
+        const text = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: 'anthropic',
+            fallbackProvider: 'openai-codex',
+        });
+        assert.ok(!text.includes('sk-ant-secreto-de-prueba-5456'),
+            'ningún valor de credentials_env puede aparecer en la respuesta');
+        assertSinFugas5456(text);
+    } finally {
+        if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = prev;
+    }
+});
+
+test('#5456 CA-3 — dos turnos (t y t+60s) reciben respuesta AMBOS; el dedup es sólo del notice proactivo', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        seedHealthSnapshot(dir);
+        const t = 1_800_000_000_000;
+        const t60 = t + 60_000;
+        const episodio = {
+            pipelineDir: dir,
+            provider: 'openai-codex',
+            crossProvider: true,
+            chain: ['anthropic', 'openai-codex'],
+            models: { providers: { 'openai-codex': { billing: 'paid', supports_tool_use: true } } },
+        };
+
+        // --- Salida REACTIVA: una respuesta por cada turno afectado. ---
+        const reactivaT = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+        });
+        const reactivaT60 = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+        });
+        assert.ok(reactivaT && reactivaT.length > 0, 'turno en t debe recibir respuesta');
+        assert.ok(reactivaT60 && reactivaT60.length > 0, 'turno en t+60s TAMBIÉN debe recibir respuesta');
+        assert.equal(reactivaT60, reactivaT,
+            'el formatter es puro: mismo input → mismo output, sin estado acumulado');
+
+        // --- Salida PROACTIVA: dedupeada por EPISODIO (#6179), sale en el primero. ---
+        const noticeT = episodeState.recordDispatch({ ...episodio, now: t });
+        const noticeT60 = episodeState.recordDispatch({ ...episodio, now: t60 });
+        assert.equal(noticeT.notify, true, 'el aviso proactivo sale en el primer turno');
+        assert.equal(noticeT60.notify, false,
+            'el aviso proactivo NO se repite mientras la situación no cambie');
+
+        // --- El invariante que cierra el CA: el dedup no toca a la reactiva. ---
+        const reactivaPostDedup = cmp.formatMidTurnQuotaResponse({
+            primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+        });
+        assert.equal(reactivaPostDedup, reactivaT,
+            'con el notice ya dedupeado, la respuesta del turno sigue saliendo completa');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#5456 — el formatter es PURO: no lee ni escribe el estado del dedup', () => {
+    const dir = mkTmpPipelineDir();
+    try {
+        const dedupFile = path.join(dir, 'commander-fallback-dedup.json');
+        assert.equal(fs.existsSync(dedupFile), false, 'precondición: sin estado previo');
+
+        for (let i = 0; i < 5; i++) {
+            cmp.formatMidTurnQuotaResponse({
+                primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+            });
+        }
+        assert.equal(fs.existsSync(dedupFile), false,
+            'el formatter NO puede tocar el estado de deduplicación');
+
+        // Y tras 5 llamadas al formatter, el aviso proactivo sigue disponible.
+        seedHealthSnapshot(dir);
+        assert.equal(
+            episodeState.recordDispatch({
+                pipelineDir: dir,
+                provider: 'openai-codex',
+                crossProvider: true,
+                chain: ['anthropic', 'openai-codex'],
+                models: { providers: { 'openai-codex': { billing: 'paid', supports_tool_use: true } } },
+                now: 1_800_000_000_000,
+            }).notify,
+            true,
+            'el formatter no consumió el episodio del aviso proactivo',
+        );
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('#5456 — QUOTA_MIDTURN_ERROR_CODE es un enum estable y no filtra el errorType real', () => {
+    assert.equal(cmp.QUOTA_MIDTURN_ERROR_CODE, 'quota_exhausted_midturn');
+    assert.ok(!cmp.QUOTA_MIDTURN_ERROR_CODE.includes('weekly_limit_content_channel'),
+        'el enum de audit no puede replicar el errorType tipado');
+    // Y nunca se filtra a la salida visible.
+    const text = cmp.formatMidTurnQuotaResponse({
+        primaryProvider: 'anthropic', fallbackProvider: 'openai-codex',
+    });
+    assert.ok(!text.includes(cmp.QUOTA_MIDTURN_ERROR_CODE));
+    assert.notEqual(text, AVISO_CRUDO_5456, 'sanity: la respuesta no es el crudo');
 });

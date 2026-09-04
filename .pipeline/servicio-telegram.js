@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Servicio Telegram — Fire-and-forget message sender
 // Procesa cola de servicios/telegram/pendiente/
@@ -11,7 +14,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const yaml = require('js-yaml');
+// #5172 — punto único de lectura/validación de `config.yaml`. Este servicio ya
+// no hace su propio `yaml.load` ni degrada a `{}` en silencio.
+const configResolver = require('./lib/config-resolver');
+const configSchema = require('./lib/config-schema');
 const httpClient = require('./lib/http-client');
 const { ERROR_CODES } = require('./lib/constants');
 // #2334 / CA6: patch console.* para que NUNCA se escriba un secreto al
@@ -39,16 +45,41 @@ const LISTO = path.join(QUEUE_DIR, 'listo');
 
 const MAIN_ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const TELEGRAM_CONFIG = path.join(MAIN_ROOT, '.claude', 'hooks', 'telegram-config.json');
-const CONFIG_PATH = path.join(PIPELINE, 'config.yaml');
+// #5172 — la ruta de `config.yaml` ya no se arma acá: la resuelve el punto único
+// a partir de `pipelineDir` (misma raíz `PIPELINE` que usaba este archivo).
 
-// #3668 — config loader best-effort para `telegram_burst_window_ms`. Si el
-// YAML no existe o no parsea, el grupo del burst usa el default hardcoded en
-// el módulo y NO crashea el drainer (anti-DoS de booting).
+// #5172 — Lectura de config por el punto único.
+//
+// ANTES: `catch { return {} }`. Ese `{}` era indistinguible de una config válida
+// sin sección `telegram_*`: el drainer aplicaba defaults sin que NADIE se
+// enterara de que el archivo estaba corrupto. Eso es lo que se elimina.
+//
+// AHORA: el fallo se loguea RUIDOSO (una línea grep-friendly por fallo distinto,
+// con detalle y acción ya redactados) y se devuelve `null` — que significa "no
+// hay config", NO "config vacía". Los dos consumidores (`resolveOutboundConfig`
+// y `burst-grouper`) aplican su default DOCUMENTADO ante `null`.
+//
+// Por qué acá el fail-closed es LOGUEAR y no propagar (ni `process.exit`): este
+// servicio es el ÚNICO transporte por el que el operador se entera de que la
+// config está inválida (`#5171` publica esa alerta por esta misma cola). Un
+// drainer que se niega a drenar por config inválida se lleva puesto el aviso de
+// que la config es inválida. Además lo que este servicio lee del YAML son
+// perillas de reintento/burst — no hay ningún gate que se pueda abrir por acá.
+let _lastConfigFailureDetail = null;
+
 function loadPipelineConfig() {
   try {
-    return yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')) || {};
-  } catch {
-    return {};
+    return configResolver.resolve({ pipelineDir: PIPELINE });
+  } catch (e) {
+    const estado = configSchema.describeConfigFailure(e, { archivo: e && e.archivo });
+    // Anti-spam: el drainer poletea cada 5s; una línea por fallo DISTINTO.
+    if (_lastConfigFailureDetail !== estado.detalle) {
+      _lastConfigFailureDetail = estado.detalle;
+      log(configSchema.formatConfigFailureLog(estado, {
+        titulo: 'CONFIG INVÁLIDA — el servicio sigue drenando con los defaults de reintento/burst',
+      }));
+    }
+    return null;
   }
 }
 const { loadTelegramSecrets } = require('./lib/telegram-secrets');
@@ -58,7 +89,7 @@ const health = require('./lib/telegram-health');
 // pendiente/ → reintento infinito y silencioso. Ahora acotamos los reintentos,
 // movemos a fallido/ y emitimos una alerta a Telegram con el error redactado
 // (espeja `notifyDriveFailure` de servicio-drive.js).
-const { notifyTelegram } = require('./lib/notify-telegram');
+const { notifyTelegram, _internal: notifyTelegramInternal } = require('./lib/notify-telegram');
 const { redactSensitive, redactSecretValue } = require('./lib/redact');
 // #4082 — Bus de recibos cross-proceso. svc-telegram escribe un recibo `enviado`
 // (con los message_id que prueban la entrega) o `fallido` ligado por
@@ -83,15 +114,64 @@ const MAX_SEND_RETRIES = 5;
 // sweep de chunks de audio del Commander (#4750) use EXACTAMENTE los mismos
 // valores (SEC-R4: no inventar valores nuevos, alinear con #4082).
 const { OUTBOUND_DEFAULTS, resolveOutboundConfig } = require('./lib/telegram-outbound-config');
+// #5573 — traza append-only de entrega de partes de voz (duplicados + latencia).
+const voiceDeliveryAudit = require('./lib/voice-delivery-audit');
+// #5924 — agrupación acotada de alertas de fallo + coerción del error_code.
+// Módulo puro (sin I/O, sin timers): el reloj y el ciclo de flush los maneja
+// este servicio.
+const alertDedup = require('./lib/telegram-alert-dedup');
 function loadOutboundConfig() {
   return resolveOutboundConfig(loadPipelineConfig());
 }
 
+function resolvePrivateDestination(requested) {
+  return notifyTelegramInternal.resolvePrivateChatId(requested);
+}
+
+// #5924 — Caps de texto remoto. `description` es entrada de tamaño no controlado
+// que devuelve la API de Telegram: se trata como dato, nunca como mensaje.
+const TELEGRAM_DESCRIPTION_MAX = 500;
+const PERSISTED_ERROR_MAX = 500;
+const EXCERPT_MAX = 200;
+
+/** Corta a `max` chars sin tocar nada más. */
+function truncate(value, max) {
+  const s = String(value == null ? '' : value);
+  return s.length <= max ? s : s.slice(0, max);
+}
+
+// #5924 / SEC-B — ORDEN FIJO: redactar PRIMERO, truncar DESPUÉS.
+//
+// Al revés la redacción se desactiva sola: los patrones de `redact.js` (p. ej.
+// `/bot…{20,}/`) y la heurística de entropía necesitan el token COMPLETO para
+// reconocerlo. Truncar antes puede dejar un prefijo de secreto que ningún patrón
+// matchea y que igual se persiste/emite. Mismo orden en la escritura (`_error`)
+// y en el punto de notificación.
+function redactAndTruncate(value, max) {
+  return truncate(redactSecretValue(redactSensitive(String(value == null ? '' : value))), max);
+}
+
 // #4082 — SEC-2 fail-closed: sin prueba de entrega (`ok:true` + `message_id`) un
 // saliente NO se marca enviado. Lanza para caer en `handleSendFailure` (reintento).
+//
+// #5924 — El `body` ya llegaba como parámetro y se DESCARTABA: los 156 salientes
+// de `fallido/` tenían todos el mismo string genérico, cero poder diagnóstico.
+// Ahora el Error lleva `error_code` + `description` (redactados y truncados) y
+// además expone el código como propiedad ESTRUCTURADA (`err.telegramErrorCode`)
+// para que la dedup agrupe por un valor acotado y no por texto remoto (R4.1).
+// La firma no cambia: los 4 call sites quedan intactos.
 function assertDelivered(body, idx, total) {
   if (!body || body.ok !== true || !body.result || body.result.message_id == null) {
-    throw new Error(`Telegram respondio ok:false o sin message_id (chunk ${idx + 1}/${total})`);
+    const code = alertDedup.coerceTelegramErrorCode(body && body.error_code);
+    const desc = redactAndTruncate((body && body.description) || '', TELEGRAM_DESCRIPTION_MAX);
+    const err = new Error(
+      `Telegram respondio ok:false o sin message_id (chunk ${idx + 1}/${total})`
+      + (code == null ? '' : ` [error_code=${code}]`)
+      + (desc ? ` description=${desc}` : ''),
+    );
+    err.telegramErrorCode = code;
+    err.telegramDescription = desc;
+    throw err;
   }
 }
 
@@ -124,6 +204,21 @@ function writeSentReceiptIfAny(data, messageIds) {
     telegramReceipt.writeReceipt(RECIBOS, fields);
   } catch (e) {
     log(`No se pudo escribir recibo enviado (${data._correlationId}): ${e.message}`);
+  }
+  // #5573 — traza APPEND-ONLY del envío del chunk. El recibo `<cid>-p<idx>.json`
+  // se SOBRESCRIBE en cada envío, así que un reenvío duplicado no dejaba ninguna
+  // huella (sólo sobrevivía el último message_id). Acá cada envío suma una línea:
+  // más de un evento `sent` para el mismo (correlationId, partIndex) ES un audio
+  // que el operador recibió repetido. Best-effort: auditar no rompe la entrega.
+  if (fields.partIndex != null) {
+    voiceDeliveryAudit.appendVoiceDeliveryEvent(PIPELINE, {
+      event: voiceDeliveryAudit.EVENT_SENT,
+      correlationId: fields.correlationId,
+      partIndex: fields.partIndex,
+      partTotal: fields.partTotal,
+      messageId: Array.isArray(messageIds) && Number.isFinite(messageIds[0]) ? messageIds[0] : undefined,
+      attempt: telegramReceipt.coercePartInt(data._telegramAttempts),
+    });
   }
 }
 
@@ -313,10 +408,25 @@ async function telegramSendMultipart(method, fieldName, filePath, extra = {}, co
   }
 }
 
+// #6226 — El orden de esta lista ES el orden en que el operador lee los
+// mensajes. `readdirSync` no garantiza ningún orden (lo decide la enumeración
+// del filesystem), y `groupByBurst` ordena por `mtimeMs`, que EMPATA para dos
+// dropfiles escritos en el mismo milisegundo — justo el caso del paginado. Con
+// el empate, el orden final quedaba librado a NTFS.
+//
+// Ordenar por nombre lo vuelve determinístico: los dropfiles se nombran
+// `<ts>-<seq>-<sufijo>` (ver `lib/dropfile-writer.js`), con timestamp al frente
+// y seq zero-padded, así que el orden lexicográfico es el orden de emisión.
+// Importa para la lectura, no sólo para la corrección: en el paginado sólo el
+// primer mensaje lleva header y los 2..N arrancan con `_(continúa)_`.
+//
+// Comparación con `<`/`>` en vez de `localeCompare`: acá se quiere el orden de
+// código de unidad, estable e independiente del locale de la máquina.
 function listWorkFiles(dir) {
   try {
     return fs.readdirSync(dir)
       .filter(f => !f.startsWith('.') && f.endsWith('.json'))
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
       .map(f => ({ name: f, path: path.join(dir, f) }));
   } catch { return []; }
 }
@@ -340,36 +450,217 @@ function isRetryDeferred(filePath) {
   return false;
 }
 
-// CA-3 / RS-3 (#3927): "fallo de envío de CUALQUIER adjunto SIEMPRE notifica
-// (nunca más silencio)". Emite una alerta a Telegram cuando un dropfile no se
-// pudo enviar de forma terminal. El texto pasa SIEMPRE por `redactSensitive`
-// + `redactSecretValue` (RS-3) — nunca volcamos `err.message`/`err.stack` crudo
-// al usuario. Espeja `notifyDriveFailure` de servicio-drive.js.
-function notifyTelegramFailure(fileName, reason, maxRetries = MAX_SEND_RETRIES) {
-  // Guard anti-recursión: el propio `notifyTelegram` escribe un dropfile de texto
-  // en esta MISMA cola (`alert-svc-telegram-*.json`). Si esa alerta fallara de
-  // forma terminal (p.ej. outage del API de Telegram), notificar de nuevo crearía
-  // una cadena infinita de archivos de alerta. Por eso NO re-notificamos el fallo
-  // de una alerta generada por nosotros mismos.
-  if (typeof fileName === 'string' && fileName.startsWith('alert-svc-telegram')) {
-    log(`Fallo terminal de alerta propia ${fileName}; no se re-notifica (anti-recursión)`);
+// #5924 — Tipo REAL del saliente, derivado del dropfile.
+//
+// El texto histórico decía "adjunto/mensaje" para TODO, incluidas las fallas que
+// no involucran ningún archivo (la mayoría). El operador leía "adjunto" y buscaba
+// un problema de archivos que no existía. El orden fija la precedencia:
+// `reply_markup` gana sobre `text` porque una notificación con botones SIEMPRE
+// trae texto y lo que la caracteriza (y lo que suele romperla) es el botón.
+function outboundKind(data) {
+  if (!data || typeof data !== 'object') return 'desconocido';
+  if (data.voice) return 'audio';
+  if (data.document) return 'documento';
+  if (data.photo) return 'imagen';
+  if (data.video) return 'video';
+  if (data.animation) return 'animacion';
+  if (data.reply_markup && typeof data.reply_markup === 'object') return 'notificacion con botones';
+  return 'mensaje de texto';
+}
+
+// #5924 / SEC-A (BLOQUEANTE) — Extracto para identificar QUÉ se perdió.
+//
+// Se deriva EXCLUSIVAMENTE del campo de texto del dropfile. NUNCA de
+// `reply_markup` ni de ningún campo que porte URL o token de acción: citarlo en
+// la alerta esquivaría el guard de URL pública de #5923 y el R7 de este issue
+// (la alerta se volvería un canal de replay de la capability).
+function safeExcerpt(data) {
+  if (!data || typeof data !== 'object') return '';
+  const raw = String(data.text || data.caption || data.message || '');
+  if (!raw) return '';
+  return redactAndTruncate(raw.replace(/\s+/g, ' ').trim(), EXCERPT_MAX);
+}
+
+// #5924 — Issue asociado al saliente, si el dropfile lo trae. Coercionado a
+// entero positivo: es un dato que va al texto de la alerta, no se interpola crudo.
+function outboundIssue(data) {
+  if (!data || typeof data !== 'object') return null;
+  const raw = data._issue != null ? data._issue : data.issue;
+  const n = Number.parseInt(String(raw == null ? '' : raw), 10);
+  return Number.isInteger(n) && n > 0 && n < 10000000 ? n : null;
+}
+
+// #5924 / R5 — Aislamiento de la suite de tests, derivado del PATH RESUELTO.
+//
+// NO se implementa como `NODE_ENV === 'test'`: eso sería un kill-switch del canal
+// de alertas del pipeline activable con una env var en producción. La supresión
+// se deriva del directorio EFECTIVO donde `notify-telegram` depositaría el
+// dropfile: sólo se suprime si ese directorio queda FUERA de la cola real.
+//
+// La cola real se calcula desde `__dirname` (inmutable, no configurable), no
+// desde `PIPELINE_STATE_DIR`: si la referencia fuera una env var, la supresión
+// volvería a ser activable desde el entorno.
+//
+// Fail-closed hacia la VISIBILIDAD: ante cualquier ambigüedad (path no
+// resoluble, excepción) → NO se suprime, se alerta.
+const REAL_ALERT_QUEUE = path.join(path.resolve(__dirname), 'servicios', 'telegram');
+
+function resolveAlertSuppression() {
+  let effective;
+  try {
+    effective = notifyTelegramInternal.telegramQueueDir();
+  } catch (e) {
+    return { suppress: false, reason: 'cola_no_resoluble' };
+  }
+  if (typeof effective !== 'string' || effective.length === 0) {
+    return { suppress: false, reason: 'cola_no_resoluble' };
+  }
+  try {
+    const real = path.resolve(REAL_ALERT_QUEUE);
+    const eff = path.resolve(effective);
+    const rel = path.relative(real, eff);
+    const inside = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    return inside
+      ? { suppress: false, reason: 'cola_real', queueDir: eff }
+      : { suppress: true, reason: 'cola_fuera_de_la_ruta_real', queueDir: eff };
+  } catch (e) {
+    return { suppress: false, reason: 'error_resolviendo_cola' };
+  }
+}
+
+// #5924 — Buffer de agrupación entre salientes distintos. Vive en el proceso del
+// servicio (larga vida) y está acotado en ventana y en nº de claves.
+const alertBuffer = alertDedup.createAlertDedup();
+
+// #5924 — Construye el payload de la alerta SIN emitirla. Función pura: es el
+// punto donde los tests verifican el contenido (tipo real, extracto, ausencia de
+// la URL del botón) sin depender de que la alerta se emita a una cola.
+function buildFailureAlert(fileName, reason, maxRetries, opts = {}) {
+  const data = opts.data && typeof opts.data === 'object' ? opts.data : null;
+  const kind = outboundKind(data);
+  const code = alertDedup.coerceTelegramErrorCode(opts.errorCode);
+  const excerpt = safeExcerpt(data);
+  const issue = outboundIssue(data);
+  const description = opts.description
+    ? redactAndTruncate(opts.description, TELEGRAM_DESCRIPTION_MAX)
+    : '';
+  const safeReason = redactAndTruncate(
+    reason == null ? 'error desconocido' : reason,
+    PERSISTED_ERROR_MAX,
+  );
+  const causa = code == null ? 'sin codigo de la API' : `error_code ${code}`;
+
+  const context = {
+    archivo: fileName,
+    tipo: kind,
+    error_code: code == null ? 'n/d' : String(code),
+    envios: String(opts.count == null ? 1 : opts.count),
+  };
+  if (issue != null) context.issue = String(issue);
+  if (excerpt) context.extracto = excerpt;
+
+  return {
+    level: 'error',
+    component: 'svc-telegram',
+    message: `No se pudo enviar ${kind} tras ${maxRetries} intentos — ${causa}`,
+    detail: safeReason,
+    context,
+    // R6 — el `description` remoto va en bloque de código: inmune a entidades
+    // Markdown, no puede romper el parseo de la propia alerta ni realimentar el
+    // ruido que este issue viene a eliminar.
+    codeBlock: description || undefined,
+    // metadatos internos (no van al mensaje) — para dedup y tests
+    _dedupKey: alertDedup.dedupKey(code, kind),
+    _kind: kind,
+    _excerpt: excerpt,
+  };
+}
+
+// #5924 — Emite un payload ya construido, aplicando el aislamiento por path.
+// Devuelve true si se emitió, false si se suprimió o falló.
+function emitAlert(payload, tag) {
+  const supp = resolveAlertSuppression();
+  if (supp.suppress) {
+    // "Loguear toda supresión": queda traza de que existió una alerta y no salió.
+    log(`Alerta suprimida (${tag}): cola de alertas fuera de la ruta real [${supp.reason}]`);
     return false;
   }
   try {
-    const safeReason = redactSecretValue(
-      redactSensitive(String(reason == null ? 'error desconocido' : reason)),
-    );
-    notifyTelegram({
-      level: 'error',
-      component: 'svc-telegram',
-      message: `Fallo terminal al enviar un adjunto/mensaje (${fileName}) tras ${maxRetries} intentos: ${safeReason}`,
-      context: { archivo: fileName },
-    });
+    const { _dedupKey, _kind, _excerpt, ...clean } = payload;
+    notifyTelegram(clean);
     return true;
   } catch (e) {
     log(`No se pudo notificar fallo a Telegram: ${e.message}`);
     return false;
   }
+}
+
+// CA-3 / RS-3 (#3927): "fallo de envío de CUALQUIER adjunto SIEMPRE notifica
+// (nunca más silencio)". Emite una alerta a Telegram cuando un dropfile no se
+// pudo enviar de forma terminal. El texto pasa SIEMPRE por `redactSensitive`
+// + `redactSecretValue` (RS-3) — nunca volcamos `err.message`/`err.stack` crudo
+// al usuario. Espeja `notifyDriveFailure` de servicio-drive.js.
+//
+// #5924 — Ahora el mensaje nombra el TIPO REAL del saliente, la causa concreta
+// (`error_code`) y un extracto por contenido; y las alertas de salientes
+// distintos con la misma causa se agrupan en ventana corta.
+function notifyTelegramFailure(fileName, reason, maxRetries = MAX_SEND_RETRIES, opts = {}) {
+  // Guard anti-recursión: el propio `notifyTelegram` escribe un dropfile de texto
+  // en esta MISMA cola (`alert-svc-telegram-*.json`). Si esa alerta fallara de
+  // forma terminal (p.ej. outage del API de Telegram), notificar de nuevo crearía
+  // una cadena infinita de archivos de alerta. Por eso NO re-notificamos el fallo
+  // de una alerta generada por nosotros mismos.
+  //
+  // #5924 — Va PRIMERO, antes de tocar el buffer de dedup: así una alerta propia
+  // nunca entra al buffer y la agrupación no puede abrir una segunda vía de
+  // recursión por consolidado (R4, nota).
+  if (typeof fileName === 'string' && fileName.startsWith('alert-svc-telegram')) {
+    log(`Fallo terminal de alerta propia ${fileName}; no se re-notifica (anti-recursión)`);
+    return false;
+  }
+  const now = Date.now();
+  // Contrato del buffer: cerrar ventanas vencidas ANTES de registrar.
+  flushAlertBuffer(now);
+  const payload = buildFailureAlert(fileName, reason, maxRetries, opts);
+  const decision = alertBuffer.register(payload._dedupKey, payload._excerpt, now);
+  if (!decision.emit) {
+    log(`Alerta agrupada (${payload._dedupKey}) — ${decision.count} salientes en la ventana; se consolidará al cerrarla`);
+    return false;
+  }
+  if (decision.overflow) {
+    log(`Buffer de dedup en su cota (${alertBuffer.maxKeys} claves); se emite sin agrupar`);
+  }
+  return emitAlert(payload, fileName);
+}
+
+// #5924 / R4.2 — Consolidado de una ventana cerrada. El conteo va SIEMPRE: una
+// dedup que no dice cuántos agrupó es indistinguible de una que perdió eventos.
+function flushAlertBuffer(now = Date.now()) {
+  let emitted = 0;
+  let groups;
+  try {
+    groups = alertBuffer.flush(now);
+  } catch (e) {
+    log(`Flush de dedup de alertas falló (best-effort): ${e.message}`);
+    return 0;
+  }
+  for (const g of groups) {
+    const context = {
+      tipo: g.tipo,
+      causa: g.causa,
+      envios: String(g.count),
+      ventana_seg: String(Math.round(alertBuffer.windowMs / 1000)),
+    };
+    if (g.sample) context.extracto = g.sample;
+    const ok = emitAlert({
+      level: 'error',
+      component: 'svc-telegram',
+      message: `${g.count} envios de tipo ${g.tipo} fallaron por ${g.causa} en los ultimos ${Math.round(alertBuffer.windowMs / 1000)}s`,
+      context,
+    }, `consolidado ${g.key}`);
+    if (ok) emitted++;
+  }
+  return emitted;
 }
 
 // CA-3 (#3927): maneja el fallo de envío de un dropfile individual. Acota los
@@ -391,6 +682,11 @@ function handleSendFailure(file, trabajandoPath, err) {
   attempts += 1;
 
   const errMsg = err && err.message ? err.message : String(err);
+  // #5924 — Datos ESTRUCTURADOS del fallo (no texto): vienen de `assertDelivered`
+  // cuando la API rechazó el envío. `null` si el fallo fue de red/FS/otro.
+  const errorCode = alertDedup.coerceTelegramErrorCode(err && err.telegramErrorCode);
+  const errorDescription = err && err.telegramDescription ? err.telegramDescription : '';
+  const permanent = alertDedup.isPermanentTelegramError(errorCode);
   // Terminal si agotó los reintentos o si el archivo no se puede ni parsear
   // (reintentarlo infinitamente nunca lo haría enviable).
   const terminal = !parsedOk || attempts >= maxRetries;
@@ -399,9 +695,21 @@ function handleSendFailure(file, trabajandoPath, err) {
     log(`Fallo terminal enviando ${file.name} (intento ${attempts}/${maxRetries}): ${errMsg}`);
     if (parsedOk && cur) {
       try {
-        cur._error = errMsg;
+        // #5924 / R2 + SEC-B — `_error` ahora lleva contenido REMOTO (el
+        // `description` de la API). Antes era un string fijo y persistirlo crudo
+        // era inocuo; ya no. Se redacta y trunca EN LA ESCRITURA, no sólo en el
+        // punto de notificación. Orden fijo: redactar → truncar.
+        cur._error = redactAndTruncate(errMsg, PERSISTED_ERROR_MAX);
         cur._failedAt = new Date().toISOString();
         cur._telegramAttempts = attempts;
+        // #5924 — dato ACOTADO que debe sobrevivir al sweep: es lo que permite
+        // agrupar por causa y decidir si el fallo es permanente.
+        if (errorCode != null) cur._telegramErrorCode = errorCode;
+        // #5924 — marca de fallo NO reintentable (4xx de request inválida o sin
+        // permiso). Es lo único que corta el ciclo de reciclado del barredor:
+        // sin esto, cada arranque del servicio reencola el saliente, agota los 5
+        // reintentos y dispara una alerta nueva (156 → 162 → 165 en un día).
+        if (permanent) cur._telegramPermanentFailure = true;
         delete cur._nextRetryAt;
         fs.writeFileSync(trabajandoPath, JSON.stringify(cur, null, 2));
       } catch {}
@@ -411,11 +719,25 @@ function handleSendFailure(file, trabajandoPath, err) {
       // error → cero superficie de leak de BOT_TOKEN (SEC-1).
       if (telegramReceipt.isValidCorrelationId(cur._correlationId)) {
         try {
-          telegramReceipt.writeReceipt(RECIBOS, {
+          const failFields = {
             correlationId: cur._correlationId,
             status: telegramReceipt.STATUS_FALLIDO,
             messageIds: [],
-          });
+          };
+          // #5573 — propagar la dimensión de CHUNK también al recibo `fallido`.
+          // Hasta acá el fallo de una parte de audio aterrizaba como `<cid>.json`
+          // (nombre de recibo de TEXTO) en vez de `<cid>-p<idx>.json`, así que el
+          // reconciliador lo metía en el historial conversacional en lugar de
+          // tratarlo como chunk. Misma validación fail-closed que
+          // `writeSentReceiptIfAny` (SEC-R2): dims corruptas → se escribe el
+          // recibo SIN dims (comportamiento previo), nunca con un valor sin acotar
+          // del que se derive un nombre de archivo.
+          if (telegramReceipt.hasPartDims({ partIndex: cur._partIndex, partTotal: cur._partTotal })
+            && telegramReceipt.isValidPartDims(cur._partIndex, cur._partTotal)) {
+            failFields.partIndex = telegramReceipt.coercePartInt(cur._partIndex);
+            failFields.partTotal = telegramReceipt.coercePartInt(cur._partTotal);
+          }
+          telegramReceipt.writeReceipt(RECIBOS, failFields);
         } catch (e) {
           log(`No se pudo escribir recibo fallido (${cur._correlationId}): ${e.message}`);
         }
@@ -429,7 +751,13 @@ function handleSendFailure(file, trabajandoPath, err) {
       try { fs.renameSync(trabajandoPath, file.path); } catch {}
     }
     // CA-3: fallo de envío de CUALQUIER adjunto SIEMPRE notifica.
-    notifyTelegramFailure(file.name, errMsg, maxRetries);
+    // #5924 — se pasa el dropfile parseado para derivar el TIPO REAL y el
+    // extracto por contenido, más los datos estructurados del rechazo.
+    notifyTelegramFailure(file.name, errMsg, maxRetries, {
+      data: parsedOk ? cur : null,
+      errorCode,
+      description: errorDescription,
+    });
     return 'failed';
   }
 
@@ -482,12 +810,32 @@ function recoverOrphans() {
 // intentos reseteado para darles un presupuesto limpio. Los `-cmd.json` más
 // viejos que `stale_ttl_ms` se DESCARTAN a listo/ con marcador en vez de
 // reenviarse fuera de contexto (SEC-4). Best-effort: nunca rompe el arranque.
+// #5924 / SEC-C (BLOQUEANTE) — ¿Se honra el flag de fallo permanente?
+//
+// La cola tiene 20+ productores escribiendo en `pendiente/` sin ningún saneo de
+// campos `_*`. Honrar el flag por su sola presencia crearía un canal de
+// supresión silenciosa POR DATO: cualquier productor podría marcar un saliente
+// como permanentemente fallido y ese saliente nunca se enviaría ni alertaría.
+//
+// Por eso el flag sólo se honra con EVIDENCIA COHERENTE de que lo escribió
+// `handleSendFailure`: timestamp de fallo parseable, al menos un intento real, y
+// un `error_code` 4xx. Sin evidencia → se ignora el flag, se reencola y se
+// loguea (fail-closed hacia la visibilidad).
+function honorsPermanentFlag(cur) {
+  if (!cur || cur._telegramPermanentFailure !== true) return false;
+  const failedAtOk = Number.isFinite(Date.parse(cur._failedAt || ''));
+  const attemptsOk = Number.isInteger(cur._telegramAttempts) && cur._telegramAttempts >= 1;
+  const code = alertDedup.coerceTelegramErrorCode(cur._telegramErrorCode);
+  const codeOk = code != null && code >= 400 && code < 500;
+  return failedAtOk && attemptsOk && codeOk;
+}
+
 function sweepFallidoOnce() {
   const oc = loadOutboundConfig();
   const failed = listWorkFiles(FALLIDO);
-  if (failed.length === 0) return { requeued: 0, discarded: 0 };
+  if (failed.length === 0) return { requeued: 0, discarded: 0, permanent: 0 };
   const now = Date.now();
-  let requeued = 0, discarded = 0, idx = 0;
+  let requeued = 0, discarded = 0, permanent = 0, idx = 0;
   for (const file of failed) {
     let cur;
     try {
@@ -508,9 +856,41 @@ function sweepFallidoOnce() {
       try { fs.renameSync(file.path, path.join(LISTO, destName)); discarded++; } catch {}
       continue;
     }
+    // #5924 — DESCARTE TERMINAL: un saliente que la API rechazó de forma no
+    // reintentable no se reencola NUNCA. Este es el corte del ciclo que
+    // amplificaba la cola: `sweepFallidoOnce` corre en CADA arranque del
+    // servicio (`main()`) y los watchdogs reinician seguido, así que sin esto
+    // cada reinicio reencolaba todo, agotaba 5 reintentos por saliente y
+    // disparaba una alerta nueva por cada uno.
+    //
+    // Se aplica a TODOS los salientes, no sólo a los que no son `-cmd.json`: un
+    // `-cmd.json` con un 400 tampoco es reenviable. El descarte por staleness de
+    // `-cmd.json` (arriba) se evalúa primero y queda intacto.
+    //
+    // La regla se deriva de un CAMPO ESTRUCTURADO del dropfile, no del nombre de
+    // archivo: una tercera regla acoplada al nombre se desactivaría en silencio
+    // el día que un productor cambiara su patrón.
+    if (honorsPermanentFlag(cur)) {
+      const destName = file.name.replace(/\.json$/, '-permanente-descartado.json');
+      try {
+        fs.renameSync(file.path, path.join(LISTO, destName));
+        permanent++;
+      } catch { /* no se pudo mover — dejar en fallido/ */ }
+      continue;
+    }
+    if (cur && cur._telegramPermanentFailure === true) {
+      // Flag presente pero SIN evidencia coherente (SEC-C): se ignora y se
+      // reencola. Se loguea porque es la firma de un productor escribiendo
+      // campos `_*` que no le corresponden.
+      log(`Flag de fallo permanente sin evidencia coherente en ${file.name}; se ignora y se reencola`);
+    }
     // SEC-3: reencolar con backoff escalonado (idx creciente) y presupuesto limpio.
     cur._telegramAttempts = 0;
     cur._nextRetryAt = new Date(now + (idx + 1) * oc.sweep_stagger_ms).toISOString();
+    // #5924 — `_error` se sigue limpiando (era el comportamiento previo), pero
+    // `_telegramErrorCode` y `_telegramPermanentFailure` NO se borran: son la
+    // evidencia acotada de por qué falló y lo único que puede cortar el ciclo en
+    // la pasada siguiente. Borrarlos era parte del amplificador.
     delete cur._error;
     delete cur._failedAt;
     try {
@@ -522,7 +902,63 @@ function sweepFallidoOnce() {
   }
   if (requeued > 0) log(`Barredor fallido/: ${requeued} reencolados con backoff escalonado (cada ${oc.sweep_stagger_ms}ms)`);
   if (discarded > 0) log(`Barredor fallido/: ${discarded} salientes stale descartados a listo/ (>${oc.stale_ttl_ms}ms)`);
-  return { requeued, discarded };
+  if (permanent > 0) log(`Barredor fallido/: ${permanent} salientes con fallo permanente descartados a listo/ (no se reencolan)`);
+  return { requeued, discarded, permanent };
+}
+
+/**
+ * #5421 — Resuelve el dialecto de parseo de un saliente de TEXTO.
+ *
+ * **Por qué existe (y por qué `data.parse_mode || 'Markdown'` era un bug).**
+ * El productor (`pulpo.js::sendTelegramWithMarkup`) y este servicio son procesos
+ * distintos: el único canal entre ellos es el JSON del dropfile. Cuando el
+ * caller pedía texto plano (`opts.plain`), el productor expresaba esa intención
+ * OMITIENDO `parse_mode` del payload. Pero "campo ausente" es indistinguible de
+ * "el emisor no opinó", y el default de este lado lo reinyectaba como
+ * `'Markdown'`. Resultado: `plain:true` no tenía ningún efecto observable — el
+ * mensaje se enviaba parseado igual.
+ *
+ * Eso hacía que un aviso crítico con markup desbalanceado (un `_` de un path, un
+ * backtick de un email hostil) se perdiera con HTTP 400, y como el saliente es
+ * fire-and-forget el emisor nunca se enteraba. También dejaba sin efecto la
+ * defensa anti-inyección del canned de cuota (#2975 CA-13), que dependía del
+ * mismo flag.
+ *
+ * El fix es hacer la intención EXPLÍCITA en el payload (`plain: true`) para que
+ * sobreviva el cruce de proceso, en vez de codificarla como una ausencia.
+ * Retrocompatible: un dropfile viejo sin `plain` conserva el default histórico.
+ *
+ * @param {object} data — payload del dropfile.
+ * @returns {string|null} dialecto, o `null` si el mensaje va SIN `parse_mode`.
+ */
+function resolveOutboundParseMode(data) {
+  if (!data || typeof data !== 'object') return 'Markdown';
+  // Declaración explícita de texto plano: gana sobre cualquier otra cosa.
+  if (data.plain === true) return null;
+  return data.parse_mode || 'Markdown';
+}
+
+/**
+ * #6190 / SEC-D — ¿este saliente va SIN vista previa de enlaces?
+ *
+ * Complemento defensivo, NO el filtro. Quien neutraliza los enlaces del texto
+ * externo es el saneador de `decision-card.js` (`URL_RE`); esto sólo impide que
+ * el cliente de Telegram dibuje la vista previa de una página ajena DENTRO de
+ * un aviso que el operador lee como escrito por el pipeline.
+ *
+ * Se resuelve en una función exportada, y no inline en el armado de `params`,
+ * por la misma razón que `resolveOutboundParseMode`: es una decisión del
+ * contrato entre dos procesos y tiene que poder testearse sin red ni token.
+ *
+ * Default cerrado sobre el tipo: sólo el booleano `true` cuenta. Un `'true'` de
+ * un dropfile mal serializado no debe cambiar el comportamiento por accidente.
+ *
+ * @param {object} data — payload del dropfile.
+ * @returns {boolean} `true` si el saliente debe ir con `disable_web_page_preview`.
+ */
+function resolveOutboundPreview(data) {
+  if (!data || typeof data !== 'object') return false;
+  return data.disable_web_page_preview === true;
 }
 
 // #3668 — Procesa un grupo de burst (N>=2 archivos del mismo skill+issue+pid+type
@@ -805,19 +1241,31 @@ async function processQueue() {
         // Telegram API limita sendMessage a 4096; antes se truncaba silenciosamente.
         // #2893: passthrough opcional de reply_markup (inline_keyboard / url buttons)
         // — se adjunta solo al último chunk para que los botones queden al final.
-        const parseMode = data.parse_mode || 'Markdown';
+        // #5421 — `null` ⇒ el saliente va SIN `parse_mode` (texto plano).
+        const parseMode = resolveOutboundParseMode(data);
         const chunks = splitLongMessage(data.text);
         const hasReplyMarkup = data.reply_markup && typeof data.reply_markup === 'object';
         // #4586 (Palanca 2a) — hilo/topic separado para el firehose de
         // entregables. Se aplica a todos los chunks del mismo mensaje.
         const textThreadId = normalizeThreadId(data.message_thread_id);
+        const privateDestination = resolvePrivateDestination(data.chat_id);
+        if (!privateDestination.ok) {
+          log(`Aviso privado omitido: ${privateDestination.reason}`);
+          fs.renameSync(trabajandoPath, path.join(LISTO, file.name));
+          continue;
+        }
         // #4082 — SEC-2 fail-closed: validar ok:true + message_id por chunk y
         // acumular los ids (multi-chunk → N ids). Si algún chunk no confirma,
         // `assertDelivered` lanza → cae a handleSendFailure (entrega parcial =
         // fallido, se reintenta el dropfile completo).
         const messageIds = [];
         for (let i = 0; i < chunks.length; i++) {
-          const params = { text: chunks[i], parse_mode: parseMode };
+          // #5421 — sólo se adjunta `parse_mode` si hay dialecto. En texto plano
+          // el campo NO viaja, así que no hay nada que Telegram pueda rechazar.
+          const params = { text: chunks[i] };
+          if (parseMode) params.parse_mode = parseMode;
+          if (resolveOutboundPreview(data)) params.disable_web_page_preview = true;
+          if (privateDestination.chatId != null) params.chat_id = privateDestination.chatId;
           if (textThreadId != null) params.message_thread_id = textThreadId;
           if (hasReplyMarkup && i === chunks.length - 1) {
             params.reply_markup = data.reply_markup;
@@ -879,6 +1327,11 @@ async function main() {
   try { require('./lib/ready-marker').signalReady('svc-telegram'); } catch {}
   while (true) {
     try { await processQueue(); } catch (e) { log(`Error: ${e.message}`); }
+    // #5924 — cierre de ventanas de agrupación. Va en el poll (cada 5s) y no en
+    // un timer propio: acota la latencia del consolidado sin sumar un handle que
+    // pueda quedar vivo y mantener el proceso arriba. Best-effort por diseño —
+    // un fallo del flush jamás debe frenar el drenaje de la cola.
+    try { flushAlertBuffer(); } catch (e) { log(`Flush de alertas falló: ${e.message}`); }
     await new Promise(r => setTimeout(r, 5000)); // Poll cada 5 seg
   }
 }
@@ -907,14 +1360,38 @@ module.exports = {
   editMessageText,
   // #4586 (Palanca 2a) — normalizador de message_thread_id, expuesto para tests.
   normalizeThreadId,
+  // #5421 — resolutor del dialecto del saliente (puro). Expuesto para el test
+  // que fija que `plain:true` produce envío SIN `parse_mode`.
+  resolveOutboundParseMode,
+  resolveOutboundPreview,
+  resolvePrivateDestination,
   // #4796 — helpers de normalización/allowlist de rutas de adjunto + guarda
   // fail-closed del solo-audio. Puros (o I/O acotado sobre disco); no arrancan el
   // servicio ni tocan red. Expuestos para `node --test`.
   resolveAttachmentPath,
   declaredAttachmentTypes,
   shouldFailClosed,
+  // #6226 — listado de la cola. Expuesto para el test que fija que el orden de
+  // drenaje es el orden de emisión (por nombre) y no el que devuelva el
+  // filesystem. Puro salvo el `readdirSync` sobre el dir que le pasan.
+  listWorkFiles,
   isUnderBase,
   mediaBaseDir,
+  // #5924 — diagnosticabilidad + no-reciclado. Puros (o I/O acotado): el
+  // constructor de la alerta, el predicado de supresión por path y el de flag de
+  // fallo permanente se testean SIN emitir nada a ninguna cola.
+  buildFailureAlert,
+  resolveAlertSuppression,
+  flushAlertBuffer,
+  honorsPermanentFlag,
+  outboundKind,
+  safeExcerpt,
+  redactAndTruncate,
+  truncate,
+  TELEGRAM_DESCRIPTION_MAX,
+  PERSISTED_ERROR_MAX,
+  EXCERPT_MAX,
+  REAL_ALERT_QUEUE,
 };
 
 // Arranque del servicio: SOLO cuando se ejecuta directamente (`node servicio-telegram.js`),

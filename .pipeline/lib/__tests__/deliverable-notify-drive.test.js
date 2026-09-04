@@ -251,33 +251,45 @@ test('RS-2 · resolveVideoPath acepta un video dentro de qa/evidence/', () => {
     assert.equal(resolved, path.resolve(evidenceVideo), 'debe resolver dentro de qa/evidence');
 });
 
-test('RS-2 · resolveVideoPath rechaza un archivo existente FUERA de los dirs permitidos', () => {
-    // Archivo real bajo PROJECT_ROOT pero NO en qa/evidence ni qa/recordings.
+// #6497 — el containment se movió de `resolveVideoPath` a `resolveConfinedEvidence`,
+// que es ahora el PUNTO ÚNICO por el que pasan TODAS las vías (video y
+// estructural). `resolveVideoPath` quedó como resolución + fallbacks pura: si
+// siguiera confinando, sería imposible distinguir "no promovido" de "fuera del
+// allowlist" (CA-UX-2) y no habría dónde correr el guard para el modo
+// estructural (CA-4). La conducta de RS-2 se conserva intacta, sólo cambia el
+// punto de entrada: estos tests apuntan al guard nuevo.
+
+test('RS-2 · el containment rechaza un archivo existente FUERA de los dirs permitidos', () => {
+    // Archivo real bajo PROJECT_ROOT pero NO en un directorio de evidencia.
     const outside = path.join(SVC_PROJECT, 'secret.txt');
     fs.writeFileSync(outside, 'no-subir-esto');
 
-    const resolved = drive.resolveVideoPath('secret.txt');
-    assert.equal(resolved, null, 'no debe resolver archivos fuera de qa/evidence|qa/recordings');
+    const confined = drive.resolveConfinedEvidence('secret.txt');
+    assert.equal(confined.ok, false, 'no debe aceptar archivos fuera del allowlist de evidencia');
+    assert.equal(confined.reason, drive.REJECT_FUERA_ALLOWLIST,
+        'existe pero está fuera: es el motivo de seguridad, no el operativo');
 });
 
-test('RS-2 · resolveVideoPath rechaza un absoluto fuera del proyecto', () => {
+test('RS-2 · el containment rechaza un absoluto fuera del proyecto', () => {
     const outsideAbs = path.join(os.tmpdir(), `rs2-outside-${process.pid}.mp4`);
     writeVideoFixture(outsideAbs, 128);
     try {
-        const resolved = drive.resolveVideoPath(outsideAbs);
-        assert.equal(resolved, null, 'no debe resolver absolutos fuera del proyecto');
+        const confined = drive.resolveConfinedEvidence(outsideAbs);
+        assert.equal(confined.ok, false, 'no debe aceptar absolutos fuera del proyecto');
+        assert.equal(confined.reason, drive.REJECT_FUERA_ALLOWLIST);
     } finally {
         try { fs.rmSync(outsideAbs, { force: true }); } catch {}
     }
 });
 
-test('RS-2 · resolveVideoPath rechaza traversal con ../', () => {
+test('RS-2 · el containment rechaza traversal con ../', () => {
     // Crear un archivo real al que un ../ intentaría escapar.
     const escapeTarget = path.join(path.dirname(SVC_PROJECT), `rs2-escape-${process.pid}.mp4`);
     writeVideoFixture(escapeTarget, 128);
     try {
-        const resolved = drive.resolveVideoPath(`../${path.basename(escapeTarget)}`);
-        assert.equal(resolved, null, 'el traversal ../ debe rechazarse');
+        const confined = drive.resolveConfinedEvidence(`../${path.basename(escapeTarget)}`);
+        assert.equal(confined.ok, false, 'el traversal ../ debe rechazarse');
+        assert.equal(confined.reason, drive.REJECT_FUERA_ALLOWLIST);
     } finally {
         try { fs.rmSync(escapeTarget, { force: true }); } catch {}
     }
@@ -394,6 +406,15 @@ test('QA estructural · processJob mueve el Markdown a listo sin invocar el uplo
         fs.mkdirSync(dir, { recursive: true });
     }
 
+    // #6497 — el artefacto tiene que EXISTIR en la ruta canónica: desde que el
+    // descriptor lleva sello, un job estructural cuyo archivo no está promovido
+    // ya no pasa de largo a `listo/` (iría a `fallido/` con motivo "no
+    // promovido"). `.pipeline/assets/docs/**` está en el allowlist ampliado
+    // (R-4) porque es lo que produce realmente `deliverable-notify`.
+    const evidencia = path.join(SVC_PROJECT, '.pipeline', 'assets', 'docs', '4899', 'qa-verificacion-4899.md');
+    fs.mkdirSync(path.dirname(evidencia), { recursive: true });
+    fs.writeFileSync(evidencia, '# QA verificacion 4899\n');
+
     const name = 'qa-4899-structural.json';
     const jobPath = path.join(pendiente, name);
     fs.writeFileSync(jobPath, JSON.stringify({
@@ -409,6 +430,12 @@ test('QA estructural · processJob mueve el Markdown a listo sin invocar el uplo
     assert.equal(fs.existsSync(path.join(listo, name)), true);
     assert.equal(fs.existsSync(path.join(fallido, name)), false);
     assert.equal(fs.existsSync(path.join(trabajando, name)), false);
+
+    // #6497 CA-1 — y llega sellado: el descriptor es la identidad autoritativa
+    // del artefacto, que es efímero.
+    const sellado = JSON.parse(fs.readFileSync(path.join(listo, name), 'utf8'));
+    assert.match(sellado.sha256, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(sellado.bytes, fs.statSync(evidencia).size);
 });
 
 // -----------------------------------------------------------------------------

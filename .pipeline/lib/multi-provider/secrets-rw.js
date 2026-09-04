@@ -38,6 +38,25 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+
+// #5245 · Guard de origen, cargado en forma perezosa y memoizada.
+//
+// Perezoso porque `secrets-rw` lo importa medio pipeline (dashboard incluido) y
+// sólo el camino de ESCRITURA necesita el guard: cargarlo en el top penalizaría
+// a todos los lectores con el require de `worktree-resolver` + `secrets-manifest`.
+//
+// Y FATAL a propósito (D-7): si el guard no carga, la escritura de credenciales
+// NO procede. Un `try/catch` con fallback acá reproduciría exactamente el modo de
+// falla que esta historia viene a matar — degradar sin ruido a escribir el secreto
+// donde no corresponde. El fallback silencioso es aceptable para telemetría, no
+// para el llavero del que arranca todo el pipeline.
+let _secretsGuard;
+function requireSecretsGuard() {
+    if (_secretsGuard === undefined) {
+        _secretsGuard = require('../secrets-guard');
+    }
+    return _secretsGuard;
+}
 const os = require('node:os');
 const crypto = require('node:crypto');
 
@@ -154,13 +173,26 @@ function getNested(obj, dotPath) {
     );
 }
 
-function setNested(obj, dotPath, value) {
+const FORBIDDEN_DOT_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+
+function parseSafeDotPath(dotPath) {
+    if (typeof dotPath !== 'string' || !dotPath.trim()) {
+        throw new Error('[secrets-rw] dot-path inválido: debe ser un string no vacío.');
+    }
     const parts = dotPath.split('.');
+    if (parts.some(part => !part || FORBIDDEN_DOT_PATH_SEGMENTS.has(part))) {
+        throw new Error(`[secrets-rw] dot-path inseguro rechazado: "${dotPath}".`);
+    }
+    return parts;
+}
+
+function setNested(obj, dotPath, value) {
+    const parts = parseSafeDotPath(dotPath);
     const last = parts.pop();
     let cur = obj;
     for (const p of parts) {
         if (cur[p] === null || cur[p] === undefined || typeof cur[p] !== 'object') {
-            cur[p] = {};
+            cur[p] = Object.create(null);
         }
         cur = cur[p];
     }
@@ -233,6 +265,133 @@ function listKeys({ secretsPath, fsImpl = fs } = {}) {
     });
 }
 
+/**
+ * Punto de escritura ÚNICO del store canónico (#5217).
+ *
+ * Extraído del core que `rotateKey` ya tenía probado: backup pre-save →
+ * escritura atómica (tmp + rename) → `chmod 0600` (best-effort en Windows) →
+ * retención de backups. Cualquier productor de credenciales debe pasar por acá
+ * en vez de hacer su propio `writeFileSync`, para no perder ninguno de esos
+ * cuatro controles.
+ *
+ * `updates` va keyed por **dot-path** de la estructura canónica anidada
+ * (ej. `'google_drive.oauth_refresh_token'`). Si el archivo destino resulta
+ * estar en formato legacy (flat), se aplican `legacyUpdates` — es lo que
+ * necesita `rotateKey` para no romper consumidores legacy; un productor nuevo
+ * simplemente no los pasa y entonces se escribe canónico igual.
+ *
+ * NOTA: no valida el contenido de los valores. Los productores validan antes
+ * (ver las precondiciones de `rotateKey`).
+ *
+ * @param {object} updates              `{ 'a.b.c': 'valor' }` — dot-paths canónicos.
+ * @param {object} [opts]
+ * @param {string} [opts.secretsPath]   destino (default: HOME_CANONICAL).
+ * @param {object} [opts.legacyUpdates] `{ flat_key: 'valor' }` para formato legacy.
+ * @returns {{ok:boolean, targetPath:string, format:string, backupPath:string|null,
+ *            written:string[]}}
+ */
+function writeCanonicalPaths(updates, {
+    secretsPath,
+    backupDir = DEFAULT_BACKUP_DIR,
+    retention = DEFAULT_BACKUP_RETENTION,
+    fsImpl = fs,
+    now = Date.now(),
+    legacyUpdates = null,
+    guardImpl = null,
+} = {}) {
+    if (!updates || typeof updates !== 'object' || Object.keys(updates).length === 0) {
+        throw new Error('[secrets-rw] writeCanonicalPaths: "updates" requerido (objeto no vacío keyed por dot-path).');
+    }
+    // Validar todos los paths antes de crear directorios o backups. Además de
+    // impedir prototype pollution, esto garantiza que un input inválido no
+    // produzca efectos secundarios parciales en el filesystem.
+    for (const dotPath of Object.keys(updates)) parseSafeDotPath(dotPath);
+
+    const targetPath = secretsPath || HOME_CANONICAL;
+
+    // #5245 · CA-10 — Guard de origen en el camino de ESCRITURA. Este es el punto
+    // de escritura único del store canónico, así que engancharlo acá cubre a TODOS
+    // los productores de credenciales (el setup OAuth de Drive, `rotateKey`, y
+    // cualquiera que se sume) en vez de un call site suelto que el próximo script
+    // vuelve a esquivar. Un guard sólo de lectura deja que el próximo setup
+    // reintroduzca la fuga intacta.
+    //
+    // Va ANTES de mkdir/backup/write: fail-closed no puede dejar efectos
+    // secundarios parciales en el filesystem si el origen resulta prohibido.
+    //
+    // Se consultan TODOS los dot-paths del update: el guard descarta por sí mismo
+    // las claves operativas (`not_a_secret`, no cuentan) y deduplica por
+    // (secreto, archivo) una vez por proceso, así que esto no infla el contador.
+    const guard = guardImpl || requireSecretsGuard();
+    if (guard && typeof guard.assertSecretOrigin === 'function') {
+        for (const dotPath of Object.keys(updates)) {
+            guard.assertSecretOrigin(targetPath, {
+                op: 'write',
+                secret: dotPath,
+                site: 'secrets-rw.writeCanonicalPaths',
+            });
+        }
+    }
+
+    const dir = path.dirname(targetPath);
+    if (!fsImpl.existsSync(dir)) fsImpl.mkdirSync(dir, { recursive: true });
+
+    let current = {};
+    let format = 'canonical';
+    if (fsImpl.existsSync(targetPath)) {
+        current = tryReadJson(targetPath, fsImpl);
+        // Fail-closed: un store ilegible NO se degrada a `{}`. Si lo hiciéramos,
+        // este write lo reemplazaría por un archivo con SÓLO las claves nuevas y
+        // se perderían Telegram y todos los providers de IA — el pipeline entero
+        // se queda sin credenciales por un JSON mal formado. Preferimos abortar
+        // sin escribir y que el operador repare o restaure un backup.
+        if (current === null || typeof current !== 'object' || Array.isArray(current)) {
+            throw new Error(
+                `[secrets-rw] writeCanonicalPaths: "${targetPath}" existe pero no es un JSON de objeto válido. ` +
+                'No se escribe nada para no perder las credenciales ya guardadas. ' +
+                `Reparalo a mano o restaurá un backup de "${backupDir}".`,
+            );
+        }
+        format = detectFormat(current);
+    }
+
+    // Backup pre-save: sólo si ya había archivo (si no, no hay nada que perder).
+    let backupPath = null;
+    if (fsImpl.existsSync(targetPath)) {
+        if (!fsImpl.existsSync(backupDir)) fsImpl.mkdirSync(backupDir, { recursive: true });
+        const ts = new Date(now).toISOString().replace(/[:.]/g, '-');
+        const basename = path.basename(targetPath, '.json');
+        backupPath = path.join(backupDir, `${basename}.${ts}.json`);
+        fsImpl.copyFileSync(targetPath, backupPath);
+        try { fsImpl.chmodSync(backupPath, 0o600); } catch { /* Windows: best-effort */ }
+    }
+
+    const updated = JSON.parse(JSON.stringify(current));
+    const written = [];
+    if (format === 'legacy' && legacyUpdates && Object.keys(legacyUpdates).length > 0) {
+        for (const [field, value] of Object.entries(legacyUpdates)) {
+            updated[field] = value;
+            written.push(field);
+        }
+    } else {
+        for (const [dotPath, value] of Object.entries(updates)) {
+            setNested(updated, dotPath, value);
+            written.push(dotPath);
+        }
+    }
+
+    // Escritura atómica: tmp + rename. Un crash a mitad nunca deja el store
+    // truncado — o está el archivo viejo entero, o el nuevo entero.
+    const tmpPath = `${targetPath}.tmp.${process.pid}.${now}`;
+    fsImpl.writeFileSync(tmpPath, JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
+    fsImpl.renameSync(tmpPath, targetPath);
+    try { fsImpl.chmodSync(targetPath, 0o600); } catch { /* Windows: best-effort */ }
+
+    applyBackupRetention({ backupDir, retention, fsImpl, basename: path.basename(targetPath, '.json') });
+
+    return { ok: true, targetPath, format, backupPath, written };
+}
+
 function rotateKey({
     provider,
     newValue,
@@ -262,56 +421,29 @@ function rotateKey({
         throw new Error('[secrets-rw] rotateKey: "newValue" demasiado corto (< 20 chars). Sospechoso.');
     }
 
-    // Escritura: por defecto el archivo destino es el canonical. Si el caller
-    // pasa `secretsPath`, se respeta. El formato escrito preserva el formato
-    // detectado del archivo existente (si es legacy y existe, mantenemos flat
-    // para no romper consumidores legacy; si no existe o es canonical,
-    // escribimos canonical nested).
-    const targetPath = secretsPath || HOME_CANONICAL;
-    const dir = path.dirname(targetPath);
-    if (!fsImpl.existsSync(dir)) fsImpl.mkdirSync(dir, { recursive: true });
-
-    let current = {};
-    let format = 'canonical';
-    if (fsImpl.existsSync(targetPath)) {
-        current = tryReadJson(targetPath, fsImpl) || {};
-        format = detectFormat(current);
-    }
-
-    let backupPath = null;
-    if (fsImpl.existsSync(targetPath)) {
-        if (!fsImpl.existsSync(backupDir)) fsImpl.mkdirSync(backupDir, { recursive: true });
-        const ts = new Date(now).toISOString().replace(/[:.]/g, '-');
-        const basename = path.basename(targetPath, '.json');
-        backupPath = path.join(backupDir, `${basename}.${ts}.json`);
-        fsImpl.copyFileSync(targetPath, backupPath);
-        try { fsImpl.chmodSync(backupPath, 0o600); } catch { /* Windows: best-effort */ }
-    }
-
+    // Escritura: delega en el punto de escritura único (#5217). Por defecto el
+    // archivo destino es el canonical; si el caller pasa `secretsPath`, se
+    // respeta. El formato escrito preserva el formato detectado del archivo
+    // existente (si es legacy y existe, mantenemos flat para no romper
+    // consumidores legacy; si no existe o es canonical, escribimos nested).
     const trimmed = newValue.trim();
-    const updated = JSON.parse(JSON.stringify(current));
-    if (format === 'legacy') {
-        updated[spec.legacyField] = trimmed;
-    } else {
-        setNested(updated, spec.canonicalPath, trimmed);
-    }
-
-    const tmpPath = `${targetPath}.tmp.${process.pid}.${now}`;
-    fsImpl.writeFileSync(tmpPath, JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
-    fsImpl.renameSync(tmpPath, targetPath);
-    try { fsImpl.chmodSync(targetPath, 0o600); } catch { /* Windows: best-effort */ }
-
-    applyBackupRetention({ backupDir, retention, fsImpl, basename: path.basename(targetPath, '.json') });
+    const res = writeCanonicalPaths(
+        { [spec.canonicalPath]: trimmed },
+        {
+            secretsPath, backupDir, retention, fsImpl, now,
+            legacyUpdates: { [spec.legacyField]: trimmed },
+        },
+    );
 
     return {
         ok: true,
         jsonField: spec.legacyField,
         canonicalPath: spec.canonicalPath,
         provider: spec.provider,
-        format,
-        targetPath,
+        format: res.format,
+        targetPath: res.targetPath,
         fingerprint: fingerprint(trimmed),
-        backupPath,
+        backupPath: res.backupPath,
     };
 }
 
@@ -347,6 +479,11 @@ module.exports = {
     MANAGED_KEYS,
     listKeys,
     rotateKey,
+    // Punto de escritura único del store canónico (#5217). Los productores de
+    // credenciales que NO son providers de IA (ej. el setup OAuth de Drive)
+    // escriben por acá, sin entrar a MANAGED_KEYS — esa lista alimenta la UI
+    // de credenciales del dashboard y su semántica `editable` no les aplica.
+    writeCanonicalPaths,
     getRawKey,
     maskValue,
     fingerprint,

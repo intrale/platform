@@ -112,14 +112,27 @@ function normalizeNumber(v) {
  *
  * Orden canónico de campos del entry persistido (además de los que agrega
  * `audit-log`: `created_at`, `hash_prev`, `hash_self`):
- *   { event, wave, issue, actor, estado_previo, estado_posterior,
+ *   { event, wave, issue, actor, source, estado_previo, estado_posterior,
  *     prioridad_previa, prioridad_nueva, note, timestamp, pid }
+ *
+ * #5882 — `source` se persiste POR ENTRY (antes sólo viajaba a
+ * `waves.json.meta.source`, que es last-write-wins global y por lo tanto
+ * inservible como traza por-issue). El predicado de traza legítima
+ * (`legit-add-trace.isLegitimateRecentWaveAdd`) enumera por `(event, source)` y
+ * NO por `actor`: los `actor` colisionan entre la promoción del operador y las
+ * reconciliaciones automáticas (ambas usan `wave-promote`), una de las cuales
+ * nace de una superficie EXTERNA (issue creado en GitHub). Acá sólo lo
+ * PERSISTIMOS sanitizado; el enum cerrado se enforcea en el consumidor.
  *
  * @param {object} evt
  * @param {string} evt.event — uno de EVENTS.
  * @param {number|null} [evt.wave] — number de la ola.
  * @param {number|null} [evt.issue] — number del issue.
  * @param {string} [evt.actor] — actor autenticado (no self-report). CA-1.
+ * @param {string} [evt.source] — origen de la mutación (#5882). Sin validación
+ *   con throw: rompería callers y no aporta seguridad (el gate real vive en el
+ *   predicado consumidor). Las entries legacy sin `source` quedan en `null` y
+ *   por construcción NO legitiman (fail-safe).
  * @param {*} [evt.estado_previo] — estado de la ola antes de la mutación.
  * @param {*} [evt.estado_posterior] — estado después.
  * @param {string|null} [evt.prioridad_previa] — label priority:* previo (CA-3).
@@ -145,6 +158,8 @@ function recordWaveEvent(evt = {}) {
         wave: normalizeNumber(evt.wave),
         issue: normalizeNumber(evt.issue),
         actor,
+        // #5882 — traza por-entry del origen de la mutación.
+        source: sanitizeField(evt.source) ?? null,
         estado_previo: evt.estado_previo ?? null,
         estado_posterior: evt.estado_posterior ?? null,
         prioridad_previa: sanitizeField(evt.prioridad_previa) ?? null,

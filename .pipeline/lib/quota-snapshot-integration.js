@@ -718,17 +718,26 @@ function _defaultGuardSlice() {
 }
 
 /**
- * Lee config.yaml (js-yaml safe-by-default). Ante cualquier error → `{}` para
- * que el guard caiga a defaults conservadores (REQ-SEC-2).
+ * Configuración cruda para el guard de cuota por proveedor.
+ *
+ * #5172 — Pasa por el punto único (`lib/config-resolver`). El `catch { return {} }`
+ * anterior NO daba "defaults conservadores": como los defaults del codebase son
+ * apagados por diseño de rollout, ese `{}` era **el guard apagado en silencio**
+ * ante un config ilegible — el fail-open que la historia viene a matar. Ahora el
+ * error tipado se PROPAGA.
+ *
+ * La política (D-3) es del llamador: `evaluateProviderQuotaGuard` ya envuelve
+ * esta llamada en su `try/catch` y devuelve `{error}` sin lanzar, así que con
+ * configuración ilegible el guard simplemente NO CORRE (no se evalúa contra una
+ * config inventada) en vez de correr creyéndose apagado.
+ *
+ * Una sección ausente en un config VÁLIDO sigue siendo un caso legítimo: el
+ * guard aplica sus defaults sobre el documento validado (D-4).
  */
 function _defaultGuardConfig() {
-    try {
-        const yaml = require('js-yaml');
-        const cfgPath = path.join(pipelineDir(), 'config.yaml');
-        return yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
-    } catch {
-        return {};
-    }
+    // Lazy-require deliberado (G-3): el resolver arrastra `js-yaml` + `ajv`.
+    const configResolver = require('./config-resolver');
+    return configResolver.resolve({ pipelineDir: pipelineDir() });
 }
 
 /**

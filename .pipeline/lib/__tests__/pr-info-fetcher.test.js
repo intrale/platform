@@ -19,7 +19,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { fetchPrInfoForIssue, fetchPrInfoForIssueAsync } = require('../pr-info-fetcher');
+const { fetchPrInfoForIssue, fetchPrInfoForIssueAsync, resolvePrForGateWrite, __FIELDS } = require('../pr-info-fetcher');
 
 /** Crea un runner falso con los efectos solicitados y registra todas las invocaciones. */
 function makeRunner(fakeResult) {
@@ -115,6 +115,35 @@ test('CA-14 | spawnSync arroja excepción → fallback (no propaga)', () => {
   const out = fetchPrInfoForIssue(3030, { runner });
   assert.equal(out.error, true);
   assert.equal(out.reason, 'spawn_failed');
+});
+
+test('resolvedor gate incluye campos de seguridad y resuelve un único PR estricto', () => {
+  for (const field of ['labels', 'isCrossRepository', 'headRepositoryOwner']) assert.match(__FIELDS, new RegExp(field));
+  const runner = makeRunner({ status: 0, stdout: JSON.stringify([{
+    number: 5519, headRefName: 'agent/5400-android-dev', state: 'OPEN', labels: [{ name: 'needs-definition' }],
+    isCrossRepository: false, headRepositoryOwner: { login: 'intrale' },
+  }]) });
+  assert.deepEqual(resolvePrForGateWrite(5400, { runner }), { ok: true, pr: {
+    number: 5519, headRefName: 'agent/5400-android-dev', state: 'OPEN', labels: ['needs-definition'],
+  } });
+});
+
+test('resolvedor gate falla cerrado ante ausencia, ambigüedad, fork y consulta fallida', () => {
+  const pr = (number, branch, state = 'OPEN') => ({ number, headRefName: branch, state, labels: [],
+    isCrossRepository: false, headRepositoryOwner: { login: 'intrale' }, body: 'Closes #5400' });
+  assert.equal(resolvePrForGateWrite(5400, { runner: makeRunner({ status: 0, stdout: JSON.stringify([pr(1, 'feature/ajena')]) }) }).reason, 'no_strict_match');
+  assert.equal(resolvePrForGateWrite(5400, { runner: makeRunner({ status: 0, stdout: JSON.stringify([pr(1, 'agent/5400-a'), pr(2, 'agent/5400-b')]) }) }).reason, 'ambiguous_match');
+  assert.equal(resolvePrForGateWrite(5400, { runner: makeRunner({ status: 0, stdout: JSON.stringify([{ ...pr(3, 'agent/5400-a'), isCrossRepository: true }]) }) }).reason, 'cross_repository');
+  assert.equal(resolvePrForGateWrite(5400, { runner: makeRunner({ status: 1, stderr: 'falló' }) }).reason, 'fetch_failed');
+});
+
+test('resolvedor gate desambigua solamente cuando existe un único PR abierto', () => {
+  const base = { labels: [], isCrossRepository: false, headRepositoryOwner: { login: 'intrale' } };
+  const runner = makeRunner({ status: 0, stdout: JSON.stringify([
+    { ...base, number: 10, headRefName: 'agent/5400-old', state: 'MERGED' },
+    { ...base, number: 11, headRefName: 'agent/5400-current', state: 'OPEN' },
+  ]) });
+  assert.equal(resolvePrForGateWrite(5400, { runner }).pr.number, 11);
 });
 
 test('CA-14 | exit code != 0 → fallback con stderr truncado', () => {

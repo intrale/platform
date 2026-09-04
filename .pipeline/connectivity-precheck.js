@@ -46,24 +46,57 @@ const INFRA_ERROR_CODES = new Set([
   'UND_ERR_SOCKET',
 ]);
 
-// Patrones de texto que también indican origen infra (timeouts genéricos,
-// errores de resolución DNS reportados sin code).
-const INFRA_MESSAGE_PATTERNS = [
-  /timeout/i,
-  /timed out/i,
+// #6745 CA-8 / CA-11 — Los patrones de texto que indican origen infra se
+// parten en DOS TIERS con precedencia distinta:
+//
+//   1. INFRA_MACHINE_TOKENS — literales que una máquina emite y que NO
+//      aparecen en la prosa de un agente. Se evalúan sobre el texto CRUDO
+//      (truncado): no se enmascaran ni se degradan por señal de código.
+//   2. INFRA_PROSE_PATTERNS — lenguaje natural genérico ("timeout", "dns").
+//      Se evalúan sobre el texto ENMASCARADO (maskCodeSpans) y pierden contra
+//      una señal de código (CA-2).
+//
+// `INFRA_MESSAGE_PATTERNS` se sigue exportando como la concatenación de ambos
+// tiers para no romper consumidores externos (CA-11).
+
+// Tier MÁQUINA — literal puro, cero prosa. NO se enmascara ni se degrada.
+const INFRA_MACHINE_TOKENS = [
   /getaddrinfo/i,
   /ENOTFOUND/i,
   /ECONNRESET/i,
-  /network is unreachable/i,
-  /dns/i,
   // #2405 CA-1 — JAVA_HOME drift es un problema de entorno (host), no de código.
-  // El helper `validate-java-home.js` falla con exit 78 y escribe este patrón
-  // en el motivo. `sysexits(3)` define 78 como EX_CONFIG → clasifica infra.
-  /JAVA_HOME\s+(?:invalido|no\s+esta\s+en\s+la\s+allowlist)/i,
+  // El helper `validate-java-home.js` falla con exit 78. `sysexits(3)` define
+  // 78 como EX_CONFIG → clasifica infra. Son códigos de salida, no prosa.
   /\bexit\s+(?:code\s+)?78\b/i,
   /\bEX_CONFIG\b/,
   /FATAL:\s*JAVA_HOME/i,
+  // #6495 — El linter sale con exit 2 y este token cuando no puede conseguir
+  // una base CONFIABLE contra la cual comparar (fetch de `origin/main` caído).
+  // Es una falla de red, no un defecto del entregable: sin esta línea el motivo
+  // cae al fallback `codigo` y el pulpo devuelve el issue a `dev` — exactamente
+  // el rebote-a-dev-por-timeout que motivó #6495. Se midió que el texto del
+  // stderr NO alcanza: sólo "Timed out" matcheaba `/timeout/i`, mientras que
+  // "Could not resolve host" y un lock de `.git/FETCH_HEAD.lock` caían en
+  // `codigo`. Token de máquina, no lenguaje natural: literal puro, sin
+  // quantifiers — cero superficie ReDoS. #6745 CA-8: gana sobre code_signal.
+  /LINTER_BASE_UNAVAILABLE/,
 ];
+
+// Tier PROSA — lenguaje natural. Enmascarable (CA-1) y degradable (CA-2).
+const INFRA_PROSE_PATTERNS = [
+  /timeout/i,
+  /timed out/i,
+  /network is unreachable/i,
+  /dns/i,
+  // #2405 — mensaje de `validate-java-home.js` en castellano. Es una FRASE (no
+  // un substring suelto), por eso convive con el enmascarado: `JAVA_HOME` está
+  // exento de `IDENT_RE` (ver `IDENT_MASK_EXEMPT`) pero el pattern exige además
+  // "invalido" / "no esta en la allowlist" a continuación.
+  /JAVA_HOME\s+(?:invalido|no\s+esta\s+en\s+la\s+allowlist)/i,
+];
+
+// Compat (CA-11): unión de los dos tiers — mismo contenido que antes de #6745.
+const INFRA_MESSAGE_PATTERNS = [...INFRA_MACHINE_TOKENS, ...INFRA_PROSE_PATTERNS];
 
 // #2404 — Patrones de toolchain (JDK/JAVA_HOME/gradle) que también son `infra`.
 // Los tenemos separados de INFRA_MESSAGE_PATTERNS por dos razones:
@@ -100,50 +133,282 @@ function hasJvmStacktrace(msg) {
   return JVM_STACKTRACE_RE.test(String(msg));
 }
 
+// =============================================================================
+// #6745 — ENMASCARADO DE SPANS DE CÓDIGO + SEÑALES DE CÓDIGO
+//
+// INVARIANTE DE ASIMETRÍA (CA-10 / SEC-A) — en criollo: para decir "esto es
+// infra" hace falta PRUEBA; para decir "esto es código" alcanza con la duda.
+//
+// `infra` es la ÚNICA clase de rebote sin cota superior: `rebote-counter.js`
+// (~:70-74) la excluye del circuit breaker genérico. Por eso `infra` exige
+// EVIDENCIA POSITIVA y `codigo` es el fallback seguro (ése sí tiene cota).
+// Ante ambigüedad, motivo vacío, nulo o no clasificable ⇒ `codigo`.
+// NUNCA agregar un `return 'infra'` como default.
+// =============================================================================
+
+// CA-9 / SEC-4 — ventana única de escaneo. Se trunca ANTES de aplicar cualquier
+// regex, así el costo de cualquier pattern queda acotado por construcción.
+// `lib/rebote-classifier.js` importa esta misma constante para no tener dos
+// ventanas divergentes (split-brain de clasificación, SEC-D).
+const MAX_MOTIVO_SCAN_LEN = 8192;
+
+// Regexes de enmascarado. TODAS con clases de caracteres planas y escaneo
+// lineal: cero cuantificadores anidados, prohibido el shape `(\w+_)+` y
+// prohibida la alternancia ambigua tipo `(?:[A-Z][A-Za-z0-9]*)+` (ésa sí es
+// exponencial: cada mayúscula podría abrir un grupo nuevo o ser consumida por
+// el grupo previo). En `IDENT_RE` el segundo tramo usa `[a-z0-9]*` justamente
+// para que cada mayúscula sea un separador NO ambiguo (SEC-4 / CA-9).
+const FENCED_BLOCK_RE = /```[^]*?(?:```|$)/g; // bloque de código, tolera no-cierre
+const BACKTICK_SPAN_RE = /`[^`\n]*`?/g; // incluye backtick sin cerrar
+// #6745 rev-2 (CA-6) — Extensiones RECONOCIDAS en una referencia
+// `archivo.ext:linea`. La lista es CERRADA a propósito.
+//
+// Antes acá vivía `[a-z]{1,5}` genérico, que también matchea un `host:puerto`
+// (`registry.npmjs.org:443`, `api.github.com:443`) — la forma NORMAL de citar
+// un endpoint en un error de red. Consecuencia medida sobre HEAD 36a291065:
+//
+//   "fallo por timeout de red a los 30s"                      -> infra (prose)
+//   "timeout de red a los 30s contra registry.npmjs.org:443"  -> codigo (code_signal)
+//
+// Es decir: la prosa de red que CA-6 enumera como caso a PRESERVAR se degradaba
+// a `codigo` apenas el agente citaba el endpoint, y un fallo de infra real
+// terminaba ruteado a `dev` consumiendo el circuit breaker de código.
+//
+// PROHIBIDO agregar `com`, `org`, `net`, `io`, `co`, `dev`, `app`, `ar`, `es`:
+// son TLDs y reabren exactamente ese falso positivo.
+const CODE_FILE_EXT_ALT = [
+  'js', 'cjs', 'mjs', 'ts', 'tsx', 'jsx',
+  'kt', 'kts', 'java', 'gradle', 'properties',
+  'json', 'yaml', 'yml', 'toml', 'xml',
+  'md', 'txt', 'log', 'conf',
+  'sh', 'bash', 'py', 'sql', 'css', 'html',
+].join('|');
+
+// Detector de referencia `archivo.ext:linea`. Arranca por un literal (`.`) para
+// que el motor pueda saltar con búsqueda de primer carácter: lineal de verdad.
+// El "head" (el nombre del archivo) se extiende hacia atrás con un walk manual.
+// Cero cuantificadores anidados: la alternancia es de literales planos y el
+// `\b` posterior impide que `js` matchee dentro de `json` (CA-9 intacto).
+const CODE_REF_SOURCE = String.raw`\.(?:${CODE_FILE_EXT_ALT})\b:\d+`;
+const PATH_REF_TAIL_RE = new RegExp(CODE_REF_SOURCE, 'gi');
+const PATH_REF_HEAD_CHARS = /[A-Za-z0-9_./\\-]/;
+const IDENT_RE = /\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b|\b[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+\b/g;
+
+// Identificadores que NO se enmascaran: los patterns de prosa/toolchain los
+// necesitan literales. `JAVA_HOME` es un literal de máquina disfrazado de
+// snake_case — y los patterns que lo usan exigen una FRASE completa
+// ("JAVA_HOME invalido", "JAVA_HOME is set to an invalid directory"), no un
+// substring suelto, así que no reabre el falso positivo que cierra CA-1.
+const IDENT_MASK_EXEMPT = new Set(['JAVA_HOME']);
+
+/** Reemplaza el tramo [from, to) del array por espacios (preserva offsets). */
+function blankSpan(arr, from, to) {
+  for (let i = from; i < to && i < arr.length; i++) arr[i] = ' ';
+}
+
+/**
+ * Enmascara spans de código dentro del motivo: bloques cercados por triple
+ * backtick, spans entre backticks, referencias `archivo.ext:linea` e
+ * identificadores camelCase/snake_case. Los reemplaza por ESPACIOS (no borra
+ * texto: preserva offsets y longitud), de modo que un pattern de prosa como
+ * `/dns/i` deje de matchear dentro de `resolveDnsCache()` o `LOCK_TIMEOUT_MS`
+ * (CA-1).
+ *
+ * Trunca a `MAX_MOTIVO_SCAN_LEN` ANTES de aplicar la primera regex (CA-9).
+ *
+ * Mismo shape que el precedente `hasJvmStacktrace` de #2404: vetar/neutralizar
+ * el contexto ANTES de aplicar los patrones de prosa, nunca después.
+ *
+ * @param {string} txt
+ * @returns {string} el mismo texto con los spans de código en blanco
+ */
+function maskCodeSpans(txt) {
+  const src = String(txt === null || txt === undefined ? '' : txt).slice(0, MAX_MOTIVO_SCAN_LEN);
+  const out = src.split('');
+
+  for (const re of [FENCED_BLOCK_RE, BACKTICK_SPAN_RE]) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      if (m[0].length === 0) { re.lastIndex++; continue; }
+      blankSpan(out, m.index, m.index + m[0].length);
+    }
+  }
+
+  PATH_REF_TAIL_RE.lastIndex = 0;
+  let pm;
+  while ((pm = PATH_REF_TAIL_RE.exec(src)) !== null) {
+    let start = pm.index;
+    while (start > 0 && PATH_REF_HEAD_CHARS.test(src[start - 1])) start--;
+    blankSpan(out, start, pm.index + pm[0].length);
+  }
+
+  IDENT_RE.lastIndex = 0;
+  let im;
+  while ((im = IDENT_RE.exec(src)) !== null) {
+    if (im[0].length === 0) { IDENT_RE.lastIndex++; continue; }
+    if (IDENT_MASK_EXEMPT.has(im[0])) continue;
+    blankSpan(out, im.index, im.index + im[0].length);
+  }
+
+  return out.join('');
+}
+
+// CA-2 — Señales fuertes de que el motivo es un rechazo de CÓDIGO/ENTREGA.
+// Son DESEMPATE: sólo degradan `infra` → `codigo`; nunca eligen fase ni
+// saltean un gate. Se evalúan sobre el texto CRUDO truncado (no enmascarado):
+// justamente lo que buscan son referencias a código.
+// Cero cuantificadores anidados.
+const CODE_SIGNAL_PATTERNS = [
+  /\bgit\s+status\b/i,
+  /\bgit\s+add\b/i,
+  /\bsin\s+commitear\b/i,
+  /\bno\s+est[aá]\s+commitead[oa]\b/i,
+  /\bno\s+fue\s+commitead[oa]\b/i,
+  /\bcloses\s+#\d+/i,
+  /\bCA-\d+\s+incumplid[oa]\b/i,
+  // Referencia a archivo:línea — `resolveDnsCache.js:12`, `pulpo.js:5309`.
+  // #6745 rev-2 (CA-6): extensión ANCLADA a la lista cerrada `CODE_FILE_EXT_ALT`.
+  // Con `[a-z]{1,5}` genérico esto matcheaba `registry.npmjs.org:443` y degradaba
+  // a `codigo` cualquier prosa de red que citara el endpoint.
+  new RegExp(CODE_REF_SOURCE, 'i'),
+];
+
+/** Trunca a la ventana de escaneo (CA-9). Nunca devuelve null/undefined. */
+function truncateForScan(txt) {
+  return String(txt === null || txt === undefined ? '' : txt).slice(0, MAX_MOTIVO_SCAN_LEN);
+}
+
+/** true si el motivo trae al menos una señal fuerte de rechazo de código. */
+function hasCodeSignal(txt) {
+  const raw = truncateForScan(txt);
+  if (!raw) return false;
+  for (const re of CODE_SIGNAL_PATTERNS) {
+    if (re.test(raw)) return true;
+  }
+  return false;
+}
+
+/**
+ * Núcleo tipado de la clasificación (#6745 — CA-1/CA-2/CA-8/CA-9/CA-10).
+ *
+ * Precedencia OBLIGATORIA, sin excepciones (CA-8):
+ *
+ *     errno / machine_token  >  code_signal  >  infra prose  >  codigo
+ *
+ * (el piso de `security`, que va todavía antes, vive en
+ * `lib/rebote-classifier.classifyRebote` — es el único que conoce el skill que
+ * emitió el rechazo. Ver CA-7 / SEC-B.)
+ *
+ * `INFRA_MACHINE_TOKENS` e `INFRA_ERROR_CODES` se evalúan sobre el texto CRUDO
+ * truncado; `INFRA_PROSE_PATTERNS` y `TOOLCHAIN_INFRA_PATTERNS`, sobre el texto
+ * ENMASCARADO.
+ *
+ * `accionRequerida` es ORTOGONAL a la clasificación: describe QUÉ pide el
+ * motivo, no de dónde vino el fallo. Por eso se calcula igual cuando un
+ * machine_token gana la clasificación — ahí lo consume la regla de capacidad de
+ * fase de `rebote-destino.js` (CA-3), que puede degradar el DESTINO sin tocar
+ * la evidencia de la clasificación.
+ *
+ * `infra_downgraded_by` es un ENUM CERRADO (CA-10 / SEC-E). Prohibido adjuntar
+ * el substring que matcheó, el span de evidencia o cualquier fragmento del
+ * motivo: `security` está en `SKILLS_SIN_MOTIVO_PUBLICO` justamente para que el
+ * texto de un hallazgo no llegue a una superficie pública. La "evidencia
+ * tipada" es un TIPO, nunca una cita.
+ *
+ * @param {Error|string|{code?: string, message?: string}} err
+ * @returns {{
+ *   clasificacion: 'infra'|'codigo'|null,
+ *   evidencia: 'errno'|'machine_token'|'toolchain'|'prose'|'code_signal'|null,
+ *   accionRequerida: 'codigo'|null,
+ *   infra_downgraded_by: 'security_floor'|'code_signal'|'phase_capability'|null,
+ * }}
+ */
+function classifyErrorDetailed(err) {
+  if (err === null || err === undefined) {
+    return {
+      clasificacion: null,
+      evidencia: null,
+      accionRequerida: null,
+      infra_downgraded_by: null,
+    };
+  }
+
+  const esString = typeof err === 'string';
+  const raw = truncateForScan(esString ? err : String(err.message || err || ''));
+
+  const codeSignal = hasCodeSignal(raw);
+  const accionRequerida = codeSignal ? 'codigo' : null;
+
+  // --- 1. errno (tier máquina, texto crudo) ---------------------------------
+  if (esString) {
+    const upper = raw.toUpperCase();
+    for (const code of INFRA_ERROR_CODES) {
+      if (upper.includes(code)) {
+        return { clasificacion: 'infra', evidencia: 'errno', accionRequerida, infra_downgraded_by: null };
+      }
+    }
+  } else {
+    const code = err.code || err.errno || err.syscall || '';
+    if (code && INFRA_ERROR_CODES.has(String(code))) {
+      return { clasificacion: 'infra', evidencia: 'errno', accionRequerida, infra_downgraded_by: null };
+    }
+  }
+
+  // --- 2. machine tokens (tier máquina, texto crudo) -------------------------
+  for (const pat of INFRA_MACHINE_TOKENS) {
+    if (pat.test(raw)) {
+      return { clasificacion: 'infra', evidencia: 'machine_token', accionRequerida, infra_downgraded_by: null };
+    }
+  }
+
+  // --- 3bis. prosa y toolchain, sobre el texto ENMASCARADO (CA-1) ------------
+  const masked = maskCodeSpans(raw);
+  let evidenciaProsa = null;
+  for (const pat of INFRA_PROSE_PATTERNS) {
+    if (pat.test(masked)) { evidenciaProsa = 'prose'; break; }
+  }
+  if (!evidenciaProsa && !hasJvmStacktrace(raw)) {
+    // #2404 — Toolchain: sólo si NO parece un stacktrace JVM.
+    for (const pat of TOOLCHAIN_INFRA_PATTERNS) {
+      if (pat.test(masked)) { evidenciaProsa = 'toolchain'; break; }
+    }
+  }
+
+  // --- 3. code_signal gana sobre la prosa infra (CA-2 / CA-8) ----------------
+  if (codeSignal) {
+    return {
+      clasificacion: 'codigo',
+      evidencia: 'code_signal',
+      accionRequerida,
+      // Sólo es un "degradado" si la prosa infra habría ganado sin la señal.
+      infra_downgraded_by: evidenciaProsa ? 'code_signal' : null,
+    };
+  }
+
+  if (evidenciaProsa) {
+    return { clasificacion: 'infra', evidencia: evidenciaProsa, accionRequerida, infra_downgraded_by: null };
+  }
+
+  // --- 5. fallback seguro (SEC-A): NUNCA 'infra' ----------------------------
+  return { clasificacion: 'codigo', evidencia: null, accionRequerida, infra_downgraded_by: null };
+}
+
 /**
  * Clasifica un error como 'infra' (red/DNS/conectividad) o 'codigo' (otro).
  * Usado para distinguir fallos que NO deben contar contra el circuit breaker
  * del issue (infra) vs los que sí (codigo).
  *
+ * #6745 CA-11 — wrapper de una línea sobre `classifyErrorDetailed`. La firma y
+ * el contrato de retorno quedan intactos para los call-sites internos
+ * (`shouldRetry` del retry con backoff, `entry.dns.error.classification`, etc.)
+ * y para los consumidores externos.
+ *
  * @param {Error|string|{code?: string, message?: string}} err
  * @returns {'infra'|'codigo'|null}
  */
 function classifyError(err) {
-  if (err === null || err === undefined) return null;
-
-  // Acepta string plano (motivo de rechazo escrito por un agente)
-  if (typeof err === 'string') {
-    const upper = err.toUpperCase();
-    for (const code of INFRA_ERROR_CODES) {
-      if (upper.includes(code)) return 'infra';
-    }
-    for (const pat of INFRA_MESSAGE_PATTERNS) {
-      if (pat.test(err)) return 'infra';
-    }
-    // #2404 — Toolchain: solo si NO parece un stacktrace JVM.
-    if (!hasJvmStacktrace(err)) {
-      for (const pat of TOOLCHAIN_INFRA_PATTERNS) {
-        if (pat.test(err)) return 'infra';
-      }
-    }
-    return 'codigo';
-  }
-
-  const code = err.code || err.errno || err.syscall || '';
-  if (code && INFRA_ERROR_CODES.has(String(code))) return 'infra';
-
-  const msg = String(err.message || err || '');
-  for (const pat of INFRA_MESSAGE_PATTERNS) {
-    if (pat.test(msg)) return 'infra';
-  }
-  // #2404 — Toolchain: solo si NO parece un stacktrace JVM.
-  if (!hasJvmStacktrace(msg)) {
-    for (const pat of TOOLCHAIN_INFRA_PATTERNS) {
-      if (pat.test(msg)) return 'infra';
-    }
-  }
-
-  return 'codigo';
+  return classifyErrorDetailed(err).clasificacion;
 }
 
 /** Espera `ms` milisegundos. */
@@ -529,10 +794,18 @@ module.exports = {
   resolveDnsWithTimeout,
   tlsHandshakeWithTimeout,
   hasJvmStacktrace,
+  // #6745 — evidencia tipada + enmascarado (CA-1/CA-2/CA-9/CA-10/CA-11)
+  classifyErrorDetailed,
+  maskCodeSpans,
+  hasCodeSignal,
   DEFAULT_ENDPOINTS,
   INFRA_ERROR_CODES,
   INFRA_MESSAGE_PATTERNS,
+  INFRA_MACHINE_TOKENS,
+  INFRA_PROSE_PATTERNS,
+  CODE_SIGNAL_PATTERNS,
   TOOLCHAIN_INFRA_PATTERNS,
+  MAX_MOTIVO_SCAN_LEN,
 };
 
 // --- CLI smoke test ---

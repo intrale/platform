@@ -19,6 +19,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const yaml = require('js-yaml');
+const { readEffectiveConfig } = require('./_test-helpers');
 
 const d = require('../project-descriptor');
 
@@ -231,8 +232,12 @@ test('CA-B3: schema falla antes que la sanitización de path (orden)', () => {
 // CA-C1 — credenciales por ref, valor literal rechazado
 // -----------------------------------------------------------------------------
 
+// El path apunta al store canónico (`~/.claude/secrets/`) desde #6031: la
+// validación ancla la ref y `~/.secrets.json` queda fuera del store. La
+// intención del test no cambia — "una ref namespeaceada pasa" —, sólo se usa
+// una ref que además es legítima.
 test('CA-C1: credentials.ref válida namespaceada pasa', () => {
-  const res = d.validateDescriptor(validDescriptor({ credentials: [{ ref: '~/.secrets.json#intrale', scopes: ['aws'] }] }));
+  const res = d.validateDescriptor(validDescriptor({ credentials: [{ ref: '~/.claude/secrets/credentials.json#intrale', scopes: ['aws'] }] }));
   assert.equal(res.valid, true, JSON.stringify(res.errors));
 });
 
@@ -392,8 +397,10 @@ test('CA-E1/E2: intrale-platform.json existe, valida y reproduce config.yaml sin
   assert.equal(loaded.valid, true, JSON.stringify(loaded.errors));
   const desc = loaded.descriptor;
 
-  const cfgPath = path.resolve(__dirname, '..', '..', 'config.yaml');
-  const cfg = yaml.load(fs.readFileSync(cfgPath, 'utf8'));
+  // #5174 — el descriptor reproduce la configuración EFECTIVA, no el kernel
+  // suelto: `dev_routing_priority` (y el resto de la tabla de ruteo) es lado
+  // producto y post-partición ya no está en el `config.yaml`.
+  const cfg = readEffectiveConfig();
 
   // 1) admission labels == intake labels de config.yaml.
   const admission = d.deriveAdmissionLabels(desc).sort();
@@ -600,7 +607,12 @@ function makeSpyFs(seed = {}) {
 }
 
 // loadDescriptor fake: devuelve un descriptor onboarding válido (o el override).
-function fakeLoader(result) { return () => result; }
+//
+// #6032 · CA-18 — `onDisk` (el parse crudo del archivo, sin migrar) por default
+// espeja `descriptor`, que es el caso normal cuando el descriptor ya está en la
+// versión corriente. Un test que necesite que DIVERJAN — justamente el escenario
+// que CA-18 cubre: disco en `1.0`, memoria migrada a `1.1` — lo pasa explícito.
+function fakeLoader(result) { return () => ({ onDisk: result.descriptor, ...result }); }
 
 const DESC_PATH = '/tmp/descriptors/acme-store.json';
 

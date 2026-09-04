@@ -227,42 +227,38 @@ function renderPolicy(cfg, accountId, cmkArn) {
 
     const doc = JSON.parse(rendered);
 
+    // El ARN de la CMK es el ÚNICO placeholder que NO se resuelve por string.
+    // El artefacto versionado lo conserva como `key/CMK_KEY_ID` a propósito: es
+    // la forma canónica contra la que `kernel-iam-verify.js` compara la policy
+    // que AWS tiene realmente adjunta para detectar drift (normaliza el ARN real
+    // al placeholder, `kernel-iam-verify.js:778`). Por eso se resuelve acá, sobre
+    // el documento ya parseado, y nunca tocando `docs/pipeline/kernel-iam-policy.json`.
+    //
+    // Sin CMK la entrada se ELIMINA en vez de quedar con el placeholder: un
+    // `key/CMK_KEY_ID` literal dejaría el Deny catch-all exceptuando un recurso
+    // indefinido, que es justo lo que el catch-all existe para evitar.
+    const esPlaceholderCmk = (r) =>
+        String(r).includes(':kms:') && String(r).includes('key/CMK_KEY_ID');
+
+    for (const st of doc.Statement || []) {
+        if (!Array.isArray(st.NotResource)) continue;
+        st.NotResource = cmkArn
+            ? st.NotResource.map((r) => (esPlaceholderCmk(r) ? cmkArn : r))
+            : st.NotResource.filter((r) => !esPlaceholderCmk(r));
+    }
+
     // Chequeo de que no quedó ningún placeholder sin resolver.
+    //
+    // `AllowIdentityCheck` y `DenyEverythingOutsideKernelTables` NO se agregan
+    // desde acá: los trae la plantilla (#5672, split de #5207), que pasó a ser la
+    // policy completa y no sólo la de datos. Empujarlos de nuevo duplicaba ambos
+    // statements y dejaba dos Deny con `NotResource` en el mismo documento.
     const asText = JSON.stringify(doc);
-    for (const ph of ['REGION', 'ACCOUNT', 'COORD_TABLE', 'table/TABLE']) {
+    for (const ph of ['REGION', 'ACCOUNT', 'COORD_TABLE', 'table/TABLE', 'CMK_KEY_ID']) {
         if (asText.includes(ph)) {
             throw new Error(`placeholder "${ph}" sin resolver en la policy renderizada`);
         }
     }
-
-    // Statements operativos que la plantilla de docs no incluye (es la policy de
-    // datos). Se agregan acá, explícitos y auditables:
-    //   - el runtime necesita poder verificar su propia identidad;
-    //   - Deny catch-all fuera de las dos tablas del kernel: convierte el
-    //     deny-by-default (implícito) en un Deny explícito, que sobrevive a que
-    //     alguien enganche otra policy con Allow al mismo usuario.
-    const stateArn = `arn:aws:dynamodb:${cfg.region}:${accountId}:table/${cfg.table}`;
-    const coordArn = `arn:aws:dynamodb:${cfg.region}:${accountId}:table/${cfg.coordinationTable}`;
-
-    doc.Statement.push({
-        Sid: 'AllowIdentityCheck',
-        Effect: 'Allow',
-        Action: ['sts:GetCallerIdentity'],
-        Resource: '*',
-    });
-    // El ARN de la CMK va exceptuado del Deny. Sin esto, el `kms:Decrypt` que
-    // DynamoDB hace en nombre del runtime cae en el catch-all y la tabla queda
-    // inaccesible (con `SSEType: KMS` y una CMK propia, leer o escribir un ítem
-    // implica una llamada a KMS).
-    const notResource = [stateArn, coordArn];
-    if (cmkArn) notResource.push(cmkArn);
-
-    doc.Statement.push({
-        Sid: 'DenyEverythingOutsideKernelTables',
-        Effect: 'Deny',
-        NotAction: ['sts:GetCallerIdentity'],
-        NotResource: notResource,
-    });
 
     return doc;
 }

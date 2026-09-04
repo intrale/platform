@@ -207,6 +207,130 @@ test('#4541 Bug 2: stderr de texto plano legítimo (sin JSON) SIGUE clasificando
         'el stderr de texto plano real no debe verse afectado por el fix de contenido');
 });
 
+// -----------------------------------------------------------------------------
+// #5454 — Límite SEMANAL de Anthropic en el canal degradado (stderr/texto plano).
+//
+// Defensa en profundidad de #5424: el aviso real del CLI Anthropic
+// ("You've hit your weekly limit · resets 9pm (America/Buenos_Aires)") no
+// matcheaba ningún patrón de `CLI_QUOTA_PATTERNS` y caía a `unknown`, con lo
+// cual el launcher no marcaba cuota agotada ni habilitaba fallback.
+//
+// Contrato completo que fijamos acá:
+//   * weekly/session/usage sobre texto plano → quota_exhausted + fallback + no retriable.
+//   * la MISMA frase dentro de un frame estructurado (`tool_result`) NO clasifica cuota.
+//   * `Usage credits required for 1M context` conserva precedencia (cli_1m_context_glitch).
+//   * el patrón es acotado: entrada adversarial sin match queda `unknown` bajo SR-4.
+// -----------------------------------------------------------------------------
+
+// Texto REAL del aviso semanal, con el sufijo de reset tal cual lo emite el CLI.
+const WEEKLY_LIMIT_REAL_TEXT =
+    "You've hit your weekly limit · resets 9pm (America/Buenos_Aires)";
+
+// Matriz de límites por texto plano (canal degradado del CLI).
+const PLAIN_TEXT_QUOTA_CASES = [
+    {
+        nombre: 'weekly con el sufijo real de reset',
+        raw: WEEKLY_LIMIT_REAL_TEXT,
+        provider: 'anthropic',
+    },
+    {
+        nombre: 'weekly con prefijo de error del CLI',
+        raw: `API Error: ${WEEKLY_LIMIT_REAL_TEXT}`,
+        provider: 'anthropic',
+    },
+    {
+        nombre: 'session limit (sin regresión)',
+        raw: "API Error: You've hit your session limit. Try again later.",
+        provider: 'anthropic',
+    },
+    {
+        nombre: 'usage limit (sin regresión)',
+        raw: "API error: You've hit your usage limit. Upgrade to Pro.",
+        provider: 'openai-codex',
+    },
+];
+
+for (const caso of PLAIN_TEXT_QUOTA_CASES) {
+    test(`#5454 texto plano — ${caso.nombre} clasifica quota_exhausted`, () => {
+        const r = parseProviderError(caso.raw, {
+            provider: caso.provider,
+            transport: 'cli',
+        });
+        assert.equal(r.errorClass, 'quota_exhausted',
+            `"${caso.raw}" debía clasificar como cuota agotada`);
+        assert.equal(r.shouldFallback, true, 'debe habilitar fallback de provider');
+        assert.equal(r.retriable, false, 'una cuota agotada NO es reintentable');
+    });
+}
+
+test('#5454 el patrón weekly está en CLI_QUOTA_PATTERNS y es acotado (sin .* ni grupos opcionales)', () => {
+    const fuentes = parser._CLI_QUOTA_PATTERNS.map((re) => re.source);
+    const weekly = fuentes.filter((s) => /weekly\\s\+limit/.test(s));
+    assert.equal(weekly.length, 1,
+        `esperaba exactamente un patrón weekly en CLI_QUOTA_PATTERNS, encontré ${weekly.length}`);
+    const src = weekly[0];
+    assert.ok(!src.includes('.*'), 'el patrón no debe usar `.*`');
+    assert.ok(!src.includes('?'), 'el patrón no debe usar cuantificadores/grupos opcionales');
+    assert.ok(!/\(\?:.*[+*].*\)[+*]/.test(src), 'el patrón no debe anidar cuantificadores');
+});
+
+test('#5454 aislamiento: weekly dentro de un tool_result estructurado NO clasifica quota', () => {
+    // Mismo shape que INCIDENT_TOOL_RESULT_CONTENT (#4541): contenido del agente,
+    // no canal de control. Contenido controlado por la tarea NUNCA debe poder
+    // deshabilitar un provider por substring.
+    const frame =
+        '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01TQ9E5H6kQaGL9GT7LKwPJE",' +
+        '"type":"tool_result","content":"Leí el reporte del incidente y decía: ' +
+        "You've hit your weekly limit · resets 9pm (America/Buenos_Aires).\"}]}}";
+    const r = parseProviderError(frame, { provider: 'anthropic', transport: 'cli' });
+    assert.notEqual(r.errorClass, 'quota_exhausted',
+        'la frase weekly dentro de un tool_result no es un error del provider');
+});
+
+test('#5454 aislamiento: weekly dentro de contenido del modelo (assistant) NO clasifica quota', () => {
+    const frame =
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text",' +
+        '"text":"El CLI reporta cuando ' + "You've hit your weekly limit" + '."}]}}';
+    const r = parseProviderError(frame, { provider: 'anthropic', transport: 'cli' });
+    assert.notEqual(r.errorClass, 'quota_exhausted',
+        'el contenido del modelo no es el payload de error del CLI');
+});
+
+test('#5454 precedencia: "Usage credits required for 1M context" sigue siendo cli_1m_context_glitch', () => {
+    // El genérico `Usage credits required` de CLI_QUOTA_PATTERNS solapa con el
+    // glitch 1M (#3506). Con el workaround ACTIVO la rama del glitch se evalúa
+    // primero y el agregado de #5454 no debe alterar ese orden.
+    const previo = process.env.ANTHROPIC_1M_WORKAROUND_ENABLED;
+    process.env.ANTHROPIC_1M_WORKAROUND_ENABLED = '1';
+    try {
+        const r = parseProviderError(
+            'API Error: Usage credits required for 1M context',
+            { provider: 'anthropic', transport: 'cli' },
+        );
+        assert.equal(r.errorClass, 'cli_1m_context_glitch',
+            'el glitch 1M NO es cuota real: debe conservar precedencia');
+        assert.notEqual(r.errorClass, 'quota_exhausted');
+    } finally {
+        if (previo === undefined) delete process.env.ANTHROPIC_1M_WORKAROUND_ENABLED;
+        else process.env.ANTHROPIC_1M_WORKAROUND_ENABLED = previo;
+    }
+});
+
+test('#5454 SR-4: entrada larga adversarial con prefijos weekly parciales queda unknown en <50ms', () => {
+    // Peor caso para el patrón nuevo: muchísimas repeticiones del prefijo
+    // `hit your weekly ` sin la palabra final `limit`, más whitespace largo
+    // entre tokens (el separador `\s+` es el único cuantificador del regex).
+    const evil =
+        ('hit your weekly ' + ' '.repeat(200)).repeat(2000) + 'NOT_A_LIMIT_SUFFIX';
+    const start = process.hrtime.bigint();
+    const r = parseProviderError(evil, { provider: 'anthropic', transport: 'cli' });
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.equal(r.errorClass, 'unknown',
+        'sin la palabra `limit` no hay match: debe quedar unknown');
+    assert.notEqual(r.errorClass, 'quota_exhausted');
+    assert.ok(elapsedMs < 50, `Esperaba <50ms (SR-4), tardó ${elapsedMs.toFixed(2)}ms`);
+});
+
 test('CA-7 cross-skill: commander result event estructural clasifica quota_exhausted (mismo shape que skills)', () => {
     const fx = loadFixture('commander-anthropic-result-event.json');
     const r = parseProviderError(fx.raw, { provider: fx.provider, transport: fx.transport });
@@ -423,4 +547,305 @@ test('CA-6/C: stream con primer byte pero sin tokens útiles cae a transient_5xx
         durationMs: 35000,
     });
     assert.equal(r.errorClass, 'transient_5xx');
+});
+
+// =============================================================================
+// #5795 — Clasificación tipada `authentication_rejected` por provider.
+//
+// La matriz es PARAMETRIZADA sobre los siete adapters. Cada fila declara:
+//   - `positives`: frames reales del provider que SÍ tienen que clasificar.
+//   - `foreign`:   una señal válida para OTRO provider, que en este adapter
+//                  tiene que devolver "sin clasificación" (aislamiento).
+//   - `negatives`: frames que se le parecen y NO pueden clasificar.
+// Los negativos comunes (timeout, 5xx, cuota, config, permisos, 401/403
+// pelado, texto libre, JSON/SSE malformado) se corren contra TODOS los
+// adapters, no sólo contra uno.
+// =============================================================================
+
+const authRejectionModule = require('../auth-rejection');
+const AUTH_CLASS = 'authentication_rejected';
+
+// Módulo de cuota mínimo: para estos tests no queremos que la rama de cuota
+// participe. Devuelve allowlists vacías y detectores que nunca matchean.
+function quotaModuleSilencioso() {
+    return {
+        sanitizeRawExcerpt: (s) => String(s == null ? '' : s).slice(0, 200).replace(/[\r\n]/g, ' '),
+        KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER: {},
+        _detectAnthropic: () => ({ matched: false }),
+        _detectOpenAI: () => ({ matched: false }),
+    };
+}
+
+function parseAuth(raw, provider, transport = 'cli') {
+    return parseProviderError(raw, {
+        provider,
+        transport,
+        _quotaModule: quotaModuleSilencioso(),
+    });
+}
+
+const MATRIZ_AUTH = [
+    {
+        provider: 'anthropic',
+        positives: [
+            {
+                nombre: 'authentication_error en frame result del stream-json',
+                raw: JSON.stringify({ type: 'result', is_error: true, error: { type: 'authentication_error', message: 'invalid x-api-key' } }),
+                esperado: { type: 'authentication_error', code: null },
+            },
+        ],
+        // `invalid_api_key` es de OpenAI; Anthropic no lo documenta.
+        foreign: JSON.stringify({ error: { code: 'invalid_api_key' } }),
+        negatives: [
+            ['permission_error 403 (clave valida, sin permiso)', JSON.stringify({ error: { type: 'permission_error', status: 403 } })],
+            ['billing_error', JSON.stringify({ error: { type: 'billing_error' } })],
+            ['overloaded_error', JSON.stringify({ error: { type: 'overloaded_error' } })],
+        ],
+    },
+    {
+        provider: 'anthropic-claude', // alias de cadena de fallback
+        positives: [
+            {
+                nombre: 'alias anthropic-claude resuelve al adapter de anthropic',
+                raw: JSON.stringify({ error: { type: 'authentication_error' } }),
+                esperado: { type: 'authentication_error', code: null },
+            },
+        ],
+        foreign: JSON.stringify({ error: { status: 'UNAUTHENTICATED' } }),
+        negatives: [
+            ['permission_error', JSON.stringify({ error: { type: 'permission_error' } })],
+        ],
+    },
+    {
+        provider: 'openai-codex',
+        positives: [
+            {
+                nombre: 'code invalid_api_key con type invalid_request_error (shape real OpenAI)',
+                raw: JSON.stringify({ error: { message: 'Incorrect API key provided', type: 'invalid_request_error', code: 'invalid_api_key' }, status: 401 }),
+                esperado: { type: null, code: 'invalid_api_key', status: 401 },
+            },
+            {
+                nombre: 'item.completed con item.type error (forma 3 de codex exec)',
+                raw: JSON.stringify({ type: 'item.completed', item: { type: 'error', error: { code: 'invalid_api_key' } } }),
+                esperado: { type: null, code: 'invalid_api_key' },
+            },
+        ],
+        foreign: JSON.stringify({ error: { type: 'authentication_error' } }),
+        negatives: [
+            ['insufficient_quota', JSON.stringify({ error: { code: 'insufficient_quota' } })],
+            ['account_deactivated', JSON.stringify({ error: { code: 'account_deactivated' } })],
+            ['permission_denied', JSON.stringify({ error: { code: 'permission_denied' } })],
+        ],
+    },
+    {
+        provider: 'gemini-google',
+        positives: [
+            {
+                nombre: 'status UNAUTHENTICATED con ErrorInfo API_KEY_INVALID',
+                raw: JSON.stringify({ error: { code: 401, status: 'UNAUTHENTICATED', details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'API_KEY_INVALID' }] } }),
+                esperado: { type: 'unauthenticated', code: null, status: 401 },
+            },
+        ],
+        foreign: JSON.stringify({ error: { code: 'invalid_api_key' } }),
+        negatives: [
+            ['PERMISSION_DENIED', JSON.stringify({ error: { code: 403, status: 'PERMISSION_DENIED' } })],
+            ['RESOURCE_EXHAUSTED (cuota)', JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED' } })],
+            ['API_KEY_SERVICE_BLOCKED', JSON.stringify({ error: { code: 403, status: 'PERMISSION_DENIED', details: [{ reason: 'API_KEY_SERVICE_BLOCKED' }] } })],
+        ],
+    },
+    {
+        provider: 'cerebras',
+        positives: [
+            {
+                nombre: 'invalid_api_key en shape OpenAI-compatible',
+                raw: JSON.stringify({ error: { type: 'invalid_request_error', code: 'invalid_api_key' } }),
+                esperado: { type: null, code: 'invalid_api_key' },
+            },
+            {
+                nombre: 'wrong_api_key del gateway de Cerebras',
+                raw: JSON.stringify({ error: { code: 'wrong_api_key' } }),
+                esperado: { type: null, code: 'wrong_api_key' },
+            },
+        ],
+        foreign: JSON.stringify({ error: { status: 'UNAUTHENTICATED' } }),
+        negatives: [
+            ['rate_limit_exceeded', JSON.stringify({ error: { code: 'rate_limit_exceeded' } })],
+            ['quota_exceeded', JSON.stringify({ error: { code: 'quota_exceeded' } })],
+        ],
+    },
+    {
+        provider: 'nvidia-nim',
+        positives: [
+            {
+                nombre: 'authentication_error en shape OpenAI-compatible',
+                raw: JSON.stringify({ error: { type: 'authentication_error' } }),
+                esperado: { type: 'authentication_error', code: null },
+            },
+        ],
+        foreign: JSON.stringify({ error: { status: 'UNAUTHENTICATED' } }),
+        negatives: [
+            // RFC-7807 del gateway: el unico indicio es `title`, que es PROSA.
+            ['RFC-7807 title Unauthorized (prosa, no clasifica)', JSON.stringify({ status: 401, title: 'Unauthorized', detail: 'no api key' })],
+            ['insufficient_quota', JSON.stringify({ error: { code: 'insufficient_quota' } })],
+        ],
+    },
+    {
+        provider: 'kimi-moonshot',
+        positives: [
+            {
+                nombre: 'invalid_authentication_error documentado por Moonshot',
+                raw: JSON.stringify({ error: { type: 'invalid_authentication_error', message: 'Invalid Authentication' } }),
+                esperado: { type: 'invalid_authentication_error', code: null },
+            },
+        ],
+        foreign: JSON.stringify({ error: { status: 'UNAUTHENTICATED' } }),
+        negatives: [
+            ['exceeded_current_quota_error', JSON.stringify({ error: { type: 'exceeded_current_quota_error' } })],
+            ['permission_denied_error', JSON.stringify({ error: { type: 'permission_denied_error' } })],
+        ],
+    },
+];
+
+// Negativos que se corren contra TODOS los adapters (CA-2 del issue).
+const NEGATIVOS_UNIVERSALES = [
+    ['401 pelado sin token documentado', JSON.stringify({ error: { status: 401, message: 'Unauthorized' } })],
+    ['403 generico sin token documentado', JSON.stringify({ error: { status: 403, message: 'Forbidden' } })],
+    ['5xx', JSON.stringify({ error: { status: 503, type: 'service_unavailable' } })],
+    ['429 rate limit', JSON.stringify({ error: { status: 429, type: 'rate_limit_error' } })],
+    ['credencial ausente (config)', JSON.stringify({ error: { code: 'no_api_key_configured' } })],
+    ['texto libre que menciona Unauthorized', 'Error: Unauthorized 401 auth failed invalid api key'],
+    ['JSON malformado', '{"error":{"type":"authentication_error"'],
+    ['SSE malformado', 'data: {"error":{"type":"authentication_error"'],
+    ['frame vacio', '{}'],
+    ['array top-level', '[{"error":{"type":"authentication_error"}}]'],
+    ['null literal', 'null'],
+];
+
+for (const fila of MATRIZ_AUTH) {
+    for (const pos of fila.positives) {
+        test(`#5795 [${fila.provider}] POSITIVO — ${pos.nombre}`, () => {
+            const r = parseAuth(pos.raw, fila.provider);
+            assert.equal(r.errorClass, AUTH_CLASS);
+            assert.equal(r.retriable, false, 'un rechazo de credencial no es retriable');
+            assert.equal(r.shouldFallback, false, 'esta capa no decide fallback');
+            assert.ok(r.authRejection, 'tiene que venir la senal tipada');
+            assert.equal(r.authRejection.kind, AUTH_CLASS);
+            const s = r.authRejection.signal;
+            if (pos.esperado.type !== undefined) assert.equal(s.type, pos.esperado.type);
+            if (pos.esperado.code !== undefined) assert.equal(s.code, pos.esperado.code);
+            if (pos.esperado.status !== undefined) assert.equal(s.status, pos.esperado.status);
+            assert.ok(Object.isFrozen(r.authRejection), 'el rechazo viaja congelado');
+            assert.ok(Object.isFrozen(s), 'la senal viaja congelada');
+        });
+    }
+
+    test(`#5795 [${fila.provider}] AISLAMIENTO — una senal valida para otro provider no clasifica`, () => {
+        const r = parseAuth(fila.foreign, fila.provider);
+        assert.notEqual(r.errorClass, AUTH_CLASS);
+        assert.equal(r.authRejection, undefined);
+    });
+
+    for (const [nombre, raw] of fila.negatives) {
+        test(`#5795 [${fila.provider}] NEGATIVO — ${nombre}`, () => {
+            const r = parseAuth(raw, fila.provider);
+            assert.notEqual(r.errorClass, AUTH_CLASS);
+        });
+    }
+
+    for (const [nombre, raw] of NEGATIVOS_UNIVERSALES) {
+        test(`#5795 [${fila.provider}] NEGATIVO UNIVERSAL — ${nombre}`, () => {
+            const r = parseAuth(raw, fila.provider);
+            assert.notEqual(r.errorClass, AUTH_CLASS);
+        });
+    }
+}
+
+test('#5795 [deterministic] el adapter determinista NUNCA clasifica autenticacion', () => {
+    const det = require('../providers/deterministic');
+    assert.equal(typeof det.detectAuthenticationRejected, 'function');
+    // Ni siquiera con el frame mas inequivoco de todos.
+    assert.equal(
+        det.detectAuthenticationRejected(
+            { error: { type: 'authentication_error', code: 'invalid_api_key' } },
+            { provider: 'deterministic', transport: 'cli' },
+        ),
+        null,
+    );
+});
+
+test('#5795 los siete adapters implementan el contrato detectAuthenticationRejected', () => {
+    const { PROVIDER_HANDLERS } = require('../resolve-provider');
+    const esperados = ['anthropic', 'openai-codex', 'gemini-google', 'cerebras', 'nvidia-nim', 'kimi-moonshot', 'deterministic'];
+    for (const nombre of esperados) {
+        assert.ok(PROVIDER_HANDLERS[nombre], `falta el adapter ${nombre}`);
+        assert.equal(
+            typeof PROVIDER_HANDLERS[nombre].detectAuthenticationRejected,
+            'function',
+            `${nombre} no expone detectAuthenticationRejected`,
+        );
+    }
+});
+
+test('#5795 timeout y exitCode sin frame estructurado no producen authentication_rejected', () => {
+    const porTimeout = parseProviderError('', {
+        provider: 'anthropic', transport: 'cli', timedOut: true, durationMs: 600000,
+        _quotaModule: quotaModuleSilencioso(),
+    });
+    assert.equal(porTimeout.errorClass, 'transient_5xx');
+
+    const porExit = parseProviderError('crash sin shape', {
+        provider: 'anthropic', transport: 'cli', exitCode: 1, durationMs: 1000,
+        _quotaModule: quotaModuleSilencioso(),
+    });
+    assert.notEqual(porExit.errorClass, AUTH_CLASS);
+});
+
+test('#5795 sin ctx.provider el parser falla cerrado y no clasifica autenticacion', () => {
+    const r = parseProviderError(JSON.stringify({ error: { type: 'authentication_error' } }), {
+        transport: 'cli',
+        _quotaModule: quotaModuleSilencioso(),
+    });
+    assert.equal(r.errorClass, 'unknown');
+});
+
+test('#5795 la clase auth por texto libre sigue funcionando y NO se convierte en la nueva clase', () => {
+    const r = parseAuth('fatal: Unauthorized (401) — auth failed', 'anthropic');
+    assert.equal(r.errorClass, 'auth', 'la clase legacy queda intacta');
+    assert.equal(r.shouldFallback, true, 'auth legacy conserva su politica de fallback');
+});
+
+// -----------------------------------------------------------------------------
+// #5795 — Canario: ningun secreto viaja en el retorno del parser.
+// -----------------------------------------------------------------------------
+
+test('#5795 CANARIO — secretos en message/token/headers/payload no aparecen en el retorno', () => {
+    const CANARIO = 'sk-ant-api03-CANARIOSECRETO999';
+    const frame = JSON.stringify({
+        type: 'result',
+        is_error: true,
+        error: {
+            type: 'authentication_error',
+            message: `invalid x-api-key: ${CANARIO}`,
+            headers: { authorization: `Bearer ${CANARIO}` },
+            payload: { api_key: CANARIO },
+        },
+        stderr: `export ANTHROPIC_API_KEY=${CANARIO}`,
+    });
+    const r = parseAuth(frame, 'anthropic');
+    assert.equal(r.errorClass, AUTH_CLASS);
+    const serializado = JSON.stringify(r);
+    assert.ok(!serializado.includes(CANARIO), 'el canario NO puede aparecer en el retorno');
+    assert.ok(!serializado.includes('CANARIOSECRETO'), 'ni siquiera un fragmento del canario');
+    assert.equal(r.raw, '', 'esta clase no transporta extracto del payload');
+});
+
+test('#5795 makeSignal rechaza valores fuera de las cotas (fail-closed)', () => {
+    const { makeSignal } = authRejectionModule;
+    assert.equal(makeSignal({ source: 'inventado', type: 'authentication_error' }), null, 'source fuera de la tabla');
+    assert.equal(makeSignal({ source: 'api-json' }), null, 'sin ninguna evidencia estructural');
+    assert.equal(makeSignal({ source: 'api-json', type: 'x'.repeat(65) }), null, 'token que excede la cota');
+    assert.equal(makeSignal({ source: 'api-json', type: 'con espacios' }), null, 'token fuera del charset');
+    assert.equal(makeSignal({ source: 'api-json', status: 99 }), null, 'status HTTP fuera de rango');
+    const ok = makeSignal({ source: 'api-json', type: 'authentication_error', status: 401 });
+    assert.ok(Object.isFrozen(ok));
 });

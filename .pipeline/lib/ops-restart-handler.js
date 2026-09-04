@@ -33,6 +33,41 @@ function makeRateLimiter(minIntervalMs) {
     };
 }
 
+// #5646 (CA-9 / REQ-SEC-5646-4) — Cota AGREGADA de restarts por ventana.
+//
+// `makeRateLimiter` limita POR TARGET: al pasar de reiniciar 1 componente a N,
+// N targets distintos pasan la misma ráfaga y una sola request se convierte en
+// "matar todos los servicios del pipeline" — un amplificador de DoS
+// auto-infligido. Esta cota es transversal: cuenta restarts totales en la
+// ventana, sin importar el target.
+//
+// Los componentes que no entran quedan pendientes en `stale-services.json` y los
+// relanza el watchdog en su ciclo: la cota RETRASA, no pierde trabajo (CA-5).
+//
+// `now` inyectable para tests.
+function makeAggregateLimiter(maxPerWindow, windowMs) {
+    const max = typeof maxPerWindow === 'number' && maxPerWindow > 0 ? maxPerWindow : 4;
+    const win = typeof windowMs === 'number' && windowMs > 0 ? windowMs : 60000;
+    let events = [];
+    return {
+        /**
+         * Reserva hasta `count` cupos. Devuelve cuántos quedaron concedidos
+         * (0..count). Los concedidos ya quedan consumidos en la ventana.
+         */
+        grant(count, now) {
+            const t = typeof now === 'number' ? now : Date.now();
+            events = events.filter(ts => (t - ts) < win);
+            const room = Math.max(0, max - events.length);
+            const granted = Math.max(0, Math.min(room, typeof count === 'number' ? count : 0));
+            for (let i = 0; i < granted; i++) events.push(t);
+            return granted;
+        },
+        _snapshot() { return events.slice(); },
+        maxPerWindow: max,
+        windowMs: win,
+    };
+}
+
 /**
  * Decide y (si corresponde) ejecuta el restart de un servicio.
  *
@@ -79,4 +114,4 @@ function runRestart(params, deps) {
     return { status: 200, body: { ok: !!(result && result.ok), msg: (result && result.msg) || '' } };
 }
 
-module.exports = { makeRateLimiter, runRestart };
+module.exports = { makeRateLimiter, makeAggregateLimiter, runRestart };

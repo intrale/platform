@@ -30,6 +30,8 @@
 
 'use strict';
 
+const { PR_PROVENANCE_FIELDS, checkPrProvenance } = require('./pr-provenance');
+
 const CLOSED = 'CLOSED';
 
 /**
@@ -135,10 +137,441 @@ function selectHumanBlocksToRelease({ markers, issueStates } = {}) {
   return { toRelease, blocked };
 }
 
+function selectMergeRaceBlocksToReclaim({ markers, prStates, ledger, maxAttempts = 3 } = {}) {
+  const toReclaim = [], toDegrade = [], skipped = [];
+  const states = prStates && typeof prStates === 'object' ? prStates : {};
+  const attemptsByIssue = ledger && typeof ledger === 'object' ? ledger : {};
+  const required = [...PR_PROVENANCE_FIELDS, 'state', 'mergeStateStatus', 'headRefOid', 'headRefName', 'labels'];
+  const skip = (marker, reason) => skipped.push({ marker, reason });
+  for (const marker of Array.isArray(markers) ? markers : []) {
+    const pc = marker && marker.precondition;
+    if (!pc || pc.type !== 'merge_checks_race') continue;
+    if (!Number.isInteger(pc.pr) || pc.pr <= 0 || !/^[0-9a-f]{40}$/.test(pc.head_sha || '')) { skip(marker, 'precondicion_invalida'); continue; }
+    const pr = states[pc.pr];
+    if (!pr || required.some((field) => pr[field] === undefined)) { skip(marker, 'pr_incompleto'); continue; }
+    const provenance = checkPrProvenance(pr, { repo: 'intrale/platform' });
+    if (!provenance.ok) { skip(marker, `procedencia:${provenance.reason}`); continue; }
+    const head = typeof pr.headRefOid === 'string' ? pr.headRefOid.toLowerCase() : '';
+    if (!/^[0-9a-f]{40}$/.test(head) || head !== pc.head_sha) { skip(marker, 'head_movido'); continue; }
+    if (pr.state !== 'OPEN') { skip(marker, 'pr_no_abierto'); continue; }
+    if (!['CLEAN', 'UNSTABLE'].includes(pr.mergeStateStatus)) { skip(marker, 'pr_no_mergeable'); continue; }
+    const branch = /^agent\/(\d+)-/.exec(pr.headRefName || '');
+    if (!branch || Number(branch[1]) !== Number(marker.issue)) { skip(marker, 'rama_ajena'); continue; }
+    const labels = pr.labels.map((label) => typeof label === 'string' ? label : label && label.name);
+    if (!labels.includes('qa:passed')) { skip(marker, 'qa_no_aprobado'); continue; }
+    const entry = attemptsByIssue[String(Number(marker.issue))];
+    const samePair = entry && Number(entry.pr) === pc.pr && String(entry.head_sha || '').toLowerCase() === pc.head_sha;
+    if (samePair && (entry.degraded === true || Number(entry.attempts || 0) >= maxAttempts)) { toDegrade.push(marker); continue; }
+    toReclaim.push(marker);
+  }
+  return { toReclaim, toDegrade, skipped };
+}
+
+// =============================================================================
+// #6611 — TERCERA fuente de markers para el MISMO motor: los `needs-human`
+// congelados con un PREDICADO RE-EVALUABLE (`precondition.type === 'verifiable'`).
+//
+// El caso que cierra: un freeze de `delivery` por `http_405_blocked_requeridos_
+// verdes` se congela como juicio humano y queda estructuralmente irreactivable —
+// nadie lo vuelve a mirar nunca. #6145 estuvo 14 h congelado ocupando slot de ola
+// con el PR ya `MERGEABLE`/`CLEAN`.
+//
+// DISCIPLINA (idéntica al hermano): PURA y SINCRÓNICA. Recibe las observaciones
+// YA leídas por la frontera; acá no hay `fs`, ni `gh`, ni red.
+//
+// LIBERACIÓN SÓLO POR EVIDENCIA POSITIVA. Las 5 condiciones, todas del tick
+// actual, todas con valor dentro de su enum. Nada se concluye por descarte:
+// lectura fallida, `null`, o valor fuera del enum ⇒ NO liberar (`null` != `[]`,
+// misma regla que `lib/required-checks.js`).
+// =============================================================================
+
+// Reusamos el clasificador de checks de `required-checks.js` en vez de re-listar
+// los enums: un solo lugar donde vive "qué es un check verde". `unusable` (p.ej.
+// `CheckRun` COMPLETED con `conclusion: null`) NO es verde por descarte.
+const { _internal: { classifyContextState } } = require('./required-checks');
+
+const VERIFIABLE = 'verifiable';
+const PR_MERGE_BLOCKED = 'pr_merge_blocked';
+
+// Techo de auto-destrabes por causa (CA-8). Override desde `config.yaml`.
+const DEFAULT_MAX_AUTO_RELEASES = 3;
+
+/**
+ * ¿El marker tiene un predicado `pr_merge_blocked` bien formado?
+ * Espejo de `human-block.normalizePrecondition`: acá se re-valida porque el
+ * selector no puede confiar en que el marker en disco haya pasado por allá
+ * (un `.reason.json` editado a mano, por ejemplo).
+ */
+function verifiablePredicateOf(marker) {
+  const pc = marker && marker.precondition;
+  if (!pc || pc.type !== VERIFIABLE) return null;
+  const p = pc.predicate;
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+  if (p.kind !== PR_MERGE_BLOCKED) return null;
+  if (!Number.isInteger(p.pr) || p.pr <= 0) return null;
+  if (typeof p.head_ref !== 'string' || !p.head_ref.trim()) return null;
+  return p;
+}
+
+/**
+ * Decisión de liberación para un `pr_merge_blocked`. Devuelve `null` si libera,
+ * o un string con el motivo por el que NO libera (para `blocked`/observabilidad).
+ *
+ * `observed` del predicado NO se consulta acá a propósito: es narrativa del
+ * productor del freeze. Si comparáramos "antes vs ahora", el veredicto se lo
+ * estaría dando quien congeló — un `observed` mentiroso (ya `CLEAN` al congelar)
+ * podría forzar la liberación. Sólo manda lo observado en ESTE tick.
+ */
+function releaseBlocker(marker, predicate, obs, counter, maxAutoReleases) {
+  // Lectura fallida / ausente / no-objeto ⇒ fail-closed.
+  if (!obs || typeof obs !== 'object' || Array.isArray(obs)) return 'observacion-ilegible';
+
+  // Techo de reintentos (CA-8). `count()` devuelve Infinity si no pudo leer el
+  // contador: no poder verificar el techo NO habilita otro destrabe.
+  const max = Number.isFinite(maxAutoReleases) && maxAutoReleases > 0
+    ? maxAutoReleases : DEFAULT_MAX_AUTO_RELEASES;
+  const c = Number.isFinite(counter) ? counter : (counter === undefined ? 0 : Infinity);
+  if (c >= max) return 'techo-de-auto-destrabes-alcanzado';
+
+  // Enums cerrados. Cualquier otro valor no es "probablemente ok": es no.
+  if (obs.state !== 'OPEN') return 'pr-no-abierto';
+  if (obs.mergeable !== 'MERGEABLE') return 'pr-no-mergeable';
+  if (obs.mergeStateStatus !== 'CLEAN') return 'merge-state-no-clean';
+
+  // BINDING predicado <-> issue. Es lo que vuelve inexplotable el residual de
+  // que un agente con FS pueda escribir el sidecar: no alcanza con apuntar a
+  // cualquier PR verde del repo, porque su `headRefName` no matchea el del
+  // issue. Manda el head_ref OBSERVADO en GitHub, no el declarado en el marker.
+  if (typeof obs.headRefName !== 'string' || obs.headRefName !== predicate.head_ref) {
+    return 'head-ref-no-coincide-con-el-declarado';
+  }
+  if (!obs.headRefName.startsWith('agent/' + marker.issue + '-')) {
+    return 'head-ref-no-pertenece-al-issue';
+  }
+
+  // `null` != `[]`. Un rollup ausente es una lectura que no se pudo hacer;
+  // un rollup vacío es una respuesta legítima de GitHub (PR sin checks) y las
+  // 4 condiciones anteriores ya llegaron con valor del enum — `CLEAN` es el
+  // veredicto de GitHub sobre la protección de rama. Vacío libera, null no.
+  const rollup = obs.statusCheckRollup;
+  if (rollup == null || !Array.isArray(rollup)) return 'rollup-ilegible';
+  if (!rollup.every((n) => classifyContextState(n) === 'green')) return 'checks-no-verdes';
+
+  return null; // libera
+}
+
+/**
+ * #6611 — Selector puro de bloqueos verificables liberables.
+ *
+ * Todo marker que NO sea `type:'verifiable'` con predicado válido hace
+ * `continue`: no entra ni a `toRelease` ni a `blocked`. Es exactamente el
+ * tratamiento que hoy recibe el juicio humano (SEC-4, CA-3) — sin predicado
+ * no hay re-evaluación, y "no evaluable" no es lo mismo que "evaluado y
+ * retenido".
+ *
+ * @param {object} p
+ * @param {Array<{issue:(string|number), precondition?:object}>} p.markers
+ * @param {Record<string,object>} p.observations  pr → estado observado en el
+ *        tick actual: `{ state, mergeable, mergeStateStatus, statusCheckRollup,
+ *        headRefName }`. Leído en la frontera (`gh pr view`).
+ * @param {Record<string,number>} [p.counters]  clave `<issue>::<kind>::<pr>` →
+ *        auto-destrabes ya consumidos. Ausente ⇒ 0 (nunca se auto-destrabó);
+ *        la frontera la puebla con `auto-recheck-counter.count()`, que ya es
+ *        fail-closed (`Infinity`) si no pudo leer.
+ * @param {number} [p.maxAutoReleases]  techo por causa (default 3).
+ * @returns {{ toRelease: Array<object>, blocked: Array<object> }}
+ */
+function selectVerifiableHumanBlocksToRelease({ markers, observations, counters, maxAutoReleases } = {}) {
+  const list = Array.isArray(markers) ? markers : [];
+  const obsMap = observations && typeof observations === 'object' ? observations : {};
+  const countMap = counters && typeof counters === 'object' ? counters : {};
+  const toRelease = [];
+  const blocked = [];
+
+  for (const m of list) {
+    if (!m || m.issue == null) continue;
+    const predicate = verifiablePredicateOf(m);
+    // Juicio humano / dependencia / tipo raro / predicado deforme → INTOCABLE.
+    if (!predicate) continue;
+
+    const obs = obsMap[depKey(predicate.pr)];
+    const counterKey = String(m.issue) + '::' + predicate.kind + '::' + predicate.pr;
+    const counter = Object.prototype.hasOwnProperty.call(countMap, counterKey)
+      ? countMap[counterKey] : 0;
+
+    const why = releaseBlocker(m, predicate, obs, counter, maxAutoReleases);
+    if (why === null) {
+      toRelease.push({ ...m, predicate, observed_now: obs });
+    } else {
+      blocked.push({ ...m, predicate, reason: why });
+    }
+  }
+
+  return { toRelease, blocked };
+}
+
+// =============================================================================
+// #6801 — Decisión pura: con TODAS las dependencias cerradas, ¿este issue se
+// auto-cierra como paraguas de split, se destraba, o no se toca?
+//
+// EL BUG QUE ESTO REEMPLAZA
+// -------------------------
+// El brazo decidía "esto es un paraguas" con `labels.includes('split')`. Ese
+// label lo llevan TANTO el issue paraguas COMO cada `[Split de #N]` hija. Y la
+// lista que mostraba como "sus historias hijas" salía de `blockedBy[issue]` —
+// que son DEPENDENCIAS, no hijas. Resultado verificado: cuatro hijas de split
+// sin una sola línea implementada cerradas como `completed` (#5791, #5797,
+// #5798, #5799), con un comentario de auditoría falso por construcción.
+//
+// ORDEN DE DECISIÓN (cubre CA-1/CA-2/CA-3)
+// ----------------------------------------
+//   1. El título matchea `[Split de #P]` → es HIJA → jamás se cierra por este
+//      camino. Se destraba y reingresa al pipeline.
+//   2. No lleva el label `split` → camino normal de desbloqueo.
+//   3. Lleva `split` y NO es hija → candidato a paraguas. Se cierra SOLO si la
+//      lista de sub-historias vino de una relación explícita padre→hijas
+//      (registro del split en el body, o títulos `[Split de #N]`) y TODAS están
+//      CLOSED. Lista indeterminable → NO cierra (fail-closed) y lo dice.
+//
+// La señal `source: 'labels'` de `split-guard.isSplitChild()` NO se usa a
+// propósito: `split` + `blocked:dependencies` es exactamente el estado de un
+// paraguas legítimo bloqueado por sus hijas, así que confiar en ella clasifica
+// a todo padre real como hija y produce la regresión inversa.
+//
+// Las dependencias NUNCA se usan como hijas. Se arrastran sólo para nombrarlas
+// por lo que son en los mensajes al operador (CA-4).
+// =============================================================================
+
+const { parseSplitParent } = require('./split-guard');
+
+const UMBRELLA_LABEL = 'split';
+
+// De dónde salió la lista de hijas, en castellano para el operador (CA-4: el
+// mensaje nombra la lista que realmente se evaluó y de dónde la sacó).
+const CHILDREN_SOURCE_LABEL = {
+  registro: 'del registro del split en el body de este issue',
+  titulos: 'de los títulos `[Split de #N]` de las hijas',
+};
+
+function labelNamesOf(issue) {
+  const raw = issue && Array.isArray(issue.labels) ? issue.labels : [];
+  return raw
+    .map(l => String((l && typeof l === 'object' ? l.name : l) ?? '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function normalizeIssueIds(ids) {
+  const out = [];
+  for (const raw of Array.isArray(ids) ? ids : []) {
+    const n = Number.parseInt(String(raw ?? '').replace(/^#/, '').trim(), 10);
+    if (Number.isInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+function fmtRefs(list) {
+  const arr = (Array.isArray(list) ? list : []).map(n => '#' + depKey(n).replace(/^#/, ''));
+  return arr.length ? arr.join(', ') : '(ninguna)';
+}
+
+/**
+ * @param {object} p
+ * @param {{number: number|string, title: string, labels?: Array}} p.issue
+ * @param {Array<string|number>} [p.deps] dependencias declaradas ya verificadas CLOSED
+ * @param {Array<number|string>|null} [p.children] hijas descubiertas (null = indeterminable)
+ * @param {'registro'|'titulos'|null} [p.childrenSource] de dónde salió `children`
+ * @param {Record<string,string>} [p.childStates] hija → 'OPEN'|'CLOSED'|...
+ * @param {boolean|null} [p.hasLinkedPr] ¿el issue tiene PR asociado? null = desconocido
+ * @returns {{action:'close'|'unblock'|'skip', reason:string, parent:number|null,
+ *            deps:string[], children:number[], childrenSource:string|null,
+ *            warnNoPr:boolean, log:string, comment:string|null, telegram:string|null}}
+ */
+function decideSplitUmbrellaClose({
+  issue,
+  deps = [],
+  children = null,
+  childrenSource = null,
+  childStates = null,
+  hasLinkedPr = null,
+} = {}) {
+  const depRefs = (Array.isArray(deps) ? deps : []).map(depKey).filter(Boolean);
+  const base = {
+    parent: null,
+    deps: depRefs,
+    children: [],
+    childrenSource: null,
+    warnNoPr: false,
+    comment: null,
+    telegram: null,
+  };
+
+  // Fail-closed de entrada: sin título legible no se puede distinguir un
+  // paraguas de una hija, y confundirlos fue exactamente el defecto de #6801.
+  if (!issue || typeof issue !== 'object' || typeof issue.title !== 'string') {
+    return {
+      ...base,
+      action: 'skip',
+      reason: 'entrada-invalida',
+      log: 'issue sin título legible: no se puede distinguir paraguas de hija — no se toca (fail-closed)',
+    };
+  }
+
+  const number = depKey(issue.number);
+  const labels = labelNamesOf(issue);
+  const parent = parseSplitParent(issue.title);
+
+  // 1. CA-3 — Hija de split. Nunca se auto-cierra, aunque lleve el label
+  //    `split` y todas sus dependencias estén cerradas. Se destraba.
+  if (parent !== null && depKey(parent) !== number) {
+    return {
+      ...base,
+      action: 'unblock',
+      reason: 'hija-de-split',
+      parent,
+      log: `#${number}: es hija del split de #${parent} — se destraba, NUNCA se auto-cierra (CA-3 #6801). Dependencias cerradas: ${fmtRefs(depRefs)}`,
+      telegram: `⚠️ #${number} no se auto-cerró: es hija de split (\`[Split de #${parent}]\`) y el trabajo sigue pendiente. Se le quitó \`blocked:dependencies\` y reingresa al pipeline.`,
+    };
+  }
+
+  // 2. Sin label `split` → desbloqueo normal.
+  if (!labels.includes(UMBRELLA_LABEL)) {
+    return {
+      ...base,
+      action: 'unblock',
+      reason: 'sin-label-split',
+      log: `#${number}: destrabado (dependencias cerradas: ${fmtRefs(depRefs)})`,
+    };
+  }
+
+  // 3. Candidato a paraguas: hace falta la lista REAL de sub-historias.
+  const childIds = normalizeIssueIds(children).filter(n => depKey(n) !== number);
+  if (!childIds.length) {
+    return {
+      ...base,
+      action: 'skip',
+      reason: 'hijas-indeterminables',
+      log: `#${number}: lleva label \`split\` pero no se pudo determinar su lista de sub-historias — NO se cierra (fail-closed CA-2 #6801). Dependencias cerradas: ${fmtRefs(depRefs)}`,
+      telegram: `⚠️ #${number} no se auto-cerró: lleva el label \`split\` pero no se pudo determinar qué sub-historias lo componen, así que el pipeline prefiere no cerrarlo. Sus dependencias declaradas (${fmtRefs(depRefs)}) sí están cerradas. Revisalo a mano: si es un paraguas real, agregale al body la línea **Sub-historias** con los números de las hijas.`,
+    };
+  }
+
+  // 4. Todas las sub-historias tienen que estar CLOSED. Fail-closed: estado
+  //    ausente o ilegible cuenta como abierta.
+  const states = childStates && typeof childStates === 'object' ? childStates : {};
+  const openChildren = childIds.filter(n => states[depKey(n)] !== CLOSED);
+  if (openChildren.length) {
+    return {
+      ...base,
+      action: 'skip',
+      reason: 'hijas-abiertas',
+      children: childIds,
+      childrenSource,
+      log: `#${number}: paraguas con sub-historias todavía abiertas (${fmtRefs(openChildren)}) — NO se cierra. Sus dependencias declaradas sí cerraron: ${fmtRefs(depRefs)}`,
+      telegram: `⚠️ #${number} no se auto-cerró: sus dependencias cerraron, pero todavía tiene sub-historias abiertas (${fmtRefs(openChildren)}). Sigue esperando a que se completen.`,
+    };
+  }
+
+  // 5. Paraguas verificado contra su relación explícita padre→hijas → cerrar.
+  const fuente = CHILDREN_SOURCE_LABEL[childrenSource] || 'de la relación padre→hijas verificada';
+  const warnNoPr = hasLinkedPr === false;
+  const comment = [
+    '## ✅ Paraguas resuelto',
+    '',
+    `Este issue es el **padre** de un split y todas sus sub-historias están cerradas: ${fmtRefs(childIds)}.`,
+    '',
+    `- **Sub-historias evaluadas** (relación padre→hijas, leída ${fuente}): ${fmtRefs(childIds)}`,
+    `- **Dependencias declaradas de este issue** (no son sus hijas, se listan aparte): ${fmtRefs(depRefs)}`,
+    '',
+    'El scope queda cubierto por las sub-historias, no requiere desarrollo adicional.',
+    '',
+    '_Cerrado automáticamente por el brazo de desbloqueo del pipeline._',
+  ].join('\n');
+
+  const telegram = [
+    `🟢 Paraguas #${number} cerrado automáticamente — sus sub-historias (${fmtRefs(childIds)}), tomadas ${fuente}, están todas cerradas.`,
+    warnNoPr
+      ? `⚠️ Ojo: el paraguas no tiene ningún PR propio asociado. Se cerró por cobertura de sus sub-historias — si esperabas un entregable propio, revisalo.`
+      : null,
+  ].filter(Boolean).join('\n');
+
+  return {
+    ...base,
+    action: 'close',
+    reason: 'paraguas-verificado',
+    children: childIds,
+    childrenSource,
+    warnNoPr,
+    log: `#${number}: paraguas real con sub-historias cerradas (${fmtRefs(childIds)}, fuente=${childrenSource || 'desconocida'}) → auto-cerrando. Dependencias declaradas: ${fmtRefs(depRefs)}`,
+    comment,
+    telegram,
+  };
+}
+
+// =============================================================================
+// #6801 CA-7 — Auditoría del radio de impacto: ¿este issue CERRADO fue víctima
+// del bug del auto-cierre?
+//
+// No alcanza con matchear el texto "Paraguas resuelto": varias de esas issues
+// volvieron a cerrar después, esta vez con PR real (#5797 ← PR #6806), y
+// reabrirlas sería destruir trabajo legítimo. Se reabre sólo si se cumplen LAS
+// TRES condiciones: (a) el título es `[Split de #N]` (es una hija, no un
+// paraguas), (b) la cerró el brazo con el comentario espurio, (c) no tiene
+// ningún PR asociado que la cierre.
+// =============================================================================
+
+// Frase que sólo escribe el brazo de desbloqueo al auto-cerrar.
+const UMBRELLA_CLOSE_MARKER = /paraguas resuelto/i;
+const UMBRELLA_CLOSE_SIGNATURE = /brazo de desbloqueo/i;
+
+/**
+ * @param {object} issue — `gh issue view --json number,title,state,comments,closedByPullRequestsReferences`
+ * @returns {{reopen: boolean, reason: string, parent: number|null, marker: boolean, prs: number}}
+ */
+function classifySpuriousUmbrellaClose(issue) {
+  const none = { reopen: false, reason: 'entrada-invalida', parent: null, marker: false, prs: 0 };
+  if (!issue || typeof issue !== 'object' || typeof issue.title !== 'string') return none;
+
+  const prs = Array.isArray(issue.closedByPullRequestsReferences)
+    ? issue.closedByPullRequestsReferences.length
+    : 0;
+  const comments = Array.isArray(issue.comments) ? issue.comments : [];
+  const marker = comments.some(c => {
+    const body = c && typeof c.body === 'string' ? c.body : '';
+    return UMBRELLA_CLOSE_MARKER.test(body) && UMBRELLA_CLOSE_SIGNATURE.test(body);
+  });
+  const parent = parseSplitParent(issue.title);
+  const out = { reopen: false, reason: '', parent, marker, prs };
+
+  if (String(issue.state || '').toUpperCase() !== 'CLOSED') {
+    return { ...out, reason: 'no-esta-cerrado' };
+  }
+  if (parent === null || depKey(parent) === depKey(issue.number)) {
+    return { ...out, reason: 'no-es-hija-de-split' };
+  }
+  if (!marker) {
+    return { ...out, reason: 'no-la-cerro-el-brazo' };
+  }
+  if (prs > 0) {
+    // Cierre legítimo posterior: el comentario espurio sigue en el historial,
+    // pero el entregable existe.
+    return { ...out, reason: 'tiene-pr-asociado' };
+  }
+  return { ...out, reopen: true, reason: 'hija-cerrada-por-el-brazo-sin-pr' };
+}
+
 module.exports = {
   selectMarkersToRelease,
   selectHumanBlocksToRelease,
+  selectMergeRaceBlocksToReclaim,
+  selectVerifiableHumanBlocksToRelease,
   allDepsClosed,
+  // #6801 — paraguas de split: cerrar sólo con relación padre→hijas verificada
+  decideSplitUmbrellaClose,
+  // #6801 CA-7 — auditoría del radio de impacto del auto-cierre espurio
+  classifySpuriousUmbrellaClose,
   depKey,
   CLOSED,
+  DEFAULT_MAX_AUTO_RELEASES,
+  // internos para tests
+  _internal: { verifiablePredicateOf, releaseBlocker },
 };

@@ -35,6 +35,10 @@ const previewDiff = require('./preview-diff');
 // las sustituyen con `_setForTests` para no tocar gh ni el FS real.
 let deps = require('../../partial-pause-deps');
 let partialPause = require('../../partial-pause');
+// #5179 grupo 3 — la MUTACIÓN va por el envoltorio único de estado operativo.
+// Los lectores (`readPreviousAllowlist`) siguen en `partialPause`: su migración
+// es superficie ancha y vive en #5164. Seam de test propio: `operationalState`.
+let operationalState = require('../../operational-state');
 
 // Opts extra para `resolveOpenDeps` (tests inyectan ghRunner / cacheFile).
 let resolveDepsOpts = {};
@@ -191,9 +195,9 @@ async function executeStep(session, step, params) {
             const diff = previewDiff(previous, nextProposed);
             const recursividadAplicada = action === 'add' && Array.isArray(s1.result.issues) && s1.result.issues.length > 1;
 
-            // setPartialPause() audita (appendMutation) ANTES de escribir. Si el
+            // setAllowlist() audita (appendMutation) ANTES de escribir. Si el
             // apply falla, la entry queda en el NDJSON (trazabilidad del intento).
-            const apply = partialPause.setPartialPause(nextProposed, {
+            const apply = operationalState.setAllowlist(nextProposed, {
                 source: SOURCE,
                 authorizedBy: AUTHORIZED_BY,
                 justification: motivo,
@@ -246,12 +250,14 @@ register();
 function _setForTests(overrides = {}) {
     if (overrides.deps) deps = overrides.deps;
     if (overrides.partialPause) partialPause = overrides.partialPause;
+    if (overrides.operationalState) operationalState = overrides.operationalState;
     if (overrides.resolveDepsOpts) resolveDepsOpts = overrides.resolveDepsOpts;
 }
 
 function _resetForTests() {
     deps = require('../../partial-pause-deps');
     partialPause = require('../../partial-pause');
+    operationalState = require('../../operational-state');
     resolveDepsOpts = {};
 }
 

@@ -142,8 +142,15 @@ test('buildLabelActions emite remove-label antes de label (remove-then-add)', ()
   const rec = reconcileGateLabels({ currentLabels: ['qa:failed'], verdict: 'pass' });
   const actions = buildLabelActions({ issue: '4572', reconciliation: rec });
   assert.strictEqual(actions.length, 2);
-  assert.deepStrictEqual(actions[0], { action: 'remove-label', issue: 4572, label: 'qa:failed', gate_reconciler: true });
-  assert.deepStrictEqual(actions[1], { action: 'label', issue: 4572, label: 'qa:passed', gate_reconciler: true });
+  assert.deepStrictEqual(actions[0], { action: 'remove-label', issue: 4572, target: 'issue', label: 'qa:failed', gate_reconciler: true });
+  assert.deepStrictEqual(actions[1], { action: 'label', issue: 4572, target: 'issue', label: 'qa:passed', gate_reconciler: true });
+});
+
+test('buildLabelActions emite target pr y rechaza destinos desconocidos', () => {
+  const reconciliation = { toRemove: ['qa:failed'], toAdd: ['qa:passed'] };
+  const actions = buildLabelActions({ issue: 5519, reconciliation, target: 'pr' });
+  assert.deepStrictEqual(actions.map((a) => a.target), ['pr', 'pr']);
+  assert.throws(() => buildLabelActions({ issue: 1, reconciliation, target: 'repo' }), /target inválido/);
 });
 
 test('buildLabelActions sin reconciliation devuelve []', () => {

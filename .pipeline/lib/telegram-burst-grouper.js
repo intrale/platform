@@ -79,6 +79,15 @@ const BURST_WINDOW_DEFAULT_MS = 60_000; // 60s
 // reporta con "+N más (ver audit JSONL)".
 const MAX_ENUMERATED_ATTEMPTS = 5;
 
+// #6179 (CA-17) — tipos que NUNCA se consolidan: caen siempre como grupo de 1
+// para que el drainer los mande por el camino individual, el único que respeta
+// el `plain: true` del dropfile y no reinyecta jerga en el encabezado.
+//
+// Agregar un tipo acá es una decisión de PRODUCTO, no una optimización: el
+// consolidado existe para absorber ráfagas de eventos técnicos, y un aviso
+// escrito para el operador no es eso.
+const NON_GROUPABLE_TYPES = Object.freeze(['cross-provider-fallback']);
+
 // Caracteres de control de Telegram MarkdownV2 que requieren escape.
 // Fuente: https://core.telegram.org/bots/api#markdownv2-style
 // Defense in depth para CA-4 (sanitización MarkdownV2).
@@ -160,12 +169,13 @@ function loadFileSafe({ filePath, fileName, fsImpl }) {
         const stat = _fs.statSync(filePath);
         const raw = _fs.readFileSync(filePath, 'utf8');
         const parsed = JSON.parse(raw);
+        const privateNonce = parsed && parsed.chat_id != null ? `|private:${fileName}` : '';
         const meta = (parsed && typeof parsed === 'object' && parsed.meta) || {};
         const pid = String(meta.pid || extractPidFromFilename(fileName) || 'unknown');
         const type = String(parsed.type || meta.type || 'unknown');
         const skill = String(meta.skill || 'unknown');
         const issue = String(meta.issue == null ? 'unknown' : meta.issue);
-        const key = `${pid}|${type}|${skill}|${issue}`;
+        const key = `${pid}|${type}|${skill}|${issue}${privateNonce}`;
         return {
             ok: true,
             file: fileName,
@@ -212,14 +222,38 @@ function extractPidFromFilename(fileName) {
 // -----------------------------------------------------------------------------
 function groupByBurst({ fileEntries, windowMs, fsImpl }) {
     const win = Number.isFinite(windowMs) ? windowMs : BURST_WINDOW_DEFAULT_MS;
+    // #6179 (CA-17 / D6) — el tipo `cross-provider-fallback` NO se agrupa nunca.
+    //
+    // El camino consolidado fuerza `parse_mode: 'MarkdownV2'`
+    // (`servicio-telegram.js:966`) ignorando el `plain: true` del dropfile, y su
+    // encabezado REINYECTA `skill=` (`:351`). O sea: por más impecable que salga
+    // `formatEpisodeNotice`, si dos avisos de episodio caen en la misma ventana
+    // el operador recibe jerga y Markdown igual, y CA-8/CA-9 se caen por una vía
+    // que no depende del copy. Cayendo siempre como grupo de 1, el consumidor
+    // (`servicio-telegram.js:1111-1118`) los manda por el camino individual, que
+    // SÍ respeta el flag (`resolveOutboundParseMode:916-921`).
+    //
+    // La exclusión va ACÁ y no en el `switch` del `typeLabel`: aquella línea es
+    // cosmética (elige la etiqueta del encabezado) y tocarla sola no desactiva
+    // ningún agrupamiento.
     const loaded = fileEntries.map((entry) =>
         loadFileSafe({ filePath: entry.path, fileName: entry.name, fsImpl })
     );
     // Sort por mtime ascendente (los unparseable van al final con mtime=Infinity).
+    //
+    // #6226 — Desempate explícito por nombre. Dos dropfiles escritos en el mismo
+    // milisegundo (el `reply` + los `extraMessages` del paginado) EMPATAN en
+    // `mtimeMs`, y sin desempate el orden quedaba heredado del orden de entrada,
+    // es decir de cómo enumeró el filesystem. Los nombres son
+    // `<ts>-<seq>-<sufijo>` (ver `lib/dropfile-writer.js`), con seq zero-padded,
+    // así que el orden lexicográfico es el orden de emisión.
     loaded.sort((a, b) => {
         const ma = a.ok ? a.mtimeMs : Number.POSITIVE_INFINITY;
         const mb = b.ok ? b.mtimeMs : Number.POSITIVE_INFINITY;
-        return ma - mb;
+        if (ma !== mb) return ma - mb;
+        const fa = a.file || '';
+        const fb = b.file || '';
+        return fa < fb ? -1 : fa > fb ? 1 : 0;
     });
 
     const groups = [];
@@ -234,6 +268,10 @@ function groupByBurst({ fileEntries, windowMs, fsImpl }) {
         }
         const groupFiles = [base];
         assigned.add(i);
+        if (NON_GROUPABLE_TYPES.includes(base.type)) {
+            groups.push({ key: base.key, files: groupFiles });
+            continue;
+        }
         for (let j = i + 1; j < loaded.length; j++) {
             if (assigned.has(j)) continue;
             const cand = loaded[j];
@@ -302,6 +340,33 @@ function extractAttemptSummary(fileEntry) {
 function formatConsolidatedMessage(group, { now } = {}) {
     if (!group || !group.files || group.files.length < 2) return null;
     const files = group.files;
+
+    // #5421 — NO consolidar mensajes que no son una ráfaga real.
+    //
+    // El consolidado DESCARTA el `text` de cada archivo y lo reemplaza por un
+    // resumen de `provider/status/error_class`. Eso es correcto para lo que esta
+    // función fue hecha (#3668: cascadas de reintentos cross-provider, donde el
+    // dato útil ES el resumen), pero es destructivo para cualquier otro mensaje.
+    //
+    // Los salientes genéricos del pulpo (`<ts>-cmd.json`) no declaran `meta`, así
+    // que TODOS derivan la misma clave `unknown|unknown|unknown|unknown` y se
+    // agrupaban entre sí por el solo hecho de haber salido dentro de la misma
+    // ventana de 60s. Dos avisos de `needs-human` no relacionados se fusionaban
+    // en un "⚠️ unknown · 2 intentos · desconocido: ?" y AMBOS textos se perdían
+    // enteros — pérdida total y silenciosa, sin siquiera un HTTP 400 que la
+    // delatara.
+    //
+    // Un grupo sin NINGÚN metadato identificatorio no es una ráfaga: es un
+    // conjunto de mensajes distintos que coincidieron en el tiempo. Devolvemos
+    // `null` para que el drainer los mande individualmente (ese fallback ya
+    // existe y es justamente "no perder el mensaje").
+    const tieneMetadata = files.some((f) => (
+        (f.type && f.type !== 'unknown')
+        || (f.skill && f.skill !== 'unknown')
+        || (f.issue && f.issue !== 'unknown')
+    ));
+    if (!tieneMetadata) return null;
+
     const baseMtime = files[0].mtimeMs || (Number.isFinite(now) ? now : Date.now());
     const lastMtime = files[files.length - 1].mtimeMs || baseMtime;
     const totalMs = Math.max(0, Math.round(lastMtime - baseMtime));
@@ -312,9 +377,12 @@ function formatConsolidatedMessage(group, { now } = {}) {
     const baseIssue = sanitizeMarkdownV2(files[0].issue || 'desconocido');
 
     // Mapeo de tipo → label en castellano. Por defecto, normalizamos.
+    // #6179 — la rama `cross-provider-fallback` se sacó de acá: ese tipo ya no
+    // llega nunca al consolidado (`NON_GROUPABLE_TYPES` en `groupByBurst`).
+    // Dejarla sería sugerir que el agrupamiento se desactiva desde este switch,
+    // que es exactamente el error que D6 documenta.
     const typeLabel =
-        baseType === 'cross-provider-fallback' ? 'Cross-provider fallback'
-        : baseType === 'cost-anomaly' ? 'Anomalía de costo'
+        baseType === 'cost-anomaly' ? 'Anomalía de costo'
         : baseType === 'agent-models-change' ? 'Cambio de modelos'
         : baseType === 'provider-exhaustion' ? 'Provider exhausto'
         : sanitizeMarkdownV2(baseType);
@@ -360,6 +428,9 @@ module.exports = {
     BURST_WINDOW_MAX_MS,
     BURST_WINDOW_DEFAULT_MS,
     MAX_ENUMERATED_ATTEMPTS,
+    // #6179 CA-17 — exportada para que el test falle si el tipo vuelve a ser
+    // agrupable (la exclusión es un criterio, no un detalle de implementación).
+    NON_GROUPABLE_TYPES,
     MARKDOWN_V2_SPECIAL,
     // exposed for tests
     _extractPidFromFilename: extractPidFromFilename,

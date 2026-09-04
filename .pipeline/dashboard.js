@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// #6812 — Windows: suprimir la ventana de consola de cada hijo (gh, git,
+// tasklist, powershell). Debe ir ANTES de cualquier require que spawnee.
+require('./lib/force-windows-hide').apply();
 // =============================================================================
 // Dashboard — Visualización completa del pipeline.
 //
@@ -20,6 +23,11 @@ const path = require('path');
 const os = require('os');
 const { exec, execSync, execFile, spawn, spawnSync } = require('child_process');
 const yaml = require('js-yaml');
+// #5172 — punto único de lectura/validación de la configuración del pipeline.
+// El dashboard NO tiene fallback permisivo: config inválida ⇒ `configErrorState`
+// explícito y cero decisiones derivadas (CA-8).
+const configResolver = require('./lib/config-resolver');
+const configSchema = require('./lib/config-schema');
 const pidDiscovery = require('./pid-discovery');
 const {
   findPidByComponent,
@@ -83,6 +91,13 @@ try { etaMarkersLib = require('./lib/eta-markers'); } catch { /* opcional */ }
 // #3951 EP7-H4 — Render puro de los badges de resultado del Commander.
 let commanderResultBadge = null;
 try { commanderResultBadge = require('./lib/commander/result-badge'); } catch { /* opcional */ }
+
+// #6459 — Fuente ÚNICA del listado de peticiones del Commander (enumeración de
+// logs + sidecar de metadata). Compartida con el panel del home V3
+// (`views/dashboard/commander-activity.js`) para que las dos superficies
+// muestren exactamente las mismas filas.
+let commanderRecentRequests = null;
+try { commanderRecentRequests = require('./lib/commander/recent-requests'); } catch { /* opcional */ }
 
 // #2892 PR-C — Estado del banner de alerta de consumo anómalo + cap de snooze.
 let restModeState = null;
@@ -152,6 +167,12 @@ const ROOT = process.env.PIPELINE_MAIN_ROOT || path.resolve(__dirname, '..');
 const LOG_DIR = path.join(PIPELINE, 'logs');
 const GITHUB_BASE = 'https://github.com/intrale/platform/issues';
 
+// #5179 grupo 3b / CA-6b — Halt total leído por el envoltorio único de estado
+// operativo, NUNCA por `existsSync('.paused')` a mano. La lectura es FAIL-CLOSED
+// y vive en `lib/full-pause-state.js`, compartida con `restart.js` y cubierta
+// por tests del camino degradado.
+const { isFullPauseActive } = require('./lib/full-pause-state');
+
 // Sistema visual unificado (issue #2523).
 // Los assets viven en .pipeline/assets/ y son producidos por el agente UX.
 // Lazy-load con cache: el dashboard renderiza muchas veces por minuto y
@@ -217,6 +238,15 @@ let _architectStateResolver = null;
 try { _architectStateResolver = require('./lib/architect-state-resolver'); } catch { /* opcional */ }
 let _architectSlices = null;
 try { _architectSlices = require('./lib/dashboard-slices'); } catch { /* opcional */ }
+
+// #6498 — Resolver puro del estado del sello de evidencia de QA (4 estados) +
+// el modulo emisor de #6495/#6496, del que salen el contador de re-encolados y
+// la cola de re-verificacion. Requires defensivos: si cualquiera falta, el
+// badge simplemente no se pinta y el dashboard queda identico a hoy.
+let _selloEvidenciaState = null;
+try { _selloEvidenciaState = require('./lib/sello-evidencia-state'); } catch { /* opcional */ }
+let _qaEvidenceSeal = null;
+try { _qaEvidenceSeal = require('./lib/qa-evidence-seal'); } catch { /* opcional */ }
 
 // #3625 CA-5 — Renderer del widget de Audit trail · Allowlist mutations.
 // Wrapper alrededor de lib/audit-trail-renderer.js para mantener el dashboard
@@ -489,6 +519,17 @@ function restartComponent(name) {
 // Map en memoria por target que rechaza ráfagas < 5s (DoS auto-infligido).
 const _opsRestartHandler = require('./lib/ops-restart-handler');
 const _opsRestartRateLimiter = _opsRestartHandler.makeRateLimiter(5000);
+// #5646 (CA-9) — Cota AGREGADA: el rate-limiter de arriba es por target, así que
+// al reiniciar N componentes afectados en vez de sólo el pulpo, N targets
+// distintos pasarían la misma ráfaga. Esta cota corta el total por ventana; lo
+// que no entra queda pendiente en `stale-services.json` y lo toma el watchdog.
+const _opsRestartAggregateLimiter = _opsRestartHandler.makeAggregateLimiter(4, 60000);
+// #5646 — Marcador de servicios con código viejo. Require defensivo: si no
+// carga, el endpoint sigue funcionando como antes (restart del pulpo) y lo dice.
+let _staleServices = null;
+try { _staleServices = require('./lib/stale-services'); } catch { /* opcional */ }
+let _runtimeBoot = null;
+try { _runtimeBoot = require('./lib/runtime-boot'); } catch { /* opcional */ }
 // #4460 — Gate de defensa-en-profundidad (loopback + Origin/Referer +
 // Content-Type) para el restart del modelo operativo. Require defensivo: si no
 // carga, el endpoint dedicado responde 503 (nunca ejecuta restart sin gate).
@@ -600,9 +641,147 @@ function tryCommentPromoted(issueNum, addedDeps) {
   } catch {}
 }
 
+// =============================================================================
+// #5172 · CA-8 — Fail-closed en el dashboard = negarse a servir, NO morir
+// =============================================================================
+//
+// ANTES: `catch { return { pipelines: {}, concurrencia: {} } }`. Como los
+// defaults del codebase son apagados por diseño de rollout, ese objeto casi
+// vacío no se veía como un error: se veía como *"el pipeline anda pero no hay
+// nada en las fases"*. Esa es exactamente la clase de fallo silencioso que
+// #5172 elimina.
+//
+// AHORA: un único `loadConfigOrError()` que setea `configErrorState` y devuelve
+// `null`; los consumidores chequean `null`. Envolver cada uno en su propio
+// `try/catch` es donde reaparecerían los fallbacks permisivos por la ventana.
+//
+// PROHIBIDO `process.exit`: si el dashboard muere, el operador pierde la única
+// pantalla que le diría que el pipeline está pausado por configuración inválida.
+
+/**
+ * Estado de error de configuración, consumible por la UI (contrato alineado con
+ * #5171). Trae `detalle` y `accion` YA redactados: la vista los renderiza tal
+ * cual y NO re-deriva copy desde `causa` (CA-UX-5) — es lo que garantiza que
+ * log, Telegram y pantalla digan lo mismo.
+ * @type {null|{ok:false, archivo:string, via:string, causa:string,
+ *               linea:number|null, columna:number|null, detalle:string,
+ *               accion:string, ts:string}}
+ */
+let configErrorState = null;
+
+function getConfigErrorState() { return configErrorState; }
+
+// #3722 — escaper compartido. Se requiere acá (y no se reimplementa) porque las
+// pantallas de error de abajo viven ANTES del `escapeHtml` local del archivo.
+const { escapeHtmlAttr: escHtml } = require('./lib/escape-html');
+
+/**
+ * #5172 · CA-8 — Pantalla de "configuración inválida".
+ *
+ * Es LA pantalla que justifica el contrato de más arriba: si el dashboard muere
+ * (o peor: renderiza un tablero vacío), el operador no tiene forma de enterarse
+ * de que el pipeline está pausado por config rota. Sólo se renderizan `detalle`
+ * y `accion`, que `config-schema.js` ya entrega redactados — acá NO se re-deriva
+ * copy ni se vuelca el valor crudo que falló (CA-UX-5 / SEC-1).
+ *
+ * @param {null|{archivo:string, via:string, detalle:string, accion:string, ts:string}} err
+ * @returns {string} HTML autocontenido (sin assets externos: la config está rota,
+ *                   no podemos depender de nada derivado de ella).
+ */
+function renderConfigErrorPage(err) {
+  const detalle = escHtml((err && err.detalle) || 'configuración del pipeline ilegible o inválida');
+  const accion = escHtml((err && err.accion) || 'revisá config.yaml y corregí el error de sintaxis o de schema');
+  // El nombre del archivo sale SIEMPRE de `err.archivo` (el resolver ya reporta
+  // la ruta efectiva, que puede no ser la del repo si el proceso corre con
+  // override). Hardcodearlo acá le mentiría al operador sobre qué archivo tocar.
+  const archivo = escHtml((err && err.archivo) || '(archivo de configuración del pipeline)');
+  const via = escHtml((err && err.via) || '');
+  const ts = escHtml((err && err.ts) || new Date().toISOString());
+  return `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<title>Configuración inválida — Pipeline</title>
+<meta http-equiv="refresh" content="15">
+<style>
+  body { background:#0d1117; color:#c9d1d9; font-family:'Segoe UI',system-ui,sans-serif;
+         margin:0; padding:48px 24px; display:flex; justify-content:center; }
+  .card { max-width:760px; width:100%; background:#161b22; border:1px solid #f85149;
+          border-radius:10px; padding:28px 32px; }
+  h1 { margin:0 0 4px; font-size:20px; color:#f85149; }
+  .sub { color:#8b949e; font-size:13px; margin-bottom:22px; }
+  .row { margin-bottom:16px; }
+  .lbl { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:#8b949e; margin-bottom:4px; }
+  .val { font-size:14px; line-height:1.5; }
+  code { background:#0d1117; border:1px solid #30363d; border-radius:4px; padding:2px 6px; font-size:13px; }
+  .foot { margin-top:24px; padding-top:16px; border-top:1px solid #30363d; color:#8b949e; font-size:12px; }
+</style></head>
+<body><div class="card">
+  <h1>⛔ Configuración inválida</h1>
+  <div class="sub">El tablero no sirve decisiones derivadas de una configuración que no pudo validarse.
+  Un board vacío sería indistinguible de "no hay trabajo", así que no se renderiza.</div>
+  <div class="row"><div class="lbl">Archivo</div><div class="val"><code>${archivo}</code>${via ? ` <span style="color:#8b949e">(vía ${via})</span>` : ''}</div></div>
+  <div class="row"><div class="lbl">Causa</div><div class="val">${detalle}</div></div>
+  <div class="row"><div class="lbl">Acción</div><div class="val">${accion}</div></div>
+  <div class="foot">El dashboard sigue vivo y reintenta solo: apenas la configuración vuelva a validar,
+  esta pantalla se reemplaza por el tablero (auto-refresh cada 15s). Detectado: ${ts}</div>
+</div></body></html>`;
+}
+
+/**
+ * #5172 · CA-8 — Rutas que devuelven una PÁGINA del tablero. Son las que se
+ * reemplazan por `renderConfigErrorPage` cuando la config no valida. Las APIs y
+ * `/logs/*` quedan fuera a propósito (ver el corte en el handler).
+ */
+const PAGINAS_HTML = new Set(['/', '', '/v3', '/v3/', '/dashboard', '/dashboard/', '/legacy', '/legacy/']);
+
+/**
+ * #5172 · CA-8 — Última red antes del `uncaughtException`. Un error de RENDER no
+ * puede costar el proceso: el dashboard es la única pantalla de diagnóstico del
+ * operador y matarlo es perder la vista justo cuando algo anda mal.
+ */
+function renderInternalErrorPage(e) {
+  return `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><title>Error interno — Pipeline</title>
+<meta http-equiv="refresh" content="15">
+<style>body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',system-ui,sans-serif;padding:48px 24px}
+h1{color:#f85149;font-size:20px} code{background:#161b22;border:1px solid #30363d;border-radius:4px;padding:2px 6px}</style>
+</head><body>
+<h1>⚠️ Error al renderizar el tablero</h1>
+<p>El dashboard sigue vivo. El detalle quedó en <code>logs/dashboard.log</code>.</p>
+<p><code>${escHtml(e && e.message)}</code></p>
+</body></html>`;
+}
+
+/**
+ * Punto único de lectura de config del dashboard.
+ * @returns {object|null} config válida, o `null` si es ilegible/inválida.
+ */
+function loadConfigOrError() {
+  try {
+    // `reload: true` = paridad con el comportamiento previo (antes se leía el
+    // archivo en cada llamada), y necesario para que una corrección en caliente
+    // de config.yaml se refleje sin reiniciar el dashboard.
+    const cfg = configResolver.resolve({ pipelineDir: PIPELINE, reload: true });
+    if (configErrorState) {
+      log(`configuración válida de nuevo: ${configErrorState.archivo} — estado de error levantado`);
+      configErrorState = null;
+    }
+    return cfg;
+  } catch (e) {
+    const estado = configSchema.describeConfigFailure(e, { archivo: e && e.archivo });
+    // Log throttleado: `loadConfig()` se llama por request y el visor de logs
+    // quedaría inservible si cada uno emitiera una línea.
+    if (!configErrorState || configErrorState.detalle !== estado.detalle) {
+      log(configSchema.formatConfigFailureLog(estado, {
+        titulo: 'CONFIG INVÁLIDA — el dashboard no sirve decisiones derivadas de config',
+      }));
+    }
+    configErrorState = estado;
+    return null;
+  }
+}
+
 function loadConfig() {
-  try { return yaml.load(fs.readFileSync(path.join(PIPELINE, 'config.yaml'), 'utf8')); }
-  catch { return { pipelines: {}, concurrencia: {} }; }
+  return loadConfigOrError();
 }
 
 // #4444 / REQ-SEC-1 — Allowlist de skills conocidos, derivada de
@@ -1003,7 +1182,17 @@ function _scheduleOlaETARefresh(state) {
             if (wSnap && Number.isFinite(wSnap.totalPct)) {
               waveTotalPct = wSnap.totalPct;
               const nowTs = Date.now();
-              waveProgressLib.appendSnapshot({ waveKey, avancePct: wSnap.totalPct, now: nowTs });
+              // #5836 — persistir peso total, conteo y versión de fórmula: sin
+              // ellos, dos puntos de la serie no permiten distinguir una caída
+              // por altas de una por retroceso (CA-5).
+              waveProgressLib.appendSnapshot({
+                waveKey,
+                avancePct: wSnap.totalPct,
+                now: nowTs,
+                totalWeight: wSnap.totalWeight,
+                issueCount: wSnap.totalIssues,
+                formulaV: wSnap.formulaV,
+              });
               const vel = await etaWaveLib.calculateWaveVelocityETA(waveKey, wSnap.totalPct, nowTs);
               // #4532 — aceptar tanto el ritmo MEDIDO ('velocity') como la
               // estimación HISTÓRICA cross-ola ('historical'), para que una ola
@@ -1319,6 +1508,13 @@ async function getPipelineStateAsync() {
 // loop con setImmediate en cada yield). Así el worker no starva /api/health.
 function* _genPipelineState() {
   const config = loadConfig();
+  // #5172 · CA-8 — sin configuración válida no se sirve el tablero: un board
+  // vacío es indistinguible de "no hay trabajo" y ese es justo el fallo
+  // silencioso que la historia elimina. Se devuelve el estado de error explícito
+  // y el proceso sigue vivo (el operador necesita esta pantalla para enterarse).
+  if (!config) {
+    return { config: null, configError: getConfigErrorState(), fases: [], agentes: [] };
+  }
   const state = { config };
   let _scanCount = 0;   // contador de archivos para trocear el scan en chunks
 
@@ -1368,6 +1564,28 @@ function* _genPipelineState() {
           const yamlData = readYamlSafe(filepath);
           entry.resultado = yamlData.resultado;
           entry.motivo = yamlData.motivo;
+          // #5629 — Señal ESTRUCTURADA de merge real. `resultado` y `motivo` NO
+          // sirven para saber si hubo merge (los markers de #5220/#5244 decían
+          // `aprobado` con el motivo confesando "merge bloqueado"); el único
+          // dato confiable es este SHA, que `delivery.js` escribe sólo en la
+          // rama de merge confirmado. Lo exponemos crudo: la validación de
+          // formato y la regla de "entregado" viven en `lib/delivery-status.js`.
+          entry.delivery_merge_sha = yamlData.delivery_merge_sha || null;
+          // #6498 CA-1/CA-10/SEC-3 — Bloque `sello:` de #6495 expuesto como
+          // campos DERIVADOS, nunca el objeto crudo. El bloque real trae
+          // `head`, rutas y hashes: jerga que el tooltip no puede mostrar
+          // (UX-3) e informacion que la capa secundaria no puede filtrar. Aca
+          // solo salen dos booleanos/contadores, asi CA-10 se cumple por
+          // construccion: no hay dato sensible que se pueda escapar.
+          const _sello = yamlData && yamlData.sello;
+          if (_sello && typeof _sello === 'object' && !Array.isArray(_sello)) {
+            entry.sello = {
+              presente: true,
+              // SEC-1: el hash declarado por el agente no coincidia con los
+              // bytes reales y se descarto. Es la senal anti-falsificacion.
+              descartes: Array.isArray(_sello.descartes) ? _sello.descartes.length : 0,
+            };
+          }
         }
 
         // #2801 — Si el archivo en pendiente/trabajando tiene contexto de
@@ -1467,6 +1685,64 @@ function* _genPipelineState() {
     catch { return {}; }
   })();
   state.retrying = retryingMap;
+
+  // #6498 — Estado TRANSITORIO del sello de evidencia (caduco / re-sellando /
+  // escalado). No hay dropfile que lo represente mientras ocurre: la fuente
+  // real que dejo #6496 es un contador FS-first con API publica
+  // (`readSealRetries`) mas la cola `verificacion-requeue/`.
+  //
+  // Costo: DOS readdir por refresco de estado (no un readFileSync por tarjeta).
+  // El readFile del contador solo se paga para los issues que efectivamente
+  // tienen uno, que en el camino feliz son cero.
+  //
+  // Mismo patron defensivo que `retryingState`: si el modulo emisor no esta o
+  // el FS falla, el mapa queda vacio, el resolver devuelve null y el dashboard
+  // queda identico a hoy. Cero regresion.
+  state.selloEvidencia = (() => {
+    const mapa = {};
+    if (!_qaEvidenceSeal || typeof _qaEvidenceSeal.readSealRetries !== 'function') return mapa;
+    const max = Number.isInteger(_qaEvidenceSeal.MAX_SEAL_REQUEUES) && _qaEvidenceSeal.MAX_SEAL_REQUEUES > 0
+      ? _qaEvidenceSeal.MAX_SEAL_REQUEUES
+      : 2;
+    try {
+      // 1) Ordenes de re-verificacion abiertas: pendiente/ + trabajando/.
+      const abiertos = new Set();
+      for (const sub of ['pendiente', 'trabajando']) {
+        let files;
+        try { files = fs.readdirSync(path.join(PIPELINE, 'verificacion-requeue', sub)); }
+        catch { continue; }
+        for (const nombre of files) {
+          const m = /^(\d+)-.*\.json$/.exec(nombre);
+          if (m) abiertos.add(m[1]);
+        }
+      }
+      // 2) Contadores `.<issue>.seal-retries` de la fase de verificacion.
+      const faseDir = typeof _qaEvidenceSeal.verificacionFasePath === 'function'
+        ? _qaEvidenceSeal.verificacionFasePath(PIPELINE)
+        : path.join(PIPELINE, 'desarrollo', 'verificacion');
+      let contadores = [];
+      try { contadores = fs.readdirSync(faseDir); } catch { contadores = []; }
+      for (const nombre of contadores) {
+        const m = /^\.(\d+)\.seal-retries$/.exec(nombre);
+        if (!m) continue;
+        const issue = m[1];
+        let r;
+        try { r = _qaEvidenceSeal.readSealRetries({ pipelineDir: PIPELINE, issue }); }
+        catch { continue; }
+        mapa[issue] = {
+          intentos: Number.isInteger(r && r.intentos) ? r.intentos : 0,
+          requeueAbierto: abiertos.has(issue),
+          maxIntentos: max,
+        };
+      }
+      // 3) Orden abierta sin contador legible: igual es una reparacion en curso.
+      for (const issue of abiertos) {
+        if (mapa[issue]) continue;
+        mapa[issue] = { intentos: 1, requeueAbierto: true, maxIntentos: max };
+      }
+    } catch { /* defensa: el badge es opcional, el board no */ }
+    return mapa;
+  })();
 
   for (const [id, data] of Object.entries(state.issueMatrix)) {
     data.pipelines = [...data.pipelines];
@@ -1628,15 +1904,52 @@ function* _genPipelineState() {
     state.bloqueadosStats = computeBloqueadosStats({});
   } catch {}
 
-  // #4580 — Bandeja "Esperando tu firma": los tres orígenes de firma del
-  // operador (waiting-operator/ · esperando-firma/ · GATE 3) unificados por
-  // lib/waiting-operator. Read-only: el lector valida el id (^\d+$, REQ-SEC-
-  // 4580-3) y redacta la evidencia (REQ-SEC-4580-5) antes de exponerla.
+  // #4580 / #6208 — Bandeja "Esperando tu firma". La fuente pasa a ser el read
+  // model `lib/gate-signature-inbox`, que UNE los pendientes REALES del depósito
+  // del kernel (firmables, con ficha + ancla server-derived + opciones) con los
+  // markers de `waiting-operator` (GATE 3 y compañía, no firmables desde acá).
+  // Antes leía SÓLO los markers, así que la bandeja estaba siempre vacía de
+  // firmas reales (CA-1). Read-only: no muta ningún archivo del pipeline.
+  //
+  // `esperandoFirmaInbox` lleva los metadatos del read model (`vacio`, `banda`,
+  // `degraded`) que la vista necesita para pintar los TRES vacíos: sin ellos un
+  // depósito ilegible se vería con el mismo cartel verde de "está todo firmado"
+  // (H-UX-6208-1).
   state.esperandoFirma = [];
+  state.esperandoFirmaInbox = null;
   try {
-    const waitingOperator = require('./lib/waiting-operator');
-    state.esperandoFirma = waitingOperator.listWaitingOperator();
-  } catch {}
+    const gateSignatureInbox = require('./lib/gate-signature-inbox');
+    const inbox = gateSignatureInbox.listInbox({ nowMs: Date.now() });
+    state.esperandoFirma = inbox.items;
+    state.esperandoFirmaInbox = {
+      degraded: inbox.degraded,
+      alert: inbox.alert,
+      corruptCount: inbox.corruptCount,
+      visibleCount: inbox.visibleCount,
+      firmables: inbox.firmables,
+      vacio: inbox.vacio,
+      banda: inbox.banda,
+    };
+  } catch (e) {
+    // Fail-closed hacia la visibilidad: si el read model no cargó NO se pinta el
+    // vacío verde. La bandeja dice que no pudo leer la lista (UX §5).
+    log(`gate-signature-inbox unavailable: ${e.message}`);
+    state.esperandoFirmaInbox = {
+      degraded: true,
+      alert: 'No pude leer la lista de firmas pendientes. Retengo y aviso.',
+      corruptCount: 0,
+      visibleCount: 0,
+      firmables: 0,
+      vacio: {
+        tono: 'warn',
+        icono: '\u26A0',
+        titulo: 'No pude leer la lista de firmas pendientes',
+        lineas: ['Esto no quiere decir que esté todo firmado.', 'Freno lo que dependa de una firma y te aviso.'],
+        chip: 'RETENIDO · REVISAR EL DEPÓSITO',
+      },
+      banda: null,
+    };
+  }
 
   // #3957 (CA-3) — username PÚBLICO del bot de Telegram para el deep-link de
   // cada fila. Validado contra el charset de Telegram antes de exponerlo; si
@@ -1810,6 +2123,34 @@ function* _genPipelineState() {
     memHistory: resourceHistory.mem.slice()
   };
 
+  // #6708 — Espacio libre en disco con el color del umbral vigente. El Pulpo lo
+  // mide en cada tick y lo persiste en `disk-guard-state.json`; acá sólo se lee
+  // (leer es barato, medir con `fsutil` en cada refresh de la página no).
+  //
+  // `null` cuando el archivo todavía no existe (Pulpo recién arrancado, o
+  // `disk_budget.enabled: false`): el render omite la celda en vez de mostrar
+  // ceros, que se leerían como "disco lleno".
+  state.disk = null;
+  try {
+    const dg = require('./lib/disk-guard');
+    const st = dg.readState({ pipelineDir: PIPELINE });
+    if (st && st.measured_at) {
+      state.disk = {
+        level: st.level,
+        // #6708 (rebote rev-1) — Rótulo textual del escalón, resuelto en el
+        // servidor por el módulo dueño del mapa. Viaja en el slice para que la
+        // pill no dependa sólo de su espejo client-side.
+        label: dg.levelLabel(st.level),
+        color: dg.LEVEL_COLORS[st.level] || dg.LEVEL_COLORS.unknown,
+        freeGB: st.free_gb,
+        totalGB: st.total_gb,
+        frozen: !!st.frozen,
+        budget: st.budget || null,
+        measuredAt: st.measured_at,
+      };
+    }
+  } catch { state.disk = null; }
+
   // #3492 — ETA agregada por ola (probabilística, p50/p75/p90). Refresh async
   // fire-and-forget contra cache TTL 30s para no bloquear el render sync.
   // Cuando el cache aún no está listo (primer tick), `state.olaETA = null`
@@ -1913,7 +2254,7 @@ function* _genPipelineState() {
       if (typeof data.faseActual === 'string' && /bloqueados/.test(data.faseActual)) bloqueados++;
     }
     const primarySummary = { activos, pendientes, bloqueados, procesados: doneIssueIds.length };
-    const isPausedNow = fs.existsSync(path.join(PIPELINE, '.paused'));
+    const isPausedNow = isFullPauseActive();
     const now = Date.now();
     state.products = catalog;
     for (const p of catalog) {
@@ -2309,7 +2650,7 @@ function renderRecommendationsSection() {
   const errorTxt = cache.error ? `<div class="reco-err">⚠ ${escapeHtml(cache.error)}</div>` : '';
   const summary = `<summary>💡 Recomendaciones pendientes <span class="reco-count" data-count="${items.length}">${items.length}</span> <span class="reco-meta">· última sync: ${updatedAtTxt}</span></summary>`;
   if (items.length === 0) {
-    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs-human</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
+    return `<details class="collapse-section reco-section">${summary}<div class="collapse-body">${errorTxt}<p class="dim" style="margin:6px 0">Sin recomendaciones pendientes. Los agentes guru/security/po/ux/review crean issues con label <code>tipo:recomendacion</code> + <code>needs:triage-backlog</code> que aparecen acá hasta que las apruebes o rechaces.</p><div style="margin-top:8px"><button class="reco-btn" onclick="recoRefresh()">🔄 Refrescar desde GitHub</button></div></div></details>`;
   }
   const rows = items.map(it => {
     const fromTxt = it.fromIssue ? `desde #${it.fromIssue}` : '';
@@ -2489,6 +2830,14 @@ function renderCommanderResultBadges(meta) {
   catch { return ''; }
 }
 
+// #6459 — CSS de los badges desde su fuente única. Si el require opcional del
+// módulo falló, el legacy queda sin las reglas (igual que ya quedaba sin los
+// badges): degradar, nunca romper el render de toda la página.
+function badgeCss() {
+  if (!commanderResultBadge || typeof commanderResultBadge.RESULT_BADGE_CSS !== 'string') return '';
+  return commanderResultBadge.RESULT_BADGE_CSS;
+}
+
 // #3949 EP7-H2 — Render de los logs recientes del Commander (un log por
 // petición atendida) dentro de la card de Commander Routing. Reutiliza el
 // patrón `<a class="log-link">` (G1) y un label legible HH:MM:SS + chat (G3),
@@ -2496,22 +2845,18 @@ function renderCommanderResultBadges(meta) {
 // epochms es el último segmento `-` del id.
 // #3951 EP7-H4 — enriquece cada item con el badge de resultado leyendo su
 // sidecar `commander-<id>.meta.json` (lectura defensiva: sin sidecar → sin badge).
+// #6459 — La enumeración de logs + lectura del sidecar se movió a
+// `lib/commander/recent-requests.js`, que es la MISMA fuente que consume el
+// panel del home V3. Antes esta función era el único lugar del repo que sabía
+// leer las peticiones del Commander, y como sólo se sirve en `/legacy`, el dato
+// no llegaba nunca al dashboard que abre el operador.
 function renderCommanderRequestLogs(logDir, limit) {
   const MAX = limit || 8;
   let files = [];
   try {
-    files = fs.readdirSync(logDir)
-      .filter(f => /^commander-.+\.log$/.test(f))
-      .map(f => {
-        // id = nombre sin prefijo `commander-` ni sufijo `.log`.
-        const id = f.replace(/^commander-/, '').replace(/\.log$/, '');
-        const parts = id.split('-');
-        const epochms = Number(parts[parts.length - 1]);
-        const chat = parts.slice(0, -1).join('-') || '?';
-        return { f, id, epochms: Number.isFinite(epochms) ? epochms : 0, chat };
-      })
-      .sort((a, b) => b.epochms - a.epochms)
-      .slice(0, MAX);
+    files = commanderRecentRequests
+      ? commanderRecentRequests.listRecentRequests(logDir, MAX)
+      : [];
   } catch { /* dir inexistente → estado vacío */ }
 
   if (files.length === 0) {
@@ -2525,17 +2870,10 @@ function renderCommanderRequestLogs(logDir, limit) {
   const items = files.map(it => {
     const hora = it.epochms ? new Date(it.epochms).toTimeString().slice(0, 8) : '??:??:??';
     const label = `${hora} · chat ${escapeHtml(it.chat)}`;
-    // #3951 EP7-H4 — lectura defensiva del sidecar de metadata. Si no existe
-    // (peticiones previas al cambio) o está corrupto → sin badge, sin error.
-    let badges = '';
-    try {
-      const metaPath = path.join(logDir, `commander-${it.id}.meta.json`);
-      if (fs.existsSync(metaPath)) {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        badges = renderCommanderResultBadges(meta);
-      }
-    } catch { /* sidecar ausente/corrupto → render sin badge */ }
-    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.f)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}${badges}</a>`;
+    // #3951 EP7-H4 — el sidecar ya viene leído (defensivamente) por
+    // `listRecentRequests`: sin sidecar / corrupto ⇒ `meta === null` ⇒ sin badge.
+    const badges = renderCommanderResultBadges(it.meta);
+    return `<a class="log-link" href="/logs/view/${encodeURIComponent(it.file)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${escapeHtml(it.id)}" style="display:block;font-size:0.8em;padding:1px 0;color:var(--ac)">📄 ${label}${badges}</a>`;
   }).join('');
 
   return `
@@ -2563,7 +2901,7 @@ function generateHTML(state) {
   const pulpoBuild = fmtDate(path.join(PIPELINE, 'pulpo.js'));
   let pulpoUptime = '—';
   try { const lr = JSON.parse(fs.readFileSync(path.join(PIPELINE, 'last-restart.json'), 'utf8')); if (lr.timestamp) { const ms = Date.now() - new Date(lr.timestamp).getTime(); const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000); pulpoUptime = h > 0 ? h + 'h ' + m + 'm' : m + 'm'; } } catch {}
-  const isPaused = fs.existsSync(path.join(PIPELINE, '.paused'));
+  const isPaused = isFullPauseActive();
 
   // #2490 — Pausa parcial (allowlist de issues)
   let partialPauseState = { mode: 'running', allowedIssues: [] };
@@ -2620,7 +2958,7 @@ function generateHTML(state) {
   // #4375 — Semáforo de sincronización allowlist↔ola (read-only). SSR inicial +
   // refresh cliente cada 30s vía /api/dash/desync-status. Ante error del slice
   // dejamos el estado degradado 'desconocido' (gris), nunca falso verde.
-  let desyncStatusData = { estado: 'desconocido', added: [], removed: [], count: 0, bloqueado: false };
+  let desyncStatusData = { estado: 'desconocido', added: [], removed: [], count: 0, bloqueado: false, detected_at: null };
   try {
     const slices = require('./lib/dashboard-slices');
     const slice = slices.desyncStatusSlice({}, {});
@@ -2760,29 +3098,43 @@ function generateHTML(state) {
   }) : [];
   const definidos = definidosList.length;
 
-  // Entregados = completaron la fase final de desarrollo (entrega/procesado)
+  // #5629 — Acá vivían `entregadosList`/`entregados`/`ttEntregados` ("Entregados
+  // a producción"), que derivaban la entrega de "marker de la fase final en
+  // procesado". Eran código MUERTO (ninguno se renderizaba: la KPI viva es
+  // `entregados24h`) pero codificaban justo la regla R4 que
+  // `lib/delivery-status.js` prohíbe, así que se eliminan en vez de migrarse:
+  // dejarlas era sembrar la sexta derivación para el próximo que las reactive.
   const devFasesKpi = config.pipelines?.desarrollo?.fases || [];
   const lastDevFase = devFasesKpi[devFasesKpi.length - 1];
-  const entregadosList = lastDevFase ? matrixEntries.filter(([_, d]) => {
-    const entries = d.fases[`desarrollo/${lastDevFase}`] || [];
-    return entries.some(e => e.estado === 'procesado');
-  }) : [];
-  const entregados = entregadosList.length;
 
   const ttDefinidos  = buildTtData('Definidos listos',        definidosList, (_, d) => {
     const label = ttLabel(d);
     return label || 'definición completada';
   });
-  const ttEntregados = buildTtData('Entregados a producción',  entregadosList, (_, d) => {
-    // Para entregados, buscar el skill que hizo la entrega
-    const entregaEntries = d.fases[`desarrollo/${lastDevFase}`] || [];
-    const proc = entregaEntries.find(e => e.estado === 'procesado');
-    const skill = proc?.skill || '';
-    const label = ttLabel(d);
-    return skill ? `${skill}` + (label ? ` · ${label}` : '') : (label || 'entregado');
-  });
   const now24 = Date.now();
-  const entregados24hList = lastDevFase ? matrixEntries.filter(([_, d]) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; return ee.some(e => e.estado === 'procesado' && e.updatedAt && (now24 - e.updatedAt) < 86400000); }) : [];
+  // #5629 — QUINTA derivación de "Entregado", y la última de la pantalla
+  // principal: este KPI contaba "marker de la fase final en procesado", que es
+  // exactamente la regla R4 que `lib/delivery-status.js` prohíbe (la presencia
+  // del marker NO es entrega: los de #5220/#5244 estaban procesados con los PRs
+  // sin mergear). Ahora la ventana de 24h sigue anclada al `updatedAt` del
+  // marker —es el único timestamp del evento de entrega—, pero sólo cuenta si
+  // el helper único confirma la entrega por CLOSED en GitHub o por
+  // `delivery_merge_sha`. Así el KPI deja de contradecir a ENTREGADOS y al
+  // board (CA-1/CA-7).
+  const _deliveryStatus = (() => {
+    try { return require('./lib/delivery-status'); } catch (_) { return null; }
+  })();
+  const _entregadoReal = (id, d) => {
+    // Sin el helper NO degradamos a la regla vieja: fail-closed (preferimos no
+    // contar una entrega antes que inventar una que no ocurrió).
+    if (!_deliveryStatus) return false;
+    const meta = state.issueTitles?.[String(id)];
+    return _deliveryStatus.isDelivered({
+      closedInGitHub: !!meta && String(meta.state).toUpperCase() === 'CLOSED',
+      mergeSha: _deliveryStatus.extractMergeSha(d),
+    });
+  };
+  const entregados24hList = lastDevFase ? matrixEntries.filter(([id, d]) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; return ee.some(e => e.estado === 'procesado' && e.updatedAt && (now24 - e.updatedAt) < 86400000) && _entregadoReal(id, d); }) : [];
   const entregados24h = entregados24hList.length;
   const ttEntregados24h = buildTtData('Entregados 24h', entregados24hList, (_, d) => { const ee = d.fases['desarrollo/' + lastDevFase] || []; const p = ee.find(e => e.estado === 'procesado'); return p ? p.skill || 'entregado' : 'entregado'; });
 
@@ -3373,6 +3725,26 @@ function generateHTML(state) {
         }
       } catch { /* defensa: no romper la tarjeta si el resolver/renderer falla */ }
     }
+    // #6498 CA-2/CA-3 — Badge del sello de evidencia de QA. Insertar
+    // SEMANTICAMENTE entre architect y stale; el orden final de la fila es:
+    // crossphase -> rebote -> needshuman -> architect -> sello -> stale.
+    //
+    // El estado sale de dos fuentes con ciclos de vida distintos: el bloque
+    // `sello:` del dropfile (lo PERSISTIDO) y el contador FS-first de #6496
+    // (lo TRANSITORIO). El resolver las mergea con prioridad
+    // escalado > re-sellando > caduco > sellado > null.
+    //
+    // Sin dato => null => CERO badge: un issue sin sello queda como hoy.
+    if (_selloEvidenciaState && _architectSlices && typeof _architectSlices.selloEvidenciaBadgeHTML === 'function') {
+      try {
+        const selloState = (state.selloEvidencia || {})[String(issueNum)];
+        const selloInfo = _selloEvidenciaState.resolveSelloEvidenciaState(data.fases, selloState);
+        if (selloInfo) {
+          const badgeHTML = _architectSlices.selloEvidenciaBadgeHTML(selloInfo, { esc, ic });
+          if (badgeHTML) stateBadges.push(badgeHTML);
+        }
+      } catch { /* defensa: no romper la tarjeta si el resolver/renderer falla */ }
+    }
     if (isStale && !isRetrying) {
       stateBadges.push(`<span class="lc-state-badge lc-state-stale" title="Sin actividad reciente: ${data.staleMin}m" aria-label="stale ${data.staleMin} minutos">${ic('estado-stale')} ${data.staleMin}m</span>`);
     }
@@ -3744,8 +4116,17 @@ function generateHTML(state) {
     ? esperandoFirmaView.renderEsperandoFirmaSsr(state)
     : '';
 
+  // #6208 · R1 — client script de la bandeja, del MISMO módulo que inyecta
+  // `estado-productos.js:541-542`. Antes la home legacy tenía su propia copia
+  // inline de los handlers y las dos divergían. Sin él la bandeja se ve pero sus
+  // botones no operan; con él hay UNA sola definición de `gateSignatureDecide`.
+  const esperandoFirmaJS = (esperandoFirmaView && typeof esperandoFirmaView.renderEsperandoFirmaClientScript === 'function')
+    ? '<script>' + esperandoFirmaView.renderEsperandoFirmaClientScript() + '</script>'
+    : '';
+
   const matrixHTML = `
     ${esperandoFirmaHTML}
+    ${esperandoFirmaJS}
     ${bloqueadosHTML}
     <a id="board-kanban" class="board-kanban-anchor" aria-hidden="true"></a>
     <div class="matrix-section section-collapsible board-kanban-centerpiece" id="issue-tracker" data-section="issue-tracker">
@@ -4075,6 +4456,15 @@ function generateHTML(state) {
   const healthLabel = healthScore > 60 ? 'Óptimo' : healthScore > 30 ? 'Presionado' : healthScore > 10 ? 'Crítico' : 'Saturado';
   const healthColor = healthScore > 60 ? '#3fb950' : healthScore > 30 ? '#d29922' : '#f85149';
   const blocked = res.cpuPercent >= res.maxCpu || res.memPercent >= res.maxMem;
+
+  // #6708 — El indicador de disco NO se pinta acá. `resourcesHTML` (abajo) es
+  // código muerto: se asigna y nunca se interpola en el HTML de salida, así
+  // que un gauge colgado de ese bloque no llega a ninguna pantalla servida.
+  // El espacio libre con el color de su umbral se renderiza en la system card
+  // del home V3 (`views/dashboard/home.js` → renderSystemCard), que es la
+  // pantalla que abre el operador. `state.disk` se sigue calculando arriba
+  // porque lo consume `headerSlice()` → /api/dash/header, la fuente del dato.
+
   const resourcesHTML = `
     <div class="sys-health">
       <div class="sys-health-score" style="--hcolor:${healthColor}">
@@ -4516,6 +4906,9 @@ ${loadDesignTokens()}
 .dss-chip{font-size:var(--fs-xs,0.68rem);font-weight:var(--fw-bold,700);padding:1px 6px;border-radius:var(--radius-full,9999px);font-variant-numeric:tabular-nums}
 .dss-chip-add{background:var(--warning-bg,rgba(210,153,34,0.16));color:var(--warning,var(--yl))}
 .dss-chip-rem{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd,#F85149))}
+/* #5724 UX-4 — indicador de overflow de la divergencia (tope de 6 chips). Sin
+   color propio: es metadato, no un issue más. */
+.dss-chip-more{background:var(--deterministic-bg,rgba(110,118,129,0.15));color:var(--text-dim,var(--dim))}
 .dss-ok{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gn));border-color:rgba(63,185,80,0.4)}
 .dss-ok .pl-ic{color:var(--success,var(--gn))}
 .dss-warn{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.45)}
@@ -4589,6 +4982,20 @@ ${loadDesignTokens()}
 .lc-state-architect-running{background:var(--warning-bg,rgba(210,153,34,0.14));color:var(--warning,var(--yl));border-color:rgba(210,153,34,0.4)}
 .lc-state-architect-approved{background:var(--success-bg,rgba(63,185,80,0.14));color:var(--success,var(--gr));border-color:rgba(63,185,80,0.4)}
 .lc-state-architect-rejected{background:var(--danger-bg,rgba(248,81,73,0.14));color:var(--danger,var(--rd));border-color:rgba(248,81,73,0.5)}
+/* #6498 CA-7 — Badge del sello de evidencia. Tokens PELADOS, sin fallback
+   literal: CA-7 prohibe colores literales en el codigo nuevo. Si
+   loadDesignTokens() degrada a vacio el badge pierde el fondo pero NO la
+   legibilidad — icono + etiqueta siguen ahi, que es la garantia de CA-5.
+   UX-G1 (vinculante): el borde de 'escalado' usa var(--danger), NO
+   var(--danger-dim): #8B1A14 sobre la tarjeta da 1.86:1 y no llega al 3:1 de
+   WCAG 1.4.11 para no-texto.
+   UX-G2 (vinculante): ninguna lleva animation — dos pulsos desfasados en la
+   misma fila que .lc-state-needshuman anulan la jerarquia visual.
+   R-1: clases NUEVAS. .lc-state-stale (gris, badge de inactividad) no se toca. */
+.lc-state-sello-sellado{background:var(--info-bg);color:var(--info);border-color:var(--info-dim)}
+.lc-state-sello-caduco{background:var(--retry-bg);color:var(--retry);border-color:var(--retry-dim)}
+.lc-state-sello-resellando{background:var(--retry-bg);color:var(--retry);border-color:var(--retry-dim)}
+.lc-state-sello-escalado{background:var(--danger-bg);color:var(--danger);border-color:var(--danger)}
 .lc-state-row{display:flex;flex-wrap:wrap;gap:5px;padding:0 var(--space-3,10px) var(--space-2,6px);margin-top:-2px}
 /* ── Cola detallada (#3356) — 5ta sub-seccion del large board principal ─── */
 /* Las 5 sub-secciones del header son: (1) brand bar / hdr-bar-v3,            */
@@ -5267,19 +5674,18 @@ h2{color:var(--dim);font-size:0.8em;text-transform:uppercase;letter-spacing:2px;
 .log-link:hover .chip{text-decoration:underline;filter:brightness(1.15)}
 
 /* ── #3951 EP7-H4 — Badge de resultado de la petición del Commander.
- *    Mapea el enum cerrado (ok/ajustada/fallback/error) a los 4 tokens
+ *    Mapea el enum cerrado (ok/ajustada/fallback/error/huerfano) a los 5 tokens
  *    semánticos del design system. Glyph + label SIEMPRE (CA-4: no depender
- *    sólo del color). Tokens con fallback legacy por si design-tokens.css no
- *    está cargado. */
-.cmd-result{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:5px;font-size:0.72em;font-weight:600;line-height:1.5;border:1px solid transparent;margin-left:6px}
-.cmd-result-ok       {color:var(--success,var(--gn));background:var(--success-bg,rgba(63,185,80,0.14));border-color:var(--success-dim,var(--gn2))}
-.cmd-result-ajustada {color:var(--warning,var(--yl));background:var(--warning-bg,rgba(210,153,34,0.14));border-color:var(--warning-dim,var(--yl2))}
-.cmd-result-fallback {color:var(--info,var(--ac));   background:var(--info-bg,rgba(88,166,255,0.14));   border-color:var(--info-dim,var(--ac2))}
-.cmd-result-error    {color:var(--danger,var(--rd)); background:var(--danger-bg,rgba(248,81,73,0.14));  border-color:var(--danger-dim,var(--rd2))}
-.cmd-provider{font-size:0.72em;color:var(--dim);font-family:inherit;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
-.cmd-verif{font-size:0.72em;padding:1px 6px;border:1px solid var(--bd);border-radius:5px;margin-left:4px}
-.cmd-verif-cross{color:var(--info,var(--ac));border-color:var(--info-dim,var(--ac2));background:var(--info-bg,rgba(88,166,255,0.14))}
-.cmd-verif-same {color:var(--dim);border-color:var(--bd)}
+ *    sólo del color).
+ *
+ *    #6459 — las reglas ya NO viven acá: se interpolan desde
+ *    lib/commander/result-badge.js (RESULT_BADGE_CSS), que es la MISMA
+ *    constante que consume el home V3 (views/dashboard/commander-activity.js).
+ *    Antes esta copia era la única del repo y generateHTML() sólo se sirve
+ *    en /legacy: el badge existía y no se veía en el dashboard que abre el
+ *    operador. Con una sola fuente, agregar un resultado no puede dejar una
+ *    de las dos superficies muda otra vez. */
+${badgeCss()}
 
 /* ── Log Viewer Panel ──────────────────────────────────────────────────── */
 .log-overlay{
@@ -6812,11 +7218,16 @@ body.standalone .section-collapsed .section-body{display:block !important}
     isPaused,
     isPartialPause,
     trabajando,
+    // #5172 · D-C — SEGUNDO lector de config del dashboard, independiente del
+    // de `loadConfig()`. Resolvía la raíz por `ROOT` en vez de por `PIPELINE`,
+    // así que IGNORABA `PIPELINE_STATE_DIR` (leía el config del repo aunque el
+    // proceso corriera contra otro directorio de estado) y encima degradaba con
+    // `catch { return 3 }`. No figuraba en ningún CA. Ahora pasa por el punto
+    // único, con la MISMA raíz que el resto del dashboard.
     pwThreshold: (() => {
-      try {
-        const cfgYaml = yaml.load(fs.readFileSync(path.join(ROOT, '.pipeline', 'config.yaml'), 'utf8'));
-        return (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
-      } catch { return 3; }
+      const cfgYaml = loadConfig();
+      if (!cfgYaml) return null;   // la vista muestra el estado de error, no un umbral inventado
+      return (cfgYaml.resource_limits || {}).priority_windows_activation_threshold || 3;
     })(),
     now: Date.now(),
     ic,
@@ -7009,7 +7420,24 @@ body.standalone .section-collapsed .section-body{display:block !important}
 
   ${state.rechazos.length > 0 ? `<details class="collapse-section"><summary>🚫 Rechazos recientes<span>${state.rechazos.length}</span></summary><div class="collapse-body">${rechazosHTML}</div></details>` : ''}
 
-  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${actHTML}</div></details>
+  ${/* #6459 — El listado "Logs recientes" (una fila por petición atendida, con
+        su badge de resultado) lo construye `renderCommanderRequestLogs` desde
+        #3949/#3951, pero su ÚNICO caller estaba dentro de `doraMinHTML`, que el
+        rediseño kiosk V3 (#2801/#2804) dejó de emitir: la variable se arma y no
+        se usa en ningún lado. Verificado sobre el dashboard vivo — `curl :3200`
+        y `:3299/`, `/v3`, `/multi-provider` ⇒ cero ocurrencias de "Logs
+        recientes" y cero de `cmd-result`.
+
+        Consecuencia: el badge de resultado NO se renderiza en ninguna parte, y
+        el estado `huerfano` nacería mudo — exactamente el escape #4531 que
+        CA-13 viene a cerrar.
+
+        La reparación es de RENDER PATH, no de layout: el listado se cuelga de la
+        sección de Commander que la página YA emite, sin card nueva, sin mover
+        nada y sin resucitar la card de DORA (que sigue muerta, fuera del alcance
+        de este issue). La anatomía de la fila es la del mockup acordado
+        `assets/mockups/6440/02-dashboard-badge-huerfano.svg`. */''}
+  <details class="collapse-section"><summary>💬 Actividad Commander</summary><div class="collapse-body" style="max-height:300px;overflow-y:auto">${renderCommanderRequestLogs(LOG_DIR)}${actHTML}</div></details>
 
   <div class="footer" id="dash-footer">🟢 Live · Refresh on-demand &nbsp;|&nbsp; ${new Date().toLocaleString('es-AR')}</div>
 
@@ -8129,21 +8557,67 @@ var _DSS_META = {
   divergencia_bloqueada: { icon: 'warn',              label: 'Divergencia bloqueada', cls: 'dss-danger',  aria: 'divergencia bloqueada, requiere intervención' },
   desconocido:           { icon: 'stage-not-entered', label: 'Sin datos',             cls: 'dss-unknown', aria: 'sin datos de sincronización' },
 };
-function _dssDetailText(estado, count) {
+// #5724 CA-4 / UX-1..UX-4 — Estado BLOQUEANTE: nombra la consecuencia (el
+// dispatch está suspendido), no el síntoma interno; candado en vez de warn;
+// role=alert; antigüedad visible; overflow explícito. Espejo exacto del SSR
+// (views/dashboard/pipeline.js) — los dos renderers tienen que decir lo mismo.
+var _DSS_META_BLOQUEADO = {
+  icon: 'pause-lock',
+  label: 'Dispatch suspendido',
+  cls: 'dss-danger',
+  aria: 'dispatch suspendido por divergencia entre la allowlist y la ola activa',
+};
+var _DSS_CHIPS_TOPE = 6;
+function _dssAgeText(detectedAt) {
+  var ts = Date.parse(detectedAt);
+  if (!Number.isFinite(ts)) return '';
+  var min = Math.floor((Date.now() - ts) / 60000);
+  if (!Number.isFinite(min) || min < 0) return '';
+  if (min < 1) return 'recién';
+  if (min < 60) return 'hace ' + min + ' min';
+  var h = Math.floor(min / 60);
+  var m = min % 60;
+  if (h >= 24) {
+    var dias = Math.floor(h / 24);
+    var restoH = h % 24;
+    return restoH > 0 ? ('hace ' + dias + ' d ' + restoH + ' h') : ('hace ' + dias + ' d');
+  }
+  return m > 0 ? ('hace ' + h + ' h ' + m + ' min') : ('hace ' + h + ' h');
+}
+function _dssDetailText(estado, count, d) {
+  var info = d && typeof d === 'object' ? d : {};
   switch (estado) {
     case 'sincronizado': return count > 0 ? (count + ' issues alineados') : 'allowlist alineada con la ola';
     case 'realineado_reductivo': return 'divergencia autoresoluble por el Pulpo · no bloquea';
-    case 'divergencia_bloqueada': return 'requiere intervención · ambiguo o flag de desync activo';
+    case 'divergencia_bloqueada': {
+      var added = (Array.isArray(info.added) ? info.added : []).filter(Number.isInteger);
+      var removed = (Array.isArray(info.removed) ? info.removed : []).filter(Number.isInteger);
+      var bloqueado = Boolean(info.bloqueado);
+      var partes = [];
+      if (removed.length > 0) partes.push(removed.length + (removed.length === 1 ? ' issue' : ' issues') + ' de la ola fuera de la allowlist');
+      if (added.length > 0) partes.push(added.length + (added.length === 1 ? ' issue' : ' issues') + ' de la allowlist fuera de la ola');
+      if (partes.length === 0) partes.push('la allowlist y la ola activa divergen');
+      if (bloqueado) partes.push('no se lanza ningún agente');
+      var edad = bloqueado ? _dssAgeText(info.detected_at) : '';
+      if (edad) partes.push(edad);
+      return partes.join(' · ');
+    }
     default: return 'waves/partial-pause ausente o degradado';
   }
 }
 function _dssChips(added, removed) {
+  var listaAdd = (Array.isArray(added) ? added : []).filter(Number.isInteger);
+  var listaRem = (Array.isArray(removed) ? removed : []).filter(Number.isInteger);
   var parts = [];
-  (Array.isArray(added) ? added : []).filter(Number.isInteger).slice(0, 6)
+  listaAdd.slice(0, _DSS_CHIPS_TOPE)
     .forEach(function(n) { parts.push('<span class="dss-chip dss-chip-add">+#' + _ppaClientEsc(String(n)) + '</span>'); });
-  (Array.isArray(removed) ? removed : []).filter(Number.isInteger).slice(0, 6)
+  listaRem.slice(0, _DSS_CHIPS_TOPE)
     .forEach(function(n) { parts.push('<span class="dss-chip dss-chip-rem">−#' + _ppaClientEsc(String(n)) + '</span>'); });
   if (parts.length === 0) return '';
+  var ocultos = Math.max(0, listaAdd.length - _DSS_CHIPS_TOPE) + Math.max(0, listaRem.length - _DSS_CHIPS_TOPE);
+  if (ocultos > 0) {
+    parts.push('<span class="dss-chip dss-chip-more" title="' + _ppaClientEsc(ocultos + ' issues más en la divergencia') + '">+' + _ppaClientEsc(String(ocultos)) + ' más</span>');
+  }
   return '<span class="dss-chips">' + parts.join('') + '</span>';
 }
 function renderDesyncStatus(data) {
@@ -8151,13 +8625,16 @@ function renderDesyncStatus(data) {
   if (!pill) return;
   var d = data && typeof data === 'object' ? data : {};
   var estado = Object.prototype.hasOwnProperty.call(_DSS_META, d.estado) ? d.estado : 'desconocido';
-  var meta = _DSS_META[estado];
+  var bloqueado = Boolean(d.bloqueado);
+  var meta = (estado === 'divergencia_bloqueada' && bloqueado) ? _DSS_META_BLOQUEADO : _DSS_META[estado];
   var count = Number.isInteger(d.count) ? d.count : 0;
-  var detail = _dssDetailText(estado, count);
+  var detail = _dssDetailText(estado, count, d);
   pill.className = 'dss-pill ' + meta.cls;
   var ariaFull = 'Estado de sincronización allowlist↔ola: ' + meta.aria + '. ' + detail;
   pill.setAttribute('aria-label', ariaFull);
   pill.setAttribute('title', detail);
+  // UX-2: aria-live assertive cuando el pipeline está frenado; polite si no.
+  pill.setAttribute('role', bloqueado ? 'alert' : 'status');
   pill.innerHTML = ''
     + '<span class="dss-ic">' + _ppaIcUse(meta.icon, meta.aria) + '</span>'
     + '<span class="dss-label">' + _ppaClientEsc(meta.label) + '</span>'
@@ -9693,48 +10170,18 @@ function toggleInfraHealth() {
   } catch (e) {}
 })();
 
-// #4580 — Bandeja "Esperando tu firma". Handlers del panel de firma del operador.
-// REQ-SEC-4580-1: la acción es POST-only + X-CSRF-Token same-origin (GET token →
-// POST decide). El dashboard NO muta estado: reenvía la decisión al backend de
-// firma (#4579) que delega la transición al kernel.
-function toggleEsperandoFirmaPanel() {
-  var p = document.getElementById('esperando-firma-panel');
-  if (!p) return;
-  var collapse = !p.classList.contains('ef-collapsed');
-  p.classList.toggle('ef-collapsed');
-  try { localStorage.setItem('ef-panel-collapsed', collapse ? '1' : '0'); } catch (e) {}
-}
-(function restoreEsperandoFirmaPanel() {
-  try {
-    if (localStorage.getItem('ef-panel-collapsed') === '1') {
-      var p = document.getElementById('esperando-firma-panel');
-      if (p) p.classList.add('ef-collapsed');
-    }
-  } catch (e) {}
-})();
-function efDisableRow(issueNum) {
-  var row = document.getElementById('esperando-firma-row-' + issueNum);
-  if (row) { row.querySelectorAll('button').forEach(function (b) { b.disabled = true; }); }
-}
-async function gateSignatureDecide(issueNum, decision) {
-  var verbo = decision === 'aprobar' ? 'Aprobar' : 'Rechazar';
-  if (!window.confirm(verbo + ' la firma del issue #' + issueNum + '?')) return;
-  efDisableRow(issueNum);
-  try {
-    var t = await fetch('/api/gate-signature/csrf-token', { cache: 'no-store' });
-    var tj = await t.json();
-    var token = tj && tj.csrf_token;
-    if (!token) { alert('No pude obtener el token CSRF; recargá y reintentá.'); location.reload(); return; }
-    var r = await fetch('/api/gate-signature/decide', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
-      body: JSON.stringify({ issue: issueNum, decision: decision })
-    });
-    var j = await r.json();
-    if (j && j.ok) { location.reload(); }
-    else { alert('Error firmando #' + issueNum + ': ' + ((j && j.msg) || 'desconocido')); location.reload(); }
-  } catch (e) { alert('Error firmando #' + issueNum + ': ' + e.message); location.reload(); }
-}
+// #6208 · R1 — Aca vivia una SEGUNDA copia de los handlers de la bandeja
+// "Esperando tu firma", con un handler de decision de 2 argumentos que ya habia
+// perdido el productId de #4778 y que nunca supo del gate multi-gate. Las filas
+// las pinta el mismo renderEsperandoFirmaSsr en las dos superficies, pero el
+// script cliente salia de fuentes distintas: arreglar una sola dejaba la otra
+// mandando pedidos que el backend rechaza.
+//
+// Ahora la UNICA definicion vive en views/dashboard/esperando-firma.js
+// (renderEsperandoFirmaClientScript) y la home legacy la inyecta igual que hace
+// estado-productos.js:541-542. Hay un test que grepea que el handler este
+// definido una sola vez en todo .pipeline/.
+// (Este bloque esta DENTRO de un template literal: sin backticks a proposito.)
 
 // Toggle del panel "Necesitan intervención humana" — colapsable + persistente
 function toggleNeedsHumanPanel(scrollOnExpand) {
@@ -9838,6 +10285,9 @@ function inferHistoricalActivity() {
 
   // 1. Archivos procesados/listo de todas las fases — cada uno es un "agente terminó"
   const config = loadConfig();
+  // #5172 · CA-8 — sin config válida no se infiere actividad: devolver una serie
+  // vacía es honesto (no hay datos), inventar una derivada de defaults no lo es.
+  if (!config) return events;
   for (const [pName, pConfig] of Object.entries(config.pipelines)) {
     for (const fase of pConfig.fases) {
       for (const estado of ['procesado', 'listo', 'trabajando', 'pendiente']) {
@@ -11600,7 +12050,12 @@ try {
   }
 } catch (e) { log(`wizard-providers unavailable: ${e.message}`); }
 
-const server = http.createServer((req, res) => {
+// #5172 · CA-8 — El cuerpo del handler vive en una función propia para poder
+// envolverlo en la red de contención de `http.createServer` (más abajo): una
+// excepción sincrónica acá NO puede escaparse al `uncaughtException`, porque ese
+// handler termina en `process.exit(1)` y matar el dashboard es dejar al operador
+// sin la única pantalla que le explica qué está pasando.
+function handleRequest(req, res) {
   // #4096 — /api/health: readiness liviano para el smoke (paso 2). DEBE ser lo
   // primero del handler, antes de cualquier ruta que toque el FS, y O(1): nunca
   // lee el histórico ni computa estado. El gate de rollback del restart depende
@@ -11923,7 +12378,14 @@ const server = http.createServer((req, res) => {
         // #4126 — leer el snapshot del worker (no recomputar en el path del SSE):
         // antes este tick reescaneaba todo el FS cada 5s por cada cliente SSE.
         const state = getCachedPipelineState();
-        const hash = crypto.createHash('md5').update(JSON.stringify(state.issueMatrix)).digest('hex').slice(0, 8);
+        // #5172 · CA-8 — con config inválida el estado degradado no trae
+        // `issueMatrix`. Se hashea el error en su lugar: así el cliente igual
+        // detecta el cambio y recarga (y ve la pantalla de config inválida) en
+        // vez de quedarse con el último tablero bueno en pantalla para siempre.
+        const payload = (state && state.config)
+          ? state.issueMatrix
+          : { configError: (state && state.configError && state.configError.detalle) || 'config inválida' };
+        const hash = crypto.createHash('md5').update(JSON.stringify(payload || {})).digest('hex').slice(0, 8);
         res.write(`data: ${hash}\n\n`);
       } catch {}
     };
@@ -12018,6 +12480,17 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const parsed = body ? JSON.parse(body) : {};
+        // #5646 (CA-9 / REQ-SEC-5646-4) — del body se lee SÓLO `actor`. El
+        // conjunto de componentes a reiniciar se computa SERVER-SIDE a partir
+        // del diff del sync: una lista de componentes en el request se ignora
+        // por completo. Aceptarla convertiría este endpoint en un selector
+        // arbitrario de procesos a matar, a un request de distancia.
+        //
+        // #5646 (CA-3) — el HEAD previo se lee ANTES de `syncOperativoTree`:
+        // esa llamada PISA el boot marker (`operativo-sync.js`), así que
+        // después ya no queda ninguna referencia previa recuperable.
+        const _prevMarker = _runtimeBoot ? _runtimeBoot.readBootMarker({ pipelineDir: PIPELINE }) : null;
+        const _prevSha = (_prevMarker && _prevMarker.sha) ? _prevMarker.sha : null;
         // #4460 (fix rebote rev-1) — PASO CLAVE: avanzar el working tree a
         // origin/main ANTES de respawnear el Pulpo. Sin esto el restart es un
         // no-op respecto de aplicar entregas: `restartComponent` sólo hace
@@ -12027,8 +12500,10 @@ const server = http.createServer((req, res) => {
         // drift desaparece (CA-4/CA-7). Si el sync falla, se reporta y NO se
         // reescribe el marker (el banner persiste, honesto con el operador).
         let syncMsg = '';
+        let _headSha = null;
         if (_operativoSync) {
           const sync = _operativoSync.syncOperativoTree({ repoRoot: ROOT, pipelineDir: PIPELINE });
+          _headSha = (typeof sync.sha === 'string') ? sync.sha : null;
           syncMsg = sync.ok
             ? `sync✓ ${sync.msg}`
             : `sync✗ ${sync.msg} (restart de todos modos, cambios NO aplicados hasta próximo sync)`;
@@ -12037,33 +12512,107 @@ const server = http.createServer((req, res) => {
           syncMsg = 'sync no disponible (operativo-sync.js no cargó)';
           log('Action: restart-operativo sync → módulo operativo-sync no disponible');
         }
-        // Restart selectivo del Pulpo (el dashboard no puede matarse a sí mismo;
-        // no existe componente 'dashboard' en COMPONENTS). Tras el sync previo,
-        // el Pulpo relanzado relee el código nuevo del modelo operativo.
-        const decision = _opsRestartHandler.runRestart(
-          {
-            target: 'pulpo',
-            source: 'restart-operativo-4460',
-            sourceIp: (req.socket && req.socket.remoteAddress) || '',
-            actor: parsed.actor || '',
-          },
-          {
-            allowlist: COMPONENTS.map(c => c.name),
-            restartFn: restartComponent,
-            rateLimiter: _opsRestartRateLimiter,
-            audit: opsRestartAudit
-              ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
-              : null,
+
+        // #5646 (CA-3) — El sync avanzó el código EN DISCO de todos los
+        // servicios; los que siguen vivos quedaron con el código viejo en su
+        // require-cache. Se marcan acá y el ejecutor los relanza: los que están
+        // en COMPONENTS, este mismo endpoint; el resto (incluido el propio
+        // `dashboard`, que no puede matarse a sí mismo) queda pendiente en disco
+        // y lo relanza el watchdog, único ejecutor externo (REQ-SEC-5646-5).
+        let _afectados = [];
+        if (_staleServices && _headSha) {
+          try {
+            // Sin `prevSha` NO se puede caer al boot marker: `syncOperativoTree`
+            // ya lo pisó con el HEAD nuevo, así que el diff daría vacío y
+            // dejaría servicios stale invisibles (fail-open). Se marca todo el
+            // registro, que es el comportamiento conservador correcto.
+            const aff = _prevSha
+              ? _staleServices.computeAffectedComponents({
+                prevSha: _prevSha,
+                headSha: _headSha,
+                repoRoot: ROOT,
+                pipelineDir: PIPELINE,
+              })
+              : {
+                components: _staleServices.ALL_COMPONENTS.slice(),
+                reasons: _staleServices.ALL_COMPONENTS.map(n => ({ component: n, path: '(estado desconocido)' })),
+                headSha: _headSha,
+              };
+            _afectados = aff.components;
+            const mark = _staleServices.markAffected(_afectados, { sha: aff.headSha, reasons: aff.reasons });
+            for (const r of aff.reasons) {
+              if (!mark.marked.includes(r.component)) continue;
+              log(`restart selectivo: ${r.component} quedó con código viejo — cambio en ${r.path}`);
+            }
+            if (!_afectados.length) log('restart selectivo: sin componentes afectados por el reset');
+          } catch (e) {
+            log(`restart selectivo: no se pudo computar el conjunto afectado (${(e && e.message || '').slice(0, 80)})`);
           }
-        );
-        log(`Action: restart-operativo pulpo → ${decision.body.ok ? '✓' : '✗'} (${decision.status}) ${decision.body.msg}`);
+        }
+
+        // Targets: SIEMPRE el pulpo (contrato del botón, #4460) más los
+        // afectados que estén en la allowlist estática. El orden es el de
+        // COMPONENTS, nunca el del diff.
+        const _allowlist = COMPONENTS.map(c => c.name);
+        const _targets = _allowlist.filter(n => n === 'pulpo' || _afectados.includes(n));
+        // Cota AGREGADA por ventana (CA-9): sin esto una request pasa de matar 1
+        // proceso a matar N. Lo que no entra sigue pendiente en disco → watchdog.
+        const _cupos = _opsRestartAggregateLimiter.grant(_targets.length);
+        if (_cupos === 0) {
+          const msg429 = 'restart ignorado: se alcanzó la cota de restarts por minuto (anti-bucle). '
+            + 'Los servicios pendientes los relanza el watchdog en su próximo ciclo.';
+          log(`Action: restart-operativo → (429) ${msg429}`);
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: false, msg: `${syncMsg} | ${msg429}`, applied: false }));
+        }
+        const _ejecutables = _targets.slice(0, _cupos);
+        const _diferidos = _targets.slice(_cupos);
+
+        const _resultados = [];
+        for (const _target of _ejecutables) {
+          const decision = _opsRestartHandler.runRestart(
+            {
+              target: _target,
+              source: 'restart-operativo-4460',
+              sourceIp: (req.socket && req.socket.remoteAddress) || '',
+              actor: parsed.actor || '',
+            },
+            {
+              allowlist: _allowlist,
+              restartFn: restartComponent,
+              rateLimiter: _opsRestartRateLimiter,
+              audit: opsRestartAudit
+                ? (rec) => opsRestartAudit.appendOpsRestartAudit(rec, { pipelineDir: PIPELINE })
+                : null,
+            }
+          );
+          log(`Action: restart-operativo ${_target} → ${decision.body.ok ? '✓' : '✗'} (${decision.status}) ${decision.body.msg}`);
+          // El pendiente se baja SÓLO con el restart confirmado (CA-5): si falló,
+          // el componente sigue marcado y lo toma el watchdog.
+          if (decision.body.ok && _staleServices) {
+            try { _staleServices.clearComponent(_target, { pipelineDir: PIPELINE }); } catch { /* best-effort */ }
+          }
+          _resultados.push({ target: _target, decision });
+        }
+        if (_diferidos.length) {
+          log(`restart selectivo: diferidos al watchdog por cota — ${_diferidos.join(', ')}`);
+        }
+
+        // El resultado que gobierna la respuesta HTTP es el del pulpo (contrato
+        // original del botón); el resto se resume en el mensaje.
+        const _principal = (_resultados.find(r => r.target === 'pulpo') || _resultados[0]).decision;
+        const _otros = _resultados.filter(r => r.target !== 'pulpo');
+        const _extraMsg = _otros.length
+          ? ` | además: ${_otros.map(r => `${r.target} ${r.decision.body.ok ? '✓' : '✗'}`).join(', ')}`
+          : '';
+        const _pendMsg = _diferidos.length ? ` | diferidos al watchdog: ${_diferidos.join(', ')}` : '';
         // Combinar el resultado del sync con el del restart para que el operador
         // sepa si los cambios se aplicaron (sync✓) o sólo se respawneó (sync✗).
-        const combined = Object.assign({}, decision.body, {
-          msg: `${syncMsg} | ${decision.body.msg}`,
-          applied: !!(decision.body.ok && /^sync✓/.test(syncMsg)),
+        const combined = Object.assign({}, _principal.body, {
+          msg: `${syncMsg} | ${_principal.body.msg}${_extraMsg}${_pendMsg}`,
+          applied: !!(_principal.body.ok && /^sync✓/.test(syncMsg)),
         });
-        res.writeHead(decision.status, { 'Content-Type': 'application/json' });
+        res.writeHead(_principal.status, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(combined));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -12122,13 +12671,19 @@ const server = http.createServer((req, res) => {
         const parsed = body ? JSON.parse(body) : {};
         const out = gateSignatureRequest.enqueueDecision({
           issue: parsed.issue,
+          // #6208 · CA-13 / CA-14 — `gate` viaja en el MISMO contrato (no hay
+          // ruta nueva). Lo valida `approval-channel.resolveGate` fail-closed,
+          // ANTES de tocar el filesystem: acá se reenvía crudo a propósito.
+          gate: parsed.gate,
           decision: parsed.decision,
           origen: parsed.origen,
           productId: parsed.productId, // #4778 · CA-2.2 — firma atada al producto (no repudio).
+          // REQ-SEC-6208-2 — `actor` es una identidad DECLARADA por el cliente:
+          // va al audit y a ningún otro lado. Nunca alimenta `authorizedSigners`.
           actor: parsed.actor,
           remoteAddress: (req.socket && req.socket.remoteAddress) || '',
         });
-        log(`Action: gate-signature decide #${parsed.issue} → ${out.decision || parsed.decision} (${out.status}) ${out.msg}`);
+        log(`Action: gate-signature decide #${parsed.issue} gate=${out.gate || parsed.gate} -> ${out.verdict || parsed.decision} (${out.status}) ${out.msg}`);
         res.writeHead(out.status || (out.ok ? 202 : 400), { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify(out));
       } catch (e) {
@@ -12449,14 +13004,16 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const { action } = JSON.parse(body);
-        const pauseFile = path.join(PIPELINE, '.paused');
+        // #5179 grupo 3b — el marker `.paused` NO se toca con fs directo: toda
+        // mutación pasa por el envoltorio único (lock + audit + sanitización).
         if (action === 'resume' || action === 'remove') {
           // #2490 — resume limpia tanto pausa completa como parcial
           // #3625 — resume requiere authorizedBy: 'resume:operator' para que el gate
           // acepte el removal masivo de allowlist.
-          try { fs.unlinkSync(pauseFile); } catch {}
+          // El `unlinkSync('.paused')` previo era redundante: `resumeAll()` ya
+          // borra el marker total (devuelve `removedFull`) además del parcial.
           try {
-            const { resumeAll } = require('./lib/partial-pause');
+            const { resumeAll } = require('./lib/operational-state');
             resumeAll({
               source: 'dashboard',
               authorizedBy: 'resume:operator',
@@ -12467,7 +13024,15 @@ const server = http.createServer((req, res) => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pipeline reanudado — lanzamientos activos' }));
         } else if (action === 'pause') {
-          fs.writeFileSync(pauseFile, new Date().toISOString());
+          // El write crudo del marker (ISO plano, sin lock ni audit) queda
+          // reemplazado por el gate. `source: 'dashboard'` NO está en
+          // AUTO_LIFTABLE_SOURCES, así que la pausa se sigue leyendo como
+          // `manual` — igual que el marker legacy. Paridad preservada (CA-8).
+          require('./lib/operational-state').setFullPause({
+            source: 'dashboard',
+            authorizedBy: 'pause:dashboard',
+            justification: 'Dashboard /api/pause action=pause (halt total)',
+          });
           log('Pipeline pausado desde dashboard');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, msg: 'Pipeline pausado — solo Telegram activo' }));
@@ -12640,6 +13205,132 @@ const server = http.createServer((req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, msg: e.message }));
     }
+    return;
+  }
+
+  // ===========================================================================
+  // #5923 — Las otras 2 resoluciones de "pausa parcial trabada".
+  //
+  // Hasta ahora los 3 botones de la alerta eran `url` al dashboard, y sólo
+  // `include-deps` tenía endpoint: `keep-original` y `cancel-partial-pause`
+  // tenían CERO ocurrencias en este archivo. O sea que aunque el saliente
+  // hubiera llegado (no llegaba: la Bot API rechaza URLs a localhost), 2 de 3
+  // botones eran botones muertos. Con la degradación a `callback_data` el
+  // callback-handler POSTea acá, así que los endpoints tienen que existir.
+  //
+  // Gate copiado de `/api/allowlist-candidates` (loopback + Origin/Referer +
+  // Content-Type estricto), NO del molde de `include-deps`, que no tiene ningún
+  // control de request (CSRF preexistente → fuera de alcance, issue #5929).
+  // El `409` cuando `mode !== 'partial_pause'` es además el anti-replay natural:
+  // el `callback_data` no tiene nonce ni TTL y el mensaje vive para siempre en
+  // el chat, así que el segundo tap tiene que morir server-side.
+  // ===========================================================================
+  //
+  // #6118 — Se suman `include-deps-for-issue` (include ACOTADO al issue de la
+  // alerta) y `mute-alert` (silencio del aviso). Entran a ESTE bloque y no al de
+  // `/include-deps` de más arriba a propósito: aquél no tiene ningún control de
+  // request (CSRF preexistente, #5929, fuera de alcance). Colgar rutas nuevas de
+  // ese molde propagaría el defecto; el molde bueno es éste.
+  if ((req.url === '/api/partial-pause/keep-original'
+       || req.url === '/api/partial-pause/cancel-partial-pause'
+       || req.url === '/api/partial-pause/include-deps-for-issue'
+       || req.url === '/api/partial-pause/mute-alert')
+      && req.method === 'POST') {
+    const ppGate = require('./lib/dashboard-request-gate');
+    const ppResolution = require('./lib/partial-pause-resolution');
+
+    const gate = ppGate.evaluateLocalMutationGate({
+      remoteAddress: (req.socket && req.socket.remoteAddress) || '',
+      method: req.method,
+      headers: req.headers,
+    });
+    if (!gate.ok) {
+      res.writeHead(gate.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, msg: gate.msg }));
+      return;
+    }
+
+    // La acción sale del path, no del body: el enum de rutas de arriba es el
+    // único set posible, así que no hay forma de que el cliente nombre una
+    // acción que no esté en esta lista.
+    const ppAction = req.url.slice('/api/partial-pause/'.length);
+    let ppBody = '';
+    let ppAborted = false;
+    req.on('data', (chunk) => {
+      ppBody += chunk;
+      if (ppBody.length > 16 * 1024) { ppAborted = true; req.destroy(); }
+    });
+    req.on('end', () => {
+      if (ppAborted) return;
+      try {
+        const payload = ppBody ? JSON.parse(ppBody) : {};
+        const pp = require('./lib/partial-pause');
+        // `authorizedBy` es una CLASE de origen del enum cerrado de #3625
+        // (`telegram:operator`), no una identidad. La identidad fina del
+        // operador que apretó el botón (su `from.id`, ya validado fail-closed
+        // contra la allowlist del listener) viaja aparte en `operatorRef` y
+        // termina en la justification del audit. Mandar `telegram:<from.id>`
+        // como authorizedBy dejaba el valor FUERA del enum: pasaba sólo por el
+        // grace period y con `PARTIAL_PAUSE_STRICT_AUTH=1` daba 403 para siempre.
+        const authorizedBy = ppGate.sanitizeAuthorizedBy(payload.authorizedBy);
+        // #6118 — El state de deps es la fuente de verdad del servidor sobre QUÉ
+        // dependencias frenan a cada issue. El tap sólo trae el número de issue
+        // (no entra más en 64 bytes de `callback_data`), así que el conjunto se
+        // deriva acá y nunca se toma del cliente.
+        const ppDepsStateFile = path.join(PIPELINE, 'partial-pause-deps-state.json');
+        const ppDepsRead = () => {
+          try { return JSON.parse(fs.readFileSync(ppDepsStateFile, 'utf8')); }
+          catch { return null; }
+        };
+        const out = ppResolution.applyResolution({
+          action: ppAction,
+          authorizedBy,
+          operatorRef: ppGate.sanitizeAuthorizedBy(payload.operatorRef, ''),
+          // Entero del cliente. `applyResolution` lo valida con `^\d{1,7}$` y lo
+          // contrasta contra el state antes de usarlo; nunca se concatena a un
+          // path ni a una URL.
+          issue: payload.issue,
+          deps: {
+            getPipelineMode: pp.getPipelineMode,
+            markDepRiskAccepted: pp.markDepRiskAccepted,
+            clearPartialPause: pp.clearPartialPause,
+            setPartialPause: pp.setPartialPause,
+            readDepsState: ppDepsRead,
+            // Metadata de la ola: `getPipelineMode()` no la expone y
+            // `setPartialPause` reescribe el marker desde sus argumentos, así que
+            // sin esto habilitar una dependencia borraría la identidad de la ola.
+            // La lectura la hace `partial-pause`, que es el dueño del marker: el
+            // path de estado no se reconstruye acá (#5109).
+            readWaveMeta: pp.readWaveMetaFromMarker,
+            alertSignature: require('./lib/partial-pause-deps').alertSignature,
+            mute: require('./lib/partial-pause-deps-mute').mute,
+            muteTtlMs: require('./lib/partial-pause-deps-mute').resolveTtlMsFromDisk(),
+            // Saca del state SÓLO al issue resuelto. Borrar el archivo entero
+            // volvería invisibles a los otros issues alertados.
+            dropIssueFromDepsState: (issueNum) => {
+              try {
+                const st = ppDepsRead();
+                if (!st || !st.missing) return;
+                delete st.missing[String(issueNum)];
+                if (Object.keys(st.missing).length === 0) { fs.unlinkSync(ppDepsStateFile); return; }
+                const tmp = `${ppDepsStateFile}.tmp.${process.pid}.${Date.now()}`;
+                fs.writeFileSync(tmp, JSON.stringify(st, null, 2));
+                fs.renameSync(tmp, ppDepsStateFile);
+              } catch {}
+            },
+            clearDepsState: () => {
+              try { fs.unlinkSync(ppDepsStateFile); } catch {}
+            },
+          },
+        });
+        log(`Pausa parcial: ${ppAction} por ${authorizedBy} → ${out.status} ${out.body.msg || ''}`);
+        res.writeHead(out.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(out.body));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: e.message }));
+      }
+    });
     return;
   }
 
@@ -13238,7 +13929,11 @@ const server = http.createServer((req, res) => {
   }
   function computeWouldPauseSkills(rmw, window, cfg, nowMs) {
     try {
-      const fullCfg = loadConfig() || {};
+      const fullCfg = loadConfig();
+      // #5172 · CA-8 — `null` (config inválida) NO es "ningún skill se pausa":
+      // sería una decisión derivada de config servida como si fuera válida. El
+      // endpoint que lo consume expone `configError` en su lugar.
+      if (!fullCfg) return null;
       const pipelines = fullCfg.pipelines || {};
       const catalog = new Set();
       for (const pk of Object.keys(pipelines)) {
@@ -13269,7 +13964,15 @@ const server = http.createServer((req, res) => {
       return;
     }
     try {
-      const cfg = (loadConfig() || {}).rest_mode || {};
+      // #5172 · CA-8 — el modo descanso es una decisión derivada de config:
+      // con config inválida se reporta el error explícito, no un default.
+      const fullCfg = loadConfig();
+      if (!fullCfg) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, msg: 'configuración inválida', configError: getConfigErrorState() }));
+        return;
+      }
+      const cfg = fullCfg.rest_mode || {};
       const window = restModeWindow.getWindow({ pipelineDir: PIPELINE });
       const now = Date.now();
       const within = restModeWindow.isWithinWindow(window, now);
@@ -14188,6 +14891,28 @@ const server = http.createServer((req, res) => {
   // lib/anthropic-usage.js + lib/quota-adapters/anthropic.js. Se retiran
   // ambas rutas mutantes no autenticadas (mejora de postura OWASP A01/A05).
 
+  // #5172 · CA-8 — Pantalla de configuración inválida en las rutas de PÁGINA.
+  //
+  // Va ANTES de `dashboard-routes` a propósito: la home V3 (`/`) es un shell SSR
+  // que no depende de config y se hidrata por JSON, así que sin este corte el
+  // operador veía un tablero prolijo y VACÍO — indistinguible de "no hay
+  // trabajo" — mientras el pipeline estaba pausado por config rota. Ese es el
+  // fallo silencioso que la historia elimina, y sólo se cierra si la pantalla
+  // lo DICE.
+  //
+  // Alcance deliberadamente acotado a las rutas HTML: `/api/health` (readiness
+  // del smoke del restart), `/logs/*` y el resto de las APIs siguen su curso —
+  // con la config rota, los logs son justo lo que el operador necesita leer.
+  if (PAGINAS_HTML.has((req.url || '').split('?')[0]) && !loadConfig()) {
+    res.writeHead(503, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(renderConfigErrorPage(getConfigErrorState()));
+    return;
+  }
+
   // Nuevo dashboard kiosk vertical (#2801) — home + 9 tabs satélite + slices JSON
   // bajo /api/dash/*. Anti-flicker: cliente hace polling JSON y muta DOM in-place.
   // Si la ruta no matchea aquí, cae al catch-all (home legacy en /legacy o /).
@@ -14206,8 +14931,54 @@ const server = http.createServer((req, res) => {
   // matcheadas). #4126 — sirve desde el snapshot del worker (no recomputa en el
   // request) para que `/` no se cuelgue bajo el ciclo de refresh (CA-3).
   const state = getCachedPipelineState();
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(generateHTML(state));
+
+  // #5172 · CA-8 — Con config inválida `_genPipelineState()` corta temprano y
+  // devuelve el estado degradado (`config: null` + `configError`), que NO tiene
+  // las claves del snapshot completo que `generateHTML` asume (`issueMatrix`,
+  // `allFases`, ...). Renderizarlo igual tiraba `TypeError` en el primer
+  // `Object.entries(state.issueMatrix)` → `uncaughtException` → `process.exit(1)`,
+  // y como CUALQUIER URL no matcheada cae acá (incluido el `/favicon.ico` que
+  // pide todo navegador al abrir el tablero), alcanzaba con abrir el dashboard
+  // para matarlo. Servimos la pantalla de configuración inválida: es la única
+  // forma de que el operador se entere de por qué el pipeline está pausado.
+  if (!state || !state.config) {
+    res.writeHead(503, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(renderConfigErrorPage(state ? state.configError : getConfigErrorState()));
+    return;
+  }
+  try {
+    const html = generateHTML(state);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+  } catch (e) {
+    // El render se hace ANTES del `writeHead(200)` justamente para poder
+    // responder 500 acá sin haber emitido ya un header de éxito.
+    log(`generateHTML falló: ${e && e.message}`);
+    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(renderInternalErrorPage(e));
+  }
+}
+
+// #5172 · CA-8 — Red de contención del proceso. Cualquier excepción sincrónica
+// de una ruta se responde como 500 en vez de escalar a `uncaughtException`
+// (que hace `process.exit(1)`). El dashboard degrada la RESPUESTA, nunca el
+// PROCESO: mientras siga vivo el operador puede ver logs y el estado de config.
+const server = http.createServer((req, res) => {
+  try {
+    handleRequest(req, res);
+  } catch (e) {
+    log(`request handler falló (${req && req.method} ${req && req.url}): ${e && (e.stack || e.message)}`);
+    try {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      }
+      res.end(renderInternalErrorPage(e));
+    } catch { try { res.destroy(); } catch {} }
+  }
 });
 
 // #3177 + #3191 — bind explícito a 127.0.0.1 por default (mitiga DNS rebinding

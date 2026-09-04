@@ -646,3 +646,89 @@ test('THRESHOLDS · expone los 4 thresholds documentados', () => {
 test('ROTATION_POLICY_DAYS · 90 días por convención', () => {
   assert.equal(cron.ROTATION_POLICY_DAYS, 90);
 });
+
+// El denominador correcto es ENV_DESCRIPTORS, no ENV_MAPPING.
+//
+// Desde #5217 (CA-6) `ENV_MAPPING` es un SUBCONJUNTO del inventario: sólo los
+// descriptores con `hydrate !== false`, o sea "lo que se escribe en el
+// `process.env` global". Las cuatro credenciales de Google Drive están
+// declaradas `hydrate: false` a propósito (su consumidor las resuelve por
+// namespace, hidratarlas expondría un refresh token en el env de todo agente
+// hijo), así que quedan fuera de `ENV_MAPPING` pero SIGUEN en el inventario:
+// se provisionan, se rotan y la política IAM las cubre.
+//
+// El cron de rotación es exactamente uno de los consumidores que el propio
+// `credentials.js:233-236` manda a leer el descriptor completo — cubrir sólo
+// las hidratadas dejaría 4 secretos sin vigilancia de vencimiento, incluido el
+// refresh token de Secrets Manager. Contrastar contra `ENV_MAPPING` volvía
+// verde ese agujero; contra `ENV_DESCRIPTORS` la coherencia es la real (13).
+test('inventario real · conserva exactamente las 13 variables de ENV_DESCRIPTORS', () => {
+  const inventory = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'secrets-inventory.md'), 'utf8');
+  const rows = cron.parseInventoryMarkdown(inventory);
+  const expected = Object.values(require('../credentials').ENV_DESCRIPTORS).map((d) => d.env).sort();
+  assert.equal(expected.length, 13);
+  assert.deepEqual(rows.map((row) => row.env_var).sort(), expected);
+});
+
+// Guard de no-regresión de #5217: si alguien vuelve a meter google_drive en
+// ENV_MAPPING, el inventario seguiría verde pero el process.env global se
+// ampliaría de nuevo. ENV_MAPPING tiene que ser subconjunto estricto.
+test('inventario real · ENV_MAPPING es subconjunto de lo inventariado y excluye google_drive', () => {
+  const credentials = require('../credentials');
+  const inventariadas = new Set(Object.values(credentials.ENV_DESCRIPTORS).map((d) => d.env));
+  for (const env of Object.values(credentials.ENV_MAPPING)) {
+    assert.ok(inventariadas.has(env), env + ' se hidrata pero no está en el inventario');
+  }
+  for (const dotPath of Object.keys(credentials.ENV_DESCRIPTORS)) {
+    if (!dotPath.startsWith('google_drive.')) continue;
+    assert.equal(credentials.ENV_MAPPING[dotPath], undefined,
+      dotPath + ' no puede volver a ENV_MAPPING (#5217 · CA-6)');
+  }
+});
+
+test('metadata pendiente · recuerda una vez por día y no silencia la credencial', () => {
+  const row = cron.parseInventoryMarkdown([
+    '| provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |',
+    '|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|',
+    '| telegram | `TELEGRAM_BOT_TOKEN` | leo | _pendiente registrar_ | _pendiente registrar_ | acct | [runbook](https://example.test) | N/A |',
+  ].join('\n'))[0];
+  assert.equal(row.metadata_missing, true);
+  const first = cron.evaluateRotationState({ now: dateUTC('2026-08-03'), inventoryRows: [row], state: {} });
+  assert.equal(first.alerts[0].threshold, 'METADATA-PENDIENTE');
+  const second = cron.evaluateRotationState({ now: dateUTC('2026-08-03'), inventoryRows: [row], state: first.nextState });
+  assert.equal(second.alerts.length, 0);
+});
+
+test('filas rotables nuevas · disparan T-14, T-7, T-3 y T-1', () => {
+  const envVars = ['TELEGRAM_BOT_TOKEN', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'CEREBRAS_API_KEY'];
+  const days = [14, 7, 3, 1];
+  for (let index = 0; index < envVars.length; index++) {
+    const row = {
+      provider: `provider-${index}`,
+      env_var: envVars[index],
+      owner: 'leo',
+      last_rotated: dateUTC('2026-05-03'),
+      expires_at: dateUTC('2026-08-01'),
+    };
+    const result = cron.evaluateRotationState({
+      now: dateUTC(`2026-07-${String(18 + (14 - days[index])).padStart(2, '0')}`),
+      inventoryRows: [row],
+      state: {},
+    });
+    assert.equal(result.alerts[0].threshold, `T-${days[index]}`);
+  }
+});
+
+test('recordatorios del mismo threshold se consolidan en un solo mensaje', () => {
+  const alerts = [
+    { provider: 'uno', env_var: 'SECRET_ONE', threshold: 'T-7', daysRemaining: 7, message: 'uno' },
+    { provider: 'dos', env_var: 'SECRET_TWO', threshold: 'T-7', daysRemaining: 7, message: 'dos' },
+    { provider: 'tres', env_var: 'SECRET_THREE', threshold: 'T-3', daysRemaining: 3, message: 'tres' },
+  ];
+  const consolidated = cron.consolidateAlertsByThreshold(alerts);
+  assert.equal(consolidated.length, 2);
+  assert.match(consolidated[0].message, /2 credenciales requieren atención/);
+  assert.match(consolidated[0].message, /SECRET_ONE/);
+  assert.match(consolidated[0].message, /SECRET_TWO/);
+  assert.equal(consolidated[1], alerts[2]);
+});

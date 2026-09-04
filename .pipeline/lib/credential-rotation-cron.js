@@ -112,19 +112,35 @@ function parseInventoryMarkdown(content) {
     // credencial NO se autentica con API key rotable en este entorno. En vez de
     // descartarla en silencio (como hace el skip genérico por no-ISO abajo), la
     // emitimos con `applies:false` para que el evaluador la excluya CON LOG.
-    const oauthMarked = /oauth/i.test(row.last_rotated || '') || /oauth/i.test(row.expires_at || '');
-    if (oauthMarked) {
+    const classification = `${row.last_rotated || ''} ${row.expires_at || ''}`;
+    const noAplica = /N\/A\s*\(([^)]+)\)/i.exec(classification);
+    const oauthMarked = /oauth/i.test(classification);
+    if (noAplica || oauthMarked) {
       rows.push({
         provider: row.provider,
         env_var: stripBackticks(row.env_var),
         owner: row.owner,
         applies: false,
+        exclusion_reason: noAplica ? noAplica[1] : 'OAuth',
         source_line: i + 1,
       });
       continue;
     }
-    // Skip rows con last_rotated no parseable (ej: `_no aplica todavía_`).
+    // Una credencial real sin fechas no desaparece del control: queda marcada
+    // para recordar diariamente que falta completar su metadata de rotación.
     const lr = parseISODate(row.last_rotated);
+    if (!lr && /pendiente\s+(?:registrar|alta)/i.test(row.last_rotated || '')) {
+      rows.push({
+        provider: row.provider,
+        env_var: stripBackticks(row.env_var),
+        owner: row.owner,
+        metadata_missing: true,
+        account_id: row.account_id,
+        runbook_url: extractMarkdownLinkUrl(row.rotation_runbook_url),
+        source_line: i + 1,
+      });
+      continue;
+    }
     if (!lr) continue;
     const er = row.expires_at ? parseISODate(row.expires_at) : null;
     rows.push({
@@ -315,8 +331,31 @@ function evaluateRotationState({ now, inventoryRows, state }) {
       excluded.push({
         env_var: entry.env_var,
         provider: entry.provider,
-        reason: 'no aplica (OAuth Max) — excluida del cron de rotación',
+        reason: `no aplica (${entry.exclusion_reason || 'OAuth'}) — excluida del cron de rotación`,
       });
+      continue;
+    }
+
+    if (entry.metadata_missing === true) {
+      const today = now.toISOString().slice(0, 10);
+      const previous = nextState[entry.env_var] || {};
+      if (previous.last_metadata_alert !== today) {
+        alerts.push({
+          env_var: entry.env_var,
+          provider: entry.provider,
+          threshold: 'METADATA-PENDIENTE',
+          daysRemaining: null,
+          message: [
+            '⚠️ Metadata de rotación pendiente',
+            `Provider: ${entry.provider}`,
+            `Variable: ${entry.env_var}`,
+            `Owner: ${entry.owner}`,
+            `Runbook: ${entry.runbook_url || 'no registrado'}`,
+          ].join('\n'),
+          priority: 'normal',
+        });
+        nextState[entry.env_var] = { ...previous, last_metadata_alert: today };
+      }
       continue;
     }
 
@@ -432,7 +471,12 @@ function runRotationTick(opts = {}) {
   }
 
   // 5. Enviar alertas (best-effort por alerta — un fallo no bloquea las demás).
-  for (const alert of alerts) {
+  // Consolidar por threshold antes de enviar. Completar el inventario puede
+  // hacer coincidir varias credenciales el mismo dia; un mensaje por fila
+  // convertiria el recordatorio operativo en spam (UX-7 de #5340).
+  const outboundAlerts = consolidateAlertsByThreshold(alerts);
+  result.notifications = outboundAlerts;
+  for (const alert of outboundAlerts) {
     if (typeof sender !== 'function') continue;
     try {
       sender(alert.message);
@@ -454,6 +498,29 @@ function runRotationTick(opts = {}) {
   return result;
 }
 
+function consolidateAlertsByThreshold(alerts) {
+  const groups = new Map();
+  for (const alert of Array.isArray(alerts) ? alerts : []) {
+    const key = alert.threshold || 'SIN-THRESHOLD';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(alert);
+  }
+  return [...groups.values()].map((group) => {
+    if (group.length === 1) return group[0];
+    const first = group[0];
+    return {
+      ...first,
+      env_var: group.map((alert) => alert.env_var).join(','),
+      message: [
+        `⚠️ Recordatorios de rotación ${first.threshold}`,
+        `${group.length} credenciales requieren atención:`,
+        ...group.map((alert) => `- ${alert.provider}: ${alert.env_var}`),
+        'Revisar fechas, owners y runbooks en docs/secrets-inventory.md.',
+      ].join('\n'),
+    };
+  });
+}
+
 module.exports = {
   // Constantes (testing).
   THRESHOLDS,
@@ -470,6 +537,7 @@ module.exports = {
   evaluateRotationState,
   // Wrapper con I/O.
   runRotationTick,
+  consolidateAlertsByThreshold,
   // Helpers.
   defaultInventoryPath,
   defaultStateFilePath,

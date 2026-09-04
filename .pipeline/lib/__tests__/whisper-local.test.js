@@ -13,6 +13,11 @@ const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
 
+// #5336 — El watchdog chequea cada WATCHDOG_TICK_MS (5 s en producción). Los tests
+// no pueden esperar segundos reales por caso, así que bajamos el tick ANTES de
+// requerir el módulo (las constantes se leen del env en el require).
+process.env.WHISPER_LOCAL_WATCHDOG_TICK_MS = '20';
+
 // --- Mock de child_process.spawn ANTES de requerir el módulo bajo test ---
 const childProcess = require('child_process');
 const realSpawn = childProcess.spawn;
@@ -266,4 +271,306 @@ test('CA-3: WER de large-v3-turbo <= WER de small en fixtures es-AR (opt-in WHIS
   werSmall /= files.length;
   console.log(`[WER] turbo=${werTurbo.toFixed(3)} small=${werSmall.toFixed(3)}`);
   assert.ok(werTurbo <= werSmall + 0.02, `large-v3-turbo (${werTurbo.toFixed(3)}) no debe ser peor que small (${werSmall.toFixed(3)})`);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #5336 — Transcripción sin límite de tiempo: no perder audios por reloj,
+// reintentar ante fallo y comunicar el fallo como fallo (no como "no te entendí").
+//
+// El incidente que originó el issue: dos audios de ~2m13s del operador se
+// descartaron por el tope de 5 min mientras la máquina estaba cargada de agentes.
+// Al reprocesarlos con la máquina libre salieron completos: el trabajo era válido,
+// lo que fallaba era el criterio de corte.
+// ---------------------------------------------------------------------------
+
+// Proceso falso que emite latidos por stderr durante `aliveMs` y recién ahí cierra.
+// Simula el motor real trabajando: tarda mucho, pero da señales de vida.
+function makeHeartbeatingSpawn({ aliveMs, beatEveryMs = 20, exitCode = 0, writeText = 'audio largo transcripto' }) {
+  return (bin, args) => {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.killed = false;
+    proc.kill = () => { proc.killed = true; };
+    const started = Date.now();
+    const beat = setInterval(() => {
+      if (proc.killed) { clearInterval(beat); return; }
+      proc.stderr.emit('data', Buffer.from(`[fw-progress] segment t=${((Date.now() - started) / 1000).toFixed(1)}s\n`));
+    }, beatEveryMs);
+    const done = setTimeout(() => {
+      clearInterval(beat);
+      if (proc.killed) return;
+      if (exitCode === 0) {
+        try { fs.writeFileSync(outputPathFromArgs(args), JSON.stringify({ text: writeText, segments: [] }), 'utf8'); } catch {}
+      }
+      proc.emit('close', exitCode);
+    }, aliveMs);
+    // Los casos que simulan un motor "eterno" usan aliveMs enorme. Sin unref, esos
+    // timers mantienen vivo el event loop y la suite tarda lo que dure el mock.
+    if (typeof beat.unref === 'function') beat.unref();
+    if (typeof done.unref === 'function') done.unref();
+    return proc;
+  };
+}
+
+test('#5336 CA-1: un audio que TARDA pero sigue dando señales de vida NO se corta', async () => {
+  // El motor late durante 300 ms con una ventana de inactividad de sólo 80 ms.
+  // Con el criterio viejo (reloj de pared) esto moría; con el criterio nuevo
+  // (ausencia de progreso) tiene que terminar bien: tardar no es fallar.
+  fakeSpawnImpl = makeHeartbeatingSpawn({ aliveMs: 300, beatEveryMs: 20 });
+  const audio = makeTmpAudio();
+  const r = await wl.transcribeLocal({ audioPath: audio, idleTimeoutMs: 80, timeoutMs: 60000 });
+  fs.unlinkSync(audio);
+  assert.equal(r.ok, true, `no debió cortarse: ${r.errorKind} ${r.raw}`);
+  assert.equal(r.text, 'audio largo transcripto');
+});
+
+test('#5336 CA-1: se mata por AUSENCIA de progreso (stalled), no por duración', async () => {
+  // Proceso que arranca, late un poco y se cuelga: deja de emitir y nunca cierra.
+  fakeSpawnImpl = () => {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.killed = false;
+    proc.kill = () => { proc.killed = true; };
+    setTimeout(() => proc.stderr.emit('data', Buffer.from('[fw-progress] model-load-start\n')), 10);
+    return proc; // nunca cierra ni vuelve a latir
+  };
+  const audio = makeTmpAudio();
+  const r = await wl.transcribeLocal({ audioPath: audio, idleTimeoutMs: 100, timeoutMs: 60000 });
+  fs.unlinkSync(audio);
+  assert.equal(r.ok, false);
+  assert.equal(r.errorKind, 'stalled', 'un proceso colgado debe distinguirse de uno lento');
+  assert.match(r.raw, /señales de vida/);
+});
+
+test('#5336 CA-1: la guarda absoluta sigue existiendo para un proceso que late para siempre', async () => {
+  // Late sin parar y nunca termina: la inactividad nunca dispara, así que la red
+  // de seguridad de último recurso es la que tiene que cerrar el caso.
+  fakeSpawnImpl = makeHeartbeatingSpawn({ aliveMs: 60000, beatEveryMs: 10 });
+  const audio = makeTmpAudio();
+  const r = await wl.transcribeLocal({ audioPath: audio, idleTimeoutMs: 60000, timeoutMs: 120 });
+  fs.unlinkSync(audio);
+  assert.equal(r.ok, false);
+  assert.equal(r.errorKind, 'timeout');
+  assert.match(r.raw, /guarda absoluta/);
+});
+
+test('#5336 CA-1: los latidos no contaminan el motivo de error que ve el usuario', async () => {
+  // Ante exit != 0 el `raw` debe mostrar la causa real, no las últimas 3 líneas
+  // de progreso (que es lo que pasaría si los latidos se acumularan en stderr).
+  fakeSpawnImpl = (bin, args) => {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    setTimeout(() => {
+      for (let i = 0; i < 5; i++) proc.stderr.emit('data', Buffer.from(`[fw-progress] segment t=${i}.0s\n`));
+      proc.stderr.emit('data', Buffer.from('MemoryError: no entra el modelo\n'));
+      proc.emit('close', 1);
+    }, 5);
+    return proc;
+  };
+  const audio = makeTmpAudio();
+  const r = await wl.transcribeLocal({ audioPath: audio });
+  fs.unlinkSync(audio);
+  assert.equal(r.errorKind, 'cli_error');
+  assert.match(r.raw, /MemoryError/, 'el error real tiene que sobrevivir al tail');
+  assert.ok(!/fw-progress/.test(r.raw), 'los latidos no son errores y no deben aparecer');
+});
+
+test('#5336 CA-1: onProgress recibe los latidos del motor', async () => {
+  fakeSpawnImpl = makeHeartbeatingSpawn({ aliveMs: 120, beatEveryMs: 20 });
+  const beats = [];
+  const audio = makeTmpAudio();
+  const r = await wl.transcribeLocal({ audioPath: audio, onProgress: (l) => beats.push(l), idleTimeoutMs: 5000 });
+  fs.unlinkSync(audio);
+  assert.equal(r.ok, true);
+  assert.ok(beats.length > 0, 'el orquestador necesita saber que el motor arrancó de verdad');
+  assert.match(beats[0], /^\[fw-progress\]/);
+});
+
+// ---------------------------------------------------------------------------
+// #5336 — Orquestación (multimedia.js): reintentos, cola sin descarte y ruteo
+// del mensaje de fallo. Se inyecta un DOBLE del motor en la caché de require
+// antes de cargar multimedia, para controlar ok/busy/error por llamada sin
+// depender de python ni del modelo real.
+// ---------------------------------------------------------------------------
+
+// Guion de respuestas del motor, consumido de a una por llamada.
+let engineScript = [];
+let engineCalls = 0;
+
+const whisperLocalModulePath = require.resolve('../whisper-local');
+const realWhisperLocalExports = require.cache[whisperLocalModulePath].exports;
+require.cache[whisperLocalModulePath].exports = Object.assign({}, realWhisperLocalExports, {
+  isAvailable: () => true,
+  transcribeLocal: async () => {
+    const next = engineScript[engineCalls] || engineScript[engineScript.length - 1];
+    engineCalls++;
+    return typeof next === 'function' ? next(engineCalls) : next;
+  },
+});
+
+// Backoff y umbrales chicos: los tests verifican COMPORTAMIENTO, no relojes.
+process.env.WHISPER_RETRY_BACKOFF_MS = '5,5';
+process.env.WHISPER_BUSY_RETRY_DELAY_MS = '5';
+process.env.WHISPER_QUEUE_NOTICE_MS = '40';
+process.env.WHISPER_ENGINE_NOTICE_MS = '40';
+process.env.WHISPER_NOTICE_TICK_MS = '10';
+
+const multimedia = require('../../multimedia');
+const commanderDet = require('../commander-deterministic');
+
+// Restauramos el motor real al terminar para no contaminar otras suites.
+test.after(() => { require.cache[whisperLocalModulePath].exports = realWhisperLocalExports; });
+
+function resetEngine(script) { engineScript = script; engineCalls = 0; }
+
+test('#5336 CA-3: un fallo transitorio se reintenta y el audio se salva', async () => {
+  // Primer intento crashea (típico: presión de memoria), el segundo sale bien.
+  resetEngine([
+    { ok: false, text: '', errorKind: 'cli_error', raw: 'exit 1: MemoryError' },
+    { ok: true, text: 'reiniciá el pipeline' },
+  ]);
+  const r = await multimedia.transcribeAudioWithFallback(Buffer.alloc(10), null, 'a.ogg');
+  assert.equal(r.ok, true, 'no puede darse por vencido al primer error');
+  assert.equal(r.text, 'reiniciá el pipeline');
+  assert.equal(engineCalls, 2, 'debe haber reintentado exactamente una vez');
+});
+
+test('#5336 CA-3: se reintenta al menos 2 veces antes de declarar el fallo', async () => {
+  resetEngine([{ ok: false, text: '', errorKind: 'stalled', raw: 'sin señales de vida' }]);
+  const r = await multimedia.transcribeAudioWithFallback(Buffer.alloc(10), null, 'a.ogg');
+  assert.equal(r.ok, false);
+  assert.equal(engineCalls, 3, '1 intento + 2 reintentos como mínimo');
+  assert.ok(multimedia.TRANSCRIBE_MAX_ATTEMPTS >= 3);
+});
+
+test('#5336 CA-3: un fallo determinístico NO se reintenta (reintentar no cambia nada)', async () => {
+  // Si falta el binario, repetir da exactamente lo mismo: reintentar sólo retrasa
+  // el aviso al operador.
+  resetEngine([{ ok: false, text: '', errorKind: 'no_binary', raw: 'no está python' }]);
+  const r = await multimedia.transcribeAudioWithFallback(Buffer.alloc(10), null, 'a.ogg');
+  assert.equal(r.ok, false);
+  assert.equal(engineCalls, 1, 'un fallo no reintentable se reporta de una');
+});
+
+test('#5336 CA-7: la espera en cola NO descarta el audio', async () => {
+  // El motor está ocupado muchas más veces de las que el presupuesto viejo (6 min
+  // / 3 s = 120 polls) toleraba antes de rendirse con `busy`. Igual tiene que
+  // terminar transcribiendo: la cola espera su turno, no vence.
+  const busyTimes = 150;
+  const script = [];
+  for (let i = 0; i < busyTimes; i++) script.push({ ok: false, text: '', errorKind: 'busy', raw: 'ocupado' });
+  script.push({ ok: true, text: 'audio que esperó su turno' });
+  resetEngine(script);
+  const r = await multimedia.transcribeAudioWithFallback(Buffer.alloc(10), null, 'a.ogg');
+  assert.equal(r.ok, true, 'un audio encolado no puede fallar por esperar');
+  assert.equal(r.text, 'audio que esperó su turno');
+  assert.notEqual(r.errorKind, 'busy');
+});
+
+test('#5336 CA-2/CA-8: el aviso de cola y el de motor son distinguibles', async () => {
+  const avisos = [];
+  // Ocupado un rato (dispara el aviso de COLA) y después transcribe.
+  const script = [];
+  for (let i = 0; i < 20; i++) script.push({ ok: false, text: '', errorKind: 'busy', raw: 'ocupado' });
+  script.push({ ok: true, text: 'listo' });
+  resetEngine(script);
+  const r = await multimedia.transcribeAudioWithFallback(Buffer.alloc(10), null, 'a.ogg', {
+    notify: (texto, stage) => avisos.push({ texto, stage }),
+  });
+  assert.equal(r.ok, true);
+  const cola = avisos.filter((a) => a.stage === 'queue');
+  assert.equal(cola.length, 1, 'un solo aviso de cola, nada de spam');
+  assert.equal(cola[0].texto, multimedia.QUEUE_NOTICE_TEXT);
+  assert.notEqual(multimedia.QUEUE_NOTICE_TEXT, multimedia.ENGINE_NOTICE_TEXT,
+    'usar el mismo texto para los dos estados comunica mal');
+  assert.match(multimedia.QUEUE_NOTICE_TEXT, /adelante/);
+  assert.match(multimedia.ENGINE_NOTICE_TEXT, /transcribiendo/);
+});
+
+test('#5336 CA-8: no se avisa "estoy procesando" si la transcripción ya cerró', async () => {
+  const avisos = [];
+  resetEngine([{ ok: true, text: 'rapidísimo' }]);
+  await multimedia.transcribeAudioWithFallback(Buffer.alloc(10), null, 'a.ogg', {
+    notify: (texto, stage) => avisos.push({ texto, stage }),
+  });
+  // Esperamos bastante más que el umbral: si el timer no se cancela, acá aparece
+  // un aviso posterior a la respuesta final (peor que el silencio).
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(avisos.length, 0, 'un aviso que llega después de la respuesta es peor que ninguno');
+});
+
+test('#5336 CA-2: un fallo del notificador jamás rompe la transcripción', async () => {
+  const script = [];
+  for (let i = 0; i < 20; i++) script.push({ ok: false, text: '', errorKind: 'busy', raw: 'ocupado' });
+  script.push({ ok: true, text: 'igual salió' });
+  resetEngine(script);
+  const r = await multimedia.transcribeAudioWithFallback(Buffer.alloc(10), null, 'a.ogg', {
+    notify: () => { throw new Error('telegram caído'); },
+  });
+  assert.equal(r.ok, true, 'el aviso es aditivo: si falla, la transcripción sigue');
+  assert.equal(r.text, 'igual salió');
+});
+
+test('#5336 CA-4: el marcador de audio fallido se rutea al fallo real, no a "no te entendí"', () => {
+  // Reproduce el bug exacto del issue: multimedia deja el texto vacío + marcador,
+  // y el router lo clasificaba `unknown` → plantilla "🤔 No te entendí, Leito".
+  const intent = commanderDet.classify('(audio sin transcribir: timeout)');
+  assert.equal(intent.audioFailed, true, 'el router tiene que reconocer el marcador');
+  assert.equal(intent.audioErrorKind, 'timeout', 'y propagar el motivo');
+});
+
+test('#5336 CA-4: el marcador se detecta ANTES del strip de anotaciones', () => {
+  // El strip borra el marcador y deja string vacío. Si la detección corriera
+  // después, la señal se perdería y volveríamos al fallback genérico.
+  assert.deepEqual(commanderDet.detectAudioFailure('(audio sin transcribir: stalled)'), { errorKind: 'stalled' });
+  assert.deepEqual(commanderDet.detectAudioFailure('(audio no disponible)'), { errorKind: 'download_failed' });
+  assert.equal(commanderDet.detectAudioFailure('(mensaje de voz transcripto · whisper local)'), null,
+    'un audio transcripto OK no es un fallo');
+});
+
+test('#5336 CA-4: un comando por voz transcripto OK sigue ruteando igual (sin regresión)', () => {
+  const intent = commanderDet.classify('/wave (mensaje de voz transcripto · whisper local)');
+  assert.equal(intent.class, 'deterministic');
+  assert.equal(intent.command, 'wave');
+  assert.ok(!intent.audioFailed);
+});
+
+test('#5336 CA-4/CA-9: el copy dice que falló la infra, y nunca "no te entendí"', () => {
+  for (const kind of Object.keys(multimedia.TRANSCRIPTION_FAILURE_REASONS)) {
+    const msg = multimedia.transcriptionFailureMessage(kind);
+    assert.match(msg, /no pude transcribirlo/, `[${kind}] debe decir que no pudo transcribir`);
+    assert.ok(!/no te entend/i.test(msg), `[${kind}] jamás el fallback de comprensión`);
+    // CA-9: ningún consejo que dejó de aplicar tras eliminar el corte por tiempo.
+    assert.ok(!/cortito/i.test(msg), `[${kind}] "reenvialo más cortito" ya no aplica`);
+    assert.ok(!/openai-whisper/i.test(msg), `[${kind}] el motor ya no es openai-whisper`);
+  }
+});
+
+test('#5336 CA-9: sólo se menciona el reintento cuando realmente se reintentó', () => {
+  assert.match(multimedia.transcriptionFailureMessage('cli_error'), /reintenté/,
+    'un fallo reintentable debe explicar que ya se insistió');
+  assert.ok(!/reintenté/.test(multimedia.transcriptionFailureMessage('no_binary')),
+    'decir que se reintentó cuando no se reintentó es mentira');
+});
+
+test('#5336 CA-5: todo errorKind produce un mensaje explícito (nunca silencio)', () => {
+  // Incluye kinds que el motor puede emitir y los caminos de excepción.
+  const kinds = ['timeout', 'stalled', 'queue_stuck', 'busy', 'cli_error', 'spawn_error',
+    'no_output', 'read_error', 'no_input', 'missing_file', 'too_large', 'download_failed',
+    'unavailable', 'no_binary', 'un_kind_que_no_existe'];
+  for (const k of kinds) {
+    const msg = multimedia.transcriptionFailureMessage(k);
+    assert.ok(typeof msg === 'string' && msg.trim().length > 20, `[${k}] sin mensaje utilizable`);
+  }
+});
+
+test('#5336 SEC: el copy de fallo no interpola datos crudos del error', () => {
+  // El enum es cerrado: pasar un "errorKind" con payload no puede filtrarlo al chat.
+  const msg = multimedia.transcriptionFailureMessage('C:\\Users\\secreto\\token-abc123.ogg');
+  assert.ok(!msg.includes('secreto'), 'nunca interpolar paths ni raw en el mensaje al usuario');
+  assert.ok(!msg.includes('token-abc123'));
 });

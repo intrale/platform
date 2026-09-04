@@ -13,11 +13,12 @@ const assert = require('node:assert/strict');
 
 const redact = require('../redact');
 
-test('a · cada uno de los 5 patterns de proveedor es redactado', () => {
+test('a · cada pattern de proveedor es redactado', () => {
     const cases = {
         anthropic: 'sk-ant-api03-AbCdEf123456789_xyz',
         openai: 'sk-ABCDEFGHIJKLMNOPQRSTUVWX123456',
         groq: 'gsk_AbCd1234EfGh5678',
+        github: `ghp_${'a'.repeat(40)}`,
         aws: 'AKIAIOSFODNN7EXAMPLE',
         jwt: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.abcDEFsig123',
     };

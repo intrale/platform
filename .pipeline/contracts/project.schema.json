@@ -8,7 +8,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "pattern": "^1\\.0$"
+      "pattern": "^1\\.1$"
     },
     "status": {
       "type": "string",
@@ -154,7 +154,62 @@
             "uniqueItems": true,
             "items": {
               "type": "string",
-              "enum": ["github", "aws", "gradle-android", "telegram-hooks", "providers"]
+              "enum": [
+                "aws",
+                "github",
+                "google_drive",
+                "multimedia",
+                "providers:anthropic",
+                "providers:cerebras",
+                "providers:google",
+                "providers:moonshot",
+                "providers:nvidia",
+                "providers:openai",
+                "r2",
+                "telegram"
+              ]
+            }
+          },
+          "inherit": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "aws",
+                "github",
+                "google_drive",
+                "multimedia",
+                "providers:anthropic",
+                "providers:cerebras",
+                "providers:google",
+                "providers:moonshot",
+                "providers:nvidia",
+                "providers:openai",
+                "r2",
+                "telegram"
+              ]
+            }
+          },
+          "shared": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "aws",
+                "github",
+                "google_drive",
+                "multimedia",
+                "providers:anthropic",
+                "providers:cerebras",
+                "providers:google",
+                "providers:moonshot",
+                "providers:nvidia",
+                "providers:openai",
+                "r2",
+                "telegram"
+              ]
             }
           }
         }

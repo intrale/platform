@@ -28,6 +28,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 function freshModule(tmpDir) {
     process.env.PIPELINE_DIR_OVERRIDE = tmpDir;
@@ -47,6 +48,11 @@ function setupTmp() {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qsi-test-'));
     fs.mkdirSync(path.join(tmpDir, 'metrics'), { recursive: true });
     fs.mkdirSync(path.join(tmpDir, 'logs'), { recursive: true });
+    // #5172: el sandbox hace de `.pipeline/`; sin `config.yaml` el `setFlag`
+    // que dispara el gate por snapshot muere con `ConfigParseViolation` en vez
+    // de resolver TTLs. Documento mínimo para no alterar los defaults que estos
+    // CAs afirman.
+    seedPipelineConfig(tmpDir);
     return tmpDir;
 }
 

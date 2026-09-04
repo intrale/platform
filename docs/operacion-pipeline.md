@@ -275,3 +275,210 @@ const result = quotaUsage('anthropic', { metricsDir, activityLogPath });
 ```
 
 `computeQuota` se mantiene durante la migración progresiva — no rompe callers existentes. La fuente única de la lógica vive en `lib/quota-adapters/`.
+
+---
+
+## Corte del fallback del vault — propuesta, ausencia y break-glass {#corte-fallback-vault}
+
+Apagar `vault.bootstrap_fallback` es la **última acción del cutover al vault** y
+la más difícil de deshacer. Esta sección es el runbook operativo: qué te va a
+proponer el pipeline, qué pasa si no estás, cómo cortar sin Telegram y hasta
+dónde se puede volver atrás.
+
+El reparto de responsabilidades entre módulos:
+
+| Pieza | Issue | Archivo |
+|-------|-------|---------|
+| Capability firmada + despacho aislado del lifecycle | #5458 | `lib/operator-gate.js`, `lib/action-token.js` |
+| Ejecutor idempotente + persistencia atómica | #5459 | `lib/vault-cut-fallback.js` |
+| Propuesta, ausencia del operador y break-glass | #5460 | `lib/vault-cut-proposal.js`, `lib/operator-absence-policy.js`, `lib/vault-cut-breakglass.js` |
+
+### Cuándo te lo va a proponer
+
+El productor corre como tick del Pulpo cada 15 min, detrás de **dos gates
+cerrados**: `vault.enabled: true` **y** `vault.cut_fallback.proposal_enabled: true`.
+Con cualquiera de los dos en `false` no evalúa nada y no escribe un solo archivo.
+
+Con los gates abiertos, publica el botón **`🔐 Confirmar corte del fallback`**
+sólo si el criterio de salida por **cobertura positiva** de la ventana sombra
+(#5427) está en `cumple`: cada secreto de `ENV_DESCRIPTORS`, en cada host de
+`vault.shadow_window.hosts_activos`, con al menos una resolución por `vault`,
+cero evidencia negativa, y la ventana de reloj cumplida.
+
+El botón es **uno solo**. No hay «Rechazar» a propósito: el estado por defecto
+ya es *no cortar*, así que no tocar nada conserva el fallback. Un botón cuyo
+efecto es idéntico al silencio sólo sugeriría que el silencio no alcanza.
+
+```bash
+# Ver el criterio de salida tal como lo ve el productor
+node .pipeline/vault-shadow-status.js
+
+# Ver dónde está cada host en la migración al vault (#5453)
+node .pipeline/vault-migration-run.js status
+```
+
+La migración por host —preflight, acreditación de la rotación, provisión,
+respawn y observación de la ventana— se maneja con
+[`.pipeline/vault-migration-run.js`](../.pipeline/vault-migration-run.js), que usa
+el mismo cableado que el Pulpo. La secuencia completa, con los comandos de cada
+paso y los códigos de salida, está en
+[`docs/runbooks/credential-rotation.md`](runbooks/credential-rotation.md#secuencia-por-host).
+Ese comando **no** corta el fallback: el corte lo ejecuta únicamente
+`.pipeline/vault-cut-breakglass.js`.
+
+### Qué pasa si no estás
+
+El productor espera tu confirmación durante `vault.cut_fallback.proposal_timeout_ms`
+(default 6 h, cotas 1 min .. 72 h). Vencido ese plazo, o si nunca se pudo
+preguntar, aplica la **política de ausencia operacional**: no hay auto-proceder
+posible, ni con allowlist, ni con índice de confianza, ni por configuración.
+
+Cuatro causas, todas con el mismo efecto:
+
+| Causa | Cuándo | Efecto |
+|-------|--------|--------|
+| `timeout` | se publicó la propuesta y venció sin respuesta | fallback conservado |
+| `telegram_ausente` | no hay canal para publicar o confirmar | fallback conservado |
+| `allowlist_vacia` | no hay ningún firmante autorizado | fallback conservado |
+| `estado_indeterminado` | no se pudo *determinar* el estado (config ilegible, evaluador roto, `no_verificado`) | fallback conservado |
+
+En los cuatro casos: se conserva el fallback, se encola el label `needs-human`
+en el issue de `vault.cut_fallback.proposal_issue`, y se escribe la **señal
+local**.
+
+> **`no_cumple` NO es una de las cuatro.** Una ventana que todavía corre es una
+> negativa *informada*: no pasa nada, no se molesta a nadie, el tick siguiente
+> vuelve a mirar. `no_verificado` sí escala, porque es ausencia de respuesta:
+> nadie pudo determinar el estado. Confundirlas es lo que convierte «no lo sé»
+> en «esperá tranquilo» para siempre.
+
+**El corte NO mueve work-files.** No atraviesa `applyTransition()`, no toca
+`waiting-operator/`, `pendiente/` ni `procesado/`, y el escalado usa
+`enqueueNeedsHumanLabel` (encolar el label) en vez de `reportHumanBlock`, que
+renombraría el work-file activo del issue.
+
+### La señal local
+
+Es el canal que sobrevive sin Telegram y sin GitHub:
+
+```bash
+cat .pipeline/state/vault-cut-absence.json
+```
+
+```json
+{
+  "estado": "fallback_conservado",
+  "timestamp": "2026-08-28T10:00:00.000Z",
+  "causa": "timeout",
+  "runbook": "docs/operacion-pipeline.md#corte-fallback-vault"
+}
+```
+
+**Exactamente cuatro claves, siempre.** La causa sale de un enum cerrado; una
+causa que el módulo no reconoce colapsa a `causa_no_reconocida` y el valor
+original se descarta. No hay hostnames, ni chat ids, ni ARNs, ni paths
+absolutos, ni el motivo crudo del evaluador: este archivo lo lee un humano en
+una terminal, y el texto libre es la vía por la que se filtra infraestructura.
+
+La señal refleja el **último** estado (se sobreescribe). El histórico verificable
+vive en `.pipeline/audit/operator-absence.jsonl` (hash-chained, `verifyChain()`).
+
+### Break-glass — cortar sin Telegram
+
+Para cuando el bot está caído, el token fue reprovisionado o el host no tiene
+salida. **No es un `--force`**: cambia *quién autoriza*, no *qué se verifica*.
+
+```bash
+echo "CORTAR FALLBACK" | node .pipeline/vault-cut-breakglass.js --operator leitolarreta
+```
+
+Lo que se sustituye y lo que se conserva:
+
+| | Canal normal | Break-glass |
+|---|---|---|
+| Identidad | HMAC + nonce sobre chat de Telegram | allowlist **cerrada en código** (`lib/operator-allowlist.js`, rol `primary`, cambiable sólo por CODEOWNERS) |
+| Segundo factor | toque del botón registrado server-side | frase exacta `CORTAR FALLBACK` por **stdin** |
+| Cobertura positiva | revalidada antes de persistir | **igual, revalidada antes de persistir** |
+| Escritura atómica + relectura + auditoría | sí | **sí, el mismo ejecutor** |
+| Lock exclusivo e idempotencia | sí | **sí** |
+
+La frase va por **stdin y nunca por argv**: `argv` lo lee cualquier proceso del
+host (`ps`, `wmic`, `/proc`), queda en el historial del shell y lo capturan los
+wrappers de logging. El id de operador sí puede ir por argv o por
+`PIPELINE_OPERATOR_ID`: es público (está en CODEOWNERS), no es la prueba.
+
+Códigos de salida (estables):
+
+| Código | Significado |
+|--------|-------------|
+| `0` | cortado, o ya estaba cortado (idempotente) |
+| `10` | identidad local no autorizada |
+| `11` | frase de confirmación incorrecta |
+| `12` | cobertura positiva insuficiente |
+| `13` | precondición del corte incumplida — fallback conservado |
+| `14` | indeterminado — fallback conservado |
+
+Cada ejecución deja un evento `breakglass_cut` en
+`.pipeline/audit/vault-cut-fallback.jsonl`, con `channel: "break-glass"` para
+distinguirlo del corte por el canal de firma. Ese registro nunca contiene
+valores de secreto, tokens, firmas, nonces, chat ids, ARNs ni paths absolutos.
+
+### Reprovisionar el bot token invalida los action-tokens en vuelo
+
+El material HMAC de los action-tokens **se deriva del `telegram.bot_token`**
+(`lib/action-token.js`, `deriveKey`). Reprovisionar ese secreto en el vault
+cambia la clave derivada, así que **toda capability emitida antes deja de
+verificar**: los botones publicados responden `invalid`, no `expired`.
+
+Consecuencia operativa concreta: si rotás el bot token mientras hay una
+propuesta de corte publicada, ese botón queda muerto. No es un bug ni hay que
+«destrabar» nada — el productor detecta el vencimiento por su propio reloj
+(`proposal_timeout_ms`), escala a `needs-human` con causa `timeout`, y el tick
+siguiente vuelve a publicar una propuesta nueva firmada con el material nuevo.
+
+Si necesitás cortar **antes** de esa ventana, usá el break-glass: no depende del
+material HMAC.
+
+### Último punto de retorno
+
+Este es el punto de no retorno barato del cutover, y conviene tenerlo explícito
+**antes** de tocar el botón:
+
+1. **Antes del corte** — `vault.enabled: false` es un rollback real: el
+   resolvedor vuelve al store previo y el pipeline sigue operando. Éste es el
+   último punto de retorno barato.
+2. **Después del corte** — con `bootstrap_fallback: false`, `vault.enabled: false`
+   **ya no es rollback**: apaga la única vía de resolución que queda y deja el
+   pipeline sin credenciales. Volver atrás pasa a requerir editar `config.yaml`
+   a mano y reponer el store previo, con el pipeline caído mientras tanto.
+
+Por eso el criterio de salida es cobertura **positiva** y no «cero fallbacks»:
+cero fallbacks se cumple trivialmente si un host estuvo apagado o un secreto
+nunca se pidió, y el corte se ejecutaría sobre evidencia vacía.
+
+### Config
+
+```yaml
+vault:
+  cut_fallback:
+    authorization_ttl_seconds: 300      # TTL de la autorización (#5459)
+    operation_timeout_ms: 10000         # timeout del ejecutor (#5459)
+    runbook: "docs/pipeline/vault-secretos-aws.md"
+    proposal_enabled: false             # gate de rollout del productor (#5460)
+    proposal_timeout_ms: 21600000       # 6 h — paciencia con el operador humano
+    proposal_issue: 0                   # 0 = sin configurar (fail-closed)
+```
+
+`proposal_timeout_ms` **no es** el TTL de la capability. Ese vive en
+`action-token.js` (`OPERATIONAL_TTL_MS`, 10 min) y acota la ventana de replay de
+una autorización ya emitida. Este acota la paciencia con un humano. Igualarlos
+rompe una de las dos cosas: o el token vive 6 h (superficie de replay), o se
+escala a `needs-human` cada 10 minutos y el operador aprende a ignorar la alerta.
+
+### Tests
+
+```bash
+node --test .pipeline/lib/__tests__/vault-cut-proposal.test.js \
+            .pipeline/lib/__tests__/operator-absence-operational-5460.test.js \
+            .pipeline/lib/__tests__/vault-cut-breakglass.test.js
+```

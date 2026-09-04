@@ -134,22 +134,29 @@ test('mixto: faltante + cancelado → ESCALATE (la ambigüedad gana sobre requeu
 });
 
 // ─── analyzeStuckIssue: escalate ────────────────────────────────────────────
-test('rechazo REAL → escalate (NO re-encolar, evita loop)', () => {
+// #6296 — REESCRITO CON INTENCIÓN. Antes esperaba `escalate`: un rechazo se
+// trataba como ambigüedad y frenaba el issue pidiendo humano. Ahora un rechazo es
+// una DECISIÓN y su carril es `rebote`. Lo que NO cambia (y por eso el test sigue
+// existiendo) es que jamás se re-encola a la MISMA fase: eso loopearía.
+test('#6296 rechazo REAL → rebote (nunca requeue a la misma fase: loopearía)', () => {
     const r = analyzeStuckIssue({
         requiredSkills: ['po', 'ux'],
         deliverables: [deliv('po', 'listo', APROB), deliv('ux', 'listo', RECHAZO)],
         nowMs: NOW,
     });
-    assert.equal(r.action, 'escalate');
-    assert.match(r.reason, /rechazo/);
+    assert.equal(r.action, 'rebote');
+    assert.notEqual(r.action, 'requeue', 'un rechazo NUNCA re-encola la misma fase');
+    assert.equal(r.rebote.severidadEfectiva, 'grave', 'sin `gravedad` declarada ⇒ grave (piso A)');
+    assert.match(r.reason, /ux:rejected\(grave\)/);
 });
-test('rechazo + faltante → escalate gana (el rechazo manda)', () => {
+test('#6296 rechazo + faltante → gana el rechazo (rebote, no requeue del faltante)', () => {
     const r = analyzeStuckIssue({
         requiredSkills: ['po', 'ux', 'guru'],
         deliverables: [deliv('po', 'listo', RECHAZO)],
         nowMs: NOW,
     });
-    assert.equal(r.action, 'escalate');
+    assert.equal(r.action, 'rebote');
+    assert.deepEqual(r.rebote.skills.map((x) => x.skill), ['po']);
 });
 
 // ─── boundaries ─────────────────────────────────────────────────────────────
@@ -193,4 +200,225 @@ test('yaml faltante en deliverable no tira y cuenta como corrupt → escalate', 
         nowMs: NOW,
     });
     assert.equal(r.action, 'escalate'); // corrupt → indeterminado → humano
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #5641 — Caída de infra ≠ veredicto de rechazo
+//
+// El Pulpo sintetiza `resultado: rechazado` cuando el proceso del agente muere
+// con exit code ≠ 0. Ese deliverable no contiene ninguna decisión de review,
+// pero el detector lo contaba como rechazo real y frenaba el issue pidiendo
+// humano (6 de 12 issues frenados de la ola 9.4 del 2026-08-06 eran esto).
+//
+// La discriminación es por PROCEDENCIA ESTRUCTURADA (`veredicto_sintetizado_por`,
+// campo que sólo el Pulpo escribe), NUNCA por el texto del `motivo`.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const { classifyPhase } = require('./stuck-phase-detector');
+
+// Veredicto sintetizado por el Pulpo: el agente se cayó, nunca opinó.
+const INFRA = {
+    resultado: 'rechazado',
+    motivo: 'Agente terminó con código 1',
+    veredicto_sintetizado_por: 'pulpo',
+    agente_exit_code: 1,
+};
+// Hermano drenado por el fast-fail que disparó esa caída.
+const DRENADO = (porQuien = 'po', infra = true) => ({
+    cancelado_por: 'fast-fail-rebote',
+    cancelado_ts: 'x',
+    cancelado_disparado_por: porQuien,
+    cancelado_disparador_infra: infra,
+});
+// Shape REAL de #5175: po caído + review/ux drenados + architect aprobado.
+const SHAPE_5175 = {
+    requiredSkills: ['po', 'review', 'ux', 'architect'],
+    deliverables: [
+        deliv('po', 'procesado', INFRA),
+        deliv('review', 'procesado', DRENADO('po')),
+        deliv('ux', 'procesado', DRENADO('po')),
+        deliv('architect', 'procesado', APROB),
+    ],
+};
+
+// ─── CA-5 / CA-6: procedencia, nunca el texto del motivo ────────────────────
+test('CA-5 classifySkill: veredicto_sintetizado_por pulpo → infra-failed', () => {
+    const c = classifySkill('po', [deliv('po', 'listo', INFRA)], new Set());
+    assert.equal(c.status, 'infra-failed');
+    assert.equal(c.exitCode, 1, 'el exit code viaja para el audit y el texto al operador');
+});
+test('CA-6 SEC-1: motivo que CITA el literal de infra pero SIN procedencia → rejected', () => {
+    const y = { resultado: 'rechazado', motivo: 'CA-1 no se cumple: secret hardcodeado en Foo.kt:42. El log dice: Agente terminó con código 1' };
+    assert.equal(classifySkill('review', [deliv('review', 'listo', y)], new Set()).status, 'rejected');
+});
+test('CA-6 SEC-1: el literal con prefijo [skill] tampoco alcanza sin procedencia', () => {
+    const y = { resultado: 'rechazado', motivo: '[po] Agente terminó con código 1' };
+    assert.equal(classifySkill('po', [deliv('po', 'listo', y)], new Set()).status, 'rejected');
+});
+test('CA-5: procedencia distinta de "pulpo" NO habilita el carril (fail-closed)', () => {
+    const y = { ...INFRA, veredicto_sintetizado_por: 'agente' };
+    assert.equal(classifySkill('po', [deliv('po', 'listo', y)], new Set()).status, 'rejected');
+});
+test('R-2 orden de guardas: procedencia + cancelado_por → infra-failed, no cancelled', () => {
+    // El drenaje fast-fail hace `{...prev, cancelado_por}`: preserva el veredicto
+    // previo. Con el orden viejo (cancelado_por antes que resultado) esta rama era
+    // inalcanzable justo en el shape que motivó el issue.
+    const y = { ...INFRA, ...DRENADO('otro') };
+    assert.equal(classifySkill('po', [deliv('po', 'procesado', y)], new Set()).status, 'infra-failed');
+});
+test('un aprobado con procedencia sigue siendo done (done gana)', () => {
+    const y = { resultado: 'aprobado', veredicto_sintetizado_por: 'pulpo' };
+    assert.equal(classifySkill('po', [deliv('po', 'listo', y)], new Set()).status, 'done');
+});
+
+// ─── CA-9: re-mapeo cancelled → missing, fail-closed en cada puerta ─────────
+test('CA-9 classifyPhase: hermanos drenados por un infra-failed → missing', () => {
+    const cs = classifyPhase(SHAPE_5175.requiredSkills, SHAPE_5175.deliverables, new Set());
+    const byName = Object.fromEntries(cs.map((c) => [c.skill, c]));
+    assert.equal(byName.po.status, 'infra-failed');
+    assert.equal(byName.review.status, 'missing');
+    assert.equal(byName.review.remappedFrom, 'cancelled');
+    assert.equal(byName.ux.status, 'missing');
+    assert.equal(byName.architect.status, 'done');
+});
+test('CA-9 fail-closed: legacy sin cancelado_disparado_por → cancelled', () => {
+    const dels = [deliv('po', 'procesado', INFRA), deliv('ux', 'procesado', CANCEL)];
+    const cs = classifyPhase(['po', 'ux'], dels, new Set());
+    assert.equal(cs.find((c) => c.skill === 'ux').status, 'cancelled');
+});
+test('CA-9 fail-closed: cancelado_disparador_infra false → cancelled', () => {
+    const dels = [deliv('po', 'procesado', INFRA), deliv('ux', 'procesado', DRENADO('po', false))];
+    const cs = classifyPhase(['po', 'ux'], dels, new Set());
+    assert.equal(cs.find((c) => c.skill === 'ux').status, 'cancelled');
+});
+test('CA-9 fail-closed: disparador MIXTO (infra + rechazo real) → cancelled', () => {
+    const dels = [
+        deliv('po', 'procesado', INFRA),
+        deliv('review', 'procesado', RECHAZO),                    // rechazo de contenido
+        deliv('ux', 'procesado', DRENADO('po,review')),
+    ];
+    const cs = classifyPhase(['po', 'review', 'ux'], dels, new Set());
+    assert.equal(cs.find((c) => c.skill === 'ux').status, 'cancelled',
+        'un solo rechazo de contenido en la mezcla ⇒ no se relaja el gate');
+});
+test('CA-9 fail-closed: disparador que NO es de la fase → cancelled', () => {
+    const dels = [deliv('po', 'procesado', INFRA), deliv('ux', 'procesado', DRENADO('desconocido'))];
+    const cs = classifyPhase(['po', 'ux'], dels, new Set());
+    assert.equal(cs.find((c) => c.skill === 'ux').status, 'cancelled');
+});
+test('CA-9: sin ningún infra-failed en la fase, classifyPhase no re-mapea nada', () => {
+    const dels = [deliv('po', 'procesado', RECHAZO), deliv('ux', 'procesado', DRENADO('po'))];
+    const cs = classifyPhase(['po', 'ux'], dels, new Set());
+    assert.equal(cs.find((c) => c.skill === 'ux').status, 'cancelled');
+});
+
+// ─── CA-10: la acción sobre el shape real de #5175 ──────────────────────────
+test('CA-10 shape de #5175 → requeue de po,review,ux (NO needs-human)', () => {
+    const r = analyzeStuckIssue({ ...SHAPE_5175, nowMs: NOW });
+    assert.equal(r.action, 'requeue');
+    assert.deepEqual(r.requeueSkills, ['po', 'review', 'ux']);
+    assert.deepEqual(r.infra.skills, ['po']);
+    assert.deepEqual(r.infra.drained, ['review', 'ux']);
+    assert.deepEqual(r.infra.exitCodes, { po: 1 });
+});
+test('CA-UX-2 el reason del carril infra NO dice "nunca corrieron"', () => {
+    const r = analyzeStuckIssue({ ...SHAPE_5175, nowMs: NOW });
+    assert.match(r.reason, /caída de infra/);
+    assert.match(r.reason, /exit 1/, 'el operador necesita el exit code');
+    assert.match(r.reason, /drenados por fast-fail/, 'distingue al caído de los arrastrados');
+    assert.doesNotMatch(r.reason, /nunca corrieron/);
+});
+test('CA-UX-2 no-regresión: skills genuinamente faltantes conservan su reason', () => {
+    const r = analyzeStuckIssue({
+        requiredSkills: ['po', 'ux'],
+        deliverables: [deliv('po', 'listo', APROB)],
+        nowMs: NOW,
+    });
+    assert.equal(r.reason, 're-encolar skills faltantes (nunca corrieron): ux');
+});
+test('infra + un skill que nunca corrió → ambos se re-encolan', () => {
+    const r = analyzeStuckIssue({
+        requiredSkills: ['po', 'ux', 'guru'],
+        deliverables: [deliv('po', 'procesado', INFRA), deliv('guru', 'listo', APROB)],
+        nowMs: NOW,
+    });
+    assert.equal(r.action, 'requeue');
+    assert.deepEqual(r.requeueSkills, ['po', 'ux']);
+    assert.match(r.reason, /nunca corrieron \(ux\)/);
+});
+
+// ─── CA-11 / CA-12 / CA-2: la línea roja del PO (fail-closed) ──────────────
+// #6296 — REESCRITOS, NO BORRADOS: son el candado del invariante de security y
+// del anti-spoof. Lo que cambia es el DESTINO (rebote a dev en vez de humano); lo
+// que NO cambia es que el rechazo sigue siendo una decisión de contenido, de
+// severidad `grave`, que jamás se auto-aprueba ni se re-encola a la misma fase.
+// RIESGO-1 de `convergence-detector.js` prohibe la AUTO-PROMOCIÓN, no el rebote:
+// devolver el defecto a desarrollo lo acciona antes que un humano que tarda días.
+test('CA-11 no-regresión: rechazo de contenido real → rebote grave (nunca aprobado)', () => {
+    const y = { resultado: 'rechazado', motivo: 'CA-3 incumplido: el endpoint devuelve 500 con payload vacío' };
+    const r = analyzeStuckIssue({
+        requiredSkills: ['po', 'review'],
+        deliverables: [deliv('po', 'listo', APROB), deliv('review', 'listo', y)],
+        nowMs: NOW,
+    });
+    assert.equal(r.action, 'rebote');
+    assert.equal(r.rebote.severidadEfectiva, 'grave');
+});
+test('CA-12 invariante security: su rechazo es SIEMPRE grave y nunca se auto-reencola', () => {
+    const y = { resultado: 'rechazado', motivo: 'SEC-2: token de Cognito logueado en claro en AuthService.kt:88' };
+    const r = analyzeStuckIssue({
+        requiredSkills: ['security', 'po'],
+        deliverables: [deliv('security', 'listo', y), deliv('po', 'listo', APROB)],
+        nowMs: NOW,
+    });
+    assert.equal(r.action, 'rebote');
+    assert.notEqual(r.action, 'requeue');
+    assert.equal(r.rebote.severidadEfectiva, 'grave');
+    assert.match(r.reason, /security:rejected\(grave\)/);
+});
+test('CA-12 piso de security: aunque DECLARE `gravedad: leve`, la efectiva es grave', () => {
+    const y = { resultado: 'rechazado', gravedad: 'leve', motivo: 'SEC-2: credencial en claro' };
+    const r = analyzeStuckIssue({
+        requiredSkills: ['security', 'po'],
+        deliverables: [deliv('security', 'listo', y), deliv('po', 'listo', APROB)],
+        nowMs: NOW,
+    });
+    assert.equal(r.rebote.severidadEfectiva, 'grave', 'el gate de seguridad no se puede auto-degradar');
+});
+test('CA-12: security rechazado convive con un infra-failed y sigue ganando (precedencia)', () => {
+    const y = { resultado: 'rechazado', motivo: 'SEC-2: credencial en claro' };
+    const r = analyzeStuckIssue({
+        requiredSkills: ['security', 'po'],
+        deliverables: [deliv('security', 'listo', y), deliv('po', 'procesado', INFRA)],
+        nowMs: NOW,
+    });
+    assert.equal(r.action, 'rebote', 'un rechazo de contenido bloquea el carril de infra');
+});
+test('CA-2 anti-spoof: tras el strip del Pulpo el rechazo de contenido → rebote (no infra)', () => {
+    // El Pulpo borra `veredicto_sintetizado_por`/`agente_exit_code` del YAML del
+    // agente ANTES de evaluarlos, así que lo que llega al detector es esto:
+    const spoofeadoYaLimpiado = { resultado: 'rechazado', motivo: 'CA-4 incumplido: falta el test de borde' };
+    const r = analyzeStuckIssue({
+        requiredSkills: ['review'],
+        deliverables: [deliv('review', 'listo', spoofeadoYaLimpiado)],
+        nowMs: NOW,
+    });
+    assert.equal(r.action, 'rebote');
+    assert.equal(r.rebote.severidadEfectiva, 'grave');
+    // El anti-spoof por CAMPO ESTRUCTURADO se mantiene intacto: el carril de
+    // infra exige `veredicto_sintetizado_por`, jamás el texto del motivo.
+    assert.equal(r.rebote.skills[0].skill, 'review');
+});
+
+// ─── CA-8: pureza del detector ─────────────────────────────────────────────
+test('CA-8 pureza: el detector no requiere el clasificador de rebotes ni fs', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'stuck-phase-detector.js'), 'utf8');
+    const requires = [...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]);
+    // #6296 — actualizado CON INTENCIÓN, no relajado: se suma UN require y es a
+    // otro módulo PURO (`rejection-severity`, cero requires propios, verificado en
+    // su propio test). Deliberadamente sigue siendo `deepEqual` y no `includes`:
+    // la aserción exacta es lo que impide que mañana entren `fs`, `path`, config
+    // o el clasificador de rebotes sin que nadie lo note.
+    assert.deepEqual(requires, ['./phase-completion', './rejection-severity'],
+        'la fuente única compartida es el CAMPO estructurado, no el módulo clasificador');
 });

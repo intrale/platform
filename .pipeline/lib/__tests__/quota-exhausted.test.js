@@ -19,6 +19,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { seedPipelineConfig } = require('./_test-helpers');
 
 // Aislamiento por test: cada test setea su propio PIPELINE_DIR_OVERRIDE en un
 // tmp dir único, requiere fresh el módulo, y limpia al final. Esto evita
@@ -46,7 +47,14 @@ function freshModule(tmpDir) {
 }
 
 function newTmpDir() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'v3-quota-exhausted-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-quota-exhausted-'));
+    // #5172: el sandbox ES el `.pipeline/` del test, y desde que la lectura de
+    // config pasa por `config-resolver` un directorio sin `config.yaml` es un
+    // fallo de lectura tipado, no "el operador no configuró TTLs". Sembramos el
+    // documento MÍNIMO: sin sección `quota_detector:` los defaults clampeados
+    // son los mismos que estos tests venían afirmando.
+    seedPipelineConfig(dir);
+    return dir;
 }
 
 function readFlag(tmpDir) {
@@ -1147,7 +1155,11 @@ test('#3220 + #3353 · KNOWN_QUOTA_ERROR_TYPES_BY_PROVIDER incluye gemini-google
     assert.ok(Object.isFrozen(meta.cerebras));
     // Valores esperados
     assert.deepEqual([...meta['gemini-google']].sort(), ['quota_exceeded', 'resource_exhausted']);
-    assert.deepEqual([...meta.cerebras].sort(), ['quota_exceeded', 'rate_limit_exceeded']);
+    // #5978 — se suma 'insufficient_quota': verificado empíricamente que Cerebras
+    // devuelve ese `code` en el 402 de billing (ver
+    // quota-exhausted-bare-error-5978.test.js). Sin él, el 402 no seteaba flag de
+    // cuota y el provider muerto seguía en la cadena rebotando issues sanos.
+    assert.deepEqual([...meta.cerebras].sort(), ['insufficient_quota', 'quota_exceeded', 'rate_limit_exceeded']);
     // Rename: bare 'gemini' ya no existe
     assert.ok(!meta.gemini, "key 'gemini' debe haber sido renombrado a 'gemini-google'");
 });

@@ -20,6 +20,18 @@ const path = require('path');
 // compartido del sprite.svg). Misma dependencia que home.js / satellites.js.
 const { renderNavTabsSsr, loadIconSprite } = require('./nav-tabs');
 
+// #5724 CA-4 — Banner del bloqueo de dispatch por divergencia allowlist<->ola.
+// Se monta en todas las ventanas: cuando el Pulpo suspende el dispatch no
+// avanza NADA, y la pregunta "por que no se mueve" se hace desde donde el
+// operador este parado. La entrega anterior dejo el estado en un modulo al que
+// no apunta ninguna ruta del menu y el bloqueo paso 10 h invisible.
+const {
+    resolveDesyncStatus: _dsbResolve,
+    renderDesyncBlockBannerSsr: _dsbRender,
+    DESYNC_BLOCK_BANNER_CSS: _DSB_CSS,
+    desyncBlockBannerBundleJs: _dsbBundle,
+} = require('./desync-block-banner.js');
+
 // #4245 (Ola 7.1) — DESCANSO adopta el marco común MIZPÁ. Se reutiliza el
 // helper compartido `renderMissionBanner` de la HOME (#4189) — el banner de ola
 // común (② del marco: tag OLA + título + métricas + bloque AVANCE) — en vez de
@@ -93,13 +105,24 @@ const SKILL_COLORS = {
 // segundo round-trip y mantener fuera de localStorage un estado que vive 5s.
 // Se sanea acá para que cualquier consumidor reciba ya integers > 0
 // (defensa en profundidad sobre lo que enforza headerSlice server-side).
-let pipelineModeState = { mode: 'running', allowedIssues: [] };
+let pipelineModeState = { mode: 'running', allowedIssues: [], allowedSkills: [] };
 function _saneAllowedIssues(arr){
     if(!Array.isArray(arr)) return [];
     const out = [];
     for(const v of arr){
         const n = Number(v);
         if(Number.isInteger(n) && n > 0) out.push(n);
+    }
+    return out;
+}
+
+// #5176 CA-UX-3/CA-UX-4 — la ventana por skill viaja al cliente. Sin este campo
+// el tablero no puede distinguir 'pausa parcial vacia' de 'ventana por skill'.
+function _saneAllowedSkills(arr){
+    if(!Array.isArray(arr)) return [];
+    const out = [];
+    for(const v of arr){
+        if(typeof v === 'string' && v.trim()) out.push(v.trim());
     }
     return out;
 }
@@ -112,6 +135,7 @@ async function tickHeader(){
     pipelineModeState = {
         mode: d.mode || 'running',
         allowedIssues: _saneAllowedIssues(d.allowedIssues),
+        allowedSkills: _saneAllowedSkills(d.allowedSkills),
     };
     // #4531 — Bandeja unificada: reloj + mode + build + recursos + pulpo se
     // hidratan con la lógica compartida (header-meta.js). SEC-1: sólo
@@ -1489,6 +1513,7 @@ ${css}
     ${renderHeaderMetaSsr({ withMode: true })}
   </header>
   ${missionHtml}
+  ${_dsbRender(_dsbResolve())}
   ${navHtml}
   ${breadcrumb}
   <main class="satellite-body">${bodyHtml}</main>
@@ -1502,6 +1527,9 @@ ${CONFIRM_MODAL_JS}
 ${headerPillsClientScript()}
 ${COMMON_HELPERS}
 ${script}</script>
+
+<style>${_DSB_CSS}</style>
+<script>${_dsbBundle()}</script>
 </body>
 </html>`;
 }

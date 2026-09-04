@@ -43,6 +43,8 @@ const livePing = require('./live-ping');
 const healthAlerts = require('./health-alerts');
 const auditLog = require('../audit-log');
 const redact = require('../redact');
+// #6226 — nombres únicos + escritura fail-closed para los dropfiles de la cola.
+const dropfileWriter = require('../dropfile-writer');
 // #4402 — fuente única de la lógica CLI-OAuth (extraída de acá a un módulo
 // compartido para que `live-ping.js` la reutilice sin ciclo de require).
 const cliOauthProbe = require('./cli-oauth-probe');
@@ -65,6 +67,19 @@ function readDefaultProvider() {
         }
     } catch { /* best-effort */ }
     return 'anthropic';
+}
+
+// #5888 — Config de agentes completa (providers + skills). Lectura defensiva:
+// si `agent-models.json` no se puede leer, el cruce de catálogo queda sin
+// modelos que verificar y la barrera no corre — nunca marca modelos como
+// muertos por no poder leer su propia config (cond. 1/2, fail-open).
+function readAgentModelsConfig() {
+    try {
+        // eslint-disable-next-line global-require
+        const am = require('./agent-models-rw');
+        const cfg = am.readConfig();
+        return (cfg && typeof cfg === 'object') ? cfg : {};
+    } catch { return {}; }
 }
 
 // Alias provider-key (cron) → default_provider key. El cron usa 'openai' para
@@ -97,9 +112,35 @@ const JITTER_RANGE_MS = 60 * 1000;                  // ±60s alrededor del slot
 const WEEKLY_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOCK_STALE_MS = 5 * 60 * 1000;                // si el lock tiene >5min, lo robamos
 const SNAPSHOT_FILENAME = 'multi-provider-health.json';
-const STATE_FILENAME = 'multi-provider-health-state.json'; // tracking interno: last_tick, last_weekly_check
+// tracking interno: last_tick_at, last_weekly_check_at, last_catalog_check_at (#5888).
+const STATE_FILENAME = 'multi-provider-health-state.json';
 const LOCK_FILENAME = 'multi-provider-health.lock';
 const AUDIT_FILENAME = 'multi-provider-health.jsonl';
+
+// -----------------------------------------------------------------------------
+// #5888 D-4 / CA-10 — Cadencia PROPIA de la verificación de catálogo.
+//
+// El health-ping sigue en 5 min (barato, `/models` no consume cuota). El cruce
+// de catálogo baja hasta 1 MiB de body por provider: correrlo cada 5 min sería
+// desproporcionado para una condición que cambia con frecuencia trimestral.
+// TTL default 6h, con piso duro de 6h (`MIN`) para que un config equivocado no
+// pueda convertirlo en un ping de catálogo cada minuto.
+// -----------------------------------------------------------------------------
+const CATALOG_CHECK_DEFAULT_HOURS = 6;
+const CATALOG_CHECK_MIN_HOURS = 6;
+const CATALOG_CHECK_MAX_HOURS = 168;   // 7 días
+
+// Providers en alcance del cruce (cond. 9 + D-1). Escrito, no implícito (CA-13).
+// `anthropic` / `openai` quedan fuera porque corren por CLI-OAuth y `ping()`
+// hace short-circuit antes del HTTP; `kimi-moonshot` queda fuera por D-1 (no
+// está en MANAGED_KEYS ni en PROVIDER_PING_ENDPOINTS — ref. #5892).
+const CATALOG_CHECK_PROVIDERS = Object.freeze(['nvidia-nim', 'gemini-google', 'cerebras']);
+
+// #5888 G-7/CA-13 — El cron nombra a Codex `openai`; `agent-models.json` lo
+// nombra `openai-codex`. El mapeo queda EXPLÍCITO para que el día que Codex
+// entre al alcance del cruce no se saltee en silencio por un nombre que no
+// matchea.
+const PING_TO_CONFIG_PROVIDER = Object.freeze({ openai: 'openai-codex' });
 
 function jitterMs(rangeMs = JITTER_RANGE_MS, rng = Math.random) {
     return Math.floor((rng() * 2 - 1) * rangeMs);
@@ -108,34 +149,73 @@ function jitterMs(rangeMs = JITTER_RANGE_MS, rng = Math.random) {
 // -----------------------------------------------------------------------------
 // #4402 CA-3 — Cadencia configurable vía config.yaml
 //
-// Lee `multi_provider.health.interval_minutes` de `.pipeline/config.yaml`
-// (default 5 min). Lectura defensiva con `try/catch` + `js-yaml` (patrón
-// `pulpo.loadConfig`): CUALQUIER error → default. Clamp `[1, 240]` min con piso
-// duro ≥60s (RS-5.5, anti-DoS: Gemini RPM 15, Cerebras RPM 30).
+// Lee `multi_provider.health.interval_minutes` de `.pipeline/config.yaml`.
+// Clamp `[1, 240]` min con piso duro ≥60s (RS-5.5, anti-DoS: Gemini RPM 15,
+// Cerebras RPM 30).
+//
+// #5172 (D-D / CA-12) — DOS cambios acá:
+//
+//  1. Se ELIMINÓ `process.env.PIPELINE_CONFIG_PATH`. Aportaba por ENTORNO una
+//     RUTA DE ARCHIVO, que es exactamente lo que CA-12 prohíbe: permitía apuntar
+//     la configuración que enforza el pipeline a cualquier YAML del disco. La
+//     variable queda DEPRECIADA (ningún archivo de producción la lee) y la raíz
+//     la resuelve `config-resolver` con su regla única — el entorno aporta
+//     DIRECTORIO, el nombre del archivo lo pone el resolver.
+//
+//  2. Se ELIMINÓ el `catch { /* → default 5 min */ }`. Un config ilegible,
+//     un YAML roto o un `interval_minutes` que viola el schema ya no se
+//     disfrazan de "cadencia default": el error tipado (`ConfigParseViolation` /
+//     `ConfigSchemaViolation`, ya redactado) se PROPAGA al llamador.
+//
+// Lo que NO cambia: la inyección por firma `configPath` (es código, no entorno);
+// y la AUSENCIA de `multi_provider.health.interval_minutes` — o de la sección
+// entera — sigue cayendo al default de 5 min: sección opcional ausente no es
+// corrupción, y el clamp `[1,240]` sigue siendo responsabilidad del cron.
+//
+// (`fsImpl` se sacó de la firma: la lectura del config la hace el resolver, así
+// que un fs inyectado acá ya no tenía efecto. Los demás helpers del cron lo
+// conservan.)
 // -----------------------------------------------------------------------------
 
-function defaultConfigPath() {
-    return process.env.PIPELINE_CONFIG_PATH
-        || path.resolve(__dirname, '..', '..', 'config.yaml');
-}
-
-function readTickIntervalMs({ fsImpl = fs, configPath = defaultConfigPath() } = {}) {
+function readTickIntervalMs({ configPath } = {}) {
     let minutes = DEFAULT_INTERVAL_MINUTES;
-    try {
-        const yaml = require('js-yaml');
-        const raw = fsImpl.readFileSync(configPath, 'utf8');
-        const cfg = yaml.load(raw) || {};
-        const v = cfg
-            && cfg.multi_provider
-            && cfg.multi_provider.health
-            && cfg.multi_provider.health.interval_minutes;
-        if (typeof v === 'number' && Number.isFinite(v)) minutes = v;
-    } catch { /* config ilegible/typo → default 5 min (sin romper el arranque) */ }
+    // eslint-disable-next-line global-require
+    const configResolver = require('../config-resolver');
+    const cfg = configResolver.resolve(configPath ? { configPath } : {});
+    const v = cfg
+        && cfg.multi_provider
+        && cfg.multi_provider.health
+        && cfg.multi_provider.health.interval_minutes;
+    if (typeof v === 'number' && Number.isFinite(v)) minutes = v;
     if (!Number.isFinite(minutes)) minutes = DEFAULT_INTERVAL_MINUTES;
     // Clamp [1, 240] min. El piso de 1 min ya garantiza ≥60s; HARD_FLOOR_MS es
     // un segundo cinturón explícito (RS-5.5).
     minutes = Math.min(Math.max(minutes, MIN_INTERVAL_MINUTES), MAX_INTERVAL_MINUTES);
     return Math.max(minutes * 60 * 1000, HARD_FLOOR_MS);
+}
+
+// -----------------------------------------------------------------------------
+// #5888 CA-10 — TTL de la verificación de catálogo, leído por el MISMO resolver
+// de config que `readTickIntervalMs()` (#5172: este módulo no decide qué archivo
+// es la config; el entorno aporta DIRECTORIO, el nombre lo pone el resolver).
+//
+// A diferencia de `readTickIntervalMs`, acá el error de config NO se propaga:
+// un config roto ya hace fallar el tick entero por `readTickIntervalMs` mucho
+// antes de llegar acá. Lo que sí atajamos es el valor ausente/no numérico → 6h.
+// -----------------------------------------------------------------------------
+function readCatalogTtlMs({ configPath } = {}) {
+    let hours = CATALOG_CHECK_DEFAULT_HOURS;
+    // eslint-disable-next-line global-require
+    const configResolver = require('../config-resolver');
+    const cfg = configResolver.resolve(configPath ? { configPath } : {});
+    const v = cfg
+        && cfg.multi_provider
+        && cfg.multi_provider.health
+        && cfg.multi_provider.health.catalog_check_hours;
+    if (typeof v === 'number' && Number.isFinite(v)) hours = v;
+    if (!Number.isFinite(hours)) hours = CATALOG_CHECK_DEFAULT_HOURS;
+    hours = Math.min(Math.max(hours, CATALOG_CHECK_MIN_HOURS), CATALOG_CHECK_MAX_HOURS);
+    return hours * 60 * 60 * 1000;
 }
 
 // -----------------------------------------------------------------------------
@@ -231,7 +311,9 @@ function releaseLock({ lockFile, fsImpl = fs } = {}) {
 function isTickDue({ stateFile, now = Date.now(), fsImpl = fs, jitter = jitterMs(), intervalMs } = {}) {
     const st = readJson(stateFile, fsImpl);
     if (!st || typeof st.last_tick_at !== 'number') return true;
-    const interval = Number.isFinite(intervalMs) ? intervalMs : readTickIntervalMs({ fsImpl });
+    // #5172 — `readTickIntervalMs` ya no toma `fsImpl`: el config lo lee el
+    // punto único (`config-resolver`), no un fs inyectado.
+    const interval = Number.isFinite(intervalMs) ? intervalMs : readTickIntervalMs();
     const elapsed = now - st.last_tick_at;
     return elapsed >= (interval + jitter);
 }
@@ -240,6 +322,97 @@ function isWeeklyDue({ stateFile, now = Date.now(), fsImpl = fs } = {}) {
     const st = readJson(stateFile, fsImpl);
     if (!st || typeof st.last_weekly_check_at !== 'number') return true;
     return (now - st.last_weekly_check_at) >= WEEKLY_CHECK_INTERVAL_MS;
+}
+
+// #5888 CA-10 — espejo exacto de `isWeeklyDue`, con su propia key de estado.
+// Sin esto, los ticks de 5 min bajarían el catálogo 288 veces por día.
+function isCatalogCheckDue({ stateFile, now = Date.now(), fsImpl = fs, ttlMs } = {}) {
+    const st = readJson(stateFile, fsImpl);
+    if (!st || typeof st.last_catalog_check_at !== 'number') return true;
+    const ttl = Number.isFinite(ttlMs) ? ttlMs : readCatalogTtlMs();
+    return (now - st.last_catalog_check_at) >= ttl;
+}
+
+// -----------------------------------------------------------------------------
+// #5888 CA-1 — Los pares `(provider, model_id)` configurados, de las 4 fuentes.
+//
+// NO reimplementamos la resolución de la cadena: `agent-models-validate.
+// resolveSkillChain(config, skill)` ya devuelve `{provider, model, source}`
+// cubriendo `skills[].provider` + `model_override`, el default del provider y
+// `fallbacks[].model_override`. Sólo falta `providers[].alternative_models[]`.
+//
+// La fuente de verdad es `agent-models.json`, NUNCA `model-catalog.js`: ese
+// catálogo local devuelve `null` para los 3 providers en alcance (G-8), así que
+// el cruce se auto-vaciaría y la barrera quedaría muda.
+//
+// El caso que motivó la historia es justamente el fallback: `deepseek-v4-pro`
+// mató agentes estando configurado como fallback, no como primario.
+// -----------------------------------------------------------------------------
+function configuredModelsByProvider(config) {
+    const out = new Map();  // provider (key de config) -> Set<model_id>
+    const add = (prov, model) => {
+        if (typeof prov !== 'string' || typeof model !== 'string' || !model) return;
+        if (!out.has(prov)) out.set(prov, new Set());
+        out.get(prov).add(model);
+    };
+    const providers = (config && config.providers && typeof config.providers === 'object')
+        ? config.providers : {};
+    for (const [prov, def] of Object.entries(providers)) {
+        add(prov, def && def.model);                                       // fuente 1
+        const alts = Array.isArray(def && def.alternative_models) ? def.alternative_models : [];
+        for (const alt of alts) add(prov, alt);                            // fuente 2
+    }
+    const skills = (config && config.skills && typeof config.skills === 'object')
+        ? config.skills : {};
+    for (const skill of Object.keys(skills)) {
+        let chain = [];
+        // eslint-disable-next-line global-require
+        try { chain = require('../agent-models-validate').resolveSkillChain(config, skill) || []; }
+        catch { chain = []; }
+        for (const link of chain) add(link && link.provider, link && link.model);  // fuentes 3 y 4
+    }
+    return out;
+}
+
+/**
+ * Modelos a verificar por provider de PING (no de config). Devuelve un Map
+ * `providerDePing -> string[]`, ya restringido a `CATALOG_CHECK_PROVIDERS`.
+ */
+function expectModelsForPing(config) {
+    const byConfigKey = configuredModelsByProvider(config);
+    const out = new Map();
+    for (const pingProvider of CATALOG_CHECK_PROVIDERS) {
+        const configKey = PING_TO_CONFIG_PROVIDER[pingProvider] || pingProvider;
+        const set = byConfigKey.get(configKey);
+        if (set && set.size > 0) out.set(pingProvider, Array.from(set).sort());
+    }
+    return out;
+}
+
+// #5888 (e) — Shape persistido en el snapshot. Sólo `{model_id, alive}` sale del
+// pipeline de datos: el `detail` interno de `crossCheckCatalog` se descarta acá
+// (es diagnóstico del módulo, no información para el snapshot ni el audit).
+function buildCatalogCheck(catalogCheck, checkedAtIso) {
+    const never = { state: 'never', checked_at: null, reason_code: null, models: [] };
+    if (!catalogCheck || typeof catalogCheck !== 'object') {
+        // Se pidió el cruce pero no hubo resultado (provider sin key, skipped,
+        // OAuth): ausencia de señal, reportable — no "todo bien" (D-3/CA-3).
+        return { state: 'unavailable', checked_at: checkedAtIso, reason_code: 'model_check_unavailable', models: [] };
+    }
+    if (catalogCheck.ok !== true) {
+        return { state: 'unavailable', checked_at: checkedAtIso, reason_code: 'model_check_unavailable', models: [] };
+    }
+    const models = (Array.isArray(catalogCheck.models) ? catalogCheck.models : [])
+        .filter((m) => m && typeof m.model_id === 'string')
+        .map((m) => ({ model_id: m.model_id, alive: m.alive === true }));
+    if (models.length === 0) return never;
+    const dead = models.filter((m) => !m.alive);
+    return {
+        state: dead.length > 0 ? 'not_in_catalog' : 'verified',
+        checked_at: checkedAtIso,
+        reason_code: dead.length > 0 ? 'model_not_in_catalog' : null,
+        models,
+    };
 }
 
 // -----------------------------------------------------------------------------
@@ -299,7 +472,7 @@ function listManagedAndPingable() {
 // Snapshot build + alerts
 // -----------------------------------------------------------------------------
 
-async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl, cliProbe, quotaAssessImpl, defaultProvider, now } = {}) {
+async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl = fs, httpImpl, pingImpl, cliProbe, quotaAssessImpl, defaultProvider, now, checkCatalog = false, expectModelsByProvider = null } = {}) {
     const prevByProvider = {};
     if (prevSnapshot && Array.isArray(prevSnapshot.providers)) {
         for (const p of prevSnapshot.providers) prevByProvider[p.provider] = p;
@@ -318,6 +491,12 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
     for (const spec of providers) {
         const keyInfo = secretsRw.listKeys({ secretsPath, fsImpl }).find(k => k.provider === spec.provider);
         const prev = prevByProvider[spec.provider] || {};
+        // #5888 — ¿este provider está en alcance del cruce de catálogo, y toca?
+        const inCatalogScope = CATALOG_CHECK_PROVIDERS.includes(spec.provider);
+        const expectModels = (checkCatalog && inCatalogScope && expectModelsByProvider
+            && Array.isArray(expectModelsByProvider.get(spec.provider)))
+            ? expectModelsByProvider.get(spec.provider)
+            : [];
         let pingResult = null;
         // #3802 — Providers CLI-OAuth (Claude Code / Codex): validar la CLI, no
         // la API key. Pinear la key da falso rojo porque el pipeline NO la usa.
@@ -331,6 +510,10 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
                     secretsPath,
                     fsImpl,
                     httpImpl,
+                    // #5888 — `expectModels` sólo para providers EN ALCANCE y sólo
+                    // cuando venció el TTL de 6h. Sin él, `ping()` se comporta
+                    // exactamente como en HEAD (no baja catálogo — R-J).
+                    expectModels: expectModels.length > 0 ? expectModels : undefined,
                 });
             } catch (e) {
                 pingResult = { ok: false, reason: 'network_error', provider: spec.provider };
@@ -369,6 +552,22 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             } catch { /* fail-open: mantenemos el estado login-based */ }
         }
 
+        // #5888 R-E — CARRY-OVER obligatorio. El health-ping corre cada 5 min y
+        // el cruce de catálogo cada 6h: sin esto, los ~71 ticks intermedios
+        // resetearían la celda del panel a "nunca verificada" y el operador
+        // dejaría de creerle. `catalog_check` se OMITE del snapshot para los
+        // providers fuera de alcance (no existe el campo, no es "never").
+        let catalogCheck;
+        if (expectModels.length > 0) {
+            catalogCheck = buildCatalogCheck(pingResult && pingResult.catalog_check, new Date(nowMs).toISOString());
+        } else if (inCatalogScope) {
+            const carried = (prev.catalog_check && typeof prev.catalog_check === 'object')
+                ? prev.catalog_check : null;
+            catalogCheck = carried || { state: 'never', checked_at: null, reason_code: null, models: [] };
+        } else {
+            catalogCheck = null;
+        }
+
         results.push({
             provider: spec.provider,
             label: spec.label,
@@ -389,6 +588,10 @@ async function pingAllProviders({ providers, prevSnapshot, secretsPath, fsImpl =
             // #3802 — el frontend usa esto para mostrar "CLI/OAuth" en vez de
             // sugerir que falta una API key cuando el provider corre por CLI.
             auth_mode: spec.auth_mode === 'oauth' ? 'oauth' : 'api_key',
+            // #5888 CA-5/R-C — EJE SEPARADO. `state` y `reason_code` de arriba
+            // son la salud del PROVIDER y no los toca nadie desde acá: un modelo
+            // muerto no pone rojo a NVIDIA, que sigue sirviendo su catálogo.
+            ...(catalogCheck ? { catalog_check: catalogCheck } : {}),
         });
     }
     return results;
@@ -462,6 +665,38 @@ function emitAlerts({ snapshot, prevSnapshot, telegramSender, dedupFile, fsImpl 
                 if (okSend) sent.push({ kind: 'invalid_key', provider: p.provider, payload: decision.payload });
             }
         }
+
+        // #5888 Trigger 4: modelo configurado fuera del catálogo del provider.
+        //
+        // SÓLO `model_not_in_catalog`. `model_check_unavailable` NO emite a
+        // Telegram (D-3/UX-5/CA-17): es ausencia de señal, no un evento —
+        // alertar por él entrenaría al operador a ignorar el canal, que es
+        // exactamente cómo mueren las barreras. Su lugar es el panel.
+        const cc = p.catalog_check;
+        if (cc && cc.state === 'not_in_catalog') {
+            const dead = (Array.isArray(cc.models) ? cc.models : []).filter(m => m && m.alive === false);
+            for (const m of dead) {
+                const decision = healthAlerts.decideModelEvent({
+                    provider: p.provider,
+                    modelId: m.model_id,
+                    providerState: p.state,
+                    now,
+                    dedupFile,
+                    fsImpl,
+                });
+                if (!decision.shouldEmit) continue;
+                const okSend = telegramSender ? !!telegramSender(decision.payload) : true;
+                healthAlerts.recordModelEvent({
+                    provider: p.provider,
+                    modelId: m.model_id,
+                    sent: okSend,
+                    now,
+                    dedupFile,
+                    fsImpl,
+                });
+                if (okSend) sent.push({ kind: 'model_not_in_catalog', provider: p.provider, payload: decision.payload });
+            }
+        }
     }
 
     // Trigger 2: multi-down (3+ free providers en rojo).
@@ -493,6 +728,34 @@ function formatAlertText(payload) {
         const provs = Array.isArray(payload.providers_red) ? payload.providers_red.join(', ') : '?';
         return `🩺 *Multi-Down* — ${payload.red_count} free providers en rojo: \`${provs}\`. Pipeline opera con red de respaldo reducida.\nObservado: ${payload.observed_at}`;
     }
+    // #5888 UX-5/CA-17 — Rama propia del eje de MODELO, ANTES de la genérica.
+    //
+    // La genérica elige el emoji por el estado del PROVIDER: con provider sano +
+    // modelo muerto saldría `🩺 … 🟢 nvidia-nim → GREEN`, y en un canal que el
+    // operador escanea por emoji 🟢 significa "ignorar". La única alerta que
+    // produce esta barrera llegaría camuflada de buena noticia.
+    //
+    // Acá la severidad la fija el eje-modelo (⚠️ en la cabecera). El estado del
+    // provider se conserva pero SUBORDINADO, dentro de la frase que aclara que
+    // sigue sano — así el mensaje no miente en ninguna dirección (cond. 4). Y
+    // nombra la CONSECUENCIA, no sólo el hecho: el operador no tiene por qué
+    // deducir que un fallback roto no se nota hasta que cae el primario.
+    if (payload.event === 'model_not_in_catalog') {
+        const emoji = payload.provider_state === 'red' ? '🔴'
+            : payload.provider_state === 'yellow' ? '🟡' : '🟢';
+        const est = payload.provider_state === 'red' ? 'CAÍDO'
+            : payload.provider_state === 'yellow' ? 'DEGRADADO' : 'SANO';
+        if (!payload.model_id) {
+            // S-A fail-closed: `sanitizeModelId` devolvió `null`. La alerta se
+            // emite IGUAL — nunca el id crudo, nunca el silencio.
+            return `⚠️ *Modelo fuera de catálogo* — \`${payload.provider}\` sigue ${emoji} ${est}, pero uno de sus `
+                 + `modelos configurados ya no aparece en su catálogo (identificador no representable).\n`
+                 + `Revisar el panel de providers.\nObservado: ${payload.observed_at}`;
+        }
+        return `⚠️ *Modelo fuera de catálogo* — \`${payload.provider}\` sigue ${emoji} ${est}, pero `
+             + `\`${payload.model_id}\` ya no aparece en su catálogo. Los agentes que lo tengan configurado `
+             + `—como primario o como fallback— van a fallar al despachar.\nObservado: ${payload.observed_at}`;
+    }
     const stateEmoji = payload.state === 'red' ? '🔴' : payload.state === 'yellow' ? '🟡' : '🟢';
     const reason = payload.reason_code || 'unknown';
     // #4402 CA-4 — nombrar provider + status del enum cerrado + conteo de
@@ -509,13 +772,28 @@ function defaultTelegramSender(payload, { pipelineDir, fsImpl = fs } = {}) {
         const root = pipelineDir || path.resolve(__dirname, '..', '..');
         const svcDir = path.join(root, 'servicios', 'telegram', 'pendiente');
         if (!fsImpl.existsSync(svcDir)) fsImpl.mkdirSync(svcDir, { recursive: true });
-        const filename = `${Date.now()}-mp-health.json`;
         // El payload ya pasó por redact en health-alerts, pero re-aplicamos
         // por defense in depth (SR-4): si el formateador introduce campos
         // nuevos, se redactan antes de salir.
         const safePayload = redact.redactValue(payload);
         const msg = { text: formatAlertText(safePayload), parse_mode: 'Markdown' };
-        fsImpl.writeFileSync(path.join(svcDir, filename), JSON.stringify(msg), 'utf8');
+        // #6226 — nombre único (`<ts>-<seq>-mp-health.json`) + escritura `wx`.
+        // Antes el nombre era `${Date.now()}-mp-health.json` a secas y
+        // `emitAlerts()` invoca este sender UNA VEZ POR ALERTA dentro del mismo
+        // tick (un tick con 4 providers en rojo emite 4 llamadas seguidas).
+        // Todas caían en el mismo milisegundo → mismo path → cada alerta pisaba
+        // a la anterior y sólo sobrevivía la última. Silencioso: el sender
+        // devolvía `true` y `emitAlerts` las contaba como enviadas, así que ni
+        // el log ni el estado de dedupe delataban las perdidas.
+        dropfileWriter.writeDropfileSync({
+            dir: svcDir,
+            suffix: 'mp-health.json',
+            data: JSON.stringify(msg),
+            fsImpl,
+            onCollision: (name, attempt) => console.warn(
+                `[health-cron] colisión de nombre de dropfile (${name}, intento ${attempt + 1}) — se reintenta con otro nombre, no se sobreescribe`
+            ),
+        });
         return true;
     } catch {
         return false;
@@ -537,6 +815,18 @@ async function runOnce(opts = {}) {
 
     const providers = listManagedAndPingable();
     const prevSnapshot = readJson(snapshotFile, fsImpl);
+
+    // #5888 — El cruce de catálogo corre SÓLO cuando el llamador lo pide
+    // (`tickIfDue` lo hace cuando venció el TTL de 6h). Default `false`: los
+    // consumidores existentes de `runOnce` (CLI, tests, api.js) no cambian de
+    // comportamiento ni bajan catálogo.
+    const checkCatalog = opts.checkCatalog === true;
+    let expectModelsByProvider = null;
+    if (checkCatalog) {
+        const cfg = opts.agentModelsConfig || readAgentModelsConfig();
+        expectModelsByProvider = expectModelsForPing(cfg);
+    }
+
     const providerResults = await pingAllProviders({
         providers,
         prevSnapshot,
@@ -548,6 +838,8 @@ async function runOnce(opts = {}) {
         quotaAssessImpl: opts.quotaAssessImpl,
         defaultProvider: opts.defaultProvider,
         now,
+        checkCatalog,
+        expectModelsByProvider,
     });
     const snapshot = buildSnapshot({ providers: providerResults, now });
 
@@ -616,6 +908,8 @@ async function runOnce(opts = {}) {
         last_tick_at: now,
     };
     if (opts.markWeekly) newState.last_weekly_check_at = now;
+    // #5888 CA-10 — TTL propio del cruce de catálogo (espeja `markWeekly`).
+    if (opts.markCatalogCheck) newState.last_catalog_check_at = now;
     writeJsonAtomic(stateFile, newState, fsImpl);
 
     return { snapshot, alerts, providers_pinged: providerResults.length };
@@ -634,7 +928,8 @@ async function tickIfDue(opts = {}) {
 
     // #4402 CA-3 — resolver la cadencia (config.yaml → default 5 min). La
     // resolución vive acá; `pulpo.js` sigue llamando `tickIfDue({})` sin cambios.
-    const intervalMs = Number.isFinite(opts.intervalMs) ? opts.intervalMs : readTickIntervalMs({ fsImpl });
+    // #5172 — sin `fsImpl`: el config lo resuelve el punto único.
+    const intervalMs = Number.isFinite(opts.intervalMs) ? opts.intervalMs : readTickIntervalMs();
 
     if (!isTickDue({ stateFile, now, fsImpl, jitter: opts.jitter !== undefined ? opts.jitter : jitterMs(), intervalMs })) {
         return { skipped: true, reason: 'not_due' };
@@ -644,7 +939,14 @@ async function tickIfDue(opts = {}) {
     }
     try {
         const markWeekly = isWeeklyDue({ stateFile, now, fsImpl });
-        return await runOnce({ ...opts, now, markWeekly, stateDir });
+        // #5888 CA-10 — El health-ping sigue en 5 min sin tocar; el cruce de
+        // catálogo tiene su propio TTL (6h). Se pasa como `checkCatalog` (¿bajo
+        // el catálogo en esta corrida?) Y como `markCatalogCheck` (¿reseteo el
+        // TTL?): si sólo se marcara, el próximo tick creería que ya verificó.
+        const checkCatalog = opts.checkCatalog !== undefined
+            ? opts.checkCatalog
+            : isCatalogCheckDue({ stateFile, now, fsImpl, ttlMs: opts.catalogTtlMs });
+        return await runOnce({ ...opts, now, markWeekly, stateDir, checkCatalog, markCatalogCheck: checkCatalog });
     } finally {
         releaseLock({ lockFile, fsImpl });
     }
@@ -657,7 +959,8 @@ module.exports = {
     MAX_INTERVAL_MINUTES,
     HARD_FLOOR_MS,
     readTickIntervalMs,
-    defaultConfigPath,
+    // #5172 — `defaultConfigPath` se eliminó junto con `PIPELINE_CONFIG_PATH`:
+    // este módulo ya no decide QUÉ archivo es la config (lo hace el resolver).
     JITTER_RANGE_MS,
     WEEKLY_CHECK_INTERVAL_MS,
     LOCK_STALE_MS,
@@ -669,6 +972,17 @@ module.exports = {
     tickIfDue,
     isTickDue,
     isWeeklyDue,
+    // #5888 — eje de vigencia de modelo (cadencia propia + cruce de config).
+    CATALOG_CHECK_DEFAULT_HOURS,
+    CATALOG_CHECK_MIN_HOURS,
+    CATALOG_CHECK_MAX_HOURS,
+    CATALOG_CHECK_PROVIDERS,
+    PING_TO_CONFIG_PROVIDER,
+    readCatalogTtlMs,
+    isCatalogCheckDue,
+    configuredModelsByProvider,
+    expectModelsForPing,
+    buildCatalogCheck,
     listManagedAndPingable,
     classifyState,
     updateRateLimitCounter,

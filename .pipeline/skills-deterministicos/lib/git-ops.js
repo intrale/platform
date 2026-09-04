@@ -8,14 +8,25 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 function runCmd(cmd, args, opts = {}) {
     const started = Date.now();
-    const res = spawnSync(cmd, args, {
+    const spawnOpts = {
         cwd: opts.cwd,
         env: opts.env || process.env,
         encoding: 'utf8',
         timeout: opts.timeoutMs || DEFAULT_TIMEOUT_MS,
         windowsHide: true,
         shell: opts.shell ?? (process.platform === 'win32'),
-    });
+    };
+    // #5426 (rev-1): permitir alimentar el stdin del proceso hijo. Lo usa
+    // `addPaths` para pasarle a `git add` la lista de pathspecs por stdin en
+    // lugar de por argv, que en Windows está limitada a 8191 caracteres.
+    // `encoding: 'utf8'` aplica a stdout/stderr; para stdin pasamos un Buffer
+    // explícito para no depender de esa conversión con separadores NUL.
+    if (opts.input != null) {
+        spawnOpts.input = Buffer.isBuffer(opts.input)
+            ? opts.input
+            : Buffer.from(String(opts.input), 'utf8');
+    }
+    const res = spawnSync(cmd, args, spawnOpts);
     return {
         cmd: `${cmd} ${args.join(' ')}`,
         exit_code: res.status == null ? 1 : res.status,
@@ -225,6 +236,106 @@ function getChangedFiles(cwd) {
         files.push({ code, path, staged: code[0] !== ' ' && code[0] !== '?' });
     }
     return files;
+}
+
+// #5426 (rev-1) — `git add` inmune al límite de línea de comandos de Windows.
+//
+// Rebote de la fase `entrega`: «git add falló: La línea de comandos es
+// demasiado larga». `delivery.js` hacía `runGit(['add', '--', ...stagePaths])`
+// con un path por argumento. Como `runCmd` usa `shell: true` en win32, el
+// comando pasa por `cmd.exe`, cuyo límite duro es **8191 caracteres** — no los
+// 32767 de CreateProcess. En el worktree del rebote había 406 archivos
+// cambiados que sumaban ~16,9 KB de paths: más del doble del límite.
+//
+// El límite de cmd.exe no es configurable, así que la lista deja de viajar por
+// argv. Estrategia, en orden:
+//
+//   1. `git add --pathspec-from-file=- --pathspec-file-nul`, leyendo la lista
+//      por **stdin**. argv queda de tamaño constante sin importar cuántos
+//      archivos haya. El separador NUL además elimina el problema de quoting:
+//      con `shell: true` Node NO escapa los argumentos, así que hoy un path con
+//      espacios ya se partía en dos pathspecs. Por el mismo motivo desaparece
+//      la necesidad del separador `--`: dentro del archivo de pathspecs nada se
+//      interpreta como opción (en el worktree del rebote había un archivo
+//      llamado literalmente `--`).
+//   2. Si git no soporta esas flags (< 2.25), se cae a `git add --` por lotes,
+//      cada uno holgadamente debajo del límite. Ese lote es el único que viaja
+//      por argv, así que va con `shell: false` (ver el comentario en el cuerpo
+//      de `addPaths`): sin cmd.exe de por medio no hay metacaracteres que
+//      interpretar en los nombres de archivo.
+//
+// El fallback se dispara ante cualquier exit distinto de 0 y no solo ante
+// "unknown option": detectar falta de soporte por el texto del stderr
+// dependería del locale del git instalado (el error que originó este rebote
+// vino en español). Reintentar por lotes es idempotente, y si el fallo era
+// real — por ejemplo un path ignorado por .gitignore — el lote falla con el
+// mismo error, que es el que se devuelve.
+const GIT_ADD_ARGV_BUDGET = 6000;
+
+function emptyCmdResult(cmd) {
+    return { cmd, exit_code: 0, stdout: '', stderr: '', wall_ms: 0, signal: null, error: null };
+}
+
+// Parte una lista de paths en lotes cuyo largo acumulado queda debajo del
+// presupuesto de argv. Siempre emite al menos un path por lote: un path que por
+// sí solo exceda el presupuesto no se puede partir, y es preferible dejar que
+// git falle con su propio mensaje a entrar en un bucle infinito.
+function chunkPathsByBudget(paths, budget = GIT_ADD_ARGV_BUDGET) {
+    const chunks = [];
+    let current = [];
+    let used = 0;
+    for (const p of paths) {
+        // +3: el separador y las comillas que pueda agregar el shell.
+        const cost = Buffer.byteLength(p, 'utf8') + 3;
+        if (current.length && used + cost > budget) {
+            chunks.push(current);
+            current = [];
+            used = 0;
+        }
+        current.push(p);
+        used += cost;
+    }
+    if (current.length) chunks.push(current);
+    return chunks;
+}
+
+function addPaths(paths, opts = {}) {
+    const list = (Array.isArray(paths) ? paths : [])
+        .filter((p) => typeof p === 'string' && p !== '');
+    if (!list.length) return emptyCmdResult('git add (sin paths)');
+
+    // 1) Ruta principal: pathspecs por stdin, separadas por NUL.
+    // `shell: false` explícito: los argumentos son constantes, así que hoy no
+    // hay nada inyectable acá, pero dejamos de depender de esa propiedad —
+    // basta con que alguien parametrice un argumento para reabrir el agujero.
+    const viaStdin = runGit(
+        ['add', '--pathspec-from-file=-', '--pathspec-file-nul'],
+        { ...opts, input: list.join('\0'), shell: false }
+    );
+    if (viaStdin.exit_code === 0) return viaStdin;
+
+    // 2) Fallback por lotes para git sin soporte de --pathspec-from-file.
+    //
+    // `shell: false` es OBLIGATORIO acá, no una preferencia de estilo: este es
+    // el único lote que viaja por argv y sus elementos son datos controlados
+    // por el contenido del worktree. Con `shell: true` Node concatena los
+    // argumentos sin escaparlos (el propio Node emite DEP0190) y los pasa a
+    // cmd.exe, donde `&`, `^`, `%`, `(` y `)` — todos VÁLIDOS en nombres de
+    // archivo de Windows — son metacaracteres. Un archivo llamado `a&ver`
+    // hacía que cmd.exe cortara el nombre en el `&` y ejecutara `ver` como
+    // comando propio, con los permisos del operador; y como el exit code que
+    // volvía era el del comando inyectado y no el de git, un `git add` fallido
+    // se reportaba como éxito (exit 0) y la entrega avanzaba sin los cambios.
+    //
+    // Sin cmd.exe de por medio, Node pasa cada argumento tal cual y el límite
+    // de largo pasa a ser el de CreateProcess (32767), muy por encima del
+    // presupuesto de 6000 que ya aplica `chunkPathsByBudget`.
+    let last = emptyCmdResult('git add (por lotes)');
+    for (const chunk of chunkPathsByBudget(list)) {
+        last = runGit(['add', '--', ...chunk], { ...opts, shell: false });
+        if (last.exit_code !== 0) return last;
+    }
+    return last;
 }
 
 // #2551 — Estado granular del worktree previo al rebase.
@@ -466,6 +577,31 @@ function fetchOrigin(cwd) {
 }
 
 /**
+ * (#6495) ¿El ref de base resuelve LOCALMENTE a un commit?
+ *
+ * Existe porque `fetchOrigin` es best-effort: un timeout de red, un lock de
+ * `.git` o un DNS caído hacen fallar el fetch aunque el remote-tracking ref
+ * local siga siendo perfectamente usable (a lo sumo, desactualizado). Sin este
+ * chequeo el linter no distinguía "no puedo comparar" de "la rama está vacía"
+ * y emitía un falso `pr:no-commits` que rebotaba a dev un entregable sano.
+ *
+ * OJO: nada de `${ref}^{commit}` acá. `runCmd` usa `shell: true` en Windows y
+ * cmd.exe trata `^` como su carácter de escape, así que el peeling se comía el
+ * `^` y el rev-parse fallaba SIEMPRE — lo que habría convertido este fix en el
+ * mismo bug con otro cartel. Se valida el SHA de salida en su lugar.
+ *
+ * @param {string} cwd  worktree donde resolver
+ * @param {string} ref  ref a verificar (ej. 'origin/main')
+ * @returns {boolean} true si el ref resuelve a un objeto commit
+ */
+function refExists(cwd, ref) {
+    if (!ref) return false;
+    const r = runGit(['rev-parse', '--verify', '--quiet', ref], { cwd });
+    if (r.exit_code !== 0) return false;
+    return /^[0-9a-f]{40}$/i.test((r.stdout || '').trim());
+}
+
+/**
  * (#3819) Busca commits YA mergeados en la base que referencien al issue.
  *
  * Caso real que motiva esto: el entregable de #3819 llegó a main arrastrado
@@ -535,15 +671,33 @@ function parseDeliveryRefs(stdout, issue, prefix = '') {
  * linter NUNCA debe caerse por culpa de esta config opcional — si no se puede
  * leer, el gate simplemente vuelve al comportamiento estricto (`pr:no-commits`).
  *
+ * #5172 — La lectura pasa por el punto único (`lib/config-resolver`), pero acá
+ * el `catch → []` SE CONSERVA, y no por comodidad: la degradación de este
+ * lector apunta al lado SEGURO. Devolver `[]` hace que el gate vuelva a su
+ * comportamiento ESTRICTO (`pr:no-commits` rebota), no que se apague — es lo
+ * contrario del fail-open que la historia viene a matar. Propagar el error acá
+ * tumbaría el linter entero por una sección opcional.
+ *
+ * Lo que SÍ cambia es el silencio: antes un config ilegible desactivaba la
+ * detección cross-repo sin dejar rastro, y ese silencio es lo que hizo que
+ * #5067 rebotara para siempre con el trabajo hecho. Ahora se avisa por stderr.
+ *
+ * G-3: el `require` del resolver es LAZY y va dentro del `try`. El linter corre
+ * en worktrees de agente que pueden no tener `node_modules` (el resolver
+ * arrastra `js-yaml` + `ajv`); un require en el tope lo mataría en el import,
+ * antes de llegar a esta política, y el fallo sería mudo.
+ *
  * @param {string} repoRoot  raíz del checkout principal (donde vive .pipeline/)
  * @returns {Array<{name: string, path: string}>} paths ya resueltos a absolutos
  */
 function loadSiblingRepos(repoRoot) {
+    const cfgPath = path.join(repoRoot, '.pipeline', 'config.yaml');
     try {
-        const yaml = require('js-yaml');
-        const cfgPath = path.join(repoRoot, '.pipeline', 'config.yaml');
+        // Ausencia de config no es anomalía a reportar: es el caso normal de un
+        // checkout sin `.pipeline/`. Se corta antes de trazar nada.
         if (!fs.existsSync(cfgPath)) return [];
-        const raw = yaml.load(fs.readFileSync(cfgPath, 'utf8')) || {};
+        // eslint-disable-next-line global-require
+        const raw = require('../../lib/config-resolver').resolve({ pipelineDir: path.dirname(cfgPath) });
         const section = raw.cross_repo_delivery;
         if (!section || section.enabled !== true) return [];
         const repos = Array.isArray(section.repos) ? section.repos : [];
@@ -559,7 +713,15 @@ function loadSiblingRepos(repoRoot) {
             out.push({ name, path: path.resolve(repoRoot, entry.path) });
         }
         return out;
-    } catch {
+    } catch (e) {
+        // Se reporta el NOMBRE del error tipado y la ruta, nunca `e.message` de
+        // js-yaml (SEC-1: su mensaje trae el snippet crudo del archivo).
+        try {
+            process.stderr.write(
+                `[git-ops] cross_repo_delivery deshabilitado: no se pudo resolver ${cfgPath}`
+                + ` (${(e && e.name) || 'error'}). El gate de entrega queda en modo estricto.\n`,
+            );
+        } catch { /* best-effort: el aviso nunca puede tumbar el linter */ }
         return [];
     }
 }
@@ -699,14 +861,40 @@ function isMergeable(cwd, base = 'origin/main') {
     return { mergeable: null, supported: false, conflicts: [], raw: r };
 }
 
-function pushBranch(cwd, branch) {
+// #6496 CA-15 / SEC-F — SHA de 40 hex. El refspec `<sha>:refs/heads/<branch>`
+// se arma sólo con un valor que matchea esto: nada que venga de afuera termina
+// interpolado en una línea de comando de git sin validar.
+const SHA40 = /^[0-9a-f]{40}$/i;
+
+function pushBranch(cwd, branch, { sha = null } = {}) {
     // --force-with-lease es seguro tras rebase (no pisa cambios ajenos al upstream conocido)
     // #2523 (rev-3): timeout subido de 2min a 5min. La red de Leo tarda ~90-120s
     // en pushes con muchos objects (p.ej. assets/mockups/narrativa-lili.mp3) y
     // 2min era exactamente el borde — spawnSync mataba el proceso justo cuando
     // git terminaba de transferir, devolviendo exit_code != 0 con stderr vacío
     // aunque el push había completado en el remote.
-    return runGit(['push', '--force-with-lease', '-u', 'origin', branch], { cwd, timeoutMs: 5 * 60 * 1000 });
+    //
+    // #6496 CA-15 / SEC-F — con un SHA verificado se pushea ESE commit explícito
+    // en vez del nombre de la rama. Antes se verificaba un SHA y se pusheaba un
+    // nombre que pudo avanzar entre el chequeo y el push (TOCTOU): si un commit
+    // entra en esa ventana, el push por nombre lo sube igual y el gate queda
+    // hablando de un commit que no es el que se integró. `-u` no aplica a un
+    // refspec con origen SHA (no hay rama local que trackear); el upstream se
+    // setea best-effort después, en `pushAndVerify`.
+    const args = SHA40.test(String(sha || ''))
+        ? ['push', '--force-with-lease', 'origin', `${sha}:refs/heads/${branch}`]
+        : ['push', '--force-with-lease', '-u', 'origin', branch];
+    // SEC (#6496, rebote security — A03). `shell: false` EXPLÍCITO. El default de
+    // `runCmd` es `shell: process.platform === 'win32'`, así que en Windows esta
+    // línea viajaba por `cmd.exe`: el SHA está validado con `SHA40`, pero
+    // `branch` se interpola sin sanitizar en el refspec, y `git check-ref-format`
+    // acepta metacaracteres de shell (ampersand, pipe, punto y coma, signo peso)
+    // en un refname. Hoy no es explotable —`branch` sale de
+    // `git branch --show-current` y los nombres los fabrica el pipeline— pero es
+    // un amplificador latente en una línea nueva, y git no necesita shell para
+    // nada. Mismo criterio que el camino CLI (`.pipeline/delivery.js`, que ya usa
+    // `spawnSync` sin shell).
+    return runGit(args, { cwd, timeoutMs: 5 * 60 * 1000, shell: false });
 }
 
 // #2523 (rev-3): helper para verificar el SHA actual de un ref en origin.
@@ -767,12 +955,22 @@ function decidePushOutcome({ pushRes, localSha, remoteSha, branch }) {
 // 2523-dashboard-visual-redesign` post-fetch == HEAD local. Esto rebotaba al
 // agente y lo llevaba al circuit breaker (rebote_numero=3) por un fallo
 // puramente cosmético del orquestador.
-function pushAndVerify(cwd, branch) {
-    const pushRes = pushBranch(cwd, branch);
+function pushAndVerify(cwd, branch, { sha = null } = {}) {
+    const pinned = SHA40.test(String(sha || '')) ? String(sha) : null;
+    const pushRes = pushBranch(cwd, branch, { sha: pinned });
     if (pushRes.exit_code === 0) {
+        if (pinned) {
+            // `push <sha>:refs/heads/<branch>` no acepta `-u`. Best-effort: sin
+            // upstream el flujo sigue igual (`gh pr create --head` es explícito),
+            // así que un fallo acá no puede frenar una entrega ya pusheada.
+            runGit(['branch', `--set-upstream-to=origin/${branch}`, branch], { cwd, timeoutMs: 30 * 1000 });
+        }
         return decidePushOutcome({ pushRes, localSha: null, remoteSha: null, branch });
     }
-    const localSha = getCurrentSha(cwd);
+    // #6496 — con SHA pinneado, la recuperación se verifica contra ESE commit,
+    // no contra el HEAD local: si el HEAD avanzó durante el push, comparar
+    // `getCurrentSha` daría "no coincide" para un push que sí subió lo verificado.
+    const localSha = pinned || getCurrentSha(cwd);
     const remoteSha = getRemoteSha(cwd, `refs/heads/${branch}`);
     return decidePushOutcome({ pushRes, localSha, remoteSha, branch });
 }
@@ -859,10 +1057,14 @@ module.exports = {
     getCurrentBranch,
     getCurrentSha,
     getChangedFiles,
+    addPaths,
+    chunkPathsByBudget,
+    GIT_ADD_ARGV_BUDGET,
     getDirtyState,
     parseGitStatusOutput,
     getDiffStats,
     fetchOrigin,
+    refExists,
     getPriorDeliveryRefs,
     parseDeliveryRefs,
     loadSiblingRepos,

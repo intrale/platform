@@ -98,7 +98,11 @@ function getActivePipelineWorktreeNames() {
                     const dotIdx = file.indexOf(".");
                     if (dotIdx <= 0) continue;
                     const issue = file.substring(0, dotIdx);
-                    const skill = file.substring(dotIdx + 1);
+                    // El nombre del worktree usa solo el skill. Los adjuntos del
+                    // pipeline (5217.architect.guidance.txt, 3734.comment.md) traen
+                    // sufijos de archivo que generaban nombres protegidos imposibles
+                    // — ruido que enterraba la lista real bajo cientos de entradas.
+                    const skill = file.substring(dotIdx + 1).split(".")[0];
                     if (!issue || !skill) continue;
                     protectedNames.add(repoName + ".agent-" + issue + "-" + skill);
                 }
@@ -254,6 +258,75 @@ function cleanupWorktree(wtPath, branchName) {
     return results;
 }
 
+// -----------------------------------------------------------------------------
+// Criterio de "integrado": el contenido del worktree ya vive en origin/main y no
+// hay trabajo local sin commitear. Reemplaza al viejo criterio de "directorio
+// vacio" (contents.length <= 1), que nunca calificaba a un worktree con codigo y
+// por eso dejaba acumular 100+ copias del repo hasta llenar el disco.
+//
+// NO sirven como criterio (dan falsos positivos con squash-merge):
+//   - git log origin/main..HEAD      -> todo PR squasheado muestra commits pendientes
+//   - git diff origin/main...HEAD    -> el diff de 3 puntos muestra los cambios de
+//                                       la rama aunque main ya los tenga
+// Si sirve: merge-base --is-ancestor, que pregunta por el commit exacto.
+// -----------------------------------------------------------------------------
+function gitIn(wtPath, cmd, timeout) {
+    try {
+        return execSync(cmd, {
+            cwd: wtPath, encoding: "utf8", timeout: timeout || 15000,
+            windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+    } catch (e) { return null; }
+}
+
+// Ruido operativo que no representa trabajo del desarrollador: estado del
+// pipeline, heartbeats y logs se reescriben solos en cada corrida.
+const NOISE_RE = /(^|\/)\.claude\/|(^|\/)\.pipeline\/|\.heartbeat|\.log$/;
+
+function hasUncommittedWork(wtPath) {
+    const out = gitIn(wtPath, "git status --porcelain");
+    if (out === null) return true;   // fail-closed: si no se puede leer, no tocar
+    if (!out) return false;
+    return out.split(/\r?\n/).some(l => l.trim() && !NOISE_RE.test(l.slice(3)));
+}
+
+function isIntegratedInMain(wtPath) {
+    const head = gitIn(wtPath, "git rev-parse HEAD");
+    if (!head) return false;
+    return gitIn(wtPath, "git merge-base --is-ancestor HEAD origin/main && echo YES") === "YES";
+}
+
+// Un heartbeat fresco significa que hay un agente escribiendo ahi ahora mismo.
+// Es la ultima linea de defensa: el registro del pipeline puede estar stale.
+function hasFreshHeartbeat(wtPath, maxAgeMs) {
+    const dir = path.join(wtPath, ".claude", "hooks");
+    const limit = maxAgeMs || 15 * 60 * 1000;
+    try {
+        for (const f of fs.readdirSync(dir)) {
+            if (!f.endsWith(".heartbeat")) continue;
+            if (Date.now() - fs.statSync(path.join(dir, f)).mtimeMs < limit) return true;
+        }
+    } catch (e) {}
+    return false;
+}
+
+// Un worktree es reclamable si esta vacio (criterio historico) o si su contenido
+// ya esta integrado en main sin trabajo local pendiente (criterio nuevo).
+function classifyWorktree(wtPath) {
+    if (!fs.existsSync(wtPath)) return { dead: true, reason: "directorio inexistente" };
+
+    let contents;
+    try { contents = fs.readdirSync(wtPath); }
+    catch (e) { return { dead: true, reason: "directorio ilegible" }; }
+    if (contents.length <= 1) return { dead: true, reason: "directorio vacio" };
+
+    if (hasFreshHeartbeat(wtPath)) return { dead: false, reason: "heartbeat activo" };
+    if (!isIntegratedInMain(wtPath)) return { dead: false, reason: "commits fuera de main" };
+    if (hasUncommittedWork(wtPath)) return { dead: false, reason: "cambios sin commitear" };
+
+    return { dead: true, reason: "integrado en main, sin cambios locales" };
+}
+
 function getTargetWorktrees(args) {
     const mainPath = REPO_ROOT.replace(/\\/g, "/");
     const repoName = path.basename(REPO_ROOT);
@@ -295,9 +368,25 @@ function getTargetWorktrees(args) {
             }
         }
         if (current.path) worktrees.push(current);
+        // La lista que llega por stdin es un inventario, no una orden de borrado:
+        // `git worktree list --porcelain | node cleanup-worktrees.js` enumera TODOS
+        // los worktrees, incluidos los que tienen trabajo en curso. Sin clasificar,
+        // esta rama borraba todo lo que no estuviera explicitamente protegido.
+        // Solo los paths pasados como argumento son una orden explicita.
         return worktrees
             .filter(w => w.path.replace(/\\/g, "/") !== mainPath)
-            .filter(w => !isPipelineProtected(w.path));
+            .filter(w => !path.basename(w.path || "").endsWith(".ops"))
+            .filter(w => !isPipelineProtected(w.path))
+            .map(w => ({ ...w, verdict: classifyWorktree(w.path) }))
+            .filter(w => {
+                if (w.verdict.dead) {
+                    log("Candidato (stdin): " + path.basename(w.path) + " (" + w.verdict.reason + ")");
+                    return true;
+                }
+                log("Conservado (stdin): " + path.basename(w.path) + " (" + w.verdict.reason + ")");
+                return false;
+            })
+            .map(w => ({ path: w.path, branch: w.branch, reason: w.verdict.reason }));
     }
 
     // Auto-detectar: worktrees registrados en git que estén muertos o vivos
@@ -311,20 +400,12 @@ function getTargetWorktrees(args) {
         // NUNCA tocar worktrees activos en el pipeline
         if (isPipelineProtected(wt.path)) continue;
 
-        let isDead = false;
-        if (!fs.existsSync(wt.path)) {
-            isDead = true;
+        const verdict = classifyWorktree(wt.path);
+        if (verdict.dead) {
+            log("Candidato: " + path.basename(wt.path) + " (" + verdict.reason + ")");
+            candidates.push({ path: wt.path, branch: getBranchName(wt), reason: verdict.reason });
         } else {
-            try {
-                const contents = fs.readdirSync(wt.path);
-                if (contents.length <= 1) isDead = true;
-            } catch (e) {
-                isDead = true;
-            }
-        }
-
-        if (isDead) {
-            candidates.push({ path: wt.path, branch: getBranchName(wt) });
+            log("Conservado: " + path.basename(wt.path) + " (" + verdict.reason + ")");
         }
     }
 
@@ -339,12 +420,11 @@ function getTargetWorktrees(args) {
             if (candidates.some(d => d.path.replace(/\\/g, "/") === fullPathNorm)) continue;
             // Pipeline protection
             if (isPipelineProtected(fullPath)) continue;
-            try {
-                const contents = fs.readdirSync(fullPath);
-                if (contents.length <= 1) {
-                    candidates.push({ path: fullPath, branch: null });
-                }
-            } catch (e) {}
+            const verdict = classifyWorktree(fullPath);
+            if (verdict.dead) {
+                log("Candidato (filesystem): " + entry + " (" + verdict.reason + ")");
+                candidates.push({ path: fullPath, branch: null, reason: verdict.reason });
+            }
         }
     } catch (e) {}
 
@@ -412,8 +492,17 @@ async function main() {
     }
 }
 
-main().catch(e => {
-    log("Error fatal: " + e.message);
-    console.error("Error: " + e.message);
-    process.exit(1);
-});
+// Solo autoejecutar como script. Sin esta guarda, un `require()` desde un test
+// dispara la limpieza real contra los worktrees de la maquina.
+if (require.main === module) {
+    main().catch(e => {
+        log("Error fatal: " + e.message);
+        console.error("Error: " + e.message);
+        process.exit(1);
+    });
+}
+
+module.exports = {
+    classifyWorktree, isIntegratedInMain, hasUncommittedWork, hasFreshHeartbeat,
+    getActivePipelineWorktreeNames, NOISE_RE,
+};
