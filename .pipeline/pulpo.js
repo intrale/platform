@@ -12808,11 +12808,20 @@ ${g}
           }
         };
 
+        // #5796 (fix rev-4) — la clave de proceso es la MISMA que mira el barrido
+        // de huérfanos (`processKey(skill, issue)`): es el identificador con el
+        // que los dos actores hablan de la misma corrida.
+        const claveDeLaCorrida = processKey(skill, issue);
         const coordinadorDeCierre = credentialRetrySettlement.crearCoordinadorDeCierreDeCorrida({
           cerrar: efectosDelCierrePorCredencial,
           reencolar: efectosDelReencoladoPorReintento,
           etiqueta: `${skill}:#${issue}`,
           log: (m) => log('lanzamiento', m),
+          // Publicación del fin del cierre en vuelo: corre en el mismo tick en
+          // que se toma el turno, gane quien gane. Sin esto, el barrido tendría
+          // que esperar al vencimiento del presupuesto para volver a operar
+          // sobre la clave.
+          alCerrar: () => credentialRetrySettlement.corridasEnSettlement.olvidar(claveDeLaCorrida),
         });
         const cerrarPorCredencialVencida = (notaDelCoordinador) =>
           coordinadorDeCierre.cerrarPorCredencialVencida(notaDelCoordinador);
@@ -12822,6 +12831,44 @@ ${g}
           && credentialRetryWiring.isAuthRejection(veredictoDeAutenticacion);
 
         if (puedeReintentarCredencial) {
+          // #5796 (fix rev-4, defecto del rechazo rev-3) — EL BARRIDO DE
+          // HUÉRFANOS ES UN TERCER ACTOR SOBRE ESTA MISMA CORRIDA.
+          //
+          // Desde acá hasta que el coordinador settlee, el dropfile sigue en
+          // `trabajando/` y la entrada de `activeProcesses` sigue viva con un
+          // PID muerto: los dos únicos `activeProcesses.delete` del brazo están
+          // DENTRO de los efectos de cierre, que corren después del settlement.
+          // Y los guards de `brazoHuerfanos` no protegen nada en esa ventana:
+          //   * `isProcessAlive(info.pid)` es false — el proceso murió, por eso
+          //     estamos en este handler de `exit`;
+          //   * `fileAgeMinutes` mide el mtime del dropfile y `moveFile` es
+          //     `fs.renameSync`, que lo preserva a través de la cola, así que un
+          //     issue que esperó más de `orphan_timeout_minutes` en `pendiente/`
+          //     nace ya vencido para el barrido.
+          //
+          // Sin esta marca, el barrido devolvía el dropfile a `pendiente/`,
+          // consumía un `orphanRetries` sobre código sano, le ponía cooldown de
+          // fast-fail al skill y —lo más caro— llamaba `forgetOperation()` sobre
+          // la clave de ESTA operación, borrando el presupuesto único que el
+          // replay tiene en vuelo. El próximo lanzamiento veía `canRetry: true`
+          // con un `operation_id` nuevo: un retry por vuelta, con N
+          // invalidaciones y N re-resoluciones contra el vault, que es
+          // exactamente lo que CA-2 prohíbe.
+          //
+          // La marca es SINCRÓNICA y va antes de arrancar el replay: el handler
+          // no devuelve el control al event loop entre la marca y el `return`,
+          // así que no existe un tick en el que el barrido pueda ver la corrida
+          // sin marcar. El presupuesto que se publica es el MISMO que acota el
+          // replay, así que la ventana de exclusión no puede durar más que el
+          // cierre garantizado.
+          const presupuestoDelReplayMs = credentialRetrySettlement.resolveReplayTimeoutMs();
+          credentialRetrySettlement.corridasEnSettlement.marcar({
+            clave: claveDeLaCorrida,
+            coordinador: coordinadorDeCierre,
+            presupuestoMs: presupuestoDelReplayMs,
+            etiqueta: `${skill}:#${issue}`,
+          });
+
           const replay = credentialRetryWiring.runReplayAttempt({
             operation: credentialOperation,
             provider: effProvider,
@@ -12921,7 +12968,7 @@ ${g}
           credentialRetrySettlement.correrReplayAcotado({
             replay,
             coordinador: coordinadorDeCierre,
-            timeoutMs: credentialRetrySettlement.resolveReplayTimeoutMs(),
+            timeoutMs: presupuestoDelReplayMs,
             log: (m) => log('lanzamiento', `${m} (${skill}:#${issue})`),
           });
           return;
@@ -13541,6 +13588,34 @@ function brazoHuerfanos(config) {
         // Verificar si el proceso sigue vivo
         const info = activeProcesses.get(key);
         if (info && isProcessAlive(info.pid)) continue;
+
+        // #5796 (fix rev-4) — EL CIERRE DE ESTA CORRIDA PUEDE ESTAR EN MANOS DE
+        // OTRO ACTOR. Cuando un agente muere por credencial vencida y el gate de
+        // retry está abierto, el brazo de `credential-death` deja el replay en
+        // vuelo y el cierre de la corrida —mover el dropfile, soltar el slot,
+        // matar daemons— queda a cargo del coordinador de
+        // `credential-retry-settlement`, que lo garantiza dentro de un
+        // presupuesto acotado.
+        //
+        // Durante esa ventana el proceso ya está muerto y el mtime del dropfile
+        // puede ser viejísimo (`fs.renameSync` lo preserva a través de la cola),
+        // así que los dos guards de arriba dan luz verde y el barrido entra a
+        // ejecutar efectos sobre una corrida que NO le pertenece: le arranca el
+        // dropfile al replay, le consume un `orphanRetries` a código sano, le
+        // pone cooldown al skill y —lo más caro— le borra con `forgetOperation`
+        // el presupuesto único de la operación en vuelo, habilitando un retry
+        // por vuelta contra el vault (viola el CA-2 de #5796).
+        //
+        // El registro es fail-SAFE, no fail-closed: si el cierre se pasa de su
+        // presupuesto más el margen de gracia, `hayCierreEnVuelo` devuelve false
+        // y de paso le arranca el turno al coordinador, así que el barrido
+        // recupera el slot y un settlement posterior ya no puede duplicar
+        // efectos. Bloquear para siempre sería peor: un tercio de la capacidad
+        // del pipeline perdida hasta el próximo restart.
+        if (credentialRetrySettlement.corridasEnSettlement.hayCierreEnVuelo(key)) {
+          log('huerfanos', `${archivo.name}: cierre del retry de credencial en vuelo → el barrido no lo toca en este tick.`);
+          continue;
+        }
 
         // #4052 CA-3 — Atribución provider-aware ANTES de tocar orphanRetries.
         // Si la muerte del proceso fue un spawn-failure del provider (marker

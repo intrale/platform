@@ -768,6 +768,21 @@ test('DEFECTO 1 — el barrido de huérfanos también libera el presupuesto, con
         wiring.operationKeyFor({ pipeline: 'desarrollo', fase: 'dev', skill: 'pipeline-dev', issue: 5796 }),
         'desarrollo/dev/pipeline-dev:5796',
     );
+
+    // #5796 (fix rev-4) — PERO SÓLO CUANDO LA CORRIDA ES DEL BARRIDO.
+    //
+    // Esta liberación es correcta para un huérfano de verdad (el proceso murió
+    // sin correr su handler de `exit`, así que nadie más va a olvidar la
+    // operación) y es DAÑINA mientras el replay de credencial está en vuelo:
+    // ahí borra el presupuesto de una operación viva y habilita un retry por
+    // vuelta contra el vault. La condición no puede vivir en este test por
+    // regex: el comportamiento cruzado de los dos actores se ejercita montando
+    // el barrido real en `credential-retry-orphan-guard-5796.test.js`.
+    const iGuard = PULPO_SRC.indexOf('credentialRetrySettlement.corridasEnSettlement.hayCierreEnVuelo(key)');
+    assert.ok(iGuard > 0,
+        'El barrido tiene que consultar si el cierre de la corrida está en manos del retry de credencial.');
+    assert.ok(iGuard < i,
+        'El guard va ANTES de los efectos del barrido, no después (el defecto del rechazo rev-3).');
 });
 
 test('DEFECTO 1 — el TTL de la operación NO se refresca en cada acceso', async () => {
@@ -871,8 +886,16 @@ test('DEFECTO 3 — el replay del agente tiene settlement garantizado y no puede
         'El replay del agente tiene que correr acotado por el módulo de settlement.');
     assert.match(brazo, /correrReplayAcotado\(\{[\s\S]{0,300}coordinador: coordinadorDeCierre/,
         'El cierre pasa SIEMPRE por el coordinador: es lo que hace imposible el efecto duplicado.');
-    assert.match(brazo, /timeoutMs: credentialRetrySettlement\.resolveReplayTimeoutMs\(\)/,
+    // El presupuesto se resuelve UNA vez por el módulo (inyectable por env) y ese
+    // MISMO valor es el que acota el replay y el que se publica en el registro de
+    // cierres en vuelo (#5796 fix rev-4). Resolverlo dos veces abriría la puerta a
+    // que la ventana de exclusión del barrido no coincida con el timeout real.
+    assert.match(brazo, /const presupuestoDelReplayMs = credentialRetrySettlement\.resolveReplayTimeoutMs\(\);/,
         'El timeout se resuelve por el módulo (inyectable por env), no hardcodeado en el brazo.');
+    assert.match(brazo, /timeoutMs: presupuestoDelReplayMs/,
+        'El replay se acota con el presupuesto resuelto por el módulo.');
+    assert.match(brazo, /marcar\(\{[\s\S]{0,300}presupuestoMs: presupuestoDelReplayMs/,
+        'El registro publica el MISMO presupuesto que acota el replay.');
 
     // Ninguna copia local del race: dos dueños del settlement es cómo volvería
     // a aparecer un desenlace sin cierre.
