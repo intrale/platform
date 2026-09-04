@@ -763,3 +763,215 @@ test('#5799 integracion (CA-2): lanzamientos concurrentes con providers distinto
     primario.childEnv.ANTHROPIC_API_KEY = 'CONTAMINADA';
     assert.equal(fallback.childEnv.OPENAI_API_KEY, 'vault-openai-codex-v1');
 });
+
+// =============================================================================
+// #5796 — LA TABLA DE CAMINOS, DE PUNTA A PUNTA.
+//
+// Los tests de arriba prueban la mitad de SNAPSHOT (#5799): cada intento pide
+// su material y el filtro de salida no deja pasar el del vecino. Los de acá
+// prueban la mitad de RETRY: los cuatro caminos —agente primario, agente
+// fallback, Commander primario, Commander fallback— corriendo sobre el flujo
+// REAL (resolver → snapshot → composeAttemptProcessEnv → buildChildEnv), con el
+// coordinador gobernando el presupuesto.
+//
+// Lo que se busca atrapar acá y no en la suite unitaria del cableado: que la
+// re-resolución del intento 2 traiga material NUEVO y del provider CORRECTO
+// atravesando toda la cadena de filtros, no sólo en un doble del snapshot.
+// =============================================================================
+
+const retryWiring = require('../lib/credential-retry-wiring');
+const { RETRY_ERROR_CODES, CLOSE_REASONS, RETRY_EVENTS } = require('../lib/credential-auth-retry');
+const { AUTH_REJECTED_CLASS } = require('../lib/agent-launcher/dispatch-with-fallback');
+
+const CFG_RETRY_ON = { pipeline: { credential_snapshot_enabled: true, credential_retry_enabled: true } };
+const CFG_RETRY_OFF = { pipeline: { credential_snapshot_enabled: true, credential_retry_enabled: false } };
+const SCOPES_INVALIDABLES_5796 = ['google_drive', 'providers', 'telegram'];
+const CATALOGO_5796 = { 'agent-child': { scopes: ['providers'] }, commander: { scopes: ['providers'] } };
+
+function rechazoDeCredencial(provider) {
+    return {
+        errorClass: 'authentication_rejected',
+        authenticationRejection: Object.freeze({
+            kind: AUTH_REJECTED_CLASS,
+            provider, operationId: null, path: null, attempt: null,
+            signal: Object.freeze({ source: 'cli-stream-json', code: 'authentication_error', status: 401, type: null }),
+        }),
+    };
+}
+
+/**
+ * Corre un camino completo bajo el coordinador, usando el flujo real de env.
+ * `desenlaces` describe qué contesta cada intento (1º y 2º).
+ */
+async function caminoConRetry({
+    skill, issue, models, fsImpl, vault, gatedProviders = [], destination,
+    operation, config = CFG_RETRY_ON, desenlaces, onInvalidar,
+}) {
+    const spawns = [];
+    const eventos = [];
+    let i = 0;
+    const salida = { ok: false, error: null, spawns, eventos };
+    try {
+        await retryWiring.runAttempt({
+            operation,
+            provider: null, // el provider EFECTIVO lo resuelve el dispatcher, como en pulpo.js
+            path: retryWiring.PRIMARY_PATH,
+            destination,
+            invalidableScopes: SCOPES_INVALIDABLES_5796,
+            destinationsCatalog: CATALOGO_5796,
+            invalidate: async (scope) => { if (onInvalidar) onInvalidar(scope); return { invalidadas: 1 }; },
+            emit: (e) => eventos.push(e),
+            createSnapshot: async () => pulpoFlowConSnapshot({
+                skill, issue, fsImpl, models, destination, config,
+                processEnv: operatorProcessEnv(),
+                quotaModule: fakeQuotaModule({ gatedProviders }),
+                createSnapshotFn: vault.fn,
+            }),
+            execute: async ({ snapshot }) => {
+                spawns.push(snapshot);
+                const paso = desenlaces[i] !== undefined ? desenlaces[i] : desenlaces[desenlaces.length - 1];
+                i += 1;
+                return typeof paso === 'function' ? paso(snapshot) : paso;
+            },
+        });
+        salida.ok = true;
+    } catch (e) {
+        salida.error = e;
+    }
+    return salida;
+}
+
+test('#5796 integracion: el reintento del agente corre con material RE-RESUELTO, no con el rechazado', async () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const vault = fakeVault();
+    const operation = retryWiring.getOrCreateOperation({
+        key: 'agente', config: CFG_RETRY_ON, kind: 'agent', skill: 'guru', issue: ISSUE, registry: new Map(),
+    });
+
+    const r = await caminoConRetry({
+        skill: 'guru', issue: ISSUE, models, fsImpl, vault, operation,
+        destination: SNAPSHOT_DESTINATION.AGENT_CHILD,
+        // La invalidación es lo que habilita al vault a entregar la versión
+        // nueva: sin ella el reintento repetiría el rechazo con el mismo material.
+        onInvalidar: () => vault.bump('anthropic'),
+        desenlaces: [rechazoDeCredencial('anthropic'), { errorClass: 'success', authenticationRejection: null }],
+    });
+
+    assert.equal(r.ok, true);
+    assert.equal(r.spawns.length, 2, 'Exactamente dos spawns: el rechazado y el único reintento.');
+    assert.equal(r.spawns[0].childEnv.ANTHROPIC_API_KEY, 'vault-anthropic-v1');
+    assert.equal(r.spawns[1].childEnv.ANTHROPIC_API_KEY, 'vault-anthropic-v2',
+        'El reintento tiene que ver la credencial rotada, no la que el provider acaba de rechazar.');
+    assert.notEqual(r.spawns[0].childEnv, r.spawns[1].childEnv, 'Sin objeto de env compartido entre intentos.');
+    assert.equal(process.env.ANTHROPIC_API_KEY, undefined, 'El env del padre nunca se hidrató.');
+    // Canario cross-provider: ni el primario ni el reintento ven la key ajena.
+    for (const s of r.spawns) assert.equal(s.childEnv.OPENAI_API_KEY, undefined);
+});
+
+test('#5796 integracion: el fallback del agente no hereda el canario del primario ni reinicia el presupuesto', async () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const vault = fakeVault();
+    const registry = new Map();
+    const clave = 'desarrollo/dev/guru:3198';
+
+    // Camino 1 — primario Anthropic: se lleva el único retry de la operación.
+    const op1 = retryWiring.getOrCreateOperation({
+        key: clave, config: CFG_RETRY_ON, kind: 'agent', skill: 'guru', issue: ISSUE, registry,
+    });
+    const primario = await caminoConRetry({
+        skill: 'guru', issue: ISSUE, models, fsImpl, vault, operation: op1,
+        destination: SNAPSHOT_DESTINATION.AGENT_CHILD,
+        onInvalidar: () => vault.bump('anthropic'),
+        desenlaces: [rechazoDeCredencial('anthropic'), { errorClass: 'success', authenticationRejection: null }],
+    });
+    assert.equal(primario.ok, true);
+
+    // Camino 2 — el mismo lanzamiento lógico cascadeado a openai-codex.
+    const op2 = retryWiring.getOrCreateOperation({
+        key: clave, config: CFG_RETRY_ON, kind: 'agent', skill: 'guru', issue: ISSUE, registry,
+    });
+    assert.equal(op2, op1, 'El cambio de provider no puede crear una operación nueva.');
+
+    const fallback = await caminoConRetry({
+        skill: 'guru', issue: ISSUE, models, fsImpl, vault, operation: op2,
+        gatedProviders: ['anthropic'],
+        destination: SNAPSHOT_DESTINATION.AGENT_CHILD,
+        onInvalidar: () => assert.fail('el fallback NO puede invalidar de nuevo'),
+        desenlaces: [rechazoDeCredencial('openai-codex')],
+    });
+
+    assert.equal(fallback.ok, false, 'Con el presupuesto gastado, el fallback falla CERRADO.');
+    assert.equal(fallback.error.code, RETRY_ERROR_CODES.CLOSED);
+    assert.equal(fallback.error.reason, CLOSE_REASONS.BUDGET_EXHAUSTED);
+    assert.equal(fallback.spawns.length, 1, 'Un solo spawn: el fallback no se gana un reintento propio.');
+
+    // Canarios cross-provider sobre el env REAL del child del fallback.
+    const envFallback = fallback.spawns[0].childEnv;
+    assert.equal(envFallback.OPENAI_API_KEY, 'vault-openai-codex-v1');
+    assert.equal(envFallback.ANTHROPIC_API_KEY, undefined, 'El fallback no puede ver la key del primario.');
+    assert.equal(envFallback.AWS_ACCESS_KEY_ID, undefined, 'Sin material AWS: el child no consulta el vault.');
+    assert.equal(envFallback.VAULT_DRIVER, undefined);
+    assert.equal(envFallback.VAULT_CONFIG, undefined);
+
+    // Cardinalidad: un solo operation_id y una sola invalidación en toda la cascada.
+    const ids = new Set([...primario.eventos, ...fallback.eventos].map((e) => e.operation_id));
+    assert.equal(ids.size, 1);
+    assert.equal(op1.invalidations, 1);
+    assert.equal(
+        [...primario.eventos, ...fallback.eventos].filter((e) => e.event === RETRY_EVENTS.INVALIDATED).length, 1,
+    );
+});
+
+test('#5796 integracion: el Commander usa su propio destino y su propia operación de turno', async () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const vault = fakeVault();
+    const operation = retryWiring.getOrCreateOperation({
+        key: 'commander:req-1', config: CFG_RETRY_ON, kind: 'commander', skill: 'commander', issue: 'req-1',
+        registry: new Map(),
+    });
+
+    const r = await caminoConRetry({
+        skill: 'guru', issue: ISSUE, models, fsImpl, vault, operation,
+        destination: SNAPSHOT_DESTINATION.COMMANDER,
+        onInvalidar: () => vault.bump('anthropic'),
+        desenlaces: [rechazoDeCredencial('anthropic'), { errorClass: 'success', authenticationRejection: null }],
+    });
+
+    assert.equal(r.ok, true);
+    assert.equal(r.spawns.length, 2);
+    // El destino del catálogo es el del Commander en TODAS las consultas al vault.
+    assert.ok(vault.llamadas.length >= 2);
+    for (const l of vault.llamadas) assert.equal(l.destination, SNAPSHOT_DESTINATION.COMMANDER);
+    assert.ok(r.eventos.every((e) => e.destination === SNAPSHOT_DESTINATION.COMMANDER && e.scope === 'providers'));
+    assert.ok(r.eventos.every((e) => typeof e.operation_id === 'string' && e.operation_id.startsWith('commander:')));
+});
+
+test('#5796 integracion: con el gate de retry CERRADO el flujo es el de #5799, spawn por spawn', async () => {
+    const models = baseAgentModels();
+    const fsImpl = fakeFsWithAgentModels(PIPELINE_DIR, models);
+    const vault = fakeVault();
+
+    // Gate cerrado ⇒ no hay operación ⇒ `runAttempt` es el camino no-op.
+    const operation = retryWiring.getOrCreateOperation({
+        key: 'k', config: CFG_RETRY_OFF, kind: 'agent', skill: 'guru', issue: ISSUE, registry: new Map(),
+    });
+    assert.equal(operation, null);
+
+    const r = await caminoConRetry({
+        skill: 'guru', issue: ISSUE, models, fsImpl, vault, operation,
+        destination: SNAPSHOT_DESTINATION.AGENT_CHILD,
+        config: CFG_RETRY_OFF,
+        onInvalidar: () => assert.fail('con el gate cerrado no se invalida nada'),
+        // Aun ante un rechazo REAL de credencial: un solo spawn, cero eventos.
+        desenlaces: [rechazoDeCredencial('anthropic')],
+    });
+
+    assert.equal(r.ok, true);
+    assert.equal(r.spawns.length, 1, 'Mismo número de spawns que antes de #5796.');
+    assert.equal(r.eventos.length, 0, 'Mismo audit: ni un evento de retry.');
+    assert.equal(vault.llamadas.length, 1, 'Una sola consulta al vault: no hay re-resolución.');
+    assert.equal(r.spawns[0].childEnv.ANTHROPIC_API_KEY, 'vault-anthropic-v1');
+});
