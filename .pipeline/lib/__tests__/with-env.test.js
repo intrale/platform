@@ -280,8 +280,16 @@ test('CA-6258-8 · SEC-7 tampoco deja mutar las OTRAS variables del mismo lote',
     assert.strictEqual(CTRL in process.env, false);
 });
 
-test('CA-6258-9 · SEC-7 direccion PERMITIDA: undefined, null y "0" no tiran', () => {
-    const CTRL = 'PIPELINE_GATE0_ENABLED';
+// #6260 CA-40.1 / seccion 11(c) — AUTORIZADO A CAMBIAR, con el invariante
+// intacto. El test defiende que *la direccion permitida no tira*; lo que cambia
+// es la variable con la que se lo ejercita. `PIPELINE_GATE0_ENABLED` resuelve
+// por la familia `*GATE*_ENABLED`, que es `apagar`: bajo el vocabulario del
+// consumidor real, ausencia y `'0'` pasaron a ser su direccion INSEGURA. Se
+// migra a una variable `encender` (`PULPO_SKIP_ALGO`), donde `undefined`,
+// `null`, `'0'`, `''` y `0` siguen siendo la direccion permitida — las CINCO
+// aserciones migran intactas — y se agrega la contracara `apagar`.
+test('CA-6258-9 / CA-40.1 · SEC-7 direccion PERMITIDA: undefined, null y "0" no tiran', () => {
+    const CTRL = 'PULPO_SKIP_ALGO';                 // familia PULPO_SKIP_* => `encender`
     const prev = process.env[CTRL];
     try {
         process.env[CTRL] = '1';
@@ -303,6 +311,12 @@ test('CA-6258-9 · SEC-7 direccion PERMITIDA: undefined, null y "0" no tiran', (
         if (prev === undefined) delete process.env[CTRL];
         else process.env[CTRL] = prev;
     }
+    // La CONTRACARA: para una variable `apagar`, `'0'` es la direccion insegura
+    // y tira. Sin este aserto el test solo probaria la mitad del invariante.
+    assert.throws(
+        () => withEnv({ PIPELINE_GATE0_ENABLED: '0' }, () => {}),
+        /PIPELINE_GATE0_ENABLED/,
+    );
 });
 
 test('CA-6258-9 · PIPELINE_DIR_OVERRIDE NO es variable de control (si lo fuera, waves-* no podria usar el helper)', () => {
@@ -436,7 +450,14 @@ test('CA-6258-12 · valores no-string se coercionan con String(), sin colarse "n
 // CA-6258-13 — el copy accionable no depende de una tilde (UX-2 / D-6258-6)
 // -----------------------------------------------------------------------------
 
-test('CA-6258-13 · el mensaje de SEC-7 es ASCII puro, afirmativo y enumera las tres salidas', () => {
+// #6260 seccion 10 — AUTORIZACION EXPLICITA para adaptar los asserts literales
+// de este test al copy nuevo. Los asserts viejos congelaban un texto FIJO que
+// bajo el vocabulario del consumidor real es falso para 9 de las 16 entradas
+// del registro: ofrecia como salida exactamente lo que el guardrail bloquea.
+// El test ejercitaba `PULPO_SKIP_ALGO` — familia `encender`, el UNICO caso
+// donde ese copy seguia siendo correcto — y por eso quedaba verde blindando el
+// defecto para las otras 9. Los invariantes de UX (d) se preservan enteros.
+test('CA-6258-13 / CA-39.2 · el mensaje de SEC-7 es ASCII puro, afirmativo y enumera la salida correcta', () => {
     let msg = null;
     try {
         withEnv({ PULPO_SKIP_ALGO: 'on' }, () => {});
@@ -448,10 +469,235 @@ test('CA-6258-13 · el mensaje de SEC-7 es ASCII puro, afirmativo y enumera las 
     assert.match(msg, /^[\x20-\x7E]+$/, 'debe ser ASCII imprimible puro');
     // Afirmativo e inequivoco: nada del ambiguo "si esta permitido".
     assert.doesNotMatch(msg, /si esta permitido/);
-    assert.match(msg, /Hay tres alternativas permitidas/);
     assert.match(msg, /\(1\) pasar el env como parametro/);
-    assert.match(msg, /\(2\) forzar la ausencia de la variable con undefined o null/);
-    assert.match(msg, /\(3\) desactivarla con "0"/);
-    assert.match(msg, /Lo unico bloqueado es el sentido que la habilita/);
+    assert.match(msg, /\(2\) el opt-in nominal de withEnv/);
+    // Direccion `encender`: la ausencia y "0" SIGUEN siendo salidas validas.
+    assert.match(msg, /forzar la ausencia de la variable con undefined o null/);
+    assert.match(msg, /desactivarla con "0"/);
+    assert.match(msg, /lo bloqueado es el sentido que la habilita/);
     assert.match(msg, /PULPO_SKIP_ALGO/);
+});
+
+// CA-39.2 (contracara) — el mismo test para una familia `apagar`, que es el
+// caso que el copy viejo instruia MAL.
+test('CA-6258-13 / CA-39.1 · para una variable `apagar` el mensaje NO ofrece "0" ni la ausencia', () => {
+    let msg = null;
+    try {
+        withEnv({ PIPELINE_GATE0_ENABLED: '0' }, () => {});
+    } catch (e) {
+        msg = e.message;
+    }
+    assert.ok(msg);
+    assert.match(msg, /^[\x20-\x7E]+$/, 'debe ser ASCII imprimible puro');
+    assert.doesNotMatch(msg, /si esta permitido/);
+    assert.match(msg, /PIPELINE_GATE0_ENABLED/);
+    assert.match(msg, /la unica salida por valor es "1"/);
+    assert.match(msg, /lo bloqueado es el sentido que la apaga/);
+    // Lo que NO puede decir: ofrecer justo lo que bloquea.
+    assert.doesNotMatch(msg, /forzar la ausencia/);
+    assert.doesNotMatch(msg, /desactivarla con "0"/);
+    assert.doesNotMatch(msg, /Lo unico bloqueado es el sentido que la habilita/);
+});
+
+// -----------------------------------------------------------------------------
+// #6260 — CA-32 .. CA-35, CA-37, CA-38, CA-39, CA-40.5
+// -----------------------------------------------------------------------------
+
+test('CA-32 · el contrato exportado se DERIVA del registro y conserva su shape', () => {
+    // El helper ya no mantiene lista propia: la resolucion sale de
+    // `test-env-lint.protected.json`. Lo que se preserva es el SHAPE.
+    const registro = require('../test-env-lint').getRegistry();
+    assert.ok(Array.isArray(SECURITY_CONTROL_VARS), 'sigue siendo un Array');
+    assert.ok(SECURITY_CONTROL_VARS.every((r) => r instanceof RegExp), 'sigue siendo de RegExp');
+    assert.ok(Object.isFrozen(SECURITY_CONTROL_VARS), 'sigue congelado');
+    assert.strictEqual(SECURITY_CONTROL_VARS.length, registro.size,
+        'una RegExp por entrada del registro (13 `nombre` + 3 `patron`)');
+    assert.strictEqual(SECURITY_CONTROL_VARS.length, 16);
+    // Y el helper NO reimplementa la lista: no queda ningun literal de patron
+    // de control escrito a mano en el archivo (R-A12).
+    const src = fs.readFileSync(HELPER_PATH, 'utf8');
+    assert.doesNotMatch(src, /\/\^PULPO_SKIP_/, 'el patron no puede volver a estar hardcodeado aca');
+    assert.doesNotMatch(src, /\/\^PULPO_NO_/, 'el patron no puede volver a estar hardcodeado aca');
+});
+
+test('CA-33 · regresion del hallazgo §3: las direcciones inseguras reales tiran', () => {
+    const casos = [
+        ['PIPELINE_CFG_FIRMA_OPERADOR__ENABLED', 'false'],
+        ['QUOTA_RECONCILE_DISABLED', '1'],
+        ['ADMISSION_SWEEP_ENABLED', '0'],
+        ['QUOTA_SNAPSHOT_ENABLED', '0'],
+    ];
+    for (const [name, valor] of casos) {
+        assert.throws(
+            () => withEnv({ [name]: valor }, () => {}),
+            new RegExp(name),
+            `${name} en su sentido inseguro debia tirar`,
+        );
+        assert.strictEqual(name in process.env, false, 'la validacion es PREVIA a mutar');
+    }
+});
+
+test('CA-34 · PULPO_NO_AUTOSTART="1" NO tira: es el sentido SEGURO (precedencia nominal)', () => {
+    // Es la regresion que desbloquea las 49 lineas del patron P1 de #6259. Sin
+    // precedencia nominal, la familia `PULPO_NO_*` (`encender`) haria tirar
+    // justo la posicion mas inerte.
+    const prev = process.env.PULPO_NO_AUTOSTART;
+    try {
+        assert.doesNotThrow(() => withEnv({ PULPO_NO_AUTOSTART: '1' }, () => {
+            assert.strictEqual(process.env.PULPO_NO_AUTOSTART, '1');
+        }));
+    } finally {
+        if (prev === undefined) delete process.env.PULPO_NO_AUTOSTART;
+        else process.env.PULPO_NO_AUTOSTART = prev;
+    }
+    // Y su contracara sigue tirando (CA-6258-8 intacto).
+    assert.throws(() => withEnv({ PULPO_NO_AUTOSTART: 'si' }, () => {}), /PULPO_NO_AUTOSTART/);
+});
+
+test('CA-35 · el opt-in exige motivo no vacio y variable reconocida', () => {
+    const OK = { permitirApagarControl: ['PIPELINE_GATE0_ENABLED'], motivo: 'rama fail-closed' };
+    assert.doesNotThrow(() => withEnv({ PIPELINE_GATE0_ENABLED: '0' }, () => {}, OK));
+    // motivo ausente
+    assert.throws(
+        () => withEnv({ PIPELINE_GATE0_ENABLED: '0' }, () => {}, { permitirApagarControl: ['PIPELINE_GATE0_ENABLED'] }),
+        /motivo/,
+    );
+    // motivo vacio / solo espacios
+    assert.throws(
+        () => withEnv({ PIPELINE_GATE0_ENABLED: '0' }, () => {}, { permitirApagarControl: ['PIPELINE_GATE0_ENABLED'], motivo: '   ' }),
+        /motivo/,
+    );
+    // variable fuera del registro: el opt-in NO es un comodin
+    assert.throws(
+        () => withEnv({ PATH: 'x' }, () => {}, { permitirApagarControl: ['PATH'], motivo: 'porque si' }),
+        /no es una variable de control/,
+    );
+});
+
+test('CA-37 · vocabulario de valores alineado al consumidor real, no a truthiness', () => {
+    // `String(env[X] || '0').trim() === '1'` en produccion: todo lo que no sea
+    // exactamente '1' APAGA el gate — "true" incluido.
+    for (const valor of ['false', 'off', '2', 'true', '0', 'FALSE']) {
+        assert.throws(
+            () => withEnv({ PIPELINE_GATE0_ENABLED: valor }, () => {}),
+            /PIPELINE_GATE0_ENABLED/,
+            `PIPELINE_GATE0_ENABLED con un valor que apaga el gate debia tirar`,
+        );
+    }
+    // '1' es la UNICA posicion que deja el gate encendido.
+    const prev = process.env.PIPELINE_GATE0_ENABLED;
+    try {
+        assert.doesNotThrow(() => withEnv({ PIPELINE_GATE0_ENABLED: '1' }, () => {}));
+        assert.doesNotThrow(() => withEnv({ PIPELINE_GATE0_ENABLED: ' 1 ' }, () => {}));
+    } finally {
+        if (prev === undefined) delete process.env.PIPELINE_GATE0_ENABLED;
+        else process.env.PIPELINE_GATE0_ENABLED = prev;
+    }
+    // Y la familia cubre los otros dos gates reales SIN enumerarlos.
+    for (const g of ['PIPELINE_VISUAL_GATE_ENABLED', 'PIPELINE_WAVE_COHERENCE_GATE_ENABLED']) {
+        assert.strictEqual(isSecurityControlVar(g), true);
+        assert.throws(() => withEnv({ [g]: 'false' }, () => {}), new RegExp(g));
+    }
+});
+
+test('CA-38 · la derivacion nominal es case-insensitive y escapa el nombre', () => {
+    // Fixture canonica: entrada `nombre` que NINGUNA familia cubre.
+    assert.strictEqual(isSecurityControlVar('PIPELINE_CFG_FIRMA_OPERADOR__ENABLED'), true);
+    assert.strictEqual(isSecurityControlVar('pipeline_cfg_firma_operador__enabled'), true);
+    assert.throws(
+        () => withEnv({ pipeline_cfg_firma_operador__enabled: '0' }, () => {}),
+        /pipeline_cfg_firma_operador__enabled/,
+    );
+    // El contrato COMPLETO (16 entradas), no solo las 3 de familia.
+    assert.ok(
+        SECURITY_CONTROL_VARS.every((re) => re.flags.includes('i')),
+        'las 16 entradas derivadas deben ser case-insensitive: process.env en Windows tambien lo es',
+    );
+    // Las 8 nominales que ninguna familia cubre, en minuscula.
+    const solasNominales = [
+        'pulpo_allow_force_provider_override', 'pipeline_cfg_firma_operador__enabled',
+        'quota_reconcile_disabled', 'pipeline_codex_healthcheck_enabled',
+        'admission_sweep_enabled', 'anthropic_1m_workaround_enabled',
+        'quota_snapshot_enabled', 'pulpo_liveness_kill_seconds',
+    ];
+    for (const n of solasNominales) {
+        assert.strictEqual(isSecurityControlVar(n), true, `${n} deberia resolver en minuscula`);
+    }
+    // El escape del nombre no ensancha la cobertura hacia variables corrientes.
+    assert.strictEqual(isSecurityControlVar('pipeline_dir_override'), false);
+});
+
+test('CA-39.3 · direccion `cualquiera`: el mensaje no ofrece NINGUNA salida por valor', () => {
+    let msg = null;
+    try {
+        withEnv({ PULPO_LIVENESS_KILL_SECONDS: '99999' }, () => {});
+    } catch (e) {
+        msg = e.message;
+    }
+    assert.ok(msg);
+    assert.match(msg, /PULPO_LIVENESS_KILL_SECONDS/);
+    assert.match(msg, /no hay salida por valor porque toda escritura es insegura/);
+    assert.doesNotMatch(msg, /desactivarla con "0"/);
+    assert.doesNotMatch(msg, /la unica salida por valor es "1"/);
+    // Las dos salidas validas siempre siguen ofreciendose.
+    assert.match(msg, /\(1\) pasar el env como parametro/);
+    assert.match(msg, /permitirApagarControl/);
+});
+
+test('CA-39.4 · un throw que agrupa direcciones distintas enumera la salida POR VARIABLE', () => {
+    let msg = null;
+    try {
+        withEnv({ PULPO_SKIP_ALGO: 'on', PIPELINE_GATE0_ENABLED: '0' }, () => {});
+    } catch (e) {
+        msg = e.message;
+    }
+    assert.ok(msg);
+    // Cada variable con su propia salida, ninguna sugerencia falsa para la otra.
+    assert.match(msg, /PULPO_SKIP_ALGO: forzar la ausencia de la variable con undefined o null/);
+    assert.match(msg, /PIPELINE_GATE0_ENABLED: la unica salida por valor es "1"/);
+});
+
+test('CA-39.5 · invariantes de #6258 preservados en las cuatro direcciones', () => {
+    const casos = [
+        { PULPO_SKIP_ALGO: CENTINELA },
+        { PIPELINE_GATE0_ENABLED: CENTINELA },
+        { PULPO_LIVENESS_KILL_SECONDS: CENTINELA },
+        { PULPO_SKIP_ALGO: CENTINELA, PIPELINE_GATE0_ENABLED: CENTINELA },
+    ];
+    for (const vars of casos) {
+        let msg = null;
+        try { withEnv(vars, () => {}); } catch (e) { msg = e.message; }
+        assert.ok(msg, 'cada caso debe tirar');
+        assert.match(msg, /^[\x20-\x7E]+$/, 'ASCII imprimible puro');
+        assert.doesNotMatch(msg, /si esta permitido/, 'nada de la forma ambigua');
+        assert.doesNotMatch(msg, new RegExp(CENTINELA), 'el mensaje NUNCA nombra el valor');
+        for (const n of Object.keys(vars)) assert.match(msg, new RegExp(n), 'el mensaje nombra la variable');
+    }
+});
+
+test('CA-40.5 · el opt-in valida contra isSecurityControlVar, NO contra la tabla nominal', () => {
+    // `PIPELINE_GATE0_ENABLED` NO figura en la tabla nominal del registro:
+    // resuelve por la familia `*GATE*_ENABLED`. Sin esto, la lectura literal de
+    // "opt-in nominal" volveria CA-40.2 inalcanzable.
+    assert.doesNotThrow(() => withEnv({ PIPELINE_GATE0_ENABLED: undefined }, () => {}, {
+        permitirApagarControl: ['PIPELINE_GATE0_ENABLED'],
+        motivo: 'resuelve por familia, no por nombre',
+    }));
+    assert.throws(
+        () => withEnv({ PATH: 'x' }, () => {}, { permitirApagarControl: ['PATH'], motivo: 'no' }),
+        /no es una variable de control/,
+    );
+    assert.throws(
+        () => withEnv({ PIPELINE_GATE0_ENABLED: undefined }, () => {}, {
+            permitirApagarControl: ['PIPELINE_GATE0_ENABLED'], motivo: '',
+        }),
+        /motivo/,
+    );
+    // La FORMA del opt-in es nominal: un patron no se acepta como nombre.
+    assert.throws(
+        () => withEnv({ PULPO_SKIP_X: '1' }, () => {}, {
+            permitirApagarControl: ['^PULPO_SKIP_[A-Z0-9_]+$'], motivo: 'intento de comodin',
+        }),
+        /no es una variable de control/,
+    );
 });

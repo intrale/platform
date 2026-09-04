@@ -45,19 +45,12 @@ function mkTmpPipeline() {
     return { root, pipeline };
 }
 
-function withEnv(overrides, fn) {
-    const prev = {};
-    for (const [k, v] of Object.entries(overrides)) {
-        prev[k] = process.env[k];
-        if (v == null) delete process.env[k]; else process.env[k] = v;
-    }
-    try { return fn(); }
-    finally {
-        for (const [k, v] of Object.entries(prev)) {
-            if (v == null) delete process.env[k]; else process.env[k] = v;
-        }
-    }
-}
+// #6260 (CA-40.3): la copia local de `withEnv` que vivía acá tocaba
+// `process.env` a mano con clave computada — exactamente el patrón que el
+// guardrail `test-env-lint` vino a prohibir, y una segunda implementación del
+// aislamiento que puede divergir del helper. Se reemplaza por el helper
+// canónico de #6258; la migración de la llamada de fail-closed está en CA-5.
+const { withEnv } = require('../test-helpers/with-env');
 
 // ---------------------------------------------------------------------------
 // CA-5 — fail-closed: sin snapshot en disco → estado 'missing', pero providers
@@ -66,8 +59,16 @@ function withEnv(overrides, fn) {
 test('CA-5: sin snapshot → estado missing con providers listados (fail-closed)', () => {
     const { pipeline, root } = mkTmpPipeline();
     const { buildQuotaStateBlock } = freshBlock();
+    // #6260 (CA-40.3, sección 11(b)): `QUOTA_SNAPSHOT_ENABLED` es fila nominal
+    // `apagar`, y forzar su ausencia es la dirección insegura bajo el
+    // vocabulario del consumidor real. El uso es legítimo — es justo la rama
+    // fail-closed que este test existe para ejercitar — así que va por el
+    // opt-in explícito de la sección 9, con motivo auditable.
     const block = withEnv({ PIPELINE_DIR_OVERRIDE: pipeline, QUOTA_SNAPSHOT_ENABLED: null }, () =>
-        buildQuotaStateBlock({ PIPELINE: pipeline, ROOT: root }));
+        buildQuotaStateBlock({ PIPELINE: pipeline, ROOT: root }), {
+        permitirApagarControl: ['QUOTA_SNAPSHOT_ENABLED'],
+        motivo: 'CA-5 verifica el fail-closed del bloque de cuota justamente con el snapshot apagado',
+    });
 
     assert.equal(block.state, 'missing', 'sin .quota-history.jsonl → missing');
     assert.equal(block.lastSnapshot, null, 'sin snapshot fresco → lastSnapshot null (no dato viejo)');

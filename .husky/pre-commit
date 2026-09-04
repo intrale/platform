@@ -52,6 +52,37 @@ if [ -f ".pipeline/lib/operational-state-lint.js" ]; then
   fi
 fi
 
+# =============================================================================
+# Issue #6260 — Guardrail de contaminacion de `process.env` en tests.
+#
+# BLOQUEANTE DESDE EL DIA UNO (seccion 2 del issue), no `--report-only`: bajo el
+# ratchet el hook solo frena LO NUEVO. Las estrictas preexistentes estan
+# congeladas en `test-env-lint.baseline.json` (shrink-only, deuda visible) y la
+# deuda ordinaria en `test-env-lint.allowlist.json`, asi que un commit que no
+# agrega nada nuevo pasa. Con `--report-only` el gate no gatea; con el ratchet
+# no hay que elegir entre bloquear y no romper a nadie.
+#
+# ANCLA DE INSERCION: inmediatamente despues del `fi` que cierra el bloque de
+# `operational-state-lint`. Se inserta por ancla TEXTUAL y no por numero de
+# linea (R-A8: cualquier PR concurrente mueve el hueco).
+#
+# SIN `--only` (CA-25): el precedente de `operational-state-lint` NO se copia.
+# Un scan filtrado rompe el piso de escaneo de CA-15'. El hook gatea por
+# PRESENCIA de archivos `.pipeline/` staged (como `RUN_GHOST_LINT` mas abajo) y
+# cuando decide correr escanea el universo completo.
+# =============================================================================
+RUN_TEST_ENV_LINT=0
+case "$TOUCHED_FILES" in
+  *".pipeline/"*) RUN_TEST_ENV_LINT=1 ;;
+esac
+if [ "$RUN_TEST_ENV_LINT" = "1" ] && [ -f ".pipeline/lib/test-env-lint.js" ]; then
+  node .pipeline/lib/test-env-lint.js --check
+  TEST_ENV_LINT_EXIT=$?
+  if [ "$TEST_ENV_LINT_EXIT" != "0" ]; then
+    exit "$TEST_ENV_LINT_EXIT"
+  fi
+fi
+
 # Validación de agent-models (#3081): gate propio.
 RUN_VALIDATE=0
 case "$TOUCHED_FILES" in
