@@ -57,6 +57,10 @@ const repoTarget = require('./repo-target');
 const { resolveInstanceVault, redactScoped } = require('./credentials');
 const { scopeVaultSegment } = require('./secret-scopes');
 const { segmentProductState } = require('./product-state-segment');
+// #5214 — Guard fail-closed de configuración durable. Módulo SIN dependencias
+// (no arrastra Ajv, ni el store, ni AWS) para poder correr antes que cualquier
+// construcción de cliente o resolución de credenciales.
+const durableConfigGuard = require('./kernel-durable-config-guard');
 
 const ACTIVE_STATUS = 'active';
 
@@ -1118,7 +1122,13 @@ function createKernelSupervisor(deps = {}) {
  * @param {function} [opts.spawn]              spawn(ctx) AISLADO por instancia (A04). Opcional.
  * @param {function} [opts.onAlert]            callback de alerta fail-closed (A09).
  * @param {function} [opts.createSupervisor]   factory del supervisor (test override; default: createKernelSupervisor).
- * @returns {Promise<{ran:boolean, reason?:string, cap?:number, spawned?:string[], skipped?:Array, error?:string}>}
+ * #5214: el best-effort NO cubre la CONFIGURACIÓN durable inválida. Con el flag
+ * ON y `kernel.tableName` ausente/vacío/whitespace se devuelve
+ * `{ran:false, reason:'config-invalid', fatal:true, exitCode}` sin tocar AWS: es
+ * un error del operador, no un fallo operativo, y el caller debe ABORTAR con
+ * código no-cero en vez de seguir arrancando degradado.
+ *
+ * @returns {Promise<{ran:boolean, reason?:string, fatal?:boolean, configReason?:string, exitCode?:number, cap?:number, spawned?:string[], skipped?:Array, error?:string}>}
  */
 async function bootKernelDurable(opts = {}) {
   const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
@@ -1130,6 +1140,46 @@ async function bootKernelDurable(opts = {}) {
   // y el arranque FS actual del pulpo no cambia.
   if (kernel.durable !== true) {
     return { ran: false, reason: 'flag-off' };
+  }
+
+  // #5214 · CA-1/CA-2/CA-4 — Guard fail-closed de config durable, ANTES del
+  // `try` y ANTES de invocar `buildCatalogStore()`.
+  //
+  // El orden importa y es lo que el CA pide testear: `buildCatalogStore` es el
+  // closure que construye el runner del AWS CLI y el driver DynamoDB, así que
+  // salir acá garantiza CERO clientes AWS, CERO credenciales consumidas y CERO
+  // procesamiento (no se instancia el supervisor ni se drena ninguna cola).
+  //
+  // Va FUERA del `try` a propósito. El `catch` de abajo es best-effort y degrada
+  // cualquier fallo a `{ran:false, reason:'error'}` — que es correcto para fallos
+  // OPERATIVOS (driver caído, catálogo corrupto) pero sería exactamente el
+  // fallback silencioso que la historia elimina si se aplicara a una config
+  // durable inválida. Por eso la config inválida sale por una rama propia.
+  //
+  // Se DEVUELVE en vez de lanzar: el contrato "esta función nunca lanza" lo
+  // consumen callers que la envuelven en try/catch (`pulpo.js`), y un throw acá
+  // se lo tragarían, convirtiendo el aborto en un WARN. El desenlace fatal lo
+  // ejecuta el entrypoint leyendo `fatal:true` — ver `pulpo.js`, que además
+  // corre este mismo guard antes de siquiera cargar el store.
+  const durableCfg = durableConfigGuard.inspectDurableKernelConfig(config);
+  if (!durableCfg.ok) {
+    // La alerta lleva el TEXTO CONSTANTE, nunca el valor recibido ni la config
+    // (A02). La variante concreta viaja aparte, en `reason`.
+    try {
+      onAlert({
+        projectId: null,
+        stage: 'boot-durable-config',
+        errors: [{ detail: durableCfg.message, reason: durableCfg.reason }],
+      });
+    } catch { /* alerta best-effort: el fail-closed va igual */ }
+    return {
+      ran: false,
+      reason: 'config-invalid',
+      fatal: true,
+      configReason: durableCfg.reason,
+      exitCode: durableCfg.exitCode,
+      error: durableCfg.message,
+    };
   }
 
   const createSupervisor = typeof opts.createSupervisor === 'function'

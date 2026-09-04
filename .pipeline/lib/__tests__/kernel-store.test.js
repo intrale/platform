@@ -471,9 +471,15 @@ test('#4811 CA-6: putProduct del mismo id repetido es idempotente (no duplica en
 
 test('driver real sin config.tableName falla (no hardcode de tabla)', () => {
   const fakeAwsDriver = { kind: 'aws-cli', createTable: async () => {}, getItem: async () => ({ item: null }), putItem: async () => ({}), deleteItem: async () => ({}) };
+  // #5214 — El mensaje ahora es el diagnóstico accionable del guard: dice DÓNDE
+  // editar (.pipeline/config.yaml), QUÉ clave (kernel.tableName) y a dónde ir
+  // (el runbook). El texto viejo ("config.tableName requerido…") nombraba una
+  // ruta de objeto que no existe en ningún archivo que el operador pueda abrir.
   assert.throws(
     () => createKernelStore({ driver: fakeAwsDriver, contextProjectId: CTX }),
-    /config\.tableName requerido/,
+    (e) => /kernel\.tableName/.test(e.message)
+      && /\.pipeline\/config\.yaml/.test(e.message)
+      && /runbook-cutover-durable\.md/.test(e.message),
   );
 });
 
