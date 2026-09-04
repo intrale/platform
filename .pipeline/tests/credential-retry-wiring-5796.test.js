@@ -640,9 +640,19 @@ function brazoCredentialDeath() {
 
 test('el cierre por credencial vencida es idempotente (un solo aviso, un solo movimiento)', () => {
     const brazo = brazoCredentialDeath();
-    assert.match(brazo, /let efectosDeCierreEjecutados = false;/,
-        'Sin guard de idempotencia, un camino inesperado del coordinador duplicaría el aviso al operador.');
-    assert.match(brazo, /if \(efectosDeCierreEjecutados\) return;/);
+    // #5796 (fix rev-3) — la idempotencia dejó de ser una bandera suelta en el
+    // brazo (que `retryExecute` escribía sin leer nunca, el bug del rechazo
+    // rev-2) y pasó a ser una barrera dura encapsulada en el coordinador de
+    // cierre. El COMPORTAMIENTO lo cubre `credential-retry-settlement-5796.test.js`
+    // contando efectos; acá sólo se fija que el brazo real esté cableado a ella.
+    assert.match(brazo, /credentialRetrySettlement\.crearCoordinadorDeCierreDeCorrida\(\{/,
+        'Sin la barrera del coordinador, un camino inesperado duplicaría el aviso al operador.');
+    assert.match(brazo, /cerrar: efectosDelCierrePorCredencial/,
+        'Los efectos del cierre entran al coordinador: no puede haber un segundo dueño.');
+    assert.match(brazo, /reencolar: efectosDelReencoladoPorReintento/,
+        'Los efectos del re-encolado entran al MISMO coordinador: es lo que los hace excluyentes.');
+    assert.ok(!/efectosDeCierreEjecutados/.test(brazo),
+        'La bandera suelta no puede volver: cualquiera la marcaba sin ejecutar el cierre.');
     // Los efectos observables viven en UNA sola función, no repartidos.
     const cierres = (brazo.match(/sendCredentialDeathNotif\(/g) || []).length;
     assert.strictEqual(cierres, 1,
@@ -654,15 +664,29 @@ test('el cierre por credencial vencida es idempotente (un solo aviso, un solo mo
 
 test('el reintento del agente NO apaga el provider ni avisa al operador', () => {
     const brazo = brazoCredentialDeath();
+
+    // Los efectos del re-encolado viven en su propia función, separados de los
+    // del cierre: es lo que permite que el coordinador los haga excluyentes.
+    const iEfectos = brazo.indexOf('const efectosDelReencoladoPorReintento = () => {');
+    assert.ok(iEfectos > 0, 'El brazo tiene que declarar los efectos del re-encolado.');
+    const cuerpoDeLosEfectos = brazo.slice(iEfectos, brazo.indexOf('crearCoordinadorDeCierreDeCorrida', iEfectos));
+    assert.ok(!/recordProviderSpawnDeath/.test(cuerpoDeLosEfectos),
+        'Apagar el provider 60 minutos mientras todavía queda un reintento legítimo es la regresión que este issue viene a cerrar.');
+    assert.ok(!/sendCredentialDeathNotif/.test(cuerpoDeLosEfectos),
+        'El operador no puede recibir un aviso de reautenticación por un intento que todavía no falló.');
+
+    // #5796 (fix rev-3, defecto 3) — BARRERA DE ENTRADA, no marca de salida.
     const i = brazo.indexOf('retryExecute: () => {');
     assert.ok(i > 0, 'El brazo tiene que declarar el reintento del coordinador.');
     const cuerpoDelReintento = brazo.slice(i, brazo.indexOf('emit: emitirEventoDeRetry', i));
-    assert.ok(!/recordProviderSpawnDeath/.test(cuerpoDelReintento),
-        'Apagar el provider 60 minutos mientras todavía queda un reintento legítimo es la regresión que este issue viene a cerrar.');
-    assert.ok(!/sendCredentialDeathNotif/.test(cuerpoDelReintento),
-        'El operador no puede recibir un aviso de reautenticación por un intento que todavía no falló.');
-    assert.match(cuerpoDelReintento, /efectosDeCierreEjecutados = true;/,
-        'El reintento cierra la corrida, así que tiene que marcar los efectos como hechos.');
+    const iGuard = cuerpoDelReintento.indexOf('if (!coordinadorDeCierre.reencolarPorReintento())');
+    assert.ok(iGuard > 0,
+        'El retryExecute tiene que CONSULTAR la barrera: en el rev-2 sólo la escribía, y un replay '
+        + 'que settleaba tarde le arrancaba el dropfile a un agente ya relanzado.');
+    assert.ok(!/moveFile\(trabajandoPath/.test(cuerpoDelReintento),
+        'Ningún efecto suelto en el retryExecute: todos viven detrás de la barrera, dentro de `reencolar`.');
+    assert.ok(!/activeProcesses\.delete/.test(cuerpoDelReintento),
+        'Liberar el slot fuera de la barrera habilita un segundo proceso claude sobre el mismo issue.');
 });
 
 test('el brazo de credential-death consulta el presupuesto ANTES de ejecutar los efectos', () => {
@@ -830,28 +854,67 @@ test('DEFECTO 2 — el execute del Commander tiene guard de entrada antes de spa
         'El guard va ANTES del spawn: lo que protege es un proceso, no un log (bug del rechazo rev-2).');
 });
 
-test('DEFECTO 3 — el replay del agente tiene settlement garantizado (timeout + cierre incondicional)', () => {
+test('DEFECTO 3 — el replay del agente tiene settlement garantizado y no puede settlear dos veces', () => {
     const brazo = brazoCredentialDeath();
 
-    assert.match(brazo, /Promise\.race\(\[/,
-        'Sin race contra un temporizador, un vault colgado deja el dropfile huérfano en trabajando/.');
-    assert.match(brazo, /REPLAY_TIMEOUT_MS/,
-        'El replay tiene que estar acotado por un timeout explícito.');
-    assert.match(brazo, /temporizadorDelReplay\.unref\(\)/,
-        'El temporizador no puede sostener vivo el event loop del Pulpo.');
-    assert.match(brazo, /\.finally\(\(\) => \{[\s\S]{0,200}clearTimeout\(temporizadorDelReplay\)/,
-        'El temporizador se limpia siempre, settlee por donde settlee.');
+    // #5796 (fix rev-3) — el race salió del brazo y vive en
+    // `lib/credential-retry-settlement.js`, que es un módulo PURO: por eso el
+    // settlement ahora se prueba por COMPORTAMIENTO (contando movimientos de
+    // dropfile y `activeProcesses.delete` con un vault más lento que el
+    // timeout) en `credential-retry-settlement-5796.test.js`. El rechazo rev-2
+    // fue explícito: un assert de regex sobre el fuente verifica que el race
+    // EXISTE, no qué pasa cuando settlea tarde — que era justo el bug.
+    //
+    // Acá queda sólo lo que ese test no puede ver: que el brazo real esté
+    // cableado al módulo y no se haya quedado con una copia propia del race.
+    assert.match(brazo, /credentialRetrySettlement\.correrReplayAcotado\(\{/,
+        'El replay del agente tiene que correr acotado por el módulo de settlement.');
+    assert.match(brazo, /correrReplayAcotado\(\{[\s\S]{0,300}coordinador: coordinadorDeCierre/,
+        'El cierre pasa SIEMPRE por el coordinador: es lo que hace imposible el efecto duplicado.');
+    assert.match(brazo, /timeoutMs: credentialRetrySettlement\.resolveReplayTimeoutMs\(\)/,
+        'El timeout se resuelve por el módulo (inyectable por env), no hardcodeado en el brazo.');
 
-    // Los cuatro desenlaces del race cierran la corrida.
-    const cierreDelRace = brazo.slice(brazo.indexOf('Promise.race(['));
-    assert.match(cierreDelRace, /desenlace\.timeout[\s\S]{0,600}cerrarPorCredencialVencida\(/,
-        'El timeout degrada al cierre de siempre.');
-    assert.match(cierreDelRace, /desenlace\.error[\s\S]{0,600}cerrarPorCredencialVencida\(/,
-        'El fallo cerrado del coordinador cierra con el motivo tipado.');
-    assert.match(cierreDelRace, /cerrarPorCredencialVencida\('el coordinador resolvió sin reintentar'\)/,
-        'Un OK sin reintento también tiene que cerrar: si no, el dropfile queda en trabajando/.');
-    assert.match(cierreDelRace, /\.catch\(\(e\) => \{[\s\S]{0,600}cerrarPorCredencialVencida\(/,
-        'Red de última instancia: ni el cierre puede dejar el dropfile huérfano.');
+    // Ninguna copia local del race: dos dueños del settlement es cómo volvería
+    // a aparecer un desenlace sin cierre.
+    assert.ok(!/Promise\.race\(\[/.test(brazo),
+        'El brazo no puede reimplementar el race: el settlement tiene un solo dueño.');
+    assert.ok(!/const REPLAY_TIMEOUT_MS = /.test(brazo),
+        'El presupuesto del replay vive en el módulo, no duplicado en pulpo.js.');
+
+    assert.match(PULPO_SRC, /require\('\.\/lib\/credential-retry-settlement'\)/,
+        'Sin este require el módulo queda huérfano y el brazo real pierde la barrera.');
+});
+
+test('DEFECTO 3 — todo desenlace del replay cierra la corrida (ningún camino deja el dropfile huérfano)', async () => {
+    // Contraparte de comportamiento del assert estructural de arriba, sobre el
+    // MISMO módulo que consume el brazo: los cuatro desenlaces posibles del
+    // replay —timeout, fallo tipado, OK sin reintento y excepción inesperada—
+    // terminan con la corrida cerrada. Un desenlace sin cierre deja el dropfile
+    // en `trabajando/`, el slot ocupado y los daemons vivos hasta el restart.
+    const settlement = require('../lib/credential-retry-settlement');
+
+    // Las promesas se crean PEREZOSAS: una `Promise.reject` construida de
+    // antemano dispara `unhandledRejection` antes de que el módulo la adopte.
+    const casos = [
+        ['timeout (vault colgado)', () => new Promise(() => {}), /timeout/],
+        ['fallo tipado del coordinador',
+            () => Promise.reject(Object.assign(new Error('x'), { reason: 'budget_exhausted' })),
+            /budget_exhausted/],
+        ['OK sin reintento', () => Promise.resolve({ ok: true }), /sin reintentar/],
+    ];
+    for (const [nombre, hacerReplay, esperado] of casos) {
+        const cierres = [];
+        const coordinador = {
+            cerrada: false,
+            cerrarPorCredencialVencida(nota) {
+                if (this.cerrada) return false;
+                this.cerrada = true; cierres.push(nota); return true;
+            },
+        };
+        await settlement.correrReplayAcotado({ replay: hacerReplay(), coordinador, timeoutMs: 20 });
+        assert.strictEqual(cierres.length, 1, `${nombre}: exactamente un cierre (hubo ${cierres.length}).`);
+        assert.match(String(cierres[0]), esperado, `${nombre}: la nota dice por qué cerró.`);
+    }
 });
 
 test('el gate del retry no puede quedar cableado al booleano del snapshot', () => {

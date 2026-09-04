@@ -576,6 +576,13 @@ const attemptSnapshot = require('./lib/attempt-credential-snapshot');
 // El módulo no requiere `credentials.js`: el coordinador resuelve
 // `resetVaultCache` perezosamente por dentro.
 const credentialRetryWiring = require('./lib/credential-retry-wiring');
+// #5796 (fix rev-3) — barrera de cierre ÚNICO de la corrida cerrada por
+// credencial vencida. Los dos caminos que ejecutan efectos sobre estado de
+// PROCESO (el cierre por credencial vencida y el re-encolado del `retryExecute`)
+// comparten una barrera dura de entrada: el que llega segundo —típicamente un
+// replay que settlea DESPUÉS del timeout, cuando el issue ya volvió a la cola y
+// puede tener otro agente vivo encima— no toca el dropfile ni el slot.
+const credentialRetrySettlement = require('./lib/credential-retry-settlement');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #4444: persistencia de logs de agente por intento (rebotes) + retención.
@@ -12707,14 +12714,23 @@ ${g}
         // en dos movimientos del dropfile.
         // ---------------------------------------------------------------
         //
-        // IDEMPOTENTE a propósito: es el guard que garantiza el "un solo aviso,
-        // un solo movimiento de dropfile" aunque el coordinador resuelva por un
-        // camino inesperado después de que el reintento ya haya cerrado la
-        // corrida. Dos intentos internos no pueden verse desde afuera.
-        let efectosDeCierreEjecutados = false;
-        const cerrarPorCredencialVencida = (notaDelCoordinador) => {
-          if (efectosDeCierreEjecutados) return;
-          efectosDeCierreEjecutados = true;
+        // BARRERA DE CIERRE ÚNICO (#5796 fix rev-3): los dos caminos que
+        // ejecutan efectos observables sobre estado de proceso —el cierre por
+        // credencial vencida y el re-encolado del `retryExecute`— son
+        // MUTUAMENTE EXCLUYENTES y corren UNA sola vez EN TOTAL, gane quien
+        // gane la carrera. Garantiza el "un solo aviso, un solo movimiento de
+        // dropfile, un solo `activeProcesses.delete`" incluso cuando el
+        // coordinador settlea TARDE, después de que el timeout del replay ya
+        // devolvió el issue a la cola (el `race` no cancela el trabajo en
+        // vuelo: del otro lado del vault no hay `AbortController`).
+        //
+        // Va en la ENTRADA de cada camino, no como marca al salir: lo que se
+        // protege es un dropfile y un slot de concurrencia, no un log. En el
+        // rev-2 la bandera existía pero `retryExecute` sólo la ESCRIBÍA sin
+        // leerla nunca, así que un replay tardío le arrancaba el dropfile al
+        // agente que ya estaba corriendo y liberaba su slot, habilitando un
+        // segundo proceso `claude` sobre el mismo issue y el mismo worktree.
+        const efectosDelCierrePorCredencial = (notaDelCoordinador) => {
           let disabled = false;
           if (providerSpawnHealth) {
             try {
@@ -12769,6 +12785,34 @@ ${g}
           }
         };
 
+        // Efectos del re-encolado por reintento. NO apaga el provider ni avisa
+        // al operador: todavía no está probado que la credencial esté rota.
+        const efectosDelReencoladoPorReintento = () => {
+          log('lanzamiento',
+            `🔁 #${issue}: credencial de ${providerLabel(effProvider)} invalidada y re-resuelta ` +
+            `(operation=${credentialOperationId}, path=${caminoDelIntento}) — ${skill} vuelve a pendiente/ ` +
+            'para el único reintento de esta operación; el motor NO se apaga.');
+          const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+          try { moveFile(trabajandoPath, pendienteDir); } catch {}
+          activeProcesses.delete(processKey(skill, issue));
+          killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (credential-retry)`);
+          if (contextChannelId) {
+            try {
+              const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+              cm.leaveChannelByType(contextChannelId, 'agent');
+            } catch (e) {}
+          }
+        };
+
+        const coordinadorDeCierre = credentialRetrySettlement.crearCoordinadorDeCierreDeCorrida({
+          cerrar: efectosDelCierrePorCredencial,
+          reencolar: efectosDelReencoladoPorReintento,
+          etiqueta: `${skill}:#${issue}`,
+          log: (m) => log('lanzamiento', m),
+        });
+        const cerrarPorCredencialVencida = (notaDelCoordinador) =>
+          coordinadorDeCierre.cerrarPorCredencialVencida(notaDelCoordinador);
+
         const puedeReintentarCredencial =
           credentialRetryWiring.canRetry(credentialOperation)
           && credentialRetryWiring.isAuthRejection(veredictoDeAutenticacion);
@@ -12802,24 +12846,29 @@ ${g}
             // la operación, que sobrevive en el registro: si el relanzamiento
             // vuelve a ser rechazado, `canRetry` da false y se cierra de verdad.
             retryExecute: () => {
-              // El reintento también cierra la corrida (el dropfile vuelve a la
-              // cola), así que marca los efectos como ejecutados: si el
-              // coordinador terminara tirando después de esto, el `catch` NO
-              // vuelve a mover el dropfile ni a avisarle al operador.
-              efectosDeCierreEjecutados = true;
-              log('lanzamiento',
-                `🔁 #${issue}: credencial de ${providerLabel(effProvider)} invalidada y re-resuelta ` +
-                `(operation=${credentialOperationId}, path=${caminoDelIntento}) — ${skill} vuelve a pendiente/ ` +
-                'para el único reintento de esta operación; el motor NO se apaga.');
-              const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
-              try { moveFile(trabajandoPath, pendienteDir); } catch {}
-              activeProcesses.delete(processKey(skill, issue));
-              killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (credential-retry)`);
-              if (contextChannelId) {
-                try {
-                  const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
-                  cm.leaveChannelByType(contextChannelId, 'agent');
-                } catch (e) {}
+              // #5796 (fix rev-3, defecto 3) — BARRERA DURA DE ENTRADA: el
+              // reintento no puede re-encolar una corrida que ya se cerró.
+              //
+              // El `race` de abajo NO cancela el trabajo en vuelo, así que el
+              // coordinador puede settlear DESPUÉS del cierre por timeout —
+              // exactamente el escenario que motivó el timeout: un vault que
+              // tarda más de lo acotado en responder. Para entonces el dropfile
+              // ya volvió a `pendiente/` y, con `poll_interval_seconds: 30`, es
+              // probable que el Pulpo ya haya relanzado el issue sobre el MISMO
+              // `trabajando/<issue>.<skill>` y la MISMA clave de
+              // `activeProcesses`. Re-encolar acá le arrancaría el dropfile al
+              // agente vivo (que al salir pierde su veredicto) y liberaría un
+              // slot ocupado, habilitando un segundo proceso `claude` sobre el
+              // mismo issue y el mismo worktree.
+              //
+              // Mismo criterio que el guard de entrada del `execute` del
+              // Commander (defecto 2): acá también lo protegido es estado de
+              // proceso, no un log, así que la barrera va ANTES de los efectos.
+              // El presupuesto de la operación ya se consumió y la invalidación
+              // del scope ya ocurrió: el relanzamiento que está en curso
+              // resuelve material FRESCO igual, que es lo que importaba.
+              if (!coordinadorDeCierre.reencolarPorReintento()) {
+                return { credentialRetryQueued: false };
               }
               // Sin `authenticationRejection`: para el coordinador este intento
               // no fue rechazado (todavía no corrió). El veredicto real llegará
@@ -12829,7 +12878,7 @@ ${g}
             emit: emitirEventoDeRetry,
           });
 
-          // #5796 (fix rev-2, defecto 3) — EL REPLAY TIENE SETTLEMENT GARANTIZADO.
+          // #5796 (fix rev-3, defecto 3) — EL REPLAY TIENE SETTLEMENT GARANTIZADO.
           //
           // Este handler de `exit` retorna sincrónicamente con la promesa del
           // replay en vuelo, así que la promesa es la ÚNICA dueña del cierre de
@@ -12844,60 +12893,32 @@ ${g}
           // el próximo restart. Con el límite de 3 agentes concurrentes, eso es
           // un tercio de la capacidad del pipeline perdido en silencio.
           //
-          // El contrato queda cerrado por dos vías complementarias:
+          // El contrato queda cerrado por tres vías complementarias, todas en
+          // `lib/credential-retry-settlement.js` (módulo puro, ejercitable por
+          // COMPORTAMIENTO contando efectos, no por regex sobre este fuente):
           //   1. Un `race` contra un temporizador acotado que degrada al cierre
           //      de siempre — el reintento se pierde, pero el issue vuelve a la
-          //      cola y el slot se libera.
-          //   2. Un cierre INCONDICIONAL en cada desenlace. `cerrarPorCredencial
-          //      Vencida` es idempotente (`efectosDeCierreEjecutados`) y
-          //      `retryExecute` ya marca esa bandera al encolar el reintento, así
-          //      que en el camino feliz esto es un no-op. Cubre además el caso en
-          //      que el coordinador resuelve OK sin haber reintentado (su
-          //      `classify` no reconoció la señal): antes ese camino también
-          //      dejaba el dropfile huérfano.
+          //      cola y el slot se libera. El temporizador va `unref`: no puede
+          //      sostener vivo el event loop del Pulpo ni un milisegundo de más.
+          //   2. Un cierre INCONDICIONAL en cada desenlace (timeout, fallo
+          //      tipado, OK sin reintento, excepción inesperada). Cubre el caso
+          //      en que el coordinador resuelve OK sin haber reintentado (su
+          //      `classify` no reconoció la señal): antes ese camino dejaba el
+          //      dropfile huérfano.
+          //   3. La barrera de cierre único del coordinador: si el replay
+          //      settlea TARDE —después de que el timeout ya devolvió el issue
+          //      a la cola— su `retryExecute` no ejecuta efectos. Sin esa
+          //      barrera (el bug del rev-2) el replay tardío le arrancaba el
+          //      dropfile al agente relanzado y liberaba su slot, habilitando
+          //      dos procesos `claude` sobre el mismo issue.
           //
-          // El temporizador va `unref`: no puede sostener vivo el event loop del
-          // Pulpo ni un milisegundo de más.
-          const REPLAY_TIMEOUT_MS = 60 * 1000;
-          let temporizadorDelReplay = null;
-          const vencimiento = new Promise((resolverVencimiento) => {
-            temporizadorDelReplay = setTimeout(() => resolverVencimiento({ timeout: true }), REPLAY_TIMEOUT_MS);
-            if (temporizadorDelReplay && typeof temporizadorDelReplay.unref === 'function') {
-              temporizadorDelReplay.unref();
-            }
-          });
-
-          Promise.race([
-            replay.then(() => ({ ok: true }), (e) => ({ error: e })),
-            vencimiento,
-          ]).then((desenlace) => {
-            if (desenlace && desenlace.timeout) {
-              // El coordinador nunca settleó. No sabemos si invalidó o no, así
-              // que el issue vuelve a la cola por el camino conservador.
-              cerrarPorCredencialVencida(
-                `el reintento no resolvió en ${Math.round(REPLAY_TIMEOUT_MS / 1000)}s (vault sin respuesta) — cierre por timeout`,
-              );
-              return;
-            }
-            if (desenlace && desenlace.error) {
-              // Fallo CERRADO del coordinador (presupuesto agotado, invalidación
-              // o re-resolución fallida, segundo rechazo): el cierre de siempre,
-              // con el motivo TIPADO del catálogo `CLOSE_REASONS` — nunca texto
-              // libre — para que el operador rutee sin leer el stack.
-              const e = desenlace.error;
-              const motivo = (e && e.reason) || (e && e.code) || 'error_no_tipado';
-              cerrarPorCredencialVencida(`no se reintentó (${motivo})`);
-              return;
-            }
-            // Camino feliz: no-op si `retryExecute` ya cerró la corrida.
-            cerrarPorCredencialVencida('el coordinador resolvió sin reintentar');
-          }).catch((e) => {
-            // Red de última instancia: ni el `race` ni el cierre pueden dejar
-            // el dropfile en `trabajando/`.
-            log('lanzamiento', `⚠️ credential-retry: el cierre del replay de ${skill}:#${issue} falló (${e && e.message})`);
-            cerrarPorCredencialVencida('error inesperado cerrando el reintento');
-          }).finally(() => {
-            try { clearTimeout(temporizadorDelReplay); } catch { /* best-effort */ }
+          // El timeout es inyectable por env (`PIPELINE_CREDENTIAL_REPLAY_TIMEOUT_MS`)
+          // para que los tests ejerciten el settlement tardío sin esperar 60s.
+          credentialRetrySettlement.correrReplayAcotado({
+            replay,
+            coordinador: coordinadorDeCierre,
+            timeoutMs: credentialRetrySettlement.resolveReplayTimeoutMs(),
+            log: (m) => log('lanzamiento', `${m} (${skill}:#${issue})`),
           });
           return;
         }
