@@ -324,7 +324,7 @@ test('un operationId con material hostil se sanea y sigue siendo un token válid
         kind: 'agent',
         skill: 'gu ru\n--inject "x"',
         issue: '57 96',
-        nonce: 'n once',
+        nonce: 'n\u0000once',
     });
     assert.ok(id, 'El id se sanea, no se descarta.');
     assert.match(id, /^[A-Za-z0-9_.:@/#-]{1,128}$/);
