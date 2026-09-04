@@ -1233,7 +1233,7 @@ function readSecretFromPath(rawPath) {
 
 #### 8.8.3 Lista de archivos NO commiteables (CA-5 — defensa final)
 
-El pre-commit hook (`.husky/pre-commit` + `.pipeline/lib/precommit-secret-scan.js`) bloquea automáticamente commits que toquen estos paths con contenido que matchee un patrón de credencial:
+El pre-commit hook (`.husky/pre-commit` + `.pipeline/lib/precommit-secret-scan.js`) escanea el **contenido agregado de todo archivo staged** — no una lista de paths — y bloquea el commit si el sanitizer encuentra un patrón de credencial (#5244 CA-8a). El mismo escáner corre bloqueante en CI sobre el diff del PR, así que `--no-verify` no lo evita. Estos paths son, además, los que nunca deberían llegar al índice:
 
 - `.pipeline/commander-session.json`
 - `.pipeline/commander-history.jsonl`
