@@ -107,8 +107,28 @@ function normalizeProducerEvent(event) {
     //     vino del bus de rejections del Commander.
     //   - si viene vacío y hay chat_id, asumimos 'telegram-commander' (el
     //     operador escribió por Telegram).
+    //   - si viene un source desconocido y NO hay chat_id, se DESCARTA
+    //     (fail-closed, #4967 CA-2 — ver nota abajo).
     //   - si viene vacío y NO hay chat_id, dejamos vacío y el consumer
     //     rechaza con SOURCE_NOT_AUTHORIZED (no inventamos identidad).
+    //
+    // #4967 CA-2 — fail-closed del passthrough (era escalada de privilegios):
+    // hasta este cambio, un source desconocido sin `chat_id` se dejaba pasar
+    // TAL CUAL "para que el consumer lo bloquee". Eso convertía al bus
+    // `.pipeline/rejections/` en un canal por el que cualquiera capaz de
+    // depositar un archivo podía NOMBRAR un origen arbitrario — incluidos los
+    // orígenes internos del pipeline, que no deben ser alcanzables desde
+    // ninguna superficie externa. El día que el consumer reconociera uno de
+    // esos nombres, el file-drop llegaría autorizado con `alias` (destino) y
+    // `motivo` elegidos por el atacante (OWASP A01).
+    //
+    // Este módulo NO nombra ningún origen interno a propósito: la whitelist de
+    // abajo es la lista completa de lo que puede salir de acá.
+    //
+    // Ahora el adapter NUNCA propaga un source que no esté en la whitelist:
+    // lo colapsa a `''` y el consumer rechaza con SOURCE_NOT_AUTHORIZED. El
+    // forensics no se pierde — el valor original sigue viajando en
+    // `_envelope.transcribe_source`, que ningún gate de autorización lee.
     const WHITELIST = new Set(['telegram-commander', 'cli-local']);
     let normalizedSource;
     if (transcribeSource && WHITELIST.has(transcribeSource)) {
@@ -116,11 +136,6 @@ function normalizeProducerEvent(event) {
     } else if (chatId) {
         // Producer del Telegram Commander, sin importar si fue texto o audio.
         normalizedSource = 'telegram-commander';
-    } else if (transcribeSource) {
-        // Tenemos un source pero no es de la whitelist y no hay chat_id:
-        // lo dejamos pasar tal cual para que el consumer lo bloquee con
-        // SOURCE_NOT_AUTHORIZED y quede el rastro en audit.
-        normalizedSource = transcribeSource;
     } else {
         normalizedSource = '';
     }
