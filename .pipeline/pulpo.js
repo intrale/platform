@@ -11822,6 +11822,27 @@ ${g}
     }
   })();
 
+  // #5901 · CA-1 — `projectId` AUTORITATIVO para el least-privilege del hijo.
+  //
+  // Se resuelve con `project-context.resolveProjectContext()`, NUNCA desde el
+  // env: `PIPELINE_PROJECT_ID` viaja en banda como TRANSPORTE y el env no es
+  // autoridad (#5110 · SEC-1). Se prefiere el `projectBinding` recien escrito
+  // porque es el mismo valor ya resuelto; si el binding no se pudo escribir
+  // (best-effort, camino single-project vigente) se reintenta la resolución, y
+  // si tampoco hay contexto se cae al slug del kernel. En ninguna rama se
+  // rompe un spawn que hoy funciona: el fail-closed de `buildChildEnv` es
+  // sobre un projectId PRESENTE E INVALIDO, no sobre la ausencia.
+  const projectIdDelSpawn = (() => {
+    if (projectBinding && projectBinding.projectId) return projectBinding.projectId;
+    try {
+      return require('./lib/project-context').resolveProjectContext().projectId;
+    } catch (e) {
+      log('lanzamiento', `⚠️  contexto de proyecto no resuelto para ${skill}:#${issue} `
+        + `(${e.message}) — se usa el namespace del kernel para el techo de scopes`);
+      return buildChildEnvLib.KERNEL_PROJECT_ID;
+    }
+  })();
+
   const pipelineExtras = {
     PIPELINE_ISSUE: issue,
     PIPELINE_SKILL: skill,
@@ -11964,6 +11985,12 @@ ${g}
         : undefined;
       childEnv = buildChildEnvLib.buildChildEnv({
         skill,
+        // #5901 · CA-3 — el eje llega al MÓDULO por parámetro. Sin esto el
+        // techo por fase queda en fail-closed (vacío) para todo despacho y el
+        // least-privilege existiría en el código sin existir en producción.
+        fase,
+        projectId: projectIdDelSpawn,
+        warn: (m) => log('lanzamiento', m),
         pipelineDir: PIPELINE,
         // #5799 — el env del INTENTO (snapshot del provider efectivo compuesto
         // sobre el env base) es la única fuente; `buildChildEnv` no cae a
@@ -15955,6 +15982,13 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // comportamiento es idéntico al previo.
         e = buildChildEnvLib.buildChildEnv({
           skill: commanderMP.COMMANDER_SKILL,
+          // #5901 · GURU-3 — el commander no corre dentro de ningún pipeline:
+          // no tiene fase real. Se le pasa la fase sintética del kernel y el
+          // slug reservado de la plataforma. Sin esto cae al fail-closed y
+          // pierde scopes el día que #5040 active el aislamiento.
+          fase: buildChildEnvLib.KERNEL_FASE,
+          projectId: buildChildEnvLib.KERNEL_PROJECT_ID,
+          warn: (m) => log('commander', m),
           pipelineDir: PIPELINE,
           processEnv: attemptProcessEnv,
           pipelineExtras: { CLAUDE_PROJECT_DIR: ROOT },
