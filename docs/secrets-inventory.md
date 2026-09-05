@@ -40,23 +40,33 @@ prefijos) aplica igual al otro documento.
 
 ## Tabla de credenciales activas
 
-| provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |
-|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|
-| telegram-bot | `TELEGRAM_BOT_TOKEN` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://t.me/BotFather |
-| telegram-chat | `TELEGRAM_CHAT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
-| telegram-operator | `TELEGRAM_LEO_OPERATOR_CHAT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
-| openai-codex | `OPENAI_API_KEY` | leitolarreta | _pendiente alta_ | _pendiente alta_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#openai) | https://platform.openai.com/api-keys |
-| anthropic | `ANTHROPIC_API_KEY` | leitolarreta | N/A (OAuth Max) | N/A (OAuth Max) | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#anthropic) | https://console.anthropic.com/settings/keys |
-| google-ai | `GEMINI_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://aistudio.google.com/app/apikey |
-| cerebras | `CEREBRAS_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://cloud.cerebras.ai/ |
-| nvidia-nim | `NVIDIA_NIM_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#nvidia-nim) | https://build.nvidia.com/settings/api-keys |
-| moonshot | `ANTHROPIC_AUTH_TOKEN` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://platform.moonshot.ai/console/api-keys |
-| google-drive-client | `GOOGLE_OAUTH_CLIENT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
-| google-drive-client-secret | `GOOGLE_OAUTH_CLIENT_SECRET` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://console.cloud.google.com/apis/credentials |
-| google-drive-refresh | `GOOGLE_OAUTH_REFRESH_TOKEN` | leitolarreta | N/A (OAuth administrado por tercero) | N/A (OAuth administrado por tercero) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | https://myaccount.google.com/permissions |
-| google-drive-folder | `GOOGLE_DRIVE_FOLDER_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| project_id | provider | env_var | owner | last_rotated | expires_at | account_id | rotation_runbook_url | revocation_endpoint |
+|------------|----------|---------|-------|--------------|------------|------------|----------------------|---------------------|
+| kernel | telegram-bot | `TELEGRAM_BOT_TOKEN` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://t.me/BotFather |
+| kernel | telegram-chat | `TELEGRAM_CHAT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| kernel | telegram-operator | `TELEGRAM_LEO_OPERATOR_CHAT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| kernel | openai-codex | `OPENAI_API_KEY` | leitolarreta | _pendiente alta_ | _pendiente alta_ | _pendiente alta_ | [runbook](runbooks/credential-rotation.md#openai) | https://platform.openai.com/api-keys |
+| kernel | anthropic | `ANTHROPIC_API_KEY` | leitolarreta | N/A (OAuth Max) | N/A (OAuth Max) | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#anthropic) | https://console.anthropic.com/settings/keys |
+| kernel | google-ai | `GEMINI_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://aistudio.google.com/app/apikey |
+| kernel | cerebras | `CEREBRAS_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://cloud.cerebras.ai/ |
+| kernel | nvidia-nim | `NVIDIA_NIM_API_KEY` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](runbooks/credential-rotation.md#nvidia-nim) | https://build.nvidia.com/settings/api-keys |
+| kernel | moonshot | `ANTHROPIC_AUTH_TOKEN` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://platform.moonshot.ai/console/api-keys |
+| kernel | google-drive-client | `GOOGLE_OAUTH_CLIENT_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
+| kernel | google-drive-client-secret | `GOOGLE_OAUTH_CLIENT_SECRET` | leitolarreta | _pendiente registrar_ | _pendiente registrar_ | `intrale-pipeline-v3` | [runbook](pipeline/vault-rotacion-auditoria.md#rotación-manual) | https://console.cloud.google.com/apis/credentials |
+| kernel | google-drive-refresh | `GOOGLE_OAUTH_REFRESH_TOKEN` | leitolarreta | N/A (OAuth administrado por tercero) | N/A (OAuth administrado por tercero) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | https://myaccount.google.com/permissions |
+| kernel | google-drive-folder | `GOOGLE_DRIVE_FOLDER_ID` | leitolarreta | N/A (identificador) | N/A (identificador) | `intrale-pipeline-v3` | [política](pipeline/vault-rotacion-auditoria.md#clasificación) | N/A |
 
 **Notas**:
+
+- `project_id` es el **eje de namespace** de la credencial (#5901). Es una
+  columna **obligatoria**: el cron de rotación indexa su estado por el par
+  `(project_id, env_var)`, así que dos productos que compartan el nombre de
+  variable no comparten casillero. **No hay default silencioso**: una celda
+  ausente, vacía o con un slug que no cumpla `^[a-z0-9][a-z0-9-]{1,63}$` hace
+  que la fila se excluya del cron CON rastro (`errors[]` del tick + log), no
+  que se asuma `kernel`. El slug `kernel` está reservado para las credenciales
+  de la plataforma (las 13 filas de hoy lo son) y se muestra al operador como
+  `Kernel (plataforma)`. Ver `.pipeline/lib/safe-project-id.js`.
 
 - `account_id` es un **identificador opaco** que el provider asocia a la cuenta
   emisora del token (ej: nombre del workspace, organization id). NO es el

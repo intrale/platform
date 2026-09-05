@@ -161,7 +161,12 @@ test('CA-3: skill OpenAI recibe OPENAI_API_KEY pero NO ANTHROPIC_API_KEY', () =>
 
 test('CA-3: skill determinístico no recibe ninguna API key del LLM', () => {
     const env = buildChildEnv({
+        // #5901 — `builder` se despacha en la fase `build`, cuyo techo autoriza
+        // `gradle-android`. Sin la fase el techo es vacío (fail-closed) y el
+        // scope no se entrega: el eje es obligatorio para conservar privilegios.
         skill: 'builder',
+        fase: 'build',
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
         skillConfigOverride: {
             skill: { provider: 'deterministic', requires_credentials: ['gradle-android'] },
@@ -181,6 +186,8 @@ test('CA-3: skill determinístico no recibe ninguna API key del LLM', () => {
 test('CA-4: scope github inyecta GH_TOKEN + GITHUB_TOKEN en skills que lo declaran', () => {
     const env = buildChildEnv({
         skill: 'security',
+        fase: 'analisis',   // #5901 — techo de `analisis` = ['github'].
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
         skillConfigOverride: {
             skill: { provider: 'anthropic', requires_credentials: ['github'] },
@@ -194,6 +201,8 @@ test('CA-4: scope github inyecta GH_TOKEN + GITHUB_TOKEN en skills que lo declar
 test('CA-4: scope aws inyecta TODAS las AWS_* en skills que lo declaran', () => {
     const env = buildChildEnv({
         skill: 'qa',
+        fase: 'verificacion',   // #5901 — techo de `verificacion` incluye `aws`.
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
         skillConfigOverride: {
             skill: { provider: 'anthropic', requires_credentials: ['aws'] },
@@ -210,6 +219,8 @@ test('CA-4: scope aws inyecta TODAS las AWS_* en skills que lo declaran', () => 
 test('CA-4: scope gradle-android inyecta JAVA_HOME, GRADLE_USER_HOME, ANDROID_*', () => {
     const env = buildChildEnv({
         skill: 'builder',
+        fase: 'build',
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
         skillConfigOverride: {
             skill: { provider: 'deterministic', requires_credentials: ['gradle-android'] },
@@ -325,6 +336,8 @@ test('CA-5: skill determinístico SIN API key NO throwa (no necesita LLM)', () =
     delete envSinKeys.OPENAI_API_KEY;
     const env = buildChildEnv({
         skill: 'builder',
+        fase: 'build',
+        projectId: 'kernel',
         processEnv: envSinKeys,
         skillConfigOverride: {
             skill: { provider: 'deterministic', requires_credentials: ['gradle-android'] },
@@ -498,6 +511,8 @@ test('CA-7: defaults hardcoded (DEFAULT_REQUIRES_BY_SKILL) aplican cuando no hay
     // Sin override y sin pipelineDir → usa defaults por skill.
     const envSec = buildChildEnv({
         skill: 'security',
+        fase: 'analisis',
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
     });
     // security tiene default ['github']
@@ -507,6 +522,8 @@ test('CA-7: defaults hardcoded (DEFAULT_REQUIRES_BY_SKILL) aplican cuando no hay
 
     const envBuilder = buildChildEnv({
         skill: 'builder',
+        fase: 'build',
+        projectId: 'kernel',
         processEnv: fullOperatorEnv(),
     });
     // builder tiene default ['gradle-android']
@@ -541,6 +558,8 @@ test('CA-7: lectura de agent-models.json fallida (JSON inválido) cae a defaults
     };
     const env = buildChildEnv({
         skill: 'security',
+        fase: 'analisis',
+        projectId: 'kernel',
         pipelineDir: '/fake/.pipeline',
         fsImpl: fakeFs,
         processEnv: fullOperatorEnv(),
@@ -621,7 +640,11 @@ test('CA-7: agent-models.json válido OVERRIDE los defaults hardcoded', () => {
         }),
     };
     const env = buildChildEnv({
+        // `security` también se despacha en `verificacion`, cuyo techo incluye
+        // `aws`: la intersección deja pasar el override sin recortarlo.
         skill: 'security',
+        fase: 'verificacion',
+        projectId: 'kernel',
         pipelineDir: '/fake/.pipeline',
         fsImpl: fakeFs,
         processEnv: fullOperatorEnv(),
@@ -772,6 +795,8 @@ test('#3198: partial override { provider } mergea con skill cfg de disk y selecc
     };
     const env = buildChildEnv({
         skill: 'guru',
+        fase: 'analisis',
+        projectId: 'kernel',
         pipelineDir: '/fake/.pipeline',
         fsImpl: fakeFs,
         processEnv: fullOperatorEnv(),
@@ -908,6 +933,8 @@ test('#3198: partial override { provider } preserva requires_credentials del ski
     };
     const env = buildChildEnv({
         skill: 'security',
+        fase: 'verificacion',   // techo con github + aws: la intersección no recorta.
+        projectId: 'kernel',
         pipelineDir: '/fake/.pipeline',
         fsImpl: fakeFs,
         processEnv: fullOperatorEnv(),

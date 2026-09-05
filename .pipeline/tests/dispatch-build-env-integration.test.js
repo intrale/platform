@@ -168,13 +168,21 @@ function operatorProcessEnv() {
 const PIPELINE_DIR = '/repo/.pipeline';
 const ISSUE = 3198;
 
+// #5901 - el eje `(fase, projectId)` que `pulpo.js` pasa a `buildChildEnv`.
+// Estos helpers replican el flujo del despacho, así que tienen que replicarlo
+// COMPLETO: sin la fase, el techo cae al fail-closed y los scopes del skill no
+// llegan al hijo — que es justamente lo que estos tests verifican que sí llega.
+const FASE_POR_SKILL = { guru: 'analisis', security: 'verificacion' };
+const PROJECT_ID_DE_PRUEBA = 'kernel';
+
 // -----------------------------------------------------------------------------
 // Función helper que replica EXACTAMENTE el flujo de pulpo.js
 // (lanzarAgenteClaude líneas 5306-5342): dispatcher → override → buildChildEnv.
 // Si pulpo.js cambia la lógica de construcción del override, este helper se
 // actualiza para mantener la integración en sincronía con la realidad.
 // -----------------------------------------------------------------------------
-function pulpoFlow({ skill, issue, fsImpl, processEnv, quotaModule }) {
+function pulpoFlow({ skill, issue, fsImpl, processEnv, quotaModule,
+                    fase = FASE_POR_SKILL[skill], projectId = PROJECT_ID_DE_PRUEBA }) {
     const dispatchResolution = resolveSpawnWithFallback({
         skill,
         issue,
@@ -202,6 +210,8 @@ function pulpoFlow({ skill, issue, fsImpl, processEnv, quotaModule }) {
 
     const childEnv = buildChildEnv({
         skill,
+        fase,
+        projectId,
         pipelineDir: PIPELINE_DIR,
         fsImpl,
         processEnv,
@@ -446,6 +456,8 @@ async function pulpoFlowConSnapshot({
     skill, issue, fsImpl, processEnv, quotaModule, models,
     config = CFG_SNAPSHOT_ON, createSnapshotFn, spawnSpy,
     destination = SNAPSHOT_DESTINATION.AGENT_CHILD,
+    // #5901 — el eje del despacho, igual que en `pulpoFlow`.
+    fase = FASE_POR_SKILL[skill], projectId = PROJECT_ID_DE_PRUEBA,
 }) {
     const dispatchResolution = resolveSpawnWithFallback({
         skill,
@@ -481,6 +493,8 @@ async function pulpoFlowConSnapshot({
 
     const childEnv = buildChildEnv({
         skill,
+        fase,
+        projectId,
         pipelineDir: PIPELINE_DIR,
         fsImpl,
         processEnv: attemptProcessEnv,
