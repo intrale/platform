@@ -358,10 +358,53 @@ function summarizeTable(describeJson, expected = {}) {
 // Sondas del gap (CA-3): comandos que el perfil acotado NO puede correr
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// #5207 (rebote rev-2) — Controles DELEGADOS a otra herramienta
+// -----------------------------------------------------------------------------
+//
+// EL DEFECTO QUE CIERRA ESTE BLOQUE
+//   `cloudtrail` se sondeaba como si este módulo tuviera que cerrarlo, pero
+//   `observeGapControl` nunca lo resuelve y `POSTURAS` no lo declara —a
+//   propósito—. El control quedaba en `no-observado` PARA SIEMPRE, así que
+//   `gapsPendientes >= 1` era una constante y `ca2Cerrado` no podía ser `true`
+//   ni en un ambiente donde todo cumple. El artefacto que FIRMA UN OPERADOR
+//   decía "CA-2 NO cerrado" con los siete controles en verde: exactamente la
+//   desalineación que `ca2Cerrado` vino a eliminar.
+//
+// LA DISTINCIÓN QUE FALTABA
+//   "No pude observarlo" y "no me toca observarlo acá" son dos cosas distintas y
+//   se estaban contando igual. El rastro de auditoría SE PRUEBA, pero con
+//   `kernel-cloudtrail-provision --verify`, que valida los 11 controles de
+//   postura del destino (bucket privado, TLS-only, retención, separación de
+//   identidades). Un `lookup-events` que devuelve 200 probaría muchísimo menos y
+//   se leería como si probara lo mismo.
+//
+// QUÉ IMPLICA SER DELEGADO
+//   - Estado propio `'delegado'`, fuera del cómputo de `gapsPendientes` y por lo
+//     tanto de `ca2Cerrado`: este módulo no puede cerrarlo NI bloquearlo.
+//   - `verified` sigue en `null`: delegar no es declarar cumplido. El cierre lo
+//     da la otra herramienta, con su propio fusible.
+//   - No se ejecuta el comando AWS: correrlo para tirar el resultado publicaba
+//     un `deny: 'none'` con remediación de permisos sobre algo que salió 200.
+//   - Sale en sección propia del markdown, NO en la tabla de gap de
+//     observación, cuya leyenda ("ningún control de esta tabla está verificado")
+//     no aplica a un control que se verifica en otro lado.
+const CONTROLES_DELEGADOS = Object.freeze({
+    cloudtrail: Object.freeze({
+        herramienta: 'node .pipeline/lib/kernel-cloudtrail-provision.js --verify',
+        porQue: 'El rastro se prueba por POSTURA DEL DESTINO (bucket privado, TLS-only, retención, '
+            + 'separación de identidades: 11 controles), no por un `lookup-events` que devuelve 200. '
+            + 'Ver docs/pipeline/kernel-cutover-evidencia-5207.md §3 y §6.4.',
+    }),
+});
+
 /**
  * Controles que este perfil no puede observar. `verified` arranca en `null` y
  * NUNCA sube a `true` desde acá: sólo un output real podría hacerlo, y si el
  * comando devolviera datos el control dejaría de ser un gap.
+ *
+ * Los probes con `delegadoA` no se ejecutan: se publican para que el artefacto
+ * nombre el control y diga con qué herramienta se prueba (#5207 rebote rev-2).
  */
 function buildGapProbes(cfg, keyArn) {
     const probes = [
@@ -384,6 +427,8 @@ function buildGapProbes(cfg, keyArn) {
             key: 'cloudtrail',
             control: 'Rastro de auditoría (CloudTrail)',
             args: ['cloudtrail', 'lookup-events', '--region', cfg.region, '--max-results', '1'],
+            // No se corre: el control lo cierra la herramienta de abajo.
+            delegadoA: CONTROLES_DELEGADOS.cloudtrail,
         },
     ];
     if (keyArn) {
@@ -641,6 +686,90 @@ function aplicarObservacion(gap, json, perfil, args) {
 }
 
 // -----------------------------------------------------------------------------
+// #5207 (rebote rev-2) — Estados de un control y qué cuenta como pendiente
+// -----------------------------------------------------------------------------
+
+const ESTADOS_GAP = Object.freeze({
+    NO_OBSERVADO: 'no-observado',
+    SIN_LECTURA: 'observado-sin-lectura',
+    CUMPLE: 'observado-cumple',
+    INCUMPLE: 'observado-incumple',
+    SIN_POSTURA: 'observado-sin-postura',
+    DELEGADO: 'delegado',
+});
+
+// Estados que la segunda pasada (perfil admin) puede reintentar. Un control ya
+// resuelto NO se relee: hacerlo podría pisar un incumplimiento ya detectado. Un
+// `observado-sin-lectura` sí se reintenta —el runtime salió 0 pero sin el campo,
+// y el admin puede traerlo completo—.
+const ESTADOS_REINTENTABLES = Object.freeze([ESTADOS_GAP.NO_OBSERVADO, ESTADOS_GAP.SIN_LECTURA]);
+
+/**
+ * ¿Este control cuenta contra el cierre del CA-2?
+ * Los DELEGADOS no: este módulo no puede cerrarlos ni tiene por qué bloquearlos.
+ * Todo lo demás que no esté en `verified: true` sí — fail-closed sin cambios.
+ */
+function cuentaComoPendiente(gap) {
+    return gap.estado !== ESTADOS_GAP.DELEGADO && gap.verified !== true;
+}
+
+function remediacionPorDeny(tipo) {
+    if (tipo === 'explicitDeny') {
+        return 'Deny explícito: agregar permisos NO alcanza; hay que editar esa policy con un principal con gestión IAM.';
+    }
+    if (tipo === 'implicitDeny') {
+        return 'Falta un Allow: se destraba agregando el permiso read-only al perfil.';
+    }
+    return 'Sin clasificar: revisar el mensaje crudo antes de decidir remediación.';
+}
+
+/**
+ * #5207 (rebote rev-2) — El comando salió 0 pero el output no trae el campo que
+ * prueba el control. Antes esto quedaba indistinguible de "no pude leerlo", con
+ * una remediación que mandaba a revisar permisos (que sobraron) y un mensaje
+ * crudo que no existía. Sigue sin cerrar nada: `verified` no se toca.
+ */
+function marcarLecturaSinObservacion(gap, perfil) {
+    gap.estado = ESTADOS_GAP.SIN_LECTURA;
+    gap.observadoCon = null; // No se observó el control: sólo corrió el comando.
+    // Qué identidad llegó a correr el comando. `gap.deny` sigue siendo el de la
+    // sonda del runtime (evidencia del mínimo privilegio), que puede ser otra:
+    // sin este campo, un `deny: implicitDeny` al lado de "corrió sin error" se
+    // lee como una contradicción en vez de como dos identidades distintas.
+    gap.corrioSinObservarCon = perfil;
+    gap.remediacion = `El comando corrió sin error con \`${perfil}\` pero el output NO trae el campo `
+        + 'que prueba el control. No es un gap de permisos: revisar el output crudo del comando '
+        + 'publicado (o si la API cambió de forma) antes de decidir remediación. Un HTTP 200 no es '
+        + 'una observación.';
+}
+
+/**
+ * #5207 (rebote rev-2) — Gap de un control que prueba OTRA herramienta.
+ * `verified: null` porque delegar no es declarar cumplido: el cierre lo da la
+ * herramienta delegada, con su propio fusible.
+ */
+function construirGapDelegado(probe) {
+    return {
+        key: probe.key,
+        control: probe.control,
+        comando: probe.delegadoA.herramienta,
+        deny: null,
+        action: null,
+        policy: null,
+        verified: null,
+        estado: ESTADOS_GAP.DELEGADO,
+        postura: null,
+        delegadoA: { ...probe.delegadoA },
+        corrioSinObservarCon: null,
+        remediacion: `Se prueba con \`${probe.delegadoA.herramienta}\`, no con este verificador. `
+            + probe.delegadoA.porQue,
+        detalle: null,
+        observadoCon: null,
+        evidencia: null,
+    };
+}
+
+// -----------------------------------------------------------------------------
 // Orquestación
 // -----------------------------------------------------------------------------
 
@@ -701,12 +830,21 @@ async function verifyKernelTables(deps = {}) {
 
     const gaps = [];
     for (const probe of probes) {
+        // #5207 (rebote rev-2) — Un control DELEGADO no se sondea acá. Correrlo
+        // para descartar el resultado publicaba un `deny: 'none'` con
+        // remediación de permisos sobre un comando que había salido 200.
+        if (probe.delegadoA) {
+            gaps.push(construirGapDelegado(probe));
+            continue;
+        }
         let deny;
         let json = null;
+        let comandoOk = false;
         try {
             const res = await runner.run(probe.args);
             if (res.code === 0) {
                 deny = { type: 'none', action: null, policy: null, message: null };
+                comandoOk = true;
                 json = parseJsonSafe(res.stdout);
             } else {
                 deny = classifyDeny(res.stderr);
@@ -724,18 +862,18 @@ async function verifyKernelTables(deps = {}) {
             // `null` = NO OBSERVADO. Nunca `true` sin evidencia: el criterio
             // prohíbe declarar cumplido lo que no se pudo observar.
             verified: null,
-            // #5207 (rebote rev-1) — Tres estados posibles, no dos:
+            // #5207 — Estados posibles del control (ver ESTADOS_GAP):
             //   'no-observado'          → no se pudo leer (el gap clásico de #5210).
+            //   'observado-sin-lectura' → el comando salió 0 pero el output no trae el campo.
             //   'observado-cumple'      → se leyó Y satisface la postura esperada.
             //   'observado-incumple'    → se leyó y NO la satisface. Esto NO cierra nada.
             //   'observado-sin-postura' → se leyó pero el control no declara postura.
+            //   'delegado'              → lo prueba otra herramienta (no se computa acá).
             estado: 'no-observado',
             postura: null,
-            remediacion: deny.type === 'explicitDeny'
-                ? 'Deny explícito: agregar permisos NO alcanza; hay que editar esa policy con un principal con gestión IAM.'
-                : (deny.type === 'implicitDeny'
-                    ? 'Falta un Allow: se destraba agregando el permiso read-only al perfil.'
-                    : 'Sin clasificar: revisar el mensaje crudo antes de decidir remediación.'),
+            delegadoA: null,
+            corrioSinObservarCon: null,
+            remediacion: remediacionPorDeny(deny.type),
             detalle: deny.message,
             // Se completan en la segunda pasada (#5207) si hay perfil admin.
             observadoCon: null,
@@ -744,7 +882,8 @@ async function verifyKernelTables(deps = {}) {
         // Si el propio runtime pudo leer el control (no hubo deny), la evidencia
         // se evalúa acá mismo: un comando que salió 200 no deja el control en un
         // limbo "salió bien pero no sé qué dijo".
-        if (json) aplicarObservacion(gap, json, runner.profile || DEFAULT_PROFILE, probe.args);
+        const observado = json ? aplicarObservacion(gap, json, runner.profile || DEFAULT_PROFILE, probe.args) : false;
+        if (!observado && comandoOk) marcarLecturaSinObservacion(gap, runner.profile || DEFAULT_PROFILE);
         gaps.push(gap);
     }
 
@@ -766,23 +905,36 @@ async function verifyKernelTables(deps = {}) {
         for (const gap of gaps) {
             const probe = porKey.get(gap.key);
             if (!probe) continue;
-            // Si el runtime ya observó el control, ese veredicto manda: leerlo de
-            // nuevo con otra identidad no cambiaría el valor y sí podría pisar un
-            // incumplimiento ya detectado.
-            if (gap.estado !== 'no-observado') continue;
+            // Si el runtime ya resolvió el control, ese veredicto manda: leerlo
+            // de nuevo con otra identidad no cambiaría el valor y sí podría pisar
+            // un incumplimiento ya detectado. Un control DELEGADO tampoco se
+            // sondea acá: lo cierra su propia herramienta (#5207 rebote rev-2).
+            if (!ESTADOS_REINTENTABLES.includes(gap.estado)) continue;
             let json = null;
+            let comandoOk = false;
             try {
                 const res = await adminRunner.run(probe.args);
-                json = res.code === 0 ? parseJsonSafe(res.stdout) : null;
+                comandoOk = res.code === 0;
+                json = comandoOk ? parseJsonSafe(res.stdout) : null;
             } catch (_) {
                 json = null; // No poder observar sigue siendo "no sé", no un fallo.
             }
-            aplicarObservacion(gap, json, adminRunner.profile || adminProfile, probe.args);
+            const perfilAdminUsado = adminRunner.profile || adminProfile;
+            const observado = aplicarObservacion(gap, json, perfilAdminUsado, probe.args);
+            // Si el admin corrió OK y aun así no se pudo leer el control, eso es
+            // "salió 200 sin el dato" — distinto de un AccessDenied. Si denegó,
+            // el gap se queda con el estado que ya traía: no se degrada un
+            // `observado-sin-lectura` del runtime a `no-observado`.
+            if (!observado && comandoOk) marcarLecturaSinObservacion(gap, perfilAdminUsado);
         }
     }
 
-    const gapsPendientes = gaps.filter((g) => g.verified !== true);
-    const incumplidos = gaps.filter((g) => g.estado === 'observado-incumple');
+    // #5207 (rebote rev-2) — Los controles DELEGADOS quedan fuera del cómputo:
+    // no se pueden cerrar acá, así que contarlos como pendientes hacía que
+    // `ca2Cerrado` fuera `false` por construcción, incluso con todo en verde.
+    const delegados = gaps.filter((g) => g.estado === ESTADOS_GAP.DELEGADO);
+    const gapsPendientes = gaps.filter(cuentaComoPendiente);
+    const incumplidos = gaps.filter((g) => g.estado === ESTADOS_GAP.INCUMPLE);
 
     return {
         issue: 5210,
@@ -800,7 +952,17 @@ async function verifyKernelTables(deps = {}) {
         verificable: tables.length === 2 && tables.every((t) => t.verified === true),
         // #5207 — Cuántos controles del gap NO quedaron cerrados: los que no se
         // pudieron observar MÁS los que se observaron y no cumplen la postura.
+        // NO incluye los delegados: ésos los cierra otra herramienta (rev-2).
         gapsPendientes: gapsPendientes.length,
+        // #5207 (rebote rev-2) — Controles que este verificador NO resuelve por
+        // diseño. Se publican para que el operador sepa que faltan pruebas, y
+        // con qué herramienta se obtienen. No son un verde ni un pendiente.
+        controlesDelegados: delegados.map((g) => ({
+            key: g.key,
+            control: g.control,
+            herramienta: g.delegadoA.herramienta,
+            porQue: g.delegadoA.porQue,
+        })),
         // #5207 (rebote rev-1) — Contador propio para el caso que antes se
         // escondía: controles LEÍDOS cuyo valor INCUMPLE la postura esperada.
         // Un ambiente que falla el CA-2 tiene que gritarlo desde el JSON, no
@@ -817,7 +979,9 @@ async function verifyKernelTables(deps = {}) {
             + '`verified: false` se observaron pero INCUMPLEN la postura esperada (`postura.esperado`). '
             + 'Ninguno de los dos puede declararse cumplido (#5210 CA-3, #5207 CA-2). Sólo los '
             + '`verified: true` están cerrados: traen el output en `evidencia`, la identidad que lo '
-            + 'leyó en `observadoCon` y la postura que satisface en `postura`.',
+            + 'leyó en `observadoCon` y la postura que satisface en `postura`. Los que tienen '
+            + '`estado: "delegado"` NO se prueban acá y tampoco se dan por cumplidos: su evidencia '
+            + 'la produce la herramienta indicada en `delegadoA.herramienta`.',
     };
 }
 
@@ -854,6 +1018,16 @@ function assertNoUnverifiedClaims(report) {
                 + `observado: ${observado}). Observar un control no es demostrarlo (#5207 CA-2).`,
             );
         }
+        // #5207 (rebote rev-2) — Un control DELEGADO no puede cerrarse acá bajo
+        // ninguna forma: su prueba vive en otra herramienta y este módulo no la
+        // corrió. Delegar es sacarlo del cómputo, no darlo por bueno.
+        if (g.estado === ESTADOS_GAP.DELEGADO && g.verified !== null) {
+            throw new Error(
+                `kernel-table-verify: el control "${g.control}" está delegado a `
+                + `\`${(g.delegadoA && g.delegadoA.herramienta) || 'otra herramienta'}\` y no puede llevar `
+                + `veredicto acá (verified: ${JSON.stringify(g.verified)}). El cierre lo da esa herramienta (#5207 CA-2).`,
+            );
+        }
     }
     return true;
 }
@@ -888,9 +1062,14 @@ function renderMarkdown(report) {
     const evidencia = (g) => Object.entries(g.evidencia || {})
         .map(([k, v]) => `${k}=\`${v}\``).join(' · ') || '—';
     const cerrados = report.gaps.filter((g) => g.verified === true);
-    const incumplen = report.gaps.filter((g) => g.estado === 'observado-incumple'
-        || g.estado === 'observado-sin-postura');
-    const noObservados = report.gaps.filter((g) => g.verified !== true && !incumplen.includes(g));
+    const incumplen = report.gaps.filter((g) => g.estado === ESTADOS_GAP.INCUMPLE
+        || g.estado === ESTADOS_GAP.SIN_POSTURA);
+    const delegados = report.gaps.filter((g) => g.estado === ESTADOS_GAP.DELEGADO);
+    // #5207 (rebote rev-2) — Los delegados NO entran acá: la leyenda de esta
+    // tabla ("ningún control está verificado") no puede aplicarse a un control
+    // que se verifica en otro lado.
+    const noObservados = report.gaps.filter((g) => g.verified !== true
+        && !incumplen.includes(g) && !delegados.includes(g));
 
     if (cerrados.length) {
         l.push('');
@@ -929,17 +1108,43 @@ function renderMarkdown(report) {
         }
     }
 
+    // #5207 (rebote rev-2) — Los controles que prueba OTRA herramienta salen de
+    // la tabla de gaps: no son "no pude leerlo", son "no me toca cerrarlo acá".
+    if (delegados.length) {
+        l.push('');
+        l.push('### Delegado a otra herramienta — no se cierra ni se bloquea acá (CA-2 · #5207)');
+        l.push('');
+        l.push('> Estos controles SÍ se prueban, pero con la herramienta de la columna del medio.');
+        l.push('> Este verificador no los observa a propósito, así que no cuentan como gap de');
+        l.push('> observación ni pesan sobre `ca2Cerrado`. Su cierre se lee en el reporte de esa');
+        l.push('> herramienta, que trae su propio fusible.');
+        l.push('');
+        l.push('| Control | Se prueba con | Por qué no acá |');
+        l.push('|---|---|---|');
+        for (const g of delegados) {
+            const d = g.delegadoA || {};
+            l.push(`| ${g.control} | \`${d.herramienta || '—'}\` | ${d.porQue || '—'} |`);
+        }
+    }
+
     l.push('');
     l.push('### Gap de verificación — NO verificado (CA-3)');
     l.push('');
     if (!noObservados.length) {
-        l.push('> Sin gaps de observación: todos los controles pudieron leerse.');
+        l.push('> Sin gaps de observación: todos los controles que se resuelven acá pudieron leerse.');
     } else {
-        l.push('| Control | Comando | Tipo de deny | Se destraba con permisos |');
-        l.push('|---|---|---|---|');
+        l.push('| Control | Comando | Qué pasó | Tipo de deny | Se destraba con permisos |');
+        l.push('|---|---|---|---|---|');
         for (const g of noObservados) {
             const destrababa = g.deny === 'explicitDeny' ? 'NO (Deny explícito)' : (g.deny === 'implicitDeny' ? 'sí (falta Allow)' : '—');
-            l.push(`| ${g.control} | \`${g.comando}\` | \`${g.deny}\` | ${destrababa} |`);
+            // La distinción importa: "no pude correrlo" y "corrió pero el output
+            // no traía el campo" mandan a lugares distintos a quien remedia.
+            const quePaso = g.estado === ESTADOS_GAP.SIN_LECTURA
+                ? `el comando salió 0 con \`${g.corrioSinObservarCon}\`, pero el output no trae el campo del control`
+                : 'no se pudo leer el control';
+            // El `deny` es siempre el de la sonda del runtime: si otra identidad
+            // llegó a correr el comando, la columna de al lado lo dice.
+            l.push(`| ${g.control} | \`${g.comando}\` | ${quePaso} | \`${g.deny}\` (runtime) | ${destrababa} |`);
         }
         l.push('');
         l.push('> Ningún control de esta tabla está verificado. No pueden declararse cumplidos.');
@@ -951,6 +1156,14 @@ function renderMarkdown(report) {
     if (report.ca2Cerrado) {
         l.push('**CA-2 cerrado:** los dos `describe-table` dan OK y los controles del gap fueron');
         l.push('observados cumpliendo su postura esperada.');
+        if (delegados.length) {
+            // El cierre no se declara total: lo delegado sigue debiendo su prueba,
+            // sólo que en otro reporte. Callarlo lo volvería un verde encubierto.
+            l.push('');
+            l.push(`> Queda(n) ${delegados.length} control(es) delegado(s) a otra herramienta `
+                + `(${delegados.map((g) => g.control).join(', ')}). Este verificador no los cierra: `
+                + 'su evidencia se lee en el reporte de esa herramienta.');
+        }
     } else {
         const partes = [];
         if (report.posturasIncumplidas) partes.push(`${report.posturasIncumplidas} control(es) INCUMPLEN su postura`);
@@ -973,6 +1186,9 @@ module.exports = {
     summarizeTable,
     buildGapProbes,
     observeGapControl,
+    ESTADOS_GAP,
+    CONTROLES_DELEGADOS,
+    cuentaComoPendiente,
     POSTURAS,
     evaluarPostura,
     verifyKernelTables,

@@ -232,7 +232,8 @@ sin fusible.
 De 7 gaps quedan 2, ambos legítimos: CloudTrail (se prueba mejor con
 `--verify`, que valida 11 controles de postura en vez de un `lookup-events` que
 devuelve 200 y parece probar lo mismo) y rotación de la CMK, que el perfil admin
-tampoco pudo leer en esa corrida.
+tampoco pudo leer en esa corrida. CloudTrail dejó de contarse como gap en
+§6.4: no es un pendiente de este verificador, es un control **delegado**.
 
 ### 6.3 Observar un control no es demostrarlo (rebote rev-1)
 
@@ -288,6 +289,70 @@ cmk-alias            cumple= true | al menos un alias propio, fuera del espacio 
 Si en una corrida futura la rotación se pudiera leer y estuviera apagada, la
 salida es **documentar esa decisión y actualizar la postura** —como se hizo con
 PITR/TTL de coordinación—, no dejar el control rotulado como demostrado.
+
+### 6.4 "No pude observarlo" ≠ "no me toca observarlo acá" (rebote rev-2)
+
+El review encontró que `ca2Cerrado` —el booleano que §6.3 introdujo justamente
+para que el cierre del CA-2 no quedara desalineado— era **estructuralmente
+inalcanzable**. Ejecutado sobre el ambiente que cumple TODO:
+
+```
+verificable: true · ca2Cerrado: FALSE · gapsPendientes: 1 · posturasIncumplidas: 0
+cloudtrail = no-observado / null
+```
+
+`buildGapProbes` sondeaba `cloudtrail`, pero `observeGapControl` cae en
+`default: return null` para esa key y `POSTURAS` no la declara —las dos cosas, a
+propósito—. El control quedaba `no-observado` para siempre, así que
+`gapsPendientes >= 1` era una constante, `ca2Cerrado` no podía ser `true` nunca y
+la rama `**CA-2 cerrado:**` del render era código muerto. El artefacto que firma
+un operador decía *"CA-2 NO cerrado"* con los siete controles en verde.
+
+**La causa de fondo era una distinción que faltaba en el modelo.** El módulo
+tenía un solo casillero para dos situaciones distintas:
+
+| Situación | Qué significa | Cómo se resuelve |
+|---|---|---|
+| `no-observado` | No pude leer el control (`AccessDenied`, output ilegible) | Permisos, o la herramienta correcta |
+| `delegado` | **No me toca cerrarlo acá**: lo prueba otra herramienta | Se lee en el reporte de esa herramienta |
+
+CloudTrail siempre fue el segundo caso —§4 y §8 ya documentaban que se prueba con
+`kernel-cloudtrail-provision --verify`, que valida 11 controles de postura del
+destino—, pero se contaba como el primero. El cierre del CA-2 se reparte entre
+dos herramientas y `ca2Cerrado` computaba como si una sola debiera cerrarlo todo.
+
+**Ahora `cloudtrail` es un control delegado** (`CONTROLES_DELEGADOS` en
+`kernel-table-verify.js`):
+
+- Estado propio `'delegado'`, **fuera** del cómputo de `gapsPendientes` y por lo
+  tanto de `ca2Cerrado`. Este módulo no puede cerrarlo **ni bloquearlo**.
+- `verified` sigue en `null`: **delegar no es declarar cumplido**. El fusible
+  aborta si alguien le planta un veredicto.
+- No se ejecuta el `lookup-events`: correrlo para descartar el resultado
+  publicaba un `deny: 'none'` con remediación de permisos sobre un comando que
+  había salido 200. La remediación ahora apunta a la herramienta que sí lo prueba.
+- Sale en **sección propia** del markdown, no en la tabla de gap de observación
+  —cuya leyenda *"ningún control de esta tabla está verificado"* no puede
+  aplicarle a un control que se verifica en otro lado—. Y cuando el CA-2 cierra,
+  el bloque de cierre **nombra lo delegado**: no se declara un cierre total.
+- Cada delegación tiene que declarar herramienta y justificación; un `delegadoA`
+  vacío sería una exención silenciosa del cómputo. Hay un test sobre el catálogo.
+
+**Síntoma derivado, mismo origen.** Un control cuyo comando salía `exit 0` pero
+cuyo output no traía el campo quedaba indistinguible de "no pude leerlo":
+`deny: 'none'`, `detalle: null` y una remediación que mandaba a *"revisar el
+mensaje crudo"* que no existía. Ese caso tiene ahora estado propio
+—`observado-sin-lectura`— con remediación que dice que el comando corrió y el
+output no trae el campo. **No cierra nada**: `verified` sigue en `null` y cuenta
+como pendiente, porque un HTTP 200 no es una observación.
+
+El fail-closed de fondo no se movió: `verified: true` sigue exigiendo evidencia
+observada **y** postura cumplida. Verificado sobre el ambiente ideal:
+
+```
+verificable: true · ca2Cerrado: TRUE · gapsPendientes: 0 · posturasIncumplidas: 0
+cloudtrail = delegado / null  → node .pipeline/lib/kernel-cloudtrail-provision.js --verify
+```
 
 ## 7. Lo que esta entrega NO hace
 

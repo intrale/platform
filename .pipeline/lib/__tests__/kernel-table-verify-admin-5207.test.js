@@ -271,9 +271,11 @@ test('#5207 · el render separa lo verificado de lo que sigue siendo gap', async
 
     assert.match(md, /Verificado con el perfil admin de sólo lectura/);
     assert.match(md, /pointInTimeRecovery=`ENABLED`/);
-    // CloudTrail y rotación quedan como gap: no se los puede leer ni con admin.
     assert.match(md, /Gap de verificación — NO verificado/);
+    // CloudTrail sigue nombrado en el artefacto, pero en la sección de delegados
+    // (#5207 rebote rev-2): no es un gap de observación.
     assert.match(md, /Rastro de auditoría \(CloudTrail\)/);
+    assert.match(md, /### Delegado a otra herramienta/);
 });
 
 test('#5207 · el reporte cuenta cuántos controles quedaron sin observar', async () => {
@@ -282,9 +284,13 @@ test('#5207 · el reporte cuenta cuántos controles quedaron sin observar', asyn
         runner: runnerRuntime(),
         adminRunner: runnerAdmin(ADMIN_COMPLETO),
     });
-    // Queda sólo CloudTrail: no se lee acá ni con el perfil admin.
-    assert.strictEqual(report.gapsPendientes, 1);
-    assert.strictEqual(report.gapsPendientes, report.gaps.filter((g) => g.verified !== true).length);
+    // Todo lo que este verificador resuelve quedó cerrado. CloudTrail no cuenta:
+    // está delegado, y contarlo hacía `ca2Cerrado` imposible (rebote rev-2).
+    assert.strictEqual(report.gapsPendientes, 0);
+    assert.strictEqual(
+        report.gapsPendientes,
+        report.gaps.filter((g) => g.estado !== 'delegado' && g.verified !== true).length,
+    );
     assert.strictEqual(report.posturasIncumplidas, 0);
 });
 
@@ -363,9 +369,10 @@ test('#5207 rev-1 · la rotación deshabilitada no cierra el control de rotació
 
 test('#5207 rev-1 · un ambiente que falla el CA-2 NO produce gapsPendientes casi en cero', async () => {
     const report = await reporteAdverso();
-    // 4 incumplen (PITR no-repudio, CMK propiedad, CMK alias, rotación) + CloudTrail sin observar.
+    // 4 incumplen: PITR no-repudio, CMK propiedad, CMK alias, rotación.
+    // CloudTrail NO suma: está delegado, no es un pendiente de este módulo.
     assert.strictEqual(report.posturasIncumplidas, 4);
-    assert.strictEqual(report.gapsPendientes, 5,
+    assert.strictEqual(report.gapsPendientes, 4,
         'el número que decide si el CA-2 está cerrado tiene que contar los incumplimientos');
     assert.strictEqual(report.ca2Cerrado, false);
 });
@@ -404,6 +411,198 @@ test('#5207 rev-1 · un control observado SIN postura declarada tampoco se cierr
         () => tv.assertNoUnverifiedClaims({ gaps: [{ ...gap, verified: true, evidencia: { a: 1 }, observadoCon: 'admin' }] }),
         /NO DECLARADA/,
     );
+});
+
+// -----------------------------------------------------------------------------
+// 6. Rebote rev-2 — `ca2Cerrado` tiene que poder ser `true`
+//
+// El review del 2026-09-05 ejecutó el módulo sobre el ambiente PERFECTO (PITR
+// ENABLED en no-repudio, DISABLED en coordinación, TTL DISABLED, CMK CUSTOMER
+// con alias propio y rotación activa, ambas tablas OK) y obtuvo:
+//
+//     verificable: true · ca2Cerrado: FALSE · gapsPendientes: 1
+//
+// `ca2Cerrado` era una constante `false`: `buildGapProbes` sondeaba `cloudtrail`,
+// `observeGapControl` caía en `default: return null` para esa key y `POSTURAS` no
+// la declaraba, así que el control quedaba `no-observado` PARA SIEMPRE. El
+// artefacto que firma un operador decía "CA-2 NO cerrado" con todo en verde, y
+// la rama `**CA-2 cerrado:**` del markdown era código muerto.
+//
+// La causa de fondo era una distinción que faltaba: "no pude observarlo" ≠ "no
+// me toca observarlo acá". CloudTrail SE PRUEBA, con
+// `kernel-cloudtrail-provision --verify` (11 controles de postura del destino),
+// como documenta el propio PR. Ahora es un control DELEGADO: fuera del cómputo,
+// con sección propia, y sin poder cerrarse acá.
+// -----------------------------------------------------------------------------
+
+test('#5207 rev-2 · el ambiente que cumple TODAS las posturas cierra el CA-2', async () => {
+    // El caso positivo que era incubrible: si este test no puede pasar, el
+    // booleano de cierre no significa nada.
+    const report = await tv.verifyKernelTables({
+        config: CFG, runner: runnerRuntime(), adminRunner: runnerAdmin(ADMIN_COMPLETO),
+    });
+    assert.strictEqual(report.verificable, true);
+    assert.strictEqual(report.gapsPendientes, 0);
+    assert.strictEqual(report.posturasIncumplidas, 0);
+    assert.strictEqual(report.ca2Cerrado, true,
+        'un booleano de cierre que nunca puede ser true reproduce la desalineación que vino a cerrar');
+});
+
+test('#5207 rev-2 · el markdown del ambiente que cumple emite el bloque CA-2 cerrado', async () => {
+    const report = await tv.verifyKernelTables({
+        config: CFG, runner: runnerRuntime(), adminRunner: runnerAdmin(ADMIN_COMPLETO),
+    });
+    const md = tv.renderMarkdown(report);
+    assert.match(md, /\*\*CA-2 cerrado:\*\*/, 'la rama de cierre del render no puede ser código muerto');
+    assert.ok(!/\*\*CA-2 NO cerrado:\*\*/.test(md));
+    // El cierre no se declara total: lo delegado sigue debiendo su prueba.
+    assert.match(md, /control\(es\) delegado\(s\) a otra herramienta/);
+});
+
+test('#5207 rev-2 · CloudTrail queda en estado delegado, no en gap de observación', async () => {
+    const report = await tv.verifyKernelTables({
+        config: CFG, runner: runnerRuntime(), adminRunner: runnerAdmin(ADMIN_COMPLETO),
+    });
+    const ct = report.gaps.find((g) => g.key === 'cloudtrail');
+    assert.strictEqual(ct.estado, 'delegado');
+    assert.strictEqual(ct.verified, null, 'delegar no es declarar cumplido');
+    assert.match(ct.delegadoA.herramienta, /kernel-cloudtrail-provision\.js --verify/);
+    // La remediación apunta a la herramienta, no al texto "Sin clasificar".
+    assert.match(ct.remediacion, /kernel-cloudtrail-provision\.js --verify/);
+    assert.ok(!/Sin clasificar/.test(ct.remediacion));
+});
+
+test('#5207 rev-2 · el control delegado no se sondea contra AWS', async () => {
+    // Correr `lookup-events` para tirar el resultado publicaba `deny: 'none'`
+    // con remediación de permisos sobre un comando que había salido 200.
+    const llamadasRuntime = [];
+    const runner = {
+        profile: 'kernel-runtime',
+        run(args) {
+            llamadasRuntime.push(args.join(' '));
+            if (args[1] === 'describe-table') {
+                return Promise.resolve({ code: 0, stdout: describeTableOk(args[3]), stderr: '' });
+            }
+            return Promise.resolve(DENIED);
+        },
+    };
+    const llamadasAdmin = [];
+    await tv.verifyKernelTables({
+        config: CFG, runner, adminRunner: runnerAdmin(ADMIN_COMPLETO, llamadasAdmin),
+    });
+    assert.ok(!llamadasRuntime.some((c) => c.includes('lookup-events')),
+        'el runtime no debe gastar una llamada cuyo resultado se descarta');
+    assert.ok(!llamadasAdmin.some((c) => c.includes('lookup-events')),
+        'el perfil admin tampoco: el control se prueba en la otra herramienta');
+});
+
+test('#5207 rev-2 · la tabla de gaps NO lista un control delegado', async () => {
+    const md = tv.renderMarkdown(await tv.verifyKernelTables({
+        config: CFG, runner: runnerRuntime(), adminRunner: runnerAdmin(ADMIN_COMPLETO),
+    }));
+    // Sólo el cuerpo de la sección: el bloque de cierre que viene después SÍ
+    // nombra al delegado a propósito (no se declara un cierre total).
+    const seccionGap = md.split('### Gap de verificación')[1].split('**CA-2')[0];
+    assert.ok(!/CloudTrail/.test(seccionGap),
+        'la leyenda "ningún control de esta tabla está verificado" no puede aplicarle a un control que se prueba en otro lado');
+    assert.match(seccionGap, /Sin gaps de observación/);
+    // Y aparece en su sección propia, antes del gap.
+    assert.match(md.split('### Gap de verificación')[0], /### Delegado a otra herramienta[\s\S]*CloudTrail/);
+});
+
+test('#5207 rev-2 · el fusible aborta si alguien marca un delegado como cerrado', () => {
+    assert.throws(
+        () => tv.assertNoUnverifiedClaims({
+            gaps: [{
+                control: 'Rastro de auditoría (CloudTrail)',
+                estado: 'delegado',
+                verified: true,
+                evidencia: { events: 1 },
+                observadoCon: 'perfil-admin',
+                postura: { esperado: 'x', cumple: true },
+                delegadoA: { herramienta: 'node .pipeline/lib/kernel-cloudtrail-provision.js --verify' },
+            }],
+        }),
+        /está delegado/,
+    );
+});
+
+test('#5207 rev-2 · un comando que salió 0 sin el campo del control se distingue de un deny', async () => {
+    // El síntoma derivado del rechazo: `deny: 'none'`, `detalle: null` y una
+    // remediación que mandaba a "revisar el mensaje crudo" que no existía.
+    const report = await tv.verifyKernelTables({
+        config: CFG,
+        runner: runnerRuntime(),
+        adminRunner: runnerAdmin({
+            ...ADMIN_COMPLETO,
+            // 200 con JSON válido, pero sin `TimeToLiveStatus`.
+            'dynamodb describe-time-to-live': { TimeToLiveDescription: {} },
+        }),
+    });
+    const ttl = report.gaps.find((g) => g.key === 'ttl-coordinacion');
+    assert.strictEqual(ttl.verified, null, 'un HTTP 200 no es una observación: el fail-closed no se toca');
+    assert.strictEqual(ttl.estado, 'observado-sin-lectura');
+    assert.match(ttl.remediacion, /output NO trae el campo/);
+    assert.ok(!/Sin clasificar/.test(ttl.remediacion),
+        '"el comando anduvo pero no resuelve el control" no puede leerse como "no pude leerlo"');
+    // Y sigue contando como pendiente: no cerrarlo es el default.
+    assert.strictEqual(report.ca2Cerrado, false);
+    // El `deny` publicado es el de la sonda del RUNTIME; quien llegó a correr el
+    // comando fue el admin. Sin decirlo, `implicitDeny` al lado de "corrió sin
+    // error" se lee como una contradicción del artefacto.
+    assert.strictEqual(ttl.corrioSinObservarCon, 'perfil-admin');
+    const md = tv.renderMarkdown(report);
+    assert.match(md, /el comando salió 0 con `perfil-admin`, pero el output no trae el campo del control/);
+});
+
+test('#5207 rev-2 · si el runtime no puede leer el control, el estado sigue siendo no-observado', async () => {
+    // Contraprueba del test anterior: el gap clásico de #5210 no se disfraza de
+    // "salió 0 sin el campo".
+    const report = await tv.verifyKernelTables({
+        config: CFG,
+        runner: runnerRuntime(),
+        adminRunner: runnerAdmin({}), // deniega todo
+    });
+    const pitr = report.gaps.find((g) => g.key === 'pitr-no-repudio');
+    assert.strictEqual(pitr.estado, 'no-observado');
+    assert.match(pitr.remediacion, /Falta un Allow|Deny explícito/);
+});
+
+test('#5207 rev-2 · el reporte publica qué controles quedaron delegados y a qué herramienta', async () => {
+    const report = await tv.verifyKernelTables({
+        config: CFG, runner: runnerRuntime(), adminRunner: runnerAdmin(ADMIN_COMPLETO),
+    });
+    assert.deepStrictEqual(report.controlesDelegados.map((d) => d.key), ['cloudtrail']);
+    assert.match(report.controlesDelegados[0].herramienta, /kernel-cloudtrail-provision\.js --verify/);
+    // Delegar tiene que ser visible en el JSON: si no, "no está" y "lo prueba
+    // otro" se vuelven indistinguibles para quien audita el artefacto.
+    assert.ok(report.controlesDelegados[0].porQue.length > 0);
+});
+
+test('#5207 rev-2 · cuentaComoPendiente excluye delegados y nada más', () => {
+    assert.strictEqual(tv.cuentaComoPendiente({ estado: 'delegado', verified: null }), false);
+    assert.strictEqual(tv.cuentaComoPendiente({ estado: 'no-observado', verified: null }), true);
+    assert.strictEqual(tv.cuentaComoPendiente({ estado: 'observado-sin-lectura', verified: null }), true);
+    assert.strictEqual(tv.cuentaComoPendiente({ estado: 'observado-incumple', verified: false }), true);
+    assert.strictEqual(tv.cuentaComoPendiente({ estado: 'observado-sin-postura', verified: false }), true);
+    assert.strictEqual(tv.cuentaComoPendiente({ estado: 'observado-cumple', verified: true }), false);
+});
+
+test('#5207 rev-2 · un delegado nuevo no se cuela sin declarar su herramienta', () => {
+    // Fail-closed sobre el propio catálogo: el mecanismo saca controles del
+    // cómputo del CA-2, así que cada delegación tiene que decir dónde se prueba
+    // y por qué. Un `delegadoA` vacío sería una exención silenciosa.
+    for (const [key, d] of Object.entries(tv.CONTROLES_DELEGADOS)) {
+        assert.ok(d.herramienta && d.herramienta.trim().length > 0, `${key} sin herramienta`);
+        assert.ok(d.porQue && d.porQue.trim().length > 20, `${key} sin justificación`);
+    }
+    // Y el probe delegado tiene que apuntar al catálogo, no a un literal suelto.
+    const probes = tv.buildGapProbes(
+        { tableName: 't', coordinationTableName: 'c', region: 'us-east-2' },
+        null,
+    );
+    const ct = probes.find((p) => p.key === 'cloudtrail');
+    assert.strictEqual(ct.delegadoA, tv.CONTROLES_DELEGADOS.cloudtrail);
 });
 
 test('#5207 rev-1 · un alias propio que contiene "/aws/" más adentro NO se confunde con uno de AWS', () => {
