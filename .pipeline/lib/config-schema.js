@@ -579,6 +579,35 @@ const SCHEMA = {
                 // ventana se abriera sola.
                 bootstrap_fallback: { type: 'boolean' },
                 bootstrap_fallback_until: { type: 'string' },
+                // #6034 — grants de herencia del kernel hacia productos hijos.
+                // Se tipa (y con `additionalProperties: false`) por el mismo
+                // motivo que `bootstrap_fallback`: es un control de AUTORIZACIÓN
+                // fail-closed. Un `enabled: "true"` string o un `until` con
+                // typo son truthy para el YAML y sólo se descubrirían el día que
+                // un producto pida heredar; acá el operador se entera al
+                // arrancar. `projectId`, `scopes` y `until` son requeridos: un
+                // grant sin fecha de vencimiento es un permiso permanente por
+                // olvido, que es justo lo que el diseño evita.
+                inheritance: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        grants: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                additionalProperties: false,
+                                required: ['projectId', 'scopes', 'until'],
+                                properties: {
+                                    projectId: { type: 'string', minLength: 1 },
+                                    scopes: { type: 'array', items: { type: 'string', minLength: 1 } },
+                                    enabled: { type: 'boolean' },
+                                    until: { type: 'string', minLength: 1 },
+                                },
+                            },
+                        },
+                    },
+                },
                 // #5453 — coordinador de la migración por host. Se tipa por el
                 // mismo motivo que `enabled`: `migration.enabled` es el gate de
                 // rollout y sólo el booleano `true` exacto lo abre; un `"true"`
