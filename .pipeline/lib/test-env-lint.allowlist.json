@@ -2040,13 +2040,13 @@
         },
         {
             "file": "lib/__tests__/qa-evidence-seal-freshness.test.js",
-            "line": 938,
+            "line": 1002,
             "kind": "deuda",
             "reason": "escritura de PIPELINE_DIR_OVERRIDE fuera del helper"
         },
         {
             "file": "lib/__tests__/qa-evidence-seal-freshness.test.js",
-            "line": 939,
+            "line": 1003,
             "kind": "deuda",
             "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
         },
@@ -3233,6 +3233,12 @@
             "reason": "escritura de WAVE_PROMOTE_RECOVERY_TTL_MS fuera del helper"
         },
         {
+            "file": "lib/__tests__/wave-promote-atomic.test.js",
+            "line": 226,
+            "kind": "deuda",
+            "reason": "escritura de WAVE_PROMOTE_RECOVERY_TTL_MS fuera del helper"
+        },
+        {
             "file": "lib/__tests__/wave-velocity-4886.test.js",
             "line": 54,
             "kind": "deuda",
@@ -4068,6 +4074,12 @@
         },
         {
             "file": "skills-deterministicos/__tests__/git-ops.test.js",
+            "line": 261,
+            "kind": "deuda",
+            "reason": "escritura de ProgramFiles fuera del helper"
+        },
+        {
+            "file": "skills-deterministicos/__tests__/git-ops.test.js",
             "line": 274,
             "kind": "deuda",
             "reason": "escritura de PATH fuera del helper"
@@ -4098,9 +4110,15 @@
         },
         {
             "file": "skills-deterministicos/__tests__/git-ops.test.js",
+            "line": 279,
+            "kind": "deuda",
+            "reason": "escritura de ProgramFiles fuera del helper"
+        },
+        {
+            "file": "skills-deterministicos/__tests__/git-ops.test.js",
             "line": 280,
             "kind": "deuda",
-            "reason": "escritura de P fuera del helper"
+            "reason": "escritura de ProgramFiles fuera del helper"
         },
         {
             "file": "skills-deterministicos/__tests__/git-ops.test.js",
@@ -4725,6 +4743,48 @@
             "line": 21,
             "kind": "deuda",
             "reason": "PULPO_NO_AUTOSTART escrita en el sentido seguro (apagar)"
+        },
+        {
+            "file": "tests/dashboard-boot-helper.test.js",
+            "line": 48,
+            "kind": "deuda",
+            "reason": "escritura de DASHBOARD_BOOT_TIMEOUT_MS fuera del helper"
+        },
+        {
+            "file": "tests/dashboard-boot-helper.test.js",
+            "line": 52,
+            "kind": "deuda",
+            "reason": "escritura de DASHBOARD_BOOT_TIMEOUT_MS fuera del helper"
+        },
+        {
+            "file": "tests/dashboard-boot-helper.test.js",
+            "line": 59,
+            "kind": "deuda",
+            "reason": "escritura de DASHBOARD_BOOT_TIMEOUT_MS fuera del helper"
+        },
+        {
+            "file": "tests/dashboard-boot-helper.test.js",
+            "line": 61,
+            "kind": "deuda",
+            "reason": "escritura de DASHBOARD_BOOT_TIMEOUT_MS fuera del helper"
+        },
+        {
+            "file": "tests/dashboard-boot-helper.test.js",
+            "line": 63,
+            "kind": "deuda",
+            "reason": "escritura de DASHBOARD_BOOT_TIMEOUT_MS fuera del helper"
+        },
+        {
+            "file": "tests/dashboard-boot-helper.test.js",
+            "line": 66,
+            "kind": "deuda",
+            "reason": "escritura de DASHBOARD_BOOT_TIMEOUT_MS fuera del helper"
+        },
+        {
+            "file": "tests/dashboard-boot-helper.test.js",
+            "line": 67,
+            "kind": "deuda",
+            "reason": "escritura de DASHBOARD_BOOT_TIMEOUT_MS fuera del helper"
         },
         {
             "file": "tests/dashboard-ola-eta-size-label.test.js",
