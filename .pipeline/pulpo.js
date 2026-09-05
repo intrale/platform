@@ -569,6 +569,24 @@ const buildChildEnvLib = require('./lib/build-child-env');
 // reintentos y cada eslabón de fallback) y compone el `processEnv` que entra a
 // `buildChildEnv`. Gate propio: `pipeline.credential_snapshot_enabled`.
 const attemptSnapshot = require('./lib/attempt-credential-snapshot');
+// #5796 — CABLEADO del coordinador de retry de credencial (#5794) en los
+// caminos reales del Pulpo: agente normal, Commander, intento primario y cada
+// eslabón de fallback. Hasta este issue el coordinador existía con sus tests en
+// verde y CERO call-sites productivos: `operationId` no aparecía en una sola
+// línea de este archivo, así que `projectAuthRejection` proyectaba la señal
+// tipada de #5795 con `operation_id: null` y el audit no podía correlacionar
+// dos rechazos de la misma operación raíz. Gate PROPIO —distinto del de
+// snapshot— `pipeline.credential_retry_enabled`, fail-closed y default false.
+// El módulo no requiere `credentials.js`: el coordinador resuelve
+// `resetVaultCache` perezosamente por dentro.
+const credentialRetryWiring = require('./lib/credential-retry-wiring');
+// #5796 (fix rev-3) — barrera de cierre ÚNICO de la corrida cerrada por
+// credencial vencida. Los dos caminos que ejecutan efectos sobre estado de
+// PROCESO (el cierre por credencial vencida y el re-encolado del `retryExecute`)
+// comparten una barrera dura de entrada: el que llega segundo —típicamente un
+// replay que settlea DESPUÉS del timeout, cuando el issue ya volvió a la cola y
+// puede tener otro agente vivo encima— no toca el dropfile ni el slot.
+const credentialRetrySettlement = require('./lib/credential-retry-settlement');
 // #2334 / CA6: log stream sanitizer para stdout/stderr del agente.
 const { createLogFileWriter } = require('./lib/sanitize-log-stream');
 // #4444: persistencia de logs de agente por intento (rebotes) + retención.
@@ -10894,6 +10912,69 @@ async function lanzarAgenteClaude(skill, issue, trabajandoPath, pipeline, fase, 
   // con el provider del fallback (cross-provider switch) y el archivo NO vuelve
   // a pendiente/. Cuando `gated === true` (primary + todos los fallbacks
   // gated), el comportamiento es idéntico al gate clásico (#3077).
+  // #5796 — OPERACIÓN RAÍZ del retry de credencial. Se obtiene ANTES de
+  // `resolveSpawnWithFallback`: el intento primario y cada eslabón de fallback
+  // tienen que colgar de la MISMA operación, porque ahí vive el presupuesto
+  // único. Si naciera después del resolver, un lanzamiento que cascadeó ya
+  // sería "otra" operación y cada provider se ganaría un retry propio.
+  //
+  // La clave es el lanzamiento LÓGICO (fase + skill + issue), no la llamada:
+  // en el Pulpo la cascada del agente se materializa como lanzamientos
+  // sucesivos del mismo dropfile, así que el presupuesto tiene que sobrevivir
+  // entre llamadas (con TTL) para que "un retry por operación" no degenere en
+  // "un retry por provider".
+  //
+  // Con el gate `pipeline.credential_retry_enabled` cerrado (default del
+  // rollout) esto devuelve `null` y todo el cableado de abajo es no-op.
+  const credentialOperationKey = credentialRetryWiring.operationKeyFor({ pipeline, fase, skill, issue });
+  let credentialOperation = null;
+  try {
+    credentialOperation = credentialRetryWiring.getOrCreateOperation({
+      key: credentialOperationKey,
+      config,
+      kind: credentialRetryWiring.OPERATION_KIND.AGENT,
+      skill,
+      issue,
+      logger: (m) => log('lanzamiento', m),
+    });
+  } catch (e) {
+    // Nunca puede impedir un lanzamiento: sin operación se sigue exactamente
+    // como antes de este issue.
+    log('lanzamiento', `⚠️ credential-retry: no se pudo obtener la operación de ${skill}:#${issue} (${e && e.message}) — sigo sin retry de credencial`);
+    credentialOperation = null;
+  }
+  const credentialOperationId = credentialOperation ? credentialOperation.operationId : null;
+  const emitirEventoDeRetry = credentialRetryWiring.makeAuditEmitter({
+    pipelineDir: PIPELINE,
+    logger: (m) => log('lanzamiento', m),
+  });
+
+  // #5796 (fix rev-2, defecto 1) — LIBERACIÓN DEL PRESUPUESTO EN *TODOS* LOS
+  // CIERRES QUE DEVUELVEN EL DROPFILE A LA COLA.
+  //
+  // La operación raíz sobrevive entre lanzamientos a propósito (la cascada de
+  // fallbacks del agente se materializa como lanzamientos sucesivos del mismo
+  // dropfile), así que el único que puede declarar "esta operación terminó" es
+  // el camino de cierre. Hay TRES cierres que devuelven el issue a `pendiente/`
+  // y por lo tanto lo relanzan: terminación normal, `provider-death` y
+  // `fast-fail`. Si sólo el primero olvidara la operación, un issue que gastó
+  // su retry y después rebota por cualquiera de los otros dos arrastraría
+  // `retryConsumed: true` de forma indefinida — el TTL no lo salva porque
+  // `getOrCreateOperation` sólo lo poda si nadie vuelve a tocar la clave, y
+  // cada relanzamiento la toca. Resultado: cuando cayera una credencial de
+  // verdad, se cerraría con "presupuesto ya consumido" sin haber reintentado
+  // NUNCA, que es exactamente lo contrario de lo que entrega este issue.
+  //
+  // Es idempotente (un `Map.delete` de una clave ausente), best-effort y no-op
+  // con el gate cerrado. La única salida que NO debe llamarlo es el reintento
+  // de credencial (`retryExecute`): ahí el presupuesto consumido es el estado
+  // que tiene que sobrevivir hasta el relanzamiento.
+  const olvidarOperacionDeCredencial = () => {
+    try {
+      credentialRetryWiring.forgetOperation({ key: credentialOperationKey });
+    } catch { /* best-effort: el TTL del registro es la red de contención */ }
+  };
+
   let dispatchResolution = null;
   // #3823 — trazabilidad observable de la resolución de provider. Se computa una
   // vez tras la resolución y se reusa para (a) el log multilinea del Pulpo y
@@ -11741,6 +11822,27 @@ ${g}
     }
   })();
 
+  // #5901 · CA-1 — `projectId` AUTORITATIVO para el least-privilege del hijo.
+  //
+  // Se resuelve con `project-context.resolveProjectContext()`, NUNCA desde el
+  // env: `PIPELINE_PROJECT_ID` viaja en banda como TRANSPORTE y el env no es
+  // autoridad (#5110 · SEC-1). Se prefiere el `projectBinding` recien escrito
+  // porque es el mismo valor ya resuelto; si el binding no se pudo escribir
+  // (best-effort, camino single-project vigente) se reintenta la resolución, y
+  // si tampoco hay contexto se cae al slug del kernel. En ninguna rama se
+  // rompe un spawn que hoy funciona: el fail-closed de `buildChildEnv` es
+  // sobre un projectId PRESENTE E INVALIDO, no sobre la ausencia.
+  const projectIdDelSpawn = (() => {
+    if (projectBinding && projectBinding.projectId) return projectBinding.projectId;
+    try {
+      return require('./lib/project-context').resolveProjectContext().projectId;
+    } catch (e) {
+      log('lanzamiento', `⚠️  contexto de proyecto no resuelto para ${skill}:#${issue} `
+        + `(${e.message}) — se usa el namespace del kernel para el techo de scopes`);
+      return buildChildEnvLib.KERNEL_PROJECT_ID;
+    }
+  })();
+
   const pipelineExtras = {
     PIPELINE_ISSUE: issue,
     PIPELINE_SKILL: skill,
@@ -11803,11 +11905,21 @@ ${g}
   // EVALUARLA con un `process.env` falso, igual que hace con los sitios del
   // Commander. Un bloque inline sería el único sitio de env de clase agente sin
   // canario funcional sobre el fuente real.
-  const construirEnvDeIntentoAgente = async () => {
+  //
+  // #5796 — la firma pasó a ser la que pide el coordinador de retry
+  // (`createSnapshot({attempt, provider, scope, destination, operationId})`).
+  // Antes era un closure de cero argumentos que resolvía el provider efectivo
+  // por dentro; ahora ACEPTA el provider del intento, que es lo que permite que
+  // la re-resolución del intento 2 pida material para el MISMO provider que
+  // acaba de rechazar la credencial —y no para el primario del skill— cuando el
+  // lanzamiento venía cascadeado a un fallback. Sin argumentos se comporta
+  // exactamente como antes (resuelve el efectivo del dispatcher).
+  const construirEnvDeIntentoAgente = async ({ attempt, provider, operationId } = {}) => {
     const { skillCfg, providersCfg } = buildChildEnvLib._resolveSkillConfig(skill, {
       pipelineDir: PIPELINE,
     });
-    const providerEfectivo = (dispatchResolution && dispatchResolution.provider)
+    const providerEfectivo = provider
+      || (dispatchResolution && dispatchResolution.provider)
       || skillCfg.provider || 'anthropic';
     const { snapshot } = await attemptSnapshot.createAttemptSnapshot({
       destination: attemptSnapshot.SNAPSHOT_DESTINATION.AGENT_CHILD,
@@ -11817,6 +11929,9 @@ ${g}
       pipelineDir: PIPELINE,
       logger: (m) => log('lanzamiento', m),
     });
+    if (operationId) {
+      log('lanzamiento', `🔑 credential-snapshot de ${skill}:#${issue} emitido para el intento ${attempt || 1} (operation=${operationId}, provider=${providerEfectivo})`);
+    }
     return attemptSnapshot.composeAttemptProcessEnv({
       baseEnv: process.env,
       snapshot,
@@ -11824,9 +11939,17 @@ ${g}
     });
   };
 
+  // #5796 — camino de correlación de ESTE intento: `primary`, o
+  // `fallback:<n>:<provider>` cuando el dispatcher cascadeó. Viaja al audit por
+  // `onSpawnExit` y a los eventos del coordinador; es lo que distingue dos
+  // rechazos de la misma operación raíz en providers distintos.
+  const caminoDelIntento = credentialRetryWiring.pathForResolution(dispatchResolution);
+
   let attemptProcessEnv = process.env;
   try {
-    attemptProcessEnv = await construirEnvDeIntentoAgente();
+    attemptProcessEnv = await construirEnvDeIntentoAgente({
+      attempt: 1, operationId: credentialOperationId,
+    });
   } catch (e) {
     // Fail-closed sobre la superficie de CREDENCIALES: si el snapshot era
     // requerido y no se pudo emitir, no arranca el child. El mensaje trae
@@ -11862,6 +11985,12 @@ ${g}
         : undefined;
       childEnv = buildChildEnvLib.buildChildEnv({
         skill,
+        // #5901 · CA-3 — el eje llega al MÓDULO por parámetro. Sin esto el
+        // techo por fase queda en fail-closed (vacío) para todo despacho y el
+        // least-privilege existiría en el código sin existir en producción.
+        fase,
+        projectId: projectIdDelSpawn,
+        warn: (m) => log('lanzamiento', m),
         pipelineDir: PIPELINE,
         // #5799 — el env del INTENTO (snapshot del provider efectivo compuesto
         // sobre el env base) es la única fuente; `buildChildEnv` no cae a
@@ -12260,6 +12389,18 @@ ${g}
     // `createSanitizeStream` (#2334). Queda '' si el skill es determinístico o
     // si la lectura falla ⇒ el detector cae fail-closed.
     let agentLogRaw = '';
+    // #5796 — veredicto de rechazo de credencial de ESTE intento, proyectado
+    // por `onSpawnExit` con el contexto de la operación raíz. Se hoistea porque
+    // lo consume el brazo de `credential-death`, que corre después del bloque
+    // del quota-detector y necesita la señal TIPADA (#5795) — no una heurística
+    // de texto sobre el log — para decidir si el coordinador puede reintentar.
+    // Queda `null` para skills determinísticos y para cualquier otra clase de
+    // error: fail-closed, el retry sólo lo dispara un rechazo reconocido.
+    let veredictoDeAutenticacion = null;
+    // Número de intento DE CREDENCIAL de este spawn. No es el intento del issue
+    // ni el del glitch 1M: es el del presupuesto de la operación raíz. Si la
+    // operación ya gastó su retry, este lanzamiento ES el reintento.
+    const intentoDeCredencial = (credentialOperation && credentialOperation.retryConsumed) ? 2 : 1;
     if (!useDeterministicSkill) {
       try {
         const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
@@ -12313,9 +12454,18 @@ ${g}
             timedOut: false,
             durationMs: Math.round(elapsedSec * 1000),
             source: (dispatchResolution && dispatchResolution.source) || 'primary',
+            // #5796 — contexto de la operación RAÍZ. El hook ya aceptaba los
+            // tres campos desde #5795, pero nadie se los pasaba: por eso
+            // `projectAuthRejection` los dejaba en `null` y el audit registraba
+            // el rechazo sin poder correlacionarlo con los otros intentos de la
+            // misma operación. Esta es la línea que habilita la correlación.
+            operationId: credentialOperationId,
+            path: caminoDelIntento,
+            attempt: intentoDeCredencial,
             pipelineDir: PIPELINE,
             onLog: log,
           });
+          veredictoDeAutenticacion = result;
           log('lanzamiento',
             `${dispatcher.CODEPATH_EMOJI.generalized} codepath=generalized skill=${skill} ` +
             `provider=${skillProvider || 'unknown'} error_class=${result.errorClass} ` +
@@ -12393,10 +12543,18 @@ ${g}
           }
           // El parser legacy no escribía telemetría de corridas. Reusamos el
           // writer canónico sin repetir sus efectos de cuota.
-          dispatcher.onSpawnExit({
+          // #5796 — el camino legacy también aporta el contexto raíz y también
+          // captura la proyección. `telemetryOnly` sólo suprime los efectos de
+          // cuota: la clasificación tipada de #5795 se calcula igual, así que
+          // con el parser generalizado APAGADO el retry de credencial sigue
+          // teniendo señal en vez de degradar a "error común".
+          veredictoDeAutenticacion = dispatcher.onSpawnExit({
             skill, issue, provider: skillProvider, transport: 'cli', rawOutput: raw,
             exitCode: code, timedOut: false, durationMs: Math.round(elapsedSec * 1000),
             source: (dispatchResolution && dispatchResolution.source) || 'primary',
+            operationId: credentialOperationId,
+            path: caminoDelIntento,
+            attempt: intentoDeCredencial,
             pipelineDir: PIPELINE, onLog: log, telemetryOnly: true,
           });
         }
@@ -12566,59 +12724,291 @@ ${g}
         const effProvider = (launchResult && launchResult.provider)
           || (dispatchResolution && dispatchResolution.provider) || 'unknown';
 
-        let disabled = false;
-        if (providerSpawnHealth) {
-          try {
-            const r = providerSpawnHealth.recordProviderSpawnDeath({
-              pipelineDir: PIPELINE, provider: effProvider, skill, issue,
-              threshold: 1,
-              disableTtlMs: 60 * 60 * 1000, // 60 min (CA-4: TTL acotado, sin apagado indefinido)
-              source: 'credential-death',
-            });
-            disabled = !!(r && r.disabled);
-          } catch (hErr) {
-            log('lanzamiento', `⚠️ provider-spawn-health falló para ${effProvider} (${skill}:#${issue}): ${hErr.message}`);
+        // ---------------------------------------------------------------
+        // #5796 — EL COORDINADOR DE RETRY DE CREDENCIAL, EN EL CAMINO REAL.
+        //
+        // Hasta acá el desenlace de una credencial vencida era terminal: se
+        // apagaba el provider 60 minutos, se avisaba al operador y el dropfile
+        // volvía a `pendiente/` para reintentar con la MISMA credencial
+        // cacheada — o sea, garantizado a repetir el rechazo.
+        //
+        // Con el gate abierto, antes de dar ese paso le preguntamos al
+        // coordinador. Él —y sólo él— decide: clasifica la señal TIPADA de
+        // #5795 (no el texto del log), consume el presupuesto único de la
+        // operación raíz, invalida el scope acotado y re-resuelve el snapshot.
+        // Si algo de eso falla, o si el presupuesto ya se gastó en otro
+        // provider de la cadena, cae al cierre de siempre.
+        //
+        // Los efectos observables (apagar el provider, avisar, mover el
+        // dropfile) viven FUERA del coordinador, después de que resuelva: dos
+        // intentos internos no pueden traducirse en dos avisos al operador ni
+        // en dos movimientos del dropfile.
+        // ---------------------------------------------------------------
+        //
+        // BARRERA DE CIERRE ÚNICO (#5796 fix rev-3): los dos caminos que
+        // ejecutan efectos observables sobre estado de proceso —el cierre por
+        // credencial vencida y el re-encolado del `retryExecute`— son
+        // MUTUAMENTE EXCLUYENTES y corren UNA sola vez EN TOTAL, gane quien
+        // gane la carrera. Garantiza el "un solo aviso, un solo movimiento de
+        // dropfile, un solo `activeProcesses.delete`" incluso cuando el
+        // coordinador settlea TARDE, después de que el timeout del replay ya
+        // devolvió el issue a la cola (el `race` no cancela el trabajo en
+        // vuelo: del otro lado del vault no hay `AbortController`).
+        //
+        // Va en la ENTRADA de cada camino, no como marca al salir: lo que se
+        // protege es un dropfile y un slot de concurrencia, no un log. En el
+        // rev-2 la bandera existía pero `retryExecute` sólo la ESCRIBÍA sin
+        // leerla nunca, así que un replay tardío le arrancaba el dropfile al
+        // agente que ya estaba corriendo y liberaba su slot, habilitando un
+        // segundo proceso `claude` sobre el mismo issue y el mismo worktree.
+        const efectosDelCierrePorCredencial = (notaDelCoordinador) => {
+          let disabled = false;
+          if (providerSpawnHealth) {
+            try {
+              const r = providerSpawnHealth.recordProviderSpawnDeath({
+                pipelineDir: PIPELINE, provider: effProvider, skill, issue,
+                threshold: 1,
+                disableTtlMs: 60 * 60 * 1000, // 60 min (CA-4: TTL acotado, sin apagado indefinido)
+                source: 'credential-death',
+              });
+              disabled = !!(r && r.disabled);
+            } catch (hErr) {
+              log('lanzamiento', `⚠️ provider-spawn-health falló para ${effProvider} (${skill}:#${issue}): ${hErr.message}`);
+            }
           }
+
+          // CA-6 — auditoría SIEMPRE (nunca la suprime el dedupe del aviso).
+          // Sin `raw_excerpt` y sin texto crudo del provider.
+          try {
+            const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
+            if (typeof dispatcher.appendSpawnExitDeathKind === 'function') {
+              dispatcher.appendSpawnExitDeathKind({
+                pipelineDir: PIPELINE, skill, issue, provider: effProvider,
+                deathKind: 'credential-death',
+                token: deathToken, signature: deathSignature,
+                exitCode: code, durationMs: Math.round(elapsedSec * 1000),
+              });
+            }
+          } catch { /* best-effort: la auditoría nunca rompe el lifecycle */ }
+
+          // CA-5 / SEC-CA-4 — el Telegram se deduplica por provider; el log NO.
+          let notif = { sent: false, remainingMin: 0, pending: `#${issue}` };
+          try { notif = sendCredentialDeathNotif(effProvider, issue); } catch { /* best-effort */ }
+
+          // CA-UX-9 — la línea de log dice si el aviso se suprimió y cuánto falta.
+          log('lanzamiento',
+            `🚨 #${issue}: sesión de ${providerLabel(effProvider)} vencida — ${skill} NO penalizado ` +
+            `(sin cooldown, sin rebote). Murió en ${elapsedSec.toFixed(0)}s (code=${code}). ` +
+            `${disabled ? 'Motor apagado 60min.' : 'Motor NO apagado (provider fuera de la allowlist).'} ` +
+            `Aviso ${notif.sent ? 'enviado' : `suprimido por cooldown (${notif.remainingMin}min restantes)`}. ` +
+            `Esperando: ${notif.pending}.` +
+            (notaDelCoordinador ? ` Retry de credencial: ${notaDelCoordinador}.` : ''));
+
+          const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+          try { moveFile(trabajandoPath, pendienteDir); } catch {}
+          activeProcesses.delete(processKey(skill, issue));
+          killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (credential-death)`);
+          if (contextChannelId) {
+            try {
+              const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+              cm.leaveChannelByType(contextChannelId, 'agent');
+            } catch (e) {}
+          }
+        };
+
+        // Efectos del re-encolado por reintento. NO apaga el provider ni avisa
+        // al operador: todavía no está probado que la credencial esté rota.
+        const efectosDelReencoladoPorReintento = () => {
+          log('lanzamiento',
+            `🔁 #${issue}: credencial de ${providerLabel(effProvider)} invalidada y re-resuelta ` +
+            `(operation=${credentialOperationId}, path=${caminoDelIntento}) — ${skill} vuelve a pendiente/ ` +
+            'para el único reintento de esta operación; el motor NO se apaga.');
+          const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
+          try { moveFile(trabajandoPath, pendienteDir); } catch {}
+          activeProcesses.delete(processKey(skill, issue));
+          killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (credential-retry)`);
+          if (contextChannelId) {
+            try {
+              const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
+              cm.leaveChannelByType(contextChannelId, 'agent');
+            } catch (e) {}
+          }
+        };
+
+        // #5796 (fix rev-4) — la clave de proceso es la MISMA que mira el barrido
+        // de huérfanos (`processKey(skill, issue)`): es el identificador con el
+        // que los dos actores hablan de la misma corrida.
+        const claveDeLaCorrida = processKey(skill, issue);
+        const coordinadorDeCierre = credentialRetrySettlement.crearCoordinadorDeCierreDeCorrida({
+          cerrar: efectosDelCierrePorCredencial,
+          reencolar: efectosDelReencoladoPorReintento,
+          etiqueta: `${skill}:#${issue}`,
+          log: (m) => log('lanzamiento', m),
+          // Publicación del fin del cierre en vuelo: corre en el mismo tick en
+          // que se toma el turno, gane quien gane. Sin esto, el barrido tendría
+          // que esperar al vencimiento del presupuesto para volver a operar
+          // sobre la clave.
+          alCerrar: () => credentialRetrySettlement.corridasEnSettlement.olvidar(claveDeLaCorrida),
+        });
+        const cerrarPorCredencialVencida = (notaDelCoordinador) =>
+          coordinadorDeCierre.cerrarPorCredencialVencida(notaDelCoordinador);
+
+        const puedeReintentarCredencial =
+          credentialRetryWiring.canRetry(credentialOperation)
+          && credentialRetryWiring.isAuthRejection(veredictoDeAutenticacion);
+
+        if (puedeReintentarCredencial) {
+          // #5796 (fix rev-4, defecto del rechazo rev-3) — EL BARRIDO DE
+          // HUÉRFANOS ES UN TERCER ACTOR SOBRE ESTA MISMA CORRIDA.
+          //
+          // Desde acá hasta que el coordinador settlee, el dropfile sigue en
+          // `trabajando/` y la entrada de `activeProcesses` sigue viva con un
+          // PID muerto: los dos únicos `activeProcesses.delete` del brazo están
+          // DENTRO de los efectos de cierre, que corren después del settlement.
+          // Y los guards de `brazoHuerfanos` no protegen nada en esa ventana:
+          //   * `isProcessAlive(info.pid)` es false — el proceso murió, por eso
+          //     estamos en este handler de `exit`;
+          //   * `fileAgeMinutes` mide el mtime del dropfile y `moveFile` es
+          //     `fs.renameSync`, que lo preserva a través de la cola, así que un
+          //     issue que esperó más de `orphan_timeout_minutes` en `pendiente/`
+          //     nace ya vencido para el barrido.
+          //
+          // Sin esta marca, el barrido devolvía el dropfile a `pendiente/`,
+          // consumía un `orphanRetries` sobre código sano, le ponía cooldown de
+          // fast-fail al skill y —lo más caro— llamaba `forgetOperation()` sobre
+          // la clave de ESTA operación, borrando el presupuesto único que el
+          // replay tiene en vuelo. El próximo lanzamiento veía `canRetry: true`
+          // con un `operation_id` nuevo: un retry por vuelta, con N
+          // invalidaciones y N re-resoluciones contra el vault, que es
+          // exactamente lo que CA-2 prohíbe.
+          //
+          // La marca es SINCRÓNICA y va antes de arrancar el replay: el handler
+          // no devuelve el control al event loop entre la marca y el `return`,
+          // así que no existe un tick en el que el barrido pueda ver la corrida
+          // sin marcar. El presupuesto que se publica es el MISMO que acota el
+          // replay, así que la ventana de exclusión no puede durar más que el
+          // cierre garantizado.
+          const presupuestoDelReplayMs = credentialRetrySettlement.resolveReplayTimeoutMs();
+          credentialRetrySettlement.corridasEnSettlement.marcar({
+            clave: claveDeLaCorrida,
+            coordinador: coordinadorDeCierre,
+            presupuestoMs: presupuestoDelReplayMs,
+            etiqueta: `${skill}:#${issue}`,
+          });
+
+          const replay = credentialRetryWiring.runReplayAttempt({
+            operation: credentialOperation,
+            provider: effProvider,
+            path: caminoDelIntento,
+            destination: attemptSnapshot.SNAPSHOT_DESTINATION.AGENT_CHILD,
+            // El intento 1 ya ocurrió: se le entregan al coordinador el env que
+            // realmente usó y el veredicto que realmente produjo. No se re-pide
+            // credencial para un spawn que ya terminó.
+            firstSnapshot: attemptProcessEnv,
+            firstOutcome: veredictoDeAutenticacion,
+            // Re-resolución del intento 2, DESPUÉS de la invalidación acotada.
+            // Se pide para el provider EFECTIVO del intento que fue rechazado.
+            createSnapshot: (ctx) => construirEnvDeIntentoAgente({
+              attempt: (ctx && ctx.attempt) || 2,
+              provider: effProvider,
+              operationId: credentialOperationId,
+            }),
+            // El reintento del agente NO es un re-spawn inline: el dropfile
+            // vuelve a `pendiente/` y el filesystem-como-cola lo relanza en el
+            // próximo tick, que es el mecanismo de reintento que este pipeline
+            // ya tiene y sabe operar. Lo que cambia respecto de hoy es todo lo
+            // demás: la caché del scope quedó invalidada (así que el próximo
+            // lanzamiento resuelve material FRESCO en vez de repetir el rechazo)
+            // y el provider NO se apaga 60 minutos, porque todavía no está
+            // probado que la credencial esté rota. El presupuesto único vive en
+            // la operación, que sobrevive en el registro: si el relanzamiento
+            // vuelve a ser rechazado, `canRetry` da false y se cierra de verdad.
+            retryExecute: () => {
+              // #5796 (fix rev-3, defecto 3) — BARRERA DURA DE ENTRADA: el
+              // reintento no puede re-encolar una corrida que ya se cerró.
+              //
+              // El `race` de abajo NO cancela el trabajo en vuelo, así que el
+              // coordinador puede settlear DESPUÉS del cierre por timeout —
+              // exactamente el escenario que motivó el timeout: un vault que
+              // tarda más de lo acotado en responder. Para entonces el dropfile
+              // ya volvió a `pendiente/` y, con `poll_interval_seconds: 30`, es
+              // probable que el Pulpo ya haya relanzado el issue sobre el MISMO
+              // `trabajando/<issue>.<skill>` y la MISMA clave de
+              // `activeProcesses`. Re-encolar acá le arrancaría el dropfile al
+              // agente vivo (que al salir pierde su veredicto) y liberaría un
+              // slot ocupado, habilitando un segundo proceso `claude` sobre el
+              // mismo issue y el mismo worktree.
+              //
+              // Mismo criterio que el guard de entrada del `execute` del
+              // Commander (defecto 2): acá también lo protegido es estado de
+              // proceso, no un log, así que la barrera va ANTES de los efectos.
+              // El presupuesto de la operación ya se consumió y la invalidación
+              // del scope ya ocurrió: el relanzamiento que está en curso
+              // resuelve material FRESCO igual, que es lo que importaba.
+              if (!coordinadorDeCierre.reencolarPorReintento()) {
+                return { credentialRetryQueued: false };
+              }
+              // Sin `authenticationRejection`: para el coordinador este intento
+              // no fue rechazado (todavía no corrió). El veredicto real llegará
+              // en el lanzamiento siguiente, con el presupuesto ya consumido.
+              return { credentialRetryQueued: true };
+            },
+            emit: emitirEventoDeRetry,
+          });
+
+          // #5796 (fix rev-3, defecto 3) — EL REPLAY TIENE SETTLEMENT GARANTIZADO.
+          //
+          // Este handler de `exit` retorna sincrónicamente con la promesa del
+          // replay en vuelo, así que la promesa es la ÚNICA dueña del cierre de
+          // la corrida: mover el dropfile fuera de `trabajando/`, soltar el slot
+          // de `activeProcesses`, matar los daemons Gradle y salir del canal de
+          // contexto. Con sólo un `.catch()` esos efectos dependían de que la
+          // promesa settleara alguna vez, y el coordinador no tiene timeout
+          // propio: si `invalidate()` (vault) o la re-resolución del snapshot
+          // quedaran colgados —justo el escenario de un vault remoto que no
+          // responde, que es CUANDO se cae una credencial— el dropfile quedaba
+          // huérfano en `trabajando/`, el slot ocupado y los daemons vivos hasta
+          // el próximo restart. Con el límite de 3 agentes concurrentes, eso es
+          // un tercio de la capacidad del pipeline perdido en silencio.
+          //
+          // El contrato queda cerrado por tres vías complementarias, todas en
+          // `lib/credential-retry-settlement.js` (módulo puro, ejercitable por
+          // COMPORTAMIENTO contando efectos, no por regex sobre este fuente):
+          //   1. Un `race` contra un temporizador acotado que degrada al cierre
+          //      de siempre — el reintento se pierde, pero el issue vuelve a la
+          //      cola y el slot se libera. El temporizador va `unref`: no puede
+          //      sostener vivo el event loop del Pulpo ni un milisegundo de más.
+          //   2. Un cierre INCONDICIONAL en cada desenlace (timeout, fallo
+          //      tipado, OK sin reintento, excepción inesperada). Cubre el caso
+          //      en que el coordinador resuelve OK sin haber reintentado (su
+          //      `classify` no reconoció la señal): antes ese camino dejaba el
+          //      dropfile huérfano.
+          //   3. La barrera de cierre único del coordinador: si el replay
+          //      settlea TARDE —después de que el timeout ya devolvió el issue
+          //      a la cola— su `retryExecute` no ejecuta efectos. Sin esa
+          //      barrera (el bug del rev-2) el replay tardío le arrancaba el
+          //      dropfile al agente relanzado y liberaba su slot, habilitando
+          //      dos procesos `claude` sobre el mismo issue.
+          //
+          // El timeout es inyectable por env (`PIPELINE_CREDENTIAL_REPLAY_TIMEOUT_MS`)
+          // para que los tests ejerciten el settlement tardío sin esperar 60s.
+          credentialRetrySettlement.correrReplayAcotado({
+            replay,
+            coordinador: coordinadorDeCierre,
+            timeoutMs: presupuestoDelReplayMs,
+            log: (m) => log('lanzamiento', `${m} (${skill}:#${issue})`),
+          });
+          return;
         }
 
-        // CA-6 — auditoría SIEMPRE (nunca la suprime el dedupe del aviso).
-        // Sin `raw_excerpt` y sin texto crudo del provider.
-        try {
-          const dispatcher = require('./lib/agent-launcher/dispatch-with-fallback');
-          if (typeof dispatcher.appendSpawnExitDeathKind === 'function') {
-            dispatcher.appendSpawnExitDeathKind({
-              pipelineDir: PIPELINE, skill, issue, provider: effProvider,
-              deathKind: 'credential-death',
-              token: deathToken, signature: deathSignature,
-              exitCode: code, durationMs: Math.round(elapsedSec * 1000),
-            });
-          }
-        } catch { /* best-effort: la auditoría nunca rompe el lifecycle */ }
-
-        // CA-5 / SEC-CA-4 — el Telegram se deduplica por provider; el log NO.
-        let notif = { sent: false, remainingMin: 0, pending: `#${issue}` };
-        try { notif = sendCredentialDeathNotif(effProvider, issue); } catch { /* best-effort */ }
-
-        // CA-UX-9 — la línea de log dice si el aviso se suprimió y cuánto falta.
-        log('lanzamiento',
-          `🚨 #${issue}: sesión de ${providerLabel(effProvider)} vencida — ${skill} NO penalizado ` +
-          `(sin cooldown, sin rebote). Murió en ${elapsedSec.toFixed(0)}s (code=${code}). ` +
-          `${disabled ? 'Motor apagado 60min.' : 'Motor NO apagado (provider fuera de la allowlist).'} ` +
-          `Aviso ${notif.sent ? 'enviado' : `suprimido por cooldown (${notif.remainingMin}min restantes)`}. ` +
-          `Esperando: ${notif.pending}.`);
-
-        const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
-        try { moveFile(trabajandoPath, pendienteDir); } catch {}
-        activeProcesses.delete(processKey(skill, issue));
-        killGradleDaemonsForCwd((needsWorktree || useExistingWorktree) ? worktreePath : ROOT, `${skill}:#${issue} (credential-death)`);
-        if (contextChannelId) {
-          try {
-            const cm = require(path.join(ROOT, '.claude', 'hooks', 'context-manager'));
-            cm.leaveChannelByType(contextChannelId, 'agent');
-          } catch (e) {}
-        }
+        cerrarPorCredencialVencida(
+          credentialOperation && !credentialRetryWiring.canRetry(credentialOperation)
+            ? 'presupuesto de la operación ya consumido'
+            : null,
+        );
         return;
       }
+
 
       // #4648 — Muerte por provider no disponible: NO penalizar al issue.
       if (!hasVerdict && deathKind === 'provider-death') {
@@ -12639,6 +13029,11 @@ ${g}
           }
         }
         log('lanzamiento', `🔌 ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) con provider fallback="${effProvider}" — muerte por provider no disponible: NO penaliza al issue${disabled ? `; provider "${effProvider}" apagado con TTL (backoff a nivel provider)` : ''}. Devuelvo a pendiente/ para reintentar al próximo tick.`);
+        // #5796 (fix rev-2, defecto 1) — este cierre relanza el issue: la
+        // operación raíz muere acá para que el próximo lanzamiento estrene su
+        // propio presupuesto. El provider murió al spawn; la credencial nunca
+        // llegó a ser rechazada, así que no hay nada que "conservar consumido".
+        olvidarOperacionDeCredencial();
         const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
         try { moveFile(trabajandoPath, pendienteDir); } catch {}
         activeProcesses.delete(processKey(skill, issue));
@@ -12656,6 +13051,11 @@ ${g}
       if (!hasVerdict) {
         const { failures, delayMin } = registerFastFail(skill, issue);
         log('lanzamiento', `⚠️ ${skill}:#${issue} murió en ${elapsedSec.toFixed(0)}s (code=${code}) — fallo #${failures}, cooldown ${delayMin}min`);
+        // #5796 (fix rev-2, defecto 1) — el fast-fail es el cierre MÁS FRECUENTE
+        // que devuelve el dropfile a `pendiente/`. Sin este olvido, un issue que
+        // gastó su retry de credencial y después rebota acá quedaría con el
+        // presupuesto consumido hasta el próximo restart del Pulpo.
+        olvidarOperacionDeCredencial();
         const pendienteDir = path.join(fasePath(pipeline, fase), 'pendiente');
         try { moveFile(trabajandoPath, pendienteDir); } catch {}
         activeProcesses.delete(processKey(skill, issue));
@@ -12708,6 +13108,14 @@ ${g}
 
     // Éxito o finalización normal → limpiar cooldown
     if (code === 0) clearCooldown(skill, issue);
+
+    // #5796 — la corrida cerró por una causa que NO es un rechazo de
+    // credencial, así que la operación raíz se olvida: el próximo lanzamiento
+    // de este issue merece su propio presupuesto. Sin esto, un issue que gastó
+    // su retry arrastraría el presupuesto consumido hasta el TTL y no podría
+    // volver a re-resolver aunque la credencial del vault ya estuviera
+    // arreglada. Idempotente y no-op con el gate cerrado.
+    olvidarOperacionDeCredencial();
 
     // #4648 — Reset del health de spawn del provider efectivo: si el agente
     // corrió bien (exit 0) o vivió lo suficiente (≥15s, no es muerte prematura),
@@ -13208,6 +13616,34 @@ function brazoHuerfanos(config) {
         const info = activeProcesses.get(key);
         if (info && isProcessAlive(info.pid)) continue;
 
+        // #5796 (fix rev-4) — EL CIERRE DE ESTA CORRIDA PUEDE ESTAR EN MANOS DE
+        // OTRO ACTOR. Cuando un agente muere por credencial vencida y el gate de
+        // retry está abierto, el brazo de `credential-death` deja el replay en
+        // vuelo y el cierre de la corrida —mover el dropfile, soltar el slot,
+        // matar daemons— queda a cargo del coordinador de
+        // `credential-retry-settlement`, que lo garantiza dentro de un
+        // presupuesto acotado.
+        //
+        // Durante esa ventana el proceso ya está muerto y el mtime del dropfile
+        // puede ser viejísimo (`fs.renameSync` lo preserva a través de la cola),
+        // así que los dos guards de arriba dan luz verde y el barrido entra a
+        // ejecutar efectos sobre una corrida que NO le pertenece: le arranca el
+        // dropfile al replay, le consume un `orphanRetries` a código sano, le
+        // pone cooldown al skill y —lo más caro— le borra con `forgetOperation`
+        // el presupuesto único de la operación en vuelo, habilitando un retry
+        // por vuelta contra el vault (viola el CA-2 de #5796).
+        //
+        // El registro es fail-SAFE, no fail-closed: si el cierre se pasa de su
+        // presupuesto más el margen de gracia, `hayCierreEnVuelo` devuelve false
+        // y de paso le arranca el turno al coordinador, así que el barrido
+        // recupera el slot y un settlement posterior ya no puede duplicar
+        // efectos. Bloquear para siempre sería peor: un tercio de la capacidad
+        // del pipeline perdida hasta el próximo restart.
+        if (credentialRetrySettlement.corridasEnSettlement.hayCierreEnVuelo(key)) {
+          log('huerfanos', `${archivo.name}: cierre del retry de credencial en vuelo → el barrido no lo toca en este tick.`);
+          continue;
+        }
+
         // #4052 CA-3 — Atribución provider-aware ANTES de tocar orphanRetries.
         // Si la muerte del proceso fue un spawn-failure del provider (marker
         // dejado por la instrumentación CA-1 en agent-launcher.js), NO es un
@@ -13286,6 +13722,17 @@ function brazoHuerfanos(config) {
           // Devolver a pendiente con cooldown para evitar loop inmediato
           const { failures, delayMin } = registerFastFail(skill, issue);
           log('huerfanos', `${archivo.name} lleva ${Math.round(age)}min sin proceso → pendiente/ (intento ${retries}/${MAX_ORPHAN_RETRIES}, cooldown ${delayMin}min)`);
+          // #5796 (fix rev-2, defecto 1) — último camino de liberación: acá el
+          // proceso murió SIN que corriera su handler de `exit`, así que ninguno
+          // de los cierres del lanzamiento tuvo la chance de olvidar la
+          // operación raíz. El dropfile vuelve a `pendiente/`, o sea el issue se
+          // relanza: sin esta liberación arrastraría un presupuesto consumido.
+          // La clave se construye con el MISMO helper que la usa al crearla.
+          try {
+            credentialRetryWiring.forgetOperation({
+              key: credentialRetryWiring.operationKeyFor({ pipeline: pipelineName, fase, skill, issue }),
+            });
+          } catch { /* best-effort: el TTL del registro es la red de contención */ }
           try {
             moveFile(archivo.path, pendienteDir);
           } catch (e) {
@@ -15457,6 +15904,36 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       commanderEnvIsolation = !!(commanderCfgRoot.pipeline && commanderCfgRoot.pipeline.env_isolation_enabled);
     } catch { /* default false */ }
 
+    // #5796 — OPERACIÓN RAÍZ del turno del Commander. Se crea acá, en el único
+    // scope que domina los DOS bucles de reintento del turno: la cascada
+    // cross-provider (`advanceOrGiveUp` ⇄ `runNonAnthropic`) y el auto-retry
+    // del glitch 1M. Crearla dentro de cualquiera de los dos le daría a cada
+    // eslabón un presupuesto propio.
+    //
+    // La clave incluye el `turnRequestId`, así que dos turnos del Commander no
+    // comparten presupuesto: lo que comparten los caminos es el turno, no el
+    // proceso. Con el gate cerrado devuelve `null` y nada de esto corre.
+    let commanderCredentialOperation = null;
+    try {
+      commanderCredentialOperation = credentialRetryWiring.getOrCreateOperation({
+        key: `commander:${turnRequestId}`,
+        config: commanderCfgRoot,
+        kind: credentialRetryWiring.OPERATION_KIND.COMMANDER,
+        skill: commanderMP.COMMANDER_SKILL,
+        issue: turnRequestId,
+        logger: (m) => log('commander', m),
+      });
+    } catch (e) {
+      log('commander', `⚠️ credential-retry: no se pudo obtener la operación del turno (${e && e.message}) — sigo sin retry de credencial`);
+      commanderCredentialOperation = null;
+    }
+    const commanderCredentialOperationId = commanderCredentialOperation
+      ? commanderCredentialOperation.operationId : null;
+    const emitirEventoDeRetryCommander = credentialRetryWiring.makeAuditEmitter({
+      pipelineDir: PIPELINE,
+      logger: (m) => log('commander', m),
+    });
+
     // #5799 — FRONTERA POR INTENTO del Commander.
     //
     // Antes había un `cleanEnv` construido UNA vez para `resolution.provider` y
@@ -15470,7 +15947,15 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
     // Es `async` porque el snapshot lo es (#5798). Lanza si el snapshot es
     // requerido y no se pudo emitir: el caller degrada (cascada) o rechaza
     // (primario), pero en ninguno de los dos casos hay spawn.
-    const construirEnvCommander = async (prov) => {
+    // #5796 — acepta la firma del coordinador de retry
+    // (`createSnapshot({attempt, provider, scope, destination, operationId})`)
+    // SIN abrir una segunda vía de armado de env: sigue siendo la única
+    // construcción del Commander. Se conserva la forma con string suelto porque
+    // los call-sites históricos (y el barrido de fuente del test de contención)
+    // la invocan como `construirEnvCommander('anthropic')`.
+    const construirEnvCommander = async (arg) => {
+      const { provider: prov, attempt: intentoDeCredencial, operationId } =
+        (arg && typeof arg === 'object') ? arg : { provider: arg };
       const { providersCfg } = buildChildEnvLib._resolveSkillConfig(
         commanderMP.COMMANDER_SKILL, { pipelineDir: PIPELINE },
       );
@@ -15497,6 +15982,13 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         // comportamiento es idéntico al previo.
         e = buildChildEnvLib.buildChildEnv({
           skill: commanderMP.COMMANDER_SKILL,
+          // #5901 · GURU-3 — el commander no corre dentro de ningún pipeline:
+          // no tiene fase real. Se le pasa la fase sintética del kernel y el
+          // slug reservado de la plataforma. Sin esto cae al fail-closed y
+          // pierde scopes el día que #5040 active el aislamiento.
+          fase: buildChildEnvLib.KERNEL_FASE,
+          projectId: buildChildEnvLib.KERNEL_PROJECT_ID,
+          warn: (m) => log('commander', m),
           pipelineDir: PIPELINE,
           processEnv: attemptProcessEnv,
           pipelineExtras: { CLAUDE_PROJECT_DIR: ROOT },
@@ -15516,6 +16008,9 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // por ninguna rama. Idempotente (buildChildEnv ya filtra internamente) y
       // es la ÚLTIMA operación sobre el env, después del merge de extras y del
       // delete.
+      if (operationId) {
+        log('commander', `🔑 credential-snapshot del Commander emitido para el intento ${intentoDeCredencial || 1} (operation=${operationId}, provider=${prov})`);
+      }
       const envDelIntento = buildChildEnvLib.stripReservedChildSecrets(e, attemptProcessEnv);
       // Marca de IDENTIDAD del intento: permite que un env precomputado se
       // reutilice sólo dentro del mismo provider. Es NO ENUMERABLE a propósito
@@ -15596,7 +16091,35 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // Dos copias del armado del env eran dos lugares donde olvidarse de pedir
       // el snapshot del provider correcto. Es `async` por la misma razón que la
       // frontera: el snapshot lo es.
-      const buildEnvFor = (prov) => construirEnvCommander(prov);
+      //
+      // #5796 — y además pasa por el MISMO coordinador que el primario, con la
+      // MISMA operación del turno. Eso es lo que hace que un cambio de provider
+      // no reinicie el presupuesto: si el primario Anthropic ya gastó el retry
+      // de credencial, este eslabón lo ve gastado.
+      //
+      // Nota honesta sobre el alcance: en este camino el coordinador todavía no
+      // puede REINTENTAR, porque la cascada no-Anthropic no invoca
+      // `onSpawnExit` y por lo tanto no produce la señal tipada de #5795 — sin
+      // señal no hay rechazo que clasificar, y clasificar por el stderr crudo
+      // es exactamente lo que #5795 vino a eliminar. Lo que sí queda cableado
+      // es la unidad de operación, el scope validado y el snapshot por intento;
+      // el día que este camino emita la señal, el retry funciona sin tocar nada.
+      const buildEnvFor = async (prov) => {
+        const r = await credentialRetryWiring.runAttempt({
+          operation: commanderCredentialOperation,
+          provider: prov,
+          path: `fallback:${triedNonAnthropic.size}:${prov}`,
+          destination: attemptSnapshot.SNAPSHOT_DESTINATION.COMMANDER,
+          createSnapshot: (ctx) => construirEnvCommander({
+            provider: prov,
+            attempt: (ctx && ctx.attempt) || 1,
+            operationId: (ctx && ctx.operationId) || null,
+          }),
+          execute: ({ snapshot }) => snapshot,
+          emit: emitirEventoDeRetryCommander,
+        });
+        return r.result;
+      };
 
       const buildFallbackArgs = (provider) => {
         if (fallbackParts && typeof fallbackParts.systemPrompt === 'string'
@@ -16013,7 +16536,16 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       const attempt = (attemptOpts && Number.isInteger(attemptOpts.attempt) && attemptOpts.attempt >= 1)
         ? attemptOpts.attempt : 1;
       const forceStandardContext = !!(attemptOpts && attemptOpts.forceStandardContext);
-      const cleanEnv = await construirEnvCommander('anthropic');
+      // #5796 — cuando el intento corre bajo el coordinador de retry, el env es
+      // el que ÉL emitió (snapshot del intento, ya re-resuelto si hubo
+      // invalidación). Sin coordinador (gate cerrado) se construye acá, igual
+      // que antes: misma función, mismo destino, mismo filtrado.
+      const cleanEnv = (attemptOpts && attemptOpts.envDelIntento)
+        || await construirEnvCommander('anthropic');
+      // Proyección tipada del rechazo de credencial de ESTE intento. La llena
+      // el parser del stream (`onSpawnExit`) y viaja en el outcome para que el
+      // coordinador clasifique con la señal de #5795 y no con el texto del CLI.
+      let rechazoDeCredencialDelIntento = null;
 
       return new Promise((resolveAttempt) => {
     // CA-2 / SR-A — en el intento estándar inyectamos `--model` SIN el sufijo
@@ -16441,7 +16973,11 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
         log('commander', `stderr: ${stderr.slice(0, 300)}`);
         resolvedText = `No pude completar tu pedido (${toolCount} operaciones en ${elapsed}s). Intentá de nuevo o con algo más puntual.`;
       }
-      resolveAttempt({ kind: attemptGlitch ? 'glitch' : 'final', text: resolvedText });
+      // #5796 — el outcome lleva la señal tipada del rechazo de credencial (o
+      // `null`). `defaultClassify` del coordinador la lee por
+      // `authenticationRejection`; cualquier otra clase de error deja el campo
+      // vacío y el retry NO se consume.
+      resolveAttempt({ kind: attemptGlitch ? 'glitch' : 'final', text: resolvedText, authenticationRejection: rechazoDeCredencialDelIntento });
     }
 
     function killProc() {
@@ -16601,9 +17137,23 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
                   exitCode: 0,     // result event llegó, todavía no hubo exit
                   timedOut: false,
                   durationMs: Date.now() - startTime,
+                  // #5796 — contexto de la operación RAÍZ del turno. Sin estos
+                  // tres campos `projectAuthRejection` dejaba `operation_id`,
+                  // `path` y `attempt` en `null`, y el rechazo del Commander
+                  // quedaba en el audit sin forma de correlacionarlo con el del
+                  // agente ni con el del eslabón siguiente de la cascada.
+                  operationId: commanderCredentialOperationId,
+                  path: credentialRetryWiring.PRIMARY_PATH,
+                  attempt: (commanderCredentialOperation && commanderCredentialOperation.retryConsumed) ? 2 : 1,
                   pipelineDir: PIPELINE,
                   onLog: (lvl, msg) => log('commander', msg),
                 });
+                // #5796 — la señal tipada viaja al outcome del intento; es lo
+                // que le permite al coordinador distinguir "la credencial fue
+                // rechazada" de "algo salió mal".
+                if (generalizedVerdict && generalizedVerdict.authenticationRejection) {
+                  rechazoDeCredencialDelIntento = generalizedVerdict.authenticationRejection;
+                }
                 log('commander',
                   `${dispatcher.CODEPATH_EMOJI.generalized} codepath=generalized ` +
                   `skill=commander provider=${cmdProvider} ` +
@@ -16897,7 +17447,70 @@ function ejecutarClaude(prompt, textoOriginal, trace, fallbackParts) {
       // loop infinito si la política dejara de devolver give_up (SR-C.1).
       const MAX_ATTEMPTS = glitchRetry.MAX_SAME_CONTEXT_RETRIES + 2;
       while (attempt <= MAX_ATTEMPTS) {
-        const outcome = await attemptAnthropicSpawn({ attempt, forceStandardContext });
+        // #5796 — el intento primario del Commander corre BAJO el coordinador
+        // de retry de credencial, con la operación raíz del turno. Éste es el
+        // camino donde el retry es completo de punta a punta: el spawn es
+        // awaitable y el outcome trae la señal tipada, así que si la credencial
+        // fue rechazada el coordinador invalida el scope, re-resuelve el
+        // snapshot y vuelve a spawnear UNA sola vez, sin tocar el bucle del
+        // glitch 1M (que cuenta otra cosa: `attempt` acá es el intento de
+        // contexto, no el de credencial).
+        //
+        // Un fallo CERRADO del coordinador no puede dejar al operador sin
+        // respuesta: se degrada al outcome del último intento realmente
+        // ejecutado, que es exactamente lo que pasaba antes de este issue.
+        let ultimoOutcomeDelIntento = null;
+        let outcome;
+        try {
+          const corrida = await credentialRetryWiring.runAttempt({
+            operation: commanderCredentialOperation,
+            provider: 'anthropic',
+            path: credentialRetryWiring.PRIMARY_PATH,
+            destination: attemptSnapshot.SNAPSHOT_DESTINATION.COMMANDER,
+            createSnapshot: (ctx) => construirEnvCommander({
+              provider: 'anthropic',
+              attempt: (ctx && ctx.attempt) || 1,
+              operationId: (ctx && ctx.operationId) || null,
+            }),
+            execute: async ({ snapshot }) => {
+              // #5796 (fix rev-2, defecto 2) — GUARD DE ENTRADA: el turno no
+              // puede spawnearse si ya tiene dueño.
+              //
+              // El fallback in-flight (#4309) puede haber reclamado el turno
+              // MIENTRAS corría el intento anterior — se resuelve en el mismo
+              // handler del frame que llena la proyección del rechazo. Sin este
+              // guard, el intento 2 del coordinador arrancaría un segundo
+              // proceso `claude` concurrente con el secundario que ya está
+              // respondiendo: dos turnos ejecutando tool calls reales sobre el
+              // mismo pedido. El `classify` de abajo evita que se llegue acá,
+              // pero el guard es la barrera dura — lo que protege es un spawn,
+              // no un log, así que va defendido en profundidad.
+              if (inflightFallbackClaimed) {
+                const reclamado = { kind: 'final', text: '', turnoReclamado: true };
+                ultimoOutcomeDelIntento = ultimoOutcomeDelIntento || reclamado;
+                return reclamado;
+              }
+              const r = await attemptAnthropicSpawn({
+                attempt, forceStandardContext, envDelIntento: snapshot,
+              });
+              ultimoOutcomeDelIntento = r;
+              return r;
+            },
+            // #5796 (fix rev-2, defecto 2) — no se clasifica un rechazo cuando
+            // el turno ya fue reclamado: no hay retry legítimo que disparar,
+            // porque el dueño de la resolución es el fallback in-flight. Envuelve
+            // (no reemplaza) `defaultClassify`, así que la política tipada de
+            // #5795 sigue intacta para el caso normal.
+            classify: credentialRetryWiring.makeClaimAwareClassify(() => inflightFallbackClaimed),
+            emit: emitirEventoDeRetryCommander,
+          });
+          outcome = corrida.result;
+        } catch (e) {
+          const motivo = (e && e.reason) || (e && e.code) || 'error_no_tipado';
+          log('commander', `[credential-retry] el turno cerró sin reintento (${motivo}, operation=${commanderCredentialOperationId || 'sin-operacion'})`);
+          if (!ultimoOutcomeDelIntento) throw e;
+          outcome = ultimoOutcomeDelIntento;
+        }
         // #4309 — Si el ejecutor del fallback in-flight reclamó el turno (el
         // primario Anthropic se cayó mid-stream y el secundario está corriendo o
         // ya respondió canned), NO resolvemos acá: el secundario es el dueño de

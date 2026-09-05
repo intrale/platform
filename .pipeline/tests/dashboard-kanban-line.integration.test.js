@@ -13,7 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { spawn } = require('child_process');
+const { spawnDashboard, waitForDashboardBoot } = require('./helpers/dashboard-boot');
 const { getFreePort } = require('./helpers/free-port');
 const { seedConfig } = require('./helpers/sandbox-config');
 
@@ -33,12 +33,18 @@ function makePipelineDirs(root, config) {
     mkdirp(path.join(root, 'logs'));
 }
 
+// #5796 — `timeout:` en las options SÓLO arma el socket timeout: sin un handler
+// del evento 'timeout' el socket queda idle sin destruirse y el callback nunca
+// se invoca. Cuando eso pasa en el sondeo de arranque, la espera no vuelve nunca
+// y el before hook muere con el genérico `test timed out after 120000ms`.
 function getHtml(p, cb) {
-    http.get({ host: '127.0.0.1', port: p, path: '/legacy', timeout: 8000 }, (res) => {
+    const req = http.get({ host: '127.0.0.1', port: p, path: '/legacy', timeout: 8000 }, (res) => {
         let data = '';
         res.on('data', (c) => { data += c; });
         res.on('end', () => cb(null, data));
-    }).on('error', cb);
+    });
+    req.on('error', cb);
+    req.on('timeout', function () { this.destroy(new Error('timeout')); });
 }
 
 before(async () => {
@@ -89,7 +95,8 @@ before(async () => {
     }, null, 2));
 
     port = await getFreePort();
-    child = spawn(process.execPath, [path.join(PIPELINE_SRC, 'dashboard.js')], {
+    child = spawnDashboard({
+        dashboardPath: path.join(PIPELINE_SRC, 'dashboard.js'),
         env: {
             ...process.env,
             PIPELINE_STATE_DIR: tmpDir,
@@ -98,20 +105,15 @@ before(async () => {
             DASHBOARD_HOST: '127.0.0.1',
             GH_BIN: 'gh-noop-nonexistent', // jamás se invoca: title cache poblado
         },
-        stdio: 'ignore',
     });
 
-    // Esperar a que el server levante + fetch.
-    await new Promise((resolve, reject) => {
-        let tries = 0;
-        const tick = () => {
-            getHtml(port, (err, body) => {
-                if (!err && body && body.length > 1000) { html = body; return resolve(); }
-                if (++tries > 40) return reject(new Error('dashboard no levantó: ' + (err && err.message)));
-                setTimeout(tick, 250);
-            });
-        };
-        setTimeout(tick, 500);
+    // Esperar a que el server levante + fetch. El probe devuelve el body ya
+    // cargado, así que el mismo sondeo que confirma el arranque trae el HTML.
+    html = await waitForDashboardBoot({
+        child,
+        probe: () => new Promise((resolve, reject) => {
+            getHtml(port, (err, body) => (err ? reject(err) : resolve(body && body.length > 1000 ? body : null)));
+        }),
     });
 });
 
