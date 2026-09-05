@@ -72,6 +72,15 @@ boot de `pulpo.js` y `restart.js`, mapea cada path a su env var canónica
 Después correr `node .pipeline/restart.js` para que el pipeline reinicie con
 las nuevas credenciales hidratadas.
 
+> **¿Hace falta reiniciar?** Depende del camino por el que se resuelva la
+> credencial, y hoy conviven dos. Con el **camino archivo** (el de esta
+> sección) sí: `loadIntoEnv()` corre en el boot y escribe en el `process.env`
+> del coordinador, así que el material viejo vive en memoria hasta el restart.
+> Con el **camino vault** (`vault.enabled: true`) no: la rotación se propaga
+> con `resetVaultCache(scope)` y el coordinador sigue en pie.
+> Ver [Rotación sin reiniciar el coordinador (#5802)](#rotación-sin-reiniciar-el-coordinador-5802),
+> que explica cómo saber en cuál de los dos estás antes de tocar nada.
+
 **Verificar qué se hidrata** (sin imprimir valores):
 
 ```bash
@@ -497,10 +506,158 @@ con la vieja. **Eso es correcto** — la vieja key revocada va a fallar al
 siguiente request, el child cae con cuota agotada o auth error, y el pipeline
 lo reagenda con la key nueva en el próximo spawn.
 
-Si necesitás invalidación inmediata (ej: la key fue comprometida), **matar
-el pulpo entero** con `taskkill /F /IM node.exe` o `pkill node`, esperar 30s,
-relanzar `node .pipeline/pulpo.js`. Los childs spawneados con la key vieja
-mueren con el padre.
+Lo que cambió con #5802 es **qué pasa en el coordinador**, no en los childs ya
+spawneados: con el camino vault, el próximo lanzamiento resuelve la generación
+nueva sin reiniciar nada. Ver
+[Rotación sin reiniciar el coordinador (#5802)](#rotación-sin-reiniciar-el-coordinador-5802).
+
+Si necesitás invalidación inmediata **de los childs en vuelo** (ej: la key fue
+comprometida), eso sigue siendo un corte duro: **matar el pulpo entero** con
+`taskkill /F /IM node.exe` o `pkill node`, esperar 30s, relanzar
+`node .pipeline/pulpo.js`. Los childs spawneados con la key vieja mueren con el
+padre. Ningún reset de caché puede alcanzar a un proceso hijo que ya recibió su
+copia del material — por eso el corte duro no desaparece, sólo deja de ser el
+procedimiento de rutina.
+
+## Rotación sin reiniciar el coordinador (#5802)
+
+Rotar dejó de exigir un restart del Pulpo **cuando la credencial se resuelve por
+el vault**. Esta sección es el procedimiento repetible: qué correr, qué señales
+esperar, cómo diagnosticar y cómo volver atrás.
+
+### Antes de empezar: en qué camino estás
+
+Los dos caminos conviven y el procedimiento es distinto. Miralo en
+`.pipeline/config.yaml`, no de memoria:
+
+```bash
+grep -nE "^vault:" -A 6 .pipeline/config.yaml   # vault.enabled
+grep -nE "credential_(snapshot|retry)_enabled" .pipeline/config.yaml
+```
+
+| `vault.enabled` | `credential_snapshot_enabled` | `credential_retry_enabled` | Procedimiento |
+|---|---|---|---|
+| `false` | — | — | **Camino archivo**: rotar `credentials.json` + `node .pipeline/restart.js` (las secciones por provider de arriba). El reset de caché no aplica: no hay caché de vault que invalidar. |
+| `true` | `false` | `false` | Reset acotado sirve para las lecturas por instancia, pero los lanzamientos todavía no toman snapshot por intento. Rotá y **verificá** con el checklist de abajo antes de dar por cerrado. |
+| `true` | `true` | `true` | **Camino vault completo**: rotación en caliente, con re-resolución automática ante el rechazo del provider. |
+
+Los tres gates son fail-closed y sólo el booleano `true` exacto los abre: un
+`"true"` entre comillas los deja cerrados. Si alguno está en `false`, **no
+supongas** que el reset se propagó — seguí el camino de la fila que te toca.
+
+### Procedimiento (camino vault)
+
+1. **Aprovisionar la generación nueva en el vault**, con el mismo scope lógico
+   que la vieja (`providers`, `telegram` o `google_drive`). El scope es la
+   unidad de invalidación: no hay forma de invalidar "una key" sin invalidar su
+   scope, y eso es deliberado.
+2. **Invalidar la caché acotada al scope**, sin tocar los demás:
+
+   ```bash
+   node -e "require('./.pipeline/lib/credentials').resetVaultCache('providers')"
+   ```
+
+   Imprime `{ scope, invalidadas }`. `invalidadas` es la cantidad de entradas de
+   memo que se tiraron: `0` es un resultado **válido** (nadie había leído ese
+   scope todavía, o ya se había invalidado), no un error.
+
+   > **Ojo con el proceso.** Ese comando invalida la caché **del proceso que lo
+   > corre**. La caché que importa es la del coordinador vivo, y ahí el reset lo
+   > dispara el propio pipeline cuando el provider rechaza la credencial (paso 3).
+   > Correrlo desde la terminal sirve para **validar el contrato y ver el shape
+   > del retorno**, no para invalidar el Pulpo en marcha.
+
+3. **Dejar que el primer rechazo haga el trabajo.** Con
+   `credential_retry_enabled: true`, el primer `authentication_rejected` de un
+   lanzamiento invalida el scope, re-resuelve el snapshot contra la generación
+   nueva y reintenta **una sola vez**. Si el segundo intento también es
+   rechazado, la operación falla **cerrada**: no hay tercer intento, y ningún
+   fallback de la cadena reinicia el presupuesto.
+4. **Revocar la generación vieja** en la consola del provider.
+5. **Actualizar `last_rotated`** en [`docs/secrets-inventory.md`](../secrets-inventory.md)
+   y commitear.
+
+Para invalidar **todos** los scopes de una (rotación masiva, incidente):
+
+```bash
+node -e "require('./.pipeline/lib/credentials').resetVaultCacheAll()"
+```
+
+`resetVaultCacheAll()` tiene nombre propio a propósito: no hay comodín `'*'` que
+a veces signifique "todo" y a veces sea un scope inválido. Un scope que no está
+en `scopesInvalidables()` se rechaza fail-closed, **antes** de tocar estado:
+
+```bash
+node -e "console.log(require('./.pipeline/lib/credentials').scopesInvalidables())"
+# → [ 'google_drive', 'providers', 'telegram' ]
+```
+
+### Señales esperadas
+
+Todo lo observable usa **scope lógico, launch/operation id, versión opaca,
+estado y timestamps**. No hay valores, ni hashes, ni longitudes, ni nada
+derivado del material — un hash estable sería un oráculo de igualdad entre
+generaciones, así que tampoco se publica.
+
+| Señal | Cuándo aparece | Qué significa |
+|---|---|---|
+| `credential_invalidated` | primer rechazo tipado de la operación | se tiró la caché del scope; `invalidated_entries` es un conteo, no un identificador |
+| `credential_reresolved` | inmediatamente después | se resolvió un snapshot nuevo; `snapshot_keys` es una **cardinalidad** |
+| `credential_retry_closed` con `reason: second_rejection` | el reintento también fue rechazado | fail-closed correcto: la credencial nueva tampoco sirve |
+| `credential_retry_closed` con `reason: budget_exhausted` | otro eslabón de la cadena ya usó el retry | esperado en fallbacks; **no** es un segundo defecto |
+
+Una rotación sana emite exactamente **un** `credential_invalidated` y **un**
+`credential_reresolved` por operación raíz, aunque la cadena de fallbacks tenga
+cinco eslabones. Ver más de uno significa que alguien está creando operaciones
+nuevas donde debería compartir la raíz.
+
+### Diagnóstico
+
+| Síntoma | Causa probable | Qué mirar |
+|---|---|---|
+| `SNAPSHOT_VAULT_DISABLED` | `vault.enabled` cerrado | la tabla de "en qué camino estás" |
+| `SNAPSHOT_VAULT_CONFIG_INVALID` | config incoherente (típico: `shared_secrets` declara un scope que no está en `required_scopes`) | la sección `vault:` de `config.yaml` |
+| `SNAPSHOT_VAULT_FAILURE` | el vault no contesta | conectividad/permisos IAM; **no** se degrada al archivo, por diseño |
+| `SNAPSHOT_SECRET_INVALID` | la clave existe pero está vacía o es un placeholder | el aprovisionamiento del paso 1 |
+| `CREDENTIAL_RETRY_SCOPE_NOT_INVALIDABLE` | se pidió invalidar algo fuera del inventario | `scopesInvalidables()` |
+| Rechazo que se repite sin invalidar nunca | la señal no es `authentication_rejected` | timeout, 5xx, cuota, permisos y texto libre **no** invalidan ni consumen retry, a propósito |
+
+Esa última fila es la confusión más cara: un 401 que llega como texto libre en
+stderr, sin señal tipada, **no** dispara la rotación en caliente. El clasificador
+sólo actúa sobre la señal estructurada, porque gastar el presupuesto con un
+timeout dejaría a la operación sin defensa contra el rechazo real que venga
+después.
+
+### Rollback
+
+Si la generación nueva resultó mala:
+
+1. **Reponer la generación anterior en el vault** (si todavía no la revocaste) o
+   aprovisionar una tercera. No hay "deshacer" de un reset: la caché no guarda
+   la generación vieja, y eso es la garantía de que un rollback no repuebla
+   material rechazado.
+2. **Invalidar el scope de nuevo** (paso 2 del procedimiento).
+3. Si el pipeline quedó fallando cerrado en cadena, **corte duro**: matar el
+   Pulpo y relanzarlo. Es la salida siempre disponible, no la de rutina.
+
+Al diagnosticar, **nunca** imprimas headers, payloads, el entorno del proceso ni
+el stdout crudo del provider: son los cuatro lugares por donde se filtra
+material en un incidente. Lo que se publica es scope lógico, launch id, versión
+opaca, estado y timestamps — nada más.
+
+### Verificación (checklist)
+
+- [ ] `node -e "console.log(require('./.pipeline/lib/credentials').scopesInvalidables())"` lista el scope que rotaste.
+- [ ] El reset del scope devuelve `{ scope, invalidadas }` y **no** tira.
+- [ ] Un lanzamiento posterior a la rotación resuelve la generación nueva, y el snapshot ya entregado al lanzamiento anterior **no** cambió.
+- [ ] Ante dos rechazos seguidos la operación falla cerrada, sin tercer intento.
+- [ ] Ni la evidencia, ni los eventos, ni los errores, ni las capturas de stdout/stderr contienen material.
+- [ ] `npm run test:pipeline` queda verde.
+
+El comportamiento entero está fijado por
+[`.pipeline/tests/credential-rotation-e2e.test.js`](../../.pipeline/tests/credential-rotation-e2e.test.js):
+si este runbook y ese test se contradicen, **el test manda** y el runbook está
+desactualizado.
 
 ## Migración al vault: secuencia por host, convivencia y corte (#5453)
 

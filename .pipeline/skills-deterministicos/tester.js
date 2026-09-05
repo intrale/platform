@@ -60,6 +60,23 @@ const DEFAULT_COVERAGE_THRESHOLD = 80;
 //   2) Wall-clock duro mata el child (con árbol) si la batería completa no
 //      termina, mucho antes del watchdog del Pulpo. El motivo se reporta.
 //   3) Heartbeat de progreso para diagnosticar a cuál archivo le tocaba el cuelgue.
+//
+// Rebote #5802 — el wall-clock pasó a ser POR BATCH, no un presupuesto global
+// repartido entre todos. Causa raíz del rebote: la batería del pipeline llegó a
+// 916 archivos, que ya no entran en un solo spawn (límite de cmdline de Windows)
+// y se parten en 2 batches. Medido en HEAD limpio: batch 1 = 553 s, batch 2 =
+// 255 s, total 808 s — 0 fallos. Con el deadline GLOBAL de 720 s, el batch 2 se
+// moría a mitad de camino, `agg.valid` quedaba en false y el tester reportaba
+// `exit 124 sin reporte JUnit parseable` con `tests=0`: un falso rojo que rebota
+// al dev por una suite que en realidad está verde.
+//
+// El batching es una consecuencia MECÁNICA del límite de línea de comandos
+// (#3953), no una decisión de presupuesto: repartir un tiempo fijo entre N
+// batches hace que el timeout dependa del largo de los nombres de archivo. Un
+// deadline por batch conserva intacta la protección anti-cuelgue de #3344 —
+// misma granularidad, mismo kill con árbol, mismo heartbeat — y escala solo
+// cuando la suite crece. El techo (12 min × batches) sigue muy por debajo del
+// watchdog del Pulpo para `tester` (45 min en `config.yaml`).
 const NODE_TEST_PER_TEST_TIMEOUT_MS = 120 * 1000;
 const NODE_TEST_WALL_TIMEOUT_MS = 12 * 60 * 1000;
 const NODE_TEST_IDLE_LOG_INTERVAL_MS = 30 * 1000;
@@ -960,13 +977,18 @@ function spawnNodeTestBatch({ repoRoot, childEnv, batchFiles, reportFile, remain
  */
 async function runNodeTests(repoRoot, env, opts = {}) {
     const onLog = typeof opts.onLog === 'function' ? opts.onLog : () => {};
-    const started = Date.now();
-    const files = findNodeTestFiles(repoRoot);
+    // Costuras inyectables (#5802). En producción los tres defaults son los de
+    // siempre; el test del presupuesto por batch los sustituye para ejercitar la
+    // secuencia completa sin spawnear un solo proceso ni esperar 12 minutos.
+    const reloj = typeof opts.now === 'function' ? opts.now : Date.now;
+    const spawnBatch = typeof opts.spawnBatch === 'function' ? opts.spawnBatch : spawnNodeTestBatch;
+    const started = reloj();
+    const files = Array.isArray(opts.files) ? opts.files : findNodeTestFiles(repoRoot);
     if (files.length === 0) {
         return {
             exit_code: 0, no_tests: true,
             stdout: '', stderr: '',
-            wall_ms: Date.now() - started,
+            wall_ms: reloj() - started,
             report_file: null, files: [],
             summary: { valid: false, tests: 0, failures: 0, errors: 0, skipped: 0,
                        time_seconds: 0, suites: 0, failed_tests: [] },
@@ -1080,25 +1102,23 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         let lastProgressLine = '';
         let lastReportFile = null;
 
-        // Deadline global compartido por todos los batches: el wall-clock total
-        // de la batería no puede exceder NODE_TEST_WALL_TIMEOUT_MS.
-        const deadlineAt = started + NODE_TEST_WALL_TIMEOUT_MS;
+        // Presupuesto de wall-clock POR BATCH (#5802). Cada spawn arranca con el
+        // presupuesto completo: el batching lo decide el límite de cmdline de
+        // Windows, no el tiempo disponible, así que repartir un total fijo entre
+        // N batches mataba batches sanos por el largo de los nombres de archivo
+        // (ver el bloque de NODE_TEST_WALL_TIMEOUT_MS). La protección
+        // anti-cuelgue queda idéntica: un batch que se cuelga sigue muriendo a
+        // los 12 min, con su heartbeat y su kill de árbol.
+        const perBatchBudgetMs = NODE_TEST_WALL_TIMEOUT_MS;
 
         for (let i = 0; i < batches.length; i++) {
             const batchLabel = `${i + 1}/${batches.length}`;
-            const remainingMs = deadlineAt - Date.now();
-            if (remainingMs <= 0) {
-                timedOut = true;
-                exitCode = 124;
-                onLog(`[tester:node-test] WALL-TIMEOUT antes del batch ${batchLabel} — sin tiempo restante`);
-                break;
-            }
             // Un solo batch conserva el nombre histórico del reporte (consumido
             // por logs y eventuales lectores); múltiples batches usan sufijo.
             const reportFile = path.join(logsDir, singleBatch ? 'node-tests-junit.xml' : `node-tests-junit.${i}.xml`);
-            const res = await spawnNodeTestBatch({
+            const res = await spawnBatch({
                 repoRoot, childEnv, batchFiles: batches[i],
-                reportFile, remainingMs, onLog, batchLabel,
+                reportFile, remainingMs: perBatchBudgetMs, onLog, batchLabel,
             });
             lastReportFile = reportFile;
             stdout += res.stdout;
@@ -1114,9 +1134,10 @@ async function runNodeTests(repoRoot, env, opts = {}) {
             if (Array.isArray(s.failed_tests)) agg.failed_tests.push(...s.failed_tests);
             // El agregado es válido solo si CADA batch produjo un JUnit parseable.
             agg.valid = agg.valid && s.valid;
-            // Primer exit code no-cero gana (preserva el detalle del fallo); un
-            // timeout en cualquier batch corta la secuencia (el deadline global
-            // ya está vencido o por vencerse).
+            // Primer exit code no-cero gana (preserva el detalle del fallo). Un
+            // timeout corta la secuencia: con su presupuesto completo agotado,
+            // ese batch está colgado de verdad, y seguir con los siguientes sólo
+            // retrasaría un rojo que ya es seguro (`agg.valid` quedó en false).
             if (res.timed_out) {
                 timedOut = true;
                 exitCode = 124;
@@ -1130,7 +1151,7 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         return {
             exit_code: timedOut ? 124 : exitCode,
             stdout, stderr,
-            wall_ms: Date.now() - started,
+            wall_ms: reloj() - started,
             report_file: lastReportFile, files,
             timed_out: timedOut,
             last_progress_line: lastProgressLine,
@@ -1979,6 +2000,10 @@ module.exports = {
     parseNodeTestJunit,
     buildNodeTestBatches,
     runNodeTests,
+    // #5802 — el presupuesto de wall-clock es POR BATCH. Se exportan para que el
+    // test del contrato los lea del módulo en vez de hardcodear los 12 minutos.
+    NODE_TEST_WALL_TIMEOUT_MS,
+    NODE_TEST_PER_TEST_TIMEOUT_MS,
     ensureGitInPath,
     getChangedFilesVsMain,
     getDeletedFilesVsMain,
