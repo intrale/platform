@@ -112,6 +112,7 @@ function escribirVeredicto(estado, issue, data, { mtimeMs } = {}) {
 // siempre y hace explícito de qué lado del corte está cada dropfile — mismo
 // patrón que `escribirAprobadoSinSello` en
 // `qa-evidence-seal-rebote-security-6496.test.js`.
+//
 // La mecánica del fechado es UNA sola —  el `mtimeMs` de `escribirVeredicto`
 // contra `PRE_CORTE_MS`/`POST_CORTE_MS` (#6034) — y estos dos wrappers sólo le
 // ponen nombre al lado del corte, para que cada fixture declare en su propia
