@@ -718,3 +718,93 @@ test('SEC-5.2 · el arbol de entrega no tiene flags de control sin clasificar', 
         'toda flag de produccion con forma de control esta cubierta por el registro',
     );
 });
+
+// --- rev-1 · el guardrail no se evade por casing ni por asignacion compuesta -
+
+test('rev-1 · una escritura en MINUSCULAS a una variable de control es ESTRICTA, no invisible', () => {
+    // En Windows `process.env` es case-insensitive: la clave en minuscula apaga
+    // EXACTAMENTE el mismo control que la mayuscula. Con la clase de nombre
+    // restringida a `[A-Z0-9_]` el lint no la veia NI COMO DEUDA, asi que el dev
+    // frenado por `withEnv` (que si la bloquea, CA-38) la evadia a mano.
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/__tests__/minus.test.js', PE + '.pipeline_gate0_enabled = "0";\n');
+    const v = violationsDe(root);
+    assert.strictEqual(v.length, 1, 'la escritura en minusculas se detecta');
+    assert.strictEqual(v[0].severity, 'estricta', 'apagar un control es estricta, sin importar el casing');
+    assert.strictEqual(v[0].variable, 'pipeline_gate0_enabled');
+    assert.strictEqual(v[0].forma, 'dot');
+});
+
+test('rev-1 · el casing MIXTO tampoco evade, y el nombre NO se reporta truncado', () => {
+    // Con `[A-Z0-9_]+` un nombre `Xxxx` no solo escapaba a la deteccion: en la
+    // forma `delete` el grupo capturaba la PRIMERA letra suelta y la identidad
+    // de la variable llegaba truncada a allowlist y baseline.
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/__tests__/mixto.test.js', [
+        PE + '.Pipeline_Gate0_Enabled = "0";',
+        DEL + PE + '.ProgramFiles;',
+        '',
+    ].join('\n'));
+    const v = violationsDe(root);
+    assert.strictEqual(v.length, 2);
+    assert.strictEqual(v[0].variable, 'Pipeline_Gate0_Enabled');
+    assert.strictEqual(v[0].severity, 'estricta');
+    assert.strictEqual(v[1].variable, 'ProgramFiles', 'el nombre completo, no la `P` suelta');
+    assert.strictEqual(v[1].forma, 'delete');
+});
+
+test('rev-2 · las asignaciones compuestas ||= ??= += tambien escriben y se detectan', () => {
+    // `X ||= "1"` ENCIENDE el escape hatch cuando la variable esta ausente, que
+    // es el caso normal en CI. El lookahead `=(?!=)` las dejaba fuera a las tres.
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/__tests__/comp.test.js', [
+        PE + '.PULPO_SKIP_SECRETS_HALT ||= "1";',
+        PE + '.PULPO_SKIP_SECRETS_HALT ??= "1";',
+        PE + '.PIPELINE_GATE0_ENABLED += "0";',
+        PE + '["PULPO_SKIP_SECRETS_HALT"] ||= "1";',
+        '',
+    ].join('\n'));
+    const v = violationsDe(root);
+    assert.strictEqual(v.length, 4, 'las tres formas compuestas, en `dot` y en `computed`');
+    for (const each of v) {
+        assert.strictEqual(each.severity, 'estricta', each.variable + ' escrita en su sentido inseguro');
+    }
+    assert.deepStrictEqual(v.map((x) => x.forma), ['dot', 'dot', 'dot', 'computed']);
+});
+
+test('rev-2 · las COMPARACIONES siguen sin ser falsos positivos', () => {
+    // La alternancia no puede aflojar el lookahead: leer no es escribir, y un
+    // guardrail que reporta lecturas se vuelve ruido y el equipo lo apaga.
+    const root = makeTmpPipeline();
+    placeJs(root, 'lib/__tests__/lee.test.js', [
+        'if (' + PE + '.PIPELINE_GATE0_ENABLED === "1") {}',
+        'if (' + PE + '.PIPELINE_GATE0_ENABLED == "1") {}',
+        'if (' + PE + '.PIPELINE_GATE0_ENABLED !== "1") {}',
+        'const a = ' + PE + '.PIPELINE_GATE0_ENABLED + "=b";',
+        'const b = ' + PE + '.PIPELINE_GATE0_ENABLED ?? "x";',
+        'const c = ' + PE + '.PIPELINE_GATE0_ENABLED || "x";',
+        '',
+    ].join('\n'));
+    assert.deepStrictEqual(violationsDe(root), []);
+});
+
+test('rev-2 / SEC-8 · el snippet de una compuesta corta ANTES del valor, sin dejar el operador', () => {
+    assert.strictEqual(safeSnippet(PE + '.PULPO_SKIP_SECRETS_HALT ||= "sk-secreto"'), PE + '.PULPO_SKIP_SECRETS_HALT');
+    assert.strictEqual(safeSnippet(PE + '.FOO ??= "sk-secreto"'), PE + '.FOO');
+    assert.strictEqual(safeSnippet(PE + '.FOO += "sk-secreto"'), PE + '.FOO');
+    assert.strictEqual(safeSnippet(PE + '.FOO = "sk-secreto"'), PE + '.FOO');
+});
+
+test('rev-1 · el helper y el lint coinciden: lo que withEnv bloquea, el lint lo ve', () => {
+    // El hallazgo era EXACTAMENTE esta divergencia: `withEnv` bloqueaba la clave
+    // en minuscula (derivacion nominal con flag `i`) y el lint no la reportaba,
+    // asi que la salida de escape era escribirla a mano.
+    const registry = lint.getRegistry();
+    for (const nombre of ['pulpo_skip_secrets_halt', 'Pipeline_Gate0_Enabled', 'PIPELINE_GATE0_ENABLED']) {
+        assert.ok(registry.isControl(nombre), nombre + ' es variable de control para el registro');
+        const root = makeTmpPipeline();
+        placeJs(root, 'lib/__tests__/par.test.js', PE + '.' + nombre + ' = "0";\n');
+        const v = lint.lint({ pipelineRoot: root, registry }).violations;
+        assert.strictEqual(v.length, 1, nombre + ' es visible para el lint');
+    }
+});

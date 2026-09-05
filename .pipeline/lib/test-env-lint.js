@@ -76,10 +76,34 @@ const SELF_EXEMPT = new Set([
 // --- Deteccion: las CUATRO formas -------------------------------------------
 // La ASSIGN_RE captura el LADO DERECHO (grupo 2): clasificar por direccion
 // exige el valor. El snippet reportado se corta despues en el `=` (SEC-8).
-const ASSIGN_RE = /process\.env\.([A-Z0-9_]+)\s*=(?!=)\s*([^;\n]*)/g;
-const COMPUTED_RE = /process\.env\[([^\]]+)\]\s*=(?!=)\s*([^;\n]*)/g;
-const DELETE_RE = /delete\s+process\.env(?:\.([A-Z0-9_]+)|\[([^\]]+)\])/g;
-const WHOLE_RE = /process\.env\s*=(?!=)|Object\.assign\(\s*process\.env/g;
+//
+// NOMBRE_RE — `[A-Za-z0-9_]`, NO `[A-Z0-9_]`. En Windows `process.env` es
+// case-insensitive: escribir la clave en minusculas deja el MISMO control
+// leido en mayusculas por el consumidor, y es justo la plataforma que
+// el issue cita para justificar la case-insensitivity del registro. Con la
+// clase en mayusculas el guardrail no veia la escritura en minuscula NI COMO
+// DEUDA: el helper `withEnv` si la bloquea (derivacion nominal con flag `i`,
+// CA-38), asi que el dev frenado por el helper la evadia escribiendo a mano en
+// minuscula — exactamente el vector que el guardrail existe para cazar, y que
+// la seccion 7 del issue declara cerrado. La infra de clasificacion ya resolvia
+// bien el nombre en minusculas (`direction()` hace `toUpperCase()` para las
+// nominales y compila los patrones con flag `i`); el unico filtro era esta
+// clase de caracteres. NO volver a restringirla a `[A-Z0-9_]`.
+const NOMBRE_RE_SRC = '[A-Za-z0-9_]+';
+// ASSIGN_OP — la asignacion compuesta TAMBIEN escribe. El lookahead `=(?!=)`
+// excluye correctamente las comparaciones (`==`, `===`, `!==`), pero sin esta
+// alternancia dejaba fuera `||=`, `??=` y `+=`. Un `||=` sobre el escape hatch
+// de secretos lo ENCIENDE cuando la variable esta ausente (el caso normal en
+// CI) y no se reportaba nada. La alternancia no admite espacios internos:
+// `||=` es un token, y `x + '=y'` no matchea.
+//
+// Este archivo se audita a si mismo (no esta en SELF_EXEMPT): por eso los
+// comentarios describen las formas en prosa y NO las escriben literales.
+const ASSIGN_OP_SRC = '\\s*(?:\\|\\||\\?\\?|\\+)?=(?!=)';
+const ASSIGN_RE = new RegExp('process\\.env\\.(' + NOMBRE_RE_SRC + ')' + ASSIGN_OP_SRC + '\\s*([^;\\n]*)', 'g');
+const COMPUTED_RE = new RegExp('process\\.env\\[([^\\]]+)\\]' + ASSIGN_OP_SRC + '\\s*([^;\\n]*)', 'g');
+const DELETE_RE = new RegExp('delete\\s+process\\.env(?:\\.(' + NOMBRE_RE_SRC + ')|\\[([^\\]]+)\\])', 'g');
+const WHOLE_RE = new RegExp('process\\.env' + ASSIGN_OP_SRC + '|Object\\.assign\\(\\s*process\\.env', 'g');
 
 const SENTIDOS = Object.freeze(['encender', 'apagar', 'cualquiera']);
 
@@ -649,7 +673,11 @@ function classify(hit, registry) {
  * del pre-commit y log de CI) y aca el match INCLUYE el valor asignado.
  */
 function safeSnippet(matchText) {
-    return String(matchText).split('=')[0].trim().slice(0, 120);
+    // El corte incluye el operador compuesto (`||=`, `??=`, `+=`) para no dejar
+    // el `||` colgando en el reporte. La garantia SEC-8 se mantiene: cualquier
+    // alternativa del split termina en el PRIMER `=`, asi que el elemento [0]
+    // nunca puede contener el valor asignado.
+    return String(matchText).split(/\s*(?:\|\||\?\?|\+)?=/)[0].trim().slice(0, 120);
 }
 
 /**
