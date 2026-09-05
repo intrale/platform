@@ -31,6 +31,25 @@ const HEAD_FALSO = 'a'.repeat(40);
 // `normalizeIssueNumber` (regex /^[1-9][0-9]{0,6}$/).
 const ISSUE_FIXTURE = 999496;
 
+// #6034 (rebote del tester) — El corte temporal duro que el rebote de security
+// de #6496 agregó a `migratePreSealBacklog` (`MIGRACION_CORTE_ISO`) data los
+// candidatos por el `mtime` del dropfile. Estos tests escribían sus fixtures
+// con `fs.writeFileSync` a secas, así que el `mtime` era la hora de la corrida:
+// pasaban sólo mientras el reloj de pared estuviera ANTES del corte, y a partir
+// del 2026-09-05T00:00Z empezaron a fallar los tres que esperan exención
+// (`exentos: []` en vez del backlog). No era una regresión de código — el
+// binario y el test son byte-idénticos a `origin/main` — sino una bomba de
+// tiempo: el test medía el calendario, no el comportamiento.
+//
+// Se ancla el `mtime` a la constante del módulo, que es el mismo patrón que ya
+// usa `qa-evidence-seal-rebote-security-6496.test.js:313-318` (por eso ese
+// archivo no explotó). Así el resultado es el mismo se corra el test hoy o
+// dentro de dos años, y "pre/post corte" pasa a ser un dato explícito del
+// fixture en vez de un efecto colateral de cuándo corriste la suite.
+const UN_DIA_MS = 86400000;
+const PRE_CORTE_MS = seal.MIGRACION_CORTE_MS - UN_DIA_MS;
+const POST_CORTE_MS = seal.MIGRACION_CORTE_MS + UN_DIA_MS;
+
 function tmpDir(prefijo) {
   return fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), prefijo));
 }
@@ -59,22 +78,16 @@ function crearEstado() {
   return dir;
 }
 
-// #6496 (A08) — La migración pre-sellado tiene un CORTE TEMPORAL DURO en código
-// (`MIGRACION_CORTE_MS`) y data cada dropfile por su `mtime` REAL en disco. Un
-// fixture escrito sin fechar hereda el mtime del reloj, así que estos tests
-// pasaban sólo mientras la fecha de ejecución fuera anterior al corte y viraban
-// a rojo por sí solos al cruzarlo (bomba de tiempo: rojo desde el 2026-09-05).
-// Se fechan relativo a la constante exportada — no a fechas literales — para que
-// mover el corte no vuelva a romperlos. Mismo patrón que
-// `qa-evidence-seal-rebote-security-6496.test.js`.
-const MTIME_PRE_CORTE = seal.MIGRACION_CORTE_MS - 7 * 86400000;
-const MTIME_POST_CORTE = seal.MIGRACION_CORTE_MS + 86400000;
-
 /**
- * Escribe un veredicto de fixture. `mtimeMs` data el dropfile: es lo único que
- * la migración mira para decidir si cae antes o después del corte.
+ * Escribe un veredicto en `procesado/`.
+ *
+ * `mtimeMs` (#6034) fija la fecha del dropfile de forma explícita. Es lo que
+ * `migratePreSealBacklog` mira para decidir si el veredicto es anterior al
+ * corte de migración; sin fijarlo, el fixture hereda la hora de la corrida y el
+ * test queda atado al reloj de pared. Los casos que no dependen de la migración
+ * pueden omitirlo.
  */
-function escribirVeredicto(estado, issue, data, mtimeMs) {
+function escribirVeredicto(estado, issue, data, { mtimeMs } = {}) {
   const file = path.join(estado, 'desarrollo', 'verificacion', 'procesado', `${issue}.qa`);
   fs.writeFileSync(file, yaml.dump(data, { lineWidth: -1 }));
   if (typeof mtimeMs === 'number') {
@@ -328,11 +341,12 @@ test('stripDeclaredSeal borra la exencion que declare el agente', () => {
 
 test('la migracion es idempotente', () => {
   const estado = crearEstado();
-  // Backlog PRE-sellado: por definición anterior al corte (es lo que la
-  // migración viene a rescatar). Sin datarlo, el corte duro lo deja afuera.
-  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_PRE_CORTE);
-  escribirVeredicto(estado, 6362, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_PRE_CORTE);
-  escribirVeredicto(estado, 6259, { resultado: 'rechazado' }, MTIME_PRE_CORTE);
+  // Backlog PRE-sellado: por definición son dropfiles anteriores al corte.
+  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: PRE_CORTE_MS });
+  escribirVeredicto(estado, 6362, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: PRE_CORTE_MS });
+  // El rechazado también va pre-corte: así el motivo por el que no se exime es
+  // el que este test quiere probar (no es `aprobado`) y no un descarte por fecha.
+  escribirVeredicto(estado, 6259, { resultado: 'rechazado' }, { mtimeMs: PRE_CORTE_MS });
 
   const uno = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
   assert.deepStrictEqual(uno.exentos.sort(), [6258, 6362]);
@@ -369,17 +383,17 @@ test('un aprobado sin sello posterior al corte NO recibe exencion en un boot pos
   // estado aislado. El defecto sólo aparece con la migración en el medio.
   const repo = crearRepo();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_PRE_CORTE);
+  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: PRE_CORTE_MS });
 
   // BOOT 1 — la ventana de migración se abre una única vez y cierra el corte.
   const boot1 = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
   assert.deepStrictEqual(boot1.exentos, [6258], 'el backlog pre-sellado sí se exime (CA-4)');
   assert.strictEqual(boot1.ventana, 'abierta');
 
-  // Llega un veredicto NUEVO, posterior al corte, aprobado y sin sello.
-  // Datado explícitamente DESPUÉS del corte: es el escenario que el test
-  // nombra, y no puede depender de que el reloj de la máquina ya lo haya cruzado.
-  escribirVeredicto(estado, 7777, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_POST_CORTE);
+  // Llega un veredicto NUEVO, posterior al corte, aprobado y sin sello. El
+  // `mtime` va explícito (#6034): "posterior al corte" es la premisa del caso,
+  // no algo que deba depender de cuándo se corra la suite.
+  escribirVeredicto(estado, 7777, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: POST_CORTE_MS });
   const antes = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 7777, cwd: repo.dir });
   assert.strictEqual(antes.caduco, true, 'antes del boot el gate ya lo declara caduco');
   assert.strictEqual(antes.motivo, 'sin-sello');
@@ -411,21 +425,46 @@ test('un aprobado sin sello posterior al corte NO recibe exencion en un boot pos
 
 test('un dropfile ya sellado no recibe exencion', () => {
   const estado = crearEstado();
+  // Pre-corte a propósito: el descarte tiene que venir de que YA está sellado,
+  // no de que el dropfile sea posterior al corte (#6034).
   escribirVeredicto(estado, ISSUE_FIXTURE, {
     resultado: 'aprobado', sello: { version: 1, head: HEAD_FALSO, artefactos: [] },
-  });
+  }, { mtimeMs: PRE_CORTE_MS });
   const res = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
   assert.deepStrictEqual(res.exentos, []);
   assert.strictEqual(leerVeredicto(estado, ISSUE_FIXTURE).sello_exencion, undefined,
     'un veredicto que YA tiene contra qué chequearse no se exime');
 });
 
+test('la exencion del backlog pre-sellado no depende de cuando se corra la suite', () => {
+  // GUARDIÁN anti-bomba-de-tiempo (#6034). Los tres tests de CA-4 de arriba se
+  // pusieron rojos solos al cruzar `MIGRACION_CORTE_ISO`, sin que cambiara una
+  // línea de código: databan sus fixtures con la hora de la corrida. Este test
+  // fija la propiedad que faltaba afirmar — la migración se decide por el
+  // `mtime` del dropfile contra el corte, y por NADA que dependa del reloj de
+  // pared ni del `ahora` que reciba. Si alguien vuelve a colgar la decisión de
+  // `Date.now()`, este caso se cae con cualquier fecha de sistema.
+  const estado = crearEstado();
+  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: PRE_CORTE_MS });
+  escribirVeredicto(estado, 7777, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: POST_CORTE_MS });
+
+  // `ahora` es sólo el sello temporal que se escribe en la marca y la auditoría:
+  // no participa de la decisión. Se pasa uno absurdamente lejano al corte para
+  // que, si alguna vez se lo usara para datar, el resultado cambiara.
+  const res = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2099-01-01T00:00:00Z' });
+
+  assert.deepStrictEqual(res.exentos, [6258], 'lo anterior al corte se exime, aunque la corrida sea muy posterior');
+  assert.strictEqual(res.fueraDeVentana, 1, 'lo posterior al corte queda contado, no exento');
+  assert.strictEqual(leerVeredicto(estado, 7777).sello_exencion, undefined);
+});
+
 test('el gate sobre el backlog migrado produce cero re-encolados', () => {
   const repo = crearRepo();
   const estado = crearEstado();
   const issues = [5220, 5244, 5459, 5986, 6145, 6208, 6239, 6362, 6432, 6611];
+  // Backlog real del corte: todos anteriores a `MIGRACION_CORTE_MS` (#6034).
   for (const n of issues) {
-    escribirVeredicto(estado, n, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_PRE_CORTE);
+    escribirVeredicto(estado, n, { resultado: 'aprobado', evidencia: 'prosa' }, { mtimeMs: PRE_CORTE_MS });
   }
 
   seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });

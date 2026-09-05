@@ -1830,6 +1830,39 @@ vault:
   # namespace), el gate falla nombrando `vault.hostId`.
   hostIdFromHostname: true
   # ---------------------------------------------------------------------------
+  # #6034 · Herencia de credenciales del KERNEL hacia productos hijos
+  # ---------------------------------------------------------------------------
+  # La autoridad es de quien ENTREGA la credencial, nunca de quien la recibe.
+  # `credentials[].inherit` del descriptor hijo es a lo sumo una SOLICITUD: la
+  # herencia efectiva es la INTERSECCIÓN de esa solicitud con un grant de acá.
+  #
+  # Por qué el grant vive en config.yaml y no en el descriptor: el descriptor de
+  # un alta se persiste VERBATIM desde un pedido autoemitido por el propio
+  # producto (`product-control-drainer.js`), así que un grant declarado ahí sería
+  # autoconcedible — el beneficiario firmándose su propio permiso. Este archivo
+  # no es escribible por esa vía.
+  #
+  # Reglas fail-closed (`.pipeline/lib/kernel-inheritance.js`):
+  #   - Sin grant ⇒ no hereda, aunque el hijo lo declare en `inherit`.
+  #   - `enabled` sólo enciende con el booleano `true` EXACTO ("true", 1 o "si"
+  #     no lo encienden).
+  #   - `until` (ISO-8601) es OBLIGATORIO: sin fecha el grant no aplica, y caduca
+  #     solo aunque el flag siga en `true`. Un permiso "temporal" sin vencimiento
+  #     se vuelve permanente por olvido.
+  #   - `aws` y `github` NUNCA son heredables: quedan fuera de
+  #     `INHERITABLE_SCOPES` (allowlist), así que ningún grant puede concederlos.
+  #   - Los scopes se escriben en forma de CONTRATO (`providers:anthropic`, con
+  #     `:`), nunca en el segmento interno del vault (`providers__anthropic`).
+  #
+  # Se commitea VACÍO a propósito: ningún grant activo en el repo. El ejemplo
+  # queda comentado para que dar de alta uno sea una decisión explícita.
+  inheritance:
+    grants: []
+    # - projectId: "acme"
+    #   scopes: ["providers:anthropic"]
+    #   enabled: true
+    #   until: "2026-12-31T00:00:00Z"
+  # ---------------------------------------------------------------------------
   # #5426 · CA-11 — mecanismo de identidad del host (raíz de confianza)
   # ---------------------------------------------------------------------------
   # Cómo prueba este host quién es ANTES de poder leer el vault. Es la señal
