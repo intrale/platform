@@ -61,8 +61,43 @@ const DEFAULT_COVERAGE_THRESHOLD = 80;
 //      termina, mucho antes del watchdog del Pulpo. El motivo se reporta.
 //   3) Heartbeat de progreso para diagnosticar a cuál archivo le tocaba el cuelgue.
 const NODE_TEST_PER_TEST_TIMEOUT_MS = 120 * 1000;
-const NODE_TEST_WALL_TIMEOUT_MS = 12 * 60 * 1000;
 const NODE_TEST_IDLE_LOG_INTERVAL_MS = 30 * 1000;
+
+// Presupuesto de wall-clock de la batería completa (rebote #5901 rev-1).
+//
+// Historia: el valor original era 12 min. Se eligió cuando la suite del
+// pipeline tenía ~800 archivos y corría en 3-5 min. La suite creció a 920
+// archivos / 17k tests y el margen se consumió solo — sin que ningún cambio
+// lo tocara y sin que nadie lo notara, porque el síntoma aparece como un
+// rebote al dev del issue en curso y no como una alerta de infraestructura.
+//
+// Medición empírica de esta pasada, misma suite, misma máquina (8 vCPU):
+//   - máquina descargada:              469 s  (7m49s, exit 0, 16657 tests)
+//   - máquina bajo carga del pipeline: 720-850 s → cruzaba los 12 min
+// La contención es el multiplicador dominante: archivos individuales pasan
+// de 38 s a 180 s (4,7x) cuando corren varios agentes en paralelo. Y correr
+// con el pipeline cargado no es el caso patológico: es el caso NORMAL, porque
+// el tester se dispara desde `verificacion` mientras hay dev y build vivos.
+//
+// Evidencia de que el techo viejo rechazaba código sano: dos issues distintos
+// el mismo día, con diffs sin relación entre sí, rebotados por exit 124 con
+// la suite en verde — #5802 (4 archivos tocados, wall 732 s) y #5901
+// (17 archivos, wall 720 s). Ver `.pipeline/logs/{5802,5901}-tester.log`.
+//
+// 25 min = ~1,8x sobre el peor caso observado (850 s) y deja ~20 min de
+// margen contra el watchdog del Pulpo, que mata al tester a los 45 min. El
+// wall-clock sigue existiendo para cortar CUELGUES (su motivo original), no
+// para presupuestar una suite lenta.
+//
+// Override operativo por env var para ajustar sin tocar código.
+const NODE_TEST_WALL_TIMEOUT_DEFAULT_MS = 25 * 60 * 1000;
+const NODE_TEST_WALL_TIMEOUT_MS = (() => {
+    const raw = process.env.PIPELINE_TESTER_NODE_WALL_TIMEOUT_MS;
+    const n = raw != null ? Number(raw) : NaN;
+    // Fail-safe: un override inválido o absurdo (0, negativo, no numérico)
+    // cae al default en vez de dejar la batería sin techo o matarla al toque.
+    return Number.isFinite(n) && n >= 60 * 1000 ? n : NODE_TEST_WALL_TIMEOUT_DEFAULT_MS;
+})();
 
 // Presupuesto de longitud para la porción de archivos de la línea de comandos
 // de `node --test <files...>` (rebote #3953).
@@ -1067,6 +1102,10 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         const batches = buildNodeTestBatches(files, repoRoot, maxCmdline);
         const singleBatch = batches.length === 1;
         onLog(`[tester:node-test] ${files.length} archivos en ${batches.length} batch(es) (límite cmdline ${maxCmdline} chars)`);
+        // Dejar el techo vigente en el log: cuando la batería se corta, saber
+        // contra qué presupuesto se cortó es la mitad del diagnóstico (#5901).
+        onLog(`[tester:node-test] techo de wall-clock: ${Math.round(NODE_TEST_WALL_TIMEOUT_MS / 1000)}s`
+            + `${process.env.PIPELINE_TESTER_NODE_WALL_TIMEOUT_MS ? ' (override por env)' : ' (default)'}`);
 
         // Acumulador del summary agregado (shape compatible con parseNodeTestJunit).
         const agg = {
@@ -1083,6 +1122,12 @@ async function runNodeTests(repoRoot, env, opts = {}) {
         // Deadline global compartido por todos los batches: el wall-clock total
         // de la batería no puede exceder NODE_TEST_WALL_TIMEOUT_MS.
         const deadlineAt = started + NODE_TEST_WALL_TIMEOUT_MS;
+
+        // Cuántos batches llegaron a terminar por sí mismos. Alimenta el motivo
+        // del rebote: sin esto el dev recibe "sin reporte JUnit parseable" y no
+        // puede distinguir "la suite no corrió" de "corrió 9376 tests en verde y
+        // se quedó sin tiempo en el último batch" (rebote #5901 rev-1).
+        let batchesCompleted = 0;
 
         for (let i = 0; i < batches.length; i++) {
             const batchLabel = `${i + 1}/${batches.length}`;
@@ -1122,6 +1167,7 @@ async function runNodeTests(repoRoot, env, opts = {}) {
                 exitCode = 124;
                 break;
             }
+            batchesCompleted++;
             if (res.exit_code !== 0 && exitCode === 0) {
                 exitCode = res.exit_code;
             }
@@ -1134,8 +1180,66 @@ async function runNodeTests(repoRoot, env, opts = {}) {
             report_file: lastReportFile, files,
             timed_out: timedOut,
             last_progress_line: lastProgressLine,
+            batches_total: batches.length,
+            batches_completed: batchesCompleted,
             summary: agg,
         };
+}
+
+/**
+ * Motivo del rebote cuando la batería `node --test` no produjo un veredicto
+ * confiable. Función PURA: no toca fs ni spawnea — se testea sin correr tests.
+ *
+ * Rebote #5901 rev-1. El motivo anterior era una sola línea para dos causas
+ * muy distintas:
+ *
+ *     `node --test exit code 124 sin reporte JUnit parseable`
+ *
+ * y era falso en el caso más común. En #5901 el batch 1/2 SÍ produjo un JUnit
+ * parseable con 9376 tests y 0 fallas; el que se quedó sin tiempo fue el 2/2.
+ * El dev leyó "sin reporte JUnit parseable" y salió a buscar un test roto o un
+ * reporter mal configurado — que no existían. La causa era el techo de
+ * wall-clock. Un motivo que apunta al lugar equivocado cuesta una pasada
+ * completa del pipeline por issue, y acá costó dos (#5802 y #5901).
+ *
+ * El veredicto NO cambia: timeout sigue siendo rechazo (fail-closed, una
+ * batería incompleta no prueba nada sobre los tests que no llegaron a correr).
+ * Lo que cambia es que el motivo dice la verdad y trae con qué diagnosticar.
+ */
+function buildNodeTestFailureMotivo(res) {
+    const summary = (res && res.summary) || {};
+    const wallS = Math.round((Number(res && res.wall_ms) || 0) / 1000);
+    const total = Number(res && res.batches_total) || 0;
+    const done = Number(res && res.batches_completed) || 0;
+
+    if (res && res.timed_out) {
+        const partes = [
+            `node --test excedió el techo de wall-clock (${wallS}s) — batería INCOMPLETA`,
+        ];
+        if (total > 1) partes.push(`batches completados: ${done}/${total}`);
+        // Lo ya corrido no aprueba nada, pero ubica el problema: si los tests
+        // que alcanzaron a correr están en verde, el sospechoso es el techo o
+        // la contención de la máquina, no el diff del issue.
+        if (summary.tests > 0) {
+            const fallas = (Number(summary.failures) || 0) + (Number(summary.errors) || 0);
+            partes.push(`tests corridos antes del corte: ${summary.tests} con ${fallas} fallas`);
+        } else {
+            partes.push('ningún test alcanzó a reportarse antes del corte');
+        }
+        if (res.last_progress_line) {
+            partes.push(`última línea de progreso: "${String(res.last_progress_line).slice(0, 160)}"`);
+        }
+        partes.push('revisar `.pipeline/logs/<issue>-tester.log` (heartbeat con elapsed/idle por batch)'
+            + ' — si los tests corridos están en verde el diff no es el sospechoso;'
+            + ' ajustar `PIPELINE_TESTER_NODE_WALL_TIMEOUT_MS` o descargar la máquina');
+        return partes.join(' · ');
+    }
+
+    // No hubo timeout: el proceso salió con código ≠ 0 y aun así el JUnit no
+    // se pudo parsear. Acá sí el sospechoso es el runner o un crash temprano.
+    return `node --test salió con exit code ${res && res.exit_code} sin reporte JUnit parseable`
+        + ' (el proceso terminó por su cuenta, no por timeout) — probable crash del runner'
+        + ' o reporter mal configurado; revisar stdout/stderr en el log del tester';
 }
 
 // ── Parseo de argumentos ────────────────────────────────────────────
@@ -1639,9 +1743,17 @@ async function main() {
             } else if (nodeRes.no_tests) {
                 logAppend('[tester] pipeline-only sin tests Node detectados — aprobando con qa:skipped equivalente');
                 // tests.valid queda en false; el report lo muestra como "skipped"
+            } else if (nodeRes.timed_out) {
+                // Timeout: rechazo fail-closed AUNQUE los batches completados
+                // estén en verde — una batería incompleta no dice nada sobre
+                // los tests que no llegaron a correr. Lo que cambia respecto de
+                // antes es el motivo, que ahora nombra la causa real y trae el
+                // parcial para diagnosticar (rebote #5901 rev-1).
+                exitCode = 1;
+                motivo = buildNodeTestFailureMotivo(nodeRes);
             } else if (!tests.valid && nodeRes.exit_code !== 0) {
                 exitCode = 1;
-                motivo = `node --test exit code ${nodeRes.exit_code} sin reporte JUnit parseable`;
+                motivo = buildNodeTestFailureMotivo(nodeRes);
             } else if (!tests.valid) {
                 logAppend('[tester] WARNING: node --test exit 0 pero reporte no parseable; aprobando por exit code');
             }
@@ -1979,6 +2091,10 @@ module.exports = {
     parseNodeTestJunit,
     buildNodeTestBatches,
     runNodeTests,
+    // Diagnóstico honesto del corte de la batería (rebote #5901 rev-1).
+    buildNodeTestFailureMotivo,
+    NODE_TEST_WALL_TIMEOUT_MS,
+    NODE_TEST_WALL_TIMEOUT_DEFAULT_MS,
     ensureGitInPath,
     getChangedFilesVsMain,
     getDeletedFilesVsMain,
