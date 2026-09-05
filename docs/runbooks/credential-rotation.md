@@ -68,9 +68,9 @@ boot de `pulpo.js` y `restart.js`, mapea cada path a su env var canónica
 3. `~/.claude/secrets/telegram-config.json` (legacy flat, fallback con warning)
 4. `<repo>/.claude/hooks/telegram-config.json` (legacy committed, último recurso)
 
-**Editar el archivo**: abrir con tu editor preferido y modificar el JSON.
-Después correr `node .pipeline/restart.js` para que el pipeline reinicie con
-las nuevas credenciales hidratadas.
+**Editar el archivo**: abrir con tu editor preferido y modificar el JSON. **No
+hace falta reiniciar nada**: ver [Cierre de toda rotación: sin
+reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
 
 **Verificar qué se hidrata** (sin imprimir valores):
 
@@ -91,6 +91,102 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
   owner por Telegram. **El cron NO toca env vars ni archivos: vos rotás, vos
   commiteás**.
 
+## Cierre de toda rotación: sin reinicio (#5802)
+
+Cada procedimiento de este runbook termina en este paso. **Rotar ya no requiere
+reiniciar el pipeline**: no hay `restart.js`, no hay matar procesos, no hay
+ventana de indisponibilidad. Esta sección es el paso 5 (o 4, o 6) de todos los
+providers de abajo.
+
+### Por qué el reinicio dejó de hacer falta
+
+Tres contratos, todos in-process y ya integrados en `main`:
+
+| Pieza | Qué hace | Dónde vive |
+|---|---|---|
+| Caché versionada por ámbito | TTL de **300 s como tope duro**. La lectura **no** refresca la vigencia, así que una entrada vence sola aunque el pipeline lance agentes sin parar. | `lib/credentials.js` (#5797) |
+| `resetVaultCache(scope)` | Invalidación **acotada** a un ámbito, con verificación positiva: devuelve `{ scope, invalidadas }`. Bumpea la generación **antes** de borrar, así una lectura en vuelo de la generación vieja no repuebla la caché ya limpia. | `lib/credentials.js` (#5797) |
+| Snapshot por lanzamiento + retry único | Cada lanzamiento pide su propio material. Si el provider rechaza la credencial, el coordinador invalida el ámbito, re-resuelve **una** vez y reintenta **una** vez. El segundo rechazo falla cerrado. | `lib/credential-auth-retry.js` (#5794) |
+
+En criollo: cuando rotás, **los lanzamientos nuevos leen material nuevo por su
+cuenta** — como muy tarde a los 300 s, y de inmediato si un lanzamiento se
+cruza con la key vieja ya revocada (el rechazo dispara la invalidación acotada
+y la re-resolución, sin intervención tuya).
+
+### El procedimiento
+
+1. Poné la key nueva en el store (el paso de cada provider más abajo).
+2. Revocá la vieja en la consola del proveedor.
+3. **No hagas nada más.** Verificá con la checklist de acá abajo.
+
+### Qué señales esperar (diagnóstico)
+
+Los eventos que emite el coordinador son el vocabulario cerrado por el que
+ruteás. Buscalos en `.pipeline/logs/pulpo.log`:
+
+| Señal | Qué significa | Qué hacer |
+|---|---|---|
+| _(ninguna)_ | Lo normal. El material nuevo entró por vencimiento de TTL antes de que nadie se cruzara con la key vieja. | Nada. |
+| `credential_invalidated` | Un lanzamiento se cruzó con la key vieja; el ámbito se invalidó. Trae `invalidated_entries` (cuántas entradas se fueron). | Nada — es el mecanismo funcionando. |
+| `credential_reresolved` | Se emitió un snapshot nuevo para el reintento. Trae `snapshot_keys` (cuántas claves, nunca sus valores). | Nada. |
+| `credential_retry_closed` | La operación falló **cerrada**. Ruteá por `reason` (tabla siguiente). | Ver tabla siguiente. |
+
+### Motivos de cierre (rollback y escalada)
+
+`credential_retry_closed` siempre trae un `reason` de esta tabla cerrada.
+Ninguno cae en texto libre, y cada uno se remedia distinto:
+
+| `reason` | Qué pasó | Remediación |
+|---|---|---|
+| `second_rejection` | Se invalidó, se re-resolvió y el provider **volvió** a rechazar. La key nueva del store no sirve. | Rollback: la rotación salió mal. Verificá que pegaste la key correcta y completa en el store, y que no revocaste la nueva por error. |
+| `budget_exhausted` | El único retry de esa operación ya se había usado (típicamente en otro provider de la cadena de fallbacks). | No es un problema de la rotación en sí: la operación raíz ya venía degradada. Revisá el `operation_id` correlacionado. |
+| `invalidation_failed` | No se pudo garantizar que el material viejo salió de la caché, así que no se reintentó con él. | Bug de cableado, no de credencial: el ámbito declarado no es invalidable. Escalar con el `scope` del evento. |
+| `reresolution_failed` | El vault no contestó al pedir el snapshot nuevo. | Problema de acceso al store (IAM, red, perfil AWS), no de la key. Ver `aws sts get-caller-identity`. |
+
+### Verificación (sin imprimir material)
+
+Todo lo verificable sale de **metadata opaca**: el ámbito lógico (`scope`), el
+identificador de la operación (`operation_id`), la versión opaca
+(`opaque_version`), el estado y los timestamps. **Nunca** el valor.
+
+- [ ] La vieja key revocada falla contra la API del proveedor (ver la checklist
+      específica de cada provider más abajo).
+- [ ] En `pulpo.log` no aparece ningún `credential_retry_closed` en los minutos
+      posteriores a la rotación.
+- [ ] Un agente lanzado **después** de la rotación termina normalmente.
+- [ ] `last_rotated` actualizado en [`docs/secrets-inventory.md`](../secrets-inventory.md)
+      y commiteado.
+
+> **Nunca** verifiques imprimiendo el valor: ni haciendo eco de la variable de
+> entorno del provider, ni volcando el ambiente del proceso, ni logueando el
+> `env` del snapshot. Un runbook que en su paso de diagnóstico imprime material
+> es un runbook que enseña a filtrarlo: ese valor queda en el historial de la
+> shell, en el scrollback de la terminal y —si estabas en una sesión grabada— en
+> la evidencia.
+>
+> Para saber **qué** se hidrató sin ver un solo valor está
+> `node .pipeline/lib/credentials.js`, que imprime nombres de variable y
+> etiquetas de origen. Ésa es la herramienta de diagnóstico; no hay otra que
+> haga falta.
+
+### Rollback
+
+Si algo salió mal, la salida es **poner la key anterior de vuelta en el store**
+(si todavía no la revocaste) o **generar una tercera key** (si ya la revocaste).
+En los dos casos el cierre es el mismo de arriba: sin reinicio. Reiniciar el
+pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
+
+### Qué NO hace falta y por qué
+
+- **`node .pipeline/restart.js`** — el reinicio era la única forma de invalidar
+  cuando la caché no tenía contrato de invalidación. Hoy lo tiene, y reiniciar
+  cuesta una ventana de indisponibilidad más los agentes en vuelo que se pierden.
+- **Matar el parque de agentes** — un hijo ya spawneado sigue con el material
+  que recibió al arrancar; eso es correcto y **acotado**: su próximo request con
+  la key revocada falla, el coordinador invalida y re-resuelve, y el reintento
+  sale con la key nueva. Matar procesos para forzar eso tira trabajo en curso
+  para ganar unos segundos.
+
 ## Anthropic
 
 > _Provider opcional — sólo aplica si activaste Vision multimedia directo
@@ -105,7 +201,7 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
    { "providers": { "anthropic": { "api_key": "<nueva-key>" } } }
    ```
 4. Revocá la **vieja** key desde la misma consola (botón "Revoke").
-5. `node .pipeline/restart.js` para que el pipeline recargue con la key nueva.
+5. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
 6. Actualizá `last_rotated` en [`docs/secrets-inventory.md`](../secrets-inventory.md)
    con la fecha de hoy en formato ISO `YYYY-MM-DD`. Commiteá.
 
@@ -118,7 +214,8 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
       fail-fast valida `credentials_env` antes de adquirir el singleton).
 - [ ] El commit con `last_rotated` actualizado está pusheado a `main` y aparece
       en `git log --oneline docs/secrets-inventory.md`.
-- [ ] Telegram recibió mensaje de "Pipeline reiniciado" tras el restart manual.
+- [ ] En `.pipeline/logs/pulpo.log` no aparece ningún `credential_retry_closed`
+      en los minutos posteriores a la rotación (ver [cierre sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802)).
 
 ## OpenAI (codex)
 
@@ -133,7 +230,7 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
    { "providers": { "openai": { "api_key": "<nueva-key>" } } }
    ```
 4. Revocá la vieja key desde la misma consola (botón "Revoke key").
-5. `node .pipeline/restart.js`.
+5. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
 6. Actualizá `last_rotated` en `docs/secrets-inventory.md`. Commiteá.
 
 ### Cómo verificar que rotaste bien (OpenAI)
@@ -154,7 +251,7 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
    { "providers": { "groq": { "api_key": "<nueva-key>" } } }
    ```
 4. Revocá la vieja key en la misma página.
-5. `node .pipeline/restart.js`.
+5. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
 
 ## Gemini (Google AI Studio — free tier)
 
@@ -175,7 +272,7 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
 4. Verificar que la **Generative Language API** esté habilitada en el proyecto
    de GCP (sino tira 403 al primer request).
 5. Revocá la vieja key desde la consola.
-6. `node .pipeline/restart.js`.
+6. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
 
 ## Cerebras (free tier — multi-provider fallback)
 
@@ -186,7 +283,7 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
    { "providers": { "cerebras": { "api_key": "<nueva-key>" } } }
    ```
 4. Revocá la vieja key.
-5. `node .pipeline/restart.js`.
+5. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
 
 ## NVIDIA NIM (preparada para #3243 — Ola N+5)
 
@@ -201,7 +298,7 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
    { "providers": { "nvidia": { "api_key": "<nueva-key>" } } }
    ```
 3. Revocá la vieja key desde la consola de NVIDIA.
-4. `node .pipeline/restart.js` (no impacta a nada hasta que se implemente #3243).
+4. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802). (No impacta a nada hasta que se implemente #3243.)
 
 ## Moonshot Kimi (fallback multi-provider)
 
@@ -220,7 +317,7 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
    { "providers": { "moonshot": { "api_key": "<nueva-key>" } } }
    ```
 3. Revocá la vieja key desde la consola de Moonshot.
-4. `node .pipeline/restart.js`.
+4. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
 
 ### Cómo verificar que rotaste bien (Moonshot Kimi)
 
@@ -491,16 +588,43 @@ Setear la env var en la terminal donde corre el pulpo y reintentar.
 
 ### "Después de rotar, los agentes ya activos siguen usando la vieja"
 
-Es esperado: los childs de Claude Code corren con su propio env (`build-child-env.js`
-les copia la key al spawn). Hasta que terminen su iteración actual, siguen
-con la vieja. **Eso es correcto** — la vieja key revocada va a fallar al
-siguiente request, el child cae con cuota agotada o auth error, y el pipeline
-lo reagenda con la key nueva en el próximo spawn.
+Es esperado, es correcto y **está acotado**. Los childs de Claude Code corren
+con su propio env: `build-child-env.js` les copia el material del snapshot al
+spawn, y ese snapshot es inmutable para ellos. Hasta que terminen su iteración
+actual, siguen con la vieja.
 
-Si necesitás invalidación inmediata (ej: la key fue comprometida), **matar
-el pulpo entero** con `taskkill /F /IM node.exe` o `pkill node`, esperar 30s,
-relanzar `node .pipeline/pulpo.js`. Los childs spawneados con la key vieja
-mueren con el padre.
+Lo que cambió (#5802): **eso ya no requiere que hagas nada**. La key vieja
+revocada falla en el próximo request del child, el provider devuelve la señal
+tipada `authentication_rejected`, y el coordinador de retry —dentro del Pulpo,
+sin reiniciarlo— hace exactamente esto, una sola vez por operación raíz:
+
+1. `credential_invalidated` — invalida **sólo** el ámbito afectado
+   (`resetVaultCache(scope)`), con verificación positiva (`invalidated_entries`).
+2. `credential_reresolved` — emite un snapshot nuevo, ya con la key rotada.
+3. Reintenta **una** vez. Si ese reintento sale bien, el incidente se cerró solo.
+
+Si el reintento también es rechazado, se cierra con
+`credential_retry_closed` / `reason: second_rejection` — que es la señal de que
+**la rotación salió mal**, no de que haga falta reiniciar. Ver [motivos de
+cierre](#motivos-de-cierre-rollback-y-escalada).
+
+#### "La key fue comprometida, necesito invalidación inmediata"
+
+Es el peor momento posible, y por eso importa que el procedimiento sea acotado:
+
+1. **Revocá la key en la consola del proveedor.** Éste es el paso que corta el
+   acceso de verdad, y es inmediato. Todo lo demás es propagación interna.
+2. **Poné la key nueva en el store.**
+3. **Listo.** Cada child que intente usar la comprometida recibe un rechazo del
+   proveedor —porque ya está revocada— y el coordinador lo resuelve con el ciclo
+   de arriba. La ventana máxima de un child con material viejo es lo que tarda su
+   request en curso.
+
+> **No mates el parque de agentes.** Matar `node.exe` a lo ancho tira todo el
+> trabajo en curso —agentes a mitad de un issue, worktrees sin cerrar, locks
+> huérfanos— para ganar segundos sobre un acceso que ya cortaste en el paso 1.
+> Y un Pulpo relanzado a mano fuera de su ciclo es el bucle de muerte que tumbó
+> al Commander 12 h en 2026-07.
 
 ## Migración al vault: secuencia por host, convivencia y corte (#5453)
 
