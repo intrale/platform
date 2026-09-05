@@ -1,7 +1,7 @@
 {
   "_doc": "#5174 · CA-2 — snapshot REDACTADO (path -> tipo, NUNCA el valor) de la configuracion resuelta ANTES de partir config.yaml en kernel + producto. Generado desde .pipeline/config.yaml en el commit 14a454441 (entrega B, pre-particion). Sirve para demostrar que la particion no perdio ni cambio ninguna clave. Si un cambio LEGITIMO agrega o quita una clave top-level, regenerar con: node .pipeline/lib/__tests__/fixtures/regen-config-snapshot.js",
-  "_generadoDesde": "598ee57d1 + cambios sin commitear en .pipeline/config.yaml",
-  "_claves": 560,
+  "_generadoDesde": "8d782c0b7 + cambios sin commitear en .pipeline/config.yaml",
+  "_claves": 562,
   "snapshot": [
     "admission_gate: object(3)",
     "admission_gate.bootstrap_cap: number",
@@ -485,7 +485,7 @@
     "timeouts.intake_interval_seconds: number",
     "timeouts.orphan_timeout_minutes: number",
     "timeouts.poll_interval_seconds: number",
-    "vault: object(17)",
+    "vault: object(18)",
     "vault.access_audit: object(7)",
     "vault.access_audit.authorization_failure_threshold: number",
     "vault.access_audit.burst_threshold: number",
@@ -509,6 +509,8 @@
     "vault.enabled: boolean",
     "vault.hostId: string",
     "vault.hostIdFromHostname: boolean",
+    "vault.inheritance: object(1)",
+    "vault.inheritance.grants: array[0]",
     "vault.max_cached_tenants: number",
     "vault.migration: object(4)",
     "vault.migration.auto_cutover: boolean",
