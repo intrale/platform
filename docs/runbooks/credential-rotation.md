@@ -68,9 +68,11 @@ boot de `pulpo.js` y `restart.js`, mapea cada path a su env var canónica
 3. `~/.claude/secrets/telegram-config.json` (legacy flat, fallback con warning)
 4. `<repo>/.claude/hooks/telegram-config.json` (legacy committed, último recurso)
 
-**Editar el archivo**: abrir con tu editor preferido y modificar el JSON. **No
-hace falta reiniciar nada**: ver [Cierre de toda rotación: sin
-reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
+**Editar el archivo**: abrir con tu editor preferido y modificar el JSON. Editarlo
+**no alcanza**: el proceso del Pulpo ya corriendo conserva en su `process.env` la
+credencial con la que arrancó. Cómo cerrar para que el material nuevo entre en
+juego —hoy, con reinicio— está en [Cierre de toda
+rotación](#cierre-de-toda-rotación-5802).
 
 **Verificar qué se hidrata** (sin imprimir valores):
 
@@ -91,16 +93,67 @@ hidratadas) y `skipped_*` (las que ya estaban en env o tenían placeholder).
   owner por Telegram. **El cron NO toca env vars ni archivos: vos rotás, vos
   commiteás**.
 
-## Cierre de toda rotación: sin reinicio (#5802)
+## Cierre de toda rotación (#5802)
 
-Cada procedimiento de este runbook termina en este paso. **Rotar ya no requiere
-reiniciar el pipeline**: no hay `restart.js`, no hay matar procesos, no hay
-ventana de indisponibilidad. Esta sección es el paso 5 (o 4, o 6) de todos los
-providers de abajo.
+Cada procedimiento de este runbook termina en este paso. **Qué hacés al cerrar
+depende de tres gates de rollout**, y hoy los tres están **cerrados**: mientras
+siga así, toda rotación cierra **reiniciando el pipeline**. El camino sin
+reinicio ya está implementado, pero es el **destino del rollout**, no el estado
+actual — no lo sigas hasta haber verificado los gates con el comando de acá abajo.
 
-### Por qué el reinicio dejó de hacer falta
+### Precondición: verificá los gates antes de elegir camino
 
-Tres contratos, todos in-process y ya integrados en `main`:
+El camino sin reinicio se apoya en piezas que existen en el código pero viven
+**detrás de gates de rollout fail-closed**: sólo el booleano `true` exacto los
+abre (`lib/attempt-credential-snapshot.js#isSnapshotEnabled`,
+`lib/credential-retry-wiring.js` → `credential_retry_enabled`), y **no hay
+override** por variable de entorno ni por `config.local`. Con cualquiera de los
+tres cerrado **ninguna de esas piezas corre**: el env base sigue siendo
+`process.env` por referencia, no se emite una sola llamada al vault y no se
+emite un solo evento de retry.
+
+```bash
+node .pipeline/check-credential-rotation-gates.js
+```
+
+| Los tres gates | Camino de cierre |
+|---|---|
+| Alguno en `false` o **ausente** (← estado actual) | [Camino A — con reinicio](#camino-a--gates-cerrados-estado-vigente) |
+| Los tres en `true` | [Camino B — sin reinicio](#camino-b--gates-abiertos-destino-del-rollout) |
+
+Los gates son `pipeline.credential_snapshot_enabled`,
+`pipeline.credential_retry_enabled` y `vault.enabled`, todos en
+`.pipeline/config.yaml`. Si la clave **no existe** en el config, el gate está
+cerrado: fail-closed cubre también la ausencia. En el repo de producción las dos
+claves `credential_*_enabled` todavía no están escritas y `vault.enabled` es
+`false`, así que el camino vigente es el A.
+
+### Camino A — gates cerrados (estado vigente)
+
+Con los gates cerrados **no hay ninguna pieza que invalide material en caliente**.
+`loadIntoEnv()` corre una sola vez, en el boot de `pulpo.js`: mientras ese proceso
+siga vivo, su `process.env` conserva la credencial con la que arrancó y **se la
+copia a cada agente que spawnea**, sin vencimiento y sin evento. Editar el store
+no cambia nada para el proceso ya corriendo. Por eso el reinicio no es opcional:
+**es el único mecanismo de invalidación disponible hoy**.
+
+1. Poné la key nueva en el store (el paso de cada provider más abajo).
+2. `node .pipeline/restart.js` — recién acá el material nuevo entra en juego.
+3. Revocá la vieja en la consola del proveedor.
+4. Verificá con la [checklist](#verificación-sin-imprimir-material).
+
+> **Si la key está comprometida el orden se invierte**: revocar primero, después
+> reiniciar. Ver ["La key fue comprometida"](#la-key-fue-comprometida-necesito-invalidación-inmediata).
+
+Los agentes en vuelo se pierden: es el costo conocido de esta ventana y la razón
+por la que el camino B existe. No hay forma de evitarlo con los gates cerrados.
+
+### Camino B — gates abiertos (destino del rollout)
+
+**Sólo aplica si el comando de la precondición devolvió `GATES ABIERTOS`.** Si no
+lo verificaste en esta misma rotación, no estás en este camino.
+
+Tres contratos in-process reemplazan al reinicio cuando los gates se abren:
 
 | Pieza | Qué hace | Dónde vive |
 |---|---|---|
@@ -108,18 +161,22 @@ Tres contratos, todos in-process y ya integrados en `main`:
 | `resetVaultCache(scope)` | Invalidación **acotada** a un ámbito, con verificación positiva: devuelve `{ scope, invalidadas }`. Bumpea la generación **antes** de borrar, así una lectura en vuelo de la generación vieja no repuebla la caché ya limpia. | `lib/credentials.js` (#5797) |
 | Snapshot por lanzamiento + retry único | Cada lanzamiento pide su propio material. Si el provider rechaza la credencial, el coordinador invalida el ámbito, re-resuelve **una** vez y reintenta **una** vez. El segundo rechazo falla cerrado. | `lib/credential-auth-retry.js` (#5794) |
 
-En criollo: cuando rotás, **los lanzamientos nuevos leen material nuevo por su
-cuenta** — como muy tarde a los 300 s, y de inmediato si un lanzamiento se
-cruza con la key vieja ya revocada (el rechazo dispara la invalidación acotada
-y la re-resolución, sin intervención tuya).
+En criollo: con los gates abiertos, **los lanzamientos nuevos leen material nuevo
+por su cuenta** — como muy tarde a los 300 s, y de inmediato si un lanzamiento se
+cruza con la key vieja ya revocada (el rechazo dispara la invalidación acotada y
+la re-resolución, sin intervención tuya).
 
-### El procedimiento
+El procedimiento entonces es:
 
-1. Poné la key nueva en el store (el paso de cada provider más abajo).
+1. Poné la key nueva en el store.
 2. Revocá la vieja en la consola del proveedor.
-3. **No hagas nada más.** Verificá con la checklist de acá abajo.
+3. **Nada más.** Verificá con la [checklist](#verificación-sin-imprimir-material).
 
 ### Qué señales esperar (diagnóstico)
+
+> Aplica al **camino B**. Con los gates cerrados el coordinador de retry no está
+> cableado y **ninguna de estas señales se emite nunca**: su ausencia no dice
+> nada sobre la rotación.
 
 Los eventos que emite el coordinador son el vocabulario cerrado por el que
 ruteás. Buscalos en `.pipeline/logs/pulpo.log`:
@@ -151,8 +208,11 @@ identificador de la operación (`operation_id`), la versión opaca
 
 - [ ] La vieja key revocada falla contra la API del proveedor (ver la checklist
       específica de cada provider más abajo).
-- [ ] En `pulpo.log` no aparece ningún `credential_retry_closed` en los minutos
-      posteriores a la rotación.
+- [ ] **(camino A)** El pulpo volvió a arrancar: `.pipeline/pulpo.pid` apunta a
+      un proceso vivo y el log tiene un `Pulpo V2 iniciado` posterior a tu
+      rotación.
+- [ ] **(camino B)** En `pulpo.log` no aparece ningún `credential_retry_closed`
+      en los minutos posteriores a la rotación.
 - [ ] Un agente lanzado **después** de la rotación termina normalmente.
 - [ ] `last_rotated` actualizado en [`docs/secrets-inventory.md`](../secrets-inventory.md)
       y commiteado.
@@ -173,19 +233,26 @@ identificador de la operación (`operation_id`), la versión opaca
 
 Si algo salió mal, la salida es **poner la key anterior de vuelta en el store**
 (si todavía no la revocaste) o **generar una tercera key** (si ya la revocaste).
-En los dos casos el cierre es el mismo de arriba: sin reinicio. Reiniciar el
-pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
+En los dos casos el cierre es el mismo camino que elegiste arriba: con reinicio
+si los gates están cerrados, sin reinicio si están abiertos. Una key mal pegada
+no la arregla ningún reinicio — corregí el store primero.
 
-### Qué NO hace falta y por qué
+### Qué NO hace falta, y sólo con los gates abiertos
 
-- **`node .pipeline/restart.js`** — el reinicio era la única forma de invalidar
-  cuando la caché no tenía contrato de invalidación. Hoy lo tiene, y reiniciar
-  cuesta una ventana de indisponibilidad más los agentes en vuelo que se pierden.
-- **Matar el parque de agentes** — un hijo ya spawneado sigue con el material
-  que recibió al arrancar; eso es correcto y **acotado**: su próximo request con
-  la key revocada falla, el coordinador invalida y re-resuelve, y el reintento
-  sale con la key nueva. Matar procesos para forzar eso tira trabajo en curso
-  para ganar unos segundos.
+> Todo este bloque describe el **camino B**. Con los gates cerrados el reinicio
+> **sí** hace falta y es el paso 2 del camino A.
+
+- **`node .pipeline/restart.js`** — el reinicio es la única forma de invalidar
+  mientras la caché no tenga contrato de invalidación cableado. Cuando los gates
+  se abran, reiniciar pasa a costar una ventana de indisponibilidad más los
+  agentes en vuelo que se pierden, sin nada a cambio.
+- **Matar el parque de agentes** — con los gates abiertos, un hijo ya spawneado
+  sigue con el material que recibió al arrancar, y eso es correcto y **acotado**:
+  su próximo request con la key revocada falla, el coordinador invalida y
+  re-resuelve, y el reintento sale con la key nueva. Matar procesos para forzar
+  eso tira trabajo en curso para ganar unos segundos. **Con los gates cerrados no
+  hay tal acotamiento**: nada invalida al hijo, que sigue usando la credencial
+  vieja hasta que muera por otra causa.
 
 ## Anthropic
 
@@ -201,7 +268,7 @@ pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
    { "providers": { "anthropic": { "api_key": "<nueva-key>" } } }
    ```
 4. Revocá la **vieja** key desde la misma consola (botón "Revoke").
-5. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
+5. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
 6. Actualizá `last_rotated` en [`docs/secrets-inventory.md`](../secrets-inventory.md)
    con la fecha de hoy en formato ISO `YYYY-MM-DD`. Commiteá.
 
@@ -215,7 +282,7 @@ pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
 - [ ] El commit con `last_rotated` actualizado está pusheado a `main` y aparece
       en `git log --oneline docs/secrets-inventory.md`.
 - [ ] En `.pipeline/logs/pulpo.log` no aparece ningún `credential_retry_closed`
-      en los minutos posteriores a la rotación (ver [cierre sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802)).
+      en los minutos posteriores a la rotación (ver [cierre de toda rotación](#cierre-de-toda-rotación-5802)).
 
 ## OpenAI (codex)
 
@@ -230,7 +297,7 @@ pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
    { "providers": { "openai": { "api_key": "<nueva-key>" } } }
    ```
 4. Revocá la vieja key desde la misma consola (botón "Revoke key").
-5. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
+5. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
 6. Actualizá `last_rotated` en `docs/secrets-inventory.md`. Commiteá.
 
 ### Cómo verificar que rotaste bien (OpenAI)
@@ -251,7 +318,7 @@ pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
    { "providers": { "groq": { "api_key": "<nueva-key>" } } }
    ```
 4. Revocá la vieja key en la misma página.
-5. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
+5. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
 
 ## Gemini (Google AI Studio — free tier)
 
@@ -272,7 +339,7 @@ pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
 4. Verificar que la **Generative Language API** esté habilitada en el proyecto
    de GCP (sino tira 403 al primer request).
 5. Revocá la vieja key desde la consola.
-6. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
+6. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
 
 ## Cerebras (free tier — multi-provider fallback)
 
@@ -283,7 +350,7 @@ pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
    { "providers": { "cerebras": { "api_key": "<nueva-key>" } } }
    ```
 4. Revocá la vieja key.
-5. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
+5. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
 
 ## NVIDIA NIM (preparada para #3243 — Ola N+5)
 
@@ -298,7 +365,7 @@ pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
    { "providers": { "nvidia": { "api_key": "<nueva-key>" } } }
    ```
 3. Revocá la vieja key desde la consola de NVIDIA.
-4. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802). (No impacta a nada hasta que se implemente #3243.)
+4. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802). (No impacta a nada hasta que se implemente #3243.)
 
 ## Moonshot Kimi (fallback multi-provider)
 
@@ -317,7 +384,7 @@ pipeline no arregla una key mal pegada, sólo agrega una ventana de caída.
    { "providers": { "moonshot": { "api_key": "<nueva-key>" } } }
    ```
 3. Revocá la vieja key desde la consola de Moonshot.
-4. Cierre sin reinicio: ver [Cierre de toda rotación: sin reinicio](#cierre-de-toda-rotación-sin-reinicio-5802).
+4. Cerrá la rotación: ver [Cierre de toda rotación](#cierre-de-toda-rotación-5802).
 
 ### Cómo verificar que rotaste bien (Moonshot Kimi)
 
@@ -588,15 +655,20 @@ Setear la env var en la terminal donde corre el pulpo y reintentar.
 
 ### "Después de rotar, los agentes ya activos siguen usando la vieja"
 
-Es esperado, es correcto y **está acotado**. Los childs de Claude Code corren
-con su propio env: `build-child-env.js` les copia el material del snapshot al
-spawn, y ese snapshot es inmutable para ellos. Hasta que terminen su iteración
-actual, siguen con la vieja.
+Es esperado. Los childs de Claude Code corren con su propio env:
+`build-child-env.js` les copia el material al spawn, y esa copia es inmutable
+para ellos. Hasta que terminen su iteración actual, siguen con la vieja.
 
-Lo que cambió (#5802): **eso ya no requiere que hagas nada**. La key vieja
-revocada falla en el próximo request del child, el provider devuelve la señal
-tipada `authentication_rejected`, y el coordinador de retry —dentro del Pulpo,
-sin reiniciarlo— hace exactamente esto, una sola vez por operación raíz:
+**Con los gates cerrados (estado actual) eso NO está acotado**: no hay nada que
+invalide al child ni al Pulpo que lo spawneó. El Pulpo sigue repartiendo la
+credencial vieja a cada agente nuevo hasta que el proceso muera. La única cota
+es `node .pipeline/restart.js` — [camino A](#camino-a--gates-cerrados-estado-vigente).
+
+Con los gates **abiertos** (#5802, [camino B](#camino-b--gates-abiertos-destino-del-rollout))
+sí queda acotado y no requiere que hagas nada: la key vieja revocada falla en el
+próximo request del child, el provider devuelve la señal tipada
+`authentication_rejected`, y el coordinador de retry —dentro del Pulpo, sin
+reiniciarlo— hace exactamente esto, una sola vez por operación raíz:
 
 1. `credential_invalidated` — invalida **sólo** el ámbito afectado
    (`resetVaultCache(scope)`), con verificación positiva (`invalidated_entries`).
@@ -610,21 +682,41 @@ cierre](#motivos-de-cierre-rollback-y-escalada).
 
 #### "La key fue comprometida, necesito invalidación inmediata"
 
-Es el peor momento posible, y por eso importa que el procedimiento sea acotado:
+Es el peor momento posible. Antes de nada, **verificá los gates**
+([precondición](#precondición-verificá-los-gates-antes-de-elegir-camino)): el
+procedimiento cambia, y el de los gates cerrados es el que corre hoy.
 
-1. **Revocá la key en la consola del proveedor.** Éste es el paso que corta el
-   acceso de verdad, y es inmediato. Todo lo demás es propagación interna.
+**Con los gates cerrados (estado vigente):**
+
+1. **Revocá la key comprometida en la consola del proveedor.** Éste es el paso
+   que corta el acceso de verdad, y es inmediato. Va **primero**, antes que
+   cualquier otra cosa: mientras la key siga válida en el proveedor, quien la
+   robó la sigue usando.
 2. **Poné la key nueva en el store.**
-3. **Listo.** Cada child que intente usar la comprometida recibe un rechazo del
-   proveedor —porque ya está revocada— y el coordinador lo resuelve con el ciclo
-   de arriba. La ventana máxima de un child con material viejo es lo que tarda su
-   request en curso.
+3. **`node .pipeline/restart.js`.** No es opcional acá. El Pulpo vivo tiene la
+   credencial comprometida en su `process.env` desde el boot y **se la copia a
+   cada agente que spawnea**, indefinidamente: sin snapshot por lanzamiento ni
+   coordinador de retry no hay ninguna pieza que la invalide. Reiniciar es la
+   única forma de sacarla de circulación interna.
+4. Verificá que el proceso viejo murió (`.pipeline/pulpo.pid` apunta a un PID
+   nuevo y vivo) y que el log tiene un `Pulpo V2 iniciado` posterior al paso 1.
 
-> **No mates el parque de agentes.** Matar `node.exe` a lo ancho tira todo el
-> trabajo en curso —agentes a mitad de un issue, worktrees sin cerrar, locks
-> huérfanos— para ganar segundos sobre un acceso que ya cortaste en el paso 1.
-> Y un Pulpo relanzado a mano fuera de su ciclo es el bucle de muerte que tumbó
-> al Commander 12 h en 2026-07.
+> Si por lo que sea el paso 1 se demora o falla —la consola del proveedor no
+> responde, perdiste el acceso a la cuenta—, el paso 3 **igual corta la
+> propagación interna**: los agentes nuevos ya no reciben la comprometida.
+> Hacelo sin esperar a que se resuelva la revocación, y seguí insistiendo con
+> ella en paralelo.
+
+**Con los gates abiertos (destino del rollout):** los pasos 1 y 2 son los mismos
+y el 3 desaparece — cada child que intente usar la comprometida recibe un rechazo
+del proveedor y el coordinador lo resuelve con el ciclo de arriba. La ventana
+máxima de un child con material viejo es lo que tarda su request en curso.
+
+> **No mates el parque de agentes a mano**, en ninguno de los dos casos. Matar
+> `node.exe` a lo ancho tira todo el trabajo en curso —agentes a mitad de un
+> issue, worktrees sin cerrar, locks huérfanos— y un Pulpo relanzado fuera de su
+> ciclo es el bucle de muerte que tumbó al Commander 12 h en 2026-07.
+> `restart.js` hace el corte de forma ordenada: usalo a él, no `taskkill`.
 
 ## Migración al vault: secuencia por host, convivencia y corte (#5453)
 

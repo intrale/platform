@@ -930,7 +930,7 @@ function leerRunbook() {
     return fs.readFileSync(RUNBOOK, 'utf8');
 }
 
-test('CA-6 · el runbook documenta el procedimiento SIN reinicio y no lo exige como paso', () => {
+test('CA-6 · el runbook documenta el procedimiento SIN reinicio como camino disponible', () => {
     const texto = leerRunbook();
 
     // El contrato que el runbook tiene que nombrar para ser accionable.
@@ -940,18 +940,76 @@ test('CA-6 · el runbook documenta el procedimiento SIN reinicio y no lo exige c
     }
 
     // El peor momento de la experiencia operativa: rotar porque la key se
-    // comprometió. Que la única salida documentada sea matar todo el parque de
-    // agentes es justamente lo que este issue viene a eliminar.
+    // comprometió. Que la salida documentada sea matar el parque entero a mano
+    // es lo que este issue viene a eliminar: el corte ordenado es `restart.js`,
+    // no un `taskkill` a lo ancho que deja locks huérfanos.
     assert.ok(!/taskkill \/F \/IM node\.exe/.test(texto),
         'el runbook sigue ofreciendo matar el parque entero como salida de invalidacion inmediata');
+});
 
-    // `restart.js` puede seguir apareciendo (es una herramienta legítima del
-    // pipeline), pero NO como paso numerado del procedimiento de rotación.
+// ---------------------------------------------------------------------------
+// El runbook no puede desincronizarse de los gates en silencio.
+//
+// El camino sin reinicio depende de tres gates de rollout fail-closed. Mientras
+// estén cerrados, ninguna de las piezas que lo habilitan corre: el Pulpo vivo
+// conserva la credencial de su boot y se la copia a cada agente que spawnea, y
+// el ÚNICO mecanismo de invalidación es reiniciar.
+//
+// Un runbook que afirma "no hace falta reiniciar" con los gates cerrados no es
+// un error de redacción: es un vector. Ante una key robada el operador no
+// reinicia, nada invalida nada, y la credencial comprometida se sigue
+// repartiendo. Por eso el documento se ata acá al valor REAL del config: si
+// alguien abre los gates —o los cierra— sin tocar el runbook, esto se pone en
+// rojo.
+// ---------------------------------------------------------------------------
+
+const { checkGates } = require('../check-credential-rotation-gates');
+
+test('CA-6 · el runbook está sincronizado con el estado real de los gates de rollout', () => {
+    const texto = leerRunbook();
+    const { gates, allOpen } = checkGates();
+
+    // Sea cual sea el estado, el runbook tiene que nombrar los tres gates para
+    // que el operador pueda verificarlos antes de elegir camino.
+    for (const { key } of gates) {
+        const clave = key.split('.').pop();
+        assert.ok(texto.includes(clave),
+            `el runbook no menciona el gate "${key}": el operador no tiene como saber que camino le toca`);
+    }
+
+    // Y tiene que ofrecer el verificador, no pedirle que confíe en la memoria.
+    assert.ok(texto.includes('check-credential-rotation-gates'),
+        'el runbook no ofrece el verificador de gates como paso de precondicion');
+
+    if (allOpen) {
+        // Gates abiertos: el camino sin reinicio es el vigente y el runbook no
+        // debe seguir mandando a reiniciar como cierre normal de la rotación.
+        assert.ok(!/^\s*\d+\.\s.*restart\.js/m.test(texto),
+            'los gates estan ABIERTOS pero el runbook todavia exige reiniciar como paso de rotacion');
+        return;
+    }
+
+    // Gates cerrados (estado vigente): el reinicio es el único mecanismo de
+    // invalidación que existe, así que el runbook DEBE conservarlo como paso
+    // numerado y ejecutable. Si desaparece, el operador se queda sin salida real
+    // ante un compromiso de credencial.
     const pasosConRestart = texto
         .split('\n')
         .filter((l) => /^\s*\d+\.\s/.test(l) && /restart\.js/.test(l));
-    assert.deepEqual(pasosConRestart, [],
-        `el runbook todavia exige reiniciar como paso de rotacion:\n${pasosConRestart.join('\n')}`);
+    assert.ok(pasosConRestart.length > 0,
+        'los gates estan CERRADOS y el runbook no conserva `node .pipeline/restart.js` como paso numerado: '
+        + 'sin el, no queda ningun procedimiento que invalide una credencial comprometida');
+
+    // Y no puede afirmar lo contrario sin condicionarlo. Estas frases sólo son
+    // ciertas con los gates abiertos; sueltas, le dicen al operador que no haga
+    // lo único que hoy funciona.
+    for (const afirmacion of [
+        /\*\*No hace falta reiniciar nada\*\*/,
+        /Rotar ya no requiere reiniciar el pipeline/,
+    ]) {
+        assert.ok(!afirmacion.test(texto),
+            `los gates estan CERRADOS y el runbook afirma sin condicion: ${afirmacion}`);
+    }
 });
 
 test('CA-6 · el runbook nombra las señales y los motivos de cierre por los que el operador rutea', () => {
