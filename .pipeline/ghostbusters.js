@@ -333,6 +333,48 @@ function isWorktreeSafeToDelete(wtPath, branch) {
   return gbWorktrees.isWorktreeSafeToDelete(wtPath, branch);
 }
 
+// Ventana de actividad: un worktree tocado hace menos que esto tiene a alguien
+// adentro, aunque no haya heartbeat ni proceso identificable.
+const WORKTREE_ACTIVE_WINDOW_MS = 60 * 60 * 1000;
+// Directorios que se saltean al medir actividad: `.git` lo toca cualquier
+// consulta de solo lectura (incluida la del propio ghostbusters) y los
+// artefactos de build los reescribe Gradle sin que haya nadie trabajando.
+const ACTIVITY_SKIP = new Set(['.git', 'node_modules', 'build', '.gradle', '.kotlin']);
+
+/**
+ * ¿Alguien está trabajando en este worktree ahora mismo?
+ *
+ * Los dos guards que ya existían no cubren a una sesión interactiva: el
+ * heartbeat lo escriben los agentes del pipeline (una sesión de Claude no
+ * escribe ninguno) y la detección por proceso busca la ruta del worktree en la
+ * LÍNEA DE COMANDO, que un `claude` lanzado desde ese directorio no lleva. Con
+ * eso, un worktree de sesión limpio y con la rama sin pushear — el estado
+ * normal de una sesión a mitad de trabajo — quedaba marcado como borrable y el
+ * brazo `--run --no-cap` del guardián de disco lo borraba bajo los pies.
+ *
+ * El mtime del árbol sí lo cubre: si hay alguien editando, algo se tocó recién.
+ * Corta apenas encuentra un archivo fresco, así que en el caso vivo es barato.
+ */
+function worktreeRecentlyActive(wtPath, windowMs = WORKTREE_ACTIVE_WINDOW_MS, depth = 0) {
+  const deadline = Date.now() - windowMs;
+  let entries;
+  try { entries = fs.readdirSync(wtPath, { withFileTypes: true }); }
+  catch { return false; }
+  for (const e of entries) {
+    if (e.isSymbolicLink()) continue;
+    if (ACTIVITY_SKIP.has(e.name)) continue;
+    const child = path.join(wtPath, e.name);
+    try {
+      if (e.isDirectory()) {
+        if (depth < 3 && worktreeRecentlyActive(child, windowMs, depth + 1)) return true;
+      } else if (fs.lstatSync(child).mtimeMs > deadline) {
+        return true;
+      }
+    } catch { /* entrada que desaparece a mitad del barrido: no dice nada */ }
+  }
+  return false;
+}
+
 function issueIsOpen(issueNum) {
   try {
     const ghPath = fs.existsSync(GH_BIN) ? GH_BIN : 'gh';
@@ -451,6 +493,7 @@ function findAbandonedWorktrees(procs, opts = {}) {
       if (cwd.startsWith(wtLower)) { hasLiveProc = true; break; }
     }
     if (hasLiveProc) continue;
+    if ((opts.worktreeRecentlyActiveImpl || worktreeRecentlyActive)(wt.path)) continue;
     const branch = wt.branch || '';
     let issueNum = null;
     let reason = null;
@@ -477,10 +520,27 @@ function findAbandonedWorktrees(procs, opts = {}) {
       // #3943 RS-3 — criterio compuesto: seguridad (todas) AND abandono (al
       // menos una: rama inexistente en remoto O antigüedad > umbral). Un solo
       // criterio NO alcanza para habilitar el borrado.
-      const safety = (opts.isWorktreeSafeToDeleteImpl || isWorktreeSafeToDelete)(wt.path, branch);
+      let safety = (opts.isWorktreeSafeToDeleteImpl || isWorktreeSafeToDelete)(wt.path, branch);
       if (!safety.safe) {
-        abandoned.push({ path: wt.path, branch, issue: issueNum, reason, skip: true, skipReason: safety.reason });
-        continue;
+        // Worktrees eternamente protegidos: la respuesta de `safety` nunca
+        // cambia sola (un commit sin pushear de abril lo sigue estando en
+        // septiembre). Pasados `rescueAfterDays` se respalda el trabajo en un
+        // tag del object store compartido y recién ahí deja de ser exclusivo.
+        // Si el rescate falla, el worktree queda protegido igual que antes.
+        const rescate = (opts.rescueLocalWorkImpl || gbWorktrees.rescueLocalWork)(wt.path, branch, {
+          rescueAfterDays: opts.rescueAfterDays,
+          dryRun: opts.dryRun !== false,
+          logger: log,
+        });
+        if (!rescate.rescued) {
+          abandoned.push({
+            path: wt.path, branch, issue: issueNum, reason,
+            skip: true, skipReason: `${safety.reason} · ${rescate.reason}`,
+          });
+          continue;
+        }
+        reason = `${reason}; trabajo respaldado en el tag ${rescate.tag} (${rescate.ageDays}d sin actividad)`;
+        safety = { safe: true };
       }
       const checkAbandonment = opts.checkAbandonmentImpl || gbWorktrees.checkAbandonment;
       const abandonment = checkAbandonment(wt.path, branch, {
@@ -967,7 +1027,7 @@ function run(opts = {}) {
     // #3943 RS-4 — cap por corrida (default 5) + audit log JSONL append-only
     // en .pipeline/audit/ghostbusters-worktrees.jsonl. El sweep ejecuta el
     // borrado solo fuera de dry-run; el audit registra ambos modos.
-    const abandoned = findAbandonedWorktrees(procs, { ageThresholdDays: opts.ageThresholdDays });
+    const abandoned = findAbandonedWorktrees(procs, { ageThresholdDays: opts.ageThresholdDays, dryRun });
     const candidates = abandoned.map(w => ({
       path: w.path, branch: w.branch, issue: w.issue, reason: w.reason,
       skip: w.skip, skipReason: w.skipReason,
