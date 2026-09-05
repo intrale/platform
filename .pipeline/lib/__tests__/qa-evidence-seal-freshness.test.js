@@ -59,9 +59,28 @@ function crearEstado() {
   return dir;
 }
 
-function escribirVeredicto(estado, issue, data) {
+// #6496 (A08) — La migración pre-sellado tiene un CORTE TEMPORAL DURO en código
+// (`MIGRACION_CORTE_MS`) y data cada dropfile por su `mtime` REAL en disco. Un
+// fixture escrito sin fechar hereda el mtime del reloj, así que estos tests
+// pasaban sólo mientras la fecha de ejecución fuera anterior al corte y viraban
+// a rojo por sí solos al cruzarlo (bomba de tiempo: rojo desde el 2026-09-05).
+// Se fechan relativo a la constante exportada — no a fechas literales — para que
+// mover el corte no vuelva a romperlos. Mismo patrón que
+// `qa-evidence-seal-rebote-security-6496.test.js`.
+const MTIME_PRE_CORTE = seal.MIGRACION_CORTE_MS - 7 * 86400000;
+const MTIME_POST_CORTE = seal.MIGRACION_CORTE_MS + 86400000;
+
+/**
+ * Escribe un veredicto de fixture. `mtimeMs` data el dropfile: es lo único que
+ * la migración mira para decidir si cae antes o después del corte.
+ */
+function escribirVeredicto(estado, issue, data, mtimeMs) {
   const file = path.join(estado, 'desarrollo', 'verificacion', 'procesado', `${issue}.qa`);
   fs.writeFileSync(file, yaml.dump(data, { lineWidth: -1 }));
+  if (typeof mtimeMs === 'number') {
+    const t = new Date(mtimeMs);
+    fs.utimesSync(file, t, t);
+  }
   return file;
 }
 
@@ -309,9 +328,11 @@ test('stripDeclaredSeal borra la exencion que declare el agente', () => {
 
 test('la migracion es idempotente', () => {
   const estado = crearEstado();
-  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' });
-  escribirVeredicto(estado, 6362, { resultado: 'aprobado', evidencia: 'prosa' });
-  escribirVeredicto(estado, 6259, { resultado: 'rechazado' });
+  // Backlog PRE-sellado: por definición anterior al corte (es lo que la
+  // migración viene a rescatar). Sin datarlo, el corte duro lo deja afuera.
+  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_PRE_CORTE);
+  escribirVeredicto(estado, 6362, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_PRE_CORTE);
+  escribirVeredicto(estado, 6259, { resultado: 'rechazado' }, MTIME_PRE_CORTE);
 
   const uno = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
   assert.deepStrictEqual(uno.exentos.sort(), [6258, 6362]);
@@ -348,7 +369,7 @@ test('un aprobado sin sello posterior al corte NO recibe exencion en un boot pos
   // estado aislado. El defecto sólo aparece con la migración en el medio.
   const repo = crearRepo();
   const estado = crearEstado();
-  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' });
+  escribirVeredicto(estado, 6258, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_PRE_CORTE);
 
   // BOOT 1 — la ventana de migración se abre una única vez y cierra el corte.
   const boot1 = seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
@@ -356,7 +377,9 @@ test('un aprobado sin sello posterior al corte NO recibe exencion en un boot pos
   assert.strictEqual(boot1.ventana, 'abierta');
 
   // Llega un veredicto NUEVO, posterior al corte, aprobado y sin sello.
-  escribirVeredicto(estado, 7777, { resultado: 'aprobado', evidencia: 'prosa' });
+  // Datado explícitamente DESPUÉS del corte: es el escenario que el test
+  // nombra, y no puede depender de que el reloj de la máquina ya lo haya cruzado.
+  escribirVeredicto(estado, 7777, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_POST_CORTE);
   const antes = seal.checkVerdictFreshness({ pipelineDir: estado, issue: 7777, cwd: repo.dir });
   assert.strictEqual(antes.caduco, true, 'antes del boot el gate ya lo declara caduco');
   assert.strictEqual(antes.motivo, 'sin-sello');
@@ -401,7 +424,9 @@ test('el gate sobre el backlog migrado produce cero re-encolados', () => {
   const repo = crearRepo();
   const estado = crearEstado();
   const issues = [5220, 5244, 5459, 5986, 6145, 6208, 6239, 6362, 6432, 6611];
-  for (const n of issues) escribirVeredicto(estado, n, { resultado: 'aprobado', evidencia: 'prosa' });
+  for (const n of issues) {
+    escribirVeredicto(estado, n, { resultado: 'aprobado', evidencia: 'prosa' }, MTIME_PRE_CORTE);
+  }
 
   seal.migratePreSealBacklog({ pipelineDir: estado, ahora: '2026-08-26T00:00:00Z' });
 
